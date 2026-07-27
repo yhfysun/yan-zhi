@@ -1,0 +1,25 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "jsx": "preserve",
+    "baseUrl": ".",
+    "paths": {
+      "@yan-zhi/shared": ["packages/shared/src"],
+      "@yan-zhi/core": ["packages/core/src"],
+      "@yan-zhi/ui": ["packages/ui/src"]
+    }
+  },
+  "exclude": ["node_modules", "dist", "**/src-tauri/target"]
+}

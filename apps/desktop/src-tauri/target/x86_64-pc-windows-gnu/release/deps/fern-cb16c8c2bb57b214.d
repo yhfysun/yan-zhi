@@ -1,0 +1,11 @@
+C:\Users\yhfys\Desktop\ai-assistant\apps\desktop\src-tauri\target\x86_64-pc-windows-gnu\release\deps\fern-cb16c8c2bb57b214.d: C:\Users\yhfys\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\fern-0.7.1\src\lib.rs C:\Users\yhfys\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\fern-0.7.1\src\builders.rs C:\Users\yhfys\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\fern-0.7.1\src\errors.rs C:\Users\yhfys\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\fern-0.7.1\src\log_impl.rs C:\Users\yhfys\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\fern-0.7.1\src\meta.rs
+
+C:\Users\yhfys\Desktop\ai-assistant\apps\desktop\src-tauri\target\x86_64-pc-windows-gnu\release\deps\libfern-cb16c8c2bb57b214.rlib: C:\Users\yhfys\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\fern-0.7.1\src\lib.rs C:\Users\yhfys\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\fern-0.7.1\src\builders.rs C:\Users\yhfys\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\fern-0.7.1\src\errors.rs C:\Users\yhfys\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\fern-0.7.1\src\log_impl.rs C:\Users\yhfys\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\fern-0.7.1\src\meta.rs
+
+C:\Users\yhfys\Desktop\ai-assistant\apps\desktop\src-tauri\target\x86_64-pc-windows-gnu\release\deps\libfern-cb16c8c2bb57b214.rmeta: C:\Users\yhfys\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\fern-0.7.1\src\lib.rs C:\Users\yhfys\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\fern-0.7.1\src\builders.rs C:\Users\yhfys\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\fern-0.7.1\src\errors.rs C:\Users\yhfys\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\fern-0.7.1\src\log_impl.rs C:\Users\yhfys\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\fern-0.7.1\src\meta.rs
+
+C:\Users\yhfys\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\fern-0.7.1\src\lib.rs:
+C:\Users\yhfys\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\fern-0.7.1\src\builders.rs:
+C:\Users\yhfys\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\fern-0.7.1\src\errors.rs:
+C:\Users\yhfys\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\fern-0.7.1\src\log_impl.rs:
+C:\Users\yhfys\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\fern-0.7.1\src\meta.rs:

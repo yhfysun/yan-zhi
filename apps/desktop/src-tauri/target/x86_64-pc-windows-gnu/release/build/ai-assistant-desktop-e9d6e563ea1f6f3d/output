@@ -1,0 +1,17 @@
+cargo:rerun-if-env-changed=TAURI_CONFIG
+cargo:rustc-check-cfg=cfg(desktop)
+cargo:rustc-cfg=desktop
+cargo:rustc-check-cfg=cfg(mobile)
+cargo:rerun-if-changed=C:\Users\yhfys\Desktop\ai-assistant\apps\desktop\src-tauri\tauri.conf.json
+cargo:rustc-env=TAURI_ANDROID_PACKAGE_NAME_APP_NAME=desktop
+cargo:rustc-env=TAURI_ANDROID_PACKAGE_NAME_PREFIX=com_ai_1assistant
+cargo:rustc-check-cfg=cfg(dev)
+cargo:PERMISSION_FILES_PATH=C:\Users\yhfys\Desktop\ai-assistant\apps\desktop\src-tauri\target\x86_64-pc-windows-gnu\release\build\ai-assistant-desktop-e9d6e563ea1f6f3d\out\app-manifest\__app__-permission-files
+cargo:rerun-if-changed=capabilities
+cargo:rerun-if-env-changed=REMOVE_UNUSED_COMMANDS
+cargo:rustc-env=TAURI_ENV_TARGET_TRIPLE=x86_64-pc-windows-gnu
+cargo:rerun-if-changed=WebView2Loader.dll
+package.metadata does not exist
+cargo:rustc-link-arg-bins=C:\Users\yhfys\Desktop\ai-assistant\apps\desktop\src-tauri\target\x86_64-pc-windows-gnu\release\build\ai-assistant-desktop-e9d6e563ea1f6f3d\out\libresource.a
+cargo:rerun-if-changed=WebView2Loader.dll
+cargo:rustc-cdylib-link-arg=WebView2Loader.dll

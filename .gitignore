@@ -1,0 +1,38 @@
+node_modules/
+dist/
+.DS_Store
+*.local
+.env
+.env.*
+!.env.example
+
+# Tauri
+src-tauri/target/
+src-tauri/Cargo.lock
+
+# Capacitor
+apps/mobile/ios/
+apps/mobile/android/
+*.apk
+*.ipa
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# 数据库
+*.db
+*.db-journal
+*.sqlite
+
+# Corepack
+.corepack-cache/
+
+# Claude local settings
+.claude/settings.local.json

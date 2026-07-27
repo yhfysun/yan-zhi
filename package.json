@@ -1,0 +1,27 @@
+{
+  "name": "yan-zhi",
+  "version": "0.1.0",
+  "private": true,
+  "description": "言智 - 本地优先的跨端 AI 助手（桌面/Web/移动三端）",
+  "scripts": {
+    "dev": "pnpm --filter @yan-zhi/server dev",
+    "dev:server": "pnpm --filter @yan-zhi/server dev",
+    "dev:web": "pnpm --filter @yan-zhi/web dev",
+    "dev:desktop": "pnpm --filter @yan-zhi/desktop dev",
+    "dev:mobile": "pnpm --filter @yan-zhi/mobile dev",
+    "build:web": "pnpm --filter @yan-zhi/web build",
+    "build:desktop": "pnpm --filter @yan-zhi/desktop tauri:build",
+    "build:mobile:android": "pnpm --filter @yan-zhi/mobile build:android",
+    "build:mobile:ios": "pnpm --filter @yan-zhi/mobile build:ios",
+    "typecheck": "pnpm -r typecheck",
+    "lint": "pnpm -r lint"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0"
+  },
+  "engines": {
+    "node": ">=20",
+    "pnpm": ">=9"
+  },
+  "packageManager": "pnpm@9.12.0"
+}

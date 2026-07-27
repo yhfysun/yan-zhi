@@ -1,0 +1,29 @@
+{
+  "name": "@yan-zhi/web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc && vite build",
+    "preview": "vite preview",
+    "typecheck": "vue-tsc --noEmit"
+  },
+  "dependencies": {
+    "@yan-zhi/shared": "workspace:*",
+    "@yan-zhi/core": "workspace:*",
+    "@yan-zhi/ui": "workspace:*",
+    "vue": "^3.5.0",
+    "vue-router": "^4.4.0",
+    "pinia": "^2.2.0",
+    "element-plus": "^2.8.0",
+    "@element-plus/icons-vue": "^2.3.0",
+    "dexie": "^4.0.0"
+  },
+  "devDependencies": {
+    "vite": "^5.4.0",
+    "vue-tsc": "^2.1.0",
+    "typescript": "^5.6.0",
+    "@vitejs/plugin-vue": "^5.1.0"
+  }
+}

@@ -1,0 +1,14 @@
+C:\Users\yhfys\Desktop\ai-assistant\apps\desktop\src-tauri\target\release\deps\serde-a1a16d45d9b2b3d0.d: C:\Users\yhfys\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\lib.rs C:\Users\yhfys\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\integer128.rs C:\Users\yhfys\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\private\mod.rs C:\Users\yhfys\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\private\de.rs C:\Users\yhfys\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\private\ser.rs C:\Users\yhfys\Desktop\ai-assistant\apps\desktop\src-tauri\target\release\build\serde-0e4882c490319264\out/private.rs
+
+C:\Users\yhfys\Desktop\ai-assistant\apps\desktop\src-tauri\target\release\deps\libserde-a1a16d45d9b2b3d0.rlib: C:\Users\yhfys\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\lib.rs C:\Users\yhfys\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\integer128.rs C:\Users\yhfys\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\private\mod.rs C:\Users\yhfys\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\private\de.rs C:\Users\yhfys\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\private\ser.rs C:\Users\yhfys\Desktop\ai-assistant\apps\desktop\src-tauri\target\release\build\serde-0e4882c490319264\out/private.rs
+
+C:\Users\yhfys\Desktop\ai-assistant\apps\desktop\src-tauri\target\release\deps\libserde-a1a16d45d9b2b3d0.rmeta: C:\Users\yhfys\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\lib.rs C:\Users\yhfys\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\integer128.rs C:\Users\yhfys\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\private\mod.rs C:\Users\yhfys\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\private\de.rs C:\Users\yhfys\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\private\ser.rs C:\Users\yhfys\Desktop\ai-assistant\apps\desktop\src-tauri\target\release\build\serde-0e4882c490319264\out/private.rs
+
+C:\Users\yhfys\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\lib.rs:
+C:\Users\yhfys\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\integer128.rs:
+C:\Users\yhfys\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\private\mod.rs:
+C:\Users\yhfys\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\private\de.rs:
+C:\Users\yhfys\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\private\ser.rs:
+C:\Users\yhfys\Desktop\ai-assistant\apps\desktop\src-tauri\target\release\build\serde-0e4882c490319264\out/private.rs:
+
+# env-dep:OUT_DIR=C:\\Users\\yhfys\\Desktop\\ai-assistant\\apps\\desktop\\src-tauri\\target\\release\\build\\serde-0e4882c490319264\\out
