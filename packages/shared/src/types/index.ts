@@ -1,11 +1,12 @@
 // 核心类型定义（对应数据库实体）
+export * from './marketplace.js';
 
 /** 平台协议类型 */
 export type Protocol = 'openai' | 'anthropic' | 'custom';
 
 /** 模型类型 */
 export type ModelType = 'llm' | 'embedding' | 'rerank' | 'image' | 'video' | 'audio' | 'tts';
-export const CHAT_MODEL_TYPES: ModelType[] = ['llm', 'chat'];
+export const CHAT_MODEL_TYPES: ModelType[] = ['llm', 'chat' as ModelType];
 
 /** 消息角色 */
 export type Role = 'system' | 'user' | 'assistant' | 'tool';

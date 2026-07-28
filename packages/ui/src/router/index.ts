@@ -45,6 +45,18 @@ const routes: RouteRecordRaw[] = [
     meta: { title: 'MCP 服务详情' },
   },
   {
+    path: '/tools',
+    name: 'tools',
+    component: () => import('../views/ToolMarket.vue'),
+    meta: { title: '工具管理' },
+  },
+  {
+    path: '/tools',
+    name: 'tools',
+    component: () => import('../views/ToolMarket.vue'),
+    meta: { title: '工具管理' },
+  },
+  {
     path: '/skills',
     name: 'skills',
     component: () => import('../views/Skills.vue'),

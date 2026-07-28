@@ -2,7 +2,7 @@
   "name": "yan-zhi",
   "version": "0.1.0",
   "private": true,
-  "description": "言智 - 本地优先的跨端 AI 助手（桌面/Web/移动三端）",
+  "description": "言智 - 语言可控的智能体平台（桌面/Web/移动三端）",
   "scripts": {
     "dev": "pnpm --filter @yan-zhi/server dev",
     "dev:server": "pnpm --filter @yan-zhi/server dev",

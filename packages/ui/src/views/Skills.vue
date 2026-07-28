@@ -6,6 +6,7 @@
         <el-input v-model="search" placeholder="搜索 Skill" style="width: 200px" clearable />
         <el-tabs v-model="tab" class="skill-tabs">
           <el-tab-pane label="商店" name="market" />
+          <el-tab-pane label="远程商城" name="remote" />
           <el-tab-pane label="已安装" name="installed" />
           <el-tab-pane label="自建" name="custom" />
         </el-tabs>
@@ -63,6 +64,42 @@
           </div>
         </el-card>
         <el-empty v-if="filteredMarket.length === 0" description="无匹配 Skill" />
+      </div>
+    </div>
+
+    <!-- 远程商城 -->
+    <div v-else-if="tab === 'remote'">
+      <div class="remote-toolbar">
+        <el-button size="small" type="primary" @click="showSkillSourceForm = true"><el-icon><Plus /></el-icon> 添加远程源</el-button>
+      </div>
+      <div v-if="skillRemoteSources.length === 0" style="padding: 40px 0; text-align: center; color: var(--color-text-secondary);">
+        暂无远程 Skill 商城源，点击上方按钮添加
+      </div>
+      <div v-else class="source-list">
+        <div v-for="s in skillRemoteSources" :key="s.id" class="source-item">
+          <div class="source-info">
+            <span class="source-name">{{ s.name }}</span>
+            <span class="source-url">{{ s.base_url }}</span>
+          </div>
+          <div class="source-actions">
+            <el-button size="small" @click="browseSkillSource(s)">浏览</el-button>
+            <el-button size="small" @click="testSkillSource(s.id)">测试</el-button>
+            <el-button size="small" type="danger" @click="delSkillSource(s.id)">删除</el-button>
+          </div>
+        </div>
+      </div>
+      <div v-if="remoteSkillItems.length > 0" class="skill-grid" style="margin-top: 20px">
+        <el-card v-for="item in remoteSkillItems" :key="item.id" class="skill-card">
+          <div class="skill-name">{{ item.name }}</div>
+          <div class="skill-desc">{{ item.description || '无描述' }}</div>
+          <div class="skill-meta">
+            <el-tag size="small">{{ item.category || '未分类' }}</el-tag>
+            <span class="skill-author">{{ item.author || '未知' }}</span>
+          </div>
+          <div class="skill-actions">
+            <el-button size="small" type="primary" @click="installRemoteSkill(item.id)">安装到本地</el-button>
+          </div>
+        </el-card>
       </div>
     </div>
 
@@ -161,6 +198,7 @@ import { Plus, Files, Download } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { useSkillStore } from '../stores';
 import { OPEN_SOURCE_RESOURCES } from '../stores/skill';
+import { api } from '../api/client';
 import type { Skill } from '@ai-assistant/shared';
 
 const store = useSkillStore();
@@ -177,9 +215,45 @@ const editor = ref({ name: '', description: '', bodyMd: '', category: '' });
 const triggersText = ref('');
 const importText = ref('');
 
+// 远程 Skill 商城
+const showSkillSourceForm = ref(false);
+const skillRemoteSources = ref<any[]>([]);
+const remoteSkillItems = ref<any[]>([]);
+const skillSourceForm = ref({ name: '', baseUrl: '', authType: 'none' as string, authValue: '' });
+let currentSkillSourceId = '';
+
+async function loadSkillRemoteSources() {
+  try { const r = await api.get<any[]>('/skill-marketplace'); skillRemoteSources.value = r.data || []; } catch {}
+}
+async function addSkillSource() {
+  if (!skillSourceForm.value.name || !skillSourceForm.value.baseUrl) { ElMessage.warning('名称和 URL 为必填项'); return; }
+  const authConfig: any = {};
+  if (skillSourceForm.value.authType === 'bearer') authConfig.token = skillSourceForm.value.authValue;
+  else if (skillSourceForm.value.authType === 'api-key') authConfig.apiKey = skillSourceForm.value.authValue;
+  await api.post('/skill-marketplace', { name: skillSourceForm.value.name, baseUrl: skillSourceForm.value.baseUrl, authType: skillSourceForm.value.authType, authConfig });
+  showSkillSourceForm.value = false; await loadSkillRemoteSources(); ElMessage.success('已添加');
+}
+async function testSkillSource(id: string) {
+  const r = await api.post<any>(`/skill-marketplace/${id}/test`);
+  ElMessage[r.ok ? 'success' : 'error'](r.ok ? '连接成功' : (r.error || '连接失败'));
+}
+async function delSkillSource(id: string) {
+  try { await ElMessageBox.confirm('删除该远程源？', '提示', { type: 'warning' }); await api.delete(`/skill-marketplace/${id}`); await loadSkillRemoteSources(); ElMessage.success('已删除'); } catch {}
+}
+async function browseSkillSource(s: any) {
+  currentSkillSourceId = s.id;
+  try { const r = await api.get<any>(`/skill-marketplace/${s.id}/skills`); remoteSkillItems.value = r?.data?.items || []; } catch { ElMessage.error('获取远程 Skill 列表失败'); }
+}
+async function installRemoteSkill(skillId: string) {
+  try {
+    await api.post(`/skill-marketplace/${currentSkillSourceId}/install`, { skillId });
+    await store.loadSkills(); ElMessage.success('已安装到本地');
+  } catch { ElMessage.error('安装失败'); }
+}
+
 const categories = ['全部', '编程', '写作', '设计', '数据分析', '办公', '自定义'];
 
-onMounted(() => store.loadSkills());
+onMounted(() => { store.loadSkills(); loadSkillRemoteSources(); });
 
 const filteredMarket = computed(() => {
   let list = store.marketSkills;

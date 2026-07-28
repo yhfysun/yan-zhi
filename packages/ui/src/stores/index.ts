@@ -6,3 +6,4 @@ export { useSkillStore } from './skill';
 export { useAgentStore } from './agent';
 export { useSettingsStore } from './settings';
 export { useAuthStore } from './auth';
+export { useToolsStore } from './tools';

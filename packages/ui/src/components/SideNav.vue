@@ -36,7 +36,7 @@
 
 <script setup lang="ts">
 import { useRoute, useRouter } from 'vue-router';
-import { ChatDotRound, Connection, Box, Files, Setting, Cpu, User, SwitchButton } from '@element-plus/icons-vue';
+import { ChatDotRound, Box, Files, Setting, Cpu, User, SwitchButton, Tools } from '@element-plus/icons-vue';
 import { useAuthStore } from '../stores/auth';
 
 const route = useRoute();
@@ -46,7 +46,7 @@ const authStore = useAuthStore();
 const navItems = [
   { path: '/chat', label: '聊天', icon: ChatDotRound },
   { path: '/models', label: '模型平台', icon: Cpu },
-  { path: '/mcp', label: 'MCP 服务', icon: Connection },
+  { path: '/tools', label: '工具管理', icon: Tools },
   { path: '/skills', label: 'Skill 商店', icon: Files },
   { path: '/agents', label: '智能体', icon: Box },
   { path: '/settings', label: '设置', icon: Setting },

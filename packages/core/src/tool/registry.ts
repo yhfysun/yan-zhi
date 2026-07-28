@@ -61,4 +61,20 @@ export class ToolRegistry {
       },
     }));
   }
+
+  /** 从数据库加载自定义工具并注册 */
+  loadCustomTools(tools: Array<{ name: string; description?: string; inputSchema: Record<string, unknown>; code: string; entry: string; timeout: number }>): void {
+    for (const t of tools) {
+      if (this.tools.has(t.name)) continue;
+      this.tools.set(t.name, {
+        name: t.name,
+        description: t.description || '',
+        inputSchema: t.inputSchema,
+        execute: async (args: Record<string, unknown>) => {
+          const { runInSandbox } = await import('./sandbox');
+          return runInSandbox(t.code, t.entry, args, { timeout: t.timeout });
+        },
+      });
+    }
+  }
 }

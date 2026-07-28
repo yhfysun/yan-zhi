@@ -181,6 +181,51 @@ CREATE TABLE IF NOT EXISTS model_call (
   created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_modelcall_created ON model_call(created_at DESC);
+
+-- 自定义工具
+CREATE TABLE IF NOT EXISTS custom_tool (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL UNIQUE,
+  description TEXT,
+  input_schema_json TEXT NOT NULL,
+  output_schema_json TEXT,
+  runtime TEXT NOT NULL DEFAULT 'node',
+  entry TEXT NOT NULL,
+  code TEXT NOT NULL,
+  dependencies_json TEXT,
+  timeout INTEGER DEFAULT 30000,
+  env_json TEXT,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  source TEXT NOT NULL DEFAULT 'local',
+  remote_source_id TEXT,
+  is_public INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+-- 远程商城源
+CREATE TABLE IF NOT EXISTS remote_marketplace (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  type TEXT NOT NULL,
+  base_url TEXT NOT NULL,
+  auth_type TEXT NOT NULL DEFAULT 'none',
+  auth_config_enc TEXT,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  created_at INTEGER NOT NULL
+);
+
+-- 远程市场缓存
+CREATE TABLE IF NOT EXISTS marketplace_cache (
+  id TEXT PRIMARY KEY,
+  remote_id TEXT NOT NULL REFERENCES remote_marketplace(id) ON DELETE CASCADE,
+  item_type TEXT NOT NULL,
+  item_id TEXT NOT NULL,
+  data_json TEXT NOT NULL,
+  cached_at INTEGER NOT NULL,
+  UNIQUE(remote_id, item_type, item_id)
+);
+CREATE INDEX IF NOT EXISTS idx_marketplace_cache_remote ON marketplace_cache(remote_id, item_type);
 `;
 
 /** 迁移 SQL：为已有数据库添加新字段 */
@@ -252,4 +297,16 @@ export async function initSchema(execFn: (sql: string) => Promise<void>): Promis
     try { await execFn(`ALTER TABLE mcp_tool ADD COLUMN ${col} TEXT;`); } catch { /* 列已存在 */ }
   }
   try { await execFn(`ALTER TABLE mcp_tool ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1;`); } catch { /* 列已存在 */ }
+  // 迁移：skill 表新增商城相关字段
+  for (const col of ['remote_source_id', 'is_public']) {
+    try { await execFn(`ALTER TABLE skill ADD COLUMN ${col} TEXT;`); } catch { /* 列已存在 */ }
+  }
+  try { await execFn(`ALTER TABLE skill ADD COLUMN is_public INTEGER NOT NULL DEFAULT 0;`); } catch {
+    try { await execFn(`ALTER TABLE skill ADD COLUMN is_public INTEGER NOT NULL DEFAULT 0;`); } catch { /* 已存在 */ }
+  }
+  // 迁移：agent 表新增商城相关字段
+  for (const col of ['source', 'remote_source_id', 'is_public']) {
+    const def = col === 'is_public' ? 'INTEGER NOT NULL DEFAULT 0' : 'TEXT';
+    try { await execFn(`ALTER TABLE agent ADD COLUMN ${col} ${def};`); } catch { /* 列已存在 */ }
+  }
 }

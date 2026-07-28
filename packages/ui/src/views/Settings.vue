@@ -54,6 +54,34 @@
           <el-button type="danger" @click="clearCache" :icon="Delete">清空缓存</el-button>
         </div>
       </el-tab-pane>
+      <el-tab-pane label="商城服务端" name="marketplace">
+        <el-form label-width="160px" style="max-width: 600px">
+          <el-form-item label="启用商城服务端">
+            <el-switch v-model="mpEnabled" @change="onMpToggle" />
+            <span class="form-tip" style="margin-left: 12px">开启后其他言智节点可连接本节点获取工具/Skill/智能体</span>
+          </el-form-item>
+          <el-form-item label="连接地址">
+            <div class="connect-url-box">
+              <code>{{ connectUrl }}</code>
+              <el-button size="small" text @click="copyUrl">复制</el-button>
+            </div>
+          </el-form-item>
+          <el-form-item label="认证方式">
+            <el-select v-model="mpAuthType" style="width: 200px" @change="onMpAuthChange">
+              <el-option label="无认证" value="none" />
+              <el-option label="Bearer Token" value="bearer" />
+              <el-option label="API Key" value="api-key" />
+            </el-select>
+          </el-form-item>
+          <el-form-item v-if="mpAuthType !== 'none'" label="凭证">
+            <el-input v-model="mpAuthValue" :placeholder="mpAuthType === 'bearer' ? '输入 Token' : '输入 API Key'" style="width: 280px" @blur="onMpAuthChange" />
+          </el-form-item>
+          <el-form-item label="端口">
+            <el-input-number v-model="mpPort" :min="1024" :max="65535" style="width: 180px" @change="onMpPortChange" />
+            <span class="form-tip" style="margin-left: 8px">默认 3001</span>
+          </el-form-item>
+        </el-form>
+      </el-tab-pane>
       <el-tab-pane label="关于" name="about">
         <div class="about-section">
           <h3>AI Assistant</h3>
@@ -71,10 +99,12 @@ import { ref, computed, onMounted, watch } from 'vue';
 import { Download, Delete, Upload } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { useSettingsStore, usePlatformStore } from '../stores';
+import { useToolsStore } from '../stores/tools';
 import type { ThemeName } from '../stores/settings';
 
 const settingsStore = useSettingsStore();
 const platformStore = usePlatformStore();
+const toolsStore = useToolsStore();
 const tab = ref('general');
 
 const fileInput = ref<HTMLInputElement | null>(null);
@@ -216,6 +246,37 @@ async function clearCache() {
     ElMessage.success('已清空');
   } catch {}
 }
+
+// 商城服务端
+const mpEnabled = ref(false);
+const mpAuthType = ref('none');
+const mpAuthValue = ref('');
+const mpPort = ref(3001);
+
+const connectUrl = computed(() => {
+  const host = window.location.hostname || 'localhost';
+  return `http://${host}:${mpPort.value}/api/marketplace`;
+});
+
+async function onMpToggle(v: boolean) {
+  await toolsStore.setMarketplaceEnabled(v);
+}
+function onMpAuthChange() {
+  toolsStore.setMarketplaceEnabled(mpEnabled.value);
+}
+function onMpPortChange() {
+  // port change stored locally, requires server restart
+}
+function copyUrl() {
+  navigator.clipboard.writeText(connectUrl.value).then(() => ElMessage.success('已复制连接地址'));
+}
+
+onMounted(async () => {
+  await toolsStore.loadMarketplaceConfig();
+  mpEnabled.value = toolsStore.marketplaceEnabled;
+  mpAuthType.value = toolsStore.marketplaceAuth.authType || 'none';
+  mpAuthValue.value = toolsStore.marketplaceAuth.token || '';
+});
 </script>
 
 <style scoped>
@@ -243,4 +304,6 @@ async function clearCache() {
 .about-section h3 { margin-bottom: 12px; }
 .about-section p { margin: 6px 0; color: var(--color-text-secondary); }
 .about-tip { font-size: 12px; opacity: 0.7; }
+.connect-url-box { display: flex; align-items: center; gap: 8px; background: rgba(15,23,42,0.04); border-radius: 6px; padding: 6px 10px; }
+.connect-url-box code { font-family: monospace; font-size: 13px; color: var(--color-primary); }
 </style>
