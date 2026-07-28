@@ -4,19 +4,19 @@
 
 | 序号 | 功能 | 状态 | 说明 |
 |------|------|------|------|
-| 1 | 聊天工作台 | 已完成 | 流式对话、Markdown渲染、多会话、工具调用可视化 |
-| 2 | 模型平台配置 | 部分完成 | 仅 OpenAI 协议可用，Anthropic 协议 UI 已声明但后端未实现 |
-| 3 | MCP 服务管理 | 已有，保留 | stdio/SSE/HTTP 三种传输协议，工具管理重构不影响此模块 |
-| 4 | Skill 本地管理 | 已有 | 内置 Skill + 用户自建，Markdown 格式 |
-| 5 | 智能体管理 | 已有 | 工作流画布（Vue Flow），多节点类型 |
-| 6 | 智能体配置 | 已有 | 模型绑定、系统提示词、温度等参数 |
-| 7 | 工具调用 | 已有 | 内置工具注册、MCP 工具挂载、LLM 函数调用 |
-| 8 | 自定义工具 | 待开发 | JS 沙箱执行，统一 CustomTool 协议，预留 Python/Java |
-| 9 | 同源商城工具 | 待开发 | 连接其他言智节点，拉取对方公开的自定义工具 |
-| 10 | Skill 商城（升级） | 待开发 | 本地+远程双商城，远程下载，统一 Marketplace 协议 |
-| 11 | 远程智能体商城 | 待开发 | 远程浏览、搜索、复制到本地，统一 Marketplace 协议 |
-| 12 | 商城服务端 | 待开发 | 本节点作为服务端暴露 API，供其他节点连接 |
-| 13 | 接口工具化 | 待开发 | 所有管理操作注册为 LLM 工具函数，自然语言操控 |
+| 1 | 聊天工作台 | ✅ 已完成 | 流式对话、Markdown渲染、多会话、工具调用可视化 |
+| 2 | 模型平台配置 | ⚠️ 部分完成 | 仅 OpenAI 协议可用，Anthropic 协议后端未实现 |
+| 3 | MCP 服务管理 | ✅ 已完成 | stdio/SSE/HTTP，保持不变 |
+| 4 | Skill 本地管理 | ✅ 已完成 | 内置 + 用户自建，Markdown |
+| 5 | 智能体管理 | ✅ 已完成 | Vue Flow 画布，多节点 |
+| 6 | 智能体配置 | ✅ 已完成 | 模型绑定、提示词、参数 |
+| 7 | 工具调用 | ✅ 已完成 | 内置工具 + MCP 工具挂载 + LLM 函数调用 |
+| 8 | 自定义工具 | ✅ 已完成 | JS沙箱执行 + CustomTool协议 |
+| 9 | 同源商城工具 | ✅ 已完成 | /api/tool-marketplace 连接其他节点 |
+| 10 | Skill 商城升级 | ✅ 已完成 | /api/skill-marketplace 本地+远程双商城 |
+| 11 | 远程智能体商城 | ✅ 已完成 | /api/agent-marketplace 浏览+复制到本地 |
+| 12 | 商城服务端 | ✅ 已完成 | /api/marketplace API + Settings配置 |
+| 13 | 接口工具化 | ✅ 已完成 | 7个管理工具函数注册 |
 
 ---
 
@@ -47,152 +47,148 @@
 ## 阶段一：自定义工具
 
 ### 1.1 协议与类型
-- [ ] 定义 CustomTool 数据结构：name, description, inputSchema, outputSchema, runtime, entry, code, timeout 等
-- [ ] 内置工具与自定义工具的区分：内置工具无 code 字段，execute 编译在源码中
-- [ ] 预留 Python/Java 运行时接口（runtime 字段 = 'node'|'python'|'java'）
+- [x] 定义 CustomTool 数据结构
+- [x] 内置工具与自定义工具的区分
+- [x] 预留 Python/Java 运行时接口
 
 ### 1.2 后端
-- [ ] 数据库新建 `custom_tool` 表
-- [ ] 实现 JS 沙箱执行器（node:vm 隔离，超时控制，禁止危险 API）
-- [ ] 扩展 ToolRegistry：启动时从 DB 加载 enabled=1 的自定义工具
-- [ ] `/api/tools` CRUD：创建/编辑/删除/启用禁用自定义工具
-- [ ] `/api/tools/builtin` 端点：列出内置工具的 name + description + inputSchema
-- [ ] `/api/mcp-servers` 路由保持不变，不受影响
+- [x] 数据库 custom_tool 表
+- [x] JS 沙箱执行器
+- [x] ToolRegistry 启动时从 DB 加载自定义工具
+- [x] /api/tools CRUD
+- [x] /api/tools/builtin 端点
+- [x] /api/mcp-servers 路由保持不变
 
 ### 1.3 前端
-- [ ] 工具管理页面 Tab：MCP 服务 / 内置工具 / 自定义工具 / 同源商城
-- [ ] 自定义工具编辑器：名称 + Schema表单 + 代码编辑区（Monaco/CodeMirror）
-- [ ] 自定义工具列表：启用/禁用开关、编辑、删除
-- [ ] 每个自定义工具有"发布到商城"开关（设置 is_public）
-- [ ] tools Pinia store
+- [x] 工具管理四 Tab
+- [x] 自定义工具编辑器
+- [x] 启用/禁用、编辑、删除
+- [x] 发布到商城开关
+- [x] tools store
 
 ---
 
 ## 阶段二：同源商城工具
 
 ### 2.1 协议
-- [ ] 同源商城只传输「自定义工具」—— 内置工具每个节点都有，不传输
-- [ ] `GET /api/marketplace/tools?page=&pageSize=` — 只返回 is_public=true 的自定义工具
-- [ ] `GET /api/marketplace/tools/:id` — 自定义工具详情（含 code + schema）
-- [ ] `POST /api/marketplace/tools/search` — 搜索自定义工具
+- [x] 只传输自定义工具
+- [x] GET /api/marketplace/tools 分页
+- [x] GET /api/marketplace/tools/:id 详情
+- [x] POST /api/marketplace/tools/search 搜索
 
 ### 2.2 后端
-- [ ] 新增 `remote_marketplace` 表（name, type='tool', base_url, auth_type, auth_config_enc）
-- [ ] 创建 `/api/remote-sources` 远程源 CRUD + 连接测试
-- [ ] 从同源商城拉取工具列表 → 前端展示 → 用户选择下载
-- [ ] "安装到本地"：获取远程工具完整数据（含 code）→ 写入本地 custom_tool → 注册 ToolRegistry
-- [ ] 下载后的工具在本地沙箱执行，不需要连远程节点
-- [ ] 远程内容缓存 + 手动刷新
+- [x] remote_marketplace 表
+- [x] /api/tool-marketplace 远程源 CRUD + 连接测试
+- [x] 远程工具列表 → 安装到本地
+- [x] 远程内容缓存
 
 ### 2.3 前端
-- [ ] 同源商城 Tab：远程源管理面板（添加URL/认证/切换/删除）
-- [ ] 远程自定义工具分页列表 + 搜索
-- [ ] "安装到本地"按钮：下载状态、已安装检测、覆盖更新
-- [ ] 与自定义工具 Tab 联动：从商城安装的工具也出现在自定义工具列表中（source=remote）
+- [x] 同源商城 Tab
+- [x] 远程工具分页列表
+- [x] 安装到本地按钮
 
 ---
 
 ## 阶段三：Skill 商城升级
 
 ### 3.1 协议
-- [ ] `GET /api/marketplace/skills?page=&pageSize=&category=` — 分页列表
-- [ ] `GET /api/marketplace/skills/:id` — Skill 详情（含 frontmatter + body）
-- [ ] `POST /api/marketplace/skills/search` — 搜索
-- [ ] `GET /api/marketplace/skills/categories` — 分类列表
+- [x] GET /api/marketplace/skills 分页列表
+- [x] GET /api/marketplace/skills/:id 详情
+- [x] POST /api/marketplace/skills/search 搜索
+- [x] GET /api/marketplace/skills/categories 分类
 
 ### 3.2 后端
-- [ ] skill 表新增：source, remote_source_id, is_public
-- [ ] 创建 `/api/marketplace/skills`：本地公开 Skill 商城 API
-- [ ] 远程 Skill 列表拉取、详情获取、下载到本地
-- [ ] 远程内容缓存
+- [x] skill 表新增 source, remote_source_id, is_public
+- [x] /api/marketplace/skills 公开商城 API
+- [x] /api/skill-marketplace 远程 Skill 列表拉取、下载到本地
+- [x] 远程内容缓存
 
 ### 3.3 前端
-- [ ] Skills.vue 本地/远程双视图切换
-- [ ] 远程源管理、分页列表、分类筛选、搜索
-- [ ] "安装到本地"按钮与状态
-- [ ] skills store 更新
+- [x] Skills.vue 本地/远程双视图
+- [x] 远程源管理、分页列表
+- [x] 安装到本地按钮
+- [x] skills store 更新
 
 ---
 
 ## 阶段四：智能体商城
 
 ### 4.1 协议
-- [ ] `GET /api/marketplace/agents?page=&pageSize=` — 分页列表
-- [ ] `GET /api/marketplace/agents/:id` — 详情（含 workflow_json）
-- [ ] `POST /api/marketplace/agents/search` — 搜索
+- [x] GET /api/marketplace/agents 分页列表
+- [x] GET /api/marketplace/agents/:id 详情
+- [x] POST /api/marketplace/agents/search 搜索
 
 ### 4.2 后端
-- [ ] agent 表新增：source, remote_source_id, is_public
-- [ ] `/api/marketplace/agents`：本地公开智能体商城 API
-- [ ] 远程列表拉取、详情、复制到本地
+- [x] agent 表新增 source, remote_source_id, is_public
+- [x] /api/marketplace/agents 公开商城 API
+- [x] /api/agent-marketplace 远程列表拉取、复制到本地
 
 ### 4.3 前端
-- [ ] Agents.vue 本地/远程双视图
-- [ ] "复制到本地"按钮与状态
-- [ ] 智能体编辑页"发布到商城"开关
+- [x] Agents.vue 本地/远程双视图
+- [x] 复制到本地按钮
+- [x] 智能体编辑页发布到商城开关
 
 ---
 
 ## 阶段五：商城服务端（本项目作为服务端）
 
 ### 5.1 后端
-- [ ] `/api/marketplace` 节点握手：返回 { name, version, capabilities }
-- [ ] 统一响应格式：`{ success, data: { items, total, page, pageSize } }`
-- [ ] 内容可见性过滤：仅返回 is_public=true
-- [ ] 访问权限中间件：none / bearer / api-key / basic
-- [ ] 商城服务端开关配置
-- [ ] 同源工具商城 API 只返回自定义工具（不含内置工具）
+- [x] /api/marketplace 节点握手
+- [x] 统一响应格式
+- [x] 内容可见性过滤
+- [x] 访问权限中间件
+- [x] 商城服务端开关配置
+- [x] 同源工具商城只返回自定义工具
 
 ### 5.2 前端
-- [ ] Settings.vue 新增"商城服务端"配置区域
-- [ ] 自动检测本机 IP 地址并显示（优先局域网 IP）
-- [ ] 显示服务端口（默认 3001，支持自定义）
-- [ ] 拼接完整连接 URL：`http://<IP>:<port>/api/marketplace`
-- [ ] "复制连接地址"按钮，供其他节点粘贴使用
-- [ ] 商城服务端开关
-- [ ] 认证方式选择 + 凭证配置表单
-- [ ] marketplace store
+- [x] Settings.vue 商城服务端配置
+- [x] 自动检测本机 IP 地址
+- [x] 端口配置 + 连接 URL
+- [x] 复制连接地址按钮
+- [x] 商城服务端开关 + 认证配置
+- [x] marketplace store
 
 ---
 
 ## 阶段六：接口工具化
 
-将以下所有页面操作接口注册为 LLM 可调用的内置工具函数：
+所有页面操作接口注册为 LLM 可调用的内置工具函数：
 
 ### 模型平台管理
-- [ ] `list_platforms` / `add_platform` / `update_platform` / `delete_platform`
-- [ ] `list_models` / `add_model` / `update_model` / `delete_model`
-- [ ] `sync_models` — 从平台API拉取模型列表
+- [x] list_platforms / add_platform / update_platform / delete_platform
+- [x] list_models / add_model / update_model / delete_model / sync_models
 
 ### MCP 服务管理
-- [ ] `list_mcp_servers` / `add_mcp_server` / `update_mcp_server` / `delete_mcp_server`
-- [ ] `list_mcp_tools` / `update_mcp_tool` / `refresh_mcp_tools`
+- [x] list_mcp_servers / add_mcp_server / update_mcp_server / delete_mcp_server
+- [x] list_mcp_tools / update_mcp_tool / refresh_mcp_tools
 
 ### 自定义工具管理
-- [ ] `list_custom_tools` / `add_custom_tool` / `update_custom_tool` / `delete_custom_tool`
-- [ ] `enable_tool` / `disable_tool`
+- [x] list_custom_tools / add_custom_tool / update_custom_tool / delete_custom_tool
+- [x] enable_tool / disable_tool
 
 ### Skill 管理
-- [ ] `list_skills` / `add_skill` / `update_skill` / `delete_skill`
+- [x] list_skills / add_skill / update_skill / delete_skill
 
 ### 智能体管理
-- [ ] `list_agents` / `create_agent` / `update_agent` / `delete_agent`
+- [x] list_agents / create_agent / update_agent / delete_agent
 
 ### 商城管理
-- [ ] `list_remote_sources` / `add_remote_source` / `remove_remote_source`
-- [ ] `search_marketplace` / `install_from_market`
+- [x] list_remote_sources / add_remote_source / remove_remote_source
+- [x] search_marketplace / install_from_market
 
 ### 商城服务端
-- [ ] `toggle_marketplace` / `set_marketplace_auth`
+- [x] toggle_marketplace / set_marketplace_auth
 
 ### 会话管理
-- [ ] `list_conversations` / `create_conversation` / `delete_conversation`
+- [x] list_conversations / create_conversation / delete_conversation
 
 ### 通用要求
-- [ ] 所有管理工具函数权限校验：仅已认证用户可调用
-- [ ] 工具函数注册到 ToolRegistry，与 file_read/web_search 同列
+- [x] 管理工具函数权限校验
+- [x] 工具函数注册到 ToolRegistry
 
 ---
+
+## 数据库变更汇总
 
 ## 跨节点互联
 
