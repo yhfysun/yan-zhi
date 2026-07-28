@@ -5,6 +5,7 @@ import type {
   FsAdapter,
   KeyringAdapter,
   McpProcessAdapter,
+  ShellAdapter,
 } from '@yan-zhi/core';
 import { invoke } from '@tauri-apps/api/core';
 import Database from '@tauri-apps/plugin-sql';
@@ -16,6 +17,7 @@ import {
   remove,
   readDir,
 } from '@tauri-apps/plugin-fs';
+import { Command } from '@tauri-apps/plugin-shell';
 
 /** 桌面端 SQLite 数据库（Tauri SQL 插件） */
 class DesktopDatabase implements DatabaseAdapter {
@@ -96,10 +98,27 @@ class DesktopMcpProcess implements McpProcessAdapter {
   }
 }
 
+/** 桌面端 Shell 适配器（Tauri Shell 插件） */
+class DesktopShell implements ShellAdapter {
+  async exec(command: string, args: string[], options?: { cwd?: string; timeout?: number; env?: Record<string, string> }): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+    const cmd = Command.create(command, args, {
+      cwd: options?.cwd,
+      env: options?.env ? { ...options.env } : undefined,
+    });
+    const output = await cmd.execute();
+    return {
+      stdout: output.stdout,
+      stderr: output.stderr,
+      exitCode: output.code ?? 0,
+    };
+  }
+}
+
 export const desktopAdapter: PlatformAdapter = {
   platform: 'desktop',
   db: new DesktopDatabase(),
   fs: new DesktopFs(),
   keyring: new DesktopKeyring(),
   mcp: new DesktopMcpProcess(),
+  shell: new DesktopShell(),
 };

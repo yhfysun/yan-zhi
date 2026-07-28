@@ -47,6 +47,7 @@ export const useToolsStore = defineStore('tools', () => {
     { name: 'file_read', description: '读取文件内容，支持指定路径和行数范围' },
     { name: 'file_write', description: '写入内容到指定文件路径' },
     { name: 'web_search', description: '联网搜索，获取实时信息' },
+    { name: 'cmd_exec', description: '执行系统命令，支持 cmd/python/java/git 等' },
   ];
 
   async function loadCustomTools() {

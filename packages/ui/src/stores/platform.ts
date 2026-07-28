@@ -289,8 +289,12 @@ export const usePlatformStore = defineStore('platform', () => {
         models.value.filter((m) => m.platformId === platformId).map((m) => [m.modelId, m]),
       );
       const remoteIds = new Set(list.map((item) => item.id));
+      const seenInBatch = new Set<string>();
       // 新增或重新启用远程有的模型
       for (const item of list) {
+        // 同批次去重（API 极少返回重复项，防御性处理）
+        if (seenInBatch.has(item.id)) continue;
+        seenInBatch.add(item.id);
         const local = existing.get(item.id);
         const type = inferModelType(item.id, item.type);
         if (local) {
@@ -387,5 +391,16 @@ export const usePlatformStore = defineStore('platform', () => {
     addModel, updateModel, deleteModel,
     fetchRemoteModels, testConnectivity, testModel,
     testPlatformConfig, fetchModelsPreview, startHealthCheck,
+    /** 按 modelId 名称查找模型，兼容存量会话中存储的是内部 ID 的情况 */
+    resolveModel(modelIdOrInternalId: string, platformId?: string): Model | undefined {
+      const candidates = platformId
+        ? models.value.filter((m) => m.platformId === platformId)
+        : models.value;
+      // 1) 按 modelId 名称匹配
+      const byName = candidates.find((m) => m.modelId === modelIdOrInternalId);
+      if (byName) return byName;
+      // 2) 存量兼容：按内部 id 查找
+      return candidates.find((m) => m.id === modelIdOrInternalId);
+    },
   };
 });

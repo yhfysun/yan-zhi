@@ -1,0 +1,71 @@
+name: 构建桌面应用
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:  # 允许手动触发
+
+jobs:
+  # macOS 构建（GitHub 云 Mac 虚拟机）
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'pnpm'
+
+      - name: 安装 Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 安装依赖
+        run: pnpm install
+
+      - name: 构建 macOS 应用
+        run: cd apps/desktop && pnpm tauri build
+
+      - name: 上传 DMG 安装包
+        uses: actions/upload-artifact@v4
+        with:
+          name: macOS-DMG
+          path: apps/desktop/src-tauri/target/release/bundle/macos/*.dmg
+
+  # Windows 构建
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'pnpm'
+
+      - name: 安装 Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 安装依赖
+        run: pnpm install
+
+      - name: 构建 Windows 应用
+        run: cd apps/desktop && pnpm tauri build
+
+      - name: 上传 NSIS 安装包
+        uses: actions/upload-artifact@v4
+        with:
+          name: Windows-Installer
+          path: apps/desktop/src-tauri/target/release/bundle/nsis/*.exe

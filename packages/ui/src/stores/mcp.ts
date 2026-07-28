@@ -134,6 +134,40 @@ export const useMcpStore = defineStore('mcp', () => {
     return server;
   }
 
+  async function updateServer(id: string, data: {
+    name?: string; transport?: McpTransport;
+    command?: string; args?: string[]; env?: Record<string, string>;
+    url?: string; headers?: Record<string, string>;
+    autoReconnect?: boolean; reconnectInterval?: number; autoConnect?: boolean;
+  }): Promise<void> {
+    const idx = servers.value.findIndex(s => s.id === id);
+    if (idx === -1) return;
+    if (on()) {
+      await api.patch(`/mcp-servers/${id}`, data);
+      await loadServers();
+      return;
+    }
+    const adapter = getPlatformAdapter();
+    await adapter.db.exec(
+      `UPDATE mcp_server SET name=?, transport=?, command=?, args_json=?, env_json=?, url=?, headers_json=?,
+       auto_reconnect=?, reconnect_interval=?, auto_connect=? WHERE id=?`,
+      [
+        data.name ?? servers.value[idx].name,
+        data.transport ?? servers.value[idx].transport,
+        data.command ?? servers.value[idx].command,
+        data.args ? JSON.stringify(data.args) : JSON.stringify(servers.value[idx].args),
+        data.env ? JSON.stringify(data.env) : JSON.stringify(servers.value[idx].env),
+        data.url ?? servers.value[idx].url,
+        data.headers ? JSON.stringify(data.headers) : JSON.stringify(servers.value[idx].headers),
+        data.autoReconnect !== undefined ? (data.autoReconnect ? 1 : 0) : (servers.value[idx].autoReconnect ? 1 : 0),
+        data.reconnectInterval ?? servers.value[idx].reconnectInterval,
+        data.autoConnect !== undefined ? (data.autoConnect ? 1 : 0) : (servers.value[idx].autoConnect ? 1 : 0),
+        id,
+      ]
+    );
+    await loadServers();
+  }
+
   async function deleteServer(id: string) {
     await disconnect(id);
     if (on()) {
@@ -341,7 +375,7 @@ export const useMcpStore = defineStore('mcp', () => {
 
   return {
     servers, tools, resources, prompts, connecting,
-    loadServers, addServer, deleteServer,
+    loadServers, addServer, updateServer, deleteServer,
     connect, disconnect, updateToolMeta, setToolEnabled, callTool, readResource, getPrompt,
     testServerConfig, cancelTest, getLogs, isDesktop,
   };

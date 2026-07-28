@@ -403,8 +403,19 @@
                   </el-button>
                 </el-tooltip>
               </el-badge>
+              <el-tooltip :content="`工作目录: ${workspaceDir}`" placement="top">
+                <el-button size="small" @click="showWorkspaceDir = true">
+                  <el-icon style="margin-right:4px"><FolderOpened /></el-icon>
+                  <span class="workspace-dir-label">{{ workspaceDir.split('/').pop() || workspaceDir }}</span>
+                </el-button>
+              </el-tooltip>
             </div>
             <div class="toolbar-right">
+              <el-tooltip content="新建会话" placement="top">
+                <el-button size="small" circle :disabled="store.streaming" @click="startNewChat">
+                  <el-icon><Plus /></el-icon>
+                </el-button>
+              </el-tooltip>
               <el-tooltip :content="store.streaming ? '终止 (停止生成)' : '发送 (Enter)'" placement="top">
                 <span>
                   <el-button v-if="!store.streaming" type="primary" :icon="Promotion" :disabled="(!input.trim() && uploadedFiles.length === 0) || !selectedModelId" @click="send" circle class="send-btn" />
@@ -565,6 +576,8 @@
 
     <AgentEditDialog v-model="showAgentEdit" :agent="editingAgent" @saved="onAgentSaved" @deleted="onAgentDeleted" />
 
+    <WorkspaceDirDialog v-model="showWorkspaceDir" :current-path="workspaceDir" @selected="onWorkspaceDirSelected" />
+
     <ul v-if="ctxMenu.visible" class="ctx-menu" :style="{ top: ctxMenu.y + 'px', left: ctxMenu.x + 'px' }">
       <li @click="togglePin(ctxMenu.conv)">
         <el-icon><Star /></el-icon>{{ ctxMenu.conv?.pinned ? '取消置顶' : '置顶' }}
@@ -590,6 +603,7 @@ import type { Agent } from '@ai-assistant/shared';
 import { estimateTokens, CHAT_MODEL_TYPES } from '@ai-assistant/shared';
 import type { Message, Conversation } from '@ai-assistant/shared';
 import AgentEditDialog from '../components/AgentEditDialog.vue';
+import WorkspaceDirDialog from '../components/WorkspaceDirDialog.vue';
 
 const store = useChatStore();
 const platformStore = usePlatformStore();
@@ -725,6 +739,29 @@ function setToolAlias(sid: string, name: string, alias: string) {
 const showAgentEdit = ref(false);
 const editingAgent = ref<Agent | null>(null);
 const debugMode = ref(false);
+
+// 工作目录选择
+const showWorkspaceDir = ref(false);
+const workspaceDir = ref('');
+const WORKSPACE_DIR_KEY = 'settings:workspaceDir';
+
+async function loadWorkspaceDir() {
+  try {
+    const { getPlatformAdapter } = await import('@yan-zhi/core');
+    const adapter = getPlatformAdapter();
+    const saved = await adapter.keyring.get(WORKSPACE_DIR_KEY);
+    workspaceDir.value = saved || 'workspace';
+  } catch { workspaceDir.value = 'workspace'; }
+}
+
+async function onWorkspaceDirSelected(path: string) {
+  workspaceDir.value = path;
+  try {
+    const { getPlatformAdapter } = await import('@yan-zhi/core');
+    const adapter = getPlatformAdapter();
+    await adapter.keyring.set(WORKSPACE_DIR_KEY, path);
+  } catch {}
+}
 
 function tryParseSnapshot(raw?: string): any {
   if (!raw) return null;
@@ -932,6 +969,7 @@ onMounted(async () => {
   await platformStore.loadModels();
   await mcpStore.loadServers();
   await skillStore.loadSkills();
+  await loadWorkspaceDir();
 
   const agent = agentStore.selectedAgent;
   if (agent?.modelId && platformStore.models.find((m) => m.id === agent.modelId)) {
@@ -954,7 +992,14 @@ onMounted(async () => {
     if (exists) {
       await store.loadMessages(store.currentConvId);
       const conv = store.conversations.find((c) => c.id === store.currentConvId);
-      if (conv?.modelId) selectedModelId.value = conv.modelId;
+      if (conv?.modelId && conv?.platformId) {
+        const resolved = platformStore.resolveModel(conv.modelId, conv.platformId);
+        if (resolved) selectedModelId.value = resolved.id;
+      } else if (conv?.modelId) {
+        // 无 platformId 的存量数据
+        const resolved = platformStore.resolveModel(conv.modelId);
+        if (resolved) selectedModelId.value = resolved.id;
+      }
     } else {
       store.currentConvId = '';
       store.currentMessages = [];
@@ -982,7 +1027,13 @@ watch(() => store.currentConvId, async (id) => {
   if (!id) return;
   isDraftMode.value = false;
   const conv = store.conversations.find((c) => c.id === id);
-  if (conv?.modelId) selectedModelId.value = conv.modelId;
+  if (conv?.modelId && conv?.platformId) {
+    const resolved = platformStore.resolveModel(conv.modelId, conv.platformId);
+    if (resolved) selectedModelId.value = resolved.id;
+  } else if (conv?.modelId) {
+    const resolved = platformStore.resolveModel(conv.modelId);
+    if (resolved) selectedModelId.value = resolved.id;
+  }
   mountedSkillIds.value = conv?.skillIds ? [...conv.skillIds] : [];
   initMountSelection();
 });
@@ -1009,7 +1060,7 @@ function onAgentSwitch(id: string) {
 function onModelChange(modelId: string) {
   const model = platformStore.models.find((m) => m.id === modelId);
   if (model && agentStore.selectedAgent) {
-    agentStore.updateAgent(agentStore.selectedId, { modelId, platformId: model.platformId });
+    agentStore.updateAgent(agentStore.selectedId, { modelId: model.modelId, platformId: model.platformId });
   }
 }
 
@@ -1025,7 +1076,13 @@ async function selectConv(id: string) {
   await store.loadMessages(id);
   isDraftMode.value = false;
   const conv = store.conversations.find((c) => c.id === id);
-  if (conv?.modelId) selectedModelId.value = conv.modelId;
+  if (conv?.modelId && conv?.platformId) {
+    const resolved = platformStore.resolveModel(conv.modelId, conv.platformId);
+    if (resolved) selectedModelId.value = resolved.id;
+  } else if (conv?.modelId) {
+    const resolved = platformStore.resolveModel(conv.modelId);
+    if (resolved) selectedModelId.value = resolved.id;
+  }
   mountedSkillIds.value = conv?.skillIds ? [...conv.skillIds] : [];
   initMountSelection();
 }
@@ -1097,7 +1154,7 @@ async function send() {
       const title = userContent.trim().slice(0, 24) + (userContent.trim().length > 24 ? '…' : '');
       const id = await store.createConversation(title, {
         platformId: platform.id,
-        modelId: model.id,
+        modelId: model.modelId,  // 存模型名称而非内部 ID，避免拉取后 ID 漂移
         skillIds: [...mountedSkillIds.value],
       });
       if (agent?.systemPrompt) {
@@ -1108,7 +1165,7 @@ async function send() {
       await store.loadMessages(id);
       isDraftMode.value = false;
     } else if (!currentConv.value?.platformId) {
-      await store.updateConversation(store.currentConvId, { platformId: platform.id, modelId: model.id });
+      await store.updateConversation(store.currentConvId, { platformId: platform.id, modelId: model.modelId });
     }
 
     input.value = '';

@@ -7,8 +7,8 @@ dist/
 !.env.example
 
 # Tauri
-src-tauri/target/
-src-tauri/Cargo.lock
+apps/desktop/src-tauri/target/
+apps/desktop/src-tauri/Cargo.lock
 
 # Capacitor
 apps/mobile/ios/
@@ -19,6 +19,7 @@ apps/mobile/android/
 # IDE
 .vscode/
 .idea/
+.trae/
 *.swp
 
 # Logs
@@ -29,6 +30,8 @@ pnpm-debug.log*
 # 数据库
 *.db
 *.db-journal
+*.db-shm
+*.db-wal
 *.sqlite
 
 # Corepack

@@ -32,6 +32,11 @@ export interface McpProcessAdapter {
   kill(childId: string): Promise<void>;
 }
 
+/** Shell 命令执行适配器（仅桌面端支持长时间运行的命令） */
+export interface ShellAdapter {
+  exec(command: string, args: string[], options?: { cwd?: string; timeout?: number; env?: Record<string, string> }): Promise<{ stdout: string; stderr: string; exitCode: number }>;
+}
+
 /** 平台适配器聚合 */
 export interface PlatformAdapter {
   platform: RuntimePlatform;
@@ -39,6 +44,7 @@ export interface PlatformAdapter {
   fs: FsAdapter;
   keyring: KeyringAdapter;
   mcp?: McpProcessAdapter; // 仅桌面端有
+  shell?: ShellAdapter;    // 仅桌面端有
 }
 
 /** 当前平台适配器（由各端入口注入） */
