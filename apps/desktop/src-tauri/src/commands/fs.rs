@@ -1,6 +1,5 @@
 // 文件系统命令（补充 Tauri FS 插件未覆盖的能力）
 use std::fs;
-use std::path::PathBuf;
 
 #[tauri::command]
 pub async fn fs_read(path: String) -> Result<String, String> {
