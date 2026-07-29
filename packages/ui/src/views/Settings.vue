@@ -180,7 +180,7 @@ async function exportData() {
     const data: Record<string, unknown> = {};
     for (const t of tables) {
       try {
-        const adapter = (await import('@ai-assistant/core')).getPlatformAdapter();
+        const adapter = (await import('@yan-zhi/core')).getPlatformAdapter();
         data[t] = await adapter.db.query(`SELECT * FROM ${t}`);
       } catch {}
     }
@@ -215,7 +215,7 @@ async function importData(e: Event) {
       '导入确认',
       { type: 'warning' },
     );
-    const adapter = (await import('@ai-assistant/core')).getPlatformAdapter();
+    const adapter = (await import('@yan-zhi/core')).getPlatformAdapter();
     for (const [table, rows] of Object.entries(backup.data)) {
       if (!Array.isArray(rows) || rows.length === 0) continue;
       // 先清空目标表
@@ -240,7 +240,7 @@ async function importData(e: Event) {
 async function clearCache() {
   try {
     await ElMessageBox.confirm('清空缓存会删除所有会话和消息（保留平台/模型/MCP/Skill 配置），确认？', '危险操作', { type: 'warning' });
-    const adapter = (await import('@ai-assistant/core')).getPlatformAdapter();
+    const adapter = (await import('@yan-zhi/core')).getPlatformAdapter();
     await adapter.db.exec('DELETE FROM message');
     await adapter.db.exec('DELETE FROM conversation');
     ElMessage.success('已清空');
