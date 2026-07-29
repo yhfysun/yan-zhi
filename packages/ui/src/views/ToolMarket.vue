@@ -401,7 +401,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
-import type { McpTransport } from '@ai-assistant/shared';
+import type { McpTransport } from '@yan-zhi/shared';
 import {
   Plus, Connection, Switch, Delete as DeleteIcon,
   ArrowLeft, ArrowRight, HomeFilled, Cloudy, Search,

@@ -231,7 +231,7 @@ import { ref, onMounted, computed } from 'vue';
 import { Plus, Connection, More, Link, Document, Switch, Tickets, List, Delete as DeleteIcon } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox, ElMessageBoxOptions } from 'element-plus';
 import { useMcpStore } from '../stores';
-import type { McpTransport, McpTool } from '@ai-assistant/shared';
+import type { McpTransport, McpTool } from '@yan-zhi/shared';
 
 const store = useMcpStore();
 const showAdd = ref(false);

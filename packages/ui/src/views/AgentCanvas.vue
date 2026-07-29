@@ -266,7 +266,7 @@ import { useAgentStore } from '../stores/agent';
 import { usePlatformStore } from '../stores/platform';
 import { useMcpStore } from '../stores/mcp';
 import { getPlatformAdapter } from '@yan-zhi/core';
-import type { NodeType, WorkflowNode } from '@ai-assistant/shared';
+import type { NodeType, WorkflowNode } from '@yan-zhi/shared';
 
 const route = useRoute();
 const router = useRouter();

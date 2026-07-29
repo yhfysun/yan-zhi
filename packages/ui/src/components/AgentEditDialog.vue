@@ -118,7 +118,7 @@
 import { ref, computed, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { User, EditPen, Cpu, Setting } from '@element-plus/icons-vue';
-import type { Agent } from '@ai-assistant/shared';
+import type { Agent } from '@yan-zhi/shared';
 import { useAgentStore, usePlatformStore } from '../stores';
 
 const props = defineProps<{

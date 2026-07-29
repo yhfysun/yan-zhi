@@ -599,9 +599,9 @@ import { ElMessage, ElMessageBox } from 'element-plus';
 import MarkdownIt from 'markdown-it';
 import hljs from 'highlight.js';
 import { useChatStore, usePlatformStore, useMcpStore, useSkillStore, useAgentStore } from '../stores';
-import type { Agent } from '@ai-assistant/shared';
-import { estimateTokens, CHAT_MODEL_TYPES } from '@ai-assistant/shared';
-import type { Message, Conversation } from '@ai-assistant/shared';
+import type { Agent } from '@yan-zhi/shared';
+import { estimateTokens, CHAT_MODEL_TYPES } from '@yan-zhi/shared';
+import type { Message, Conversation } from '@yan-zhi/shared';
 import AgentEditDialog from '../components/AgentEditDialog.vue';
 import WorkspaceDirDialog from '../components/WorkspaceDirDialog.vue';
 

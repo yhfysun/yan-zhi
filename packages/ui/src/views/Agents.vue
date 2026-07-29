@@ -198,7 +198,7 @@ import { Plus, EditPen, Delete, Setting, Lock, ArrowLeft } from '@element-plus/i
 import { ElMessageBox, ElMessage } from 'element-plus';
 import { useAgentStore } from '../stores/agent';
 import { api } from '../api/client';
-import type { Agent } from '@ai-assistant/shared';
+import type { Agent } from '@yan-zhi/shared';
 import AgentEditDialog from '../components/AgentEditDialog.vue';
 
 const router = useRouter();
