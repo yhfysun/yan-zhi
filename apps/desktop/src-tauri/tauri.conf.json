@@ -28,7 +28,11 @@
   "bundle": {
     "active": true,
     "targets": ["nsis", "dmg"],
-    "icon": ["icons/icon.png"],
+    "icon": [
+      "../../assets/icons/icon.icns",
+      "../../assets/icons/icon.ico",
+      "../../assets/icons/icon.png"
+    ],
     "resources": {
       "WebView2Loader.dll": "./"
     },
