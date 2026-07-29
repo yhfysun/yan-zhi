@@ -30,11 +30,14 @@ jobs:
       - name: 构建 macOS 应用
         run: cd apps/desktop && pnpm tauri build
 
+      - name: 检查 bundle 目录
+        run: ls -la apps/desktop/src-tauri/target/release/bundle/
+
       - name: 上传 DMG 安装包
         uses: actions/upload-artifact@v4
         with:
           name: macOS-DMG
-          path: apps/desktop/src-tauri/target/release/bundle/macos/*.dmg
+          path: apps/desktop/src-tauri/target/release/bundle/**/*.dmg
 
   # Windows 构建
   build-windows:
