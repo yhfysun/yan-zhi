@@ -28,6 +28,7 @@ pub fn run() {
             mcp::mcp_kill,
             fs_cmd::fs_read,
             fs_cmd::fs_write,
+            fs_cmd::fs_list_dir,
             keyring::keyring_set,
             keyring::keyring_get,
             keyring::keyring_delete,
