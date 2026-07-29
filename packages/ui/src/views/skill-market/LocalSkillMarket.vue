@@ -6,10 +6,18 @@
         <h2 class="lm-title">本地商城</h2>
       </div>
       <div class="lm-header-right">
-        <el-input v-model="search" placeholder="搜索 Skill" style="width: 200px" clearable />
-        <el-button type="primary" @click="openNew"><el-icon><Plus /></el-icon> 新建 Skill</el-button>
-        <el-button @click="importMd">从 Markdown 导入</el-button>
-        <el-button @click="importFolder"><el-icon><FolderOpened /></el-icon> 从文件夹导入</el-button>
+        <div class="lm-search-wrap">
+          <el-icon class="lm-search-icon"><Search /></el-icon>
+          <input v-model="search" placeholder="搜索..." class="lm-search-input" />
+          <el-icon v-if="search" class="lm-search-clear" @click="search = ''"><Close /></el-icon>
+        </div>
+        <el-button type="primary" circle :icon="Plus" @click="openNew" class="fab-add"></el-button>
+        <el-tooltip content="Markdown 导入">
+          <el-button circle @click="importMd" class="lm-icon-btn"><el-icon :size="16"><UploadFilled /></el-icon></el-button>
+        </el-tooltip>
+        <el-tooltip content="文件夹导入">
+          <el-button circle @click="importFolder" class="lm-icon-btn"><el-icon :size="16"><FolderOpened /></el-icon></el-button>
+        </el-tooltip>
       </div>
     </header>
 
@@ -74,7 +82,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
-import { Plus, Files, ArrowLeft, Edit, Delete, FolderOpened } from '@element-plus/icons-vue';
+import { Plus, Files, ArrowLeft, Edit, Delete, FolderOpened, UploadFilled, Search, Close } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { useSkillStore } from '../../stores';
 import { getPlatformAdapter } from '@yan-zhi/core';
@@ -278,8 +286,30 @@ function parseSkillMd(md: string): { frontmatter: any; bodyMd: string; body: str
 
 .lm-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 12px; }
 .lm-header-left { display: flex; align-items: center; gap: 12px; }
-.lm-header-right { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.lm-header-right { display: flex; align-items: center; gap: 6px; flex-shrink: 0; flex-wrap: wrap; }
 .lm-title { font-size: 20px; font-weight: 600; margin: 0; }
+
+.lm-search-wrap {
+  display: flex; align-items: center; gap: 4px;
+  padding: 4px 10px; border-radius: 8px;
+  border: 1px solid var(--glass-border); background: var(--glass-bg);
+  width: 150px; transition: border-color 0.2s;
+}
+.lm-search-wrap:focus-within { border-color: var(--color-primary); }
+.lm-search-icon { font-size: 14px; color: var(--color-text-secondary); flex-shrink: 0; }
+.lm-search-input {
+  border: none; outline: none; background: transparent;
+  font-size: 13px; width: 100%; min-width: 0; color: var(--color-text);
+}
+.lm-search-input::placeholder { color: var(--color-text-secondary); opacity: 0.5; }
+.lm-search-clear { font-size: 13px; color: var(--color-text-secondary); cursor: pointer; flex-shrink: 0; }
+
+.lm-icon-btn {
+  width: 32px; height: 32px; padding: 0;
+  border: 1px solid var(--glass-border);
+  background: var(--glass-bg); color: var(--color-text-secondary);
+}
+.lm-icon-btn:hover { color: var(--color-primary); border-color: var(--color-primary); }
 
 .skill-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
 .skill-card {

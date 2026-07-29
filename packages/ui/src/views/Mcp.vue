@@ -5,7 +5,14 @@
         <h2 class="page-title">MCP 服务管理</h2>
         <p class="page-sub">连接外部 MCP 服务，扩展 AI 工具能力</p>
       </div>
-      <el-button type="primary" size="large" @click="openAdd"><el-icon><Plus /></el-icon> 新增服务</el-button>
+      <div class="page-top-actions">
+        <div class="mcp-search-wrap">
+          <el-icon class="mcp-search-icon"><Search /></el-icon>
+          <input v-model="searchQuery" placeholder="搜索服务..." class="mcp-search-input" />
+          <el-icon v-if="searchQuery" class="mcp-search-clear" @click="searchQuery = ''"><Close /></el-icon>
+        </div>
+        <el-button type="primary" @click="openAdd" circle :icon="Plus" class="fab-add"></el-button>
+      </div>
     </div>
 
     <el-empty v-if="store.servers.length === 0" description="暂无 MCP 服务，点击上方按钮添加" :image-size="120" />
@@ -228,13 +235,14 @@
 
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue';
-import { Plus, Connection, More, Link, Document, Switch, Tickets, List, Delete as DeleteIcon } from '@element-plus/icons-vue';
+import { Plus, Connection, More, Link, Document, Switch, Tickets, List, Delete as DeleteIcon, Search, Close } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox, ElMessageBoxOptions } from 'element-plus';
 import { useMcpStore } from '../stores';
 import type { McpTransport, McpTool } from '@yan-zhi/shared';
 
 const store = useMcpStore();
 const showAdd = ref(false);
+const searchQuery = ref('');
 const toolsDialog = ref(false);
 const resourcesDialog = ref(false);
 const promptsDialog = ref(false);
@@ -480,7 +488,25 @@ async function del(id: string) {
 
 <style scoped>
 .page { padding: 28px 32px; }
-.page-top { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 28px; }
+.page-top { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 28px; flex-wrap: wrap; gap: 12px; }
+.page-info { flex: 1; min-width: 0; }
+.page-top-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+
+.mcp-search-wrap {
+  display: flex; align-items: center; gap: 4px;
+  padding: 5px 12px; border-radius: 10px;
+  border: 1px solid var(--glass-border); background: var(--glass-bg);
+  width: 200px; transition: border-color 0.2s;
+}
+.mcp-search-wrap:focus-within { border-color: var(--color-primary); }
+.mcp-search-icon { font-size: 14px; color: var(--color-text-secondary); flex-shrink: 0; }
+.mcp-search-input {
+  border: none; outline: none; background: transparent;
+  font-size: 13px; width: 100%; min-width: 0; color: var(--color-text);
+}
+.mcp-search-input::placeholder { color: var(--color-text-secondary); opacity: 0.5; }
+.mcp-search-clear { font-size: 13px; color: var(--color-text-secondary); cursor: pointer; flex-shrink: 0; }
+
 .page-title { font-size: 22px; font-weight: 700; margin: 0; }
 .page-sub { font-size: 13px; color: var(--color-text-secondary); margin: 4px 0 0; }
 

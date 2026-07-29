@@ -2357,6 +2357,60 @@ async function saveSkills() {
 /* Tighter msg spacing */
 .msg { margin-bottom: 16px; }
 
+/* ===== Mobile ===== */
+@media (max-width: 767px) {
+  .chat-page { flex-direction: column; }
+
+  .sidebar {
+    position: fixed; left: 0; top: 0; bottom: 0; z-index: 200;
+    transform: translateX(-100%); width: 280px;
+    transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  .chat-page.drawer-open .sidebar {
+    transform: translateX(0);
+    box-shadow: 0 0 30px rgba(0,0,0,0.2);
+  }
+  .drawer-overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.3);
+    z-index: 199; backdrop-filter: blur(2px);
+  }
+
+  .conv-toggle { display: none; }
+  .chat-topbar { padding: 8px 10px; min-height: 42px; }
+  .messages { padding: 8px 6px 6px; }
+
+  .input-area {
+    position: sticky; bottom: 0; z-index: 100;
+    padding: 4px 6px 6px;
+    padding-bottom: calc(6px + env(safe-area-inset-bottom, 0px));
+    border-top: 1px solid var(--glass-border);
+  }
+  .input-box { border-radius: 12px; }
+  .input-textarea :deep(.el-textarea__inner) { font-size: 15px; padding: 6px 8px; }
+  .input-toolbar { padding: 2px 4px; gap: 2px; }
+  .toolbar-left .token-chip { display: none; }
+  .toolbar-center { flex-wrap: wrap; gap: 2px; }
+  .toolbar-center .toolbar-agent { display: none; }
+  .workspace-dir-label { display: none; }
+
+  /* fix: file panel → fixed bottom sheet (no scroll-trigger) */
+  .file-panel {
+    position: fixed !important; top: auto; bottom: 0; left: 0; right: 0;
+    width: 100% !important; height: 50vh; z-index: 190;
+    border-radius: 16px 16px 0 0;
+    transform: translateY(100%);
+    transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+    box-shadow: 0 -4px 20px rgba(0,0,0,0.15);
+  }
+  .file-panel.open { transform: translateY(0); width: 100% !important; }
+
+  .scroll-nav { right: 8px; bottom: 120px; }
+  .welcome-card h2 { font-size: 18px; }
+  .welcome-actions { max-width: 100%; }
+  .msg { margin-bottom: 10px; gap: 8px; }
+  .msg-actions { opacity: 0.6; }
+}
+
 </style>
 
 <style>
