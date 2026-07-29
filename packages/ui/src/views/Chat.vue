@@ -1,5 +1,7 @@
 <template>
-  <div class="chat-page" :class="{ 'conv-collapsed': convCollapsed }">
+  <div class="chat-page" :class="{ 'conv-collapsed': convCollapsed, 'drawer-open': drawerOpen }">
+    <div v-if="drawerOpen" class="drawer-overlay" @click="drawerOpen = false"></div>
+
     <aside class="sidebar">
       <div class="sidebar-tabs">
         <div class="sb-tab" :class="{ active: sideTab === 'agent' }" @click="sideTab = 'agent'">
@@ -53,7 +55,7 @@
             :key="conv.id"
             class="conv-item"
             :class="{ active: conv.id === store.currentConvId, pinned: conv.pinned, selecting: batchMode }"
-            @click="batchMode ? toggleConvSelect(conv.id) : selectConv(conv.id)"
+            @click="batchMode ? toggleConvSelect(conv.id) : (drawerOpen = false, selectConv(conv.id))"
             @contextmenu.prevent="!batchMode && openConvMenu($event, conv)"
             @dblclick="!batchMode && startRename(conv)"
           >
@@ -88,6 +90,9 @@
 
     <section class="chat-main">
       <div class="chat-topbar">
+        <el-button class="hamburger-btn" text circle @click="drawerOpen = !drawerOpen">
+          <el-icon :size="20"><Expand /></el-icon>
+        </el-button>
         <span class="conv-title-display">{{ currentConv?.title || '新对话' }}</span>
         <div class="chat-topbar-actions">
           <el-tooltip content="文件管理" placement="bottom">
@@ -669,6 +674,7 @@ interface MessageRound {
   agentStats?: { stepCount: number; reasoningCount: number; toolCallCount: number };
 }
 const mountedSkillIds = ref<string[]>([]);
+const drawerOpen = ref(false);
 const convCollapsed = ref(false);
 const sideTab = ref<'agent' | 'chat'>('chat');
 const batchMode = ref(false);
@@ -2357,9 +2363,14 @@ async function saveSkills() {
 /* Tighter msg spacing */
 .msg { margin-bottom: 16px; }
 
+/* Hamburger button — hidden on desktop */
+.hamburger-btn { display: none; }
+
 /* ===== Mobile ===== */
 @media (max-width: 767px) {
   .chat-page { flex-direction: column; }
+
+  .hamburger-btn { display: inline-flex; }
 
   .sidebar {
     position: fixed; left: 0; top: 0; bottom: 0; z-index: 200;
