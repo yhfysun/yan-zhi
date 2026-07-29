@@ -11,7 +11,7 @@
           <input v-model="searchQuery" placeholder="搜索服务..." class="mcp-search-input" />
           <el-icon v-if="searchQuery" class="mcp-search-clear" @click="searchQuery = ''"><Close /></el-icon>
         </div>
-        <el-button type="primary" @click="openAdd" circle :icon="Plus" class="fab-add"></el-button>
+        <el-button type="primary" @click="openAdd" circle :icon="Plus"></el-button>
       </div>
     </div>
 
