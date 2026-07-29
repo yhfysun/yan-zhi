@@ -6,6 +6,12 @@ dist/
 .env.*
 !.env.example
 
+# TSC 编译污染（不应在 src 目录生成）
+packages/*/src/**/*.js
+packages/*/src/**/*.d.ts
+packages/*/src/**/*.js.map
+packages/*/src/**/*.d.ts.map
+
 # Tauri
 apps/desktop/src-tauri/target/
 apps/desktop/src-tauri/Cargo.lock
