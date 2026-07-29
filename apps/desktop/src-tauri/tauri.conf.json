@@ -29,9 +29,9 @@
     "active": true,
     "targets": ["nsis", "dmg"],
     "icon": [
-      "../../assets/icons/icon.icns",
-      "../../assets/icons/icon.ico",
-      "../../assets/icons/icon.png"
+      "../../../assets/icons/icon.icns",
+      "../../../assets/icons/icon.ico",
+      "../../../assets/icons/icon.png"
     ],
     "resources": {
       "WebView2Loader.dll": "./"
