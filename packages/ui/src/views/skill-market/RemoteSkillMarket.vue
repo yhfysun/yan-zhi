@@ -131,4 +131,14 @@ async function installRemote(skillId: string) {
 }
 .card-tag { flex-shrink: 0; }
 .skill-actions { display: flex; align-items: center; gap: 2px; flex-shrink: 0; }
+
+@media (max-width: 767px) {
+  .remote-market { padding: 14px !important; }
+  .rm-header { flex-direction: column; align-items: stretch; gap: 10px; }
+  .rm-header-right { width: 100%; }
+  .rm-header-right .el-input { width: 100% !important; }
+  .rm-title { font-size: 18px; }
+  .skill-grid { grid-template-columns: 1fr; gap: 10px; }
+}
+
 </style>

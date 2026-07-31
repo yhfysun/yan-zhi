@@ -1,6 +1,7 @@
 // 管理工具 — 将管理操作注册为 LLM 可调用的内置工具
 import type { BuiltInTool } from '../types';
 import type { ToolRegistry } from '../registry';
+import { GetApiToolsTool } from './get-api-tools';
 
 class ListPlatformsTool implements BuiltInTool {
   name = 'list_platforms'; description = '列出所有已配置的模型平台';
@@ -98,4 +99,5 @@ export function registerManagementTools(registry: ToolRegistry, getDb: () => any
   registry.register(new ListSkillsTool(getDb));
   registry.register(new ListAgentsTool(getDb));
   registry.register(new SearchMarketplaceTool(getDb));
+  registry.register(new GetApiToolsTool());
 }

@@ -309,4 +309,9 @@ export async function initSchema(execFn: (sql: string) => Promise<void>): Promis
     const def = col === 'is_public' ? 'INTEGER NOT NULL DEFAULT 0' : 'TEXT';
     try { await execFn(`ALTER TABLE agent ADD COLUMN ${col} ${def};`); } catch { /* 列已存在 */ }
   }
+  // 迁移：agent 表新增 Harness 模式 + 挂载字段
+  try { await execFn(`ALTER TABLE agent ADD COLUMN type TEXT NOT NULL DEFAULT 'harness';`); } catch { /* 列已存在 */ }
+  for (const col of ['builtin_tool_ids', 'custom_tool_ids', 'mcp_tool_mounts', 'skill_ids', 'sub_agent_ids']) {
+    try { await execFn(`ALTER TABLE agent ADD COLUMN ${col} TEXT;`); } catch { /* 列已存在 */ }
+  }
 }

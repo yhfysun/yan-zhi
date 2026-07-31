@@ -307,21 +307,90 @@ export const useChatStore = defineStore('chat', () => {
     currentMessages.value = currentMessages.value.filter((m) => m.id !== id);
   }
 
-  async function buildTools(): Promise<unknown[]> {
-    if (mountedMcpServers.value.length === 0) return [];
-    const mcpStore = useMcpStore();
-    const tools: unknown[] = [];
+  function getMergedMounts(): {
+    builtinToolIds: string[];
+    customToolIds: string[];
+    mcpToolMounts: { serverId: string; toolName: string }[];
+    skillIds: string[];
+    subAgentIds: string[];
+  } {
+    const agent = activeAgent();
+    const conv = conversations.value.find(c => c.id === currentConvId.value);
+    const isHarness = !agent || !agent.type || agent.type === 'harness';
+
+    // 智能体挂载（仅 harness）
+    const agentBuiltin = isHarness && agent?.builtinToolIds ? agent.builtinToolIds : [];
+    const agentCustom = isHarness && agent?.customToolIds ? agent.customToolIds : [];
+    const agentMcp = isHarness && agent?.mcpToolMounts ? agent.mcpToolMounts : [];
+    const agentSkills = isHarness && agent?.skillIds ? agent.skillIds : [];
+    const agentSubs = isHarness && agent?.subAgentIds ? agent.subAgentIds : [];
+
+    // 会话挂载
+    const convSkills = conv?.skillIds || [];
+    const convMcp: { serverId: string; toolName: string }[] = [];
     for (const sid of mountedMcpServers.value) {
-      const list = mcpStore.tools[sid] || [];
-      const disabledNames = mcpDisabledTools.value[sid] || [];
+      const disabled = mcpDisabledTools.value[sid] || [];
+      const mcpStore = useMcpStore();
+      const tools = mcpStore.tools[sid] || [];
+      for (const t of tools) {
+        if (!disabled.includes(t.name)) {
+          convMcp.push({ serverId: sid, toolName: t.name });
+        }
+      }
+    }
+
+    // 合并取并集（MCP: agent 中 server "*" 覆盖 conv 的细粒度）
+    const mergedMcp: { serverId: string; toolName: string }[] = [...agentMcp];
+    const agentStarServers = new Set(agentMcp.filter(m => m.toolName === '*').map(m => m.serverId));
+    for (const c of convMcp) {
+      if (!agentStarServers.has(c.serverId) &&
+          !mergedMcp.some(m => m.serverId === c.serverId && m.toolName === c.toolName)) {
+        mergedMcp.push(c);
+      }
+    }
+
+    return {
+      builtinToolIds: [...new Set([...agentBuiltin])],
+      customToolIds: [...new Set([...agentCustom])],
+      mcpToolMounts: mergedMcp,
+      skillIds: [...new Set([...agentSkills, ...convSkills])],
+      subAgentIds: [...new Set([...agentSubs])],
+    };
+  }
+
+  async function buildTools(): Promise<unknown[]> {
+    const merged = getMergedMounts();
+    const tools: unknown[] = [];
+    const mcpStore = useMcpStore();
+
+    // MCP 工具
+    for (const m of merged.mcpToolMounts) {
+      const list = mcpStore.tools[m.serverId] || [];
       for (const t of list) {
-        if (disabledNames.includes(t.name)) continue;
+        if (m.toolName !== '*' && m.toolName !== t.name) continue;
         tools.push({
           type: 'function',
           function: {
-            name: `mcp_${sid.slice(0, 8)}__${t.name}`,
+            name: `mcp_${m.serverId.slice(0, 8)}__${t.name}`,
             description: t.description || t.name,
             parameters: t.inputSchema || { type: 'object', properties: {} },
+          },
+        });
+      }
+    }
+
+    // 自定义工具
+    for (const id of merged.customToolIds) {
+      const { useToolsStore } = await import('./tools');
+      const toolsStore = useToolsStore();
+      const ct = toolsStore.customTools.find(t => t.id === id);
+      if (ct && ct.enabled) {
+        tools.push({
+          type: 'function',
+          function: {
+            name: `custom_${ct.name}`,
+            description: ct.description || ct.name,
+            parameters: ct.inputSchema || { type: 'object', properties: {} },
           },
         });
       }
@@ -330,51 +399,75 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   function buildToolsDescription(): string {
-    if (mountedMcpServers.value.length === 0) return '';
+    const merged = getMergedMounts();
     const mcpStore = useMcpStore();
     const lines: string[] = [];
-    for (const sid of mountedMcpServers.value) {
-      const server = mcpStore.servers.find(s => s.id === sid);
-      const list = mcpStore.tools[sid] || [];
-      const disabledNames = mcpDisabledTools.value[sid] || [];
-      const aliases = mcpToolAliases.value[sid] || {};
-      const enabled = list.filter(t => !disabledNames.includes(t.name));
-      if (enabled.length === 0) continue;
-      const serverName = server?.name || sid;
-      lines.push(`## ${serverName}`);
-      for (const t of enabled) {
-        const desc = t.description || '无描述';
-        const shortDesc = desc.length > 120 ? desc.slice(0, 117) + '...' : desc;
-        const fnName = `mcp_${sid.slice(0, 8)}__${t.name}`;
-        const aliasLabel = aliases[t.name] ? `（${aliases[t.name]}）` : (t.alias ? `（${t.alias}）` : '');
-        const remarkSuffix = t.remark ? ` 💬${t.remark}` : '';
-        lines.push(`- \`${fnName}\`${aliasLabel}: ${shortDesc}${remarkSuffix}`);
+
+    if (merged.builtinToolIds.length > 0) {
+      lines.push('### 内置工具');
+      for (const name of merged.builtinToolIds) {
+        lines.push(`- \`${name}\``);
       }
     }
+
+    for (const m of merged.mcpToolMounts) {
+      const server = mcpStore.servers.find(s => s.id === m.serverId);
+      const list = mcpStore.tools[m.serverId] || [];
+      const enabled = m.toolName === '*' ? list : list.filter(t => t.name === m.toolName);
+      if (enabled.length === 0) continue;
+      lines.push(`### ${server?.name || m.serverId}`);
+      for (const t of enabled) {
+        const desc = t.description || '';
+        const shortDesc = desc.length > 120 ? desc.slice(0, 117) + '...' : desc;
+        lines.push(`- \`mcp_${m.serverId.slice(0, 8)}__${t.name}\`: ${shortDesc}`);
+      }
+    }
+
+    if (merged.customToolIds.length > 0) {
+      lines.push('### 自定义工具');
+      const { useToolsStore } = require('./tools');
+      const ts = useToolsStore();
+      for (const id of merged.customToolIds) {
+        const ct = ts.customTools.find((t: any) => t.id === id);
+        if (ct) lines.push(`- \`custom_${ct.name}\`: ${ct.description || ct.name}`);
+      }
+    }
+
     return lines.length > 0 ? lines.join('\n') : '';
   }
 
   function buildSkillsDescription(): string {
-    const conv = conversations.value.find(c => c.id === currentConvId.value);
-    const skillIds = conv?.skillIds || [];
-    if (skillIds.length === 0) return '';
+    const merged = getMergedMounts();
+    if (merged.skillIds.length === 0) return '';
     const skillStore = useSkillStore();
     const lines: string[] = [];
-    for (const skId of skillIds) {
+    for (const skId of merged.skillIds) {
       const sk = skillStore.skills.find(s => s.id === skId);
       if (!sk || !sk.enabled) continue;
       const desc = sk.frontmatter.description || sk.description || '';
       const shortDesc = desc.length > 100 ? desc.slice(0, 97) + '...' : desc;
       lines.push(`- **${sk.name}**: ${shortDesc}`);
     }
-    if (lines.length === 0) return '';
-    return '可用 Skills（按需激活，说出 skill 名称即可获取完整能力）:\n' + lines.join('\n');
+    return lines.length > 0 ? '可用 Skills（说出名称激活）:\n' + lines.join('\n') : '';
+  }
+
+  function buildSubAgentsDescription(): string {
+    const merged = getMergedMounts();
+    if (merged.subAgentIds.length === 0) return '';
+    const agentStore = useAgentStore();
+    const lines: string[] = [];
+    for (const id of merged.subAgentIds) {
+      const sub = agentStore.agents.find(a => a.id === id);
+      if (!sub) continue;
+      lines.push(`- **${sub.name}**: ${sub.description || ''}`);
+    }
+    return lines.length > 0 ? '可调用子智能体:\n' + lines.join('\n') : '';
   }
 
   function buildSystemPrompt(): string {
     const conv = conversations.value.find(c => c.id === currentConvId.value);
-    const agentStore = useAgentStore();
-    const agent = agentStore.selectedAgent;
+    const agent = activeAgent();
+    const isHarness = !agent || !agent.type || agent.type === 'harness';
     const parts: string[] = [];
 
     if (conv?.systemPrompt) {
@@ -383,14 +476,37 @@ export const useChatStore = defineStore('chat', () => {
       parts.push(agent.systemPrompt);
     }
 
-    const toolsDesc = buildToolsDescription();
-    if (toolsDesc) {
-      parts.push('---\n当前可调用的 MCP 工具：\n' + toolsDesc);
-    }
-
-    const skillsDesc = buildSkillsDescription();
-    if (skillsDesc) {
-      parts.push('---\n' + skillsDesc);
+    if (isHarness) {
+      const toolsDesc = buildToolsDescription();
+      if (toolsDesc) parts.push('---\n## 可用工具\n' + toolsDesc);
+      const skillsDesc = buildSkillsDescription();
+      if (skillsDesc) parts.push('---\n## 可用 Skills\n' + skillsDesc);
+      const subsDesc = buildSubAgentsDescription();
+      if (subsDesc) parts.push('---\n## 可调用子智能体\n' + subsDesc);
+    } else {
+      // Workflow: 保留现有 MCP 工具描述逻辑
+      const mcpStore = useMcpStore();
+      const lines: string[] = [];
+      for (const sid of mountedMcpServers.value) {
+        const server = mcpStore.servers.find(s => s.id === sid);
+        const list = mcpStore.tools[sid] || [];
+        const disabledNames = mcpDisabledTools.value[sid] || [];
+        const aliases = mcpToolAliases.value[sid] || {};
+        const enabled = list.filter((t: any) => !disabledNames.includes(t.name));
+        if (enabled.length === 0) continue;
+        const serverName = server?.name || sid;
+        lines.push(`## ${serverName}`);
+        for (const t of enabled) {
+          const desc = t.description || '无描述';
+          const shortDesc = desc.length > 120 ? desc.slice(0, 117) + '...' : desc;
+          const fnName = `mcp_${sid.slice(0, 8)}__${t.name}`;
+          const aliasLabel = aliases[t.name] ? `（${aliases[t.name]}）` : (t.alias ? `（${t.alias}）` : '');
+          lines.push(`- \`${fnName}\`${aliasLabel}: ${shortDesc}`);
+        }
+      }
+      if (lines.length > 0) parts.push('---\n当前可调用的 MCP 工具：\n' + lines.join('\n'));
+      const skillsDesc = buildSkillsDescription();
+      if (skillsDesc) parts.push('---\n' + skillsDesc);
     }
 
     return parts.join('\n\n');
@@ -678,6 +794,6 @@ export const useChatStore = defineStore('chat', () => {
     activeAgent, activeAgentId,
     loadConversations, loadMessages, createConversation, updateConversation, deleteConversation, deleteConversations,
     addMessage, updateMessage, deleteMessage, sendMessage, regenerate, stop, buildTools,
-    buildToolsDescription, buildSkillsDescription, buildSystemPrompt,
+    buildToolsDescription, buildSkillsDescription, buildSubAgentsDescription, buildSystemPrompt, getMergedMounts,
   };
 });

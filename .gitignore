@@ -5,6 +5,17 @@ dist/
 .env
 .env.*
 !.env.example
+.codegraph/
+
+# Build outputs
+*.js
+*.js.map
+*.d.ts
+*.d.ts.map
+!*.config.js
+!vitest.config.ts
+!eslint.config.*
+
 
 # Tauri
 apps/desktop/src-tauri/target/

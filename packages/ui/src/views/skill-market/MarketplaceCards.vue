@@ -160,6 +160,14 @@ onMounted(() => { store.loadSkills(); loadRemoteSources(); });
 
 .card-ops { display: flex; gap: 4px; flex-shrink: 0; }
 
-.add-card { border-style: dashed; }
-.add-card:hover { border-color: var(--color-primary); }
+.add-card { border-style: dashed; border-color: var(--glass-border); background: rgba(255,255,255,0.25); }
+.add-card:hover { border-color: var(--color-primary); background: rgba(99,102,241,0.05); }
+
+@media (max-width: 767px) {
+  .mp-home { padding: 14px !important; }
+  .mp-header { margin-bottom: 18px; }
+  .mp-title { font-size: 20px; }
+  .mp-card-grid { grid-template-columns: 1fr; gap: 12px; }
+}
+
 </style>

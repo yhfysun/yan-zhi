@@ -11,7 +11,7 @@
           <input v-model="search" placeholder="搜索..." class="lm-search-input" />
           <el-icon v-if="search" class="lm-search-clear" @click="search = ''"><Close /></el-icon>
         </div>
-        <el-button type="primary" circle :icon="Plus" @click="openNew" class="fab-add"></el-button>
+        <el-button type="primary" :icon="Plus" @click="openNew" class="fab-add">新增 Skill</el-button>
         <el-tooltip content="Markdown 导入">
           <el-button circle @click="importMd" class="lm-icon-btn"><el-icon :size="16"><UploadFilled /></el-icon></el-button>
         </el-tooltip>
@@ -343,5 +343,18 @@ function parseSkillMd(md: string): { frontmatter: any; bodyMd: string; body: str
   background: rgba(15, 23, 42, 0.04); padding: 16px; border-radius: 6px;
   font-family: "JetBrains Mono", monospace; font-size: 13px; max-height: 500px;
   overflow: auto; white-space: pre-wrap;
+}
+
+/* ===== Mobile ===== */
+@media (max-width: 767px) {
+  .local-market { padding: 14px !important; }
+  .lm-header { flex-direction: column; align-items: stretch; gap: 10px; }
+  .lm-header-left { flex-wrap: wrap; }
+  .lm-header-right { flex-wrap: wrap; gap: 6px; }
+  .lm-search-wrap { width: 100%; }
+  .lm-title { font-size: 18px; }
+  .skill-grid { grid-template-columns: 1fr; gap: 10px; }
+  .editor-layout { grid-template-columns: 1fr; gap: 12px; }
+  .preview-md { min-height: 180px; max-height: 280px; }
 }
 </style>

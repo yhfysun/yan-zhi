@@ -1,5 +1,6 @@
 <template>
-  <nav class="side-nav">
+  <!-- Desktop sidebar nav (hidden on mobile) -->
+  <nav v-if="!isMobile" class="side-nav">
     <div class="nav-top">
       <el-tooltip v-for="item in navItems" :key="item.path" :content="item.label" placement="right" :show-after="400">
         <router-link :to="item.path" class="nav-item" :class="{ active: isActive(item.path) }">
@@ -32,24 +33,41 @@
       </el-tooltip>
     </div>
   </nav>
+
+  <!-- Mobile bottom TabBar -->
+  <nav v-if="isMobile" class="tab-bar">
+    <router-link
+      v-for="item in navItems"
+      :key="item.path"
+      :to="item.path"
+      class="tab-bar-item"
+      :class="{ active: isActive(item.path) }"
+    >
+      <el-icon :size="20"><component :is="item.icon" /></el-icon>
+      <span class="tab-bar-label">{{ item.tabLabel || item.label }}</span>
+    </router-link>
+  </nav>
 </template>
 
 <script setup lang="ts">
 import { useRoute, useRouter } from 'vue-router';
-import { ChatDotRound, Box, Files, Setting, Cpu, User, SwitchButton, Tools } from '@element-plus/icons-vue';
+import { ChatDotRound, Box, Files, Setting, Cpu, User, SwitchButton, Tools, Connection } from '@element-plus/icons-vue';
 import { useAuthStore } from '../stores/auth';
+import { useIsMobile } from '../composables/useIsMobile';
 
 const route = useRoute();
 const router = useRouter();
 const authStore = useAuthStore();
+const isMobile = useIsMobile();
 
 const navItems = [
-  { path: '/chat', label: '聊天', icon: ChatDotRound },
-  { path: '/models', label: '模型平台', icon: Cpu },
-  { path: '/tools', label: '工具管理', icon: Tools },
-  { path: '/skills', label: 'Skill 商店', icon: Files },
-  { path: '/agents', label: '智能体', icon: Box },
-  { path: '/settings', label: '设置', icon: Setting },
+  { path: '/chat', label: '聊天', tabLabel: '对话', icon: ChatDotRound },
+  { path: '/models', label: '模型平台', tabLabel: '模型', icon: Cpu },
+  { path: '/tools', label: '工具管理', tabLabel: '工具', icon: Tools },
+  { path: '/skills', label: 'Skill 商店', tabLabel: 'Skills', icon: Files },
+  { path: '/agents', label: '智能体', tabLabel: '智能体', icon: Box },
+  { path: '/mcp', label: 'MCP 服务', tabLabel: 'MCP', icon: Connection },
+  { path: '/settings', label: '设置', tabLabel: '设置', icon: Setting },
 ];
 
 function isActive(path: string) {
@@ -112,6 +130,74 @@ function isActive(path: string) {
 .nav-avatar:hover {
   transform: scale(1.06);
   box-shadow: 0 2px 8px rgba(124, 58, 237, 0.2);
+}
+
+/* ===== Mobile bottom TabBar ===== */
+.tab-bar {
+  display: none;
+}
+
+@media (max-width: 767px) {
+  .tab-bar {
+    display: flex;
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 56px;
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    background: var(--glass-bg);
+    backdrop-filter: var(--glass-filter);
+    -webkit-backdrop-filter: var(--glass-filter);
+    border-top: 1px solid var(--glass-border);
+    z-index: 100;
+    justify-content: space-around;
+    align-items: flex-start;
+    padding-top: 6px;
+  }
+
+  .tab-bar-item {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+    min-width: 44px;
+    min-height: 44px;
+    text-decoration: none;
+    color: var(--color-text-secondary);
+    font-size: 10px;
+    font-weight: 500;
+    border-radius: 8px;
+    padding: 4px 6px;
+    transition: color 0.18s ease;
+    position: relative;
+  }
+
+  .tab-bar-item:hover {
+    color: var(--color-text);
+  }
+
+  .tab-bar-item.active {
+    color: var(--color-primary);
+  }
+
+  .tab-bar-item.active::before {
+    content: '';
+    position: absolute;
+    top: -6px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 20px;
+    height: 2px;
+    background: var(--color-primary);
+    border-radius: 1px;
+  }
+
+  .tab-bar-label {
+    font-size: 10px;
+    line-height: 1;
+  }
 }
 </style>
 

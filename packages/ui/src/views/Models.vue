@@ -2,16 +2,20 @@
   <div class="page">
     <header class="page-header">
       <h2 class="page-title">模型平台管理</h2>
-      <el-button type="primary" @click="showAdd = true">
-        <el-icon><Plus /></el-icon> 新增平台
-      </el-button>
+      <el-button type="primary" :icon="Plus" @click="showAdd = true" class="add-btn-desktop">新增平台</el-button>
     </header>
 
     <div class="platform-grid">
       <template v-if="store.loading">
-        <el-skeleton v-for="n in 4" :key="n" animated style="padding:16px">
-          <template #template><el-skeleton-item variant="text" style="width:60%" /><el-skeleton-item variant="text" style="width:40%" /><el-skeleton-item variant="rect" style="height:40px;margin-top:8px" /></template>
-        </el-skeleton>
+        <div v-for="n in 4" :key="n" class="platform-card skeleton-card">
+          <el-skeleton animated>
+            <template #template>
+              <el-skeleton-item variant="text" style="width:60%" />
+              <el-skeleton-item variant="text" style="width:40%" />
+              <el-skeleton-item variant="rect" style="height:40px;margin-top:8px" />
+            </template>
+          </el-skeleton>
+        </div>
       </template>
       <el-card v-for="p in store.platforms" :key="p.id" class="platform-card">
         <div class="card-head">
@@ -34,7 +38,7 @@
           <el-button size="small" type="danger" @click="del(p.id)">删除</el-button>
         </div>
       </el-card>
-      <el-empty v-if="store.platforms.length === 0" description="还没有平台，点击右上角新增" />
+      <el-empty v-if="store.platforms.length === 0" description="还没有平台，点击右下角新增" />
     </div>
 
     <el-dialog v-model="showAdd" :title="editingId ? '编辑平台' : '新增平台'" width="640px" :close-on-click-modal="false">
@@ -86,6 +90,9 @@
         <el-button type="primary" :loading="saving" @click="save">{{ editingId ? '保存修改' : '保存' }}</el-button>
       </template>
     </el-dialog>
+
+    <!-- Mobile FAB -->
+    <el-button type="primary" :icon="Plus" circle class="mobile-fab" @click="showAdd = true" />
   </div>
 </template>
 
@@ -267,10 +274,9 @@ async function del(id: string) {
 </script>
 
 <style scoped>
-.page { padding: 24px; }
-.page-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; }
-.page-title { font-size: 20px; font-weight: 600; }
-.platform-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 16px; }
+/* .page / .page-header / .page-title come from App.vue global */
+.platform-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 20px; }
+
 .platform-card { background: var(--glass-bg); backdrop-filter: var(--glass-filter); }
 .card-head { display: flex; align-items: center; gap: 12px; }
 .card-info { flex: 1; cursor: pointer; }
@@ -288,6 +294,36 @@ async function del(id: string) {
 .form-tip { font-size: 12px; color: var(--color-text-secondary); margin-top: 4px; line-height: 1.5; }
 .form-tip code { background: rgba(59, 130, 246, 0.1); padding: 1px 4px; border-radius: 3px; font-family: "JetBrains Mono", "Cascadia Code", monospace; }
 
+/* Desktop show button, mobile hide it */
+.add-btn-desktop { }
+.mobile-fab {
+  display: none;
+  position: fixed;
+  right: 20px;
+  z-index: 99;
+  width: 48px;
+  height: 48px;
+  box-shadow: 0 4px 16px rgba(124, 58, 237, 0.45);
+  border-radius: 50%;
+  bottom: calc(56px + 12px + env(safe-area-inset-bottom, 0px));
+}
+
+@media (max-width: 767px) {
+  .add-btn-desktop { display: none; }
+  .mobile-fab { display: flex; }
+  .platform-grid { grid-template-columns: 1fr; gap: 14px; padding-bottom: 72px; }
+  .card-actions { flex-wrap: wrap; gap: 6px; }
+  .card-actions .el-button { font-size: 12px; padding: 5px 10px; }
+}
+
+/* Skeleton card — looks like a real card */
+.skeleton-card {
+  padding: 16px;
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-md);
+}
+
+/* Dialog action buttons bar */
 .dialog-actions-bar {
   display: flex;
   align-items: center;
@@ -296,6 +332,17 @@ async function del(id: string) {
   border-top: 1px dashed var(--color-border-light);
   margin-top: 8px;
 }
+@media (max-width: 767px) {
+  .dialog-actions-bar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .dialog-actions-bar .el-button {
+    width: 100%;
+    justify-content: center;
+  }
+}
+
 .form-status { font-size: 12px; margin-left: auto; }
 .form-status.ok { color: var(--el-color-success); }
 .form-status.err { color: var(--el-color-danger); }
@@ -328,4 +375,5 @@ async function del(id: string) {
 }
 .fetched-item:hover { background: rgba(99, 102, 241, 0.08); }
 .model-id { font-family: "JetBrains Mono", "Cascadia Code", monospace; font-size: 12px; }
+
 </style>

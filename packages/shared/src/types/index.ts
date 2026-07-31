@@ -126,6 +126,15 @@ export interface McpTool {
   inputSchema: unknown; // JSON Schema
 }
 
+/** 智能体类型 */
+export type AgentType = 'harness' | 'workflow';
+
+/** MCP 工具挂载项 */
+export interface McpToolMount {
+  serverId: string;
+  toolName: string; // '*' 表示该 server 全部工具
+}
+
 /** 智能体 */
 export interface Agent {
   id: string;
@@ -140,6 +149,18 @@ export interface Agent {
   presencePenalty?: number;
   platformId?: string;
   modelId?: string;
+  /** 智能体类型：harness（默认，挂载即用）| workflow（DAG 连线编排） */
+  type?: AgentType;
+  /** Harness 挂载：内置工具名列表 */
+  builtinToolIds?: string[];
+  /** Harness 挂载：自定义工具 ID 列表 */
+  customToolIds?: string[];
+  /** Harness 挂载：MCP 工具挂载配置 */
+  mcpToolMounts?: McpToolMount[];
+  /** Harness 挂载：Skill ID 列表 */
+  skillIds?: string[];
+  /** Harness 挂载：子智能体 ID 列表 */
+  subAgentIds?: string[];
   workflow: Workflow;
   inputsSchema?: Record<string, unknown>;
   config?: Record<string, unknown>;

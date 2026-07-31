@@ -23,15 +23,9 @@
               clearable
               style="width: 200px"
             />
-            <el-button type="primary" size="small" @click="openMcpAdd">
-              <el-icon><Plus /></el-icon> 新增服务
-            </el-button>
           </div>
         </div>
-        <el-empty v-if="mcpStore.servers.length === 0" description="暂无 MCP 服务" :image-size="60">
-          <el-button type="primary" size="small" @click="openMcpAdd">新增服务</el-button>
-        </el-empty>
-        <div v-else class="mcp-scroll">
+        <div class="mcp-scroll">
           <div
             v-for="s in filteredMcpServers"
             :key="s.id"
@@ -76,6 +70,17 @@
               </el-tooltip>
             </div>
           </div>
+          <!-- 新增卡片（虚线兜底，始终在末尾） -->
+          <div class="mcp-mini-card add-card" @click="openMcpAdd">
+            <div class="mcp-mini-card-top">
+              <div class="mcp-mini-card-icon disconnected">
+                <el-icon :size="18"><Plus /></el-icon>
+              </div>
+              <div class="mcp-mini-card-body">
+                <span class="mcp-mini-name">新增 MCP 服务</span>
+              </div>
+            </div>
+          </div>
         </div>
       </section>
 
@@ -83,9 +88,7 @@
       <section class="section">
         <div class="section-header">
           <h3 class="section-title">工具商城</h3>
-          <el-button type="primary" size="small" @click="showSourceForm = true">
-            <el-icon><Plus /></el-icon> 新增远程商城
-          </el-button>
+          <el-button type="primary" :icon="Plus" @click="showSourceForm = true" class="fab-add">新增远程商城</el-button>
         </div>
         <div class="market-grid">
           <!-- 本地商城卡片（始终存在） -->
@@ -164,9 +167,7 @@
       <section class="section">
         <div class="section-header">
           <h4 class="subsection-title">自定义工具</h4>
-          <el-button type="primary" size="small" @click="openEditor(null)">
-            <el-icon><Plus /></el-icon> 新增工具
-          </el-button>
+          <el-button type="primary" :icon="Plus" @click="openEditor(null)" class="fab-add">新增工具</el-button>
         </div>
         <el-empty v-if="toolsStore.customTools.length === 0" description="暂无自定义工具，点击上方按钮创建" :image-size="60" />
         <div v-else class="card-grid">
@@ -747,10 +748,8 @@ async function installTool(item: any) {
 .view-fade-leave-to { opacity: 0; }
 
 /* ---- 页面 ---- */
-.page { padding: 28px 32px; }
+/* .page / .page-title / .page-sub come from App.vue global */
 .page-top { margin-bottom: 24px; }
-.page-title { font-size: 22px; font-weight: 700; margin: 0; }
-.page-sub { font-size: 13px; color: var(--color-text-secondary); margin: 4px 0 0; }
 
 /* ---- 分区 ---- */
 .section { margin-bottom: 32px; }
@@ -787,6 +786,16 @@ async function installTool(item: any) {
   border-color: var(--glass-border-strong);
 }
 .mcp-mini-card.connected { border-color: rgba(34,197,94,0.2); }
+.mcp-mini-card.add-card {
+  border: 1.5px dashed var(--glass-border);
+  background: rgba(255,255,255,0.2);
+  cursor: pointer;
+  justify-content: center;
+}
+.mcp-mini-card.add-card:hover {
+  border-color: var(--color-primary);
+  background: rgba(99,102,241,0.04);
+}
 .mcp-mini-card-top {
   display: flex; align-items: center; gap: 12px;
 }
@@ -966,4 +975,22 @@ async function installTool(item: any) {
 .tool-dialog-right { flex-shrink: 0; }
 
 .code-input textarea { font-family: "JetBrains Mono", "Cascadia Code", monospace; font-size: 13px; }
+
+/* ===== Mobile ===== */
+@media (max-width: 767px) {
+  .page-top { margin-bottom: 18px; }
+  .page-title { font-size: 18px; }
+  .section { margin-bottom: 24px; }
+  .section-header { flex-wrap: wrap; gap: 8px; }
+  .section-header-right { flex-wrap: wrap; }
+  .section-header-right .el-input { max-width: 100%; flex: 1; min-width: 0; }
+  .sub-header { flex-wrap: wrap; gap: 10px; padding-bottom: 12px; margin-bottom: 16px; }
+  .sub-header-info { width: 100%; }
+  .sub-header-actions { width: 100%; justify-content: flex-end; }
+  .sub-title { font-size: 16px; }
+  .card-grid { grid-template-columns: 1fr; gap: 12px; }
+  .market-grid { grid-template-columns: 1fr; gap: 12px; }
+  .mcp-scroll { flex-direction: column; overflow-x: visible; gap: 10px; }
+  .mcp-mini-card { flex: none; width: 100%; }
+}
 </style>

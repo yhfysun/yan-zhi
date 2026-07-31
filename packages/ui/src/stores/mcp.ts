@@ -243,6 +243,15 @@ export const useMcpStore = defineStore('mcp', () => {
       if (msg.includes('Failed to fetch') || msg.includes('NetworkError')) {
         msg = '网络请求失败，请检查 URL 是否正确或服务器是否允许跨域访问（CORS）';
       }
+      // 连接失败时更新状态为 disconnected
+      const idx = servers.value.findIndex((x) => x.id === id);
+      if (idx !== -1) servers.value[idx] = { ...servers.value[idx], status: 'disconnected' };
+      if (on()) {
+        api.patch(`/mcp-servers/${id}`, { status: 0 }).catch(() => {});
+      } else {
+        const adapter = getPlatformAdapter();
+        adapter.db.exec('UPDATE mcp_server SET status = ? WHERE id = ?', [0, id]).catch(() => {});
+      }
       addLog(id, 'connect', false, e?.message);
       return { ok: false, msg };
     } finally {

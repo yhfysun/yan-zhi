@@ -280,9 +280,19 @@ onMounted(async () => {
 </script>
 
 <style scoped>
-.page { padding: 24px; }
-.page-title { font-size: 20px; font-weight: 600; margin-bottom: 24px; }
+/* .page / .page-title come from App.vue global */
+.page-title { margin-bottom: 24px; }
 .glass-tabs { background: var(--glass-bg); backdrop-filter: var(--glass-filter); border-radius: var(--radius-md); padding: 16px; }
+
+@media (max-width: 767px) {
+  .page-title { font-size: 18px; margin-bottom: 16px; }
+  .glass-tabs { padding: 12px; }
+  .glass-tabs :deep(.el-tabs__header) { margin-bottom: 12px; }
+  .glass-tabs :deep(.el-tabs__nav-wrap::after) { display: none; }
+  .el-form { max-width: 100% !important; }
+  .el-form-item { margin-bottom: 14px; }
+  .data-section { flex-direction: column; gap: 8px; }
+}
 
 .theme-grid { display: flex; gap: 10px; flex-wrap: wrap; }
 .theme-chip {
@@ -306,4 +316,5 @@ onMounted(async () => {
 .about-tip { font-size: 12px; opacity: 0.7; }
 .connect-url-box { display: flex; align-items: center; gap: 8px; background: rgba(15,23,42,0.04); border-radius: 6px; padding: 6px 10px; }
 .connect-url-box code { font-family: monospace; font-size: 13px; color: var(--color-primary); }
+
 </style>

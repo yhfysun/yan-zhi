@@ -20,6 +20,12 @@ function rowToAgent(r: any): Agent {
     presencePenalty: r.presence_penalty ?? 0,
     platformId: r.platform_id || '',
     modelId: r.model_id || '',
+    type: (r.type as Agent['type']) || 'harness',
+    builtinToolIds: r.builtin_tool_ids ? JSON.parse(r.builtin_tool_ids) : undefined,
+    customToolIds: r.custom_tool_ids ? JSON.parse(r.custom_tool_ids) : undefined,
+    mcpToolMounts: r.mcp_tool_mounts ? JSON.parse(r.mcp_tool_mounts) : undefined,
+    skillIds: r.skill_ids ? JSON.parse(r.skill_ids) : undefined,
+    subAgentIds: r.sub_agent_ids ? JSON.parse(r.sub_agent_ids) : undefined,
     workflow: wf,
     inputsSchema: r.inputs_schema_json ? JSON.parse(r.inputs_schema_json) : undefined,
     config: r.config_json ? JSON.parse(r.config_json) : undefined,
@@ -36,7 +42,8 @@ const EMPTY_WORKFLOW: Workflow = { nodes: [], edges: [] };
 
 const DEFAULT_AGENT_DATA = {
   name: 'AI 助手',
-  description: '默认 ReAct 智能体，支持工具调用自循环',
+  description: '默认 Harness 智能体，挂载工具/Skill/子智能体后即可使用，大模型自主 ReAct 决策',
+  type: 'harness' as const,
   systemPrompt: `你是一个 ReAct（推理-行动）智能体。遵循以下规则：
 
 1. **思考**：分析用户需求并决定下一步操作。
@@ -159,8 +166,8 @@ export const useAgentStore = defineStore('agent', () => {
       ? data.config
       : (defaults.config ? { ...defaults.config, ...data.config } : data.config);
     await adapter.db.exec(
-      `INSERT INTO agent (id, name, description, system_prompt, temperature, max_tokens, top_p, frequency_penalty, presence_penalty, platform_id, model_id, is_default, workflow_json, config_json, version, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO agent (id, name, description, system_prompt, temperature, max_tokens, top_p, frequency_penalty, presence_penalty, platform_id, model_id, type, builtin_tool_ids, custom_tool_ids, mcp_tool_mounts, skill_ids, sub_agent_ids, is_default, workflow_json, config_json, version, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         data.name || '新智能体',
@@ -173,6 +180,12 @@ export const useAgentStore = defineStore('agent', () => {
         data.presencePenalty ?? defaults.presencePenalty,
         data.platformId || '',
         data.modelId || '',
+        data.type || 'harness',
+        data.builtinToolIds?.length ? JSON.stringify(data.builtinToolIds) : null,
+        data.customToolIds?.length ? JSON.stringify(data.customToolIds) : null,
+        data.mcpToolMounts?.length ? JSON.stringify(data.mcpToolMounts) : null,
+        data.skillIds?.length ? JSON.stringify(data.skillIds) : null,
+        data.subAgentIds?.length ? JSON.stringify(data.subAgentIds) : null,
         0,
         data.workflow ? JSON.stringify(data.workflow) : JSON.stringify(EMPTY_WORKFLOW),
         config ? JSON.stringify(config) : null,
@@ -199,6 +212,7 @@ export const useAgentStore = defineStore('agent', () => {
       [patch.presencePenalty, 'presence_penalty'],
       [patch.platformId, 'platform_id'],
       [patch.modelId, 'model_id'],
+      [patch.type, 'type'],
     ];
     for (const [val, col] of map) {
       if (val !== undefined) { sets.push(`${col} = ?`); params.push(val); }
@@ -206,6 +220,26 @@ export const useAgentStore = defineStore('agent', () => {
     if (patch.config !== undefined) {
       sets.push('config_json = ?');
       params.push(JSON.stringify(patch.config));
+    }
+    if (patch.builtinToolIds !== undefined) {
+      sets.push('builtin_tool_ids = ?');
+      params.push(patch.builtinToolIds.length ? JSON.stringify(patch.builtinToolIds) : null);
+    }
+    if (patch.customToolIds !== undefined) {
+      sets.push('custom_tool_ids = ?');
+      params.push(patch.customToolIds.length ? JSON.stringify(patch.customToolIds) : null);
+    }
+    if (patch.mcpToolMounts !== undefined) {
+      sets.push('mcp_tool_mounts = ?');
+      params.push(patch.mcpToolMounts.length ? JSON.stringify(patch.mcpToolMounts) : null);
+    }
+    if (patch.skillIds !== undefined) {
+      sets.push('skill_ids = ?');
+      params.push(patch.skillIds.length ? JSON.stringify(patch.skillIds) : null);
+    }
+    if (patch.subAgentIds !== undefined) {
+      sets.push('sub_agent_ids = ?');
+      params.push(patch.subAgentIds.length ? JSON.stringify(patch.subAgentIds) : null);
     }
     if (patch.isDefault !== undefined) { sets.push('is_default = ?'); params.push(patch.isDefault ? 1 : 0); }
     if (patch.allowSubAgent !== undefined) { sets.push('allow_sub_agent = ?'); params.push(patch.allowSubAgent ? 1 : 0); }
@@ -277,7 +311,7 @@ export const useAgentStore = defineStore('agent', () => {
   function defaultNodeConfig(type: NodeType): Record<string, unknown> {
     switch (type) {
       case 'llm': return { platformId: '', modelId: '', systemPrompt: '', temperature: 0.7, maxTokens: 2048 };
-      case 'tool': return { mcpServerId: '', toolName: '', arguments: {} };
+      case 'tool': return { toolSource: 'mcp', mcpServerId: '', toolName: '', arguments: {} };
       case 'input': return { schema: {} };
       case 'output': return { key: 'result' };
       case 'code': return { expression: 'return ctx.input;' };

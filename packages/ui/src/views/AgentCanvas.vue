@@ -11,12 +11,20 @@
         <el-tag v-if="dirty" size="small" type="warning">未保存</el-tag>
         <el-button :icon="Document" size="small" @click="save">保存</el-button>
         <el-button type="primary" :icon="CaretRight" size="small" :loading="store.running" @click="run">运行</el-button>
+        <el-button v-if="isMobile" class="palette-toggle-btn" size="small" circle @click="paletteOpen = !paletteOpen">
+          <el-icon :size="16"><Grid /></el-icon>
+        </el-button>
+        <el-button v-if="isMobile" class="inspector-toggle-btn" size="small" circle @click="inspectorOpen = !inspectorOpen">
+          <el-icon :size="16"><Setting /></el-icon>
+        </el-button>
       </div>
     </header>
 
     <div class="canvas-body">
+      <!-- 移动端节点库遮罩 -->
+      <div v-if="isMobile && paletteOpen" class="palette-overlay" @click="paletteOpen = false"></div>
       <!-- 左侧节点库 -->
-      <aside class="palette">
+      <aside class="palette" :class="{ 'palette-open': paletteOpen }">
         <div class="palette-title">节点库</div>
         <div
           v-for="g in nodePalette"
@@ -61,7 +69,9 @@
       </main>
 
       <!-- 右侧属性面板 -->
-      <aside class="inspector">
+      <!-- 移动端遮罩 -->
+      <div v-if="isMobile && inspectorOpen" class="inspector-overlay" @click="inspectorOpen = false"></div>
+      <aside class="inspector" :class="{ 'inspector-open': inspectorOpen }">
         <div class="inspector-title">{{ selectedNode ? '节点属性' : '智能体设置' }}</div>
         <div v-if="!selectedNode" class="inspector-empty">
           <el-form label-position="top" size="small">
@@ -107,16 +117,39 @@
 
             <!-- Tool 节点 -->
             <template v-else-if="selectedNode.type === 'tool'">
-              <el-form-item label="MCP 服务">
-                <el-select v-model="cfg.mcpServerId" placeholder="选择服务" @change="onServerChange">
-                  <el-option v-for="s in mcpServers" :key="s.id" :label="s.name" :value="s.id" />
+              <el-form-item label="工具来源">
+                <el-select v-model="cfg.toolSource" placeholder="选择来源">
+                  <el-option label="MCP 工具" value="mcp" />
+                  <el-option label="内置工具" value="builtin" />
+                  <el-option label="自定义工具" value="custom" />
                 </el-select>
               </el-form-item>
-              <el-form-item label="工具">
-                <el-select v-model="cfg.toolName" placeholder="选择工具">
-                  <el-option v-for="t in filteredTools" :key="t.name" :label="t.name" :value="t.name" />
-                </el-select>
-              </el-form-item>
+              <template v-if="cfg.toolSource === 'mcp' || !cfg.toolSource">
+                <el-form-item label="MCP 服务">
+                  <el-select v-model="cfg.mcpServerId" placeholder="选择服务" @change="onServerChange">
+                    <el-option v-for="s in mcpServers" :key="s.id" :label="s.name" :value="s.id" />
+                  </el-select>
+                </el-form-item>
+                <el-form-item label="工具">
+                  <el-select v-model="cfg.toolName" placeholder="选择工具">
+                    <el-option v-for="t in filteredTools" :key="t.name" :label="t.name" :value="t.name" />
+                  </el-select>
+                </el-form-item>
+              </template>
+              <template v-if="cfg.toolSource === 'builtin'">
+                <el-form-item label="工具">
+                  <el-select v-model="cfg.toolName" placeholder="选择内置工具">
+                    <el-option v-for="t in builtinToolNames" :key="t" :label="t" :value="t" />
+                  </el-select>
+                </el-form-item>
+              </template>
+              <template v-if="cfg.toolSource === 'custom'">
+                <el-form-item label="工具">
+                  <el-select v-model="cfg.toolName" placeholder="选择自定义工具">
+                    <el-option v-for="t in customToolNames" :key="t.name" :label="t.name" :value="t.name" />
+                  </el-select>
+                </el-form-item>
+              </template>
               <el-form-item label="参数（JSON，{} 表示用上游输入）">
                 <el-input v-model="cfg.argumentsText" type="textarea" :rows="4" placeholder='{}' />
               </el-form-item>
@@ -260,12 +293,14 @@
 import { ref, reactive, computed, onMounted, watch, markRaw, h, defineComponent } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { VueFlow, useVueFlow, type Node, type Edge } from '@vue-flow/core';
-import { ArrowLeft, Document, CaretRight, Delete, ChatDotRound, Tools, Upload, Download, Lightning, Switch, Refresh, Avatar, Reading, Memo } from '@element-plus/icons-vue';
+import { ArrowLeft, Document, CaretRight, Delete, ChatDotRound, Tools, Upload, Download, Lightning, Switch, Refresh, Avatar, Reading, Memo, Grid, Setting } from '@element-plus/icons-vue';
 import { ElMessage } from 'element-plus';
 import { useAgentStore } from '../stores/agent';
 import { usePlatformStore } from '../stores/platform';
 import { useMcpStore } from '../stores/mcp';
+import { useToolsStore } from '../stores/tools';
 import { getPlatformAdapter } from '@yan-zhi/core';
+import { useIsMobile } from '../composables/useIsMobile';
 import type { NodeType, WorkflowNode } from '@yan-zhi/shared';
 
 const route = useRoute();
@@ -273,8 +308,13 @@ const router = useRouter();
 const store = useAgentStore();
 const platformStore = usePlatformStore();
 const mcpStore = useMcpStore();
+const toolsStore = useToolsStore();
 
 const agentId = computed(() => route.params.id as string);
+
+const isMobile = useIsMobile();
+const paletteOpen = ref(false);
+const inspectorOpen = ref(false);
 
 const agent = reactive<{ name: string; description: string }>({ name: '', description: '' });
 const inputsText = ref('{}');
@@ -293,6 +333,9 @@ const filteredTools = computed(() => {
   if (!cfg.mcpServerId) return [];
   return (mcpStore.tools as Record<string, any[]>)[cfg.mcpServerId as string] || [];
 });
+
+const builtinToolNames = computed(() => toolsStore.builtinTools.map((t: any) => t.name));
+const customToolNames = computed(() => toolsStore.customTools.filter((t: any) => t.enabled));
 
 // 节点配置 reactive
 const cfg = reactive<Record<string, any>>({});
@@ -606,6 +649,7 @@ onMounted(load);
   display: flex;
   flex-direction: column;
   height: 100vh;
+  height: 100dvh;
   background: var(--color-bg);
 }
 .toolbar {
@@ -819,4 +863,53 @@ onMounted(load);
   width: 8px;
   height: 8px;
 }
+
+/* ===== Mobile responsive ===== */
+@media (max-width: 767px) {
+  .canvas-page { height: 100%; min-height: 0; }
+
+  .toolbar {
+    padding: 6px 10px; gap: 4px;
+  }
+  .toolbar-left { gap: 4px; }
+  .title-input { width: 120px; }
+  .toolbar-right { gap: 4px; }
+  .palette-toggle-btn, .inspector-toggle-btn { flex-shrink: 0; }
+
+  .canvas-body { flex-direction: column; position: relative; }
+
+  /* Palette: overlay drawer from left */
+  .palette {
+    position: fixed; left: 0; top: 0; bottom: 0; z-index: 300;
+    width: 260px; transform: translateX(-100%);
+    transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+    padding-top: env(safe-area-inset-top, 0px);
+  }
+  .palette.palette-open { transform: translateX(0); box-shadow: 4px 0 24px rgba(0,0,0,0.2); }
+  .palette-overlay {
+    position: fixed; inset: 0; z-index: 299;
+    background: rgba(0,0,0,0.4); backdrop-filter: blur(2px);
+  }
+
+  /* Inspector: bottom sheet */
+  .inspector {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 300;
+    width: 100vw; max-height: 55vh; border-radius: 16px 16px 0 0;
+    border-left: none; border-top: 1px solid var(--color-border);
+    transform: translateY(100%);
+    transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+    box-shadow: 0 -4px 24px rgba(0,0,0,0.2);
+    padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 8px);
+  }
+  .inspector.inspector-open { transform: translateY(0); }
+  .inspector-overlay {
+    position: fixed; inset: 0; z-index: 299;
+    background: rgba(0,0,0,0.4); backdrop-filter: blur(2px);
+  }
+
+  .flow-wrap { flex: 1; min-height: 300px; }
+  .flow-controls { right: 8px; bottom: 8px; gap: 4px; }
+  .flow-controls .el-button { width: 30px; height: 30px; font-size: 10px; }
+}
+
 </style>

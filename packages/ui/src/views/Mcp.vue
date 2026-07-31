@@ -487,7 +487,7 @@ async function del(id: string) {
 </script>
 
 <style scoped>
-.page { padding: 28px 32px; }
+/* .page style from App.vue global */
 .page-top { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 28px; flex-wrap: wrap; gap: 12px; }
 .page-info { flex: 1; min-width: 0; }
 .page-top-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
@@ -657,4 +657,13 @@ async function del(id: string) {
 .tool-card-desc.empty-desc:hover { background: none; }
 
 .tool-card-right { padding-top: 2px; flex-shrink: 0; }
+
+@media (max-width: 767px) {
+  .page-top { flex-direction: column; gap: 10px; }
+  .page-title { font-size: 18px; }
+  .page-top-actions { width: 100%; }
+  .mcp-search-wrap { width: 100%; }
+  .card-grid { grid-template-columns: 1fr; gap: 12px; }
+  .mcp-card { padding: 14px; }
+}
 </style>

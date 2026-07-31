@@ -82,7 +82,7 @@
             <p class="page-sub">内置智能体与自定义创建的智能体</p>
           </div>
         </div>
-        <el-button type="primary" :icon="Plus" @click="createAgent">新建智能体</el-button>
+        <el-button type="primary" :icon="Plus" @click="createAgent" class="fab-add">新建智能体</el-button>
       </header>
 
       <div v-loading="loading" class="agent-grid">
@@ -308,12 +308,14 @@ async function remove(agent: Agent) {
 </script>
 
 <style scoped>
-.page { padding: 24px; }
-.page-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 24px; gap: 16px; }
-.page-title { font-size: 20px; font-weight: 600; margin: 0; }
-.page-sub { font-size: 13px; color: var(--color-text-secondary); margin: 6px 0 0; }
+/* .page / .page-header / .page-title / .page-sub come from App.vue global */
 .page-sub.mono { font-family: "JetBrains Mono", "Cascadia Code", monospace; font-size: 12px; }
 
+.marketplace-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: 20px;
+}
 /* ===== 返回导航 ===== */
 .back-header { display: flex; align-items: flex-start; gap: 12px; }
 .back-btn { flex-shrink: 0; margin-top: 2px; }
@@ -321,8 +323,8 @@ async function remove(agent: Agent) {
 /* ===== 商城卡片网格（入口层） ===== */
 .marketplace-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-  gap: 16px;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: 20px;
 }
 .marketplace-card {
   background: var(--glass-bg);
@@ -404,7 +406,7 @@ async function remove(agent: Agent) {
 .add-card-text { font-size: 14px; }
 
 /* ===== 智能体卡片网格 ===== */
-.agent-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 16px; }
+.agent-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 20px; }
 .agent-card {
   background: var(--glass-bg);
   backdrop-filter: var(--glass-filter);
@@ -442,4 +444,13 @@ async function remove(agent: Agent) {
 
 /* ===== 远程工具条 ===== */
 .remote-toolbar { margin-bottom: 16px; }
+
+@media (max-width: 767px) {
+  .marketplace-grid, .agent-grid { grid-template-columns: 1fr; gap: 12px; }
+  .sub-header { flex-wrap: wrap; gap: 10px; }
+  .sub-header-info { width: 100%; }
+  .marketplace-card-body { flex-wrap: wrap; }
+  .agent-actions { flex-wrap: wrap; }
+}
+
 </style>

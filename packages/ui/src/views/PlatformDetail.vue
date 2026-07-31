@@ -6,7 +6,7 @@
         <h2 class="page-title">{{ platform?.name || '平台详情' }}</h2>
         <span :class="['status-dot', platform?.status]"></span>
       </div>
-      <div class="header-actions">
+      <div class="header-actions header-actions-desktop">
         <el-button @click="fetchRemote" :loading="fetching">拉取远程模型</el-button>
         <el-button @click="batchMode = !batchMode" :type="batchMode ? 'warning' : ''">
           {{ batchMode ? '取消' : '批量' }}
@@ -140,17 +140,16 @@
       </div>
     </el-dialog>
 
-    <el-dialog v-model="showBatchContext" title="批量设置上下文窗口" width="380px">
-      <el-form label-width="100px">
-        <el-form-item label="上下文窗口">
-          <el-input-number v-model="batchContextWindow" :min="512" :step="1024" />
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="showBatchContext = false">取消</el-button>
-        <el-button type="primary" :loading="batchSaving" @click="applyBatchContext">应用 ({{ selectedModelIds.size }} 个)</el-button>
-      </template>
-    </el-dialog>
+    <!-- Mobile: header-actions as a collapsible toolbar below header -->
+    <div class="header-actions-mobile">
+      <el-button size="small" @click="fetchRemote" :loading="fetching">拉取</el-button>
+      <el-button size="small" @click="batchMode = !batchMode" :type="batchMode ? 'warning' : ''">
+        {{ batchMode ? '取消' : '批量' }}
+      </el-button>
+    </div>
+
+    <!-- Mobile FAB -->
+    <el-button type="primary" :icon="Plus" circle class="mobile-fab" @click="showAdd = true" />
   </div>
 </template>
 
@@ -308,17 +307,14 @@ async function testModel(row: any) {
 </script>
 
 <style scoped>
-.page { padding: 24px; }
-.page-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; flex-wrap: wrap; gap: 12px; }
+/* .page / .page-header / .page-title come from App.vue global */
 .header-left { display: flex; align-items: center; gap: 12px; }
-.page-title { font-size: 20px; font-weight: 600; }
 .header-actions { display: flex; gap: 8px; }
 .status-dot { width: 8px; height: 8px; border-radius: 50%; }
 .status-dot.healthy { background: #10b981; box-shadow: 0 0 6px rgba(16,185,129,0.4); }
 .status-dot.down { background: #ef4444; }
 .status-dot.unknown { background: #94a3b8; }
 
-/* 模型卡片网格 */
 .model-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
@@ -379,4 +375,36 @@ async function testModel(row: any) {
 .form-tip { font-size: 12px; color: var(--color-text-secondary); margin-left: 8px; }
 .test-result { padding: 12px; }
 .test-detail { margin-top: -8px; padding: 0 24px 12px; font-size: 13px; color: var(--color-text-secondary); line-height: 1.8; }
+
+/* Desktop: show header actions, hide mobile toolbar/FAB */
+.header-actions-desktop { display: flex; }
+.header-actions-mobile { display: none; }
+.mobile-fab { display: none; }
+
+@media (max-width: 767px) {
+  .header-actions-desktop { display: none; }
+  .header-actions-mobile {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 14px;
+    flex-wrap: wrap;
+  }
+  .mobile-fab {
+    display: flex;
+    position: fixed;
+    right: 20px;
+    z-index: 99;
+    width: 48px;
+    height: 48px;
+    box-shadow: 0 4px 16px rgba(124, 58, 237, 0.45);
+    border-radius: 50%;
+    /* above mobile TabBar (56px) */
+    bottom: calc(56px + 12px + env(safe-area-inset-bottom, 0px));
+  }
+  .model-grid { grid-template-columns: 1fr; gap: 12px; padding-bottom: 72px; }
+  .batch-toolbar { flex-wrap: wrap; gap: 8px; font-size: 12px; padding: 8px 12px; }
+  .alias-input { max-width: 100%; }
+  .model-card-foot { flex-wrap: wrap; gap: 8px; }
+  .model-card-actions { width: 100%; margin-left: 0; flex-wrap: wrap; justify-content: flex-start; }
+}
 </style>

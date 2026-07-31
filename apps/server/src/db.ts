@@ -190,4 +190,12 @@ try {
   try { db.exec('ALTER TABLE agent ADD COLUMN is_public INTEGER NOT NULL DEFAULT 0'); } catch {}
 } catch {}
 
+// 迁移 agent 表（Harness 模式 + 挂载字段）
+try {
+  try { db.exec("ALTER TABLE agent ADD COLUMN type TEXT NOT NULL DEFAULT 'harness'"); } catch {}
+  for (const col of ['builtin_tool_ids', 'custom_tool_ids', 'mcp_tool_mounts', 'skill_ids', 'sub_agent_ids']) {
+    try { db.exec(`ALTER TABLE agent ADD COLUMN ${col} TEXT`); } catch {}
+  }
+} catch {}
+
 export { db };

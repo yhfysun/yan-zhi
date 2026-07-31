@@ -90,7 +90,7 @@ async function submit() {
 <style scoped>
 .auth-page {
   display: flex; align-items: center; justify-content: center;
-  min-height: 100vh; padding: 24px;
+  min-height: 100vh; min-height: 100dvh; padding: 24px;
   background: var(--color-bg);
 }
 
@@ -104,6 +104,14 @@ async function submit() {
   padding: 40px 36px;
   box-shadow: var(--shadow-lg);
   animation: cardEnter 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@media (max-width: 767px) {
+  .auth-page { padding: 0; }
+  .auth-card {
+    max-width: none; border-radius: 0; padding: 32px 20px;
+    min-height: 100vh; min-height: 100dvh; box-shadow: none; border: none;
+  }
 }
 
 @keyframes cardEnter {
@@ -165,4 +173,5 @@ async function submit() {
 .form-fade-enter-active { transition: all 0.25s ease; }
 .form-fade-leave-active { transition: all 0.15s ease; }
 .form-fade-enter-from, .form-fade-leave-to { opacity: 0; transform: translateY(-4px); }
+
 </style>

@@ -104,7 +104,7 @@
       </div>
 
       <div class="messages" ref="messagesRef">
-        <div v-for="(round, ri) in messageRounds" :key="ri" :class="['round-group']">
+        <div v-for="(round, ri) in messageRounds" :key="ri" :class="['round-group']" :data-round="ri">
           <!-- 用户消息 -->
           <!-- 用户消息 -->
           <div v-if="round.user" class="msg msg-user">
@@ -316,6 +316,20 @@
         </button>
       </div>
 
+      <!-- 右侧消息导航指示器 -->
+      <div v-if="userRoundIndices.length > 1" class="round-nav">
+        <div
+          v-for="(ri, idx) in userRoundIndices"
+          :key="ri"
+          class="round-nav-dash"
+          :class="{ active: ri === activeNavRound }"
+          :title="'跳到提问 #' + (idx + 1)"
+          @click="scrollToRound(ri)"
+        >
+          <span class="dash-line" />
+        </div>
+      </div>
+
       <div class="input-area">
         <div class="input-box" :class="{ focused: inputFocused }">
           <el-input
@@ -331,71 +345,110 @@
             class="input-textarea"
           />
           <div class="input-toolbar">
-            <div class="toolbar-left">
-              <el-tooltip content="上传文件" placement="top">
-                <el-button size="small" circle @click="triggerFileUpload">
-                  <el-icon><UploadFilled /></el-icon>
+            <div class="toolbar-agent">
+              <div class="minimal-select agent-switch" @click.stop>
+                <el-select v-model="agentStore.selectedId" placeholder="选择智能体" size="small" popper-class="minimal-popper" @change="onAgentSwitch">
+                  <el-option
+                    v-for="ag in agentStore.agents"
+                    :key="ag.id"
+                    :label="ag.name"
+                    :value="ag.id"
+                  >
+                    <span style="display:flex;align-items:center;gap:6px">
+                      <el-icon v-if="ag.isDefault" style="font-size:12px"><Lock /></el-icon>
+                      <span>{{ ag.name }}</span>
+                    </span>
+                  </el-option>
+                </el-select>
+                <el-icon class="select-icon"><User /></el-icon>
+              </div>
+              <el-tooltip content="编辑当前智能体" placement="top">
+                <el-button size="small" circle @click="openEditAgent(agentStore.selectedAgent)">
+                  <el-icon><EditPen /></el-icon>
                 </el-button>
               </el-tooltip>
-              <el-tooltip :content="`上下文：${tokenCount} / ${contextLimit} tokens`" placement="top">
-                <div class="token-chip">
-                  <el-progress :percentage="tokenPercent" :stroke-width="4" :show-text="false" :color="tokenBarColor" class="token-progress" />
-                </div>
-              </el-tooltip>
             </div>
-            <div class="toolbar-center">
-              <div class="toolbar-agent">
-                <div class="minimal-select agent-switch" @click.stop>
-                  <el-select v-model="agentStore.selectedId" placeholder="选择智能体" size="small" popper-class="minimal-popper" @change="onAgentSwitch">
-                    <el-option
-                      v-for="ag in agentStore.agents"
-                      :key="ag.id"
-                      :label="ag.name"
-                      :value="ag.id"
-                    >
-                      <span style="display:flex;align-items:center;gap:6px">
-                        <el-icon v-if="ag.isDefault" style="font-size:12px"><Lock /></el-icon>
-                        <span>{{ ag.name }}</span>
-                      </span>
-                    </el-option>
-                  </el-select>
-                  <el-icon class="select-icon"><User /></el-icon>
-                </div>
-                <el-tooltip content="编辑当前智能体" placement="top">
-                  <el-button size="small" circle @click="openEditAgent(agentStore.selectedAgent)">
-                    <el-icon><EditPen /></el-icon>
-                  </el-button>
-                </el-tooltip>
-              </div>
 
-              <div class="minimal-select model-select" @click.stop>
-                <el-icon class="select-icon"><Cpu /></el-icon>
-                <el-select
-                  v-model="selectedModelId"
-                  placeholder="选择模型"
-                  filterable
-                  size="small"
-                  popper-class="minimal-popper"
-                  @change="onModelChange"
+            <div class="minimal-select model-select" @click.stop>
+              <el-icon class="select-icon"><Cpu /></el-icon>
+              <el-select
+                v-model="selectedModelId"
+                placeholder="选择模型"
+                filterable
+                size="small"
+                popper-class="minimal-popper"
+                @change="onModelChange"
+              >
+                <el-option-group
+                  v-for="g in modelGroups"
+                  :key="g.platformId"
+                  :label="g.platformName"
                 >
-                  <el-option-group
-                    v-for="g in modelGroups"
-                    :key="g.platformId"
-                    :label="g.platformName"
+                  <el-option
+                    v-for="m in g.models"
+                    :key="m.id"
+                    :label="m.alias || m.modelId"
+                    :value="m.id"
                   >
-                    <el-option
+                    <span>{{ m.alias || m.modelId }}</span>
+                    <span style="font-size:11px;color:#94a3b8;margin-left:6px">{{ m.modelId }}</span>
+                  </el-option>
+                </el-option-group>
+              </el-select>
+            </div>
+
+            <!-- mobile-only: icon buttons to popover agent / model list -->
+            <div class="toolbar-mobile-selects">
+              <el-popover placement="top" trigger="click" :width="220" :show-arrow="false">
+                <template #reference>
+                  <el-button size="small" circle>
+                    <el-icon><User /></el-icon>
+                  </el-button>
+                </template>
+                <div class="pop-select-list">
+                  <div
+                    v-for="ag in agentStore.agents"
+                    :key="ag.id"
+                    class="pop-select-item"
+                    :class="{ active: ag.id === agentStore.selectedId }"
+                    @click="onAgentSwitch(ag.id); agentStore.selectAgent(ag.id)"
+                  >
+                    <el-icon v-if="ag.isDefault" style="font-size:12px"><Lock /></el-icon>
+                    <span>{{ ag.name }}</span>
+                  </div>
+                </div>
+              </el-popover>
+
+              <el-tooltip content="编辑当前智能体" placement="top">
+                <el-button size="small" circle @click="openEditAgent(agentStore.selectedAgent)">
+                  <el-icon><EditPen /></el-icon>
+                </el-button>
+              </el-tooltip>
+
+              <el-popover placement="top" trigger="click" :width="240" :show-arrow="false">
+                <template #reference>
+                  <el-button size="small" circle>
+                    <el-icon><Cpu /></el-icon>
+                  </el-button>
+                </template>
+                <div class="pop-select-list">
+                  <template v-for="g in modelGroups" :key="g.platformId">
+                    <div class="pop-select-label">{{ g.platformName }}</div>
+                    <div
                       v-for="m in g.models"
                       :key="m.id"
-                      :label="m.alias || m.modelId"
-                      :value="m.id"
+                      class="pop-select-item"
+                      :class="{ active: m.id === selectedModelId }"
+                      @click="onModelChange(m.id)"
                     >
                       <span>{{ m.alias || m.modelId }}</span>
-                      <span style="font-size:11px;color:#94a3b8;margin-left:6px">{{ m.modelId }}</span>
-                    </el-option>
-                  </el-option-group>
-                </el-select>
-              </div>
+                    </div>
+                  </template>
+                </div>
+              </el-popover>
+            </div>
 
+            <div class="toolbar-icons">
               <el-tooltip content="MCP 工具" placement="top">
                 <el-button size="small" circle @click="showMount = true">
                   <el-icon><Connection /></el-icon>
@@ -414,7 +467,37 @@
                   <span class="workspace-dir-label">{{ workspaceDir.split('/').pop() || workspaceDir }}</span>
                 </el-button>
               </el-tooltip>
+              <el-tooltip content="上传文件" placement="top">
+                <el-button size="small" circle @click="triggerFileUpload">
+                  <el-icon><UploadFilled /></el-icon>
+                </el-button>
+              </el-tooltip>
             </div>
+
+            <div class="toolbar-more">
+              <el-popover placement="top" trigger="click" :width="160" :show-arrow="false">
+                <template #reference>
+                  <el-button size="small" circle>
+                    <el-icon><MoreFilled /></el-icon>
+                  </el-button>
+                </template>
+                <div class="more-menu">
+                  <div class="more-item" @click="showMount = true">
+                    <el-icon><Connection /></el-icon><span>MCP 工具</span>
+                  </div>
+                  <div class="more-item" @click="showSkills = true">
+                    <el-icon><Files /></el-icon><span>Skill {{ mountedSkillIds.length ? '(' + mountedSkillIds.length + ')' : '' }}</span>
+                  </div>
+                  <div class="more-item" @click="showWorkspaceDir = true">
+                    <el-icon><FolderOpened /></el-icon><span>工作目录</span>
+                  </div>
+                  <div class="more-item" @click="triggerFileUpload">
+                    <el-icon><UploadFilled /></el-icon><span>上传文件</span>
+                  </div>
+                </div>
+              </el-popover>
+            </div>
+
             <div class="toolbar-right">
               <el-tooltip content="新建会话" placement="top">
                 <el-button size="small" circle :disabled="store.streaming" @click="startNewChat">
@@ -599,7 +682,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, nextTick, watch, reactive, onUnmounted } from 'vue';
-import { Plus, ChatDotRound, Star, Connection, CaretRight, CaretBottom, Search, Files, EditPen, Delete, User, Setting, CopyDocument, Refresh, Promotion, Fold, Expand, Lock, Check, Cpu, UploadFilled, Close, View, ArrowRight, ArrowDown, ArrowUp, CircleCheck, CircleClose, Loading, FolderOpened } from '@element-plus/icons-vue';
+import { Plus, ChatDotRound, Star, Connection, CaretRight, CaretBottom, Search, Files, EditPen, Delete, User, Setting, CopyDocument, Refresh, Promotion, Fold, Expand, Lock, Check, Cpu, UploadFilled, Close, View, ArrowRight, ArrowDown, ArrowUp, CircleCheck, CircleClose, Loading, FolderOpened, MoreFilled } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import MarkdownIt from 'markdown-it';
 import hljs from 'highlight.js';
@@ -659,6 +742,15 @@ const collapsedToolGroups = reactive<Record<string, boolean>>({});
 const collapsedMessages = reactive<Record<string, boolean>>({});
 const expandedAgentProcess = reactive<Record<string, boolean>>({});
 const expandedStepTools = reactive<Record<string, boolean>>({});
+
+const activeNavRound = ref<number | null>(null);
+
+// 哪些 messageRounds 包含用户消息（用于右侧导航指示器）
+const userRoundIndices = computed<number[]>(() =>
+  messageRounds.value
+    .map((r, i) => (r.user ? i : -1))
+    .filter(i => i >= 0),
+);
 
 interface MessageRound {
   user: Message | null;
@@ -1027,8 +1119,10 @@ onUnmounted(() => {
 
 watch(() => store.currentMessages.length, () => nextTick(() => {
   if (messagesRef.value) { messagesRef.value.scrollTop = messagesRef.value.scrollHeight; handleScroll(); }
+  if (!store.streaming) collapseEarlyOnMobile();
 }));
 
+// 移动端：只在新消息加载/切会话时折叠早期消息（不随 streaming 重复折叠）
 watch(() => store.currentConvId, async (id) => {
   if (!id) return;
   isDraftMode.value = false;
@@ -1042,6 +1136,9 @@ watch(() => store.currentConvId, async (id) => {
   }
   mountedSkillIds.value = conv?.skillIds ? [...conv.skillIds] : [];
   initMountSelection();
+  // 切会话后在下一帧判断是否折叠早期消息
+  await nextTick();
+  collapseEarlyOnMobile();
 });
 
 watch(showMount, (v) => {
@@ -1390,6 +1487,12 @@ async function deleteFileItem(f: { path: string; name: string }) {
 
 function scrollToTop() { if (messagesRef.value) messagesRef.value.scrollTo({ top: 0, behavior: 'smooth' }); }
 function scrollToBottom() { if (messagesRef.value) messagesRef.value.scrollTo({ top: messagesRef.value.scrollHeight, behavior: 'smooth' }); }
+function scrollToRound(ri: number) {
+  activeNavRound.value = ri;
+  const group = document.querySelector(`[data-round="${ri}"]`) as HTMLElement;
+  if (!group) return;
+  group.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
 
 function handleScroll() {
   const el = messagesRef.value;
@@ -1398,6 +1501,25 @@ function handleScroll() {
   const canScroll = el.scrollHeight > el.clientHeight;
   showScrollBottom.value = canScroll && !atBottom;
   showScrollTop.value = canScroll && el.scrollTop > el.clientHeight;
+
+  // 跟踪当前可见的用户消息轮次（用于右侧导航指示器）
+  updateActiveNavRound(el);
+}
+
+function updateActiveNavRound(el: HTMLElement) {
+  const indices = userRoundIndices.value;
+  if (indices.length === 0) { activeNavRound.value = null; return; }
+  // 找到最后一个顶部出现在视口上方的 round
+  let lastVisible: number | null = null;
+  for (const ri of indices) {
+    const group = el.querySelector(`[data-round="${ri}"]`) as HTMLElement;
+    if (!group) continue;
+    const relTop = group.getBoundingClientRect().top - el.getBoundingClientRect().top;
+    if (relTop < el.clientHeight / 2) {
+      lastVisible = ri;
+    }
+  }
+  activeNavRound.value = lastVisible !== null ? lastVisible : indices[0];
 }
 
 function formatTime(ts: number): string {
@@ -1411,6 +1533,31 @@ function toggleReasoning(id: string) { expandedReasoning[id] = !expandedReasonin
 function toggleTool(key: string) { expandedTools[key] = !expandedTools[key]; }
 function toggleToolGroup(msgId: string) { expandedToolGroups[msgId] = !expandedToolGroups[msgId]; }
 function toggleMsgCollapse(msgId: string) { collapsedMessages[msgId] = !collapsedMessages[msgId]; }
+
+const collapsedByAuto = new Set<string>();
+
+function collapseEarlyOnMobile() {
+  const isMobile = window.innerWidth <= 767;
+  if (!isMobile) return;
+  // 只放已设为 true 的自动折叠，用户手动展开的跳过
+  for (const id of collapsedByAuto) {
+    if (collapsedMessages[id]) collapsedMessages[id] = false;
+  }
+  collapsedByAuto.clear();
+  const rounds = messageRounds.value;
+  let runningLen = 0;
+  const THRESHOLD = 600;
+  for (let ri = 0; ri < rounds.length - 1; ri++) {
+    const r = rounds[ri];
+    const userLen = (r.user?.content || '').length;
+    const asstLen = (r.finalAssistant?.content || '').length;
+    runningLen += userLen + asstLen;
+    if (runningLen > THRESHOLD && ri < rounds.length - 2) {
+      if (r.user) { collapsedMessages[r.user.id] = true; collapsedByAuto.add(r.user.id); }
+      if (r.finalAssistant) { collapsedMessages[r.finalAssistant.id] = true; collapsedByAuto.add(r.finalAssistant.id); }
+    }
+  }
+}
 function toggleAgentProcess(key: string) { expandedAgentProcess[key] = !expandedAgentProcess[key]; }
 function toggleStepTools(key: string) { expandedStepTools[key] = !expandedStepTools[key]; }
 
@@ -1747,7 +1894,7 @@ async function saveSkills() {
 [data-theme="dark"] .chat-topbar { background: rgba(24, 26, 36, 0.5); }
 .conv-title-display { font-weight: 600; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-.messages { flex: 1; overflow-y: auto; padding: 24px 32px 60px 32px; scroll-behavior: smooth; }
+.messages { flex: 1; overflow-y: auto; padding: 24px 32px 60px 32px; scroll-behavior: smooth; position: relative; }
 .messages::-webkit-scrollbar { width: 8px; }
 .messages::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.1); border-radius: 4px; }
 .messages::-webkit-scrollbar-thumb:hover { background: rgba(0,0,0,0.18); }
@@ -2076,6 +2223,31 @@ async function saveSkills() {
 .toolbar-right { display: flex; align-items: center; gap: 4px; }
 .toolbar-agent { display: flex; align-items: center; gap: 4px; }
 
+.toolbar-mobile-selects { display: none; }
+
+.toolbar-icons { display: flex; align-items: center; gap: 6px; }
+
+.toolbar-more { display: none; }
+
+.pop-select-list { max-height: 260px; overflow-y: auto; }
+.pop-select-label { font-size: 11px; font-weight: 600; color: var(--color-text-secondary); text-transform: uppercase; padding: 4px 12px 2px; }
+.pop-select-item {
+  display: flex; align-items: center; gap: 6px; padding: 8px 12px;
+  border-radius: 8px; cursor: pointer; font-size: 13px; color: var(--color-text);
+  transition: background 0.15s;
+}
+.pop-select-item:hover { background: rgba(59,130,246,0.06); }
+.pop-select-item.active { color: var(--color-primary); font-weight: 600; background: rgba(124,58,237,0.06); }
+
+.more-menu { display: flex; flex-direction: column; gap: 2px; }
+.more-item {
+  display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+  border-radius: 8px; cursor: pointer; font-size: 13px; color: var(--color-text);
+  transition: background 0.15s;
+}
+.more-item:hover { background: rgba(59,130,246,0.06); }
+.more-item .el-icon { font-size: 16px; color: var(--color-text-secondary); }
+
 .minimal-select {
   display: flex; align-items: center; gap: 2px;
   padding: 2px 8px; border-radius: 8px; transition: background 0.15s;
@@ -2292,8 +2464,10 @@ async function saveSkills() {
 
 /* Scroll navigator */
 .scroll-nav {
-  position: absolute; right: 24px; bottom: 164px;
-  display: flex; flex-direction: column; gap: 8px; z-index: 15;
+  position: fixed; right: 24px; bottom: 190px;
+  display: flex; flex-direction: column; gap: 8px; z-index: 210;
+  /* ensure clicks pass through to elements behind the nav */
+  pointer-events: auto;
 }
 .scroll-nav-btn {
   width: 40px; height: 40px; border-radius: 50%;
@@ -2308,6 +2482,40 @@ async function saveSkills() {
 .scroll-nav-btn:hover {
   background: var(--glass-bg-hover); color: var(--color-primary);
   transform: scale(1.08); box-shadow: var(--shadow-md);
+}
+
+/* ===== 消息导航指示器（右侧小横杠） ===== */
+.round-nav {
+  position: fixed; right: 6px; top: 50%; transform: translateY(-50%);
+  display: flex; flex-direction: column; align-items: flex-end; gap: 8px;
+  z-index: 210; padding: 4px 6px;
+  pointer-events: auto;
+}
+.round-nav-dash {
+  display: flex; align-items: center; justify-content: flex-end;
+  cursor: pointer; padding: 6px 8px 6px 12px;
+  border-radius: 20px 0 0 20px;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  position: relative;
+}
+.round-nav-dash:hover { background: rgba(59,130,246,0.06); }
+.round-nav-dash.active { background: rgba(59,130,246,0.08); }
+
+.dash-line {
+  display: inline-block;
+  width: 18px; height: 3px; border-radius: 2px;
+  background: rgba(148,163,184,0.35);
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  flex-shrink: 0;
+}
+.round-nav-dash.active .dash-line {
+  width: 26px; height: 4px;
+  background: var(--color-primary);
+  box-shadow: 0 0 6px rgba(59,130,246,0.4);
+}
+.round-nav-dash:hover .dash-line {
+  background: var(--color-primary);
+  width: 24px;
 }
 
 /* File panel */
@@ -2387,22 +2595,32 @@ async function saveSkills() {
   }
 
   .conv-toggle { display: none; }
-  .chat-topbar { padding: 8px 10px; min-height: 42px; }
-  .messages { padding: 8px 6px 6px; }
+  .chat-topbar {
+    position: sticky; top: 0; z-index: 110;
+    padding: 8px 10px; min-height: 42px;
+  }
+  /* input area lives above tab bar */
+  .messages { padding: 8px 16px calc(140px + env(safe-area-inset-bottom, 0px)) 8px; }
 
   .input-area {
-    position: sticky; bottom: 0; z-index: 100;
-    padding: 4px 6px 6px;
-    padding-bottom: calc(6px + env(safe-area-inset-bottom, 0px));
+    position: sticky; bottom: 56px; z-index: 100;
+    padding: 6px 8px 8px;
+    padding-bottom: calc(8px + env(safe-area-inset-bottom, 0px));
     border-top: 1px solid var(--glass-border);
   }
   .input-box { border-radius: 12px; }
-  .input-textarea :deep(.el-textarea__inner) { font-size: 15px; padding: 6px 8px; }
-  .input-toolbar { padding: 2px 4px; gap: 2px; }
-  .toolbar-left .token-chip { display: none; }
-  .toolbar-center { flex-wrap: wrap; gap: 2px; }
-  .toolbar-center .toolbar-agent { display: none; }
+  .input-textarea :deep(.el-textarea__inner) { font-size: 15px; padding: 8px 8px; }
+  .input-toolbar { padding: 4px 6px; gap: 4px; }
+  .toolbar-agent { display: none; }
+  .model-select { display: none; }
+  .toolbar-mobile-selects { display: flex; align-items: center; gap: 3px; }
+  .toolbar-icons { display: none; }
+  .toolbar-more { display: flex; align-items: center; }
   .workspace-dir-label { display: none; }
+  .toolbar-left .token-chip { display: none; }
+  /* ensure toolbar buttons/icons stay visible on mobile */
+  .input-toolbar .el-button { flex-shrink: 0; }
+  .minimal-select { flex-shrink: 0; }
 
   /* fix: file panel → fixed bottom sheet (no scroll-trigger) */
   .file-panel {
@@ -2415,7 +2633,11 @@ async function saveSkills() {
   }
   .file-panel.open { transform: translateY(0); width: 100% !important; }
 
-  .scroll-nav { right: 8px; bottom: 120px; }
+  .scroll-nav { right: 8px; bottom: calc(120px + env(safe-area-inset-bottom, 0px)); z-index: 210; }
+  .round-nav { right: 2px; top: 44%; gap: 5px; z-index: 210; }
+  .round-nav-dash { padding: 4px 6px 4px 8px; }
+  .dash-line { width: 12px; height: 2px; }
+  .round-nav-dash.active .dash-line { width: 18px; height: 3px; }
   .welcome-card h2 { font-size: 18px; }
   .welcome-actions { max-width: 100%; }
   .msg { margin-bottom: 10px; gap: 8px; }
