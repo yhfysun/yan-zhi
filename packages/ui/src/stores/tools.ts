@@ -110,7 +110,10 @@ export const useToolsStore = defineStore('tools', () => {
 
   async function testRemoteSource(id: string): Promise<{ ok: boolean; error?: string; info?: any }> {
     const r = await api.post<any>(`/tool-marketplace/${id}/test`);
-    return r as any;
+    // apiFetch 把成功响应包进 { data: ... }；失败用 { error }。这里统一解包，调用方拿到的就是后端实际负载
+    if (r && 'error' in r) return { ok: false, error: (r as any).error };
+    const payload = (r as any).data ?? r;
+    return payload as { ok: boolean; error?: string; info?: any };
   }
 
   async function fetchRemoteItems(sourceId: string, page = 1, pageSize = 20) {
@@ -126,17 +129,36 @@ export const useToolsStore = defineStore('tools', () => {
 
   async function setMarketplaceEnabled(enabled: boolean) {
     marketplaceEnabled.value = enabled;
-    await api.patch('/marketplace/config', { enabled });
+    const cached = { enabled, auth: marketplaceAuth.value };
+    localStorage.setItem('marketplace_config_v1', JSON.stringify(cached));
+    try {
+      await api.patch('/marketplace/config', { enabled });
+    } catch (e) {
+      console.warn('[marketplace] PATCH /marketplace/config failed, kept in localStorage', e);
+    }
   }
 
   async function loadMarketplaceConfig() {
+    let cfg: any = null;
     try {
       const r = await api.get<any>('/marketplace/config');
-      if ('data' in r && r.data) {
-        marketplaceEnabled.value = !!r.data.enabled;
-        marketplaceAuth.value = r.data.auth || { authType: 'none' };
+      cfg = r && r.data ? r.data : null;
+    } catch {
+      cfg = null;
+    }
+    if (cfg && typeof cfg === 'object') {
+      marketplaceEnabled.value = !!cfg.enabled;
+      if (cfg.auth) marketplaceAuth.value = cfg.auth;
+    } else {
+      const raw = localStorage.getItem('marketplace_config_v1');
+      if (raw) {
+        try {
+          const local = JSON.parse(raw);
+          marketplaceEnabled.value = !!local.enabled;
+          if (local.auth) marketplaceAuth.value = local.auth;
+        } catch {}
       }
-    } catch {}
+    }
   }
 
   return {

@@ -101,8 +101,8 @@ async function addSource() {
 
 async function testSource(id: string) {
   const r = await api.post<any>(`/skill-marketplace/${id}/test`);
-  const ok = (r as any).ok ?? !!(r as any).data;
-  ElMessage[ok ? 'success' : 'error'](ok ? '连接成功' : ((r as any).error || '连接失败'));
+  const payload: any = (r as any).error ? { ok: false, error: (r as any).error } : ((r as any).data ?? r);
+  ElMessage[payload.ok ? 'success' : 'error'](payload.ok ? '连接成功' : (payload.error || '连接失败'));
 }
 
 async function delSource(id: string) {
@@ -117,12 +117,11 @@ onMounted(() => { store.loadSkills(); loadRemoteSources(); });
 .mp-header { margin-bottom: 24px; }
 .mp-title { font-size: 22px; font-weight: 700; margin: 0; }
 
-.mp-card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+.mp-card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(280px, 100%), 1fr)); gap: 16px; }
 
 .market-card {
-  background: var(--glass-bg);
-  backdrop-filter: var(--glass-filter);
-  border: 1px solid var(--glass-border);
+  background: var(--el-bg-color);
+  border: 1px solid var(--el-border-color-lighter);
   border-radius: var(--radius-md);
   padding: 24px;
   display: flex;
@@ -131,6 +130,8 @@ onMounted(() => { store.loadSkills(); loadRemoteSources(); });
   cursor: pointer;
   transition: all 0.2s ease;
   position: relative;
+  min-width: 0;
+  max-width: 100%;
 }
 .market-card:hover { transform: translateY(-2px); box-shadow: 0 8px 25px rgba(0,0,0,0.06); }
 
@@ -160,14 +161,15 @@ onMounted(() => { store.loadSkills(); loadRemoteSources(); });
 
 .card-ops { display: flex; gap: 4px; flex-shrink: 0; }
 
-.add-card { border-style: dashed; border-color: var(--glass-border); background: rgba(255,255,255,0.25); }
-.add-card:hover { border-color: var(--color-primary); background: rgba(99,102,241,0.05); }
+.add-card { background: var(--el-fill-color-light); }
+.add-card:hover { border-color: var(--color-primary); background: var(--el-fill-color-blank); }
 
 @media (max-width: 767px) {
-  .mp-home { padding: 14px !important; }
-  .mp-header { margin-bottom: 18px; }
+  .mp-home { padding: 0 !important; width: 100%; }
+  .mp-header { display: none; }
   .mp-title { font-size: 20px; }
-  .mp-card-grid { grid-template-columns: 1fr; gap: 12px; }
+  .mp-card-grid { grid-template-columns: minmax(0, 1fr) !important; gap: 12px; width: 100%; }
+  .market-card { width: 100%; max-width: 100%; box-sizing: border-box; padding: 16px; }
 }
 
 </style>

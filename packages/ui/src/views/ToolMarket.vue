@@ -180,7 +180,7 @@
             <div class="tool-card-header">
               <el-icon :size="16" class="tool-icon"><Switch /></el-icon>
               <span class="tool-card-name">{{ t.name }}</span>
-              <el-tag size="small" :type="t.source === 'remote' ? 'warning' : 'success'" effect="plain">
+              <el-tag size="small" :type="t.source === 'remote' ? 'primary' : 'success'" effect="plain">
                 {{ t.source === 'remote' ? '远程' : '本地' }}
               </el-tag>
               <el-tag v-if="t.isPublic" size="small" type="primary" effect="plain">已公开</el-tag>
@@ -226,7 +226,7 @@
           <div class="tool-card-header">
             <el-icon :size="16" class="tool-icon"><Switch /></el-icon>
             <span class="tool-card-name">{{ item.name }}</span>
-            <el-tag size="small" type="warning" effect="plain">远程</el-tag>
+            <el-tag size="small" type="primary" effect="plain">远程</el-tag>
           </div>
           <p class="tool-card-desc" :title="item.description || '无描述'">{{ item.description || '无描述' }}</p>
           <div class="tool-card-foot">
@@ -860,7 +860,7 @@ async function installTool(item: any) {
   display: flex; align-items: center; justify-content: center;
 }
 .local-icon { background: rgba(124,58,237,0.12); color: #7c3aed; }
-.remote-icon { background: rgba(59,130,246,0.12); color: #3b82f6; }
+.remote-icon { background: rgba(124,58,237,0.12); color: #7c3aed; }
 .market-card-body {
   padding: 12px 14px 14px;
   display: flex; flex-direction: column; gap: 4px;
@@ -872,7 +872,7 @@ async function installTool(item: any) {
   padding: 2px 10px; border-radius: 20px; font-size: 11px; font-weight: 600;
 }
 .local-badge { background: rgba(124,58,237,0.1); color: #7c3aed; }
-.remote-badge { background: rgba(59,130,246,0.1); color: #3b82f6; }
+.remote-badge { background: rgba(124,58,237,0.1); color: #7c3aed; }
 
 /* ---- 子视图 ---- */
 .sub-header {

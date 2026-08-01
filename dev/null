@@ -1,0 +1,147 @@
+import { Router } from "express";
+import { v4 as uuid } from "uuid";
+import { authMiddleware } from "../auth.js";
+import { db } from "../db.js";
+const router = Router();
+router.use(authMiddleware);
+function marketApiBase(baseUrl) {
+  return baseUrl.replace(/\/+$/, "").replace(/\/api\/marketplace$/, "");
+}
+function authHeaders(s) {
+  const h = {};
+  if (!s.auth_config_enc) return h;
+  const c = JSON.parse(s.auth_config_enc);
+  if (s.auth_type === "bearer" && c.token) h["Authorization"] = `Bearer ${c.token}`;
+  else if (s.auth_type === "api-key" && c.apiKey) h["X-API-Key"] = c.apiKey;
+  return h;
+}
+router.get("/", (req, res) => {
+  const rows = db.prepare("SELECT id, name, base_url, auth_type, enabled, created_at FROM remote_marketplace WHERE user_id = ? AND type='agent' ORDER BY created_at DESC").all(req.user.userId);
+  res.json({ data: rows });
+});
+router.post("/", (req, res) => {
+  const { name, baseUrl, authType, authConfig } = req.body || {};
+  if (!name || !baseUrl) {
+    res.status(400).json({ error: "name, baseUrl \u4E3A\u5FC5\u586B\u9879" });
+    return;
+  }
+  const id = uuid();
+  const now = Date.now();
+  db.prepare("INSERT INTO remote_marketplace (id, user_id, name, type, base_url, auth_type, auth_config_enc, enabled, created_at) VALUES (?,?,?,?,?,?,?,1,?)").run(id, req.user.userId, name, "agent", baseUrl, authType || "none", authConfig ? JSON.stringify(authConfig) : null, now);
+  res.json({ data: db.prepare("SELECT id, name, base_url, auth_type, enabled, created_at FROM remote_marketplace WHERE id = ?").get(id) });
+});
+router.patch("/:id", (req, res) => {
+  const e = db.prepare("SELECT * FROM remote_marketplace WHERE id = ? AND user_id = ? AND type='agent'").get(req.params.id, req.user.userId);
+  if (!e) {
+    res.status(404).json({ error: "\u8FDC\u7A0B\u6E90\u4E0D\u5B58\u5728" });
+    return;
+  }
+  const sets = [];
+  const vals = [];
+  if (req.body.name !== void 0) {
+    sets.push("name = ?");
+    vals.push(req.body.name);
+  }
+  if (req.body.baseUrl !== void 0) {
+    sets.push("base_url = ?");
+    vals.push(req.body.baseUrl);
+  }
+  if (req.body.authType !== void 0) {
+    sets.push("auth_type = ?");
+    vals.push(req.body.authType);
+  }
+  if (req.body.authConfig !== void 0) {
+    sets.push("auth_config_enc = ?");
+    vals.push(JSON.stringify(req.body.authConfig));
+  }
+  if (req.body.enabled !== void 0) {
+    sets.push("enabled = ?");
+    vals.push(req.body.enabled ? 1 : 0);
+  }
+  if (sets.length === 0) {
+    res.json({ data: e });
+    return;
+  }
+  vals.push(req.params.id);
+  db.prepare(`UPDATE remote_marketplace SET ${sets.join(", ")} WHERE id = ?`).run(...vals);
+  res.json({ data: db.prepare("SELECT id, name, base_url, auth_type, enabled, created_at FROM remote_marketplace WHERE id = ?").get(req.params.id) });
+});
+router.delete("/:id", (req, res) => {
+  if (!db.prepare("SELECT id FROM remote_marketplace WHERE id = ? AND user_id = ? AND type='agent'").get(req.params.id, req.user.userId)) {
+    res.status(404).json({ error: "\u8FDC\u7A0B\u6E90\u4E0D\u5B58\u5728" });
+    return;
+  }
+  db.prepare("DELETE FROM marketplace_cache WHERE remote_id = ?").run(req.params.id);
+  db.prepare("DELETE FROM remote_marketplace WHERE id = ?").run(req.params.id);
+  res.json({ ok: true });
+});
+router.post("/:id/test", async (req, res) => {
+  const s = db.prepare("SELECT * FROM remote_marketplace WHERE id = ? AND user_id = ? AND type='agent'").get(req.params.id, req.user.userId);
+  if (!s) {
+    res.status(404).json({ error: "\u8FDC\u7A0B\u6E90\u4E0D\u5B58\u5728" });
+    return;
+  }
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 1e4);
+    const resp = await fetch(`${marketApiBase(s.base_url)}/api/marketplace`, { headers: authHeaders(s), signal: ctrl.signal });
+    clearTimeout(t);
+    if (!resp.ok) {
+      res.json({ ok: false, error: `\u8FDE\u63A5\u5931\u8D25\uFF0C\u72B6\u6001\u7801: ${resp.status}` });
+      return;
+    }
+    res.json({ ok: true, info: await resp.json() });
+  } catch (err) {
+    res.json({ ok: false, error: err instanceof Error ? err.message : String(err) });
+  }
+});
+router.get("/:id/agents", async (req, res) => {
+  const s = db.prepare("SELECT * FROM remote_marketplace WHERE id = ? AND user_id = ? AND type='agent'").get(req.params.id, req.user.userId);
+  if (!s) {
+    res.status(404).json({ error: "\u8FDC\u7A0B\u6E90\u4E0D\u5B58\u5728" });
+    return;
+  }
+  try {
+    const page = req.query.page || 1;
+    const pageSize = req.query.pageSize || 20;
+    const resp = await fetch(`${marketApiBase(s.base_url)}/api/marketplace/agents?page=${page}&pageSize=${pageSize}`, { headers: authHeaders(s) });
+    if (!resp.ok) {
+      res.status(resp.status).json({ success: false, error: `\u8FDC\u7A0B\u6E90\u8FD4\u56DE\u72B6\u6001\u7801: ${resp.status}` });
+      return;
+    }
+    res.json(await resp.json());
+  } catch (err) {
+    res.status(502).json({ success: false, error: err instanceof Error ? err.message : String(err) });
+  }
+});
+router.post("/:id/install", async (req, res) => {
+  const s = db.prepare("SELECT * FROM remote_marketplace WHERE id = ? AND user_id = ? AND type='agent'").get(req.params.id, req.user.userId);
+  if (!s) {
+    res.status(404).json({ error: "\u8FDC\u7A0B\u6E90\u4E0D\u5B58\u5728" });
+    return;
+  }
+  const { agentId } = req.body || {};
+  if (!agentId) {
+    res.status(400).json({ error: "agentId \u4E3A\u5FC5\u586B\u9879" });
+    return;
+  }
+  try {
+    const resp = await fetch(`${marketApiBase(s.base_url)}/api/marketplace/agents/${encodeURIComponent(agentId)}`, { headers: authHeaders(s) });
+    const data = await resp.json();
+    if (!data.success || !data.data) {
+      res.status(404).json({ error: "\u8FDC\u7A0B\u667A\u80FD\u4F53\u4E0D\u5B58\u5728" });
+      return;
+    }
+    const a = data.data;
+    const id = uuid();
+    const now = Date.now();
+    db.prepare("INSERT INTO agent (id, name, description, avatar, workflow_json, inputs_schema_json, config_json, is_public, source, remote_source_id, version, created_at, updated_at) VALUES (?,?,?,?,?,?,?,0,?,?,1,?,?)").run(id, a.name, a.description || null, a.avatar || null, JSON.stringify(a.workflow || { nodes: [], edges: [] }), a.inputsSchema ? JSON.stringify(a.inputsSchema) : null, a.config ? JSON.stringify(a.config) : null, "remote", req.params.id, now, now);
+    res.json({ data: db.prepare("SELECT * FROM agent WHERE id = ?").get(id) });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+var agent_marketplace_sources_default = router;
+export {
+  agent_marketplace_sources_default as default
+};

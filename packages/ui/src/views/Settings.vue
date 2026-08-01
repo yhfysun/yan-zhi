@@ -259,7 +259,12 @@ const connectUrl = computed(() => {
 });
 
 async function onMpToggle(v: boolean) {
-  await toolsStore.setMarketplaceEnabled(v);
+  const r = await toolsStore.setMarketplaceEnabled(v);
+  if (r.persisted === 'local') {
+    ElMessage.info('已暂存到本地（后端接口未就绪，恢复后将自动同步）');
+  } else {
+    ElMessage.success('商城服务端配置已保存');
+  }
 }
 function onMpAuthChange() {
   toolsStore.setMarketplaceEnabled(mpEnabled.value);
@@ -291,7 +296,10 @@ onMounted(async () => {
   .glass-tabs :deep(.el-tabs__nav-wrap::after) { display: none; }
   .el-form { max-width: 100% !important; }
   .el-form-item { margin-bottom: 14px; }
-  .data-section { flex-direction: column; gap: 8px; }
+  .data-section { flex-wrap: wrap; gap: 8px; }
+  .data-section .el-button:nth-child(1),
+  .data-section .el-button:nth-child(2) { flex: 1 1 calc(50% - 4px); min-width: 0; white-space: nowrap; }
+  .data-section .el-button:nth-child(3) { flex: 1 1 100%; }
 }
 
 .theme-grid { display: flex; gap: 10px; flex-wrap: wrap; }

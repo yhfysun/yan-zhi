@@ -95,11 +95,28 @@
         </el-button>
         <span class="conv-title-display">{{ currentConv?.title || '新对话' }}</span>
         <div class="chat-topbar-actions">
-          <el-tooltip content="文件管理" placement="bottom">
+          <el-tooltip v-if="!isMobile" content="文件管理" placement="bottom">
             <el-button size="small" circle @click="filePanelOpen = !filePanelOpen" :type="filePanelOpen ? 'primary' : ''">
               <el-icon><FolderOpened /></el-icon>
             </el-button>
           </el-tooltip>
+          <el-dropdown v-if="isMobile && authStore.isLoggedIn" trigger="click">
+            <span class="mobile-user-avatar">{{ authStore.user?.username?.slice(0, 1) || 'U' }}</span>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <div class="user-dropdown-header">
+                  <span class="user-dropdown-name">{{ authStore.user?.username }}</span>
+                </div>
+                <el-dropdown-item divided @click="authStore.logout()">
+                  <el-icon><SwitchButton /></el-icon>
+                  <span>退出登录</span>
+                </el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
+          <router-link v-else-if="isMobile" to="/login" class="mobile-user-avatar" style="text-decoration:none;font-size:14px">
+            <el-icon :size="18"><User /></el-icon>
+          </router-link>
         </div>
       </div>
 
@@ -682,11 +699,12 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, nextTick, watch, reactive, onUnmounted } from 'vue';
-import { Plus, ChatDotRound, Star, Connection, CaretRight, CaretBottom, Search, Files, EditPen, Delete, User, Setting, CopyDocument, Refresh, Promotion, Fold, Expand, Lock, Check, Cpu, UploadFilled, Close, View, ArrowRight, ArrowDown, ArrowUp, CircleCheck, CircleClose, Loading, FolderOpened, MoreFilled } from '@element-plus/icons-vue';
+import { Plus, ChatDotRound, Star, Connection, CaretRight, CaretBottom, Search, Files, EditPen, Delete, User, Setting, CopyDocument, Refresh, Promotion, Fold, Expand, Lock, Check, Cpu, UploadFilled, Close, View, ArrowRight, ArrowDown, ArrowUp, CircleCheck, CircleClose, Loading, FolderOpened, MoreFilled, SwitchButton } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import MarkdownIt from 'markdown-it';
 import hljs from 'highlight.js';
-import { useChatStore, usePlatformStore, useMcpStore, useSkillStore, useAgentStore } from '../stores';
+import { useChatStore, usePlatformStore, useMcpStore, useSkillStore, useAgentStore, useAuthStore } from '../stores';
+import { useIsMobile } from '../composables/useIsMobile';
 import type { Agent } from '@yan-zhi/shared';
 import { estimateTokens, CHAT_MODEL_TYPES } from '@yan-zhi/shared';
 import type { Message, Conversation } from '@yan-zhi/shared';
@@ -698,6 +716,8 @@ const platformStore = usePlatformStore();
 const mcpStore = useMcpStore();
 const skillStore = useSkillStore();
 const agentStore = useAgentStore();
+const authStore = useAuthStore();
+const isMobile = useIsMobile();
 
 const input = ref('');
 const inputFocused = ref(false);
@@ -1885,6 +1905,9 @@ async function saveSkills() {
 /* ===== 主区 ===== */
 .chat-main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 
+/* 定位跳转时，给 round-group 留出顶栏高度的偏移，避免被 sticky topbar 遮住 */
+.round-group { scroll-margin-top: 72px; }
+
 .chat-topbar {
   display: flex; align-items: center; gap: 8px;
   padding: 10px 20px; border-bottom: 1px solid var(--glass-border);
@@ -2599,6 +2622,8 @@ async function saveSkills() {
     position: sticky; top: 0; z-index: 110;
     padding: 8px 10px; min-height: 42px;
   }
+  /* 移动端 topbar 较矮，相应减小偏移 */
+  .round-group { scroll-margin-top: 56px; }
   /* input area lives above tab bar */
   .messages { padding: 8px 16px calc(140px + env(safe-area-inset-bottom, 0px)) 8px; }
 

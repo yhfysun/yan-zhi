@@ -250,7 +250,8 @@ async function addAgentSource() {
 }
 async function testAgentSource(id: string) {
   const r = await api.post<any>(`/agent-marketplace/${id}/test`);
-  ElMessage[r.ok ? 'success' : 'error'](r.ok ? '连接成功' : (r.error || '连接失败'));
+  const payload: any = (r as any).error ? { ok: false, error: (r as any).error } : ((r as any).data ?? r);
+  ElMessage[payload.ok ? 'success' : 'error'](payload.ok ? '连接成功' : (payload.error || '连接失败'));
 }
 async function delAgentSource(id: string) {
   try { await ElMessageBox.confirm('删除该远程源？', '提示', { type: 'warning' }); await api.delete(`/agent-marketplace/${id}`); await loadAgentRemoteSources(); ElMessage.success('已删除'); } catch {}

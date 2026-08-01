@@ -37,7 +37,7 @@
   <!-- Mobile bottom TabBar -->
   <nav v-if="isMobile" class="tab-bar">
     <router-link
-      v-for="item in navItems"
+      v-for="item in navItems.filter(i => i.path !== '/mcp')"
       :key="item.path"
       :to="item.path"
       class="tab-bar-item"
@@ -161,16 +161,18 @@ function isActive(path: string) {
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: 2px;
-    min-width: 44px;
+    flex: 1;
+    gap: 3px;
+    min-width: 0;
     min-height: 44px;
     text-decoration: none;
     color: var(--color-text-secondary);
     font-size: 10px;
     font-weight: 500;
-    border-radius: 8px;
-    padding: 4px 6px;
-    transition: color 0.18s ease;
+    border-radius: 10px;
+    padding: 4px 2px;
+    margin: 0 2px;
+    transition: color 0.18s ease, background-color 0.18s ease;
     position: relative;
   }
 
@@ -180,6 +182,12 @@ function isActive(path: string) {
 
   .tab-bar-item.active {
     color: var(--color-primary);
+    background: rgba(124, 58, 237, 0.1);
+  }
+
+  .tab-bar-item.active .el-icon {
+    transform: translateY(-1px) scale(1.06);
+    transition: transform 0.18s ease;
   }
 
   .tab-bar-item.active::before {
@@ -188,10 +196,10 @@ function isActive(path: string) {
     top: -6px;
     left: 50%;
     transform: translateX(-50%);
-    width: 20px;
-    height: 2px;
+    width: 18px;
+    height: 3px;
     background: var(--color-primary);
-    border-radius: 1px;
+    border-radius: 0 0 2px 2px;
   }
 
   .tab-bar-label {

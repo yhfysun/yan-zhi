@@ -401,7 +401,7 @@ async function testModel(row: any) {
     /* above mobile TabBar (56px) */
     bottom: calc(56px + 12px + env(safe-area-inset-bottom, 0px));
   }
-  .model-grid { grid-template-columns: 1fr; gap: 12px; padding-bottom: 72px; }
+  .model-grid { grid-template-columns: 1fr; gap: 12px; }
   .batch-toolbar { flex-wrap: wrap; gap: 8px; font-size: 12px; padding: 8px 12px; }
   .alias-input { max-width: 100%; }
   .model-card-foot { flex-wrap: wrap; gap: 8px; }

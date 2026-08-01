@@ -7,6 +7,11 @@ import { db } from '../db.js';
 const router = Router();
 router.use(authMiddleware);
 
+// 归一化远程源地址：去掉结尾的 / 以及可能冗余的 /api/marketplace 后缀
+function marketApiBase(baseUrl: string): string {
+  return baseUrl.replace(/\/+$/, '').replace(/\/api\/marketplace$/, '');
+}
+
 function authHeaders(s: any): Record<string, string> {
   const h: Record<string, string> = {};
   if (!s.auth_config_enc) return h;
@@ -56,7 +61,7 @@ router.post('/:id/test', async (req: Request, res: Response) => {
   if (!s) { res.status(404).json({ error: '远程源不存在' }); return; }
   try {
     const ctrl = new AbortController(); const t = setTimeout(() => ctrl.abort(), 10000);
-    const resp = await fetch(`${s.base_url.replace(/\/$/, '')}/api/marketplace`, { headers: authHeaders(s), signal: ctrl.signal });
+    const resp = await fetch(`${marketApiBase(s.base_url)}/api/marketplace`, { headers: authHeaders(s), signal: ctrl.signal });
     clearTimeout(t);
     if (!resp.ok) { res.json({ ok: false, error: `连接失败，状态码: ${resp.status}` }); return; }
     res.json({ ok: true, info: await resp.json() });
@@ -68,9 +73,10 @@ router.get('/:id/agents', async (req: Request, res: Response) => {
   if (!s) { res.status(404).json({ error: '远程源不存在' }); return; }
   try {
     const page = req.query.page || 1; const pageSize = req.query.pageSize || 20;
-    const resp = await fetch(`${s.base_url.replace(/\/$/, '')}/api/marketplace/agents?page=${page}&pageSize=${pageSize}`, { headers: authHeaders(s) });
+    const resp = await fetch(`${marketApiBase(s.base_url)}/api/marketplace/agents?page=${page}&pageSize=${pageSize}`, { headers: authHeaders(s) });
+    if (!resp.ok) { res.status(resp.status).json({ success: false, error: `远程源返回状态码: ${resp.status}` }); return; }
     res.json(await resp.json());
-  } catch (err: unknown) { res.status(500).json({ error: err instanceof Error ? err.message : String(err) }); }
+  } catch (err: unknown) { res.status(502).json({ success: false, error: err instanceof Error ? err.message : String(err) }); }
 });
 
 router.post('/:id/install', async (req: Request, res: Response) => {
@@ -79,7 +85,7 @@ router.post('/:id/install', async (req: Request, res: Response) => {
   const { agentId } = req.body || {};
   if (!agentId) { res.status(400).json({ error: 'agentId 为必填项' }); return; }
   try {
-    const resp = await fetch(`${s.base_url.replace(/\/$/, '')}/api/marketplace/agents/${encodeURIComponent(agentId)}`, { headers: authHeaders(s) });
+    const resp = await fetch(`${marketApiBase(s.base_url)}/api/marketplace/agents/${encodeURIComponent(agentId)}`, { headers: authHeaders(s) });
     const data = await resp.json();
     if (!data.success || !data.data) { res.status(404).json({ error: '远程智能体不存在' }); return; }
     const a = data.data; const id = uuid(); const now = Date.now();

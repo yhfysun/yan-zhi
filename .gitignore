@@ -50,3 +50,6 @@ pnpm-debug.log*
 
 # Claude local settings
 .claude/settings.local.json
+
+tmp/
+.workbuddy/

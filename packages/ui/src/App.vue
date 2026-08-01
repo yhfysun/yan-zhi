@@ -37,7 +37,7 @@
           </router-link>
         </div>
       </header>
-      <main class="main-content">
+      <main class="main-content" :class="{ 'is-chat': route.name === 'chat' }">
         <router-view v-slot="{ Component }">
           <transition name="slide-fade" mode="out-in"><component :is="Component" /></transition>
         </router-view>
@@ -93,6 +93,14 @@ authStore.loadUser();
   --color-success: #22c55e;
   --color-warning: #f59e0b;
   --color-danger: #ef4444;
+  /* Element Plus theme — keep aligned with brand purple so el-input/textarea/select focus rings match */
+  --el-color-primary: #7C3AED;
+  --el-color-primary-light-3: #A78BFA;
+  --el-color-primary-light-5: #C4B5FD;
+  --el-color-primary-light-7: #DDD6FE;
+  --el-color-primary-light-8: #EDE9FE;
+  --el-color-primary-light-9: #F5F3FF;
+  --el-color-primary-dark-2: #5B21B6;
   --color-bg: #f8fafc;
   --color-text: #1e293b;
   --color-text-secondary: #64748b;
@@ -195,7 +203,7 @@ body {
     backdrop-filter: var(--glass-filter);
     -webkit-backdrop-filter: var(--glass-filter);
     border-bottom: 1px solid var(--glass-border);
-    z-index: 99;
+    z-index: 50;
     align-items: center;
     justify-content: space-between;
   }
@@ -227,10 +235,6 @@ body {
     cursor: pointer;
     user-select: none;
   }
-
-  .main-content {
-    padding-top: 48px;
-  }
 }
 
 .slide-fade-enter-active { transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1); }
@@ -254,6 +258,27 @@ body {
 [data-theme="dark"] .el-button:not(.el-button--text):not(.el-button--primary):not(.el-button--success):not(.el-button--warning):not(.el-button--danger):hover {
   background: rgba(255,255,255,0.1);
 }
+
+/* Modernize el-button loading spinner: brand-color stroke + dash animation + rounded caps */
+.el-button .el-loading-spinner {
+  width: 18px; height: 18px;
+}
+.el-button .el-loading-spinner .circular {
+  stroke: currentColor;
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-dasharray: 90 150;
+  stroke-dashoffset: 0;
+  animation: btn-rotate 1s linear infinite, btn-dash 1.4s ease-in-out infinite;
+}
+@keyframes btn-rotate { to { transform: rotate(360deg); } }
+@keyframes btn-dash {
+  0%   { stroke-dasharray: 1 150; stroke-dashoffset: 0; }
+  50%  { stroke-dasharray: 90 150; stroke-dashoffset: -35; }
+  100% { stroke-dasharray: 90 150; stroke-dashoffset: -124; }
+}
+/* dim the inner mask slightly so the spinner pops */
+.el-button.is-loading::before { background-color: var(--el-mask-color); opacity: 0.4; }
 
 .el-button:focus-visible, .el-input__wrapper:focus-within, .el-select .el-input__wrapper:focus-within {
   outline: 2px solid var(--color-primary);
@@ -320,6 +345,19 @@ body {
   .main-content {
     margin-left: 0 !important;
     padding: 0 !important;
+    /* keep content clear of the fixed top bar (48px) and bottom tab bar (56px) */
+    padding-top: calc(48px + env(safe-area-inset-top, 0px)) !important;
+    padding-bottom: calc(56px + env(safe-area-inset-bottom, 0px)) !important;
+  }
+  /* chat page manages its own safe-area + input spacing */
+  .main-content.is-chat {
+    padding-top: env(safe-area-inset-top, 0px) !important;
+    padding-bottom: 0 !important;
+  }
+  /* login is full-screen with no chrome */
+  .main-content.full {
+    padding-top: 0 !important;
+    padding-bottom: 0 !important;
   }
   html, body, #app, .app-shell, .main-content { max-width: 100vw; overflow-x: hidden; }
 
@@ -329,29 +367,52 @@ body {
   .page-title { font-size: 18px; }
   .card-grid, .card-grid-sm { grid-template-columns: 1fr; gap: 12px; }
 
-  /* Dialogs: compact */
+  /* Dialogs: compact (keep Element Plus centering: el-overlay-dialog is fixed+flex,
+     el-dialog must stay absolute so the parent's justify/align-center works) */
+  .el-overlay { z-index: 9999 !important; overflow-y: auto !important; padding: 0 !important; }
+  .el-overlay-dialog { display: flex !important; justify-content: center !important; align-items: center !important; padding-top: calc(48px + env(safe-area-inset-top, 0px)) !important; padding-bottom: calc(56px + env(safe-area-inset-bottom, 0px)) !important; }
   .el-dialog {
-    width: 92vw !important; max-width: 92vw !important; margin: 0 auto !important;
-    max-height: calc(100dvh - 48px - 16px - env(safe-area-inset-top, 0px) - 70px);
+    z-index: 9999 !important;
+    position: absolute !important;
+    width: 92vw !important; max-width: 92vw !important;
+    margin: 0 !important;
+    max-height: calc(100dvh - 48px - env(safe-area-inset-top, 0px) - 56px - env(safe-area-inset-bottom, 0px) - 8px);
     display: flex !important; flex-direction: column !important;
+    background: var(--el-bg-color) !important;
+    -webkit-backdrop-filter: none !important; backdrop-filter: none !important;
   }
-  .el-dialog__body { flex: 1; overflow-y: auto; padding: 12px 16px; }
-  .el-dialog__header { flex-shrink: 0; padding: 14px 16px 10px; }
-  .el-dialog__footer { flex-shrink: 0; padding: 10px 16px 14px; }
-  .el-overlay { overflow-y: auto !important; display: flex; align-items: flex-start; justify-content: center; padding-top: calc(48px + 16px + env(safe-area-inset-top, 0px)); padding-bottom: 16px; }
+  .el-dialog__header { background: var(--el-bg-color) !important; border-bottom: 1px solid var(--el-border-color-lighter); }
+  .el-dialog__body { flex: 1; overflow-y: auto; padding: 12px 16px; background: var(--el-bg-color) !important; }
+  .el-dialog__footer { display: flex; flex-direction: row; flex-wrap: nowrap; justify-content: flex-end; gap: 8px; flex-shrink: 0; padding: 10px 16px 14px; background: var(--el-bg-color) !important; }
+  .el-dialog__footer .el-button { flex-shrink: 0; white-space: nowrap; }
 
   /* Prevent overflow */
   .el-card, .el-form, .el-table { max-width: 100%; overflow-x: auto; }
 
   /* Forms */
-  .el-form-item:not(.el-form-item--small) { flex-direction: column; align-items: flex-start; }
-  .el-form-item:not(.el-form-item--small) .el-form-item__label { width: 100% !important; text-align: left !important; padding-bottom: 4px; }
+  .el-form-item:not(.el-form-item--small) { flex-direction: column; align-items: flex-start; margin-bottom: 14px; }
+  .el-form-item:not(.el-form-item--small) .el-form-item__label { width: 100% !important; text-align: left !important; padding-bottom: 4px; line-height: 1.4; font-size: 13px; }
   .el-form-item:not(.el-form-item--small) .el-form-item__content { width: 100% !important; margin-left: 0 !important; }
   .el-form-item .el-input-number, .el-form-item .el-select { width: 100% !important; }
 
   /* Toast */
   .el-message { top: 8px !important; left: 50% !important; transform: translateX(-50%) !important; min-width: auto !important; max-width: 90vw !important; }
   .el-select-dropdown { max-height: 50vh !important; }
+
+  /* Finger-friendly controls on touch screens */
+  .el-input__wrapper,
+  .el-select__wrapper { min-height: 40px; }
+  .el-button:not(.el-button--small):not(.el-button--text) { min-height: 40px; }
+  .el-radio, .el-checkbox { min-height: 28px; }
+
+  /* Hide decorative orbs on mobile — they bleed through translucent surfaces and look messy */
+  .bg-orbs { display: none; }
+
+  /* Solid page background so no orb/glass shows through */
+  .page { background: var(--color-bg); }
+
+  /* Solid glass-tabs on mobile (used by Settings) */
+  .glass-tabs { background: var(--el-bg-color) !important; backdrop-filter: none !important; -webkit-backdrop-filter: none !important; border: 1px solid var(--el-border-color-lighter); }
 }
 
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {

@@ -3,6 +3,62 @@ import { db } from '../db.js';
 
 const router = Router();
 
+// 确保单例配置行存在
+function ensureConfig() {
+  db.prepare(
+    `CREATE TABLE IF NOT EXISTS marketplace_config (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      enabled INTEGER NOT NULL DEFAULT 0,
+      auth_type TEXT NOT NULL DEFAULT 'none',
+      auth_token TEXT,
+      port INTEGER NOT NULL DEFAULT 3001,
+      updated_at INTEGER NOT NULL
+    )`,
+  ).run();
+  const exists = db.prepare('SELECT id FROM marketplace_config WHERE id = 1').get();
+  if (!exists) {
+    db.prepare(
+      'INSERT INTO marketplace_config (id, enabled, auth_type, auth_token, port, updated_at) VALUES (1, 0, \'none\', NULL, 3001, ?)',
+    ).run(Date.now());
+  }
+}
+
+// GET /api/marketplace/config — 读取商城服务端配置
+router.get('/config', (_req: Request, res: Response) => {
+  ensureConfig();
+  const row = db.prepare('SELECT enabled, auth_type, auth_token, port FROM marketplace_config WHERE id = 1').get() as any;
+  res.json({
+    success: true,
+    data: {
+      enabled: !!row.enabled,
+      auth: { authType: row.auth_type || 'none', token: row.auth_token || '' },
+      port: row.port || 3001,
+    },
+  });
+});
+
+// PATCH /api/marketplace/config — 更新商城服务端配置（enabled / auth / port 均可选）
+router.patch('/config', (req: Request, res: Response) => {
+  ensureConfig();
+  const { enabled, auth, port } = req.body || {};
+  const cur = db.prepare('SELECT * FROM marketplace_config WHERE id = 1').get() as any;
+  const nextEnabled = enabled === undefined ? cur.enabled : enabled ? 1 : 0;
+  const nextAuthType = auth?.authType !== undefined ? auth.authType : cur.auth_type;
+  const nextToken = auth?.token !== undefined ? auth.token : cur.auth_token;
+  const nextPort = port !== undefined ? port : cur.port;
+  db.prepare(
+    'UPDATE marketplace_config SET enabled = ?, auth_type = ?, auth_token = ?, port = ?, updated_at = ? WHERE id = 1',
+  ).run(nextEnabled, nextAuthType, nextToken, nextPort, Date.now());
+  res.json({
+    success: true,
+    data: {
+      enabled: !!nextEnabled,
+      auth: { authType: nextAuthType, token: nextToken || '' },
+      port: nextPort,
+    },
+  });
+});
+
 // GET /api/marketplace — 节点握手
 router.get('/', (_req: Request, res: Response) => {
   res.json({ name: '言智', version: '0.1.0', capabilities: ['skill', 'agent', 'tool'] });

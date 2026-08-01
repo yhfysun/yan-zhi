@@ -166,6 +166,15 @@ db.exec(`
     cached_at INTEGER NOT NULL,
     UNIQUE(remote_id, item_type, item_id)
   );
+
+  CREATE TABLE IF NOT EXISTS marketplace_config (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    enabled INTEGER NOT NULL DEFAULT 0,
+    auth_type TEXT NOT NULL DEFAULT 'none',
+    auth_token TEXT,
+    port INTEGER NOT NULL DEFAULT 3001,
+    updated_at INTEGER NOT NULL
+  );
 `);
 
 // 迁移 mcp_tool 表（添加 alias, remark 列）

@@ -311,7 +311,7 @@ async function del(id: string) {
 @media (max-width: 767px) {
   .add-btn-desktop { display: none; }
   .mobile-fab { display: flex; }
-  .platform-grid { grid-template-columns: 1fr; gap: 14px; padding-bottom: 72px; }
+  .platform-grid { grid-template-columns: 1fr; gap: 14px; }
   .card-actions { flex-wrap: wrap; gap: 6px; }
   .card-actions .el-button { font-size: 12px; padding: 5px 10px; }
 }
@@ -334,12 +334,16 @@ async function del(id: string) {
 }
 @media (max-width: 767px) {
   .dialog-actions-bar {
-    flex-direction: column;
-    align-items: stretch;
+    flex-direction: row;
+    gap: 6px;
+    padding: 6px 0 10px;
   }
   .dialog-actions-bar .el-button {
-    width: 100%;
+    flex: 1;
     justify-content: center;
+    white-space: nowrap;
+    font-size: 13px;
+    padding: 8px 6px;
   }
 }
 

@@ -7,6 +7,12 @@ import { db } from '../db.js';
 const router = Router();
 router.use(authMiddleware);
 
+// 归一化远程源地址：去掉结尾的 / 以及可能冗余的 /api/marketplace 后缀，
+// 这样用户填 "http://host:3001" 或 "http://host:3001/api/marketplace" 都能正确拼出 /api/marketplace/... 路径
+function marketApiBase(baseUrl: string): string {
+  return baseUrl.replace(/\/+$/, '').replace(/\/api\/marketplace$/, '');
+}
+
 router.get('/', (req: Request, res: Response) => {
   const rows = db.prepare(
     "SELECT id, name, base_url, auth_type, enabled, created_at FROM remote_marketplace WHERE user_id = ? AND type='tool' ORDER BY created_at DESC",
@@ -62,7 +68,7 @@ router.post('/:id/test', async (req: Request, res: Response) => {
       else if (s.auth_type === 'api-key' && c.apiKey) headers['X-API-Key'] = c.apiKey;
     }
     const ctrl = new AbortController(); const t = setTimeout(() => ctrl.abort(), 10000);
-    const resp = await fetch(`${s.base_url.replace(/\/$/, '')}/api/marketplace`, { headers, signal: ctrl.signal });
+    const resp = await fetch(`${marketApiBase(s.base_url)}/api/marketplace`, { headers, signal: ctrl.signal });
     clearTimeout(t);
     if (!resp.ok) { res.json({ ok: false, error: `连接失败，状态码: ${resp.status}` }); return; }
     res.json({ ok: true, info: await resp.json() });
@@ -80,9 +86,10 @@ router.get('/:id/tools', async (req: Request, res: Response) => {
       if (s.auth_type === 'bearer' && c.token) headers['Authorization'] = `Bearer ${c.token}`;
       else if (s.auth_type === 'api-key' && c.apiKey) headers['X-API-Key'] = c.apiKey;
     }
-    const resp = await fetch(`${s.base_url.replace(/\/$/, '')}/api/marketplace/tools?page=${page}&pageSize=${pageSize}`, { headers });
+    const resp = await fetch(`${marketApiBase(s.base_url)}/api/marketplace/tools?page=${page}&pageSize=${pageSize}`, { headers });
+    if (!resp.ok) { res.status(resp.status).json({ success: false, error: `远程源返回状态码: ${resp.status}` }); return; }
     res.json(await resp.json());
-  } catch (err: unknown) { res.status(500).json({ error: err instanceof Error ? err.message : String(err) }); }
+  } catch (err: unknown) { res.status(502).json({ success: false, error: err instanceof Error ? err.message : String(err) }); }
 });
 
 router.post('/:id/install', async (req: Request, res: Response) => {
@@ -98,7 +105,7 @@ router.post('/:id/install', async (req: Request, res: Response) => {
       if (s.auth_type === 'bearer' && c.token) headers['Authorization'] = `Bearer ${c.token}`;
       else if (s.auth_type === 'api-key' && c.apiKey) headers['X-API-Key'] = c.apiKey;
     }
-    const resp = await fetch(`${s.base_url.replace(/\/$/, '')}/api/marketplace/tools/${encodeURIComponent(toolId)}`, { headers });
+    const resp = await fetch(`${marketApiBase(s.base_url)}/api/marketplace/tools/${encodeURIComponent(toolId)}`, { headers });
     const data = await resp.json();
     if (!data.success || !data.data) { res.status(404).json({ error: '远程工具不存在' }); return; }
     const t = data.data;
