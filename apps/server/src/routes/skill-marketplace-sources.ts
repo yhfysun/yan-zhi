@@ -73,7 +73,45 @@ router.get('/:id/skills', async (req: Request, res: Response) => {
   if (!s) { res.status(404).json({ error: '远程源不存在' }); return; }
   try {
     const page = req.query.page || 1; const pageSize = req.query.pageSize || 20;
-    const resp = await fetch(`${marketApiBase(s.base_url)}/api/marketplace/skills?page=${page}&pageSize=${pageSize}`, { headers: authHeaders(s) });
+    const category = req.query.category ? `&category=${encodeURIComponent(String(req.query.category))}` : '';
+    const resp = await fetch(`${marketApiBase(s.base_url)}/api/marketplace/skills?page=${page}&pageSize=${pageSize}${category}`, { headers: authHeaders(s) });
+    if (!resp.ok) { res.status(resp.status).json({ success: false, error: `远程源返回状态码: ${resp.status}` }); return; }
+    res.json(await resp.json());
+  } catch (err: unknown) { res.status(502).json({ success: false, error: err instanceof Error ? err.message : String(err) }); }
+});
+
+// GET /:id/skills/categories —— 必须在 /:id/skills/:itemId 之前注册
+router.get('/:id/skills/categories', async (req: Request, res: Response) => {
+  const s = db.prepare("SELECT * FROM remote_marketplace WHERE id = ? AND user_id = ? AND type='skill'").get(req.params.id, req.user!.userId) as any;
+  if (!s) { res.status(404).json({ error: '远程源不存在' }); return; }
+  try {
+    const resp = await fetch(`${marketApiBase(s.base_url)}/api/marketplace/skills/categories`, { headers: authHeaders(s) });
+    if (!resp.ok) { res.status(resp.status).json({ success: false, error: `远程源返回状态码: ${resp.status}` }); return; }
+    res.json(await resp.json());
+  } catch (err: unknown) { res.status(502).json({ success: false, error: err instanceof Error ? err.message : String(err) }); }
+});
+
+// GET /:id/skills/:itemId —— 单个 Skill 详情
+router.get('/:id/skills/:itemId', async (req: Request, res: Response) => {
+  const s = db.prepare("SELECT * FROM remote_marketplace WHERE id = ? AND user_id = ? AND type='skill'").get(req.params.id, req.user!.userId) as any;
+  if (!s) { res.status(404).json({ error: '远程源不存在' }); return; }
+  try {
+    const resp = await fetch(`${marketApiBase(s.base_url)}/api/marketplace/skills/${encodeURIComponent(req.params.itemId)}`, { headers: authHeaders(s) });
+    if (!resp.ok) { res.status(resp.status).json({ success: false, error: `远程源返回状态码: ${resp.status}` }); return; }
+    res.json(await resp.json());
+  } catch (err: unknown) { res.status(502).json({ success: false, error: err instanceof Error ? err.message : String(err) }); }
+});
+
+// POST /:id/skills/search —— 搜索远程源 Skill
+router.post('/:id/skills/search', async (req: Request, res: Response) => {
+  const s = db.prepare("SELECT * FROM remote_marketplace WHERE id = ? AND user_id = ? AND type='skill'").get(req.params.id, req.user!.userId) as any;
+  if (!s) { res.status(404).json({ error: '远程源不存在' }); return; }
+  try {
+    const page = req.query.page || 1; const pageSize = req.query.pageSize || 20;
+    const resp = await fetch(`${marketApiBase(s.base_url)}/api/marketplace/skills/search?page=${page}&pageSize=${pageSize}`, {
+      method: 'POST', headers: { ...authHeaders(s), 'Content-Type': 'application/json' },
+      body: JSON.stringify(req.body || {}),
+    });
     if (!resp.ok) { res.status(resp.status).json({ success: false, error: `远程源返回状态码: ${resp.status}` }); return; }
     res.json(await resp.json());
   } catch (err: unknown) { res.status(502).json({ success: false, error: err instanceof Error ? err.message : String(err) }); }
@@ -85,7 +123,10 @@ router.post('/:id/install', async (req: Request, res: Response) => {
   const { skillId } = req.body || {};
   if (!skillId) { res.status(400).json({ error: 'skillId 为必填项' }); return; }
   try {
-    const resp = await fetch(`${marketApiBase(s.base_url)}/api/marketplace/skills/${encodeURIComponent(skillId)}`, { headers: authHeaders(s) });
+    // 调用远程 install 端点（POST），既获取完整定义又递增远程安装计数
+    const resp = await fetch(`${marketApiBase(s.base_url)}/api/marketplace/skills/${encodeURIComponent(skillId)}/install`, {
+      method: 'POST', headers: { ...authHeaders(s), 'Content-Type': 'application/json' },
+    });
     const data = await resp.json();
     if (!data.success || !data.data) { res.status(404).json({ error: '远程 Skill 不存在' }); return; }
     const sk = data.data; const id = uuid(); const now = Date.now();

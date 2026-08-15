@@ -53,3 +53,10 @@ pnpm-debug.log*
 
 tmp/
 .workbuddy/
+
+# 环境/临时文件（不应入库）
+_rustup-init.exe
+rustup-init.exe
+_diag.txt
+*.timestamp-*.mjs
+apps/server/workspace/

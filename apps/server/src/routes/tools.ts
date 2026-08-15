@@ -20,6 +20,13 @@ router.post('/', (req: Request, res: Response) => {
   if (!name || !inputSchema || !code || !entry) {
     res.status(400).json({ error: 'name, inputSchema, code, entry 为必填项' }); return;
   }
+  // 工具名合法性校验（A6）：仅允许字母/数字/下划线/连字符，长度 1-64；禁止保留前缀
+  if (!/^[a-zA-Z0-9_-]{1,64}$/.test(name)) {
+    res.status(400).json({ error: '工具名只能包含字母、数字、下划线、连字符，长度 1-64' }); return;
+  }
+  if (name.startsWith('mcp_') || name.startsWith('custom_')) {
+    res.status(400).json({ error: '工具名不能以 mcp_ 或 custom_ 开头（保留前缀）' }); return;
+  }
   const existing = db.prepare('SELECT id FROM custom_tool WHERE name = ? AND user_id = ?').get(name, userId);
   if (existing) { res.status(409).json({ error: `工具 "${name}" 已存在` }); return; }
 
@@ -69,6 +76,23 @@ router.delete('/:id', (req: Request, res: Response) => {
   }
   db.prepare('DELETE FROM custom_tool WHERE id = ?').run(tid);
   res.json({ ok: true });
+});
+
+// POST /api/tools/:id/execute — 执行自定义工具（服务端 node:vm 沙箱）
+router.post('/:id/execute', async (req: Request, res: Response) => {
+  const userId = req.user!.userId;
+  const tid = req.params.id;
+  const t = db.prepare('SELECT * FROM custom_tool WHERE id = ? AND user_id = ?').get(tid, userId) as any;
+  if (!t) { res.status(404).json({ error: '工具不存在' }); return; }
+  if (!t.enabled) { res.status(400).json({ error: '工具未启用' }); return; }
+  const args = (req.body && req.body.args) || {};
+  try {
+    const { runInSandbox } = await import('@yan-zhi/core');
+    const result = await runInSandbox(t.code, t.entry, args, { timeout: t.timeout || 30000 });
+    res.json({ data: result });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || '工具执行失败' });
+  }
 });
 
 // GET /api/tools/builtin — 列出内置工具

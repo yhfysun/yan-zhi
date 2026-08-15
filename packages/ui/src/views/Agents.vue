@@ -115,8 +115,8 @@
           </div>
           <div class="agent-actions" @click.stop>
             <el-button text size="small" :icon="EditPen" @click="editAgent(agent)">编辑</el-button>
-            <el-button text size="small" :icon="Setting" @click="openCanvas(agent.id)">设计</el-button>
-            <el-button v-if="!agent.isDefault" text size="small" type="danger" :icon="Delete" @click="remove(agent)">删除</el-button>
+            <el-button v-if="agent.type === 'workflow'" text size="small" :icon="Setting" @click="openCanvas(agent.id)">设计</el-button>
+            <el-button v-if="!agent.isDefault && !agent.isBuiltin" text size="small" type="danger" :icon="Delete" @click="remove(agent)">删除</el-button>
           </div>
         </el-card>
       </div>
@@ -258,11 +258,15 @@ async function delAgentSource(id: string) {
 }
 async function browseAgentSource(s: any) {
   selectedRemoteSource.value = s;
-  try { const r = await api.get<any>(`/agent-marketplace/${s.id}/agents`); remoteAgentItems.value = r?.data?.items || []; } catch { ElMessage.error('获取远程智能体列表失败'); }
+  const r = await api.get<any>(`/agent-marketplace/${s.id}/agents`);
+  if (r && 'error' in r) { ElMessage.error((r as any).error || '获取远程智能体列表失败'); return; }
+  remoteAgentItems.value = r?.data?.items || [];
 }
 async function installRemoteAgent(agentId: string) {
   if (!selectedRemoteSource.value) return;
-  try { await api.post(`/agent-marketplace/${selectedRemoteSource.value.id}/install`, { agentId }); await store.loadAgents(); ElMessage.success('已复制到本地'); } catch { ElMessage.error('安装失败'); }
+  const r = await store.installFromMarketplace(selectedRemoteSource.value.id, agentId);
+  if (r.ok) ElMessage.success('已复制到本地');
+  else ElMessage.error(r.error || '安装失败');
 }
 
 onMounted(async () => {

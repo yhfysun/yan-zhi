@@ -7,3 +7,5 @@ export { useAgentStore } from './agent';
 export { useSettingsStore } from './settings';
 export { useAuthStore } from './auth';
 export { useToolsStore } from './tools';
+export { useSpaceStore } from './space';
+export { useFileStore } from './file';

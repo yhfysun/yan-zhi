@@ -40,6 +40,7 @@ export const useToolsStore = defineStore('tools', () => {
   const loading = ref(false);
   const marketplaceEnabled = ref(false);
   const marketplaceAuth = ref<{ authType: string; token?: string }>({ authType: 'none' });
+  const marketplacePort = ref(3001);
 
   const on = () => !!useAuthStore().isLoggedIn;
 
@@ -48,6 +49,9 @@ export const useToolsStore = defineStore('tools', () => {
     { name: 'file_write', description: '写入内容到指定文件路径' },
     { name: 'web_search', description: '联网搜索，获取实时信息' },
     { name: 'cmd_exec', description: '执行系统命令，支持 cmd/python/java/git 等' },
+    { name: 'ask_user', description: '向用户反问澄清问题并等待回答（弹出对话框）' },
+    { name: 'task_plan', description: '创建任务计划，在对话区展示进度清单' },
+    { name: 'task_step', description: '更新任务步骤状态（待办/进行中/完成/失败）' },
   ];
 
   async function loadCustomTools() {
@@ -127,28 +131,52 @@ export const useToolsStore = defineStore('tools', () => {
     return rowToTool(r.data);
   }
 
-  async function setMarketplaceEnabled(enabled: boolean) {
-    marketplaceEnabled.value = enabled;
-    const cached = { enabled, auth: marketplaceAuth.value };
-    localStorage.setItem('marketplace_config_v1', JSON.stringify(cached));
-    try {
-      await api.patch('/marketplace/config', { enabled });
-    } catch (e) {
-      console.warn('[marketplace] PATCH /marketplace/config failed, kept in localStorage', e);
+  /**
+   * 保存商城服务端配置到服务端。
+   * enabled/auth/port 均可选；未传的字段保持当前 store 值。
+   * 返回 { persisted: 'server'|'local', error? }：服务端成功为 'server'，失败回退本地缓存为 'local'。
+   */
+  async function setMarketplaceConfig(opts: {
+    enabled?: boolean;
+    auth?: { authType?: string; token?: string };
+    port?: number;
+  }): Promise<{ persisted: 'server' | 'local'; error?: string }> {
+    if (opts.enabled !== undefined) marketplaceEnabled.value = opts.enabled;
+    if (opts.auth) {
+      marketplaceAuth.value = {
+        authType: opts.auth.authType !== undefined ? opts.auth.authType : marketplaceAuth.value.authType,
+        token: opts.auth.token !== undefined ? opts.auth.token : marketplaceAuth.value.token,
+      };
     }
+    if (opts.port !== undefined) marketplacePort.value = opts.port;
+    // 本地缓存（服务端不可用时回退）
+    const cached = { enabled: marketplaceEnabled.value, auth: marketplaceAuth.value, port: marketplacePort.value };
+    localStorage.setItem('marketplace_config_v1', JSON.stringify(cached));
+    // 同步到服务端
+    const body: any = {};
+    if (opts.enabled !== undefined) body.enabled = opts.enabled;
+    if (opts.auth) body.auth = marketplaceAuth.value;
+    if (opts.port !== undefined) body.port = opts.port;
+    const r = await api.patch<any>('/marketplace/config', body);
+    if (r && 'error' in r) {
+      return { persisted: 'local', error: (r as any).error };
+    }
+    return { persisted: 'server' };
+  }
+
+  /** 兼容旧调用：仅切换 enabled */
+  async function setMarketplaceEnabled(enabled: boolean) {
+    return setMarketplaceConfig({ enabled });
   }
 
   async function loadMarketplaceConfig() {
     let cfg: any = null;
-    try {
-      const r = await api.get<any>('/marketplace/config');
-      cfg = r && r.data ? r.data : null;
-    } catch {
-      cfg = null;
-    }
+    const r = await api.get<any>('/marketplace/config');
+    cfg = r && r.data ? r.data : null;
     if (cfg && typeof cfg === 'object') {
       marketplaceEnabled.value = !!cfg.enabled;
       if (cfg.auth) marketplaceAuth.value = cfg.auth;
+      if (cfg.port) marketplacePort.value = cfg.port;
     } else {
       const raw = localStorage.getItem('marketplace_config_v1');
       if (raw) {
@@ -156,6 +184,7 @@ export const useToolsStore = defineStore('tools', () => {
           const local = JSON.parse(raw);
           marketplaceEnabled.value = !!local.enabled;
           if (local.auth) marketplaceAuth.value = local.auth;
+          if (local.port) marketplacePort.value = local.port;
         } catch {}
       }
     }
@@ -163,10 +192,10 @@ export const useToolsStore = defineStore('tools', () => {
 
   return {
     builtinTools, customTools, remoteSources, remoteItems, loading,
-    marketplaceEnabled, marketplaceAuth,
+    marketplaceEnabled, marketplaceAuth, marketplacePort,
     loadCustomTools, createTool, updateTool, deleteTool, toggleEnabled, togglePublic,
     loadRemoteSources, addRemoteSource, deleteRemoteSource, testRemoteSource,
     fetchRemoteItems, installFromMarket,
-    setMarketplaceEnabled, loadMarketplaceConfig,
+    setMarketplaceConfig, setMarketplaceEnabled, loadMarketplaceConfig,
   };
 });

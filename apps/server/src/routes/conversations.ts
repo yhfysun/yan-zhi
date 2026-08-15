@@ -18,13 +18,13 @@ router.get('/', (_req: Request, res: Response) => {
 // POST /api/conversations
 router.post('/', (req: Request, res: Response) => {
   const userId = req.user!.userId;
-  const { title, platformId, modelId, agentId } = req.body || {};
+  const { title, platformId, modelId, agentId, spaceId } = req.body || {};
   if (!title) { res.status(400).json({ error: '标题为必填项' }); return; }
   const id = uuid();
   const now = Date.now();
   db.prepare(
-    'INSERT INTO conversation (id, user_id, title, agent_id, platform_id, model_id, mcp_servers_json, skill_ids_json, pinned, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-  ).run(id, userId, title, agentId || null, platformId || null, modelId || null, '[]', '[]', 0, now, now);
+    'INSERT INTO conversation (id, user_id, title, agent_id, platform_id, model_id, space_id, mcp_servers_json, skill_ids_json, pinned, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+  ).run(id, userId, title, agentId || null, platformId || null, modelId || null, spaceId || null, '[]', '[]', 0, now, now);
   const row = db.prepare('SELECT * FROM conversation WHERE id = ?').get(id);
   res.json({ data: row });
 });
@@ -41,6 +41,11 @@ router.patch('/:id', (req: Request, res: Response) => {
   const bodyFields: Record<string, string> = { title: 'title', platformId: 'platform_id', modelId: 'model_id', systemPrompt: 'system_prompt' };
   for (const [key, col] of Object.entries(bodyFields)) {
     if (req.body[key] !== undefined) { sets.push(`${col} = ?`); vals.push(req.body[key]); }
+  }
+  // spaceId：支持移动会话到空间（传 null/空字符串归"未归类"）
+  if (req.body.spaceId !== undefined) {
+    sets.push('space_id = ?');
+    vals.push(req.body.spaceId || null);
   }
   if (req.body.mcpServerIds !== undefined || req.body.mcpDisabledTools !== undefined) {
     const serverIds = req.body.mcpServerIds ?? (() => {

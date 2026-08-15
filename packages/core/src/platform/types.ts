@@ -8,14 +8,26 @@ export interface DatabaseAdapter {
   transaction<T>(fn: () => Promise<T>): Promise<T>;
 }
 
+/** 目录条目信息（结构化） */
+export interface DirEntryInfo {
+  name: string;
+  path: string;
+  isDir: boolean;
+}
+
 /** 文件系统适配器 */
 export interface FsAdapter {
+  /** 读取文本文件内容（UTF-8）。二进制文件会返回乱码，请勿用于图片/PDF 预览 */
   readFile(path: string): Promise<string>;
+  /** 以 base64 读取文件原始字节（用于图片/PDF 等二进制内容的预览） */
+  readFileBase64(path: string): Promise<string>;
   writeFile(path: string, content: string): Promise<void>;
   exists(path: string): Promise<boolean>;
   mkdir(path: string): Promise<void>;
   remove(path: string): Promise<void>;
   readDir(path: string): Promise<string[]>;
+  /** 可选：返回结构化目录条目（含 is_dir）。桌面端用 Rust 命令一次获取，避免 N+1 调用 */
+  listDirEntries?(path: string): Promise<DirEntryInfo[]>;
 }
 
 /** 钥匙串适配器（安全存储 API Key） */

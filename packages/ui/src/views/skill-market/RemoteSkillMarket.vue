@@ -6,6 +6,10 @@
         <h2 class="rm-title">{{ sourceName }}</h2>
       </div>
       <div class="rm-header-right">
+        <el-select v-model="category" placeholder="全部分类" clearable style="width: 140px" @change="loadItems">
+          <el-option label="全部分类" value="" />
+          <el-option v-for="c in categories" :key="c" :label="c" :value="c" />
+        </el-select>
         <el-input v-model="search" placeholder="搜索 Skill" style="width: 200px" clearable />
       </div>
     </header>
@@ -51,26 +55,42 @@ const props = defineProps<{ sourceId: string }>();
 const store = useSkillStore();
 
 const search = ref('');
+const category = ref('');
+const categories = ref<string[]>([]);
 const loading = ref(false);
 const items = ref<any[]>([]);
 const sourceName = ref('远程商城');
 
-onMounted(async () => {
-  await store.loadSkills();
+async function loadItems() {
   loading.value = true;
   try {
-    const r = await api.get<any>(`/skill-marketplace/${props.sourceId}/skills`);
+    const catParam = category.value ? `&category=${encodeURIComponent(category.value)}` : '';
+    const r = await api.get<any>(`/skill-marketplace/${props.sourceId}/skills?page=1&pageSize=100${catParam}`);
     items.value = (r as any)?.data?.items || [];
-    const rs = await api.get<any[]>('/skill-marketplace');
-    if ('data' in rs) {
-      const found = (rs.data as any[]).find((s: any) => s.id === props.sourceId);
-      if (found) sourceName.value = found.name;
-    }
   } catch {
     ElMessage.error('获取远程 Skill 列表失败');
   } finally {
     loading.value = false;
   }
+}
+
+async function loadCategories() {
+  try {
+    const r = await api.get<any>(`/skill-marketplace/${props.sourceId}/skills/categories`);
+    categories.value = (r as any)?.data || [];
+  } catch { /* 远程源不支持分类时静默 */ }
+}
+
+onMounted(async () => {
+  await store.loadSkills();
+  await Promise.all([loadItems(), loadCategories()]);
+  try {
+    const rs = await api.get<any[]>('/skill-marketplace');
+    if ('data' in rs) {
+      const found = (rs.data as any[]).find((s: any) => s.id === props.sourceId);
+      if (found) sourceName.value = found.name;
+    }
+  } catch { /* ignore */ }
 });
 
 const filteredItems = computed(() => {
@@ -87,13 +107,10 @@ function isInstalled(name: string) {
 }
 
 async function installRemote(skillId: string) {
-  try {
-    await api.post(`/skill-marketplace/${props.sourceId}/install`, { skillId });
-    await store.loadSkills();
-    ElMessage.success('已安装到本地');
-  } catch {
-    ElMessage.error('安装失败');
-  }
+  const r = await api.post(`/skill-marketplace/${props.sourceId}/install`, { skillId });
+  if (r && 'error' in r) { ElMessage.error((r as any).error || '安装失败'); return; }
+  await store.loadSkills();
+  ElMessage.success('已安装到本地');
 }
 </script>
 

@@ -13,6 +13,17 @@ function marketApiBase(baseUrl: string): string {
   return baseUrl.replace(/\/+$/, '').replace(/\/api\/marketplace$/, '');
 }
 
+/** 从远程源记录构建鉴权请求头 */
+function buildAuthHeaders(s: any): Record<string, string> {
+  const headers: Record<string, string> = {};
+  if (s.auth_config_enc) {
+    const c = JSON.parse(s.auth_config_enc);
+    if (s.auth_type === 'bearer' && c.token) headers['Authorization'] = `Bearer ${c.token}`;
+    else if (s.auth_type === 'api-key' && c.apiKey) headers['X-API-Key'] = c.apiKey;
+  }
+  return headers;
+}
+
 router.get('/', (req: Request, res: Response) => {
   const rows = db.prepare(
     "SELECT id, name, base_url, auth_type, enabled, created_at FROM remote_marketplace WHERE user_id = ? AND type='tool' ORDER BY created_at DESC",
@@ -80,13 +91,45 @@ router.get('/:id/tools', async (req: Request, res: Response) => {
   if (!s) { res.status(404).json({ error: '远程源不存在' }); return; }
   try {
     const page = req.query.page || 1; const pageSize = req.query.pageSize || 20;
-    const headers: Record<string, string> = {};
-    if (s.auth_config_enc) {
-      const c = JSON.parse(s.auth_config_enc);
-      if (s.auth_type === 'bearer' && c.token) headers['Authorization'] = `Bearer ${c.token}`;
-      else if (s.auth_type === 'api-key' && c.apiKey) headers['X-API-Key'] = c.apiKey;
-    }
+    const headers = buildAuthHeaders(s);
     const resp = await fetch(`${marketApiBase(s.base_url)}/api/marketplace/tools?page=${page}&pageSize=${pageSize}`, { headers });
+    if (!resp.ok) { res.status(resp.status).json({ success: false, error: `远程源返回状态码: ${resp.status}` }); return; }
+    res.json(await resp.json());
+  } catch (err: unknown) { res.status(502).json({ success: false, error: err instanceof Error ? err.message : String(err) }); }
+});
+
+// GET /:id/tools/categories —— 必须在 /:id/tools/:itemId 之前注册
+router.get('/:id/tools/categories', async (req: Request, res: Response) => {
+  const s = db.prepare("SELECT * FROM remote_marketplace WHERE id = ? AND user_id = ? AND type='tool'").get(req.params.id, req.user!.userId) as any;
+  if (!s) { res.status(404).json({ error: '远程源不存在' }); return; }
+  try {
+    const resp = await fetch(`${marketApiBase(s.base_url)}/api/marketplace/tools/categories`, { headers: buildAuthHeaders(s) });
+    if (!resp.ok) { res.status(resp.status).json({ success: false, error: `远程源返回状态码: ${resp.status}` }); return; }
+    res.json(await resp.json());
+  } catch (err: unknown) { res.status(502).json({ success: false, error: err instanceof Error ? err.message : String(err) }); }
+});
+
+// GET /:id/tools/:itemId —— 单个工具详情
+router.get('/:id/tools/:itemId', async (req: Request, res: Response) => {
+  const s = db.prepare("SELECT * FROM remote_marketplace WHERE id = ? AND user_id = ? AND type='tool'").get(req.params.id, req.user!.userId) as any;
+  if (!s) { res.status(404).json({ error: '远程源不存在' }); return; }
+  try {
+    const resp = await fetch(`${marketApiBase(s.base_url)}/api/marketplace/tools/${encodeURIComponent(req.params.itemId)}`, { headers: buildAuthHeaders(s) });
+    if (!resp.ok) { res.status(resp.status).json({ success: false, error: `远程源返回状态码: ${resp.status}` }); return; }
+    res.json(await resp.json());
+  } catch (err: unknown) { res.status(502).json({ success: false, error: err instanceof Error ? err.message : String(err) }); }
+});
+
+// POST /:id/tools/search —— 搜索远程源工具
+router.post('/:id/tools/search', async (req: Request, res: Response) => {
+  const s = db.prepare("SELECT * FROM remote_marketplace WHERE id = ? AND user_id = ? AND type='tool'").get(req.params.id, req.user!.userId) as any;
+  if (!s) { res.status(404).json({ error: '远程源不存在' }); return; }
+  try {
+    const page = req.query.page || 1; const pageSize = req.query.pageSize || 20;
+    const resp = await fetch(`${marketApiBase(s.base_url)}/api/marketplace/tools/search?page=${page}&pageSize=${pageSize}`, {
+      method: 'POST', headers: { ...buildAuthHeaders(s), 'Content-Type': 'application/json' },
+      body: JSON.stringify(req.body || {}),
+    });
     if (!resp.ok) { res.status(resp.status).json({ success: false, error: `远程源返回状态码: ${resp.status}` }); return; }
     res.json(await resp.json());
   } catch (err: unknown) { res.status(502).json({ success: false, error: err instanceof Error ? err.message : String(err) }); }
@@ -99,13 +142,10 @@ router.post('/:id/install', async (req: Request, res: Response) => {
   const { toolId } = req.body || {};
   if (!toolId) { res.status(400).json({ error: 'toolId 为必填项' }); return; }
   try {
-    const headers: Record<string, string> = {};
-    if (s.auth_config_enc) {
-      const c = JSON.parse(s.auth_config_enc);
-      if (s.auth_type === 'bearer' && c.token) headers['Authorization'] = `Bearer ${c.token}`;
-      else if (s.auth_type === 'api-key' && c.apiKey) headers['X-API-Key'] = c.apiKey;
-    }
-    const resp = await fetch(`${marketApiBase(s.base_url)}/api/marketplace/tools/${encodeURIComponent(toolId)}`, { headers });
+    // 调用远程 install 端点（POST），既获取完整定义又递增远程安装计数
+    const resp = await fetch(`${marketApiBase(s.base_url)}/api/marketplace/tools/${encodeURIComponent(toolId)}/install`, {
+      method: 'POST', headers: { ...buildAuthHeaders(s), 'Content-Type': 'application/json' },
+    });
     const data = await resp.json();
     if (!data.success || !data.data) { res.status(404).json({ error: '远程工具不存在' }); return; }
     const t = data.data;

@@ -9,6 +9,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_sql::Builder::default().build())
         .plugin(
@@ -27,8 +28,12 @@ pub fn run() {
             mcp::mcp_call,
             mcp::mcp_kill,
             fs_cmd::fs_read,
+            fs_cmd::fs_read_base64,
             fs_cmd::fs_write,
             fs_cmd::fs_list_dir,
+            fs_cmd::fs_exists,
+            fs_cmd::fs_mkdir,
+            fs_cmd::fs_remove,
             keyring::keyring_set,
             keyring::keyring_get,
             keyring::keyring_delete,

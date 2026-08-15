@@ -26,9 +26,13 @@
         <div class="card-top">
           <div class="card-icon" :class="{ off: !s.enabled }"><el-icon :size="24"><Files /></el-icon></div>
           <div class="card-name" :title="s.name">{{ s.name }}</div>
+          <el-tag v-if="s.isPublic" type="primary" size="small" effect="dark">已公开</el-tag>
           <el-tag :type="s.source === 'local' ? 'warning' : 'success'" size="small" effect="plain">{{ s.source === 'local' ? '自建' : '内置' }}</el-tag>
         </div>
         <div class="card-bar" @click.stop>
+          <el-tooltip v-if="authStore.isLoggedIn" :content="s.isPublic ? '点击下架' : '发布到商城'" placement="top">
+            <el-switch :model-value="!!s.isPublic" size="small" @change="(v: boolean) => togglePublish(s.id, v)" />
+          </el-tooltip>
           <el-switch :model-value="s.enabled" size="small" @change="(v: boolean) => toggle(s.id, v)" />
           <span class="card-gap" />
           <el-tooltip v-if="s.source === 'local'" content="编辑" placement="top"><el-button size="small" circle @click="openEdit(s)"><el-icon :size="14"><Edit /></el-icon></el-button></el-tooltip>
@@ -84,11 +88,12 @@
 import { ref, computed, onMounted } from 'vue';
 import { Plus, Files, ArrowLeft, Edit, Delete, FolderOpened, UploadFilled, Search, Close } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { useSkillStore } from '../../stores';
+import { useSkillStore, useAuthStore } from '../../stores';
 import { getPlatformAdapter } from '@yan-zhi/core';
 import type { Skill } from '../../stores/skill';
 
 const store = useSkillStore();
+const authStore = useAuthStore();
 const search = ref('');
 
 const showEditor = ref(false);
@@ -172,6 +177,15 @@ function exportSkill(s: Skill) {
 
 async function toggle(id: string, enabled: boolean) {
   await store.toggleEnabled(id, enabled);
+}
+
+async function togglePublish(id: string, isPublic: boolean) {
+  try {
+    await store.togglePublic(id, isPublic);
+    ElMessage.success(isPublic ? '已发布到商城' : '已从商城下架');
+  } catch (e: any) {
+    ElMessage.error(e?.message || '操作失败');
+  }
 }
 
 async function removeSkill(id: string) {

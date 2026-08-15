@@ -163,6 +163,9 @@ class WebFs implements FsAdapter {
   async readFile(_path: string): Promise<string> {
     throw new Error('Web 端文件系统访问需要用户授权（File System Access API）');
   }
+  async readFileBase64(_path: string): Promise<string> {
+    throw new Error('Web 端文件系统访问需要用户授权（File System Access API）');
+  }
   async writeFile(_path: string, _content: string): Promise<void> {
     throw new Error('Web 端文件系统访问需要用户授权（File System Access API）');
   }

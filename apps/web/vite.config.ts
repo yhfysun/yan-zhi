@@ -11,6 +11,10 @@ export default defineConfig({
       '@yan-zhi/shared': resolve(__dirname, '../../packages/shared/src'),
     },
   },
+  // workspace 包为源码软链：排除预打包，使改 packages/* 源码后前端实时热更。
+  optimizeDeps: {
+    exclude: ['@yan-zhi/ui', '@yan-zhi/core', '@yan-zhi/shared'],
+  },
   server: {
     port: 5173,
     proxy: {

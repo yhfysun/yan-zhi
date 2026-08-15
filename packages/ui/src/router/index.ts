@@ -69,6 +69,12 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '智能体' },
   },
   {
+    path: '/browser',
+    name: 'browser',
+    component: () => import('../views/Browser.vue'),
+    meta: { title: '浏览器' },
+  },
+  {
     path: '/agents/:id',
     name: 'agent-canvas',
     component: () => import('../views/AgentCanvas.vue'),

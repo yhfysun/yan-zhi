@@ -11,11 +11,12 @@ export type ApiModuleName =
   | 'tool'
   | 'marketplace'
   | 'workspace'
-  | 'memory';
+  | 'memory'
+  | 'file';
 
 export const API_MODULES: ApiModuleName[] = [
   'agent', 'conversation', 'message', 'platform', 'mcp', 'skill', 'tool',
-  'marketplace', 'workspace', 'memory',
+  'marketplace', 'workspace', 'memory', 'file',
 ];
 
 export function createApiToolRegistry(): Map<ApiModuleName, ToolDefinition[]> {
@@ -36,6 +37,7 @@ export function getApiToolRegistry(): Map<ApiModuleName, ToolDefinition[]> {
     import('./marketplace').then(m => m.registerMarketplaceTools(_instance!));
     import('./workspace').then(m => m.registerWorkspaceTools(_instance!));
     import('./memory').then(m => m.registerMemoryTools(_instance!));
+    import('./file').then(m => m.registerFileTools(_instance!));
   }
   return _instance;
 }
@@ -53,6 +55,7 @@ export function initApiToolRegistry(): void {
   const { registerMarketplaceTools } = require('./marketplace');
   const { registerWorkspaceTools } = require('./workspace');
   const { registerMemoryTools } = require('./memory');
+  const { registerFileTools } = require('./file');
   registerAgentTools(_instance);
   registerConversationTools(_instance);
   registerMessageTools(_instance);
@@ -63,4 +66,5 @@ export function initApiToolRegistry(): void {
   registerMarketplaceTools(_instance);
   registerWorkspaceTools(_instance);
   registerMemoryTools(_instance);
+  registerFileTools(_instance);
 }

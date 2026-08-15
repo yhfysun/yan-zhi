@@ -5,6 +5,8 @@ import { getPlatformAdapter } from '../platform/types';
 export interface McpCallResult {
   content: Array<{ type: string; text?: string }>;
   isError?: boolean;
+  /** 工具执行元数据（非标准 MCP 字段，用于内置工具透传分类等信息给执行循环） */
+  _meta?: Record<string, unknown>;
 }
 
 interface PendingEvent {

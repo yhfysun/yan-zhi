@@ -189,6 +189,13 @@
             <div class="tool-card-foot">
               <span class="stat">{{ t.runtime }} · {{ t.timeout }}ms</span>
               <div class="card-actions">
+                <el-tooltip v-if="authStore.isLoggedIn" :content="t.isPublic ? '点击下架' : '发布到商城'" placement="top">
+                  <el-switch
+                    :model-value="!!t.isPublic"
+                    size="small"
+                    @change="(v: boolean) => toolsStore.togglePublic(t.id, v)"
+                  />
+                </el-tooltip>
                 <el-switch
                   v-model="t.enabled"
                   size="small"
@@ -409,12 +416,13 @@ import {
   Link, InfoFilled, Edit,
 } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { useMcpStore } from '../stores';
+import { useMcpStore, useAuthStore } from '../stores';
 import { useToolsStore } from '../stores/tools';
 
 const SearchIcon = Search;
 const mcpStore = useMcpStore();
 const toolsStore = useToolsStore();
+const authStore = useAuthStore();
 
 // ---- 视图切换 ----
 const activeMarketId = ref<string | null>(null);

@@ -1,6 +1,6 @@
 <template>
-  <div class="app-shell">
-    <div class="bg-orbs">
+  <div class="app-shell" :class="{ 'platform-desktop': isDesktop, 'nav-collapsed': collapsed }">
+    <div v-if="!isDesktop" class="bg-orbs">
       <div class="bg-orb orb-1"></div>
       <div class="bg-orb orb-2"></div>
       <div class="bg-orb orb-3"></div>
@@ -53,13 +53,18 @@ import { User, SwitchButton } from '@element-plus/icons-vue';
 import { useAuthStore } from './stores/auth';
 import SideNav from './components/SideNav.vue';
 import { useIsMobile } from './composables/useIsMobile';
+import { usePlatform } from './composables/usePlatform';
+import { useSidebarState } from './composables/useSidebarState';
 
 const route = useRoute();
 const authStore = useAuthStore();
 const isMobile = useIsMobile();
+const { isDesktop } = usePlatform();
+const { collapsed } = useSidebarState();
 
 const ROUTE_TITLES: Record<string, string> = {
   chat: '对话',
+  browser: '浏览器',
   models: '模型平台',
   tools: '工具管理',
   skills: 'Skill 商店',
@@ -160,7 +165,31 @@ body {
   transition: background-color 0.4s ease, border-color 0.4s ease, color 0.3s ease;
 }
 
-.app-shell { display: flex; height: 100vh; height: 100dvh; position: relative; overflow: hidden; }
+.app-shell { display: flex; height: 100%; position: relative; overflow: hidden; }
+
+/* ===== 桌面端专属布局：CSS 变量驱动侧栏宽度联动、固定字号、实色背景、紧凑密度 ===== */
+/* web/mobile 因 html,body,#app{height:100%} 仍正确铺满；高度从 100vh/dvh 改为 100% 以兼容桌面端被 flex 父容器包裹 */
+.platform-desktop.app-shell {
+  --sidebar-w: 220px;            /* 桌面端侧栏展开宽度，由 SideNav 实际宽度对齐 */
+  font-size: 14px;                /* 覆盖 body 的 clamp 流体字号，桌面端固定 */
+  background: var(--color-bg);    /* 实色背景，确保无玻璃透出 */
+}
+.platform-desktop.app-shell.nav-collapsed {
+  --sidebar-w: 56px;              /* 侧栏折叠时缩窄到图标 dock 宽度 */
+}
+.platform-desktop .main-content {
+  margin-left: var(--sidebar-w);  /* 跟随侧栏折叠状态联动 */
+}
+.platform-desktop .page { padding: 20px 24px; }
+.platform-desktop .page-title { font-size: 18px; }
+.platform-desktop .card-grid {
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 16px;
+}
+.platform-desktop .card-grid-sm {
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 10px;
+}
 
 .bg-orbs { position: fixed; inset: 0; z-index: 0; pointer-events: none; overflow: hidden; }
 .bg-orb {

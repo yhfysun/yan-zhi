@@ -17,6 +17,11 @@ export class FileWriteTool implements BuiltInTool {
         type: 'string',
         description: 'The text content to write to the file.',
       },
+      category: {
+        type: 'string',
+        enum: ['intermediate', 'deliverable'],
+        description: 'File category for classification: "intermediate" (default, intermediate artifact) or "deliverable" (final output delivered to user).',
+      },
     },
     required: ['path', 'content'],
   };
@@ -25,6 +30,7 @@ export class FileWriteTool implements BuiltInTool {
     const { fs } = getPlatformAdapter();
     const path = args.path as string;
     const content = args.content as string;
+    const category = (args.category as 'intermediate' | 'deliverable') || 'intermediate';
 
     if (!path) {
       return { content: [{ type: 'text', text: 'Error: path is required' }], isError: true };
@@ -44,7 +50,11 @@ export class FileWriteTool implements BuiltInTool {
       }
       await fs.writeFile(path, content);
       const len = content.length;
-      return { content: [{ type: 'text', text: `Successfully wrote ${len} bytes to ${path}` }] };
+      // 在结果中携带元数据，供 chat.ts 执行循环记录到 conversation_file
+      return {
+        content: [{ type: 'text', text: `Successfully wrote ${len} bytes to ${path}` }],
+        _meta: { path, category, bytes: len },
+      };
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       return { content: [{ type: 'text', text: `Error writing file: ${msg}` }], isError: true };

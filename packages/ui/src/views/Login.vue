@@ -1,5 +1,10 @@
 <template>
   <div class="auth-page">
+    <!-- 返回上一页（桌面端无侧栏可点，进入登录页后需手动返回入口） -->
+    <button class="auth-back" type="button" @click="goBack" aria-label="返回">
+      <el-icon :size="18"><ArrowLeft /></el-icon>
+      <span>返回</span>
+    </button>
     <div class="auth-card">
       <div class="auth-header">
         <div class="auth-logo">
@@ -44,7 +49,7 @@
           <el-alert v-if="authStore.error" :title="authStore.error" type="error" show-icon :closable="false" />
         </transition>
         <el-form-item>
-          <el-button class="submit-btn" size="large" native-type="submit" :loading="authStore.loading">
+          <el-button class="submit-btn" type="primary" size="large" native-type="submit" :loading="authStore.loading">
             {{ isLogin ? '登录' : '创建账号' }}
           </el-button>
         </el-form-item>
@@ -64,12 +69,18 @@
 <script setup lang="ts">
 import { ref } from 'vue';
 import { useRouter } from 'vue-router';
-import { ChatDotRound, User, Lock, Message } from '@element-plus/icons-vue';
+import { ChatDotRound, User, Lock, Message, ArrowLeft } from '@element-plus/icons-vue';
 import { ElMessage } from 'element-plus';
 import { useAuthStore } from '../stores/auth';
 
 const router = useRouter();
 const authStore = useAuthStore();
+
+// 返回上一页；若无历史则回到聊天主页
+function goBack() {
+  if (window.history.length > 1) router.back();
+  else router.replace('/chat');
+}
 
 const isLogin = ref(true);
 const username = ref('');
@@ -90,8 +101,36 @@ async function submit() {
 <style scoped>
 .auth-page {
   display: flex; align-items: center; justify-content: center;
-  min-height: 100vh; min-height: 100dvh; padding: 24px;
+  /* 用 100% 而非 100vh：桌面端标题栏(36px)会吃掉视口高度，100vh 会导致卡片溢出底部被裁切；
+     web/mobile 的 #app 高度也是 100%，百分比同样铺满 */
+  min-height: 100%;
+  padding: 24px;
+  position: relative;
   background: var(--color-bg);
+}
+
+/* 返回按钮：固定在登录页左上角 */
+.auth-back {
+  position: absolute;
+  top: 16px;
+  left: 16px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 10px;
+  border: none;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+  border-radius: 8px;
+  transition: background-color 0.18s ease, color 0.18s ease;
+  z-index: 2;
+}
+.auth-back:hover {
+  background: var(--glass-bg-hover);
+  color: var(--color-text);
 }
 
 .auth-card {
@@ -138,8 +177,11 @@ async function submit() {
 
 .submit-btn {
   width: 100%; height: 44px;
-  background: var(--gradient-primary);
-  border: none; color: white; font-weight: 600; font-size: 15px;
+  /* !important：覆盖 App.vue 全局 .el-button:not(--primary) 透明背景规则（优先级 0,6,0）
+     及 Element Plus --primary 默认实色背景，确保品牌渐变可见 */
+  background: var(--gradient-primary) !important;
+  border: none !important; color: #fff !important;
+  font-weight: 600; font-size: 15px;
   border-radius: var(--radius-md);
   box-shadow: 0 4px 14px rgba(124, 58, 237, 0.3);
   transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
@@ -147,6 +189,7 @@ async function submit() {
 .submit-btn:hover {
   transform: translateY(-2px);
   box-shadow: 0 6px 20px rgba(124, 58, 237, 0.45);
+  filter: brightness(1.08);
 }
 .submit-btn:active { transform: translateY(0); }
 

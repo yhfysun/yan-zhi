@@ -1,118 +1,125 @@
 @echo off
-:: ============================================================
-:: 言智 (Yan-Zhi) 环境搭建指引 (Windows CMD)
-:: 用法: bin\setup-env.bat [--desktop|--mobile|--all]
-:: ============================================================
 setlocal enabledelayedexpansion
 
-set SCOPE=%1
-if "%SCOPE%"=="" set SCOPE=--all
+:: === Yan-Zhi Desktop Dev Environment Setup ===
+:: Run: double-click this file, or bin\setup-env.bat
 
-echo.
-echo ============================================================
-echo   言智 (Yan-Zhi) 环境搭建指引
-echo ============================================================
-echo   操作系统: Windows
+echo ============================================
+echo   Yan-Zhi Desktop Dev Environment Setup
+echo ============================================
 echo.
 
-:: ========== 基础环境 ==========
-echo ▸ 基础环境 (必需)
-echo.
+:: ========== Step 1: Check Node.js ==========
+echo [1/5] Checking Node.js...
+where node >nul 2>&1
+if %errorlevel% neq 0 (
+    echo   [ERROR] Node.js not found. Install Node.js >= 20
+    echo   Download: https://mirrors.tuna.tsinghua.edu.cn/nodejs-release/
+    pause
+    exit /b 1
+)
+for /f "tokens=2 delims=v" %%v in ('node -v 2^>^&1') do echo   [OK] Node.js v%%v
 
-echo   1. Node.js ^>= 20
-echo      官方下载: https://nodejs.org
-echo      推荐使用 nvm-windows 管理版本:
-echo        https://github.com/coreybutler/nvm-windows
-echo.
+:: ========== Step 2: Setup pnpm ==========
+echo [2/5] Setting up pnpm...
+where pnpm >nul 2>&1
+if %errorlevel% neq 0 (
+    echo   Installing pnpm via corepack...
+    corepack enable 2>nul
+    corepack prepare pnpm@9.12.0 --activate 2>nul
+    if %errorlevel% neq 0 (
+        echo   corepack failed, trying npm install...
+        call npm install -g pnpm@9.12.0
+    )
+)
+for /f "tokens=*" %%v in ('pnpm -v 2^>^&1') do echo   [OK] pnpm v%%v
 
-echo   2. pnpm ^>= 9
-echo      安装 Node.js 后运行:
-echo        npm install -g pnpm
-echo.
+:: ========== Step 3: Install dependencies ==========
+echo [3/5] Installing dependencies (pnpm install)...
+cd /d "%~dp0.."
+call pnpm install --frozen-lockfile
+if %errorlevel% neq 0 (
+    echo   [WARN] pnpm install returned non-zero exit code
+    echo   Dependencies may still be ready, continuing...
+)
+echo   [OK] Dependencies installed
 
-echo   3. Git for Windows
-echo      https://git-scm.com/download/win
-echo      安装后自带 Git Bash，可运行 .sh 脚本
-echo.
+:: ========== Step 4: Check Rust ==========
+echo [4/5] Checking Rust toolchain...
+where rustup >nul 2>&1
+if %errorlevel% neq 0 (
+    echo   [WARN] rustup not found, installing Rust...
+    echo   Using Tuna mirror for faster download in China
+    set "RUSTUP_DIST_SERVER=https://mirrors.tuna.tsinghua.edu.cn/rustup"
+    set "RUSTUP_UPDATE_ROOT=https://mirrors.tuna.tsinghua.edu.cn/rustup/rustup"
 
-echo   4. Python 3 (node-gyp 编译需要)
-echo      https://www.python.org/downloads/
-echo      安装时勾选 "Add Python to PATH"
-echo.
+    if exist "%~dp0..\rustup-init.exe" (
+        "%~dp0..\rustup-init.exe" -y --default-toolchain stable-msvc --profile default
+    ) else (
+        echo   Downloading rustup-init.exe...
+        powershell -Command "Invoke-WebRequest -Uri 'https://mirrors.tuna.tsinghua.edu.cn/rustup/rustup/dist/x86_64-pc-windows-msvc/rustup-init.exe' -OutFile '%TEMP%\rustup-init.exe'"
+        "%TEMP%\rustup-init.exe" -y --default-toolchain stable-msvc --profile default
+    )
+) else (
+    echo   [OK] Rust already installed
+)
 
-echo   5. 安装项目依赖
-echo      pnpm install
-echo.
+:: Configure RsProxy mirror (if not configured)
+if not exist "%USERPROFILE%\.cargo\config.toml" (
+    echo   Configuring cargo mirror (rsproxy.cn)...
+    mkdir "%USERPROFILE%\.cargo" 2>nul
+    (
+        echo [source.crates-io]
+        echo replace-with = "rsproxy-sparse"
+        echo.
+        echo [source.rsproxy-sparse]
+        echo registry = "sparse+https://rsproxy.cn/index/"
+        echo.
+        echo [registries.rsproxy]
+        echo index = "https://rsproxy.cn/crates.io-index"
+        echo.
+        echo [net]
+        echo git-fetch-with-cli = true
+    ) > "%USERPROFILE%\.cargo\config.toml"
+) else (
+    echo   [OK] cargo config already exists
+)
 
-:: ========== 桌面端 ==========
-if "%SCOPE%"=="--mobile" goto SKIP_DESKTOP
+:: Check for C/C++ linker (required for Tauri Rust compilation)
+echo   Checking C/C++ linker...
+where link.exe >nul 2>&1
+if %errorlevel% equ 0 (
+    echo   [OK] MSVC linker (link.exe) found
+) else (
+    echo.
+    echo   ========================================
+    echo   [WARNING] MSVC linker (link.exe) not found!
+    echo   Required for Tauri Rust compilation.
+    echo   Install Visual Studio 2022 Build Tools:
+    echo     - Select "Desktop development with C++"
+    echo     - Download: https://visualstudio.microsoft.com/downloads/
+    echo   ========================================
+    echo.
+)
 
-echo ▸ 桌面端 (Tauri / Rust)
+:: ========== Step 5: Verify ==========
+echo [5/5] Verifying build...
 echo.
+echo   Testing frontend build...
+call pnpm --filter @yan-zhi/desktop build >nul 2>&1
+if %errorlevel% equ 0 (
+    echo   [OK] Frontend build successful
+) else (
+    echo   [WARN] Frontend build failed, check errors above
+)
 
-echo   1. Rust 工具链
-echo      下载 rustup-init.exe: https://rustup.rs
-echo      运行安装程序，默认选项即可
 echo.
-
-echo   2. Windows Rust 目标 (二选一)
-echo      # MSVC 工具链（推荐，需安装 Visual Studio Build Tools）
-echo        rustup default stable-x86_64-pc-windows-msvc
+echo ============================================
+echo   Setup Complete!
 echo.
-echo      # GNU 工具链（需安装 MinGW-w64）
-echo        rustup default stable-x86_64-pc-windows-gnu
-echo.
-
-echo   3. Visual Studio Build Tools 2022 (MSVC工具链需要，推荐)
-echo      下载: https://visualstudio.microsoft.com/downloads/#build-tools-for-visual-studio-2022
-echo      安装时勾选「C++ 桌面开发」工作负载
-echo      安装后重启终端
-echo.
-
-echo   4. MinGW-w64 (GNU工具链需要，二选一)
-echo      方案A: 从 https://winlibs.com 下载，解压后将 bin\ 加入 PATH
-echo      方案B: 安装 MSYS2 (https://www.msys2.org) 后运行:
-echo        pacman -S mingw-w64-x86_64-gcc
-echo.
-
-echo   5. WebView2 Runtime
-echo      Windows 10/11 通常已预装，Tauri 安装包会自动安装
-echo      https://developer.microsoft.com/microsoft-edge/webview2
-echo.
-
-:SKIP_DESKTOP
-
-:: ========== 移动端 ==========
-if "%SCOPE%"=="--desktop" goto SKIP_MOBILE
-
-echo ▸ 移动端 (Capacitor)
-echo.
-
-echo   1. Android 构建环境
-echo      - JDK 17: https://adoptium.net/download
-echo        安装后设置环境变量 JAVA_HOME 指向 JDK 目录
-echo      - Android Studio: https://developer.android.com/studio
-echo        安装后设置环境变量 ANDROID_HOME
-echo        默认路径: %%USERPROFILE%%\Android\Sdk
-echo      - SDK Manager 安装 Android SDK Platform 34+
-echo.
-
-echo   2. iOS 构建环境
-echo      需要 macOS + Xcode 15+，Windows 下无法构建 iOS
-echo.
-
-:SKIP_MOBILE
-
-:: ========== 验证 ==========
-echo ============================================================
-echo.
-echo   环境搭建完成后，运行以下命令验证:
-echo     bin\check-env.bat
-echo.
-echo   快速启动: (需要 Git Bash 或 MSYS2 终端)
-echo     bash bin/check-env.sh
-echo.
-echo   开发启动:
-echo     pnpm dev              # 后端 (http://localhost:3001)
-echo     pnpm dev:web          # Web 端 (http://localhost:5176)
-echo.
+echo   Start dev:
+echo     bin\dev-desktop.bat  - Launch Tauri desktop app
+echo     pnpm dev:web         - Web frontend only
+echo     pnpm dev:server      - Backend server
+echo ============================================
+pause

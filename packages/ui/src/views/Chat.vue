@@ -38,6 +38,33 @@
       </div>
 
       <div v-else class="conv-list">
+        <!-- 空间选择器 -->
+        <div class="space-selector">
+          <div class="space-tabs">
+            <div class="space-tab" :class="{ active: spaceStore.currentSpaceId === null }" @click="selectSpace(null)" title="全部会话">
+              全部
+            </div>
+            <div
+              v-for="sp in spaceStore.spaces"
+              :key="sp.id"
+              class="space-tab"
+              :class="{ active: spaceStore.currentSpaceId === sp.id }"
+              :title="sp.dirPath || sp.name"
+              @click="selectSpace(sp.id)"
+              @contextmenu.prevent="openSpaceMenu($event, sp)"
+            >
+              <el-icon :size="12"><FolderOpened /></el-icon>
+              <span class="space-tab-name">{{ sp.name }}</span>
+            </div>
+            <div class="space-tab add-space-tab" @click="createSpaceQuick" title="新建空间">
+              <el-icon><Plus /></el-icon>
+            </div>
+          </div>
+          <div v-if="spaceStore.currentSpaceId && spaceStore.currentSpace" class="space-current-hint" :title="spaceStore.currentSpace.dirPath">
+            <el-icon :size="12"><FolderOpened /></el-icon>
+            <span>{{ spaceStore.currentSpace.dirPath || '未绑定目录' }}</span>
+          </div>
+        </div>
         <div class="conv-header">
           <el-input v-model="search" placeholder="搜索会话" size="small" clearable :prefix-icon="Search" />
           <div class="conv-header-row">
@@ -89,15 +116,69 @@
     </div>
 
     <section class="chat-main">
+      <!-- 左侧聊天主体（顶栏 + 消息 + 输入区）：在 chat-main 中作为行 flex 的列项，与右面板左右并排 -->
+      <div class="chat-column">
       <div class="chat-topbar">
         <el-button class="hamburger-btn" text circle @click="drawerOpen = !drawerOpen">
           <el-icon :size="20"><Expand /></el-icon>
         </el-button>
         <span class="conv-title-display">{{ currentConv?.title || '新对话' }}</span>
         <div class="chat-topbar-actions">
-          <el-tooltip v-if="!isMobile" content="文件管理" placement="bottom">
-            <el-button size="small" circle @click="filePanelOpen = !filePanelOpen" :type="filePanelOpen ? 'primary' : ''">
-              <el-icon><FolderOpened /></el-icon>
+          <!-- 文件管理：聊天页顶栏右侧，点开向下小弹窗（非全屏），内含三段分类；点文件→右侧预览面板 -->
+          <el-popover
+            v-model:visible="store.showFilePopup"
+            placement="bottom-end"
+            :width="440"
+            trigger="click"
+            popper-class="file-mgr-popover"
+            :show-arrow="true"
+          >
+            <template #reference>
+              <el-button size="small" circle :type="store.showFilePopup ? 'primary' : ''" title="文件管理" aria-label="文件管理">
+                <el-icon><FolderOpened /></el-icon>
+              </el-button>
+            </template>
+            <div class="file-mgr-pop">
+              <div class="file-mgr-pop-header">
+                <span class="file-mgr-pop-title">文件管理</span>
+                <el-button size="small" circle @click="triggerFilePanelUpload" title="上传文件">
+                  <el-icon><UploadFilled /></el-icon>
+                </el-button>
+              </div>
+              <div class="file-panel-list conv-file-list file-mgr-pop-list">
+                <div v-for="cat in fileCategories" :key="cat.key" class="conv-file-group">
+                  <div class="conv-file-group-header" @click="expandedFileCategories[cat.key] = !expandedFileCategories[cat.key]">
+                    <el-icon class="collapse-icon" :class="{ collapsed: !expandedFileCategories[cat.key] }">
+                      <ArrowDown v-if="expandedFileCategories[cat.key]" /><ArrowRight v-else />
+                    </el-icon>
+                    <span class="conv-file-group-name">{{ cat.label }}</span>
+                    <el-tag size="small" type="info" effect="plain" round>{{ (fileStore.filesByCategory[cat.key] || []).length }}</el-tag>
+                  </div>
+                  <div v-show="expandedFileCategories[cat.key]" class="conv-file-group-body">
+                    <div
+                      v-for="f in (fileStore.filesByCategory[cat.key] || [])"
+                      :key="f.id"
+                      class="file-panel-item"
+                      :class="{ active: store.previewingFile?.path === f.path }"
+                      @click="previewInPopup(f)"
+                      @contextmenu.prevent="showConvFileMenu($event, f)"
+                    >
+                      <el-icon :size="16" class="file-item-icon"><Files /></el-icon>
+                      <div class="file-item-info">
+                        <span class="file-item-name">{{ f.name }}</span>
+                        <span class="file-item-meta">{{ formatSize(f.size) }} · {{ f.source === 'user' ? '上传' : '产出' }}</span>
+                      </div>
+                    </div>
+                    <div v-if="(fileStore.filesByCategory[cat.key] || []).length === 0" class="conv-file-empty">暂无{{ cat.label }}</div>
+                  </div>
+                </div>
+              </div>
+              <input ref="filePanelUploadRef" type="file" multiple style="display:none" @change="handleFilePanelUpload" />
+            </div>
+          </el-popover>
+          <el-tooltip content="侧栏（预览窗口）" placement="bottom">
+            <el-button size="small" circle @click="toggleRightPanel" :type="store.rightPanelOpen ? 'primary' : ''" aria-label="切换右侧栏">
+              <el-icon><Operation /></el-icon>
             </el-button>
           </el-tooltip>
           <el-dropdown v-if="isMobile && authStore.isLoggedIn" trigger="click">
@@ -121,6 +202,8 @@
       </div>
 
       <div class="messages" ref="messagesRef">
+        <!-- E12: 任务规划进度卡片（task_plan / task_step 工具驱动，常驻对话区顶部） -->
+        <TaskPlanCard v-if="store.planSteps.length" class="chat-plan-card" />
         <div v-for="(round, ri) in messageRounds" :key="ri" :class="['round-group']" :data-round="ri">
           <!-- 用户消息 -->
           <!-- 用户消息 -->
@@ -362,56 +445,56 @@
             class="input-textarea"
           />
           <div class="input-toolbar">
-            <div class="toolbar-agent">
-              <div class="minimal-select agent-switch" @click.stop>
-                <el-select v-model="agentStore.selectedId" placeholder="选择智能体" size="small" popper-class="minimal-popper" @change="onAgentSwitch">
-                  <el-option
-                    v-for="ag in agentStore.agents"
-                    :key="ag.id"
-                    :label="ag.name"
-                    :value="ag.id"
-                  >
-                    <span style="display:flex;align-items:center;gap:6px">
-                      <el-icon v-if="ag.isDefault" style="font-size:12px"><Lock /></el-icon>
-                      <span>{{ ag.name }}</span>
-                    </span>
-                  </el-option>
-                </el-select>
-                <el-icon class="select-icon"><User /></el-icon>
+            <div class="toolbar-left">
+              <div class="toolbar-agent">
+                <div class="minimal-select agent-switch" @click.stop>
+                  <el-select v-model="agentStore.selectedId" placeholder="选择智能体" size="small" popper-class="minimal-popper" @change="onAgentSwitch">
+                    <el-option
+                      v-for="ag in agentStore.agents"
+                      :key="ag.id"
+                      :label="ag.name"
+                      :value="ag.id"
+                    >
+                      <span style="display:flex;align-items:center;gap:6px">
+                        <el-icon v-if="ag.isDefault" style="font-size:12px"><Lock /></el-icon>
+                        <span>{{ ag.name }}</span>
+                      </span>
+                    </el-option>
+                  </el-select>
+                  <el-icon class="select-icon"><User /></el-icon>
+                </div>
+                <el-tooltip content="编辑当前智能体" placement="top">
+                  <el-button size="small" circle @click="openEditAgent(agentStore.selectedAgent)">
+                    <el-icon><EditPen /></el-icon>
+                  </el-button>
+                </el-tooltip>
               </div>
-              <el-tooltip content="编辑当前智能体" placement="top">
-                <el-button size="small" circle @click="openEditAgent(agentStore.selectedAgent)">
-                  <el-icon><EditPen /></el-icon>
-                </el-button>
-              </el-tooltip>
-            </div>
 
-            <div class="minimal-select model-select" @click.stop>
-              <el-icon class="select-icon"><Cpu /></el-icon>
-              <el-select
-                v-model="selectedModelId"
-                placeholder="选择模型"
-                filterable
-                size="small"
-                popper-class="minimal-popper"
-                @change="onModelChange"
-              >
-                <el-option-group
-                  v-for="g in modelGroups"
-                  :key="g.platformId"
-                  :label="g.platformName"
-                >
-                  <el-option
-                    v-for="m in g.models"
-                    :key="m.id"
-                    :label="m.alias || m.modelId"
-                    :value="m.id"
-                  >
-                    <span>{{ m.alias || m.modelId }}</span>
-                    <span style="font-size:11px;color:#94a3b8;margin-left:6px">{{ m.modelId }}</span>
-                  </el-option>
-                </el-option-group>
-              </el-select>
+              <div class="toolbar-icons">
+                <el-tooltip content="MCP 工具" placement="top">
+                  <el-button size="small" circle @click="showMount = true">
+                    <el-icon><Connection /></el-icon>
+                  </el-button>
+                </el-tooltip>
+                <el-badge :value="mountedSkillIds.length" :hidden="mountedSkillIds.length === 0" type="primary">
+                  <el-tooltip content="Skill" placement="top">
+                    <el-button size="small" circle @click="showSkills = true">
+                      <el-icon><Files /></el-icon>
+                    </el-button>
+                  </el-tooltip>
+                </el-badge>
+                <el-tooltip :content="`工作目录: ${workspaceDir}`" placement="top">
+                  <el-button size="small" @click="showWorkspaceDir = true">
+                    <el-icon style="margin-right:4px"><FolderOpened /></el-icon>
+                    <span class="workspace-dir-label">{{ workspaceDir.split('/').pop() || workspaceDir }}</span>
+                  </el-button>
+                </el-tooltip>
+                <el-tooltip content="上传文件" placement="top">
+                  <el-button size="small" circle @click="triggerFileUpload">
+                    <el-icon><UploadFilled /></el-icon>
+                  </el-button>
+                </el-tooltip>
+              </div>
             </div>
 
             <!-- mobile-only: icon buttons to popover agent / model list -->
@@ -465,32 +548,6 @@
               </el-popover>
             </div>
 
-            <div class="toolbar-icons">
-              <el-tooltip content="MCP 工具" placement="top">
-                <el-button size="small" circle @click="showMount = true">
-                  <el-icon><Connection /></el-icon>
-                </el-button>
-              </el-tooltip>
-              <el-badge :value="mountedSkillIds.length" :hidden="mountedSkillIds.length === 0" type="primary">
-                <el-tooltip content="Skill" placement="top">
-                  <el-button size="small" circle @click="showSkills = true">
-                    <el-icon><Files /></el-icon>
-                  </el-button>
-                </el-tooltip>
-              </el-badge>
-              <el-tooltip :content="`工作目录: ${workspaceDir}`" placement="top">
-                <el-button size="small" @click="showWorkspaceDir = true">
-                  <el-icon style="margin-right:4px"><FolderOpened /></el-icon>
-                  <span class="workspace-dir-label">{{ workspaceDir.split('/').pop() || workspaceDir }}</span>
-                </el-button>
-              </el-tooltip>
-              <el-tooltip content="上传文件" placement="top">
-                <el-button size="small" circle @click="triggerFileUpload">
-                  <el-icon><UploadFilled /></el-icon>
-                </el-button>
-              </el-tooltip>
-            </div>
-
             <div class="toolbar-more">
               <el-popover placement="top" trigger="click" :width="160" :show-arrow="false">
                 <template #reference>
@@ -516,6 +573,33 @@
             </div>
 
             <div class="toolbar-right">
+              <div class="minimal-select model-select" @click.stop>
+                <el-icon class="select-icon"><Cpu /></el-icon>
+                <el-select
+                  v-model="selectedModelId"
+                  placeholder="选择模型"
+                  filterable
+                  size="small"
+                  popper-class="minimal-popper"
+                  @change="onModelChange"
+                >
+                  <el-option-group
+                    v-for="g in modelGroups"
+                    :key="g.platformId"
+                    :label="g.platformName"
+                  >
+                    <el-option
+                      v-for="m in g.models"
+                      :key="m.id"
+                      :label="m.alias || m.modelId"
+                      :value="m.id"
+                    >
+                      <span>{{ m.alias || m.modelId }}</span>
+                      <span style="font-size:11px;color:#94a3b8;margin-left:6px">{{ m.modelId }}</span>
+                    </el-option>
+                  </el-option-group>
+                </el-select>
+              </div>
               <el-tooltip content="新建会话" placement="top">
                 <el-button size="small" circle :disabled="store.streaming" @click="startNewChat">
                   <el-icon><Plus /></el-icon>
@@ -544,37 +628,35 @@
 
         <input ref="fileInputRef" type="file" multiple accept="image/*,.pdf,.txt,.md,.json,.csv,.py,.js,.ts,.vue,.html,.css,.xml,.yaml,.yml,.log,.doc,.docx,.xlsx,.pptx,.zip" style="display:none" @change="handleFileChange" />
       </div>
+      </div>
+      <!-- /.chat-column -->
 
-      <aside class="file-panel" :class="{ open: filePanelOpen }">
-        <div class="file-panel-header">
-          <span class="file-panel-title">文件管理</span>
-          <div class="file-panel-header-actions">
-            <el-button size="small" circle @click="triggerFilePanelUpload">
-              <el-icon><UploadFilled /></el-icon>
-            </el-button>
-            <el-button size="small" circle @click="filePanelOpen = false">
+      <!-- 右侧预览面板：预览窗口，可预览文件 / 网站；tab 标题是当前真实打开的文件名 / 网站名 -->
+      <aside class="right-panel" :class="{ open: store.rightPanelOpen }">
+        <div class="right-panel-tabs">
+          <div v-if="store.previewingFile" class="right-panel-tab" :class="{ active: store.rightPanelTab === 'file' }" @click="store.rightPanelTab = 'file'">
+            <span class="right-panel-tab-title" :title="store.previewingFile.name">{{ store.previewingFile.name }}</span>
+          </div>
+          <div v-if="browserActive" class="right-panel-tab" :class="{ active: store.rightPanelTab === 'browser' }" @click="store.rightPanelTab = 'browser'">
+            <span class="right-panel-tab-title" :title="store.currentBrowserUrl || currentBrowserLabel">{{ currentBrowserLabel }}</span>
+          </div>
+          <div class="right-panel-tab-actions">
+            <el-button size="small" circle @click="closeRightPanel" title="收起面板">
               <el-icon><Close /></el-icon>
             </el-button>
           </div>
         </div>
-        <el-input v-model="fileSearch" placeholder="搜索文件..." size="small" clearable :prefix-icon="Search" class="file-panel-search" />
-        <div class="file-panel-list">
-          <div v-for="f in filteredFiles" :key="f.path" class="file-panel-item"
-            :class="{ selected: selectedFilePaths.has(f.path) }"
-            @click="previewFile(f)" @contextmenu.prevent="toggleFileSelect(f.path)">
-            <el-icon :size="16" class="file-item-icon"><Files /></el-icon>
-            <div class="file-item-info">
-              <span class="file-item-name">{{ f.name }}</span>
-              <span class="file-item-meta">{{ formatSize(f.size) }}</span>
-            </div>
-            <el-button size="small" text circle class="file-item-delete" @click.stop="deleteFileItem(f)">
-              <el-icon :size="14"><Delete /></el-icon>
-            </el-button>
-          </div>
-          <el-empty v-if="workspaceFiles.length === 0" description="暂无文件" :image-size="40" />
-          <el-empty v-else-if="filteredFiles.length === 0 && fileSearch" description="无匹配文件" :image-size="40" />
+
+        <!-- 文件预览 tab：展示 FilePreview，空时提示去文件管理选文件 -->
+        <div v-show="store.rightPanelTab === 'file'" class="right-panel-body">
+          <FilePreview v-if="store.previewingFile" :file="store.previewingFile" />
+          <el-empty v-else description="点击顶栏「文件管理」选择文件预览" :image-size="60" />
         </div>
-        <input ref="filePanelUploadRef" type="file" multiple style="display:none" @change="handleFilePanelUpload" />
+
+        <!-- 网站 tab：聚焦按钮 + 步骤日志（Agent 浏览器操作截图） -->
+        <div v-show="store.rightPanelTab === 'browser'" class="right-panel-body">
+          <BrowserPanel />
+        </div>
       </aside>
     </section>
 
@@ -690,26 +772,114 @@
       <li @click="startRename(ctxMenu.conv)">
         <el-icon><EditPen /></el-icon>重命名
       </li>
+      <li class="has-submenu">
+        <el-icon><FolderOpened /></el-icon>移动到空间
+        <el-icon class="submenu-arrow"><ArrowRight /></el-icon>
+        <ul class="ctx-submenu">
+          <li v-if="spaceStore.spaces.length === 0" class="disabled-hint">暂无空间，请先创建</li>
+          <li @click="moveConvToSpace(ctxMenu.conv!.id, null)">
+            <el-icon><Close /></el-icon>未归类
+          </li>
+          <li v-for="sp in spaceStore.spaces" :key="sp.id" @click="moveConvToSpace(ctxMenu.conv!.id, sp.id)">
+            <el-icon><FolderOpened /></el-icon>{{ sp.name }}
+          </li>
+        </ul>
+      </li>
       <li class="danger" @click="deleteConv(ctxMenu.conv)">
         <el-icon><Delete /></el-icon>删除
       </li>
     </ul>
+
+    <!-- 空间编辑对话框 -->
+    <el-dialog v-model="showSpaceEdit" title="编辑空间" width="460px">
+      <el-form label-width="80px">
+        <el-form-item label="名称">
+          <el-input v-model="spaceEditForm.name" placeholder="空间名称" />
+        </el-form-item>
+        <el-form-item label="目录">
+          <el-input v-model="spaceEditForm.dirPath" placeholder="绑定的本地目录（可选）" />
+        </el-form-item>
+        <el-form-item label="描述">
+          <el-input v-model="spaceEditForm.description" type="textarea" :rows="2" placeholder="空间描述（可选）" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="showSpaceEdit = false">取消</el-button>
+        <el-button type="primary" @click="saveSpaceEdit">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 空间右键菜单 -->
+    <ul v-if="spaceMenuTarget" class="ctx-menu" :style="{ top: spaceMenuTarget.y + 'px', left: spaceMenuTarget.x + 'px' }" @click.stop>
+      <li @click="openSpaceEdit(spaceMenuTarget.space); closeSpaceMenu()">
+        <el-icon><EditPen /></el-icon>编辑空间
+      </li>
+      <li class="danger" @click="deleteSpaceConfirm(spaceMenuTarget.space); closeSpaceMenu()">
+        <el-icon><Delete /></el-icon>删除空间
+      </li>
+    </ul>
+
+    <!-- E12: 智能体反问弹窗 —— ask_user 工具触发，阻塞 ReAct 循环等待用户回答 -->
+    <el-dialog
+      v-model="askDialogVisible"
+      title="智能体提问"
+      width="460px"
+      :close-on-click-modal="false"
+      :close-on-press-escape="false"
+      class="ask-user-dialog"
+      @close="onAskDialogClose"
+    >
+      <div class="ask-user-question">{{ store.pendingQuestion?.question }}</div>
+
+      <div v-if="askMultiSelect" class="ask-user-options">
+        <el-checkbox v-for="(opt, i) in store.pendingQuestion?.options" :key="i" v-model="askChecked[i]">{{ opt }}</el-checkbox>
+      </div>
+      <div v-else-if="store.pendingQuestion?.options?.length" class="ask-user-options">
+        <button
+          v-for="(opt, i) in store.pendingQuestion.options"
+          :key="i"
+          type="button"
+          class="ask-user-opt"
+          :class="{ 'is-active': askSingle === opt }"
+          @click="askSingle = opt"
+        >{{ opt }}</button>
+        <button type="button" class="ask-user-opt ask-user-opt-text" :class="{ 'is-active': askShowText }" @click="askShowText = true">
+          其他（文字输入）
+        </button>
+      </div>
+
+      <el-input
+        v-if="!store.pendingQuestion?.options?.length || askShowText"
+        v-model="askText"
+        type="textarea"
+        :rows="3"
+        placeholder="输入你的回答..."
+        @keyup.ctrl.enter="onAskSubmit"
+      />
+      <template #footer>
+        <el-button @click="onAskSkip">跳过</el-button>
+        <el-button type="primary" @click="onAskSubmit">提交</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, onMounted, nextTick, watch, reactive, onUnmounted } from 'vue';
-import { Plus, ChatDotRound, Star, Connection, CaretRight, CaretBottom, Search, Files, EditPen, Delete, User, Setting, CopyDocument, Refresh, Promotion, Fold, Expand, Lock, Check, Cpu, UploadFilled, Close, View, ArrowRight, ArrowDown, ArrowUp, CircleCheck, CircleClose, Loading, FolderOpened, MoreFilled, SwitchButton } from '@element-plus/icons-vue';
+import { Plus, ChatDotRound, Star, Connection, CaretRight, CaretBottom, Search, Files, EditPen, Delete, User, Setting, CopyDocument, Refresh, Promotion, Fold, Expand, Lock, Check, Cpu, UploadFilled, Close, View, ArrowRight, ArrowDown, ArrowUp, ArrowLeft, CircleCheck, CircleClose, Loading, FolderOpened, MoreFilled, SwitchButton, Aim, Monitor, Operation } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import MarkdownIt from 'markdown-it';
 import hljs from 'highlight.js';
-import { useChatStore, usePlatformStore, useMcpStore, useSkillStore, useAgentStore, useAuthStore } from '../stores';
+import { useChatStore, usePlatformStore, useMcpStore, useSkillStore, useAgentStore, useAuthStore, useSpaceStore, useFileStore } from '../stores';
 import { useIsMobile } from '../composables/useIsMobile';
 import type { Agent } from '@yan-zhi/shared';
 import { estimateTokens, CHAT_MODEL_TYPES } from '@yan-zhi/shared';
 import type { Message, Conversation } from '@yan-zhi/shared';
 import AgentEditDialog from '../components/AgentEditDialog.vue';
 import WorkspaceDirDialog from '../components/WorkspaceDirDialog.vue';
+import FilePreview from '../components/FilePreview.vue';
+import BrowserPanel from '../components/BrowserPanel.vue';
+import TaskPlanCard from '../components/TaskPlanCard.vue';
 
 const store = useChatStore();
 const platformStore = usePlatformStore();
@@ -717,7 +887,59 @@ const mcpStore = useMcpStore();
 const skillStore = useSkillStore();
 const agentStore = useAgentStore();
 const authStore = useAuthStore();
+const spaceStore = useSpaceStore();
+const fileStore = useFileStore();
 const isMobile = useIsMobile();
+
+// E12: 智能体反问弹窗表单状态（ask_user 工具触发）
+const askText = ref('');
+const askSingle = ref('');
+const askChecked = ref<boolean[]>([]);
+const askShowText = ref(false);
+const askDialogVisible = computed({
+  get: () => !!store.pendingQuestion,
+  set: (v: boolean) => { if (!v) onAskDialogClose(); },
+});
+const askMultiSelect = computed(
+  () => !!store.pendingQuestion?.multiSelect && !!store.pendingQuestion?.options?.length,
+);
+function resetAskForm() {
+  askText.value = '';
+  askSingle.value = '';
+  askChecked.value = [];
+  askShowText.value = false;
+}
+function onAskSubmit() {
+  const q = store.pendingQuestion;
+  if (!q) return;
+  let answer = '';
+  if (askMultiSelect.value) {
+    const sel = (q.options || []).filter((_, i) => askChecked.value[i]);
+    answer = sel.join('、');
+  } else if (q.options?.length) {
+    answer = askSingle.value;
+  }
+  if (!answer) answer = askText.value.trim();
+  if (!answer) {
+    ElMessage.warning('请选择或输入回答');
+    return;
+  }
+  store.submitPendingQuestion(answer);
+  resetAskForm();
+}
+function onAskSkip() {
+  if (store.pendingQuestion) store.submitPendingQuestion('[用户选择跳过该问题]');
+  resetAskForm();
+}
+function onAskDialogClose() {
+  if (store.pendingQuestion) store.submitPendingQuestion('[用户关闭了提问，未作答]');
+  resetAskForm();
+}
+// 新提问弹出时清空上一份表单
+watch(
+  () => store.pendingQuestion,
+  (q) => { if (q) resetAskForm(); },
+);
 
 const input = ref('');
 const inputFocused = ref(false);
@@ -727,7 +949,29 @@ const uploadedFiles = ref<Array<{ name: string; size: number; type: string; data
 const showScrollBottom = ref(false);
 const showScrollTop = ref(false);
 
-const filePanelOpen = ref(false);
+// 右侧预览面板用 store.rightPanelTab 控制显示内容（'file' = 文件预览，'browser' = 网站/Agent 页面）
+// 智能体已开启浏览器（browser_* 工具产生了步骤日志）→ 显示网站预览 tab
+const browserActive = computed(() => store.browserSteps.length > 0);
+// 网站 tab 标题：取 URL 里的 hostname（如 baidu.com），无 URL 时回退到「网站」
+const currentBrowserLabel = computed(() => {
+  const u = store.currentBrowserUrl;
+  if (!u) return '网站';
+  try { return new URL(u).hostname || u; } catch { return u; }
+});
+// 智能体首次打开浏览器时，自动切到网站预览 tab；日志被清空时切回文件预览
+watch(() => store.browserSteps.length, (n, o) => {
+  if (o === 0 && n > 0) store.rightPanelTab = 'browser';
+  else if (n === 0 && store.rightPanelTab === 'browser') store.rightPanelTab = 'file';
+});
+function closeRightPanel() {
+  store.rightPanelOpen = false;
+}
+/** 顶栏切换右侧栏：打开时若残留 'browser' 但无浏览器日志，切回文件预览 tab */
+function toggleRightPanel() {
+  if (!store.rightPanelOpen && !browserActive.value) store.rightPanelTab = 'file';
+  store.rightPanelOpen = !store.rightPanelOpen;
+}
+const expandedFileCategories = reactive<Record<string, boolean>>({ upload: true, intermediate: true, deliverable: true });
 const fileSearch = ref('');
 const workspaceFiles = ref<Array<{ name: string; path: string; size: number; isDir: boolean }>>([]);
 const selectedFilePaths = ref<Set<string>>(new Set());
@@ -950,9 +1194,15 @@ function handleContentClick(e: MouseEvent) {
 
 const currentConv = computed(() => store.conversations.find((c) => c.id === store.currentConvId));
 const filteredConversations = computed(() => {
-  if (!search.value.trim()) return store.conversations;
+  let list = store.conversations;
+  // 按当前选中空间过滤（null=全部，具体 ID=该空间，空串视为未归类）
+  const sid = spaceStore.currentSpaceId;
+  if (sid !== null) {
+    list = list.filter((c) => (sid === '' ? !c.spaceId : c.spaceId === sid));
+  }
+  if (!search.value.trim()) return list;
   const q = search.value.toLowerCase();
-  return store.conversations.filter((c) => c.title.toLowerCase().includes(q));
+  return list.filter((c) => c.title.toLowerCase().includes(q));
 });
 
 const messageRounds = computed<MessageRound[]>(() => {
@@ -1080,6 +1330,114 @@ function onAgentDeleted(_agentId: string) {
   showAgentEdit.value = false;
 }
 
+// ========== 空间（文件夹）管理 ==========
+const showSpaceEdit = ref(false);
+const spaceEditForm = ref({ id: '', name: '', dirPath: '', description: '' });
+const spaceMenuTarget = ref<{ x: number; y: number; space: any } | null>(null);
+
+function selectSpace(id: string | null) {
+  spaceStore.selectSpace(id);
+}
+
+async function createSpaceQuick() {
+  try {
+    const { value: name } = await ElMessageBox.prompt('请输入空间名称', '新建空间', {
+      confirmButtonText: '创建',
+      cancelButtonText: '取消',
+      inputValidator: (v) => !!v?.trim() || '名称不能为空',
+    });
+    if (!name?.trim()) return;
+    const id = await spaceStore.createSpace({ name: name.trim() });
+    spaceStore.selectSpace(id);
+    ElMessage.success('空间已创建');
+  } catch { /* 用户取消 */ }
+}
+
+function openSpaceEdit(space: any) {
+  spaceEditForm.value = {
+    id: space.id,
+    name: space.name,
+    dirPath: space.dirPath || '',
+    description: space.description || '',
+  };
+  showSpaceEdit.value = true;
+}
+
+async function saveSpaceEdit() {
+  if (!spaceEditForm.value.name.trim()) { ElMessage.warning('名称不能为空'); return; }
+  await spaceStore.updateSpace(spaceEditForm.value.id, {
+    name: spaceEditForm.value.name.trim(),
+    dirPath: spaceEditForm.value.dirPath.trim() || undefined,
+    description: spaceEditForm.value.description.trim() || undefined,
+  });
+  showSpaceEdit.value = false;
+  ElMessage.success('空间已更新');
+}
+
+async function deleteSpaceConfirm(space: any) {
+  try {
+    await ElMessageBox.confirm(
+      `确定删除空间"${space.name}"吗？其下会话将归入"未归类"，目录文件不受影响。`,
+      '删除空间',
+      { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' },
+    );
+    await spaceStore.deleteSpace(space.id);
+    ElMessage.success('空间已删除');
+  } catch { /* 取消 */ }
+}
+
+function openSpaceMenu(e: MouseEvent, space: any) {
+  e.preventDefault();
+  e.stopPropagation();
+  spaceMenuTarget.value = { x: e.clientX, y: e.clientY, space };
+}
+
+function closeSpaceMenu() {
+  spaceMenuTarget.value = null;
+}
+
+/** 移动会话到指定空间 */
+async function moveConvToSpace(convId: string, spaceId: string | null) {
+  await store.updateConversation(convId, { spaceId: spaceId || undefined });
+  ElMessage.success(spaceId ? '已移动到空间' : '已移出空间');
+}
+
+// ========== 会话文件分类管理 ==========
+const fileCategories = [
+  { key: 'upload' as const, label: '上传文件' },
+  { key: 'intermediate' as const, label: '中间文件' },
+  { key: 'deliverable' as const, label: '交付文件' },
+];
+
+/** 预览会话文件：同步到右侧预览面板并显示文件预览 tab（弹窗保持打开，可继续浏览） */
+function previewInPopup(f: any) {
+  store.previewingFile = { name: f.name, path: f.path };
+  store.rightPanelTab = 'file';
+  store.rightPanelOpen = true;
+}
+
+/** 会话文件右键菜单：改分类 / 重命名 / 删除 */
+async function showConvFileMenu(e: MouseEvent, f: any) {
+  try {
+    const action = await ElMessageBox.confirm('', '文件操作', {
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+      distinguishCancelAndClose: true,
+      message: `文件：${f.name}\n选择操作：`,
+    });
+    if (action) {
+      await fileStore.deleteFile(f.id);
+      ElMessage.success('已删除文件记录');
+    }
+  } catch { /* 取消 */ }
+}
+
+/** 切换会话文件分类 */
+async function reclassifyConvFile(fileId: string, category: 'intermediate' | 'deliverable') {
+  await fileStore.updateFile(fileId, { category });
+  ElMessage.success('已更改分类');
+}
+
 onMounted(async () => {
   await agentStore.loadAgents();
   await store.loadConversations();
@@ -1087,6 +1445,7 @@ onMounted(async () => {
   await platformStore.loadModels();
   await mcpStore.loadServers();
   await skillStore.loadSkills();
+  spaceStore.loadSpaces();
   await loadWorkspaceDir();
 
   const agent = agentStore.selectedAgent;
@@ -1165,6 +1524,8 @@ watch(showMount, (v) => {
   if (v) initMountSelection();
 });
 
+/** 弹窗（popover）关闭时无需特殊处理；右侧预览面板保留上次选择 */
+
 watch(() => store.streaming, (isStreaming) => {
   if (isStreaming) {
     const lastIdx = messageRounds.value.length - 1;
@@ -1208,6 +1569,8 @@ async function selectConv(id: string) {
   }
   mountedSkillIds.value = conv?.skillIds ? [...conv.skillIds] : [];
   initMountSelection();
+  // D6: 切换会话时加载该会话的文件列表
+  fileStore.loadConversationFiles(id);
 }
 
 function triggerFileUpload() {
@@ -1430,29 +1793,13 @@ async function loadWorkspaceFiles() {
   }
 }
 
+// 预览文件——把文件送到右侧预览栏，关闭弹窗
 async function previewFile(f: { name: string; path: string; isDir: boolean }) {
   if (f.isDir) return;
-  try {
-    const ext = f.name.split('.').pop()?.toLowerCase();
-    const imgExts = ['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'ico'];
-    const { getPlatformAdapter } = await import('@yan-zhi/core');
-    const adapter = getPlatformAdapter();
-    const content = await adapter.fs.readFile(f.path);
-
-    if (imgExts.includes(ext || '')) {
-      ElMessageBox.alert(
-        `<img src="${content}" style="max-width:100%;max-height:500px" />`,
-        f.name, { dangerouslyUseHTMLString: true, confirmButtonText: '关闭' },
-      );
-    } else {
-      ElMessageBox.alert(
-        `<pre style="max-height:500px;overflow:auto;font-size:12px;line-height:1.5;white-space:pre-wrap">${content.slice(0, 10000).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</pre>`,
-        f.name, { dangerouslyUseHTMLString: true, confirmButtonText: '关闭' },
-      );
-    }
-  } catch (e: any) {
-    ElMessage.error('读取文件失败: ' + (e?.message || e));
-  }
+  store.previewingFile = { name: f.name, path: f.path };
+  store.rightPanelTab = 'file';
+  store.rightPanelOpen = true;
+  store.showFilePopup = false;
 }
 
 function toggleFileSelect(path: string) {
@@ -1470,7 +1817,9 @@ async function handleFilePanelUpload(e: Event) {
   try {
     const { getPlatformAdapter } = await import('@yan-zhi/core');
     const adapter = getPlatformAdapter();
-    const filesDir = 'workspace/files';
+    // D10: 上传文件写入 workspace/uploads/<convId>/，并注册到 conversation_file(category=upload)
+    const convId = store.currentConvId || 'default';
+    const filesDir = 'workspace/uploads/' + convId;
     const dirExists = await adapter.fs.exists(filesDir);
     if (!dirExists) await adapter.fs.mkdir(filesDir);
     for (let i = 0; i < files.length; i++) {
@@ -1484,6 +1833,20 @@ async function handleFilePanelUpload(e: Event) {
         reader.readAsDataURL(f);
       });
       await adapter.fs.writeFile(newPath, content);
+      // 注册到会话文件表（分类=上传，来源=用户）
+      if (store.currentConvId) {
+        try {
+          await fileStore.registerFile({
+            conversationId: store.currentConvId,
+            name: f.name,
+            path: newPath,
+            category: 'upload',
+            mimeType: f.type,
+            size: f.size,
+            source: 'user',
+          });
+        } catch (err) { console.warn('[Chat] 注册上传文件失败:', err); }
+      }
     }
     await loadWorkspaceFiles();
     ElMessage.success('已上传 ' + files.length + ' 个文件');
@@ -1714,7 +2077,7 @@ async function delMsg(msg: Message) { await store.deleteMessage(msg.id); }
 function openConvMenu(e: MouseEvent, conv: Conversation) {
   ctxMenu.visible = true; ctxMenu.x = e.clientX; ctxMenu.y = e.clientY; ctxMenu.conv = conv;
 }
-function closeCtxMenu() { ctxMenu.visible = false; }
+function closeCtxMenu() { ctxMenu.visible = false; closeSpaceMenu(); }
 async function togglePin(conv: Conversation | null) {
   if (!conv) return;
   await store.updateConversation(conv.id, { pinned: !conv.pinned });
@@ -1903,7 +2266,9 @@ async function saveSkills() {
 .conv-toggle:hover { color: var(--color-primary); background: var(--glass-bg-hover); }
 
 /* ===== 主区 ===== */
-.chat-main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+/* chat-main 改为行布局：左 = chat-column（顶栏+消息+输入区），右 = right-panel（文件管理/浏览器预览） */
+.chat-main { flex: 1; display: flex; flex-direction: row; min-width: 0; }
+.chat-column { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 
 /* 定位跳转时，给 round-group 留出顶栏高度的偏移，避免被 sticky topbar 遮住 */
 .round-group { scroll-margin-top: 72px; }
@@ -2238,17 +2603,17 @@ async function saveSkills() {
   word-break: normal; overflow-wrap: break-word;
 }
 .input-toolbar {
-  display: flex; justify-content: space-between; align-items: center;
-  padding: 4px 8px 4px 12px; flex-wrap: wrap; gap: 6px;
+  display: flex; align-items: center;
+  padding: 4px 12px; flex-wrap: wrap; gap: 6px;
 }
-.toolbar-left { display: flex; align-items: center; gap: 6px; }
-.toolbar-center { display: flex; align-items: center; gap: 6px; flex: 1; justify-content: center; }
-.toolbar-right { display: flex; align-items: center; gap: 4px; }
-.toolbar-agent { display: flex; align-items: center; gap: 4px; }
+.toolbar-left { display: flex; align-items: center; gap: 6px; flex: 1 1 auto; min-width: 0; }
+.toolbar-right { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+.toolbar-agent { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
 
 .toolbar-mobile-selects { display: none; }
 
-.toolbar-icons { display: flex; align-items: center; gap: 6px; }
+.toolbar-icons { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.toolbar-icons .el-button { flex-shrink: 0; }
 
 .toolbar-more { display: none; }
 
@@ -2386,10 +2751,86 @@ async function saveSkills() {
 .ctx-menu li {
   display: flex; align-items: center; gap: 8px;
   padding: 8px 12px; cursor: pointer; font-size: 13px; border-radius: 6px; transition: background 0.15s;
+  position: relative;
 }
 .ctx-menu li:hover { background: var(--glass-bg-hover); }
 .ctx-menu li.danger { color: var(--el-color-danger); }
 .ctx-menu li.danger:hover { background: rgba(239,68,68,0.08); }
+.ctx-menu li.has-submenu .submenu-arrow { margin-left: auto; font-size: 11px; opacity: 0.5; }
+.ctx-menu li.has-submenu .ctx-submenu {
+  display: none; position: absolute; left: 100%; top: -4px;
+  background: var(--glass-bg); backdrop-filter: var(--glass-filter);
+  border: 1px solid var(--glass-border); border-radius: 10px;
+  padding: 4px; min-width: 160px; box-shadow: 0 8px 32px rgba(0,0,0,0.16);
+  list-style: none; margin: 0; max-height: 280px; overflow-y: auto;
+}
+.ctx-menu li.has-submenu:hover .ctx-submenu { display: block; }
+.ctx-menu li.disabled-hint { color: var(--color-text-secondary); cursor: default; font-size: 12px; }
+.ctx-menu li.disabled-hint:hover { background: transparent; }
+
+/* 空间选择器 */
+.space-selector { flex-shrink: 0; padding: 6px 8px 0 8px; }
+.space-tabs {
+  display: flex; align-items: center; gap: 4px; overflow-x: auto;
+  padding-bottom: 6px; scrollbar-width: thin;
+}
+.space-tabs::-webkit-scrollbar { height: 3px; }
+.space-tabs::-webkit-scrollbar-thumb { background: var(--glass-border); border-radius: 2px; }
+.space-tab {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 4px 10px; border-radius: 14px; font-size: 12px;
+  background: var(--glass-bg); border: 1px solid var(--glass-border);
+  cursor: pointer; white-space: nowrap; flex-shrink: 0;
+  transition: all 0.15s; color: var(--color-text-secondary);
+}
+.space-tab:hover { background: var(--glass-bg-hover); }
+.space-tab.active {
+  background: var(--el-color-primary); color: #fff; border-color: var(--el-color-primary);
+}
+.space-tab .space-tab-name { max-width: 80px; overflow: hidden; text-overflow: ellipsis; }
+.space-tab.add-space-tab { padding: 4px 8px; color: var(--color-text-secondary); }
+.space-current-hint {
+  display: flex; align-items: center; gap: 4px;
+  font-size: 11px; color: var(--color-text-secondary);
+  padding: 2px 4px 6px; overflow: hidden;
+}
+.space-current-hint span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* 文件面板模式切换 + 分类列表 */
+.file-panel-modes {
+  display: flex; gap: 4px; padding: 6px 8px; flex-shrink: 0;
+  border-bottom: 1px solid var(--glass-border);
+  align-items: center;
+}
+/* 文件管理弹窗（顶栏右侧向下小弹窗，非全屏） */
+.file-mgr-popover { padding: 0 !important; }
+.file-mgr-pop { display: flex; flex-direction: column; max-height: 60vh; min-height: 0; }
+.file-mgr-pop-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 12px; border-bottom: 1px solid var(--glass-border);
+}
+.file-mgr-pop-title { font-size: 13px; font-weight: 600; color: var(--color-text); }
+.file-mgr-pop-list { max-height: calc(60vh - 45px); overflow-y: auto; padding: 4px 0; }
+.file-panel-item.active {
+  background: rgba(124, 58, 237, 0.1);
+  color: var(--color-primary);
+}
+.conv-file-list { padding: 4px 0; }
+.conv-file-group { margin-bottom: 2px; }
+.conv-file-group-header {
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 10px; cursor: pointer; font-size: 12px; font-weight: 500;
+  color: var(--color-text-primary); user-select: none;
+}
+.conv-file-group-header:hover { background: var(--glass-bg-hover); }
+.conv-file-group-header .collapse-icon { transition: transform 0.15s; font-size: 11px; }
+.conv-file-group-header .collapse-icon.collapsed { transform: rotate(0deg); }
+.conv-file-group-name { flex: 1; }
+.conv-file-group-body { padding: 0 4px; }
+.conv-file-empty {
+  padding: 8px 12px; font-size: 11px; color: var(--color-text-secondary);
+  text-align: center;
+}
 
 .file-chips {
   display: flex; flex-wrap: wrap; gap: 6px;
@@ -2542,23 +2983,58 @@ async function saveSkills() {
 }
 
 /* File panel */
-.chat-main { position: relative; }
-.file-panel {
-  position: absolute; right: 0; top: 0; bottom: 0; width: 0; overflow: hidden;
+.chat-main { position: relative; flex: 1; min-width: 0; }
+/* 右侧常驻面板：桌面端默认 flex:1 显示（与对话区 1:1），收起时折叠为 0；移动端受 .open 控制为底部抽屉 */
+.right-panel {
+  flex: 1 1 0; min-width: 320px; display: flex; flex-direction: column;
   background: var(--glass-bg);
   backdrop-filter: var(--glass-filter);
   -webkit-backdrop-filter: var(--glass-filter);
   border-left: 1px solid var(--glass-border);
-  display: flex; flex-direction: column;
-  transition: width 0.25s ease; z-index: 8;
+  position: relative; overflow: hidden;
+  transition: flex-basis 0.25s ease, min-width 0.25s ease, opacity 0.2s ease;
 }
-.file-panel.open { width: 240px; }
+.right-panel:not(.open) { flex: 0 0 0; min-width: 0; width: 0; opacity: 0; pointer-events: none; border-left: none; }
+.right-panel.previewing { min-width: 520px; }
+.right-panel-tabs {
+  display: flex; align-items: center; gap: 4px;
+  padding: 8px 10px; border-bottom: 1px solid var(--glass-border);
+  flex-shrink: 0;
+}
+.right-panel-tab {
+  display: flex; align-items: center; gap: 5px;
+  padding: 5px 10px; border-radius: var(--radius-sm);
+  font-size: 13px; font-weight: 500;
+  color: var(--color-text-secondary);
+  cursor: pointer; transition: all 0.15s;
+  user-select: none;
+}
+.right-panel-tab:hover { background: var(--glass-bg-hover); color: var(--color-text-primary); }
+.right-panel-tab.active {
+  background: rgba(124, 58, 237, 0.08);
+  color: var(--color-primary);
+}
+.right-panel-tab-title {
+  max-width: 180px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  display: inline-block;
+}
+.right-panel-tab-actions {
+  margin-left: auto; display: flex; gap: 4px; align-items: center;
+}
+.right-panel-body {
+  flex: 1; display: flex; flex-direction: column; overflow: hidden; min-height: 0;
+}
+.file-preview-container { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+.file-preview-back { display: flex; align-items: center; gap: 4px; padding: 8px 12px; cursor: pointer; font-size: 12px; color: var(--el-text-color-secondary); border-bottom: 1px solid var(--glass-border); flex-shrink: 0; }
+.file-preview-back:hover { color: var(--el-color-primary); }
 .file-panel-header { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; border-bottom: 1px solid var(--glass-border); flex-shrink: 0; }
 .file-panel-title { font-size: 13px; font-weight: 600; }
 .file-panel-header-actions { display: flex; gap: 4px; }
 .file-panel-search { padding: 8px 10px; flex-shrink: 0; }
 .file-panel-list { flex: 1; overflow-y: auto; padding: 4px; }
 .file-panel-list::-webkit-scrollbar { width: 5px; }
+.file-panel-list::-webkit-scrollbar::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.1); border-radius: 3px; }
 .file-panel-list::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.1); border-radius: 3px; }
 .file-panel-item {
   display: flex; align-items: center; gap: 8px;
@@ -2635,7 +3111,8 @@ async function saveSkills() {
   }
   .input-box { border-radius: 12px; }
   .input-textarea :deep(.el-textarea__inner) { font-size: 15px; padding: 8px 8px; }
-  .input-toolbar { padding: 4px 6px; gap: 4px; }
+  .input-toolbar { padding: 4px 6px; gap: 4px; justify-content: space-between; }
+  .toolbar-left { display: none; }
   .toolbar-agent { display: none; }
   .model-select { display: none; }
   .toolbar-mobile-selects { display: flex; align-items: center; gap: 3px; }
@@ -2647,16 +3124,17 @@ async function saveSkills() {
   .input-toolbar .el-button { flex-shrink: 0; }
   .minimal-select { flex-shrink: 0; }
 
-  /* fix: file panel → fixed bottom sheet (no scroll-trigger) */
-  .file-panel {
+  /* 移动端：右面板固定为底部抽屉，受 .open 控制 */
+  .right-panel {
     position: fixed !important; top: auto; bottom: 0; left: 0; right: 0;
-    width: 100% !important; height: 50vh; z-index: 190;
+    flex: none !important; min-width: 0 !important; width: 100% !important; height: 60vh; z-index: 190;
     border-radius: 16px 16px 0 0;
+    border-left: none;
     transform: translateY(100%);
     transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
     box-shadow: 0 -4px 20px rgba(0,0,0,0.15);
   }
-  .file-panel.open { transform: translateY(0); width: 100% !important; }
+  .right-panel.open { transform: translateY(0); }
 
   .scroll-nav { right: 8px; bottom: calc(120px + env(safe-area-inset-bottom, 0px)); z-index: 210; }
   .round-nav { right: 2px; top: 44%; gap: 5px; z-index: 210; }
@@ -2668,6 +3146,43 @@ async function saveSkills() {
   .msg { margin-bottom: 10px; gap: 8px; }
   .msg-actions { opacity: 0.6; }
 }
+
+/* E12: 智能体反问弹窗 */
+.ask-user-dialog .el-dialog__body { padding: 16px 20px; }
+.ask-user-question {
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--el-text-color-primary);
+  margin-bottom: 14px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.ask-user-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.ask-user-opt {
+  border: 1px solid var(--el-border-color);
+  background: var(--el-fill-color-blank);
+  color: var(--el-text-color-regular);
+  border-radius: 8px;
+  padding: 7px 14px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  font-family: inherit;
+}
+.ask-user-opt:hover { border-color: var(--el-color-primary); color: var(--el-color-primary); }
+.ask-user-opt.is-active {
+  background: var(--el-color-primary-light-9);
+  border-color: var(--el-color-primary);
+  color: var(--el-color-primary);
+  font-weight: 600;
+}
+.ask-user-opt-text { font-style: italic; }
+.ask-user-dialog .el-checkbox { margin-right: 16px; }
 
 </style>
 

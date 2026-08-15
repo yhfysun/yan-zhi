@@ -3,20 +3,13 @@ import type {
   PlatformAdapter,
   DatabaseAdapter,
   FsAdapter,
+  DirEntryInfo,
   KeyringAdapter,
   McpProcessAdapter,
   ShellAdapter,
 } from '@yan-zhi/core';
 import { invoke } from '@tauri-apps/api/core';
 import Database from '@tauri-apps/plugin-sql';
-import {
-  readTextFile,
-  writeTextFile,
-  exists,
-  mkdir,
-  remove,
-  readDir,
-} from '@tauri-apps/plugin-fs';
 import { Command } from '@tauri-apps/plugin-shell';
 
 /** 桌面端 SQLite 数据库（Tauri SQL 插件） */
@@ -59,16 +52,32 @@ class DesktopDatabase implements DatabaseAdapter {
   }
 }
 
-/** 桌面端文件系统（Tauri FS 插件） */
+/** 桌面端文件系统（自定义 Rust 命令，绕过 Tauri FS 插件 scope 限制） */
 class DesktopFs implements FsAdapter {
-  async readFile(path: string): Promise<string> { return readTextFile(path); }
-  async writeFile(path: string, content: string): Promise<void> { await writeTextFile(path, content); }
-  async exists(path: string): Promise<boolean> { return exists(path); }
-  async mkdir(path: string): Promise<void> { await mkdir(path, { recursive: true }); }
-  async remove(path: string): Promise<void> { await remove(path); }
+  async readFile(path: string): Promise<string> {
+    return invoke<string>('fs_read', { path });
+  }
+  async readFileBase64(path: string): Promise<string> {
+    return invoke<string>('fs_read_base64', { path });
+  }
+  async writeFile(path: string, content: string): Promise<void> {
+    await invoke('fs_write', { path, content });
+  }
+  async exists(path: string): Promise<boolean> {
+    return invoke<boolean>('fs_exists', { path });
+  }
+  async mkdir(path: string): Promise<void> {
+    await invoke('fs_mkdir', { path });
+  }
+  async remove(path: string): Promise<void> {
+    await invoke('fs_remove', { path });
+  }
   async readDir(path: string): Promise<string[]> {
-    const entries = await readDir(path);
+    const entries = await invoke<Array<{ name: string; path: string; is_dir: boolean }>>('fs_list_dir', { path });
     return entries.map((e) => e.name);
+  }
+  async listDirEntries(path: string): Promise<DirEntryInfo[]> {
+    return invoke<DirEntryInfo[]>('fs_list_dir', { path });
   }
 }
 

@@ -54,6 +54,7 @@ export interface Conversation {
   agentId?: string;
   platformId?: string;
   modelId?: string;
+  spaceId?: string;
   mcpServerIds: string[];
   _mcpDisabledTools?: Record<string, string[]>;
   _mcpToolAliases?: Record<string, Record<string, string>>;
@@ -62,6 +63,37 @@ export interface Conversation {
   pinned: boolean;
   createdAt: number;
   updatedAt: number;
+}
+
+/** 空间（文件夹）：组织会话与目录绑定 */
+export interface Space {
+  id: string;
+  name: string;
+  /** 绑定的本地目录路径（桌面端可选） */
+  dirPath?: string;
+  description?: string;
+  sortOrder: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** 文件分类：上传 / 中间产物 / 交付物 */
+export type FileCategory = 'upload' | 'intermediate' | 'deliverable';
+
+/** 会话文件（分类管理） */
+export interface ConversationFile {
+  id: string;
+  conversationId: string;
+  spaceId?: string;
+  name: string;
+  path: string;
+  category: FileCategory;
+  mimeType?: string;
+  size: number;
+  /** 来源：user（用户上传）/ agent（智能体产出） */
+  source: 'user' | 'agent';
+  messageId?: string;
+  createdAt: number;
 }
 
 /** 消息 */
@@ -167,6 +199,10 @@ export interface Agent {
   parentAgentId?: string;
   allowSubAgent: boolean;
   isDefault: boolean;
+  /** 是否为内置智能体（harness 内置，如 pageAgent）。内置智能体不可删除、类型不可改。 */
+  isBuiltin?: boolean;
+  /** 是否发布到商城（is_public）。本地表冗余字段，发布时同步 upsert 到服务端 agent 表 */
+  isPublic?: boolean;
   version: number;
   createdAt: number;
   updatedAt: number;

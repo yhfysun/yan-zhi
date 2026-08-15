@@ -1,3 +1,18 @@
 export * from './types';
 export * from './registry';
 export * from './builtin/index';
+export * from './sandbox';
+
+import { ToolRegistry } from './registry';
+import { registerBuiltInTools } from './builtin/index';
+
+let _registry: ToolRegistry | null = null;
+
+/** 内置工具注册中心单例（懒初始化，首次获取时注册所有内置工具） */
+export function getToolRegistry(): ToolRegistry {
+  if (!_registry) {
+    _registry = new ToolRegistry();
+    registerBuiltInTools(_registry);
+  }
+  return _registry;
+}

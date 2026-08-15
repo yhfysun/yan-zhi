@@ -16,6 +16,7 @@ export interface Skill {
   frontmatter: SkillFrontmatter;
   bodyMd: string;
   enabled: boolean;
+  isPublic?: boolean;
   category?: string;
   author?: string;
   installs?: number;
@@ -223,6 +224,17 @@ export const useSkillStore = defineStore('skill', () => {
     await loadSkills();
   }
 
+  /** 发布/下架 Skill 到商城：登录态走服务端 PATCH（同步 is_public），离线态写本地表 */
+  async function togglePublic(id: string, isPublic: boolean) {
+    if (on()) {
+      await api.patch(`/skills/${id}`, { isPublic });
+    } else {
+      const adapter = getPlatformAdapter();
+      await adapter.db.exec('UPDATE skill SET is_public = ? WHERE id = ?', [isPublic ? 1 : 0, id]);
+    }
+    await loadSkills();
+  }
+
   async function uninstall(id: string) {
     if (on()) {
       await api.delete(`/skills/${id}`);
@@ -250,7 +262,7 @@ export const useSkillStore = defineStore('skill', () => {
 
   return {
     skills, marketSkills, loading, category, search, filteredMarket, formatInstalls,
-    loadSkills, install, createCustom, updateSkill, toggleEnabled, uninstall,
+    loadSkills, install, createCustom, updateSkill, toggleEnabled, togglePublic, uninstall,
     importFromMd, exportToMd,
   };
 });
@@ -260,6 +272,7 @@ function rowToSkill(r: any): Skill {
     return {
       id: r.id, name: r.name, description: r.description,
       source: r.source, enabled: !!r.enabled,
+      isPublic: !!r.is_public,
       frontmatter: r.frontmatter_json ? JSON.parse(r.frontmatter_json) : { name: r.name },
       bodyMd: r.body_md,
     };
@@ -268,6 +281,7 @@ function rowToSkill(r: any): Skill {
     id: r.id, name: r.name,
     description: r.description || '',
     source: 'local',
+    isPublic: !!r.is_public,
     frontmatter: {
       name: r.name, description: r.description,
       triggers: r.triggers_json ? JSON.parse(r.triggers_json) : [],

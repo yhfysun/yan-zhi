@@ -2,11 +2,12 @@
 import { defineStore } from 'pinia';
 import { ref } from 'vue';
 import type { Conversation, Message, Platform, Model, DeltaToolCall } from '@yan-zhi/shared';
-import { getPlatformAdapter, LlmClient, ContextWindow } from '@yan-zhi/core';
+import { getPlatformAdapter, LlmClient, ContextWindow, getToolRegistry } from '@yan-zhi/core';
 import { uid } from '@yan-zhi/shared';
 import { useMcpStore } from './mcp';
 import { useAgentStore } from './agent';
 import { useSkillStore } from './skill';
+import { useToolsStore } from './tools';
 import { api } from '../api/client';
 import { useAuthStore } from './auth';
 
@@ -36,6 +37,7 @@ function rowToConv(r: any): Conversation {
     agentId: r.agent_id,
     platformId: r.platform_id,
     modelId: r.model_id,
+    spaceId: r.space_id,
     mcpServerIds,
     _mcpDisabledTools: convMcpDisabled,
     _mcpToolAliases: convMcpAliases,
@@ -76,6 +78,52 @@ export const useChatStore = defineStore('chat', () => {
   const mountedMcpServers = ref<string[]>([]);
   const mcpDisabledTools = ref<Record<string, string[]>>({});
   const mcpToolAliases = ref<Record<string, Record<string, string>>>({});
+  // E11: 浏览器面板步骤日志 —— dispatchToolCall 中 browser_* 工具执行后推送
+  const browserSteps = ref<Array<{ action: string; result: string; time: number }>>([]);
+  // 右侧预览面板是否展开；默认收起（初始无预览内容，选文件/Agent开浏览器时自动展开）
+  const rightPanelOpen = ref(false);
+  // 文件管理弹窗（el-dialog）是否显示——左侧栏「文件管理」按钮触发
+  const showFilePopup = ref(false);
+  // 右侧预览面板（即"预览窗口"）当前展示内容：'file' = 文件预览，'browser' = 网站/Agent页面预览
+  const rightPanelTab = ref<'file' | 'browser'>('file');
+  // 右侧预览面板正在预览的文件（点击文件管理弹窗中的文件后设置）
+  const previewingFile = ref<{ name: string; path: string } | null>(null);
+  // 右侧预览面板当前网站 tab 标题的原始 URL（BrowserPanel 写入），用于在 tab header 上展示「真实打开的网站名」
+  const currentBrowserUrl = ref('');
+
+  // E12: 智能体反问弹窗 —— 等待用户回答的待处理问题（dispatchToolCall 中 await 此 Promise 以暂停 ReAct 循环）
+  interface PendingQuestion {
+    question: string;
+    options?: string[];
+    multiSelect?: boolean;
+    resolve: (answer: string) => void;
+  }
+  const pendingQuestion = ref<PendingQuestion | null>(null);
+  // E12: 任务规划进度 —— task_plan / task_step 工具写入，UI 渲染 todo 卡片
+  type PlanStepStatus = 'pending' | 'running' | 'done' | 'failed';
+  interface PlanStep {
+    id: string;
+    title: string;
+    description?: string;
+    status: PlanStepStatus;
+    note?: string;
+  }
+  const planTitle = ref('');
+  const planSteps = ref<PlanStep[]>([]);
+
+  /** 用户提交反问弹窗的回答（或在未提供选项时填入文本）；答案作为该工具调用的 result 回写并继续循环 */
+  function submitPendingQuestion(answer: string) {
+    if (pendingQuestion.value) {
+      const resolve = pendingQuestion.value.resolve;
+      pendingQuestion.value = null;
+      resolve(answer);
+    }
+  }
+  /** 清空当前任务计划（用户关闭进度卡片时调用） */
+  function clearPlan() {
+    planTitle.value = '';
+    planSteps.value = [];
+  }
   let abortController: AbortController | null = null;
 
   const isServerMode = () => !!useAuthStore().isLoggedIn;
@@ -132,11 +180,19 @@ export const useChatStore = defineStore('chat', () => {
     mcpToolAliases.value = conv?._mcpToolAliases ? JSON.parse(JSON.stringify(conv._mcpToolAliases)) : {};
   }
 
-  async function createConversation(title: string, opts?: { platformId?: string; modelId?: string; skillIds?: string[] }): Promise<string> {
+  async function createConversation(title: string, opts?: { platformId?: string; modelId?: string; skillIds?: string[]; spaceId?: string }): Promise<string> {
+    // 默认挂到当前选中的空间（null 表示"全部"则不归类，即 spaceId=null）
+    let spaceId = opts?.spaceId;
+    if (spaceId === undefined) {
+      try {
+        const { useSpaceStore } = await import('./space');
+        spaceId = useSpaceStore().currentSpaceId ?? undefined;
+      } catch { /* space store 未加载则忽略 */ }
+    }
     if (isServerMode()) {
       const r = await api.post<any>('/conversations', {
         title, platformId: opts?.platformId, modelId: opts?.modelId,
-        skillIds: opts?.skillIds || [],
+        skillIds: opts?.skillIds || [], spaceId: spaceId || null,
       });
       if ('data' in r) {
         const row = r.data as any;
@@ -151,8 +207,8 @@ export const useChatStore = defineStore('chat', () => {
     const ts = Date.now();
     const skillIdsJson = JSON.stringify(opts?.skillIds || []);
     await adapter.db.exec(
-      'INSERT INTO conversation (id, title, platform_id, model_id, mcp_servers_json, skill_ids_json, pinned, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      [id, title, opts?.platformId || null, opts?.modelId || null, '[]', skillIdsJson, 0, ts, ts],
+      'INSERT INTO conversation (id, title, platform_id, model_id, space_id, mcp_servers_json, skill_ids_json, pinned, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [id, title, opts?.platformId || null, opts?.modelId || null, spaceId || null, '[]', skillIdsJson, 0, ts, ts],
     );
     await loadConversations();
     return id;
@@ -169,6 +225,7 @@ export const useChatStore = defineStore('chat', () => {
       if (patch._mcpDisabledTools !== undefined) body.mcpDisabledTools = patch._mcpDisabledTools;
       if (patch.skillIds !== undefined) body.skillIds = patch.skillIds;
       if (patch.systemPrompt !== undefined) body.systemPrompt = patch.systemPrompt;
+      if (patch.spaceId !== undefined) body.spaceId = patch.spaceId || null;
       if (Object.keys(body).length === 0) return;
       await api.patch(`/conversations/${id}`, body);
       await loadConversations();
@@ -181,6 +238,7 @@ export const useChatStore = defineStore('chat', () => {
     if (patch.platformId !== undefined) { sets.push('platform_id = ?'); params.push(patch.platformId); }
     if (patch.modelId !== undefined) { sets.push('model_id = ?'); params.push(patch.modelId); }
     if (patch.pinned !== undefined) { sets.push('pinned = ?'); params.push(patch.pinned ? 1 : 0); }
+    if (patch.spaceId !== undefined) { sets.push('space_id = ?'); params.push(patch.spaceId || null); }
     if (patch.mcpServerIds !== undefined || patch._mcpDisabledTools !== undefined || patch._mcpToolAliases !== undefined) {
       const serverIds = patch.mcpServerIds ?? mountedMcpServers.value;
       const disabled = patch._mcpDisabledTools ?? mcpDisabledTools.value;
@@ -358,20 +416,302 @@ export const useChatStore = defineStore('chat', () => {
     };
   }
 
+  // ============ 工具命名与分发（A 组重构：内置裸名 / MCP shortId / 自定义 id 化） ============
+
+  // 工具名合法性：仅允许 [a-zA-Z0-9_-]，长度 1-64（A6）
+  const TOOL_NAME_RE = /^[a-zA-Z0-9_-]{1,64}$/;
+  // 保留前缀：内置工具裸名不得以此开头，避免与 MCP/自定义工具路由冲突
+  const MCP_PREFIX = 'mcp_';
+  const CUSTOM_PREFIX = 'custom_';
+
+  /** MCP serverId → 8 位 shortId：去掉 mcp_ 前缀后取前 8 个字母数字。
+   *  desktop 用 uid('mcp_') 生成 mcp_xxxxxxxx；server 用 uuid() 生成 UUID，
+   *  两种格式统一处理，修复旧代码 mcp_mcp_ 双前缀问题（A3）。 */
+  function mcpShortIdOf(serverId: string): string {
+    const base = serverId.startsWith('mcp_') ? serverId.slice(4) : serverId;
+    return base.replace(/[^a-zA-Z0-9]/g, '').slice(0, 8);
+  }
+
+  /** 构建 shortId→serverId 精确映射表：仅当某 shortId 唯一对应一个 serverId 时才登记，
+   *  避免前缀碰撞导致工具调用误路由到错误的服务（A3 精确映射）。 */
+  function buildMcpShortIdMap(): Map<string, string> {
+    const groups = new Map<string, string[]>();
+    for (const sid of mountedMcpServers.value) {
+      const shortId = mcpShortIdOf(sid);
+      if (!shortId) continue;
+      if (!groups.has(shortId)) groups.set(shortId, []);
+      groups.get(shortId)!.push(sid);
+    }
+    const result = new Map<string, string>();
+    for (const [shortId, sids] of groups) {
+      if (sids.length === 1) result.set(shortId, sids[0]); // 仅唯一时精确映射
+    }
+    return result;
+  }
+
+  /** 自定义工具暴露名：custom_{id前8位}_{name}，按 id 反查分发，避免裸 name 与内置/MCP 重名（A2） */
+  function customToolExposedName(id: string, name: string): string {
+    const idTag = (id || '').replace(/[^a-zA-Z0-9]/g, '').slice(0, 8);
+    return `${CUSTOM_PREFIX}${idTag}_${name}`;
+  }
+
+  /** 解析 MCP 工具暴露名 → { serverId, toolName } | null（shortId→serverId 精确映射 + 工具存在性校验） */
+  function parseMcpToolName(fullName: string): { serverId: string; toolName: string } | null {
+    const m = fullName.match(/^mcp_([a-zA-Z0-9]{1,8})__(.+)$/);
+    if (!m) return null;
+    const shortId = m[1];
+    const toolName = m[2];
+    const serverId = buildMcpShortIdMap().get(shortId);
+    if (!serverId) return null;
+    const mcpStore = useMcpStore();
+    const list = mcpStore.tools[serverId] || [];
+    if (!list.some(t => t.name === toolName)) return null; // 防止幽灵调用
+    return { serverId, toolName };
+  }
+
+  /** 解析自定义工具暴露名 → { id, name } | null（精确字符串匹配已挂载工具，无碰撞风险） */
+  function parseCustomToolName(fullName: string): { id: string; name: string } | null {
+    if (!fullName.startsWith(CUSTOM_PREFIX)) return null;
+    const merged = getMergedMounts();
+    const toolsStore = useToolsStore();
+    for (const id of merged.customToolIds) {
+      const ct = toolsStore.customTools.find(t => t.id === id);
+      if (!ct) continue;
+      if (customToolExposedName(ct.id, ct.name) === fullName) {
+        return { id: ct.id, name: ct.name };
+      }
+    }
+    return null;
+  }
+
+  /** 统一工具调用分发（A4 分发顺序）：
+   *  1) mcp_{shortId}__{toolName} → MCP callTool
+   *  2) custom_{idTag}_{name}     → 服务端沙箱 /api/tools/:id/execute（沙箱依赖 node:vm，仅服务端可用）
+   *  3) 裸名                       → ToolRegistry.execute（内置工具，经平台适配器执行）
+   *  重名不误路由：三类前缀互斥，裸名不得以 mcp_/custom_ 开头。 */
+  async function dispatchToolCall(fullName: string, args: unknown): Promise<{ ok: boolean; result?: unknown; msg?: string }> {
+    const mcpStore = useMcpStore();
+    const registry = getToolRegistry();
+
+    // 1) MCP 工具
+    if (fullName.startsWith(MCP_PREFIX) && fullName.includes('__')) {
+      const parsed = parseMcpToolName(fullName);
+      if (!parsed) return { ok: false, msg: '无法解析 MCP 工具或工具不存在: ' + fullName };
+      return mcpStore.callTool(parsed.serverId, parsed.toolName, args);
+    }
+
+    // 2) 自定义工具（服务端 node:vm 沙箱执行）
+    if (fullName.startsWith(CUSTOM_PREFIX)) {
+      const parsed = parseCustomToolName(fullName);
+      if (!parsed) return { ok: false, msg: '无法解析自定义工具: ' + fullName };
+      if (!isServerMode()) {
+        return { ok: false, msg: '自定义工具需登录服务端执行（沙箱依赖 Node 运行时）' };
+      }
+      const r = await api.post<any>(`/tools/${parsed.id}/execute`, { args });
+      if ('error' in r) return { ok: false, msg: r.error };
+      return { ok: true, result: r.data };
+    }
+
+    // 3) 内置工具裸名（经 ToolRegistry + 平台适配器执行）
+    if (registry.has(fullName)) {
+      if (fullName.startsWith(MCP_PREFIX) || fullName.startsWith(CUSTOM_PREFIX)) {
+        return { ok: false, msg: '内置工具名与保留前缀冲突: ' + fullName };
+      }
+      // E7: call_agent 特殊拦截 —— 委派给子智能体执行
+      if (fullName === 'call_agent') {
+        return runSubAgent(args as { agentId?: string; input?: string });
+      }
+      // E12: ask_user —— 弹出反问对话框，await 用户回答后再继续（暂停 ReAct 循环）
+      if (fullName === 'ask_user') {
+        const q = String((args as Record<string, unknown>).question || '');
+        if (!q) return { ok: false, msg: 'ask_user 缺少 question 参数' };
+        return await new Promise<{ ok: boolean; result?: unknown; msg?: string }>((resolve) => {
+          pendingQuestion.value = {
+            question: q,
+            options: Array.isArray((args as Record<string, unknown>).options)
+              ? ((args as Record<string, unknown>).options as unknown[]).map(String)
+              : undefined,
+            multiSelect: !!(args as Record<string, unknown>).multiSelect,
+            resolve: (answer: string) => resolve({ ok: true, result: answer }),
+          };
+        });
+      }
+      // E12: task_plan —— 创建/替换任务计划，渲染进度卡片
+      if (fullName === 'task_plan') {
+        const steps = Array.isArray((args as Record<string, unknown>).steps)
+          ? ((args as Record<string, unknown>).steps as any[])
+          : [];
+        planTitle.value = String((args as Record<string, unknown>).title || '任务计划');
+        planSteps.value = steps
+          .filter((s: any) => s && s.title)
+          .map((s: any) => ({
+            id: uid(),
+            title: String(s.title),
+            description: s.description ? String(s.description) : undefined,
+            status: 'pending' as PlanStepStatus,
+          }));
+        return { ok: true, result: `已创建任务计划「${planTitle.value}」，共 ${planSteps.value.length} 步` };
+      }
+      // E12: task_step —— 更新某一步状态，刷新进度卡片
+      if (fullName === 'task_step') {
+        const idx = Number((args as Record<string, unknown>).index);
+        const status = String((args as Record<string, unknown>).status || 'done') as PlanStepStatus;
+        const note = (args as Record<string, unknown>).note != null ? String((args as Record<string, unknown>).note) : undefined;
+        if (!Number.isFinite(idx) || idx < 1 || idx > planSteps.value.length) {
+          return { ok: false, msg: `task_step 的 index 超出范围（1-${planSteps.value.length}）` };
+        }
+        const step = planSteps.value[idx - 1];
+        if (step) {
+          step.status = status;
+          if (note !== undefined) step.note = note;
+        }
+        return { ok: true, result: `已更新第 ${idx} 步状态为 ${status}` };
+      }
+      const res = await registry.execute(fullName, args as Record<string, unknown>);
+      const text = res.content?.[0]?.text ?? '';
+      // E11: browser_* 工具执行后推送步骤日志到浏览器面板
+      if (fullName.startsWith('browser_')) {
+        browserSteps.value.push({ action: fullName, result: text, time: Date.now() });
+      }
+      return { ok: !res.isError, result: text, msg: res.isError ? text : undefined };
+    }
+
+    return { ok: false, msg: '未知工具: ' + fullName };
+  }
+
+  /** E7: 运行子智能体（call_agent 的实际执行逻辑）—— 递归 LLM ReAct 循环，带 callStack 防递归 */
+  const subAgentCallStack = ref<string[]>([]);
+  async function runSubAgent(args: { agentId?: string; input?: string }): Promise<{ ok: boolean; result?: unknown; msg?: string }> {
+    const agentId = args.agentId;
+    const input = args.input;
+    if (!agentId) return { ok: false, msg: 'agentId 为必填项' };
+    if (!input) return { ok: false, msg: 'input 为必填项' };
+    // 防递归：callStack 深度限制
+    if (subAgentCallStack.value.length >= 3) {
+      return { ok: false, msg: '子智能体调用深度超限（最多 3 层）' };
+    }
+    if (subAgentCallStack.value.includes(agentId)) {
+      return { ok: false, msg: '检测到循环调用，已终止' };
+    }
+
+    try {
+      const { useAgentStore } = await import('./agent');
+      const agentStore = useAgentStore();
+      const subAgent = agentStore.agents.find((a) => a.id === agentId);
+      if (!subAgent) return { ok: false, msg: '子智能体不存在: ' + agentId };
+
+      // 获取当前会话的平台和模型
+      const conv = conversations.value.find((c) => c.id === currentConvId.value);
+      const platformId = subAgent.platformId || conv?.platformId;
+      const modelId = subAgent.modelId || conv?.modelId;
+      if (!platformId || !modelId) {
+        return { ok: false, msg: '子智能体未配置平台/模型，无法执行' };
+      }
+      const { usePlatformStore } = await import('./platform');
+      const platformStore = usePlatformStore();
+      const resolved = platformStore.resolveModel(modelId, platformId);
+      if (!resolved) return { ok: false, msg: '无法解析子智能体的模型配置' };
+      const platform = platformStore.platforms.find((p) => p.id === platformId);
+      if (!platform) return { ok: false, msg: '平台不存在' };
+
+      // 临时切换挂载到子智能体的工具配置，运行简化 ReAct 循环
+      subAgentCallStack.value.push(agentId);
+      try {
+        const result = await runSubAgentLlm(subAgent, input, platform, resolved);
+        return { ok: true, result: result };
+      } finally {
+        subAgentCallStack.value.pop();
+      }
+    } catch (e: any) {
+      return { ok: false, msg: '子智能体执行失败: ' + (e?.message || e) };
+    }
+  }
+
+  /** 子智能体 LLM 循环：用子智能体的 systemPrompt + 挂载工具运行有限步 ReAct */
+  async function runSubAgentLlm(agent: any, input: string, platform: Platform, model: Model): Promise<string> {
+    const registry = getToolRegistry();
+    const maxSteps = agent.config?.maxReActSteps || 8;
+    const client = new LlmClient(platform, model);
+
+    // 构建子智能体的工具列表
+    const subTools: unknown[] = [];
+    const subBuiltinIds: string[] = agent.builtinToolIds || [];
+    for (const name of subBuiltinIds) {
+      if (!registry.has(name)) continue;
+      // 递归调用自身用 call_agent 会在 dispatchToolCall 中拦截
+      const def = registry.get(name)!;
+      subTools.push({ type: 'function', function: { name, description: def.description, parameters: def.inputSchema } });
+    }
+
+    const messages: any[] = [
+      { role: 'system', content: agent.systemPrompt || '你是一个智能助手。' },
+      { role: 'user', content: input },
+    ];
+
+    for (let step = 0; step < maxSteps; step++) {
+      const response = await client.chat({
+        messages,
+        tools: subTools.length > 0 ? subTools : undefined,
+        temperature: agent.temperature ?? 0.7,
+        maxTokens: agent.maxTokens ?? 2048,
+      });
+
+      const content = response.delta?.content || '';
+      const toolCalls = response.delta?.toolCalls || [];
+
+      if (toolCalls.length > 0) {
+        messages.push({ role: 'assistant', content, toolCalls });
+        for (const tc of toolCalls) {
+          const tcName = tc.function?.name || '';
+          const tcArgs = typeof tc.function?.arguments === 'string' ? safeParseJson(tc.function.arguments) : {};
+          const result = await dispatchToolCall(tcName, tcArgs);
+          const resultStr = result.ok
+            ? (typeof result.result === 'string' ? result.result : JSON.stringify(result.result))
+            : JSON.stringify({ error: result.msg || '工具执行失败' });
+          messages.push({ role: 'tool', toolCallId: tc.id, content: resultStr });
+        }
+      } else {
+        return content || '(无输出)';
+      }
+    }
+    return '(已达最大步数)';
+  }
+
   async function buildTools(): Promise<unknown[]> {
     const merged = getMergedMounts();
     const tools: unknown[] = [];
     const mcpStore = useMcpStore();
+    const registry = getToolRegistry();
+    const toolsStore = useToolsStore();
+    const seen = new Set<string>(); // 去重：同一名工具不重复暴露
 
-    // MCP 工具
+    // 1) 内置工具（裸名，且不得以 mcp_/custom_ 开头，避免与保留前缀路由冲突）（A1）
+    for (const name of merged.builtinToolIds) {
+      if (!registry.has(name)) continue;
+      if (name.startsWith(MCP_PREFIX) || name.startsWith(CUSTOM_PREFIX)) continue;
+      if (seen.has(name)) continue;
+      seen.add(name);
+      const def = registry.get(name)!;
+      tools.push({
+        type: 'function',
+        function: { name, description: def.description, parameters: def.inputSchema },
+      });
+    }
+
+    // 2) MCP 工具（mcp_{shortId}__{toolName}，去双 mcp_ 前缀）（A3）
     for (const m of merged.mcpToolMounts) {
       const list = mcpStore.tools[m.serverId] || [];
+      const shortId = mcpShortIdOf(m.serverId);
       for (const t of list) {
         if (m.toolName !== '*' && m.toolName !== t.name) continue;
+        const exposedName = `${MCP_PREFIX}${shortId}__${t.name}`;
+        if (!TOOL_NAME_RE.test(exposedName)) continue; // 非法名跳过（A6）
+        if (seen.has(exposedName)) continue;
+        seen.add(exposedName);
         tools.push({
           type: 'function',
           function: {
-            name: `mcp_${m.serverId.slice(0, 8)}__${t.name}`,
+            name: exposedName,
             description: t.description || t.name,
             parameters: t.inputSchema || { type: 'object', properties: {} },
           },
@@ -379,21 +719,22 @@ export const useChatStore = defineStore('chat', () => {
       }
     }
 
-    // 自定义工具
+    // 3) 自定义工具（custom_{id前8位}_{name}，按 id 反查分发，避免裸 name 重名）（A2）
     for (const id of merged.customToolIds) {
-      const { useToolsStore } = await import('./tools');
-      const toolsStore = useToolsStore();
       const ct = toolsStore.customTools.find(t => t.id === id);
-      if (ct && ct.enabled) {
-        tools.push({
-          type: 'function',
-          function: {
-            name: `custom_${ct.name}`,
-            description: ct.description || ct.name,
-            parameters: ct.inputSchema || { type: 'object', properties: {} },
-          },
-        });
-      }
+      if (!ct || !ct.enabled) continue;
+      const exposedName = customToolExposedName(ct.id, ct.name);
+      if (!TOOL_NAME_RE.test(exposedName)) continue; // 非法名跳过（A6）
+      if (seen.has(exposedName)) continue;
+      seen.add(exposedName);
+      tools.push({
+        type: 'function',
+        function: {
+          name: exposedName,
+          description: ct.description || ct.name,
+          parameters: ct.inputSchema || { type: 'object', properties: {} },
+        },
+      });
     }
     return tools;
   }
@@ -401,36 +742,45 @@ export const useChatStore = defineStore('chat', () => {
   function buildToolsDescription(): string {
     const merged = getMergedMounts();
     const mcpStore = useMcpStore();
+    const registry = getToolRegistry();
     const lines: string[] = [];
 
+    // 内置工具（裸名，与 buildTools 暴露名保持一致）
     if (merged.builtinToolIds.length > 0) {
-      lines.push('### 内置工具');
+      const builtinLines: string[] = [];
       for (const name of merged.builtinToolIds) {
-        lines.push(`- \`${name}\``);
+        if (!registry.has(name)) continue;
+        if (name.startsWith(MCP_PREFIX) || name.startsWith(CUSTOM_PREFIX)) continue;
+        builtinLines.push(`- \`${name}\`: ${registry.get(name)!.description}`);
       }
+      if (builtinLines.length > 0) { lines.push('### 内置工具'); lines.push(...builtinLines); }
     }
 
+    // MCP 工具（暴露名与 buildTools 一致：mcp_{shortId}__{toolName}，去双 mcp_ 前缀）
     for (const m of merged.mcpToolMounts) {
       const server = mcpStore.servers.find(s => s.id === m.serverId);
       const list = mcpStore.tools[m.serverId] || [];
       const enabled = m.toolName === '*' ? list : list.filter(t => t.name === m.toolName);
       if (enabled.length === 0) continue;
+      const shortId = mcpShortIdOf(m.serverId);
       lines.push(`### ${server?.name || m.serverId}`);
       for (const t of enabled) {
         const desc = t.description || '';
         const shortDesc = desc.length > 120 ? desc.slice(0, 117) + '...' : desc;
-        lines.push(`- \`mcp_${m.serverId.slice(0, 8)}__${t.name}\`: ${shortDesc}`);
+        lines.push(`- \`${MCP_PREFIX}${shortId}__${t.name}\`: ${shortDesc}`);
       }
     }
 
+    // 自定义工具（暴露名与 buildTools 一致：custom_{id前8位}_{name}）
     if (merged.customToolIds.length > 0) {
-      lines.push('### 自定义工具');
-      const { useToolsStore } = require('./tools');
-      const ts = useToolsStore();
+      const toolsStore = useToolsStore(); // 顶部已 import，修复原 require('./tools') 在 ESM/Vite 下不可用的问题（A5）
+      const customLines: string[] = [];
       for (const id of merged.customToolIds) {
-        const ct = ts.customTools.find((t: any) => t.id === id);
-        if (ct) lines.push(`- \`custom_${ct.name}\`: ${ct.description || ct.name}`);
+        const ct = toolsStore.customTools.find(t => t.id === id);
+        if (!ct) continue;
+        customLines.push(`- \`${customToolExposedName(ct.id, ct.name)}\`: ${ct.description || ct.name}`);
       }
+      if (customLines.length > 0) { lines.push('### 自定义工具'); lines.push(...customLines); }
     }
 
     return lines.length > 0 ? lines.join('\n') : '';
@@ -499,7 +849,7 @@ export const useChatStore = defineStore('chat', () => {
         for (const t of enabled) {
           const desc = t.description || '无描述';
           const shortDesc = desc.length > 120 ? desc.slice(0, 117) + '...' : desc;
-          const fnName = `mcp_${sid.slice(0, 8)}__${t.name}`;
+          const fnName = `${MCP_PREFIX}${mcpShortIdOf(sid)}__${t.name}`;
           const aliasLabel = aliases[t.name] ? `（${aliases[t.name]}）` : (t.alias ? `（${t.alias}）` : '');
           lines.push(`- \`${fnName}\`${aliasLabel}: ${shortDesc}`);
         }
@@ -518,22 +868,6 @@ export const useChatStore = defineStore('chat', () => {
     const steps = agent?.config?.maxReActSteps;
     if (typeof steps === 'number' && steps > 0) return steps;
     return 10;
-  }
-
-  function parseToolCallName(fullName: string): { serverId: string; toolName: string } | null {
-    // 新格式: mcp_{shortId}__{toolName}
-    let m = fullName.match(/^mcp_(.+?)__(.+)$/);
-    if (m) {
-      const match = mountedMcpServers.value.find(sid => sid.startsWith(m![1]));
-      if (match) return { serverId: match, toolName: m[2] };
-    }
-    // 完整 UUID 老格式: mcp_{full-uuid}_{toolName}
-    m = fullName.match(/^mcp_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})_(.+)$/);
-    if (m) {
-      const match = mountedMcpServers.value.find(sid => sid === m![1]);
-      if (match) return { serverId: match, toolName: m[2] };
-    }
-    return null;
   }
 
   async function callLlm(
@@ -556,7 +890,6 @@ export const useChatStore = defineStore('chat', () => {
     streaming.value = true;
     abortController = new AbortController();
     const maxSteps = getMaxReActSteps();
-    const mcpStore = useMcpStore();
 
     await ensureMcpConnections();
 
@@ -709,18 +1042,8 @@ export const useChatStore = defineStore('chat', () => {
         });
 
         for (const tc of toolCalls) {
-          const parsed = parseToolCallName(tc.name);
-          if (!parsed) {
-            await addMessage({
-              conversationId: currentConvId.value,
-              role: 'tool',
-              content: JSON.stringify({ error: '无法解析工具名称: ' + tc.name }),
-              toolCallId: tc.id,
-            });
-            continue;
-          }
-
-          const result = await mcpStore.callTool(parsed.serverId, parsed.toolName, safeParseJson(tc.arguments));
+          const parsedArgs = safeParseJson(tc.arguments) as Record<string, unknown>;
+          const result = await dispatchToolCall(tc.name, parsedArgs);
           const resultStr = result.ok
             ? (typeof result.result === 'string' ? result.result : JSON.stringify(result.result))
             : JSON.stringify({ error: result.msg || '工具执行失败' });
@@ -731,6 +1054,25 @@ export const useChatStore = defineStore('chat', () => {
             content: resultStr,
             toolCallId: tc.id,
           });
+
+          // D4: file_write 成功后，记录到 conversation_file（分类管理）
+          if (result.ok && tc.name === 'file_write' && parsedArgs.path && currentConvId.value) {
+            try {
+              const { useFileStore } = await import('./file');
+              const filePath = String(parsedArgs.path);
+              const sep = filePath.includes('/') ? '/' : '\\';
+              const fileName = filePath.split(sep).pop() || filePath;
+              const category = (parsedArgs.category as 'intermediate' | 'deliverable') || 'intermediate';
+              await useFileStore().registerFile({
+                conversationId: currentConvId.value,
+                name: fileName,
+                path: filePath,
+                category,
+                source: 'agent',
+                messageId: assistantMsgId,
+              });
+            } catch (e) { console.warn('[Chat] 记录文件失败:', e); }
+          }
         }
       }
 
@@ -791,6 +1133,9 @@ export const useChatStore = defineStore('chat', () => {
 
   return {
     conversations, currentMessages, streaming, currentConvId, mountedMcpServers, mcpDisabledTools, mcpToolAliases,
+    browserSteps, rightPanelOpen,
+    showFilePopup, previewingFile, rightPanelTab, currentBrowserUrl,
+    pendingQuestion, planSteps, planTitle, submitPendingQuestion, clearPlan,
     activeAgent, activeAgentId,
     loadConversations, loadMessages, createConversation, updateConversation, deleteConversation, deleteConversations,
     addMessage, updateMessage, deleteMessage, sendMessage, regenerate, stop, buildTools,

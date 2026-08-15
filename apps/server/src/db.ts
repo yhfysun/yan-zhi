@@ -46,6 +46,17 @@ db.exec(`
     created_at INTEGER NOT NULL
   );
 
+  CREATE TABLE IF NOT EXISTS space (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES user(id),
+    name TEXT NOT NULL,
+    dir_path TEXT,
+    description TEXT,
+    sort_order INTEGER DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+
   CREATE TABLE IF NOT EXISTS conversation (
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL REFERENCES user(id),
@@ -53,6 +64,7 @@ db.exec(`
     agent_id TEXT,
     platform_id TEXT,
     model_id TEXT,
+    space_id TEXT,
     mcp_servers_json TEXT DEFAULT '[]',
     skill_ids_json TEXT DEFAULT '[]',
     system_prompt TEXT,
@@ -73,6 +85,41 @@ db.exec(`
     system_prompt_snapshot TEXT,
     tokens INTEGER DEFAULT 0,
     created_at INTEGER NOT NULL
+  );
+
+  -- 智能体（商城发布用：远程节点通过 /marketplace/agents/publish 把本地 agent 快照 upsert 到此表）
+  CREATE TABLE IF NOT EXISTS agent (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT,
+    avatar TEXT,
+    system_prompt TEXT,
+    temperature REAL DEFAULT 0.7,
+    max_tokens INTEGER DEFAULT 2048,
+    top_p REAL DEFAULT 1.0,
+    frequency_penalty REAL DEFAULT 0,
+    presence_penalty REAL DEFAULT 0,
+    platform_id TEXT,
+    model_id TEXT,
+    workflow_json TEXT DEFAULT '{"nodes":[],"edges":[]}',
+    inputs_schema_json TEXT,
+    config_json TEXT,
+    parent_agent_id TEXT,
+    allow_sub_agent INTEGER DEFAULT 0,
+    is_default INTEGER DEFAULT 0,
+    type TEXT DEFAULT 'harness',
+    builtin_tool_ids TEXT,
+    custom_tool_ids TEXT,
+    mcp_tool_mounts TEXT,
+    skill_ids TEXT,
+    sub_agent_ids TEXT,
+    source TEXT,
+    remote_source_id TEXT,
+    is_public INTEGER NOT NULL DEFAULT 0,
+    version INTEGER DEFAULT 1,
+    installs INTEGER DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
   );
 
   CREATE TABLE IF NOT EXISTS mcp_server (
@@ -118,11 +165,16 @@ db.exec(`
   );
 
   CREATE INDEX IF NOT EXISTS idx_conversation_user ON conversation(user_id);
+-- 注意：idx_conversation_space 引用 conversation.space_id，但该列由下方 ALTER TABLE 迁移添加。
+-- 不能放在此处（旧库 conversation 表无 space_id 列会导致整个 db.exec() 失败，连带 conversation_file 等后续表也无法创建）。
+-- 该索引已移至迁移代码块之后创建。
+CREATE INDEX IF NOT EXISTS idx_space_user ON space(user_id);
   CREATE INDEX IF NOT EXISTS idx_message_conv ON message(conversation_id);
   CREATE INDEX IF NOT EXISTS idx_platform_user ON platform(user_id);
   CREATE INDEX IF NOT EXISTS idx_model_platform ON model(platform_id);
   CREATE INDEX IF NOT EXISTS idx_mcp_user ON mcp_server(user_id);
   CREATE INDEX IF NOT EXISTS idx_skill_user ON skill(user_id);
+  -- 注意：conversation_file 的索引必须在该表创建之后（见下方），否则 db.exec() 会因表不存在而中断。
 
   CREATE TABLE IF NOT EXISTS custom_tool (
     id TEXT PRIMARY KEY,
@@ -175,12 +227,36 @@ db.exec(`
     port INTEGER NOT NULL DEFAULT 3001,
     updated_at INTEGER NOT NULL
   );
+
+  CREATE TABLE IF NOT EXISTS conversation_file (
+    id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL REFERENCES conversation(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL REFERENCES user(id),
+    space_id TEXT,
+    name TEXT NOT NULL,
+    path TEXT NOT NULL,
+    category TEXT NOT NULL DEFAULT 'intermediate',
+    mime_type TEXT,
+    size INTEGER DEFAULT 0,
+    source TEXT DEFAULT 'agent',
+    message_id TEXT,
+    created_at INTEGER NOT NULL
+  );
+
+  -- conversation_file 的索引：必须在表创建之后才能创建
+  CREATE INDEX IF NOT EXISTS idx_conv_file_conv ON conversation_file(conversation_id);
+  CREATE INDEX IF NOT EXISTS idx_conv_file_cat ON conversation_file(conversation_id, category);
 `);
 
 // 迁移 mcp_tool 表（添加 alias, remark 列）
 for (const col of ['alias', 'remark']) {
   try { db.exec(`ALTER TABLE mcp_tool ADD COLUMN ${col} TEXT`); } catch {}
 }
+
+// 迁移 conversation 表（添加 space_id 列）
+try { db.exec('ALTER TABLE conversation ADD COLUMN space_id TEXT'); } catch {}
+// 迁移完成后才能创建引用 space_id 的索引（旧库迁移场景）
+try { db.exec('CREATE INDEX IF NOT EXISTS idx_conversation_space ON conversation(space_id)'); } catch {}
 
 // 迁移 message 表（添加 system_prompt_snapshot 列）
 try { db.exec('ALTER TABLE message ADD COLUMN system_prompt_snapshot TEXT'); } catch {}
@@ -205,6 +281,13 @@ try {
   for (const col of ['builtin_tool_ids', 'custom_tool_ids', 'mcp_tool_mounts', 'skill_ids', 'sub_agent_ids']) {
     try { db.exec(`ALTER TABLE agent ADD COLUMN ${col} TEXT`); } catch {}
   }
+  // E4: 内置智能体标记（如 pageAgent）
+  try { db.exec('ALTER TABLE agent ADD COLUMN is_builtin INTEGER NOT NULL DEFAULT 0'); } catch {}
 } catch {}
+
+// 迁移：custom_tool / agent 新增 installs 计数列（商城安装计数）
+for (const t of ['custom_tool', 'agent']) {
+  try { db.exec(`ALTER TABLE ${t} ADD COLUMN installs INTEGER NOT NULL DEFAULT 0`); } catch {}
+}
 
 export { db };

@@ -42,6 +42,7 @@ router.patch('/:id', (req: Request, res: Response) => {
   if (req.body.enabled !== undefined) { sets.push('enabled = ?'); vals.push(req.body.enabled ? 1 : 0); }
   if (req.body.category !== undefined) { sets.push('category = ?'); vals.push(req.body.category); }
   if (req.body.triggers !== undefined) { sets.push('triggers_json = ?'); vals.push(JSON.stringify(req.body.triggers)); }
+  if (req.body.isPublic !== undefined) { sets.push('is_public = ?'); vals.push(req.body.isPublic ? 1 : 0); }
   if (sets.length === 0) { res.json({ data: existing }); return; }
   vals.push(sid);
   db.prepare(`UPDATE skill SET ${sets.join(', ')} WHERE id = ?`).run(...vals);

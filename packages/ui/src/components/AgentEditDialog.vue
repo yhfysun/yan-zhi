@@ -9,12 +9,12 @@
               <el-form-item label="名称"><el-input v-model="form.name" placeholder="智能体名称" /></el-form-item>
               <el-form-item label="描述"><el-input v-model="form.description" placeholder="简短描述" /></el-form-item>
               <el-form-item label="类型">
-                <div class="type-selector">
-                  <div class="type-card" :class="{ active: form.type === 'harness' }" @click="form.type = 'harness'">
+                <div class="type-selector" :class="{ disabled: isEdit }">
+                  <div class="type-card" :class="{ active: form.type === 'harness' }" @click="!isEdit && (form.type = 'harness')">
                     <div class="type-icon"><el-icon :size="18"><Connection /></el-icon></div>
                     <span>Harness · 挂载即用</span>
                   </div>
-                  <div class="type-card" :class="{ active: form.type === 'workflow' }" @click="form.type = 'workflow'">
+                  <div class="type-card" :class="{ active: form.type === 'workflow' }" @click="!isEdit && (form.type = 'workflow')">
                     <div class="type-icon"><el-icon :size="18"><Share /></el-icon></div>
                     <span>Workflow · DAG编排</span>
                   </div>
@@ -29,6 +29,12 @@
                     <el-option v-for="m in g.models" :key="m.id" :label="m.alias || m.modelId" :value="m.id" />
                   </el-option-group>
                 </el-select>
+              </el-form-item>
+              <el-form-item v-if="authStore.isLoggedIn" label="发布到商城">
+                <div class="publish-row">
+                  <el-switch v-model="form.isPublic" active-text="公开" inactive-text="私有" />
+                  <span class="publish-hint">开启后将此智能体快照发布到商城供远程节点安装</span>
+                </div>
               </el-form-item>
             </el-form>
           </div>
@@ -136,7 +142,7 @@
     </div>
 
     <template #footer>
-      <el-button v-if="isEdit&&!agent?.isDefault" type="danger" plain @click="handleDelete" style="margin-right:auto">删除</el-button>
+      <el-button v-if="isEdit&&!agent?.isDefault&&!agent?.isBuiltin" type="danger" plain @click="handleDelete" style="margin-right:auto">删除</el-button>
       <el-button @click="visible=false">取消</el-button>
       <el-button type="primary" @click="handleSave">保存</el-button>
     </template>
@@ -147,12 +153,13 @@ import { ref, computed, watch, reactive } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { User, EditPen, Cpu, Setting, Connection, Share, Files, Switch } from '@element-plus/icons-vue';
 import type { Agent } from '@yan-zhi/shared';
-import { useAgentStore, usePlatformStore, useMcpStore, useSkillStore, useToolsStore } from '../stores';
+import { useAgentStore, usePlatformStore, useMcpStore, useSkillStore, useToolsStore, useAuthStore } from '../stores';
 
 const props = defineProps<{ modelValue: boolean; agent?: Agent | null }>();
 const emit = defineEmits<{ (e: 'update:modelValue', v: boolean): void; (e: 'saved', agentId: string): void; (e: 'deleted', agentId: string): void }>();
 
 const agentStore = useAgentStore();
+const authStore = useAuthStore();
 const platformStore = usePlatformStore();
 const mcpStore = useMcpStore();
 const skillStore = useSkillStore();
@@ -169,13 +176,15 @@ const form = ref<any>({
   temperature: 0.7, maxTokens: 2048, topP: 1, frequencyPenalty: 0, presencePenalty: 0,
   reasoningEffort: '', maxReActSteps: 10,
   builtinToolIds: [], customToolIds: [], mcpToolMounts: [], skillIds: [], subAgentIds: [],
+  isPublic: false,
 });
 
 const builtinToolList = computed(() => toolsStore.builtinTools);
 const customToolList = computed(() => toolsStore.customTools.filter((t: any) => t.enabled));
 const mcpServerList = computed(() => mcpStore.servers);
 const skillList = computed(() => skillStore.skills.filter((s: any) => s.enabled));
-const subAgentList = computed(() => agentStore.agents.filter(a => a.id !== props.agent?.id));
+// E8: 排除内置智能体（如 pageAgent）—— 不在子智能体选择列表中显示，避免用户手动挂载内置专家
+const subAgentList = computed(() => agentStore.agents.filter(a => a.id !== props.agent?.id && !a.isBuiltin));
 const modelGroups = computed(() => {
   const enabled = platformStore.models.filter((m: any) => m.enabled);
   return platformStore.platforms.map((p: any) => ({ platformId: p.id, platformName: p.name, models: enabled.filter((m: any) => m.platformId === p.id) })).filter((g: any) => g.models.length > 0);
@@ -204,6 +213,7 @@ watch(() => [props.modelValue, props.agent], () => {
       customToolIds: a?.customToolIds ? [...a.customToolIds] : [],
       mcpToolMounts: a?.mcpToolMounts ? [...a.mcpToolMounts] : [],
       skillIds: a?.skillIds ? [...a.skillIds] : [], subAgentIds: a?.subAgentIds ? [...a.subAgentIds] : [],
+      isPublic: !!a?.isPublic,
     };
     activeTab.value = 'basic'; mountTab.value = 'tools';
   }
@@ -222,8 +232,28 @@ async function handleSave() {
     builtinToolIds: form.value.builtinToolIds, customToolIds: form.value.customToolIds,
     mcpToolMounts: form.value.mcpToolMounts, skillIds: form.value.skillIds, subAgentIds: form.value.subAgentIds,
   };
-  if (props.agent?.id) { await agentStore.updateAgent(props.agent.id, data); ElMessage.success('已更新'); visible.value = false; emit('saved', props.agent.id); }
-  else { const id = await agentStore.createChatAgent(data); ElMessage.success('已创建'); visible.value = false; emit('saved', id); }
+  // 发布状态由 publishAgent/unpublishAgent 单独管理（同步本地 + 服务端），不随普通字段写入
+  const wasPublic = !!props.agent?.isPublic;
+  const wantPublic = !!form.value.isPublic;
+  let savedId = '';
+  if (props.agent?.id) { await agentStore.updateAgent(props.agent.id, data); savedId = props.agent.id; ElMessage.success('已更新'); }
+  else { savedId = await agentStore.createChatAgent(data); ElMessage.success('已创建'); }
+  // 发布/下架：仅在状态变化或已公开需同步更新时触发
+  if (wantPublic && !wasPublic) {
+    const r = await agentStore.publishAgent(savedId);
+    if (r.ok) ElMessage.success('已发布到商城');
+    else ElMessage.warning(r.error || '发布失败');
+  } else if (wantPublic && wasPublic) {
+    // 已公开的智能体编辑后重新同步快照到服务端
+    const r = await agentStore.publishAgent(savedId);
+    if (!r.ok) ElMessage.warning(r.error || '商城同步失败');
+  } else if (!wantPublic && wasPublic) {
+    const r = await agentStore.unpublishAgent(savedId);
+    if (r.ok) ElMessage.success('已从商城下架');
+    else ElMessage.warning(r.error || '下架失败');
+  }
+  visible.value = false;
+  emit('saved', savedId);
 }
 async function handleDelete() {
   if (!props.agent?.id) return; if (props.agent.isDefault) { ElMessage.warning('默认智能体不可删除'); return; }
@@ -242,6 +272,9 @@ async function handleDelete() {
 .tab-inner::-webkit-scrollbar { width: 5px; }
 .tab-inner::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.1); border-radius: 3px; }
 
+.publish-row { display: flex; align-items: center; gap: 10px; }
+.publish-hint { font-size: 11px; color: var(--color-text-secondary); }
+
 .type-selector { display: flex; gap: 8px; }
 .type-card {
   flex: 1; display: flex; align-items: center; gap: 8px; padding: 10px 14px;
@@ -253,6 +286,8 @@ async function handleDelete() {
 .type-card:hover { border-color: var(--color-primary); color: var(--color-text); }
 .type-card .type-icon { width: 32px; height: 32px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 16px; background: rgba(15,23,42,0.05); color: var(--color-text-secondary); }
 .type-card.active { border-color: var(--color-primary); background: rgba(99,102,241,0.04); }
+.type-selector.disabled .type-card { opacity: 0.6; cursor: not-allowed; }
+.type-selector.disabled .type-card:hover { border-color: var(--el-border-color); color: var(--el-text-color-regular); }
 .type-card.active .type-icon { background: var(--color-primary); color: #fff; }
 
 .param-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 16px; }

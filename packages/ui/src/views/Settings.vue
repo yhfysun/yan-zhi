@@ -259,18 +259,20 @@ const connectUrl = computed(() => {
 });
 
 async function onMpToggle(v: boolean) {
-  const r = await toolsStore.setMarketplaceEnabled(v);
+  const r = await toolsStore.setMarketplaceConfig({ enabled: v });
   if (r.persisted === 'local') {
     ElMessage.info('已暂存到本地（后端接口未就绪，恢复后将自动同步）');
   } else {
     ElMessage.success('商城服务端配置已保存');
   }
 }
-function onMpAuthChange() {
-  toolsStore.setMarketplaceEnabled(mpEnabled.value);
+async function onMpAuthChange() {
+  await toolsStore.setMarketplaceConfig({
+    auth: { authType: mpAuthType.value, token: mpAuthValue.value },
+  });
 }
-function onMpPortChange() {
-  // port change stored locally, requires server restart
+async function onMpPortChange() {
+  await toolsStore.setMarketplaceConfig({ port: mpPort.value });
 }
 function copyUrl() {
   navigator.clipboard.writeText(connectUrl.value).then(() => ElMessage.success('已复制连接地址'));
@@ -281,6 +283,7 @@ onMounted(async () => {
   mpEnabled.value = toolsStore.marketplaceEnabled;
   mpAuthType.value = toolsStore.marketplaceAuth.authType || 'none';
   mpAuthValue.value = toolsStore.marketplaceAuth.token || '';
+  mpPort.value = toolsStore.marketplacePort || 3001;
 });
 </script>
 

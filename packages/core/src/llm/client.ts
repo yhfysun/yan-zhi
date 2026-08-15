@@ -90,7 +90,9 @@ export class LlmClient {
     options?: { tools?: unknown[]; temperature?: number; maxTokens?: number; topP?: number; frequencyPenalty?: number; presencePenalty?: number },
   ): Promise<ChatChunk> {
     const headers = await this.buildHeaders();
-    const body: ChatRequest = {
+    // toApiMessage 返回 OpenAI 约定的 snake_case Record，与内部 Message 类型不同构；
+    // 与 chatStream 一致用 any 规避 ChatRequest.messages: Message[] 的类型摩擦。
+    const body: any = {
       model: this.model.modelId,
       messages: messages.map(m => this.toApiMessage(m)),
       tools: options?.tools,

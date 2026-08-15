@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS conversation (
   agent_id TEXT,
   platform_id TEXT,
   model_id TEXT,
+  space_id TEXT,
   mcp_servers_json TEXT,
   skill_ids_json TEXT,
   system_prompt TEXT,
@@ -46,6 +47,20 @@ CREATE TABLE IF NOT EXISTS conversation (
   updated_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_conversation_updated ON conversation(updated_at DESC);
+-- idx_conversation_space 引用 conversation.space_id，旧库无此列；
+-- 该索引已移至 initSchema 迁移块之后创建（ALTER TABLE conversation ADD COLUMN space_id 之后）。
+
+-- 空间（文件夹）
+CREATE TABLE IF NOT EXISTS space (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  dir_path TEXT,
+  description TEXT,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_space_updated ON space(sort_order ASC, updated_at DESC);
 
 -- 消息
 CREATE TABLE IF NOT EXISTS message (
@@ -226,6 +241,23 @@ CREATE TABLE IF NOT EXISTS marketplace_cache (
   UNIQUE(remote_id, item_type, item_id)
 );
 CREATE INDEX IF NOT EXISTS idx_marketplace_cache_remote ON marketplace_cache(remote_id, item_type);
+
+-- 会话文件（分类管理：上传/中间产物/交付物）
+CREATE TABLE IF NOT EXISTS conversation_file (
+  id TEXT PRIMARY KEY,
+  conversation_id TEXT NOT NULL REFERENCES conversation(id) ON DELETE CASCADE,
+  space_id TEXT,
+  name TEXT NOT NULL,
+  path TEXT NOT NULL,
+  category TEXT NOT NULL DEFAULT 'intermediate',
+  mime_type TEXT,
+  size INTEGER NOT NULL DEFAULT 0,
+  source TEXT NOT NULL DEFAULT 'agent',
+  message_id TEXT,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_conv_file_conv ON conversation_file(conversation_id);
+CREATE INDEX IF NOT EXISTS idx_conv_file_cat ON conversation_file(conversation_id, category);
 `;
 
 /** 迁移 SQL：为已有数据库添加新字段 */
@@ -314,4 +346,14 @@ export async function initSchema(execFn: (sql: string) => Promise<void>): Promis
   for (const col of ['builtin_tool_ids', 'custom_tool_ids', 'mcp_tool_mounts', 'skill_ids', 'sub_agent_ids']) {
     try { await execFn(`ALTER TABLE agent ADD COLUMN ${col} TEXT;`); } catch { /* 列已存在 */ }
   }
+  // 迁移：agent 表新增 is_builtin 列（内置智能体标记，E4）
+  try { await execFn(`ALTER TABLE agent ADD COLUMN is_builtin INTEGER NOT NULL DEFAULT 0;`); } catch { /* 列已存在 */ }
+  // 迁移：custom_tool / agent 新增 installs 计数列（商城安装计数）
+  for (const t of ['custom_tool', 'agent']) {
+    try { await execFn(`ALTER TABLE ${t} ADD COLUMN installs INTEGER NOT NULL DEFAULT 0;`); } catch { /* 列已存在 */ }
+  }
+  // 迁移：conversation 新增 space_id 列（空间/文件夹功能）
+  try { await execFn(`ALTER TABLE conversation ADD COLUMN space_id TEXT;`); } catch { /* 列已存在 */ }
+  // 迁移完成后创建引用 space_id 的索引（旧库迁移场景：旧 conversation 表无 space_id 列）
+  try { await execFn(`CREATE INDEX IF NOT EXISTS idx_conversation_space ON conversation(space_id);`); } catch { /* 索引已存在 */ }
 }

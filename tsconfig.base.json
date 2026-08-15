@@ -17,8 +17,11 @@
     "baseUrl": ".",
     "paths": {
       "@yan-zhi/shared": ["packages/shared/src"],
+      "@yan-zhi/shared/*": ["packages/shared/src/*"],
       "@yan-zhi/core": ["packages/core/src"],
-      "@yan-zhi/ui": ["packages/ui/src"]
+      "@yan-zhi/core/*": ["packages/core/src/*"],
+      "@yan-zhi/ui": ["packages/ui/src"],
+      "@yan-zhi/ui/*": ["packages/ui/src/*"]
     }
   },
   "exclude": ["node_modules", "dist", "**/src-tauri/target"]

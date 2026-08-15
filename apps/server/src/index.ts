@@ -3,6 +3,8 @@ import cors from 'cors';
 import authRoutes from './auth.js';
 import conversationRoutes from './routes/conversations.js';
 import messageRoutes from './routes/messages.js';
+import spaceRoutes from './routes/spaces.js';
+import fileRoutes from './routes/files.js';
 import platformRoutes from './routes/platforms.js';
 import mcpRoutes from './routes/mcp.js';
 import skillRoutes from './routes/skills.js';
@@ -11,6 +13,7 @@ import toolMarketplaceRoutes from './routes/tool-marketplace-sources.js';
 import skillMarketplaceRoutes from './routes/skill-marketplace-sources.js';
 import agentMarketplaceRoutes from './routes/agent-marketplace-sources.js';
 import marketplaceRoutes from './routes/marketplace.js';
+import browserRoutes from './routes/browser.js';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -24,7 +27,9 @@ app.get('/api/health', (_req, res) => {
 
 app.use('/api/auth', authRoutes);
 app.use('/api/conversations', conversationRoutes);
+app.use('/api/conversations', fileRoutes);
 app.use('/api/messages', messageRoutes);
+app.use('/api/spaces', spaceRoutes);
 app.use('/api/platforms', platformRoutes);
 app.use('/api/mcp-servers', mcpRoutes);
 app.use('/api/skills', skillRoutes);
@@ -33,6 +38,7 @@ app.use('/api/tool-marketplace', toolMarketplaceRoutes);
 app.use('/api/skill-marketplace', skillMarketplaceRoutes);
 app.use('/api/agent-marketplace', agentMarketplaceRoutes);
 app.use('/api/marketplace', marketplaceRoutes);
+app.use('/api/browser', browserRoutes);
 
 app.listen(PORT, () => {
   console.log(`后端已启动: http://localhost:${PORT}`);

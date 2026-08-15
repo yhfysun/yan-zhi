@@ -1,5 +1,22 @@
 <template>
   <el-dialog v-model="visible" title="选择工作目录" width="520px" :close-on-click-modal="false" @open="onOpen">
+    <!-- 工具栏：原生目录选择 + 手动输入路径 -->
+    <div class="wdd-toolbar">
+      <el-button v-if="isDesktop" size="small" type="primary" plain @click="pickNativeDir" :loading="picking">
+        <el-icon><FolderOpened /></el-icon> 浏览电脑目录
+      </el-button>
+      <el-input
+        v-model="manualPath"
+        size="small"
+        placeholder="手动输入路径，如 C:\Users\Administrator\Projects"
+        class="wdd-manual-input"
+        @keyup.enter="navigateToManual"
+      >
+        <template #append>
+          <el-button size="small" @click="navigateToManual" :disabled="!manualPath.trim()">前往</el-button>
+        </template>
+      </el-input>
+    </div>
     <div class="wdd-breadcrumb">
       <el-button size="small" circle @click="goUp" :disabled="!canGoUp">
         <el-icon><ArrowUp /></el-icon>
@@ -37,6 +54,7 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue';
 import { ArrowUp, FolderOpened, Files } from '@element-plus/icons-vue';
+import { ElMessage } from 'element-plus';
 import { getPlatformAdapter } from '@yan-zhi/core';
 
 const props = defineProps<{
@@ -54,6 +72,8 @@ const visible = computed({
   set: (v) => emit('update:modelValue', v),
 });
 
+const isDesktop = getPlatformAdapter().platform === 'desktop';
+
 interface DirEntry {
   name: string;
   path: string;
@@ -64,57 +84,118 @@ const currentPath = ref('');
 const entries = ref<DirEntry[]>([]);
 const selectedPath = ref('');
 const loading = ref(false);
+const manualPath = ref('');
+const picking = ref(false);
 
 const canGoUp = computed(() => {
   const p = currentPath.value;
-  return p && p !== '/' && p !== 'workspace' && p.includes('/');
+  if (!p || p === '/') return false;
+  // Windows 盘符根目录（C:\）或 Unix 根路径（/）到顶时不可再上
+  if (/^[A-Za-z]:\\?$/.test(p)) return false;
+  return true;
 });
 
-function onOpen() {
-  currentPath.value = props.currentPath || 'workspace';
+async function onOpen() {
+  // 有已选路径则沿用；否则桌面端默认从 C:\ 开始（Windows），web 端用 'workspace'
+  if (props.currentPath) {
+    currentPath.value = props.currentPath;
+  } else if (isDesktop) {
+    currentPath.value = 'C:\\';
+  } else {
+    currentPath.value = 'workspace';
+  }
   selectedPath.value = '';
+  manualPath.value = currentPath.value;
   loadEntries();
 }
 
 async function loadEntries() {
   loading.value = true;
   try {
-    const adapter = getPlatformAdapter();
-    const dirPath = currentPath.value || 'workspace';
-    const exists = await adapter.fs.exists(dirPath);
-    if (!exists) {
+    const dirPath = currentPath.value;
+    if (!dirPath) {
       entries.value = [];
-      loading.value = false;
       return;
     }
-    const raw = await adapter.fs.readDir(dirPath);
-    const result: DirEntry[] = [];
-    for (const name of raw) {
-      const cleanDir = dirPath.endsWith('/') ? dirPath : dirPath + '/';
-      const fullPath = cleanDir + name;
-      try {
-        const entryExists = await adapter.fs.exists(fullPath);
-        if (!entryExists) continue;
+    const adapter = getPlatformAdapter();
+    // 优先使用 listDirEntries（桌面端一次返回结构化条目，无 scope 限制）
+    if (adapter.fs.listDirEntries) {
+      const raw = await adapter.fs.listDirEntries(dirPath);
+      const result: DirEntry[] = raw.map((e) => ({ name: e.name, path: e.path, isDir: e.isDir }));
+      result.sort((a, b) => {
+        if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
+        return a.name.localeCompare(b.name);
+      });
+      entries.value = result;
+    } else {
+      // Web/Mobile：通过 readDir + 逐个判断 isDir
+      const exists = await adapter.fs.exists(dirPath);
+      if (!exists) {
+        entries.value = [];
+        return;
+      }
+      const names = await adapter.fs.readDir(dirPath);
+      const result: DirEntry[] = [];
+      for (const name of names) {
+        const sep = dirPath.includes('\\') ? '\\' : '/';
+        const cleanDir = dirPath.endsWith(sep) ? dirPath : dirPath + sep;
+        const fullPath = cleanDir + name;
         try {
           await adapter.fs.readDir(fullPath);
           result.push({ name, path: fullPath, isDir: true });
         } catch {
           result.push({ name, path: fullPath, isDir: false });
         }
-      } catch {
-        // skip
       }
+      result.sort((a, b) => {
+        if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
+        return a.name.localeCompare(b.name);
+      });
+      entries.value = result;
     }
-    result.sort((a, b) => {
-      if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
-      return a.name.localeCompare(b.name);
-    });
-    entries.value = result;
   } catch (e) {
     console.error('loadEntries error:', e);
     entries.value = [];
   } finally {
     loading.value = false;
+  }
+}
+
+/** 桌面端：调用 Tauri 原生目录选择对话框 */
+async function pickNativeDir() {
+  picking.value = true;
+  try {
+    const { open } = await import('@tauri-apps/plugin-dialog');
+    const selected = await open({ directory: true, multiple: false, title: '选择工作目录' });
+    if (selected && typeof selected === 'string') {
+      currentPath.value = selected;
+      selectedPath.value = '';
+      manualPath.value = selected;
+      await loadEntries();
+    }
+  } catch (e: any) {
+    ElMessage.error('目录选择失败: ' + (e?.message || e));
+  } finally {
+    picking.value = false;
+  }
+}
+
+/** 手动输入路径后前往 */
+async function navigateToManual() {
+  const p = manualPath.value.trim();
+  if (!p) return;
+  const adapter = getPlatformAdapter();
+  try {
+    const exists = await adapter.fs.exists(p);
+    if (!exists) {
+      ElMessage.warning('路径不存在: ' + p);
+      return;
+    }
+    currentPath.value = p;
+    selectedPath.value = '';
+    await loadEntries();
+  } catch (e: any) {
+    ElMessage.error('无法访问路径: ' + (e?.message || e));
   }
 }
 
@@ -127,16 +208,26 @@ function selectEntry(entry: DirEntry) {
 function navigateTo(entry: DirEntry) {
   if (!entry.isDir) return;
   currentPath.value = entry.path;
+  manualPath.value = entry.path;
   selectedPath.value = '';
   loadEntries();
 }
 
 function goUp() {
   const p = currentPath.value;
-  if (!p || p === '/' || p === 'workspace' || !p.includes('/')) return;
-  const parts = p.split('/');
-  parts.pop();
-  currentPath.value = parts.join('/') || 'workspace';
+  if (!p || p === '/') return;
+  if (/^[A-Za-z]:\\?$/.test(p)) return; // Windows 盘符根目录到顶
+  // 兼容 Windows \ 和 Unix /
+  if (p.includes('\\')) {
+    const parts = p.split('\\').filter(Boolean);
+    parts.pop();
+    currentPath.value = parts.length > 0 ? parts.join('\\') : (p.charAt(0) + ':\\');
+  } else {
+    const parts = p.split('/');
+    parts.pop();
+    currentPath.value = parts.join('/') || '/';
+  }
+  manualPath.value = currentPath.value;
   selectedPath.value = '';
   loadEntries();
 }
@@ -148,6 +239,15 @@ function confirm() {
 </script>
 
 <style scoped>
+.wdd-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.wdd-manual-input {
+  flex: 1;
+}
 .wdd-breadcrumb {
   display: flex;
   align-items: center;

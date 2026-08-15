@@ -79,13 +79,53 @@ router.get('/:id/agents', async (req: Request, res: Response) => {
   } catch (err: unknown) { res.status(502).json({ success: false, error: err instanceof Error ? err.message : String(err) }); }
 });
 
+// GET /:id/agents/categories —— 必须在 /:id/agents/:itemId 之前注册
+router.get('/:id/agents/categories', async (req: Request, res: Response) => {
+  const s = db.prepare("SELECT * FROM remote_marketplace WHERE id = ? AND user_id = ? AND type='agent'").get(req.params.id, req.user!.userId) as any;
+  if (!s) { res.status(404).json({ error: '远程源不存在' }); return; }
+  try {
+    const resp = await fetch(`${marketApiBase(s.base_url)}/api/marketplace/agents/categories`, { headers: authHeaders(s) });
+    if (!resp.ok) { res.status(resp.status).json({ success: false, error: `远程源返回状态码: ${resp.status}` }); return; }
+    res.json(await resp.json());
+  } catch (err: unknown) { res.status(502).json({ success: false, error: err instanceof Error ? err.message : String(err) }); }
+});
+
+// GET /:id/agents/:itemId —— 单个智能体详情
+router.get('/:id/agents/:itemId', async (req: Request, res: Response) => {
+  const s = db.prepare("SELECT * FROM remote_marketplace WHERE id = ? AND user_id = ? AND type='agent'").get(req.params.id, req.user!.userId) as any;
+  if (!s) { res.status(404).json({ error: '远程源不存在' }); return; }
+  try {
+    const resp = await fetch(`${marketApiBase(s.base_url)}/api/marketplace/agents/${encodeURIComponent(req.params.itemId)}`, { headers: authHeaders(s) });
+    if (!resp.ok) { res.status(resp.status).json({ success: false, error: `远程源返回状态码: ${resp.status}` }); return; }
+    res.json(await resp.json());
+  } catch (err: unknown) { res.status(502).json({ success: false, error: err instanceof Error ? err.message : String(err) }); }
+});
+
+// POST /:id/agents/search —— 搜索远程源智能体
+router.post('/:id/agents/search', async (req: Request, res: Response) => {
+  const s = db.prepare("SELECT * FROM remote_marketplace WHERE id = ? AND user_id = ? AND type='agent'").get(req.params.id, req.user!.userId) as any;
+  if (!s) { res.status(404).json({ error: '远程源不存在' }); return; }
+  try {
+    const page = req.query.page || 1; const pageSize = req.query.pageSize || 20;
+    const resp = await fetch(`${marketApiBase(s.base_url)}/api/marketplace/agents/search?page=${page}&pageSize=${pageSize}`, {
+      method: 'POST', headers: { ...authHeaders(s), 'Content-Type': 'application/json' },
+      body: JSON.stringify(req.body || {}),
+    });
+    if (!resp.ok) { res.status(resp.status).json({ success: false, error: `远程源返回状态码: ${resp.status}` }); return; }
+    res.json(await resp.json());
+  } catch (err: unknown) { res.status(502).json({ success: false, error: err instanceof Error ? err.message : String(err) }); }
+});
+
 router.post('/:id/install', async (req: Request, res: Response) => {
   const s = db.prepare("SELECT * FROM remote_marketplace WHERE id = ? AND user_id = ? AND type='agent'").get(req.params.id, req.user!.userId) as any;
   if (!s) { res.status(404).json({ error: '远程源不存在' }); return; }
   const { agentId } = req.body || {};
   if (!agentId) { res.status(400).json({ error: 'agentId 为必填项' }); return; }
   try {
-    const resp = await fetch(`${marketApiBase(s.base_url)}/api/marketplace/agents/${encodeURIComponent(agentId)}`, { headers: authHeaders(s) });
+    // 调用远程 install 端点（POST），既获取完整定义又递增远程安装计数
+    const resp = await fetch(`${marketApiBase(s.base_url)}/api/marketplace/agents/${encodeURIComponent(agentId)}/install`, {
+      method: 'POST', headers: { ...authHeaders(s), 'Content-Type': 'application/json' },
+    });
     const data = await resp.json();
     if (!data.success || !data.data) { res.status(404).json({ error: '远程智能体不存在' }); return; }
     const a = data.data; const id = uuid(); const now = Date.now();
