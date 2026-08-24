@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
-    "start": "node dist/index.js"
+    "start": "node dist/apps/server/src/index.js"
   },
   "dependencies": {
     "@yan-zhi/core": "workspace:*",

@@ -23,11 +23,16 @@
         <button v-if="urlInput" class="url-clear" @click="urlInput = ''">×</button>
       </div>
 
-      <!-- 代理模式开关 -->
-      <button class="nav-btn" :class="{ active: proxyMode }" @click="toggleProxy"
-        :title="proxyMode ? '代理模式：已绕过反嵌入限制（百度/淘宝等可打开）' : '直连模式：切换为代理模式可打开禁止嵌入的网站'">
-        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm0 10.99h7c-.53 4.12-3.28 7.79-7 8.98V12H5V6.3l7-3.11v8.8z"/></svg>
-      </button>
+      <!-- 页面缩放 -->
+      <div class="zoom-group">
+        <button class="nav-btn" @click="zoomOut" title="缩小">
+          <el-icon :size="18"><ZoomOut /></el-icon>
+        </button>
+        <button class="zoom-label" @click="resetZoom" title="重置缩放">{{ Math.round(pageZoom * 100) }}%</button>
+        <button class="nav-btn" @click="zoomIn" title="放大">
+          <el-icon :size="18"><ZoomIn /></el-icon>
+        </button>
+      </div>
 
       <!-- 收藏按钮 -->
       <button class="nav-btn" :class="{ active: isBookmarked }" @click="toggleBookmark" :title="isBookmarked ? '取消收藏' : '收藏此页'">
@@ -111,11 +116,22 @@
       </div>
     </div>
 
-    <!-- 真实网页渲染区 -->
-    <div v-else class="browser-viewport">
-      <iframe v-if="frameSrc" :key="iframeKey" :src="frameSrc" class="page-frame" referrerpolicy="no-referrer"></iframe>
-      <div v-if="proxyMode && frameSrc" class="proxy-badge" title="代理模式：目标站经同源代理加载，绕过反嵌入限制">代理</div>
+    <!-- 远程浏览器渲染区 -->
+    <div v-else class="browser-viewport" ref="viewportRef">
+      <!-- Electron 桌面端：BrowserView 占位 div（原生 BrowserView 会覆盖此区域） -->
+      <div v-if="isElectron" ref="browserViewPlaceholder" class="browser-view-placeholder"></div>
+      <!-- Web 端：iframe + Playwright DOM 预渲染 -->
+      <iframe v-else-if="frameSrc" :key="iframeKey" :src="frameSrc" class="page-frame"
+        :style="{ zoom: pageZoom }" referrerpolicy="no-referrer" @load="onFrameLoad"
+        sandbox="allow-same-origin allow-forms allow-popups"></iframe>
+      <!-- 加载中遮罩 -->
+      <div v-if="loading" class="loading-overlay">
+        <div class="loading-spinner"></div>
+        <p>正在加载...</p>
+      </div>
+
     </div>
+
 
     <!-- 收藏夹弹窗 -->
     <el-dialog v-model="showBookmarks" title="收藏夹" width="480px" append-to-body>
@@ -168,10 +184,20 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue';
+import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue';
 import { ElMessage } from 'element-plus';
+import { ZoomIn, ZoomOut } from '@element-plus/icons-vue';
 import { usePlatformStore } from '../stores/platform';
+import { usePlatform } from '../composables/usePlatform';
 import { LlmClient } from '@yan-zhi/core';
+import { API_BASE } from '../api/client';
+
+// ── 平台检测 ──
+const { isDesktop } = usePlatform();
+
+// 检测是否在 Electron 桌面端（有 electronAPI 标识）
+const isElectron = typeof window !== 'undefined' && !!(window as any).electronAPI?.isElectron;
+
 
 interface Bookmark { url: string; title: string; }
 interface Pin { name: string; url: string; host?: string; }
@@ -195,22 +221,69 @@ const DEFAULT_PINNED: Pin[] = [
 const urlInput = ref('');
 const homeInput = ref('');
 const urlFocused = ref(false);
-const proxyMode = ref(false);
+
+// ── 远程浏览器状态 ──
+const loading = ref(false);
+const viewportRef = ref<HTMLDivElement>();
+const browserViewPlaceholder = ref<HTMLDivElement>();
 const iframeKey = ref(0);
 
-// ── 历史栈（iframe 跨域拿不到内部 history，自行维护）──
+// ── 页面缩放（让浏览器网页可随应用缩放）──
+const pageZoom = ref(1);
+function applyZoom() {
+  if (isElectron) {
+    const bv = (window as any).electronAPI?.browserView;
+    // Electron 桌面端：原生 BrowserView 支持 setZoomFactor
+    if (bv?.setZoomFactor) {
+      try { bv.setZoomFactor(pageZoom.value); } catch { /* ignore */ }
+    }
+    return;
+  }
+  // Web 端：通过 iframe 元素 style.zoom 缩放渲染内容（见模板 :style 绑定）
+}
+function zoomIn() { pageZoom.value = Math.min(3, +(pageZoom.value + 0.1).toFixed(2)); applyZoom(); }
+function zoomOut() { pageZoom.value = Math.max(0.3, +(pageZoom.value - 0.1).toFixed(2)); applyZoom(); }
+function resetZoom() { pageZoom.value = 1; applyZoom(); }
+
+// ── BrowserView 尺寸同步：监听占位 div 尺寸/位置变化，调用 setBounds 同步原生 BrowserView ──
+let browserViewResizeObserver: ResizeObserver | null = null;
+let browserViewScrollHandler: (() => void) | null = null;
+let browserViewResizeHandler: (() => void) | null = null;
+// 监听外层主题切换，同步到 iframe 内部滚动条
+let themeObserver: MutationObserver | null = null;
+
+/** 计算占位 div 在 BrowserWindow 内的坐标，同步到 BrowserView bounds */
+let resizeRafId: number | null = null;
+function syncBrowserViewBounds() {
+  if (!isElectron) return;
+  // 用 requestAnimationFrame 防抖：等布局稳定后再计算，确保窗口缩放时等比例更新
+  if (resizeRafId !== null) cancelAnimationFrame(resizeRafId);
+  resizeRafId = requestAnimationFrame(() => {
+    resizeRafId = null;
+    const el = browserViewPlaceholder.value;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    // Electron 33 的 setBounds 使用 CSS 像素（逻辑像素），不需要乘以 DPR
+    (window as any).electronAPI.browserView.resize(
+      Math.round(rect.left),
+      Math.round(rect.top),
+      Math.round(rect.width),
+      Math.round(rect.height),
+    );
+  });
+}
+
+// ── 历史栈（远程浏览器方案下，前端自行维护导航历史）──
 const history = ref<string[]>([]);
 const histIndex = ref(-1);
 const currentUrl = computed(() => history.value[histIndex.value] || '');
-const canBack = computed(() => histIndex.value > 0);
-const canForward = computed(() => histIndex.value < history.value.length - 1);
+// Electron 端用响应式变量保存 BrowserView 的可前进/后退状态
+const electronCanBack = ref(false);
+const electronCanForward = ref(false);
+const canBack = computed(() => isElectron ? electronCanBack.value : histIndex.value > 0);
+const canForward = computed(() => isElectron ? electronCanForward.value : histIndex.value < history.value.length - 1);
 const isSecure = computed(() => /^https:\/\//i.test(currentUrl.value));
-
-const frameSrc = computed(() => {
-  const u = currentUrl.value;
-  if (!u) return '';
-  return proxyMode.value ? '/api/browser/proxy?url=' + encodeURIComponent(u) : u;
-});
+const currentHost = computed(() => { try { return new URL(currentUrl.value).host; } catch { return ''; } });
 
 // Pinia store 必须在 setup 同步顶层创建，不能在 async 函数中调用
 const platformStore = usePlatformStore();
@@ -248,7 +321,7 @@ const showHome = computed(() => !currentUrl.value);
 
 const pinned = ref<Pin[]>(safeGetJson('browser_pinned', DEFAULT_PINNED));
 const searchEngine = ref(safeGetString('browser_search_engine', 'baidu'));
-const defaultProxy = ref(safeGetString('browser_default_proxy', '0') === '1');
+const defaultProxy = ref(safeGetString('browser_default_proxy', '1') === '1');
 const engineName = computed(() => (SEARCH_ENGINES[searchEngine.value] || SEARCH_ENGINES.baidu).name);
 
 const showBookmarks = ref(false);
@@ -309,18 +382,57 @@ function pushHistory(url: string) {
   histIndex.value = history.value.length - 1;
 }
 
-function navigate() {
+
+// 获取 viewport 尺寸（同步前端视口大小，传给后端 Playwright）
+function getViewportSize() {
+  const el = viewportRef.value;
+  if (!el) return { width: 1280, height: 800 };
+  return { width: el.clientWidth, height: el.clientHeight };
+}
+
+// iframe src：指向后端 /render 路由（Playwright 预渲染 DOM）
+const frameSrc = computed(() => {
+  const u = currentUrl.value;
+  if (!u) return '';
+  // Electron 桌面端：用 BrowserView 加载 URL，不再用 iframe
+  if (isElectron) return '';
+  // Web 端：通过后端 /render 预渲染 DOM
+  const vp = getViewportSize();
+  return `${API_BASE}/browser/render?url=${encodeURIComponent(u)}&w=${vp.width}&h=${vp.height}`;
+});
+
+async function navigate() {
   const target = normalizeUrl(urlInput.value);
   if (!target) return;
   pushHistory(target);
+  loading.value = true;
   iframeKey.value++;
+  // Electron 桌面端：用 BrowserView 加载 URL，并同步 bounds
+  if (isElectron) {
+    // 等待 Vue 重新渲染（browserViewPlaceholder 需要先出现在 DOM 中才能计算 bounds）
+    await nextTick();
+    syncBrowserViewBounds();
+    try {
+      await (window as any).electronAPI.browserView.load(target);
+      // 加载后再次同步 bounds（确保 BrowserView 尺寸正确）
+      syncBrowserViewBounds();
+    } catch (e) {
+      console.warn('[browser] BrowserView load 失败', e);
+    }
+    // 更新可前进/后退状态
+    electronCanBack.value = await (window as any).electronAPI.browserView.canGoBack();
+    electronCanForward.value = await (window as any).electronAPI.browserView.canGoForward();
+  }
+  // 超时保护：15 秒后自动清除 loading
+  setTimeout(() => { loading.value = false; }, 15000);
 }
 
 function homeSearch() {
   const target = normalizeUrl(homeInput.value);
   if (!target) return;
-  pushHistory(target);
-  iframeKey.value++;
+  // 复用 navigate 流程（内部会 pushHistory + 调用后端导航）
+  urlInput.value = target;
+  navigate();
 }
 
 function openSite(url: string) {
@@ -332,40 +444,156 @@ function goHome() {
   history.value = [];
   histIndex.value = -1;
   urlInput.value = '';
+  // Electron 桌面端：隐藏 BrowserView，让主页可见
+  if (isElectron) {
+    (window as any).electronAPI.browserView.hide();
+    electronCanBack.value = false;
+    electronCanForward.value = false;
+  }
 }
 
-function goBack() {
-  if (histIndex.value > 0) {
-    histIndex.value--;
-    urlInput.value = currentUrl.value;
-    iframeKey.value++;
+// 后退/前进/刷新（前端切换 iframe src，重新触发 /render 加载）
+async function goBack() {
+  if (loading.value) return;
+  // Electron 桌面端：调用 BrowserView.goBack
+  if (isElectron) {
+    if (!electronCanBack.value) return;
+    await (window as any).electronAPI.browserView.back();
+    electronCanBack.value = await (window as any).electronAPI.browserView.canGoBack();
+    electronCanForward.value = await (window as any).electronAPI.browserView.canGoForward();
+    return;
   }
-}
-function goForward() {
-  if (histIndex.value < history.value.length - 1) {
-    histIndex.value++;
-    urlInput.value = currentUrl.value;
-    iframeKey.value++;
-  }
-}
-function refresh() {
-  if (currentUrl.value) urlInput.value = currentUrl.value;
+  // Web 端：更新历史栈 + 重新加载
+  if (histIndex.value <= 0) return;
+  histIndex.value--;
+  urlInput.value = currentUrl.value;
+  loading.value = true;
   iframeKey.value++;
 }
-function toggleProxy() {
-  proxyMode.value = !proxyMode.value;
+
+async function goForward() {
+  if (loading.value) return;
+  // Electron 桌面端：调用 BrowserView.goForward
+  if (isElectron) {
+    if (!electronCanForward.value) return;
+    await (window as any).electronAPI.browserView.forward();
+    electronCanBack.value = await (window as any).electronAPI.browserView.canGoBack();
+    electronCanForward.value = await (window as any).electronAPI.browserView.canGoForward();
+    return;
+  }
+  // Web 端：更新历史栈 + 重新加载
+  if (histIndex.value >= history.value.length - 1) return;
+  histIndex.value++;
+  urlInput.value = currentUrl.value;
+  loading.value = true;
   iframeKey.value++;
 }
+
+async function refresh() {
+  if (!currentUrl.value) return;
+  // Electron 桌面端：调用 BrowserView.reload（不检查 loading，允许刷新正在加载的页面）
+  if (isElectron) {
+    loading.value = true;
+    try {
+      await (window as any).electronAPI.browserView.reload();
+    } catch (e) {
+      console.warn('[browser] reload 失败', e);
+    }
+    return;
+  }
+  // Web 端：重新加载 iframe
+  loading.value = true;
+  iframeKey.value++;
+}
+
+// 把主题化滚动条样式注入 iframe 文档（iframe 是独立文档，外层 ::-webkit-scrollbar 不影响它）
+function injectScrollbarStyle(doc: Document | null, retry = false) {
+  if (!doc) return;
+  try {
+    // head 可能尚未就绪（尤其是 sandbox 无 allow-scripts 时），等一帧再试
+    if (!doc.head) {
+      if (!retry) requestAnimationFrame(() => injectScrollbarStyle(doc, true));
+      return;
+    }
+    const dark = document.documentElement.getAttribute('data-theme') === 'dark';
+    const thumb = dark ? 'rgba(255,255,255,0.22)' : 'rgba(0,0,0,0.22)';
+    const thumbHover = dark ? 'rgba(255,255,255,0.38)' : 'rgba(0,0,0,0.38)';
+    const css = `
+      html::-webkit-scrollbar, body::-webkit-scrollbar, *::-webkit-scrollbar { width: 10px !important; height: 10px !important; }
+      html::-webkit-scrollbar-track, body::-webkit-scrollbar-track, *::-webkit-scrollbar-track { background: transparent !important; }
+      html::-webkit-scrollbar-thumb, body::-webkit-scrollbar-thumb, *::-webkit-scrollbar-thumb { background: ${thumb} !important; border-radius: 5px !important; border: 2px solid transparent !important; background-clip: padding-box !important; }
+      html::-webkit-scrollbar-thumb:hover, body::-webkit-scrollbar-thumb:hover, *::-webkit-scrollbar-thumb:hover { background: ${thumbHover} !important; border: 2px solid transparent !important; background-clip: padding-box !important; }
+      html, body, * { scrollbar-width: thin !important; scrollbar-color: ${thumb} transparent !important; }
+      /* 覆盖页面自身滚动条样式 */
+      html::-webkit-scrollbar-corner, body::-webkit-scrollbar-corner, *::-webkit-scrollbar-corner { background: transparent !important; }
+    `;
+    let styleEl = doc.getElementById('yz-scrollbar') as HTMLStyleElement | null;
+    if (!styleEl) {
+      styleEl = doc.createElement('style');
+      styleEl.id = 'yz-scrollbar';
+      doc.head.appendChild(styleEl);
+    }
+    styleEl.textContent = css;
+
+    // 延迟再注入一次：防止页面后续脚本/动态内容覆盖我们的样式
+    if (!retry) setTimeout(() => injectScrollbarStyle(doc, true), 800);
+  } catch { /* 跨域文档无法访问时静默跳过 */ }
+}
+
+// iframe 加载完成后拦截链接点击 + 同步地址栏
+function onFrameLoad() {
+  loading.value = false;
+  // Electron 桌面端：BrowserView 的导航事件由 onNavigated/onLoaded 回调处理，这里直接返回
+  if (isElectron) return;
+  // Web 端 iframe：拦截链接点击（原有逻辑）
+  // 同源 iframe（无 allow-scripts），可以访问 contentDocument 拦截链接
+  const iframe = document.querySelector('.page-frame') as HTMLIFrameElement | null;
+  if (!iframe || !iframe.contentDocument) return;
+  const doc = iframe.contentDocument;
+
+  // 把应用主题滚动条样式注入 iframe 文档（解决"浏览器滚动条样式不随主题变化"）
+  injectScrollbarStyle(doc);
+
+  // 拦截链接点击（capture 阶段，优先于页面内 handler）
+  doc.addEventListener('click', (e: MouseEvent) => {
+    const target = e.target as HTMLElement | null;
+    if (!target) return;
+    const link = target.closest('a') as HTMLAnchorElement | null;
+    if (link && link.href) {
+      e.preventDefault();
+      e.stopPropagation();
+      urlInput.value = link.href;
+      navigate();
+    }
+  }, true);
+
+  // 拦截表单提交（防止原生提交导致 iframe 跳出代理壳）
+  doc.addEventListener('submit', (e: Event) => {
+    e.preventDefault();
+    e.stopPropagation();
+  }, true);
+
+  // 同步地址栏（页面可能发生重定向，从后端 state 取真实 URL）
+  try {
+    fetch(`${API_BASE}/browser/state`).then(r => r.json()).then(resp => {
+      if (resp.data?.url && resp.data.url !== currentUrl.value) {
+        urlInput.value = resp.data.url;
+        history.value[histIndex.value] = resp.data.url;
+      }
+    });
+  } catch { /* ignore */ }
+}
+
 
 // 每次导航变化 → 记录到后端（供最近浏览/常用/每日 AI 分析）
 watch(currentUrl, (u) => { if (u) recordVisit(u); });
 
 async function recordVisit(url: string) {
   try {
-    await fetch('/api/browser/history', {
+    await fetch(`${API_BASE}/browser/history`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url, proxy: proxyMode.value }),
+      body: JSON.stringify({ url }),
     });
   } catch { /* 后端不可用则忽略，不影响浏览 */ }
 }
@@ -373,8 +601,8 @@ async function recordVisit(url: string) {
 async function fetchData() {
   try {
     const [h, a] = await Promise.all([
-      fetch('/api/browser/history?days=30&limit=20').then(r => r.json()),
-      fetch('/api/browser/analysis').then(r => r.json()),
+      fetch(`${API_BASE}/browser/history?days=30&limit=20`).then(r => r.json()),
+      fetch(`${API_BASE}/browser/analysis`).then(r => r.json()),
     ]);
     recentList.value = (h.data && h.data.recent) || [];
     frequentList.value = (h.data && h.data.frequent) || [];
@@ -410,7 +638,7 @@ async function generateAnalysis() {
     const platform = llm && ps.platforms.find(p => p.id === llm.platformId);
     if (!llm || !platform) return; // 未配置 → 静默跳过
 
-    const statsRes = await fetch('/api/browser/stats').then(r => r.json());
+    const statsRes = await fetch(`${API_BASE}/browser/stats`).then(r => r.json());
     const stats = statsRes.data;
     if (!stats) return;
 
@@ -423,7 +651,7 @@ async function generateAnalysis() {
     const parsed = parseAnalysis(text, stats);
 
     const payload = { ...parsed, date: stats.date, model: llm.modelId };
-    await fetch('/api/browser/analysis', {
+    await fetch(`${API_BASE}/browser/analysis`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
@@ -522,7 +750,7 @@ function onEngineChange(v: string) {
 function onDefaultProxyChange(v: boolean) {
   defaultProxy.value = v;
   safeSetString('browser_default_proxy', v ? '1' : '0');
-  proxyMode.value = v;
+
 }
 function addPin() {
   const name = newPinName.value.trim();
@@ -556,10 +784,87 @@ function onMenuCommand(cmd: string) {
 }
 
 onMounted(() => {
-  proxyMode.value = defaultProxy.value;
   fetchData();
   startDailyAnalysisScheduler();
+
+  // 监听外层主题切换，实时同步到当前 iframe 内部滚动条
+  themeObserver = new MutationObserver(() => {
+    const iframe = document.querySelector('.page-frame') as HTMLIFrameElement | null;
+    if (iframe && iframe.contentDocument) injectScrollbarStyle(iframe.contentDocument);
+  });
+  themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+
+  // Electron 桌面端：注册 BrowserView 导航/加载回调 + 启动 ResizeObserver 同步 bounds
+  if (isElectron) {
+    const api = (window as any).electronAPI;
+    // 监听 BrowserView 导航事件，同步地址栏 URL
+    api.browserView.onNavigated((url: string) => {
+      if (url && url !== currentUrl.value) {
+        urlInput.value = url;
+        history.value[histIndex.value] = url;
+      }
+      // 导航后更新可前进/后退状态
+      api.browserView.canGoBack().then((v: boolean) => { electronCanBack.value = v; });
+      api.browserView.canGoForward().then((v: boolean) => { electronCanForward.value = v; });
+    });
+    // 监听页面加载完成事件
+    api.browserView.onLoaded((_url: string) => {
+      loading.value = false;
+    });
+
+    // ResizeObserver 监听占位 div 尺寸变化，同步 BrowserView bounds
+    browserViewResizeObserver = new ResizeObserver(() => syncBrowserViewBounds());
+    // 初始时 placeholder 可能不存在（首页状态），用 watch 在它出现时开始观察
+    if (browserViewPlaceholder.value) {
+      browserViewResizeObserver.observe(browserViewPlaceholder.value);
+    }
+    // 监听 window 的 scroll 和 resize 事件（getBoundingClientRect 会随滚动变化）
+    browserViewScrollHandler = () => syncBrowserViewBounds();
+    browserViewResizeHandler = () => syncBrowserViewBounds();
+    window.addEventListener('scroll', browserViewScrollHandler, true);
+    window.addEventListener('resize', browserViewResizeHandler);
+    // 初始同步一次
+    syncBrowserViewBounds();
+  }
 });
+
+// Electron 端：placeholder 出现时（用户导航到 URL）开始 ResizeObserver 观察
+watch(browserViewPlaceholder, (el, oldEl) => {
+  if (!browserViewResizeObserver) return;
+  if (oldEl) browserViewResizeObserver.unobserve(oldEl);
+  if (el) {
+    browserViewResizeObserver.observe(el);
+    syncBrowserViewBounds();
+  }
+});
+
+onUnmounted(() => {
+  if (resizeRafId !== null) {
+    cancelAnimationFrame(resizeRafId);
+    resizeRafId = null;
+  }
+  if (browserViewResizeObserver) {
+    browserViewResizeObserver.disconnect();
+    browserViewResizeObserver = null;
+  }
+  if (browserViewScrollHandler) {
+    window.removeEventListener('scroll', browserViewScrollHandler, true);
+    browserViewScrollHandler = null;
+  }
+  if (browserViewResizeHandler) {
+    window.removeEventListener('resize', browserViewResizeHandler);
+    browserViewResizeHandler = null;
+  }
+  if (themeObserver) {
+    themeObserver.disconnect();
+    themeObserver = null;
+  }
+  // Electron 桌面端：组件卸载时隐藏 BrowserView
+  if (isElectron) {
+    try { (window as any).electronAPI.browserView.hide(); } catch { /* ignore */ }
+  }
+});
+
 </script>
 
 <style scoped>
@@ -603,6 +908,18 @@ onMounted(() => {
 .url-input::placeholder { color: var(--el-text-color-placeholder, #9aa0a6); }
 .url-clear { border: none; background: transparent; cursor: pointer; font-size: 18px; color: var(--el-text-color-secondary); line-height: 1; }
 .url-clear:hover { color: var(--el-text-color-primary); }
+
+/* 页面缩放组 */
+.zoom-group { display: flex; align-items: center; gap: 2px; flex-shrink: 0; }
+.zoom-label {
+  min-width: 48px; height: 28px; padding: 0 6px;
+  border: none; background: transparent; border-radius: 8px;
+  color: var(--el-text-color-regular, #5f6368); cursor: pointer;
+  font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap;
+  transition: background 0.15s;
+}
+.zoom-label:hover { background: rgba(0,0,0,0.08); }
+[data-theme="dark"] .zoom-label:hover { background: rgba(255,255,255,0.1); }
 
 /* 收藏夹栏 */
 .bookmarks-bar {
@@ -675,11 +992,59 @@ onMounted(() => {
 .analysis-error { font-size: 12px; color: var(--el-color-danger, #f56c6c); margin-top: 6px; }
 
 /* 页面渲染区 */
-.browser-viewport { flex: 1; min-height: 0; position: relative; background: #fff; overflow: hidden; }
+.browser-viewport { flex: 1; min-height: 0; position: relative; overflow: hidden; background: #fff; display: flex; flex-direction: column; }
 [data-theme="dark"] .browser-viewport { background: #1b1d23; }
-.page-frame { width: 100%; height: 100%; border: none; background: #fff; display: block; }
+/* webview/iframe：flex:1 撑满 viewport */
+.page-frame { flex: 1; width: 100%; min-width: 0; border: none; background: #fff; display: block; overflow: hidden; }
 [data-theme="dark"] .page-frame { background: #1b1d23; }
-.proxy-badge { position: absolute; right: 10px; bottom: 10px; padding: 2px 10px; border-radius: 10px; font-size: 11px; background: rgba(124,58,237,0.12); color: var(--el-color-primary, #7C3AED); pointer-events: none; }
+
+/* 浏览器视口滚动条（兜底：当 iframe 自身出现滚动条时也用主题样式） */
+.browser-viewport::-webkit-scrollbar,
+.page-frame::-webkit-scrollbar { width: 10px !important; height: 10px !important; }
+.browser-viewport::-webkit-scrollbar-track,
+.page-frame::-webkit-scrollbar-track { background: transparent; }
+.browser-viewport::-webkit-scrollbar-thumb,
+.page-frame::-webkit-scrollbar-thumb {
+  background: rgba(0,0,0,0.22) !important; border-radius: 5px !important;
+  border: 2px solid transparent !important; background-clip: padding-box !important;
+}
+.browser-viewport::-webkit-scrollbar-thumb:hover,
+.page-frame::-webkit-scrollbar-thumb:hover {
+  background: rgba(0,0,0,0.38) !important; border: 2px solid transparent !important; background-clip: padding-box !important;
+}
+[data-theme="dark"] .browser-viewport::-webkit-scrollbar-thumb,
+[data-theme="dark"] .page-frame::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,0.22) !important; border: 2px solid transparent !important; background-clip: padding-box !important;
+}
+[data-theme="dark"] .browser-viewport::-webkit-scrollbar-thumb:hover,
+[data-theme="dark"] .page-frame::-webkit-scrollbar-thumb:hover {
+  background: rgba(255,255,255,0.38) !important; border: 2px solid transparent !important; background-clip: padding-box !important;
+}
+
+/* Electron 桌面端：BrowserView 占位 div（原生 BrowserView 会覆盖此区域） */
+.browser-view-placeholder { width: 100%; height: 100%; flex: 1; min-height: 0; }
+
+.loading-overlay {
+  position: absolute; inset: 0; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 12px;
+  background: rgba(255,255,255,0.7); z-index: 5;
+}
+[data-theme="dark"] .loading-overlay { background: rgba(27,29,35,0.7); }
+.loading-spinner {
+  width: 36px; height: 36px; border: 3px solid rgba(124,58,237,0.2);
+  border-top-color: var(--el-color-primary, #7C3AED); border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+
+/* 桌面端原生浏览器占位（主窗口已加载外部网页，这里只做提示） */
+.native-browser-placeholder { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; background: var(--el-bg-color-page, #fafafa); }
+[data-theme="dark"] .native-browser-placeholder { background: #1b1d23; }
+.placeholder-content { text-align: center; }
+.placeholder-icon { font-size: 64px; margin-bottom: 16px; }
+.placeholder-text { font-size: 18px; color: var(--el-text-color-primary); margin-bottom: 8px; }
+.placeholder-hint { font-size: 13px; color: var(--el-text-color-secondary); max-width: 400px; margin: 0 auto; line-height: 1.6; }
 
 /* 弹窗列表 */
 .bookmark-row { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--el-border-color-lighter); }
@@ -694,4 +1059,7 @@ onMounted(() => {
 .pin-del { border: none; background: transparent; color: var(--el-text-color-secondary); cursor: pointer; font-size: 18px; }
 .pin-del:hover { color: var(--el-color-danger); }
 .pin-add { display: flex; gap: 8px; align-items: center; margin-top: 10px; }
+
+
+
 </style>

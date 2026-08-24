@@ -231,6 +231,7 @@
               <div class="msg-actions">
                 <el-tooltip content="复制" placement="top"><el-button text size="small" circle @click="copyMsg(round.user)"><el-icon><CopyDocument /></el-icon></el-button></el-tooltip>
                 <el-tooltip content="编辑" placement="top"><el-button text size="small" circle @click="editMsg(round.user)"><el-icon><EditPen /></el-icon></el-button></el-tooltip>
+                <el-tooltip content="蒸馏为 Skill" placement="top"><el-button text size="small" circle @click="distillUserMsg(round.user)"><el-icon><MagicStick /></el-icon></el-button></el-tooltip>
                 <el-tooltip content="删除" placement="top"><el-button text size="small" circle @click="delMsg(round.user)"><el-icon><Delete /></el-icon></el-button></el-tooltip>
                 <el-tooltip v-if="debugMode" content="请求快照" placement="top"><el-button text size="small" circle @click="openSnapshotDialog(round.user)"><el-icon><View /></el-icon></el-button></el-tooltip>
                 <el-tooltip content="折叠" placement="top"><el-button text size="small" circle @click.stop="toggleMsgCollapse(round.user.id)"><el-icon><Fold /></el-icon></el-button></el-tooltip>
@@ -257,8 +258,18 @@
                     </div>
                     <div v-show="expandedReasoning['agent-fa-' + ri]" class="reasoning-body">{{ round.finalAssistant.reasoningContent }}</div>
                   </div>
-                  <div v-if="round.finalAssistant?.content" class="msg-content" v-html="renderMarkdown(round.finalAssistant.content)" @click="handleContentClick"></div>
-                <div v-else-if="isLastRoundStreaming(round, ri)" class="msg-content streaming"><span class="cursor">▋</span></div>
+                  <template v-if="round.finalAssistant?.content">
+                    <div class="msg-content" v-html="renderMarkdown(displayAssistantContent(round.finalAssistant.content))" @click="handleContentClick"></div>
+                    <PlatformConfigCard
+                      v-if="parseConfigCard(round.finalAssistant.content)"
+                      :mode="parseConfigCard(round.finalAssistant.content)!.mode"
+                      :platform="getEditPlatform(round.finalAssistant.content)"
+                      :reason="getEditReason(round.finalAssistant.content)"
+                      class="msg-config-card"
+                      @saved="onConfigSaved"
+                    />
+                  </template>
+                  <div v-else-if="isLastRoundStreaming(round, ri)" class="msg-content streaming"><span class="cursor">▋</span></div>
               </div>
 
               <!-- 智能体内部处理过程（可折叠） -->
@@ -382,6 +393,7 @@
               <div class="msg-actions msg-actions-assistant">
                 <el-tooltip content="复制" placement="top"><el-button text size="small" circle @click="copyMsg(round.finalAssistant!)"><el-icon><CopyDocument /></el-icon></el-button></el-tooltip>
                 <el-tooltip content="重新生成" placement="top"><el-button text size="small" circle :disabled="store.streaming" @click="regenerateMsg"><el-icon><Refresh /></el-icon></el-button></el-tooltip>
+                <el-tooltip content="蒸馏为 Skill" placement="top"><el-button text size="small" circle @click="distillAssistantMsg(round)"><el-icon><MagicStick /></el-icon></el-button></el-tooltip>
                 <el-tooltip content="删除" placement="top"><el-button text size="small" circle @click="delMsg(round.finalAssistant!)"><el-icon><Delete /></el-icon></el-button></el-tooltip>
                 <el-tooltip content="折叠" placement="top"><el-button text size="small" circle @click.stop="toggleMsgCollapse(round.finalAssistant!.id)"><el-icon><Fold /></el-icon></el-button></el-tooltip>
               </div>
@@ -432,6 +444,35 @@
 
       <div class="input-area">
         <div class="input-box" :class="{ focused: inputFocused }">
+          <!-- 上下文条：工作目录 / MCP 工具 / Skill / 上传文件，位于输入框上方 -->
+          <div class="input-context">
+            <el-tooltip :content="workspaceDir || '未设置工作目录'" placement="top" :disabled="!workspaceDir">
+              <button class="ctx-chip ctx-dir" type="button" @click="showWorkspaceDir = true">
+                <el-icon class="ctx-icon"><FolderOpened /></el-icon>
+                <span class="ctx-dir-text">{{ workspaceDir || '未设置工作目录' }}</span>
+                <el-icon class="ctx-caret"><ArrowDown /></el-icon>
+              </button>
+            </el-tooltip>
+
+            <button class="ctx-chip" type="button" @click="showMount = true">
+              <el-icon class="ctx-icon"><Connection /></el-icon>
+              <span>MCP 工具</span>
+              <span v-if="store.mountedMcpServers.length" class="ctx-count">{{ store.mountedMcpServers.length }}</span>
+            </button>
+
+            <button class="ctx-chip" type="button" @click="showSkills = true">
+              <el-icon class="ctx-icon"><Files /></el-icon>
+              <span>Skill</span>
+              <span v-if="mountedSkillIds.length" class="ctx-count">{{ mountedSkillIds.length }}</span>
+            </button>
+
+            <el-tooltip content="上传文件" placement="top">
+              <button class="ctx-chip ctx-icon-only" type="button" @click="triggerFileUpload">
+                <el-icon class="ctx-icon"><UploadFilled /></el-icon>
+              </button>
+            </el-tooltip>
+          </div>
+
           <el-input
             v-model="input"
             type="textarea"
@@ -470,31 +511,6 @@
                 </el-tooltip>
               </div>
 
-              <div class="toolbar-icons">
-                <el-tooltip content="MCP 工具" placement="top">
-                  <el-button size="small" circle @click="showMount = true">
-                    <el-icon><Connection /></el-icon>
-                  </el-button>
-                </el-tooltip>
-                <el-badge :value="mountedSkillIds.length" :hidden="mountedSkillIds.length === 0" type="primary">
-                  <el-tooltip content="Skill" placement="top">
-                    <el-button size="small" circle @click="showSkills = true">
-                      <el-icon><Files /></el-icon>
-                    </el-button>
-                  </el-tooltip>
-                </el-badge>
-                <el-tooltip :content="`工作目录: ${workspaceDir}`" placement="top">
-                  <el-button size="small" @click="showWorkspaceDir = true">
-                    <el-icon style="margin-right:4px"><FolderOpened /></el-icon>
-                    <span class="workspace-dir-label">{{ workspaceDir.split('/').pop() || workspaceDir }}</span>
-                  </el-button>
-                </el-tooltip>
-                <el-tooltip content="上传文件" placement="top">
-                  <el-button size="small" circle @click="triggerFileUpload">
-                    <el-icon><UploadFilled /></el-icon>
-                  </el-button>
-                </el-tooltip>
-              </div>
             </div>
 
             <!-- mobile-only: icon buttons to popover agent / model list -->
@@ -544,30 +560,6 @@
                       <span>{{ m.alias || m.modelId }}</span>
                     </div>
                   </template>
-                </div>
-              </el-popover>
-            </div>
-
-            <div class="toolbar-more">
-              <el-popover placement="top" trigger="click" :width="160" :show-arrow="false">
-                <template #reference>
-                  <el-button size="small" circle>
-                    <el-icon><MoreFilled /></el-icon>
-                  </el-button>
-                </template>
-                <div class="more-menu">
-                  <div class="more-item" @click="showMount = true">
-                    <el-icon><Connection /></el-icon><span>MCP 工具</span>
-                  </div>
-                  <div class="more-item" @click="showSkills = true">
-                    <el-icon><Files /></el-icon><span>Skill {{ mountedSkillIds.length ? '(' + mountedSkillIds.length + ')' : '' }}</span>
-                  </div>
-                  <div class="more-item" @click="showWorkspaceDir = true">
-                    <el-icon><FolderOpened /></el-icon><span>工作目录</span>
-                  </div>
-                  <div class="more-item" @click="triggerFileUpload">
-                    <el-icon><UploadFilled /></el-icon><span>上传文件</span>
-                  </div>
                 </div>
               </el-popover>
             </div>
@@ -861,16 +853,19 @@
         <el-button type="primary" @click="onAskSubmit">提交</el-button>
       </template>
     </el-dialog>
+
+    <!-- Skill 蒸馏弹窗 -->
+    <DistillDialog v-model:visible="showDistill" :messages="distillMessages" />
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, onMounted, nextTick, watch, reactive, onUnmounted } from 'vue';
-import { Plus, ChatDotRound, Star, Connection, CaretRight, CaretBottom, Search, Files, EditPen, Delete, User, Setting, CopyDocument, Refresh, Promotion, Fold, Expand, Lock, Check, Cpu, UploadFilled, Close, View, ArrowRight, ArrowDown, ArrowUp, ArrowLeft, CircleCheck, CircleClose, Loading, FolderOpened, MoreFilled, SwitchButton, Aim, Monitor, Operation } from '@element-plus/icons-vue';
+import { Plus, ChatDotRound, Star, Connection, CaretRight, CaretBottom, Search, Files, EditPen, Delete, User, Setting, CopyDocument, Refresh, Promotion, Fold, Expand, Lock, Check, Cpu, UploadFilled, Close, View, ArrowRight, ArrowDown, ArrowUp, ArrowLeft, CircleCheck, CircleClose, Loading, FolderOpened, MoreFilled, SwitchButton, Aim, Monitor, Operation, MagicStick } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import MarkdownIt from 'markdown-it';
 import hljs from 'highlight.js';
-import { useChatStore, usePlatformStore, useMcpStore, useSkillStore, useAgentStore, useAuthStore, useSpaceStore, useFileStore } from '../stores';
+import { useChatStore, usePlatformStore, useMcpStore, useSkillStore, useAgentStore, useAuthStore, useSpaceStore, useFileStore, useDistillStore } from '../stores';
 import { useIsMobile } from '../composables/useIsMobile';
 import type { Agent } from '@yan-zhi/shared';
 import { estimateTokens, CHAT_MODEL_TYPES } from '@yan-zhi/shared';
@@ -880,6 +875,9 @@ import WorkspaceDirDialog from '../components/WorkspaceDirDialog.vue';
 import FilePreview from '../components/FilePreview.vue';
 import BrowserPanel from '../components/BrowserPanel.vue';
 import TaskPlanCard from '../components/TaskPlanCard.vue';
+import DistillDialog from '../components/DistillDialog.vue';
+import PlatformConfigCard from '../components/PlatformConfigCard.vue';
+import type { Platform } from '@yan-zhi/shared';
 
 const store = useChatStore();
 const platformStore = usePlatformStore();
@@ -889,7 +887,24 @@ const agentStore = useAgentStore();
 const authStore = useAuthStore();
 const spaceStore = useSpaceStore();
 const fileStore = useFileStore();
+const distillStore = useDistillStore();
 const isMobile = useIsMobile();
+
+// Skill 蒸馏弹窗状态
+const showDistill = ref(false);
+const distillMessages = ref<Array<{ role: string; content: string }>>([]);
+
+function distillUserMsg(msg: Message) {
+  distillMessages.value = [{ role: 'user', content: msg.content || '' }];
+  showDistill.value = true;
+}
+function distillAssistantMsg(round: any) {
+  const msgs: Array<{ role: string; content: string }> = [];
+  if (round.user) msgs.push({ role: 'user', content: round.user.content || '' });
+  if (round.finalAssistant) msgs.push({ role: 'assistant', content: round.finalAssistant.content || '' });
+  distillMessages.value = msgs;
+  showDistill.value = true;
+}
 
 // E12: 智能体反问弹窗表单状态（ask_user 工具触发）
 const askText = ref('');
@@ -1548,6 +1563,75 @@ function onModelChange(modelId: string) {
   }
 }
 
+// ===== 聊天内嵌平台配置卡片：解析消息 content 中的 [[PLATFORM_CONFIG:mode:platformId?]] 标记 =====
+interface ParsedConfigCard {
+  tip: string;
+  reason?: string;
+  mode: 'create' | 'edit';
+  platformId?: string;
+}
+
+function parseConfigCard(content: string | undefined): ParsedConfigCard | null {
+  if (!content) return null;
+  const m = content.match(/\[\[PLATFORM_CONFIG:(create|edit)(?::([^\]]+))?\]\]/);
+  if (!m) return null;
+  const mode = m[1] as 'create' | 'edit';
+  const platformId = m[2] || undefined;
+  // 去掉标记，保留提示文本
+  const body = content.replace(/\[\[PLATFORM_CONFIG:[^\]]*\]\]\s*$/, '').trim();
+  // 拆分「气泡短提示」与「卡片详细原因」：@@REASON@@ 之后为详细原因
+  const REASON_SEP = '\n@@REASON@@\n';
+  let tip = body;
+  let reason: string | undefined;
+  const sepIdx = body.indexOf(REASON_SEP);
+  if (sepIdx >= 0) {
+    tip = body.slice(0, sepIdx).trim();
+    reason = body.slice(sepIdx + REASON_SEP.length).trim();
+  }
+  return { tip, reason, mode, platformId };
+}
+
+/** 渲染时用：若有配置卡片标记，只显示去掉标记的提示文本；否则原样返回 */
+function displayAssistantContent(content: string | undefined): string {
+  const parsed = parseConfigCard(content);
+  if (parsed) return parsed.tip;
+  return content || '';
+}
+
+/** edit 模式下返回要预填的 platform */
+function getEditPlatform(content: string | undefined): Platform | undefined {
+  const parsed = parseConfigCard(content);
+  if (parsed?.mode === 'edit' && parsed.platformId) {
+    return platformStore.platforms.find((p) => p.id === parsed.platformId);
+  }
+  return undefined;
+}
+
+/** edit 模式下把详细原因传给卡片（气泡只显示短提示） */
+function getEditReason(content: string | undefined): string | undefined {
+  const parsed = parseConfigCard(content);
+  if (parsed?.mode === 'edit') return parsed.reason;
+  return undefined;
+}
+
+async function onConfigSaved(payload: { platformId: string; modelId?: string }) {
+  if (payload.modelId) {
+    selectedModelId.value = payload.modelId;
+    // 同步到当前智能体
+    const model = platformStore.models.find((m) => m.id === payload.modelId);
+    if (model && agentStore.selectedAgent) {
+      agentStore.updateAgent(agentStore.selectedId, { modelId: model.modelId, platformId: model.platformId });
+    }
+  }
+  ElMessage.success(
+    payload.modelId
+      ? '平台已配置并选中模型，请重新发送消息'
+      : '平台已配置，请到模型页选择模型后重新发送消息',
+  );
+  await nextTick();
+  scrollToBottom();
+}
+
 function startNewChat() {
   store.currentConvId = '';
   store.currentMessages = [];
@@ -1604,12 +1688,58 @@ function formatSize(bytes: number): string {
 
 async function send() {
   if (!input.value.trim() && uploadedFiles.value.length === 0) return;
-  if (!selectedModelId.value || !platformStore.models.find((m) => m.id === selectedModelId.value)) {
-    ElMessage.error('请先选择模型'); return;
+
+  // ===== 未配置平台/未选模型分支：在聊天内回复提示 + 内嵌配置卡片 =====
+  const hasPlatform = platformStore.platforms.length > 0;
+  const hasModel = !!selectedModelId.value && !!platformStore.models.find((m) => m.id === selectedModelId.value);
+  if (!hasPlatform || !hasModel) {
+    const userContent = input.value.trim();
+    if (!userContent && uploadedFiles.value.length === 0) return;
+    input.value = '';
+    uploadedFiles.value = [];
+
+    // 确保有会话
+    if (store.currentConvId && !store.conversations.some((c) => c.id === store.currentConvId)) {
+      store.currentConvId = '';
+      store.currentMessages = [];
+    }
+    if (!store.currentConvId) {
+      const titleBase = userContent || '配置平台';
+      const title = titleBase.slice(0, 24) + (titleBase.length > 24 ? '…' : '');
+      const id = await store.createConversation(title, { skillIds: [...mountedSkillIds.value] });
+      try { await saveMountToDb(id); } catch { /* 忽略挂载持久化失败 */ }
+      await store.loadMessages(id);
+      isDraftMode.value = false;
+    }
+
+    // 用户消息入库
+    if (userContent) {
+      await store.addMessage({
+        conversationId: store.currentConvId,
+        role: 'user',
+        content: userContent,
+      });
+    }
+
+    // 助手提示 + 内嵌配置卡片标记
+    const tip = !hasPlatform
+      ? '⚠️ 平台未配置，请在下方填写平台信息后保存。'
+      : '⚠️ 未选择模型，请在下方配置平台后选择模型。';
+    await store.addMessage({
+      conversationId: store.currentConvId,
+      role: 'assistant',
+      content: tip + '\n[[PLATFORM_CONFIG:create]]',
+    });
+
+    await nextTick();
+    scrollToBottom();
+    return;
   }
+
   const content = input.value;
   const model = platformStore.models.find((m) => m.id === selectedModelId.value);
-  const platform = platformStore.platforms.find((p) => p.id === model?.platformId);
+  // platform 提到 try 外声明，catch 分支需要用它来预填修正卡片
+  let platform: Platform | undefined = platformStore.platforms.find((p) => p.id === model?.platformId);
   if (!platform || !model) { ElMessage.error('平台或模型不存在'); return; }
 
   if (!CHAT_MODEL_TYPES.includes(model.type)) {
@@ -1707,7 +1837,30 @@ async function send() {
   } catch (e: any) {
     if (e?.name === 'AbortError') return;
     console.error('[Chat] 发送失败:', e);
-    ElMessage({ message: e?.message || '发送失败', type: 'error', duration: 6000, showClose: true });
+
+    // ===== LLM 请求失败（平台访问不了）：在聊天内回复提示 + 内嵌修正卡片 =====
+    // callLlm 失败前已 addMessage 一条空 assistant 占位消息（content=''），优先更新它；
+    // 若不存在空占位（理论上不会，但防御性处理），则新增一条助手提示消息。
+    const reason = e?.message || '请求失败';
+    const tipText = '⚠️ 平台无法访问，请在下方修正平台配置。';
+    const marker = platform
+      ? `\n[[PLATFORM_CONFIG:edit:${platform.id}]]`
+      : '\n[[PLATFORM_CONFIG:create]]';
+    const fullContent = `${tipText}\n@@REASON@@\n${reason}${marker}`;
+
+    const msgs = store.currentMessages;
+    const last = msgs[msgs.length - 1];
+    if (last && last.role === 'assistant' && !last.content) {
+      await store.updateMessage(last.id, { content: fullContent });
+    } else if (store.currentConvId) {
+      await store.addMessage({
+        conversationId: store.currentConvId,
+        role: 'assistant',
+        content: fullContent,
+      });
+    }
+    await nextTick();
+    scrollToBottom();
   }
 }
 
@@ -2174,7 +2327,7 @@ async function saveSkills() {
 
 <style scoped>
 /* ===== 布局 ===== */
-.chat-page { display: flex; height: 100%; position: relative; }
+.chat-page { display: flex; flex: 1; position: relative; min-height: 0; }
 .chat-page.conv-collapsed .sidebar { width: 0; overflow: hidden; border: none; }
 .chat-page.conv-collapsed .conv-toggle { left: 0; }
 
@@ -2413,6 +2566,12 @@ async function saveSkills() {
 }
 .agent-response-card:hover { box-shadow: 0 2px 12px rgba(0,0,0,0.08); }
 .agent-response-body { line-height: 1.65; }
+.msg-config-card {
+  margin-top: 10px;
+  /* 突破 msg-block 85% 限制，给配置卡片足够宽度 */
+  max-width: 520px;
+  width: 520px;
+}
 
 .agent-process-header {
   display: flex; align-items: center; gap: 6px;
@@ -2606,16 +2765,42 @@ async function saveSkills() {
   display: flex; align-items: center;
   padding: 4px 12px; flex-wrap: wrap; gap: 6px;
 }
+
+/* 上下文条：位于输入框上方，承载工作目录 / MCP / Skill / 上传 等会话上下文 */
+.input-context {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
+  padding: 8px 12px 2px;
+}
+.ctx-chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  max-width: 280px; height: 28px; padding: 0 10px;
+  background: rgba(59,130,246,0.06);
+  border: 1px solid rgba(59,130,246,0.14);
+  border-radius: 14px;
+  font-size: 12.5px; color: var(--color-text);
+  cursor: pointer; white-space: nowrap;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.ctx-chip:hover { background: rgba(59,130,246,0.12); border-color: rgba(59,130,246,0.32); }
+.ctx-chip .ctx-icon { font-size: 14px; color: var(--color-primary); flex-shrink: 0; }
+.ctx-dir { max-width: 320px; }
+.ctx-dir-text {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  max-width: 240px; display: inline-block; vertical-align: middle;
+}
+.ctx-caret { font-size: 11px; color: var(--color-text-secondary); flex-shrink: 0; }
+.ctx-count {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 16px; height: 16px; padding: 0 4px; margin-left: 1px;
+  background: var(--color-primary); color: #fff;
+  font-size: 11px; line-height: 1; border-radius: 8px; flex-shrink: 0;
+}
+.ctx-icon-only { padding: 0 8px; }
 .toolbar-left { display: flex; align-items: center; gap: 6px; flex: 1 1 auto; min-width: 0; }
 .toolbar-right { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
 .toolbar-agent { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
 
 .toolbar-mobile-selects { display: none; }
-
-.toolbar-icons { display: flex; align-items: center; gap: 6px; min-width: 0; }
-.toolbar-icons .el-button { flex-shrink: 0; }
-
-.toolbar-more { display: none; }
 
 .pop-select-list { max-height: 260px; overflow-y: auto; }
 .pop-select-label { font-size: 11px; font-weight: 600; color: var(--color-text-secondary); text-transform: uppercase; padding: 4px 12px 2px; }
@@ -2626,15 +2811,6 @@ async function saveSkills() {
 }
 .pop-select-item:hover { background: rgba(59,130,246,0.06); }
 .pop-select-item.active { color: var(--color-primary); font-weight: 600; background: rgba(124,58,237,0.06); }
-
-.more-menu { display: flex; flex-direction: column; gap: 2px; }
-.more-item {
-  display: flex; align-items: center; gap: 8px; padding: 8px 12px;
-  border-radius: 8px; cursor: pointer; font-size: 13px; color: var(--color-text);
-  transition: background 0.15s;
-}
-.more-item:hover { background: rgba(59,130,246,0.06); }
-.more-item .el-icon { font-size: 16px; color: var(--color-text-secondary); }
 
 .minimal-select {
   display: flex; align-items: center; gap: 2px;
@@ -3111,15 +3287,15 @@ async function saveSkills() {
   }
   .input-box { border-radius: 12px; }
   .input-textarea :deep(.el-textarea__inner) { font-size: 15px; padding: 8px 8px; }
+  .input-context { padding: 6px 8px 2px; gap: 5px; }
+  .ctx-chip { height: 26px; padding: 0 8px; font-size: 12px; max-width: 200px; }
+  .ctx-dir { max-width: 220px; }
+  .ctx-dir-text { max-width: 150px; }
   .input-toolbar { padding: 4px 6px; gap: 4px; justify-content: space-between; }
   .toolbar-left { display: none; }
   .toolbar-agent { display: none; }
   .model-select { display: none; }
   .toolbar-mobile-selects { display: flex; align-items: center; gap: 3px; }
-  .toolbar-icons { display: none; }
-  .toolbar-more { display: flex; align-items: center; }
-  .workspace-dir-label { display: none; }
-  .toolbar-left .token-chip { display: none; }
   /* ensure toolbar buttons/icons stay visible on mobile */
   .input-toolbar .el-button { flex-shrink: 0; }
   .minimal-select { flex-shrink: 0; }

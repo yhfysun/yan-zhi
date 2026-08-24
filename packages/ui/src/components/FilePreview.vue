@@ -27,6 +27,7 @@ import { ref, watch, computed } from 'vue';
 import MarkdownIt from 'markdown-it';
 import hljs from 'highlight.js';
 import { Document } from '@element-plus/icons-vue';
+import { API_BASE } from '../api/client';
 
 const props = defineProps<{ file: { name: string; path: string } }>();
 const emit = defineEmits<{ (e: 'close'): void }>();
@@ -122,7 +123,7 @@ async function loadFile() {
 function download() {
   // 通过创建 a 标签下载
   const a = document.createElement('a');
-  a.href = `/api/files/download?path=${encodeURIComponent(props.file.path)}`;
+  a.href = `${API_BASE}/files/download?path=${encodeURIComponent(props.file.path)}`;
   a.download = props.file.name;
   a.click();
 }

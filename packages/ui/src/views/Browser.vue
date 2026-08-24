@@ -9,5 +9,5 @@ import BrowserPanel from '../components/BrowserPanel.vue';
 </script>
 
 <style scoped>
-.browser-page { height: 100%; display: flex; flex-direction: column; padding: 0; box-sizing: border-box; }
+.browser-page { flex: 1; display: flex; flex-direction: column; padding: 0; box-sizing: border-box; min-height: 0; }
 </style>

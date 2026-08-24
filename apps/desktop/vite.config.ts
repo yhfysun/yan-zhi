@@ -17,6 +17,8 @@ export default defineConfig({
     exclude: ['@yan-zhi/ui', '@yan-zhi/core', '@yan-zhi/shared'],
   },
   base: './',
+  // 桌面端共享 web 的 public 目录（纹理图片、GeoJSON 等静态资源）
+  publicDir: resolve(__dirname, '../web/public'),
   server: {
     port: 1420,
     strictPort: true,

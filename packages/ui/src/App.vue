@@ -1,48 +1,52 @@
 <template>
-  <div class="app-shell" :class="{ 'platform-desktop': isDesktop, 'nav-collapsed': collapsed }">
-    <div v-if="!isDesktop" class="bg-orbs">
-      <div class="bg-orb orb-1"></div>
-      <div class="bg-orb orb-2"></div>
-      <div class="bg-orb orb-3"></div>
+  <div class="app-shell" :class="{ 'platform-desktop': isDesktop, 'nav-collapsed': collapsed, 'is-electron': isElectron }">
+
+    <!-- 内容区域 -->
+    <div class="app-body">
+      <div v-if="!isDesktop" class="bg-orbs">
+        <div class="bg-orb orb-1"></div>
+        <div class="bg-orb orb-2"></div>
+        <div class="bg-orb orb-3"></div>
+      </div>
+
+      <template v-if="$route.name === 'login'">
+        <main class="main-content full">
+          <router-view />
+        </main>
+      </template>
+
+      <template v-else>
+        <SideNav />
+        <!-- Mobile TopBar (hidden on chat page - Chat has its own topbar) -->
+        <header v-if="isMobile && route.name !== 'chat'" class="mobile-topbar">
+          <span class="mobile-topbar-title">{{ pageTitle }}</span>
+          <div class="mobile-topbar-actions">
+            <el-dropdown v-if="authStore.isLoggedIn" trigger="click">
+              <span class="mobile-user-avatar">{{ authStore.user?.username?.slice(0, 1) || 'U' }}</span>
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <div class="user-dropdown-header">
+                    <span class="user-dropdown-name">{{ authStore.user?.username }}</span>
+                  </div>
+                  <el-dropdown-item divided @click="authStore.logout()">
+                    <el-icon><SwitchButton /></el-icon>
+                    <span>退出登录</span>
+                  </el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
+            <router-link v-else to="/login" class="mobile-user-avatar" style="text-decoration:none;font-size:14px">
+              <el-icon :size="18"><User /></el-icon>
+            </router-link>
+          </div>
+        </header>
+        <main class="main-content" :class="{ 'is-chat': route.name === 'chat' }">
+          <router-view v-slot="{ Component }">
+            <transition name="slide-fade" mode="out-in"><component :is="Component" /></transition>
+          </router-view>
+        </main>
+      </template>
     </div>
-
-    <template v-if="$route.name === 'login'">
-      <main class="main-content full">
-        <router-view />
-      </main>
-    </template>
-
-    <template v-else>
-      <SideNav />
-      <!-- Mobile TopBar (hidden on chat page - Chat has its own topbar) -->
-      <header v-if="isMobile && route.name !== 'chat'" class="mobile-topbar">
-        <span class="mobile-topbar-title">{{ pageTitle }}</span>
-        <div class="mobile-topbar-actions">
-          <el-dropdown v-if="authStore.isLoggedIn" trigger="click">
-            <span class="mobile-user-avatar">{{ authStore.user?.username?.slice(0, 1) || 'U' }}</span>
-            <template #dropdown>
-              <el-dropdown-menu>
-                <div class="user-dropdown-header">
-                  <span class="user-dropdown-name">{{ authStore.user?.username }}</span>
-                </div>
-                <el-dropdown-item divided @click="authStore.logout()">
-                  <el-icon><SwitchButton /></el-icon>
-                  <span>退出登录</span>
-                </el-dropdown-item>
-              </el-dropdown-menu>
-            </template>
-          </el-dropdown>
-          <router-link v-else to="/login" class="mobile-user-avatar" style="text-decoration:none;font-size:14px">
-            <el-icon :size="18"><User /></el-icon>
-          </router-link>
-        </div>
-      </header>
-      <main class="main-content" :class="{ 'is-chat': route.name === 'chat' }">
-        <router-view v-slot="{ Component }">
-          <transition name="slide-fade" mode="out-in"><component :is="Component" /></transition>
-        </router-view>
-      </main>
-    </template>
   </div>
 </template>
 
@@ -52,6 +56,7 @@ import { useRoute } from 'vue-router';
 import { User, SwitchButton } from '@element-plus/icons-vue';
 import { useAuthStore } from './stores/auth';
 import SideNav from './components/SideNav.vue';
+
 import { useIsMobile } from './composables/useIsMobile';
 import { usePlatform } from './composables/usePlatform';
 import { useSidebarState } from './composables/useSidebarState';
@@ -62,12 +67,17 @@ const isMobile = useIsMobile();
 const { isDesktop } = usePlatform();
 const { collapsed } = useSidebarState();
 
+// Electron 桌面端检测：由主进程通过 preload 注入 window.electronAPI.isElectron
+const isElectron = typeof window !== 'undefined' && !!(window as any).electronAPI?.isElectron;
+
 const ROUTE_TITLES: Record<string, string> = {
+  home: '首页',
   chat: '对话',
   browser: '浏览器',
   models: '模型平台',
   tools: '工具管理',
   skills: 'Skill 商店',
+  distill: 'Skill 蒸馏',
   agents: '智能体',
   mcp: 'MCP 服务',
   settings: '设置',
@@ -165,7 +175,8 @@ body {
   transition: background-color 0.4s ease, border-color 0.4s ease, color 0.3s ease;
 }
 
-.app-shell { display: flex; height: 100%; position: relative; overflow: hidden; }
+.app-shell { display: flex; flex-direction: column; height: 100%; position: relative; overflow: hidden; }
+.app-body { flex: 1; display: flex; overflow: hidden; min-height: 0; }
 
 /* ===== 桌面端专属布局：CSS 变量驱动侧栏宽度联动、固定字号、实色背景、紧凑密度 ===== */
 /* web/mobile 因 html,body,#app{height:100%} 仍正确铺满；高度从 100vh/dvh 改为 100% 以兼容桌面端被 flex 父容器包裹 */
@@ -210,8 +221,10 @@ body {
 
 @media (prefers-reduced-motion: reduce) { .bg-orb { animation: none !important; } }
 
-.main-content { flex: 1; overflow-y: auto; position: relative; z-index: 1; margin-left: 52px; }
+.main-content { flex: 1; overflow: hidden; position: relative; z-index: 1; margin-left: 52px; display: flex; flex-direction: column; min-height: 0; }
 .main-content.full { overflow: visible; margin-left: 0; }
+/* 可滚动页面：.page 自管滚动 */
+.page { padding: 28px 36px; flex: 1; overflow-y: auto; }
 
 /* Mobile TopBar */
 .mobile-topbar {
@@ -324,13 +337,18 @@ body {
 }
 .glass-card:hover { transform: translateY(-2px); box-shadow: var(--shadow-md); }
 
-/* Scrollbar */
-::-webkit-scrollbar { width: 6px; height: 6px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.12); border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: rgba(0,0,0,0.2); }
-[data-theme="dark"] ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); }
-[data-theme="dark"] ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.2); }
+/* Scrollbar — VS Code 风格：宽 12px、透明轨道、圆角滑块、hover 加深 */
+::-webkit-scrollbar { width: 12px !important; height: 12px !important; }
+::-webkit-scrollbar-track { background: transparent !important; }
+::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.22) !important; border-radius: 6px !important; border: 3px solid transparent !important; background-clip: padding-box !important; }
+::-webkit-scrollbar-thumb:hover { background: rgba(0,0,0,0.4) !important; border: 3px solid transparent !important; background-clip: padding-box !important; }
+::-webkit-scrollbar-thumb:active { background: rgba(0,0,0,0.5) !important; border: 3px solid transparent !important; background-clip: padding-box !important; }
+[data-theme="dark"] ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.22) !important; border: 3px solid transparent !important; background-clip: padding-box !important; }
+[data-theme="dark"] ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.4) !important; border: 3px solid transparent !important; background-clip: padding-box !important; }
+[data-theme="dark"] ::-webkit-scrollbar-thumb:active { background: rgba(255,255,255,0.5) !important; border: 3px solid transparent !important; background-clip: padding-box !important; }
+/* Firefox */
+* { scrollbar-width: thin !important; scrollbar-color: rgba(0,0,0,0.22) transparent !important; }
+[data-theme="dark"] * { scrollbar-color: rgba(255,255,255,0.22) transparent !important; }
 
 /* Skeleton shimmer */
 .skeleton-shimmer {
@@ -348,7 +366,7 @@ body {
 }
 
 /* ===== Global page layout classes ===== */
-.page { padding: 28px 36px; }
+
 .page-header {
   display: flex; justify-content: space-between; align-items: center;
   margin-bottom: 24px; gap: 16px;
@@ -464,4 +482,68 @@ body {
   color: var(--color-text-secondary);
 }
 .add-card-text { font-size: 14px; }
+
+/* ===== Electron 桌面端：VS Code 风格 ===== */
+/* 标题栏 32px 高，SideNav 通过 --titlebar-h 变量从标题栏下方开始 */
+.is-electron.app-shell {
+  --titlebar-h: 32px;
+}
+/* VS Code 风格：紧凑间距、桌面字体、原生滚动条 */
+.is-electron .app-body {
+  flex: 1; display: flex; overflow: hidden;
+  font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, "Microsoft YaHei", sans-serif;
+  font-size: 13px; /* 桌面端固定 13px，不用 clamp 流体字号 */
+}
+
+/* 原生滚动条（VS Code 风格：8px 宽，圆角，半透明，hover 加深） */
+.is-electron ::-webkit-scrollbar {
+  width: 8px !important; height: 8px !important;
+}
+.is-electron ::-webkit-scrollbar-track {
+  background: transparent !important;
+}
+.is-electron ::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15) !important; border-radius: 4px !important; border: 2px solid transparent !important; background-clip: padding-box !important;
+}
+.is-electron ::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.3) !important; border: 2px solid transparent !important; background-clip: padding-box !important;
+}
+.is-electron ::-webkit-scrollbar-thumb:active {
+  background: rgba(255, 255, 255, 0.4) !important; border: 2px solid transparent !important; background-clip: padding-box !important;
+}
+.is-electron :root:not([data-theme="dark"]) ::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.15) !important; border: 2px solid transparent !important; background-clip: padding-box !important;
+}
+.is-electron :root:not([data-theme="dark"]) ::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.3) !important; border: 2px solid transparent !important; background-clip: padding-box !important;
+}
+.is-electron :root:not([data-theme="dark"]) ::-webkit-scrollbar-thumb:active {
+  background: rgba(0, 0, 0, 0.4) !important; border: 2px solid transparent !important; background-clip: padding-box !important;
+}
+
+/* 紧凑间距：减小 padding/margin */
+.is-electron .page { padding: 16px 20px; }
+.is-electron .page-header { margin-bottom: 16px; }
+.is-electron .page-title { font-size: 16px; }
+.is-electron .card-grid { gap: 12px; }
+.is-electron .card-grid-sm { gap: 8px; }
+
+/* 暗色主题背景（VS Code Catppuccin Mocha 风格） */
+.is-electron [data-theme="dark"] .app-shell {
+  background: #1e1e2e;
+}
+.is-electron [data-theme="dark"] .app-body {
+  background: #1e1e2e;
+}
+.is-electron [data-theme="dark"] .main-content {
+  background: #1e1e2e;
+}
+
+/* 浅色主题背景（VS Code 浅色风格） */
+.is-electron :root:not([data-theme="dark"]) .app-shell {
+  background: #f3f3f3;
+}
+.is-electron :root:not([data-theme="dark"]) .app-body {
+  background: #f3f3f3;
+}
 </style>

@@ -2,7 +2,13 @@
 import { createRouter, createWebHashHistory, type RouteRecordRaw } from 'vue-router';
 
 const routes: RouteRecordRaw[] = [
-  { path: '/', redirect: '/chat' },
+  { path: '/', redirect: '/home' },
+  {
+    path: '/home',
+    name: 'home',
+    component: () => import('../views/Home.vue'),
+    meta: { title: '首页' },
+  },
   {
     path: '/login',
     name: 'login',
@@ -79,6 +85,12 @@ const routes: RouteRecordRaw[] = [
     name: 'agent-canvas',
     component: () => import('../views/AgentCanvas.vue'),
     meta: { title: '智能体画布' },
+  },
+  {
+    path: '/distill',
+    name: 'distill',
+    component: () => import('../views/SkillDistill.vue'),
+    meta: { title: 'Skill 蒸馏' },
   },
   {
     path: '/settings',

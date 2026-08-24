@@ -1,7 +1,7 @@
 <template>
   <div class="title-bar">
     <!-- 拖拽背景层：铺满整条标题栏，按钮等交互元素作为兄弟叠在其上方 -->
-    <div class="drag-region" data-tauri-drag-region></div>
+    <div class="drag-region"></div>
 
     <!-- 内容层：pointer-events:none 使非按钮区域点击穿透到拖拽层 -->
     <div class="title-content">
@@ -36,53 +36,54 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue';
 import { Minus, FullScreen, CopyDocument, Close } from '@element-plus/icons-vue';
-import { getCurrentWindow } from '@tauri-apps/api/window';
 
-// 当前 Tauri 窗口实例；非 Tauri 环境（如浏览器预览）下 getCurrentWindow 会抛错，置 null 使按钮降级为无操作
-let win: ReturnType<typeof getCurrentWindow> | null = null;
-try {
-  win = getCurrentWindow();
-} catch {
-  win = null;
-}
+// Electron 渲染进程通过 contextBridge 注入的 API
+const api = (window as any).electronAPI;
 
 // 是否处于最大化状态
 const isMaximized = ref(false);
 
-// onResized 监听器取消函数
-let unlisten: (() => void) | null = null;
+// 窗口尺寸变化监听回调
+let resizeHandler: (() => void) | null = null;
 
 // 最小化
 async function onMinimize() {
-  try { await win?.minimize(); } catch {}
+  try { api?.minimize(); } catch {}
 }
 
-// 最大化 / 还原切换
+// 最大化 / 还原切换（Electron 主进程的 window-maximize 已实现 toggle 逻辑）
 async function onToggleMaximize() {
-  try { await win?.toggleMaximize(); } catch {}
+  try {
+    api?.maximize();
+    // 点击后立即同步状态（resize 事件可能不会触发，例如从最大化还原）
+    if (api?.isMaximized) {
+      isMaximized.value = await api.isMaximized();
+    }
+  } catch {}
 }
 
 // 关闭窗口
 async function onClose() {
-  try { await win?.close(); } catch {}
+  try { api?.close(); } catch {}
 }
 
 onMounted(async () => {
-  if (!win) return;
+  if (!api) return;
   try {
     // 初始化最大化状态
-    isMaximized.value = await win.isMaximized();
-    // 监听窗口尺寸变化，同步最大化状态（onResized 返回 unlisten 函数）
-    unlisten = await win.onResized(async () => {
-      try { isMaximized.value = await win!.isMaximized(); } catch {}
-    });
+    isMaximized.value = await api.isMaximized();
+    // 监听窗口尺寸变化，同步最大化状态
+    resizeHandler = async () => {
+      try { isMaximized.value = await api.isMaximized(); } catch {}
+    };
+    window.addEventListener('resize', resizeHandler);
   } catch {}
 });
 
 onUnmounted(() => {
-  if (unlisten) {
-    try { unlisten(); } catch {}
-    unlisten = null;
+  if (resizeHandler) {
+    window.removeEventListener('resize', resizeHandler);
+    resizeHandler = null;
   }
 });
 </script>
@@ -106,11 +107,13 @@ onUnmounted(() => {
   border-bottom-color: rgba(255, 255, 255, 0.08);
 }
 
-/* 拖拽背景层：绝对定位铺满整条标题栏，置于最底层 */
+/* 拖拽背景层：绝对定位铺满整条标题栏，置于最底层；使用 Electron 原生拖拽 */
 .drag-region {
   position: absolute;
   inset: 0;
   z-index: 0;
+  -webkit-app-region: drag;
+  app-region: drag;
 }
 
 /* 内容层：透传点击事件到拖拽层，仅按钮拦截点击 */
@@ -182,6 +185,9 @@ onUnmounted(() => {
   color: #1e293b;
   cursor: pointer;
   pointer-events: auto;
+  /* 按钮区域禁用拖拽，允许点击 */
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
   transition: background-color 0.12s ease, color 0.12s ease;
 }
 

@@ -52,7 +52,13 @@ async function getPage() {
     lastActivityAt = Date.now();
     return pageInstance;
   }
-  const context = await browser.newContext();
+  // 创建 context 时设置合理默认值：viewport、user agent、locale
+  // 远程浏览器方案下，前端会动态同步 viewport 尺寸，这里给一个合理初始值
+  const context = await browser.newContext({
+    viewport: { width: 1280, height: 800 },
+    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
+    locale: 'zh-CN',
+  });
   pageInstance = await context.newPage();
   // 监听下载事件，记录到 downloadRecords
   pageInstance.on('download', async (download: any) => {
@@ -86,12 +92,16 @@ function scheduleIdleCheck() {
   }, IDLE_TIMEOUT_MS);
 }
 
-// POST /api/browser/navigate —— 导航到 URL
+// POST /api/browser/navigate —— 导航到 URL（返回 url + title，前端用 /render 获取 DOM）
 router.post('/navigate', async (req: Request, res: Response) => {
   try {
-    const { url } = req.body || {};
+    const { url, viewport } = req.body || {};
     if (!url) { res.status(400).json({ error: 'url 为必填项' }); return; }
     const page = await getPage();
+    // 同步前端视口大小
+    if (viewport && viewport.width && viewport.height) {
+      await page.setViewportSize({ width: viewport.width, height: viewport.height }).catch(() => {});
+    }
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
     const title = await page.title();
     const currentUrl = page.url();
@@ -101,6 +111,7 @@ router.post('/navigate', async (req: Request, res: Response) => {
     res.status(500).json({ error: e?.message || '导航失败' });
   }
 });
+
 
 // POST /api/browser/action —— 执行浏览器动作（click/type/press/scroll/hover/get_text/get_dom/wait）
 router.post('/action', async (req: Request, res: Response) => {
@@ -220,7 +231,7 @@ router.post('/focus', async (_req: Request, res: Response) => {
   }
 });
 
-// POST /api/browser/back —— 后退
+// POST /api/browser/back —— 后退（返回 url + title）
 router.post('/back', async (_req: Request, res: Response) => {
   try {
     const page = await getPage();
@@ -232,7 +243,7 @@ router.post('/back', async (_req: Request, res: Response) => {
   }
 });
 
-// POST /api/browser/forward —— 前进
+// POST /api/browser/forward —— 前进（返回 url + title）
 router.post('/forward', async (_req: Request, res: Response) => {
   try {
     const page = await getPage();
@@ -244,7 +255,7 @@ router.post('/forward', async (_req: Request, res: Response) => {
   }
 });
 
-// POST /api/browser/refresh —— 刷新当前页
+// POST /api/browser/refresh —— 刷新当前页（返回 url + title）
 router.post('/refresh', async (_req: Request, res: Response) => {
   try {
     const page = await getPage();
@@ -296,6 +307,68 @@ router.get('/downloads', async (_req: Request, res: Response) => {
     res.json({ data: downloadRecords });
   } catch {
     res.json({ data: [] });
+  }
+});
+
+// GET /api/browser/render?url=... —— Playwright 预渲染：获取已渲染 DOM，移除 script，重写 URL
+// 流程：用 Playwright 加载页面 → 等待渲染 → 取完整 HTML → 移除 script/noscript/CSP meta →
+//       重写资源 URL 为代理 URL → 注入样式修复 → 返回 HTML（由前端 iframe 显示）
+router.get('/render', async (req: Request, res: Response) => {
+  try {
+    const target = String(req.query.url || '');
+    if (!/^https?:\/\//i.test(target)) {
+      res.status(400).json({ error: 'url 需以 http:// 或 https:// 开头' });
+      return;
+    }
+    const parsed = new URL(target);
+    const page = await getPage();
+
+    // 设置 viewport（从 query 参数获取，默认 1280x800）
+    const vw = parseInt(String(req.query.w || '1280'), 10) || 1280;
+    const vh = parseInt(String(req.query.h || '800'), 10) || 800;
+    await page.setViewportSize({ width: vw, height: vh }).catch(() => {});
+
+    // 导航并等待渲染
+    await page.goto(target, { waitUntil: 'networkidle', timeout: 20000 }).catch(() => {
+      // networkidle 可能超时，忽略，继续获取已有 DOM
+    });
+    // 额外等待确保 SPA 渲染完成
+    await page.waitForTimeout(1000).catch(() => {});
+
+    // 获取已渲染的完整 HTML
+    let html = await page.content();
+    lastActivityAt = Date.now();
+
+    // 1) 移除所有 <script> 标签（防止 JS 重新执行导致 iframe 检测/重复请求等问题）
+    html = html.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '');
+    // 2) 移除 <noscript> 标签内容
+    html = html.replace(/<noscript\b[^<]*(?:(?!<\/noscript>)<[^<]*)*<\/noscript>/gi, '');
+    // 3) 删除 CSP / X-Frame-Options meta 标签
+    html = html.replace(/<meta[^>]*http-equiv=["']?Content-Security-Policy["']?[^>]*>/gi, '');
+    html = html.replace(/<meta[^>]*http-equiv=["']?X-Frame-Options["']?[^>]*>/gi, '');
+
+    // 4) 重写所有资源 URL 为代理 URL
+    const baseOrigin = parsed.origin;
+    html = rewriteRenderUrls(html, baseOrigin);
+
+    // 5) 注入样式修复（移除 body 限制、确保正常滚动）
+    const fixStyle = `<style>html,body{margin:0!important;padding:0!important;overflow:auto!important;height:auto!important;max-height:none!important;}</style>`;
+    if (/<head[^>]*>/i.test(html)) {
+      html = html.replace(/<head([^>]*)>/i, `<head$1>${fixStyle}`);
+    } else if (/<html[^>]*>/i.test(html)) {
+      html = html.replace(/<html([^>]*)>/i, `<html$1><head>${fixStyle}</head>`);
+    } else {
+      html = fixStyle + html;
+    }
+
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    // 剥离反嵌入头
+    res.removeHeader('x-frame-options');
+    res.removeHeader('content-security-policy');
+    res.removeHeader('content-security-policy-report-only');
+    res.send(html);
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || '渲染失败' });
   }
 });
 
@@ -353,18 +426,40 @@ router.all('/proxy', async (req: Request, res: Response) => {
     if (contentType.toLowerCase().includes('text/html')) {
       let html = buf.toString('utf8');
       html = rewriteProxyUrls(html, parsed.origin);
-      const baseTag = `<base href="${parsed.origin}/">`;
+      // 注入 iframe 检测覆盖脚本：让 window.top/parent/self 都返回 window，frameElement 返回 null
+      // 解决 GitHub 等站点检测到自己在 iframe 中拒绝渲染的问题
+      const iframeBypassScript = `<script>(function(){try{Object.defineProperty(window,'top',{get:function(){return window;}});Object.defineProperty(window,'parent',{get:function(){return window;}});Object.defineProperty(window,'self',{get:function(){return window;}});Object.defineProperty(window,'frameElement',{get:function(){return null;}});}catch(e){}})();</script>`;
+      // 注入 fetch/XHR/Image/动态脚本拦截：把 JS 动态请求的 URL 转为代理 URL
+      const proxyInterceptScript = `<script>(function(){
+  var ORIGIN=${JSON.stringify(parsed.origin)};
+  function wrap(u){try{if(!u||/^(data:|blob:|#|javascript:|mailto:|tel:|about:)/i.test(u))return u;var abs;if(/^\\/\\//.test(u))abs=location.protocol+u;else if(/^\\//.test(u))abs=ORIGIN+u;else if(/^https?:/i.test(u))abs=u;else abs=new URL(u,ORIGIN+'/').href;return '/api/browser/proxy?url='+encodeURIComponent(abs);}catch(e){return u;}}
+  var origFetch=window.fetch;
+  window.fetch=function(input,init){try{if(typeof input==='string')input=wrap(input);else if(input&&input.url)input=new Request(wrap(input.url),input);}catch(e){}return origFetch.call(this,input,init);};
+  var origOpen=XMLHttpRequest.prototype.open;
+  XMLHttpRequest.prototype.open=function(method,url){try{arguments[1]=wrap(url);}catch(e){}return origOpen.apply(this,arguments);};
+  var ImgSrc=Object.getOwnPropertyDescriptor(HTMLImageElement.prototype,'src');
+  if(ImgSrc&&ImgSrc.set){Object.defineProperty(HTMLImageElement.prototype,'src',{set:function(v){ImgSrc.set.call(this,wrap(v));},get:function(){return ImgSrc.get.call(this);},configurable:true});}
+  var origCreate=document.createElement;
+  document.createElement=function(tag){var el=origCreate.call(this,tag);if(tag.toLowerCase()==='script'){var desc=Object.getOwnPropertyDescriptor(HTMLScriptElement.prototype,'src');if(desc&&desc.set){Object.defineProperty(el,'src',{set:function(v){desc.set.call(this,wrap(v));},get:function(){return desc.get.call(this);}});}}return el;};
+})();</script>`;
+      const inject = iframeBypassScript + proxyInterceptScript;
       if (/<head[^>]*>/i.test(html)) {
-        html = html.replace(/<head([^>]*)>/i, `<head$1>${baseTag}`);
+        html = html.replace(/<head([^>]*)>/i, `<head$1>${inject}`);
       } else if (/<html[^>]*/i.test(html)) {
-        html = html.replace(/<html([^>]*)>/i, `<html$1><head>${baseTag}</head>`);
+        html = html.replace(/<html([^>]*)>/i, `<html$1><head>${inject}</head>`);
       } else {
-        html = baseTag + html;
+        html = inject + html;
       }
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
       res.send(html);
+    } else if (contentType.toLowerCase().includes('text/css')) {
+      // CSS 文件：重写内部 url() 引用（背景图/字体等），避免指向原站被阻止
+      let css = buf.toString('utf8');
+      css = rewriteCssUrls(css, parsed.origin);
+      res.setHeader('Content-Type', 'text/css; charset=utf-8');
+      res.send(css);
     } else {
-      // 非 HTML 资源（图片/css/js 等）透传；静态资源跨域加载不受 CORS 限制
+      // 非 HTML 资源（图片/js 等）透传；静态资源跨域加载不受 CORS 限制
       res.setHeader('Content-Type', contentType);
       upstream.headers.forEach((v, k) => {
         const lk = k.toLowerCase();
@@ -389,19 +484,150 @@ function readRawBody(req: Request): Promise<Buffer> {
   });
 }
 
-// 把 HTML 中的 href/src/action 改为同源代理 URL，使 iframe 内所有导航与资源都走代理
+// 把任意 URL 转为同源代理 URL（保留协议相对/绝对/相对路径语义）
+// 跳过锚点、特殊协议（javascript/mailto/tel/data/about）等不应代理的 URL
+function wrapProxyUrl(u: string, baseOrigin: string): string {
+  if (!u || /^(#|javascript:|mailto:|tel:|data:|about:)/i.test(u)) return u;
+  let abs: string;
+  if (/^\/\//.test(u)) abs = baseOrigin.split(':')[0] + ':' + u;
+  else if (/^\//.test(u)) abs = baseOrigin + u;
+  else if (/^https?:\/\//i.test(u)) abs = u;
+  else { try { abs = new URL(u, baseOrigin + '/').href; } catch { return u; } }
+  return '/api/browser/proxy?url=' + encodeURIComponent(abs);
+}
+
+// 重写 CSS 内容中的 url(...) 引用（背景图、字体等）
+// 跳过 data: URI 和锚点，其余 url() 一律改为代理 URL，避免 CSS 内资源指向原站被阻止
+function rewriteCssUrls(css: string, baseOrigin: string): string {
+  return css.replace(/url\s*\(\s*(['"]?)([^'")]+)\1\s*\)/gi, (m, quote: string, url: string) => {
+    if (/^(data:|#)/i.test(url)) return m; // data URI 和锚点不重写
+    const wrapped = wrapProxyUrl(url, baseOrigin);
+    return `url(${quote}${wrapped}${quote})`;
+  });
+}
+
+// 把 HTML 中的各类 URL 改为同源代理 URL，使 iframe 内所有导航与资源都走代理
+// 处理：href/src/action、srcset、poster、内联 style 属性、内联 <style> 标签、meta refresh
+// 同时删除 HTML 中的 meta CSP / meta X-Frame-Options（响应头已被剥离，但 meta 仍会生效）
 function rewriteProxyUrls(html: string, baseOrigin: string): string {
-  const wrap = (u: string): string => {
-    if (!u || /^(#|javascript:|mailto:|tel:|data:|about:)/i.test(u)) return u;
-    let abs: string;
-    if (/^\/\//.test(u)) abs = baseOrigin.split(':')[0] + ':' + u;
-    else if (/^\//.test(u)) abs = baseOrigin + u;
-    else if (/^https?:\/\//i.test(u)) abs = u;
-    else { try { abs = new URL(u, baseOrigin + '/').href; } catch { return u; } }
-    return '/api/browser/proxy?url=' + encodeURIComponent(abs);
-  };
-  html = html.replace(/(href|src|action)=(")([^"]*)(")/gi, (_m, attr, oq, val, cq) => `${attr}=${oq}${wrap(val)}${cq}`);
-  html = html.replace(/(href|src|action)=(')([^']*)(')/gi, (_m, attr, oq, val, cq) => `${attr}=${oq}${wrap(val)}${cq}`);
+  const wrap = (u: string): string => wrapProxyUrl(u, baseOrigin);
+
+  // 1) 删除 HTML 中的 CSP / X-Frame-Options meta 标签
+  //    响应头剥离不足以让 iframe 渲染：HTML 内 <meta http-equiv="Content-Security-Policy"> 仍会生效
+  html = html.replace(/<meta[^>]*http-equiv=["']?Content-Security-Policy["']?[^>]*>/gi, '');
+  html = html.replace(/<meta[^>]*http-equiv=["']?X-Frame-Options["']?[^>]*>/gi, '');
+
+  // 2) 重写 href/src/action（双引号 + 单引号）
+  html = html.replace(/(href|src|action)=(")([^"]*)(")/gi, (_m, attr: string, oq: string, val: string, cq: string) => `${attr}=${oq}${wrap(val)}${cq}`);
+  html = html.replace(/(href|src|action)=(')([^']*)(')/gi, (_m, attr: string, oq: string, val: string, cq: string) => `${attr}=${oq}${wrap(val)}${cq}`);
+
+  // 3) 重写 srcset 属性：格式 "url1 1x, url2 2x" 或 "url1 100w, url2 200w"
+  html = html.replace(/srcset\s*=\s*"([^"]*)"/gi, (_m, val: string) => {
+    const rewritten = val.split(',').map(part => {
+      const trimmed = part.trim();
+      const spaceIdx = trimmed.indexOf(' ');
+      const url = spaceIdx >= 0 ? trimmed.slice(0, spaceIdx) : trimmed;
+      const descriptor = spaceIdx >= 0 ? trimmed.slice(spaceIdx) : '';
+      return wrap(url) + descriptor;
+    }).join(', ');
+    return `srcset="${rewritten}"`;
+  });
+  html = html.replace(/srcset\s*=\s*'([^']*)'/gi, (_m, val: string) => {
+    const rewritten = val.split(',').map(part => {
+      const trimmed = part.trim();
+      const spaceIdx = trimmed.indexOf(' ');
+      const url = spaceIdx >= 0 ? trimmed.slice(0, spaceIdx) : trimmed;
+      const descriptor = spaceIdx >= 0 ? trimmed.slice(spaceIdx) : '';
+      return wrap(url) + descriptor;
+    }).join(', ');
+    return `srcset='${rewritten}'`;
+  });
+
+  // 4) 重写 poster 属性（video poster 图）
+  html = html.replace(/poster\s*=\s*"([^"]*)"/gi, (_m, val: string) => `poster="${wrap(val)}"`);
+  html = html.replace(/poster\s*=\s*'([^']*)'/gi, (_m, val: string) => `poster='${wrap(val)}'`);
+
+  // 5) 重写内联 style 属性中的 url()
+  html = html.replace(/style\s*=\s*"([^"]*)"/gi, (_m, val: string) => `style="${rewriteCssUrls(val, baseOrigin)}"`);
+  html = html.replace(/style\s*=\s*'([^']*)'/gi, (_m, val: string) => `style='${rewriteCssUrls(val, baseOrigin)}'`);
+
+  // 6) 重写内联 <style> 标签中的 url()
+  html = html.replace(/<style([^>]*)>([\s\S]*?)<\/style>/gi, (_m, attrs: string, css: string) => {
+    return `<style${attrs}>${rewriteCssUrls(css, baseOrigin)}</style>`;
+  });
+
+  // 7) 重写 <meta http-equiv="refresh" content="...;url=..."> 中的 URL
+  html = html.replace(/<meta([^>]*http-equiv=["']?refresh["']?[^>]*)>/gi, (_m, attrs: string) => {
+    return '<meta' + attrs.replace(/url\s*=\s*([^\s;]+)/gi, (mm: string, u: string) => `url=${wrap(u)}`) + '>';
+  });
+
+  return html;
+}
+
+/**
+ * 重写渲染后 HTML 中的资源 URL 为代理 URL（用于 /render 路由）。
+ * 与 rewriteProxyUrls 的差异：不重写 <a> 的 href（链接由前端拦截），
+ * 只重写资源类引用（link/img/source/video/audio/embed/iframe/track/srcset/poster/style url()/meta refresh）。
+ */
+function rewriteRenderUrls(html: string, baseOrigin: string): string {
+  const wrap = (u: string): string => wrapProxyUrl(u, baseOrigin);
+
+  // 1) 重写 <link> 的 href（CSS 等）
+  html = html.replace(/<link\b[^>]*>/gi, (m) => {
+    return m.replace(/href\s*=\s*"([^"]*)"/gi, (mm, val: string) => `href="${wrap(val)}"`)
+            .replace(/href\s*=\s*'([^']*)'/gi, (mm, val: string) => `href='${wrap(val)}'`);
+  });
+
+  // 2) 重写 src（img/source/video/audio/embed/iframe/track）
+  html = html.replace(/src\s*=\s*"([^"]*)"/gi, (m, val: string) => {
+    if (/^(data:|blob:|#|javascript:|mailto:|tel:|about:)/i.test(val)) return m;
+    return `src="${wrap(val)}"`;
+  });
+  html = html.replace(/src\s*=\s*'([^']*)'/gi, (m, val: string) => {
+    if (/^(data:|blob:|#|javascript:|mailto:|tel:|about:)/i.test(val)) return m;
+    return `src='${wrap(val)}'`;
+  });
+
+  // 3) 重写 srcset
+  html = html.replace(/srcset\s*=\s*"([^"]*)"/gi, (_m, val: string) => {
+    const rewritten = val.split(',').map(part => {
+      const trimmed = part.trim();
+      const spaceIdx = trimmed.indexOf(' ');
+      const url = spaceIdx >= 0 ? trimmed.slice(0, spaceIdx) : trimmed;
+      const descriptor = spaceIdx >= 0 ? trimmed.slice(spaceIdx) : '';
+      return wrap(url) + descriptor;
+    }).join(', ');
+    return `srcset="${rewritten}"`;
+  });
+  html = html.replace(/srcset\s*=\s*'([^']*)'/gi, (_m, val: string) => {
+    const rewritten = val.split(',').map(part => {
+      const trimmed = part.trim();
+      const spaceIdx = trimmed.indexOf(' ');
+      const url = spaceIdx >= 0 ? trimmed.slice(0, spaceIdx) : trimmed;
+      const descriptor = spaceIdx >= 0 ? trimmed.slice(spaceIdx) : '';
+      return wrap(url) + descriptor;
+    }).join(', ');
+    return `srcset='${rewritten}'`;
+  });
+
+  // 4) 重写 poster（video）
+  html = html.replace(/poster\s*=\s*"([^"]*)"/gi, (_m, val: string) => `poster="${wrap(val)}"`);
+  html = html.replace(/poster\s*=\s*'([^']*)'/gi, (_m, val: string) => `poster='${wrap(val)}'`);
+
+  // 5) 重写内联 <style> 标签中的 url()
+  html = html.replace(/<style([^>]*)>([\s\S]*?)<\/style>/gi, (_m, attrs: string, css: string) => {
+    return `<style${attrs}>${rewriteCssUrls(css, baseOrigin)}</style>`;
+  });
+
+  // 6) 重写 style 属性中的 url()
+  html = html.replace(/style\s*=\s*"([^"]*)"/gi, (_m, val: string) => `style="${rewriteCssUrls(val, baseOrigin)}"`);
+  html = html.replace(/style\s*=\s*'([^']*)'/gi, (_m, val: string) => `style='${rewriteCssUrls(val, baseOrigin)}'`);
+
+  // 7) 重写 <meta refresh> 中的 URL
+  html = html.replace(/<meta([^>]*http-equiv=["']?refresh["']?[^>]*)>/gi, (m, attrs: string) => {
+    return '<meta' + attrs.replace(/url\s*=\s*([^\s;]+)/gi, (mm: string, u: string) => `url=${wrap(u)}`) + '>';
+  });
+
   return html;
 }
 

@@ -2,7 +2,7 @@ mod commands;
 
 use std::collections::HashMap;
 use std::sync::Mutex;
-use commands::{mcp, fs as fs_cmd, keyring};
+use commands::{mcp, fs as fs_cmd, keyring, browser};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -37,6 +37,15 @@ pub fn run() {
             keyring::keyring_set,
             keyring::keyring_get,
             keyring::keyring_delete,
+            browser::browser_open,
+            browser::browser_close,
+            browser::browser_navigate,
+            browser::browser_focus,
+            browser::browser_move,
+            browser::browser_set_visible,
+            browser::browser_go_back,
+            browser::browser_go_forward,
+            browser::browser_refresh,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

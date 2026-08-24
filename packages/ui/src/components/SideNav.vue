@@ -106,7 +106,7 @@
 
 <script setup lang="ts">
 import { useRoute, useRouter } from 'vue-router';
-import { ChatDotRound, Box, Files, Setting, Cpu, User, SwitchButton, Suitcase, Connection, Fold, Expand, Monitor } from '@element-plus/icons-vue';
+import { ChatDotRound, Box, Files, Setting, Cpu, User, SwitchButton, Suitcase, Connection, Fold, Expand, Monitor, HomeFilled, MagicStick } from '@element-plus/icons-vue';
 import { useAuthStore } from '../stores/auth';
 import { useIsMobile } from '../composables/useIsMobile';
 import { usePlatform } from '../composables/usePlatform';
@@ -120,11 +120,13 @@ const { isDesktop } = usePlatform();
 const { collapsed, toggle } = useSidebarState();
 
 const navItems = [
+  { path: '/home', label: '首页', tabLabel: '首页', icon: HomeFilled },
   { path: '/chat', label: '聊天', tabLabel: '对话', icon: ChatDotRound },
   { path: '/browser', label: '浏览器', tabLabel: '浏览器', icon: Monitor },
   { path: '/models', label: '模型平台', tabLabel: '模型', icon: Cpu },
   { path: '/tools', label: '工具管理', tabLabel: '工具', icon: Suitcase },
   { path: '/skills', label: 'Skill 商店', tabLabel: 'Skills', icon: Files },
+  { path: '/distill', label: 'Skill 蒸馏', tabLabel: '蒸馏', icon: MagicStick },
   { path: '/agents', label: '智能体', tabLabel: '智能体', icon: Box },
   { path: '/mcp', label: 'MCP 服务', tabLabel: 'MCP', icon: Connection },
   { path: '/settings', label: '设置', tabLabel: '设置', icon: Setting },

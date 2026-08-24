@@ -3,6 +3,7 @@ export { usePlatformStore } from './platform';
 export { useChatStore } from './chat';
 export { useMcpStore } from './mcp';
 export { useSkillStore } from './skill';
+export { useDistillStore } from './distill';
 export { useAgentStore } from './agent';
 export { useSettingsStore } from './settings';
 export { useAuthStore } from './auth';
