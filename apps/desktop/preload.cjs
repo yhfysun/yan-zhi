@@ -59,6 +59,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getUrl: () => ipcRenderer.invoke('browserView:getUrl'),
     canGoBack: () => ipcRenderer.invoke('browserView:canGoBack'),
     canGoForward: () => ipcRenderer.invoke('browserView:canGoForward'),
+    // 设置网页缩放级别（对应前端 [−]/[+] 缩放控件）
+    setZoomFactor: (factor) => ipcRenderer.invoke('browserView:setZoomFactor', factor),
+    // 注入滚动条主题样式（美化原生滚动条）
+    insertScrollbarCSS: (css) => ipcRenderer.invoke('browserView:insertScrollbarCSS', css),
+    // 同步当前主题（深/浅），由主进程据此注入对应主题色的滚动条样式
+    setTheme: (theme) => ipcRenderer.invoke('browserView:setTheme', theme),
     // 监听主进程的导航事件（地址栏同步）
     onNavigated: (callback) => {
       ipcRenderer.on('browserView:navigated', (_e, url) => callback(url));

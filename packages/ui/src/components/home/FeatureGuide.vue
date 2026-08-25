@@ -33,8 +33,8 @@
               <p class="section-text">{{ detail.usage }}</p>
             </section>
 
-            <!-- 功能按钮 -->
-            <section class="guide-section">
+            <!-- 功能按钮（无按钮的功能不渲染该段，如首页） -->
+            <section v-if="detail.buttons.length" class="guide-section">
               <div class="section-title"><span class="section-emoji">🔘</span> 功能按钮</div>
               <ul class="section-list">
                 <li v-for="btn in detail.buttons" :key="btn">{{ btn }}</li>
@@ -96,14 +96,9 @@ interface FeatureDetail {
 
 const FEATURE_DETAILS: Record<string, FeatureDetail> = {
   home: {
-    purpose: '应用门面，承载 3D 太阳系探索界面。所有功能模块以星球形式悬浮于首页，是用户进入各子功能的入口。',
-    usage: '拖动旋转太阳系视角，滚轮或按钮缩放；点击星球查看功能介绍并相机聚焦，点击地球可切换到真实世界地图查看国家信息。',
-    buttons: [
-      '功能导航（左上角按钮）：展开/收起功能列表面板',
-      '缩放控制（右下角）：放大、缩小、重置视角',
-      '点击星球：相机飞向该星球并显示功能介绍面板',
-      '查看真实地球：在地球星球上切换到地图视图',
-    ],
+    purpose: 'yan-zhi 一体化 AI 助手工作台，将对话、浏览器自动化、模型配置、工具、技能（Skill）、智能体（Agent）、MCP 与外部服务接入统一整合，是进入全部功能模块的门户。',
+    usage: '通过首页功能列表或星球入口进入任意模块：对话（与模型流式交流）、浏览器（网页自动化与截图）、模型（管理 OpenAI/Anthropic 平台与默认模型）、工具（内置/自定义/商城工具）、Skill（技能安装与编排）、智能体（单轮与多节点工作流）、MCP（接入外部服务）、设置（全局偏好与主题）。',
+    buttons: [],
   },
   chat: {
     purpose: '流式对话工作台，支持多会话管理、工具调用可视化、思考链展示、Markdown 渲染与消息蒸馏为 Skill。',

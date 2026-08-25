@@ -211,6 +211,10 @@ function ensureBrowserView() {
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('browserView:loaded', wc.getURL());
     }
+    // 主进程侧直接注入滚动条主题样式（不依赖前端 IPC 往返，避免时序错位导致漏注入）
+    injectBrowserViewScrollbar();
+    // 恢复上一次的页面缩放级别（loadURL 可能重置 zoom）
+    try { browserView.webContents.setZoomFactor(browserViewZoom); } catch { /* ignore */ }
   });
 
   // 拦截 BrowserView 内的快捷键：Ctrl+R/F5 刷新、Alt+Left/Right 导航
@@ -309,6 +313,56 @@ ipcMain.handle('browserView:hide', () => {
   if (!browserView) return;
   // 隐藏 BrowserView（bounds 设为 0），让主页可见
   browserView.setBounds({ x: 0, y: 0, width: 0, height: 0 });
+});
+
+// 设置 BrowserView 网页缩放级别（对应前端 [−]/[+] 缩放控件）
+let browserViewZoom = 1;
+ipcMain.handle('browserView:setZoomFactor', (_e, factor) => {
+  browserViewZoom = factor;
+  if (!browserView) return;
+  try { browserView.webContents.setZoomFactor(factor); } catch { /* ignore */ }
+});
+
+// ── 滚动条主题样式：由主进程在页面加载完成时注入（BrowserView 是原生图层，无法用 HTML 叠加）──
+let browserViewTheme = 'light';
+let scrollbarCssKey = null;
+
+function buildScrollbarCss(theme) {
+  const dark = theme === 'dark';
+  const thumb = dark ? 'rgba(255,255,255,0.32)' : 'rgba(0,0,0,0.28)';
+  const thumbHover = dark ? 'rgba(255,255,255,0.55)' : 'rgba(0,0,0,0.45)';
+  return `
+    ::-webkit-scrollbar { width: 10px !important; height: 10px !important; }
+    ::-webkit-scrollbar-track { background: transparent !important; }
+    ::-webkit-scrollbar-thumb { background: ${thumb} !important; border-radius: 5px !important; border: 2px solid transparent !important; background-clip: padding-box !important; }
+    ::-webkit-scrollbar-thumb:hover { background: ${thumbHover} !important; border: 2px solid transparent !important; background-clip: padding-box !important; }
+    * { scrollbar-width: thin !important; scrollbar-color: ${thumb} transparent !important; }
+  `;
+}
+
+async function injectBrowserViewScrollbar() {
+  if (!browserView) { console.log('[browser] scrollbar inject skipped: no browserView yet'); return; }
+  const css = buildScrollbarCss(browserViewTheme);
+  try {
+    if (scrollbarCssKey) {
+      try { await browserView.webContents.removeInsertedCSS(scrollbarCssKey); } catch (e) { console.log('[browser] removeInsertedCSS failed', e); }
+    }
+    scrollbarCssKey = await browserView.webContents.insertCSS(css);
+    console.log('[browser] scrollbar CSS injected, theme =', browserViewTheme);
+  } catch (e) {
+    console.log('[browser] insertCSS failed', e);
+  }
+}
+
+// 前端在深浅主题切换时通知主进程，重新注入对应主题色的滚动条样式
+ipcMain.handle('browserView:setTheme', (_e, theme) => {
+  browserViewTheme = theme === 'dark' ? 'dark' : 'light';
+  injectBrowserViewScrollbar();
+});
+
+// 兼容旧调用（前端历史版本可能仍 invoke 此方法）：统一走主进程注入
+ipcMain.handle('browserView:insertScrollbarCSS', async () => {
+  injectBrowserViewScrollbar();
 });
 
 ipcMain.handle('browserView:canGoBack', () => {

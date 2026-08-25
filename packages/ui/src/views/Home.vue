@@ -132,7 +132,7 @@ function onIntroClick() {
 
 /** 菜单项：icon 字段存储图标组件名，供 FeatureGuide 解析 */
 const menuItems: Array<{ path: string; name: string; desc: string; icon: any; iconName: string; color: string; key: string }> = [
-  { path: '/home', name: '首页', desc: '应用门面，太阳系探索', icon: HomeFilled, iconName: 'HomeFilled', color: '#4A90D9', key: 'home' },
+  { path: '/home', name: '首页', desc: '平台门户，功能总览', icon: HomeFilled, iconName: 'HomeFilled', color: '#4A90D9', key: 'home' },
   { path: '/chat', name: '聊天', desc: '流式对话、多会话、工具可视化', icon: ChatDotRound, iconName: 'ChatDotRound', color: '#7C3AED', key: 'chat' },
   { path: '/browser', name: '浏览器', desc: '内置浏览器自动化', icon: Monitor, iconName: 'Monitor', color: '#10B981', key: 'browser' },
   { path: '/models', name: '模型平台', desc: 'OpenAI/Anthropic 双协议', icon: Cpu, iconName: 'Cpu', color: '#F59E0B', key: 'models' },

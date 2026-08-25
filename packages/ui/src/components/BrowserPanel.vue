@@ -122,8 +122,14 @@
       <div v-if="isElectron" ref="browserViewPlaceholder" class="browser-view-placeholder"></div>
       <!-- Web 端：iframe + Playwright DOM 预渲染 -->
       <iframe v-else-if="frameSrc" :key="iframeKey" :src="frameSrc" class="page-frame"
-        :style="{ zoom: pageZoom }" referrerpolicy="no-referrer" @load="onFrameLoad"
+        referrerpolicy="no-referrer" @load="onFrameLoad"
         sandbox="allow-same-origin allow-forms allow-popups"></iframe>
+      <!-- Web 端自定义滚动条（屏蔽原生，应用层自绘） -->
+      <div v-if="!isElectron && frameSrc && scrollbarVisible" class="custom-scrollbar" @pointerdown="onScrollbarTrack">
+        <div ref="scrollThumbRef" class="custom-scrollbar-thumb" :style="thumbStyle"
+          @pointerdown.stop="onScrollbarThumb" @pointermove="onScrollbarThumbMove"
+          @pointerup="onScrollbarThumbUp" @pointercancel="onScrollbarThumbUp"></div>
+      </div>
       <!-- 加载中遮罩 -->
       <div v-if="loading" class="loading-overlay">
         <div class="loading-spinner"></div>
@@ -230,6 +236,17 @@ const iframeKey = ref(0);
 
 // ── 页面缩放（让浏览器网页可随应用缩放）──
 const pageZoom = ref(1);
+
+/** 向同源 iframe 内部文档注入 zoom（模拟浏览器 Ctrl+/- 缩放） */
+function injectIframeZoom(zoom: number) {
+  const iframe = document.querySelector('.page-frame') as HTMLIFrameElement | null;
+  if (!iframe?.contentDocument) return;
+  try {
+    const doc = iframe.contentDocument;
+    doc.documentElement.style.zoom = String(zoom);
+  } catch { /* 跨域时静默跳过 */ }
+}
+
 function applyZoom() {
   if (isElectron) {
     const bv = (window as any).electronAPI?.browserView;
@@ -239,11 +256,22 @@ function applyZoom() {
     }
     return;
   }
-  // Web 端：通过 iframe 元素 style.zoom 缩放渲染内容（见模板 :style 绑定）
+  // Web 端：向 iframe 内部文档注入 zoom（CSS zoom 对 iframe 元素本身不可靠）
+  injectIframeZoom(pageZoom.value);
+  refreshCustomScrollbar();
 }
 function zoomIn() { pageZoom.value = Math.min(3, +(pageZoom.value + 0.1).toFixed(2)); applyZoom(); }
 function zoomOut() { pageZoom.value = Math.max(0.3, +(pageZoom.value - 0.1).toFixed(2)); applyZoom(); }
 function resetZoom() { pageZoom.value = 1; applyZoom(); }
+
+// ── Electron 桌面端：通知主进程当前主题，由主进程用 insertCSS 美化原生滚动条（BrowserView 是原生图层，无法用 HTML 叠加）──
+function applyElectronScrollbarTheme() {
+  if (!isElectron) return;
+  const dark = document.documentElement.getAttribute('data-theme') === 'dark';
+  const api = (window as any).electronAPI?.browserView;
+  // 主进程会在页面加载完成时注入滚动条样式；这里只同步主题色
+  if (api?.setTheme) api.setTheme(dark ? 'dark' : 'light');
+}
 
 // ── BrowserView 尺寸同步：监听占位 div 尺寸/位置变化，调用 setBounds 同步原生 BrowserView ──
 let browserViewResizeObserver: ResizeObserver | null = null;
@@ -506,26 +534,19 @@ async function refresh() {
   iframeKey.value++;
 }
 
-// 把主题化滚动条样式注入 iframe 文档（iframe 是独立文档，外层 ::-webkit-scrollbar 不影响它）
-function injectScrollbarStyle(doc: Document | null, retry = false) {
+// 屏蔽 iframe 内部原生滚动条（真正的滚动由应用层自绘滚动条驱动）
+function hideNativeScrollbar(doc: Document | null, retry = false) {
   if (!doc) return;
   try {
     // head 可能尚未就绪（尤其是 sandbox 无 allow-scripts 时），等一帧再试
     if (!doc.head) {
-      if (!retry) requestAnimationFrame(() => injectScrollbarStyle(doc, true));
+      if (!retry) requestAnimationFrame(() => hideNativeScrollbar(doc, true));
       return;
     }
-    const dark = document.documentElement.getAttribute('data-theme') === 'dark';
-    const thumb = dark ? 'rgba(255,255,255,0.22)' : 'rgba(0,0,0,0.22)';
-    const thumbHover = dark ? 'rgba(255,255,255,0.38)' : 'rgba(0,0,0,0.38)';
+    // 彻底隐藏网页原生滚动条：Firefox/IE 用 scrollbar-width:none，WebKit 用 display:none
     const css = `
-      html::-webkit-scrollbar, body::-webkit-scrollbar, *::-webkit-scrollbar { width: 10px !important; height: 10px !important; }
-      html::-webkit-scrollbar-track, body::-webkit-scrollbar-track, *::-webkit-scrollbar-track { background: transparent !important; }
-      html::-webkit-scrollbar-thumb, body::-webkit-scrollbar-thumb, *::-webkit-scrollbar-thumb { background: ${thumb} !important; border-radius: 5px !important; border: 2px solid transparent !important; background-clip: padding-box !important; }
-      html::-webkit-scrollbar-thumb:hover, body::-webkit-scrollbar-thumb:hover, *::-webkit-scrollbar-thumb:hover { background: ${thumbHover} !important; border: 2px solid transparent !important; background-clip: padding-box !important; }
-      html, body, * { scrollbar-width: thin !important; scrollbar-color: ${thumb} transparent !important; }
-      /* 覆盖页面自身滚动条样式 */
-      html::-webkit-scrollbar-corner, body::-webkit-scrollbar-corner, *::-webkit-scrollbar-corner { background: transparent !important; }
+      html, body, * { scrollbar-width: none !important; -ms-overflow-style: none !important; }
+      html::-webkit-scrollbar, body::-webkit-scrollbar, *::-webkit-scrollbar { width: 0 !important; height: 0 !important; display: none !important; }
     `;
     let styleEl = doc.getElementById('yz-scrollbar') as HTMLStyleElement | null;
     if (!styleEl) {
@@ -535,10 +556,97 @@ function injectScrollbarStyle(doc: Document | null, retry = false) {
     }
     styleEl.textContent = css;
 
-    // 延迟再注入一次：防止页面后续脚本/动态内容覆盖我们的样式
-    if (!retry) setTimeout(() => injectScrollbarStyle(doc, true), 800);
+    // 延迟再注入一次：防止页面后续脚本/动态内容覆盖
+    if (!retry) setTimeout(() => hideNativeScrollbar(doc, true), 800);
   } catch { /* 跨域文档无法访问时静默跳过 */ }
 }
+
+// ── 自定义滚动条（应用层自绘，控制 iframe 文档根滚动）──
+const scrollThumbRef = ref<HTMLDivElement>();
+const scrollbarVisible = ref(false);
+const thumbStyle = ref<{ height: string; top: string }>({ height: '0px', top: '0px' });
+let attachedScrollWin: Window | null = null;
+let scrollDragState: { startY: number; startScrollTop: number; startThumbTop: number } | null = null;
+
+/** 取同源 iframe 的根文档元素（跨域时返回 null） */
+function getFrameDocEl(): HTMLElement | null {
+  const iframe = document.querySelector('.page-frame') as HTMLIFrameElement | null;
+  try { return iframe?.contentDocument?.documentElement ?? null; } catch { return null; }
+}
+
+/** 读取 iframe 根滚动指标，刷新自绘滚动条尺寸与位置 */
+function refreshCustomScrollbar() {
+  const docEl = getFrameDocEl();
+  const viewportH = viewportRef.value?.clientHeight ?? 0;
+  if (!docEl || !viewportH) { scrollbarVisible.value = false; return; }
+  try {
+    const scrollTop = docEl.scrollTop;
+    const scrollHeight = docEl.scrollHeight;
+    const clientHeight = docEl.clientHeight;
+    if (!clientHeight || scrollHeight <= clientHeight + 1) {
+      scrollbarVisible.value = false;
+      return;
+    }
+    scrollbarVisible.value = true;
+    const trackH = viewportH;
+    const thumbH = Math.max(28, (clientHeight / scrollHeight) * trackH);
+    const maxThumbTop = trackH - thumbH;
+    const thumbTop = maxThumbTop <= 0 ? 0 : (scrollTop / (scrollHeight - clientHeight)) * maxThumbTop;
+    thumbStyle.value = { height: `${thumbH}px`, top: `${thumbTop}px` };
+  } catch { scrollbarVisible.value = false; }
+}
+
+/** iframe 内部滚动时同步自绘滚动条位置 */
+function onIframeScroll() { refreshCustomScrollbar(); }
+
+/** 点击轨道：跳转到点击位置 */
+function onScrollbarTrack(e: PointerEvent) {
+  const docEl = getFrameDocEl();
+  if (!docEl) return;
+  const trackH = viewportRef.value?.clientHeight ?? 0;
+  const thumbH = parseFloat(thumbStyle.value.height) || 28;
+  const maxThumbTop = trackH - thumbH;
+  const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+  let newThumbTop = e.clientY - rect.top - thumbH / 2;
+  newThumbTop = Math.max(0, Math.min(maxThumbTop, newThumbTop));
+  const newScrollTop = maxThumbTop <= 0 ? 0 : (newThumbTop / maxThumbTop) * (docEl.scrollHeight - docEl.clientHeight);
+  docEl.scrollTop = newScrollTop;
+}
+
+/** 拖拽滑块：跟随指针移动，反向驱动 iframe 文档滚动 */
+function onScrollbarThumb(e: PointerEvent) {
+  e.stopPropagation();
+  const docEl = getFrameDocEl();
+  if (!docEl) return;
+  scrollDragState = {
+    startY: e.clientY,
+    startScrollTop: docEl.scrollTop,
+    startThumbTop: parseFloat(thumbStyle.value.top) || 0,
+  };
+  (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
+}
+
+function onScrollbarThumbMove(e: PointerEvent) {
+  if (!scrollDragState) return;
+  const docEl = getFrameDocEl();
+  if (!docEl) return;
+  const trackH = viewportRef.value?.clientHeight ?? 0;
+  const thumbH = parseFloat(thumbStyle.value.height) || 28;
+  const maxThumbTop = trackH - thumbH;
+  const dy = e.clientY - scrollDragState.startY;
+  const newThumbTop = Math.max(0, Math.min(maxThumbTop, scrollDragState.startThumbTop + dy));
+  const newScrollTop = maxThumbTop <= 0 ? 0 : (newThumbTop / maxThumbTop) * (docEl.scrollHeight - docEl.clientHeight);
+  docEl.scrollTop = newScrollTop;
+  thumbStyle.value = { height: `${thumbH}px`, top: `${newThumbTop}px` };
+}
+
+function onScrollbarThumbUp(e: PointerEvent) {
+  scrollDragState = null;
+  (e.target as HTMLElement).releasePointerCapture?.(e.pointerId);
+}
+
+/** 应用窗口尺寸变化：刷新自绘滚动条 */
+function onAppResize() { refreshCustomScrollbar(); }
 
 // iframe 加载完成后拦截链接点击 + 同步地址栏
 function onFrameLoad() {
@@ -551,8 +659,20 @@ function onFrameLoad() {
   if (!iframe || !iframe.contentDocument) return;
   const doc = iframe.contentDocument;
 
-  // 把应用主题滚动条样式注入 iframe 文档（解决"浏览器滚动条样式不随主题变化"）
-  injectScrollbarStyle(doc);
+  // 屏蔽 iframe 内部原生滚动条（改用应用层自绘滚动条）
+  hideNativeScrollbar(doc);
+
+  // 恢复当前缩放级别（导航/刷新后需要重新注入）
+  if (pageZoom.value !== 1) applyZoom();
+
+  // 监听 iframe 内部滚动，同步自绘滚动条位置
+  const cw = iframe.contentWindow;
+  if (cw && cw !== attachedScrollWin) {
+    if (attachedScrollWin) attachedScrollWin.removeEventListener('scroll', onIframeScroll, true);
+    cw.addEventListener('scroll', onIframeScroll, true);
+    attachedScrollWin = cw;
+  }
+  refreshCustomScrollbar();
 
   // 拦截链接点击（capture 阶段，优先于页面内 handler）
   doc.addEventListener('click', (e: MouseEvent) => {
@@ -787,12 +907,15 @@ onMounted(() => {
   fetchData();
   startDailyAnalysisScheduler();
 
-  // 监听外层主题切换，实时同步到当前 iframe 内部滚动条
+  // 监听外层主题切换：Web 端刷新自绘滚动条位置；Electron 端重新注入滚动条主题样式
   themeObserver = new MutationObserver(() => {
-    const iframe = document.querySelector('.page-frame') as HTMLIFrameElement | null;
-    if (iframe && iframe.contentDocument) injectScrollbarStyle(iframe.contentDocument);
+    if (isElectron) applyElectronScrollbarTheme();
+    else refreshCustomScrollbar();
   });
   themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+
+  // Web 端：应用窗口 resize 时刷新自绘滚动条
+  if (!isElectron) window.addEventListener('resize', onAppResize);
 
   // Electron 桌面端：注册 BrowserView 导航/加载回调 + 启动 ResizeObserver 同步 bounds
   if (isElectron) {
@@ -810,6 +933,8 @@ onMounted(() => {
     // 监听页面加载完成事件
     api.browserView.onLoaded((_url: string) => {
       loading.value = false;
+      // 页面加载完成后注入滚动条主题样式（导航到新页面会重置，需重新注入）
+      applyElectronScrollbarTheme();
     });
 
     // ResizeObserver 监听占位 div 尺寸变化，同步 BrowserView bounds
@@ -858,6 +983,14 @@ onUnmounted(() => {
   if (themeObserver) {
     themeObserver.disconnect();
     themeObserver = null;
+  }
+  // Web 端：移除 resize 监听 + iframe 滚动监听
+  if (!isElectron) {
+    window.removeEventListener('resize', onAppResize);
+    if (attachedScrollWin) {
+      attachedScrollWin.removeEventListener('scroll', onIframeScroll, true);
+      attachedScrollWin = null;
+    }
   }
   // Electron 桌面端：组件卸载时隐藏 BrowserView
   if (isElectron) {
@@ -998,20 +1131,19 @@ onUnmounted(() => {
 .page-frame { flex: 1; width: 100%; min-width: 0; border: none; background: #fff; display: block; overflow: hidden; }
 [data-theme="dark"] .page-frame { background: #1b1d23; }
 
-/* 浏览器视口滚动条（兜底：当 iframe 自身出现滚动条时也用主题样式） */
-.browser-viewport::-webkit-scrollbar,
-.page-frame::-webkit-scrollbar { width: 10px !important; height: 10px !important; }
-.browser-viewport::-webkit-scrollbar-track,
-.page-frame::-webkit-scrollbar-track { background: transparent; }
-.browser-viewport::-webkit-scrollbar-thumb,
-.page-frame::-webkit-scrollbar-thumb {
-  background: rgba(0,0,0,0.22) !important; border-radius: 5px !important;
-  border: 2px solid transparent !important; background-clip: padding-box !important;
+/* 自定义滚动条（应用层自绘，覆盖在 iframe 右侧，原生已屏蔽） */
+.custom-scrollbar {
+  position: absolute; top: 0; right: 0; bottom: 0; width: 10px;
+  z-index: 30; pointer-events: auto;
 }
-.browser-viewport::-webkit-scrollbar-thumb:hover,
-.page-frame::-webkit-scrollbar-thumb:hover {
-  background: rgba(0,0,0,0.38) !important; border: 2px solid transparent !important; background-clip: padding-box !important;
+.custom-scrollbar-thumb {
+  position: absolute; right: 2px; width: 6px;
+  border-radius: 4px; background: rgba(0,0,0,0.3);
+  cursor: pointer; transition: background 0.15s;
 }
+.custom-scrollbar-thumb:hover { background: rgba(0,0,0,0.5); }
+[data-theme="dark"] .custom-scrollbar-thumb { background: rgba(255,255,255,0.32); }
+[data-theme="dark"] .custom-scrollbar-thumb:hover { background: rgba(255,255,255,0.55); }
 [data-theme="dark"] .browser-viewport::-webkit-scrollbar-thumb,
 [data-theme="dark"] .page-frame::-webkit-scrollbar-thumb {
   background: rgba(255,255,255,0.22) !important; border: 2px solid transparent !important; background-clip: padding-box !important;
