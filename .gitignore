@@ -21,6 +21,9 @@ dist/
 apps/desktop/src-tauri/target/
 apps/desktop/src-tauri/Cargo.lock
 
+# Electron 构建产物
+apps/desktop/release*/
+
 # Capacitor
 apps/mobile/ios/
 apps/mobile/android/

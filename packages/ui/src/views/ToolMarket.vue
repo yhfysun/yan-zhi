@@ -774,7 +774,6 @@ async function installTool(item: any) {
 .mcp-scroll {
   display: flex; gap: 12px; padding-bottom: 6px;
   overflow-x: auto; -webkit-overflow-scrolling: touch;
-  scrollbar-width: thin;
 }
 .mcp-scroll::-webkit-scrollbar { height: 5px; }
 .mcp-scroll::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.1); border-radius: 3px; }

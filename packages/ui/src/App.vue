@@ -130,6 +130,10 @@ authStore.loadUser();
   --radius-md: 12px;
   --radius-lg: 16px;
   --radius-xl: 20px;
+  --scrollbar-size: 8px;
+  --scrollbar-thumb: rgba(15, 23, 42, 0.18);
+  --scrollbar-thumb-hover: rgba(15, 23, 42, 0.32);
+  --scrollbar-thumb-active: rgba(15, 23, 42, 0.45);
 
   /* Responsive breakpoints (min-width values, unitless for calc) */
   --bp-xs: 0;
@@ -155,6 +159,9 @@ authStore.loadUser();
   --color-bg: #0f1117;
   --color-text: #e2e8f0;
   --color-text-secondary: #94a3b8;
+  --scrollbar-thumb: rgba(255, 255, 255, 0.2);
+  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.36);
+  --scrollbar-thumb-active: rgba(255, 255, 255, 0.5);
   --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.3);
   --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
   --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.5);
@@ -337,18 +344,24 @@ body {
 }
 .glass-card:hover { transform: translateY(-2px); box-shadow: var(--shadow-md); }
 
-/* Scrollbar — VS Code 风格：宽 12px、透明轨道、圆角滑块、hover 加深 */
-::-webkit-scrollbar { width: 12px !important; height: 12px !important; }
-::-webkit-scrollbar-track { background: transparent !important; }
-::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.22) !important; border-radius: 6px !important; border: 3px solid transparent !important; background-clip: padding-box !important; }
-::-webkit-scrollbar-thumb:hover { background: rgba(0,0,0,0.4) !important; border: 3px solid transparent !important; background-clip: padding-box !important; }
-::-webkit-scrollbar-thumb:active { background: rgba(0,0,0,0.5) !important; border: 3px solid transparent !important; background-clip: padding-box !important; }
-[data-theme="dark"] ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.22) !important; border: 3px solid transparent !important; background-clip: padding-box !important; }
-[data-theme="dark"] ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.4) !important; border: 3px solid transparent !important; background-clip: padding-box !important; }
-[data-theme="dark"] ::-webkit-scrollbar-thumb:active { background: rgba(255,255,255,0.5) !important; border: 3px solid transparent !important; background-clip: padding-box !important; }
-/* Firefox */
-* { scrollbar-width: thin !important; scrollbar-color: rgba(0,0,0,0.22) transparent !important; }
-[data-theme="dark"] * { scrollbar-color: rgba(255,255,255,0.22) transparent !important; }
+/* Scrollbar — 统一细圆角样式：透明轨道、轻量滑块，hover/active 逐步加深 */
+/* Firefox 单独处理：Chromium 一旦设置 scrollbar-width/color 会改用原生滚动条，导致圆角失效 */
+@supports (-moz-appearance:none) {
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--scrollbar-thumb) transparent;
+  }
+}
+::-webkit-scrollbar { width: var(--scrollbar-size); height: var(--scrollbar-size); }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border: none !important;
+  border-radius: 999px;
+}
+::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-thumb-hover); }
+::-webkit-scrollbar-thumb:active { background: var(--scrollbar-thumb-active); }
+::-webkit-scrollbar-corner { background: transparent; }
 
 /* Skeleton shimmer */
 .skeleton-shimmer {
@@ -493,32 +506,6 @@ body {
   flex: 1; display: flex; overflow: hidden;
   font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, "Microsoft YaHei", sans-serif;
   font-size: 13px; /* 桌面端固定 13px，不用 clamp 流体字号 */
-}
-
-/* 原生滚动条（VS Code 风格：8px 宽，圆角，半透明，hover 加深） */
-.is-electron ::-webkit-scrollbar {
-  width: 8px !important; height: 8px !important;
-}
-.is-electron ::-webkit-scrollbar-track {
-  background: transparent !important;
-}
-.is-electron ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.15) !important; border-radius: 4px !important; border: 2px solid transparent !important; background-clip: padding-box !important;
-}
-.is-electron ::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.3) !important; border: 2px solid transparent !important; background-clip: padding-box !important;
-}
-.is-electron ::-webkit-scrollbar-thumb:active {
-  background: rgba(255, 255, 255, 0.4) !important; border: 2px solid transparent !important; background-clip: padding-box !important;
-}
-.is-electron :root:not([data-theme="dark"]) ::-webkit-scrollbar-thumb {
-  background: rgba(0, 0, 0, 0.15) !important; border: 2px solid transparent !important; background-clip: padding-box !important;
-}
-.is-electron :root:not([data-theme="dark"]) ::-webkit-scrollbar-thumb:hover {
-  background: rgba(0, 0, 0, 0.3) !important; border: 2px solid transparent !important; background-clip: padding-box !important;
-}
-.is-electron :root:not([data-theme="dark"]) ::-webkit-scrollbar-thumb:active {
-  background: rgba(0, 0, 0, 0.4) !important; border: 2px solid transparent !important; background-clip: padding-box !important;
 }
 
 /* 紧凑间距：减小 padding/margin */

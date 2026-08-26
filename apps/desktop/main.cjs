@@ -104,9 +104,18 @@ function startServer() {
   }
 }
 
+/** 获取应用图标路径（开发/打包两套目录） */
+function getAppIconPath() {
+  if (app.isPackaged) {
+    return path.join(process.resourcesPath, 'icon.ico');
+  }
+  return path.join(__dirname, '..', '..', 'assets', 'icons', 'icon.ico');
+}
+
 /** 创建主窗口 */
 function createWindow() {
   mainWindow = new BrowserWindow({
+    icon: getAppIconPath(),
     width: 1280,
     height: 840,
     minWidth: 800,
@@ -184,6 +193,8 @@ function ensureBrowserView() {
     webPreferences: {
       // 独立 partition：与主窗口 session 隔离，主窗口的 CSP 注入不影响 BrowserView 加载的第三方网页
       partition: 'browser-view',
+      // document-start 阶段先注入滚动条样式，避免第三方页面先闪一下原生滚动条
+      preload: path.join(__dirname, 'browser-preload.cjs'),
       nodeIntegration: false,
       contextIsolation: true,
       spellcheck: false,
@@ -200,11 +211,25 @@ function ensureBrowserView() {
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('browserView:navigated', url);
     }
+    // did-navigate 比 dom-ready 更早，先注入一次可进一步减少原生滚动条闪现；
+    // 若当前文档尚不能插入 CSS，下面的 dom-ready 会兜底重试。
+    injectBrowserViewScrollbar();
   });
   wc.on('did-navigate-in-page', (_e, url) => {
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('browserView:navigated', url);
     }
+  });
+  // 每次真正导航到新文档时，把旧文档的 inserted CSS 状态清掉。
+  // dom-ready 阶段再注入，避免上一页的 key 被误当成新页已注入而跳过。
+  wc.on('did-start-navigation', () => {
+    scrollbarCssKey = null;
+    browserViewInjectedTheme = null;
+  });
+  // DOM 就绪时先注入滚动条样式，尽量缩小原生滚动条闪现窗口
+  wc.on('dom-ready', () => {
+    browserView?.webContents.send('browser-view:scrollbar-theme', browserViewTheme);
+    injectBrowserViewScrollbar();
   });
   // 页面加载完成，通知前端
   wc.on('did-finish-load', () => {
@@ -326,37 +351,58 @@ ipcMain.handle('browserView:setZoomFactor', (_e, factor) => {
 // ── 滚动条主题样式：由主进程在页面加载完成时注入（BrowserView 是原生图层，无法用 HTML 叠加）──
 let browserViewTheme = 'light';
 let scrollbarCssKey = null;
+let browserViewInjectedTheme = null;
 
 function buildScrollbarCss(theme) {
   const dark = theme === 'dark';
-  const thumb = dark ? 'rgba(255,255,255,0.32)' : 'rgba(0,0,0,0.28)';
-  const thumbHover = dark ? 'rgba(255,255,255,0.55)' : 'rgba(0,0,0,0.45)';
+  const thumb = dark ? 'rgba(255,255,255,0.2)' : 'rgba(15,23,42,0.18)';
+  const thumbHover = dark ? 'rgba(255,255,255,0.36)' : 'rgba(15,23,42,0.32)';
+  const thumbActive = dark ? 'rgba(255,255,255,0.5)' : 'rgba(15,23,42,0.45)';
   return `
-    ::-webkit-scrollbar { width: 10px !important; height: 10px !important; }
+    ::-webkit-scrollbar { width: 8px !important; height: 8px !important; }
     ::-webkit-scrollbar-track { background: transparent !important; }
-    ::-webkit-scrollbar-thumb { background: ${thumb} !important; border-radius: 5px !important; border: 2px solid transparent !important; background-clip: padding-box !important; }
-    ::-webkit-scrollbar-thumb:hover { background: ${thumbHover} !important; border: 2px solid transparent !important; background-clip: padding-box !important; }
-    * { scrollbar-width: thin !important; scrollbar-color: ${thumb} transparent !important; }
+    ::-webkit-scrollbar-thumb { background: ${thumb} !important; border: none !important; border-radius: 999px !important; }
+    ::-webkit-scrollbar-thumb:hover { background: ${thumbHover} !important; }
+    ::-webkit-scrollbar-thumb:active { background: ${thumbActive} !important; }
+    ::-webkit-scrollbar-corner { background: transparent !important; }
   `;
 }
 
-async function injectBrowserViewScrollbar() {
-  if (!browserView) { console.log('[browser] scrollbar inject skipped: no browserView yet'); return; }
-  const css = buildScrollbarCss(browserViewTheme);
-  try {
-    if (scrollbarCssKey) {
-      try { await browserView.webContents.removeInsertedCSS(scrollbarCssKey); } catch (e) { console.log('[browser] removeInsertedCSS failed', e); }
+let scrollbarInjectQueue = Promise.resolve();
+
+function injectBrowserViewScrollbar() {
+  scrollbarInjectQueue = scrollbarInjectQueue.then(async () => {
+    if (!browserView) { console.log('[browser] scrollbar inject skipped: no browserView yet'); return; }
+    // 主题未变化且当前文档已有注入，避免 did-finish-load 对同主题重复 remove/insert
+    // 造成瞬间退回原生滚动条；页面导航时 did-start-navigation 会清掉这两个状态。
+    if (scrollbarCssKey && browserViewInjectedTheme === browserViewTheme) {
+      return;
     }
-    scrollbarCssKey = await browserView.webContents.insertCSS(css);
-    console.log('[browser] scrollbar CSS injected, theme =', browserViewTheme);
-  } catch (e) {
-    console.log('[browser] insertCSS failed', e);
-  }
+    const css = buildScrollbarCss(browserViewTheme);
+    try {
+      if (scrollbarCssKey) {
+        try { await browserView.webContents.removeInsertedCSS(scrollbarCssKey); } catch (e) { console.log('[browser] removeInsertedCSS failed', e); }
+        scrollbarCssKey = null;
+      }
+      scrollbarCssKey = await browserView.webContents.insertCSS(css);
+      browserViewInjectedTheme = browserViewTheme;
+      console.log('[browser] scrollbar CSS injected, theme =', browserViewTheme);
+    } catch (e) {
+      console.log('[browser] insertCSS failed', e);
+    }
+  });
+  return scrollbarInjectQueue;
 }
+
+// BrowserView preload 在 document-start 阶段同步读取当前主题，避免注入延迟。
+ipcMain.on('browserView:getTheme', (event) => {
+  event.returnValue = browserViewTheme;
+});
 
 // 前端在深浅主题切换时通知主进程，重新注入对应主题色的滚动条样式
 ipcMain.handle('browserView:setTheme', (_e, theme) => {
   browserViewTheme = theme === 'dark' ? 'dark' : 'light';
+  browserView?.webContents.send('browser-view:scrollbar-theme', browserViewTheme);
   injectBrowserViewScrollbar();
 });
 

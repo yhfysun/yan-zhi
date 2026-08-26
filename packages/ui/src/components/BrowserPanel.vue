@@ -1133,25 +1133,15 @@ onUnmounted(() => {
 
 /* 自定义滚动条（应用层自绘，覆盖在 iframe 右侧，原生已屏蔽） */
 .custom-scrollbar {
-  position: absolute; top: 0; right: 0; bottom: 0; width: 10px;
+  position: absolute; top: 0; right: 0; bottom: 0; width: 12px;
   z-index: 30; pointer-events: auto;
 }
 .custom-scrollbar-thumb {
-  position: absolute; right: 2px; width: 6px;
-  border-radius: 4px; background: rgba(0,0,0,0.3);
+  position: absolute; right: 3px; width: 6px;
+  border-radius: 999px; background: var(--scrollbar-thumb, rgba(0,0,0,0.3));
   cursor: pointer; transition: background 0.15s;
 }
-.custom-scrollbar-thumb:hover { background: rgba(0,0,0,0.5); }
-[data-theme="dark"] .custom-scrollbar-thumb { background: rgba(255,255,255,0.32); }
-[data-theme="dark"] .custom-scrollbar-thumb:hover { background: rgba(255,255,255,0.55); }
-[data-theme="dark"] .browser-viewport::-webkit-scrollbar-thumb,
-[data-theme="dark"] .page-frame::-webkit-scrollbar-thumb {
-  background: rgba(255,255,255,0.22) !important; border: 2px solid transparent !important; background-clip: padding-box !important;
-}
-[data-theme="dark"] .browser-viewport::-webkit-scrollbar-thumb:hover,
-[data-theme="dark"] .page-frame::-webkit-scrollbar-thumb:hover {
-  background: rgba(255,255,255,0.38) !important; border: 2px solid transparent !important; background-clip: padding-box !important;
-}
+.custom-scrollbar-thumb:hover { background: var(--scrollbar-thumb-hover, rgba(0,0,0,0.5)); }
 
 /* Electron 桌面端：BrowserView 占位 div（原生 BrowserView 会覆盖此区域） */
 .browser-view-placeholder { width: 100%; height: 100%; flex: 1; min-height: 0; }

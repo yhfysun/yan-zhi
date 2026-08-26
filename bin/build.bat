@@ -35,20 +35,13 @@ exit /b 0
 
 :BuildDesktop
 echo.
-echo ====== Build Desktop (Tauri) ======
-echo.
-echo   Checking Rust environment...
-where rustc >nul 2>&1
-if %ERRORLEVEL% NEQ 0 (
-    echo   [ERROR] Rust not installed, run: bin\setup-env.bat --desktop
-    exit /b 1
-)
+echo ====== Build Desktop (Electron) ======
 echo.
 call pnpm build:desktop
 if %ERRORLEVEL% NEQ 0 exit /b 1
 echo.
 echo Build complete
-echo   Output: apps\desktop\src-tauri\target\release\bundle\
+echo   Output: apps\desktop\release\
 exit /b 0
 
 :BuildMobileAndroid

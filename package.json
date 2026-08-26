@@ -10,7 +10,7 @@
     "dev:desktop": "pnpm --filter @yan-zhi/desktop dev",
     "dev:mobile": "pnpm --filter @yan-zhi/mobile dev",
     "build:web": "pnpm --filter @yan-zhi/web build",
-    "build:desktop": "pnpm --filter @yan-zhi/desktop tauri:build",
+    "build:desktop": "pnpm --filter @yan-zhi/desktop electron:build",
     "build:mobile:android": "pnpm --filter @yan-zhi/mobile build:android",
     "build:mobile:ios": "pnpm --filter @yan-zhi/mobile build:ios",
     "typecheck": "pnpm -r typecheck",

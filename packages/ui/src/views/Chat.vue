@@ -2350,8 +2350,6 @@ async function saveSkills() {
 .sb-tab.active { color: var(--color-primary); background: rgba(124, 58, 237, 0.08); font-weight: 600; }
 
 .agent-list { flex: 1; overflow-y: auto; padding: 8px; }
-.agent-list::-webkit-scrollbar { width: 6px; }
-.agent-list::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.12); border-radius: 3px; }
 .agent-item {
   display: flex; align-items: center; gap: 10px;
   padding: 10px 12px; border-radius: var(--radius-sm); cursor: pointer;
@@ -2382,8 +2380,6 @@ async function saveSkills() {
 .conv-header { padding: 8px; flex-shrink: 0; }
 .conv-header-row { display: flex; gap: 6px; margin-top: 6px; }
 .conv-items { flex: 1; overflow-y: auto; padding: 4px; }
-.conv-items::-webkit-scrollbar { width: 6px; }
-.conv-items::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.12); border-radius: 3px; }
 .conv-item {
   display: flex; align-items: center; gap: 8px;
   padding: 9px 10px; border-radius: var(--radius-sm); cursor: pointer;
@@ -2436,9 +2432,6 @@ async function saveSkills() {
 .conv-title-display { font-weight: 600; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 .messages { flex: 1; overflow-y: auto; padding: 24px 32px 60px 32px; scroll-behavior: smooth; position: relative; }
-.messages::-webkit-scrollbar { width: 8px; }
-.messages::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.1); border-radius: 4px; }
-.messages::-webkit-scrollbar-thumb:hover { background: rgba(0,0,0,0.18); }
 
 .welcome-card {
   display: flex; flex-direction: column; align-items: center; justify-content: center;
@@ -2729,7 +2722,7 @@ async function saveSkills() {
   white-space: pre-wrap; word-break: break-all; max-height: 160px; overflow-y: auto; margin: 0;
 }
 .tool-item-json::-webkit-scrollbar { width: 4px; }
-.tool-item-json::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.1); border-radius: 2px; }
+.tool-item-json::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb, rgba(0,0,0,0.1)); border-radius: 2px; }
 .tool-item-json-error { color: #dc2626; }
 
 .msg-actions .el-button { color: var(--color-text-secondary); }
@@ -2747,7 +2740,7 @@ async function saveSkills() {
   margin: 0; border: 1px solid var(--glass-border);
 }
 .snapshot-body::-webkit-scrollbar { width: 4px; }
-.snapshot-body::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.1); border-radius: 2px; }
+.snapshot-body::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb, rgba(0,0,0,0.1)); border-radius: 2px; }
 
 /* ===== 输入区 ===== */
 .input-area { padding: 10px 20px 14px; background: var(--glass-bg); backdrop-filter: var(--glass-filter); }
@@ -2948,7 +2941,7 @@ async function saveSkills() {
 .space-selector { flex-shrink: 0; padding: 6px 8px 0 8px; }
 .space-tabs {
   display: flex; align-items: center; gap: 4px; overflow-x: auto;
-  padding-bottom: 6px; scrollbar-width: thin;
+  padding-bottom: 6px;
 }
 .space-tabs::-webkit-scrollbar { height: 3px; }
 .space-tabs::-webkit-scrollbar-thumb { background: var(--glass-border); border-radius: 2px; }
@@ -3037,7 +3030,7 @@ async function saveSkills() {
   display: flex; flex-direction: column; gap: 8px;
 }
 .skill-mount-body::-webkit-scrollbar { width: 5px; }
-.skill-mount-body::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.1); border-radius: 3px; }
+.skill-mount-body::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb, rgba(0,0,0,0.1)); border-radius: 3px; }
 
 .skill-card-item {
   display: flex; align-items: center; gap: 12px;
@@ -3210,8 +3203,7 @@ async function saveSkills() {
 .file-panel-search { padding: 8px 10px; flex-shrink: 0; }
 .file-panel-list { flex: 1; overflow-y: auto; padding: 4px; }
 .file-panel-list::-webkit-scrollbar { width: 5px; }
-.file-panel-list::-webkit-scrollbar::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.1); border-radius: 3px; }
-.file-panel-list::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.1); border-radius: 3px; }
+.file-panel-list::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb, rgba(0,0,0,0.1)); border-radius: 3px; }
 .file-panel-item {
   display: flex; align-items: center; gap: 8px;
   padding: 8px 10px; border-radius: var(--radius-sm);
@@ -3373,5 +3365,5 @@ async function saveSkills() {
   padding-top: 8px;
 }
 .mount-dialog .el-dialog__body::-webkit-scrollbar { width: 5px; }
-.mount-dialog .el-dialog__body::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.1); border-radius: 3px; }
+.mount-dialog .el-dialog__body::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb, rgba(0,0,0,0.1)); border-radius: 3px; }
 </style>
