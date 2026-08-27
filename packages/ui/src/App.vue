@@ -278,6 +278,7 @@ body {
 }
 .platform-desktop .main-content {
   margin-left: var(--sidebar-w);  /* 跟随侧栏折叠状态联动 */
+  padding-right: 0;
 }
 .platform-desktop .page { padding: 20px 24px; }
 .platform-desktop .page-title { font-size: 18px; }
@@ -309,7 +310,7 @@ body {
 
 @media (prefers-reduced-motion: reduce) { .bg-orb { animation: none !important; } }
 
-.main-content { flex: 1; overflow: hidden; position: relative; z-index: 1; margin-left: 52px; display: flex; flex-direction: column; min-height: 0; }
+.main-content { flex: 1; overflow: hidden; position: relative; z-index: 1; margin-left: 52px; padding-right: 52px; display: flex; flex-direction: column; min-height: 0; }
 .main-content.full { overflow: visible; margin-left: 0; }
 /* 可滚动页面：.page 自管滚动 */
 .page { padding: 28px 36px; flex: 1; overflow-y: auto; }
@@ -515,12 +516,19 @@ body {
   .el-dialog {
     z-index: 9999 !important;
     position: absolute !important;
-    width: 92vw !important; max-width: 92vw !important;
+    max-width: calc(100vw - 24px) !important;
     margin: 0 !important;
     max-height: calc(100dvh - 48px - env(safe-area-inset-top, 0px) - 56px - env(safe-area-inset-bottom, 0px) - 8px);
     display: flex !important; flex-direction: column !important;
     background: var(--el-bg-color) !important;
     -webkit-backdrop-filter: none !important; backdrop-filter: none !important;
+  }
+  .mount-dialog .el-dialog,
+  .skill-mount-dialog .el-dialog,
+  .snapshot-dialog .el-dialog,
+  .agent-edit-dialog .el-dialog {
+    width: 92vw !important;
+    max-width: 92vw !important;
   }
   .el-dialog__header { background: var(--el-bg-color) !important; border-bottom: 1px solid var(--el-border-color-lighter); }
   .el-dialog__body { flex: 1; overflow-y: auto; padding: 12px 16px; background: var(--el-bg-color) !important; }
@@ -577,6 +585,31 @@ body {
 }
 .add-card-text { font-size: 14px; }
 
+/* Action buttons: normal text buttons on desktop, mobile turns them into a 48px FAB */
+.fab-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+@media (max-width: 767px) {
+  .fab-add {
+    position: fixed;
+    right: 16px;
+    bottom: calc(56px + 12px + env(safe-area-inset-bottom, 0px));
+    z-index: 80;
+    width: 48px;
+    height: 48px;
+    padding: 0;
+    border-radius: 50%;
+    font-size: 0;
+    box-shadow: 0 4px 16px rgba(124, 58, 237, 0.45);
+  }
+  .fab-add .el-icon {
+    font-size: 18px;
+    margin: 0;
+  }
+}
+
 /* ===== Electron 桌面端：VS Code 风格 ===== */
 /* 标题栏 32px 高，SideNav 通过 --titlebar-h 变量从标题栏下方开始 */
 .is-electron.app-shell {
@@ -591,6 +624,7 @@ body {
 
 /* 紧凑间距：减小 padding/margin */
 .is-electron .page { padding: 16px 20px; }
+.is-electron .main-content { padding-right: 0; }
 .is-electron .page-header { margin-bottom: 16px; }
 .is-electron .page-title { font-size: 16px; }
 .is-electron .card-grid { gap: 12px; }

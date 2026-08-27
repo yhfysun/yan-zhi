@@ -3,135 +3,70 @@
     <div class="page-top">
       <div class="page-info">
         <h2 class="page-title">工具管理</h2>
-        <p class="page-sub">管理 MCP 服务和工具商城</p>
+        <p class="page-sub">浏览和管理本地与远程工具商城</p>
       </div>
     </div>
 
     <!-- ========== 视图容器 ========== -->
     <Transition name="view-fade" mode="out-in">
     <div v-if="activeMarketId === null" key="main">
-      <!-- MCP 服务概览区 -->
+      <!-- MCP 服务只读概览区 -->
       <section class="section">
         <div class="section-header">
           <h3 class="section-title">MCP 服务</h3>
-          <div class="section-header-right">
-            <el-input
-              v-model="mcpSearch"
-              size="small"
-              placeholder="搜索服务..."
-              :prefix-icon="SearchIcon"
-              clearable
-              style="width: 200px"
-            />
-          </div>
+          <el-button text size="small" @click="$router.push('/mcp')">前往管理</el-button>
         </div>
-        <div class="mcp-scroll">
-          <div
-            v-for="s in filteredMcpServers"
+        <el-empty v-if="mcpStore.servers.length === 0" description="尚未接入 MCP 服务，前往管理页添加" :image-size="60" />
+        <div v-else class="mcp-picker-list">
+          <McpServerPicker
+            v-for="s in mcpStore.servers"
             :key="s.id"
-            class="mcp-mini-card"
-            :class="{ connected: s.status === 'connected' }"
-          >
-            <div class="mcp-mini-card-top">
-              <div class="mcp-mini-card-icon" :class="s.status">
-                <el-icon :size="18"><Connection /></el-icon>
-              </div>
-              <div class="mcp-mini-card-body">
-                <span class="mcp-mini-name">
-                  {{ s.name }}
-                  <span class="status-dot" :class="s.status || 'disconnected'"></span>
-                </span>
-                <div class="mcp-mini-meta">
-                  <el-tag size="small" effect="plain" type="info">{{ s.transport.toUpperCase() }}</el-tag>
-                  <span class="mcp-mini-tools">{{ (mcpStore.tools[s.id] || []).length }} 工具</span>
-                </div>
-              </div>
-            </div>
-            <div class="mcp-mini-card-actions">
-              <el-tooltip :content="s.status === 'connected' ? '重连' : '连接'" placement="top">
-                <el-button
-                  size="small" circle
-                  :type="s.status === 'connected' ? '' : 'primary'"
-                  :loading="mcpStore.connecting === s.id"
-                  @click.stop="connectMcp(s.id)"
-                ><el-icon :size="14"><Link /></el-icon></el-button>
-              </el-tooltip>
-              <el-tooltip content="工具" placement="top">
-                <el-button size="small" circle :disabled="s.status !== 'connected'" @click.stop="showMcpTools(s.id)"><el-icon :size="14"><Switch /></el-icon></el-button>
-              </el-tooltip>
-              <el-tooltip content="详情" placement="top">
-                <el-button size="small" circle @click.stop="showMcpDetail(s)"><el-icon :size="14"><InfoFilled /></el-icon></el-button>
-              </el-tooltip>
-              <el-tooltip content="编辑" placement="top">
-                <el-button size="small" circle @click.stop="editMcpServer(s)"><el-icon :size="14"><Edit /></el-icon></el-button>
-              </el-tooltip>
-              <el-tooltip content="删除" placement="top">
-                <el-button size="small" circle type="danger" @click.stop="delMcp(s.id)"><el-icon :size="14"><DeleteIcon /></el-icon></el-button>
-              </el-tooltip>
-            </div>
-          </div>
-          <!-- 新增卡片（虚线兜底，始终在末尾） -->
-          <div class="mcp-mini-card add-card" @click="openMcpAdd">
-            <div class="mcp-mini-card-top">
-              <div class="mcp-mini-card-icon disconnected">
-                <el-icon :size="18"><Plus /></el-icon>
-              </div>
-              <div class="mcp-mini-card-body">
-                <span class="mcp-mini-name">新增 MCP 服务</span>
-              </div>
-            </div>
-          </div>
+            :server-id="s.id"
+            show-tools-count
+          />
         </div>
       </section>
 
       <!-- 工具商城区 -->
       <section class="section">
-        <div class="section-header">
-          <h3 class="section-title">工具商城</h3>
-          <el-button type="primary" :icon="Plus" @click="showSourceForm = true" class="fab-add">新增远程商城</el-button>
-        </div>
-        <div class="market-grid">
-          <!-- 本地商城卡片（始终存在） -->
-          <div class="market-card local" @click="activeMarketId = 'local'">
-            <div class="market-card-cover">
-              <div class="market-card-icon local-icon">
-                <el-icon :size="28"><HomeFilled /></el-icon>
-              </div>
-            </div>
-            <div class="market-card-body">
-              <span class="market-card-name">本地商城</span>
-              <span class="market-card-meta">
+        <MarketplaceShell title="工具商城" subtitle="浏览本地与远程工具商城">
+          <template #actions>
+            <el-button type="primary" :icon="Plus" @click="showSourceForm = true" class="fab-add">
+              新增远程商城
+            </el-button>
+          </template>
+
+          <div class="market-grid">
+            <MarketplaceCard variant="local" @click="activeMarketId = 'local'">
+              <template #icon><el-icon :size="28"><HomeFilled /></el-icon></template>
+              <template #title>本地商城</template>
+              <template #description>内置工具与自定义工具</template>
+              <template #meta>
                 {{ toolsStore.builtinTools.length }} 内置 · {{ toolsStore.customTools.length }} 自定义
-              </span>
-            </div>
-            <div class="market-card-badge local-badge">本机</div>
+              </template>
+              <template #badge><el-tag size="small" type="primary" effect="plain">本机</el-tag></template>
+            </MarketplaceCard>
+
+            <MarketplaceCard
+              v-for="s in toolsStore.remoteSources"
+              :key="s.id"
+              variant="remote"
+              @click="enterRemoteMarket(s)"
+            >
+              <template #icon><el-icon :size="28"><Cloudy /></el-icon></template>
+              <template #title>{{ s.name }}</template>
+              <template #description>{{ s.base_url }}</template>
+              <template #meta>远程商城</template>
+              <template #badge><el-tag size="small" type="info" effect="plain">远程</el-tag></template>
+            </MarketplaceCard>
           </div>
 
-          <!-- 远程商城源卡片 -->
-          <div
-            v-for="s in toolsStore.remoteSources"
-            :key="s.id"
-            class="market-card remote"
-            @click="enterRemoteMarket(s)"
-          >
-            <div class="market-card-cover">
-              <div class="market-card-icon remote-icon">
-                <el-icon :size="28"><Cloudy /></el-icon>
-              </div>
-            </div>
-            <div class="market-card-body">
-              <span class="market-card-name">{{ s.name }}</span>
-              <span class="market-card-meta">{{ s.base_url }}</span>
-            </div>
-            <div class="market-card-badge remote-badge">远程</div>
-          </div>
-        </div>
-
-        <el-empty
-          v-if="toolsStore.remoteSources.length === 0"
-          description="暂无远程商城，点击上方按钮添加其他节点"
-          :image-size="60"
-        />
+          <MarketplaceEmpty
+            v-if="toolsStore.remoteSources.length === 0"
+            description="暂无远程商城，点击上方按钮添加其他节点"
+            :image-size="60"
+          />
+        </MarketplaceShell>
       </section>
     </div>
 
@@ -244,106 +179,6 @@
     </div>
     </Transition>
 
-    <!-- ========== MCP 新增/编辑 Dialog ========== -->
-    <el-dialog v-model="showMcpForm" :title="editingMcp ? '编辑 MCP 服务' : '新增 MCP 服务'" width="560px" @close="cancelMcpDialog">
-      <el-form label-width="100px">
-        <el-form-item label="名称">
-          <el-input v-model="mcpForm.name" placeholder="如：filesystem" />
-        </el-form-item>
-        <el-form-item label="协议">
-          <el-segmented v-model="mcpForm.transport" :options="transportOptions" />
-        </el-form-item>
-        <template v-if="mcpForm.transport === 'stdio'">
-          <el-alert v-if="!mcpStore.isDesktop()" title="当前为浏览器环境，stdio 协议仅在桌面端可用" type="warning" :closable="false" show-icon style="margin-bottom:12px" />
-          <el-form-item label="命令"><el-input v-model="mcpForm.command" placeholder="如：npx" /></el-form-item>
-          <el-form-item label="参数">
-            <el-input v-model="mcpArgsText" type="textarea" :rows="2" placeholder="一行一个参数，如：-y\n@modelcontextprotocol/server-filesystem\n/tmp" />
-          </el-form-item>
-          <el-form-item label="环境变量">
-            <el-input v-model="mcpEnvText" type="textarea" :rows="2" placeholder="KEY=value 一行一个" />
-          </el-form-item>
-        </template>
-        <template v-else>
-          <el-form-item label="URL">
-            <el-input v-model="mcpForm.url" placeholder="https://example.com/mcp" />
-            <div class="form-tip">
-              <template v-if="mcpForm.transport === 'sse'">SSE 端点 URL，系统自动解析 endpoint 事件</template>
-              <template v-else>Streamable HTTP JSON-RPC 端点</template>
-              <span class="form-tip-warn" v-if="!mcpStore.isDesktop()"> · 浏览器端需服务端支持 CORS</span>
-            </div>
-          </el-form-item>
-          <el-form-item label="Headers">
-            <el-input v-model="mcpHeadersText" type="textarea" :rows="2" placeholder="Key: Value 一行一个（可选）" />
-          </el-form-item>
-        </template>
-        <el-form-item label="自动重连"><el-switch v-model="mcpForm.autoReconnect" /></el-form-item>
-        <el-form-item label="重连间隔"><el-input-number v-model="mcpForm.reconnectInterval" :min="1000" :step="1000" style="width:180px" /> ms</el-form-item>
-        <el-form-item label="启动时连接"><el-switch v-model="mcpForm.autoConnect" /></el-form-item>
-      </el-form>
-
-      <div class="dialog-actions-bar">
-        <el-button :loading="testingMcpForm" :icon="Connection" @click="testMcpForm">测试连接</el-button>
-        <span v-if="mcpFormStatus" :class="['form-status', mcpFormStatusType]">{{ mcpFormStatus }}</span>
-      </div>
-
-      <div v-if="mcpPreviewTools.length > 0" class="preview-tools">
-        <div class="preview-header">预览到 {{ mcpPreviewTools.length }} 个工具</div>
-        <div class="preview-list">
-          <div v-for="t in mcpPreviewTools" :key="t.name" class="preview-item">
-            <span class="tool-name">{{ t.name }}</span>
-            <span class="tool-desc">{{ t.description || '无描述' }}</span>
-          </div>
-        </div>
-      </div>
-
-      <template #footer>
-        <el-button @click="cancelMcpDialog">取消</el-button>
-        <el-button type="primary" :loading="savingMcp" @click="saveMcp">保存</el-button>
-      </template>
-    </el-dialog>
-
-    <!-- ========== MCP 详情 Dialog ========== -->
-    <el-dialog v-model="showMcpDetailDialog" title="MCP 服务详情" width="540px">
-      <template v-if="detailMcpServer">
-        <el-descriptions :column="1" border size="small">
-          <el-descriptions-item label="名称">{{ detailMcpServer.name }}</el-descriptions-item>
-          <el-descriptions-item label="协议">{{ detailMcpServer.transport.toUpperCase() }}</el-descriptions-item>
-          <el-descriptions-item v-if="detailMcpServer.transport === 'stdio'" label="命令">{{ detailMcpServer.command }} {{ (detailMcpServer.args || []).join(' ') }}</el-descriptions-item>
-          <el-descriptions-item v-else label="URL">{{ detailMcpServer.url }}</el-descriptions-item>
-          <el-descriptions-item label="状态">
-            <el-tag :type="detailMcpServer.status === 'connected' ? 'success' : 'info'" size="small">
-              {{ detailMcpServer.status === 'connected' ? '已连接' : '未连接' }}
-            </el-tag>
-          </el-descriptions-item>
-          <el-descriptions-item label="工具数">{{ (mcpStore.tools[detailMcpServer.id] || []).length }}</el-descriptions-item>
-          <el-descriptions-item label="自动重连">{{ detailMcpServer.autoReconnect ? '是' : '否' }}</el-descriptions-item>
-        </el-descriptions>
-      </template>
-      <template #footer>
-        <el-button @click="showMcpDetailDialog = false">关闭</el-button>
-      </template>
-    </el-dialog>
-
-    <!-- ========== MCP 工具列表 Dialog ========== -->
-    <el-dialog v-model="showMcpToolsDialog" :title="`工具列表（${mcpCurrentTools.length}）`" width="680px">
-      <div class="tools-dialog-body">
-        <el-empty v-if="mcpCurrentTools.length === 0" description="暂无工具" :image-size="80" />
-        <div v-for="t in mcpCurrentTools" :key="t.name" class="tool-dialog-item" :class="{ disabled: !mcpToolEnabled[t.name] }">
-          <div class="tool-dialog-left">
-            <span class="tool-dialog-name">{{ t.name }}</span>
-            <span v-if="t.description" class="tool-dialog-desc" :title="t.description">{{ t.description }}</span>
-          </div>
-          <div class="tool-dialog-right">
-            <el-switch
-              v-model="mcpToolEnabled[t.name]"
-              size="small"
-              @change="(v: boolean) => onMcpToolToggle(t, v)"
-            />
-          </div>
-        </div>
-      </div>
-    </el-dialog>
-
     <!-- ========== 自定义工具 Dialog ========== -->
     <el-dialog
       v-model="showCustomEditor"
@@ -409,17 +244,18 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
-import type { McpTransport } from '@yan-zhi/shared';
 import {
-  Plus, Connection, Switch, Delete as DeleteIcon,
-  ArrowLeft, ArrowRight, HomeFilled, Cloudy, Search,
-  Link, InfoFilled, Edit,
+  Plus, Switch,
+  ArrowLeft, HomeFilled, Cloudy,
 } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { useMcpStore, useAuthStore } from '../stores';
 import { useToolsStore } from '../stores/tools';
+import McpServerPicker from '../components/McpServerPicker.vue';
+import MarketplaceShell from '../components/marketplace/MarketplaceShell.vue';
+import MarketplaceCard from '../components/marketplace/MarketplaceCard.vue';
+import MarketplaceEmpty from '../components/marketplace/MarketplaceEmpty.vue';
 
-const SearchIcon = Search;
 const mcpStore = useMcpStore();
 const toolsStore = useToolsStore();
 const authStore = useAuthStore();
@@ -429,198 +265,6 @@ const activeMarketId = ref<string | null>(null);
 const activeRemoteSource = computed(() =>
   toolsStore.remoteSources.find(s => s.id === activeMarketId.value)
 );
-
-// ---- MCP 搜索 ----
-const mcpSearch = ref('');
-const filteredMcpServers = computed(() => {
-  const q = mcpSearch.value.toLowerCase().trim();
-  if (!q) return mcpStore.servers;
-  return mcpStore.servers.filter(s =>
-    s.name.toLowerCase().includes(q) ||
-    s.transport.toLowerCase().includes(q) ||
-    (s.url && s.url.toLowerCase().includes(q))
-  );
-});
-
-// ---- MCP 连接/删除 ----
-async function connectMcp(id: string) {
-  const r = await mcpStore.connect(id);
-  ElMessage[r.ok ? 'success' : 'error'](r.msg);
-}
-async function delMcp(id: string) {
-  try {
-    await ElMessageBox.confirm('删除该 MCP 服务？关联工具也会一并删除', '提示', { type: 'warning' });
-    await mcpStore.deleteServer(id);
-    ElMessage.success('已删除');
-  } catch {}
-}
-
-// ---- MCP 详情 ----
-const showMcpDetailDialog = ref(false);
-const detailMcpServer = ref<any>(null);
-function showMcpDetail(s: any) {
-  detailMcpServer.value = s;
-  showMcpDetailDialog.value = true;
-}
-
-// ---- MCP 工具列表 ----
-const showMcpToolsDialog = ref(false);
-const mcpToolsServerId = ref('');
-const mcpCurrentTools = computed(() => mcpStore.tools[mcpToolsServerId.value] || []);
-const mcpToolEnabled = ref<Record<string, boolean>>({});
-
-function showMcpTools(id: string) {
-  mcpToolsServerId.value = id;
-  const tools = mcpStore.tools[id] || [];
-  for (const t of tools) {
-    if (!(t.name in mcpToolEnabled.value)) {
-      mcpToolEnabled.value[t.name] = t.enabled !== false;
-    }
-  }
-  showMcpToolsDialog.value = true;
-}
-async function onMcpToolToggle(t: any, v: boolean) {
-  mcpToolEnabled.value[t.name] = v;
-  await mcpStore.setToolEnabled(mcpToolsServerId.value, t.name, v);
-}
-
-// ---- MCP 新增/编辑 Dialog ----
-const showMcpForm = ref(false);
-const editingMcp = ref<any>(null);
-const savingMcp = ref(false);
-const testingMcpForm = ref(false);
-const mcpFormStatus = ref('');
-const mcpFormStatusType = ref<'ok' | 'err'>('ok');
-const mcpPreviewTools = ref<any[]>([]);
-const transportOptions = [
-  { label: 'stdio', value: 'stdio' },
-  { label: 'SSE', value: 'sse' },
-  { label: 'HTTP', value: 'http' },
-];
-
-const mcpForm = ref({
-  name: '', transport: 'stdio' as McpTransport,
-  command: '', url: '', autoReconnect: true, reconnectInterval: 5000, autoConnect: true,
-});
-const mcpArgsText = ref('');
-const mcpEnvText = ref('');
-const mcpHeadersText = ref('');
-
-function openMcpAdd() {
-  editingMcp.value = null;
-  resetMcpForm();
-  showMcpForm.value = true;
-}
-
-function editMcpServer(s: any) {
-  editingMcp.value = s;
-  mcpForm.value = {
-    name: s.name, transport: s.transport,
-    command: s.command || '', url: s.url || '',
-    autoReconnect: s.autoReconnect !== false,
-    reconnectInterval: s.reconnectInterval || 5000,
-    autoConnect: s.autoConnect !== false,
-  };
-  mcpArgsText.value = (s.args || []).join('\n');
-  mcpEnvText.value = Object.entries(s.env || {}).map(([k, v]) => `${k}=${v}`).join('\n');
-  mcpHeadersText.value = Object.entries(s.headers || {}).map(([k, v]) => `${k}: ${v}`).join('\n');
-  showMcpForm.value = true;
-}
-
-function cancelMcpDialog() {
-  if (testingMcpForm.value) mcpStore.cancelTest();
-  showMcpForm.value = false;
-  testingMcpForm.value = false;
-  mcpFormStatus.value = '';
-  mcpPreviewTools.value = [];
-}
-
-function resetMcpForm() {
-  mcpForm.value = { name: '', transport: 'stdio', command: '', url: '', autoReconnect: true, reconnectInterval: 5000, autoConnect: true };
-  mcpArgsText.value = '';
-  mcpEnvText.value = '';
-  mcpHeadersText.value = '';
-  mcpFormStatus.value = '';
-  mcpPreviewTools.value = [];
-}
-
-function parseMcpForm() {
-  const args = mcpArgsText.value.split('\n').map(s => s.trim()).filter(Boolean);
-  const env: Record<string, string> = {};
-  mcpEnvText.value.split('\n').forEach(line => {
-    const m = line.match(/^([^=]+)=(.*)$/);
-    if (m) env[m[1].trim()] = m[2].trim();
-  });
-  const headers: Record<string, string> = {};
-  mcpHeadersText.value.split('\n').forEach(line => {
-    const m = line.match(/^([^:]+):\s*(.*)$/);
-    if (m) headers[m[1].trim()] = m[2].trim();
-  });
-  return { args, env, headers };
-}
-
-async function testMcpForm() {
-  if (mcpForm.value.transport === 'stdio' && !mcpForm.value.command) { ElMessage.warning('请填写 command'); return; }
-  if (mcpForm.value.transport !== 'stdio' && !mcpForm.value.url) { ElMessage.warning('请填写 URL'); return; }
-  testingMcpForm.value = true;
-  mcpFormStatus.value = '';
-  mcpPreviewTools.value = [];
-  try {
-    const { args, env, headers } = parseMcpForm();
-    const r = await mcpStore.testServerConfig({
-      transport: mcpForm.value.transport, command: mcpForm.value.command,
-      args, env, url: mcpForm.value.url, headers,
-    });
-    if (r.ok) {
-      mcpFormStatus.value = `${r.msg}（${r.durationMs}ms）`;
-      mcpFormStatusType.value = 'ok';
-      mcpPreviewTools.value = r.tools || [];
-    } else {
-      mcpFormStatus.value = r.msg;
-      mcpFormStatusType.value = 'err';
-      ElMessage.error(r.msg);
-    }
-  } finally {
-    testingMcpForm.value = false;
-  }
-}
-
-async function saveMcp() {
-  if (!mcpForm.value.name) { ElMessage.warning('名称必填'); return; }
-  if (mcpForm.value.transport === 'stdio' && !mcpForm.value.command) { ElMessage.warning('stdio 需要 command'); return; }
-  if (mcpForm.value.transport !== 'stdio' && !mcpForm.value.url) { ElMessage.warning('sse/http 需要 URL'); return; }
-
-  savingMcp.value = true;
-  try {
-    const { args, env, headers } = parseMcpForm();
-    if (editingMcp.value) {
-      await mcpStore.updateServer(editingMcp.value.id, {
-        name: mcpForm.value.name, transport: mcpForm.value.transport,
-        command: mcpForm.value.command, args, env, url: mcpForm.value.url, headers,
-        autoReconnect: mcpForm.value.autoReconnect, reconnectInterval: mcpForm.value.reconnectInterval,
-        autoConnect: mcpForm.value.autoConnect,
-      });
-      showMcpForm.value = false;
-      resetMcpForm();
-      ElMessage.success('已更新');
-    } else {
-      const server = await mcpStore.addServer({
-        name: mcpForm.value.name, transport: mcpForm.value.transport,
-        command: mcpForm.value.command, args, env, url: mcpForm.value.url, headers,
-        autoReconnect: mcpForm.value.autoReconnect, reconnectInterval: mcpForm.value.reconnectInterval,
-        autoConnect: mcpForm.value.autoConnect,
-      });
-      showMcpForm.value = false;
-      resetMcpForm();
-      ElMessage.success('已添加，正在连接…');
-      const r = await mcpStore.connect(server.id);
-      if (r.ok) ElMessage.success(r.msg);
-      else ElMessage.warning(r.msg);
-    }
-  } finally {
-    savingMcp.value = false;
-  }
-}
 
 // ---- 远程工具 ----
 const remoteTools = ref<any[]>([]);
@@ -770,65 +414,12 @@ async function installTool(item: any) {
 }
 .section-title { font-size: 15px; font-weight: 600; margin: 0; }
 
-/* ---- MCP 概览紧凑卡片（横向滚动） ---- */
-.mcp-scroll {
-  display: flex; gap: 12px; padding-bottom: 6px;
-  overflow-x: auto; -webkit-overflow-scrolling: touch;
+/* ---- MCP 只读概览 ---- */
+.mcp-picker-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
 }
-.mcp-scroll::-webkit-scrollbar { height: 5px; }
-.mcp-scroll::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.1); border-radius: 3px; }
-
-.mcp-mini-card {
-  flex: 0 0 300px;
-  padding: 12px 14px; border-radius: 10px;
-  background: var(--glass-bg);
-  backdrop-filter: var(--glass-filter);
-  -webkit-backdrop-filter: var(--glass-filter);
-  border: 1px solid var(--glass-border);
-  transition: all 0.18s;
-  display: flex; flex-direction: column; gap: 12px;
-}
-.mcp-mini-card:hover {
-  box-shadow: 0 4px 14px rgba(0,0,0,0.05);
-  border-color: var(--glass-border-strong);
-}
-.mcp-mini-card.connected { border-color: rgba(34,197,94,0.2); }
-.mcp-mini-card.add-card {
-  border: 1.5px dashed var(--glass-border);
-  background: rgba(255,255,255,0.2);
-  cursor: pointer;
-  justify-content: center;
-}
-.mcp-mini-card.add-card:hover {
-  border-color: var(--color-primary);
-  background: rgba(99,102,241,0.04);
-}
-.mcp-mini-card-top {
-  display: flex; align-items: center; gap: 12px;
-}
-.mcp-mini-card-icon {
-  width: 32px; height: 32px; border-radius: 8px;
-  display: flex; align-items: center; justify-content: center;
-  background: rgba(59,130,246,0.08); color: var(--color-primary);
-  flex-shrink: 0;
-}
-.mcp-mini-card-icon.connected { background: rgba(34,197,94,0.1); color: #22c55e; }
-.mcp-mini-card-body { flex: 1; min-width: 0; }
-.mcp-mini-name {
-  display: flex; align-items: center; gap: 6px;
-  font-size: 13px; font-weight: 600; margin-bottom: 2px;
-}
-.mcp-mini-meta { display: flex; align-items: center; gap: 6px; }
-.mcp-mini-tools { font-size: 11px; color: var(--color-text-secondary); }
-.mcp-mini-card-actions {
-  display: flex; gap: 2px; align-items: center;
-}
-
-.status-dot {
-  display: inline-block; width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
-}
-.status-dot.connected { background: #22c55e; box-shadow: 0 0 5px rgba(34,197,94,0.4); }
-.status-dot.disconnected { background: #cbd5e1; }
 
 /* ---- 商城卡片网格 ---- */
 .market-grid {
@@ -836,50 +427,6 @@ async function installTool(item: any) {
   grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
   gap: 14px;
 }
-
-/* ---- 商城卡片 ---- */
-.market-card {
-  position: relative;
-  border-radius: 14px; overflow: hidden; cursor: pointer;
-  background: var(--glass-bg);
-  backdrop-filter: var(--glass-filter);
-  -webkit-backdrop-filter: var(--glass-filter);
-  border: 1px solid var(--glass-border);
-  transition: all 0.22s cubic-bezier(0.16, 1, 0.3, 1);
-}
-.market-card:hover {
-  transform: translateY(-3px);
-  box-shadow: 0 10px 30px rgba(0,0,0,0.07);
-  border-color: var(--glass-border-strong);
-}
-.market-card-cover {
-  height: 70px;
-  display: flex; align-items: center; justify-content: center;
-}
-.market-card.local .market-card-cover {
-  background: linear-gradient(135deg, rgba(124,58,237,0.08), rgba(139,92,246,0.04));
-}
-.market-card.remote .market-card-cover {
-  background: linear-gradient(135deg, rgba(59,130,246,0.08), rgba(96,165,250,0.04));
-}
-.market-card-icon {
-  width: 44px; height: 44px; border-radius: 12px;
-  display: flex; align-items: center; justify-content: center;
-}
-.local-icon { background: rgba(124,58,237,0.12); color: #7c3aed; }
-.remote-icon { background: rgba(124,58,237,0.12); color: #7c3aed; }
-.market-card-body {
-  padding: 12px 14px 14px;
-  display: flex; flex-direction: column; gap: 4px;
-}
-.market-card-name { font-size: 13px; font-weight: 600; }
-.market-card-meta { font-size: 12px; color: var(--color-text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.market-card-badge {
-  position: absolute; top: 12px; right: 12px;
-  padding: 2px 10px; border-radius: 20px; font-size: 11px; font-weight: 600;
-}
-.local-badge { background: rgba(124,58,237,0.1); color: #7c3aed; }
-.remote-badge { background: rgba(124,58,237,0.1); color: #7c3aed; }
 
 /* ---- 子视图 ---- */
 .sub-header {
@@ -902,7 +449,7 @@ async function installTool(item: any) {
 /* ---- 工具卡片（统一高度 + 描述截断）---- */
 .card-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
   gap: 12px;
 }
 .tool-card {
@@ -936,51 +483,6 @@ async function installTool(item: any) {
 .card-actions { display: flex; gap: 4px; align-items: center; }
 .stat { font-size: 12px; color: var(--color-text-secondary); }
 
-/* ---- MCP Form ---- */
-.form-tip { font-size: 12px; color: var(--color-text-secondary); margin-top: 4px; line-height: 1.5; }
-.form-tip-warn { color: #f59e0b; }
-.dialog-actions-bar {
-  display: flex; align-items: center; gap: 8px;
-  padding: 8px 0 12px;
-  border-top: 1px solid var(--glass-border);
-  margin-top: 8px;
-}
-.form-status { font-size: 12px; margin-left: auto; }
-.form-status.ok { color: #22c55e; }
-.form-status.err { color: #ef4444; }
-.preview-tools {
-  margin-top: 8px; border: 1px solid var(--glass-border); border-radius: 8px;
-  padding: 8px 12px; max-height: 200px; overflow-y: auto;
-  background: rgba(15, 23, 42, 0.02);
-}
-.preview-header { font-size: 12px; color: var(--color-text-secondary); padding-bottom: 6px; border-bottom: 1px solid var(--glass-border); margin-bottom: 6px; }
-.preview-list { display: flex; flex-direction: column; gap: 4px; }
-.preview-item { display: flex; gap: 8px; padding: 4px 6px; border-radius: 4px; font-size: 12px; }
-.preview-item:hover { background: rgba(99, 102, 241, 0.06); }
-.tool-name { font-family: "JetBrains Mono", monospace; color: var(--color-text); flex-shrink: 0; }
-.tool-desc { color: var(--color-text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-/* ---- MCP 工具列表 Dialog ---- */
-.tools-dialog-body {
-  max-height: 420px; overflow-y: auto; display: flex; flex-direction: column; gap: 4px;
-}
-.tool-dialog-item {
-  display: flex; align-items: center; justify-content: space-between; gap: 12px;
-  padding: 10px 12px; border-radius: 6px;
-  background: rgba(15,23,42,0.02); border: 1px solid var(--glass-border);
-  transition: all 0.15s;
-}
-.tool-dialog-item:hover { background: rgba(59,130,246,0.04); border-color: rgba(59,130,246,0.15); }
-.tool-dialog-item.disabled { opacity: 0.45; }
-.tool-dialog-left { flex: 1; min-width: 0; }
-.tool-dialog-name { font-family: monospace; font-size: 12px; font-weight: 600; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tool-dialog-desc {
-  font-size: 11px; color: var(--color-text-secondary); margin-top: 2px;
-  display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical;
-  overflow: hidden; word-break: break-word;
-}
-.tool-dialog-right { flex-shrink: 0; }
-
 .code-input textarea { font-family: "JetBrains Mono", "Cascadia Code", monospace; font-size: 13px; }
 
 /* ===== Mobile ===== */
@@ -997,7 +499,6 @@ async function installTool(item: any) {
   .sub-title { font-size: 16px; }
   .card-grid { grid-template-columns: 1fr; gap: 12px; }
   .market-grid { grid-template-columns: 1fr; gap: 12px; }
-  .mcp-scroll { flex-direction: column; overflow-x: visible; gap: 10px; }
-  .mcp-mini-card { flex: none; width: 100%; }
+  .mcp-picker-list { flex-direction: column; }
 }
 </style>

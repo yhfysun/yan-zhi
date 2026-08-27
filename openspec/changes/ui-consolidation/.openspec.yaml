@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-08-27
+goal: 合并 optimize-page-layout / optimize-mobile-responsiveness /
+  fix-layout-regressions，统一三端导航方向

@@ -35,21 +35,15 @@ pub async fn mcp_start(
 pub async fn mcp_call(
     _registry: State<'_, ChildRegistry>,
     child_id: String,
-    method: String,
-    params: serde_json::Value,
+    _method: String,
+    _params: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    // TODO: 实现完整的 JSON-RPC over stdio 协议
-    // 当前为骨架，实际需要：
-    // 1. 序列化 {"jsonrpc":"2.0","id":x,"method":method,"params":params}
-    // 2. 写入子进程 stdin（带换行）
-    // 3. 从 stdout 读取响应行
-    // 4. 反序列化并返回 result 字段
-    Ok(serde_json::json!({
-        "child_id": child_id,
-        "method": method,
-        "params": params,
-        "note": "stdio 传输骨架，待实现完整 JSON-RPC"
-    }))
+    // 当前桌面端主壳为 Electron，其 main.cjs 已实现完整的 stdio JSON-RPC。
+    // 该 Tauri 壳未实现 stdio 协议，这里明确返回不支持，避免返回虚假成功结果。
+    Err(format!(
+        "stdio JSON-RPC 未在此 Tauri 壳实现（child_id: {}），请使用 Electron 桌面端或改用 SSE/HTTP 传输",
+        child_id
+    ))
 }
 
 /// 终止子进程

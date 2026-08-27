@@ -40,6 +40,10 @@ export const useMcpStore = defineStore('mcp', () => {
     try { return !!getPlatformAdapter().mcp; } catch { return false; }
   }
 
+  function isStdioSupported() {
+    try { return !!getPlatformAdapter().mcp?.supportsStdio; } catch { return false; }
+  }
+
   function cancelTest() {
     mcpTestClient.value?.abort();
     mcpTestClient.value = null;
@@ -386,6 +390,6 @@ export const useMcpStore = defineStore('mcp', () => {
     servers, tools, resources, prompts, connecting,
     loadServers, addServer, updateServer, deleteServer,
     connect, disconnect, updateToolMeta, setToolEnabled, callTool, readResource, getPrompt,
-    testServerConfig, cancelTest, getLogs, isDesktop,
+    testServerConfig, cancelTest, getLogs, isDesktop, isStdioSupported,
   };
 });

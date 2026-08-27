@@ -11,7 +11,7 @@
           <input v-model="searchQuery" placeholder="搜索服务..." class="mcp-search-input" />
           <el-icon v-if="searchQuery" class="mcp-search-clear" @click="searchQuery = ''"><Close /></el-icon>
         </div>
-        <el-button type="primary" @click="openAdd" circle :icon="Plus"></el-button>
+        <el-button type="primary" @click="openAdd" :icon="Plus" class="fab-add">新增服务</el-button>
       </div>
     </div>
 
@@ -82,7 +82,7 @@
           <el-segmented v-model="form.transport" :options="transportOptions" />
         </el-form-item>
         <template v-if="form.transport === 'stdio'">
-          <el-alert v-if="!store.isDesktop()" title="当前为浏览器环境，stdio 协议仅在桌面端可用" type="warning" :closable="false" show-icon style="margin-bottom:12px" />
+          <el-alert v-if="!store.isStdioSupported()" :title="stdioUnsupportedTitle" type="warning" :closable="false" show-icon style="margin-bottom:12px" />
           <el-form-item label="命令"><el-input v-model="form.command" placeholder="如：npx" /></el-form-item>
           <el-form-item label="参数">
             <el-input v-model="argsText" type="textarea" :rows="2" placeholder="一行一个参数，如：-y\n@modelcontextprotocol/server-filesystem\n/tmp" />
@@ -314,11 +314,17 @@ function toggleDesc(name: string) {
   expandedDescs.value[name] = !expandedDescs.value[name];
 }
 
-const transportOptions = [
-  { label: 'stdio', value: 'stdio' },
+const transportOptions = computed(() => [
+  { label: 'stdio', value: 'stdio', disabled: !store.isStdioSupported() },
   { label: 'SSE', value: 'sse' },
   { label: 'HTTP', value: 'http' },
-];
+]);
+
+const stdioUnsupportedTitle = computed(() =>
+  store.isDesktop()
+    ? '当前桌面端壳未实现 stdio JSON-RPC，请使用 Electron 桌面端或改用 SSE/HTTP'
+    : '当前为浏览器环境，stdio 协议仅在 Electron 桌面端可用',
+);
 
 onMounted(() => store.loadServers());
 
@@ -361,6 +367,7 @@ function parseForm() {
 }
 
 async function testForm() {
+  if (form.value.transport === 'stdio' && !store.isStdioSupported()) { ElMessage.warning('当前环境不支持 stdio，请改用 SSE/HTTP'); return; }
   if (form.value.transport === 'stdio' && !form.value.command) { ElMessage.warning('请填写 command'); return; }
   if (form.value.transport !== 'stdio' && !form.value.url) { ElMessage.warning('请填写 URL'); return; }
   testingForm.value = true;
@@ -386,6 +393,7 @@ async function testForm() {
 
 async function save() {
   if (!form.value.name) { ElMessage.warning('名称必填'); return; }
+  if (form.value.transport === 'stdio' && !store.isStdioSupported()) { ElMessage.warning('当前环境不支持 stdio，请改用 SSE/HTTP'); return; }
   if (form.value.transport === 'stdio' && !form.value.command) { ElMessage.warning('stdio 需要 command'); return; }
   if (form.value.transport !== 'stdio' && !form.value.url) { ElMessage.warning('sse/http 需要 URL'); return; }
 
@@ -410,7 +418,7 @@ async function save() {
 }
 
 function resetForm() {
-  form.value = { name: '', transport: 'stdio', command: '', url: '', autoReconnect: true, reconnectInterval: 5000, autoConnect: true };
+  form.value = { name: '', transport: store.isStdioSupported() ? 'stdio' : 'sse', command: '', url: '', autoReconnect: true, reconnectInterval: 5000, autoConnect: true };
   argsText.value = ''; envText.value = ''; headersText.value = '';
   formStatus.value = ''; previewTools.value = [];
 }

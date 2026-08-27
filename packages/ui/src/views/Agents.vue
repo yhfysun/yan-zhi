@@ -2,74 +2,57 @@
   <div class="page">
     <!-- ===== 商城卡片入口页 ===== -->
     <template v-if="currentView === 'marketplace'">
-      <header class="page-header">
-        <div>
-          <h2 class="page-title">智能体商店</h2>
-          <p class="page-sub">管理本地智能体，或接入远程智能体商城</p>
+      <MarketplaceShell title="智能体商店" subtitle="管理本地智能体，或接入远程智能体商城">
+        <div class="marketplace-grid">
+          <MarketplaceCard variant="local" @click="goToLocalAgents()">
+            <template #icon><el-icon :size="28"><UserFilled /></el-icon></template>
+            <template #title>本地智能体</template>
+            <template #description>管理内置智能体和自定义创建的智能体</template>
+            <template #meta>
+              内置 {{ builtinCount }} 个 · 自定义 {{ customCount }} 个
+            </template>
+            <template #actions>
+              <el-button type="primary" size="small">进入管理</el-button>
+            </template>
+          </MarketplaceCard>
+
+          <MarketplaceCard
+            v-for="s in agentRemoteSources"
+            :key="s.id"
+            variant="remote"
+            @click="goToRemoteAgents(s)"
+          >
+            <template #icon><el-icon :size="28"><Monitor /></el-icon></template>
+            <template #title>
+              {{ s.name }}
+              <span class="connect-dot" :class="s.status || 'unknown'"></span>
+            </template>
+            <template #description>{{ s.base_url }}</template>
+            <template #meta>
+              <el-tag size="small" :type="s.enabled ? 'success' : 'info'">
+                {{ s.enabled ? '启用' : '禁用' }}
+              </el-tag>
+            </template>
+            <template #actions>
+              <el-button size="small" text @click="browseAgentSource(s)">浏览</el-button>
+              <el-button size="small" text @click="testAgentSource(s.id)">测试</el-button>
+              <el-button size="small" text type="danger" @click="delAgentSource(s.id)">删除</el-button>
+            </template>
+          </MarketplaceCard>
+
+          <MarketplaceCard variant="add" @click="showAgentSourceForm = true">
+            <template #icon><el-icon :size="28"><Plus /></el-icon></template>
+            <template #title>添加远程商城</template>
+            <template #description>接入远程智能体商城</template>
+          </MarketplaceCard>
         </div>
-      </header>
 
-      <div class="marketplace-grid">
-        <!-- 本地商城卡片 -->
-        <el-card class="marketplace-card local-card" shadow="hover" @click="goToLocalAgents()">
-          <div class="marketplace-card-body">
-            <div class="marketplace-icon local">
-              <span class="icon-emoji">🤖</span>
-            </div>
-            <div class="marketplace-info">
-              <div class="marketplace-name">本地智能体</div>
-              <div class="marketplace-desc">管理内置智能体和自定义创建的智能体</div>
-            </div>
-          </div>
-          <div class="marketplace-stats">
-            <el-tag size="small" type="info" effect="plain">内置 {{ builtinCount }} 个</el-tag>
-            <el-tag size="small" type="success" effect="plain">自定义 {{ customCount }} 个</el-tag>
-          </div>
-          <div class="marketplace-actions">
-            <el-button type="primary" size="small">进入管理</el-button>
-          </div>
-        </el-card>
-
-        <!-- 远程商城卡片 -->
-        <el-card
-          v-for="s in agentRemoteSources"
-          :key="s.id"
-          class="marketplace-card remote-card"
-          shadow="hover"
-          @click="goToRemoteAgents(s)"
-        >
-          <div class="marketplace-card-body">
-            <div class="marketplace-icon remote">
-              <span class="icon-emoji">🌐</span>
-            </div>
-            <div class="marketplace-info">
-              <div class="marketplace-name">
-                {{ s.name }}
-                <span class="connect-dot" :class="s.status || 'unknown'"></span>
-              </div>
-              <div class="marketplace-desc mono">{{ s.base_url }}</div>
-            </div>
-          </div>
-          <div class="marketplace-stats">
-            <el-tag size="small" :type="s.enabled ? 'success' : 'info'">{{ s.enabled ? '启用' : '禁用' }}</el-tag>
-          </div>
-          <div class="marketplace-actions" @click.stop>
-            <el-button size="small" text @click="browseAgentSource(s)">浏览</el-button>
-            <el-button size="small" text @click="testAgentSource(s.id)">测试</el-button>
-            <el-button size="small" text type="danger" @click="delAgentSource(s.id)">删除</el-button>
-          </div>
-        </el-card>
-
-        <!-- 添加远程商城入口卡片 -->
-        <el-card class="marketplace-card add-card" shadow="never" @click="showAgentSourceForm = true">
-          <div class="add-card-content">
-            <el-icon :size="32"><Plus /></el-icon>
-            <span class="add-card-text">添加远程商城</span>
-          </div>
-        </el-card>
-      </div>
-
-      <el-empty v-if="agentRemoteSources.length === 0 && !loading" description="暂无远程商城源，点击上方卡片添加" :image-size="80" />
+        <MarketplaceEmpty
+          v-if="agentRemoteSources.length === 0 && !loading"
+          description="暂无远程商城源，点击上方卡片添加"
+          :image-size="80"
+        />
+      </MarketplaceShell>
     </template>
 
     <!-- ===== 本地智能体列表页 ===== -->
@@ -194,12 +177,15 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
 import { useRouter } from 'vue-router';
-import { Plus, EditPen, Delete, Setting, Lock, ArrowLeft } from '@element-plus/icons-vue';
+import { Plus, EditPen, Delete, Setting, Lock, ArrowLeft, UserFilled, Monitor } from '@element-plus/icons-vue';
 import { ElMessageBox, ElMessage } from 'element-plus';
 import { useAgentStore } from '../stores/agent';
 import { api } from '../api/client';
 import type { Agent } from '@yan-zhi/shared';
 import AgentEditDialog from '../components/AgentEditDialog.vue';
+import MarketplaceShell from '../components/marketplace/MarketplaceShell.vue';
+import MarketplaceCard from '../components/marketplace/MarketplaceCard.vue';
+import MarketplaceEmpty from '../components/marketplace/MarketplaceEmpty.vue';
 
 const router = useRouter();
 const store = useAgentStore();
@@ -238,7 +224,7 @@ function goToRemoteAgents(source: any) {
 }
 
 async function loadAgentRemoteSources() {
-  try { const r = await api.get<any[]>('/agent-marketplace'); agentRemoteSources.value = r.data || []; } catch {}
+  try { const r = await api.get<any[]>('/agent-marketplace'); agentRemoteSources.value = (r as any).data || []; } catch {}
 }
 async function addAgentSource() {
   if (!agentSourceForm.value.name || !agentSourceForm.value.baseUrl) { ElMessage.warning('名称和 URL 为必填项'); return; }
@@ -316,11 +302,6 @@ async function remove(agent: Agent) {
 /* .page / .page-header / .page-title / .page-sub come from App.vue global */
 .page-sub.mono { font-family: "JetBrains Mono", "Cascadia Code", monospace; font-size: 12px; }
 
-.marketplace-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
-  gap: 20px;
-}
 /* ===== 返回导航 ===== */
 .back-header { display: flex; align-items: flex-start; gap: 12px; }
 .back-btn { flex-shrink: 0; margin-top: 2px; }
@@ -331,84 +312,12 @@ async function remove(agent: Agent) {
   grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
   gap: 20px;
 }
-.marketplace-card {
-  background: var(--glass-bg);
-  backdrop-filter: var(--glass-filter);
-  -webkit-backdrop-filter: var(--glass-filter);
-  border: 1px solid var(--glass-border);
-  border-radius: var(--radius-md);
-  transition: transform 0.2s, box-shadow 0.2s;
-  cursor: pointer;
-}
-.marketplace-card:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 8px 25px rgba(0, 0, 0, 0.06);
-  border-color: var(--glass-border-strong);
-}
-.marketplace-card.local-card {
-  border-color: rgba(139, 92, 246, 0.25);
-}
-.marketplace-card-body {
-  display: flex;
-  gap: 16px;
-  align-items: flex-start;
-}
-.marketplace-icon {
-  width: 56px; height: 56px; border-radius: 14px;
-  display: flex; align-items: center; justify-content: center;
-  flex-shrink: 0; font-size: 24px;
-}
-.marketplace-icon.local {
-  background: linear-gradient(135deg, rgba(139, 92, 246, 0.15), rgba(99, 102, 241, 0.15));
-}
-.marketplace-icon.remote {
-  background: linear-gradient(135deg, rgba(34, 197, 94, 0.12), rgba(16, 185, 129, 0.12));
-}
-.icon-emoji { line-height: 1; }
-.marketplace-info { flex: 1; min-width: 0; }
-.marketplace-name {
-  font-weight: 600; font-size: 16px;
-  display: flex; align-items: center; gap: 6px;
-}
-.marketplace-desc {
-  font-size: 12px; color: var(--color-text-secondary);
-  margin-top: 4px; line-height: 1.4;
-}
-.marketplace-desc.mono {
-  font-family: "JetBrains Mono", "Cascadia Code", monospace;
-  font-size: 11px; word-break: break-all;
-}
-.marketplace-stats {
-  display: flex; gap: 6px; margin: 14px 0 10px; flex-wrap: wrap;
-}
-.marketplace-actions {
-  display: flex; gap: 4px;
-  border-top: 1px solid var(--color-border-light); padding-top: 10px;
-}
 .connect-dot {
   display: inline-block; width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
 }
 .connect-dot.connected { background: #22c55e; box-shadow: 0 0 6px rgba(34, 197, 94, 0.5); }
 .connect-dot.disconnected,
 .connect-dot.unknown { background: #94a3b8; }
-
-/* 添加远程商城卡片 */
-.marketplace-card.add-card {
-  border: 2px dashed var(--glass-border);
-  background: rgba(255, 255, 255, 0.2);
-  cursor: pointer;
-  transition: all 0.2s;
-}
-.marketplace-card.add-card:hover {
-  border-color: var(--color-primary);
-  background: rgba(59, 130, 246, 0.04);
-  transform: translateY(-2px);
-}
-.add-card-content {
-  display: flex; flex-direction: column; align-items: center; justify-content: center;
-  gap: 8px; padding: 16px 0; color: var(--color-text-secondary);
-}
-.add-card-text { font-size: 14px; }
 
 /* ===== 智能体卡片网格 ===== */
 .agent-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 20px; }
@@ -454,7 +363,6 @@ async function remove(agent: Agent) {
   .marketplace-grid, .agent-grid { grid-template-columns: 1fr; gap: 12px; }
   .sub-header { flex-wrap: wrap; gap: 10px; }
   .sub-header-info { width: 100%; }
-  .marketplace-card-body { flex-wrap: wrap; }
   .agent-actions { flex-wrap: wrap; }
 }
 

@@ -11,6 +11,9 @@ import type {
 
 // 渲染进程通过 contextBridge 注入的全局 API
 const api = (window as any).electronAPI;
+const isTauri =
+  typeof (window as any).__TAURI_INTERNALS__ !== 'undefined' ||
+  typeof (window as any).__TAURI__ !== 'undefined';
 
 /** 桌面端 SQLite 数据库（通过 Electron IPC 调用主进程的 better-sqlite3） */
 class DesktopDatabase implements DatabaseAdapter {
@@ -80,6 +83,10 @@ class DesktopKeyring implements KeyringAdapter {
 
 /** MCP 子进程适配器（通过 Electron IPC 调用主进程 child_process） */
 class DesktopMcpProcess implements McpProcessAdapter {
+  get supportsStdio() {
+    return !isTauri;
+  }
+
   async start(command: string, args: string[], env: Record<string, string>): Promise<string> {
     return api.mcp.start(command, args, env);
   }

@@ -1,0 +1,3 @@
+schema: spec-driven
+created: 2026-08-27
+goal: MCP 服务管理只保留 Mcp.vue 单一入口，ToolMarket 仅负责工具商城

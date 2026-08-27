@@ -42,6 +42,8 @@ export interface McpProcessAdapter {
   start(command: string, args: string[], env: Record<string, string>): Promise<string>; // 返回 childId
   call(childId: string, method: string, params: unknown): Promise<unknown>;
   kill(childId: string): Promise<void>;
+  /** 是否真正实现 stdio JSON-RPC。Electron 主壳为 true；未实现的最小壳应设为 false，UI 据此禁用 stdio。 */
+  supportsStdio?: boolean;
 }
 
 /** Shell 命令执行适配器（仅桌面端支持长时间运行的命令） */

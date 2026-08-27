@@ -43,6 +43,7 @@ export class McpClient {
   private async connectStdio(): Promise<void> {
     const adapter = getPlatformAdapter();
     if (!adapter.mcp) throw new Error('stdio 仅桌面端');
+    if (adapter.mcp.supportsStdio === false) throw new Error('当前桌面端未实现 stdio JSON-RPC，请改用 SSE/HTTP');
     if (!this.server.command) throw new Error('stdio 需要 command');
     await adapter.mcp.start(this.server.command, this.server.args || [], this.server.env || {});
   }

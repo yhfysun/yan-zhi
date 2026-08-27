@@ -71,6 +71,27 @@ function requireUser(userId?: string): string {
   return userId;
 }
 
+/** 服务端实际实现了执行逻辑的 api_* 工具清单，未列出的名称应被配置层过滤。 */
+export const SUPPORTED_API_TOOLS = new Set([
+  'api_agent_list', 'api_agent_get', 'api_agent_create', 'api_agent_update', 'api_agent_delete', 'api_agent_mount',
+  'api_conversation_list', 'api_conversation_get', 'api_conversation_create', 'api_conversation_update', 'api_conversation_delete',
+  'api_message_list', 'api_message_send', 'api_message_delete',
+  'api_platform_list', 'api_platform_create', 'api_platform_update', 'api_platform_delete',
+  'api_model_list', 'api_model_create', 'api_model_update', 'api_model_delete',
+  'api_mcp_server_list', 'api_mcp_server_create', 'api_mcp_server_update', 'api_mcp_server_delete', 'api_mcp_tool_list', 'api_mcp_tool_toggle',
+  'api_skill_list', 'api_skill_get', 'api_skill_toggle', 'api_skill_install', 'api_skill_delete',
+  'api_custom_tool_list', 'api_custom_tool_get', 'api_custom_tool_create', 'api_custom_tool_update', 'api_custom_tool_delete', 'api_custom_tool_toggle',
+  'api_builtin_tool_list',
+  'api_marketplace_sources', 'api_marketplace_add_source', 'api_marketplace_delete_source', 'api_marketplace_browse', 'api_marketplace_install',
+  'api_workspace_list_dir', 'api_workspace_search_files',
+  'api_memory_search', 'api_memory_list', 'api_memory_create', 'api_memory_delete',
+  'api_file_list', 'api_file_set_category',
+  'api_peer_register', 'api_peer_list', 'api_peer_ping', 'api_chat_send', 'api_chat_poll',
+  'api_im_connector_list', 'api_im_connector_create', 'api_im_connector_update', 'api_im_connector_delete', 'api_im_send',
+  'api_kb_list', 'api_kb_create', 'api_kb_update', 'api_kb_delete',
+  'api_kb_document_add', 'api_kb_document_list', 'api_kb_document_delete', 'api_kb_search',
+]);
+
 export async function executeApiTool(
   name: string,
   args: Record<string, unknown>,

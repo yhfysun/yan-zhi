@@ -76,3 +76,8 @@
 
 ### Requirement: File panel visual style
 文件面板 SHALL 使用与左侧会话侧边栏一致的毛玻璃风格（backdrop-filter），包含面板标题栏（标题 + 上传按钮 + 关闭按钮）、搜索框和文件列表区域。面板与聊天消息区之间有 1px 分隔线。
+
+#### Scenario: File panel uses glass style
+- **WHEN** 文件面板展开
+- **THEN** 面板标题栏、搜索框和文件列表区域使用毛玻璃背景
+- **AND** 面板与聊天消息区之间存在 1px 分隔线

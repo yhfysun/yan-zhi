@@ -89,10 +89,10 @@
     </div>
   </nav>
 
-  <!-- 移动端底部 TabBar -->
+  <!-- 移动端底部 TabBar：常用入口 + 更多 -->
   <nav v-if="isMobile" class="tab-bar">
     <router-link
-      v-for="item in navItems.filter(i => i.path !== '/mcp' && i.path !== '/browser')"
+      v-for="item in mobilePrimaryItems"
       :key="item.path"
       :to="item.path"
       class="tab-bar-item"
@@ -101,12 +101,47 @@
       <el-icon :size="20"><component :is="item.icon" /></el-icon>
       <span class="tab-bar-label">{{ item.tabLabel || item.label }}</span>
     </router-link>
+    <button
+      type="button"
+      class="tab-bar-item tab-bar-more"
+      :class="{ active: isMoreActive }"
+      @click="showMore = true"
+    >
+      <el-icon :size="20"><MoreFilled /></el-icon>
+      <span class="tab-bar-label">更多</span>
+    </button>
   </nav>
+
+  <!-- 移动端“更多”底部抽屉 -->
+  <transition name="tab-more-fade">
+    <div v-if="isMobile && showMore" class="tab-more-mask" @click.self="showMore = false">
+      <div class="tab-more-sheet">
+        <div class="tab-more-header">
+          <span>更多功能</span>
+          <button type="button" class="tab-more-close" aria-label="关闭" @click="showMore = false">×</button>
+        </div>
+        <div class="tab-more-grid">
+          <router-link
+            v-for="item in mobileMoreItems"
+            :key="item.path"
+            :to="item.path"
+            class="tab-more-item"
+            :class="{ active: isActive(item.path) }"
+            @click="showMore = false"
+          >
+            <el-icon :size="20"><component :is="item.icon" /></el-icon>
+            <span>{{ item.tabLabel || item.label }}</span>
+          </router-link>
+        </div>
+      </div>
+    </div>
+  </transition>
 </template>
 
 <script setup lang="ts">
+import { computed, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { ChatDotRound, Box, Files, Setting, Cpu, User, SwitchButton, Suitcase, Connection, Fold, Expand, Monitor, HomeFilled, MagicStick, ChatLineRound, Promotion, Collection } from '@element-plus/icons-vue';
+import { ChatDotRound, Box, Files, Setting, Cpu, User, SwitchButton, Suitcase, Connection, Fold, Expand, Monitor, HomeFilled, MagicStick, ChatLineRound, Promotion, Collection, MoreFilled } from '@element-plus/icons-vue';
 import { useAuthStore } from '../stores/auth';
 import { useIsMobile } from '../composables/useIsMobile';
 import { usePlatform } from '../composables/usePlatform';
@@ -134,6 +169,21 @@ const navItems = [
   { path: '/mcp', label: 'MCP 服务', tabLabel: 'MCP', icon: Connection },
   { path: '/settings', label: '设置', tabLabel: '设置', icon: Setting },
 ];
+
+const mobilePrimaryPaths = new Set(['/home', '/chat', '/agents', '/tools']);
+const mobilePrimaryItems = computed(() => navItems.filter((item) => mobilePrimaryPaths.has(item.path)));
+const mobileMoreItems = computed(() =>
+  navItems.filter((item) => !mobilePrimaryPaths.has(item.path) && item.path !== '/mcp' && item.path !== '/browser'),
+);
+const isMoreActive = computed(() => mobileMoreItems.value.some((item) => isActive(item.path)));
+const showMore = ref(false);
+
+watch(
+  () => route.path,
+  () => {
+    showMore.value = false;
+  },
+);
 
 function isActive(path: string) {
   return route.path === path || route.path.startsWith(path + '/');
@@ -387,6 +437,104 @@ function isActive(path: string) {
     font-size: 10px;
     line-height: 1;
   }
+}
+
+.tab-bar-more {
+  cursor: pointer;
+}
+
+.tab-more-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  background: rgba(15, 23, 42, 0.45);
+  display: flex;
+  align-items: flex-end;
+}
+
+.tab-more-sheet {
+  width: 100%;
+  max-height: 72vh;
+  overflow: auto;
+  background: var(--el-bg-color, #fff);
+  border-radius: 16px 16px 0 0;
+  padding: 12px 12px calc(16px + env(safe-area-inset-bottom, 0px));
+}
+
+.tab-more-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 4px 12px;
+  color: var(--color-text);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.tab-more-close {
+  width: 32px;
+  height: 32px;
+  border: none;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+  border-radius: 8px;
+}
+
+.tab-more-close:hover {
+  color: var(--color-text);
+  background: var(--glass-bg-hover);
+}
+
+.tab-more-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.tab-more-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 4px;
+  border-radius: 12px;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  text-decoration: none;
+  transition: color 0.18s ease, background-color 0.18s ease;
+}
+
+.tab-more-item:hover {
+  color: var(--color-text);
+  background: var(--glass-bg-hover);
+}
+
+.tab-more-item.active {
+  color: var(--color-primary);
+  background: rgba(124, 58, 237, 0.1);
+}
+
+.tab-more-fade-enter-active,
+.tab-more-fade-leave-active {
+  transition: opacity 0.2s ease;
+}
+
+.tab-more-fade-enter-from,
+.tab-more-fade-leave-to {
+  opacity: 0;
+}
+
+.tab-more-fade-enter-active .tab-more-sheet,
+.tab-more-fade-leave-active .tab-more-sheet {
+  transition: transform 0.22s ease;
+}
+
+.tab-more-fade-enter-from .tab-more-sheet,
+.tab-more-fade-leave-to .tab-more-sheet {
+  transform: translateY(100%);
 }
 </style>
 

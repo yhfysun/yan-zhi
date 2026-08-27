@@ -1,0 +1,5 @@
+schema: spec-driven
+context: |
+  言智（yan-zhi）是一个 Vue 3 + TypeScript + Element Plus 的本地优先 AI 助手。
+  桌面端使用 Tauri/Rust，Web 端使用 Capacitor，服务端为 Node.js。
+  UI 集中在 packages/ui，通过 packages/ui/src 提供跨端共享界面。

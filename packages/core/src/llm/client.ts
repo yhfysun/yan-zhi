@@ -35,6 +35,8 @@ export class LlmClient {
 
   private get baseUrl() { return this.platform.apiUrl.replace(/\/$/, ''); }
   private get isAnthropic() { return this.platform.protocol === 'anthropic'; }
+  /** Anthropic 官方协议不提供 embeddings 接口，上层 UI 应据此隐藏相关入口。 */
+  get supportsEmbeddings() { return !this.isAnthropic; }
 
   private async buildHeaders(): Promise<HeadersInit> {
     const adapter = getPlatformAdapter();

@@ -1,7 +1,7 @@
 import { Router, type Request, type Response } from 'express';
 import { getApiToolRegistry, getToolRegistry } from '@yan-zhi/core';
 import { resolveJwtUser } from '../auth.js';
-import { executeApiTool } from './api-tool-executor.js';
+import { executeApiTool, SUPPORTED_API_TOOLS } from './api-tool-executor.js';
 
 const router = Router();
 
@@ -32,6 +32,7 @@ function listAllTools() {
   const apiTools: Array<Record<string, unknown>> = [];
   for (const tools of getApiToolRegistry().values()) {
     for (const tool of tools) {
+      if (!SUPPORTED_API_TOOLS.has(tool.name)) continue;
       apiTools.push({
         name: tool.name,
         description: tool.description,
@@ -117,4 +118,3 @@ router.post('/', async (req: Request, res: Response) => {
 });
 
 export default router;
-

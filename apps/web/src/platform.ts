@@ -2,6 +2,11 @@
 import type { PlatformAdapter, DatabaseAdapter, FsAdapter, KeyringAdapter } from '@yan-zhi/core';
 import Dexie from 'dexie';
 
+/** 浏览器端明确的能力边界错误，用于替代裸 throw */
+class WebPlatformNotSupportedError extends Error {
+  override name = 'NotSupportedError';
+}
+
 /** Web 端数据库（用 Dexie 模拟 SQL 接口） */
 class WebDatabase extends Dexie implements DatabaseAdapter {
   _tables: Record<string, Dexie.Table<any, string>>;
@@ -107,20 +112,24 @@ class WebDatabase extends Dexie implements DatabaseAdapter {
     // DDL（CREATE TABLE / CREATE INDEX / CREATE VIRTUAL TABLE）：Dexie 已通过 version() 声明，忽略
     if (/^(CREATE|DROP|ALTER)\s/i.test(trimmed)) return;
 
-    // 其他不支持的语句静默忽略（避免 initSchema 失败）
-    console.warn('[WebDatabase] 未支持的 SQL，已忽略:', sql.slice(0, 80));
+    // 非 DDL 的未知语句不再静默吞掉，显式失败并记录结构化能力告警
+    const err = new Error(`[WebDatabase] 不支持的 SQL: ${sql.slice(0, 120)}`);
+    console.warn('[WebDatabase] capability: unsupported-sql', { sql: sql.slice(0, 200) });
+    throw err;
   }
 
   async query<T>(sql: string, _params?: unknown[]): Promise<T[]> {
     // 支持：SELECT * FROM table [WHERE col=?] [ORDER BY col1 ASC|DESC, col2 ASC|DESC, ...]
     const m = sql.match(/^SELECT\s+\*\s+FROM\s+(\w+)(?:\s+WHERE\s+(\w+)\s*=\s*\?)?(?:\s+ORDER\s+BY\s+(.+?))?$/i);
     if (!m) {
-      console.warn('[WebDatabase] 不支持的查询，返回空:', sql.slice(0, 80));
-      return [];
+      console.warn('[WebDatabase] capability: unsupported-query', { sql: sql.slice(0, 200) });
+      throw new Error(`[WebDatabase] 不支持的查询: ${sql.slice(0, 120)}`);
     }
     const [, tableName, whereCol, orderByRaw] = m;
     const table = this._tables[tableName];
-    if (!table) return [];
+    if (!table) {
+      throw new Error(`[WebDatabase] 未知表: ${tableName}`);
+    }
     let collection: Dexie.Collection<any, string>;
     if (whereCol && _params && _params.length > 0) {
       collection = table.where(whereCol).equals(_params[0] as never);
@@ -157,22 +166,35 @@ class WebDatabase extends Dexie implements DatabaseAdapter {
   }
 }
 
-/** Web 文件系统（File System Access API）
- *  MVP 阶段：仅支持浏览器下载/上传，不实现目录授权访问 */
+/** Web 文件系统（受浏览器沙箱约束）
+ *  网页端无法直接访问本地文件系统，统一通过显式 NotSupportedError 降级，
+ *  避免把“平台限制”伪装成普通的运行时异常。 */
 class WebFs implements FsAdapter {
-  async readFile(_path: string): Promise<string> {
-    throw new Error('Web 端文件系统访问需要用户授权（File System Access API）');
+  private unsupported(action: string, path: string): WebPlatformNotSupportedError {
+    return new WebPlatformNotSupportedError(
+      `[WebFs] ${action}（${path}）在浏览器网页端不可用。请改用文件上传/下载能力，或切换到桌面端。`,
+    );
   }
-  async readFileBase64(_path: string): Promise<string> {
-    throw new Error('Web 端文件系统访问需要用户授权（File System Access API）');
+
+  async readFile(path: string): Promise<string> {
+    throw this.unsupported('读取文件', path);
   }
-  async writeFile(_path: string, _content: string): Promise<void> {
-    throw new Error('Web 端文件系统访问需要用户授权（File System Access API）');
+  async readFileBase64(path: string): Promise<string> {
+    throw this.unsupported('读取文件', path);
+  }
+  async writeFile(path: string, _content: string): Promise<void> {
+    throw this.unsupported('写入文件', path);
   }
   async exists(_path: string): Promise<boolean> { return false; }
-  async mkdir(_path: string): Promise<void> {}
-  async remove(_path: string): Promise<void> {}
-  async readDir(_path: string): Promise<string[]> { return []; }
+  async mkdir(path: string): Promise<void> {
+    throw this.unsupported('创建目录', path);
+  }
+  async remove(path: string): Promise<void> {
+    throw this.unsupported('删除文件', path);
+  }
+  async readDir(path: string): Promise<string[]> {
+    throw this.unsupported('读取目录', path);
+  }
 }
 
 /** Web 钥匙串 - 持久化到 Dexie（IndexedDB）

@@ -1,0 +1,3 @@
+schema: spec-driven
+created: 2026-08-27
+goal: 补齐 Web 端文件、数据库、MCP stdio、api_* 工具与 embeddings 的能力实现或明确降级

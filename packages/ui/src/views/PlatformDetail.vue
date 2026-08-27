@@ -92,7 +92,7 @@
         <el-form-item label="类型">
           <el-select v-model="form.type">
             <el-option label="LLM" value="llm" />
-            <el-option label="Embedding" value="embedding" />
+            <el-option v-if="supportsEmbeddings" label="Embedding" value="embedding" />
             <el-option label="Rerank" value="rerank" />
           </el-select>
         </el-form-item>
@@ -170,6 +170,7 @@ const store = usePlatformStore();
 const platformId = computed(() => route.params.platformId as string);
 const platform = computed(() => store.platforms.find((p) => p.id === platformId.value));
 const models = computed(() => store.models.filter((m) => m.platformId === platformId.value));
+const supportsEmbeddings = computed(() => platform.value?.protocol !== 'anthropic');
 const showAdd = ref(false);
 const editingModelId = ref('');
 const fetching = ref(false);
