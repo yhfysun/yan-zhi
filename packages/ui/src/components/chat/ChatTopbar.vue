@@ -8,7 +8,6 @@
       <span class="model-pill">
         <span class="model-pill-dot"></span>
         <span class="model-pill-name">{{ selectedModel?.alias || selectedModel?.modelId || '选择模型' }}</span>
-        <span class="model-pill-reasoning">推理增强</span>
         <el-icon :size="12"><ArrowDown /></el-icon>
       </span>
       <template #dropdown>
@@ -126,15 +125,6 @@ const selectedModel = computed(() => {
   white-space: nowrap;
 }
 
-.model-pill-reasoning {
-  padding-left: 7px;
-  border-left: 1px solid var(--glass-border, rgba(15, 23, 42, 0.1));
-  color: var(--el-text-color-secondary, #64748b);
-  font-size: 11px;
-  font-weight: 500;
-  white-space: nowrap;
-}
-
 @media (max-width: 767px) {
   .model-pill {
     height: 30px;
@@ -144,10 +134,6 @@ const selectedModel = computed(() => {
 
   .model-pill-name {
     max-width: 112px;
-  }
-
-  .model-pill-reasoning {
-    display: none;
   }
 }
 </style>
