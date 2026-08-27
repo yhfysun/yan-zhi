@@ -102,6 +102,10 @@ router.get('/builtin', (_req: Request, res: Response) => {
       { name: 'file_read', description: '读取文件内容，支持指定路径和行数范围', inputSchema: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] } },
       { name: 'file_write', description: '写入内容到指定文件路径', inputSchema: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } }, required: ['path', 'content'] } },
       { name: 'web_search', description: '联网搜索，获取实时信息', inputSchema: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] } },
+      { name: 'ask_user', description: '向用户反问澄清问题并等待回答', inputSchema: { type: 'object', properties: { question: { type: 'string' } }, required: ['question'] } },
+      { name: 'confirm_user', description: '多页确认向导，逐页收集用户选择、文字回答和补充说明', inputSchema: { type: 'object', properties: { title: { type: 'string' }, pages: { type: 'array' } }, required: ['pages'] } },
+      { name: 'task_plan', description: '创建任务计划并展示进度', inputSchema: { type: 'object', properties: { steps: { type: 'array' } }, required: ['steps'] } },
+      { name: 'task_step', description: '更新任务步骤状态', inputSchema: { type: 'object', properties: { index: { type: 'number' }, status: { type: 'string' } }, required: ['index', 'status'] } },
     ],
   });
 });

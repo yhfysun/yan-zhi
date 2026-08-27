@@ -27,6 +27,10 @@ export class AskUserTool implements BuiltInTool {
         type: 'boolean',
         description: 'If true and `options` is provided, the user may select multiple options (answers joined with "、").',
       },
+      allowSupplement: {
+        type: 'boolean',
+        description: 'If true, show an optional supplementary note input below the answer. Defaults to true.',
+      },
     },
     required: ['question'],
   };

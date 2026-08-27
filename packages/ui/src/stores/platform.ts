@@ -18,6 +18,7 @@ function rowToPlatform(r: any): Platform {
     headers: r.headers_json ? tryParse(r.headers_json) : {},
     status: r.status === 1 ? 'healthy' : r.status === 0 ? 'down' : 'unknown',
     lastHealthAt: r.last_health_at,
+    isBuiltin: !!r.is_builtin,
     createdAt: r.created_at,
   };
 }
@@ -36,11 +37,53 @@ function rowToModel(r: any): Model {
     pricing: r.pricing_json ? tryParse(r.pricing_json) : undefined,
     lastChatTestAt: r.last_chat_test_at || undefined,
     lastChatTestOk: r.last_chat_test_ok === null ? undefined : !!r.last_chat_test_ok,
+    isBuiltin: !!r.is_builtin,
   };
 }
 
 function tryParse(v: string) {
   try { return JSON.parse(v); } catch { return {}; }
+}
+
+const GUEST_LOCAL_PLATFORM_ID = 'local-model-guest';
+const GUEST_LOCAL_LLM_ID = 'local-model-guest-llm';
+const GUEST_LOCAL_MODEL_ID = 'qwen2.5-1.5b-instruct';
+const GUEST_LOCAL_BASE_URL = 'http://127.0.0.1:3001/local-model';
+
+async function ensureGuestLocalModel() {
+  const adapter = getPlatformAdapter();
+  const now = Date.now();
+  const platformId = GUEST_LOCAL_PLATFORM_ID;
+
+  const existingPlatform = await adapter.db.query<any>('SELECT id FROM platform WHERE id = ?', [platformId]);
+  if (existingPlatform.length === 0) {
+    await adapter.db.exec(
+      'INSERT INTO platform (id, name, protocol, api_url, api_key_enc, headers_json, status, is_builtin, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)',
+      [platformId, '内置小模型', 'openai', GUEST_LOCAL_BASE_URL, '', '{}', 1, now],
+    );
+  } else {
+    await adapter.db.exec(
+      "UPDATE platform SET name = '内置小模型', protocol = 'openai', api_url = ?, status = 1, is_builtin = 1 WHERE id = ?",
+      [GUEST_LOCAL_BASE_URL, platformId],
+    );
+  }
+
+  const llmId = GUEST_LOCAL_LLM_ID;
+  const existingLlm = await adapter.db.query<any>('SELECT id FROM model WHERE id = ?', [llmId]);
+  if (existingLlm.length === 0) {
+    await adapter.db.exec(
+      'INSERT INTO model (id, platform_id, model_id, alias, type, context_window, enabled, is_default, is_builtin, capabilities_json, pricing_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)',
+      [llmId, platformId, GUEST_LOCAL_MODEL_ID, '本地小模型（Qwen2.5 1.5B）', 'llm', 8192, 1, 1, JSON.stringify(['function_call']), '{}'],
+    );
+  } else {
+    await adapter.db.exec(
+      "UPDATE model SET platform_id = ?, model_id = ?, alias = '本地小模型（Qwen2.5 1.5B）', type = 'llm', context_window = 8192, enabled = 1, is_default = 1, is_builtin = 1, capabilities_json = ? WHERE id = ?",
+      [platformId, GUEST_LOCAL_MODEL_ID, JSON.stringify(['function_call']), llmId],
+    );
+  }
+
+  // 本地小模型只提供聊天 LLM；旧版本残留的 embedding 项会被清除，避免出现在模型管理/知识库等需要 Embedding 的位置。
+  await adapter.db.exec("DELETE FROM model WHERE platform_id = ? AND type = 'embedding'", [platformId]);
 }
 
 /** 从模型 ID 自动推断模型类型 */
@@ -74,6 +117,22 @@ function inferModelType(modelId: string, apiType?: string): ModelType {
   return 'llm';
 }
 
+function assertEditablePlatform(id: string) {
+  const store = usePlatformStore();
+  const p = store.platforms.find((x) => x.id === id);
+  if (p?.isBuiltin || id.startsWith('local-model-')) {
+    throw new Error('内置平台不可编辑');
+  }
+}
+
+function assertEditableModel(id: string) {
+  const store = usePlatformStore();
+  const m = store.models.find((x) => x.id === id);
+  if (m?.isBuiltin || id.startsWith('local-model-')) {
+    throw new Error('内置模型不可编辑');
+  }
+}
+
 export const usePlatformStore = defineStore('platform', () => {
   const platforms = ref<Platform[]>([]);
   const models = ref<Model[]>([]);
@@ -97,6 +156,7 @@ export const usePlatformStore = defineStore('platform', () => {
         }
       } else {
         const adapter = getPlatformAdapter();
+        await ensureGuestLocalModel();
         const rows = await adapter.db.query<any>('SELECT * FROM platform ORDER BY created_at DESC');
         platforms.value = rows.map(rowToPlatform);
       }
@@ -111,6 +171,7 @@ export const usePlatformStore = defineStore('platform', () => {
       return;
     }
     const adapter = getPlatformAdapter();
+    await ensureGuestLocalModel();
     const rows = platformId
       ? await adapter.db.query<any>('SELECT * FROM model WHERE platform_id = ? ORDER BY is_default DESC', [platformId])
       : await adapter.db.query<any>('SELECT * FROM model ORDER BY platform_id, is_default DESC');
@@ -137,7 +198,7 @@ export const usePlatformStore = defineStore('platform', () => {
     const adapter = getPlatformAdapter();
     const id = uid('p_');
     await adapter.db.exec(
-      'INSERT INTO platform (id, name, protocol, api_url, api_key_enc, headers_json, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO platform (id, name, protocol, api_url, api_key_enc, headers_json, status, is_builtin, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)',
       [id, p.name, p.protocol, p.apiUrl, p.apiKeyEnc, JSON.stringify(p.headers || {}), 1, Date.now()],
     );
     if (p.apiKeyEnc) await adapter.keyring.set(`platform:${id}:apikey`, p.apiKeyEnc);
@@ -146,6 +207,7 @@ export const usePlatformStore = defineStore('platform', () => {
   }
 
   async function deletePlatform(id: string) {
+    assertEditablePlatform(id);
     if (on()) {
       await api.delete(`/platforms/${id}`);
       const adapter = getPlatformAdapter();
@@ -160,6 +222,7 @@ export const usePlatformStore = defineStore('platform', () => {
   }
 
   async function updatePlatform(id: string, patch: Partial<{ name: string; protocol: string; apiUrl: string; apiKeyEnc: string; headers: Record<string, string>; status: string }>) {
+    assertEditablePlatform(id);
     if (on()) {
       const body: any = {};
       if (patch.name !== undefined) body.name = patch.name;
@@ -203,7 +266,7 @@ export const usePlatformStore = defineStore('platform', () => {
     const adapter = getPlatformAdapter();
     const id = uid('m_');
     await adapter.db.exec(
-      'INSERT INTO model (id, platform_id, model_id, alias, type, context_window, enabled, is_default, capabilities_json, pricing_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO model (id, platform_id, model_id, alias, type, context_window, enabled, is_default, is_builtin, capabilities_json, pricing_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)',
       [id, m.platformId, m.modelId, m.alias || null, m.type, m.contextWindow,
         m.enabled ? 1 : 0, m.isDefault ? 1 : 0,
         m.capabilities ? JSON.stringify(m.capabilities) : null,
@@ -214,6 +277,7 @@ export const usePlatformStore = defineStore('platform', () => {
   }
 
   async function updateModel(id: string, patch: Partial<Model>) {
+    assertEditableModel(id);
     if (on()) {
       const body: any = {};
       if (patch.alias !== undefined) body.alias = patch.alias;
@@ -261,6 +325,7 @@ export const usePlatformStore = defineStore('platform', () => {
   }
 
   async function deleteModel(id: string) {
+    assertEditableModel(id);
     if (on()) {
       await api.delete(`/platforms/models/${id}`);
     } else {
@@ -274,6 +339,7 @@ export const usePlatformStore = defineStore('platform', () => {
   }
 
   async function fetchRemoteModels(platformId: string): Promise<string[]> {
+    assertEditablePlatform(platformId);
     const p = platforms.value.find((x) => x.id === platformId);
     if (!p) throw new Error('平台不存在');
     const client = new LlmClient(p, {} as Model);

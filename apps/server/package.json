@@ -5,8 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "build": "tsc",
-    "start": "node dist/apps/server/src/index.js"
+    "build": "tsc && node scripts/fix-esm-extensions.cjs",
+    "start": "node dist/apps/server/src/index.js",
+    "postinstall": "node ./scripts/fix-sqlite-electron.cjs || true"
   },
   "dependencies": {
     "@yan-zhi/core": "workspace:*",
@@ -16,6 +17,7 @@
     "cors": "^2.8.5",
     "express": "^4.21.0",
     "jsonwebtoken": "^9.0.2",
+    "node-llama-cpp": "3.20.0",
     "playwright": "^1.62.1",
     "uuid": "^10.0.0"
   },

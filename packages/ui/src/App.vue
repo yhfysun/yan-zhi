@@ -47,13 +47,50 @@
         </main>
       </template>
     </div>
+
+    <el-dialog
+      v-if="localModelVisible"
+      :model-value="true"
+      :show-close="false"
+      :close-on-click-modal="false"
+      :close-on-press-escape="false"
+      width="420px"
+      class="local-model-download-dialog"
+    >
+      <div class="local-model-download-body">
+        <div class="local-model-download-title">
+          {{ localModelState.state === 'error' ? '本地模型下载失败' : '正在准备本地小模型' }}
+        </div>
+        <div class="local-model-download-desc">
+          {{ localModelState.state === 'error'
+            ? '安装完成后可以重试下载，期间仍可使用云端模型平台。'
+            : '轻量安装包首次运行会自动下载模型，下载完成后即可离线使用基础问答。' }}
+        </div>
+        <el-progress
+          v-if="localModelState.state !== 'error'"
+          :percentage="localModelProgress"
+          :stroke-width="8"
+          :show-text="true"
+          :status="localModelState.state === 'done' ? 'success' : undefined"
+        />
+        <div class="local-model-download-message">{{ localModelState.message }}</div>
+      </div>
+      <template #footer>
+        <template v-if="localModelState.state === 'error'">
+          <el-button @click="dismissLocalModel">稍后使用云端模型</el-button>
+          <el-button type="primary" @click="retryLocalModel">重试下载</el-button>
+        </template>
+        <el-button v-else disabled>正在下载</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { useRoute } from 'vue-router';
 import { User, SwitchButton } from '@element-plus/icons-vue';
+import { ElMessage } from 'element-plus';
 import { useAuthStore } from './stores/auth';
 import SideNav from './components/SideNav.vue';
 
@@ -70,9 +107,53 @@ const { collapsed } = useSidebarState();
 // Electron 桌面端检测：由主进程通过 preload 注入 window.electronAPI.isElectron
 const isElectron = typeof window !== 'undefined' && !!(window as any).electronAPI?.isElectron;
 
+const localModelState = ref({
+  state: 'idle',
+  receivedBytes: 0,
+  totalBytes: 0,
+  progress: 0,
+  message: '',
+});
+const localModelVisible = computed(() => {
+  return isElectron && (localModelState.value.state === 'downloading' || localModelState.value.state === 'error');
+});
+const localModelProgress = computed(() => Math.max(0, Math.min(100, Math.round(localModelState.value.progress * 100))));
+let offLocalModelState: (() => void) | undefined;
+
+onMounted(async () => {
+  const api = (window as any).electronAPI?.localModel;
+  if (!api) return;
+  offLocalModelState = api.onState((state: any) => {
+    if (state) localModelState.value = state;
+  });
+  const initial = await api.getState();
+  if (initial) localModelState.value = initial;
+});
+
+onUnmounted(() => {
+  offLocalModelState?.();
+});
+
+async function retryLocalModel() {
+  const api = (window as any).electronAPI?.localModel;
+  if (!api) return;
+  try {
+    await api.start();
+  } catch (error: any) {
+    ElMessage.warning(error?.message || '启动模型下载失败');
+  }
+}
+
+function dismissLocalModel() {
+  localModelState.value = { state: 'idle', receivedBytes: 0, totalBytes: 0, progress: 0, message: '已跳过本次下载' };
+}
+
 const ROUTE_TITLES: Record<string, string> = {
   home: '首页',
   chat: '对话',
+  peers: '客户端节点',
+  connections: 'IM 连接',
+  knowledge: '知识库',
   browser: '浏览器',
   models: '模型平台',
   tools: '工具管理',
@@ -533,4 +614,10 @@ body {
 .is-electron :root:not([data-theme="dark"]) .app-body {
   background: #f3f3f3;
 }
+
+.local-model-download-dialog .el-dialog__body { padding: 18px 20px; }
+.local-model-download-body { display: flex; flex-direction: column; gap: 10px; }
+.local-model-download-title { font-size: 16px; font-weight: 650; color: var(--color-text); }
+.local-model-download-desc { font-size: 13px; line-height: 1.55; color: var(--color-text-secondary); }
+.local-model-download-message { min-height: 20px; font-size: 12px; color: var(--color-text-secondary); word-break: break-all; }
 </style>

@@ -28,6 +28,8 @@ export interface Platform {
   headers?: Record<string, string>;
   status: 'healthy' | 'down' | 'unknown';
   lastHealthAt?: string;
+  /** 是否为内置平台/模型，内置项只读 */
+  isBuiltin?: boolean;
   createdAt: number;
 }
 
@@ -45,6 +47,8 @@ export interface Model {
   pricing?: { input?: number; output?: number }; // 每千 token 价格（元）
   lastChatTestAt?: number;
   lastChatTestOk?: boolean;
+  /** 是否为内置平台/模型，内置项只读 */
+  isBuiltin?: boolean;
 }
 
 /** 会话 */

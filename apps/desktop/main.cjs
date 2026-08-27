@@ -4,10 +4,28 @@ const fs = require('fs');
 const fsp = fs.promises;
 const { spawn, execFile } = require('child_process');
 const crypto = require('crypto');
+const util = require('util');
+const http = require('http');
+const https = require('https');
+const { Transform, pipeline } = require('stream');
 
 let mainWindow = null;
 let serverProcess = null;
 let browserView = null;
+let logsDir = '';
+let modelsDir = '';
+
+const localModelFile = 'qwen2.5-1.5b-instruct-q4_k_m.gguf';
+const localModelDownloadUrl = 'https://hf-mirror.com/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf';
+
+let localModelDownloadPromise = null;
+let localModelDownloadState = {
+  state: 'idle',
+  receivedBytes: 0,
+  totalBytes: 0,
+  progress: 0,
+  message: '',
+};
 
 // ============================================================
 // 数据库（better-sqlite3，主进程单例）
@@ -31,7 +49,87 @@ function getDb() {
   } catch (err) {
     console.warn('[db] sqlite-vec 扩展加载失败，向量检索功能不可用:', err && err.message ? err.message : err);
   }
+
+  // 桌面端旧库可能先于 renderer 的 initSchema 启动，这里在主进程侧兜底迁移和修复内置模型。
+  try {
+    ensureDesktopSchema(db);
+    normalizeBuiltinLocalModel(db);
+  } catch (err) {
+    console.warn('[db] 桌面端 schema/内置模型兜底迁移失败:', err && err.message ? err.message : err);
+  }
   return db;
+}
+
+function columnExists(database, table, column) {
+  const rows = database.prepare(`PRAGMA table_info(${table})`).all();
+  return rows.some((row) => row.name === column);
+}
+
+function ensureColumn(database, table, column, definition) {
+  if (columnExists(database, table, column)) return;
+  database.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+}
+
+function ensureDesktopSchema(database) {
+  ensureColumn(database, 'platform', 'is_builtin', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn(database, 'model', 'is_builtin', 'INTEGER NOT NULL DEFAULT 0');
+}
+
+function normalizeBuiltinLocalModel(database) {
+  const platformId = 'local-model-guest';
+  const llmId = 'local-model-guest-llm';
+  const baseUrl = 'http://127.0.0.1:3001/local-model';
+  const now = Date.now();
+
+  const platformExists = database.prepare('SELECT id FROM platform WHERE id = ?').get(platformId);
+  if (platformExists) {
+    database.prepare(
+      `UPDATE platform
+       SET name = '内置小模型',
+           protocol = 'openai',
+           api_url = ?,
+           api_key_enc = '',
+           headers_json = '{}',
+           status = 1,
+           is_builtin = 1
+       WHERE id = ?`,
+    ).run(baseUrl, platformId);
+  } else {
+    database.prepare(
+      `INSERT INTO platform
+        (id, name, protocol, api_url, api_key_enc, headers_json, status, is_builtin, created_at)
+       VALUES (?, '内置小模型', 'openai', ?, '', '{}', 1, 1, ?)`,
+    ).run(platformId, baseUrl, now);
+  }
+
+  const llmExists = database.prepare('SELECT id FROM model WHERE id = ?').get(llmId);
+  if (llmExists) {
+    database.prepare(
+      `UPDATE model
+       SET platform_id = ?,
+           model_id = 'qwen2.5-1.5b-instruct',
+           alias = '本地小模型（Qwen2.5 1.5B）',
+           type = 'llm',
+           context_window = 8192,
+           enabled = 1,
+           is_default = 1,
+           is_builtin = 1,
+           capabilities_json = '["function_call"]',
+           pricing_json = '{}'
+       WHERE id = ?`,
+    ).run(platformId, llmId);
+  } else {
+    database.prepare(
+      `INSERT INTO model
+        (id, platform_id, model_id, alias, type, context_window, enabled, is_default, is_builtin, capabilities_json, pricing_json)
+       VALUES (?, ?, 'qwen2.5-1.5b-instruct', '本地小模型（Qwen2.5 1.5B）', 'llm', 8192, 1, 1, 1, '["function_call"]', '{}')`,
+    ).run(llmId, platformId);
+  }
+
+  // 本地小模型只提供聊天 LLM；旧版本残留的 embedding 项必须清理。
+  database.prepare(
+    "DELETE FROM model WHERE platform_id = ? AND (type = 'embedding' OR id = 'local-model-guest-embedding')",
+  ).run(platformId);
 }
 
 // ============================================================
@@ -65,12 +163,193 @@ async function writeKeyring(data) {
 const mcpChildren = new Map();
 let mcpChildSeq = 0;
 
+function formatLogArgs(args) {
+  return args.map((item) => (typeof item === 'string' ? item : util.inspect(item))).join(' ');
+}
+
+function setupMainLogging(dir) {
+  if (!dir) return;
+  try {
+    const logPath = path.join(dir, 'main.log');
+    const write = (level, args) => {
+      try {
+        fs.appendFileSync(logPath, `[${new Date().toISOString()}] [${level}] ${formatLogArgs(args)}\n`, 'utf-8');
+      } catch { /* 日志写入失败不影响主流程 */ }
+    };
+    const original = {
+      log: console.log.bind(console),
+      warn: console.warn.bind(console),
+      error: console.error.bind(console),
+    };
+    console.log = (...args) => { write('info', args); original.log(...args); };
+    console.warn = (...args) => { write('warn', args); original.warn(...args); };
+    console.error = (...args) => { write('error', args); original.error(...args); };
+  } catch (err) {
+    // 日志系统初始化失败时仍继续启动
+  }
+}
+
+function ensureRuntimeDirs() {
+  const userData = app.getPath('userData');
+  logsDir = path.join(userData, 'logs');
+  modelsDir = path.join(userData, 'models');
+  try { fs.mkdirSync(logsDir, { recursive: true }); } catch { /* ignore */ }
+  try { fs.mkdirSync(modelsDir, { recursive: true }); } catch { /* ignore */ }
+}
+
+function resolveLocalModelFile(sourceModelPath) {
+  if (sourceModelPath && fs.existsSync(sourceModelPath) && fs.statSync(sourceModelPath).size > 0) {
+    return sourceModelPath;
+  }
+
+  // 用户模型目录既是外部模型入口，也是轻量包首次运行后的下载目标。
+  const modelRoot = modelsDir || path.join(app.getPath('userData'), 'models');
+  const userModelPath = path.join(modelRoot, localModelFile);
+  if (fs.existsSync(userModelPath) && fs.statSync(userModelPath).size > 0) {
+    return userModelPath;
+  }
+
+  // 轻量包中内置 resources 可能没有模型文件，此时仍返回用户目录，让下载器写完后
+  // 后端能直接按这个路径加载。
+  return userModelPath;
+}
+
+function setLocalModelDownloadState(patch) {
+  localModelDownloadState = { ...localModelDownloadState, ...patch };
+  if (localModelDownloadState.progress !== undefined) {
+    localModelDownloadState.progress = Math.max(0, Math.min(1, localModelDownloadState.progress));
+  }
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('local-model:state', localModelDownloadState);
+  }
+}
+
+function existingLocalModelPath() {
+  const sourceModelPath = app.isPackaged
+    ? path.join(process.resourcesPath, 'server', 'models', localModelFile)
+    : path.join(__dirname, '..', 'server', 'models', localModelFile);
+  return resolveLocalModelFile(sourceModelPath);
+}
+
+function downloadModelFile(url, dest, onProgress) {
+  return new Promise((resolve, reject) => {
+    let redirects = 0;
+    const request = (currentUrl) => {
+      const lib = currentUrl.startsWith('https:') ? https : http;
+      const req = lib.get(currentUrl, { headers: { 'User-Agent': 'yan-zhi-desktop' } }, (res) => {
+        if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location) {
+          res.resume();
+          redirects += 1;
+          if (redirects > 10) {
+            reject(new Error('模型下载重定向次数过多'));
+            return;
+          }
+          request(new URL(res.headers.location, currentUrl).toString());
+          return;
+        }
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          res.resume();
+          reject(new Error(`模型下载失败：HTTP ${res.statusCode}`));
+          return;
+        }
+
+        const totalBytes = Number(res.headers['content-length'] || 0);
+        const tempDest = `${dest}.part`;
+        let receivedBytes = 0;
+        let lastPercent = 0;
+        const tracker = new Transform({
+          transform(chunk, _encoding, callback) {
+            receivedBytes += chunk.length;
+            const progress = totalBytes > 0 ? receivedBytes / totalBytes : 0;
+            onProgress?.({ receivedBytes, totalBytes, progress });
+            if (totalBytes > 0) {
+              const percent = Math.floor(progress * 100);
+              if (percent !== lastPercent) {
+                lastPercent = percent;
+                console.log(`[local-model] 下载进度: ${percent}%`);
+              }
+            }
+            callback(null, chunk);
+          },
+        });
+        const out = fs.createWriteStream(tempDest);
+        pipeline(res, tracker, out, (err) => {
+          if (err) {
+            try { fs.rmSync(tempDest, { force: true }); } catch { /* ignore */ }
+            reject(err);
+            return;
+          }
+          try {
+            fs.renameSync(tempDest, dest);
+            resolve();
+          } catch (err) {
+            reject(err);
+          }
+        });
+      });
+      req.setTimeout(30000, () => req.destroy(new Error('模型下载连接超时')));
+      req.on('error', reject);
+    };
+    request(url);
+  });
+}
+
+async function startLocalModelDownload() {
+  if (!app.isPackaged) return null;
+  const dest = path.join(modelsDir || path.join(app.getPath('userData'), 'models'), localModelFile);
+  const current = existingLocalModelPath();
+  if (current && fs.existsSync(current) && fs.statSync(current).size > 0) {
+    setLocalModelDownloadState({ state: 'done', progress: 1, message: '本地模型已就绪' });
+    return null;
+  }
+  if (localModelDownloadPromise) return localModelDownloadPromise;
+
+  setLocalModelDownloadState({ state: 'downloading', receivedBytes: 0, totalBytes: 0, progress: 0, message: '正在下载本地小模型' });
+  localModelDownloadPromise = downloadModelFile(localModelDownloadUrl, dest, ({ receivedBytes, totalBytes, progress }) => {
+    setLocalModelDownloadState({
+      state: 'downloading',
+      receivedBytes,
+      totalBytes,
+      progress,
+      message: totalBytes > 0
+        ? `正在下载本地小模型 ${Math.round(progress * 100)}%`
+        : `正在下载本地小模型 ${Math.round(receivedBytes / 1024 / 1024)} MB`,
+    });
+  })
+    .then(() => {
+      setLocalModelDownloadState({ state: 'done', progress: 1, message: '本地小模型已下载完成' });
+      localModelDownloadPromise = null;
+      return null;
+    })
+    .catch((error) => {
+      setLocalModelDownloadState({ state: 'error', message: error && error.message ? error.message : String(error) });
+      localModelDownloadPromise = null;
+      return null;
+    });
+  return localModelDownloadPromise;
+}
+
 /** 启动后端服务器（apps/server）
  *  重要：better-sqlite3 是原生模块，编译为 Electron 的 ABI。
  *  后端必须用 Electron 的 Node.js（ELECTRON_RUN_AS_NODE=1）启动，否则 ABI 不兼容。
  */
 function startServer() {
   const serverDir = path.join(__dirname, '..', 'server');
+  const bundledModelPath = app.isPackaged
+    ? path.join(process.resourcesPath, 'server', 'models', localModelFile)
+    : path.join(serverDir, 'models', localModelFile);
+  const localModelPath = app.isPackaged
+    ? resolveLocalModelFile(bundledModelPath)
+    : bundledModelPath;
+  const backendEnv = {
+    ...process.env,
+    ELECTRON_RUN_AS_NODE: '1',
+    PORT: '3001',
+    LOCAL_MODEL_PATH: localModelPath,
+    MODELS_DIR: modelsDir || path.join(app.getPath('userData'), 'models'),
+    LOGS_DIR: logsDir || path.join(app.getPath('userData'), 'logs'),
+    DATA_DIR: app.getPath('userData'),
+  };
 
   if (!app.isPackaged) {
     // 开发模式：用 Electron 的 Node.js + tsx 运行 TypeScript 源码
@@ -80,7 +359,7 @@ function startServer() {
       serverProcess = spawn(process.execPath, [tsxPath, 'src/index.ts'], {
         cwd: serverDir,
         stdio: 'inherit',
-        env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+        env: backendEnv,
       });
     } else {
       // 回退：npx tsx（可能 ABI 不兼容，但至少能启动）
@@ -93,13 +372,22 @@ function startServer() {
     }
     serverProcess.on('error', (err) => console.error('后端启动失败:', err));
   } else {
-    // 生产模式：用 Electron 作为 Node.js（ELECTRON_RUN_AS_NODE=1）运行后端编译产物
+    // 生产模式：用 Electron 作为 Node.js（ELECTRON_RUN_AS_NODE=1）运行后端编译产物，
+    // 避免运行时再依赖 tsx / 源码，降低 packaged 依赖缺失导致的 Failed to fetch。
     const serverPath = path.join(process.resourcesPath, 'server', 'dist', 'apps', 'server', 'src', 'index.js');
+    const resourceServerDir = path.join(process.resourcesPath, 'server');
+    const outFd = fs.openSync(path.join(logsDir, 'server.log'), 'a');
+    const errFd = fs.openSync(path.join(logsDir, 'server-error.log'), 'a');
     serverProcess = spawn(process.execPath, [serverPath], {
-      stdio: 'inherit',
-      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+      cwd: resourceServerDir,
+      stdio: ['ignore', outFd, errFd],
+      env: backendEnv,
     });
     serverProcess.on('error', (err) => console.error('后端启动失败:', err));
+    serverProcess.on('exit', (code, signal) => {
+      console.error(`后端进程退出: code=${code} signal=${signal}`);
+      serverProcess = null;
+    });
     console.log('后端服务器启动中:', serverPath);
   }
 }
@@ -549,6 +837,13 @@ ipcMain.handle('shell:exec', (e, command, args, options) => {
 });
 
 // ============================================================
+// IPC：轻量包本地模型下载状态与手动重试
+// ============================================================
+ipcMain.handle('local-model:getState', () => localModelDownloadState);
+ipcMain.handle('local-model:start', () => startLocalModelDownload());
+ipcMain.handle('local-model:getPath', () => existingLocalModelPath());
+
+// ============================================================
 // IPC：MCP 子进程（child_process + JSON-RPC over stdin/stdout）
 // ============================================================
 ipcMain.handle('mcp:start', (e, command, args, env) => {
@@ -638,6 +933,10 @@ ipcMain.handle('mcp:kill', (e, childId) => {
 // 应用启动
 // ============================================================
 app.whenReady().then(() => {
+  ensureRuntimeDirs();
+  setupMainLogging(logsDir);
+  console.log('[app] 应用启动，日志目录:', logsDir, '模型目录:', modelsDir);
+
   Menu.setApplicationMenu(null);  // 移除默认菜单栏
 
   // ============================================================
@@ -653,13 +952,13 @@ app.whenReady().then(() => {
       "style-src 'self' 'unsafe-inline'; " +
       "img-src 'self' data: blob: https: http:; " +
       "font-src 'self' data:; " +
-      "connect-src 'self' ws://localhost:1420 wss://localhost:1420 http://localhost:3001 https: http:;"
+      "connect-src 'self' ws://localhost:1420 wss://localhost:1420 http://127.0.0.1:3001 http://localhost:3001 https: http:;"
     : "default-src 'self'; " +
       "script-src 'self'; " +
       "style-src 'self' 'unsafe-inline'; " +
       "img-src 'self' data: blob: https: http:; " +
       "font-src 'self' data:; " +
-      "connect-src 'self' http://localhost:3001 https: http:;";
+      "connect-src 'self' http://127.0.0.1:3001 http://localhost:3001 https: http:;";
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
     callback({
       responseHeaders: {
@@ -675,6 +974,8 @@ app.whenReady().then(() => {
   } catch (err) {
     console.error('数据库初始化失败:', err);
   }
+  // 轻量包首次启动时后台下载本地模型；全量包或已下载时该调用会立即返回。
+  startLocalModelDownload();
   startServer();
   // 等待后端启动（给 1.5 秒）
   setTimeout(createWindow, 1500);

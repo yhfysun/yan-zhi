@@ -50,8 +50,10 @@ export const useToolsStore = defineStore('tools', () => {
     { name: 'web_search', description: '联网搜索，获取实时信息' },
     { name: 'cmd_exec', description: '执行系统命令，支持 cmd/python/java/git 等' },
     { name: 'ask_user', description: '向用户反问澄清问题并等待回答（弹出对话框）' },
+    { name: 'confirm_user', description: '多页确认向导，逐页收集用户选择、文字回答和补充说明' },
     { name: 'task_plan', description: '创建任务计划，在对话区展示进度清单' },
     { name: 'task_step', description: '更新任务步骤状态（待办/进行中/完成/失败）' },
+    { name: 'configure_model_platform', description: '弹出模型平台/模型配置表单，等待用户填写后创建平台与模型' },
   ];
 
   async function loadCustomTools() {

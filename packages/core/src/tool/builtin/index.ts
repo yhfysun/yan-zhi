@@ -6,7 +6,9 @@ export { CmdExecTool } from './cmd-exec';
 export { BrowserToolClasses, BROWSER_TOOL_NAMES } from './browser';
 export { CallAgentTool } from './call-agent';
 export { AskUserTool } from './ask-user';
+export { ConfirmUserTool } from './confirm-user';
 export { TaskPlanTool, TaskStepTool } from './task-plan';
+export { ConfigureModelPlatformTool } from './configure-model-platform';
 
 import type { SearchBackend } from './web-search';
 import { FileReadTool } from './file-read';
@@ -16,7 +18,9 @@ import { CmdExecTool } from './cmd-exec';
 import { BrowserToolClasses } from './browser';
 import { CallAgentTool } from './call-agent';
 import { AskUserTool } from './ask-user';
+import { ConfirmUserTool } from './confirm-user';
 import { TaskPlanTool, TaskStepTool } from './task-plan';
+import { ConfigureModelPlatformTool } from './configure-model-platform';
 import type { ToolRegistry } from '../registry';
 
 /** 注册所有内置工具到 registry，可选配置 web_search 后端 */
@@ -37,8 +41,10 @@ export function registerBuiltInTools(registry: ToolRegistry, searchBackend?: Sea
   registry.register(new CallAgentTool());
   // 交互式工具（E12）：反问弹窗 + 任务规划进度（实际执行由 UI 层 dispatchToolCall 拦截）
   registry.register(new AskUserTool());
+  registry.register(new ConfirmUserTool());
   registry.register(new TaskPlanTool());
   registry.register(new TaskStepTool());
+  registry.register(new ConfigureModelPlatformTool());
 }
 
 /** 注册管理工具函数到 registry */

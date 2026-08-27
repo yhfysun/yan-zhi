@@ -27,6 +27,24 @@ const routes: RouteRecordRaw[] = [
     component: () => import('../views/Chat.vue'),
   },
   {
+    path: '/peers',
+    name: 'peers',
+    component: () => import('../views/Peers.vue'),
+    meta: { title: '客户端节点' },
+  },
+  {
+    path: '/connections',
+    name: 'connections',
+    component: () => import('../views/Connections.vue'),
+    meta: { title: 'IM 连接' },
+  },
+  {
+    path: '/knowledge',
+    name: 'knowledge',
+    component: () => import('../views/Knowledge.vue'),
+    meta: { title: '知识库' },
+  },
+  {
     path: '/models',
     name: 'models',
     component: () => import('../views/Models.vue'),

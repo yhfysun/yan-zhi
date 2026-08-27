@@ -1,9 +1,12 @@
 import Database from 'better-sqlite3';
+import fs from 'node:fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DB_PATH = path.join(__dirname, '..', 'data.db');
+const dataDir = process.env.DATA_DIR || path.join(__dirname, '..');
+fs.mkdirSync(dataDir, { recursive: true });
+const DB_PATH = path.join(dataDir, 'data.db');
 
 const db = new Database(DB_PATH);
 
@@ -28,6 +31,7 @@ db.exec(`
     api_key_enc TEXT,
     headers_json TEXT DEFAULT '{}',
     status INTEGER DEFAULT 1,
+    is_builtin INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL
   );
 
@@ -43,6 +47,7 @@ db.exec(`
     pricing_json TEXT DEFAULT '{}',
     enabled INTEGER DEFAULT 1,
     is_default INTEGER DEFAULT 0,
+    is_builtin INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL
   );
 
@@ -253,6 +258,11 @@ for (const col of ['alias', 'remark']) {
   try { db.exec(`ALTER TABLE mcp_tool ADD COLUMN ${col} TEXT`); } catch {}
 }
 
+// 迁移平台/模型表（添加内置标记）
+for (const table of ['platform', 'model']) {
+  try { db.exec(`ALTER TABLE ${table} ADD COLUMN is_builtin INTEGER NOT NULL DEFAULT 0`); } catch {}
+}
+
 // 迁移 conversation 表（添加 space_id 列）
 try { db.exec('ALTER TABLE conversation ADD COLUMN space_id TEXT'); } catch {}
 // 迁移完成后才能创建引用 space_id 的索引（旧库迁移场景）
@@ -289,5 +299,118 @@ try {
 for (const t of ['custom_tool', 'agent']) {
   try { db.exec(`ALTER TABLE ${t} ADD COLUMN installs INTEGER NOT NULL DEFAULT 0`); } catch {}
 }
+
+// ===== 客户端发现与聊天 =====
+db.exec(`
+  CREATE TABLE IF NOT EXISTS chat_peer (
+    id TEXT PRIMARY KEY,
+    user_id TEXT,
+    node_id TEXT UNIQUE NOT NULL,
+    name TEXT NOT NULL,
+    base_url TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'client',
+    capabilities_json TEXT DEFAULT '[]',
+    auth_token TEXT,
+    status INTEGER NOT NULL DEFAULT 1,
+    last_seen_at INTEGER NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS chat_message (
+    id TEXT PRIMARY KEY,
+    from_peer_id TEXT NOT NULL,
+    to_peer_id TEXT NOT NULL,
+    sender_name TEXT,
+    content TEXT,
+    file_json TEXT,
+    direction TEXT NOT NULL DEFAULT 'incoming',
+    created_at INTEGER NOT NULL
+  );
+`);
+try { db.exec('CREATE INDEX IF NOT EXISTS idx_chat_peer_status ON chat_peer(status, last_seen_at DESC)'); } catch {}
+try { db.exec('CREATE INDEX IF NOT EXISTS idx_chat_message_peers ON chat_message(to_peer_id, created_at)'); } catch {}
+
+// ===== IM 连接器与入站事件 =====
+db.exec(`
+  CREATE TABLE IF NOT EXISTS im_connector (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES user(id),
+    provider TEXT NOT NULL,
+    name TEXT NOT NULL,
+    config_json TEXT NOT NULL DEFAULT '{}',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS im_inbound_event (
+    id TEXT PRIMARY KEY,
+    connector_id TEXT,
+    provider TEXT NOT NULL,
+    external_id TEXT,
+    from_user TEXT,
+    to_user TEXT,
+    content TEXT,
+    file_json TEXT,
+    raw_json TEXT,
+    created_at INTEGER NOT NULL
+  );
+`);
+try { db.exec('CREATE INDEX IF NOT EXISTS idx_im_connector_user ON im_connector(user_id, provider)'); } catch {}
+try { db.exec('CREATE INDEX IF NOT EXISTS idx_im_inbound_provider ON im_inbound_event(provider, created_at)'); } catch {}
+
+// ===== 知识库 =====
+db.exec(`
+  CREATE TABLE IF NOT EXISTS knowledge_base (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES user(id),
+    name TEXT NOT NULL,
+    description TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS knowledge_doc (
+    id TEXT PRIMARY KEY,
+    base_id TEXT NOT NULL REFERENCES knowledge_base(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL REFERENCES user(id),
+    name TEXT NOT NULL,
+    content TEXT,
+    source_path TEXT,
+    metadata_json TEXT DEFAULT '{}',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS knowledge_chunk (
+    id TEXT PRIMARY KEY,
+    doc_id TEXT NOT NULL REFERENCES knowledge_doc(id) ON DELETE CASCADE,
+    base_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    chunk_index INTEGER NOT NULL,
+    content TEXT NOT NULL,
+    metadata_json TEXT DEFAULT '{}',
+    created_at INTEGER NOT NULL
+  );
+`);
+try { db.exec('CREATE INDEX IF NOT EXISTS idx_kb_base_user ON knowledge_base(user_id)'); } catch {}
+try { db.exec('CREATE INDEX IF NOT EXISTS idx_kb_doc_base ON knowledge_doc(base_id)'); } catch {}
+try { db.exec('CREATE INDEX IF NOT EXISTS idx_kb_chunk_base ON knowledge_chunk(base_id, doc_id)'); } catch {}
+
+// 记忆表：服务端 MCP 的 api_memory_* 需要可持久化。
+db.exec(`
+  CREATE TABLE IF NOT EXISTS memory (
+    id TEXT PRIMARY KEY,
+    user_id TEXT,
+    agent_id TEXT,
+    content TEXT NOT NULL,
+    tags_json TEXT,
+    embedding BLOB,
+    metadata_json TEXT,
+    created_at INTEGER NOT NULL,
+    last_used_at INTEGER NOT NULL
+  );
+`);
+try { db.exec('CREATE INDEX IF NOT EXISTS idx_memory_user_agent ON memory(user_id, agent_id, last_used_at DESC)'); } catch {}
 
 export { db };

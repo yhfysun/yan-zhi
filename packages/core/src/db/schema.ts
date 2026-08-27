@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS platform (
   headers_json TEXT,
   status INTEGER NOT NULL DEFAULT 1,
   last_health_at TEXT,
+  is_builtin INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL
 );
 
@@ -25,6 +26,7 @@ CREATE TABLE IF NOT EXISTS model (
   is_default INTEGER NOT NULL DEFAULT 0,
   capabilities_json TEXT,
   pricing_json TEXT,
+  is_builtin INTEGER NOT NULL DEFAULT 0,
   last_chat_test_at INTEGER,
   last_chat_test_ok INTEGER,
   UNIQUE(platform_id, model_id)
@@ -289,6 +291,13 @@ export async function initSchema(execFn: (sql: string) => Promise<void>): Promis
   for (const col of ['capabilities_json', 'pricing_json']) {
     try {
       await execFn(`ALTER TABLE model ADD COLUMN ${col} TEXT;`);
+    } catch {
+      // 列已存在则忽略
+    }
+  }
+  for (const table of ['platform', 'model']) {
+    try {
+      await execFn(`ALTER TABLE ${table} ADD COLUMN is_builtin INTEGER NOT NULL DEFAULT 0;`);
     } catch {
       // 列已存在则忽略
     }

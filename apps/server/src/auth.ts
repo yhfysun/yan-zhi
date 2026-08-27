@@ -9,7 +9,7 @@ const JWT_EXPIRES = '30d';
 
 const router = Router();
 
-interface JwtPayload {
+export interface JwtPayload {
   userId: string;
   username: string;
 }
@@ -48,6 +48,16 @@ export function optionalAuth(req: Request, _res: Response, next: NextFunction) {
     } catch {}
   }
   next();
+}
+
+/** 从 Authorization Bearer token 中解析用户，供非 Express 中间件上下文使用。 */
+export function resolveJwtUser(header?: string): JwtPayload | null {
+  if (!header || !header.startsWith('Bearer ')) return null;
+  try {
+    return jwt.verify(header.slice(7), JWT_SECRET) as JwtPayload;
+  } catch {
+    return null;
+  }
 }
 
 // POST /api/auth/register

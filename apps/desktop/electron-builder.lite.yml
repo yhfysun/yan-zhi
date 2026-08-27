@@ -1,0 +1,33 @@
+appId: com.yanzhi.desktop
+productName: 言智
+directories:
+  output: release-lite
+files:
+  - dist/**/*
+  - main.cjs
+  - preload.cjs
+  - browser-preload.cjs
+extraResources:
+  - from: ../server/dist
+    to: server/dist
+  - from: ../server/src
+    to: server/src
+  - from: runtime/server-runtime/node_modules
+    to: server/node_modules
+  - from: ../server/package.json
+    to: server/package.json
+  - from: ../../assets/icons/icon.ico
+    to: icon.ico
+win:
+  target: nsis
+  icon: ../../assets/icons/icon.ico
+mac:
+  target: dmg
+  icon: ../../assets/icons/icon.icns
+linux:
+  target: AppImage
+  icon: ../../assets/icons/icon.png
+nsis:
+  installerIcon: ../../assets/icons/icon.ico
+  uninstallerIcon: ../../assets/icons/icon.ico
+  artifactName: ${productName}-Setup-${version}-${arch}-lite.${ext}

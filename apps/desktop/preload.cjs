@@ -41,6 +41,18 @@ contextBridge.exposeInMainWorld('electronAPI', {
     exec: (command, args, options) => ipcRenderer.invoke('shell:exec', command, args, options),
   },
 
+  // 本地小模型：轻量包首次运行下载状态、重试与当前路径
+  localModel: {
+    getState: () => ipcRenderer.invoke('local-model:getState'),
+    start: () => ipcRenderer.invoke('local-model:start'),
+    getPath: () => ipcRenderer.invoke('local-model:getPath'),
+    onState: (callback) => {
+      const listener = (_event, state) => callback(state);
+      ipcRenderer.on('local-model:state', listener);
+      return () => ipcRenderer.removeListener('local-model:state', listener);
+    },
+  },
+
   // MCP
   mcp: {
     start: (command, args, env) => ipcRenderer.invoke('mcp:start', command, args, env),

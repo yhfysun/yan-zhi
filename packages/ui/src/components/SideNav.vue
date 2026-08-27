@@ -4,7 +4,7 @@
     <div class="nav-top">
       <el-tooltip
         v-for="item in navItems"
-        :key="item.key || item.path"
+        :key="item.path"
         :content="item.label"
         placement="right"
         :show-after="400"
@@ -57,7 +57,7 @@
   <!-- Web 宽屏：保留原有 52px 图标 dock（浏览器/MCP 为桌面端专属，web 端不显示） -->
   <nav v-else-if="!isMobile" class="side-nav">
     <div class="nav-top">
-      <el-tooltip v-for="item in navItems.filter(i => i.path !== '/mcp' && i.path !== '/browser')" :key="item.key || item.path" :content="item.label" placement="right" :show-after="400">
+      <el-tooltip v-for="item in navItems.filter(i => i.path !== '/mcp' && i.path !== '/browser')" :key="item.path" :content="item.label" placement="right" :show-after="400">
         <router-link :to="item.path" class="nav-item" :class="{ active: isActive(item.path) }">
           <el-icon :size="20"><component :is="item.icon" /></el-icon>
         </router-link>
@@ -93,7 +93,7 @@
   <nav v-if="isMobile" class="tab-bar">
     <router-link
       v-for="item in navItems.filter(i => i.path !== '/mcp' && i.path !== '/browser')"
-      :key="item.key || item.path"
+      :key="item.path"
       :to="item.path"
       class="tab-bar-item"
       :class="{ active: isActive(item.path) }"
@@ -106,7 +106,7 @@
 
 <script setup lang="ts">
 import { useRoute, useRouter } from 'vue-router';
-import { ChatDotRound, Box, Files, Setting, Cpu, User, SwitchButton, Suitcase, Connection, Fold, Expand, Monitor, HomeFilled, MagicStick } from '@element-plus/icons-vue';
+import { ChatDotRound, Box, Files, Setting, Cpu, User, SwitchButton, Suitcase, Connection, Fold, Expand, Monitor, HomeFilled, MagicStick, ChatLineRound, Promotion, Collection } from '@element-plus/icons-vue';
 import { useAuthStore } from '../stores/auth';
 import { useIsMobile } from '../composables/useIsMobile';
 import { usePlatform } from '../composables/usePlatform';
@@ -122,6 +122,9 @@ const { collapsed, toggle } = useSidebarState();
 const navItems = [
   { path: '/home', label: '首页', tabLabel: '首页', icon: HomeFilled },
   { path: '/chat', label: '聊天', tabLabel: '对话', icon: ChatDotRound },
+  { path: '/peers', label: '客户端节点', tabLabel: '节点', icon: ChatLineRound },
+  { path: '/connections', label: 'IM 连接', tabLabel: '连接', icon: Promotion },
+  { path: '/knowledge', label: '知识库', tabLabel: '知识', icon: Collection },
   { path: '/browser', label: '浏览器', tabLabel: '浏览器', icon: Monitor },
   { path: '/models', label: '模型平台', tabLabel: '模型', icon: Cpu },
   { path: '/tools', label: '工具管理', tabLabel: '工具', icon: Suitcase },

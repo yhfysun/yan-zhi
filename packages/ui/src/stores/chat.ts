@@ -96,9 +96,47 @@ export const useChatStore = defineStore('chat', () => {
     question: string;
     options?: string[];
     multiSelect?: boolean;
-    resolve: (answer: string) => void;
+    allowSupplement?: boolean;
+    resolve: (answer: string, supplement?: string) => void;
   }
   const pendingQuestion = ref<PendingQuestion | null>(null);
+  // E12b: 多页用户确认向导 —— confirm_user 工具逐页收集选择/文字/补充说明
+  interface ConfirmationPage {
+    question: string;
+    description?: string;
+    options?: string[];
+    multiSelect?: boolean;
+    allowText?: boolean;
+    allowSupplement?: boolean;
+    required?: boolean;
+  }
+  interface ConfirmationAnswer {
+    question: string;
+    answer: string;
+    supplement?: string;
+  }
+  interface PendingConfirmation {
+    title: string;
+    pages: ConfirmationPage[];
+    index: number;
+    answers: ConfirmationAnswer[];
+    resolve: (result: Record<string, unknown>) => void;
+  }
+  const pendingConfirmation = ref<PendingConfirmation | null>(null);
+  // E12c: 模型平台配置弹窗 —— configure_model_platform 工具触发，等待用户填写并保存平台/模型
+  interface PendingPlatformConfig {
+    prefill: {
+      name?: string;
+      protocol?: 'openai' | 'anthropic' | 'custom';
+      apiUrl?: string;
+      apiKey?: string;
+      modelId?: string;
+      alias?: string;
+      contextWindow?: number;
+    };
+    resolve: (result: { cancelled: boolean; platformId?: string; modelId?: string; message?: string }) => void;
+  }
+  const pendingPlatformConfig = ref<PendingPlatformConfig | null>(null);
   // E12: 任务规划进度 —— task_plan / task_step 工具写入，UI 渲染 todo 卡片
   type PlanStepStatus = 'pending' | 'running' | 'done' | 'failed';
   interface PlanStep {
@@ -112,12 +150,62 @@ export const useChatStore = defineStore('chat', () => {
   const planSteps = ref<PlanStep[]>([]);
 
   /** 用户提交反问弹窗的回答（或在未提供选项时填入文本）；答案作为该工具调用的 result 回写并继续循环 */
-  function submitPendingQuestion(answer: string) {
+  function submitPendingQuestion(answer: string, supplement?: string) {
     if (pendingQuestion.value) {
       const resolve = pendingQuestion.value.resolve;
       pendingQuestion.value = null;
-      resolve(answer);
+      resolve(answer, supplement?.trim() || undefined);
     }
+  }
+  /** 提交当前确认向导页；非最后一页时前进，最后一页汇总全部回答并恢复 ReAct 循环 */
+  function submitPendingConfirmation(answer: string, supplement?: string) {
+    const wizard = pendingConfirmation.value;
+    if (!wizard) return;
+    const page = wizard.pages[wizard.index];
+    if (!page) return;
+    wizard.answers[wizard.index] = {
+      question: page.question,
+      answer,
+      supplement: supplement?.trim() || undefined,
+    };
+    if (wizard.index < wizard.pages.length - 1) {
+      wizard.index += 1;
+      return;
+    }
+    const resolve = wizard.resolve;
+    pendingConfirmation.value = null;
+    resolve({
+      cancelled: false,
+      title: wizard.title,
+      answers: wizard.answers,
+      summary: wizard.answers
+        .map((a) => `Q: ${a.question}\nA: ${a.answer || '(未作答)'}${a.supplement ? `\n补充: ${a.supplement}` : ''}`)
+        .join('\n\n'),
+    });
+  }
+  /** 跳过当前确认页：把这一页标记为跳过并进入下一页 */
+  function skipPendingConfirmation() {
+    submitPendingConfirmation('', '[用户跳过该问题]');
+  }
+  /** 用户关闭向导：以取消结果结束本次 confirm_user 调用 */
+  function cancelPendingConfirmation() {
+    const wizard = pendingConfirmation.value;
+    if (!wizard) return;
+    const resolve = wizard.resolve;
+    pendingConfirmation.value = null;
+    resolve({ cancelled: true, title: wizard.title, answers: wizard.answers });
+  }
+  /** 用户提交模型平台配置弹窗：将保存结果回写为 configure_model_platform 工具结果 */
+  function submitPlatformConfig(result: { cancelled: boolean; platformId?: string; modelId?: string; message?: string }) {
+    const pending = pendingPlatformConfig.value;
+    if (!pending) return;
+    const resolve = pending.resolve;
+    pendingPlatformConfig.value = null;
+    resolve(result);
+  }
+  /** 用户关闭模型平台配置弹窗：以取消结果结束本次工具调用 */
+  function cancelPlatformConfig() {
+    submitPlatformConfig({ cancelled: true, message: '用户关闭了模型平台配置弹窗' });
   }
   /** 清空当前任务计划（用户关闭进度卡片时调用） */
   function clearPlan() {
@@ -532,7 +620,73 @@ export const useChatStore = defineStore('chat', () => {
               ? ((args as Record<string, unknown>).options as unknown[]).map(String)
               : undefined,
             multiSelect: !!(args as Record<string, unknown>).multiSelect,
-            resolve: (answer: string) => resolve({ ok: true, result: answer }),
+            allowSupplement: (args as Record<string, unknown>).allowSupplement !== false,
+            resolve: (answer: string, supplement?: string) => {
+              const result = supplement
+                ? `${answer}\n\n补充说明：${supplement}`
+                : answer;
+              resolve({ ok: true, result });
+            },
+          };
+        });
+      }
+      // E12b: confirm_user —— 多页确认向导，逐页收集回答与补充说明
+      if (fullName === 'confirm_user') {
+        const rawArgs = args as Record<string, unknown>;
+        const rawPages = Array.isArray(rawArgs.pages) ? (rawArgs.pages as Record<string, unknown>[]) : [];
+        if (rawPages.length === 0) return { ok: false, msg: 'confirm_user 缺少 pages 参数' };
+        const pages: ConfirmationPage[] = rawPages.map((p, index) => {
+          const question = String(p.question || '');
+          return {
+            question,
+            description: p.description != null ? String(p.description) : undefined,
+            options: Array.isArray(p.options) ? p.options.map(String) : undefined,
+            multiSelect: !!p.multiSelect,
+            allowText: p.allowText !== false,
+            allowSupplement: p.allowSupplement !== false,
+            required: !!p.required,
+          };
+        });
+        if (pages.some((p) => !p.question.trim())) {
+          return { ok: false, msg: 'confirm_user 每个 page 都必须包含 question' };
+        }
+        return await new Promise<{ ok: boolean; result?: unknown; msg?: string }>((resolve) => {
+          pendingConfirmation.value = {
+            title: String(rawArgs.title || '用户确认'),
+            pages,
+            index: 0,
+            answers: [],
+            resolve: (result) => resolve({ ok: true, result }),
+          };
+        });
+      }
+      // E12c: configure_model_platform —— 弹出平台/模型配置表单，await 用户保存后再继续（暂停 ReAct 循环）
+      if (fullName === 'configure_model_platform') {
+        const raw = args as Record<string, unknown>;
+        return await new Promise<{ ok: boolean; result?: unknown; msg?: string }>((resolve) => {
+          pendingPlatformConfig.value = {
+            prefill: {
+              name: raw.name != null ? String(raw.name) : undefined,
+              protocol: raw.protocol === 'anthropic' || raw.protocol === 'custom' || raw.protocol === 'openai' ? raw.protocol : undefined,
+              apiUrl: raw.apiUrl != null ? String(raw.apiUrl) : undefined,
+              apiKey: raw.apiKey != null ? String(raw.apiKey) : undefined,
+              modelId: raw.modelId != null ? String(raw.modelId) : undefined,
+              alias: raw.alias != null ? String(raw.alias) : undefined,
+              contextWindow: raw.contextWindow != null ? Number(raw.contextWindow) : undefined,
+            },
+            resolve: (result) => {
+              if (result.cancelled) {
+                resolve({ ok: false, msg: result.message || '用户取消配置' });
+              } else {
+                resolve({
+                  ok: true,
+                  result: result.message || JSON.stringify({
+                    platformId: result.platformId,
+                    modelId: result.modelId,
+                  }),
+                });
+              }
+            },
           };
         });
       }
@@ -1135,7 +1289,10 @@ export const useChatStore = defineStore('chat', () => {
     conversations, currentMessages, streaming, currentConvId, mountedMcpServers, mcpDisabledTools, mcpToolAliases,
     browserSteps, rightPanelOpen,
     showFilePopup, previewingFile, rightPanelTab, currentBrowserUrl,
-    pendingQuestion, planSteps, planTitle, submitPendingQuestion, clearPlan,
+    pendingQuestion, pendingConfirmation, pendingPlatformConfig, submitPendingQuestion,
+    submitPendingConfirmation, skipPendingConfirmation, cancelPendingConfirmation,
+    submitPlatformConfig, cancelPlatformConfig,
+    planSteps, planTitle, clearPlan,
     activeAgent, activeAgentId,
     loadConversations, loadMessages, createConversation, updateConversation, deleteConversation, deleteConversations,
     addMessage, updateMessage, deleteMessage, sendMessage, regenerate, stop, buildTools,

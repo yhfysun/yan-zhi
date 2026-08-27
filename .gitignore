@@ -23,6 +23,13 @@ apps/desktop/src-tauri/Cargo.lock
 
 # Electron 构建产物
 apps/desktop/release*/
+apps/desktop/build/
+apps/desktop/runtime/
+
+# Electron/本地调试产物
+apps/server/bsqlite-*.txt
+apps/server/smoke-*.txt
+apps/server/electron-*.mjs
 
 # Capacitor
 apps/mobile/ios/
@@ -63,3 +70,8 @@ rustup-init.exe
 _diag.txt
 *.timestamp-*.mjs
 apps/server/workspace/
+
+# 本地模型权重（体积较大，不在 Git 中提交）
+apps/server/models/
+*.gguf
+*.gguf.part

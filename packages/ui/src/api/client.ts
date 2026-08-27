@@ -1,7 +1,7 @@
 // API 客户端 —— 自动附带 JWT Token
-// Electron file:// 协议下 /api 会失效，需用 http://localhost:3001/api
+// Electron file:// 协议下 /api 会失效，需用 http://127.0.0.1:3001/api
 const isElectron = typeof window !== 'undefined' && !!(window as any).electronAPI?.isElectron;
-export const API_BASE = isElectron ? 'http://localhost:3001/api' : '/api';
+export const API_BASE = isElectron ? 'http://127.0.0.1:3001/api' : '/api';
 const BASE_URL = API_BASE;
 
 function getToken(): string | null {

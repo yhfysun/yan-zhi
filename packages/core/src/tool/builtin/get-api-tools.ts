@@ -14,7 +14,7 @@ export class GetApiToolsTool implements BuiltInTool {
   inputSchema = {
     type: 'object',
     properties: {
-      module: { type: 'string', description: '模块名: agent, conversation, message, platform, mcp, skill, tool, marketplace, workspace, memory。传 "list" 列出所有' },
+      module: { type: 'string', description: '模块名: agent, conversation, message, platform, mcp, skill, tool, marketplace, workspace, memory, file, peer, im, knowledge。传 "list" 列出所有' },
     },
     required: [],
   };

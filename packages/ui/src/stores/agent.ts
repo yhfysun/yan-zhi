@@ -47,7 +47,7 @@ const EMPTY_WORKFLOW: Workflow = { nodes: [], edges: [] };
 // 默认 agent 自动挂载的常用内置工具。
 // cmd_exec 涉及系统 shell 执行（仅桌面端可用且有安全风险），不自动挂载，留给用户按需开启。
 // call_agent 用于委派子智能体（如 pageAgent）。
-const DEFAULT_BUILTIN_TOOLS = ['file_read', 'file_write', 'web_search', 'call_agent', 'ask_user', 'task_plan', 'task_step'];
+const DEFAULT_BUILTIN_TOOLS = ['file_read', 'file_write', 'web_search', 'call_agent', 'ask_user', 'confirm_user', 'task_plan', 'task_step', 'configure_model_platform'];
 
 const DEFAULT_AGENT_DATA = {
   name: 'AI 助手',
@@ -86,7 +86,7 @@ const DEFAULT_AGENT_ID = 'a_default_assistant';
 
 /** 默认 agent 结构版本：作为一次性迁移门槛。
  *  version < N 时执行迁移，迁移后置为 N，避免反复覆盖用户后续对工具挂载的修改（如手动清空）。 */
-const DEFAULT_AGENT_VERSION = 3;
+const DEFAULT_AGENT_VERSION = 5;
 
 // ========== E5: pageAgent（内置浏览器自动化智能体） ==========
 /** pageAgent 固定 ID：内置智能体，浏览器操作专家 */
@@ -284,6 +284,52 @@ export const useAgentStore = defineStore('agent', () => {
             [JSON.stringify(builtinIds), JSON.stringify([PAGE_AGENT_ID]), 3, defRowV3.id],
           );
           rows = await adapter.db.query<any>('SELECT * FROM agent ORDER BY is_default DESC, is_builtin DESC, created_at ASC');
+        }
+
+        // E12b: v4 迁移 —— 为历史默认 agent 补挂 confirm_user（多页确认向导）。
+        // 只追加缺失的 confirm_user，不覆盖用户后续手动调整过的其他工具挂载。
+        const defRowV4 = rows.find((r: any) => r.is_default === 1);
+        if (defRowV4 && (defRowV4.version === null || defRowV4.version === undefined || Number(defRowV4.version) < 4)) {
+          let builtinIds: string[] = [];
+          try {
+            builtinIds = defRowV4.builtin_tool_ids ? JSON.parse(defRowV4.builtin_tool_ids) : [];
+          } catch {
+            builtinIds = [];
+          }
+          if (!Array.isArray(builtinIds)) builtinIds = [];
+          if (!builtinIds.includes('confirm_user')) {
+            builtinIds = [...builtinIds, 'confirm_user'];
+            await adapter.db.exec(
+              'UPDATE agent SET builtin_tool_ids = ?, version = ? WHERE id = ?',
+              [JSON.stringify(builtinIds), 4, defRowV4.id],
+            );
+            rows = await adapter.db.query<any>('SELECT * FROM agent ORDER BY is_default DESC, is_builtin DESC, created_at ASC');
+          } else if (Number(defRowV4.version) < 4) {
+            await adapter.db.exec('UPDATE agent SET version = ? WHERE id = ?', [4, defRowV4.id]);
+          }
+        }
+
+        // v5 迁移 —— 为历史默认 agent 补挂 configure_model_platform（模型平台配置弹窗）。
+        // 只追加缺失的 configure_model_platform，不覆盖用户后续手动调整过的其他工具挂载。
+        const defRowV5 = rows.find((r: any) => r.is_default === 1);
+        if (defRowV5 && (defRowV5.version === null || defRowV5.version === undefined || Number(defRowV5.version) < 5)) {
+          let builtinIds: string[] = [];
+          try {
+            builtinIds = defRowV5.builtin_tool_ids ? JSON.parse(defRowV5.builtin_tool_ids) : [];
+          } catch {
+            builtinIds = [];
+          }
+          if (!Array.isArray(builtinIds)) builtinIds = [];
+          if (!builtinIds.includes('configure_model_platform')) {
+            builtinIds = [...builtinIds, 'configure_model_platform'];
+            await adapter.db.exec(
+              'UPDATE agent SET builtin_tool_ids = ?, version = ? WHERE id = ?',
+              [JSON.stringify(builtinIds), 5, defRowV5.id],
+            );
+            rows = await adapter.db.query<any>('SELECT * FROM agent ORDER BY is_default DESC, is_builtin DESC, created_at ASC');
+          } else if (Number(defRowV5.version) < 5) {
+            await adapter.db.exec('UPDATE agent SET version = ? WHERE id = ?', [5, defRowV5.id]);
+          }
         }
 
         agents.value = rows.map(rowToAgent);

@@ -413,7 +413,7 @@
             <el-button @click="input = '解释什么是机器学习'; $nextTick(() => { const ta = document.querySelector('.input-textarea textarea') as HTMLTextAreaElement; if (ta) ta.focus(); })">解释什么是机器学习</el-button>
             <el-button @click="input = '帮我分析这个项目的结构'; $nextTick(() => { const ta = document.querySelector('.input-textarea textarea') as HTMLTextAreaElement; if (ta) ta.focus(); })">帮我分析这个项目的结构</el-button>
           </div>
-          <el-button type="primary" size="large" round @click="$router.push('/models')" style="margin-top:8px">
+          <el-button type="primary" size="large" round @click="openPlatformConfig" style="margin-top:8px">
             <el-icon><Setting /></el-icon> 配置模型
           </el-button>
         </div>
@@ -592,6 +592,11 @@
                   </el-option-group>
                 </el-select>
               </div>
+              <el-tooltip content="配置模型平台" placement="top">
+                <el-button size="small" circle @click="openPlatformConfig">
+                  <el-icon><Setting /></el-icon>
+                </el-button>
+              </el-tooltip>
               <el-tooltip content="新建会话" placement="top">
                 <el-button size="small" circle :disabled="store.streaming" @click="startNewChat">
                   <el-icon><Plus /></el-icon>
@@ -811,6 +816,75 @@
       </li>
     </ul>
 
+    <!-- E12b: 多页用户确认向导 —— confirm_user 工具触发，一页一个问题 -->
+    <el-dialog
+      v-model="confirmDialogVisible"
+      :title="store.pendingConfirmation?.title || '用户确认'"
+      width="520px"
+      :close-on-click-modal="false"
+      :close-on-press-escape="false"
+      class="confirm-user-dialog"
+      @close="onConfirmDialogClose"
+    >
+      <div v-if="confirmCurrentPage && store.pendingConfirmation" class="confirm-wizard">
+        <div class="confirm-wizard-step">
+          第 {{ store.pendingConfirmation.index + 1 }} / {{ store.pendingConfirmation.pages.length }} 页
+        </div>
+        <div class="confirm-wizard-question">{{ confirmCurrentPage.question }}</div>
+        <div v-if="confirmCurrentPage.description" class="confirm-wizard-description">
+          {{ confirmCurrentPage.description }}
+        </div>
+
+        <div v-if="confirmMultiSelect" class="confirm-wizard-options">
+          <el-checkbox
+            v-for="(opt, i) in confirmCurrentPage.options"
+            :key="i"
+            v-model="confirmChecked[i]"
+          >{{ opt }}</el-checkbox>
+        </div>
+        <div v-else-if="confirmCurrentPage.options?.length" class="confirm-wizard-options">
+          <button
+            v-for="(opt, i) in confirmCurrentPage.options"
+            :key="i"
+            type="button"
+            class="ask-user-opt"
+            :class="{ 'is-active': confirmSingle === opt }"
+            @click="confirmSingle = opt"
+          >{{ opt }}</button>
+          <button
+            v-if="confirmCurrentPage.allowText !== false"
+            type="button"
+            class="ask-user-opt ask-user-opt-text"
+            :class="{ 'is-active': confirmShowText }"
+            @click="confirmShowText = true"
+          >其他（文字输入）</button>
+        </div>
+
+        <el-input
+          v-if="confirmCurrentPage.allowText !== false && (!confirmCurrentPage.options?.length || confirmMultiSelect || confirmShowText)"
+          v-model="confirmText"
+          type="textarea"
+          :rows="3"
+          placeholder="输入你的回答..."
+          class="confirm-wizard-text"
+        />
+        <el-input
+          v-if="confirmCurrentPage.allowSupplement !== false"
+          v-model="confirmSupplement"
+          type="textarea"
+          :rows="2"
+          placeholder="补充说明（可选）"
+          class="confirm-wizard-supplement"
+        />
+      </div>
+      <template #footer>
+        <el-button @click="onConfirmSkip">跳过</el-button>
+        <el-button type="primary" @click="onConfirmNext">
+          {{ store.pendingConfirmation && store.pendingConfirmation.index < store.pendingConfirmation.pages.length - 1 ? '下一页' : '完成' }}
+        </el-button>
+      </template>
+    </el-dialog>
+
     <!-- E12: 智能体反问弹窗 —— ask_user 工具触发，阻塞 ReAct 循环等待用户回答 -->
     <el-dialog
       v-model="askDialogVisible"
@@ -848,9 +922,61 @@
         placeholder="输入你的回答..."
         @keyup.ctrl.enter="onAskSubmit"
       />
+      <el-input
+        v-if="store.pendingQuestion?.allowSupplement !== false"
+        v-model="askSupplement"
+        type="textarea"
+        :rows="2"
+        placeholder="补充说明（可选）"
+        class="ask-user-supplement"
+        @keyup.ctrl.enter="onAskSubmit"
+      />
       <template #footer>
         <el-button @click="onAskSkip">跳过</el-button>
         <el-button type="primary" @click="onAskSubmit">提交</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- E12c: 模型平台配置弹窗 —— configure_model_platform 工具触发，等待用户填写平台与模型 -->
+    <el-dialog
+      v-model="platformConfigDialogVisible"
+      title="配置模型平台"
+      width="560px"
+      :close-on-click-modal="false"
+      :close-on-press-escape="false"
+      class="platform-config-dialog"
+      @close="onPlatformConfigClose"
+    >
+      <el-form label-width="96px" class="platform-config-form">
+        <el-form-item label="平台名称">
+          <el-input v-model="platformConfigForm.name" placeholder="如：OpenAI / DeepSeek" />
+        </el-form-item>
+        <el-form-item label="协议">
+          <el-select v-model="platformConfigForm.protocol">
+            <el-option label="OpenAI" value="openai" />
+            <el-option label="Anthropic" value="anthropic" />
+            <el-option label="自定义" value="custom" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="API URL">
+          <el-input v-model="platformConfigForm.apiUrl" placeholder="https://api.openai.com" />
+        </el-form-item>
+        <el-form-item label="API Key">
+          <el-input v-model="platformConfigForm.apiKey" type="password" show-password placeholder="sk-..." />
+        </el-form-item>
+        <el-form-item label="模型 ID">
+          <el-input v-model="platformConfigForm.modelId" placeholder="如：gpt-4o-mini / deepseek-chat" />
+        </el-form-item>
+        <el-form-item label="模型别名">
+          <el-input v-model="platformConfigForm.alias" placeholder="可选，展示在模型列表中的名称" />
+        </el-form-item>
+        <el-form-item label="上下文窗口">
+          <el-input-number v-model="platformConfigForm.contextWindow" :min="1024" :max="1000000" :step="1024" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="onPlatformConfigCancel">取消</el-button>
+        <el-button type="primary" :loading="platformConfigSaving" @click="onPlatformConfigSubmit">保存并创建</el-button>
       </template>
     </el-dialog>
 
@@ -908,6 +1034,7 @@ function distillAssistantMsg(round: any) {
 
 // E12: 智能体反问弹窗表单状态（ask_user 工具触发）
 const askText = ref('');
+const askSupplement = ref('');
 const askSingle = ref('');
 const askChecked = ref<boolean[]>([]);
 const askShowText = ref(false);
@@ -920,6 +1047,7 @@ const askMultiSelect = computed(
 );
 function resetAskForm() {
   askText.value = '';
+  askSupplement.value = '';
   askSingle.value = '';
   askChecked.value = [];
   askShowText.value = false;
@@ -935,11 +1063,12 @@ function onAskSubmit() {
     answer = askSingle.value;
   }
   if (!answer) answer = askText.value.trim();
-  if (!answer) {
-    ElMessage.warning('请选择或输入回答');
+  const supplement = askSupplement.value.trim();
+  if (!answer && !supplement) {
+    ElMessage.warning('请选择或输入回答，或填写补充说明');
     return;
   }
-  store.submitPendingQuestion(answer);
+  store.submitPendingQuestion(answer || '[用户仅提供补充说明]', supplement);
   resetAskForm();
 }
 function onAskSkip() {
@@ -954,6 +1083,168 @@ function onAskDialogClose() {
 watch(
   () => store.pendingQuestion,
   (q) => { if (q) resetAskForm(); },
+);
+
+// E12b: 多页用户确认向导表单状态（confirm_user 工具触发）
+const confirmText = ref('');
+const confirmSingle = ref('');
+const confirmChecked = ref<boolean[]>([]);
+const confirmShowText = ref(false);
+const confirmSupplement = ref('');
+const confirmDialogVisible = computed({
+  get: () => !!store.pendingConfirmation,
+  set: (v: boolean) => { if (!v) onConfirmDialogClose(); },
+});
+const confirmCurrentPage = computed(() => {
+  const wizard = store.pendingConfirmation;
+  if (!wizard) return null;
+  return wizard.pages[wizard.index] || null;
+});
+const confirmMultiSelect = computed(
+  () => !!confirmCurrentPage.value?.multiSelect && !!confirmCurrentPage.value?.options?.length,
+);
+function resetConfirmForm() {
+  confirmText.value = '';
+  confirmSingle.value = '';
+  confirmChecked.value = [];
+  confirmShowText.value = false;
+  confirmSupplement.value = '';
+}
+function onConfirmNext() {
+  const wizard = store.pendingConfirmation;
+  const page = confirmCurrentPage.value;
+  if (!wizard || !page) return;
+
+  let answer = '';
+  if (confirmMultiSelect.value) {
+    const sel = (page.options || []).filter((_, i) => confirmChecked.value[i]);
+    answer = sel.join('、');
+  } else if (page.options?.length) {
+    answer = confirmSingle.value;
+  }
+  if (!answer && confirmText.value.trim()) answer = confirmText.value.trim();
+  if (!answer && page.required) {
+    ElMessage.warning('该问题为必填，请选择或输入回答');
+    return;
+  }
+  if (!answer && !confirmSupplement.value.trim()) {
+    ElMessage.warning('请填写答案或补充说明');
+    return;
+  }
+  store.submitPendingConfirmation(answer, confirmSupplement.value);
+  resetConfirmForm();
+}
+function onConfirmSkip() {
+  if (store.pendingConfirmation) store.skipPendingConfirmation();
+  resetConfirmForm();
+}
+function onConfirmDialogClose() {
+  if (store.pendingConfirmation) store.cancelPendingConfirmation();
+  resetConfirmForm();
+}
+watch(
+  [() => store.pendingConfirmation, () => store.pendingConfirmation?.index],
+  () => { if (store.pendingConfirmation) resetConfirmForm(); },
+);
+
+// E12c: 模型平台配置弹窗表单状态（configure_model_platform 工具触发）
+const platformConfigSaving = ref(false);
+const manualPlatformConfigVisible = ref(false);
+const platformConfigForm = ref({
+  name: '',
+  protocol: 'openai',
+  apiUrl: '',
+  apiKey: '',
+  modelId: '',
+  alias: '',
+  contextWindow: 131072,
+});
+const platformConfigDialogVisible = computed({
+  get: () => !!store.pendingPlatformConfig || manualPlatformConfigVisible.value,
+  set: (v: boolean) => { if (!v) onPlatformConfigClose(); },
+});
+
+function resetPlatformConfigForm() {
+  const prefill = store.pendingPlatformConfig?.prefill;
+  platformConfigForm.value = {
+    name: prefill?.name || '',
+    protocol: prefill?.protocol || 'openai',
+    apiUrl: prefill?.apiUrl || '',
+    apiKey: prefill?.apiKey || '',
+    modelId: prefill?.modelId || '',
+    alias: prefill?.alias || '',
+    contextWindow: Number.isFinite(Number(prefill?.contextWindow))
+      ? Number(prefill?.contextWindow)
+      : 131072,
+  };
+}
+
+function openPlatformConfig() {
+  manualPlatformConfigVisible.value = true;
+  resetPlatformConfigForm();
+}
+
+async function onPlatformConfigSubmit() {
+  const f = platformConfigForm.value;
+  if (!f.name.trim() || !f.apiUrl.trim() || !f.modelId.trim()) {
+    ElMessage.warning('平台名称、API URL 和模型 ID 为必填');
+    return;
+  }
+  platformConfigSaving.value = true;
+  try {
+    const platformId = await platformStore.addPlatform({
+      name: f.name.trim(),
+      protocol: f.protocol as any,
+      apiUrl: f.apiUrl.trim(),
+      apiKeyEnc: f.apiKey.trim(),
+      headers: {},
+      status: 'unknown',
+    });
+    await platformStore.addModel({
+      platformId,
+      modelId: f.modelId.trim(),
+      alias: f.alias.trim() || f.modelId.trim().split('/').pop() || f.modelId.trim(),
+      type: 'llm' as any,
+      contextWindow: Number(f.contextWindow) || 131072,
+      enabled: true,
+      isDefault: false,
+      capabilities: ['function_call'],
+    });
+    const message = `已创建模型平台「${f.name.trim()}」并添加模型 ${f.modelId.trim()}`;
+    if (store.pendingPlatformConfig) {
+      store.submitPlatformConfig({ cancelled: false, platformId, modelId: f.modelId.trim(), message });
+    }
+    manualPlatformConfigVisible.value = false;
+    ElMessage.success(message);
+    resetPlatformConfigForm();
+  } catch (e: any) {
+    ElMessage.error('创建失败: ' + (e?.message || e));
+  } finally {
+    platformConfigSaving.value = false;
+  }
+}
+
+function onPlatformConfigCancel() {
+  if (store.pendingPlatformConfig) {
+    store.cancelPlatformConfig();
+  } else {
+    manualPlatformConfigVisible.value = false;
+  }
+  resetPlatformConfigForm();
+}
+
+function onPlatformConfigClose() {
+  if (store.pendingPlatformConfig) {
+    store.cancelPlatformConfig();
+  } else {
+    manualPlatformConfigVisible.value = false;
+  }
+  resetPlatformConfigForm();
+}
+
+watch(
+  () => store.pendingPlatformConfig,
+  (pending) => { if (pending) resetPlatformConfigForm(); },
 );
 
 const input = ref('');
@@ -1289,13 +1580,16 @@ function isToolErrorContent(content: string): boolean {
   } catch { return false; }
 }
 
+const chatModels = computed(() =>
+  platformStore.models.filter((m) => m.enabled && CHAT_MODEL_TYPES.includes(m.type)),
+);
+
 const modelGroups = computed(() => {
-  const enabled = platformStore.models.filter((m) => m.enabled);
   return platformStore.platforms
     .map((p) => ({
       platformId: p.id,
       platformName: p.name,
-      models: enabled.filter((m) => m.platformId === p.id),
+      models: chatModels.value.filter((m) => m.platformId === p.id),
     }))
     .filter((g) => g.models.length > 0);
 });
@@ -1336,7 +1630,7 @@ function openCreateAgent() {
 function onAgentSaved(agentId: string) {
   agentStore.selectAgent(agentId);
   const agent = agentStore.agents.find((a) => a.id === agentId);
-  if (agent?.modelId && platformStore.models.find((m) => m.id === agent.modelId)) {
+  if (agent?.modelId && chatModels.value.find((m) => m.id === agent.modelId)) {
     selectedModelId.value = agent.modelId;
   }
 }
@@ -1464,10 +1758,10 @@ onMounted(async () => {
   await loadWorkspaceDir();
 
   const agent = agentStore.selectedAgent;
-  if (agent?.modelId && platformStore.models.find((m) => m.id === agent.modelId)) {
+  if (agent?.modelId && chatModels.value.find((m) => m.id === agent.modelId)) {
     selectedModelId.value = agent.modelId;
   } else {
-    const first = platformStore.models.find((m) => m.enabled);
+    const first = chatModels.value[0];
     if (first) selectedModelId.value = first.id;
   }
 
@@ -1486,11 +1780,11 @@ onMounted(async () => {
       const conv = store.conversations.find((c) => c.id === store.currentConvId);
       if (conv?.modelId && conv?.platformId) {
         const resolved = platformStore.resolveModel(conv.modelId, conv.platformId);
-        if (resolved) selectedModelId.value = resolved.id;
+        if (resolved && CHAT_MODEL_TYPES.includes(resolved.type)) selectedModelId.value = resolved.id;
       } else if (conv?.modelId) {
         // 无 platformId 的存量数据
         const resolved = platformStore.resolveModel(conv.modelId);
-        if (resolved) selectedModelId.value = resolved.id;
+        if (resolved && CHAT_MODEL_TYPES.includes(resolved.type)) selectedModelId.value = resolved.id;
       }
     } else {
       store.currentConvId = '';
@@ -1523,10 +1817,10 @@ watch(() => store.currentConvId, async (id) => {
   const conv = store.conversations.find((c) => c.id === id);
   if (conv?.modelId && conv?.platformId) {
     const resolved = platformStore.resolveModel(conv.modelId, conv.platformId);
-    if (resolved) selectedModelId.value = resolved.id;
+    if (resolved && CHAT_MODEL_TYPES.includes(resolved.type)) selectedModelId.value = resolved.id;
   } else if (conv?.modelId) {
     const resolved = platformStore.resolveModel(conv.modelId);
-    if (resolved) selectedModelId.value = resolved.id;
+    if (resolved && CHAT_MODEL_TYPES.includes(resolved.type)) selectedModelId.value = resolved.id;
   }
   mountedSkillIds.value = conv?.skillIds ? [...conv.skillIds] : [];
   initMountSelection();
@@ -1551,7 +1845,7 @@ watch(() => store.streaming, (isStreaming) => {
 function onAgentSwitch(id: string) {
   agentStore.selectAgent(id);
   const agent = agentStore.agents.find((a) => a.id === id);
-  if (agent?.modelId && platformStore.models.find((m) => m.id === agent.modelId)) {
+  if (agent?.modelId && chatModels.value.find((m) => m.id === agent.modelId)) {
     selectedModelId.value = agent.modelId;
   }
 }
@@ -1646,10 +1940,10 @@ async function selectConv(id: string) {
   const conv = store.conversations.find((c) => c.id === id);
   if (conv?.modelId && conv?.platformId) {
     const resolved = platformStore.resolveModel(conv.modelId, conv.platformId);
-    if (resolved) selectedModelId.value = resolved.id;
+    if (resolved && CHAT_MODEL_TYPES.includes(resolved.type)) selectedModelId.value = resolved.id;
   } else if (conv?.modelId) {
     const resolved = platformStore.resolveModel(conv.modelId);
-    if (resolved) selectedModelId.value = resolved.id;
+    if (resolved && CHAT_MODEL_TYPES.includes(resolved.type)) selectedModelId.value = resolved.id;
   }
   mountedSkillIds.value = conv?.skillIds ? [...conv.skillIds] : [];
   initMountSelection();
@@ -3351,6 +3645,52 @@ async function saveSkills() {
 }
 .ask-user-opt-text { font-style: italic; }
 .ask-user-dialog .el-checkbox { margin-right: 16px; }
+.ask-user-supplement { margin-top: 10px; }
+.ask-user-supplement .el-textarea__inner { min-height: 48px !important; }
+
+/* E12b: 多页用户确认向导 */
+.confirm-user-dialog .el-dialog__body { padding: 16px 20px 8px; }
+.confirm-wizard-step {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  margin-bottom: 8px;
+}
+.confirm-wizard-question {
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.55;
+  color: var(--el-text-color-primary);
+  margin-bottom: 8px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.confirm-wizard-description {
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--el-text-color-secondary);
+  margin-bottom: 12px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.confirm-wizard-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.confirm-wizard-text,
+.confirm-wizard-supplement {
+  margin-bottom: 10px;
+}
+.confirm-wizard-supplement .el-textarea__inner {
+  min-height: 48px !important;
+}
+
+/* E12c: 模型平台配置弹窗 */
+.platform-config-dialog .el-dialog__body { padding: 16px 20px; }
+.platform-config-form .el-input-number { width: 100%; }
+.platform-config-form .el-select { width: 100%; }
+.platform-config-form .el-form-item:last-child { margin-bottom: 0; }
 
 </style>
 

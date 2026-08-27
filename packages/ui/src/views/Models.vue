@@ -2,7 +2,7 @@
   <div class="page">
     <header class="page-header">
       <h2 class="page-title">模型平台管理</h2>
-      <el-button type="primary" :icon="Plus" @click="showAdd = true" class="add-btn-desktop">新增平台</el-button>
+      <el-button type="primary" :icon="Plus" @click="openAdd" class="add-btn-desktop">新增平台</el-button>
     </header>
 
     <div class="platform-grid">
@@ -24,6 +24,7 @@
             <div class="platform-name">{{ p.name }}</div>
             <div class="platform-url">{{ p.apiUrl }}</div>
           </div>
+          <el-tag v-if="p.isBuiltin" size="small" type="warning" effect="dark">内置</el-tag>
           <span :class="['status-dot', p.status]" :title="p.lastHealthAt ? `最近健康：${p.lastHealthAt}` : ''"></span>
         </div>
         <div class="platform-meta">
@@ -34,14 +35,16 @@
         <div class="card-actions">
           <el-button size="small" :loading="testing === p.id" @click="test(p.id)">测试</el-button>
           <el-button size="small" @click="openPlatform(p.id)">管理模型</el-button>
-          <el-button size="small" @click="editPlatform(p)">编辑</el-button>
-          <el-button size="small" type="danger" @click="del(p.id)">删除</el-button>
+          <template v-if="!p.isBuiltin">
+            <el-button size="small" @click="editPlatform(p)">编辑</el-button>
+            <el-button size="small" type="danger" @click="del(p.id)">删除</el-button>
+          </template>
         </div>
       </el-card>
       <el-empty v-if="store.platforms.length === 0" description="还没有平台，点击右下角新增" />
     </div>
 
-    <el-dialog v-model="showAdd" :title="editingId ? '编辑平台' : '新增平台'" width="640px" :close-on-click-modal="false">
+    <el-dialog v-model="showAdd" :title="editingId ? '编辑平台' : '新增平台'" width="640px" :close-on-click-modal="false" @closed="resetForm">
       <el-form label-width="90px">
         <el-form-item label="名称"><el-input v-model="form.name" placeholder="如：OpenAI / DeepSeek" /></el-form-item>
         <el-form-item label="协议">
@@ -86,13 +89,13 @@
       </div>
 
       <template #footer>
-        <el-button @click="showAdd = false">取消</el-button>
+        <el-button @click="closeAdd">取消</el-button>
         <el-button type="primary" :loading="saving" @click="save">{{ editingId ? '保存修改' : '保存' }}</el-button>
       </template>
     </el-dialog>
 
     <!-- Mobile FAB -->
-    <el-button type="primary" :icon="Plus" circle class="mobile-fab" @click="showAdd = true" />
+    <el-button type="primary" :icon="Plus" circle class="mobile-fab" @click="openAdd" />
   </div>
 </template>
 
@@ -101,6 +104,7 @@ import { ref, computed, onMounted } from 'vue';
 import { useRouter } from 'vue-router';
 import { Plus, Connection, Download } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
+import type { ModelType } from '@yan-zhi/shared';
 import { usePlatformStore } from '../stores';
 
 const store = usePlatformStore();
@@ -137,6 +141,16 @@ function setStatus(msg: string, type: 'ok' | 'err' = 'ok') {
   formStatusType.value = type;
 }
 
+function openAdd() {
+  resetForm();
+  showAdd.value = true;
+}
+
+function closeAdd() {
+  showAdd.value = false;
+  resetForm();
+}
+
 async function testForm() {
   if (!form.value.apiUrl) { ElMessage.warning('请先填写 API URL'); return; }
   testingForm.value = true;
@@ -165,7 +179,7 @@ async function fetchModels() {
     const r = await store.fetchModelsPreview({ apiUrl: form.value.apiUrl, apiKey: form.value.apiKey });
     if (r.ok) {
       fetchedModels.value = r.models;
-      checkedModelIds.value = r.models.map((m) => m.id);
+      checkedModelIds.value = r.models.map((m: { id: string }) => m.id);
       setStatus(r.msg, 'ok');
       ElMessage.success(`拉取到 ${r.models.length} 个模型`);
     } else {
@@ -182,6 +196,7 @@ function onCheckAll(val: any) {
 }
 
 function editPlatform(p: any) {
+  if (p.isBuiltin) { ElMessage.warning('内置平台不可编辑'); return; }
   editingId.value = p.id;
   apiKeyDirty.value = false;
   form.value = { name: p.name, protocol: p.protocol || 'openai', apiUrl: p.apiUrl, apiKey: p.apiKeyDec || '' };
@@ -265,6 +280,8 @@ function openPlatform(id: string) {
 }
 
 async function del(id: string) {
+  const p = store.platforms.find((x) => x.id === id);
+  if (p?.isBuiltin) { ElMessage.warning('内置平台不可删除'); return; }
   try {
     await ElMessageBox.confirm('删除平台会同时删除其下所有模型，确认？', '提示', { type: 'warning' });
     await store.deletePlatform(id);

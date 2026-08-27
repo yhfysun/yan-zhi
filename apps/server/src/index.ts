@@ -1,5 +1,6 @@
 import express from 'express';
 import cors from 'cors';
+import { setPlatformAdapter } from '@yan-zhi/core';
 import authRoutes from './auth.js';
 import conversationRoutes from './routes/conversations.js';
 import messageRoutes from './routes/messages.js';
@@ -14,9 +15,18 @@ import skillMarketplaceRoutes from './routes/skill-marketplace-sources.js';
 import agentMarketplaceRoutes from './routes/agent-marketplace-sources.js';
 import marketplaceRoutes from './routes/marketplace.js';
 import browserRoutes from './routes/browser.js';
+import peersRoutes from './routes/peers.js';
+import imRoutes from './routes/im.js';
+import kbRoutes from './routes/kb.js';
+import mcpBridgeRoutes from './mcp/index.js';
+import { nodeAdapter } from './node-adapter.js';
+import localModelRoutes from './local-model/router.js';
+import { warmupLocalModel } from './local-model/engine.js';
+
+setPlatformAdapter(nodeAdapter);
 
 const app = express();
-const PORT = process.env.PORT || 3001;
+const PORT = Number(process.env.PORT) || 3001;
 
 app.use(cors({ origin: true, credentials: true }));
 app.use(express.json({ limit: '10mb' }));
@@ -39,7 +49,16 @@ app.use('/api/skill-marketplace', skillMarketplaceRoutes);
 app.use('/api/agent-marketplace', agentMarketplaceRoutes);
 app.use('/api/marketplace', marketplaceRoutes);
 app.use('/api/browser', browserRoutes);
+app.use('/api/peers', peersRoutes);
+app.use('/api/im', imRoutes);
+app.use('/api/kb', kbRoutes);
+app.use('/api/mcp', mcpBridgeRoutes);
+app.use('/local-model', localModelRoutes);
 
-app.listen(PORT, () => {
-  console.log(`后端已启动: http://localhost:${PORT}`);
+app.listen(PORT, '127.0.0.1', () => {
+  console.log(`后端已启动: http://127.0.0.1:${PORT}`);
+});
+
+warmupLocalModel().catch((error) => {
+  console.error(`[local-model] 预热本地模型失败: ${error instanceof Error ? error.message : String(error)}`);
 });

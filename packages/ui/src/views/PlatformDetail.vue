@@ -6,12 +6,12 @@
         <h2 class="page-title">{{ platform?.name || '平台详情' }}</h2>
         <span :class="['status-dot', platform?.status]"></span>
       </div>
-      <div class="header-actions header-actions-desktop">
+      <div v-if="!platform?.isBuiltin" class="header-actions header-actions-desktop">
         <el-button @click="fetchRemote" :loading="fetching">拉取远程模型</el-button>
         <el-button @click="batchMode = !batchMode" :type="batchMode ? 'warning' : ''">
           {{ batchMode ? '取消' : '批量' }}
         </el-button>
-        <el-button type="primary" @click="showAdd = true"><el-icon><Plus /></el-icon> 手动添加</el-button>
+        <el-button type="primary" @click="openAddModel"><el-icon><Plus /></el-icon> 手动添加</el-button>
       </div>
     </header>
 
@@ -25,7 +25,7 @@
     <div class="model-grid">
       <div v-for="m in models" :key="m.id" class="model-card" :class="{ disabled: !m.enabled }">
         <el-checkbox
-          v-if="batchMode"
+          v-if="batchMode && !m.isBuiltin"
           :model-value="selectedModelIds.has(m.id)"
           class="model-card-check"
           @click.stop
@@ -37,12 +37,13 @@
             <div class="model-card-name">{{ m.alias || m.modelId }}</div>
             <div class="model-card-id">{{ m.modelId }}</div>
           </div>
-          <el-switch v-model="m.enabled" size="small" @change="toggleEnabled(m)" />
+          <el-switch v-if="!m.isBuiltin" v-model="m.enabled" size="small" @change="toggleEnabled(m)" />
         </div>
 
         <div class="model-card-tags">
           <el-tag size="small" :type="m.type === 'llm' ? '' : 'info'" effect="light">{{ m.type }}</el-tag>
           <el-tag v-if="m.isDefault" size="small" type="warning" effect="dark">默认</el-tag>
+          <el-tag v-if="m.isBuiltin" size="small" type="warning" effect="dark">内置</el-tag>
           <el-tag v-for="cap in (m.capabilities || [])" :key="cap" size="small" type="info">
             {{ capabilityLabel(cap) }}
           </el-tag>
@@ -57,6 +58,7 @@
 
         <div class="model-card-foot">
           <el-input
+            v-if="!m.isBuiltin"
             v-model="m.alias"
             size="small"
             placeholder="别名（可选）"
@@ -64,15 +66,17 @@
             class="alias-input"
           />
           <div class="model-card-actions">
-            <el-button size="small" text @click="editModel(m)">编辑</el-button>
-            <el-button size="small" text @click="setDefault(m)" v-if="!m.isDefault">设为默认</el-button>
             <el-button size="small" :loading="testing === m.id" @click="testModel(m)">测试</el-button>
-            <el-button size="small" type="danger" text @click="del(m)">删除</el-button>
+            <template v-if="!m.isBuiltin">
+              <el-button size="small" text @click="editModel(m)">编辑</el-button>
+              <el-button size="small" text @click="setDefault(m)" v-if="!m.isDefault">设为默认</el-button>
+              <el-button size="small" type="danger" text @click="del(m)">删除</el-button>
+            </template>
           </div>
         </div>
       </div>
 
-      <div class="model-card add-card" @click="showAdd = true">
+      <div v-if="!platform?.isBuiltin" class="model-card add-card" @click="openAddModel">
         <el-icon :size="32"><Plus /></el-icon>
         <span>添加模型</span>
       </div>
@@ -81,7 +85,7 @@
     </div>
 
     <!-- 手动添加对话框 -->
-    <el-dialog v-model="showAdd" :title="editingModelId ? '编辑模型' : '添加模型'" width="520px">
+    <el-dialog v-model="showAdd" :title="editingModelId ? '编辑模型' : '添加模型'" width="520px" @closed="resetModelForm">
       <el-form label-width="100px">
         <el-form-item label="模型 ID"><el-input v-model="form.modelId" placeholder="如：gpt-4o-mini" /></el-form-item>
         <el-form-item label="别名"><el-input v-model="form.alias" placeholder="（可选）" /></el-form-item>
@@ -112,7 +116,7 @@
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="showAdd = false">取消</el-button>
+        <el-button @click="closeModelDialog">取消</el-button>
         <el-button type="primary" @click="addOrEditModel">{{ editingModelId ? '保存修改' : '添加' }}</el-button>
       </template>
     </el-dialog>
@@ -141,7 +145,7 @@
     </el-dialog>
 
     <!-- Mobile: header-actions as a collapsible toolbar below header -->
-    <div class="header-actions-mobile">
+    <div v-if="!platform?.isBuiltin" class="header-actions-mobile">
       <el-button size="small" @click="fetchRemote" :loading="fetching">拉取</el-button>
       <el-button size="small" @click="batchMode = !batchMode" :type="batchMode ? 'warning' : ''">
         {{ batchMode ? '取消' : '批量' }}
@@ -149,7 +153,7 @@
     </div>
 
     <!-- Mobile FAB -->
-    <el-button type="primary" :icon="Plus" circle class="mobile-fab" @click="showAdd = true" />
+    <el-button v-if="!platform?.isBuiltin" type="primary" :icon="Plus" circle class="mobile-fab" @click="openAddModel" />
   </div>
 </template>
 
@@ -194,12 +198,24 @@ function capabilityLabel(cap: string) {
   const m: Record<string, string> = { function_call: '函数调用', vision: '视觉', reasoning: '推理' };
   return m[cap] || cap;
 }
+
+function openAddModel() {
+  resetModelForm();
+  showAdd.value = true;
+}
+
+function closeModelDialog() {
+  showAdd.value = false;
+  resetModelForm();
+}
+
 function formatWindow(n: number): string {
   if (n >= 1000) return `${(n / 1000).toFixed(0)}K`;
   return String(n);
 }
 
 async function fetchRemote() {
+  if (platform.value?.isBuiltin) { ElMessage.warning('内置平台不可拉取或修改模型'); return; }
   fetching.value = true;
   try {
     const ids = await store.fetchRemoteModels(platformId.value);
@@ -210,6 +226,7 @@ async function fetchRemote() {
 }
 
 function editModel(m: any) {
+  if (m.isBuiltin) { ElMessage.warning('内置模型不可编辑'); return; }
   editingModelId.value = m.id;
   form.value = {
     modelId: m.modelId, alias: m.alias || '', type: m.type || 'llm',
@@ -249,17 +266,19 @@ function resetModelForm() {
   form.value = { modelId: '', alias: '', type: 'llm', contextWindow: 131072, capabilities: [], pricingInput: 0, pricingOutput: 0 };
 }
 
-async function updateAlias(row: any) { await store.updateModel(row.id, { alias: row.alias }); }
-async function toggleEnabled(row: any) { await store.updateModel(row.id, { enabled: row.enabled }); }
-async function setDefault(row: any) { await store.updateModel(row.id, { isDefault: true }); ElMessage.success(`已设为默认：${row.modelId}`); }
+async function updateAlias(row: any) { if (row.isBuiltin) return; await store.updateModel(row.id, { alias: row.alias }); }
+async function toggleEnabled(row: any) { if (row.isBuiltin) return; await store.updateModel(row.id, { enabled: row.enabled }); }
+async function setDefault(row: any) { if (row.isBuiltin) { ElMessage.warning('内置模型不可设为默认'); return; } await store.updateModel(row.id, { isDefault: true }); ElMessage.success(`已设为默认：${row.modelId}`); }
 
 function toggleModelSelect(id: string) {
+  const m = models.value.find((x) => x.id === id);
+  if (m?.isBuiltin) return;
   const next = new Set(selectedModelIds.value);
   if (next.has(id)) next.delete(id); else next.add(id);
   selectedModelIds.value = next;
 }
 function batchSelectAll() {
-  selectedModelIds.value = new Set(models.value.filter(m => m.enabled).map(m => m.id));
+  selectedModelIds.value = new Set(models.value.filter(m => m.enabled && !m.isBuiltin).map(m => m.id));
 }
 async function applyBatchContext() {
   if (selectedModelIds.value.size === 0) return;
@@ -289,6 +308,7 @@ async function batchDeleteModels() {
   } catch {}
 }
 async function del(row: any) {
+  if (row.isBuiltin) { ElMessage.warning('内置模型不可删除'); return; }
   try {
     await ElMessageBox.confirm(`删除模型 ${row.modelId}？`, '提示', { type: 'warning' });
     await store.deleteModel(row.id);

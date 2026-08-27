@@ -9,7 +9,10 @@
     "build": "vite build",
     "electron:dev": "concurrently \"vite\" \"electron . --dev\"",
     "electron:preview": "vite build && electron .",
-    "electron:build": "pnpm --filter @yan-zhi/server build && vite build && electron-builder",
+    "electron:build": "pnpm --filter @yan-zhi/server build && vite build && node ./scripts/prepare-server-runtime.cjs && electron-builder --config electron-builder.full.yml --publish never",
+    "electron:build:full": "pnpm --filter @yan-zhi/server build && vite build && node ./scripts/prepare-server-runtime.cjs && electron-builder --config electron-builder.full.yml --publish never",
+    "electron:build:lite": "pnpm --filter @yan-zhi/server build && vite build && node ./scripts/prepare-server-runtime.cjs && electron-builder --config electron-builder.lite.yml --publish never",
+    "prepare:server-runtime": "node ./scripts/prepare-server-runtime.cjs",
     "postinstall": "node ./scripts/fix-sqlite-binding.cjs || true",
     "typecheck": "vue-tsc --noEmit"
   },
@@ -53,12 +56,20 @@
         "to": "server/dist"
       },
       {
-        "from": "../server/node_modules",
+        "from": "../server/src",
+        "to": "server/src"
+      },
+      {
+        "from": "runtime/server-runtime/node_modules",
         "to": "server/node_modules"
       },
       {
         "from": "../server/package.json",
         "to": "server/package.json"
+      },
+      {
+        "from": "../server/models",
+        "to": "server/models"
       },
       {
         "from": "../../assets/icons/icon.ico",
