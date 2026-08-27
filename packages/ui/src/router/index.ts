@@ -2,7 +2,7 @@
 import { createRouter, createWebHashHistory, type RouteRecordRaw } from 'vue-router';
 
 const routes: RouteRecordRaw[] = [
-  { path: '/', redirect: '/home' },
+  { path: '/', redirect: '/chat' },
   {
     path: '/home',
     name: 'home',
@@ -19,7 +19,13 @@ const routes: RouteRecordRaw[] = [
     path: '/chat',
     name: 'chat',
     component: () => import('../views/Chat.vue'),
-    meta: { title: '聊天工作台' },
+    meta: { title: '对话工作台' },
+  },
+  {
+    path: '/chat-hub',
+    name: 'chat-hub',
+    component: () => import('../views/ChatHub.vue'),
+    meta: { title: '聊天' },
   },
   {
     path: '/chat/:convId',

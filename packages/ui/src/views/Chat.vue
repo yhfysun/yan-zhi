@@ -14,6 +14,7 @@
         <ChatMessageList />
         <ChatInputArea />
       </div>
+      <ChatContextSidebar />
       <ChatPreviewPane />
     </section>
 
@@ -30,6 +31,7 @@ import ChatSidebar from '../components/chat/ChatSidebar.vue';
 import ChatTopbar from '../components/chat/ChatTopbar.vue';
 import ChatMessageList from '../components/chat/ChatMessageList.vue';
 import ChatInputArea from '../components/chat/ChatInputArea.vue';
+import ChatContextSidebar from '../components/chat/ChatContextSidebar.vue';
 import ChatPreviewPane from '../components/chat/ChatPreviewPane.vue';
 import ChatMountDialog from '../components/chat/ChatMountDialog.vue';
 import ChatSkillCards from '../components/chat/ChatSkillCards.vue';

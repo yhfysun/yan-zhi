@@ -2,19 +2,23 @@
   <!-- 桌面平台：可折叠带标签侧栏 -->
   <nav v-if="isDesktop" class="side-nav side-nav-desktop" :class="{ collapsed }">
     <div class="nav-top">
-      <el-tooltip
-        v-for="item in navItems"
-        :key="item.path"
-        :content="item.label"
-        placement="right"
-        :show-after="400"
-        :disabled="!collapsed"
-      >
-        <router-link :to="item.path" class="nav-item" :class="{ active: isActive(item.path) }">
-          <el-icon :size="20"><component :is="item.icon" /></el-icon>
-          <span class="nav-label">{{ item.label }}</span>
-        </router-link>
-      </el-tooltip>
+      <template v-for="item in navItems" :key="item.path">
+        <el-tooltip
+          :content="item.label"
+          placement="right"
+          :show-after="400"
+          :disabled="!collapsed"
+        >
+          <router-link v-if="item.kind === 'route'" :to="item.path" class="nav-item" :class="{ active: isActive(item.path) }">
+            <el-icon :size="20"><component :is="item.icon" /></el-icon>
+            <span class="nav-label">{{ item.label }}</span>
+          </router-link>
+          <button v-else type="button" class="nav-item" @click="openSettingsDrawer('general')">
+            <el-icon :size="20"><component :is="item.icon" /></el-icon>
+            <span class="nav-label">{{ item.label }}</span>
+          </button>
+        </el-tooltip>
+      </template>
     </div>
 
     <div class="nav-bottom">
@@ -54,17 +58,27 @@
     </div>
   </nav>
 
-  <!-- Web 宽屏：保留原有 52px 图标 dock（浏览器/MCP 为桌面端专属，web 端不显示） -->
+  <!-- Web 宽屏：52px 图标 dock -->
   <nav v-else-if="!isMobile" class="side-nav">
     <div class="nav-top">
-      <el-tooltip v-for="item in navItems.filter(i => i.path !== '/mcp' && i.path !== '/browser')" :key="item.path" :content="item.label" placement="right" :show-after="400">
-        <router-link :to="item.path" class="nav-item" :class="{ active: isActive(item.path) }">
-          <el-icon :size="20"><component :is="item.icon" /></el-icon>
-        </router-link>
-      </el-tooltip>
+      <template v-for="item in navItems" :key="item.path">
+        <el-tooltip :content="item.label" placement="right" :show-after="400">
+          <router-link v-if="item.kind === 'route'" :to="item.path" class="nav-item" :class="{ active: isActive(item.path) }">
+            <el-icon :size="20"><component :is="item.icon" /></el-icon>
+          </router-link>
+          <button v-else type="button" class="nav-item" @click="openSettingsDrawer('general')">
+            <el-icon :size="20"><component :is="item.icon" /></el-icon>
+          </button>
+        </el-tooltip>
+      </template>
     </div>
 
     <div class="nav-bottom">
+      <el-tooltip :content="settingsStore.settings.darkMode ? '切换浅色模式' : '切换深色模式'" placement="right">
+        <button class="nav-item nav-theme-toggle" type="button" aria-label="切换主题" @click="toggleTheme">
+          <el-icon :size="20"><component :is="settingsStore.settings.darkMode ? Sunny : Moon" /></el-icon>
+        </button>
+      </el-tooltip>
       <el-dropdown v-if="authStore.isLoggedIn" trigger="click" popper-class="sidenav-user-popper">
         <span class="nav-avatar" :title="authStore.user?.username">
           {{ authStore.user?.username?.slice(0, 1) || 'U' }}
@@ -89,104 +103,65 @@
     </div>
   </nav>
 
-  <!-- 移动端底部 TabBar：常用入口 + 更多 -->
+  <!-- 移动端底部 TabBar：五个核心入口 -->
   <nav v-if="isMobile" class="tab-bar">
-    <router-link
-      v-for="item in mobilePrimaryItems"
-      :key="item.path"
-      :to="item.path"
-      class="tab-bar-item"
-      :class="{ active: isActive(item.path) }"
-    >
-      <el-icon :size="20"><component :is="item.icon" /></el-icon>
-      <span class="tab-bar-label">{{ item.tabLabel || item.label }}</span>
-    </router-link>
-    <button
-      type="button"
-      class="tab-bar-item tab-bar-more"
-      :class="{ active: isMoreActive }"
-      @click="showMore = true"
-    >
-      <el-icon :size="20"><MoreFilled /></el-icon>
-      <span class="tab-bar-label">更多</span>
-    </button>
+    <template v-for="item in mobilePrimaryItems" :key="item.path">
+      <router-link
+        v-if="item.kind === 'route'"
+        :to="item.path"
+        class="tab-bar-item"
+        :class="{ active: isActive(item.path) }"
+      >
+        <el-icon :size="20"><component :is="item.icon" /></el-icon>
+        <span class="tab-bar-label">{{ item.tabLabel || item.label }}</span>
+      </router-link>
+      <button
+        v-else
+        type="button"
+        class="tab-bar-item"
+        @click="openSettingsDrawer('general')"
+      >
+        <el-icon :size="20"><component :is="item.icon" /></el-icon>
+        <span class="tab-bar-label">{{ item.tabLabel || item.label }}</span>
+      </button>
+    </template>
   </nav>
-
-  <!-- 移动端“更多”底部抽屉 -->
-  <transition name="tab-more-fade">
-    <div v-if="isMobile && showMore" class="tab-more-mask" @click.self="showMore = false">
-      <div class="tab-more-sheet">
-        <div class="tab-more-header">
-          <span>更多功能</span>
-          <button type="button" class="tab-more-close" aria-label="关闭" @click="showMore = false">×</button>
-        </div>
-        <div class="tab-more-grid">
-          <router-link
-            v-for="item in mobileMoreItems"
-            :key="item.path"
-            :to="item.path"
-            class="tab-more-item"
-            :class="{ active: isActive(item.path) }"
-            @click="showMore = false"
-          >
-            <el-icon :size="20"><component :is="item.icon" /></el-icon>
-            <span>{{ item.tabLabel || item.label }}</span>
-          </router-link>
-        </div>
-      </div>
-    </div>
-  </transition>
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
-import { useRoute, useRouter } from 'vue-router';
-import { ChatDotRound, Box, Files, Setting, Cpu, User, SwitchButton, Suitcase, Connection, Fold, Expand, Monitor, HomeFilled, MagicStick, ChatLineRound, Promotion, Collection, MoreFilled } from '@element-plus/icons-vue';
+import { computed } from 'vue';
+import { useRoute } from 'vue-router';
+import { ChatDotRound, Setting, User, SwitchButton, Fold, Expand, Monitor, ChatLineRound, Collection, Moon, Sunny } from '@element-plus/icons-vue';
 import { useAuthStore } from '../stores/auth';
+import { useSettingsStore } from '../stores/settings';
 import { useIsMobile } from '../composables/useIsMobile';
 import { usePlatform } from '../composables/usePlatform';
 import { useSidebarState } from '../composables/useSidebarState';
+import { openSettingsDrawer } from '../composables/useSettingsDrawer';
 
 const route = useRoute();
-const router = useRouter();
 const authStore = useAuthStore();
+const settingsStore = useSettingsStore();
 const isMobile = useIsMobile();
 const { isDesktop } = usePlatform();
 const { collapsed, toggle } = useSidebarState();
 
 const navItems = [
-  { path: '/home', label: '首页', tabLabel: '首页', icon: HomeFilled },
-  { path: '/chat', label: '聊天', tabLabel: '对话', icon: ChatDotRound },
-  { path: '/peers', label: '客户端节点', tabLabel: '节点', icon: ChatLineRound },
-  { path: '/connections', label: 'IM 连接', tabLabel: '连接', icon: Promotion },
-  { path: '/knowledge', label: '知识库', tabLabel: '知识', icon: Collection },
-  { path: '/browser', label: '浏览器', tabLabel: '浏览器', icon: Monitor },
-  { path: '/models', label: '模型平台', tabLabel: '模型', icon: Cpu },
-  { path: '/tools', label: '工具管理', tabLabel: '工具', icon: Suitcase },
-  { path: '/skills', label: 'Skill 商店', tabLabel: 'Skills', icon: Files },
-  { path: '/distill', label: 'Skill 蒸馏', tabLabel: '蒸馏', icon: MagicStick },
-  { path: '/agents', label: '智能体', tabLabel: '智能体', icon: Box },
-  { path: '/mcp', label: 'MCP 服务', tabLabel: 'MCP', icon: Connection },
-  { path: '/settings', label: '设置', tabLabel: '设置', icon: Setting },
+  { path: '/chat', label: '对话', tabLabel: '对话', icon: ChatDotRound, kind: 'route' },
+  { path: '/chat-hub', label: '聊天', tabLabel: '聊天', icon: ChatLineRound, kind: 'route' },
+  { path: '/knowledge', label: '知识库', tabLabel: '知识', icon: Collection, kind: 'route' },
+  { path: '/browser', label: '浏览器', tabLabel: '浏览器', icon: Monitor, kind: 'route' },
+  { path: '', label: '设置', tabLabel: '设置', icon: Setting, kind: 'settings' },
 ];
 
-const mobilePrimaryPaths = new Set(['/home', '/chat', '/agents', '/tools']);
-const mobilePrimaryItems = computed(() => navItems.filter((item) => mobilePrimaryPaths.has(item.path)));
-const mobileMoreItems = computed(() =>
-  navItems.filter((item) => !mobilePrimaryPaths.has(item.path) && item.path !== '/mcp' && item.path !== '/browser'),
-);
-const isMoreActive = computed(() => mobileMoreItems.value.some((item) => isActive(item.path)));
-const showMore = ref(false);
-
-watch(
-  () => route.path,
-  () => {
-    showMore.value = false;
-  },
-);
+const mobilePrimaryItems = computed(() => navItems);
 
 function isActive(path: string) {
   return route.path === path || route.path.startsWith(path + '/');
+}
+
+function toggleTheme() {
+  settingsStore.update({ darkMode: !settingsStore.settings.darkMode });
 }
 </script>
 

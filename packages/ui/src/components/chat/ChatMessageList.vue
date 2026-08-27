@@ -52,7 +52,7 @@
                   <div v-show="expandedReasoning['agent-fa-' + ri]" class="reasoning-body">{{ round.finalAssistant.reasoningContent }}</div>
                 </div>
                 <template v-if="round.finalAssistant?.content">
-                  <div class="msg-content" v-html="renderMarkdown(displayAssistantContent(round.finalAssistant.content))" @click="handleContentClick"></div>
+                  <div class="msg-content" v-html="renderAssistantMarkdown(round.finalAssistant.content)" @click="handleContentClick"></div>
                   <PlatformConfigCard
                     v-if="parseConfigCard(round.finalAssistant.content)"
                     :mode="parseConfigCard(round.finalAssistant.content)!.mode"
@@ -62,7 +62,9 @@
                     @saved="onConfigSaved"
                   />
                 </template>
-                <div v-else-if="isLastRoundStreaming(round, ri)" class="msg-content streaming"><span class="cursor">▋</span></div>
+                <div v-else-if="isLastRoundStreaming(round, ri)" class="msg-content streaming">
+                  <span class="typing-dots" aria-label="正在输入"><span></span><span></span><span></span></span>
+                </div>
               </div>
 
               <div v-if="round.hasAgentProcess" class="agent-process-header" @click="toggleAgentProcess('round-' + ri)">
@@ -244,7 +246,7 @@ import PlatformConfigCard from '../PlatformConfigCard.vue';
 const {
   store, platformStore, messagesRef, messageRounds, formatTime, collapsedMessages, toggleMsgCollapse,
   renderMarkdown, handleContentClick, copyMsg, editMsg, distillUserMsg, delMsg, debugMode,
-  openSnapshotDialog, isLastRoundStreaming, displayAssistantContent, parseConfigCard, getEditPlatform,
+  openSnapshotDialog, isLastRoundStreaming, parseConfigCard, getEditPlatform,
   getEditReason, onConfigSaved, expandedReasoning, toggleReasoning, expandedAgentProcess,
   toggleAgentProcess, expandedStepTools, toggleStepTools, getStepToolGroupClass, isStepToolsRunning,
   isStepToolsError, toggleTool, getStepToolStatusClass, getStepToolResult, isStepToolError, resolveToolDisplay,
@@ -254,4 +256,13 @@ const {
   scrollToBottom, userRoundIndices, activeNavRound, scrollToRound,
 } = useChat();
 const document = window.document;
+
+function renderAssistantMarkdown(content?: string) {
+  return (content || '').split(/(\[tool_call\])/g).map((part) => {
+    if (part === '[tool_call]') {
+      return '<span class="inline-tool-chip"><span class="inline-tool-spinner"></span>正在调用工具</span>';
+    }
+    return renderMarkdown(part);
+  }).join('');
+}
 </script>

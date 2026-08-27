@@ -311,6 +311,58 @@
 .cursor { animation: blink 1s step-end infinite; font-weight: bold; color: var(--color-primary); }
 @keyframes blink { 50% { opacity: 0; } }
 
+.inline-tool-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  margin: 0 2px;
+  border-radius: 999px;
+  border: 1px solid rgba(59, 130, 246, 0.18);
+  background: rgba(59, 130, 246, 0.08);
+  color: var(--color-primary);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.inline-tool-spinner {
+  width: 11px;
+  height: 11px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  border: 2px solid rgba(59, 130, 246, 0.25);
+  border-top-color: var(--color-primary);
+  animation: toolChipSpin 0.75s linear infinite;
+}
+
+@keyframes toolChipSpin {
+  to { transform: rotate(360deg); }
+}
+
+.typing-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 18px;
+}
+
+.typing-dots span {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--color-text-secondary);
+  animation: typingDot 1.2s ease-in-out infinite;
+}
+
+.typing-dots span:nth-child(2) { animation-delay: 0.16s; }
+.typing-dots span:nth-child(3) { animation-delay: 0.32s; }
+
+@keyframes typingDot {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.35; }
+  30% { transform: translateY(-4px); opacity: 1; }
+}
+
 .msg-reasoning {
   font-size: 12px; color: var(--color-text-secondary); margin-bottom: 6px;
   background: rgba(139,92,246,0.05); border: 1px solid rgba(139,92,246,0.12);

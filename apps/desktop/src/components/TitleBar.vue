@@ -14,6 +14,14 @@
       <!-- 中部：可拖拽留白（flex:1） -->
       <div class="title-spacer"></div>
 
+      <!-- 主题切换 -->
+      <button class="win-btn title-theme-btn" type="button" title="切换主题" @click="toggleTheme">
+        <el-icon :size="15">
+          <Sunny v-if="settingsStore.settings.darkMode" />
+          <Moon v-else />
+        </el-icon>
+      </button>
+
       <!-- 右侧：窗口控制按钮 -->
       <div class="window-controls">
         <button class="win-btn" title="最小化" @click="onMinimize">
@@ -35,10 +43,12 @@
 
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue';
-import { Minus, FullScreen, CopyDocument, Close } from '@element-plus/icons-vue';
+import { Minus, FullScreen, CopyDocument, Close, Moon, Sunny } from '@element-plus/icons-vue';
+import { useSettingsStore } from '@yan-zhi/ui';
 
 // Electron 渲染进程通过 contextBridge 注入的 API
 const api = (window as any).electronAPI;
+const settingsStore = useSettingsStore();
 
 // 是否处于最大化状态
 const isMaximized = ref(false);
@@ -68,6 +78,10 @@ async function onClose() {
 }
 
 onMounted(async () => {
+  try {
+    await settingsStore.load();
+  } catch {}
+
   if (!api) return;
   try {
     // 初始化最大化状态
@@ -79,6 +93,10 @@ onMounted(async () => {
     window.addEventListener('resize', resizeHandler);
   } catch {}
 });
+
+function toggleTheme() {
+  settingsStore.update({ darkMode: !settingsStore.settings.darkMode });
+}
 
 onUnmounted(() => {
   if (resizeHandler) {
@@ -171,6 +189,20 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   height: 100%;
+}
+
+.title-theme-btn {
+  width: 40px;
+  color: #64748b;
+}
+
+[data-theme="dark"] .title-theme-btn {
+  color: #94a3b8;
+}
+
+.title-theme-btn:hover {
+  background: rgba(124, 58, 237, 0.08);
+  color: #7c3aed;
 }
 
 .win-btn {

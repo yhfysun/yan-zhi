@@ -350,6 +350,7 @@ function createChat() {
   const drawerOpen = ref(false);
   const convCollapsed = ref(false);
   const sideTab = ref<'agent' | 'chat'>('chat');
+  const contextSidebarOpen = ref(!isMobile.value);
   const batchMode = ref(false);
   const selectedConvIds = ref<Set<string>>(new Set());
 
@@ -357,6 +358,10 @@ function createChat() {
   const toolAliasMap = reactive<Record<string, Record<string, string>>>({});
   const mountSearch = ref('');
   const collapsedServers = reactive<Record<string, boolean>>({});
+
+  function toggleContextSidebar() {
+    contextSidebarOpen.value = !contextSidebarOpen.value;
+  }
 
   function toggleServerCollapse(sid: string) {
     collapsedServers[sid] = !collapsedServers[sid];
@@ -1599,7 +1604,7 @@ function createChat() {
     browserActive, currentBrowserLabel, closeRightPanel, toggleRightPanel,
     expandedFileCategories, fileSearch, workspaceFiles, selectedFilePaths, filePanelUploadRef, search, messagesRef, showMount, showSkills, skillSearch, filteredSkillStore, toggleSkillMount,
     selectedModelId, expandedReasoning, expandedTools, expandedToolGroups, collapsedToolGroups, collapsedMessages, expandedAgentProcess, expandedStepTools, activeNavRound,
-    userRoundIndices, mountedSkillIds, drawerOpen, convCollapsed, sideTab, batchMode, selectedConvIds,
+    userRoundIndices, mountedSkillIds, drawerOpen, convCollapsed, sideTab, contextSidebarOpen, toggleContextSidebar, batchMode, selectedConvIds,
     mountToolSelection, toolAliasMap, mountSearch, collapsedServers, toggleServerCollapse, filteredTools, initMountSelection, isToolMounted, toggleMountTool, isAllToolsMounted, toggleAllTools, setToolAlias,
     showAgentEdit, editingAgent, debugMode,
     showWorkspaceDir, workspaceDir, loadWorkspaceDir, onWorkspaceDirSelected,

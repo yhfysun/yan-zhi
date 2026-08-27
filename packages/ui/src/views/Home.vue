@@ -48,13 +48,13 @@
             class="feature-nav-item"
             :style="{ '--item-color': item.color }"
           >
-            <div class="feature-nav-item-info" @click="openGuide(item)">
+            <div class="feature-nav-item-info" @click="handleInfoClick(item)">
               <div class="feature-nav-item-icon">
                 <el-icon :size="18"><component :is="item.icon" /></el-icon>
               </div>
               <span class="feature-nav-item-name">{{ item.name }}</span>
             </div>
-            <el-button size="small" text class="feature-nav-item-enter" @click="$router.push(item.path)">
+            <el-button size="small" text class="feature-nav-item-enter" @click="enterItem(item)">
               进入
             </el-button>
           </div>
@@ -73,12 +73,14 @@
 
 <script setup lang="ts">
 import { ref, computed } from 'vue';
+import { useRouter } from 'vue-router';
 import {
-  HomeFilled, ChatDotRound, Monitor, Cpu, Suitcase, Files, MagicStick, Box, Connection, Setting, Grid, InfoFilled,
+  ChatDotRound, ChatLineRound, Collection, Monitor, Setting, Cpu, Grid, InfoFilled,
 } from '@element-plus/icons-vue';
 import SolarSystem from '../components/home/SolarSystem.vue';
 import EarthMap from '../components/home/EarthMap.vue';
 import FeatureGuide from '../components/home/FeatureGuide.vue';
+import { openSettingsDrawer, type SettingsDrawerSection } from '../composables/useSettingsDrawer';
 
 /** 功能信息（与 FeatureGuide.vue 的 FeatureInfo 接口保持一致） */
 interface FeatureInfo {
@@ -98,6 +100,7 @@ const currentFeature = ref<FeatureInfo | null>(null);
 const introExpanded = ref(false);
 const introPos = ref({ x: 24, y: 24 }); // 小按钮/卡片位置
 const introStyle = computed(() => ({ left: introPos.value.x + 'px', top: introPos.value.y + 'px' }));
+const router = useRouter();
 let introDragging = false;
 let introDragStartX = 0;
 let introDragStartY = 0;
@@ -130,18 +133,25 @@ function onIntroClick() {
   introExpanded.value = true;
 }
 
-/** 菜单项：icon 字段存储图标组件名，供 FeatureGuide 解析 */
-const menuItems: Array<{ path: string; name: string; desc: string; icon: any; iconName: string; color: string; key: string }> = [
-  { path: '/home', name: '首页', desc: '平台门户，功能总览', icon: HomeFilled, iconName: 'HomeFilled', color: '#4A90D9', key: 'home' },
-  { path: '/chat', name: '聊天', desc: '流式对话、多会话、工具可视化', icon: ChatDotRound, iconName: 'ChatDotRound', color: '#7C3AED', key: 'chat' },
-  { path: '/browser', name: '浏览器', desc: '内置浏览器自动化', icon: Monitor, iconName: 'Monitor', color: '#10B981', key: 'browser' },
-  { path: '/models', name: '模型平台', desc: 'OpenAI/Anthropic 双协议', icon: Cpu, iconName: 'Cpu', color: '#F59E0B', key: 'models' },
-  { path: '/tools', name: '工具管理', desc: '内置+自定义+商城工具', icon: Suitcase, iconName: 'Suitcase', color: '#EF4444', key: 'tools' },
-  { path: '/skills', name: 'Skill 商店', desc: '本地+远程 Skill 管理', icon: Files, iconName: 'Files', color: '#8B5CF6', key: 'skills' },
-  { path: '/distill', name: 'Skill 蒸馏', desc: '从对话蒸馏可复用 Skill', icon: MagicStick, iconName: 'MagicStick', color: '#EC4899', key: 'distill' },
-  { path: '/agents', name: '智能体', desc: 'harness+workflow 智能体', icon: Box, iconName: 'Box', color: '#06B6D4', key: 'agents' },
-  { path: '/mcp', name: 'MCP 服务', desc: 'stdio/SSE/HTTP 传输', icon: Connection, iconName: 'Connection', color: '#3B82F6', key: 'mcp' },
-  { path: '/settings', name: '设置', desc: '主题/数据/商城配置', icon: Setting, iconName: 'Setting', color: '#64748B', key: 'settings' },
+/** 菜单项：核心导航 5 项 + 2 个设置分组入口 */
+interface HomeMenuItem {
+  path: string;
+  name: string;
+  desc: string;
+  icon: any;
+  iconName: string;
+  color: string;
+  key: string;
+  section?: SettingsDrawerSection;
+}
+
+const menuItems: HomeMenuItem[] = [
+  { path: '/chat', name: '对话', desc: '与大模型进行多会话、工具可视化对话', icon: ChatDotRound, iconName: 'ChatDotRound', color: '#7C3AED', key: 'chat' },
+  { path: '/chat-hub', name: '聊天', desc: 'IM 消息中枢入口，后续接入微信与飞书', icon: ChatLineRound, iconName: 'ChatLineRound', color: '#EC4899', key: 'chat-hub' },
+  { path: '/knowledge', name: '知识库', desc: '管理本地知识资料', icon: Collection, iconName: 'Collection', color: '#10B981', key: 'knowledge' },
+  { path: '/browser', name: '浏览器', desc: '内置浏览器自动化', icon: Monitor, iconName: 'Monitor', color: '#F59E0B', key: 'browser' },
+  { path: '', name: '通用与数据', desc: '主题、默认模型、备份与缓存', icon: Setting, iconName: 'Setting', color: '#64748B', key: 'settings-general', section: 'general' },
+  { path: '', name: '模型与能力', desc: '模型、MCP、工具、Skill 与智能体配置', icon: Cpu, iconName: 'Cpu', color: '#3B82F6', key: 'settings-abilities', section: 'models' },
 ];
 
 /** 打开功能详情弹窗 */
@@ -155,6 +165,24 @@ function openGuide(item: typeof menuItems[number]) {
   };
   guideVisible.value = true;
   showFeatureNav.value = false;
+}
+
+function enterItem(item: HomeMenuItem) {
+  if (item.section) {
+    openSettingsDrawer(item.section);
+  } else {
+    router.push(item.path);
+  }
+  showFeatureNav.value = false;
+}
+
+function handleInfoClick(item: HomeMenuItem) {
+  if (item.section) {
+    openSettingsDrawer(item.section);
+    showFeatureNav.value = false;
+    return;
+  }
+  openGuide(item);
 }
 </script>
 

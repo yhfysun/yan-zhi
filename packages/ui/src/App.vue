@@ -21,6 +21,11 @@
         <header v-if="isMobile && route.name !== 'chat'" class="mobile-topbar">
           <span class="mobile-topbar-title">{{ pageTitle }}</span>
           <div class="mobile-topbar-actions">
+            <el-tooltip :content="settingsStore.settings.darkMode ? '切换浅色模式' : '切换深色模式'" placement="bottom">
+              <button class="mobile-theme-btn" type="button" aria-label="切换主题" @click="toggleTheme">
+                <el-icon :size="17"><component :is="settingsStore.settings.darkMode ? Sunny : Moon" /></el-icon>
+              </button>
+            </el-tooltip>
             <el-dropdown v-if="authStore.isLoggedIn" trigger="click">
               <span class="mobile-user-avatar">{{ authStore.user?.username?.slice(0, 1) || 'U' }}</span>
               <template #dropdown>
@@ -83,16 +88,19 @@
         <el-button v-else disabled>正在下载</el-button>
       </template>
     </el-dialog>
+    <SettingsDrawer />
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { useRoute } from 'vue-router';
-import { User, SwitchButton } from '@element-plus/icons-vue';
+import { User, SwitchButton, Moon, Sunny } from '@element-plus/icons-vue';
 import { ElMessage } from 'element-plus';
 import { useAuthStore } from './stores/auth';
+import { useSettingsStore } from './stores/settings';
 import SideNav from './components/SideNav.vue';
+import SettingsDrawer from './components/SettingsDrawer.vue';
 
 import { useIsMobile } from './composables/useIsMobile';
 import { usePlatform } from './composables/usePlatform';
@@ -100,6 +108,7 @@ import { useSidebarState } from './composables/useSidebarState';
 
 const route = useRoute();
 const authStore = useAuthStore();
+const settingsStore = useSettingsStore();
 const isMobile = useIsMobile();
 const { isDesktop } = usePlatform();
 const { collapsed } = useSidebarState();
@@ -121,6 +130,12 @@ const localModelProgress = computed(() => Math.max(0, Math.min(100, Math.round(l
 let offLocalModelState: (() => void) | undefined;
 
 onMounted(async () => {
+  try {
+    await settingsStore.load();
+  } catch {
+    // 设置读取失败时仍允许应用正常渲染
+  }
+
   const api = (window as any).electronAPI?.localModel;
   if (!api) return;
   offLocalModelState = api.onState((state: any) => {
@@ -148,9 +163,14 @@ function dismissLocalModel() {
   localModelState.value = { state: 'idle', receivedBytes: 0, totalBytes: 0, progress: 0, message: '已跳过本次下载' };
 }
 
+function toggleTheme() {
+  settingsStore.update({ darkMode: !settingsStore.settings.darkMode });
+}
+
 const ROUTE_TITLES: Record<string, string> = {
   home: '首页',
   chat: '对话',
+  'chat-hub': '聊天',
   peers: '客户端节点',
   connections: 'IM 连接',
   knowledge: '知识库',
@@ -246,6 +266,18 @@ authStore.loadUser();
   --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.3);
   --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
   --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.5);
+  --el-bg-color: #181a24;
+  --el-bg-color-overlay: #20222e;
+  --el-fill-color-blank: #1b1d27;
+  --el-fill-color: #2a2c38;
+  --el-fill-color-light: #2a2c38;
+  --el-border-color: #343644;
+  --el-border-color-light: #2e303c;
+  --el-border-color-lighter: #292b36;
+  --el-text-color-primary: #e2e8f0;
+  --el-text-color-regular: #cbd5e1;
+  --el-text-color-secondary: #94a3b8;
+  --el-mask-color: rgba(15, 17, 23, 0.5);
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -432,6 +464,25 @@ body {
   * {
     scrollbar-width: thin;
     scrollbar-color: var(--scrollbar-thumb) transparent;
+  }
+
+  .mobile-theme-btn {
+    width: 32px;
+    height: 32px;
+    border: none;
+    border-radius: 8px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(15, 23, 42, 0.06);
+    color: var(--color-text-secondary);
+    cursor: pointer;
+    user-select: none;
+  }
+
+  .mobile-theme-btn:hover {
+    background: rgba(15, 23, 42, 0.1);
+    color: var(--color-text);
   }
 }
 ::-webkit-scrollbar { width: var(--scrollbar-size); height: var(--scrollbar-size); }

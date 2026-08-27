@@ -17,7 +17,7 @@ export interface AppSettings {
 
 const DEFAULT_SETTINGS: AppSettings = {
   theme: 'aurora',
-  darkMode: false,
+  darkMode: true,
   defaultPlatformId: '',
   defaultModelId: '',
   keepRecent: 6,
