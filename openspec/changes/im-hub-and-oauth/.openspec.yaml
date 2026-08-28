@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-08-27
+goal: 构建独立 IM 消息中枢(内置/微信/飞书)与微信/飞书 OAuth 授权流：补齐后端 OAuth
+  接口(发起/回调/code换token/凭证持久化)、IM 会话数据模型与 API、BrowserPanel 授权回调拦截
