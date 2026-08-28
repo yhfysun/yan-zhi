@@ -397,6 +397,65 @@ try { db.exec('CREATE INDEX IF NOT EXISTS idx_kb_base_user ON knowledge_base(use
 try { db.exec('CREATE INDEX IF NOT EXISTS idx_kb_doc_base ON knowledge_doc(base_id)'); } catch {}
 try { db.exec('CREATE INDEX IF NOT EXISTS idx_kb_chunk_base ON knowledge_chunk(base_id, doc_id)'); } catch {}
 
+// ===== 知识库实体关系图谱（实体抽取 + 融合）=====
+db.exec(`
+  -- 实体：name 在本库内唯一（同名合并为同一实体 → 唯一标识）
+  CREATE TABLE IF NOT EXISTS kb_entity (
+    id TEXT PRIMARY KEY,
+    base_id TEXT NOT NULL REFERENCES knowledge_base(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    description TEXT,
+    updated_at INTEGER NOT NULL
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS uq_kb_entity_base_name ON kb_entity(base_id, name);
+
+  -- 实体间关系（有向边：source --relation--> target，均指实体名）
+  CREATE TABLE IF NOT EXISTS kb_relation (
+    id TEXT PRIMARY KEY,
+    base_id TEXT NOT NULL REFERENCES knowledge_base(id) ON DELETE CASCADE,
+    source TEXT NOT NULL,
+    target TEXT NOT NULL,
+    relation TEXT NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_kb_rel_base ON kb_relation(base_id);
+
+  -- 实体 → 来源切片（点实体可回溯到 N 个原文分片）
+  CREATE TABLE IF NOT EXISTS kb_entity_chunk (
+    entity_id TEXT NOT NULL REFERENCES kb_entity(id) ON DELETE CASCADE,
+    chunk_id TEXT NOT NULL REFERENCES knowledge_chunk(id) ON DELETE CASCADE,
+    base_id TEXT NOT NULL,
+    PRIMARY KEY (entity_id, chunk_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_kb_ent_chunk ON kb_entity_chunk(chunk_id);
+
+  -- 已抽取过实体图谱的文档（增量）
+  CREATE TABLE IF NOT EXISTS kb_processed_doc (
+    doc_id TEXT PRIMARY KEY,
+    base_id TEXT NOT NULL,
+    extracted_at INTEGER NOT NULL
+  );
+`);
+
+// ===== 知识库共享级别（一套 DB，guest 建 public / 登录用户 private）=====
+// knowledge_base 加 visibility 列（public=共享 / private=私有，默认 private）。安全 ALTER 兼容旧库。
+try {
+  const cols = db.prepare(`SELECT name FROM pragma_table_info('knowledge_base')`).all() as Array<{ name: string }>;
+  if (!cols.some((c) => c.name === 'visibility')) {
+    db.exec(`ALTER TABLE knowledge_base ADD COLUMN visibility TEXT NOT NULL DEFAULT 'private'`);
+  }
+} catch {}
+try { db.exec('CREATE INDEX IF NOT EXISTS idx_kb_visibility ON knowledge_base(user_id, visibility)'); } catch {}
+
+// 预置内置 guest 用户：未登录（web/桌面）统一用它作为访客身份访问服务端知识库。
+// 该用户不可登录（占位哈希），其创建的知识库强制 public，供所有用户共享浏览。
+try {
+  const guest = db.prepare("SELECT id FROM user WHERE username = 'guest'").get();
+  if (!guest) {
+    db.prepare("INSERT INTO user (id, username, email, password_hash, created_at) VALUES ('guest', 'guest', NULL, '!guest-internal-account', 0)").run();
+  }
+} catch {}
+
 // 记忆表：服务端 MCP 的 api_memory_* 需要可持久化。
 db.exec(`
   CREATE TABLE IF NOT EXISTS memory (
@@ -411,6 +470,14 @@ db.exec(`
     last_used_at INTEGER NOT NULL
   );
 `);
+// 记忆多层类型：daily=每日聚合 / session=会话 / agent=智能体长期（默认）。安全 ALTER，兼容已存在库。
+try {
+  const cols = db.prepare(`SELECT name FROM pragma_table_info('memory')`).all() as Array<{ name: string }>;
+  if (!cols.some((c) => c.name === 'type')) {
+    db.exec(`ALTER TABLE memory ADD COLUMN type TEXT NOT NULL DEFAULT 'agent'`);
+  }
+} catch {}
 try { db.exec('CREATE INDEX IF NOT EXISTS idx_memory_user_agent ON memory(user_id, agent_id, last_used_at DESC)'); } catch {}
+try { db.exec('CREATE INDEX IF NOT EXISTS idx_memory_type ON memory(user_id, type, last_used_at DESC)'); } catch {}
 
 export { db };

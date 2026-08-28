@@ -93,7 +93,10 @@ async function submit() {
     : await authStore.register(username.value, password.value, email.value);
   if (ok) {
     ElMessage.success(isLogin.value ? '登录成功' : '注册成功');
-    router.replace('/chat');
+    const redirect = typeof router.currentRoute.value.query.redirect === 'string'
+      ? router.currentRoute.value.query.redirect
+      : '/chat';
+    router.replace(redirect);
   }
 }
 </script>

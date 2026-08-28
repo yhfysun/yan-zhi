@@ -25,14 +25,26 @@ jobs:
       - name: 安装依赖
         run: pnpm install
 
-      - name: 构建 macOS 应用
-        run: pnpm --filter @yan-zhi/desktop electron:build
+      - name: 下载内置模型（qwen + bge，模型不进 git，构建前需补齐）
+        run: pnpm --filter @yan-zhi/server download:models
 
-      - name: 上传 DMG 安装包
+      - name: 构建 macOS 完整版
+        run: pnpm --filter @yan-zhi/desktop electron:build:full
+
+      - name: 构建 macOS 轻量版
+        run: pnpm --filter @yan-zhi/desktop electron:build:lite
+
+      - name: 上传 macOS DMG（完整版）
         uses: actions/upload-artifact@v4
         with:
-          name: macOS-DMG
+          name: macOS-DMG-full
           path: apps/desktop/release/*.dmg
+
+      - name: 上传 macOS DMG（轻量版）
+        uses: actions/upload-artifact@v4
+        with:
+          name: macOS-DMG-lite
+          path: apps/desktop/release-lite/*.dmg
 
   build-windows:
     runs-on: windows-latest
@@ -53,11 +65,23 @@ jobs:
       - name: 安装依赖
         run: pnpm install
 
-      - name: 构建 Windows 应用
-        run: pnpm --filter @yan-zhi/desktop electron:build
+      - name: 下载内置模型（qwen + bge，模型不进 git，构建前需补齐）
+        run: pnpm --filter @yan-zhi/server download:models
 
-      - name: 上传 NSIS 安装包
+      - name: 构建 Windows 完整版
+        run: pnpm --filter @yan-zhi/desktop electron:build:full
+
+      - name: 构建 Windows 轻量版
+        run: pnpm --filter @yan-zhi/desktop electron:build:lite
+
+      - name: 上传 NSIS 安装包（完整版）
         uses: actions/upload-artifact@v4
         with:
-          name: Windows-Installer
+          name: Windows-Installer-full
           path: apps/desktop/release/*.exe
+
+      - name: 上传 NSIS 安装包（轻量版）
+        uses: actions/upload-artifact@v4
+        with:
+          name: Windows-Installer-lite
+          path: apps/desktop/release-lite/*.exe

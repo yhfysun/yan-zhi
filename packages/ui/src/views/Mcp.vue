@@ -235,12 +235,14 @@
 
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue';
+import { useRoute } from 'vue-router';
 import { Plus, Connection, More, Link, Document, Switch, Tickets, List, Delete as DeleteIcon, Search, Close } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox, ElMessageBoxOptions } from 'element-plus';
 import { useMcpStore } from '../stores';
 import type { McpTransport, McpTool } from '@yan-zhi/shared';
 
 const store = useMcpStore();
+const route = useRoute();
 const showAdd = ref(false);
 const searchQuery = ref('');
 const toolsDialog = ref(false);
@@ -326,7 +328,14 @@ const stdioUnsupportedTitle = computed(() =>
     : '当前为浏览器环境，stdio 协议仅在 Electron 桌面端可用',
 );
 
-onMounted(() => store.loadServers());
+onMounted(async () => {
+  await store.loadServers();
+  // 深度链接：/mcp/:id 自动打开对应服务的工具面板
+  const id = route.params.id as string | undefined;
+  if (id && store.servers.some((s) => s.id === id)) {
+    showTools(id);
+  }
+});
 
 const currentTools = computed(() => store.tools[currentServerId.value] || []);
 const currentResources = computed(() => store.resources[currentServerId.value] || []);

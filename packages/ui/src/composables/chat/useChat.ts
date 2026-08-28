@@ -12,8 +12,10 @@ import {
   useSpaceStore,
   useFileStore,
   useDistillStore,
+  useSettingsStore,
 } from '../../stores';
 import { useIsMobile } from '../useIsMobile';
+import { api } from '../../api/client';
 import type { Agent, Message, Conversation, Platform } from '@yan-zhi/shared';
 import { estimateTokens, CHAT_MODEL_TYPES } from '@yan-zhi/shared';
 
@@ -425,25 +427,33 @@ function createChat() {
   const debugMode = ref(false);
 
   const showWorkspaceDir = ref(false);
-  const workspaceDir = ref('');
-  const WORKSPACE_DIR_KEY = 'settings:workspaceDir';
+  const settingsStore = useSettingsStore();
+  // 对外暴露，UI 展示用（未设置时显示 'workspace'）
+  const workspaceDir = computed(() => settingsStore.settings.workspaceDir || 'workspace');
 
   async function loadWorkspaceDir() {
+    if (!settingsStore.loaded) await settingsStore.load();
+    // 兼容旧版独立 keyring 键，迁移到 settings 统一命名空间
+    if (!settingsStore.settings.workspaceDir) {
+      try {
+        const { getPlatformAdapter } = await import('@yan-zhi/core');
+        const saved = await getPlatformAdapter().keyring.get('settings:workspaceDir');
+        if (saved) await settingsStore.update({ workspaceDir: saved });
+      } catch {}
+    }
+    // 把当前工作目录同步给 server，作为 cmd_exec / 目录工具的默认 cwd
+    await pushWorkspaceDir(settingsStore.settings.workspaceDir);
+  }
+
+  async function pushWorkspaceDir(dir: string) {
     try {
-      const { getPlatformAdapter } = await import('@yan-zhi/core');
-      const adapter = getPlatformAdapter();
-      const saved = await adapter.keyring.get(WORKSPACE_DIR_KEY);
-      workspaceDir.value = saved || 'workspace';
-    } catch { workspaceDir.value = 'workspace'; }
+      await api.post('/workspace/dir', { dir });
+    } catch {}
   }
 
   async function onWorkspaceDirSelected(path: string) {
-    workspaceDir.value = path;
-    try {
-      const { getPlatformAdapter } = await import('@yan-zhi/core');
-      const adapter = getPlatformAdapter();
-      await adapter.keyring.set(WORKSPACE_DIR_KEY, path);
-    } catch {}
+    await settingsStore.update({ workspaceDir: path });
+    await pushWorkspaceDir(path);
   }
 
   function tryParseSnapshot(raw?: string): any {
@@ -628,7 +638,8 @@ function createChat() {
     if (tokenPercent.value >= 70) return '#f59e0b';
     return '#3B82F6';
   });
-  const canSend = computed(() => (!!input.value.trim() || uploadedFiles.value.length > 0) && !!selectedModelId.value && !store.streaming);
+  // 仅当「当前会话」在流式时才锁定发送；其它会话并行运行时，当前空会话仍可输入/发送
+  const canSend = computed(() => (!!input.value.trim() || uploadedFiles.value.length > 0) && !!selectedModelId.value && !store.isConvStreaming(store.currentConvId));
 
   const userRoundIndices = computed<number[]>(() =>
     messageRounds.value
@@ -802,7 +813,6 @@ function createChat() {
         }
       } else {
         store.currentConvId = '';
-        store.currentMessages = [];
       }
     }
 
@@ -821,7 +831,7 @@ function createChat() {
 
   watch(() => store.currentMessages.length, () => nextTick(() => {
     if (messagesRef.value) { messagesRef.value.scrollTop = messagesRef.value.scrollHeight; handleScroll(); }
-    if (!store.streaming) collapseEarlyOnMobile();
+    if (!store.isConvStreaming(store.currentConvId)) collapseEarlyOnMobile();
   }));
 
   watch(() => store.currentConvId, async (id) => {
@@ -924,7 +934,6 @@ function createChat() {
 
   function startNewChat() {
     store.currentConvId = '';
-    store.currentMessages = [];
     isDraftMode.value = true;
     mountedSkillIds.value = [];
     input.value = '';
@@ -993,7 +1002,6 @@ function createChat() {
 
       if (store.currentConvId && !store.conversations.some((c) => c.id === store.currentConvId)) {
         store.currentConvId = '';
-        store.currentMessages = [];
       }
       if (!store.currentConvId) {
         const titleBase = userContent || '配置平台';
@@ -1050,7 +1058,6 @@ function createChat() {
 
     if (store.currentConvId && !store.conversations.some((c) => c.id === store.currentConvId)) {
       store.currentConvId = '';
-      store.currentMessages = [];
     }
 
     try {

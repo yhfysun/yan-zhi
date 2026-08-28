@@ -1,6 +1,6 @@
 // get_api_tools 内置工具 — 按模块渐进式暴露 API 接口
 import type { BuiltInTool } from '../types';
-import { initApiToolRegistry } from './api-tools';
+import { initApiToolRegistry, getApiToolRegistry, API_MODULES } from './api-tools';
 
 let _initDone = false;
 
@@ -21,7 +21,6 @@ export class GetApiToolsTool implements BuiltInTool {
 
   async execute(args: Record<string, unknown>) {
     ensureInit();
-    const { getApiToolRegistry, API_MODULES } = require('./api-tools');
     const registry = getApiToolRegistry();
     const module = args.module as string | undefined;
 

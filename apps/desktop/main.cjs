@@ -1,4 +1,4 @@
-const { app, BrowserWindow, BrowserView, ipcMain, Menu, session } = require('electron');
+const { app, BrowserWindow, BrowserView, dialog, ipcMain, Menu, session } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const fsp = fs.promises;
@@ -16,7 +16,13 @@ let logsDir = '';
 let modelsDir = '';
 
 const localModelFile = 'qwen2.5-1.5b-instruct-q4_k_m.gguf';
-const localModelDownloadUrl = 'https://hf-mirror.com/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf';
+// 内置 embedding 模型文件（bge-small-zh q8_0，约26MB）：完整版/轻量版都打包进 server/models。
+const embeddingModelFile = 'bge-small-zh-v1.5-q8_0.gguf';
+// 本地小模型下载源：国内魔搭(ModelScope)直链优先，hf-mirror 兜底，逐个尝试直到成功。
+const localModelDownloadUrls = [
+  'https://modelscope.cn/models/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/master/qwen2.5-1.5b-instruct-q4_k_m.gguf',
+  'https://hf-mirror.com/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf',
+];
 
 let localModelDownloadPromise = null;
 let localModelDownloadState = {
@@ -231,66 +237,80 @@ function existingLocalModelPath() {
   return resolveLocalModelFile(sourceModelPath);
 }
 
-function downloadModelFile(url, dest, onProgress) {
+function downloadModelFile(urls, dest, onProgress) {
   return new Promise((resolve, reject) => {
-    let redirects = 0;
-    const request = (currentUrl) => {
-      const lib = currentUrl.startsWith('https:') ? https : http;
-      const req = lib.get(currentUrl, { headers: { 'User-Agent': 'yan-zhi-desktop' } }, (res) => {
-        if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location) {
-          res.resume();
-          redirects += 1;
-          if (redirects > 10) {
-            reject(new Error('模型下载重定向次数过多'));
-            return;
-          }
-          request(new URL(res.headers.location, currentUrl).toString());
-          return;
-        }
-        if (res.statusCode < 200 || res.statusCode >= 300) {
-          res.resume();
-          reject(new Error(`模型下载失败：HTTP ${res.statusCode}`));
-          return;
-        }
-
-        const totalBytes = Number(res.headers['content-length'] || 0);
-        const tempDest = `${dest}.part`;
-        let receivedBytes = 0;
-        let lastPercent = 0;
-        const tracker = new Transform({
-          transform(chunk, _encoding, callback) {
-            receivedBytes += chunk.length;
-            const progress = totalBytes > 0 ? receivedBytes / totalBytes : 0;
-            onProgress?.({ receivedBytes, totalBytes, progress });
-            if (totalBytes > 0) {
-              const percent = Math.floor(progress * 100);
-              if (percent !== lastPercent) {
-                lastPercent = percent;
-                console.log(`[local-model] 下载进度: ${percent}%`);
-              }
+    const trySource = (index) => {
+      if (index >= urls.length) {
+        reject(new Error('所有模型下载源均失败'));
+        return;
+      }
+      const url = urls[index];
+      const tempDest = `${dest}.part`;
+      let redirects = 0;
+      const request = (currentUrl) => {
+        const lib = currentUrl.startsWith('https:') ? https : http;
+        const req = lib.get(currentUrl, { headers: { 'User-Agent': 'yan-zhi-desktop' } }, (res) => {
+          if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location) {
+            res.resume();
+            redirects += 1;
+            if (redirects > 10) {
+              fail(`模型下载重定向次数过多: ${currentUrl}`);
+              return;
             }
-            callback(null, chunk);
-          },
-        });
-        const out = fs.createWriteStream(tempDest);
-        pipeline(res, tracker, out, (err) => {
-          if (err) {
-            try { fs.rmSync(tempDest, { force: true }); } catch { /* ignore */ }
-            reject(err);
+            request(new URL(res.headers.location, currentUrl).toString());
             return;
           }
-          try {
-            fs.renameSync(tempDest, dest);
-            resolve();
-          } catch (err) {
-            reject(err);
+          if (res.statusCode < 200 || res.statusCode >= 300) {
+            res.resume();
+            fail(`HTTP ${res.statusCode} (${currentUrl})`);
+            return;
           }
+
+          const totalBytes = Number(res.headers['content-length'] || 0);
+          let receivedBytes = 0;
+          let lastPercent = 0;
+          const tracker = new Transform({
+            transform(chunk, _encoding, callback) {
+              receivedBytes += chunk.length;
+              const progress = totalBytes > 0 ? receivedBytes / totalBytes : 0;
+              onProgress?.({ receivedBytes, totalBytes, progress });
+              if (totalBytes > 0) {
+                const percent = Math.floor(progress * 100);
+                if (percent !== lastPercent) {
+                  lastPercent = percent;
+                  console.log(`[local-model] 下载进度: ${percent}%`);
+                }
+              }
+              callback(null, chunk);
+            },
+          });
+          const out = fs.createWriteStream(tempDest);
+          pipeline(res, tracker, out, (err) => {
+            if (err) {
+              try { fs.rmSync(tempDest, { force: true }); } catch { /* ignore */ }
+              fail(err && err.message ? err.message : String(err));
+              return;
+            }
+            try {
+              fs.renameSync(tempDest, dest);
+              resolve();
+            } catch (err) {
+              fail(err && err.message ? err.message : String(err));
+            }
+          });
         });
-      });
-      req.setTimeout(30000, () => req.destroy(new Error('模型下载连接超时')));
-      req.on('error', reject);
+        req.setTimeout(30000, () => req.destroy(new Error('模型下载连接超时')));
+        req.on('error', (err) => fail(err && err.message ? err.message : String(err)));
+      };
+      const fail = (reason) => {
+        // 当前源失败：打印日志并尝试下一个源。
+        console.error(`[local-model] 下载源失败(${index + 1}/${urls.length}): ${reason}`);
+        try { fs.rmSync(tempDest, { force: true }); } catch { /* ignore */ }
+        trySource(index + 1);
+      };
+      request(url);
     };
-    request(url);
+    trySource(0);
   });
 }
 
@@ -305,7 +325,7 @@ async function startLocalModelDownload() {
   if (localModelDownloadPromise) return localModelDownloadPromise;
 
   setLocalModelDownloadState({ state: 'downloading', receivedBytes: 0, totalBytes: 0, progress: 0, message: '正在下载本地小模型' });
-  localModelDownloadPromise = downloadModelFile(localModelDownloadUrl, dest, ({ receivedBytes, totalBytes, progress }) => {
+  localModelDownloadPromise = downloadModelFile(localModelDownloadUrls, dest, ({ receivedBytes, totalBytes, progress }) => {
     setLocalModelDownloadState({
       state: 'downloading',
       receivedBytes,
@@ -341,11 +361,16 @@ function startServer() {
   const localModelPath = app.isPackaged
     ? resolveLocalModelFile(bundledModelPath)
     : bundledModelPath;
+  // 内置 embedding 模型（bge，约26MB）：完整版/轻量版都打包进 server/models，这里直接指向打包路径。
+  const bundledEmbeddingModel = app.isPackaged
+    ? path.join(process.resourcesPath, 'server', 'models', embeddingModelFile)
+    : path.join(serverDir, 'models', embeddingModelFile);
   const backendEnv = {
     ...process.env,
     ELECTRON_RUN_AS_NODE: '1',
     PORT: '3001',
     LOCAL_MODEL_PATH: localModelPath,
+    LOCAL_EMBEDDING_MODEL_PATH: bundledEmbeddingModel,
     MODELS_DIR: modelsDir || path.join(app.getPath('userData'), 'models'),
     LOGS_DIR: logsDir || path.join(app.getPath('userData'), 'logs'),
     DATA_DIR: app.getPath('userData'),
@@ -789,6 +814,17 @@ ipcMain.handle('fs:listDirEntries', async (e, p) => {
     path: path.join(p, entry.name),
     isDir: entry.isDirectory(),
   }));
+});
+
+// 桌面端原生目录选择对话框（替代 electron-builder 前身 Tauri 的 plugin-dialog）
+ipcMain.handle('dialog:showOpenDir', async (e, options) => {
+  const win = BrowserWindow.fromWebContents(e.sender);
+  const result = await dialog.showOpenDialog(win, {
+    title: options?.title || '选择工作目录',
+    properties: ['openDirectory', 'createDirectory'],
+  });
+  if (result.canceled || result.filePaths.length === 0) return null;
+  return result.filePaths[0];
 });
 
 // ============================================================

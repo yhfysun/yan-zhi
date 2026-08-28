@@ -50,6 +50,22 @@ export function optionalAuth(req: Request, _res: Response, next: NextFunction) {
   next();
 }
 
+/** 访客/登录双模：有合法 token 用其身份；否则以内置 guest 身份（用于共享知识库等 public 资源）。 */
+export function guestOrAuth(req: Request, _res: Response, next: NextFunction) {
+  const header = req.headers.authorization;
+  if (header && header.startsWith('Bearer ')) {
+    try {
+      req.user = jwt.verify(header.slice(7), JWT_SECRET) as JwtPayload;
+      next();
+      return;
+    } catch {
+      // 无效 token 回退 guest
+    }
+  }
+  req.user = { userId: 'guest', username: 'guest' };
+  next();
+}
+
 /** 从 Authorization Bearer token 中解析用户，供非 Express 中间件上下文使用。 */
 export function resolveJwtUser(header?: string): JwtPayload | null {
   if (!header || !header.startsWith('Bearer ')) return null;
@@ -107,6 +123,17 @@ router.post('/login', (req: Request, res: Response) => {
 
   const token = jwt.sign({ userId: row.id, username: row.username }, JWT_SECRET, { expiresIn: JWT_EXPIRES });
   res.json({ token, user: { id: row.id, username: row.username, email: row.email } });
+});
+
+// POST /api/auth/guest —— 获取访客身份 token（未登录时访问共享知识库等）。预置 guest 用户不可登录，仅用于标注数据归属。
+router.post('/guest', (_req: Request, res: Response) => {
+  const row = db.prepare("SELECT id, username FROM user WHERE username = 'guest'").get() as any;
+  if (!row) {
+    res.status(500).json({ error: '未初始化 guest 用户' });
+    return;
+  }
+  const token = jwt.sign({ userId: row.id, username: row.username }, JWT_SECRET, { expiresIn: '365d' });
+  res.json({ token, user: { id: row.id, username: row.username, email: null } });
 });
 
 // GET /api/auth/me

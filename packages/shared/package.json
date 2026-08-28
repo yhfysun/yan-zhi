@@ -5,6 +5,7 @@
   "type": "module",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
+  "description": "言智共享类型定义与通用工具",
   "scripts": {
     "typecheck": "tsc --noEmit"
   },

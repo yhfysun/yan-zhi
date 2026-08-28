@@ -161,12 +161,14 @@ async function loadEntries() {
   }
 }
 
-/** 桌面端：调用 Tauri 原生目录选择对话框 */
+/** 桌面端：选择工作目录（经 preload 暴露的 Electron 原生 dialog） */
 async function pickNativeDir() {
   picking.value = true;
   try {
-    const { open } = await import('@tauri-apps/plugin-dialog');
-    const selected = await open({ directory: true, multiple: false, title: '选择工作目录' });
+    const electronApi = (window as any).electronAPI;
+    const selected = electronApi?.dialog?.showOpenDir
+      ? await electronApi.dialog.showOpenDir({ title: '选择工作目录' })
+      : null;
     if (selected && typeof selected === 'string') {
       currentPath.value = selected;
       selectedPath.value = '';

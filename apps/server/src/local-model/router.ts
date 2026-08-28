@@ -1,6 +1,7 @@
 import { Router, type Request, type Response } from 'express';
 import { LOCAL_MODEL_ID } from './service.js';
 import { generateLocalChat, getLocalModelStatus } from './engine.js';
+import { embedTexts, getEmbeddingModelStatus } from './embedding-engine.js';
 import type { OpenAiTool, OpenAiToolCall } from './tool-call-adapter.js';
 
 const router = Router();
@@ -196,6 +197,29 @@ router.get('/v1/models', (_req: Request, res: Response) => {
   res.json({
     object: 'list',
     data: [{ id: LOCAL_MODEL_ID, type: 'llm' }],
+  });
+});
+
+// 内置 embedding（OpenAI 兼容）：POST /v1/embeddings { input: string|string[] }
+router.post('/v1/embeddings', async (req: Request, res: Response) => {
+  const body = (req.body || {}) as { input?: string | string[] };
+  const input = body.input;
+  const inputs = Array.isArray(input) ? input : [input ?? ''];
+  const cleaned = inputs.map((t) => String(t || '').trim()).filter((t) => t.length > 0);
+  if (cleaned.length === 0) {
+    res.status(400).json({ error: 'input 不能为空' });
+    return;
+  }
+  const embeddings = await embedTexts(cleaned);
+  if (embeddings.some((v) => v === null)) {
+    res.status(503).json({ error: getEmbeddingModelStatus().error || '内置 embedding 模型不可用' });
+    return;
+  }
+  res.json({
+    object: 'list',
+    model: LOCAL_MODEL_ID,
+    data: embeddings.map((vec, i) => ({ object: 'embedding', index: i, embedding: vec })),
+    usage: { prompt_tokens: cleaned.reduce((s, t) => s + Math.ceil(t.length / 2), 0), total_tokens: cleaned.length },
   });
 });
 

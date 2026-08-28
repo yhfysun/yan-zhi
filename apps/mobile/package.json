@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "description": "言智移动端（Capacitor，原生 SQLite 插件）",
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc && vite build",

@@ -194,6 +194,7 @@ import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue';
 import { ElMessage } from 'element-plus';
 import { ZoomIn, ZoomOut } from '@element-plus/icons-vue';
 import { usePlatformStore } from '../stores/platform';
+import { useChatStore } from '../stores/chat';
 import { usePlatform } from '../composables/usePlatform';
 import { LlmClient } from '@yan-zhi/core';
 import { API_BASE } from '../api/client';
@@ -707,6 +708,19 @@ function onFrameLoad() {
 
 // 每次导航变化 → 记录到后端（供最近浏览/常用/每日 AI 分析）
 watch(currentUrl, (u) => { if (u) recordVisit(u); });
+
+// 智能体（LLM）调 browser_navigate 时，store.currentBrowserUrl 写入 url，
+// 这里 watch 到后复用 openSite 导航 —— 让智能体打开的页面与预览面板共用同一浏览器（桌面 BrowserView）
+const chatStore = useChatStore();
+watch(
+  () => chatStore.currentBrowserUrl,
+  (url) => {
+    if (!url) return;
+    if (url === currentUrl.value) return; // 已打开同一页，避免重复导航
+    openSite(url);
+  },
+);
+
 
 async function recordVisit(url: string) {
   try {

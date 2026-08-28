@@ -5,6 +5,7 @@
   "type": "module",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
+  "description": "言智业务核心：LLM 客户端、MCP、工具注册与沙箱、工作流、记忆",
   "scripts": {
     "typecheck": "tsc --noEmit"
   },

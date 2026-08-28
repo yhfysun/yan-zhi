@@ -260,6 +260,37 @@ CREATE TABLE IF NOT EXISTS conversation_file (
 );
 CREATE INDEX IF NOT EXISTS idx_conv_file_conv ON conversation_file(conversation_id);
 CREATE INDEX IF NOT EXISTS idx_conv_file_cat ON conversation_file(conversation_id, category);
+
+-- 知识库（本地模式 / guest 不登录也可用）
+CREATE TABLE IF NOT EXISTS knowledge_base (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  description TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS knowledge_doc (
+  id TEXT PRIMARY KEY,
+  base_id TEXT NOT NULL REFERENCES knowledge_base(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  content TEXT,
+  source_path TEXT,
+  metadata_json TEXT DEFAULT '{}',
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS knowledge_chunk (
+  id TEXT PRIMARY KEY,
+  doc_id TEXT NOT NULL REFERENCES knowledge_doc(id) ON DELETE CASCADE,
+  base_id TEXT NOT NULL,
+  chunk_index INTEGER NOT NULL,
+  content TEXT NOT NULL,
+  embedding BLOB,
+  metadata_json TEXT DEFAULT '{}',
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_kb_doc_base ON knowledge_doc(base_id);
+CREATE INDEX IF NOT EXISTS idx_kb_chunk_base ON knowledge_chunk(base_id, doc_id);
 `;
 
 /** 迁移 SQL：为已有数据库添加新字段 */

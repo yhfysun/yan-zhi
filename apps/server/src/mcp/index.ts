@@ -1,9 +1,47 @@
 import { Router, type Request, type Response } from 'express';
-import { getApiToolRegistry, getToolRegistry } from '@yan-zhi/core';
+import {
+  getApiToolRegistry,
+  getToolRegistry,
+  registerManagementTools,
+  FetchSearchBackend,
+  type SearchBackend,
+} from '@yan-zhi/core';
 import { resolveJwtUser } from '../auth.js';
 import { executeApiTool, SUPPORTED_API_TOOLS } from './api-tool-executor.js';
+import { db } from '../db.js';
+import { PlaywrightSearchBackend } from './search-backend.js';
 
 const router = Router();
+
+/** 解析 web_search 后端：优先用内置 Playwright 浏览器（YANZHI_SEARCH_ENGINE=bing|baidu，默认 bing）；否则可用 YANZHI_SEARCH_ENDPOINT 指定外部搜索 API */
+function resolveSearchBackend(): SearchBackend {
+  const engine = (process.env.YANZHI_SEARCH_ENGINE || 'bing').toLowerCase();
+  if (engine === 'bing' || engine === 'baidu') {
+    return new PlaywrightSearchBackend(engine);
+  }
+  const endpoint = process.env.YANZHI_SEARCH_ENDPOINT;
+  if (endpoint) {
+    return new FetchSearchBackend({
+      endpoint,
+      extractResults: (data: unknown) => (data as { results?: Array<{ title?: string; url?: string; snippet?: string }> })?.results?.map((r) => ({
+        title: r.title || '',
+        url: r.url || '',
+        snippet: r.snippet || '',
+      })) || [],
+    });
+  }
+  // 无配置时默认仍走浏览器，避免 web_search 直接报「无后端」
+  return new PlaywrightSearchBackend('bing');
+}
+
+/** 确保管理类工具（get_api_tools/list_platforms 等）与 searchBackend 在首次获取 registry 时已就位 */
+let _toolsInitialized = false;
+function ensureToolsInitialized(): void {
+  if (_toolsInitialized) return;
+  _toolsInitialized = true;
+  const registry = getToolRegistry(resolveSearchBackend());
+  registerManagementTools(registry, () => db);
+}
 
 interface JsonRpcRequest {
   jsonrpc?: string;
@@ -29,6 +67,7 @@ function jsonResult(id: string | number | null | undefined, result: unknown) {
 }
 
 function listAllTools() {
+  ensureToolsInitialized();
   const apiTools: Array<Record<string, unknown>> = [];
   for (const tools of getApiToolRegistry().values()) {
     for (const tool of tools) {
@@ -84,6 +123,7 @@ router.post('/', async (req: Request, res: Response) => {
   }
 
   if (request.method === 'tools/call') {
+    ensureToolsInitialized();
     const userId = resolveJwtUser(req.headers.authorization)?.userId;
     const name = String(request.params?.name || '');
     const args = (request.params?.arguments || {}) as Record<string, unknown>;

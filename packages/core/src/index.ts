@@ -9,3 +9,15 @@ export * from './compress/window';
 export * from './db/schema';
 export * from './skill/loader';
 export * from './tool';
+export {
+  localListBases,
+  localCreateBase,
+  localUpdateBase,
+  localDeleteBase,
+  localListDocs,
+  localAddDoc,
+  localDeleteDoc,
+  localSearch,
+  localSearchAll,
+  localEmbed,
+} from './kb/local-knowledge';

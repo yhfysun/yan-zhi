@@ -16,6 +16,12 @@ extraResources:
     to: server/node_modules
   - from: ../server/package.json
     to: server/package.json
+  # 轻量版也带上内置 embedding 模型（bge，约26MB）：语义检索开箱即用，无需运行时下载
+  - from: ../server/models
+    to: server/models
+    filter:
+      - "*.gguf"
+      - "!qwen2.5-1.5b-instruct-q4_k_m.gguf"
   - from: ../../assets/icons/icon.ico
     to: icon.ico
 win:

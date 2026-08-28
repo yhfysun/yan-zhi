@@ -3,10 +3,12 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "description": "言智后端服务：Express API、鉴权、商城服务端与 Playwright 浏览器自动化",
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc && node scripts/fix-esm-extensions.cjs",
     "start": "node dist/apps/server/src/index.js",
+    "download:models": "node ./scripts/download-models.cjs",
     "postinstall": "node ./scripts/fix-sqlite-electron.cjs || true"
   },
   "dependencies": {

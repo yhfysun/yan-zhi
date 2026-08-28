@@ -1,6 +1,6 @@
 // 聊天 store
 import { defineStore } from 'pinia';
-import { ref } from 'vue';
+import { ref, computed } from 'vue';
 import type { Conversation, Message, Platform, Model, DeltaToolCall } from '@yan-zhi/shared';
 import { getPlatformAdapter, LlmClient, ContextWindow, getToolRegistry } from '@yan-zhi/core';
 import { uid } from '@yan-zhi/shared';
@@ -8,6 +8,7 @@ import { useMcpStore } from './mcp';
 import { useAgentStore } from './agent';
 import { useSkillStore } from './skill';
 import { useToolsStore } from './tools';
+import { useSettingsStore } from './settings';
 import { api } from '../api/client';
 import { useAuthStore } from './auth';
 
@@ -72,9 +73,18 @@ function safeParseJson(s: string): unknown {
 
 export const useChatStore = defineStore('chat', () => {
   const conversations = ref<Conversation[]>([]);
-  const currentMessages = ref<Message[]>([]);
-  const streaming = ref(false);
   const currentConvId = ref('');
+  // 会话级消息缓存：每个会话独立一份消息数组，支持多会话并行（后台会话流式时不会污染当前会话视图）
+  const messagesByConv = ref<Record<string, Message[]>>({});
+  // 当前会话视图：始终指向 messagesByConv 里当前会话的数组（会话未加载/不存在时为空）
+  const currentMessages = computed<Message[]>(() => messagesByConv.value[currentConvId.value] || []);
+  // 当前会话是否流式/跑任务（多会话可并行，此值只反映用户当前查看的会话）
+  const streaming = computed(() => runningConvIds.value.has(currentConvId.value));
+  // 正在运行的会话集合：支持不同会话同时跑任务（真并行），同一会话仍互斥
+  const runningConvIds = ref<Set<string>>(new Set());
+  function isConvStreaming(convId: string) {
+    return runningConvIds.value.has(convId);
+  }
   const mountedMcpServers = ref<string[]>([]);
   const mcpDisabledTools = ref<Record<string, string[]>>({});
   const mcpToolAliases = ref<Record<string, Record<string, string>>>({});
@@ -90,6 +100,12 @@ export const useChatStore = defineStore('chat', () => {
   const previewingFile = ref<{ name: string; path: string } | null>(null);
   // 右侧预览面板当前网站 tab 标题的原始 URL（BrowserPanel 写入），用于在 tab header 上展示「真实打开的网站名」
   const currentBrowserUrl = ref('');
+  // 三层记忆缓存（异步预取）：callLlm 前刷新，buildSystemPrompt 同步拼接注入
+  const memoryContext = ref('');
+  // 知识库命中缓存（异步预取，不登录/登录都可用）：命中知识片段注入 prompt
+  const knowledgeContext = ref('');
+  // 会话轮数计数：每满固定轮数触发一次记忆抽取（用户无感知）
+  const conversationTurnCount = ref(0);
 
   // E12: 智能体反问弹窗 —— 等待用户回答的待处理问题（dispatchToolCall 中 await 此 Promise 以暂停 ReAct 循环）
   interface PendingQuestion {
@@ -212,7 +228,7 @@ export const useChatStore = defineStore('chat', () => {
     planTitle.value = '';
     planSteps.value = [];
   }
-  let abortController: AbortController | null = null;
+  let abortControllers = new Map<string, AbortController>();
 
   const isServerMode = () => !!useAuthStore().isLoggedIn;
 
@@ -246,9 +262,9 @@ export const useChatStore = defineStore('chat', () => {
     if (isServerMode()) {
       const r = await api.get<any[]>(`/conversations/${convId}/messages`);
       if ('data' in r) {
-        currentMessages.value = (r.data as any[]).map(rowToMsg);
+        messagesByConv.value[convId] = (r.data as any[]).map(rowToMsg);
       } else {
-        currentMessages.value = [];
+        messagesByConv.value[convId] = [];
       }
       const conv = conversations.value.find((c) => c.id === convId);
       mountedMcpServers.value = conv?.mcpServerIds || [];
@@ -261,7 +277,7 @@ export const useChatStore = defineStore('chat', () => {
       'SELECT * FROM message WHERE conversation_id = ? ORDER BY created_at ASC',
       [convId],
     );
-    currentMessages.value = rows.map(rowToMsg);
+    messagesByConv.value[convId] = rows.map(rowToMsg);
     const conv = conversations.value.find((c) => c.id === convId);
     mountedMcpServers.value = conv?.mcpServerIds || [];
     mcpDisabledTools.value = conv?._mcpDisabledTools ? { ...conv._mcpDisabledTools } : {};
@@ -359,8 +375,8 @@ export const useChatStore = defineStore('chat', () => {
     }
     if (currentConvId.value === id) {
       currentConvId.value = '';
-      currentMessages.value = [];
     }
+    delete messagesByConv.value[id];
     await loadConversations();
   }
 
@@ -377,21 +393,22 @@ export const useChatStore = defineStore('chat', () => {
     }
     if (ids.includes(currentConvId.value)) {
       currentConvId.value = '';
-      currentMessages.value = [];
     }
+    for (const id of ids) delete messagesByConv.value[id];
     await loadConversations();
   }
 
   async function addMessage(msg: Omit<Message, 'id' | 'createdAt'>): Promise<string> {
+    const targetConvId = msg.conversationId || currentConvId.value;
     if (isServerMode()) {
-      const r = await api.post<any>(`/conversations/${msg.conversationId}/messages`, {
+      const r = await api.post<any>(`/conversations/${targetConvId}/messages`, {
         role: msg.role, content: msg.content, toolCalls: msg.toolCalls,
         toolCallId: msg.toolCallId, reasoningContent: msg.reasoningContent, tokens: msg.tokens,
       });
       if ('data' in r) {
         const row = r.data as any;
         const m = rowToMsg(row);
-        currentMessages.value.push(m);
+        (messagesByConv.value[targetConvId] ||= []).push(m);
         return m.id;
       }
       throw new Error('添加消息失败');
@@ -402,19 +419,30 @@ export const useChatStore = defineStore('chat', () => {
     await adapter.db.exec(
       'INSERT INTO message (id, conversation_id, role, content, tool_calls_json, tool_call_id, reasoning_content, system_prompt_snapshot, tokens, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
       [
-        id, msg.conversationId, msg.role, msg.content || null,
+        id, targetConvId, msg.role, msg.content || null,
         msg.toolCalls ? JSON.stringify(msg.toolCalls) : null,
         msg.toolCallId || null, msg.reasoningContent || null,
         msg.systemPromptSnapshot || null,
         msg.tokens || 0, ts,
       ],
     );
-    await adapter.db.exec('UPDATE conversation SET updated_at = ? WHERE id = ?', [ts, msg.conversationId]);
-    currentMessages.value.push({ ...msg, id, createdAt: ts });
+    await adapter.db.exec('UPDATE conversation SET updated_at = ? WHERE id = ?', [ts, targetConvId]);
+    (messagesByConv.value[targetConvId] ||= []).push({ ...msg, id, createdAt: ts });
     return id;
   }
 
   async function updateMessage(id: string, patch: Partial<Message>) {
+    // 定位该消息所在会话缓存并原地更新，支持后台会话并发流式
+    const updateInPlace = () => {
+      for (const convId of Object.keys(messagesByConv.value)) {
+        const arr = messagesByConv.value[convId];
+        const idx = arr.findIndex((m) => m.id === id);
+        if (idx >= 0) {
+          arr[idx] = { ...arr[idx], ...patch };
+          return;
+        }
+      }
+    };
     if (isServerMode()) {
       const body: any = {};
       if (patch.content !== undefined) body.content = patch.content;
@@ -424,8 +452,7 @@ export const useChatStore = defineStore('chat', () => {
       if (patch.systemPromptSnapshot !== undefined) body.systemPromptSnapshot = patch.systemPromptSnapshot;
       if (Object.keys(body).length === 0) return;
       await api.patch(`/messages/${id}`, body);
-      const idx = currentMessages.value.findIndex((m) => m.id === id);
-      if (idx >= 0) currentMessages.value[idx] = { ...currentMessages.value[idx], ...patch };
+      updateInPlace();
       return;
     }
     const adapter = getPlatformAdapter();
@@ -439,8 +466,7 @@ export const useChatStore = defineStore('chat', () => {
     if (sets.length === 0) return;
     params.push(id);
     await adapter.db.exec(`UPDATE message SET ${sets.join(', ')} WHERE id = ?`, params);
-    const idx = currentMessages.value.findIndex((m) => m.id === id);
-    if (idx >= 0) currentMessages.value[idx] = { ...currentMessages.value[idx], ...patch };
+    updateInPlace();
   }
 
   async function deleteMessage(id: string) {
@@ -450,7 +476,9 @@ export const useChatStore = defineStore('chat', () => {
       const adapter = getPlatformAdapter();
       await adapter.db.exec('DELETE FROM message WHERE id = ?', [id]);
     }
-    currentMessages.value = currentMessages.value.filter((m) => m.id !== id);
+    for (const convId of Object.keys(messagesByConv.value)) {
+      messagesByConv.value[convId] = messagesByConv.value[convId].filter((m) => m.id !== id);
+    }
   }
 
   function getMergedMounts(): {
@@ -604,6 +632,23 @@ export const useChatStore = defineStore('chat', () => {
     if (registry.has(fullName)) {
       if (fullName.startsWith(MCP_PREFIX) || fullName.startsWith(CUSTOM_PREFIX)) {
         return { ok: false, msg: '内置工具名与保留前缀冲突: ' + fullName };
+      }
+      // B 方案：智能体调 browser_navigate 时，桌面端桥接到预览面板的 BrowserView（共用同一浏览器）。
+      // 通过 store.currentBrowserUrl 命令 BrowserPanel 导航，模型打开的页面在预览面板同步显示。
+      if (fullName === 'browser_navigate') {
+        const isElectronDesktop = typeof window !== 'undefined' && !!(window as any).electronAPI?.isElectron;
+        const rawUrl = String((args as Record<string, unknown>).url || '').trim();
+        if (isElectronDesktop) {
+          if (!rawUrl) return { ok: false, msg: 'browser_navigate 缺少 url 参数' };
+          // 规范化：非 http 开头补 https://（与 BrowserPanel 一致）
+          const target = /^https?:\/\//i.test(rawUrl) ? rawUrl : 'https://' + rawUrl;
+          rightPanelOpen.value = true;
+          rightPanelTab.value = 'browser';
+          currentBrowserUrl.value = target; // BrowserPanel watch 到后 openSite 导航
+          browserSteps.value.push({ action: 'browser_navigate', result: `已在预览面板打开 ${target}`, time: Date.now() });
+          return { ok: true, result: `已在预览浏览器打开 ${target}` };
+        }
+        // Web 端/非桌面：走 registry.execute（服务端 Playwright），逻辑不变
       }
       // E7: call_agent 特殊拦截 —— 委派给子智能体执行
       if (fullName === 'call_agent') {
@@ -968,6 +1013,146 @@ export const useChatStore = defineStore('chat', () => {
     return lines.length > 0 ? '可调用子智能体:\n' + lines.join('\n') : '';
   }
 
+  /** 从服务端检索多层记忆（仅登录态可用；本地模式跳过）。返回格式化片段。
+   *  注入每日/智能体记忆，以及「当前会话」的会话记忆（session 按当前会话过滤，不串台）。 */
+  async function buildMemoryContext(): Promise<string> {
+    if (!isServerMode()) return '';
+    try {
+      const agentId = encodeURIComponent(activeAgent()?.id || '');
+      const cid = encodeURIComponent(currentConvId.value || '');
+      const types = encodeURIComponent('daily,agent,session');
+      // session 按当前会话过滤（服务端对 metadata.conversationId 匹配）
+      const q = cid ? `/memory/recent?type=${types}&agentId=${agentId}&conversationId=${cid}&limit=20` : `/memory/recent?type=${types}&agentId=${agentId}&limit=20`;
+      const r = await api.get<any>(q);
+      const rows = (r && 'data' in r ? r.data : r) as Array<{ type: string; content: string; metadata_json?: string }>;
+      if (!rows || rows.length === 0) return '';
+      const labeled = rows.map((m) => {
+        const label = m.type === 'daily' ? `[每日记忆]` : m.type === 'session' ? `[当前会话记忆]` : `[智能体记忆]`;
+        return `${label} ${m.content}`;
+      });
+      return '---\n## 已知记忆（供参考，可能与当前问题不相关，按需使用）\n' + labeled.join('\n');
+    } catch {
+      return '';
+    }
+  }
+
+  /** 从知识库检索命中片段（登录态走 server 跨库搜索，guest 走本地 cross-lib；命中注入 prompt） */
+  async function buildKnowledgeContext(): Promise<string> {
+    try {
+      const lastUserMsg = [...(messagesByConv.value[currentConvId.value] || [])].reverse().find((m) => m.role === 'user');
+      const query = (lastUserMsg?.content || '').trim();
+      if (!query || query.length < 2) return '';
+      let rows: Array<{ content: string; baseName?: string; entity?: string; hop?: number; reason?: string }> = [];
+      // 知识库统一存服务端（guest 也走 server，服务端 guestOrAuth 以 guest 身份检索 public 库）
+      try {
+        // 优先实体导向多跳：问题匹配实体 → 取其切片 → 沿关联最多 3 级取关联实体切片
+        const er = await api.get<any>(`/kb/entity-search?query=${encodeURIComponent(query.slice(0, 100))}&hops=3&topK=3`);
+        rows = (er && 'data' in er ? er.data : er) || [];
+      } catch {
+        rows = [];
+      }
+      // 实体检索没结果则退化为关键词多跳
+      if (!rows || rows.length === 0) {
+        try {
+          const r = await api.get<any>(`/kb/search-all?query=${encodeURIComponent(query.slice(0, 100))}&topK=5`);
+          rows = (r && 'data' in r ? r.data : r) || [];
+        } catch {
+          rows = [];
+        }
+      }
+      if (!rows || rows.length === 0) return '';
+      const blocks = rows.map((r) => {
+        const tag = r.baseName ? `（库：${r.baseName}）` : '';
+        const ent = r.entity ? `[实体:${r.entity}]` : '';
+        const hop = r.hop && r.hop > 1 ? `（${r.hop}级关联）` : '';
+        return `- ${tag}${ent}${hop} ${(r.content || '').slice(0, 400)}`;
+      });
+      return '---\n## 知识库参考（命中内容，可能与问题相关）\n' + blocks.join('\n');
+    } catch {
+      return '';
+    }
+  }
+
+  // ── 记忆抽取（LLM 抽取多层记忆 → 服务端落库）──
+  const memoryExtractInFlight = ref(false);
+  /** 解析记忆抽取模型：settings 配置优先，其次默认模型，最后回退本地小模型 */
+  async function resolveExtractModel(): Promise<{ platform: any; model: any } | null> {
+    const { usePlatformStore } = await import('./platform');
+    const platformStore = usePlatformStore();
+    const settingsStore = useSettingsStore();
+    const pid = settingsStore.settings.memoryExtractPlatformId
+      || settingsStore.settings.defaultPlatformId;
+    const mid = settingsStore.settings.memoryExtractModelId
+      || settingsStore.settings.defaultModelId;
+    let platform: any = platformStore.platforms.find((p: any) => p.id === pid);
+    let model: any = platformStore.resolveModel(mid || '', pid || '');
+    // 无默认/不可用时回退本地小模型
+    if (!platform || !model) {
+      const local = platformStore.platforms.find((p: any) => p.id?.startsWith('local-model-'));
+      if (local) {
+        platform = local;
+        model = platformStore.resolveModel('', local.id)
+          || platformStore.models.find((m: any) => m.platformId === local.id)
+          || null;
+      }
+    }
+    return platform && model ? { platform, model } : null;
+  }
+
+  /** 抽取最近对话，沉淀为 daily/session/agent 三层记忆，服务端落库。幂等防并发。 */
+  async function extractMemoryFromConversation(): Promise<void> {
+    if (memoryExtractInFlight.value) return;
+    if (!isServerMode()) return;
+    const resolved = await resolveExtractModel();
+    if (!resolved) return;
+    const msgs = messagesByConv.value[currentConvId.value] || [];
+    const recent = msgs.filter((m) => m.content || m.toolCalls?.length).slice(-20);
+    if (recent.length < 4) return; // 对话太短无需抽取
+    memoryExtractInFlight.value = true;
+    try {
+      const transcript = recent
+        .map((m) => {
+          const role = m.role === 'user' ? '用户' : m.role === 'assistant' ? '助手' : m.role;
+          return `【${role}】\n${m.content || (m.toolCalls?.length ? '(调用工具)' : '')}`;
+        })
+        .join('\n\n---\n\n');
+      const client = new LlmClient(resolved.platform, resolved.model);
+      const resp = await client.chat(
+        [
+          {
+            role: 'system',
+            content: '你是记忆抽取助手。从对话中抽取「值得长期记住的用户信息」，输出 JSON 数组，每项形如 {"type":"agent|session|daily","content":"一句话事实"}。agent=稳定的用户偏好/背景；daily=当天的重要事件/进展；session=本会话的上下文结论。只输出 JSON，不要解释。若没有值得记的返回 []。',
+          },
+          { role: 'user', content: transcript },
+        ] as any,
+        { temperature: 0.2, maxTokens: 800 },
+      );
+      const raw = resp.delta?.content || '';
+      const jsonMatch = raw.match(/\[[\s\S]*\]/);
+      if (!jsonMatch) return;
+      const items = JSON.parse(jsonMatch[0]);
+      if (!Array.isArray(items)) return;
+      const agentId = activeAgent()?.id || '';
+      const today = new Date().toISOString().slice(0, 10);
+      for (const item of items) {
+        const content = String(item?.content || '').trim();
+        if (!content) continue;
+        const t = String(item?.type || 'agent');
+        if (t === 'daily') {
+          await api.post('/memory/upsert-daily', { content, agentId, date: today }).catch(() => {});
+        } else if (t === 'session') {
+          await api.post('/memory/create', { content, type: 'session', agentId, metadata: { conversationId: currentConvId.value } }).catch(() => {});
+        } else {
+          await api.post('/memory/create', { content, type: 'agent', agentId }).catch(() => {});
+        }
+      }
+    } catch {
+      // 抽取失败静默，不影响主对话
+    } finally {
+      memoryExtractInFlight.value = false;
+    }
+  }
+
   function buildSystemPrompt(): string {
     const conv = conversations.value.find(c => c.id === currentConvId.value);
     const agent = activeAgent();
@@ -978,6 +1163,15 @@ export const useChatStore = defineStore('chat', () => {
       parts.push(conv.systemPrompt);
     } else if (agent?.systemPrompt) {
       parts.push(agent.systemPrompt);
+    }
+
+    // 应用使用指南：命中用户问题关键字（怎么用/如何使用/用法/操作方法/ help/guide 等）时注入
+    const lastUserMsg = [...(messagesByConv.value[currentConvId.value] || [])].reverse().find((m) => m.role === 'user');
+    const userText = lastUserMsg?.content || '';
+    const guideHit = /(怎么用|如何使用|用法|怎么使用|操作方法|使用说明|help|guide|workbuddy|yan-zhi|这个应用|这个软件|这个工具)/i.test(userText);
+    if (guideHit) {
+      const guide = useSettingsStore().settings.appGuide?.trim();
+      if (guide) parts.push('---\n## 应用使用指南\n' + guide);
     }
 
     if (isHarness) {
@@ -1013,6 +1207,21 @@ export const useChatStore = defineStore('chat', () => {
       if (skillsDesc) parts.push('---\n' + skillsDesc);
     }
 
+    const wd = useSettingsStore().settings.workspaceDir;
+    if (wd && wd.trim()) {
+      parts.push(`---\n## 工作目录\n当前工作目录：${wd}`);
+    }
+
+    // 三层记忆注入（callLlm 已异步刷新 memoryContext）
+    if (memoryContext.value && memoryContext.value.trim()) {
+      parts.push(memoryContext.value);
+    }
+
+    // 知识库命中片段注入（callLlm 已刷新 knowledgeContext）
+    if (knowledgeContext.value && knowledgeContext.value.trim()) {
+      parts.push(knowledgeContext.value);
+    }
+
     return parts.join('\n\n');
   }
 
@@ -1038,11 +1247,13 @@ export const useChatStore = defineStore('chat', () => {
     },
     onChunk?: (chunk: { content?: string; reasoning?: string }) => void,
   ): Promise<void> {
-    if (!currentConvId.value) throw new Error('未选择会话');
-    if (streaming.value) return;
+    const convId = currentConvId.value;
+    if (!convId) throw new Error('未选择会话');
+    // 会话级互斥：同一会话不可重复提交，不同会话可并行跑任务
+    if (runningConvIds.value.has(convId)) return;
 
-    streaming.value = true;
-    abortController = new AbortController();
+    runningConvIds.value.add(convId);
+    abortControllers.set(convId, new AbortController());
     const maxSteps = getMaxReActSteps();
 
     await ensureMcpConnections();
@@ -1050,7 +1261,7 @@ export const useChatStore = defineStore('chat', () => {
     try {
       if (options.userContent !== undefined) {
         await addMessage({
-          conversationId: currentConvId.value,
+          conversationId: convId,
           role: 'user',
           content: options.userContent,
         });
@@ -1058,10 +1269,22 @@ export const useChatStore = defineStore('chat', () => {
 
       for (let step = 0; step < maxSteps; step++) {
         const ctxWindow = new ContextWindow(model.contextWindow || 8000, 6);
-        let messagesToSend = [...currentMessages.value];
+        let messagesToSend = [...(messagesByConv.value[convId] || [])];
         messagesToSend = messagesToSend.filter((m) => m.content || m.toolCalls || m.role === 'tool');
         if (ctxWindow.needsCompression(messagesToSend)) {
           messagesToSend = await ctxWindow.compress(messagesToSend);
+        }
+
+        // 发送前异步刷新三层记忆缓存（登录态从服务端拉取；本地模式为空）
+        memoryContext.value = await buildMemoryContext();
+        // 刷新知识库命中片段（不登录也可用）
+        try { knowledgeContext.value = await buildKnowledgeContext(); } catch { knowledgeContext.value = ''; }
+
+        // 每 10 轮触发一次记忆抽取（fire-and-forget，不阻塞主对话、用户无感知）
+        conversationTurnCount.value++;
+        if (conversationTurnCount.value >= 10) {
+          conversationTurnCount.value = 0;
+          void extractMemoryFromConversation();
         }
 
         const systemPrompt = buildSystemPrompt();
@@ -1077,7 +1300,7 @@ export const useChatStore = defineStore('chat', () => {
         })));
 
         const assistantMsgId = await addMessage({
-          conversationId: currentConvId.value,
+          conversationId: convId,
           role: 'assistant',
           content: '',
         });
@@ -1123,7 +1346,7 @@ export const useChatStore = defineStore('chat', () => {
           frequencyPenalty: options.frequencyPenalty,
           presencePenalty: options.presencePenalty,
           reasoningEffort: options.reasoningEffort,
-          signal: abortController.signal,
+          signal: abortControllers.get(convId)?.signal,
         })) {
           if (chunk.delta?.content) {
             fullContent += chunk.delta.content;
@@ -1156,10 +1379,11 @@ export const useChatStore = defineStore('chat', () => {
               }
             }
           }
-          const idx = currentMessages.value.findIndex((m) => m.id === assistantMsgId);
+          const convMessages = messagesByConv.value[convId] || [];
+          const idx = convMessages.findIndex((m) => m.id === assistantMsgId);
           if (idx >= 0) {
-            currentMessages.value[idx] = {
-              ...currentMessages.value[idx],
+            convMessages[idx] = {
+              ...convMessages[idx],
               content: fullContent,
               reasoningContent: fullReasoning || undefined,
               toolCalls: toolCallAcc.length > 0 ? [...toolCallAcc] as any : undefined,
@@ -1203,14 +1427,14 @@ export const useChatStore = defineStore('chat', () => {
             : JSON.stringify({ error: result.msg || '工具执行失败' });
 
           await addMessage({
-            conversationId: currentConvId.value,
+            conversationId: convId,
             role: 'tool',
             content: resultStr,
             toolCallId: tc.id,
           });
 
           // D4: file_write 成功后，记录到 conversation_file（分类管理）
-          if (result.ok && tc.name === 'file_write' && parsedArgs.path && currentConvId.value) {
+          if (result.ok && tc.name === 'file_write' && parsedArgs.path && convId) {
             try {
               const { useFileStore } = await import('./file');
               const filePath = String(parsedArgs.path);
@@ -1218,7 +1442,7 @@ export const useChatStore = defineStore('chat', () => {
               const fileName = filePath.split(sep).pop() || filePath;
               const category = (parsedArgs.category as 'intermediate' | 'deliverable') || 'intermediate';
               await useFileStore().registerFile({
-                conversationId: currentConvId.value,
+                conversationId: convId,
                 name: fileName,
                 path: filePath,
                 category,
@@ -1231,7 +1455,7 @@ export const useChatStore = defineStore('chat', () => {
       }
 
       await addMessage({
-        conversationId: currentConvId.value,
+        conversationId: convId,
         role: 'assistant',
         content: `已达到最大循环步数（${maxSteps}），请检查任务是否需要拆分或调整工具配置。`,
       });
@@ -1240,8 +1464,8 @@ export const useChatStore = defineStore('chat', () => {
       console.error('[Chat] 发送失败:', e);
       throw e;
     } finally {
-      abortController = null;
-      streaming.value = false;
+      abortControllers.delete(convId);
+      runningConvIds.value.delete(convId);
     }
   }
 
@@ -1255,10 +1479,11 @@ export const useChatStore = defineStore('chat', () => {
     return callLlm(platform, model, { userContent, ...options }, onChunk);
   }
 
-  function stop() {
-    if (abortController) {
-      abortController.abort();
-    }
+  function stop(convId?: string) {
+    const target = convId || currentConvId.value;
+    if (!target) return;
+    const controller = abortControllers.get(target);
+    if (controller) controller.abort();
   }
 
   async function ensureMcpConnections() {
@@ -1287,6 +1512,7 @@ export const useChatStore = defineStore('chat', () => {
 
   return {
     conversations, currentMessages, streaming, currentConvId, mountedMcpServers, mcpDisabledTools, mcpToolAliases,
+    runningConvIds, isConvStreaming,
     browserSteps, rightPanelOpen,
     showFilePopup, previewingFile, rightPanelTab, currentBrowserUrl,
     pendingQuestion, pendingConfirmation, pendingPlatformConfig, submitPendingQuestion,

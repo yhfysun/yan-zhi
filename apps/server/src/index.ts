@@ -19,6 +19,8 @@ import peersRoutes from './routes/peers.js';
 import imRoutes from './routes/im.js';
 import kbRoutes from './routes/kb.js';
 import mcpBridgeRoutes from './mcp/index.js';
+import workspaceRoutes from './routes/workspace.js';
+import memoryRoutes from './routes/memory.js';
 import { nodeAdapter } from './node-adapter.js';
 import localModelRoutes from './local-model/router.js';
 import { warmupLocalModel } from './local-model/engine.js';
@@ -53,6 +55,8 @@ app.use('/api/peers', peersRoutes);
 app.use('/api/im', imRoutes);
 app.use('/api/kb', kbRoutes);
 app.use('/api/mcp', mcpBridgeRoutes);
+app.use('/api/workspace', workspaceRoutes);
+app.use('/api/memory', memoryRoutes);
 app.use('/local-model', localModelRoutes);
 
 app.listen(PORT, '127.0.0.1', () => {

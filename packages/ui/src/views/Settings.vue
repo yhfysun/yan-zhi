@@ -32,6 +32,17 @@
               <el-option v-for="m in availableDefaultModels" :key="m.id" :label="m.alias || m.modelId" :value="m.id" />
             </el-select>
           </el-form-item>
+          <el-form-item label="记忆抽取模型">
+            <div style="display:flex;gap:8px;align-items:center">
+              <el-select v-model="memoryExtractPlatformId" placeholder="抽取模型平台" style="width:140px" clearable @change="onMemoryExtractPlatformChange">
+                <el-option v-for="p in platformStore.platforms" :key="p.id" :label="p.name" :value="p.id" />
+              </el-select>
+              <el-select v-model="memoryExtractModelId" placeholder="抽取模型" style="width:140px" clearable :disabled="!memoryExtractPlatformId">
+                <el-option v-for="m in availableMemoryExtractModels" :key="m.id" :label="m.alias || m.modelId" :value="m.id" />
+              </el-select>
+              <span class="form-tip">留空则使用默认模型，仍不可用则自动回退本地小模型</span>
+            </div>
+          </el-form-item>
           <el-form-item label="启用上下文压缩">
             <el-switch v-model="enableCompression" />
             <span class="form-tip" style="margin-left: 12px">超长会话时自动摘要压缩</span>
@@ -124,9 +135,14 @@ const defaultModelId = ref('');
 const keepRecent = ref(6);
 const maxContextTokens = ref(8000);
 const enableCompression = ref(true);
+const memoryExtractPlatformId = ref('');
+const memoryExtractModelId = ref('');
 
 const availableDefaultModels = computed(() =>
   platformStore.models.filter((m) => m.platformId === defaultPlatformId.value && m.enabled),
+);
+const availableMemoryExtractModels = computed(() =>
+  platformStore.models.filter((m) => m.platformId === memoryExtractPlatformId.value && m.enabled),
 );
 
 onMounted(async () => {
@@ -138,8 +154,13 @@ onMounted(async () => {
   keepRecent.value = settingsStore.settings.keepRecent;
   maxContextTokens.value = settingsStore.settings.maxContextTokens;
   enableCompression.value = settingsStore.settings.enableCompression;
+  memoryExtractPlatformId.value = settingsStore.settings.memoryExtractPlatformId;
+  memoryExtractModelId.value = settingsStore.settings.memoryExtractModelId;
   if (defaultPlatformId.value) {
     await platformStore.loadModels(defaultPlatformId.value);
+  }
+  if (memoryExtractPlatformId.value) {
+    await platformStore.loadModels(memoryExtractPlatformId.value);
   }
 });
 
@@ -170,6 +191,27 @@ watch([defaultModelId, keepRecent, maxContextTokens, enableCompression], async (
     keepRecent: keepRecent.value,
     maxContextTokens: maxContextTokens.value,
     enableCompression: enableCompression.value,
+  });
+});
+
+async function onMemoryExtractPlatformChange() {
+  memoryExtractModelId.value = '';
+  if (memoryExtractPlatformId.value) {
+    await platformStore.loadModels(memoryExtractPlatformId.value);
+    const def = platformStore.models.find((m) => m.platformId === memoryExtractPlatformId.value && m.isDefault);
+    memoryExtractModelId.value = def?.id || '';
+  }
+  await settingsStore.update({
+    memoryExtractPlatformId: memoryExtractPlatformId.value,
+    memoryExtractModelId: memoryExtractModelId.value,
+  });
+}
+
+watch([memoryExtractPlatformId, memoryExtractModelId], async ([pid, mid]) => {
+  if (pid === settingsStore.settings.memoryExtractPlatformId && mid === settingsStore.settings.memoryExtractModelId) return;
+  await settingsStore.update({
+    memoryExtractPlatformId: memoryExtractPlatformId.value,
+    memoryExtractModelId: memoryExtractModelId.value,
   });
 });
 

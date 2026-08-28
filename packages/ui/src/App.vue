@@ -128,6 +128,7 @@ const localModelVisible = computed(() => {
 });
 const localModelProgress = computed(() => Math.max(0, Math.min(100, Math.round(localModelState.value.progress * 100))));
 let offLocalModelState: (() => void) | undefined;
+let localModelPollTimer: ReturnType<typeof setTimeout> | undefined;
 
 onMounted(async () => {
   try {
@@ -143,10 +144,21 @@ onMounted(async () => {
   });
   const initial = await api.getState();
   if (initial) localModelState.value = initial;
+
+  // 主动推送(webContents.send)在窗口就绪前可能丢失；周期性向主进程拉取真实状态，
+  // 保证下载/错误结束后 UI 能同步到 done 并自动关闭弹窗，避免"卡在下载中"。
+  const poll = async () => {
+    const api2 = (window as any).electronAPI?.localModel;
+    if (!api2) return;
+    const st = await api2.getState();
+    if (st) localModelState.value = st;
+  };
+  localModelPollTimer = setInterval(poll, 2000);
 });
 
 onUnmounted(() => {
   offLocalModelState?.();
+  if (localModelPollTimer) clearInterval(localModelPollTimer);
 });
 
 async function retryLocalModel() {

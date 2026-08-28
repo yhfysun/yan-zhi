@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "description": "言智 Web 端（PWA，IndexedDB/Dexie 本地存储）",
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc && vite build",

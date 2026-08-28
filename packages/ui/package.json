@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "main": "./src/index.ts",
+  "description": "言智共享 UI：跨端 Vue 组件、路由、视图与状态管理（stores）",
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc && vite build",
@@ -27,8 +28,6 @@
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
-    "@tauri-apps/api": "^2.0.0",
-    "@tauri-apps/plugin-dialog": "^2.7.2",
     "@types/leaflet": "^1.9.22",
     "@types/three": "^0.185.4",
     "@vitejs/plugin-vue": "^5.1.0",

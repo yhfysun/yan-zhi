@@ -48,7 +48,7 @@ const routes: RouteRecordRaw[] = [
     path: '/knowledge',
     name: 'knowledge',
     component: () => import('../views/Knowledge.vue'),
-    meta: { title: '知识库' },
+    meta: { title: '知识库', guest: true },
   },
   {
     path: '/models',
@@ -127,6 +127,12 @@ const routes: RouteRecordRaw[] = [
 const router = createRouter({
   history: createWebHashHistory(),
   routes,
+});
+
+router.beforeEach((to) => {
+  if (to.meta.requiresAuth && !localStorage.getItem('auth_token')) {
+    return { path: '/login', query: { redirect: to.fullPath } };
+  }
 });
 
 export default router;

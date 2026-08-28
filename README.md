@@ -1,30 +1,32 @@
 # 言智 (Yan-Zhi)
 
-语言可控的智能体平台 — 一款所有管理功能均可通过自然语言操控的跨端 AI 助手应用，覆盖桌面（Tauri）、Web（PWA）、移动端（Capacitor）三端，统一一套 Vue 3 代码库。
+语言可控的智能体平台 — 一款所有管理功能均可通过自然语言操控的跨端 AI 助手应用，覆盖桌面（Electron）、Web（PWA）、移动端（Capacitor）三端，统一一套 Vue 3 代码库。
 
 ## 核心理念
 
 - **语言即界面**：项目所有管理接口都是大模型可直接调用的工具，用户通过聊天即可配置模型、管理工具、安装 Skill、创建智能体
 - **协议开放**：模型接入遵循 OpenAI 兼容协议，商城互联使用标准化 REST API
-- **数据本地**：对话、配置、记忆默认本地存储，隐私可控
+- **数据分层**：对话、配置、本地文件默认本地存储，隐私可控；**知识/记忆类共享数据**落在内置服务端（guest/登录统一，支持 public/private），方便跨设备与共享
 - **节点互联**：每个言智节点既是客户端也是服务端，可连接其他节点获取工具 / Skill / 智能体
 
 ## 技术栈
 
 - Vue 3.5 + TypeScript + Vite 5
-- Tauri 2（桌面）/ Capacitor 6（移动）/ PWA（Web）
+- Electron（桌面，electron-builder 打包）/ Capacitor 6（移动）/ PWA（Web）
 - Element Plus + Vue Router + Pinia + Vue Flow（工作流画布）
-- SQLite + better-sqlite3 + sqlite-vec（本地存储与向量记忆）/ Dexie（Web 端 IndexedDB）
+- SQLite + better-sqlite3（本地会话/配置）+ sqlite-vec（本地向量记忆）/ Dexie（Web 端 IndexedDB）
+- 内置 Express 后端（apps/server）统一承载**共享数据**（知识库等，guest/登录都走服务端一套 DB，支持 public/private 共享）
+- 内置本地模型：qwen2.5-1.5b（对话）+ bge-small-zh（语义向量，知识库/记忆检索）
 - Express（后端 API）+ JWT / bcrypt（鉴权）
 - Playwright（内置浏览器自动化）
-- OpenAI 兼容协议 + MCP（Model Context Protocol）
+- OpenAI 兼容协议 + Anthropic 协议 + MCP（Model Context Protocol）
 
 ## 项目结构
 
 ```
 yan-zhi/
 ├── apps/
-│   ├── desktop/      # Tauri 桌面端（本地 SQLite + WebView2）
+│   ├── desktop/      # Electron 桌面端（本地 SQLite + WebView2 Chromium）
 │   ├── mobile/       # Capacitor 移动端（SQLite 插件 + 应用沙箱）
 │   ├── server/       # Express API 服务（独立后端 + 商城服务端 + Playwright 浏览器）
 │   └── web/          # 纯 Web PWA（Dexie / IndexedDB）
@@ -115,15 +117,23 @@ yan-zhi/
 - 文件面板默认折叠为分类列表，点击文件展开预览
 
 ### 内置浏览器 + pageAgent（已实现）
-- 服务端用 Playwright 启动有头 Chromium 独立窗口，浏览器工具做真实鼠标 / 键盘模拟
+- 桌面端「预览面板」打开网页走 **Electron 原生 BrowserView**（应用自带 Chromium，无需额外下载）
+- 服务端另用 **Playwright 无头 Chromium** 执行浏览器自动化 / `web_search` 抓取（该 Chromium 为独立二进制，需 `npx playwright install chromium`）
 - pageAgent 为内置 harness 子智能体，默认 AI 助理经 `call_agent` 挂载并委派浏览器任务
 - 右侧预览面板「浏览器」模式显示操作步骤日志，可聚焦 / 打开浏览器窗口
 - 运行前提：服务端需本机有显示环境（本地开发 / 桌面天然满足）
 
 ### 子智能体与记忆（已实现）
 - 子智能体注册与并行调度
+- 三层自动记忆：**每日记忆**（按自然天聚合）/ **会话记忆**（当前会话，不串台）/ **智能体记忆**（跨会话长期）；对话中自动抽取、对话前自动注入（可配置抽取模型，默认本地）
 - 短期记忆滑动窗口 + 长期记忆向量检索（sqlite-vec）
 - 上下文自动压缩
+
+### 知识库（已实现，含语义检索）
+- 创建 / 编辑 / 删除知识库，添加文档自动切块并向量化
+- 检索升级：内置 **bge-small-zh** 向量模型做余弦相似度语义排序；模型缺失时自动降级为关键词检索
+- **一套数据库 + 共享级别**：知识库统一存服务端一套 DB；不登录（guest）自动以访客身份访问，托管 public 库；登录用户可建 private / public 共享（跨用户可见）。旧本地库方案已废弃。
+- 应用使用知识（内置指南可自定义）+ 三层记忆 + 知识库命中片段，都会在对话前注入提示词，帮助模型回答「怎么用这个应用」等问题
 
 ### 聊天接口工具化（已实现）
 - 模型 / MCP / 自定义工具 / Skill / 智能体 / 商城 / 会话等管理操作注册为 LLM 可调用的工具函数
@@ -131,7 +141,7 @@ yan-zhi/
 
 ## 三端差异化
 
-| 能力 | 桌面（Tauri） | Web（PWA） | 移动（Capacitor） |
+| 能力 | 桌面（Electron） | Web（PWA） | 移动（Capacitor） |
 |------|--------------|-----------|------------------|
 | 本地数据存储 | SQLite (原生) | IndexedDB (Dexie) | SQLite (原生插件) |
 | MCP stdio 子进程 | 完整支持 | 仅远程 SSE/HTTP | 仅远程 SSE/HTTP |
@@ -139,7 +149,7 @@ yan-zhi/
 | Skill 本地目录 | 文件系统 | IndexedDB 虚拟 FS | 应用沙箱目录 |
 | 系统托盘/通知 | 支持 | 不支持 | 支持 |
 | 离线可用 | 支持 | 需 PWA 安装 | 支持 |
-| 自动更新 | Tauri Updater | Service Worker | 应用商店 |
+| 自动更新 | electron-updater | Service Worker | 应用商店 |
 | 内置浏览器自动化 | 支持 | 需本机服务端 | 不支持 |
 
 ## 快速开始
@@ -154,7 +164,7 @@ pnpm dev
 # 启动 Web 端（Vite 开发端口 http://localhost:5173）
 pnpm dev:web
 
-# 启动桌面端（Tauri dev，前端 Vite 端口 1420，/api 代理到 3001，需 Rust 环境）
+# 启动桌面端（Electron dev，前端 Vite 端口 1420，/api 代理到 3001）
 pnpm dev:desktop
 
 # 启动移动端（需 Xcode / Android Studio）
@@ -166,9 +176,17 @@ pnpm dev:mobile
 ## 打包
 
 ```bash
-# 桌面端（生成 .exe 安装包，需 Rust + MinGW-w64）
+# 桌面端（生成 .exe 安装包，需 MSVC Build Tools + electron-builder）
 pnpm build:desktop
-# 产物：apps/desktop/src-tauri/target/x86_64-pc-windows-gnu/release/bundle/nsis/
+#   默认（electron-builder.full.yml）产物：apps/desktop/release-full/言智-Setup-<version>-<arch>-full.exe
+#   完整版：内嵌后端服务与本地模型（models/），不带模型的完整功能，安装包较大
+
+# 精简版（electron-builder.lite.yml，不含本地模型）
+pnpm --filter @yan-zhi/desktop electron:build:lite
+#   产物：apps/desktop/release-lite/言智-Setup-<version>-<arch>-lite.exe
+
+# 构建步骤（两个版本共用）：先 server build → vite build → prepare-server-runtime（打平后端依赖）→ electron-builder
+# `pnpm build:desktop` 等价 `pnpm --filter @yan-zhi/desktop electron:build:full`
 
 # 移动端 Android
 pnpm build:mobile:android
@@ -182,29 +200,49 @@ pnpm build:web
 
 ### 桌面端打包前提
 
-- Rust 工具链（MSVC 或 GNU）：`rustup install stable-x86_64-pc-windows-gnu`
-- MinGW-w64（GNU 工具链时需要）
-- 系统没有 VS Build Tools 会自动使用 GNU 工具链（`apps/desktop/src-tauri/.cargo/config.toml` 已配置）
-- 安装程序会自动安装 WebView2 Runtime（若无）
+- **MSVC Build Tools**（含 C++ 构建工具）：`apps/desktop` 依赖 `better-sqlite3` 等原生模块，`electron-rebuild` 需要 C++ 编译环境
+- 受限网络下 `electron-builder` 下载 Electron 二进制与 NSIS 打包器可能失败，需配置国内镜像（如 `ELECTRON_MIRROR` / npmmirror）
+- 安装程序会自动处理 WebView2 / VC++ 运行库（若无）
 
-### 图标
+### 完整版 vs 精简版
 
-应用图标统一放在 `assets/icons/`，打包时自动引用：
-- `assets/icons/icon.png` — 用于打包元数据
-- `assets/icons/icon.ico` — 用于 Windows 可执行文件图标
+| 版本 | 配置 | 内嵌模型 | 典型体积 |
+|------|------|---------|---------|
+| 完整版（full） | `electron-builder.full.yml` | qwen 对话模型 + bge 向量模型（整个 `server/models`） | 约 1GB+ |
+| 精简版（lite） | `electron-builder.lite.yml` | 仅 bge 向量模型（排除 qwen，约 26MB） | 约 200MB |
 
-替换图标文件后重新 `pnpm build:desktop` 即可生效。
+> - **精简版也内嵌 bge 向量模型**：语义检索（知识库/记忆）开箱即用，无需联网下载；两者差异主要在不带 1.1GB 的 qwen 本地对话模型。
+> - 精简版不含 qwen，本地对话默认不可用，需通过模型平台配置外部 LLM（OpenAI / Anthropic 兼容网关）。
+
+### 内置模型（qwen / bge）与国内下载
+
+模型文件被 `.gitignore` 排除（`apps/server/models/`、`*.gguf`），不随仓库分发。构建或开发前需先补齐：
+
+```bash
+# 下载全部内置模型（qwen 对话 + bge 向量）
+pnpm --filter @yan-zhi/server download:models
+# 只下载向量模型（轻量版/仅需语义检索时）
+pnpm --filter @yan-zhi/server download:models --embedding
+# 只下载对话模型
+pnpm --filter @yan-zhi/server download:models --llm
+```
+
+下载源：国内魔搭（ModelScope）直链优先、hf-mirror 兜底，源逐个尝试直到成功，断点续传。
+- `qwen2.5-1.5b-instruct-q4_k_m.gguf`（1.1GB）— 本地对话模型
+- `bge-small-zh-v1.5-q8_0.gguf`（26MB）— 中文语义向量模型（知识库/记忆检索）
+
+GitHub Actions（`.github/workflows/build-desktop.yml`）在构建前会自动执行 `download:models`，并同时产出完整版与轻量版安装包。
 
 ## 数据存储
 
-各端数据独立存储，互不依赖：
+**分层**：对话、笔记、配置、本地文件按端本地存储；**知识库等可共享数据统一存内置服务端一套 DB**（guest/登录都走服务端，`public/private` 决定可见性）。
 
 | 端 | 存储方式 |
 |----|---------|
-| 桌面端 | Tauri + better-sqlite3（本地文件） |
-| 移动端 | Capacitor SQLite（设备本地） |
-| Web 端 | 浏览器 IndexedDB（Dexie） |
-| 后端   | better-sqlite3（`apps/server/data.db`） |
+| 桌面端 | Electron + better-sqlite3（本地会话/配置/文件）+ 内置 server（`apps/server/data.db`，知识库等共享数据） |
+| 移动端 | Capacitor SQLite（本地会话/配置）+ 服务端（共享数据） |
+| Web 端 | 浏览器 IndexedDB（Dexie，本地会话/配置）+ 服务端（共享数据） |
+| 后端   | better-sqlite3（`apps/server/data.db`）：user / platform / 知识库(含 public/private) / 记忆 等 |
 
 ## 文档导航
 
@@ -216,14 +254,14 @@ pnpm build:web
 
 修改项目名称时，需要改动以下文件：
 
-### 桌面端 (Tauri) — 影响 EXE 名称
+### 桌面端 (Electron) — 影响 EXE / 安装包名称
 
 | 文件 | 字段 | 说明 |
 |------|------|------|
-| `apps/desktop/src-tauri/tauri.conf.json` | `productName` | **决定 EXE 文件名和 NSIS 安装包名称** |
-| `apps/desktop/src-tauri/tauri.conf.json` | `identifier` | 应用唯一标识，建议同步修改 |
-| `apps/desktop/src-tauri/tauri.conf.json` | `app.windows[0].title` | 窗口标题栏文字 |
-| `apps/desktop/src-tauri/Cargo.toml` | `package.name` | Rust crate 名称（不影响 EXE 输出） |
+| `apps/desktop/electron-builder.full.yml` | `productName` | **决定 EXE 文件名和 NSIS 安装包名称**（完整版） |
+| `apps/desktop/electron-builder.lite.yml` | `productName` | 决定 EXE / 安装包名称（精简版） |
+| `apps/desktop/electron-builder.*.yml` | `appId` | 应用唯一标识，建议同步修改 |
+| `apps/desktop/main.cjs` | `BrowserWindow title` | 窗口标题栏文字 |
 | `apps/desktop/index.html` | `<title>` | 浏览器标签页标题 |
 
 ### Web 端

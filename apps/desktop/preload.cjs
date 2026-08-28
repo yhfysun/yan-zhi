@@ -36,6 +36,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     delete: (key) => ipcRenderer.invoke('keyring:delete', key),
   },
 
+  // 原生对话框
+  dialog: {
+    showOpenDir: (options) => ipcRenderer.invoke('dialog:showOpenDir', options),
+  },
+
   // Shell
   shell: {
     exec: (command, args, options) => ipcRenderer.invoke('shell:exec', command, args, options),

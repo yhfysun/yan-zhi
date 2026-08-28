@@ -2,6 +2,7 @@ import { v4 as uuid } from 'uuid';
 import { readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { db } from '../db.js';
+import { serverState } from '../state.js';
 import {
   upsertPeer,
   listPeers,
@@ -11,13 +12,16 @@ import {
 } from '../services/peers.js';
 import {
   listKnowledgeBases,
+  listMountedKnowledgeBases,
   createKnowledgeBase,
   updateKnowledgeBase,
   deleteKnowledgeBase,
   listKnowledgeDocs,
   addKnowledgeDoc,
   deleteKnowledgeDoc,
-  searchKnowledgeBase,
+  multiHopSearchKnowledge,
+  entityGraphSearch,
+  entityGraphSearchGrouped,
 } from '../services/kb.js';
 import {
   listImConnectors,
@@ -508,7 +512,7 @@ export async function executeApiTool(
 
       // Knowledge base
       case 'api_kb_list':
-        return ok(listKnowledgeBases(requireUser(userId)));
+        return ok(listMountedKnowledgeBases(requireUser(userId)));
       case 'api_kb_create':
         return ok(createKnowledgeBase(requireUser(userId), {
           name: str(args, 'name'),
@@ -533,8 +537,24 @@ export async function executeApiTool(
       case 'api_kb_document_delete':
         deleteKnowledgeDoc(requireUser(userId), str(args, 'docId'));
         return ok({ deleted: true });
-      case 'api_kb_search':
-        return ok(searchKnowledgeBase(requireUser(userId), str(args, 'baseId'), str(args, 'query'), num(args, 'topK', 5)));
+      case 'api_kb_search': {
+        const q = str(args, 'query');
+        const baseIds = (arr(args, 'baseIds') as string[]).map((b) => String(b)).filter(Boolean);
+        const hops = num(args, 'hops', 3);
+        // 实体导向多跳查询，按知识库分组返回（{ 库id: [切片...] }）；单库/多库指定都走同一逻辑，天然分组
+        const grouped = entityGraphSearchGrouped(requireUser(userId), q, baseIds, hops, num(args, 'topK', 3));
+        const total = Object.values(grouped).reduce((s: number, a: any[]) => s + a.length, 0);
+        if (total > 0) return ok({ grouped, total });
+        // 实体图谱为空（未抽取/无实体）→ 退化关键词多跳，按库分组
+        const kw = multiHopSearchKnowledge(requireUser(userId), q, num(args, 'topK', 3), hops);
+        const kwGrouped: Record<string, any[]> = {};
+        for (const c of kw) {
+          if (baseIds.length && !baseIds.includes(c.baseId)) continue;
+          (kwGrouped[c.baseId] ||= []).push(c);
+        }
+        const kwTotal = Object.values(kwGrouped).reduce((s: number, a: any[]) => s + a.length, 0);
+        return ok({ grouped: kwGrouped, total: kwTotal });
+      }
 
       default:
         return fail(`未实现的 API 工具: ${name}`);
@@ -559,7 +579,7 @@ function getBuiltinToolDefinitions() {
 }
 
 async function listWorkspaceDir(dirPath: string) {
-  const root = path.resolve(dirPath || process.cwd());
+  const root = path.resolve(dirPath || serverState.workspaceDir || process.cwd());
   const entries = await readdir(root, { withFileTypes: true });
   return Promise.all(
     entries.map(async (entry) => {
@@ -576,7 +596,7 @@ async function listWorkspaceDir(dirPath: string) {
 
 async function searchWorkspaceFiles(pattern: string) {
   if (!pattern) return [];
-  const root = process.cwd();
+  const root = serverState.workspaceDir || process.cwd();
   const needle = pattern.replace(/\\/g, '/').toLowerCase();
   const results: string[] = [];
   async function walk(dir: string, depth: number) {

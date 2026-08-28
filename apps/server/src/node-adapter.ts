@@ -9,6 +9,7 @@ import type {
   PlatformAdapter,
   ShellAdapter,
 } from '@yan-zhi/core';
+import { serverState } from './state.js';
 
 const dbAdapter: DatabaseAdapter = {
   async exec() {
@@ -76,7 +77,7 @@ function execCommand(
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
   return new Promise((resolve) => {
     const child = spawn(command, args, {
-      cwd: options?.cwd || process.cwd(),
+      cwd: options?.cwd || serverState.workspaceDir || process.cwd(),
       env: { ...process.env, ...(options?.env || {}) },
       shell: process.platform === 'win32',
       windowsHide: true,

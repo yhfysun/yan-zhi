@@ -37,9 +37,21 @@ router.patch('/:id', (req: Request, res: Response) => {
   const existing = db.prepare('SELECT * FROM mcp_server WHERE id = ? AND user_id = ?').get(sid, userId) as any;
   if (!existing) { res.status(404).json({ error: 'MCP 服务不存在' }); return; }
 
+  const body = req.body || {};
   const sets: string[] = [];
   const vals: any[] = [];
-  if (req.body.status !== undefined) { sets.push('status = ?'); vals.push(req.body.status ? 1 : 0); }
+  const pushVal = (col: string, value: unknown) => { sets.push(`${col} = ?`); vals.push(value); };
+  if (body.status !== undefined) pushVal('status', body.status ? 1 : 0);
+  if (body.name !== undefined) pushVal('name', body.name);
+  if (body.transport !== undefined) pushVal('transport', body.transport);
+  if (body.command !== undefined) pushVal('command', body.command || null);
+  if (body.args !== undefined) pushVal('args_json', JSON.stringify(body.args || []));
+  if (body.env !== undefined) pushVal('env_json', JSON.stringify(body.env || {}));
+  if (body.url !== undefined) pushVal('url', body.url || null);
+  if (body.headers !== undefined) pushVal('headers_json', JSON.stringify(body.headers || {}));
+  if (body.autoReconnect !== undefined) pushVal('auto_reconnect', body.autoReconnect ? 1 : 0);
+  if (body.reconnectInterval !== undefined) pushVal('reconnect_interval', body.reconnectInterval || 5000);
+  if (body.autoConnect !== undefined) pushVal('auto_connect', body.autoConnect ? 1 : 0);
   if (sets.length === 0) { res.json({ data: existing }); return; }
   vals.push(sid);
   db.prepare(`UPDATE mcp_server SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
