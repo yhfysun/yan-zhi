@@ -81,3 +81,11 @@ apps/server/bin/
 
 # 授权码私钥（仅本地生成授权码用，绝不入库；公钥 apps/server/src/license-public-key.pem 可入库）
 scripts/license-private-key.pem
+
+# 测试覆盖率 / TS 构建缓存 / 临时产物
+coverage/
+*.tsbuildinfo
+typecheck_output.txt
+_check_db.py
+*分析报告.md
+*完整性检查.md
