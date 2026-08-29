@@ -2,7 +2,7 @@ import { Router, Request, Response } from 'express';
 import { v4 as uuid } from 'uuid';
 import { authMiddleware } from '../auth.js';
 import { db } from '../db.js';
-import { ensureLocalModel } from '../local-model/service.js';
+
 
 const router = Router();
 router.use(authMiddleware);
@@ -36,14 +36,11 @@ const rowToM = (r: any) => ({
 });
 
 const userId = (req: Request) => req.user!.userId;
-const isBuiltinPlatformId = (id: string) => id.startsWith('local-model-');
-const isBuiltinModelId = (id: string) => id.startsWith('local-model-');
 
 // === Platforms ===
 
 router.get('/', (req: Request, res: Response) => {
-  ensureLocalModel(userId(req));
-  const rows = db.prepare('SELECT * FROM platform WHERE user_id = ? ORDER BY created_at DESC').all(userId(req));
+  const rows = db.prepare("SELECT * FROM platform WHERE user_id = ? AND id NOT LIKE 'local-model-%' ORDER BY created_at DESC").all(userId(req));
   res.json({ data: rows.map(rowToP) });
 });
 
@@ -63,7 +60,7 @@ router.delete('/:id', (req: Request, res: Response) => {
   const pid = req.params.id;
   const existing = db.prepare('SELECT * FROM platform WHERE id = ? AND user_id = ?').get(pid, userId(req));
   if (!existing) { res.status(404).json({ error: '平台不存在' }); return; }
-  if ((existing as any).is_builtin || isBuiltinPlatformId(pid)) { res.status(403).json({ error: '内置平台不可删除' }); return; }
+  if ((existing as any).is_builtin) { res.status(403).json({ error: '内置平台不可删除' }); return; }
   db.prepare('DELETE FROM model WHERE platform_id = ?').run(pid);
   db.prepare('DELETE FROM platform WHERE id = ?').run(pid);
   res.json({ ok: true });
@@ -73,7 +70,7 @@ router.patch('/:id', (req: Request, res: Response) => {
   const pid = req.params.id;
   const existing = db.prepare('SELECT * FROM platform WHERE id = ? AND user_id = ?').get(pid, userId(req));
   if (!existing) { res.status(404).json({ error: '平台不存在' }); return; }
-  if ((existing as any).is_builtin || isBuiltinPlatformId(pid)) { res.status(403).json({ error: '内置平台不可编辑' }); return; }
+  if ((existing as any).is_builtin) { res.status(403).json({ error: '内置平台不可编辑' }); return; }
   const { name, protocol, apiUrl, apiKeyEnc, headers } = req.body || {};
   const sets: string[] = [];
   const vals: any[] = [];
@@ -92,14 +89,13 @@ router.patch('/:id', (req: Request, res: Response) => {
 // === Models (platform-scoped + global) ===
 
 router.get('/all-models', (req: Request, res: Response) => {
-  ensureLocalModel(userId(req));
-  const rows = db.prepare('SELECT * FROM model WHERE user_id = ? ORDER BY platform_id, is_default DESC').all(userId(req));
+
+  const rows = db.prepare("SELECT * FROM model WHERE user_id = ? AND id NOT LIKE 'local-model-%' AND platform_id NOT LIKE 'local-model-%' ORDER BY platform_id, is_default DESC").all(userId(req));
   res.json({ data: rows.map(rowToM) });
 });
 
 router.get('/:pid/models', (req: Request, res: Response) => {
   const pid = req.params.pid;
-  ensureLocalModel(userId(req));
   const platform = db.prepare('SELECT id FROM platform WHERE id = ? AND user_id = ?').get(pid, userId(req));
   if (!platform) { res.status(404).json({ error: '平台不存在' }); return; }
   const rows = db.prepare('SELECT * FROM model WHERE platform_id = ? AND user_id = ? ORDER BY is_default DESC').all(pid, userId(req));
@@ -110,7 +106,7 @@ router.post('/:pid/models', (req: Request, res: Response) => {
   const pid = req.params.pid;
   const platform = db.prepare('SELECT id, is_builtin FROM platform WHERE id = ? AND user_id = ?').get(pid, userId(req));
   if (!platform) { res.status(404).json({ error: '平台不存在' }); return; }
-  if ((platform as any).is_builtin || isBuiltinPlatformId(pid)) { res.status(403).json({ error: '内置平台不可添加模型' }); return; }
+  if ((platform as any).is_builtin) { res.status(403).json({ error: '内置平台不可添加模型' }); return; }
   const { modelId, alias, type, contextWindow, capabilities, pricing, enabled, isDefault } = req.body || {};
   if (!modelId) { res.status(400).json({ error: 'modelId 为必填项' }); return; }
   const id = uuid();
@@ -127,7 +123,7 @@ router.patch('/models/:mid', (req: Request, res: Response) => {
   const mid = req.params.mid;
   const row = db.prepare('SELECT * FROM model WHERE id = ? AND user_id = ?').get(mid, userId(req)) as any;
   if (!row) { res.status(404).json({ error: '模型不存在' }); return; }
-  if (row.is_builtin || isBuiltinModelId(mid)) { res.status(403).json({ error: '内置模型不可编辑' }); return; }
+  if (row.is_builtin) { res.status(403).json({ error: '内置模型不可编辑' }); return; }
   const sets: string[] = [];
   const vals: any[] = [];
   if (req.body.alias !== undefined) { sets.push('alias = ?'); vals.push(req.body.alias); }
@@ -148,7 +144,7 @@ router.delete('/models/:mid', (req: Request, res: Response) => {
   if (!row) {
     res.status(404).json({ error: '模型不存在' }); return;
   }
-  if ((row as any).is_builtin || isBuiltinModelId(mid)) { res.status(403).json({ error: '内置模型不可删除' }); return; }
+  if ((row as any).is_builtin) { res.status(403).json({ error: '内置模型不可删除' }); return; }
   db.prepare('DELETE FROM model WHERE id = ?').run(mid);
   res.json({ ok: true });
 });
@@ -158,7 +154,7 @@ router.post('/models/batch', (req: Request, res: Response) => {
   if (!platformId || !Array.isArray(models)) { res.status(400).json({ error: 'platformId 和 models 为必填项' }); return; }
   const platform = db.prepare('SELECT id, is_builtin FROM platform WHERE id = ? AND user_id = ?').get(platformId, userId(req));
   if (!platform) { res.status(404).json({ error: '平台不存在' }); return; }
-  if ((platform as any).is_builtin || isBuiltinPlatformId(platformId)) { res.status(403).json({ error: '内置平台不可拉取或修改模型' }); return; }
+  if ((platform as any).is_builtin) { res.status(403).json({ error: '内置平台不可拉取或修改模型' }); return; }
   const uid = userId(req);
   const now = Date.now();
 

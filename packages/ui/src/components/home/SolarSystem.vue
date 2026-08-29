@@ -793,7 +793,7 @@ function onClick(e: MouseEvent) {
 function getSelectedActualRadius(): number {
   if (selectedPlanetIndex < 0) return 1;
   if (selectedPlanetIndex === 0) return 2.5 * 3;
-  return planets[selectedPlanetIndex].geometry.parameters.radius * 3;
+  return (planets[selectedPlanetIndex].geometry as any).parameters.radius * 3;
 }
 
 function selectPlanet(idx: number) {
@@ -828,7 +828,7 @@ function selectPlanet(idx: number) {
   isFocusing = true;
   focusLerp = 0; // 启动平滑飞行动画
   focusStartPos.copy(camera.position); // 记录起始位置
-  const actualRadius = idx === 0 ? 2.5 * 3 : planets[idx].geometry.parameters.radius * 3;
+  const actualRadius = idx === 0 ? 2.5 * 3 : (planets[idx].geometry as any).parameters.radius * 3;
   focusDistance = actualRadius * 1.8; // 1.8倍半径，星球充满视野
   focusAngleX = 0.25;
   focusAngleY = 0;

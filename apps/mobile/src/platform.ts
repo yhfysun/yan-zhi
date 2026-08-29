@@ -57,6 +57,10 @@ class MobileFs implements FsAdapter {
     const result = await Filesystem.readFile({ path, directory: Directory.Data, encoding: Encoding.UTF8 });
     return result.data as string;
   }
+  async readFileBase64(path: string): Promise<string> {
+    const result = await Filesystem.readFile({ path, directory: Directory.Data });
+    return result.data as string;
+  }
   async writeFile(path: string, content: string): Promise<void> {
     await Filesystem.writeFile({ path, data: content, directory: Directory.Data, encoding: Encoding.UTF8, recursive: true });
   }

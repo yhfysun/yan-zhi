@@ -9,7 +9,7 @@
         <div class="bg-orb orb-3"></div>
       </div>
 
-      <template v-if="$route.name === 'login'">
+      <template v-if="$route.name === 'login' || $route.name === 'license'">
         <main class="main-content full">
           <router-view />
         </main>
@@ -53,50 +53,14 @@
       </template>
     </div>
 
-    <el-dialog
-      v-if="localModelVisible"
-      :model-value="true"
-      :show-close="false"
-      :close-on-click-modal="false"
-      :close-on-press-escape="false"
-      width="420px"
-      class="local-model-download-dialog"
-    >
-      <div class="local-model-download-body">
-        <div class="local-model-download-title">
-          {{ localModelState.state === 'error' ? '本地模型下载失败' : '正在准备本地小模型' }}
-        </div>
-        <div class="local-model-download-desc">
-          {{ localModelState.state === 'error'
-            ? '安装完成后可以重试下载，期间仍可使用云端模型平台。'
-            : '轻量安装包首次运行会自动下载模型，下载完成后即可离线使用基础问答。' }}
-        </div>
-        <el-progress
-          v-if="localModelState.state !== 'error'"
-          :percentage="localModelProgress"
-          :stroke-width="8"
-          :show-text="true"
-          :status="localModelState.state === 'done' ? 'success' : undefined"
-        />
-        <div class="local-model-download-message">{{ localModelState.message }}</div>
-      </div>
-      <template #footer>
-        <template v-if="localModelState.state === 'error'">
-          <el-button @click="dismissLocalModel">稍后使用云端模型</el-button>
-          <el-button type="primary" @click="retryLocalModel">重试下载</el-button>
-        </template>
-        <el-button v-else disabled>正在下载</el-button>
-      </template>
-    </el-dialog>
     <SettingsDrawer />
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue';
+import { computed, onMounted } from 'vue';
 import { useRoute } from 'vue-router';
 import { User, SwitchButton, Moon, Sunny } from '@element-plus/icons-vue';
-import { ElMessage } from 'element-plus';
 import { useAuthStore } from './stores/auth';
 import { useSettingsStore } from './stores/settings';
 import SideNav from './components/SideNav.vue';
@@ -116,64 +80,14 @@ const { collapsed } = useSidebarState();
 // Electron 桌面端检测：由主进程通过 preload 注入 window.electronAPI.isElectron
 const isElectron = typeof window !== 'undefined' && !!(window as any).electronAPI?.isElectron;
 
-const localModelState = ref({
-  state: 'idle',
-  receivedBytes: 0,
-  totalBytes: 0,
-  progress: 0,
-  message: '',
-});
-const localModelVisible = computed(() => {
-  return isElectron && (localModelState.value.state === 'downloading' || localModelState.value.state === 'error');
-});
-const localModelProgress = computed(() => Math.max(0, Math.min(100, Math.round(localModelState.value.progress * 100))));
-let offLocalModelState: (() => void) | undefined;
-let localModelPollTimer: ReturnType<typeof setTimeout> | undefined;
-
 onMounted(async () => {
   try {
     await settingsStore.load();
   } catch {
     // 设置读取失败时仍允许应用正常渲染
   }
-
-  const api = (window as any).electronAPI?.localModel;
-  if (!api) return;
-  offLocalModelState = api.onState((state: any) => {
-    if (state) localModelState.value = state;
-  });
-  const initial = await api.getState();
-  if (initial) localModelState.value = initial;
-
-  // 主动推送(webContents.send)在窗口就绪前可能丢失；周期性向主进程拉取真实状态，
-  // 保证下载/错误结束后 UI 能同步到 done 并自动关闭弹窗，避免"卡在下载中"。
-  const poll = async () => {
-    const api2 = (window as any).electronAPI?.localModel;
-    if (!api2) return;
-    const st = await api2.getState();
-    if (st) localModelState.value = st;
-  };
-  localModelPollTimer = setInterval(poll, 2000);
 });
 
-onUnmounted(() => {
-  offLocalModelState?.();
-  if (localModelPollTimer) clearInterval(localModelPollTimer);
-});
-
-async function retryLocalModel() {
-  const api = (window as any).electronAPI?.localModel;
-  if (!api) return;
-  try {
-    await api.start();
-  } catch (error: any) {
-    ElMessage.warning(error?.message || '启动模型下载失败');
-  }
-}
-
-function dismissLocalModel() {
-  localModelState.value = { state: 'idle', receivedBytes: 0, totalBytes: 0, progress: 0, message: '已跳过本次下载' };
-}
 
 function toggleTheme() {
   settingsStore.update({ darkMode: !settingsStore.settings.darkMode });

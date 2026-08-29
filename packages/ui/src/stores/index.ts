@@ -7,6 +7,8 @@ export { useDistillStore } from './distill';
 export { useAgentStore } from './agent';
 export { useSettingsStore } from './settings';
 export { useAuthStore } from './auth';
+export { useLicenseStore } from './license';
 export { useToolsStore } from './tools';
 export { useSpaceStore } from './space';
 export { useFileStore } from './file';
+export { useScheduledTaskStore } from './scheduledTask';

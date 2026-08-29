@@ -16,8 +16,26 @@ const desktopBetterSqlite = path.join(
   'better_sqlite3.node',
 );
 
-function fileUrl(p) {
-  return 'file:' + p.replace(/\\/g, '/');
+const ESBUILD_VERSION = '0.28.2';
+const LLAMA_VERSION = '3.20.0';
+
+// 原生依赖按「构建机平台 + 架构」挑选。
+// 之前这里写死 win32-x64，在 macOS / Linux runner 上 npm 直接 EBADPLATFORM 失败，
+// 因此改成宿主平台映射（构建产物架构与构建机一致，不做交叉编译）。
+const PLATFORM_BINDINGS = {
+  'win32-x64': { esbuild: '@esbuild/win32-x64', llama: '@node-llama-cpp/win-x64' },
+  'darwin-x64': { esbuild: '@esbuild/darwin-x64', llama: '@node-llama-cpp/mac-x64' },
+  'darwin-arm64': { esbuild: '@esbuild/darwin-arm64', llama: '@node-llama-cpp/mac-arm64-metal' },
+  'linux-x64': { esbuild: '@esbuild/linux-x64', llama: '@node-llama-cpp/linux-x64' },
+};
+
+const hostKey = `${process.platform}-${process.arch}`;
+const bindings = PLATFORM_BINDINGS[hostKey];
+if (!bindings) {
+  throw new Error(
+    `[prepare-server-runtime] 暂不支持的平台/架构: ${hostKey}。\n` +
+      `支持项: ${Object.keys(PLATFORM_BINDINGS).join(', ')}`,
+  );
 }
 
 function assertInside(parent, child) {
@@ -27,29 +45,70 @@ function assertInside(parent, child) {
   }
 }
 
-console.log('[prepare-server-runtime] 生成扁平后端运行依赖...');
+// 统一执行子进程：CI 上把输出吞掉会导致排查不到真实报错，
+// 因此失败时回打输出尾部，成功时只回打摘要行。
+function runCommand(file, args, options = {}) {
+  const display = [path.basename(file), ...args].join(' ');
+  console.log(`[prepare-server-runtime] > ${display}`);
+  try {
+    const out = execFileSync(file, args, {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      ...options,
+    });
+    if (out) {
+      console.log(
+        out
+          .split('\n')
+          .slice(-8)
+          .filter(Boolean)
+          .map((line) => `  | ${line}`)
+          .join('\n'),
+      );
+    }
+    return out;
+  } catch (err) {
+    const detail = `${err.stdout || ''}${err.stderr || ''}`.trim();
+    if (detail) {
+      console.error(
+        detail
+          .split('\n')
+          .slice(-80)
+          .map((line) => `  | ${line}`)
+          .join('\n'),
+      );
+    }
+    const reason = detail ? '' : `（无输出，退出码 ${err.status}）`;
+    throw new Error(`[prepare-server-runtime] 命令失败: ${display}${reason}`);
+  }
+}
+
+console.log(
+  `[prepare-server-runtime] 生成扁平后端运行依赖（平台 ${hostKey}，` +
+    `原生包 ${bindings.esbuild}@${ESBUILD_VERSION} / ${bindings.llama}@${LLAMA_VERSION}）...`,
+);
 
 if (fs.existsSync(buildDir)) {
   fs.rmSync(buildDir, { recursive: true, force: true });
 }
 fs.mkdirSync(buildDir, { recursive: true });
 
+// @yan-zhi/core、@yan-zhi/shared 不交给 npm 安装：它们是 workspace 源码包，
+// 安装后再用产物目录整体覆盖，避免 npm 复制一份再丢弃的额外开销与协议差异。
 const pkg = {
   name: 'yan-zhi-server-runtime',
   version: '0.1.0',
   private: true,
   type: 'module',
   dependencies: {
-    '@esbuild/win32-x64': '0.28.2',
-    '@node-llama-cpp/win-x64': '3.20.0',
-    '@yan-zhi/core': fileUrl(path.join(rootDir, 'packages', 'core')),
-    '@yan-zhi/shared': fileUrl(path.join(rootDir, 'packages', 'shared')),
+    [bindings.esbuild]: ESBUILD_VERSION,
+    [bindings.llama]: LLAMA_VERSION,
     bcryptjs: '^2.4.3',
     'better-sqlite3': '^11.10.0',
     cors: '^2.8.5',
     express: '^4.21.0',
     jsonwebtoken: '^9.0.2',
-    'node-llama-cpp': '3.20.0',
+    'node-llama-cpp': LLAMA_VERSION,
     playwright: '^1.62.1',
     tsx: '^4.19.0',
     uuid: '^10.0.0',
@@ -60,35 +119,38 @@ const pkg = {
 fs.writeFileSync(path.join(buildDir, 'package.json'), JSON.stringify(pkg, null, 2));
 
 console.log('[prepare-server-runtime] npm install --omit=optional --ignore-scripts...');
-execFileSync(
-  process.platform === 'win32' ? 'npm.cmd' : 'npm',
-  ['install', '--omit=optional', '--ignore-scripts', '--no-audit', '--no-fund', '--no-package-lock'],
-  {
-    cwd: buildDir,
-    stdio: 'inherit',
-    shell: true,
-    env: {
-      ...process.env,
-      NODE_OPTIONS: '',
-      // 后端只通过浏览器路由按需使用 playwright；安装阶段跳过 Chromium 下载以控制包体。
-      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1',
-      PLAYWRIGHT_BROWSERS_PATH: '0',
-    },
+runCommand(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['install', '--omit=optional', '--ignore-scripts', '--no-audit', '--no-fund', '--no-package-lock'], {
+  cwd: buildDir,
+  shell: true,
+  env: {
+    ...process.env,
+    NODE_OPTIONS: '',
+    // 后端只通过浏览器路由按需使用 playwright；安装阶段跳过 Chromium 下载以控制包体。
+    PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1',
+    PLAYWRIGHT_BROWSERS_PATH: '0',
   },
-);
+});
 
 const tempNodeModules = path.join(buildDir, 'node_modules');
+
+for (const dep of [bindings.esbuild, bindings.llama]) {
+  if (!fs.existsSync(path.join(tempNodeModules, ...dep.split('/')))) {
+    throw new Error(`[prepare-server-runtime] 平台原生包未安装成功: ${dep}（${hostKey}）`);
+  }
+}
 
 // better-sqlite3 会在下方使用 Electron ABI 的预编译二进制覆盖，不能在 npm install
 // 阶段触发 node-gyp 构建。这里只单独执行 esbuild / node-llama-cpp 必需的后置脚本，
 // 避免整包开启 scripts 导致 better-sqlite3 因缺少 VS 构建失败。
 const runPackagePostinstall = (scriptPath, args = []) => {
   const resolved = path.join(tempNodeModules, scriptPath);
-  if (!fs.existsSync(resolved)) return;
+  if (!fs.existsSync(resolved)) {
+    console.log(`[prepare-server-runtime] postinstall 跳过（不存在）: ${scriptPath}`);
+    return;
+  }
   console.log(`[prepare-server-runtime] postinstall: ${scriptPath}`);
-  execFileSync(process.execPath, [resolved, ...args], {
+  runCommand(process.execPath, [resolved, ...args], {
     cwd: path.dirname(resolved),
-    stdio: 'inherit',
     shell: true,
     env: {
       ...process.env,
@@ -99,24 +161,39 @@ const runPackagePostinstall = (scriptPath, args = []) => {
   });
 };
 
-runPackagePostinstall('esbuild/install.js');
-runPackagePostinstall('node-llama-cpp/dist/cli/cli.js', ['postinstall']);
+runPackagePostinstall(path.join('esbuild', 'install.js'));
+runPackagePostinstall(path.join('node-llama-cpp', 'dist', 'cli', 'cli.js'), ['postinstall']);
 
+// 复制 workspace 源码包（排除 node_modules：里面是 pnpm 软链，复制过去会断链且徒增体积）
 const yanZhiDir = path.join(tempNodeModules, '@yan-zhi');
+const copyFilter = (src) => path.basename(src) !== 'node_modules';
 for (const name of ['core', 'shared']) {
   const target = path.join(yanZhiDir, name);
-  const backup = target + '.bak';
-  if (fs.existsSync(target)) {
-    fs.renameSync(target, backup);
-  }
-  fs.cpSync(path.join(rootDir, 'packages', name), target, { recursive: true, force: true });
+  fs.mkdirSync(yanZhiDir, { recursive: true });
+  fs.cpSync(path.join(rootDir, 'packages', name), target, {
+    recursive: true,
+    force: true,
+    filter: copyFilter,
+  });
 
-  // npm 安装阶段会把本地 workspace 包复制成源码包；生产环境用 Electron Node 直接
-  // 运行 apps/server/dist 的编译产物，因此把 @yan-zhi/* 的入口指到同目录的 dist。
+  // 生产环境用 Electron Node 直接运行 apps/server/dist 的编译产物，
+  // 因此把 @yan-zhi/* 的入口指到同目录的 dist，并去掉 workspace 依赖声明。
   const targetPkg = JSON.parse(fs.readFileSync(path.join(target, 'package.json'), 'utf8'));
-  targetPkg.main = `../../../dist/packages/${name}/src/index.js`;
-  targetPkg.types = `../../../dist/packages/${name}/src/index.js`;
-  fs.writeFileSync(path.join(target, 'package.json'), JSON.stringify(targetPkg, null, 2));
+  fs.writeFileSync(
+    path.join(target, 'package.json'),
+    JSON.stringify(
+      {
+        name: targetPkg.name,
+        version: targetPkg.version,
+        private: true,
+        type: 'module',
+        main: `../../../dist/packages/${name}/src/index.js`,
+        types: `../../../dist/packages/${name}/src/index.js`,
+      },
+      null,
+      2,
+    ),
+  );
 }
 
 if (!fs.existsSync(desktopBetterSqlite)) {

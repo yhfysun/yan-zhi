@@ -86,14 +86,30 @@
       <section class="section">
         <h4 class="subsection-title">内置工具</h4>
         <el-empty v-if="toolsStore.builtinTools.length === 0" description="暂无内置工具" :image-size="60" />
-        <div v-else class="card-grid">
-          <div v-for="t in toolsStore.builtinTools" :key="t.name" class="tool-card">
-            <div class="tool-card-header">
-              <el-icon :size="16" class="tool-icon"><Switch /></el-icon>
-              <span class="tool-card-name">{{ t.name }}</span>
-              <el-tag size="small" type="info" effect="plain">内置</el-tag>
+        <div v-for="g in toolsStore.builtinToolGroups" :key="g.key" class="builtin-cat">
+          <div class="builtin-cat-head" @click="toggleBuiltinCat(g.key)">
+            <el-icon :size="12" class="builtin-cat-arrow" :class="{ open: isBuiltinCatOpen(g.key) }"><ArrowRight /></el-icon>
+            <span class="builtin-cat-name">{{ g.label }}</span>
+            <span class="builtin-cat-count">{{ g.tools.length }}</span>
+          </div>
+          <div v-show="isBuiltinCatOpen(g.key)" class="card-grid">
+            <div v-for="t in g.tools" :key="t.name" class="tool-card">
+              <div class="tool-card-header">
+                <el-icon :size="16" class="tool-icon"><Switch /></el-icon>
+                <span class="tool-card-name">{{ t.name }}</span>
+                <el-tag size="small" type="info" effect="plain">内置</el-tag>
+              </div>
+              <p class="tool-card-desc" :title="t.description">{{ t.description }}</p>
+              <div class="tool-schema-toggle">
+                <el-button size="small" link @click="toggleSchema('builtin-' + t.name)">
+                  {{ expandedSchema['builtin-' + t.name] ? '收起' : '入参/出参' }}
+                </el-button>
+              </div>
+              <div v-if="expandedSchema['builtin-' + t.name]" class="tool-schema-block">
+                <div class="schema-section"><span class="schema-label">入参</span><pre class="schema-pre">{{ fmtSchema(t.inputSchema) }}</pre></div>
+                <div class="schema-section"><span class="schema-label">出参</span><pre class="schema-pre">{{ fmtSchema(t.outputSchema) }}</pre></div>
+              </div>
             </div>
-            <p class="tool-card-desc" :title="t.description">{{ t.description }}</p>
           </div>
         </div>
       </section>
@@ -121,6 +137,15 @@
               <el-tag v-if="t.isPublic" size="small" type="primary" effect="plain">已公开</el-tag>
             </div>
             <p class="tool-card-desc" :title="t.description || '无描述'">{{ t.description || '无描述' }}</p>
+            <div class="tool-schema-toggle">
+              <el-button size="small" link @click="toggleSchema('custom-' + t.id)">
+                {{ expandedSchema['custom-' + t.id] ? '收起' : '入参/出参' }}
+              </el-button>
+            </div>
+            <div v-if="expandedSchema['custom-' + t.id]" class="tool-schema-block">
+              <div class="schema-section"><span class="schema-label">入参</span><pre class="schema-pre">{{ fmtSchema(t.inputSchema) }}</pre></div>
+              <div class="schema-section"><span class="schema-label">出参</span><pre class="schema-pre">{{ fmtSchema(t.outputSchema) }}</pre></div>
+            </div>
             <div class="tool-card-foot">
               <span class="stat">{{ t.runtime }} · {{ t.timeout }}ms</span>
               <div class="card-actions">
@@ -198,6 +223,14 @@
             placeholder='{"type":"object","properties":{"key":{"type":"string"}}}'
           />
         </el-form-item>
+        <el-form-item label="输出 Schema">
+          <el-input
+            v-model="editor.outputSchemaText"
+            type="textarea"
+            :rows="4"
+            placeholder='{"type":"object","properties":{"result":{"type":"string"}}}（可选）'
+          />
+        </el-form-item>
         <el-form-item label="JS 代码">
           <el-input
             v-model="editor.code"
@@ -246,7 +279,7 @@
 import { ref, computed, onMounted } from 'vue';
 import {
   Plus, Switch,
-  ArrowLeft, HomeFilled, Cloudy,
+  ArrowLeft, HomeFilled, Cloudy, ArrowRight,
 } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { useMcpStore, useAuthStore } from '../stores';
@@ -282,9 +315,23 @@ function enterRemoteMarket(s: any) {
 
 onMounted(() => {
   mcpStore.loadServers();
+  toolsStore.loadBuiltinTools();
   toolsStore.loadCustomTools();
   toolsStore.loadRemoteSources();
 });
+
+// ---- 入参/出参行内展开 ----
+const expandedSchema = ref<Record<string, boolean>>({});
+function toggleSchema(key: string) {
+  expandedSchema.value[key] = !expandedSchema.value[key];
+}
+const builtinCatOpen = ref<Record<string, boolean>>({});
+function isBuiltinCatOpen(key: string) { return builtinCatOpen.value[key] !== false; }
+function toggleBuiltinCat(key: string) { builtinCatOpen.value[key] = !isBuiltinCatOpen(key); }
+function fmtSchema(schema: unknown): string {
+  if (!schema || (typeof schema === 'object' && Object.keys(schema as object).length === 0)) return '（无）';
+  try { return JSON.stringify(schema, null, 2); } catch { return String(schema); }
+}
 
 // ---- 自定义工具编辑器 ----
 const showCustomEditor = ref(false);
@@ -292,7 +339,7 @@ const editingTool = ref<any>(null);
 const savingCustom = ref(false);
 const editor = ref({
   name: '', description: '', entry: '',
-  schemaText: '{}', code: '', timeout: 30000, isPublic: false,
+  schemaText: '{}', outputSchemaText: '', code: '', timeout: 30000, isPublic: false,
 });
 
 function openEditor(t: any | null) {
@@ -301,17 +348,18 @@ function openEditor(t: any | null) {
     editor.value = {
       name: t.name, description: t.description || '',
       entry: t.entry, schemaText: JSON.stringify(t.inputSchema, null, 2),
+      outputSchemaText: t.outputSchema ? JSON.stringify(t.outputSchema, null, 2) : '',
       code: t.code, timeout: t.timeout, isPublic: t.isPublic,
     };
   } else {
     editingTool.value = null;
-    editor.value = { name: '', description: '', entry: '', schemaText: '{}', code: '', timeout: 30000, isPublic: false };
+    editor.value = { name: '', description: '', entry: '', schemaText: '{}', outputSchemaText: '', code: '', timeout: 30000, isPublic: false };
   }
   showCustomEditor.value = true;
 }
 
 function resetEditor() {
-  editor.value = { name: '', description: '', entry: '', schemaText: '{}', code: '', timeout: 30000, isPublic: false };
+  editor.value = { name: '', description: '', entry: '', schemaText: '{}', outputSchemaText: '', code: '', timeout: 30000, isPublic: false };
   editingTool.value = null;
 }
 
@@ -324,16 +372,20 @@ async function saveCustomTool() {
   try {
     let schema: Record<string, unknown>;
     try { schema = JSON.parse(editor.value.schemaText); } catch { ElMessage.warning('输入 Schema 格式错误'); return; }
+    let outputSchema: Record<string, unknown> | undefined;
+    if (editor.value.outputSchemaText.trim()) {
+      try { outputSchema = JSON.parse(editor.value.outputSchemaText); } catch { ElMessage.warning('输出 Schema 格式错误'); return; }
+    }
     if (editingTool.value) {
       await toolsStore.updateTool(editingTool.value.id, {
         name: editor.value.name, description: editor.value.description,
         code: editor.value.code, entry: editor.value.entry,
-        inputSchema: schema, timeout: editor.value.timeout, isPublic: editor.value.isPublic,
+        inputSchema: schema, outputSchema, timeout: editor.value.timeout, isPublic: editor.value.isPublic,
       });
     } else {
       await toolsStore.createTool({
         name: editor.value.name, description: editor.value.description,
-        entry: editor.value.entry, inputSchema: schema,
+        entry: editor.value.entry, inputSchema: schema, outputSchema,
         code: editor.value.code, timeout: editor.value.timeout, isPublic: editor.value.isPublic,
       });
     }
@@ -446,6 +498,15 @@ async function installTool(item: any) {
   color: var(--color-text-secondary);
 }
 
+.builtin-cat { margin-bottom: 16px; border: 1px solid var(--glass-border); border-radius: 10px; overflow: hidden; }
+.builtin-cat-head { display: flex; align-items: center; gap: 8px; padding: 10px 14px; cursor: pointer; user-select: none; background: var(--glass-bg); transition: background 0.15s; }
+.builtin-cat-head:hover { background: rgba(99,102,241,0.04); }
+.builtin-cat-arrow { transition: transform 0.15s; color: var(--color-text-secondary); }
+.builtin-cat-arrow.open { transform: rotate(90deg); }
+.builtin-cat-name { font-size: 13px; font-weight: 600; color: var(--color-text); }
+.builtin-cat-count { font-size: 11px; font-weight: 700; color: var(--color-text-secondary); background: rgba(15,23,42,0.06); border-radius: 10px; padding: 2px 8px; }
+.builtin-cat .card-grid { padding: 12px 14px; }
+
 /* ---- 工具卡片（统一高度 + 描述截断）---- */
 .card-grid {
   display: grid;
@@ -479,6 +540,28 @@ async function installTool(item: any) {
 }
 .tool-card-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: auto; }
 .tool-icon { color: #8B5CF6; flex-shrink: 0; }
+
+/* 入参/出参展示块 */
+.tool-schema-toggle { margin-top: 4px; }
+.tool-schema-toggle .el-button { font-size: 12px; padding: 0 2px; height: 22px; }
+.tool-schema-block {
+  margin-top: 6px; padding: 8px 10px; border-radius: 8px;
+  background: rgba(15, 23, 42, 0.06); border: 1px solid var(--glass-border);
+  display: flex; flex-direction: column; gap: 8px;
+}
+.schema-section { display: flex; flex-direction: column; gap: 4px; }
+.schema-label {
+  font-size: 11px; font-weight: 600; color: var(--color-text);
+  text-transform: uppercase; letter-spacing: 0.5px; opacity: 0.85;
+}
+.schema-pre {
+  margin: 0; padding: 8px; border-radius: 6px;
+  background: rgba(0, 0, 0, 0.04); color: var(--color-text);
+  font-family: "JetBrains Mono", "Cascadia Code", monospace; font-size: 11px;
+  line-height: 1.5; max-height: 220px; overflow: auto; white-space: pre-wrap; word-break: break-word;
+}
+:root[data-theme="dark"] .tool-schema-block { background: rgba(255, 255, 255, 0.04); }
+:root[data-theme="dark"] .schema-pre { background: rgba(0, 0, 0, 0.35); }
 
 .card-actions { display: flex; gap: 4px; align-items: center; }
 .stat { font-size: 12px; color: var(--color-text-secondary); }

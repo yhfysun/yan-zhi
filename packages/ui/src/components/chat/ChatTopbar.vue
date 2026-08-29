@@ -34,6 +34,7 @@
           <el-icon><Grid /></el-icon>
         </el-button>
       </el-tooltip>
+
       <ChatFilePanel />
       <el-tooltip content="侧栏（预览窗口）" placement="bottom">
         <el-button size="small" circle @click="toggleRightPanel" :type="store.rightPanelOpen ? 'primary' : ''" aria-label="切换右侧栏">

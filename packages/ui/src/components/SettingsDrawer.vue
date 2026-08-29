@@ -43,6 +43,7 @@
 
 <script setup lang="ts">
 import { computed, defineAsyncComponent, onBeforeUnmount, onMounted } from 'vue';
+import { useRouter } from 'vue-router';
 import {
   Setting,
   ChatDotRound,
@@ -50,7 +51,7 @@ import {
   Connection,
   Suitcase,
   Files,
-  MagicStick,
+
   Box,
   Monitor,
   Promotion,
@@ -76,7 +77,7 @@ const sections: SettingsSection[] = [
   { section: 'mcp', label: 'MCP 服务', icon: Connection },
   { section: 'tools', label: '工具管理', icon: Suitcase },
   { section: 'skills', label: 'Skill 商店', icon: Files },
-  { section: 'distill', label: 'Skill 蒸馏', icon: MagicStick },
+
   { section: 'agents', label: '智能体', icon: Box },
   { section: 'peers', label: '客户端节点', icon: Monitor },
   { section: 'connections', label: 'IM 连接', icon: Promotion },
@@ -95,10 +96,17 @@ const sectionComponents: Record<SettingsDrawerSection, ReturnType<typeof defineA
   connections: defineAsyncComponent(() => import('../views/Connections.vue')),
 };
 
+const router = useRouter();
+
 const activeSection = computed(() => settingsDrawerSection.value);
 const activeItem = computed(() => sections.find((item) => item.section === activeSection.value));
 
 function selectSection(section: SettingsDrawerSection) {
+  if (section === 'distill') {
+    closeSettingsDrawer();
+    router.push('/distill');
+    return;
+  }
   settingsDrawerSection.value = section;
 }
 
@@ -119,7 +127,7 @@ onBeforeUnmount(() => {
 .settings-drawer-mask {
   position: fixed;
   inset: 0;
-  z-index: 3000;
+  z-index: 1999;
   background: rgba(15, 23, 42, 0.5);
   backdrop-filter: blur(3px);
   -webkit-backdrop-filter: blur(3px);

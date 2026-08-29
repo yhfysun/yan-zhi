@@ -1,109 +1,122 @@
 <template>
   <aside class="sidebar">
     <div class="sidebar-tabs">
-      <div class="sb-tab" :class="{ active: sideTab === 'agent' }" @click="sideTab = 'agent'">
-        <el-icon><User /></el-icon> 智能体
-      </div>
       <div class="sb-tab" :class="{ active: sideTab === 'chat' }" @click="sideTab = 'chat'">
-        <el-icon><ChatDotRound /></el-icon> 会话
+        <el-icon><ChatDotRound /></el-icon> 对话
+      </div>
+      <div class="sb-tab" :class="{ active: sideTab === 'task' }" @click="sideTab = 'task'">
+        <el-icon><Timer /></el-icon> 定时任务
       </div>
     </div>
 
-    <div v-if="sideTab === 'agent'" class="agent-list">
-      <div class="agent-item add-agent" @click="openCreateAgent">
-        <el-icon><Plus /></el-icon> 新建智能体
-      </div>
-      <div
-        v-for="ag in agentStore.agents"
-        :key="ag.id"
-        class="agent-item"
-        :class="{ active: ag.id === agentStore.selectedId }"
-        @click="agentStore.selectAgent(ag.id)"
-      >
-        <div class="agent-avatar">{{ ag.name.slice(0, 1) }}</div>
-        <div class="agent-info">
-          <div class="agent-name">
-            <el-icon v-if="ag.isDefault" class="lock-icon"><Lock /></el-icon>
-            {{ ag.name }}
-          </div>
-          <div class="agent-summary">{{ ag.description || '无描述' }}</div>
-        </div>
-        <el-button class="agent-edit-btn" text size="small" circle @click.stop="openEditAgent(ag)">
-          <el-icon><EditPen /></el-icon>
-        </el-button>
-      </div>
-    </div>
-
-    <div v-else class="conv-list">
-      <div class="space-selector">
-        <div class="space-tabs">
-          <div class="space-tab" :class="{ active: spaceStore.currentSpaceId === null }" @click="selectSpace(null)" title="全部会话">
-            全部
-          </div>
-          <div
-            v-for="sp in spaceStore.spaces"
-            :key="sp.id"
-            class="space-tab"
-            :class="{ active: spaceStore.currentSpaceId === sp.id }"
-            :title="sp.dirPath || sp.name"
-            @click="selectSpace(sp.id)"
-            @contextmenu.prevent="openSpaceMenu($event, sp)"
-          >
-            <el-icon :size="12"><FolderOpened /></el-icon>
-            <span class="space-tab-name">{{ sp.name }}</span>
-          </div>
-          <div class="space-tab add-space-tab" @click="createSpaceQuick" title="新建空间">
-            <el-icon><Plus /></el-icon>
-          </div>
-        </div>
-        <div v-if="spaceStore.currentSpaceId && spaceStore.currentSpace" class="space-current-hint" :title="spaceStore.currentSpace.dirPath">
-          <el-icon :size="12"><FolderOpened /></el-icon>
-          <span>{{ spaceStore.currentSpace.dirPath || '未绑定目录' }}</span>
-        </div>
-      </div>
+    <div v-if="sideTab === 'chat'" class="conv-list">
       <div class="conv-header">
         <el-input v-model="search" placeholder="搜索会话" size="small" clearable :prefix-icon="Search" />
         <div class="conv-header-row">
-          <el-button type="primary" size="small" plain @click="startNewChat" style="flex:1">
-            <el-icon><Plus /></el-icon> 新建
-          </el-button>
-          <el-button size="small" @click="batchMode = !batchMode" :type="batchMode ? 'warning' : ''">
+          <el-button size="small" @click="batchMode = !batchMode" :type="batchMode ? 'warning' : ''" style="flex:1">
             {{ batchMode ? '取消' : '批量' }}
           </el-button>
         </div>
       </div>
-      <div class="conv-items">
-        <div
-          v-for="conv in filteredConversations"
-          :key="conv.id"
-          class="conv-item"
-          :class="{ active: conv.id === store.currentConvId, pinned: conv.pinned, selecting: batchMode }"
-          @click="batchMode ? toggleConvSelect(conv.id) : (drawerOpen = false, selectConv(conv.id))"
-          @contextmenu.prevent="!batchMode && openConvMenu($event, conv)"
-          @dblclick="!batchMode && startRename(conv)"
-        >
-          <el-checkbox v-if="batchMode" :model-value="selectedConvIds.has(conv.id)" @click.stop @change="toggleConvSelect(conv.id)" />
-          <el-icon class="pin-icon" v-if="conv.pinned"><Star /></el-icon>
-          <el-icon v-else-if="!batchMode"><ChatDotRound /></el-icon>
-          <span v-if="renamingId !== conv.id" class="conv-title">{{ conv.title }}</span>
-          <el-input
-            v-else
-            v-model="renamingTitle"
-            size="small"
-            @click.stop
-            @blur="commitRename"
-            @keydown.enter.prevent="commitRename"
-            @keydown.esc.prevent="renamingId = ''"
-            ref="renameInputRef"
-          />
+
+      <div class="conv-tree">
+        <!-- 对话根节点：未归类会话 -->
+        <div class="tree-node tree-root">
+          <div class="tree-node-head" @click="toggleRootCollapse">
+            <el-icon class="tree-caret" :class="{ expanded: !rootCollapsed }"><CaretRight /></el-icon>
+            <el-icon class="tree-node-icon"><ChatDotRound /></el-icon>
+            <span class="tree-node-label">对话</span>
+            <span class="tree-count">{{ rootConversations.length }}</span>
+            <el-icon class="tree-add-icon" @click.stop="startNewChat(null)"><Plus /></el-icon>
+          </div>
+          <div v-show="!rootCollapsed" class="tree-children">
+            <div
+              v-for="conv in rootConversations"
+              :key="conv.id"
+              class="conv-item"
+              :class="{ active: conv.id === store.currentConvId, pinned: conv.pinned, selecting: batchMode }"
+              @click="batchMode ? toggleConvSelect(conv.id) : (drawerOpen = false, selectConv(conv.id))"
+              @contextmenu.prevent="!batchMode && openConvMenu($event, conv)"
+              @dblclick="!batchMode && startRename(conv)"
+            >
+              <el-checkbox v-if="batchMode" :model-value="selectedConvIds.has(conv.id)" @click.stop @change="toggleConvSelect(conv.id)" />
+              <el-icon class="pin-icon" v-if="conv.pinned"><Star /></el-icon>
+              <el-icon v-else-if="!batchMode"><ChatDotRound /></el-icon>
+              <span v-if="renamingId !== conv.id" class="conv-title">{{ conv.title }}</span>
+              <el-input
+                v-else
+                v-model="renamingTitle"
+                size="small"
+                @click.stop
+                @blur="commitRename"
+                @keydown.enter.prevent="commitRename"
+                @keydown.esc.prevent="renamingId = ''"
+                ref="renameInputRef"
+              />
+              <el-tooltip v-if="conv.scheduledTaskId" content="定时任务发起" placement="top">
+                <el-icon class="scheduled-badge"><Timer /></el-icon>
+              </el-tooltip>
+            </div>
+            <div v-if="!rootCollapsed && rootConversations.length === 0" class="tree-empty">{{ search ? '无匹配' : '暂无会话' }}</div>
+          </div>
         </div>
-        <el-empty v-if="filteredConversations.length === 0" :description="search ? '无匹配会话' : '新建会话开始对话'" :image-size="50" />
+
+        <!-- 各空间节点 -->
+        <div v-for="sp in spaceStore.spaces" :key="sp.id" class="tree-node tree-space">
+          <div
+            class="tree-node-head"
+            @click="toggleSpaceCollapse(sp.id)"
+            @contextmenu.prevent="openSpaceMenu($event, sp)"
+          >
+            <el-icon class="tree-caret" :class="{ expanded: !spaceCollapsed[sp.id] }"><CaretRight /></el-icon>
+            <el-icon class="tree-node-icon"><FolderOpened /></el-icon>
+            <span class="tree-node-label" :title="sp.dirPath || sp.name">{{ sp.name }}</span>
+            <span class="tree-count">{{ conversationsBySpace[sp.id]?.length || 0 }}</span>
+            <el-icon class="tree-add-icon" @click.stop="startNewChat(sp.id)"><Plus /></el-icon>
+          </div>
+          <div v-show="!spaceCollapsed[sp.id]" class="tree-children">
+            <div
+              v-for="conv in conversationsBySpace[sp.id] || []"
+              :key="conv.id"
+              class="conv-item"
+              :class="{ active: conv.id === store.currentConvId, pinned: conv.pinned, selecting: batchMode }"
+              @click="batchMode ? toggleConvSelect(conv.id) : (drawerOpen = false, selectConv(conv.id))"
+              @contextmenu.prevent="!batchMode && openConvMenu($event, conv)"
+              @dblclick="!batchMode && startRename(conv)"
+            >
+              <el-checkbox v-if="batchMode" :model-value="selectedConvIds.has(conv.id)" @click.stop @change="toggleConvSelect(conv.id)" />
+              <el-icon class="pin-icon" v-if="conv.pinned"><Star /></el-icon>
+              <el-icon v-else-if="!batchMode"><ChatDotRound /></el-icon>
+              <span v-if="renamingId !== conv.id" class="conv-title">{{ conv.title }}</span>
+              <el-input
+                v-else
+                v-model="renamingTitle"
+                size="small"
+                @click.stop
+                @blur="commitRename"
+                @keydown.enter.prevent="commitRename"
+                @keydown.esc.prevent="renamingId = ''"
+                ref="renameInputRef"
+              />
+              <el-tooltip v-if="conv.scheduledTaskId" content="定时任务发起" placement="top">
+                <el-icon class="scheduled-badge"><Timer /></el-icon>
+              </el-tooltip>
+            </div>
+            <div v-if="!spaceCollapsed[sp.id] && (!conversationsBySpace[sp.id] || conversationsBySpace[sp.id].length === 0)" class="tree-empty">{{ search ? '无匹配' : '暂无会话' }}</div>
+          </div>
+        </div>
+
       </div>
+
       <div v-if="batchMode && selectedConvIds.size > 0" class="batch-bar">
         <span>已选 {{ selectedConvIds.size }} 个</span>
         <el-button size="small" :disabled="filteredConversations.length === 0" @click="batchSelectAll">全选</el-button>
         <el-button size="small" type="danger" @click="batchDeleteConvs">删除选中</el-button>
       </div>
+    </div>
+
+    <div v-else class="task-tab">
+      <ScheduledTaskDialog />
     </div>
   </aside>
 
@@ -158,20 +171,32 @@
       <el-icon><Delete /></el-icon>删除空间
     </li>
   </ul>
+
 </template>
 
 <script setup lang="ts">
+import { onMounted, onBeforeUnmount } from 'vue';
 import {
-  Plus, ChatDotRound, Star, EditPen, User, Delete, FolderOpened, ArrowRight, Close, Search,
+  Plus, ChatDotRound, Star, EditPen, Delete, FolderOpened, ArrowRight, Close, Search, CaretRight, Timer,
 } from '@element-plus/icons-vue';
 import { useChat } from '../../composables/chat/useChat';
+import ScheduledTaskDialog from './ScheduledTaskDialog.vue';
 
 const {
-  sideTab, agentStore, openCreateAgent, openEditAgent, search, store, batchMode, toggleConvSelect,
+  sideTab, search, store, batchMode, toggleConvSelect,
   selectConv, drawerOpen, openConvMenu, startRename, selectedConvIds, renamingId, renamingTitle,
   commitRename, renameInputRef, filteredConversations, startNewChat, batchSelectAll, batchDeleteConvs,
-  spaceStore, selectSpace, createSpaceQuick, openSpaceMenu, openSpaceEdit, showSpaceEdit, spaceEditForm,
+  rootConversations, conversationsBySpace, spaceCollapsed, toggleSpaceCollapse, rootCollapsed, toggleRootCollapse,
+  spaceStore, openSpaceMenu, openSpaceEdit, showSpaceEdit, spaceEditForm,
   saveSpaceEdit, deleteSpaceConfirm, spaceMenuTarget, closeSpaceMenu, moveConvToSpace, ctxMenu,
-  togglePin, deleteConv,
+  togglePin, deleteConv, closeCtxMenu,
 } = useChat();
+
+function onDocMouseDown(e: MouseEvent) {
+  if ((e.target as HTMLElement)?.closest('.ctx-menu')) return;
+  closeCtxMenu();
+}
+
+onMounted(() => document.addEventListener('mousedown', onDocMouseDown, true));
+onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMouseDown, true));
 </script>

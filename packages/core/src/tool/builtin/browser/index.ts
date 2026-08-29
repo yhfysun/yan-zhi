@@ -35,7 +35,7 @@ function err(msg: string): McpCallResult {
 // ========== 导航 ==========
 export class BrowserNavigateTool implements BuiltInTool {
   name = 'browser_navigate';
-  description = 'Navigate the built-in browser to a URL. Opens a visible browser window.';
+  description = 'Navigate the in-app browser preview panel to a URL (renders inside the app, not a system browser).';
   inputSchema = {
     type: 'object',
     properties: { url: { type: 'string', description: 'The URL to navigate to.' } },
@@ -48,6 +48,35 @@ export class BrowserNavigateTool implements BuiltInTool {
       const data = await callBrowserApi('/navigate', 'POST', { url }) as any;
       return ok(`Navigated to ${data.url}\nTitle: ${data.title}`);
     } catch (e: any) { return err(e?.message || '导航失败'); }
+  }
+}
+
+// ========== 在系统浏览器中打开（原生预览，非 iframe/弹窗） ==========
+export class BrowserOpenExternalTool implements BuiltInTool {
+  name = 'browser_open_external';
+  description = 'Open a URL in the system default browser (desktop) or a new browser tab (web). Native preview, not an in-app iframe or popup dialog.';
+  inputSchema = {
+    type: 'object',
+    properties: { url: { type: 'string', description: 'The URL to open externally.' } },
+    required: ['url'],
+  };
+  async execute(args: Record<string, unknown>): Promise<McpCallResult> {
+    const url = args.url as string;
+    if (!url) return err('url is required');
+    if (!/^https?:\/\//i.test(url)) return err('url 需以 http:// 或 https:// 开头');
+    try {
+      const w = (typeof window !== 'undefined' ? window : null) as any;
+      const electronShell = w?.electronAPI?.shell;
+      if (electronShell?.openExternal) {
+        await electronShell.openExternal(url);
+        return ok(`Opened externally (system browser): ${url}`);
+      }
+      if (w?.open) {
+        w.open(url, '_blank', 'noopener,noreferrer');
+        return ok(`Opened externally (new tab): ${url}`);
+      }
+      return err('当前环境无法打开外部浏览器');
+    } catch (e: any) { return err(e?.message || '外部打开失败'); }
   }
 }
 
@@ -216,6 +245,7 @@ export class BrowserScreenshotTool implements BuiltInTool {
 /** 所有浏览器工具类列表 */
 export const BrowserToolClasses = [
   BrowserNavigateTool,
+  BrowserOpenExternalTool,
   BrowserClickTool,
   BrowserTypeTool,
   BrowserPressKeyTool,
@@ -229,7 +259,7 @@ export const BrowserToolClasses = [
 
 /** 所有浏览器工具的暴露名（裸名） */
 export const BROWSER_TOOL_NAMES = [
-  'browser_navigate', 'browser_click', 'browser_type', 'browser_press_key',
+  'browser_navigate', 'browser_open_external', 'browser_click', 'browser_type', 'browser_press_key',
   'browser_scroll', 'browser_hover', 'browser_get_text', 'browser_get_dom',
   'browser_wait', 'browser_screenshot',
 ];

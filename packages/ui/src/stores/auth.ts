@@ -3,7 +3,7 @@ import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
 import { api, setToken } from '../api/client';
 
-interface UserInfo {
+export interface UserInfo {
   id: string;
   username: string;
   email: string | null;
@@ -25,8 +25,8 @@ export const useAuthStore = defineStore('auth', () => {
     if ('data' in result) {
       user.value = result.data.user;
     } else {
-      setToken(null);
-      user.value = null;
+      // 本地模式：鉴权已屏蔽，/auth/me 失败时不清 token、不强制登出，回退匿名用户
+      user.value = { id: 'guest', username: 'guest', email: null };
     }
   }
 

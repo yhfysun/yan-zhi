@@ -22,21 +22,25 @@ declare global {
   }
 }
 
-/** 必须登录的中间件 */
+/** 本地单用户模式固定身份（数据都在本地，登录已屏蔽）。 */
+const LOCAL_USER: JwtPayload = { userId: 'guest', username: 'guest' };
+
+/** 必须登录的中间件 —— 本地模式已屏蔽鉴权：有合法 token 就用其身份，否则回退本地固定身份放行。
+ *  恢复登录鉴权时，把下面回退分支改回 `res.status(401).json({ error: '未登录' }); return;` 即可。 */
 export function authMiddleware(req: Request, res: Response, next: NextFunction) {
   const header = req.headers.authorization;
-  if (!header || !header.startsWith('Bearer ')) {
-    res.status(401).json({ error: '未登录' });
-    return;
+  if (header && header.startsWith('Bearer ')) {
+    try {
+      const payload = jwt.verify(header.slice(7), JWT_SECRET) as JwtPayload;
+      req.user = payload;
+      next();
+      return;
+    } catch {
+      // token 无效，回退本地身份
+    }
   }
-  try {
-    const token = header.slice(7);
-    const payload = jwt.verify(token, JWT_SECRET) as JwtPayload;
-    req.user = payload;
-    next();
-  } catch {
-    res.status(401).json({ error: 'Token 无效或已过期，请重新登录' });
-  }
+  req.user = LOCAL_USER;
+  next();
 }
 
 /** 可选登录：有 token 就解析，没有不报错 */

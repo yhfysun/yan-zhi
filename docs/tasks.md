@@ -222,11 +222,10 @@
 
 ## 已知问题
 
-### 1. Anthropic 协议未实现
+### 1. Anthropic 协议（已实现）
 
-`Protocol = 'openai' | 'anthropic' | 'custom'` 和 UI 中已声明 Anthropic 选项，但 `LlmClient` 只实现了 OpenAI 格式：
-- 端点硬编码 `/v1/chat/completions`（Anthropic 实际为 `/v1/messages`）
-- 鉴权写死 `Bearer`（Anthropic 需 `x-api-key`）
-- 请求/响应结构不兼容 Anthropic Messages API
+`LlmClient` 已完整支持 OpenAI 与 Anthropic 双协议（`packages/core/src/llm/anthropic.ts` 适配层）：
+- OpenAI：`/v1/chat/completions` + `Bearer` 鉴权
+- Anthropic：`/v1/messages` + `x-api-key` 鉴权，自动完成 system 提取、tool_use/tool_result 转换、流式 SSE 解析
 
-选 Anthropic 协议的平台无法正常使用。需后续增加协议适配层。
+注意：Anthropic 官方无公开模型列表接口，"拉取模型"可能返回空，需手动添加模型 ID。Anthropic 不支持 embeddings。

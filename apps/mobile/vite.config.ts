@@ -5,6 +5,7 @@ import { resolve } from 'path';
 export default defineConfig({
   plugins: [vue()],
   resolve: {
+    extensions: ['.ts', '.mjs', '.js', '.vue', '.json'],
     alias: {
       '@yan-zhi/ui': resolve(__dirname, '../../packages/ui/src'),
       '@yan-zhi/core': resolve(__dirname, '../../packages/core/src'),

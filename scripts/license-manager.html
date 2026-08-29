@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>言智 · 授权码管理</title>
+<style>
+  :root {
+    --bg: #f8fafc; --text: #1e293b; --text-2: #64748b;
+    --card: rgba(255,255,255,0.72); --border: rgba(15,23,42,0.08); --border-2: rgba(15,23,42,0.12);
+    --field: rgba(15,23,42,0.04); --field-hover: rgba(15,23,42,0.07);
+    --primary: #7C3AED; --accent: #EC4899; --grad: linear-gradient(135deg,#7C3AED,#EC4899);
+    --ok: #22c55e; --warn: #f59e0b; --err: #ef4444;
+    --shadow: 0 8px 32px rgba(0,0,0,0.12); --radius: 14px;
+  }
+  [data-theme="dark"] {
+    --bg: #0f1117; --text: #e2e8f0; --text-2: #94a3b8;
+    --card: rgba(24,26,36,0.78); --border: rgba(255,255,255,0.07); --border-2: rgba(255,255,255,0.11);
+    --field: rgba(255,255,255,0.05); --field-hover: rgba(255,255,255,0.09);
+    --shadow: 0 8px 32px rgba(0,0,0,0.5);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-size: 14px; color: var(--text); background: var(--bg);
+    display: flex; flex-direction: column; align-items: center; min-height: 100vh;
+    padding: 32px 20px;
+  }
+  .orb { position: fixed; border-radius: 50%; filter: blur(70px); opacity: 0.3; z-index: 0; pointer-events: none; }
+  [data-theme="dark"] .orb { opacity: 0.14; }
+  .orb-1 { width: 420px; height: 420px; background: #7C3AED; top: -120px; left: -120px; }
+  .orb-2 { width: 360px; height: 360px; background: #EC4899; bottom: -100px; right: -100px; }
+  .wrap { position: relative; z-index: 1; width: 760px; max-width: 100%; }
+  header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 22px; }
+  .brand { display: flex; align-items: center; gap: 12px; }
+  .logo { width: 44px; height: 44px; border-radius: 12px; background: var(--grad); display: flex; align-items: center; justify-content: center; color: #fff; font-size: 22px; font-weight: 800; box-shadow: 0 6px 20px rgba(124,58,237,0.4); }
+  h1 { font-size: 19px; font-weight: 700; }
+  .sub { font-size: 12px; color: var(--text-2); margin-top: 2px; }
+  .theme-btn { width: 38px; height: 38px; border-radius: 10px; border: 1px solid var(--border); background: var(--field); color: var(--text); cursor: pointer; font-size: 17px; transition: background 0.2s; }
+  .theme-btn:hover { background: var(--field-hover); }
+  .card { background: var(--card); backdrop-filter: blur(16px) saturate(180%); -webkit-backdrop-filter: blur(16px) saturate(180%); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); padding: 22px 24px; margin-bottom: 16px; }
+  .card-title { font-size: 14px; font-weight: 600; margin-bottom: 14px; display: flex; align-items: center; gap: 8px; }
+  .card-title .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--grad); }
+  .row { display: flex; gap: 12px; }
+  .row > * { flex: 1; }
+  label { display: block; font-size: 12px; color: var(--text-2); margin-bottom: 6px; font-weight: 500; }
+  input, textarea, select { width: 100%; padding: 9px 12px; font-size: 13px; font-family: inherit; color: var(--text); background: var(--field); border: 1px solid var(--border); border-radius: 9px; outline: none; transition: border-color 0.2s, background 0.2s; }
+  input:focus, textarea:focus, select:focus { border-color: var(--primary); background: var(--field-hover); }
+  textarea { resize: vertical; min-height: 70px; font-family: ui-monospace, "SF Mono", monospace; font-size: 12px; line-height: 1.5; }
+  .mono { font-family: ui-monospace, "SF Mono", monospace; }
+  .btn { padding: 9px 18px; font-size: 13px; font-weight: 600; border: none; border-radius: 9px; cursor: pointer; transition: transform 0.15s, box-shadow 0.2s; }
+  .btn:hover { transform: translateY(-1px); }
+  .btn:active { transform: translateY(0); }
+  .btn-primary { background: var(--grad); color: #fff; box-shadow: 0 4px 14px rgba(124,58,237,0.3); }
+  .btn-ghost { background: var(--field); color: var(--text); border: 1px solid var(--border); }
+  .btn-ghost:hover { background: var(--field-hover); }
+  .btn-sm { padding: 6px 12px; font-size: 12px; }
+  .btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+  .radio-group { display: flex; gap: 8px; }
+  .radio { flex: 1; padding: 9px; text-align: center; font-size: 12px; font-weight: 500; border: 1px solid var(--border); border-radius: 9px; cursor: pointer; background: var(--field); color: var(--text-2); transition: all 0.2s; }
+  .radio.active { border-color: var(--primary); background: rgba(124,58,237,0.1); color: var(--primary); font-weight: 600; }
+  .actions { display: flex; gap: 10px; margin-top: 14px; align-items: center; }
+  .actions .spacer { flex: 1; }
+  .badge { display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; font-size: 11px; font-weight: 600; border-radius: 6px; }
+  .badge-ok { background: rgba(34,197,94,0.15); color: var(--ok); }
+  .badge-err { background: rgba(239,68,68,0.15); color: var(--err); }
+  .badge-warn { background: rgba(245,158,11,0.15); color: var(--warn); }
+  .badge-info { background: rgba(124,58,237,0.15); color: var(--primary); }
+  .out { margin-top: 14px; padding: 12px; background: var(--field); border: 1px solid var(--border); border-radius: 9px; }
+  .out-label { font-size: 11px; color: var(--text-2); margin-bottom: 6px; }
+  .out-code { font-family: ui-monospace, monospace; font-size: 11px; line-height: 1.6; word-break: break-all; color: var(--text); max-height: 120px; overflow-y: auto; }
+  .kv { display: grid; grid-template-columns: 110px 1fr; gap: 6px 12px; font-size: 12px; }
+  .kv .k { color: var(--text-2); }
+  .kv .v { color: var(--text); font-family: ui-monospace, monospace; word-break: break-all; }
+  .hist { display: flex; flex-direction: column; gap: 8px; }
+  .hist-item { padding: 10px 12px; background: var(--field); border: 1px solid var(--border); border-radius: 9px; display: flex; align-items: center; gap: 10px; }
+  .hist-item .meta { flex: 1; font-size: 11px; color: var(--text-2); }
+  .hist-item .code { font-family: ui-monospace, monospace; font-size: 10px; color: var(--text); max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .empty { text-align: center; color: var(--text-2); font-size: 12px; padding: 16px; }
+  .check { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-2); cursor: pointer; }
+  .check input { width: auto; }
+  .file-btn { position: relative; overflow: hidden; }
+  .file-btn input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+  .toast { position: fixed; top: 20px; left: 50%; transform: translateX(-50%); padding: 10px 20px; background: var(--grad); color: #fff; border-radius: 9px; font-size: 13px; font-weight: 500; box-shadow: var(--shadow); z-index: 100; opacity: 0; transition: opacity 0.3s, top 0.3s; pointer-events: none; }
+  .toast.show { opacity: 1; top: 30px; }
+  .sec { display: none; }
+  .sec.active { display: block; }
+  .tabs { display: flex; gap: 4px; padding: 4px; background: var(--field); border-radius: 11px; margin-bottom: 16px; }
+  .tab { flex: 1; padding: 9px; text-align: center; font-size: 13px; font-weight: 500; color: var(--text-2); border-radius: 8px; cursor: pointer; transition: all 0.2s; }
+  .tab.active { background: var(--card); color: var(--text); box-shadow: 0 2px 8px rgba(0,0,0,0.08); font-weight: 600; }
+  [data-theme="dark"] .tab.active { background: rgba(255,255,255,0.08); }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-thumb { background: var(--border-2); border-radius: 4px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--text-2); }
+</style>
+</head>
+<body>
+<div class="orb orb-1"></div>
+<div class="orb orb-2"></div>
+<div class="wrap">
+  <header>
+    <div class="brand">
+      <div class="logo">言</div>
+      <div>
+        <h1>言智 · 授权码管理</h1>
+        <div class="sub">本地工具 · 私钥签名生成 / 公钥验签解析</div>
+      </div>
+    </div>
+    <button class="theme-btn" id="themeBtn" title="切换主题">🌙</button>
+  </header>
+
+  <div class="tabs">
+    <div class="tab active" data-tab="gen">生成授权码</div>
+    <div class="tab" data-tab="parse">解析验签</div>
+  </div>
+
+  <!-- 生成 -->
+  <div class="sec active" id="sec-gen">
+    <div class="card">
+      <div class="card-title"><span class="dot"></span>私钥</div>
+      <div id="keyStatus" style="margin-bottom:10px"></div>
+      <textarea id="privKey" placeholder="粘贴 PKCS#8 PEM 私钥（-----BEGIN PRIVATE KEY----- ...）" rows="4"></textarea>
+      <div class="actions">
+        <label class="file-btn btn btn-ghost btn-sm">选择 .pem 文件<input type="file" id="privFile" accept=".pem,.key"></label>
+        <label class="check"><input type="checkbox" id="rememberKey"> 记住私钥（localStorage）</label>
+        <div class="spacer"></div>
+        <button class="btn btn-ghost btn-sm" id="clearKey">清除</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><span class="dot"></span>授权参数</div>
+      <label>有效期</label>
+      <div class="radio-group" id="expireType">
+        <div class="radio active" data-v="forever">永久</div>
+        <div class="radio" data-v="days">按天数</div>
+        <div class="radio" data-v="date">指定日期</div>
+      </div>
+      <div style="margin-top:12px" id="expireInputs">
+        <div id="daysInput" style="display:none">
+          <label>有效天数</label>
+          <input type="number" id="days" value="30" min="1" placeholder="如 30">
+        </div>
+        <div id="dateInput" style="display:none">
+          <label>到期日期</label>
+          <input type="date" id="expireDate">
+        </div>
+      </div>
+      <div style="margin-top:14px">
+        <label>绑定 MAC（可选，留空则所有机器可用）</label>
+        <input type="text" id="mac" placeholder="如 AA:BB:CC:DD:EE:FF" class="mono">
+      </div>
+      <div class="actions">
+        <div class="spacer"></div>
+        <button class="btn btn-primary" id="genBtn">生成授权码</button>
+      </div>
+    </div>
+
+    <div class="card" id="resultCard" style="display:none">
+      <div class="card-title"><span class="dot"></span>授权码</div>
+      <div class="out">
+        <div class="out-label">授权码（复制给用户粘贴到应用激活）</div>
+        <div class="out-code mono" id="licenseCode"></div>
+      </div>
+      <div class="actions">
+        <div class="kv" id="resultMeta" style="flex:1"></div>
+        <button class="btn btn-ghost btn-sm" id="copyCode">复制</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><span class="dot"></span>本次会话历史</div>
+      <div class="hist" id="history"></div>
+    </div>
+  </div>
+
+  <!-- 解析 -->
+  <div class="sec" id="sec-parse">
+    <div class="card">
+      <div class="card-title"><span class="dot"></span>解析授权码</div>
+      <label>授权码</label>
+      <textarea id="parseCode" placeholder="粘贴要解析的授权码" rows="4" class="mono"></textarea>
+      <div class="actions">
+        <div class="spacer"></div>
+        <button class="btn btn-primary" id="parseBtn">解析验签</button>
+      </div>
+    </div>
+    <div class="card" id="parseResult" style="display:none">
+      <div class="card-title"><span class="dot"></span>解析结果</div>
+      <div id="parseOut"></div>
+    </div>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+const PUBLIC_KEY = `-----BEGIN PUBLIC KEY-----
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAudaPf8W9lEYSASD8ZeAd
+gHjDrN/DLpJbQLn3DrpNeKdqa2FkAIs5UuuoY7aCfjOSsnyO6gpIo3ZVTPsE2Fyw
+OB43b3NsfElR7CY7sGiRB+X/SmOPiEStLpBnvI6yZCtl98GVyPZlxPxPgFk9FRxP
+TYqes1L2jRu2D+wNmJNAwYTOKB5vo1lAfPyK8j/43wkzftRhGTlIuxmGBJMnIrBv
+efa/AXMxFjukBEfzQ5EmewMT43sV2TAy3AstjPaPmsJfJ3arTWFnM0CcdLOj6yIo
+cInEgmQ8Gf7Wfg9hHLpr7aoWMM6jJGrPmtj6SONg8GW6SPXg9O3BuS5AN8azgevF
+gQIDAQAB
+-----END PUBLIC KEY-----`;
+
+const $ = (id) => document.getElementById(id);
+const history = [];
+
+function b64urlEncode(bytes) {
+  let bin = '';
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+function b64urlDecode(str) {
+  const pad = str.length % 4 === 0 ? '' : '='.repeat(4 - (str.length % 4));
+  const bin = atob(str.replace(/-/g, '+').replace(/_/g, '/') + pad);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes;
+}
+function pemToBytes(pem) {
+  const b64 = pem.replace(/-----[A-Z ]+-----/g, '').replace(/\s/g, '');
+  return b64urlDecode(b64.replace(/\+/g, '-').replace(/\//g, '_'));
+}
+function toast(msg) {
+  const t = $('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 1800);
+}
+async function copyText(text) {
+  try { await navigator.clipboard.writeText(text); toast('已复制'); }
+  catch { const ta = document.createElement('textarea'); ta.value = text; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove(); toast('已复制'); }
+}
+function fmtDate(iso) { if (!iso) return '永久'; const d = new Date(iso); return d.toLocaleString('zh-CN'); }
+
+// 主题
+const savedTheme = localStorage.getItem('lm_theme');
+if (savedTheme === 'dark') document.documentElement.setAttribute('data-theme', 'dark');
+$('themeBtn').onclick = () => {
+  const dark = document.documentElement.getAttribute('data-theme') === 'dark';
+  if (dark) { document.documentElement.removeAttribute('data-theme'); localStorage.setItem('lm_theme', 'light'); $('themeBtn').textContent = '🌙'; }
+  else { document.documentElement.setAttribute('data-theme', 'dark'); localStorage.setItem('lm_theme', 'dark'); $('themeBtn').textContent = '☀'; }
+};
+if (document.documentElement.getAttribute('data-theme') === 'dark') $('themeBtn').textContent = '☀';
+
+// Tab 切换
+document.querySelectorAll('.tab').forEach(tab => {
+  tab.onclick = () => {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    tab.classList.add('active');
+    document.querySelectorAll('.sec').forEach(s => s.classList.remove('active'));
+    $('sec-' + tab.dataset.tab).classList.add('active');
+  };
+});
+
+// 私钥加载
+function updateKeyStatus() {
+  const v = $('privKey').value.trim();
+  const el = $('keyStatus');
+  if (v) el.innerHTML = '<span class="badge badge-ok">● 私钥已加载</span>';
+  else el.innerHTML = '<span class="badge badge-warn">○ 未加载私钥</span>';
+}
+$('privKey').oninput = updateKeyStatus;
+$('privFile').onchange = (e) => {
+  const f = e.target.files[0];
+  if (!f) return;
+  const r = new FileReader();
+  r.onload = () => { $('privKey').value = r.result; updateKeyStatus(); toast('私钥文件已读取'); };
+  r.readAsText(f);
+};
+$('clearKey').onclick = () => { $('privKey').value = ''; localStorage.removeItem('lm_privkey'); updateKeyStatus(); };
+const savedKey = localStorage.getItem('lm_privkey');
+if (savedKey) { $('privKey').value = savedKey; $('rememberKey').checked = true; updateKeyStatus(); }
+
+// 过期类型
+let expireType = 'forever';
+document.querySelectorAll('#expireType .radio').forEach(r => {
+  r.onclick = () => {
+    document.querySelectorAll('#expireType .radio').forEach(x => x.classList.remove('active'));
+    r.classList.add('active');
+    expireType = r.dataset.v;
+    $('daysInput').style.display = expireType === 'days' ? 'block' : 'none';
+    $('dateInput').style.display = expireType === 'date' ? 'block' : 'none';
+  };
+});
+
+// 生成
+$('genBtn').onclick = async () => {
+  const pem = $('privKey').value.trim();
+  if (!pem) { toast('请先加载私钥'); return; }
+  if ($('rememberKey').checked) localStorage.setItem('lm_privkey', pem);
+  else localStorage.removeItem('lm_privkey');
+
+  let expireAt = null;
+  if (expireType === 'days') {
+    const d = parseInt($('days').value, 10);
+    if (!d || d < 1) { toast('请输入有效天数'); return; }
+    const dt = new Date(); dt.setDate(dt.getDate() + d); dt.setHours(23, 59, 59, 0);
+    expireAt = dt.toISOString();
+  } else if (expireType === 'date') {
+    const v = $('expireDate').value;
+    if (!v) { toast('请选择日期'); return; }
+    expireAt = new Date(v + 'T23:59:59').toISOString();
+  }
+
+  let mac = $('mac').value.trim().toUpperCase();
+  if (mac && !/^([0-9A-F]{2}:){5}[0-9A-F]{2}$/.test(mac)) { toast('MAC 格式应为 XX:XX:XX:XX:XX:XX'); return; }
+  if (!mac) mac = null;
+
+  const payload = JSON.stringify({ expireAt, mac });
+  let key, sig;
+  try {
+    const der = pemToBytes(pem);
+    key = await crypto.subtle.importKey('pkcs8', der, { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['sign']);
+    sig = await crypto.subtle.sign('RSASSA-PKCS1-v1_5', key, new TextEncoder().encode(payload));
+  } catch (err) { toast('签名失败：' + err.message); return; }
+
+  const code = b64urlEncode(new TextEncoder().encode(payload)) + '.' + b64urlEncode(new Uint8Array(sig));
+  $('licenseCode').textContent = code;
+  $('resultCard').style.display = 'block';
+  $('resultMeta').innerHTML =
+    `<span class="k">过期</span><span class="v">${fmtDate(expireAt)}</span>` +
+    `<span class="k">绑定 MAC</span><span class="v">${mac || '不限制'}</span>`;
+  history.unshift({ code, expireAt, mac, ts: new Date() });
+  renderHistory();
+  toast('授权码已生成');
+};
+
+$('copyCode').onclick = () => copyText($('licenseCode').textContent);
+
+function renderHistory() {
+  const el = $('history');
+  if (!history.length) { el.innerHTML = '<div class="empty">暂无记录</div>'; return; }
+  el.innerHTML = history.map(h => `
+    <div class="hist-item">
+      <div class="meta">
+        <div>${fmtDate(h.expireAt)} · ${h.mac || '不限MAC'}</div>
+        <div class="code">${h.code}</div>
+      </div>
+      <button class="btn btn-ghost btn-sm" onclick="copyText('${h.code.replace(/'/g, "\\'")}')">复制</button>
+    </div>`).join('');
+}
+renderHistory();
+
+// 解析验签
+$('parseBtn').onclick = async () => {
+  const code = $('parseCode').value.trim();
+  if (!code) { toast('请粘贴授权码'); return; }
+  const parts = code.split('.');
+  const out = $('parseOut');
+  $('parseResult').style.display = 'block';
+
+  if (parts.length !== 2) { out.innerHTML = '<span class="badge badge-err">格式错误</span> 授权码应为 payload.signature 结构'; return; }
+  let payload, payloadStr, sig;
+  try {
+    payloadStr = new TextDecoder().decode(b64urlDecode(parts[0]));
+    payload = JSON.parse(payloadStr);
+    sig = b64urlDecode(parts[1]);
+  } catch (err) { out.innerHTML = '<span class="badge badge-err">解析失败</span> ' + err.message; return; }
+
+  let sigOk = false;
+  try {
+    const der = pemToBytes(PUBLIC_KEY);
+    const pub = await crypto.subtle.importKey('spki', der, { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['verify']);
+    sigOk = await crypto.subtle.verify('RSASSA-PKCS1-v1_5', pub, sig, new TextEncoder().encode(payloadStr));
+  } catch (err) { out.innerHTML = '<span class="badge badge-err">验签异常</span> ' + err.message; return; }
+
+  const expired = payload.expireAt !== null && new Date(payload.expireAt).getTime() < Date.now();
+  const rows = [
+    ['签名验证', sigOk ? '<span class="badge badge-ok">有效</span>' : '<span class="badge badge-err">无效（被篡改）</span>'],
+    ['过期时间', fmtDate(payload.expireAt)],
+    ['当前是否过期', payload.expireAt === null ? '<span class="badge badge-info">永不过期</span>' : (expired ? '<span class="badge badge-err">已过期</span>' : '<span class="badge badge-ok">未过期</span>')],
+    ['绑定 MAC', payload.mac || '不限制（所有机器可用）'],
+  ];
+  out.innerHTML = '<div class="kv">' + rows.map(r => `<span class="k">${r[0]}</span><span class="v">${r[1]}</span>`).join('') + '</div>';
+};
+</script>
+</body>
+</html>

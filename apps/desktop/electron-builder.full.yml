@@ -16,8 +16,7 @@ extraResources:
     to: server/node_modules
   - from: ../server/package.json
     to: server/package.json
-  - from: ../server/models
-    to: server/models
+
   - from: ../../assets/icons/icon.ico
     to: icon.ico
 win:
@@ -26,6 +25,9 @@ win:
 mac:
   target: dmg
   icon: ../../assets/icons/icon.icns
+  # CI 上无开发者证书，走 ad-hoc 签名；关闭 hardenedRuntime/gatekeeperAssess 以免卡在校验
+  hardenedRuntime: false
+  gatekeeperAssess: false
 linux:
   target: AppImage
   icon: ../../assets/icons/icon.png

@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { v4 as uuid } from 'uuid';
 import { authMiddleware } from '../auth.js';
 import { db } from '../db.js';
+import { getToolRegistry } from '@yan-zhi/core';
 
 const router = Router();
 router.use(authMiddleware);
@@ -95,19 +96,17 @@ router.post('/:id/execute', async (req: Request, res: Response) => {
   }
 });
 
-// GET /api/tools/builtin — 列出内置工具
+// GET /api/tools/builtin — 列出内置工具（含完整 inputSchema + outputSchema）
+// 从 ToolRegistry 动态生成，与 packages/core 注册的内置工具自动同步，避免硬编码脱节。
 router.get('/builtin', (_req: Request, res: Response) => {
-  res.json({
-    data: [
-      { name: 'file_read', description: '读取文件内容，支持指定路径和行数范围', inputSchema: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] } },
-      { name: 'file_write', description: '写入内容到指定文件路径', inputSchema: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } }, required: ['path', 'content'] } },
-      { name: 'web_search', description: '联网搜索，获取实时信息', inputSchema: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] } },
-      { name: 'ask_user', description: '向用户反问澄清问题并等待回答', inputSchema: { type: 'object', properties: { question: { type: 'string' } }, required: ['question'] } },
-      { name: 'confirm_user', description: '多页确认向导，逐页收集用户选择、文字回答和补充说明', inputSchema: { type: 'object', properties: { title: { type: 'string' }, pages: { type: 'array' } }, required: ['pages'] } },
-      { name: 'task_plan', description: '创建任务计划并展示进度', inputSchema: { type: 'object', properties: { steps: { type: 'array' } }, required: ['steps'] } },
-      { name: 'task_step', description: '更新任务步骤状态', inputSchema: { type: 'object', properties: { index: { type: 'number' }, status: { type: 'string' } }, required: ['index', 'status'] } },
-    ],
-  });
+  const textOut = { type: 'object', properties: { content: { type: 'array', items: { type: 'object', properties: { type: { type: 'string' }, text: { type: 'string' } } } }, isError: { type: 'boolean' } } };
+  const tools = getToolRegistry().list().map((tool) => ({
+    name: tool.name,
+    description: tool.description,
+    inputSchema: tool.inputSchema,
+    outputSchema: tool.outputSchema || textOut,
+  }));
+  res.json({ data: tools });
 });
 
 // POST /api/tools/install — 从远程商城安装工具
@@ -135,6 +134,36 @@ router.post('/install', (req: Request, res: Response) => {
       res.json({ data: db.prepare('SELECT * FROM custom_tool WHERE id = ?').get(id) });
     })
     .catch((err: Error) => res.status(500).json({ error: err.message }));
+});
+
+// POST /api/tools/ocr — 图片 OCR 文字识别（image_analyze 工具的降级路径）
+// body: { image?: string(base64), path?: string, lang?: string }
+// 优先 image base64，其次 path 读文件；lang 默认 chi_sim+eng（中英文）
+router.post('/ocr', async (req: Request, res: Response) => {
+  try {
+    const { image, path: imgPath, lang } = req.body || {};
+    let buffer: Buffer | null = null;
+    if (typeof image === 'string' && image.length > 0) {
+      buffer = Buffer.from(image, 'base64');
+    } else if (typeof imgPath === 'string' && imgPath.length > 0) {
+      const { readFile } = await import('node:fs/promises');
+      buffer = await readFile(imgPath);
+    }
+    if (!buffer) {
+      res.status(400).json({ error: '需提供 image(base64) 或 path 参数' });
+      return;
+    }
+    const { createWorker } = await import('tesseract.js');
+    const worker = await createWorker(lang || 'chi_sim+eng', 1, { logger: () => {} });
+    try {
+      const { data } = await worker.recognize(buffer);
+      res.json({ data: { text: data.text || '', confidence: data.confidence } });
+    } finally {
+      await worker.terminate();
+    }
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || 'OCR 识别失败' });
+  }
 });
 
 export default router;

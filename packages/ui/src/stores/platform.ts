@@ -45,47 +45,6 @@ function tryParse(v: string) {
   try { return JSON.parse(v); } catch { return {}; }
 }
 
-const GUEST_LOCAL_PLATFORM_ID = 'local-model-guest';
-const GUEST_LOCAL_LLM_ID = 'local-model-guest-llm';
-const GUEST_LOCAL_MODEL_ID = 'qwen2.5-1.5b-instruct';
-const GUEST_LOCAL_BASE_URL = 'http://127.0.0.1:3001/local-model';
-
-async function ensureGuestLocalModel() {
-  const adapter = getPlatformAdapter();
-  const now = Date.now();
-  const platformId = GUEST_LOCAL_PLATFORM_ID;
-
-  const existingPlatform = await adapter.db.query<any>('SELECT id FROM platform WHERE id = ?', [platformId]);
-  if (existingPlatform.length === 0) {
-    await adapter.db.exec(
-      'INSERT INTO platform (id, name, protocol, api_url, api_key_enc, headers_json, status, is_builtin, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)',
-      [platformId, '内置小模型', 'openai', GUEST_LOCAL_BASE_URL, '', '{}', 1, now],
-    );
-  } else {
-    await adapter.db.exec(
-      "UPDATE platform SET name = '内置小模型', protocol = 'openai', api_url = ?, status = 1, is_builtin = 1 WHERE id = ?",
-      [GUEST_LOCAL_BASE_URL, platformId],
-    );
-  }
-
-  const llmId = GUEST_LOCAL_LLM_ID;
-  const existingLlm = await adapter.db.query<any>('SELECT id FROM model WHERE id = ?', [llmId]);
-  if (existingLlm.length === 0) {
-    await adapter.db.exec(
-      'INSERT INTO model (id, platform_id, model_id, alias, type, context_window, enabled, is_default, is_builtin, capabilities_json, pricing_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)',
-      [llmId, platformId, GUEST_LOCAL_MODEL_ID, '本地小模型（Qwen2.5 1.5B）', 'llm', 8192, 1, 1, JSON.stringify(['function_call']), '{}'],
-    );
-  } else {
-    await adapter.db.exec(
-      "UPDATE model SET platform_id = ?, model_id = ?, alias = '本地小模型（Qwen2.5 1.5B）', type = 'llm', context_window = 8192, enabled = 1, is_default = 1, is_builtin = 1, capabilities_json = ? WHERE id = ?",
-      [platformId, GUEST_LOCAL_MODEL_ID, JSON.stringify(['function_call']), llmId],
-    );
-  }
-
-  // 本地小模型只提供聊天 LLM；旧版本残留的 embedding 项会被清除，避免出现在模型管理/知识库等需要 Embedding 的位置。
-  await adapter.db.exec("DELETE FROM model WHERE platform_id = ? AND type = 'embedding'", [platformId]);
-}
-
 /** 从模型 ID 自动推断模型类型 */
 function inferModelType(modelId: string, apiType?: string): ModelType {
   const id = modelId.toLowerCase();
@@ -120,7 +79,7 @@ function inferModelType(modelId: string, apiType?: string): ModelType {
 function assertEditablePlatform(id: string) {
   const store = usePlatformStore();
   const p = store.platforms.find((x) => x.id === id);
-  if (p?.isBuiltin || id.startsWith('local-model-')) {
+  if (p?.isBuiltin) {
     throw new Error('内置平台不可编辑');
   }
 }
@@ -128,7 +87,7 @@ function assertEditablePlatform(id: string) {
 function assertEditableModel(id: string) {
   const store = usePlatformStore();
   const m = store.models.find((x) => x.id === id);
-  if (m?.isBuiltin || id.startsWith('local-model-')) {
+  if (m?.isBuiltin) {
     throw new Error('内置模型不可编辑');
   }
 }
@@ -155,8 +114,8 @@ export const usePlatformStore = defineStore('platform', () => {
           }
         }
       } else {
+        // 不再自动注册内置本地模型——本地模型改由「本地模型商城」按需下载注册
         const adapter = getPlatformAdapter();
-        await ensureGuestLocalModel();
         const rows = await adapter.db.query<any>('SELECT * FROM platform ORDER BY created_at DESC');
         platforms.value = rows.map(rowToPlatform);
       }
@@ -171,7 +130,6 @@ export const usePlatformStore = defineStore('platform', () => {
       return;
     }
     const adapter = getPlatformAdapter();
-    await ensureGuestLocalModel();
     const rows = platformId
       ? await adapter.db.query<any>('SELECT * FROM model WHERE platform_id = ? ORDER BY is_default DESC', [platformId])
       : await adapter.db.query<any>('SELECT * FROM model ORDER BY platform_id, is_default DESC');

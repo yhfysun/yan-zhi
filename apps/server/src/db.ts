@@ -2,6 +2,7 @@ import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { createRequire } from 'node:module';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const dataDir = process.env.DATA_DIR || path.join(__dirname, '..');
@@ -12,6 +13,22 @@ const db = new Database(DB_PATH);
 
 db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
+
+// 加载 sqlite-vec 扩展（向量记忆检索 memory_vec 表 + 知识库向量检索依赖此扩展）
+// sqlite-vec 是 SQLite 原生扩展（非 Node addon），无需 electron-rebuild
+let sqliteVecLoaded = false;
+try {
+  const require = createRequire(import.meta.url);
+  const sqliteVec = require('sqlite-vec');
+  const vecPath = sqliteVec.getLoadablePath();
+  db.loadExtension(vecPath);
+  sqliteVecLoaded = true;
+  console.log('[db] sqlite-vec 扩展已加载:', vecPath);
+} catch (err: unknown) {
+  const msg = err instanceof Error ? err.message : String(err);
+  console.warn('[db] sqlite-vec 扩展加载失败，向量检索功能将降级为关键词检索:', msg);
+}
+export const hasSqliteVec = sqliteVecLoaded;
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS user (
@@ -397,6 +414,9 @@ try { db.exec('CREATE INDEX IF NOT EXISTS idx_kb_base_user ON knowledge_base(use
 try { db.exec('CREATE INDEX IF NOT EXISTS idx_kb_doc_base ON knowledge_doc(base_id)'); } catch {}
 try { db.exec('CREATE INDEX IF NOT EXISTS idx_kb_chunk_base ON knowledge_chunk(base_id, doc_id)'); } catch {}
 
+// 知识库向量检索：给 knowledge_chunk 加 embedding BLOB 列（存 Float32Array 的 buffer）
+try { db.exec('ALTER TABLE knowledge_chunk ADD COLUMN embedding BLOB'); } catch {}
+
 // ===== 知识库实体关系图谱（实体抽取 + 融合）=====
 db.exec(`
   -- 实体：name 在本库内唯一（同名合并为同一实体 → 唯一标识）
@@ -479,5 +499,40 @@ try {
 } catch {}
 try { db.exec('CREATE INDEX IF NOT EXISTS idx_memory_user_agent ON memory(user_id, agent_id, last_used_at DESC)'); } catch {}
 try { db.exec('CREATE INDEX IF NOT EXISTS idx_memory_type ON memory(user_id, type, last_used_at DESC)'); } catch {}
+
+// ===== 对话定时任务 =====
+db.exec(`
+  CREATE TABLE IF NOT EXISTS scheduled_task (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES user(id),
+    name TEXT NOT NULL,
+    prompt TEXT,
+    cron_expr TEXT,
+    interval_minutes INTEGER,
+    conversation_id TEXT,
+    enabled INTEGER DEFAULT 1,
+    last_run_at INTEGER,
+    next_run_at INTEGER,
+    created_at INTEGER,
+    updated_at INTEGER
+  );
+`);
+try { db.exec('CREATE INDEX IF NOT EXISTS idx_scheduled_task_user ON scheduled_task(user_id, enabled, next_run_at)'); } catch {}
+
+// 定时任务绑定智能体/模型/空间；会话记录来源定时任务（用于列表显示定时标记）
+try { db.exec('ALTER TABLE scheduled_task ADD COLUMN agent_id TEXT'); } catch {}
+try { db.exec('ALTER TABLE scheduled_task ADD COLUMN platform_id TEXT'); } catch {}
+try { db.exec('ALTER TABLE scheduled_task ADD COLUMN model_id TEXT'); } catch {}
+try { db.exec('ALTER TABLE scheduled_task ADD COLUMN space_id TEXT'); } catch {}
+try { db.exec('ALTER TABLE conversation ADD COLUMN scheduled_task_id TEXT'); } catch {}
+
+// ===== 应用全局配置（key-value）=====
+db.exec(`
+  CREATE TABLE IF NOT EXISTS app_config (
+    key TEXT PRIMARY KEY,
+    value TEXT,
+    updated_at INTEGER NOT NULL
+  );
+`);
 
 export { db };

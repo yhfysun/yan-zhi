@@ -8,7 +8,6 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc && node scripts/fix-esm-extensions.cjs",
     "start": "node dist/apps/server/src/index.js",
-    "download:models": "node ./scripts/download-models.cjs",
     "postinstall": "node ./scripts/fix-sqlite-electron.cjs || true"
   },
   "dependencies": {
@@ -19,8 +18,9 @@
     "cors": "^2.8.5",
     "express": "^4.21.0",
     "jsonwebtoken": "^9.0.2",
-    "node-llama-cpp": "3.20.0",
     "playwright": "^1.62.1",
+    "sqlite-vec": "^0.1.9",
+    "tesseract.js": "^5.1.1",
     "uuid": "^10.0.0"
   },
   "devDependencies": {

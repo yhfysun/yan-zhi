@@ -39,6 +39,7 @@ function rowToConv(r: any): Conversation {
     platformId: r.platform_id,
     modelId: r.model_id,
     spaceId: r.space_id,
+    scheduledTaskId: r.scheduled_task_id ?? r.scheduledTaskId,
     mcpServerIds,
     _mcpDisabledTools: convMcpDisabled,
     _mcpToolAliases: convMcpAliases,
@@ -69,6 +70,61 @@ interface ToolCallRecord { id: string; name: string; arguments: string; }
 
 function safeParseJson(s: string): unknown {
   try { return JSON.parse(s); } catch { return {}; }
+}
+
+export interface PendingQuestion {
+  question: string;
+  options?: string[];
+  multiSelect?: boolean;
+  allowSupplement?: boolean;
+  resolve: (answer: string, supplement?: string) => void;
+}
+
+export interface ConfirmationPage {
+  question: string;
+  description?: string;
+  options?: string[];
+  multiSelect?: boolean;
+  allowText?: boolean;
+  allowSupplement?: boolean;
+  required?: boolean;
+}
+
+export interface ConfirmationAnswer {
+  question: string;
+  answer: string;
+  supplement?: string;
+}
+
+export interface PendingConfirmation {
+  title: string;
+  pages: ConfirmationPage[];
+  index: number;
+  answers: ConfirmationAnswer[];
+  resolve: (result: Record<string, unknown>) => void;
+}
+
+export interface PendingPlatformConfig {
+  prefill: {
+    name?: string;
+    protocol?: 'openai' | 'anthropic' | 'custom';
+    apiUrl?: string;
+    apiKey?: string;
+    modelId?: string;
+    alias?: string;
+    contextWindow?: number;
+  };
+  resolve: (result: { cancelled: boolean; platformId?: string; modelId?: string; message?: string }) => void;
+}
+
+export type PlanStepStatus = 'pending' | 'running' | 'done' | 'failed';
+
+export interface PlanStep {
+  id: string;
+  title: string;
+  description?: string;
+  status: PlanStepStatus;
+  note?: string;
 }
 
 export const useChatStore = defineStore('chat', () => {
@@ -108,60 +164,12 @@ export const useChatStore = defineStore('chat', () => {
   const conversationTurnCount = ref(0);
 
   // E12: 智能体反问弹窗 —— 等待用户回答的待处理问题（dispatchToolCall 中 await 此 Promise 以暂停 ReAct 循环）
-  interface PendingQuestion {
-    question: string;
-    options?: string[];
-    multiSelect?: boolean;
-    allowSupplement?: boolean;
-    resolve: (answer: string, supplement?: string) => void;
-  }
   const pendingQuestion = ref<PendingQuestion | null>(null);
   // E12b: 多页用户确认向导 —— confirm_user 工具逐页收集选择/文字/补充说明
-  interface ConfirmationPage {
-    question: string;
-    description?: string;
-    options?: string[];
-    multiSelect?: boolean;
-    allowText?: boolean;
-    allowSupplement?: boolean;
-    required?: boolean;
-  }
-  interface ConfirmationAnswer {
-    question: string;
-    answer: string;
-    supplement?: string;
-  }
-  interface PendingConfirmation {
-    title: string;
-    pages: ConfirmationPage[];
-    index: number;
-    answers: ConfirmationAnswer[];
-    resolve: (result: Record<string, unknown>) => void;
-  }
   const pendingConfirmation = ref<PendingConfirmation | null>(null);
   // E12c: 模型平台配置弹窗 —— configure_model_platform 工具触发，等待用户填写并保存平台/模型
-  interface PendingPlatformConfig {
-    prefill: {
-      name?: string;
-      protocol?: 'openai' | 'anthropic' | 'custom';
-      apiUrl?: string;
-      apiKey?: string;
-      modelId?: string;
-      alias?: string;
-      contextWindow?: number;
-    };
-    resolve: (result: { cancelled: boolean; platformId?: string; modelId?: string; message?: string }) => void;
-  }
   const pendingPlatformConfig = ref<PendingPlatformConfig | null>(null);
   // E12: 任务规划进度 —— task_plan / task_step 工具写入，UI 渲染 todo 卡片
-  type PlanStepStatus = 'pending' | 'running' | 'done' | 'failed';
-  interface PlanStep {
-    id: string;
-    title: string;
-    description?: string;
-    status: PlanStepStatus;
-    note?: string;
-  }
   const planTitle = ref('');
   const planSteps = ref<PlanStep[]>([]);
 
@@ -654,6 +662,22 @@ export const useChatStore = defineStore('chat', () => {
       if (fullName === 'call_agent') {
         return runSubAgent(args as { agentId?: string; input?: string });
       }
+      // E7b: list_sub_agents 拦截 —— 返回当前智能体可调用的子智能体列表（id/名称/描述/工具）
+      if (fullName === 'list_sub_agents') {
+        const merged = getMergedMounts();
+        const agentStore = useAgentStore();
+        const list = merged.subAgentIds.map((id) => {
+          const sub = agentStore.agents.find((a) => a.id === id);
+          if (!sub) return `- id: \`${id}\`（该子智能体已被删除）`;
+          const tools = [...(sub.builtinToolIds || []), ...(sub.customToolIds || [])];
+          return `- **${sub.name}** (id: \`${id}\`): ${sub.description || ''}\n  挂载工具: ${tools.length ? tools.join(', ') : '无'}`;
+        });
+        return { ok: true, result: list.length ? list.join('\n') : '当前智能体未挂载任何子智能体' };
+      }
+      // image_analyze 拦截 —— 优先 vision 多模态模型，降级服务端 Tesseract OCR
+      if (fullName === 'image_analyze') {
+        return runImageAnalyze(args as { path?: string; prompt?: string; platformId?: string; modelId?: string });
+      }
       // E12: ask_user —— 弹出反问对话框，await 用户回答后再继续（暂停 ReAct 循环）
       if (fullName === 'ask_user') {
         const q = String((args as Record<string, unknown>).question || '');
@@ -778,6 +802,79 @@ export const useChatStore = defineStore('chat', () => {
     return { ok: false, msg: '未知工具: ' + fullName };
   }
 
+  /** image_analyze 实际执行：优先 vision 模型，降级服务端 OCR */
+  async function runImageAnalyze(args: { path?: string; prompt?: string; platformId?: string; modelId?: string }): Promise<{ ok: boolean; result?: unknown; msg?: string }> {
+    const imgPath = args.path;
+    if (!imgPath) return { ok: false, msg: 'path 为必填项' };
+    const prompt = args.prompt || '请详细描述这张图片的内容，包括其中的文字、物体、场景等信息。';
+
+    const { fs } = getPlatformAdapter();
+    const exists = await fs.exists(imgPath).catch(() => false);
+    if (!exists) return { ok: false, msg: '图片不存在: ' + imgPath };
+
+    const ext = imgPath.split('.').pop()?.toLowerCase() || '';
+    const mimeMap: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp' };
+    const mime = mimeMap[ext];
+    if (!mime) return { ok: false, msg: `不支持的图片格式 .${ext}（支持 png/jpg/jpeg/gif/webp/bmp）` };
+
+    let base64: string;
+    try {
+      base64 = await fs.readFileBase64(imgPath);
+    } catch (e: any) {
+      return { ok: false, msg: '读取图片失败: ' + (e?.message || e) };
+    }
+
+    const { usePlatformStore } = await import('./platform');
+    const platformStore = usePlatformStore();
+    let platform: Platform | undefined;
+    let model: Model | undefined;
+
+    if (args.platformId && args.modelId) {
+      platform = platformStore.platforms.find((p) => p.id === args.platformId);
+      model = platformStore.models.find((m) => m.id === args.modelId && m.platformId === args.platformId);
+      if (model && !(model.capabilities || []).includes('vision')) {
+        return { ok: false, msg: `模型 ${model.modelId} 不支持 vision（capabilities 未含 vision）` };
+      }
+    } else {
+      const conv = conversations.value.find((c) => c.id === currentConvId.value);
+      if (conv?.platformId && conv?.modelId) {
+        const resolved = platformStore.resolveModel(conv.modelId, conv.platformId);
+        if (resolved && (resolved.capabilities || []).includes('vision')) {
+          platform = platformStore.platforms.find((p) => p.id === conv.platformId);
+          model = resolved;
+        }
+      }
+      if (!model) {
+        const visionModel = platformStore.models.find((m) => m.enabled && (m.capabilities || []).includes('vision'));
+        if (visionModel) {
+          model = visionModel;
+          platform = platformStore.platforms.find((p) => p.id === visionModel.platformId);
+        }
+      }
+    }
+
+    if (platform && model) {
+      try {
+        const client = new LlmClient(platform, model);
+        const text = await client.visionAnalyze(base64, mime, prompt);
+        return { ok: true, result: text || '(模型返回空)' };
+      } catch (e: any) {
+        // vision 失败，继续降级 OCR
+        console.warn('[image_analyze] vision 失败，降级 OCR:', e?.message || e);
+      }
+    }
+
+    try {
+      const r = await api.post<any>('/tools/ocr', { image: base64, lang: 'chi_sim+eng' });
+      if ('error' in r) return { ok: false, msg: r.error };
+      const text = r.data?.text || '';
+      const note = platform && model ? '' : '\n\n[注: 未配置可用的 vision 模型，使用 OCR 降级，仅提取文字]';
+      return { ok: true, result: (text || '(OCR 未识别到文字)') + note };
+    } catch (e: any) {
+      return { ok: false, msg: '图片识别失败（vision 与 OCR 均不可用）: ' + (e?.message || e) };
+    }
+  }
+
   /** E7: 运行子智能体（call_agent 的实际执行逻辑）—— 递归 LLM ReAct 循环，带 callStack 防递归 */
   const subAgentCallStack = ref<string[]>([]);
   async function runSubAgent(args: { agentId?: string; input?: string }): Promise<{ ok: boolean; result?: unknown; msg?: string }> {
@@ -796,8 +893,15 @@ export const useChatStore = defineStore('chat', () => {
     try {
       const { useAgentStore } = await import('./agent');
       const agentStore = useAgentStore();
-      const subAgent = agentStore.agents.find((a) => a.id === agentId);
-      if (!subAgent) return { ok: false, msg: '子智能体不存在: ' + agentId };
+      // 别名兜底：LLM 常用简写命名，归一化到内置 pageAgent 的正式 ID
+      const SUBAGENT_ALIASES: Record<string, string> = {
+        pageAgent: 'a_builtin_page_agent',
+        page_agent: 'a_builtin_page_agent',
+        pageagent: 'a_builtin_page_agent',
+      };
+      const resolvedId = SUBAGENT_ALIASES[agentId] || agentId;
+      const subAgent = agentStore.agents.find((a) => a.id === resolvedId);
+      if (!subAgent) return { ok: false, msg: '子智能体不存在: ' + agentId + '（可调用 list_sub_agents 工具查询可用子智能体及其 ID）' };
 
       // 获取当前会话的平台和模型
       const conv = conversations.value.find((c) => c.id === currentConvId.value);
@@ -848,8 +952,7 @@ export const useChatStore = defineStore('chat', () => {
     ];
 
     for (let step = 0; step < maxSteps; step++) {
-      const response = await client.chat({
-        messages,
+      const response = await client.chat(messages, {
         tools: subTools.length > 0 ? subTools : undefined,
         temperature: agent.temperature ?? 0.7,
         maxTokens: agent.maxTokens ?? 2048,
@@ -1008,7 +1111,7 @@ export const useChatStore = defineStore('chat', () => {
     for (const id of merged.subAgentIds) {
       const sub = agentStore.agents.find(a => a.id === id);
       if (!sub) continue;
-      lines.push(`- **${sub.name}**: ${sub.description || ''}`);
+      lines.push(`- **${sub.name}** (id: \`${id}\`): ${sub.description || ''}`);
     }
     return lines.length > 0 ? '可调用子智能体:\n' + lines.join('\n') : '';
   }
@@ -1086,16 +1189,7 @@ export const useChatStore = defineStore('chat', () => {
       || settingsStore.settings.defaultModelId;
     let platform: any = platformStore.platforms.find((p: any) => p.id === pid);
     let model: any = platformStore.resolveModel(mid || '', pid || '');
-    // 无默认/不可用时回退本地小模型
-    if (!platform || !model) {
-      const local = platformStore.platforms.find((p: any) => p.id?.startsWith('local-model-'));
-      if (local) {
-        platform = local;
-        model = platformStore.resolveModel('', local.id)
-          || platformStore.models.find((m: any) => m.platformId === local.id)
-          || null;
-      }
-    }
+
     return platform && model ? { platform, model } : null;
   }
 
@@ -1307,6 +1401,9 @@ export const useChatStore = defineStore('chat', () => {
 
         const client = new LlmClient(platform, model);
         const tools = await buildTools();
+        // 本地模型 capabilities=[] 表示不支持 function calling，不传 tools 避免 400
+        const modelCaps = model.capabilities as string[] | undefined;
+        const supportsTools = !modelCaps || modelCaps.includes('function_call');
         const requestSnapshot = JSON.stringify({
           step,
           timestamp: new Date().toISOString(),
@@ -1338,16 +1435,18 @@ export const useChatStore = defineStore('chat', () => {
         let fullReasoning = '';
         const toolCallAcc: DeltaToolCall[] = [];
 
-        for await (const chunk of client.chatStream(llmMessages, {
-          tools: tools.length > 0 ? tools : undefined,
-          temperature: options.temperature,
-          maxTokens: options.maxTokens,
-          topP: options.topP,
-          frequencyPenalty: options.frequencyPenalty,
-          presencePenalty: options.presencePenalty,
-          reasoningEffort: options.reasoningEffort,
-          signal: abortControllers.get(convId)?.signal,
-        })) {
+        // 流式请求：如果模型不支持 tools（Ollama 小模型返回 400），自动去掉 tools 重试
+        const streamOnce = async (withTools: boolean) => {
+          for await (const chunk of client.chatStream(llmMessages, {
+            tools: withTools && supportsTools && tools.length > 0 ? tools : undefined,
+            temperature: options.temperature,
+            maxTokens: options.maxTokens,
+            topP: options.topP,
+            frequencyPenalty: options.frequencyPenalty,
+            presencePenalty: options.presencePenalty,
+            reasoningEffort: options.reasoningEffort,
+            signal: abortControllers.get(convId)?.signal,
+          })) {
           if (chunk.delta?.content) {
             fullContent += chunk.delta.content;
           }
@@ -1390,6 +1489,44 @@ export const useChatStore = defineStore('chat', () => {
             };
           }
           if (onChunk) onChunk({ content: chunk.delta?.content, reasoning: chunk.delta?.reasoningContent });
+          }
+        };
+
+        try {
+          await streamOnce(true);
+        } catch (e: any) {
+          const msg = e?.message || '';
+          if (/does not support tools|not support.*tool/i.test(msg)) {
+            fullContent = ''; fullReasoning = ''; toolCallAcc.length = 0;
+            if (tools.length > 0 && llmMessages[0]?.role === 'system') {
+              const toolList = tools.map((t: any) => `- ${t.function.name}: ${t.function.description || ''}`).join('\n');
+              llmMessages[0].content += `\n\n## 工具调用（文本模式）\n当需要调用工具时，在回复中用以下格式输出（可多次调用）：\n[TOOL_CALL]{"name":"工具名","arguments":{"参数":"值"}}[/TOOL_CALL]\n可用工具：\n${toolList}\n调用后等待返回结果，再继续回复。`;
+            }
+            await streamOnce(false);
+          } else {
+            throw e;
+          }
+        }
+
+        // 文本模式工具调用解析：从输出中提取 [TOOL_CALL]...[/TOOL_CALL]
+        if (toolCallAcc.length === 0 && fullContent.includes('[TOOL_CALL]')) {
+          const re = /\[TOOL_CALL\]\s*(\{[\s\S]*?\})\s*\[\/TOOL_CALL\]/g;
+          let m: RegExpExecArray | null;
+          while ((m = re.exec(fullContent)) !== null) {
+            try {
+              const parsed = JSON.parse(m[1]);
+              if (parsed.name) {
+                toolCallAcc.push({
+                  id: `text_tc_${Date.now()}_${toolCallAcc.length}`,
+                  type: 'function',
+                  function: { name: parsed.name, arguments: JSON.stringify(parsed.arguments || {}) },
+                });
+              }
+            } catch {}
+          }
+          if (toolCallAcc.length > 0) {
+            fullContent = fullContent.replace(/\[TOOL_CALL\][\s\S]*?\[\/TOOL_CALL\]/g, '').trim();
+          }
         }
 
         if (toolCallAcc.length === 0) {

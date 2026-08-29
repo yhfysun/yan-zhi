@@ -11,6 +11,8 @@ import {
   deleteKnowledgeDoc,
   searchKnowledgeBase,
   searchAllKnowledgeBases,
+  vectorSearchChunks,
+  vectorSearchAll,
   listKnowledgeChunks,
   multiHopSearchKnowledge,
   getKnowledgeGraph,
@@ -19,7 +21,14 @@ import {
   entityGraphSearch,
   ensureBuiltinAppGuide,
   resetBuiltinAppGuide,
+  revectorizeAllKnowledgeBases,
+  getRevectorizeStatus,
 } from '../services/kb.js';
+import {
+  listEmbeddingModels,
+  getEmbeddingConfig,
+  setEmbeddingConfig,
+} from '../services/ollama-embed.js';
 
 const router = Router();
 router.use(guestOrAuth);
@@ -68,15 +77,15 @@ router.post('/builtin-guide/reset', async (req: Request, res: Response) => {
 });
 
 // GET /api/kb/search-all?query=... —— 跨所有库检索（prompt 命中注入用）。须在 /:id 之前注册，避免被当 id
-router.get('/search-all', (req: Request, res: Response) => {
+router.get('/search-all', async (req: Request, res: Response) => {
   try {
-    res.json({
-      data: searchAllKnowledgeBases(
-        req.user!.userId,
-        String(req.query.query || ''),
-        Number(req.query.topK) || 5,
-      ),
-    });
+    const userId = req.user!.userId;
+    const query = String(req.query.query || '');
+    const topK = Number(req.query.topK) || 5;
+    // 优先向量检索，失败/不可用降级为关键词 LIKE
+    const vec = await vectorSearchAll(userId, query, topK);
+    if (vec) { res.json({ data: vec, mode: 'vector' }); return; }
+    res.json({ data: searchAllKnowledgeBases(userId, query, topK), mode: 'keyword' });
   } catch (e: unknown) {
     handleError(res, e);
   }
@@ -203,16 +212,16 @@ router.post('/:id/graph/extract', async (req: Request, res: Response) => {
 });
 
 // GET /api/kb/:id/search?query=...
-router.get('/:id/search', (req: Request, res: Response) => {
+router.get('/:id/search', async (req: Request, res: Response) => {
   try {
-    res.json({
-      data: searchKnowledgeBase(
-        req.user!.userId,
-        req.params.id,
-        String(req.query.query || ''),
-        Number(req.query.topK) || 5,
-      ),
-    });
+    const userId = req.user!.userId;
+    const baseId = req.params.id;
+    const query = String(req.query.query || '');
+    const topK = Number(req.query.topK) || 5;
+    // 优先向量检索，失败/不可用降级为关键词 LIKE
+    const vec = await vectorSearchChunks(userId, baseId, query, topK);
+    if (vec) { res.json({ data: vec, mode: 'vector' }); return; }
+    res.json({ data: searchKnowledgeBase(userId, baseId, query, topK), mode: 'keyword' });
   } catch (e: unknown) {
     handleError(res, e);
   }
@@ -226,6 +235,37 @@ router.delete('/documents/:docId', (req: Request, res: Response) => {
   } catch (e: unknown) {
     handleError(res, e);
   }
+});
+
+// ── 全局 Embedding 模型配置（可从任意已配置平台选择）──
+// GET /api/kb/embedding-model —— 所有平台的 embedding 模型列表 + 当前选中
+router.get('/embedding-model', (_req: Request, res: Response) => {
+  const { platforms, models } = listEmbeddingModels();
+  const current = getEmbeddingConfig();
+  res.json({ data: { platforms, models, current } });
+});
+
+// POST /api/kb/embedding-model —— 设置选中的 embedding 平台+模型 { platformId, modelId }
+router.post('/embedding-model', (req: Request, res: Response) => {
+  const { platformId, modelId } = req.body || {};
+  if (!platformId || !modelId) { res.status(400).json({ error: 'platformId 和 modelId 为必填项' }); return; }
+  setEmbeddingConfig({ platformId, modelId });
+  res.json({ ok: true, current: { platformId, modelId } });
+});
+
+// POST /api/kb/revectorize —— 重新向量化所有知识库
+router.post('/revectorize', async (_req: Request, res: Response) => {
+  try {
+    const r = await revectorizeAllKnowledgeBases();
+    res.json({ ok: true, ...r });
+  } catch (e: unknown) {
+    handleError(res, e);
+  }
+});
+
+// GET /api/kb/revectorize-status —— 重新向量化进度
+router.get('/revectorize-status', (_req: Request, res: Response) => {
+  res.json({ data: getRevectorizeStatus() });
 });
 
 export default router;

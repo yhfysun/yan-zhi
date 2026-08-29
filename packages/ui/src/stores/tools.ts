@@ -20,6 +20,27 @@ export interface RemoteMarketplaceSource {
   enabled: boolean; created_at: number;
 }
 
+/** 内置工具条目（含完整入参/出参 Schema） */
+export interface BuiltinToolItem {
+  name: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
+  outputSchema?: Record<string, unknown>;
+}
+
+/** 内置工具分类配置（有序，前缀/名称匹配，未命中归入"其他"） */
+const BUILTIN_TOOL_CATEGORIES: { key: string; label: string; prefixes?: string[]; names?: string[] }[] = [
+  { key: 'file', label: '文件读写', prefixes: ['file_'] },
+  { key: 'browser', label: '浏览器自动化', prefixes: ['browser_'] },
+  { key: 'subagent', label: '子智能体', names: ['call_agent', 'list_sub_agents'] },
+  { key: 'search', label: '联网搜索', names: ['web_search'] },
+  { key: 'cmd', label: '命令执行', names: ['cmd_exec'] },
+  { key: 'interact', label: '用户交互', names: ['ask_user', 'confirm_user'] },
+  { key: 'task', label: '任务规划', names: ['task_plan', 'task_step'] },
+  { key: 'image', label: '图像分析', names: ['image_analyze'] },
+  { key: 'config', label: '模型配置', names: ['configure_model_platform'] },
+];
+
 function rowToTool(r: any): CustomToolItem {
   return {
     id: r.id, name: r.name, description: r.description,
@@ -35,6 +56,26 @@ function rowToTool(r: any): CustomToolItem {
 
 export const useToolsStore = defineStore('tools', () => {
   const customTools = ref<CustomToolItem[]>([]);
+  const builtinTools = ref<BuiltinToolItem[]>([]);
+
+  /** 内置工具按分类分组（供 UI 折叠渲染） */
+  const builtinToolGroups = computed(() => {
+    const groups: { key: string; label: string; tools: BuiltinToolItem[] }[] = [];
+    const used = new Set<string>();
+    for (const cat of BUILTIN_TOOL_CATEGORIES) {
+      const tools = builtinTools.value.filter((t) => {
+        if (used.has(t.name)) return false;
+        if (cat.names?.includes(t.name)) return true;
+        if (cat.prefixes?.some((p) => t.name.startsWith(p))) return true;
+        return false;
+      });
+      tools.forEach((t) => used.add(t.name));
+      if (tools.length > 0) groups.push({ key: cat.key, label: cat.label, tools });
+    }
+    const others = builtinTools.value.filter((t) => !used.has(t.name));
+    if (others.length > 0) groups.push({ key: 'other', label: '其他', tools: others });
+    return groups;
+  });
   const remoteSources = ref<RemoteMarketplaceSource[]>([]);
   const remoteItems = ref<Record<string, any[]>>({});
   const loading = ref(false);
@@ -44,33 +85,31 @@ export const useToolsStore = defineStore('tools', () => {
 
   const on = () => !!useAuthStore().isLoggedIn;
 
-  const builtinTools = [
-    { name: 'file_read', description: '读取文件内容，支持指定路径和行数范围' },
-    { name: 'file_write', description: '写入内容到指定文件路径' },
-    { name: 'web_search', description: '联网搜索，获取实时信息' },
-    { name: 'cmd_exec', description: '执行系统命令，支持 cmd/python/java/git 等' },
-    { name: 'ask_user', description: '向用户反问澄清问题并等待回答（弹出对话框）' },
-    { name: 'confirm_user', description: '多页确认向导，逐页收集用户选择、文字回答和补充说明' },
-    { name: 'task_plan', description: '创建任务计划，在对话区展示进度清单' },
-    { name: 'task_step', description: '更新任务步骤状态（待办/进行中/完成/失败）' },
-    { name: 'configure_model_platform', description: '弹出模型平台/模型配置表单，等待用户填写后创建平台与模型' },
-  ];
+  async function loadBuiltinTools() {
+    try {
+      const r = await api.get<any[]>('/tools/builtin');
+      builtinTools.value = ((r as any).data as any[]) || [];
+    } catch {
+      builtinTools.value = [];
+    }
+  }
 
   async function loadCustomTools() {
     if (!on()) return;
     loading.value = true;
     try {
       const r = await api.get<any[]>('/tools');
-      customTools.value = (r.data as any[] || []).map(rowToTool);
+      customTools.value = ((r as any).data as any[] || []).map(rowToTool);
     } finally { loading.value = false; }
   }
 
   async function createTool(data: {
     name: string; description?: string; inputSchema: Record<string, unknown>;
+    outputSchema?: Record<string, unknown>;
     entry: string; code: string; runtime?: string; timeout?: number; isPublic?: boolean;
   }) {
     const r = await api.post<any>('/tools', data);
-    const tool = rowToTool(r.data);
+    const tool = rowToTool((r as any).data);
     customTools.value.unshift(tool);
     return tool;
   }
@@ -100,13 +139,13 @@ export const useToolsStore = defineStore('tools', () => {
   async function loadRemoteSources() {
     if (!on()) return;
     const r = await api.get<any[]>('/tool-marketplace');
-    remoteSources.value = (r.data as any[]) || [];
+    remoteSources.value = ((r as any).data as any[]) || [];
   }
 
   async function addRemoteSource(data: { name: string; baseUrl: string; authType?: string; authConfig?: any }) {
     const r = await api.post<any>('/tool-marketplace', data);
     await loadRemoteSources();
-    return r.data;
+    return (r as any).data;
   }
 
   async function deleteRemoteSource(id: string) {
@@ -124,13 +163,14 @@ export const useToolsStore = defineStore('tools', () => {
 
   async function fetchRemoteItems(sourceId: string, page = 1, pageSize = 20) {
     const r = await api.get<any>(`/tool-marketplace/${sourceId}/tools?page=${page}&pageSize=${pageSize}`);
-    if (r && r.data) remoteItems.value[sourceId] = r.data.items || [];
+    const rd = (r as any).data;
+    if (rd) remoteItems.value[sourceId] = rd.items || [];
   }
 
   async function installFromMarket(sourceId: string, toolId: string) {
     const r = await api.post<any>(`/tool-marketplace/${sourceId}/install`, { toolId });
     await loadCustomTools();
-    return rowToTool(r.data);
+    return rowToTool((r as any).data);
   }
 
   /**
@@ -174,7 +214,7 @@ export const useToolsStore = defineStore('tools', () => {
   async function loadMarketplaceConfig() {
     let cfg: any = null;
     const r = await api.get<any>('/marketplace/config');
-    cfg = r && r.data ? r.data : null;
+    cfg = (r as any)?.data ?? null;
     if (cfg && typeof cfg === 'object') {
       marketplaceEnabled.value = !!cfg.enabled;
       if (cfg.auth) marketplaceAuth.value = cfg.auth;
@@ -193,9 +233,9 @@ export const useToolsStore = defineStore('tools', () => {
   }
 
   return {
-    builtinTools, customTools, remoteSources, remoteItems, loading,
+    builtinTools, builtinToolGroups, customTools, remoteSources, remoteItems, loading,
     marketplaceEnabled, marketplaceAuth, marketplacePort,
-    loadCustomTools, createTool, updateTool, deleteTool, toggleEnabled, togglePublic,
+    loadBuiltinTools, loadCustomTools, createTool, updateTool, deleteTool, toggleEnabled, togglePublic,
     loadRemoteSources, addRemoteSource, deleteRemoteSource, testRemoteSource,
     fetchRemoteItems, installFromMarket,
     setMarketplaceConfig, setMarketplaceEnabled, loadMarketplaceConfig,

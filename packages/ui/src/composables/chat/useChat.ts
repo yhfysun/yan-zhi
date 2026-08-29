@@ -15,6 +15,7 @@ import {
   useSettingsStore,
 } from '../../stores';
 import { useIsMobile } from '../useIsMobile';
+import { useRouter } from 'vue-router';
 import { api } from '../../api/client';
 import type { Agent, Message, Conversation, Platform } from '@yan-zhi/shared';
 import { estimateTokens, CHAT_MODEL_TYPES } from '@yan-zhi/shared';
@@ -41,6 +42,7 @@ interface ParsedConfigCard {
 }
 
 function createChat() {
+  const router = useRouter();
   const store = useChatStore();
   const platformStore = usePlatformStore();
   const mcpStore = useMcpStore();
@@ -215,9 +217,12 @@ function createChat() {
     };
   }
 
+  /**
+   * 打开模型平台配置弹窗：手动新建平台 + 模型，保存后自动拉取模型列表并设为默认。
+   */
   function openPlatformConfig() {
-    manualPlatformConfigVisible.value = true;
     resetPlatformConfigForm();
+    manualPlatformConfigVisible.value = true;
   }
 
   async function onPlatformConfigSubmit() {
@@ -246,9 +251,32 @@ function createChat() {
         isDefault: false,
         capabilities: ['function_call'],
       });
-      const message = `已创建模型平台「${f.name.trim()}」并添加模型 ${f.modelId.trim()}`;
+      // 平台创建后自动拉取远程模型列表（失败仅提示，回退手动填写的模型）
+      let remoteIds: string[] = [];
+      try {
+        remoteIds = await platformStore.fetchRemoteModels(platformId);
+      } catch (e: any) {
+        ElMessage.warning('拉取远程模型失败：' + (e?.message || '未知错误') + '，已回退到手动填写的模型');
+      }
+      // 优先选远程列表里第一个可用的对话模型；拉取失败/无可用模型时回退手动填写的模型
+      const pickedModel = remoteIds.length > 0
+        ? platformStore.models.find((m) => m.platformId === platformId && m.enabled && CHAT_MODEL_TYPES.includes(m.type))
+        : undefined;
+      const model = pickedModel
+        || platformStore.models.find((m) => m.platformId === platformId && m.modelId === f.modelId.trim());
+      if (model) {
+        // 选中新模型，并写入默认平台/模型与当前智能体
+        selectedModelId.value = model.id;
+        await settingsStore.update({ defaultPlatformId: platformId, defaultModelId: model.id });
+        if (agentStore.selectedAgent) {
+          agentStore.updateAgent(agentStore.selectedId, { modelId: model.modelId, platformId: model.platformId });
+        }
+      }
+      const message = pickedModel
+        ? `已创建模型平台「${f.name.trim()}」，拉取到 ${remoteIds.length} 个模型并默认选用 ${model?.modelId || f.modelId.trim()}`
+        : `已创建模型平台「${f.name.trim()}」并添加模型 ${f.modelId.trim()}`;
       if (store.pendingPlatformConfig) {
-        store.submitPlatformConfig({ cancelled: false, platformId, modelId: f.modelId.trim(), message });
+        store.submitPlatformConfig({ cancelled: false, platformId, modelId: model?.modelId || f.modelId.trim(), message });
       }
       manualPlatformConfigVisible.value = false;
       ElMessage.success(message);
@@ -351,7 +379,7 @@ function createChat() {
   const mountedSkillIds = ref<string[]>([]);
   const drawerOpen = ref(false);
   const convCollapsed = ref(false);
-  const sideTab = ref<'agent' | 'chat'>('chat');
+  const sideTab = ref<'chat' | 'task'>('chat');
   const contextSidebarOpen = ref(!isMobile.value);
   const batchMode = ref(false);
   const selectedConvIds = ref<Set<string>>(new Set());
@@ -454,6 +482,7 @@ function createChat() {
   async function onWorkspaceDirSelected(path: string) {
     await settingsStore.update({ workspaceDir: path });
     await pushWorkspaceDir(path);
+
   }
 
   function tryParseSnapshot(raw?: string): any {
@@ -498,7 +527,7 @@ function createChat() {
 
   const md = new MarkdownIt({
     html: false, linkify: true, breaks: true,
-    highlight(str: string, lang: string) {
+    highlight(str: string, lang: string): string {
       const codeClass = lang ? ` class="language-${lang}"` : '';
       const langLabel = lang ? `<span class="code-lang">${lang}</span>` : '';
       if (lang && hljs.getLanguage(lang)) {
@@ -520,20 +549,55 @@ function createChat() {
       navigator.clipboard.writeText(decodeURIComponent(raw)).then(() => {
         t.textContent = '已复制'; setTimeout(() => { t.textContent = '复制'; }, 1500);
       }).catch(() => ElMessage.error('复制失败'));
+      return;
+    }
+    // 链接：在应用内浏览器预览面板打开（不跳系统浏览器）
+    const a = t.closest('a');
+    if (a) {
+      const href = a.getAttribute('href') || '';
+      if (/^https?:\/\//i.test(href)) {
+        e.preventDefault();
+        router.push({ path: '/browser', query: { url: href } });
+      }
     }
   }
 
   const currentConv = computed(() => store.conversations.find((c) => c.id === store.currentConvId));
   const filteredConversations = computed(() => {
     let list = store.conversations;
-    const sid = spaceStore.currentSpaceId;
-    if (sid !== null) {
-      list = list.filter((c) => (sid === '' ? !c.spaceId : c.spaceId === sid));
-    }
     if (!search.value.trim()) return list;
     const q = search.value.toLowerCase();
     return list.filter((c) => c.title.toLowerCase().includes(q));
   });
+  /** 对话根节点：未归入任何空间的会话 */
+  const rootConversations = computed(() => filteredConversations.value.filter((c) => !c.spaceId));
+  /** 按空间分组的会话：spaceId -> 会话列表 */
+  const conversationsBySpace = computed(() => {
+    const map: Record<string, typeof filteredConversations.value> = {};
+    for (const sp of spaceStore.spaces) {
+      map[sp.id] = filteredConversations.value.filter((c) => c.spaceId === sp.id);
+    }
+    return map;
+  });
+  /** 空间折叠状态（持久化到 localStorage） */
+  const SPACE_COLLAPSE_KEY = 'yz_space_collapsed';
+  const spaceCollapsed = ref<Record<string, boolean>>((() => {
+    try { return JSON.parse(localStorage.getItem(SPACE_COLLAPSE_KEY) || '{}'); } catch { return {}; }
+  })());
+  function persistSpaceCollapse() {
+    try { localStorage.setItem(SPACE_COLLAPSE_KEY, JSON.stringify(spaceCollapsed.value)); } catch { /* ignore */ }
+  }
+  function toggleSpaceCollapse(id: string) {
+    spaceCollapsed.value[id] = !spaceCollapsed.value[id];
+    persistSpaceCollapse();
+  }
+  /** 对话根节点折叠状态 */
+  const ROOT_COLLAPSE_KEY = 'yz_conv_root_collapsed';
+  const rootCollapsed = ref<boolean>(localStorage.getItem(ROOT_COLLAPSE_KEY) === '1');
+  function toggleRootCollapse() {
+    rootCollapsed.value = !rootCollapsed.value;
+    try { localStorage.setItem(ROOT_COLLAPSE_KEY, rootCollapsed.value ? '1' : '0'); } catch { /* ignore */ }
+  }
 
   const messageRounds = computed<MessageRound[]>(() => {
     const msgs = store.currentMessages;
@@ -604,7 +668,9 @@ function createChat() {
   }
 
   const chatModels = computed(() =>
-    platformStore.models.filter((m) => m.enabled && CHAT_MODEL_TYPES.includes(m.type)),
+    platformStore.models.filter((m) =>
+      m.enabled && CHAT_MODEL_TYPES.includes(m.type),
+    ),
   );
 
   const modelGroups = computed(() => {
@@ -678,18 +744,23 @@ function createChat() {
     spaceStore.selectSpace(id);
   }
 
-  async function createSpaceQuick() {
+  const showSpaceDirPicker = ref(false);
+  function createSpaceQuick() {
+    showSpaceDirPicker.value = true;
+  }
+  /** 目录选择回调：以目录名作为空间名，绑定 dirPath */
+  async function createSpaceFromDir(dirPath: string) {
+    const p = (dirPath || '').trim();
+    if (!p) { ElMessage.warning('未选择目录'); return; }
+    const sep = p.includes('/') ? '/' : '\\';
+    const baseName = p.split(sep).filter(Boolean).pop() || p;
     try {
-      const { value: name } = await ElMessageBox.prompt('请输入空间名称', '新建空间', {
-        confirmButtonText: '创建',
-        cancelButtonText: '取消',
-        inputValidator: (v) => !!v?.trim() || '名称不能为空',
-      });
-      if (!name?.trim()) return;
-      const id = await spaceStore.createSpace({ name: name.trim() });
+      const id = await spaceStore.createSpace({ name: baseName, dirPath: p });
       spaceStore.selectSpace(id);
-      ElMessage.success('空间已创建');
-    } catch { /* 用户取消 */ }
+      ElMessage.success(`空间「${baseName}」已创建`);
+    } catch (e: any) {
+      ElMessage.error(e?.message || '创建空间失败');
+    }
   }
 
   function openSpaceEdit(space: any) {
@@ -740,6 +811,26 @@ function createChat() {
     ElMessage.success(spaceId ? '已移动到空间' : '已移出空间');
   }
 
+  /** 发送消息时确保工作目录对应的空间存在：按 dirPath 匹配已有空间；没有则以文件夹名创建并选中。返回空间 ID（无有效工作目录/失败时返回 undefined） */
+  async function ensureWorkspaceSpace(): Promise<string | undefined> {
+    const wd = (settingsStore.settings.workspaceDir || '').trim();
+    // 未设置或仍是占位默认值 'workspace' 时，视为没有真实工作目录，不自动建空间
+    if (!wd || wd === 'workspace') return undefined;
+    try {
+      const existed = spaceStore.spaces.find((s) => s.dirPath === wd);
+      if (existed) return existed.id;
+      const sep = wd.includes('/') ? '/' : '\\';
+      const baseName = wd.split(sep).filter(Boolean).pop() || wd;
+      const newId = await spaceStore.createSpace({ name: baseName, dirPath: wd });
+      spaceStore.selectSpace(newId);
+      ElMessage.success(`已为工作目录创建空间「${baseName}」`);
+      return newId;
+    } catch (e: any) {
+      console.warn('[Chat] 自动创建工作目录空间失败:', e);
+      return undefined;
+    }
+  }
+
   // ========== 会话文件分类管理 ==========
   const fileCategories = [
     { key: 'upload' as const, label: '上传文件' },
@@ -783,11 +874,15 @@ function createChat() {
     spaceStore.loadSpaces();
     await loadWorkspaceDir();
 
+
     const agent = agentStore.selectedAgent;
     if (agent?.modelId && chatModels.value.find((m) => m.id === agent.modelId)) {
       selectedModelId.value = agent.modelId;
     } else {
-      const first = chatModels.value[0];
+      // 以数据库为准：优先选 is_default=1 的可用对话模型，其次 settings 里配置的默认，最后第一个
+      const def = chatModels.value.find((m) => m.isDefault);
+      const settingsModel = chatModels.value.find((m) => m.id === settingsStore.settings.defaultModelId);
+      const first = def || settingsModel || chatModels.value[0];
       if (first) selectedModelId.value = first.id;
     }
 
@@ -874,6 +969,8 @@ function createChat() {
     const model = platformStore.models.find((m) => m.id === modelId);
     if (model && agentStore.selectedAgent) {
       agentStore.updateAgent(agentStore.selectedId, { modelId: model.modelId, platformId: model.platformId });
+      selectedModelId.value = model.id;
+
     }
   }
 
@@ -932,11 +1029,20 @@ function createChat() {
     scrollToBottom();
   }
 
-  function startNewChat() {
+  async function startNewChat(spaceId?: string | null) {
     store.currentConvId = '';
     isDraftMode.value = true;
     mountedSkillIds.value = [];
     input.value = '';
+    if (spaceId !== undefined) {
+      spaceStore.selectSpace(spaceId);
+      if (spaceId) {
+        const sp = spaceStore.spaces.find((s) => s.id === spaceId);
+        await settingsStore.update({ workspaceDir: sp?.dirPath || '' });
+      } else {
+        await settingsStore.update({ workspaceDir: '' });
+      }
+    }
   }
 
   async function selectConv(id: string) {
@@ -1000,13 +1106,15 @@ function createChat() {
       input.value = '';
       uploadedFiles.value = [];
 
+      // 每次发送都确保工作目录对应空间存在（幂等：已存在则复用，失败则下次仍可重试）
+      const spaceId = await ensureWorkspaceSpace();
       if (store.currentConvId && !store.conversations.some((c) => c.id === store.currentConvId)) {
         store.currentConvId = '';
       }
       if (!store.currentConvId) {
         const titleBase = userContent || '配置平台';
         const title = titleBase.slice(0, 24) + (titleBase.length > 24 ? '…' : '');
-        const id = await store.createConversation(title, { skillIds: [...mountedSkillIds.value] });
+        const id = await store.createConversation(title, { skillIds: [...mountedSkillIds.value], spaceId });
         try { await saveMountToDb(id); } catch { /* 忽略挂载持久化失败 */ }
         await store.loadMessages(id);
         isDraftMode.value = false;
@@ -1023,6 +1131,8 @@ function createChat() {
       const tip = !hasPlatform
         ? '⚠️ 平台未配置，请在下方填写平台信息后保存。'
         : '⚠️ 未选择模型，请在下方配置平台后选择模型。';
+      // 消息带 [[PLATFORM_CONFIG:create]] 标记 —— ChatMessageList 会在该消息下方渲染
+      // 内嵌的模型平台配置表单卡片（与 configure_model_platform 工具的交互形态一致），不弹浏览器弹窗
       await store.addMessage({
         conversationId: store.currentConvId,
         role: 'assistant',
@@ -1062,12 +1172,15 @@ function createChat() {
 
     try {
       const agent = agentStore.selectedAgent;
+      // 每次发送都确保工作目录对应空间存在（幂等：已存在则复用，失败则下次仍可重试）
+      const spaceId = await ensureWorkspaceSpace();
       if (!store.currentConvId) {
         const title = userContent.trim().slice(0, 24) + (userContent.trim().length > 24 ? '…' : '');
         const id = await store.createConversation(title, {
           platformId: platform.id,
           modelId: model.modelId,
           skillIds: [...mountedSkillIds.value],
+          spaceId,
         });
         if (agent?.systemPrompt) {
           await store.updateConversation(id, { systemPrompt: agent.systemPrompt });
@@ -1075,8 +1188,19 @@ function createChat() {
         await saveMountToDb(id);
         await store.loadMessages(id);
         isDraftMode.value = false;
-      } else if (!currentConv.value?.platformId) {
-        await store.updateConversation(store.currentConvId, { platformId: platform.id, modelId: model.modelId });
+      } else {
+        // 已有会话：补齐平台/模型，并把会话归入工作目录对应空间（若尚未归入）
+        const updates: { platformId?: string; modelId?: string; spaceId?: string } = {};
+        if (!currentConv.value?.platformId) {
+          updates.platformId = platform.id;
+          updates.modelId = model.modelId;
+        }
+        if (spaceId && currentConv.value?.spaceId !== spaceId) {
+          updates.spaceId = spaceId;
+        }
+        if (Object.keys(updates).length) {
+          await store.updateConversation(store.currentConvId, updates);
+        }
       }
 
       input.value = '';
@@ -1129,6 +1253,7 @@ function createChat() {
         presencePenalty: agent?.presencePenalty,
         reasoningEffort: (agent?.config as any)?.reasoningEffort || undefined,
       });
+
     } catch (e: any) {
       if (e?.name === 'AbortError') return;
       console.error('[Chat] 发送失败:', e);
@@ -1307,7 +1432,7 @@ function createChat() {
     } catch { /* cancelled */ }
   }
 
-  function scrollToTop() { if (messagesRef.value) messagesRef.value.scrollTo({ top: 0, behavior: 'smooth' }); }
+
   function scrollToBottom() { if (messagesRef.value) messagesRef.value.scrollTo({ top: messagesRef.value.scrollHeight, behavior: 'smooth' }); }
   function scrollToRound(ri: number) {
     activeNavRound.value = ri;
@@ -1607,11 +1732,12 @@ function createChat() {
     confirmText, confirmSingle, confirmChecked, confirmShowText, confirmSupplement, confirmDialogVisible, confirmCurrentPage, confirmMultiSelect, resetConfirmForm, onConfirmNext, onConfirmSkip, onConfirmDialogClose,
     platformConfigSaving, manualPlatformConfigVisible, platformConfigForm, platformConfigDialogVisible, resetPlatformConfigForm, openPlatformConfig, onPlatformConfigSubmit, onPlatformConfigCancel, onPlatformConfigClose,
     input, inputFocused, fileInputRef, uploadedFiles,
-    showScrollBottom, showScrollTop,
+
     browserActive, currentBrowserLabel, closeRightPanel, toggleRightPanel,
     expandedFileCategories, fileSearch, workspaceFiles, selectedFilePaths, filePanelUploadRef, search, messagesRef, showMount, showSkills, skillSearch, filteredSkillStore, toggleSkillMount,
     selectedModelId, expandedReasoning, expandedTools, expandedToolGroups, collapsedToolGroups, collapsedMessages, expandedAgentProcess, expandedStepTools, activeNavRound,
     userRoundIndices, mountedSkillIds, drawerOpen, convCollapsed, sideTab, contextSidebarOpen, toggleContextSidebar, batchMode, selectedConvIds,
+    rootConversations, conversationsBySpace, spaceCollapsed, toggleSpaceCollapse, rootCollapsed, toggleRootCollapse,
     mountToolSelection, toolAliasMap, mountSearch, collapsedServers, toggleServerCollapse, filteredTools, initMountSelection, isToolMounted, toggleMountTool, isAllToolsMounted, toggleAllTools, setToolAlias,
     showAgentEdit, editingAgent, debugMode,
     showWorkspaceDir, workspaceDir, loadWorkspaceDir, onWorkspaceDirSelected,
@@ -1621,13 +1747,13 @@ function createChat() {
     currentConv, filteredConversations, messageRounds, isToolErrorContent,
     chatModels, modelGroups, mountableServers, tokenCount, contextLimit, tokenPercent, tokenBarColor, canSend,
     openEditAgent, openCreateAgent, onAgentSaved, onAgentDeleted,
-    showSpaceEdit, spaceEditForm, spaceMenuTarget, selectSpace, createSpaceQuick, openSpaceEdit, saveSpaceEdit, deleteSpaceConfirm, openSpaceMenu, closeSpaceMenu, moveConvToSpace,
+    showSpaceEdit, spaceEditForm, spaceMenuTarget, selectSpace, createSpaceQuick, createSpaceFromDir, showSpaceDirPicker, openSpaceEdit, saveSpaceEdit, deleteSpaceConfirm, openSpaceMenu, closeSpaceMenu, moveConvToSpace,
     fileCategories, previewInPopup, showConvFileMenu, reclassifyConvFile,
     onAgentSwitch, onModelChange,
     parseConfigCard, displayAssistantContent, getEditPlatform, getEditReason, onConfigSaved,
     startNewChat, selectConv, triggerFileUpload, handleFileChange, removeFile, formatSize, send, stopChat, regenerateMsg, shouldShowMessage, collectToolCalls,
     filteredFiles, loadWorkspaceFiles, previewFile, toggleFileSelect, triggerFilePanelUpload, handleFilePanelUpload, deleteFileItem,
-    scrollToTop, scrollToBottom, scrollToRound, handleScroll, updateActiveNavRound, formatTime,
+    scrollToRound, handleScroll, updateActiveNavRound, formatTime,
     toggleReasoning, toggleTool, toggleToolGroup, toggleMsgCollapse, collapseEarlyOnMobile, toggleAgentProcess, toggleStepTools, isLastRoundStreaming,
     getStepToolResult, isStepToolError, isStepToolsRunning, isStepToolsError, getStepToolGroupClass, getStepToolStatusClass,
     isToolGroupRunning, isToolGroupError, getToolGroupStatusClass, resolveToolDisplay, resolveToolArgs, safeJson, isToolError, getToolStatusClass, getToolResult,

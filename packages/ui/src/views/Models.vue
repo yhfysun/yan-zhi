@@ -2,7 +2,10 @@
   <div class="page">
     <header class="page-header">
       <h2 class="page-title">模型平台管理</h2>
-      <el-button type="primary" :icon="Plus" @click="openAdd" class="add-btn-desktop">新增平台</el-button>
+      <div style="display:flex;gap:10px">
+        <el-button :icon="Download" @click="showLocalMarket = true">本地模型商城</el-button>
+        <el-button type="primary" :icon="Plus" @click="openAdd" class="add-btn-desktop">新增平台</el-button>
+      </div>
     </header>
 
     <div class="platform-grid">
@@ -94,22 +97,46 @@
       </template>
     </el-dialog>
 
+    <!-- 管理模型：弹窗内嵌平台详情，不再路由跳转（在设置抽屉中打开也不会切走主页面） -->
+    <el-dialog
+      v-model="showDetail"
+      :title="detailTitle"
+      width="860px"
+      top="6vh"
+      class="platform-detail-dialog"
+      destroy-on-close
+    >
+      <PlatformDetail :key="detailId" :platform-id="detailId" embedded />
+    </el-dialog>
+
     <!-- Mobile FAB -->
     <el-button type="primary" :icon="Plus" circle class="mobile-fab" @click="openAdd" />
+
+    <!-- 本地模型商城：国内源下载 / 测试启用 / 删除 / Ollama 接入 -->
+    <LocalModelMarket v-model="showLocalMarket" />
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
-import { useRouter } from 'vue-router';
 import { Plus, Connection, Download } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import type { ModelType } from '@yan-zhi/shared';
 import { usePlatformStore } from '../stores';
+import PlatformDetail from './PlatformDetail.vue';
+import LocalModelMarket from '../components/LocalModelMarket.vue';
 
 const store = usePlatformStore();
-const router = useRouter();
 const showAdd = ref(false);
+const showLocalMarket = ref(false);
+
+// 平台详情弹窗：内嵌 PlatformDetail，替代路由跳转
+const showDetail = ref(false);
+const detailId = ref('');
+const detailTitle = computed(() => {
+  const p = store.platforms.find((x) => x.id === detailId.value);
+  return p ? `管理模型 - ${p.name}` : '管理模型';
+});
 const editingId = ref('');
 const apiKeyDirty = ref(false);
 const testing = ref('');
@@ -127,9 +154,10 @@ const checkedModelIds = ref<string[]>([]);
 const checkAll = computed(() => fetchedModels.value.length > 0 && checkedModelIds.value.length === fetchedModels.value.length);
 const isIndeterminate = computed(() => checkedModelIds.value.length > 0 && checkedModelIds.value.length < fetchedModels.value.length);
 
+// 以数据库 status 为准，不进页自动 ping（避免线上平台因瞬时抖动被误判掉线）。
+// 需要校验时由用户手动点"测试连通性"按钮。
 onMounted(() => {
   store.loadPlatforms();
-  store.startHealthCheck();
 });
 
 function modelCount(platformId: string) {
@@ -276,7 +304,8 @@ async function test(id: string) {
 }
 
 function openPlatform(id: string) {
-  router.push(`/models/${id}`);
+  detailId.value = id;
+  showDetail.value = true;
 }
 
 async function del(id: string) {
@@ -397,4 +426,25 @@ async function del(id: string) {
 .fetched-item:hover { background: rgba(99, 102, 241, 0.08); }
 .model-id { font-family: "JetBrains Mono", "Cascadia Code", monospace; font-size: 12px; }
 
+</style>
+
+<style>
+/* 平台详情弹窗：内容区限高独立滚动，避免模型多时撑出屏幕；
+   内嵌的 .page 去掉整页 padding/滚动，并恢复被设置抽屉隐藏的页内标题 */
+.platform-detail-dialog .el-dialog__body {
+  max-height: calc(88vh - 120px);
+  overflow-y: auto;
+  padding-top: 8px;
+}
+.platform-detail-dialog .page {
+  padding: 0;
+  min-height: 0;
+  overflow: visible;
+}
+.platform-detail-dialog .page-header {
+  justify-content: space-between !important;
+}
+.platform-detail-dialog .page-title {
+  display: block !important;
+}
 </style>

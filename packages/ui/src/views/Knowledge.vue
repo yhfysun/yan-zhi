@@ -8,6 +8,47 @@
       <el-button type="primary" :icon="Plus" @click="openCreate">新建知识库</el-button>
     </header>
 
+    <!-- 全局 Embedding 模型配置 -->
+    <div class="embedding-config-bar glass-card">
+      <div class="embedding-config-left">
+        <el-icon><Histogram /></el-icon>
+        <span class="embedding-config-title">向量模型</span>
+        <el-select
+          v-model="currentEmbeddingModel"
+          size="small"
+          style="width: 280px"
+          :loading="embeddingLoading"
+          placeholder="未选择（兜底 Ollama）"
+          @change="switchEmbeddingModel"
+        >
+          <el-option-group v-for="g in embeddingGroups" :key="g.platformId" :label="g.platformName">
+            <el-option
+              v-for="m in g.models"
+              :key="`${g.platformId}:${m.id}`"
+              :label="m.alias || m.model_id"
+              :value="`${g.platformId}:${m.id}`"
+            />
+          </el-option-group>
+        </el-select>
+        <span class="embedding-config-hint">{{ currentEmbeddingDesc }}</span>
+      </div>
+      <div class="embedding-config-right">
+        <el-button
+          size="small"
+          type="warning"
+          plain
+          :loading="revectorizing"
+          :disabled="revectorizing"
+          @click="triggerRevectorize"
+        >
+          重新向量化
+        </el-button>
+        <span v-if="revectorizing && revectorizeProgress.total > 0" class="revectorize-progress">
+          {{ revectorizeProgress.done }} / {{ revectorizeProgress.total }}
+        </span>
+      </div>
+    </div>
+
     <div class="knowledge-layout">
       <aside class="kb-list glass-card">
         <div class="panel-head">
@@ -69,46 +110,72 @@
             </el-input>
           </div>
 
-          <div class="doc-toolbar">
-            <span class="section-label">文档</span>
-            <el-button size="small" type="primary" :icon="Plus" @click="openAddDoc">添加文档</el-button>
-          </div>
-
-          <div v-if="docLoading" class="panel-state">
-            <el-skeleton :rows="4" animated />
-          </div>
-          <el-empty v-else-if="docs.length === 0" description="还没有文档" :image-size="60" />
-          <div v-else class="doc-list">
-            <div v-for="doc in docs" :key="doc.id" class="doc-item">
-              <div class="doc-info">
-                <span class="doc-name">{{ doc.name }}</span>
-                <span class="doc-meta">{{ doc.createdAt ? new Date(doc.createdAt).toLocaleString() : '' }}</span>
+          <el-tabs v-model="activeTab" class="kb-tabs">
+            <el-tab-pane label="文档" name="docs">
+              <div class="doc-explorer">
+                <div class="doc-tree-panel">
+                  <div class="doc-tree-toolbar">
+                    <span class="section-label">文档列表</span>
+                    <el-button size="small" type="primary" :icon="Plus" @click="openAddDoc">添加文档</el-button>
+                  </div>
+                  <div v-if="docLoading" class="panel-state"><el-skeleton :rows="5" animated /></div>
+                  <el-empty v-else-if="docs.length === 0" description="还没有文档，点击右上角添加" :image-size="60" />
+                  <div v-else class="doc-tree-body">
+                    <div
+                      v-for="doc in docs"
+                      :key="doc.id"
+                      class="doc-tree-item"
+                      :class="{ active: selectedDocId === doc.id }"
+                      @click="selectDoc(doc)"
+                    >
+                      <el-icon class="doc-tree-icon"><Document /></el-icon>
+                      <span class="doc-tree-name">{{ doc.name }}</span>
+                      <span class="doc-tree-chunk-count">{{ docChunksMap[doc.id]?.items.length ?? '—' }} 片</span>
+                    </div>
+                  </div>
+                </div>
+                <div class="doc-preview-panel">
+                  <el-empty v-if="!selectedDoc" description="点击左侧文档查看预览" :image-size="80" />
+                  <template v-else>
+                    <div class="doc-preview-head">
+                      <div class="doc-preview-info">
+                        <div class="doc-preview-title">{{ selectedDoc.name }}</div>
+                        <div class="doc-preview-meta">
+                          <span>{{ docChunksMap[selectedDoc.id]?.items.length ?? 0 }} 个分片</span>
+                          <span v-if="selectedDoc.createdAt"> · {{ new Date(selectedDoc.createdAt).toLocaleString() }}</span>
+                        </div>
+                      </div>
+                      <el-button size="small" type="danger" :icon="Delete" @click="removeDoc(selectedDoc.id)">删除</el-button>
+                    </div>
+                    <div class="doc-preview-body">
+                      <div v-if="docChunksMap[selectedDoc.id]?.loading" class="panel-state">
+                        <el-skeleton :rows="6" animated />
+                      </div>
+                      <el-empty v-else-if="docChunksMap[selectedDoc.id] && docChunksMap[selectedDoc.id].items.length === 0" description="该文档暂无分片内容" :image-size="60" />
+                      <div v-else-if="docChunksMap[selectedDoc.id]" class="doc-preview-chunks">
+                        <div v-for="c in docChunksMap[selectedDoc.id].items" :key="c.id" class="doc-preview-chunk">
+                          <span class="doc-preview-chunk-index">分片 {{ c.chunkIndex }}</span>
+                          <p class="doc-preview-chunk-text">{{ c.content }}</p>
+                        </div>
+                      </div>
+                      <div v-else class="panel-state"><el-skeleton :rows="3" animated /></div>
+                    </div>
+                  </template>
+                </div>
               </div>
-              <el-button link type="danger" :icon="Delete" @click="removeDoc(doc.id)" />
-            </div>
-          </div>
+            </el-tab-pane>
 
-          <!-- 分片节点：列表 / 关系图谱 可选，每个分片内容可见 -->
-          <div class="chunk-section">
-            <div class="doc-toolbar" style="margin-top:14px">
-              <span class="section-label">分片节点</span>
-              <el-radio-group v-model="kbViewMode" size="small">
-                <el-radio-button value="graph">关系图谱</el-radio-button>
-                <el-radio-button value="list">分片列表</el-radio-button>
-              </el-radio-group>
-            </div>
+            <el-tab-pane label="关系图谱" name="graph">
+              <KbGraph :base-id="selected.id" />
+            </el-tab-pane>
 
-            <!-- 关系图谱（库 → 文档 → 分片 网状） -->
-            <KbGraph v-if="kbViewMode === 'graph'" :base-id="selected.id" />
-
-            <!-- 分片列表（树状，详细） -->
-            <template v-else>
-              <div class="doc-toolbar" style="margin-top:4px">
+            <el-tab-pane label="分片列表" name="chunks">
+              <div class="chunk-tab-toolbar">
                 <el-button size="small" :icon="Share" :loading="chunkLoading" @click="loadChunks(selected.id)">
                   {{ chunksLoaded ? '刷新分片' : '查看分片' }}
                 </el-button>
               </div>
-              <div v-if="chunkLoading" class="panel-state"><el-skeleton :rows="3" animated /></div>
+              <div v-if="chunkLoading" class="panel-state"><el-skeleton :rows="4" animated /></div>
               <el-empty v-else-if="chunksLoaded && chunks.length === 0" description="添加文档后会自动切分，分片将显示于此" :image-size="50" />
               <div v-else-if="chunksLoaded" class="chunk-tree">
                 <div v-for="group in chunkGroups" :key="group.docId" class="chunk-group">
@@ -135,8 +202,9 @@
                   </div>
                 </div>
               </div>
-            </template>
-          </div>
+              <el-empty v-else description="点击「查看分片」加载分片列表" :image-size="50" />
+            </el-tab-pane>
+          </el-tabs>
 
           <div v-if="results.length > 0" class="results">
             <span class="section-label">检索结果</span>
@@ -207,7 +275,7 @@
 
 <script setup lang="ts">
 import { onMounted, ref, computed } from 'vue';
-import { Plus, Refresh, Edit, Delete, Search, Folder, Share, ArrowDown, ArrowRight } from '@element-plus/icons-vue';
+import { Plus, Refresh, Edit, Delete, Search, Folder, Share, ArrowDown, ArrowRight, Histogram, Document } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { api } from '../api/client';
 import { useAuthStore, useSettingsStore } from '../stores';
@@ -249,6 +317,93 @@ const docForm = ref({ name: '', content: '', sourcePath: '' });
 // 上传文件选择
 const docFileInputRef = ref<HTMLInputElement | null>(null);
 const docFileName = ref('');
+
+// ── 全局 Embedding 模型配置（可从任意已配置平台选择）──
+const embeddingGroups = ref<Array<{ platformId: string; platformName: string; models: any[] }>>([]);
+const currentEmbeddingModel = ref('');
+const currentEmbeddingDesc = ref('');
+const embeddingLoading = ref(false);
+const revectorizing = ref(false);
+const revectorizeProgress = ref({ done: 0, total: 0 });
+let revectorizePollTimer: ReturnType<typeof setInterval> | undefined;
+
+async function loadEmbeddingModels() {
+  embeddingLoading.value = true;
+  try {
+    const r = await api.get<any>('/kb/embedding-model');
+    if ('data' in r && r.data) {
+      const platforms = r.data.platforms || [];
+      const models = r.data.models || [];
+      embeddingGroups.value = platforms.map((p: any) => ({
+        platformId: p.id,
+        platformName: p.name,
+        models: models.filter((m: any) => m.platform_id === p.id),
+      })).filter((g: any) => g.models.length > 0);
+      const cur = r.data.current;
+      currentEmbeddingModel.value = cur ? `${cur.platformId}:${cur.modelId}` : '';
+      currentEmbeddingDesc.value = cur ? '已配置平台向量模型' : '未配置（兜底 Ollama）';
+    }
+  } catch {
+    // 后端不可用，静默
+  } finally {
+    embeddingLoading.value = false;
+  }
+}
+
+async function switchEmbeddingModel(val: string) {
+  const [platformId, modelId] = val.split(':');
+  if (!platformId || !modelId) return;
+  try {
+    await api.post('/kb/embedding-model', { platformId, modelId });
+    currentEmbeddingDesc.value = '已配置平台向量模型';
+    ElMessage.success('已切换向量模型，建议重新向量化以获得最佳检索效果');
+  } catch (e: unknown) {
+    ElMessage.error('切换向量模型失败：' + (e instanceof Error ? e.message : String(e)));
+    await loadEmbeddingModels();
+  }
+}
+
+async function triggerRevectorize() {
+  try {
+    await ElMessageBox.confirm(
+      '将使用当前向量模型重新生成所有知识库的向量。文档较多时可能需要几分钟，期间检索会受影响。',
+      '确认重新向量化',
+      { confirmButtonText: '开始', cancelButtonText: '取消', type: 'warning' },
+    );
+  } catch {
+    return;
+  }
+  revectorizing.value = true;
+  revectorizeProgress.value = { done: 0, total: 0 };
+  try {
+    const r = await api.post<any>('/kb/revectorize');
+    if ('ok' in r && r.ok) {
+      const rd = r as any;
+      ElMessage.success(`重新向量化完成：${rd.done}/${rd.total} 片`);
+    }
+  } catch (e: unknown) {
+    ElMessage.error('重新向量化失败：' + (e instanceof Error ? e.message : String(e)));
+  } finally {
+    revectorizing.value = false;
+  }
+}
+
+function startRevectorizePoll() {
+  if (revectorizePollTimer) return;
+  revectorizePollTimer = setInterval(async () => {
+    try {
+      const r = await api.get<any>('/kb/revectorize-status');
+      if ('data' in r && r.data) {
+        revectorizeProgress.value = { done: r.data.done || 0, total: r.data.total || 0 };
+        if (!r.data.running) {
+          revectorizing.value = false;
+          if (revectorizePollTimer) { clearInterval(revectorizePollTimer); revectorizePollTimer = undefined; }
+        }
+      }
+    } catch { /* ignore */ }
+  }, 1000);
+}
+
 async function onDocFilePicked(e: Event) {
   const input = e.target as HTMLInputElement;
   const file = input.files?.[0];
@@ -269,7 +424,34 @@ const isBuiltin = computed(() => selectedId.value === BUILTIN_GUIDE_ID);
 const chunks = ref<any[]>([]);          // 原始分片列表（含 docId/docName/chunkIndex/content）
 const chunksLoaded = ref(false);
 const chunkLoading = ref(false);
-const kbViewMode = ref<'graph' | 'list'>('graph'); // 分片展示：默认关系图谱
+
+// 文档表格展开行：docId → 该文档的分片内容（懒加载缓存）
+const docChunksMap = ref<Record<string, { loading: boolean; items: any[] }>>({});
+
+const activeTab = ref<'docs' | 'graph' | 'chunks'>('docs');
+const selectedDoc = ref<any | null>(null);
+const selectedDocId = ref('');
+
+/** 点击左侧文档：懒加载该文档的分片内容用于预览（全库 chunks 拉一次后按 docId 过滤缓存） */
+async function selectDoc(doc: any) {
+  selectedDoc.value = doc;
+  selectedDocId.value = doc.id;
+  if (docChunksMap.value[doc.id]?.items) return; // 已缓存
+  docChunksMap.value[doc.id] = { loading: true, items: [] };
+  try {
+    if (!chunksLoaded.value) {
+      const res = await api.get<any[]>(`/kb/${selected.value.id}/chunks`);
+      if ('error' in res) throw new Error((res as any).error);
+      chunks.value = (res as any).data || [];
+      chunksLoaded.value = true;
+    }
+    const items = chunks.value.filter((c: any) => c.docId === doc.id);
+    docChunksMap.value[doc.id] = { loading: false, items };
+  } catch (e: any) {
+    docChunksMap.value[doc.id] = { loading: false, items: [] };
+    ElMessage.error(e?.message || '加载文档内容失败');
+  }
+}
 const expandedChunkGroups = ref<string[]>([]); // 展开的文档组 docId
 const expandedChunks = ref<string[]>([]);      // 展开的分片 id
 const chunkGroups = computed(() => {
@@ -303,6 +485,7 @@ function toggleChunk(id: string) {
 onMounted(async () => {
   await ensureBuiltinGuide(); // 确保内置「应用使用说明」库存在（种子化）
   await loadBases();
+  loadEmbeddingModels(); // 加载全局 embedding 模型配置（非阻塞）
 });
 
 async function loadBases() {
@@ -341,6 +524,10 @@ async function selectBase(id: string) {
   docs.value = [];
   results.value = [];
   query.value = '';
+  docChunksMap.value = {}; // 切库清空展开行缓存
+  selectedDoc.value = null;
+  selectedDocId.value = '';
+  activeTab.value = 'docs';
   await loadDocs(id);
 }
 
@@ -522,6 +709,11 @@ async function removeDoc(docId: string) {
     }
   }
   ElMessage.success('已删除');
+  delete docChunksMap.value[docId]; // 清展开缓存
+  if (selectedDocId.value === docId) {
+    selectedDoc.value = null;
+    selectedDocId.value = '';
+  }
   if (selected.value) await loadDocs(selected.value.id);
 }
 
@@ -576,6 +768,42 @@ async function resetBuiltinGuide() {
 </script>
 
 <style scoped>
+.embedding-config-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  margin-bottom: 12px;
+  gap: 12px;
+}
+.embedding-config-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.embedding-config-title {
+  font-weight: 600;
+  white-space: nowrap;
+}
+.embedding-config-hint {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 300px;
+}
+.embedding-config-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.revectorize-progress {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
 .knowledge-layout {
   display: grid;
   grid-template-columns: 280px 1fr;
@@ -697,7 +925,6 @@ async function resetBuiltinGuide() {
   color: var(--color-text-secondary);
 }
 
-.doc-list,
 .results {
   display: flex;
   flex-direction: column;
@@ -705,32 +932,32 @@ async function resetBuiltinGuide() {
   margin-top: 12px;
 }
 
-.doc-item {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 11px 12px;
-  border: 1px solid var(--glass-border);
-  border-radius: 10px;
+/* 文档表格：固定最大高度、独立滚动，避免撑长页面 */
+.doc-table {
+  margin-top: 12px;
+  flex-shrink: 0;
 }
 
-.doc-info {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
+.doc-table :deep(.el-table__cell .cell) {
+  font-size: 13px;
 }
 
-.doc-name {
-  font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+/* 展开行：显示文档分片全文 */
+.doc-expand-state { padding: 8px 4px; }
+.doc-expand-body {
+  max-height: 320px; overflow-y: auto; padding: 4px 8px;
+  display: flex; flex-direction: column; gap: 8px;
 }
-
-.doc-meta {
-  font-size: 12px;
-  color: var(--color-text-secondary);
+.doc-expand-chunk {
+  border: 1px solid var(--glass-border); border-radius: 8px; padding: 8px 12px;
+  background: rgba(0, 0, 0, 0.015);
+}
+.doc-expand-chunk-index {
+  font-size: 11px; font-weight: 700; color: var(--color-primary);
+}
+.doc-expand-chunk-text {
+  margin: 6px 0 0; font-size: 12.5px; line-height: 1.7;
+  white-space: pre-wrap; word-break: break-word; color: var(--color-text);
 }
 
 .results {
@@ -801,5 +1028,173 @@ async function resetBuiltinGuide() {
   color: var(--color-text); background: rgba(0,0,0,0.02);
   word-break: break-word; white-space: pre-wrap;
   max-height: 40vh; overflow-y: auto;
+}
+
+/* ===== Tab 切换主体 ===== */
+.kb-tabs {
+  margin-top: 14px;
+}
+.kb-tabs :deep(.el-tabs__header) {
+  margin-bottom: 12px;
+}
+.kb-tabs :deep(.el-tabs__nav-wrap::after) {
+  height: 1px;
+}
+.chunk-tab-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+/* ===== 文档浏览器（Windows 资源管理器风格：左目录 + 右预览） ===== */
+.doc-explorer {
+  display: grid;
+  grid-template-columns: 260px 1fr;
+  gap: 12px;
+  min-height: 360px;
+  height: calc(70vh - 40px);
+}
+.doc-tree-panel {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--glass-border);
+  border-radius: 10px;
+  background: var(--glass-bg, rgba(255, 255, 255, 0.4));
+  overflow: hidden;
+}
+.doc-tree-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--glass-border);
+  flex-shrink: 0;
+}
+.doc-tree-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 6px;
+}
+.doc-tree-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--color-text);
+  transition: background 0.15s ease;
+  user-select: none;
+}
+.doc-tree-item:hover {
+  background: var(--glass-bg-hover);
+}
+.doc-tree-item.active {
+  background: rgba(124, 58, 237, 0.12);
+  color: var(--color-primary);
+  font-weight: 600;
+}
+.doc-tree-icon {
+  font-size: 16px;
+  flex-shrink: 0;
+}
+.doc-tree-item.active .doc-tree-icon {
+  color: var(--color-primary);
+}
+.doc-tree-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.doc-tree-chunk-count {
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  flex-shrink: 0;
+}
+.doc-tree-item.active .doc-tree-chunk-count {
+  color: var(--color-primary);
+  opacity: 0.8;
+}
+
+.doc-preview-panel {
+  border: 1px solid var(--glass-border);
+  border-radius: 10px;
+  background: var(--glass-bg, rgba(255, 255, 255, 0.4));
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.doc-preview-panel :deep(.el-empty) {
+  margin: auto;
+}
+.doc-preview-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--glass-border);
+  flex-shrink: 0;
+}
+.doc-preview-info {
+  min-width: 0;
+}
+.doc-preview-title {
+  font-size: 15px;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.doc-preview-meta {
+  margin-top: 3px;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+.doc-preview-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 14px;
+}
+.doc-preview-chunks {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.doc-preview-chunk {
+  border: 1px solid var(--glass-border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: rgba(0, 0, 0, 0.015);
+}
+.doc-preview-chunk-index {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--color-primary);
+}
+.doc-preview-chunk-text {
+  margin: 6px 0 0;
+  font-size: 12.5px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--color-text);
+}
+
+@media (max-width: 767px) {
+  .doc-explorer {
+    grid-template-columns: 1fr;
+    height: auto;
+  }
+  .doc-tree-panel {
+    max-height: 220px;
+  }
+  .doc-preview-panel {
+    min-height: 260px;
+  }
 }
 </style>

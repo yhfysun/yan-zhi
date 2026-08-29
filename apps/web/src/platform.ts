@@ -1,5 +1,5 @@
 // Web 平台适配器 - 使用 Dexie (IndexedDB) 模拟 SQLite，keyring 持久化到 Dexie
-import type { PlatformAdapter, DatabaseAdapter, FsAdapter, KeyringAdapter } from '@yan-zhi/core';
+import type { PlatformAdapter, DatabaseAdapter, FsAdapter, KeyringAdapter, DirEntryInfo } from '@yan-zhi/core';
 import Dexie from 'dexie';
 
 /** 浏览器端明确的能力边界错误，用于替代裸 throw */
@@ -32,6 +32,9 @@ class WebDatabase extends Dexie implements DatabaseAdapter {
     this.version(2).stores({
       agent_profile: 'id, name, is_default, created_at',
     });
+    this.version(3).stores({
+      scheduled_task: 'id, enabled, created_at',
+    });
     this._tables = {
       platform: this.table('platform'),
       model: this.table('model'),
@@ -46,6 +49,7 @@ class WebDatabase extends Dexie implements DatabaseAdapter {
       skill: this.table('skill'),
       model_call: this.table('model_call'),
       agent_profile: this.table('agent_profile'),
+      scheduled_task: this.table('scheduled_task'),
     };
     this.keyring = this.table('keyring');
   }
@@ -161,41 +165,233 @@ class WebDatabase extends Dexie implements DatabaseAdapter {
     return (await collection.toArray()) as T[];
   }
 
+  // @ts-expect-error - DatabaseAdapter.transaction 与 Dexie.transaction 签名冲突，此处有意覆盖
   async transaction<T>(fn: () => Promise<T>): Promise<T> {
-    return super.transaction('rw', Object.values(this._tables), fn);
+    return (Dexie.prototype.transaction as any).call(this, 'rw', Object.values(this._tables), fn);
   }
 }
 
-/** Web 文件系统（受浏览器沙箱约束）
- *  网页端无法直接访问本地文件系统，统一通过显式 NotSupportedError 降级，
- *  避免把“平台限制”伪装成普通的运行时异常。 */
+/** Web 文件系统 —— 优先使用 File System Access API（Chromium 系浏览器支持）。
+ *  用户授权一个根目录后，所有路径相对于该根解析。
+ *  Safari/Firefox 不支持时降级为 NotSupportedError，引导用户用桌面端或上传/下载。 */
 class WebFs implements FsAdapter {
+  private rootHandle: any = null;
+  private rootName = '';
+
   private unsupported(action: string, path: string): WebPlatformNotSupportedError {
     return new WebPlatformNotSupportedError(
-      `[WebFs] ${action}（${path}）在浏览器网页端不可用。请改用文件上传/下载能力，或切换到桌面端。`,
+      `[WebFs] ${action}（${path}）在浏览器网页端不可用。请先授权工作区目录，或改用桌面端。`,
     );
   }
 
+  private isSupported(): boolean {
+    return typeof (window as any).showDirectoryPicker === 'function';
+  }
+
+  /** 规范化路径：去掉前导 / 和 ./，按 / 分割，过滤空段 */
+  private parsePath(path: string): string[] {
+    return path.replace(/^\.?\//, '').split('/').filter(Boolean);
+  }
+
+  /** 遍历到目标文件的父目录，返回 (父目录 handle, 文件名) */
+  private async resolveFile(path: string): Promise<{ dir: any; name: string }> {
+    const segs = this.parsePath(path);
+    if (segs.length === 0) throw new Error(`[WebFs] 路径无效: ${path}`);
+    const name = segs.pop()!;
+    let dir = this.rootHandle;
+    for (const seg of segs) {
+      dir = await dir.getDirectoryHandle(seg);
+    }
+    return { dir, name };
+  }
+
+  /** 遍历到目标目录 handle */
+  private async resolveDir(path: string): Promise<any> {
+    const segs = this.parsePath(path);
+    let dir = this.rootHandle;
+    for (const seg of segs) {
+      dir = await dir.getDirectoryHandle(seg);
+    }
+    return dir;
+  }
+
   async readFile(path: string): Promise<string> {
-    throw this.unsupported('读取文件', path);
+    if (!this.rootHandle) throw this.unsupported('读取文件', path);
+    const { dir, name } = await this.resolveFile(path);
+    const fh = await dir.getFileHandle(name);
+    const file = await fh.getFile();
+    return file.text();
   }
+
   async readFileBase64(path: string): Promise<string> {
-    throw this.unsupported('读取文件', path);
+    if (!this.rootHandle) throw this.unsupported('读取文件', path);
+    const { dir, name } = await this.resolveFile(path);
+    const fh = await dir.getFileHandle(name);
+    const file = await fh.getFile();
+    return new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = String(reader.result || '');
+        const comma = result.indexOf(',');
+        resolve(comma >= 0 ? result.slice(comma + 1) : result);
+      };
+      reader.onerror = () => reject(reader.error);
+      reader.readAsDataURL(file);
+    });
   }
-  async writeFile(path: string, _content: string): Promise<void> {
-    throw this.unsupported('写入文件', path);
+
+  async writeFile(path: string, content: string): Promise<void> {
+    if (!this.rootHandle) throw this.unsupported('写入文件', path);
+    const { dir, name } = await this.resolveFile(path);
+    const fh = await dir.getFileHandle(name, { create: true });
+    const writable = await fh.createWritable();
+    await writable.write(content);
+    await writable.close();
   }
-  async exists(_path: string): Promise<boolean> { return false; }
+
+  async exists(path: string): Promise<boolean> {
+    if (!this.rootHandle) return false;
+    const segs = this.parsePath(path);
+    if (segs.length === 0) return true;
+    try {
+      let dir = this.rootHandle;
+      for (let i = 0; i < segs.length - 1; i++) {
+        dir = await dir.getDirectoryHandle(segs[i]);
+      }
+      const last = segs[segs.length - 1];
+      try { await dir.getFileHandle(last); return true; } catch { /* not a file */ }
+      try { await dir.getDirectoryHandle(last); return true; } catch { /* not a dir */ }
+      return false;
+    } catch {
+      return false;
+    }
+  }
+
   async mkdir(path: string): Promise<void> {
-    throw this.unsupported('创建目录', path);
+    if (!this.rootHandle) throw this.unsupported('创建目录', path);
+    const segs = this.parsePath(path);
+    let dir = this.rootHandle;
+    for (const seg of segs) {
+      dir = await dir.getDirectoryHandle(seg, { create: true });
+    }
   }
+
   async remove(path: string): Promise<void> {
-    throw this.unsupported('删除文件', path);
+    if (!this.rootHandle) throw this.unsupported('删除文件', path);
+    const segs = this.parsePath(path);
+    if (segs.length === 0) throw new Error(`[WebFs] 不能删除根目录`);
+    let dir = this.rootHandle;
+    for (let i = 0; i < segs.length - 1; i++) {
+      dir = await dir.getDirectoryHandle(segs[i]);
+    }
+    await dir.removeEntry(segs[segs.length - 1]);
   }
+
   async readDir(path: string): Promise<string[]> {
-    throw this.unsupported('读取目录', path);
+    if (!this.rootHandle) throw this.unsupported('读取目录', path);
+    const dir = await this.resolveDir(path);
+    const names: string[] = [];
+    for await (const [name] of dir.entries()) names.push(name);
+    return names;
   }
+
+  async listDirEntries(path: string): Promise<DirEntryInfo[]> {
+    if (!this.rootHandle) throw this.unsupported('读取目录', path);
+    const dir = await this.resolveDir(path);
+    const entries: DirEntryInfo[] = [];
+    for await (const [name, handle] of dir.entries()) {
+      entries.push({ name, path: this.joinPath(path, name), isDir: handle.kind === 'directory' });
+    }
+    return entries;
+  }
+
+  private joinPath(base: string, name: string): string {
+    const b = base.replace(/^\.?\//, '').replace(/\/$/, '');
+    return b ? `${b}/${name}` : name;
+  }
+
+  // ── 授权与持久化 ──
+  /** 弹出目录选择器，授权根目录。返回根目录名。不支持 FSA API 时 throw NotSupported。 */
+  async authorize(): Promise<string> {
+    if (!this.isSupported()) {
+      throw new WebPlatformNotSupportedError('[WebFs] 当前浏览器不支持 File System Access API，请使用 Chrome/Edge 或桌面端。');
+    }
+    const handle = await (window as any).showDirectoryPicker({ mode: 'readwrite' });
+    this.rootHandle = handle;
+    this.rootName = handle.name || 'workspace';
+    await saveFsRootHandle(handle);
+    return this.rootName;
+  }
+
+  /** 从 IndexedDB 恢复已授权的根目录 handle（刷新后自动恢复） */
+  async restore(): Promise<boolean> {
+    if (this.rootHandle) return true;
+    try {
+      const handle = await loadFsRootHandle();
+      if (handle) {
+        this.rootHandle = handle;
+        this.rootName = handle.name || 'workspace';
+        return true;
+      }
+    } catch { /* ignore */ }
+    return false;
+  }
+
+  getAuthorized(): boolean { return !!this.rootHandle; }
+  getRootName(): string { return this.rootName; }
 }
+
+/** 用原生 IndexedDB 持久化 FSA directory handle（结构化克隆兼容） */
+const FS_IDB_DB = 'yan-zhi-fs';
+const FS_IDB_STORE = 'handles';
+const FS_IDB_KEY = 'root';
+
+function loadFsRootHandle(): Promise<any | null> {
+  return new Promise((resolve) => {
+    try {
+      const req = indexedDB.open(FS_IDB_DB, 1);
+      req.onupgradeneeded = (e: any) => {
+        e.target.result.createObjectStore(FS_IDB_STORE);
+      };
+      req.onsuccess = (e: any) => {
+        const idb = e.target.result;
+        try {
+          const tx = idb.transaction(FS_IDB_STORE, 'readonly');
+          const get = tx.objectStore(FS_IDB_STORE).get(FS_IDB_KEY);
+          get.onsuccess = () => resolve(get.result || null);
+          get.onerror = () => resolve(null);
+        } catch { resolve(null); }
+      };
+      req.onerror = () => resolve(null);
+    } catch { resolve(null); }
+  });
+}
+
+function saveFsRootHandle(handle: any): Promise<void> {
+  return new Promise((resolve) => {
+    try {
+      const req = indexedDB.open(FS_IDB_DB, 1);
+      req.onupgradeneeded = (e: any) => {
+        e.target.result.createObjectStore(FS_IDB_STORE);
+      };
+      req.onsuccess = (e: any) => {
+        const idb = e.target.result;
+        try {
+          const tx = idb.transaction(FS_IDB_STORE, 'readwrite');
+          tx.objectStore(FS_IDB_STORE).put(handle, FS_IDB_KEY);
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => resolve();
+        } catch { resolve(); }
+      };
+      req.onerror = () => resolve();
+    } catch { resolve(); }
+  });
+}
+
+// 模块级单例的 WebFs，供授权 API 引用
+const webFs = new WebFs();
+// 启动时尝试恢复已授权的根目录
+webFs.restore().catch(() => undefined);
 
 /** Web 钥匙串 - 持久化到 Dexie（IndexedDB）
  *  MVP 阶段：明文存储，刷新不丢失。
@@ -221,7 +417,18 @@ const webDb = new WebDatabase();
 export const webAdapter: PlatformAdapter = {
   platform: 'web',
   db: webDb,
-  fs: new WebFs(),
+  fs: webFs,
   keyring: new WebKeyring(webDb),
   // Web 端不支持 MCP stdio
 };
+
+// ── Web 文件系统授权 API（供 UI 调用）──
+export async function authorizeWebFs(): Promise<string> {
+  return webFs.authorize();
+}
+export function isWebFsAuthorized(): boolean {
+  return webFs.getAuthorized();
+}
+export function getWebFsRootName(): string {
+  return webFs.getRootName();
+}

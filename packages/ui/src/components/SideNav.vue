@@ -131,7 +131,7 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import { useRoute } from 'vue-router';
-import { ChatDotRound, Setting, User, SwitchButton, Fold, Expand, Monitor, ChatLineRound, Collection, Moon, Sunny } from '@element-plus/icons-vue';
+import { ChatDotRound, Setting, User, SwitchButton, Fold, Expand, Monitor, ChatLineRound, Collection, Moon, Sunny, HomeFilled, MagicStick } from '@element-plus/icons-vue';
 import { useAuthStore } from '../stores/auth';
 import { useSettingsStore } from '../stores/settings';
 import { useIsMobile } from '../composables/useIsMobile';
@@ -147,10 +147,12 @@ const { isDesktop } = usePlatform();
 const { collapsed, toggle } = useSidebarState();
 
 const navItems = [
+  { path: '/home', label: '首页', tabLabel: '首页', icon: HomeFilled, kind: 'route' },
   { path: '/chat', label: '对话', tabLabel: '对话', icon: ChatDotRound, kind: 'route' },
   { path: '/chat-hub', label: '聊天', tabLabel: '聊天', icon: ChatLineRound, kind: 'route' },
   { path: '/knowledge', label: '知识库', tabLabel: '知识', icon: Collection, kind: 'route' },
   { path: '/browser', label: '浏览器', tabLabel: '浏览器', icon: Monitor, kind: 'route' },
+  { path: '/distill', label: 'Skill 蒸馏', tabLabel: '蒸馏', icon: MagicStick, kind: 'route' },
   { path: '', label: '设置', tabLabel: '设置', icon: Setting, kind: 'settings' },
 ];
 

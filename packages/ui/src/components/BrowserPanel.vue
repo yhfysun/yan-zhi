@@ -15,6 +15,9 @@
       <button class="nav-btn" @click="refresh" title="刷新">
         <svg viewBox="0 0 24 24" width="18" height="18"><path d="M17.65 6.35A7.95 7.95 0 0012 4a8 8 0 108 8h-2a6 6 0 11-6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z" fill="currentColor"/></svg>
       </button>
+      <button class="nav-btn" @click="openExternal" :disabled="!urlInput" title="用系统浏览器打开">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path d="M14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7zM19 19H5V5h7V3H5a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7h-2v7z" fill="currentColor"/></svg>
+      </button>
 
       <!-- 地址栏 -->
       <div class="url-bar" :class="{ focused: urlFocused }">
@@ -198,12 +201,16 @@ import { useChatStore } from '../stores/chat';
 import { usePlatform } from '../composables/usePlatform';
 import { LlmClient } from '@yan-zhi/core';
 import { API_BASE } from '../api/client';
+import { useRoute } from 'vue-router';
 
 // ── 平台检测 ──
 const { isDesktop } = usePlatform();
 
 // 检测是否在 Electron 桌面端（有 electronAPI 标识）
 const isElectron = typeof window !== 'undefined' && !!(window as any).electronAPI?.isElectron;
+
+// 路由 query（支持从对话页跳转并传初始 URL）
+const route = useRoute();
 
 
 interface Bookmark { url: string; title: string; }
@@ -264,6 +271,15 @@ function applyZoom() {
 function zoomIn() { pageZoom.value = Math.min(3, +(pageZoom.value + 0.1).toFixed(2)); applyZoom(); }
 function zoomOut() { pageZoom.value = Math.max(0.3, +(pageZoom.value - 0.1).toFixed(2)); applyZoom(); }
 function resetZoom() { pageZoom.value = 1; applyZoom(); }
+
+/** 用系统默认浏览器（桌面端）或新标签页（Web 端）打开当前地址，原生预览，非 iframe/弹窗 */
+function openExternal() {
+  const u = urlInput.value.trim();
+  if (!u || !/^https?:\/\//i.test(u)) { ElMessage.warning('请先输入有效网址'); return; }
+  const electronShell = (window as any).electronAPI?.shell;
+  if (electronShell?.openExternal) { electronShell.openExternal(u); return; }
+  window.open(u, '_blank', 'noopener,noreferrer');
+}
 
 // ── Electron 桌面端：通知主进程当前主题，由主进程用 insertCSS 美化原生滚动条（BrowserView 是原生图层，无法用 HTML 叠加）──
 function applyElectronScrollbarTheme() {
@@ -358,6 +374,20 @@ const showHistory = ref(false);
 const showSettings = ref(false);
 const newPinName = ref('');
 const newPinUrl = ref('');
+
+// Electron 桌面端：BrowserView 是原生图层，永远覆盖主窗口 DOM 之上，
+// 任何 el-dialog 都会被它挡住。打开弹窗时临时隐藏 BrowserView，关闭后恢复。
+watch(
+  () => showBookmarks.value || showHistory.value || showSettings.value,
+  (hasDialog) => {
+    if (!isElectron) return;
+    if (hasDialog) {
+      (window as any).electronAPI.browserView.hide();
+    } else {
+      syncBrowserViewBounds();
+    }
+  },
+);
 
 // 常用网站 = 固定 pin + 历史常用（去重 host）
 const commonSites = computed<Pin[]>(() => {
@@ -918,6 +948,11 @@ function onMenuCommand(cmd: string) {
 }
 
 onMounted(() => {
+  // 从路由 query 接收初始 URL（对话页点链接跳转过来），在应用内预览面板打开
+  const initUrl = route.query.url;
+  if (typeof initUrl === 'string' && /^https?:\/\//i.test(initUrl)) {
+    nextTick(() => openSite(initUrl));
+  }
   fetchData();
   startDailyAnalysisScheduler();
 

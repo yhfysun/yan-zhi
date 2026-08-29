@@ -297,13 +297,13 @@ Skill 管理:
 
 ## 9. 已知问题
 
-### 9.1 Anthropic 协议未实现
+### 9.1 Anthropic 协议（已实现）
 
-类型定义（`Protocol = 'openai' | 'anthropic' | 'custom'`）和 UI 中声明了 Anthropic 协议选项，但 `LlmClient`（`packages/core/src/llm/client.ts`）只实现了 OpenAI 兼容协议：
+`LlmClient`（`packages/core/src/llm/client.ts`）已完整支持 OpenAI 与 Anthropic 双协议，由 `platform.protocol` 决定路径：
 
-- 所有请求硬编码走 `/v1/chat/completions`、`/v1/models`、`/v1/embeddings` 端点
-- 鉴权头写死 `Authorization: Bearer xxx`
-- 请求体和响应解析均为 OpenAI 格式
+- **OpenAI**：端点 `/v1/chat/completions`，`Authorization: Bearer` 鉴权
+- **Anthropic**：端点 `/v1/messages`，`x-api-key` + `anthropic-version` 鉴权；`anthropic.ts` 适配层自动完成 system 提取、tool_use/tool_result block 转换、流式 SSE 事件解析
 
-Anthropic Messages API 与之不兼容（端点不同、`x-api-key` 头、system prompt 单独放置、tool_use 格式不同）。选 Anthropic 协议的平台实际无法使用。需要后续为 LlmClient 增加协议适配层，根据 platform.protocol 切换请求格式。
+注意：Anthropic 官方无公开模型列表接口，"拉取模型"对纯 Anthropic 平台可能返回空，需手动添加模型 ID；兼容网关（如 OpenRouter）通常支持列表拉取。Anthropic 协议不支持 embeddings。
+
 - 从同源商城下载的工具在本地沙箱执行，不依赖远程节点

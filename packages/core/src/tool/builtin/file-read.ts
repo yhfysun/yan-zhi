@@ -3,11 +3,22 @@ import type { McpCallResult } from '../../mcp/client';
 import { getPlatformAdapter } from '../../platform/types';
 
 const EXCEL_EXTENSIONS = ['xlsx', 'xls', 'csv'];
+const WORD_EXTENSIONS = ['docx'];
+const PPTX_EXTENSIONS = ['pptx'];
+const LEGACY_OFFICE_EXTENSIONS = ['doc', 'ppt'];
 const MAX_ROWS = 10000;
+
+function base64ToBytes(b64: string): Uint8Array {
+  const bin = typeof atob === 'function' ? atob(b64) : Buffer.from(b64, 'base64').toString('binary');
+  const len = bin.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes;
+}
 
 export class FileReadTool implements BuiltInTool {
   name = 'file_read';
-  description = 'Read the contents of a file. For text files returns the full content. For Excel files (.xlsx/.xls/.csv) returns tabular data — supports sheet selection, range filtering, and CSV/JSON output formats.';
+  description = 'Read the contents of a file. For text files returns the full content. For Excel files (.xlsx/.xls/.csv) returns tabular data — supports sheet selection, range filtering, and CSV/JSON output formats. For Word (.docx) returns extracted text. For PowerPoint (.pptx) returns text per slide. Legacy .doc/.ppt are not supported.';
 
   inputSchema = {
     type: 'object',
@@ -54,6 +65,18 @@ export class FileReadTool implements BuiltInTool {
     const ext = path.split('.').pop()?.toLowerCase() || '';
     if (EXCEL_EXTENSIONS.includes(ext)) {
       return this.readExcel(path, args, fs);
+    }
+    if (WORD_EXTENSIONS.includes(ext)) {
+      return this.readDocx(path, fs);
+    }
+    if (PPTX_EXTENSIONS.includes(ext)) {
+      return this.readPptx(path, fs);
+    }
+    if (LEGACY_OFFICE_EXTENSIONS.includes(ext)) {
+      return {
+        content: [{ type: 'text', text: `Error: 不支持老格式 .${ext}，请另存为 .${ext}x（Office 新格式）后再读取。` }],
+        isError: true,
+      };
     }
 
     try {
@@ -153,6 +176,66 @@ export class FileReadTool implements BuiltInTool {
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       return { content: [{ type: 'text', text: `Error reading Excel file: ${msg}` }], isError: true };
+    }
+  }
+
+  private async readDocx(
+    path: string,
+    fs: ReturnType<typeof getPlatformAdapter>['fs'],
+  ): Promise<McpCallResult> {
+    try {
+      const b64 = await fs.readFileBase64(path);
+      const bytes = base64ToBytes(b64);
+      const ab = new ArrayBuffer(bytes.byteLength);
+      new Uint8Array(ab).set(bytes);
+      const mammoth = await import('mammoth');
+      const result = await mammoth.extractRawText({ arrayBuffer: ab });
+      const text = result.value || '';
+      return { content: [{ type: 'text', text: text || '(文档为空)' }] };
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return { content: [{ type: 'text', text: `Error reading Word file: ${msg}` }], isError: true };
+    }
+  }
+
+  private async readPptx(
+    path: string,
+    fs: ReturnType<typeof getPlatformAdapter>['fs'],
+  ): Promise<McpCallResult> {
+    try {
+      const b64 = await fs.readFileBase64(path);
+      const bytes = base64ToBytes(b64);
+      const JSZip = (await import('jszip')).default;
+      const zip = await JSZip.loadAsync(bytes);
+      const slideNames = Object.keys(zip.files)
+        .filter((n) => /^ppt\/slides\/slide\d+\.xml$/.test(n))
+        .sort((a, b) => {
+          const na = parseInt(a.match(/slide(\d+)\.xml/)![1], 10);
+          const nb = parseInt(b.match(/slide(\d+)\.xml/)![1], 10);
+          return na - nb;
+        });
+      if (slideNames.length === 0) {
+        return { content: [{ type: 'text', text: '(未找到幻灯片)' }] };
+      }
+      const parts: string[] = [];
+      for (const name of slideNames) {
+        const xml = await zip.file(name)!.async('string');
+        const texts: string[] = [];
+        const re = /<a:t>([\s\S]*?)<\/a:t>/g;
+        let m: RegExpExecArray | null;
+        while ((m = re.exec(xml)) !== null) {
+          const t = m[1]
+            .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+            .replace(/&quot;/g, '"').replace(/&apos;/g, "'");
+          if (t) texts.push(t);
+        }
+        const idx = parseInt(name.match(/slide(\d+)\.xml/)![1], 10);
+        parts.push(`--- Slide ${idx} ---\n${texts.join(' ') || '(空幻灯片)'}`);
+      }
+      return { content: [{ type: 'text', text: parts.join('\n\n') }] };
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return { content: [{ type: 'text', text: `Error reading PowerPoint file: ${msg}` }], isError: true };
     }
   }
 }

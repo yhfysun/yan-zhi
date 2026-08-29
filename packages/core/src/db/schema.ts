@@ -291,6 +291,22 @@ CREATE TABLE IF NOT EXISTS knowledge_chunk (
 );
 CREATE INDEX IF NOT EXISTS idx_kb_doc_base ON knowledge_doc(base_id);
 CREATE INDEX IF NOT EXISTS idx_kb_chunk_base ON knowledge_chunk(base_id, doc_id);
+
+-- 对话定时任务
+CREATE TABLE IF NOT EXISTS scheduled_task (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  prompt TEXT,
+  cron_expr TEXT,
+  interval_minutes INTEGER,
+  conversation_id TEXT,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  last_run_at INTEGER,
+  next_run_at INTEGER,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_scheduled_task_enabled ON scheduled_task(enabled, next_run_at);
 `;
 
 /** 迁移 SQL：为已有数据库添加新字段 */

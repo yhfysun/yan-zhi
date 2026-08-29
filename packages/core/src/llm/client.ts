@@ -73,7 +73,6 @@ export class LlmClient {
     const body: any = {
       model: this.model.modelId,
       messages: apiMessages,
-      tools: options?.tools,
       temperature: options?.temperature,
       maxTokens: options?.maxTokens,
       topP: options?.topP,
@@ -81,6 +80,7 @@ export class LlmClient {
       presencePenalty: options?.presencePenalty,
       stream: true,
     };
+    if (options?.tools?.length) body.tools = options.tools;
     if (options?.reasoningEffort) {
       body.reasoning_effort = options.reasoningEffort;
     }
@@ -101,6 +101,22 @@ export class LlmClient {
     }
     if (!res.ok || !res.body) {
       const text = await res.text().catch(() => '');
+      // Ollama 小模型不支持 tools：去掉 tools + 清理消息中的 tool_calls/tool 角色后重试
+      if (res.status === 400 && /does not support tools/i.test(text) && body.tools) {
+        delete body.tools;
+        body.messages = (body.messages as any[]).map((m: any) => {
+          if (m.role === 'tool') return { role: 'user', content: `[工具结果] ${m.content || ''}` };
+          if (m.tool_calls) { const { tool_calls, tool_call_id, ...rest } = m; return rest; }
+          return m;
+        }).filter((m: any) => m.content || m.role !== 'assistant');
+        const retryRes = await fetch(url, {
+          method: 'POST', headers, body: JSON.stringify(body), signal: options?.signal,
+        });
+        if (retryRes.ok && retryRes.body) {
+          yield* parseSSE(retryRes.body);
+          return;
+        }
+      }
       let hint = '';
       if (res.status === 401) hint = '（API Key 无效或未配置）';
       else if (res.status === 404) hint = `（URL 不对，请检查平台 API URL。当前请求: ${url}）`;
@@ -342,5 +358,67 @@ export class LlmClient {
     if (!res.ok) throw new Error(`Embedding 请求失败: ${res.status}`);
     const data = await res.json();
     return (data.data || []).map((d: { embedding: number[] }) => d.embedding);
+  }
+
+  /**
+   * 多模态图片分析：发一次性 vision 请求（非流式），返回模型文本回复。
+   * 不走 Message 类型（content 仍为 string），仅在此方法内构造多模态 body。
+   * - OpenAI 协议：content 数组含 image_url（data URL）
+   * - Anthropic 协议：content 数组含 image block（base64 source）
+   */
+  async visionAnalyze(
+    imageBase64: string,
+    mime: string,
+    prompt: string,
+    options?: { maxTokens?: number; temperature?: number; signal?: AbortSignal },
+  ): Promise<string> {
+    if (this.isAnthropic) {
+      const headers = await this.buildAnthropicHeaders();
+      const body = {
+        model: this.model.modelId,
+        max_tokens: options?.maxTokens ?? 1024,
+        messages: [{
+          role: 'user',
+          content: [
+            { type: 'text', text: prompt },
+            { type: 'image', source: { type: 'base64', media_type: mime, data: imageBase64 } },
+          ],
+        }],
+        stream: false,
+      };
+      const res = await fetch(`${this.baseUrl}/v1/messages`, {
+        method: 'POST', headers, body: JSON.stringify(body), signal: options?.signal,
+      });
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        throw new Error(`vision 请求失败: ${res.status} ${res.statusText} ${text.slice(0, 200)}`);
+      }
+      const data = await res.json();
+      const parts = (data.content || []).filter((b: any) => b.type === 'text').map((b: any) => b.text || '');
+      return parts.join('');
+    }
+    const headers = await this.buildHeaders();
+    const body = {
+      model: this.model.modelId,
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'text', text: prompt },
+          { type: 'image_url', image_url: { url: `data:${mime};base64,${imageBase64}` } },
+        ],
+      }],
+      max_tokens: options?.maxTokens ?? 1024,
+      temperature: options?.temperature,
+      stream: false,
+    };
+    const res = await fetch(`${this.baseUrl}/v1/chat/completions`, {
+      method: 'POST', headers, body: JSON.stringify(body), signal: options?.signal,
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`vision 请求失败: ${res.status} ${res.statusText} ${text.slice(0, 200)}`);
+    }
+    const data = await res.json();
+    return data.choices?.[0]?.message?.content || '';
   }
 }

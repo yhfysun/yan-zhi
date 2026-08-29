@@ -93,10 +93,17 @@
               <template v-if="mountTab === 'tools'">
                 <div class="mount-group">
                   <div class="mount-label">内置工具</div>
-                  <div class="chip-wrap">
-                    <label v-for="t in builtinToolList" :key="t.name" class="chip" :class="{ on: form.builtinToolIds.includes(t.name) }">
-                      <input type="checkbox" :value="t.name" v-model="form.builtinToolIds" hidden />{{ t.name }}
-                    </label>
+                  <div v-for="g in builtinToolGroups" :key="g.key" class="tool-cat">
+                    <div class="tool-cat-head" @click="toggleBuiltinCat(g.key)">
+                      <el-icon :size="11" class="tool-cat-arrow" :class="{ open: isBuiltinCatOpen(g.key) }"><ArrowRight /></el-icon>
+                      <span class="tool-cat-name">{{ g.label }}</span>
+                      <span class="tool-cat-count">{{ g.tools.length }}</span>
+                    </div>
+                    <div v-show="isBuiltinCatOpen(g.key)" class="chip-wrap">
+                      <label v-for="t in g.tools" :key="t.name" class="chip" :class="{ on: form.builtinToolIds.includes(t.name) }">
+                        <input type="checkbox" :value="t.name" v-model="form.builtinToolIds" hidden />{{ t.name }}
+                      </label>
+                    </div>
                   </div>
                 </div>
                 <div class="mount-group">
@@ -151,7 +158,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, reactive } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { User, EditPen, Cpu, Setting, Connection, Share, Files, Switch } from '@element-plus/icons-vue';
+import { User, EditPen, Cpu, Setting, Connection, Share, Files, Switch, ArrowRight } from '@element-plus/icons-vue';
 import type { Agent } from '@yan-zhi/shared';
 import { useAgentStore, usePlatformStore, useMcpStore, useSkillStore, useToolsStore, useAuthStore } from '../stores';
 
@@ -179,7 +186,10 @@ const form = ref<any>({
   isPublic: false,
 });
 
-const builtinToolList = computed(() => toolsStore.builtinTools);
+const builtinToolGroups = computed(() => toolsStore.builtinToolGroups);
+const builtinCatOpen = ref<Record<string, boolean>>({});
+function isBuiltinCatOpen(key: string) { return builtinCatOpen.value[key] !== false; }
+function toggleBuiltinCat(key: string) { builtinCatOpen.value[key] = !isBuiltinCatOpen(key); }
 const customToolList = computed(() => toolsStore.customTools.filter((t: any) => t.enabled));
 const mcpServerList = computed(() => mcpStore.servers);
 const skillList = computed(() => skillStore.skills.filter((s: any) => s.enabled));
@@ -337,6 +347,14 @@ async function handleDelete() {
   border-color: var(--color-primary); background: rgba(99,102,241,0.08);
   color: var(--color-primary); font-weight: 600;
 }
+
+.tool-cat { margin-bottom: 6px; }
+.tool-cat-head { display: flex; align-items: center; gap: 5px; cursor: pointer; padding: 3px 0; user-select: none; }
+.tool-cat-head:hover .tool-cat-name { color: var(--color-primary); }
+.tool-cat-arrow { transition: transform 0.15s; color: var(--color-text-secondary); }
+.tool-cat-arrow.open { transform: rotate(90deg); }
+.tool-cat-name { font-size: 12px; font-weight: 600; color: var(--color-text); transition: color 0.15s; }
+.tool-cat-count { font-size: 10px; font-weight: 700; color: var(--color-text-secondary); background: rgba(15,23,42,0.06); border-radius: 8px; padding: 1px 6px; }
 
 @media (max-width: 767px) {
   .tab-inner { padding: 4px 2px 4px 0; }

@@ -47,7 +47,7 @@ const EMPTY_WORKFLOW: Workflow = { nodes: [], edges: [] };
 // 默认 agent 自动挂载的常用内置工具。
 // cmd_exec 涉及系统 shell 执行（仅桌面端可用且有安全风险），不自动挂载，留给用户按需开启。
 // call_agent 用于委派子智能体（如 pageAgent）。
-const DEFAULT_BUILTIN_TOOLS = ['file_read', 'file_write', 'web_search', 'call_agent', 'ask_user', 'confirm_user', 'task_plan', 'task_step', 'configure_model_platform'];
+const DEFAULT_BUILTIN_TOOLS = ['file_read', 'file_write', 'web_search', 'call_agent', 'list_sub_agents', 'ask_user', 'confirm_user', 'task_plan', 'task_step', 'configure_model_platform'];
 
 const DEFAULT_AGENT_DATA = {
   name: 'AI 助手',
@@ -86,7 +86,7 @@ const DEFAULT_AGENT_ID = 'a_default_assistant';
 
 /** 默认 agent 结构版本：作为一次性迁移门槛。
  *  version < N 时执行迁移，迁移后置为 N，避免反复覆盖用户后续对工具挂载的修改（如手动清空）。 */
-const DEFAULT_AGENT_VERSION = 5;
+const DEFAULT_AGENT_VERSION = 6;
 
 // ========== E5: pageAgent（内置浏览器自动化智能体） ==========
 /** pageAgent 固定 ID：内置智能体，浏览器操作专家 */
@@ -329,6 +329,29 @@ export const useAgentStore = defineStore('agent', () => {
             rows = await adapter.db.query<any>('SELECT * FROM agent ORDER BY is_default DESC, is_builtin DESC, created_at ASC');
           } else if (Number(defRowV5.version) < 5) {
             await adapter.db.exec('UPDATE agent SET version = ? WHERE id = ?', [5, defRowV5.id]);
+          }
+        }
+
+        // v6 迁移 —— 为历史默认 agent 补挂 list_sub_agents（子智能体列表查询工具，E7b）。
+        // 只追加缺失的 list_sub_agents，不覆盖用户后续手动调整过的其他工具挂载。
+        const defRowV6 = rows.find((r: any) => r.is_default === 1);
+        if (defRowV6 && (defRowV6.version === null || defRowV6.version === undefined || Number(defRowV6.version) < 6)) {
+          let builtinIds: string[] = [];
+          try {
+            builtinIds = defRowV6.builtin_tool_ids ? JSON.parse(defRowV6.builtin_tool_ids) : [];
+          } catch {
+            builtinIds = [];
+          }
+          if (!Array.isArray(builtinIds)) builtinIds = [];
+          if (!builtinIds.includes('list_sub_agents')) {
+            builtinIds = [...builtinIds, 'list_sub_agents'];
+            await adapter.db.exec(
+              'UPDATE agent SET builtin_tool_ids = ?, version = ? WHERE id = ?',
+              [JSON.stringify(builtinIds), 6, defRowV6.id],
+            );
+            rows = await adapter.db.query<any>('SELECT * FROM agent ORDER BY is_default DESC, is_builtin DESC, created_at ASC');
+          } else if (Number(defRowV6.version) < 6) {
+            await adapter.db.exec('UPDATE agent SET version = ? WHERE id = ?', [6, defRowV6.id]);
           }
         }
 

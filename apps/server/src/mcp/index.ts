@@ -4,6 +4,7 @@ import {
   getToolRegistry,
   registerManagementTools,
   FetchSearchBackend,
+  DuckDuckGoSearchBackend,
   type SearchBackend,
 } from '@yan-zhi/core';
 import { resolveJwtUser } from '../auth.js';
@@ -13,11 +14,19 @@ import { PlaywrightSearchBackend } from './search-backend.js';
 
 const router = Router();
 
-/** 解析 web_search 后端：优先用内置 Playwright 浏览器（YANZHI_SEARCH_ENGINE=bing|baidu，默认 bing）；否则可用 YANZHI_SEARCH_ENDPOINT 指定外部搜索 API */
+/**
+ * 解析 web_search 后端：
+ * - 默认（或 YANZHI_SEARCH_ENGINE=duckduckgo）：走 DuckDuckGo HTML，纯 fetch 零依赖，无需 Playwright/API Key
+ * - YANZHI_SEARCH_ENGINE=bing|baidu：走内置 Playwright 抓搜索引擎（需安装 chromium）
+ * - YANZHI_SEARCH_ENDPOINT：走外部搜索 API（FetchSearchBackend，可带 headers/API key）
+ */
 function resolveSearchBackend(): SearchBackend {
-  const engine = (process.env.YANZHI_SEARCH_ENGINE || 'bing').toLowerCase();
+  const engine = (process.env.YANZHI_SEARCH_ENGINE || 'duckduckgo').toLowerCase();
   if (engine === 'bing' || engine === 'baidu') {
     return new PlaywrightSearchBackend(engine);
+  }
+  if (engine === 'duckduckgo') {
+    return new DuckDuckGoSearchBackend();
   }
   const endpoint = process.env.YANZHI_SEARCH_ENDPOINT;
   if (endpoint) {
@@ -30,8 +39,8 @@ function resolveSearchBackend(): SearchBackend {
       })) || [],
     });
   }
-  // 无配置时默认仍走浏览器，避免 web_search 直接报「无后端」
-  return new PlaywrightSearchBackend('bing');
+  // 无配置时默认走 DuckDuckGo（零依赖），避免 web_search 报「无后端」
+  return new DuckDuckGoSearchBackend();
 }
 
 /** 确保管理类工具（get_api_tools/list_platforms 等）与 searchBackend 在首次获取 registry 时已就位 */
@@ -84,6 +93,7 @@ function listAllTools() {
     name: tool.name,
     description: tool.description,
     inputSchema: tool.inputSchema,
+    outputSchema: tool.outputSchema,
   }));
 
   return [...apiTools, ...builtInTools];

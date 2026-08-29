@@ -119,40 +119,13 @@
         </div>
 
         <div class="toolbar-right">
-          <div class="minimal-select model-select" @click.stop>
-            <el-icon class="select-icon"><Cpu /></el-icon>
-            <el-select
-              v-model="selectedModelId"
-              placeholder="选择模型"
-              filterable
-              size="small"
-              popper-class="minimal-popper"
-              @change="onModelChange"
-            >
-              <el-option-group
-                v-for="g in modelGroups"
-                :key="g.platformId"
-                :label="g.platformName"
-              >
-                <el-option
-                  v-for="m in g.models"
-                  :key="m.id"
-                  :label="m.alias || m.modelId"
-                  :value="m.id"
-                >
-                  <span>{{ m.alias || m.modelId }}</span>
-                  <span style="font-size:11px;color:#94a3b8;margin-left:6px">{{ m.modelId }}</span>
-                </el-option>
-              </el-option-group>
-            </el-select>
-          </div>
           <el-tooltip content="配置模型平台" placement="top">
             <el-button size="small" circle @click="openPlatformConfig">
               <el-icon><Setting /></el-icon>
             </el-button>
           </el-tooltip>
           <el-tooltip content="新建会话" placement="top">
-            <el-button size="small" circle :disabled="store.streaming" @click="startNewChat">
+            <el-button size="small" circle :disabled="store.streaming" @click="startNewChat()">
               <el-icon><Plus /></el-icon>
             </el-button>
           </el-tooltip>

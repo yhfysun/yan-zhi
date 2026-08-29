@@ -95,10 +95,12 @@
       </el-tab-pane>
       <el-tab-pane label="关于" name="about">
         <div class="about-section">
-          <h3>AI Assistant</h3>
+          <h3>言智 (Yan-Zhi)</h3>
           <p>版本：v0.1.0 (MVP)</p>
-          <p>本地优先的跨端 AI 助手</p>
-          <p class="about-tip">参考 Cherry Studio + DE-GPT 设计，基于 OpenAI 标准协议</p>
+          <p>语言可控的跨端 AI 助手 · 桌面 / Web / 移动三端统一</p>
+          <p class="about-tip">开发者：yhfysun</p>
+          <p class="about-tip">源码：<a class="about-link" href="https://github.com/yhfysun/yan-zhi" target="_blank" rel="noopener">https://github.com/yhfysun/yan-zhi</a></p>
+          <p class="about-tip">开源协议：Apache-2.0</p>
         </div>
       </el-tab-pane>
     </el-tabs>
@@ -367,6 +369,8 @@ onMounted(async () => {
 .about-section h3 { margin-bottom: 12px; }
 .about-section p { margin: 6px 0; color: var(--color-text-secondary); }
 .about-tip { font-size: 12px; opacity: 0.7; }
+.about-link { color: var(--color-primary); text-decoration: none; }
+.about-link:hover { text-decoration: underline; }
 .connect-url-box { display: flex; align-items: center; gap: 8px; background: rgba(15,23,42,0.04); border-radius: 6px; padding: 6px 10px; }
 .connect-url-box code { font-family: monospace; font-size: 13px; color: var(--color-primary); }
 

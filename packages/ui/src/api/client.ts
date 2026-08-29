@@ -33,9 +33,7 @@ export async function apiFetch<T = any>(
   const res = await fetch(BASE_URL + path, { ...options, headers });
   const json = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
   if (!res.ok) {
-    if (res.status === 401) {
-      setToken(null);
-    }
+    // 本地模式已屏蔽鉴权，401 不再清 token 跳登录
     return { error: (json as any).error || `请求失败 (${res.status})` };
   }
   if (json.error) return { error: json.error };

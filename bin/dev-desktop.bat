@@ -1,64 +1,34 @@
 @echo off
+chcp 65001 >nul
 setlocal enabledelayedexpansion
-title Yan-Zhi Desktop
+title Yan-Zhi Desktop Dev
 
-echo ============================================================
-echo   Yan-Zhi Desktop Dev Launcher (Electron)
-echo   %date% %time%
-echo ============================================================
-echo.
-
-:: Step 0: ensure we can see what's happening
-echo [0] Initializing...
-
-:: Clear safe-delete shim
 set NODE_OPTIONS=
-
-:: Electron 国内镜像（避免 postinstall 下载卡住）
 set ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/
 set ELECTRON_CUSTOM_DIR={{ version }}
 
-:: Navigate to project root
 cd /d "%~dp0.."
+
+set "NODE_BIN=node"
+where node >nul 2>&1
 if errorlevel 1 (
-    echo [ERROR] Cannot cd to project root: "%~dp0.."
-    pause
-    exit /b 1
+    if exist "%USERPROFILE%\.workbuddy\binaries\node\versions\22.22.2\node.exe" (
+        set "NODE_BIN=%USERPROFILE%\.workbuddy\binaries\node\versions\22.22.2\node.exe"
+    ) else (
+        echo [ERROR] 未找到 node
+        pause
+        exit /b 1
+    )
 )
-echo     Project root: %cd%
 
-:: Check pnpm
-echo     Checking pnpm...
-where pnpm >nul 2>&1
-if %errorlevel%==0 (
-    set "PNPM=pnpm"
-    echo     [OK] pnpm in PATH
-) else if exist "%USERPROFILE%\.workbuddy\binaries\node\workspace\pnpm.cmd" (
-    set "PNPM=%USERPROFILE%\.workbuddy\binaries\node\workspace\pnpm.cmd"
-    echo     [OK] pnpm found at workspace
-) else (
-    echo [ERROR] pnpm not found
-    pause
-    exit /b 1
-)
-echo     PNPM = %PNPM%
+echo ============================================================
+echo   Yan-Zhi Desktop (Electron) - %date% %time%
+echo   参数直通 dev.mjs：--clean 强制清缓存 / --vite-only 只起前端
+echo ============================================================
 echo.
 
-echo [1/3] pnpm install...
-call %PNPM% install
-if errorlevel 1 echo [WARN] pnpm install exit code non-zero (may be harmless^)
-echo.
+"%NODE_BIN%" "%CD%\bin\dev.mjs" desktop %*
 
-echo [2/3] Backend server will be started by Electron main process (ABI compatible)
 echo.
-
-echo [3/3] Starting Electron desktop (electron:dev)...
-call %PNPM% --filter @yan-zhi/desktop electron:dev
-if errorlevel 1 (
-    echo.
-    echo [ERROR] electron:dev failed
-)
-echo.
-echo === Done ===
+echo === 已退出 ===
 pause
-exit /b 0

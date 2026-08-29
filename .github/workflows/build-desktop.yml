@@ -8,8 +8,10 @@ on:
 jobs:
   build-macos:
     runs-on: macos-latest
-    env:
-      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+    # 注意：这里不能设 CSC_IDENTITY_AUTO_DISCOVERY=false。
+    # arm64 macOS 要求应用内的每个原生二进制（含 node-llama-cpp 的 dylib）都有签名，
+    # 禁用自动发现会让 electron-builder 完全跳过签名，装出的 dmg 一启动就崩。
+    # 不设该变量时，无证书环境会回退为 ad-hoc 签名，可正常分发（未公证，需右键打开）。
     steps:
       - uses: actions/checkout@v4
 
@@ -19,14 +21,12 @@ jobs:
       - name: 安装 Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: 'pnpm'
 
       - name: 安装依赖
         run: pnpm install
 
-      - name: 下载内置模型（qwen + bge，模型不进 git，构建前需补齐）
-        run: pnpm --filter @yan-zhi/server download:models
 
       - name: 构建 macOS 完整版
         run: pnpm --filter @yan-zhi/desktop electron:build:full
@@ -34,17 +34,25 @@ jobs:
       - name: 构建 macOS 轻量版
         run: pnpm --filter @yan-zhi/desktop electron:build:lite
 
+      - name: 列出构建产物（诊断用）
+        run: |
+          echo "=== release-full ==="; ls -la apps/desktop/release-full 2>/dev/null || echo "(空)"
+          echo "=== release-lite ==="; ls -la apps/desktop/release-lite 2>/dev/null || echo "(空)"
+
+      # 完整版输出目录是 release-full（见 electron-builder.full.yml 的 directories.output）
       - name: 上传 macOS DMG（完整版）
         uses: actions/upload-artifact@v4
         with:
           name: macOS-DMG-full
-          path: apps/desktop/release/*.dmg
+          path: apps/desktop/release-full/*.dmg
+          if-no-files-found: error
 
       - name: 上传 macOS DMG（轻量版）
         uses: actions/upload-artifact@v4
         with:
           name: macOS-DMG-lite
           path: apps/desktop/release-lite/*.dmg
+          if-no-files-found: error
 
   build-windows:
     runs-on: windows-latest
@@ -59,14 +67,12 @@ jobs:
       - name: 安装 Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: 'pnpm'
 
       - name: 安装依赖
         run: pnpm install
 
-      - name: 下载内置模型（qwen + bge，模型不进 git，构建前需补齐）
-        run: pnpm --filter @yan-zhi/server download:models
 
       - name: 构建 Windows 完整版
         run: pnpm --filter @yan-zhi/desktop electron:build:full
@@ -74,14 +80,25 @@ jobs:
       - name: 构建 Windows 轻量版
         run: pnpm --filter @yan-zhi/desktop electron:build:lite
 
+      - name: 列出构建产物（诊断用）
+        shell: pwsh
+        run: |
+          Write-Output "=== release-full ==="
+          Get-ChildItem -Path apps/desktop/release-full -ErrorAction SilentlyContinue | Select-Object Name,Length | Format-Table -AutoSize
+          Write-Output "=== release-lite ==="
+          Get-ChildItem -Path apps/desktop/release-lite -ErrorAction SilentlyContinue | Select-Object Name,Length | Format-Table -AutoSize
+
+      # 完整版输出目录是 release-full（见 electron-builder.full.yml 的 directories.output）
       - name: 上传 NSIS 安装包（完整版）
         uses: actions/upload-artifact@v4
         with:
           name: Windows-Installer-full
-          path: apps/desktop/release/*.exe
+          path: apps/desktop/release-full/*.exe
+          if-no-files-found: error
 
       - name: 上传 NSIS 安装包（轻量版）
         uses: actions/upload-artifact@v4
         with:
           name: Windows-Installer-lite
           path: apps/desktop/release-lite/*.exe
+          if-no-files-found: error

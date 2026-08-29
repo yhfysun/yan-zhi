@@ -6,6 +6,8 @@ export interface ToolDefinition {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
+  /** 输出结构描述（JSON Schema），可选 */
+  outputSchema?: Record<string, unknown>;
 }
 
 /** 内置工具 = 定义 + 执行逻辑 */

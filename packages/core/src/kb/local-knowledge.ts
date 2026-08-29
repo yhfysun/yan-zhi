@@ -1,10 +1,11 @@
 // 本地知识库服务 —— 供不登录（guest）模式使用：数据落在本地 adapter DB。
-// 检索支持：内置 embedding（走同机 3001 内置 server 的 /local-model/v1/embeddings）向量相似度，
+// 检索支持：Ollama embedding（走同机 11434 的 /api/embed）向量相似度，
 // 无 embedding 时降级为关键词 LIKE。与登录态的服务端 kb（apps/server/src/services/kb.ts）互补。
 import { getPlatformAdapter, type DatabaseAdapter } from '../platform/types';
 
-// 内置 embedding 端点：同机内置 server（guest/登录都一直在跑），固定地址。
-const EMBEDDING_URL = () => `http://127.0.0.1:3001/local-model/v1/embeddings`;
+// Ollama embedding 端点：同机 Ollama 服务，固定地址。
+const OLLAMA_BASE = () => process.env.OLLAMA_BASE || 'http://127.0.0.1:11434';
+const EMBEDDING_PREF = ['nomic-embed-text', 'bge-m3', 'bge-large-zh-v1.5', 'bge-small-zh-v1.5', 'mxbai-embed-large'];
 
 interface KbBaseRow { id: string; name: string; description: string | null; created_at: number; updated_at: number; }
 interface KbDocRow { id: string; base_id: string; name: string; content: string | null; source_path: string | null; metadata_json: string; created_at: number; updated_at: number; }
@@ -18,22 +19,41 @@ function now(): number { return Date.now(); }
 function toJson(v: unknown): string { try { return JSON.stringify(v ?? {}); } catch { return '{}'; } }
 function fromJson<T>(v: string | null, fallback: T): T { if (!v) return fallback; try { return JSON.parse(v) as T; } catch { return fallback; } }
 
-/** 内置 embedding 端点（同机 server，guest/登录都可用）。不可用返回 null。 */
+/** Ollama embedding（同机 Ollama，guest/登录都可用）。不可用返回 null。 */
 let embeddingDown = false;
+let cachedEmbedModel: string | null | undefined;
+async function pickEmbedModel(): Promise<string | null> {
+  if (cachedEmbedModel !== undefined) return cachedEmbedModel;
+  try {
+    const resp = await fetch(`${OLLAMA_BASE()}/api/tags`);
+    if (!resp.ok) { cachedEmbedModel = null; return null; }
+    const data = await resp.json() as { models?: Array<{ name: string }> };
+    const names = (data.models || []).map((m) => m.name.toLowerCase());
+    for (const pref of EMBEDDING_PREF) {
+      const hit = (data.models || []).find((m) => m.name.toLowerCase() === pref || m.name.toLowerCase().startsWith(pref));
+      if (hit) { cachedEmbedModel = hit.name; return hit.name; }
+    }
+    const embedLike = (data.models || []).find((m) => /embed|bge|e5/i.test(m.name));
+    cachedEmbedModel = embedLike ? embedLike.name : null;
+    return cachedEmbedModel;
+  } catch { cachedEmbedModel = null; return null; }
+}
 export async function localEmbed(text: string): Promise<number[] | null> {
   if (embeddingDown) return null;
   try {
-    const res = await fetch(EMBEDDING_URL(), {
+    const model = await pickEmbedModel();
+    if (!model) { embeddingDown = true; return null; }
+    const res = await fetch(`${OLLAMA_BASE()}/api/embed`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ input: String(text).slice(0, 8000) }),
+      body: JSON.stringify({ model, input: String(text).slice(0, 8000) }),
     });
     if (!res.ok) {
-      if (res.status === 503) embeddingDown = true; // 模型文件缺失，后续直接降级关键词
+      if (res.status === 404) embeddingDown = true;
       return null;
     }
-    const json = await res.json() as { data?: Array<{ embedding: number[] }> };
-    return json.data?.[0]?.embedding ?? null;
+    const json = await res.json() as { embeddings?: number[][]; embedding?: number[] };
+    return json.embeddings?.[0] ?? json.embedding ?? null;
   } catch {
     embeddingDown = true;
     return null;

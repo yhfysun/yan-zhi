@@ -1,37 +1,13 @@
-const { app, BrowserWindow, BrowserView, dialog, ipcMain, Menu, session } = require('electron');
+const { app, BrowserWindow, BrowserView, dialog, ipcMain, Menu, session, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const fsp = fs.promises;
 const { spawn, execFile } = require('child_process');
 const crypto = require('crypto');
-const util = require('util');
-const http = require('http');
-const https = require('https');
-const { Transform, pipeline } = require('stream');
 
 let mainWindow = null;
 let serverProcess = null;
 let browserView = null;
-let logsDir = '';
-let modelsDir = '';
-
-const localModelFile = 'qwen2.5-1.5b-instruct-q4_k_m.gguf';
-// 内置 embedding 模型文件（bge-small-zh q8_0，约26MB）：完整版/轻量版都打包进 server/models。
-const embeddingModelFile = 'bge-small-zh-v1.5-q8_0.gguf';
-// 本地小模型下载源：国内魔搭(ModelScope)直链优先，hf-mirror 兜底，逐个尝试直到成功。
-const localModelDownloadUrls = [
-  'https://modelscope.cn/models/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/master/qwen2.5-1.5b-instruct-q4_k_m.gguf',
-  'https://hf-mirror.com/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf',
-];
-
-let localModelDownloadPromise = null;
-let localModelDownloadState = {
-  state: 'idle',
-  receivedBytes: 0,
-  totalBytes: 0,
-  progress: 0,
-  message: '',
-};
 
 // ============================================================
 // 数据库（better-sqlite3，主进程单例）
@@ -55,87 +31,7 @@ function getDb() {
   } catch (err) {
     console.warn('[db] sqlite-vec 扩展加载失败，向量检索功能不可用:', err && err.message ? err.message : err);
   }
-
-  // 桌面端旧库可能先于 renderer 的 initSchema 启动，这里在主进程侧兜底迁移和修复内置模型。
-  try {
-    ensureDesktopSchema(db);
-    normalizeBuiltinLocalModel(db);
-  } catch (err) {
-    console.warn('[db] 桌面端 schema/内置模型兜底迁移失败:', err && err.message ? err.message : err);
-  }
   return db;
-}
-
-function columnExists(database, table, column) {
-  const rows = database.prepare(`PRAGMA table_info(${table})`).all();
-  return rows.some((row) => row.name === column);
-}
-
-function ensureColumn(database, table, column, definition) {
-  if (columnExists(database, table, column)) return;
-  database.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
-}
-
-function ensureDesktopSchema(database) {
-  ensureColumn(database, 'platform', 'is_builtin', 'INTEGER NOT NULL DEFAULT 0');
-  ensureColumn(database, 'model', 'is_builtin', 'INTEGER NOT NULL DEFAULT 0');
-}
-
-function normalizeBuiltinLocalModel(database) {
-  const platformId = 'local-model-guest';
-  const llmId = 'local-model-guest-llm';
-  const baseUrl = 'http://127.0.0.1:3001/local-model';
-  const now = Date.now();
-
-  const platformExists = database.prepare('SELECT id FROM platform WHERE id = ?').get(platformId);
-  if (platformExists) {
-    database.prepare(
-      `UPDATE platform
-       SET name = '内置小模型',
-           protocol = 'openai',
-           api_url = ?,
-           api_key_enc = '',
-           headers_json = '{}',
-           status = 1,
-           is_builtin = 1
-       WHERE id = ?`,
-    ).run(baseUrl, platformId);
-  } else {
-    database.prepare(
-      `INSERT INTO platform
-        (id, name, protocol, api_url, api_key_enc, headers_json, status, is_builtin, created_at)
-       VALUES (?, '内置小模型', 'openai', ?, '', '{}', 1, 1, ?)`,
-    ).run(platformId, baseUrl, now);
-  }
-
-  const llmExists = database.prepare('SELECT id FROM model WHERE id = ?').get(llmId);
-  if (llmExists) {
-    database.prepare(
-      `UPDATE model
-       SET platform_id = ?,
-           model_id = 'qwen2.5-1.5b-instruct',
-           alias = '本地小模型（Qwen2.5 1.5B）',
-           type = 'llm',
-           context_window = 8192,
-           enabled = 1,
-           is_default = 1,
-           is_builtin = 1,
-           capabilities_json = '["function_call"]',
-           pricing_json = '{}'
-       WHERE id = ?`,
-    ).run(platformId, llmId);
-  } else {
-    database.prepare(
-      `INSERT INTO model
-        (id, platform_id, model_id, alias, type, context_window, enabled, is_default, is_builtin, capabilities_json, pricing_json)
-       VALUES (?, ?, 'qwen2.5-1.5b-instruct', '本地小模型（Qwen2.5 1.5B）', 'llm', 8192, 1, 1, 1, '["function_call"]', '{}')`,
-    ).run(llmId, platformId);
-  }
-
-  // 本地小模型只提供聊天 LLM；旧版本残留的 embedding 项必须清理。
-  database.prepare(
-    "DELETE FROM model WHERE platform_id = ? AND (type = 'embedding' OR id = 'local-model-guest-embedding')",
-  ).run(platformId);
 }
 
 // ============================================================
@@ -169,212 +65,27 @@ async function writeKeyring(data) {
 const mcpChildren = new Map();
 let mcpChildSeq = 0;
 
-function formatLogArgs(args) {
-  return args.map((item) => (typeof item === 'string' ? item : util.inspect(item))).join(' ');
-}
-
-function setupMainLogging(dir) {
-  if (!dir) return;
-  try {
-    const logPath = path.join(dir, 'main.log');
-    const write = (level, args) => {
-      try {
-        fs.appendFileSync(logPath, `[${new Date().toISOString()}] [${level}] ${formatLogArgs(args)}\n`, 'utf-8');
-      } catch { /* 日志写入失败不影响主流程 */ }
-    };
-    const original = {
-      log: console.log.bind(console),
-      warn: console.warn.bind(console),
-      error: console.error.bind(console),
-    };
-    console.log = (...args) => { write('info', args); original.log(...args); };
-    console.warn = (...args) => { write('warn', args); original.warn(...args); };
-    console.error = (...args) => { write('error', args); original.error(...args); };
-  } catch (err) {
-    // 日志系统初始化失败时仍继续启动
-  }
-}
-
-function ensureRuntimeDirs() {
-  const userData = app.getPath('userData');
-  logsDir = path.join(userData, 'logs');
-  modelsDir = path.join(userData, 'models');
-  try { fs.mkdirSync(logsDir, { recursive: true }); } catch { /* ignore */ }
-  try { fs.mkdirSync(modelsDir, { recursive: true }); } catch { /* ignore */ }
-}
-
-function resolveLocalModelFile(sourceModelPath) {
-  if (sourceModelPath && fs.existsSync(sourceModelPath) && fs.statSync(sourceModelPath).size > 0) {
-    return sourceModelPath;
-  }
-
-  // 用户模型目录既是外部模型入口，也是轻量包首次运行后的下载目标。
-  const modelRoot = modelsDir || path.join(app.getPath('userData'), 'models');
-  const userModelPath = path.join(modelRoot, localModelFile);
-  if (fs.existsSync(userModelPath) && fs.statSync(userModelPath).size > 0) {
-    return userModelPath;
-  }
-
-  // 轻量包中内置 resources 可能没有模型文件，此时仍返回用户目录，让下载器写完后
-  // 后端能直接按这个路径加载。
-  return userModelPath;
-}
-
-function setLocalModelDownloadState(patch) {
-  localModelDownloadState = { ...localModelDownloadState, ...patch };
-  if (localModelDownloadState.progress !== undefined) {
-    localModelDownloadState.progress = Math.max(0, Math.min(1, localModelDownloadState.progress));
-  }
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send('local-model:state', localModelDownloadState);
-  }
-}
-
-function existingLocalModelPath() {
-  const sourceModelPath = app.isPackaged
-    ? path.join(process.resourcesPath, 'server', 'models', localModelFile)
-    : path.join(__dirname, '..', 'server', 'models', localModelFile);
-  return resolveLocalModelFile(sourceModelPath);
-}
-
-function downloadModelFile(urls, dest, onProgress) {
-  return new Promise((resolve, reject) => {
-    const trySource = (index) => {
-      if (index >= urls.length) {
-        reject(new Error('所有模型下载源均失败'));
-        return;
-      }
-      const url = urls[index];
-      const tempDest = `${dest}.part`;
-      let redirects = 0;
-      const request = (currentUrl) => {
-        const lib = currentUrl.startsWith('https:') ? https : http;
-        const req = lib.get(currentUrl, { headers: { 'User-Agent': 'yan-zhi-desktop' } }, (res) => {
-          if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location) {
-            res.resume();
-            redirects += 1;
-            if (redirects > 10) {
-              fail(`模型下载重定向次数过多: ${currentUrl}`);
-              return;
-            }
-            request(new URL(res.headers.location, currentUrl).toString());
-            return;
-          }
-          if (res.statusCode < 200 || res.statusCode >= 300) {
-            res.resume();
-            fail(`HTTP ${res.statusCode} (${currentUrl})`);
-            return;
-          }
-
-          const totalBytes = Number(res.headers['content-length'] || 0);
-          let receivedBytes = 0;
-          let lastPercent = 0;
-          const tracker = new Transform({
-            transform(chunk, _encoding, callback) {
-              receivedBytes += chunk.length;
-              const progress = totalBytes > 0 ? receivedBytes / totalBytes : 0;
-              onProgress?.({ receivedBytes, totalBytes, progress });
-              if (totalBytes > 0) {
-                const percent = Math.floor(progress * 100);
-                if (percent !== lastPercent) {
-                  lastPercent = percent;
-                  console.log(`[local-model] 下载进度: ${percent}%`);
-                }
-              }
-              callback(null, chunk);
-            },
-          });
-          const out = fs.createWriteStream(tempDest);
-          pipeline(res, tracker, out, (err) => {
-            if (err) {
-              try { fs.rmSync(tempDest, { force: true }); } catch { /* ignore */ }
-              fail(err && err.message ? err.message : String(err));
-              return;
-            }
-            try {
-              fs.renameSync(tempDest, dest);
-              resolve();
-            } catch (err) {
-              fail(err && err.message ? err.message : String(err));
-            }
-          });
-        });
-        req.setTimeout(30000, () => req.destroy(new Error('模型下载连接超时')));
-        req.on('error', (err) => fail(err && err.message ? err.message : String(err)));
-      };
-      const fail = (reason) => {
-        // 当前源失败：打印日志并尝试下一个源。
-        console.error(`[local-model] 下载源失败(${index + 1}/${urls.length}): ${reason}`);
-        try { fs.rmSync(tempDest, { force: true }); } catch { /* ignore */ }
-        trySource(index + 1);
-      };
-      request(url);
-    };
-    trySource(0);
-  });
-}
-
-async function startLocalModelDownload() {
-  if (!app.isPackaged) return null;
-  const dest = path.join(modelsDir || path.join(app.getPath('userData'), 'models'), localModelFile);
-  const current = existingLocalModelPath();
-  if (current && fs.existsSync(current) && fs.statSync(current).size > 0) {
-    setLocalModelDownloadState({ state: 'done', progress: 1, message: '本地模型已就绪' });
-    return null;
-  }
-  if (localModelDownloadPromise) return localModelDownloadPromise;
-
-  setLocalModelDownloadState({ state: 'downloading', receivedBytes: 0, totalBytes: 0, progress: 0, message: '正在下载本地小模型' });
-  localModelDownloadPromise = downloadModelFile(localModelDownloadUrls, dest, ({ receivedBytes, totalBytes, progress }) => {
-    setLocalModelDownloadState({
-      state: 'downloading',
-      receivedBytes,
-      totalBytes,
-      progress,
-      message: totalBytes > 0
-        ? `正在下载本地小模型 ${Math.round(progress * 100)}%`
-        : `正在下载本地小模型 ${Math.round(receivedBytes / 1024 / 1024)} MB`,
-    });
-  })
-    .then(() => {
-      setLocalModelDownloadState({ state: 'done', progress: 1, message: '本地小模型已下载完成' });
-      localModelDownloadPromise = null;
-      return null;
-    })
-    .catch((error) => {
-      setLocalModelDownloadState({ state: 'error', message: error && error.message ? error.message : String(error) });
-      localModelDownloadPromise = null;
-      return null;
-    });
-  return localModelDownloadPromise;
-}
-
 /** 启动后端服务器（apps/server）
  *  重要：better-sqlite3 是原生模块，编译为 Electron 的 ABI。
  *  后端必须用 Electron 的 Node.js（ELECTRON_RUN_AS_NODE=1）启动，否则 ABI 不兼容。
  */
 function startServer() {
   const serverDir = path.join(__dirname, '..', 'server');
-  const bundledModelPath = app.isPackaged
-    ? path.join(process.resourcesPath, 'server', 'models', localModelFile)
-    : path.join(serverDir, 'models', localModelFile);
-  const localModelPath = app.isPackaged
-    ? resolveLocalModelFile(bundledModelPath)
-    : bundledModelPath;
-  // 内置 embedding 模型（bge，约26MB）：完整版/轻量版都打包进 server/models，这里直接指向打包路径。
-  const bundledEmbeddingModel = app.isPackaged
-    ? path.join(process.resourcesPath, 'server', 'models', embeddingModelFile)
-    : path.join(serverDir, 'models', embeddingModelFile);
-  const backendEnv = {
-    ...process.env,
-    ELECTRON_RUN_AS_NODE: '1',
-    PORT: '3001',
-    LOCAL_MODEL_PATH: localModelPath,
-    LOCAL_EMBEDDING_MODEL_PATH: bundledEmbeddingModel,
-    MODELS_DIR: modelsDir || path.join(app.getPath('userData'), 'models'),
-    LOGS_DIR: logsDir || path.join(app.getPath('userData'), 'logs'),
-    DATA_DIR: app.getPath('userData'),
-  };
+  // 模型目录统一放在 Electron userData/models，商城下载/引擎加载都从这里找
+  const modelsDir = path.join(app.getPath('userData'), 'models');
+  fs.mkdirSync(modelsDir, { recursive: true });
+  // 开发模式：把源码目录已有的模型文件同步到 userData/models（一次性，不覆盖）
+  if (!app.isPackaged) {
+    const srcModelsDir = path.join(serverDir, 'models');
+    try {
+      for (const f of fs.readdirSync(srcModelsDir)) {
+        if (f.toLowerCase().endsWith('.gguf')) {
+          const dest = path.join(modelsDir, f);
+          if (!fs.existsSync(dest)) fs.copyFileSync(path.join(srcModelsDir, f), dest);
+        }
+      }
+    } catch {}
+  }
 
   if (!app.isPackaged) {
     // 开发模式：用 Electron 的 Node.js + tsx 运行 TypeScript 源码
@@ -384,7 +95,7 @@ function startServer() {
       serverProcess = spawn(process.execPath, [tsxPath, 'src/index.ts'], {
         cwd: serverDir,
         stdio: 'inherit',
-        env: backendEnv,
+        env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', YANZHI_MODELS_DIR: modelsDir },
       });
     } else {
       // 回退：npx tsx（可能 ABI 不兼容，但至少能启动）
@@ -393,26 +104,18 @@ function startServer() {
         cwd: serverDir,
         stdio: 'inherit',
         shell: true,
+        env: { ...process.env, YANZHI_MODELS_DIR: modelsDir },
       });
     }
     serverProcess.on('error', (err) => console.error('后端启动失败:', err));
   } else {
-    // 生产模式：用 Electron 作为 Node.js（ELECTRON_RUN_AS_NODE=1）运行后端编译产物，
-    // 避免运行时再依赖 tsx / 源码，降低 packaged 依赖缺失导致的 Failed to fetch。
+    // 生产模式：用 Electron 作为 Node.js（ELECTRON_RUN_AS_NODE=1）运行后端编译产物
     const serverPath = path.join(process.resourcesPath, 'server', 'dist', 'apps', 'server', 'src', 'index.js');
-    const resourceServerDir = path.join(process.resourcesPath, 'server');
-    const outFd = fs.openSync(path.join(logsDir, 'server.log'), 'a');
-    const errFd = fs.openSync(path.join(logsDir, 'server-error.log'), 'a');
     serverProcess = spawn(process.execPath, [serverPath], {
-      cwd: resourceServerDir,
-      stdio: ['ignore', outFd, errFd],
-      env: backendEnv,
+      stdio: 'inherit',
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', YANZHI_MODELS_DIR: modelsDir },
     });
     serverProcess.on('error', (err) => console.error('后端启动失败:', err));
-    serverProcess.on('exit', (code, signal) => {
-      console.error(`后端进程退出: code=${code} signal=${signal}`);
-      serverProcess = null;
-    });
     console.log('后端服务器启动中:', serverPath);
   }
 }
@@ -435,7 +138,8 @@ function createWindow() {
     minHeight: 600,
     frame: false,           // 无边框窗口（自定义标题栏）
     titleBarStyle: 'hidden',
-    transparent: true,      // 透明背景：让 Windows 11 原生圆角可见
+    // 不开 transparent：Windows 11 上 frame:false + 非 transparent 时 DWM 仍提供原生圆角+阴影，
+    // 且 maximize/unmaximize 与边缘 resize 走原生 NCA，避免透明窗口下"全屏后缩不回/拖边缩不了"的 bug
     webPreferences: {
       // 不再使用 <webview> 标签，改用 BrowserView
       preload: path.join(__dirname, 'preload.cjs'),
@@ -443,6 +147,20 @@ function createWindow() {
       contextIsolation: true,
       spellcheck: false,
     },
+  });
+
+  // 外链（http/https）用系统浏览器打开，避免在应用窗口内导航离开
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:\/\//i.test(url)) {
+      shell.openExternal(url);
+    }
+    return { action: 'deny' };
+  });
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    if (/^https?:\/\//i.test(url) && url !== mainWindow.webContents.getURL()) {
+      event.preventDefault();
+      shell.openExternal(url);
+    }
   });
 
   // 拦截主窗口键盘事件：当 BrowserView 可见时，Ctrl+R/F5 刷新 BrowserView 而非主窗口
@@ -506,8 +224,6 @@ function ensureBrowserView() {
     webPreferences: {
       // 独立 partition：与主窗口 session 隔离，主窗口的 CSP 注入不影响 BrowserView 加载的第三方网页
       partition: 'browser-view',
-      // document-start 阶段先注入滚动条样式，避免第三方页面先闪一下原生滚动条
-      preload: path.join(__dirname, 'browser-preload.cjs'),
       nodeIntegration: false,
       contextIsolation: true,
       spellcheck: false,
@@ -524,35 +240,19 @@ function ensureBrowserView() {
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('browserView:navigated', url);
     }
-    // did-navigate 比 dom-ready 更早，先注入一次可进一步减少原生滚动条闪现；
-    // 若当前文档尚不能插入 CSS，下面的 dom-ready 会兜底重试。
-    injectBrowserViewScrollbar();
   });
   wc.on('did-navigate-in-page', (_e, url) => {
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('browserView:navigated', url);
     }
   });
-  // 每次真正导航到新文档时，把旧文档的 inserted CSS 状态清掉。
-  // dom-ready 阶段再注入，避免上一页的 key 被误当成新页已注入而跳过。
-  wc.on('did-start-navigation', () => {
-    scrollbarCssKey = null;
-    browserViewInjectedTheme = null;
-  });
-  // DOM 就绪时先注入滚动条样式，尽量缩小原生滚动条闪现窗口
-  wc.on('dom-ready', () => {
-    browserView?.webContents.send('browser-view:scrollbar-theme', browserViewTheme);
-    injectBrowserViewScrollbar();
-  });
   // 页面加载完成，通知前端
   wc.on('did-finish-load', () => {
+    // 导航到新页面会重置已注入的 CSS，需重新注入自定义滚动条
+    injectScrollbarCss();
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('browserView:loaded', wc.getURL());
     }
-    // 主进程侧直接注入滚动条主题样式（不依赖前端 IPC 往返，避免时序错位导致漏注入）
-    injectBrowserViewScrollbar();
-    // 恢复上一次的页面缩放级别（loadURL 可能重置 zoom）
-    try { browserView.webContents.setZoomFactor(browserViewZoom); } catch { /* ignore */ }
   });
 
   // 拦截 BrowserView 内的快捷键：Ctrl+R/F5 刷新、Alt+Left/Right 导航
@@ -576,6 +276,55 @@ function ensureBrowserView() {
   });
 
   return browserView;
+}
+
+// BrowserView 自定义滚动条（隐藏默认 + 圆角自定义），按网页自身背景亮度选色
+let browserViewScrollbarCssKey = null;
+
+function scrollbarCssForTheme(theme) {
+  const dark = theme === 'dark';
+  const thumb = dark ? 'rgba(255,255,255,0.4)' : 'rgba(0,0,0,0.35)';
+  const thumbHover = dark ? 'rgba(255,255,255,0.6)' : 'rgba(0,0,0,0.5)';
+  return `
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background-color: ${thumb};
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover { background-color: ${thumbHover}; background-clip: padding-box; }
+::-webkit-scrollbar-corner { background: transparent; }
+`;
+}
+
+// 检测网页根/body 背景亮度，判断是否深色页面（避免暗色应用主题下浅色网页滚动条看不清）
+async function detectPageDark(wc) {
+  try {
+    const dark = await wc.executeJavaScript(`(function(){
+      try {
+        function lum(c){ var m=c.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/); if(!m) return 255; return 0.299*(+m[1])+0.587*(+m[2])+0.114*(+m[3]); }
+        var s = lum(getComputedStyle(document.documentElement).backgroundColor);
+        var b = lum(getComputedStyle(document.body).backgroundColor);
+        return Math.min(s, b) < 128;
+      } catch(e){ return false; }
+    })()`);
+    return !!dark;
+  } catch { return false; }
+}
+
+async function injectScrollbarCss() {
+  if (!browserView) return;
+  const wc = browserView.webContents;
+  try {
+    if (browserViewScrollbarCssKey && typeof wc.removeInsertedCSS === 'function') {
+      try { await wc.removeInsertedCSS(browserViewScrollbarCssKey); } catch { /* ignore */ }
+      browserViewScrollbarCssKey = null;
+    }
+    const pageDark = await detectPageDark(wc);
+    browserViewScrollbarCssKey = await wc.insertCSS(scrollbarCssForTheme(pageDark ? 'dark' : 'light'));
+  } catch { /* ignore */ }
 }
 
 // ============================================================
@@ -653,77 +402,6 @@ ipcMain.handle('browserView:hide', () => {
   browserView.setBounds({ x: 0, y: 0, width: 0, height: 0 });
 });
 
-// 设置 BrowserView 网页缩放级别（对应前端 [−]/[+] 缩放控件）
-let browserViewZoom = 1;
-ipcMain.handle('browserView:setZoomFactor', (_e, factor) => {
-  browserViewZoom = factor;
-  if (!browserView) return;
-  try { browserView.webContents.setZoomFactor(factor); } catch { /* ignore */ }
-});
-
-// ── 滚动条主题样式：由主进程在页面加载完成时注入（BrowserView 是原生图层，无法用 HTML 叠加）──
-let browserViewTheme = 'light';
-let scrollbarCssKey = null;
-let browserViewInjectedTheme = null;
-
-function buildScrollbarCss(theme) {
-  const dark = theme === 'dark';
-  const thumb = dark ? 'rgba(255,255,255,0.2)' : 'rgba(15,23,42,0.18)';
-  const thumbHover = dark ? 'rgba(255,255,255,0.36)' : 'rgba(15,23,42,0.32)';
-  const thumbActive = dark ? 'rgba(255,255,255,0.5)' : 'rgba(15,23,42,0.45)';
-  return `
-    ::-webkit-scrollbar { width: 8px !important; height: 8px !important; }
-    ::-webkit-scrollbar-track { background: transparent !important; }
-    ::-webkit-scrollbar-thumb { background: ${thumb} !important; border: none !important; border-radius: 999px !important; }
-    ::-webkit-scrollbar-thumb:hover { background: ${thumbHover} !important; }
-    ::-webkit-scrollbar-thumb:active { background: ${thumbActive} !important; }
-    ::-webkit-scrollbar-corner { background: transparent !important; }
-  `;
-}
-
-let scrollbarInjectQueue = Promise.resolve();
-
-function injectBrowserViewScrollbar() {
-  scrollbarInjectQueue = scrollbarInjectQueue.then(async () => {
-    if (!browserView) { console.log('[browser] scrollbar inject skipped: no browserView yet'); return; }
-    // 主题未变化且当前文档已有注入，避免 did-finish-load 对同主题重复 remove/insert
-    // 造成瞬间退回原生滚动条；页面导航时 did-start-navigation 会清掉这两个状态。
-    if (scrollbarCssKey && browserViewInjectedTheme === browserViewTheme) {
-      return;
-    }
-    const css = buildScrollbarCss(browserViewTheme);
-    try {
-      if (scrollbarCssKey) {
-        try { await browserView.webContents.removeInsertedCSS(scrollbarCssKey); } catch (e) { console.log('[browser] removeInsertedCSS failed', e); }
-        scrollbarCssKey = null;
-      }
-      scrollbarCssKey = await browserView.webContents.insertCSS(css);
-      browserViewInjectedTheme = browserViewTheme;
-      console.log('[browser] scrollbar CSS injected, theme =', browserViewTheme);
-    } catch (e) {
-      console.log('[browser] insertCSS failed', e);
-    }
-  });
-  return scrollbarInjectQueue;
-}
-
-// BrowserView preload 在 document-start 阶段同步读取当前主题，避免注入延迟。
-ipcMain.on('browserView:getTheme', (event) => {
-  event.returnValue = browserViewTheme;
-});
-
-// 前端在深浅主题切换时通知主进程，重新注入对应主题色的滚动条样式
-ipcMain.handle('browserView:setTheme', (_e, theme) => {
-  browserViewTheme = theme === 'dark' ? 'dark' : 'light';
-  browserView?.webContents.send('browser-view:scrollbar-theme', browserViewTheme);
-  injectBrowserViewScrollbar();
-});
-
-// 兼容旧调用（前端历史版本可能仍 invoke 此方法）：统一走主进程注入
-ipcMain.handle('browserView:insertScrollbarCSS', async () => {
-  injectBrowserViewScrollbar();
-});
-
 ipcMain.handle('browserView:canGoBack', () => {
   if (!browserView) return false;
   // 兼容新旧 API：新版用 navigationHistory，旧版用 canGoBack()
@@ -741,15 +419,38 @@ ipcMain.handle('browserView:canGoForward', () => {
   return browserView.webContents.canGoForward?.() || false;
 });
 
+// 页面缩放（BrowserView 原生 setZoomFactor）
+ipcMain.handle('browserView:setZoomFactor', (_e, factor) => {
+  if (!browserView) return;
+  try { browserView.webContents.setZoomFactor(Number(factor) || 1); } catch { /* ignore */ }
+});
+
+// 同步滚动条主题（应用主题切换时重新注入，颜色按网页背景自动选择）
+ipcMain.handle('browserView:setTheme', () => {
+  injectScrollbarCss();
+});
+
+// 直接注入任意滚动条 CSS（前端自定义用）
+ipcMain.handle('browserView:insertScrollbarCSS', async (_e, css) => {
+  if (!browserView) return;
+  try { await browserView.webContents.insertCSS(css); } catch { /* ignore */ }
+});
+
 // ============================================================
 // IPC：数据库（better-sqlite3）
 // ============================================================
 ipcMain.handle('db:exec', (e, sql, params) => {
   const d = getDb();
-  if (params && params.length > 0) {
-    d.prepare(sql).run(...params);
-  } else {
-    d.exec(sql);
+  try {
+    if (params && params.length > 0) {
+      d.prepare(sql).run(...params);
+    } else {
+      d.exec(sql);
+    }
+  } catch (err) {
+    // 迁移类错误静默忽略：列已存在 / 旧表不存在
+    if (err && err.code === 'SQLITE_ERROR' && /duplicate column|no such table/i.test(err.message)) return;
+    throw err;
   }
 });
 
@@ -816,17 +517,6 @@ ipcMain.handle('fs:listDirEntries', async (e, p) => {
   }));
 });
 
-// 桌面端原生目录选择对话框（替代 electron-builder 前身 Tauri 的 plugin-dialog）
-ipcMain.handle('dialog:showOpenDir', async (e, options) => {
-  const win = BrowserWindow.fromWebContents(e.sender);
-  const result = await dialog.showOpenDialog(win, {
-    title: options?.title || '选择工作目录',
-    properties: ['openDirectory', 'createDirectory'],
-  });
-  if (result.canceled || result.filePaths.length === 0) return null;
-  return result.filePaths[0];
-});
-
 // ============================================================
 // IPC：Keyring（JSON 文件存储）
 // ============================================================
@@ -872,12 +562,16 @@ ipcMain.handle('shell:exec', (e, command, args, options) => {
   });
 });
 
-// ============================================================
-// IPC：轻量包本地模型下载状态与手动重试
-// ============================================================
-ipcMain.handle('local-model:getState', () => localModelDownloadState);
-ipcMain.handle('local-model:start', () => startLocalModelDownload());
-ipcMain.handle('local-model:getPath', () => existingLocalModelPath());
+ipcMain.handle('shell:openPath', (_e, p) => {
+  if (!p) return;
+  try { shell.openPath(p); } catch {}
+});
+
+// 用系统默认浏览器打开外链（http/https），不在应用窗口内导航离开
+ipcMain.handle('shell:openExternal', (_e, url) => {
+  if (!url || !/^https?:\/\//i.test(url)) return;
+  try { shell.openExternal(url); } catch {}
+});
 
 // ============================================================
 // IPC：MCP 子进程（child_process + JSON-RPC over stdin/stdout）
@@ -965,14 +659,11 @@ ipcMain.handle('mcp:kill', (e, childId) => {
   mcpChildren.delete(childId);
 });
 
+
 // ============================================================
 // 应用启动
 // ============================================================
 app.whenReady().then(() => {
-  ensureRuntimeDirs();
-  setupMainLogging(logsDir);
-  console.log('[app] 应用启动，日志目录:', logsDir, '模型目录:', modelsDir);
-
   Menu.setApplicationMenu(null);  // 移除默认菜单栏
 
   // ============================================================
@@ -988,13 +679,13 @@ app.whenReady().then(() => {
       "style-src 'self' 'unsafe-inline'; " +
       "img-src 'self' data: blob: https: http:; " +
       "font-src 'self' data:; " +
-      "connect-src 'self' ws://localhost:1420 wss://localhost:1420 http://127.0.0.1:3001 http://localhost:3001 https: http:;"
+      "connect-src 'self' ws://localhost:1420 wss://localhost:1420 http://localhost:3001 https: http:;"
     : "default-src 'self'; " +
       "script-src 'self'; " +
       "style-src 'self' 'unsafe-inline'; " +
       "img-src 'self' data: blob: https: http:; " +
       "font-src 'self' data:; " +
-      "connect-src 'self' http://127.0.0.1:3001 http://localhost:3001 https: http:;";
+      "connect-src 'self' http://localhost:3001 https: http:;";
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
     callback({
       responseHeaders: {
@@ -1010,8 +701,6 @@ app.whenReady().then(() => {
   } catch (err) {
     console.error('数据库初始化失败:', err);
   }
-  // 轻量包首次启动时后台下载本地模型；全量包或已下载时该调用会立即返回。
-  startLocalModelDownload();
   startServer();
   // 等待后端启动（给 1.5 秒）
   setTimeout(createWindow, 1500);

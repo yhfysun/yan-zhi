@@ -1,5 +1,6 @@
 // 路由定义
 import { createRouter, createWebHashHistory, type RouteRecordRaw } from 'vue-router';
+import { useLicenseStore } from '../stores/license';
 
 const routes: RouteRecordRaw[] = [
   { path: '/', redirect: '/chat' },
@@ -8,6 +9,12 @@ const routes: RouteRecordRaw[] = [
     name: 'home',
     component: () => import('../views/Home.vue'),
     meta: { title: '首页' },
+  },
+  {
+    path: '/license',
+    name: 'license',
+    component: () => import('../views/License.vue'),
+    meta: { title: '授权激活', guest: true },
   },
   {
     path: '/login',
@@ -129,9 +136,14 @@ const router = createRouter({
   routes,
 });
 
-router.beforeEach((to) => {
-  if (to.meta.requiresAuth && !localStorage.getItem('auth_token')) {
-    return { path: '/login', query: { redirect: to.fullPath } };
+router.beforeEach(async (to) => {
+  // 授权码门禁：未激活时拦截到授权页（license/login 页本身放行）
+  if (to.path !== '/license' && to.path !== '/login' && !to.meta.guest) {
+    const licenseStore = useLicenseStore();
+    await licenseStore.init();
+    if (!licenseStore.verified) {
+      return { path: '/license' };
+    }
   }
 });
 

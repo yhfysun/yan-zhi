@@ -164,6 +164,10 @@
               {{ t.description }}
             </div>
             <div v-else class="tool-card-desc empty-desc">暂无描述</div>
+            <div v-if="expandedSchema[t.name]" class="tool-schema-block">
+              <div class="schema-section"><span class="schema-label">入参</span><pre class="schema-pre">{{ fmtSchema(t.inputSchema) }}</pre></div>
+              <div class="schema-section"><span class="schema-label">出参</span><pre class="schema-pre">{{ fmtSchema(t.outputSchema) }}</pre></div>
+            </div>
           </div>
           <div class="tool-card-right">
             <el-switch
@@ -269,6 +273,7 @@ const previewTools = ref<McpTool[]>([]);
 
 const toolEnabledMap = ref<Record<string, boolean>>({});
 const expandedDescs = ref<Record<string, boolean>>({});
+const expandedSchema = ref<Record<string, boolean>>({});
 const toolMetaMap = ref<Record<string, { alias: string; remark: string }>>({});
 
 function initToolMap() {
@@ -487,11 +492,11 @@ async function getPromptContent(row: any) {
 }
 
 function showSchema(tool: any) {
-  ElMessageBox.alert(
-    `<pre style="max-height:400px;overflow:auto;background:#f5f5f5;padding:12px;border-radius:6px;font-size:12px">${JSON.stringify(tool.inputSchema, null, 2)}</pre>`,
-    `${tool.name} - 输入 Schema`,
-    { dangerouslyUseHTMLString: true, customClass: 'schema-dialog' } as ElMessageBoxOptions,
-  );
+  expandedSchema.value[tool.name] = !expandedSchema.value[tool.name];
+}
+function fmtSchema(schema: unknown): string {
+  if (!schema || (typeof schema === 'object' && Object.keys(schema as object).length === 0)) return '（无）';
+  try { return JSON.stringify(schema, null, 2); } catch { return String(schema); }
 }
 
 async function del(id: string) {
@@ -674,6 +679,26 @@ async function del(id: string) {
 .tool-card-desc.empty-desc:hover { background: none; }
 
 .tool-card-right { padding-top: 2px; flex-shrink: 0; }
+
+/* 入参/出参行内展开块 */
+.tool-schema-block {
+  margin: 6px 0 0 24px; padding: 8px 10px; border-radius: 8px;
+  background: rgba(15, 23, 42, 0.06); border: 1px solid var(--glass-border);
+  display: flex; flex-direction: column; gap: 8px;
+}
+.schema-section { display: flex; flex-direction: column; gap: 4px; }
+.schema-label {
+  font-size: 11px; font-weight: 600; color: var(--color-text);
+  text-transform: uppercase; letter-spacing: 0.5px; opacity: 0.85;
+}
+.schema-pre {
+  margin: 0; padding: 8px; border-radius: 6px;
+  background: rgba(0, 0, 0, 0.04); color: var(--color-text);
+  font-family: "JetBrains Mono", "Cascadia Code", monospace; font-size: 11px;
+  line-height: 1.5; max-height: 220px; overflow: auto; white-space: pre-wrap; word-break: break-word;
+}
+:root[data-theme="dark"] .tool-schema-block { background: rgba(255, 255, 255, 0.04); }
+:root[data-theme="dark"] .schema-pre { background: rgba(0, 0, 0, 0.35); }
 
 @media (max-width: 767px) {
   .page-top { flex-direction: column; gap: 10px; }

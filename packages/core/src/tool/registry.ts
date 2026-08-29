@@ -25,10 +25,11 @@ export class ToolRegistry {
   }
 
   list(): ToolDefinition[] {
-    return Array.from(this.tools.values()).map(({ name, description, inputSchema }) => ({
+    return Array.from(this.tools.values()).map(({ name, description, inputSchema, outputSchema }) => ({
       name,
       description,
       inputSchema,
+      outputSchema,
     }));
   }
 

@@ -75,3 +75,9 @@ apps/server/workspace/
 apps/server/models/
 *.gguf
 *.gguf.part
+
+# llama-server 预编译二进制（构建时从 llama.cpp release 下载，不入库）
+apps/server/bin/
+
+# 授权码私钥（仅本地生成授权码用，绝不入库；公钥 apps/server/src/license-public-key.pem 可入库）
+scripts/license-private-key.pem

@@ -1,11 +1,11 @@
 <template>
-  <el-dialog v-model="snapshotDialog" title="请求快照" width="780px" class="snapshot-dialog">
+  <el-dialog v-model="snapshotDialog" title="查看提示词" width="780px" class="snapshot-dialog">
     <el-tabs v-model="snapshotActiveTab" type="card">
       <el-tab-pane v-for="s in currentSnapshots" :key="s.id" :label="s.label" :name="s.id">
         <pre class="snapshot-body">{{ s.content }}</pre>
       </el-tab-pane>
     </el-tabs>
-    <el-empty v-if="currentSnapshots.length === 0" description="没有找到请求快照" :image-size="80" />
+    <el-empty v-if="currentSnapshots.length === 0" description="没有找到提示词数据" :image-size="80" />
   </el-dialog>
 
   <AgentEditDialog v-model="showAgentEdit" :agent="editingAgent" @saved="onAgentSaved" @deleted="onAgentDeleted" />

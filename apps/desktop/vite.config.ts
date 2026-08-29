@@ -5,6 +5,9 @@ import { resolve } from 'path';
 export default defineConfig({
   plugins: [vue()],
   resolve: {
+    // 关键：packages/*/src 下有 tsc 编译残留 .js（8月24日旧产物）。Vite 默认 .js 优先于 .ts，
+    // 会导致前端加载旧 .js（缺新功能导出，如 localAddDoc → SyntaxError）。让 .ts 优先。
+    extensions: ['.ts', '.mjs', '.js', '.vue', '.json'],
     alias: {
       '@yan-zhi/ui': resolve(__dirname, '../../packages/ui/src'),
       '@yan-zhi/core': resolve(__dirname, '../../packages/core/src'),

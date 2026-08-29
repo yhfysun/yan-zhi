@@ -5,7 +5,7 @@ import ElementPlus from 'element-plus';
 import 'element-plus/dist/index.css';
 import * as Icons from '@element-plus/icons-vue';
 import App from '@yan-zhi/ui/App.vue';
-import router from '@yan-zhi/ui';
+import { router } from '@yan-zhi/ui';
 import { setPlatformAdapter, initSchema } from '@yan-zhi/core';
 import { mobileAdapter } from './platform';
 

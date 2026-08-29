@@ -48,7 +48,7 @@
         <VueFlow
           v-model:nodes="vfNodes"
           v-model:edges="vfEdges"
-          :node-types="nodeTypes"
+          :node-types="(nodeTypes as any)"
           :default-viewport="{ x: 0, y: 0, zoom: 0.9 }"
           fit-view-on-init
           @nodes-change="markDirty"

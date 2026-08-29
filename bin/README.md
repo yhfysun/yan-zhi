@@ -39,7 +39,7 @@ bash bin/build.sh web
 运行后自动扫描并给出 PASS / WARN / MISS 结果：
 
 - **基础**：Node.js (>=20)、pnpm (>=9)、Git、Python 3
-- **桌面端**：Rust 工具链、Windows 目标、MinGW-w64、Visual Studio
+- **桌面端**：Python 3、Visual Studio Build Tools 2022（用于编译 better-sqlite3 / sqlite-vec 原生模块）
 - **移动端**：JDK、Android SDK、Xcode / CocoaPods (macOS)
 - **项目**：node_modules 状态
 
@@ -73,7 +73,7 @@ bin\check-env.bat --mobile         REM 基础 + 移动端
 
 ```bash
 bash bin/setup-env.sh              # 所有平台
-bash bin/setup-env.sh --desktop    # 仅桌面端 (Tauri/Rust)
+  bash bin/setup-env.sh --desktop    # 仅桌面端 (Electron)
 bash bin/setup-env.sh --mobile     # 仅移动端 (Capacitor)
 ```
 
@@ -92,42 +92,48 @@ bin\setup-env.bat --mobile         REM 仅移动端
 **.sh 参数：**
 
 ```bash
-bash bin/build.sh desktop         # 桌面端 (Tauri -> .exe/.msi)
+bash bin/build.sh desktop         # 桌面端完整版 (Electron -> .exe/.dmg)
+bash bin/build.sh desktop:full    # 同上，显式指定完整版
+bash bin/build.sh desktop:lite    # 桌面端轻量版 (不内置 qwen 推理模型，包更小)
 bash bin/build.sh mobile:android  # Android APK
 bash bin/build.sh mobile:ios      # iOS IPA (需 macOS)
 bash bin/build.sh web             # Web 端 -> apps/web/dist/
 bash bin/build.sh server          # 服务端 -> apps/server/dist/
-bash bin/build.sh all             # server -> web -> desktop 依次
+bash bin/build.sh all             # server -> web -> desktop:full 依次
 ```
 
 **.bat 参数：**
 
 ```cmd
-bin\build.bat desktop             REM 桌面端
+bin\build.bat desktop             REM 桌面端完整版
+bin\build.bat desktop:full        REM 同上，显式指定完整版
+bin\build.bat desktop:lite        REM 桌面端轻量版
 bin\build.bat mobile:android      REM Android APK
 bin\build.bat web                 REM Web 端
 bin\build.bat server              REM 服务端
-bin\build.bat all                 REM 全量打包
+bin\build.bat all                 REM 全量打包 (server -> web -> desktop:full)
 ```
 
 ## 项目各端构建产物位置
 
-| 端            | 产物路径 |
-|---------------|---------|
-| 桌面端 (Tauri) | `apps/desktop/src-tauri/target/release/bundle/` |
-| Web 端         | `apps/web/dist/` |
-| 服务端         | `apps/server/dist/` |
-| Android       | `apps/mobile/android/app/build/outputs/apk/` |
-| iOS           | Xcode Archive（通过 Xcode 打开 `apps/mobile/ios/App` 导出） |
+| 端                  | 产物路径 |
+|---------------------|---------|
+| 桌面端 (Electron 完整版) | `apps/desktop/release-full/` |
+| 桌面端 (Electron 轻量版) | `apps/desktop/release-lite/` |
+| Web 端              | `apps/web/dist/` |
+| 服务端              | `apps/server/dist/` |
+| Android            | `apps/mobile/android/app/build/outputs/apk/` |
+| iOS                | Xcode Archive（通过 Xcode 打开 `apps/mobile/ios/App` 导出） |
 
 ## 各端打包前提
 
-### 桌面端 (Tauri)
+### 桌面端 (Electron)
 
-- Rust 工具链（MSVC 或 GNU），`rust-version = "1.70"`
-- Windows 目标：`x86_64-pc-windows-msvc` 或 `x86_64-pc-windows-gnu`
-- GNU 工具链 -> MinGW-w64；MSVC 工具链 -> Visual Studio Build Tools 2022
-- 安装包会引导用户安装 WebView2 Runtime（若缺失）
+- Node.js 20+、pnpm 9+
+- Python 3 + Visual Studio Build Tools 2022（用于编译 better-sqlite3 / sqlite-vec 原生模块；`postinstall` 会按 Electron ABI 自动 rebuild）
+- 打包前脚本会自动下载内置模型 (qwen + bge) 与 llama-server 二进制（不进 git，构建前必须补齐）
+- Electron 自带运行时，无需用户额外安装 WebView2
+- 完整版内置全部模型 + llama-server；轻量版仅内置 bge embedding 模型 + llama-server，包更小
 
 ### 移动端 (Capacitor)
 
@@ -180,10 +186,10 @@ bash bin/build.sh desktop
 
 ## 项目环境依赖速查
 
-| 目标 | Node | pnpm | Rust | Java/GCC | 其他 |
-|------|------|------|------|----------|------|
-| Web 端 | >=20 | >=9 | -- | -- | -- |
-| 服务端 | >=20 | >=9 | -- | Python 3 (node-gyp) | -- |
-| 桌面端 | >=20 | >=9 | >=1.70 | MinGW-w64 或 VS Build Tools | WebView2 |
-| Android | >=20 | >=9 | -- | JDK 17 + Android SDK | Capacitor CLI |
-| iOS | >=20 | >=9 | -- | Xcode 15+ | CocoaPods |
+| 目标 | Node | pnpm | Java/GCC | 其他 |
+|------|------|------|----------|------|
+| Web 端 | >=20 | >=9 | -- | -- |
+| 服务端 | >=20 | >=9 | Python 3 (node-gyp) | -- |
+| 桌面端 | >=20 | >=9 | VS Build Tools 2022 | Python 3 (原生模块编译) |
+| Android | >=20 | >=9 | JDK 17 + Android SDK | Capacitor CLI |
+| iOS | >=20 | >=9 | Xcode 15+ | CocoaPods |

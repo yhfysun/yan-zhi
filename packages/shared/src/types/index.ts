@@ -59,6 +59,8 @@ export interface Conversation {
   platformId?: string;
   modelId?: string;
   spaceId?: string;
+  /** 由定时任务发起时记录的任务 ID，用于在会话列表显示定时标记 */
+  scheduledTaskId?: string;
   mcpServerIds: string[];
   _mcpDisabledTools?: Record<string, string[]>;
   _mcpToolAliases?: Record<string, Record<string, string>>;
@@ -160,6 +162,8 @@ export interface McpTool {
   remark?: string;
   enabled?: boolean;
   inputSchema: unknown; // JSON Schema
+  /** 输出结构描述（JSON Schema），可选 */
+  outputSchema?: unknown;
 }
 
 /** 智能体类型 */

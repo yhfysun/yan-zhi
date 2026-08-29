@@ -1,10 +1,31 @@
 import { v4 as uuid } from 'uuid';
 import { readFile } from 'node:fs/promises';
-import { db } from '../db.js';
-import { generateLocalChat } from '../local-model/engine.js';
+import { db, hasSqliteVec } from '../db.js';
+import { embedText, ollamaChat } from './ollama-embed.js';
 
 function now() {
   return Date.now();
+}
+
+// ── 向量检索辅助：与 packages/core/src/kb/local-knowledge.ts 一致的 Float32 编码 + 余弦相似度 ──
+function vecToBytes(v: number[] | null): Uint8Array | null {
+  if (!v) return null;
+  return new Uint8Array(new Float32Array(v).buffer);
+}
+function bytesToVec(b: Uint8Array | Buffer | null): number[] | null {
+  if (!b) return null;
+  try {
+    const u = b instanceof Uint8Array ? b : new Uint8Array(b as any);
+    return Array.from(new Float32Array(u.buffer, u.byteOffset, u.byteLength / 4));
+  } catch {
+    return null;
+  }
+}
+function cosine(a: number[], b: number[]): number {
+  const n = Math.min(a.length, b.length);
+  let dot = 0, na = 0, nb = 0;
+  for (let i = 0; i < n; i++) { dot += a[i] * b[i]; na += a[i] * a[i]; nb += b[i] * b[i]; }
+  return dot / (Math.sqrt(na) * Math.sqrt(nb) || 1);
 }
 
 function rowToBase(r: any) {
@@ -186,14 +207,79 @@ export async function addKnowledgeDoc(
       (id, doc_id, base_id, user_id, chunk_index, content, metadata_json, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
   );
+  const chunkIds: string[] = [];
   for (const [index, text] of chunks.entries()) {
-    insertChunk.run(uuid(), id, base.id, base.userId, index, text, '{}', ts);
+    const cid = uuid();
+    chunkIds.push(cid);
+    insertChunk.run(cid, id, base.id, base.userId, index, text, '{}', ts);
   }
   db.prepare('UPDATE knowledge_base SET updated_at = ? WHERE id = ?').run(ts, base.id);
+
+  // fire-and-forget 生成 embedding（不阻塞返回；模型不可用则跳过，检索降级为 LIKE）
+  if (chunkIds.length > 0) {
+    embedChunksInBackground(chunkIds, chunks).catch(() => undefined);
+  }
+
   return {
     doc: rowToDoc(db.prepare('SELECT * FROM knowledge_doc WHERE id = ?').get(id)),
     chunkCount: chunks.length,
   };
+}
+
+/** 后台批量生成 chunk embedding 并写库。失败静默跳过（检索自动降级为 LIKE）。 */
+async function embedChunksInBackground(chunkIds: string[], texts: string[]) {
+  for (let i = 0; i < chunkIds.length; i++) {
+    try {
+      const vec = await embedText(texts[i]);
+      if (!vec) continue;
+      const bytes = vecToBytes(vec);
+      if (bytes) db.prepare('UPDATE knowledge_chunk SET embedding = ? WHERE id = ?').run(Buffer.from(bytes), chunkIds[i]);
+    } catch {
+      // 单条失败不影响其他 chunk
+    }
+  }
+}
+
+// ── 重新向量化：切换 embedding 模型后，用新模型重新生成所有 chunk 的向量 ──
+let revectorizeStatus: { running: boolean; total: number; done: number; error: string } = {
+  running: false, total: 0, done: 0, error: '',
+};
+
+export function getRevectorizeStatus() {
+  return { ...revectorizeStatus };
+}
+
+/** 重新向量化所有知识库 chunk（全局）。清除旧 embedding → 用当前 embedding 模型重新生成。 */
+export async function revectorizeAllKnowledgeBases(): Promise<{ total: number; done: number }> {
+  if (revectorizeStatus.running) {
+    throw new Error('重新向量化正在进行中，请等待完成');
+  }
+  const chunks = db.prepare('SELECT id, content FROM knowledge_chunk').all() as any[];
+  // 清除所有旧 embedding
+  db.prepare('UPDATE knowledge_chunk SET embedding = NULL').run();
+  revectorizeStatus = { running: true, total: chunks.length, done: 0, error: '' };
+  try {
+    for (const chunk of chunks) {
+      try {
+        const vec = await embedText(chunk.content || '');
+        if (vec) {
+          const bytes = vecToBytes(vec);
+          if (bytes) {
+            db.prepare('UPDATE knowledge_chunk SET embedding = ? WHERE id = ?').run(Buffer.from(bytes), chunk.id);
+          }
+        }
+      } catch {
+        // 单条失败跳过
+      }
+      revectorizeStatus.done++;
+    }
+    return { total: revectorizeStatus.total, done: revectorizeStatus.done };
+  } catch (error) {
+    revectorizeStatus.error = error instanceof Error ? error.message : String(error);
+    throw error;
+  } finally {
+    revectorizeStatus.running = false;
+  }
 }
 
 const BUILTIN_GUIDE_BASE_ID = 'builtin-app-guide';
@@ -325,6 +411,61 @@ export function searchAllKnowledgeBases(userId: string, query: string, topK = 5)
   const rows = db.prepare(sql).all(...args);
   return (rows as any[]).map((r) => ({
     ...rowToChunk(r), baseName: r.base_name, docName: r.doc_name || '', docId: r.doc_id, baseId: r.base_id,
+  }));
+}
+
+// ── 向量检索：生成 query embedding → 拉取有 embedding 的 chunk → JS 端余弦相似度排序 ──
+// 与 packages/core/src/kb/local-knowledge.ts 一致；embedding 缺失/模型不可用返回 null（调用方降级 LIKE）
+
+/** 单库向量检索。返回 null 表示无法向量检索（应降级）。 */
+export async function vectorSearchChunks(userId: string, baseId: string, query: string, topK = 5): Promise<any[] | null> {
+  if (!hasSqliteVec) return null;
+  if (!query) return null;
+  const base = getKnowledgeBase(userId, baseId); // 校验读权限
+  const qVec = await embedText(query);
+  if (!qVec) return null;
+  const limit = Math.min(Math.max(Number(topK) || 5, 1), 50);
+  const rows = db.prepare(
+    'SELECT * FROM knowledge_chunk WHERE base_id = ? AND embedding IS NOT NULL',
+  ).all(base.id) as any[];
+  const scored = rows
+    .map((r) => {
+      const v = bytesToVec(r.embedding);
+      if (!v) return null;
+      return { r, score: cosine(qVec, v) };
+    })
+    .filter((x): x is { r: any; score: number } => x !== null)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit);
+  return scored.map((x) => ({ ...rowToChunk(x.r), score: x.score }));
+}
+
+/** 跨所有可见库向量检索。返回 null 表示无法向量检索（应降级）。 */
+export async function vectorSearchAll(userId: string, query: string, topK = 5): Promise<any[] | null> {
+  if (!hasSqliteVec) return null;
+  if (!query) return null;
+  const qVec = await embedText(query);
+  if (!qVec) return null;
+  const limit = Math.min(Math.max(Number(topK) || 5, 1), 30);
+  const sql = `SELECT c.*, b.name AS base_name, b.user_id AS owner_id, d.name AS doc_name
+     FROM knowledge_chunk c
+     JOIN knowledge_base b ON b.id = c.base_id
+     LEFT JOIN knowledge_doc d ON d.id = c.doc_id
+     WHERE ${userId === 'guest' ? "b.visibility = 'public'" : "(b.user_id = ? OR b.visibility = 'public')"}
+     AND c.embedding IS NOT NULL`;
+  const args: unknown[] = userId === 'guest' ? [] : [userId];
+  const rows = db.prepare(sql).all(...args) as any[];
+  const scored = rows
+    .map((r) => {
+      const v = bytesToVec(r.embedding);
+      if (!v) return null;
+      return { r, score: cosine(qVec, v) };
+    })
+    .filter((x): x is { r: any; score: number } => x !== null)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit);
+  return scored.map((x) => ({
+    ...rowToChunk(x.r), score: x.score, baseName: x.r.base_name, docName: x.r.doc_name || '', docId: x.r.doc_id, baseId: x.r.base_id,
   }));
 }
 
@@ -589,13 +730,13 @@ export async function extractEntityGraph(userId: string, baseId: string): Promis
     for (const c of chunks) {
       const prompt =
         `现有实体图谱（JSON）：\n${JSON.stringify(fused)}\n\n---\n\n新的知识分片（chunkId=${c.id}）：\n${c.content}`;
-      const res = await generateLocalChat(
+      const res = await ollamaChat(
         [{ role: 'system', content: EXTRACT_SYSTEM }, { role: 'user', content: prompt }],
         { temperature: 0.2, maxTokens: 1200 },
       );
       if (!res?.content) {
-        // 本地模型不可用时中止增量，返回提示（已处理的正常落库）
-        return { ok: false, processed, error: '本地模型不可用，无法抽取实体图谱' };
+        // Ollama 不可用时中止增量，返回提示（已处理的正常落库）
+        return { ok: false, processed, error: 'Ollama 不可用或无 chat 模型，无法抽取实体图谱' };
       }
       const parsed = parseJsonOf(res.content);
       if (parsed && Array.isArray(parsed.entities)) {

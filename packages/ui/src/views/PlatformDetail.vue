@@ -2,7 +2,7 @@
   <div class="page">
     <header class="page-header">
       <div class="header-left">
-        <el-button text @click="back"><el-icon><ArrowLeft /></el-icon> 返回</el-button>
+        <el-button v-if="!embedded" text @click="back"><el-icon><ArrowLeft /></el-icon> 返回</el-button>
         <h2 class="page-title">{{ platform?.name || '平台详情' }}</h2>
         <span :class="['status-dot', platform?.status]"></span>
       </div>
@@ -164,10 +164,17 @@ import { Plus, ArrowLeft, Expand } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { usePlatformStore } from '../stores';
 
+const props = defineProps<{
+  /** 弹窗内嵌时直接传入平台 ID；不传则回退到路由参数（/models/:platformId） */
+  platformId?: string;
+  /** 内嵌模式（如设置弹窗中）：隐藏「返回」按钮 */
+  embedded?: boolean;
+}>();
+
 const route = useRoute();
 const router = useRouter();
 const store = usePlatformStore();
-const platformId = computed(() => route.params.platformId as string);
+const platformId = computed(() => props.platformId || (route.params.platformId as string));
 const platform = computed(() => store.platforms.find((p) => p.id === platformId.value));
 const models = computed(() => store.models.filter((m) => m.platformId === platformId.value));
 const supportsEmbeddings = computed(() => platform.value?.protocol !== 'anthropic');

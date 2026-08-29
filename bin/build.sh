@@ -2,7 +2,7 @@
 # ============================================================
 # 言智 (Yan-Zhi) 打包/构建脚本
 # 用法: bash bin/build.sh <target>
-#   target: desktop | mobile:android | mobile:ios | web | server | all
+#   target: desktop | desktop:full | desktop:lite | mobile:android | mobile:ios | web | server | all
 # ============================================================
 set -euo pipefail
 
@@ -12,29 +12,40 @@ BOLD='\033[1m' NC='\033[0m'
 TARGET="${1:-}"
 if [ -z "$TARGET" ]; then
   echo -e "${RED}用法: bash bin/build.sh <target>${NC}"
-  echo "  target: desktop | mobile:android | mobile:ios | web | server | all"
+  echo "  target: desktop | desktop:full | desktop:lite | mobile:android | mobile:ios | web | server | all"
   exit 1
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$SCRIPT_DIR"
 
-build_desktop() {
+# 桌面端打包前置：内置模型平台已移除，改用 Ollama，无需下载模型/llama-server
+prepare_desktop_resources() {
   echo ""
-  echo -e "${BOLD}${CYAN}══════ 打包桌面端 (Tauri) ══════${NC}"
+  echo -e "${BOLD}${CYAN}══════ Skip model download (use Ollama) ══════${NC}"
   echo ""
-  echo "  检查 Rust 环境..."
-  rustc --version || { echo -e "${RED}Rust 未安装，请先运行 bash bin/setup-env.sh --desktop${NC}"; exit 1; }
-  rustup target list --installed | grep -qE "x86_64-pc-windows-(msvc|gnu)" || {
-    echo -e "${RED}未安装 Windows Rust 目标${NC}"
-    echo "  安装: rustup target add x86_64-pc-windows-gnu"
-    exit 1
-  }
+}
+
+build_desktop_full() {
   echo ""
-  pnpm build:desktop
+  echo -e "${BOLD}${CYAN}══════ 打包桌面端 Electron (完整版) ══════${NC}"
+  echo ""
+  prepare_desktop_resources
+  pnpm --filter @yan-zhi/desktop electron:build:full
   echo ""
   echo -e "${GREEN}打包完成${NC}"
-  echo "  产物目录: apps/desktop/src-tauri/target/release/bundle/"
+  echo "  产物目录: apps/desktop/release-full/"
+}
+
+build_desktop_lite() {
+  echo ""
+  echo -e "${BOLD}${CYAN}══════ 打包桌面端 Electron (轻量版) ══════${NC}"
+  echo ""
+  prepare_desktop_resources
+  pnpm --filter @yan-zhi/desktop electron:build:lite
+  echo ""
+  echo -e "${GREEN}打包完成${NC}"
+  echo "  产物目录: apps/desktop/release-lite/"
 }
 
 build_mobile_android() {
@@ -78,25 +89,27 @@ build_server() {
   echo ""
   cd "$SCRIPT_DIR/apps/server"
   pnpm build
+  cd "$SCRIPT_DIR"
   echo ""
   echo -e "${GREEN}打包完成${NC}"
   echo "  产物目录: apps/server/dist/"
 }
 
 case "$TARGET" in
-  desktop)         build_desktop ;;
-  mobile:android)  build_mobile_android ;;
-  mobile:ios)      build_mobile_ios ;;
-  web)             build_web ;;
-  server)          build_server ;;
+  desktop|desktop:full) build_desktop_full ;;
+  desktop:lite)         build_desktop_lite ;;
+  mobile:android)       build_mobile_android ;;
+  mobile:ios)           build_mobile_ios ;;
+  web)                  build_web ;;
+  server)               build_server ;;
   all)
     build_server
     build_web
-    build_desktop
+    build_desktop_full
     ;;
   *)
     echo -e "${RED}未知目标: $TARGET${NC}"
-    echo "  可用: desktop | mobile:android | mobile:ios | web | server | all"
+    echo "  可用: desktop | desktop:full | desktop:lite | mobile:android | mobile:ios | web | server | all"
     exit 1
     ;;
 esac

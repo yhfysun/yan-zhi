@@ -2,7 +2,8 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "outDir": "dist",
-    "jsx": "preserve"
+    "jsx": "preserve",
+    "types": ["vite/client"]
   },
   "include": ["src"]
 }
