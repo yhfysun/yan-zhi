@@ -28,29 +28,17 @@ jobs:
         run: pnpm install
 
 
-      - name: 构建 macOS 完整版
-        run: pnpm --filter @yan-zhi/desktop electron:build:full
-
       - name: 构建 macOS 轻量版
         run: pnpm --filter @yan-zhi/desktop electron:build:lite
 
       - name: 列出构建产物（诊断用）
         run: |
-          echo "=== release-full ==="; ls -la apps/desktop/release-full 2>/dev/null || echo "(空)"
           echo "=== release-lite ==="; ls -la apps/desktop/release-lite 2>/dev/null || echo "(空)"
 
-      # 完整版输出目录是 release-full（见 electron-builder.full.yml 的 directories.output）
-      - name: 上传 macOS DMG（完整版）
+      - name: 上传 macOS DMG
         uses: actions/upload-artifact@v4
         with:
-          name: macOS-DMG-full
-          path: apps/desktop/release-full/*.dmg
-          if-no-files-found: error
-
-      - name: 上传 macOS DMG（轻量版）
-        uses: actions/upload-artifact@v4
-        with:
-          name: macOS-DMG-lite
+          name: macOS-DMG
           path: apps/desktop/release-lite/*.dmg
           if-no-files-found: error
 
@@ -74,31 +62,18 @@ jobs:
         run: pnpm install
 
 
-      - name: 构建 Windows 完整版
-        run: pnpm --filter @yan-zhi/desktop electron:build:full
-
       - name: 构建 Windows 轻量版
         run: pnpm --filter @yan-zhi/desktop electron:build:lite
 
       - name: 列出构建产物（诊断用）
         shell: pwsh
         run: |
-          Write-Output "=== release-full ==="
-          Get-ChildItem -Path apps/desktop/release-full -ErrorAction SilentlyContinue | Select-Object Name,Length | Format-Table -AutoSize
           Write-Output "=== release-lite ==="
           Get-ChildItem -Path apps/desktop/release-lite -ErrorAction SilentlyContinue | Select-Object Name,Length | Format-Table -AutoSize
 
-      # 完整版输出目录是 release-full（见 electron-builder.full.yml 的 directories.output）
-      - name: 上传 NSIS 安装包（完整版）
+      - name: 上传 NSIS 安装包
         uses: actions/upload-artifact@v4
         with:
-          name: Windows-Installer-full
-          path: apps/desktop/release-full/*.exe
-          if-no-files-found: error
-
-      - name: 上传 NSIS 安装包（轻量版）
-        uses: actions/upload-artifact@v4
-        with:
-          name: Windows-Installer-lite
+          name: Windows-Installer
           path: apps/desktop/release-lite/*.exe
           if-no-files-found: error
