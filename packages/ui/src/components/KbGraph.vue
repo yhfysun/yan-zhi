@@ -1,5 +1,5 @@
 <template>
-  <div class="kb-graph">
+  <div ref="rootRef" class="kb-graph" :class="{ 'is-fullscreen': isFullscreen }">
     <div class="kb-graph-head">
       <span class="section-label">{{ isEntityMode ? '实体关系图谱（点实体查看来源切片）' : '关系图谱（库 → 文档 → 分片）' }}</span>
       <div class="kb-graph-actions">
@@ -8,6 +8,7 @@
         <el-button size="small" :icon="Search" @click="fitView">适应</el-button>
         <el-button size="small" :icon="ZoomIn" @click="zoomIn">+</el-button>
         <el-button size="small" :icon="ZoomOut" @click="zoomOut">−</el-button>
+        <el-button size="small" :type="isFullscreen ? 'primary' : ''" :icon="isFullscreen ? Aim : FullScreen" :title="isFullscreen ? '退出全屏' : '全屏'" @click="toggleFullscreen" />
       </div>
     </div>
 
@@ -72,13 +73,33 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue';
+import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue';
 import { VueFlow, useVueFlow, type Node, type Edge } from '@vue-flow/core';
-import { Refresh, Search, ZoomIn, ZoomOut, MagicStick } from '@element-plus/icons-vue';
+import '@vue-flow/core/dist/style.css';
+import '@vue-flow/core/dist/theme-default.css';
+import { Refresh, Search, ZoomIn, ZoomOut, MagicStick, FullScreen, Aim } from '@element-plus/icons-vue';
 import { ElMessage } from 'element-plus';
 import { api } from '../api/client';
 
 const props = defineProps<{ baseId: string }>();
+
+const rootRef = ref<HTMLElement | null>(null);
+const isFullscreen = ref(false);
+function toggleFullscreen() {
+  const el = rootRef.value;
+  if (!el) return;
+  if (!document.fullscreenElement) {
+    el.requestFullscreen?.().catch(() => {});
+  } else {
+    document.exitFullscreen?.();
+  }
+}
+function handleFsChange() {
+  isFullscreen.value = document.fullscreenElement === rootRef.value;
+  if (isFullscreen.value) nextTick(() => fitView());
+}
+onMounted(() => document.addEventListener('fullscreenchange', handleFsChange));
+onUnmounted(() => document.removeEventListener('fullscreenchange', handleFsChange));
 
 const loading = ref(false);
 // 提取状态按知识库 keyed：提取 A 库不影响 B 库，切换库状态自动跟着当前库走
@@ -257,6 +278,8 @@ defineExpose({ load });
 
 <style scoped>
 .kb-graph { border: 1px solid var(--glass-border); border-radius: 12px; overflow: hidden; background: var(--glass-bg, rgba(255,255,255,0.5)); margin-top: 10px; }
+.kb-graph.is-fullscreen { display: flex; flex-direction: column; background: var(--el-bg-color, #141414); }
+.kb-graph.is-fullscreen .kb-graph-body { flex: 1; height: auto; }
 .kb-graph-head { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; gap: 8px; }
 .kb-graph-actions { display: flex; gap: 4px; }
 .kb-graph-body { position: relative; height: 400px; }

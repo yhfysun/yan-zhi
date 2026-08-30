@@ -68,6 +68,15 @@ export function registerImTools(m: Map<ApiModuleName, ToolDefinition[]>) {
         required: ['connectorId', 'to'],
       },
     },
+    {
+      name: 'api_im_connector_test',
+      description: '测试微信/飞书连接器的配置是否可用（凭证是否有效、能否连通）。配置连接器后建议先测试再启用',
+      inputSchema: {
+        type: 'object',
+        properties: { id: { type: 'string', description: '连接器 id' } },
+        required: ['id'],
+      },
+    },
   ]);
 }
 

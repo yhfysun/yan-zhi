@@ -20,7 +20,7 @@ export class FileWriteTool implements BuiltInTool {
       category: {
         type: 'string',
         enum: ['intermediate', 'deliverable'],
-        description: 'File category for classification: "intermediate" (default, intermediate artifact) or "deliverable" (final output delivered to user).',
+        description: '文件分类，必须正确选择：deliverable=最终交付给用户的成果（报告、最终文档、生成的源代码、导出数据、图片成品等用户会直接使用或保存的文件）；intermediate=过程性中间产物（调试输出、临时草稿、中间计算结果、将被后续步骤覆盖或删除的临时文件）。凡用户最终想要的结果文件必须显式传 deliverable，不要省略该参数，也不要把交付物误标为 intermediate。',
       },
     },
     required: ['path', 'content'],

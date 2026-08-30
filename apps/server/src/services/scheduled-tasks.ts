@@ -230,8 +230,9 @@ export async function runScheduledTask(task: any): Promise<ScheduledTaskRunResul
   }
 }
 
-// ===== 60s 轮询调度器 =====
-let schedulerStarted = false;
+// ===== 60s 轮询调度器（按需启停：仅当存在启用中的任务时才轮询） =====
+let schedulerTimer: NodeJS.Timeout | null = null;
+let startupTimer: NodeJS.Timeout | null = null;
 let ticking = false;
 
 async function tick() {
@@ -255,16 +256,36 @@ async function tick() {
   }
 }
 
-/** 启动调度器（模块级 guard，重复调用只启动一次） */
-export function startScheduledTaskScheduler() {
-  if (schedulerStarted) return;
-  schedulerStarted = true;
-  setInterval(() => {
-    tick().catch(() => {});
-  }, MINUTE_MS);
+function hasEnabledTask(): boolean {
+  try {
+    const row = db.prepare('SELECT COUNT(*) AS c FROM scheduled_task WHERE enabled = 1').get() as any;
+    return !!(row && row.c > 0);
+  } catch {
+    return false;
+  }
+}
+
+function startSchedulerTimer() {
+  if (schedulerTimer) return;
+  schedulerTimer = setInterval(() => { tick().catch(() => {}); }, MINUTE_MS);
   // 启动 15s 后先跑一轮，补上停机期间到期的任务
-  setTimeout(() => {
-    tick().catch(() => {});
-  }, 15_000);
+  startupTimer = setTimeout(() => { tick().catch(() => {}); }, 15_000);
   console.log('[scheduled-task] 定时任务调度器已启动（每 60s 轮询）');
+}
+
+function stopSchedulerTimer() {
+  if (schedulerTimer) { clearInterval(schedulerTimer); schedulerTimer = null; }
+  if (startupTimer) { clearTimeout(startupTimer); startupTimer = null; }
+  console.log('[scheduled-task] 无启用任务，调度器已停止');
+}
+
+/** 按需启停：仅当存在启用中的任务时才运行轮询，全部停用/删除时停止，避免空轮询 */
+export function refreshScheduledTaskScheduler() {
+  if (hasEnabledTask()) startSchedulerTimer();
+  else stopSchedulerTimer();
+}
+
+/** 兼容旧入口：启动时按需启停调度器 */
+export function startScheduledTaskScheduler() {
+  refreshScheduledTaskScheduler();
 }

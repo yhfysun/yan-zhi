@@ -22,6 +22,23 @@
               </div>
             </div>
           </el-form-item>
+          <el-form-item label="布局">
+            <el-select
+              :model-value="settingsStore.settings.layout"
+              placeholder="选择布局"
+              style="width: 280px"
+              @change="setLayout"
+            >
+              <el-option label="默认布局" value="default" />
+              <el-option
+                v-for="l in pluginStore.layouts"
+                :key="l.id"
+                :label="l.name"
+                :value="l.id"
+              />
+            </el-select>
+            <span class="form-tip" style="margin-left: 12px">插件可贡献自定义布局</span>
+          </el-form-item>
           <el-form-item label="默认平台">
             <el-select v-model="defaultPlatformId" placeholder="选择默认平台" style="width: 280px" clearable @change="onPlatformChange">
               <el-option v-for="p in platformStore.platforms" :key="p.id" :label="p.name" :value="p.id" />
@@ -64,6 +81,9 @@
           <input ref="fileInput" type="file" accept=".json" style="display:none" @change="importData" />
           <el-button type="danger" @click="clearCache" :icon="Delete">清空缓存</el-button>
         </div>
+      </el-tab-pane>
+      <el-tab-pane label="记忆管理" name="memory">
+        <MemoryManage />
       </el-tab-pane>
       <el-tab-pane label="商城服务端" name="marketplace">
         <el-form label-width="160px" style="max-width: 600px">
@@ -112,11 +132,14 @@ import { ref, computed, onMounted, watch } from 'vue';
 import { Download, Delete, Upload } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { useSettingsStore, usePlatformStore } from '../stores';
+import { usePluginStore } from '../stores/plugin';
 import { useToolsStore } from '../stores/tools';
 import type { ThemeName } from '../stores/settings';
+import MemoryManage from '../components/memory/MemoryManage.vue';
 
 const settingsStore = useSettingsStore();
 const platformStore = usePlatformStore();
+const pluginStore = usePluginStore();
 const toolsStore = useToolsStore();
 const tab = ref('general');
 
@@ -168,6 +191,10 @@ onMounted(async () => {
 
 function setTheme(t: ThemeName) {
   settingsStore.update({ theme: t });
+}
+
+function setLayout(id: string) {
+  settingsStore.update({ layout: id });
 }
 
 function toggleDarkMode() {

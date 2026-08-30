@@ -16,6 +16,13 @@
       </template>
 
       <template v-else>
+        <!-- 插件提供的自定义布局：router-view 作为默认 slot 注入 -->
+        <component v-if="pluginLayoutLoader" :is="pluginLayoutLoader">
+          <router-view />
+        </component>
+
+        <!-- 内置默认布局 -->
+        <template v-else>
         <SideNav />
         <!-- Mobile TopBar (hidden on chat page - Chat has its own topbar) -->
         <header v-if="isMobile && route.name !== 'chat'" class="mobile-topbar">
@@ -50,6 +57,7 @@
             <transition name="slide-fade" mode="out-in"><component :is="Component" /></transition>
           </router-view>
         </main>
+        </template>
       </template>
     </div>
 
@@ -58,13 +66,16 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted } from 'vue';
+import { computed, onMounted, shallowRef, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import { User, SwitchButton, Moon, Sunny } from '@element-plus/icons-vue';
 import { useAuthStore } from './stores/auth';
 import { useSettingsStore } from './stores/settings';
+import { usePluginStore } from './stores/plugin';
 import SideNav from './components/SideNav.vue';
 import SettingsDrawer from './components/SettingsDrawer.vue';
+import { syncPluginRoutes } from './router';
+import { resolvePluginComponent } from './plugin-component-registry';
 
 import { useIsMobile } from './composables/useIsMobile';
 import { usePlatform } from './composables/usePlatform';
@@ -73,6 +84,7 @@ import { useSidebarState } from './composables/useSidebarState';
 const route = useRoute();
 const authStore = useAuthStore();
 const settingsStore = useSettingsStore();
+const pluginStore = usePluginStore();
 const isMobile = useIsMobile();
 const { isDesktop } = usePlatform();
 const { collapsed } = useSidebarState();
@@ -80,13 +92,33 @@ const { collapsed } = useSidebarState();
 // Electron 桌面端检测：由主进程通过 preload 注入 window.electronAPI.isElectron
 const isElectron = typeof window !== 'undefined' && !!(window as any).electronAPI?.isElectron;
 
+/** 当前插件布局组件（懒加载函数）；null 表示用内置默认布局 */
+const pluginLayoutLoader = shallowRef<(() => Promise<unknown>) | null>(null);
+function resolvePluginLayout() {
+  const id = settingsStore.settings.layout;
+  if (id === 'default') { pluginLayoutLoader.value = null; return; }
+  const def = pluginStore.layouts.find((l) => l.id === id);
+  pluginLayoutLoader.value = def ? (resolvePluginComponent(def.component) ?? null) : null;
+}
+
 onMounted(async () => {
   try {
     await settingsStore.load();
   } catch {
     // 设置读取失败时仍允许应用正常渲染
   }
+  // 拉取插件清单并同步动态路由 / 布局
+  try {
+    await pluginStore.refresh();
+    await syncPluginRoutes();
+    resolvePluginLayout();
+  } catch {
+    // 插件加载失败不阻塞主应用
+  }
 });
+
+// 布局切换或插件清单变化时重新解析
+watch(() => [settingsStore.settings.layout, pluginStore.layouts], resolvePluginLayout, { deep: true });
 
 
 function toggleTheme() {
@@ -493,7 +525,7 @@ body {
   .el-dialog {
     z-index: 9999 !important;
     position: absolute !important;
-    max-width: calc(100vw - 24px) !important;
+    max-width: calc(100vw - var(--yz-right-w, 0px) - 24px) !important;
     margin: 0 !important;
     max-height: calc(100dvh - 48px - env(safe-area-inset-top, 0px) - 56px - env(safe-area-inset-bottom, 0px) - 8px);
     display: flex !important; flex-direction: column !important;
@@ -505,7 +537,7 @@ body {
   .snapshot-dialog .el-dialog,
   .agent-edit-dialog .el-dialog {
     width: 92vw !important;
-    max-width: 92vw !important;
+
   }
   .el-dialog__header { background: var(--el-bg-color) !important; border-bottom: 1px solid var(--el-border-color-lighter); }
   .el-dialog__body { flex: 1; overflow-y: auto; padding: 12px 16px; background: var(--el-bg-color) !important; }

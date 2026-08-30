@@ -13,125 +13,7 @@
   <WorkspaceDirDialog v-model="showWorkspaceDir" :current-path="workspaceDir" @selected="onWorkspaceDirSelected" />
 
   <el-dialog
-    v-model="confirmDialogVisible"
-    :title="store.pendingConfirmation?.title || '用户确认'"
-    width="520px"
-    :close-on-click-modal="false"
-    :close-on-press-escape="false"
-    class="confirm-user-dialog"
-    @close="onConfirmDialogClose"
-  >
-    <div v-if="confirmCurrentPage && store.pendingConfirmation" class="confirm-wizard">
-      <div class="confirm-wizard-step">
-        第 {{ store.pendingConfirmation.index + 1 }} / {{ store.pendingConfirmation.pages.length }} 页
-      </div>
-      <div class="confirm-wizard-question">{{ confirmCurrentPage.question }}</div>
-      <div v-if="confirmCurrentPage.description" class="confirm-wizard-description">
-        {{ confirmCurrentPage.description }}
-      </div>
 
-      <div v-if="confirmMultiSelect" class="confirm-wizard-options">
-        <el-checkbox
-          v-for="(opt, i) in confirmCurrentPage.options"
-          :key="i"
-          v-model="confirmChecked[i]"
-        >{{ opt }}</el-checkbox>
-      </div>
-      <div v-else-if="confirmCurrentPage.options?.length" class="confirm-wizard-options">
-        <button
-          v-for="(opt, i) in confirmCurrentPage.options"
-          :key="i"
-          type="button"
-          class="ask-user-opt"
-          :class="{ 'is-active': confirmSingle === opt }"
-          @click="confirmSingle = opt"
-        >{{ opt }}</button>
-        <button
-          v-if="confirmCurrentPage.allowText !== false"
-          type="button"
-          class="ask-user-opt ask-user-opt-text"
-          :class="{ 'is-active': confirmShowText }"
-          @click="confirmShowText = true"
-        >其他（文字输入）</button>
-      </div>
-
-      <el-input
-        v-if="confirmCurrentPage.allowText !== false && (!confirmCurrentPage.options?.length || confirmMultiSelect || confirmShowText)"
-        v-model="confirmText"
-        type="textarea"
-        :rows="3"
-        placeholder="输入你的回答..."
-        class="confirm-wizard-text"
-      />
-      <el-input
-        v-if="confirmCurrentPage.allowSupplement !== false"
-        v-model="confirmSupplement"
-        type="textarea"
-        :rows="2"
-        placeholder="补充说明（可选）"
-        class="confirm-wizard-supplement"
-      />
-    </div>
-    <template #footer>
-      <el-button @click="onConfirmSkip">跳过</el-button>
-      <el-button type="primary" @click="onConfirmNext">
-        {{ store.pendingConfirmation && store.pendingConfirmation.index < store.pendingConfirmation.pages.length - 1 ? '下一页' : '完成' }}
-      </el-button>
-    </template>
-  </el-dialog>
-
-  <el-dialog
-    v-model="askDialogVisible"
-    title="智能体提问"
-    width="460px"
-    :close-on-click-modal="false"
-    :close-on-press-escape="false"
-    class="ask-user-dialog"
-    @close="onAskDialogClose"
-  >
-    <div class="ask-user-question">{{ store.pendingQuestion?.question }}</div>
-
-    <div v-if="askMultiSelect" class="ask-user-options">
-      <el-checkbox v-for="(opt, i) in store.pendingQuestion?.options" :key="i" v-model="askChecked[i]">{{ opt }}</el-checkbox>
-    </div>
-    <div v-else-if="store.pendingQuestion?.options?.length" class="ask-user-options">
-      <button
-        v-for="(opt, i) in store.pendingQuestion.options"
-        :key="i"
-        type="button"
-        class="ask-user-opt"
-        :class="{ 'is-active': askSingle === opt }"
-        @click="askSingle = opt"
-      >{{ opt }}</button>
-      <button type="button" class="ask-user-opt ask-user-opt-text" :class="{ 'is-active': askShowText }" @click="askShowText = true">
-        其他（文字输入）
-      </button>
-    </div>
-
-    <el-input
-      v-if="!store.pendingQuestion?.options?.length || askShowText"
-      v-model="askText"
-      type="textarea"
-      :rows="3"
-      placeholder="输入你的回答..."
-      @keyup.ctrl.enter="onAskSubmit"
-    />
-    <el-input
-      v-if="store.pendingQuestion?.allowSupplement !== false"
-      v-model="askSupplement"
-      type="textarea"
-      :rows="2"
-      placeholder="补充说明（可选）"
-      class="ask-user-supplement"
-      @keyup.ctrl.enter="onAskSubmit"
-    />
-    <template #footer>
-      <el-button @click="onAskSkip">跳过</el-button>
-      <el-button type="primary" @click="onAskSubmit">提交</el-button>
-    </template>
-  </el-dialog>
-
-  <el-dialog
     v-model="platformConfigDialogVisible"
     title="配置模型平台"
     width="560px"
@@ -184,11 +66,8 @@ import DistillDialog from '../DistillDialog.vue';
 
 const {
   snapshotDialog, snapshotActiveTab, currentSnapshots, showAgentEdit, editingAgent, onAgentSaved,
-  onAgentDeleted, showWorkspaceDir, workspaceDir, onWorkspaceDirSelected, confirmDialogVisible,
-  store, confirmCurrentPage, confirmMultiSelect, confirmChecked, confirmSingle, confirmShowText,
-  confirmText, confirmSupplement, onConfirmSkip, onConfirmNext, onConfirmDialogClose, askDialogVisible,
-  askMultiSelect, askChecked, askSingle, askShowText, askText, askSupplement, onAskSubmit, onAskSkip,
-  onAskDialogClose, platformConfigDialogVisible, platformConfigForm, platformConfigSaving,
+  onAgentDeleted, showWorkspaceDir, workspaceDir, onWorkspaceDirSelected,
+  store, platformConfigDialogVisible, platformConfigForm, platformConfigSaving,
   onPlatformConfigCancel, onPlatformConfigSubmit, onPlatformConfigClose, showDistill, distillMessages,
 } = useChat();
 </script>

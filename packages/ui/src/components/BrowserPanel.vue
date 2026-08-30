@@ -42,6 +42,11 @@
         <svg viewBox="0 0 24 24" width="18" height="18"><path :fill="isBookmarked ? 'currentColor' : 'none'" d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
       </button>
 
+      <!-- 密码管理按钮 -->
+      <button class="nav-btn" @click="openPasswordManager" title="密码管理">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M7 11V7a5 5 0 0110 0v4M5 11h14a2 2 0 012 2v7a2 2 0 01-2 2H5a2 2 0 01-2-2v-7a2 2 0 012-2z"/></svg>
+      </button>
+
       <!-- 更多菜单 ⋮ -->
       <el-dropdown trigger="click" @command="onMenuCommand">
         <button class="nav-btn" title="更多工具">
@@ -50,6 +55,7 @@
         <template #dropdown>
           <el-dropdown-menu>
             <el-dropdown-item command="history">浏览历史 ({{ recentList.length }})</el-dropdown-item>
+            <el-dropdown-item command="passwords">密码管理 ({{ savedPasswords.length }})</el-dropdown-item>
             <el-dropdown-item command="settings">浏览器设置</el-dropdown-item>
             <el-dropdown-item command="bookmarks" divided>收藏夹 ({{ bookmarks.length }})</el-dropdown-item>
             <el-dropdown-item command="clearBookmarks">清空收藏夹</el-dropdown-item>
@@ -189,6 +195,52 @@
         <el-button size="small" type="primary" @click="addPin">添加</el-button>
       </div>
     </el-dialog>
+
+    <!-- 密码管理弹窗 -->
+    <el-dialog v-model="showPasswords" title="密码管理" width="560px" append-to-body>
+      <div class="pwd-toolbar">
+        <el-button size="small" type="primary" @click="openPasswordEditor(null)">添加密码</el-button>
+        <el-button size="small" @click="loadSavedPasswords">刷新</el-button>
+      </div>
+      <div v-if="savedPasswords.length === 0" style="text-align:center;padding:30px;color:var(--el-text-color-secondary)">暂无已保存密码</div>
+      <div v-for="p in savedPasswords" :key="p.id" class="pwd-row">
+        <div class="pwd-main">
+          <div class="pwd-host">{{ p.name || p.host }}</div>
+          <div class="pwd-sub">{{ p.username }} · {{ p.host }}<span v-if="revealedPwd[p.id]"> · {{ revealedPwd[p.id] }}</span></div>
+        </div>
+        <div class="pwd-actions">
+          <el-button size="small" text @click="revealPassword(p)">查看</el-button>
+          <el-button size="small" text @click="fillPassword(p)">填充</el-button>
+          <el-button size="small" text @click="openPasswordEditor(p)">编辑</el-button>
+          <el-button size="small" text type="danger" @click="deletePassword(p)">删除</el-button>
+        </div>
+      </div>
+    </el-dialog>
+
+    <!-- 保存/编辑密码弹窗 -->
+    <el-dialog v-model="showPasswordEditor" :title="editingPassword ? '编辑密码' : '保存密码'" width="420px" append-to-body>
+      <el-form label-width="72px" size="small">
+        <el-form-item label="站点名">
+          <el-input v-model="pwdForm.name" placeholder="可选，如 某AI视频站" />
+        </el-form-item>
+        <el-form-item label="网址">
+          <el-input v-model="pwdForm.url" placeholder="https://..." @blur="syncPwdHost" />
+        </el-form-item>
+        <el-form-item label="域名">
+          <el-input v-model="pwdForm.host" placeholder="example.com" />
+        </el-form-item>
+        <el-form-item label="用户名">
+          <el-input v-model="pwdForm.username" placeholder="账号/邮箱/手机号" />
+        </el-form-item>
+        <el-form-item label="密码">
+          <el-input v-model="pwdForm.password" type="password" show-password placeholder="密码" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button size="small" @click="showPasswordEditor = false">取消</el-button>
+        <el-button size="small" type="primary" @click="savePasswordForm">保存</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -202,6 +254,8 @@ import { usePlatform } from '../composables/usePlatform';
 import { LlmClient } from '@yan-zhi/core';
 import { API_BASE } from '../api/client';
 import { useRoute } from 'vue-router';
+import { settingsDrawerOpen } from '../composables/useSettingsDrawer';
+import { useChat } from '../composables/chat/useChat';
 
 // ── 平台检测 ──
 const { isDesktop } = usePlatform();
@@ -211,6 +265,12 @@ const isElectron = typeof window !== 'undefined' && !!(window as any).electronAP
 
 // 路由 query（支持从对话页跳转并传初始 URL）
 const route = useRoute();
+
+// 聊天区弹窗开关（useChat 单例）：任一打开时隐藏原生 BrowserView，避免弹窗被其遮挡
+const {
+  showMount, showSkills, platformConfigDialogVisible, snapshotDialog,
+  showAgentEdit, showWorkspaceDir, showSpaceEdit,
+} = useChat();
 
 
 interface Bookmark { url: string; title: string; }
@@ -305,9 +365,15 @@ function syncBrowserViewBounds() {
   if (resizeRafId !== null) cancelAnimationFrame(resizeRafId);
   resizeRafId = requestAnimationFrame(() => {
     resizeRafId = null;
+    // 先看可见性：面板收起时 CSS 只是宽度过渡归 0 + 透明（并非 display:none），
+    // 占位元素仍在 DOM 且高度非零，ResizeObserver 会在过渡期间连续回调。
+    // 若不判断可见性就同步 bounds，会把 hide() 刚设的 0 尺寸重新覆盖成可见区域，
+    // 导致原生图层残留（容器 UI 已隐藏、网页却仍浮在窗口上）。
+    const visible = chatStore.rightPanelOpen && chatStore.rightPanelTab === 'browser';
     const el = browserViewPlaceholder.value;
-    if (!el) return;
+    if (!visible || !el) { try { (window as any).electronAPI.browserView.hide(); } catch { /* ignore */ } return; }
     const rect = el.getBoundingClientRect();
+    if (rect.width < 1 || rect.height < 1) { try { (window as any).electronAPI.browserView.hide(); } catch { /* ignore */ } return; }
     // Electron 33 的 setBounds 使用 CSS 像素（逻辑像素），不需要乘以 DPR
     (window as any).electronAPI.browserView.resize(
       Math.round(rect.left),
@@ -372,13 +438,17 @@ const engineName = computed(() => (SEARCH_ENGINES[searchEngine.value] || SEARCH_
 const showBookmarks = ref(false);
 const showHistory = ref(false);
 const showSettings = ref(false);
+const showPasswords = ref(false);
+const showPasswordEditor = ref(false);
 const newPinName = ref('');
 const newPinUrl = ref('');
 
 // Electron 桌面端：BrowserView 是原生图层，永远覆盖主窗口 DOM 之上，
-// 任何 el-dialog 都会被它挡住。打开弹窗时临时隐藏 BrowserView，关闭后恢复。
+// 任何 el-dialog / 全局设置抽屉都会被它挡住。打开时临时隐藏 BrowserView，关闭后恢复。
+// 仅限 BrowserPanel 内部弹窗（书签/历史/设置/密码）：它们长在预览面板区域内，
+// 无法避让，只能临时藏起 BrowserView。ask_user/confirm_user 已改为内联表单，不受影响。
 watch(
-  () => showBookmarks.value || showHistory.value || showSettings.value,
+  () => showBookmarks.value || showHistory.value || showSettings.value || showPasswords.value || showPasswordEditor.value || settingsDrawerOpen.value,
   (hasDialog) => {
     if (!isElectron) return;
     if (hasDialog) {
@@ -386,6 +456,45 @@ watch(
     } else {
       syncBrowserViewBounds();
     }
+  },
+);
+
+// 聊天区弹窗（模型平台/Skill/MCP/编辑智能体/工作目录/编辑空间/查看提示词）避让右侧预览面板：
+// 不隐藏 BrowserView（预览保持可见），而是把弹窗居中容器 .el-overlay-dialog 限制在面板左侧的可用区域，
+// 弹窗在排除预览宽度后的区域居中，绝不跨入预览面板。JS 直接读面板宽度设内联 style，可靠生效。
+function applyDialogAvoidPanel() {
+  if (!isElectron) return;
+  const panel = document.querySelector('.right-panel.open') as HTMLElement | null;
+  const panelW = panel ? panel.offsetWidth : 0;
+  document.querySelectorAll<HTMLElement>('.el-overlay-dialog').forEach(el => {
+    if (panelW > 0) {
+      el.style.setProperty('position', 'fixed', 'important');
+      el.style.setProperty('left', '0', 'important');
+      el.style.setProperty('right', panelW + 'px', 'important');
+      el.style.setProperty('top', '0', 'important');
+      el.style.setProperty('bottom', '0', 'important');
+    } else {
+      el.style.removeProperty('position');
+      el.style.removeProperty('left');
+      el.style.removeProperty('right');
+      el.style.removeProperty('top');
+      el.style.removeProperty('bottom');
+    }
+  });
+  document.querySelectorAll<HTMLElement>('.el-dialog').forEach(el => {
+    if (panelW > 0) {
+      el.style.setProperty('max-width', `calc(100vw - ${panelW}px - 24px)`, 'important');
+    } else {
+      el.style.removeProperty('max-width');
+    }
+  });
+}
+watch(
+  () => showMount.value || showSkills.value || platformConfigDialogVisible.value || snapshotDialog.value
+    || showAgentEdit.value || showWorkspaceDir.value || showSpaceEdit.value,
+  (open) => {
+    if (!isElectron) return;
+    if (open) nextTick(() => requestAnimationFrame(applyDialogAvoidPanel));
   },
 );
 
@@ -746,7 +855,7 @@ watch(
   () => chatStore.currentBrowserUrl,
   (url) => {
     if (!url) return;
-    if (url === currentUrl.value) return; // 已打开同一页，避免重复导航
+
     openSite(url);
   },
 );
@@ -936,8 +1045,117 @@ function openFromHistory(url: string) {
   showHistory.value = false;
 }
 
+// ── 密码管理（记住密码）──
+interface SavedPassword {
+  id: string; host: string; url?: string; name?: string; username: string;
+  form_meta?: any; created_at?: number; updated_at?: number;
+}
+const savedPasswords = ref<SavedPassword[]>([]);
+
+const editingPassword = ref<SavedPassword | null>(null);
+const revealedPwd = ref<Record<string, string>>({});
+const pwdForm = ref({ name: '', url: '', host: '', username: '', password: '' });
+
+function getAuthHeader(): Record<string, string> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  try {
+    const token = localStorage.getItem('auth_token');
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+  } catch {}
+  return headers;
+}
+
+async function callPwdApi(p: string, method = 'GET', body?: any): Promise<any> {
+  const res = await fetch('/api/browser' + p, { method, headers: getAuthHeader(), body: body !== undefined ? JSON.stringify(body) : undefined });
+  const json = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+  if (!res.ok || json.error) throw new Error(json.error || `请求失败 (${res.status})`);
+  return json.data ?? json;
+}
+
+async function loadSavedPasswords() {
+  try {
+    const data = await callPwdApi('/passwords') as any[];
+    savedPasswords.value = data || [];
+  } catch (e: any) {
+    ElMessage.error(e?.message || '加载密码失败');
+  }
+}
+
+function openPasswordManager() {
+  loadSavedPasswords();
+  showPasswords.value = true;
+}
+
+function openPasswordEditor(p: SavedPassword | null) {
+  editingPassword.value = p;
+  if (p) {
+    pwdForm.value = { name: p.name || '', url: p.url || '', host: p.host, username: p.username, password: '' };
+  } else {
+    let h = '', u = '';
+    try { h = new URL(currentUrl.value).host; u = currentUrl.value; } catch {}
+    pwdForm.value = { name: '', url: u, host: h, username: '', password: '' };
+  }
+  showPasswordEditor.value = true;
+}
+
+function syncPwdHost() {
+  try { pwdForm.value.host = new URL(pwdForm.value.url).host; } catch {}
+}
+
+async function savePasswordForm() {
+  const f = pwdForm.value;
+  if (!f.host || !f.username || !f.password) { ElMessage.warning('域名/用户名/密码为必填项'); return; }
+  try {
+    if (editingPassword.value) {
+      await callPwdApi(`/passwords/${editingPassword.value.id}`, 'PUT', {
+        host: f.host, url: f.url, name: f.name, username: f.username, password: f.password,
+      });
+      ElMessage.success('已更新');
+    } else {
+      await callPwdApi('/passwords', 'POST', {
+        host: f.host, url: f.url, name: f.name, username: f.username, password: f.password,
+      });
+      ElMessage.success('已保存');
+    }
+    showPasswordEditor.value = false;
+    loadSavedPasswords();
+  } catch (e: any) {
+    ElMessage.error(e?.message || '保存失败');
+  }
+}
+
+async function revealPassword(p: SavedPassword) {
+  try {
+    const data = await callPwdApi(`/passwords/${p.id}/reveal`, 'POST') as any;
+    revealedPwd.value = { ...revealedPwd.value, [p.id]: data.password };
+  } catch (e: any) {
+    ElMessage.error(e?.message || '查看失败');
+  }
+}
+
+async function fillPassword(p: SavedPassword) {
+  if (!currentUrl.value) { ElMessage.warning('请先在浏览器打开目标登录页'); return; }
+  try {
+    await callPwdApi(`/passwords/${p.id}/fill`, 'POST');
+    ElMessage.success('已填充，请确认后提交');
+  } catch (e: any) {
+    ElMessage.error(e?.message || '填充失败');
+  }
+}
+
+async function deletePassword(p: SavedPassword) {
+  try {
+    await callPwdApi(`/passwords/${p.id}`, 'DELETE');
+    ElMessage.success('已删除');
+    loadSavedPasswords();
+  } catch (e: any) {
+    ElMessage.error(e?.message || '删除失败');
+  }
+}
+
 function onMenuCommand(cmd: string) {
   if (cmd === 'history') { fetchData(); showHistory.value = true; }
+  else if (cmd === 'passwords') openPasswordManager();
   else if (cmd === 'settings') showSettings.value = true;
   else if (cmd === 'bookmarks') showBookmarks.value = true;
   else if (cmd === 'clearBookmarks') {
@@ -971,6 +1189,13 @@ onMounted(() => {
     const api = (window as any).electronAPI;
     // 监听 BrowserView 导航事件，同步地址栏 URL
     api.browserView.onNavigated((url: string) => {
+      // 面板未打开却收到导航事件：说明是 Agent 后台导航或页面自动跳转把原生图层
+      // 重新挂回了窗口（主进程 navigate 分支会 setBrowserView）。此时 UI 容器是关着的，
+      // 必须立刻把图层收回去，否则会出现"容器没了、网页却浮着且点不掉"的残留图层。
+      if (!(chatStore.rightPanelOpen && chatStore.rightPanelTab === 'browser')) {
+        try { api.browserView.hide(); } catch { /* ignore */ }
+        return;
+      }
       if (url && url !== currentUrl.value) {
         urlInput.value = url;
         history.value[histIndex.value] = url;
@@ -999,6 +1224,7 @@ onMounted(() => {
     window.addEventListener('resize', browserViewResizeHandler);
     // 初始同步一次
     syncBrowserViewBounds();
+
   }
 });
 
@@ -1033,6 +1259,7 @@ onUnmounted(() => {
     themeObserver.disconnect();
     themeObserver = null;
   }
+
   // Web 端：移除 resize 监听 + iframe 滚动监听
   if (!isElectron) {
     window.removeEventListener('resize', onAppResize);
@@ -1231,6 +1458,12 @@ onUnmounted(() => {
 .pin-del:hover { color: var(--el-color-danger); }
 .pin-add { display: flex; gap: 8px; align-items: center; margin-top: 10px; }
 
+.pwd-toolbar { display: flex; gap: 8px; margin-bottom: 12px; }
+.pwd-row { display: flex; align-items: center; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid var(--el-border-color-lighter); }
+.pwd-main { flex: 1; min-width: 0; }
+.pwd-host { font-weight: 500; font-size: 14px; }
+.pwd-sub { font-size: 12px; color: var(--el-text-color-secondary); margin-top: 2px; word-break: break-all; }
+.pwd-actions { display: flex; gap: 4px; flex-shrink: 0; }
 
 
 </style>

@@ -10,6 +10,16 @@ function getAuthToken(): string | null {
 
 /** 调用浏览器 API 端点 */
 async function callBrowserApi(path: string, method: 'GET' | 'POST' = 'POST', body?: unknown): Promise<unknown> {
+  // 桌面端：将 /navigate 和 /action 转发到 IPC 直接操作可见的 BrowserView（含虚拟鼠标光标）
+  const electron = (typeof window !== 'undefined' && (window as any).electronAPI?.isElectron) ? (window as any).electronAPI : null;
+  if (electron && method === 'POST' && (path === '/navigate' || path === '/action')) {
+    let ipcAction = path === '/navigate' ? 'navigate' : (body as any)?.action;
+    let ipcArgs = path === '/navigate' ? (body as any) : (() => { const { action, ...rest } = body as any; return rest; })();
+    const result = await electron.browserView.action(ipcAction, ipcArgs);
+    if (result?.error) throw new Error(result.error);
+    return result;
+  }
+  // Web 端或非 action 路径（/screenshot、/passwords 等）：走 server Playwright
   const token = getAuthToken();
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (token) headers['Authorization'] = `Bearer ${token}`;
@@ -30,6 +40,24 @@ function ok(text: string): McpCallResult {
 }
 function err(msg: string): McpCallResult {
   return { content: [{ type: 'text', text: msg }], isError: true };
+}
+
+/** click/type 空参兜底：自动拉取当前页面编号元素清单，引导模型下一步用 index 定位 */
+async function emptyTargetHint(): Promise<McpCallResult> {
+  let list = '';
+  try {
+    const data = await callBrowserApi('/action', 'POST', { action: 'get_page_info' }) as any;
+    const elems = (data?.interactive || []).slice(0, 25).map((e: any) => {
+      let s = `[${e.index}] ${e.tag}`;
+      if (e.iframe) s += ' (in iframe)';
+      if (e.text) s += ` "${e.text.slice(0, 30)}"`;
+      if (e.placeholder) s += ` [ph:${e.placeholder}]`;
+      if (e.ariaLabel) s += ` [aria:${e.ariaLabel}]`;
+      return s;
+    }).join('\n');
+    if (elems) list = `\n当前页面可交互元素（前 25 个，用 index 参数重试）：\n${elems}`;
+  } catch { /* 页面不可用时忽略 */ }
+  return err(`未提供定位参数（index / selector / x+y）${list}\n请从上方编号列表中选择目标元素，以 { "index": <编号> } 形式重新调用。`);
 }
 
 // ========== 导航 ==========
@@ -83,19 +111,24 @@ export class BrowserOpenExternalTool implements BuiltInTool {
 // ========== 点击 ==========
 export class BrowserClickTool implements BuiltInTool {
   name = 'browser_click';
-  description = 'Click an element in the browser by CSS selector or coordinates. Uses real mouse movement.';
+  description = 'Click an element in the browser. Preferred: use the element index (index) from browser_get_page_info/browser_get_dom numbered list. Also supports CSS selector or coordinates. Uses real mouse movement. Returns pageChanged/noChangeStreak feedback; if ambiguous, a candidate list with indexes is returned.';
   inputSchema = {
     type: 'object',
     properties: {
-      selector: { type: 'string', description: 'CSS selector of the element to click.' },
-      x: { type: 'number', description: 'X coordinate (if no selector).' },
-      y: { type: 'number', description: 'Y coordinate (if no selector).' },
+      index: { type: 'number', description: 'Element index from the numbered interactive-element list returned by browser_get_page_info / browser_get_dom. Preferred over selector. If stale, re-fetch the list.' },
+      selector: { type: 'string', description: 'CSS selector of the element to click. Supports :contains("text") pseudo-selector to match elements by visible text, e.g. button:contains("登录"). If multiple elements match, an ambiguous candidate list with indexes is returned.' },
+      x: { type: 'number', description: 'X coordinate (last resort, if no index/selector).' },
+      y: { type: 'number', description: 'Y coordinate (last resort, if no index/selector).' },
     },
   };
   async execute(args: Record<string, unknown>): Promise<McpCallResult> {
     try {
-      await callBrowserApi('/action', 'POST', { action: 'click', selector: args.selector, x: args.x, y: args.y });
-      return ok(`Clicked ${args.selector || `(${args.x}, ${args.y})`}`);
+      // 空参兜底：自动返回页面编号元素清单，引导模型用 index 重试
+      if (args.index === undefined && !args.selector && args.x === undefined && args.y === undefined) {
+        return await emptyTargetHint();
+      }
+      const data = await callBrowserApi('/action', 'POST', { action: 'click', index: args.index, selector: args.selector, x: args.x, y: args.y }) as any;
+      return ok(JSON.stringify(data));
     } catch (e: any) { return err(e?.message || '点击失败'); }
   }
 }
@@ -103,12 +136,13 @@ export class BrowserClickTool implements BuiltInTool {
 // ========== 输入文本 ==========
 export class BrowserTypeTool implements BuiltInTool {
   name = 'browser_type';
-  description = 'Type text into a focused element or element by selector. Uses real keyboard input (per-character).';
+  description = 'Type text into an element. Preferred: use the element index (index) from browser_get_page_info/browser_get_dom numbered list; also supports CSS selector or the currently focused element. Uses real keyboard input (per-character).';
   inputSchema = {
     type: 'object',
     properties: {
       text: { type: 'string', description: 'The text to type.' },
-      selector: { type: 'string', description: 'CSS selector to focus before typing (optional).' },
+      index: { type: 'number', description: 'Element index from the numbered interactive-element list returned by browser_get_page_info / browser_get_dom. Preferred over selector.' },
+      selector: { type: 'string', description: 'CSS selector to focus before typing (optional). Supports :contains("text") pseudo-selector. If multiple elements match, an ambiguous candidate list with indexes is returned.' },
     },
     required: ['text'],
   };
@@ -116,8 +150,14 @@ export class BrowserTypeTool implements BuiltInTool {
     try {
       const text = args.text as string;
       if (!text) return err('text is required');
-      await callBrowserApi('/action', 'POST', { action: 'type', selector: args.selector, text });
-      return ok(`Typed ${text.length} characters${args.selector ? ' into ' + args.selector : ''}`);
+      // 注意：无 index/selector 时合法——输入到当前聚焦元素（先 click 聚焦再 type）
+      const data = await callBrowserApi('/action', 'POST', { action: 'type', index: args.index, selector: args.selector, text }) as any;
+      if (data?.error === '无聚焦元素') {
+        // 无聚焦目标时给出引导，而非裸报错
+        const hint = await emptyTargetHint();
+        return err(`无聚焦元素（需先用 browser_click 聚焦输入框，或直接传 index/selector）${(hint.content?.[0]?.text || '').replace(/^未提供定位参数（index \/ selector \/ x\+y）/, '')}`);
+      }
+      return ok(JSON.stringify(data));
     } catch (e: any) { return err(e?.message || '输入失败'); }
   }
 }
@@ -168,7 +208,7 @@ export class BrowserHoverTool implements BuiltInTool {
   inputSchema = {
     type: 'object',
     properties: {
-      selector: { type: 'string', description: 'CSS selector of the element to hover.' },
+      selector: { type: 'string', description: 'CSS selector of the element to hover. Supports :contains("text") pseudo-selector.' },
       x: { type: 'number', description: 'X coordinate (if no selector).' },
       y: { type: 'number', description: 'Y coordinate (if no selector).' },
     },
@@ -194,7 +234,7 @@ export class BrowserGetTextTool implements BuiltInTool {
   async execute(args: Record<string, unknown>): Promise<McpCallResult> {
     try {
       const data = await callBrowserApi('/action', 'POST', { action: 'get_text', selector: args.selector });
-      const text = typeof data === 'string' ? data : JSON.stringify(data);
+      const text = typeof data === 'string' ? data : ((data as any)?.text ?? JSON.stringify(data));
       return ok(text.slice(0, 8000));
     } catch (e: any) { return err(e?.message || '获取文本失败'); }
   }
@@ -203,12 +243,21 @@ export class BrowserGetTextTool implements BuiltInTool {
 // ========== 获取 DOM ==========
 export class BrowserGetDomTool implements BuiltInTool {
   name = 'browser_get_dom';
-  description = 'Get a summary of the current page DOM structure (preview, truncated).';
-  inputSchema = { type: 'object', properties: {} };
-  async execute(): Promise<McpCallResult> {
+  description = 'Get a structured DOM tree of visible elements (excludes script/style/svg), penetrating same-origin iframes and Shadow DOM. Each node has tag, id, class, role, aria-label, text, href, placeholder, type, name, value, children. Interactive nodes (a/button/input/select/textarea etc.) carry an index number usable directly by browser_click/browser_type (index param). Use selector to scope, depth to limit tree depth, maxNodes to cap node count.';
+  inputSchema = {
+    type: 'object',
+    properties: {
+      selector: { type: 'string', description: 'CSS selector to scope the DOM tree (default: entire body).' },
+      depth: { type: 'number', description: 'Max tree depth (default 12).' },
+      maxNodes: { type: 'number', description: 'Max number of nodes to return (default 1000).' },
+    },
+  };
+  async execute(args: Record<string, unknown>): Promise<McpCallResult> {
     try {
-      const data = await callBrowserApi('/action', 'POST', { action: 'get_dom' }) as any;
-      return ok(`DOM length: ${data.length}\nPreview:\n${data.preview}`);
+      const data = await callBrowserApi('/action', 'POST', { action: 'get_dom', selector: args.selector, depth: args.depth, maxNodes: args.maxNodes }) as any;
+      if (data.error) return err(data.error);
+      const iframes = data.iframes ? `\nIframes: sameOrigin=${data.iframes.sameOrigin}, crossOriginSkipped=${data.iframes.crossOriginSkipped}` : '';
+      return ok(`URL: ${data.url}\nTitle: ${data.title}\nNodes: ${data.nodeCount}${iframes}\nDOM tree (interactive nodes carry "index" for browser_click/browser_type):\n${JSON.stringify(data.dom, null, 2)}`);
     } catch (e: any) { return err(e?.message || '获取 DOM 失败'); }
   }
 }
@@ -242,6 +291,497 @@ export class BrowserScreenshotTool implements BuiltInTool {
   }
 }
 
+// ========== 批量填写表单 ==========
+export class BrowserFillFormTool implements BuiltInTool {
+  name = 'browser_fill_form';
+  description = 'Fill multiple form fields at once. Each field: {selector, value, type?} where type is "text"|"select"|"checkbox"|"radio". For select use label or value. For checkbox/radio set value true/false.';
+  inputSchema = {
+    type: 'object',
+    properties: {
+      fields: {
+        type: 'array',
+        description: 'Array of {selector, value, type?, label?} to fill.',
+        items: { type: 'object' },
+      },
+    },
+    required: ['fields'],
+  };
+  async execute(args: Record<string, unknown>): Promise<McpCallResult> {
+    try {
+      const data = await callBrowserApi('/action', 'POST', { action: 'fill_form', fields: args.fields }) as any;
+      return ok(`Filled ${data.filled} fields: ${JSON.stringify(data.fields)}`);
+    } catch (e: any) { return err(e?.message || '填表单失败'); }
+  }
+}
+
+// ========== 提交表单 ==========
+export class BrowserSubmitFormTool implements BuiltInTool {
+  name = 'browser_submit_form';
+  description = 'Submit a form by clicking a submit button (selector) or pressing Enter, then wait for navigation.';
+  inputSchema = {
+    type: 'object',
+    properties: { selector: { type: 'string', description: 'CSS selector of submit button (optional, defaults to Enter).' } },
+  };
+  async execute(args: Record<string, unknown>): Promise<McpCallResult> {
+    try {
+      const data = await callBrowserApi('/action', 'POST', { action: 'submit_form', selector: args.selector }) as any;
+      return ok(`Form submitted. URL: ${data.url}\nTitle: ${data.title}`);
+    } catch (e: any) { return err(e?.message || '提交失败'); }
+  }
+}
+
+// ========== 页面搜索 ==========
+export class BrowserSearchTool implements BuiltInTool {
+  name = 'browser_search';
+  description = 'Search on the current page: fill the search box with query and submit. Auto-detects search input if input_selector not given.';
+  inputSchema = {
+    type: 'object',
+    properties: {
+      query: { type: 'string', description: 'Search query text.' },
+      input_selector: { type: 'string', description: 'CSS selector of search input (optional, auto-detected).' },
+      submit_selector: { type: 'string', description: 'CSS selector of submit button (optional, defaults to Enter).' },
+    },
+    required: ['query'],
+  };
+  async execute(args: Record<string, unknown>): Promise<McpCallResult> {
+    try {
+      const data = await callBrowserApi('/action', 'POST', { action: 'search', query: args.query, input_selector: args.input_selector, submit_selector: args.submit_selector }) as any;
+      return ok(`Searched "${data.searched}". URL: ${data.url}\nTitle: ${data.title}`);
+    } catch (e: any) { return err(e?.message || '搜索失败'); }
+  }
+}
+
+// ========== 翻页 ==========
+export class BrowserNextPageTool implements BuiltInTool {
+  name = 'browser_next_page';
+  description = 'Go to the next page by clicking "下一页/›/Next" link or a custom selector.';
+  inputSchema = { type: 'object', properties: { selector: { type: 'string', description: 'CSS selector of next-page element (optional, auto-detected).' } } };
+  async execute(args: Record<string, unknown>): Promise<McpCallResult> {
+    try {
+      const data = await callBrowserApi('/action', 'POST', { action: 'next_page', selector: args.selector }) as any;
+      return ok(`Paged next. URL: ${data.url}\nTitle: ${data.title}`);
+    } catch (e: any) { return err(e?.message || '翻页失败'); }
+  }
+}
+export class BrowserPrevPageTool implements BuiltInTool {
+  name = 'browser_prev_page';
+  description = 'Go to the previous page by clicking "上一页/‹/Prev" link or a custom selector.';
+  inputSchema = { type: 'object', properties: { selector: { type: 'string', description: 'CSS selector of prev-page element (optional, auto-detected).' } } };
+  async execute(args: Record<string, unknown>): Promise<McpCallResult> {
+    try {
+      const data = await callBrowserApi('/action', 'POST', { action: 'prev_page', selector: args.selector }) as any;
+      return ok(`Paged prev. URL: ${data.url}\nTitle: ${data.title}`);
+    } catch (e: any) { return err(e?.message || '翻页失败'); }
+  }
+}
+
+// ========== 智能等待 ==========
+export class BrowserWaitForTool implements BuiltInTool {
+  name = 'browser_wait_for';
+  description = 'Wait for a condition: selector appearing, URL matching, or text appearing. Smarter than fixed wait.';
+  inputSchema = {
+    type: 'object',
+    properties: {
+      selector: { type: 'string', description: 'Wait for this CSS selector to appear.' },
+      url: { type: 'string', description: 'Wait for URL to match (string/regex).' },
+      text: { type: 'string', description: 'Wait for this text to appear on page.' },
+      timeout: { type: 'number', description: 'Max wait ms (default 10000, max 30000).' },
+    },
+  };
+  async execute(args: Record<string, unknown>): Promise<McpCallResult> {
+    try {
+      const data = await callBrowserApi('/action', 'POST', { action: 'wait_for', selector: args.selector, url: args.url, text: args.text, timeout: args.timeout }) as any;
+      return ok(`Waited for ${data.waited}: ${data.selector || data.url || data.text || data.ms + 'ms'}`);
+    } catch (e: any) { return err(e?.message || '等待失败'); }
+  }
+}
+
+// ========== 获取可见文本 ==========
+export class BrowserGetVisibleTextTool implements BuiltInTool {
+  name = 'browser_get_visible_text';
+  description = 'Get visible text content of the page or an element (filters hidden elements, returns clean text).';
+  inputSchema = { type: 'object', properties: { selector: { type: 'string', description: 'CSS selector (optional, defaults to full body).' } } };
+  async execute(args: Record<string, unknown>): Promise<McpCallResult> {
+    try {
+      const data = await callBrowserApi('/action', 'POST', { action: 'get_visible_text', selector: args.selector });
+      const text = typeof data === 'string' ? data : JSON.stringify(data);
+      return ok(text.slice(0, 8000));
+    } catch (e: any) { return err(e?.message || '获取文本失败'); }
+  }
+}
+
+// ========== 下拉选择 ==========
+export class BrowserSelectOptionTool implements BuiltInTool {
+  name = 'browser_select_option';
+  description = 'Select an option in a <select> dropdown by value or label.';
+  inputSchema = {
+    type: 'object',
+    properties: {
+      selector: { type: 'string', description: 'CSS selector of the <select> element.' },
+      value: { type: 'string', description: 'Option value to select.' },
+      label: { type: 'string', description: 'Option label (visible text) to select.' },
+    },
+    required: ['selector'],
+  };
+  async execute(args: Record<string, unknown>): Promise<McpCallResult> {
+    try {
+      await callBrowserApi('/action', 'POST', { action: 'select_option', selector: args.selector, value: args.value, label: args.label });
+      return ok(`Selected option in ${args.selector}`);
+    } catch (e: any) { return err(e?.message || '选择失败'); }
+  }
+}
+
+// ========== 勾选/取消 ==========
+export class BrowserCheckTool implements BuiltInTool {
+  name = 'browser_check';
+  description = 'Check a checkbox or radio button.';
+  inputSchema = { type: 'object', properties: { selector: { type: 'string', description: 'CSS selector of the checkbox/radio.' } }, required: ['selector'] };
+  async execute(args: Record<string, unknown>): Promise<McpCallResult> {
+    try {
+      await callBrowserApi('/action', 'POST', { action: 'check', selector: args.selector });
+      return ok(`Checked ${args.selector}`);
+    } catch (e: any) { return err(e?.message || '勾选失败'); }
+  }
+}
+export class BrowserUncheckTool implements BuiltInTool {
+  name = 'browser_uncheck';
+  description = 'Uncheck a checkbox.';
+  inputSchema = { type: 'object', properties: { selector: { type: 'string', description: 'CSS selector of the checkbox.' } }, required: ['selector'] };
+  async execute(args: Record<string, unknown>): Promise<McpCallResult> {
+    try {
+      await callBrowserApi('/action', 'POST', { action: 'uncheck', selector: args.selector });
+      return ok(`Unchecked ${args.selector}`);
+    } catch (e: any) { return err(e?.message || '取消勾选失败'); }
+  }
+}
+
+// ========== 页面信息 ==========
+export class BrowserGetPageInfoTool implements BuiltInTool {
+  name = 'browser_get_page_info';
+  description = 'Get current page url, title, and a numbered list of interactive elements (penetrates same-origin iframes and Shadow DOM, up to 300). Each element has an index number — pass it as the index param of browser_click/browser_type to locate the element precisely (preferred over CSS selector, especially for dynamic hash classes and elements inside iframes/popups). Also includes selector, tag, text, position and attributes (type, placeholder, value, ariaLabel, name, role, options for select, checked).';
+  inputSchema = { type: 'object', properties: {} };
+  async execute(): Promise<McpCallResult> {
+    try {
+      const data = await callBrowserApi('/action', 'POST', { action: 'get_page_info' }) as any;
+      if (data.error) return err(data.error);
+      const elems = (data.interactive || []).slice(0, 120).map((e: any) => {
+        let s = `[${e.index}] ${e.tag}`;
+        if (e.iframe) s += ' (in iframe)';
+        if (e.text) s += ` "${e.text.slice(0, 40)}"`;
+        if (e.placeholder) s += ` [ph:${e.placeholder}]`;
+        if (e.value) s += ` [val:${e.value}]`;
+        if (e.ariaLabel) s += ` [aria:${e.ariaLabel}]`;
+        if (e.options) s += ` [opts:${e.options.length}]`;
+        if (e.checked !== undefined) s += ` [checked:${e.checked}]`;
+        s += ` <${e.selector}>`;
+        return s;
+      }).join('\n');
+      return ok(`URL: ${data.url}\nTitle: ${data.title}\nInteractive elements (${data.interactiveCount}, numbered — use index in browser_click/browser_type):\n${elems}${(data.interactive || []).length > 120 ? '\n(only first 120 shown)' : ''}`);
+    } catch (e: any) { return err(e?.message || '获取页面信息失败'); }
+  }
+}
+
+// ========== 用已存密码登录 ==========
+export class BrowserLoginSavedTool implements BuiltInTool {
+  name = 'browser_login_saved';
+  description = 'Log into a site using a saved password. Pass host or url; auto-finds the login form, fills credentials, submits, and reports success. Requires the password to be saved first via the browser password manager.';
+  inputSchema = {
+    type: 'object',
+    properties: {
+      host: { type: 'string', description: 'Site host (e.g. example.com) to match saved credential.' },
+      url: { type: 'string', description: 'Login page URL to navigate first (optional). If given, host is derived from it.' },
+    },
+  };
+  async execute(args: Record<string, unknown>): Promise<McpCallResult> {
+    try {
+      const data = await callBrowserApi('/login-saved', 'POST', { host: args.host, url: args.url }) as any;
+      return ok(`Login ${data.loggedIn ? 'succeeded' : 'may have failed (login form still present)'}. URL: ${data.url}\nTitle: ${data.title}`);
+    } catch (e: any) { return err(e?.message || '登录失败'); }
+  }
+}
+
+// ========== C4 多标签页管理 ==========
+export class BrowserNewTabTool implements BuiltInTool {
+  name = 'browser_new_tab';
+  description = 'Open a new browser tab and optionally navigate to a URL. Returns the new tab id. 新开标签页并导航（可选 url），返回标签页 id。';
+  inputSchema = {
+    type: 'object',
+    properties: { url: { type: 'string', description: 'Optional URL to navigate the new tab to. 不传则打开空白标签页。' } },
+  };
+  async execute(args: Record<string, unknown>): Promise<McpCallResult> {
+    try {
+      const data = await callBrowserApi('/action', 'POST', { action: 'new_tab', url: args.url }) as any;
+      return ok(`新标签页已打开。tabId=${data.tabId}${args.url ? `, url=${data.url}` : ''}`);
+    } catch (e: any) { return err(e?.message || '新开标签页失败'); }
+  }
+}
+export class BrowserSwitchTabTool implements BuiltInTool {
+  name = 'browser_switch_tab';
+  description = 'Switch to a browser tab by tabId. 切换到指定标签页。';
+  inputSchema = {
+    type: 'object',
+    properties: { tabId: { type: 'number', description: 'The tab id to switch to (from browser_get_tabs).' } },
+    required: ['tabId'],
+  };
+  async execute(args: Record<string, unknown>): Promise<McpCallResult> {
+    try {
+      if (args.tabId === undefined || args.tabId === null) return err('tabId 为必填项');
+      const data = await callBrowserApi('/action', 'POST', { action: 'switch_tab', tabId: args.tabId }) as any;
+      return ok(`已切换到标签页 tabId=${data.tabId}, url=${data.url}, title=${data.title}`);
+    } catch (e: any) { return err(e?.message || '切换标签页失败'); }
+  }
+}
+export class BrowserCloseTabTool implements BuiltInTool {
+  name = 'browser_close_tab';
+  description = 'Close a browser tab. 关闭标签页（不传 tabId 则关闭当前活动标签页）。';
+  inputSchema = {
+    type: 'object',
+    properties: { tabId: { type: 'number', description: 'The tab id to close (optional, defaults to the active tab).' } },
+  };
+  async execute(args: Record<string, unknown>): Promise<McpCallResult> {
+    try {
+      const data = await callBrowserApi('/action', 'POST', { action: 'close_tab', tabId: args.tabId }) as any;
+      return ok(`已关闭标签页 tabId=${data.closedTabId}。剩余标签页数=${data.remaining}`);
+    } catch (e: any) { return err(e?.message || '关闭标签页失败'); }
+  }
+}
+export class BrowserGetTabsTool implements BuiltInTool {
+  name = 'browser_get_tabs';
+  description = 'List all open browser tabs (id/url/title/active). 列出所有标签页。';
+  inputSchema = { type: 'object', properties: {} };
+  async execute(): Promise<McpCallResult> {
+    try {
+      const data = await callBrowserApi('/action', 'POST', { action: 'get_tabs' }) as any;
+      return ok(`标签页列表（共 ${data.tabs.length} 个）：\n${JSON.stringify(data.tabs, null, 2)}`);
+    } catch (e: any) { return err(e?.message || '获取标签页列表失败'); }
+  }
+}
+
+// ========== C5 网络请求监听 ==========
+export class BrowserWaitForRequestTool implements BuiltInTool {
+  name = 'browser_wait_for_request';
+  description = 'Wait for a network request matching urlPattern to finish (includes XHR/fetch). Returns request url/status/method. 等待匹配 URL 模式的网络请求完成。';
+  inputSchema = {
+    type: 'object',
+    properties: {
+      urlPattern: { type: 'string', description: 'URL substring or regex pattern to match (e.g. "/api/list" or ".*\\.json").' },
+      timeout: { type: 'number', description: 'Max wait ms (default 10000, max 30000).' },
+    },
+    required: ['urlPattern'],
+  };
+  async execute(args: Record<string, unknown>): Promise<McpCallResult> {
+    try {
+      const urlPattern = args.urlPattern as string;
+      if (!urlPattern) return err('urlPattern 为必填项');
+      const data = await callBrowserApi('/action', 'POST', { action: 'wait_for_request', urlPattern, timeout: args.timeout }) as any;
+      if (data?.error) return err(data.error);
+      return ok(`等待到匹配请求: ${JSON.stringify(data)}`);
+    } catch (e: any) { return err(e?.message || '等待网络请求失败'); }
+  }
+}
+export class BrowserGetNetworkLogTool implements BuiltInTool {
+  name = 'browser_get_network_log';
+  description = 'Get recent network request log (url/status/method/responseSize). 获取最近的网络请求日志（内存缓冲最近 100 条）。';
+  inputSchema = {
+    type: 'object',
+    properties: {
+      urlPattern: { type: 'string', description: 'Optional URL substring to filter log entries.' },
+      lastN: { type: 'number', description: 'Return the last N entries (default 20, max 100).' },
+    },
+  };
+  async execute(args: Record<string, unknown>): Promise<McpCallResult> {
+    try {
+      const data = await callBrowserApi('/action', 'POST', { action: 'get_network_log', urlPattern: args.urlPattern, lastN: args.lastN }) as any;
+      return ok(`网络日志（${data.entries.length} 条）：\n${JSON.stringify(data.entries, null, 2)}`);
+    } catch (e: any) { return err(e?.message || '获取网络日志失败'); }
+  }
+}
+
+// ========== C6 结构化数据提取 ==========
+export class BrowserExtractListTool implements BuiltInTool {
+  name = 'browser_extract_list';
+  description = 'Extract a list of structured data from the page as JSON array. 按模板从页面批量提取列表数据。selector 指定列表项容器，fields 描述每项要提取的字段（字段名→{selector,attr}）。attr 为 "text" 取文本，"html" 取 innerHTML，其他值取对应属性（如 href/src）。若不传 fields，自动识别常见列表项（商品卡片：标题/价格/链接）。';
+  inputSchema = {
+    type: 'object',
+    properties: {
+      selector: { type: 'string', description: 'CSS selector of the list item container (e.g. ".goods-item"). 列表项容器选择器。' },
+      fields: {
+        type: 'object',
+        description: 'Map of field name → { selector, attr }. attr: "text"=textContent, "html"=innerHTML, other=getAttribute(attr). e.g. { title: { selector: ".title", attr: "text" }, price: { selector: ".price", attr: "text" }, link: { selector: "a", attr: "href" } }.',
+      },
+      limit: { type: 'number', description: 'Max number of items to extract (default 20).' },
+    },
+  };
+  async execute(args: Record<string, unknown>): Promise<McpCallResult> {
+    try {
+      const data = await callBrowserApi('/action', 'POST', { action: 'extract_list', selector: args.selector, fields: args.fields, limit: args.limit }) as any;
+      if (data?.error) return err(data.error);
+      return ok(`提取到 ${data.count} 条数据：\n${JSON.stringify(data.items, null, 2)}`);
+    } catch (e: any) { return err(e?.message || '结构化提取失败'); }
+  }
+}
+
+// ========== C9 视觉定位闭环 ==========
+export class BrowserVisualLocateTool implements BuiltInTool {
+  name = 'browser_visual_locate';
+  description = 'Screenshot the page and return the saved image path, then use image_analyze to locate target elements by vision (fallback when get_page_info/get_dom cannot capture popup/portal structure). 截图后用视觉模型识别目标元素坐标/文本，作为 get_page_info/get_dom 拿不到弹窗结构时的兜底。本工具完成截图并返回路径，需紧接着调用 image_analyze(path=<返回路径>, prompt="找出所有 <target> 元素的位置和文本，返回候选列表含坐标/文本/置信度") 完成视觉识别闭环。';
+  inputSchema = {
+    type: 'object',
+    properties: {
+      target: { type: 'string', description: 'Description of the target element to locate (e.g. "登录按钮" / "关闭弹窗的 X 图标").' },
+      screenshot: { type: 'boolean', description: 'Whether to take a fresh screenshot (default true).' },
+    },
+    required: ['target'],
+  };
+  async execute(args: Record<string, unknown>): Promise<McpCallResult> {
+    try {
+      const target = args.target as string;
+      if (!target) return err('target 为必填项');
+      const take = args.screenshot !== false;
+      const data = await callBrowserApi('/action', 'POST', { action: 'visual_locate', target, screenshot: take }) as any;
+      if (data?.error) return err(data.error);
+      const path = data.path;
+      const hint = `已截图保存到 ${path}。请紧接着调用 image_analyze 工具完成视觉识别：\nimage_analyze(path="${path}", prompt="找出页面中所有「${target}」元素的位置（坐标）和文本，返回候选列表（每项含坐标 x/y/width/height、文本、置信度）。若无匹配返回空列表。")`;
+      return ok(JSON.stringify({ screenshotPath: path, target, nextStep: 'call image_analyze', hint })) ;
+    } catch (e: any) { return err(e?.message || '视觉定位截图失败'); }
+  }
+}
+
+// ========== C11 文件上传/下载 ==========
+export class BrowserUploadTool implements BuiltInTool {
+  name = 'browser_upload';
+  description = 'Upload a file by setting filePath on an <input type="file">. 给 input[type=file] 设文件路径并上传。用 index 或 selector 定位 input。';
+  inputSchema = {
+    type: 'object',
+    properties: {
+      index: { type: 'number', description: 'Element index of the file input (from browser_get_page_info numbered list).' },
+      selector: { type: 'string', description: 'CSS selector of the <input type="file"> element.' },
+      filePath: { type: 'string', description: 'Absolute path to the file to upload.' },
+    },
+    required: ['filePath'],
+  };
+  async execute(args: Record<string, unknown>): Promise<McpCallResult> {
+    try {
+      const filePath = args.filePath as string;
+      if (!filePath) return err('filePath 为必填项');
+      if (args.index === undefined && !args.selector) return err('需要 index 或 selector 来定位 input[type=file]');
+      const data = await callBrowserApi('/action', 'POST', { action: 'upload', index: args.index, selector: args.selector, filePath }) as any;
+      if (data?.error) return err(data.error);
+      return ok(`已上传文件: ${filePath}`);
+    } catch (e: any) { return err(e?.message || '文件上传失败'); }
+  }
+}
+export class BrowserDownloadTool implements BuiltInTool {
+  name = 'browser_download';
+  description = 'Trigger a download (click a link or navigate to url) and wait for it to finish, returns the saved path. 触发下载并等待完成，返回保存路径。savePath 不传则用默认下载目录。';
+  inputSchema = {
+    type: 'object',
+    properties: {
+      url: { type: 'string', description: 'URL to navigate to trigger download (optional if using selector).' },
+      selector: { type: 'string', description: 'CSS selector of a link/button to click to trigger download (optional if using url).' },
+      savePath: { type: 'string', description: 'Path to save the downloaded file (optional, defaults to workspace/downloads/).' },
+    },
+  };
+  async execute(args: Record<string, unknown>): Promise<McpCallResult> {
+    try {
+      if (!args.url && !args.selector) return err('需要 url 或 selector 来触发下载');
+      const data = await callBrowserApi('/action', 'POST', { action: 'download', url: args.url, selector: args.selector, savePath: args.savePath }) as any;
+      if (data?.error) return err(data.error);
+      return ok(`下载完成: ${data.filename}\n保存路径: ${data.savedPath}`);
+    } catch (e: any) { return err(e?.message || '文件下载失败'); }
+  }
+}
+
+// ========== C12 滚动到元素 / 可见性检测 ==========
+export class BrowserScrollIntoViewTool implements BuiltInTool {
+  name = 'browser_scroll_into_view';
+  description = 'Scroll an element into the viewport. 滚动使元素进入视口。用 index 或 selector 定位。';
+  inputSchema = {
+    type: 'object',
+    properties: {
+      index: { type: 'number', description: 'Element index from browser_get_page_info numbered list.' },
+      selector: { type: 'string', description: 'CSS selector of the element to scroll into view.' },
+    },
+  };
+  async execute(args: Record<string, unknown>): Promise<McpCallResult> {
+    try {
+      if (args.index === undefined && !args.selector) return err('需要 index 或 selector 来定位元素');
+      const data = await callBrowserApi('/action', 'POST', { action: 'scroll_into_view', index: args.index, selector: args.selector }) as any;
+      if (data?.error) return err(data.error);
+      return ok(`已滚动到元素${args.index !== undefined ? ` (index=${args.index})` : ` (${args.selector})`}`);
+    } catch (e: any) { return err(e?.message || '滚动到元素失败'); }
+  }
+}
+export class BrowserIsVisibleTool implements BuiltInTool {
+  name = 'browser_is_visible';
+  description = 'Check whether an element is visible. Returns { visible: boolean, reason }. 返回元素是否可见及原因。用 index 或 selector 定位。';
+  inputSchema = {
+    type: 'object',
+    properties: {
+      index: { type: 'number', description: 'Element index from browser_get_page_info numbered list.' },
+      selector: { type: 'string', description: 'CSS selector of the element to check.' },
+    },
+  };
+  async execute(args: Record<string, unknown>): Promise<McpCallResult> {
+    try {
+      if (args.index === undefined && !args.selector) return err('需要 index 或 selector 来定位元素');
+      const data = await callBrowserApi('/action', 'POST', { action: 'is_visible', index: args.index, selector: args.selector }) as any;
+      if (data?.error) return err(data.error);
+      return ok(`元素可见性: ${JSON.stringify(data)}`);
+    } catch (e: any) { return err(e?.message || '可见性检测失败'); }
+  }
+}
+
+// ========== C13 拖拽 ==========
+export class BrowserDragTool implements BuiltInTool {
+  name = 'browser_drag';
+  description = 'Drag from a start point to an end point. 从起点拖到终点。起点/终点均可用 index/selector/坐标(x/y)指定。';
+  inputSchema = {
+    type: 'object',
+    properties: {
+      fromIndex: { type: 'number', description: 'Element index of drag source (from browser_get_page_info).' },
+      fromSelector: { type: 'string', description: 'CSS selector of drag source.' },
+      fromX: { type: 'number', description: 'X coordinate of drag source.' },
+      fromY: { type: 'number', description: 'Y coordinate of drag source.' },
+      toIndex: { type: 'number', description: 'Element index of drop target (from browser_get_page_info).' },
+      toSelector: { type: 'string', description: 'CSS selector of drop target.' },
+      toX: { type: 'number', description: 'X coordinate of drop target.' },
+      toY: { type: 'number', description: 'Y coordinate of drop target.' },
+    },
+  };
+  async execute(args: Record<string, unknown>): Promise<McpCallResult> {
+    try {
+      const hasFrom = args.fromIndex !== undefined || args.fromSelector || (args.fromX !== undefined && args.fromY !== undefined);
+      const hasTo = args.toIndex !== undefined || args.toSelector || (args.toX !== undefined && args.toY !== undefined);
+      if (!hasFrom || !hasTo) return err('需要起点（fromIndex/fromSelector/fromX+fromY）和终点（toIndex/toSelector/toX+toY）');
+      const data = await callBrowserApi('/action', 'POST', {
+        action: 'drag',
+        fromIndex: args.fromIndex, fromSelector: args.fromSelector, fromX: args.fromX, fromY: args.fromY,
+        toIndex: args.toIndex, toSelector: args.toSelector, toX: args.toX, toY: args.toY,
+      }) as any;
+      if (data?.error) return err(data.error);
+      return ok(`拖拽完成: ${JSON.stringify(data)}`);
+    } catch (e: any) { return err(e?.message || '拖拽失败'); }
+  }
+}
+
+// ========== C14 Accessibility Tree ==========
+export class BrowserGetA11yTreeTool implements BuiltInTool {
+  name = 'browser_get_a11y_tree';
+  description = 'Get the page accessibility tree (role/name/value/children), a stable supplement to get_dom for SPA/portal. 返回页面无障碍树，作为 get_dom 的补充，对 SPA/portal 更稳。';
+  inputSchema = {
+    type: 'object',
+    properties: { maxNodes: { type: 'number', description: 'Max number of nodes to return (default 200).' } },
+  };
+  async execute(args: Record<string, unknown>): Promise<McpCallResult> {
+    try {
+      const data = await callBrowserApi('/action', 'POST', { action: 'get_a11y_tree', maxNodes: args.maxNodes }) as any;
+      if (data?.error) return err(data.error);
+      return ok(`A11y tree（${data.nodeCount} 个节点）：\n${JSON.stringify(data.tree, null, 2)}`);
+    } catch (e: any) { return err(e?.message || '获取无障碍树失败'); }
+  }
+}
+
 /** 所有浏览器工具类列表 */
 export const BrowserToolClasses = [
   BrowserNavigateTool,
@@ -255,6 +795,40 @@ export const BrowserToolClasses = [
   BrowserGetDomTool,
   BrowserWaitTool,
   BrowserScreenshotTool,
+  BrowserFillFormTool,
+  BrowserSubmitFormTool,
+  BrowserSearchTool,
+  BrowserNextPageTool,
+  BrowserPrevPageTool,
+  BrowserWaitForTool,
+  BrowserGetVisibleTextTool,
+  BrowserSelectOptionTool,
+  BrowserCheckTool,
+  BrowserUncheckTool,
+  BrowserGetPageInfoTool,
+  BrowserLoginSavedTool,
+  // C4 多标签页管理
+  BrowserNewTabTool,
+  BrowserSwitchTabTool,
+  BrowserCloseTabTool,
+  BrowserGetTabsTool,
+  // C5 网络请求监听
+  BrowserWaitForRequestTool,
+  BrowserGetNetworkLogTool,
+  // C6 结构化数据提取
+  BrowserExtractListTool,
+  // C9 视觉定位闭环
+  BrowserVisualLocateTool,
+  // C11 文件上传/下载
+  BrowserUploadTool,
+  BrowserDownloadTool,
+  // C12 滚动到元素 / 可见性检测
+  BrowserScrollIntoViewTool,
+  BrowserIsVisibleTool,
+  // C13 拖拽
+  BrowserDragTool,
+  // C14 Accessibility Tree
+  BrowserGetA11yTreeTool,
 ];
 
 /** 所有浏览器工具的暴露名（裸名） */
@@ -262,4 +836,24 @@ export const BROWSER_TOOL_NAMES = [
   'browser_navigate', 'browser_open_external', 'browser_click', 'browser_type', 'browser_press_key',
   'browser_scroll', 'browser_hover', 'browser_get_text', 'browser_get_dom',
   'browser_wait', 'browser_screenshot',
+  'browser_fill_form', 'browser_submit_form', 'browser_search',
+  'browser_next_page', 'browser_prev_page', 'browser_wait_for', 'browser_get_visible_text',
+  'browser_select_option', 'browser_check', 'browser_uncheck', 'browser_get_page_info',
+  'browser_login_saved',
+  // C4 多标签页管理
+  'browser_new_tab', 'browser_switch_tab', 'browser_close_tab', 'browser_get_tabs',
+  // C5 网络请求监听
+  'browser_wait_for_request', 'browser_get_network_log',
+  // C6 结构化数据提取
+  'browser_extract_list',
+  // C9 视觉定位闭环
+  'browser_visual_locate',
+  // C11 文件上传/下载
+  'browser_upload', 'browser_download',
+  // C12 滚动到元素 / 可见性检测
+  'browser_scroll_into_view', 'browser_is_visible',
+  // C13 拖拽
+  'browser_drag',
+  // C14 Accessibility Tree
+  'browser_get_a11y_tree',
 ];

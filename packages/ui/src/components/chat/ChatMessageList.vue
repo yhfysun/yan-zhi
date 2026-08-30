@@ -60,25 +60,40 @@
                     class="msg-config-card"
                     @saved="onConfigSaved"
                   />
+                  <DeliverableFileCard
+                    v-if="getRoundDeliverableFiles(round).length"
+                    :files="getRoundDeliverableFiles(round)"
+                    class="msg-deliverable-card"
+                  />
                 </template>
-                <div v-else-if="isLastRoundStreaming(round, ri)" class="msg-content streaming">
-                  <span class="typing-dots" aria-label="正在输入"><span></span><span></span><span></span></span>
-                </div>
+                <template v-else-if="isLastRoundStreaming(round, ri)">
+                  <!-- 有实时正文：跑马灯式流式显示 + 末尾闪烁光标 -->
+                  <div v-if="getStreamingText(round, ri)" class="msg-content streaming-content" v-html="renderStreamingContent(getStreamingText(round, ri))" @click="handleContentClick"></div>
+                  <!-- 有思考但无正文：显示正在思考 + 实时思考内容 -->
+                  <div v-else-if="getStreamingReasoning(round, ri)" class="msg-reasoning streaming-reasoning">
+                    <div class="reasoning-header"><span>正在思考…</span></div>
+                    <div class="reasoning-body">{{ getStreamingReasoning(round, ri) }}</div>
+                  </div>
+                  <!-- 刚开始无任何内容：三点初始态 -->
+                  <div v-else class="msg-content streaming">
+                    <span class="typing-dots" aria-label="正在输入"><span></span><span></span><span></span></span>
+                  </div>
+                </template>
               </div>
 
               <div v-if="round.hasAgentProcess" class="agent-process-header" @click="toggleAgentProcess('round-' + ri)">
                 <el-icon :size="14" class="agent-process-icon">
-                  <CaretRight v-if="!expandedAgentProcess['round-' + ri]" />
+                  <CaretRight v-if="!isProcessOpen(round, ri)" />
                   <CaretBottom v-else />
                 </el-icon>
                 <span>智能体思考过程</span>
                 <span class="agent-process-stats">({{ round.agentStats?.reasoningCount || 0 }} 次推理，{{ round.agentStats?.toolCallCount || 0 }} 个工具调用)</span>
                 <el-icon :size="12" class="agent-process-chevron">
-                  <ArrowDown v-if="!expandedAgentProcess['round-' + ri]" />
+                  <ArrowDown v-if="!isProcessOpen(round, ri)" />
                   <ArrowRight v-else />
                 </el-icon>
               </div>
-              <div v-if="round.hasAgentProcess" v-show="expandedAgentProcess['round-' + ri]" class="agent-process-steps">
+              <div v-if="round.hasAgentProcess" v-show="isProcessOpen(round, ri)" class="agent-process-steps">
                 <div v-for="(step, si) in round.steps" :key="'agent-step-' + ri + '-' + si" class="agent-step">
                   <div v-if="step.reasoningContent" class="msg-reasoning">
                     <div class="reasoning-header" @click="toggleReasoning('agent-step-' + ri + '-' + si)">
@@ -114,11 +129,11 @@
                             <code class="tool-item-fn">{{ resolveToolDisplay(tc).tool }}</code>
                           </div>
                           <el-icon :size="12" class="tool-item-chevron">
-                            <ArrowDown v-if="expandedTools['agent-step-' + ri + '-' + si + '-' + idx]" />
+                            <ArrowDown v-if="isToolItemOpen(tc.id, 'agent-step-' + ri + '-' + si + '-' + idx)" />
                             <ArrowRight v-else />
                           </el-icon>
                         </div>
-                        <div v-show="expandedTools['agent-step-' + ri + '-' + si + '-' + idx]" class="tool-item-body">
+                        <div v-show="isToolItemOpen(tc.id, 'agent-step-' + ri + '-' + si + '-' + idx)" class="tool-item-body">
                           <div class="tool-item-section">
                             <div class="tool-item-label">参数</div>
                             <pre class="tool-item-json">{{ resolveToolArgs(tc) }}</pre>
@@ -127,6 +142,14 @@
                             <div class="tool-item-label">结果</div>
                             <pre class="tool-item-json" :class="{ 'tool-item-json-error': isStepToolError(step, tc.id) }">{{ getStepToolResult(step, tc.id) }}</pre>
                           </div>
+                          <div v-if="detectGitPath(getStepToolResult(step, tc.id))" class="tool-item-section">
+                            <el-button size="small" @click="openInGit(detectGitPath(getStepToolResult(step, tc.id))!)">浏览文件</el-button>
+                          </div>
+                          <SubAgentRoundView
+                            v-if="tc.toolName === 'call_agent' && step.subAgentRounds?.find(r => r.toolCallId === tc.id)"
+                            :round="step.subAgentRounds!.find(r => r.toolCallId === tc.id)!"
+                            :id-prefix="'sub-' + ri + '-' + si + '-' + idx"
+                          />
                         </div>
                       </div>
                     </div>
@@ -172,6 +195,9 @@
                             <div class="tool-item-label">结果</div>
                             <pre class="tool-item-json" :class="{ 'tool-item-json-error': isToolError(tc.id) }">{{ getToolResult(tc.id) }}</pre>
                           </div>
+                          <div v-if="detectGitPath(getToolResult(tc.id))" class="tool-item-section">
+                            <el-button size="small" @click="openInGit(detectGitPath(getToolResult(tc.id))!)">浏览文件</el-button>
+                          </div>
                         </div>
                       </div>
                     </div>
@@ -180,6 +206,7 @@
               </div>
             </div>
           </div>
+
 
           <div class="msg-actions msg-actions-assistant">
             <el-tooltip content="复制" placement="top"><el-button text size="small" circle @click="copyMsg(round.finalAssistant!)"><el-icon><CopyDocument /></el-icon></el-button></el-tooltip>
@@ -210,6 +237,53 @@
     </div>
   </div>
 
+  <!-- ask_user 内联表单（消息流末尾独立渲染，不受横岗 hover 与轮次数控制） -->
+  <div v-if="store.pendingQuestion" class="inline-ask-card">
+    <div class="inline-ask-icon"><el-icon><ChatDotRound /></el-icon></div>
+    <div class="inline-ask-body">
+      <div class="inline-ask-question">{{ store.pendingQuestion.question }}</div>
+      <div v-if="askMultiSelect" class="inline-ask-options">
+        <el-checkbox v-for="(opt, i) in store.pendingQuestion.options" :key="i" v-model="askChecked[i]">{{ opt }}</el-checkbox>
+      </div>
+      <div v-else-if="store.pendingQuestion.options?.length" class="inline-ask-options">
+        <button v-for="(opt, i) in store.pendingQuestion.options" :key="i" type="button" class="inline-ask-opt" :class="{ 'is-active': askSingle === opt }" @click="askSingle = opt">{{ opt }}</button>
+        <button type="button" class="inline-ask-opt inline-ask-opt-text" :class="{ 'is-active': askShowText }" @click="askShowText = true">其他（文字输入）</button>
+      </div>
+      <el-input v-if="!store.pendingQuestion.options?.length || askShowText" v-model="askText" type="textarea" :rows="3" placeholder="输入你的回答..." @keyup.ctrl.enter="onAskSubmit" />
+      <button v-if="store.pendingQuestion.allowSupplement !== false && !askSupplementOpen" type="button" class="inline-ask-toggle" @click="askSupplementOpen = true">+ 补充说明</button>
+      <el-input v-if="store.pendingQuestion.allowSupplement !== false && askSupplementOpen" v-model="askSupplement" type="textarea" :rows="2" placeholder="补充说明（可选）" class="inline-ask-supplement" @keyup.ctrl.enter="onAskSubmit" />
+      <div class="inline-ask-actions">
+        <el-button size="small" @click="onAskSkip">跳过</el-button>
+        <el-button size="small" type="primary" @click="onAskSubmit">提交</el-button>
+      </div>
+    </div>
+  </div>
+
+  <!-- confirm_user 内联表单（多页确认向导，独立渲染） -->
+  <div v-if="store.pendingConfirmation && confirmCurrentPage" class="inline-ask-card">
+    <div class="inline-ask-icon"><el-icon><ChatDotRound /></el-icon></div>
+    <div class="inline-ask-body">
+      <div class="inline-ask-step">第 {{ store.pendingConfirmation.index + 1 }} / {{ store.pendingConfirmation.pages.length }} 页</div>
+      <div class="inline-ask-question">{{ confirmCurrentPage.question }}</div>
+      <div v-if="confirmCurrentPage.description" class="inline-ask-desc">{{ confirmCurrentPage.description }}</div>
+      <div v-if="confirmMultiSelect" class="inline-ask-options">
+        <el-checkbox v-for="(opt, i) in confirmCurrentPage.options" :key="i" v-model="confirmChecked[i]">{{ opt }}</el-checkbox>
+      </div>
+      <div v-else-if="confirmCurrentPage.options?.length" class="inline-ask-options">
+        <button v-for="(opt, i) in confirmCurrentPage.options" :key="i" type="button" class="inline-ask-opt" :class="{ 'is-active': confirmSingle === opt }" @click="confirmSingle = opt">{{ opt }}</button>
+        <button v-if="confirmCurrentPage.allowText !== false" type="button" class="inline-ask-opt inline-ask-opt-text" :class="{ 'is-active': confirmShowText }" @click="confirmShowText = true">其他（文字输入）</button>
+      </div>
+      <el-input v-if="confirmCurrentPage.allowText !== false && (!confirmCurrentPage.options?.length || confirmMultiSelect || confirmShowText)" v-model="confirmText" type="textarea" :rows="3" placeholder="输入你的回答..." />
+      <button v-if="confirmCurrentPage.allowSupplement !== false && !confirmSupplementOpen" type="button" class="inline-ask-toggle" @click="confirmSupplementOpen = true">+ 补充说明</button>
+      <el-input v-if="confirmCurrentPage.allowSupplement !== false && confirmSupplementOpen" v-model="confirmSupplement" type="textarea" :rows="2" placeholder="补充说明（可选）" class="inline-ask-supplement" />
+      <div class="inline-ask-actions">
+        <el-button size="small" @click="onConfirmSkip">跳过</el-button>
+        <el-button size="small" type="primary" @click="onConfirmNext">
+          {{ store.pendingConfirmation.index < store.pendingConfirmation.pages.length - 1 ? '下一页' : '完成' }}
+        </el-button>
+      </div>
+    </div>
+  </div>
 
   <div
     v-if="userRoundIndices.length > 1"
@@ -248,32 +322,100 @@
         <span class="round-nav-list-text">{{ getRoundText(ri) }}</span>
       </div>
     </div>
+
+
+    <transition name="scroll-fab">
+      <button v-if="showScrollTop" class="scroll-fab scroll-fab-top" @click="messagesRef!.scrollTop = 0" aria-label="滚动到顶部">
+        <el-icon><ArrowUp /></el-icon>
+      </button>
+    </transition>
+    <transition name="scroll-fab">
+      <button v-if="showScrollBottom" class="scroll-fab scroll-fab-bottom" @click="scrollToBottom" aria-label="滚动到底部">
+        <el-icon><ArrowDown /></el-icon>
+      </button>
+    </transition>
   </div>
 </template>
 
 <script setup lang="ts">
 import {
-  User, ChatDotRound, CaretRight, CaretBottom, ArrowDown, ArrowRight, Loading, CircleCheck,
+  User, ChatDotRound, CaretRight, CaretBottom, ArrowDown, ArrowRight, ArrowUp, Loading, CircleCheck,
   CircleClose, CopyDocument, EditPen, MagicStick, Delete, View, Fold, Refresh, Setting,
 } from '@element-plus/icons-vue';
 import { ref, watch, nextTick, computed } from 'vue';
+import { useRouter } from 'vue-router';
 import { useChat } from '../../composables/chat/useChat';
+import type { MessageRound } from '../../composables/chat/useChat';
+import { useSettingsStore } from '../../stores/settings';
 import TaskPlanCard from '../TaskPlanCard.vue';
 import PlatformConfigCard from '../PlatformConfigCard.vue';
+import SubAgentRoundView from './SubAgentRoundView.vue';
+import DeliverableFileCard from './DeliverableFileCard.vue';
 
 const {
-  store, platformStore, messagesRef, messageRounds, formatTime, collapsedMessages, toggleMsgCollapse,
+  store, platformStore, fileStore, messagesRef, messageRounds, formatTime, collapsedMessages, toggleMsgCollapse,
   renderMarkdown, handleContentClick, copyMsg, editMsg, distillUserMsg, delMsg,
-  openSnapshotDialog, isLastRoundStreaming, parseConfigCard, getEditPlatform,
+  openSnapshotDialog, isLastRoundStreaming, getStreamingStep, parseConfigCard, getEditPlatform,
   getEditReason, onConfigSaved, expandedReasoning, toggleReasoning, expandedAgentProcess,
   toggleAgentProcess, expandedStepTools, toggleStepTools, getStepToolGroupClass, isStepToolsRunning,
   isStepToolsError, toggleTool, getStepToolStatusClass, getStepToolResult, isStepToolError, resolveToolDisplay,
   resolveToolArgs, expandedTools, toggleToolGroup, getToolGroupStatusClass, isToolGroupRunning,
   isToolGroupError, expandedToolGroups, getToolStatusClass, getToolResult, isToolError, distillAssistantMsg, regenerateMsg,
+  isToolItemOpen,
   selectedModelId, input, openPlatformConfig,
   userRoundIndices, activeNavRound, scrollToRound,
+  showScrollBottom, showScrollTop, scrollToBottom,
+  askMultiSelect, askChecked, askSingle, askShowText, askText, askSupplement, onAskSubmit, onAskSkip,
+  confirmCurrentPage, confirmMultiSelect, confirmChecked, confirmSingle, confirmShowText,
+  confirmText, confirmSupplement, onConfirmSkip, onConfirmNext,
 } = useChat();
+const askSupplementOpen = ref(false);
+const confirmSupplementOpen = ref(false);
 const document = window.document;
+const router = useRouter();
+
+// ask_user / confirm_user 表单出现时自动滚动到底部
+watch(
+  () => !!store.pendingQuestion || !!store.pendingConfirmation,
+  (show) => {
+    if (show) {
+      nextTick(() => {
+        setTimeout(() => {
+          const el = messagesRef.value;
+          if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+        }, 50);
+      });
+    }
+  },
+);
+
+// 流式过程中：智能体思考过程区域限高后，自动滚到底部以看到最新工具调用进度
+watch(
+  messageRounds,
+  () => {
+    if (!store.streaming) return;
+    nextTick(() => {
+      const all = messagesRef.value?.querySelectorAll<HTMLElement>('.agent-process-steps');
+      const last = all?.[all.length - 1];
+      if (last) last.scrollTop = last.scrollHeight;
+    });
+  },
+  { flush: 'post' },
+);
+
+/** 从工具结果文本中检测目录绝对路径，用于「浏览文件」 */
+function detectGitPath(text: unknown): string | null {
+  if (text == null) return null;
+  const s = typeof text === 'string' ? text : JSON.stringify(text);
+  const m = s.match(/(?:[A-Za-z]:[\\/][^\s"'<>|]+)|(?:\/(?:home|Users|root|tmp|opt|var|src|projects|code|workspace)[^\s"'<>|]*)/);
+  return m ? m[0].replace(/["',]+$/, '') : null;
+}
+function openInGit(path: string) {
+  const settingsStore = useSettingsStore();
+  settingsStore.update({ workspaceDir: path });
+  store.rightPanelTab = 'git';
+  store.rightPanelOpen = true;
+}
 
 function renderAssistantMarkdown(content?: string) {
   let c = content || '';
@@ -285,6 +427,40 @@ function renderAssistantMarkdown(content?: string) {
     }
     return renderMarkdown(part);
   }).join('');
+}
+
+/** 取整轮所有 assistant 消息产出的交付文件（按真实消息 id 集合过滤）
+ *  交付文件在 chat.ts 中以产生 file_write 工具调用的那条助手消息真实 id 注册，
+ *  该消息通常带 toolCalls 属于中间步骤，故需收集整轮 steps 的 messageId 命中过滤，
+ *  而非仅用合成的 finalAssistant.id（永远匹配不到真实 messageId）。
+ */
+function getRoundDeliverableFiles(round: MessageRound) {
+  const ids = new Set<string>();
+  round.steps.forEach((s) => { if (s.messageId) ids.add(s.messageId); });
+  if (round.finalAssistant?.id) ids.add(round.finalAssistant.id);
+  return fileStore.filesByCategory.deliverable.filter((f) => f.messageId && ids.has(f.messageId));
+}
+
+/** 智能体思考过程是否展开：流式过程中强制展开（让工具调用进度实时可见），结束后由用户控制可折叠 */
+function isProcessOpen(round: MessageRound, ri: number): boolean {
+  return !!expandedAgentProcess['round-' + ri] || isLastRoundStreaming(round, ri);
+}
+
+/** 获取当前流式 step 的实时正文内容（跑马灯式逐步增长的 partialContent） */
+function getStreamingText(round: MessageRound, ri: number): string {
+  const step = getStreamingStep(round, ri);
+  return step?.partialContent || '';
+}
+
+/** 获取当前流式 step 的实时思考内容 */
+function getStreamingReasoning(round: MessageRound, ri: number): string {
+  const step = getStreamingStep(round, ri);
+  return step?.reasoningContent || '';
+}
+
+/** 流式渲染：正文 markdown + 末尾闪烁光标（跑马灯进行中指示） */
+function renderStreamingContent(content: string): string {
+  return renderAssistantMarkdown(content) + '<span class="streaming-cursor" aria-hidden="true"></span>';
 }
 
 const roundNavRef = ref<HTMLElement | null>(null);
@@ -429,3 +605,65 @@ watch(activeNavRound, () => {
   });
 });
 </script>
+
+<style scoped>
+.inline-ask-card {
+  display: flex; gap: 10px; margin: 12px auto; padding: 14px 16px;
+  max-width: 85%;
+  background: var(--glass-bg); backdrop-filter: var(--glass-filter);
+  border: 1px solid var(--glass-border);
+  border-radius: 16px; border-bottom-left-radius: 4px;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+  animation: inline-ask-in .25s ease-out;
+}
+@keyframes inline-ask-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+.inline-ask-icon {
+  flex-shrink: 0; width: 32px; height: 32px; border-radius: 50%;
+  background: var(--color-primary, #6366f1); color: #fff;
+  display: flex; align-items: center; justify-content: center; font-size: 16px;
+}
+.inline-ask-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+.inline-ask-step { font-size: 12px; color: var(--el-text-color-secondary, #888); }
+.inline-ask-question { font-size: 14px; font-weight: 500; color: var(--el-text-color-primary, #fff); line-height: 1.5; }
+.inline-ask-desc { font-size: 13px; color: var(--el-text-color-secondary, #aaa); line-height: 1.4; }
+.inline-ask-options { display: flex; flex-wrap: wrap; gap: 8px; }
+.inline-ask-opt {
+  padding: 6px 14px; border: 1px solid var(--el-border-color, #2d2d3a); border-radius: 8px;
+  background: transparent; color: var(--el-text-color-regular, #ccc); font-size: 13px; cursor: pointer; transition: all .15s;
+}
+.inline-ask-opt:hover { border-color: var(--color-primary, #6366f1); color: var(--color-primary, #6366f1); }
+.inline-ask-opt.is-active { border-color: var(--color-primary, #6366f1); background: var(--color-primary, #6366f1); color: #fff; }
+.inline-ask-opt-text { font-style: italic; }
+.inline-ask-supplement { margin-top: 4px; }
+.inline-ask-toggle { align-self: flex-start; padding: 2px 8px; border: none; background: transparent; color: var(--color-text-secondary, #888); font-size: 12px; cursor: pointer; border-radius: 6px; transition: all .15s; }
+.inline-ask-toggle:hover { color: var(--color-primary, #6366f1); background: rgba(99,102,241,0.08); }
+.inline-ask-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+
+/* 流式跑马灯：实时正文容器 */
+.streaming-content {
+  position: relative;
+}
+/* 末尾闪烁光标（v-html 内，需 :deep 穿透）；暗色主题下用主色 + 发光确保对比度 */
+.streaming-content :deep(.streaming-cursor) {
+  display: inline-block;
+  width: 8px;
+  height: 1.1em;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  background: var(--color-primary, #6366f1);
+  border-radius: 1px;
+  box-shadow: 0 0 6px rgba(99, 102, 241, 0.55);
+  animation: streamingBlink 1s step-end infinite;
+}
+@keyframes streamingBlink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}
+/* 流式思考：淡显，暗色主题下提升正文对比度 */
+.streaming-reasoning {
+  border-color: rgba(139, 92, 246, 0.28);
+  background: rgba(139, 92, 246, 0.08);
+}
+.streaming-reasoning .reasoning-header { color: var(--color-primary, #8B5CF6); }
+.streaming-reasoning .reasoning-body { color: var(--color-text-primary, #e5e7eb); }
+</style>

@@ -73,6 +73,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     insertScrollbarCSS: (css) => ipcRenderer.invoke('browserView:insertScrollbarCSS', css),
     // 同步当前主题（深/浅），由主进程据此注入对应主题色的滚动条样式
     setTheme: (theme) => ipcRenderer.invoke('browserView:setTheme', theme),
+    // pageAgent 自动化操作（直接操作可见的 BrowserView，含虚拟鼠标光标）
+    action: (action, args) => ipcRenderer.invoke('browserView:action', action, args),
     // 监听主进程的导航事件（地址栏同步）
     onNavigated: (callback) => {
       ipcRenderer.on('browserView:navigated', (_e, url) => callback(url));

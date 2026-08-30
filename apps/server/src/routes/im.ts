@@ -9,6 +9,8 @@ import {
   updateImConnector,
   deleteImConnector,
   sendImMessage,
+  testImConnector,
+  listImEvents,
 } from '../services/im.js';
 
 const router = Router();
@@ -54,6 +56,24 @@ router.post('/connectors/:id/send', authMiddleware, async (req: Request, res: Re
   } catch (e: unknown) {
     res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
   }
+});
+
+// POST /api/im/connectors/:id/test  连通性测试
+router.post('/connectors/:id/test', authMiddleware, async (req: Request, res: Response) => {
+  try {
+    const result = await testImConnector(req.user!.userId, req.params.id);
+    res.json({ data: result });
+  } catch (e: unknown) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// GET /api/im/events  查询入站消息（会话页用）
+router.get('/events', authMiddleware, (req: Request, res: Response) => {
+  const connectorId = (req.query.connectorId as string) || undefined;
+  const since = Number(req.query.since) || 0;
+  const limit = Number(req.query.limit) || 200;
+  res.json({ data: listImEvents(req.user!.userId, { connectorId, since, limit }) });
 });
 
 // POST /api/im/inbound/feishu

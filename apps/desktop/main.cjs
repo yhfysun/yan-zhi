@@ -8,6 +8,12 @@ const crypto = require('crypto');
 let mainWindow = null;
 let serverProcess = null;
 let browserView = null;
+// BrowserView 是否处于隐藏态。渲染层的 ResizeObserver 是异步触发的，
+// 面板收起（CSS 过渡）期间仍会推来非零 bounds，若不拦截会把 hide() 的
+// 0 尺寸覆盖回去，导致原生图层残留在窗口上。hide 后所有 resize 一律忽略。
+let browserViewHidden = true;
+/** BrowserView 首次创建时的缓存清理 Promise：loadURL 前必须 await，否则并发中止加载（ERR_ABORTED）*/
+let cacheClearPromise = null;
 
 // ============================================================
 // 数据库（better-sqlite3，主进程单例）
@@ -222,11 +228,13 @@ function ensureBrowserView() {
 
   browserView = new BrowserView({
     webPreferences: {
-      // 独立 partition：与主窗口 session 隔离，主窗口的 CSP 注入不影响 BrowserView 加载的第三方网页
-      partition: 'browser-view',
+      // 持久化 partition：cookie/localStorage 落盘，跨会话保留登录态（如即梦扫码登录后无需重复扫码）
+      partition: 'persist:browser-view',
       nodeIntegration: false,
       contextIsolation: true,
       spellcheck: false,
+      // 显式背景色：避免未加载/加载失败时默认黑底
+      backgroundColor: '#ffffff',
     },
   });
   mainWindow.setBrowserView(browserView);
@@ -234,6 +242,20 @@ function ensureBrowserView() {
   browserView.setBounds({ x: 0, y: 0, width: 0, height: 0 });
 
   const wc = browserView.webContents;
+
+  // persist partition 的 HTTP 磁盘缓存损坏会导致 BrowserView 渲染全黑（Windows 常见）。
+  // clearCache 只清 HTTP 缓存，不清 cookie/localStorage，登录态不受影响。
+  // 注意：必须 await 完成后再放行 loadURL —— clearCache 与页面加载并发会中止加载（ERR_ABORTED -3）导致黑屏。
+  cacheClearPromise = wc.session.clearCache().catch(() => { /* ignore */ });
+
+  // 渲染进程崩溃（GPU/内存等）后页面变黑且不再响应：自动重载恢复
+  wc.on('render-process-gone', (_e, details) => {
+    console.warn('[browserView] render-process-gone:', details?.reason);
+    try { wc.reload(); } catch { /* ignore */ }
+  });
+  wc.on('crashed' /* 兼容旧事件名 */, () => {
+    try { wc.reload(); } catch { /* ignore */ }
+  });
 
   // 监听导航事件，通知前端地址栏更新
   wc.on('did-navigate', (_e, url) => {
@@ -248,8 +270,9 @@ function ensureBrowserView() {
   });
   // 页面加载完成，通知前端
   wc.on('did-finish-load', () => {
-    // 导航到新页面会重置已注入的 CSS，需重新注入自定义滚动条
+    // 导航到新页面会重置已注入的 CSS，需重新注入自定义滚动条 + 虚拟鼠标
     injectScrollbarCss();
+    injectYzAssistant(wc);
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('browserView:loaded', wc.getURL());
     }
@@ -344,13 +367,25 @@ ipcMain.handle('window-is-maximized', () => mainWindow?.isMaximized() || false);
 // 用 BrowserView 替代 <webview> 标签，通过 setBounds 精确控制尺寸
 // ============================================================
 ipcMain.handle('browserView:load', async (e, url) => {
-  if (!url) return;
+  if (!url) return { error: 'url 为空' };
+  // URL 清洗：剥离模型以 markdown 反引号/引号包裹传来的格式字符
+  let cleanUrl = String(url).trim().replace(/^[`"'\s]+|[`"'\s]+$/g, '');
+  if (!/^https?:\/\//i.test(cleanUrl)) return { error: `无效 URL: ${cleanUrl}` };
   // 按需创建 BrowserView（首次导航时创建）
   const bv = ensureBrowserView();
-  if (!bv) return;
-  // 重新附加到主窗口（hide 时会分离）
+  if (!bv) return { error: '主窗口不可用' };
+  // 等待首次缓存清理完成（并发会中止加载导致黑屏，见 ensureBrowserView 注释）
+  if (cacheClearPromise) { await cacheClearPromise; cacheClearPromise = null; }
+  // 重新附加到主窗口（hide 时会分离）并解除隐藏态
   mainWindow.setBrowserView(bv);
-  await bv.webContents.loadURL(url);
+  browserViewHidden = false;
+  try {
+    await bv.webContents.loadURL(cleanUrl);
+    return { url: bv.webContents.getURL() };
+  } catch (err) {
+    // 加载失败返回明确错误，前端可展示而非黑屏
+    return { error: `页面加载失败（${err?.code || err?.errno || ''}）: ${cleanUrl}` };
+  }
 });
 
 ipcMain.handle('browserView:back', () => {
@@ -382,6 +417,8 @@ ipcMain.handle('browserView:reload', () => {
 
 ipcMain.handle('browserView:resize', (e, x, y, width, height) => {
   if (!browserView) return;
+  // 隐藏态下忽略渲染层迟到的 bounds 同步（面板收起动画期间 ResizeObserver 仍会触发）
+  if (browserViewHidden) return;
   // bounds 坐标使用 CSS 像素（Electron 33 setBounds 用逻辑像素，不需要乘 DPR）
   browserView.setBounds({
     x: Math.round(x),
@@ -398,7 +435,10 @@ ipcMain.handle('browserView:getUrl', () => {
 
 ipcMain.handle('browserView:hide', () => {
   if (!browserView) return;
-  // 隐藏 BrowserView（bounds 设为 0），让主页可见
+  // 真正从主窗口摘除原生图层：仅 setBounds(0,0,0,0) 在部分 Electron 版本/平台下
+  // 并不可靠，图层仍挂在窗口上会残留渲染。摘除后再归零尺寸做双保险。
+  browserViewHidden = true;
+  try { mainWindow.removeBrowserView(browserView); } catch { /* ignore */ }
   browserView.setBounds({ x: 0, y: 0, width: 0, height: 0 });
 });
 
@@ -434,6 +474,673 @@ ipcMain.handle('browserView:setTheme', () => {
 ipcMain.handle('browserView:insertScrollbarCSS', async (_e, css) => {
   if (!browserView) return;
   try { await browserView.webContents.insertCSS(css); } catch { /* ignore */ }
+});
+
+// ============================================================
+// IPC：BrowserView 自动化操作（pageAgent 直接操作可见的 BrowserView）
+// 虚拟鼠标光标 + click/type/scroll/hover/screenshot/get_page_info 等
+// ============================================================
+
+// 虚拟鼠标光标 CSS
+const YZ_CURSOR_CSS = `
+  #__yz-cursor{position:fixed;z-index:2147483647;pointer-events:none;width:28px;height:28px;margin:-14px 0 0 -14px;transition:left .12s ease,top .12s ease;background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='28' height='28'%3E%3Cpath d='M5 3L5 20L10 16L13 22L16 21L13 15L19 15Z' fill='%234a9eff' stroke='white' stroke-width='1.5'/%3E%3C/svg%3E") no-repeat center;}
+  #__yz-cursor.clicking{transform:scale(.6);transition:transform .08s;}
+  #__yz-ring{position:fixed;z-index:2147483646;pointer-events:none;border:2px solid #4a9eff;border-radius:50%;width:36px;height:36px;margin:-18px 0 0 -18px;opacity:0;}
+  #__yz-ring.active{animation:__yz-ring-anim .5s ease-out;}
+  @keyframes __yz-ring-anim{0%{transform:scale(.4);opacity:1}100%{transform:scale(1.8);opacity:0}}
+  #__yz-badge{position:fixed;z-index:2147483647;pointer-events:none;background:#4a9eff;color:white;font-size:12px;padding:2px 8px;border-radius:10px;margin-left:16px;margin-top:16px;box-shadow:0 2px 8px rgba(0,0,0,.3);transition:left .12s ease,top .12s ease;}
+`;
+
+// 注入虚拟鼠标 + 操作助手到 BrowserView 页面
+async function injectYzAssistant(wc) {
+  try { await wc.insertCSS(YZ_CURSOR_CSS); } catch { /* ignore */ }
+  await wc.executeJavaScript(`(function(){
+    if(!document.body)return;
+    var c=document.getElementById('__yz-cursor');
+    var r=document.getElementById('__yz-ring');
+    var b=document.getElementById('__yz-badge');
+    if(!c){c=document.createElement('div');c.id='__yz-cursor';c.style.display='none';document.body.appendChild(c);}
+    if(!r){r=document.createElement('div');r.id='__yz-ring';document.body.appendChild(r);}
+    if(!b){b=document.createElement('div');b.id='__yz-badge';b.style.display='none';document.body.appendChild(b);}
+    function showCursor(x,y,label){c.style.display='';c.style.left=x+'px';c.style.top=y+'px';
+      if(label){b.style.display='';b.textContent=label;b.style.left=x+'px';b.style.top=y+'px';}else{b.style.display='none';}}
+    function hideCursor(){c.style.display='none';b.style.display='none';}
+    function clickAt(x,y){c.style.display='';c.style.left=x+'px';c.style.top=y+'px';c.classList.add('clicking');
+      r.style.display='';r.style.left=x+'px';r.style.top=y+'px';r.classList.remove('active');void r.offsetWidth;r.classList.add('active');
+      setTimeout(function(){c.classList.remove('clicking');},200);
+      var el=document.elementFromPoint(x,y);if(el){var o={bubbles:true,cancelable:true,clientX:x,clientY:y,view:window};
+        el.dispatchEvent(new MouseEvent('mousemove',o));el.dispatchEvent(new MouseEvent('mousedown',o));
+        el.dispatchEvent(new MouseEvent('mouseup',o));el.dispatchEvent(new MouseEvent('click',o));}return el?el.tagName+'.'+(el.className||''):null;}
+    function typeIn(el,text){el.focus();el.value='';el.dispatchEvent(new Event('input',{bubbles:true}));
+      for(var i=0;i<text.length;i++){el.value+=text[i];el.dispatchEvent(new Event('input',{bubbles:true}));}
+      el.dispatchEvent(new Event('change',{bubbles:true}));}
+    // 为元素生成尽量稳定的唯一 CSS 选择器
+    function genSel(el){
+      function esc(s){return String(s).replace(/"/g,'\\\\"');}
+      if(el.id&&/^[A-Za-z][\\w-]*$/.test(el.id)){try{if(document.querySelectorAll('#'+el.id).length===1)return '#'+el.id;}catch(e){}}
+      var tid=el.getAttribute('data-testid');if(tid)return '[data-testid="'+esc(tid)+'"]';
+      var t=el.getAttribute('data-test');if(t)return '[data-test="'+esc(t)+'"]';
+      var al=el.getAttribute('aria-label');if(al){var s=el.tagName.toLowerCase()+'[aria-label="'+esc(al)+'"]';try{if(document.querySelectorAll(s).length===1)return s;}catch(e){}}
+      var cls=(typeof el.className==='string'?el.className:'').trim().split(/\\s+/).filter(Boolean);
+      for(var i=0;i<cls.length;i++){var s2=el.tagName.toLowerCase()+'.'+cls[i].replace(/[^\\w-]/g,'');try{if(s2&&document.querySelectorAll(s2).length===1)return s2;}catch(e){}}
+      var nm=el.getAttribute('name');if(nm){var s3=el.tagName.toLowerCase()+'[name="'+esc(nm)+'"]';try{if(document.querySelectorAll(s3).length===1)return s3;}catch(e){}}
+      var ph=el.getAttribute('placeholder');if(ph){var s4=el.tagName.toLowerCase()+'[placeholder="'+esc(ph)+'"]';try{if(document.querySelectorAll(s4).length===1)return s4;}catch(e){}}
+      var path=[],cur=el,depth=0;
+      while(cur&&cur.nodeType===1&&cur!==document.body&&depth<6){
+        var pe=cur.parentElement;if(!pe)break;
+        var sibs=Array.from(pe.children).filter(function(c){return c.tagName===cur.tagName;});
+        var idx=sibs.indexOf(cur)+1;
+        path.unshift(cur.tagName.toLowerCase()+(sibs.length>1?':nth-of-type('+idx+')':''));
+        cur=pe;depth++;
+      }
+      return path.length?path.join(' > '):el.tagName.toLowerCase();
+    }
+    // 元素注册表：可交互元素编号（index），供 click/type 直接按编号定位
+    if(!window.__yzElements)window.__yzElements=[];
+    function register(el){
+      if(el&&el.__yzIndex!=null&&window.__yzElements[el.__yzIndex]===el)return el.__yzIndex;
+      var i=window.__yzElements.push(el)-1;
+      try{el.__yzIndex=i;}catch(e){/* 跨域对象不可挂属性时忽略 */}
+      return i;
+    }
+    // 解析选择器为元素数组（:contains 伪选择器返回全部匹配）
+    function resolveAll(sel){
+      if(!sel)return[];
+      var m=String(sel).match(/^([\s\S]*?):contains\(\s*["']([\s\S]*?)["']\s*\)\s*$/);
+      if(m){
+        var base=m[1]||'*';var text=m[2];var out=[];
+        var els;try{els=document.querySelectorAll(base);}catch(e){return[];}
+        for(var i=0;i<els.length;i++){var el=els[i];
+          if((el.textContent||'').trim().indexOf(text)>=0&&el.offsetParent!==null)out.push(el);}
+        return out;
+      }
+      try{return Array.prototype.slice.call(document.querySelectorAll(sel));}catch(e){return[];}
+    }
+    function resolve(sel){var a=resolveAll(sel);return a.length?a[0]:null;}
+    window.__yzAssistant={showCursor:showCursor,hideCursor:hideCursor,clickAt:clickAt,typeIn:typeIn,resolve:resolve,resolveAll:resolveAll,genSel:genSel,register:register};
+  })()`);
+}
+
+// 通用 action handler
+// 变化检测：这些 action 可能改变页面状态，执行后对比前后快照，防止模型盲操作死循环
+const CHANGE_ACTIONS = new Set(['click', 'type', 'press', 'select_option', 'check', 'uncheck', 'submit_form', 'search', 'next_page', 'prev_page']);
+let noChangeStreak = 0;
+const STATE_SNAPSHOT_JS = `(function(){try{var d=document.body;return{url:location.href,t:(d?d.innerText:'').slice(0,2000),n:document.querySelectorAll('a,button,input,select,textarea').length};}catch(e){return null;}})()`;
+
+ipcMain.handle('browserView:action', async (_e, action, args) => {
+  if (!browserView) return { error: '浏览器未打开，请先导航到页面' };
+  const wc = browserView.webContents;
+  args = args || {};
+  try {
+    // 确保助手已注入
+    await injectYzAssistant(wc);
+
+    const doAction = async () => {
+    switch (action) {
+      case 'navigate': {
+        // URL 清洗：剥离模型以 markdown 反引号/引号包裹传来的格式字符
+        let cleanUrl = String(args.url || '').trim().replace(/^[`"'\s]+|[`"'\s]+$/g, '');
+        if (!/^https?:\/\//i.test(cleanUrl)) return { error: `无效 URL: ${cleanUrl}` };
+        mainWindow.setBrowserView(browserView);
+        browserViewHidden = false;
+        // 等待首次缓存清理完成（并发会中止加载导致黑屏）
+        if (cacheClearPromise) { await cacheClearPromise; cacheClearPromise = null; }
+        try {
+          await wc.loadURL(cleanUrl);
+        } catch (err) {
+          return { error: `页面加载失败（${err?.code || err?.errno || ''}）: ${cleanUrl}` };
+        }
+        await injectYzAssistant(wc);
+        return { url: wc.getURL(), title: wc.getTitle() };
+      }
+      case 'click': {
+        return await wc.executeJavaScript(`(function(){
+          var a=${JSON.stringify(args)};
+          var A=window.__yzAssistant;
+          function clickEl(el){
+            el.scrollIntoView({behavior:'smooth',block:'center'});
+            return new Promise(function(res){
+              setTimeout(function(){
+                var rect=el.getBoundingClientRect();
+                var doc=el.ownerDocument;
+                if(doc===document){
+                  var x=rect.x+rect.width/2,y=rect.y+rect.height/2;
+                  var tag=A.clickAt(x,y);
+                  res({success:true,via:'real-mouse',tag:tag});
+                }else{
+                  // iframe 内元素：坐标相对 iframe 视口，改在元素上直接派发鼠标事件
+                  var w=doc.defaultView;
+                  var o={bubbles:true,cancelable:true,clientX:rect.x+rect.width/2,clientY:rect.y+rect.height/2,view:w};
+                  el.dispatchEvent(new MouseEvent('mousemove',o));el.dispatchEvent(new MouseEvent('mousedown',o));
+                  el.dispatchEvent(new MouseEvent('mouseup',o));el.dispatchEvent(new MouseEvent('click',o));
+                  res({success:true,via:'dom-events',iframe:true,tag:el.tagName.toLowerCase()});
+                }
+              },300);
+            });
+          }
+          function notFound(sel){return{error:'元素未找到: '+sel,hint:'建议先调用 browser_get_page_info 获取编号元素列表，再用 index 参数定位'};}
+          if(a.index!=null){
+            var el=window.__yzElements&&window.__yzElements[a.index];
+            if(!el||!el.isConnected)return{error:'index '+a.index+' 已失效（页面已变化）。请重新调用 browser_get_page_info / browser_get_dom 获取最新编号列表。'};
+            return clickEl(el).then(function(r){r.index=a.index;return r;});
+          }
+          if(a.selector){
+            var els=A.resolveAll(a.selector);
+            if(els.length===0)return notFound(a.selector);
+            if(els.length>1){
+              var cands=els.slice(0,10).map(function(el){
+                return{index:A.register(el),tag:el.tagName.toLowerCase(),text:(el.textContent||'').trim().slice(0,40),selector:A.genSel(el)};
+              });
+              return{ambiguous:true,matched:els.length,candidates:cands,hint:'该选择器匹配多个元素，请从候选列表选一个 index 重新调用 click'};
+            }
+            return clickEl(els[0]);
+          }
+          if(a.x!=null&&a.y!=null){var tag=A.clickAt(a.x,a.y);return{success:true,via:'real-mouse',x:a.x,y:a.y,tag:tag};}
+          return{error:'需要 index、selector 或 x/y'};
+        })()`);
+      }
+      case 'type': {
+        return await wc.executeJavaScript(`(function(){
+          var a=${JSON.stringify(args)};
+          var A=window.__yzAssistant;
+          function typeEl(el){
+            el.scrollIntoView({behavior:'smooth',block:'center'});
+            var rect=el.getBoundingClientRect();A.showCursor(rect.x+rect.width/2,rect.y+rect.height/2,'输入');
+            A.typeIn(el,a.text);return{success:true,typed:(a.text||'').length};
+          }
+          if(a.index!=null){
+            var el=window.__yzElements&&window.__yzElements[a.index];
+            if(!el||!el.isConnected)return{error:'index '+a.index+' 已失效（页面已变化）。请重新调用 browser_get_page_info / browser_get_dom 获取最新编号列表。'};
+            return typeEl(el);
+          }
+          if(a.selector){
+            var els=A.resolveAll(a.selector);
+            if(els.length===0)return{error:'元素未找到: '+a.selector,hint:'建议先调用 browser_get_page_info 获取编号元素列表，再用 index 参数定位'};
+            if(els.length>1){
+              var cands=els.slice(0,10).map(function(el){
+                return{index:A.register(el),tag:el.tagName.toLowerCase(),text:(el.textContent||'').trim().slice(0,40),selector:A.genSel(el)};
+              });
+              return{ambiguous:true,matched:els.length,candidates:cands,hint:'该选择器匹配多个元素，请从候选列表选一个 index 重新调用 type'};
+            }
+            return typeEl(els[0]);
+          }
+          var el=document.activeElement;if(!el)return{error:'无聚焦元素'};
+          A.typeIn(el,a.text);return{success:true,typed:(a.text||'').length};
+        })()`);
+      }
+      case 'press': {
+        await wc.sendInputEvent({ type: 'keyDown', keyCode: args.key });
+        await wc.sendInputEvent({ type: 'keyUp', keyCode: args.key });
+        return { success: true };
+      }
+      case 'scroll': {
+        return await wc.executeJavaScript(`(function(){
+          var a=${JSON.stringify(args)};
+          if(a.selector){var el=window.__yzAssistant.resolve(a.selector);if(!el)return{error:'元素未找到: '+a.selector};
+            el.scrollIntoView({behavior:'smooth',block:'center'});return{success:true};}
+          var dx=a.x||a.dx||0,dy=a.y||a.dy||0;
+          window.scrollBy({left:dx,top:dy,behavior:'smooth'});
+          window.__yzAssistant.showCursor(window.innerWidth/2,window.innerHeight/2,'滚动 '+(dy>0?'↓':'↑'));
+          setTimeout(function(){window.__yzAssistant.hideCursor();},500);
+          return{success:true,scrollX:window.scrollX,scrollY:window.scrollY};
+        })()`);
+      }
+      case 'hover': {
+        return await wc.executeJavaScript(`(function(){
+          var a=${JSON.stringify(args)};
+          if(a.selector){var el=window.__yzAssistant.resolve(a.selector);if(!el)return{error:'元素未找到: '+a.selector};
+            el.scrollIntoView({behavior:'smooth',block:'center'});
+            var rect=el.getBoundingClientRect();window.__yzAssistant.showCursor(rect.x+rect.width/2,rect.y+rect.height/2,'悬停');
+            var o={bubbles:true,cancelable:true,clientX:rect.x+rect.width/2,clientY:rect.y+rect.height/2,view:window};
+            el.dispatchEvent(new MouseEvent('mousemove',o));el.dispatchEvent(new MouseEvent('mouseover',o));
+            return{success:true};}
+          return{error:'需要 selector'};
+        })()`);
+      }
+      case 'screenshot': {
+        const image = await wc.capturePage();
+        return { base64: image.toDataURL().split(',')[1] };
+      }
+      case 'get_page_info': {
+        // 穿透 iframe / Shadow DOM 收集可交互元素并编号注册（含 iframe 内弹窗元素）
+        return await wc.executeJavaScript(`(function(){
+          var A=window.__yzAssistant;
+          var S='a,button,input,select,textarea,[role=button],[role=link],[role=checkbox],[role=radio],[onclick],label[for],summary,details,[tabindex]';
+          var els=[];
+          function visible(el){
+            if(el.disabled===true)return false;
+            var rect=el.getBoundingClientRect();if(rect.width<2||rect.height<2)return false;
+            if(el.offsetParent===null){
+              try{var st=el.ownerDocument.defaultView.getComputedStyle(el).position;
+                if(st!=='fixed'&&st!=='sticky')return false;}catch(e){return false;}
+            }
+            return true;
+          }
+          function collect(root){
+            var found;try{found=root.querySelectorAll(S);}catch(e){return;}
+            for(var i=0;i<found.length;i++){var el=found[i];if(visible(el))els.push(el);}
+            var all;try{all=root.querySelectorAll('*');}catch(e){return;}
+            for(var j=0;j<all.length;j++){var n=all[j];
+              if(n.shadowRoot)collect(n.shadowRoot);
+              if(n.tagName==='IFRAME'||n.tagName==='FRAME'){try{var cd=n.contentDocument;if(cd&&cd.body)collect(cd.body);}catch(e){}}
+            }
+          }
+          collect(document.documentElement);
+          var out=[];
+          for(var k=0;k<els.length&&out.length<300;k++){var el=els[k];
+            var idx=A.register(el);
+            var o={index:idx,tag:el.tagName.toLowerCase(),selector:A.genSel(el),text:(el.textContent||'').trim().slice(0,60)};
+            if(el.ownerDocument!==document){o.iframe=true;}
+            else{var rect=el.getBoundingClientRect();o.x=Math.round(rect.x);o.y=Math.round(rect.y);o.w=Math.round(rect.width);o.h=Math.round(rect.height);}
+            if(el.id)o.id=el.id;
+            if(el.type)o.type=el.type;
+            if(el.href)o.href=el.href.slice(0,200);
+            if(el.placeholder)o.placeholder=el.placeholder;
+            if(el.value&&(el.tagName==='INPUT'||el.tagName==='TEXTAREA'))o.value=String(el.value).slice(0,80);
+            if(el.getAttribute('aria-label'))o.ariaLabel=el.getAttribute('aria-label');
+            if(el.name)o.name=el.name;
+            if(el.getAttribute('role'))o.role=el.getAttribute('role');
+            if(el.required)o.required=true;
+            if(el.tagName==='SELECT'){o.options=Array.from(el.options).slice(0,30).map(function(op){return{v:op.value,t:op.text.trim().slice(0,40),s:op.selected}});}
+            if(el.tagName==='INPUT'&&(el.type==='radio'||el.type==='checkbox'))o.checked=!!el.checked;
+            out.push(o);
+          }
+          return{url:location.href,title:document.title,interactiveCount:els.length,interactive:out,
+            hint:els.length>300?'可交互元素超过 300 个，仅返回前 300 个':'可交互元素已编号（index 字段），browser_click / browser_type 可直接用 index 参数定位（优先于 selector）'};
+        })()`);
+      }
+      case 'get_visible_text': {
+        return await wc.executeJavaScript(`(function(){
+          var a=${JSON.stringify(args)};
+          function visibleText(el){var s='';el.childNodes.forEach(function(n){
+            if(n.nodeType===3){var t=n.textContent.trim();if(t)s+=t+' ';}
+            else if(n.nodeType===1){var st=getComputedStyle(n);if(st.display!=='none'&&st.visibility!=='hidden'&&st.opacity!=='0')s+=visibleText(n);}
+          });return s;}
+          var root=a.selector?window.__yzAssistant.resolve(a.selector):document.body;
+          if(!root)return{error:'元素未找到'};
+          return{text:visibleText(root).trim().slice(0,5000)};
+        })()`);
+      }
+      case 'fill_form': {
+        return await wc.executeJavaScript(`(function(){
+          var a=${JSON.stringify(args)};var fields=a.fields||[];var names=[];
+          for(var i=0;i<fields.length;i++){var f=fields[i];var el=window.__yzAssistant.resolve(f.selector);
+            if(!el)continue;el.scrollIntoView({behavior:'smooth',block:'center'});
+            var rect=el.getBoundingClientRect();window.__yzAssistant.showCursor(rect.x+rect.width/2,rect.y+rect.height/2,'填写');
+            if(f.type==='select'){el.value=f.value;el.dispatchEvent(new Event('change',{bubbles:true}));}
+            else if(f.type==='checkbox'){el.checked=!!f.value;el.dispatchEvent(new Event('change',{bubbles:true}));}
+            else{window.__yzAssistant.typeIn(el,String(f.value));}
+            names.push(f.selector);}
+          setTimeout(function(){window.__yzAssistant.hideCursor();},500);
+          return{filled:names.length,fields:names};
+        })()`);
+      }
+      case 'submit_form': {
+        var r = await wc.executeJavaScript(`(function(){
+          var a=${JSON.stringify(args)};
+          if(a.selector){var el=window.__yzAssistant.resolve(a.selector);if(!el)return{error:'元素未找到: '+a.selector};
+            var rect=el.getBoundingClientRect();window.__yzAssistant.clickAt(rect.x+rect.width/2,rect.y+rect.height/2);
+            return{success:true};}
+          var form=document.querySelector('form');if(form){form.submit();return{success:true};}
+          return{error:'未找到表单'};
+        })()`);
+        if (r.error) return r;
+        return { submitted: true, url: wc.getURL(), title: wc.getTitle() };
+      }
+      case 'search': {
+        var r = await wc.executeJavaScript(`(function(){
+          var a=${JSON.stringify(args)};
+          var inp=a.input_selector?window.__yzAssistant.resolve(a.input_selector):document.querySelector('input[type=search],input[placeholder*=搜索 i],input[placeholder*=search i]');
+          if(!inp)return{error:'未找到搜索框'};
+          inp.scrollIntoView({behavior:'smooth',block:'center'});
+          var rect=inp.getBoundingClientRect();window.__yzAssistant.showCursor(rect.x+rect.width/2,rect.y+rect.height/2,'搜索');
+          window.__yzAssistant.typeIn(inp,a.query);
+          inp.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));
+          inp.form?inp.form.submit():inp.dispatchEvent(new Event('search',{bubbles:true}));
+          return{success:true};
+        })()`);
+        if (r.error) return r;
+        return { searched: args.query, url: wc.getURL(), title: wc.getTitle() };
+      }
+      case 'next_page':
+      case 'prev_page': {
+        var label = action === 'next_page' ? '下一页' : '上一页';
+        var patterns = action === 'next_page' ? ['下一页','下页','Next','›','>>','»'] : ['上一页','上页','Prev','‹','<<','«'];
+        var r = await wc.executeJavaScript(`(function(){
+          var pats=${JSON.stringify(patterns)};
+          var links=Array.from(document.querySelectorAll('a,button,[role=button]'));
+          for(var i=0;i<pats.length;i++){var p=pats[i];
+            var match=links.find(function(l){return(l.textContent||'').trim()===p||(l.getAttribute('aria-label')||'')===p;});
+            if(match){match.scrollIntoView({behavior:'smooth',block:'center'});
+              var rect=match.getBoundingClientRect();window.__yzAssistant.clickAt(rect.x+rect.width/2,rect.y+rect.height/2);
+              return{clicked:p};}}
+          return{error:'未找到按钮'};
+        })()`);
+        if (r.error) return { error: '未找到' + label + '按钮' };
+        return { paged: action, clicked: r.clicked, url: wc.getURL(), title: wc.getTitle() };
+      }
+      case 'wait_for': {
+        var timeout = args.timeout || 10000;
+        var start = Date.now();
+        while (Date.now() - start < timeout) {
+          var result = await wc.executeJavaScript(`(function(){
+            var a=${JSON.stringify(args)};
+            if(a.selector){var el=window.__yzAssistant.resolve(a.selector);if(el&&el.offsetParent!==null)return{ready:true};}
+            if(a.text){if(document.body.innerText.includes(a.text))return{ready:true};}
+            if(a.url){if(location.href.includes(a.url))return{ready:true};}
+            return{ready:false};
+          })()`);
+          if (result.ready) return { waited: 'ready', selector: args.selector, url: args.url, text: args.text };
+          await new Promise(r => setTimeout(r, 300));
+        }
+        return { error: '等待超时' };
+      }
+      case 'select_option': {
+        return await wc.executeJavaScript(`(function(){
+          var a=${JSON.stringify(args)};var el=window.__yzAssistant.resolve(a.selector);if(!el)return{error:'元素未找到'};
+          el.value=a.value;el.dispatchEvent(new Event('change',{bubbles:true}));return{success:true};
+        })()`);
+      }
+      case 'check':
+      case 'uncheck': {
+        return await wc.executeJavaScript(`(function(){
+          var a=${JSON.stringify(args)};var el=window.__yzAssistant.resolve(a.selector);if(!el)return{error:'元素未找到'};
+          el.checked=${action === 'check'};el.dispatchEvent(new Event('change',{bubbles:true}));return{success:true};
+        })()`);
+      }
+      case 'get_text': {
+        return await wc.executeJavaScript(`(function(){
+          var a=${JSON.stringify(args)};
+          if(a.selector){var el=window.__yzAssistant.resolve(a.selector);if(!el)return{error:'元素未找到'};return{text:el.textContent.trim()};}
+          return{text:document.body.innerText.slice(0,10000)};
+        })()`);
+      }
+      case 'get_dom': {
+        return await wc.executeJavaScript(`(function(){
+          var a=${JSON.stringify(args)};
+          var maxDepth=a.depth||12,maxNodes=a.maxNodes||1000;
+          var skip=new Set(['SCRIPT','STYLE','SVG','NOSCRIPT','TEMPLATE','LINK','META','HEAD']);
+          var SELS='a,button,input,select,textarea,[role=button],[role=link],[role=checkbox],[role=radio],[onclick],label[for],summary,details,[tabindex]';
+          var count=0,sameOriginIframes=0,crossOriginIframes=0,shadowRoots=0;
+          function walk(el,depth){
+            if(count>=maxNodes||skip.has(el.tagName)||depth>maxDepth)return null;
+            var st=getComputedStyle(el);
+            if(st.display==='none'||st.visibility==='hidden'||st.opacity==='0')return null;
+            count++;
+            var node={tag:el.tagName.toLowerCase()};
+            // 可交互节点附加编号，供 browser_click / browser_type 用 index 定位
+            try{if(el.matches&&el.matches(SELS)&&window.__yzAssistant)node.index=window.__yzAssistant.register(el);}catch(e){}
+            if(el.id)node.id=el.id;
+            var cls=(typeof el.className==='string'?el.className:'').trim();
+            if(cls)node.class=cls.slice(0,80);
+            if(el.getAttribute('role'))node.role=el.getAttribute('role');
+            if(el.getAttribute('aria-label'))node.ariaLabel=el.getAttribute('aria-label');
+            if(el.getAttribute('href'))node.href=el.getAttribute('href').slice(0,120);
+            if(el.getAttribute('placeholder'))node.placeholder=el.getAttribute('placeholder');
+            if(el.getAttribute('type'))node.type=el.getAttribute('type');
+            if(el.getAttribute('name'))node.name=el.getAttribute('name');
+            if(el.getAttribute('value')&&el.tagName==='INPUT')node.value=String(el.value).slice(0,60);
+            var directText=Array.from(el.childNodes).filter(function(n){return n.nodeType===3;}).map(function(n){return n.textContent.trim();}).filter(Boolean).join(' ');
+            if(directText)node.text=directText.slice(0,100);
+            var kids=[];
+            for(var i=0;i<el.children.length;i++){var c=walk(el.children[i],depth+1);if(c)kids.push(c);}
+            if(el.shadowRoot){shadowRoots++;for(var si=0;si<el.shadowRoot.children.length;si++){var sc=walk(el.shadowRoot.children[si],depth+1);if(sc){sc.shadowRoot=true;kids.push(sc);}}}
+            if((el.tagName==='IFRAME'||el.tagName==='FRAME')){
+              try{var cd=el.contentDocument||el.contentWindow&&el.contentWindow.document;if(cd&&cd.body){sameOriginIframes++;var ic=walk(cd.body,depth+1);if(ic){ic.iframe=true;ic.src=el.getAttribute('src')||'';kids.push(ic);}}else{crossOriginIframes++;}}catch(e){crossOriginIframes++;}
+            }
+            if(kids.length)node.children=kids;
+            return node;
+          }
+          var root=a.selector?window.__yzAssistant.resolve(a.selector):document.body;
+          if(!root)return{error:'元素未找到'};
+          return{url:location.href,title:document.title,dom:walk(root,0),nodeCount:count,iframes:{sameOrigin:sameOriginIframes,crossOriginSkipped:crossOriginIframes},shadowRoots:shadowRoots};
+        })()`);
+      }
+      case 'wait': {
+        const ms = Math.min(args.timeout || 1000, 10000);
+        await new Promise(r => setTimeout(r, ms));
+        return { waited: ms };
+      }
+      // ========== C4 多标签页管理（桌面端单 BrowserView，降级提示） ==========
+      case 'new_tab':
+      case 'switch_tab':
+      case 'close_tab':
+      case 'get_tabs': {
+        return { error: '桌面端暂不支持 ' + action + '（单 BrowserView 视图），请在服务端使用或改用 browser_navigate 切换页面' };
+      }
+      // ========== C5 网络请求监听（桌面端用 performance API 轮询） ==========
+      case 'wait_for_request': {
+        const pat = String(args.urlPattern || '');
+        if (!pat) return { error: 'urlPattern 为必填项' };
+        const to = Math.min(args.timeout || 10000, 30000);
+        const start = Date.now();
+        while (Date.now() - start < to) {
+          const r = await wc.executeJavaScript(`(function(){
+            var pat=${JSON.stringify(pat)};
+            var entries = performance.getEntriesByType('resource').filter(function(e){return e.name.indexOf(pat)>=0;});
+            if (entries.length) { var e = entries[entries.length-1]; return { url: e.name, method: 'GET', status: (e.responseStatus||0) }; }
+            return null;
+          })()`).catch(() => null);
+          if (r) return r;
+          await new Promise(r => setTimeout(r, 300));
+        }
+        return { error: '等待超时未匹配到 ' + pat };
+      }
+      case 'get_network_log': {
+        const pat = args.urlPattern ? String(args.urlPattern) : null;
+        const n = Math.min(args.lastN || 20, 100);
+        const entries = await wc.executeJavaScript(`(function(){
+          return performance.getEntriesByType('resource').slice(-100).map(function(e){
+            return { url: e.name, method: 'GET', status: 0, responseSize: e.transferSize || 0, time: Date.now() };
+          });
+        })()`).catch(() => []);
+        let list = entries || [];
+        if (pat) list = list.filter(function(e) { return e.url.indexOf(pat) >= 0; });
+        return { entries: list.slice(-n).reverse() };
+      }
+      // ========== C6 结构化数据提取 ==========
+      case 'extract_list': {
+        return await wc.executeJavaScript(`(function(){
+          var a=${JSON.stringify(args)};
+          var limit=a.limit||20; var fields=a.fields||null;
+          var containerSel=a.selector;
+          if(!containerSel){
+            var candidates=['.goods-item','.product-item','.item','.card','li','article','[role="listitem"]'];
+            for(var i=0;i<candidates.length;i++){if(document.querySelectorAll(candidates[i]).length>=2){containerSel=candidates[i];break;}}
+          }
+          if(!containerSel)return{error:'未指定 selector 且无法自动识别列表项容器，请传 selector'};
+          var containers=Array.from(document.querySelectorAll(containerSel));
+          if(!containers.length)return{error:'未匹配到列表项: '+containerSel};
+          var autoFields=fields||{title:{selector:'.title, h3, h2, .name',attr:'text'},price:{selector:'.price, .cost',attr:'text'},link:{selector:'a',attr:'href'}};
+          var items=[];
+          for(var ci=0;ci<containers.length;ci++){if(items.length>=limit)break;var c=containers[ci];var item={};
+            for(var fname in autoFields){var fdef=autoFields[fname];var sel=fdef.selector;var attr=fdef.attr||'text';var el=c.querySelector(sel);
+              if(!el){item[fname]=null;continue;}
+              if(attr==='text')item[fname]=(el.textContent||'').trim();
+              else if(attr==='html')item[fname]=el.innerHTML;
+              else item[fname]=el.getAttribute(attr);}
+            items.push(item);}
+          return{count:items.length,items:items};
+        })()`);
+      }
+      // ========== C9 视觉定位闭环（桌面端截图保存到临时文件） ==========
+      case 'visual_locate': {
+        const image = await wc.capturePage();
+        const buf = image.toPNG();
+        const ts = Date.now();
+        const dir = path.join(require('os').tmpdir(), 'yz_visual_locate');
+        try { fs.mkdirSync(dir, { recursive: true }); } catch {}
+        const savePath = path.join(dir, 'screenshot_' + ts + '.png');
+        fs.writeFileSync(savePath, buf);
+        return { path: savePath };
+      }
+      // ========== C11 文件上传/下载 ==========
+      case 'upload': {
+        const fp = String(args.filePath || '');
+        if (!fp) return { error: 'filePath 为必填项' };
+        try {
+          const buf = await fsp.readFile(fp);
+          const base64 = buf.toString('base64');
+          const filename = path.basename(fp);
+          return await wc.executeJavaScript(`(function(){
+            var a=${JSON.stringify(args)};
+            var base64=${JSON.stringify(base64)};
+            var filename=${JSON.stringify(filename)};
+            var b=atob(base64);var arr=new Uint8Array(b.length);for(var i=0;i<b.length;i++)arr[i]=b.charCodeAt(i);
+            var file=new File([arr],filename);var dt=new DataTransfer();dt.items.add(file);
+            var input=null;
+            if(a.index!=null&&window.__yzElements){input=window.__yzElements[a.index];}
+            else if(a.selector){input=window.__yzAssistant.resolve(a.selector);}
+            else{input=document.querySelector('input[type=file]');}
+            if(!input)return{error:'未找到 input[type=file] 元素'};
+            try{input.files=dt.files;}catch(e){return{error:'无法设置文件（浏览器安全限制）: '+e.message};}
+            input.dispatchEvent(new Event('change',{bubbles:true}));
+            return{uploaded:true,filename:filename};
+          })()`);
+        } catch (e) {
+          return { error: '读取文件失败: ' + (e?.message || e) };
+        }
+      }
+      case 'download': {
+        const savePath = args.savePath ? String(args.savePath) : null;
+        const sess = wc.session;
+        const downloadP = new Promise((resolve) => {
+          let settled = false;
+          sess.once('will-download', (e, item) => {
+            const filename = item.getFilename();
+            const sp = savePath || path.join(require('os').tmpdir(), filename);
+            try { fs.mkdirSync(path.dirname(sp), { recursive: true }); } catch {}
+            item.setSavePath(sp);
+            item.once('done', () => { if (!settled) { settled = true; resolve({ filename, savedPath: sp, url: item.getURL() }); } });
+            item.once('interrupted', () => { if (!settled) { settled = true; resolve({ error: '下载中断' }); } });
+          });
+          setTimeout(() => { if (!settled) { settled = true; resolve({ error: '未触发下载（超时）' }); } }, 15000);
+        });
+        if (args.url) {
+          wc.downloadURL(String(args.url));
+        } else if (args.selector) {
+          await wc.executeJavaScript(`(function(){var el=window.__yzAssistant.resolve(${JSON.stringify(args.selector)});if(el)el.click();return !!el;})()`).catch(() => null);
+        }
+        return await downloadP;
+      }
+      // ========== C12 滚动到元素 / 可见性检测 ==========
+      case 'scroll_into_view': {
+        return await wc.executeJavaScript(`(function(){
+          var a=${JSON.stringify(args)};
+          var el=null;
+          if(a.index!=null&&window.__yzElements){el=window.__yzElements[a.index];}
+          else if(a.selector){el=window.__yzAssistant.resolve(a.selector);}
+          if(!el)return{error:'元素未找到'};
+          el.scrollIntoView({behavior:'smooth',block:'center'});return{success:true};
+        })()`);
+      }
+      case 'is_visible': {
+        return await wc.executeJavaScript(`(function(){
+          var a=${JSON.stringify(args)};
+          var el=null;
+          if(a.index!=null&&window.__yzElements){el=window.__yzElements[a.index];}
+          else if(a.selector){el=window.__yzAssistant.resolve(a.selector);}
+          if(!el)return{visible:false,reason:'元素未找到'};
+          if(!el.isConnected)return{visible:false,reason:'元素已从 DOM 移除'};
+          var rect=el.getBoundingClientRect();
+          if(rect.width<2||rect.height<2)return{visible:false,reason:'尺寸过小'};
+          if(el.offsetParent===null){var st=getComputedStyle(el).position;if(st!=='fixed'&&st!=='sticky')return{visible:false,reason:'offsetParent 为 null（display:none 或祖先隐藏）'};}
+          var cs=getComputedStyle(el);
+          if(cs.visibility==='hidden')return{visible:false,reason:'visibility:hidden'};
+          if(cs.opacity==='0')return{visible:false,reason:'opacity:0'};
+          return{visible:true,reason:'可见'};
+        })()`);
+      }
+      // ========== C13 拖拽（桌面端用 sendInputEvent 模拟鼠标） ==========
+      case 'drag': {
+        const from = await wc.executeJavaScript(`(function(){
+          var a=${JSON.stringify(args)};
+          function resolve(prefix){
+            var idx=prefix==='from'?a.fromIndex:a.toIndex;
+            var sel=prefix==='from'?a.fromSelector:a.toSelector;
+            if(idx!=null&&window.__yzElements){var el=window.__yzElements[idx];if(!el||!el.isConnected)return null;el.scrollIntoView({block:'center'});var r=el.getBoundingClientRect();return{x:r.x+r.width/2,y:r.y+r.height/2};}
+            if(sel){var el=window.__yzAssistant.resolve(sel);if(!el)return null;el.scrollIntoView({block:'center'});var r=el.getBoundingClientRect();return{x:r.x+r.width/2,y:r.y+r.height/2};}
+            var px=prefix==='from'?a.fromX:a.toX;var py=prefix==='from'?a.fromY:a.toY;
+            if(px!=null&&py!=null)return{x:px,y:py};
+            return null;
+          }
+          return{from:resolve('from'),to:resolve('to')};
+        })()`);
+        if (!from || !from.from) return { error: '无法解析起点坐标（index/selector/x+y 失效）' };
+        if (!from.to) return { error: '无法解析终点坐标（index/selector/x+y 失效）' };
+        await wc.sendInputEvent({ type: 'mouseMoved', x: from.from.x, y: from.from.y });
+        await wc.sendInputEvent({ type: 'mouseButtonDown', button: 'left', x: from.from.x, y: from.from.y });
+        // 分步移动模拟真实拖拽
+        const steps = 10;
+        for (let i = 1; i <= steps; i++) {
+          const x = from.from.x + (from.to.x - from.from.x) * i / steps;
+          const y = from.from.y + (from.to.y - from.from.y) * i / steps;
+          await wc.sendInputEvent({ type: 'mouseMoved', x, y });
+        }
+        await wc.sendInputEvent({ type: 'mouseButtonUp', button: 'left', x: from.to.x, y: from.to.y });
+        return { dragged: true, from: from.from, to: from.to };
+      }
+      // ========== C14 Accessibility Tree（桌面端遍历 DOM aria 角色构建） ==========
+      case 'get_a11y_tree': {
+        const maxNodes = args.maxNodes || 200;
+        return await wc.executeJavaScript(`(function(){
+          var maxNodes=${maxNodes};var count=0;
+          var roleMap={'a':'link','button':'button','input':'textbox','select':'listbox','textarea':'textbox','img':'img','h1':'heading','h2':'heading','h3':'heading','h4':'heading','h5':'heading','h6':'heading','ul':'list','ol':'list','li':'listitem','table':'table','nav':'navigation','form':'form','dialog':'dialog','section':'region','article':'article','main':'main','header':'banner','footer':'contentinfo'};
+          function build(el){
+            if(count>=maxNodes)return null;
+            if(!el||el.nodeType!==1)return null;
+            var st=getComputedStyle(el);
+            if(st.display==='none'||st.visibility==='hidden')return null;
+            var role=el.getAttribute('role')||roleMap[el.tagName.toLowerCase()]||'';
+            var name=(el.getAttribute('aria-label')||'').trim();
+            if(!name){var txt=(el.textContent||'').trim();if(txt&&txt.length<80)name=txt;}
+            var value='';
+            if(el.tagName==='INPUT'||el.tagName==='TEXTAREA')value=String(el.value||'');
+            if(!role&&!name&&!value)return null;
+            count++;
+            var node={role:role};
+            if(name)node.name=name.slice(0,80);
+            if(value)node.value=value.slice(0,80);
+            if(el.getAttribute('aria-checked'))node.checked=el.getAttribute('aria-checked')==='true';
+            var kids=[];
+            for(var i=0;i<el.children.length;i++){var k=build(el.children[i]);if(k)kids.push(k);}
+            if(kids.length)node.children=kids;
+            return node;
+          }
+          var tree=build(document.body);
+          return{tree:tree,nodeCount:count};
+        })()`);
+      }
+      default:
+        return { error: '未知操作: ' + action };
+    }
+    };
+
+    // 变化检测：对可能改变页面的操作做前后快照对比，为模型提供 pageChanged / noChangeStreak 反馈
+    let beforeState = null;
+    if (CHANGE_ACTIONS.has(action)) {
+      beforeState = await wc.executeJavaScript(STATE_SNAPSHOT_JS).catch(() => null);
+    }
+    const result = await doAction();
+    if (result && !result.error && !result.ambiguous && beforeState) {
+      await new Promise(r => setTimeout(r, 500)); // 等待页面响应
+      const after = await wc.executeJavaScript(STATE_SNAPSHOT_JS).catch(() => null);
+      if (after) {
+        const urlChanged = after.url !== beforeState.url;
+        const changed = urlChanged || after.t !== beforeState.t || after.n !== beforeState.n;
+        noChangeStreak = changed ? 0 : noChangeStreak + 1;
+        result.pageChanged = changed;
+        result.urlChanged = urlChanged;
+        result.noChangeStreak = noChangeStreak;
+        if (noChangeStreak >= 3) {
+          result.warning = '连续 ' + noChangeStreak + ' 次操作页面无任何变化，操作可能未生效。请停止重复同类操作：改用 index 精确定位（先 browser_get_page_info 获取编号列表）、重新分析页面、或 ask_user 请求人工介入。';
+        }
+      }
+    }
+    return result;
+  } catch (e) {
+    return { error: e?.message || String(e) };
+  }
 });
 
 // ============================================================
@@ -571,6 +1278,17 @@ ipcMain.handle('shell:openPath', (_e, p) => {
 ipcMain.handle('shell:openExternal', (_e, url) => {
   if (!url || !/^https?:\/\//i.test(url)) return;
   try { shell.openExternal(url); } catch {}
+});
+
+// 原生文件夹/文件选择对话框，返回选中路径（取消返回 null）
+ipcMain.handle('dialog:showOpenDir', async (_e, options) => {
+  const props = (options && options.directory === false) ? ['openFile'] : ['openDirectory'];
+  const result = await dialog.showOpenDialog(mainWindow, {
+    properties: props,
+    title: (options && options.title) || '选择文件夹',
+  });
+  if (result.canceled || !result.filePaths.length) return null;
+  return result.filePaths[0];
 });
 
 // ============================================================

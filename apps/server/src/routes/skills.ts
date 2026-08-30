@@ -8,7 +8,8 @@ router.use(authMiddleware);
 
 // GET /api/skills
 router.get('/', (req: Request, res: Response) => {
-  const rows = db.prepare('SELECT * FROM skill WHERE user_id = ? ORDER BY created_at DESC').all(req.user!.userId);
+  const uid = req.user!.userId;
+  const rows = db.prepare('SELECT * FROM skill WHERE user_id = ? OR user_id = ? ORDER BY created_at DESC').all(uid, 'guest');
   res.json({ data: rows });
 });
 

@@ -60,7 +60,7 @@ router.delete('/:id', (req: Request, res: Response) => {
   const pid = req.params.id;
   const existing = db.prepare('SELECT * FROM platform WHERE id = ? AND user_id = ?').get(pid, userId(req));
   if (!existing) { res.status(404).json({ error: '平台不存在' }); return; }
-  if ((existing as any).is_builtin) { res.status(403).json({ error: '内置平台不可删除' }); return; }
+
   db.prepare('DELETE FROM model WHERE platform_id = ?').run(pid);
   db.prepare('DELETE FROM platform WHERE id = ?').run(pid);
   res.json({ ok: true });
@@ -144,7 +144,7 @@ router.delete('/models/:mid', (req: Request, res: Response) => {
   if (!row) {
     res.status(404).json({ error: '模型不存在' }); return;
   }
-  if ((row as any).is_builtin) { res.status(403).json({ error: '内置模型不可删除' }); return; }
+
   db.prepare('DELETE FROM model WHERE id = ?').run(mid);
   res.json({ ok: true });
 });

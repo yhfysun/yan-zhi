@@ -2,8 +2,10 @@
 import { defineStore } from 'pinia';
 import { ref, watch } from 'vue';
 import { getPlatformAdapter } from '@yan-zhi/core';
+import { usePluginStore } from './plugin';
 
-export type ThemeName = 'ocean' | 'forest' | 'sunset' | 'aurora' | 'rose';
+export type ThemeName = string;
+export const BUILTIN_THEME_NAMES = ['ocean', 'forest', 'sunset', 'aurora', 'rose'] as const;
 
 export interface AppSettings {
   theme: ThemeName;
@@ -19,6 +21,8 @@ export interface AppSettings {
   /** 记忆抽取模型配置：空则默认本地小模型 */
   memoryExtractPlatformId: string;
   memoryExtractModelId: string;
+  /** 当前布局 id；'default' 为内置布局，其它值由插件 contributes.layouts 提供 */
+  layout: string;
 }
 
 /**
@@ -46,10 +50,11 @@ export const APP_GUIDE_DOCS: Array<{ name: string; content: string }> = [
   {
     name: '模型平台与模型选择',
     content: `## 模型平台与模型选择
-- 顶部有「平台 / 模型」下拉：选择要使用的模型平台和具体模型（含内置本地小模型）。
-- 在「设置」→「模型平台」里可新增平台（OpenAI / Anthropic 兼容网关），配置 API 地址与密钥。
-- 离线（未登录）时默认用内置本地小模型（完整版安装包内置；轻量版需配置外部模型）。
-- 记忆抽取等后台任务用「记忆抽取模型」，默认本地小模型，可单独配置更强模型。`,
+- 顶部有「平台 / 模型」下拉：选择要使用的模型平台和具体模型。
+- 在「设置」→「模型平台」里可新增平台（OpenAI / Anthropic 兼容网关、Ollama 等），配置 API 地址与密钥。
+- 本地模型由本机 **Ollama** 提供：先确保本机已安装并运行 Ollama（默认 http://127.0.0.1:11434），在「模型平台」新增一个 Ollama 平台指向它；再到「本地模型市场」按需拉取模型（如 qwen2.5:1.5b、qwen3:4b、nomic-embed-text 向量模型等）。
+- 离线（未登录）时可用本机 Ollama 本地模型；未配置 Ollama 则需配置外部模型平台。
+- 记忆抽取等后台任务用「记忆抽取模型」，默认本机 Ollama 小模型，可单独配置更强模型。`,
   },
   {
     name: '右侧预览面板',
@@ -96,7 +101,7 @@ export const APP_GUIDE_DOCS: Array<{ name: string; content: string }> = [
   - 会话记忆：当前会话专属的上下文结论，不串到其它会话。
   - 智能体记忆：跨会话的长期用户偏好/背景。
 - 对话进行中（到一定轮数）自动用「记忆抽取模型」抽取并落库；下次对话前自动检索注入。
-- 记忆抽取模型可在「设置」里切换（默认内置本地小模型）。`,
+- 记忆抽取模型可在「设置」里切换（默认本机 Ollama 小模型）。`,
   },
   {
     name: '内置浏览器与 Chromium',
@@ -113,6 +118,15 @@ export const APP_GUIDE_DOCS: Array<{ name: string; content: string }> = [
 - 智能体能调用内置工具（命令执行、读写文件、打开网页、知识库检索等）。
 - 智能体之间可委派：主智能体可调「子智能体」（call_agent）并行完成子任务。
 - 「智能体画布」支持可视化编排节点工作流（拖拽连线）。`,
+  },
+  {
+    name: '定时任务',
+    content: `## 定时任务
+- 在「定时任务」页可创建周期性自动任务：到时间后，应用用指定的智能体/模型自动就某个 prompt 发起一次对话，结果落在绑定的会话里。
+- 调度方式二选一：间隔（每 N 分钟，intervalMinutes）或 Cron（5 字段分钟粒度，如 "30 9 * * *" 表示每天 09:30，cronExpr）。
+- 每个任务可绑定：对话（conversationId）、智能体（agentId）、模型平台与模型（platformId/modelId）、空间（spaceId）；不绑定则用默认。
+- 典型用法：配合「浏览器自动化」做每日签到/领积分、每日资讯汇总、定时抓取——创建后按时自动跑，无需人工干预。
+- 任务可随时启用/停用、编辑、删除；列表显示下次执行时间。`,
   },
   {
     name: 'MCP 工具服务',
@@ -140,7 +154,7 @@ export const APP_GUIDE_DOCS: Array<{ name: string; content: string }> = [
 - AI 答非所问：检查知识库里是否已放入相关内容，或工作目录是否设置正确。
 - 浏览器打不开网页：桌面端确认用的是内置浏览器（无需下载）；若走服务端抓取/搜索，需已安装 Playwright Chromium。
 - 命令执行失败：先确认「工作目录」是否正确。
-- 模型不可用：检查「设置 → 模型平台」是否配置了可用平台；离线时用本地小模型（完整版内置）。
+- 模型不可用：检查「设置 → 模型平台」是否配置了可用平台；离线时用本机 Ollama 本地模型（需先安装运行 Ollama 并拉取模型）。
 - 知识库检索不到：确认库是公开还是私有、以及提问措辞（语义检索比关键词更宽松）。`,
   },
 ];
@@ -160,6 +174,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   appGuide: DEFAULT_APP_GUIDE,
   memoryExtractPlatformId: '',
   memoryExtractModelId: '',
+  layout: 'default',
 };
 
 interface ThemePalette {
@@ -258,7 +273,16 @@ export const useSettingsStore = defineStore('settings', () => {
   }
 
   function applyTheme(theme: ThemeName) {
-    const p = THEMES[theme];
+    let p: ThemePalette | undefined = THEMES[theme as keyof typeof THEMES];
+    if (!p) {
+      try {
+        const pluginTheme = usePluginStore().themes.find((t) => t.id === theme);
+        if (pluginTheme) p = pluginTheme as unknown as ThemePalette;
+      } catch {
+        /* plugin store 未就绪 */
+      }
+    }
+    if (!p) return;
     const root = document.documentElement.style;
     root.setProperty('--color-primary', p.primary);
     root.setProperty('--color-primary-light', p.primaryLight);

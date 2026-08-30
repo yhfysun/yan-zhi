@@ -9,9 +9,14 @@ import { registerMarketplaceTools } from './marketplace';
 import { registerMcpTools } from './mcp';
 import { registerMemoryTools } from './memory';
 import { registerMessageTools } from './message';
+import { registerOllamaTools } from './ollama';
 import { registerPeerTools } from './peer';
 import { registerPlatformTools } from './platform';
+import { registerPluginTools } from './plugin';
+import { registerScheduledTaskTools } from './scheduled-task';
 import { registerSkillTools } from './skill';
+import { registerSpaceTools } from './space';
+import { registerGitTools } from './git';
 import { registerToolTools } from './tool';
 import { registerWorkspaceTools } from './workspace';
 
@@ -29,7 +34,12 @@ export type ApiModuleName =
   | 'file'
   | 'peer'
   | 'im'
-  | 'knowledge';
+  | 'knowledge'
+  | 'scheduled-task'
+  | 'ollama'
+  | 'git'
+  | 'plugin'
+  | 'space';
 
 export const API_MODULES: ApiModuleName[] = [
   'agent',
@@ -46,6 +56,11 @@ export const API_MODULES: ApiModuleName[] = [
   'peer',
   'im',
   'knowledge',
+  'scheduled-task',
+  'ollama',
+  'git',
+  'plugin',
+  'space',
 ];
 
 export function createApiToolRegistry(): Map<ApiModuleName, ToolDefinition[]> {
@@ -78,5 +93,10 @@ export function initApiToolRegistry(): void {
   registerPeerTools(registry);
   registerImTools(registry);
   registerKnowledgeTools(registry);
+  registerScheduledTaskTools(registry);
+  registerOllamaTools(registry);
+  registerGitTools(registry);
+  registerPluginTools(registry);
+  registerSpaceTools(registry);
   _instance = registry;
 }

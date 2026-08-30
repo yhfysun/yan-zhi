@@ -30,7 +30,7 @@
 
             <div class="settings-drawer-content">
               <component
-                :is="sectionComponents[activeSection]"
+                :is="resolveComponent(activeSection)"
                 :key="activeSection"
               />
             </div>
@@ -43,17 +43,14 @@
 
 <script setup lang="ts">
 import { computed, defineAsyncComponent, onBeforeUnmount, onMounted } from 'vue';
-import { useRouter } from 'vue-router';
+
 import {
   Setting,
-  ChatDotRound,
   Cpu,
   Connection,
   Suitcase,
   Files,
-
   Box,
-  Monitor,
   Promotion,
   Close,
 } from '@element-plus/icons-vue';
@@ -63,6 +60,9 @@ import {
   closeSettingsDrawer,
   type SettingsDrawerSection,
 } from '../composables/useSettingsDrawer';
+import { usePluginStore } from '../stores/plugin';
+import { resolvePluginComponent } from '../plugin-component-registry';
+import { resolvePluginIcon } from '../plugin-icons';
 
 interface SettingsSection {
   section: SettingsDrawerSection;
@@ -70,43 +70,62 @@ interface SettingsSection {
   icon: any;
 }
 
-const sections: SettingsSection[] = [
+const pluginStore = usePluginStore();
+
+const builtinSections: SettingsSection[] = [
   { section: 'general', label: '通用与数据', icon: Setting },
-  { section: 'chat', label: '聊天', icon: ChatDotRound },
+
   { section: 'models', label: '模型平台', icon: Cpu },
   { section: 'mcp', label: 'MCP 服务', icon: Connection },
   { section: 'tools', label: '工具管理', icon: Suitcase },
   { section: 'skills', label: 'Skill 商店', icon: Files },
-
   { section: 'agents', label: '智能体', icon: Box },
-  { section: 'peers', label: '客户端节点', icon: Monitor },
+
   { section: 'connections', label: 'IM 连接', icon: Promotion },
+  { section: 'plugins', label: '插件管理', icon: Box },
 ];
 
-const sectionComponents: Record<SettingsDrawerSection, ReturnType<typeof defineAsyncComponent>> = {
+const sections = computed<SettingsSection[]>(() => {
+  const pluginTabs: SettingsSection[] = pluginStore.settingsTabs.map((t) => ({
+    section: `plugin:${t.id}` as SettingsDrawerSection,
+    label: t.label,
+    icon: resolvePluginIcon(t.icon || ''),
+  }));
+  return [...builtinSections, ...pluginTabs];
+});
+
+const builtinComponents: Record<string, ReturnType<typeof defineAsyncComponent>> = {
   general: defineAsyncComponent(() => import('../views/Settings.vue')),
-  chat: defineAsyncComponent(() => import('../views/ChatHub.vue')),
+
   models: defineAsyncComponent(() => import('../views/Models.vue')),
   mcp: defineAsyncComponent(() => import('../views/Mcp.vue')),
   tools: defineAsyncComponent(() => import('../views/ToolMarket.vue')),
-  skills: defineAsyncComponent(() => import('../views/Skills.vue')),
-  distill: defineAsyncComponent(() => import('../views/SkillDistill.vue')),
+  skills: defineAsyncComponent(() => import('../views/skill-market/LocalSkillMarket.vue')),
   agents: defineAsyncComponent(() => import('../views/Agents.vue')),
-  peers: defineAsyncComponent(() => import('../views/Peers.vue')),
+
   connections: defineAsyncComponent(() => import('../views/Connections.vue')),
+  plugins: defineAsyncComponent(() => import('./plugin/PluginManager.vue')),
 };
 
-const router = useRouter();
+function resolveComponent(section: string): ReturnType<typeof defineAsyncComponent> | undefined {
+  if (builtinComponents[section]) return builtinComponents[section];
+  if (section.startsWith('plugin:')) {
+    const id = section.slice(7);
+    const tab = pluginStore.settingsTabs.find((t) => t.id === id);
+    if (tab) {
+      const comp = resolvePluginComponent(tab.component);
+      if (comp) return defineAsyncComponent(comp as () => Promise<{ default: unknown }>);
+    }
+  }
+  return undefined;
+}
+
 
 const activeSection = computed(() => settingsDrawerSection.value);
-const activeItem = computed(() => sections.find((item) => item.section === activeSection.value));
+const activeItem = computed(() => sections.value.find((item) => item.section === activeSection.value));
 
 function selectSection(section: SettingsDrawerSection) {
-  if (section === 'distill') {
-    closeSettingsDrawer();
-    router.push('/distill');
-    return;
-  }
+
   settingsDrawerSection.value = section;
 }
 

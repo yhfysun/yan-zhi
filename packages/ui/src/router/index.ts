@@ -1,6 +1,8 @@
 // 路由定义
 import { createRouter, createWebHashHistory, type RouteRecordRaw } from 'vue-router';
 import { useLicenseStore } from '../stores/license';
+import { usePluginStore } from '../stores/plugin';
+import { resolvePluginComponent } from '../plugin-component-registry';
 
 const routes: RouteRecordRaw[] = [
   { path: '/', redirect: '/chat' },
@@ -32,7 +34,7 @@ const routes: RouteRecordRaw[] = [
     path: '/chat-hub',
     name: 'chat-hub',
     component: () => import('../views/ChatHub.vue'),
-    meta: { title: '聊天' },
+    meta: { title: '消息' },
   },
   {
     path: '/chat/:convId',
@@ -146,5 +148,25 @@ router.beforeEach(async (to) => {
     }
   }
 });
+
+/** 动态挂载插件贡献的前端路由（在 usePluginStore.refresh 之后调用） */
+export async function syncPluginRoutes(): Promise<void> {
+  try {
+    const pluginStore = usePluginStore();
+    for (const r of pluginStore.routes) {
+      if (router.hasRoute(r.name)) continue;
+      const comp = resolvePluginComponent(r.component);
+      if (!comp) continue;
+      router.addRoute({
+        path: r.path,
+        name: r.name,
+        component: comp as () => Promise<unknown>,
+        meta: r.meta,
+      });
+    }
+  } catch {
+    /* plugin store 未就绪 */
+  }
+}
 
 export default router;

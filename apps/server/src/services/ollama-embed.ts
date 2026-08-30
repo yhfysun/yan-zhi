@@ -38,21 +38,47 @@ export function setEmbeddingConfig(cfg: EmbeddingConfig): void {
 
 // ── 列出所有平台的 embedding 模型（供前端选择）──
 
-export function listEmbeddingModels() {
+const EMBEDDING_RE = /embed|bge|minilm|e5|ada-002/i;
+
+export async function listEmbeddingModels() {
   const platforms = db.prepare('SELECT id, name, api_url, protocol FROM platform').all() as any[];
   const models = db.prepare(
-    "SELECT id, platform_id, model_id, alias, type, enabled FROM model WHERE type = 'embedding' OR model_id LIKE '%embed%' OR model_id LIKE '%bge%'",
+    "SELECT id, platform_id, model_id, alias, type, enabled FROM model WHERE type = 'embedding' OR model_id LIKE '%embed%' OR model_id LIKE '%bge%' OR model_id LIKE '%minilm%' OR model_id LIKE '%e5%' OR model_id LIKE '%ada-002%'",
   ).all() as any[];
+
+  // 始终回查 Ollama 实时列表并合并（去重），避免用户用 CLI 拉的向量模型选不到
+  const ollamaModels = await fetchOllamaModels();
+  const embedNames = ollamaModels
+    .filter((m) => m.type === 'embedding' || EMBEDDING_RE.test(m.name))
+    .map((m) => m.name);
+  if (embedNames.length > 0) {
+    let ollamaPlatform = platforms.find((p) => String(p.api_url || '').includes('127.0.0.1:11434'));
+    if (!ollamaPlatform) {
+      ollamaPlatform = { id: 'ollama-local', name: '本地模型', api_url: OLLAMA_BASE, protocol: 'openai' };
+      platforms.push(ollamaPlatform);
+    }
+    const existing = new Set(models.map((m: any) => `${m.platform_id}:${m.model_id}`));
+    for (const name of embedNames) {
+      if (!existing.has(`${ollamaPlatform.id}:${name}`)) {
+        models.push({ id: name, platform_id: ollamaPlatform.id, model_id: name, alias: name, type: 'embedding', enabled: 1 });
+        existing.add(`${ollamaPlatform.id}:${name}`);
+      }
+    }
+  }
   return { platforms, models };
 }
 
 // ── 平台 embedding 调用（OpenAI 兼容 /v1/embeddings）──
 
 async function embedViaPlatform(text: string, platformId: string, modelRowId: string): Promise<number[] | null> {
-  const platform = db.prepare('SELECT api_url, api_key_enc, protocol, headers_json FROM platform WHERE id = ?').get(platformId) as any;
+  let platform = db.prepare('SELECT api_url, api_key_enc, protocol, headers_json FROM platform WHERE id = ?').get(platformId) as any;
+  if (!platform && platformId === 'ollama-local') {
+    platform = { api_url: OLLAMA_BASE, api_key_enc: '', protocol: 'openai', headers_json: '' };
+  }
   if (!platform?.api_url) return null;
-  const model = db.prepare('SELECT model_id FROM model WHERE id = ? AND platform_id = ?').get(modelRowId, platformId) as any;
-  if (!model?.model_id) return null;
+  let modelId = (db.prepare('SELECT model_id FROM model WHERE id = ? AND platform_id = ?').get(modelRowId, platformId) as any)?.model_id;
+  if (!modelId && String(platform.api_url).includes('127.0.0.1:11434')) modelId = modelRowId;
+  if (!modelId) return null;
   const baseUrl = String(platform.api_url).replace(/\/$/, '');
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (platform.api_key_enc) headers['Authorization'] = `Bearer ${platform.api_key_enc}`;
@@ -64,7 +90,7 @@ async function embedViaPlatform(text: string, platformId: string, modelRowId: st
     const res = await fetch(`${baseUrl}/v1/embeddings`, {
       method: 'POST',
       headers,
-      body: JSON.stringify({ model: model.model_id, input: String(text).slice(0, 8000) }),
+      body: JSON.stringify({ model: modelId, input: String(text).slice(0, 8000) }),
     });
     if (!res.ok) return null;
     const data = await res.json() as any;

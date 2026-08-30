@@ -123,6 +123,38 @@ router.get('/entity-search', (req: Request, res: Response) => {
   }
 });
 
+// ── 全局 Embedding 模型配置（可从任意已配置平台选择）──
+// 注意：以下静态路径必须在 /:id 之前注册，否则会被当作知识库 id 匹配
+// GET /api/kb/embedding-model —— 所有平台的 embedding 模型列表 + 当前选中
+router.get('/embedding-model', async (_req: Request, res: Response) => {
+  const { platforms, models } = await listEmbeddingModels();
+  const current = getEmbeddingConfig();
+  res.json({ data: { platforms, models, current } });
+});
+
+// POST /api/kb/embedding-model —— 设置选中的 embedding 平台+模型 { platformId, modelId }
+router.post('/embedding-model', (req: Request, res: Response) => {
+  const { platformId, modelId } = req.body || {};
+  if (!platformId || !modelId) { res.status(400).json({ error: 'platformId 和 modelId 为必填项' }); return; }
+  setEmbeddingConfig({ platformId, modelId });
+  res.json({ ok: true, current: { platformId, modelId } });
+});
+
+// POST /api/kb/revectorize —— 重新向量化所有知识库
+router.post('/revectorize', async (_req: Request, res: Response) => {
+  try {
+    const r = await revectorizeAllKnowledgeBases();
+    res.json({ ok: true, ...r });
+  } catch (e: unknown) {
+    handleError(res, e);
+  }
+});
+
+// GET /api/kb/revectorize-status —— 重新向量化进度
+router.get('/revectorize-status', (_req: Request, res: Response) => {
+  res.json({ data: getRevectorizeStatus() });
+});
+
 // GET /api/kb/:id
 router.get('/:id', (req: Request, res: Response) => {
   try {
@@ -237,35 +269,5 @@ router.delete('/documents/:docId', (req: Request, res: Response) => {
   }
 });
 
-// ── 全局 Embedding 模型配置（可从任意已配置平台选择）──
-// GET /api/kb/embedding-model —— 所有平台的 embedding 模型列表 + 当前选中
-router.get('/embedding-model', (_req: Request, res: Response) => {
-  const { platforms, models } = listEmbeddingModels();
-  const current = getEmbeddingConfig();
-  res.json({ data: { platforms, models, current } });
-});
-
-// POST /api/kb/embedding-model —— 设置选中的 embedding 平台+模型 { platformId, modelId }
-router.post('/embedding-model', (req: Request, res: Response) => {
-  const { platformId, modelId } = req.body || {};
-  if (!platformId || !modelId) { res.status(400).json({ error: 'platformId 和 modelId 为必填项' }); return; }
-  setEmbeddingConfig({ platformId, modelId });
-  res.json({ ok: true, current: { platformId, modelId } });
-});
-
-// POST /api/kb/revectorize —— 重新向量化所有知识库
-router.post('/revectorize', async (_req: Request, res: Response) => {
-  try {
-    const r = await revectorizeAllKnowledgeBases();
-    res.json({ ok: true, ...r });
-  } catch (e: unknown) {
-    handleError(res, e);
-  }
-});
-
-// GET /api/kb/revectorize-status —— 重新向量化进度
-router.get('/revectorize-status', (_req: Request, res: Response) => {
-  res.json({ data: getRevectorizeStatus() });
-});
 
 export default router;

@@ -38,10 +38,8 @@
         <div class="card-actions">
           <el-button size="small" :loading="testing === p.id" @click="test(p.id)">测试</el-button>
           <el-button size="small" @click="openPlatform(p.id)">管理模型</el-button>
-          <template v-if="!p.isBuiltin">
-            <el-button size="small" @click="editPlatform(p)">编辑</el-button>
-            <el-button size="small" type="danger" @click="del(p.id)">删除</el-button>
-          </template>
+              <el-button v-if="!p.isBuiltin" size="small" @click="editPlatform(p)">编辑</el-button>
+              <el-button size="small" type="danger" @click="del(p.id)">删除</el-button>
         </div>
       </el-card>
       <el-empty v-if="store.platforms.length === 0" description="还没有平台，点击右下角新增" />
@@ -310,7 +308,7 @@ function openPlatform(id: string) {
 
 async function del(id: string) {
   const p = store.platforms.find((x) => x.id === id);
-  if (p?.isBuiltin) { ElMessage.warning('内置平台不可删除'); return; }
+
   try {
     await ElMessageBox.confirm('删除平台会同时删除其下所有模型，确认？', '提示', { type: 'warning' });
     await store.deletePlatform(id);

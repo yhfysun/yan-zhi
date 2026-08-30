@@ -114,6 +114,10 @@ export interface Message {
   systemPromptSnapshot?: string;
   tokens?: number;
   createdAt: number;
+  subAgentId?: string;
+  subAgentName?: string;
+  parentToolCallId?: string;
+  subAgentDepth?: number;
 }
 
 /** 工具调用 */

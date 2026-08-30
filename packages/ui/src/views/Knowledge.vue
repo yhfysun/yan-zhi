@@ -351,7 +351,9 @@ async function loadEmbeddingModels() {
 }
 
 async function switchEmbeddingModel(val: string) {
-  const [platformId, modelId] = val.split(':');
+  const idx = val.indexOf(':');
+  const platformId = val.slice(0, idx);
+  const modelId = val.slice(idx + 1);
   if (!platformId || !modelId) return;
   try {
     await api.post('/kb/embedding-model', { platformId, modelId });

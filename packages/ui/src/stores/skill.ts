@@ -101,6 +101,7 @@ const MARKET_SKILLS: Array<{
   },
 ];
 
+
 export const useSkillStore = defineStore('skill', () => {
   const skills = ref<Skill[]>([]);
   const marketSkills = ref(MARKET_SKILLS);
@@ -280,7 +281,7 @@ function rowToSkill(r: any): Skill {
   return {
     id: r.id, name: r.name,
     description: r.description || '',
-    source: 'local',
+    source: r.source || 'local',
     isPublic: !!r.is_public,
     frontmatter: {
       name: r.name, description: r.description,

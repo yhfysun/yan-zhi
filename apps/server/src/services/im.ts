@@ -260,3 +260,54 @@ async function resolveFile(file: NonNullable<ImSendInput['file']>): Promise<{ na
   }
   throw new Error('文件需要 path 或 base64 data');
 }
+
+export async function testImConnector(userId: string, connectorId: string) {
+  const connector = db.prepare('SELECT * FROM im_connector WHERE id = ? AND user_id = ?').get(connectorId, userId) as any;
+  if (!connector) throw new Error('连接器不存在');
+  const config = connector.config_json ? JSON.parse(connector.config_json) : {};
+  if (connector.provider === 'feishu') {
+    if (!config.appId || !config.appSecret) throw new Error('飞书连接器缺少 appId/appSecret');
+    await getFeishuToken(config.appId, config.appSecret);
+    return { provider: 'feishu', ok: true };
+  }
+  if (connector.provider === 'wechat') {
+    if (!config.corpId || !config.secret) throw new Error('企业微信连接器缺少 corpId/secret');
+    await getWechatToken(config.corpId, config.secret);
+    return { provider: 'wechat', ok: true };
+  }
+  throw new Error('不支持的 provider');
+}
+
+export function listImEvents(
+  userId: string,
+  opts: { connectorId?: string; since?: number; limit?: number } = {},
+) {
+  const limit = Math.min(opts.limit || 200, 500);
+  const since = opts.since || 0;
+  let sql: string;
+  let params: any[];
+  if (opts.connectorId) {
+    sql = `SELECT e.* FROM im_inbound_event e
+           JOIN im_connector c ON c.id = e.connector_id
+           WHERE c.user_id = ? AND e.connector_id = ? AND e.created_at >= ?
+           ORDER BY e.created_at ASC LIMIT ?`;
+    params = [userId, opts.connectorId, since, limit];
+  } else {
+    sql = `SELECT e.* FROM im_inbound_event e
+           JOIN im_connector c ON c.id = e.connector_id
+           WHERE c.user_id = ? AND e.created_at >= ?
+           ORDER BY e.created_at ASC LIMIT ?`;
+    params = [userId, since, limit];
+  }
+  const rows = db.prepare(sql).all(...params) as any[];
+  return rows.map((r) => ({
+    id: r.id,
+    connectorId: r.connector_id,
+    provider: r.provider,
+    externalId: r.external_id,
+    fromUser: r.from_user,
+    toUser: r.to_user,
+    content: r.content,
+    createdAt: r.created_at,
+  }));
+}

@@ -21,22 +21,32 @@
       </div>
     </header>
 
-    <div class="skill-grid">
-      <div v-for="s in filteredSkills" :key="s.id" class="skill-card" @click="previewSkill(s)">
-        <div class="card-top">
-          <div class="card-icon" :class="{ off: !s.enabled }"><el-icon :size="24"><Files /></el-icon></div>
-          <div class="card-name" :title="s.name">{{ s.name }}</div>
-          <el-tag v-if="s.isPublic" type="primary" size="small" effect="dark">已公开</el-tag>
-          <el-tag :type="s.source === 'local' ? 'warning' : 'success'" size="small" effect="plain">{{ s.source === 'local' ? '自建' : '内置' }}</el-tag>
+    <div class="skill-groups">
+      <div v-for="group in groupedSkills" :key="group.category" class="skill-group">
+        <div class="group-header" @click="toggleGroup(group.category)">
+          <el-icon class="group-arrow" :class="{ collapsed: !isGroupOpen(group.category) }"><ArrowRight /></el-icon>
+          <span class="group-title">{{ group.category }}</span>
+          <span class="group-count">{{ group.skills.length }}</span>
         </div>
-        <div class="card-bar" @click.stop>
-          <el-tooltip v-if="authStore.isLoggedIn" :content="s.isPublic ? '点击下架' : '发布到商城'" placement="top">
-            <el-switch :model-value="!!s.isPublic" size="small" @change="(v: boolean) => togglePublish(s.id, v)" />
-          </el-tooltip>
-          <el-switch :model-value="s.enabled" size="small" @change="(v: boolean) => toggle(s.id, v)" />
-          <span class="card-gap" />
-          <el-tooltip v-if="s.source === 'local'" content="编辑" placement="top"><el-button size="small" circle @click="openEdit(s)"><el-icon :size="14"><Edit /></el-icon></el-button></el-tooltip>
-          <el-tooltip :content="s.source === 'local' ? '删除' : '卸载'" placement="top"><el-button size="small" circle type="danger" @click="removeSkill(s.id)"><el-icon :size="14"><Delete /></el-icon></el-button></el-tooltip>
+        <div v-show="isGroupOpen(group.category)" class="skill-grid">
+          <div v-for="s in group.skills" :key="s.id" class="skill-card" @click="previewSkill(s)">
+            <div class="card-top">
+              <div class="card-icon" :class="{ off: !s.enabled }"><el-icon :size="24"><Files /></el-icon></div>
+              <div class="card-name" :title="s.name">{{ s.name }}</div>
+              <el-tag v-if="s.isPublic" type="primary" size="small" effect="dark">已公开</el-tag>
+              <el-tag :type="s.source === 'local' ? 'warning' : 'success'" size="small" effect="plain">{{ s.source === 'local' ? '自建' : '内置' }}</el-tag>
+            </div>
+            <div class="card-desc" :title="s.description">{{ s.description }}</div>
+            <div class="card-bar" @click.stop>
+              <el-tooltip v-if="authStore.isLoggedIn" :content="s.isPublic ? '点击下架' : '发布到商城'" placement="top">
+                <el-switch :model-value="!!s.isPublic" size="small" @change="(v: boolean) => togglePublish(s.id, v)" />
+              </el-tooltip>
+              <el-switch :model-value="s.enabled" size="small" @change="(v: boolean) => toggle(s.id, v)" />
+              <span class="card-gap" />
+              <el-tooltip v-if="s.source === 'local'" content="编辑" placement="top"><el-button size="small" circle @click="openEdit(s)"><el-icon :size="14"><Edit /></el-icon></el-button></el-tooltip>
+              <el-tooltip :content="s.source === 'local' ? '删除' : '卸载'" placement="top"><el-button size="small" circle type="danger" @click="removeSkill(s.id)"><el-icon :size="14"><Delete /></el-icon></el-button></el-tooltip>
+            </div>
+          </div>
         </div>
       </div>
       <el-empty v-if="filteredSkills.length === 0" description="还没有 Skill" />
@@ -85,8 +95,8 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue';
-import { Plus, Files, ArrowLeft, Edit, Delete, FolderOpened, UploadFilled, Search, Close } from '@element-plus/icons-vue';
+import { ref, computed, onMounted, reactive } from 'vue';
+import { Plus, Files, ArrowLeft, ArrowRight, Edit, Delete, FolderOpened, UploadFilled, Search, Close } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { useSkillStore, useAuthStore } from '../../stores';
 import { getPlatformAdapter } from '@yan-zhi/core';
@@ -114,6 +124,32 @@ const filteredSkills = computed(() => {
     s.name.toLowerCase().includes(q) || (s.description || '').toLowerCase().includes(q)
   );
 });
+
+/** 获取 skill 的分类（兼容本地 sqlite frontmatter.category 和 server 端 category 字段） */
+function getSkillCategory(s: Skill): string {
+  return (s as any).category || (s.frontmatter as any)?.category || '其他';
+}
+
+/** 按分类分组 */
+const groupedSkills = computed(() => {
+  const map = new Map<string, Skill[]>();
+  for (const s of filteredSkills.value) {
+    const cat = getSkillCategory(s);
+    if (!map.has(cat)) map.set(cat, []);
+    map.get(cat)!.push(s);
+  }
+  return Array.from(map.entries()).map(([category, skills]) => ({ category, skills }));
+});
+
+/** 分组折叠状态（默认全展开） */
+const groupOpen = reactive<Record<string, boolean>>({});
+function isGroupOpen(cat: string): boolean {
+  if (groupOpen[cat] === undefined) groupOpen[cat] = true;
+  return groupOpen[cat];
+}
+function toggleGroup(cat: string) {
+  groupOpen[cat] = !isGroupOpen(cat);
+}
 
 const previewMd = computed(() => {
   const fm = ['---', `name: ${editor.value.name || '(未填写)'}`];
@@ -215,10 +251,14 @@ async function doImport() {
 async function importFolder() {
   try {
     const adapter = getPlatformAdapter();
-    // 使用 Tauri dialog 打开文件夹选择器
-    const path = await (window as any).__TAURI__?.dialog?.open({
-      directory: true, multiple: false, title: '选择 Skill 文件夹',
-    });
+    // 文件夹选择：优先 Electron 原生对话框，回退 Tauri
+    const w = window as any;
+    let path: string | null = null;
+    if (w.electronAPI?.dialog?.showOpenDir) {
+      path = await w.electronAPI.dialog.showOpenDir({ directory: true, title: '选择 Skill 文件夹' });
+    } else if (w.__TAURI__?.dialog?.open) {
+      path = await w.__TAURI__.dialog.open({ directory: true, multiple: false, title: '选择 Skill 文件夹' });
+    }
     if (!path) return;
     // 递归扫描 .md 文件
     const mdFiles: string[] = [];
@@ -325,6 +365,24 @@ function parseSkillMd(md: string): { frontmatter: any; bodyMd: string; body: str
 }
 .lm-icon-btn:hover { color: var(--color-primary); border-color: var(--color-primary); }
 
+.skill-groups { display: flex; flex-direction: column; gap: 16px; }
+.skill-group { }
+.group-header {
+  display: flex; align-items: center; gap: 8px; cursor: pointer; user-select: none;
+  padding: 8px 12px; border-radius: var(--radius-md); margin-bottom: 10px;
+  background: var(--glass-bg); border: 1px solid var(--glass-border);
+  transition: all 0.15s;
+}
+.group-header:hover { border-color: rgba(124,58,237,0.3); }
+.group-arrow { font-size: 14px; color: var(--color-text-secondary); transition: transform 0.2s; }
+.group-arrow.collapsed { transform: rotate(0deg); }
+.group-arrow:not(.collapsed) { transform: rotate(90deg); }
+.group-title { font-size: 15px; font-weight: 600; color: var(--color-text); }
+.group-count {
+  font-size: 12px; color: var(--color-text-secondary);
+  background: rgba(124,58,237,0.08); padding: 2px 8px; border-radius: 10px;
+}
+
 .skill-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(220px, 100%), 1fr)); gap: 12px; }
 .skill-card {
   background: var(--glass-bg); backdrop-filter: var(--glass-filter);
@@ -342,6 +400,10 @@ function parseSkillMd(md: string): { frontmatter: any; bodyMd: string; body: str
 .card-name {
   font-weight: 600; font-size: 14px; flex: 1; min-width: 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.card-desc {
+  font-size: 12px; color: var(--color-text-secondary); margin-bottom: 10px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; line-height: 1.4;
 }
 
 .card-bar { display: flex; align-items: center; justify-content: flex-end; gap: 6px; }

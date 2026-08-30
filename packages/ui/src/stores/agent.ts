@@ -86,7 +86,7 @@ const DEFAULT_AGENT_ID = 'a_default_assistant';
 
 /** 默认 agent 结构版本：作为一次性迁移门槛。
  *  version < N 时执行迁移，迁移后置为 N，避免反复覆盖用户后续对工具挂载的修改（如手动清空）。 */
-const DEFAULT_AGENT_VERSION = 6;
+const DEFAULT_AGENT_VERSION = 7;
 
 // ========== E5: pageAgent（内置浏览器自动化智能体） ==========
 /** pageAgent 固定 ID：内置智能体，浏览器操作专家 */
@@ -97,6 +97,27 @@ const PAGE_AGENT_BUILTIN_TOOLS = [
   'browser_navigate', 'browser_click', 'browser_type', 'browser_press_key',
   'browser_scroll', 'browser_hover', 'browser_get_text', 'browser_get_dom',
   'browser_wait', 'browser_screenshot',
+  'browser_fill_form', 'browser_submit_form', 'browser_search',
+  'browser_next_page', 'browser_prev_page', 'browser_wait_for', 'browser_get_visible_text',
+  'browser_select_option', 'browser_check', 'browser_uncheck', 'browser_get_page_info',
+  'browser_login_saved',
+  // C4 多标签页管理
+  'browser_new_tab', 'browser_switch_tab', 'browser_close_tab', 'browser_get_tabs',
+  // C5 网络请求监听
+  'browser_wait_for_request', 'browser_get_network_log',
+  // C6 结构化数据提取
+  'browser_extract_list',
+  // C9 视觉定位闭环
+  'browser_visual_locate',
+  // C11 文件上传/下载
+  'browser_upload', 'browser_download',
+  // C12 滚动到元素 / 可见性检测
+  'browser_scroll_into_view', 'browser_is_visible',
+  // C13 拖拽
+  'browser_drag',
+  // C14 Accessibility Tree
+  'browser_get_a11y_tree',
+  'ask_user',
 ];
 
 const PAGE_AGENT_DATA = {
@@ -107,8 +128,8 @@ const PAGE_AGENT_DATA = {
 
 能力：
 - browser_navigate: 导航到指定 URL
-- browser_click: 点击元素（CSS 选择器或坐标）
-- browser_type: 在输入框输入文本
+- browser_click: 点击元素（优先用元素编号 index，其次 CSS 选择器或坐标）
+- browser_type: 在输入框输入文本（优先用元素编号 index 定位输入框）
 - browser_press_key: 按键（Enter/Tab/Escape 等）
 - browser_scroll: 滚动页面
 - browser_hover: 悬停元素
@@ -116,28 +137,63 @@ const PAGE_AGENT_DATA = {
 - browser_get_dom: 获取页面 DOM 摘要
 - browser_wait: 等待指定时间
 - browser_screenshot: 截图
+- browser_fill_form: 批量填写表单（支持 text/select/checkbox/radio）
+- browser_submit_form: 提交表单（点提交按钮或回车，等待导航）
+- browser_search: 在页面搜索框输入并提交（自动识别搜索框）
+- browser_next_page / browser_prev_page: 翻页（自动识别"下一页/上一页"）
+- browser_wait_for: 智能等待（等元素/URL/文本出现）
+- browser_get_visible_text: 获取干净可见文本（过滤隐藏元素）
+- browser_select_option: 下拉选择
+- browser_check / browser_uncheck: 勾选/取消勾选
+- browser_get_page_info: 返回当前 url/title/可交互元素摘要（理解页面状态）
+- browser_login_saved: 用已保存的密码自动登录站点（需先用浏览器密码管理保存）
+- ask_user: 向用户提问/请求确认（用于扫码登录等需要人工干预的场景）
 
 工作流程：
-1. 分析委派给你的任务（如"打开某网站搜索某关键词"）
-2. browser_navigate 导航到目标页面
-3. 用 browser_get_text/get_dom 了解页面结构，找到目标元素的 CSS 选择器
-4. 用 browser_click/type/press_key 执行操作
-5. 必要时 browser_wait 等待页面加载
-6. 用 browser_get_text 获取最终结果
-7. 返回任务结果摘要
+1. 分析委派给你的任务（如"打开某网站搜索某关键词"、"每日签到领取积分"、"输入文案制作视频"）
+2. 若目标站点需要登录，优先用 browser_login_saved（传 host 或 url）自动登录已保存密码的站点
+   - 若 browser_login_saved 报未找到凭证，提示用户先在浏览器密码管理中保存该站点密码
+3. 若站点是扫码登录/验证码登录（如即梦、抖音、微信等），无法用 browser_login_saved 自动登录：
+   - browser_navigate 打开登录页（用户在浏览器面板可见）
+   - 用 ask_user 弹窗提示用户："请在浏览器面板中扫码登录/输入验证码，登录完成后点击确认"
+   - 用户在可见的浏览器面板上完成扫码/验证码登录后点击确认
+   - 用 browser_get_page_info 检查登录状态（有用户头像/昵称=已登录）
+4. browser_navigate 导航到目标页面
+5. 用 browser_get_page_info / browser_get_visible_text 了解页面结构与状态，找到目标元素
+6. 用 browser_fill_form / browser_click / browser_search / browser_select_option / browser_check 执行操作
+7. 用 browser_submit_form 提交表单，browser_next_page / browser_prev_page 翻页
+8. 必要时 browser_wait_for 等待页面加载或元素出现
+9. 用 browser_get_visible_text / browser_get_page_info 获取最终结果
+10. 返回任务结果摘要
 
 注意：
+- 优先用高级工具（fill_form/search/next_page/get_page_info），它们比逐个 click+type 更可靠
 - 使用 CSS 选择器定位元素（如 input.search-box、button#submit）
-- 如果选择器找不到元素，用 get_dom 查看页面结构后调整
+- 如果选择器找不到元素，用 get_page_info 查看可交互元素后调整
 - 每步操作后观察结果，确认是否成功
-- 用中文返回结果摘要`,
+- 用中文返回结果摘要
+
+【核心工作方式 — 元素编号定位（最重要）】
+1. 每到一个新页面或弹窗出现后，先调用 browser_get_page_info（或 browser_get_dom）获取带编号（index）的可交互元素列表，已穿透 iframe/Shadow DOM（含登录弹窗内的元素）。
+2. 用列表中的 index 直接调用 browser_click / browser_type（传 index 参数）操作目标元素。不要自己猜动态 hash class 选择器（如 input-xrB84C），不要凭截图猜坐标。
+3. 若 selector 匹配到多个元素，工具会返回 ambiguous 和候选列表（带编号），从中选一个 index 重试。
+4. 页面变化后 index 会失效，此时重新调用 browser_get_page_info 刷新编号列表。
+5. 每次 click/type 的返回包含 pageChanged / urlChanged / noChangeStreak：noChangeStreak ≥ 3 时会收到 warning，必须停止重复同类操作，改换定位方式（重新 get_page_info 分析）或 ask_user 请求人工介入。
+
+【硬约束 — 即梦签到类任务】
+- 目标站固定：即梦签到只允许访问 https://jimeng.jianying.com/，禁止访问 dreamina.ai / dreamina.com 等国际版（国际版无中文签到入口）。
+- 登录流程：检测到未登录 → 必须 ask_user 提示用户在浏览器面板扫码登录 → 等用户确认 → browser_get_page_info 复核已登录。禁止代填手机号、禁止代填验证码（验证码需用户手机接收，代填必死循环）。
+- 登录闭环职责（最重要）：检测到未登录时，pageAgent 必须自己调 ask_user 提示用户在浏览器面板扫码/验证码登录，等用户确认后用 browser_get_page_info 复核已登录，然后继续任务。**严禁返回"需要登录"/"未登录"/"请登录"等结论给父智能体而自己停下**——登录闭环必须在 pageAgent 内完成，父智能体不参与登录决策、不会帮你扫码。ask_user 的 question 中要明确说明"请在浏览器面板中完成登录后点击确认"。即梦签到类任务在 pageAgent 内完成全部登录→签到→领取闭环。
+- 已知稳定选择器：即梦"领积分"入口 #SiderMenuCredit；登录弹窗出现后用 browser_get_page_info / browser_get_dom（已穿透 iframe/Shadow DOM）抓弹窗结构，用返回的 index 定位。
+- 定位优先级：browser_get_page_info / browser_get_dom 获取编号列表 → index 参数定位（首选）→ 稳定 id / ARIA / :contains(可见文本) 选择器 → 坐标（最后手段）。
+- 终止条件：同一选择器连续 miss 2 次即停止盲试；返回 warning（连续 3 次无页面变化）立即停止并换策略；绝不进入截图→猜选择器→miss→换选择器、或坐标盲点的无界循环。`,
   temperature: 0.3,
   maxTokens: 2048,
   topP: 1.0,
   frequencyPenalty: 0,
   presencePenalty: 0,
   isBuiltin: true,
-  config: { maxReActSteps: 15 },
+  config: { maxReActSteps: 25 },
 };
 
 export const useAgentStore = defineStore('agent', () => {
@@ -209,12 +265,13 @@ export const useAgentStore = defineStore('agent', () => {
           // 保证默认智能体全局唯一。兼容 web 端 Dexie（table.add 主键冲突抛错亦被 catch）。
           try {
             await adapter.db.exec(
-              `INSERT INTO agent (id, name, description, system_prompt, temperature, max_tokens, top_p, frequency_penalty, presence_penalty, is_default, builtin_tool_ids, workflow_json, config_json, version, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              `INSERT INTO agent (id, name, description, system_prompt, temperature, max_tokens, top_p, frequency_penalty, presence_penalty, is_default, builtin_tool_ids, sub_agent_ids, workflow_json, config_json, version, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
               [DEFAULT_AGENT_ID, DEFAULT_AGENT_DATA.name, DEFAULT_AGENT_DATA.description, DEFAULT_AGENT_DATA.systemPrompt,
                DEFAULT_AGENT_DATA.temperature, DEFAULT_AGENT_DATA.maxTokens, DEFAULT_AGENT_DATA.topP,
                DEFAULT_AGENT_DATA.frequencyPenalty, DEFAULT_AGENT_DATA.presencePenalty, 1,
                JSON.stringify(DEFAULT_AGENT_DATA.builtinToolIds),
+               JSON.stringify([PAGE_AGENT_ID]),
                JSON.stringify(EMPTY_WORKFLOW), JSON.stringify(DEFAULT_AGENT_DATA.config), DEFAULT_AGENT_VERSION, ts, ts],
             );
           } catch {
@@ -267,6 +324,17 @@ export const useAgentStore = defineStore('agent', () => {
           } catch {
             // 主键冲突：已被并发调用插入，忽略
           }
+          rows = await adapter.db.query<any>('SELECT * FROM agent ORDER BY is_default DESC, is_builtin DESC, created_at ASC');
+        }
+
+        // E13: pageAgent v2 迁移 —— 更新内置 systemPrompt（元素编号 index 定位 + 变化反馈工作流）。
+        // pageAgent 为内置智能体（不可编辑/删除），systemPrompt 属产品内置行为，版本升级时覆盖。
+        const paRow = rows.find((r: any) => r.id === PAGE_AGENT_ID);
+        if (paRow && (paRow.version === null || paRow.version === undefined || Number(paRow.version) < 2)) {
+          await adapter.db.exec(
+            'UPDATE agent SET system_prompt = ?, config_json = ?, version = ? WHERE id = ?',
+            [PAGE_AGENT_DATA.systemPrompt, JSON.stringify(PAGE_AGENT_DATA.config), 2, PAGE_AGENT_ID],
+          );
           rows = await adapter.db.query<any>('SELECT * FROM agent ORDER BY is_default DESC, is_builtin DESC, created_at ASC');
         }
 
@@ -352,6 +420,27 @@ export const useAgentStore = defineStore('agent', () => {
             rows = await adapter.db.query<any>('SELECT * FROM agent ORDER BY is_default DESC, is_builtin DESC, created_at ASC');
           } else if (Number(defRowV6.version) < 6) {
             await adapter.db.exec('UPDATE agent SET version = ? WHERE id = ?', [6, defRowV6.id]);
+          }
+        }
+
+        // v7 迁移 —— 为默认 agent 补挂 pageAgent 子智能体 + call_agent 工具。
+        // 修复：seed 直接写入 version=DEFAULT_AGENT_VERSION，导致 v3 补挂逻辑（门槛 version<3）被跳过，
+        // 默认 agent 的 sub_agent_ids 一直为空，list_sub_agents 工具查询返回空。
+        // 门槛：version < 7 且 sub_agent_ids 为空（从未显式挂载过子智能体），不覆盖用户手动清空（'[]'）。
+        const defRowV7 = rows.find((r: any) => r.is_default === 1);
+        if (defRowV7 && (defRowV7.version === null || defRowV7.version === undefined || Number(defRowV7.version) < 7)) {
+          if (!defRowV7.sub_agent_ids) {
+            let builtinIds: string[] = [];
+            try { builtinIds = defRowV7.builtin_tool_ids ? JSON.parse(defRowV7.builtin_tool_ids) : []; } catch { builtinIds = []; }
+            if (!Array.isArray(builtinIds)) builtinIds = [];
+            if (!builtinIds.includes('call_agent')) builtinIds = [...builtinIds, 'call_agent'];
+            await adapter.db.exec(
+              'UPDATE agent SET builtin_tool_ids = ?, sub_agent_ids = ?, version = ? WHERE id = ?',
+              [JSON.stringify(builtinIds), JSON.stringify([PAGE_AGENT_ID]), 7, defRowV7.id],
+            );
+            rows = await adapter.db.query<any>('SELECT * FROM agent ORDER BY is_default DESC, is_builtin DESC, created_at ASC');
+          } else {
+            await adapter.db.exec('UPDATE agent SET version = ? WHERE id = ?', [7, defRowV7.id]);
           }
         }
 

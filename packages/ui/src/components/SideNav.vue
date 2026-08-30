@@ -131,13 +131,15 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import { useRoute } from 'vue-router';
-import { ChatDotRound, Setting, User, SwitchButton, Fold, Expand, Monitor, ChatLineRound, Collection, Moon, Sunny, HomeFilled, MagicStick } from '@element-plus/icons-vue';
+import { ChatDotRound, Setting, User, SwitchButton, Fold, Expand, Monitor, ChatLineRound, Collection, Moon, Sunny, HomeFilled, MagicStick, Promotion } from '@element-plus/icons-vue';
 import { useAuthStore } from '../stores/auth';
 import { useSettingsStore } from '../stores/settings';
 import { useIsMobile } from '../composables/useIsMobile';
 import { usePlatform } from '../composables/usePlatform';
 import { useSidebarState } from '../composables/useSidebarState';
 import { openSettingsDrawer } from '../composables/useSettingsDrawer';
+import { usePluginStore } from '../stores/plugin';
+import { resolvePluginIcon } from '../plugin-icons';
 
 const route = useRoute();
 const authStore = useAuthStore();
@@ -146,17 +148,49 @@ const isMobile = useIsMobile();
 const { isDesktop } = usePlatform();
 const { collapsed, toggle } = useSidebarState();
 
-const navItems = [
+const builtinNavItems = [
   { path: '/home', label: '首页', tabLabel: '首页', icon: HomeFilled, kind: 'route' },
   { path: '/chat', label: '对话', tabLabel: '对话', icon: ChatDotRound, kind: 'route' },
-  { path: '/chat-hub', label: '聊天', tabLabel: '聊天', icon: ChatLineRound, kind: 'route' },
+  { path: '/peers', label: '聊天', tabLabel: '聊天', icon: ChatLineRound, kind: 'route' },
+  { path: '/chat-hub', label: '消息', tabLabel: '消息', icon: Promotion, kind: 'route' },
   { path: '/knowledge', label: '知识库', tabLabel: '知识', icon: Collection, kind: 'route' },
   { path: '/browser', label: '浏览器', tabLabel: '浏览器', icon: Monitor, kind: 'route' },
   { path: '/distill', label: 'Skill 蒸馏', tabLabel: '蒸馏', icon: MagicStick, kind: 'route' },
   { path: '', label: '设置', tabLabel: '设置', icon: Setting, kind: 'settings' },
 ];
 
-const mobilePrimaryItems = computed(() => navItems);
+const pluginStore = usePluginStore();
+function matchWhen(when?: string): boolean {
+  if (!when || when === 'all') return true;
+  if (when === 'desktop') return isDesktop;
+  if (when === 'mobile') return isMobile.value;
+  if (when === 'web') return !isDesktop && !isMobile.value;
+  return true;
+}
+const pluginNavItems = computed(() =>
+  pluginStore.sidebar
+    .filter((item) => matchWhen(item.when))
+    .map((item) => ({
+      path: item.route,
+      label: item.label,
+      tabLabel: item.label,
+      icon: resolvePluginIcon(item.icon),
+      kind: 'route' as const,
+    })),
+);
+const navItems = computed(() => [...builtinNavItems, ...pluginNavItems.value]);
+const mobilePrimaryItems = computed(() => [
+  ...builtinNavItems,
+  ...pluginStore.sidebar
+    .filter((item) => matchWhen(item.when))
+    .map((item) => ({
+      path: item.route,
+      label: item.label,
+      tabLabel: item.label,
+      icon: resolvePluginIcon(item.icon),
+      kind: 'route' as const,
+    })),
+]);
 
 function isActive(path: string) {
   return route.path === path || route.path.startsWith(path + '/');

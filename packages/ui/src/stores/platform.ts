@@ -50,8 +50,8 @@ function inferModelType(modelId: string, apiType?: string): ModelType {
   const id = modelId.toLowerCase();
   // 已知聊天 LLM 模式
   if (/^(gpt|claude|gemini|llama|mistral|qwen|deepseek|yi|moonshot|ernie|spark|hunyuan|chatglm|baichuan|phi|openchat|falcon|command|cohere)/.test(id)) return 'llm';
-  // embedding
-  if (/embed/.test(id) || /ada-002/.test(id)) return 'embedding';
+  // embedding（含 bge / minilm / e5 等常见向量模型族）
+  if (/embed|bge|minilm|e5|ada-002/.test(id)) return 'embedding';
   // rerank
   if (/rerank/.test(id)) return 'rerank';
   // image generation
@@ -165,7 +165,7 @@ export const usePlatformStore = defineStore('platform', () => {
   }
 
   async function deletePlatform(id: string) {
-    assertEditablePlatform(id);
+
     if (on()) {
       await api.delete(`/platforms/${id}`);
       const adapter = getPlatformAdapter();
@@ -283,7 +283,7 @@ export const usePlatformStore = defineStore('platform', () => {
   }
 
   async function deleteModel(id: string) {
-    assertEditableModel(id);
+
     if (on()) {
       await api.delete(`/platforms/models/${id}`);
     } else {
@@ -305,7 +305,7 @@ export const usePlatformStore = defineStore('platform', () => {
     if (on()) {
       await api.post('/platforms/models/batch', {
         platformId,
-        models: list.map((m) => ({ modelId: m.id, type: m.type || 'llm', contextWindow: 131072 })),
+        models: list.map((m) => ({ modelId: m.id, type: inferModelType(m.id, m.type), contextWindow: 131072 })),
       });
     } else {
       const adapter = getPlatformAdapter();

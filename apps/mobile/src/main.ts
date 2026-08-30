@@ -6,12 +6,14 @@ import 'element-plus/dist/index.css';
 import * as Icons from '@element-plus/icons-vue';
 import App from '@yan-zhi/ui/App.vue';
 import { router } from '@yan-zhi/ui';
-import { setPlatformAdapter, initSchema } from '@yan-zhi/core';
+import { setPlatformAdapter, initSchema, seedBuiltinSkills } from '@yan-zhi/core';
 import { mobileAdapter } from './platform';
 
 setPlatformAdapter(mobileAdapter);
 
-initSchema((sql) => mobileAdapter.db.exec(sql)).then(() => {
+initSchema((sql) => mobileAdapter.db.exec(sql))
+  .then(() => seedBuiltinSkills((sql, params) => mobileAdapter.db.exec(sql, params)))
+  .then(() => {
   const app = createApp(App);
   for (const [key, comp] of Object.entries(Icons)) {
     app.component(key, comp as any);

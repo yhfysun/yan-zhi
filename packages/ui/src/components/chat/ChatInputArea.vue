@@ -2,13 +2,20 @@
   <div class="input-area">
     <div class="input-box" :class="{ focused: inputFocused }">
       <div class="input-context">
-        <el-tooltip :content="workspaceDir || '未设置工作目录'" placement="top" :disabled="!workspaceDir">
-          <button class="ctx-chip ctx-dir" type="button" @click="showWorkspaceDir = true">
-            <el-icon class="ctx-icon"><FolderOpened /></el-icon>
-            <span class="ctx-dir-text">{{ workspaceDir || '未设置工作目录' }}</span>
-            <el-icon class="ctx-caret"><ArrowDown /></el-icon>
-          </button>
-        </el-tooltip>
+        <div class="ctx-dir-group">
+          <el-tooltip :content="workspaceDir || '未设置工作目录'" placement="top" :disabled="!workspaceDir">
+            <button class="ctx-chip ctx-dir" type="button" @click="showWorkspaceDir = true">
+              <el-icon class="ctx-icon"><FolderOpened /></el-icon>
+              <span class="ctx-dir-text">{{ workspaceDir || '未设置工作目录' }}</span>
+              <el-icon class="ctx-caret"><ArrowDown /></el-icon>
+            </button>
+          </el-tooltip>
+          <el-tooltip content="清除工作目录" placement="top">
+            <button v-if="hasWorkspaceDir" class="ctx-dir-clear" type="button" @click="clearWorkspaceDir">
+              <el-icon><Close /></el-icon>
+            </button>
+          </el-tooltip>
+        </div>
 
         <button class="ctx-chip" type="button" @click="showMount = true">
           <el-icon class="ctx-icon"><Connection /></el-icon>
@@ -32,8 +39,7 @@
       <el-input
         v-model="input"
         type="textarea"
-        :rows="3"
-        resize="none"
+        :autosize="{ minRows: 3, maxRows: 12 }"
         placeholder="输入消息，Enter 发送，Shift+Enter 换行"
         @keydown.enter.exact.prevent="store.streaming ? null : send()"
         :disabled="store.streaming"
@@ -162,7 +168,7 @@ import {
 import { useChat } from '../../composables/chat/useChat';
 
 const {
-  inputFocused, workspaceDir, showWorkspaceDir, showMount, store, showSkills, mountedSkillIds,
+  inputFocused, workspaceDir, hasWorkspaceDir, clearWorkspaceDir, showWorkspaceDir, showMount, store, showSkills, mountedSkillIds,
   triggerFileUpload, input, send, agentStore, onAgentSwitch, openEditAgent, modelGroups,
   selectedModelId, onModelChange, openPlatformConfig, startNewChat, uploadedFiles, stopChat,
   formatSize, removeFile, fileInputRef, handleFileChange,

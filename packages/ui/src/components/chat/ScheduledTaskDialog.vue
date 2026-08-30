@@ -390,6 +390,9 @@ async function onDelete(task: ScheduledTask) {
   overflow-y: auto;
   padding-right: 4px;
 }
+.st-form :deep(.el-input-number),
+.st-form :deep(.el-time-picker),
+.st-form :deep(.el-date-editor) { width: 100%; }
 
 .st-form-hint {
   color: var(--el-text-color-secondary, #64748b);

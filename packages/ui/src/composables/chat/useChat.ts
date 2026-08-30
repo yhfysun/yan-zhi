@@ -14,20 +14,35 @@ import {
   useDistillStore,
   useSettingsStore,
 } from '../../stores';
+import { useGitStore } from '../../stores/git';
 import { useIsMobile } from '../useIsMobile';
 import { useRouter } from 'vue-router';
 import { api } from '../../api/client';
 import type { Agent, Message, Conversation, Platform } from '@yan-zhi/shared';
 import { estimateTokens, CHAT_MODEL_TYPES } from '@yan-zhi/shared';
 
+export interface AgentStep {
+  reasoningContent?: string;
+  toolCalls: any[];
+  toolResults: Array<{ callId: string; content: string; isError: boolean }>;
+  partialContent?: string;
+  subAgentRounds?: SubAgentRound[];
+  /** 关联的真实助手消息 id，用于匹配交付文件等按消息 id 索引的资源 */
+  messageId?: string;
+}
+
+export interface SubAgentRound {
+  toolCallId: string;
+  subAgentId: string;
+  subAgentName?: string;
+  depth: number;
+  steps: AgentStep[];
+  finalContent?: string;
+}
+
 export interface MessageRound {
   user: Message | null;
-  steps: Array<{
-    reasoningContent?: string;
-    toolCalls: any[];
-    toolResults: Array<{ callId: string; content: string; isError: boolean }>;
-    partialContent?: string;
-  }>;
+  steps: AgentStep[];
   allToolCalls: any[];
   finalAssistant: Message | null;
   hasAgentProcess?: boolean;
@@ -329,6 +344,19 @@ function createChat() {
     if (o === 0 && n > 0) store.rightPanelTab = 'browser';
     else if (n === 0 && store.rightPanelTab === 'browser') store.rightPanelTab = 'file';
   });
+  // 桌面端：右侧面板开合 / tab 切换与原生 BrowserView 图层联动，避免关闭面板后即梦页面仍浮在窗口上
+  watch(() => store.rightPanelOpen, (open) => {
+    const api = (window as any).electronAPI?.browserView;
+    if (!api) return;
+    if (!open) { try { api.hide(); } catch { /* ignore */ } }
+    else if (store.rightPanelTab === 'browser' && store.currentBrowserUrl) { try { api.load(store.currentBrowserUrl); } catch { /* ignore */ } }
+  }, { flush: 'sync' });
+  watch(() => store.rightPanelTab, (tab) => {
+    const api = (window as any).electronAPI?.browserView;
+    if (!api) return;
+    if (tab === 'browser' && store.rightPanelOpen && store.currentBrowserUrl) { try { api.load(store.currentBrowserUrl); } catch { /* ignore */ } }
+    else if (tab !== 'browser') { try { api.hide(); } catch { /* ignore */ } }
+  }, { flush: 'sync' });
   function closeRightPanel() {
     store.rightPanelOpen = false;
   }
@@ -458,6 +486,8 @@ function createChat() {
   const settingsStore = useSettingsStore();
   // 对外暴露，UI 展示用（未设置时显示 'workspace'）
   const workspaceDir = computed(() => settingsStore.settings.workspaceDir || 'workspace');
+  // 是否已真实设置工作目录（区分 'workspace' 兜底显示与真正选过目录）
+  const hasWorkspaceDir = computed(() => !!settingsStore.settings.workspaceDir);
 
   async function loadWorkspaceDir() {
     if (!settingsStore.loaded) await settingsStore.load();
@@ -483,6 +513,29 @@ function createChat() {
     await settingsStore.update({ workspaceDir: path });
     await pushWorkspaceDir(path);
 
+    // 选了工作目录后自动打开 Git 文件预览面板
+    try {
+      const gitStore = useGitStore();
+      await gitStore.checkCapability();
+      if (gitStore.supported) {
+        store.rightPanelTab = 'git';
+        store.rightPanelOpen = true;
+      }
+    } catch {
+      /* git 不可用时忽略 */
+    }
+  }
+
+  /** 清除已选工作目录，恢复到未设置状态 */
+  async function clearWorkspaceDir() {
+    await settingsStore.update({ workspaceDir: '' });
+    await pushWorkspaceDir('');
+    // 清除后若 Git 面板正开着则收起，避免指向不存在的目录
+    try {
+      if (store.rightPanelTab === 'git') store.rightPanelOpen = false;
+    } catch {
+      /* ignore */
+    }
   }
 
   function tryParseSnapshot(raw?: string): any {
@@ -551,13 +604,17 @@ function createChat() {
       }).catch(() => ElMessage.error('复制失败'));
       return;
     }
-    // 链接：在应用内浏览器预览面板打开（不跳系统浏览器）
+    // 链接：在对话页预览面板的浏览器 tab 打开（不跳系统浏览器、不离开对话页）
     const a = t.closest('a');
     if (a) {
       const href = a.getAttribute('href') || '';
       if (/^https?:\/\//i.test(href)) {
         e.preventDefault();
-        router.push({ path: '/browser', query: { url: href } });
+        store.rightPanelOpen = true;
+        store.rightPanelTab = 'browser';
+        // 先置空再设，确保 BrowserPanel 的 watch currentBrowserUrl 触发（重复点同一链接也能重新导航）
+        if (store.currentBrowserUrl === href) store.currentBrowserUrl = '';
+        nextTick(() => { store.currentBrowserUrl = href; });
       }
     }
   }
@@ -603,20 +660,69 @@ function createChat() {
     const msgs = store.currentMessages;
     const rounds: MessageRound[] = [];
     let currentRound: MessageRound | null = null;
+    const stepByToolCallId = new Map<string, AgentStep>();
 
     for (const msg of msgs) {
       if (msg.role === 'system') continue;
+      // 子智能体消息：归入父 step 的 subAgentRounds
+      if (msg.parentToolCallId) {
+        const parentStep = stepByToolCallId.get(msg.parentToolCallId);
+        if (!parentStep) continue;
+        if (!parentStep.subAgentRounds) parentStep.subAgentRounds = [];
+        let subRound = parentStep.subAgentRounds.find((r) => r.toolCallId === msg.parentToolCallId);
+        if (!subRound) {
+          subRound = {
+            toolCallId: msg.parentToolCallId,
+            subAgentId: msg.subAgentId || '',
+            subAgentName: msg.subAgentName,
+            depth: msg.subAgentDepth || 1,
+            steps: [],
+          };
+          parentStep.subAgentRounds.push(subRound);
+        }
+        if (msg.role === 'assistant') {
+          const subStep: AgentStep = {
+            reasoningContent: msg.reasoningContent,
+            toolCalls: msg.toolCalls || [],
+            toolResults: [],
+            partialContent: msg.content || undefined,
+            messageId: msg.id,
+          };
+          subRound.steps.push(subStep);
+          for (const tc of subStep.toolCalls) {
+            if (tc?.id) stepByToolCallId.set(tc.id, subStep);
+          }
+        } else if (msg.role === 'tool') {
+          for (let s = subRound.steps.length - 1; s >= 0; s--) {
+            const step = subRound.steps[s];
+            if (step.toolCalls.some((tc: any) => tc.id === msg.toolCallId)) {
+              step.toolResults.push({
+                callId: msg.toolCallId || '',
+                content: msg.content || '',
+                isError: isToolErrorContent(msg.content || ''),
+              });
+              break;
+            }
+          }
+        }
+        continue;
+      }
       if (msg.role === 'user') {
         if (currentRound) rounds.push(currentRound);
         currentRound = { user: msg, steps: [], allToolCalls: [], finalAssistant: null };
       } else if (msg.role === 'assistant') {
         if (!currentRound) continue;
-        currentRound.steps.push({
+        const step: AgentStep = {
           reasoningContent: msg.reasoningContent,
           toolCalls: msg.toolCalls || [],
           toolResults: [],
           partialContent: msg.content || undefined,
-        });
+          messageId: msg.id,
+        };
+        currentRound.steps.push(step);
+        for (const tc of step.toolCalls) {
+          if (tc?.id) stepByToolCallId.set(tc.id, step);
+        }
         if (msg.toolCalls?.length) {
           currentRound.allToolCalls.push(...msg.toolCalls);
         }
@@ -641,7 +747,7 @@ function createChat() {
       const lastStep = round.steps[round.steps.length - 1];
       if (lastStep && !lastStep.toolCalls.length) {
         round.finalAssistant = {
-          id: round.user?.id + '-fa' || 'fa',
+          id: lastStep.messageId || (round.user?.id ? round.user.id + '-fa' : 'fa'),
           conversationId: '',
           role: 'assistant',
           content: lastStep.partialContent || '',
@@ -1478,6 +1584,12 @@ function createChat() {
   function toggleToolGroup(msgId: string) { expandedToolGroups[msgId] = !expandedToolGroups[msgId]; }
   function toggleMsgCollapse(msgId: string) { collapsedMessages[msgId] = !collapsedMessages[msgId]; }
 
+  /** 改动①：工具项展开判定——call_agent 执行中（runningToolCallIds 包含该 toolCallId）强制展开，
+   *  让 SubAgentRoundView 实时露出子智能体每一步；执行结束自动折叠回简洁态，保留手动展开（expandedTools）。 */
+  function isToolItemOpen(toolCallId: string, key: string): boolean {
+    return store.isToolCallRunning(toolCallId) || !!expandedTools[key];
+  }
+
   const collapsedByAuto = new Set<string>();
 
   function collapseEarlyOnMobile() {
@@ -1508,6 +1620,19 @@ function createChat() {
     return ri === messageRounds.value.length - 1 &&
       store.streaming &&
       !round.finalAssistant?.content;
+  }
+
+  /**
+   * 获取当前正在流式的 step。
+   * 当最后一轮处于流式状态且 finalAssistant 无内容时，返回 round.steps 的最后一个 step，
+   * 其 partialContent / reasoningContent 为模型实时输出的内容（messageRounds 是 computed，
+   * step.partialContent = msg.content 随每个 chunk 实时更新）。
+   * 用于把流式过程中的实时内容"提"到主响应区以跑马灯式显示，而非仅显示三点加载动画。
+   */
+  function getStreamingStep(round: MessageRound, ri: number): AgentStep | null {
+    if (!isLastRoundStreaming(round, ri)) return null;
+    const lastStep = round.steps[round.steps.length - 1];
+    return lastStep || null;
   }
 
   function getStepToolResult(step: { toolResults: Array<{ callId: string; content: string; isError: boolean }> }, tcId: string): string | null {
@@ -1740,7 +1865,7 @@ function createChat() {
     rootConversations, conversationsBySpace, spaceCollapsed, toggleSpaceCollapse, rootCollapsed, toggleRootCollapse,
     mountToolSelection, toolAliasMap, mountSearch, collapsedServers, toggleServerCollapse, filteredTools, initMountSelection, isToolMounted, toggleMountTool, isAllToolsMounted, toggleAllTools, setToolAlias,
     showAgentEdit, editingAgent, debugMode,
-    showWorkspaceDir, workspaceDir, loadWorkspaceDir, onWorkspaceDirSelected,
+    showWorkspaceDir, workspaceDir, hasWorkspaceDir, loadWorkspaceDir, onWorkspaceDirSelected, clearWorkspaceDir,
     tryParseSnapshot, formatSnapshot, snapshotDialog, snapshotActiveTab, currentSnapshots, openSnapshotDialog,
     isDraftMode, renamingId, renamingTitle, renameInputRef, ctxMenu,
     md, renderMarkdown, handleContentClick,
@@ -1753,8 +1878,9 @@ function createChat() {
     parseConfigCard, displayAssistantContent, getEditPlatform, getEditReason, onConfigSaved,
     startNewChat, selectConv, triggerFileUpload, handleFileChange, removeFile, formatSize, send, stopChat, regenerateMsg, shouldShowMessage, collectToolCalls,
     filteredFiles, loadWorkspaceFiles, previewFile, toggleFileSelect, triggerFilePanelUpload, handleFilePanelUpload, deleteFileItem,
-    scrollToRound, handleScroll, updateActiveNavRound, formatTime,
-    toggleReasoning, toggleTool, toggleToolGroup, toggleMsgCollapse, collapseEarlyOnMobile, toggleAgentProcess, toggleStepTools, isLastRoundStreaming,
+    scrollToRound, handleScroll, updateActiveNavRound, formatTime, showScrollBottom, showScrollTop, scrollToBottom,
+    toggleReasoning, toggleTool, toggleToolGroup, toggleMsgCollapse, collapseEarlyOnMobile, toggleAgentProcess, toggleStepTools, isLastRoundStreaming, getStreamingStep,
+    isToolItemOpen,
     getStepToolResult, isStepToolError, isStepToolsRunning, isStepToolsError, getStepToolGroupClass, getStepToolStatusClass,
     isToolGroupRunning, isToolGroupError, getToolGroupStatusClass, resolveToolDisplay, resolveToolArgs, safeJson, isToolError, getToolStatusClass, getToolResult,
     copyMsg, editMsg, delMsg, openConvMenu, closeCtxMenu, togglePin, startRename, commitRename, deleteConv, toggleConvSelect, batchSelectAll, batchDeleteConvs,

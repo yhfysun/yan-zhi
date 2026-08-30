@@ -311,8 +311,8 @@
         <!-- 切换：已保存 Skill / 蒸馏结果 -->
         <div class="preview-switch">
           <el-radio-group v-model="rightViewMode" size="small">
-            <el-radio-button label="saved">已保存 Skill</el-radio-button>
-            <el-radio-button label="distill">蒸馏结果</el-radio-button>
+            <el-radio-button value="saved">已保存 Skill</el-radio-button>
+            <el-radio-button value="distill">蒸馏结果</el-radio-button>
           </el-radio-group>
         </div>
 

@@ -9,6 +9,7 @@ export * from './compress/window';
 export * from './db/schema';
 export * from './skill/loader';
 export * from './tool';
+export * from './plugin';
 export {
   localListBases,
   localCreateBase,

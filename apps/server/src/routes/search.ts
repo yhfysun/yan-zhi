@@ -1,21 +1,21 @@
-// web_search 服务端代理 —— 前端直接 fetch DuckDuckGo 会被 CORS 拦截，
-// 故由服务端代理：前端调 /api/search，服务端用 DuckDuckGoSearchBackend 抓取后返回。
+// web_search 服务端代理 —— 前端直接 fetch 搜索引擎会被 CORS 拦截，
+// 故由服务端代理：前端调 /api/search，服务端用统一解析的 SearchBackend 抓取后返回。
 import { Router, Request, Response } from 'express';
 import { optionalAuth } from '../auth.js';
-import { DuckDuckGoSearchBackend } from '@yan-zhi/core';
+import { getSearchBackend } from '../mcp/search-backend.js';
 
 const router = Router();
 router.use(optionalAuth);
 
-const backend = new DuckDuckGoSearchBackend();
-
-// GET /api/search?q=...&maxResults=...
+// GET /api/search?q=...&maxResults=...&timeRange=...
 router.get('/', async (req: Request, res: Response) => {
   try {
     const query = String(req.query.q || '');
     const maxResults = parseInt(String(req.query.maxResults || '5'), 10) || 5;
+    // timeRange 透传给后端（day/week/month/year/recent）；类型在 core 内部为联合字面量，这里用 any 透传避免改 core barrel
+    const timeRange = (String(req.query.timeRange || '') as any) || undefined;
     if (!query) { res.status(400).json({ error: 'q 为必填项' }); return; }
-    const results = await backend.search(query, maxResults);
+    const results = await getSearchBackend().search(query, maxResults, timeRange);
     res.json({ data: results });
   } catch (e: any) {
     res.status(500).json({ error: e?.message || '搜索失败' });

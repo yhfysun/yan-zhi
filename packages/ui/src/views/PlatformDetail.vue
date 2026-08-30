@@ -67,11 +67,9 @@
           />
           <div class="model-card-actions">
             <el-button size="small" :loading="testing === m.id" @click="testModel(m)">测试</el-button>
-            <template v-if="!m.isBuiltin">
-              <el-button size="small" text @click="editModel(m)">编辑</el-button>
-              <el-button size="small" text @click="setDefault(m)" v-if="!m.isDefault">设为默认</el-button>
-              <el-button size="small" type="danger" text @click="del(m)">删除</el-button>
-            </template>
+            <el-button v-if="!m.isBuiltin" size="small" text @click="editModel(m)">编辑</el-button>
+            <el-button v-if="!m.isBuiltin && !m.isDefault" size="small" text @click="setDefault(m)">设为默认</el-button>
+            <el-button size="small" type="danger" text @click="del(m)">删除</el-button>
           </div>
         </div>
       </div>
@@ -316,7 +314,7 @@ async function batchDeleteModels() {
   } catch {}
 }
 async function del(row: any) {
-  if (row.isBuiltin) { ElMessage.warning('内置模型不可删除'); return; }
+
   try {
     await ElMessageBox.confirm(`删除模型 ${row.modelId}？`, '提示', { type: 'warning' });
     await store.deleteModel(row.id);

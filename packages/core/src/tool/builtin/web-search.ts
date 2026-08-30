@@ -7,8 +7,53 @@ export interface SearchResult {
   snippet: string;
 }
 
+/** 时间过滤范围（用于提升搜索结果新鲜度，避免返回过期旧数据） */
+export type TimeRange = 'day' | 'week' | 'month' | 'year' | 'recent';
+
 export interface SearchBackend {
-  search(query: string, maxResults: number): Promise<SearchResult[]>;
+  search(query: string, maxResults: number, timeRange?: TimeRange): Promise<SearchResult[]>;
+}
+
+/** 把外部传入的 timeRange/freshness 规范化为 TimeRange，非法值返回 undefined */
+function normalizeTimeRange(raw: unknown): TimeRange | undefined {
+  if (raw == null) return undefined;
+  const v = String(raw).toLowerCase().trim();
+  if (v === 'day' || v === 'week' || v === 'month' || v === 'year' || v === 'recent') return v;
+  return undefined;
+}
+
+/**
+ * 时间过滤兜底：当后端不支持原生时间参数时，在 query 末尾追加时间限定词提升新鲜度。
+ * - year → 当前年份（如 2026）
+ * - month → 当前年月（如 2026年8月）
+ * - week → "最近一周"
+ * - day → "最近24小时"
+ * - recent → "最新"
+ */
+function applyTimeRangeFallback(query: string, timeRange?: TimeRange): string {
+  if (!timeRange) return query;
+  const now = new Date();
+  let suffix: string;
+  switch (timeRange) {
+    case 'year':
+      suffix = String(now.getFullYear());
+      break;
+    case 'month':
+      suffix = `${now.getFullYear()}年${now.getMonth() + 1}月`;
+      break;
+    case 'week':
+      suffix = '最近一周';
+      break;
+    case 'day':
+      suffix = '最近24小时';
+      break;
+    case 'recent':
+      suffix = '最新';
+      break;
+    default:
+      return query;
+  }
+  return `${query} ${suffix}`;
 }
 
 export interface FetchSearchConfig {
@@ -23,10 +68,13 @@ export interface FetchSearchConfig {
 export class FetchSearchBackend implements SearchBackend {
   constructor(private config: FetchSearchConfig) {}
 
-  async search(query: string, maxResults: number): Promise<SearchResult[]> {
+  async search(query: string, maxResults: number, timeRange?: TimeRange): Promise<SearchResult[]> {
+    // 后端无原生时间参数时，在 query 末尾追加时间限定词兜底
+    const finalQuery = applyTimeRangeFallback(query, timeRange);
     const url = this.config.endpoint
-      .replace('{query}', encodeURIComponent(query))
-      .replace('{maxResults}', String(maxResults));
+      .replace('{query}', encodeURIComponent(finalQuery))
+      .replace('{maxResults}', String(maxResults))
+      .replace('{timeRange}', timeRange ?? '');
 
     const res = await fetch(url, { headers: this.config.headers });
     if (!res.ok) {
@@ -45,9 +93,11 @@ export class FetchSearchBackend implements SearchBackend {
 export class DuckDuckGoSearchBackend implements SearchBackend {
   constructor(private defaultMaxResults = 5) {}
 
-  async search(query: string, maxResults: number): Promise<SearchResult[]> {
+  async search(query: string, maxResults: number, timeRange?: TimeRange): Promise<SearchResult[]> {
     const limit = Math.min(maxResults || this.defaultMaxResults, 10);
-    const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
+    // DuckDuckGo HTML 端点不支持原生时间过滤参数，在 query 末尾追加时间词兜底
+    const finalQuery = applyTimeRangeFallback(query, timeRange);
+    const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(finalQuery)}`;
     const res = await fetch(url, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
@@ -107,14 +157,22 @@ export class DuckDuckGoSearchBackend implements SearchBackend {
  * 故走服务端 /api/search 代理。仅在有 window 的浏览器环境使用。
  */
 export class ServerSearchBackend implements SearchBackend {
-  async search(query: string, maxResults: number): Promise<SearchResult[]> {
+  async search(query: string, maxResults: number, timeRange?: TimeRange): Promise<SearchResult[]> {
     let token: string | null = null;
     try { token = localStorage.getItem('auth_token'); } catch { /* 非浏览器环境 */ }
     const headers: Record<string, string> = {};
     if (token) headers['Authorization'] = `Bearer ${token}`;
-    const url = `/api/search?q=${encodeURIComponent(query)}&maxResults=${maxResults}`;
+    // query 末尾追加时间词兜底；同时把 timeRange 透传给服务端，服务端可按需转成搜索引擎原生时间参数
+    const finalQuery = applyTimeRangeFallback(query, timeRange);
+    let url = `/api/search?q=${encodeURIComponent(finalQuery)}&maxResults=${maxResults}`;
+    if (timeRange) url += `&timeRange=${encodeURIComponent(timeRange)}`;
     const res = await fetch(url, { headers });
-    if (!res.ok) throw new Error(`搜索服务返回 HTTP ${res.status}`);
+    if (!res.ok) {
+      // 先尝试读取服务端返回的具体错误原因，避免只报 "HTTP 500" 丢失根因
+      let detail = '';
+      try { const j = await res.json() as { error?: string }; if (j?.error) detail = String(j.error); } catch { /* body 非 JSON */ }
+      throw new Error(`搜索服务返回 HTTP ${res.status}${detail ? `: ${detail}` : ''}`);
+    }
     const json = await res.json();
     if (json.error) throw new Error(json.error);
     return (json.data as SearchResult[]) || [];
@@ -123,7 +181,7 @@ export class ServerSearchBackend implements SearchBackend {
 
 export class WebSearchTool implements BuiltInTool {
   name = 'web_search';
-  description = 'Search the web for information. Returns a list of results with titles, URLs, and snippets.';
+  description = 'Search the web for information. Returns a list of results with titles, URLs, and snippets. 支持 timeRange/freshness 时间过滤（day/week/month/year/recent）以优先返回最近的结果；推荐/资讯类查询建议传 timeRange=year 优先返回最近一年结果，避免返回过期旧数据。';
 
   inputSchema = {
     type: 'object',
@@ -135,6 +193,16 @@ export class WebSearchTool implements BuiltInTool {
       maxResults: {
         type: 'number',
         description: 'Maximum number of results to return (default: 5, max: 10).',
+      },
+      timeRange: {
+        type: 'string',
+        enum: ['day', 'week', 'month', 'year', 'recent'],
+        description: '时间过滤范围：day=最近一天，week=最近一周，month=最近一月，year=最近一年，recent=最新。推荐/资讯类查询建议传 year。',
+      },
+      freshness: {
+        type: 'string',
+        enum: ['day', 'week', 'month', 'year', 'recent'],
+        description: 'timeRange 的同义别名，兼容性参数，行为与 timeRange 完全一致。',
       },
     },
     required: ['query'],
@@ -156,13 +224,15 @@ export class WebSearchTool implements BuiltInTool {
 
     const query = args.query as string;
     const maxResults = Math.min((args.maxResults as number) || 5, 10);
+    // freshness 为 timeRange 的同义别名，两者任一有效即采用
+    const timeRange = normalizeTimeRange(args.timeRange ?? args.freshness);
 
     if (!query) {
       return { content: [{ type: 'text', text: 'Error: query is required' }], isError: true };
     }
 
     try {
-      const results = await this.backend.search(query, maxResults);
+      const results = await this.backend.search(query, maxResults, timeRange);
       const text = results.length === 0
         ? 'No results found.'
         : results.map((r, i) => `${i + 1}. ${r.title}\n   URL: ${r.url}\n   ${r.snippet}`).join('\n\n');

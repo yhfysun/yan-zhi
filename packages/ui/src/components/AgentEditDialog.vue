@@ -64,8 +64,8 @@
                 </el-select>
               </div>
               <div class="param-item">
-                <div class="param-head"><span class="param-label">最大循环</span><span class="param-val">{{ form.maxReActSteps }}</span></div>
-                <el-slider v-model="form.maxReActSteps" :min="1" :max="30" :step="1" size="small" />
+                <div class="param-head"><span class="param-label">最大循环步数</span><span class="param-val">{{ form.maxReActSteps }}</span></div>
+                <el-input-number v-model="form.maxReActSteps" :min="1" :max="500" :step="1" size="small" controls-position="right" style="width: 100%" />
               </div>
             </div>
           </div>
@@ -177,11 +177,12 @@ const isEdit = computed(() => !!props.agent?.id);
 const activeTab = ref('basic');
 const mountTab = ref('tools');
 const mcpExpanded = reactive<Record<string, boolean>>({});
+const builtinToolsLoaded = ref(false);
 
 const form = ref<any>({
   name: '', description: '', systemPrompt: '', modelId: '', type: 'harness',
   temperature: 0.7, maxTokens: 2048, topP: 1, frequencyPenalty: 0, presencePenalty: 0,
-  reasoningEffort: '', maxReActSteps: 10,
+  reasoningEffort: '', maxReActSteps: 100,
   builtinToolIds: [], customToolIds: [], mcpToolMounts: [], skillIds: [], subAgentIds: [],
   isPublic: false,
 });
@@ -193,8 +194,8 @@ function toggleBuiltinCat(key: string) { builtinCatOpen.value[key] = !isBuiltinC
 const customToolList = computed(() => toolsStore.customTools.filter((t: any) => t.enabled));
 const mcpServerList = computed(() => mcpStore.servers);
 const skillList = computed(() => skillStore.skills.filter((s: any) => s.enabled));
-// E8: 排除内置智能体（如 pageAgent）—— 不在子智能体选择列表中显示，避免用户手动挂载内置专家
-const subAgentList = computed(() => agentStore.agents.filter(a => a.id !== props.agent?.id && !a.isBuiltin));
+// 内置智能体（如 pageAgent）也允许出现在子智能体列表中，默认助理可看到并确认已挂载的 pageAgent
+const subAgentList = computed(() => agentStore.agents.filter(a => a.id !== props.agent?.id));
 const modelGroups = computed(() => {
   const enabled = platformStore.models.filter((m: any) => m.enabled);
   return platformStore.platforms.map((p: any) => ({ platformId: p.id, platformName: p.name, models: enabled.filter((m: any) => m.platformId === p.id) })).filter((g: any) => g.models.length > 0);
@@ -212,13 +213,17 @@ function onMcpTool(sid: string, toolName: string, checked: boolean) {
 
 watch(() => [props.modelValue, props.agent], () => {
   if (props.modelValue) {
+    if (!builtinToolsLoaded.value) {
+      builtinToolsLoaded.value = true;
+      toolsStore.loadBuiltinTools();
+    }
     const a = props.agent;
     form.value = {
       name: a?.name || '', description: a?.description || '', systemPrompt: a?.systemPrompt || '',
       modelId: a?.modelId || '', type: a?.type || 'harness',
       temperature: a?.temperature ?? 0.7, maxTokens: a?.maxTokens ?? 2048, topP: a?.topP ?? 1,
       frequencyPenalty: a?.frequencyPenalty ?? 0, presencePenalty: a?.presencePenalty ?? 0,
-      reasoningEffort: (a?.config as any)?.reasoningEffort || '', maxReActSteps: (a?.config as any)?.maxReActSteps ?? 10,
+      reasoningEffort: (a?.config as any)?.reasoningEffort || '', maxReActSteps: (a?.config as any)?.maxReActSteps ?? 100,
       builtinToolIds: a?.builtinToolIds ? [...a.builtinToolIds] : [],
       customToolIds: a?.customToolIds ? [...a.customToolIds] : [],
       mcpToolMounts: a?.mcpToolMounts ? [...a.mcpToolMounts] : [],

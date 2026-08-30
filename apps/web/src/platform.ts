@@ -35,6 +35,11 @@ class WebDatabase extends Dexie implements DatabaseAdapter {
     this.version(3).stores({
       scheduled_task: 'id, enabled, created_at',
     });
+    // 改动③：message 表新增子智能体关联字段索引（parent_tool_call_id / sub_agent_id），
+    // 子智能体中间消息持久化后可按父工具调用/子智能体查询；sub_agent_name/sub_agent_depth 为非索引字段，Dexie 自动存储。
+    this.version(4).stores({
+      message: 'id, conversation_id, created_at, parent_tool_call_id, sub_agent_id',
+    });
     this._tables = {
       platform: this.table('platform'),
       model: this.table('model'),

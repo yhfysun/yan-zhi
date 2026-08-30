@@ -1,16 +1,6 @@
 import { ref } from 'vue';
 
-export type SettingsDrawerSection =
-  | 'general'
-  | 'chat'
-  | 'models'
-  | 'mcp'
-  | 'tools'
-  | 'skills'
-  | 'distill'
-  | 'agents'
-  | 'peers'
-  | 'connections';
+export type SettingsDrawerSection = string;
 
 export const settingsDrawerOpen = ref(false);
 export const settingsDrawerSection = ref<SettingsDrawerSection>('general');

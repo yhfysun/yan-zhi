@@ -123,4 +123,113 @@ router.post('/upsert-daily', (_req, res) => {
   }
 });
 
+// 维度映射（方案A）：前端 dimension → SQL 条件
+//   daily    → type = 'daily'
+//   session  → type = 'session'
+//   agent    → type = 'agent' AND agent_id IS NOT NULL（智能体记忆）
+//   profile  → type = 'agent' AND agent_id IS NULL（用户个人画像）
+const VALID_DIMENSIONS = new Set(['profile', 'agent', 'session', 'daily']);
+
+// GET /api/memory/list?dimension=&agentId=&keyword=&page=&pageSize= —— 分页查询记忆（按维度/关键词过滤）
+router.get('/list', (_req, res) => {
+  try {
+    const userId = _req.user?.userId;
+    if (!userId) { res.status(401).json({ error: '未登录' }); return; }
+    const dimension = String(_req.query.dimension || '').trim();
+    if (!VALID_DIMENSIONS.has(dimension)) {
+      res.status(400).json({ error: 'dimension 取值必须为 profile|agent|session|daily' });
+      return;
+    }
+    const agentId = String(_req.query.agentId || '').trim();
+    const keyword = String(_req.query.keyword || '').trim();
+    const page = Math.max(Number(_req.query.page) || 1, 1);
+    const pageSize = Math.min(Math.max(Number(_req.query.pageSize) || 20, 1), 100);
+    const offset = (page - 1) * pageSize;
+
+    // 组装 WHERE 条件（user_id 必带，防越权）
+    let whereClause = 'user_id = ?';
+    const args: unknown[] = [userId];
+    if (dimension === 'daily') {
+      whereClause += ` AND type = 'daily'`;
+    } else if (dimension === 'session') {
+      whereClause += ` AND type = 'session'`;
+    } else if (dimension === 'agent') {
+      whereClause += ` AND type = 'agent' AND agent_id IS NOT NULL`;
+    } else {
+      whereClause += ` AND type = 'agent' AND agent_id IS NULL`;
+    }
+    if (agentId) {
+      whereClause += ` AND agent_id = ?`;
+      args.push(agentId);
+    }
+    if (keyword) {
+      whereClause += ` AND content LIKE ?`;
+      args.push(`%${keyword}%`);
+    }
+
+    const total = (db.prepare(`SELECT COUNT(*) AS c FROM memory WHERE ${whereClause}`).get(...args) as { c: number }).c;
+    const rows = db.prepare(
+      `SELECT * FROM memory WHERE ${whereClause} ORDER BY last_used_at DESC LIMIT ? OFFSET ?`,
+    ).all(...args, pageSize, offset);
+    res.json({ data: rows, total, page, pageSize });
+  } catch (e: unknown) {
+    res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// PATCH /api/memory/:id —— 更新单条记忆（content/tags/metadata 任选），同步刷新 last_used_at
+router.patch('/:id', (_req, res) => {
+  try {
+    const userId = _req.user?.userId;
+    if (!userId) { res.status(401).json({ error: '未登录' }); return; }
+    const id = String(_req.params.id || '');
+    // WHERE 带 user_id 防越权改别人记忆
+    const existing = db.prepare('SELECT * FROM memory WHERE id = ? AND user_id = ?').get(id, userId);
+    if (!existing) { res.status(404).json({ error: '记忆不存在或不属于当前用户' }); return; }
+
+    const sets: string[] = [];
+    const args: unknown[] = [];
+    if (_req.body?.content !== undefined) {
+      const content = String(_req.body.content).trim();
+      if (!content) { res.status(400).json({ error: 'content 不能为空' }); return; }
+      sets.push('content = ?');
+      args.push(content);
+    }
+    if (_req.body?.tags !== undefined) {
+      sets.push('tags_json = ?');
+      args.push(JSON.stringify(Array.isArray(_req.body.tags) ? _req.body.tags : []));
+    }
+    if (_req.body?.metadata !== undefined) {
+      sets.push('metadata_json = ?');
+      args.push(JSON.stringify(_req.body.metadata || {}));
+    }
+    if (sets.length === 0) {
+      res.status(400).json({ error: '未提供要更新的字段（content/tags/metadata）' });
+      return;
+    }
+    sets.push('last_used_at = ?');
+    args.push(Date.now());
+    args.push(id, userId);
+    db.prepare(`UPDATE memory SET ${sets.join(', ')} WHERE id = ? AND user_id = ?`).run(...args);
+    res.json({ data: db.prepare('SELECT * FROM memory WHERE id = ?').get(id) });
+  } catch (e: unknown) {
+    res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// DELETE /api/memory/:id —— 删除单条记忆（WHERE 带 user_id 防越权）
+router.delete('/:id', (_req, res) => {
+  try {
+    const userId = _req.user?.userId;
+    if (!userId) { res.status(401).json({ error: '未登录' }); return; }
+    const id = String(_req.params.id || '');
+    const existing = db.prepare('SELECT id FROM memory WHERE id = ? AND user_id = ?').get(id, userId);
+    if (!existing) { res.status(404).json({ error: '记忆不存在或不属于当前用户' }); return; }
+    db.prepare('DELETE FROM memory WHERE id = ? AND user_id = ?').run(id, userId);
+    res.json({ data: { id, deleted: true } });
+  } catch (e: unknown) {
+    res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
 export default router;

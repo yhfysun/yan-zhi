@@ -94,6 +94,12 @@ export class LlmClient {
         signal: options?.signal,
       });
     } catch (e: any) {
+      // 区分 abort（超时/用户取消）与真正的网络/CORS 错误，避免把超时误报为 CORS/网络不通
+      const sig = options?.signal;
+      if (sig?.aborted || e?.name === 'AbortError') {
+        const reason = (sig?.reason as any)?.message || e?.message || 'Aborted';
+        throw new Error(`请求被中止（${reason}）。URL: ${url}`);
+      }
       // 浏览器 CORS 拦截或网络不通时 fetch 直接抛 TypeError
       throw new Error(
         `请求失败（可能是 CORS 跨域拦截或网络不通）: ${e?.message || e}。URL: ${url}`,
@@ -153,6 +159,12 @@ export class LlmClient {
         signal: options?.signal,
       });
     } catch (e: any) {
+      // 区分 abort（超时/用户取消）与真正的网络/CORS 错误，避免把超时误报为 CORS/网络不通
+      const sig = options?.signal;
+      if (sig?.aborted || e?.name === 'AbortError') {
+        const reason = (sig?.reason as any)?.message || e?.message || 'Aborted';
+        throw new Error(`请求被中止（${reason}）。URL: ${url}`);
+      }
       throw new Error(
         `请求失败（可能是 CORS 跨域拦截或网络不通）: ${e?.message || e}。URL: ${url}`,
       );
@@ -170,7 +182,7 @@ export class LlmClient {
 
   async chat(
     messages: Message[],
-    options?: { tools?: unknown[]; temperature?: number; maxTokens?: number; topP?: number; frequencyPenalty?: number; presencePenalty?: number },
+    options?: { tools?: unknown[]; temperature?: number; maxTokens?: number; topP?: number; frequencyPenalty?: number; presencePenalty?: number; signal?: AbortSignal },
   ): Promise<ChatChunk> {
     if (this.isAnthropic) {
       return this.anthropicChat(messages, options);
@@ -193,6 +205,7 @@ export class LlmClient {
       method: 'POST',
       headers,
       body: JSON.stringify(body),
+      signal: options?.signal,
     });
     if (!res.ok) throw new Error(`LLM 请求失败: ${res.status} ${res.statusText}`);
     const data = await res.json();
@@ -211,7 +224,7 @@ export class LlmClient {
 
   private async anthropicChat(
     messages: Message[],
-    options?: { tools?: unknown[]; temperature?: number; maxTokens?: number; topP?: number; frequencyPenalty?: number; presencePenalty?: number },
+    options?: { tools?: unknown[]; temperature?: number; maxTokens?: number; topP?: number; frequencyPenalty?: number; presencePenalty?: number; signal?: AbortSignal },
   ): Promise<ChatChunk> {
     const headers = await this.buildAnthropicHeaders();
     const { system, messages: aMessages } = toAnthropicMessages(messages);
@@ -230,6 +243,7 @@ export class LlmClient {
       method: 'POST',
       headers,
       body: JSON.stringify(body),
+      signal: options?.signal,
     });
     if (!res.ok) throw new Error(`LLM 请求失败: ${res.status} ${res.statusText}`);
     const data = await res.json();

@@ -9,7 +9,7 @@ import { useAgentStore } from './agent';
 import { useSkillStore } from './skill';
 import { useToolsStore } from './tools';
 import { useSettingsStore } from './settings';
-import { api } from '../api/client';
+import { api, isElectron } from '../api/client';
 import { useAuthStore } from './auth';
 
 function rowToConv(r: any): Conversation {
@@ -63,6 +63,10 @@ function rowToMsg(r: any): Message {
     systemPromptSnapshot: r.system_prompt_snapshot,
     tokens: r.tokens,
     createdAt: r.created_at,
+    parentToolCallId: r.parent_tool_call_id,
+    subAgentId: r.sub_agent_id,
+    subAgentName: r.sub_agent_name,
+    subAgentDepth: r.sub_agent_depth,
   };
 }
 
@@ -141,6 +145,12 @@ export const useChatStore = defineStore('chat', () => {
   function isConvStreaming(convId: string) {
     return runningConvIds.value.has(convId);
   }
+  // 正在执行的 call_agent 工具调用 id 集合：用于跨层强制展开对应工具项，
+  // 让 SubAgentRoundView 实时露出子智能体每一步；执行结束移除即自动折叠回简洁态。
+  const runningToolCallIds = ref<Set<string>>(new Set());
+  function isToolCallRunning(toolCallId: string) {
+    return runningToolCallIds.value.has(toolCallId);
+  }
   const mountedMcpServers = ref<string[]>([]);
   const mcpDisabledTools = ref<Record<string, string[]>>({});
   const mcpToolAliases = ref<Record<string, Record<string, string>>>({});
@@ -151,7 +161,7 @@ export const useChatStore = defineStore('chat', () => {
   // 文件管理弹窗（el-dialog）是否显示——左侧栏「文件管理」按钮触发
   const showFilePopup = ref(false);
   // 右侧预览面板（即"预览窗口"）当前展示内容：'file' = 文件预览，'browser' = 网站/Agent页面预览
-  const rightPanelTab = ref<'file' | 'browser'>('file');
+  const rightPanelTab = ref<'file' | 'browser' | 'git'>('file');
   // 右侧预览面板正在预览的文件（点击文件管理弹窗中的文件后设置）
   const previewingFile = ref<{ name: string; path: string } | null>(null);
   // 右侧预览面板当前网站 tab 标题的原始 URL（BrowserPanel 写入），用于在 tab header 上展示「真实打开的网站名」
@@ -239,6 +249,9 @@ export const useChatStore = defineStore('chat', () => {
   let abortControllers = new Map<string, AbortController>();
 
   const isServerMode = () => !!useAuthStore().isLoggedIn;
+  // 记忆启用条件：已登录（远程服务端）或 Electron 桌面端（内置 server，guest 也可访问 memory 路由）。
+  // 之前仅 isServerMode() 门控，导致桌面端未登录时记忆完全不抽取/注入。
+  const memoryEnabled = () => isServerMode() || isElectron;
 
   function activeAgent() {
     const agentStore = useAgentStore();
@@ -412,6 +425,8 @@ export const useChatStore = defineStore('chat', () => {
       const r = await api.post<any>(`/conversations/${targetConvId}/messages`, {
         role: msg.role, content: msg.content, toolCalls: msg.toolCalls,
         toolCallId: msg.toolCallId, reasoningContent: msg.reasoningContent, tokens: msg.tokens,
+        parentToolCallId: msg.parentToolCallId, subAgentId: msg.subAgentId,
+        subAgentName: msg.subAgentName, subAgentDepth: msg.subAgentDepth,
       });
       if ('data' in r) {
         const row = r.data as any;
@@ -424,17 +439,26 @@ export const useChatStore = defineStore('chat', () => {
     const adapter = getPlatformAdapter();
     const id = uid('msg_');
     const ts = Date.now();
-    await adapter.db.exec(
-      'INSERT INTO message (id, conversation_id, role, content, tool_calls_json, tool_call_id, reasoning_content, system_prompt_snapshot, tokens, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      [
-        id, targetConvId, msg.role, msg.content || null,
-        msg.toolCalls ? JSON.stringify(msg.toolCalls) : null,
-        msg.toolCallId || null, msg.reasoningContent || null,
-        msg.systemPromptSnapshot || null,
-        msg.tokens || 0, ts,
-      ],
-    );
-    await adapter.db.exec('UPDATE conversation SET updated_at = ? WHERE id = ?', [ts, targetConvId]);
+    // 兜底：旧库若未跑完 migration（无新列）或某端 SQL 解析不兼容，INSERT 会抛错打断主对话发送；
+    // 落库失败时降级只 push 内存缓存，保证发送流程不中断（与 appendTransientMessage 一致）。
+    try {
+      await adapter.db.exec(
+        'INSERT INTO message (id, conversation_id, role, content, tool_calls_json, tool_call_id, reasoning_content, system_prompt_snapshot, tokens, parent_tool_call_id, sub_agent_id, sub_agent_name, sub_agent_depth, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [
+          id, targetConvId, msg.role, msg.content || null,
+          msg.toolCalls ? JSON.stringify(msg.toolCalls) : null,
+          msg.toolCallId || null, msg.reasoningContent || null,
+          msg.systemPromptSnapshot || null,
+          msg.tokens || 0,
+          msg.parentToolCallId || null, msg.subAgentId || null,
+          msg.subAgentName || null, msg.subAgentDepth ?? null,
+          ts,
+        ],
+      );
+      await adapter.db.exec('UPDATE conversation SET updated_at = ? WHERE id = ?', [ts, targetConvId]);
+    } catch (e) {
+      console.warn('[Chat] addMessage 落库失败，降级仅存内存:', e);
+    }
     (messagesByConv.value[targetConvId] ||= []).push({ ...msg, id, createdAt: ts });
     return id;
   }
@@ -613,7 +637,7 @@ export const useChatStore = defineStore('chat', () => {
    *  2) custom_{idTag}_{name}     → 服务端沙箱 /api/tools/:id/execute（沙箱依赖 node:vm，仅服务端可用）
    *  3) 裸名                       → ToolRegistry.execute（内置工具，经平台适配器执行）
    *  重名不误路由：三类前缀互斥，裸名不得以 mcp_/custom_ 开头。 */
-  async function dispatchToolCall(fullName: string, args: unknown): Promise<{ ok: boolean; result?: unknown; msg?: string }> {
+  async function dispatchToolCall(fullName: string, args: unknown, ctx?: { parentToolCallId?: string; depth?: number }): Promise<{ ok: boolean; result?: unknown; msg?: string }> {
     const mcpStore = useMcpStore();
     const registry = getToolRegistry();
 
@@ -621,6 +645,10 @@ export const useChatStore = defineStore('chat', () => {
     if (fullName.startsWith(MCP_PREFIX) && fullName.includes('__')) {
       const parsed = parseMcpToolName(fullName);
       if (!parsed) return { ok: false, msg: '无法解析 MCP 工具或工具不存在: ' + fullName };
+      // 人机交互类 MCP 工具路由到内置拦截：ask_user/confirm_user 需在前端等待用户回答，不能直接调服务端
+      if (parsed.toolName === 'ask_user' || parsed.toolName === 'confirm_user') {
+        return dispatchToolCall(parsed.toolName, args, ctx);
+      }
       return mcpStore.callTool(parsed.serverId, parsed.toolName, args);
     }
 
@@ -660,17 +688,16 @@ export const useChatStore = defineStore('chat', () => {
       }
       // E7: call_agent 特殊拦截 —— 委派给子智能体执行
       if (fullName === 'call_agent') {
-        return runSubAgent(args as { agentId?: string; input?: string });
+        return runSubAgent(args as { agentId?: string; input?: string }, ctx);
       }
-      // E7b: list_sub_agents 拦截 —— 返回当前智能体可调用的子智能体列表（id/名称/描述/工具）
+      // E7b: list_sub_agents 拦截 —— 返回当前智能体可调用的子智能体列表（id/名称/描述）
       if (fullName === 'list_sub_agents') {
         const merged = getMergedMounts();
         const agentStore = useAgentStore();
         const list = merged.subAgentIds.map((id) => {
           const sub = agentStore.agents.find((a) => a.id === id);
           if (!sub) return `- id: \`${id}\`（该子智能体已被删除）`;
-          const tools = [...(sub.builtinToolIds || []), ...(sub.customToolIds || [])];
-          return `- **${sub.name}** (id: \`${id}\`): ${sub.description || ''}\n  挂载工具: ${tools.length ? tools.join(', ') : '无'}`;
+          return `- **${sub.name}** (id: \`${id}\`): ${sub.description || ''}`;
         });
         return { ok: true, result: list.length ? list.join('\n') : '当前智能体未挂载任何子智能体' };
       }
@@ -682,7 +709,15 @@ export const useChatStore = defineStore('chat', () => {
       if (fullName === 'ask_user') {
         const q = String((args as Record<string, unknown>).question || '');
         if (!q) return { ok: false, msg: 'ask_user 缺少 question 参数' };
+        const askSignal = abortControllers.get(currentConvId.value || '')?.signal;
         return await new Promise<{ ok: boolean; result?: unknown; msg?: string }>((resolve) => {
+          if (askSignal?.aborted) { resolve({ ok: false, msg: '用户已终止' }); return; }
+          const onAskAbort = () => {
+            askSignal?.removeEventListener('abort', onAskAbort);
+            pendingQuestion.value = null;
+            resolve({ ok: false, msg: '用户已终止' });
+          };
+          askSignal?.addEventListener('abort', onAskAbort);
           pendingQuestion.value = {
             question: q,
             options: Array.isArray((args as Record<string, unknown>).options)
@@ -691,6 +726,8 @@ export const useChatStore = defineStore('chat', () => {
             multiSelect: !!(args as Record<string, unknown>).multiSelect,
             allowSupplement: (args as Record<string, unknown>).allowSupplement !== false,
             resolve: (answer: string, supplement?: string) => {
+              askSignal?.removeEventListener('abort', onAskAbort);
+              pendingQuestion.value = null;
               const result = supplement
                 ? `${answer}\n\n补充说明：${supplement}`
                 : answer;
@@ -719,13 +756,25 @@ export const useChatStore = defineStore('chat', () => {
         if (pages.some((p) => !p.question.trim())) {
           return { ok: false, msg: 'confirm_user 每个 page 都必须包含 question' };
         }
+        const confirmSignal = abortControllers.get(currentConvId.value || '')?.signal;
         return await new Promise<{ ok: boolean; result?: unknown; msg?: string }>((resolve) => {
+          if (confirmSignal?.aborted) { resolve({ ok: false, msg: '用户已终止' }); return; }
+          const onConfirmAbort = () => {
+            confirmSignal?.removeEventListener('abort', onConfirmAbort);
+            pendingConfirmation.value = null;
+            resolve({ ok: false, msg: '用户已终止' });
+          };
+          confirmSignal?.addEventListener('abort', onConfirmAbort);
           pendingConfirmation.value = {
             title: String(rawArgs.title || '用户确认'),
             pages,
             index: 0,
             answers: [],
-            resolve: (result) => resolve({ ok: true, result }),
+            resolve: (result) => {
+              confirmSignal?.removeEventListener('abort', onConfirmAbort);
+              pendingConfirmation.value = null;
+              resolve({ ok: true, result });
+            },
           };
         });
       }
@@ -877,7 +926,7 @@ export const useChatStore = defineStore('chat', () => {
 
   /** E7: 运行子智能体（call_agent 的实际执行逻辑）—— 递归 LLM ReAct 循环，带 callStack 防递归 */
   const subAgentCallStack = ref<string[]>([]);
-  async function runSubAgent(args: { agentId?: string; input?: string }): Promise<{ ok: boolean; result?: unknown; msg?: string }> {
+  async function runSubAgent(args: { agentId?: string; input?: string }, ctx?: { parentToolCallId?: string; depth?: number }): Promise<{ ok: boolean; result?: unknown; msg?: string }> {
     const agentId = args.agentId;
     const input = args.input;
     if (!agentId) return { ok: false, msg: 'agentId 为必填项' };
@@ -920,21 +969,82 @@ export const useChatStore = defineStore('chat', () => {
       // 临时切换挂载到子智能体的工具配置，运行简化 ReAct 循环
       subAgentCallStack.value.push(agentId);
       try {
-        const result = await runSubAgentLlm(subAgent, input, platform, resolved);
+        const result = await runSubAgentLlm(subAgent, input, platform, resolved, ctx?.parentToolCallId, ctx?.depth ?? 1);
         return { ok: true, result: result };
       } finally {
         subAgentCallStack.value.pop();
       }
     } catch (e: any) {
+      // C1: 任何异常都返回 ok:false 而非抛出，避免子智能体异常/超时中断父智能体链路。
+      // runSubAgentLlm 已把异常转为带进度的 Error，此处统一兜底。
       return { ok: false, msg: '子智能体执行失败: ' + (e?.message || e) };
     }
   }
 
-  /** 子智能体 LLM 循环：用子智能体的 systemPrompt + 挂载工具运行有限步 ReAct */
-  async function runSubAgentLlm(agent: any, input: string, platform: Platform, model: Model): Promise<string> {
+  /** 追加子智能体中间消息并落库（持久化 + 内存缓存实时可见）。
+   *  改动③：原仅进内存不落库，刷新会话后丢失；现落库到 message 表（带 parent_tool_call_id 等关联字段）。
+   *  返回消息 id，供流式过程中逐字更新该占位消息。 */
+  async function appendTransientMessage(msg: Omit<Message, 'id' | 'createdAt'> & { conversationId: string }): Promise<string> {
+    const convId = msg.conversationId || currentConvId.value;
+    if (!convId) return '';
+    const id = uid('submsg_');
+    const ts = Date.now();
+    const fullMsg: Message = { ...msg, conversationId: convId, id, createdAt: ts } as Message;
+    if (isServerMode()) {
+      try {
+        const r = await api.post<any>(`/conversations/${convId}/messages`, {
+          role: msg.role, content: msg.content, toolCalls: msg.toolCalls,
+          toolCallId: msg.toolCallId, reasoningContent: msg.reasoningContent, tokens: msg.tokens,
+          parentToolCallId: msg.parentToolCallId, subAgentId: msg.subAgentId,
+          subAgentName: msg.subAgentName, subAgentDepth: msg.subAgentDepth,
+        });
+        if ('data' in r) {
+          const m = rowToMsg(r.data as any);
+          (messagesByConv.value[convId] ||= []).push(m);
+          return m.id;
+        }
+      } catch { /* 落库失败回退到内存 */ }
+      (messagesByConv.value[convId] ||= []).push(fullMsg);
+      return id;
+    }
+    const adapter = getPlatformAdapter();
+    try {
+      await adapter.db.exec(
+        'INSERT INTO message (id, conversation_id, role, content, tool_calls_json, tool_call_id, reasoning_content, system_prompt_snapshot, tokens, parent_tool_call_id, sub_agent_id, sub_agent_name, sub_agent_depth, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [
+          id, convId, msg.role, msg.content || null,
+          msg.toolCalls ? JSON.stringify(msg.toolCalls) : null,
+          msg.toolCallId || null, msg.reasoningContent || null,
+          msg.systemPromptSnapshot || null,
+          msg.tokens || 0,
+          msg.parentToolCallId || null, msg.subAgentId || null,
+          msg.subAgentName || null, msg.subAgentDepth ?? null,
+          ts,
+        ],
+      );
+    } catch (e) { console.warn('[Chat] 子智能体中间消息落库失败:', e); }
+    (messagesByConv.value[convId] ||= []).push(fullMsg);
+    return id;
+  }
+
+  /** 子智能体 LLM 循环：用子智能体的 systemPrompt + 挂载工具运行有限步 ReAct。
+   *  C1: 加独立超时（单步 60s / 总 5min，可配）+ 顶层 try/catch 兜底，任何异常都转为带进度的错误抛出，
+   *  由 runSubAgent 统一返回 ok:false，避免子智能体挂起/异常中断父智能体链路。 */
+  async function runSubAgentLlm(agent: any, input: string, platform: Platform, model: Model, parentToolCallId?: string, depth = 1): Promise<string> {
     const registry = getToolRegistry();
-    const maxSteps = agent.config?.maxReActSteps || 8;
+    const maxSteps = agent.config?.maxReActSteps || 100;
+    // C1: 子智能体独立超时（可配），超时返回已执行进度摘要而非静默挂起
+    const stepTimeoutMs = agent.config?.stepTimeoutMs ?? 60_000;        // 单步 LLM 调用 60s
+    const totalTimeoutMs = agent.config?.totalTimeoutMs ?? 5 * 60_000;  // 总执行 5min
+    const deadline = Date.now() + totalTimeoutMs;
+    // 进度跟踪（异常/超时时返回摘要）
+    let executedSteps = 0;
+    let executedToolCalls = 0;
+    let lastAssistantContent = '';
     const client = new LlmClient(platform, model);
+    const convId = currentConvId.value;
+    const subAgentId = agent.id;
+    const subAgentName = agent.name;
 
     // 构建子智能体的工具列表
     const subTools: unknown[] = [];
@@ -951,32 +1061,167 @@ export const useChatStore = defineStore('chat', () => {
       { role: 'user', content: input },
     ];
 
-    for (let step = 0; step < maxSteps; step++) {
-      const response = await client.chat(messages, {
-        tools: subTools.length > 0 ? subTools : undefined,
-        temperature: agent.temperature ?? 0.7,
-        maxTokens: agent.maxTokens ?? 2048,
-      });
-
-      const content = response.delta?.content || '';
-      const toolCalls = response.delta?.toolCalls || [];
-
-      if (toolCalls.length > 0) {
-        messages.push({ role: 'assistant', content, toolCalls });
-        for (const tc of toolCalls) {
-          const tcName = tc.function?.name || '';
-          const tcArgs = typeof tc.function?.arguments === 'string' ? safeParseJson(tc.function.arguments) : {};
-          const result = await dispatchToolCall(tcName, tcArgs);
-          const resultStr = result.ok
-            ? (typeof result.result === 'string' ? result.result : JSON.stringify(result.result))
-            : JSON.stringify({ error: result.msg || '工具执行失败' });
-          messages.push({ role: 'tool', toolCallId: tc.id, content: resultStr });
+    // 改动①：执行期间标记该 call_agent 工具项为 running，跨层强制展开 SubAgentRoundView；结束移除即自动折叠
+    if (parentToolCallId) runningToolCallIds.value.add(parentToolCallId);
+    try {
+      for (let step = 0; step < maxSteps; step++) {
+        // C1: 总超时检查
+        if (Date.now() > deadline) {
+          throw new Error(`子智能体总执行超时 (${totalTimeoutMs / 1000}s)`);
         }
-      } else {
-        return content || '(无输出)';
+        const abortSignal = convId ? abortControllers.get(convId)?.signal : undefined;
+        if (abortSignal?.aborted) throw new DOMException('Aborted', 'AbortError');
+
+        // 改动①：先创建占位 assistant 中间消息（落库），流式过程中逐字更新它
+        let placeholderId = '';
+        if (convId) {
+          placeholderId = await appendTransientMessage({
+            conversationId: convId,
+            role: 'assistant',
+            content: undefined,
+            subAgentId,
+            subAgentName,
+            parentToolCallId,
+            subAgentDepth: depth,
+          });
+        }
+        let fullContent = '';
+        let fullReasoning = '';
+        const toolCallAcc: DeltaToolCall[] = [];
+
+        // 单步流式消费：用独立 AbortController 实现单步超时 + 外层 abort 联动
+        const streamOnce = async () => {
+          const stepCtrl = new AbortController();
+          const onParentAbort = () => stepCtrl.abort(abortSignal?.reason || new DOMException('Aborted', 'AbortError'));
+          if (abortSignal) {
+            if (abortSignal.aborted) onParentAbort();
+            else abortSignal.addEventListener('abort', onParentAbort, { once: true });
+          }
+          const timer = setTimeout(() => stepCtrl.abort(new Error(`单步 LLM 调用超时 (${stepTimeoutMs / 1000}s)`)), stepTimeoutMs);
+          try {
+            for await (const chunk of client.chatStream(messages, {
+              tools: subTools.length > 0 ? subTools : undefined,
+              temperature: agent.temperature ?? 0.7,
+              maxTokens: agent.maxTokens ?? 2048,
+              signal: stepCtrl.signal,
+            })) {
+              if (chunk.delta?.content) fullContent += chunk.delta.content;
+              if (chunk.delta?.reasoningContent) fullReasoning += chunk.delta.reasoningContent;
+              if (chunk.delta?.toolCalls) {
+                for (const tc of chunk.delta.toolCalls) {
+                  let idx = tc.index;
+                  if (idx === undefined) idx = toolCallAcc.length > 0 ? toolCallAcc.length - 1 : 0;
+                  if (!toolCallAcc[idx]) {
+                    toolCallAcc[idx] = { ...tc };
+                  } else {
+                    const prev = toolCallAcc[idx];
+                    toolCallAcc[idx] = {
+                      ...prev,
+                      ...tc,
+                      function: tc.function
+                        ? {
+                            ...prev.function,
+                            ...tc.function,
+                            arguments: (prev.function?.arguments || '') + (tc.function!.arguments || ''),
+                          }
+                        : prev.function,
+                    };
+                  }
+                }
+              }
+              // 改动①：逐字更新内存占位消息（参考主循环流式手法）
+              if (convId && placeholderId) {
+                const arr = messagesByConv.value[convId];
+                const idx2 = arr.findIndex((m) => m.id === placeholderId);
+                if (idx2 >= 0) {
+                  arr[idx2] = {
+                    ...arr[idx2],
+                    content: fullContent,
+                    reasoningContent: fullReasoning || undefined,
+                    toolCalls: toolCallAcc.length > 0 ? [...toolCallAcc] as any : undefined,
+                  };
+                }
+              }
+            }
+          } finally {
+            clearTimeout(timer);
+            if (abortSignal) abortSignal.removeEventListener('abort', onParentAbort);
+          }
+        };
+
+        try {
+          await streamOnce();
+        } catch (e: any) {
+          if (e?.name === 'AbortError' && abortSignal?.aborted) throw e;
+          const isTimeout = (e?.message || '').includes('超时');
+          const isNet = (e?.message || '').includes('Failed to fetch') || (e?.message || '').includes('NetworkError') || e?.name === 'TypeError';
+          // 超时不重试；网络错误重置状态后重试一次
+          if (!isTimeout && isNet) {
+            fullContent = ''; fullReasoning = ''; toolCallAcc.length = 0;
+            if (convId && placeholderId) {
+              const arr = messagesByConv.value[convId];
+              const idx2 = arr.findIndex((m) => m.id === placeholderId);
+              if (idx2 >= 0) arr[idx2] = { ...arr[idx2], content: '', reasoningContent: undefined, toolCalls: undefined };
+            }
+            await new Promise(r => setTimeout(r, 1000));
+            await streamOnce();
+          } else {
+            throw e;
+          }
+        }
+
+        executedSteps++;
+        if (fullContent) lastAssistantContent = fullContent;
+
+        // 流式结束：把最终 content/reasoning/toolCalls 落库到占位消息
+        if (convId && placeholderId) {
+          await updateMessage(placeholderId, {
+            content: fullContent,
+            reasoningContent: fullReasoning || undefined,
+            toolCalls: toolCallAcc.length > 0 ? [...toolCallAcc] as any : undefined,
+          });
+        }
+
+        if (toolCallAcc.length > 0) {
+          messages.push({ role: 'assistant', content: fullContent, toolCalls: toolCallAcc });
+          for (const tc of toolCallAcc) {
+            if (abortSignal?.aborted) throw new DOMException('Aborted', 'AbortError');
+            const tcName = tc.function?.name || '';
+            const tcArgs = typeof tc.function?.arguments === 'string' ? safeParseJson(tc.function.arguments) : {};
+            const result = await dispatchToolCall(tcName, tcArgs, { parentToolCallId: tc.id || '', depth: depth + 1 });
+            executedToolCalls++;
+            const resultStr = result.ok
+              ? (typeof result.result === 'string' ? result.result : JSON.stringify(result.result))
+              : JSON.stringify({ error: result.msg || '工具执行失败' });
+            messages.push({ role: 'tool', toolCallId: tc.id, content: resultStr });
+            if (convId) {
+              await appendTransientMessage({
+                conversationId: convId,
+                role: 'tool',
+                content: resultStr,
+                toolCallId: tc.id,
+                subAgentId,
+                subAgentName,
+                parentToolCallId,
+                subAgentDepth: depth,
+              });
+            }
+          }
+        } else {
+          return fullContent || '(无输出)';
+        }
       }
+      const doneSteps = messages.filter(m => m.role === 'tool').length;
+      const lastAssistant = [...messages].reverse().find((m: any) => m.role === 'assistant' && m.content);
+      return `(已达最大步数 ${maxSteps}，已执行 ${doneSteps} 次工具调用)\n最后状态: ${lastAssistant?.content || '(无文本输出)'}\n提示：子智能体步数用尽未给出最终答复，可增大 maxReActSteps 或简化任务后重试。`;
+    } catch (e: any) {
+      // C1: 顶层兜底——任何异常都转为带进度的错误抛出，由 runSubAgent 统一返回 ok:false
+      const reason = e?.name === 'AbortError' ? '用户终止' : (e?.message || String(e));
+      throw new Error(`${reason}. 已执行到: ${executedSteps} 步/${executedToolCalls} 次工具调用，最后状态: ${lastAssistantContent || '(无文本输出)'}`);
+    } finally {
+      // 改动①：执行结束移除 running 标记，工具项自动折叠回简洁态（保留手动展开能力）
+      if (parentToolCallId) runningToolCallIds.value.delete(parentToolCallId);
     }
-    return '(已达最大步数)';
   }
 
   async function buildTools(): Promise<unknown[]> {
@@ -1103,6 +1348,28 @@ export const useChatStore = defineStore('chat', () => {
     return lines.length > 0 ? '可用 Skills（说出名称激活）:\n' + lines.join('\n') : '';
   }
 
+  /** C3: 构建已激活 Skill 的流程指引文本，注入父智能体 systemPrompt，让父智能体也知道
+   *  该 ask_user、该委派 pageAgent 做什么（而非只看到 skill 名称简述就瞎决策）。
+   *  单 skill 流程注入上限 2000 字符，避免撑爆 systemPrompt。 */
+  function buildSkillsFlowPrompt(): string {
+    const merged = getMergedMounts();
+    if (merged.skillIds.length === 0) return '';
+    const skillStore = useSkillStore();
+    const parts: string[] = [];
+    for (const skId of merged.skillIds) {
+      const sk = skillStore.skills.find(s => s.id === skId);
+      if (!sk || !sk.enabled) continue;
+      const body = sk.bodyMd?.trim();
+      if (!body) continue;
+      // 截断保护：单 skill 流程注入上限 2000 字符
+      const truncated = body.length > 2000 ? body.slice(0, 2000) + '\n...(流程过长已截断)' : body;
+      parts.push(`### Skill 流程指引：${sk.name}\n${truncated}`);
+    }
+    return parts.length > 0
+      ? '## 当前任务流程指引（按 Skill 流程执行：该 ask_user 时 ask_user，该委派 pageAgent 时委派 pageAgent 并在 input 中传入流程要求）\n' + parts.join('\n\n')
+      : '';
+  }
+
   function buildSubAgentsDescription(): string {
     const merged = getMergedMounts();
     if (merged.subAgentIds.length === 0) return '';
@@ -1119,7 +1386,7 @@ export const useChatStore = defineStore('chat', () => {
   /** 从服务端检索多层记忆（仅登录态可用；本地模式跳过）。返回格式化片段。
    *  注入每日/智能体记忆，以及「当前会话」的会话记忆（session 按当前会话过滤，不串台）。 */
   async function buildMemoryContext(): Promise<string> {
-    if (!isServerMode()) return '';
+    if (!memoryEnabled()) return '';
     try {
       const agentId = encodeURIComponent(activeAgent()?.id || '');
       const cid = encodeURIComponent(currentConvId.value || '');
@@ -1196,7 +1463,7 @@ export const useChatStore = defineStore('chat', () => {
   /** 抽取最近对话，沉淀为 daily/session/agent 三层记忆，服务端落库。幂等防并发。 */
   async function extractMemoryFromConversation(): Promise<void> {
     if (memoryExtractInFlight.value) return;
-    if (!isServerMode()) return;
+    if (!memoryEnabled()) return;
     const resolved = await resolveExtractModel();
     if (!resolved) return;
     const msgs = messagesByConv.value[currentConvId.value] || [];
@@ -1273,6 +1540,9 @@ export const useChatStore = defineStore('chat', () => {
       if (toolsDesc) parts.push('---\n## 可用工具\n' + toolsDesc);
       const skillsDesc = buildSkillsDescription();
       if (skillsDesc) parts.push('---\n## 可用 Skills\n' + skillsDesc);
+      // C3: 把已激活 Skill 的标准流程注入父智能体，让父智能体知道该 ask_user / 该委派 pageAgent 做什么
+      const skillsFlow = buildSkillsFlowPrompt();
+      if (skillsFlow) parts.push('---\n' + skillsFlow);
       const subsDesc = buildSubAgentsDescription();
       if (subsDesc) parts.push('---\n## 可调用子智能体\n' + subsDesc);
     } else {
@@ -1299,6 +1569,20 @@ export const useChatStore = defineStore('chat', () => {
       if (lines.length > 0) parts.push('---\n当前可调用的 MCP 工具：\n' + lines.join('\n'));
       const skillsDesc = buildSkillsDescription();
       if (skillsDesc) parts.push('---\n' + skillsDesc);
+      // C3: workflow 智能体也注入 Skill 流程指引
+      const skillsFlow = buildSkillsFlowPrompt();
+      if (skillsFlow) parts.push('---\n' + skillsFlow);
+    }
+
+    if (isHarness) {
+      parts.push([
+        '---',
+        '## 文件产出分类规范',
+        '你可通过 file_write 工具产出文件，必须用 category 参数正确分类：',
+        '- category="deliverable"：最终交付给用户的成果（报告、最终文档、生成的源代码、数据导出、图片成品等用户会直接使用或保存的文件）。',
+        '- category="intermediate"：过程性中间产物（调试输出、临时草稿、中间计算结果、将被后续步骤覆盖或删除的临时文件）。',
+        '规则：凡是用户最终想要的结果文件，必须显式传 category="deliverable"；只有过程性临时文件才用 intermediate。不要省略 category，也不要把交付物误标为 intermediate。',
+      ].join('\n'));
     }
 
     const wd = useSettingsStore().settings.workspaceDir;
@@ -1324,7 +1608,7 @@ export const useChatStore = defineStore('chat', () => {
     const agent = agentStore.selectedAgent;
     const steps = agent?.config?.maxReActSteps;
     if (typeof steps === 'number' && steps > 0) return steps;
-    return 10;
+    return 100;
   }
 
   async function callLlm(
@@ -1362,6 +1646,7 @@ export const useChatStore = defineStore('chat', () => {
       }
 
       for (let step = 0; step < maxSteps; step++) {
+        if (abortControllers.get(convId)?.signal.aborted) throw new DOMException('Aborted', 'AbortError');
         const ctxWindow = new ContextWindow(model.contextWindow || 8000, 6);
         let messagesToSend = [...(messagesByConv.value[convId] || [])];
         messagesToSend = messagesToSend.filter((m) => m.content || m.toolCalls || m.role === 'tool');
@@ -1457,8 +1742,19 @@ export const useChatStore = defineStore('chat', () => {
             for (const tc of chunk.delta.toolCalls) {
               let idx = tc.index;
               if (idx === undefined) {
-                // 部分 provider 后续 arguments 片段不带 index/id，追加到最后一个条目
-                idx = toolCallAcc.length > 0 ? toolCallAcc.length - 1 : 0;
+                // C2: 区分"新工具声明"和"arguments 续片"，避免多工具交错时 arguments 串扰。
+                // 旧逻辑统一兜底为 length-1，导致第二个工具的 arguments 分片拼到第一个工具上。
+                if (tc.id) {
+                  // 带 id：按 id 匹配已有条目，无则新建
+                  const existById = toolCallAcc.findIndex(x => x.id === tc.id);
+                  idx = existById >= 0 ? existById : toolCallAcc.length;
+                } else if (tc.function?.name) {
+                  // 无 id 但带 function.name（新工具声明）：新建一项
+                  idx = toolCallAcc.length;
+                } else {
+                  // 纯 arguments 续片（无 id 无 name）：追加到最后一个
+                  idx = toolCallAcc.length > 0 ? toolCallAcc.length - 1 : 0;
+                }
               }
               if (!toolCallAcc[idx]) {
                 toolCallAcc[idx] = { ...tc };
@@ -1540,11 +1836,18 @@ export const useChatStore = defineStore('chat', () => {
 
         const toolCalls: ToolCallRecord[] = toolCallAcc
           .filter(tc => tc.function?.name && tc.id)
-          .map(tc => ({
-            id: tc.id || '',
-            name: tc.function!.name!,
-            arguments: tc.function!.arguments || '{}',
-          }));
+          .map(tc => {
+            const args = tc.function!.arguments || '';
+            // C2: 流式累积后 arguments 仍为空，可能是 provider 流式分片问题或累积串扰，打 warning 便于排查
+            if (!args || args.trim() === '' || args.trim() === '{}') {
+              console.warn(`[stream] toolCall "${tc.function!.name}" (id=${tc.id}) arguments 为空，将传空对象给工具`);
+            }
+            return {
+              id: tc.id || '',
+              name: tc.function!.name!,
+              arguments: args || '{}',
+            };
+          });
 
         await updateMessage(assistantMsgId, {
           content: fullContent,
@@ -1557,8 +1860,10 @@ export const useChatStore = defineStore('chat', () => {
         });
 
         for (const tc of toolCalls) {
+          if (abortControllers.get(convId)?.signal.aborted) throw new DOMException('Aborted', 'AbortError');
           const parsedArgs = safeParseJson(tc.arguments) as Record<string, unknown>;
-          const result = await dispatchToolCall(tc.name, parsedArgs);
+          const subCtx = tc.name === 'call_agent' ? { parentToolCallId: tc.id, depth: 1 } : undefined;
+          const result = await dispatchToolCall(tc.name, parsedArgs, subCtx);
           const resultStr = result.ok
             ? (typeof result.result === 'string' ? result.result : JSON.stringify(result.result))
             : JSON.stringify({ error: result.msg || '工具执行失败' });
@@ -1621,6 +1926,11 @@ export const useChatStore = defineStore('chat', () => {
     if (!target) return;
     const controller = abortControllers.get(target);
     if (controller) controller.abort();
+    // 兜底：abort 事件已 resolve 监听了 signal 的 ask_user/confirm_user Promise；
+    // configure_model_platform 未监听 signal，此处清理避免 Promise 永远 pending 导致 streaming 卡死
+    if (pendingPlatformConfig.value) {
+      cancelPlatformConfig();
+    }
   }
 
   async function ensureMcpConnections() {
@@ -1650,6 +1960,7 @@ export const useChatStore = defineStore('chat', () => {
   return {
     conversations, currentMessages, streaming, currentConvId, mountedMcpServers, mcpDisabledTools, mcpToolAliases,
     runningConvIds, isConvStreaming,
+    runningToolCallIds, isToolCallRunning,
     browserSteps, rightPanelOpen,
     showFilePopup, previewingFile, rightPanelTab, currentBrowserUrl,
     pendingQuestion, pendingConfirmation, pendingPlatformConfig, submitPendingQuestion,
@@ -1659,6 +1970,6 @@ export const useChatStore = defineStore('chat', () => {
     activeAgent, activeAgentId,
     loadConversations, loadMessages, createConversation, updateConversation, deleteConversation, deleteConversations,
     addMessage, updateMessage, deleteMessage, sendMessage, regenerate, stop, buildTools,
-    buildToolsDescription, buildSkillsDescription, buildSubAgentsDescription, buildSystemPrompt, getMergedMounts,
+    buildToolsDescription, buildSkillsDescription, buildSkillsFlowPrompt, buildSubAgentsDescription, buildSystemPrompt, getMergedMounts,
   };
 });

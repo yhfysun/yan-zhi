@@ -150,6 +150,7 @@ const items = ref<MarketItem[]>([]);
 const activeTier = ref<'low' | 'mid' | 'high' | 'ultra' | 'embedding'>('low');
 const testing = ref('');
 let pollTimer: ReturnType<typeof setInterval> | undefined;
+let wasDownloading = false;
 
 const filteredItems = computed(() => items.value.filter((it) => it.tier === activeTier.value));
 
@@ -160,8 +161,16 @@ const ollamaConnected = computed(() =>
 watch(visible, (v) => {
   if (v) {
     load();
-    pollTimer = setInterval(() => {
-      if (items.value.some((i) => i.download?.state === 'downloading')) load();
+    pollTimer = setInterval(async () => {
+      const hasDl = items.value.some((i) => i.download?.state === 'downloading');
+      if (hasDl) await load();
+      // 从"有下载中"变为"全部完成"时，刷新模型管理页，让新拉取的模型立即可见
+      if (wasDownloading && !hasDl) {
+        wasDownloading = false;
+        await ensureOllamaPlatform();
+      } else if (hasDl) {
+        wasDownloading = true;
+      }
     }, 1500);
   } else {
     stopPolling();
@@ -210,6 +219,27 @@ async function pull(item: MarketItem) {
   if ('error' in r) { ElMessage.error(r.error); return; }
   ElMessage.success('开始拉取模型');
   load();
+  // 拉取后自动确保 Ollama 平台存在并刷新模型列表，让模型管理页可见
+  await ensureOllamaPlatform();
+}
+
+/** 确保本地模型（Ollama）平台存在并刷新其模型列表，拉取/完成时调用 */
+async function ensureOllamaPlatform() {
+  try {
+    let p = (platformStore.platforms as any[]).find((x) => x?.apiUrl && x.apiUrl.includes('127.0.0.1:11434'));
+    if (!p) {
+      const platformId = await platformStore.addPlatform({
+        name: '本地模型', protocol: 'openai' as any, apiUrl: 'http://127.0.0.1:11434',
+        apiKeyEnc: '', headers: {}, status: 'unknown',
+      });
+      await platformStore.loadPlatforms();
+      p = platformStore.platforms.find((x: any) => x.id === platformId);
+    }
+    if (p) {
+      await platformStore.fetchRemoteModels(p.id).catch(() => undefined);
+      await platformStore.loadModels();
+    }
+  } catch { /* 忽略：平台创建/刷新失败不影响拉取 */ }
 }
 
 async function test(item: MarketItem) {

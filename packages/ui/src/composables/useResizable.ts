@@ -3,8 +3,9 @@ import { ref, onUnmounted } from 'vue';
 
 export function useResizable(key: string, initial: number, min: number, max: number) {
   const stored = Number(localStorage.getItem(`yz_resize_${key}`));
-  const width = ref(Number.isFinite(stored) && stored >= min && stored <= max ? stored : initial);
-  const moved = ref(false);
+  const hasStored = Number.isFinite(stored) && stored >= min && stored <= max;
+  const width = ref(hasStored ? stored : initial);
+  const moved = ref(hasStored);
   const dragging = ref(false);
 
   let direction: 'left' | 'right' = 'left';
@@ -24,7 +25,6 @@ export function useResizable(key: string, initial: number, min: number, max: num
     //      'right' —— 面板在分隔条右侧，左移鼠标增大宽度（width = width0 + startX - clientX）
     dragging.value = true;
     direction = dir;
-    moved.value = false;
     offset = dir === 'left' ? width.value - e.clientX : width.value + e.clientX;
     document.addEventListener('mousemove', onMove);
     document.addEventListener('mouseup', stopDrag);

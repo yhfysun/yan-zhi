@@ -3,7 +3,7 @@
 // 返回清洗后的页面文本/链接给模型，复用项目已有的浏览器基础设施，无需外部搜索 API。
 // 注：页面 DOM 原文含大量 script/style 噪音，这里返回清洗后的可见文本 + 结果链接，
 //     更贴近「返回 DOM/文本就好」的诉求，且模型可直接据此判断并配合 browser_navigate 深挖。
-import type { SearchBackend, SearchResult } from '@yan-zhi/core';
+import { FetchSearchBackend, DuckDuckGoSearchBackend, type SearchBackend, type SearchResult } from '@yan-zhi/core';
 
 type EngineConfig = {
   url: (query: string) => string;
@@ -100,5 +100,42 @@ export class PlaywrightSearchBackend implements SearchBackend {
       },
     ];
   }
+}
+
+/**
+ * 解析 web_search 后端：
+ * - 默认（或 YANZHI_SEARCH_ENGINE=bing）：走内置 Playwright 抓 Bing（chromium 已就绪，国内可达）
+ * - YANZHI_SEARCH_ENGINE=baidu：走 Playwright 抓百度
+ * - YANZHI_SEARCH_ENGINE=duckduckgo：走 DuckDuckGo HTML，纯 fetch 零依赖（注意：国内不可达）
+ * - YANZHI_SEARCH_ENDPOINT：走外部搜索 API（FetchSearchBackend，可带 headers/API key）
+ */
+export function resolveSearchBackend(): SearchBackend {
+  const engine = (process.env.YANZHI_SEARCH_ENGINE || 'bing').toLowerCase();
+  if (engine === 'bing' || engine === 'baidu') {
+    return new PlaywrightSearchBackend(engine);
+  }
+  if (engine === 'duckduckgo') {
+    return new DuckDuckGoSearchBackend();
+  }
+  const endpoint = process.env.YANZHI_SEARCH_ENDPOINT;
+  if (endpoint) {
+    return new FetchSearchBackend({
+      endpoint,
+      extractResults: (data: unknown) => (data as { results?: Array<{ title?: string; url?: string; snippet?: string }> })?.results?.map((r) => ({
+        title: r.title || '',
+        url: r.url || '',
+        snippet: r.snippet || '',
+      })) || [],
+    });
+  }
+  // 无配置时默认走 Bing（Playwright），国内可达；DuckDuckGo 在国内不可达
+  return new PlaywrightSearchBackend('bing');
+}
+
+/** 搜索后端单例（避免每次请求重复创建，Playwright 浏览器实例在 PlaywrightSearchBackend 内部已缓存） */
+let _searchBackend: SearchBackend | null = null;
+export function getSearchBackend(): SearchBackend {
+  if (!_searchBackend) _searchBackend = resolveSearchBackend();
+  return _searchBackend;
 }
 

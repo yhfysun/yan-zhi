@@ -13,12 +13,14 @@
   "dependencies": {
     "@yan-zhi/core": "workspace:*",
     "@yan-zhi/shared": "workspace:*",
+    "adm-zip": "^0.6.0",
     "bcryptjs": "^2.4.3",
     "better-sqlite3": "^11.10.0",
     "cors": "^2.8.5",
     "express": "^4.21.0",
     "jsonwebtoken": "^9.0.2",
     "playwright": "^1.62.1",
+    "simple-git": "^3.36.0",
     "sqlite-vec": "^0.1.9",
     "tesseract.js": "^5.1.1",
     "uuid": "^10.0.0"

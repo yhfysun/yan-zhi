@@ -114,9 +114,9 @@ const mountedTools = computed(() =>
 }
 
 .context-sidebar.open {
-  flex: 0 0 286px;
-  min-width: 286px;
-  width: 286px;
+  flex: 0 0 var(--chat-context-w, 286px);
+  min-width: var(--chat-context-w, 286px);
+  width: var(--chat-context-w, 286px);
   opacity: 1;
   pointer-events: auto;
 }

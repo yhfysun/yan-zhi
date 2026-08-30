@@ -2,7 +2,7 @@ import { Router, Request, Response } from 'express';
 import { v4 as uuid } from 'uuid';
 import { authMiddleware } from '../auth.js';
 import { db } from '../db.js';
-import { computeNextRun, nextCronTime, runScheduledTask } from '../services/scheduled-tasks.js';
+import { computeNextRun, nextCronTime, runScheduledTask, refreshScheduledTaskScheduler } from '../services/scheduled-tasks.js';
 
 const router = Router();
 router.use(authMiddleware);
@@ -71,6 +71,7 @@ router.post('/', (req: Request, res: Response) => {
     now, now,
   );
   const row = db.prepare('SELECT * FROM scheduled_task WHERE id = ?').get(id);
+  refreshScheduledTaskScheduler();
   res.json({ data: rowToTask(row) });
 });
 
@@ -120,6 +121,7 @@ router.patch('/:id', (req: Request, res: Response) => {
   vals.push(id);
   db.prepare(`UPDATE scheduled_task SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
   const row = db.prepare('SELECT * FROM scheduled_task WHERE id = ?').get(id);
+  refreshScheduledTaskScheduler();
   res.json({ data: rowToTask(row) });
 });
 
@@ -130,6 +132,7 @@ router.delete('/:id', (req: Request, res: Response) => {
   const existing = db.prepare('SELECT * FROM scheduled_task WHERE id = ? AND user_id = ?').get(id, userId);
   if (!existing) { res.status(404).json({ error: '任务不存在' }); return; }
   db.prepare('DELETE FROM scheduled_task WHERE id = ?').run(id);
+  refreshScheduledTaskScheduler();
   res.json({ ok: true });
 });
 

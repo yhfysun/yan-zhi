@@ -4,6 +4,9 @@ import { Router, Request, Response } from 'express';
 import { optionalAuth } from '../auth.js';
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
+import { db } from '../db.js';
+import { encrypt, decrypt } from '../utils/crypto.js';
 
 const router = Router();
 router.use(optionalAuth); // 浏览器功能不需要登录，有 token 就解析（可选）
@@ -18,6 +21,16 @@ const IDLE_TIMEOUT_MS = 5 * 60 * 1000; // 5 分钟空闲后关闭
 // 下载记录（Playwright download 事件收集，内存中保留最近 50 条）
 interface DownloadRecord { url: string; filename: string; time: number; }
 const downloadRecords: DownloadRecord[] = [];
+
+// C4 多标签页管理：tabId -> page（tab 0 为主标签页，pageInstance 始终指向当前活动页）
+const tabs = new Map<number, any>();
+let nextTabId = 0;
+let activeTabId = -1;
+
+// C5 网络请求日志缓冲（最近 100 条，page requestfinished 事件收集）
+interface NetworkLogEntry { url: string; method: string; status: number; responseSize: number; time: number; }
+const networkLog: NetworkLogEntry[] = [];
+const NETWORK_LOG_MAX = 100;
 
 /** 懒加载 playwright 模块 */
 async function loadChromium() {
@@ -45,23 +58,10 @@ async function getBrowser() {
   return browserInstance;
 }
 
-/** 获取或创建页面 */
-async function getPage() {
-  const browser = await getBrowser();
-  if (pageInstance && !pageInstance.isClosed?.()) {
-    lastActivityAt = Date.now();
-    return pageInstance;
-  }
-  // 创建 context 时设置合理默认值：viewport、user agent、locale
-  // 远程浏览器方案下，前端会动态同步 viewport 尺寸，这里给一个合理初始值
-  const context = await browser.newContext({
-    viewport: { width: 1280, height: 800 },
-    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
-    locale: 'zh-CN',
-  });
-  pageInstance = await context.newPage();
+/** 给 page 挂载下载与网络请求监听 */
+function attachPageListeners(page: any) {
   // 监听下载事件，记录到 downloadRecords
-  pageInstance.on('download', async (download: any) => {
+  page.on('download', async (download: any) => {
     try {
       const filename = download.suggestedFilename();
       const url = download.url();
@@ -72,8 +72,55 @@ async function getPage() {
       await download.saveAs(savePath);
     } catch {}
   });
+  // C5 网络请求完成事件，记录到 networkLog
+  page.on('requestfinished', async (req: any) => {
+    try {
+      const resp = await req.response().catch(() => null);
+      let responseSize = 0;
+      try { if (resp) { const body = await resp.body().catch(() => null); if (body) responseSize = body.length; } } catch {}
+      const entry: NetworkLogEntry = {
+        url: req.url(),
+        method: req.method(),
+        status: resp ? resp.status() : 0,
+        responseSize,
+        time: Date.now(),
+      };
+      networkLog.unshift(entry);
+      if (networkLog.length > NETWORK_LOG_MAX) networkLog.pop();
+    } catch {}
+  });
+}
+
+/** 创建一个新的 context + page（多标签页基础单元），可选导航到 url */
+async function createTabPage(url?: string): Promise<any> {
+  const browser = await getBrowser();
+  const context = await browser.newContext({
+    viewport: { width: 1280, height: 800 },
+    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
+    locale: 'zh-CN',
+  });
+  const page = await context.newPage();
+  attachPageListeners(page);
+  if (url) {
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+  }
+  return page;
+}
+
+/** 获取或创建页面（当前活动标签页） */
+async function getPage() {
+  if (pageInstance && !pageInstance.isClosed?.()) {
+    lastActivityAt = Date.now();
+    return pageInstance;
+  }
+  // 首次：创建主标签页（tab 0）
+  const page = await createTabPage();
+  pageInstance = page;
+  activeTabId = 0;
+  tabs.set(0, page);
+  nextTabId = 1;
   lastActivityAt = Date.now();
-  return pageInstance;
+  return page;
 }
 
 /** 空闲超时检查：关闭浏览器释放资源 */
@@ -86,6 +133,9 @@ function scheduleIdleCheck() {
       } catch {}
       pageInstance = null;
       browserInstance = null;
+      tabs.clear();
+      activeTabId = -1;
+      nextTabId = 0;
     } else {
       scheduleIdleCheck();
     }
@@ -114,17 +164,124 @@ router.post('/navigate', async (req: Request, res: Response) => {
 
 
 // POST /api/browser/action —— 执行浏览器动作（click/type/press/scroll/hover/get_text/get_dom/wait）
+// 页面内元素注册表 + 编号 + 稳定选择器生成（自包含无闭包，供 page.evaluate 注入）。
+// browser_get_page_info / browser_get_dom 收集可交互元素时注册并返回 index，
+// browser_click / browser_type 用 index 直接定位，免手写动态 hash class 选择器。
+function ensureYzReg() {
+  const w = window as any;
+  if (w.__yzReg) return w.__yzReg;
+  w.__yzElements = w.__yzElements || [];
+  const esc = (s: string) => String(s).replace(/"/g, '\\"');
+  const genSel = (el: any): string => {
+    const tag = el.tagName.toLowerCase();
+    if (el.id && /^[A-Za-z][\w-]*$/.test(el.id)) { try { if (document.querySelectorAll('#' + el.id).length === 1) return '#' + el.id; } catch {} }
+    const tid = el.getAttribute('data-testid'); if (tid) return `[data-testid="${esc(tid)}"]`;
+    const t = el.getAttribute('data-test'); if (t) return `[data-test="${esc(t)}"]`;
+    const al = el.getAttribute('aria-label');
+    if (al) { const s = `${tag}[aria-label="${esc(al)}"]`; try { if (document.querySelectorAll(s).length === 1) return s; } catch {} }
+    const cls = (typeof el.className === 'string' ? el.className : '').trim().split(/\s+/).filter(Boolean);
+    for (const c of cls) { const s = `${tag}.${c.replace(/[^\w-]/g, '')}`; try { if (s && document.querySelectorAll(s).length === 1) return s; } catch {} }
+    const nm = el.getAttribute('name'); if (nm) { const s = `${tag}[name="${esc(nm)}"]`; try { if (document.querySelectorAll(s).length === 1) return s; } catch {} }
+    const ph = el.getAttribute('placeholder'); if (ph) { const s = `${tag}[placeholder="${esc(ph)}"]`; try { if (document.querySelectorAll(s).length === 1) return s; } catch {} }
+    const path: string[] = []; let cur: any = el; let depth = 0;
+    while (cur && cur.nodeType === 1 && cur !== document.body && depth < 6) {
+      const pe = cur.parentElement; if (!pe) break;
+      const sibs = Array.from(pe.children).filter((c: any) => c.tagName === cur.tagName);
+      const idx = sibs.indexOf(cur) + 1;
+      path.unshift(sibs.length > 1 ? `${cur.tagName.toLowerCase()}:nth-of-type(${idx})` : cur.tagName.toLowerCase());
+      cur = pe; depth++;
+    }
+    return path.length ? path.join(' > ') : tag;
+  };
+  w.__yzReg = {
+    register(el: any) {
+      if (el && el.__yzIndex != null && w.__yzElements[el.__yzIndex] === el) return el.__yzIndex;
+      const i = w.__yzElements.push(el) - 1;
+      try { el.__yzIndex = i; } catch { /* ignore */ }
+      return i;
+    },
+    get(i: number) { return w.__yzElements[i]; },
+    genSel,
+  };
+  return w.__yzReg;
+}
+
+// 变化检测：这些 action 可能改变页面状态，执行后对比前后快照
+const CHANGE_ACTIONS = new Set(['click', 'type', 'press', 'select_option', 'check', 'uncheck', 'submit_form', 'search', 'next_page', 'prev_page']);
+let noChangeStreak = 0;
+const snapshotFn = () => { try { const d = document.body; return { url: location.href, t: (d ? d.innerText : '').slice(0, 2000), n: document.querySelectorAll('a,button,input,select,textarea').length }; } catch { return null; } };
+
 router.post('/action', async (req: Request, res: Response) => {
   try {
-    const { action, selector, text, key, x, y, timeout } = req.body || {};
+    const args = req.body || {};
+    const { action, text, key, x, y, timeout } = args;
+    const selector = args.selector ? String(args.selector).replace(/:contains\(\s*["']([\s\S]*?)["']\s*\)/g, ':has-text("$1")') : args.selector;
     if (!action) { res.status(400).json({ error: 'action 为必填项' }); return; }
     const page = await getPage();
     let result: unknown = null;
 
+    // 变化检测：操作前采集页面快照
+    let beforeState: any = null;
+    if (CHANGE_ACTIONS.has(String(action))) {
+      beforeState = await page.evaluate(snapshotFn).catch(() => null);
+    }
+
     switch (action) {
       case 'click': {
+        if (args.index !== undefined && args.index !== null) {
+          // 元素编号定位（优先）：从页面注册表取元素并点击
+          await page.evaluate(ensureYzReg);
+          const pos = await page.evaluate((idx: number) => {
+            const R = (window as any).__yzReg;
+            const el = R.get(idx);
+            if (!el || !el.isConnected) return { error: `index ${idx} 已失效（页面已变化），请重新调用 get_page_info 获取编号列表` };
+            el.scrollIntoView({ block: 'center' });
+            const rect = el.getBoundingClientRect();
+            if (el.ownerDocument === document) return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+            // iframe 内元素：坐标相对 iframe 视口，直接派发 DOM 事件
+            const o = { bubbles: true, cancelable: true, clientX: rect.x + rect.width / 2, clientY: rect.y + rect.height / 2, view: el.ownerDocument.defaultView };
+            el.dispatchEvent(new MouseEvent('mousedown', o));
+            el.dispatchEvent(new MouseEvent('mouseup', o));
+            el.dispatchEvent(new MouseEvent('click', o));
+            return { via: 'dom-events', iframe: true };
+          }, Number(args.index));
+          if ((pos as any)?.error) {
+            result = pos;
+          } else if ((pos as any)?.x !== undefined) {
+            await page.mouse.click((pos as any).x, (pos as any).y);
+            result = { success: true, index: args.index, via: 'real-mouse' };
+          } else {
+            result = { success: true, index: args.index, via: 'dom-events', iframe: true };
+          }
+          break;
+        }
         // 真实鼠标点击：先 move 再 click
         if (selector) {
+          // 多匹配歧义检测：返回带编号的候选列表
+          const count = await page.locator(selector).count().catch(() => -1);
+          if (count === 0) {
+            result = { error: `元素未找到: ${args.selector}`, hint: '建议先调用 get_page_info 获取编号元素列表，再用 index 参数定位' };
+            break;
+          }
+          if (count > 1) {
+            await page.evaluate(ensureYzReg);
+            const cands = await page.evaluate((sel: string) => {
+              const R = (window as any).__yzReg;
+              // selector 可能含 :has-text() Playwright 伪选择器，DOM 无法解析 → 退化为宽泛收集
+              let els: Element[] = [];
+              try { els = Array.from(document.querySelectorAll(sel)); } catch { els = []; }
+              if (!els.length) {
+                // 回退：按标签+文本粗筛（如 button:has-text("登录")）
+                const m = String(sel).match(/^([a-z*]+):has-text\(["']?([\s\S]*?)["']?\)$/i);
+                if (m) {
+                  els = Array.from(document.querySelectorAll(m[1])).filter((el: any) => (el.textContent || '').includes(m[2]));
+                }
+              }
+              return els.slice(0, 10).map((el: any) => ({ index: R.register(el), tag: el.tagName.toLowerCase(), text: (el.textContent || '').trim().slice(0, 40), selector: R.genSel(el) }));
+            }, String(args.selector)).catch(() => [] as any[]);
+            result = { ambiguous: true, matched: count, candidates: cands, hint: '该选择器匹配多个元素，请从候选列表选一个 index 重新调用 click' };
+            break;
+          }
           await page.locator(selector).scrollIntoViewIfNeeded().catch(() => {});
           const box = await page.locator(selector).boundingBox();
           if (box) {
@@ -140,8 +297,43 @@ router.post('/action', async (req: Request, res: Response) => {
         break;
       }
       case 'type': {
+        if (args.index !== undefined && args.index !== null) {
+          await page.evaluate(ensureYzReg);
+          const r = await page.evaluate((p: { idx: number; text: string }) => {
+            const R = (window as any).__yzReg;
+            const el = R.get(p.idx);
+            if (!el || !el.isConnected) return { error: `index ${p.idx} 已失效（页面已变化），请重新调用 get_page_info 获取编号列表` };
+            el.scrollIntoView({ block: 'center' });
+            el.focus();
+            for (const ch of p.text) {
+              el.value += ch;
+              el.dispatchEvent(new Event('input', { bubbles: true }));
+            }
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+            return { success: true, index: p.idx, typed: p.text.length };
+          }, { idx: Number(args.index), text: String(text || '') });
+          result = r;
+          break;
+        }
         // 真实键盘输入：逐字符 type
-        if (selector) await page.locator(selector).click().catch(() => {});
+        if (selector) {
+          const count = await page.locator(selector).count().catch(() => -1);
+          if (count === 0) {
+            result = { error: `元素未找到: ${args.selector}`, hint: '建议先调用 get_page_info 获取编号元素列表，再用 index 参数定位' };
+            break;
+          }
+          if (count > 1) {
+            await page.evaluate(ensureYzReg);
+            const cands = await page.evaluate(() => {
+              const R = (window as any).__yzReg;
+              const els = Array.from(document.querySelectorAll('input,textarea')).filter((el: any) => el.offsetParent !== null);
+              return els.slice(0, 10).map((el: any) => ({ index: R.register(el), tag: 'input', placeholder: el.placeholder || '', selector: R.genSel(el) }));
+            }).catch(() => [] as any[]);
+            result = { ambiguous: true, matched: count, candidates: cands, hint: '该选择器匹配多个元素，请从候选列表选一个 index 重新调用 type' };
+            break;
+          }
+          await page.locator(selector).click().catch(() => {});
+        }
         await page.keyboard.type(text || '', { delay: 30 });
         result = { typed: text?.length || 0 };
         break;
@@ -176,9 +368,46 @@ router.post('/action', async (req: Request, res: Response) => {
         break;
       }
       case 'get_dom': {
-        // 获取简化 DOM 结构（可见元素摘要）
-        const html = await page.content();
-        result = { length: html.length, preview: html.slice(0, 2000) };
+        await page.evaluate(ensureYzReg);
+        result = await page.evaluate((args: any) => {
+          const maxDepth = args?.depth || 12;
+          const maxNodes = args?.maxNodes || 1000;
+          const skip = new Set(['SCRIPT', 'STYLE', 'SVG', 'NOSCRIPT', 'TEMPLATE', 'LINK', 'META', 'HEAD']);
+          const SELS = 'a,button,input,select,textarea,[role=button],[role=link],[role=checkbox],[role=radio],[onclick],label[for],summary,details,[tabindex]';
+          let count = 0, sameOriginIframes = 0, crossOriginIframes = 0, shadowRoots = 0;
+          const walk = (el: Element, depth: number): any => {
+            if (count >= maxNodes || skip.has(el.tagName) || depth > maxDepth) return null;
+            const st = getComputedStyle(el);
+            if (st.display === 'none' || st.visibility === 'hidden' || st.opacity === '0') return null;
+            count++;
+            const node: any = { tag: el.tagName.toLowerCase() };
+            // 可交互节点附加编号，供 browser_click / browser_type 用 index 定位
+            try { if ((el as any).matches && (el as any).matches(SELS)) { const R = (window as any).__yzReg; if (R) node.index = R.register(el); } } catch { /* ignore */ }
+            if (el.id) node.id = el.id;
+            const cls = (typeof (el as any).className === 'string' ? (el as any).className : '').trim();
+            if (cls) node.class = cls.slice(0, 80);
+            if (el.getAttribute('role')) node.role = el.getAttribute('role');
+            if (el.getAttribute('aria-label')) node.ariaLabel = el.getAttribute('aria-label');
+            if (el.getAttribute('href')) node.href = el.getAttribute('href')!.slice(0, 120);
+            if (el.getAttribute('placeholder')) node.placeholder = el.getAttribute('placeholder');
+            if (el.getAttribute('type')) node.type = el.getAttribute('type');
+            if (el.getAttribute('name')) node.name = el.getAttribute('name');
+            if (el.getAttribute('value') && el.tagName === 'INPUT') node.value = String((el as any).value).slice(0, 60);
+            const directText = Array.from(el.childNodes).filter(n => n.nodeType === 3).map(n => n.textContent!.trim()).filter(Boolean).join(' ');
+            if (directText) node.text = directText.slice(0, 100);
+            const kids: any[] = [];
+            for (let i = 0; i < el.children.length; i++) { const c = walk(el.children[i], depth + 1); if (c) kids.push(c); }
+            if ((el as any).shadowRoot) { shadowRoots++; const sr = (el as any).shadowRoot; for (let si = 0; si < sr.children.length; si++) { const sc = walk(sr.children[si], depth + 1); if (sc) { sc.shadowRoot = true; kids.push(sc); } } }
+            if (el.tagName === 'IFRAME' || el.tagName === 'FRAME') {
+              try { const cd = (el as any).contentDocument || ((el as any).contentWindow && (el as any).contentWindow.document); if (cd && cd.body) { sameOriginIframes++; const ic = walk(cd.body, depth + 1); if (ic) { ic.iframe = true; ic.src = el.getAttribute('src') || ''; kids.push(ic); } } else { crossOriginIframes++; } } catch { crossOriginIframes++; }
+            }
+            if (kids.length) node.children = kids;
+            return node;
+          };
+          const root = args?.selector ? document.querySelector(args.selector) : document.body;
+          if (!root) return { error: '元素未找到' };
+          return { url: location.href, title: document.title, dom: walk(root, 0), nodeCount: count, iframes: { sameOrigin: sameOriginIframes, crossOriginSkipped: crossOriginIframes }, shadowRoots };
+        }, args);
         break;
       }
       case 'wait': {
@@ -192,8 +421,487 @@ router.post('/action', async (req: Request, res: Response) => {
         result = { base64: buf.toString('base64') };
         break;
       }
+      case 'fill_form': {
+        const fields = Array.isArray(args.fields) ? args.fields : [];
+        const filled: string[] = [];
+        const toPw = (s: string) => String(s).replace(/:contains\(\s*["']([\s\S]*?)["']\s*\)/g, ':has-text("$1")');
+        for (const f of fields) {
+          const sel = toPw(f.selector);
+          if (!sel) continue;
+          const ftype = String(f.type || 'text').toLowerCase();
+          if (ftype === 'select') {
+            const opt = f.label !== undefined ? { label: String(f.label) } : String(f.value ?? '');
+            await page.locator(sel).selectOption(opt as any);
+          } else if (ftype === 'checkbox' || ftype === 'radio') {
+            if (f.value === false || f.value === 'false') await page.locator(sel).uncheck().catch(() => {});
+            else await page.locator(sel).check().catch(() => {});
+          } else {
+            await page.locator(sel).scrollIntoViewIfNeeded().catch(() => {});
+            await page.locator(sel).fill(String(f.value ?? ''));
+          }
+          filled.push(sel);
+        }
+        result = { filled: filled.length, fields: filled };
+        break;
+      }
+      case 'submit_form': {
+        if (selector) {
+          await page.locator(selector).scrollIntoViewIfNeeded().catch(() => {});
+          await page.locator(selector).click();
+        } else {
+          await page.keyboard.press('Enter');
+        }
+        await page.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() => {});
+        result = { submitted: true, url: page.url(), title: await page.title().catch(() => '') };
+        break;
+      }
+      case 'search': {
+        const query = String(args.query || '');
+        if (!query) { res.status(400).json({ error: 'query 为必填项' }); return; }
+        const toPwSel = (s: string) => String(s).replace(/:contains\(\s*["']([\s\S]*?)["']\s*\)/g, ':has-text("$1")');
+        const inputSel = args.input_selector ? toPwSel(args.input_selector)
+          || 'input[type="search"], input[role="searchbox"], input[name*="search" i], input[name*="q" i], input[placeholder*="搜索" i], input[placeholder*="search" i]' : 'input[type="search"], input[role="searchbox"], input[name*="search" i], input[name*="q" i], input[placeholder*="搜索" i], input[placeholder*="search" i]';
+        const input = page.locator(inputSel).first();
+        await input.click().catch(() => {});
+        await input.fill(query);
+        if (args.submit_selector) {
+          await page.locator(toPwSel(args.submit_selector)).click().catch(() => {});
+        } else {
+          await page.keyboard.press('Enter');
+        }
+        await page.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() => {});
+        result = { searched: query, url: page.url(), title: await page.title().catch(() => '') };
+        break;
+      }
+      case 'next_page': {
+        const sel = selector
+          || 'a:has-text("下一页"), a:has-text("下页"), a:has-text("›"), a:has-text("»"), a:has-text("Next"), button:has-text("下一页"), button:has-text("Next"), a[rel="next"]';
+        await page.locator(sel).first().click();
+        await page.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() => {});
+        result = { paged: 'next', url: page.url(), title: await page.title().catch(() => '') };
+        break;
+      }
+      case 'prev_page': {
+        const sel = selector
+          || 'a:has-text("上一页"), a:has-text("上页"), a:has-text("‹"), a:has-text("«"), a:has-text("Prev"), button:has-text("上一页"), button:has-text("Prev"), a[rel="prev"]';
+        await page.locator(sel).first().click();
+        await page.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() => {});
+        result = { paged: 'prev', url: page.url(), title: await page.title().catch(() => '') };
+        break;
+      }
+      case 'wait_for': {
+        const to = Math.min(args.timeout || 10000, 30000);
+        if (selector) {
+          await page.waitForSelector(selector, { timeout: to });
+          result = { waited: 'selector', selector };
+        } else if (args.url) {
+          await page.waitForURL(args.url, { timeout: to }).catch(() => {});
+          result = { waited: 'url', url: page.url() };
+        } else if (args.text) {
+          await page.waitForFunction((t: string) => (document.body?.innerText || '').includes(t), args.text as string, { timeout: to }).catch(() => {});
+          result = { waited: 'text', text: args.text };
+        } else {
+          await page.waitForTimeout(to);
+          result = { waited: 'timeout', ms: to };
+        }
+        break;
+      }
+      case 'get_visible_text': {
+        result = await page.evaluate((sel: string | undefined) => {
+          const root = sel ? document.querySelector(sel) : document.body;
+          return root ? (root as any).innerText : '';
+        }, selector as string | undefined);
+        break;
+      }
+      case 'select_option': {
+        const opt = args.label !== undefined ? { label: String(args.label) } : String(args.value ?? '');
+        await page.locator(selector as string).selectOption(opt as any);
+        result = { selected: true };
+        break;
+      }
+      case 'check': {
+        await page.locator(selector as string).check();
+        result = { checked: true };
+        break;
+      }
+      case 'uncheck': {
+        await page.locator(selector as string).uncheck();
+        result = { unchecked: true };
+        break;
+      }
+      case 'get_page_info': {
+        // 穿透 iframe / Shadow DOM 收集可交互元素并编号注册（含 iframe 内弹窗元素）
+        await page.evaluate(ensureYzReg);
+        result = await page.evaluate(() => {
+          const R = (window as any).__yzReg;
+          const S = 'a,button,input,select,textarea,[role=button],[role=link],[role=checkbox],[role=radio],[onclick],label[for],summary,details,[tabindex]';
+          const els: Element[] = [];
+          const visible = (el: any) => {
+            if (el.disabled === true) return false;
+            const rect = el.getBoundingClientRect();
+            if (rect.width < 2 || rect.height < 2) return false;
+            if (el.offsetParent === null) {
+              try {
+                const st = el.ownerDocument.defaultView.getComputedStyle(el).position;
+                if (st !== 'fixed' && st !== 'sticky') return false;
+              } catch { return false; }
+            }
+            return true;
+          };
+          const collect = (root: any) => {
+            let found: NodeListOf<Element> | Element[];
+            try { found = root.querySelectorAll(S); } catch { return; }
+            for (const el of Array.from(found)) { if (visible(el)) els.push(el); }
+            let all: NodeListOf<Element> | Element[];
+            try { all = root.querySelectorAll('*'); } catch { return; }
+            for (const n of Array.from(all)) {
+              if ((n as any).shadowRoot) collect((n as any).shadowRoot);
+              if (n.tagName === 'IFRAME' || n.tagName === 'FRAME') {
+                try { const cd = (n as any).contentDocument; if (cd && cd.body) collect(cd.body); } catch { /* 跨域跳过 */ }
+              }
+            }
+          };
+          collect(document.documentElement);
+          const out: any[] = [];
+          for (let k = 0; k < els.length && out.length < 300; k++) {
+            const el = els[k] as any;
+            const idx = R.register(el);
+            const o: any = { index: idx, tag: el.tagName.toLowerCase(), selector: R.genSel(el), text: (el.textContent || '').trim().slice(0, 60) };
+            if (el.ownerDocument !== document) { o.iframe = true; }
+            else { const rect = el.getBoundingClientRect(); o.x = Math.round(rect.x); o.y = Math.round(rect.y); o.w = Math.round(rect.width); o.h = Math.round(rect.height); }
+            if (el.id) o.id = el.id;
+            if (el.type) o.type = el.type;
+            if (el.href) o.href = String(el.href).slice(0, 200);
+            if (el.placeholder) o.placeholder = el.placeholder;
+            if (el.value && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) o.value = String(el.value).slice(0, 80);
+            if (el.getAttribute('aria-label')) o.ariaLabel = el.getAttribute('aria-label');
+            if (el.name) o.name = el.name;
+            if (el.getAttribute('role')) o.role = el.getAttribute('role');
+            if (el.required) o.required = true;
+            if (el.tagName === 'SELECT') o.options = Array.from(el.options).slice(0, 30).map((op: any) => ({ v: op.value, t: op.text.trim().slice(0, 40), s: op.selected }));
+            if (el.tagName === 'INPUT' && (el.type === 'radio' || el.type === 'checkbox')) o.checked = !!el.checked;
+            out.push(o);
+          }
+          return { url: location.href, title: document.title, interactiveCount: els.length, interactive: out, hint: '可交互元素已编号（index 字段），browser_click / browser_type 可直接用 index 参数定位（优先于 selector）' };
+        });
+        break;
+      }
+      // ========== C4 多标签页管理 ==========
+      case 'new_tab': {
+        const newPage = await createTabPage(args.url);
+        const tabId = nextTabId++;
+        tabs.set(tabId, newPage);
+        pageInstance = newPage;
+        activeTabId = tabId;
+        result = { tabId, url: newPage.url(), title: await newPage.title().catch(() => '') };
+        break;
+      }
+      case 'switch_tab': {
+        const tid = Number(args.tabId);
+        if (!tabs.has(tid)) { result = { error: `tabId ${tid} 不存在` }; break; }
+        const p = tabs.get(tid);
+        if (p.isClosed?.()) { tabs.delete(tid); result = { error: `tabId ${tid} 已关闭` }; break; }
+        pageInstance = p;
+        activeTabId = tid;
+        result = { tabId: tid, url: p.url(), title: await p.title().catch(() => '') };
+        break;
+      }
+      case 'close_tab': {
+        const tid = args.tabId !== undefined && args.tabId !== null ? Number(args.tabId) : activeTabId;
+        if (!tabs.has(tid)) { result = { error: `tabId ${tid} 不存在` }; break; }
+        const p = tabs.get(tid);
+        await p.close().catch(() => {});
+        tabs.delete(tid);
+        if (activeTabId === tid) {
+          const rest = Array.from(tabs.keys());
+          if (rest.length) { activeTabId = rest[0]; pageInstance = tabs.get(rest[0]); }
+          else { activeTabId = -1; pageInstance = null; }
+        }
+        result = { closedTabId: tid, remaining: tabs.size };
+        break;
+      }
+      case 'get_tabs': {
+        const list: any[] = [];
+        for (const [tid, p] of tabs) {
+          if (p.isClosed?.()) { tabs.delete(tid); continue; }
+          list.push({ id: tid, url: p.url(), title: await p.title().catch(() => ''), active: tid === activeTabId });
+        }
+        result = { tabs: list };
+        break;
+      }
+      // ========== C5 网络请求监听 ==========
+      case 'wait_for_request': {
+        const pat = String(args.urlPattern || '');
+        if (!pat) { result = { error: 'urlPattern 为必填项' }; break; }
+        const to = Math.min(args.timeout || 10000, 30000);
+        let regex: RegExp;
+        try { regex = new RegExp(pat); } catch { regex = new RegExp(pat.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')); }
+        const match = (u: string) => u.includes(pat) || regex.test(u);
+        // 先在已有日志里找
+        const found = networkLog.find((e) => match(e.url));
+        if (found) { result = { url: found.url, method: found.method, status: found.status }; break; }
+        // 等待新请求完成
+        const start = Date.now();
+        const r = await new Promise((resolve) => {
+          const onReq = async (req: any) => {
+            const u = req.url();
+            if (!match(u)) return;
+            page.off('requestfinished', onReq);
+            try {
+              const resp = await req.response().catch(() => null);
+              resolve({ url: u, method: req.method(), status: resp ? resp.status() : 0 });
+            } catch { resolve({ url: u, method: req.method(), status: 0 }); }
+          };
+          page.on('requestfinished', onReq);
+          setTimeout(() => { page.off('requestfinished', onReq); resolve(null); }, to);
+        });
+        result = r || { error: `等待超时（${to}ms）未匹配到 ${pat}` };
+        break;
+      }
+      case 'get_network_log': {
+        const pat = args.urlPattern ? String(args.urlPattern) : null;
+        const n = Math.min(args.lastN || 20, 100);
+        let entries = networkLog.slice();
+        if (pat) {
+          let regex: RegExp;
+          try { regex = new RegExp(pat); } catch { regex = new RegExp(pat.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')); }
+          entries = entries.filter((e) => e.url.includes(pat) || regex.test(e.url));
+        }
+        entries = entries.slice(0, n);
+        result = { entries };
+        break;
+      }
+      // ========== C6 结构化数据提取 ==========
+      case 'extract_list': {
+        result = await page.evaluate((a: any) => {
+          const limit = a.limit || 20;
+          const fields = a.fields || null;
+          // 自动识别常见列表项选择器
+          let containerSel = a.selector;
+          if (!containerSel) {
+            const candidates = ['.goods-item', '.product-item', '.item', '.card', 'li', 'article', '[role="listitem"]'];
+            for (const c of candidates) {
+              const els = document.querySelectorAll(c);
+              if (els.length >= 2) { containerSel = c; break; }
+            }
+          }
+          if (!containerSel) return { error: '未指定 selector 且无法自动识别列表项容器，请传 selector' };
+          const containers = Array.from(document.querySelectorAll(containerSel));
+          if (!containers.length) return { error: `未匹配到列表项: ${containerSel}` };
+          const autoFields = fields || {
+            title: { selector: '.title, h3, h2, .name', attr: 'text' },
+            price: { selector: '.price, .cost', attr: 'text' },
+            link: { selector: 'a', attr: 'href' },
+          };
+          const items: any[] = [];
+          for (const c of containers) {
+            if (items.length >= limit) break;
+            const item: any = {};
+            for (const [fname, fdef] of Object.entries(autoFields)) {
+              const sel = (fdef as any).selector;
+              const attr = (fdef as any).attr || 'text';
+              const el = c.querySelector(sel);
+              if (!el) { item[fname] = null; continue; }
+              if (attr === 'text') item[fname] = (el.textContent || '').trim();
+              else if (attr === 'html') item[fname] = (el as any).innerHTML;
+              else item[fname] = el.getAttribute(attr);
+            }
+            items.push(item);
+          }
+          return { count: items.length, items };
+        }, args);
+        break;
+      }
+      // ========== C9 视觉定位闭环 ==========
+      case 'visual_locate': {
+        const buf = await page.screenshot({ fullPage: false });
+        const ts = Date.now();
+        const dir = 'workspace/visual_locate';
+        try { await fs.promises.mkdir(dir, { recursive: true }); } catch {}
+        const savePath = `${dir}/screenshot_${ts}.png`;
+        await fs.promises.writeFile(savePath, buf);
+        result = { path: savePath };
+        break;
+      }
+      // ========== C11 文件上传/下载 ==========
+      case 'upload': {
+        const fp = String(args.filePath || '');
+        if (!fp) { result = { error: 'filePath 为必填项' }; break; }
+        let locator: any = null;
+        if (args.index !== undefined && args.index !== null) {
+          await page.evaluate(ensureYzReg);
+          const sel = await page.evaluate((idx: number) => {
+            const R = (window as any).__yzReg;
+            const el = R.get(idx);
+            if (!el || !el.isConnected) return null;
+            return R.genSel(el);
+          }, Number(args.index));
+          if (!sel) { result = { error: `index ${args.index} 已失效` }; break; }
+          locator = page.locator(sel);
+        } else if (selector) {
+          locator = page.locator(selector);
+        } else {
+          locator = page.locator('input[type="file"]').first();
+        }
+        await locator.setInputFiles(fp);
+        result = { uploaded: true, filePath: fp };
+        break;
+      }
+      case 'download': {
+        const savePath = args.savePath ? String(args.savePath) : null;
+        const waitP = page.waitForEvent('download', { timeout: 15000 }).catch(() => null);
+        if (args.url) {
+          await page.goto(String(args.url), { waitUntil: 'commit', timeout: 15000 }).catch(() => {});
+        } else if (selector) {
+          await page.locator(selector).click().catch(() => {});
+        }
+        const download: any = await waitP;
+        if (!download) { result = { error: '未触发下载（超时）' }; break; }
+        const filename = download.suggestedFilename();
+        const sp = savePath || `workspace/downloads/${filename}`;
+        try { await fs.promises.mkdir(path.dirname(sp), { recursive: true }); } catch {}
+        await download.saveAs(sp);
+        result = { filename, savedPath: sp, url: download.url() };
+        break;
+      }
+      // ========== C12 滚动到元素 / 可见性检测 ==========
+      case 'scroll_into_view': {
+        if (args.index !== undefined && args.index !== null) {
+          await page.evaluate(ensureYzReg);
+          result = await page.evaluate((idx: number) => {
+            const R = (window as any).__yzReg;
+            const el = R.get(idx);
+            if (!el || !el.isConnected) return { error: `index ${idx} 已失效` };
+            el.scrollIntoView({ block: 'center' });
+            return { success: true };
+          }, Number(args.index));
+          break;
+        }
+        if (selector) {
+          await page.locator(selector).scrollIntoViewIfNeeded();
+          result = { success: true };
+          break;
+        }
+        result = { error: '需要 index 或 selector' };
+        break;
+      }
+      case 'is_visible': {
+        if (args.index !== undefined && args.index !== null) {
+          await page.evaluate(ensureYzReg);
+          result = await page.evaluate((idx: number) => {
+            const R = (window as any).__yzReg;
+            const el = R.get(idx);
+            if (!el || !el.isConnected) return { visible: false, reason: `index ${idx} 已失效或已移除` };
+            const rect = el.getBoundingClientRect();
+            if (rect.width < 2 || rect.height < 2) return { visible: false, reason: '尺寸过小' };
+            if (el.offsetParent === null) {
+              const st = el.ownerDocument.defaultView.getComputedStyle(el).position;
+              if (st !== 'fixed' && st !== 'sticky') return { visible: false, reason: 'offsetParent 为 null（display:none 或祖先隐藏）' };
+            }
+            const cs = el.ownerDocument.defaultView.getComputedStyle(el);
+            if (cs.visibility === 'hidden') return { visible: false, reason: 'visibility:hidden' };
+            if (cs.opacity === '0') return { visible: false, reason: 'opacity:0' };
+            return { visible: true, reason: '可见' };
+          }, Number(args.index));
+          break;
+        }
+        if (selector) {
+          const count = await page.locator(selector).count().catch(() => 0);
+          if (count === 0) { result = { visible: false, reason: '元素未找到' }; break; }
+          const isVisible = await page.locator(selector).isVisible();
+          result = { visible: isVisible, reason: isVisible ? '可见' : '元素存在但不可见（display:none / visibility:hidden / 视口外等）' };
+          break;
+        }
+        result = { error: '需要 index 或 selector' };
+        break;
+      }
+      // ========== C13 拖拽 ==========
+      case 'drag': {
+        const resolvePoint = async (prefix: 'from' | 'to'): Promise<{ x?: number; y?: number; error?: string }> => {
+          const idx = prefix === 'from' ? args.fromIndex : args.toIndex;
+          const sel = prefix === 'from' ? args.fromSelector : args.toSelector;
+          if (idx !== undefined && idx !== null) {
+            await page.evaluate(ensureYzReg);
+            const r = await page.evaluate((i: number) => {
+              const R = (window as any).__yzReg;
+              const el = R.get(i);
+              if (!el || !el.isConnected) return null;
+              el.scrollIntoView({ block: 'center' });
+              const rect = el.getBoundingClientRect();
+              return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+            }, Number(idx));
+            if (!r) return { error: `index ${idx} 已失效` };
+            return r;
+          }
+          if (sel) {
+            const loc = page.locator(String(sel));
+            const cnt = await loc.count().catch(() => 0);
+            if (cnt === 0) return { error: `元素未找到: ${sel}` };
+            await loc.scrollIntoViewIfNeeded().catch(() => {});
+            const box = await loc.boundingBox();
+            if (!box) return { error: `无法获取元素边界: ${sel}` };
+            return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+          }
+          const px = prefix === 'from' ? args.fromX : args.toX;
+          const py = prefix === 'from' ? args.fromY : args.toY;
+          if (px !== undefined && py !== undefined) return { x: Number(px), y: Number(py) };
+          return { error: `缺少 ${prefix} 定位参数` };
+        };
+        const from = await resolvePoint('from');
+        if (from.error) { result = from; break; }
+        const to = await resolvePoint('to');
+        if (to.error) { result = to; break; }
+        await page.mouse.move(from.x!, from.y!);
+        await page.mouse.down();
+        await page.mouse.move(to.x!, to.y!, { steps: 10 });
+        await page.mouse.up();
+        result = { dragged: true, from, to };
+        break;
+      }
+      // ========== C14 Accessibility Tree ==========
+      case 'get_a11y_tree': {
+        const maxNodes = args.maxNodes || 200;
+        let count = 0;
+        const prune = (node: any): any => {
+          if (!node || count >= maxNodes) return null;
+          count++;
+          const out: any = { role: node.role };
+          if (node.name) out.name = node.name;
+          if (node.value) out.value = node.value;
+          if (node.checked !== undefined) out.checked = node.checked;
+          if (node.level !== undefined) out.level = node.level;
+          if (node.selected !== undefined) out.selected = node.selected;
+          if (node.children) {
+            const kids: any[] = [];
+            for (const c of node.children) { const k = prune(c); if (k) kids.push(k); }
+            if (kids.length) out.children = kids;
+          }
+          return out;
+        };
+        const snap = await page.accessibility.snapshot().catch(() => null);
+        const tree = prune(snap);
+        result = { tree, nodeCount: count };
+        break;
+      }
       default:
         res.status(400).json({ error: '未知 action: ' + action }); return;
+    }
+    // 变化检测：操作后对比快照，为模型提供 pageChanged / noChangeStreak 反馈
+    const r = result as any;
+    if (beforeState && r && !r.error && !r.ambiguous) {
+      await page.waitForTimeout(500).catch(() => {});
+      const after = await page.evaluate(snapshotFn).catch(() => null);
+      if (after) {
+        const urlChanged = after.url !== beforeState.url;
+        const changed = urlChanged || after.t !== beforeState.t || after.n !== beforeState.n;
+        noChangeStreak = changed ? 0 : noChangeStreak + 1;
+        r.pageChanged = changed;
+        r.urlChanged = urlChanged;
+        r.noChangeStreak = noChangeStreak;
+        if (noChangeStreak >= 3) {
+          r.warning = '连续 ' + noChangeStreak + ' 次操作页面无任何变化，操作可能未生效。请停止重复同类操作：改用 index 精确定位（先 get_page_info 获取编号列表）、重新分析页面、或 ask_user 请求人工介入。';
+        }
+      }
     }
     lastActivityAt = Date.now();
     res.json({ data: result });
@@ -836,6 +1544,180 @@ router.post('/analysis', (req: Request, res: Response) => {
     res.json({ data: a });
   } catch {
     res.status(500).json({ error: '保存分析失败' });
+  }
+});
+
+// ========== 浏览器记住密码：站点凭证 CRUD + 自动填充/登录 ==========
+function pwdUserId(req: Request): string {
+  return req.user?.userId || 'guest';
+}
+
+/** 自动识别当前页登录表单字段选择器（优先 id > name > type） */
+async function findLoginFields(page: any): Promise<{ userSelector?: string; passwordSelector?: string; submitSelector?: string } | null> {
+  return await page.evaluate(() => {
+    const pwd = document.querySelector('input[type="password"]') as HTMLInputElement | null;
+    if (!pwd) return null;
+    const form = (pwd.closest('form') as HTMLElement) || document.body;
+    const inputs = Array.from(form.querySelectorAll('input')) as HTMLInputElement[];
+    let userField: HTMLInputElement | null = null;
+    for (const inp of inputs) {
+      if (inp === pwd) break;
+      const t = (inp.type || '').toLowerCase();
+      if (t === 'text' || t === 'email' || t === 'tel' || t === '') userField = inp;
+    }
+    const sel = (el: Element | null): string | undefined => {
+      if (!el) return undefined;
+      if (el.id) return '#' + ((window as any).CSS?.escape ? (window as any).CSS.escape(el.id) : el.id);
+      const n = el.getAttribute('name');
+      if (n) return `${el.tagName.toLowerCase()}[name="${n}"]`;
+      const t = (el as HTMLInputElement).type;
+      if (t) return `${el.tagName.toLowerCase()}[type="${t}"]`;
+      return el.tagName.toLowerCase();
+    };
+    const submit = form.querySelector('button[type="submit"], input[type="submit"], button:not([type])');
+    return { userSelector: sel(userField), passwordSelector: sel(pwd), submitSelector: sel(submit) };
+  });
+}
+
+// GET /api/browser/passwords —— 列表（不返回明文密码）
+router.get('/passwords', (req: Request, res: Response) => {
+  try {
+    const rows = db.prepare('SELECT id, host, url, name, username, form_meta_json, created_at, updated_at FROM saved_password WHERE user_id = ? ORDER BY updated_at DESC').all(pwdUserId(req)) as any[];
+    res.json({ data: rows.map(r => ({ id: r.id, host: r.host, url: r.url, name: r.name, username: r.username, form_meta: r.form_meta_json ? JSON.parse(r.form_meta_json) : null, created_at: r.created_at, updated_at: r.updated_at })) });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || '查询失败' });
+  }
+});
+
+// POST /api/browser/passwords —— 保存/更新（按 host+username 去重 upsert）
+router.post('/passwords', (req: Request, res: Response) => {
+  try {
+    const { host, url, name, username, password, form_meta } = req.body || {};
+    if (!host || !username || !password) { res.status(400).json({ error: 'host/username/password 为必填项' }); return; }
+    const uid = pwdUserId(req);
+    const now = Date.now();
+    const enc = encrypt(String(password));
+    const metaJson = form_meta ? JSON.stringify(form_meta) : null;
+    const existing = db.prepare('SELECT id FROM saved_password WHERE user_id = ? AND host = ? AND username = ?').get(uid, host, username) as any;
+    if (existing) {
+      db.prepare('UPDATE saved_password SET url=?, name=?, password_enc=?, form_meta_json=?, updated_at=? WHERE id=?').run(url || null, name || null, enc, metaJson, now, existing.id);
+      res.json({ data: { id: existing.id, updated: true } });
+    } else {
+      const id = 'pw_' + crypto.randomUUID();
+      db.prepare('INSERT INTO saved_password (id, user_id, host, url, name, username, password_enc, form_meta_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(id, uid, host, url || null, name || null, username, enc, metaJson, now, now);
+      res.json({ data: { id, created: true } });
+    }
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || '保存失败' });
+  }
+});
+
+// PUT /api/browser/passwords/:id —— 更新
+router.put('/passwords/:id', (req: Request, res: Response) => {
+  try {
+    const { host, url, name, username, password, form_meta } = req.body || {};
+    const row = db.prepare('SELECT id FROM saved_password WHERE id = ? AND user_id = ?').get(req.params.id, pwdUserId(req)) as any;
+    if (!row) { res.status(404).json({ error: '凭证不存在' }); return; }
+    const now = Date.now();
+    const metaJson = form_meta ? JSON.stringify(form_meta) : null;
+    if (password) {
+      const enc = encrypt(String(password));
+      db.prepare('UPDATE saved_password SET host=?, url=?, name=?, username=?, password_enc=?, form_meta_json=?, updated_at=? WHERE id=?').run(host || '', url || null, name || null, username || '', enc, metaJson, now, req.params.id);
+    } else {
+      db.prepare('UPDATE saved_password SET host=?, url=?, name=?, username=?, form_meta_json=?, updated_at=? WHERE id=?').run(host || '', url || null, name || null, username || '', metaJson, now, req.params.id);
+    }
+    res.json({ ok: true });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || '更新失败' });
+  }
+});
+
+// DELETE /api/browser/passwords/:id
+router.delete('/passwords/:id', (req: Request, res: Response) => {
+  try {
+    db.prepare('DELETE FROM saved_password WHERE id = ? AND user_id = ?').run(req.params.id, pwdUserId(req));
+    res.json({ ok: true });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || '删除失败' });
+  }
+});
+
+// POST /api/browser/passwords/:id/reveal —— 返回明文密码（管理弹窗查看时用）
+router.post('/passwords/:id/reveal', (req: Request, res: Response) => {
+  try {
+    const row = db.prepare('SELECT password_enc FROM saved_password WHERE id = ? AND user_id = ?').get(req.params.id, pwdUserId(req)) as any;
+    if (!row) { res.status(404).json({ error: '凭证不存在' }); return; }
+    res.json({ data: { password: decrypt(row.password_enc) } });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || '解密失败' });
+  }
+});
+
+// POST /api/browser/passwords/:id/fill —— 用已存凭证自动填充当前页登录表单（不提交）
+router.post('/passwords/:id/fill', async (req: Request, res: Response) => {
+  try {
+    const row = db.prepare('SELECT username, password_enc, form_meta_json FROM saved_password WHERE id = ? AND user_id = ?').get(req.params.id, pwdUserId(req)) as any;
+    if (!row) { res.status(404).json({ error: '凭证不存在' }); return; }
+    const password = decrypt(row.password_enc);
+    const page = await getPage();
+    const meta = row.form_meta_json ? JSON.parse(row.form_meta_json) : null;
+    const fields = meta && meta.passwordSelector ? meta : await findLoginFields(page);
+    if (!fields || !fields.passwordSelector) { res.status(400).json({ error: '当前页面未找到登录表单' }); return; }
+    if (fields.userSelector) {
+      await page.locator(fields.userSelector).first().fill(row.username).catch(() => {});
+    }
+    await page.locator(fields.passwordSelector).first().fill(password);
+    lastActivityAt = Date.now();
+    res.json({ data: { filled: true, submitted: false } });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || '填充失败' });
+  }
+});
+
+// POST /api/browser/login-saved —— 用已存凭证登录目标站点
+// body: { host?, url? } —— 按 host 匹配凭证；若提供 url 先导航；自动找登录表单→填→提交→判断
+router.post('/login-saved', async (req: Request, res: Response) => {
+  try {
+    const { host, url } = req.body || {};
+    const uid = pwdUserId(req);
+    let targetHost = host;
+    if (!targetHost && url) { try { targetHost = new URL(url).host; } catch {} }
+    if (!targetHost) { res.status(400).json({ error: 'host 或 url 为必填项' }); return; }
+    const row = db.prepare('SELECT url, username, password_enc, form_meta_json FROM saved_password WHERE user_id = ? AND host = ? ORDER BY updated_at DESC LIMIT 1').get(uid, targetHost) as any;
+    if (!row) { res.status(404).json({ error: `未找到 ${targetHost} 的已保存凭证` }); return; }
+    const password = decrypt(row.password_enc);
+    const page = await getPage();
+    const navUrl = url || row.url;
+    if (navUrl) {
+      await page.goto(navUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+    }
+    const meta = row.form_meta_json ? JSON.parse(row.form_meta_json) : null;
+    let fields = meta && meta.passwordSelector ? meta : await findLoginFields(page);
+    if (!fields || !fields.passwordSelector) {
+      const loginLink = page.locator('a:has-text("登录"), a:has-text("Login"), a:has-text("Sign in"), a[href*="login" i]').first();
+      if (await loginLink.count().catch(() => 0) > 0) {
+        await loginLink.click().catch(() => {});
+        await page.waitForLoadState('domcontentloaded', { timeout: 10000 }).catch(() => {});
+        fields = await findLoginFields(page);
+      }
+    }
+    if (!fields || !fields.passwordSelector) { res.status(400).json({ error: '未找到登录表单，可能已登录或需要手动指定选择器' }); return; }
+    if (fields.userSelector) {
+      await page.locator(fields.userSelector).first().fill(row.username).catch(() => {});
+    }
+    await page.locator(fields.passwordSelector).first().fill(password);
+    if (fields.submitSelector) {
+      await page.locator(fields.submitSelector).first().click().catch(() => {});
+    } else {
+      await page.keyboard.press('Enter');
+    }
+    await page.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() => {});
+    await page.waitForTimeout(1500).catch(() => {});
+    const stillHasPwd = await page.locator('input[type="password"]').count().catch(() => 0);
+    lastActivityAt = Date.now();
+    res.json({ data: { loggedIn: stillHasPwd === 0, url: page.url(), title: await page.title().catch(() => '') } });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || '登录失败' });
   }
 });
 

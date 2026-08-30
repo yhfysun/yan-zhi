@@ -2,12 +2,17 @@
   <div class="page">
     <header class="page-header">
       <div>
-        <h2 class="page-title">客户端节点</h2>
-        <div class="page-sub">注册节点，发现其他客户端并互发消息</div>
+        <h2 class="page-title">聊天</h2>
+        <div class="page-sub">和其它客户端互发消息</div>
       </div>
       <div class="header-actions">
+        <div class="my-nickname">
+          <span class="nickname-label">昵称</span>
+          <span class="nickname-value">{{ myNickname || '未设置' }}</span>
+          <el-button size="small" :icon="Edit" @click="openNickname">设置</el-button>
+        </div>
         <el-button :icon="Refresh" @click="loadPeers" />
-        <el-button type="primary" :icon="Plus" @click="showRegister = true">注册节点</el-button>
+        <el-button :icon="Setting" @click="showRegister = true">节点设置</el-button>
       </div>
     </header>
 
@@ -17,16 +22,16 @@
         <div v-if="loading" class="panel-state">
           <el-skeleton :rows="5" animated />
         </div>
-        <el-empty v-else-if="peers.length === 0" description="暂未发现节点" :image-size="64" />
+        <el-empty v-else-if="otherPeers.length === 0" description="暂无其他在线节点" :image-size="64" />
         <button
-          v-for="peer in peers"
+          v-for="peer in otherPeers"
           :key="peer.nodeId"
+          type="button"
           class="peer-item"
           :class="{ active: activePeer?.nodeId === peer.nodeId }"
-          type="button"
           @click="selectPeer(peer)"
         >
-          <span class="peer-avatar">{{ peer.name.slice(0, 1) }}</span>
+          <span class="peer-avatar">{{ (peer.name || '?').slice(0, 1) }}</span>
           <span class="peer-info">
             <span class="peer-name">{{ peer.name }}</span>
             <span class="peer-meta">{{ peer.nodeId }}</span>
@@ -54,10 +59,10 @@
               v-for="m in messages"
               :key="m.id"
               class="message-row"
-              :class="{ mine: m.fromPeerId === ownNodeId }"
+              :class="{ mine: m.direction === 'outgoing' || m.fromPeerId === ownNodeId }"
             >
               <div class="message-bubble">
-                <div class="message-sender">{{ m.senderName || m.fromPeerId }}</div>
+                <div v-if="m.direction === 'incoming'" class="message-sender">{{ m.senderName || m.fromPeerId }}</div>
                 <div class="message-text">{{ m.content }}</div>
                 <div v-if="m.file" class="message-file">
                   <el-icon><Document /></el-icon>
@@ -75,24 +80,31 @@
       </section>
     </div>
 
-    <el-dialog v-model="showRegister" title="注册客户端节点" width="480px">
+    <el-dialog v-model="showNickname" title="设置昵称" width="360px">
+      <el-input v-model="nicknameInput" placeholder="输入你的昵称" maxlength="20" show-word-limit />
+      <template #footer>
+        <el-button @click="showNickname = false">取消</el-button>
+        <el-button type="primary" :loading="savingNickname" @click="saveNickname">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="showRegister" title="节点设置" width="480px">
       <el-form label-width="100px">
-        <el-form-item label="节点 ID"><el-input v-model="registerForm.nodeId" placeholder="唯一标识，如 desktop-mac" /></el-form-item>
-        <el-form-item label="显示名称"><el-input v-model="registerForm.name" /></el-form-item>
+        <el-form-item label="节点 ID"><el-input v-model="registerForm.nodeId" disabled /></el-form-item>
         <el-form-item label="回调地址"><el-input v-model="registerForm.baseUrl" placeholder="http://host:port" /></el-form-item>
         <el-form-item label="能力"><el-input v-model="registerForm.capabilities" placeholder="逗号分隔，如 chat,files" /></el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="showRegister = false">取消</el-button>
-        <el-button type="primary" :loading="savingRegister" @click="registerPeer">注册</el-button>
+        <el-button type="primary" :loading="savingRegister" @click="saveRegister">保存</el-button>
       </template>
     </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue';
-import { Plus, Refresh, Document } from '@element-plus/icons-vue';
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { Refresh, Document, Edit, Setting } from '@element-plus/icons-vue';
 import { ElMessage } from 'element-plus';
 import { api } from '../api/client';
 
@@ -109,9 +121,37 @@ const lastSince = ref(0);
 const messageList = ref<HTMLElement | null>(null);
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 
-const registerForm = ref({ nodeId: '', name: '', baseUrl: '', capabilities: '' });
+const showNickname = ref(false);
+const nicknameInput = ref('');
+const savingNickname = ref(false);
+const myNickname = ref('');
 
-onMounted(() => {
+const registerForm = ref({ nodeId: '', baseUrl: '', capabilities: 'chat' });
+
+const otherPeers = computed(() => peers.value.filter((p) => p.nodeId !== ownNodeId.value));
+
+function callbackBase(): string {
+  if (typeof window !== 'undefined' && window.location && window.location.origin && !window.location.origin.startsWith('file')) {
+    return window.location.origin;
+  }
+  return 'http://127.0.0.1:3001';
+}
+
+function genNodeId(): string {
+  const g = (globalThis as any).crypto;
+  if (g?.randomUUID) return `peer-${g.randomUUID()}`;
+  return `peer-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function lsGet(key: string): string {
+  try { return localStorage.getItem(key) || ''; } catch { return ''; }
+}
+function lsSet(key: string, val: string) {
+  try { localStorage.setItem(key, val); } catch {}
+}
+
+onMounted(async () => {
+  await ensureSelf();
   loadPeers();
   pollTimer = setInterval(pollMessages, 3000);
 });
@@ -119,6 +159,33 @@ onMounted(() => {
 onBeforeUnmount(() => {
   if (pollTimer) clearInterval(pollTimer);
 });
+
+async function ensureSelf() {
+  let nodeId = lsGet('peer_node_id');
+  let name = lsGet('peer_name');
+  let baseUrl = lsGet('peer_base_url');
+  if (!nodeId) {
+    nodeId = genNodeId();
+    name = `用户${Math.floor(Math.random() * 9000 + 1000)}`;
+    baseUrl = callbackBase();
+    lsSet('peer_node_id', nodeId);
+    lsSet('peer_name', name);
+    lsSet('peer_base_url', baseUrl);
+  }
+  const res = await api.post<any>('/peers/register', {
+    nodeId,
+    name: name || '匿名',
+    baseUrl: baseUrl || callbackBase(),
+    capabilities: ['chat'],
+  });
+  if ('error' in res) {
+    ElMessage.error(res.error);
+    return;
+  }
+  ownNodeId.value = nodeId;
+  myNickname.value = res.data?.name || name;
+  registerForm.value = { nodeId, baseUrl: baseUrl || callbackBase(), capabilities: 'chat' };
+}
 
 async function loadPeers() {
   loading.value = true;
@@ -129,30 +196,55 @@ async function loadPeers() {
     return;
   }
   peers.value = res.data || [];
+  const me = peers.value.find((p) => p.nodeId === ownNodeId.value);
+  if (me) myNickname.value = me.name;
 }
 
-async function registerPeer() {
-  if (!registerForm.value.nodeId.trim() || !registerForm.value.name.trim() || !registerForm.value.baseUrl.trim()) {
-    ElMessage.warning('节点 ID、名称和回调地址为必填项');
+function openNickname() {
+  nicknameInput.value = myNickname.value;
+  showNickname.value = true;
+}
+
+async function saveNickname() {
+  if (!nicknameInput.value.trim()) {
+    ElMessage.warning('昵称不能为空');
     return;
   }
+  savingNickname.value = true;
+  const baseUrl = registerForm.value.baseUrl || callbackBase();
+  const res = await api.post<any>('/peers/register', {
+    nodeId: ownNodeId.value,
+    name: nicknameInput.value.trim(),
+    baseUrl,
+    capabilities: ['chat'],
+  });
+  savingNickname.value = false;
+  if ('error' in res) {
+    ElMessage.error(res.error);
+    return;
+  }
+  myNickname.value = nicknameInput.value.trim();
+  lsSet('peer_name', myNickname.value);
+  ElMessage.success('昵称已更新');
+  showNickname.value = false;
+  await loadPeers();
+}
+
+async function saveRegister() {
   savingRegister.value = true;
   const res = await api.post<any>('/peers/register', {
-    nodeId: registerForm.value.nodeId,
-    name: registerForm.value.name,
+    nodeId: ownNodeId.value,
+    name: myNickname.value || '匿名',
     baseUrl: registerForm.value.baseUrl,
-    capabilities: registerForm.value.capabilities
-      .split(',')
-      .map((item) => item.trim())
-      .filter(Boolean),
+    capabilities: registerForm.value.capabilities.split(',').map((s) => s.trim()).filter(Boolean),
   });
   savingRegister.value = false;
   if ('error' in res) {
     ElMessage.error(res.error);
     return;
   }
-  ownNodeId.value = res.data.nodeId;
-  ElMessage.success('节点已注册');
+  lsSet('peer_base_url', registerForm.value.baseUrl);
+  ElMessage.success('已保存');
   showRegister.value = false;
   await loadPeers();
 }
@@ -180,11 +272,7 @@ async function pollMessages() {
   const next = res.data || [];
   if (next.length > 0) {
     const existing = new Set(messages.value.map((m) => m.id));
-    for (const msg of next) {
-      if (!existing.has(msg.id)) {
-        messages.value.push(msg);
-      }
-    }
+    for (const msg of next) if (!existing.has(msg.id)) messages.value.push(msg);
     lastSince.value = Math.max(...next.map((m) => Number(m.createdAt) || 0), lastSince.value);
     scrollToBottom();
   }
@@ -197,6 +285,7 @@ async function sendMessage() {
     fromPeerId: ownNodeId.value,
     toPeerId: activePeer.value.nodeId,
     content: draft.value.trim(),
+    senderName: myNickname.value,
   });
   sendingMessage.value = false;
   if ('error' in res) {
@@ -217,7 +306,31 @@ function scrollToBottom() {
 <style scoped>
 .header-actions {
   display: flex;
+  align-items: center;
   gap: 8px;
+}
+
+.my-nickname {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid var(--glass-border);
+  border-radius: 999px;
+  font-size: 13px;
+}
+
+.nickname-label {
+  color: var(--color-text-secondary);
+  font-size: 12px;
+}
+
+.nickname-value {
+  font-weight: 600;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .peer-layout {
@@ -381,10 +494,6 @@ function scrollToBottom() {
   font-size: 11px;
   margin-bottom: 4px;
   color: var(--color-text-secondary);
-}
-
-.message-row.mine .message-sender {
-  color: rgba(255, 255, 255, 0.7);
 }
 
 .message-text {

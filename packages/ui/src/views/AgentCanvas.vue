@@ -293,6 +293,8 @@
 import { ref, reactive, computed, onMounted, watch, markRaw, h, defineComponent } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { VueFlow, useVueFlow, type Node, type Edge } from '@vue-flow/core';
+import '@vue-flow/core/dist/style.css';
+import '@vue-flow/core/dist/theme-default.css';
 import { ArrowLeft, Document, CaretRight, Delete, ChatDotRound, Tools, Upload, Download, Lightning, Switch, Refresh, Avatar, Reading, Memo, Grid, Setting } from '@element-plus/icons-vue';
 import { ElMessage } from 'element-plus';
 import { useAgentStore } from '../stores/agent';

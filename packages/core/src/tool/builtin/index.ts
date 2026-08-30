@@ -3,6 +3,7 @@ export { FileWriteTool } from './file-write';
 export { WebSearchTool, FetchSearchBackend, DuckDuckGoSearchBackend, ServerSearchBackend } from './web-search';
 export type { SearchBackend, SearchResult, FetchSearchConfig } from './web-search';
 export { CmdExecTool } from './cmd-exec';
+export { PythonExecTool } from './python-exec';
 export { BrowserToolClasses, BROWSER_TOOL_NAMES } from './browser';
 export { CallAgentTool } from './call-agent';
 export { ListSubAgentsTool } from './list-sub-agents';
@@ -11,12 +12,14 @@ export { ConfirmUserTool } from './confirm-user';
 export { TaskPlanTool, TaskStepTool } from './task-plan';
 export { ConfigureModelPlatformTool } from './configure-model-platform';
 export { ImageAnalyzeTool } from './image-analyze';
+export { CompareProductsTool } from './compare-products';
 
 import type { SearchBackend } from './web-search';
 import { FileReadTool } from './file-read';
 import { FileWriteTool } from './file-write';
 import { WebSearchTool } from './web-search';
 import { CmdExecTool } from './cmd-exec';
+import { PythonExecTool } from './python-exec';
 import { BrowserToolClasses } from './browser';
 import { CallAgentTool } from './call-agent';
 import { ListSubAgentsTool } from './list-sub-agents';
@@ -25,6 +28,7 @@ import { ConfirmUserTool } from './confirm-user';
 import { TaskPlanTool, TaskStepTool } from './task-plan';
 import { ConfigureModelPlatformTool } from './configure-model-platform';
 import { ImageAnalyzeTool } from './image-analyze';
+import { CompareProductsTool } from './compare-products';
 import type { ToolRegistry } from '../registry';
 
 /** 注册所有内置工具到 registry，可选配置 web_search 后端 */
@@ -37,6 +41,7 @@ export function registerBuiltInTools(registry: ToolRegistry, searchBackend?: Sea
   }
   registry.register(searchTool);
   registry.register(new CmdExecTool());
+  registry.register(new PythonExecTool());
   // 浏览器自动化工具集（E3）
   for (const ToolClass of BrowserToolClasses) {
     registry.register(new ToolClass());
@@ -52,6 +57,8 @@ export function registerBuiltInTools(registry: ToolRegistry, searchBackend?: Sea
   registry.register(new TaskStepTool());
   registry.register(new ConfigureModelPlatformTool());
   registry.register(new ImageAnalyzeTool());
+  // 跨平台比价引擎（C10）—— pageAgent 多平台购物对比汇总
+  registry.register(new CompareProductsTool());
 }
 
 /** 注册管理工具函数到 registry */
