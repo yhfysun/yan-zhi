@@ -116,4 +116,7 @@ export const desktopAdapter: PlatformAdapter = {
   keyring: new DesktopKeyring(),
   mcp: new DesktopMcpProcess(),
   shell: new DesktopShell(),
+  // LLM 走后端代理（/api/llm/*）：API Key 不暴露给前端，后端从库读配置转发。
+  // Electron file:// 下用绝对地址（与 packages/ui api/client.ts 的 API_BASE 一致）。
+  llmProxyBase: 'http://127.0.0.1:3001/api/llm',
 };

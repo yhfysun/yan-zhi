@@ -15,7 +15,7 @@
   <el-dialog
 
     v-model="platformConfigDialogVisible"
-    title="配置模型平台"
+    :title="platformConfigEditId ? '编辑模型平台' : '配置模型平台'"
     width="560px"
     :close-on-click-modal="false"
     :close-on-press-escape="false"
@@ -37,21 +37,23 @@
         <el-input v-model="platformConfigForm.apiUrl" placeholder="https://api.openai.com" />
       </el-form-item>
       <el-form-item label="API Key">
-        <el-input v-model="platformConfigForm.apiKey" type="password" show-password placeholder="sk-..." />
+        <el-input v-model="platformConfigForm.apiKey" type="password" show-password :placeholder="platformConfigEditId ? '留空则不修改' : 'sk-...'" />
       </el-form-item>
-      <el-form-item label="模型 ID">
-        <el-input v-model="platformConfigForm.modelId" placeholder="如：gpt-4o-mini / deepseek-chat" />
-      </el-form-item>
-      <el-form-item label="模型别名">
-        <el-input v-model="platformConfigForm.alias" placeholder="可选，展示在模型列表中的名称" />
-      </el-form-item>
-      <el-form-item label="上下文窗口">
-        <el-input-number v-model="platformConfigForm.contextWindow" :min="1024" :max="1000000" :step="1024" />
-      </el-form-item>
+      <template v-if="!platformConfigEditId">
+        <el-form-item label="模型 ID">
+          <el-input v-model="platformConfigForm.modelId" placeholder="如：gpt-4o-mini / deepseek-chat" />
+        </el-form-item>
+        <el-form-item label="模型别名">
+          <el-input v-model="platformConfigForm.alias" placeholder="可选，展示在模型列表中的名称" />
+        </el-form-item>
+        <el-form-item label="上下文窗口">
+          <el-input-number v-model="platformConfigForm.contextWindow" :min="1024" :max="1000000" :step="1024" />
+        </el-form-item>
+      </template>
     </el-form>
     <template #footer>
       <el-button @click="onPlatformConfigCancel">取消</el-button>
-      <el-button type="primary" :loading="platformConfigSaving" @click="onPlatformConfigSubmit">保存并创建</el-button>
+      <el-button type="primary" :loading="platformConfigSaving" @click="onPlatformConfigSubmit">{{ platformConfigEditId ? '保存' : '保存并创建' }}</el-button>
     </template>
   </el-dialog>
 
@@ -67,7 +69,7 @@ import DistillDialog from '../DistillDialog.vue';
 const {
   snapshotDialog, snapshotActiveTab, currentSnapshots, showAgentEdit, editingAgent, onAgentSaved,
   onAgentDeleted, showWorkspaceDir, workspaceDir, onWorkspaceDirSelected,
-  store, platformConfigDialogVisible, platformConfigForm, platformConfigSaving,
+  store, platformConfigDialogVisible, platformConfigEditId, platformConfigForm, platformConfigSaving,
   onPlatformConfigCancel, onPlatformConfigSubmit, onPlatformConfigClose, showDistill, distillMessages,
 } = useChat();
 </script>

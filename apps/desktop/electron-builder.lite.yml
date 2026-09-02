@@ -1,7 +1,7 @@
 appId: com.yanzhi.desktop
 productName: 言智
 directories:
-  output: release-lite
+  output: ../../dist-release
 files:
   - dist/**/*
   - main.cjs

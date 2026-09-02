@@ -94,7 +94,16 @@ db.exec(`
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
   );
+`);
+// 会话级内置工具挂载（合并到智能体级，允许会话临时追加工具）
+try {
+  const convCols = db.prepare(`SELECT name FROM pragma_table_info('conversation')`).all() as Array<{ name: string }>;
+  if (!convCols.some((c) => c.name === 'builtin_tool_ids_json')) {
+    db.exec(`ALTER TABLE conversation ADD COLUMN builtin_tool_ids_json TEXT DEFAULT '[]'`);
+  }
+} catch {}
 
+db.exec(`
   CREATE TABLE IF NOT EXISTS message (
     id TEXT PRIMARY KEY,
     conversation_id TEXT NOT NULL REFERENCES conversation(id),
@@ -274,6 +283,8 @@ CREATE INDEX IF NOT EXISTS idx_space_user ON space(user_id);
 for (const col of ['alias', 'remark']) {
   try { db.exec(`ALTER TABLE mcp_tool ADD COLUMN ${col} TEXT`); } catch {}
 }
+// enabled 列：前端 store 一直在读写它，但建表语句里从未创建过，老库会直接报 no such column
+try { db.exec('ALTER TABLE mcp_tool ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1'); } catch {}
 
 // 迁移平台/模型表（添加内置标记）
 for (const table of ['platform', 'model']) {
@@ -285,8 +296,13 @@ try { db.exec('ALTER TABLE conversation ADD COLUMN space_id TEXT'); } catch {}
 // 迁移完成后才能创建引用 space_id 的索引（旧库迁移场景）
 try { db.exec('CREATE INDEX IF NOT EXISTS idx_conversation_space ON conversation(space_id)'); } catch {}
 
-// 迁移 message 表（添加 system_prompt_snapshot 列）
+// 迁移 message 表（添加 system_prompt_snapshot 列 + 子智能体归属列）
 try { db.exec('ALTER TABLE message ADD COLUMN system_prompt_snapshot TEXT'); } catch {}
+for (const col of ['parent_tool_call_id TEXT', 'sub_agent_id TEXT', 'sub_agent_name TEXT', 'sub_agent_depth INTEGER']) {
+  const [name] = col.split(' ');
+  try { db.exec(`ALTER TABLE message ADD COLUMN ${col}`); } catch {}
+  void name;
+}
 
 // 迁移 skill 表（添加商城相关字段）
 for (const col of ['source', 'remote_source_id']) {
@@ -310,6 +326,18 @@ try {
   }
   // E4: 内置智能体标记（如 pageAgent）
   try { db.exec('ALTER TABLE agent ADD COLUMN is_builtin INTEGER NOT NULL DEFAULT 0'); } catch {}
+  // 智能体归属用户（guest=未登录/桌面本地；放开登录后按真实用户隔离）
+  try { db.exec('ALTER TABLE agent ADD COLUMN user_id TEXT'); } catch {}
+} catch {}
+
+// 迁移：把历史 agent_id 为 NULL 的会话回填为 a_default_assistant。
+// 之前 createConversation 绑定的是 selectedId，selectedId 为空时落 NULL → 子智能体/工具挂载失效。
+// 一次性回填所有用户（无 agent_id 且 a_default_assistant 存在）的会话。
+try {
+  const defaultExists = db.prepare("SELECT 1 FROM agent WHERE id = 'a_default_assistant'").get();
+  if (defaultExists) {
+    db.exec("UPDATE conversation SET agent_id = 'a_default_assistant' WHERE agent_id IS NULL OR agent_id = ''");
+  }
 } catch {}
 
 // 迁移：custom_tool / agent 新增 installs 计数列（商城安装计数）
@@ -475,6 +503,100 @@ try {
     db.prepare("INSERT INTO user (id, username, email, password_hash, created_at) VALUES ('guest', 'guest', NULL, '!guest-internal-account', 0)").run();
   }
 } catch {}
+
+// 预置内置智能体：默认「AI 助手」+ 子智能体「浏览器操作专家（pageAgent）」。
+// 智能体完整定义（含 system_prompt 等）存前端本地库；此处种子仅为了让后端能解析
+// 默认智能体的工具挂载与子智能体关系（会话绑定默认智能体后 call_agent/list_sub_agents 可用）。
+// server agent 表无 user_id 列，归属靠 is_public=1 全局共享。
+const DEFAULT_AGENT_BUILTIN_TOOLS = ['file_read', 'file_write', 'web_search', 'call_agent', 'list_sub_agents', 'ask_user', 'confirm_user', 'task_plan', 'task_step', 'configure_model_platform'];
+const PAGE_AGENT_BUILTIN_TOOLS = ['browser_navigate', 'browser_click', 'browser_type', 'browser_press_key', 'browser_scroll', 'browser_hover', 'browser_get_text', 'browser_get_dom', 'browser_wait', 'browser_screenshot', 'browser_fill_form', 'browser_submit_form', 'browser_search', 'browser_next_page', 'browser_prev_page', 'browser_wait_for', 'browser_get_visible_text', 'browser_select_option', 'browser_check', 'browser_uncheck', 'browser_get_page_info', 'browser_login_saved', 'browser_new_tab', 'browser_switch_tab', 'browser_close_tab', 'browser_get_tabs', 'browser_wait_for_request', 'browser_get_network_log', 'browser_extract_list', 'browser_visual_locate', 'browser_upload', 'browser_download', 'browser_scroll_into_view', 'browser_is_visible', 'browser_drag', 'browser_get_a11y_tree', 'ask_user'];
+// 默认智能体的 system_prompt 必须存进 server 端（后端 buildSystemPromptForBackend 直接读 agent.system_prompt 列，不再前端注入）
+const DEFAULT_AGENT_SYSTEM_PROMPT = `你是一个 ReAct（推理-行动）智能体。遵循以下规则：
+
+1. **思考**：分析用户需求并决定下一步操作。
+2. **行动**：调用可用工具获取信息或执行操作。
+3. **观察**：分析工具返回结果，判断是否满足需求。
+4. **循环**：重复 思考→行动→观察 直到任务完成。
+
+行为准则：
+- 尽量在一次响应中完成简单任务
+- 需要外部信息时主动调用工具
+- 工具返回的信息可能不完整，多轮调用获取全面数据
+- 用中文回复，代码需标注语言
+- 回复简洁有效，不输出无关内容`;
+const PAGE_AGENT_SYSTEM_PROMPT = `你是一个浏览器自动化专家（pageAgent）。你通过调用浏览器工具来操作一个真实的、可见的浏览器窗口。
+
+能力：
+- browser_navigate: 导航到指定 URL
+- browser_click: 点击元素（优先用元素编号 index，其次 CSS 选择器或坐标）
+- browser_type: 在输入框输入文本（优先用元素编号 index 定位输入框）
+- browser_press_key: 按键（Enter/Tab/Escape 等）
+- browser_scroll: 滚动页面
+- browser_hover: 悬停元素
+- browser_get_text: 获取元素文本
+- browser_get_dom: 获取页面 DOM 摘要
+- browser_wait: 等待指定时间
+- browser_screenshot: 截图
+- browser_fill_form: 批量填写表单（支持 text/select/checkbox/radio）
+- browser_submit_form: 提交表单（点提交按钮或回车，等待导航）
+- browser_search: 在页面搜索框输入并提交（自动识别搜索框）
+- browser_next_page / browser_prev_page: 翻页（自动识别"下一页/上一页"）
+- browser_wait_for: 智能等待（等元素/URL/文本出现）
+- browser_get_visible_text: 获取干净可见文本（过滤隐藏元素）
+- browser_select_option: 下拉选择
+- browser_check / browser_uncheck: 勾选/取消勾选
+- browser_get_page_info: 返回当前 url/title/可交互元素摘要（理解页面状态）
+- browser_login_saved: 用已保存的密码自动登录站点（需先用浏览器密码管理保存）
+- ask_user: 向用户提问/请求确认（用于扫码登录等需要人工干预的场景）
+
+工作流程：
+1. 分析委派给你的任务
+2. 若目标站点需要登录，优先用 browser_login_saved 自动登录
+3. 若扫码/验证码登录，用 ask_user 提示用户在浏览器面板完成
+4. browser_navigate 导航到目标页面
+5. 用 browser_get_page_info 了解页面结构
+6. 用 browser_fill_form / browser_click / browser_search 等执行操作
+7. 用 browser_submit_form 提交表单
+8. 必要时 browser_wait_for 等待加载
+9. 用 browser_get_visible_text 获取最终结果
+10. 返回任务结果摘要
+
+注意：优先用元素编号 index 定位（最稳定），其次 CSS 选择器，最后坐标。`;
+const seedAgents: Array<Record<string, unknown>> = [
+  {
+    id: 'a_default_assistant',
+    name: 'AI 助手',
+    description: '默认 Harness 智能体，挂载工具/Skill/子智能体后即可使用，大模型自主 ReAct 决策',
+    type: 'harness',
+    is_default: 1,
+    builtin_tool_ids: JSON.stringify(DEFAULT_AGENT_BUILTIN_TOOLS),
+    sub_agent_ids: JSON.stringify(['a_builtin_page_agent']),
+    system_prompt: DEFAULT_AGENT_SYSTEM_PROMPT,
+  },
+  {
+    id: 'a_builtin_page_agent',
+    name: '浏览器操作专家',
+    description: '内置 pageAgent：通过 Playwright 驱动真实浏览器，执行导航/点击/输入/截图等自动化任务',
+    type: 'harness',
+    builtin_tool_ids: JSON.stringify(PAGE_AGENT_BUILTIN_TOOLS),
+    system_prompt: PAGE_AGENT_SYSTEM_PROMPT,
+  },
+];
+for (const a of seedAgents) {
+  try {
+    const has = db.prepare('SELECT id FROM agent WHERE id = ?').get(a.id as string);
+    if (has) {
+      // 已存在：仅在 system_prompt IS NULL 时填入（避免覆盖用户后续编辑）
+      db.prepare(
+        'UPDATE agent SET is_public = 1, user_id = COALESCE(user_id, ?), builtin_tool_ids = ?, sub_agent_ids = ?, type = ?, system_prompt = COALESCE(system_prompt, ?) WHERE id = ?'
+      ).run('guest', a.builtin_tool_ids as string, (a.sub_agent_ids as string) || '[]', a.type as string, a.system_prompt as string, a.id as string);
+    } else {
+      db.prepare(
+        'INSERT INTO agent (id, user_id, name, description, system_prompt, type, builtin_tool_ids, sub_agent_ids, is_default, is_public, version, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?)',
+      ).run(a.id, 'guest', a.name, a.description, a.system_prompt as string, a.type, a.builtin_tool_ids, (a.sub_agent_ids as string) || '[]', a.is_default || 0, Date.now(), Date.now());
+    }
+  } catch {}
+}
 
 // 预置内置 skill：网站自动化任务（web-task-automation）—— pageAgent + 记住密码 + 定时任务
 try {
@@ -754,6 +876,11 @@ try { db.exec('ALTER TABLE scheduled_task ADD COLUMN agent_id TEXT'); } catch {}
 try { db.exec('ALTER TABLE scheduled_task ADD COLUMN platform_id TEXT'); } catch {}
 try { db.exec('ALTER TABLE scheduled_task ADD COLUMN model_id TEXT'); } catch {}
 try { db.exec('ALTER TABLE scheduled_task ADD COLUMN space_id TEXT'); } catch {}
+// 定时任务类型：chat=对话式（走 createTask ReAct 循环）；workflow=工作流（走 startWorkflowRun）。bundle 随任务存库，前端关闭也能跑。
+try { db.exec("ALTER TABLE scheduled_task ADD COLUMN task_type TEXT DEFAULT 'chat'"); } catch {}
+try { db.exec('ALTER TABLE scheduled_task ADD COLUMN workflow_bundle_json TEXT'); } catch {}
+try { db.exec('ALTER TABLE scheduled_task ADD COLUMN workflow_inputs_json TEXT'); } catch {}
+try { db.exec("ALTER TABLE scheduled_task ADD COLUMN workflow_agent_id TEXT"); } catch {}
 try { db.exec('ALTER TABLE conversation ADD COLUMN scheduled_task_id TEXT'); } catch {}
 
 // ===== 应用全局配置（key-value）=====
@@ -781,5 +908,46 @@ db.exec(`
   );
 `);
 try { db.exec('CREATE INDEX IF NOT EXISTS idx_saved_password_user ON saved_password(user_id, host)'); } catch {}
+
+// ===== LLM 任务（ReAct 循环）持久化 =====
+// 任务原本只存在内存 tasks Map 中，server 重启/崩溃后状态全丢，
+// DB 里还会残留"助手空占位 + 缺 tool 结果"的半截消息。落库后可查询、可标记中断。
+db.exec(`
+  CREATE TABLE IF NOT EXISTS llm_task (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    conversation_id TEXT,
+    origin TEXT NOT NULL DEFAULT 'chat',
+    status TEXT NOT NULL,
+    step INTEGER NOT NULL DEFAULT 0,
+    error TEXT,
+    pending_tool_json TEXT,
+    params_json TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+`);
+try { db.exec('CREATE INDEX IF NOT EXISTS idx_llm_task_user ON llm_task(user_id, status, updated_at DESC)'); } catch {}
+try { db.exec('CREATE INDEX IF NOT EXISTS idx_llm_task_conv ON llm_task(conversation_id, status)'); } catch {}
+
+// ===== 工作流运行持久化 =====
+// 与 llm_task 同思路：运行状态/节点日志/结果落库，前端断开后可回查，重启后遗留 running 标记 interrupted。
+db.exec(`
+  CREATE TABLE IF NOT EXISTS workflow_run (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    agent_id TEXT,
+    agent_name TEXT,
+    bundle_json TEXT,
+    inputs_json TEXT,
+    status TEXT NOT NULL DEFAULT 'running',
+    result_json TEXT,
+    logs_json TEXT NOT NULL DEFAULT '[]',
+    error TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+`);
+try { db.exec('CREATE INDEX IF NOT EXISTS idx_workflow_run_user ON workflow_run(user_id, created_at DESC)'); } catch {}
 
 export { db };

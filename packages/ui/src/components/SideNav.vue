@@ -32,14 +32,14 @@
             <div class="user-dropdown-header">
               <span class="user-dropdown-name">{{ authStore.user?.username }}</span>
             </div>
-            <el-dropdown-item divided @click="authStore.logout()">
+            <el-dropdown-item v-if="!isElectron" divided @click="authStore.logout()">
               <el-icon><SwitchButton /></el-icon>
               <span>退出登录</span>
             </el-dropdown-item>
           </el-dropdown-menu>
         </template>
       </el-dropdown>
-      <el-tooltip v-else content="登录" placement="right" :disabled="!collapsed">
+      <el-tooltip v-else-if="!isElectron" content="登录" placement="right" :disabled="!collapsed">
         <div class="nav-avatar-wrap" @click="$router.push('/login')">
           <span class="nav-avatar"><el-icon :size="20"><User /></el-icon></span>
           <span class="nav-label nav-username">登录</span>
@@ -140,6 +140,7 @@ import { useSidebarState } from '../composables/useSidebarState';
 import { openSettingsDrawer } from '../composables/useSettingsDrawer';
 import { usePluginStore } from '../stores/plugin';
 import { resolvePluginIcon } from '../plugin-icons';
+import { isElectron } from '../api/client';
 
 const route = useRoute();
 const authStore = useAuthStore();
@@ -150,7 +151,7 @@ const { collapsed, toggle } = useSidebarState();
 
 const builtinNavItems = [
   { path: '/home', label: '首页', tabLabel: '首页', icon: HomeFilled, kind: 'route' },
-  { path: '/chat', label: '对话', tabLabel: '对话', icon: ChatDotRound, kind: 'route' },
+  { path: '/chat', label: '任务', tabLabel: '任务', icon: ChatDotRound, kind: 'route' },
   { path: '/peers', label: '聊天', tabLabel: '聊天', icon: ChatLineRound, kind: 'route' },
   { path: '/chat-hub', label: '消息', tabLabel: '消息', icon: Promotion, kind: 'route' },
   { path: '/knowledge', label: '知识库', tabLabel: '知识', icon: Collection, kind: 'route' },

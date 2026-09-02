@@ -14,7 +14,9 @@
             <div class="st-item-name" :title="task.name">{{ task.name }}</div>
             <div class="st-item-meta">
               <el-tag size="small" effect="plain" round>{{ scheduleText(task) }}</el-tag>
-              <span v-if="boundAgentName(task.agentId)" class="st-item-sub">智能体：{{ boundAgentName(task.agentId) }}</span>
+              <el-tag v-if="task.taskType === 'workflow'" size="small" type="success" effect="plain" round>工作流</el-tag>
+              <span v-if="task.taskType === 'workflow' && workflowAgentName(task.workflowAgentId)" class="st-item-sub">智能体：{{ workflowAgentName(task.workflowAgentId) }}</span>
+              <span v-else-if="boundAgentName(task.agentId)" class="st-item-sub">智能体：{{ boundAgentName(task.agentId) }}</span>
               <span v-if="boundSpaceName(task.spaceId)" class="st-item-sub">空间：{{ boundSpaceName(task.spaceId) }}</span>
               <span v-if="task.conversationId" class="st-item-sub">已绑定会话</span>
               <span class="st-item-sub">上次：{{ task.lastRunAt ? formatTime(task.lastRunAt) : '未运行' }}</span>
@@ -54,9 +56,27 @@
         <el-form-item label="任务名称">
           <el-input v-model="form.name" placeholder="如：每日早报" maxlength="50" />
         </el-form-item>
-        <el-form-item label="提示词">
-          <el-input v-model="form.prompt" type="textarea" :rows="4" placeholder="定时发送给模型的提示词" />
+        <el-form-item label="任务类型">
+          <el-radio-group v-model="form.taskType">
+            <el-radio value="chat">对话</el-radio>
+            <el-radio value="workflow">工作流</el-radio>
+          </el-radio-group>
         </el-form-item>
+        <template v-if="form.taskType === 'workflow'">
+          <el-form-item label="工作流">
+            <el-select v-model="form.workflowAgentId" placeholder="选择要定时运行的工作流智能体" clearable filterable @change="onWorkflowAgentPick">
+              <el-option v-for="ag in workflowAgents" :key="ag.id" :value="ag.id" :label="ag.name" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="任务说明">
+            <el-input v-model="form.prompt" type="textarea" :rows="3" placeholder="选填：作为输入传给工作流（如：分析今天的销售数据）" />
+          </el-form-item>
+        </template>
+        <template v-else>
+          <el-form-item label="提示词">
+            <el-input v-model="form.prompt" type="textarea" :rows="4" placeholder="定时发送给模型的提示词" />
+          </el-form-item>
+        </template>
         <el-form-item label="定时方式">
           <el-radio-group v-model="form.scheduleType">
             <el-radio value="interval">每 N 分钟</el-radio>
@@ -69,30 +89,32 @@
         <el-form-item v-else label="运行时间">
           <el-time-picker v-model="form.dailyTime" format="HH:mm" value-format="HH:mm" placeholder="选择时间" />
         </el-form-item>
-        <el-form-item label="智能体">
-          <el-select v-model="form.agentId" placeholder="不绑定则用默认智能体" clearable filterable @change="onAgentPick">
-            <el-option v-for="ag in agentStore.agents" :key="ag.id" :value="ag.id" :label="ag.name" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="大模型">
-          <el-select v-model="form.modelId" placeholder="不绑定则用默认模型" clearable filterable @change="onModelPick">
-            <el-option-group v-for="group in modelGroups" :key="group.platformId" :label="group.platformName">
-              <el-option v-for="model in group.models" :key="model.id" :value="model.id" :label="model.alias || model.modelId" />
-            </el-option-group>
-          </el-select>
-        </el-form-item>
-        <el-form-item label="空间">
-          <el-select v-model="form.spaceId" placeholder="不绑定则不归类" clearable filterable>
-            <el-option v-for="sp in spaceStore.spaces" :key="sp.id" :value="sp.id" :label="sp.name" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="绑定会话">
-          <el-checkbox v-model="form.bindConversation" :disabled="!currentConv">
-            {{ currentConv ? `写入当前会话「${currentConv.title}」` : '当前无会话' }}
-          </el-checkbox>
-        </el-form-item>
+        <template v-if="form.taskType === 'chat'">
+          <el-form-item label="智能体">
+            <el-select v-model="form.agentId" placeholder="不绑定则用默认智能体" clearable filterable @change="onAgentPick">
+              <el-option v-for="ag in agentStore.agents" :key="ag.id" :value="ag.id" :label="ag.name" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="大模型">
+            <el-select v-model="form.modelId" placeholder="不绑定则用默认模型" clearable filterable @change="onModelPick">
+              <el-option-group v-for="group in modelGroups" :key="group.platformId" :label="group.platformName">
+                <el-option v-for="model in group.models" :key="model.id" :value="model.id" :label="model.alias || model.modelId" />
+              </el-option-group>
+            </el-select>
+          </el-form-item>
+          <el-form-item label="空间">
+            <el-select v-model="form.spaceId" placeholder="不绑定则不归类" clearable filterable>
+              <el-option v-for="sp in spaceStore.spaces" :key="sp.id" :value="sp.id" :label="sp.name" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="绑定会话">
+            <el-checkbox v-model="form.bindConversation" :disabled="!currentConv">
+              {{ currentConv ? `写入当前会话「${currentConv.title}」` : '当前无会话' }}
+            </el-checkbox>
+          </el-form-item>
+        </template>
       </el-form>
-      <div class="st-form-hint">不绑定会话时，将在首次运行时自动创建独立会话；绑定智能体/大模型/空间后，任务发起的会话会继承这些配置。</div>
+      <div class="st-form-hint">{{ form.taskType === 'workflow' ? '工作流任务保存后随任务存储定义，即使前端关闭也会按计划执行，结果写入自动创建的会话。' : '不绑定会话时，将在首次运行时自动创建独立会话；绑定智能体/大模型/空间后，任务发起的会话会继承这些配置。' }}</div>
       <div class="st-form-footer">
         <el-button size="small" @click="formVisible = false">取消</el-button>
         <el-button type="primary" size="small" :loading="saving" @click="onSave">{{ editingId ? '保存' : '创建' }}</el-button>
@@ -102,7 +124,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted } from 'vue';
+import { ref, reactive, computed, onMounted } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { Delete, EditPen, Plus, VideoPlay } from '@element-plus/icons-vue';
 import { useScheduledTaskStore, type ScheduledTask } from '../../stores/scheduledTask';
@@ -119,6 +141,8 @@ const runningId = ref('');
 const form = reactive({
   name: '',
   prompt: '',
+  taskType: 'chat' as 'chat' | 'workflow',
+  workflowAgentId: '' as string,
   scheduleType: 'interval' as 'interval' | 'daily',
   intervalMinutes: 30,
   dailyTime: '09:00',
@@ -129,12 +153,21 @@ const form = reactive({
   spaceId: '' as string,
 });
 
+/** 可选的工作流智能体（本身是工作流定义，有 workflow 节点） */
+const workflowAgents = computed(() => agentStore.agents.filter((a) => a.workflow && (a.workflow as any)?.nodes?.length));
+
 onMounted(() => { if (taskStore.tasks.length === 0) taskStore.loadTasks(); });
 
 function boundAgentName(id?: string | null): string {
   if (!id) return '';
   return agentStore.agents.find((a) => a.id === id)?.name || '';
 }
+function workflowAgentName(id?: string | null): string {
+  if (!id) return '';
+  return agentStore.agents.find((a) => a.id === id)?.name || '';
+}
+/** 选择工作流智能体后，其 prompt 可选（仅作为输入提示，不校验必填） */
+function onWorkflowAgentPick(_agentId: string) {}
 function boundSpaceName(id?: string | null): string {
   if (!id) return '';
   return spaceStore.spaces.find((s) => s.id === id)?.name || '';
@@ -165,6 +198,8 @@ function openCreate() {
   editingId.value = null;
   form.name = '';
   form.prompt = '';
+  form.taskType = 'chat';
+  form.workflowAgentId = '';
   form.scheduleType = 'interval';
   form.intervalMinutes = 30;
   form.dailyTime = '09:00';
@@ -181,6 +216,8 @@ function openEdit(task: ScheduledTask) {
   editingId.value = task.id;
   form.name = task.name;
   form.prompt = task.prompt || '';
+  form.taskType = task.taskType === 'workflow' ? 'workflow' : 'chat';
+  form.workflowAgentId = task.workflowAgentId || '';
   if (task.intervalMinutes && task.intervalMinutes > 0) {
     form.scheduleType = 'interval';
     form.intervalMinutes = task.intervalMinutes;
@@ -222,16 +259,30 @@ function formatTime(ts: number): string {
 
 async function onSave() {
   if (!form.name.trim()) { ElMessage.warning('请填写任务名称'); return; }
-  if (!form.prompt.trim()) { ElMessage.warning('请填写提示词'); return; }
+  if (form.taskType === 'workflow') {
+    if (!form.workflowAgentId) { ElMessage.warning('请选择要定时运行的工作流智能体'); return; }
+  } else if (!form.prompt.trim()) {
+    ElMessage.warning('请填写提示词'); return;
+  }
   const input: any = {
     name: form.name.trim(),
     prompt: form.prompt.trim(),
-    conversationId: form.bindConversation && currentConv.value ? currentConv.value.id : null,
-    agentId: form.agentId || null,
-    platformId: form.platformId || null,
-    modelId: form.modelId || null,
-    spaceId: form.spaceId || null,
+    taskType: form.taskType,
+    conversationId: form.taskType === 'chat' && form.bindConversation && currentConv.value ? currentConv.value.id : null,
+    agentId: form.taskType === 'chat' ? form.agentId || null : null,
+    platformId: form.taskType === 'chat' ? form.platformId || null : null,
+    modelId: form.taskType === 'chat' ? form.modelId || null : null,
+    spaceId: form.taskType === 'chat' ? form.spaceId || null : null,
   };
+  if (form.taskType === 'workflow') {
+    const { getPlatformAdapter } = await import('@yan-zhi/core');
+    const rows = await getPlatformAdapter().db.query<any>('SELECT * FROM agent WHERE id = ?', [form.workflowAgentId]);
+    if (rows.length === 0) { ElMessage.warning('工作流智能体不存在'); return; }
+    const { agent, subAgents } = await agentStore.collectWorkflowBundle(rows[0]);
+    input.workflowAgentId = form.workflowAgentId;
+    input.workflowBundle = { agent, subAgents };
+    input.workflowInputs = { prompt: form.prompt.trim() };
+  }
   if (form.scheduleType === 'interval') {
     input.intervalMinutes = form.intervalMinutes;
     input.cronExpr = null;

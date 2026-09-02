@@ -65,7 +65,7 @@
               </div>
               <div class="param-item">
                 <div class="param-head"><span class="param-label">最大循环步数</span><span class="param-val">{{ form.maxReActSteps }}</span></div>
-                <el-input-number v-model="form.maxReActSteps" :min="1" :max="500" :step="1" size="small" controls-position="right" style="width: 100%" />
+                <el-input-number v-model="form.maxReActSteps" :min="100" :max="500" :step="1" size="small" controls-position="right" style="width: 100%" />
               </div>
             </div>
           </div>

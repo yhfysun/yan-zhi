@@ -1,9 +1,10 @@
 // 对话定时任务：调度计算 + 任务执行器 + 60s 轮询调度器
-// 说明：服务端不代理前端聊天（前端直连 LLM），因此这里用平台表里存储的
-// apiUrl + apiKey 直接调用 OpenAI 兼容 /v1/chat/completions（非流式），
-// Anthropic 协议平台走 /v1/messages。
+// 定时任务通过后端 createTask 走完整 ReAct 循环（含工具执行），
+// 排除 UI 交互工具（ask_user 等），页面没开也能独立运行。
 import { v4 as uuid } from 'uuid';
 import { db } from '../db.js';
+import { createTask, loadAgentModelParams } from '../llm-task-manager.js';
+import { startWorkflowRun, subscribeWorkflowRun, type WorkflowRunBundle, type WorkflowRunEvent } from '../workflow-runner.js';
 
 const MINUTE_MS = 60_000;
 
@@ -86,7 +87,7 @@ function findDefaultModel(userId: string): any | null {
   return (
     db
       .prepare(
-        `SELECT m.id, m.model_id, p.api_url, p.api_key_enc, p.protocol, p.headers_json
+        `SELECT m.id, m.platform_id, m.model_id, p.api_url, p.api_key_enc, p.protocol, p.headers_json
          FROM model m JOIN platform p ON p.id = m.platform_id
          WHERE m.user_id = ? AND m.enabled = 1 AND m.type = 'llm'
          ORDER BY CASE
@@ -169,7 +170,95 @@ export interface ScheduledTaskRunResult {
 const INSERT_MESSAGE =
   'INSERT INTO message (id, conversation_id, user_id, role, content, tool_calls_json, tool_call_id, reasoning_content, system_prompt_snapshot, tokens, created_at) VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?)';
 
-/** 执行一次定时任务：复用/创建会话 → 写用户消息 → 调默认模型 → 写助手消息 → 更新运行状态 */
+/** 工作流定时任务最长等待时长（工作流可能有多轮 LLM 循环 + 子智能体） */
+const WORKFLOW_TIMEOUT_MS = 30 * 60_000;
+
+/** 等待工作流运行结束，返回最终 result；超时抛错 */
+async function awaitWorkflowResult(runId: string, timeoutMs: number): Promise<Record<string, unknown>> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      unsubscribe();
+      reject(new Error('工作流执行超时，请稍后在运行记录中查看进度'));
+    }, timeoutMs);
+    const unsubscribe = subscribeWorkflowRun(runId, 0, (ev: WorkflowRunEvent) => {
+      if (ev.type === 'run:completed') {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        unsubscribe();
+        resolve(ev.result || {});
+      } else if (ev.type === 'run:failed') {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        unsubscribe();
+        reject(new Error(ev.msg || '工作流执行失败'));
+      }
+    });
+  });
+}
+
+/** 执行工作流类型定时任务：复用/新建会话 → 起工作流并等待 → 结果写回会话消息 */
+async function runScheduledWorkflow(
+  task: any,
+  convId: string,
+  userId: string,
+  now: number,
+): Promise<ScheduledTaskRunResult> {
+  const bundleRaw = task.workflow_bundle_json;
+  if (!bundleRaw) throw new Error('任务缺少工作流定义（workflow_bundle_json 为空）');
+  let bundle: WorkflowRunBundle;
+  try {
+    bundle = JSON.parse(bundleRaw);
+  } catch {
+    throw new Error('工作流定义解析失败');
+  }
+  if (!bundle?.agent?.workflow?.nodes?.length) throw new Error('工作流定义无效（没有节点）');
+
+  let inputs: Record<string, unknown> = {};
+  try {
+    const raw = task.workflow_inputs_json;
+    if (raw) inputs = JSON.parse(raw) || {};
+  } catch { /* 忽略非法输入，用空输入 */ }
+  inputs = { ...inputs, __userId: userId };
+
+  db.prepare(INSERT_MESSAGE).run(uuid(), convId, userId, 'user', `[定时工作流] ${task.name}`.trim(), 0, Date.now());
+  const runId = startWorkflowRun(bundle, inputs, userId);
+  const result = await awaitWorkflowResult(runId, WORKFLOW_TIMEOUT_MS);
+  const summary = summarizeWorkflowResult(result);
+  db.prepare(INSERT_MESSAGE).run(
+    uuid(), convId, userId, 'assistant',
+    `[定时工作流完成] ${task.name}\n\n${summary}`,
+    0, Date.now(),
+  );
+  return { ok: true, conversationId: convId };
+}
+
+/** 把工作流 result 整理成可读摘要（对象递归压平成键值行；非对象直接转字符串） */
+function summarizeWorkflowResult(result: Record<string, unknown>): string {
+  const lines: string[] = [];
+  const walk = (obj: unknown, prefix = ''): void => {
+    if (obj === null || obj === undefined) return;
+    if (Array.isArray(obj)) {
+      obj.forEach((v, i) => walk(v, `${prefix}[${i}]`));
+      return;
+    }
+    if (typeof obj === 'object') {
+      for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
+        walk(v, prefix ? `${prefix}.${k}` : k);
+      }
+      return;
+    }
+    lines.push(`${prefix}: ${String(obj)}`);
+  };
+  walk(result);
+  return lines.length > 0 ? lines.join('\n') : '(无输出)';
+}
+
+/** 执行一次定时任务：复用/创建会话 → 创建后端任务走 ReAct 循环 → 更新调度状态 */
 export async function runScheduledTask(task: any): Promise<ScheduledTaskRunResult> {
   const now = Date.now();
   const userId = task.user_id;
@@ -192,42 +281,82 @@ export async function runScheduledTask(task: any): Promise<ScheduledTaskRunResul
     db.prepare('UPDATE scheduled_task SET conversation_id = ?, updated_at = ? WHERE id = ?').run(convId, now, task.id);
   }
 
-  // 2. 写入用户消息（带 [定时任务] 前缀）
+  // 2. 工作流类型：解析随任务存的 bundle，直接跑工作流（前端关闭也不受影响）
+  if (task.task_type === 'workflow') {
+    try {
+      return await runScheduledWorkflow(task, convId, userId, now);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error(`[scheduled-task] 工作流任务「${task.name}」执行失败: ${msg}`);
+      db.prepare(INSERT_MESSAGE).run(uuid(), convId, userId, 'assistant', `[定时工作流执行失败] ${msg}`, 0, Date.now());
+      return finishTask(task, convId, now, false, msg);
+    }
+  }
+
+  // 3. 确定模型：优先 task 指定，其次 agent 默认，最后任意启用 LLM
+  let platformId = task.platform_id || null;
+  let modelId = task.model_id || null;
+  if ((!platformId || !modelId) && task.agent_id) {
+    const agent = db.prepare('SELECT platform_id, model_id FROM agent WHERE id = ?').get(task.agent_id) as any;
+    if (agent) {
+      platformId = platformId || agent.platform_id;
+      modelId = modelId || agent.model_id;
+    }
+  }
+  if (!platformId || !modelId) {
+    const fallback = findDefaultModel(userId);
+    if (fallback) {
+      platformId = fallback.platform_id;
+      modelId = fallback.id;
+    }
+  }
+  if (!platformId || !modelId) {
+    const errorMsg = '未找到可用的模型，请先在「设置 → 模型平台」配置并启用模型';
+    db.prepare(INSERT_MESSAGE).run(uuid(), convId, userId, 'assistant', `[定时任务执行失败] ${errorMsg}`, 0, Date.now());
+    return finishTask(task, convId, now, false, errorMsg);
+  }
+
+  // 3. 模型参数（提示词/工具由 runReActLoop 后端统一构建，origin='scheduled' 自动排除 UI 工具）
+  const modelParams = loadAgentModelParams(task.agent_id || null, userId);
+
+  // 4. 创建后端任务 —— ReAct 循环独立运行，消息持久化到 DB
   const userContent = `[定时任务] ${task.name}\n${task.prompt || ''}`.trim();
-  db.prepare(INSERT_MESSAGE).run(uuid(), convId, userId, 'user', userContent, 0, now);
-
-  // 3. 取最近上下文（含刚写入的用户消息）调用默认模型
-  const historyRows = db
-    .prepare(
-      "SELECT role, content FROM message WHERE conversation_id = ? AND role IN ('user', 'assistant') AND content IS NOT NULL ORDER BY created_at DESC LIMIT 20",
-    )
-    .all(convId) as any[];
-  const messages = historyRows.reverse().map((r) => ({ role: r.role, content: r.content || '' }));
-
-  const finish = (ok: boolean, error?: string): ScheduledTaskRunResult => {
-    db.prepare('UPDATE conversation SET updated_at = ? WHERE id = ?').run(Date.now(), convId);
-    // 停用状态的任务保持 next_run_at 为空，避免误恢复调度
-    const next = task.enabled ? computeNextRun(task, now) : null;
-    db.prepare('UPDATE scheduled_task SET last_run_at = ?, next_run_at = ?, updated_at = ? WHERE id = ?').run(
-      now, next, now, task.id,
-    );
-    return { ok, error, conversationId: convId! };
-  };
-
   try {
-    const model = findTaskModel(userId, task.platform_id, task.model_id);
-    if (!model) throw new Error('未找到可用的默认模型，请先在「设置 → 模型平台」配置并启用模型');
-    const reply = await callModel(model, messages);
-    if (!reply.content) throw new Error('模型返回了空回复');
-    db.prepare(INSERT_MESSAGE).run(uuid(), convId, userId, 'assistant', reply.content, reply.tokens, Date.now());
-    return finish(true);
+    createTask({
+      conversationId: convId,
+      userId,
+      platformId,
+      modelId,
+      userContent,
+      agentId: task.agent_id || null,
+      options: {
+        temperature: modelParams.temperature,
+        maxTokens: modelParams.maxTokens,
+        topP: modelParams.topP,
+        reasoningEffort: modelParams.reasoningEffort,
+      },
+      maxSteps: modelParams.maxReActSteps || 100,
+      origin: 'scheduled',
+      // 无人值守：需要前端交互的工具直接跳过并告知模型，绝不挂起等待
+      offlinePolicy: 'skip',
+    });
+    return finishTask(task, convId, now, true);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    console.error(`[scheduled-task] 任务「${task.name}」执行失败: ${msg}`);
-    // 失败也落一条助手消息，用户在会话里可见
+    console.error(`[scheduled-task] 任务「${task.name}」创建失败: ${msg}`);
     db.prepare(INSERT_MESSAGE).run(uuid(), convId, userId, 'assistant', `[定时任务执行失败] ${msg}`, 0, Date.now());
-    return finish(false, msg);
+    return finishTask(task, convId, now, false, msg);
   }
+}
+
+/** 更新任务调度状态（last_run_at, next_run_at, conversation updated_at） */
+function finishTask(task: any, convId: string, now: number, ok: boolean, error?: string): ScheduledTaskRunResult {
+  db.prepare('UPDATE conversation SET updated_at = ? WHERE id = ?').run(Date.now(), convId);
+  const next = task.enabled ? computeNextRun(task, now) : null;
+  db.prepare('UPDATE scheduled_task SET last_run_at = ?, next_run_at = ?, updated_at = ? WHERE id = ?').run(
+    now, next, now, task.id,
+  );
+  return { ok, error, conversationId: convId };
 }
 
 // ===== 60s 轮询调度器（按需启停：仅当存在启用中的任务时才轮询） =====

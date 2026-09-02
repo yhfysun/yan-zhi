@@ -104,13 +104,13 @@ export class PlaywrightSearchBackend implements SearchBackend {
 
 /**
  * 解析 web_search 后端：
- * - 默认（或 YANZHI_SEARCH_ENGINE=bing）：走内置 Playwright 抓 Bing（chromium 已就绪，国内可达）
+ * - 默认（或 YANZHI_SEARCH_ENGINE=baidu）：走内置 Playwright 抓百度（国内可达）
  * - YANZHI_SEARCH_ENGINE=baidu：走 Playwright 抓百度
  * - YANZHI_SEARCH_ENGINE=duckduckgo：走 DuckDuckGo HTML，纯 fetch 零依赖（注意：国内不可达）
  * - YANZHI_SEARCH_ENDPOINT：走外部搜索 API（FetchSearchBackend，可带 headers/API key）
  */
 export function resolveSearchBackend(): SearchBackend {
-  const engine = (process.env.YANZHI_SEARCH_ENGINE || 'bing').toLowerCase();
+  const engine = (process.env.YANZHI_SEARCH_ENGINE || 'baidu').toLowerCase();
   if (engine === 'bing' || engine === 'baidu') {
     return new PlaywrightSearchBackend(engine);
   }
@@ -128,8 +128,8 @@ export function resolveSearchBackend(): SearchBackend {
       })) || [],
     });
   }
-  // 无配置时默认走 Bing（Playwright），国内可达；DuckDuckGo 在国内不可达
-  return new PlaywrightSearchBackend('bing');
+  // 无配置时默认走百度（Playwright），国内可达；DuckDuckGo 在国内不可达
+  return new PlaywrightSearchBackend('baidu');
 }
 
 /** 搜索后端单例（避免每次请求重复创建，Playwright 浏览器实例在 PlaywrightSearchBackend 内部已缓存） */

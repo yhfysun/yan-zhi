@@ -97,7 +97,7 @@ export const usePlatformStore = defineStore('platform', () => {
   const models = ref<Model[]>([]);
   const loading = ref(false);
 
-  const on = () => !!useAuthStore().isLoggedIn;
+  const on = () => useAuthStore().useServerApi;
 
   async function loadPlatforms() {
     loading.value = true;
@@ -362,39 +362,31 @@ export const usePlatformStore = defineStore('platform', () => {
     if (!config.apiUrl) return { ok: false, msg: 'API URL 必填' };
     const start = Date.now();
     try {
-      const res = await fetch(`${config.apiUrl.replace(/\/$/, '')}/v1/models`, {
-        headers: { 'Content-Type': 'application/json', ...(config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {}), ...(config.headers || {}) },
-        mode: 'cors',
+      const r = await api.post<any>('/llm/preview-models', {
+        apiUrl: config.apiUrl, apiKey: config.apiKey, headers: config.headers,
       });
       const ms = Date.now() - start;
-      if (!res.ok) return { ok: false, msg: `HTTP ${res.status} ${res.statusText}`, durationMs: ms };
-      const data = await res.json();
-      return { ok: true, msg: `连通正常，${(data.data || []).length} 个模型`, durationMs: ms };
+      if ('error' in r) return { ok: false, msg: r.error, durationMs: ms };
+      const data = r.data as any;
+      const list = Array.isArray(data) ? data : (data?.data || []);
+      return { ok: true, msg: `连通正常，${list.length} 个模型`, durationMs: ms };
     } catch (e: any) {
-      let msg = e?.message || '请求异常';
-      if (msg.includes('Failed to fetch') || msg.includes('NetworkError')) {
-        msg = `请求被浏览器拦截，可能是 CORS 跨域问题。请在 ${config.apiUrl} 服务端添加响应头：Access-Control-Allow-Origin: *`;
-      }
-      return { ok: false, msg, durationMs: Date.now() - start };
+      return { ok: false, msg: e?.message || '请求异常', durationMs: Date.now() - start };
     }
   }
 
   async function fetchModelsPreview(config: { apiUrl: string; apiKey?: string; headers?: Record<string, string> }) {
     if (!config.apiUrl) return { ok: false, models: [] as { id: string; type?: string }[], msg: 'API URL 必填' };
     try {
-      const res = await fetch(`${config.apiUrl.replace(/\/$/, '')}/v1/models`, {
-        headers: { 'Content-Type': 'application/json', ...(config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {}), ...(config.headers || {}) },
-        mode: 'cors',
+      const r = await api.post<any>('/llm/preview-models', {
+        apiUrl: config.apiUrl, apiKey: config.apiKey, headers: config.headers,
       });
-      if (!res.ok) return { ok: false, models: [], msg: `HTTP ${res.status} ${res.statusText}` };
-      const data = await res.json();
-      return { ok: true, models: (data.data || []).map((m: any) => ({ id: m.id, type: inferModelType(m.id, m.type) })), msg: `共 ${(data.data || []).length} 个` };
+      if ('error' in r) return { ok: false, models: [], msg: r.error };
+      const data = r.data as any;
+      const list = Array.isArray(data) ? data : (data?.data || []);
+      return { ok: true, models: list.map((m: any) => ({ id: m.id, type: inferModelType(m.id, m.type) })), msg: `共 ${list.length} 个` };
     } catch (e: any) {
-      let msg = e?.message || '请求异常';
-      if (msg.includes('Failed to fetch') || msg.includes('NetworkError')) {
-        msg = `请求被浏览器拦截，可能是 CORS 跨域问题。请在 ${config.apiUrl} 服务端添加响应头：Access-Control-Allow-Origin: *`;
-      }
-      return { ok: false, models: [], msg };
+      return { ok: false, models: [], msg: e?.message || '请求异常' };
     }
   }
 

@@ -15,8 +15,8 @@ const logErr = (...args: unknown[]) => console.error('[Web]', ...args);
 log('Web 端启动中...');
 log('平台适配器:', webAdapter.platform);
 
-// 注入 Web 平台适配器
-setPlatformAdapter(webAdapter);
+// 注入 Web 平台适配器（LLM 请求走后端代理，避免 CORS 且隐藏 API Key）
+setPlatformAdapter({ ...webAdapter, llmProxyBase: '/api/llm' });
 log('平台适配器已注入');
 
 // 初始化数据库

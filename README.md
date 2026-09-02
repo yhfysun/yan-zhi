@@ -177,19 +177,25 @@ pnpm dev:mobile
 
 ```bash
 # 桌面端（生成 .exe 安装包，需 MSVC Build Tools + electron-builder）
+# 所有桌面端产物统一输出到根目录 dist-release/，靠 artifactName 区分 lite/full/mac
 pnpm build:desktop
-#   默认（electron-builder.full.yml）产物：apps/desktop/release-full/言智-Setup-<version>-<arch>-full.exe
+#   默认（electron-builder.full.yml）产物：dist-release/言智-Setup-<version>-<arch>-full.exe
 #   完整版：内嵌后端服务与本地模型（models/），不带模型的完整功能，安装包较大
 
 # 精简版（electron-builder.lite.yml，不含本地模型）
 pnpm --filter @yan-zhi/desktop electron:build:lite
-#   产物：apps/desktop/release-lite/言智-Setup-<version>-<arch>-lite.exe
+#   产物：dist-release/言智-Setup-<version>-<arch>-lite.exe
 
-# 构建步骤（两个版本共用）：先 server build → vite build → prepare-server-runtime（打平后端依赖）→ electron-builder
+# macOS 版（electron-builder.mac.yml，需在 macOS 上构建）
+pnpm --filter @yan-zhi/desktop electron:build:mac
+#   产物：dist-release/言智-<version>-<arch>-mac.dmg / .zip
+
+# 构建步骤（桌面端共用）：先 server build → vite build → prepare-server-runtime（打平后端依赖）→ electron-builder
 # `pnpm build:desktop` 等价 `pnpm --filter @yan-zhi/desktop electron:build:full`
 
-# 移动端 Android
+# 移动端 Android（APK 构建后自动拷贝到 dist-release/）
 pnpm build:mobile:android
+#   产物：dist-release/*.apk（由 scripts/copy-apk.cjs 从 Gradle 输出目录拷入）
 
 # 移动端 iOS（需 macOS + Xcode）
 pnpm build:mobile:ios
@@ -231,7 +237,7 @@ pnpm --filter @yan-zhi/server download:models --llm
 - `qwen2.5-1.5b-instruct-q4_k_m.gguf`（1.1GB）— 本地对话模型
 - `bge-small-zh-v1.5-q8_0.gguf`（26MB）— 中文语义向量模型（知识库/记忆检索）
 
-GitHub Actions（`.github/workflows/build-desktop.yml`）在构建前会自动执行 `download:models`，并同时产出完整版与轻量版安装包。
+GitHub Actions（`.github/workflows/build-desktop.yml`）在构建前会自动执行 `download:models`，并产出轻量版安装包到 `dist-release/`（完整版需本地手动 `pnpm build:desktop:full` 触发）。
 
 ## 数据存储
 

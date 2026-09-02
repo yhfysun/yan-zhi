@@ -42,7 +42,7 @@ export const useSpaceStore = defineStore('space', () => {
     } catch {}
   }
 
-  const isServerMode = () => !!useAuthStore().isLoggedIn;
+  const isServerMode = () => useAuthStore().useServerApi;
 
   const currentSpace = computed(() => spaces.value.find((s) => s.id === currentSpaceId.value) || null);
 

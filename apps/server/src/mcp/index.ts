@@ -13,7 +13,7 @@ const router = Router();
 
 /** 确保管理类工具（get_api_tools/list_platforms 等）与 searchBackend 在首次获取 registry 时已就位 */
 let _toolsInitialized = false;
-function ensureToolsInitialized(): void {
+export function ensureToolsInitialized(): void {
   if (_toolsInitialized) return;
   _toolsInitialized = true;
   const registry = getToolRegistry(getSearchBackend());

@@ -65,6 +65,7 @@ export interface Conversation {
   _mcpDisabledTools?: Record<string, string[]>;
   _mcpToolAliases?: Record<string, Record<string, string>>;
   skillIds: string[];
+  builtinToolIds?: string[]; // 会话级内置工具（合并到智能体级）
   systemPrompt?: string;
   pinned: boolean;
   createdAt: number;

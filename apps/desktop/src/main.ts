@@ -12,8 +12,8 @@ import { desktopAdapter } from './platform';
 console.log('[desktop] Electron 桌面端启动中...');
 console.log(`[desktop] 平台适配器: ${desktopAdapter.platform}`);
 
-// 注入桌面平台适配器
-setPlatformAdapter(desktopAdapter);
+// 注入桌面平台适配器（LLM 请求走本地后端代理，避免 CORS 且隐藏 API Key）
+setPlatformAdapter({ ...desktopAdapter, llmProxyBase: 'http://127.0.0.1:3001/api/llm' });
 console.log('[desktop] 平台适配器已注入');
 
 // 初始化数据库 schema，完成后挂载 Vue 应用

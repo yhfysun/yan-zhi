@@ -27,7 +27,7 @@ export const useFileStore = defineStore('conversationFile', () => {
   const currentConvId = ref('');
   const loading = ref(false);
 
-  const isServerMode = () => !!useAuthStore().isLoggedIn;
+  const isServerMode = () => useAuthStore().useServerApi;
 
   /** 按分类分组的文件 */
   const filesByCategory = computed(() => {

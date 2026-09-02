@@ -64,7 +64,13 @@ const fsAdapter: FsAdapter = {
 
 const keyringAdapter: KeyringAdapter = {
   async set() {},
-  async get() {
+  async get(key: string) {
+    const m = key.match(/^platform:(.+):apikey$/);
+    if (m) {
+      const { db } = await import('./db.js');
+      const row = db.prepare('SELECT api_key_enc FROM platform WHERE id = ?').get(m[1]) as any;
+      return row?.api_key_enc || null;
+    }
     return null;
   },
   async delete() {},

@@ -45,7 +45,7 @@ import {
   getEntityGraph,
   getRevectorizeStatus,
 } from '../services/kb.js';
-import { listEmbeddingModels, getEmbeddingConfig } from '../services/ollama-embed.js';
+import { listEmbeddingModels, getEmbeddingConfig, embedText } from '../services/ollama-embed.js';
 import {
   listImConnectors,
   createImConnector,
@@ -90,6 +90,21 @@ function obj(args: Record<string, unknown>, key: string): Record<string, unknown
   return value && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {};
+}
+
+function memBytesToVec(b: Uint8Array | Buffer | null): number[] | null {
+  if (!b) return null;
+  try { return Array.from(new Float32Array(b.buffer, b.byteOffset, b.byteLength / 4)); } catch { return null; }
+}
+function memVecToBytes(v: number[] | null): Buffer | null {
+  if (!v || !v.length) return null;
+  return Buffer.from(new Float32Array(v).buffer);
+}
+function memCosine(a: number[], b: number[]): number {
+  const n = Math.min(a.length, b.length);
+  let dot = 0, na = 0, nb = 0;
+  for (let i = 0; i < n; i++) { dot += a[i] * b[i]; na += a[i] * a[i]; nb += b[i] * b[i]; }
+  return dot / (Math.sqrt(na) * Math.sqrt(nb) || 1);
 }
 
 function requireUser(userId?: string): string {
@@ -545,10 +560,24 @@ export async function executeApiTool(
       // Memory
       case 'api_memory_search': {
         const uid = requireUser(userId);
+        const agentId = str(args, 'agentId');
+        const topK = num(args, 'topK', 5);
+        const qVec = await embedText(str(args, 'query')).catch(() => null);
+        if (qVec) {
+          const rows = db.prepare(
+            `SELECT * FROM memory WHERE user_id = ? AND (? = '' OR agent_id = ?) AND embedding IS NOT NULL`,
+          ).all(uid, agentId, agentId) as any[];
+          const scored = rows
+            .map((r) => { const v = memBytesToVec(r.embedding); return v ? { r, score: memCosine(qVec, v) } : null; })
+            .filter((x): x is { r: any; score: number } => x !== null)
+            .sort((a, b) => b.score - a.score)
+            .slice(0, topK);
+          if (scored.length) return ok(scored.map((x) => x.r));
+        }
         const q = `%${str(args, 'query')}%`;
         const rows = db.prepare(
           `SELECT * FROM memory WHERE user_id = ? AND (? = '' OR agent_id = ?) AND content LIKE ? ORDER BY last_used_at DESC LIMIT ?`,
-        ).all(uid, str(args, 'agentId'), str(args, 'agentId'), q, num(args, 'topK', 5));
+        ).all(uid, agentId, agentId, q, topK);
         return ok(rows);
       }
       case 'api_memory_list': {
@@ -560,9 +589,11 @@ export async function executeApiTool(
         const uid = requireUser(userId);
         const id = uuid();
         const ts = Date.now();
+        const content = str(args, 'content');
+        const emb = memVecToBytes(await embedText(content).catch(() => null));
         db.prepare(
-          'INSERT INTO memory (id, user_id, agent_id, content, tags_json, metadata_json, created_at, last_used_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-        ).run(id, uid, str(args, 'agentId') || null, str(args, 'content'), JSON.stringify(arr(args, 'tags')), '{}', ts, ts);
+          'INSERT INTO memory (id, user_id, agent_id, content, tags_json, metadata_json, embedding, created_at, last_used_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        ).run(id, uid, str(args, 'agentId') || null, content, JSON.stringify(arr(args, 'tags')), '{}', emb, ts, ts);
         return ok(db.prepare('SELECT * FROM memory WHERE id = ?').get(id));
       }
       case 'api_memory_delete':

@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc && vite build",
-    "build:android": "vite build && cap sync android && cap build android",
+    "build:android": "vite build && cap sync android && cap build android && node ./scripts/copy-apk.cjs",
     "build:ios": "vite build && cap sync ios && cap build ios",
     "sync": "cap sync",
     "typecheck": "vue-tsc --noEmit"

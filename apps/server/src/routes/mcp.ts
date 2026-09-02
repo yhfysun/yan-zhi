@@ -2,9 +2,126 @@ import { Router, Request, Response } from 'express';
 import { v4 as uuid } from 'uuid';
 import { authMiddleware } from '../auth.js';
 import { db } from '../db.js';
+import {
+  ensureConnected, disconnectServer, isConnected, getToolsFromDb, testServerConfig, callMcpTool,
+  listMcpResources, readMcpResource, listMcpPrompts, getMcpPrompt,
+} from '../mcp/client-manager.js';
 
 const router = Router();
 router.use(authMiddleware);
+
+// ===== 连接管理：连接统一由后端持有，前端只发指令 =====
+
+// POST /api/mcp-servers/:id/connect  由后端建立连接并同步工具清单
+router.post('/:id/connect', async (req: Request, res: Response) => {
+  const userId = req.user!.userId;
+  const sid = req.params.id;
+  const existing = db.prepare('SELECT * FROM mcp_server WHERE id = ? AND user_id = ?').get(sid, userId);
+  if (!existing) { res.status(404).json({ error: 'MCP 服务不存在' }); return; }
+  try {
+    const conn = await ensureConnected(sid, userId);
+    res.json({ data: { ok: true, tools: getToolsFromDb(sid), connectedAt: conn.connectedAt } });
+  } catch (e: any) {
+    res.status(502).json({ error: e?.message || String(e) });
+  }
+});
+
+// POST /api/mcp-servers/:id/disconnect
+router.post('/:id/disconnect', async (req: Request, res: Response) => {
+  const userId = req.user!.userId;
+  const sid = req.params.id;
+  const existing = db.prepare('SELECT * FROM mcp_server WHERE id = ? AND user_id = ?').get(sid, userId);
+  if (!existing) { res.status(404).json({ error: 'MCP 服务不存在' }); return; }
+  await disconnectServer(sid);
+  res.json({ ok: true });
+});
+
+// GET /api/mcp-servers/:id/status
+router.get('/:id/status', (req: Request, res: Response) => {
+  const userId = req.user!.userId;
+  const sid = req.params.id;
+  const existing = db.prepare('SELECT * FROM mcp_server WHERE id = ? AND user_id = ?').get(sid, userId);
+  if (!existing) { res.status(404).json({ error: 'MCP 服务不存在' }); return; }
+  res.json({ data: { connected: isConnected(sid), toolCount: getToolsFromDb(sid).length } });
+});
+
+// POST /api/mcp-servers/test  测试一份未保存的配置（不落库、不留连接）
+router.post('/test', async (req: Request, res: Response) => {
+  const result = await testServerConfig(req.body || {});
+  res.json({ data: result });
+});
+
+// POST /api/mcp-servers/:id/call  手动调用一次工具（MCP 管理页用）
+router.post('/:id/call', async (req: Request, res: Response) => {
+  const userId = req.user!.userId;
+  const sid = req.params.id;
+  const existing = db.prepare('SELECT * FROM mcp_server WHERE id = ? AND user_id = ?').get(sid, userId);
+  if (!existing) { res.status(404).json({ error: 'MCP 服务不存在' }); return; }
+  const { toolName, args } = req.body || {};
+  if (!toolName) { res.status(400).json({ error: '缺少 toolName' }); return; }
+  try {
+    const text = await callMcpTool(sid, toolName, args || {});
+    res.json({ data: { ok: true, result: text } });
+  } catch (e: any) {
+    res.json({ data: { ok: false, msg: e?.message || String(e) } });
+  }
+});
+
+// GET /api/mcp-servers/:id/resources  列出 resources（连接由后端代理建立）
+router.get('/:id/resources', async (req: Request, res: Response) => {
+  const userId = req.user!.userId;
+  const sid = req.params.id;
+  const existing = db.prepare('SELECT * FROM mcp_server WHERE id = ? AND user_id = ?').get(sid, userId);
+  if (!existing) { res.status(404).json({ error: 'MCP 服务不存在' }); return; }
+  try {
+    res.json({ data: await listMcpResources(sid) });
+  } catch (e: any) {
+    res.status(502).json({ error: e?.message || String(e) });
+  }
+});
+
+// POST /api/mcp-servers/:id/resource-read  读取一个 resource
+router.post('/:id/resource-read', async (req: Request, res: Response) => {
+  const userId = req.user!.userId;
+  const sid = req.params.id;
+  const existing = db.prepare('SELECT * FROM mcp_server WHERE id = ? AND user_id = ?').get(sid, userId);
+  if (!existing) { res.status(404).json({ error: 'MCP 服务不存在' }); return; }
+  const { uri } = req.body || {};
+  if (!uri) { res.status(400).json({ error: '缺少 uri' }); return; }
+  try {
+    res.json({ data: await readMcpResource(sid, uri) });
+  } catch (e: any) {
+    res.status(502).json({ error: e?.message || String(e) });
+  }
+});
+
+// GET /api/mcp-servers/:id/prompts  列出 prompts
+router.get('/:id/prompts', async (req: Request, res: Response) => {
+  const userId = req.user!.userId;
+  const sid = req.params.id;
+  const existing = db.prepare('SELECT * FROM mcp_server WHERE id = ? AND user_id = ?').get(sid, userId);
+  if (!existing) { res.status(404).json({ error: 'MCP 服务不存在' }); return; }
+  try {
+    res.json({ data: await listMcpPrompts(sid) });
+  } catch (e: any) {
+    res.status(502).json({ error: e?.message || String(e) });
+  }
+});
+
+// POST /api/mcp-servers/:id/prompt-get  获取一个 prompt 内容
+router.post('/:id/prompt-get', async (req: Request, res: Response) => {
+  const userId = req.user!.userId;
+  const sid = req.params.id;
+  const existing = db.prepare('SELECT * FROM mcp_server WHERE id = ? AND user_id = ?').get(sid, userId);
+  if (!existing) { res.status(404).json({ error: 'MCP 服务不存在' }); return; }
+  const { name, args } = req.body || {};
+  if (!name) { res.status(400).json({ error: '缺少 name' }); return; }
+  try {
+    res.json({ data: await getMcpPrompt(sid, name, args || {}) });
+  } catch (e: any) {
+    res.status(502).json({ error: e?.message || String(e) });
+  }
+});
 
 // GET /api/mcp-servers
 router.get('/', (req: Request, res: Response) => {

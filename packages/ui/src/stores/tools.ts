@@ -83,7 +83,7 @@ export const useToolsStore = defineStore('tools', () => {
   const marketplaceAuth = ref<{ authType: string; token?: string }>({ authType: 'none' });
   const marketplacePort = ref(3001);
 
-  const on = () => !!useAuthStore().isLoggedIn;
+  const on = () => useAuthStore().useServerApi;
 
   async function loadBuiltinTools() {
     try {

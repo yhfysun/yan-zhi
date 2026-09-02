@@ -1,0 +1,32 @@
+appId: com.yanzhi.desktop
+productName: 言智
+directories:
+  output: ../../dist-release
+files:
+  - dist/**/*
+  - main.cjs
+  - preload.cjs
+  - browser-preload.cjs
+extraResources:
+  - from: ../server/dist
+    to: server/dist
+  - from: ../server/src
+    to: server/src
+  - from: runtime/server-runtime/node_modules
+    to: server/node_modules
+  - from: ../server/package.json
+    to: server/package.json
+
+  - from: ../../assets/icons/icon.icns
+    to: icon.icns
+mac:
+  target:
+    - dmg
+    - zip
+  icon: ../../assets/icons/icon.icns
+  # 无开发者证书时走 ad-hoc 签名；关闭 hardenedRuntime/gatekeeperAssess 以免卡在校验
+  hardenedRuntime: false
+  gatekeeperAssess: false
+  artifactName: ${productName}-${version}-${arch}-mac.${ext}
+dmg:
+  artifactName: ${productName}-${version}-${arch}-mac.dmg

@@ -203,6 +203,7 @@ function createChat() {
   // E12c: 模型平台配置弹窗表单状态（configure_model_platform 工具触发）
   const platformConfigSaving = ref(false);
   const manualPlatformConfigVisible = ref(false);
+  const platformConfigEditId = ref('');
   const platformConfigForm = ref({
     name: '',
     protocol: 'openai',
@@ -218,6 +219,7 @@ function createChat() {
   });
 
   function resetPlatformConfigForm() {
+    platformConfigEditId.value = '';
     const prefill = store.pendingPlatformConfig?.prefill;
     platformConfigForm.value = {
       name: prefill?.name || '',
@@ -236,37 +238,74 @@ function createChat() {
    * 打开模型平台配置弹窗：手动新建平台 + 模型，保存后自动拉取模型列表并设为默认。
    */
   function openPlatformConfig() {
-    resetPlatformConfigForm();
+    const agent = agentStore.selectedAgent;
+    const platform = agent?.platformId
+      ? platformStore.platforms.find((p) => p.id === agent.platformId)
+      : undefined;
+    if (platform) {
+      const model = agent?.modelId
+        ? platformStore.models.find((m) => m.platformId === platform.id && m.modelId === agent.modelId)
+        : undefined;
+      platformConfigEditId.value = platform.id;
+      platformConfigForm.value = {
+        name: platform.name,
+        protocol: platform.protocol || 'openai',
+        apiUrl: platform.apiUrl,
+        apiKey: platform.apiKeyDec || '',
+        modelId: model?.modelId || agent?.modelId || '',
+        alias: model?.alias || '',
+        contextWindow: model?.contextWindow || 131072,
+      };
+    } else {
+      resetPlatformConfigForm();
+    }
     manualPlatformConfigVisible.value = true;
   }
 
   async function onPlatformConfigSubmit() {
     const f = platformConfigForm.value;
-    if (!f.name.trim() || !f.apiUrl.trim() || !f.modelId.trim()) {
-      ElMessage.warning('平台名称、API URL 和模型 ID 为必填');
+    const isEdit = !!platformConfigEditId.value;
+    if (!f.name.trim() || !f.apiUrl.trim()) {
+      ElMessage.warning('平台名称和 API URL 为必填');
+      return;
+    }
+    if (!isEdit && !f.modelId.trim()) {
+      ElMessage.warning('模型 ID 为必填');
       return;
     }
     platformConfigSaving.value = true;
     try {
-      const platformId = await platformStore.addPlatform({
-        name: f.name.trim(),
-        protocol: f.protocol as any,
-        apiUrl: f.apiUrl.trim(),
-        apiKeyEnc: f.apiKey.trim(),
-        headers: {},
-        status: 'unknown',
-      });
-      await platformStore.addModel({
-        platformId,
-        modelId: f.modelId.trim(),
-        alias: f.alias.trim() || f.modelId.trim().split('/').pop() || f.modelId.trim(),
-        type: 'llm' as any,
-        contextWindow: Number(f.contextWindow) || 131072,
-        enabled: true,
-        isDefault: false,
-        capabilities: ['function_call'],
-      });
-      // 平台创建后自动拉取远程模型列表（失败仅提示，回退手动填写的模型）
+      let platformId: string;
+      if (isEdit) {
+        platformId = platformConfigEditId.value;
+        const patch: any = {
+          name: f.name.trim(),
+          protocol: f.protocol as any,
+          apiUrl: f.apiUrl.trim(),
+        };
+        if (f.apiKey.trim()) patch.apiKeyEnc = f.apiKey.trim();
+        await platformStore.updatePlatform(platformId, patch);
+      } else {
+        platformId = await platformStore.addPlatform({
+          name: f.name.trim(),
+          protocol: f.protocol as any,
+          apiUrl: f.apiUrl.trim(),
+          apiKeyEnc: f.apiKey.trim(),
+          headers: {},
+          status: 'unknown',
+        });
+        await platformStore.addModel({
+          platformId,
+          modelId: f.modelId.trim(),
+          alias: f.alias.trim() || f.modelId.trim().split('/').pop() || f.modelId.trim(),
+          type: 'llm' as any,
+          contextWindow: Number(f.contextWindow) || 131072,
+          enabled: true,
+          isDefault: false,
+          capabilities: ['function_call'],
+        });
+      }
+      // 平台创建/更新后自动拉取远程模型列表（失败仅提示，回退手动填写的模型）
       let remoteIds: string[] = [];
       try {
         remoteIds = await platformStore.fetchRemoteModels(platformId);
@@ -280,16 +319,17 @@ function createChat() {
       const model = pickedModel
         || platformStore.models.find((m) => m.platformId === platformId && m.modelId === f.modelId.trim());
       if (model) {
-        // 选中新模型，并写入默认平台/模型与当前智能体
         selectedModelId.value = model.id;
         await settingsStore.update({ defaultPlatformId: platformId, defaultModelId: model.id });
         if (agentStore.selectedAgent) {
           agentStore.updateAgent(agentStore.selectedId, { modelId: model.modelId, platformId: model.platformId });
         }
       }
-      const message = pickedModel
-        ? `已创建模型平台「${f.name.trim()}」，拉取到 ${remoteIds.length} 个模型并默认选用 ${model?.modelId || f.modelId.trim()}`
-        : `已创建模型平台「${f.name.trim()}」并添加模型 ${f.modelId.trim()}`;
+      const message = isEdit
+        ? `已更新模型平台「${f.name.trim()}」配置`
+        : pickedModel
+          ? `已创建模型平台「${f.name.trim()}」，拉取到 ${remoteIds.length} 个模型并默认选用 ${model?.modelId || f.modelId.trim()}`
+          : `已创建模型平台「${f.name.trim()}」并添加模型 ${f.modelId.trim()}`;
       if (store.pendingPlatformConfig) {
         store.submitPlatformConfig({ cancelled: false, platformId, modelId: model?.modelId || f.modelId.trim(), message });
       }
@@ -297,7 +337,7 @@ function createChat() {
       ElMessage.success(message);
       resetPlatformConfigForm();
     } catch (e: any) {
-      ElMessage.error('创建失败: ' + (e?.message || e));
+      ElMessage.error(isEdit ? '更新失败: ' + (e?.message || e) : '创建失败: ' + (e?.message || e));
     } finally {
       platformConfigSaving.value = false;
     }
@@ -349,13 +389,11 @@ function createChat() {
     const api = (window as any).electronAPI?.browserView;
     if (!api) return;
     if (!open) { try { api.hide(); } catch { /* ignore */ } }
-    else if (store.rightPanelTab === 'browser' && store.currentBrowserUrl) { try { api.load(store.currentBrowserUrl); } catch { /* ignore */ } }
   }, { flush: 'sync' });
   watch(() => store.rightPanelTab, (tab) => {
     const api = (window as any).electronAPI?.browserView;
     if (!api) return;
-    if (tab === 'browser' && store.rightPanelOpen && store.currentBrowserUrl) { try { api.load(store.currentBrowserUrl); } catch { /* ignore */ } }
-    else if (tab !== 'browser') { try { api.hide(); } catch { /* ignore */ } }
+    if (tab !== 'browser') { try { api.hide(); } catch { /* ignore */ } }
   }, { flush: 'sync' });
   function closeRightPanel() {
     store.rightPanelOpen = false;
@@ -408,7 +446,7 @@ function createChat() {
   const drawerOpen = ref(false);
   const convCollapsed = ref(false);
   const sideTab = ref<'chat' | 'task'>('chat');
-  const contextSidebarOpen = ref(!isMobile.value);
+  const contextSidebarOpen = ref(false);
   const batchMode = ref(false);
   const selectedConvIds = ref<Set<string>>(new Set());
 
@@ -544,7 +582,38 @@ function createChat() {
   }
   function formatSnapshot(raw?: string): string {
     if (!raw) return '（无快照数据）';
-    try { return JSON.stringify(JSON.parse(raw), null, 2); } catch { return raw; }
+    try {
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== 'object') return raw;
+      // 兼容旧格式 {prompt} / {text}
+      if (typeof parsed.prompt === 'string') return parsed.prompt;
+      if (typeof parsed.text === 'string') return parsed.text;
+      // 完整快照格式：头部摘要 + 系统提示词正文
+      if (typeof parsed.systemPrompt === 'string') {
+        const lines: string[] = [];
+        const stepLabel = parsed.step !== undefined ? `步骤 ${parsed.step}` : '步骤 ?';
+        const ts = parsed.timestamp ? ` | ${parsed.timestamp}` : '';
+        lines.push(`【${stepLabel}${ts}】`);
+        if (parsed.subAgent) lines.push(`【子智能体: ${parsed.subAgent}】`);
+        if (parsed.model) lines.push(`【模型: ${parsed.model.alias || ''} (${parsed.model.id || ''}) | 平台: ${parsed.platform?.name || ''} (${parsed.platform?.protocol || ''})】`);
+        if (parsed.parameters) {
+          const p = parsed.parameters;
+          const ps = Object.entries(p).filter(([, v]) => v !== undefined && v !== null).map(([k, v]) => `${k}=${v}`).join(', ');
+          if (ps) lines.push(`【参数: ${ps}】`);
+        }
+        if (Array.isArray(parsed.tools) && parsed.tools.length) lines.push(`【工具: ${parsed.tools.map((t: any) => t.name).join(', ')}】`);
+        if (Array.isArray(parsed.messages)) {
+          const ms = parsed.messages.map((m: any) => `${m.role}${m.toolCalls ? `(${m.toolCalls} toolCalls)` : ''}`).join(' → ');
+          lines.push(`【消息历史: ${ms}】`);
+        }
+        if (parsed.input) lines.push(`【输入: ${String(parsed.input).slice(0, 200)}】`);
+        lines.push('');
+        lines.push('========== 系统提示词 ==========');
+        lines.push(parsed.systemPrompt);
+        return lines.join('\n');
+      }
+      return JSON.stringify(parsed, null, 2);
+    } catch { return raw; }
   }
 
   const snapshotDialog = ref(false);
@@ -920,8 +989,8 @@ function createChat() {
   /** 发送消息时确保工作目录对应的空间存在：按 dirPath 匹配已有空间；没有则以文件夹名创建并选中。返回空间 ID（无有效工作目录/失败时返回 undefined） */
   async function ensureWorkspaceSpace(): Promise<string | undefined> {
     const wd = (settingsStore.settings.workspaceDir || '').trim();
-    // 未设置或仍是占位默认值 'workspace' 时，视为没有真实工作目录，不自动建空间
-    if (!wd || wd === 'workspace') return undefined;
+    // 未设置、占位默认值、或 URL（可能被误设为浏览器导航 URL）时，不自动建空间
+    if (!wd || wd === 'workspace' || /^https?:\/\//i.test(wd)) return undefined;
     try {
       const existed = spaceStore.spaces.find((s) => s.dirPath === wd);
       if (existed) return existed.id;
@@ -1068,6 +1137,10 @@ function createChat() {
     const agent = agentStore.agents.find((a) => a.id === id);
     if (agent?.modelId && chatModels.value.find((m) => m.id === agent.modelId)) {
       selectedModelId.value = agent.modelId;
+    }
+    // 同步更新当前会话的 agent_id，确保后端 list_sub_agents/call_agent 能查到正确的子智能体
+    if (store.currentConvId) {
+      void store.updateConversation(store.currentConvId, { agentId: id });
     }
   }
 
@@ -1266,8 +1339,7 @@ function createChat() {
     let userContent = content;
     if (files.length > 0) {
       userContent = content || '请分析以下文件';
-      const fileParts = files.map(f => `\n[文件: ${f.name} (${formatSize(f.size)}, ${f.type})]`).join('');
-      userContent = userContent + '\n---\n已上传文件：' + fileParts;
+
     }
 
     if (!userContent.trim()) { ElMessage.warning('请输入消息'); return; }
@@ -1309,6 +1381,36 @@ function createChat() {
         }
       }
 
+      // 保存上传文件到磁盘并把路径告知智能体（智能体可用 file_read 读取）
+      if (files.length > 0) {
+        try {
+          const { getPlatformAdapter } = await import('@yan-zhi/core');
+          const adapter = getPlatformAdapter();
+          const convId = store.currentConvId || 'default';
+          const filesDir = 'workspace/uploads/' + convId;
+          try { await adapter.fs.mkdir(filesDir); } catch {}
+          const fileParts: string[] = [];
+          for (const f of files) {
+            const fileId = 'f_' + (crypto as any).randomUUID?.().slice(0, 12) || 'f_' + Date.now().toString(36);
+            const newName = fileId + '_' + f.name;
+            const newPath = filesDir + '/' + newName;
+            try {
+              await adapter.fs.writeFile(newPath, f.dataUrl);
+              await useFileStore().registerFile({
+                conversationId: convId, name: f.name, path: newPath,
+                category: 'upload', mimeType: f.type, size: f.size, source: 'user',
+              });
+              fileParts.push(`\n[文件: ${f.name} (${formatSize(f.size)}, ${f.type}) 路径: ${newPath}]`);
+            } catch (e: any) {
+              fileParts.push(`\n[文件: ${f.name} (${formatSize(f.size)}, ${f.type}) 保存失败: ${e?.message || e}]`);
+            }
+          }
+          if (fileParts.length) userContent = userContent + '\n---\n已上传文件：' + fileParts.join('');
+        } catch (e: any) {
+          userContent = userContent + '\n---\n[文件保存失败: ' + (e?.message || e) + ']';
+        }
+      }
+
       input.value = '';
 
       if (selectedFilePaths.value.size > 0) {
@@ -1342,6 +1444,7 @@ function createChat() {
             fileRefs.push({
               fileId: f.name.split('_')[0],
               fileName: f.name.replace(/^f_[a-f0-9]+_/, ''),
+              path: f.path,
               type: ext || 'unknown', size: f.size, preview,
             });
           } catch { /* skip */ }
@@ -1815,10 +1918,12 @@ function createChat() {
       const diff = all.filter(n => !sel.includes(n));
       if (diff.length > 0) disabled[sid] = diff;
     }
+    const conv = store.conversations.find(c => c.id === convId);
     await store.updateConversation(convId, {
       mcpServerIds: serverIds,
       _mcpDisabledTools: disabled,
       _mcpToolAliases: aliases,
+      builtinToolIds: conv?.builtinToolIds || [],
     });
   }
 
@@ -1855,7 +1960,7 @@ function createChat() {
     showDistill, distillMessages, distillUserMsg, distillAssistantMsg,
     askText, askSupplement, askSingle, askChecked, askShowText, askDialogVisible, askMultiSelect, resetAskForm, onAskSubmit, onAskSkip, onAskDialogClose,
     confirmText, confirmSingle, confirmChecked, confirmShowText, confirmSupplement, confirmDialogVisible, confirmCurrentPage, confirmMultiSelect, resetConfirmForm, onConfirmNext, onConfirmSkip, onConfirmDialogClose,
-    platformConfigSaving, manualPlatformConfigVisible, platformConfigForm, platformConfigDialogVisible, resetPlatformConfigForm, openPlatformConfig, onPlatformConfigSubmit, onPlatformConfigCancel, onPlatformConfigClose,
+    platformConfigSaving, manualPlatformConfigVisible, platformConfigEditId, platformConfigForm, platformConfigDialogVisible, resetPlatformConfigForm, openPlatformConfig, onPlatformConfigSubmit, onPlatformConfigCancel, onPlatformConfigClose,
     input, inputFocused, fileInputRef, uploadedFiles,
 
     browserActive, currentBrowserLabel, closeRightPanel, toggleRightPanel,

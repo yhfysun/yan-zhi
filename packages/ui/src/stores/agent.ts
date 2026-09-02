@@ -1,10 +1,10 @@
 // 智能体 store（聊天 + 工作流统一）
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
-import type { Agent, Workflow, WorkflowNode, WorkflowEdge, NodeType } from '@yan-zhi/shared';
-import { getPlatformAdapter, WorkflowEngine, LlmNodeHandler, ToolNodeHandler } from '@yan-zhi/core';
+import type { Agent, Workflow, WorkflowNode, NodeType } from '@yan-zhi/shared';
+import { getPlatformAdapter } from '@yan-zhi/core';
 import { uid, now } from '@yan-zhi/shared';
-import { api } from '../api/client';
+import { api, API_BASE } from '../api/client';
 import { useAuthStore } from './auth';
 
 function rowToAgent(r: any): Agent {
@@ -233,30 +233,34 @@ export const useAgentStore = defineStore('agent', () => {
     if (agents.value.find((a) => a.id === id)) selectedId.value = id;
   }
 
-  let engine: WorkflowEngine | null = null;
-  function getEngine(): WorkflowEngine {
-    if (!engine) {
-      engine = new WorkflowEngine();
-      engine.register(new LlmNodeHandler());
-      engine.register(new ToolNodeHandler());
-      engine.register(new InputNodeHandler());
-      engine.register(new OutputNodeHandler());
-      engine.register(new CodeNodeHandler());
-      engine.register(new ConditionNodeHandler());
-      engine.register(new LoopNodeHandler());
-      engine.register(new SubAgentNodeHandler());
-      engine.register(new MemoryReadNodeHandler());
-      engine.register(new MemoryWriteNodeHandler());
-    }
-    return engine;
-  }
-
   async function loadAgents() {
     // inflight 去重：同一 store 实例内并发调用共享同一个 Promise，
     // 避免两个 loadAgents 同时 SELECT 空表后各自 INSERT 造成重复。
     if (loadInflight) return loadInflight;
     loadInflight = (async () => {
       try {
+        // 数据面统一后端：有 server 可用时智能体全部读 server（guest 默认身份）。
+        // 本地 Dexie/IPC 仅在后端不可用（web 未登录无 guest token）时兜底。
+        const useServer = useAuthStore().useServerApi;
+        if (useServer) {
+          const r = await api.get<any[]>('/agents');
+          if ('data' in r) {
+            const serverRows = r.data as any[];
+            // 数据迁移（一次性）：本地 Dexie/IPC 是历史遗留数据源，后端才是唯一数据源。
+            // 首次切到后端时，若 server 端该用户没有任何私有自定义智能体、而本地库存在私有智能体，
+            // 则把本地定义导入 server（保留原 id，保证会话/子智能体引用稳定）。幂等：server 已有则跳过。
+            const hasPrivateOnServer = serverRows.some((x) => !x.is_public && x.user_id === 'guest');
+            if (!hasPrivateOnServer) {
+              await migrateLocalAgentsToServer();
+            }
+            agents.value = serverRows.map(rowToAgent);
+            if (!selectedId.value || !agents.value.find((a) => a.id === selectedId.value)) {
+              selectedId.value = agents.value.find((a) => a.isDefault)?.id || agents.value[0]?.id || '';
+            }
+            return;
+          }
+          // 后端不可达：回退本地库
+        }
         const adapter = getPlatformAdapter();
         let rows = await adapter.db.query<any>('SELECT * FROM agent ORDER BY is_default DESC, created_at ASC');
         if (rows.length === 0) {
@@ -455,7 +459,66 @@ export const useAgentStore = defineStore('agent', () => {
     return loadInflight;
   }
 
-  async function loadAgent(id: string) {
+  /**
+   * 一次性数据迁移：把本地 Dexie/IPC 库中的私有自定义智能体导入 server（保留原 id）。
+   * 默认 AI 助手与内置 pageAgent 由 server 侧 seed 提供，不迁移；仅迁移 is_default=0 且 is_builtin=0
+   * 的用户自定义智能体，避免与 server 内置智能体冲突。幂等：失败静默，下次 loadAgents 再触发。
+   */
+  async function migrateLocalAgentsToServer() {
+    try {
+      const adapter = getPlatformAdapter();
+      const rows = await adapter.db.query<any>('SELECT * FROM agent WHERE is_default = 0 AND is_builtin = 0');
+      if (!rows || rows.length === 0) return;
+      for (const r of rows) {
+        const a = rowToAgent(r);
+        const body: Record<string, unknown> = {
+          id: a.id,
+          name: a.name || '迁移智能体',
+          description: a.description || '',
+          avatar: a.avatar || null,
+          systemPrompt: a.systemPrompt || '',
+          temperature: a.temperature ?? 0.7,
+          maxTokens: a.maxTokens ?? 2048,
+          topP: a.topP ?? 1.0,
+          frequencyPenalty: a.frequencyPenalty ?? 0,
+          presencePenalty: a.presencePenalty ?? 0,
+          platformId: a.platformId || null,
+          modelId: a.modelId || null,
+          type: a.type || 'harness',
+          builtinToolIds: a.builtinToolIds || [],
+          customToolIds: a.customToolIds || [],
+          mcpToolMounts: a.mcpToolMounts || [],
+          skillIds: a.skillIds || [],
+          subAgentIds: a.subAgentIds || [],
+          parentAgentId: a.parentAgentId || null,
+          allowSubAgent: !!a.allowSubAgent,
+          isDefault: false,
+          isPublic: false,
+          workflow: a.workflow || EMPTY_WORKFLOW,
+          inputsSchema: a.inputsSchema || null,
+          config: a.config || null,
+          version: a.version ?? 1,
+        };
+        const rr = await api.post<any>('/agents', body);
+        if (rr && 'error' in rr) {
+          // 已存在（幂等）或 server 拒绝，忽略该条
+          continue;
+        }
+      }
+    } catch {
+      // 迁移失败不阻塞主流程，下次 loadAgents 再试
+    }
+  }
+
+  async function loadAgent(id: string) {    if (useAuthStore().useServerApi) {
+      const r = await api.get<any>(`/agents/${id}`);
+      if (r && 'data' in r) {
+        current.value = rowToAgent((r as any).data);
+      } else {
+        current.value = null;
+      }
+      return;
+    }
     const adapter = getPlatformAdapter();
     const rows = await adapter.db.query<any>('SELECT * FROM agent WHERE id = ?', [id]);
     if (rows.length > 0) current.value = rowToAgent(rows[0]);
@@ -463,6 +526,12 @@ export const useAgentStore = defineStore('agent', () => {
   }
 
   async function createAgent(name: string, description = ''): Promise<string> {
+    if (useAuthStore().useServerApi) {
+      const r = await api.post<any>('/agents', { name, description, workflow: EMPTY_WORKFLOW, version: 1 });
+      const id = (r && 'data' in r) ? (r as any).data?.id : '';
+      await loadAgents();
+      return id || '';
+    }
     const adapter = getPlatformAdapter();
     const id = uid('a_');
     const ts = now();
@@ -475,6 +544,40 @@ export const useAgentStore = defineStore('agent', () => {
   }
 
   async function createChatAgent(data: Partial<Agent>): Promise<string> {
+    if (useAuthStore().useServerApi) {
+      const defaults = defaultAgentBase();
+      const systemPrompt = data.systemPrompt || defaults.systemPrompt;
+      const config = data.config && Object.keys(data.config).length > 0
+        ? data.config
+        : (defaults.config ? { ...defaults.config, ...data.config } : data.config);
+      const body: Record<string, unknown> = {
+        name: data.name || '新智能体',
+        description: data.description || '',
+        systemPrompt,
+        temperature: data.temperature ?? defaults.temperature,
+        maxTokens: data.maxTokens ?? defaults.maxTokens,
+        topP: data.topP ?? defaults.topP,
+        frequencyPenalty: data.frequencyPenalty ?? defaults.frequencyPenalty,
+        presencePenalty: data.presencePenalty ?? defaults.presencePenalty,
+        platformId: data.platformId || '',
+        modelId: data.modelId || '',
+        type: data.type || 'harness',
+        builtinToolIds: data.builtinToolIds || [],
+        customToolIds: data.customToolIds || [],
+        mcpToolMounts: data.mcpToolMounts || [],
+        skillIds: data.skillIds || [],
+        subAgentIds: data.subAgentIds || [],
+        isDefault: false,
+        isPublic: !!data.isPublic,
+        workflow: data.workflow || EMPTY_WORKFLOW,
+        config,
+        version: 1,
+      };
+      const r = await api.post<any>('/agents', body);
+      const id = (r && 'data' in r) ? (r as any).data?.id : '';
+      await loadAgents();
+      return id || '';
+    }
     const adapter = getPlatformAdapter();
     const id = uid('a_');
     const ts = now();
@@ -516,6 +619,23 @@ export const useAgentStore = defineStore('agent', () => {
   }
 
   async function updateAgent(id: string, patch: Partial<Agent>) {
+    if (useAuthStore().useServerApi) {
+      const body: Record<string, unknown> = { ...patch };
+      // 移除 undefined 字段，server 端按提供的字段动态 SET
+      for (const k of Object.keys(body)) {
+        if (body[k] === undefined) delete body[k];
+      }
+      const r = await api.patch<any>(`/agents/${id}`, body);
+      if (r && 'data' in r) {
+        const updated = rowToAgent((r as any).data);
+        const idx = agents.value.findIndex((a) => a.id === id);
+        if (idx >= 0) agents.value[idx] = updated;
+        else agents.value.push(updated);
+        if (current.value?.id === id) current.value = updated;
+      }
+      await loadAgents();
+      return;
+    }
     const adapter = getPlatformAdapter();
     const sets: string[] = [];
     const params: unknown[] = [];
@@ -575,12 +695,20 @@ export const useAgentStore = defineStore('agent', () => {
   }
 
   /**
-   * 发布智能体到商城：把本地 agent 快照 upsert 到服务端 agent 表并置 is_public=1。
-   * 本地表 is_public 同步置 1。需登录（JWT 鉴权），未登录时静默跳过。
-   * agent 由本地 adapter 管理、商城读服务端 DB，故发布 = 跨库同步定义。
+   * 发布智能体到商城：把 agent 定义置 is_public=1（后端唯一数据源）。
+   * 需登录（JWT 鉴权），未登录时静默跳过。server 模式下直接 PATCH /api/agents/:id；
+   * 本地兜底模式下保留原跨库同步逻辑。
    */
   async function publishAgent(id: string): Promise<{ ok: boolean; error?: string }> {
     if (!useAuthStore().isLoggedIn) return { ok: false, error: '未登录，无法发布' };
+    if (useAuthStore().useServerApi) {
+      const r = await api.patch<any>(`/agents/${id}`, { isPublic: true });
+      if (r && 'error' in r) return { ok: false, error: (r as any).error };
+      const i = agents.value.findIndex((x) => x.id === id);
+      if (i >= 0) agents.value[i] = { ...agents.value[i], isPublic: true };
+      if (current.value?.id === id) current.value = { ...current.value, isPublic: true };
+      return { ok: true };
+    }
     const adapter = getPlatformAdapter();
     const rows = await adapter.db.query<any>('SELECT * FROM agent WHERE id = ?', [id]);
     if (rows.length === 0) return { ok: false, error: '智能体不存在' };
@@ -594,9 +722,17 @@ export const useAgentStore = defineStore('agent', () => {
     return { ok: true };
   }
 
-  /** 下架智能体：服务端 is_public 置 0，本地同步。 */
+  /** 下架智能体：is_public 置 0（后端唯一数据源）。 */
   async function unpublishAgent(id: string): Promise<{ ok: boolean; error?: string }> {
     if (!useAuthStore().isLoggedIn) return { ok: false, error: '未登录' };
+    if (useAuthStore().useServerApi) {
+      const r = await api.patch<any>(`/agents/${id}`, { isPublic: false });
+      if (r && 'error' in r) return { ok: false, error: (r as any).error };
+      const i = agents.value.findIndex((x) => x.id === id);
+      if (i >= 0) agents.value[i] = { ...agents.value[i], isPublic: false };
+      if (current.value?.id === id) current.value = { ...current.value, isPublic: false };
+      return { ok: true };
+    }
     const r = await api.post<any>(`/marketplace/agents/${id}/unpublish`);
     if (r && 'error' in r) return { ok: false, error: (r as any).error };
     const adapter = getPlatformAdapter();
@@ -609,13 +745,33 @@ export const useAgentStore = defineStore('agent', () => {
 
   /**
    * 从远程商城安装智能体：服务端代理调远程 install 端点（递增远程计数）并返回完整定义，
-   * 客户端再写入本地 adapter 表（agent 由本地 adapter 管理，服务端表仅做中转）。
+   * 再写入 server agent 表（后端唯一数据源，保留原 id 由本地生成）。
    */
   async function installFromMarketplace(sourceId: string, agentId: string): Promise<{ ok: boolean; error?: string }> {
     const r = await api.post<any>(`/agent-marketplace/${sourceId}/install`, { agentId });
     if (r && 'error' in r) return { ok: false, error: (r as any).error };
     const a = (r as any).data;
     if (!a) return { ok: false, error: '远程智能体数据为空' };
+    if (useAuthStore().useServerApi) {
+      const id = uid('a_');
+      const body: Record<string, unknown> = {
+        id,
+        name: a.name || '远程智能体',
+        description: a.description || '',
+        avatar: a.avatar || null,
+        workflow: a.workflow || EMPTY_WORKFLOW,
+        inputsSchema: a.inputsSchema || null,
+        config: a.config || null,
+        type: 'harness',
+        isDefault: false,
+        isPublic: false,
+        version: 1,
+      };
+      const rr = await api.post<any>('/agents', body);
+      if (rr && 'error' in rr) return { ok: false, error: (rr as any).error };
+      await loadAgents();
+      return { ok: true };
+    }
     const adapter = getPlatformAdapter();
     const id = uid('a_');
     const ts = now();
@@ -637,6 +793,16 @@ export const useAgentStore = defineStore('agent', () => {
   }
 
   async function updateWorkflow(id: string, workflow: Workflow) {
+    if (useAuthStore().useServerApi) {
+      const r = await api.patch<any>(`/agents/${id}`, { workflow });
+      if (r && 'data' in r) {
+        const updated = rowToAgent((r as any).data);
+        if (current.value?.id === id) current.value = updated;
+        const idx = agents.value.findIndex((a) => a.id === id);
+        if (idx >= 0) agents.value[idx] = updated;
+      }
+      return;
+    }
     const adapter = getPlatformAdapter();
     await adapter.db.exec(
       'UPDATE agent SET workflow_json = ?, updated_at = ? WHERE id = ?',
@@ -653,6 +819,15 @@ export const useAgentStore = defineStore('agent', () => {
     // E8: 内置智能体（如 pageAgent）不可删除
     if (agent.isBuiltin) return;
     if (agents.value.length <= 1) return;
+    if (useAuthStore().useServerApi) {
+      await api.delete(`/agents/${id}`);
+      agents.value = agents.value.filter((a) => a.id !== id);
+      if (selectedId.value === id) {
+        selectedId.value = agents.value[0]?.id || '';
+      }
+      if (current.value?.id === id) current.value = null;
+      return;
+    }
     const adapter = getPlatformAdapter();
     await adapter.db.exec('DELETE FROM agent WHERE id = ?', [id]);
     agents.value = agents.value.filter((a) => a.id !== id);
@@ -662,22 +837,156 @@ export const useAgentStore = defineStore('agent', () => {
     if (current.value?.id === id) current.value = null;
   }
 
+  /**
+   * 运行工作流（后端执行）：智能体定义存前端本地库，把定义 + sub_agent 引用的子智能体
+   * 打成 bundle 提交 POST /api/workflow/run 创建运行（server 落库 workflow_run + 异步执行），
+   * 再订阅 SSE 拿节点级进度；断线用 since=最后 seq 续传，运行结束取最终结果。
+   * 前端关闭不影响执行；MCP 连接复用后端 client-manager。
+   */
+  async function collectWorkflowBundle(row: any): Promise<{ agent: any; subAgents: Record<string, any> }> {
+    const agent = {
+      id: row.id,
+      name: row.name,
+      workflow: row.workflow_json ? JSON.parse(row.workflow_json) : { nodes: [], edges: [] },
+    };
+    const subAgents: Record<string, any> = {};
+    const seen = new Set<string>([agent.id]);
+    const queue: Workflow[] = [agent.workflow];
+    const useServer = useAuthStore().useServerApi;
+    while (queue.length > 0) {
+      const wf = queue.shift()!;
+      for (const n of wf.nodes || []) {
+        if (n.type !== 'sub_agent') continue;
+        const sid = (n.config?.subAgentId as string) || '';
+        if (!sid || seen.has(sid)) continue;
+        seen.add(sid);
+        // server 模式：后端唯一数据源，子智能体定义从后端读
+        if (useServer) {
+          const sr = await api.get<any>(`/agents/${sid}`);
+          if (sr && 'data' in sr && sr.data) {
+            const s = sr.data as any;
+            const swf: Workflow = s.workflow_json ? JSON.parse(s.workflow_json) : { nodes: [], edges: [] };
+            subAgents[sid] = { id: s.id, name: s.name, workflow: swf };
+            queue.push(swf);
+          }
+          continue;
+        }
+        const adapter = getPlatformAdapter();
+        const srows = await adapter.db.query<any>('SELECT id, name, workflow_json FROM agent WHERE id = ?', [sid]);
+        if (srows.length === 0) continue;
+        const swf: Workflow = srows[0].workflow_json ? JSON.parse(srows[0].workflow_json) : { nodes: [], edges: [] };
+        subAgents[sid] = { id: srows[0].id, name: srows[0].name, workflow: swf };
+        queue.push(swf);
+      }
+    }
+    return { agent, subAgents };
+  }
+
+  /** 消费运行事件流：节点 start/ok/error → runLogs；run:completed/failed → 最终状态。
+   *  断线自动用 since=最后 seq 重连（最多 10 次），运行结束正常返回。 */
+  async function consumeRunEvents(runId: string, signal: AbortSignal): Promise<'completed' | 'failed'> {
+    let since = 0;
+    let retries = 0;
+    for (;;) {
+      const token = localStorage.getItem('auth_token') || '';
+      const res = await fetch(`${API_BASE}/workflow/runs/${runId}/stream?since=${since}`, {
+        headers: { Authorization: `Bearer ${token}` },
+        signal,
+      });
+      if (!res.ok || !res.body) {
+        // 内存态被清理/重启 → 回查 DB 状态兜底
+        const r = await api.get<any>(`/workflow/runs/${runId}`);
+        if ('data' in r && r.data?.status && r.data.status !== 'running') {
+          for (const log of r.data.logs || []) runLogs.value.unshift(log);
+          if (r.data.status === 'completed') return 'completed';
+          throw new Error(r.data.error || '工作流运行失败');
+        }
+        throw new Error('SSE 连接失败');
+      }
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let runEnded = false;
+      let ended: 'completed' | 'failed' | null = null;
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const events = buffer.split('\n\n');
+        buffer = events.pop() || '';
+        for (const raw of events) {
+          const line = raw.trim();
+          if (!line.startsWith('data: ')) continue;
+          let ev: any;
+          try { ev = JSON.parse(line.slice(6)); } catch { continue; }
+          if (typeof ev.seq === 'number') since = ev.seq;
+          switch (ev.type) {
+            case 'connected': break;
+            case 'node:start':
+              runLogs.value.unshift({ nodeId: ev.nodeId, status: 'start', time: Date.now() });
+              break;
+            case 'node:ok':
+              runLogs.value.unshift({ nodeId: ev.nodeId, status: 'ok', time: Date.now() });
+              break;
+            case 'node:error':
+              runLogs.value.unshift({ nodeId: ev.nodeId, status: 'error', msg: ev.msg, time: Date.now() });
+              break;
+            case 'run:completed':
+              ended = 'completed';
+              runEnded = true;
+              break;
+            case 'run:failed':
+              ended = 'failed';
+              runEnded = true;
+              runLogs.value.unshift({ nodeId: '__end__', status: 'error', msg: ev.msg, time: Date.now() });
+              break;
+          }
+        }
+        if (runEnded) break;
+      }
+      if (ended === 'completed') return 'completed';
+      if (ended === 'failed') throw new Error('工作流运行失败');
+      // 流断开但运行未结束（网络闪断）→ since 续传重连
+      if (++retries > 10) throw new Error('SSE 多次断开，放弃续传');
+      await new Promise((r) => setTimeout(r, 800));
+    }
+  }
+
   async function runAgent(id: string, inputs: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
-    const adapter = getPlatformAdapter();
-    const rows = await adapter.db.query<any>('SELECT * FROM agent WHERE id = ?', [id]);
-    if (rows.length === 0) throw new Error('智能体不存在');
-    const agent = rowToAgent(rows[0]);
+    // 后端唯一数据源：server 模式下 agent 定义从后端读
+    let agentRow: any;
+    if (useAuthStore().useServerApi) {
+      const r = await api.get<any>(`/agents/${id}`);
+      if (!r || !('data' in r) || !r.data) throw new Error('智能体不存在');
+      agentRow = r.data;
+    } else {
+      const adapter = getPlatformAdapter();
+      const rows = await adapter.db.query<any>('SELECT * FROM agent WHERE id = ?', [id]);
+      if (rows.length === 0) throw new Error('智能体不存在');
+      agentRow = rows[0];
+    }
+    const { agent, subAgents } = await collectWorkflowBundle(agentRow);
     running.value = true;
     runLogs.value = [];
+    const ctrl = new AbortController();
     try {
-      const eng = getEngine();
-      const result = await eng.run(agent, inputs, { callStack: [id] });
-      runLogs.value.unshift({ nodeId: '__end__', status: 'ok', time: Date.now() });
-      return result;
+      const r = await api.post<any>('/workflow/run', { agent, subAgents, inputs });
+      if ('error' in r) throw new Error(r.error);
+      const runId = r.data?.runId as string;
+      if (!runId) throw new Error('创建运行失败：未返回 runId');
+      const outcome = await consumeRunEvents(runId, ctrl.signal);
+      // 拉最终结果（SSE 完成事件不带全量 result，统一回查一次）
+      const rr = await api.get<any>(`/workflow/runs/${runId}`);
+      if ('error' in rr) throw new Error(rr.error);
+      if (outcome === 'failed') throw new Error(rr.data?.error || '工作流运行失败');
+      return rr.data?.result || {};
     } catch (e: any) {
-      runLogs.value.unshift({ nodeId: '__end__', status: 'error', msg: e?.message, time: Date.now() });
+      if (e?.name !== 'AbortError') {
+        runLogs.value.unshift({ nodeId: '__end__', status: 'error', msg: e?.message, time: Date.now() });
+      }
       throw e;
     } finally {
+      ctrl.abort();
       running.value = false;
     }
   }
@@ -713,179 +1022,6 @@ export const useAgentStore = defineStore('agent', () => {
     selectedId, selectedAgent, selectAgent,
     loadAgents, loadAgent, createAgent, createChatAgent, updateAgent, updateWorkflow, deleteAgent,
     publishAgent, unpublishAgent, installFromMarketplace,
-    runAgent, addNode,
+    collectWorkflowBundle, runAgent, addNode,
   };
 });
-
-// 内置节点 handler
-import type { NodeHandler, RunContext, NodeResult } from '@yan-zhi/core';
-
-class InputNodeHandler implements NodeHandler {
-  type = 'input';
-  async execute(config: Record<string, unknown>, ctx: RunContext): Promise<NodeResult> {
-    return { output: ctx.inputs };
-  }
-}
-
-class OutputNodeHandler implements NodeHandler {
-  type = 'output';
-  async execute(config: Record<string, unknown>, ctx: RunContext): Promise<NodeResult> {
-    const key = (config.key as string) || 'result';
-    return { output: ctx.outputs.size > 0 ? Array.from(ctx.outputs.values()).pop() : ctx.inputs[key] };
-  }
-}
-
-class CodeNodeHandler implements NodeHandler {
-  type = 'code';
-  async execute(config: Record<string, unknown>, ctx: RunContext): Promise<NodeResult> {
-    const expr = (config.expression as string) || 'return null;';
-    try {
-      // 沙箱：屏蔽危险全局对象
-      const sandboxed = `"use strict"; const window=void 0,document=void 0,fetch=void 0,XMLHttpRequest=void 0,eval=void 0,Function=void 0,setTimeout=void 0,setInterval=void 0; return (function(ctx){ ${expr} })(ctx);`;
-      const fn = new Function('ctx', sandboxed);
-      const out = await Promise.race([
-        Promise.resolve(fn(ctx)),
-        new Promise<null>((_, rej) => setTimeout(() => rej(new Error('代码节点超时（3s）')), 3000)),
-      ]);
-      return { output: out };
-    } catch {
-      return { output: null };
-    }
-  }
-}
-
-class ConditionNodeHandler implements NodeHandler {
-  type = 'condition';
-  async execute(config: Record<string, unknown>, ctx: RunContext): Promise<NodeResult> {
-    const expr = (config.expression as string) || 'return true;';
-    try {
-      const fn = new Function('ctx', expr);
-      const result = fn(ctx);
-      return { output: { matched: !!result, value: result } };
-    } catch {
-      return { output: { matched: false, value: false } };
-    }
-  }
-}
-
-class LoopNodeHandler implements NodeHandler {
-  type = 'loop';
-  async execute(config: Record<string, unknown>, ctx: RunContext): Promise<NodeResult> {
-    // 引擎层已处理子图循环，这里做单机回退逻辑
-    const maxIter = Number(config.maxIterations) || 5;
-    const key = (config.iterateKey as string) || 'item';
-    const bodyExpr = (config.bodyExpr as string) || '';
-    const source = ctx.outputs.size > 0
-      ? Array.from(ctx.outputs.values()).pop()
-      : ctx.inputs;
-    const arr: unknown[] = Array.isArray(source) ? source : (source ? [source] : []);
-    const results: unknown[] = [];
-    if (bodyExpr) {
-      try {
-        const fn = new Function('ctx', `"use strict"; const window=void 0,document=void 0,fetch=void 0; return (function(ctx){ ${bodyExpr} })(ctx);`);
-        const limit = Math.min(arr.length, maxIter);
-        for (let i = 0; i < limit; i++) {
-          results.push(fn({ ...ctx, [key]: arr[i], index: i }));
-        }
-      } catch {}
-    }
-    return { output: results.length > 0 ? results : source };
-  }
-}
-
-class SubAgentNodeHandler implements NodeHandler {
-  type = 'sub_agent';
-  async execute(config: Record<string, unknown>, ctx: RunContext): Promise<NodeResult> {
-    const subAgentId = config.subAgentId as string;
-    if (!subAgentId) throw new Error('子智能体节点缺少 subAgentId');
-    const mapping = (config.inputsMapping as Record<string, unknown>) || {};
-    const subInputs: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(mapping)) {
-      if (typeof v === 'string' && v.startsWith('${') && v.endsWith('}')) {
-        const path = v.slice(2, -1).split('.').slice(1);
-        let cur: any = ctx;
-        for (const p of path) cur = cur?.[p];
-        subInputs[k] = cur;
-      } else {
-        subInputs[k] = v;
-      }
-    }
-    const adapter = getPlatformAdapter();
-    const [row] = await adapter.db.query<any>('SELECT * FROM agent WHERE id = ?', [subAgentId]);
-    if (!row) throw new Error(`子智能体不存在: ${subAgentId}`);
-    const wf: Workflow = row.workflow_json ? JSON.parse(row.workflow_json) : { nodes: [], edges: [] };
-    const subAgent: Agent = {
-      id: row.id, name: row.name, description: row.description,
-      workflow: wf, allowSubAgent: !!row.allow_sub_agent, isDefault: false, version: row.version,
-      createdAt: row.created_at, updatedAt: row.updated_at,
-    };
-    const eng = new WorkflowEngine();
-    eng.register(new LlmNodeHandler());
-    eng.register(new ToolNodeHandler());
-    eng.register(new InputNodeHandler());
-    eng.register(new OutputNodeHandler());
-    eng.register(new CodeNodeHandler());
-    eng.register(new ConditionNodeHandler());
-    eng.register(new LoopNodeHandler());
-    eng.register(new MemoryReadNodeHandler());
-    eng.register(new MemoryWriteNodeHandler());
-    const nextStack = ctx.callStack ? [...ctx.callStack, subAgentId] : [subAgentId];
-    const result = await eng.run(subAgent, subInputs, { callStack: nextStack });
-    return { output: result };
-  }
-}
-
-class MemoryReadNodeHandler implements NodeHandler {
-  type = 'memory_read';
-  async execute(config: Record<string, unknown>, ctx: RunContext): Promise<NodeResult> {
-    const agentId = (config.agentId as string) || '';
-    const query = (config.query as string) || '';
-    const topK = Number(config.topK) || 3;
-    const adapter = getPlatformAdapter();
-    let rows: any[] = [];
-    if (agentId) {
-      rows = await adapter.db.query<any>(
-        'SELECT * FROM memory WHERE agent_id = ? ORDER BY last_used_at DESC LIMIT ?',
-        [agentId, topK],
-      );
-    } else {
-      rows = await adapter.db.query<any>(
-        'SELECT * FROM memory ORDER BY last_used_at DESC LIMIT ?',
-        [topK],
-      );
-    }
-    if (query) {
-      const q = query.toLowerCase();
-      rows = rows
-        .map((r) => ({ r, score: (r.content || '').toLowerCase().includes(q) ? 1 : 0 }))
-        .filter((x) => x.score > 0)
-        .map((x) => x.r);
-    }
-    return { output: rows.map((r) => ({ id: r.id, content: r.content, tags: r.tags_json ? JSON.parse(r.tags_json) : [] })) };
-  }
-}
-
-class MemoryWriteNodeHandler implements NodeHandler {
-  type = 'memory_write';
-  async execute(config: Record<string, unknown>, ctx: RunContext): Promise<NodeResult> {
-    const agentId = (config.agentId as string) || '';
-    const contentKey = (config.contentKey as string) || 'content';
-    const tags = (config.tags as string[]) || [];
-    const upstream = ctx.outputs.size > 0 ? Array.from(ctx.outputs.values()).pop() : ctx.inputs;
-    let content = '';
-    if (typeof upstream === 'string') content = upstream;
-    else if (upstream && typeof upstream === 'object' && contentKey in (upstream as any)) {
-      content = String((upstream as any)[contentKey]);
-    } else {
-      content = JSON.stringify(upstream);
-    }
-    const adapter = getPlatformAdapter();
-    const id = uid('mem_');
-    const ts = now();
-    await adapter.db.exec(
-      'INSERT INTO memory (id, agent_id, content, tags_json, created_at, last_used_at) VALUES (?, ?, ?, ?, ?, ?)',
-      [id, agentId, content, JSON.stringify(tags), ts, ts],
-    );
-    return { output: { id, content, tags } };
-  }
-}

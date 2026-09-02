@@ -1,16 +1,33 @@
-// 聊天 store
+﻿// 聊天 store
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
 import type { Conversation, Message, Platform, Model, DeltaToolCall } from '@yan-zhi/shared';
-import { getPlatformAdapter, LlmClient, ContextWindow, getToolRegistry } from '@yan-zhi/core';
+import { getPlatformAdapter, LlmClient, ContextWindow, getToolRegistry, getApiToolRegistry } from '@yan-zhi/core';
 import { uid } from '@yan-zhi/shared';
 import { useMcpStore } from './mcp';
 import { useAgentStore } from './agent';
 import { useSkillStore } from './skill';
 import { useToolsStore } from './tools';
 import { useSettingsStore } from './settings';
-import { api, isElectron } from '../api/client';
+import { useFileStore } from './file';
+import { api, isElectron, API_BASE } from '../api/client';
 import { useAuthStore } from './auth';
+
+// 从工具调用参数中健壮地提取 URL —— 模型常把 URL 放在非 url 字段（target/address/link/href/page 等），
+// 或直接把 arguments 写成 JSON 字符串。只认 args.url 会导致「缺少 url 参数」误报。
+function extractUrlFromArgs(args: unknown): string {
+  if (typeof args === 'string') return args.trim();
+  if (args && typeof args === 'object') {
+    const o = args as Record<string, unknown>;
+    for (const k of ['url', 'target', 'address', 'link', 'href', 'page', 'site', 'to', 'uri', 'location', 'query', 'q']) {
+      const v = o[k];
+      if (typeof v === 'string' && v.trim()) return v.trim();
+    }
+    const strVals = Object.values(o).filter((v) => typeof v === 'string' && (v as string).trim());
+    if (strVals.length === 1) return String(strVals[0]).trim();
+  }
+  return '';
+}
 
 function rowToConv(r: any): Conversation {
   let mcpServerIds: string[] = [];
@@ -44,6 +61,7 @@ function rowToConv(r: any): Conversation {
     _mcpDisabledTools: convMcpDisabled,
     _mcpToolAliases: convMcpAliases,
     skillIds: r.skill_ids_json ? JSON.parse(r.skill_ids_json) : [],
+    builtinToolIds: r.builtin_tool_ids_json ? JSON.parse(r.builtin_tool_ids_json) : [],
     systemPrompt: r.system_prompt,
     pinned: !!r.pinned,
     createdAt: r.created_at,
@@ -166,12 +184,7 @@ export const useChatStore = defineStore('chat', () => {
   const previewingFile = ref<{ name: string; path: string } | null>(null);
   // 右侧预览面板当前网站 tab 标题的原始 URL（BrowserPanel 写入），用于在 tab header 上展示「真实打开的网站名」
   const currentBrowserUrl = ref('');
-  // 三层记忆缓存（异步预取）：callLlm 前刷新，buildSystemPrompt 同步拼接注入
-  const memoryContext = ref('');
-  // 知识库命中缓存（异步预取，不登录/登录都可用）：命中知识片段注入 prompt
-  const knowledgeContext = ref('');
-  // 会话轮数计数：每满固定轮数触发一次记忆抽取（用户无感知）
-  const conversationTurnCount = ref(0);
+
 
   // E12: 智能体反问弹窗 —— 等待用户回答的待处理问题（dispatchToolCall 中 await 此 Promise 以暂停 ReAct 循环）
   const pendingQuestion = ref<PendingQuestion | null>(null);
@@ -247,6 +260,8 @@ export const useChatStore = defineStore('chat', () => {
     planSteps.value = [];
   }
   let abortControllers = new Map<string, AbortController>();
+  const taskIds = new Map<string, string>(); // convId → backend taskId（用于 abort）
+  const taskEventCounts = new Map<string, number>(); // taskId → 已收到事件数（重连时作为 since）
 
   const isServerMode = () => !!useAuthStore().isLoggedIn;
   // 记忆启用条件：已登录（远程服务端）或 Electron 桌面端（内置 server，guest 也可访问 memory 路由）。
@@ -291,6 +306,7 @@ export const useChatStore = defineStore('chat', () => {
       mountedMcpServers.value = conv?.mcpServerIds || [];
       mcpDisabledTools.value = conv?._mcpDisabledTools ? { ...conv._mcpDisabledTools } : {};
       mcpToolAliases.value = conv?._mcpToolAliases ? JSON.parse(JSON.stringify(conv._mcpToolAliases)) : {};
+      void reconnectActiveTask(convId);
       return;
     }
     const adapter = getPlatformAdapter();
@@ -349,7 +365,9 @@ export const useChatStore = defineStore('chat', () => {
       if (patch.mcpServerIds !== undefined) body.mcpServerIds = patch.mcpServerIds;
       if (patch._mcpDisabledTools !== undefined) body.mcpDisabledTools = patch._mcpDisabledTools;
       if (patch.skillIds !== undefined) body.skillIds = patch.skillIds;
+      if (patch.builtinToolIds !== undefined) body.builtinToolIds = patch.builtinToolIds;
       if (patch.systemPrompt !== undefined) body.systemPrompt = patch.systemPrompt;
+      if (patch.agentId !== undefined) body.agentId = patch.agentId;
       if (patch.spaceId !== undefined) body.spaceId = patch.spaceId || null;
       if (Object.keys(body).length === 0) return;
       await api.patch(`/conversations/${id}`, body);
@@ -378,6 +396,7 @@ export const useChatStore = defineStore('chat', () => {
     }
     if (patch.skillIds !== undefined) { sets.push('skill_ids_json = ?'); params.push(JSON.stringify(patch.skillIds)); }
     if (patch.systemPrompt !== undefined) { sets.push('system_prompt = ?'); params.push(patch.systemPrompt); }
+    if (patch.agentId !== undefined) { sets.push('agent_id = ?'); params.push(patch.agentId || null); }
     if (sets.length === 0) return;
     sets.push('updated_at = ?');
     params.push(Math.floor(Date.now()));
@@ -461,6 +480,54 @@ export const useChatStore = defineStore('chat', () => {
     }
     (messagesByConv.value[targetConvId] ||= []).push({ ...msg, id, createdAt: ts });
     return id;
+  }
+
+  /** 乐观添加消息：先 push 到内存（UI 立即显示），再异步落库（不经过 addMessage，避免重复 push）。
+   *  返回 { id, dbPromise }：id 是前端临时 ID（内存中用），dbPromise resolve 为后端真实 ID。 */
+  function pushMessageOptimistic(msg: Omit<Message, 'id' | 'createdAt'>): { id: string; dbPromise: Promise<string> } {
+    const targetConvId = msg.conversationId || currentConvId.value;
+    const id = uid('msg_');
+    const ts = Date.now();
+    (messagesByConv.value[targetConvId] ||= []).push({ ...msg, id, createdAt: ts });
+    const dbPromise = (async (): Promise<string> => {
+      if (isServerMode()) {
+        const r = await api.post<any>(`/conversations/${targetConvId}/messages`, {
+          role: msg.role, content: msg.content, toolCalls: msg.toolCalls,
+          toolCallId: msg.toolCallId, reasoningContent: msg.reasoningContent, tokens: msg.tokens,
+          parentToolCallId: msg.parentToolCallId, subAgentId: msg.subAgentId,
+          subAgentName: msg.subAgentName, subAgentDepth: msg.subAgentDepth,
+        });
+        if ('data' in r) {
+          const realId = (r.data as any).id;
+          const arr = messagesByConv.value[targetConvId];
+          const idx = arr.findIndex(m => m.id === id);
+          if (idx >= 0) arr[idx] = { ...arr[idx], id: realId };
+          return realId;
+        }
+        throw new Error('添加消息失败');
+      }
+      try {
+        const adapter = getPlatformAdapter();
+        await adapter.db.exec(
+          'INSERT INTO message (id, conversation_id, role, content, tool_calls_json, tool_call_id, reasoning_content, system_prompt_snapshot, tokens, parent_tool_call_id, sub_agent_id, sub_agent_name, sub_agent_depth, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          [
+            id, targetConvId, msg.role, msg.content || null,
+            msg.toolCalls ? JSON.stringify(msg.toolCalls) : null,
+            msg.toolCallId || null, msg.reasoningContent || null,
+            msg.systemPromptSnapshot || null,
+            msg.tokens || 0,
+            msg.parentToolCallId || null, msg.subAgentId || null,
+            msg.subAgentName || null, msg.subAgentDepth ?? null,
+            ts,
+          ],
+        );
+        await adapter.db.exec('UPDATE conversation SET updated_at = ? WHERE id = ?', [ts, targetConvId]);
+      } catch (e) {
+        console.warn('[Chat] pushMessageOptimistic 落库失败:', e);
+      }
+      return id;
+    })();
+    return { id, dbPromise };
   }
 
   async function updateMessage(id: string, patch: Partial<Message>) {
@@ -556,7 +623,7 @@ export const useChatStore = defineStore('chat', () => {
     }
 
     return {
-      builtinToolIds: [...new Set([...agentBuiltin])],
+      builtinToolIds: [...new Set([...agentBuiltin, ...(conv?.builtinToolIds || [])])],
       customToolIds: [...new Set([...agentCustom])],
       mcpToolMounts: mergedMcp,
       skillIds: [...new Set([...agentSkills, ...convSkills])],
@@ -652,19 +719,8 @@ export const useChatStore = defineStore('chat', () => {
       return mcpStore.callTool(parsed.serverId, parsed.toolName, args);
     }
 
-    // 2) 自定义工具（服务端 node:vm 沙箱执行）
-    if (fullName.startsWith(CUSTOM_PREFIX)) {
-      const parsed = parseCustomToolName(fullName);
-      if (!parsed) return { ok: false, msg: '无法解析自定义工具: ' + fullName };
-      if (!isServerMode()) {
-        return { ok: false, msg: '自定义工具需登录服务端执行（沙箱依赖 Node 运行时）' };
-      }
-      const r = await api.post<any>(`/tools/${parsed.id}/execute`, { args });
-      if ('error' in r) return { ok: false, msg: r.error };
-      return { ok: true, result: r.data };
-    }
-
-    // 3) 内置工具裸名（经 ToolRegistry + 平台适配器执行）
+    // 2) 内置工具裸名（经 ToolRegistry + 平台适配器执行）
+    // 注意：custom_/call_agent/list_sub_agents 已由后端直接执行，不再委托前端
     if (registry.has(fullName)) {
       if (fullName.startsWith(MCP_PREFIX) || fullName.startsWith(CUSTOM_PREFIX)) {
         return { ok: false, msg: '内置工具名与保留前缀冲突: ' + fullName };
@@ -673,7 +729,7 @@ export const useChatStore = defineStore('chat', () => {
       // 通过 store.currentBrowserUrl 命令 BrowserPanel 导航，模型打开的页面在预览面板同步显示。
       if (fullName === 'browser_navigate') {
         const isElectronDesktop = typeof window !== 'undefined' && !!(window as any).electronAPI?.isElectron;
-        const rawUrl = String((args as Record<string, unknown>).url || '').trim();
+        const rawUrl = extractUrlFromArgs(args);
         if (isElectronDesktop) {
           if (!rawUrl) return { ok: false, msg: 'browser_navigate 缺少 url 参数' };
           // 规范化：非 http 开头补 https://（与 BrowserPanel 一致）
@@ -686,21 +742,7 @@ export const useChatStore = defineStore('chat', () => {
         }
         // Web 端/非桌面：走 registry.execute（服务端 Playwright），逻辑不变
       }
-      // E7: call_agent 特殊拦截 —— 委派给子智能体执行
-      if (fullName === 'call_agent') {
-        return runSubAgent(args as { agentId?: string; input?: string }, ctx);
-      }
-      // E7b: list_sub_agents 拦截 —— 返回当前智能体可调用的子智能体列表（id/名称/描述）
-      if (fullName === 'list_sub_agents') {
-        const merged = getMergedMounts();
-        const agentStore = useAgentStore();
-        const list = merged.subAgentIds.map((id) => {
-          const sub = agentStore.agents.find((a) => a.id === id);
-          if (!sub) return `- id: \`${id}\`（该子智能体已被删除）`;
-          return `- **${sub.name}** (id: \`${id}\`): ${sub.description || ''}`;
-        });
-        return { ok: true, result: list.length ? list.join('\n') : '当前智能体未挂载任何子智能体' };
-      }
+
       // image_analyze 拦截 —— 优先 vision 多模态模型，降级服务端 Tesseract OCR
       if (fullName === 'image_analyze') {
         return runImageAnalyze(args as { path?: string; prompt?: string; platformId?: string; modelId?: string });
@@ -925,305 +967,6 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   /** E7: 运行子智能体（call_agent 的实际执行逻辑）—— 递归 LLM ReAct 循环，带 callStack 防递归 */
-  const subAgentCallStack = ref<string[]>([]);
-  async function runSubAgent(args: { agentId?: string; input?: string }, ctx?: { parentToolCallId?: string; depth?: number }): Promise<{ ok: boolean; result?: unknown; msg?: string }> {
-    const agentId = args.agentId;
-    const input = args.input;
-    if (!agentId) return { ok: false, msg: 'agentId 为必填项' };
-    if (!input) return { ok: false, msg: 'input 为必填项' };
-    // 防递归：callStack 深度限制
-    if (subAgentCallStack.value.length >= 3) {
-      return { ok: false, msg: '子智能体调用深度超限（最多 3 层）' };
-    }
-    if (subAgentCallStack.value.includes(agentId)) {
-      return { ok: false, msg: '检测到循环调用，已终止' };
-    }
-
-    try {
-      const { useAgentStore } = await import('./agent');
-      const agentStore = useAgentStore();
-      // 别名兜底：LLM 常用简写命名，归一化到内置 pageAgent 的正式 ID
-      const SUBAGENT_ALIASES: Record<string, string> = {
-        pageAgent: 'a_builtin_page_agent',
-        page_agent: 'a_builtin_page_agent',
-        pageagent: 'a_builtin_page_agent',
-      };
-      const resolvedId = SUBAGENT_ALIASES[agentId] || agentId;
-      const subAgent = agentStore.agents.find((a) => a.id === resolvedId);
-      if (!subAgent) return { ok: false, msg: '子智能体不存在: ' + agentId + '（可调用 list_sub_agents 工具查询可用子智能体及其 ID）' };
-
-      // 获取当前会话的平台和模型
-      const conv = conversations.value.find((c) => c.id === currentConvId.value);
-      const platformId = subAgent.platformId || conv?.platformId;
-      const modelId = subAgent.modelId || conv?.modelId;
-      if (!platformId || !modelId) {
-        return { ok: false, msg: '子智能体未配置平台/模型，无法执行' };
-      }
-      const { usePlatformStore } = await import('./platform');
-      const platformStore = usePlatformStore();
-      const resolved = platformStore.resolveModel(modelId, platformId);
-      if (!resolved) return { ok: false, msg: '无法解析子智能体的模型配置' };
-      const platform = platformStore.platforms.find((p) => p.id === platformId);
-      if (!platform) return { ok: false, msg: '平台不存在' };
-
-      // 临时切换挂载到子智能体的工具配置，运行简化 ReAct 循环
-      subAgentCallStack.value.push(agentId);
-      try {
-        const result = await runSubAgentLlm(subAgent, input, platform, resolved, ctx?.parentToolCallId, ctx?.depth ?? 1);
-        return { ok: true, result: result };
-      } finally {
-        subAgentCallStack.value.pop();
-      }
-    } catch (e: any) {
-      // C1: 任何异常都返回 ok:false 而非抛出，避免子智能体异常/超时中断父智能体链路。
-      // runSubAgentLlm 已把异常转为带进度的 Error，此处统一兜底。
-      return { ok: false, msg: '子智能体执行失败: ' + (e?.message || e) };
-    }
-  }
-
-  /** 追加子智能体中间消息并落库（持久化 + 内存缓存实时可见）。
-   *  改动③：原仅进内存不落库，刷新会话后丢失；现落库到 message 表（带 parent_tool_call_id 等关联字段）。
-   *  返回消息 id，供流式过程中逐字更新该占位消息。 */
-  async function appendTransientMessage(msg: Omit<Message, 'id' | 'createdAt'> & { conversationId: string }): Promise<string> {
-    const convId = msg.conversationId || currentConvId.value;
-    if (!convId) return '';
-    const id = uid('submsg_');
-    const ts = Date.now();
-    const fullMsg: Message = { ...msg, conversationId: convId, id, createdAt: ts } as Message;
-    if (isServerMode()) {
-      try {
-        const r = await api.post<any>(`/conversations/${convId}/messages`, {
-          role: msg.role, content: msg.content, toolCalls: msg.toolCalls,
-          toolCallId: msg.toolCallId, reasoningContent: msg.reasoningContent, tokens: msg.tokens,
-          parentToolCallId: msg.parentToolCallId, subAgentId: msg.subAgentId,
-          subAgentName: msg.subAgentName, subAgentDepth: msg.subAgentDepth,
-        });
-        if ('data' in r) {
-          const m = rowToMsg(r.data as any);
-          (messagesByConv.value[convId] ||= []).push(m);
-          return m.id;
-        }
-      } catch { /* 落库失败回退到内存 */ }
-      (messagesByConv.value[convId] ||= []).push(fullMsg);
-      return id;
-    }
-    const adapter = getPlatformAdapter();
-    try {
-      await adapter.db.exec(
-        'INSERT INTO message (id, conversation_id, role, content, tool_calls_json, tool_call_id, reasoning_content, system_prompt_snapshot, tokens, parent_tool_call_id, sub_agent_id, sub_agent_name, sub_agent_depth, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-        [
-          id, convId, msg.role, msg.content || null,
-          msg.toolCalls ? JSON.stringify(msg.toolCalls) : null,
-          msg.toolCallId || null, msg.reasoningContent || null,
-          msg.systemPromptSnapshot || null,
-          msg.tokens || 0,
-          msg.parentToolCallId || null, msg.subAgentId || null,
-          msg.subAgentName || null, msg.subAgentDepth ?? null,
-          ts,
-        ],
-      );
-    } catch (e) { console.warn('[Chat] 子智能体中间消息落库失败:', e); }
-    (messagesByConv.value[convId] ||= []).push(fullMsg);
-    return id;
-  }
-
-  /** 子智能体 LLM 循环：用子智能体的 systemPrompt + 挂载工具运行有限步 ReAct。
-   *  C1: 加独立超时（单步 60s / 总 5min，可配）+ 顶层 try/catch 兜底，任何异常都转为带进度的错误抛出，
-   *  由 runSubAgent 统一返回 ok:false，避免子智能体挂起/异常中断父智能体链路。 */
-  async function runSubAgentLlm(agent: any, input: string, platform: Platform, model: Model, parentToolCallId?: string, depth = 1): Promise<string> {
-    const registry = getToolRegistry();
-    const maxSteps = agent.config?.maxReActSteps || 100;
-    // C1: 子智能体独立超时（可配），超时返回已执行进度摘要而非静默挂起
-    const stepTimeoutMs = agent.config?.stepTimeoutMs ?? 60_000;        // 单步 LLM 调用 60s
-    const totalTimeoutMs = agent.config?.totalTimeoutMs ?? 5 * 60_000;  // 总执行 5min
-    const deadline = Date.now() + totalTimeoutMs;
-    // 进度跟踪（异常/超时时返回摘要）
-    let executedSteps = 0;
-    let executedToolCalls = 0;
-    let lastAssistantContent = '';
-    const client = new LlmClient(platform, model);
-    const convId = currentConvId.value;
-    const subAgentId = agent.id;
-    const subAgentName = agent.name;
-
-    // 构建子智能体的工具列表
-    const subTools: unknown[] = [];
-    const subBuiltinIds: string[] = agent.builtinToolIds || [];
-    for (const name of subBuiltinIds) {
-      if (!registry.has(name)) continue;
-      // 递归调用自身用 call_agent 会在 dispatchToolCall 中拦截
-      const def = registry.get(name)!;
-      subTools.push({ type: 'function', function: { name, description: def.description, parameters: def.inputSchema } });
-    }
-
-    const messages: any[] = [
-      { role: 'system', content: agent.systemPrompt || '你是一个智能助手。' },
-      { role: 'user', content: input },
-    ];
-
-    // 改动①：执行期间标记该 call_agent 工具项为 running，跨层强制展开 SubAgentRoundView；结束移除即自动折叠
-    if (parentToolCallId) runningToolCallIds.value.add(parentToolCallId);
-    try {
-      for (let step = 0; step < maxSteps; step++) {
-        // C1: 总超时检查
-        if (Date.now() > deadline) {
-          throw new Error(`子智能体总执行超时 (${totalTimeoutMs / 1000}s)`);
-        }
-        const abortSignal = convId ? abortControllers.get(convId)?.signal : undefined;
-        if (abortSignal?.aborted) throw new DOMException('Aborted', 'AbortError');
-
-        // 改动①：先创建占位 assistant 中间消息（落库），流式过程中逐字更新它
-        let placeholderId = '';
-        if (convId) {
-          placeholderId = await appendTransientMessage({
-            conversationId: convId,
-            role: 'assistant',
-            content: undefined,
-            subAgentId,
-            subAgentName,
-            parentToolCallId,
-            subAgentDepth: depth,
-          });
-        }
-        let fullContent = '';
-        let fullReasoning = '';
-        const toolCallAcc: DeltaToolCall[] = [];
-
-        // 单步流式消费：用独立 AbortController 实现单步超时 + 外层 abort 联动
-        const streamOnce = async () => {
-          const stepCtrl = new AbortController();
-          const onParentAbort = () => stepCtrl.abort(abortSignal?.reason || new DOMException('Aborted', 'AbortError'));
-          if (abortSignal) {
-            if (abortSignal.aborted) onParentAbort();
-            else abortSignal.addEventListener('abort', onParentAbort, { once: true });
-          }
-          const timer = setTimeout(() => stepCtrl.abort(new Error(`单步 LLM 调用超时 (${stepTimeoutMs / 1000}s)`)), stepTimeoutMs);
-          try {
-            for await (const chunk of client.chatStream(messages, {
-              tools: subTools.length > 0 ? subTools : undefined,
-              temperature: agent.temperature ?? 0.7,
-              maxTokens: agent.maxTokens ?? 2048,
-              signal: stepCtrl.signal,
-            })) {
-              if (chunk.delta?.content) fullContent += chunk.delta.content;
-              if (chunk.delta?.reasoningContent) fullReasoning += chunk.delta.reasoningContent;
-              if (chunk.delta?.toolCalls) {
-                for (const tc of chunk.delta.toolCalls) {
-                  let idx = tc.index;
-                  if (idx === undefined) idx = toolCallAcc.length > 0 ? toolCallAcc.length - 1 : 0;
-                  if (!toolCallAcc[idx]) {
-                    toolCallAcc[idx] = { ...tc };
-                  } else {
-                    const prev = toolCallAcc[idx];
-                    toolCallAcc[idx] = {
-                      ...prev,
-                      ...tc,
-                      function: tc.function
-                        ? {
-                            ...prev.function,
-                            ...tc.function,
-                            arguments: (prev.function?.arguments || '') + (tc.function!.arguments || ''),
-                          }
-                        : prev.function,
-                    };
-                  }
-                }
-              }
-              // 改动①：逐字更新内存占位消息（参考主循环流式手法）
-              if (convId && placeholderId) {
-                const arr = messagesByConv.value[convId];
-                const idx2 = arr.findIndex((m) => m.id === placeholderId);
-                if (idx2 >= 0) {
-                  arr[idx2] = {
-                    ...arr[idx2],
-                    content: fullContent,
-                    reasoningContent: fullReasoning || undefined,
-                    toolCalls: toolCallAcc.length > 0 ? [...toolCallAcc] as any : undefined,
-                  };
-                }
-              }
-            }
-          } finally {
-            clearTimeout(timer);
-            if (abortSignal) abortSignal.removeEventListener('abort', onParentAbort);
-          }
-        };
-
-        try {
-          await streamOnce();
-        } catch (e: any) {
-          if (e?.name === 'AbortError' && abortSignal?.aborted) throw e;
-          const isTimeout = (e?.message || '').includes('超时');
-          const isNet = (e?.message || '').includes('Failed to fetch') || (e?.message || '').includes('NetworkError') || e?.name === 'TypeError';
-          // 超时不重试；网络错误重置状态后重试一次
-          if (!isTimeout && isNet) {
-            fullContent = ''; fullReasoning = ''; toolCallAcc.length = 0;
-            if (convId && placeholderId) {
-              const arr = messagesByConv.value[convId];
-              const idx2 = arr.findIndex((m) => m.id === placeholderId);
-              if (idx2 >= 0) arr[idx2] = { ...arr[idx2], content: '', reasoningContent: undefined, toolCalls: undefined };
-            }
-            await new Promise(r => setTimeout(r, 1000));
-            await streamOnce();
-          } else {
-            throw e;
-          }
-        }
-
-        executedSteps++;
-        if (fullContent) lastAssistantContent = fullContent;
-
-        // 流式结束：把最终 content/reasoning/toolCalls 落库到占位消息
-        if (convId && placeholderId) {
-          await updateMessage(placeholderId, {
-            content: fullContent,
-            reasoningContent: fullReasoning || undefined,
-            toolCalls: toolCallAcc.length > 0 ? [...toolCallAcc] as any : undefined,
-          });
-        }
-
-        if (toolCallAcc.length > 0) {
-          messages.push({ role: 'assistant', content: fullContent, toolCalls: toolCallAcc });
-          for (const tc of toolCallAcc) {
-            if (abortSignal?.aborted) throw new DOMException('Aborted', 'AbortError');
-            const tcName = tc.function?.name || '';
-            const tcArgs = typeof tc.function?.arguments === 'string' ? safeParseJson(tc.function.arguments) : {};
-            const result = await dispatchToolCall(tcName, tcArgs, { parentToolCallId: tc.id || '', depth: depth + 1 });
-            executedToolCalls++;
-            const resultStr = result.ok
-              ? (typeof result.result === 'string' ? result.result : JSON.stringify(result.result))
-              : JSON.stringify({ error: result.msg || '工具执行失败' });
-            messages.push({ role: 'tool', toolCallId: tc.id, content: resultStr });
-            if (convId) {
-              await appendTransientMessage({
-                conversationId: convId,
-                role: 'tool',
-                content: resultStr,
-                toolCallId: tc.id,
-                subAgentId,
-                subAgentName,
-                parentToolCallId,
-                subAgentDepth: depth,
-              });
-            }
-          }
-        } else {
-          return fullContent || '(无输出)';
-        }
-      }
-      const doneSteps = messages.filter(m => m.role === 'tool').length;
-      const lastAssistant = [...messages].reverse().find((m: any) => m.role === 'assistant' && m.content);
-      return `(已达最大步数 ${maxSteps}，已执行 ${doneSteps} 次工具调用)\n最后状态: ${lastAssistant?.content || '(无文本输出)'}\n提示：子智能体步数用尽未给出最终答复，可增大 maxReActSteps 或简化任务后重试。`;
-    } catch (e: any) {
-      // C1: 顶层兜底——任何异常都转为带进度的错误抛出，由 runSubAgent 统一返回 ok:false
-      const reason = e?.name === 'AbortError' ? '用户终止' : (e?.message || String(e));
-      throw new Error(`${reason}. 已执行到: ${executedSteps} 步/${executedToolCalls} 次工具调用，最后状态: ${lastAssistantContent || '(无文本输出)'}`);
-    } finally {
-      // 改动①：执行结束移除 running 标记，工具项自动折叠回简洁态（保留手动展开能力）
-      if (parentToolCallId) runningToolCallIds.value.delete(parentToolCallId);
-    }
-  }
-
   async function buildTools(): Promise<unknown[]> {
     const merged = getMergedMounts();
     const tools: unknown[] = [];
@@ -1283,6 +1026,28 @@ export const useChatStore = defineStore('chat', () => {
         },
       });
     }
+
+    // 4) 记忆/知识库工具 —— 默认暴露，模型按需调用（不靠 systemPrompt 注入）
+    if (memoryEnabled()) {
+      const apiRegistry = getApiToolRegistry();
+      const autoApiTools = ['api_memory_search', 'api_kb_search', 'api_kb_list'];
+      for (const tName of autoApiTools) {
+        if (seen.has(tName)) continue;
+        let def: { name: string; description: string; inputSchema: any } | undefined;
+        for (const tools of apiRegistry.values()) {
+          const found = tools.find(t => t.name === tName);
+          if (found) { def = found; break; }
+        }
+        if (def) {
+          seen.add(tName);
+          tools.push({
+            type: 'function',
+            function: { name: def.name, description: def.description, parameters: def.inputSchema },
+          });
+        }
+      }
+    }
+
     return tools;
   }
 
@@ -1383,136 +1148,6 @@ export const useChatStore = defineStore('chat', () => {
     return lines.length > 0 ? '可调用子智能体:\n' + lines.join('\n') : '';
   }
 
-  /** 从服务端检索多层记忆（仅登录态可用；本地模式跳过）。返回格式化片段。
-   *  注入每日/智能体记忆，以及「当前会话」的会话记忆（session 按当前会话过滤，不串台）。 */
-  async function buildMemoryContext(): Promise<string> {
-    if (!memoryEnabled()) return '';
-    try {
-      const agentId = encodeURIComponent(activeAgent()?.id || '');
-      const cid = encodeURIComponent(currentConvId.value || '');
-      const types = encodeURIComponent('daily,agent,session');
-      // session 按当前会话过滤（服务端对 metadata.conversationId 匹配）
-      const q = cid ? `/memory/recent?type=${types}&agentId=${agentId}&conversationId=${cid}&limit=20` : `/memory/recent?type=${types}&agentId=${agentId}&limit=20`;
-      const r = await api.get<any>(q);
-      const rows = (r && 'data' in r ? r.data : r) as Array<{ type: string; content: string; metadata_json?: string }>;
-      if (!rows || rows.length === 0) return '';
-      const labeled = rows.map((m) => {
-        const label = m.type === 'daily' ? `[每日记忆]` : m.type === 'session' ? `[当前会话记忆]` : `[智能体记忆]`;
-        return `${label} ${m.content}`;
-      });
-      return '---\n## 已知记忆（供参考，可能与当前问题不相关，按需使用）\n' + labeled.join('\n');
-    } catch {
-      return '';
-    }
-  }
-
-  /** 从知识库检索命中片段（登录态走 server 跨库搜索，guest 走本地 cross-lib；命中注入 prompt） */
-  async function buildKnowledgeContext(): Promise<string> {
-    try {
-      const lastUserMsg = [...(messagesByConv.value[currentConvId.value] || [])].reverse().find((m) => m.role === 'user');
-      const query = (lastUserMsg?.content || '').trim();
-      if (!query || query.length < 2) return '';
-      let rows: Array<{ content: string; baseName?: string; entity?: string; hop?: number; reason?: string }> = [];
-      // 知识库统一存服务端（guest 也走 server，服务端 guestOrAuth 以 guest 身份检索 public 库）
-      try {
-        // 优先实体导向多跳：问题匹配实体 → 取其切片 → 沿关联最多 3 级取关联实体切片
-        const er = await api.get<any>(`/kb/entity-search?query=${encodeURIComponent(query.slice(0, 100))}&hops=3&topK=3`);
-        rows = (er && 'data' in er ? er.data : er) || [];
-      } catch {
-        rows = [];
-      }
-      // 实体检索没结果则退化为关键词多跳
-      if (!rows || rows.length === 0) {
-        try {
-          const r = await api.get<any>(`/kb/search-all?query=${encodeURIComponent(query.slice(0, 100))}&topK=5`);
-          rows = (r && 'data' in r ? r.data : r) || [];
-        } catch {
-          rows = [];
-        }
-      }
-      if (!rows || rows.length === 0) return '';
-      const blocks = rows.map((r) => {
-        const tag = r.baseName ? `（库：${r.baseName}）` : '';
-        const ent = r.entity ? `[实体:${r.entity}]` : '';
-        const hop = r.hop && r.hop > 1 ? `（${r.hop}级关联）` : '';
-        return `- ${tag}${ent}${hop} ${(r.content || '').slice(0, 400)}`;
-      });
-      return '---\n## 知识库参考（命中内容，可能与问题相关）\n' + blocks.join('\n');
-    } catch {
-      return '';
-    }
-  }
-
-  // ── 记忆抽取（LLM 抽取多层记忆 → 服务端落库）──
-  const memoryExtractInFlight = ref(false);
-  /** 解析记忆抽取模型：settings 配置优先，其次默认模型，最后回退本地小模型 */
-  async function resolveExtractModel(): Promise<{ platform: any; model: any } | null> {
-    const { usePlatformStore } = await import('./platform');
-    const platformStore = usePlatformStore();
-    const settingsStore = useSettingsStore();
-    const pid = settingsStore.settings.memoryExtractPlatformId
-      || settingsStore.settings.defaultPlatformId;
-    const mid = settingsStore.settings.memoryExtractModelId
-      || settingsStore.settings.defaultModelId;
-    let platform: any = platformStore.platforms.find((p: any) => p.id === pid);
-    let model: any = platformStore.resolveModel(mid || '', pid || '');
-
-    return platform && model ? { platform, model } : null;
-  }
-
-  /** 抽取最近对话，沉淀为 daily/session/agent 三层记忆，服务端落库。幂等防并发。 */
-  async function extractMemoryFromConversation(): Promise<void> {
-    if (memoryExtractInFlight.value) return;
-    if (!memoryEnabled()) return;
-    const resolved = await resolveExtractModel();
-    if (!resolved) return;
-    const msgs = messagesByConv.value[currentConvId.value] || [];
-    const recent = msgs.filter((m) => m.content || m.toolCalls?.length).slice(-20);
-    if (recent.length < 4) return; // 对话太短无需抽取
-    memoryExtractInFlight.value = true;
-    try {
-      const transcript = recent
-        .map((m) => {
-          const role = m.role === 'user' ? '用户' : m.role === 'assistant' ? '助手' : m.role;
-          return `【${role}】\n${m.content || (m.toolCalls?.length ? '(调用工具)' : '')}`;
-        })
-        .join('\n\n---\n\n');
-      const client = new LlmClient(resolved.platform, resolved.model);
-      const resp = await client.chat(
-        [
-          {
-            role: 'system',
-            content: '你是记忆抽取助手。从对话中抽取「值得长期记住的用户信息」，输出 JSON 数组，每项形如 {"type":"agent|session|daily","content":"一句话事实"}。agent=稳定的用户偏好/背景；daily=当天的重要事件/进展；session=本会话的上下文结论。只输出 JSON，不要解释。若没有值得记的返回 []。',
-          },
-          { role: 'user', content: transcript },
-        ] as any,
-        { temperature: 0.2, maxTokens: 800 },
-      );
-      const raw = resp.delta?.content || '';
-      const jsonMatch = raw.match(/\[[\s\S]*\]/);
-      if (!jsonMatch) return;
-      const items = JSON.parse(jsonMatch[0]);
-      if (!Array.isArray(items)) return;
-      const agentId = activeAgent()?.id || '';
-      const today = new Date().toISOString().slice(0, 10);
-      for (const item of items) {
-        const content = String(item?.content || '').trim();
-        if (!content) continue;
-        const t = String(item?.type || 'agent');
-        if (t === 'daily') {
-          await api.post('/memory/upsert-daily', { content, agentId, date: today }).catch(() => {});
-        } else if (t === 'session') {
-          await api.post('/memory/create', { content, type: 'session', agentId, metadata: { conversationId: currentConvId.value } }).catch(() => {});
-        } else {
-          await api.post('/memory/create', { content, type: 'agent', agentId }).catch(() => {});
-        }
-      }
-    } catch {
-      // 抽取失败静默，不影响主对话
-    } finally {
-      memoryExtractInFlight.value = false;
-    }
-  }
 
   function buildSystemPrompt(): string {
     const conv = conversations.value.find(c => c.id === currentConvId.value);
@@ -1590,15 +1225,7 @@ export const useChatStore = defineStore('chat', () => {
       parts.push(`---\n## 工作目录\n当前工作目录：${wd}`);
     }
 
-    // 三层记忆注入（callLlm 已异步刷新 memoryContext）
-    if (memoryContext.value && memoryContext.value.trim()) {
-      parts.push(memoryContext.value);
-    }
-
-    // 知识库命中片段注入（callLlm 已刷新 knowledgeContext）
-    if (knowledgeContext.value && knowledgeContext.value.trim()) {
-      parts.push(knowledgeContext.value);
-    }
+    // 记忆/知识库已改为工具按需调用（api_memory_search / api_kb_search），不再注入 systemPrompt
 
     return parts.join('\n\n');
   }
@@ -1607,8 +1234,252 @@ export const useChatStore = defineStore('chat', () => {
     const agentStore = useAgentStore();
     const agent = agentStore.selectedAgent;
     const steps = agent?.config?.maxReActSteps;
-    if (typeof steps === 'number' && steps > 0) return steps;
-    return 100;
+    if (typeof steps === 'number' && steps >= 100) return steps;
+    return 100; // 默认 100，低于 100 的旧配置值也兜底到 100
+  }
+
+  /** 订阅后端任务 SSE 事件流，更新前端消息状态。callLlm 和重连均使用此函数。 */
+  async function subscribeTaskSse(
+    convId: string,
+    taskId: string,
+    signal: AbortSignal,
+    onChunk?: (chunk: { content?: string; reasoning?: string }) => void,
+    since: number = 0,
+  ): Promise<void> {
+    const token = localStorage.getItem('auth_token') || '';
+    const sseRes = await fetch(`${API_BASE}/llm/tasks/${taskId}/stream?since=${since}`, {
+      headers: { Authorization: `Bearer ${token}` },
+      signal,
+    });
+    if (!sseRes.ok || !sseRes.body) throw new Error('SSE 连接失败');
+
+    const reader = sseRes.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let assistantMsgId = '';
+    const subAgentMsgIds = new Map<string, string>(); // subAgentId → assistantMsgId
+    const executedToolCallIds = new Set<string>(); // tool:execute 去重（重放时跳过已执行）
+
+    // 流式 chunk 节流：缓冲增量，每 ~50ms 批量提交到 Vue 响应式状态，避免高频重渲染闪烁
+    const chunkBuffer = new Map<string, { content: string; reasoning: string }>();
+    let flushTimer: ReturnType<typeof setTimeout> | null = null;
+    function scheduleFlush(convId: string) {
+      if (flushTimer !== null) return;
+      flushTimer = setTimeout(() => {
+        flushTimer = null;
+        const arr = messagesByConv.value[convId];
+        if (!arr) return;
+        for (const [msgId, buf] of chunkBuffer) {
+          const idx = arr.findIndex(m => m.id === msgId);
+          if (idx < 0) continue;
+          if (buf.content) arr[idx].content = (arr[idx].content || '') + buf.content;
+          if (buf.reasoning) arr[idx].reasoningContent = (arr[idx].reasoningContent || '') + buf.reasoning;
+        }
+        chunkBuffer.clear();
+      }, 50);
+    }
+    function flushNow(convId: string) {
+      if (flushTimer !== null) { clearTimeout(flushTimer); flushTimer = null; }
+      const arr = messagesByConv.value[convId];
+      if (!arr) { chunkBuffer.clear(); return; }
+      for (const [msgId, buf] of chunkBuffer) {
+        const idx = arr.findIndex(m => m.id === msgId);
+        if (idx < 0) continue;
+        if (buf.content) arr[idx].content = (arr[idx].content || '') + buf.content;
+        if (buf.reasoning) arr[idx].reasoningContent = (arr[idx].reasoningContent || '') + buf.reasoning;
+      }
+      chunkBuffer.clear();
+    }
+
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) { flushNow(convId); break; }
+      buffer += decoder.decode(value, { stream: true });
+      const events = buffer.split('\n\n');
+      buffer = events.pop() || '';
+      for (const raw of events) {
+        const line = raw.trim();
+        if (!line.startsWith('data: ')) continue;
+        let event: any;
+        try { event = JSON.parse(line.slice(6)); } catch { continue; }
+
+        // 追踪事件数（重连时作为 since 参数，避免重放旧事件）
+        taskEventCounts.set(taskId, (taskEventCounts.get(taskId) || 0) + 1);
+
+        switch (event.type) {
+          case 'connected': break;
+          case 'message:added': {
+            const msg = event.message;
+            const arr = messagesByConv.value[convId] || [];
+            if (!arr.some(m => m.id === msg.id)) {
+              arr.push({
+                id: msg.id, conversationId: convId, role: msg.role,
+                content: msg.content || '', toolCallId: msg.toolCallId,
+                reasoningContent: msg.role === 'assistant' ? '' : undefined,
+                toolCalls: msg.role === 'assistant' ? [] : undefined,
+                systemPromptSnapshot: msg.systemPromptSnapshot,
+
+                subAgentId: msg.subAgentId,
+                subAgentName: msg.subAgentName,
+                subAgentDepth: msg.subAgentDepth,
+                createdAt: Date.now(),
+              } as any);
+            }
+            if (msg.role === 'assistant') {
+              if (msg.subAgentId) subAgentMsgIds.set(msg.subAgentId, msg.id);
+              else assistantMsgId = msg.id;
+            }
+            break;
+          }
+          case 'chunk': {
+            if (event.content || event.reasoning) {
+              const arr = messagesByConv.value[convId] || [];
+              const targetId = event.subAgentId ? subAgentMsgIds.get(event.subAgentId) : assistantMsgId;
+              const idx = targetId ? arr.findIndex(m => m.id === targetId) : arr.length - 1;
+              if (idx >= 0 && arr[idx].role === 'assistant') {
+                const msgId = arr[idx].id;
+                const buf = chunkBuffer.get(msgId) || { content: '', reasoning: '' };
+                if (event.content) buf.content += event.content;
+                if (event.reasoning) buf.reasoning += event.reasoning;
+                chunkBuffer.set(msgId, buf);
+                scheduleFlush(convId);
+              }
+            }
+            if (onChunk && !event.subAgentId) onChunk({ content: event.content, reasoning: event.reasoning });
+            break;
+          }
+          case 'tool_call': {
+            flushNow(convId);
+            const targetId = event.subAgentId ? subAgentMsgIds.get(event.subAgentId) : assistantMsgId;
+            if (targetId) {
+              const arr = messagesByConv.value[convId] || [];
+              const idx = arr.findIndex(m => m.id === targetId);
+              if (idx >= 0) arr[idx].toolCalls = event.toolCalls;
+            }
+            break;
+          }
+          case 'message:updated': {
+            flushNow(convId);
+            const arr = messagesByConv.value[convId] || [];
+            const idx = arr.findIndex(m => m.id === event.messageId);
+            if (idx >= 0) {
+              arr[idx] = {
+                ...arr[idx],
+                content: event.content ?? arr[idx].content,
+                reasoningContent: event.reasoning ?? arr[idx].reasoningContent,
+                toolCalls: event.toolCalls ?? arr[idx].toolCalls,
+              };
+            }
+            break;
+          }
+          case 'tool:start': {
+            // 仅浏览器类工具推送步骤日志，避免非浏览器工具污染右侧浏览器面板
+            if (event.toolName?.startsWith('browser_')) {
+              browserSteps.value.push({ action: event.toolName, result: '执行中...', time: Date.now() });
+            }
+            break;
+          }
+          case 'tool:result': {
+            if (event.toolName?.startsWith('browser_')) {
+              browserSteps.value.push({ action: event.toolName, result: event.result, time: Date.now() });
+            }
+            break;
+          }
+          case 'sub_agent:start': {
+            if (event.parentToolCallId) runningToolCallIds.value.add(event.parentToolCallId);
+            break;
+          }
+          case 'sub_agent:end': {
+            if (event.parentToolCallId) runningToolCallIds.value.delete(event.parentToolCallId);
+            if (event.agentId) subAgentMsgIds.delete(event.agentId);
+            break;
+          }
+          case 'tool:execute': {
+            const { callId, toolName, args, toolCallId: ptcId, depth: evtDepth } = event;
+            // 去重：重放时跳过已执行的 tool:execute（避免重复调工具/弹窗）
+            if (executedToolCallIds.has(callId)) break;
+            executedToolCallIds.add(callId);
+            const ctx = ptcId ? { parentToolCallId: ptcId, depth: evtDepth ?? 1 } : undefined;
+            try {
+              const r = await dispatchToolCall(toolName, args, ctx);
+              const resultStr = r.ok
+                ? (typeof r.result === 'string' ? r.result : JSON.stringify(r.result || ''))
+                : (r.msg || '工具执行失败');
+              const t = localStorage.getItem('auth_token') || '';
+              const postResult = async (retry = 0) => {
+                try {
+                  const resp = await fetch(`${API_BASE}/llm/tasks/${taskId}/tool-result`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${t}` },
+                    body: JSON.stringify({ callId, result: resultStr }),
+                  });
+                  if (!resp.ok && retry < 2) { await new Promise(r => setTimeout(r, 1000)); return postResult(retry + 1); }
+                } catch (e: any) {
+                  if (retry < 2) { await new Promise(r => setTimeout(r, 1000)); return postResult(retry + 1); }
+                  console.error('[Chat] tool-result POST 失败:', e?.message || e);
+                }
+              };
+              void postResult();
+            } catch (e: any) {
+              const t = localStorage.getItem('auth_token') || '';
+              const postError = async (retry = 0) => {
+                try {
+                  const resp = await fetch(`${API_BASE}/llm/tasks/${taskId}/tool-result`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${t}` },
+                    body: JSON.stringify({ callId, result: `工具执行失败: ${e?.message || e}` }),
+                  });
+                  if (!resp.ok && retry < 2) { await new Promise(r => setTimeout(r, 1000)); return postError(retry + 1); }
+                } catch (e2: any) {
+                  if (retry < 2) { await new Promise(r => setTimeout(r, 1000)); return postError(retry + 1); }
+                  console.error('[Chat] tool-error POST 失败:', e2?.message || e2);
+                }
+              };
+              void postError();
+            }
+            break;
+          }
+          case 'file:registered': {
+            try { await useFileStore().loadConversationFiles(event.conversationId || convId); } catch {}
+            break;
+          }
+          case 'task:completed': flushNow(convId); return;
+          case 'task:aborted': flushNow(convId); return;
+          case 'task:error': flushNow(convId); throw new Error(event.error || '任务执行失败');
+        }
+      }
+    }
+  }
+
+  /** 检查会话是否有未完成的后端任务，如有则重新订阅 SSE 恢复流式输出。 */
+  async function reconnectActiveTask(convId: string): Promise<void> {
+    if (!isServerMode()) return;
+    if (runningConvIds.value.has(convId)) return;
+    try {
+      const r = await api.get<any[]>(`/llm/tasks/active?conversationId=${convId}`);
+      if ('error' in r || !r.data || r.data.length === 0) return;
+      const task = r.data[0];
+      const taskId = task.id;
+      taskIds.set(convId, taskId);
+      runningConvIds.value.add(convId);
+      const abortController = new AbortController();
+      abortControllers.set(convId, abortController);
+      void (async () => {
+        try {
+          const since = taskEventCounts.get(taskId) || 0;
+          await subscribeTaskSse(convId, taskId, abortController.signal, undefined, since);
+        } catch (e: any) {
+          if (e?.name === 'AbortError') return;
+          console.error('[Chat] 重连 SSE 失败:', e);
+        } finally {
+          abortControllers.delete(convId);
+          taskIds.delete(convId);
+          runningConvIds.value.delete(convId);
+        }
+      })();
+    } catch (e) {
+      console.error('[Chat] 检查活动任务失败:', e);
+    }
   }
 
   async function callLlm(
@@ -1627,286 +1498,47 @@ export const useChatStore = defineStore('chat', () => {
   ): Promise<void> {
     const convId = currentConvId.value;
     if (!convId) throw new Error('未选择会话');
-    // 会话级互斥：同一会话不可重复提交，不同会话可并行跑任务
     if (runningConvIds.value.has(convId)) return;
 
     runningConvIds.value.add(convId);
-    abortControllers.set(convId, new AbortController());
-    const maxSteps = getMaxReActSteps();
-
-    await ensureMcpConnections();
+    const abortController = new AbortController();
+    abortControllers.set(convId, abortController);
 
     try {
-      if (options.userContent !== undefined) {
-        await addMessage({
-          conversationId: convId,
-          role: 'user',
-          content: options.userContent,
-        });
-      }
+      // 前端构建完整系统提示词 + 工具 schema，发给后端
+      const systemPrompt = buildSystemPrompt();
+      const tools = await buildTools();
+      const maxSteps = getMaxReActSteps();
 
-      for (let step = 0; step < maxSteps; step++) {
-        if (abortControllers.get(convId)?.signal.aborted) throw new DOMException('Aborted', 'AbortError');
-        const ctxWindow = new ContextWindow(model.contextWindow || 8000, 6);
-        let messagesToSend = [...(messagesByConv.value[convId] || [])];
-        messagesToSend = messagesToSend.filter((m) => m.content || m.toolCalls || m.role === 'tool');
-        if (ctxWindow.needsCompression(messagesToSend)) {
-          messagesToSend = await ctxWindow.compress(messagesToSend);
-        }
-
-        // 发送前异步刷新三层记忆缓存（登录态从服务端拉取；本地模式为空）
-        memoryContext.value = await buildMemoryContext();
-        // 刷新知识库命中片段（不登录也可用）
-        try { knowledgeContext.value = await buildKnowledgeContext(); } catch { knowledgeContext.value = ''; }
-
-        // 每 10 轮触发一次记忆抽取（fire-and-forget，不阻塞主对话、用户无感知）
-        conversationTurnCount.value++;
-        if (conversationTurnCount.value >= 10) {
-          conversationTurnCount.value = 0;
-          void extractMemoryFromConversation();
-        }
-
-        const systemPrompt = buildSystemPrompt();
-        const llmMessages: Message[] = [];
-        if (systemPrompt) {
-          llmMessages.push({ id: 'sys', conversationId: '', role: 'system', content: systemPrompt, createdAt: 0 });
-        }
-        llmMessages.push(...messagesToSend.map((m) => ({
-          id: m.id, conversationId: '', role: m.role,
-          content: m.content, toolCalls: m.toolCalls,
-          toolCallId: m.toolCallId, reasoningContent: undefined,
-          createdAt: m.createdAt,
-        })));
-
-        const assistantMsgId = await addMessage({
-          conversationId: convId,
-          role: 'assistant',
-          content: '',
-        });
-
-        const client = new LlmClient(platform, model);
-        const tools = await buildTools();
-        // 本地模型 capabilities=[] 表示不支持 function calling，不传 tools 避免 400
-        const modelCaps = model.capabilities as string[] | undefined;
-        const supportsTools = !modelCaps || modelCaps.includes('function_call');
-        const requestSnapshot = JSON.stringify({
-          step,
-          timestamp: new Date().toISOString(),
-          model: { id: model.modelId || model.id, alias: model.alias, contextWindow: model.contextWindow },
-          platform: { id: platform.id, name: platform.name, protocol: platform.protocol },
-          parameters: {
-            temperature: options.temperature,
-            maxTokens: options.maxTokens,
-            topP: options.topP,
-            frequencyPenalty: options.frequencyPenalty,
-            presencePenalty: options.presencePenalty,
-            reasoningEffort: options.reasoningEffort,
-          },
-          systemPrompt,
-          tools: tools.length > 0 ? (tools as any[]).map((t: any) => ({
-            name: t.function.name,
-            description: t.function.description,
-            parameters: t.function.parameters,
-          })) : [],
-          messages: llmMessages.map(m => ({
-            role: m.role,
-            content: typeof m.content === 'string' && m.content.length > 500
-              ? m.content.slice(0, 497) + '...' : m.content || '',
-            toolCalls: m.toolCalls?.length || 0,
-          })),
-        }, null, 2);
-        await updateMessage(assistantMsgId, { systemPromptSnapshot: requestSnapshot });
-        let fullContent = '';
-        let fullReasoning = '';
-        const toolCallAcc: DeltaToolCall[] = [];
-
-        // 流式请求：如果模型不支持 tools（Ollama 小模型返回 400），自动去掉 tools 重试
-        const streamOnce = async (withTools: boolean) => {
-          for await (const chunk of client.chatStream(llmMessages, {
-            tools: withTools && supportsTools && tools.length > 0 ? tools : undefined,
-            temperature: options.temperature,
-            maxTokens: options.maxTokens,
-            topP: options.topP,
-            frequencyPenalty: options.frequencyPenalty,
-            presencePenalty: options.presencePenalty,
-            reasoningEffort: options.reasoningEffort,
-            signal: abortControllers.get(convId)?.signal,
-          })) {
-          if (chunk.delta?.content) {
-            fullContent += chunk.delta.content;
-          }
-          if (chunk.delta?.reasoningContent) {
-            fullReasoning += chunk.delta.reasoningContent;
-          }
-          if (chunk.delta?.toolCalls) {
-            for (const tc of chunk.delta.toolCalls) {
-              let idx = tc.index;
-              if (idx === undefined) {
-                // C2: 区分"新工具声明"和"arguments 续片"，避免多工具交错时 arguments 串扰。
-                // 旧逻辑统一兜底为 length-1，导致第二个工具的 arguments 分片拼到第一个工具上。
-                if (tc.id) {
-                  // 带 id：按 id 匹配已有条目，无则新建
-                  const existById = toolCallAcc.findIndex(x => x.id === tc.id);
-                  idx = existById >= 0 ? existById : toolCallAcc.length;
-                } else if (tc.function?.name) {
-                  // 无 id 但带 function.name（新工具声明）：新建一项
-                  idx = toolCallAcc.length;
-                } else {
-                  // 纯 arguments 续片（无 id 无 name）：追加到最后一个
-                  idx = toolCallAcc.length > 0 ? toolCallAcc.length - 1 : 0;
-                }
-              }
-              if (!toolCallAcc[idx]) {
-                toolCallAcc[idx] = { ...tc };
-              } else {
-                const prev = toolCallAcc[idx];
-                toolCallAcc[idx] = {
-                  ...prev,
-                  ...tc,
-                  function: tc.function
-                    ? {
-                        ...prev.function,
-                        ...tc.function,
-                        arguments: (prev.function?.arguments || '') + (tc.function!.arguments || ''),
-                      }
-                    : prev.function,
-                };
-              }
-            }
-          }
-          const convMessages = messagesByConv.value[convId] || [];
-          const idx = convMessages.findIndex((m) => m.id === assistantMsgId);
-          if (idx >= 0) {
-            convMessages[idx] = {
-              ...convMessages[idx],
-              content: fullContent,
-              reasoningContent: fullReasoning || undefined,
-              toolCalls: toolCallAcc.length > 0 ? [...toolCallAcc] as any : undefined,
-            };
-          }
-          if (onChunk) onChunk({ content: chunk.delta?.content, reasoning: chunk.delta?.reasoningContent });
-          }
-        };
-
-        try {
-          await streamOnce(true);
-        } catch (e: any) {
-          const msg = e?.message || '';
-          if (/does not support tools|not support.*tool/i.test(msg)) {
-            fullContent = ''; fullReasoning = ''; toolCallAcc.length = 0;
-            if (tools.length > 0 && llmMessages[0]?.role === 'system') {
-              const toolList = tools.map((t: any) => `- ${t.function.name}: ${t.function.description || ''}`).join('\n');
-              llmMessages[0].content += `\n\n## 工具调用（文本模式）\n当需要调用工具时，在回复中用以下格式输出（可多次调用）：\n[TOOL_CALL]{"name":"工具名","arguments":{"参数":"值"}}[/TOOL_CALL]\n可用工具：\n${toolList}\n调用后等待返回结果，再继续回复。`;
-            }
-            await streamOnce(false);
-          } else {
-            throw e;
-          }
-        }
-
-        // 文本模式工具调用解析：从输出中提取 [TOOL_CALL]...[/TOOL_CALL]
-        if (toolCallAcc.length === 0 && fullContent.includes('[TOOL_CALL]')) {
-          const re = /\[TOOL_CALL\]\s*(\{[\s\S]*?\})\s*\[\/TOOL_CALL\]/g;
-          let m: RegExpExecArray | null;
-          while ((m = re.exec(fullContent)) !== null) {
-            try {
-              const parsed = JSON.parse(m[1]);
-              if (parsed.name) {
-                toolCallAcc.push({
-                  id: `text_tc_${Date.now()}_${toolCallAcc.length}`,
-                  type: 'function',
-                  function: { name: parsed.name, arguments: JSON.stringify(parsed.arguments || {}) },
-                });
-              }
-            } catch {}
-          }
-          if (toolCallAcc.length > 0) {
-            fullContent = fullContent.replace(/\[TOOL_CALL\][\s\S]*?\[\/TOOL_CALL\]/g, '').trim();
-          }
-        }
-
-        if (toolCallAcc.length === 0) {
-          await updateMessage(assistantMsgId, {
-            content: fullContent,
-            reasoningContent: fullReasoning || undefined,
-            toolCalls: undefined,
-          });
-          return;
-        }
-
-        const toolCalls: ToolCallRecord[] = toolCallAcc
-          .filter(tc => tc.function?.name && tc.id)
-          .map(tc => {
-            const args = tc.function!.arguments || '';
-            // C2: 流式累积后 arguments 仍为空，可能是 provider 流式分片问题或累积串扰，打 warning 便于排查
-            if (!args || args.trim() === '' || args.trim() === '{}') {
-              console.warn(`[stream] toolCall "${tc.function!.name}" (id=${tc.id}) arguments 为空，将传空对象给工具`);
-            }
-            return {
-              id: tc.id || '',
-              name: tc.function!.name!,
-              arguments: args || '{}',
-            };
-          });
-
-        await updateMessage(assistantMsgId, {
-          content: fullContent,
-          reasoningContent: fullReasoning || undefined,
-          toolCalls: toolCalls.map(tc => ({
-            id: tc.id, messageId: assistantMsgId,
-            toolName: tc.name,
-            arguments: safeParseJson(tc.arguments),
-          })) as any,
-        });
-
-        for (const tc of toolCalls) {
-          if (abortControllers.get(convId)?.signal.aborted) throw new DOMException('Aborted', 'AbortError');
-          const parsedArgs = safeParseJson(tc.arguments) as Record<string, unknown>;
-          const subCtx = tc.name === 'call_agent' ? { parentToolCallId: tc.id, depth: 1 } : undefined;
-          const result = await dispatchToolCall(tc.name, parsedArgs, subCtx);
-          const resultStr = result.ok
-            ? (typeof result.result === 'string' ? result.result : JSON.stringify(result.result))
-            : JSON.stringify({ error: result.msg || '工具执行失败' });
-
-          await addMessage({
-            conversationId: convId,
-            role: 'tool',
-            content: resultStr,
-            toolCallId: tc.id,
-          });
-
-          // D4: file_write 成功后，记录到 conversation_file（分类管理）
-          if (result.ok && tc.name === 'file_write' && parsedArgs.path && convId) {
-            try {
-              const { useFileStore } = await import('./file');
-              const filePath = String(parsedArgs.path);
-              const sep = filePath.includes('/') ? '/' : '\\';
-              const fileName = filePath.split(sep).pop() || filePath;
-              const category = (parsedArgs.category as 'intermediate' | 'deliverable') || 'intermediate';
-              await useFileStore().registerFile({
-                conversationId: convId,
-                name: fileName,
-                path: filePath,
-                category,
-                source: 'agent',
-                messageId: assistantMsgId,
-              });
-            } catch (e) { console.warn('[Chat] 记录文件失败:', e); }
-          }
-        }
-      }
-
-      await addMessage({
+      const taskRes = await api.post<any>('/llm/tasks', {
         conversationId: convId,
-        role: 'assistant',
-        content: `已达到最大循环步数（${maxSteps}），请检查任务是否需要拆分或调整工具配置。`,
+        platformId: platform.id,
+        modelId: model.id,
+        userContent: options.userContent,
+        systemPrompt,
+        tools,
+        maxSteps,
+        options: {
+          temperature: options.temperature,
+          maxTokens: options.maxTokens,
+          topP: options.topP,
+          frequencyPenalty: options.frequencyPenalty,
+          presencePenalty: options.presencePenalty,
+          reasoningEffort: options.reasoningEffort,
+        },
       });
+      if ('error' in taskRes) throw new Error(taskRes.error);
+      const taskId = taskRes.data.taskId;
+      taskIds.set(convId, taskId);
+
+      await subscribeTaskSse(convId, taskId, abortController.signal, onChunk);
     } catch (e: any) {
       if (e?.name === 'AbortError') return;
       console.error('[Chat] 发送失败:', e);
       throw e;
     } finally {
       abortControllers.delete(convId);
+      taskIds.delete(convId);
       runningConvIds.value.delete(convId);
     }
   }
@@ -1926,8 +1558,14 @@ export const useChatStore = defineStore('chat', () => {
     if (!target) return;
     const controller = abortControllers.get(target);
     if (controller) controller.abort();
-    // 兜底：abort 事件已 resolve 监听了 signal 的 ask_user/confirm_user Promise；
-    // configure_model_platform 未监听 signal，此处清理避免 Promise 永远 pending 导致 streaming 卡死
+    // 终止后端任务
+    const taskId = taskIds.get(target);
+    if (taskId) {
+      const token = localStorage.getItem('auth_token') || '';
+      void fetch(`${API_BASE}/llm/tasks/${taskId}/abort`, {
+        method: 'POST', headers: { Authorization: `Bearer ${token}` },
+      }).catch(() => {});
+    }
     if (pendingPlatformConfig.value) {
       cancelPlatformConfig();
     }

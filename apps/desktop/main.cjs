@@ -1,19 +1,22 @@
-const { app, BrowserWindow, BrowserView, dialog, ipcMain, Menu, session, shell } = require('electron');
+const { app, BrowserWindow, BrowserView, dialog, ipcMain, Menu, session, shell, clipboard, Tray } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const fsp = fs.promises;
 const { spawn, execFile } = require('child_process');
 const crypto = require('crypto');
+const http = require('http');
 
 let mainWindow = null;
 let serverProcess = null;
-let browserView = null;
+let tray = null;
+let isQuitting = false;
+// BrowserView 多标签页管理：tabId → { view, cacheClearPromise, scrollbarCssKey, hidden }
+const browserViews = new Map();
+let activeTabId = null;
 // BrowserView 是否处于隐藏态。渲染层的 ResizeObserver 是异步触发的，
 // 面板收起（CSS 过渡）期间仍会推来非零 bounds，若不拦截会把 hide() 的
 // 0 尺寸覆盖回去，导致原生图层残留在窗口上。hide 后所有 resize 一律忽略。
-let browserViewHidden = true;
 /** BrowserView 首次创建时的缓存清理 Promise：loadURL 前必须 await，否则并发中止加载（ERR_ABORTED）*/
-let cacheClearPromise = null;
 
 // ============================================================
 // 数据库（better-sqlite3，主进程单例）
@@ -75,6 +78,28 @@ let mcpChildSeq = 0;
  *  重要：better-sqlite3 是原生模块，编译为 Electron 的 ABI。
  *  后端必须用 Electron 的 Node.js（ELECTRON_RUN_AS_NODE=1）启动，否则 ABI 不兼容。
  */
+
+/** 生产模式：后端数据目录与程序分离。
+ *  旧版把 data.db 落在 resources/server/dist/apps/server/（安装目录内），
+ *  NSIS 覆盖安装时卸载旧版会清空安装目录导致用户数据丢失。
+ *  现统一放 userData/server-data，并把旧位置的数据一次性迁移过来。 */
+function ensureServerDataDir() {
+  if (!app.isPackaged) return null;
+  const dataDir = path.join(app.getPath('userData'), 'server-data');
+  fs.mkdirSync(dataDir, { recursive: true });
+  const newPath = path.join(dataDir, 'data.db');
+  if (!fs.existsSync(newPath)) {
+    const legacyDir = path.join(process.resourcesPath, 'server', 'dist', 'apps', 'server');
+    for (const f of ['data.db', 'data.db-wal', 'data.db-shm']) {
+      const src = path.join(legacyDir, f);
+      if (fs.existsSync(src)) {
+        try { fs.copyFileSync(src, path.join(dataDir, f)); } catch {}
+      }
+    }
+  }
+  return dataDir;
+}
+
 function startServer() {
   const serverDir = path.join(__dirname, '..', 'server');
   // 模型目录统一放在 Electron userData/models，商城下载/引擎加载都从这里找
@@ -117,9 +142,10 @@ function startServer() {
   } else {
     // 生产模式：用 Electron 作为 Node.js（ELECTRON_RUN_AS_NODE=1）运行后端编译产物
     const serverPath = path.join(process.resourcesPath, 'server', 'dist', 'apps', 'server', 'src', 'index.js');
+    const dataDir = ensureServerDataDir();
     serverProcess = spawn(process.execPath, [serverPath], {
       stdio: 'inherit',
-      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', YANZHI_MODELS_DIR: modelsDir },
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', YANZHI_MODELS_DIR: modelsDir, ...(dataDir ? { DATA_DIR: dataDir } : {}) },
     });
     serverProcess.on('error', (err) => console.error('后端启动失败:', err));
     console.log('后端服务器启动中:', serverPath);
@@ -136,6 +162,12 @@ function getAppIconPath() {
 
 /** 创建主窗口 */
 function createWindow() {
+  // 防重入：窗口已存在且未销毁时直接返回
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.show();
+    mainWindow.focus();
+    return mainWindow;
+  }
   mainWindow = new BrowserWindow({
     icon: getAppIconPath(),
     width: 1280,
@@ -144,6 +176,8 @@ function createWindow() {
     minHeight: 600,
     frame: false,           // 无边框窗口（自定义标题栏）
     titleBarStyle: 'hidden',
+    backgroundColor: '#1e1e2e',  // 匹配页面背景色，消除窗口创建到首屏渲染间的黑屏
+    show: false,            // 延迟到 ready-to-show 再显示，彻底消除黑屏/闪烁
     // 不开 transparent：Windows 11 上 frame:false + 非 transparent 时 DWM 仍提供原生圆角+阴影，
     // 且 maximize/unmaximize 与边缘 resize 走原生 NCA，避免透明窗口下"全屏后缩不回/拖边缩不了"的 bug
     webPreferences: {
@@ -153,6 +187,19 @@ function createWindow() {
       contextIsolation: true,
       spellcheck: false,
     },
+  });
+
+  // 页面首屏渲染完成后再显示窗口，配合 show:false 彻底消除黑屏
+  mainWindow.once('ready-to-show', () => {
+    mainWindow?.show();
+  });
+
+  // 关闭窗口时隐藏而非销毁（守护模式：后端保持运行，可通过托盘重新打开）
+  mainWindow.on('close', (e) => {
+    if (!isQuitting) {
+      e.preventDefault();
+      mainWindow?.hide();
+    }
   });
 
   // 外链（http/https）用系统浏览器打开，避免在应用窗口内导航离开
@@ -169,27 +216,43 @@ function createWindow() {
     }
   });
 
+  // 右键菜单：在可编辑区域（输入框/textarea）显示剪切/复制/粘贴/全选
+  mainWindow.webContents.on('context-menu', (_event, params) => {
+    if (!params.isEditable) return;
+    const template = [
+      { label: '粘贴', role: 'paste', enabled: params.editFlags.canPaste },
+      { type: 'separator' },
+      { label: '复制', role: 'copy', enabled: params.editFlags.canCopy },
+      { label: '剪切', role: 'cut', enabled: params.editFlags.canCut },
+      { type: 'separator' },
+      { label: '全选', role: 'selectAll' },
+    ];
+    Menu.buildFromTemplate(template).popup(mainWindow);
+  });
+
   // 拦截主窗口键盘事件：当 BrowserView 可见时，Ctrl+R/F5 刷新 BrowserView 而非主窗口
   mainWindow.webContents.on('before-input-event', (event, input) => {
-    if (!browserView) return;
+    const entry = activeTabId ? browserViews.get(activeTabId) : null;
+    if (!entry || entry.hidden) return;
+    const bv = entry.view;
     const key = input.key.toLowerCase();
     // Ctrl+R 或 F5 → 刷新 BrowserView
     if ((input.control && key === 'r') || key === 'f5') {
       event.preventDefault();
-      browserView.webContents.reload();
+      bv.webContents.reload();
     }
     // Alt+Left → 后退
     if (input.alt && key === 'arrowleft') {
       event.preventDefault();
-      if (browserView.webContents.navigationHistory?.canGoBack?.() || browserView.webContents.canGoBack?.()) {
-        browserView.webContents.goBack();
+      if (bv.webContents.navigationHistory?.canGoBack?.() || bv.webContents.canGoBack?.()) {
+        bv.webContents.goBack();
       }
     }
     // Alt+Right → 前进
     if (input.alt && key === 'arrowright') {
       event.preventDefault();
-      if (browserView.webContents.navigationHistory?.canGoForward?.() || browserView.webContents.canGoForward?.()) {
-        browserView.webContents.goForward();
+      if (bv.webContents.navigationHistory?.canGoForward?.() || bv.webContents.canGoForward?.()) {
+        bv.webContents.goForward();
       }
     }
   });
@@ -206,12 +269,12 @@ function createWindow() {
   }
 
   mainWindow.on('closed', () => {
-    // 清理 BrowserView
-    if (browserView) {
-      try { mainWindow?.setBrowserView(null); } catch {}
-      try { browserView.webContents?.destroy?.(); } catch {}
-      browserView = null;
+    // 清理所有 BrowserView
+    for (const [id, entry] of browserViews) {
+      try { entry.view.webContents?.destroy?.(); } catch {}
     }
+    browserViews.clear();
+    activeTabId = null;
     mainWindow = null;
   });
 
@@ -220,13 +283,16 @@ function createWindow() {
 
 // ============================================================
 // BrowserView：嵌入外部网页（替代 <webview> 标签，支持精确 setBounds）
+// 多标签页：每个 tabId 对应一个独立 BrowserView 实例
 // ============================================================
-/** 按需创建 BrowserView 并附加到主窗口（延迟创建，避免初始白屏） */
-function ensureBrowserView() {
-  if (browserView) return browserView;
+/** 按需为指定标签创建 BrowserView 并附加到主窗口（延迟创建，避免初始白屏） */
+function ensureBrowserView(tabId) {
+  if (!tabId) return null;
+  const existing = browserViews.get(tabId);
+  if (existing) return existing.view;
   if (!mainWindow || mainWindow.isDestroyed()) return null;
 
-  browserView = new BrowserView({
+  const bv = new BrowserView({
     webPreferences: {
       // 持久化 partition：cookie/localStorage 落盘，跨会话保留登录态（如即梦扫码登录后无需重复扫码）
       partition: 'persist:browser-view',
@@ -237,16 +303,18 @@ function ensureBrowserView() {
       backgroundColor: '#ffffff',
     },
   });
-  mainWindow.setBrowserView(browserView);
-  // 初始设为不可见
-  browserView.setBounds({ x: 0, y: 0, width: 0, height: 0 });
 
-  const wc = browserView.webContents;
+  const entry = { view: bv, cacheClearPromise: null, scrollbarCssKey: null, hidden: true };
+  browserViews.set(tabId, entry);
+  // 初始设为不可见（不附加到主窗口，激活时才附加）
+  bv.setBounds({ x: 0, y: 0, width: 0, height: 0 });
+
+  const wc = bv.webContents;
 
   // persist partition 的 HTTP 磁盘缓存损坏会导致 BrowserView 渲染全黑（Windows 常见）。
   // clearCache 只清 HTTP 缓存，不清 cookie/localStorage，登录态不受影响。
   // 注意：必须 await 完成后再放行 loadURL —— clearCache 与页面加载并发会中止加载（ERR_ABORTED -3）导致黑屏。
-  cacheClearPromise = wc.session.clearCache().catch(() => { /* ignore */ });
+  entry.cacheClearPromise = wc.session.clearCache().catch(() => { /* ignore */ });
 
   // 渲染进程崩溃（GPU/内存等）后页面变黑且不再响应：自动重载恢复
   wc.on('render-process-gone', (_e, details) => {
@@ -257,24 +325,24 @@ function ensureBrowserView() {
     try { wc.reload(); } catch { /* ignore */ }
   });
 
-  // 监听导航事件，通知前端地址栏更新
+  // 监听导航事件，通知前端地址栏更新（带 tabId）
   wc.on('did-navigate', (_e, url) => {
     if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('browserView:navigated', url);
+      mainWindow.webContents.send('browserView:navigated', tabId, url);
     }
   });
   wc.on('did-navigate-in-page', (_e, url) => {
     if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('browserView:navigated', url);
+      mainWindow.webContents.send('browserView:navigated', tabId, url);
     }
   });
   // 页面加载完成，通知前端
   wc.on('did-finish-load', () => {
     // 导航到新页面会重置已注入的 CSS，需重新注入自定义滚动条 + 虚拟鼠标
-    injectScrollbarCss();
+    injectScrollbarCss(tabId);
     injectYzAssistant(wc);
     if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('browserView:loaded', wc.getURL());
+      mainWindow.webContents.send('browserView:loaded', tabId, wc.getURL());
     }
   });
 
@@ -298,28 +366,40 @@ function ensureBrowserView() {
     }
   });
 
-  return browserView;
+  return bv;
+}
+
+/** 激活指定标签：显示其 BrowserView，隐藏其他所有标签的 BrowserView */
+function activateTab(tabId) {
+  // 标记其他标签为隐藏
+  for (const [id, entry] of browserViews) {
+    if (id !== tabId) {
+      entry.hidden = true;
+      entry.view.setBounds({ x: 0, y: 0, width: 0, height: 0 });
+    }
+  }
+  activeTabId = tabId;
+  const entry = browserViews.get(tabId);
+  if (entry) entry.hidden = false;
 }
 
 // BrowserView 自定义滚动条（隐藏默认 + 圆角自定义），按网页自身背景亮度选色
-let browserViewScrollbarCssKey = null;
-
 function scrollbarCssForTheme(theme) {
   const dark = theme === 'dark';
   const thumb = dark ? 'rgba(255,255,255,0.4)' : 'rgba(0,0,0,0.35)';
   const thumbHover = dark ? 'rgba(255,255,255,0.6)' : 'rgba(0,0,0,0.5)';
   return `
-::-webkit-scrollbar { width: 10px; height: 10px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb {
-  background-color: ${thumb};
-  border-radius: 999px;
-  border: 2px solid transparent;
-  background-clip: padding-box;
-}
-::-webkit-scrollbar-thumb:hover { background-color: ${thumbHover}; background-clip: padding-box; }
-::-webkit-scrollbar-corner { background: transparent; }
-`;
+    ::-webkit-scrollbar { width: 10px !important; height: 10px !important; }
+    ::-webkit-scrollbar-track { background: transparent !important; }
+    ::-webkit-scrollbar-thumb {
+      background-color: ${thumb} !important;
+      border-radius: 999px;
+      border: 2px solid transparent;
+      background-clip: padding-box;
+    }
+    ::-webkit-scrollbar-thumb:hover { background-color: ${thumbHover} !important; background-clip: padding-box; }
+    ::-webkit-scrollbar-corner { background: transparent !important; }
+  `;
 }
 
 // 检测网页根/body 背景亮度，判断是否深色页面（避免暗色应用主题下浅色网页滚动条看不清）
@@ -337,16 +417,18 @@ async function detectPageDark(wc) {
   } catch { return false; }
 }
 
-async function injectScrollbarCss() {
-  if (!browserView) return;
-  const wc = browserView.webContents;
+async function injectScrollbarCss(tabId) {
+  const entry = tabId ? browserViews.get(tabId) : (activeTabId ? browserViews.get(activeTabId) : null);
+  if (!entry) return;
+  const bv = entry.view;
+  const wc = bv.webContents;
   try {
-    if (browserViewScrollbarCssKey && typeof wc.removeInsertedCSS === 'function') {
-      try { await wc.removeInsertedCSS(browserViewScrollbarCssKey); } catch { /* ignore */ }
-      browserViewScrollbarCssKey = null;
+    if (entry.scrollbarCssKey && typeof wc.removeInsertedCSS === 'function') {
+      try { await wc.removeInsertedCSS(entry.scrollbarCssKey); } catch { /* ignore */ }
+      entry.scrollbarCssKey = null;
     }
     const pageDark = await detectPageDark(wc);
-    browserViewScrollbarCssKey = await wc.insertCSS(scrollbarCssForTheme(pageDark ? 'dark' : 'light'));
+    entry.scrollbarCssKey = await wc.insertCSS(scrollbarCssForTheme(pageDark ? 'dark' : 'light'));
   } catch { /* ignore */ }
 }
 
@@ -364,63 +446,98 @@ ipcMain.handle('window-is-maximized', () => mainWindow?.isMaximized() || false);
 
 // ============================================================
 // IPC：BrowserView 导航控制（前进/后退/刷新/resize/URL）
-// 用 BrowserView 替代 <webview> 标签，通过 setBounds 精确控制尺寸
+// 多标签页：所有通道带 tabId 参数，操作对应标签的 BrowserView
 // ============================================================
-ipcMain.handle('browserView:load', async (e, url) => {
+
+// 创建新标签页，返回 tabId
+let tabSeq = 0;
+ipcMain.handle('browserView:createTab', () => {
+  const tabId = 'tab-' + (++tabSeq);
+  ensureBrowserView(tabId);
+  return tabId;
+});
+
+// 关闭标签页，销毁对应 BrowserView
+ipcMain.handle('browserView:closeTab', (_e, tabId) => {
+  const entry = browserViews.get(tabId);
+  if (entry) {
+    // 如果关闭的是当前可见标签，先摘除
+    if (!entry.hidden) {
+      try { mainWindow.setBrowserView(null); } catch { /* ignore */ }
+    }
+    try { entry.view.webContents?.destroy?.(); } catch { /* ignore */ }
+    browserViews.delete(tabId);
+  }
+  if (activeTabId === tabId) activeTabId = null;
+});
+
+// 激活标签页：显示其 BrowserView，隐藏其他
+ipcMain.handle('browserView:activateTab', (_e, tabId) => {
+  const entry = browserViews.get(tabId);
+  if (!entry) return;
+  activateTab(tabId);
+  // 重新附加到主窗口
+  mainWindow.setBrowserView(entry.view);
+});
+
+ipcMain.handle('browserView:load', async (e, tabId, url) => {
   if (!url) return { error: 'url 为空' };
   // URL 清洗：剥离模型以 markdown 反引号/引号包裹传来的格式字符
   let cleanUrl = String(url).trim().replace(/^[`"'\s]+|[`"'\s]+$/g, '');
   if (!/^https?:\/\//i.test(cleanUrl)) return { error: `无效 URL: ${cleanUrl}` };
-  // 按需创建 BrowserView（首次导航时创建）
-  const bv = ensureBrowserView();
+  // 按需为该标签创建 BrowserView
+  const bv = ensureBrowserView(tabId);
   if (!bv) return { error: '主窗口不可用' };
-  // 等待首次缓存清理完成（并发会中止加载导致黑屏，见 ensureBrowserView 注释）
-  if (cacheClearPromise) { await cacheClearPromise; cacheClearPromise = null; }
-  // 重新附加到主窗口（hide 时会分离）并解除隐藏态
+  const entry = browserViews.get(tabId);
+  // 等待首次缓存清理完成（并发会中止加载导致黑屏）
+  if (entry.cacheClearPromise) { await entry.cacheClearPromise; entry.cacheClearPromise = null; }
+  // 激活该标签并附加到主窗口
+  activateTab(tabId);
   mainWindow.setBrowserView(bv);
-  browserViewHidden = false;
   try {
     await bv.webContents.loadURL(cleanUrl);
     return { url: bv.webContents.getURL() };
   } catch (err) {
-    // 加载失败返回明确错误，前端可展示而非黑屏
     return { error: `页面加载失败（${err?.code || err?.errno || ''}）: ${cleanUrl}` };
   }
 });
 
-ipcMain.handle('browserView:back', () => {
-  if (!browserView) return;
-  if (browserView.webContents.navigationHistory) {
-    if (browserView.webContents.navigationHistory.canGoBack()) {
-      browserView.webContents.goBack();
-    }
-  } else if (browserView.webContents.canGoBack?.()) {
-    browserView.webContents.goBack();
+ipcMain.handle('browserView:back', (_e, tabId) => {
+  const entry = tabId ? browserViews.get(tabId) : (activeTabId ? browserViews.get(activeTabId) : null);
+  if (!entry) return;
+  const wc = entry.view.webContents;
+  if (wc.navigationHistory) {
+    if (wc.navigationHistory.canGoBack()) wc.goBack();
+  } else if (wc.canGoBack?.()) {
+    wc.goBack();
   }
 });
 
-ipcMain.handle('browserView:forward', () => {
-  if (!browserView) return;
-  if (browserView.webContents.navigationHistory) {
-    if (browserView.webContents.navigationHistory.canGoForward()) {
-      browserView.webContents.goForward();
-    }
-  } else if (browserView.webContents.canGoForward?.()) {
-    browserView.webContents.goForward();
+ipcMain.handle('browserView:forward', (_e, tabId) => {
+  const entry = tabId ? browserViews.get(tabId) : (activeTabId ? browserViews.get(activeTabId) : null);
+  if (!entry) return;
+  const wc = entry.view.webContents;
+  if (wc.navigationHistory) {
+    if (wc.navigationHistory.canGoForward()) wc.goForward();
+  } else if (wc.canGoForward?.()) {
+    wc.goForward();
   }
 });
 
-ipcMain.handle('browserView:reload', () => {
-  if (!browserView) return;
-  browserView.webContents.reload();
+ipcMain.handle('browserView:reload', (_e, tabId) => {
+  const entry = tabId ? browserViews.get(tabId) : (activeTabId ? browserViews.get(activeTabId) : null);
+  if (!entry) return;
+  entry.view.webContents.reload();
 });
 
-ipcMain.handle('browserView:resize', (e, x, y, width, height) => {
-  if (!browserView) return;
-  // 隐藏态下忽略渲染层迟到的 bounds 同步（面板收起动画期间 ResizeObserver 仍会触发）
-  if (browserViewHidden) return;
-  // bounds 坐标使用 CSS 像素（Electron 33 setBounds 用逻辑像素，不需要乘 DPR）
-  browserView.setBounds({
+ipcMain.handle('browserView:resize', (e, tabId, x, y, width, height) => {
+  const entry = tabId ? browserViews.get(tabId) : (activeTabId ? browserViews.get(activeTabId) : null);
+  if (!entry) return;
+  // 隐藏态下忽略渲染层迟到的 bounds 同步
+  if (entry.hidden) return;
+  // 确保 BrowserView 附加到主窗口（hide 时会被 setBrowserView(null) 摘除）
+  mainWindow.setBrowserView(entry.view);
+  entry.view.setBounds({
     x: Math.round(x),
     y: Math.round(y),
     width: Math.max(0, Math.round(width)),
@@ -428,52 +545,55 @@ ipcMain.handle('browserView:resize', (e, x, y, width, height) => {
   });
 });
 
-ipcMain.handle('browserView:getUrl', () => {
-  if (!browserView) return '';
-  return browserView.webContents.getURL();
+ipcMain.handle('browserView:getUrl', (_e, tabId) => {
+  const entry = tabId ? browserViews.get(tabId) : (activeTabId ? browserViews.get(activeTabId) : null);
+  if (!entry) return '';
+  return entry.view.webContents.getURL();
 });
 
-ipcMain.handle('browserView:hide', () => {
-  if (!browserView) return;
-  // 真正从主窗口摘除原生图层：仅 setBounds(0,0,0,0) 在部分 Electron 版本/平台下
-  // 并不可靠，图层仍挂在窗口上会残留渲染。摘除后再归零尺寸做双保险。
-  browserViewHidden = true;
-  try { mainWindow.removeBrowserView(browserView); } catch { /* ignore */ }
-  browserView.setBounds({ x: 0, y: 0, width: 0, height: 0 });
+ipcMain.handle('browserView:hide', (_e, tabId) => {
+  // 隐藏指定标签或当前激活标签
+  const entry = tabId ? browserViews.get(tabId) : (activeTabId ? browserViews.get(activeTabId) : null);
+  if (!entry) return;
+  entry.hidden = true;
+  // setBrowserView(null) 摘除当前可见的 BrowserView（同一时间只有一个标签可见）
+  try { mainWindow.setBrowserView(null); } catch { /* ignore */ }
+  entry.view.setBounds({ x: 0, y: 0, width: 0, height: 0 });
 });
 
-ipcMain.handle('browserView:canGoBack', () => {
-  if (!browserView) return false;
-  // 兼容新旧 API：新版用 navigationHistory，旧版用 canGoBack()
-  if (browserView.webContents.navigationHistory) {
-    return browserView.webContents.navigationHistory.canGoBack();
-  }
-  return browserView.webContents.canGoBack?.() || false;
+ipcMain.handle('browserView:canGoBack', (_e, tabId) => {
+  const entry = tabId ? browserViews.get(tabId) : (activeTabId ? browserViews.get(activeTabId) : null);
+  if (!entry) return false;
+  const wc = entry.view.webContents;
+  if (wc.navigationHistory) return wc.navigationHistory.canGoBack();
+  return wc.canGoBack?.() || false;
 });
 
-ipcMain.handle('browserView:canGoForward', () => {
-  if (!browserView) return false;
-  if (browserView.webContents.navigationHistory) {
-    return browserView.webContents.navigationHistory.canGoForward();
-  }
-  return browserView.webContents.canGoForward?.() || false;
+ipcMain.handle('browserView:canGoForward', (_e, tabId) => {
+  const entry = tabId ? browserViews.get(tabId) : (activeTabId ? browserViews.get(activeTabId) : null);
+  if (!entry) return false;
+  const wc = entry.view.webContents;
+  if (wc.navigationHistory) return wc.navigationHistory.canGoForward();
+  return wc.canGoForward?.() || false;
 });
 
 // 页面缩放（BrowserView 原生 setZoomFactor）
-ipcMain.handle('browserView:setZoomFactor', (_e, factor) => {
-  if (!browserView) return;
-  try { browserView.webContents.setZoomFactor(Number(factor) || 1); } catch { /* ignore */ }
+ipcMain.handle('browserView:setZoomFactor', (_e, tabId, factor) => {
+  const entry = tabId ? browserViews.get(tabId) : (activeTabId ? browserViews.get(activeTabId) : null);
+  if (!entry) return;
+  try { entry.view.webContents.setZoomFactor(Number(factor) || 1); } catch { /* ignore */ }
 });
 
 // 同步滚动条主题（应用主题切换时重新注入，颜色按网页背景自动选择）
-ipcMain.handle('browserView:setTheme', () => {
-  injectScrollbarCss();
+ipcMain.handle('browserView:setTheme', (_e, tabId) => {
+  injectScrollbarCss(tabId);
 });
 
 // 直接注入任意滚动条 CSS（前端自定义用）
-ipcMain.handle('browserView:insertScrollbarCSS', async (_e, css) => {
-  if (!browserView) return;
-  try { await browserView.webContents.insertCSS(css); } catch { /* ignore */ }
+ipcMain.handle('browserView:insertScrollbarCSS', async (_e, tabId, css) => {
+  const entry = tabId ? browserViews.get(tabId) : (activeTabId ? browserViews.get(activeTabId) : null);
+  if (!entry) return;
+  try { await entry.view.webContents.insertCSS(css); } catch { /* ignore */ }
 });
 
 // ============================================================
@@ -567,9 +687,11 @@ const CHANGE_ACTIONS = new Set(['click', 'type', 'press', 'select_option', 'chec
 let noChangeStreak = 0;
 const STATE_SNAPSHOT_JS = `(function(){try{var d=document.body;return{url:location.href,t:(d?d.innerText:'').slice(0,2000),n:document.querySelectorAll('a,button,input,select,textarea').length};}catch(e){return null;}})()`;
 
-ipcMain.handle('browserView:action', async (_e, action, args) => {
-  if (!browserView) return { error: '浏览器未打开，请先导航到页面' };
-  const wc = browserView.webContents;
+ipcMain.handle('browserView:action', async (_e, tabId, action, args) => {
+  const entry = tabId ? browserViews.get(tabId) : (activeTabId ? browserViews.get(activeTabId) : null);
+  if (!entry) return { error: '浏览器未打开，请先导航到页面' };
+  const bv = entry.view;
+  const wc = bv.webContents;
   args = args || {};
   try {
     // 确保助手已注入
@@ -581,10 +703,10 @@ ipcMain.handle('browserView:action', async (_e, action, args) => {
         // URL 清洗：剥离模型以 markdown 反引号/引号包裹传来的格式字符
         let cleanUrl = String(args.url || '').trim().replace(/^[`"'\s]+|[`"'\s]+$/g, '');
         if (!/^https?:\/\//i.test(cleanUrl)) return { error: `无效 URL: ${cleanUrl}` };
-        mainWindow.setBrowserView(browserView);
-        browserViewHidden = false;
+        activateTab(tabId || activeTabId);
+        mainWindow.setBrowserView(bv);
         // 等待首次缓存清理完成（并发会中止加载导致黑屏）
-        if (cacheClearPromise) { await cacheClearPromise; cacheClearPromise = null; }
+        if (entry.cacheClearPromise) { await entry.cacheClearPromise; entry.cacheClearPromise = null; }
         try {
           await wc.loadURL(cleanUrl);
         } catch (err) {
@@ -1247,6 +1369,12 @@ ipcMain.handle('keyring:delete', async (e, key) => {
 });
 
 // ============================================================
+// IPC：Clipboard
+// ============================================================
+ipcMain.handle('clipboard:readText', () => clipboard.readText());
+ipcMain.handle('clipboard:writeText', (_e, text) => clipboard.writeText(String(text ?? '')));
+
+// ============================================================
 // IPC：Shell（child_process）
 // ============================================================
 ipcMain.handle('shell:exec', (e, command, args, options) => {
@@ -1383,6 +1511,9 @@ ipcMain.handle('mcp:kill', (e, childId) => {
 // ============================================================
 app.whenReady().then(() => {
   Menu.setApplicationMenu(null);  // 移除默认菜单栏
+  if (process.platform === 'win32') {
+    app.setAppUserModelId('com.yanzhi.desktop');
+  }
 
   // ============================================================
   // Content-Security-Policy：注入到主窗口所在 session 的响应头
@@ -1420,23 +1551,95 @@ app.whenReady().then(() => {
     console.error('数据库初始化失败:', err);
   }
   startServer();
-  // 等待后端启动（给 1.5 秒）
-  setTimeout(createWindow, 1500);
+
+  // 健康检查：轮询后端 /api/health，就绪后创建窗口（替代固定 1.5s 延迟）
+  const checkHealth = (retries = 0) => {
+    if (retries > 60) { // 最多等 30 秒
+      console.error('[后端] 启动超时，强制创建窗口');
+      createWindow();
+      return;
+    }
+    const req = http.get('http://127.0.0.1:3001/api/health', (res) => {
+      res.resume();
+      if (res.statusCode === 200) {
+        console.log('[后端] 健康检查通过，创建窗口');
+        createWindow();
+      } else {
+        setTimeout(() => checkHealth(retries + 1), 500);
+      }
+    });
+    req.on('error', () => setTimeout(() => checkHealth(retries + 1), 500));
+    req.setTimeout(2000, () => { req.destroy(); setTimeout(() => checkHealth(retries + 1), 500); });
+  };
+  setTimeout(checkHealth, 300);
+
+  // 创建系统托盘图标（关闭窗口时后端保持守护运行，通过托盘退出）
+  const createTray = () => {
+    const iconPath = getAppIconPath();
+    if (!fs.existsSync(iconPath)) return;
+    tray = new Tray(iconPath);
+    tray.setToolTip('言智');
+    const updateTrayMenu = () => {
+      const menu = Menu.buildFromTemplate([
+        {
+          label: mainWindow && mainWindow.isVisible() ? '隐藏主窗口' : '显示主窗口',
+          click: () => {
+            if (mainWindow) {
+              if (mainWindow.isVisible()) { mainWindow.hide(); }
+              else { mainWindow.show(); mainWindow.focus(); }
+            } else {
+              createWindow();
+            }
+          },
+        },
+        { type: 'separator' },
+        {
+          label: '退出',
+          click: () => { isQuitting = true; app.quit(); },
+        },
+      ]);
+      tray.setContextMenu(menu);
+    };
+    updateTrayMenu();
+    tray.on('click', () => {
+      if (mainWindow) {
+        if (mainWindow.isVisible()) { mainWindow.hide(); }
+        else { mainWindow.show(); mainWindow.focus(); }
+      } else {
+        createWindow();
+      }
+    });
+    // 窗口可见性变化时更新菜单
+    if (mainWindow) {
+      mainWindow.on('show', updateTrayMenu);
+      mainWindow.on('hide', updateTrayMenu);
+    }
+  };
+  createTray();
 });
 
 app.on('window-all-closed', () => {
-  if (serverProcess) { serverProcess.kill(); serverProcess = null; }
-  // 关闭所有 MCP 子进程
+  // 守护模式：关闭窗口不杀后端，用户通过托盘退出
+  if (!isQuitting && process.platform === 'darwin') {
+    // macOS: 不做任何事，应用保持活跃
+  } else if (!isQuitting) {
+    // Windows/Linux: 窗口已关闭但后端保持运行，用户可通过托盘重新打开
+  }
+});
+
+// 真正退出时清理后端 + MCP + 数据库
+app.on('before-quit', () => {
+  isQuitting = true;
+  if (serverProcess) { try { serverProcess.kill('SIGTERM'); } catch {} serverProcess = null; }
   for (const [id, entry] of mcpChildren) {
     try { entry.child.kill('SIGTERM'); } catch {}
   }
   mcpChildren.clear();
-  // 关闭数据库
   if (db) {
     try { db.close(); } catch {}
     db = null;
   }
-  if (process.platform !== 'darwin') app.quit();
+  if (tray) { try { tray.destroy(); } catch {} tray = null; }
 });
 
 app.on('activate', () => {

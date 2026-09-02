@@ -42,45 +42,6 @@
               <span class="collapsed-hint">点击展开</span>
             </div>
             <div v-show="!collapsedMessages[round.finalAssistant?.id || '']">
-              <div class="agent-response-body">
-                <div v-if="round.finalAssistant?.reasoningContent && !round.hasAgentProcess" class="msg-reasoning">
-                  <div class="reasoning-header" @click="toggleReasoning('agent-fa-' + ri)">
-                    <el-icon><CaretRight v-if="!expandedReasoning['agent-fa-' + ri]" /><CaretBottom v-else /></el-icon>
-                    <span>思考过程</span>
-                  </div>
-                  <div v-show="expandedReasoning['agent-fa-' + ri]" class="reasoning-body">{{ round.finalAssistant.reasoningContent }}</div>
-                </div>
-                <template v-if="round.finalAssistant?.content">
-                  <div class="msg-content" v-html="renderAssistantMarkdown(round.finalAssistant.content)" @click="handleContentClick"></div>
-                  <PlatformConfigCard
-                    v-if="parseConfigCard(round.finalAssistant.content)"
-                    :mode="parseConfigCard(round.finalAssistant.content)!.mode"
-                    :platform="getEditPlatform(round.finalAssistant.content)"
-                    :reason="getEditReason(round.finalAssistant.content)"
-                    class="msg-config-card"
-                    @saved="onConfigSaved"
-                  />
-                  <DeliverableFileCard
-                    v-if="getRoundDeliverableFiles(round).length"
-                    :files="getRoundDeliverableFiles(round)"
-                    class="msg-deliverable-card"
-                  />
-                </template>
-                <template v-else-if="isLastRoundStreaming(round, ri)">
-                  <!-- 有实时正文：跑马灯式流式显示 + 末尾闪烁光标 -->
-                  <div v-if="getStreamingText(round, ri)" class="msg-content streaming-content" v-html="renderStreamingContent(getStreamingText(round, ri))" @click="handleContentClick"></div>
-                  <!-- 有思考但无正文：显示正在思考 + 实时思考内容 -->
-                  <div v-else-if="getStreamingReasoning(round, ri)" class="msg-reasoning streaming-reasoning">
-                    <div class="reasoning-header"><span>正在思考…</span></div>
-                    <div class="reasoning-body">{{ getStreamingReasoning(round, ri) }}</div>
-                  </div>
-                  <!-- 刚开始无任何内容：三点初始态 -->
-                  <div v-else class="msg-content streaming">
-                    <span class="typing-dots" aria-label="正在输入"><span></span><span></span><span></span></span>
-                  </div>
-                </template>
-              </div>
-
               <div v-if="round.hasAgentProcess" class="agent-process-header" @click="toggleAgentProcess('round-' + ri)">
                 <el-icon :size="14" class="agent-process-icon">
                   <CaretRight v-if="!isProcessOpen(round, ri)" />
@@ -204,6 +165,45 @@
                   </div>
                 </div>
               </div>
+              <div class="agent-response-body">
+                <div v-if="round.finalAssistant?.reasoningContent && !round.hasAgentProcess" class="msg-reasoning">
+                  <div class="reasoning-header" @click="toggleReasoning('agent-fa-' + ri)">
+                    <el-icon><CaretRight v-if="!expandedReasoning['agent-fa-' + ri]" /><CaretBottom v-else /></el-icon>
+                    <span>思考过程</span>
+                  </div>
+                  <div v-show="expandedReasoning['agent-fa-' + ri]" class="reasoning-body">{{ round.finalAssistant.reasoningContent }}</div>
+                </div>
+                <template v-if="round.finalAssistant?.content">
+                  <div class="msg-content" v-html="renderAssistantMarkdown(round.finalAssistant.content)" @click="handleContentClick"></div>
+                  <PlatformConfigCard
+                    v-if="parseConfigCard(round.finalAssistant.content)"
+                    :mode="parseConfigCard(round.finalAssistant.content)!.mode"
+                    :platform="getEditPlatform(round.finalAssistant.content)"
+                    :reason="getEditReason(round.finalAssistant.content)"
+                    class="msg-config-card"
+                    @saved="onConfigSaved"
+                  />
+                  <DeliverableFileCard
+                    v-if="getRoundDeliverableFiles(round).length"
+                    :files="getRoundDeliverableFiles(round)"
+                    class="msg-deliverable-card"
+                  />
+                </template>
+                <template v-else-if="isLastRoundStreaming(round, ri)">
+                  <!-- 有实时正文：跑马灯式流式显示 + 末尾闪烁光标 -->
+                  <div v-if="getStreamingText(round, ri)" class="msg-content streaming-content" v-html="renderStreamingContent(getStreamingText(round, ri))" @click="handleContentClick"></div>
+                  <!-- 有思考但无正文：显示正在思考 + 实时思考内容 -->
+                  <div v-else-if="getStreamingReasoning(round, ri)" class="msg-reasoning streaming-reasoning">
+                    <div class="reasoning-header"><span>正在思考…</span></div>
+                    <div class="reasoning-body">{{ getStreamingReasoning(round, ri) }}</div>
+                  </div>
+                  <!-- 刚开始无任何内容：三点初始态 -->
+                  <div v-else class="msg-content streaming">
+                    <span class="typing-dots" aria-label="正在输入"><span></span><span></span><span></span></span>
+                  </div>
+                </template>
+              </div>
+
             </div>
           </div>
 
@@ -642,6 +642,8 @@ watch(activeNavRound, () => {
 /* 流式跑马灯：实时正文容器 */
 .streaming-content {
   position: relative;
+  will-change: contents;
+  contain: content;
 }
 /* 末尾闪烁光标（v-html 内，需 :deep 穿透）；暗色主题下用主色 + 发光确保对比度 */
 .streaming-content :deep(.streaming-cursor) {
@@ -653,11 +655,11 @@ watch(activeNavRound, () => {
   background: var(--color-primary, #6366f1);
   border-radius: 1px;
   box-shadow: 0 0 6px rgba(99, 102, 241, 0.55);
-  animation: streamingBlink 1s step-end infinite;
+  animation: streamingBlink 1.1s ease-in-out infinite;
 }
 @keyframes streamingBlink {
-  0%, 50% { opacity: 1; }
-  51%, 100% { opacity: 0; }
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.15; }
 }
 /* 流式思考：淡显，暗色主题下提升正文对比度 */
 .streaming-reasoning {
@@ -666,4 +668,16 @@ watch(activeNavRound, () => {
 }
 .streaming-reasoning .reasoning-header { color: var(--color-primary, #8B5CF6); }
 .streaming-reasoning .reasoning-body { color: var(--color-text-primary, #e5e7eb); }
+
+/* 思考过程区域：平滑出现动画 */
+.agent-process-header {
+  animation: fadeInDown 0.25s ease-out;
+}
+.agent-process-steps {
+  animation: fadeInDown 0.3s ease-out;
+}
+@keyframes fadeInDown {
+  from { opacity: 0; transform: translateY(-6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
 </style>

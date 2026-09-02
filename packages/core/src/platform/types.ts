@@ -59,6 +59,9 @@ export interface PlatformAdapter {
   keyring: KeyringAdapter;
   mcp?: McpProcessAdapter; // 仅桌面端有
   shell?: ShellAdapter;    // 仅桌面端有
+  /** LLM 代理基址（如 '/api/llm'）。设置后 LlmClient 走后端代理转发，避免浏览器 CORS 并隐藏 API Key。
+   *  浏览器端（web/desktop 渲染进程）注入；server 端不注入（直连上游）。 */
+  llmProxyBase?: string;
 }
 
 /** 当前平台适配器（由各端入口注入） */

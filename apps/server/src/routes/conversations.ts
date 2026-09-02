@@ -22,9 +22,15 @@ router.post('/', (req: Request, res: Response) => {
   if (!title) { res.status(400).json({ error: '标题为必填项' }); return; }
   const id = uuid();
   const now = Date.now();
+  // 未指定智能体时默认绑定 a_default_assistant，确保子智能体/工具挂载生效
+  let resolvedAgentId = agentId || null;
+  if (!resolvedAgentId) {
+    const def = db.prepare("SELECT 1 FROM agent WHERE id = 'a_default_assistant' AND (user_id = ? OR is_public = 1)").get(userId);
+    if (def) resolvedAgentId = 'a_default_assistant';
+  }
   db.prepare(
     'INSERT INTO conversation (id, user_id, title, agent_id, platform_id, model_id, space_id, mcp_servers_json, skill_ids_json, pinned, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-  ).run(id, userId, title, agentId || null, platformId || null, modelId || null, spaceId || null, '[]', '[]', 0, now, now);
+  ).run(id, userId, title, resolvedAgentId, platformId || null, modelId || null, spaceId || null, '[]', '[]', 0, now, now);
   const row = db.prepare('SELECT * FROM conversation WHERE id = ?').get(id);
   res.json({ data: row });
 });
@@ -60,6 +66,7 @@ router.patch('/:id', (req: Request, res: Response) => {
     sets.push('mcp_servers_json = ?'); vals.push(JSON.stringify(serversJson));
   }
   if (req.body.skillIds !== undefined) { sets.push('skill_ids_json = ?'); vals.push(JSON.stringify(req.body.skillIds)); }
+  if (req.body.builtinToolIds !== undefined) { sets.push('builtin_tool_ids_json = ?'); vals.push(JSON.stringify(req.body.builtinToolIds)); }
   if (req.body.pinned !== undefined) { sets.push('pinned = ?'); vals.push(req.body.pinned ? 1 : 0); }
   if (sets.length === 0) { res.json({ data: existing }); return; }
 
@@ -97,15 +104,17 @@ router.post('/:id/messages', (req: Request, res: Response) => {
   const cid = req.params.id;
   const conv = db.prepare('SELECT id FROM conversation WHERE id = ? AND user_id = ?').get(cid, userId);
   if (!conv) { res.status(404).json({ error: '会话不存在' }); return; }
-  const { role, content, toolCalls, toolCallId, reasoningContent, tokens, systemPromptSnapshot } = req.body || {};
+  const { role, content, toolCalls, toolCallId, reasoningContent, tokens, systemPromptSnapshot,
+    parentToolCallId, subAgentId, subAgentName, subAgentDepth } = req.body || {};
   if (!role) { res.status(400).json({ error: 'role 为必填项' }); return; }
 
   const id = uuid();
   const now = Date.now();
   db.prepare(
-    'INSERT INTO message (id, conversation_id, user_id, role, content, tool_calls_json, tool_call_id, reasoning_content, system_prompt_snapshot, tokens, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    'INSERT INTO message (id, conversation_id, user_id, role, content, tool_calls_json, tool_call_id, reasoning_content, system_prompt_snapshot, tokens, parent_tool_call_id, sub_agent_id, sub_agent_name, sub_agent_depth, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
   ).run(id, cid, userId, role, content || null, toolCalls ? JSON.stringify(toolCalls) : null,
-    toolCallId || null, reasoningContent || null, systemPromptSnapshot || null, tokens || 0, now);
+    toolCallId || null, reasoningContent || null, systemPromptSnapshot || null, tokens || 0,
+    parentToolCallId || null, subAgentId || null, subAgentName || null, subAgentDepth ?? null, now);
   db.prepare('UPDATE conversation SET updated_at = ? WHERE id = ?').run(now, cid);
   const row = db.prepare('SELECT * FROM message WHERE id = ?').get(id);
   res.json({ data: row });

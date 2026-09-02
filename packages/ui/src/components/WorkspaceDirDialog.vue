@@ -45,6 +45,7 @@
       </template>
     </div>
     <template #footer>
+      <el-button v-if="currentPath" type="danger" plain @click="clearDir">清除工作目录</el-button>
       <el-button @click="visible = false">取消</el-button>
       <el-button type="primary" @click="confirm">选择当前目录</el-button>
     </template>
@@ -236,6 +237,11 @@ function goUp() {
 
 function confirm() {
   emit('selected', currentPath.value);
+  visible.value = false;
+}
+
+function clearDir() {
+  emit('selected', '');
   visible.value = false;
 }
 </script>

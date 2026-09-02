@@ -41,6 +41,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     showOpenDir: (options) => ipcRenderer.invoke('dialog:showOpenDir', options),
   },
 
+  // 剪贴板
+  clipboard: {
+    readText: () => ipcRenderer.invoke('clipboard:readText'),
+    writeText: (text) => ipcRenderer.invoke('clipboard:writeText', text),
+  },
+
   // Shell
   shell: {
     exec: (command, args, options) => ipcRenderer.invoke('shell:exec', command, args, options),
@@ -56,32 +62,29 @@ contextBridge.exposeInMainWorld('electronAPI', {
     kill: (childId) => ipcRenderer.invoke('mcp:kill', childId),
   },
 
-  // BrowserView：嵌入外部网页（替代 <webview> 标签）
+  // BrowserView：嵌入外部网页（多标签页，每个 tabId 对应独立 BrowserView）
   browserView: {
-    load: (url) => ipcRenderer.invoke('browserView:load', url),
-    back: () => ipcRenderer.invoke('browserView:back'),
-    forward: () => ipcRenderer.invoke('browserView:forward'),
-    reload: () => ipcRenderer.invoke('browserView:reload'),
-    resize: (x, y, width, height) => ipcRenderer.invoke('browserView:resize', x, y, width, height),
-    hide: () => ipcRenderer.invoke('browserView:hide'),
-    getUrl: () => ipcRenderer.invoke('browserView:getUrl'),
-    canGoBack: () => ipcRenderer.invoke('browserView:canGoBack'),
-    canGoForward: () => ipcRenderer.invoke('browserView:canGoForward'),
-    // 设置网页缩放级别（对应前端 [−]/[+] 缩放控件）
-    setZoomFactor: (factor) => ipcRenderer.invoke('browserView:setZoomFactor', factor),
-    // 注入滚动条主题样式（美化原生滚动条）
-    insertScrollbarCSS: (css) => ipcRenderer.invoke('browserView:insertScrollbarCSS', css),
-    // 同步当前主题（深/浅），由主进程据此注入对应主题色的滚动条样式
-    setTheme: (theme) => ipcRenderer.invoke('browserView:setTheme', theme),
-    // pageAgent 自动化操作（直接操作可见的 BrowserView，含虚拟鼠标光标）
-    action: (action, args) => ipcRenderer.invoke('browserView:action', action, args),
-    // 监听主进程的导航事件（地址栏同步）
+    createTab: () => ipcRenderer.invoke('browserView:createTab'),
+    closeTab: (tabId) => ipcRenderer.invoke('browserView:closeTab', tabId),
+    activateTab: (tabId) => ipcRenderer.invoke('browserView:activateTab', tabId),
+    load: (tabId, url) => ipcRenderer.invoke('browserView:load', tabId, url),
+    back: (tabId) => ipcRenderer.invoke('browserView:back', tabId),
+    forward: (tabId) => ipcRenderer.invoke('browserView:forward', tabId),
+    reload: (tabId) => ipcRenderer.invoke('browserView:reload', tabId),
+    resize: (tabId, x, y, width, height) => ipcRenderer.invoke('browserView:resize', tabId, x, y, width, height),
+    hide: (tabId) => ipcRenderer.invoke('browserView:hide', tabId),
+    getUrl: (tabId) => ipcRenderer.invoke('browserView:getUrl', tabId),
+    canGoBack: (tabId) => ipcRenderer.invoke('browserView:canGoBack', tabId),
+    canGoForward: (tabId) => ipcRenderer.invoke('browserView:canGoForward', tabId),
+    setZoomFactor: (tabId, factor) => ipcRenderer.invoke('browserView:setZoomFactor', tabId, factor),
+    insertScrollbarCSS: (tabId, css) => ipcRenderer.invoke('browserView:insertScrollbarCSS', tabId, css),
+    setTheme: (tabId, theme) => ipcRenderer.invoke('browserView:setTheme', tabId, theme),
+    action: (tabId, action, args) => ipcRenderer.invoke('browserView:action', tabId, action, args),
     onNavigated: (callback) => {
-      ipcRenderer.on('browserView:navigated', (_e, url) => callback(url));
+      ipcRenderer.on('browserView:navigated', (_e, tabId, url) => callback(tabId, url));
     },
-    // 监听页面加载完成事件
     onLoaded: (callback) => {
-      ipcRenderer.on('browserView:loaded', (_e, url) => callback(url));
+      ipcRenderer.on('browserView:loaded', (_e, tabId, url) => callback(tabId, url));
     },
   },
 });

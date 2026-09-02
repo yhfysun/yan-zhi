@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { v4 as uuid } from 'uuid';
 import { authMiddleware } from '../auth.js';
 import { db } from '../db.js';
+import { ensureAgnesPlatform } from '../agnes-platform/service.js';
 
 
 const router = Router();
@@ -40,6 +41,9 @@ const userId = (req: Request) => req.user!.userId;
 // === Platforms ===
 
 router.get('/', (req: Request, res: Response) => {
+  // 惰性 seed agnes 平台：覆盖「服务启动后才出现的用户」（如注册/新库），
+  // 已存在则 no-op，绝不覆盖用户修改。失败不阻塞列表返回。
+  try { ensureAgnesPlatform(userId(req)); } catch {}
   const rows = db.prepare("SELECT * FROM platform WHERE user_id = ? AND id NOT LIKE 'local-model-%' ORDER BY created_at DESC").all(userId(req));
   res.json({ data: rows.map(rowToP) });
 });

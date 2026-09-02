@@ -1,4 +1,6 @@
 // LLM 客户端 - 同时支持 OpenAI Chat Completions 与 Anthropic Messages 协议
+// 浏览器端通过 PlatformAdapter.llmProxyBase 走后端代理（/api/llm/*），避免 CORS 且不暴露 API Key；
+// server 端（无 llmProxyBase）直连上游。
 import type { Platform, Model, Message, ChatChunk, ChatRequest } from '@yan-zhi/shared';
 import { getPlatformAdapter } from '../platform/types';
 import { parseSSE } from './stream';
@@ -38,6 +40,11 @@ export class LlmClient {
   /** Anthropic 官方协议不提供 embeddings 接口，上层 UI 应据此隐藏相关入口。 */
   get supportsEmbeddings() { return !this.isAnthropic; }
 
+  /** 后端 LLM 代理基址（浏览器端注入）；server 端无此字段则直连上游 */
+  private get proxyBase(): string | undefined {
+    try { return getPlatformAdapter().llmProxyBase; } catch { return undefined; }
+  }
+
   private async buildHeaders(): Promise<HeadersInit> {
     const adapter = getPlatformAdapter();
     const apiKey = await adapter.keyring.get(`platform:${this.platform.id}:apikey`);
@@ -60,15 +67,47 @@ export class LlmClient {
     };
   }
 
+  /** 走后端代理时的鉴权头：带本地 JWT token（后端 authMiddleware 放行本地模式） */
+  private proxyAuthHeaders(): HeadersInit {
+    const h: Record<string, string> = { 'Content-Type': 'application/json' };
+    try {
+      const token = typeof localStorage !== 'undefined' ? localStorage.getItem('auth_token') : null;
+      if (token) h['Authorization'] = `Bearer ${token}`;
+    } catch {}
+    return h;
+  }
+
+  /** 统一 POST：有代理走后端 /api/llm/<path>（body 包 platformId + payload），无则直连上游。
+   *  upstreamPath 形如 'v1/chat/completions' / 'v1/messages' / 'v1/embeddings' */
+  private async upstreamFetch(
+    upstreamPath: string,
+    body: any,
+    options?: { signal?: AbortSignal; anthropic?: boolean },
+  ): Promise<Response> {
+    const proxy = this.proxyBase;
+    if (proxy) {
+      const proxyPath = upstreamPath.replace(/^v1\//, '');
+      return fetch(`${proxy}/${proxyPath}`, {
+        method: 'POST',
+        headers: this.proxyAuthHeaders(),
+        body: JSON.stringify({ platformId: this.platform.id, payload: body }),
+        signal: options?.signal,
+      });
+    }
+    const headers = options?.anthropic ? await this.buildAnthropicHeaders() : await this.buildHeaders();
+    return fetch(`${this.baseUrl}/${upstreamPath}`, {
+      method: 'POST', headers, body: JSON.stringify(body), signal: options?.signal,
+    });
+  }
+
   async *chatStream(
     messages: Message[],
-    options?: { tools?: unknown[]; temperature?: number; maxTokens?: number; topP?: number; frequencyPenalty?: number; presencePenalty?: number; reasoningEffort?: string; signal?: AbortSignal },
+    options?: { tools?: unknown[]; temperature?: number; maxTokens?: number; topP?: number; frequencyPenalty?: number; presencePenalty?: number; reasoningEffort?: string; responseFormat?: { type: 'json_object' | 'json_schema'; json_schema?: unknown }; signal?: AbortSignal },
   ): AsyncIterable<ChatChunk> {
     if (this.isAnthropic) {
       yield* this.anthropicStream(messages, options);
       return;
     }
-    const headers = await this.buildHeaders();
     const apiMessages = messages.map(m => this.toApiMessage(m));
     const body: any = {
       model: this.model.modelId,
@@ -81,29 +120,21 @@ export class LlmClient {
       stream: true,
     };
     if (options?.tools?.length) body.tools = options.tools;
+    if (options?.responseFormat) body.response_format = options.responseFormat;
     if (options?.reasoningEffort) {
       body.reasoning_effort = options.reasoningEffort;
     }
-    const url = `${this.baseUrl}/v1/chat/completions`;
+    const urlDesc = this.proxyBase ? `${this.proxyBase}/chat/completions` : `${this.baseUrl}/v1/chat/completions`;
     let res: Response;
     try {
-      res = await fetch(url, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(body),
-        signal: options?.signal,
-      });
+      res = await this.upstreamFetch('v1/chat/completions', body, { signal: options?.signal });
     } catch (e: any) {
-      // 区分 abort（超时/用户取消）与真正的网络/CORS 错误，避免把超时误报为 CORS/网络不通
       const sig = options?.signal;
       if (sig?.aborted || e?.name === 'AbortError') {
         const reason = (sig?.reason as any)?.message || e?.message || 'Aborted';
-        throw new Error(`请求被中止（${reason}）。URL: ${url}`);
+        throw new Error(`请求被中止（${reason}）。URL: ${urlDesc}`);
       }
-      // 浏览器 CORS 拦截或网络不通时 fetch 直接抛 TypeError
-      throw new Error(
-        `请求失败（可能是 CORS 跨域拦截或网络不通）: ${e?.message || e}。URL: ${url}`,
-      );
+      throw new Error(`请求失败（代理或网络不通）: ${e?.message || e}。URL: ${urlDesc}`);
     }
     if (!res.ok || !res.body) {
       const text = await res.text().catch(() => '');
@@ -115,9 +146,7 @@ export class LlmClient {
           if (m.tool_calls) { const { tool_calls, tool_call_id, ...rest } = m; return rest; }
           return m;
         }).filter((m: any) => m.content || m.role !== 'assistant');
-        const retryRes = await fetch(url, {
-          method: 'POST', headers, body: JSON.stringify(body), signal: options?.signal,
-        });
+        const retryRes = await this.upstreamFetch('v1/chat/completions', body, { signal: options?.signal });
         if (retryRes.ok && retryRes.body) {
           yield* parseSSE(retryRes.body);
           return;
@@ -125,7 +154,7 @@ export class LlmClient {
       }
       let hint = '';
       if (res.status === 401) hint = '（API Key 无效或未配置）';
-      else if (res.status === 404) hint = `（URL 不对，请检查平台 API URL。当前请求: ${url}）`;
+      else if (res.status === 404) hint = `（URL 不对，请检查平台 API URL。当前请求: ${urlDesc}）`;
       else if (res.status === 429) hint = '（请求频率超限）';
       throw new Error(`LLM 请求失败: ${res.status} ${res.statusText}${hint}${text ? ` ${text.slice(0, 200)}` : ''}`);
     }
@@ -136,7 +165,6 @@ export class LlmClient {
     messages: Message[],
     options?: { tools?: unknown[]; temperature?: number; maxTokens?: number; topP?: number; frequencyPenalty?: number; presencePenalty?: number; reasoningEffort?: string; signal?: AbortSignal },
   ): AsyncIterable<ChatChunk> {
-    const headers = await this.buildAnthropicHeaders();
     const { system, messages: aMessages } = toAnthropicMessages(messages);
     const body: any = {
       model: this.model.modelId,
@@ -149,31 +177,23 @@ export class LlmClient {
     if (tools.length) body.tools = tools;
     if (options?.temperature != null) body.temperature = options.temperature;
     if (options?.topP != null) body.top_p = options.topP;
-    const url = `${this.baseUrl}/v1/messages`;
+    const urlDesc = this.proxyBase ? `${this.proxyBase}/messages` : `${this.baseUrl}/v1/messages`;
     let res: Response;
     try {
-      res = await fetch(url, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(body),
-        signal: options?.signal,
-      });
+      res = await this.upstreamFetch('v1/messages', body, { signal: options?.signal, anthropic: true });
     } catch (e: any) {
-      // 区分 abort（超时/用户取消）与真正的网络/CORS 错误，避免把超时误报为 CORS/网络不通
       const sig = options?.signal;
       if (sig?.aborted || e?.name === 'AbortError') {
         const reason = (sig?.reason as any)?.message || e?.message || 'Aborted';
-        throw new Error(`请求被中止（${reason}）。URL: ${url}`);
+        throw new Error(`请求被中止（${reason}）。URL: ${urlDesc}`);
       }
-      throw new Error(
-        `请求失败（可能是 CORS 跨域拦截或网络不通）: ${e?.message || e}。URL: ${url}`,
-      );
+      throw new Error(`请求失败（代理或网络不通）: ${e?.message || e}。URL: ${urlDesc}`);
     }
     if (!res.ok || !res.body) {
       const text = await res.text().catch(() => '');
       let hint = '';
       if (res.status === 401) hint = '（API Key 无效或未配置）';
-      else if (res.status === 404) hint = `（URL 不对，请检查平台 API URL。当前请求: ${url}）`;
+      else if (res.status === 404) hint = `（URL 不对，请检查平台 API URL。当前请求: ${urlDesc}）`;
       else if (res.status === 429) hint = '（请求频率超限）';
       throw new Error(`LLM 请求失败: ${res.status} ${res.statusText}${hint}${text ? ` ${text.slice(0, 200)}` : ''}`);
     }
@@ -182,12 +202,11 @@ export class LlmClient {
 
   async chat(
     messages: Message[],
-    options?: { tools?: unknown[]; temperature?: number; maxTokens?: number; topP?: number; frequencyPenalty?: number; presencePenalty?: number; signal?: AbortSignal },
+    options?: { tools?: unknown[]; temperature?: number; maxTokens?: number; topP?: number; frequencyPenalty?: number; presencePenalty?: number; responseFormat?: { type: 'json_object' | 'json_schema'; json_schema?: unknown }; signal?: AbortSignal },
   ): Promise<ChatChunk> {
     if (this.isAnthropic) {
       return this.anthropicChat(messages, options);
     }
-    const headers = await this.buildHeaders();
     // toApiMessage 返回 OpenAI 约定的 snake_case Record，与内部 Message 类型不同构；
     // 与 chatStream 一致用 any 规避 ChatRequest.messages: Message[] 的类型摩擦。
     const body: any = {
@@ -201,12 +220,8 @@ export class LlmClient {
       presencePenalty: options?.presencePenalty,
       stream: false,
     };
-    const res = await fetch(`${this.baseUrl}/v1/chat/completions`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(body),
-      signal: options?.signal,
-    });
+    if (options?.responseFormat) body.response_format = options.responseFormat;
+    const res = await this.upstreamFetch('v1/chat/completions', body, { signal: options?.signal });
     if (!res.ok) throw new Error(`LLM 请求失败: ${res.status} ${res.statusText}`);
     const data = await res.json();
     return {
@@ -226,7 +241,6 @@ export class LlmClient {
     messages: Message[],
     options?: { tools?: unknown[]; temperature?: number; maxTokens?: number; topP?: number; frequencyPenalty?: number; presencePenalty?: number; signal?: AbortSignal },
   ): Promise<ChatChunk> {
-    const headers = await this.buildAnthropicHeaders();
     const { system, messages: aMessages } = toAnthropicMessages(messages);
     const body: any = {
       model: this.model.modelId,
@@ -239,12 +253,7 @@ export class LlmClient {
     if (tools.length) body.tools = tools;
     if (options?.temperature != null) body.temperature = options.temperature;
     if (options?.topP != null) body.top_p = options.topP;
-    const res = await fetch(`${this.baseUrl}/v1/messages`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(body),
-      signal: options?.signal,
-    });
+    const res = await this.upstreamFetch('v1/messages', body, { signal: options?.signal, anthropic: true });
     if (!res.ok) throw new Error(`LLM 请求失败: ${res.status} ${res.statusText}`);
     const data = await res.json();
     return anthropicResponseToChunk(data);
@@ -254,8 +263,7 @@ export class LlmClient {
     if (this.isAnthropic) {
       // Anthropic 官方无公开模型列表接口；兼容网关（如 OpenRouter）可能支持
       try {
-        const headers = await this.buildAnthropicHeaders();
-        const res = await fetch(`${this.baseUrl}/v1/models`, { headers });
+        const res = await this.fetchModels();
         if (!res.ok) return [];
         const data = await res.json().catch(() => null);
         return (data?.data || []).map((m: { id: string; type?: string }) => ({ id: m.id, type: m.type }));
@@ -263,11 +271,22 @@ export class LlmClient {
         return [];
       }
     }
-    const headers = await this.buildHeaders();
-    const res = await fetch(`${this.baseUrl}/v1/models`, { headers });
+    const res = await this.fetchModels();
     if (!res.ok) throw new Error(`拉取模型失败: ${res.status}`);
     const data = await res.json();
     return (data.data || []).map((m: { id: string; type?: string }) => ({ id: m.id, type: m.type }));
+  }
+
+  /** GET /v1/models：有代理走后端 /api/llm/models?platformId=，否则直连 */
+  private async fetchModels(): Promise<Response> {
+    const proxy = this.proxyBase;
+    if (proxy) {
+      return fetch(`${proxy}/models?platformId=${encodeURIComponent(this.platform.id)}`, {
+        headers: this.proxyAuthHeaders(),
+      });
+    }
+    const headers = this.isAnthropic ? await this.buildAnthropicHeaders() : await this.buildHeaders();
+    return fetch(`${this.baseUrl}/v1/models`, { headers });
   }
 
   async ping(): Promise<boolean> {
@@ -275,8 +294,7 @@ export class LlmClient {
       // 无模型时仅做连通性探测（不校验鉴权）；有模型时用小请求验证可用性
       try {
         if (this.model?.modelId) return (await this.chatTest()).ok;
-        const headers = await this.buildAnthropicHeaders();
-        const res = await fetch(`${this.baseUrl}/v1/models`, { headers });
+        const res = await this.fetchModels();
         return res.status < 500;
       } catch {
         return false;
@@ -295,7 +313,6 @@ export class LlmClient {
     if (this.isAnthropic) return this.anthropicChatTest();
     const start = Date.now();
     try {
-      const headers = await this.buildHeaders();
       const body: ChatRequest = {
         model: this.model.modelId,
         messages: [
@@ -304,11 +321,7 @@ export class LlmClient {
         maxTokens: 5,
         stream: false,
       };
-      const res = await fetch(`${this.baseUrl}/v1/chat/completions`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(body),
-      });
+      const res = await this.upstreamFetch('v1/chat/completions', body);
       const durationMs = Date.now() - start;
       if (!res.ok) {
         const text = await res.text().catch(() => '');
@@ -329,18 +342,13 @@ export class LlmClient {
   private async anthropicChatTest(): Promise<{ ok: boolean; durationMs: number; finishReason?: string; content?: string; msg?: string }> {
     const start = Date.now();
     try {
-      const headers = await this.buildAnthropicHeaders();
       const body = {
         model: this.model.modelId,
         max_tokens: 5,
         messages: [{ role: 'user', content: [{ type: 'text', text: 'ping' }] }],
         stream: false,
       };
-      const res = await fetch(`${this.baseUrl}/v1/messages`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(body),
-      });
+      const res = await this.upstreamFetch('v1/messages', body, { anthropic: true });
       const durationMs = Date.now() - start;
       if (!res.ok) {
         const text = await res.text().catch(() => '');
@@ -363,12 +371,7 @@ export class LlmClient {
     if (this.isAnthropic) {
       throw new Error('Anthropic 协议不支持 embeddings 接口（请使用支持 embeddings 的平台）');
     }
-    const headers = await this.buildHeaders();
-    const res = await fetch(`${this.baseUrl}/v1/embeddings`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({ model: this.model.modelId, input }),
-    });
+    const res = await this.upstreamFetch('v1/embeddings', { model: this.model.modelId, input });
     if (!res.ok) throw new Error(`Embedding 请求失败: ${res.status}`);
     const data = await res.json();
     return (data.data || []).map((d: { embedding: number[] }) => d.embedding);
@@ -387,7 +390,6 @@ export class LlmClient {
     options?: { maxTokens?: number; temperature?: number; signal?: AbortSignal },
   ): Promise<string> {
     if (this.isAnthropic) {
-      const headers = await this.buildAnthropicHeaders();
       const body = {
         model: this.model.modelId,
         max_tokens: options?.maxTokens ?? 1024,
@@ -400,9 +402,7 @@ export class LlmClient {
         }],
         stream: false,
       };
-      const res = await fetch(`${this.baseUrl}/v1/messages`, {
-        method: 'POST', headers, body: JSON.stringify(body), signal: options?.signal,
-      });
+      const res = await this.upstreamFetch('v1/messages', body, { signal: options?.signal, anthropic: true });
       if (!res.ok) {
         const text = await res.text().catch(() => '');
         throw new Error(`vision 请求失败: ${res.status} ${res.statusText} ${text.slice(0, 200)}`);
@@ -411,7 +411,6 @@ export class LlmClient {
       const parts = (data.content || []).filter((b: any) => b.type === 'text').map((b: any) => b.text || '');
       return parts.join('');
     }
-    const headers = await this.buildHeaders();
     const body = {
       model: this.model.modelId,
       messages: [{
@@ -425,9 +424,7 @@ export class LlmClient {
       temperature: options?.temperature,
       stream: false,
     };
-    const res = await fetch(`${this.baseUrl}/v1/chat/completions`, {
-      method: 'POST', headers, body: JSON.stringify(body), signal: options?.signal,
-    });
+    const res = await this.upstreamFetch('v1/chat/completions', body, { signal: options?.signal });
     if (!res.ok) {
       const text = await res.text().catch(() => '');
       throw new Error(`vision 请求失败: ${res.status} ${res.statusText} ${text.slice(0, 200)}`);

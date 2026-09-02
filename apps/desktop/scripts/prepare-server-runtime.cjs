@@ -23,10 +23,10 @@ const LLAMA_VERSION = '3.20.0';
 // 之前这里写死 win32-x64，在 macOS / Linux runner 上 npm 直接 EBADPLATFORM 失败，
 // 因此改成宿主平台映射（构建产物架构与构建机一致，不做交叉编译）。
 const PLATFORM_BINDINGS = {
-  'win32-x64': { esbuild: '@esbuild/win32-x64', llama: '@node-llama-cpp/win-x64' },
-  'darwin-x64': { esbuild: '@esbuild/darwin-x64', llama: '@node-llama-cpp/mac-x64' },
-  'darwin-arm64': { esbuild: '@esbuild/darwin-arm64', llama: '@node-llama-cpp/mac-arm64-metal' },
-  'linux-x64': { esbuild: '@esbuild/linux-x64', llama: '@node-llama-cpp/linux-x64' },
+  'win32-x64': { esbuild: '@esbuild/win32-x64', llama: '@node-llama-cpp/win-x64', sqliteVec: 'sqlite-vec-windows-x64' },
+  'darwin-x64': { esbuild: '@esbuild/darwin-x64', llama: '@node-llama-cpp/mac-x64', sqliteVec: 'sqlite-vec-darwin-x64' },
+  'darwin-arm64': { esbuild: '@esbuild/darwin-arm64', llama: '@node-llama-cpp/mac-arm64-metal', sqliteVec: 'sqlite-vec-darwin-arm64' },
+  'linux-x64': { esbuild: '@esbuild/linux-x64', llama: '@node-llama-cpp/linux-x64', sqliteVec: 'sqlite-vec-linux-x64' },
 };
 
 const hostKey = `${process.platform}-${process.arch}`;
@@ -103,13 +103,20 @@ const pkg = {
   dependencies: {
     [bindings.esbuild]: ESBUILD_VERSION,
     [bindings.llama]: LLAMA_VERSION,
+    [bindings.sqliteVec]: '^0.1.9',
+    'adm-zip': '^0.6.0',
     bcryptjs: '^2.4.3',
     'better-sqlite3': '^11.10.0',
     cors: '^2.8.5',
     express: '^4.21.0',
     jsonwebtoken: '^9.0.2',
+    jszip: '^3.10.1',
+    mammoth: '^1.8.0',
     'node-llama-cpp': LLAMA_VERSION,
     playwright: '^1.62.1',
+    'simple-git': '^3.36.0',
+    'sqlite-vec': '^0.1.9',
+    'tesseract.js': '^5.1.1',
     tsx: '^4.19.0',
     uuid: '^10.0.0',
     xlsx: '^0.18.5',
@@ -151,7 +158,7 @@ const runPackagePostinstall = (scriptPath, args = []) => {
   console.log(`[prepare-server-runtime] postinstall: ${scriptPath}`);
   runCommand(process.execPath, [resolved, ...args], {
     cwd: path.dirname(resolved),
-    shell: true,
+
     env: {
       ...process.env,
       NODE_OPTIONS: '',

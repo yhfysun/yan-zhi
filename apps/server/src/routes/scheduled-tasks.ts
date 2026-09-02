@@ -19,6 +19,10 @@ function rowToTask(r: any) {
     platformId: r.platform_id,
     modelId: r.model_id,
     spaceId: r.space_id,
+    taskType: r.task_type || 'chat',
+    workflowAgentId: r.workflow_agent_id || null,
+    workflowBundle: r.workflow_bundle_json ? JSON.parse(r.workflow_bundle_json) : null,
+    workflowInputs: r.workflow_inputs_json ? JSON.parse(r.workflow_inputs_json) : null,
     enabled: !!r.enabled,
     lastRunAt: r.last_run_at,
     nextRunAt: r.next_run_at,
@@ -53,8 +57,12 @@ router.get('/', (req: Request, res: Response) => {
 // POST /api/scheduled-tasks —— 创建任务
 router.post('/', (req: Request, res: Response) => {
   const userId = req.user!.userId;
-  const { name, prompt, cronExpr, intervalMinutes, conversationId, agentId, platformId, modelId, spaceId, enabled } = req.body || {};
+  const { name, prompt, cronExpr, intervalMinutes, conversationId, agentId, platformId, modelId, spaceId, enabled, taskType, workflowAgentId, workflowBundle, workflowInputs } = req.body || {};
   if (!name || !String(name).trim()) { res.status(400).json({ error: '任务名称为必填项' }); return; }
+  const type = taskType === 'workflow' ? 'workflow' : 'chat';
+  if (type === 'workflow') {
+    if (!workflowBundle?.agent?.workflow?.nodes?.length) { res.status(400).json({ error: '工作流任务缺少有效的智能体工作流定义' }); return; }
+  }
   const scheduleError = validateSchedule(intervalMinutes, cronExpr);
   if (scheduleError) { res.status(400).json({ error: scheduleError }); return; }
 
@@ -62,10 +70,14 @@ router.post('/', (req: Request, res: Response) => {
   const now = Date.now();
   const isEnabled = enabled === undefined ? true : !!enabled;
   db.prepare(
-    'INSERT INTO scheduled_task (id, user_id, name, prompt, cron_expr, interval_minutes, conversation_id, agent_id, platform_id, model_id, space_id, enabled, last_run_at, next_run_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)',
+    'INSERT INTO scheduled_task (id, user_id, name, prompt, cron_expr, interval_minutes, conversation_id, agent_id, platform_id, model_id, space_id, task_type, workflow_bundle_json, workflow_inputs_json, workflow_agent_id, enabled, last_run_at, next_run_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)',
   ).run(
     id, userId, String(name).trim(), prompt || null, cronExpr || null, intervalMinutes || null,
     ownConversationId(userId, conversationId), agentId || null, platformId || null, modelId || null, spaceId || null,
+    type,
+    type === 'workflow' ? JSON.stringify(workflowBundle) : null,
+    type === 'workflow' ? JSON.stringify(workflowInputs || {}) : null,
+    type === 'workflow' ? workflowAgentId || null : null,
     isEnabled ? 1 : 0,
     isEnabled ? computeNextRun({ interval_minutes: intervalMinutes, cron_expr: cronExpr }, now) : null,
     now, now,
@@ -104,6 +116,10 @@ router.patch('/:id', (req: Request, res: Response) => {
   if (body.platformId !== undefined) { sets.push('platform_id = ?'); vals.push(body.platformId || null); }
   if (body.modelId !== undefined) { sets.push('model_id = ?'); vals.push(body.modelId || null); }
   if (body.spaceId !== undefined) { sets.push('space_id = ?'); vals.push(body.spaceId || null); }
+  if (body.taskType !== undefined) { sets.push('task_type = ?'); vals.push(body.taskType === 'workflow' ? 'workflow' : 'chat'); }
+  if (body.workflowAgentId !== undefined) { sets.push('workflow_agent_id = ?'); vals.push(body.workflowAgentId || null); }
+  if (body.workflowBundle !== undefined) { sets.push('workflow_bundle_json = ?'); vals.push(body.workflowBundle ? JSON.stringify(body.workflowBundle) : null); }
+  if (body.workflowInputs !== undefined) { sets.push('workflow_inputs_json = ?'); vals.push(body.workflowInputs ? JSON.stringify(body.workflowInputs) : null); }
   if (body.enabled !== undefined) { sets.push('enabled = ?'); vals.push(body.enabled ? 1 : 0); }
   if (sets.length === 0) { res.json({ data: rowToTask(existing) }); return; }
 

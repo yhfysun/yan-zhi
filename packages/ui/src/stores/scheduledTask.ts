@@ -22,6 +22,14 @@ export interface ScheduledTask {
   modelId?: string | null;
   /** 绑定的空间：任务发起会话归属的空间 */
   spaceId?: string | null;
+  /** 任务类型：chat=对话式（ReAct 循环）；workflow=工作流 */
+  taskType?: 'chat' | 'workflow';
+  /** 工作流智能体 id（仅 workflow 类型；用于界面展示名称） */
+  workflowAgentId?: string | null;
+  /** 工作流定义 bundle（仅 workflow 类型；随任务存后端，前端关闭也能跑） */
+  workflowBundle?: { agent: any; subAgents?: Record<string, any> } | null;
+  /** 工作流输入（仅 workflow 类型） */
+  workflowInputs?: Record<string, unknown> | null;
   enabled: boolean;
   lastRunAt?: number | null;
   nextRunAt?: number | null;
@@ -39,6 +47,10 @@ export interface ScheduledTaskInput {
   platformId?: string | null;
   modelId?: string | null;
   spaceId?: string | null;
+  taskType?: 'chat' | 'workflow';
+  workflowAgentId?: string | null;
+  workflowBundle?: { agent: any; subAgents?: Record<string, any> } | null;
+  workflowInputs?: Record<string, unknown> | null;
   enabled?: boolean;
 }
 
@@ -54,6 +66,10 @@ function rowToTask(r: any): ScheduledTask {
     platformId: r.platform_id ?? r.platformId ?? null,
     modelId: r.model_id ?? r.modelId ?? null,
     spaceId: r.space_id ?? r.spaceId ?? null,
+    taskType: (r.task_type ?? r.taskType ?? 'chat') as 'chat' | 'workflow',
+    workflowAgentId: r.workflow_agent_id ?? r.workflowAgentId ?? null,
+    workflowBundle: r.workflow_bundle_json ? (typeof r.workflow_bundle_json === 'string' ? JSON.parse(r.workflow_bundle_json) : r.workflow_bundle_json) : r.workflowBundle ?? null,
+    workflowInputs: r.workflow_inputs_json ? (typeof r.workflow_inputs_json === 'string' ? JSON.parse(r.workflow_inputs_json) : r.workflow_inputs_json) : r.workflowInputs ?? null,
     enabled: !!(r.enabled ?? 1),
     lastRunAt: r.last_run_at ?? r.lastRunAt ?? null,
     nextRunAt: r.next_run_at ?? r.nextRunAt ?? null,
@@ -68,7 +84,7 @@ export const useScheduledTaskStore = defineStore('scheduledTask', () => {
   /** 定时任务弹窗显隐（顶栏按钮触发） */
   const dialogVisible = ref(false);
 
-  const isServerMode = () => !!useAuthStore().isLoggedIn;
+  const isServerMode = () => useAuthStore().useServerApi;
 
   async function loadTasks() {
     loading.value = true;
@@ -102,10 +118,15 @@ export const useScheduledTaskStore = defineStore('scheduledTask', () => {
     const id = uid('st_');
     const now = Date.now();
     const enabled = input.enabled !== false;
+    const taskType = input.taskType === 'workflow' ? 'workflow' : 'chat';
     await adapter.db.exec(
-      'INSERT INTO scheduled_task (id, name, prompt, cron_expr, interval_minutes, conversation_id, agent_id, platform_id, model_id, space_id, enabled, last_run_at, next_run_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO scheduled_task (id, name, prompt, cron_expr, interval_minutes, conversation_id, agent_id, platform_id, model_id, space_id, task_type, workflow_bundle_json, workflow_inputs_json, workflow_agent_id, enabled, last_run_at, next_run_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
       [id, input.name, input.prompt || null, input.cronExpr || null, input.intervalMinutes || null,
         input.conversationId || null, input.agentId || null, input.platformId || null, input.modelId || null, input.spaceId || null,
+        taskType,
+        taskType === 'workflow' ? JSON.stringify(input.workflowBundle || null) : null,
+        taskType === 'workflow' ? JSON.stringify(input.workflowInputs || {}) : null,
+        taskType === 'workflow' ? input.workflowAgentId || null : null,
         enabled ? 1 : 0, null,
         enabled && input.intervalMinutes ? now + input.intervalMinutes * 60000 : null, now, now],
     );
@@ -130,6 +151,10 @@ export const useScheduledTaskStore = defineStore('scheduledTask', () => {
       if (patch.platformId !== undefined) { sets.push('platform_id = ?'); params.push(patch.platformId || null); }
       if (patch.modelId !== undefined) { sets.push('model_id = ?'); params.push(patch.modelId || null); }
       if (patch.spaceId !== undefined) { sets.push('space_id = ?'); params.push(patch.spaceId || null); }
+      if (patch.taskType !== undefined) { sets.push('task_type = ?'); params.push(patch.taskType === 'workflow' ? 'workflow' : 'chat'); }
+      if (patch.workflowAgentId !== undefined) { sets.push('workflow_agent_id = ?'); params.push(patch.workflowAgentId || null); }
+      if (patch.workflowBundle !== undefined) { sets.push('workflow_bundle_json = ?'); params.push(patch.workflowBundle ? JSON.stringify(patch.workflowBundle) : null); }
+      if (patch.workflowInputs !== undefined) { sets.push('workflow_inputs_json = ?'); params.push(patch.workflowInputs ? JSON.stringify(patch.workflowInputs) : null); }
       if (patch.enabled !== undefined) { sets.push('enabled = ?'); params.push(patch.enabled ? 1 : 0); }
       if (sets.length === 0) return;
       sets.push('updated_at = ?'); params.push(Date.now());

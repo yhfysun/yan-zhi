@@ -3,7 +3,7 @@
     <el-button class="hamburger-btn" text circle @click="drawerOpen = !drawerOpen">
       <el-icon :size="20"><Expand /></el-icon>
     </el-button>
-    <span class="conv-title-display">{{ currentConv?.title || '新对话' }}</span>
+    <span class="conv-title-display">{{ currentConv?.title || '新任务' }}</span>
     <el-dropdown class="model-pill-dropdown" trigger="click" popper-class="model-pill-popper" @command="onModelChange">
       <span class="model-pill">
         <span class="model-pill-dot"></span>
@@ -28,6 +28,11 @@
         </el-dropdown-menu>
       </template>
     </el-dropdown>
+    <el-tooltip content="新建任务" placement="bottom">
+      <el-button size="small" circle class="new-chat-btn" @click="startNewChat()" aria-label="新建任务">
+        <el-icon><Plus /></el-icon>
+      </el-button>
+    </el-tooltip>
     <div class="chat-topbar-actions">
       <el-tooltip content="上下文栏" placement="bottom">
         <el-button size="small" circle :type="contextSidebarOpen ? 'primary' : ''" @click="toggleContextSidebar" aria-label="切换上下文栏">
@@ -64,13 +69,14 @@
 
 <script setup lang="ts">
 import { computed } from 'vue';
-import { ArrowDown, Expand, Grid, Operation, SwitchButton, User } from '@element-plus/icons-vue';
+import { ArrowDown, Expand, Grid, Operation, Plus, SwitchButton, User } from '@element-plus/icons-vue';
 import { useChat } from '../../composables/chat/useChat';
 import ChatFilePanel from './ChatFilePanel.vue';
 
 const {
   drawerOpen, currentConv, toggleRightPanel, store, isMobile, authStore,
   modelGroups, selectedModelId, onModelChange, contextSidebarOpen, toggleContextSidebar,
+  startNewChat,
 } = useChat();
 
 const selectedModel = computed(() => {
@@ -86,6 +92,11 @@ const selectedModel = computed(() => {
 .model-pill-dropdown {
   flex-shrink: 0;
   margin-left: 2px;
+}
+
+.new-chat-btn {
+  flex-shrink: 0;
+  margin-left: 6px;
 }
 
 .model-pill {

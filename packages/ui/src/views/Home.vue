@@ -146,7 +146,7 @@ interface HomeMenuItem {
 }
 
 const menuItems: HomeMenuItem[] = [
-  { path: '/chat', name: '对话', desc: '与大模型进行多会话、工具可视化对话', icon: ChatDotRound, iconName: 'ChatDotRound', color: '#7C3AED', key: 'chat' },
+  { path: '/chat', name: '任务', desc: '与大模型进行多会话、工具可视化任务', icon: ChatDotRound, iconName: 'ChatDotRound', color: '#7C3AED', key: 'chat' },
   { path: '/chat-hub', name: '聊天', desc: 'IM 消息中枢入口，后续接入微信与飞书', icon: ChatLineRound, iconName: 'ChatLineRound', color: '#EC4899', key: 'chat-hub' },
   { path: '/knowledge', name: '知识库', desc: '管理本地知识资料', icon: Collection, iconName: 'Collection', color: '#10B981', key: 'knowledge' },
   { path: '/browser', name: '浏览器', desc: '内置浏览器自动化', icon: Monitor, iconName: 'Monitor', color: '#F59E0B', key: 'browser' },

@@ -6,10 +6,13 @@ setlocal enabledelayedexpansion
 ::   target: desktop | desktop:full | desktop:lite | mobile:android | mobile:ios | web | server | all
 
 set TARGET=%1
+set INTERACTIVE=0
 if "%TARGET%"=="" (
+    set INTERACTIVE=1
+    set TARGET=desktop:lite
+    echo No target given, defaulting to desktop:lite
     echo Usage: bin\build.bat ^<target^>
     echo   target: desktop ^| desktop:full ^| desktop:lite ^| mobile:android ^| mobile:ios ^| web ^| server ^| all
-    exit /b 1
 )
 
 set "ROOT_DIR=%~dp0.."
@@ -33,6 +36,7 @@ if "%TARGET%"=="all" (
 
 echo.
 echo All build tasks completed.
+if "%INTERACTIVE%"=="1" pause
 exit /b 0
 
 :: 桌面端打包前置：内置模型平台已移除，改用 Ollama，无需下载模型/llama-server
@@ -52,7 +56,7 @@ call pnpm --filter @yan-zhi/desktop electron:build:full
 if %ERRORLEVEL% NEQ 0 exit /b 1
 echo.
 echo Build complete
-echo   Output: apps\desktop\release-full\
+echo   Output: dist-release\ (言智-Setup-*-full.exe)
 exit /b 0
 
 :BuildDesktopLite
@@ -65,24 +69,15 @@ call pnpm --filter @yan-zhi/desktop electron:build:lite
 if %ERRORLEVEL% NEQ 0 exit /b 1
 echo.
 echo Build complete
-echo   Output: apps\desktop\release-lite\
+echo   Output: dist-release\ (言智-Setup-*-lite.exe)
 exit /b 0
 
 :BuildMobileAndroid
 echo.
 echo ====== Build Mobile Android ======
 echo.
-where javac >nul 2>&1
-if %ERRORLEVEL% NEQ 0 (
-    echo   [ERROR] JDK not installed
-    exit /b 1
-)
-call pnpm build:mobile:android
-if %ERRORLEVEL% NEQ 0 exit /b 1
-echo.
-echo Build complete
-echo   APK: apps\mobile\android\app\build\outputs\apk\
-exit /b 0
+powershell -ExecutionPolicy Bypass -File "%~dp0build-android.ps1" %2 %3
+exit /b %ERRORLEVEL%
 
 :BuildMobileIos
 echo.

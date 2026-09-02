@@ -1,6 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import { setPlatformAdapter, getPluginManager, getToolRegistry } from '@yan-zhi/core';
+import { ensureToolsInitialized } from './mcp/index.js';
 import authRoutes from './auth.js';
 import licenseRoutes from './license.js';
 import conversationRoutes from './routes/conversations.js';
@@ -27,6 +28,8 @@ import scheduledTaskRoutes from './routes/scheduled-tasks.js';
 import ollamaMarketRoutes from './routes/ollama-market.js';
 import pluginRoutes from './routes/plugins.js';
 import gitRoutes from './routes/git.js';
+import llmProxyRoutes from './routes/llm-proxy.js';
+import llmTaskRoutes from './routes/llm-tasks.js';
 import { gitExplorerManifest, gitExplorerModule } from './plugins/git-explorer.js';
 import { syncAgnesPlatformForAllUsers } from './agnes-platform/service.js';
 import { startScheduledTaskScheduler } from './services/scheduled-tasks.js';
@@ -34,6 +37,10 @@ import { nodeAdapter } from './node-adapter.js';
 import { db } from './db.js';
 
 setPlatformAdapter(nodeAdapter);
+
+// 启动时立即初始化工具注册中心，确保 web_search 用 Playwright/百度后端（国内可达），
+// 避免插件初始化等无参 getToolRegistry() 先把单例锁定为 DuckDuckGo（国内不可达）。
+ensureToolsInitialized();
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3001;
@@ -71,6 +78,8 @@ app.use('/api/scheduled-tasks', scheduledTaskRoutes);
 app.use('/api/ollama-market', ollamaMarketRoutes);
 app.use('/api/plugins', pluginRoutes);
 app.use('/api/git', gitRoutes);
+app.use('/api/llm', llmProxyRoutes);
+app.use('/api/llm', llmTaskRoutes);
 
 app.listen(PORT, '127.0.0.1', () => {
   console.log(`后端已启动: http://127.0.0.1:${PORT}`);

@@ -164,7 +164,12 @@ export class ServerSearchBackend implements SearchBackend {
     if (token) headers['Authorization'] = `Bearer ${token}`;
     // query 末尾追加时间词兜底；同时把 timeRange 透传给服务端，服务端可按需转成搜索引擎原生时间参数
     const finalQuery = applyTimeRangeFallback(query, timeRange);
-    let url = `/api/search?q=${encodeURIComponent(finalQuery)}&maxResults=${maxResults}`;
+    // Electron 桌面端用 loadFile 加载本地文件，页面 origin 为 file://，相对路径 /api 会解析成
+    // file:///api 导致 "Failed to fetch"。此处与 packages/ui/src/api/client.ts 的 API_BASE 保持一致：
+    // 检测到 Electron 环境时改用后端绝对地址 http://127.0.0.1:3001/api。
+    const isElectron = typeof window !== 'undefined' && !!(window as any).electronAPI?.isElectron;
+    const apiBase = isElectron ? 'http://127.0.0.1:3001/api' : '/api';
+    let url = `${apiBase}/search?q=${encodeURIComponent(finalQuery)}&maxResults=${maxResults}`;
     if (timeRange) url += `&timeRange=${encodeURIComponent(timeRange)}`;
     const res = await fetch(url, { headers });
     if (!res.ok) {

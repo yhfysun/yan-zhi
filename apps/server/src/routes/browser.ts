@@ -100,6 +100,9 @@ async function createTabPage(url?: string): Promise<any> {
     locale: 'zh-CN',
   });
   const page = await context.newPage();
+  // 注入 __name polyfill：esbuild keepNames 会给 ensureYzReg 内部嵌套函数注入 __name helper，
+  // page.evaluate 序列化函数体到浏览器执行时 __name 未定义会报 ReferenceError。此处全局兜底。
+  await page.addInitScript({ content: 'window.__name = window.__name || ((t) => t);' });
   attachPageListeners(page);
   if (url) {
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});

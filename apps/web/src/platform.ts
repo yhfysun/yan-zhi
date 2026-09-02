@@ -424,6 +424,8 @@ export const webAdapter: PlatformAdapter = {
   db: webDb,
   fs: webFs,
   keyring: new WebKeyring(webDb),
+  // LLM 走后端代理（/api/llm/*）：API Key 不暴露给前端，后端从库读配置转发。
+  llmProxyBase: '/api/llm',
   // Web 端不支持 MCP stdio
 };
 

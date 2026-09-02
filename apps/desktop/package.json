@@ -6,13 +6,14 @@
   "main": "main.cjs",
   "description": "言智 Electron 桌面端（含内置后端运行时，electron-builder 打包）",
   "scripts": {
-    "dev": "vite",
+    "dev": "concurrently -k -n web,server -c green,cyan \"vite\" \"node scripts/dev-server.cjs\"",
     "build": "vite build",
     "electron:dev": "concurrently \"vite\" \"electron . --dev\"",
     "electron:preview": "vite build && electron .",
-    "electron:build": "pnpm --filter @yan-zhi/server build && vite build && node ./scripts/prepare-server-runtime.cjs && electron-builder --config electron-builder.full.yml --publish never",
-    "electron:build:full": "pnpm --filter @yan-zhi/server build && vite build && node ./scripts/prepare-server-runtime.cjs && electron-builder --config electron-builder.full.yml --publish never",
-    "electron:build:lite": "pnpm --filter @yan-zhi/server build && vite build && node ./scripts/prepare-server-runtime.cjs && electron-builder --config electron-builder.lite.yml --publish never",
+    "electron:build": "pnpm --filter @yan-zhi/server build && vite build && node ./scripts/prepare-server-runtime.cjs && node ./scripts/clean-broken-symlinks.cjs && node ./scripts/electron-build.cjs electron-builder.full.yml",
+    "electron:build:full": "pnpm --filter @yan-zhi/server build && vite build && node ./scripts/prepare-server-runtime.cjs && node ./scripts/clean-broken-symlinks.cjs && node ./scripts/electron-build.cjs electron-builder.full.yml",
+    "electron:build:lite": "pnpm --filter @yan-zhi/server build && vite build && node ./scripts/prepare-server-runtime.cjs && node ./scripts/clean-broken-symlinks.cjs && node ./scripts/electron-build.cjs electron-builder.lite.yml",
+    "electron:build:mac": "pnpm --filter @yan-zhi/server build && vite build && node ./scripts/prepare-server-runtime.cjs && node ./scripts/clean-broken-symlinks.cjs && node ./scripts/electron-build.cjs electron-builder.mac.yml --mac",
     "prepare:server-runtime": "node ./scripts/prepare-server-runtime.cjs",
     "postinstall": "node ./scripts/fix-sqlite-binding.cjs || true",
     "typecheck": "vue-tsc --noEmit"

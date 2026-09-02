@@ -1,42 +1,32 @@
 <template>
   <div class="input-area">
     <div class="input-box" :class="{ focused: inputFocused }">
-      <div class="input-context">
-        <div class="ctx-dir-group">
-          <el-tooltip :content="workspaceDir || '未设置工作目录'" placement="top" :disabled="!workspaceDir">
-            <button class="ctx-chip ctx-dir" type="button" @click="showWorkspaceDir = true">
-              <el-icon class="ctx-icon"><FolderOpened /></el-icon>
-              <span class="ctx-dir-text">{{ workspaceDir || '未设置工作目录' }}</span>
-              <el-icon class="ctx-caret"><ArrowDown /></el-icon>
-            </button>
-          </el-tooltip>
-          <el-tooltip content="清除工作目录" placement="top">
-            <button v-if="hasWorkspaceDir" class="ctx-dir-clear" type="button" @click="clearWorkspaceDir">
-              <el-icon><Close /></el-icon>
-            </button>
-          </el-tooltip>
+
+      <div class="input-agent-bar">
+        <div class="minimal-select agent-switch" @click.stop>
+          <el-select v-model="agentStore.selectedId" placeholder="选择智能体" size="small" popper-class="minimal-popper" @change="onAgentSwitch">
+            <el-option
+              v-for="ag in agentStore.agents"
+              :key="ag.id"
+              :label="ag.name"
+              :value="ag.id"
+            >
+              <span style="display:flex;align-items:center;gap:6px">
+                <el-icon v-if="ag.isDefault" style="font-size:12px"><Lock /></el-icon>
+                <span>{{ ag.name }}</span>
+              </span>
+            </el-option>
+          </el-select>
         </div>
-
-        <button class="ctx-chip" type="button" @click="showMount = true">
-          <el-icon class="ctx-icon"><Connection /></el-icon>
-          <span>MCP 工具</span>
-          <span v-if="store.mountedMcpServers.length" class="ctx-count">{{ store.mountedMcpServers.length }}</span>
-        </button>
-
-        <button class="ctx-chip" type="button" @click="showSkills = true">
-          <el-icon class="ctx-icon"><Files /></el-icon>
-          <span>Skill</span>
-          <span v-if="mountedSkillIds.length" class="ctx-count">{{ mountedSkillIds.length }}</span>
-        </button>
-
-        <el-tooltip content="上传文件" placement="top">
-          <button class="ctx-chip ctx-icon-only" type="button" @click="triggerFileUpload">
-            <el-icon class="ctx-icon"><UploadFilled /></el-icon>
-          </button>
+        <el-tooltip content="编辑当前智能体" placement="top">
+          <el-button size="small" circle class="agent-edit-btn" @click="openEditAgent(agentStore.selectedAgent)">
+            <el-icon><EditPen /></el-icon>
+          </el-button>
         </el-tooltip>
       </div>
 
       <el-input
+        ref="inputRef"
         v-model="input"
         type="textarea"
         :autosize="{ minRows: 3, maxRows: 12 }"
@@ -49,29 +39,29 @@
       />
       <div class="input-toolbar">
         <div class="toolbar-left">
-          <div class="toolbar-agent">
-            <div class="minimal-select agent-switch" @click.stop>
-              <el-select v-model="agentStore.selectedId" placeholder="选择智能体" size="small" popper-class="minimal-popper" @change="onAgentSwitch">
-                <el-option
-                  v-for="ag in agentStore.agents"
-                  :key="ag.id"
-                  :label="ag.name"
-                  :value="ag.id"
-                >
-                  <span style="display:flex;align-items:center;gap:6px">
-                    <el-icon v-if="ag.isDefault" style="font-size:12px"><Lock /></el-icon>
-                    <span>{{ ag.name }}</span>
-                  </span>
-                </el-option>
-              </el-select>
-              <el-icon class="select-icon"><User /></el-icon>
-            </div>
-            <el-tooltip content="编辑当前智能体" placement="top">
-              <el-button size="small" circle @click="openEditAgent(agentStore.selectedAgent)">
-                <el-icon><EditPen /></el-icon>
-              </el-button>
-            </el-tooltip>
-          </div>
+          <el-tooltip content="上传文件" placement="top">
+            <el-button size="small" circle class="ctx-btn" @click="triggerFileUpload">
+              <el-icon><UploadFilled /></el-icon>
+            </el-button>
+          </el-tooltip>
+          <el-tooltip :content="workspaceDir || '设置工作目录'" placement="top">
+            <el-button size="small" circle class="ctx-btn" :class="{ 'is-active': hasWorkspaceDir }" @click="showWorkspaceDir = true">
+              <el-icon><FolderOpened /></el-icon>
+            </el-button>
+          </el-tooltip>
+          <el-tooltip content="MCP 工具" placement="top">
+            <el-button size="small" circle class="ctx-btn" @click="showMount = true">
+              <el-icon><Connection /></el-icon>
+              <span v-if="store.mountedMcpServers.length" class="btn-badge">{{ store.mountedMcpServers.length }}</span>
+            </el-button>
+          </el-tooltip>
+          <el-tooltip content="Skill" placement="top">
+            <el-button size="small" circle class="ctx-btn" @click="showSkills = true">
+              <el-icon><Files /></el-icon>
+              <span v-if="mountedSkillIds.length" class="btn-badge">{{ mountedSkillIds.length }}</span>
+            </el-button>
+          </el-tooltip>
+
         </div>
 
         <div class="toolbar-mobile-selects">
@@ -130,15 +120,15 @@
               <el-icon><Setting /></el-icon>
             </el-button>
           </el-tooltip>
-          <el-tooltip content="新建会话" placement="top">
-            <el-button size="small" circle :disabled="store.streaming" @click="startNewChat()">
+          <el-tooltip content="新建任务" placement="top">
+            <el-button size="small" circle @click="startNewChat()">
               <el-icon><Plus /></el-icon>
             </el-button>
           </el-tooltip>
           <el-tooltip :content="store.streaming ? '终止 (停止生成)' : '发送 (Enter)'" placement="top">
             <span>
               <el-button v-if="!store.streaming" type="primary" :icon="Promotion" :disabled="(!input.trim() && uploadedFiles.length === 0) || !selectedModelId" @click="send" circle class="send-btn" />
-              <el-button v-else type="danger" :icon="Close" @click="stopChat" circle class="send-btn" />
+              <el-button v-else type="danger" :icon="Close" @click="stopChat" circle class="send-btn stop-btn" />
             </span>
           </el-tooltip>
         </div>
@@ -157,6 +147,7 @@
     </div>
 
     <input ref="fileInputRef" type="file" multiple accept="image/*,.pdf,.txt,.md,.json,.csv,.py,.js,.ts,.vue,.html,.css,.xml,.yaml,.yml,.log,.doc,.docx,.xlsx,.pptx,.zip" style="display:none" @change="handleFileChange" />
+
   </div>
 </template>
 

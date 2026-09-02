@@ -34,7 +34,7 @@ export const useMcpStore = defineStore('mcp', () => {
   const mcpTestClient = ref<McpClient | null>(null);
 
   const clients = new Map<string, McpClient>();
-  const on = () => !!useAuthStore().isLoggedIn;
+  const on = () => useAuthStore().useServerApi;
 
   function isDesktop() {
     try { return !!getPlatformAdapter().mcp; } catch { return false; }
@@ -49,6 +49,17 @@ export const useMcpStore = defineStore('mcp', () => {
     mcpTestClient.value = null;
   }
 
+  function mapToolRow(serverId: string, t: any): McpTool {
+    return {
+      id: t.id, mcpServerId: serverId,
+      name: t.name, description: t.description,
+      alias: t.alias || undefined,
+      remark: t.remark || undefined,
+      enabled: t.enabled !== 0 && t.enabled !== false,
+      inputSchema: t.inputSchema || (t.input_schema_json ? JSON.parse(t.input_schema_json) : {}),
+    };
+  }
+
   async function loadServers() {
     if (on()) {
       const r = await api.get<any[]>('/mcp-servers');
@@ -56,16 +67,7 @@ export const useMcpStore = defineStore('mcp', () => {
       for (const s of servers.value) {
         try {
           const tr = await api.get<any[]>(`/mcp-servers/${s.id}/tools`);
-          if ('data' in tr) {
-            tools.value[s.id] = (tr.data as any[]).map((t: any) => ({
-              id: t.id, mcpServerId: s.id,
-              name: t.name, description: t.description,
-              alias: t.alias || undefined,
-              remark: t.remark || undefined,
-              enabled: t.enabled !== 0,
-              inputSchema: t.inputSchema || (t.input_schema_json ? JSON.parse(t.input_schema_json) : {}),
-            }));
-          }
+          if ('data' in tr) tools.value[s.id] = (tr.data as any[]).map((t: any) => mapToolRow(s.id, t));
         } catch {
           if (!tools.value[s.id]) tools.value[s.id] = [];
         }
@@ -187,6 +189,35 @@ export const useMcpStore = defineStore('mcp', () => {
   async function connect(id: string): Promise<{ ok: boolean; msg: string }> {
     const s = servers.value.find((x) => x.id === id);
     if (!s) return { ok: false, msg: '服务不存在' };
+
+    // 服务端模式：连接由后端持有（前端关闭后 mcp_* 工具依然可用）
+    if (on()) {
+      connecting.value = id;
+      try {
+        const r = await api.post<any>(`/mcp-servers/${id}/connect`);
+        if ('error' in r) throw new Error(r.error);
+        // 后端连接成功后已把工具清单同步进 DB，重新拉取即可
+        const tr = await api.get<any[]>(`/mcp-servers/${id}/tools`);
+        if ('data' in tr) tools.value[id] = (tr.data as any[]).map((t: any) => mapToolRow(id, t));
+        const rr = await api.get<any[]>(`/mcp-servers/${id}/resources`).catch(() => null);
+        resources.value[id] = (rr && 'data' in rr ? (rr.data as any[]) : []) || [];
+        const pr = await api.get<any[]>(`/mcp-servers/${id}/prompts`).catch(() => null);
+        prompts.value[id] = (pr && 'data' in pr ? (pr.data as any[]) : []) || [];
+        const idx = servers.value.findIndex((x) => x.id === id);
+        if (idx !== -1) servers.value[idx] = { ...servers.value[idx], status: 'connected' };
+        addLog(id, 'connect', true);
+        return { ok: true, msg: `连接成功，${tools.value[id]?.length || 0} 个工具` };
+      } catch (e: any) {
+        const idx = servers.value.findIndex((x) => x.id === id);
+        if (idx !== -1) servers.value[idx] = { ...servers.value[idx], status: 'disconnected' };
+        addLog(id, 'connect', false, e?.message);
+        return { ok: false, msg: e?.message || '连接失败' };
+      } finally {
+        connecting.value = '';
+      }
+    }
+
+    // 本地模式（未登录）：前端直连
     if (clients.has(id)) return { ok: true, msg: '已连接' };
     connecting.value = id;
     try {
@@ -205,39 +236,23 @@ export const useMcpStore = defineStore('mcp', () => {
       tools.value[id] = list || [];
       try { resources.value[id] = await client.listResources(); } catch { resources.value[id] = []; }
       try { prompts.value[id] = await client.listPrompts(); } catch { prompts.value[id] = []; }
-      if (!on()) {
-        if (list && list.length > 0) {
-          const adapter = getPlatformAdapter();
-          // 保留已有 alias/remark/enabled
-          const oldRows = await adapter.db.query<any>('SELECT name, alias, remark, enabled FROM mcp_tool WHERE mcp_server_id = ?', [id]);
-          const oldMeta: Record<string, { alias?: string; remark?: string; enabled?: number }> = {};
-          for (const r of oldRows) oldMeta[r.name] = { alias: r.alias, remark: r.remark, enabled: r.enabled };
-          await adapter.db.exec('DELETE FROM mcp_tool WHERE mcp_server_id = ?', [id]);
-          for (const t of list) {
-            const meta = oldMeta[t.name] || {};
-            await adapter.db.exec(
-              'INSERT INTO mcp_tool (id, mcp_server_id, name, description, input_schema_json, alias, remark, enabled) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-              [uid('mt_'), id, t.name, t.description || null, JSON.stringify(t.inputSchema), meta.alias || null, meta.remark || null, meta.enabled ?? 1],
-            );
-          }
-        }
-      }
-      if (on()) {
-        await api.patch(`/mcp-servers/${id}`, { status: 1 });
-        if (list && list.length > 0) {
-          await api.put(`/mcp-servers/${id}/tools`, {
-            tools: list.map(t => ({
-              id: uid('mt_'),
-              name: t.name,
-              description: t.description || null,
-              inputSchema: t.inputSchema || {},
-            })),
-          }).catch(() => {});
-        }
-      } else {
+      if (list && list.length > 0) {
         const adapter = getPlatformAdapter();
-        await adapter.db.exec('UPDATE mcp_server SET status = ? WHERE id = ?', [1, id]);
+        // 保留已有 alias/remark/enabled
+        const oldRows = await adapter.db.query<any>('SELECT name, alias, remark, enabled FROM mcp_tool WHERE mcp_server_id = ?', [id]);
+        const oldMeta: Record<string, { alias?: string; remark?: string; enabled?: number }> = {};
+        for (const r of oldRows) oldMeta[r.name] = { alias: r.alias, remark: r.remark, enabled: r.enabled };
+        await adapter.db.exec('DELETE FROM mcp_tool WHERE mcp_server_id = ?', [id]);
+        for (const t of list) {
+          const meta = oldMeta[t.name] || {};
+          await adapter.db.exec(
+            'INSERT INTO mcp_tool (id, mcp_server_id, name, description, input_schema_json, alias, remark, enabled) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+            [uid('mt_'), id, t.name, t.description || null, JSON.stringify(t.inputSchema), meta.alias || null, meta.remark || null, meta.enabled ?? 1],
+          );
+        }
       }
+      const adapter = getPlatformAdapter();
+      await adapter.db.exec('UPDATE mcp_server SET status = ? WHERE id = ?', [1, id]);
       const idx = servers.value.findIndex((x) => x.id === id);
       if (idx !== -1) servers.value[idx] = { ...servers.value[idx], status: 'connected' };
       addLog(id, 'connect', true);
@@ -250,12 +265,8 @@ export const useMcpStore = defineStore('mcp', () => {
       // 连接失败时更新状态为 disconnected
       const idx = servers.value.findIndex((x) => x.id === id);
       if (idx !== -1) servers.value[idx] = { ...servers.value[idx], status: 'disconnected' };
-      if (on()) {
-        api.patch(`/mcp-servers/${id}`, { status: 0 }).catch(() => {});
-      } else {
-        const adapter = getPlatformAdapter();
-        adapter.db.exec('UPDATE mcp_server SET status = ? WHERE id = ?', [0, id]).catch(() => {});
-      }
+      const adapter = getPlatformAdapter();
+      adapter.db.exec('UPDATE mcp_server SET status = ? WHERE id = ?', [0, id]).catch(() => {});
       addLog(id, 'connect', false, e?.message);
       return { ok: false, msg };
     } finally {
@@ -303,11 +314,11 @@ export const useMcpStore = defineStore('mcp', () => {
   }
 
   async function disconnect(id: string) {
-    const client = clients.get(id);
-    if (client) { try { await client.disconnect(); } catch {} clients.delete(id); }
     if (on()) {
-      await api.patch(`/mcp-servers/${id}`, { status: 0 });
+      await api.post(`/mcp-servers/${id}/disconnect`).catch(() => {});
     } else {
+      const client = clients.get(id);
+      if (client) { try { await client.disconnect(); } catch {} clients.delete(id); }
       const adapter = getPlatformAdapter();
       await adapter.db.exec('UPDATE mcp_server SET status = ? WHERE id = ?', [0, id]);
     }
@@ -316,6 +327,12 @@ export const useMcpStore = defineStore('mcp', () => {
   }
 
   async function testServerConfig(config: any): Promise<{ ok: boolean; msg: string; tools?: any[]; durationMs?: number }> {
+    // 服务端模式：测试也由后端执行（可测 stdio，且不受浏览器 CORS 限制）
+    if (on()) {
+      const r = await api.post<any>('/mcp-servers/test', config);
+      if ('data' in r) return r.data;
+      return { ok: false, msg: (r as any).error || '连接失败' };
+    }
     const start = Date.now();
     const temp = { id: '_tmp', name: '_tmp', transport: config.transport, command: config.command, args: config.args || [], env: config.env || {}, url: config.url, headers: config.headers || {}, status: 'disconnected' as const, autoReconnect: false, reconnectInterval: 5000, autoConnect: false };
     const client = new McpClient(temp);
@@ -337,9 +354,23 @@ export const useMcpStore = defineStore('mcp', () => {
   }
 
   async function callTool(serverId: string, toolName: string, args: unknown): Promise<{ ok: true; result: unknown } | { ok: false; msg: string }> {
+    const start = Date.now();
+    if (on()) {
+      const r = await api.post<any>(`/mcp-servers/${serverId}/call`, { toolName, args });
+      if ('data' in r) {
+        const d = r.data as any;
+        if (d.ok) {
+          addLog(serverId, `tools/call:${toolName}`, true, `${Date.now() - start}ms`);
+          return { ok: true, result: d.result };
+        }
+        addLog(serverId, `tools/call:${toolName}`, false, d.msg);
+        return { ok: false, msg: d.msg };
+      }
+      addLog(serverId, `tools/call:${toolName}`, false, (r as any).error);
+      return { ok: false, msg: (r as any).error };
+    }
     const c = clients.get(serverId);
     if (!c) return { ok: false, msg: '服务未连接' };
-    const start = Date.now();
     try {
       const r = await c.callTool(toolName, args);
       addLog(serverId, `tools/call:${toolName}`, true, `${Date.now() - start}ms`);
@@ -351,6 +382,15 @@ export const useMcpStore = defineStore('mcp', () => {
   }
 
   async function readResource(serverId: string, uri: string) {
+    if (on()) {
+      const r = await api.post<any[]>(`/mcp-servers/${serverId}/resource-read`, { uri });
+      if ('data' in r) {
+        addLog(serverId, `resources/read:${uri}`, true);
+        return { ok: true, contents: r.data };
+      }
+      addLog(serverId, `resources/read:${uri}`, false, (r as any).error);
+      return { ok: false, msg: (r as any).error };
+    }
     const c = clients.get(serverId);
     if (!c) return { ok: false, msg: '服务未连接' };
     try {
@@ -364,6 +404,15 @@ export const useMcpStore = defineStore('mcp', () => {
   }
 
   async function getPrompt(serverId: string, name: string, args?: Record<string, string>) {
+    if (on()) {
+      const r = await api.post<any>(`/mcp-servers/${serverId}/prompt-get`, { name, args });
+      if ('data' in r) {
+        addLog(serverId, `prompts/get:${name}`, true);
+        return { ok: true, result: r.data };
+      }
+      addLog(serverId, `prompts/get:${name}`, false, (r as any).error);
+      return { ok: false, msg: (r as any).error };
+    }
     const c = clients.get(serverId);
     if (!c) return { ok: false, msg: '服务未连接' };
     try {

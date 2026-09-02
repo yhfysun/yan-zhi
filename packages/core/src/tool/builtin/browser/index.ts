@@ -15,7 +15,7 @@ async function callBrowserApi(path: string, method: 'GET' | 'POST' = 'POST', bod
   if (electron && method === 'POST' && (path === '/navigate' || path === '/action')) {
     let ipcAction = path === '/navigate' ? 'navigate' : (body as any)?.action;
     let ipcArgs = path === '/navigate' ? (body as any) : (() => { const { action, ...rest } = body as any; return rest; })();
-    const result = await electron.browserView.action(ipcAction, ipcArgs);
+    const result = await electron.browserView.action(null, ipcAction, ipcArgs);
     if (result?.error) throw new Error(result.error);
     return result;
   }
@@ -23,7 +23,9 @@ async function callBrowserApi(path: string, method: 'GET' | 'POST' = 'POST', bod
   const token = getAuthToken();
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (token) headers['Authorization'] = `Bearer ${token}`;
-  const res = await fetch('/api/browser' + path, {
+  // 后端 Node.js 环境用绝对 URL，前端用相对 URL
+  const baseUrl = typeof window !== 'undefined' ? '' : `http://127.0.0.1:${process.env.PORT || 3001}`;
+  const res = await fetch(baseUrl + '/api/browser' + path, {
     method,
     headers,
     body: body !== undefined ? JSON.stringify(body) : undefined,
@@ -40,6 +42,22 @@ function ok(text: string): McpCallResult {
 }
 function err(msg: string): McpCallResult {
   return { content: [{ type: 'text', text: msg }], isError: true };
+}
+
+/** 从工具参数中健壮提取 URL —— 模型常把 URL 放在非 url 字段（target/address/link/href/page 等），
+ *  或直接把 arguments 写成 JSON 字符串。只认 args.url 会误报「url is required」。 */
+function extractUrlFromArgs(args: unknown): string {
+  if (typeof args === 'string') return args.trim();
+  if (args && typeof args === 'object') {
+    const o = args as Record<string, unknown>;
+    for (const k of ['url', 'target', 'address', 'link', 'href', 'page', 'site', 'to', 'uri', 'location', 'query', 'q']) {
+      const v = o[k];
+      if (typeof v === 'string' && v.trim()) return v.trim();
+    }
+    const strVals = Object.values(o).filter((v) => typeof v === 'string' && (v as string).trim());
+    if (strVals.length === 1) return String(strVals[0]).trim();
+  }
+  return '';
 }
 
 /** click/type 空参兜底：自动拉取当前页面编号元素清单，引导模型下一步用 index 定位 */
@@ -71,7 +89,7 @@ export class BrowserNavigateTool implements BuiltInTool {
   };
   async execute(args: Record<string, unknown>): Promise<McpCallResult> {
     try {
-      const url = args.url as string;
+      const url = extractUrlFromArgs(args);
       if (!url) return err('url is required');
       const data = await callBrowserApi('/navigate', 'POST', { url }) as any;
       return ok(`Navigated to ${data.url}\nTitle: ${data.title}`);

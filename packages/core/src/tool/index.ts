@@ -25,6 +25,12 @@ export function getToolRegistry(searchBackend?: SearchBackend): ToolRegistry {
       ? new ServerSearchBackend()
       : new DuckDuckGoSearchBackend();
     registerBuiltInTools(_registry, searchBackend ?? defaultBackend);
+  } else if (searchBackend) {
+    // 单例已存在：若传入新 backend（如后端 ensureToolsInitialized 传百度 Playwright），
+    // 更新 web_search 后端。避免插件初始化等无参调用先把单例锁定为 DuckDuckGo（国内不可达）
+    // 导致后续 ensureToolsInitialized 传入的百度后端被忽略、web_search 报 fetch failed。
+    const webSearch = _registry.get('web_search') as { setBackend?: (b: SearchBackend) => void } | undefined;
+    webSearch?.setBackend?.(searchBackend);
   }
   return _registry;
 }

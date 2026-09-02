@@ -3,6 +3,7 @@ import { createRouter, createWebHashHistory, type RouteRecordRaw } from 'vue-rou
 import { useLicenseStore } from '../stores/license';
 import { usePluginStore } from '../stores/plugin';
 import { resolvePluginComponent } from '../plugin-component-registry';
+import { isElectron } from '../api/client';
 
 const routes: RouteRecordRaw[] = [
   { path: '/', redirect: '/chat' },
@@ -139,6 +140,10 @@ const router = createRouter({
 });
 
 router.beforeEach(async (to) => {
+  // 桌面端本地单机应用无登录概念：/login 直接回对话页
+  if (isElectron && to.path === '/login') {
+    return { path: '/chat' };
+  }
   // 授权码门禁：未激活时拦截到授权页（license/login 页本身放行）
   if (to.path !== '/license' && to.path !== '/login' && !to.meta.guest) {
     const licenseStore = useLicenseStore();

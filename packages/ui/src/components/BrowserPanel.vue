@@ -1,5 +1,25 @@
 <template>
   <div class="browser-shell">
+    <!-- 多标签页栏（Chrome 风格） -->
+    <div class="browser-tabbar">
+      <div class="tab-list">
+        <div
+          v-for="tab in tabs" :key="tab.id"
+          class="tab-item"
+          :class="{ active: tab.id === activeTabId }"
+          @click="switchTab(tab.id)"
+        >
+          <span class="tab-favicon" v-if="tab.loading">○</span>
+          <span class="tab-favicon" v-else>●</span>
+          <span class="tab-title">{{ tab.title || tab.url || '新标签页' }}</span>
+          <button class="tab-close" @click.stop="closeTab(tab.id)" v-if="tabs.length > 1">×</button>
+        </div>
+        <button class="tab-new" @click="newTab()" title="新建标签页">
+          <svg viewBox="0 0 24 24" width="15" height="15"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z" fill="currentColor"/></svg>
+        </button>
+      </div>
+    </div>
+
     <!-- Chrome 风格工具栏 -->
     <div class="browser-toolbar">
       <!-- 主页按钮：回到起始页 -->
@@ -36,6 +56,7 @@
           <el-icon :size="18"><ZoomIn /></el-icon>
         </button>
       </div>
+
 
       <!-- 收藏按钮 -->
       <button class="nav-btn" :class="{ active: isBookmarked }" @click="toggleBookmark" :title="isBookmarked ? '取消收藏' : '收藏此页'">
@@ -263,6 +284,23 @@ const { isDesktop } = usePlatform();
 // 检测是否在 Electron 桌面端（有 electronAPI 标识）
 const isElectron = typeof window !== 'undefined' && !!(window as any).electronAPI?.isElectron;
 
+// ── 多标签页管理（Electron 桌面端）──
+interface BrowserTab {
+  id: string;
+  url: string;
+  title: string;
+  loading: boolean;
+  urlInput: string;
+  history: string[];
+  histIndex: number;
+  pageZoom: number;
+  canBack: boolean;
+  canForward: boolean;
+}
+const tabs = ref<BrowserTab[]>([]);
+const activeTabId = ref<string>('');
+const activeTab = computed(() => tabs.value.find(t => t.id === activeTabId.value));
+
 // 路由 query（支持从对话页跳转并传初始 URL）
 const route = useRoute();
 
@@ -320,7 +358,7 @@ function applyZoom() {
     const bv = (window as any).electronAPI?.browserView;
     // Electron 桌面端：原生 BrowserView 支持 setZoomFactor
     if (bv?.setZoomFactor) {
-      try { bv.setZoomFactor(pageZoom.value); } catch { /* ignore */ }
+      try { bv.setZoomFactor(activeTabId.value, pageZoom.value); } catch { /* ignore */ }
     }
     return;
   }
@@ -347,7 +385,95 @@ function applyElectronScrollbarTheme() {
   const dark = document.documentElement.getAttribute('data-theme') === 'dark';
   const api = (window as any).electronAPI?.browserView;
   // 主进程会在页面加载完成时注入滚动条样式；这里只同步主题色
-  if (api?.setTheme) api.setTheme(dark ? 'dark' : 'light');
+  if (api?.setTheme) api.setTheme(activeTabId.value, dark ? 'dark' : 'light');
+}
+
+// ── 多标签页管理函数 ──
+async function newTab(url?: string) {
+  const api = (window as any).electronAPI;
+  let tabId = '';
+  if (isElectron && api?.browserView?.createTab) {
+    tabId = await api.browserView.createTab();
+  } else {
+    tabId = 'web-tab-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6);
+  }
+  const tab: BrowserTab = {
+    id: tabId,
+    url: url || '',
+    title: '',
+    loading: false,
+    urlInput: url || '',
+    history: url ? [url] : [],
+    histIndex: url ? 0 : -1,
+    pageZoom: 1,
+    canBack: false,
+    canForward: false,
+  };
+  tabs.value.push(tab);
+  await switchTab(tabId);
+  if (url) {
+    urlInput.value = url;
+    navigate();
+  }
+}
+
+async function switchTab(tabId: string) {
+  if (tabId === activeTabId.value) return;
+  // 保存当前标签状态
+  if (activeTab.value) {
+    activeTab.value.urlInput = urlInput.value;
+    activeTab.value.history = [...history.value];
+    activeTab.value.histIndex = histIndex.value;
+    activeTab.value.pageZoom = pageZoom.value;
+    activeTab.value.canBack = electronCanBack.value;
+    activeTab.value.canForward = electronCanForward.value;
+  }
+  // 切换激活标签
+  activeTabId.value = tabId;
+  const tab = tabs.value.find(t => t.id === tabId);
+  if (!tab) return;
+  // 恢复标签状态到当前 ref
+  urlInput.value = tab.urlInput;
+  history.value = [...tab.history];
+  histIndex.value = tab.histIndex;
+  pageZoom.value = tab.pageZoom;
+  electronCanBack.value = tab.canBack;
+  electronCanForward.value = tab.canForward;
+  loading.value = tab.loading;
+  // Electron 端：通知主进程激活该标签的 BrowserView
+  if (isElectron) {
+    const api = (window as any).electronAPI;
+    await api.browserView.activateTab(tabId);
+    if (tab.url) {
+      await nextTick();
+      syncBrowserViewBounds();
+    } else {
+      api.browserView.hide(tabId);
+    }
+  }
+}
+
+async function closeTab(tabId: string) {
+  const idx = tabs.value.findIndex(t => t.id === tabId);
+  if (idx === -1) return;
+  // Electron 端：关闭主进程中的 BrowserView
+  if (isElectron) {
+    const api = (window as any).electronAPI;
+    await api.browserView.closeTab(tabId);
+  }
+  tabs.value.splice(idx, 1);
+  // 如果关闭的是当前标签，切换到相邻标签
+  if (activeTabId.value === tabId) {
+    const nextTab = tabs.value[idx] || tabs.value[idx - 1];
+    if (nextTab) {
+      await switchTab(nextTab.id);
+    } else {
+      activeTabId.value = '';
+      urlInput.value = '';
+      history.value = [];
+      histIndex.value = -1;
+    }
+  }
 }
 
 // ── BrowserView 尺寸同步：监听占位 div 尺寸/位置变化，调用 setBounds 同步原生 BrowserView ──
@@ -371,11 +497,13 @@ function syncBrowserViewBounds() {
     // 导致原生图层残留（容器 UI 已隐藏、网页却仍浮在窗口上）。
     const visible = chatStore.rightPanelOpen && chatStore.rightPanelTab === 'browser';
     const el = browserViewPlaceholder.value;
-    if (!visible || !el) { try { (window as any).electronAPI.browserView.hide(); } catch { /* ignore */ } return; }
+    if (!visible || !el) { try { (window as any).electronAPI.browserView.hide(activeTabId.value); } catch { /* ignore */ } return; }
     const rect = el.getBoundingClientRect();
-    if (rect.width < 1 || rect.height < 1) { try { (window as any).electronAPI.browserView.hide(); } catch { /* ignore */ } return; }
+    // 面板可见但尺寸过小（CSS 过渡中）：不调 hide，避免把 hidden 设回 true 导致后续 resize 被拦截
+    if (rect.width < 1 || rect.height < 1) return;
     // Electron 33 的 setBounds 使用 CSS 像素（逻辑像素），不需要乘以 DPR
     (window as any).electronAPI.browserView.resize(
+      activeTabId.value,
       Math.round(rect.left),
       Math.round(rect.top),
       Math.round(rect.width),
@@ -452,7 +580,7 @@ watch(
   (hasDialog) => {
     if (!isElectron) return;
     if (hasDialog) {
-      (window as any).electronAPI.browserView.hide();
+      (window as any).electronAPI.browserView.hide(activeTabId.value);
     } else {
       syncBrowserViewBounds();
     }
@@ -575,21 +703,31 @@ async function navigate() {
   pushHistory(target);
   loading.value = true;
   iframeKey.value++;
+  // 更新当前标签的 url
+  if (activeTab.value) {
+    activeTab.value.url = target;
+    activeTab.value.urlInput = target;
+  }
   // Electron 桌面端：用 BrowserView 加载 URL，并同步 bounds
   if (isElectron) {
+    const tid = activeTabId.value;
     // 等待 Vue 重新渲染（browserViewPlaceholder 需要先出现在 DOM 中才能计算 bounds）
     await nextTick();
     syncBrowserViewBounds();
     try {
-      await (window as any).electronAPI.browserView.load(target);
+      await (window as any).electronAPI.browserView.load(tid, target);
       // 加载后再次同步 bounds（确保 BrowserView 尺寸正确）
       syncBrowserViewBounds();
     } catch (e) {
       console.warn('[browser] BrowserView load 失败', e);
     }
     // 更新可前进/后退状态
-    electronCanBack.value = await (window as any).electronAPI.browserView.canGoBack();
-    electronCanForward.value = await (window as any).electronAPI.browserView.canGoForward();
+    electronCanBack.value = await (window as any).electronAPI.browserView.canGoBack(tid);
+    electronCanForward.value = await (window as any).electronAPI.browserView.canGoForward(tid);
+    if (activeTab.value) {
+      activeTab.value.canBack = electronCanBack.value;
+      activeTab.value.canForward = electronCanForward.value;
+    }
   }
   // 超时保护：15 秒后自动清除 loading
   setTimeout(() => { loading.value = false; }, 15000);
@@ -612,9 +750,13 @@ function goHome() {
   history.value = [];
   histIndex.value = -1;
   urlInput.value = '';
+  if (activeTab.value) {
+    activeTab.value.url = '';
+    activeTab.value.urlInput = '';
+  }
   // Electron 桌面端：隐藏 BrowserView，让主页可见
   if (isElectron) {
-    (window as any).electronAPI.browserView.hide();
+    (window as any).electronAPI.browserView.hide(activeTabId.value);
     electronCanBack.value = false;
     electronCanForward.value = false;
   }
@@ -625,10 +767,11 @@ async function goBack() {
   if (loading.value) return;
   // Electron 桌面端：调用 BrowserView.goBack
   if (isElectron) {
+    const tid = activeTabId.value;
     if (!electronCanBack.value) return;
-    await (window as any).electronAPI.browserView.back();
-    electronCanBack.value = await (window as any).electronAPI.browserView.canGoBack();
-    electronCanForward.value = await (window as any).electronAPI.browserView.canGoForward();
+    await (window as any).electronAPI.browserView.back(tid);
+    electronCanBack.value = await (window as any).electronAPI.browserView.canGoBack(tid);
+    electronCanForward.value = await (window as any).electronAPI.browserView.canGoForward(tid);
     return;
   }
   // Web 端：更新历史栈 + 重新加载
@@ -643,10 +786,11 @@ async function goForward() {
   if (loading.value) return;
   // Electron 桌面端：调用 BrowserView.goForward
   if (isElectron) {
+    const tid = activeTabId.value;
     if (!electronCanForward.value) return;
-    await (window as any).electronAPI.browserView.forward();
-    electronCanBack.value = await (window as any).electronAPI.browserView.canGoBack();
-    electronCanForward.value = await (window as any).electronAPI.browserView.canGoForward();
+    await (window as any).electronAPI.browserView.forward(tid);
+    electronCanBack.value = await (window as any).electronAPI.browserView.canGoBack(tid);
+    electronCanForward.value = await (window as any).electronAPI.browserView.canGoForward(tid);
     return;
   }
   // Web 端：更新历史栈 + 重新加载
@@ -663,7 +807,7 @@ async function refresh() {
   if (isElectron) {
     loading.value = true;
     try {
-      await (window as any).electronAPI.browserView.reload();
+      await (window as any).electronAPI.browserView.reload(activeTabId.value);
     } catch (e) {
       console.warn('[browser] reload 失败', e);
     }
@@ -1166,11 +1310,14 @@ function onMenuCommand(cmd: string) {
 }
 
 onMounted(() => {
-  // 从路由 query 接收初始 URL（对话页点链接跳转过来），在应用内预览面板打开
-  const initUrl = route.query.url;
-  if (typeof initUrl === 'string' && /^https?:\/\//i.test(initUrl)) {
-    nextTick(() => openSite(initUrl));
-  }
+  // 初始化第一个标签页
+  newTab().then(() => {
+    // 从路由 query 接收初始 URL（对话页点链接跳转过来），在应用内预览面板打开
+    const initUrl = route.query.url;
+    if (typeof initUrl === 'string' && /^https?:\/\//i.test(initUrl)) {
+      nextTick(() => openSite(initUrl));
+    }
+  });
   fetchData();
   startDailyAnalysisScheduler();
 
@@ -1187,26 +1334,32 @@ onMounted(() => {
   // Electron 桌面端：注册 BrowserView 导航/加载回调 + 启动 ResizeObserver 同步 bounds
   if (isElectron) {
     const api = (window as any).electronAPI;
-    // 监听 BrowserView 导航事件，同步地址栏 URL
-    api.browserView.onNavigated((url: string) => {
-      // 面板未打开却收到导航事件：说明是 Agent 后台导航或页面自动跳转把原生图层
-      // 重新挂回了窗口（主进程 navigate 分支会 setBrowserView）。此时 UI 容器是关着的，
-      // 必须立刻把图层收回去，否则会出现"容器没了、网页却浮着且点不掉"的残留图层。
+    // 监听 BrowserView 导航事件，同步地址栏 URL（带 tabId）
+    api.browserView.onNavigated((tid: string, url: string) => {
+      // 只处理当前激活标签的导航事件
+      if (tid !== activeTabId.value) return;
+      // 面板未打开却收到导航事件：隐藏图层避免残留
       if (!(chatStore.rightPanelOpen && chatStore.rightPanelTab === 'browser')) {
-        try { api.browserView.hide(); } catch { /* ignore */ }
+        try { api.browserView.hide(tid); } catch { /* ignore */ }
         return;
       }
       if (url && url !== currentUrl.value) {
         urlInput.value = url;
         history.value[histIndex.value] = url;
+        if (activeTab.value) {
+          activeTab.value.url = url;
+          activeTab.value.urlInput = url;
+        }
       }
       // 导航后更新可前进/后退状态
-      api.browserView.canGoBack().then((v: boolean) => { electronCanBack.value = v; });
-      api.browserView.canGoForward().then((v: boolean) => { electronCanForward.value = v; });
+      api.browserView.canGoBack(tid).then((v: boolean) => { electronCanBack.value = v; });
+      api.browserView.canGoForward(tid).then((v: boolean) => { electronCanForward.value = v; });
     });
-    // 监听页面加载完成事件
-    api.browserView.onLoaded((_url: string) => {
+    // 监听页面加载完成事件（带 tabId）
+    api.browserView.onLoaded((tid: string, _url: string) => {
+      if (tid !== activeTabId.value) return;
       loading.value = false;
+      if (activeTab.value) activeTab.value.loading = false;
       // 页面加载完成后注入滚动条主题样式（导航到新页面会重置，需重新注入）
       applyElectronScrollbarTheme();
     });
@@ -1268,9 +1421,11 @@ onUnmounted(() => {
       attachedScrollWin = null;
     }
   }
-  // Electron 桌面端：组件卸载时隐藏 BrowserView
+  // Electron 桌面端：组件卸载时隐藏所有 BrowserView
   if (isElectron) {
-    try { (window as any).electronAPI.browserView.hide(); } catch { /* ignore */ }
+    for (const tab of tabs.value) {
+      try { (window as any).electronAPI.browserView.hide(tab.id); } catch { /* ignore */ }
+    }
   }
 });
 
@@ -1278,6 +1433,52 @@ onUnmounted(() => {
 
 <style scoped>
 .browser-shell { flex: 1; display: flex; flex-direction: column; overflow: hidden; background: var(--el-bg-color, #fff); min-height: 0; }
+
+/* 多标签页栏（Chrome 风格） */
+.browser-tabbar {
+  display: flex; align-items: flex-end;
+  background: var(--el-bg-color-page, #dee1e6);
+  padding: 0 4px; height: 36px; flex-shrink: 0;
+}
+[data-theme="dark"] .browser-tabbar { background: #202225; }
+.tab-list { display: flex; align-items: flex-end; overflow-x: auto; overflow-y: hidden; height: 100%; flex: 1; }
+.tab-list::-webkit-scrollbar { height: 0; }
+.tab-item {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 0 12px; height: 30px; min-width: 48px; max-width: 200px;
+  cursor: pointer; white-space: nowrap; font-size: 12px;
+  color: var(--el-text-color-secondary, #5f6368);
+  border-radius: 8px 8px 0 0;
+  transition: background 0.15s, color 0.15s;
+  flex-shrink: 0;
+}
+.tab-item:hover { background: rgba(0,0,0,0.06); }
+[data-theme="dark"] .tab-item:hover { background: rgba(255,255,255,0.08); }
+.tab-item.active {
+  color: var(--el-text-color-primary, #202124);
+  background: var(--el-bg-color, #fff);
+}
+[data-theme="dark"] .tab-item.active { background: #1b1d23; }
+.tab-favicon { font-size: 7px; opacity: 0.5; flex-shrink: 0; }
+.tab-item.active .tab-favicon { opacity: 0.8; }
+.tab-title { overflow: hidden; text-overflow: ellipsis; flex: 1; }
+.tab-close {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; border: none; background: transparent;
+  cursor: pointer; font-size: 13px; line-height: 1; color: inherit;
+  border-radius: 50%; opacity: 0; flex-shrink: 0; transition: opacity 0.15s, background 0.15s;
+}
+.tab-item:hover .tab-close, .tab-item.active .tab-close { opacity: 0.6; }
+.tab-close:hover { opacity: 1 !important; background: rgba(0,0,0,0.1); }
+[data-theme="dark"] .tab-close:hover { background: rgba(255,255,255,0.15); }
+.tab-new {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 28px; height: 30px; border: none; background: transparent;
+  cursor: pointer; color: var(--el-text-color-secondary, #5f6368);
+  flex-shrink: 0; border-radius: 8px 8px 0 0; transition: background 0.15s, color 0.15s;
+}
+.tab-new:hover { color: var(--el-text-color-primary, #202124); background: rgba(0,0,0,0.06); }
+[data-theme="dark"] .tab-new:hover { color: #fff; background: rgba(255,255,255,0.08); }
 
 /* Chrome 风格工具栏 */
 .browser-toolbar {

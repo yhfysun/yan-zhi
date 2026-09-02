@@ -226,6 +226,7 @@ authStore.loadUser();
   --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.5);
   --el-bg-color: #181a24;
   --el-bg-color-overlay: #20222e;
+  --el-bg-color-page: #1b1d27;
   --el-fill-color-blank: #1b1d27;
   --el-fill-color: #2a2c38;
   --el-fill-color-light: #2a2c38;
@@ -235,7 +236,22 @@ authStore.loadUser();
   --el-text-color-primary: #e2e8f0;
   --el-text-color-regular: #cbd5e1;
   --el-text-color-secondary: #94a3b8;
+  --el-text-color-placeholder: #6b7280;
   --el-mask-color: rgba(15, 17, 23, 0.5);
+  --el-color-primary: #7C3AED;
+  --el-color-primary-light-3: #6d28d9;
+  --el-color-primary-light-5: #5b21b6;
+  --el-color-primary-light-7: #4c1d95;
+  --el-color-primary-light-8: #3b1876;
+  --el-color-primary-light-9: rgba(124, 58, 237, 0.15);
+  --el-color-primary-dark-2: #5B21B6;
+  --el-color-success: #67c23a;
+  --el-color-success-light-9: rgba(103, 194, 58, 0.15);
+  --el-color-warning: #e6a23c;
+  --el-color-warning-light-9: rgba(230, 162, 60, 0.15);
+  --el-color-danger: #f56c6c;
+  --el-color-danger-light-9: rgba(245, 108, 108, 0.15);
+  --el-fill-color-dark: #343644;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }

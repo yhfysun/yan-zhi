@@ -1,20 +1,37 @@
 // 多层记忆接口（daily=每日聚合 / session=会话 / agent=智能体长期）。
 // 抽取的 LLM 调用在 UI 侧完成（UI 持有平台配置与 API Key），这里只负责检索与入库。
+// 检索支持向量相似度（embedding BLOB + JS 端余弦），embedding 不可用时降级关键词 LIKE。
 import { Router } from 'express';
 import { db } from '../db.js';
 import { authMiddleware } from '../auth.js';
+import { embedText } from '../services/ollama-embed.js';
 
 const router = Router();
 router.use(authMiddleware);
 
 const VALID_TYPES = new Set(['daily', 'session', 'agent']);
+
+function bytesToVec(b: Uint8Array | Buffer | null): number[] | null {
+  if (!b) return null;
+  try { return Array.from(new Float32Array(b.buffer, b.byteOffset, b.byteLength / 4)); } catch { return null; }
+}
+function vecToBytes(v: number[] | null): Buffer | null {
+  if (!v || !v.length) return null;
+  return Buffer.from(new Float32Array(v).buffer);
+}
+function cosine(a: number[], b: number[]): number {
+  const n = Math.min(a.length, b.length);
+  let dot = 0, na = 0, nb = 0;
+  for (let i = 0; i < n; i++) { dot += a[i] * b[i]; na += a[i] * a[i]; nb += b[i] * b[i]; }
+  return dot / (Math.sqrt(na) * Math.sqrt(nb) || 1);
+}
 function normType(t: unknown): string {
   const v = String(t || 'agent');
   return VALID_TYPES.has(v) ? v : 'agent';
 }
 
-// GET /api/memory/search?query=&type=&agentId=&topK= —— 关键词检索（SQL LIKE + last_used_at 排序）
-router.get('/search', (_req, res) => {
+// GET /api/memory/search?query=&type=&agentId=&topK= —— 向量检索（embedding 余弦相似度），降级关键词 LIKE
+router.get('/search', async (_req, res) => {
   try {
     const userId = _req.user?.userId;
     if (!userId) { res.status(401).json({ error: '未登录' }); return; }
@@ -22,6 +39,24 @@ router.get('/search', (_req, res) => {
     const type = normType(_req.query.type);
     const agentId = String(_req.query.agentId || '');
     const topK = Math.min(Number(_req.query.topK) || 5, 20);
+    // 向量检索：生成 query embedding → 拉有 embedding 的记忆 → 余弦相似度排序
+    const qVec = await embedText(query).catch(() => null);
+    if (qVec) {
+      const rows = db.prepare(
+        `SELECT * FROM memory WHERE user_id = ? AND type = ?
+         AND (? = '' OR agent_id = ?) AND embedding IS NOT NULL`,
+      ).all(userId, type, agentId, agentId) as any[];
+      const scored = rows
+        .map((r) => {
+          const v = bytesToVec(r.embedding);
+          return v ? { r, score: cosine(qVec, v) } : null;
+        })
+        .filter((x): x is { r: any; score: number } => x !== null)
+        .sort((a, b) => b.score - a.score)
+        .slice(0, topK);
+      if (scored.length) { res.json({ data: scored.map((x) => x.r) }); return; }
+    }
+    // 降级：关键词 LIKE + last_used_at 排序
     const rows = db.prepare(
       `SELECT * FROM memory WHERE user_id = ? AND type = ?
        AND (? = '' OR agent_id = ?) AND content LIKE ?
@@ -62,8 +97,8 @@ router.get('/recent', (_req, res) => {
   }
 });
 
-// POST /api/memory/create —— 写入一条记忆（UI 抽取结果或手动）
-router.post('/create', (_req, res) => {
+// POST /api/memory/create —— 写入一条记忆（UI 抽取结果或手动），同步生成 embedding
+router.post('/create', async (_req, res) => {
   try {
     const userId = _req.user?.userId;
     if (!userId) { res.status(401).json({ error: '未登录' }); return; }
@@ -75,10 +110,11 @@ router.post('/create', (_req, res) => {
     const metadata = JSON.stringify(_req.body?.metadata || {});
     const id = require('node:crypto').randomUUID();
     const ts = Date.now();
+    const emb = vecToBytes(await embedText(content).catch(() => null));
     db.prepare(
-      `INSERT INTO memory (id, user_id, agent_id, content, tags_json, metadata_json, created_at, last_used_at, type)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(id, userId, agentId, content, tags, metadata, ts, ts, type);
+      `INSERT INTO memory (id, user_id, agent_id, content, tags_json, metadata_json, embedding, created_at, last_used_at, type)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(id, userId, agentId, content, tags, metadata, emb, ts, ts, type);
     res.json({ data: db.prepare('SELECT * FROM memory WHERE id = ?').get(id) });
   } catch (e: unknown) {
     res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
@@ -86,7 +122,7 @@ router.post('/create', (_req, res) => {
 });
 
 // POST /api/memory/upsert-daily —— 每日记忆：按自然天聚合（当天已存在 daily 则合并追加，否则新建）
-router.post('/upsert-daily', (_req, res) => {
+router.post('/upsert-daily', async (_req, res) => {
   try {
     const userId = _req.user?.userId;
     if (!userId) { res.status(401).json({ error: '未登录' }); return; }
@@ -106,17 +142,19 @@ router.post('/upsert-daily', (_req, res) => {
       const merged = existing.content.endsWith('\n')
         ? existing.content + content
         : existing.content + '\n' + content;
+      const emb = vecToBytes(await embedText(merged).catch(() => null));
       db.prepare(
-        `UPDATE memory SET content = ?, last_used_at = ? WHERE id = ?`,
-      ).run(merged, ts, existing.id);
+        `UPDATE memory SET content = ?, embedding = ?, last_used_at = ? WHERE id = ?`,
+      ).run(merged, emb, ts, existing.id);
       res.json({ data: db.prepare('SELECT * FROM memory WHERE id = ?').get(existing.id), merged: true });
       return;
     }
     const id = require('node:crypto').randomUUID();
+    const emb = vecToBytes(await embedText(content).catch(() => null));
     db.prepare(
-      `INSERT INTO memory (id, user_id, agent_id, content, tags_json, metadata_json, created_at, last_used_at, type)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'daily')`,
-    ).run(id, userId, agentId, content, '[]', JSON.stringify(metadata), ts, ts);
+      `INSERT INTO memory (id, user_id, agent_id, content, tags_json, metadata_json, embedding, created_at, last_used_at, type)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'daily')`,
+    ).run(id, userId, agentId, content, '[]', JSON.stringify(metadata), emb, ts, ts);
     res.json({ data: db.prepare('SELECT * FROM memory WHERE id = ?').get(id), merged: false });
   } catch (e: unknown) {
     res.status(500).json({ error: e instanceof Error ? e.message : String(e) });

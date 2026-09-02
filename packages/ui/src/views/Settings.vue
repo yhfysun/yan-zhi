@@ -113,6 +113,11 @@
           </el-form-item>
         </el-form>
       </el-tab-pane>
+      <el-tab-pane label="日志" name="logs">
+        <div class="logs-tab-embed">
+          <LlmLogs />
+        </div>
+      </el-tab-pane>
       <el-tab-pane label="关于" name="about">
         <div class="about-section">
           <h3>言智 (Yan-Zhi)</h3>
@@ -136,6 +141,7 @@ import { usePluginStore } from '../stores/plugin';
 import { useToolsStore } from '../stores/tools';
 import type { ThemeName } from '../stores/settings';
 import MemoryManage from '../components/memory/MemoryManage.vue';
+import LlmLogs from './LlmLogs.vue';
 
 const settingsStore = useSettingsStore();
 const platformStore = usePlatformStore();
@@ -400,5 +406,20 @@ onMounted(async () => {
 .about-link:hover { text-decoration: underline; }
 .connect-url-box { display: flex; align-items: center; gap: 8px; background: rgba(15,23,42,0.04); border-radius: 6px; padding: 6px 10px; }
 .connect-url-box code { font-family: monospace; font-size: 13px; color: var(--color-primary); }
+
+/* 日志页嵌入设置 tab 时：去掉独立滚动，让整页自然滚动 */
+.logs-tab-embed { padding: 4px 0; }
+.logs-tab-embed :deep(.logs-page) {
+  padding: 0;
+  overflow: visible;
+  min-height: 0;
+}
+.logs-tab-embed :deep(.logs-list) {
+  overflow: visible;
+  flex: none;
+}
+.logs-tab-embed :deep(.stats-table-wrap) {
+  max-height: 320px;
+}
 
 </style>
