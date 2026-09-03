@@ -112,6 +112,18 @@ function maskError(err: unknown): string {
 const DEFAULT_MAX_ROWS = 500;
 const DEFAULT_TIMEOUT_MS = 30_000;
 
+/**
+ * MySQL/PG 行数上限下推：把任意 SELECT 包成派生表加 LIMIT，避免大表全量拉回内存。
+ * 已含 LIMIT/FETCH/ROWNUM（宽松全文判断）或非 SELECT（WITH 起头的 CTE 在 MySQL 派生表内兼容性差）时不包，
+ * 此时仍由结果集截断兜底。
+ */
+function withRowCap(sql: string, maxRows: number): string {
+  if (maxRows <= 0) return sql;
+  if (/limit\s+\d|fetch\s+(first|next)|rownum/i.test(sql)) return sql;
+  if (!/^\s*select\b/i.test(sql)) return sql;
+  return `SELECT * FROM (${sql}) _yz_cap LIMIT ${maxRows + 1}`;
+}
+
 // ===== 项目库 / SQLite（better-sqlite3，同步接口）=====
 
 class SqliteLikeConnector implements Connector {
@@ -240,7 +252,7 @@ class MysqlConnector implements Connector {
     const start = Date.now();
     const pool = await this.pool();
     const maxRows = opts?.maxRows ?? DEFAULT_MAX_ROWS;
-    const [raw, fields] = await pool.query({ sql, timeout: opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS });
+    const [raw, fields] = await pool.query({ sql: withRowCap(sql, maxRows), timeout: opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS });
     const rowsAll = raw as Record<string, unknown>[];
     const columns = Array.isArray(fields) && fields.length
       ? fields.map((f) => f.name || '').filter(Boolean)
@@ -346,7 +358,7 @@ class PgConnector implements Connector {
       const timeout = opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
       if (timeout > 0) await client.query(`SET statement_timeout = ${Math.floor(timeout)}`);
       const maxRows = opts?.maxRows ?? DEFAULT_MAX_ROWS;
-      const r = await client.query(sql);
+      const r = await client.query(withRowCap(sql, maxRows));
       const rows = r.rows.slice(0, maxRows);
       return {
         columns: r.fields.map((f) => f.name),

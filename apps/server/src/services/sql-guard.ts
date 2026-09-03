@@ -109,8 +109,11 @@ function classify(text: string): { action: SqlAction; reason?: string } {
     return { action: 'read' };
   }
   if (READ_HEADS.has(head)) {
-    // EXPLAIN ANALYZE 会真执行（PG 13+ 会实际运行写语句?）——EXPLAIN 本身不执行 DML（PG 的 EXPLAIN ANALYZE 会执行!）
-    // PG: EXPLAIN ANALYZE INSERT 会真实执行。统一拦：EXPLAIN 后跟写词则按写处理。
+    // MySQL SELECT ... INTO OUTFILE/DUMPFILE 会在服务端写文件（需要 FILE 权限），按写操作拦截
+    if (/\bINTO\s+(OUTFILE|DUMPFILE)\b/i.test(stripped)) {
+      return { action: 'write', reason: 'SELECT ... INTO OUTFILE/DUMPFILE 属于服务端文件写入，拒绝' };
+    }
+    // EXPLAIN ANALYZE 会真实执行（PG 语义），后面跟写语句按写拦截
     if (/^EXPLAIN\b/i.test(text)) {
       const rest = stripped.replace(/^\s*EXPLAIN(\s+(ANALYZE|VERBOSE|FORMAT\s+\w+|COSTS\s+\w+|SETTINGS))+\s*/i, ' ');
       const inner = headWord(rest.trim());

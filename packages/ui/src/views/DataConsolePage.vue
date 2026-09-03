@@ -264,7 +264,7 @@ function formatSql() {
   let out = masked;
   // 长词优先替换，避免 GROUP BY 被 GROUP 截断
   for (const kw of [...FORMAT_KEYWORDS].sort((a, b) => b.length - a.length)) {
-    out = out.replace(new RegExp(`\\b${kw.replaceAll(' ', '\\\\s+')}\\b`, 'gi'), kw);
+    out = out.replace(new RegExp(`\\b${kw.replaceAll(' ', '\\s+')}\\b`, 'gi'), kw);
   }
   out = out.replace(/\u0000(\d+)\u0000/g, (_, i) => mask[Number(i)]);
   editorText.value = splitSqlStatements(out).map((s) => s.text).join(';\n\n') + (splitSqlStatements(out).length ? ';' : '');

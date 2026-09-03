@@ -110,12 +110,18 @@ function optionsJson(input: CreateInput): string {
 /** 内置项目库数据源：确定性 id（ds_project_{userId}），存在即跳过（幂等，多用户就绪） */
 export function ensureProjectDataSource(userId: string): void {
   const id = `ds_project_${userId}`;
+  if (db.prepare('SELECT 1 FROM data_source WHERE id = ?').get(id)) return;
   const now = Date.now();
+  // 名称被用户自建数据源占用时自动让位，保证内置库始终能建出来
+  let name = '言智项目库';
+  for (let i = 2; db.prepare('SELECT 1 FROM data_source WHERE user_id = ? AND name = ?').get(userId, name); i++) {
+    name = `言智项目库 ${i}`;
+  }
   db.prepare(
-    `INSERT OR IGNORE INTO data_source
+    `INSERT INTO data_source
        (id, user_id, name, type, readonly, allow_write, builtin, status, created_at, updated_at)
-     VALUES (?, ?, '言智项目库', 'project', 1, 0, 1, 'ok', ?, ?)`,
-  ).run(id, userId, now, now);
+     VALUES (?, ?, ?, 'project', 1, 0, 1, 'ok', ?, ?)`,
+  ).run(id, userId, name, now, now);
 }
 
 export function listDataSources(userId: string): DataSourceInfo[] {

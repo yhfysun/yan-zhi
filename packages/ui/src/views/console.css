@@ -24,11 +24,21 @@
 .dw-root .dc-ds-select {
   width: 240px;
 }
-.dw-root .dc-ds-opt {
+/* el-select popper teleport 到 body，在 .dw-root 作用域之外：用字面色兜底 */
+.dc-ds-opt {
   display: inline-flex;
   align-items: center;
   gap: 6px;
 }
+.dc-ds-opt .ds-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #8e93a6;
+  flex-shrink: 0;
+}
+.dc-ds-opt .ds-dot.ok { background: #0e9f8f; }
+.dc-ds-opt .ds-dot.err { background: #d6336c; }
 .dw-root .dc-guard {
   display: inline-flex;
   align-items: center;

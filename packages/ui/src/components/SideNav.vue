@@ -43,6 +43,14 @@
               <el-icon><Collection /></el-icon>
               <span>记忆管理</span>
             </el-dropdown-item>
+            <el-dropdown-item divided @click="$router.push('/data-sources')">
+              <el-icon><DataLine /></el-icon>
+              <span>数据源</span>
+            </el-dropdown-item>
+            <el-dropdown-item @click="$router.push('/sql-console')">
+              <el-icon><Operation /></el-icon>
+              <span>SQL 控制台</span>
+            </el-dropdown-item>
             <el-dropdown-item v-if="!isElectron" divided @click="authStore.logout()">
               <el-icon><SwitchButton /></el-icon>
               <span>退出登录</span>
@@ -107,6 +115,14 @@
               <el-icon><Collection /></el-icon>
               <span>记忆管理</span>
             </el-dropdown-item>
+            <el-dropdown-item divided @click="$router.push('/data-sources')">
+              <el-icon><DataLine /></el-icon>
+              <span>数据源</span>
+            </el-dropdown-item>
+            <el-dropdown-item @click="$router.push('/sql-console')">
+              <el-icon><Operation /></el-icon>
+              <span>SQL 控制台</span>
+            </el-dropdown-item>
             <el-dropdown-item divided @click="authStore.logout()">
               <el-icon><SwitchButton /></el-icon>
               <span>退出登录</span>
@@ -149,7 +165,7 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import { useRoute } from 'vue-router';
-import { ChatDotRound, Setting, User, SwitchButton, Fold, Expand, Monitor, Collection, Moon, Sunny, HomeFilled, Promotion } from '@element-plus/icons-vue';
+import { ChatDotRound, Setting, User, SwitchButton, Fold, Expand, Monitor, Collection, Moon, Sunny, HomeFilled, Promotion, DataLine, Operation } from '@element-plus/icons-vue';
 import { useAuthStore } from '../stores/auth';
 import { useSettingsStore } from '../stores/settings';
 import { useIsMobile } from '../composables/useIsMobile';
