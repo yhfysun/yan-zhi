@@ -93,3 +93,7 @@ typecheck_output.txt
 _check_db.py
 *分析报告.md
 *完整性检查.md
+
+# playwright-cli 浏览器脚本临时产物（日志 / 快照 / 截图）
+.playwright-cli/
+openspec/changes/data-ontology-agent/shots/

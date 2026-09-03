@@ -132,7 +132,8 @@ button{cursor:pointer;background:none;border:none;padding:0}
 .tab.on{background:var(--surface);color:var(--brand);font-weight:600;box-shadow:var(--sh-1)}
 
 .body{flex:1;min-height:0;overflow:hidden;position:relative}
-.view{display:none;height:100%}
+.view{height:100%}
+.view:not(.on){display:none!important}   /* 用 :not 提特异性，防止下方 .v-* 的 display:flex 覆盖隐藏 */
 .view.on{display:flex}
 
 /* ============================================================
@@ -246,8 +247,12 @@ select.inp{cursor:pointer}
 .card-foot .sp{flex:1}
 
 /* 新建数据源表单（内嵌展开） */
-.form-card{grid-column:1/-1;background:var(--surface);border:1px solid var(--brand-line);border-radius:var(--r-md)}
-.form-card .card-head{background:var(--brand-soft);border-bottom-color:var(--brand-line)}
+/* 新建面板是临时态，视觉重量必须低于常态卡片：只留左侧品牌色标记，不铺底 */
+.form-card{
+  grid-column:1/-1;background:var(--surface);border:1px solid var(--rule);
+  border-left:2px solid var(--brand);border-radius:var(--r-md)
+}
+.form-card .card-head{background:var(--surface);border-bottom-color:var(--rule)}
 .fgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:var(--s3) var(--s4);padding:var(--s4)}
 .field{display:flex;flex-direction:column;gap:5px}
 .field label{font-size:11.5px;font-weight:500;color:var(--ink-2)}
@@ -259,6 +264,24 @@ select.inp{cursor:pointer}
 }
 .typepick button:hover{border-color:var(--ink-3)}
 .typepick button.on{border-color:var(--brand);background:var(--brand-soft);color:var(--brand);font-weight:600}
+/* 类型分组：8 个平铺 → 按语族切成 3 组，每组 ≤5，靠 chunking 降认知负荷而非藏进下拉 */
+.tp-groups{display:flex;flex-wrap:wrap;gap:var(--s4) var(--s5)}
+.tp-g{display:flex;flex-direction:column;gap:5px}
+.tp-g>.eyebrow{font-size:10px}
+.tp-g.na .typepick button{color:var(--ink-3);border-style:dashed}
+
+/* 失败诊断折叠：错误码 → 可能原因，避免用户平均 15 分钟盲查 */
+.cdiag{border-top:1px solid var(--rule)}
+.cdiag>summary{
+  list-style:none;cursor:pointer;padding:var(--s2) var(--s4);font-size:11.5px;
+  color:var(--danger);display:flex;align-items:center;gap:6px
+}
+.cdiag>summary::-webkit-details-marker{display:none}
+.cdiag>summary .chev{transition:transform .18s var(--ease)}
+.cdiag[open]>summary .chev{transform:rotate(90deg)}
+.cdiag-body{padding:0 var(--s4) var(--s3) 30px;font-size:11.5px;color:var(--ink-2)}
+.cdiag-body ol{margin:0 0 var(--s2);padding-left:16px;display:flex;flex-direction:column;gap:3px}
+.cdiag-body code{font-family:var(--f-mono);font-size:11px;background:var(--canvas);padding:1px 4px;border-radius:var(--r-xs)}
 
 /* ============================================================
    视图 2 · 本体（三栏）
@@ -305,6 +328,41 @@ select.inp{cursor:pointer}
 
 .defgrid{display:grid;grid-template-columns:1fr 1fr;gap:var(--s4);margin-bottom:var(--s5)}
 .defgrid .full{grid-column:1/-1}
+
+/* 表单分段：7 个字段一字排开是墙，切成 标识 / 语义 / 物理 三段 */
+.fgroup{
+  display:flex;align-items:baseline;gap:var(--s3);
+  margin:var(--s5) 0 var(--s3);padding-bottom:5px;border-bottom:1px solid var(--rule)
+}
+.fgroup:first-of-type{margin-top:0}
+.fg-label{
+  font-family:var(--f-display);font-size:11px;font-weight:600;color:var(--ink);
+  letter-spacing:.1em;text-transform:uppercase
+}
+.fg-note{font-size:11px;color:var(--ink-3)}
+
+/* 同义词：chip 输入，比 textarea 更符合"一组短标签"的心智 */
+.chipin{
+  display:flex;flex-wrap:wrap;align-items:center;gap:5px;min-height:32px;
+  padding:5px 7px;background:var(--surface);border:1px solid var(--rule-strong);border-radius:var(--r-sm)
+}
+.chipin .chip{
+  display:inline-flex;align-items:center;gap:3px;padding:2px 4px 2px 7px;
+  background:var(--canvas);border:1px solid var(--rule);border-radius:var(--r-xs);font-size:11.5px
+}
+.chipin .chip button{color:var(--ink-3);font-size:13px;line-height:1;padding:0 2px}
+.chipin .chip button:hover{color:var(--danger)}
+.chipin input{flex:1;min-width:70px;border:none;outline:none;font-size:12px;background:none}
+
+/* 源文件态 vs 派生产物：必须一眼分清，否则用户会去改错地方 */
+.scope.derived{background:var(--void-2);border:1px solid var(--void-3)}
+.scope.derived pre{opacity:.86}
+.src-tag,.drv-tag{
+  display:inline-flex;align-items:center;gap:4px;padding:1px 6px;border-radius:var(--r-xs);
+  font-size:10px;font-weight:600;letter-spacing:.04em
+}
+.src-tag{background:rgba(124,58,237,.22);color:#C9AEFB;border:1px solid rgba(124,58,237,.45)}
+.drv-tag{background:rgba(139,145,163,.16);color:var(--void-ink-2);border:1px solid var(--void-3)}
 
 /* 字段表（编目表格：发丝线、等宽名、小圆角） */
 .tbl{width:100%;border-collapse:separate;border-spacing:0;font-size:12.5px}
@@ -354,6 +412,35 @@ select.inp{cursor:pointer}
 .act.publish{margin-left:auto;border-color:var(--brand);background:var(--brand);color:#fff}
 .act.publish .d{color:#E9D5FF}
 .act.publish:hover{background:#6D2FDB;border-color:#6D2FDB}
+
+/* 未保存指示：Nielsen「用户控制与自由」——切页签前必须能看见改动没落地 */
+.dirty{
+  display:inline-flex;align-items:center;gap:5px;font-size:11.5px;color:var(--caution);
+  padding:3px 8px;background:var(--caution-soft);border:1px solid var(--caution-line);border-radius:var(--r-sm)
+}
+.dirty .dot{width:5px;height:5px;border-radius:50%;background:var(--caution)}
+
+/* 发布预检：发布会改变智能体取数口径，等同写操作，必须有 diff + 影响范围 + 回滚 */
+.pubwrap{margin-left:auto;position:relative}
+.pubwrap>summary{list-style:none}
+.pubwrap>summary::-webkit-details-marker{display:none}
+.pubcheck{
+  position:absolute;right:0;bottom:calc(100% + 8px);width:392px;z-index:20;
+  background:var(--surface);border:1px solid var(--rule-strong);border-radius:var(--r-md);box-shadow:var(--sh-2)
+}
+.pc-head{padding:var(--s3) var(--s4);border-bottom:1px solid var(--rule)}
+.pc-head h4{margin:0;font-family:var(--f-display);font-size:13px;font-weight:600}
+.pc-head p{margin:3px 0 0;font-size:11.5px;color:var(--ink-2)}
+.pc-sect{padding:var(--s3) var(--s4);border-bottom:1px solid var(--rule)}
+.pc-sect>.eyebrow{display:block;margin-bottom:6px}
+.dl{font-family:var(--f-mono);font-size:11.5px;display:flex;gap:6px;padding:1px 0}
+.dl .sgn{width:10px;flex-shrink:0;font-weight:700}
+.dl.add{color:var(--signal)} .dl.del{color:var(--danger)}
+.dl.del .txt{text-decoration:line-through;opacity:.75}
+.pc-ref{display:flex;align-items:center;gap:6px;font-size:11.5px;padding:2px 0}
+.pc-ref .li-code{font-size:11px}
+.pc-foot{padding:var(--s3) var(--s4);display:flex;align-items:center;gap:var(--s2)}
+.pc-foot .note{font-size:10.5px;color:var(--ink-3);flex:1;line-height:1.35}
 
 /* 右：编译预览 —— 签名元素「编译轨道」 */
 .col-right{
@@ -652,10 +739,22 @@ select.inp{cursor:pointer}
               <div class="fgrid">
                 <div class="field" style="grid-column:1/-1">
                   <label>数据库类型</label>
-                  <div class="typepick">
-                    <button class="on">MySQL</button><button>PostgreSQL</button><button>达梦 DM</button>
-                    <button>Oracle</button><button>SQLite</button><button>项目库</button>
-                    <button>MongoDB</button><button>Elastic</button>
+                  <div class="tp-groups">
+                    <div class="tp-g">
+                      <span class="eyebrow">关系型 · 支持自动 JOIN</span>
+                      <div class="typepick">
+                        <button class="on">MySQL</button><button>PostgreSQL</button>
+                        <button>达梦 DM</button><button>Oracle</button><button>SQLite</button>
+                      </div>
+                    </div>
+                    <div class="tp-g">
+                      <span class="eyebrow">内置</span>
+                      <div class="typepick"><button>言智项目库</button></div>
+                    </div>
+                    <div class="tp-g na">
+                      <span class="eyebrow">文档型 · 无 JOIN 下推</span>
+                      <div class="typepick"><button>MongoDB</button><button>Elasticsearch</button></div>
+                    </div>
                   </div>
                 </div>
                 <div class="field"><label>主机</label><input class="inp mono" value="10.0.12.31"></div>
@@ -770,8 +869,22 @@ select.inp{cursor:pointer}
                   <dt>账号</dt><dd>ERP_READ</dd>
                 </dl>
               </div>
-              <div class="card-foot" style="color:var(--danger);font-size:11.5px">
-                无法建立连接，检查网络或账号口令
+              <details class="cdiag">
+                <summary>
+                  <svg class="chev" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="m9 6 6 6-6 6"/></svg>
+                  ORA-12170 是什么？如何排查
+                </summary>
+                <div class="cdiag-body">
+                  <ol>
+                    <li>防火墙 / 安全组未放通 <code>1521</code></li>
+                    <li>监听未启动：目标机执行 <code>lsnrctl status</code></li>
+                    <li>服务名写错：<code>ORCLPDB1</code> 与实际 PDB 不一致</li>
+                  </ol>
+                  <button class="btn sm ghost">复制错误码与连接串</button>
+                </div>
+              </details>
+              <div class="card-foot" style="font-size:11.5px">
+                <span class="stat" style="color:var(--danger)">最近 3 次均失败 · 12 分钟前</span>
                 <div class="sp"></div>
                 <button class="btn sm">重新测试</button>
               </div>
@@ -869,20 +982,36 @@ select.inp{cursor:pointer}
               <!-- 语义 -->
               <div class="subpane on" id="sp-sem">
                 <div class="sect-title"><h2>语义定义</h2><span class="eyebrow">Ontology · order</span></div>
+
+                <div class="fgroup"><span class="fg-label">标识</span><span class="fg-note">改 code 会断开引用它的智能体</span></div>
                 <div class="defgrid">
                   <div class="field"><label>本体 code（唯一、供大模型引用）</label>
                     <input class="inp mono" value="order"><span class="hint">只能用小写字母、数字、下划线</span></div>
                   <div class="field"><label>名称</label><input class="inp" value="订单"></div>
+                </div>
+
+                <div class="fgroup"><span class="fg-label">语义</span><span class="fg-note">大模型只看这一段来决定选不选它</span></div>
+                <div class="defgrid">
                   <div class="field full"><label>业务描述（决定大模型能否选对它，写清口径与粒度）</label>
                     <textarea class="inp" rows="4">一笔订单的完整生命周期记录。一笔订单 = 一个用户一次下单行为，含金额、状态、渠道。
 金额口径统一为「实付金额」（已扣优惠，不含退款）。
 粒度：一行 = 一笔订单，以 order_id 唯一。</textarea>
                     <span class="hint">AI 生成 · 依据：知识库《数据字典 v3》#订单域 · 已采纳并锁定</span></div>
                   <div class="field"><label>业务域</label><select class="inp"><option>交易域</option><option>用户域</option><option>商品域</option></select></div>
-                  <div class="field"><label>同义词（一行一个，用于命中提问）</label>
-                    <textarea class="inp" rows="2">订单记录
-交易单
-单量</textarea></div>
+                  <div class="field"><label>同义词（用于命中提问）</label>
+                    <div class="chipin">
+                      <span class="chip">订单记录<button aria-label="移除">×</button></span>
+                      <span class="chip">交易单<button aria-label="移除">×</button></span>
+                      <span class="chip">单量<button aria-label="移除">×</button></span>
+                      <input placeholder="回车添加">
+                    </div></div>
+                </div>
+
+                <div class="fgroup">
+                  <span class="fg-label">物理</span>
+                  <span class="fg-note">大模型看不到这一段，只有编译器用</span>
+                </div>
+                <div class="defgrid">
                   <div class="field full"><label>物理来源 SQL（输出列必须显式 AS 别名）</label>
                     <div class="scope" style="margin:0">
                       <div class="scope-bar"><span class="lang">SQL</span><span>sqlite</span><div class="sp"></div><span>7 输出列 · 全部已别名</span></div>
@@ -1081,7 +1210,9 @@ select.inp{cursor:pointer}
                 <div class="sect-title"><h2>本体定义（YAML 源文件态）</h2>
                   <div style="display:flex;gap:8px"><button class="btn sm">导入</button><button class="btn sm">复制</button></div></div>
                 <div class="scope" style="margin:0">
-                  <div class="scope-bar"><span class="lang">YAML</span><span>order.ontology.yaml</span><div class="sp"></div><span>86 行</span></div>
+                  <div class="scope-bar"><span class="lang">YAML</span><span>order.ontology.yaml</span>
+                    <span class="src-tag">源文件 · 可改</span>
+                    <div class="sp"></div><span>86 行 · v2</span></div>
 <pre><span class="c"># 可直接导出/导入，也是喂给大模型的形态</span>
 <span class="f">version</span>: 1
 <span class="f">datasource</span>: ds_project
@@ -1160,8 +1291,10 @@ select.inp{cursor:pointer}
           </div>
 
           <div class="rail-body">
-            <div class="scope">
-              <div class="scope-bar"><span class="lang">SQLITE</span><span>编译产物</span><div class="sp"></div>
+            <div class="scope derived">
+              <div class="scope-bar"><span class="lang">SQLITE</span>
+                <span class="drv-tag">派生 · 只读</span>
+                <div class="sp"></div>
                 <button style="color:var(--void-ink-2);font-family:var(--f-mono);font-size:10.5px">复制</button></div>
 <pre><span class="k">SELECT</span>
   __u.name                              <span class="k">AS</span> user_name,
