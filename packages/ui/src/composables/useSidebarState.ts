@@ -2,7 +2,8 @@
 // 通过模块级 ref 共享同一实例，并在切换时持久化到 localStorage。
 import { ref } from 'vue';
 
-const STORAGE_KEY = 'yz:sidenav:collapsed';
+// v2：导航重构后（分组 + AI 能力入口）默认展开，旧折叠态不再沿用，避免用户看到"和之前一样"的图标条
+const STORAGE_KEY = 'yz:sidenav:collapsed:v2';
 
 // 读取初始值：'1' 表示折叠，其它（含 null / SSR 环境）表示展开
 function readInitial(): boolean {

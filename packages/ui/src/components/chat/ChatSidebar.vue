@@ -2,7 +2,7 @@
   <aside class="sidebar">
     <div class="sidebar-tabs">
       <div class="sb-tab" :class="{ active: sideTab === 'chat' }" @click="sideTab = 'chat'">
-        <el-icon><ChatDotRound /></el-icon> 对话
+        <el-icon><ChatDotRound /></el-icon> 会话
       </div>
       <div class="sb-tab" :class="{ active: sideTab === 'task' }" @click="sideTab = 'task'">
         <el-icon><Timer /></el-icon> 定时任务
@@ -25,7 +25,7 @@
           <div class="tree-node-head" @click="toggleRootCollapse">
             <el-icon class="tree-caret" :class="{ expanded: !rootCollapsed }"><CaretRight /></el-icon>
             <el-icon class="tree-node-icon"><ChatDotRound /></el-icon>
-            <span class="tree-node-label">任务</span>
+            <span class="tree-node-label">会话</span>
             <span class="tree-count">{{ rootConversations.length }}</span>
             <el-icon class="tree-add-icon" @click.stop="startNewChat(null)"><Plus /></el-icon>
           </div>

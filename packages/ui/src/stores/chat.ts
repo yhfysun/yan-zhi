@@ -118,6 +118,21 @@ export interface ConfirmationAnswer {
   supplement?: string;
 }
 
+// ===== 右栏多 tab 数据模型（Phase B1）=====
+// 替换旧三态互斥模型（rightPanelTab 单枚举 + previewingFile 单值）：
+// 旧模型物理上无法同时打开 2 个文件。新模型 previewTabs[] 并存 + activeTabId 激活。
+// file tab 可多开（按 path 幂等）；browser/git 为单例（内容组件单实例，浏览器内部自管多 tab）。
+export type PreviewTabKind = 'file' | 'browser' | 'git';
+export interface PreviewTab {
+  id: string;
+  kind: PreviewTabKind;
+  name: string;        // tab 标题（browser 实际标题渲染时优先取 currentBrowserUrl 的 hostname）
+  path?: string;       // file：文件绝对路径（幂等 key）
+  url?: string;        // browser：打开时的初始 URL
+  repoPath?: string;   // git：仓库路径
+  createdAt: number;
+}
+
 export interface PendingConfirmation {
   title: string;
   pages: ConfirmationPage[];
@@ -174,15 +189,66 @@ export const useChatStore = defineStore('chat', () => {
   const mcpToolAliases = ref<Record<string, Record<string, string>>>({});
   // E11: 浏览器面板步骤日志 —— dispatchToolCall 中 browser_* 工具执行后推送
   const browserSteps = ref<Array<{ action: string; result: string; time: number }>>([]);
-  // 右侧预览面板是否展开；默认收起（初始无预览内容，选文件/Agent开浏览器时自动展开）
-  const rightPanelOpen = ref(false);
+  // 右侧预览面板是否展开；默认**打开**（首次进入聊天页即可见到右栏，不再需要手动点开）
+  // 老逻辑：ref(false)，新用户进 chat 页看到一片空白区，体验差
+  const rightPanelOpen = ref(true);
   // 文件管理弹窗（el-dialog）是否显示——左侧栏「文件管理」按钮触发
   const showFilePopup = ref(false);
-  // 右侧预览面板（即"预览窗口"）当前展示内容：'file' = 文件预览，'browser' = 网站/Agent页面预览
-  const rightPanelTab = ref<'file' | 'browser' | 'git'>('file');
-  // 右侧预览面板正在预览的文件（点击文件管理弹窗中的文件后设置）
-  const previewingFile = ref<{ name: string; path: string } | null>(null);
-  // 右侧预览面板当前网站 tab 标题的原始 URL（BrowserPanel 写入），用于在 tab header 上展示「真实打开的网站名」
+  // ===== 多 tab 数据模型（Phase B1）：previewTabs 并存 + activeTabId 激活 =====
+  const previewTabs = ref<PreviewTab[]>([]);
+  const activeTabId = ref<string | null>(null);
+  let previewTabSeq = 0;
+  const activeTab = computed<PreviewTab | null>(
+    () => previewTabs.value.find((t) => t.id === activeTabId.value) || null,
+  );
+
+  /** 打开（或激活已存在的）预览 tab。file 按 path 幂等复用；browser/git 单例复用 */
+  function openTab(tab: Omit<PreviewTab, 'id' | 'createdAt'>): string {
+    const existing =
+      tab.kind === 'file' && tab.path
+        ? previewTabs.value.find((t) => t.kind === 'file' && t.path === tab.path)
+        : previewTabs.value.find((t) => t.kind === tab.kind);
+    if (existing) {
+      activeTabId.value = existing.id;
+      rightPanelOpen.value = true;
+      return existing.id;
+    }
+    const id = 'pv-' + ++previewTabSeq;
+    previewTabs.value.push({ ...tab, id, createdAt: Date.now() });
+    activeTabId.value = id;
+    rightPanelOpen.value = true;
+    return id;
+  }
+  /** 激活指定 tab（id 不存在时 no-op） */
+  function activatePreviewTab(id: string) {
+    if (previewTabs.value.some((t) => t.id === id)) {
+      activeTabId.value = id;
+      rightPanelOpen.value = true;
+    }
+  }
+  /** 关闭 tab；关的是激活项则激活左邻 → 右邻 → 无 */
+  function closePreviewTab(id: string) {
+    const idx = previewTabs.value.findIndex((t) => t.id === id);
+    if (idx < 0) return;
+    previewTabs.value.splice(idx, 1);
+    if (activeTabId.value === id) {
+      const next = previewTabs.value[idx - 1] || previewTabs.value[idx] || null;
+      activeTabId.value = next ? next.id : null;
+    }
+  }
+  /** 全部关闭（面板保持展开，内容区显示空态） */
+  function closeAllPreviewTabs() {
+    previewTabs.value = [];
+    activeTabId.value = null;
+  }
+
+  // ===== 兼容层：旧三态字段改为派生只读（迁移期读取点不改可跑通）=====
+  const rightPanelTab = computed<'file' | 'browser' | 'git'>(() => activeTab.value?.kind || 'file');
+  const previewingFile = computed<{ name: string; path: string } | null>(() => {
+    const t = activeTab.value;
+    return t && t.kind === 'file' && t.path ? { name: t.name, path: t.path } : null;
+  });
+  // currentBrowserUrl 保持可写（BrowserPanel 写入更新标题 / browser_navigate 写入触发导航）
   const currentBrowserUrl = ref('');
 
 
@@ -734,8 +800,10 @@ export const useChatStore = defineStore('chat', () => {
           if (!rawUrl) return { ok: false, msg: 'browser_navigate 缺少 url 参数' };
           // 规范化：非 http 开头补 https://（与 BrowserPanel 一致）
           const target = /^https?:\/\//i.test(rawUrl) ? rawUrl : 'https://' + rawUrl;
-          rightPanelOpen.value = true;
-          rightPanelTab.value = 'browser';
+          // 多 tab 模型：打开（或激活）browser tab；currentBrowserUrl 由 BrowserPanel watch 触发导航
+          let host = target;
+          try { host = new URL(target).hostname; } catch { /* keep raw */ }
+          openTab({ kind: 'browser', name: host, url: target });
           currentBrowserUrl.value = target; // BrowserPanel watch 到后 openSite 导航
           browserSteps.value.push({ action: 'browser_navigate', result: `已在预览面板打开 ${target}`, time: Date.now() });
           return { ok: true, result: `已在预览浏览器打开 ${target}` };
@@ -1601,6 +1669,8 @@ export const useChatStore = defineStore('chat', () => {
     runningToolCallIds, isToolCallRunning,
     browserSteps, rightPanelOpen,
     showFilePopup, previewingFile, rightPanelTab, currentBrowserUrl,
+    previewTabs, activeTabId, activeTab,
+    openTab, activatePreviewTab, closePreviewTab, closeAllPreviewTabs,
     pendingQuestion, pendingConfirmation, pendingPlatformConfig, submitPendingQuestion,
     submitPendingConfirmation, skipPendingConfirmation, cancelPendingConfirmation,
     submitPlatformConfig, cancelPlatformConfig,

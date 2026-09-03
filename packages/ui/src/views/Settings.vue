@@ -152,11 +152,11 @@ const tab = ref('general');
 const fileInput = ref<HTMLInputElement | null>(null);
 
 const themes: Array<{ value: ThemeName; label: string; color: string }> = [
-  { value: 'ocean', label: 'Ocean', color: '#3B82F6' },
-  { value: 'forest', label: 'Forest', color: '#10B981' },
-  { value: 'sunset', label: 'Sunset', color: '#F59E0B' },
-  { value: 'aurora', label: 'Aurora', color: '#7C3AED' },
-  { value: 'rose', label: 'Rose', color: '#EC4899' },
+  { value: 'cinnabar', label: '朱砂', color: '#C2410C' },
+  { value: 'ink', label: '松烟', color: '#57534E' },
+  { value: 'indigo', label: '靛青', color: '#2C4A6E' },
+  { value: 'pine', label: '松绿', color: '#2F6B4F' },
+  { value: 'clay', label: '陶土', color: '#B05A45' },
 ];
 
 const darkMode = ref(settingsStore.settings.darkMode);

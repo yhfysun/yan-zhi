@@ -79,7 +79,7 @@ interface PlanetInfo {
 
 const PLANETS: PlanetInfo[] = [
   { name: '太阳', emoji: '☀️', color: '#FDB813', description: '言智的核心——语言可控的智能体平台，所有管理功能均可通过自然语言操控。', feature: '应用核心' },
-  { name: '水星', emoji: '💬', color: '#A0826D', description: '流式对话、Markdown 渲染、多会话管理、工具调用可视化、思考链展示。', feature: '聊天工作台', route: '/chat' },
+  { name: '水星', emoji: '💬', color: '#A0826D', description: '流式对话、Markdown 渲染、多会话管理、工具调用可视化、思考链展示。', feature: '任务', route: '/chat' },
   { name: '金星', emoji: '⚙️', color: '#E8C39E', description: 'OpenAI 与 Anthropic 双协议配置，模型自动拉取、连通性测试、健康检查。', feature: '模型平台', route: '/models' },
   { name: '地球', emoji: '🌍', color: '#4A90D9', description: '应用的门面——首页太阳系探索。点击查看真实地球地图，点击国家查询信息。', feature: '首页', route: '/home', isEarth: true },
   { name: '火星', emoji: '🔧', color: '#CD5C5C', description: '内置工具 + 自定义 JS 沙箱工具 + 同源商城工具，统一 CustomTool 协议。', feature: '工具管理', route: '/tools' },

@@ -3,12 +3,6 @@
 
     <!-- 内容区域 -->
     <div class="app-body">
-      <div v-if="!isDesktop" class="bg-orbs">
-        <div class="bg-orb orb-1"></div>
-        <div class="bg-orb orb-2"></div>
-        <div class="bg-orb orb-3"></div>
-      </div>
-
       <template v-if="$route.name === 'login' || $route.name === 'license'">
         <main class="main-content full">
           <router-view />
@@ -127,8 +121,8 @@ function toggleTheme() {
 
 const ROUTE_TITLES: Record<string, string> = {
   home: '首页',
-  chat: '对话',
-  'chat-hub': '聊天',
+  chat: '任务',
+  'chat-hub': '消息',
   peers: '客户端节点',
   connections: 'IM 连接',
   knowledge: '知识库',
@@ -153,46 +147,63 @@ authStore.loadUser();
 
 <style>
 :root {
-  --glass-bg: rgba(255, 255, 255, 0.72);
-  --glass-bg-hover: rgba(255, 255, 255, 0.85);
-  --glass-border: rgba(15, 23, 42, 0.08);
-  --glass-border-strong: rgba(15, 23, 42, 0.12);
-  --glass-blur: 16px;
-  --glass-saturate: 180%;
-  --glass-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
-  --color-primary: #7C3AED;
-  --color-primary-light: #EDE9FE;
-  --color-primary-dark: #5B21B6;
-  --color-accent: #EC4899;
-  --color-success: #22c55e;
-  --color-warning: #f59e0b;
-  --color-danger: #ef4444;
-  /* Element Plus theme — keep aligned with brand purple so el-input/textarea/select focus rings match */
-  --el-color-primary: #7C3AED;
-  --el-color-primary-light-3: #A78BFA;
-  --el-color-primary-light-5: #C4B5FD;
-  --el-color-primary-light-7: #DDD6FE;
-  --el-color-primary-light-8: #EDE9FE;
-  --el-color-primary-light-9: #F5F3FF;
-  --el-color-primary-dark-2: #5B21B6;
-  --color-bg: #f8fafc;
-  --color-text: #1e293b;
-  --color-text-secondary: #64748b;
-  --gradient-primary: linear-gradient(135deg, #7C3AED, #EC4899);
-  --orb-1-color: #7C3AED;
-  --orb-2-color: #A78BFA;
-  --orb-3-color: #EC4899;
-  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.06);
-  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08);
-  --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.12);
-  --radius-sm: 8px;
-  --radius-md: 12px;
-  --radius-lg: 16px;
-  --radius-xl: 20px;
+  /* ===== 中性纸墨骨架：背景/文字/边框不绑定主题色，切主题只换强调色，全局不突兀 ===== */
+  --color-bg: #F7F5F0;
+  --color-surface: #FFFFFF;
+  --color-surface-hover: #F1EFE9;
+  --color-border: #E7E4DC;
+  --color-border-strong: #D8D5CC;
+  --color-text: #1A1A1A;
+  --color-text-secondary: #6B6B66;
+  --color-text-tertiary: #9C9B94;
+
+  /* 兼容旧玻璃变量名（组件大量引用），改为实色纸面，去除 backdrop-blur */
+  --glass-bg: #FFFFFF;
+  --glass-bg-hover: #F1EFE9;
+  --glass-border: #E7E4DC;
+  --glass-border-strong: #D8D5CC;
+  --glass-blur: 0px;
+  --glass-saturate: 100%;
+  --glass-filter: none;
+
+  /* 字体三套：宋体 display / 无衬线 body / 等宽数据 */
+  --font-display: "Songti SC", "Noto Serif SC", "Source Han Serif SC", "SimSun", Georgia, serif;
+  --font-body: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", Roboto, sans-serif;
+  --font-mono: "JetBrains Mono", "SF Mono", ui-monospace, "Cascadia Code", Consolas, monospace;
+
+  /* 主题色（applyTheme 运行时覆盖，这里为默认「朱砂」） */
+  --color-primary: #C2410C;
+  --color-primary-light: #FBEBDD;
+  --color-primary-dark: #7C2D12;
+  --color-accent: #B45309;
+  --color-success: #2F6B4F;
+  --color-warning: #B45309;
+  --color-danger: #B91C1C;
+
+  /* Element Plus theme — 中性对齐，applyTheme 会同步主色 */
+  --el-color-primary: #C2410C;
+  --el-color-primary-light-3: #D97757;
+  --el-color-primary-light-5: #E5A48B;
+  --el-color-primary-light-7: #F0C9B8;
+  --el-color-primary-light-8: #F6DDD0;
+  --el-color-primary-light-9: #FBEBDD;
+  --el-color-primary-dark-2: #7C2D12;
+
+  --gradient-primary: linear-gradient(135deg, #C2410C, #B45309);
+
+  /* 阴影：极轻，去 slop 的浮起感 */
+  --shadow-sm: 0 1px 2px rgba(26, 26, 26, 0.04);
+  --shadow-md: 0 2px 8px rgba(26, 26, 26, 0.06);
+  --shadow-lg: 0 8px 24px rgba(26, 26, 26, 0.10);
+
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 18px;
   --scrollbar-size: 8px;
-  --scrollbar-thumb: rgba(15, 23, 42, 0.18);
-  --scrollbar-thumb-hover: rgba(15, 23, 42, 0.32);
-  --scrollbar-thumb-active: rgba(15, 23, 42, 0.45);
+  --scrollbar-thumb: rgba(26, 26, 26, 0.16);
+  --scrollbar-thumb-hover: rgba(26, 26, 26, 0.28);
+  --scrollbar-thumb-active: rgba(26, 26, 26, 0.40);
 
   /* Responsive breakpoints (min-width values, unitless for calc) */
   --bp-xs: 0;
@@ -211,54 +222,71 @@ authStore.loadUser();
 }
 
 [data-theme="dark"] {
-  --glass-bg: rgba(24, 26, 36, 0.78);
-  --glass-bg-hover: rgba(36, 38, 50, 0.88);
-  --glass-border: rgba(255, 255, 255, 0.07);
-  --glass-border-strong: rgba(255, 255, 255, 0.11);
-  --color-bg: #0f1117;
-  --color-text: #e2e8f0;
-  --color-text-secondary: #94a3b8;
-  --scrollbar-thumb: rgba(255, 255, 255, 0.2);
-  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.36);
-  --scrollbar-thumb-active: rgba(255, 255, 255, 0.5);
-  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.3);
-  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
-  --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.5);
-  --el-bg-color: #181a24;
-  --el-bg-color-overlay: #20222e;
-  --el-bg-color-page: #1b1d27;
-  --el-fill-color-blank: #1b1d27;
-  --el-fill-color: #2a2c38;
-  --el-fill-color-light: #2a2c38;
-  --el-border-color: #343644;
-  --el-border-color-light: #2e303c;
-  --el-border-color-lighter: #292b36;
-  --el-text-color-primary: #e2e8f0;
-  --el-text-color-regular: #cbd5e1;
-  --el-text-color-secondary: #94a3b8;
-  --el-text-color-placeholder: #6b7280;
-  --el-mask-color: rgba(15, 17, 23, 0.5);
-  --el-color-primary: #7C3AED;
-  --el-color-primary-light-3: #6d28d9;
-  --el-color-primary-light-5: #5b21b6;
-  --el-color-primary-light-7: #4c1d95;
-  --el-color-primary-light-8: #3b1876;
-  --el-color-primary-light-9: rgba(124, 58, 237, 0.15);
-  --el-color-primary-dark-2: #5B21B6;
-  --el-color-success: #67c23a;
-  --el-color-success-light-9: rgba(103, 194, 58, 0.15);
-  --el-color-warning: #e6a23c;
-  --el-color-warning-light-9: rgba(230, 162, 60, 0.15);
-  --el-color-danger: #f56c6c;
-  --el-color-danger-light-9: rgba(245, 108, 108, 0.15);
-  --el-fill-color-dark: #343644;
+  --color-bg: #141414;
+  --color-surface: #1D1D1C;
+  --color-surface-hover: #262624;
+  --color-border: #2A2A28;
+  --color-border-strong: #3A3A37;
+  --color-text: #ECEAE4;
+  --color-text-secondary: #9A9A92;
+  --color-text-tertiary: #6F6F68;
+
+  --glass-bg: #1D1D1C;
+  --glass-bg-hover: #262624;
+  --glass-border: #2A2A28;
+  --glass-border-strong: #3A3A37;
+  --glass-filter: none;
+
+  --color-primary: #D97757;
+  --color-primary-light: rgba(217, 119, 87, 0.16);
+  --color-primary-dark: #C2410C;
+  --color-accent: #D97757;
+  --color-success: #4A8571;
+  --color-warning: #C07A5C;
+  --color-danger: #C25B4E;
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.5);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.6);
+  --scrollbar-thumb: rgba(255, 255, 255, 0.18);
+  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.32);
+  --scrollbar-thumb-active: rgba(255, 255, 255, 0.46);
+
+  --el-bg-color: #1D1D1C;
+  --el-bg-color-overlay: #262624;
+  --el-bg-color-page: #141414;
+  --el-fill-color-blank: #1D1D1C;
+  --el-fill-color: #2A2A28;
+  --el-fill-color-light: #2A2A28;
+  --el-border-color: #3A3A37;
+  --el-border-color-light: #33332F;
+  --el-border-color-lighter: #2A2A28;
+  --el-text-color-primary: #ECEAE4;
+  --el-text-color-regular: #D6D4CE;
+  --el-text-color-secondary: #9A9A92;
+  --el-text-color-placeholder: #6F6F68;
+  --el-mask-color: rgba(0, 0, 0, 0.5);
+  --el-color-primary: #D97757;
+  --el-color-primary-light-3: #C2603A;
+  --el-color-primary-light-5: #A84F2D;
+  --el-color-primary-light-7: #8E4022;
+  --el-color-primary-light-8: #7C2D12;
+  --el-color-primary-light-9: rgba(217, 119, 87, 0.16);
+  --el-color-primary-dark-2: #C2410C;
+  --el-color-success: #4A8571;
+  --el-color-success-light-9: rgba(74, 133, 113, 0.16);
+  --el-color-warning: #C07A5C;
+  --el-color-warning-light-9: rgba(192, 122, 92, 0.16);
+  --el-color-danger: #C25B4E;
+  --el-color-danger-light-9: rgba(194, 91, 78, 0.16);
+  --el-fill-color-dark: #33332F;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html, body, #app { height: 100%; }
 
 body {
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-family: var(--font-body);
   font-size: clamp(14px, 1vw + 8px, 16px);
   color: var(--color-text);
   background: var(--color-bg);
@@ -296,25 +324,6 @@ body {
   grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
   gap: 10px;
 }
-
-.bg-orbs { position: fixed; inset: 0; z-index: 0; pointer-events: none; overflow: hidden; }
-.bg-orb {
-  position: absolute; border-radius: 50%; filter: blur(60px);
-  opacity: 0.35; animation: float 20s ease-in-out infinite;
-}
-[data-theme="dark"] .bg-orb { opacity: 0.15; }
-
-.orb-1 { width: 400px; height: 400px; background: var(--orb-1-color); top: -100px; left: -100px; }
-.orb-2 { width: 350px; height: 350px; background: var(--orb-2-color); bottom: -80px; right: -80px; animation-delay: -7s; }
-.orb-3 { width: 300px; height: 300px; background: var(--orb-3-color); top: 40%; left: 50%; animation-delay: -14s; }
-
-@keyframes float {
-  0%, 100% { transform: translate(0, 0) scale(1); }
-  33% { transform: translate(30px, -30px) scale(1.05); }
-  66% { transform: translate(-20px, 20px) scale(0.95); }
-}
-
-@media (prefers-reduced-motion: reduce) { .bg-orb { animation: none !important; } }
 
 .main-content { flex: 1; overflow: hidden; position: relative; z-index: 1; margin-left: 52px; padding-right: 52px; display: flex; flex-direction: column; min-height: 0; }
 .main-content.full { overflow: visible; margin-left: 0; }
@@ -381,8 +390,8 @@ body {
 
 /* Global Element Plus overrides */
 .el-button { font-weight: 500; letter-spacing: 0.01em; transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1); }
-.el-button:hover { transform: translateY(-1px); box-shadow: var(--shadow-md); }
-.el-button:active { transform: translateY(0); }
+.el-button:hover { filter: brightness(1.03); }
+.el-button:active { filter: brightness(0.97); }
 .el-button:not(.el-button--text):not(.el-button--primary):not(.el-button--success):not(.el-button--warning):not(.el-button--danger) {
   background: rgba(15,23,42,0.04); border-color: transparent;
 }
@@ -428,9 +437,9 @@ body {
   -webkit-backdrop-filter: var(--glass-filter);
   border: 1px solid var(--glass-border);
   border-radius: var(--radius-md);
-  transition: transform 0.2s ease, box-shadow 0.2s ease;
+  transition: border-color 0.2s ease;
 }
-.glass-card:hover { transform: translateY(-2px); box-shadow: var(--shadow-md); }
+.glass-card:hover { border-color: var(--glass-border-strong); }
 
 /* Scrollbar — 统一细圆角样式：透明轨道、轻量滑块，hover/active 逐步加深 */
 /* Firefox 单独处理：Chromium 一旦设置 scrollbar-width/color 会改用原生滚动条，导致圆角失效 */
@@ -579,10 +588,7 @@ body {
   .el-button:not(.el-button--small):not(.el-button--text) { min-height: 40px; }
   .el-radio, .el-checkbox { min-height: 28px; }
 
-  /* Hide decorative orbs on mobile — they bleed through translucent surfaces and look messy */
-  .bg-orbs { display: none; }
-
-  /* Solid page background so no orb/glass shows through */
+  /* Solid page background */
   .page { background: var(--color-bg); }
 
   /* Solid glass-tabs on mobile (used by Settings) */

@@ -38,9 +38,7 @@ function formatTime(t: number | string | undefined): string {
 /** 点击卡片即预览 */
 function preview(f: ConversationFile) {
   const store = useChatStore();
-  store.previewingFile = { name: f.name, path: f.path };
-  store.rightPanelTab = 'file';
-  store.rightPanelOpen = true;
+  store.openTab({ kind: 'file', name: f.name, path: f.path });
   store.showFilePopup = false;
 }
 

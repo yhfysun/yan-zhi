@@ -380,9 +380,17 @@ function createChat() {
     if (!u) return '网站';
     try { return new URL(u).hostname || u; } catch { return u; }
   });
+  // browserSteps 首次出现：确保 browser tab 存在并展开面板（browser_navigate 桥接已自带 openTab，
+  // 此处兜底其他 browser_* 工具只 push step 不开 tab 的场景）
   watch(() => store.browserSteps.length, (n, o) => {
-    if (o === 0 && n > 0) store.rightPanelTab = 'browser';
-    else if (n === 0 && store.rightPanelTab === 'browser') store.rightPanelTab = 'file';
+    if (o === 0 && n > 0) {
+      if (!store.previewTabs.some((t) => t.kind === 'browser')) {
+        store.openTab({ kind: 'browser', name: '浏览器', url: '' });
+      } else {
+        store.rightPanelOpen = true;
+      }
+    }
+    // n===0 时不强制切回 file，避免清空时面板闪一下；保留当前 tab（默认 file/git）
   });
   // 桌面端：右侧面板开合 / tab 切换与原生 BrowserView 图层联动，避免关闭面板后即梦页面仍浮在窗口上
   watch(() => store.rightPanelOpen, (open) => {
@@ -399,7 +407,6 @@ function createChat() {
     store.rightPanelOpen = false;
   }
   function toggleRightPanel() {
-    if (!store.rightPanelOpen && !browserActive.value) store.rightPanelTab = 'file';
     store.rightPanelOpen = !store.rightPanelOpen;
   }
 
@@ -556,8 +563,8 @@ function createChat() {
       const gitStore = useGitStore();
       await gitStore.checkCapability();
       if (gitStore.supported) {
-        store.rightPanelTab = 'git';
-        store.rightPanelOpen = true;
+        const repoName = path.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || 'Git';
+        store.openTab({ kind: 'git', name: repoName, repoPath: path });
       }
     } catch {
       /* git 不可用时忽略 */
@@ -568,9 +575,10 @@ function createChat() {
   async function clearWorkspaceDir() {
     await settingsStore.update({ workspaceDir: '' });
     await pushWorkspaceDir('');
-    // 清除后若 Git 面板正开着则收起，避免指向不存在的目录
+    // 清除后若 Git tab 正开着则关掉，避免指向不存在的目录
     try {
-      if (store.rightPanelTab === 'git') store.rightPanelOpen = false;
+      const gitTab = store.previewTabs.find((t) => t.kind === 'git');
+      if (gitTab) store.closePreviewTab(gitTab.id);
     } catch {
       /* ignore */
     }
@@ -679,9 +687,10 @@ function createChat() {
       const href = a.getAttribute('href') || '';
       if (/^https?:\/\//i.test(href)) {
         e.preventDefault();
-        store.rightPanelOpen = true;
-        store.rightPanelTab = 'browser';
-        // 先置空再设，确保 BrowserPanel 的 watch currentBrowserUrl 触发（重复点同一链接也能重新导航）
+        // 打开（或激活）browser tab；先置空再设，确保 BrowserPanel 的 watch currentBrowserUrl 触发（重复点同一链接也能重新导航）
+        let host = href;
+        try { host = new URL(href).hostname || href; } catch { /* keep raw */ }
+        store.openTab({ kind: 'browser', name: host, url: href });
         if (store.currentBrowserUrl === href) store.currentBrowserUrl = '';
         nextTick(() => { store.currentBrowserUrl = href; });
       }
@@ -1014,9 +1023,7 @@ function createChat() {
   ];
 
   function previewInPopup(f: any) {
-    store.previewingFile = { name: f.name, path: f.path };
-    store.rightPanelTab = 'file';
-    store.rightPanelOpen = true;
+    store.openTab({ kind: 'file', name: f.name, path: f.path });
   }
 
   async function showConvFileMenu(e: MouseEvent, f: any) {
@@ -1571,9 +1578,7 @@ function createChat() {
 
   async function previewFile(f: { name: string; path: string; isDir: boolean }) {
     if (f.isDir) return;
-    store.previewingFile = { name: f.name, path: f.path };
-    store.rightPanelTab = 'file';
-    store.rightPanelOpen = true;
+    store.openTab({ kind: 'file', name: f.name, path: f.path });
     store.showFilePopup = false;
   }
 

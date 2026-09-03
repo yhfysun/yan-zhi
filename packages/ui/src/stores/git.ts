@@ -11,6 +11,17 @@ export interface GitFileNode {
   size?: number;
 }
 
+export interface GitNumstatEntry {
+  path: string;
+  added: number;
+  deleted: number;
+}
+
+export interface GitAheadBehind {
+  ahead: number;
+  behind: number;
+}
+
 export const useGitStore = defineStore('git', () => {
   const supported = ref(false);
   const status = ref<Record<string, unknown> | null>(null);
@@ -85,6 +96,34 @@ export const useGitStore = defineStore('git', () => {
     return api.post('/git/restore', { repo, files });
   }
 
+  async function fetchNumstat(repo: string): Promise<GitNumstatEntry[]> {
+    const res = await api.get<GitNumstatEntry[]>(`/git/numstat?repo=${encodeURIComponent(repo)}`);
+    return 'data' in res ? res.data : [];
+  }
+
+  async function fetchAheadBehind(repo: string, branch?: string): Promise<GitAheadBehind> {
+    const q = branch ? `&branch=${encodeURIComponent(branch)}` : '';
+    const res = await api.get<GitAheadBehind>(`/git/aheadBehind?repo=${encodeURIComponent(repo)}${q}`);
+    return 'data' in res ? res.data : { ahead: 0, behind: 0 };
+  }
+
+  async function fetchTree(repo: string): Promise<Array<{ path: string; type: 'file' }>> {
+    const res = await api.get<Array<{ path: string; type: 'file' }>>(`/git/lsTree?repo=${encodeURIComponent(repo)}`);
+    return 'data' in res ? res.data : [];
+  }
+
+  async function stageFiles(repo: string, files: string[]) {
+    return api.post('/git/add', { repo, files });
+  }
+
+  async function unstageFiles(repo: string, files: string[]) {
+    return api.post('/git/unstage', { repo, files });
+  }
+
+  async function createBranch(repo: string, name: string) {
+    return api.post('/git/createBranch', { repo, name });
+  }
+
   return {
     supported,
     status,
@@ -105,5 +144,11 @@ export const useGitStore = defineStore('git', () => {
     push,
     checkout,
     restore,
+    fetchNumstat,
+    fetchAheadBehind,
+    fetchTree,
+    stageFiles,
+    unstageFiles,
+    createBranch,
   };
 });

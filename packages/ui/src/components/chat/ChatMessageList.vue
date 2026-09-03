@@ -413,8 +413,8 @@ function detectGitPath(text: unknown): string | null {
 function openInGit(path: string) {
   const settingsStore = useSettingsStore();
   settingsStore.update({ workspaceDir: path });
-  store.rightPanelTab = 'git';
-  store.rightPanelOpen = true;
+  const repoName = path.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || 'Git';
+  store.openTab({ kind: 'git', name: repoName, repoPath: path });
 }
 
 function renderAssistantMarkdown(content?: string) {

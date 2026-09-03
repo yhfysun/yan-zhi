@@ -52,6 +52,9 @@ import {
   Files,
   Box,
   Promotion,
+  Collection,
+  Memo,
+  MagicStick,
   Close,
 } from '@element-plus/icons-vue';
 import {
@@ -79,7 +82,10 @@ const builtinSections: SettingsSection[] = [
   { section: 'mcp', label: 'MCP 服务', icon: Connection },
   { section: 'tools', label: '工具管理', icon: Suitcase },
   { section: 'skills', label: 'Skill 商店', icon: Files },
+  { section: 'distill', label: 'Skill 蒸馏', icon: MagicStick },
   { section: 'agents', label: '智能体', icon: Box },
+  { section: 'knowledge', label: '知识库', icon: Collection },
+  { section: 'memory', label: '记忆管理', icon: Memo },
 
   { section: 'connections', label: 'IM 连接', icon: Promotion },
   { section: 'plugins', label: '插件管理', icon: Box },
@@ -101,7 +107,10 @@ const builtinComponents: Record<string, ReturnType<typeof defineAsyncComponent>>
   mcp: defineAsyncComponent(() => import('../views/Mcp.vue')),
   tools: defineAsyncComponent(() => import('../views/ToolMarket.vue')),
   skills: defineAsyncComponent(() => import('../views/skill-market/LocalSkillMarket.vue')),
+  distill: defineAsyncComponent(() => import('../views/SkillDistill.vue')),
   agents: defineAsyncComponent(() => import('../views/Agents.vue')),
+  knowledge: defineAsyncComponent(() => import('../views/Knowledge.vue')),
+  memory: defineAsyncComponent(() => import('../components/memory/MemoryManage.vue')),
 
   connections: defineAsyncComponent(() => import('../views/Connections.vue')),
   plugins: defineAsyncComponent(() => import('./plugin/PluginManager.vue')),

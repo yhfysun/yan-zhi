@@ -1,23 +1,26 @@
 <template>
-  <!-- 桌面平台：可折叠带标签侧栏 -->
+  <!-- 桌面平台：可折叠带标签侧栏（分组导航） -->
   <nav v-if="isDesktop" class="side-nav side-nav-desktop" :class="{ collapsed }">
     <div class="nav-top">
-      <template v-for="item in navItems" :key="item.path">
-        <el-tooltip
-          :content="item.label"
-          placement="right"
-          :show-after="400"
-          :disabled="!collapsed"
-        >
-          <router-link v-if="item.kind === 'route'" :to="item.path" class="nav-item" :class="{ active: isActive(item.path) }">
-            <el-icon :size="20"><component :is="item.icon" /></el-icon>
-            <span class="nav-label">{{ item.label }}</span>
-          </router-link>
-          <button v-else type="button" class="nav-item" @click="openSettingsDrawer('general')">
-            <el-icon :size="20"><component :is="item.icon" /></el-icon>
-            <span class="nav-label">{{ item.label }}</span>
-          </button>
-        </el-tooltip>
+      <template v-for="g in navGroups" :key="g.label">
+        <div v-if="!collapsed" class="nav-group-label">{{ g.label }}</div>
+        <template v-for="item in g.items" :key="item.path">
+          <el-tooltip
+            :content="item.label"
+            placement="right"
+            :show-after="400"
+            :disabled="!collapsed"
+          >
+            <router-link v-if="item.kind === 'route'" :to="item.path" class="nav-item" :class="{ active: isActive(item.path) }">
+              <el-icon :size="20"><component :is="item.icon" /></el-icon>
+              <span class="nav-label">{{ item.label }}</span>
+            </router-link>
+            <button v-else type="button" class="nav-item" @click="openSettingsDrawer('general')">
+              <el-icon :size="20"><component :is="item.icon" /></el-icon>
+              <span class="nav-label">{{ item.label }}</span>
+            </button>
+          </el-tooltip>
+        </template>
       </template>
     </div>
 
@@ -32,6 +35,14 @@
             <div class="user-dropdown-header">
               <span class="user-dropdown-name">{{ authStore.user?.username }}</span>
             </div>
+            <el-dropdown-item @click="openSettingsDrawer('general')">
+              <el-icon><Setting /></el-icon>
+              <span>设置</span>
+            </el-dropdown-item>
+            <el-dropdown-item @click="openSettingsDrawer('memory')">
+              <el-icon><Collection /></el-icon>
+              <span>记忆管理</span>
+            </el-dropdown-item>
             <el-dropdown-item v-if="!isElectron" divided @click="authStore.logout()">
               <el-icon><SwitchButton /></el-icon>
               <span>退出登录</span>
@@ -88,6 +99,14 @@
             <div class="user-dropdown-header">
               <span class="user-dropdown-name">{{ authStore.user?.username }}</span>
             </div>
+            <el-dropdown-item @click="openSettingsDrawer('general')">
+              <el-icon><Setting /></el-icon>
+              <span>设置</span>
+            </el-dropdown-item>
+            <el-dropdown-item @click="openSettingsDrawer('memory')">
+              <el-icon><Collection /></el-icon>
+              <span>记忆管理</span>
+            </el-dropdown-item>
             <el-dropdown-item divided @click="authStore.logout()">
               <el-icon><SwitchButton /></el-icon>
               <span>退出登录</span>
@@ -131,7 +150,7 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import { useRoute } from 'vue-router';
-import { ChatDotRound, Setting, User, SwitchButton, Fold, Expand, Monitor, ChatLineRound, Collection, Moon, Sunny, HomeFilled, MagicStick, Promotion } from '@element-plus/icons-vue';
+import { ChatDotRound, Setting, User, SwitchButton, Fold, Expand, Monitor, Collection, Moon, Sunny, HomeFilled, Promotion } from '@element-plus/icons-vue';
 import { useAuthStore } from '../stores/auth';
 import { useSettingsStore } from '../stores/settings';
 import { useIsMobile } from '../composables/useIsMobile';
@@ -149,15 +168,21 @@ const isMobile = useIsMobile();
 const { isDesktop } = usePlatform();
 const { collapsed, toggle } = useSidebarState();
 
-const builtinNavItems = [
-  { path: '/home', label: '首页', tabLabel: '首页', icon: HomeFilled, kind: 'route' },
-  { path: '/chat', label: '任务', tabLabel: '任务', icon: ChatDotRound, kind: 'route' },
-  { path: '/peers', label: '聊天', tabLabel: '聊天', icon: ChatLineRound, kind: 'route' },
-  { path: '/chat-hub', label: '消息', tabLabel: '消息', icon: Promotion, kind: 'route' },
-  { path: '/knowledge', label: '知识库', tabLabel: '知识', icon: Collection, kind: 'route' },
-  { path: '/browser', label: '浏览器', tabLabel: '浏览器', icon: Monitor, kind: 'route' },
-  { path: '/distill', label: 'Skill 蒸馏', tabLabel: '蒸馏', icon: MagicStick, kind: 'route' },
-  { path: '', label: '设置', tabLabel: '设置', icon: Setting, kind: 'settings' },
+interface NavItem {
+  path: string;
+  label: string;
+  tabLabel?: string;
+  icon: any;
+  kind: 'route' | 'settings';
+  group: string;
+}
+
+const builtinNavItems: NavItem[] = [
+  { path: '/home', label: '首页', tabLabel: '首页', icon: HomeFilled, kind: 'route', group: '工作台' },
+  { path: '/chat', label: '任务', tabLabel: '任务', icon: ChatDotRound, kind: 'route', group: '工作台' },
+  { path: '/browser', label: '浏览器', tabLabel: '浏览器', icon: Monitor, kind: 'route', group: '工作台' },
+  { path: '/chat-hub', label: '消息', tabLabel: '消息', icon: Promotion, kind: 'route', group: '工作台' },
+  { path: '', label: '设置', tabLabel: '设置', icon: Setting, kind: 'settings', group: '系统' },
 ];
 
 const pluginStore = usePluginStore();
@@ -168,7 +193,7 @@ function matchWhen(when?: string): boolean {
   if (when === 'web') return !isDesktop && !isMobile.value;
   return true;
 }
-const pluginNavItems = computed(() =>
+const pluginNavItems = computed<NavItem[]>(() =>
   pluginStore.sidebar
     .filter((item) => matchWhen(item.when))
     .map((item) => ({
@@ -177,20 +202,24 @@ const pluginNavItems = computed(() =>
       tabLabel: item.label,
       icon: resolvePluginIcon(item.icon),
       kind: 'route' as const,
+      group: '插件',
     })),
 );
-const navItems = computed(() => [...builtinNavItems, ...pluginNavItems.value]);
-const mobilePrimaryItems = computed(() => [
-  ...builtinNavItems,
-  ...pluginStore.sidebar
-    .filter((item) => matchWhen(item.when))
-    .map((item) => ({
-      path: item.route,
-      label: item.label,
-      tabLabel: item.label,
-      icon: resolvePluginIcon(item.icon),
-      kind: 'route' as const,
-    })),
+const navItems = computed<NavItem[]>(() => [...builtinNavItems, ...pluginNavItems.value]);
+/** 桌面展开态按 group 分组渲染 */
+const navGroups = computed(() => {
+  const groups: Array<{ label: string; items: NavItem[] }> = [];
+  for (const item of navItems.value) {
+    let g = groups.find((x) => x.label === item.group);
+    if (!g) { g = { label: item.group, items: [] }; groups.push(g); }
+    g.items.push(item);
+  }
+  return groups;
+});
+/** 移动端底部 TabBar：五个核心入口（对话 / 智能体 / 浏览器 / 知识库 / 设置） */
+const mobilePrimaryItems = computed<NavItem[]>(() => [
+  ...builtinNavItems.filter((i) => ['/chat', '/browser', '/chat-hub'].includes(i.path)),
+  { path: '', label: '设置', tabLabel: '设置', icon: Setting, kind: 'settings', group: '系统' },
 ]);
 
 function isActive(path: string) {
@@ -217,6 +246,9 @@ function toggleTheme() {
 .nav-top {
   flex: 1; display: flex; flex-direction: column; align-items: center; gap: 2px;
   padding-top: 4px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  width: 100%;
 }
 
 .nav-bottom {
@@ -231,6 +263,7 @@ function toggleTheme() {
   transition: all 0.18s cubic-bezier(0.16, 1, 0.3, 1);
   position: relative; text-decoration: none;
   border: none; background: transparent; font-family: inherit; padding: 0;
+  flex-shrink: 0;
 }
 .nav-item:hover {
   color: var(--color-text);
@@ -263,11 +296,9 @@ function toggleTheme() {
 /* ===== 桌面端可折叠带标签侧栏（覆盖 .side-nav 默认值） ===== */
 .side-nav-desktop {
   width: 220px;
-  /* 桌面端侧栏从标题栏下方开始；web/mobile 无 --titlebar-h 变量，回退 0px */
   top: var(--titlebar-h, 0px);
   align-items: stretch;
   padding: 10px 8px;
-  /* 桌面端实色背景，关闭毛玻璃 */
   background: var(--el-bg-color, #fff);
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
@@ -283,6 +314,18 @@ function toggleTheme() {
 .side-nav-desktop .nav-top {
   align-items: stretch;
   gap: 2px;
+}
+
+/* 分组标题（仅桌面展开态显示） */
+.nav-group-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--color-text-secondary);
+  opacity: 0.7;
+  padding: 10px 14px 4px;
+  white-space: nowrap;
+  user-select: none;
 }
 
 .side-nav-desktop .nav-item {
@@ -307,6 +350,9 @@ function toggleTheme() {
   text-align: left;
 }
 .side-nav-desktop.collapsed .nav-label {
+  display: none;
+}
+.side-nav-desktop.collapsed .nav-group-label {
   display: none;
 }
 

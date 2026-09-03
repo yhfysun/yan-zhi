@@ -5,7 +5,7 @@ import { getPlatformAdapter } from '@yan-zhi/core';
 import { usePluginStore } from './plugin';
 
 export type ThemeName = string;
-export const BUILTIN_THEME_NAMES = ['ocean', 'forest', 'sunset', 'aurora', 'rose'] as const;
+export const BUILTIN_THEME_NAMES = ['cinnabar', 'ink', 'indigo', 'pine', 'clay'] as const;
 
 export interface AppSettings {
   theme: ThemeName;
@@ -16,7 +16,8 @@ export interface AppSettings {
   maxContextTokens: number;
   enableCompression: boolean;
   workspaceDir: string;
-  /** 应用使用指南（内置默认，用户可在设置里自定义覆盖）；命中用户问题关键字时注入提示词 */
+  /** 工作目录最近使用记录（目录选择器 chip 快捷入口，新选择的目录提到最前，最多 5 个） */
+  recentWorkspaceDirs: string[];
   appGuide: string;
   /** 记忆抽取模型配置：空则默认本地小模型 */
   memoryExtractPlatformId: string;
@@ -163,7 +164,7 @@ export const APP_GUIDE_DOCS: Array<{ name: string; content: string }> = [
 export const DEFAULT_APP_GUIDE = APP_GUIDE_DOCS.map((d) => d.content).join('\n\n---\n\n');
 
 const DEFAULT_SETTINGS: AppSettings = {
-  theme: 'aurora',
+  theme: 'cinnabar',
   darkMode: true,
   defaultPlatformId: '',
   defaultModelId: '',
@@ -171,6 +172,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   maxContextTokens: 8000,
   enableCompression: true,
   workspaceDir: '',
+  recentWorkspaceDirs: [],
   appGuide: DEFAULT_APP_GUIDE,
   memoryExtractPlatformId: '',
   memoryExtractModelId: '',
@@ -189,55 +191,55 @@ interface ThemePalette {
 }
 
 const THEMES: Record<ThemeName, ThemePalette> = {
-  ocean: {
-    primary: '#3B82F6',
-    primaryLight: '#DBEAFE',
-    primaryDark: '#1D4ED8',
-    accent: '#6366F1',
-    gradient: 'linear-gradient(135deg, #3B82F6, #6366F1)',
-    orb1: '#3B82F6',
-    orb2: '#60A5FA',
-    orb3: '#93C5FD',
+  cinnabar: {
+    primary: '#C2410C',
+    primaryLight: '#FBEBDD',
+    primaryDark: '#7C2D12',
+    accent: '#B45309',
+    gradient: 'linear-gradient(135deg, #C2410C, #B45309)',
+    orb1: '#C2410C',
+    orb2: '#D97706',
+    orb3: '#B45309',
   },
-  forest: {
-    primary: '#10B981',
-    primaryLight: '#D1FAE5',
-    primaryDark: '#047857',
-    accent: '#34D399',
-    gradient: 'linear-gradient(135deg, #10B981, #34D399)',
-    orb1: '#10B981',
-    orb2: '#34D399',
-    orb3: '#6EE7B7',
+  ink: {
+    primary: '#57534E',
+    primaryLight: '#EDEAE5',
+    primaryDark: '#292524',
+    accent: '#78716C',
+    gradient: 'linear-gradient(135deg, #57534E, #292524)',
+    orb1: '#57534E',
+    orb2: '#78716C',
+    orb3: '#44403C',
   },
-  sunset: {
-    primary: '#F59E0B',
-    primaryLight: '#FEF3C7',
-    primaryDark: '#B45309',
-    accent: '#F97316',
-    gradient: 'linear-gradient(135deg, #F59E0B, #F97316)',
-    orb1: '#F59E0B',
-    orb2: '#FBBF24',
-    orb3: '#FDE68A',
+  indigo: {
+    primary: '#2C4A6E',
+    primaryLight: '#E2E9F0',
+    primaryDark: '#1B3150',
+    accent: '#3B82A8',
+    gradient: 'linear-gradient(135deg, #2C4A6E, #3B82A8)',
+    orb1: '#2C4A6E',
+    orb2: '#3B82A8',
+    orb3: '#5B8CB8',
   },
-  aurora: {
-    primary: '#7C3AED',
-    primaryLight: '#EDE9FE',
-    primaryDark: '#5B21B6',
-    accent: '#EC4899',
-    gradient: 'linear-gradient(135deg, #7C3AED, #EC4899)',
-    orb1: '#7C3AED',
-    orb2: '#A78BFA',
-    orb3: '#EC4899',
+  pine: {
+    primary: '#2F6B4F',
+    primaryLight: '#E1EDE6',
+    primaryDark: '#1D4A36',
+    accent: '#4A8571',
+    gradient: 'linear-gradient(135deg, #2F6B4F, #4A8571)',
+    orb1: '#2F6B4F',
+    orb2: '#4A8571',
+    orb3: '#5FA184',
   },
-  rose: {
-    primary: '#EC4899',
-    primaryLight: '#FCE7F3',
-    primaryDark: '#BE185D',
-    accent: '#F472B6',
-    gradient: 'linear-gradient(135deg, #EC4899, #F472B6)',
-    orb1: '#EC4899',
-    orb2: '#F472B6',
-    orb3: '#FBCFE8',
+  clay: {
+    primary: '#B05A45',
+    primaryLight: '#F3E2DC',
+    primaryDark: '#7E3B2A',
+    accent: '#C07A5C',
+    gradient: 'linear-gradient(135deg, #B05A45, #C07A5C)',
+    orb1: '#B05A45',
+    orb2: '#C07A5C',
+    orb3: '#C98A72',
   },
 };
 
@@ -292,6 +294,14 @@ export const useSettingsStore = defineStore('settings', () => {
     root.setProperty('--orb-1-color', p.orb1);
     root.setProperty('--orb-2-color', p.orb2);
     root.setProperty('--orb-3-color', p.orb3);
+    // Element Plus 主色同步，避免按钮/输入框 focus 环仍停留在旧紫
+    root.setProperty('--el-color-primary', p.primary);
+    root.setProperty('--el-color-primary-light-3', p.primaryLight);
+    root.setProperty('--el-color-primary-light-5', p.primaryLight);
+    root.setProperty('--el-color-primary-light-7', p.primaryLight);
+    root.setProperty('--el-color-primary-light-8', p.primaryLight);
+    root.setProperty('--el-color-primary-light-9', p.primaryLight);
+    root.setProperty('--el-color-primary-dark-2', p.primaryDark);
   }
 
   function applyDarkMode(dark: boolean) {

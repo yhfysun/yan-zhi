@@ -41,11 +41,28 @@
       </el-tooltip>
 
       <ChatFilePanel />
-      <el-tooltip content="侧栏（预览窗口）" placement="bottom">
-        <el-button size="small" circle @click="toggleRightPanel" :type="store.rightPanelOpen ? 'primary' : ''" aria-label="切换右侧栏">
+      <el-dropdown trigger="click">
+        <el-button size="small" circle title="右侧栏视图" aria-label="右侧栏视图">
           <el-icon><Operation /></el-icon>
         </el-button>
-      </el-tooltip>
+        <template #dropdown>
+          <el-dropdown-menu>
+            <el-dropdown-item @click="store.showFilePopup = true">
+              <el-icon><Document /></el-icon><span>文件预览</span>
+            </el-dropdown-item>
+            <el-dropdown-item @click="store.openTab({ kind: 'browser', name: '浏览器', url: '' })">
+              <el-icon><Monitor /></el-icon><span>浏览器预览</span>
+            </el-dropdown-item>
+            <el-dropdown-item @click="openGitTab" :disabled="!hasWorkspaceDir">
+              <el-icon><FolderOpened /></el-icon><span>Git 文件</span>
+            </el-dropdown-item>
+            <el-dropdown-item divided @click="store.rightPanelOpen = !store.rightPanelOpen">
+              <el-icon><Fold v-if="store.rightPanelOpen" /><Expand v-else /></el-icon>
+              <span>{{ store.rightPanelOpen ? '收起右侧栏' : '展开右侧栏' }}</span>
+            </el-dropdown-item>
+          </el-dropdown-menu>
+        </template>
+      </el-dropdown>
       <el-dropdown v-if="isMobile && authStore.isLoggedIn" trigger="click">
         <span class="mobile-user-avatar">{{ authStore.user?.username?.slice(0, 1) || 'U' }}</span>
         <template #dropdown>
@@ -69,15 +86,25 @@
 
 <script setup lang="ts">
 import { computed } from 'vue';
-import { ArrowDown, Expand, Grid, Operation, Plus, SwitchButton, User } from '@element-plus/icons-vue';
+import { ArrowDown, Document, Expand, FolderOpened, Fold, Grid, Monitor, Operation, Plus, SwitchButton, User } from '@element-plus/icons-vue';
 import { useChat } from '../../composables/chat/useChat';
+import { useSettingsStore } from '../../stores/settings';
 import ChatFilePanel from './ChatFilePanel.vue';
 
 const {
-  drawerOpen, currentConv, toggleRightPanel, store, isMobile, authStore,
+  drawerOpen, currentConv, store, isMobile, authStore,
   modelGroups, selectedModelId, onModelChange, contextSidebarOpen, toggleContextSidebar,
   startNewChat,
 } = useChat();
+
+const settingsStore = useSettingsStore();
+const hasWorkspaceDir = computed(() => !!settingsStore.settings.workspaceDir);
+
+function openGitTab() {
+  const dir = settingsStore.settings.workspaceDir || '';
+  const repoName = dir.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || 'Git';
+  store.openTab({ kind: 'git', name: repoName, repoPath: dir });
+}
 
 const selectedModel = computed(() => {
   for (const group of modelGroups.value) {
