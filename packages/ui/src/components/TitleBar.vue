@@ -77,13 +77,13 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   height: 32px;
-  background: #1e1e2e;
-  color: #cdd6f4;
+  background: var(--glass-bg);
+  color: var(--color-text-secondary);
   -webkit-app-region: drag; /* 整个标题栏可拖拽 */
   app-region: drag;
   user-select: none;
   flex-shrink: 0;
-  border-bottom: 1px solid #313244;
+  border-bottom: 1px solid var(--glass-border);
   position: relative;
   z-index: 200;
 }
@@ -100,7 +100,7 @@ onBeforeUnmount(() => {
   width: 20px;
   height: 20px;
   border-radius: 4px;
-  background: linear-gradient(135deg, #7c3aed, #ec4899);
+  background: var(--color-primary);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -112,7 +112,7 @@ onBeforeUnmount(() => {
 .title-bar-name {
   font-size: 12px;
   font-weight: 500;
-  color: #a6adc8;
+  color: var(--color-text-secondary);
 }
 
 .title-bar-drag {
@@ -131,7 +131,7 @@ onBeforeUnmount(() => {
   height: 32px;
   border: none;
   background: transparent;
-  color: #a6adc8;
+  color: var(--color-text-secondary);
   cursor: pointer;
   display: flex;
   align-items: center;
@@ -141,32 +141,16 @@ onBeforeUnmount(() => {
 }
 
 .title-btn:hover {
-  background: rgba(255, 255, 255, 0.1);
+  background: var(--glass-bg-hover);
 }
 
 .title-btn:focus-visible {
-  outline: 1px solid var(--color-primary, #7c3aed);
+  outline: 1px solid var(--color-primary, #C2410C);
   outline-offset: -2px;
 }
 
 .title-btn-close:hover {
   background: #e81123;
   color: #fff;
-}
-
-/* 浅色主题 */
-:global(:root:not([data-theme='dark'])) .title-bar {
-  background: #f3f3f3;
-  color: #333;
-  border-bottom-color: #e0e0e0;
-}
-:global(:root:not([data-theme='dark'])) .title-bar-name {
-  color: #555;
-}
-:global(:root:not([data-theme='dark'])) .title-btn {
-  color: #555;
-}
-:global(:root:not([data-theme='dark'])) .title-btn:hover {
-  background: rgba(0, 0, 0, 0.08);
 }
 </style>

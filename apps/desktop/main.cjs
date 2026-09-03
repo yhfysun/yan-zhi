@@ -197,7 +197,7 @@ function createWindow() {
     minHeight: 600,
     frame: false,           // 无边框窗口（自定义标题栏）
     titleBarStyle: 'hidden',
-    backgroundColor: '#1e1e2e',  // 匹配页面背景色，消除窗口创建到首屏渲染间的黑屏
+    backgroundColor: '#1D1D1C',  // 匹配 dark 主题 --glass-bg，消除窗口创建到首屏渲染间的黑屏
     show: false,            // 延迟到 ready-to-show 再显示，彻底消除黑屏/闪烁
     // 不开 transparent：Windows 11 上 frame:false + 非 transparent 时 DWM 仍提供原生圆角+阴影，
     // 且 maximize/unmaximize 与边缘 resize 走原生 NCA，避免透明窗口下"全屏后缩不回/拖边缩不了"的 bug
