@@ -30,7 +30,7 @@
     </el-dropdown>
     <el-tooltip content="新建任务" placement="bottom">
       <el-button size="small" circle class="new-chat-btn" @click="startNewChat()" aria-label="新建任务">
-        <el-icon><Plus /></el-icon>
+        <el-icon><EditPen /></el-icon>
       </el-button>
     </el-tooltip>
     <div class="chat-topbar-actions">
@@ -86,7 +86,7 @@
 
 <script setup lang="ts">
 import { computed } from 'vue';
-import { ArrowDown, Document, Expand, FolderOpened, Fold, Grid, Monitor, Operation, Plus, SwitchButton, User } from '@element-plus/icons-vue';
+import { ArrowDown, Document, Expand, FolderOpened, Fold, Grid, Monitor, Operation, EditPen, SwitchButton, User } from '@element-plus/icons-vue';
 import { useChat } from '../../composables/chat/useChat';
 import { useSettingsStore } from '../../stores/settings';
 import ChatFilePanel from './ChatFilePanel.vue';

@@ -199,7 +199,7 @@
               </div>
               <div class="plus-menu-divider"></div>
               <div class="plus-menu-item" @click="closePlus(() => startNewChat())">
-                <span class="plus-menu-ic"><el-icon><Plus /></el-icon></span>
+                <span class="plus-menu-ic"><el-icon><EditPen /></el-icon></span>
                 <div class="plus-menu-info"><div class="plus-menu-label">新建任务</div></div>
               </div>
               <div class="plus-menu-item" @click="closePlus(openPlatformConfig)">
@@ -309,7 +309,7 @@
           </el-popover>
           <el-tooltip content="新建任务" placement="top">
             <el-button size="small" circle @click="startNewChat()">
-              <el-icon><Plus /></el-icon>
+              <el-icon><EditPen /></el-icon>
             </el-button>
           </el-tooltip>
           <el-tooltip :content="store.streaming ? '终止 (停止生成)' : '发送 (Enter)'" placement="top">
