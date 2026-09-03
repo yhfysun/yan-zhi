@@ -1002,7 +1002,7 @@ async function resetBuiltinGuide() {
 
 /* ===== 分片节点（文档→分片 关系） ===== */
 .chunk-section { margin-top: 4px; }
-.chunk-tree { margin-top: 8px; display: flex; flex-direction: column; gap: 8px; }
+.chunk-tree { margin-top: 8px; display: flex; flex-direction: column; gap: 8px; max-height: 60vh; overflow-y: auto; padding-right: 4px; }
 .chunk-group {
   border: 1px solid var(--glass-border); border-radius: 12px; overflow: hidden;
   background: var(--glass-bg, rgba(255,255,255,0.6));

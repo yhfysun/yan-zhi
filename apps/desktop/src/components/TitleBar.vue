@@ -39,6 +39,14 @@
                 <el-icon style="margin-right:6px"><component :is="m.icon" /></el-icon>
                 <span>{{ m.label }}</span>
               </el-dropdown-item>
+              <el-dropdown-item command="memory" divided>
+                <el-icon style="margin-right:6px"><Memo /></el-icon>
+                <span>记忆管理</span>
+              </el-dropdown-item>
+              <el-dropdown-item command="plugins">
+                <el-icon style="margin-right:6px"><Box /></el-icon>
+                <span>插件管理</span>
+              </el-dropdown-item>
               <template v-if="pluginMenus.length">
                 <el-dropdown-item v-for="m in pluginMenus" :key="m.path" :command="m.path" divided>
                   <el-icon style="margin-right:6px"><component :is="m.icon" /></el-icon>
@@ -108,7 +116,7 @@ import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import {
   Minus, FullScreen, CopyDocument, Close, Moon, Sunny, HomeFilled, ChatDotRound, Monitor, Promotion, Setting, Collection,
-  More, Cpu, Connection, Tools, Files, User, Link, Platform, MagicStick,
+  More, Cpu, Connection, Tools, Files, User, Link, Platform, MagicStick, Memo, Box,
 } from '@element-plus/icons-vue';
 import { useSettingsStore, useAuthStore, usePluginStore, openSettingsDrawer } from '@yan-zhi/ui';
 import { resolvePluginIcon } from '@yan-zhi/ui/plugin-icons';
