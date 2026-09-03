@@ -706,7 +706,7 @@ function enterFeature() {
   color: rgba(255, 255, 255, 0.7);
 }
 .section-list li { margin-bottom: 4px; }
-.section-list li::marker { color: rgba(124, 58, 237, 0.8); }
+.section-list li::marker { color: var(--color-primary); }
 
 /* 代码块 */
 .section-code {

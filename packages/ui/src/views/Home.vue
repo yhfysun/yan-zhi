@@ -146,12 +146,12 @@ interface HomeMenuItem {
 }
 
 const menuItems: HomeMenuItem[] = [
-  { path: '/chat', name: '任务', desc: '与大模型多会话对话、跑工具化任务（含文件/结果区/浏览器预览）', icon: ChatDotRound, iconName: 'ChatDotRound', color: '#7C3AED', key: 'chat' },
-  { path: '/chat-hub', name: '消息', desc: '统一聊天中心：本应用助手 + 飞书/企业微信渠道', icon: ChatLineRound, iconName: 'ChatLineRound', color: '#EC4899', key: 'chat-hub' },
+  { path: '/chat', name: '任务', desc: '与大模型多会话对话、跑工具化任务（含文件/结果区/浏览器预览）', icon: ChatDotRound, iconName: 'ChatDotRound', color: '#C2410C', key: 'chat' },
+  { path: '/chat-hub', name: '消息', desc: '统一聊天中心：本应用助手 + 飞书/企业微信渠道', icon: ChatLineRound, iconName: 'ChatLineRound', color: '#0EA5E9', key: 'chat-hub' },
   { path: '/knowledge', name: '知识库', desc: '管理本地知识资料', icon: Collection, iconName: 'Collection', color: '#10B981', key: 'knowledge' },
   { path: '/browser', name: '浏览器', desc: '内置浏览器自动化', icon: Monitor, iconName: 'Monitor', color: '#F59E0B', key: 'browser' },
   { path: '', name: '通用与数据', desc: '主题、默认模型、备份与缓存', icon: Setting, iconName: 'Setting', color: '#64748B', key: 'settings-general', section: 'general' },
-  { path: '', name: '模型与能力', desc: '模型、MCP、工具、Skill 与智能体配置', icon: Cpu, iconName: 'Cpu', color: '#3B82F6', key: 'settings-abilities', section: 'models' },
+  { path: '', name: '模型与能力', desc: '模型、MCP、工具、Skill 与智能体配置', icon: Cpu, iconName: 'Cpu', color: '#14B8A6', key: 'settings-abilities', section: 'models' },
 ];
 
 /** 打开功能详情弹窗 */
@@ -209,7 +209,7 @@ function handleInfoClick(item: HomeMenuItem) {
   transition: transform 0.2s ease, background 0.2s ease;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
 }
-.intro-dot:hover { background: rgba(124, 58, 237, 0.4); transform: scale(1.08); }
+.intro-dot:hover { background: color-mix(in srgb, var(--color-primary) 55%, transparent); transform: scale(1.08); }
 .intro-dot:active { cursor: grabbing; }
 
 /* 展开后的介绍卡片 */
@@ -256,14 +256,14 @@ function handleInfoClick(item: HomeMenuItem) {
   transition: all 0.25s ease;
 }
 .feature-nav-btn:hover {
-  background: rgba(124, 58, 237, 0.35);
-  border-color: rgba(124, 58, 237, 0.6);
+  background: color-mix(in srgb, var(--color-primary) 35%, transparent);
+  border-color: color-mix(in srgb, var(--color-primary) 60%, transparent);
   color: #fff;
   transform: scale(1.06);
 }
 .feature-nav-btn.active {
-  background: rgba(124, 58, 237, 0.45);
-  border-color: rgba(124, 58, 237, 0.7);
+  background: color-mix(in srgb, var(--color-primary) 45%, transparent);
+  border-color: color-mix(in srgb, var(--color-primary) 70%, transparent);
   color: #fff;
 }
 /* 关闭 glass-card 默认 hover 位移，避免按钮跳动 */
@@ -324,8 +324,8 @@ function handleInfoClick(item: HomeMenuItem) {
 .feature-nav-item-icon {
   width: 32px; height: 32px; border-radius: 8px; flex-shrink: 0;
   display: flex; align-items: center; justify-content: center;
-  background: color-mix(in srgb, var(--item-color, #7C3AED) 22%, transparent);
-  color: var(--item-color, #7C3AED);
+  background: color-mix(in srgb, var(--item-color, #C2410C) 22%, transparent);
+  color: var(--item-color, #C2410C);
   transition: transform 0.2s ease;
 }
 .feature-nav-item-info:hover .feature-nav-item-icon { transform: scale(1.08); }
@@ -334,7 +334,7 @@ function handleInfoClick(item: HomeMenuItem) {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .feature-nav-item-enter {
-  flex-shrink: 0; color: rgba(124, 58, 237, 0.9) !important;
+  flex-shrink: 0; color: var(--color-primary) !important;
 }
 .feature-nav-item-enter:hover { color: #fff !important; }
 
