@@ -390,6 +390,24 @@ select.inp{cursor:pointer}
 .relmap{background:var(--canvas);border:1px solid var(--rule);border-radius:var(--r-md);padding:var(--s4)}
 .rel-table{margin-top:var(--s4)}
 
+/* 键位提示：提升「灵活性与效率」，重度用户不必记忆 */
+.kbd{
+  font-family:var(--f-mono);font-size:9.5px;line-height:1;padding:2px 4px;margin-left:4px;
+  border:1px solid var(--rule-strong);border-bottom-width:2px;border-radius:var(--r-xs);
+  color:var(--ink-3);background:var(--canvas)
+}
+.kbd.on{border-color:rgba(255,255,255,.34);color:#EDE4FE;background:rgba(255,255,255,.12)}
+
+/* 扇出（chasm trap）警示：关系图页的实质内容，而非填白 */
+.trap{
+  margin-top:var(--s4);display:flex;gap:var(--s3);padding:var(--s3) var(--s4);
+  background:var(--caution-soft);border:1px solid var(--caution-line);border-radius:var(--r-md)
+}
+.trap .ic{color:var(--caution);flex-shrink:0;margin-top:1px}
+.trap h5{margin:0 0 3px;font-size:12px;font-weight:600;color:#7A4D06}
+.trap p{margin:0;font-size:11.5px;color:var(--ink-2);line-height:1.5}
+.trap code{font-family:var(--f-mono);font-size:11px;background:rgba(180,113,10,.1);padding:1px 4px;border-radius:var(--r-xs)}
+
 /* 示例问答 */
 .ex-item{border:1px solid var(--rule);border-radius:var(--r-md);padding:var(--s3) var(--s4);margin-bottom:var(--s3);background:var(--surface)}
 .ex-q{font-size:13px;font-weight:500;display:flex;gap:8px;align-items:flex-start}
@@ -1179,8 +1197,17 @@ select.inp{cursor:pointer}
                 </table>
                 <p style="font-size:11.5px;color:var(--ink-3);margin-top:var(--s3)">
                   大模型不写 JOIN：查询涉及多个实体时，引擎在这张图上求最小连接子树，按基数方向拼 LEFT JOIN。
-                  两个事实表的度量同时出现且路径含一对多扇出时，直接拒绝并提示先建聚合本体。
                 </p>
+                <div class="trap">
+                  <span class="ic">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 2.5 17.4A1.7 1.7 0 0 0 4 20h16a1.7 1.7 0 0 0 1.5-2.6L13.7 3.9a1.7 1.7 0 0 0-3 0Z"/></svg>
+                  </span>
+                  <div>
+                    <h5>检出 1 处扇出风险（chasm trap）</h5>
+                    <p>路径 <code>order → order_item → refund</code> 同时取 <code>pay_amount_sum</code> 与 <code>refund_amount_sum</code> 会让金额按明细行数翻倍。
+                    引擎将<strong>直接拒绝</strong>此类查询，并提示先建聚合本体 <code>order_refund_daily</code>。</p>
+                  </div>
+                </div>
               </div>
 
               <!-- 示例问答 -->
@@ -1264,10 +1291,45 @@ select.inp{cursor:pointer}
             <button class="act"><span class="t">预览定义</span><span class="d">看编译结果，不执行</span></button>
             <button class="act"><span class="t">预览数据</span><span class="d">裸跑前 50 行</span></button>
             <button class="act"><span class="t">试跑查询</span><span class="d">套上选择器与过滤器</span></button>
-            <button class="act publish"><span class="t">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 12l5 5L20 7"/></svg>
-              发布
-            </span><span class="d">草稿改动对智能体不可见</span></button>
+
+            <span class="dirty" style="margin-left:var(--s3)"><span class="dot"></span>3 处未保存改动</span>
+            <button class="btn sm ghost">撤销</button>
+
+            <!-- 发布 = 改变智能体取数口径，必须先过预检 -->
+            <details class="pubwrap" open>
+              <summary class="act publish"><span class="t">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 12l5 5L20 7"/></svg>
+                发布 v3
+              </span><span class="d">当前生效 v2 · 草稿对智能体不可见</span></summary>
+
+              <div class="pubcheck">
+                <div class="pc-head">
+                  <h4>发布预检 · order v2 → v3</h4>
+                  <p>发布后智能体立即按新口径取数，历史会话不重算。</p>
+                </div>
+
+                <div class="pc-sect">
+                  <span class="eyebrow">口径变更（3）</span>
+                  <div class="dl del"><span class="sgn">−</span><span class="txt">pay_amount: 订单金额（含优惠）</span></div>
+                  <div class="dl add"><span class="sgn">+</span><span class="txt">pay_amount: 实付金额（已扣优惠，不含退款）</span></div>
+                  <div class="dl add"><span class="sgn">+</span><span class="txt">measures.avg_order_value: non_additive</span></div>
+                  <div class="dl add"><span class="sgn">+</span><span class="txt">relations: order → user (many_to_one, confirmed)</span></div>
+                </div>
+
+                <div class="pc-sect">
+                  <span class="eyebrow">影响范围 · 3 个智能体正在引用</span>
+                  <div class="pc-ref"><span class="li-code mono">经营日报智能体</span><span style="color:var(--ink-3)">用于 GMV 口径</span></div>
+                  <div class="pc-ref"><span class="li-code mono">客服查单助手</span><span style="color:var(--ink-3)">仅用状态维度</span></div>
+                  <div class="pc-ref"><span class="li-code mono">数据分析师</span><span style="color:var(--danger)">金额口径将变化</span></div>
+                </div>
+
+                <div class="pc-foot">
+                  <span class="note">发布后 24 小时内可一键回滚到 v2，历史版本永久留存。</span>
+                  <button class="btn sm">取消</button>
+                  <button class="btn sm primary">确认发布</button>
+                </div>
+              </div>
+            </details>
           </div>
         </div>
 
@@ -1505,11 +1567,11 @@ select.inp{cursor:pointer}
             </span>
             <span style="font-size:11.5px;color:var(--ink-3)">上限 500 行 · 超时 30s · 单语句</span>
             <div style="flex:1"></div>
-            <button class="btn sm">格式化</button>
-            <button class="btn sm">运行选中</button>
+            <button class="btn sm">格式化 <kbd class="kbd">⇧⌥F</kbd></button>
+            <button class="btn sm">运行选中 <kbd class="kbd">⌃↵</kbd></button>
             <button class="btn sm primary">
               <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><path d="M7 4l13 8-13 8z"/></svg>
-              运行
+              全部运行 <kbd class="kbd on">⌃⇧↵</kbd>
             </button>
           </div>
 
