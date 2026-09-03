@@ -108,7 +108,7 @@ import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import {
   Minus, FullScreen, CopyDocument, Close, Moon, Sunny, HomeFilled, ChatDotRound, Monitor, Promotion, Setting, Collection,
-  More, Cpu, Connection, Tools, Files, User, Link, Platform,
+  More, Cpu, Connection, Tools, Files, User, Link, Platform, MagicStick,
 } from '@element-plus/icons-vue';
 import { useSettingsStore, useAuthStore, usePluginStore, openSettingsDrawer } from '@yan-zhi/ui';
 import { resolvePluginIcon } from '@yan-zhi/ui/plugin-icons';
@@ -131,13 +131,14 @@ function isActive(p: string) {
   return route.path === p || route.path.startsWith(p + '/');
 }
 
-// 「更多」下拉：其它功能入口 + 设置（/settings 完整页面，非弹窗）
+// 「更多」下拉：全部功能入口（11 项）
 const moreMenus = [
   { path: '/knowledge', label: '知识库', icon: Collection },
   { path: '/models', label: '模型平台', icon: Cpu },
   { path: '/mcp', label: 'MCP 连接', icon: Connection },
   { path: '/tools', label: '工具', icon: Tools },
   { path: '/skills', label: 'Skill', icon: Files },
+  { path: '/distill', label: 'Skill 蒸馏', icon: MagicStick },
   { path: '/agents', label: '智能体', icon: User },
   { path: '/connections', label: 'IM 连接', icon: Link },
   { path: '/peers', label: '客户端节点', icon: Platform },
@@ -145,6 +146,7 @@ const moreMenus = [
 ];
 const moreActive = computed(() => moreMenus.some((m) => isActive(m.path)));
 function onMoreCommand(p: string) {
+  if (p === 'memory' || p === 'plugins') { openSettingsDrawer(p); return; }
   router.push(p);
 }
 
