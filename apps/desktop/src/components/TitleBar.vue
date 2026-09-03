@@ -5,13 +5,7 @@
 
     <!-- 内容层：pointer-events:none 使非按钮区域点击穿透到拖拽层 -->
     <div class="title-content">
-      <!-- 左侧：品牌标识 -->
-      <div class="brand">
-        <span class="brand-logo">言</span>
-        <span class="brand-name">言智</span>
-      </div>
-
-      <!-- 中部：可拖拽留白（flex:1） -->
+      <!-- 左侧留白（对标 WorkBuddy：标题栏无品牌元素，完全隐形，仅作拖拽区） -->
       <div class="title-spacer"></div>
 
       <!-- 主题切换 -->
