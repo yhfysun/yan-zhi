@@ -76,12 +76,11 @@ import { ref, computed } from 'vue';
 import { useRouter } from 'vue-router';
 import {
   ChatDotRound, ChatLineRound, Collection, Monitor, Setting, Cpu, Grid, InfoFilled,
-  User, Connection, Tools, Files, Link, Platform,
+  User, Connection, Tools, Files, Link, Platform, Memo, MagicStick,
 } from '@element-plus/icons-vue';
 import SolarSystem from '../components/home/SolarSystem.vue';
 import EarthMap from '../components/home/EarthMap.vue';
 import FeatureGuide from '../components/home/FeatureGuide.vue';
-import { openSettingsDrawer, type SettingsDrawerSection } from '../composables/useSettingsDrawer';
 
 /** 功能信息（与 FeatureGuide.vue 的 FeatureInfo 接口保持一致） */
 interface FeatureInfo {
@@ -143,7 +142,6 @@ interface HomeMenuItem {
   iconName: string;
   color: string;
   key: string;
-  section?: SettingsDrawerSection;
 }
 
 const menuItems: HomeMenuItem[] = [
@@ -158,8 +156,9 @@ const menuItems: HomeMenuItem[] = [
   { path: '/models', name: '模型平台', desc: 'OpenAI / Anthropic 双协议平台与模型管理', icon: Cpu, iconName: 'Cpu', color: '#2563EB', key: 'models' },
   { path: '/connections', name: 'IM 连接', desc: '飞书 / 企业微信 / 个人微信接入，收消息自动跑任务并回执', icon: Link, iconName: 'Link', color: '#0D9488', key: 'connections' },
   { path: '/peers', name: '客户端节点', desc: '言智节点互联：互取工具 / Skill / 智能体，可作商城服务端', icon: Platform, iconName: 'Platform', color: '#B45309', key: 'peers' },
-  { path: '', name: '通用与数据', desc: '主题、知识库分区、备份与缓存', icon: Setting, iconName: 'Setting', color: '#64748B', key: 'settings', section: 'general' },
-  { path: '', name: '模型与能力', desc: '模型、MCP、工具、Skill 与智能体配置', icon: Cpu, iconName: 'Cpu', color: '#14B8A6', key: 'models', section: 'models' },
+  { path: '/memory', name: '记忆管理', desc: '三层自动记忆：每日 / 会话 / 长期向量，自动抽取与注入', icon: Memo, iconName: 'Memo', color: '#7C2D12', key: 'memory' },
+  { path: '/distill', name: 'Skill 蒸馏', desc: '从对话记录蒸馏出可复用的 Skill · 三屏工作台', icon: MagicStick, iconName: 'MagicStick', color: '#9333EA', key: 'distill' },
+  { path: '/settings', name: '设置', desc: '通用与数据：主题、默认模型、备份与缓存', icon: Setting, iconName: 'Setting', color: '#64748B', key: 'settings' },
 ];
 
 /** 打开功能详情弹窗 */
@@ -176,20 +175,11 @@ function openGuide(item: typeof menuItems[number]) {
 }
 
 function enterItem(item: HomeMenuItem) {
-  if (item.section) {
-    openSettingsDrawer(item.section);
-  } else {
-    router.push(item.path);
-  }
+  router.push(item.path);
   showFeatureNav.value = false;
 }
 
 function handleInfoClick(item: HomeMenuItem) {
-  if (item.section) {
-    openSettingsDrawer(item.section);
-    showFeatureNav.value = false;
-    return;
-  }
   openGuide(item);
 }
 </script>

@@ -279,14 +279,18 @@ onMounted(() => pluginStore.refresh());
   color: var(--el-text-color-secondary);
 }
 .pm-list {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
   gap: 12px;
+  align-items: start;
 }
 .pm-card {
   border: 1px solid var(--el-border-color-lighter, rgba(15, 23, 42, 0.1));
   border-radius: 10px;
   padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 .pm-card-head {
   display: flex;
