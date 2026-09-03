@@ -10,13 +10,34 @@ let mainWindow = null;
 let serverProcess = null;
 let tray = null;
 let isQuitting = false;
-// BrowserView 多标签页管理：tabId → { view, cacheClearPromise, scrollbarCssKey, hidden }
+// BrowserView 多标签页管理：tabId → entry
+//   entry = { view, cacheClearPromise, scrollbarCssKey, attached, visible, bounds,
+//             zoomFactor, url, lastActiveAt, suspended, ownerWindow }
+//   attached — 真实挂载态：BrowserView 是否已 attach 到 BrowserWindow
+//   visible  — 业务可见态：渲染层是否要求它可见（右栏开 + 该 tab 激活）
+//   bounds   — 渲染层最后一次同步的矩形 { x, y, width, height }，null 表示未知
+//   zoomFactor — 页面缩放单一真相源（setZoomFactor 写入，did-finish-load 回放）
+//   url      — 最近导航地址（did-navigate 持续更新；挂起卸载后靠它复活）
+//   lastActiveAt — 最近激活时间戳（LRU 逐出 / 空闲卸载 / closeTab 顶替的排序依据）
+//   suspended — R4 挂起态：true = webContents 已销毁、tab 壳保留，激活时复活
+//   ownerWindow — R6 多窗口预留：创建时的宿主窗口（单窗口下与 mainWindow 等价）
+// 两个字段必须分开：早期版本混用单个 hidden 字段，导致 hide 后再展开时
+// resize 被自己的状态位拦死（"隐藏墓碑"），页面再也回不来。
+// 所有挂载/摘除一律走 applyVisibility(entry)，禁止业务代码各自 setBrowserView
+// 或用 setBounds(0,0,0,0) 冒充隐藏（Windows GPU 加速下会残留图层吞点击）。
 const browserViews = new Map();
 let activeTabId = null;
-// BrowserView 是否处于隐藏态。渲染层的 ResizeObserver 是异步触发的，
-// 面板收起（CSS 过渡）期间仍会推来非零 bounds，若不拦截会把 hide() 的
-// 0 尺寸覆盖回去，导致原生图层残留在窗口上。hide 后所有 resize 一律忽略。
-/** BrowserView 首次创建时的缓存清理 Promise：loadURL 前必须 await，否则并发中止加载（ERR_ABORTED）*/
+// 最近一次有效矩形（由 browserView:resize 写入），首次导航/强制重挂时作为兜底，
+// 取代写死的 480px，避免首次导航因 bounds 未同步而被判为不可见。
+let lastGoodBounds = null;
+
+// R3：摘除即静音 —— 收起右栏/切走 tab 后视频音乐不再出声（"收起了就该安静"）。
+// 如果有意保留后台音乐（如挂机听歌），把该开关设为 false 即可一行回退。
+const MUTE_ON_DETACH = true;
+// R4：tab 内存管理 —— 每个 tab 一个完整渲染进程（Chromium 约 60~120MB），
+// 不设上限开 15 个 tab 就是 1~2GB。
+const MAX_TABS = 8;                          // 同时存活的 webContents 上限
+const TAB_IDLE_UNLOAD_MS = 10 * 60 * 1000;   // 非激活 tab 空闲多久后卸载
 
 // ============================================================
 // 数据库（better-sqlite3，主进程单例）
@@ -233,7 +254,7 @@ function createWindow() {
   // 拦截主窗口键盘事件：当 BrowserView 可见时，Ctrl+R/F5 刷新 BrowserView 而非主窗口
   mainWindow.webContents.on('before-input-event', (event, input) => {
     const entry = activeTabId ? browserViews.get(activeTabId) : null;
-    if (!entry || entry.hidden) return;
+    if (!entry || !entry.attached) return;
     const bv = entry.view;
     const key = input.key.toLowerCase();
     // Ctrl+R 或 F5 → 刷新 BrowserView
@@ -268,10 +289,27 @@ function createWindow() {
     mainWindow.loadFile(path.join(__dirname, 'dist', 'index.html'));
   }
 
+  // 窗口几何变化后同步 BrowserView。分两类处理：
+  //
+  // 【强制重挂】restore / maximize / unmaximize / show / 进出全屏 ——
+  //   Windows 下这些操作后 GPU 合成层不会自动重绘 BrowserView，表现为黑块残留或
+  //   bounds 错位；必须摘了再挂（removeBrowserView + setBrowserView）强制重新合成。
+  //   这些是离散事件，摘挂代价可接受。
+  //
+  // 【仅更新 bounds】resize ——
+  //   拖拽边缘缩放时每帧触发，逐帧摘挂会明显闪烁；此处只走 applyVisibility
+  //   （已 attached 时仅 setBounds），配合渲染层 ResizeObserver 的 100ms 节流兜住露白。
+  for (const ev of ['restore', 'maximize', 'unmaximize', 'show', 'enter-full-screen', 'leave-full-screen']) {
+    mainWindow.on(ev, () => scheduleBoundsRefresh(true));
+  }
+  mainWindow.on('resize', () => scheduleBoundsRefresh(false));
+
   mainWindow.on('closed', () => {
+    if (boundsRefreshTimer) { clearTimeout(boundsRefreshTimer); boundsRefreshTimer = null; }
+    if (tabIdleTimer) { clearInterval(tabIdleTimer); tabIdleTimer = null; } // R4：停掉空闲卸载巡检
     // 清理所有 BrowserView
     for (const [id, entry] of browserViews) {
-      try { entry.view.webContents?.destroy?.(); } catch {}
+      try { entry.view?.webContents?.destroy?.(); } catch {} // R4：挂起态 view 为 null
     }
     browserViews.clear();
     activeTabId = null;
@@ -285,13 +323,12 @@ function createWindow() {
 // BrowserView：嵌入外部网页（替代 <webview> 标签，支持精确 setBounds）
 // 多标签页：每个 tabId 对应一个独立 BrowserView 实例
 // ============================================================
-/** 按需为指定标签创建 BrowserView 并附加到主窗口（延迟创建，避免初始白屏） */
-function ensureBrowserView(tabId) {
-  if (!tabId) return null;
-  const existing = browserViews.get(tabId);
-  if (existing) return existing.view;
-  if (!mainWindow || mainWindow.isDestroyed()) return null;
-
+/**
+ * 为 entry 创建底层 BrowserView 实例并挂接全部 wc 事件。
+ * 首次创建与挂起复活（R4）共用此函数，保证两条路径行为一致
+ * （崩溃重载 / 滚动条注入 / 缩放回放 / 快捷键拦截）。
+ */
+function createBrowserViewFor(tabId, entry) {
   const bv = new BrowserView({
     webPreferences: {
       // 持久化 partition：cookie/localStorage 落盘，跨会话保留登录态（如即梦扫码登录后无需重复扫码）
@@ -303,10 +340,9 @@ function ensureBrowserView(tabId) {
       backgroundColor: '#ffffff',
     },
   });
-
-  const entry = { view: bv, cacheClearPromise: null, scrollbarCssKey: null, hidden: true };
-  browserViews.set(tabId, entry);
-  // 初始设为不可见（不附加到主窗口，激活时才附加）
+  entry.view = bv;
+  entry.attached = false;
+  // 初始不挂载到主窗口（延迟到激活 + 有有效 bounds 时由 applyVisibility 挂载）
   bv.setBounds({ x: 0, y: 0, width: 0, height: 0 });
 
   const wc = bv.webContents;
@@ -316,31 +352,61 @@ function ensureBrowserView(tabId) {
   // 注意：必须 await 完成后再放行 loadURL —— clearCache 与页面加载并发会中止加载（ERR_ABORTED -3）导致黑屏。
   entry.cacheClearPromise = wc.session.clearCache().catch(() => { /* ignore */ });
 
-  // 渲染进程崩溃（GPU/内存等）后页面变黑且不再响应：自动重载恢复
-  wc.on('render-process-gone', (_e, details) => {
-    console.warn('[browserView] render-process-gone:', details?.reason);
+  // 渲染进程崩溃（GPU/内存等）后页面变黑且不再响应：自动重载恢复。
+  // 三个必须处理的点：
+  //   1) 次数上限 —— 页面本身有问题（死循环/OOM）时无限重载会打转，吃满 CPU
+  //   2) 事件去重 —— Electron 新版 render-process-gone 与 crashed 会同时触发，
+  //      不去掉重则计数翻倍、reload 跑两遍
+  //   3) 通知前端 —— 重载期间右栏空白且 loading 转圈不停，超限后需让前端收尾
+  let crashCount = 0;
+  let lastCrashAt = 0;
+  const CRASH_RELOAD_LIMIT = 3;
+  const CRASH_DEDUPE_MS = 1000;
+
+  function onBrowserViewCrash(reason) {
+    const now = Date.now();
+    if (now - lastCrashAt < CRASH_DEDUPE_MS) return;   // 双事件去重
+    lastCrashAt = now;
+    crashCount += 1;
+    console.warn(`[browserView] render-process-gone (${crashCount}/${CRASH_RELOAD_LIMIT}):`, reason);
+    if (crashCount > CRASH_RELOAD_LIMIT) {
+      // 超过上限：停止自动重载，通知渲染层收尾（停 loading / 显示错误态）
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('browserView:crashed', tabId, reason || 'unknown');
+      }
+      return;
+    }
     try { wc.reload(); } catch { /* ignore */ }
-  });
-  wc.on('crashed' /* 兼容旧事件名 */, () => {
-    try { wc.reload(); } catch { /* ignore */ }
-  });
+  }
+
+  wc.on('render-process-gone', (_e, details) => onBrowserViewCrash(details?.reason));
+  wc.on('crashed' /* 兼容旧事件名 */, () => onBrowserViewCrash('crashed'));
 
   // 监听导航事件，通知前端地址栏更新（带 tabId）
   wc.on('did-navigate', (_e, url) => {
+    entry.url = url; // R4：挂起卸载后靠它复活
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('browserView:navigated', tabId, url);
     }
   });
   wc.on('did-navigate-in-page', (_e, url) => {
+    entry.url = url; // R4：同上
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('browserView:navigated', tabId, url);
     }
   });
   // 页面加载完成，通知前端
   wc.on('did-finish-load', () => {
+    // 成功渲染后清零崩溃计数：只有"连续"崩溃才停手，偶尔一次崩溃不应永久拉黑页面
+    crashCount = 0;
     // 导航到新页面会重置已注入的 CSS，需重新注入自定义滚动条 + 虚拟鼠标
     injectScrollbarCss(tabId);
+    // 跨源导航会重置页面缩放，按 entry.zoomFactor 回放，避免 UI 百分比与实际缩放脱节
+    if (entry.zoomFactor && entry.zoomFactor !== 1) {
+      try { wc.setZoomFactor(entry.zoomFactor); } catch { /* ignore */ }
+    }
     injectYzAssistant(wc);
+    entry.url = wc.getURL(); // R4：挂起卸载后靠它复活
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('browserView:loaded', tabId, wc.getURL());
     }
@@ -369,18 +435,234 @@ function ensureBrowserView(tabId) {
   return bv;
 }
 
+/** 按需为指定标签创建 BrowserView 并附加到主窗口（延迟创建，避免初始白屏）；挂起态自动复活 */
+function ensureBrowserView(tabId) {
+  if (!tabId) return null;
+  const existing = browserViews.get(tabId);
+  if (existing) {
+    // R4 挂起复活：只重建视图不导航 —— activateTab 会补 loadURL(entry.url)，load 路径直接加载新地址。
+    // 复活一个就多一个 webContents，先按 LRU 腾位（当前激活 tab 永不逐出），保证存活 ≤ MAX_TABS。
+    if (existing.suspended || !existing.view) {
+      if (!mainWindow || mainWindow.isDestroyed()) return null;
+      evictLruTabIfNeeded();
+      createBrowserViewFor(tabId, existing);
+      existing.suspended = false;
+    }
+    return existing.view;
+  }
+  if (!mainWindow || mainWindow.isDestroyed()) return null;
+  const entry = {
+    view: null,
+    cacheClearPromise: null,
+    scrollbarCssKey: null,
+    attached: false,
+    visible: false,
+    bounds: null,
+    zoomFactor: 1, // 缩放单一真相源：setZoomFactor 写入，did-finish-load 跨源导航后回放
+    url: null,                    // R4：最近导航地址，挂起卸载后靠它复活
+    lastActiveAt: Date.now(),     // R4：LRU 逐出 / 空闲卸载 / closeTab 顶替的排序依据
+    suspended: false,             // R4：true = webContents 已销毁、tab 壳保留
+    ownerWindow: mainWindow,      // R6：多窗口预留（单窗口下与模块级 mainWindow 等价）
+  };
+  browserViews.set(tabId, entry);
+  scheduleTabIdleCheck();
+  return createBrowserViewFor(tabId, entry);
+}
+
+// ============================================================
+// R4：tab 内存管理 —— webContents 上限 + LRU 逐出 + 空闲卸载 + 挂起复活
+// 每个 tab 一个完整渲染进程（Chromium 约 60~120MB），不设上限开 15 个就是 1~2GB。
+// 挂起 = 销毁 webContents 释放内存，保留 entry（url/zoom/bounds），tab 壳不消失；
+// 激活时复活重建。滚动位置/表单内容明确不保留（要保留得存 sessionStorage 快照，成本不值）。
+// ============================================================
+
+/** 挂起指定 tab：摘除 + 销毁 webContents（挂起目标本就应是非激活 tab，摘除是保险） */
+function suspendBrowserViewEntry(tabId, entry) {
+  if (!entry || entry.suspended || !entry.view) return;
+  entry.visible = false;
+  applyVisibility(entry);
+  try { entry.view.webContents?.destroy?.(); } catch { /* ignore */ }
+  entry.view = null;
+  entry.suspended = true;
+  entry.attached = false;
+  entry.scrollbarCssKey = null; // 文档已随 webContents 销毁，key 失效；复活后 did-finish-load 重注入
+}
+
+/** 当前存活（未挂起）的 webContents 数 */
+function countLiveEntries() {
+  let n = 0;
+  for (const e of browserViews.values()) if (!e.suspended && e.view) n++;
+  return n;
+}
+
+/** 超限按 LRU 挂起最久未激活的非当前 tab（当前激活 tab 永不逐出） */
+function evictLruTabIfNeeded() {
+  let guard = 0;
+  while (countLiveEntries() >= MAX_TABS && guard++ < 32) {
+    let lruId = null, lruAt = Infinity;
+    for (const [id, e] of browserViews) {
+      if (e.suspended || !e.view) continue;
+      if (id === activeTabId) continue;
+      const t = e.lastActiveAt || 0;
+      if (t < lruAt) { lruAt = t; lruId = id; }
+    }
+    if (!lruId) break; // 只剩当前激活 tab，无处可逐
+    console.log('[browserView] LRU 逐出挂起:', lruId);
+    suspendBrowserViewEntry(lruId, browserViews.get(lruId));
+  }
+}
+
+// 空闲卸载巡检：每分钟扫一次，非激活且超过 TAB_IDLE_UNLOAD_MS 未用即挂起
+let tabIdleTimer = null;
+function scheduleTabIdleCheck() {
+  if (tabIdleTimer) return;
+  tabIdleTimer = setInterval(() => {
+    const now = Date.now();
+    for (const [id, e] of browserViews) {
+      if (e.suspended || !e.view) continue;
+      if (id === activeTabId) continue;
+      if (now - (e.lastActiveAt || 0) > TAB_IDLE_UNLOAD_MS) {
+        console.log('[browserView] 空闲卸载挂起:', id, e.url || '');
+        suspendBrowserViewEntry(id, e);
+      }
+    }
+  }, 60 * 1000);
+}
+
+/**
+ * 唯一收敛函数：把 entry 的实际挂载态对齐到「可见意图 && 有有效 bounds」。
+ * 所有改变挂载态的地方都必须调它，业务代码不得自行 setBrowserView / setBounds(0,0,0,0)。
+ */
+function applyVisibility(entry) {
+  if (!entry || !entry.view) return; // R4：挂起态无视图，无挂载可言
+  const win = entry.ownerWindow || mainWindow; // R6：优先 entry 记录的宿主窗口
+  if (!win || win.isDestroyed()) return;
+  const b = entry.bounds;
+  const hasValidBounds = !!b && b.width >= 1 && b.height >= 1;
+  const shouldShow = !!entry.visible && hasValidBounds;
+
+  if (shouldShow) {
+    if (!entry.attached) {
+      try {
+        win.setBrowserView(entry.view);
+        entry.attached = true;
+      } catch { return; }
+    }
+    try {
+      entry.view.setBounds({
+        x: Math.round(b.x), y: Math.round(b.y),
+        width: Math.round(b.width), height: Math.round(b.height),
+      });
+    } catch { /* ignore */ }
+    // 恢复渲染节流关闭，保证页面正常绘制
+    try { entry.view.webContents.setBackgroundThrottling(false); } catch { /* ignore */ }
+    // R3：可见即恢复发声（与摘除静音成对出现）
+    if (MUTE_ON_DETACH) { try { entry.view.webContents.setAudioMuted(false); } catch { /* ignore */ } }
+    return;
+  }
+
+  if (entry.attached) {
+    // 双保险摘除：removeBrowserView 会触发 GPU 合成层清理，根治 Windows 下的图层残留；
+    // 老版本 Electron 可能没有该 API，回退到 setBrowserView(null)。
+    try { win.removeBrowserView(entry.view); } catch { /* ignore */ }
+    try { win.setBrowserView(null); } catch { /* ignore */ }
+    try { entry.view.setBounds({ x: 0, y: 0, width: 0, height: 0 }); } catch { /* ignore */ }
+    try { entry.view.webContents.setBackgroundThrottling(true); } catch { /* ignore */ }
+    // R3：摘除即静音 —— 收起右栏/切走 tab 后视频音乐不再出声（开关 MUTE_ON_DETACH）
+    if (MUTE_ON_DETACH) { try { entry.view.webContents.setAudioMuted(true); } catch { /* ignore */ } }
+    entry.attached = false;
+  }
+}
+
+/**
+ * 窗口几何变化后强制重挂所有可见 BrowserView。
+ * Windows 下窗口最小化恢复 / 最大化还原时，GPU 合成层不会自动重绘 BrowserView，
+ * 表现为黑块残留或 bounds 错位；单纯 setBounds 不触发重绘，
+ * 必须先摘除（removeBrowserView + setBrowserView(null)）再经 applyVisibility 挂回。
+ */
+function refreshAllBrowserViewBounds(forceReattach = false) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  for (const entry of browserViews.values()) {
+    if (!entry.visible || !entry.view) continue; // R4：挂起态无视图，跳过
+    // 无有效 bounds（首次导航、渲染层还没同步过）时先兜底一个矩形：
+    // 否则下面强制摘挂后会因"无尺寸可挂"直接不挂载，且 DOM 尺寸没变化不会再触发
+    // ResizeObserver，页面就此永久消失。
+    if (!entry.bounds) ensureFallbackBounds(entry);
+    const win = entry.ownerWindow || mainWindow; // R6
+    // 只有 forceReattach 才摘了重挂：拖拽边缘缩放时每帧摘挂会明显闪烁，
+    // 那种场景只需要更新 bounds（applyVisibility 在已 attached 时只调 setBounds）。
+    if (forceReattach && entry.attached) {
+      try { win.removeBrowserView(entry.view); } catch { /* ignore */ }
+      try { win.setBrowserView(null); } catch { /* ignore */ }
+      entry.attached = false;
+    }
+    applyVisibility(entry);
+  }
+}
+
+/**
+ * 窗口几何事件的合并器：拖拽边缘缩放时 resize 每帧触发，
+ * 逐个重挂会造成明显闪烁，统一合并到 50ms 后执行一次。
+ */
+let boundsRefreshTimer = null;
+let boundsRefreshForce = false;
+function scheduleBoundsRefresh(forceReattach = false) {
+  // 合并期间只要有一次请求强制重挂，就按强制处理（不能让后续的轻量 resize 把它降级）
+  boundsRefreshForce = boundsRefreshForce || forceReattach;
+  if (boundsRefreshTimer) return;
+  boundsRefreshTimer = setTimeout(() => {
+    boundsRefreshTimer = null;
+    const force = boundsRefreshForce;
+    boundsRefreshForce = false;
+    refreshAllBrowserViewBounds(force);
+  }, 50);
+}
+
+/** 首次导航时渲染层可能还没同步过 bounds，给一个兜底矩形，避免挂载后被判为不可见 */
+function ensureFallbackBounds(entry) {
+  if (!entry || entry.bounds) return;
+  const win = entry.ownerWindow || mainWindow; // R6
+  if (!win || win.isDestroyed()) return;
+  try {
+    const [w, h] = win.getContentSize();
+    let bounds;
+    if (lastGoodBounds && lastGoodBounds.width > 0 && lastGoodBounds.height > 0) {
+      // 复用最近一次有效矩形（来自 resize），比写死 480px 准确，跨 session 仍合法
+      bounds = { ...lastGoodBounds };
+    } else {
+      const width = Math.min(480, Math.max(1, w));
+      bounds = { x: Math.max(0, w - width), y: 0, width, height: Math.max(1, h) };
+    }
+    entry.bounds = bounds;
+    applyVisibility(entry);
+  } catch { /* ignore */ }
+}
+
 /** 激活指定标签：显示其 BrowserView，隐藏其他所有标签的 BrowserView */
 function activateTab(tabId) {
-  // 标记其他标签为隐藏
+  // 1) 先把其他标签全部摘除：setBrowserView 是单槽，必须先清场再挂目标
   for (const [id, entry] of browserViews) {
     if (id !== tabId) {
-      entry.hidden = true;
-      entry.view.setBounds({ x: 0, y: 0, width: 0, height: 0 });
+      entry.visible = false;
+      applyVisibility(entry);
     }
   }
+  // 2) 再挂目标标签（有 bounds 才挂，没有则等渲染层下一次 resize）
   activeTabId = tabId;
   const entry = browserViews.get(tabId);
-  if (entry) entry.hidden = false;
+  if (entry) {
+    // R4 挂起复活：ensureBrowserView 内部会先 LRU 腾位再重建视图，
+    // 这里补懒加载记忆的 url。加载失败回退为空白页（不静默崩溃），用户可刷新/重输地址。
+    if (entry.suspended || !entry.view) {
+      ensureBrowserView(tabId);
+      if (entry.url && entry.view) {
+        entry.view.webContents.loadURL(entry.url).catch(() => { /* ignore */ });
+      }
+    }
+    entry.lastActiveAt = Date.now();
+    entry.visible = true;
+    applyVisibility(entry);
+  }
 }
 
 // BrowserView 自定义滚动条（隐藏默认 + 圆角自定义），按网页自身背景亮度选色
@@ -419,7 +701,7 @@ async function detectPageDark(wc) {
 
 async function injectScrollbarCss(tabId) {
   const entry = tabId ? browserViews.get(tabId) : (activeTabId ? browserViews.get(activeTabId) : null);
-  if (!entry) return;
+  if (!entry || !entry.view) return; // R4：挂起态无视图；复活后 did-finish-load 会重注入
   const bv = entry.view;
   const wc = bv.webContents;
   try {
@@ -452,23 +734,45 @@ ipcMain.handle('window-is-maximized', () => mainWindow?.isMaximized() || false);
 // 创建新标签页，返回 tabId
 let tabSeq = 0;
 ipcMain.handle('browserView:createTab', () => {
+  // R4：超限先按 LRU 挂起最久未激活的 tab（壳保留、激活复活），再新建，
+  // 保证同时存活的 webContents ≤ MAX_TABS
+  evictLruTabIfNeeded();
   const tabId = 'tab-' + (++tabSeq);
   ensureBrowserView(tabId);
   return tabId;
 });
 
 // 关闭标签页，销毁对应 BrowserView
-ipcMain.handle('browserView:closeTab', (_e, tabId) => {
+// fromUi=true 表示 UI 路径（渲染层会自行顶替相邻 tab，主进程不顶替不广播，避免双顶替抖动）；
+// 非 UI 路径（pageAgent 工具 / 页面 window.close）没有渲染层参与，主进程必须在这里收口。
+ipcMain.handle('browserView:closeTab', (_e, tabId, fromUi) => {
   const entry = browserViews.get(tabId);
   if (entry) {
-    // 如果关闭的是当前可见标签，先摘除
-    if (!entry.hidden) {
-      try { mainWindow.setBrowserView(null); } catch { /* ignore */ }
-    }
-    try { entry.view.webContents?.destroy?.(); } catch { /* ignore */ }
+    // 统一走收敛函数摘除（无论当前是否挂载），再销毁 webContents
+    entry.visible = false;
+    entry.bounds = null;
+    applyVisibility(entry);
+    try { entry.view?.webContents?.destroy?.(); } catch { /* ignore */ }
     browserViews.delete(tabId);
   }
-  if (activeTabId === tabId) activeTabId = null;
+  if (activeTabId === tabId) {
+    activeTabId = null;
+    // R5：非 UI 路径关掉当前 tab 时主进程自行顶替最近激活的剩余 tab 并广播。
+    // UI 路径渲染层也会顶替：收到 tabActivated 时若 activeTabId 已一致则忽略，幂等不打架。
+    if (!fromUi) {
+      let next = null, newest = -1;
+      for (const [id, e] of browserViews) {
+        const t = e.lastActiveAt || 0;
+        if (t >= newest) { newest = t; next = id; }
+      }
+      if (next) {
+        activateTab(next);
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('browserView:tabActivated', next);
+        }
+      }
+    }
+  }
 });
 
 // 激活标签页：显示其 BrowserView，隐藏其他
@@ -476,8 +780,6 @@ ipcMain.handle('browserView:activateTab', (_e, tabId) => {
   const entry = browserViews.get(tabId);
   if (!entry) return;
   activateTab(tabId);
-  // 重新附加到主窗口
-  mainWindow.setBrowserView(entry.view);
 });
 
 ipcMain.handle('browserView:load', async (e, tabId, url) => {
@@ -491,9 +793,9 @@ ipcMain.handle('browserView:load', async (e, tabId, url) => {
   const entry = browserViews.get(tabId);
   // 等待首次缓存清理完成（并发会中止加载导致黑屏）
   if (entry.cacheClearPromise) { await entry.cacheClearPromise; entry.cacheClearPromise = null; }
-  // 激活该标签并附加到主窗口
+  // 激活该标签（挂载由 applyVisibility 统一处理）
   activateTab(tabId);
-  mainWindow.setBrowserView(bv);
+  ensureFallbackBounds(entry);
   try {
     await bv.webContents.loadURL(cleanUrl);
     return { url: bv.webContents.getURL() };
@@ -504,7 +806,7 @@ ipcMain.handle('browserView:load', async (e, tabId, url) => {
 
 ipcMain.handle('browserView:back', (_e, tabId) => {
   const entry = tabId ? browserViews.get(tabId) : (activeTabId ? browserViews.get(activeTabId) : null);
-  if (!entry) return;
+  if (!entry || !entry.view) return; // R4：挂起态无导航历史，直接忽略
   const wc = entry.view.webContents;
   if (wc.navigationHistory) {
     if (wc.navigationHistory.canGoBack()) wc.goBack();
@@ -515,7 +817,7 @@ ipcMain.handle('browserView:back', (_e, tabId) => {
 
 ipcMain.handle('browserView:forward', (_e, tabId) => {
   const entry = tabId ? browserViews.get(tabId) : (activeTabId ? browserViews.get(activeTabId) : null);
-  if (!entry) return;
+  if (!entry || !entry.view) return; // R4：挂起态无导航历史，直接忽略
   const wc = entry.view.webContents;
   if (wc.navigationHistory) {
     if (wc.navigationHistory.canGoForward()) wc.goForward();
@@ -527,27 +829,44 @@ ipcMain.handle('browserView:forward', (_e, tabId) => {
 ipcMain.handle('browserView:reload', (_e, tabId) => {
   const entry = tabId ? browserViews.get(tabId) : (activeTabId ? browserViews.get(activeTabId) : null);
   if (!entry) return;
+  // R4：挂起态等价于复活 —— 重建视图并重新加载记忆的 url
+  if (!entry.view) {
+    if (entry.url) {
+      ensureBrowserView(tabId || activeTabId);
+      entry.view?.webContents?.loadURL?.(entry.url).catch(() => { /* ignore */ });
+    }
+    return;
+  }
   entry.view.webContents.reload();
 });
 
 ipcMain.handle('browserView:resize', (e, tabId, x, y, width, height) => {
   const entry = tabId ? browserViews.get(tabId) : (activeTabId ? browserViews.get(activeTabId) : null);
   if (!entry) return;
-  // 隐藏态下忽略渲染层迟到的 bounds 同步
-  if (entry.hidden) return;
-  // 确保 BrowserView 附加到主窗口（hide 时会被 setBrowserView(null) 摘除）
-  mainWindow.setBrowserView(entry.view);
-  entry.view.setBounds({
-    x: Math.round(x),
-    y: Math.round(y),
-    width: Math.max(0, Math.round(width)),
-    height: Math.max(0, Math.round(height)),
-  });
+  const w = Math.max(0, Math.round(width));
+  const h = Math.max(0, Math.round(height));
+  // 只有当前激活标签才允许实际挂载；非激活 tab 仅记录 bounds，
+  // 否则单槽机制下会顶掉正在显示的那个 BrowserView。
+  const isActive = !tabId || tabId === activeTabId;
+  if (w < 1 || h < 1) {
+    // 0 尺寸 = 隐藏请求：清空 bounds 并统一摘除
+    // 注意：不要在这里清 entry.scrollbarCssKey —— 见 hide handler 的说明
+    entry.bounds = null;
+    entry.visible = false;
+    applyVisibility(entry);
+    return;
+  }
+  entry.bounds = { x: Math.round(x), y: Math.round(y), width: w, height: h };
+  // 记住最近一次有效矩形，作为首次导航/强制重挂时的兜底（比写死 480px 准确）
+  lastGoodBounds = { ...entry.bounds };
+  entry.visible = isActive;
+  applyVisibility(entry);
 });
 
 ipcMain.handle('browserView:getUrl', (_e, tabId) => {
   const entry = tabId ? browserViews.get(tabId) : (activeTabId ? browserViews.get(activeTabId) : null);
   if (!entry) return '';
+  if (!entry.view) return entry.url || ''; // R4：挂起态返回记忆的 url
   return entry.view.webContents.getURL();
 });
 
@@ -555,15 +874,22 @@ ipcMain.handle('browserView:hide', (_e, tabId) => {
   // 隐藏指定标签或当前激活标签
   const entry = tabId ? browserViews.get(tabId) : (activeTabId ? browserViews.get(activeTabId) : null);
   if (!entry) return;
-  entry.hidden = true;
-  // setBrowserView(null) 摘除当前可见的 BrowserView（同一时间只有一个标签可见）
-  try { mainWindow.setBrowserView(null); } catch { /* ignore */ }
-  entry.view.setBounds({ x: 0, y: 0, width: 0, height: 0 });
+  // 统一走收敛函数：removeBrowserView + setBrowserView(null) 双保险 + 后台节流
+  entry.visible = false;
+  entry.bounds = null;
+  applyVisibility(entry);
+  // 关键：不要在这里清 entry.scrollbarCssKey。
+  // 隐藏 BrowserView 不会重新加载页面，insertCSS 注入的样式表仍在文档内，
+  // key 是 removeInsertedCSS 的唯一凭证 —— 丢了 key 就永久多留一份样式表，
+  // 反复「收起 → 展开」会在页面里叠加 N 份滚动条规则（长会话下拖慢样式计算，
+  // 且某次注入失败时会停留在上一个主题的旧样式）。
+  // 导航后 key 会变成陈旧值，但 injectScrollbarCss 的 removeInsertedCSS 外面
+  // 套着 try/catch，陈旧 key 无害，did-finish-load 会立刻覆盖成新 key。
 });
 
 ipcMain.handle('browserView:canGoBack', (_e, tabId) => {
   const entry = tabId ? browserViews.get(tabId) : (activeTabId ? browserViews.get(activeTabId) : null);
-  if (!entry) return false;
+  if (!entry || !entry.view) return false; // R4：挂起态无导航历史
   const wc = entry.view.webContents;
   if (wc.navigationHistory) return wc.navigationHistory.canGoBack();
   return wc.canGoBack?.() || false;
@@ -571,7 +897,7 @@ ipcMain.handle('browserView:canGoBack', (_e, tabId) => {
 
 ipcMain.handle('browserView:canGoForward', (_e, tabId) => {
   const entry = tabId ? browserViews.get(tabId) : (activeTabId ? browserViews.get(activeTabId) : null);
-  if (!entry) return false;
+  if (!entry || !entry.view) return false; // R4：挂起态无导航历史
   const wc = entry.view.webContents;
   if (wc.navigationHistory) return wc.navigationHistory.canGoForward();
   return wc.canGoForward?.() || false;
@@ -581,7 +907,17 @@ ipcMain.handle('browserView:canGoForward', (_e, tabId) => {
 ipcMain.handle('browserView:setZoomFactor', (_e, tabId, factor) => {
   const entry = tabId ? browserViews.get(tabId) : (activeTabId ? browserViews.get(activeTabId) : null);
   if (!entry) return;
-  try { entry.view.webContents.setZoomFactor(Number(factor) || 1); } catch { /* ignore */ }
+  const f = Number(factor) || 1;
+  // 真值先落账：挂起态（无视图）也生效，复活后由 did-finish-load 回放
+  entry.zoomFactor = f;
+  try { entry.view.webContents.setZoomFactor(f); } catch { /* ignore */ }
+});
+
+// 取当前实际缩放因子（单一真相源）：切换标签/恢复时前端据此校正 UI 显示
+ipcMain.handle('browserView:getZoomFactor', (_e, tabId) => {
+  const entry = tabId ? browserViews.get(tabId) : (activeTabId ? browserViews.get(activeTabId) : null);
+  if (!entry) return 1;
+  try { return entry.view.webContents.getZoomFactor() || entry.zoomFactor || 1; } catch { return entry.zoomFactor || 1; }
 });
 
 // 同步滚动条主题（应用主题切换时重新注入，颜色按网页背景自动选择）
@@ -589,12 +925,9 @@ ipcMain.handle('browserView:setTheme', (_e, tabId) => {
   injectScrollbarCss(tabId);
 });
 
-// 直接注入任意滚动条 CSS（前端自定义用）
-ipcMain.handle('browserView:insertScrollbarCSS', async (_e, tabId, css) => {
-  const entry = tabId ? browserViews.get(tabId) : (activeTabId ? browserViews.get(activeTabId) : null);
-  if (!entry) return;
-  try { await entry.view.webContents.insertCSS(css); } catch { /* ignore */ }
-});
+// 已移除 browserView:insertScrollbarCSS：全仓无调用方，且不追踪 insertCSS 返回的 key
+// （无法 removeInsertedCSS，每次调用永久多留一份样式表）。
+// 滚动条统一由主进程 injectScrollbarCss() 管理，前端只通过 browserView:setTheme 触发。
 
 // ============================================================
 // IPC：BrowserView 自动化操作（pageAgent 直接操作可见的 BrowserView）
@@ -690,6 +1023,11 @@ const STATE_SNAPSHOT_JS = `(function(){try{var d=document.body;return{url:locati
 ipcMain.handle('browserView:action', async (_e, tabId, action, args) => {
   const entry = tabId ? browserViews.get(tabId) : (activeTabId ? browserViews.get(activeTabId) : null);
   if (!entry) return { error: '浏览器未打开，请先导航到页面' };
+  // R4：挂起复活 —— pageAgent 的 navigate 等操作可能指向被 LRU 逐出/空闲卸载的 tab
+  if (!entry.view) {
+    ensureBrowserView(tabId || activeTabId);
+    if (!entry.view) return { error: '浏览器未打开，请先导航到页面' };
+  }
   const bv = entry.view;
   const wc = bv.webContents;
   args = args || {};
@@ -704,7 +1042,7 @@ ipcMain.handle('browserView:action', async (_e, tabId, action, args) => {
         let cleanUrl = String(args.url || '').trim().replace(/^[`"'\s]+|[`"'\s]+$/g, '');
         if (!/^https?:\/\//i.test(cleanUrl)) return { error: `无效 URL: ${cleanUrl}` };
         activateTab(tabId || activeTabId);
-        mainWindow.setBrowserView(bv);
+        ensureFallbackBounds(entry);
         // 等待首次缓存清理完成（并发会中止加载导致黑屏）
         if (entry.cacheClearPromise) { await entry.cacheClearPromise; entry.cacheClearPromise = null; }
         try {

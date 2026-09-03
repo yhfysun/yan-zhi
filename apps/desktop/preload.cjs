@@ -65,7 +65,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // BrowserView：嵌入外部网页（多标签页，每个 tabId 对应独立 BrowserView）
   browserView: {
     createTab: () => ipcRenderer.invoke('browserView:createTab'),
-    closeTab: (tabId) => ipcRenderer.invoke('browserView:closeTab', tabId),
+    closeTab: (tabId, fromUi) => ipcRenderer.invoke('browserView:closeTab', tabId, fromUi),
     activateTab: (tabId) => ipcRenderer.invoke('browserView:activateTab', tabId),
     load: (tabId, url) => ipcRenderer.invoke('browserView:load', tabId, url),
     back: (tabId) => ipcRenderer.invoke('browserView:back', tabId),
@@ -77,7 +77,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     canGoBack: (tabId) => ipcRenderer.invoke('browserView:canGoBack', tabId),
     canGoForward: (tabId) => ipcRenderer.invoke('browserView:canGoForward', tabId),
     setZoomFactor: (tabId, factor) => ipcRenderer.invoke('browserView:setZoomFactor', tabId, factor),
-    insertScrollbarCSS: (tabId, css) => ipcRenderer.invoke('browserView:insertScrollbarCSS', tabId, css),
+    getZoomFactor: (tabId) => ipcRenderer.invoke('browserView:getZoomFactor', tabId),
     setTheme: (tabId, theme) => ipcRenderer.invoke('browserView:setTheme', tabId, theme),
     action: (tabId, action, args) => ipcRenderer.invoke('browserView:action', tabId, action, args),
     onNavigated: (callback) => {
@@ -85,6 +85,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     },
     onLoaded: (callback) => {
       ipcRenderer.on('browserView:loaded', (_e, tabId, url) => callback(tabId, url));
+    },
+    onCrashed: (callback) => {
+      ipcRenderer.on('browserView:crashed', (_e, tabId, reason) => callback(tabId, reason));
+    },
+    onTabActivated: (callback) => {
+      ipcRenderer.on('browserView:tabActivated', (_e, tabId) => callback(tabId));
     },
   },
 });

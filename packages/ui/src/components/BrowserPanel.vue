@@ -444,6 +444,15 @@ async function switchTab(tabId: string) {
   if (isElectron) {
     const api = (window as any).electronAPI;
     await api.browserView.activateTab(tabId);
+    // 缩放单一真相源已迁到主进程 entry.zoomFactor：切换标签时以实际因子校正 UI 显示，
+    // 避免只恢复 display（tab.pageZoom）而与实际缩放脱节。
+    try {
+      const z = await api.browserView.getZoomFactor(tabId);
+      if (typeof z === 'number' && z > 0) {
+        pageZoom.value = +z.toFixed(2);
+        tab.pageZoom = pageZoom.value;
+      }
+    } catch { /* ignore */ }
     if (tab.url) {
       await nextTick();
       syncBrowserViewBounds();
@@ -456,10 +465,11 @@ async function switchTab(tabId: string) {
 async function closeTab(tabId: string) {
   const idx = tabs.value.findIndex(t => t.id === tabId);
   if (idx === -1) return;
-  // Electron 端：关闭主进程中的 BrowserView
+  // Electron 端：关闭主进程中的 BrowserView。
+  // fromUi=true：渲染层自行顶替相邻 tab，主进程不做 R5 顶替/广播，避免双顶替抖动。
   if (isElectron) {
     const api = (window as any).electronAPI;
-    await api.browserView.closeTab(tabId);
+    await api.browserView.closeTab(tabId, true);
   }
   tabs.value.splice(idx, 1);
   // 如果关闭的是当前标签，切换到相邻标签
@@ -485,21 +495,30 @@ let themeObserver: MutationObserver | null = null;
 
 /** 计算占位 div 在 BrowserWindow 内的坐标，同步到 BrowserView bounds */
 let resizeRafId: number | null = null;
-function syncBrowserViewBounds() {
-  if (!isElectron) return;
-  // 用 requestAnimationFrame 防抖：等布局稳定后再计算，确保窗口缩放时等比例更新
+let lastSyncAt = 0;
+let pendingSync = false;
+let syncTimer: ReturnType<typeof setTimeout> | null = null;
+/** bounds 同步最小间隔：ResizeObserver 在拖拽/过渡期间每帧回调，过密的 IPC 会拖慢 UI */
+const SYNC_MIN_INTERVAL = 100;
+
+function hideBrowserView() {
+  try { (window as any).electronAPI.browserView.hide(activeTabId.value); } catch { /* ignore */ }
+}
+
+function runBoundsSync() {
+  // 用 requestAnimationFrame 等布局稳定后再计算，确保窗口缩放时等比例更新
   if (resizeRafId !== null) cancelAnimationFrame(resizeRafId);
   resizeRafId = requestAnimationFrame(() => {
     resizeRafId = null;
-    // 先看可见性：面板收起时 CSS 只是宽度过渡归 0 + 透明（并非 display:none），
-    // 占位元素仍在 DOM 且高度非零，ResizeObserver 会在过渡期间连续回调。
-    // 若不判断可见性就同步 bounds，会把 hide() 刚设的 0 尺寸重新覆盖成可见区域，
+    lastSyncAt = Date.now();
+    // 单一闸门：面板收起 / 当前不是浏览器 tab → 隐藏。
+    // 面板收起时 CSS 只是宽度过渡归 0 + 透明（并非 display:none），占位元素仍在 DOM，
+    // ResizeObserver 会在过渡期间连续回调；不判断可见性会把 hide() 的效果覆盖回去，
     // 导致原生图层残留（容器 UI 已隐藏、网页却仍浮在窗口上）。
-    const visible = chatStore.rightPanelOpen && chatStore.rightPanelTab === 'browser';
     const el = browserViewPlaceholder.value;
-    if (!visible || !el) { try { (window as any).electronAPI.browserView.hide(activeTabId.value); } catch { /* ignore */ } return; }
+    if (!shouldBeVisible.value || !el) { hideBrowserView(); return; }
     const rect = el.getBoundingClientRect();
-    // 面板可见但尺寸过小（CSS 过渡中）：不调 hide，避免把 hidden 设回 true 导致后续 resize 被拦截
+    // 面板可见但尺寸仍为 0（CSS 过渡中）：跳过本次，等尾部补的那一次同步对齐
     if (rect.width < 1 || rect.height < 1) return;
     // Electron 33 的 setBounds 使用 CSS 像素（逻辑像素），不需要乘以 DPR
     (window as any).electronAPI.browserView.resize(
@@ -510,6 +529,29 @@ function syncBrowserViewBounds() {
       Math.round(rect.height),
     );
   });
+}
+
+/**
+ * 同步占位 div 矩形到原生 BrowserView。
+ * 100ms 节流 + 尾部补一次：纯 rAF 防抖在拖拽期间会被每帧回调饿死（一次都不执行），
+ * 改成节流后拖拽过程可见跟随，松手后再补一次保证 bounds 精确对齐。
+ */
+function syncBrowserViewBounds(force = false) {
+  if (!isElectron) return;
+  const elapsed = Date.now() - lastSyncAt;
+  if (force || elapsed >= SYNC_MIN_INTERVAL) {
+    if (syncTimer !== null) { clearTimeout(syncTimer); syncTimer = null; }
+    pendingSync = false;
+    runBoundsSync();
+    return;
+  }
+  pendingSync = true;
+  if (syncTimer === null) {
+    syncTimer = setTimeout(() => {
+      syncTimer = null;
+      if (pendingSync) { pendingSync = false; runBoundsSync(); }
+    }, SYNC_MIN_INTERVAL - elapsed);
+  }
 }
 
 // ── 历史栈（远程浏览器方案下，前端自行维护导航历史）──
@@ -995,6 +1037,18 @@ watch(currentUrl, (u) => { if (u) recordVisit(u); });
 // 智能体（LLM）调 browser_navigate 时，store.currentBrowserUrl 写入 url，
 // 这里 watch 到后复用 openSite 导航 —— 让智能体打开的页面与预览面板共用同一浏览器（桌面 BrowserView）
 const chatStore = useChatStore();
+
+/**
+ * 渲染层单一可见性闸门：整个组件只有这一处判断 BrowserView 该不该可见。
+ * 主进程侧由 applyVisibility(entry) 收敛挂载/摘除，这里只负责表达意图。
+ * 早期两侧各有两份重复判断（syncBrowserViewBounds / onNavigated），容易漂移。
+ */
+const shouldBeVisible = computed(
+  () => chatStore.rightPanelOpen && chatStore.activeTab?.kind === 'browser',
+);
+// 可见性变化（右栏收起展开、切 tab）立即同步一次，不等节流窗口
+watch(shouldBeVisible, () => { nextTick(() => syncBrowserViewBounds(true)); }, { flush: 'post' });
+
 watch(
   () => chatStore.currentBrowserUrl,
   (url) => {
@@ -1338,8 +1392,8 @@ onMounted(() => {
     api.browserView.onNavigated((tid: string, url: string) => {
       // 只处理当前激活标签的导航事件
       if (tid !== activeTabId.value) return;
-      // 面板未打开却收到导航事件：隐藏图层避免残留
-      if (!(chatStore.rightPanelOpen && chatStore.rightPanelTab === 'browser')) {
+      // 面板未打开却收到导航事件：隐藏图层避免残留（复用单一可见性闸门）
+      if (!shouldBeVisible.value) {
         try { api.browserView.hide(tid); } catch { /* ignore */ }
         return;
       }
@@ -1356,12 +1410,38 @@ onMounted(() => {
       api.browserView.canGoForward(tid).then((v: boolean) => { electronCanForward.value = v; });
     });
     // 监听页面加载完成事件（带 tabId）
-    api.browserView.onLoaded((tid: string, _url: string) => {
+    api.browserView.onLoaded(async (tid: string, _url: string) => {
       if (tid !== activeTabId.value) return;
       loading.value = false;
       if (activeTab.value) activeTab.value.loading = false;
       // 页面加载完成后注入滚动条主题样式（导航到新页面会重置，需重新注入）
       applyElectronScrollbarTheme();
+      // 跨源导航/崩溃重载会重置页面缩放：以主进程 entry.zoomFactor 校正 UI 百分比，
+      // 保证显示与真实缩放一致（不再依赖可能陈旧的 tab.pageZoom）。
+      if (isElectron) {
+        try {
+          const z = await (window as any).electronAPI.browserView.getZoomFactor(tid);
+          if (typeof z === 'number' && z > 0) {
+            pageZoom.value = +z.toFixed(2);
+            if (activeTab.value) activeTab.value.pageZoom = pageZoom.value;
+          }
+        } catch { /* ignore */ }
+      }
+    });
+    // 渲染进程崩溃且自动重载超过上限（主进程 CRASH_RELOAD_LIMIT=3）：
+    // 只收尾 loading 状态，避免转圈不停。不新增任何可见 UI。
+    api.browserView.onCrashed?.((tid: string, reason: string) => {
+      if (tid !== activeTabId.value) return;
+      loading.value = false;
+      if (activeTab.value) activeTab.value.loading = false;
+      console.warn('[BrowserPanel] 页面渲染进程崩溃且自动重载已达上限：', reason);
+    });
+    // 非 UI 路径（pageAgent 工具 / 页面 window.close）关闭当前 tab 时，主进程自行顶替并广播。
+    // activeTabId 已一致则忽略（幂等）：UI 路径下渲染层自身也会顶替，避免两次 switchTab 抖动。
+    api.browserView.onTabActivated?.((tid: string) => {
+      if (tid === activeTabId.value) return;
+      if (!tabs.value.some(t => t.id === tid)) return; // 渲染层没有该 tab 壳，无从切换
+      switchTab(tid).catch(() => { /* ignore */ });
     });
 
     // ResizeObserver 监听占位 div 尺寸变化，同步 BrowserView bounds
@@ -1392,6 +1472,10 @@ watch(browserViewPlaceholder, (el, oldEl) => {
 });
 
 onUnmounted(() => {
+  if (syncTimer !== null) {
+    clearTimeout(syncTimer);
+    syncTimer = null;
+  }
   if (resizeRafId !== null) {
     cancelAnimationFrame(resizeRafId);
     resizeRafId = null;
