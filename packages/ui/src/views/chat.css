@@ -197,13 +197,13 @@
 .welcome-card p { font-size: 14px; max-width: 420px; line-height: 1.7; }
 
 /* 消息 */
-.msg { display: flex; gap: 12px; margin-bottom: 24px; animation: msgIn 0.3s cubic-bezier(0.16,1,0.3,1); }
+.msg { display: flex; gap: 12px; margin-bottom: 20px; animation: msgIn 0.3s cubic-bezier(0.16,1,0.3,1); }
 @keyframes msgIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
 .msg-user { flex-direction: row-reverse; }
 .msg-avatar {
-  width: 36px; height: 36px; border-radius: 12px;
+  width: 30px; height: 30px; border-radius: 9px;
   display: flex; align-items: center; justify-content: center;
-  flex-shrink: 0; font-size: 18px; color: white; box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+  flex-shrink: 0; font-size: 15px; color: white; box-shadow: 0 2px 8px rgba(0,0,0,0.1);
 }
 .avatar-user { background: linear-gradient(135deg, var(--color-primary), var(--color-primary-dark)); }
 .avatar-assistant { background: linear-gradient(135deg, var(--color-accent), var(--color-primary-dark)); }
@@ -212,11 +212,14 @@
 .avatar-assistant.streaming {
   animation: avatarPulse 2s ease-in-out infinite;
 }
+/* 对齐 WorkBuddy：AI 回复隐藏头像，纯文本流铺满窄栏 */
+.msg-assistant .msg-avatar { display: none; }
+.msg-assistant .msg-body { max-width: 100%; }
 @keyframes avatarPulse {
   0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-primary) 40%, transparent); }
   50% { box-shadow: 0 0 0 6px color-mix(in srgb, var(--color-primary) 0%, transparent); }
 }
-.msg-body { min-width: 0; max-width: calc(100% - 48px); display: flex; flex-direction: column; }
+.msg-body { min-width: 0; max-width: calc(100% - 42px); display: flex; flex-direction: column; }
 /* flex:1 让 .msg-body 撑满 .msg（不再收缩到内容宽度），使 .msg-block 的 max-width:85% 相对于固定宽度，
    消除"85% × 收缩后的 msg-body"循环依赖——否则短文本会被压缩到 85%×max-content 导致换行。 */
 .msg-user .msg-body { align-items: flex-end; flex: 1 1 0; }
@@ -239,7 +242,7 @@
   overflow-wrap: break-word;
   word-break: break-word;
 }
-.msg-assistant .msg-block, .msg-system .msg-block { max-width: 85%; }
+.msg-assistant .msg-block, .msg-system .msg-block { max-width: 100%; }
 /* 用户消息气泡：外层 .msg-block 作为 flex item 不设 width（由 align-items:flex-end 收缩到内容宽度），
    max-width:85% 与智能体对齐；自适应由内层 .msg-content 的 inline-block 实现（经典可靠方案）。 */
 .msg-user .msg-block { max-width: 85%; }
@@ -304,39 +307,35 @@
   max-width: 100%;
 }
 .msg-assistant .msg-content {
-  background: var(--glass-bg); backdrop-filter: var(--glass-filter);
-  border: 1px solid var(--glass-border); border-bottom-left-radius: 4px; box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  padding: 0;
+  max-height: none;
+  overflow-y: visible;
   position: relative;
 }
-.msg-assistant .msg-content::before {
-  content: ''; position: absolute; top: 0; left: 0; right: 0; height: 1px;
-  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.3), transparent);
-  pointer-events: none;
-}
-.msg-assistant .msg-content:hover { box-shadow: 0 2px 12px rgba(0,0,0,0.08); }
+.msg-assistant .msg-content:hover { box-shadow: none; }
 
 /* ===== 智能体统一回复卡片 ===== */
 .agent-response-card {
-  background: var(--glass-bg); backdrop-filter: var(--glass-filter);
-  border: 1px solid var(--glass-border);
-  border-radius: 16px; border-bottom-left-radius: 4px;
-  box-shadow: 0 1px 4px rgba(0,0,0,0.04);
-  padding: 16px; transition: box-shadow 0.2s;
   min-width: 0;
-  /* 自适应宽度：与用户消息 .msg-block 一致（fit-content + max-width:85%），短回复收缩、长回复到 85% 换行 */
-  width: fit-content;
-  max-width: 85%;
+  max-width: 100%;
   box-sizing: border-box;
   overflow-wrap: break-word;
   word-break: break-word;
+  /* 对齐 WorkBuddy：AI 回复去卡片化，纯文本流铺满窄栏（无背景/边框/阴影/内边距） */
 }
-.agent-response-card:hover { box-shadow: 0 2px 12px rgba(0,0,0,0.08); }
 /* AI 回复折叠态：仅保留摘要行，禁横向溢出 */
 .agent-response-card.msg-collapsed {
   cursor: pointer;
   padding: 10px 14px;
   max-height: 48px;
   overflow: hidden;
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: 12px;
 }
 .agent-response-card.msg-collapsed:hover {
   border-color: var(--color-primary);
@@ -349,7 +348,8 @@
 }
 .agent-response-body > .msg-content {
   overflow-x: hidden;
-  overflow-y: auto;
+  overflow-y: visible;
+  max-height: none;
 }
 .msg-config-card {
   margin-top: 10px;

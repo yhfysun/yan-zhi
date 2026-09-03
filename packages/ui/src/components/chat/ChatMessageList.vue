@@ -130,7 +130,7 @@
                         <ArrowRight v-else />
                       </el-icon>
                     </div>
-                    <div v-show="!expandedToolGroups['round-' + ri]" class="tool-group-body" style="margin-top:6px;border-top:1px dashed rgba(139,92,246,0.12);padding-top:6px">
+                    <div v-show="!expandedToolGroups['round-' + ri]" class="tool-group-body" style="margin-top:6px;border-top:1px dashed color-mix(in srgb, var(--color-primary) 12%, transparent);padding-top:6px">
                       <div v-for="(tc, idx) in round.allToolCalls" :key="idx" class="tool-item">
                         <div class="tool-item-header" @click="toggleTool('round-' + ri + '-' + idx)">
                           <div class="tool-item-left">
@@ -495,7 +495,7 @@ function dashStyle(d: number): Record<string, string> {
   const activeColor = 'var(--color-primary)';
   if (hoverPos.value === null) {
     if (d === activeDashIdx.value) {
-      return { width: max + 'px', height: '2.5px', backgroundColor: activeColor, boxShadow: '0 0 4px rgba(59,130,246,0.4)' };
+      return { width: max + 'px', height: '2.5px', backgroundColor: activeColor, boxShadow: '0 0 4px color-mix(in srgb, var(--color-primary) 40%, transparent)' };
     }
     return { width: normal + 'px', height: '1.5px', backgroundColor: normalColor, boxShadow: 'none' };
   }
@@ -505,7 +505,7 @@ function dashStyle(d: number): Record<string, string> {
   const width = normal + (max - normal) * decay;
   const height = (1.5 + decay).toFixed(2) + 'px';
   const bg = decay > 0.05 ? activeColor : normalColor;
-  const shadow = decay > 0.4 ? `0 0 ${(4 * decay).toFixed(1)}px rgba(59,130,246,0.5)` : 'none';
+  const shadow = decay > 0.4 ? `0 0 ${(4 * decay).toFixed(1)}px color-mix(in srgb, var(--color-primary) 50%, transparent)` : 'none';
   return { width: width.toFixed(1) + 'px', height, backgroundColor: bg, boxShadow: shadow };
 }
 
@@ -636,7 +636,7 @@ watch(activeNavRound, () => {
 .inline-ask-opt-text { font-style: italic; }
 .inline-ask-supplement { margin-top: 4px; }
 .inline-ask-toggle { align-self: flex-start; padding: 2px 8px; border: none; background: transparent; color: var(--color-text-secondary, #888); font-size: 12px; cursor: pointer; border-radius: 6px; transition: all .15s; }
-.inline-ask-toggle:hover { color: var(--color-primary, #6366f1); background: rgba(99,102,241,0.08); }
+.inline-ask-toggle:hover { color: var(--color-primary, #6366f1); background: color-mix(in srgb, var(--color-primary) 8%, transparent); }
 .inline-ask-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
 
 /* 流式跑马灯：实时正文容器 */
@@ -654,7 +654,7 @@ watch(activeNavRound, () => {
   vertical-align: text-bottom;
   background: var(--color-primary, #6366f1);
   border-radius: 1px;
-  box-shadow: 0 0 6px rgba(99, 102, 241, 0.55);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--color-primary) 55%, transparent);
   animation: streamingBlink 1.1s ease-in-out infinite;
 }
 @keyframes streamingBlink {
@@ -663,8 +663,8 @@ watch(activeNavRound, () => {
 }
 /* 流式思考：淡显，暗色主题下提升正文对比度 */
 .streaming-reasoning {
-  border-color: rgba(139, 92, 246, 0.28);
-  background: rgba(139, 92, 246, 0.08);
+  border-color: color-mix(in srgb, var(--color-primary) 28%, transparent);
+  background: color-mix(in srgb, var(--color-primary) 8%, transparent);
 }
 .streaming-reasoning .reasoning-header { color: var(--color-primary, #8B5CF6); }
 .streaming-reasoning .reasoning-body { color: var(--color-text-primary, #e5e7eb); }

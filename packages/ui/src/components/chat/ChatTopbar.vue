@@ -145,7 +145,7 @@ const selectedModel = computed(() => {
 
 .model-pill:hover {
   border-color: var(--el-color-primary, #7c3aed);
-  box-shadow: 0 2px 8px rgba(59, 130, 246, 0.12);
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--color-primary) 12%, transparent);
 }
 
 .model-pill-dot {

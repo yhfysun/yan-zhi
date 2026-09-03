@@ -104,7 +104,7 @@ async function reveal(f: ConversationFile) {
 .deliverable-file-card:hover {
   border-color: var(--color-primary);
   background: var(--glass-bg-hover);
-  box-shadow: 0 1px 6px rgba(124, 58, 237, 0.2);
+  box-shadow: 0 1px 6px color-mix(in srgb, var(--color-primary) 20%, transparent);
 }
 /* 文件名：一行省略，hover 时展开完整显示 */
 .deliverable-file-name {
