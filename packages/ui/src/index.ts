@@ -2,3 +2,5 @@
 export { default as App } from './App.vue';
 export { default as router } from './router';
 export * from './stores';
+export { openSettingsDrawer, closeSettingsDrawer, settingsDrawerOpen, settingsDrawerSection } from './composables/useSettingsDrawer';
+export type { SettingsDrawerSection } from './composables/useSettingsDrawer';

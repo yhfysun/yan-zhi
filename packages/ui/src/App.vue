@@ -17,7 +17,8 @@
 
         <!-- 内置默认布局 -->
         <template v-else>
-        <SideNav />
+        <!-- 桌面端：竖排 SideNav 退役，主导航由 apps/desktop TitleBar 横排承担；移动端 TabBar / Web dock 不受影响 -->
+        <SideNav v-if="!isDesktop" />
         <!-- Mobile TopBar (hidden on chat page - Chat has its own topbar) -->
         <header v-if="isMobile && route.name !== 'chat'" class="mobile-topbar">
           <span class="mobile-topbar-title">{{ pageTitle }}</span>
