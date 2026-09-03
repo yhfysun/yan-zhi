@@ -53,6 +53,7 @@ pnpm-debug.log*
 
 # 数据库
 *.db
+*.db.bak-*
 *.db-journal
 *.db-shm
 *.db-wal

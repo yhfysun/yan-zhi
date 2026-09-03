@@ -1,0 +1,1635 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>言智 · 数据工作台 UI 原型</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+/* ============================================================
+   言智 · 数据工作台 —— 设计令牌
+   题材：数据库 / 语义层 / 编译器流水线
+   取向：编目卡片 (hairline catalog) + 仪器面板 (dark scope inset)
+   ============================================================ */
+:root{
+  /* —— 色板（具名，非 primary/secondary） —— */
+  --canvas:#FBFAFD;        /* 工作台底色：极浅冷白，区别于 --color-bg #f8fafc */
+  --surface:#FFFFFF;       /* 卡片 / 面板 */
+  --ink:#14161A;           /* 主文本，带蓝调的近黑 */
+  --ink-2:#5B6070;         /* 次要文本 */
+  --ink-3:#8E93A6;         /* 弱文本 / 占位 */
+  --rule:#E7E5EE;          /* 发丝分隔线 */
+  --rule-strong:#D3D0DE;   /* 表头下边 / 强调线 */
+  --brand:#7C3AED;         /* 沿用言智品牌紫 */
+  --brand-soft:#F1ECFE;
+  --brand-line:#DDD0FB;
+  --signal:#0E9F8F;        /* 度量 / 成功 / 数值 */
+  --signal-soft:#E4F5F2;
+  --signal-line:#B8E3DC;
+  --caution:#B4710A;       /* 草稿 / 待复核 / AI 建议 */
+  --caution-soft:#FDF3E2;
+  --caution-line:#F0DDB6;
+  --danger:#D6336C;        /* 拒绝 / 敏感 / 写操作 */
+  --danger-soft:#FDECF2;
+  --danger-line:#F6C9D8;
+  --void:#14161A;          /* SQL 编辑器深底（仪器面板） */
+  --void-2:#1C1F27;
+  --void-3:#2A2E38;
+  --void-ink:#E6E8EE;
+  --void-ink-2:#8B91A3;
+
+  /* —— 语义角色色（本体字段角色，功能性非装饰） —— */
+  --role-entity:#334155;
+  --role-dim:#0E9F8F;
+  --role-measure:#7C3AED;
+  --role-time:#4F7DF3;
+  --role-filter:#B4710A;
+  --role-policy:#D6336C;
+
+  /* —— 字体：三角色 —— */
+  --f-display:'Space Grotesk','PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif;
+  --f-body:'IBM Plex Sans','PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif;
+  --f-mono:'JetBrains Mono','SFMono-Regular',Consolas,'Liberation Mono',monospace;
+
+  /* —— 间距（4 基准） —— */
+  --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:20px; --s6:24px; --s7:32px; --s8:40px;
+
+  /* —— 圆角：数据工具用小圆角，拒绝 pill 泛滥 —— */
+  --r-xs:3px; --r-sm:5px; --r-md:8px; --r-lg:12px;
+
+  /* —— 阴影：只留一级 —— */
+  --sh-1:0 1px 2px rgba(20,22,26,.04);
+  --sh-2:0 4px 16px rgba(20,22,26,.07);
+
+  --rail-w:56px;
+  --ease:cubic-bezier(.16,1,.3,1);
+}
+
+*,*::before,*::after{box-sizing:border-box}
+html,body{height:100%}
+body{
+  margin:0; background:var(--canvas); color:var(--ink);
+  font-family:var(--f-body); font-size:13px; line-height:1.55;
+  -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility;
+}
+button,input,select,textarea{font:inherit;color:inherit}
+button{cursor:pointer;background:none;border:none;padding:0}
+:focus-visible{outline:2px solid var(--brand);outline-offset:2px;border-radius:var(--r-xs)}
+::selection{background:var(--brand-soft)}
+.mono{font-family:var(--f-mono);font-variant-numeric:tabular-nums}
+
+/* ===== 滚动条 ===== */
+*::-webkit-scrollbar{width:8px;height:8px}
+*::-webkit-scrollbar-thumb{background:rgba(20,22,26,.16);border-radius:4px}
+*::-webkit-scrollbar-thumb:hover{background:rgba(20,22,26,.3)}
+*::-webkit-scrollbar-track{background:transparent}
+
+/* ============================================================
+   外壳
+   ============================================================ */
+.app{display:flex;height:100vh;overflow:hidden}
+
+/* 极简图标导轨（提示这是言智内部的一页） */
+.rail{
+  width:var(--rail-w);flex-shrink:0;background:var(--surface);
+  border-right:1px solid var(--rule);
+  display:flex;flex-direction:column;align-items:center;gap:var(--s1);padding:var(--s3) 0;
+}
+.rail-logo{
+  width:28px;height:28px;border-radius:var(--r-md);margin-bottom:var(--s3);
+  background:linear-gradient(135deg,#7C3AED,#A78BFA);
+  color:#fff;display:grid;place-items:center;font-family:var(--f-display);font-weight:700;font-size:14px;
+}
+.rail-btn{
+  width:34px;height:34px;border-radius:var(--r-md);display:grid;place-items:center;
+  color:var(--ink-3);transition:background .18s var(--ease),color .18s var(--ease)
+}
+.rail-btn:hover{background:var(--canvas);color:var(--ink-2)}
+.rail-btn.on{background:var(--brand-soft);color:var(--brand)}
+
+/* 主区 */
+.main{flex:1;min-width:0;display:flex;flex-direction:column}
+.topbar{
+  height:52px;flex-shrink:0;background:var(--surface);border-bottom:1px solid var(--rule);
+  display:flex;align-items:center;gap:var(--s5);padding:0 var(--s5)
+}
+.crumb{display:flex;align-items:baseline;gap:var(--s2);min-width:0}
+.crumb h1{
+  margin:0;font-family:var(--f-display);font-size:15px;font-weight:600;letter-spacing:-.01em;
+  white-space:nowrap
+}
+.crumb .meta{font-size:11.5px;color:var(--ink-3);white-space:nowrap}
+
+/* 视图切换（分段控件，非圆角 pill） */
+.tabs{display:flex;gap:2px;margin-left:auto;background:var(--canvas);padding:3px;border-radius:var(--r-md)}
+.tab{
+  padding:5px 12px;border-radius:var(--r-sm);font-size:12.5px;font-weight:500;color:var(--ink-2);
+  transition:all .18s var(--ease);white-space:nowrap
+}
+.tab:hover{color:var(--ink)}
+.tab.on{background:var(--surface);color:var(--brand);font-weight:600;box-shadow:var(--sh-1)}
+
+.body{flex:1;min-height:0;overflow:hidden;position:relative}
+.view{display:none;height:100%}
+.view.on{display:flex}
+
+/* ============================================================
+   通用件
+   ============================================================ */
+.btn{
+  display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 12px;
+  border:1px solid var(--rule-strong);border-radius:var(--r-sm);background:var(--surface);
+  font-size:12.5px;font-weight:500;color:var(--ink);
+  transition:all .16s var(--ease);white-space:nowrap
+}
+.btn:hover{border-color:var(--ink-3);background:var(--canvas)}
+.btn:active{transform:translateY(.5px)}
+.btn.primary{background:var(--brand);border-color:var(--brand);color:#fff}
+.btn.primary:hover{background:#6D2FDB;border-color:#6D2FDB}
+.btn.ghost{border-color:transparent;color:var(--ink-2)}
+.btn.ghost:hover{background:var(--canvas);border-color:var(--rule)}
+.btn.sm{height:26px;padding:0 9px;font-size:12px}
+.btn.warn{color:var(--danger);border-color:var(--danger-line)}
+.btn.warn:hover{background:var(--danger-soft);border-color:var(--danger)}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+
+.inp{
+  height:30px;padding:0 10px;border:1px solid var(--rule-strong);border-radius:var(--r-sm);
+  background:var(--surface);font-size:12.5px;width:100%;transition:border-color .16s
+}
+.inp:focus{outline:none;border-color:var(--brand);box-shadow:0 0 0 3px var(--brand-soft)}
+.inp::placeholder{color:var(--ink-3)}
+textarea.inp{height:auto;padding:8px 10px;line-height:1.6;resize:vertical}
+select.inp{cursor:pointer}
+
+/* 段内标签（eyebrow） */
+.eyebrow{
+  font-family:var(--f-display);font-size:10.5px;font-weight:600;letter-spacing:.1em;
+  text-transform:uppercase;color:var(--ink-3)
+}
+.sect-title{display:flex;align-items:center;justify-content:space-between;margin-bottom:var(--s3)}
+.sect-title h2{margin:0;font-family:var(--f-display);font-size:13px;font-weight:600}
+
+/* 徽标 */
+.badge{
+  display:inline-flex;align-items:center;gap:4px;height:19px;padding:0 6px;
+  border-radius:var(--r-xs);font-size:11px;font-weight:600;letter-spacing:.01em;
+  border:1px solid transparent;white-space:nowrap
+}
+.b-entity{background:#EEF1F5;color:var(--role-entity);border-color:#DCE1E8}
+.b-dim{background:var(--signal-soft);color:var(--role-dim);border-color:var(--signal-line)}
+.b-measure{background:var(--brand-soft);color:var(--role-measure);border-color:var(--brand-line)}
+.b-time{background:#EAF0FE;color:var(--role-time);border-color:#C9D8FC}
+.b-filter{background:var(--caution-soft);color:var(--role-filter);border-color:var(--caution-line)}
+.b-policy{background:var(--danger-soft);color:var(--role-policy);border-color:var(--danger-line)}
+.b-draft{background:var(--caution-soft);color:var(--caution);border-color:var(--caution-line)}
+.b-live{background:var(--signal-soft);color:var(--signal);border-color:var(--signal-line)}
+.b-neut{background:var(--canvas);color:var(--ink-2);border-color:var(--rule)}
+
+.dot{width:6px;height:6px;border-radius:50%;flex-shrink:0}
+.dot.ok{background:var(--signal)}
+.dot.warn{background:var(--caution)}
+.dot.err{background:var(--danger)}
+
+/* 发丝分隔 */
+.hr{height:1px;background:var(--rule);border:0;margin:0}
+
+/* ============================================================
+   视图 1 · 数据源
+   ============================================================ */
+.v-ds{flex-direction:column;width:100%}
+.pane-head{
+  flex-shrink:0;background:var(--surface);border-bottom:1px solid var(--rule);
+  padding:var(--s3) var(--s5);display:flex;align-items:center;gap:var(--s3)
+}
+.pane-head .grow{flex:1}
+.search{position:relative;max-width:260px}
+.search .inp{padding-left:28px}
+.search svg{position:absolute;left:8px;top:8px;color:var(--ink-3)}
+
+.ds-scroll{flex:1;min-height:0;overflow-y:auto;padding:var(--s5)}
+.ds-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:var(--s4);max-width:1400px}
+
+/* 编目卡片：无投影、发丝线、等宽型号 */
+.card{
+  background:var(--surface);border:1px solid var(--rule);border-radius:var(--r-md);
+  overflow:hidden;transition:border-color .18s var(--ease),box-shadow .18s var(--ease)
+}
+.card:hover{border-color:var(--rule-strong);box-shadow:var(--sh-2)}
+.card-head{padding:var(--s3) var(--s4) var(--s3);border-bottom:1px solid var(--rule)}
+.card-top{display:flex;align-items:center;gap:var(--s2);margin-bottom:6px}
+.kind{
+  font-family:var(--f-mono);font-size:10.5px;font-weight:600;letter-spacing:.04em;
+  padding:2px 6px;border-radius:var(--r-xs);background:var(--void);color:#fff
+}
+.kind.sqlite{background:#334155}
+.kind.project{background:linear-gradient(90deg,#7C3AED,#A78BFA)}
+.kind.mongo{background:#0E9F8F}
+.card-title{
+  margin:0;font-family:var(--f-display);font-size:14.5px;font-weight:600;letter-spacing:-.01em;
+  display:flex;align-items:center;gap:6px
+}
+.card-sub{margin:4px 0 0;font-size:11.5px;color:var(--ink-3)}
+.card-body{padding:var(--s3) var(--s4)}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:4px var(--s3);font-size:12px;align-items:baseline}
+.kv dt{color:var(--ink-3);white-space:nowrap}
+.kv dd{margin:0;font-family:var(--f-mono);font-size:11.5px;color:var(--ink-2);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.card-foot{
+  padding:var(--s2) var(--s4);border-top:1px solid var(--rule);background:#FDFDFF;
+  display:flex;align-items:center;gap:var(--s2)
+}
+.stat{display:flex;align-items:baseline;gap:4px;font-size:11.5px;color:var(--ink-3)}
+.stat b{font-family:var(--f-mono);font-size:12.5px;font-weight:600;color:var(--ink)}
+.card-foot .sp{flex:1}
+
+/* 新建数据源表单（内嵌展开） */
+.form-card{grid-column:1/-1;background:var(--surface);border:1px solid var(--brand-line);border-radius:var(--r-md)}
+.form-card .card-head{background:var(--brand-soft);border-bottom-color:var(--brand-line)}
+.fgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:var(--s3) var(--s4);padding:var(--s4)}
+.field{display:flex;flex-direction:column;gap:5px}
+.field label{font-size:11.5px;font-weight:500;color:var(--ink-2)}
+.field .hint{font-size:11px;color:var(--ink-3)}
+.typepick{display:flex;flex-wrap:wrap;gap:6px}
+.typepick button{
+  padding:4px 9px;border:1px solid var(--rule-strong);border-radius:var(--r-sm);
+  font-size:12px;background:var(--surface);transition:all .16s var(--ease)
+}
+.typepick button:hover{border-color:var(--ink-3)}
+.typepick button.on{border-color:var(--brand);background:var(--brand-soft);color:var(--brand);font-weight:600}
+
+/* ============================================================
+   视图 2 · 本体（三栏）
+   ============================================================ */
+.v-ont{width:100%;display:flex}
+
+/* 左：本体列表 —— 筛选固定顶部，列表独立滚动 */
+.col-left{
+  width:264px;flex-shrink:0;background:var(--surface);border-right:1px solid var(--rule);
+  display:flex;flex-direction:column;min-height:0
+}
+.list-head{flex-shrink:0;padding:var(--s3);border-bottom:1px solid var(--rule);display:flex;flex-direction:column;gap:var(--s3)}
+.list{flex:1;min-height:0;overflow-y:auto;padding:var(--s2)}
+.li{
+  padding:9px 10px;border-radius:var(--r-sm);cursor:pointer;margin-bottom:2px;
+  display:flex;flex-direction:column;gap:3px;transition:background .15s
+}
+.li:hover{background:var(--canvas)}
+.li.on{background:var(--brand-soft)}
+.li.on .li-name{color:var(--brand)}
+.li-row{display:flex;align-items:center;gap:6px}
+.li-code{font-family:var(--f-mono);font-size:11px;color:var(--ink-3);flex-shrink:0}
+.li.on .li-code{color:#8B5CF6}
+.li-name{font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.li-desc{font-size:11.5px;color:var(--ink-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.li-tags{display:flex;gap:4px;margin-top:2px}
+.chipmini{
+  font-family:var(--f-mono);font-size:10px;padding:1px 5px;border-radius:var(--r-xs);
+  background:var(--canvas);color:var(--ink-3);border:1px solid var(--rule)
+}
+
+/* 中：定义区 */
+.col-mid{flex:1;min-width:0;display:flex;flex-direction:column;background:var(--surface)}
+.subtabs{flex-shrink:0;display:flex;gap:var(--s5);padding:0 var(--s5);border-bottom:1px solid var(--rule);background:var(--surface)}
+.subtab{
+  padding:9px 0;font-size:12.5px;font-weight:500;color:var(--ink-2);
+  border-bottom:2px solid transparent;margin-bottom:-1px;transition:color .16s
+}
+.subtab:hover{color:var(--ink)}
+.subtab.on{color:var(--brand);border-bottom-color:var(--brand);font-weight:600}
+.mid-scroll{flex:1;min-height:0;overflow-y:auto;padding:var(--s5)}
+.mid-inner{max-width:900px}
+.subpane{display:none}.subpane.on{display:block}
+
+.defgrid{display:grid;grid-template-columns:1fr 1fr;gap:var(--s4);margin-bottom:var(--s5)}
+.defgrid .full{grid-column:1/-1}
+
+/* 字段表（编目表格：发丝线、等宽名、小圆角） */
+.tbl{width:100%;border-collapse:separate;border-spacing:0;font-size:12.5px}
+.tbl th{
+  text-align:left;font-weight:600;font-size:11px;color:var(--ink-3);letter-spacing:.04em;
+  padding:6px 10px;border-bottom:1px solid var(--rule-strong);background:var(--surface);
+  position:sticky;top:0;z-index:1;white-space:nowrap
+}
+.tbl td{padding:8px 10px;border-bottom:1px solid var(--rule);vertical-align:middle}
+.tbl tr:hover td{background:#FDFDFF}
+.tbl .nm{font-family:var(--f-mono);font-size:11.5px;color:var(--ink)}
+.tbl .ex{font-family:var(--f-mono);font-size:11px;color:var(--ink-3)}
+.ref{
+  display:inline-flex;align-items:center;gap:4px;font-family:var(--f-mono);font-size:10.5px;
+  padding:1px 5px;border-radius:var(--r-xs);background:var(--brand-soft);color:var(--brand);
+  border:1px solid var(--brand-line);cursor:pointer
+}
+.ref:hover{background:#E7DEFD}
+.lockico{color:var(--ink-3);display:inline-flex;vertical-align:-2px}
+.conf{font-family:var(--f-mono);font-size:11px}
+.conf.hi{color:var(--signal)}.conf.mid{color:var(--caution)}.conf.lo{color:var(--danger)}
+.syn{font-size:11px;color:var(--ink-3)}
+
+/* 关系图（SVG 迷你图） */
+.relmap{background:var(--canvas);border:1px solid var(--rule);border-radius:var(--r-md);padding:var(--s4)}
+.rel-table{margin-top:var(--s4)}
+
+/* 示例问答 */
+.ex-item{border:1px solid var(--rule);border-radius:var(--r-md);padding:var(--s3) var(--s4);margin-bottom:var(--s3);background:var(--surface)}
+.ex-q{font-size:13px;font-weight:500;display:flex;gap:8px;align-items:flex-start}
+.ex-q .idx{font-family:var(--f-mono);font-size:11px;color:var(--ink-3);flex-shrink:0;margin-top:2px}
+.ex-meta{display:flex;gap:var(--s3);margin-top:6px;font-size:11px;color:var(--ink-3);padding-left:22px}
+
+/* 底部动作条（4 个动作，含文说明而非 tooltip） */
+.actionbar{
+  flex-shrink:0;border-top:1px solid var(--rule);background:var(--surface);
+  padding:var(--s3) var(--s5);display:flex;align-items:center;gap:var(--s2)
+}
+.act{
+  display:flex;flex-direction:column;align-items:flex-start;gap:1px;
+  padding:6px 12px;border:1px solid var(--rule-strong);border-radius:var(--r-sm);
+  background:var(--surface);transition:all .16s var(--ease);text-align:left
+}
+.act:hover{border-color:var(--ink-3);background:var(--canvas)}
+.act .t{font-size:12.5px;font-weight:600;display:flex;align-items:center;gap:5px}
+.act .d{font-size:10.5px;color:var(--ink-3)}
+.act.publish{margin-left:auto;border-color:var(--brand);background:var(--brand);color:#fff}
+.act.publish .d{color:#E9D5FF}
+.act.publish:hover{background:#6D2FDB;border-color:#6D2FDB}
+
+/* 右：编译预览 —— 签名元素「编译轨道」 */
+.col-right{
+  width:400px;flex-shrink:0;border-left:1px solid var(--rule);background:var(--surface);
+  display:flex;flex-direction:column;min-height:0
+}
+.rail-head{flex-shrink:0;padding:var(--s3) var(--s4);border-bottom:1px solid var(--rule)}
+/* —— 编译轨道（signature） —— */
+.track{display:flex;align-items:center;gap:0;margin-top:var(--s3)}
+.stage{display:flex;align-items:center;gap:6px;flex-shrink:0}
+.stage .n{
+  width:18px;height:18px;border-radius:50%;border:1.5px solid var(--rule-strong);
+  display:grid;place-items:center;font-family:var(--f-mono);font-size:10px;font-weight:600;
+  color:var(--ink-3);background:var(--surface)
+}
+.stage .l{font-size:11px;color:var(--ink-3);white-space:nowrap}
+.stage.done .n{border-color:var(--signal);background:var(--signal);color:#fff}
+.stage.done .l{color:var(--ink-2)}
+.stage.cur .n{border-color:var(--brand);background:var(--brand-soft);color:var(--brand);box-shadow:0 0 0 3px var(--brand-soft)}
+.stage.cur .l{color:var(--brand);font-weight:600}
+.stage.err .n{border-color:var(--danger);background:var(--danger-soft);color:var(--danger)}
+.stage.err .l{color:var(--danger);font-weight:600}
+.conn{flex:1;height:1.5px;background:var(--rule-strong);min-width:10px;margin:0 6px}
+.conn.done{background:var(--signal)}
+
+.rail-body{flex:1;min-height:0;overflow-y:auto}
+/* 深色仪器面板：SQL */
+.scope{background:var(--void);color:var(--void-ink);border-radius:var(--r-md);overflow:hidden;margin:var(--s4)}
+.scope-bar{
+  display:flex;align-items:center;gap:6px;padding:7px 10px;background:var(--void-2);
+  border-bottom:1px solid var(--void-3);font-size:11px;color:var(--void-ink-2)
+}
+.scope-bar .lang{font-family:var(--f-mono);font-size:10.5px;letter-spacing:.06em;color:#A78BFA}
+.scope-bar .sp{flex:1}
+.scope pre{
+  margin:0;padding:var(--s3) var(--s4);font-family:var(--f-mono);font-size:11.5px;line-height:1.75;
+  overflow-x:auto;white-space:pre
+}
+.k{color:#C4B5FD}.s{color:#7DD3C0}.n{color:#F0B37E}.c{color:#636B7E;font-style:italic}.f{color:#8AB4F8}
+.scope-foot{
+  display:flex;gap:var(--s4);padding:7px 10px;background:var(--void-2);border-top:1px solid var(--void-3);
+  font-family:var(--f-mono);font-size:10.5px;color:var(--void-ink-2)
+}
+
+.diag{border:1px solid var(--rule);border-radius:var(--r-md);margin:0 var(--s4) var(--s4);overflow:hidden}
+.diag-row{display:flex;gap:8px;padding:8px 11px;border-bottom:1px solid var(--rule);font-size:11.5px;align-items:flex-start}
+.diag-row:last-child{border-bottom:none}
+.diag-row .lvl{flex-shrink:0;font-family:var(--f-mono);font-size:10px;font-weight:600;padding:1px 5px;border-radius:var(--r-xs)}
+.lvl.ok{background:var(--signal-soft);color:var(--signal)}
+.lvl.warn{background:var(--caution-soft);color:var(--caution)}
+.lvl.err{background:var(--danger-soft);color:var(--danger)}
+.diag-row .msg{flex:1;color:var(--ink-2)}
+.diag-row .loc{font-family:var(--f-mono);font-size:10.5px;color:var(--ink-3)}
+
+/* ============================================================
+   视图 3 · 标准属性
+   ============================================================ */
+.v-attr{width:100%;display:flex}
+.attr-right{flex:1;min-width:0;display:flex;flex-direction:column;background:var(--surface)}
+.attr-scroll{flex:1;min-height:0;overflow-y:auto;padding:var(--s5)}
+.attr-inner{max-width:1000px}
+
+/* ============================================================
+   视图 4 · 数据控制台
+   ============================================================ */
+.v-con{width:100%;display:flex}
+.schema{
+  width:236px;flex-shrink:0;background:var(--surface);border-right:1px solid var(--rule);
+  display:flex;flex-direction:column;min-height:0
+}
+.tree{flex:1;min-height:0;overflow-y:auto;padding:var(--s2)}
+.tn{
+  display:flex;align-items:center;gap:5px;padding:5px 8px;border-radius:var(--r-xs);
+  font-size:12px;cursor:pointer;transition:background .14s
+}
+.tn:hover{background:var(--canvas)}
+.tn.on{background:var(--brand-soft);color:var(--brand);font-weight:600}
+.tn .caret{color:var(--ink-3);font-size:9px;transition:transform .18s var(--ease);flex-shrink:0}
+.tn .caret.open{transform:rotate(90deg)}
+.tn.leaf{padding-left:24px;font-family:var(--f-mono);font-size:11px;color:var(--ink-2)}
+.tn .ty{font-family:var(--f-mono);font-size:9.5px;color:var(--ink-3);margin-left:auto}
+.tn-grp{display:none}.tn-grp.open{display:block}
+
+.con-main{flex:1;min-width:0;display:flex;flex-direction:column}
+.con-bar{
+  flex-shrink:0;height:44px;border-bottom:1px solid var(--rule);background:var(--surface);
+  display:flex;align-items:center;gap:var(--s3);padding:0 var(--s4)
+}
+.guard{
+  display:inline-flex;align-items:center;gap:5px;font-size:11px;color:var(--signal);
+  background:var(--signal-soft);border:1px solid var(--signal-line);padding:2px 7px;border-radius:var(--r-xs)
+}
+/* 编辑器（深色仪器面板，占上半） */
+.editor{flex:1.05;min-height:0;background:var(--void);display:flex;flex-direction:column}
+.ed-bar{
+  flex-shrink:0;height:32px;background:var(--void-2);border-bottom:1px solid var(--void-3);
+  display:flex;align-items:center;gap:var(--s3);padding:0 var(--s3);
+  font-family:var(--f-mono);font-size:11px;color:var(--void-ink-2)
+}
+.ed-bar .sp{flex:1}
+.ed-body{flex:1;min-height:0;display:flex;overflow:hidden}
+.gutter{
+  flex-shrink:0;padding:var(--s3) 10px var(--s3) var(--s4);font-family:var(--f-mono);
+  font-size:12px;line-height:1.75;color:#4A5060;text-align:right;user-select:none;background:var(--void)
+}
+.ed-code{
+  flex:1;min-width:0;padding:var(--s3) var(--s4);font-family:var(--f-mono);font-size:12.5px;
+  line-height:1.75;color:var(--void-ink);white-space:pre;overflow:auto
+}
+.ed-code .sel{background:rgba(124,58,237,.28);box-shadow:0 0 0 1px rgba(167,139,250,.4)}
+.caret-blink{
+  display:inline-block;width:1.5px;height:15px;background:#A78BFA;vertical-align:-3px;
+  animation:blink 1.15s steps(2,start) infinite
+}
+@keyframes blink{to{visibility:hidden}}
+
+/* 结果（下半） */
+.result{
+  flex:1;min-height:0;display:flex;flex-direction:column;background:var(--surface);
+  border-top:1px solid var(--rule-strong)
+}
+.res-head{
+  flex-shrink:0;height:38px;display:flex;align-items:center;gap:var(--s3);padding:0 var(--s4);
+  border-bottom:1px solid var(--rule)
+}
+.res-tabs{display:flex;gap:var(--s4)}
+.res-tab{font-size:12px;color:var(--ink-2);padding:8px 0;border-bottom:2px solid transparent;margin-bottom:-1px}
+.res-tab.on{color:var(--ink);font-weight:600;border-bottom-color:var(--brand)}
+.res-scroll{flex:1;min-height:0;overflow:auto}
+.grid{width:100%;border-collapse:separate;border-spacing:0;font-size:12px}
+.grid th{
+  position:sticky;top:0;z-index:1;background:#FAFAFD;text-align:left;padding:7px 10px;
+  font-size:11px;font-weight:600;color:var(--ink-2);border-bottom:1px solid var(--rule-strong);
+  border-right:1px solid var(--rule);white-space:nowrap
+}
+.grid th:last-child{border-right:none}
+.grid th .ty{font-family:var(--f-mono);font-size:9.5px;color:var(--ink-3);font-weight:400;margin-left:4px}
+.grid td{
+  padding:6px 10px;border-bottom:1px solid var(--rule);border-right:1px solid var(--rule);
+  white-space:nowrap;max-width:220px;overflow:hidden;text-overflow:ellipsis
+}
+.grid td:last-child{border-right:none}
+.grid tr:hover td{background:#FAFAFE}
+.grid .num{font-family:var(--f-mono);text-align:right;font-variant-numeric:tabular-nums}
+.grid .pk{font-family:var(--f-mono);color:var(--brand)}
+.grid .st{font-size:11px}
+.res-foot{
+  flex-shrink:0;height:34px;border-top:1px solid var(--rule);display:flex;align-items:center;
+  gap:var(--s3);padding:0 var(--s4);font-size:11.5px;color:var(--ink-3);background:#FDFDFF
+}
+.res-foot .sp{flex:1}
+
+/* 空态 / 错误 */
+.empty{
+  flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  gap:var(--s2);padding:var(--s8);text-align:center;color:var(--ink-3)
+}
+.empty .big{font-family:var(--f-display);font-size:15px;color:var(--ink-2);font-weight:600}
+.empty .sub{font-size:12.5px;max-width:340px;line-height:1.7}
+.empty .kbd{
+  font-family:var(--f-mono);font-size:11px;background:var(--canvas);border:1px solid var(--rule-strong);
+  border-bottom-width:2px;border-radius:var(--r-xs);padding:1px 5px;color:var(--ink-2)
+}
+
+/* ============================================================
+   视图 5 · 查询结果面板（智能体右栏）
+   ============================================================ */
+.v-res{width:100%;display:flex;background:var(--canvas)}
+.res-frame{
+  width:420px;flex-shrink:0;background:var(--surface);border-right:1px solid var(--rule);
+  display:flex;flex-direction:column;min-height:0;box-shadow:var(--sh-2)
+}
+.chat-ghost{flex:1;min-width:0;padding:var(--s6);overflow-y:auto}
+.gmsg{max-width:560px;margin-bottom:var(--s5)}
+.gmsg .who{font-size:11px;color:var(--ink-3);margin-bottom:5px;font-family:var(--f-display);letter-spacing:.04em}
+.bubble{background:var(--surface);border:1px solid var(--rule);border-radius:var(--r-lg);padding:var(--s3) var(--s4);font-size:13px;line-height:1.7}
+.bubble.me{background:var(--brand-soft);border-color:var(--brand-line)}
+.insight{
+  border-left:2px solid var(--brand);padding:var(--s2) 0 var(--s2) var(--s3);margin-top:var(--s3);
+  font-size:12.5px;color:var(--ink-2);line-height:1.75
+}
+.insight b{color:var(--ink);font-family:var(--f-mono)}
+
+.panel-head{flex-shrink:0;padding:var(--s3) var(--s4);border-bottom:1px solid var(--rule)}
+.panel-head h3{margin:4px 0 0;font-family:var(--f-display);font-size:14px;font-weight:600}
+.panel-scroll{flex:1;min-height:0;overflow-y:auto}
+.filterbar{padding:var(--s3) var(--s4);border-bottom:1px solid var(--rule);background:#FDFDFF;display:flex;flex-direction:column;gap:var(--s2)}
+.frow{display:flex;align-items:center;gap:6px}
+.frow .fl{font-size:11.5px;color:var(--ink-3);width:52px;flex-shrink:0}
+.frow .inp{height:26px;font-size:12px}
+.frow .op{
+  width:56px;flex-shrink:0;height:26px;border:1px solid var(--rule-strong);border-radius:var(--r-sm);
+  background:var(--surface);font-family:var(--f-mono);font-size:11.5px;color:var(--ink-2);cursor:pointer
+}
+.valchips{display:flex;flex-wrap:wrap;gap:4px;padding:2px 0}
+.vchip{
+  padding:2px 8px;border:1px solid var(--rule-strong);border-radius:var(--r-sm);
+  font-size:11.5px;background:var(--surface);transition:all .15s var(--ease)
+}
+.vchip:hover{border-color:var(--ink-3)}
+.vchip.on{background:var(--brand);border-color:var(--brand);color:#fff;font-weight:500}
+.vchip .k{font-family:var(--f-mono);font-size:10px;opacity:.65;margin-left:3px}
+
+.mini-chart{padding:var(--s4)}
+.bars{display:flex;align-items:flex-end;gap:var(--s2);height:120px;margin-top:var(--s3)}
+.bar{flex:1;background:var(--brand-soft);border-top:2px solid var(--brand);border-radius:2px 2px 0 0;position:relative;min-height:3px}
+.bar .v{
+  position:absolute;top:-16px;left:0;right:0;text-align:center;font-family:var(--f-mono);
+  font-size:9.5px;color:var(--ink-2)
+}
+.bar .x{position:absolute;bottom:-18px;left:0;right:0;text-align:center;font-size:10px;color:var(--ink-3)}
+
+.pager{
+  flex-shrink:0;height:38px;border-top:1px solid var(--rule);display:flex;align-items:center;
+  gap:var(--s2);padding:0 var(--s4);font-size:11.5px;color:var(--ink-3)
+}
+.pager .sp{flex:1}
+.pgbtn{
+  min-width:24px;height:24px;padding:0 5px;border:1px solid var(--rule-strong);border-radius:var(--r-xs);
+  background:var(--surface);font-family:var(--f-mono);font-size:11px;color:var(--ink-2);transition:all .15s
+}
+.pgbtn:hover{border-color:var(--ink-3)}
+.pgbtn.on{background:var(--brand);border-color:var(--brand);color:#fff}
+.pgbtn:disabled{opacity:.4;cursor:not-allowed}
+
+/* 移动端 */
+@media (max-width:1180px){
+  .col-right{width:320px}
+}
+@media (max-width:960px){
+  .col-left,.schema{display:none}
+  .col-right{width:300px}
+  .tabs{overflow-x:auto}
+}
+@media (prefers-reduced-motion:reduce){
+  *{animation-duration:.001ms!important;transition-duration:.001ms!important}
+}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- ============ 极简导轨 ============ -->
+  <nav class="rail" aria-label="全局导航">
+    <div class="rail-logo">言</div>
+    <button class="rail-btn" aria-label="首页"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/></svg></button>
+    <button class="rail-btn on" aria-label="对话"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M21 12a8 8 0 0 1-11.6 7.1L3 21l1.9-6.4A8 8 0 1 1 21 12Z"/></svg></button>
+    <button class="rail-btn" aria-label="浏览器"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18a15 15 0 0 1 0-18Z"/></svg></button>
+    <button class="rail-btn" aria-label="消息"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 5h16v14H4z"/><path d="m4 6 8 6 8-6"/></svg></button>
+    <div style="flex:1"></div>
+    <button class="rail-btn" aria-label="设置"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9 17 7M7 17l-2.1 2.1"/></svg></button>
+  </nav>
+
+  <div class="main">
+    <!-- ============ 顶栏 ============ -->
+    <header class="topbar">
+      <div class="crumb">
+        <h1>数据工作台</h1>
+        <span class="meta">3 个数据源 · 27 个本体 · 12 个标准属性</span>
+      </div>
+      <div class="tabs" role="tablist">
+        <button class="tab on" data-v="ds" role="tab">数据源</button>
+        <button class="tab" data-v="ont" role="tab">本体</button>
+        <button class="tab" data-v="attr" role="tab">标准属性</button>
+        <button class="tab" data-v="con" role="tab">控制台</button>
+        <button class="tab" data-v="res" role="tab">结果面板</button>
+      </div>
+    </header>
+
+    <div class="body">
+
+      <!-- ==================== 视图 1 · 数据源 ==================== -->
+      <section class="view v-ds on" id="v-ds">
+        <div class="pane-head">
+          <div class="search">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+            <input class="inp" placeholder="搜索数据源 / 主机 / 库名">
+          </div>
+          <div class="grow"></div>
+          <button class="btn">同步结构</button>
+          <button class="btn primary">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M5 12h14"/></svg>
+            新建数据源
+          </button>
+        </div>
+
+        <div class="ds-scroll">
+          <div class="ds-grid">
+
+            <!-- 新建表单（内嵌展开态） -->
+            <div class="form-card">
+              <div class="card-head">
+                <div class="card-top"><span class="kind">MYSQL</span><span class="eyebrow">新建连接</span></div>
+                <h3 class="card-title">生产交易库</h3>
+              </div>
+              <div class="fgrid">
+                <div class="field" style="grid-column:1/-1">
+                  <label>数据库类型</label>
+                  <div class="typepick">
+                    <button class="on">MySQL</button><button>PostgreSQL</button><button>达梦 DM</button>
+                    <button>Oracle</button><button>SQLite</button><button>项目库</button>
+                    <button>MongoDB</button><button>Elastic</button>
+                  </div>
+                </div>
+                <div class="field"><label>主机</label><input class="inp mono" value="10.0.12.31"></div>
+                <div class="field"><label>端口</label><input class="inp mono" value="3306"></div>
+                <div class="field"><label>数据库</label><input class="inp mono" value="trade"></div>
+                <div class="field"><label>用户名</label><input class="inp mono" value="yan_zhi_ro"></div>
+                <div class="field"><label>密码</label><input class="inp mono" type="password" value="••••••••">
+                  <span class="hint">AES 加密存本地，不回显</span></div>
+                <div class="field"><label>连接用途</label>
+                  <select class="inp"><option>只读（默认）</option><option>可写（需显式开启）</option></select>
+                </div>
+                <div class="field" style="grid-column:1/-1;flex-direction:row;align-items:center;gap:16px">
+                  <label style="display:flex;align-items:center;gap:6px;font-weight:400">
+                    <input type="checkbox" checked style="accent-color:#7C3AED"> SSL
+                  </label>
+                  <label style="display:flex;align-items:center;gap:6px;font-weight:400">
+                    <input type="checkbox" style="accent-color:#7C3AED"> 允许写操作
+                  </label>
+                  <span class="hint">写操作默认关闭，且需在会话中限时开启</span>
+                </div>
+              </div>
+              <div class="card-foot">
+                <button class="btn sm">测试连接</button>
+                <span class="stat" style="color:var(--signal)"><span class="dot ok"></span>连接成功 · 42 ms</span>
+                <div class="sp"></div>
+                <button class="btn sm">取消</button>
+                <button class="btn sm primary">保存并同步结构</button>
+              </div>
+            </div>
+
+            <!-- 卡片：项目库 -->
+            <article class="card">
+              <div class="card-head">
+                <div class="card-top"><span class="kind project">PROJECT</span><span class="eyebrow">内置</span>
+                  <div style="flex:1"></div><span class="badge b-live"><span class="dot ok"></span>已连接</span></div>
+                <h3 class="card-title">言智项目库</h3>
+                <p class="card-sub">应用自身的 data.db，开箱可用</p>
+              </div>
+              <div class="card-body">
+                <dl class="kv">
+                  <dt>位置</dt><dd>userData/data.db</dd>
+                  <dt>方言</dt><dd>sqlite</dd>
+                  <dt>表</dt><dd>31 · 本体 27</dd>
+                </dl>
+              </div>
+              <div class="card-foot">
+                <span class="stat">本体 <b>27</b></span>
+                <span class="stat">同步 <b>3 分钟前</b></span>
+                <div class="sp"></div>
+                <button class="btn sm ghost">管理</button>
+              </div>
+            </article>
+
+            <!-- 卡片：PostgreSQL -->
+            <article class="card">
+              <div class="card-head">
+                <div class="card-top"><span class="kind">PG</span><span class="eyebrow">外部</span>
+                  <div style="flex:1"></div><span class="badge b-live"><span class="dot ok"></span>已连接</span></div>
+                <h3 class="card-title">数仓 ODS</h3>
+                <p class="card-sub">离线数仓贴源层，每日 02:00 同步</p>
+              </div>
+              <div class="card-body">
+                <dl class="kv">
+                  <dt>主机</dt><dd>10.0.8.7:5432</dd>
+                  <dt>库</dt><dd>warehouse</dd>
+                  <dt>账号</dt><dd>yan_zhi_ro · SSL</dd>
+                </dl>
+              </div>
+              <div class="card-foot">
+                <span class="stat">表 <b>184</b></span>
+                <span class="stat">本体 <b>63</b></span>
+                <div class="sp"></div>
+                <button class="btn sm ghost">管理</button>
+              </div>
+            </article>
+
+            <!-- 卡片：达梦 -->
+            <article class="card">
+              <div class="card-head">
+                <div class="card-top"><span class="kind" style="background:#334155">DM</span><span class="eyebrow">外部</span>
+                  <div style="flex:1"></div><span class="badge b-draft"><span class="dot warn"></span>未同步</span></div>
+                <h3 class="card-title">政务主库</h3>
+                <p class="card-sub">达梦 DM8，尚未采集表结构</p>
+              </div>
+              <div class="card-body">
+                <dl class="kv">
+                  <dt>主机</dt><dd>172.16.4.20:5236</dd>
+                  <dt>库</dt><dd>GOV_MAIN</dd>
+                  <dt>账号</dt><dd>SYSDBA</dd>
+                </dl>
+              </div>
+              <div class="card-foot">
+                <span class="stat">表 <b>—</b></span>
+                <span class="stat">本体 <b>0</b></span>
+                <div class="sp"></div>
+                <button class="btn sm">同步结构</button>
+              </div>
+            </article>
+
+            <!-- 卡片：Oracle（错误态） -->
+            <article class="card">
+              <div class="card-head">
+                <div class="card-top"><span class="kind" style="background:#7A3E1D">ORA</span><span class="eyebrow">外部</span>
+                  <div style="flex:1"></div><span class="badge" style="background:var(--danger-soft);color:var(--danger);border-color:var(--danger-line)"><span class="dot err"></span>连接失败</span></div>
+                <h3 class="card-title">老 ERP 库</h3>
+                <p class="card-sub">上次连接：ORA-12170 连接超时</p>
+              </div>
+              <div class="card-body">
+                <dl class="kv">
+                  <dt>主机</dt><dd>192.168.9.15:1521</dd>
+                  <dt>服务名</dt><dd>ORCLPDB1</dd>
+                  <dt>账号</dt><dd>ERP_READ</dd>
+                </dl>
+              </div>
+              <div class="card-foot" style="color:var(--danger);font-size:11.5px">
+                无法建立连接，检查网络或账号口令
+                <div class="sp"></div>
+                <button class="btn sm">重新测试</button>
+              </div>
+            </article>
+
+            <!-- 卡片：MongoDB -->
+            <article class="card">
+              <div class="card-head">
+                <div class="card-top"><span class="kind mongo">MONGO</span><span class="eyebrow">文档型</span>
+                  <div style="flex:1"></div><span class="badge b-live"><span class="dot ok"></span>已连接</span></div>
+                <h3 class="card-title">行为日志</h3>
+                <p class="card-sub">弱 schema · 采样 500 条推导结构</p>
+              </div>
+              <div class="card-body">
+                <dl class="kv">
+                  <dt>主机</dt><dd>10.0.8.9:27017</dd>
+                  <dt>集合</dt><dd>events · profiles</dd>
+                  <dt>字段</dt><dd>46（含嵌套 a.b.c）</dd>
+                </dl>
+              </div>
+              <div class="card-foot">
+                <span class="stat">本体 <b>2</b></span>
+                <span class="stat">不支持 <b>JOIN / 聚合下推</b></span>
+                <div class="sp"></div>
+                <button class="btn sm ghost">管理</button>
+              </div>
+            </article>
+
+          </div>
+        </div>
+      </section>
+
+      <!-- ==================== 视图 2 · 本体 ==================== -->
+      <section class="view v-ont" id="v-ont">
+
+        <!-- 左：本体列表（筛选固定，列表独立滚动） -->
+        <aside class="col-left">
+          <div class="list-head">
+            <div class="search" style="max-width:none">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+              <input class="inp" placeholder="搜索本体 / 字段 / 同义词">
+            </div>
+            <div style="display:flex;gap:6px">
+              <select class="inp" style="height:26px;font-size:11.5px"><option>全部域</option><option>交易域</option><option>用户域</option></select>
+              <select class="inp" style="height:26px;font-size:11.5px"><option>全部状态</option><option>已发布</option><option>草稿</option></select>
+            </div>
+          </div>
+          <div class="list">
+            <div class="li on">
+              <div class="li-row"><span class="li-code">order</span><span class="li-name">订单</span>
+                <div style="flex:1"></div><span class="badge b-live">已发布</span></div>
+              <div class="li-desc">一笔订单的完整生命周期记录</div>
+              <div class="li-tags"><span class="chipmini">5 维度</span><span class="chipmini">3 度量</span><span class="chipmini">7 枚举</span></div>
+            </div>
+            <div class="li">
+              <div class="li-row"><span class="li-code">user</span><span class="li-name">用户</span>
+                <div style="flex:1"></div><span class="badge b-live">已发布</span></div>
+              <div class="li-desc">注册用户主数据与归属大区</div>
+              <div class="li-tags"><span class="chipmini">6 维度</span><span class="chipmini">1 度量</span></div>
+            </div>
+            <div class="li">
+              <div class="li-row"><span class="li-code">pay</span><span class="li-name">支付流水</span>
+                <div style="flex:1"></div><span class="badge b-draft">草稿</span></div>
+              <div class="li-desc">支付渠道流水，含退款与手续费</div>
+              <div class="li-tags"><span class="chipmini">4 维度</span><span class="chipmini">2 度量</span><span class="chipmini">AI 待复核 9</span></div>
+            </div>
+            <div class="li">
+              <div class="li-row"><span class="li-code">refund</span><span class="li-name">退款单</span>
+                <div style="flex:1"></div><span class="badge b-draft">草稿</span></div>
+              <div class="li-desc">退款申请与到账状态</div>
+              <div class="li-tags"><span class="chipmini">3 维度</span><span class="chipmini">1 度量</span></div>
+            </div>
+            <div class="li">
+              <div class="li-row"><span class="li-code">sku</span><span class="li-name">商品</span>
+                <div style="flex:1"></div><span class="badge b-live">已发布</span></div>
+              <div class="li-desc">商品主数据与类目层级</div>
+              <div class="li-tags"><span class="chipmini">5 维度</span></div>
+            </div>
+          </div>
+        </aside>
+
+        <!-- 中：定义区 -->
+        <div class="col-mid">
+          <div class="subtabs">
+            <button class="subtab on" data-sp="sp-sem">语义</button>
+            <button class="subtab" data-sp="sp-fields">字段 12</button>
+            <button class="subtab" data-sp="sp-rel">关系 3</button>
+            <button class="subtab" data-sp="sp-ex">示例问答 4</button>
+            <button class="subtab" data-sp="sp-yaml">YAML</button>
+          </div>
+
+          <div class="mid-scroll">
+            <div class="mid-inner">
+
+              <!-- 语义 -->
+              <div class="subpane on" id="sp-sem">
+                <div class="sect-title"><h2>语义定义</h2><span class="eyebrow">Ontology · order</span></div>
+                <div class="defgrid">
+                  <div class="field"><label>本体 code（唯一、供大模型引用）</label>
+                    <input class="inp mono" value="order"><span class="hint">只能用小写字母、数字、下划线</span></div>
+                  <div class="field"><label>名称</label><input class="inp" value="订单"></div>
+                  <div class="field full"><label>业务描述（决定大模型能否选对它，写清口径与粒度）</label>
+                    <textarea class="inp" rows="4">一笔订单的完整生命周期记录。一笔订单 = 一个用户一次下单行为，含金额、状态、渠道。
+金额口径统一为「实付金额」（已扣优惠，不含退款）。
+粒度：一行 = 一笔订单，以 order_id 唯一。</textarea>
+                    <span class="hint">AI 生成 · 依据：知识库《数据字典 v3》#订单域 · 已采纳并锁定</span></div>
+                  <div class="field"><label>业务域</label><select class="inp"><option>交易域</option><option>用户域</option><option>商品域</option></select></div>
+                  <div class="field"><label>同义词（一行一个，用于命中提问）</label>
+                    <textarea class="inp" rows="2">订单记录
+交易单
+单量</textarea></div>
+                  <div class="field full"><label>物理来源 SQL（输出列必须显式 AS 别名）</label>
+                    <div class="scope" style="margin:0">
+                      <div class="scope-bar"><span class="lang">SQL</span><span>sqlite</span><div class="sp"></div><span>7 输出列 · 全部已别名</span></div>
+<pre><span class="c">-- 每个输出列都必须 AS 别名，选择器只能引用别名</span>
+<span class="k">SELECT</span> o.id          <span class="k">AS</span> order_id,
+       o.user_id    <span class="k">AS</span> user_id,
+       u.name       <span class="k">AS</span> user_name,
+       u.region     <span class="k">AS</span> region,
+       o.pay_amount <span class="k">AS</span> pay_amount,
+       o.status     <span class="k">AS</span> status,
+       o.created_at <span class="k">AS</span> created_at
+<span class="k">FROM</span> t_order o
+<span class="k">LEFT JOIN</span> t_user u <span class="k">ON</span> u.id = o.user_id
+<span class="k">WHERE</span> o.is_deleted = <span class="n">0</span></pre>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="sect-title" style="margin-top:var(--s6)"><h2>行级策略</h2><span class="eyebrow">强制注入 · 用户不可绕过</span></div>
+                <div class="ex-item" style="display:flex;align-items:center;gap:12px;margin-bottom:0">
+                  <span class="badge b-policy">ENFORCED</span>
+                  <code class="mono" style="font-size:12px;flex:1">o.is_deleted = 0</code>
+                  <span style="font-size:11.5px;color:var(--ink-3)">排除逻辑删除订单</span>
+                </div>
+              </div>
+
+              <!-- 字段 -->
+              <div class="subpane" id="sp-fields">
+                <div class="sect-title">
+                  <h2>字段（12）</h2>
+                  <div style="display:flex;gap:8px">
+                    <button class="btn sm">批量采纳 AI 草稿</button>
+                    <button class="btn sm">从表结构同步</button>
+                    <button class="btn sm primary">新增字段</button>
+                  </div>
+                </div>
+                <table class="tbl">
+                  <thead><tr>
+                    <th style="width:74px">角色</th><th>名称</th><th>展示名</th>
+                    <th style="width:130px">表达式</th><th style="width:64px">聚合</th>
+                    <th style="width:150px">值域 / 标准属性</th><th style="width:52px">置信</th><th style="width:28px"></th>
+                  </tr></thead>
+                  <tbody>
+                    <tr>
+                      <td><span class="badge b-entity">实体</span></td>
+                      <td class="nm">order_id</td><td>订单号</td><td class="ex">order_id</td><td>—</td>
+                      <td><span class="syn">主键</span></td><td class="conf hi">1.00</td>
+                      <td><span class="lockico"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg></span></td>
+                    </tr>
+                    <tr>
+                      <td><span class="badge b-dim">维度</span></td>
+                      <td class="nm">region</td><td>用户所属大区</td><td class="ex">region</td><td>—</td>
+                      <td><span class="ref" data-goto="attr">⧉ region</span></td><td class="conf hi">0.94</td>
+                      <td><span class="lockico"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg></span></td>
+                    </tr>
+                    <tr>
+                      <td><span class="badge b-dim">维度</span></td>
+                      <td class="nm">status</td><td>订单状态</td><td class="ex">status</td><td>—</td>
+                      <td><span class="ref" data-goto="attr">⧉ order_status</span></td><td class="conf hi">0.91</td>
+                      <td><span class="lockico"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg></span></td>
+                    </tr>
+                    <tr>
+                      <td><span class="badge b-time">时间</span></td>
+                      <td class="nm">created_at</td><td>下单时间</td><td class="ex">created_at</td><td>—</td>
+                      <td><span class="syn">日/周/月/季/年</span></td><td class="conf hi">0.97</td>
+                      <td><span class="lockico"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg></span></td>
+                    </tr>
+                    <tr>
+                      <td><span class="badge b-measure">度量</span></td>
+                      <td class="nm">order_count</td><td>订单笔数</td><td class="ex">order_id</td><td class="mono">count_distinct</td>
+                      <td><span class="badge b-neut">可加</span></td><td class="conf hi">0.96</td>
+                      <td><span class="lockico"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg></span></td>
+                    </tr>
+                    <tr>
+                      <td><span class="badge b-measure">度量</span></td>
+                      <td class="nm">pay_amount_sum</td><td>实付金额合计</td><td class="ex">pay_amount</td><td class="mono">sum</td>
+                      <td><span class="badge b-neut">可加</span> <span class="syn">元</span></td><td class="conf hi">0.93</td>
+                      <td><span class="lockico"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg></span></td>
+                    </tr>
+                    <tr style="background:#FFFEFA">
+                      <td><span class="badge b-measure">度量</span></td>
+                      <td class="nm">avg_order_value</td><td>客单价</td><td class="ex">pay/count</td><td class="mono">derived</td>
+                      <td><span class="badge b-draft">不可加</span></td><td class="conf mid">0.72</td>
+                      <td></td>
+                    </tr>
+                    <tr style="background:#FFFEFA">
+                      <td><span class="badge b-filter">过滤</span></td>
+                      <td class="nm">pay_channel</td><td>支付渠道</td><td class="ex">pay_channel</td><td>—</td>
+                      <td><span class="badge b-draft">AI 草稿</span> <span class="syn">4 枚举待补 def</span></td><td class="conf lo">0.58</td>
+                      <td></td>
+                    </tr>
+                    <tr style="background:#FFFEFA">
+                      <td><span class="badge b-dim">维度</span></td>
+                      <td class="nm">user_level</td><td>用户等级</td><td class="ex">user_level</td><td>—</td>
+                      <td><span class="badge b-draft">AI 草稿</span></td><td class="conf mid">0.66</td>
+                      <td></td>
+                    </tr>
+                  </tbody>
+                </table>
+                <p style="font-size:11.5px;color:var(--ink-3);margin-top:var(--s3)">
+                  置信度 &lt; 0.70 的字段以浅黄底标出，需人工复核后才能发布。锁定的字段不会被结构同步覆盖。
+                </p>
+              </div>
+
+              <!-- 关系 -->
+              <div class="subpane" id="sp-rel">
+                <div class="sect-title"><h2>关系图</h2><div style="display:flex;gap:8px">
+                  <button class="btn sm">AI 推断关系</button><button class="btn sm primary">新建关系</button></div></div>
+                <div class="relmap">
+                  <svg viewBox="0 0 640 190" width="100%" height="190" role="img" aria-label="本体关系图">
+                    <defs>
+                      <marker id="ah" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto">
+                        <path d="M0,0 L7,3 L0,6 Z" fill="#8E93A6"/>
+                      </marker>
+                    </defs>
+                    <line x1="150" y1="60" x2="330" y2="60" stroke="#C9C4D6" stroke-width="1.4" marker-end="url(#ah)"/>
+                    <text x="240" y="50" font-family="JetBrains Mono,monospace" font-size="10.5" fill="#8E93A6" text-anchor="middle">N : 1</text>
+                    <text x="240" y="76" font-size="10" fill="#B0B4C4" text-anchor="middle">user_id = user_id</text>
+                    <line x1="330" y1="60" x2="510" y2="60" stroke="#C9C4D6" stroke-width="1.4" marker-end="url(#ah)"/>
+                    <text x="420" y="50" font-family="JetBrains Mono,monospace" font-size="10.5" fill="#8E93A6" text-anchor="middle">N : 1</text>
+                    <line x1="150" y1="60" x2="150" y2="140" stroke="#F0DDB6" stroke-width="1.4" stroke-dasharray="4 3" marker-end="url(#ah)"/>
+                    <text x="120" y="112" font-family="JetBrains Mono,monospace" font-size="10.5" fill="#B4710A" text-anchor="middle">1 : N ?</text>
+                    <line x1="330" y1="60" x2="330" y2="140" stroke="#C9C4D6" stroke-width="1.4" marker-end="url(#ah)"/>
+                    <text x="300" y="112" font-family="JetBrains Mono,monospace" font-size="10.5" fill="#8E93A6" text-anchor="middle">1 : N</text>
+
+                    <g>
+                      <rect x="70" y="42" width="80" height="36" rx="6" fill="#fff" stroke="#D3D0DE"/>
+                      <text x="110" y="58" font-family="JetBrains Mono,monospace" font-size="11.5" font-weight="600" fill="#14161A" text-anchor="middle">order</text>
+                      <text x="110" y="70" font-size="10" fill="#8E93A6" text-anchor="middle">订单</text>
+                    </g>
+                    <g>
+                      <rect x="330" y="42" width="80" height="36" rx="6" fill="#F1ECFE" stroke="#7C3AED" stroke-width="1.4"/>
+                      <text x="370" y="58" font-family="JetBrains Mono,monospace" font-size="11.5" font-weight="600" fill="#7C3AED" text-anchor="middle">user</text>
+                      <text x="370" y="70" font-size="10" fill="#7C3AED" text-anchor="middle">用户</text>
+                    </g>
+                    <g>
+                      <rect x="510" y="42" width="80" height="36" rx="6" fill="#fff" stroke="#D3D0DE"/>
+                      <text x="550" y="58" font-family="JetBrains Mono,monospace" font-size="11.5" font-weight="600" fill="#14161A" text-anchor="middle">region_dim</text>
+                      <text x="550" y="70" font-size="10" fill="#8E93A6" text-anchor="middle">大区维表</text>
+                    </g>
+                    <g>
+                      <rect x="110" y="122" width="80" height="36" rx="6" fill="#fff" stroke="#D3D0DE" stroke-dasharray="4 3"/>
+                      <text x="150" y="138" font-family="JetBrains Mono,monospace" font-size="11.5" font-weight="600" fill="#14161A" text-anchor="middle">pay</text>
+                      <text x="150" y="150" font-size="10" fill="#8E93A6" text-anchor="middle">支付流水</text>
+                    </g>
+                    <g>
+                      <rect x="290" y="122" width="80" height="36" rx="6" fill="#fff" stroke="#D3D0DE"/>
+                      <text x="330" y="138" font-family="JetBrains Mono,monospace" font-size="11.5" font-weight="600" fill="#14161A" text-anchor="middle">refund</text>
+                      <text x="330" y="150" font-size="10" fill="#8E93A6" text-anchor="middle">退款单</text>
+                    </g>
+                  </svg>
+                </div>
+                <table class="tbl rel-table">
+                  <thead><tr><th>关系</th><th style="width:110px">基数</th><th style="width:70px">Join</th><th style="width:90px">状态</th><th style="width:60px">置信</th></tr></thead>
+                  <tbody>
+                    <tr><td class="nm">order.user_id → user.user_id</td><td class="mono">many_to_one</td><td class="mono">LEFT</td>
+                      <td><span class="badge b-live">已确认</span></td><td class="conf hi">0.98</td></tr>
+                    <tr><td class="nm">user.region → region_dim.code</td><td class="mono">many_to_one</td><td class="mono">LEFT</td>
+                      <td><span class="badge b-live">已确认</span></td><td class="conf hi">0.92</td></tr>
+                    <tr><td class="nm">order.order_id → refund.order_id</td><td class="mono">one_to_many</td><td class="mono">LEFT</td>
+                      <td><span class="badge b-live">已确认</span></td><td class="conf hi">0.95</td></tr>
+                    <tr style="background:#FFFEFA"><td class="nm">order.order_id → pay.order_id</td><td class="mono">one_to_many ?</td><td class="mono">LEFT</td>
+                      <td><span class="badge b-draft">待确认</span></td><td class="conf mid">0.61</td></tr>
+                  </tbody>
+                </table>
+                <p style="font-size:11.5px;color:var(--ink-3);margin-top:var(--s3)">
+                  大模型不写 JOIN：查询涉及多个实体时，引擎在这张图上求最小连接子树，按基数方向拼 LEFT JOIN。
+                  两个事实表的度量同时出现且路径含一对多扇出时，直接拒绝并提示先建聚合本体。
+                </p>
+              </div>
+
+              <!-- 示例问答 -->
+              <div class="subpane" id="sp-ex">
+                <div class="sect-title"><h2>已验证问答（4）</h2>
+                  <div style="display:flex;gap:8px"><button class="btn sm">从历史沉淀</button><button class="btn sm primary">新增</button></div></div>
+                <div class="ex-item">
+                  <div class="ex-q"><span class="idx">01</span><span>华东区上月的订单量和销售额</span></div>
+                  <div class="ex-meta"><span>命中率 18 次</span><span>验证人 yhfy</span><span class="badge b-live">已验证</span></div>
+                </div>
+                <div class="ex-item">
+                  <div class="ex-q"><span class="idx">02</span><span>各支付渠道的客单价对比</span></div>
+                  <div class="ex-meta"><span>命中率 7 次</span><span>验证人 yhfy</span><span class="badge b-live">已验证</span></div>
+                </div>
+                <div class="ex-item">
+                  <div class="ex-q"><span class="idx">03</span><span>最近 7 天未完结订单有多少</span></div>
+                  <div class="ex-meta"><span>命中率 12 次</span><span>依赖枚举分组 unfinished</span><span class="badge b-live">已验证</span></div>
+                </div>
+                <div class="ex-item" style="border-style:dashed">
+                  <div class="ex-q"><span class="idx">04</span><span style="color:var(--ink-3)">本月退款率最高的 10 个商品</span></div>
+                  <div class="ex-meta"><span>来自 L3 兜底，尚未验证</span><span class="badge b-draft">候选</span></div>
+                </div>
+              </div>
+
+              <!-- YAML -->
+              <div class="subpane" id="sp-yaml">
+                <div class="sect-title"><h2>本体定义（YAML 源文件态）</h2>
+                  <div style="display:flex;gap:8px"><button class="btn sm">导入</button><button class="btn sm">复制</button></div></div>
+                <div class="scope" style="margin:0">
+                  <div class="scope-bar"><span class="lang">YAML</span><span>order.ontology.yaml</span><div class="sp"></div><span>86 行</span></div>
+<pre><span class="c"># 可直接导出/导入，也是喂给大模型的形态</span>
+<span class="f">version</span>: 1
+<span class="f">datasource</span>: ds_project
+<span class="f">code</span>: order
+<span class="f">name</span>: 订单
+<span class="f">domain</span>: 交易域
+<span class="f">description</span>: &gt;
+  一笔订单 = 一个用户一次下单行为。金额口径统一为「实付金额」。
+
+<span class="f">entities</span>:
+  - <span class="f">name</span>: order   <span class="f">type</span>: primary  <span class="f">expr</span>: order_id
+  - <span class="f">name</span>: user    <span class="f">type</span>: foreign  <span class="f">expr</span>: user_id
+
+<span class="f">time_dimensions</span>:
+  - <span class="f">name</span>: created_at
+    <span class="f">description</span>: 下单时间
+    <span class="f">synonyms</span>: [下单日期, 创建时间]
+    <span class="f">granularities</span>: [day, week, month, quarter, year]
+
+<span class="f">dimensions</span>:
+  - <span class="f">name</span>: region
+    <span class="f">description</span>: 用户所属大区
+    <span class="f">ref_attr</span>: region
+    <span class="f">sample_values</span>: [华东, 华北, 华南]
+  - <span class="f">name</span>: status
+    <span class="f">description</span>: 订单当前状态
+    <span class="f">ref_attr</span>: order_status      <span class="c"># 枚举 + 状态机来自标准属性</span>
+
+<span class="f">measures</span>:
+  - <span class="f">name</span>: order_count      <span class="f">agg</span>: count_distinct  <span class="f">additive</span>: additive
+  - <span class="f">name</span>: pay_amount_sum   <span class="f">agg</span>: sum             <span class="f">additive</span>: additive
+  - <span class="f">name</span>: avg_order_value  <span class="f">expr</span>: pay_amount_sum/order_count
+    <span class="f">additive</span>: non_additive     <span class="c"># 禁止上卷求和</span>
+
+<span class="f">relations</span>:
+  - <span class="f">left</span>: order  <span class="f">right</span>: user  <span class="f">cardinality</span>: many_to_one
+    <span class="f">on</span>: order.user_id = user.user_id  <span class="f">status</span>: confirmed</pre>
+                </div>
+                <p style="font-size:11.5px;color:var(--ink-3);margin-top:var(--s3)">
+                  四种表示的分工：存关系表 → 导出 YAML → 喂大模型用裁剪后的 YAML 片段（不含物理 SQL）→ 大模型回 JSON 意图 → 引擎吃编译后的 manifest。
+                </p>
+              </div>
+
+            </div>
+          </div>
+
+          <!-- 底部：4 个动作，文案自带说明（不用 tooltip） -->
+          <div class="actionbar">
+            <button class="act"><span class="t">预览定义</span><span class="d">看编译结果，不执行</span></button>
+            <button class="act"><span class="t">预览数据</span><span class="d">裸跑前 50 行</span></button>
+            <button class="act"><span class="t">试跑查询</span><span class="d">套上选择器与过滤器</span></button>
+            <button class="act publish"><span class="t">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 12l5 5L20 7"/></svg>
+              发布
+            </span><span class="d">草稿改动对智能体不可见</span></button>
+          </div>
+        </div>
+
+        <!-- 右：编译预览（签名：编译轨道） -->
+        <aside class="col-right">
+          <div class="rail-head">
+            <div style="display:flex;align-items:center;justify-content:space-between">
+              <span class="eyebrow">编译预览</span>
+              <span class="badge b-neut">不执行</span>
+            </div>
+            <!-- —— 编译轨道 —— -->
+            <div class="track">
+              <div class="stage done"><span class="n">1</span><span class="l">意图</span></div>
+              <div class="conn done"></div>
+              <div class="stage done"><span class="n">2</span><span class="l">关系路径</span></div>
+              <div class="conn done"></div>
+              <div class="stage cur"><span class="n">3</span><span class="l">物理 SQL</span></div>
+              <div class="conn"></div>
+              <div class="stage"><span class="n">4</span><span class="l">结果</span></div>
+            </div>
+          </div>
+
+          <div class="rail-body">
+            <div class="scope">
+              <div class="scope-bar"><span class="lang">SQLITE</span><span>编译产物</span><div class="sp"></div>
+                <button style="color:var(--void-ink-2);font-family:var(--f-mono);font-size:10.5px">复制</button></div>
+<pre><span class="k">SELECT</span>
+  __u.name                              <span class="k">AS</span> user_name,
+  <span class="f">COUNT</span>(<span class="k">DISTINCT</span> __o.order_id)      <span class="k">AS</span> order_count,
+  <span class="f">SUM</span>(__o.pay_amount)                  <span class="k">AS</span> pay_amount_sum
+<span class="k">FROM</span> (
+  <span class="k">SELECT</span> o.id <span class="k">AS</span> order_id, o.user_id <span class="k">AS</span> user_id,
+         u.name <span class="k">AS</span> user_name, u.region <span class="k">AS</span> region,
+         o.pay_amount <span class="k">AS</span> pay_amount, o.status <span class="k">AS</span> status,
+         o.created_at <span class="k">AS</span> created_at
+  <span class="k">FROM</span> t_order o
+  <span class="k">LEFT JOIN</span> t_user u <span class="k">ON</span> u.id = o.user_id
+  <span class="k">WHERE</span> o.is_deleted = <span class="n">0</span>
+) __o
+<span class="k">LEFT JOIN</span> ( <span class="c">/* user */</span> ) __u <span class="k">ON</span> __u.user_id = __o.user_id
+<span class="k">WHERE</span> __u.region = <span class="s">'华东'</span>
+  <span class="k">AND</span> __o.created_at &gt;= <span class="f">date</span>(<span class="s">'now'</span>, <span class="s">'-1 month'</span>)
+<span class="k">GROUP BY</span> __u.name
+<span class="k">ORDER BY</span> pay_amount_sum <span class="k">DESC</span>
+<span class="k">LIMIT</span> <span class="n">50</span></pre>
+              <div class="scope-foot"><span>路径 order → user</span><span>2 JOIN</span><span>耗时 6 ms</span></div>
+            </div>
+
+            <div class="diag">
+              <div class="diag-row"><span class="lvl ok">OK</span>
+                <span class="msg">输出列全部显式别名，选择器引用有效</span><span class="loc">base.sql</span></div>
+              <div class="diag-row"><span class="lvl ok">OK</span>
+                <span class="msg">连接子树唯一：order → user（many_to_one）</span><span class="loc">relations</span></div>
+              <div class="diag-row"><span class="lvl warn">WARN</span>
+                <span class="msg">行级策略已强制注入 is_deleted = 0</span><span class="loc">policies</span></div>
+              <div class="diag-row"><span class="lvl err">ERR</span>
+                <span class="msg">avg_order_value 为不可加度量，禁止与本查询的分组同时上卷求和</span><span class="loc">measures</span></div>
+            </div>
+          </div>
+        </aside>
+      </section>
+
+      <!-- ==================== 视图 3 · 标准属性 ==================== -->
+      <section class="view v-attr" id="v-attr">
+        <aside class="col-left">
+          <div class="list-head">
+            <div class="search" style="max-width:none">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+              <input class="inp" placeholder="搜索标准属性">
+            </div>
+          </div>
+          <div class="list">
+            <div class="li on"><div class="li-row"><span class="li-code">order_status</span><div style="flex:1"></div>
+              <span class="chipmini">7 值</span></div>
+              <div class="li-name">订单状态</div><div class="li-desc">被 6 个本体引用</div></div>
+            <div class="li"><div class="li-row"><span class="li-code">region</span><div style="flex:1"></div>
+              <span class="chipmini">7 值</span></div>
+              <div class="li-name">大区</div><div class="li-desc">被 4 个本体引用</div></div>
+            <div class="li"><div class="li-row"><span class="li-code">pay_type</span><div style="flex:1"></div>
+              <span class="chipmini">4 值</span></div>
+              <div class="li-name">支付方式</div><div class="li-desc">被 3 个本体引用 · 来源 SQL</div></div>
+            <div class="li"><div class="li-row"><span class="li-code">yes_no</span><div style="flex:1"></div>
+              <span class="chipmini">2 值</span></div>
+              <div class="li-name">是否</div><div class="li-desc">被 11 个本体引用</div></div>
+            <div class="li"><div class="li-row"><span class="li-code">user_level</span><div style="flex:1"></div>
+              <span class="chipmini">5 值</span></div>
+              <div class="li-name">用户等级</div><div class="li-desc">被 2 个本体引用 · 层级</div></div>
+          </div>
+        </aside>
+
+        <div class="attr-right">
+          <div class="subtabs">
+            <button class="subtab on">枚举值 7</button>
+            <button class="subtab">JSON</button>
+            <button class="subtab">SQL 取字典</button>
+            <button class="subtab">语义分组 2</button>
+            <button class="subtab">引用它的本体 6</button>
+          </div>
+          <div class="attr-scroll">
+            <div class="attr-inner">
+              <div class="sect-title">
+                <div>
+                  <h2 style="display:flex;align-items:center;gap:8px">订单状态
+                    <span class="badge b-neut mono">order_status</span>
+                    <span class="badge b-draft">state</span></h2>
+                  <p style="margin:4px 0 0;font-size:12px;color:var(--ink-2)">
+                    一份定义，6 个本体共用。改动会提示影响面，可选同步到全部引用或断开转为本地副本。
+                  </p>
+                </div>
+                <div style="display:flex;gap:8px">
+                  <button class="btn sm">从 SQL 刷新</button>
+                  <button class="btn sm primary">新增枚举值</button>
+                </div>
+              </div>
+
+              <table class="tbl">
+                <thead><tr>
+                  <th style="width:56px">key</th><th style="width:110px">value</th>
+                  <th>def（业务口径，给大模型判断用）</th>
+                  <th style="width:130px">下一状态</th><th style="width:150px">同义词</th><th style="width:56px"></th>
+                </tr></thead>
+                <tbody>
+                  <tr><td class="mono">0</td><td>待支付</td>
+                    <td style="white-space:normal">用户已下单但未完成支付；30 分钟未支付系统自动关闭</td>
+                    <td><span class="chipmini">1</span> <span class="chipmini">-1</span></td>
+                    <td class="syn">未付款 · 待付款 · 新建订单</td><td><span class="badge b-live">生效</span></td></tr>
+                  <tr><td class="mono">1</td><td>已支付</td>
+                    <td style="white-space:normal">支付成功，等待商家发货</td>
+                    <td><span class="chipmini">2</span> <span class="chipmini">4</span></td>
+                    <td class="syn">已付款 · 支付完成</td><td><span class="badge b-live">生效</span></td></tr>
+                  <tr><td class="mono">2</td><td>已发货</td>
+                    <td style="white-space:normal">商家已发货，物流在途</td>
+                    <td><span class="chipmini">3</span> <span class="chipmini">5</span></td>
+                    <td class="syn">已出库 · 在途</td><td><span class="badge b-live">生效</span></td></tr>
+                  <tr><td class="mono">3</td><td>已完成</td>
+                    <td style="white-space:normal">用户确认收货，订单进入终态</td>
+                    <td><span class="chipmini">— 终态</span></td>
+                    <td class="syn">已签收 · 完结</td><td><span class="badge b-live">生效</span></td></tr>
+                  <tr><td class="mono">4</td><td>退款中</td>
+                    <td style="white-space:normal">用户发起退款，等待商家或平台处理</td>
+                    <td><span class="chipmini">5</span> <span class="chipmini">1</span></td>
+                    <td class="syn">售后中 · 退货中</td><td><span class="badge b-live">生效</span></td></tr>
+                  <tr><td class="mono">5</td><td>已退款</td>
+                    <td style="white-space:normal">退款已到账，订单进入终态</td>
+                    <td><span class="chipmini">— 终态</span></td>
+                    <td class="syn">退款完成</td><td><span class="badge b-live">生效</span></td></tr>
+                  <tr><td class="mono">-1</td><td>已取消</td>
+                    <td style="white-space:normal">用户主动取消或超时未支付，订单进入终态</td>
+                    <td><span class="chipmini">— 终态</span></td>
+                    <td class="syn">已关闭 · 作废</td>
+                    <td><span class="badge b-neut">弃用</span></td></tr>
+                </tbody>
+              </table>
+
+              <div class="sect-title" style="margin-top:var(--s6)"><h2>语义分组</h2>
+                <span class="eyebrow">消解「已完结 / 未完结」这类歧义提问</span></div>
+              <div class="ex-item">
+                <div style="display:flex;align-items:center;gap:10px">
+                  <code class="mono" style="font-size:12px">finished</code>
+                  <span>已完结（终态）</span>
+                  <span style="flex:1"></span>
+                  <span class="chipmini">3</span><span class="chipmini">5</span><span class="chipmini">-1</span>
+                </div>
+                <p style="margin:6px 0 0;font-size:12px;color:var(--ink-3)">不再发生状态流转的订单，含已完成、已退款与已取消</p>
+              </div>
+              <div class="ex-item" style="margin-bottom:0">
+                <div style="display:flex;align-items:center;gap:10px">
+                  <code class="mono" style="font-size:12px">unfinished</code>
+                  <span>进行中</span>
+                  <span style="flex:1"></span>
+                  <span class="chipmini">0</span><span class="chipmini">1</span><span class="chipmini">2</span><span class="chipmini">4</span>
+                </div>
+                <p style="margin:6px 0 0;font-size:12px;color:var(--ink-3)">尚未进入终态的订单，用于「在途订单量」等口径</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ==================== 视图 4 · 控制台 ==================== -->
+      <section class="view v-con" id="v-con">
+        <aside class="schema">
+          <div class="list-head">
+            <select class="inp" style="height:28px"><option>言智项目库 · sqlite</option><option>数仓 ODS · postgres</option></select>
+            <div class="search" style="max-width:none">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+              <input class="inp" style="height:28px" placeholder="过滤表 / 列">
+            </div>
+          </div>
+          <div class="tree">
+            <div class="tn" data-tg="g1"><span class="caret open">▶</span>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M9 9v11"/></svg>
+              t_order<span class="ty">VIEW ×1</span></div>
+            <div class="tn-grp open" id="g1">
+              <div class="tn leaf"><span style="color:var(--brand)">◆</span> id<span class="ty">INT PK</span></div>
+              <div class="tn leaf">user_id<span class="ty">INT</span></div>
+              <div class="tn leaf">pay_amount<span class="ty">DEC</span></div>
+              <div class="tn leaf">status<span class="ty">INT</span></div>
+              <div class="tn leaf">created_at<span class="ty">DATETIME</span></div>
+            </div>
+            <div class="tn" data-tg="g2"><span class="caret">▶</span>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M9 9v11"/></svg>
+              t_user</div>
+            <div class="tn-grp" id="g2">
+              <div class="tn leaf"><span style="color:var(--brand)">◆</span> id<span class="ty">INT PK</span></div>
+              <div class="tn leaf">name<span class="ty">TEXT</span></div>
+              <div class="tn leaf">region<span class="ty">TEXT</span></div>
+            </div>
+            <div class="tn" data-tg="g3"><span class="caret">▶</span>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M9 9v11"/></svg>
+              t_sku</div>
+            <div class="tn-grp" id="g3"><div class="tn leaf">sku_id<span class="ty">INT PK</span></div><div class="tn leaf">title<span class="ty">TEXT</span></div></div>
+            <div class="tn" data-tg="g4"><span class="caret">▶</span>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M9 9v11"/></svg>
+              t_refund</div>
+            <div class="tn-grp" id="g4"><div class="tn leaf">refund_id<span class="ty">INT PK</span></div></div>
+            <div class="tn" data-tg="g5"><span class="caret">▶</span>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3 4 7l8 4 8-4-8-4Z"/><path d="M4 12l8 4 8-4M4 17l8 4 8-4"/></svg>
+              <span style="font-family:var(--f-mono);font-size:11px">本体</span><span class="ty">27</span></div>
+            <div class="tn-grp" id="g5">
+              <div class="tn leaf"><span style="color:var(--role-measure)">◈</span> order<span class="ty">本体</span></div>
+              <div class="tn leaf"><span style="color:var(--role-measure)">◈</span> user<span class="ty">本体</span></div>
+              <div class="tn leaf"><span style="color:var(--role-measure)">◈</span> pay<span class="ty">本体</span></div>
+            </div>
+          </div>
+        </aside>
+
+        <div class="con-main">
+          <div class="con-bar">
+            <span class="guard">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>
+              只读护栏
+            </span>
+            <span style="font-size:11.5px;color:var(--ink-3)">上限 500 行 · 超时 30s · 单语句</span>
+            <div style="flex:1"></div>
+            <button class="btn sm">格式化</button>
+            <button class="btn sm">运行选中</button>
+            <button class="btn sm primary">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><path d="M7 4l13 8-13 8z"/></svg>
+              运行
+            </button>
+          </div>
+
+          <!-- 深色仪器面板 -->
+          <div class="editor">
+            <div class="ed-bar">
+              <span>query.sql</span><span>sqlite</span><span style="color:#4A5060">|</span>
+              <span>3 条语句 · 光标在第 2 条</span>
+              <div class="sp"></div>
+              <span style="color:#636B7E">Ctrl + Enter 运行选中</span>
+            </div>
+            <div class="ed-body">
+              <div class="gutter">1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12</div>
+              <div class="ed-code"><span class="c">-- ① 各状态订单量</span>
+<span class="k">SELECT</span> status, <span class="f">COUNT</span>(*) <span class="k">AS</span> cnt
+<span class="k">FROM</span> t_order <span class="k">GROUP BY</span> status;
+
+<span class="sel"><span class="c">-- ② 选中这段：华东区近 30 天每日销售额</span>
+<span class="k">SELECT</span> <span class="f">date</span>(created_at) <span class="k">AS</span> d,
+       <span class="f">SUM</span>(pay_amount) <span class="k">AS</span> amt
+<span class="k">FROM</span> t_order o
+<span class="k">JOIN</span> t_user u <span class="k">ON</span> u.id = o.user_id
+<span class="k">WHERE</span> u.region = <span class="s">'华东'</span>
+<span class="k">GROUP BY</span> d <span class="k">ORDER BY</span> d <span class="k">DESC</span>;</span><span class="caret-blink"></span>
+
+<span class="c">-- ③ 未选中，不会被误执行</span>
+<span class="k">SELECT</span> <span class="f">COUNT</span>(*) <span class="k">FROM</span> t_sku;</div>
+            </div>
+          </div>
+
+          <!-- 结果 -->
+          <div class="result">
+            <div class="res-head">
+              <div class="res-tabs">
+                <button class="res-tab on">结果 · 30 行</button>
+                <button class="res-tab">执行计划</button>
+                <button class="res-tab">消息</button>
+              </div>
+              <div style="flex:1"></div>
+              <span style="font-size:11.5px;color:var(--ink-3)">语句 ② · 18 ms</span>
+              <button class="btn sm">导出 CSV</button>
+            </div>
+            <div class="res-scroll">
+              <table class="grid">
+                <thead><tr>
+                  <th style="width:52px">#<span class="ty">row</span></th>
+                  <th>d<span class="ty">DATE</span></th>
+                  <th style="text-align:right">amt<span class="ty">DECIMAL</span></th>
+                  <th>cnt<span class="ty">INT</span></th>
+                  <th>top_sku<span class="ty">TEXT</span></th>
+                </tr></thead>
+                <tbody>
+                  <tr><td class="num" style="text-align:left;color:var(--ink-3)">1</td><td class="mono">2026-09-02</td><td class="num">128,540.00</td><td class="num">312</td><td>SKU-88213</td></tr>
+                  <tr><td class="num" style="text-align:left;color:var(--ink-3)">2</td><td class="mono">2026-09-01</td><td class="num">141,206.50</td><td class="num">348</td><td>SKU-88104</td></tr>
+                  <tr><td class="num" style="text-align:left;color:var(--ink-3)">3</td><td class="mono">2026-08-31</td><td class="num">97,331.20</td><td class="num">261</td><td>SKU-88077</td></tr>
+                  <tr><td class="num" style="text-align:left;color:var(--ink-3)">4</td><td class="mono">2026-08-30</td><td class="num">103,880.00</td><td class="num">289</td><td>SKU-88012</td></tr>
+                  <tr><td class="num" style="text-align:left;color:var(--ink-3)">5</td><td class="mono">2026-08-29</td><td class="num">88,412.75</td><td class="num">244</td><td>SKU-87988</td></tr>
+                  <tr><td class="num" style="text-align:left;color:var(--ink-3)">6</td><td class="mono">2026-08-28</td><td class="num">112,004.30</td><td class="num">301</td><td>SKU-87901</td></tr>
+                  <tr><td class="num" style="text-align:left;color:var(--ink-3)">7</td><td class="mono">2026-08-27</td><td class="num">76,905.10</td><td class="num">212</td><td>SKU-87866</td></tr>
+                  <tr><td class="num" style="text-align:left;color:var(--ink-3)">8</td><td class="mono">2026-08-26</td><td class="num">95,668.40</td><td class="num">257</td><td>SKU-87802</td></tr>
+                  <tr><td class="num" style="text-align:left;color:var(--ink-3)">9</td><td class="mono">2026-08-25</td><td class="num">120,377.90</td><td class="num">330</td><td>SKU-87745</td></tr>
+                  <tr><td class="num" style="text-align:left;color:var(--ink-3)">10</td><td class="mono">2026-08-24</td><td class="num">84,220.60</td><td class="num">233</td><td>SKU-87690</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="res-foot">
+              <span>显示前 10 / 共 30 行</span><span>·</span><span>3 列 · 无 NULL 告警</span>
+              <div class="sp"></div>
+              <span>结果集无主键，网格编辑已禁用</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ==================== 视图 5 · 结果面板 ==================== -->
+      <section class="view v-res" id="v-res">
+        <!-- 左侧对话（幽灵态，示意上下文） -->
+        <div class="chat-ghost">
+          <div class="gmsg">
+            <div class="who">你</div>
+            <div class="bubble me">华东区上月销售额最高的 10 个用户是谁？顺带看下趋势。</div>
+          </div>
+          <div class="gmsg">
+            <div class="who">数据查询智能体 · 挂「本体数据分析」skill</div>
+            <div class="bubble">
+              已按本体 <code class="mono" style="font-size:12px">order</code> × <code class="mono" style="font-size:12px">user</code> 取数，结果在右侧面板。
+              <div class="insight">
+                <b>10</b> 个用户合计 <b>¥1,284,330</b>，占华东区上月销售额的 <b>38.2%</b>。<br>
+                <b>张伟</b> 以 <b>¥186,420</b> 居首，环比上月 <b style="color:var(--signal)">+12.4%</b>。<br>
+                客单价整体 <b>¥4,118</b>，高于华东均值 <b>¥3,240</b>。
+              </div>
+            </div>
+          </div>
+          <div class="gmsg">
+            <div class="who">你</div>
+            <div class="bubble me">把这些做成一份 doc 报告。</div>
+          </div>
+          <div class="gmsg">
+            <div class="who">数据查询智能体 · 叠加「报告生成」skill</div>
+            <div class="bubble">
+              已生成 <b>华东区Top10用户销售分析.docx</b>，含趋势图与客单价对比表，
+              已作为交付文件挂在本次对话。
+            </div>
+          </div>
+        </div>
+
+        <!-- 右侧：结果面板 -->
+        <aside class="res-frame">
+          <div class="panel-head">
+            <span class="eyebrow">查询结果</span>
+            <h3>华东区上月销售额 Top 10 用户</h3>
+            <div style="display:flex;gap:6px;margin-top:8px">
+              <span class="badge b-neut">order × user</span>
+              <span class="badge b-neut">自动 JOIN</span>
+              <span class="badge b-neut">42 行命中</span>
+            </div>
+          </div>
+
+          <div class="panel-scroll">
+            <!-- 过滤器（固定在此，随内容一起滚） -->
+            <div class="filterbar">
+              <div class="frow"><span class="fl">大区</span>
+                <div class="valchips">
+                  <button class="vchip on">华东</button><button class="vchip">华北</button>
+                  <button class="vchip">华南</button><button class="vchip">华中</button>
+                </div>
+              </div>
+              <div class="frow"><span class="fl">状态</span>
+                <div class="valchips">
+                  <button class="vchip on">全部</button>
+                  <button class="vchip">已完成<span class="k">3</span></button>
+                  <button class="vchip">已发货<span class="k">2</span></button>
+                  <button class="vchip">退款中<span class="k">4</span></button>
+                </div>
+              </div>
+              <div class="frow"><span class="fl">下单时间</span>
+                <select class="op"><option>最近</option><option>区间</option></select>
+                <input class="inp" value="30 天" style="max-width:110px">
+                <div style="flex:1"></div>
+                <button class="btn sm">重置</button>
+              </div>
+            </div>
+
+            <div class="mini-chart">
+              <div class="sect-title" style="margin-bottom:0"><h2>销售额趋势</h2><span class="eyebrow">按日</span></div>
+              <div class="bars">
+                <div class="bar" style="height:46%"><span class="v">84k</span><span class="x">08-24</span></div>
+                <div class="bar" style="height:62%"><span class="v">120k</span><span class="x">08-25</span></div>
+                <div class="bar" style="height:48%"><span class="v">96k</span><span class="x">08-26</span></div>
+                <div class="bar" style="height:38%"><span class="v">77k</span><span class="x">08-27</span></div>
+                <div class="bar" style="height:56%"><span class="v">112k</span><span class="x">08-28</span></div>
+                <div class="bar" style="height:44%"><span class="v">88k</span><span class="x">08-29</span></div>
+                <div class="bar" style="height:52%"><span class="v">104k</span><span class="x">08-30</span></div>
+                <div class="bar" style="height:49%"><span class="v">97k</span><span class="x">08-31</span></div>
+                <div class="bar" style="height:71%"><span class="v">141k</span><span class="x">09-01</span></div>
+                <div class="bar" style="height:65%;background:var(--brand);opacity:.9"><span class="v">129k</span><span class="x">09-02</span></div>
+              </div>
+              <div style="height:20px"></div>
+            </div>
+
+            <table class="grid">
+              <thead><tr>
+                <th style="width:44px">#</th><th>用户</th>
+                <th style="text-align:right">销售额</th><th style="text-align:right">订单数</th><th style="text-align:right">客单价</th>
+              </tr></thead>
+              <tbody>
+                <tr><td class="num" style="text-align:left;color:var(--ink-3)">1</td><td>张伟<span class="syn" style="margin-left:6px">华东</span></td><td class="num">186,420.00</td><td class="num">42</td><td class="num">4,438</td></tr>
+                <tr><td class="num" style="text-align:left;color:var(--ink-3)">2</td><td>李静<span class="syn" style="margin-left:6px">华东</span></td><td class="num">164,880.50</td><td class="num">38</td><td class="num">4,339</td></tr>
+                <tr><td class="num" style="text-align:left;color:var(--ink-3)">3</td><td>王海涛<span class="syn" style="margin-left:6px">华东</span></td><td class="num">148,205.00</td><td class="num">51</td><td class="num">2,906</td></tr>
+                <tr><td class="num" style="text-align:left;color:var(--ink-3)">4</td><td>陈曦<span class="syn" style="margin-left:6px">华东</span></td><td class="num">132,660.00</td><td class="num">29</td><td class="num">4,574</td></tr>
+                <tr><td class="num" style="text-align:left;color:var(--ink-3)">5</td><td>刘敏<span class="syn" style="margin-left:6px">华东</span></td><td class="num">121,340.80</td><td class="num">44</td><td class="num">2,758</td></tr>
+                <tr><td class="num" style="text-align:left;color:var(--ink-3)">6</td><td>赵鹏<span class="syn" style="margin-left:6px">华东</span></td><td class="num">110,975.00</td><td class="num">26</td><td class="num">4,268</td></tr>
+                <tr><td class="num" style="text-align:left;color:var(--ink-3)">7</td><td>孙丽<span class="syn" style="margin-left:6px">华东</span></td><td class="num">98,420.30</td><td class="num">33</td><td class="num">2,982</td></tr>
+                <tr><td class="num" style="text-align:left;color:var(--ink-3)">8</td><td>周强<span class="syn" style="margin-left:6px">华东</span></td><td class="num">94,180.00</td><td class="num">21</td><td class="num">4,485</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="pager">
+            <span>共 42 行 · 第 1 页</span>
+            <div class="sp"></div>
+            <button class="pgbtn" disabled>‹</button>
+            <button class="pgbtn on">1</button>
+            <button class="pgbtn">2</button>
+            <button class="pgbtn">3</button>
+            <span style="color:var(--ink-3)">…</span>
+            <button class="pgbtn">6</button>
+            <button class="pgbtn">›</button>
+          </div>
+        </aside>
+      </section>
+
+    </div>
+  </div>
+</div>
+
+<script>
+// —— 视图切换 ——
+document.querySelectorAll('.tab').forEach(function(t){
+  t.addEventListener('click', function(){
+    document.querySelectorAll('.tab').forEach(function(x){x.classList.remove('on')});
+    t.classList.add('on');
+    document.querySelectorAll('.view').forEach(function(v){v.classList.remove('on')});
+    document.getElementById('v-'+t.dataset.v).classList.add('on');
+  });
+});
+// —— 本体子页签 ——
+document.querySelectorAll('.subtab[data-sp]').forEach(function(t){
+  t.addEventListener('click', function(){
+    var box = t.closest('.col-mid');
+    box.querySelectorAll('.subtab').forEach(function(x){x.classList.remove('on')});
+    t.classList.add('on');
+    box.querySelectorAll('.subpane').forEach(function(p){p.classList.remove('on')});
+    document.getElementById(t.dataset.sp).classList.add('on');
+  });
+});
+// —— schema 树展开 ——
+document.querySelectorAll('.tn[data-tg]').forEach(function(n){
+  n.addEventListener('click', function(){
+    var g = document.getElementById(n.dataset.tg);
+    var open = g.classList.toggle('open');
+    n.querySelector('.caret').classList.toggle('open', open);
+  });
+});
+// —— 引用徽标跳转到标准属性 ——
+document.querySelectorAll('[data-goto="attr"]').forEach(function(b){
+  b.addEventListener('click', function(){
+    document.querySelectorAll('.tab').forEach(function(x){x.classList.remove('on')});
+    document.querySelector('.tab[data-v="attr"]').classList.add('on');
+    document.querySelectorAll('.view').forEach(function(v){v.classList.remove('on')});
+    document.getElementById('v-attr').classList.add('on');
+  });
+});
+// —— 过滤 chip 切换 ——
+document.querySelectorAll('.valchips').forEach(function(g){
+  g.addEventListener('click', function(e){
+    var c = e.target.closest('.vchip'); if(!c) return;
+    var only = g.querySelectorAll('.vchip').length > 1;
+    g.querySelectorAll('.vchip').forEach(function(x){x.classList.remove('on')});
+    c.classList.add('on');
+  });
+});
+</script>
+</body>
+</html>

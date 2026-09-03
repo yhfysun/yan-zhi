@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-09-03
+goal: 多数据源接入 + 本体(text2sql 语义层)管理 + 数据查询分析智能体能力链
+phase: 方案(先出方案，不动代码)
