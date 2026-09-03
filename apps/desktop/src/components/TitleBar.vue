@@ -113,16 +113,10 @@ onUnmounted(() => {
   align-items: center;
   height: 36px;
   width: 100%;
-  background: #ffffff;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+  background: var(--glass-bg);
   user-select: none;
   -webkit-user-select: none;
   flex-shrink: 0;
-}
-
-[data-theme="dark"] .title-bar {
-  background: #1b1d23;
-  border-bottom-color: rgba(255, 255, 255, 0.08);
 }
 
 /* 拖拽背景层：绝对定位铺满整条标题栏，置于最底层；使用 Electron 原生拖拽 */
@@ -160,7 +154,7 @@ onUnmounted(() => {
   width: 22px;
   height: 22px;
   border-radius: 6px;
-  background: linear-gradient(135deg, #7C3AED, #EC4899);
+  background: var(--color-primary);
   color: #ffffff;
   font-size: 13px;
   font-weight: 700;
@@ -169,13 +163,9 @@ onUnmounted(() => {
 
 .brand-name {
   font-size: 13px;
-  font-weight: 600;
-  color: #1e293b;
+  font-weight: 500;
+  color: var(--color-text-secondary);
   letter-spacing: 0.02em;
-}
-
-[data-theme="dark"] .brand-name {
-  color: #e2e8f0;
 }
 
 /* 中部留白（可拖拽） */
@@ -193,16 +183,12 @@ onUnmounted(() => {
 
 .title-theme-btn {
   width: 40px;
-  color: #64748b;
-}
-
-[data-theme="dark"] .title-theme-btn {
-  color: #94a3b8;
+  color: var(--color-text-secondary);
 }
 
 .title-theme-btn:hover {
-  background: rgba(124, 58, 237, 0.08);
-  color: #7c3aed;
+  background: var(--glass-bg-hover);
+  color: var(--color-primary);
 }
 
 .win-btn {
@@ -214,17 +200,13 @@ onUnmounted(() => {
   border: none;
   outline: none;
   background: transparent;
-  color: #1e293b;
+  color: var(--color-text-secondary);
   cursor: pointer;
   pointer-events: auto;
   /* 按钮区域禁用拖拽，允许点击 */
   -webkit-app-region: no-drag;
   app-region: no-drag;
   transition: background-color 0.12s ease, color 0.12s ease;
-}
-
-[data-theme="dark"] .win-btn {
-  color: #e2e8f0;
 }
 
 .win-btn:hover {
