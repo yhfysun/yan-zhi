@@ -304,15 +304,11 @@ body {
 /* ===== 桌面端专属布局：CSS 变量驱动侧栏宽度联动、固定字号、实色背景、紧凑密度 ===== */
 /* web/mobile 因 html,body,#app{height:100%} 仍正确铺满；高度从 100vh/dvh 改为 100% 以兼容桌面端被 flex 父容器包裹 */
 .platform-desktop.app-shell {
-  --sidebar-w: 220px;            /* 桌面端侧栏展开宽度，由 SideNav 实际宽度对齐 */
   font-size: 14px;                /* 覆盖 body 的 clamp 流体字号，桌面端固定 */
   background: var(--color-bg);    /* 实色背景，确保无玻璃透出 */
 }
-.platform-desktop.app-shell.nav-collapsed {
-  --sidebar-w: 56px;              /* 侧栏折叠时缩窄到图标 dock 宽度 */
-}
 .platform-desktop .main-content {
-  margin-left: var(--sidebar-w);  /* 跟随侧栏折叠状态联动 */
+  margin-left: 0;                 /* 桌面端竖排 SideNav 已退役（导航上移标题栏），主区全宽 */
   padding-right: 0;
 }
 .platform-desktop .page { padding: 20px 24px; }
