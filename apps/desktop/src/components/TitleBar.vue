@@ -5,7 +5,17 @@
 
     <!-- 内容层：pointer-events:none 使非按钮区域点击穿透到拖拽层 -->
     <div class="title-content">
-      <!-- 左侧留白（对标 WorkBuddy：标题栏无品牌元素，完全隐形，仅作拖拽区） -->
+      <!-- 左侧：品牌 logo（朱砂对话气泡 + 思考点，言智 = AI 对话） -->
+      <div class="brand">
+        <svg class="brand-logo" viewBox="0 0 24 24" role="img" aria-label="言智">
+          <path d="M12 2.5C6.8 2.5 2.5 6.3 2.5 11c0 2.8 1.5 5.3 3.8 6.9L5.2 21l4.6-2.2c.7.1 1.4.2 2.2.2 5.2 0 9.5-3.8 9.5-8.5S17.2 2.5 12 2.5z" fill="var(--color-primary)" />
+          <circle cx="8.2" cy="11" r="1.5" fill="#fff" />
+          <circle cx="12" cy="11" r="1.5" fill="#fff" />
+          <circle cx="15.8" cy="11" r="1.5" fill="#fff" />
+        </svg>
+      </div>
+
+      <!-- 中部：可拖拽留白（flex:1） -->
       <div class="title-spacer"></div>
 
       <!-- 主题切换 -->
@@ -137,29 +147,13 @@ onUnmounted(() => {
 .brand {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 0 12px;
+  padding: 0 14px;
 }
 
 .brand-logo {
-  display: flex;
-  align-items: center;
-  justify-content: center;
   width: 22px;
   height: 22px;
-  border-radius: 6px;
-  background: var(--color-primary);
-  color: #ffffff;
-  font-size: 13px;
-  font-weight: 700;
-  line-height: 1;
-}
-
-.brand-name {
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--color-text-secondary);
-  letter-spacing: 0.02em;
+  display: block;
 }
 
 /* 中部留白（可拖拽） */
