@@ -35,17 +35,21 @@
           </button>
           <template #dropdown>
             <el-dropdown-menu>
-              <el-dropdown-item v-for="m in moreMenus" :key="m.path" :command="m.path" :divided="m.path === '/settings'">
+              <el-dropdown-item v-for="m in moreMenus" :key="m.path" :command="m.path">
                 <el-icon style="margin-right:6px"><component :is="m.icon" /></el-icon>
                 <span>{{ m.label }}</span>
               </el-dropdown-item>
-              <el-dropdown-item command="memory" divided>
+              <el-dropdown-item command="/memory" divided>
                 <el-icon style="margin-right:6px"><Memo /></el-icon>
                 <span>记忆管理</span>
               </el-dropdown-item>
-              <el-dropdown-item command="plugins">
+              <el-dropdown-item command="/plugins">
                 <el-icon style="margin-right:6px"><Box /></el-icon>
                 <span>插件管理</span>
+              </el-dropdown-item>
+              <el-dropdown-item command="/settings" divided>
+                <el-icon style="margin-right:6px"><Setting /></el-icon>
+                <span>设置</span>
               </el-dropdown-item>
               <template v-if="pluginMenus.length">
                 <el-dropdown-item v-for="m in pluginMenus" :key="m.path" :command="m.path" divided>
@@ -139,7 +143,7 @@ function isActive(p: string) {
   return route.path === p || route.path.startsWith(p + '/');
 }
 
-// 「更多」下拉：全部功能入口（11 项）
+// 「更多」下拉：功能入口 9 项 + 页面化记忆/插件 + 设置（最后）
 const moreMenus = [
   { path: '/knowledge', label: '知识库', icon: Collection },
   { path: '/models', label: '模型平台', icon: Cpu },
@@ -150,11 +154,11 @@ const moreMenus = [
   { path: '/agents', label: '智能体', icon: User },
   { path: '/connections', label: 'IM 连接', icon: Link },
   { path: '/peers', label: '客户端节点', icon: Platform },
-  { path: '/settings', label: '设置', icon: Setting },
 ];
-const moreActive = computed(() => moreMenus.some((m) => isActive(m.path)));
+const moreActive = computed(
+  () => moreMenus.some((m) => isActive(m.path)) || isActive('/memory') || isActive('/plugins') || isActive('/settings'),
+);
 function onMoreCommand(p: string) {
-  if (p === 'memory' || p === 'plugins') { openSettingsDrawer(p); return; }
   router.push(p);
 }
 

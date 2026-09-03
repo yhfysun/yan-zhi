@@ -125,6 +125,8 @@ const ROUTE_TITLES: Record<string, string> = {
   chat: '任务',
   'chat-hub': '消息',
   peers: '客户端节点',
+  memory: '记忆管理',
+  plugins: '插件管理',
   connections: 'IM 连接',
   knowledge: '知识库',
   browser: '浏览器',

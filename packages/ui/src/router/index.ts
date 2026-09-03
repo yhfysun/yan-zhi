@@ -127,6 +127,18 @@ const routes: RouteRecordRaw[] = [
     meta: { title: 'Skill 蒸馏' },
   },
   {
+    path: '/memory',
+    name: 'memory',
+    component: () => import('../views/MemoryPage.vue'),
+    meta: { title: '记忆管理' },
+  },
+  {
+    path: '/plugins',
+    name: 'plugins',
+    component: () => import('../views/PluginsPage.vue'),
+    meta: { title: '插件管理' },
+  },
+  {
     path: '/settings',
     name: 'settings',
     component: () => import('../views/Settings.vue'),
