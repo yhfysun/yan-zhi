@@ -1016,11 +1016,14 @@
 .skill-mount-group-header {
   display: flex; align-items: center; gap: 8px;
   padding: 7px 12px; border-radius: 8px;
-  background: var(--glass-bg, rgba(255,255,255,0.5));
-  border: 1px solid var(--glass-border);
+  background: transparent;
+  border: 1px solid transparent;
   cursor: pointer; user-select: none; transition: all 0.15s;
 }
-.skill-mount-group-header:hover { border-color: color-mix(in srgb, var(--color-primary) 30%, transparent); }
+.skill-mount-group-header:hover {
+  background: color-mix(in srgb, var(--color-primary) 5%, transparent);
+  border-color: color-mix(in srgb, var(--color-primary) 20%, transparent);
+}
 .skill-mount-group-arrow { font-size: 13px; color: var(--color-text-secondary, #64748b); transition: transform 0.2s; }
 .skill-mount-group-arrow.collapsed { transform: rotate(0deg); }
 .skill-mount-group-arrow:not(.collapsed) { transform: rotate(90deg); }
@@ -1035,8 +1038,7 @@
   display: flex; align-items: center; gap: 12px;
   padding: 12px 14px; border-radius: 10px;
   border: 1px solid var(--glass-border);
-  background: rgba(255,255,255,0.45);
-  backdrop-filter: blur(4px);
+  background: var(--glass-bg);
   transition: all 0.18s; cursor: pointer; user-select: none;
 }
 .skill-card-item:hover {
@@ -1054,7 +1056,7 @@
 }
 .skill-card-item.disabled:hover {
   border-color: var(--glass-border);
-  background: rgba(255,255,255,0.45);
+  background: var(--glass-bg);
   transform: none; box-shadow: none;
 }
 
