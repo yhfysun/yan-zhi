@@ -1,38 +1,34 @@
 <template>
   <div class="page">
-    <header class="page-header">
-      <div>
+    <!-- 页头：标题 + 向量模型 + 新建，单行工具栏 -->
+    <header class="page-header kb-header">
+      <div class="kb-header-title">
         <h2 class="page-title">知识库</h2>
         <div class="page-sub">管理文档切片，按关键词检索知识内容</div>
       </div>
-      <el-button type="primary" :icon="Plus" @click="openCreate">新建知识库</el-button>
-    </header>
-
-    <!-- 全局 Embedding 模型配置 -->
-    <div class="embedding-config-bar glass-card">
-      <div class="embedding-config-left">
-        <el-icon><Histogram /></el-icon>
-        <span class="embedding-config-title">向量模型</span>
-        <el-select
-          v-model="currentEmbeddingModel"
-          size="small"
-          style="width: 280px"
-          :loading="embeddingLoading"
-          placeholder="未选择（兜底 Ollama）"
-          @change="switchEmbeddingModel"
-        >
-          <el-option-group v-for="g in embeddingGroups" :key="g.platformId" :label="g.platformName">
-            <el-option
-              v-for="m in g.models"
-              :key="`${g.platformId}:${m.id}`"
-              :label="m.alias || m.model_id"
-              :value="`${g.platformId}:${m.id}`"
-            />
-          </el-option-group>
-        </el-select>
-        <span class="embedding-config-hint">{{ currentEmbeddingDesc }}</span>
-      </div>
-      <div class="embedding-config-right">
+      <div class="kb-header-tools">
+        <div class="embedding-inline">
+          <el-icon><Histogram /></el-icon>
+          <span class="embedding-config-title">向量模型</span>
+          <el-select
+            v-model="currentEmbeddingModel"
+            size="small"
+            style="width: 240px"
+            :loading="embeddingLoading"
+            placeholder="未选择（兜底 Ollama）"
+            @change="switchEmbeddingModel"
+          >
+            <el-option-group v-for="g in embeddingGroups" :key="g.platformId" :label="g.platformName">
+              <el-option
+                v-for="m in g.models"
+                :key="`${g.platformId}:${m.id}`"
+                :label="m.alias || m.model_id"
+                :value="`${g.platformId}:${m.id}`"
+              />
+            </el-option-group>
+          </el-select>
+          <span class="embedding-config-hint">{{ currentEmbeddingDesc }}</span>
+        </div>
         <el-button
           size="small"
           type="warning"
@@ -46,8 +42,9 @@
         <span v-if="revectorizing && revectorizeProgress.total > 0" class="revectorize-progress">
           {{ revectorizeProgress.done }} / {{ revectorizeProgress.total }}
         </span>
+        <el-button type="primary" :icon="Plus" @click="openCreate">新建知识库</el-button>
       </div>
-    </div>
+    </header>
 
     <div class="knowledge-layout">
       <aside class="kb-list glass-card">
@@ -770,15 +767,21 @@ async function resetBuiltinGuide() {
 </script>
 
 <style scoped>
-.embedding-config-bar {
+/* 页头单行工具栏：标题 | 向量模型 | 重新向量化 | 新建 */
+.kb-header {
+  flex-wrap: wrap;
+  row-gap: 10px;
+  margin-bottom: 16px;
+}
+.kb-header-title { min-width: 0; }
+.kb-header .page-sub { margin-top: 2px; }
+.kb-header-tools {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 10px 16px;
-  margin-bottom: 12px;
-  gap: 12px;
+  gap: 10px;
+  flex-wrap: wrap;
 }
-.embedding-config-left {
+.embedding-inline {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -786,6 +789,7 @@ async function resetBuiltinGuide() {
 .embedding-config-title {
   font-weight: 600;
   white-space: nowrap;
+  font-size: 13px;
 }
 .embedding-config-hint {
   font-size: 12px;
@@ -793,13 +797,7 @@ async function resetBuiltinGuide() {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 300px;
-}
-.embedding-config-right {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-shrink: 0;
+  max-width: 220px;
 }
 .revectorize-progress {
   font-size: 12px;
