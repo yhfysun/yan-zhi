@@ -1,0 +1,107 @@
+/* ============================================================
+   数据工作台设计令牌（P6.1）
+   对应方案 ui-design.md §1；原型 ui-prototype.html 的落地版。
+   作用域 .dw-root，--dw- 前缀避免污染全局主题。
+   ============================================================ */
+
+.dw-root {
+  /* —— 表面与文本 —— */
+  --dw-canvas: #FBFAFD;        /* 工作台底色：极浅冷白，与主界面 --color-bg 区分出「另一个工作面」 */
+  --dw-surface: #FFFFFF;
+  --dw-ink: #14161A;
+  --dw-ink-2: #5B6070;
+  --dw-ink-3: #8E93A6;
+  --dw-rule: #E7E5EE;
+  --dw-rule-strong: #D3D0DE;
+
+  /* —— 状态色（配 -soft/-line 衍生，禁止主色直接铺底） —— */
+  --dw-brand: #7C3AED;         /* 沿用言智品牌紫 */
+  --dw-brand-soft: #F1ECFE;
+  --dw-brand-line: #DDD0FB;
+  --dw-signal: #0E9F8F;
+  --dw-signal-soft: #E4F5F2;
+  --dw-signal-line: #B8E3DC;
+  --dw-caution: #B4710A;
+  --dw-caution-soft: #FDF3E2;
+  --dw-caution-line: #F0DDB6;
+  --dw-danger: #D6336C;
+  --dw-danger-soft: #FDECF2;
+  --dw-danger-line: #F6C9D8;
+
+  /* —— 深色仪器面板（源文件态 vs 派生产物必须一眼可分） —— */
+  --dw-void: #14161A;          /* 派生产物（编译 SQL，只读） */
+  --dw-void-2: #1C1F27;        /* 源文件态（YAML，可改）+ 面板顶栏 */
+  --dw-void-3: #2A2E38;
+  --dw-void-ink: #E6E8EE;
+  --dw-void-ink-2: #8B91A3;
+
+  /* —— 语义角色色（本体字段角色，功能性编码） —— */
+  --dw-role-entity: #334155;
+  --dw-role-dim: #0E9F8F;
+  --dw-role-measure: #7C3AED;
+  --dw-role-time: #4F7DF3;
+  --dw-role-filter: #B4710A;
+  --dw-role-policy: #D6336C;
+
+  /* —— 尺度：小圆角（数据工具拒绝 pill）、只两级阴影 —— */
+  --dw-r-xs: 3px;
+  --dw-r-sm: 5px;
+  --dw-r-md: 8px;
+  --dw-r-lg: 12px;
+  --dw-sh-1: 0 1px 2px rgba(20, 22, 26, 0.04);
+  --dw-sh-2: 0 4px 16px rgba(20, 22, 26, 0.07);
+  --dw-ease: cubic-bezier(0.16, 1, 0.3, 1);
+
+  /* —— 三字体角色 —— */
+  --dw-f-display: 'Space Grotesk', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  --dw-f-body: 'IBM Plex Sans', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  --dw-f-mono: 'JetBrains Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
+
+  background: var(--dw-canvas);
+  color: var(--dw-ink);
+  font-family: var(--dw-f-body);
+  font-size: 13px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* 深色模式：面板系令牌整体反转，仪器面板略提亮以保住与背景的层级差 */
+html.dark .dw-root {
+  --dw-canvas: #16181D;
+  --dw-surface: #1E2127;
+  --dw-ink: #E6E8EE;
+  --dw-ink-2: #A8ADBD;
+  --dw-ink-3: #6E7386;
+  --dw-rule: #2C303A;
+  --dw-rule-strong: #3A3F4C;
+  --dw-void: #0E1013;
+  --dw-void-2: #16181D;
+  --dw-void-3: #2C303A;
+}
+
+.dw-root .dw-mono {
+  font-family: var(--dw-f-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.dw-root ::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.dw-root ::-webkit-scrollbar-thumb {
+  background: rgba(20, 22, 26, 0.16);
+  border-radius: 4px;
+}
+html.dark .dw-root ::-webkit-scrollbar-thumb {
+  background: rgba(230, 232, 238, 0.18);
+}
+
+/* 中英混排标题：中文 fallback 单独声明 600 字重，避免字形断层 */
+.dw-root .dw-display {
+  font-family: var(--dw-f-display);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.dw-root:lang(zh) .dw-display {
+  font-weight: 600;
+}

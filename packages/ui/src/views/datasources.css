@@ -1,0 +1,292 @@
+/* 数据源页面样式（P6.3）——发丝线编目卡片 + 小圆角 + mono 数值，令牌来自 data-workbench.css */
+
+.dw-root .ds-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.dw-root .ds-search {
+  width: 220px;
+}
+
+.dw-root .ds-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 16px;
+  align-items: start;
+}
+
+/* —— 卡片：发丝线编目，非圆角投影堆叠 —— */
+.dw-root .ds-card {
+  background: var(--dw-surface);
+  border: 1px solid var(--dw-rule);
+  border-radius: var(--dw-r-md);
+  box-shadow: var(--dw-sh-1);
+  overflow: hidden;
+}
+.dw-root .ds-card-title {
+  margin: 0;
+  padding: 0 16px;
+  font-size: 14px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.dw-root .ds-card-sub {
+  margin: 2px 0 0;
+  padding: 0 16px 10px;
+  font-size: 11.5px;
+  color: var(--dw-ink-3);
+}
+.dw-root .ds-card-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 16px 8px;
+}
+.dw-root .ds-card-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 16px;
+  border-top: 1px solid var(--dw-rule);
+  font-size: 11.5px;
+  color: var(--dw-ink-2);
+}
+
+.dw-root .ds-kind {
+  font-family: var(--dw-f-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  padding: 2px 6px;
+  border-radius: var(--dw-r-xs);
+  background: var(--dw-void-2);
+  color: var(--dw-void-ink);
+}
+.dw-root .ds-kind.project {
+  background: var(--dw-brand-soft);
+  color: var(--dw-brand);
+  border: 1px solid var(--dw-brand-line);
+}
+.dw-root .ds-eyebrow {
+  font-size: 10px;
+  color: var(--dw-ink-3);
+  letter-spacing: 0.08em;
+}
+
+/* —— 状态徽标 —— */
+.dw-root .ds-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 1px 7px;
+  border-radius: var(--dw-r-sm);
+  border: 1px solid var(--dw-rule);
+  color: var(--dw-ink-2);
+  background: var(--dw-canvas);
+}
+.dw-root .ds-badge.b-ok {
+  background: var(--dw-signal-soft);
+  color: var(--dw-signal);
+  border-color: var(--dw-signal-line);
+}
+.dw-root .ds-badge.b-err {
+  background: var(--dw-danger-soft);
+  color: var(--dw-danger);
+  border-color: var(--dw-danger-line);
+}
+.dw-root .ds-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--dw-ink-3);
+  flex-shrink: 0;
+}
+.dw-root .ds-dot.ok { background: var(--dw-signal); }
+.dw-root .ds-dot.err { background: var(--dw-danger); }
+
+/* —— 详情 kv —— */
+.dw-root .ds-kv {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 3px 12px;
+  margin: 0;
+  padding: 0 16px 12px;
+  font-size: 11.5px;
+}
+.dw-root .ds-kv dt {
+  color: var(--dw-ink-3);
+}
+.dw-root .ds-kv dd {
+  margin: 0;
+  color: var(--dw-ink-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dw-root .ds-stat {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 3px;
+  font-size: 11px;
+  color: var(--dw-ink-3);
+}
+.dw-root .ds-stat b {
+  color: var(--dw-ink-2);
+  font-family: var(--dw-f-mono);
+  font-weight: 600;
+}
+
+/* —— 表单卡：临时态，白底 + 左侧品牌竖线（视觉重量低于常态卡片） —— */
+.dw-root .ds-form {
+  grid-column: 1 / -1;
+  border-left: 2px solid var(--dw-brand);
+}
+.dw-root .ds-fgrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 12px 16px;
+  padding: 16px;
+}
+.dw-root .ds-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.dw-root .ds-field label {
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--dw-ink-2);
+}
+.dw-root .ds-hint {
+  font-size: 11px;
+  color: var(--dw-ink-3);
+}
+.dw-root .ds-switches {
+  grid-column: 1 / -1;
+  flex-direction: row;
+  align-items: center;
+  gap: 16px;
+}
+
+/* —— 类型三组选择 —— */
+.dw-root .tp-groups {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px 24px;
+}
+.dw-root .tp-g {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.dw-root .tp-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.dw-root .tp-btn {
+  padding: 4px 9px;
+  border: 1px solid var(--dw-rule-strong);
+  border-radius: var(--dw-r-sm);
+  font-size: 12px;
+  font-family: var(--dw-f-body);
+  background: var(--dw-surface);
+  color: var(--dw-ink);
+  cursor: pointer;
+  transition: all 0.16s var(--dw-ease);
+}
+.dw-root .tp-btn:hover { border-color: var(--dw-ink-3); }
+.dw-root .tp-btn.on {
+  border-color: var(--dw-brand);
+  background: var(--dw-brand-soft);
+  color: var(--dw-brand);
+  font-weight: 600;
+}
+.dw-root .tp-btn.tp-na,
+.dw-root .tp-btn.tp-fixed {
+  color: var(--dw-ink-3);
+  border-style: dashed;
+  cursor: not-allowed;
+  background: var(--dw-canvas);
+}
+.dw-root .tp-btn.tp-fixed {
+  cursor: default;
+  border-style: solid;
+}
+
+/* —— 失败诊断折叠 —— */
+.dw-root .ds-diag {
+  grid-column: 1 / -1;
+  border-top: 1px solid var(--dw-rule);
+}
+.dw-root .ds-card > .ds-diag {
+  margin: 0 16px;
+  border-top: none;
+  border-bottom: 1px solid var(--dw-rule);
+}
+.dw-root .ds-diag > summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 8px 4px;
+  font-size: 11.5px;
+  color: var(--dw-danger);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  user-select: none;
+}
+.dw-root .ds-diag > summary::-webkit-details-marker {
+  display: none;
+}
+.dw-root .ds-diag > summary .chev {
+  transition: transform 0.18s var(--dw-ease);
+}
+.dw-root .ds-diag[open] > summary .chev {
+  transform: rotate(90deg);
+}
+.dw-root .ds-diag-body {
+  padding: 0 4px 10px 22px;
+  font-size: 11.5px;
+  color: var(--dw-ink-2);
+}
+.dw-root .ds-diag-body ol {
+  margin: 6px 0;
+  padding-left: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.dw-root .ds-diag-body code {
+  font-family: var(--dw-f-mono);
+  font-size: 11px;
+  background: var(--dw-canvas);
+  padding: 1px 4px;
+  border-radius: var(--dw-r-xs);
+}
+.dw-root .ds-diag-err {
+  margin: 0 0 6px;
+  font-size: 11px;
+  color: var(--dw-danger);
+  word-break: break-all;
+}
+
+/* —— 空态 / 加载 —— */
+.dw-root .dw-loading,
+.dw-root .dw-empty {
+  padding: 48px 0;
+  text-align: center;
+  color: var(--dw-ink-3);
+  font-size: 12.5px;
+}
+.dw-root .dw-empty-err {
+  color: var(--dw-danger);
+}
+
+.dw-root .ds-more {
+  color: var(--dw-ink-3);
+}

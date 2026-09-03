@@ -127,6 +127,7 @@ const ROUTE_TITLES: Record<string, string> = {
   peers: '客户端节点',
   memory: '记忆管理',
   plugins: '插件管理',
+  'data-sources': '数据源',
   connections: 'IM 连接',
   knowledge: '知识库',
   browser: '浏览器',

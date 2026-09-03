@@ -960,4 +960,35 @@ db.exec(`
 `);
 try { db.exec('CREATE INDEX IF NOT EXISTS idx_workflow_run_user ON workflow_run(user_id, created_at DESC)'); } catch {}
 
+// ===== 多数据源（P1 数据源底座）=====
+// 密码用 utils/crypto.ts 的 AES-256-GCM 加密（password_enc），接口永不回显明文。
+// type: mysql|postgres|dm|oracle|sqlite|project（project=应用自身 data.db，builtin=1）
+db.exec(`
+  CREATE TABLE IF NOT EXISTS data_source (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    type TEXT NOT NULL,
+    host TEXT,
+    port INTEGER,
+    database TEXT,
+    service_name TEXT,
+    file_path TEXT,
+    username TEXT,
+    password_enc TEXT,
+    options_json TEXT DEFAULT '{}',
+    readonly INTEGER NOT NULL DEFAULT 1,
+    allow_write INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'unknown',
+    last_error TEXT,
+    last_test_at INTEGER,
+    schema_synced_at INTEGER,
+    table_count INTEGER,
+    builtin INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+`);
+try { db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_data_source_user_name ON data_source(user_id, name)'); } catch {}
+
 export { db };

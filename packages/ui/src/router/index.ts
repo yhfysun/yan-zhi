@@ -139,6 +139,12 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '插件管理' },
   },
   {
+    path: '/data-sources',
+    name: 'data-sources',
+    component: () => import('../views/DataSourcesPage.vue'),
+    meta: { title: '数据源' },
+  },
+  {
     path: '/settings',
     name: 'settings',
     component: () => import('../views/Settings.vue'),
