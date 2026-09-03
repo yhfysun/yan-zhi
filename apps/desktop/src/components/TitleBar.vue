@@ -16,7 +16,7 @@
         <span class="brand-name">言智</span>
       </div>
 
-      <!-- 横排主导航：桌面端竖排 SideNav 退役，菜单上移标题栏 -->
+      <!-- 横排主导航：核心 4 页 + 更多下拉（其它功能入口收进弹层） -->
       <nav class="title-nav">
         <router-link
           v-for="m in navMenus"
@@ -28,20 +28,26 @@
           <el-icon :size="15"><component :is="m.icon" /></el-icon>
           <span>{{ m.label }}</span>
         </router-link>
-        <button class="title-nav-item" type="button" @click="openSettingsDrawer('general')">
-          <el-icon :size="15"><Setting /></el-icon>
-          <span>设置</span>
-        </button>
-        <router-link
-          v-for="m in pluginMenus"
-          :key="m.path"
-          :to="m.path"
-          class="title-nav-item"
-          :class="{ active: isActive(m.path) }"
-        >
-          <el-icon :size="15"><component :is="m.icon" /></el-icon>
-          <span>{{ m.label }}</span>
-        </router-link>
+        <el-dropdown trigger="click" popper-class="plus-menu-popper" @command="(p: string) => $router.push(p)">
+          <button class="title-nav-item" :class="{ active: moreActive }" type="button">
+            <el-icon :size="15"><More /></el-icon>
+            <span>更多</span>
+          </button>
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item v-for="m in moreMenus" :key="m.path" :command="m.path">
+                <el-icon style="margin-right:6px"><component :is="m.icon" /></el-icon>
+                <span>{{ m.label }}</span>
+              </el-dropdown-item>
+              <template v-if="pluginMenus.length">
+                <el-dropdown-item v-for="m in pluginMenus" :key="m.path" :command="m.path" divided>
+                  <el-icon style="margin-right:6px"><component :is="m.icon" /></el-icon>
+                  <span>{{ m.label }}</span>
+                </el-dropdown-item>
+              </template>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
       </nav>
 
       <!-- 中部：可拖拽留白（flex:1） -->
@@ -69,6 +75,11 @@
         </template>
       </el-dropdown>
       <button v-else class="title-login-btn" type="button" @click="$router.push('/login')">登录</button>
+
+      <!-- 设置弹窗入口（设置就是设置：独立按钮，点击开设置抽屉） -->
+      <button class="win-btn title-theme-btn" type="button" title="设置" @click="openSettingsDrawer('general')">
+        <el-icon :size="15"><Setting /></el-icon>
+      </button>
 
       <!-- 主题切换 -->
       <button class="win-btn title-theme-btn" type="button" title="切换主题" @click="toggleTheme">
@@ -100,7 +111,10 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { useRoute } from 'vue-router';
-import { Minus, FullScreen, CopyDocument, Close, Moon, Sunny, HomeFilled, ChatDotRound, Monitor, Promotion, Setting, Collection } from '@element-plus/icons-vue';
+import {
+  Minus, FullScreen, CopyDocument, Close, Moon, Sunny, HomeFilled, ChatDotRound, Monitor, Promotion, Setting, Collection,
+  More, Cpu, Connection, Tools, Files, User, Link, Platform,
+} from '@element-plus/icons-vue';
 import { useSettingsStore, useAuthStore, usePluginStore, openSettingsDrawer } from '@yan-zhi/ui';
 import { resolvePluginIcon } from '@yan-zhi/ui/plugin-icons';
 
@@ -110,7 +124,7 @@ const settingsStore = useSettingsStore();
 const authStore = useAuthStore();
 const route = useRoute();
 
-// 横排主导航（桌面端竖排 SideNav 退役后上移至此，与 ui builtinNavItems 保持一致）
+// 横排主导航：核心 4 页（设置独立为右侧弹窗入口）
 const navMenus = [
   { path: '/home', label: '首页', icon: HomeFilled },
   { path: '/chat', label: '对话', icon: ChatDotRound },
@@ -121,12 +135,28 @@ function isActive(p: string) {
   return route.path === p || route.path.startsWith(p + '/');
 }
 
+// 「更多」下拉：其它功能入口（点击跳转对应页面）
+const moreMenus = [
+  { path: '/knowledge', label: '知识库', icon: Collection },
+  { path: '/models', label: '模型平台', icon: Cpu },
+  { path: '/mcp', label: 'MCP 连接', icon: Connection },
+  { path: '/tools', label: '工具', icon: Tools },
+  { path: '/skills', label: 'Skill', icon: Files },
+  { path: '/agents', label: '智能体', icon: User },
+  { path: '/connections', label: 'IM 连接', icon: Link },
+  { path: '/peers', label: '客户端节点', icon: Platform },
+];
 // 插件注入的导航项（原 SideNav pluginNavItems 等价迁移；桌面端 when 过滤）
 const pluginStore = usePluginStore();
 const pluginMenus = computed(() =>
   pluginStore.sidebar
     .filter((it) => !it.when || it.when === 'all' || it.when === 'desktop')
     .map((it) => ({ path: it.route, label: it.label, icon: resolvePluginIcon(it.icon) })),
+);
+
+// 「更多」在当前路由位于其它/插件菜单时高亮
+const moreActive = computed(
+  () => moreMenus.some((m) => isActive(m.path)) || pluginMenus.value.some((m) => isActive(m.path)),
 );
 
 // 是否处于最大化状态
