@@ -920,7 +920,7 @@ function onResize() {
   width: 48px; height: 48px; border-radius: 50%;
   display: flex; align-items: center; justify-content: center;
   font-size: 24px; cursor: grab; user-select: none;
-  box-shadow: 0 0 24px rgba(124,58,237,0.5), 0 4px 16px rgba(0,0,0,0.4);
+  box-shadow: 0 0 24px color-mix(in srgb, var(--color-primary) 50%, transparent), 0 4px 16px rgba(0,0,0,0.4);
   border: 2px solid rgba(255,255,255,0.2);
   transition: transform 0.2s ease;
   color: #fff;
@@ -941,12 +941,12 @@ function onResize() {
   color: rgba(255,255,255,0.7); cursor: pointer; flex-shrink: 0;
   display: flex; align-items: center; justify-content: center; transition: all 0.2s;
 }
-.panel-toggle:hover { background: rgba(124,58,237,0.3); color: #fff; }
+.panel-toggle:hover { background: color-mix(in srgb, var(--color-primary) 35%, transparent); color: #fff; }
 .panel-body { overflow: hidden; }
 .panel-icon {
   width: 52px; height: 52px; border-radius: 50%; flex-shrink: 0;
   display: flex; align-items: center; justify-content: center; font-size: 26px;
-  box-shadow: 0 0 20px rgba(124,58,237,0.4);
+  box-shadow: 0 0 20px color-mix(in srgb, var(--color-primary) 40%, transparent);
 }
 .panel-titles { min-width: 0; }
 .panel-name { font-size: 18px; font-weight: 700; color: #fff; margin: 0; }

@@ -158,9 +158,9 @@ const GEOJSON_REMOTE_URL = 'https://raw.githubusercontent.com/johan/world.geo.js
 function renderGeoJson(data: any) {
   geoJsonLayer = L.geoJSON(data, {
     style: {
-      color: 'rgba(124, 58, 237, 0.4)',
+      color: 'rgba(194, 65, 12, 0.4)',
       weight: 1,
-      fillColor: 'rgba(124, 58, 237, 0.05)',
+      fillColor: 'rgba(194, 65, 12, 0.05)',
       fillOpacity: 0.3,
     },
     onEachFeature: (feature, layer) => {
@@ -174,9 +174,9 @@ function renderGeoJson(data: any) {
 
       layer.on('mouseover', (e: any) => {
         e.target.setStyle({
-          color: 'rgba(124, 58, 237, 1)',
+          color: 'rgba(194, 65, 12, 1)',
           weight: 2,
-          fillColor: 'rgba(124, 58, 237, 0.3)',
+          fillColor: 'rgba(194, 65, 12, 0.3)',
           fillOpacity: 0.5,
         });
       });
@@ -184,9 +184,9 @@ function renderGeoJson(data: any) {
       layer.on('mouseout', (e: any) => {
         if (selectedCountry.value?.code3 !== countryCode) {
           e.target.setStyle({
-            color: 'rgba(124, 58, 237, 0.4)',
+            color: 'rgba(194, 65, 12, 0.4)',
             weight: 1,
-            fillColor: 'rgba(124, 58, 237, 0.05)',
+            fillColor: 'rgba(194, 65, 12, 0.05)',
             fillOpacity: 0.3,
           });
         }
@@ -407,7 +407,7 @@ function getFlagEmoji(code: string): string {
 .continent-emoji { font-size: 20px; }
 .continent-name {
   font-size: 11px; font-weight: 700; color: #fff;
-  background: rgba(124, 58, 237, 0.7); padding: 1px 8px; border-radius: 8px;
+  background: color-mix(in srgb, var(--color-primary) 75%, transparent); padding: 1px 8px; border-radius: 8px;
   white-space: nowrap;
 }
 </style>
