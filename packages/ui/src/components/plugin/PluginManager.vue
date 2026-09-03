@@ -1,7 +1,6 @@
 <template>
   <div class="plugin-manager">
     <div class="pm-header">
-      <h3>插件管理</h3>
       <div class="pm-header-actions">
         <el-input v-model="keyword" placeholder="搜索" size="small" style="width: 180px" />
         <el-button

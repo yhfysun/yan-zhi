@@ -34,7 +34,7 @@
         />
         <el-button v-else :icon="Refresh" @click="loadPeers" />
         <el-button v-if="channel === 'node'" :icon="Setting" @click="showRegister = true">节点设置</el-button>
-        <el-button v-else :icon="Setting" @click="openSettingsDrawer('connections')">配置</el-button>
+        <el-button v-else :icon="Setting" @click="router.push('/connections')">配置</el-button>
       </div>
     </header>
 
@@ -113,7 +113,7 @@
     <!-- IM 渠道：无连接器 -->
     <div v-else-if="connectors.length === 0" class="im-empty">
       <el-empty description="还没有可用的 IM 连接">
-        <el-button type="primary" @click="openSettingsDrawer('connections')">去配置 IM 连接</el-button>
+        <el-button type="primary" @click="router.push('/connections')">去配置 IM 连接</el-button>
       </el-empty>
     </div>
 
@@ -192,10 +192,12 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { useRouter } from 'vue-router';
 import { Refresh, Document, Edit, Setting, ArrowDown, Connection, Promotion } from '@element-plus/icons-vue';
 import { ElMessage } from 'element-plus';
 import { api } from '../api/client';
-import { openSettingsDrawer } from '../composables/useSettingsDrawer';
+
+const router = useRouter();
 
 interface ImEvent {
   id: string;

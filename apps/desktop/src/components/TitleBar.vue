@@ -79,7 +79,7 @@
               <el-icon><Setting /></el-icon>
               <span>设置</span>
             </el-dropdown-item>
-            <el-dropdown-item @click="openSettingsDrawer('memory')">
+            <el-dropdown-item command="/memory">
               <el-icon><Collection /></el-icon>
               <span>记忆管理</span>
             </el-dropdown-item>

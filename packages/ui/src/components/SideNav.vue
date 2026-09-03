@@ -15,10 +15,10 @@
               <el-icon :size="20"><component :is="item.icon" /></el-icon>
               <span class="nav-label">{{ item.label }}</span>
             </router-link>
-            <button v-else type="button" class="nav-item" @click="openSettingsDrawer('general')">
+            <router-link v-else to="/settings" class="nav-item">
               <el-icon :size="20"><component :is="item.icon" /></el-icon>
               <span class="nav-label">{{ item.label }}</span>
-            </button>
+            </router-link>
           </el-tooltip>
         </template>
       </template>
@@ -35,11 +35,11 @@
             <div class="user-dropdown-header">
               <span class="user-dropdown-name">{{ authStore.user?.username }}</span>
             </div>
-            <el-dropdown-item @click="openSettingsDrawer('general')">
+            <el-dropdown-item @click="$router.push('/settings')">
               <el-icon><Setting /></el-icon>
               <span>设置</span>
             </el-dropdown-item>
-            <el-dropdown-item @click="openSettingsDrawer('memory')">
+            <el-dropdown-item @click="$router.push('/memory')">
               <el-icon><Collection /></el-icon>
               <span>记忆管理</span>
             </el-dropdown-item>
@@ -77,9 +77,9 @@
           <router-link v-if="item.kind === 'route'" :to="item.path" class="nav-item" :class="{ active: isActive(item.path) }">
             <el-icon :size="20"><component :is="item.icon" /></el-icon>
           </router-link>
-          <button v-else type="button" class="nav-item" @click="openSettingsDrawer('general')">
+          <router-link v-else to="/settings" class="nav-item">
             <el-icon :size="20"><component :is="item.icon" /></el-icon>
-          </button>
+          </router-link>
         </el-tooltip>
       </template>
     </div>
@@ -99,11 +99,11 @@
             <div class="user-dropdown-header">
               <span class="user-dropdown-name">{{ authStore.user?.username }}</span>
             </div>
-            <el-dropdown-item @click="openSettingsDrawer('general')">
+            <el-dropdown-item @click="$router.push('/settings')">
               <el-icon><Setting /></el-icon>
               <span>设置</span>
             </el-dropdown-item>
-            <el-dropdown-item @click="openSettingsDrawer('memory')">
+            <el-dropdown-item @click="$router.push('/memory')">
               <el-icon><Collection /></el-icon>
               <span>记忆管理</span>
             </el-dropdown-item>
@@ -134,15 +134,14 @@
         <el-icon :size="20"><component :is="item.icon" /></el-icon>
         <span class="tab-bar-label">{{ item.tabLabel || item.label }}</span>
       </router-link>
-      <button
+      <router-link
         v-else
-        type="button"
+        to="/settings"
         class="tab-bar-item"
-        @click="openSettingsDrawer('general')"
       >
         <el-icon :size="20"><component :is="item.icon" /></el-icon>
         <span class="tab-bar-label">{{ item.tabLabel || item.label }}</span>
-      </button>
+      </router-link>
     </template>
   </nav>
 </template>
@@ -156,7 +155,6 @@ import { useSettingsStore } from '../stores/settings';
 import { useIsMobile } from '../composables/useIsMobile';
 import { usePlatform } from '../composables/usePlatform';
 import { useSidebarState } from '../composables/useSidebarState';
-import { openSettingsDrawer } from '../composables/useSettingsDrawer';
 import { usePluginStore } from '../stores/plugin';
 import { resolvePluginIcon } from '../plugin-icons';
 import { isElectron } from '../api/client';
