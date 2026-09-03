@@ -2,43 +2,6 @@
   <div class="input-area">
     <div class="input-box" :class="{ focused: inputFocused }">
 
-      <div class="input-agent-bar">
-        <el-dropdown trigger="click" placement="bottom-start" popper-class="agent-switch-popper" @command="onAgentSwitch">
-          <div class="agent-trigger" @click.stop>
-            <span class="agent-trigger-avatar">{{ (agentStore.selectedAgent?.name || '?').slice(0, 1) }}</span>
-            <span class="agent-trigger-name">{{ agentStore.selectedAgent?.name || '选择智能体' }}</span>
-            <el-icon class="agent-trigger-caret"><ArrowDown /></el-icon>
-          </div>
-          <template #dropdown>
-            <el-dropdown-menu>
-              <el-dropdown-item
-                v-for="ag in agentStore.agents"
-                :key="ag.id"
-                :command="ag.id"
-                :class="{ 'is-active': ag.id === agentStore.selectedId }"
-              >
-                <div class="agent-opt">
-                  <span class="agent-opt-avatar">{{ (ag.name || '?').slice(0, 1) }}</span>
-                  <div class="agent-opt-info">
-                    <span class="agent-opt-name">
-                      <el-icon v-if="ag.isDefault" class="agent-opt-lock"><Lock /></el-icon>
-                      {{ ag.name }}
-                    </span>
-                    <span class="agent-opt-desc">{{ ag.description || '未填写描述' }}</span>
-                  </div>
-                  <el-icon v-if="ag.id === agentStore.selectedId" class="agent-opt-check"><Check /></el-icon>
-                </div>
-              </el-dropdown-item>
-            </el-dropdown-menu>
-          </template>
-        </el-dropdown>
-        <el-tooltip content="编辑当前智能体" placement="top">
-          <el-button size="small" circle class="agent-edit-btn" @click="openEditAgent(agentStore.selectedAgent)">
-            <el-icon><EditPen /></el-icon>
-          </el-button>
-        </el-tooltip>
-      </div>
-
       <el-input
         ref="inputRef"
         v-model="input"
@@ -131,29 +94,81 @@
 
       <div class="input-toolbar">
         <div class="toolbar-left">
-          <el-tooltip content="上传文件" placement="top">
-            <el-button size="small" circle class="ctx-btn" @click="triggerFileUpload">
-              <el-icon><UploadFilled /></el-icon>
-            </el-button>
-          </el-tooltip>
-          <el-tooltip :content="workspaceDir || '设置工作目录'" placement="top">
-            <el-button size="small" circle class="ctx-btn" :class="{ 'is-active': hasWorkspaceDir }" @click="showWorkspaceDir = true">
-              <el-icon><FolderOpened /></el-icon>
-            </el-button>
-          </el-tooltip>
-          <el-tooltip content="MCP 工具" placement="top">
-            <el-button size="small" circle class="ctx-btn" @click="showMount = true">
-              <el-icon><Connection /></el-icon>
-              <span v-if="store.mountedMcpServers.length" class="btn-badge">{{ store.mountedMcpServers.length }}</span>
-            </el-button>
-          </el-tooltip>
-          <el-tooltip content="Skill" placement="top">
-            <el-button size="small" circle class="ctx-btn" @click="showSkills = true">
-              <el-icon><Files /></el-icon>
-              <span v-if="mountedSkillIds.length" class="btn-badge">{{ mountedSkillIds.length }}</span>
-            </el-button>
-          </el-tooltip>
-
+          <el-popover v-model:visible="plusOpen" placement="top-start" :width="264" trigger="click" :show-arrow="false" popper-class="plus-menu-popper">
+            <template #reference>
+              <el-button size="small" circle class="ctx-btn plus-btn" :class="{ 'is-active': plusOpen }">
+                <el-icon><Plus /></el-icon>
+              </el-button>
+            </template>
+            <div v-if="plusPanel === 'main'" class="plus-menu">
+              <div class="plus-menu-item" @click="plusPanel = 'agents'">
+                <span class="plus-menu-ic agent">{{ (agentStore.selectedAgent?.name || '?').slice(0, 1) }}</span>
+                <div class="plus-menu-info">
+                  <div class="plus-menu-label">专家</div>
+                  <div class="plus-menu-desc">{{ agentStore.selectedAgent?.name || '选择智能体' }}</div>
+                </div>
+                <el-icon class="plus-menu-arrow"><ArrowRight /></el-icon>
+              </div>
+              <div class="plus-menu-item" @click="closePlus(() => { showSkills = true; })">
+                <span class="plus-menu-ic"><el-icon><Files /></el-icon></span>
+                <div class="plus-menu-info">
+                  <div class="plus-menu-label">技能 · Skill</div>
+                  <div class="plus-menu-desc">{{ mountedSkillIds.length ? `已挂载 ${mountedSkillIds.length} 个` : '未挂载' }}</div>
+                </div>
+              </div>
+              <div class="plus-menu-item" @click="closePlus(() => { showMount = true; })">
+                <span class="plus-menu-ic"><el-icon><Connection /></el-icon></span>
+                <div class="plus-menu-info">
+                  <div class="plus-menu-label">连接器 · MCP</div>
+                  <div class="plus-menu-desc">{{ store.mountedMcpServers.length ? `已挂载 ${store.mountedMcpServers.length} 个` : '未挂载' }}</div>
+                </div>
+              </div>
+              <div class="plus-menu-divider"></div>
+              <div class="plus-menu-item" @click="closePlus(triggerFileUpload)">
+                <span class="plus-menu-ic"><el-icon><UploadFilled /></el-icon></span>
+                <div class="plus-menu-info"><div class="plus-menu-label">上传文件</div></div>
+              </div>
+              <div class="plus-menu-item" @click="closePlus(() => { showWorkspaceDir = true; })">
+                <span class="plus-menu-ic"><el-icon><FolderOpened /></el-icon></span>
+                <div class="plus-menu-info">
+                  <div class="plus-menu-label">工作目录</div>
+                  <div class="plus-menu-desc">{{ hasWorkspaceDir ? workspaceDir : '未设置' }}</div>
+                </div>
+              </div>
+              <div class="plus-menu-divider"></div>
+              <div class="plus-menu-item" @click="closePlus(() => startNewChat())">
+                <span class="plus-menu-ic"><el-icon><Plus /></el-icon></span>
+                <div class="plus-menu-info"><div class="plus-menu-label">新建任务</div></div>
+              </div>
+              <div class="plus-menu-item" @click="closePlus(openPlatformConfig)">
+                <span class="plus-menu-ic"><el-icon><Setting /></el-icon></span>
+                <div class="plus-menu-info"><div class="plus-menu-label">配置模型平台</div></div>
+              </div>
+            </div>
+            <div v-else class="plus-menu">
+              <div class="plus-menu-back" @click="plusPanel = 'main'">
+                <el-icon><ArrowLeft /></el-icon><span>专家</span>
+              </div>
+              <div
+                v-for="ag in agentStore.agents"
+                :key="ag.id"
+                class="plus-menu-item"
+                :class="{ 'is-active': ag.id === agentStore.selectedId }"
+                @click="pickPlusAgent(ag.id)"
+              >
+                <span class="plus-menu-ic agent">{{ (ag.name || '?').slice(0, 1) }}</span>
+                <div class="plus-menu-info">
+                  <div class="plus-menu-label">{{ ag.name }}</div>
+                  <div class="plus-menu-desc">{{ ag.description || '未填写描述' }}</div>
+                </div>
+                <el-icon v-if="ag.id === agentStore.selectedId" class="plus-menu-check"><Check /></el-icon>
+              </div>
+              <div class="plus-menu-item" @click="closePlus(() => openEditAgent(agentStore.selectedAgent))">
+                <span class="plus-menu-ic"><el-icon><EditPen /></el-icon></span>
+                <div class="plus-menu-info"><div class="plus-menu-label">编辑当前专家</div></div>
+              </div>
+            </div>
+          </el-popover>
         </div>
 
         <div class="toolbar-mobile-selects">
@@ -207,16 +222,29 @@
         </div>
 
         <div class="toolbar-right">
-          <el-tooltip content="配置模型平台" placement="top">
-            <el-button size="small" circle @click="openPlatformConfig">
-              <el-icon><Setting /></el-icon>
-            </el-button>
-          </el-tooltip>
-          <el-tooltip content="新建任务" placement="top">
-            <el-button size="small" circle @click="startNewChat()">
-              <el-icon><Plus /></el-icon>
-            </el-button>
-          </el-tooltip>
+          <el-popover placement="top-end" :width="240" trigger="click" :show-arrow="false">
+            <template #reference>
+              <button type="button" class="model-select-btn">
+                <el-icon :size="13"><Cpu /></el-icon>
+                <span class="model-select-name">{{ currentModelName }}</span>
+                <el-icon :size="11"><ArrowDown /></el-icon>
+              </button>
+            </template>
+            <div class="pop-select-list">
+              <template v-for="g in modelGroups" :key="g.platformId">
+                <div class="pop-select-label">{{ g.platformName }}</div>
+                <div
+                  v-for="m in g.models"
+                  :key="m.id"
+                  class="pop-select-item"
+                  :class="{ active: m.id === selectedModelId }"
+                  @click="onModelChange(m.id)"
+                >
+                  <span>{{ m.alias || m.modelId }}</span>
+                </div>
+              </template>
+            </div>
+          </el-popover>
           <el-tooltip :content="store.streaming ? '终止 (停止生成)' : '发送 (Enter)'" placement="top">
             <span>
               <el-button v-if="!store.streaming" type="primary" :icon="Promotion" :disabled="(!input.trim() && uploadedFiles.length === 0) || !selectedModelId" @click="send" circle class="send-btn" />
@@ -261,7 +289,7 @@
 import { ref, computed, watch } from 'vue';
 import type { Component } from 'vue';
 import {
-  FolderOpened, ArrowDown, Connection, Files, UploadFilled, User, EditPen, Cpu, Setting, Plus,
+  FolderOpened, ArrowDown, ArrowLeft, ArrowRight, Connection, Files, UploadFilled, User, EditPen, Cpu, Setting, Plus,
   Promotion, Close, Lock, Check, Picture, Document, Tickets, Box, VideoCamera, Headset, Memo,
 } from '@element-plus/icons-vue';
 import { useChat } from '../../composables/chat/useChat';
@@ -273,6 +301,19 @@ const {
   formatSize, removeFile, fileInputRef, handleFileChange,
   workspaceFiles, selectedFilePaths, toggleFileSelect,
 } = useChat();
+
+// ===== 「+」聚合菜单（对齐 WorkBuddy：专家/技能/连接器/上传/目录收进一个入口） =====
+const plusOpen = ref(false);
+const plusPanel = ref<'main' | 'agents'>('main');
+function closePlus(fn?: () => void) { fn?.(); plusOpen.value = false; plusPanel.value = 'main'; }
+function pickPlusAgent(id: string) { onAgentSwitch(id); closePlus(); }
+const currentModelName = computed(() => {
+  for (const g of modelGroups.value) {
+    const m = g.models.find((x) => x.id === selectedModelId.value);
+    if (m) return m.alias || m.modelId;
+  }
+  return '选择模型';
+});
 
 // ===== D2 `/` 命令菜单 =====
 type SlashMode = 'command' | 'agent' | 'model';

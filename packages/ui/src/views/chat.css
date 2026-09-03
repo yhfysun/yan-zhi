@@ -169,11 +169,10 @@
 
 .chat-topbar {
   display: flex; align-items: center; gap: 8px;
-  padding: 10px max(20px, calc((100% - 820px) / 2)); border-bottom: 1px solid var(--glass-border);
-  background: var(--glass-bg);
+  padding: 10px max(20px, calc((100% - 820px) / 2));
+  background: transparent;
   min-height: 52px;
 }
-[data-theme="dark"] .chat-topbar { background: var(--glass-bg); }
 .conv-title-display { font-weight: 600; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* 消息流居中窄栏：宽屏下内容收敛到 820px 居中（对标主流 AI 对话应用），窄屏自动退回固定留白 */
@@ -619,13 +618,15 @@
 
 /* ===== 输入区 ===== */
 /* 输入区与消息流同宽居中，三者左缘对齐 */
-.input-area { padding: 10px max(20px, calc((100% - 820px) / 2)) 14px; background: var(--glass-bg); backdrop-filter: var(--glass-filter); }
+.input-area { padding: 8px max(20px, calc((100% - 820px) / 2)) 18px; background: transparent; }
 .input-box {
-  background: var(--glass-bg, rgba(255,255,255,0.6)); border: 1.5px solid var(--glass-border);
-  border-radius: 16px; padding: 4px; transition: all 0.2s ease;
+  background: var(--glass-bg, rgba(255,255,255,0.6)); border: 1px solid var(--glass-border);
+  border-radius: 24px; padding: 6px;
+  box-shadow: 0 4px 24px rgba(0,0,0,0.07), 0 1px 3px rgba(0,0,0,0.04);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
   color: var(--color-text, #333);
 }
-.input-box.focused { border-color: var(--color-primary); box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary) 18%, transparent); background: var(--glass-bg-hover, rgba(255,255,255,0.85)); }
+.input-box.focused { border-color: var(--color-primary); box-shadow: 0 6px 28px color-mix(in srgb, var(--color-primary) 13%, transparent); }
 .input-textarea .el-textarea__inner {
   border: none; background: transparent; box-shadow: none !important;
   color: var(--color-text, #333); caret-color: var(--color-text, #333);
@@ -1330,6 +1331,7 @@
     padding: 6px 8px 8px;
     padding-bottom: calc(8px + env(safe-area-inset-bottom, 0px));
     border-top: 1px solid var(--glass-border);
+    background: var(--glass-bg);
   }
   .input-box { border-radius: 12px; }
   .input-agent-bar { display: none; }
@@ -1501,3 +1503,23 @@ body.yz-right-panel-open .el-overlay-dialog {
   bottom: 0 !important;
   width: auto !important;
 }
+
+/* ===== 输入框「+」聚合菜单（对齐 WorkBuddy：专家/技能/连接器/上传/目录统一入口） ===== */
+.plus-menu-popper { border-radius: 14px !important; border: 1px solid var(--glass-border) !important; box-shadow: 0 8px 32px rgba(0,0,0,0.12) !important; padding: 6px !important; }
+.plus-menu { display: flex; flex-direction: column; }
+.plus-menu-item { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 10px; cursor: pointer; transition: background 0.15s; }
+.plus-menu-item:hover { background: var(--glass-bg-hover); }
+.plus-menu-item.is-active { background: color-mix(in srgb, var(--color-primary) 8%, transparent); }
+.plus-menu-ic { flex-shrink: 0; width: 28px; height: 28px; border-radius: 8px; display: flex; align-items: center; justify-content: center; background: color-mix(in srgb, var(--color-primary) 10%, transparent); color: var(--color-primary); font-size: 13px; font-weight: 600; }
+.plus-menu-ic.agent { background: var(--color-primary); color: #fff; }
+.plus-menu-info { flex: 1; min-width: 0; }
+.plus-menu-label { font-size: 13px; font-weight: 500; color: var(--color-text); line-height: 1.3; }
+.plus-menu-desc { font-size: 11.5px; color: var(--color-text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 170px; }
+.plus-menu-arrow, .plus-menu-check { color: var(--color-text-secondary); flex-shrink: 0; }
+.plus-menu-check { color: var(--color-primary); }
+.plus-menu-divider { height: 1px; background: var(--glass-border); margin: 5px 8px; }
+.plus-menu-back { display: flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 600; color: var(--color-text); padding: 6px 10px 8px; cursor: pointer; }
+.plus-btn.is-active { border-color: var(--color-primary); color: var(--color-primary); }
+.model-select-btn { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 10px; border-radius: 999px; border: 1px solid var(--glass-border); background: transparent; color: var(--color-text); font-size: 12px; cursor: pointer; transition: border-color 0.15s; }
+.model-select-btn:hover { border-color: var(--color-primary); }
+.model-select-name { max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
