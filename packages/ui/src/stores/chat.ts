@@ -189,9 +189,8 @@ export const useChatStore = defineStore('chat', () => {
   const mcpToolAliases = ref<Record<string, Record<string, string>>>({});
   // E11: 浏览器面板步骤日志 —— dispatchToolCall 中 browser_* 工具执行后推送
   const browserSteps = ref<Array<{ action: string; result: string; time: number }>>([]);
-  // 右侧预览面板是否展开；默认**打开**（首次进入聊天页即可见到右栏，不再需要手动点开）
-  // 老逻辑：ref(false)，新用户进 chat 页看到一片空白区，体验差
-  const rightPanelOpen = ref(true);
+  // 右侧预览面板是否展开；默认**关闭**（进入聊天页先看到纯聊天区，点了文件/网站才展开右栏）
+  const rightPanelOpen = ref(false);
   // 文件管理弹窗（el-dialog）是否显示——左侧栏「文件管理」按钮触发
   const showFilePopup = ref(false);
   // ===== 多 tab 数据模型（Phase B1）：previewTabs 并存 + activeTabId 激活 =====
