@@ -128,6 +128,7 @@ const ROUTE_TITLES: Record<string, string> = {
   memory: '记忆管理',
   plugins: '插件管理',
   'data-sources': '数据源',
+  'sql-console': 'SQL 控制台',
   connections: 'IM 连接',
   knowledge: '知识库',
   browser: '浏览器',

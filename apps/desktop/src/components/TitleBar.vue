@@ -120,7 +120,7 @@ import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import {
   Minus, FullScreen, CopyDocument, Close, Moon, Sunny, HomeFilled, ChatDotRound, Monitor, Promotion, Setting, Collection,
-  More, Cpu, Connection, Tools, Files, User, Link, Platform, MagicStick, Memo, Box, DataLine,
+  More, Cpu, Connection, Tools, Files, User, Link, Platform, MagicStick, Memo, Box, DataLine, Operation,
 } from '@element-plus/icons-vue';
 import { useSettingsStore, useAuthStore, usePluginStore, openSettingsDrawer } from '@yan-zhi/ui';
 import { resolvePluginIcon } from '@yan-zhi/ui/plugin-icons';
@@ -154,6 +154,7 @@ const moreMenus = [
   { path: '/agents', label: '智能体', icon: User },
   { path: '/connections', label: 'IM 连接', icon: Link },
   { path: '/data-sources', label: '数据源', icon: DataLine },
+  { path: '/sql-console', label: 'SQL 控制台', icon: Operation },
   { path: '/peers', label: '客户端节点', icon: Platform },
 ];
 const moreActive = computed(

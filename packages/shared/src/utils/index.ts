@@ -40,3 +40,10 @@ export function debounce<T extends (...args: any[]) => void>(fn: T, ms: number):
     t = setTimeout(() => fn(...args), ms);
   }) as T;
 }
+
+// ===== SQL 文本工具（server sql-guard 与前端控制台共用） =====
+export {
+  splitSqlStatements,
+  statementAt,
+  type SqlStatement,
+} from './sql-text';

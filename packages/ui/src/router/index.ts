@@ -145,6 +145,12 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '数据源' },
   },
   {
+    path: '/sql-console',
+    name: 'sql-console',
+    component: () => import('../views/DataConsolePage.vue'),
+    meta: { title: 'SQL 控制台' },
+  },
+  {
     path: '/settings',
     name: 'settings',
     component: () => import('../views/Settings.vue'),

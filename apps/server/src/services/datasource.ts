@@ -11,6 +11,7 @@ import {
   type SchemaTable,
   type TestResult,
 } from './connector.js';
+import { guardSqlConsole } from './sql-guard.js';
 
 export interface DataSourceInfo {
   id: string;
@@ -255,4 +256,60 @@ export async function syncDataSourceSchema(userId: string, id: string): Promise<
     db.prepare('UPDATE data_source SET status = ?, last_error = ? WHERE id = ?').run('error', msg, id);
     throw err;
   }
+}
+
+// ===== SQL 控制台（P2.1）=====
+
+export interface ConsoleStatementResult {
+  index: number;
+  text: string;
+  status: 'ok' | 'error' | 'blocked' | 'skipped';
+  columns?: string[];
+  rows?: Record<string, unknown>[];
+  rowCount?: number;
+  truncated?: boolean;
+  latencyMs?: number;
+  error?: string;
+}
+
+/**
+ * 控制台执行：guardSqlConsole 先过护栏（DDL 一律拒、写语句引导走数据编辑通道），
+ * 只读语句按序执行，出错即停，未执行到的标 skipped。
+ */
+export async function runConsole(
+  userId: string,
+  id: string,
+  sql: string,
+  opts?: { maxRows?: number; timeoutMs?: number },
+): Promise<{ results: ConsoleStatementResult[]; totalMs: number }> {
+  const row = getRow(userId, id);
+  if (!row) throw new Error('数据源不存在');
+  const guard = guardSqlConsole(sql, !!row.allow_write);
+  const results: ConsoleStatementResult[] = [];
+  const start = Date.now();
+
+  const statements = guard.statements;
+  for (let index = 0; index < statements.length; index++) {
+    const s = statements[index];
+    const blocked = guard.blocked.find((b) => b.index === index);
+    if (blocked) {
+      results.push({ index, text: s.text, status: 'blocked', error: blocked.reason });
+      continue;
+    }
+    try {
+      const r = await getConnector(row).query(s.text, {
+        maxRows: opts?.maxRows ?? 500,
+        timeoutMs: opts?.timeoutMs ?? 30_000,
+      });
+      results.push({ index, text: s.text, status: 'ok', ...r });
+    } catch (err) {
+      results.push({ index, text: s.text, status: 'error', error: err instanceof Error ? err.message : String(err) });
+      // 顺序执行出错即停，剩余标记 skipped
+      for (let j = index + 1; j < statements.length; j++) {
+        results.push({ index: j, text: statements[j].text, status: 'skipped', error: '前序语句执行失败，未执行' });
+      }
+      break;
+    }
+  }
+  return { results, totalMs: Date.now() - start };
 }

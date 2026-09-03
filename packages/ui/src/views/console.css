@@ -1,0 +1,413 @@
+/* SQL 控制台（P2.2）——浅色工作台 + 深色仪器面板（编辑器），令牌来自 data-workbench.css */
+
+.dw-root.dc-root {
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - 96px); /* 页头之外撑满，内部各自滚动 */
+  min-height: 480px;
+}
+.dw-root.dc-root .page-header {
+  display: none; /* 控制台用自带顶栏，不重复页头 */
+}
+
+/* ===== 顶栏 ===== */
+.dw-root .dc-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 16px;
+  background: var(--dw-surface);
+  border: 1px solid var(--dw-rule);
+  border-bottom: none;
+  border-radius: var(--dw-r-md) var(--dw-r-md) 0 0;
+}
+.dw-root .dc-ds-select {
+  width: 240px;
+}
+.dw-root .dc-ds-opt {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.dw-root .dc-guard {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--dw-signal);
+  padding: 2px 8px;
+  border: 1px solid var(--dw-signal-line);
+  background: var(--dw-signal-soft);
+  border-radius: var(--dw-r-sm);
+}
+.dw-root .dc-guard.write {
+  color: var(--dw-danger);
+  border-color: var(--dw-danger-line);
+  background: var(--dw-danger-soft);
+}
+.dw-root .dc-limits {
+  font-size: 11px;
+  color: var(--dw-ink-3);
+}
+
+.dw-root .kbd {
+  font-family: var(--dw-f-mono);
+  font-size: 9.5px;
+  line-height: 1;
+  padding: 2px 4px;
+  margin-left: 4px;
+  border: 1px solid var(--dw-rule-strong);
+  border-bottom-width: 2px;
+  border-radius: var(--dw-r-xs);
+  color: var(--dw-ink-3);
+  background: var(--dw-canvas);
+}
+.dw-root .kbd.on {
+  border-color: rgba(255, 255, 255, 0.34);
+  color: #ede4fe;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+/* ===== 主体三块 ===== */
+.dw-root .dc-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  border: 1px solid var(--dw-rule);
+  border-radius: 0 0 var(--dw-r-md) var(--dw-r-md);
+  background: var(--dw-surface);
+  overflow: hidden;
+}
+
+/* —— schema 树 —— */
+.dw-root .dc-tree {
+  width: 250px;
+  flex-shrink: 0;
+  border-right: 1px solid var(--dw-rule);
+  display: flex;
+  flex-direction: column;
+  padding: 10px;
+  gap: 8px;
+  min-height: 0;
+}
+.dw-root .dc-tree-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+.dw-root .dc-tree-empty {
+  padding: 24px 8px;
+  text-align: center;
+  font-size: 11.5px;
+  color: var(--dw-ink-3);
+}
+.dw-root .dc-tbl {
+  margin-bottom: 2px;
+}
+.dw-root .dc-tbl-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  padding: 4px 6px;
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--dw-ink);
+  text-align: left;
+  border-radius: var(--dw-r-sm);
+}
+.dw-root .dc-tbl-head:hover {
+  background: var(--dw-canvas);
+}
+.dw-root .dc-tbl-head .chev {
+  transition: transform 0.15s var(--dw-ease);
+  color: var(--dw-ink-3);
+  flex-shrink: 0;
+}
+.dw-root .dc-tbl-head .chev.open {
+  transform: rotate(90deg);
+}
+.dw-root .dc-tbl-kind {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--dw-ink-3);
+}
+.dw-root .dc-cols {
+  padding: 0 0 4px 20px;
+}
+.dw-root .dc-col {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 2px 6px;
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-size: 11.5px;
+  color: var(--dw-ink-2);
+  text-align: left;
+  border-radius: var(--dw-r-xs);
+}
+.dw-root .dc-col:hover {
+  background: var(--dw-brand-soft);
+  color: var(--dw-brand);
+}
+.dw-root .dc-col-type {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--dw-ink-3);
+  font-family: var(--dw-f-mono);
+}
+
+/* —— 编辑器：深色仪器面板 —— */
+.dw-root .dc-editor {
+  background: var(--dw-void);
+  border-bottom: 1px solid var(--dw-void-3);
+  display: flex;
+  flex-direction: column;
+  height: 38%;
+  min-height: 150px;
+  flex-shrink: 0;
+}
+.dw-root .dc-ed-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  background: var(--dw-void-2);
+  border-bottom: 1px solid var(--dw-void-3);
+  font-size: 11px;
+  color: var(--dw-void-ink-2);
+}
+.dw-root .dc-ed-hint {
+  color: #636b7e;
+}
+.dw-root .dc-ed-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
+}
+.dw-root .dc-gutter {
+  width: 44px;
+  flex-shrink: 0;
+  padding: 10px 8px;
+  text-align: right;
+  color: #4a5060;
+  font-size: 12px;
+  line-height: 1.75;
+  background: var(--dw-void-2);
+  border-right: 1px solid var(--dw-void-3);
+  overflow: hidden;
+  user-select: none;
+}
+.dw-root .dc-textarea {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  resize: none;
+  background: var(--dw-void);
+  color: var(--dw-void-ink);
+  caret-color: #c9aefb;
+  font-size: 12.5px;
+  line-height: 1.75;
+  padding: 10px 12px;
+  white-space: pre;
+  overflow: auto;
+  tab-size: 2;
+}
+.dw-root .dc-textarea::placeholder {
+  color: #4a5060;
+}
+.dw-root .dc-textarea::selection {
+  background: rgba(124, 58, 237, 0.35);
+}
+
+/* —— 结果区 —— */
+.dw-root .dc-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.dw-root .dc-results {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.dw-root .dc-res-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--dw-ink-3);
+  font-size: 12px;
+}
+.dw-root .dc-res-tabs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--dw-rule);
+  background: var(--dw-canvas);
+}
+.dw-root .dc-res-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  font-size: 11.5px;
+  border: 1px solid transparent;
+  border-radius: var(--dw-r-sm);
+  background: none;
+  cursor: pointer;
+  color: var(--dw-ink-2);
+}
+.dw-root .dc-res-tab:hover {
+  background: var(--dw-surface);
+}
+.dw-root .dc-res-tab.on {
+  background: var(--dw-surface);
+  border-color: var(--dw-rule-strong);
+  color: var(--dw-ink);
+  font-weight: 600;
+}
+.dw-root .dc-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--dw-ink-3);
+}
+.dw-root .dc-res-tab.st-ok .dc-dot { background: var(--dw-signal); }
+.dw-root .dc-res-tab.st-error .dc-dot { background: var(--dw-danger); }
+.dw-root .dc-res-tab.st-blocked .dc-dot { background: var(--dw-caution); }
+.dw-root .dc-res-tab.st-skipped .dc-dot { background: var(--dw-ink-3); }
+.dw-root .dc-res-total {
+  font-size: 11px;
+  color: var(--dw-ink-3);
+  font-family: var(--dw-f-mono);
+  margin-right: 8px;
+}
+
+.dw-root .dc-res-pane {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.dw-root .dc-res-err {
+  margin: 16px;
+  padding: 12px 14px;
+  border-radius: var(--dw-r-md);
+  font-size: 12px;
+  overflow: auto;
+}
+.dw-root .dc-res-err.st-error {
+  background: var(--dw-danger-soft);
+  border: 1px solid var(--dw-danger-line);
+  color: var(--dw-danger);
+}
+.dw-root .dc-res-err.st-blocked {
+  background: var(--dw-caution-soft);
+  border: 1px solid var(--dw-caution-line);
+  color: var(--dw-caution);
+}
+.dw-root .dc-res-err.st-skipped {
+  background: var(--dw-canvas);
+  border: 1px solid var(--dw-rule);
+  color: var(--dw-ink-3);
+}
+.dw-root .dc-res-err p {
+  margin: 4px 0 8px;
+  line-height: 1.5;
+}
+.dw-root .dc-res-err pre {
+  margin: 0;
+  font-size: 11px;
+  color: var(--dw-ink-2);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* 结果网格：表头吸顶独立滚动，NULL 弱化 */
+.dw-root .dc-grid-wrap {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+.dw-root .dc-grid {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 12px;
+}
+.dw-root .dc-grid th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  text-align: left;
+  font-weight: 600;
+  font-size: 11px;
+  letter-spacing: 0.03em;
+  color: var(--dw-ink-2);
+  background: var(--dw-canvas);
+  border-bottom: 1px solid var(--dw-rule-strong);
+  padding: 6px 10px;
+  white-space: nowrap;
+}
+.dw-root .dc-grid td {
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--dw-rule);
+  color: var(--dw-ink);
+  white-space: nowrap;
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+}
+.dw-root .dc-grid td.is-null {
+  color: var(--dw-ink-3);
+  font-style: italic;
+  font-size: 10.5px;
+}
+.dw-root .dc-grid td.dc-rownum,
+.dw-root .dc-grid th.dc-rownum {
+  color: var(--dw-ink-3);
+  font-family: var(--dw-f-mono);
+  font-size: 10.5px;
+  background: var(--dw-canvas);
+  position: sticky;
+  left: 0;
+  border-right: 1px solid var(--dw-rule);
+  min-width: 34px;
+}
+.dw-root .dc-grid th.dc-rownum {
+  z-index: 2;
+}
+.dw-root .dc-grid tbody tr:hover td {
+  background: var(--dw-brand-soft);
+}
+.dw-root .dc-grid tbody tr:hover td.dc-rownum {
+  background: var(--dw-canvas);
+}
+.dw-root .dc-grid-empty {
+  text-align: center;
+  color: var(--dw-ink-3);
+  padding: 24px !important;
+}
+.dw-root .dc-res-foot {
+  display: flex;
+  gap: 16px;
+  padding: 6px 14px;
+  border-top: 1px solid var(--dw-rule);
+  font-size: 11px;
+  color: var(--dw-ink-3);
+  font-family: var(--dw-f-mono);
+}

@@ -21,8 +21,8 @@
 
 ## P2 SQL 控制台 + 数据编辑
 
-- [ ] 2.1 `routes/sql-console.ts`：/run 执行，只读校验 + 单语句校验 + maxRows/timeout
-- [ ] 2.2 `views/DataConsole.vue`：数据源下拉 + 表/字段树 + 多行编辑 + 多语句逐条 + 结果多 Tab + 导出 CSV + Ctrl+Enter
+- [x] 2.1 `routes/sql-console.ts`：/run 执行 + `services/sql-guard.ts` 只读护栏（DDL 一律拒/写引导走数据编辑/SET 等 admin 拒/EXPLAIN ANALYZE 写语句拦/字符串与注释不误伤）+ `@yan-zhi/shared` sql-text 切分器（两端共用）——冒烟 22/22
+- [x] 2.2 `views/DataConsolePage.vue`：数据源下拉（默认项目库）+ schema 树（搜索/点列插入）+ 行号深色编辑器 + Ctrl+Enter 运行选中/光标语句 + Ctrl+Shift+Enter 全部 + 结果多 Tab（状态点/截断提示/出错即停标 skipped）+ 导出 CSV（BOM）+ 轻量格式化
 - [ ] 2.3 **数据编辑（默认关闭）**：`data_edit_audit` 表 + 写权限开关（15min 自动关）+ 预检影响行数 + 二次确认 + 事务 + 审计（含变更前快照）
 - [ ] 2.4 网格内编辑：结果集必须带主键，否则禁止；禁止 DDL / 无 WHERE 的 UPDATE·DELETE / 多语句
 
