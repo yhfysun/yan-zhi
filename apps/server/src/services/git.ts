@@ -172,6 +172,68 @@ export class GitService {
     await this.open(repo).checkout(['--', ...files]);
   }
 
+  /** 变更行数统计（git diff --numstat），用于变更列表显示 +n / −m */
+  async numstat(repo: string): Promise<Array<{ path: string; added: number; deleted: number }>> {
+    const ws = await this.getWorkspaceDir();
+    this.assertWithinWorkspace(repo, ws);
+    const out = await this.open(repo).raw(['diff', '--numstat']);
+    return out
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => {
+        const [a, d, ...rest] = line.split('\t');
+        const path = rest.join('\t');
+        return {
+          path,
+          added: a === '-' ? 0 : Number(a) || 0,
+          deleted: d === '-' ? 0 : Number(d) || 0,
+        };
+      });
+  }
+
+  /** 本地分支相对上游的领先/落后提交数（git rev-list --left-right --count） */
+  async aheadBehind(repo: string, branch?: string): Promise<{ ahead: number; behind: number }> {
+    const ws = await this.getWorkspaceDir();
+    this.assertWithinWorkspace(repo, ws);
+    const ref = branch || 'HEAD';
+    try {
+      const out = await this.open(repo).raw([
+        'rev-list', '--left-right', '--count', `${ref}...@{upstream}`,
+      ]);
+      const [behind, ahead] = out.trim().split(/\s+/).map((n) => Number(n) || 0);
+      return { ahead, behind };
+    } catch {
+      // 无上游（未 push / 本地新仓库）时无法计算，返回 0
+      return { ahead: 0, behind: 0 };
+    }
+  }
+
+  /** 撤销暂存（git reset HEAD -- files），对应「取消暂存」 */
+  async unstage(repo: string, files: string[]): Promise<void> {
+    const ws = await this.getWorkspaceDir();
+    this.assertWithinWorkspace(repo, ws);
+    if (!files.length) return;
+    await this.open(repo).raw(['reset', 'HEAD', '--', ...files]);
+  }
+
+  /** 新建并切换到指定分支（git checkout -b） */
+  async createBranch(repo: string, name: string): Promise<void> {
+    const ws = await this.getWorkspaceDir();
+    this.assertWithinWorkspace(repo, ws);
+    await this.open(repo).raw(['checkout', '-b', name]);
+  }
+
+  /** 全量文件列表（git ls-files），用于文件树视图一次取全 */
+  async lsTree(repo: string): Promise<Array<{ path: string; type: 'file' }>> {
+    const ws = await this.getWorkspaceDir();
+    this.assertWithinWorkspace(repo, ws);
+    const out = await this.open(repo).raw(['ls-files']);
+    return out
+      .split('\n')
+      .filter(Boolean)
+      .map((p) => ({ path: p, type: 'file' as const }));
+  }
+
   async readFile(repo: string, filePath: string): Promise<string> {
     const ws = await this.getWorkspaceDir();
     this.assertWithinWorkspace(repo, ws);

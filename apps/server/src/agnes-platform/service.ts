@@ -55,6 +55,12 @@ export function ensureAgnesPlatform(userId: string): { platformId: string; creat
   if (existing) {
     return { platformId, created: false };
   }
+  // 去重：同一 api_url 已存在平台（历史随机 id 或用户手动添加的 agnes 平台）时不再新建，
+  // 避免列表里出现两条指向同一 apihub.agnes-ai.com 的重复条目。
+  const dupByUrl = db.prepare('SELECT id FROM platform WHERE user_id = ? AND api_url = ? LIMIT 1').get(userId, AGNES_API_URL) as { id: string } | undefined;
+  if (dupByUrl) {
+    return { platformId: dupByUrl.id, created: false };
+  }
 
   const now = Date.now();
   const insertPlatform = db.prepare(
@@ -91,14 +97,47 @@ export function ensureAgnesPlatform(userId: string): { platformId: string; creat
 }
 
 /**
+ * 一次性去重：修复历史上「随机 id 的 agnes 平台」与「确定性 id agnes-${userId}」并存的重复。
+ * 优先保留确定性 id；否则保留最早创建的那条，其余删除并把引用（会话/智能体/定时任务）重指到保留项。
+ * 幂等，重复调用安全。
+ */
+export function dedupeAgnesPlatforms(userId: string): { kept: string | null; removed: string[] } {
+  const canonicalId = `agnes-${userId}`;
+  const rows = db.prepare(
+    'SELECT id FROM platform WHERE user_id = ? AND api_url = ? ORDER BY (id = ?) DESC, created_at ASC',
+  ).all(userId, AGNES_API_URL, canonicalId) as { id: string }[];
+  if (rows.length <= 1) return { kept: rows[0]?.id ?? null, removed: [] };
+
+  const kept = rows[0].id;
+  const removed = rows.slice(1).map((r) => r.id);
+  const repointConv = db.prepare('UPDATE conversation SET platform_id = ? WHERE platform_id = ?');
+  const repointAgent = db.prepare('UPDATE agent SET platform_id = ? WHERE platform_id = ?');
+  const repointTask = db.prepare('UPDATE scheduled_task SET platform_id = ? WHERE platform_id = ?');
+  const delModel = db.prepare('DELETE FROM model WHERE platform_id = ?');
+  const delPlatform = db.prepare('DELETE FROM platform WHERE id = ?');
+
+  db.transaction(() => {
+    for (const id of removed) {
+      repointConv.run(kept, id);
+      repointAgent.run(kept, id);
+      repointTask.run(kept, id);
+      delModel.run(id);
+      delPlatform.run(id);
+    }
+  })();
+  return { kept, removed };
+}
+
+/**
  * 启动时为所有已有用户初始化 agnes 平台。
- * 仅做首次 seed，已存在的用户记录不会被改动。
+ * 先做一次性去重（修复历史重复记录），再做首次 seed；已存在的用户记录不会被改动。
  */
 export function syncAgnesPlatformForAllUsers(): { seeded: string[]; skipped: string[] } {
   const users = db.prepare('SELECT id FROM user').all() as { id: string }[];
   const seeded: string[] = [];
   const skipped: string[] = [];
   for (const u of users) {
+    dedupeAgnesPlatforms(u.id);
     const r = ensureAgnesPlatform(u.id);
     if (r.created) seeded.push(u.id);
     else skipped.push(u.id);

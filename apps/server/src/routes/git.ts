@@ -159,4 +159,51 @@ router.get('/show', async (req: Request, res: Response) => {
   }
 });
 
+router.get('/numstat', async (req: Request, res: Response) => {
+  try {
+    res.json({ data: await gitService.numstat(String(req.query.repo || '')) });
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message });
+  }
+});
+
+router.get('/aheadBehind', async (req: Request, res: Response) => {
+  try {
+    res.json({
+      data: await gitService.aheadBehind(
+        String(req.query.repo || ''),
+        req.query.branch as string | undefined,
+      ),
+    });
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message });
+  }
+});
+
+router.get('/lsTree', async (req: Request, res: Response) => {
+  try {
+    res.json({ data: await gitService.lsTree(String(req.query.repo || '')) });
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message });
+  }
+});
+
+router.post('/unstage', async (req: Request, res: Response) => {
+  try {
+    await gitService.unstage(req.body.repo, req.body.files || []);
+    res.json({ data: { ok: true } });
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message });
+  }
+});
+
+router.post('/createBranch', async (req: Request, res: Response) => {
+  try {
+    await gitService.createBranch(req.body.repo, req.body.name);
+    res.json({ data: { ok: true } });
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message });
+  }
+});
+
 export default router;

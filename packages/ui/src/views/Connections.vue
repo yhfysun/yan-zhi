@@ -128,6 +128,10 @@
                 <el-input v-model="form.token" />
                 <span class="field-help">接收消息 > API接收 设置的 Token（收消息必需）</span>
               </el-form-item>
+              <el-form-item label="EncodingAESKey">
+                <el-input v-model="form.encodingAesKey" />
+                <span class="field-help">同页 43 位 EncodingAESKey（加密模式收消息必需）</span>
+              </el-form-item>
             </template>
           </el-form>
         </div>
@@ -213,6 +217,7 @@ const form = ref({
   secret: '',
   agentId: '',
   token: '',
+  encodingAesKey: '',
 });
 
 const callbackBase = computed(() => {
@@ -238,14 +243,14 @@ async function load() {
 function configFrom(f: typeof form.value) {
   return f.provider === 'feishu'
     ? { appId: f.appId, appSecret: f.appSecret, verificationToken: f.verificationToken }
-    : { corpId: f.corpId, secret: f.secret, agentId: f.agentId, token: f.token };
+    : { corpId: f.corpId, secret: f.secret, agentId: f.agentId, token: f.token, encodingAesKey: f.encodingAesKey };
 }
 
 function resetForm() {
   editingId.value = '';
   testResult.value = '';
   testError.value = '';
-  form.value = { provider: 'feishu', name: '', appId: '', appSecret: '', verificationToken: '', corpId: '', secret: '', agentId: '', token: '' };
+  form.value = { provider: 'feishu', name: '', appId: '', appSecret: '', verificationToken: '', corpId: '', secret: '', agentId: '', token: '', encodingAesKey: '' };
 }
 
 function openCreate() {
@@ -266,6 +271,7 @@ function openEdit(c: any) {
     secret: config.secret || '',
     agentId: config.agentId || '',
     token: config.token || '',
+    encodingAesKey: config.encodingAesKey || '',
   };
   editingId.value = c.id;
   testResult.value = '';
@@ -393,6 +399,7 @@ async function onImportFile(event: Event) {
     secret: config.secret || '',
     agentId: config.agentId || '',
     token: config.token || '',
+    encodingAesKey: config.encodingAesKey || '',
   };
   editingId.value = '';
   testResult.value = '';

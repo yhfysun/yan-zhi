@@ -1,6 +1,7 @@
 import { v4 as uuid } from 'uuid';
 import { readFile } from 'node:fs/promises';
 import { db } from '../db.js';
+import { createTask, subscribe } from '../llm-task-manager.js';
 
 type ImProvider = 'wechat' | 'feishu';
 
@@ -310,4 +311,264 @@ export function listImEvents(
     content: r.content,
     createdAt: r.created_at,
   }));
+}
+
+// ============================================================
+// 飞书入站闭环：收消息 → 建/复会话 → 跑任务 → 回结果
+// ============================================================
+
+interface ParsedFeishuInbound {
+  messageId: string;
+  text: string;
+  openId: string;
+  chatId: string;
+  chatType: string;
+}
+
+/** 解析飞书 v2 事件体，提取消息 ID / 文本 / 发送者 open_id / 会话 chat_id */
+export function parseFeishuInbound(body: any): ParsedFeishuInbound {
+  const ev = body?.event || {};
+  const sender = ev?.sender?.sender_id || {};
+  const message = ev?.message || {};
+  const content = message?.content;
+
+  let text = '';
+  if (content !== undefined && content !== null) {
+    if (typeof content === 'string') {
+      try {
+        const parsed = JSON.parse(content);
+        if (parsed && typeof parsed === 'object') {
+          if (typeof parsed.text === 'string') text = parsed.text;
+          else if (Array.isArray(parsed.content)) text = parsed.content.map((c: any) => c?.text || '').join('\n');
+          else if (typeof parsed.title === 'string') text = parsed.title;
+        } else {
+          text = content;
+        }
+      } catch {
+        text = content;
+      }
+    } else if (typeof content === 'object') {
+      if (typeof content.text === 'string') text = content.text;
+    }
+  }
+
+  return {
+    messageId: String(body?.header?.event_id || message?.message_id || body?.event_id || ''),
+    text: text.trim(),
+    openId: String(sender?.open_id || body?.sender?.sender_id?.open_id || ''),
+    chatId: String(message?.chat_id || ''),
+    chatType: String(message?.chat_type || 'p2p'),
+  };
+}
+
+/** 取用户默认模型（is_default=1 优先，否则最早启用的模型），返回 platformId + modelId */
+function getDefaultModel(userId: string): { platformId: string; modelId: string } | null {
+  let row = db.prepare(
+    'SELECT id, platform_id FROM model WHERE user_id = ? AND enabled = 1 AND is_default = 1 ORDER BY created_at ASC LIMIT 1',
+  ).get(userId) as any;
+  if (!row) {
+    row = db.prepare(
+      'SELECT id, platform_id FROM model WHERE user_id = ? AND enabled = 1 ORDER BY created_at ASC LIMIT 1',
+    ).get(userId) as any;
+  }
+  if (!row) return null;
+  return { platformId: row.platform_id, modelId: row.id };
+}
+
+/** 查询/创建 IM 联系人 → 会话映射：同一 connector + 同一外部用户复用同一 conversation */
+function getOrCreateImConversation(connectorId: string, externalUser: string, userId: string, title: string): string {
+  const existing = db.prepare(
+    'SELECT conversation_id FROM im_conversation_map WHERE connector_id = ? AND external_user = ?',
+  ).get(connectorId, externalUser) as any;
+  if (existing) return existing.conversation_id;
+
+  const convId = uuid();
+  const ts = now();
+  db.prepare(
+    `INSERT INTO conversation (id, user_id, title, agent_id, platform_id, model_id, space_id, mcp_servers_json, skill_ids_json, system_prompt, pinned, created_at, updated_at)
+     VALUES (?, ?, ?, 'a_default_assistant', NULL, NULL, NULL, '[]', '[]', NULL, 0, ?, ?)`,
+  ).run(convId, userId, title, ts, ts);
+  db.prepare(
+    'INSERT INTO im_conversation_map (connector_id, external_user, conversation_id, created_at) VALUES (?, ?, ?, ?)',
+  ).run(connectorId, externalUser, convId, ts);
+  return convId;
+}
+
+/** 读取会话最后一条非空助手回复（排除占位/超长循环兜底文案） */
+function readLastAssistantReply(conversationId: string): string {
+  const row = db.prepare(
+    `SELECT content FROM message
+     WHERE conversation_id = ? AND role = 'assistant'
+       AND content IS NOT NULL AND content != ''
+       AND content NOT LIKE '已达到最大循环数%'
+     ORDER BY created_at DESC LIMIT 1`,
+  ).get(conversationId) as any;
+  return row?.content ? String(row.content) : '';
+}
+
+interface ImClosedLoopPayload {
+  connectorId: string | undefined;
+  userId: string;
+  provider: 'feishu' | 'wechat';
+  externalId: string;
+  text: string;
+  fromUser: string;
+  toUser: string;
+  replyTo: string;
+  receiveIdType?: string;
+  rawJson: string;
+}
+
+/** 通用 IM 闭环：去重 → 落库 → 建/复会话 → 跑任务 → 回结果。飞书 / 企业微信共用。 */
+function runImClosedLoop(p: ImClosedLoopPayload): { handled: boolean; reason?: string } {
+  if (!p.externalId || !p.text || !p.fromUser) {
+    return { handled: false, reason: 'empty_or_non_text' };
+  }
+
+  // 去重：同一消息事件只处理一次（平台可能重投）
+  const dup = db.prepare(
+    'SELECT id FROM im_inbound_event WHERE connector_id = ? AND provider = ? AND external_id = ?',
+  ).get(p.connectorId || null, p.provider, p.externalId);
+  if (dup) return { handled: false, reason: 'duplicate' };
+
+  db.prepare(
+    `INSERT INTO im_inbound_event
+      (id, connector_id, provider, external_id, from_user, to_user, content, file_json, raw_json, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    uuid(),
+    p.connectorId || null,
+    p.provider,
+    p.externalId,
+    p.fromUser,
+    p.toUser,
+    p.text,
+    null,
+    p.rawJson,
+    now(),
+  );
+
+  const model = getDefaultModel(p.userId);
+  if (!model) return { handled: false, reason: 'no_default_model' };
+
+  const title = p.text.length > 24 ? p.text.slice(0, 24) + '…' : p.text;
+  const conversationId = getOrCreateImConversation(p.connectorId || p.provider, p.fromUser, p.userId, title);
+
+  const taskId = createTask({
+    conversationId,
+    userId: p.userId,
+    platformId: model.platformId,
+    modelId: model.modelId,
+    userContent: p.text,
+    agentId: 'a_default_assistant',
+    origin: 'im',
+    offlinePolicy: 'skip',
+  });
+
+  subscribe(taskId, 0, (event) => {
+    if (event.type === 'task:completed') {
+      const reply = readLastAssistantReply(conversationId) || '（助手未返回有效内容）';
+      void sendImMessage(p.userId, p.connectorId || '', {
+        to: p.replyTo,
+        content: reply,
+        receiveIdType: p.receiveIdType,
+      }).catch(() => {});
+    } else if (event.type === 'task:error') {
+      void sendImMessage(p.userId, p.connectorId || '', {
+        to: p.replyTo,
+        content: `处理失败：${event.error || '未知错误'}`,
+        receiveIdType: p.receiveIdType,
+      }).catch(() => {});
+    }
+  });
+
+  return { handled: true };
+}
+
+/**
+ * 处理飞书入站消息，驱动「收消息 → 跑任务 → 回结果」闭环。
+ * 返回 handled 标记；重复事件 / 空文本 / 无默认模型时跳过。
+ */
+export function handleImInbound(
+  connectorId: string | undefined,
+  userId: string,
+  provider: string,
+  body: unknown,
+): { handled: boolean; reason?: string } {
+  if (provider !== 'feishu') return { handled: false, reason: 'unsupported_provider' };
+
+  const parsed = parseFeishuInbound(body);
+  if (!parsed.messageId || !parsed.text || !parsed.openId) {
+    return { handled: false, reason: 'empty_or_non_text' };
+  }
+
+  // 回发目标：单聊回 open_id，群聊回 chat_id
+  const replyTo = parsed.chatType === 'group' && parsed.chatId ? parsed.chatId : parsed.openId;
+  const receiveIdType = parsed.chatType === 'group' && parsed.chatId ? 'chat_id' : 'open_id';
+
+  return runImClosedLoop({
+    connectorId,
+    userId,
+    provider: 'feishu',
+    externalId: parsed.messageId,
+    text: parsed.text,
+    fromUser: parsed.openId,
+    toUser: parsed.chatId,
+    replyTo,
+    receiveIdType,
+    rawJson: JSON.stringify(body || {}),
+  });
+}
+
+/** 企业微信解密后的内层 XML 结构 */
+export interface ParsedWechatInbound {
+  messageId: string;
+  msgType: string;
+  text: string;
+  fromUser: string;
+  toUser: string;
+  agentId: string;
+}
+
+/** 解析企业微信解密后的消息 XML，提取文本 / 发送者 / 消息 ID */
+export function parseWechatInbound(xml: string): ParsedWechatInbound {
+  const msgType = xmlTag(xml, 'MsgType');
+  const content = msgType === 'text' ? xmlTag(xml, 'Content') : '';
+  return {
+    messageId: xmlTag(xml, 'MsgId') || xmlTag(xml, 'Event') || '',
+    msgType,
+    text: content.trim(),
+    fromUser: xmlTag(xml, 'FromUserName'),
+    toUser: xmlTag(xml, 'ToUserName'),
+    agentId: xmlTag(xml, 'AgentID'),
+  };
+}
+
+/** 处理企业微信入站（解密 + 解析后调用），仅文本消息进入 AI 闭环 */
+export function handleWechatInbound(
+  connectorId: string | undefined,
+  userId: string,
+  parsed: ParsedWechatInbound,
+): { handled: boolean; reason?: string } {
+  if (parsed.msgType !== 'text' || !parsed.text || !parsed.fromUser) {
+    return { handled: false, reason: 'non_text_or_empty' };
+  }
+  return runImClosedLoop({
+    connectorId,
+    userId,
+    provider: 'wechat',
+    externalId: parsed.messageId,
+    text: parsed.text,
+    fromUser: parsed.fromUser,
+    toUser: parsed.toUser,
+    replyTo: parsed.fromUser,
+    rawJson: JSON.stringify(parsed),
+  });
+}
+
+/** 简易 XML 取值：兼容 CDATA，不引入外部解析依赖 */
+function xmlTag(xml: string, tag: string): string {
+  const re = new RegExp(`<${tag}>(?:<!\\[CDATA\\[)?([\\s\\S]*?)(?:\\]\\]>)?</${tag}>`);
+  const m = xml.match(re);
+  return m ? m[1] : '';
 }

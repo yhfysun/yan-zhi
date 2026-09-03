@@ -400,9 +400,19 @@ db.exec(`
     raw_json TEXT,
     created_at INTEGER NOT NULL
   );
+
+  -- IM 联系人 → 会话映射：同一 connector + 同一外部用户 复用同一 conversation，保证上下文连续
+  CREATE TABLE IF NOT EXISTS im_conversation_map (
+    connector_id TEXT NOT NULL,
+    external_user TEXT NOT NULL,
+    conversation_id TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (connector_id, external_user)
+  );
 `);
 try { db.exec('CREATE INDEX IF NOT EXISTS idx_im_connector_user ON im_connector(user_id, provider)'); } catch {}
 try { db.exec('CREATE INDEX IF NOT EXISTS idx_im_inbound_provider ON im_inbound_event(provider, created_at)'); } catch {}
+try { db.exec('CREATE INDEX IF NOT EXISTS idx_im_conv_map_conv ON im_conversation_map(conversation_id)'); } catch {}
 
 // ===== 知识库 =====
 db.exec(`
