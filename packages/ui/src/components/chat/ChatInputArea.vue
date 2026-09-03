@@ -2,6 +2,43 @@
   <div class="input-area">
     <div class="input-box" :class="{ focused: inputFocused }">
 
+      <div class="input-agent-bar">
+        <el-dropdown trigger="click" placement="bottom-start" popper-class="agent-switch-popper" @command="onAgentSwitch">
+          <div class="agent-trigger" @click.stop>
+            <span class="agent-trigger-avatar">{{ (agentStore.selectedAgent?.name || '?').slice(0, 1) }}</span>
+            <span class="agent-trigger-name">{{ agentStore.selectedAgent?.name || '选择智能体' }}</span>
+            <el-icon class="agent-trigger-caret"><ArrowDown /></el-icon>
+          </div>
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item
+                v-for="ag in agentStore.agents"
+                :key="ag.id"
+                :command="ag.id"
+                :class="{ 'is-active': ag.id === agentStore.selectedId }"
+              >
+                <div class="agent-opt">
+                  <span class="agent-opt-avatar">{{ (ag.name || '?').slice(0, 1) }}</span>
+                  <div class="agent-opt-info">
+                    <span class="agent-opt-name">
+                      <el-icon v-if="ag.isDefault" class="agent-opt-lock"><Lock /></el-icon>
+                      {{ ag.name }}
+                    </span>
+                    <span class="agent-opt-desc">{{ ag.description || '未填写描述' }}</span>
+                  </div>
+                  <el-icon v-if="ag.id === agentStore.selectedId" class="agent-opt-check"><Check /></el-icon>
+                </div>
+              </el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
+        <el-tooltip content="编辑当前智能体" placement="top">
+          <el-button size="small" circle class="agent-edit-btn" @click="openEditAgent(agentStore.selectedAgent)">
+            <el-icon><EditPen /></el-icon>
+          </el-button>
+        </el-tooltip>
+      </div>
+
       <el-input
         ref="inputRef"
         v-model="input"
@@ -270,6 +307,11 @@
               </template>
             </div>
           </el-popover>
+          <el-tooltip content="新建任务" placement="top">
+            <el-button size="small" circle @click="startNewChat()">
+              <el-icon><Plus /></el-icon>
+            </el-button>
+          </el-tooltip>
           <el-tooltip :content="store.streaming ? '终止 (停止生成)' : '发送 (Enter)'" placement="top">
             <span>
               <el-button v-if="!store.streaming" type="primary" :icon="Promotion" :disabled="(!input.trim() && uploadedFiles.length === 0) || !selectedModelId" @click="send" circle class="send-btn" />
