@@ -123,6 +123,31 @@
                   <div class="plus-menu-desc">{{ store.mountedMcpServers.length ? `已挂载 ${store.mountedMcpServers.length} 个` : '未挂载' }}</div>
                 </div>
               </div>
+              <div class="plus-menu-section">模式</div>
+              <div class="plus-menu-item" @click.stop>
+                <span class="plus-menu-ic"><el-icon><ChatDotRound /></el-icon></span>
+                <div class="plus-menu-info">
+                  <div class="plus-menu-label">深度思考</div>
+                  <div class="plus-menu-desc">推理更充分，回答稍慢</div>
+                </div>
+                <el-switch v-model="store.thinkingMode" size="small" @click.stop />
+              </div>
+              <div class="plus-menu-item" @click.stop>
+                <span class="plus-menu-ic"><el-icon><Tickets /></el-icon></span>
+                <div class="plus-menu-info">
+                  <div class="plus-menu-label">计划</div>
+                  <div class="plus-menu-desc">先出计划，再逐项执行</div>
+                </div>
+                <el-switch v-model="store.planMode" size="small" @click.stop />
+              </div>
+              <div class="plus-menu-item" @click.stop>
+                <span class="plus-menu-ic"><el-icon><Memo /></el-icon></span>
+                <div class="plus-menu-info">
+                  <div class="plus-menu-label">仅回答</div>
+                  <div class="plus-menu-desc">不调用工具，直接作答</div>
+                </div>
+                <el-switch v-model="store.answerOnly" size="small" @click.stop />
+              </div>
               <div class="plus-menu-divider"></div>
               <div class="plus-menu-item" @click="closePlus(triggerFileUpload)">
                 <span class="plus-menu-ic"><el-icon><UploadFilled /></el-icon></span>
@@ -290,7 +315,7 @@ import { ref, computed, watch } from 'vue';
 import type { Component } from 'vue';
 import {
   FolderOpened, ArrowDown, ArrowLeft, ArrowRight, Connection, Files, UploadFilled, User, EditPen, Cpu, Setting, Plus,
-  Promotion, Close, Lock, Check, Picture, Document, Tickets, Box, VideoCamera, Headset, Memo,
+  Promotion, Close, Lock, Check, Picture, Document, Tickets, Box, VideoCamera, Headset, Memo, ChatDotRound,
 } from '@element-plus/icons-vue';
 import { useChat } from '../../composables/chat/useChat';
 

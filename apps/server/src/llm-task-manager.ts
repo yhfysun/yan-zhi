@@ -156,6 +156,7 @@ export function createTask(params: {
   systemPrompt?: string;
   tools?: any[];
   options?: { temperature?: number; maxTokens?: number; topP?: number; reasoningEffort?: string };
+  modeFlags?: { thinking?: boolean; plan?: boolean; answerOnly?: boolean };
   maxSteps?: number;
   origin?: string;
   offlinePolicy?: string;
@@ -440,6 +441,7 @@ async function runReActLoop(task: LlmTask, params: {
   systemPrompt?: string;
   tools?: any[];
   options?: { temperature?: number; maxTokens?: number; topP?: number; reasoningEffort?: string };
+  modeFlags?: { thinking?: boolean; plan?: boolean; answerOnly?: boolean };
   maxSteps?: number;
 }) {
   const { conversationId: convId, userId, options } = params;
@@ -468,12 +470,28 @@ async function runReActLoop(task: LlmTask, params: {
 
     // 后端统一构建 systemPrompt/tools（单一事实来源）：前端只传 agentId/appGuide。
     // 历史兼容：显式传 systemPrompt/tools 则优先（定时任务等场景）。
-    const systemPromptBuilt = params.systemPrompt !== undefined
+    // 模式开关（前端「+」菜单）：无论提示词来自哪条路径，模式指令统一由后端追加、工具统一由后端裁剪。
+    const modeFlags = params.modeFlags || {};
+    const modePrompt: string[] = [];
+    if (modeFlags.thinking) {
+      modePrompt.push('- 深度思考模式：回答前先在内部充分推理，从多个角度权衡方案、核对关键假设后，再给出结论；正文保持结构化、重点突出。');
+    }
+    if (modeFlags.plan) {
+      modePrompt.push('- 计划模式：动手执行前先制定完整分步计划。若 task_plan 工具可用，优先用 task_plan/task_step 登记计划与进度；否则以编号列表先给出计划，再按计划逐项执行并在每步完成后简要汇报。');
+    }
+    if (modeFlags.answerOnly) {
+      modePrompt.push('- 仅回答模式：本次任务禁止调用任何工具（包括搜索、文件、代码执行与子智能体），直接依据已有知识与上下文用文字回答；若信息不足，明确说明缺什么，而不是尝试调用工具。');
+    }
+    let systemPromptBuilt = params.systemPrompt !== undefined
       ? params.systemPrompt
       : buildSystemPromptForBackend(params.agentId ?? null, userId, params.appGuide);
-    const toolsBuilt = params.tools !== undefined
+    if (modePrompt.length) {
+      systemPromptBuilt += '\n\n## 模式指令（用户在输入框开启，优先级高于默认行为）\n' + modePrompt.join('\n');
+    }
+    let toolsBuilt = params.tools !== undefined
       ? params.tools
       : buildToolsForBackend(params.agentId ?? null, userId);
+    if (modeFlags.answerOnly) toolsBuilt = [];
     const tools = supportsTools ? toolsBuilt : [];
 
     // UI 交互工具 —— 必须委托前端执行（需要用户输入/确认）

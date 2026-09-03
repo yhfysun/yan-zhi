@@ -11,13 +11,14 @@ router.use(authMiddleware);
 // POST /api/llm/tasks  创建任务
 router.post('/tasks', (req: Request, res: Response) => {
   const userId = req.user!.userId;
-  const { conversationId, platformId, modelId, userContent, agentId, appGuide, systemPrompt, tools, options, maxSteps } = req.body || {};
+  const { conversationId, platformId, modelId, userContent, agentId, appGuide, systemPrompt, tools, options, modeFlags, maxSteps } = req.body || {};
   if (!conversationId || !platformId || !modelId) {
     res.status(400).json({ error: '缺少 conversationId/platformId/modelId' });
     return;
   }
   // systemPrompt/tools 为历史兼容字段；新前端只传 agentId/appGuide，由后端统一构建
-  const taskId = createTask({ conversationId, userId, platformId, modelId, userContent, agentId: agentId ?? null, appGuide, systemPrompt, tools, options, maxSteps });
+  // modeFlags：输入框「+」菜单模式开关（深度思考/计划/仅回答），后端统一追加指令与裁剪工具
+  const taskId = createTask({ conversationId, userId, platformId, modelId, userContent, agentId: agentId ?? null, appGuide, systemPrompt, tools, options, modeFlags, maxSteps });
   res.json({ data: { taskId } });
 });
 

@@ -191,6 +191,10 @@ export const useChatStore = defineStore('chat', () => {
   const browserSteps = ref<Array<{ action: string; result: string; time: number }>>([]);
   // 右侧预览面板是否展开；默认**关闭**（进入聊天页先看到纯聊天区，点了文件/网站才展开右栏）
   const rightPanelOpen = ref(false);
+  // 输入框「+」菜单模式开关（对齐 WorkBuddy）：随请求透传 modeFlags，后端统一追加指令/裁剪工具
+  const thinkingMode = ref(false);   // 深度思考：提示词要求充分推理后再作答
+  const planMode = ref(false);       // 计划模式：先用 task_plan 登记计划再执行
+  const answerOnly = ref(false);     // 仅回答：后端清空工具列表，禁一切工具调用
   // 文件管理弹窗（el-dialog）是否显示——左侧栏「文件管理」按钮触发
   const showFilePopup = ref(false);
   // ===== 多 tab 数据模型（Phase B1）：previewTabs 并存 + activeTabId 激活 =====
@@ -1585,6 +1589,11 @@ export const useChatStore = defineStore('chat', () => {
         systemPrompt,
         tools,
         maxSteps,
+        modeFlags: {
+          thinking: thinkingMode.value,
+          plan: planMode.value,
+          answerOnly: answerOnly.value,
+        },
         options: {
           temperature: options.temperature,
           maxTokens: options.maxTokens,
@@ -1666,7 +1675,7 @@ export const useChatStore = defineStore('chat', () => {
     conversations, currentMessages, streaming, currentConvId, mountedMcpServers, mcpDisabledTools, mcpToolAliases,
     runningConvIds, isConvStreaming,
     runningToolCallIds, isToolCallRunning,
-    browserSteps, rightPanelOpen,
+    browserSteps, rightPanelOpen, thinkingMode, planMode, answerOnly,
     showFilePopup, previewingFile, rightPanelTab, currentBrowserUrl,
     previewTabs, activeTabId, activeTab,
     openTab, activatePreviewTab, closePreviewTab, closeAllPreviewTabs,
