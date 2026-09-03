@@ -32,6 +32,16 @@
           <el-icon :size="15"><Setting /></el-icon>
           <span>设置</span>
         </button>
+        <router-link
+          v-for="m in pluginMenus"
+          :key="m.path"
+          :to="m.path"
+          class="title-nav-item"
+          :class="{ active: isActive(m.path) }"
+        >
+          <el-icon :size="15"><component :is="m.icon" /></el-icon>
+          <span>{{ m.label }}</span>
+        </router-link>
       </nav>
 
       <!-- 中部：可拖拽留白（flex:1） -->
@@ -88,10 +98,11 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue';
+import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { useRoute } from 'vue-router';
 import { Minus, FullScreen, CopyDocument, Close, Moon, Sunny, HomeFilled, ChatDotRound, Monitor, Promotion, Setting, Collection } from '@element-plus/icons-vue';
-import { useSettingsStore, useAuthStore, openSettingsDrawer } from '@yan-zhi/ui';
+import { useSettingsStore, useAuthStore, usePluginStore, openSettingsDrawer } from '@yan-zhi/ui';
+import { resolvePluginIcon } from '@yan-zhi/ui/plugin-icons';
 
 // Electron 渲染进程通过 contextBridge 注入的 API
 const api = (window as any).electronAPI;
@@ -109,6 +120,14 @@ const navMenus = [
 function isActive(p: string) {
   return route.path === p || route.path.startsWith(p + '/');
 }
+
+// 插件注入的导航项（原 SideNav pluginNavItems 等价迁移；桌面端 when 过滤）
+const pluginStore = usePluginStore();
+const pluginMenus = computed(() =>
+  pluginStore.sidebar
+    .filter((it) => !it.when || it.when === 'all' || it.when === 'desktop')
+    .map((it) => ({ path: it.route, label: it.label, icon: resolvePluginIcon(it.icon) })),
+);
 
 // 是否处于最大化状态
 const isMaximized = ref(false);
