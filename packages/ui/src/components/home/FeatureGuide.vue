@@ -1,8 +1,7 @@
 <template>
   <transition name="guide-fade">
     <div v-if="feature" class="feature-guide-mask" @click.self="$emit('close')">
-      <transition name="guide-pop" appear>
-        <div v-if="feature" class="feature-guide glass-card" @click.stop>
+      <div v-if="feature" class="feature-guide glass-card" @click.stop>
           <!-- 头部 -->
           <header class="guide-header">
             <div class="guide-title-wrap">
@@ -54,7 +53,6 @@
             <el-button type="primary" @click="enterFeature">进入功能</el-button>
           </footer>
         </div>
-      </transition>
     </div>
   </transition>
 </template>
@@ -669,6 +667,7 @@ function enterFeature() {
   backdrop-filter: blur(2px);
   -webkit-backdrop-filter: blur(2px);
   padding: 24px;
+  overflow: hidden;
 }
 
 /* 弹窗主体 */
@@ -722,7 +721,7 @@ function enterFeature() {
 
 /* 内容区 */
 .guide-body {
-  padding: 18px 24px; overflow-y: auto; flex: 1;
+  padding: 18px 24px; overflow-y: auto; flex: 1; min-height: 0;
 }
 .guide-section { margin-bottom: 20px; }
 .guide-section:last-child { margin-bottom: 0; }
@@ -772,9 +771,12 @@ function enterFeature() {
 .guide-fade-enter-active, .guide-fade-leave-active { transition: opacity 0.25s ease; }
 .guide-fade-enter-from, .guide-fade-leave-to { opacity: 0; }
 
-/* 弹窗 fade + scale 进入 */
-.guide-pop-enter-active, .guide-pop-leave-active { transition: all 0.28s cubic-bezier(0.34, 1.56, 0.64, 1); }
-.guide-pop-enter-from, .guide-pop-leave-to { opacity: 0; transform: scale(0.92); }
+/* 弹窗入场：一次性 CSS animation（不用 Vue transition，杜绝 transitionend 冒泡导致动画反复重播「变大变小」） */
+.feature-guide { animation: guidePopIn 0.28s cubic-bezier(0.34, 1.56, 0.64, 1); }
+@keyframes guidePopIn {
+  from { opacity: 0; transform: scale(0.92); }
+  to { opacity: 1; transform: scale(1); }
+}
 
 /* 响应式 */
 @media (max-width: 767px) {
