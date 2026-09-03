@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { db } from '../db.js';
 import { createTask, subscribe } from '../llm-task-manager.js';
 
-type ImProvider = 'wechat' | 'feishu';
+type ImProvider = 'wechat' | 'feishu' | 'wechat-personal';
 
 interface ImSendInput {
   to: string;
@@ -44,8 +44,8 @@ export function createImConnector(
   userId: string,
   input: { provider: string; name: string; config?: Record<string, unknown>; enabled?: boolean },
 ) {
-  if (!input.provider || !['wechat', 'feishu'].includes(input.provider)) {
-    throw new Error('provider 必须为 wechat 或 feishu');
+  if (!input.provider || !['wechat', 'feishu', 'wechat-personal'].includes(input.provider)) {
+    throw new Error('provider 必须为 wechat / feishu / wechat-personal');
   }
   if (!input.name) throw new Error('连接器名称为必填项');
   const id = uuid();
@@ -114,6 +114,9 @@ export async function sendImMessage(userId: string, connectorId: string, input: 
   }
   if (connector.provider === 'wechat') {
     return sendWechat(config, input);
+  }
+  if (connector.provider === 'wechat-personal') {
+    return sendWechatPersonal(config, input);
   }
   throw new Error('不支持的 provider');
 }
@@ -189,6 +192,14 @@ async function sendWechat(config: any, input: ImSendInput) {
     throw new Error(`企业微信发送失败: ${data.errmsg || data.message || res.status}`);
   }
   return data;
+}
+
+/**
+ * 个人微信（ClawBot）发送：依赖外部 CLI（@tencent-weixin/openclaw-weixin-cli）。
+ * CLI 具体命令/接口未确认前不臆造调用，明确报错；接入后在此落地。
+ */
+async function sendWechatPersonal(_config: any, _input: ImSendInput) {
+  throw new Error('个人微信发送需接入 ClawBot CLI（@tencent-weixin/openclaw-weixin-cli），暂未启用');
 }
 
 async function getFeishuToken(appId: string, appSecret: string): Promise<string> {
@@ -275,6 +286,11 @@ export async function testImConnector(userId: string, connectorId: string) {
     if (!config.corpId || !config.secret) throw new Error('企业微信连接器缺少 corpId/secret');
     await getWechatToken(config.corpId, config.secret);
     return { provider: 'wechat', ok: true };
+  }
+  if (connector.provider === 'wechat-personal') {
+    // ClawBot 连通性依赖本机 CLI 运行状态，此处仅校验配置存在
+    if (!config.botName) throw new Error('个人微信连接器缺少 botName');
+    return { provider: 'wechat-personal', ok: true, note: 'ClawBot CLI 未接入，仅校验配置' };
   }
   throw new Error('不支持的 provider');
 }
@@ -409,7 +425,7 @@ function readLastAssistantReply(conversationId: string): string {
 interface ImClosedLoopPayload {
   connectorId: string | undefined;
   userId: string;
-  provider: 'feishu' | 'wechat';
+  provider: 'feishu' | 'wechat' | 'wechat-personal';
   externalId: string;
   text: string;
   fromUser: string;
@@ -571,4 +587,49 @@ function xmlTag(xml: string, tag: string): string {
   const re = new RegExp(`<${tag}>(?:<!\\[CDATA\\[)?([\\s\\S]*?)(?:\\]\\]>)?</${tag}>`);
   const m = xml.match(re);
   return m ? m[1] : '';
+}
+
+// ============================================================
+// 个人微信（ClawBot）入站：JSON webhook → 同一闭环
+// ============================================================
+
+/**
+ * 解析个人微信 ClawBot webhook（JSON）。
+ * 契约（适配层需按此字段推送）：{ messageId, text, fromUser }，兼容常见别名。
+ */
+export function parseWechatPersonalInbound(body: any): { messageId: string; text: string; fromUser: string } {
+  const text =
+    typeof body?.text === 'string'
+      ? body.text
+      : typeof body?.content === 'string'
+        ? body.content
+        : '';
+  return {
+    messageId: String(body?.messageId || body?.msgId || body?.id || ''),
+    text: text.trim(),
+    fromUser: String(body?.fromUser || body?.from || body?.sender || body?.openId || ''),
+  };
+}
+
+/** 处理个人微信 ClawBot 入站，仅文本消息进入 AI 闭环 */
+export function handleWechatPersonalInbound(
+  connectorId: string | undefined,
+  userId: string,
+  body: unknown,
+): { handled: boolean; reason?: string } {
+  const parsed = parseWechatPersonalInbound(body);
+  if (!parsed.messageId || !parsed.text || !parsed.fromUser) {
+    return { handled: false, reason: 'empty_or_non_text' };
+  }
+  return runImClosedLoop({
+    connectorId,
+    userId,
+    provider: 'wechat-personal',
+    externalId: parsed.messageId,
+    text: parsed.text,
+    fromUser: parsed.fromUser,
+    toUser: parsed.fromUser,
+    replyTo: parsed.fromUser,
+    rawJson: JSON.stringify(body || {}),
+  });
 }

@@ -14,6 +14,7 @@ import {
   handleImInbound,
   parseWechatInbound,
   handleWechatInbound,
+  handleWechatPersonalInbound,
 } from '../services/im.js';
 
 const router = Router();
@@ -227,6 +228,17 @@ function findWechatConnector() {
     config: row.config_json ? JSON.parse(row.config_json) : {},
   };
 }
+
+// POST /api/im/inbound/wechat-personal  个人微信 ClawBot webhook（JSON）
+router.post('/inbound/wechat-personal', (req: Request, res: Response) => {
+  const row = db.prepare(
+    "SELECT * FROM im_connector WHERE provider = 'wechat-personal' AND enabled = 1 ORDER BY created_at ASC LIMIT 1",
+  ).get() as any;
+  if (row) {
+    void handleWechatPersonalInbound(row.id, row.user_id, req.body || {});
+  }
+  res.json({ code: 0, msg: 'success' });
+});
 
 function saveInboundEvent(connectorId: string | undefined, provider: string, body: unknown) {
   db.prepare(

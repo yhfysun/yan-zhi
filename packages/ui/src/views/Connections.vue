@@ -17,7 +17,7 @@
     <div v-else class="connector-grid">
       <el-card v-for="c in connectors" :key="c.id" class="connector-card">
         <div class="connector-head">
-          <div :class="['provider-badge', c.provider]">{{ c.provider === 'feishu' ? '飞书' : '企业微信' }}</div>
+          <div :class="['provider-badge', c.provider]">{{ providerLabel(c.provider) }}</div>
           <el-switch v-model="c.enabled" @change="toggleEnabled(c)" />
         </div>
         <div class="connector-name">{{ c.name }}</div>
@@ -68,6 +68,10 @@
             <div class="choice-title">企业微信</div>
             <div class="choice-desc">自建应用，收发消息</div>
           </button>
+          <button type="button" class="choice-card" @click="chooseProvider('wechat-personal')">
+            <div class="choice-title">个人微信（ClawBot）</div>
+            <div class="choice-desc">ClawBot CLI 扫码登录个人微信，收发消息</div>
+          </button>
         </div>
 
         <!-- 步骤 2：取参数引导 -->
@@ -81,13 +85,22 @@
             </ol>
             <div class="guide-callback">回调地址：<code>{{ callbackBase }}/api/im/inbound/feishu</code></div>
           </template>
-          <template v-else>
+          <template v-else-if="form.provider === 'wechat'">
             <ol class="guide-list">
               <li>登录 <a href="https://work.weixin.qq.com/" target="_blank" rel="noopener">企业微信管理后台</a>，在「应用管理」创建自建应用</li>
               <li>在「我的企业」拿到 <b>Corp ID</b>；应用详情页拿到 <b>Secret</b> 和 <b>Agent ID</b></li>
               <li>在「接收消息 > API 接收」设置 <b>Token</b> 和 EncodingAESKey，填回调地址</li>
             </ol>
             <div class="guide-callback">回调地址：<code>{{ callbackBase }}/api/im/inbound/wechat</code></div>
+          </template>
+          <template v-else>
+            <ol class="guide-list">
+              <li>在服务器安装 <code>@tencent-weixin/openclaw-weixin-cli</code> 并启动 ClawBot 进程</li>
+              <li>扫描 CLI 生成的登录二维码，登录目标个人微信</li>
+              <li>将 ClawBot 消息推送到下方回调地址（JSON：<code>{ messageId, text, fromUser }</code>）</li>
+            </ol>
+            <div class="guide-callback">回调地址：<code>{{ callbackBase }}/api/im/inbound/wechat-personal</code></div>
+            <div class="guide-callback">提示：发送方向与二维码生成待 ClawBot CLI 接口确认后接入</div>
           </template>
         </div>
 
@@ -111,7 +124,7 @@
                 <span class="field-help">事件与回调页，配回调后生成（收消息必需）</span>
               </el-form-item>
             </template>
-            <template v-else>
+            <template v-else-if="form.provider === 'wechat'">
               <el-form-item label="Corp ID">
                 <el-input v-model="form.corpId" />
                 <span class="field-help">我的企业页的企业ID</span>
@@ -131,6 +144,12 @@
               <el-form-item label="EncodingAESKey">
                 <el-input v-model="form.encodingAesKey" />
                 <span class="field-help">同页 43 位 EncodingAESKey（加密模式收消息必需）</span>
+              </el-form-item>
+            </template>
+            <template v-else>
+              <el-form-item label="Bot 名称">
+                <el-input v-model="form.botName" />
+                <span class="field-help">ClawBot 登录的个人微信昵称（标识用）</span>
               </el-form-item>
             </template>
           </el-form>
@@ -218,6 +237,7 @@ const form = ref({
   agentId: '',
   token: '',
   encodingAesKey: '',
+  botName: '',
 });
 
 const callbackBase = computed(() => {
@@ -241,16 +261,20 @@ async function load() {
 }
 
 function configFrom(f: typeof form.value) {
-  return f.provider === 'feishu'
-    ? { appId: f.appId, appSecret: f.appSecret, verificationToken: f.verificationToken }
-    : { corpId: f.corpId, secret: f.secret, agentId: f.agentId, token: f.token, encodingAesKey: f.encodingAesKey };
+  if (f.provider === 'feishu') {
+    return { appId: f.appId, appSecret: f.appSecret, verificationToken: f.verificationToken };
+  }
+  if (f.provider === 'wechat-personal') {
+    return { botName: f.botName };
+  }
+  return { corpId: f.corpId, secret: f.secret, agentId: f.agentId, token: f.token, encodingAesKey: f.encodingAesKey };
 }
 
 function resetForm() {
   editingId.value = '';
   testResult.value = '';
   testError.value = '';
-  form.value = { provider: 'feishu', name: '', appId: '', appSecret: '', verificationToken: '', corpId: '', secret: '', agentId: '', token: '', encodingAesKey: '' };
+  form.value = { provider: 'feishu', name: '', appId: '', appSecret: '', verificationToken: '', corpId: '', secret: '', agentId: '', token: '', encodingAesKey: '', botName: '' };
 }
 
 function openCreate() {
@@ -272,6 +296,7 @@ function openEdit(c: any) {
     agentId: config.agentId || '',
     token: config.token || '',
     encodingAesKey: config.encodingAesKey || '',
+    botName: config.botName || '',
   };
   editingId.value = c.id;
   testResult.value = '';
@@ -280,7 +305,7 @@ function openEdit(c: any) {
   showWizard.value = true;
 }
 
-function chooseProvider(p: 'feishu' | 'wechat') {
+function chooseProvider(p: 'feishu' | 'wechat' | 'wechat-personal') {
   form.value.provider = p;
   step.value = 2;
 }
@@ -348,9 +373,16 @@ async function testConnector(c: any) {
   else ElMessage.success('连接正常');
 }
 
+function providerLabel(p: string) {
+  if (p === 'feishu') return '飞书';
+  if (p === 'wechat-personal') return '个人微信';
+  return '企业微信';
+}
+
 function configSummary(c: any) {
   const config = c.config || {};
   if (c.provider === 'feishu') return config.appId ? `App ID ${config.appId}` : '未配置凭据';
+  if (c.provider === 'wechat-personal') return config.botName ? `Bot ${config.botName}` : '未配置 Bot';
   return config.corpId ? `Corp ID ${config.corpId}` : '未配置凭据';
 }
 
@@ -390,7 +422,7 @@ async function onImportFile(event: Event) {
   }
   const config = obj.config || {};
   form.value = {
-    provider: obj.provider === 'wechat' ? 'wechat' : 'feishu',
+    provider: obj.provider === 'wechat' ? 'wechat' : obj.provider === 'wechat-personal' ? 'wechat-personal' : 'feishu',
     name: obj.name || '导入的连接',
     appId: config.appId || '',
     appSecret: config.appSecret || '',
@@ -400,6 +432,7 @@ async function onImportFile(event: Event) {
     agentId: config.agentId || '',
     token: config.token || '',
     encodingAesKey: config.encodingAesKey || '',
+    botName: config.botName || '',
   };
   editingId.value = '';
   testResult.value = '';
@@ -469,6 +502,11 @@ async function decodeQrImage(file: File): Promise<string | null> {
 .provider-badge.wechat {
   color: #1f9d55;
   background: rgba(34, 197, 94, 0.12);
+}
+
+.provider-badge.wechat-personal {
+  color: #7c3aed;
+  background: rgba(124, 58, 237, 0.12);
 }
 
 .connector-name {
