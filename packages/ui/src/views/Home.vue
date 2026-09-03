@@ -76,6 +76,7 @@ import { ref, computed } from 'vue';
 import { useRouter } from 'vue-router';
 import {
   ChatDotRound, ChatLineRound, Collection, Monitor, Setting, Cpu, Grid, InfoFilled,
+  User, Connection, Tools, Files, Link, Platform,
 } from '@element-plus/icons-vue';
 import SolarSystem from '../components/home/SolarSystem.vue';
 import EarthMap from '../components/home/EarthMap.vue';
@@ -147,11 +148,18 @@ interface HomeMenuItem {
 
 const menuItems: HomeMenuItem[] = [
   { path: '/chat', name: '任务', desc: '与大模型多会话对话、跑工具化任务（含文件/结果区/浏览器预览）', icon: ChatDotRound, iconName: 'ChatDotRound', color: '#C2410C', key: 'chat' },
-  { path: '/chat-hub', name: '消息', desc: '统一聊天中心：本应用助手 + 飞书/企业微信渠道', icon: ChatLineRound, iconName: 'ChatLineRound', color: '#0EA5E9', key: 'chat-hub' },
-  { path: '/knowledge', name: '知识库', desc: '管理本地知识资料', icon: Collection, iconName: 'Collection', color: '#10B981', key: 'knowledge' },
-  { path: '/browser', name: '浏览器', desc: '内置浏览器自动化', icon: Monitor, iconName: 'Monitor', color: '#F59E0B', key: 'browser' },
-  { path: '', name: '通用与数据', desc: '主题、默认模型、备份与缓存', icon: Setting, iconName: 'Setting', color: '#64748B', key: 'settings-general', section: 'general' },
-  { path: '', name: '模型与能力', desc: '模型、MCP、工具、Skill 与智能体配置', icon: Cpu, iconName: 'Cpu', color: '#14B8A6', key: 'settings-abilities', section: 'models' },
+  { path: '/chat-hub', name: '消息', desc: '统一聊天中心：本应用助手 + 言智节点互聊 + 飞书/企业微信/个人微信渠道', icon: ChatLineRound, iconName: 'ChatLineRound', color: '#0EA5E9', key: 'chat-hub' },
+  { path: '/browser', name: '浏览器', desc: '内置浏览器自动化（真实鼠标/键盘模拟 + pageAgent）', icon: Monitor, iconName: 'Monitor', color: '#F59E0B', key: 'browser' },
+  { path: '/knowledge', name: '知识库', desc: '文档切块向量化、语义检索，命中自动注入对话', icon: Collection, iconName: 'Collection', color: '#10B981', key: 'knowledge' },
+  { path: '/agents', name: '智能体', desc: 'harness 对话智能体 + Vue Flow 工作流画布 + 子智能体调度', icon: User, iconName: 'User', color: '#F43F5E', key: 'agents' },
+  { path: '/mcp', name: 'MCP 连接', desc: '接入外部 MCP 服务（stdio / SSE / Streamable HTTP）', icon: Connection, iconName: 'Connection', color: '#6366F1', key: 'mcp' },
+  { path: '/tools', name: '工具', desc: '内置工具 + 自定义 JS 沙箱工具 + 同源商城工具', icon: Tools, iconName: 'Tools', color: '#475569', key: 'tools' },
+  { path: '/skills', name: 'Skill', desc: '本地技能管理 + 远程 Skill 商城（分页/详情/搜索/分类）', icon: Files, iconName: 'Files', color: '#CA8A04', key: 'skills' },
+  { path: '/models', name: '模型平台', desc: 'OpenAI / Anthropic 双协议平台与模型管理', icon: Cpu, iconName: 'Cpu', color: '#2563EB', key: 'models' },
+  { path: '/connections', name: 'IM 连接', desc: '飞书 / 企业微信 / 个人微信接入，收消息自动跑任务并回执', icon: Link, iconName: 'Link', color: '#0D9488', key: 'connections' },
+  { path: '/peers', name: '客户端节点', desc: '言智节点互联：互取工具 / Skill / 智能体，可作商城服务端', icon: Platform, iconName: 'Platform', color: '#B45309', key: 'peers' },
+  { path: '', name: '通用与数据', desc: '主题、知识库分区、备份与缓存', icon: Setting, iconName: 'Setting', color: '#64748B', key: 'settings', section: 'general' },
+  { path: '', name: '模型与能力', desc: '模型、MCP、工具、Skill 与智能体配置', icon: Cpu, iconName: 'Cpu', color: '#14B8A6', key: 'models', section: 'models' },
 ];
 
 /** 打开功能详情弹窗 */
