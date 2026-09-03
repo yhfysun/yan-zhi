@@ -349,7 +349,7 @@ async function addOllama() {
 
 .ollama-box {
   margin-top: 20px; border: 1px solid var(--color-border, #e4e7ed); border-radius: 10px; padding: 16px;
-  background: rgba(124, 58, 237, 0.04);
+  background: color-mix(in srgb, var(--color-primary) 4%, transparent);
 }
 .ollama-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
 .ollama-title { font-size: 15px; font-weight: 600; margin-bottom: 4px; }

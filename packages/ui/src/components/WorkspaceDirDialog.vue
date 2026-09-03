@@ -494,7 +494,7 @@ function clearDir() {
 }
 .wdd-entry:last-child { border-bottom: none; }
 .wdd-entry:hover { background: var(--glass-bg-hover); }
-.wdd-entry.selected { background: rgba(59,130,246,0.08); }
+.wdd-entry.selected { background: color-mix(in srgb, var(--color-primary) 8%, transparent); }
 .wdd-entry-name {
   font-size: 13px;
   flex: 1;

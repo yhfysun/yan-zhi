@@ -90,7 +90,7 @@ defineEmits<{ click: [] }>();
   border-color: var(--glass-border-strong);
 }
 .marketplace-card.is-local {
-  border-color: rgba(124, 58, 237, 0.28);
+  border-color: color-mix(in srgb, var(--color-primary) 28%, transparent);
 }
 .marketplace-card.is-add {
   border-style: dashed;
@@ -115,8 +115,8 @@ defineEmits<{ click: [] }>();
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  background: rgba(124, 58, 237, 0.1);
-  color: #7c3aed;
+  background: color-mix(in srgb, var(--color-primary) 10%, transparent);
+  color: var(--color-primary);
 }
 .marketplace-card.is-remote .marketplace-card-icon {
   background: rgba(59, 130, 246, 0.1);

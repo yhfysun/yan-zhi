@@ -1714,8 +1714,8 @@ onUnmounted(() => {
 }
 [data-theme="dark"] .loading-overlay { background: rgba(27,29,35,0.7); }
 .loading-spinner {
-  width: 36px; height: 36px; border: 3px solid rgba(124,58,237,0.2);
-  border-top-color: var(--el-color-primary, #7C3AED); border-radius: 50%;
+  width: 36px; height: 36px; border: 3px solid color-mix(in srgb, var(--color-primary) 20%, transparent);
+  border-top-color: var(--el-color-primary, #C2410C); border-radius: 50%;
   animation: spin 0.8s linear infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }

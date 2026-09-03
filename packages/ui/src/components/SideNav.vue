@@ -271,7 +271,7 @@ function toggleTheme() {
 }
 .nav-item.active {
   color: var(--color-primary);
-  background: rgba(124, 58, 237, 0.1);
+  background: color-mix(in srgb, var(--color-primary) 10%, transparent);
 }
 .nav-item.active::before {
   content: ''; position: absolute; left: 0; top: 25%; height: 50%;
