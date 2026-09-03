@@ -27,7 +27,7 @@
     <div class="nav-bottom">
       <el-dropdown v-if="authStore.isLoggedIn" trigger="click" popper-class="sidenav-user-popper">
         <div class="nav-avatar-wrap" :title="authStore.user?.username">
-          <span class="nav-avatar">{{ authStore.user?.username?.slice(0, 1) || 'U' }}</span>
+          <span class="nav-avatar">{{ authStore.user?.username?.slice(0, 1) || 'U' }}<i class="login-dot" /></span>
           <span class="nav-label nav-username">{{ authStore.user?.username }}</span>
         </div>
         <template #dropdown>
@@ -51,7 +51,7 @@
         </template>
       </el-dropdown>
       <el-tooltip v-else-if="!isElectron" content="登录" placement="right" :disabled="!collapsed">
-        <div class="nav-avatar-wrap" @click="$router.push('/login')">
+        <div class="nav-avatar-wrap is-login-entry" @click="$router.push('/login')">
           <span class="nav-avatar"><el-icon :size="20"><User /></el-icon></span>
           <span class="nav-label nav-username">登录</span>
         </div>
@@ -92,7 +92,7 @@
       </el-tooltip>
       <el-dropdown v-if="authStore.isLoggedIn" trigger="click" popper-class="sidenav-user-popper">
         <span class="nav-avatar" :title="authStore.user?.username">
-          {{ authStore.user?.username?.slice(0, 1) || 'U' }}
+          {{ authStore.user?.username?.slice(0, 1) || 'U' }}<i class="login-dot" />
         </span>
         <template #dropdown>
           <el-dropdown-menu>
@@ -280,17 +280,30 @@ function toggleTheme() {
 .nav-item:active { transform: scale(0.93); }
 
 .nav-avatar {
+  position: relative;
   width: 36px; height: 36px; border-radius: 10px;
   display: flex; align-items: center; justify-content: center;
   font-size: 14px; font-weight: 700;
-  background: linear-gradient(135deg, rgba(124, 58, 237, 0.15), rgba(236, 72, 153, 0.15));
+  background: color-mix(in srgb, var(--color-primary) 12%, transparent);
   color: var(--color-primary);
   cursor: pointer; user-select: none;
   transition: all 0.2s ease;
 }
 .nav-avatar:hover {
   transform: scale(1.06);
-  box-shadow: 0 2px 8px rgba(124, 58, 237, 0.2);
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--color-primary) 20%, transparent);
+}
+/* 登录状态点：绿点 = 已登录在线 */
+.nav-avatar .login-dot {
+  position: absolute; right: -2px; bottom: -2px;
+  width: 11px; height: 11px; border-radius: 50%;
+  background: #22c55e;
+  border: 2px solid var(--glass-bg);
+}
+/* 未登录入口：主题色实底按钮，明确可点 */
+.nav-avatar-wrap.is-login-entry .nav-avatar {
+  background: var(--color-primary);
+  color: #fff;
 }
 
 /* ===== 桌面端可折叠带标签侧栏（覆盖 .side-nav 默认值） ===== */
