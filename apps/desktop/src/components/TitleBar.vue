@@ -16,7 +16,7 @@
         <span class="brand-name">言智</span>
       </div>
 
-      <!-- 横排主导航：核心 4 页 + 更多下拉（其它功能入口收进弹层） -->
+      <!-- 横排主导航：核心 4 页 + 更多下拉（其它功能入口 + 设置，统一收进弹层） -->
       <nav class="title-nav">
         <router-link
           v-for="m in navMenus"
@@ -28,14 +28,14 @@
           <el-icon :size="15"><component :is="m.icon" /></el-icon>
           <span>{{ m.label }}</span>
         </router-link>
-        <el-dropdown trigger="click" popper-class="plus-menu-popper" @command="(p: string) => $router.push(p)">
+        <el-dropdown trigger="click" popper-class="plus-menu-popper" @command="onMoreCommand">
           <button class="title-nav-item" :class="{ active: moreActive }" type="button">
             <el-icon :size="15"><More /></el-icon>
             <span>更多</span>
           </button>
           <template #dropdown>
             <el-dropdown-menu>
-              <el-dropdown-item v-for="m in moreMenus" :key="m.path" :command="m.path">
+              <el-dropdown-item v-for="m in moreMenus" :key="m.path" :command="m.path" :divided="m.path === '/settings'">
                 <el-icon style="margin-right:6px"><component :is="m.icon" /></el-icon>
                 <span>{{ m.label }}</span>
               </el-dropdown-item>
@@ -63,7 +63,7 @@
             <div class="user-dropdown-header">
               <span class="user-dropdown-name">{{ authStore.user?.username }}</span>
             </div>
-            <el-dropdown-item @click="openSettingsDrawer('general')">
+            <el-dropdown-item command="/settings">
               <el-icon><Setting /></el-icon>
               <span>设置</span>
             </el-dropdown-item>
@@ -75,11 +75,6 @@
         </template>
       </el-dropdown>
       <button v-else class="title-login-btn" type="button" @click="$router.push('/login')">登录</button>
-
-      <!-- 设置弹窗入口（设置就是设置：独立按钮，点击开设置抽屉） -->
-      <button class="win-btn title-theme-btn" type="button" title="设置" @click="openSettingsDrawer('general')">
-        <el-icon :size="15"><Setting /></el-icon>
-      </button>
 
       <!-- 主题切换 -->
       <button class="win-btn title-theme-btn" type="button" title="切换主题" @click="toggleTheme">
@@ -110,7 +105,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue';
-import { useRoute } from 'vue-router';
+import { useRoute, useRouter } from 'vue-router';
 import {
   Minus, FullScreen, CopyDocument, Close, Moon, Sunny, HomeFilled, ChatDotRound, Monitor, Promotion, Setting, Collection,
   More, Cpu, Connection, Tools, Files, User, Link, Platform,
@@ -123,11 +118,12 @@ const api = (window as any).electronAPI;
 const settingsStore = useSettingsStore();
 const authStore = useAuthStore();
 const route = useRoute();
+const router = useRouter();
 
-// 横排主导航：核心 4 页（设置独立为右侧弹窗入口）
+// 横排主导航：核心 4 页
 const navMenus = [
   { path: '/home', label: '首页', icon: HomeFilled },
-  { path: '/chat', label: '对话', icon: ChatDotRound },
+  { path: '/chat', label: '任务', icon: ChatDotRound },
   { path: '/browser', label: '浏览器', icon: Monitor },
   { path: '/chat-hub', label: '消息', icon: Promotion },
 ];
@@ -135,7 +131,7 @@ function isActive(p: string) {
   return route.path === p || route.path.startsWith(p + '/');
 }
 
-// 「更多」下拉：其它功能入口（点击跳转对应页面）
+// 「更多」下拉：其它功能入口 + 设置（/settings 完整页面，非弹窗）
 const moreMenus = [
   { path: '/knowledge', label: '知识库', icon: Collection },
   { path: '/models', label: '模型平台', icon: Cpu },
@@ -145,18 +141,19 @@ const moreMenus = [
   { path: '/agents', label: '智能体', icon: User },
   { path: '/connections', label: 'IM 连接', icon: Link },
   { path: '/peers', label: '客户端节点', icon: Platform },
+  { path: '/settings', label: '设置', icon: Setting },
 ];
+const moreActive = computed(() => moreMenus.some((m) => isActive(m.path)));
+function onMoreCommand(p: string) {
+  router.push(p);
+}
+
 // 插件注入的导航项（原 SideNav pluginNavItems 等价迁移；桌面端 when 过滤）
 const pluginStore = usePluginStore();
 const pluginMenus = computed(() =>
   pluginStore.sidebar
     .filter((it) => !it.when || it.when === 'all' || it.when === 'desktop')
     .map((it) => ({ path: it.route, label: it.label, icon: resolvePluginIcon(it.icon) })),
-);
-
-// 「更多」在当前路由位于其它/插件菜单时高亮
-const moreActive = computed(
-  () => moreMenus.some((m) => isActive(m.path)) || pluginMenus.value.some((m) => isActive(m.path)),
 );
 
 // 是否处于最大化状态
