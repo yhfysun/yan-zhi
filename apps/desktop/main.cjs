@@ -1,4 +1,4 @@
-const { app, BrowserWindow, BrowserView, dialog, ipcMain, Menu, session, shell, clipboard, Tray } = require('electron');
+const { app, BrowserWindow, BrowserView, dialog, ipcMain, Menu, session, shell, clipboard, Tray, globalShortcut } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const fsp = fs.promises;
@@ -1890,6 +1890,23 @@ app.whenReady().then(() => {
   }
   startServer();
 
+  // computer-use 急停热键：Ctrl+Alt+Esc → 通知后端 panic（冻结输入工具并禁用插件）。
+  // 插件未启用时后端返回 404，静默忽略；请求失败也不影响本进程。
+  try {
+    const ok = globalShortcut.register('Control+Alt+Escape', () => {
+      const req = http.request('http://127.0.0.1:3001/api/plugin/computer-use/panic', { method: 'POST', timeout: 3000 }, (res) => {
+        res.resume();
+      });
+      req.on('error', () => {});
+      req.on('timeout', () => req.destroy());
+      req.end();
+      console.log('[panic] 急停热键触发');
+    });
+    if (ok) console.log('[panic] 已注册急停热键 Ctrl+Alt+Esc');
+  } catch (e) {
+    console.warn('[panic] 急停热键注册失败:', e);
+  }
+
   // 健康检查：轮询后端 /api/health，就绪后创建窗口（替代固定 1.5s 延迟）
   const checkHealth = (retries = 0) => {
     if (retries > 60) { // 最多等 30 秒
@@ -1968,6 +1985,7 @@ app.on('window-all-closed', () => {
 // 真正退出时清理后端 + MCP + 数据库
 app.on('before-quit', () => {
   isQuitting = true;
+  try { globalShortcut.unregisterAll(); } catch {}
   if (serverProcess) { try { serverProcess.kill('SIGTERM'); } catch {} serverProcess = null; }
   for (const [id, entry] of mcpChildren) {
     try { entry.child.kill('SIGTERM'); } catch {}

@@ -6,13 +6,14 @@
 import path from 'node:path';
 import type { McpCallResult, PluginManifest, PluginModule } from '@yan-zhi/core';
 import type { ShellAdapter } from '@yan-zhi/core';
+import { db } from '../db.js';
 
 export const computerUseManifest: PluginManifest = {
   id: 'computer-use',
   name: '电脑使用',
   version: '0.1.0',
   description:
-    '智能体可操作本机软件：鼠标点击/拖拽、键盘输入/快捷键、窗口枚举与激活、截屏、启动应用（仅 Windows；默认关闭，需手动开启）',
+    '智能体可操作本机软件：鼠标点击、键盘输入/快捷键、窗口激活、截屏、启动应用（Windows 全量支持；macOS 基础支持需辅助功能权限；默认关闭，需手动开启）',
   permissions: ['desktop-input', 'shell'],
   contributes: {
     tools: [
@@ -42,10 +43,13 @@ let opCount = 0;
 let lastOpAt = 0;
 let maxOps = 200;
 let allowSelfWindowClick = false;
+/** 急停标志：Ctrl+Alt+Esc（桌面端 globalShortcut → POST /panic）触发后置位并禁用插件 */
+let panicActive = false;
 
 const OP_WINDOW_MS = 10 * 60 * 1000;
 
 function checkLimit(): void {
+  if (panicActive) throw new Error('急停已触发（Ctrl+Alt+Esc），输入工具已冻结。请在「插件管理」页手动重新启用插件');
   const now = Date.now();
   if (now - lastOpAt > OP_WINDOW_MS) opCount = 0;
   if (opCount >= maxOps) {
@@ -181,8 +185,8 @@ async function ps(
   script: string,
   timeout = 20000,
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-  if (process.platform !== 'win32') {
-    throw new Error('computer-use 插件当前仅支持 Windows（macOS 适配规划中）');
+  if (process.platform !== 'win32' && process.platform !== 'darwin') {
+    throw new Error('computer-use 插件当前支持 Windows / macOS');
   }
   const b64 = Buffer.from(script, 'utf16le').toString('base64');
   return shell.exec(
@@ -190,6 +194,48 @@ async function ps(
     ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', b64],
     { timeout },
   );
+}
+
+// ---------- macOS 执行层（osascript / screencapture / open，需系统授予辅助功能权限） ----------
+const MAC = process.platform === 'darwin';
+
+async function osa(shell: ShellAdapter, script: string, timeout = 15000): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+  const r = await shell.exec('osascript', ['-e', script], { timeout });
+  if (r.exitCode !== 0 && /assistive|accessib|not allowed/i.test(r.stderr)) {
+    throw new Error(`macOS 辅助功能权限未授予：系统设置 → 隐私与安全性 → 辅助功能，允许本应用后重试`);
+  }
+  return r;
+}
+
+function osaStr(s: string): string {
+  return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+
+const MAC_KEYCODE: Record<string, number> = {
+  enter: 36, return: 36, tab: 48, esc: 53, escape: 53, space: 49,
+  backspace: 51, delete: 51, forwarddelete: 117,
+  home: 115, end: 119, pageup: 116, pagedown: 121,
+  up: 126, down: 125, left: 123, right: 124,
+  f1: 122, f2: 120, f3: 99, f4: 118, f5: 96, f6: 97,
+  f7: 98, f8: 100, f9: 101, f10: 109, f11: 103, f12: 111,
+};
+
+/** mac 组合键 → AppleScript（ctrl 直觉映射为 command） */
+function buildMacKeyScript(keys: string[]): string {
+  const MODS: Record<string, string> = { ctrl: 'command down', control: 'command down', alt: 'option down', shift: 'shift down' };
+  const mods: string[] = [];
+  let action = '';
+  for (const raw of keys) {
+    const k = raw.trim().toLowerCase();
+    if (!k) continue;
+    if (MODS[k]) { mods.push(MODS[k]); continue; }
+    if (action) throw new Error('macOS 一次只支持一个主键');
+    if (MAC_KEYCODE[k] != null) action = `key code ${MAC_KEYCODE[k]}`;
+    else if (k.length === 1) action = `keystroke "${osaStr(k)}"`;
+    else throw new Error(`不支持的按键: ${raw}`);
+  }
+  if (!action) throw new Error('keys 不能为空');
+  return `tell application "System Events" to ${action}${mods.length ? ` using {${mods.join(', ')}}` : ''}`;
 }
 
 /** 本应用自身进程名列表（用于自窗点击拒绝） */
@@ -233,8 +279,38 @@ Write-Output 'OK'`;
 
 export const computerUseModule: PluginModule = {
   activate: (ctx) => {
+    panicActive = false;
     maxOps = Number((ctx.config as Record<string, unknown> | undefined)?.maxOps) || 200;
     allowSelfWindowClick = !!(ctx.config as Record<string, unknown> | undefined)?.allowSelfWindowClick;
+
+    // 后端路由：/api/plugin/computer-use/*
+    // POST /panic —— 急停入口（桌面端 globalShortcut Ctrl+Alt+Esc 调用）：冻结输入工具并禁用插件（恢复=手动重新启用）
+    // GET  /audit —— 操作审计记录（插件页「记录」按钮）
+    ctx.registerBackendRoute((raw) => {
+      const r = raw as {
+        post: (p: string, h: (req: unknown, res: { json: (d: unknown) => void }) => void) => void;
+        get: (p: string, h: (req: unknown, res: { json: (d: unknown) => void }) => void) => void;
+      };
+      r.post('/panic', (_req, res) => {
+        panicActive = true;
+        ctx.log('!!! 急停触发（Ctrl+Alt+Esc）：输入工具已冻结，插件即将禁用');
+        void import('@yan-zhi/core')
+          .then(({ getPluginManager }) => getPluginManager().disable('computer-use'))
+          .catch(() => undefined);
+        res.json({ data: { ok: true, message: '急停已生效，computer-use 插件已禁用（可在插件管理页重新启用）' } });
+      });
+      r.get('/audit', (_req, res) => {
+        try {
+          const row = db
+            .prepare("SELECT value FROM plugin_storage WHERE plugin_id = 'computer-use' AND key = 'audit'")
+            .get() as { value: string | null } | undefined;
+          const ops = row?.value ? (JSON.parse(row.value) as unknown[]) : [];
+          res.json({ data: { panic: panicActive, ops } });
+        } catch (e) {
+          res.json({ error: (e as Error).message });
+        }
+      });
+    });
 
     /** 统一操作入口：护栏检查 → 执行 → 计数 → 审计 */
     const runOp = async (
@@ -272,6 +348,11 @@ export const computerUseModule: PluginModule = {
             const dir = process.env.DATA_DIR || path.resolve('screenshots');
             await (await import('node:fs/promises')).mkdir(dir, { recursive: true });
             const file = path.join(dir, `screenshot-${Date.now()}.png`);
+            if (MAC) {
+              const r = await ctx.adapter.shell!.exec('screencapture', ['-x', file], { timeout: 30000 });
+              if (r.exitCode !== 0) throw new Error(`截屏失败: ${r.stderr || r.stdout}`);
+              return textResult({ file, offsetX: 0, offsetY: 0, note: 'macOS：屏幕坐标与截图像素坐标一致（主屏）' });
+            }
             const script = `Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 $b = [System.Windows.Forms.SystemInformation]::VirtualScreen
@@ -319,6 +400,14 @@ Write-Output ('OK' + [string][char]9 + $b.X + [string][char]9 + $b.Y + [string][
         return runOp(
           'mouse_click',
           async () => {
+            if (MAC) {
+              if (button !== 'left' || double) {
+                throw new Error('macOS 适配 v1 仅支持左键单击（右键/双击暂不支持）');
+              }
+              const r = await osa(ctx.adapter.shell!, `tell application "System Events" to click at {${x}, ${y}}`);
+              if (r.exitCode !== 0) throw new Error(`点击失败: ${r.stderr || r.stdout}`);
+              return textOut(`OK: click @ (${x}, ${y})`);
+            }
             const r = await ps(ctx.adapter.shell!, clickScript(x, y, button, double));
             if (r.exitCode === 2 || r.stdout.startsWith('BLOCKED')) {
               throw new Error(`目标点落在本应用自身窗口（${r.stdout.split(String.fromCharCode(9))[1] || ''}），已拒绝。如确需操作请在插件配置开启 allowSelfWindowClick`);
@@ -346,6 +435,7 @@ Write-Output ('OK' + [string][char]9 + $b.X + [string][char]9 + $b.Y + [string][
         return runOp(
           'mouse_move',
           async () => {
+            if (MAC) throw new Error('macOS 适配 v1 不支持纯鼠标移动（可改用 mouse_click）');
             const r = await ps(ctx.adapter.shell!, `${PS_BASE}\n[CU]::SetCursorPos(${x}, ${y}) | Out-Null\nWrite-Output 'OK'`);
             if (r.exitCode !== 0) throw new Error(`移动失败: ${r.stderr || r.stdout}`);
             return textOut(`OK: moved to (${x}, ${y})`);
@@ -375,6 +465,7 @@ Write-Output ('OK' + [string][char]9 + $b.X + [string][char]9 + $b.Y + [string][
         return runOp(
           'mouse_drag',
           async () => {
+            if (MAC) throw new Error('macOS 适配 v1 不支持鼠标拖拽');
             const steps = Math.min(60, Math.max(5, Math.round(Math.hypot(tx - fx, ty - fy) / 10)));
             const script = `${PS_BASE}
 [CU]::SetCursorPos(${fx}, ${fy}) | Out-Null
@@ -420,6 +511,7 @@ Write-Output 'OK'`;
         return runOp(
           'scroll',
           async () => {
+            if (MAC) throw new Error('macOS 适配 v1 不支持滚轮模拟');
             const delta = direction === 'up' ? 120 : -120;
             const script = `${PS_BASE}
 [CU]::SetCursorPos(${x}, ${y}) | Out-Null
@@ -453,6 +545,14 @@ Write-Output 'OK'`;
         return runOp(
           'type',
           async () => {
+            if (MAC) {
+              if (/[^\x00-\x7F]/.test(text)) {
+                throw new Error('macOS keystroke 不支持非 ASCII 字符（中文等），请改用剪贴板粘贴');
+              }
+              const r = await osa(ctx.adapter.shell!, `tell application "System Events" to keystroke "${osaStr(text)}"`);
+              if (r.exitCode !== 0) throw new Error(`键入失败: ${r.stderr || r.stdout}`);
+              return textOut(`OK: typed ${text.length} chars`);
+            }
             const script = `[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 Add-Type -AssemblyName System.Windows.Forms
 $text = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${b64Arg(text)}'))
@@ -484,6 +584,12 @@ Write-Output 'OK'`;
           return runOp(
             'press_key',
             async () => {
+              if (MAC) {
+                const script = buildMacKeyScript(keys);
+                const r = await osa(ctx.adapter.shell!, script);
+                if (r.exitCode !== 0) throw new Error(`按键失败: ${r.stderr || r.stdout}`);
+                return textOut(`OK: pressed ${keys.join('+')}`);
+              }
               const sendKeysSeq = buildSendKeys(keys).replace(/'/g, "''");
               const script = `[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 Add-Type -AssemblyName System.Windows.Forms
@@ -510,6 +616,18 @@ Write-Output 'OK'`;
         runOp(
           'list_windows',
           async () => {
+            if (MAC) {
+              const r = await osa(
+                ctx.adapter.shell!,
+                'tell application "System Events" to get name of every application process whose background only is false',
+              );
+              if (r.exitCode !== 0) throw new Error(`窗口枚举失败: ${r.stderr || r.stdout}`);
+              const names = r.stdout.trim().split(',').map((s) => s.trim()).filter(Boolean).slice(0, 50);
+              return textResult({
+                windows: names.map((n) => ({ process: n, title: n })),
+                note: 'macOS v1 仅返回前台应用进程名（可将其作为 activate_window 的 title 使用）',
+              });
+            }
             const script = `${PS_BASE}
 $lines = [CU]::ListWindows() -split ([string][char]10) | Where-Object { $_ }
 $pids = @()
@@ -561,6 +679,18 @@ $out | ConvertTo-Json -Compress -Depth 3`;
         return runOp(
           'activate_window',
           async () => {
+            if (MAC) {
+              let appName = title || '';
+              if (pid != null) {
+                const ps1 = await ctx.adapter.shell!.exec('ps', ['-p', String(pid), '-o', 'comm=']);
+                if (ps1.exitCode !== 0 || !ps1.stdout.trim()) throw new Error(`未找到进程 pid=${pid}`);
+                appName = path.basename(ps1.stdout.trim());
+              }
+              if (!appName) throw new Error('macOS 激活需要 pid 或应用名（title 参数）');
+              const r = await osa(ctx.adapter.shell!, `tell application "${osaStr(appName)}" to activate`);
+              if (r.exitCode !== 0) throw new Error(`激活失败（应用 "${appName}" 可能未安装或未运行）: ${r.stderr || r.stdout}`);
+              return textOut(`OK: activated app "${appName}"`);
+            }
             let script: string;
             if (pid != null) {
               script = `${PS_BASE}
@@ -605,6 +735,13 @@ Write-Output 'OK'`;
           return runOp(
             'open_app',
             async () => {
+              if (MAC) {
+                const r = /[/\\]/.test(target)
+                  ? await ctx.adapter.shell!.exec('open', [target])
+                  : await ctx.adapter.shell!.exec('open', ['-a', target]);
+                if (r.exitCode !== 0) throw new Error(`启动失败: ${r.stderr || r.stdout}`);
+                return textOut(`OK: started ${target}`);
+              }
               const script = `$target = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${b64Arg(target)}'))
 Start-Process -FilePath $target
 Write-Output 'OK'`;

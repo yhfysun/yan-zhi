@@ -136,14 +136,26 @@ try {
         }
       }
     };
-    mgr.on('enabled', () => syncPluginTools());
+    const mountedRoutes = new Set<string>();
+    const mountPluginRoutes = (pluginId: string) => {
+      if (mountedRoutes.has(pluginId)) return;
+      const setups = mgr.registry.backendRoutes.filter((e) => e.pluginId === pluginId);
+      if (setups.length === 0) return;
+      const r = express.Router();
+      for (const { setup } of setups) setup(r);
+      app.use(`/api/plugin/${pluginId}`, r);
+      mountedRoutes.add(pluginId);
+    };
+    mgr.on('enabled', (id: string) => {
+      syncPluginTools();
+      // 启用时即时挂载该插件的后端路由（免去重启生效）
+      mountPluginRoutes(id);
+    });
     mgr.on('disabled', () => syncPluginTools());
     syncPluginTools();
-    // 挂载已启用插件的后端路由（运行时新启用的需重启生效）
-    for (const { pluginId, setup } of mgr.registry.backendRoutes) {
-      const r = express.Router();
-      setup(r);
-      app.use(`/api/plugin/${pluginId}`, r);
+    // 挂载启动时已启用插件的后端路由
+    for (const { pluginId } of mgr.registry.backendRoutes) {
+      mountPluginRoutes(pluginId);
     }
     console.log('[plugin] 插件系统已初始化');
   } catch (e) {

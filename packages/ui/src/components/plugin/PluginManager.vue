@@ -46,6 +46,7 @@
           <el-button size="small" @click="openConfig(p)">配置</el-button>
           <el-button size="small" @click="openDetail(p)">详情</el-button>
           <el-button size="small" @click="onExport(p)">导出</el-button>
+          <el-button v-if="p.manifest.id === 'computer-use'" size="small" @click="onAudit(p)">记录</el-button>
           <el-button
             v-if="p.source !== 'builtin'"
             size="small"
@@ -80,6 +81,25 @@
       <template #footer>
         <el-button @click="templateOpen = false">关闭</el-button>
         <el-button type="primary" :disabled="!templateData" @click="downloadBase64(templateData?.base64 || '', templateData?.filename || 'plugin-template.zip')">下载 zip</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 电脑使用：操作审计 -->
+    <el-dialog v-model="auditOpen" title="电脑使用 · 操作记录" width="620">
+      <el-table :data="auditList" size="small" max-height="420">
+        <el-table-column label="时间" width="170">
+          <template #default="{ row }">{{ new Date(row.t).toLocaleString('zh-CN') }}</template>
+        </el-table-column>
+        <el-table-column prop="op" label="操作" width="150" />
+        <el-table-column label="参数">
+          <template #default="{ row }">
+            <span class="pm-detail">{{ JSON.stringify(row.detail ?? {}) }}</span>
+          </template>
+        </el-table-column>
+      </el-table>
+      <div v-if="auditPanic" class="pm-error" style="margin-top: 8px">当前处于急停状态，请在插件卡片上重新启用</div>
+      <template #footer>
+        <el-button @click="auditOpen = false">关闭</el-button>
       </template>
     </el-dialog>
 
@@ -211,6 +231,21 @@ async function onOpenTemplate() {
   if ('error' in res) { ElMessage.error(res.error); return; }
   templateData.value = res.data;
   templateOpen.value = true;
+}
+
+// 电脑使用操作审计
+const auditOpen = ref(false);
+const auditList = ref<Array<{ t: number; op: string; detail?: Record<string, unknown> }>>([]);
+const auditPanic = ref(false);
+
+async function onAudit(_p: PluginInfo) {
+  const res = await api.get<{ panic: boolean; ops: Array<{ t: number; op: string; detail?: Record<string, unknown> }> }>(
+    '/plugin/computer-use/audit',
+  );
+  if ('error' in res) { ElMessage.error(res.error); return; }
+  auditPanic.value = !!res.data.panic;
+  auditList.value = (res.data.ops || []).slice().reverse();
+  auditOpen.value = true;
 }
 
 function openConfig(p: PluginInfo) {

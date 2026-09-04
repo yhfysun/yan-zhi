@@ -935,6 +935,11 @@ export async function executeApiTool(
       case 'api_plugin_enable': {
         requireUser(userId);
         const { getPluginManager } = await import('@yan-zhi/core');
+        const target = getPluginManager().get(str(args, 'id'));
+        // 高危权限插件（如 desktop-input）不允许智能体自行启用，必须用户在插件管理页手动操作
+        if (target && (target.manifest.permissions || []).includes('desktop-input')) {
+          return fail('该插件含控制鼠标键盘的高危权限，禁止由智能体自行启用，请在「插件管理」页手动开启');
+        }
         await getPluginManager().enable(str(args, 'id'));
         return ok({ ok: true });
       }
