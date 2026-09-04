@@ -5,7 +5,8 @@ import { fileURLToPath } from 'url';
 import { createRequire } from 'node:module';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const dataDir = process.env.DATA_DIR || path.join(__dirname, '..');
+// dataDir 单一真相源：以 db.ts 所在目录为基准，其他模块一律 import 复用，禁止自行重算
+export const dataDir = process.env.DATA_DIR || path.join(__dirname, '..');
 fs.mkdirSync(dataDir, { recursive: true });
 const DB_PATH = path.join(dataDir, 'data.db');
 

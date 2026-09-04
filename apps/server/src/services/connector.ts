@@ -3,13 +3,10 @@
 // 只读约束：连接器层面尽力强制（PG 会话只读 / SQLite readonly 连接），SQL 文本级护栏在路由层（sql-guard）。
 import fs from 'node:fs';
 import path from 'path';
-import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import { encrypt, decrypt } from '../utils/crypto.js';
+import { dataDir } from '../db.js';
 import type { DialectType } from './dialect.js';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const dataDir = process.env.DATA_DIR || path.join(__dirname, '..');
 
 export type DataSourceType = DialectType | 'project';
 
@@ -134,10 +131,11 @@ class SqliteLikeConnector implements Connector {
     this.type = type;
     // 项目库与未开写权限的 sqlite 一律 readonly 连接，驱动层禁写
     const readonly = type === 'project' ? true : !allowWrite;
-    if (type !== 'project' && !fs.existsSync(file)) {
-      throw new Error(`SQLite 文件不存在: ${file}`);
+    if (!fs.existsSync(file)) {
+      const hint = type === 'project' ? `（DATA_DIR=${process.env.DATA_DIR || '(未设置，按 server 源码目录推断)'}）` : '';
+      throw new Error(`SQLite 文件不存在: ${file}${hint}`);
     }
-    this.conn = new Database(file, { readonly, fileMustExist: type === 'project' });
+    this.conn = new Database(file, { readonly, fileMustExist: true });
   }
 
   async test(): Promise<TestResult> {
