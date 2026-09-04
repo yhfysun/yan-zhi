@@ -8,7 +8,7 @@ export class ManifestError extends Error {
   }
 }
 
-const VALID_PERMS: PluginPermission[] = ['fs', 'shell', 'git', 'db', 'network', 'clipboard'];
+const VALID_PERMS: PluginPermission[] = ['fs', 'shell', 'git', 'db', 'network', 'clipboard', 'desktop-input'];
 
 /** 校验清单对象，返回类型安全的 manifest */
 export function validateManifest(m: unknown): PluginManifest {

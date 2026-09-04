@@ -12,6 +12,7 @@
         >
           安装插件(.yzp)
         </el-button>
+        <el-button size="small" style="margin-left: 8px" @click="onOpenTemplate">开发模板</el-button>
       </div>
     </div>
     <div v-if="!pluginStore.loaded" class="pm-empty">加载中…</div>
@@ -44,6 +45,7 @@
         <div class="pm-actions">
           <el-button size="small" @click="openConfig(p)">配置</el-button>
           <el-button size="small" @click="openDetail(p)">详情</el-button>
+          <el-button size="small" @click="onExport(p)">导出</el-button>
           <el-button
             v-if="p.source !== 'builtin'"
             size="small"
@@ -64,6 +66,21 @@
 
     <el-dialog v-model="detailOpen" title="插件详情" width="500">
       <pre class="pm-detail">{{ detailContent }}</pre>
+    </el-dialog>
+
+    <!-- 插件开发模板 -->
+    <el-dialog v-model="templateOpen" title="插件开发模板" width="640">
+      <div v-if="templateData" class="install-step">
+        <p class="install-hint">
+          以 manifest + main.ts + README 打包的脚手架：注册工具 / 挂后端路由 / storage / 事件的用法示例。
+          参考内置插件「{{ templateData.manifest?.name }}」的写法改造成你自己的插件。
+        </p>
+        <pre class="pm-detail pm-code">{{ templateData.code }}</pre>
+      </div>
+      <template #footer>
+        <el-button @click="templateOpen = false">关闭</el-button>
+        <el-button type="primary" :disabled="!templateData" @click="downloadBase64(templateData?.base64 || '', templateData?.filename || 'plugin-template.zip')">下载 zip</el-button>
+      </template>
     </el-dialog>
 
     <!-- 安装向导 -->
@@ -136,7 +153,12 @@ const PERM_LABELS: Record<string, string> = {
   db: '数据库读写',
   network: '网络请求',
   clipboard: '剪贴板',
+  'desktop-input': '控制鼠标键盘（电脑使用）',
 };
+
+// 开发模板
+const templateOpen = ref(false);
+const templateData = ref<{ manifest?: PluginManifest; code?: string; base64?: string; filename?: string } | null>(null);
 
 const filtered = computed(() => {
   const kw = keyword.value.toLowerCase();
@@ -146,12 +168,49 @@ const filtered = computed(() => {
 });
 
 async function toggle(p: PluginInfo) {
+  if (p.state !== 'enabled' && (p.manifest.permissions || []).includes('desktop-input')) {
+    try {
+      await ElMessageBox.confirm(
+        '该插件拥有「控制鼠标键盘」高危权限：启用后智能体可在任务中操作本机的鼠标、键盘和窗口（含截屏）。',
+        '高危权限确认',
+        { confirmButtonText: '我已知晓风险，启用', cancelButtonText: '取消', type: 'warning' },
+      );
+    } catch {
+      return;
+    }
+  }
   const err =
     p.state === 'enabled'
       ? await pluginStore.disable(p.manifest.id)
       : await pluginStore.enable(p.manifest.id);
   if (err) ElMessage.error(err);
   else ElMessage.success(p.state === 'enabled' ? '已禁用' : '已启用');
+}
+
+function downloadBase64(base64: string, filename: string) {
+  const bin = atob(base64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  const url = URL.createObjectURL(new Blob([bytes], { type: 'application/octet-stream' }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+async function onExport(p: PluginInfo) {
+  const res = await api.get<{ format: string; filename: string; base64: string }>(`/plugins/${p.manifest.id}/export`);
+  if ('error' in res) { ElMessage.error(res.error); return; }
+  downloadBase64(res.data.base64, res.data.filename);
+  ElMessage.success(res.data.format === 'yzp' ? '已导出 .yzp 插件包' : '已导出源码包');
+}
+
+async function onOpenTemplate() {
+  const res = await api.get<{ manifest: PluginManifest; code: string; base64: string; filename: string }>('/plugins/template');
+  if ('error' in res) { ElMessage.error(res.error); return; }
+  templateData.value = res.data;
+  templateOpen.value = true;
 }
 
 function openConfig(p: PluginInfo) {
@@ -327,6 +386,13 @@ onMounted(() => pluginStore.refresh());
 .pm-detail {
   font-size: 12px;
   white-space: pre-wrap;
+}
+.pm-code {
+  max-height: 360px;
+  overflow: auto;
+  background: var(--el-fill-color-light, rgba(15, 23, 42, 0.04));
+  border-radius: 8px;
+  padding: 12px;
 }
 .install-step {
   min-height: 80px;

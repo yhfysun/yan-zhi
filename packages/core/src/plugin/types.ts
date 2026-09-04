@@ -8,7 +8,7 @@ export interface Disposable {
 }
 
 /** 插件权限声明 */
-export type PluginPermission = 'fs' | 'shell' | 'git' | 'db' | 'network' | 'clipboard';
+export type PluginPermission = 'fs' | 'shell' | 'git' | 'db' | 'network' | 'clipboard' | 'desktop-input';
 
 /** 插件状态 */
 export type PluginState = 'installed' | 'enabled' | 'disabled' | 'error';

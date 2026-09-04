@@ -6,6 +6,7 @@ import AdmZip from 'adm-zip';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { PLUGIN_TEMPLATES } from '../plugins/templates/index.js';
 
 const router = Router();
 router.use(authMiddleware);
@@ -66,6 +67,57 @@ router.post('/install', async (req: Request, res: Response) => {
     const entryUrl = (await import('node:url')).pathToFileURL(entryPath).href;
     await mgr.registerInstalled(manifest, entryUrl);
     res.json({ data: toInfo(mgr.get(manifest.id)!) });
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message });
+  }
+});
+
+// GET /api/plugins/template —— 插件开发脚手架（manifest + 源码 + README + 打包 zip）
+router.get('/template', (_req: Request, res: Response) => {
+  const t = PLUGIN_TEMPLATES.template;
+  const zip = new AdmZip();
+  zip.addFile('manifest.json', Buffer.from(JSON.stringify(t.manifest, null, 2), 'utf8'));
+  zip.addFile('main.ts', Buffer.from(t.code, 'utf8'));
+  zip.addFile('README.md', Buffer.from(t.readme, 'utf8'));
+  res.json({
+    data: {
+      manifest: t.manifest,
+      code: t.code,
+      readme: t.readme,
+      filename: 'plugin-template.zip',
+      base64: zip.toBuffer().toString('base64'),
+    },
+  });
+});
+
+// GET /api/plugins/:id/export —— 导出插件
+// 内置插件：manifest + 源码模板打包 zip（format=source，供阅读学习/二改）
+// 已安装插件：安装目录打回 .yzp（format=yzp，可直接重装）
+router.get('/:id/export', (req: Request, res: Response) => {
+  const p = getPluginManager().get(req.params.id);
+  if (!p) { res.status(404).json({ error: '插件不存在' }); return; }
+  const id = p.manifest.id;
+  const ver = p.manifest.version || '0.0.0';
+  try {
+    if (p.source === 'builtin') {
+      const tpl = PLUGIN_TEMPLATES[id];
+      if (!tpl) { res.status(404).json({ error: '该内置插件暂无源码模板' }); return; }
+      const zip = new AdmZip();
+      zip.addFile('manifest.json', Buffer.from(JSON.stringify(tpl.manifest, null, 2), 'utf8'));
+      zip.addFile('main.ts', Buffer.from(tpl.code, 'utf8'));
+      zip.addFile('README.md', Buffer.from(tpl.readme, 'utf8'));
+      res.json({
+        data: { format: 'source', filename: `${id}-${ver}-source.zip`, base64: zip.toBuffer().toString('base64') },
+      });
+    } else {
+      const dir = path.join(PLUGINS_DIR, id);
+      const zip = new AdmZip();
+      zip.addLocalFolder(dir);
+      zip.addFile('manifest.json', Buffer.from(JSON.stringify(p.manifest, null, 2), 'utf8'));
+      res.json({
+        data: { format: 'yzp', filename: `${id}-${ver}.yzp`, base64: zip.toBuffer().toString('base64') },
+      });
+    }
   } catch (e) {
     res.status(400).json({ error: (e as Error).message });
   }

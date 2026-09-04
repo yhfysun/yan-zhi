@@ -33,8 +33,10 @@ import sqlConsoleRoutes from './routes/sql-console.js';
 import llmProxyRoutes from './routes/llm-proxy.js';
 import llmTaskRoutes from './routes/llm-tasks.js';
 import { gitExplorerManifest, gitExplorerModule } from './plugins/git-explorer.js';
+import { computerUseManifest, computerUseModule } from './plugins/computer-use.js';
 import { syncAgnesPlatformForAllUsers } from './agnes-platform/service.js';
 import { startScheduledTaskScheduler } from './services/scheduled-tasks.js';
+import { syncDingtalkStreamClients } from './services/dingtalk-stream.js';
 import { nodeAdapter } from './node-adapter.js';
 import { db } from './db.js';
 
@@ -105,6 +107,13 @@ try {
 // 启动对话定时任务调度器（内部有 guard，只会启动一次）
 startScheduledTaskScheduler();
 
+// 启动钉钉 Stream 客户端：为所有启用的 dingtalk 连接器恢复长连接
+try {
+  syncDingtalkStreamClients();
+} catch (e) {
+  console.warn('[im] 钉钉 Stream 客户端启动失败:', e);
+}
+
 // 插件系统初始化：恢复已启用插件、同步工具到 ToolRegistry、挂载插件后端路由
 (async () => {
   try {
@@ -112,6 +121,8 @@ startScheduledTaskScheduler();
     await mgr.init();
     // 注册内置插件
     await mgr.registerBuiltin(gitExplorerManifest, gitExplorerModule);
+    // computer-use 高危权限（desktop-input），默认 disabled，需在插件管理页手动开启
+    await mgr.registerBuiltin(computerUseManifest, computerUseModule, false);
     const toolReg = getToolRegistry();
     const syncPluginTools = () => {
       for (const name of toolReg.names()) {
