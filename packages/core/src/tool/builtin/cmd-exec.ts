@@ -2,6 +2,7 @@
 import type { BuiltInTool } from '../types';
 import type { McpCallResult } from '../../mcp/client';
 import { getPlatformAdapter } from '../../platform/types';
+import { capToolOutput } from './output-cap';
 
 /** Windows shell 内置命令白名单（where 对这些返回非 0，需放行不预检） */
 const WIN_BUILTIN_COMMANDS = new Set([
@@ -161,8 +162,9 @@ export class CmdExecTool implements BuiltInTool {
     try {
       const result = await shell.exec(command, cmdArgs, { cwd, timeout });
       const lines: string[] = [];
-      if (result.stdout) lines.push('[stdout]\n' + result.stdout);
-      if (result.stderr) lines.push('[stderr]\n' + result.stderr);
+      // 截断防上下文爆炸（如 dir /s、cat 大日志），保留头尾
+      if (result.stdout) lines.push('[stdout]\n' + capToolOutput(result.stdout));
+      if (result.stderr) lines.push('[stderr]\n' + capToolOutput(result.stderr));
       if (!result.stdout && !result.stderr) lines.push('(no output)');
       lines.push(`\nExit code: ${result.exitCode}`);
       return { content: [{ type: 'text', text: lines.join('\n') }], isError: result.exitCode !== 0 };

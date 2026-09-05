@@ -81,6 +81,12 @@ export class FileReadTool implements BuiltInTool {
 
     try {
       const content = await fs.readFile(path);
+      // 截断防上下文爆炸：64KB 上限保留头部；超大文件建议用 code_search/code_outline 定位后再读
+      if (content.length > 64 * 1024) {
+        const text = content.slice(0, 64 * 1024)
+          + `\n\n[file truncated: ${content.length} chars total, showing first 64KB. Use code_search/code_outline to locate the relevant part, then re-read with a narrower tool.]`;
+        return { content: [{ type: 'text', text }] };
+      }
       return { content: [{ type: 'text', text: content }] };
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);

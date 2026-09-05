@@ -2,6 +2,7 @@
 import type { BuiltInTool } from '../types';
 import type { McpCallResult } from '../../mcp/client';
 import { getPlatformAdapter } from '../../platform/types';
+import { capToolOutput } from './output-cap';
 
 /** 兼容浏览器/Node.js 的 UTF-8 base64 编码 */
 function toBase64(str: string): string {
@@ -85,8 +86,8 @@ export class PythonExecTool implements BuiltInTool {
     try {
       const result = await shell.exec(pyCmd, ['-c', wrapper], { timeout });
       const lines: string[] = [];
-      if (result.stdout) lines.push(result.stdout);
-      if (result.stderr) lines.push('[stderr]\n' + result.stderr);
+      if (result.stdout) lines.push(capToolOutput(result.stdout));
+      if (result.stderr) lines.push('[stderr]\n' + capToolOutput(result.stderr));
       if (!result.stdout && !result.stderr) lines.push('(无输出)');
       return { content: [{ type: 'text', text: lines.join('\n') }], isError: result.exitCode !== 0 };
     } catch (e: unknown) {

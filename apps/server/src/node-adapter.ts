@@ -93,6 +93,11 @@ function execCommand(
     let stderr = '';
     let settled = false;
 
+    // 采集硬上限：防止超长输出占满内存（工具层还有 64KB 字符级二次截断）
+    const MAX_CAPTURE_BYTES = 512 * 1024;
+    let outBytes = 0;
+    let errBytes = 0;
+
     const timeout = options?.timeout || 30000;
     const timer = setTimeout(() => {
       if (!settled) {
@@ -103,10 +108,18 @@ function execCommand(
     }, timeout);
 
     child.stdout.on('data', (chunk) => {
-      stdout += chunk.toString();
+      if (outBytes >= MAX_CAPTURE_BYTES) return;
+      const s = chunk.toString();
+      stdout += s;
+      outBytes += Buffer.byteLength(s);
+      if (outBytes >= MAX_CAPTURE_BYTES) stdout += '\n[stdout truncated at 512KB capture limit]';
     });
     child.stderr.on('data', (chunk) => {
-      stderr += chunk.toString();
+      if (errBytes >= MAX_CAPTURE_BYTES) return;
+      const s = chunk.toString();
+      stderr += s;
+      errBytes += Buffer.byteLength(s);
+      if (errBytes >= MAX_CAPTURE_BYTES) stderr += '\n[stderr truncated at 512KB capture limit]';
     });
     child.on('error', (error) => {
       if (!settled) {
