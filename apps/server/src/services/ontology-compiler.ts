@@ -6,6 +6,12 @@ import { dateTrunc, paginate, quoteIdent, type DialectType, type TimeGrain } fro
 
 // ===== 本体规格（与 services/ontology.ts 的存储段一一对应） =====
 
+export interface OntologyEntity {
+  name: string;
+  type: 'primary' | 'foreign';
+  expr: string;
+}
+
 export interface OntologyDimension {
   name: string;
   expr: string; // 引用 source_sql 输出列别名

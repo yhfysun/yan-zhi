@@ -9,7 +9,10 @@
           <el-option label="已发布" value="published" />
           <el-option label="草稿" value="draft" />
         </el-select>
-        <el-button size="small" text :icon="Plus" @click="openCreate">新建</el-button>
+        <div style="display: flex; gap: 4px">
+          <el-button size="small" style="flex: 1" :icon="Coin" @click="openTableDialog">从表生成</el-button>
+          <el-button size="small" style="flex: 1" :icon="Plus" @click="openCreate">手写 SQL</el-button>
+        </div>
       </div>
       <div class="ont-list">
         <div v-if="loading" class="ont-empty">加载中…</div>
@@ -33,6 +36,38 @@
         </button>
       </div>
     </aside>
+
+    <!-- 从表生成对话框 -->
+    <el-dialog v-model="tableDialogOpen" title="从数据源表生成本体" width="560" :close-on-click-modal="false">
+      <div class="ont-tgen">
+        <el-select v-model="genDsId" size="small" placeholder="选择数据源" style="width: 100%" @change="loadGenTables">
+          <el-option v-for="d in dsOptions" :key="d.id" :label="d.name" :value="d.id" />
+        </el-select>
+        <el-input v-model="genTableFilter" size="small" placeholder="搜索表" clearable :prefix-icon="Search" style="margin-top: 8px" />
+        <div class="ont-tgen-list">
+          <div v-if="genLoading" class="ont-empty" style="padding: 20px">加载表结构中…（大库首次同步较慢）</div>
+          <div v-else-if="!genTablesFiltered.length" class="ont-empty" style="padding: 20px">没有匹配的表</div>
+          <button
+            v-for="t in genTablesFiltered" :key="t.name"
+            class="ont-tgen-li" :class="{ on: genTable === t.name }"
+            type="button" @click="genTable = t.name"
+          >
+            <span class="dw-mono ont-tgen-name">{{ t.name }}</span>
+            <span class="ont-tgen-comment">{{ t.comment || (t.kind === 'view' ? '视图' : `${t.columns.length} 列`) }}</span>
+            <span v-if="genCodeSet.has(sanitize(t.name))" class="ont-tag">已生成</span>
+          </button>
+        </div>
+        <p class="ont-hint" style="margin: 8px 0 0">
+          名称/描述默认取表备注；数值列自动成为度量、日期时间列成为时间维度、其余列成为维度。生成后补业务口径再发布。
+        </p>
+      </div>
+      <template #footer>
+        <el-button size="small" @click="tableDialogOpen = false">取消</el-button>
+        <el-button size="small" type="primary" :disabled="!genTable" :loading="genCreating" @click="generateFromTable">
+          生成本体
+        </el-button>
+      </template>
+    </el-dialog>
 
     <!-- 中：编辑区 -->
     <div class="ont-mid">
@@ -224,7 +259,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { Search, Plus, Delete, MoreFilled } from '@element-plus/icons-vue';
+import { Search, Plus, Delete, MoreFilled, Coin } from '@element-plus/icons-vue';
 import { api } from '../api/client';
 import CompileTrack, { type CompileStage } from '../components/CompileTrack.vue';
 import '../styles/data-workbench.css';
@@ -511,5 +546,79 @@ function formatCell(v: unknown): string {
   return String(v);
 }
 
-onMounted(() => void load(false));
+// ===== 从表生成 =====
+interface DsOption { id: string; name: string; type: string }
+interface GenTable { name: string; kind: 'table' | 'view'; comment?: string; columns: { name: string; type: string }[] }
+
+const tableDialogOpen = ref(false);
+const dsOptions = ref<DsOption[]>([]);
+const genDsId = ref('');
+const genTables = ref<GenTable[]>([]);
+const genTableFilter = ref('');
+const genTable = ref('');
+const genLoading = ref(false);
+const genCreating = ref(false);
+
+/** 与 server sanitizeCode 同规则，用于「已生成」标记 */
+function sanitize(raw: string): string {
+  let c = raw.toLowerCase().replace(/[^a-z0-9_]+/g, '_').replace(/^_+|_+$/g, '');
+  if (/^\d/.test(c)) c = `t_${c}`;
+  return c || 'table';
+}
+
+const genCodeSet = computed(() => new Set(list.value.map((o) => o.code)));
+const genTablesFiltered = computed(() => {
+  const k = genTableFilter.value.trim().toLowerCase();
+  if (!k) return genTables.value;
+  return genTables.value.filter((t) => t.name.toLowerCase().includes(k) || (t.comment || '').toLowerCase().includes(k));
+});
+
+async function openTableDialog() {
+  tableDialogOpen.value = true;
+  if (!dsOptions.value.length) {
+    const res = await api.get<DsOption[]>('/datasources');
+    if ('error' in res) return ElMessage.error(res.error);
+    dsOptions.value = res.data;
+  }
+  // 默认选当前编辑中的本体所属数据源，否则项目库
+  genDsId.value = form.datasourceId || dsOptions.value.find((d) => d.type === 'project')?.id || dsOptions.value[0]?.id || '';
+  await loadGenTables();
+}
+
+async function loadGenTables() {
+  genTable.value = '';
+  genTables.value = [];
+  if (!genDsId.value) return;
+  genLoading.value = true;
+  const res = await api.get<{ tables: GenTable[] }>(`/datasources/${genDsId.value}/schema`);
+  genLoading.value = false;
+  if ('error' in res) return ElMessage.error(`加载结构失败：${res.error}`);
+  genTables.value = res.data.tables;
+}
+
+async function generateFromTable() {
+  if (!genDsId.value || !genTable.value) return;
+  genCreating.value = true;
+  const res = await api.post<OntologyInfo>('/ontologies/generate-table', {
+    datasourceId: genDsId.value,
+    table: genTable.value,
+  });
+  genCreating.value = false;
+  if ('error' in res) return ElMessage.error(res.error);
+  ElMessage.success(`已生成「${res.data.code}」，补好业务口径后发布`);
+  tableDialogOpen.value = false;
+  await load(true);
+  selectedId.value = res.data.id;
+  fillForm(res.data);
+}
+
+onMounted(() => {
+  void load(false);
+  void openTableDialogPreload();
+});
+// 预取数据源列表但不开框（对话框首开更快）
+async function openTableDialogPreload() {
+  const res = await api.get<DsOption[]>('/datasources');
+  if (!('error' in res)) dsOptions.value = res.data;
+}
 </script>

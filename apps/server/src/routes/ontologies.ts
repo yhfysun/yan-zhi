@@ -6,6 +6,7 @@ import {
   createOntology,
   deleteOntology,
   exportYaml,
+  generateFromTable,
   importYaml,
   listOntologies,
   previewOntologyData,
@@ -91,6 +92,17 @@ router.post('/:id/try-run', authMiddleware, async (req: Request, res: Response) 
   } catch (err) {
     const errors = (err as { compileErrors?: unknown }).compileErrors;
     res.status(400).json({ error: err instanceof Error ? err.message : String(err), errors });
+  }
+});
+
+// POST /api/ontologies/generate-table —— 从数据源的表直接生成本体（描述默认取表备注）
+router.post('/generate-table', authMiddleware, async (req: Request, res: Response) => {
+  try {
+    const { datasourceId, table } = req.body || {};
+    if (!datasourceId || !table) throw new Error('缺少 datasourceId 或 table');
+    res.json({ data: await generateFromTable(req.user!.userId, String(datasourceId), String(table)) });
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
   }
 });
 

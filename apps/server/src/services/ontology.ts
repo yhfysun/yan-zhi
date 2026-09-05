@@ -6,6 +6,7 @@ import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { db } from '../db.js';
 import { getConnector, type DataSourceRow } from './connector.js';
 import { validateOntology, checkSourceSqlAliases } from './ontology-validator.js';
+import { buildTableOntologySpec, type TableSchemaLite } from './ontology-table-gen.js';
 import {
   compileOntologyQuery,
   type OntologySpec,
@@ -412,29 +413,13 @@ export function ensureBuiltinOntologies(userId: string): void {
     try {
       const conn = getConnector(project);
       const schema = await conn.schemaInfo();
-      const now = Date.now();
       for (const t of schema) {
-        if (existing.has(t.name)) continue;
+        if (existing.has(t.name)) continue; // 已存在（含结构漂移刷新）由 generateTableOntology 的幂等逻辑兜底，避免列表期频繁写
         if (!t.columns.length) continue;
-        const colList = t.columns.map((c) => `  ${quoteCol(c.name)} AS ${quoteCol(c.name)}`).join(',\n');
-        const sourceSql = `SELECT\n${colList}\nFROM ${quoteCol(t.name)}`;
-        const aliasCheck = checkSourceSqlAliases(sourceSql);
-        if (!aliasCheck.ok) continue;
         try {
-          db.prepare(
-            `INSERT INTO ontology
-               (id, user_id, datasource_id, code, name, description, synonyms_json, source_sql,
-                entities_json, time_dimensions_json, dimensions_json, measures_json, relations_json, policies_json,
-                status, version, builtin, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, '[]', ?, '[]', '[]', '[]', '[]', '[]', '[]', 'draft', 1, 1, ?, ?)`,
-          ).run(
-            `ont_b_${uuid().slice(0, 12)}`, userId, project.id, t.name,
-            t.comment || t.name,
-            `项目库内置本体：${t.kind === 'view' ? '视图' : '表'} ${t.name}（${t.columns.length} 列）。业务口径待 AI 富化补充。`,
-            sourceSql, now, now,
-          );
+          await generateTableOntology(userId, project, t as TableSchemaLite, { builtin: true, silentConflict: true });
         } catch {
-          // code 唯一索引冲突（并发/重放）跳过
+          // 单表失败（重名/校验）跳过，不影响其余表
         }
       }
     } catch {
@@ -445,4 +430,67 @@ export function ensureBuiltinOntologies(userId: string): void {
 
 function quoteCol(name: string): string {
   return `"${name.replaceAll('"', '""')}"`;
+}
+
+/**
+ * 从数据源的表直接生成本体（用户主动触发；项目库自动生成也走这里）。
+ * - 名称/描述默认取表备注（无备注用库.表兜底）
+ * - 数值列 → sum 度量、日期时间列 → 时间维度、其余列 → 维度、主键 → 主实体
+ * - 同 code 已存在：builtin（自动生成）→ 用最新结构+备注刷新（保留人工补的同义词/描述见 refresh 策略）；
+ *   用户自建（builtin=0）→ 报错提示，避免误覆盖
+ */
+export async function generateTableOntology(
+  userId: string,
+  ds: DataSourceRow,
+  table: TableSchemaLite,
+  opts?: { builtin?: boolean; silentConflict?: boolean },
+): Promise<OntologyInfo> {
+  const gen = buildTableOntologySpec(table, ds.name);
+  const existing = db
+    .prepare('SELECT * FROM ontology WHERE user_id = ? AND code = ?')
+    .get(userId, gen.code) as OntologyRow | undefined;
+
+  if (existing) {
+    if (opts?.silentConflict && existing.builtin) {
+      // 自动生成重放：仅当表结构漂移（列变了导致 source_sql 不同）才刷新结构字段；
+      // 不动 name/description/同义词——用户改过的语义不能被列表加载踩掉
+      if (existing.source_sql === gen.sourceSql) return toInfo(existing);
+      db.prepare(
+        `UPDATE ontology SET source_sql=?, entities_json=?, time_dimensions_json=?,
+           dimensions_json=?, measures_json=?, updated_at=?
+         WHERE id=? AND user_id=?`,
+      ).run(
+        gen.sourceSql, JSON.stringify(gen.entities), JSON.stringify(gen.timeDimensions),
+        JSON.stringify(gen.dimensions), JSON.stringify(gen.measures),
+        Date.now(), existing.id, userId,
+      );
+      return toInfo(getRow(userId, existing.id)!);
+    }
+    if (opts?.silentConflict) return toInfo(existing);
+    throw new Error(`本体 code 已存在: ${gen.code}（${existing.builtin ? '内置本体，可直接编辑' : '可直接编辑或删除后重新生成'}）`);
+  }
+
+  return createOntology(userId, {
+    datasourceId: ds.id,
+    code: gen.code,
+    name: gen.name,
+    description: gen.description,
+    sourceSql: gen.sourceSql,
+    entities: gen.entities,
+    dimensions: gen.dimensions,
+    timeDimensions: gen.timeDimensions,
+    measures: gen.measures,
+  });
+}
+
+/** 用户从 UI 选表生成：校验表存在性后复用 generateTableOntology */
+export async function generateFromTable(userId: string, datasourceId: string, tableName: string): Promise<OntologyInfo> {
+  const ds = db.prepare('SELECT * FROM data_source WHERE id = ? AND user_id = ?').get(datasourceId, userId) as
+    | DataSourceRow
+    | undefined;
+  if (!ds) throw new Error('数据源不存在');
+  const schema = await getConnector(ds).schemaInfo();
+  const table = schema.find((t) => t.name === tableName) || schema.find((t) => t.name.toLowerCase() === tableName.toLowerCase());
+  if (!table) throw new Error(`数据源 ${ds.name} 中找不到表「${tableName}」，请先同步结构`);
+  return generateTableOntology(userId, ds, table, { builtin: false });
 }

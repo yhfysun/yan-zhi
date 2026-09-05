@@ -329,3 +329,61 @@
   min-height: 0;
   overflow: auto;
 }
+
+/* ===== 从表生成对话框 ===== */
+.dw-root .ont-tgen-list {
+  max-height: 300px;
+  overflow-y: auto;
+  margin-top: 8px;
+  border: 1px solid var(--dw-rule);
+  border-radius: var(--dw-r-sm);
+}
+.dw-root .ont-tgen-li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 10px;
+  border: none;
+  border-bottom: 1px solid var(--dw-rule);
+  background: none;
+  cursor: pointer;
+  text-align: left;
+  color: var(--dw-ink);
+  font-size: 12px;
+}
+.dw-root .ont-tgen-li:last-child {
+  border-bottom: none;
+}
+.dw-root .ont-tgen-li:hover {
+  background: var(--dw-canvas);
+}
+.dw-root .ont-tgen-li.on {
+  background: var(--dw-brand-soft);
+  color: var(--dw-brand);
+}
+.dw-root .ont-tgen-name {
+  flex-shrink: 0;
+}
+.dw-root .ont-tgen-comment {
+  flex: 1;
+  font-size: 11px;
+  color: var(--dw-ink-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 对话框 teleport 到 body，脱离 .dw-root：字面色兜底 */
+.ont-tgen-li .ont-tgen-comment {
+  color: #8e93a6;
+}
+.ont-tgen-li .ont-tag {
+  font-size: 10px;
+  color: #7c3aed;
+  background: #f1ecfe;
+  border: 1px solid #ddd0fb;
+  border-radius: 3px;
+  padding: 0 5px;
+  flex-shrink: 0;
+}
