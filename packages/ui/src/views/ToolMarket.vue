@@ -11,7 +11,7 @@
     <el-tabs v-model="activeTab" class="tl-tabs">
       <!-- ===== Tab：工具库（原本地商城内容直出，少一层钻入） ===== -->
       <el-tab-pane label="工具库" name="tools">
-        <!-- 内置工具：紧凑列表，点击行展开入参/出参 -->
+        <!-- 内置工具：卡片九宫格，分类默认收起 -->
         <section class="section">
           <h4 class="subsection-title">内置工具</h4>
           <el-empty v-if="toolsStore.builtinTools.length === 0" description="暂无内置工具" :image-size="60" />
@@ -21,19 +21,19 @@
               <span class="builtin-cat-name">{{ g.label }}</span>
               <span class="builtin-cat-count">{{ g.tools.length }}</span>
             </div>
-            <div v-show="isBuiltinCatOpen(g.key)" class="builtin-list">
-              <div
-                v-for="t in g.tools"
-                :key="t.name"
-                class="builtin-item"
-                :class="{ open: expandedSchema['builtin-' + t.name] }"
-              >
-                <div class="builtin-item-head" @click="toggleSchema('builtin-' + t.name)">
-                  <span class="builtin-item-name">{{ t.name }}</span>
-                  <span class="builtin-item-desc" :title="t.description">{{ t.description }}</span>
-                  <el-icon :size="12" class="builtin-item-arrow" :class="{ open: expandedSchema['builtin-' + t.name] }"><ArrowRight /></el-icon>
+            <div v-show="isBuiltinCatOpen(g.key)" class="card-grid builtin-card-grid">
+              <div v-for="t in g.tools" :key="t.name" class="tool-card">
+                <div class="tool-card-header">
+                  <span class="tool-card-name">{{ t.name }}</span>
+                  <el-tag size="small" type="info" effect="plain">内置</el-tag>
                 </div>
-                <div v-if="expandedSchema['builtin-' + t.name]" class="builtin-item-body">
+                <p class="tool-card-desc" :title="t.description">{{ t.description }}</p>
+                <div class="tool-schema-toggle">
+                  <el-button size="small" link @click="toggleSchema('builtin-' + t.name)">
+                    {{ expandedSchema['builtin-' + t.name] ? '收起' : '入参/出参' }}
+                  </el-button>
+                </div>
+                <div v-if="expandedSchema['builtin-' + t.name]" class="tool-schema-block">
                   <div class="schema-section"><span class="schema-label">入参</span><pre class="schema-pre">{{ fmtSchema(t.inputSchema) }}</pre></div>
                   <div class="schema-section"><span class="schema-label">出参</span><pre class="schema-pre">{{ fmtSchema(t.outputSchema) }}</pre></div>
                 </div>
@@ -333,7 +333,8 @@ function toggleSchema(key: string) {
   expandedSchema.value[key] = !expandedSchema.value[key];
 }
 const builtinCatOpen = ref<Record<string, boolean>>({});
-function isBuiltinCatOpen(key: string) { return builtinCatOpen.value[key] !== false; }
+/** 分类默认收起，用户点开后记住状态 */
+function isBuiltinCatOpen(key: string) { return builtinCatOpen.value[key] === true; }
 function toggleBuiltinCat(key: string) { builtinCatOpen.value[key] = !isBuiltinCatOpen(key); }
 function fmtSchema(schema: unknown): string {
   if (!schema || (typeof schema === 'object' && Object.keys(schema as object).length === 0)) return '（无）';
@@ -560,33 +561,7 @@ async function installTool(item: any) {
 .builtin-cat-arrow.open { transform: rotate(90deg); }
 .builtin-cat-name { font-size: 13px; font-weight: 600; color: var(--color-text); }
 .builtin-cat-count { font-size: 11px; font-weight: 700; color: var(--color-text-secondary); background: rgba(15,23,42,0.06); border-radius: 10px; padding: 2px 8px; }
-
-/* 内置工具紧凑列表：一行一个工具，点击行展开 schema */
-.builtin-list { display: flex; flex-direction: column; }
-.builtin-item { border-bottom: 1px solid var(--glass-border); }
-.builtin-item:last-child { border-bottom: none; }
-.builtin-item-head {
-  display: flex; align-items: baseline; gap: 12px;
-  padding: 8px 14px; cursor: pointer; user-select: none;
-  transition: background 0.12s;
-}
-.builtin-item-head:hover { background: rgba(99,102,241,0.04); }
-.builtin-item-name {
-  font-family: "JetBrains Mono", "Cascadia Code", monospace;
-  font-size: 12.5px; font-weight: 600; color: var(--color-text);
-  flex-shrink: 0; width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.builtin-item-desc {
-  flex: 1; font-size: 12px; color: var(--color-text-secondary);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.builtin-item-arrow { align-self: center; flex-shrink: 0; transition: transform 0.15s; color: var(--color-text-secondary); }
-.builtin-item-arrow.open { transform: rotate(90deg); }
-.builtin-item-body {
-  padding: 4px 14px 12px;
-  display: flex; flex-direction: column; gap: 8px;
-  background: rgba(15, 23, 42, 0.03);
-}
+.builtin-card-grid { padding: 12px 14px; }
 
 /* ---- 工具卡片（统一高度 + 描述截断）---- */
 .card-grid {
@@ -642,7 +617,6 @@ async function installTool(item: any) {
 }
 :root[data-theme="dark"] .tool-schema-block { background: rgba(255, 255, 255, 0.04); }
 :root[data-theme="dark"] .schema-pre { background: rgba(0, 0, 0, 0.35); }
-:root[data-theme="dark"] .builtin-item-body { background: rgba(255, 255, 255, 0.03); }
 :root[data-theme="dark"] .builtin-cat-count { background: rgba(255,255,255,0.08); }
 
 .card-actions { display: flex; gap: 4px; align-items: center; }
@@ -669,8 +643,5 @@ async function installTool(item: any) {
   .sub-title { font-size: 16px; }
   .card-grid { grid-template-columns: 1fr; gap: 12px; }
   .market-grid { grid-template-columns: 1fr; gap: 12px; }
-  .builtin-item-head { flex-wrap: wrap; gap: 4px 10px; padding: 10px 12px; }
-  .builtin-item-name { width: auto; max-width: 100%; }
-  .builtin-item-desc { width: 100%; white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 }
 </style>
