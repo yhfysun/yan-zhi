@@ -7,17 +7,17 @@
 
 ## P0 地基（v2 新增，后面一切依赖它）
 
-- [ ] 0.1 `services/dialect.ts`：标识符引号 / 时间粒度 / 分页(offset+keyset) / TOP-N / 采样 五类，覆盖 mysql|postgres|dm|oracle|sqlite
-- [ ] 0.2 本体保存校验器：解析 `source_sql` SELECT 列表 → 输出列必须有别名 → 选择器/过滤器 `expr` 必须在别名集合内，否则拒绝保存
+- [x] 0.1 `services/dialect.ts`：标识符引号 / 时间粒度 / 分页(offset+keyset) / TOP-N / 采样 五类，覆盖 mysql|postgres|dm|oracle|sqlite
+- [x] 0.2 本体保存校验器：解析 `source_sql` SELECT 列表 → 输出列必须有别名 → 选择器/过滤器 `expr` 必须在别名集合内，否则拒绝保存
 - [ ] 0.3 `ontology` 表字段扩容：role/time_dimension/granularities/additive/synonyms/sample_values/ref_attr/sensitive/domain/policies/status(draft|published)/locked/enriched_by/confidence
 
 ## P1 数据源底座
 
 - [ ] 1.1 db.ts + core/schema.ts 加 `data_source` 表；密码加密/脱敏工具
-- [ ] 1.2 `services/connector.ts`：Connector 接口 + mysql2/pg/better-sqlite3(项目库/sqlite) 实现 + 连接池缓存（内部走 dialect.ts）
-- [ ] 1.3 `routes/datasources.ts`：CRUD + test + schema；内置项目库数据源 ensure(id 稳定)
-- [ ] 1.4 `views/DataSources.vue` + SettingsDrawer 加 `data-sources` section（可加路由）
-- [ ] 1.5 dm/oracle connector + 驱动能力探测与安装提示
+- [x] 1.2 `services/connector.ts`：Connector 接口 + mysql2/pg/better-sqlite3(项目库/sqlite) 实现 + 连接池缓存（内部走 dialect.ts）
+- [x] 1.3 `routes/datasources.ts`：CRUD + test + schema；内置项目库数据源 ensure(id 稳定)
+- [x] 1.4 `views/DataSourcesPage.vue` + SettingsDrawer 加 `data-sources` section（可加路由）
+- [x] 1.5 dm/oracle connector（动态探测+安装指引，真实联调需本机装驱动） + 驱动能力探测与安装提示
 
 ## P2 SQL 控制台 + 数据编辑
 
@@ -35,12 +35,12 @@
 
 ## P3 本体管理（v2 大幅扩展）
 
-- [ ] 3.1 db.ts/core 加 `ontology` / `std_attribute` / `ontology_relation` / `ontology_example` / `ontology_enrich_job` 表
-- [ ] 3.2 `services/ontology.ts`：CRUD + YAML 导入导出（yaml 库）+ 编译校验
-- [ ] 3.3 **翻译引擎 v2**：关系图最小连接子树(Steiner) → 按基数定 JOIN → 扇出检测 → 行级策略 → 过滤器 → 分组/HAVING/排序 → 方言化 LIMIT
+- [x] 3.1 db.ts 加 `ontology` / `std_attribute` / `ontology_relation` / `ontology_example` / `ontology_enrich_job` 表
+- [x] 3.2 `services/ontology.ts`：CRUD + YAML 导入导出（yaml 库）+ 编译校验
+- [ ] 3.3 **翻译引擎 v2**（v1 单本体编译已落地 `ontology-compiler.ts`，跨本体 JOIN 待做）：关系图最小连接子树(Steiner) → 按基数定 JOIN → 扇出检测 → 行级策略 → 过滤器 → 分组/HAVING/排序 → 方言化 LIMIT
 - [ ] 3.4 **四个预览按钮**：预览定义(YAML+SQL+EXPLAIN+诊断) / 预览数据(裸跑前 N 行) / 试跑查询(DSL) / 发布影响面
-- [ ] 3.5 `routes/ontologies.ts`：CRUD + yaml/import-yaml/compile/explain/preview-data/try-run/publish/impact
-- [ ] 3.6 `views/OntologyManage.vue` + SettingsDrawer 加 `ontology` section：语义区 + 技术映射区 + 四按钮 + draft/published 态
+- [x] 3.5 `routes/ontologies.ts`：CRUD + yaml/import-yaml/compile/explain/preview-data/try-run/publish/impact
+- [x] 3.6 `views/OntologyPage.vue` + SettingsDrawer 加 `ontology` section：语义区 + 技术映射区 + 四按钮 + draft/published 态
 - [ ] 3.7 **标准属性库**：`routes/std-attributes.ts` + CRUD + preview-sql + refresh；枚举三来源（手工/JSON、SQL 字典、DISTINCT 采样）；表格⇄JSON 双模式编辑
 - [ ] 3.8 关系管理 UI：suggested 列表 → 确认/拒绝；关系图可视化（可选）
 
