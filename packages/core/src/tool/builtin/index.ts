@@ -1,5 +1,14 @@
 export { FileReadTool } from './file-read';
 export { FileWriteTool } from './file-write';
+export { FileListTool } from './file-list';
+export { CodeSearchTool } from './code-search';
+export { CodeOutlineTool } from './code-outline';
+export { JsExecTool } from './js-exec';
+export { PortScanTool } from './port-scan';
+export { HttpRequestTool } from './http-request';
+export { TcpSendTool } from './tcp-send';
+export { UdpSendTool } from './udp-send';
+export { DnsLookupTool } from './dns-lookup';
 export { WebSearchTool, FetchSearchBackend, DuckDuckGoSearchBackend, ServerSearchBackend } from './web-search';
 export type { SearchBackend, SearchResult, FetchSearchConfig } from './web-search';
 export { CmdExecTool } from './cmd-exec';
@@ -17,6 +26,15 @@ export { CompareProductsTool } from './compare-products';
 import type { SearchBackend } from './web-search';
 import { FileReadTool } from './file-read';
 import { FileWriteTool } from './file-write';
+import { FileListTool } from './file-list';
+import { CodeSearchTool } from './code-search';
+import { CodeOutlineTool } from './code-outline';
+import { JsExecTool } from './js-exec';
+import { PortScanTool } from './port-scan';
+import { HttpRequestTool } from './http-request';
+import { TcpSendTool } from './tcp-send';
+import { UdpSendTool } from './udp-send';
+import { DnsLookupTool } from './dns-lookup';
 import { WebSearchTool } from './web-search';
 import { CmdExecTool } from './cmd-exec';
 import { PythonExecTool } from './python-exec';
@@ -35,6 +53,17 @@ import type { ToolRegistry } from '../registry';
 export function registerBuiltInTools(registry: ToolRegistry, searchBackend?: SearchBackend): void {
   registry.register(new FileReadTool());
   registry.register(new FileWriteTool());
+  // 目录列表 + 源码查看/搜索 + JS 沙箱执行（代码工具族）
+  registry.register(new FileListTool());
+  registry.register(new CodeSearchTool());
+  registry.register(new CodeOutlineTool());
+  registry.register(new JsExecTool());
+  // 网络安全工具族（端口扫描/HTTP/TCP/UDP/DNS —— 仅限授权目标使用）
+  registry.register(new PortScanTool());
+  registry.register(new HttpRequestTool());
+  registry.register(new TcpSendTool());
+  registry.register(new UdpSendTool());
+  registry.register(new DnsLookupTool());
   const searchTool = new WebSearchTool();
   if (searchBackend) {
     searchTool.setBackend(searchBackend);
