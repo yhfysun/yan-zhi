@@ -147,6 +147,63 @@ describe('WebSearchToolTest', () => {
     expect(res.content[0].text).toBe('Search error: string error');
   });
 
+  it('summarize=true 但 summarizer 未注入时静默退回原始列表', async () => {
+    tool.setBackend(
+      makeBackend(async () => [{ title: 'A', url: 'https://a.com', snippet: 'sa' }]),
+    );
+    const res = await tool.execute({ query: 'q', summarize: true });
+    expect(res.isError).toBeUndefined();
+    expect(res.content[0].text).not.toContain('【摘要】');
+    expect(res.content[0].text).toContain('1. A');
+  });
+
+  it('summarize=true 且 summarizer 返回摘要时输出【摘要】+【原始结果】', async () => {
+    tool.setBackend(
+      makeBackend(async () => [
+        { title: 'A', url: 'https://a.com', snippet: 'sa' },
+        { title: 'B', url: 'https://b.com', snippet: 'sb' },
+      ]),
+    );
+    tool.setSummarizer(async (query, results) => `关于 ${query} 共 ${results.length} 条：都很有用`);
+    const res = await tool.execute({ query: '测试词', summarize: true });
+    const text = res.content[0].text!;
+    expect(text).toContain('【摘要】');
+    expect(text).toContain('关于 测试词 共 2 条');
+    expect(text).toContain('【原始结果】');
+    expect(text).toContain('1. A');
+  });
+
+  it('summarizer 抛错时静默退回原始列表', async () => {
+    tool.setBackend(
+      makeBackend(async () => [{ title: 'A', url: 'https://a.com', snippet: 'sa' }]),
+    );
+    tool.setSummarizer(async () => { throw new Error('llm down'); });
+    const res = await tool.execute({ query: 'q', summarize: true });
+    expect(res.isError).toBeUndefined();
+    expect(res.content[0].text).not.toContain('【摘要】');
+    expect(res.content[0].text).toContain('1. A');
+  });
+
+  it('summarizer 返回 null（如无可用模型）时静默退回原始列表', async () => {
+    tool.setBackend(
+      makeBackend(async () => [{ title: 'A', url: 'https://a.com', snippet: 'sa' }]),
+    );
+    tool.setSummarizer(async () => null);
+    const res = await tool.execute({ query: 'q', summarize: true });
+    expect(res.isError).toBeUndefined();
+    expect(res.content[0].text).not.toContain('【摘要】');
+  });
+
+  it('summarize 缺省（false）时不调用 summarizer', async () => {
+    tool.setBackend(
+      makeBackend(async () => [{ title: 'A', url: 'https://a.com', snippet: 'sa' }]),
+    );
+    const fn = vi.fn(async () => 'should not be called');
+    tool.setSummarizer(fn);
+    await tool.execute({ query: 'q' });
+    expect(fn).not.toHaveBeenCalled();
+  });
+
   it('结果 snippet 缺省（undefined）时仍能格式化且不出现 undefined', async () => {
     tool.setBackend(
       makeBackend(async () => [{ title: 'A', url: 'http://a', snippet: '' }]),

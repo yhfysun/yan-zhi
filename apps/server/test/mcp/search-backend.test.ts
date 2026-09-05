@@ -86,6 +86,26 @@ describe('resolveSearchBackend() 引擎映射（同步）', () => {
   });
 });
 
+describe('pickSummarizerModel()（Layer 3 便宜模型挑选）', () => {
+  it('优先挑 model_id/alias 匹配 flash/mini/haiku/lite/free/turbo 的模型', async () => {
+    const { pickSummarizerModel } = await importBackend();
+    const models = [{ model_id: 'gpt-4' }, { model_id: 'gemini-2.5-flash' }, { model_id: 'o1' }];
+    expect(pickSummarizerModel(models)).toBe(1);
+  });
+
+  it('alias 匹配也算便宜模型', async () => {
+    const { pickSummarizerModel } = await importBackend();
+    const models = [{ model_id: 'qwen-max', alias: '旗舰' }, { model_id: 'qwen-turbo', alias: '快速' }];
+    expect(pickSummarizerModel(models)).toBe(1);
+  });
+
+  it('无便宜模型时回退第一个（idx 0）', async () => {
+    const { pickSummarizerModel } = await importBackend();
+    expect(pickSummarizerModel([{ model_id: 'gpt-4' }, { model_id: 'o1' }])).toBe(0);
+    expect(pickSummarizerModel([])).toBe(0);
+  });
+});
+
 describe('FallbackSearchBackend 顺序尝试', () => {
   it('第一个 backend 成功 → 直接采用，不调用后续', async () => {
     const { FallbackSearchBackend } = await importBackend();

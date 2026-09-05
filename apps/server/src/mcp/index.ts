@@ -7,7 +7,7 @@ import {
 import { resolveJwtUser } from '../auth.js';
 import { executeApiTool, SUPPORTED_API_TOOLS } from './api-tool-executor.js';
 import { db } from '../db.js';
-import { PlaywrightSearchBackend, getSearchBackend } from './search-backend.js';
+import { getSearchBackend, getSearchBackendWithFallback, createLlmSummarizer } from './search-backend.js';
 
 const router = Router();
 
@@ -18,6 +18,16 @@ export function ensureToolsInitialized(): void {
   _toolsInitialized = true;
   const registry = getToolRegistry(getSearchBackend());
   registerManagementTools(registry, () => db);
+  // Layer 3：注入 LLM 结果总结器（web_search summarize=true 时启用；失败静默退回原始列表）
+  try {
+    (registry.get('web_search') as any)?.setSummarizer?.(createLlmSummarizer());
+  } catch { /* 注入失败不影响搜索 */ }
+  // 后台升级到降级链（playwright 探测失败自动切 DuckDuckGo/endpoint），不阻塞启动
+  getSearchBackendWithFallback()
+    .then((backend) => {
+      (getToolRegistry().get('web_search') as any)?.setBackend?.(backend);
+    })
+    .catch(() => { /* 保留初始 backend */ });
 }
 
 interface JsonRpcRequest {

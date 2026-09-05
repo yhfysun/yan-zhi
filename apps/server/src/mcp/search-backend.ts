@@ -7,7 +7,7 @@
 // 注：PlaywrightSearchBackend.search() 解析百度/必应的搜索结果列表 DOM，返回真正的多条
 // {title,url,snippet}（不是「整页清洗文本塞一个结果」）。解析失败时回退到旧的整页文本行为
 // 保持向后兼容，避免完全空白。
-import { FetchSearchBackend, DuckDuckGoSearchBackend, type SearchBackend, type SearchResult } from '@yan-zhi/core';
+import { FetchSearchBackend, DuckDuckGoSearchBackend, type SearchBackend, type SearchResult, type SearchSummarizer } from '@yan-zhi/core';
 
 // Re-export 给 server 测试用（避免测试里 import @yan-zhi/core 后 instanceof 比对失败）
 export { FetchSearchBackend, DuckDuckGoSearchBackend };
@@ -372,4 +372,62 @@ let _searchBackend: SearchBackend | null = null;
 export function getSearchBackend(): SearchBackend {
   if (!_searchBackend) _searchBackend = resolveSearchBackend();
   return _searchBackend;
+}
+
+// ===== Layer 3：LLM 结果总结 =====
+// 挑便宜快速模型（flash/mini/haiku/lite/free 优先，否则第一个 llm 模型）做单轮总结。
+// 一切失败（无模型/无平台/调用失败）返回 null，web_search 静默退回原始结果列表。
+const CHEAP_MODEL_RE = /flash|mini|haiku|lite|free|turbo/i;
+
+/** 抽取为纯函数便于测试：从模型行列表挑出总结用模型 */
+export function pickSummarizerModel(models: Array<{ model_id?: string; alias?: string }>): number {
+  const idx = models.findIndex((m) => CHEAP_MODEL_RE.test(m.model_id || '') || CHEAP_MODEL_RE.test(m.alias || ''));
+  return idx >= 0 ? idx : 0;
+}
+
+export function createLlmSummarizer(): SearchSummarizer {
+  return async (query, results) => {
+    try {
+      const [{ db }, { LlmClient }] = await Promise.all([import('../db.js'), import('@yan-zhi/core')]);
+      const models = db.prepare("SELECT id, platform_id, model_id, alias FROM model WHERE type = 'llm' OR type IS NULL").all() as any[];
+      if (models.length === 0) return null;
+      const picked = models[pickSummarizerModel(models)];
+      const prow = db.prepare('SELECT * FROM platform WHERE id = ?').get(picked.platform_id) as any;
+      if (!prow?.api_url) return null;
+
+      const platform = {
+        id: prow.id,
+        name: prow.name,
+        protocol: prow.protocol || 'openai',
+        apiUrl: prow.api_url,
+        headers: (() => { try { return JSON.parse(prow.headers_json || '{}'); } catch { return {}; } })(),
+      };
+      const model = {
+        id: picked.id,
+        platformId: picked.platform_id,
+        modelId: picked.model_id,
+        alias: picked.alias,
+        type: 'llm',
+        contextWindow: 8000,
+        capabilities: [],
+      };
+      const client = new LlmClient(platform as any, model as any);
+
+      const list = results.slice(0, 5)
+        .map((r, i) => `${i + 1}. ${r.title}\n   ${r.url}\n   ${(r.snippet || '').slice(0, 300)}`)
+        .join('\n');
+      const messages = [
+        { id: 'sys', conversationId: '', role: 'system' as const, content: '你是搜索结果摘要助手。只基于给定结果输出简明中文摘要，不编造结果里没有的信息。', createdAt: 0 },
+        {
+          id: 'u', conversationId: '', role: 'user' as const, createdAt: 0,
+          content: `搜索词：${query}\n\n结果列表：\n${list}\n\n请输出：每条结果用一句话概括内容要点（保持编号）；最后一行以「总体结论：」开头给一句综合判断。`,
+        },
+      ];
+      const out = await client.chat(messages as any, { maxTokens: 500 });
+      const text = String(out?.delta?.content || '').trim();
+      return text || null;
+    } catch {
+      return null;
+    }
+  };
 }

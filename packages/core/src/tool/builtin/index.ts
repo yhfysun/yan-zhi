@@ -10,7 +10,9 @@ export { TcpSendTool } from './tcp-send';
 export { UdpSendTool } from './udp-send';
 export { DnsLookupTool } from './dns-lookup';
 export { WebSearchTool, FetchSearchBackend, DuckDuckGoSearchBackend, ServerSearchBackend } from './web-search';
-export type { SearchBackend, SearchResult, FetchSearchConfig } from './web-search';
+export type { SearchBackend, SearchResult, FetchSearchConfig, SearchSummarizer } from './web-search';
+export { WebFetchTool, extractMainContent, fetchPage } from './web-fetch';
+export type { ExtractedPage } from './web-fetch';
 export { CmdExecTool } from './cmd-exec';
 export { PythonExecTool } from './python-exec';
 export { BrowserToolClasses, BROWSER_TOOL_NAMES } from './browser';
@@ -36,6 +38,7 @@ import { TcpSendTool } from './tcp-send';
 import { UdpSendTool } from './udp-send';
 import { DnsLookupTool } from './dns-lookup';
 import { WebSearchTool } from './web-search';
+import { WebFetchTool } from './web-fetch';
 import { CmdExecTool } from './cmd-exec';
 import { PythonExecTool } from './python-exec';
 import { BrowserToolClasses } from './browser';
@@ -69,6 +72,8 @@ export function registerBuiltInTools(registry: ToolRegistry, searchBackend?: Sea
     searchTool.setBackend(searchBackend);
   }
   registry.register(searchTool);
+  // 网页正文抓取（与 web_search 串成「搜索 → 详情」）
+  registry.register(new WebFetchTool());
   registry.register(new CmdExecTool());
   registry.register(new PythonExecTool());
   // 浏览器自动化工具集（E3）

@@ -184,9 +184,16 @@ export class ServerSearchBackend implements SearchBackend {
   }
 }
 
+/**
+ * LLM 总结器注入点（Layer 3）：core 保持零 LLM 依赖，
+ * 由宿主（server/desktop）注入实现（如 cheap 模型单轮调用）。
+ * 返回 null 或抛错 = 总结失败，web_search 静默退回原始结果列表。
+ */
+export type SearchSummarizer = (query: string, results: SearchResult[]) => Promise<string | null>;
+
 export class WebSearchTool implements BuiltInTool {
   name = 'web_search';
-  description = 'Search the web for information. Returns a list of results with titles, URLs, and snippets. 支持 timeRange/freshness 时间过滤（day/week/month/year/recent）以优先返回最近的结果；推荐/资讯类查询建议传 timeRange=year 优先返回最近一年结果，避免返回过期旧数据。sites 白名单可限定搜索来源域（如 ["arxiv.org","*.edu.cn"]），同域名默认最多保留 2 条防 SEO spam。';
+  description = 'Search the web for information. Returns a list of results with titles, URLs, and snippets. 支持 timeRange/freshness 时间过滤（day/week/month/year/recent）以优先返回最近的结果；推荐/资讯类查询建议传 timeRange=year 优先返回最近一年结果，避免返回过期旧数据。sites 白名单可限定搜索来源域（如 ["arxiv.org","*.edu.cn"]），同域名默认最多保留 2 条防 SEO spam。summarize=true 时由内置 LLM 对结果生成简明摘要（更慢、消耗 token，默认关闭）。';
 
   inputSchema = {
     type: 'object',
@@ -214,14 +221,23 @@ export class WebSearchTool implements BuiltInTool {
         items: { type: 'string' },
         description: '域名白名单，仅返回匹配这些域名的结果。支持通配符，如 ["arxiv.org", "*.edu.cn"]。空数组 = 不过滤。',
       },
+      summarize: {
+        type: 'boolean',
+        description: '为 true 时由内置 LLM 对结果列表生成摘要（每条 1~2 句 + 总体结论）。更慢且消耗额外 token，默认关闭。',
+      },
     },
     required: ['query'],
   };
 
   private backend: SearchBackend | null = null;
+  private summarizer: SearchSummarizer | null = null;
 
   setBackend(backend: SearchBackend): void {
     this.backend = backend;
+  }
+
+  setSummarizer(fn: SearchSummarizer | null): void {
+    this.summarizer = fn;
   }
 
   async execute(args: Record<string, unknown>): Promise<McpCallResult> {
@@ -237,6 +253,7 @@ export class WebSearchTool implements BuiltInTool {
     // freshness 为 timeRange 的同义别名，两者任一有效即采用
     const timeRange = normalizeTimeRange(args.timeRange ?? args.freshness);
     const sites = Array.isArray(args.sites) ? (args.sites as unknown[]).filter((s): s is string => typeof s === 'string') : [];
+    const wantSummary = args.summarize === true;
 
     if (!query) {
       return { content: [{ type: 'text', text: 'Error: query is required' }], isError: true };
@@ -261,12 +278,25 @@ export class WebSearchTool implements BuiltInTool {
       // 4) 截断到 maxResults
       results = results.slice(0, maxResults);
 
-      const text = results.length === 0
-        ? (sites.length > 0
+      if (results.length === 0) {
+        const text = sites.length > 0
           ? `No results matched sites=${JSON.stringify(sites)} for "${query}".`
-          : 'No results found.')
-        : results.map((r, i) => `${i + 1}. ${r.title}\n   URL: ${r.url}\n   ${r.snippet}`).join('\n\n');
+          : 'No results found.';
+        return { content: [{ type: 'text', text }] };
+      }
 
+      // 5) 可选 LLM 总结（Layer 3）—— summarizer 未注入/失败时静默退回原始列表
+      if (wantSummary && this.summarizer) {
+        try {
+          const summary = await this.summarizer(query, results);
+          if (summary) {
+            const raw = results.map((r, i) => `${i + 1}. ${r.title}\n   URL: ${r.url}\n   ${r.snippet}`).join('\n\n');
+            return { content: [{ type: 'text', text: `【摘要】\n${summary}\n\n【原始结果】\n${raw}` }] };
+          }
+        } catch { /* 总结失败静默降级 */ }
+      }
+
+      const text = results.map((r, i) => `${i + 1}. ${r.title}\n   URL: ${r.url}\n   ${r.snippet}`).join('\n\n');
       return { content: [{ type: 'text', text }] };
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
