@@ -449,6 +449,24 @@ async function main() {
 
   if (appName === 'server') {
     await freePort(3001, 'backend');
+    // server 依赖 better-sqlite3 等 native 模块，其预编译 ABI 跟 Electron 内嵌 node 对齐。
+    // 用 PATH 上的 node 启动会因 NODE_MODULE_VERSION 不匹配直接 ERR_DLOPEN_FAILED（且
+    // 报错容易被终端其它输出冲掉，表现为"莫名退出"）。所以这里与打包版 main.cjs 同源：
+    // 一律用 Electron 内嵌 node（ELECTRON_RUN_AS_NODE=1）+ tsx watch 启动，与 PATH node 版本解耦。
+    const electronBin = resolveElectronBin();
+    const tsxCli = path.join(ROOT, 'apps/server/node_modules/tsx/dist/cli.mjs');
+    if (electronBin && fs.existsSync(tsxCli)) {
+      log('用 Electron 内嵌 node 启动 server（ABI 与 native 模块对齐，不受 PATH node 版本影响）');
+      start(
+        'server',
+        electronBin,
+        [tsxCli, 'watch', 'src/index.ts'],
+        path.join(ROOT, 'apps/server'),
+        { ELECTRON_RUN_AS_NODE: '1', NODE_OPTIONS: '' }
+      );
+      return;
+    }
+    if (!electronBin) warn('未找到 Electron 二进制，回退 PATH node 启动 server（native 模块 ABI 不匹配时会 ERR_DLOPEN_FAILED）');
     const pnpm = resolvePnpm();
     if (!pnpm) throw new Error('未找到 pnpm');
     start('server', pnpm.cmd, [...pnpm.args, '--filter', '@yan-zhi/server', 'dev'], ROOT);
