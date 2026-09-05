@@ -134,11 +134,10 @@ const ROUTE_TITLES: Record<string, string> = {
   knowledge: '知识库',
   browser: '浏览器',
   models: '模型平台',
-  tools: '工具管理',
+  tools: '工具与连接',
   skills: 'Skill 商店',
   distill: 'Skill 蒸馏',
   agents: '智能体',
-  mcp: 'MCP 服务',
   settings: '设置',
   login: '登录',
 };

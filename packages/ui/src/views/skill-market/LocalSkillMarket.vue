@@ -84,7 +84,7 @@
     </el-dialog>
 
     <!-- 导入弹窗 -->
-    <el-dialog v-model="showImport" title="从 Markdown 导入" width="640px">
+    <el-dialog v-model="showImport" title="从 Markdown 导入" width="640px" :close-on-click-modal="false">
       <el-input v-model="importText" type="textarea" :rows="12" placeholder="粘贴 Skill Markdown（含 frontmatter）" />
       <template #footer>
         <el-button @click="showImport = false">取消</el-button>

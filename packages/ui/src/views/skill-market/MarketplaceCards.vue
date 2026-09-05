@@ -35,7 +35,7 @@
     </MarketplaceShell>
 
     <!-- 添加远程商城弹窗 -->
-    <el-dialog v-model="showAdd" title="添加远程 Skill 商城" width="460px">
+    <el-dialog v-model="showAdd" title="添加远程 Skill 商城" width="460px" :close-on-click-modal="false">
       <el-form label-width="80px">
         <el-form-item label="名称"><el-input v-model="form.name" placeholder="如: 官方Skill源" /></el-form-item>
         <el-form-item label="URL"><el-input v-model="form.baseUrl" placeholder="http://192.168.1.100:3001" /></el-form-item>

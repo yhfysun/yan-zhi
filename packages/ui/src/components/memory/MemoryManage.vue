@@ -34,17 +34,24 @@
           </template>
         </el-input>
 
-        <el-button type="primary" :icon="Plus" @click="toggleCreateForm">手动新增</el-button>
+        <el-button type="primary" :icon="Plus" @click="openCreate">手动新增</el-button>
       </div>
     </div>
 
-    <!-- 手动新增：内联展开表单（非弹窗） -->
-    <div v-if="showCreateForm" class="inline-form glass-sub">
-      <div class="inline-form-head">
-        <span class="inline-form-title">手动新增记忆</span>
-        <span class="inline-form-hint">{{ dimensionHint }}</span>
-      </div>
+    <!-- 手动新增：弹窗。此前为内联展开表单，「手动新增」是取反开关，
+         已打开时再点一次会静默关闭并丢弃已输入内容 -->
+    <FormDialog
+      v-model="showCreateForm"
+      title="手动新增记忆"
+      width="600px"
+      :loading="creating"
+      :unsaved-guard="true"
+      :dirty="createDirty"
+      @submit="submitCreate"
+      @closed="onCreateClosed"
+    >
       <el-form label-width="90px" class="memory-form">
+        <p class="fd-note">{{ dimensionHint }}</p>
         <el-form-item label="内容">
           <el-input
             v-model="createForm.content"
@@ -70,11 +77,28 @@
           </el-select>
         </el-form-item>
       </el-form>
-      <div class="inline-form-actions">
-        <el-button @click="cancelCreate">取消</el-button>
-        <el-button type="primary" :loading="creating" @click="submitCreate">保存</el-button>
-      </div>
-    </div>
+    </FormDialog>
+
+    <!-- 编辑记忆：弹窗。此前是 el-table 展开行内编辑，窄屏挤压、且保存后强制跳回第 1 页 -->
+    <FormDialog
+      v-model="editOpen"
+      title="编辑记忆"
+      width="600px"
+      :loading="saving"
+      :unsaved-guard="true"
+      :dirty="editDirty"
+      @submit="submitEdit"
+      @closed="onEditClosed"
+    >
+      <el-form label-width="70px" class="memory-form">
+        <el-form-item label="内容">
+          <el-input v-model="editForm.content" type="textarea" :rows="3" />
+        </el-form-item>
+        <el-form-item label="标签">
+          <el-input v-model="editForm.tags" placeholder="多个标签用逗号分隔" />
+        </el-form-item>
+      </el-form>
+    </FormDialog>
 
     <!-- 列表 -->
     <div class="memory-table-wrap glass-sub">
@@ -88,38 +112,9 @@
         v-else
         :data="store.rows"
         row-key="id"
-        :expand-row-keys="expandedKeys"
         size="small"
         class="memory-table"
-        @expand-change="onExpandChange"
       >
-        <el-table-column type="expand">
-          <template #default="{ row }">
-            <div v-if="editingId === row.id" class="row-edit-form">
-              <div class="inline-form-title">编辑记忆</div>
-              <el-form label-width="70px" class="memory-form">
-                <el-form-item label="内容">
-                  <el-input
-                    v-model="editForm.content"
-                    type="textarea"
-                    :rows="3"
-                  />
-                </el-form-item>
-                <el-form-item label="标签">
-                  <el-input
-                    v-model="editForm.tags"
-                    placeholder="多个标签用逗号分隔"
-                  />
-                </el-form-item>
-              </el-form>
-              <div class="inline-form-actions">
-                <el-button size="small" @click="cancelEdit">取消</el-button>
-                <el-button size="small" type="primary" :loading="saving" @click="submitEdit(row)">保存</el-button>
-              </div>
-            </div>
-            <div v-else class="row-edit-empty"></div>
-          </template>
-        </el-table-column>
         <el-table-column label="内容" min-width="280">
           <template #default="{ row }">
             <el-tooltip
@@ -188,6 +183,7 @@ import { Plus, Search } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { useMemoryStore, useAgentStore } from '../../stores';
 import type { MemoryDimension, MemoryRow } from '../../stores/memory';
+import FormDialog from '../FormDialog.vue';
 
 const store = useMemoryStore();
 const agentStore = useAgentStore();
@@ -198,18 +194,23 @@ const keyword = ref<string>('');
 
 const agents = computed(() => agentStore.agents || []);
 
-// 手动新增表单
+// 手动新增（弹窗）
 const showCreateForm = ref(false);
 const creating = ref(false);
 const createForm = ref({ content: '', tags: '', agentId: '' });
+const createSnap = ref('');
+const createDirty = computed(
+  () => showCreateForm.value && JSON.stringify(createForm.value) !== createSnap.value,
+);
 
-// 行内编辑
-const editingId = ref<string | null>(null);
+// 编辑（弹窗）
+const editOpen = ref(false);
+const editingRow = ref<MemoryRow | null>(null);
 const saving = ref(false);
 const editForm = ref({ content: '', tags: '' });
-
-const expandedKeys = computed<string[]>(() =>
-  editingId.value ? [editingId.value] : [],
+const editSnap = ref('');
+const editDirty = computed(
+  () => editOpen.value && JSON.stringify(editForm.value) !== editSnap.value,
 );
 
 const dimensionHint = computed(() => {
@@ -262,13 +263,14 @@ function agentName(id: string): string {
   return a?.name || id;
 }
 
-async function reload() {
+/** keepPage：新增/编辑后就地刷新，不把用户从第 N 页踢回第 1 页 */
+async function reload(keepPage = false) {
   try {
     await store.loadMemories({
       dimension: dimension.value,
       agentId: agentFilter.value,
       keyword: keyword.value,
-      page: 1,
+      page: keepPage ? store.page : 1,
     });
   } catch (e: unknown) {
     ElMessage.error(e instanceof Error ? e.message : '加载记忆失败');
@@ -279,17 +281,17 @@ function onDimensionChange() {
   // 切换维度：重置智能体筛选与分页
   agentFilter.value = '';
   showCreateForm.value = false;
-  editingId.value = null;
+  editOpen.value = false;
   reload();
 }
 
 function onAgentFilterChange() {
-  editingId.value = null;
+  editOpen.value = false;
   reload();
 }
 
 function onSearch() {
-  editingId.value = null;
+  editOpen.value = false;
   reload();
 }
 
@@ -303,15 +305,17 @@ function onPageChange(p: number) {
 }
 
 // ── 手动新增 ──
-function toggleCreateForm() {
-  showCreateForm.value = !showCreateForm.value;
-  if (showCreateForm.value) {
-    createForm.value = { content: '', tags: '', agentId: agentFilter.value || '' };
-  }
+function openCreate() {
+  // 不再取反：弹窗已打开时再点「手动新增」保持打开，
+  // 避免旧实现里静默关闭并丢弃已输入内容
+  if (showCreateForm.value) return;
+  createForm.value = { content: '', tags: '', agentId: agentFilter.value || '' };
+  createSnap.value = JSON.stringify(createForm.value);
+  showCreateForm.value = true;
 }
 
-function cancelCreate() {
-  showCreateForm.value = false;
+function onCreateClosed() {
+  creating.value = false;
 }
 
 /** 维度 → 落库 type/agentId 映射（方案A）：profile/agent 都写 type=agent，profile 不传 agentId。 */
@@ -347,7 +351,7 @@ async function submitCreate() {
     await store.createMemory(buildCreateBody());
     ElMessage.success('已新增记忆');
     showCreateForm.value = false;
-    await reload();
+    await reload(true);
   } catch (e: unknown) {
     ElMessage.error(e instanceof Error ? e.message : '新增失败');
   } finally {
@@ -355,27 +359,25 @@ async function submitCreate() {
   }
 }
 
-// ── 行内编辑 ──
+// ── 编辑 ──
 function startEdit(row: MemoryRow) {
-  editingId.value = row.id;
+  editingRow.value = row;
   editForm.value = {
     content: row.content || '',
     tags: parseTags(row.tags_json).join(', '),
   };
+  editSnap.value = JSON.stringify(editForm.value);
+  editOpen.value = true;
 }
 
-function cancelEdit() {
-  editingId.value = null;
+function onEditClosed() {
+  editingRow.value = null;
+  saving.value = false;
 }
 
-function onExpandChange(_row: MemoryRow, expanded: MemoryRow[]) {
-  // 用户点击展开箭头时，若不是当前编辑行则收起编辑态
-  if (!expanded.find((r) => r.id === editingId.value)) {
-    editingId.value = null;
-  }
-}
-
-async function submitEdit(row: MemoryRow) {
+async function submitEdit() {
+  const row = editingRow.value;
+  if (!row) return;
   if (!editForm.value.content.trim()) {
     ElMessage.warning('内容不能为空');
     return;
@@ -391,8 +393,8 @@ async function submitEdit(row: MemoryRow) {
       tags,
     });
     ElMessage.success('已更新');
-    editingId.value = null;
-    await reload();
+    editOpen.value = false;
+    await reload(true);
   } catch (e: unknown) {
     ElMessage.error(e instanceof Error ? e.message : '更新失败');
   } finally {
@@ -414,7 +416,10 @@ async function removeRow(row: MemoryRow) {
   try {
     await store.deleteMemory(row.id);
     ElMessage.success('已删除');
-    if (editingId.value === row.id) editingId.value = null;
+    if (editingRow.value?.id === row.id) {
+      editingRow.value = null;
+      editOpen.value = false;
+    }
     // 删除后若当前页空了，回退一页
     if (store.rows.length <= 1 && store.page > 1) {
       await store.loadMemories({
@@ -470,37 +475,16 @@ onMounted(async () => {
   padding: 14px 16px;
 }
 
-.inline-form {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.inline-form-head {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-}
-
-.inline-form-title {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--color-text);
-}
-
-.inline-form-hint {
+/* 弹窗内的维度说明（承接原内联表单头部的 hint） */
+.fd-note {
+  margin: 0 0 12px;
   font-size: 12px;
   color: var(--color-text-secondary);
+  line-height: 1.5;
 }
 
 .memory-form {
   max-width: 640px;
-}
-
-.inline-form-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
 }
 
 /* 列表 */
@@ -511,17 +495,6 @@ onMounted(async () => {
 
 .table-state {
   padding: 8px 4px;
-}
-
-/* 隐藏 el-table 默认展开箭头：编辑区由「编辑」按钮触发，避免空展开 */
-.memory-table :deep(.el-table__expand-icon) {
-  visibility: hidden;
-}
-.memory-table :deep(.el-table__expand-cell) {
-  padding: 0 !important;
-  width: 0 !important;
-  max-width: 0 !important;
-  border-right: none !important;
 }
 
 .content-cell {
@@ -551,20 +524,6 @@ onMounted(async () => {
 .muted {
   color: var(--color-text-secondary);
   font-size: 12px;
-}
-
-/* 行内编辑区 */
-.row-edit-form {
-  padding: 12px 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  background: var(--glass-bg-hover, rgba(124, 58, 237, 0.04));
-  border-radius: 8px;
-}
-
-.row-edit-empty {
-  display: none;
 }
 
 /* 分页 */

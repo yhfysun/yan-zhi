@@ -25,6 +25,7 @@
           </div>
           <div class="msg-actions">
             <el-tooltip content="复制" placement="top"><el-button text size="small" circle @click="copyMsg(round.user)"><el-icon><CopyDocument /></el-icon></el-button></el-tooltip>
+            <el-tooltip content="引用" placement="top"><el-button text size="small" circle @click="quoteMsg(round.user)"><el-icon><Link /></el-icon></el-button></el-tooltip>
             <el-tooltip content="编辑" placement="top"><el-button text size="small" circle @click="editMsg(round.user)"><el-icon><EditPen /></el-icon></el-button></el-tooltip>
             <el-tooltip content="蒸馏为 Skill" placement="top"><el-button text size="small" circle @click="distillUserMsg(round.user)"><el-icon><MagicStick /></el-icon></el-button></el-tooltip>
             <el-tooltip content="删除" placement="top"><el-button text size="small" circle @click="delMsg(round.user)"><el-icon><Delete /></el-icon></el-button></el-tooltip>
@@ -210,6 +211,7 @@
 
           <div class="msg-actions msg-actions-assistant">
             <el-tooltip content="复制" placement="top"><el-button text size="small" circle @click="copyMsg(round.finalAssistant!)"><el-icon><CopyDocument /></el-icon></el-button></el-tooltip>
+            <el-tooltip content="引用" placement="top"><el-button text size="small" circle @click="quoteMsg(round.finalAssistant!)"><el-icon><Link /></el-icon></el-button></el-tooltip>
             <el-tooltip content="重新生成" placement="top"><el-button text size="small" circle :disabled="store.streaming" @click="regenerateMsg"><el-icon><Refresh /></el-icon></el-button></el-tooltip>
             <el-tooltip content="蒸馏为 Skill" placement="top"><el-button text size="small" circle @click="distillAssistantMsg(round)"><el-icon><MagicStick /></el-icon></el-button></el-tooltip>
             <el-tooltip content="删除" placement="top"><el-button text size="small" circle @click="delMsg(round.finalAssistant!)"><el-icon><Delete /></el-icon></el-button></el-tooltip>
@@ -340,7 +342,7 @@
 <script setup lang="ts">
 import {
   User, ChatDotRound, CaretRight, CaretBottom, ArrowDown, ArrowRight, ArrowUp, Loading, CircleCheck,
-  CircleClose, CopyDocument, EditPen, MagicStick, Delete, View, Fold, Refresh, Setting,
+  CircleClose, CopyDocument, EditPen, MagicStick, Delete, View, Fold, Refresh, Setting, Link,
 } from '@element-plus/icons-vue';
 import { ref, watch, nextTick, computed } from 'vue';
 import { useRouter } from 'vue-router';
@@ -354,7 +356,7 @@ import DeliverableFileCard from './DeliverableFileCard.vue';
 
 const {
   store, platformStore, fileStore, messagesRef, messageRounds, formatTime, collapsedMessages, toggleMsgCollapse,
-  renderMarkdown, handleContentClick, copyMsg, editMsg, distillUserMsg, delMsg,
+  renderMarkdown, handleContentClick, copyMsg, editMsg, quoteMsg, distillUserMsg, delMsg,
   openSnapshotDialog, isLastRoundStreaming, getStreamingStep, parseConfigCard, getEditPlatform,
   getEditReason, onConfigSaved, expandedReasoning, toggleReasoning, expandedAgentProcess,
   toggleAgentProcess, expandedStepTools, toggleStepTools, getStepToolGroupClass, isStepToolsRunning,

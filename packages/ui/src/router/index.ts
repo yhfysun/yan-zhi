@@ -73,22 +73,19 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '平台详情' },
   },
   {
+    // MCP 管理已并入 /tools 工具页「MCP 服务」tab；旧路由重定向兼容历史链接与插件注入
     path: '/mcp',
-    name: 'mcp',
-    component: () => import('../views/Mcp.vue'),
-    meta: { title: 'MCP 服务' },
+    redirect: { path: '/tools', query: { tab: 'mcp' } },
   },
   {
     path: '/mcp/:id',
-    name: 'mcp-detail',
-    component: () => import('../views/Mcp.vue'),
-    meta: { title: 'MCP 服务详情' },
+    redirect: (to) => ({ path: '/tools', query: { tab: 'mcp', focus: String(to.params.id ?? '') } }),
   },
   {
     path: '/tools',
     name: 'tools',
     component: () => import('../views/ToolMarket.vue'),
-    meta: { title: '工具管理' },
+    meta: { title: '工具与连接' },
   },
   {
     path: '/skills',

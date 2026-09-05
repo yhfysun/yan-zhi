@@ -3,7 +3,7 @@
     <header class="page-header">
       <div>
         <h2 class="page-title">IM 连接</h2>
-        <div class="page-sub">接入飞书 / 企业微信，按向导一步步来</div>
+        <div class="page-sub">接入飞书 / 企业微信 / 钉钉，按向导一步步来</div>
       </div>
       <el-button type="primary" :icon="Plus" @click="openCreate">添加连接器</el-button>
     </header>
@@ -68,6 +68,10 @@
             <div class="choice-title">企业微信</div>
             <div class="choice-desc">自建应用，收发消息</div>
           </button>
+          <button type="button" class="choice-card" @click="chooseProvider('dingtalk')">
+            <div class="choice-title">钉钉（Stream 模式）</div>
+            <div class="choice-desc">企业内部应用机器人，无需公网回调</div>
+          </button>
           <button type="button" class="choice-card" @click="chooseProvider('wechat-personal')">
             <div class="choice-title">个人微信（ClawBot）</div>
             <div class="choice-desc">ClawBot CLI 扫码登录个人微信，收发消息</div>
@@ -92,6 +96,15 @@
               <li>在「接收消息 > API 接收」设置 <b>Token</b> 和 EncodingAESKey，填回调地址</li>
             </ol>
             <div class="guide-callback">回调地址：<code>{{ callbackBase }}/api/im/inbound/wechat</code></div>
+          </template>
+          <template v-else-if="form.provider === 'dingtalk'">
+            <ol class="guide-list">
+              <li>打开 <a href="https://open.dingtalk.com/" target="_blank" rel="noopener">钉钉开放平台</a>（手机钉钉扫码登录），在「应用开发 > 企业内部开发」创建应用</li>
+              <li>在「凭证与基础信息」页拿到 <b>Client ID</b>（即 AppKey）和 <b>Client Secret</b>（即 AppSecret）</li>
+              <li>在「应用功能 > 机器人与消息推送」打开机器人配置开关，勾选 <b>Stream 模式</b>，然后发布应用</li>
+              <li>在「权限管理」开通 <b>企业内机器人发送消息权限</b></li>
+            </ol>
+            <div class="guide-callback">Stream 模式无需配置回调地址，服务端自动建立长连接收消息</div>
           </template>
           <template v-else>
             <ol class="guide-list">
@@ -144,6 +157,16 @@
               <el-form-item label="EncodingAESKey">
                 <el-input v-model="form.encodingAesKey" />
                 <span class="field-help">同页 43 位 EncodingAESKey（加密模式收消息必需）</span>
+              </el-form-item>
+            </template>
+            <template v-else-if="form.provider === 'dingtalk'">
+              <el-form-item label="Client ID">
+                <el-input v-model="form.clientId" placeholder="钉钉应用 AppKey" />
+                <span class="field-help">凭证与基础信息页的 Client ID / AppKey</span>
+              </el-form-item>
+              <el-form-item label="Client Secret">
+                <el-input v-model="form.clientSecret" type="password" show-password />
+                <span class="field-help">同页的 Client Secret / AppSecret</span>
               </el-form-item>
             </template>
             <template v-else>
@@ -238,6 +261,8 @@ const form = ref({
   token: '',
   encodingAesKey: '',
   botName: '',
+  clientId: '',
+  clientSecret: '',
 });
 
 const callbackBase = computed(() => {
@@ -267,6 +292,9 @@ function configFrom(f: typeof form.value) {
   if (f.provider === 'wechat-personal') {
     return { botName: f.botName };
   }
+  if (f.provider === 'dingtalk') {
+    return { clientId: f.clientId, clientSecret: f.clientSecret };
+  }
   return { corpId: f.corpId, secret: f.secret, agentId: f.agentId, token: f.token, encodingAesKey: f.encodingAesKey };
 }
 
@@ -274,7 +302,7 @@ function resetForm() {
   editingId.value = '';
   testResult.value = '';
   testError.value = '';
-  form.value = { provider: 'feishu', name: '', appId: '', appSecret: '', verificationToken: '', corpId: '', secret: '', agentId: '', token: '', encodingAesKey: '', botName: '' };
+  form.value = { provider: 'feishu', name: '', appId: '', appSecret: '', verificationToken: '', corpId: '', secret: '', agentId: '', token: '', encodingAesKey: '', botName: '', clientId: '', clientSecret: '' };
 }
 
 function openCreate() {
@@ -297,6 +325,8 @@ function openEdit(c: any) {
     token: config.token || '',
     encodingAesKey: config.encodingAesKey || '',
     botName: config.botName || '',
+    clientId: config.clientId || '',
+    clientSecret: config.clientSecret || '',
   };
   editingId.value = c.id;
   testResult.value = '';
@@ -305,7 +335,7 @@ function openEdit(c: any) {
   showWizard.value = true;
 }
 
-function chooseProvider(p: 'feishu' | 'wechat' | 'wechat-personal') {
+function chooseProvider(p: 'feishu' | 'wechat' | 'wechat-personal' | 'dingtalk') {
   form.value.provider = p;
   step.value = 2;
 }
@@ -376,6 +406,7 @@ async function testConnector(c: any) {
 function providerLabel(p: string) {
   if (p === 'feishu') return '飞书';
   if (p === 'wechat-personal') return '个人微信';
+  if (p === 'dingtalk') return '钉钉';
   return '企业微信';
 }
 
@@ -383,6 +414,7 @@ function configSummary(c: any) {
   const config = c.config || {};
   if (c.provider === 'feishu') return config.appId ? `App ID ${config.appId}` : '未配置凭据';
   if (c.provider === 'wechat-personal') return config.botName ? `Bot ${config.botName}` : '未配置 Bot';
+  if (c.provider === 'dingtalk') return config.clientId ? `Client ID ${config.clientId}` : '未配置凭据';
   return config.corpId ? `Corp ID ${config.corpId}` : '未配置凭据';
 }
 
@@ -421,8 +453,9 @@ async function onImportFile(event: Event) {
     return;
   }
   const config = obj.config || {};
+  const provider = ['feishu', 'wechat', 'wechat-personal', 'dingtalk'].includes(obj.provider) ? obj.provider : 'feishu';
   form.value = {
-    provider: obj.provider === 'wechat' ? 'wechat' : obj.provider === 'wechat-personal' ? 'wechat-personal' : 'feishu',
+    provider,
     name: obj.name || '导入的连接',
     appId: config.appId || '',
     appSecret: config.appSecret || '',
@@ -433,6 +466,8 @@ async function onImportFile(event: Event) {
     token: config.token || '',
     encodingAesKey: config.encodingAesKey || '',
     botName: config.botName || '',
+    clientId: config.clientId || '',
+    clientSecret: config.clientSecret || '',
   };
   editingId.value = '';
   testResult.value = '';
@@ -507,6 +542,11 @@ async function decodeQrImage(file: File): Promise<string | null> {
 .provider-badge.wechat-personal {
   color: #7c3aed;
   background: rgba(124, 58, 237, 0.12);
+}
+
+.provider-badge.dingtalk {
+  color: #1e6fff;
+  background: rgba(30, 102, 255, 0.12);
 }
 
 .connector-name {

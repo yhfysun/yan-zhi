@@ -168,7 +168,7 @@
       </section>
     </div>
 
-    <el-dialog v-model="showNickname" title="设置昵称" width="360px">
+    <el-dialog v-model="showNickname" title="设置昵称" width="360px" :close-on-click-modal="false">
       <el-input v-model="nicknameInput" placeholder="输入你的昵称" maxlength="20" show-word-limit />
       <template #footer>
         <el-button @click="showNickname = false">取消</el-button>
@@ -176,7 +176,7 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="showRegister" title="节点设置" width="480px">
+    <el-dialog v-model="showRegister" title="节点设置" width="480px" :close-on-click-modal="false">
       <el-form label-width="100px">
         <el-form-item label="节点 ID"><el-input v-model="registerForm.nodeId" disabled /></el-form-item>
         <el-form-item label="回调地址"><el-input v-model="registerForm.baseUrl" placeholder="http://host:port" /></el-form-item>
@@ -231,7 +231,7 @@ const currentChannelLabel = computed(() => {
 });
 const currentChannelSub = computed(() => {
   if (channel.value === 'node') return '和其它言智客户端互发消息';
-  return '飞书 / 企业微信 会话';
+  return '飞书 / 企业微信 / 钉钉 会话';
 });
 
 const activeConnector = computed(() => connectors.value.find((c) => c.id === activeConnectorId.value));

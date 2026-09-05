@@ -83,7 +83,7 @@
     </div>
 
     <!-- 手动添加对话框 -->
-    <el-dialog v-model="showAdd" :title="editingModelId ? '编辑模型' : '添加模型'" width="520px" @closed="resetModelForm">
+    <el-dialog v-model="showAdd" :title="editingModelId ? '编辑模型' : '添加模型'" width="520px" :close-on-click-modal="false" @closed="resetModelForm">
       <el-form label-width="100px">
         <el-form-item label="模型 ID"><el-input v-model="form.modelId" placeholder="如：gpt-4o-mini" /></el-form-item>
         <el-form-item label="别名"><el-input v-model="form.alias" placeholder="（可选）" /></el-form-item>
@@ -119,7 +119,7 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="showBatchContext" title="批量设置上下文窗口" width="380px">
+    <el-dialog v-model="showBatchContext" title="批量设置上下文窗口" width="380px" :close-on-click-modal="false">
       <el-form label-width="100px">
         <el-form-item label="上下文窗口">
           <el-input-number v-model="batchContextWindow" :min="512" :step="1024" />

@@ -145,7 +145,7 @@
     </li>
   </ul>
 
-  <el-dialog v-model="showSpaceEdit" title="编辑空间" width="460px">
+  <el-dialog v-model="showSpaceEdit" title="编辑空间" width="460px" :close-on-click-modal="false">
     <el-form label-width="80px">
       <el-form-item label="名称">
         <el-input v-model="spaceEditForm.name" placeholder="空间名称" />

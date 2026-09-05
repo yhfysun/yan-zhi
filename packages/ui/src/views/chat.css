@@ -1003,6 +1003,20 @@
 }
 .file-chip-remove:hover { color: var(--el-color-danger); }
 
+/* URL 引用 chip（浏览器 → 对话） */
+.url-chip { max-width: 420px; }
+.url-chip-icon { color: var(--color-primary); }
+.url-chip-host {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--color-text-secondary); font-size: 11px; flex-shrink: 1; min-width: 0;
+}
+
+/* 输入过长提示（发送时自动转附件） */
+.long-input-hint {
+  padding: 2px 8px 6px 8px;
+  font-size: 11px; color: var(--color-text-secondary);
+}
+
 /* Skill 挂载弹窗 - 卡片样式 */
 .skill-mount-search { margin-bottom: 14px; }
 .skill-mount-body {
@@ -1520,9 +1534,15 @@ body.yz-right-panel-open .el-overlay-dialog {
 .plus-menu-arrow, .plus-menu-check { color: var(--color-text-secondary); flex-shrink: 0; }
 .plus-menu-check { color: var(--color-primary); }
 .plus-menu-divider { height: 1px; background: var(--glass-border); margin: 5px 8px; }
-.plus-menu-back { display: flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 600; color: var(--color-text); padding: 6px 10px 8px; cursor: pointer; }
+.plus-menu-wrap { position: relative; }
+.plus-menu-item.has-sub-open { background: var(--glass-bg-hover); }
+.plus-menu-sub { position: absolute; left: calc(100% + 10px); min-width: 240px; padding: 4px; border-radius: var(--radius-md, 12px); border: 1px solid var(--glass-border); background: var(--el-bg-color-overlay, #fff); box-shadow: var(--shadow-lg); }
+.plus-sub-search { padding: 2px 4px 6px; border-bottom: 1px solid var(--glass-border); margin-bottom: 4px; }
+.plus-sub-list { max-height: 264px; overflow-y: auto; display: flex; flex-direction: column; }
+.plus-menu-empty { font-size: 12px; color: var(--color-text-secondary); text-align: center; padding: 14px 0; }
+.plus-sub-fade-enter-active, .plus-sub-fade-leave-active { transition: opacity 0.15s ease, transform 0.15s ease; }
+.plus-sub-fade-enter-from, .plus-sub-fade-leave-to { opacity: 0; transform: translateX(-4px); }
 .plus-btn.is-active { border-color: var(--color-primary); color: var(--color-primary); }
 .model-select-btn { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 10px; border-radius: 999px; border: 1px solid var(--glass-border); background: transparent; color: var(--color-text); font-size: 12px; cursor: pointer; transition: border-color 0.15s; }
 .model-select-btn:hover { border-color: var(--color-primary); }
 .model-select-name { max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.plus-menu-section { font-size: 11px; font-weight: 600; color: var(--color-text-secondary); letter-spacing: 0.04em; padding: 7px 10px 3px; }

@@ -39,6 +39,11 @@
         <svg viewBox="0 0 24 24" width="18" height="18"><path d="M14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7zM19 19H5V5h7V3H5a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7h-2v7z" fill="currentColor"/></svg>
       </button>
 
+      <!-- 引用到对话：把当前页面 URL 作为引用 chip 加入聊天输入区 -->
+      <button class="nav-btn" @click="addQuotedUrl(currentUrl)" :disabled="!currentUrl" title="引用到对话">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+
       <!-- 地址栏 -->
       <div class="url-bar" :class="{ focused: urlFocused }">
         <svg class="url-lock" viewBox="0 0 24 24" width="14" height="14" v-if="isSecure"><path fill="currentColor" d="M12 1a5 5 0 00-5 5v3H6a2 2 0 00-2 2v9a2 2 0 002 2h12a2 2 0 002-2v-9a2 2 0 00-2-2h-1V6a5 5 0 00-5-5zm3 8H9V6a3 3 0 016 0v3z"/></svg>
@@ -239,7 +244,7 @@
     </el-dialog>
 
     <!-- 保存/编辑密码弹窗 -->
-    <el-dialog v-model="showPasswordEditor" :title="editingPassword ? '编辑密码' : '保存密码'" width="420px" append-to-body>
+    <el-dialog v-model="showPasswordEditor" :title="editingPassword ? '编辑密码' : '保存密码'" width="420px" append-to-body :close-on-click-modal="false">
       <el-form label-width="72px" size="small">
         <el-form-item label="站点名">
           <el-input v-model="pwdForm.name" placeholder="可选，如 某AI视频站" />
@@ -308,6 +313,7 @@ const route = useRoute();
 const {
   showMount, showSkills, platformConfigDialogVisible, snapshotDialog,
   showAgentEdit, showWorkspaceDir, showSpaceEdit,
+  addQuotedUrl,
 } = useChat();
 
 

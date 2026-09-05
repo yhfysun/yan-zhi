@@ -149,7 +149,7 @@
     </template>
 
     <!-- 远程商城源添加弹窗 -->
-    <el-dialog v-model="showAgentSourceForm" title="添加远程智能体商城" width="480px">
+    <el-dialog v-model="showAgentSourceForm" title="添加远程智能体商城" width="480px" :close-on-click-modal="false">
       <el-form label-width="80px">
         <el-form-item label="名称"><el-input v-model="agentSourceForm.name" placeholder="如: 官方智能体源" /></el-form-item>
         <el-form-item label="URL"><el-input v-model="agentSourceForm.baseUrl" placeholder="http://192.168.1.100:3001" /></el-form-item>

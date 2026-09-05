@@ -137,98 +137,138 @@
                 <el-icon><Plus /></el-icon>
               </el-button>
             </template>
-            <div v-if="plusPanel === 'main'" class="plus-menu">
-              <div class="plus-menu-item" @click="plusPanel = 'agents'">
-                <span class="plus-menu-ic agent">{{ (agentStore.selectedAgent?.name || '?').slice(0, 1) }}</span>
-                <div class="plus-menu-info">
-                  <div class="plus-menu-label">专家</div>
-                  <div class="plus-menu-desc">{{ agentStore.selectedAgent?.name || '选择智能体' }}</div>
+            <div class="plus-menu-wrap" @mouseleave="scheduleCloseSub">
+              <div class="plus-menu">
+                <div class="plus-menu-item" :class="{ 'has-sub-open': hoverSub === 'agents' }" @mouseenter="openSub('agents', $event)" @click="openSub('agents', $event)">
+                  <span class="plus-menu-ic agent">{{ (agentStore.selectedAgent?.name || '?').slice(0, 1) }}</span>
+                  <div class="plus-menu-info">
+                    <div class="plus-menu-label">专家</div>
+                    <div class="plus-menu-desc">{{ agentStore.selectedAgent?.name || '选择智能体' }}</div>
+                  </div>
+                  <el-icon class="plus-menu-arrow"><ArrowRight /></el-icon>
                 </div>
-                <el-icon class="plus-menu-arrow"><ArrowRight /></el-icon>
-              </div>
-              <div class="plus-menu-item" @click="closePlus(() => { showSkills = true; })">
-                <span class="plus-menu-ic"><el-icon><Files /></el-icon></span>
-                <div class="plus-menu-info">
-                  <div class="plus-menu-label">技能 · Skill</div>
-                  <div class="plus-menu-desc">{{ mountedSkillIds.length ? `已挂载 ${mountedSkillIds.length} 个` : '未挂载' }}</div>
+                <div class="plus-menu-item" :class="{ 'has-sub-open': hoverSub === 'skills' }" @mouseenter="openSub('skills', $event)" @click="openSub('skills', $event)">
+                  <span class="plus-menu-ic"><el-icon><Files /></el-icon></span>
+                  <div class="plus-menu-info">
+                    <div class="plus-menu-label">技能 · Skill</div>
+                    <div class="plus-menu-desc">{{ mountedSkillIds.length ? `已挂载 ${mountedSkillIds.length} 个` : '未挂载' }}</div>
+                  </div>
+                  <el-icon class="plus-menu-arrow"><ArrowRight /></el-icon>
                 </div>
-              </div>
-              <div class="plus-menu-item" @click="closePlus(() => { showMount = true; })">
-                <span class="plus-menu-ic"><el-icon><Connection /></el-icon></span>
-                <div class="plus-menu-info">
-                  <div class="plus-menu-label">连接器 · MCP</div>
-                  <div class="plus-menu-desc">{{ store.mountedMcpServers.length ? `已挂载 ${store.mountedMcpServers.length} 个` : '未挂载' }}</div>
+                <div class="plus-menu-item" @mouseenter="closeSubNow" @click="closePlus(() => { showMount = true; })">
+                  <span class="plus-menu-ic"><el-icon><Connection /></el-icon></span>
+                  <div class="plus-menu-info">
+                    <div class="plus-menu-label">连接器 · MCP</div>
+                    <div class="plus-menu-desc">{{ store.mountedMcpServers.length ? `已挂载 ${store.mountedMcpServers.length} 个` : '未挂载' }}</div>
+                  </div>
                 </div>
-              </div>
-              <div class="plus-menu-section">模式</div>
-              <div class="plus-menu-item" @click.stop>
-                <span class="plus-menu-ic"><el-icon><ChatDotRound /></el-icon></span>
-                <div class="plus-menu-info">
-                  <div class="plus-menu-label">深度思考</div>
-                  <div class="plus-menu-desc">推理更充分，回答稍慢</div>
+                <div class="plus-menu-item" :class="{ 'has-sub-open': hoverSub === 'modes' }" @mouseenter="openSub('modes', $event)" @click="openSub('modes', $event)">
+                  <span class="plus-menu-ic"><el-icon><Operation /></el-icon></span>
+                  <div class="plus-menu-info">
+                    <div class="plus-menu-label">模式</div>
+                    <div class="plus-menu-desc">{{ modesDesc }}</div>
+                  </div>
+                  <el-icon class="plus-menu-arrow"><ArrowRight /></el-icon>
                 </div>
-                <el-switch v-model="store.thinkingMode" size="small" @click.stop />
-              </div>
-              <div class="plus-menu-item" @click.stop>
-                <span class="plus-menu-ic"><el-icon><Tickets /></el-icon></span>
-                <div class="plus-menu-info">
-                  <div class="plus-menu-label">计划</div>
-                  <div class="plus-menu-desc">先出计划，再逐项执行</div>
+                <div class="plus-menu-divider"></div>
+                <div class="plus-menu-item" @mouseenter="closeSubNow" @click="closePlus(triggerFileUpload)">
+                  <span class="plus-menu-ic"><el-icon><UploadFilled /></el-icon></span>
+                  <div class="plus-menu-info"><div class="plus-menu-label">上传文件</div></div>
                 </div>
-                <el-switch v-model="store.planMode" size="small" @click.stop />
-              </div>
-              <div class="plus-menu-item" @click.stop>
-                <span class="plus-menu-ic"><el-icon><Memo /></el-icon></span>
-                <div class="plus-menu-info">
-                  <div class="plus-menu-label">仅回答</div>
-                  <div class="plus-menu-desc">不调用工具，直接作答</div>
+                <div class="plus-menu-item" @mouseenter="closeSubNow" @click="closePlus(() => { showWorkspaceDir = true; })">
+                  <span class="plus-menu-ic"><el-icon><FolderOpened /></el-icon></span>
+                  <div class="plus-menu-info">
+                    <div class="plus-menu-label">工作目录</div>
+                    <div class="plus-menu-desc">{{ hasWorkspaceDir ? workspaceDir : '未设置' }}</div>
+                  </div>
                 </div>
-                <el-switch v-model="store.answerOnly" size="small" @click.stop />
-              </div>
-              <div class="plus-menu-divider"></div>
-              <div class="plus-menu-item" @click="closePlus(triggerFileUpload)">
-                <span class="plus-menu-ic"><el-icon><UploadFilled /></el-icon></span>
-                <div class="plus-menu-info"><div class="plus-menu-label">上传文件</div></div>
-              </div>
-              <div class="plus-menu-item" @click="closePlus(() => { showWorkspaceDir = true; })">
-                <span class="plus-menu-ic"><el-icon><FolderOpened /></el-icon></span>
-                <div class="plus-menu-info">
-                  <div class="plus-menu-label">工作目录</div>
-                  <div class="plus-menu-desc">{{ hasWorkspaceDir ? workspaceDir : '未设置' }}</div>
+                <div class="plus-menu-divider"></div>
+                <div class="plus-menu-item" @mouseenter="closeSubNow" @click="closePlus(() => startNewChat())">
+                  <span class="plus-menu-ic"><el-icon><EditPen /></el-icon></span>
+                  <div class="plus-menu-info"><div class="plus-menu-label">新建任务</div></div>
+                </div>
+                <div class="plus-menu-item" @mouseenter="closeSubNow" @click="closePlus(openPlatformConfig)">
+                  <span class="plus-menu-ic"><el-icon><Setting /></el-icon></span>
+                  <div class="plus-menu-info"><div class="plus-menu-label">配置模型平台</div></div>
                 </div>
               </div>
-              <div class="plus-menu-divider"></div>
-              <div class="plus-menu-item" @click="closePlus(() => startNewChat())">
-                <span class="plus-menu-ic"><el-icon><EditPen /></el-icon></span>
-                <div class="plus-menu-info"><div class="plus-menu-label">新建任务</div></div>
-              </div>
-              <div class="plus-menu-item" @click="closePlus(openPlatformConfig)">
-                <span class="plus-menu-ic"><el-icon><Setting /></el-icon></span>
-                <div class="plus-menu-info"><div class="plus-menu-label">配置模型平台</div></div>
-              </div>
-            </div>
-            <div v-else class="plus-menu">
-              <div class="plus-menu-back" @click="plusPanel = 'main'">
-                <el-icon><ArrowLeft /></el-icon><span>专家</span>
-              </div>
-              <div
-                v-for="ag in agentStore.agents"
-                :key="ag.id"
-                class="plus-menu-item"
-                :class="{ 'is-active': ag.id === agentStore.selectedId }"
-                @click="pickPlusAgent(ag.id)"
-              >
-                <span class="plus-menu-ic agent">{{ (ag.name || '?').slice(0, 1) }}</span>
-                <div class="plus-menu-info">
-                  <div class="plus-menu-label">{{ ag.name }}</div>
-                  <div class="plus-menu-desc">{{ ag.description || '未填写描述' }}</div>
+              <!-- hover 右侧弹出的子菜单（专家列表 / 模式开关） -->
+              <transition name="plus-sub-fade">
+                <div v-if="hoverSub" class="plus-menu plus-menu-sub" :style="{ top: subTop + 'px' }" @mouseenter="cancelCloseSub">
+                  <template v-if="hoverSub === 'agents'">
+                    <div
+                      v-for="ag in agentStore.agents"
+                      :key="ag.id"
+                      class="plus-menu-item"
+                      :class="{ 'is-active': ag.id === agentStore.selectedId }"
+                      @click="pickPlusAgent(ag.id)"
+                    >
+                      <span class="plus-menu-ic agent">{{ (ag.name || '?').slice(0, 1) }}</span>
+                      <div class="plus-menu-info">
+                        <div class="plus-menu-label">{{ ag.name }}</div>
+                        <div class="plus-menu-desc">{{ ag.description || '未填写描述' }}</div>
+                      </div>
+                      <el-icon v-if="ag.id === agentStore.selectedId" class="plus-menu-check"><Check /></el-icon>
+                    </div>
+                    <div class="plus-menu-item" @click="closePlus(() => openEditAgent(agentStore.selectedAgent))">
+                      <span class="plus-menu-ic"><el-icon><EditPen /></el-icon></span>
+                      <div class="plus-menu-info"><div class="plus-menu-label">编辑当前专家</div></div>
+                    </div>
+                  </template>
+                  <template v-else-if="hoverSub === 'skills'">
+                    <div class="plus-sub-search" @mousedown.stop>
+                      <el-input v-model="skillSearch" placeholder="搜索技能" size="small" :prefix-icon="Search" clearable />
+                    </div>
+                    <div class="plus-sub-list">
+                      <div
+                        v-for="s in filteredSkillStore"
+                        :key="s.id"
+                        class="plus-menu-item"
+                        :class="{ 'is-active': mountedSkillIds.includes(s.id) }"
+                        @click="toggleSkillMount(s.id)"
+                      >
+                        <span class="plus-menu-ic"><el-icon><Files /></el-icon></span>
+                        <div class="plus-menu-info">
+                          <div class="plus-menu-label">{{ s.name }}</div>
+                          <div class="plus-menu-desc">{{ s.description || '—' }}</div>
+                        </div>
+                        <el-icon v-if="mountedSkillIds.includes(s.id)" class="plus-menu-check"><Check /></el-icon>
+                      </div>
+                      <div v-if="!filteredSkillStore.length" class="plus-menu-empty">无匹配技能</div>
+                    </div>
+                    <div class="plus-menu-item" @click="closePlus(() => { showSkills = true; })">
+                      <span class="plus-menu-ic"><el-icon><Setting /></el-icon></span>
+                      <div class="plus-menu-info"><div class="plus-menu-label">管理技能</div></div>
+                    </div>
+                  </template>
+                  <template v-else>
+                    <div class="plus-menu-item" @click.stop>
+                      <span class="plus-menu-ic"><el-icon><ChatDotRound /></el-icon></span>
+                      <div class="plus-menu-info">
+                        <div class="plus-menu-label">深度思考</div>
+                        <div class="plus-menu-desc">推理更充分，回答稍慢</div>
+                      </div>
+                      <el-switch v-model="store.thinkingMode" size="small" @click.stop />
+                    </div>
+                    <div class="plus-menu-item" @click.stop>
+                      <span class="plus-menu-ic"><el-icon><Tickets /></el-icon></span>
+                      <div class="plus-menu-info">
+                        <div class="plus-menu-label">计划</div>
+                        <div class="plus-menu-desc">先出计划，再逐项执行</div>
+                      </div>
+                      <el-switch v-model="store.planMode" size="small" @click.stop />
+                    </div>
+                    <div class="plus-menu-item" @click.stop>
+                      <span class="plus-menu-ic"><el-icon><Memo /></el-icon></span>
+                      <div class="plus-menu-info">
+                        <div class="plus-menu-label">仅回答</div>
+                        <div class="plus-menu-desc">不调用工具，直接作答</div>
+                      </div>
+                      <el-switch v-model="store.answerOnly" size="small" @click.stop />
+                    </div>
+                  </template>
                 </div>
-                <el-icon v-if="ag.id === agentStore.selectedId" class="plus-menu-check"><Check /></el-icon>
-              </div>
-              <div class="plus-menu-item" @click="closePlus(() => openEditAgent(agentStore.selectedAgent))">
-                <span class="plus-menu-ic"><el-icon><EditPen /></el-icon></span>
-                <div class="plus-menu-info"><div class="plus-menu-label">编辑当前专家</div></div>
-              </div>
+              </transition>
             </div>
           </el-popover>
         </div>
@@ -314,7 +354,7 @@
           </el-tooltip>
           <el-tooltip :content="store.streaming ? '终止 (停止生成)' : '发送 (Enter)'" placement="top">
             <span>
-              <el-button v-if="!store.streaming" type="primary" :icon="Promotion" :disabled="(!input.trim() && uploadedFiles.length === 0) || !selectedModelId" @click="send" circle class="send-btn" />
+              <el-button v-if="!store.streaming" type="primary" :icon="Promotion" :disabled="(!input.trim() && uploadedFiles.length === 0 && quotedUrls.length === 0) || !selectedModelId" @click="send" circle class="send-btn" />
               <el-button v-else type="danger" :icon="Close" @click="stopChat" circle class="send-btn stop-btn" />
             </span>
           </el-tooltip>
@@ -347,6 +387,21 @@
       </div>
     </div>
 
+    <div v-if="quotedUrls.length > 0" class="file-chips url-chips">
+      <div v-for="q in quotedUrls" :key="q.url" class="file-chip ref-chip url-chip">
+        <el-icon class="file-chip-icon url-chip-icon"><Link /></el-icon>
+        <span class="file-chip-name">{{ q.name }}</span>
+        <el-tooltip :content="q.url" placement="top">
+          <span class="url-chip-host">{{ q.url }}</span>
+        </el-tooltip>
+        <el-button size="small" link class="file-chip-remove" @click="removeQuotedUrl(q.url)">
+          <el-icon><Close /></el-icon>
+        </el-button>
+      </div>
+    </div>
+
+    <div v-if="inputTooLong" class="long-input-hint">内容较长（{{ input.length }} 字），发送时将自动转为附件</div>
+
     <input ref="fileInputRef" type="file" multiple accept="image/*,.pdf,.txt,.md,.json,.csv,.py,.js,.ts,.vue,.html,.css,.xml,.yaml,.yml,.log,.doc,.docx,.xlsx,.pptx,.zip" style="display:none" @change="handleFileChange" />
 
   </div>
@@ -356,24 +411,59 @@
 import { ref, computed, watch } from 'vue';
 import type { Component } from 'vue';
 import {
-  FolderOpened, ArrowDown, ArrowLeft, ArrowRight, Connection, Files, UploadFilled, User, EditPen, Cpu, Setting, Plus,
+  FolderOpened, ArrowDown, ArrowRight, Connection, Files, UploadFilled, User, EditPen, Cpu, Setting, Plus,
   Promotion, Close, Lock, Check, Picture, Document, Tickets, Box, VideoCamera, Headset, Memo, ChatDotRound,
+  Operation, Search, Link,
 } from '@element-plus/icons-vue';
 import { useChat } from '../../composables/chat/useChat';
 
 const {
   inputFocused, workspaceDir, hasWorkspaceDir, clearWorkspaceDir, showWorkspaceDir, showMount, store, showSkills, mountedSkillIds,
+  skillStore, skillSearch, filteredSkillStore, toggleSkillMount,
   triggerFileUpload, input, send, agentStore, onAgentSwitch, openEditAgent, modelGroups,
   selectedModelId, onModelChange, openPlatformConfig, startNewChat, uploadedFiles, stopChat,
   formatSize, removeFile, fileInputRef, handleFileChange,
   workspaceFiles, selectedFilePaths, toggleFileSelect,
+  quotedUrls, removeQuotedUrl, LONG_INPUT_THRESHOLD,
 } = useChat();
 
-// ===== 「+」聚合菜单（对齐 WorkBuddy：专家/技能/连接器/上传/目录收进一个入口） =====
+const inputTooLong = computed(() => input.value.length > LONG_INPUT_THRESHOLD);
+
+// ===== 「+」聚合菜单（对齐 WorkBuddy：专家/模式 hover 右侧弹出子菜单，其余点击触发） =====
 const plusOpen = ref(false);
-const plusPanel = ref<'main' | 'agents'>('main');
-function closePlus(fn?: () => void) { fn?.(); plusOpen.value = false; plusPanel.value = 'main'; }
+function closePlus(fn?: () => void) { fn?.(); plusOpen.value = false; hoverSub.value = null; }
 function pickPlusAgent(id: string) { onAgentSwitch(id); closePlus(); }
+
+// hover 子菜单：记录触发行 offsetTop，子菜单绝对定位对齐该行
+const hoverSub = ref<'agents' | 'modes' | 'skills' | null>(null);
+const subTop = ref(0);
+let subCloseTimer: ReturnType<typeof setTimeout> | undefined;
+function openSub(kind: 'agents' | 'modes' | 'skills', evt: MouseEvent) {
+  if (subCloseTimer) { clearTimeout(subCloseTimer); subCloseTimer = undefined; }
+  if (kind === 'skills') skillSearch.value = '';
+  const el = evt.currentTarget as HTMLElement;
+  if (hoverSub.value === kind && subTop.value === el.offsetTop) return;
+  hoverSub.value = kind;
+  subTop.value = el.offsetTop;
+}
+function closeSubNow() { hoverSub.value = null; }
+function scheduleCloseSub() {
+  // 延迟关闭，留出指针移入子菜单的时间
+  if (subCloseTimer) clearTimeout(subCloseTimer);
+  subCloseTimer = setTimeout(() => { hoverSub.value = null; }, 150);
+}
+function cancelCloseSub() {
+  if (subCloseTimer) { clearTimeout(subCloseTimer); subCloseTimer = undefined; }
+}
+watch(plusOpen, (v) => { if (!v) closeSubNow(); });
+
+const modesDesc = computed(() => {
+  const on: string[] = [];
+  if (store.thinkingMode) on.push('深度思考');
+  if (store.planMode) on.push('计划');
+  if (store.answerOnly) on.push('仅回答');
+  return on.length ? on.join(' · ') : '默认';
+});
 const currentModelName = computed(() => {
   for (const g of modelGroups.value) {
     const m = g.models.find((x) => x.id === selectedModelId.value);

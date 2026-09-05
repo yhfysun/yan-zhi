@@ -47,7 +47,6 @@ import { computed, defineAsyncComponent, onBeforeUnmount, onMounted } from 'vue'
 import {
   Setting,
   Cpu,
-  Connection,
   Suitcase,
   Files,
   Box,
@@ -79,8 +78,7 @@ const builtinSections: SettingsSection[] = [
   { section: 'general', label: '通用与数据', icon: Setting },
 
   { section: 'models', label: '模型平台', icon: Cpu },
-  { section: 'mcp', label: 'MCP 服务', icon: Connection },
-  { section: 'tools', label: '工具管理', icon: Suitcase },
+  { section: 'tools', label: '工具与连接', icon: Suitcase },
   { section: 'skills', label: 'Skill 商店', icon: Files },
   { section: 'distill', label: 'Skill 蒸馏', icon: MagicStick },
   { section: 'agents', label: '智能体', icon: Box },
@@ -104,7 +102,6 @@ const builtinComponents: Record<string, ReturnType<typeof defineAsyncComponent>>
   general: defineAsyncComponent(() => import('../views/Settings.vue')),
 
   models: defineAsyncComponent(() => import('../views/Models.vue')),
-  mcp: defineAsyncComponent(() => import('../views/Mcp.vue')),
   tools: defineAsyncComponent(() => import('../views/ToolMarket.vue')),
   skills: defineAsyncComponent(() => import('../views/skill-market/LocalSkillMarket.vue')),
   distill: defineAsyncComponent(() => import('../views/SkillDistill.vue')),

@@ -19,132 +19,137 @@
       </div>
     </header>
 
+    <!-- 新建/编辑：统一走弹窗。此前内嵌在卡片网格首位会导致整片重排、
+         且「顶部编辑卡 + 列表里同一条原卡」同时存在；弹窗化后编辑态与列表态互斥 -->
+    <FormDialog
+      v-model="formOpen"
+      :is-edit="!!editingId"
+      title-create="新建数据源"
+      title-edit="编辑数据源"
+      width="720px"
+      top="6vh"
+      :loading="saving"
+      :unsaved-guard="true"
+      :dirty="formDirty"
+      body-class="dw-root"
+      @submit="save(false)"
+      @closed="onFormClosed"
+    >
+      <div class="ds-fgrid">
+        <div class="ds-field" style="grid-column: 1 / -1">
+          <label>数据库类型</label>
+          <!-- 按语族分 3 组：把「8 个选项」切成 ≤5 的语块，能力差异写进分组标题 -->
+          <div class="tp-groups">
+            <div class="tp-g">
+              <span class="ds-eyebrow">关系型 · 支持自动 JOIN</span>
+              <div class="tp-row">
+                <button
+                  v-for="t in RELATIONAL_TYPES" :key="t"
+                  type="button" class="tp-btn" :class="{ on: form.type === t }"
+                  @click="form.type = t"
+                >{{ typeLabel(t) }}</button>
+              </div>
+            </div>
+            <div class="tp-g">
+              <span class="ds-eyebrow">内置</span>
+              <div class="tp-row">
+                <span class="tp-btn tp-fixed">言智项目库（自动就绪）</span>
+              </div>
+            </div>
+            <div class="tp-g">
+              <span class="ds-eyebrow">文档型 · 无 JOIN 下推（P5 落地）</span>
+              <div class="tp-row">
+                <button
+                  v-for="t in DOC_TYPES" :key="t" type="button"
+                  class="tp-btn tp-na" disabled
+                >{{ typeLabel(t) }}</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="ds-field">
+          <label>名称</label>
+          <el-input v-model="form.name" placeholder="如：生产交易库" maxlength="40" />
+        </div>
+        <template v-if="form.type === 'sqlite'">
+          <div class="ds-field" style="grid-column: 1 / -1">
+            <label>数据库文件路径</label>
+            <el-input v-model="form.filePath" placeholder="如：D:\data\archive.db" />
+          </div>
+        </template>
+        <template v-else>
+          <div class="ds-field">
+            <label>主机</label>
+            <el-input v-model="form.host" placeholder="127.0.0.1" />
+          </div>
+          <div class="ds-field">
+            <label>端口</label>
+            <el-input v-model.number="form.port" :placeholder="defaultPort(form.type)" />
+          </div>
+          <div v-if="form.type === 'oracle' || form.type === 'dm'" class="ds-field">
+            <label>服务名</label>
+            <el-input v-model="form.serviceName" :placeholder="form.type === 'oracle' ? 'ORCLPDB1' : '可选'" />
+          </div>
+          <div class="ds-field">
+            <label>数据库</label>
+            <el-input v-model="form.database" :placeholder="form.type === 'oracle' ? '可选（默认服务名）' : '库名'" />
+          </div>
+          <div class="ds-field">
+            <label>用户名</label>
+            <el-input v-model="form.username" placeholder="建议只读账号" autocomplete="off" />
+          </div>
+          <div class="ds-field">
+            <label>密码{{ editingId && form.password === undefined ? '（已保存，留空保持不变）' : '' }}</label>
+            <el-input
+              v-model="form.password" type="password" show-password
+              placeholder="AES 加密存本地，不回显" autocomplete="new-password"
+            />
+          </div>
+        </template>
+
+        <div class="ds-field ds-switches">
+          <el-checkbox v-if="form.type === 'mysql' || form.type === 'postgres'" v-model="form.ssl">SSL</el-checkbox>
+          <el-checkbox v-model="form.allowWrite">允许写操作</el-checkbox>
+          <span class="ds-hint">写操作默认关闭，执行时还需在会话中限时开启</span>
+        </div>
+
+        <!-- 失败诊断：只给"重新测试"等于让用户盲查；错误码展开可解释 -->
+        <details v-if="formTestError" class="ds-diag">
+          <summary>
+            <el-icon class="chev"><ArrowRight /></el-icon>
+            连接失败 · 如何排查
+          </summary>
+          <div class="ds-diag-body">
+            <p class="ds-diag-err dw-mono">{{ formTestError }}</p>
+            <ol>
+              <li>防火墙 / 安全组未放通端口 <code class="dw-mono">{{ form.port || defaultPort(form.type) }}</code></li>
+              <li>账号或密码错误（建议使用只读账号）</li>
+              <li v-if="form.type === 'oracle'">服务名与实际 PDB 不一致（<code class="dw-mono">lsnrctl status</code> 核对）</li>
+              <li v-else-if="form.type === 'dm'">达梦监听未启动（目标机 <code class="dw-mono">DmServiceDMSERVER</code> 状态）</li>
+              <li v-else-if="form.type === 'postgres'">pg_hba.conf 未允许该来源 IP 连接</li>
+              <li v-else>数据库未启动或拒绝远程连接</li>
+            </ol>
+            <el-button size="small" text @click="copyText(formTestError)">复制错误信息</el-button>
+          </div>
+        </details>
+      </div>
+
+      <template #footer="{ close }">
+        <el-button size="small" :loading="testing" @click="saveAndTest">保存并测试</el-button>
+        <span v-if="formTestOk" class="ds-stat" style="color: var(--dw-signal)">
+          <span class="ds-dot ok" />连接成功 · {{ formTestLatency }} ms
+        </span>
+        <span style="flex: 1" />
+        <el-button size="small" @click="close()">取消</el-button>
+        <el-button size="small" type="primary" :loading="saving" @click="save(false)">保存</el-button>
+      </template>
+    </FormDialog>
+
     <div v-if="loading" class="dw-loading">加载中…</div>
     <div v-else-if="loadError" class="dw-empty dw-empty-err">{{ loadError }}</div>
 
     <div v-else class="ds-grid">
-      <!-- 新建/编辑表单：临时态，视觉重量必须低于常态卡片（白底 + 左侧品牌竖线） -->
-      <div v-if="formOpen" class="ds-card ds-form">
-        <div class="ds-card-head">
-          <span class="ds-kind" :class="{ project: form.type === 'project' }">{{ typeLabel(form.type) }}</span>
-          <span class="ds-eyebrow">{{ editingId ? '编辑连接' : '新建连接' }}</span>
-          <span style="flex: 1" />
-          <el-button text size="small" @click="closeForm">取消</el-button>
-        </div>
-        <h3 class="ds-card-title">{{ form.name || '未命名连接' }}</h3>
-
-        <div class="ds-fgrid">
-          <div class="ds-field" style="grid-column: 1 / -1">
-            <label>数据库类型</label>
-            <!-- 按语族分 3 组：把「8 个选项」切成 ≤5 的语块，能力差异写进分组标题 -->
-            <div class="tp-groups">
-              <div class="tp-g">
-                <span class="ds-eyebrow">关系型 · 支持自动 JOIN</span>
-                <div class="tp-row">
-                  <button
-                    v-for="t in RELATIONAL_TYPES" :key="t"
-                    type="button" class="tp-btn" :class="{ on: form.type === t }"
-                    @click="form.type = t"
-                  >{{ typeLabel(t) }}</button>
-                </div>
-              </div>
-              <div class="tp-g">
-                <span class="ds-eyebrow">内置</span>
-                <div class="tp-row">
-                  <span class="tp-btn tp-fixed">言智项目库（自动就绪）</span>
-                </div>
-              </div>
-              <div class="tp-g">
-                <span class="ds-eyebrow">文档型 · 无 JOIN 下推（P5 落地）</span>
-                <div class="tp-row">
-                  <button
-                    v-for="t in DOC_TYPES" :key="t" type="button"
-                    class="tp-btn tp-na" disabled
-                  >{{ typeLabel(t) }}</button>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div class="ds-field">
-            <label>名称</label>
-            <el-input v-model="form.name" placeholder="如：生产交易库" maxlength="40" />
-          </div>
-          <template v-if="form.type === 'sqlite'">
-            <div class="ds-field" style="grid-column: 1 / -1">
-              <label>数据库文件路径</label>
-              <el-input v-model="form.filePath" placeholder="如：D:\data\archive.db" />
-            </div>
-          </template>
-          <template v-else>
-            <div class="ds-field">
-              <label>主机</label>
-              <el-input v-model="form.host" placeholder="127.0.0.1" />
-            </div>
-            <div class="ds-field">
-              <label>端口</label>
-              <el-input v-model.number="form.port" :placeholder="defaultPort(form.type)" />
-            </div>
-            <div v-if="form.type === 'oracle' || form.type === 'dm'" class="ds-field">
-              <label>服务名</label>
-              <el-input v-model="form.serviceName" :placeholder="form.type === 'oracle' ? 'ORCLPDB1' : '可选'" />
-            </div>
-            <div class="ds-field">
-              <label>数据库</label>
-              <el-input v-model="form.database" :placeholder="form.type === 'oracle' ? '可选（默认服务名）' : '库名'" />
-            </div>
-            <div class="ds-field">
-              <label>用户名</label>
-              <el-input v-model="form.username" placeholder="建议只读账号" autocomplete="off" />
-            </div>
-            <div class="ds-field">
-              <label>密码{{ editingId && form.password === undefined ? '（已保存，留空保持不变）' : '' }}</label>
-              <el-input
-                v-model="form.password" type="password" show-password
-                placeholder="AES 加密存本地，不回显" autocomplete="new-password"
-              />
-            </div>
-          </template>
-
-          <div class="ds-field ds-switches">
-            <el-checkbox v-if="form.type === 'mysql' || form.type === 'postgres'" v-model="form.ssl">SSL</el-checkbox>
-            <el-checkbox v-model="form.allowWrite">允许写操作</el-checkbox>
-            <span class="ds-hint">写操作默认关闭，执行时还需在会话中限时开启</span>
-          </div>
-
-          <!-- 失败诊断：只给"重新测试"等于让用户盲查；错误码展开可解释 -->
-          <details v-if="formTestError" class="ds-diag">
-            <summary>
-              <el-icon class="chev"><ArrowRight /></el-icon>
-              连接失败 · 如何排查
-            </summary>
-            <div class="ds-diag-body">
-              <p class="ds-diag-err dw-mono">{{ formTestError }}</p>
-              <ol>
-                <li>防火墙 / 安全组未放通端口 <code class="dw-mono">{{ form.port || defaultPort(form.type) }}</code></li>
-                <li>账号或密码错误（建议使用只读账号）</li>
-                <li v-if="form.type === 'oracle'">服务名与实际 PDB 不一致（<code class="dw-mono">lsnrctl status</code> 核对）</li>
-                <li v-else-if="form.type === 'dm'">达梦监听未启动（目标机 <code class="dw-mono">DmServiceDMSERVER</code> 状态）</li>
-                <li v-else-if="form.type === 'postgres'">pg_hba.conf 未允许该来源 IP 连接</li>
-                <li v-else>数据库未启动或拒绝远程连接</li>
-              </ol>
-              <el-button size="small" text @click="copyText(formTestError)">复制错误信息</el-button>
-            </div>
-          </details>
-        </div>
-
-        <div class="ds-card-foot">
-          <el-button size="small" :loading="testing" @click="saveAndTest">
-            保存并测试
-          </el-button>
-          <span v-if="formTestOk" class="ds-stat" style="color: var(--dw-signal)">
-            <span class="ds-dot ok" />连接成功 · {{ formTestLatency }} ms
-          </span>
-          <span style="flex: 1" />
-          <el-button size="small" type="primary" :loading="saving" @click="save(false)">保存</el-button>
-        </div>
-      </div>
-
       <!-- 常态卡片 -->
       <article v-for="ds in filtered" :key="ds.id" class="ds-card">
         <div class="ds-card-head">
@@ -216,6 +221,7 @@ import { computed, onMounted, reactive, ref } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { Search, Plus, ArrowRight, MoreFilled } from '@element-plus/icons-vue';
 import { api } from '../api/client';
+import FormDialog from '../components/FormDialog.vue';
 import '../styles/data-workbench.css';
 
 // ===== 类型分组（能力差异写进分组标题，用户选型前即知情） =====
@@ -346,11 +352,17 @@ function onCardCmd(cmd: string, ds: DataSourceInfo) {
 }
 
 async function removeDs(ds: DataSourceInfo) {
-  await ElMessageBox.confirm(
-    `删除数据源「${ds.name}」？已挂载它的本体与智能体将失去数据来源。`,
-    '删除数据源',
-    { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' },
-  ).catch(() => null);
+  // 必须用 try/catch 守卫：ElMessageBox 取消会以 reject 抛出，
+  // 若用 .catch(() => null) 吞掉，取消后仍会执行下面的 delete（误删）。
+  try {
+    await ElMessageBox.confirm(
+      `删除数据源「${ds.name}」？已挂载它的本体与智能体将失去数据来源。`,
+      '删除数据源',
+      { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' },
+    );
+  } catch {
+    return;
+  }
   const res = await api.delete(`/datasources/${ds.id}`);
   if ('error' in res) return ElMessage.error(res.error);
   ElMessage.success('已删除');
@@ -387,14 +399,19 @@ const form = reactive<FormModel>({
   ssl: false, allowWrite: false,
 });
 
+// 未保存守卫：打开时留一份快照，与当前 form 比对判断是否脏
+const formSnapshot = ref('');
+const formDirty = computed(() => formOpen.value && JSON.stringify({ ...form }) !== formSnapshot.value);
+
 function openCreate() {
   Object.assign(form, {
     name: '', type: form.type || 'mysql', host: '', port: undefined, database: '',
     serviceName: '', filePath: '', username: '', password: '', ssl: false, allowWrite: false,
   });
   editingId.value = '';
-  formOpen.value = true;
   resetFormTest();
+  formSnapshot.value = JSON.stringify({ ...form });
+  formOpen.value = true;
 }
 
 function openEdit(ds: DataSourceInfo) {
@@ -404,13 +421,18 @@ function openEdit(ds: DataSourceInfo) {
     username: ds.username || '', password: undefined, ssl: !!ds.ssl, allowWrite: ds.allowWrite,
   });
   editingId.value = ds.id;
-  formOpen.value = true;
   resetFormTest();
+  formSnapshot.value = JSON.stringify({ ...form });
+  formOpen.value = true;
 }
 
-function closeForm() {
-  formOpen.value = false;
+// 弹窗关闭后统一复位：destroy-on-close 只销毁弹窗内 DOM，
+// 表单状态在父组件里，必须自己清，否则下次打开残留上次输入
+function onFormClosed() {
   editingId.value = '';
+  resetFormTest();
+  saving.value = false;
+  testing.value = false;
 }
 
 function resetFormTest() {
@@ -431,7 +453,8 @@ function payload(): Record<string, unknown> {
 }
 
 async function save(alsoTest: boolean) {
-  saving.value = alsoTest;
+  // 此前 saving = alsoTest，主「保存」传 false → loading 恒 false，点了没反馈
+  saving.value = true;
   testing.value = alsoTest;
   resetFormTest();
   const isEdit = !!editingId.value;

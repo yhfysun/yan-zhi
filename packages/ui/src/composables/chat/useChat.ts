@@ -1220,6 +1220,7 @@ function createChat() {
     isDraftMode.value = true;
     mountedSkillIds.value = [];
     input.value = '';
+    quotedUrls.value = [];
     if (spaceId !== undefined) {
       spaceStore.selectSpace(spaceId);
       if (spaceId) {
@@ -1281,16 +1282,40 @@ function createChat() {
     return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
   }
 
+  // ===== URL 引用（浏览器 → 对话） =====
+  /** 输入超过该字符数，发送时全文自动落盘为附件 */
+  const LONG_INPUT_THRESHOLD = 5000;
+  const quotedUrls = ref<Array<{ url: string; name: string }>>([]);
+  function addQuotedUrl(url: string) {
+    const u = (url || '').trim();
+    if (!u) return;
+    if (quotedUrls.value.some((q) => q.url === u)) { ElMessage.info('该链接已在引用中'); return; }
+    let host = u;
+    try { host = new URL(u).host; } catch { /* 非 URL 原样展示 */ }
+    quotedUrls.value = [...quotedUrls.value, { url: u, name: host }];
+    ElMessage.success('已引用到对话');
+  }
+  function removeQuotedUrl(url: string) {
+    quotedUrls.value = quotedUrls.value.filter((q) => q.url !== url);
+  }
+
+  // 会话标题取首个非引用行，避免 `> ` 引用块污染标题
+  function titleFromContent(s: string) {
+    const base = (s.split('\n').find((l) => l.trim() && !l.trimStart().startsWith('>')) || s.trim()).trim().replace(/^>\s*/, '');
+    return base.slice(0, 24) + (base.length > 24 ? '…' : '');
+  }
+
   async function send() {
-    if (!input.value.trim() && uploadedFiles.value.length === 0) return;
+    if (!input.value.trim() && uploadedFiles.value.length === 0 && quotedUrls.value.length === 0) return;
 
     const hasPlatform = platformStore.platforms.length > 0;
     const hasModel = !!selectedModelId.value && !!platformStore.models.find((m) => m.id === selectedModelId.value);
     if (!hasPlatform || !hasModel) {
       const userContent = input.value.trim();
-      if (!userContent && uploadedFiles.value.length === 0) return;
+      if (!userContent && uploadedFiles.value.length === 0 && quotedUrls.value.length === 0) return;
       input.value = '';
       uploadedFiles.value = [];
+      quotedUrls.value = [];
 
       // 每次发送都确保工作目录对应空间存在（幂等：已存在则复用，失败则下次仍可重试）
       const spaceId = await ensureWorkspaceSpace();
@@ -1298,8 +1323,7 @@ function createChat() {
         store.currentConvId = '';
       }
       if (!store.currentConvId) {
-        const titleBase = userContent || '配置平台';
-        const title = titleBase.slice(0, 24) + (titleBase.length > 24 ? '…' : '');
+        const title = userContent ? titleFromContent(userContent) : '配置平台';
         const id = await store.createConversation(title, { skillIds: [...mountedSkillIds.value], spaceId });
         try { await saveMountToDb(id); } catch { /* 忽略挂载持久化失败 */ }
         await store.loadMessages(id);
@@ -1346,7 +1370,8 @@ function createChat() {
     let userContent = content;
     if (files.length > 0) {
       userContent = content || '请分析以下文件';
-
+    } else if (!content.trim() && quotedUrls.value.length > 0) {
+      userContent = '请参考以下网页';
     }
 
     if (!userContent.trim()) { ElMessage.warning('请输入消息'); return; }
@@ -1360,7 +1385,7 @@ function createChat() {
       // 每次发送都确保工作目录对应空间存在（幂等：已存在则复用，失败则下次仍可重试）
       const spaceId = await ensureWorkspaceSpace();
       if (!store.currentConvId) {
-        const title = userContent.trim().slice(0, 24) + (userContent.trim().length > 24 ? '…' : '');
+        const title = titleFromContent(userContent.trim()) || '网页引用';
         const id = await store.createConversation(title, {
           platformId: platform.id,
           modelId: model.modelId,
@@ -1386,6 +1411,26 @@ function createChat() {
         if (Object.keys(updates).length) {
           await store.updateConversation(store.currentConvId, updates);
         }
+      }
+
+      // F3 输入过长：全文自动落盘为附件，正文截断为预览（落盘失败则按原文发送，不阻塞对话）
+      if (userContent.length > LONG_INPUT_THRESHOLD) {
+        try {
+          const { getPlatformAdapter } = await import('@yan-zhi/core');
+          const adapter = getPlatformAdapter();
+          const convId = store.currentConvId || 'default';
+          const filesDir = 'workspace/uploads/' + convId;
+          try { await adapter.fs.mkdir(filesDir); } catch {}
+          const total = userContent.length;
+          const name = 'paste_' + Date.now() + '.txt';
+          const newPath = filesDir + '/' + name;
+          await adapter.fs.writeFile(newPath, userContent);
+          await useFileStore().registerFile({
+            conversationId: convId, name, path: newPath,
+            category: 'upload', mimeType: 'text/plain', size: new Blob([userContent]).size, source: 'user',
+          });
+          userContent = userContent.slice(0, 200) + `\n（输入过长，全文 ${total} 字已存为附件，路径: ${newPath}）`;
+        } catch { /* 落盘失败按原文发送 */ }
       }
 
       // 保存上传文件到磁盘并把路径告知智能体（智能体可用 file_read 读取）
@@ -1459,6 +1504,13 @@ function createChat() {
         if (fileRefs.length > 0) {
           userContent = userContent + '\n\n[Files]\n' + JSON.stringify(fileRefs, null, 2);
         }
+      }
+
+      // F1 浏览器 URL 引用：注入 [网页引用]，智能体用 browser_* 工具访问
+      if (quotedUrls.value.length > 0) {
+        const urlParts = quotedUrls.value.map((q) => `- ${q.name} ${q.url}`).join('\n');
+        userContent = userContent + '\n\n[网页引用]\n' + urlParts;
+        quotedUrls.value = [];
       }
 
       await store.sendMessage(userContent, platform, model, undefined, {
@@ -1860,6 +1912,22 @@ function createChat() {
     if (ta) { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }
   }
 
+  // F2 消息引用：以 `> ` 引用块插入输入框，最多 20 行，超出省略
+  async function quoteMsg(msg: Message) {
+    const raw = (msg.content || '')
+      .replace(/\[\[PLATFORM_CONFIG:[^\]]*\]\]/g, '')
+      .replace(/@@REASON@@[\s\S]*$/, '')
+      .replace(/\n+$/, '');
+    if (!raw) return;
+    const lines = raw.split('\n');
+    const quoted = lines.slice(0, 20).map((l) => '> ' + l).join('\n') + (lines.length > 20 ? '\n> …' : '');
+    const block = quoted + '\n\n';
+    input.value = input.value ? input.value.replace(/\s*$/, '') + '\n' + block : block;
+    await nextTick();
+    const ta = document.querySelector('.input-textarea textarea') as HTMLTextAreaElement;
+    if (ta) { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }
+  }
+
   async function delMsg(msg: Message) { await store.deleteMessage(msg.id); }
 
   function openConvMenu(e: MouseEvent, conv: Conversation) {
@@ -1993,7 +2061,8 @@ function createChat() {
     isToolItemOpen,
     getStepToolResult, isStepToolError, isStepToolsRunning, isStepToolsError, getStepToolGroupClass, getStepToolStatusClass,
     isToolGroupRunning, isToolGroupError, getToolGroupStatusClass, resolveToolDisplay, resolveToolArgs, safeJson, isToolError, getToolStatusClass, getToolResult,
-    copyMsg, editMsg, delMsg, openConvMenu, closeCtxMenu, togglePin, startRename, commitRename, deleteConv, toggleConvSelect, batchSelectAll, batchDeleteConvs,
+    copyMsg, editMsg, quoteMsg, delMsg, openConvMenu, closeCtxMenu, togglePin, startRename, commitRename, deleteConv, toggleConvSelect, batchSelectAll, batchDeleteConvs,
+    quotedUrls, addQuotedUrl, removeQuotedUrl, LONG_INPUT_THRESHOLD,
     saveMountToDb, saveMount, saveSkills,
   };
 }

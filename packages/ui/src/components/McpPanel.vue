@@ -1,24 +1,19 @@
 <template>
-  <div class="page">
-    <div class="page-top">
-      <div class="page-info">
-        <h2 class="page-title">MCP 服务管理</h2>
-        <p class="page-sub">连接外部 MCP 服务，扩展 AI 工具能力</p>
+  <div class="mcp-panel">
+    <!-- 面板工具栏：搜索 + 新增（原独立页 page-top 的精简版，供 tab 内嵌使用） -->
+    <div class="mcp-panel-toolbar">
+      <div class="mcp-search-wrap">
+        <el-icon class="mcp-search-icon"><Search /></el-icon>
+        <input v-model="searchQuery" placeholder="搜索服务..." class="mcp-search-input" />
+        <el-icon v-if="searchQuery" class="mcp-search-clear" @click="searchQuery = ''"><Close /></el-icon>
       </div>
-      <div class="page-top-actions">
-        <div class="mcp-search-wrap">
-          <el-icon class="mcp-search-icon"><Search /></el-icon>
-          <input v-model="searchQuery" placeholder="搜索服务..." class="mcp-search-input" />
-          <el-icon v-if="searchQuery" class="mcp-search-clear" @click="searchQuery = ''"><Close /></el-icon>
-        </div>
-        <el-button type="primary" @click="openAdd" :icon="Plus" class="fab-add">新增服务</el-button>
-      </div>
+      <el-button type="primary" @click="openAdd" :icon="Plus" class="fab-add">新增服务</el-button>
     </div>
 
-    <el-empty v-if="store.servers.length === 0" description="暂无 MCP 服务，点击上方按钮添加" :image-size="120" />
+    <el-empty v-if="filteredServers.length === 0" :description="searchQuery ? '没有匹配的 MCP 服务' : '暂无 MCP 服务，点击右上角按钮添加'" :image-size="120" />
 
     <div v-else class="card-grid">
-      <div v-for="s in store.servers" :key="s.id" class="mcp-card" :class="{ connected: s.status === 'connected' }">
+      <div v-for="s in filteredServers" :key="s.id" class="mcp-card" :class="{ connected: s.status === 'connected' }">
         <div class="card-top">
           <div class="card-icon" :class="s.status">
             <el-icon :size="20"><Connection /></el-icon>
@@ -73,7 +68,7 @@
       </div>
     </div>
 
-    <el-dialog v-model="showAdd" title="新增 MCP 服务" width="560px" @close="cancelDialog">
+    <el-dialog v-model="showAdd" title="新增 MCP 服务" width="560px" :close-on-click-modal="false" @close="cancelDialog">
       <el-form label-width="100px">
         <el-form-item label="名称">
           <el-input v-model="form.name" placeholder="如：filesystem" />
@@ -239,14 +234,17 @@
 
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue';
-import { useRoute } from 'vue-router';
 import { Plus, Connection, More, Link, Document, Switch, Tickets, List, Delete as DeleteIcon, Search, Close } from '@element-plus/icons-vue';
-import { ElMessage, ElMessageBox, ElMessageBoxOptions } from 'element-plus';
+import { ElMessage, ElMessageBox } from 'element-plus';
 import { useMcpStore } from '../stores';
 import type { McpTransport, McpTool } from '@yan-zhi/shared';
 
+const props = defineProps<{
+  /** 深链聚焦：/mcp/:id 迁移后由 /tools?focus=<id> 传入，挂载后自动打开该服务的工具面板 */
+  focusServerId?: string;
+}>();
+
 const store = useMcpStore();
-const route = useRoute();
 const showAdd = ref(false);
 const searchQuery = ref('');
 const toolsDialog = ref(false);
@@ -275,6 +273,13 @@ const toolEnabledMap = ref<Record<string, boolean>>({});
 const expandedDescs = ref<Record<string, boolean>>({});
 const expandedSchema = ref<Record<string, boolean>>({});
 const toolMetaMap = ref<Record<string, { alias: string; remark: string }>>({});
+
+/** 按名称过滤（原独立页无此逻辑外的差异：过滤后空态与全空态文案区分） */
+const filteredServers = computed(() => {
+  const q = searchQuery.value.trim().toLowerCase();
+  if (!q) return store.servers;
+  return store.servers.filter((s) => (s.name || '').toLowerCase().includes(q));
+});
 
 function initToolMap() {
   const tools = currentTools.value;
@@ -335,10 +340,9 @@ const stdioUnsupportedTitle = computed(() =>
 
 onMounted(async () => {
   await store.loadServers();
-  // 深度链接：/mcp/:id 自动打开对应服务的工具面板
-  const id = route.params.id as string | undefined;
-  if (id && store.servers.some((s) => s.id === id)) {
-    showTools(id);
+  // 深链聚焦：原 /mcp/:id 直达，迁移后由 /tools?focus=<id> 传入
+  if (props.focusServerId && store.servers.some((s) => s.id === props.focusServerId)) {
+    showTools(props.focusServerId);
   }
 });
 
@@ -509,10 +513,18 @@ async function del(id: string) {
 </script>
 
 <style scoped>
-/* .page style from App.vue global */
-.page-top { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 28px; flex-wrap: wrap; gap: 12px; }
-.page-info { flex: 1; min-width: 0; }
-.page-top-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.mcp-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.mcp-panel-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
 
 .mcp-search-wrap {
   display: flex; align-items: center; gap: 4px;
@@ -528,9 +540,6 @@ async function del(id: string) {
 }
 .mcp-search-input::placeholder { color: var(--color-text-secondary); opacity: 0.5; }
 .mcp-search-clear { font-size: 13px; color: var(--color-text-secondary); cursor: pointer; flex-shrink: 0; }
-
-.page-title { font-size: 22px; font-weight: 700; margin: 0; }
-.page-sub { font-size: 13px; color: var(--color-text-secondary); margin: 4px 0 0; }
 
 .card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 16px; }
 
@@ -573,11 +582,6 @@ async function del(id: string) {
 .status-dot.connected { background: #22c55e; box-shadow: 0 0 6px rgba(34,197,94,0.5); }
 .status-dot.disconnected { background: #94a3b8; }
 .status-dot.error { background: #ef4444; }
-
-@keyframes pulse-dot {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.4; }
-}
 
 .card-body {
   background: rgba(15, 23, 42, 0.03);
@@ -701,9 +705,7 @@ async function del(id: string) {
 :root[data-theme="dark"] .schema-pre { background: rgba(0, 0, 0, 0.35); }
 
 @media (max-width: 767px) {
-  .page-top { flex-direction: column; gap: 10px; }
-  .page-title { font-size: 18px; }
-  .page-top-actions { width: 100%; }
+  .mcp-panel-toolbar { flex-wrap: wrap; }
   .mcp-search-wrap { width: 100%; }
   .card-grid { grid-template-columns: 1fr; gap: 12px; }
   .mcp-card { padding: 14px; }

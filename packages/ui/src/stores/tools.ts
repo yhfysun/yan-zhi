@@ -35,6 +35,8 @@ const BUILTIN_TOOL_CATEGORIES: { key: string; label: string; prefixes?: string[]
   { key: 'subagent', label: '子智能体', names: ['call_agent', 'list_sub_agents'] },
   { key: 'search', label: '联网搜索', names: ['web_search'] },
   { key: 'cmd', label: '命令执行', names: ['cmd_exec'] },
+  { key: 'code', label: '代码工具', names: ['code_search', 'code_outline', 'js_exec', 'python_exec'] },
+  { key: 'network', label: '网络安全', names: ['port_scan', 'http_request', 'tcp_send', 'udp_send', 'dns_lookup'] },
   { key: 'interact', label: '用户交互', names: ['ask_user', 'confirm_user'] },
   { key: 'task', label: '任务规划', names: ['task_plan', 'task_step'] },
   { key: 'image', label: '图像分析', names: ['image_analyze'] },

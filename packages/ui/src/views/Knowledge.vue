@@ -220,7 +220,7 @@
       </section>
     </div>
 
-    <el-dialog v-model="showBaseDialog" :title="editingBase ? '编辑知识库' : '新建知识库'" width="480px">
+    <el-dialog v-model="showBaseDialog" :title="editingBase ? '编辑知识库' : '新建知识库'" width="480px" :close-on-click-modal="false">
       <el-form label-width="80px">
         <el-form-item label="名称"><el-input v-model="baseForm.name" placeholder="如：产品资料库" /></el-form-item>
         <el-form-item label="描述"><el-input v-model="baseForm.description" type="textarea" :rows="3" placeholder="可选" /></el-form-item>
@@ -246,7 +246,7 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="showDocDialog" title="添加文档" width="560px">
+    <el-dialog v-model="showDocDialog" title="添加文档" width="560px" :close-on-click-modal="false">
       <el-form label-width="80px">
         <el-form-item label="名称"><el-input v-model="docForm.name" placeholder="文档名称" /></el-form-item>
         <el-form-item label="上传文件">

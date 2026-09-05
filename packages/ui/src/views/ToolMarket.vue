@@ -2,213 +2,183 @@
   <div class="page">
     <div class="page-top">
       <div class="page-info">
-        <h2 class="page-title">工具管理</h2>
-        <p class="page-sub">浏览和管理本地与远程工具商城</p>
+        <h2 class="page-title">工具与连接</h2>
+        <p class="page-sub">管理工具库、MCP 服务与远程商城</p>
       </div>
     </div>
 
-    <!-- ========== 视图容器 ========== -->
-    <Transition name="view-fade" mode="out-in">
-    <div v-if="activeMarketId === null" key="main">
-      <!-- MCP 服务只读概览区 -->
-      <section class="section">
-        <div class="section-header">
-          <h3 class="section-title">MCP 服务</h3>
-          <el-button text size="small" @click="$router.push('/mcp')">前往管理</el-button>
-        </div>
-        <el-empty v-if="mcpStore.servers.length === 0" description="尚未接入 MCP 服务，前往管理页添加" :image-size="60" />
-        <div v-else class="mcp-picker-list">
-          <McpServerPicker
-            v-for="s in mcpStore.servers"
-            :key="s.id"
-            :server-id="s.id"
-            show-tools-count
-          />
-        </div>
-      </section>
+    <!-- 三 tab：工具库 / MCP 服务 / 远程商城（MCP 由原 /mcp 独立页并入） -->
+    <el-tabs v-model="activeTab" class="tl-tabs">
+      <!-- ===== Tab：工具库（原本地商城内容直出，少一层钻入） ===== -->
+      <el-tab-pane label="工具库" name="tools">
+        <!-- 内置工具 -->
+        <section class="section">
+          <h4 class="subsection-title">内置工具</h4>
+          <el-empty v-if="toolsStore.builtinTools.length === 0" description="暂无内置工具" :image-size="60" />
+          <div v-for="g in toolsStore.builtinToolGroups" :key="g.key" class="builtin-cat">
+            <div class="builtin-cat-head" @click="toggleBuiltinCat(g.key)">
+              <el-icon :size="12" class="builtin-cat-arrow" :class="{ open: isBuiltinCatOpen(g.key) }"><ArrowRight /></el-icon>
+              <span class="builtin-cat-name">{{ g.label }}</span>
+              <span class="builtin-cat-count">{{ g.tools.length }}</span>
+            </div>
+            <div v-show="isBuiltinCatOpen(g.key)" class="card-grid">
+              <div v-for="t in g.tools" :key="t.name" class="tool-card">
+                <div class="tool-card-header">
+                  <el-icon :size="16" class="tool-icon"><Switch /></el-icon>
+                  <span class="tool-card-name">{{ t.name }}</span>
+                  <el-tag size="small" type="info" effect="plain">内置</el-tag>
+                </div>
+                <p class="tool-card-desc" :title="t.description">{{ t.description }}</p>
+                <div class="tool-schema-toggle">
+                  <el-button size="small" link @click="toggleSchema('builtin-' + t.name)">
+                    {{ expandedSchema['builtin-' + t.name] ? '收起' : '入参/出参' }}
+                  </el-button>
+                </div>
+                <div v-if="expandedSchema['builtin-' + t.name]" class="tool-schema-block">
+                  <div class="schema-section"><span class="schema-label">入参</span><pre class="schema-pre">{{ fmtSchema(t.inputSchema) }}</pre></div>
+                  <div class="schema-section"><span class="schema-label">出参</span><pre class="schema-pre">{{ fmtSchema(t.outputSchema) }}</pre></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
 
-      <!-- 工具商城区 -->
-      <section class="section">
-        <MarketplaceShell title="工具商城" subtitle="浏览本地与远程工具商城">
-          <template #actions>
-            <el-button type="primary" :icon="Plus" @click="showSourceForm = true" class="fab-add">
-              新增远程商城
-            </el-button>
-          </template>
-
-          <div class="market-grid">
-            <MarketplaceCard variant="local" @click="activeMarketId = 'local'">
-              <template #icon><el-icon :size="28"><HomeFilled /></el-icon></template>
-              <template #title>本地商城</template>
-              <template #description>内置工具与自定义工具</template>
-              <template #meta>
-                {{ toolsStore.builtinTools.length }} 内置 · {{ toolsStore.customTools.length }} 自定义
-              </template>
-              <template #badge><el-tag size="small" type="primary" effect="plain">本机</el-tag></template>
-            </MarketplaceCard>
-
-            <MarketplaceCard
-              v-for="s in toolsStore.remoteSources"
-              :key="s.id"
-              variant="remote"
-              @click="enterRemoteMarket(s)"
+        <!-- 自定义工具 -->
+        <section class="section">
+          <div class="section-header">
+            <h4 class="subsection-title">自定义工具</h4>
+            <el-button type="primary" :icon="Plus" @click="openEditor(null)" class="fab-add">新增工具</el-button>
+          </div>
+          <el-empty v-if="toolsStore.customTools.length === 0" description="暂无自定义工具，点击上方按钮创建" :image-size="60" />
+          <div v-else class="card-grid">
+            <div
+              v-for="t in toolsStore.customTools"
+              :key="t.id"
+              class="tool-card"
+              :class="{ disabled: !t.enabled }"
             >
-              <template #icon><el-icon :size="28"><Cloudy /></el-icon></template>
-              <template #title>{{ s.name }}</template>
-              <template #description>{{ s.base_url }}</template>
-              <template #meta>远程商城</template>
-              <template #badge><el-tag size="small" type="info" effect="plain">远程</el-tag></template>
-            </MarketplaceCard>
-          </div>
-
-          <MarketplaceEmpty
-            v-if="toolsStore.remoteSources.length === 0"
-            description="暂无远程商城，点击上方按钮添加其他节点"
-            :image-size="60"
-          />
-        </MarketplaceShell>
-      </section>
-    </div>
-
-    <!-- ========== 子视图：本地商城 ========== -->
-    <div v-else-if="activeMarketId === 'local'" key="local">
-      <div class="sub-header">
-        <el-button text size="small" @click="activeMarketId = null">
-          <el-icon><ArrowLeft /></el-icon> 返回商城列表
-        </el-button>
-        <div class="sub-header-info">
-          <h3 class="sub-title">本地商城</h3>
-          <span class="sub-meta">{{ toolsStore.builtinTools.length }} 内置 · {{ toolsStore.customTools.length }} 自定义</span>
-        </div>
-      </div>
-
-      <!-- 内置工具 -->
-      <section class="section">
-        <h4 class="subsection-title">内置工具</h4>
-        <el-empty v-if="toolsStore.builtinTools.length === 0" description="暂无内置工具" :image-size="60" />
-        <div v-for="g in toolsStore.builtinToolGroups" :key="g.key" class="builtin-cat">
-          <div class="builtin-cat-head" @click="toggleBuiltinCat(g.key)">
-            <el-icon :size="12" class="builtin-cat-arrow" :class="{ open: isBuiltinCatOpen(g.key) }"><ArrowRight /></el-icon>
-            <span class="builtin-cat-name">{{ g.label }}</span>
-            <span class="builtin-cat-count">{{ g.tools.length }}</span>
-          </div>
-          <div v-show="isBuiltinCatOpen(g.key)" class="card-grid">
-            <div v-for="t in g.tools" :key="t.name" class="tool-card">
               <div class="tool-card-header">
                 <el-icon :size="16" class="tool-icon"><Switch /></el-icon>
                 <span class="tool-card-name">{{ t.name }}</span>
-                <el-tag size="small" type="info" effect="plain">内置</el-tag>
+                <el-tag size="small" :type="t.source === 'remote' ? 'primary' : 'success'" effect="plain">
+                  {{ t.source === 'remote' ? '远程' : '本地' }}
+                </el-tag>
+                <el-tag v-if="t.isPublic" size="small" type="primary" effect="plain">已公开</el-tag>
               </div>
-              <p class="tool-card-desc" :title="t.description">{{ t.description }}</p>
+              <p class="tool-card-desc" :title="t.description || '无描述'">{{ t.description || '无描述' }}</p>
               <div class="tool-schema-toggle">
-                <el-button size="small" link @click="toggleSchema('builtin-' + t.name)">
-                  {{ expandedSchema['builtin-' + t.name] ? '收起' : '入参/出参' }}
+                <el-button size="small" link @click="toggleSchema('custom-' + t.id)">
+                  {{ expandedSchema['custom-' + t.id] ? '收起' : '入参/出参' }}
                 </el-button>
               </div>
-              <div v-if="expandedSchema['builtin-' + t.name]" class="tool-schema-block">
+              <div v-if="expandedSchema['custom-' + t.id]" class="tool-schema-block">
                 <div class="schema-section"><span class="schema-label">入参</span><pre class="schema-pre">{{ fmtSchema(t.inputSchema) }}</pre></div>
                 <div class="schema-section"><span class="schema-label">出参</span><pre class="schema-pre">{{ fmtSchema(t.outputSchema) }}</pre></div>
               </div>
+              <div class="tool-card-foot">
+                <span class="stat">{{ t.runtime }} · {{ t.timeout }}ms</span>
+                <div class="card-actions">
+                  <el-tooltip v-if="authStore.isLoggedIn" :content="t.isPublic ? '点击下架' : '发布到商城'" placement="top">
+                    <el-switch
+                      :model-value="!!t.isPublic"
+                      size="small"
+                      @change="(v: boolean) => toolsStore.togglePublic(t.id, v)"
+                    />
+                  </el-tooltip>
+                  <el-switch
+                    v-model="t.enabled"
+                    size="small"
+                    @change="(v: boolean) => toolsStore.toggleEnabled(t.id, v)"
+                  />
+                  <el-button size="small" link @click="openEditor(t)">编辑</el-button>
+                  <el-button size="small" link type="danger" @click="delCustomTool(t.id)">删除</el-button>
+                </div>
+              </div>
             </div>
           </div>
-        </div>
-      </section>
+        </section>
+      </el-tab-pane>
 
-      <!-- 自定义工具 -->
-      <section class="section">
-        <div class="section-header">
-          <h4 class="subsection-title">自定义工具</h4>
-          <el-button type="primary" :icon="Plus" @click="openEditor(null)" class="fab-add">新增工具</el-button>
-        </div>
-        <el-empty v-if="toolsStore.customTools.length === 0" description="暂无自定义工具，点击上方按钮创建" :image-size="60" />
-        <div v-else class="card-grid">
-          <div
-            v-for="t in toolsStore.customTools"
-            :key="t.id"
-            class="tool-card"
-            :class="{ disabled: !t.enabled }"
-          >
-            <div class="tool-card-header">
-              <el-icon :size="16" class="tool-icon"><Switch /></el-icon>
-              <span class="tool-card-name">{{ t.name }}</span>
-              <el-tag size="small" :type="t.source === 'remote' ? 'primary' : 'success'" effect="plain">
-                {{ t.source === 'remote' ? '远程' : '本地' }}
-              </el-tag>
-              <el-tag v-if="t.isPublic" size="small" type="primary" effect="plain">已公开</el-tag>
-            </div>
-            <p class="tool-card-desc" :title="t.description || '无描述'">{{ t.description || '无描述' }}</p>
-            <div class="tool-schema-toggle">
-              <el-button size="small" link @click="toggleSchema('custom-' + t.id)">
-                {{ expandedSchema['custom-' + t.id] ? '收起' : '入参/出参' }}
+      <!-- ===== Tab：MCP 服务（原 /mcp 独立页整体迁入） ===== -->
+      <el-tab-pane label="MCP 服务" name="mcp" lazy>
+        <McpPanel :key="focusServerId || 'mcp'" :focus-server-id="focusServerId" />
+      </el-tab-pane>
+
+      <!-- ===== Tab：远程商城 ===== -->
+      <el-tab-pane label="远程商城" name="remote" lazy>
+        <!-- 远程源列表 -->
+        <div v-if="activeSourceId === null">
+          <MarketplaceShell title="远程商城" subtitle="浏览与安装其他节点公开的工具">
+            <template #actions>
+              <el-button type="primary" :icon="Plus" @click="showSourceForm = true" class="fab-add">
+                新增远程商城
               </el-button>
+            </template>
+
+            <div class="market-grid">
+              <MarketplaceCard
+                v-for="s in toolsStore.remoteSources"
+                :key="s.id"
+                variant="remote"
+                @click="enterRemoteMarket(s)"
+              >
+                <template #icon><el-icon :size="28"><Cloudy /></el-icon></template>
+                <template #title>{{ s.name }}</template>
+                <template #description>{{ s.base_url }}</template>
+                <template #meta>远程商城</template>
+                <template #badge><el-tag size="small" type="info" effect="plain">远程</el-tag></template>
+              </MarketplaceCard>
             </div>
-            <div v-if="expandedSchema['custom-' + t.id]" class="tool-schema-block">
-              <div class="schema-section"><span class="schema-label">入参</span><pre class="schema-pre">{{ fmtSchema(t.inputSchema) }}</pre></div>
-              <div class="schema-section"><span class="schema-label">出参</span><pre class="schema-pre">{{ fmtSchema(t.outputSchema) }}</pre></div>
+
+            <MarketplaceEmpty
+              v-if="toolsStore.remoteSources.length === 0"
+              description="暂无远程商城，点击上方按钮添加其他节点"
+              :image-size="60"
+            />
+          </MarketplaceShell>
+        </div>
+
+        <!-- 远程源详情（tab 内钻入） -->
+        <div v-else>
+          <div class="sub-header">
+            <el-button text size="small" @click="activeSourceId = null">
+              <el-icon><ArrowLeft /></el-icon> 返回商城列表
+            </el-button>
+            <div class="sub-header-info">
+              <h3 class="sub-title">{{ activeRemoteSource?.name }}</h3>
+              <span class="sub-meta url">{{ activeRemoteSource?.base_url }}</span>
             </div>
-            <div class="tool-card-foot">
-              <span class="stat">{{ t.runtime }} · {{ t.timeout }}ms</span>
-              <div class="card-actions">
-                <el-tooltip v-if="authStore.isLoggedIn" :content="t.isPublic ? '点击下架' : '发布到商城'" placement="top">
-                  <el-switch
-                    :model-value="!!t.isPublic"
-                    size="small"
-                    @change="(v: boolean) => toolsStore.togglePublic(t.id, v)"
-                  />
-                </el-tooltip>
-                <el-switch
-                  v-model="t.enabled"
-                  size="small"
-                  @change="(v: boolean) => toolsStore.toggleEnabled(t.id, v)"
-                />
-                <el-button size="small" link @click="openEditor(t)">编辑</el-button>
-                <el-button size="small" link type="danger" @click="delCustomTool(t.id)">删除</el-button>
+            <div class="sub-header-actions">
+              <el-button size="small" @click="testSource(activeSourceId)">测试连接</el-button>
+              <el-button size="small" type="danger" @click="delSource(activeSourceId)">删除源</el-button>
+            </div>
+          </div>
+
+          <el-empty v-if="!remoteToolsLoaded" description="正在加载远程工具..." :image-size="60" />
+          <el-empty v-else-if="!remoteTools.length" description="该远程源暂无公开的自定义工具" :image-size="60" />
+          <div v-else class="card-grid">
+            <div v-for="item in remoteTools" :key="item.id" class="tool-card">
+              <div class="tool-card-header">
+                <el-icon :size="16" class="tool-icon"><Switch /></el-icon>
+                <span class="tool-card-name">{{ item.name }}</span>
+                <el-tag size="small" type="primary" effect="plain">远程</el-tag>
+              </div>
+              <p class="tool-card-desc" :title="item.description || '无描述'">{{ item.description || '无描述' }}</p>
+              <div class="tool-card-foot">
+                <el-button size="small" type="primary" @click="installTool(item)">安装到本地</el-button>
               </div>
             </div>
           </div>
         </div>
-      </section>
-    </div>
-
-    <!-- ========== 子视图：远程商城 ========== -->
-    <div v-else key="remote">
-      <div class="sub-header">
-        <el-button text size="small" @click="activeMarketId = null">
-          <el-icon><ArrowLeft /></el-icon> 返回商城列表
-        </el-button>
-        <div class="sub-header-info">
-          <h3 class="sub-title">{{ activeRemoteSource?.name }}</h3>
-          <span class="sub-meta url">{{ activeRemoteSource?.base_url }}</span>
-        </div>
-        <div class="sub-header-actions">
-          <el-button size="small" @click="testSource(activeMarketId)">测试连接</el-button>
-          <el-button size="small" type="danger" @click="delSource(activeMarketId)">删除源</el-button>
-        </div>
-      </div>
-
-      <el-empty v-if="!remoteToolsLoaded" description="正在加载远程工具..." :image-size="60" />
-      <el-empty v-else-if="!remoteTools.length" description="该远程源暂无公开的自定义工具" :image-size="60" />
-      <div v-else class="card-grid">
-        <div v-for="item in remoteTools" :key="item.id" class="tool-card">
-          <div class="tool-card-header">
-            <el-icon :size="16" class="tool-icon"><Switch /></el-icon>
-            <span class="tool-card-name">{{ item.name }}</span>
-            <el-tag size="small" type="primary" effect="plain">远程</el-tag>
-          </div>
-          <p class="tool-card-desc" :title="item.description || '无描述'">{{ item.description || '无描述' }}</p>
-          <div class="tool-card-foot">
-            <el-button size="small" type="primary" @click="installTool(item)">安装到本地</el-button>
-          </div>
-        </div>
-      </div>
-    </div>
-    </Transition>
+      </el-tab-pane>
+    </el-tabs>
 
     <!-- ========== 自定义工具 Dialog ========== -->
     <el-dialog
       v-model="showCustomEditor"
       :title="editingTool ? '编辑工具' : '新增自定义工具'"
       width="640px"
+      :close-on-click-modal="false"
       @close="resetEditor"
     >
       <el-form label-width="100px">
@@ -252,7 +222,7 @@
     </el-dialog>
 
     <!-- ========== 远程商城源 Dialog ========== -->
-    <el-dialog v-model="showSourceForm" title="添加远程工具商城" width="480px" @close="resetSourceForm">
+    <el-dialog v-model="showSourceForm" title="添加远程工具商城" width="480px" :close-on-click-modal="false" @close="resetSourceForm">
       <el-form label-width="100px">
         <el-form-item label="名称"><el-input v-model="sourceForm.name" placeholder="如: 我的节点" /></el-form-item>
         <el-form-item label="URL"><el-input v-model="sourceForm.baseUrl" placeholder="http://192.168.1.100:3001" /></el-form-item>
@@ -277,34 +247,50 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
+import { useRoute } from 'vue-router';
 import {
   Plus, Switch,
-  ArrowLeft, HomeFilled, Cloudy, ArrowRight,
+  ArrowLeft, Cloudy, ArrowRight,
 } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { useMcpStore, useAuthStore } from '../stores';
+import { useAuthStore } from '../stores';
 import { useToolsStore } from '../stores/tools';
-import McpServerPicker from '../components/McpServerPicker.vue';
+import McpPanel from '../components/McpPanel.vue';
 import MarketplaceShell from '../components/marketplace/MarketplaceShell.vue';
 import MarketplaceCard from '../components/marketplace/MarketplaceCard.vue';
 import MarketplaceEmpty from '../components/marketplace/MarketplaceEmpty.vue';
 
-const mcpStore = useMcpStore();
 const toolsStore = useToolsStore();
 const authStore = useAuthStore();
+const route = useRoute();
 
-// ---- 视图切换 ----
-const activeMarketId = ref<string | null>(null);
+// ---- Tab 切换（支持 /mcp 重定向带来的 ?tab=mcp&focus=<id> 深链） ----
+const activeTab = ref<'tools' | 'mcp' | 'remote'>('tools');
+const focusServerId = ref<string | undefined>(undefined);
+
+onMounted(() => {
+  const tab = route.query.tab;
+  if (tab === 'mcp') activeTab.value = 'mcp';
+  else if (tab === 'remote') activeTab.value = 'remote';
+  const focus = route.query.focus;
+  if (typeof focus === 'string' && focus) focusServerId.value = focus;
+
+  toolsStore.loadBuiltinTools();
+  toolsStore.loadCustomTools();
+  toolsStore.loadRemoteSources();
+});
+
+// ---- 远程源钻入 ----
+const activeSourceId = ref<string | null>(null);
 const activeRemoteSource = computed(() =>
-  toolsStore.remoteSources.find(s => s.id === activeMarketId.value)
+  toolsStore.remoteSources.find(s => s.id === activeSourceId.value)
 );
 
-// ---- 远程工具 ----
 const remoteTools = ref<any[]>([]);
 const remoteToolsLoaded = ref(false);
 
 function enterRemoteMarket(s: any) {
-  activeMarketId.value = s.id;
+  activeSourceId.value = s.id;
   remoteToolsLoaded.value = false;
   remoteTools.value = [];
   toolsStore.fetchRemoteItems(s.id).then(() => {
@@ -312,13 +298,6 @@ function enterRemoteMarket(s: any) {
     remoteToolsLoaded.value = true;
   });
 }
-
-onMounted(() => {
-  mcpStore.loadServers();
-  toolsStore.loadBuiltinTools();
-  toolsStore.loadCustomTools();
-  toolsStore.loadRemoteSources();
-});
 
 // ---- 入参/出参行内展开 ----
 const expandedSchema = ref<Record<string, boolean>>({});
@@ -431,29 +410,28 @@ async function delSource(id: string) {
   try {
     await ElMessageBox.confirm('删除该远程源？', '提示', { type: 'warning' });
     await toolsStore.deleteRemoteSource(id);
-    activeMarketId.value = null;
+    activeSourceId.value = null;
     ElMessage.success('已删除');
   } catch {}
 }
 
 async function installTool(item: any) {
   try {
-    await toolsStore.installFromMarket(activeMarketId.value!, item.id);
+    await toolsStore.installFromMarket(activeSourceId.value!, item.id);
     ElMessage.success(`已安装 "${item.name}" 到本地商城`);
   } catch { ElMessage.error('安装失败'); }
 }
 </script>
 
 <style scoped>
-/* ---- 视图过渡 ---- */
-.view-fade-enter-active,
-.view-fade-leave-active { transition: opacity 0.15s ease; }
-.view-fade-enter-from,
-.view-fade-leave-to { opacity: 0; }
-
 /* ---- 页面 ---- */
 /* .page / .page-title / .page-sub come from App.vue global */
-.page-top { margin-bottom: 24px; }
+.page-top { margin-bottom: 20px; }
+
+/* ---- Tab ---- */
+.tl-tabs :deep(.el-tabs__header) {
+  margin-bottom: 20px;
+}
 
 /* ---- 分区 ---- */
 .section { margin-bottom: 32px; }
@@ -465,13 +443,6 @@ async function installTool(item: any) {
   display: flex; align-items: center; gap: 10px;
 }
 .section-title { font-size: 15px; font-weight: 600; margin: 0; }
-
-/* ---- MCP 只读概览 ---- */
-.mcp-picker-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-}
 
 /* ---- 商城卡片网格 ---- */
 .market-grid {
@@ -570,18 +541,16 @@ async function installTool(item: any) {
 
 /* ===== Mobile ===== */
 @media (max-width: 767px) {
-  .page-top { margin-bottom: 18px; }
+  .page-top { margin-bottom: 14px; }
   .page-title { font-size: 18px; }
   .section { margin-bottom: 24px; }
   .section-header { flex-wrap: wrap; gap: 8px; }
   .section-header-right { flex-wrap: wrap; }
-  .section-header-right .el-input { max-width: 100%; flex: 1; min-width: 0; }
   .sub-header { flex-wrap: wrap; gap: 10px; padding-bottom: 12px; margin-bottom: 16px; }
   .sub-header-info { width: 100%; }
   .sub-header-actions { width: 100%; justify-content: flex-end; }
   .sub-title { font-size: 16px; }
   .card-grid { grid-template-columns: 1fr; gap: 12px; }
   .market-grid { grid-template-columns: 1fr; gap: 12px; }
-  .mcp-picker-list { flex-direction: column; }
 }
 </style>
