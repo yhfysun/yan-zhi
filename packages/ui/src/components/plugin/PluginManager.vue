@@ -46,7 +46,7 @@
           <el-button size="small" @click="openConfig(p)">配置</el-button>
           <el-button size="small" @click="openDetail(p)">详情</el-button>
           <el-button size="small" @click="onExport(p)">导出</el-button>
-          <el-button v-if="p.manifest.id === 'computer-use'" size="small" @click="onAudit(p)">记录</el-button>
+          <el-button v-if="p.manifest.id === 'computer-use' && p.state === 'enabled'" size="small" @click="onAudit(p)">记录</el-button>
           <el-button
             v-if="p.source !== 'builtin'"
             size="small"
@@ -57,7 +57,7 @@
       </div>
     </div>
 
-    <el-dialog v-model="configOpen" title="插件配置" width="500">
+    <el-dialog v-model="configOpen" title="插件配置" width="500" :close-on-click-modal="false">
       <el-input v-model="configText" type="textarea" :rows="10" />
       <template #footer>
         <el-button @click="configOpen = false">取消</el-button>

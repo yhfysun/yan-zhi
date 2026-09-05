@@ -4,6 +4,7 @@
 // 护栏：desktop-input 权限声明 / 10 分钟滚动窗口操作上限 / 危险组合键与命令黑名单 /
 //       本应用自身窗口点击默认拒绝 / 全操作审计（plugin_storage.audit）。
 import path from 'node:path';
+import { getPluginManager } from '@yan-zhi/core';
 import type { McpCallResult, PluginManifest, PluginModule } from '@yan-zhi/core';
 import type { ShellAdapter } from '@yan-zhi/core';
 import { db } from '../db.js';
@@ -292,14 +293,23 @@ export const computerUseModule: PluginModule = {
         get: (p: string, h: (req: unknown, res: { json: (d: unknown) => void }) => void) => void;
       };
       r.post('/panic', (_req, res) => {
+        if (getPluginManager().get('computer-use')?.state !== 'enabled') {
+          res.json({ error: 'computer-use 插件未启用，无需急停' });
+          return;
+        }
         panicActive = true;
         ctx.log('!!! 急停触发（Ctrl+Alt+Esc）：输入工具已冻结，插件即将禁用');
-        void import('@yan-zhi/core')
-          .then(({ getPluginManager }) => getPluginManager().disable('computer-use'))
+        void getPluginManager()
+          .disable('computer-use')
           .catch(() => undefined);
         res.json({ data: { ok: true, message: '急停已生效，computer-use 插件已禁用（可在插件管理页重新启用）' } });
       });
       r.get('/audit', (_req, res) => {
+        // 未启用时明确拒绝（路由禁用后仍挂载），历史记录仍在 plugin_storage，重新启用即可查看
+        if (getPluginManager().get('computer-use')?.state !== 'enabled') {
+          res.json({ error: 'computer-use 插件未启用，启用后可查看操作记录' });
+          return;
+        }
         try {
           const row = db
             .prepare("SELECT value FROM plugin_storage WHERE plugin_id = 'computer-use' AND key = 'audit'")
