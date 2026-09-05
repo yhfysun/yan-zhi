@@ -33,7 +33,7 @@ const BUILTIN_TOOL_CATEGORIES: { key: string; label: string; prefixes?: string[]
   { key: 'file', label: '文件读写', prefixes: ['file_'] },
   { key: 'browser', label: '浏览器自动化', prefixes: ['browser_'] },
   { key: 'subagent', label: '子智能体', names: ['call_agent', 'list_sub_agents'] },
-  { key: 'search', label: '联网搜索', names: ['web_search'] },
+  { key: 'search', label: '联网搜索', names: ['web_search', 'web_fetch'] },
   { key: 'cmd', label: '命令执行', names: ['cmd_exec'] },
   { key: 'code', label: '代码工具', names: ['code_search', 'code_outline', 'js_exec', 'python_exec'] },
   { key: 'network', label: '网络安全', names: ['port_scan', 'http_request', 'tcp_send', 'udp_send', 'dns_lookup'] },
@@ -124,6 +124,13 @@ export const useToolsStore = defineStore('tools', () => {
   async function deleteTool(id: string) {
     await api.delete(`/tools/${id}`);
     customTools.value = customTools.value.filter(t => t.id !== id);
+  }
+
+  /** 试运行自定义工具（服务端 node:vm 沙箱执行）。失败抛出后端 error 信息。 */
+  async function executeTool(id: string, args: Record<string, unknown>): Promise<unknown> {
+    const r = await api.post<any>(`/tools/${id}/execute`, { args });
+    if (r && 'error' in r) throw new Error((r as any).error);
+    return (r as any).data;
   }
 
   async function toggleEnabled(id: string, enabled: boolean) {
@@ -237,7 +244,7 @@ export const useToolsStore = defineStore('tools', () => {
   return {
     builtinTools, builtinToolGroups, customTools, remoteSources, remoteItems, loading,
     marketplaceEnabled, marketplaceAuth, marketplacePort,
-    loadBuiltinTools, loadCustomTools, createTool, updateTool, deleteTool, toggleEnabled, togglePublic,
+    loadBuiltinTools, loadCustomTools, createTool, updateTool, deleteTool, toggleEnabled, togglePublic, executeTool,
     loadRemoteSources, addRemoteSource, deleteRemoteSource, testRemoteSource,
     fetchRemoteItems, installFromMarket,
     setMarketplaceConfig, setMarketplaceEnabled, loadMarketplaceConfig,

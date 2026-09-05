@@ -11,7 +11,7 @@
     <el-tabs v-model="activeTab" class="tl-tabs">
       <!-- ===== Tab：工具库（原本地商城内容直出，少一层钻入） ===== -->
       <el-tab-pane label="工具库" name="tools">
-        <!-- 内置工具 -->
+        <!-- 内置工具：紧凑列表，点击行展开入参/出参 -->
         <section class="section">
           <h4 class="subsection-title">内置工具</h4>
           <el-empty v-if="toolsStore.builtinTools.length === 0" description="暂无内置工具" :image-size="60" />
@@ -21,20 +21,19 @@
               <span class="builtin-cat-name">{{ g.label }}</span>
               <span class="builtin-cat-count">{{ g.tools.length }}</span>
             </div>
-            <div v-show="isBuiltinCatOpen(g.key)" class="card-grid">
-              <div v-for="t in g.tools" :key="t.name" class="tool-card">
-                <div class="tool-card-header">
-                  <el-icon :size="16" class="tool-icon"><Switch /></el-icon>
-                  <span class="tool-card-name">{{ t.name }}</span>
-                  <el-tag size="small" type="info" effect="plain">内置</el-tag>
+            <div v-show="isBuiltinCatOpen(g.key)" class="builtin-list">
+              <div
+                v-for="t in g.tools"
+                :key="t.name"
+                class="builtin-item"
+                :class="{ open: expandedSchema['builtin-' + t.name] }"
+              >
+                <div class="builtin-item-head" @click="toggleSchema('builtin-' + t.name)">
+                  <span class="builtin-item-name">{{ t.name }}</span>
+                  <span class="builtin-item-desc" :title="t.description">{{ t.description }}</span>
+                  <el-icon :size="12" class="builtin-item-arrow" :class="{ open: expandedSchema['builtin-' + t.name] }"><ArrowRight /></el-icon>
                 </div>
-                <p class="tool-card-desc" :title="t.description">{{ t.description }}</p>
-                <div class="tool-schema-toggle">
-                  <el-button size="small" link @click="toggleSchema('builtin-' + t.name)">
-                    {{ expandedSchema['builtin-' + t.name] ? '收起' : '入参/出参' }}
-                  </el-button>
-                </div>
-                <div v-if="expandedSchema['builtin-' + t.name]" class="tool-schema-block">
+                <div v-if="expandedSchema['builtin-' + t.name]" class="builtin-item-body">
                   <div class="schema-section"><span class="schema-label">入参</span><pre class="schema-pre">{{ fmtSchema(t.inputSchema) }}</pre></div>
                   <div class="schema-section"><span class="schema-label">出参</span><pre class="schema-pre">{{ fmtSchema(t.outputSchema) }}</pre></div>
                 </div>
@@ -58,7 +57,6 @@
               :class="{ disabled: !t.enabled }"
             >
               <div class="tool-card-header">
-                <el-icon :size="16" class="tool-icon"><Switch /></el-icon>
                 <span class="tool-card-name">{{ t.name }}</span>
                 <el-tag size="small" :type="t.source === 'remote' ? 'primary' : 'success'" effect="plain">
                   {{ t.source === 'remote' ? '远程' : '本地' }}
@@ -90,6 +88,7 @@
                     size="small"
                     @change="(v: boolean) => toolsStore.toggleEnabled(t.id, v)"
                   />
+                  <el-button size="small" link type="primary" :disabled="!t.enabled" @click="openRunner(t)">试运行</el-button>
                   <el-button size="small" link @click="openEditor(t)">编辑</el-button>
                   <el-button size="small" link type="danger" @click="delCustomTool(t.id)">删除</el-button>
                 </div>
@@ -159,7 +158,6 @@
           <div v-else class="card-grid">
             <div v-for="item in remoteTools" :key="item.id" class="tool-card">
               <div class="tool-card-header">
-                <el-icon :size="16" class="tool-icon"><Switch /></el-icon>
                 <span class="tool-card-name">{{ item.name }}</span>
                 <el-tag size="small" type="primary" effect="plain">远程</el-tag>
               </div>
@@ -221,6 +219,36 @@
       </template>
     </el-dialog>
 
+    <!-- ========== 试运行 Dialog（后端 /tools/:id/execute，node:vm 沙箱） ========== -->
+    <el-dialog
+      v-model="showRunner"
+      :title="`试运行：${runningTool?.name || ''}`"
+      width="560px"
+      :close-on-click-modal="false"
+      @close="resetRunner"
+    >
+      <div class="runner-entry">入口函数：{{ runningTool?.entry }}</div>
+      <el-input
+        v-model="runnerArgsText"
+        type="textarea"
+        :rows="6"
+        class="code-input"
+        placeholder='入参 JSON，如 {"key": "value"}；留空 = {}'
+      />
+      <div v-if="runnerError" class="runner-block runner-error">
+        <span class="schema-label">错误</span>
+        <pre class="schema-pre">{{ runnerError }}</pre>
+      </div>
+      <div v-if="runnerResult !== null" class="runner-block">
+        <span class="schema-label">结果</span>
+        <pre class="schema-pre">{{ runnerResult }}</pre>
+      </div>
+      <template #footer>
+        <el-button @click="showRunner = false">关闭</el-button>
+        <el-button type="primary" :loading="running" @click="runTool">运行</el-button>
+      </template>
+    </el-dialog>
+
     <!-- ========== 远程商城源 Dialog ========== -->
     <el-dialog v-model="showSourceForm" title="添加远程工具商城" width="480px" :close-on-click-modal="false" @close="resetSourceForm">
       <el-form label-width="100px">
@@ -249,12 +277,12 @@
 import { ref, computed, onMounted } from 'vue';
 import { useRoute } from 'vue-router';
 import {
-  Plus, Switch,
+  Plus,
   ArrowLeft, Cloudy, ArrowRight,
 } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { useAuthStore } from '../stores';
-import { useToolsStore } from '../stores/tools';
+import { useToolsStore, type CustomToolItem } from '../stores/tools';
 import McpPanel from '../components/McpPanel.vue';
 import MarketplaceShell from '../components/marketplace/MarketplaceShell.vue';
 import MarketplaceCard from '../components/marketplace/MarketplaceCard.vue';
@@ -382,6 +410,62 @@ async function delCustomTool(id: string) {
   } catch {}
 }
 
+// ---- 试运行（POST /api/tools/:id/execute，服务端 node:vm 沙箱） ----
+const showRunner = ref(false);
+const runningTool = ref<CustomToolItem | null>(null);
+const runnerArgsText = ref('');
+const runnerResult = ref<string | null>(null);
+const runnerError = ref('');
+const running = ref(false);
+
+/** 从 inputSchema.properties 生成默认参数模板（string→""，number→0，boolean→false，array/object→空结构） */
+function defaultArgsFromSchema(schema: Record<string, unknown> | undefined): string {
+  const props = (schema?.properties || {}) as Record<string, any>;
+  const out: Record<string, unknown> = {};
+  for (const [k, p] of Object.entries(props)) {
+    const type = Array.isArray(p.type) ? p.type[0] : p.type;
+    if (type === 'number' || type === 'integer') out[k] = 0;
+    else if (type === 'boolean') out[k] = false;
+    else if (type === 'array') out[k] = [];
+    else if (type === 'object') out[k] = {};
+    else out[k] = '';
+  }
+  return JSON.stringify(out, null, 2);
+}
+
+function openRunner(t: CustomToolItem) {
+  runningTool.value = t;
+  runnerArgsText.value = defaultArgsFromSchema(t.inputSchema);
+  runnerResult.value = null;
+  runnerError.value = '';
+  showRunner.value = true;
+}
+
+function resetRunner() {
+  runningTool.value = null;
+  runnerArgsText.value = '';
+  runnerResult.value = null;
+  runnerError.value = '';
+}
+
+async function runTool() {
+  if (!runningTool.value) return;
+  let args: Record<string, unknown> = {};
+  const text = runnerArgsText.value.trim();
+  if (text) {
+    try { args = JSON.parse(text); } catch { runnerError.value = '入参 JSON 格式错误'; runnerResult.value = null; return; }
+  }
+  running.value = true;
+  runnerError.value = '';
+  runnerResult.value = null;
+  try {
+    const r = await toolsStore.executeTool(runningTool.value.id, args);
+    runnerResult.value = JSON.stringify(r, null, 2);
+  } catch (e: unknown) {
+    runnerError.value = e instanceof Error ? e.message : String(e);
+  } finally { running.value = false; }
+}
+
 // ---- 远程源管理 ----
 const showSourceForm = ref(false);
 const sourceForm = ref({ name: '', baseUrl: '', authType: 'none' as string, authValue: '' });
@@ -476,7 +560,33 @@ async function installTool(item: any) {
 .builtin-cat-arrow.open { transform: rotate(90deg); }
 .builtin-cat-name { font-size: 13px; font-weight: 600; color: var(--color-text); }
 .builtin-cat-count { font-size: 11px; font-weight: 700; color: var(--color-text-secondary); background: rgba(15,23,42,0.06); border-radius: 10px; padding: 2px 8px; }
-.builtin-cat .card-grid { padding: 12px 14px; }
+
+/* 内置工具紧凑列表：一行一个工具，点击行展开 schema */
+.builtin-list { display: flex; flex-direction: column; }
+.builtin-item { border-bottom: 1px solid var(--glass-border); }
+.builtin-item:last-child { border-bottom: none; }
+.builtin-item-head {
+  display: flex; align-items: baseline; gap: 12px;
+  padding: 8px 14px; cursor: pointer; user-select: none;
+  transition: background 0.12s;
+}
+.builtin-item-head:hover { background: rgba(99,102,241,0.04); }
+.builtin-item-name {
+  font-family: "JetBrains Mono", "Cascadia Code", monospace;
+  font-size: 12.5px; font-weight: 600; color: var(--color-text);
+  flex-shrink: 0; width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.builtin-item-desc {
+  flex: 1; font-size: 12px; color: var(--color-text-secondary);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.builtin-item-arrow { align-self: center; flex-shrink: 0; transition: transform 0.15s; color: var(--color-text-secondary); }
+.builtin-item-arrow.open { transform: rotate(90deg); }
+.builtin-item-body {
+  padding: 4px 14px 12px;
+  display: flex; flex-direction: column; gap: 8px;
+  background: rgba(15, 23, 42, 0.03);
+}
 
 /* ---- 工具卡片（统一高度 + 描述截断）---- */
 .card-grid {
@@ -510,7 +620,6 @@ async function installTool(item: any) {
   max-height: 3em; /* fallback: 2 lines × 1.5 line-height */
 }
 .tool-card-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: auto; }
-.tool-icon { color: #8B5CF6; flex-shrink: 0; }
 
 /* 入参/出参展示块 */
 .tool-schema-toggle { margin-top: 4px; }
@@ -533,11 +642,19 @@ async function installTool(item: any) {
 }
 :root[data-theme="dark"] .tool-schema-block { background: rgba(255, 255, 255, 0.04); }
 :root[data-theme="dark"] .schema-pre { background: rgba(0, 0, 0, 0.35); }
+:root[data-theme="dark"] .builtin-item-body { background: rgba(255, 255, 255, 0.03); }
+:root[data-theme="dark"] .builtin-cat-count { background: rgba(255,255,255,0.08); }
 
 .card-actions { display: flex; gap: 4px; align-items: center; }
 .stat { font-size: 12px; color: var(--color-text-secondary); }
 
 .code-input textarea { font-family: "JetBrains Mono", "Cascadia Code", monospace; font-size: 13px; }
+
+/* ---- 试运行 ---- */
+.runner-entry { font-size: 12px; color: var(--color-text-secondary); margin-bottom: 10px; }
+.runner-entry code, .runner-entry { font-family: inherit; }
+.runner-block { margin-top: 12px; display: flex; flex-direction: column; gap: 4px; }
+.runner-error .schema-pre { color: #d84a3a; }
 
 /* ===== Mobile ===== */
 @media (max-width: 767px) {
@@ -552,5 +669,8 @@ async function installTool(item: any) {
   .sub-title { font-size: 16px; }
   .card-grid { grid-template-columns: 1fr; gap: 12px; }
   .market-grid { grid-template-columns: 1fr; gap: 12px; }
+  .builtin-item-head { flex-wrap: wrap; gap: 4px 10px; padding: 10px 12px; }
+  .builtin-item-name { width: auto; max-width: 100%; }
+  .builtin-item-desc { width: 100%; white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 }
 </style>
