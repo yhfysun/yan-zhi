@@ -4,6 +4,9 @@ import {
   FetchSearchBackend,
   DuckDuckGoSearchBackend,
   ServerSearchBackend,
+  matchDomain,
+  dedupeByDomain,
+  rankByQuality,
   type SearchResult,
   type SearchBackend,
 } from './web-search';
@@ -105,25 +108,25 @@ describe('WebSearchToolTest', () => {
     expect(res.content[0].text).toBe('No results found.');
   });
 
-  it('maxResults 缺省时传给 backend 的值为 5', async () => {
+  it('maxResults 缺省时传给 backend 的值为 10（fetchCount = 2*5）', async () => {
     let received = -1;
     tool.setBackend(makeBackend(async (_q, n) => ((received = n), [])));
     await tool.execute({ query: 'q' });
-    expect(received).toBe(5);
-  });
-
-  it('maxResults 超过 10 时被截断为 10', async () => {
-    let received = -1;
-    tool.setBackend(makeBackend(async (_q, n) => ((received = n), [])));
-    await tool.execute({ query: 'q', maxResults: 99 });
     expect(received).toBe(10);
   });
 
-  it('maxResults 为 0（falsy）时回退到默认 5', async () => {
+  it('maxResults 超过 10 时被截断为 10，传给 backend 的 fetchCount=20', async () => {
+    let received = -1;
+    tool.setBackend(makeBackend(async (_q, n) => ((received = n), [])));
+    await tool.execute({ query: 'q', maxResults: 99 });
+    expect(received).toBe(20);
+  });
+
+  it('maxResults 为 0（falsy）时回退到默认 5，传给 backend 的 fetchCount=10', async () => {
     let received = -1;
     tool.setBackend(makeBackend(async (_q, n) => ((received = n), [])));
     await tool.execute({ query: 'q', maxResults: 0 });
-    expect(received).toBe(5);
+    expect(received).toBe(10);
   });
 
   it('backend.search 抛 Error 时返回 "Search error: <message>" 且 isError=true', async () => {
@@ -151,6 +154,83 @@ describe('WebSearchToolTest', () => {
     const res = await tool.execute({ query: 'q' });
     expect(res.content[0].text).not.toContain('undefined');
     expect(res.content[0].text).toContain('1. A');
+  });
+
+  it('sites 白名单生效：仅返回匹配域名的结果，其它域名被过滤掉', async () => {
+    tool.setBackend(
+      makeBackend(async () => [
+        { title: 'A', url: 'https://arxiv.org/abs/1234', snippet: 'sa' },
+        { title: 'B', url: 'https://example.com/x', snippet: 'sb' },
+        { title: 'C', url: 'https://cs.edu.cn/news', snippet: 'sc' },
+      ]),
+    );
+    const res = await tool.execute({ query: 'q', maxResults: 5, sites: ['arxiv.org', '*.edu.cn'] });
+    const text = res.content[0].text!;
+    expect(text).toContain('arxiv.org');
+    expect(text).toContain('cs.edu.cn');
+    expect(text).not.toContain('example.com');
+  });
+
+  it('sites 数组为空数组时不过滤（视为未传）', async () => {
+    tool.setBackend(
+      makeBackend(async () => [
+        { title: 'A', url: 'https://a.com/x', snippet: 's' },
+        { title: 'B', url: 'https://b.com/y', snippet: 's' },
+      ]),
+    );
+    const res = await tool.execute({ query: 'q', sites: [] });
+    expect(res.content[0].text).toContain('a.com');
+    expect(res.content[0].text).toContain('b.com');
+  });
+
+  it('sites 全部不匹配时输出 "No results matched sites=..."', async () => {
+    tool.setBackend(
+      makeBackend(async () => [
+        { title: 'A', url: 'https://a.com/x', snippet: 's' },
+      ]),
+    );
+    const res = await tool.execute({ query: 'q', sites: ['arxiv.org'] });
+    expect(res.content[0].text).toContain('No results matched sites=');
+    expect(res.content[0].text).toContain('arxiv.org');
+  });
+
+  it('sites 支持 *.example.com 通配匹配子域', async () => {
+    tool.setBackend(
+      makeBackend(async () => [
+        { title: 'A', url: 'https://foo.example.com/x', snippet: 's' },
+        { title: 'B', url: 'https://bar.example.com/y', snippet: 's' },
+        { title: 'C', url: 'https://example.com/z', snippet: 's' }, // 精确 *.example.com 不匹配裸 example.com
+      ]),
+    );
+    const res = await tool.execute({ query: 'q', maxResults: 5, sites: ['*.example.com'] });
+    const text = res.content[0].text!;
+    expect(text).toContain('foo.example.com');
+    expect(text).toContain('bar.example.com');
+    expect(text).not.toContain('1. C'); // 主域不被 *.example.com 命中
+  });
+
+  it('同域名去重：同一域名超过 2 条时被截断为 2 条', async () => {
+    tool.setBackend(
+      makeBackend(async () => [
+        { title: 'A1', url: 'https://e.com/1', snippet: 'sa' },
+        { title: 'A2', url: 'https://e.com/2', snippet: 'sa' },
+        { title: 'A3', url: 'https://e.com/3', snippet: 'sa' }, // 第 3 条被丢
+        { title: 'B',  url: 'https://other.com/1', snippet: 'sb' },
+      ]),
+    );
+    const res = await tool.execute({ query: 'q', maxResults: 10 });
+    const text = res.content[0].text!;
+    expect(text).toContain('A1');
+    expect(text).toContain('A2');
+    expect(text).not.toContain('A3');
+    expect(text).toContain('B');
+  });
+
+  it('rankByQuality 把权威短域（.edu）排在非权威长域之前', async () => {
+    const r1 = { title: 'AAA very long title that exceeds 120 chars to drop the title length bonus significantly AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', url: 'https://foo.bar.example.longdomain.com/x', snippet: '' };
+    const r2 = { title: 'T', url: 'https://cs.edu.cn/news', snippet: 'snippet here snippet here snippet here snippet here snippet here snippet here snippet here snippet here snippet' };
+    const ranked = rankByQuality([r1, r2]);
+    expect(ranked[0]).toBe(r2); // .edu 域 + 合理标题 + 中等 snippet → 第一
   });
 });
 
@@ -454,5 +534,107 @@ describe('ServerSearchBackendTest', () => {
     fetchMock.mockResolvedValue(mockResponse({ ok: false, status: 429, json: {} }));
     const backend = new ServerSearchBackend();
     await expect(backend.search('q', 5)).rejects.toThrow('搜索服务返回 HTTP 429');
+  });
+});
+
+describe('matchDomainTest', () => {
+  it('精确域名匹配：host 等于 pattern 时返回 true', () => {
+    expect(matchDomain('https://example.com/path', 'example.com')).toBe(true);
+  });
+
+  it('精确域名匹配：子域不等于裸域', () => {
+    expect(matchDomain('https://foo.example.com/path', 'example.com')).toBe(false);
+  });
+
+  it('通配符 *.example.com 匹配子域 foo.example.com', () => {
+    expect(matchDomain('https://foo.example.com/path', '*.example.com')).toBe(true);
+    expect(matchDomain('https://a.b.example.com/path', '*.example.com')).toBe(true);
+  });
+
+  it('通配符 *.example.com 不匹配裸 example.com（避免过宽）', () => {
+    expect(matchDomain('https://example.com/path', '*.example.com')).toBe(false);
+  });
+
+  it('URL 解析失败（如无协议）时返回 false，不抛错', () => {
+    expect(matchDomain('not-a-url', 'example.com')).toBe(false);
+  });
+
+  it('host 大小写归一化（URL hostname / pattern 都不区分大小写）', () => {
+    expect(matchDomain('https://Example.COM/path', 'example.com')).toBe(true);
+  });
+
+  it('pattern 含协议前缀不影响匹配（用 URL 解析 host）', () => {
+    expect(matchDomain('https://example.com/path', 'https://example.com')).toBe(true);
+  });
+});
+
+describe('dedupeByDomainTest', () => {
+  it('同一域名 cap=2 时保留前 2 条，丢弃后续', () => {
+    const results: SearchResult[] = [
+      { title: 'A1', url: 'https://e.com/1', snippet: '' },
+      { title: 'A2', url: 'https://e.com/2', snippet: '' },
+      { title: 'A3', url: 'https://e.com/3', snippet: '' },
+    ];
+    const out = dedupeByDomain(results, 2);
+    expect(out.map((r) => r.title)).toEqual(['A1', 'A2']);
+  });
+
+  it('cap=1 时同域仅保留第一条（最强去重）', () => {
+    const results: SearchResult[] = [
+      { title: 'A1', url: 'https://e.com/1', snippet: '' },
+      { title: 'A2', url: 'https://e.com/2', snippet: '' },
+    ];
+    const out = dedupeByDomain(results, 1);
+    expect(out).toHaveLength(1);
+    expect(out[0].title).toBe('A1');
+  });
+
+  it('不同域名互不影响', () => {
+    const results: SearchResult[] = [
+      { title: 'A', url: 'https://e.com/1', snippet: '' },
+      { title: 'B', url: 'https://f.com/1', snippet: '' },
+      { title: 'C', url: 'https://g.com/1', snippet: '' },
+    ];
+    const out = dedupeByDomain(results, 2);
+    expect(out).toHaveLength(3);
+  });
+
+  it('URL 无法解析时按 url 字符串本身作为 host key（不抛错）', () => {
+    const results: SearchResult[] = [
+      { title: 'A', url: 'not-a-url', snippet: '' },
+      { title: 'B', url: 'not-a-url', snippet: '' },
+    ];
+    const out = dedupeByDomain(results, 2);
+    expect(out).toHaveLength(2); // 都按 raw 视为同一 host，第一次出现允许，第二次也允许
+  });
+});
+
+describe('rankByQualityTest', () => {
+  it('中等长度 snippet（80~400）比空 snippet 排名更高', () => {
+    const r1 = { title: 'A', url: 'https://e.com/1', snippet: '' };
+    const r2 = { title: 'B', url: 'https://f.com/1', snippet: 'a'.repeat(200) };
+    const ranked = rankByQuality([r1, r2]);
+    expect(ranked[0]).toBe(r2);
+  });
+
+  it('.edu/.gov/.org 域加分', () => {
+    const r1 = { title: 'A', url: 'https://foo.bar.commercial.com/1', snippet: 'a'.repeat(200) };
+    const r2 = { title: 'B', url: 'https://cs.edu.cn/news', snippet: 'a'.repeat(200) };
+    const ranked = rankByQuality([r1, r2]);
+    expect(ranked[0]).toBe(r2);
+  });
+
+  it('同分时按原顺序稳定排序', () => {
+    const r1 = { title: 'A', url: 'https://e.com/1', snippet: 'a'.repeat(200) };
+    const r2 = { title: 'B', url: 'https://f.com/1', snippet: 'a'.repeat(200) };
+    const ranked = rankByQuality([r1, r2]);
+    expect(ranked).toEqual([r1, r2]);
+  });
+
+  it('超长 snippet（>800）减分，避免整页清洗文本塞前排', () => {
+    const r1 = { title: 'A', url: 'https://e.com/1', snippet: 'a'.repeat(1500) };
+    const r2 = { title: 'B', url: 'https://f.com/1', snippet: 'a'.repeat(200) };
+    const ranked = rankByQuality([r1, r2]);
+    expect(ranked[0]).toBe(r2);
   });
 });

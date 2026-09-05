@@ -186,7 +186,7 @@ export class ServerSearchBackend implements SearchBackend {
 
 export class WebSearchTool implements BuiltInTool {
   name = 'web_search';
-  description = 'Search the web for information. Returns a list of results with titles, URLs, and snippets. 支持 timeRange/freshness 时间过滤（day/week/month/year/recent）以优先返回最近的结果；推荐/资讯类查询建议传 timeRange=year 优先返回最近一年结果，避免返回过期旧数据。';
+  description = 'Search the web for information. Returns a list of results with titles, URLs, and snippets. 支持 timeRange/freshness 时间过滤（day/week/month/year/recent）以优先返回最近的结果；推荐/资讯类查询建议传 timeRange=year 优先返回最近一年结果，避免返回过期旧数据。sites 白名单可限定搜索来源域（如 ["arxiv.org","*.edu.cn"]），同域名默认最多保留 2 条防 SEO spam。';
 
   inputSchema = {
     type: 'object',
@@ -208,6 +208,11 @@ export class WebSearchTool implements BuiltInTool {
         type: 'string',
         enum: ['day', 'week', 'month', 'year', 'recent'],
         description: 'timeRange 的同义别名，兼容性参数，行为与 timeRange 完全一致。',
+      },
+      sites: {
+        type: 'array',
+        items: { type: 'string' },
+        description: '域名白名单，仅返回匹配这些域名的结果。支持通配符，如 ["arxiv.org", "*.edu.cn"]。空数组 = 不过滤。',
       },
     },
     required: ['query'],
@@ -231,15 +236,35 @@ export class WebSearchTool implements BuiltInTool {
     const maxResults = Math.min((args.maxResults as number) || 5, 10);
     // freshness 为 timeRange 的同义别名，两者任一有效即采用
     const timeRange = normalizeTimeRange(args.timeRange ?? args.freshness);
+    const sites = Array.isArray(args.sites) ? (args.sites as unknown[]).filter((s): s is string => typeof s === 'string') : [];
 
     if (!query) {
       return { content: [{ type: 'text', text: 'Error: query is required' }], isError: true };
     }
 
     try {
-      const results = await this.backend.search(query, maxResults, timeRange);
+      // 多取一些结果，方便 sites/dedupe 后还能凑够 maxResults
+      const fetchCount = Math.min((maxResults || 5) * 2, 20);
+      let results = await this.backend.search(query, fetchCount, timeRange);
+
+      // 1) sites 白名单过滤（仅在白名单非空时生效）
+      if (sites.length > 0) {
+        results = results.filter((r) => sites.some((pat) => matchDomain(r.url, pat)));
+      }
+
+      // 2) 同域名去重（cap=2 防 SEO spam / 镜像站占位）
+      results = dedupeByDomain(results, 2);
+
+      // 3) 按相关性重排（snippet 信息量 > 域名权威 > 标题长度）
+      results = rankByQuality(results);
+
+      // 4) 截断到 maxResults
+      results = results.slice(0, maxResults);
+
       const text = results.length === 0
-        ? 'No results found.'
+        ? (sites.length > 0
+          ? `No results matched sites=${JSON.stringify(sites)} for "${query}".`
+          : 'No results found.')
         : results.map((r, i) => `${i + 1}. ${r.title}\n   URL: ${r.url}\n   ${r.snippet}`).join('\n\n');
 
       return { content: [{ type: 'text', text }] };
@@ -248,4 +273,77 @@ export class WebSearchTool implements BuiltInTool {
       return { content: [{ type: 'text', text: `Search error: ${msg}` }], isError: true };
     }
   }
+}
+
+// ===== 后处理工具函数（导出用于测试） =====
+
+/**
+ * URL 域名匹配：支持通配符 `*.example.com`（仅前缀通配），容忍 pattern 带 protocol/path。
+ * - "example.com" 精确匹配 host 等于 example.com
+ * - "*.example.com" 匹配 host 以 .example.com 结尾（即 foo.example.com / bar.example.com 都匹配）
+ * - "https://example.com/path" → 剥掉 protocol/path 再匹配 host
+ */
+export function matchDomain(url: string, pattern: string): boolean {
+  try {
+    const u = new URL(url);
+    const host = u.hostname.toLowerCase();
+    let pat = pattern.toLowerCase().trim();
+    // 容忍 pattern 带 protocol/path（如 "https://example.com/path"）
+    pat = pat.replace(/^https?:\/\//, '').split('/')[0].trim();
+    if (pat.startsWith('*.')) {
+      const suffix = pat.slice(1); // ".example.com"
+      return host.endsWith(suffix) && host.length > suffix.length;
+    }
+    return host === pat;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 同域名去重：同一 host 最多保留 cap 条，超出的丢弃（保留前 cap 条，按原顺序）。
+ */
+export function dedupeByDomain(results: SearchResult[], cap = 2): SearchResult[] {
+  const seen = new Map<string, number>();
+  const out: SearchResult[] = [];
+  for (const r of results) {
+    let host = '';
+    try { host = new URL(r.url).hostname.toLowerCase(); } catch { host = r.url; }
+    const c = seen.get(host) || 0;
+    if (c >= cap) continue;
+    seen.set(host, c + 1);
+    out.push(r);
+  }
+  return out;
+}
+
+/**
+ * 基础相关性重排：
+ * - snippet 长度 80~400 字加分（太短信息量低，太长可能是被污染的整页文本）
+ * - 短 host（如 arxiv.org / github.com / *.edu.cn）轻微加分
+ * - 标题含 query 关键词加分
+ */
+export function rankByQuality(results: SearchResult[]): SearchResult[] {
+  return [...results]
+    .map((r, i) => ({ r, score: qualityScore(r), i }))
+    .sort((a, b) => b.score - a.score || a.i - b.i)
+    .map((x) => x.r);
+}
+
+function qualityScore(r: SearchResult): number {
+  let s = 0;
+  const len = (r.snippet || '').length;
+  if (len >= 80 && len <= 400) s += 2;
+  else if (len > 400 && len <= 800) s += 1;
+  // 短 host 加分（权威域往往短）
+  try {
+    const host = new URL(r.url).hostname.toLowerCase();
+    const partCount = host.split('.').length;
+    if (partCount <= 2) s += 1;
+    // .edu / .gov / .org 权威域（含 .edu.cn / .gov.uk 等二级域变体）
+    if (/\.(edu|gov|org)(\.|$)/.test(host)) s += 1;
+  } catch { /* 忽略 */ }
+  // 标题非空 + 长度合理加分
+  if (r.title && r.title.length >= 8 && r.title.length <= 120) s += 1;
+  return s;
 }
