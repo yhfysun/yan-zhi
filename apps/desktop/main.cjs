@@ -164,11 +164,20 @@ function startServer() {
     // 生产模式：用 Electron 作为 Node.js（ELECTRON_RUN_AS_NODE=1）运行后端编译产物
     const serverPath = path.join(process.resourcesPath, 'server', 'dist', 'apps', 'server', 'src', 'index.js');
     const dataDir = ensureServerDataDir();
+    // 后端日志落盘：新电脑排障必须有据可查（黑屏时无控制台可见）
+    const logPath = path.join(app.getPath('userData'), 'server.log');
+    try { if (fs.statSync(logPath).size > 5 * 1024 * 1024) fs.unlinkSync(logPath); } catch {}
+    const logStream = fs.createWriteStream(logPath, { flags: 'a' });
+    const stamp = () => new Date().toLocaleString('zh-CN', { hour12: false });
+    logStream.write(`\n===== [${stamp()}] 后端启动 =====\n`);
     serverProcess = spawn(process.execPath, [serverPath], {
-      stdio: 'inherit',
+      stdio: ['ignore', 'pipe', 'pipe'],
       env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', YANZHI_MODELS_DIR: modelsDir, ...(dataDir ? { DATA_DIR: dataDir } : {}) },
     });
-    serverProcess.on('error', (err) => console.error('后端启动失败:', err));
+    serverProcess.stdout.on('data', (d) => logStream.write(d));
+    serverProcess.stderr.on('data', (d) => logStream.write(d));
+    serverProcess.on('error', (err) => { logStream.write(`[${stamp()}] 后端进程启动失败: ${err.stack || err}\n`); console.error('后端启动失败:', err); });
+    serverProcess.on('exit', (code) => logStream.write(`\n===== [${stamp()}] 后端退出 code=${code} =====\n`));
     console.log('后端服务器启动中:', serverPath);
   }
 }
@@ -1911,6 +1920,7 @@ app.whenReady().then(() => {
   const checkHealth = (retries = 0) => {
     if (retries > 60) { // 最多等 30 秒
       console.error('[后端] 启动超时，强制创建窗口');
+      try { fs.appendFileSync(path.join(app.getPath('userData'), 'server.log'), `[${new Date().toLocaleString('zh-CN', { hour12: false })}] [后端] 30 秒健康检查超时，后端未就绪，强制创建窗口（大概率后端启动失败，见上方日志）\n`); } catch {}
       createWindow();
       return;
     }

@@ -16,6 +16,7 @@ import {
   handleWechatInbound,
   handleWechatPersonalInbound,
 } from '../services/im.js';
+import { syncDingtalkStreamClients } from '../services/dingtalk-stream.js';
 
 const router = Router();
 
@@ -28,6 +29,7 @@ router.get('/connectors', authMiddleware, (req: Request, res: Response) => {
 router.post('/connectors', authMiddleware, (req: Request, res: Response) => {
   try {
     res.json({ data: createImConnector(req.user!.userId, req.body || {}) });
+    void syncDingtalkStreamClients();
   } catch (e: unknown) {
     res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
   }
@@ -37,6 +39,7 @@ router.post('/connectors', authMiddleware, (req: Request, res: Response) => {
 router.patch('/connectors/:id', authMiddleware, (req: Request, res: Response) => {
   try {
     res.json({ data: updateImConnector(req.user!.userId, req.params.id, req.body || {}) });
+    void syncDingtalkStreamClients();
   } catch (e: unknown) {
     res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
   }
@@ -46,6 +49,7 @@ router.patch('/connectors/:id', authMiddleware, (req: Request, res: Response) =>
 router.delete('/connectors/:id', authMiddleware, (req: Request, res: Response) => {
   try {
     deleteImConnector(req.user!.userId, req.params.id);
+    void syncDingtalkStreamClients();
     res.json({ ok: true });
   } catch (e: unknown) {
     res.status(400).json({ error: e instanceof Error ? e.message : String(e) });

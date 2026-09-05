@@ -206,15 +206,19 @@ class CodeNodeHandler implements NodeHandler {
   type = 'code';
   async execute(config: Record<string, unknown>, ctx: RunContext): Promise<NodeResult> {
     const expr = (config.expression as string) || 'return null;';
+    const nodeId = (config[NODE_ID_KEY] as string) || '';
     try {
-      const sandboxed = `"use strict"; const window=void 0,document=void 0,fetch=void 0,XMLHttpRequest=void 0,eval=void 0,Function=void 0,setTimeout=void 0,setInterval=void 0; return (function(ctx){ ${expr} })(ctx);`;
+      // 注意：严格模式下不能 const eval/arguments（SyntaxError），只屏蔽 window/document 等浏览器全局
+      const sandboxed = `"use strict"; const window=void 0,document=void 0,fetch=void 0,XMLHttpRequest=void 0,setTimeout=void 0,setInterval=void 0; return (function(ctx){ ${expr} })(ctx);`;
       const fn = new Function('ctx', sandboxed);
       const out = await Promise.race([
         Promise.resolve(fn(ctx)),
         new Promise<null>((_, rej) => setTimeout(() => rej(new Error('代码节点超时（3s）')), 3000)),
       ]);
       return { output: out };
-    } catch {
+    } catch (e: any) {
+      // 不再静默吞错：至少落到 server 日志，便于排查「代码节点输出 null」类问题
+      console.error(`[wf-code] 节点 ${nodeId} 执行失败: ${e?.message || e}`);
       return { output: null };
     }
   }
@@ -557,7 +561,10 @@ async function executeBundle(
   if (run) emitRunEvent(run, { type: 'run:started', msg: bundle.agent.name || bundle.agent.id });
   logs.push({ nodeId: '__start__', status: 'ok', msg: bundle.agent.name || bundle.agent.id, time: Date.now() });
   try {
-    const result = await eng.run(annotated.agent as any, { ...inputs, __userId: userId }, { callStack: [bundle.agent.id] });
+    const result = await eng.run(annotated.agent as any, { ...inputs, __userId: userId }, {
+      callStack: [bundle.agent.id],
+      onNodeEvent: run ? (e) => emitRunEvent(run, e) : undefined,
+    });
     logs.push({ nodeId: '__end__', status: 'ok', time: Date.now() });
     return result;
   } catch (e: any) {

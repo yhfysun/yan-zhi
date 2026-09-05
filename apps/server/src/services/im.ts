@@ -3,7 +3,10 @@ import { readFile } from 'node:fs/promises';
 import { db } from '../db.js';
 import { createTask, subscribe } from '../llm-task-manager.js';
 
-type ImProvider = 'wechat' | 'feishu' | 'wechat-personal';
+type ImProvider = 'wechat' | 'feishu' | 'wechat-personal' | 'dingtalk';
+
+/** 钉钉 Stream 回调订阅 topic（机器人收消息） */
+export const DINGTALK_ROBOT_TOPIC = '/v1.0/im/bot/messages/get';
 
 interface ImSendInput {
   to: string;
@@ -44,8 +47,8 @@ export function createImConnector(
   userId: string,
   input: { provider: string; name: string; config?: Record<string, unknown>; enabled?: boolean },
 ) {
-  if (!input.provider || !['wechat', 'feishu', 'wechat-personal'].includes(input.provider)) {
-    throw new Error('provider 必须为 wechat / feishu / wechat-personal');
+  if (!input.provider || !['wechat', 'feishu', 'wechat-personal', 'dingtalk'].includes(input.provider)) {
+    throw new Error('provider 必须为 wechat / feishu / wechat-personal / dingtalk');
   }
   if (!input.name) throw new Error('连接器名称为必填项');
   const id = uuid();
@@ -117,6 +120,9 @@ export async function sendImMessage(userId: string, connectorId: string, input: 
   }
   if (connector.provider === 'wechat-personal') {
     return sendWechatPersonal(config, input);
+  }
+  if (connector.provider === 'dingtalk') {
+    return sendDingtalk(config, input);
   }
   throw new Error('不支持的 provider');
 }
@@ -200,6 +206,66 @@ async function sendWechat(config: any, input: ImSendInput) {
  */
 async function sendWechatPersonal(_config: any, _input: ImSendInput) {
   throw new Error('个人微信发送需接入 ClawBot CLI（@tencent-weixin/openclaw-weixin-cli），暂未启用');
+}
+
+/**
+ * 钉钉发送：to 为群会话 openConversationId（cid 开头）走群聊接口，
+ * 否则视为用户 userid 走单聊批量接口。仅支持文本。
+ */
+async function sendDingtalk(config: any, input: ImSendInput) {
+  if (!config.clientId || !config.clientSecret) {
+    throw new Error('钉钉连接器缺少 clientId/clientSecret');
+  }
+  if (input.file) {
+    throw new Error('钉钉发送暂仅支持文本消息');
+  }
+  const token = await getDingtalkToken(config.clientId, config.clientSecret);
+  const robotCode = config.robotCode || config.clientId;
+  const to = input.to;
+  // openConversationId 以 cid 开头（钉钉约定），据此区分群聊 / 单聊目标
+  const isGroup = to.startsWith('cid');
+  const body = isGroup
+    ? {
+        robotCode,
+        openConversationId: to,
+        msgKey: 'sampleText',
+        msgParam: JSON.stringify({ content: input.content || '' }),
+      }
+    : {
+        robotCode,
+        userIds: [to],
+        msgKey: 'sampleText',
+        msgParam: JSON.stringify({ content: input.content || '' }),
+      };
+  const url = isGroup
+    ? 'https://api.dingtalk.com/v1.0/robot/groupMessages/send'
+    : 'https://api.dingtalk.com/v1.0/robot/oToMessages/batchSend';
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-acs-dingtalk-access-token': token,
+    },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json();
+  if (!res.ok || data?.code) {
+    throw new Error(`钉钉发送失败: ${data?.message || res.status}`);
+  }
+  return data;
+}
+
+async function getDingtalkToken(clientId: string, clientSecret: string): Promise<string> {
+  const res = await fetch('https://api.dingtalk.com/v1.0/oauth2/accessToken', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ appKey: clientId, appSecret: clientSecret }),
+  });
+  const data = await res.json();
+  if (!res.ok || !data?.accessToken) {
+    throw new Error(`获取钉钉 access_token 失败: ${data?.message || res.status}`);
+  }
+  return String(data.accessToken);
 }
 
 async function getFeishuToken(appId: string, appSecret: string): Promise<string> {
@@ -291,6 +357,11 @@ export async function testImConnector(userId: string, connectorId: string) {
     // ClawBot 连通性依赖本机 CLI 运行状态，此处仅校验配置存在
     if (!config.botName) throw new Error('个人微信连接器缺少 botName');
     return { provider: 'wechat-personal', ok: true, note: 'ClawBot CLI 未接入，仅校验配置' };
+  }
+  if (connector.provider === 'dingtalk') {
+    if (!config.clientId || !config.clientSecret) throw new Error('钉钉连接器缺少 clientId/clientSecret');
+    await getDingtalkToken(config.clientId, config.clientSecret);
+    return { provider: 'dingtalk', ok: true };
   }
   throw new Error('不支持的 provider');
 }
@@ -425,7 +496,7 @@ function readLastAssistantReply(conversationId: string): string {
 interface ImClosedLoopPayload {
   connectorId: string | undefined;
   userId: string;
-  provider: 'feishu' | 'wechat' | 'wechat-personal';
+  provider: ImProvider;
   externalId: string;
   text: string;
   fromUser: string;
@@ -631,5 +702,79 @@ export function handleWechatPersonalInbound(
     toUser: parsed.fromUser,
     replyTo: parsed.fromUser,
     rawJson: JSON.stringify(body || {}),
+  });
+}
+
+// ============================================================
+// 钉钉入站（Stream 模式回调数据）：同一闭环
+// ============================================================
+
+/** 钉钉机器人回调消息体（Stream data 反序列化后，仅列出用到的字段） */
+export interface ParsedDingtalkInbound {
+  messageId: string;
+  msgtype: string;
+  text: string;
+  conversationType: string;
+  senderStaffId: string;
+  senderId: string;
+  openConversationId: string;
+  conversationId: string;
+  conversationTitle: string;
+}
+
+/** 解析钉钉机器人消息，提取消息 ID / 文本 / 会话信息 */
+export function parseDingtalkInbound(data: any): ParsedDingtalkInbound {
+  const text =
+    typeof data?.text?.content === 'string' ? data.text.content : '';
+  return {
+    messageId: String(data?.msgId || ''),
+    msgtype: String(data?.msgtype || 'text'),
+    text,
+    conversationType: String(data?.conversationType || '1'),
+    senderStaffId: String(data?.senderStaffId || ''),
+    senderId: String(data?.senderId || ''),
+    openConversationId: String(data?.openConversationId || ''),
+    conversationId: String(data?.conversationId || ''),
+    conversationTitle: String(data?.conversationTitle || ''),
+  };
+}
+
+/**
+ * 处理钉钉入站（Stream 模式推送），仅文本消息进入 AI 闭环。
+ * 单聊按发送人建会话（fromUser=userid），群聊按群建会话（fromUser=openConversationId）。
+ */
+export function handleDingtalkInbound(
+  connectorId: string | undefined,
+  userId: string,
+  data: unknown,
+): { handled: boolean; reason?: string } {
+  const parsed = parseDingtalkInbound(data);
+  if (parsed.msgtype !== 'text' || !parsed.messageId || !parsed.text.trim()) {
+    return { handled: false, reason: 'non_text_or_empty' };
+  }
+  const isGroup = parsed.conversationType === '2';
+  const sender = parsed.senderStaffId || parsed.senderId;
+  if (!sender) return { handled: false, reason: 'empty_or_non_text' };
+
+  // 群聊文本常带 @机器人 前缀，剥掉首个 @提及
+  let text = parsed.text.trim();
+  if (isGroup) text = text.replace(/^@\S+\s+/, '').trim() || parsed.text.trim();
+
+  // 回发目标：群聊回 openConversationId（sendDingtalk 按 cid 前缀识别走群聊接口），单聊回 userid
+  const fromUser = isGroup
+    ? (parsed.openConversationId || parsed.conversationId)
+    : sender;
+  if (!fromUser) return { handled: false, reason: 'empty_or_non_text' };
+
+  return runImClosedLoop({
+    connectorId,
+    userId,
+    provider: 'dingtalk',
+    externalId: parsed.messageId,
+    text,
+    fromUser,
+    toUser: isGroup ? fromUser : sender,
+    replyTo: fromUser,
+    rawJson: JSON.stringify(data || {}),
   });
 }

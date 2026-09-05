@@ -519,7 +519,7 @@ try {
 // 智能体完整定义（含 system_prompt 等）存前端本地库；此处种子仅为了让后端能解析
 // 默认智能体的工具挂载与子智能体关系（会话绑定默认智能体后 call_agent/list_sub_agents 可用）。
 // server agent 表无 user_id 列，归属靠 is_public=1 全局共享。
-const DEFAULT_AGENT_BUILTIN_TOOLS = ['file_read', 'file_write', 'web_search', 'call_agent', 'list_sub_agents', 'ask_user', 'confirm_user', 'task_plan', 'task_step', 'configure_model_platform'];
+const DEFAULT_AGENT_BUILTIN_TOOLS = ['file_read', 'file_write', 'file_list', 'code_search', 'code_outline', 'js_exec', 'http_request', 'dns_lookup', 'port_scan', 'tcp_send', 'udp_send', 'web_search', 'call_agent', 'list_sub_agents', 'ask_user', 'confirm_user', 'task_plan', 'task_step', 'configure_model_platform'];
 const PAGE_AGENT_BUILTIN_TOOLS = ['browser_navigate', 'browser_click', 'browser_type', 'browser_press_key', 'browser_scroll', 'browser_hover', 'browser_get_text', 'browser_get_dom', 'browser_wait', 'browser_screenshot', 'browser_fill_form', 'browser_submit_form', 'browser_search', 'browser_next_page', 'browser_prev_page', 'browser_wait_for', 'browser_get_visible_text', 'browser_select_option', 'browser_check', 'browser_uncheck', 'browser_get_page_info', 'browser_login_saved', 'browser_new_tab', 'browser_switch_tab', 'browser_close_tab', 'browser_get_tabs', 'browser_wait_for_request', 'browser_get_network_log', 'browser_extract_list', 'browser_visual_locate', 'browser_upload', 'browser_download', 'browser_scroll_into_view', 'browser_is_visible', 'browser_drag', 'browser_get_a11y_tree', 'ask_user'];
 // 默认智能体的 system_prompt 必须存进 server 端（后端 buildSystemPromptForBackend 直接读 agent.system_prompt 列，不再前端注入）
 const DEFAULT_AGENT_SYSTEM_PROMPT = `你是一个 ReAct（推理-行动）智能体。遵循以下规则：

@@ -1,7 +1,7 @@
 import type { CapacitorConfig } from '@capacitor/cli';
 
 const config: CapacitorConfig = {
-  appId: 'com.yan-zhi.mobile',
+  appId: 'com.yanzhi.mobile',
   appName: '言智',
   webDir: 'dist',
   server: {

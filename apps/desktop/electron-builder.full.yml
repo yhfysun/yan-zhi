@@ -34,4 +34,4 @@ linux:
 nsis:
   installerIcon: ../../assets/icons/icon.ico
   uninstallerIcon: ../../assets/icons/icon.ico
-  artifactName: ${productName}-Setup-${version}-${arch}-full.${ext}
+  artifactName: ${productName}-Setup-${version}-${arch}.${ext}

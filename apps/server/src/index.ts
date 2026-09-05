@@ -12,6 +12,9 @@ import messageRoutes from './routes/messages.js';
 import spaceRoutes from './routes/spaces.js';
 import fileRoutes from './routes/files.js';
 import platformRoutes from './routes/platforms.js';
+import { seedBuiltinWorkflowAgents, ensureBuiltinWorkflowModel } from './builtin-workflow-agents.js';
+import agentRoutes from './routes/agents.js';
+import workflowRoutes from './routes/workflow.js';
 import mcpRoutes from './routes/mcp.js';
 import skillRoutes from './routes/skills.js';
 import toolsRoutes from './routes/tools.js';
@@ -67,6 +70,8 @@ app.use('/api/conversations', fileRoutes);
 app.use('/api/messages', messageRoutes);
 app.use('/api/spaces', spaceRoutes);
 app.use('/api/platforms', platformRoutes);
+app.use('/api/agents', agentRoutes);
+app.use('/api/workflow', workflowRoutes);
 app.use('/api/mcp-servers', mcpRoutes);
 app.use('/api/skills', skillRoutes);
 app.use('/api/tools', toolsRoutes);
@@ -108,6 +113,14 @@ try {
   const r = syncAgnesPlatformForAllUsers();
   if (r.seeded.length) console.log(`[agnes] 已为用户初始化平台: ${r.seeded.join(', ')}`);
 } catch (e) { console.warn('[agnes] 初始化平台失败:', e); }
+
+// 内置「工作流·全节点冒烟」智能体：幂等 seed（仅首次创建）+ LLM 节点模型自动回填
+try {
+  const s = seedBuiltinWorkflowAgents(db);
+  if (s.seeded.length) console.log(`[builtin-wf] 已内置冒烟智能体: ${s.seeded.join(', ')}`);
+  const f = ensureBuiltinWorkflowModel(db);
+  if (f.filled) console.log('[builtin-wf] 冒烟智能体 LLM 节点已自动回填模型');
+} catch (e) { console.warn('[builtin-wf] 初始化失败:', e); }
 
 // 启动对话定时任务调度器（内部有 guard，只会启动一次）
 startScheduledTaskScheduler();

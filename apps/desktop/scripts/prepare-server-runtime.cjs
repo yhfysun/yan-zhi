@@ -113,13 +113,17 @@ const pkg = {
     jszip: '^3.10.1',
     mammoth: '^1.8.0',
     'node-llama-cpp': LLAMA_VERSION,
+    pg: '^8.23.0',
     playwright: '^1.62.1',
     'simple-git': '^3.36.0',
     'sqlite-vec': '^0.1.9',
     'tesseract.js': '^5.1.1',
     tsx: '^4.19.0',
     uuid: '^10.0.0',
+    ws: '^8.18.0',
     xlsx: '^0.18.5',
+    yaml: '^2.4.0',
+    mysql2: '^3.24.3',
   },
 };
 

@@ -29,9 +29,18 @@ export interface NodeHandler {
   execute(config: Record<string, unknown>, ctx: RunContext): Promise<NodeResult>;
 }
 
+export interface NodeEvent {
+  type: 'node:start' | 'node:ok' | 'node:error';
+  nodeId: string;
+  nodeType: string;
+  msg?: string;
+}
+
 export interface RunOptions {
   maxDepth?: number;
   callStack?: string[];
+  /** 节点级事件回调。常规节点由外部 wrap handler 发事件；loop 节点由引擎内联分支直发。 */
+  onNodeEvent?: (e: NodeEvent) => void;
 }
 
 export class WorkflowEngine {
@@ -47,10 +56,10 @@ export class WorkflowEngine {
     inputs: Record<string, unknown>,
     opts: RunOptions = {},
   ): Promise<Record<string, unknown>> {
-    const { maxDepth = 3, callStack = [] } = opts;
+    const { maxDepth = 3, callStack = [], onNodeEvent } = opts;
     const ctx = createRunContext(inputs);
     const plan = buildExecutionPlan(agent.workflow.nodes, agent.workflow.edges);
-    await this.executePlan(plan, agent, ctx, maxDepth, callStack);
+    await this.executePlan(plan, agent, ctx, maxDepth, callStack, onNodeEvent);
 
     const finalResult: Record<string, unknown> = {};
     for (const node of agent.workflow.nodes) {
@@ -68,6 +77,7 @@ export class WorkflowEngine {
     ctx: RunContext,
     maxDepth: number,
     callStack: string[],
+    onNodeEvent?: (e: NodeEvent) => void,
   ) {
     const { nodes, edges } = agent.workflow;
     const nodeMap = new Map(nodes.map((n) => [n.id, n]));
@@ -86,33 +96,40 @@ export class WorkflowEngine {
 
       // ── Loop 节点 ──
       if (node.type === 'loop') {
-        let source = ctx.outputs.size > 0
-          ? Array.from(ctx.outputs.values()).pop()
-          : ctx.inputs;
-        const key = (node.config.iterateKey as string) || 'item';
-        const maxIter = Number(node.config.maxIterations) || 5;
-        const results: unknown[] = [];
+        onNodeEvent?.({ type: 'node:start', nodeId, nodeType: 'loop' });
+        try {
+          const source = ctx.outputs.size > 0
+            ? Array.from(ctx.outputs.values()).pop()
+            : ctx.inputs;
+          const key = (node.config.iterateKey as string) || 'item';
+          const maxIter = Number(node.config.maxIterations) || 5;
+          const results: unknown[] = [];
 
-        const bodyEdges = edges.filter((e) => e.source === nodeId && e.sourceHandle === 'loop_body');
-        const exitEdges = edges.filter((e) => e.source === nodeId && e.sourceHandle === 'loop_exit');
+          const bodyEdges = edges.filter((e) => e.source === nodeId && e.sourceHandle === 'loop_body');
+          const exitEdges = edges.filter((e) => e.source === nodeId && e.sourceHandle === 'loop_exit');
 
-        if (bodyEdges.length > 0) {
-          const arr: unknown[] = Array.isArray(source) ? source : (source ? [source] : []);
-          const limit = Math.min(arr.length, maxIter);
-          for (let i = 0; i < limit; i++) {
-            const itemCtx = createRunContext({ ...ctx.inputs, [key]: arr[i], index: i });
-            for (const [k, v] of ctx.outputs) itemCtx.set(k, v);
-            for (const e of bodyEdges) {
-              const subPlan = buildSubgraphPlan(nodeMap, e.target, edges);
-              await this.executePlan(subPlan, agent, itemCtx, maxDepth, callStack);
+          if (bodyEdges.length > 0) {
+            const arr: unknown[] = Array.isArray(source) ? source : (source ? [source] : []);
+            const limit = Math.min(arr.length, maxIter);
+            for (let i = 0; i < limit; i++) {
+              const itemCtx = createRunContext({ ...ctx.inputs, [key]: arr[i], index: i });
+              for (const [k, v] of ctx.outputs) itemCtx.set(k, v);
+              for (const e of bodyEdges) {
+                const subPlan = buildSubgraphPlan(nodeMap, e.target, edges);
+                await this.executePlan(subPlan, agent, itemCtx, maxDepth, callStack, onNodeEvent);
+              }
+              results.push(Array.from(itemCtx.outputs.values()));
             }
-            results.push(Array.from(itemCtx.outputs.values()));
           }
-        }
-        ctx.set(nodeId, results.length > 0 ? results : source);
+          ctx.set(nodeId, results.length > 0 ? results : source);
 
-        for (const e of exitEdges) {
-          if (!pending.includes(e.target)) pending.push(e.target);
+          for (const e of exitEdges) {
+            if (!pending.includes(e.target)) pending.push(e.target);
+          }
+          onNodeEvent?.({ type: 'node:ok', nodeId, nodeType: 'loop' });
+        } catch (e: any) {
+          onNodeEvent?.({ type: 'node:error', nodeId, nodeType: 'loop', msg: e?.message });
+          throw e;
         }
         continue;
       }

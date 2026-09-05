@@ -5,6 +5,7 @@
 // 又把 start() 返回的 childId 丢了、后续 call()/kill() 用 server.id 当 key，
 //  导致 stdio 传输实际不可用（unknown childId）。后端这里直接自己管进程。
 import { spawn, type ChildProcess } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import type { McpServer, McpTool } from '@yan-zhi/shared';
 import { serverState } from '../state.js';
 
@@ -35,15 +36,47 @@ export class StdioMcpClient {
     return !!this.child && !this.exited;
   }
 
+  /**
+   * 解析实际启动命令。bare "node" 优先从 PATH 找绝对路径；
+   * 找不到（打包版用户机没装 node）则回退到当前进程的可执行文件
+   * （Electron 下配 ELECTRON_RUN_AS_NODE=1 即等价 node）。
+   */
+  private resolveCommand(): { command: string; useShell: boolean; extraEnv: Record<string, string> } {
+    const raw = (this.server.command || '').trim();
+    const isBare = !raw.includes('\\') && !raw.includes('/');
+    const base = isBare ? raw.replace(/\.exe$/i, '').toLowerCase() : '';
+    if (isBare && base === 'node') {
+      const found = this.findNodeInPath();
+      if (found) return { command: found, useShell: false, extraEnv: {} };
+      return { command: process.execPath, useShell: false, extraEnv: { ELECTRON_RUN_AS_NODE: '1' } };
+    }
+    return { command: raw, useShell: process.platform === 'win32', extraEnv: {} };
+  }
+
+  private findNodeInPath(): string | null {
+    const names = process.platform === 'win32' ? ['node.exe'] : ['node'];
+    const dirs = (process.env.PATH || '').split(process.platform === 'win32' ? ';' : ':').filter(Boolean);
+    for (const dir of dirs) {
+      for (const name of names) {
+        try {
+          const p = `${dir.replace(/[\\/]+$/, '')}${process.platform === 'win32' ? '\\' : '/'}${name}`;
+          if (existsSync(p)) return p;
+        } catch {}
+      }
+    }
+    return null;
+  }
+
   async connect(): Promise<void> {
     if (this.child) return;
     if (!this.server.command) throw new Error('stdio 传输需要 command');
 
-    const child = spawn(this.server.command, this.server.args || [], {
-      env: { ...process.env, ...(this.server.env || {}) },
+    const { command, useShell, extraEnv } = this.resolveCommand();
+    const child = spawn(command, this.server.args || [], {
+      env: { ...process.env, ...extraEnv, ...(this.server.env || {}) },
       cwd: serverState.workspaceDir || process.cwd(),
       stdio: ['pipe', 'pipe', 'pipe'],
-      shell: process.platform === 'win32',
+      shell: useShell,
       windowsHide: true,
     });
     this.child = child;
