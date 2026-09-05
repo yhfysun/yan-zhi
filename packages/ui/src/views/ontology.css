@@ -1,0 +1,331 @@
+/* 本体工作台（P3.6）——三栏编目布局：列表 / 编辑（标识·语义·选择器·物理分段）/ 编译预览 */
+
+.dw-root.ont-root {
+  display: flex;
+  gap: 12px;
+  height: calc(100vh - 96px);
+  min-height: 480px;
+  padding-bottom: 16px;
+}
+
+/* ===== 左：列表 ===== */
+.dw-root .ont-left {
+  width: 264px;
+  flex-shrink: 0;
+  background: var(--dw-surface);
+  border: 1px solid var(--dw-rule);
+  border-radius: var(--dw-r-md);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.dw-root .ont-left-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border-bottom: 1px solid var(--dw-rule);
+}
+.dw-root .ont-status-sel {
+  width: 100%;
+}
+.dw-root .ont-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 6px;
+}
+.dw-root .ont-li {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: 7px 9px;
+  border: 1px solid transparent;
+  border-radius: var(--dw-r-sm);
+  background: none;
+  cursor: pointer;
+  text-align: left;
+  color: var(--dw-ink);
+}
+.dw-root .ont-li:hover {
+  background: var(--dw-canvas);
+}
+.dw-root .ont-li.on {
+  background: var(--dw-brand-soft);
+  border-color: var(--dw-brand-line);
+}
+.dw-root .ont-li-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.dw-root .ont-li-code {
+  font-size: 11.5px;
+  font-weight: 600;
+}
+.dw-root .ont-li-name {
+  font-size: 11px;
+  color: var(--dw-ink-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dw-root .ont-tag {
+  font-size: 10px;
+  color: var(--dw-brand);
+  background: var(--dw-brand-soft);
+  border: 1px solid var(--dw-brand-line);
+  border-radius: var(--dw-r-xs);
+  padding: 0 5px;
+  flex-shrink: 0;
+}
+.dw-root .ds-badge.b-draft {
+  background: var(--dw-caution-soft);
+  color: var(--dw-caution);
+  border-color: var(--dw-caution-line);
+}
+
+/* ===== 中：编辑 ===== */
+.dw-root .ont-mid {
+  flex: 1;
+  min-width: 0;
+  background: var(--dw-surface);
+  border: 1px solid var(--dw-rule);
+  border-radius: var(--dw-r-md);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.dw-root .ont-mid-empty,
+.dw-root .ont-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--dw-ink-3);
+  font-size: 12px;
+  padding: 24px;
+  text-align: center;
+}
+.dw-root .ont-mid-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 12px 16px 10px;
+  border-bottom: 1px solid var(--dw-rule);
+}
+.dw-root .ont-mid-head h3 {
+  margin: 0;
+  font-size: 15px;
+  display: inline;
+}
+.dw-root .ont-head-code {
+  font-size: 11px;
+  color: var(--dw-ink-3);
+  margin-left: 8px;
+}
+.dw-root .ont-head-code + .ont-tag {
+  margin-left: 6px;
+}
+.dw-root .ont-head-actions {
+  margin-left: auto;
+}
+.dw-root .ont-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px 16px 16px;
+}
+
+/* 分段标题（对应原型的 fgroup：标识 / 语义 / 选择器 / 物理） */
+.dw-root .ont-fgroup {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin: 14px 0 8px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--dw-rule);
+}
+.dw-root .ont-fgroup span {
+  font-family: var(--dw-f-display);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+}
+.dw-root .ont-fgroup small {
+  font-size: 11px;
+  color: var(--dw-ink-3);
+}
+.dw-root .ont-fgrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px 14px;
+}
+.dw-root .ont-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.dw-root .ont-field label {
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--dw-ink-2);
+}
+.dw-root .ont-full {
+  grid-column: 1 / -1;
+}
+.dw-root .ont-hint {
+  font-size: 11px;
+  color: var(--dw-ink-3);
+}
+.dw-root .ont-sql :deep(.el-textarea__inner) {
+  font-size: 12px;
+  line-height: 1.6;
+  background: var(--dw-void);
+  color: var(--dw-void-ink);
+  border-color: var(--dw-void-3);
+}
+.dw-root .ont-sql :deep(.el-textarea__inner:focus) {
+  box-shadow: 0 0 0 1px var(--dw-brand) inset;
+}
+
+/* 选择器表格 */
+.dw-root .ont-spec-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.dw-root .ont-spec-table th {
+  text-align: left;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--dw-ink-3);
+  letter-spacing: 0.04em;
+  padding: 3px 6px;
+  border-bottom: 1px solid var(--dw-rule-strong);
+}
+.dw-root .ont-spec-table td {
+  padding: 3px 6px;
+  border-bottom: 1px solid var(--dw-rule);
+}
+.dw-root .ont-cell-na {
+  color: var(--dw-ink-3);
+  font-size: 10.5px;
+}
+.dw-root .ont-role {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: var(--dw-r-xs);
+  color: #fff;
+}
+.dw-root .ont-role-dim { background: var(--dw-role-dim); }
+.dw-root .ont-role-measure { background: var(--dw-role-measure); }
+.dw-root .ont-role-time { background: var(--dw-role-time); }
+.dw-root .ont-add-row {
+  display: flex;
+  gap: 4px;
+  margin-top: 6px;
+}
+.dw-root .ont-policy-row {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+}
+
+/* 动作条 */
+.dw-root .ont-actionbar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border-top: 1px solid var(--dw-rule);
+  background: var(--dw-surface);
+  border-radius: 0 0 var(--dw-r-md) var(--dw-r-md);
+}
+
+/* ===== 右：编译预览 ===== */
+.dw-root .ont-right {
+  width: 380px;
+  flex-shrink: 0;
+  background: var(--dw-surface);
+  border: 1px solid var(--dw-rule);
+  border-radius: var(--dw-r-md);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.dw-root .ont-right-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px 6px;
+}
+.dw-root .ont-eyebrow {
+  font-family: var(--dw-f-display);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: var(--dw-ink-2);
+}
+.dw-root .ont-right-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--dw-rule);
+}
+.dw-root .ont-rtab {
+  padding: 4px 10px;
+  font-size: 11.5px;
+  color: var(--dw-ink-2);
+  border: 1px solid transparent;
+  border-radius: var(--dw-r-sm);
+  background: none;
+  cursor: pointer;
+}
+.dw-root .ont-rtab:hover {
+  background: var(--dw-canvas);
+}
+.dw-root .ont-rtab.on {
+  background: var(--dw-canvas);
+  border-color: var(--dw-rule-strong);
+  color: var(--dw-ink);
+  font-weight: 600;
+}
+.dw-root .ont-right-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.dw-root .ont-code {
+  flex: 1;
+  margin: 0;
+  padding: 12px 14px;
+  overflow: auto;
+  background: var(--dw-void-2);
+  color: var(--dw-void-ink);
+  font-size: 11.5px;
+  line-height: 1.65;
+  white-space: pre;
+  border-radius: 0 0 var(--dw-r-md) var(--dw-r-md);
+}
+.dw-root .ont-run-err {
+  margin: 14px;
+  padding: 10px 12px;
+  background: var(--dw-caution-soft);
+  border: 1px solid var(--dw-caution-line);
+  border-radius: var(--dw-r-sm);
+  color: var(--dw-caution);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.dw-root .ont-grid-wrap {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}

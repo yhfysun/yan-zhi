@@ -47,6 +47,10 @@
               <el-icon><DataLine /></el-icon>
               <span>数据源</span>
             </el-dropdown-item>
+            <el-dropdown-item @click="$router.push('/ontologies')">
+              <el-icon><Share /></el-icon>
+              <span>本体管理</span>
+            </el-dropdown-item>
             <el-dropdown-item @click="$router.push('/sql-console')">
               <el-icon><Operation /></el-icon>
               <span>SQL 控制台</span>
@@ -119,6 +123,10 @@
               <el-icon><DataLine /></el-icon>
               <span>数据源</span>
             </el-dropdown-item>
+            <el-dropdown-item @click="$router.push('/ontologies')">
+              <el-icon><Share /></el-icon>
+              <span>本体管理</span>
+            </el-dropdown-item>
             <el-dropdown-item @click="$router.push('/sql-console')">
               <el-icon><Operation /></el-icon>
               <span>SQL 控制台</span>
@@ -165,7 +173,7 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import { useRoute } from 'vue-router';
-import { ChatDotRound, Setting, User, SwitchButton, Fold, Expand, Monitor, Collection, Moon, Sunny, HomeFilled, Promotion, DataLine, Operation } from '@element-plus/icons-vue';
+import { ChatDotRound, Setting, User, SwitchButton, Fold, Expand, Monitor, Collection, Moon, Sunny, HomeFilled, Promotion, DataLine, Operation, Share } from '@element-plus/icons-vue';
 import { useAuthStore } from '../stores/auth';
 import { useSettingsStore } from '../stores/settings';
 import { useIsMobile } from '../composables/useIsMobile';

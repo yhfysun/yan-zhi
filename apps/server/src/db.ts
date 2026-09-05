@@ -992,4 +992,37 @@ db.exec(`
 `);
 try { db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_data_source_user_name ON data_source(user_id, name)'); } catch {}
 
+// ===== 本体（text2sql 语义层，P3.1）=====
+// source_sql 输出列必须显式 AS 别名（保存时 services/ontology-validator.ts 校验）；
+// 维度/度量/时间维度/关系分段 JSON 存储，字段 expr 只能引用别名集合；
+// status: draft（对智能体不可见）| published；发布即改智能体取数口径，bump version。
+db.exec(`
+  CREATE TABLE IF NOT EXISTS ontology (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    datasource_id TEXT NOT NULL,
+    code TEXT NOT NULL,
+    name TEXT NOT NULL,
+    domain TEXT,
+    description TEXT,
+    synonyms_json TEXT DEFAULT '[]',
+    source_sql TEXT NOT NULL,
+    entities_json TEXT DEFAULT '[]',
+    time_dimensions_json TEXT DEFAULT '[]',
+    dimensions_json TEXT DEFAULT '[]',
+    measures_json TEXT DEFAULT '[]',
+    relations_json TEXT DEFAULT '[]',
+    policies_json TEXT DEFAULT '[]',
+    status TEXT NOT NULL DEFAULT 'draft',
+    version INTEGER NOT NULL DEFAULT 1,
+    builtin INTEGER NOT NULL DEFAULT 0,
+    enriched_by TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    published_at INTEGER
+  );
+`);
+try { db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_ontology_user_code ON ontology(user_id, code)'); } catch {}
+try { db.exec('CREATE INDEX IF NOT EXISTS idx_ontology_user_ds ON ontology(user_id, datasource_id, status)'); } catch {}
+
 export { db };

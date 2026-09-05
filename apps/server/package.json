@@ -27,7 +27,9 @@
     "simple-git": "^3.36.0",
     "sqlite-vec": "^0.1.9",
     "tesseract.js": "^5.1.1",
-    "uuid": "^10.0.0"
+    "uuid": "^10.0.0",
+    "ws": "^8.18.0",
+    "yaml": "^2.9.0"
   },
   "devDependencies": {
     "@types/bcryptjs": "^2.4.6",
@@ -37,6 +39,7 @@
     "@types/jsonwebtoken": "^9.0.7",
     "@types/pg": "^8.23.1",
     "@types/uuid": "^10.0.0",
+    "@types/ws": "^8",
     "tsx": "^4.19.0",
     "typescript": "^5.6.0",
     "vitest": "^2.1.0"
