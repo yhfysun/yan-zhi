@@ -609,6 +609,167 @@ for (const a of seedAgents) {
   } catch {}
 }
 
+// 预置示例自定义工具（JS + node:vm 沙箱）——开箱即用的演示/实用工具
+// 幂等：按 name 查重，已存在不覆盖（用户可能已编辑）
+const seedCustomTools: Array<{
+  name: string; description: string; inputSchema: Record<string, unknown>;
+  entry: string; code: string;
+}> = [
+  {
+    name: 'text_stats',
+    description: '【示例】文本统计：返回字符数、词数、行数、非空白字符数。入参 { text: string }。',
+    inputSchema: { type: 'object', properties: { text: { type: 'string', description: '要统计的文本' } }, required: ['text'] },
+    entry: 'textStats',
+    code: `function textStats(input) {
+  var text = String(input && input.text || '');
+  var words = text.split(/\\s+/).filter(function (w) { return w.length > 0; });
+  var lines = text.split(/\\r?\\n/);
+  var nonBlank = text.replace(/\\s/g, '');
+  return { chars: text.length, words: words.length, lines: lines.length, nonBlankChars: nonBlank.length };
+}`,
+  },
+  {
+    name: 'json_extract',
+    description: '【示例】JSON 提取：按点号路径从 JSON 对象取值，如 path="a.b.0.c"。取不到返回 null。',
+    inputSchema: {
+      type: 'object',
+      properties: { data: { type: 'object', description: 'JSON 对象' }, path: { type: 'string', description: '点号路径，如 "user.tags.0"' } },
+      required: ['data', 'path'],
+    },
+    entry: 'jsonExtract',
+    code: `function jsonExtract(input) {
+  var cur = input && input.data;
+  var parts = String(input && input.path || '').split('.').filter(function (p) { return p.length > 0; });
+  for (var i = 0; i < parts.length; i++) {
+    if (cur === null || cur === undefined) return null;
+    cur = cur[parts[i]];
+  }
+  return cur === undefined ? null : cur;
+}`,
+  },
+  {
+    name: 'timestamp_convert',
+    description: '【示例】时间戳⇄日期互转：传 timestamp（毫秒）返回日期字符串；传 dateStr（如 2026-09-05 20:00:00）返回毫秒时间戳。二者传一。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        timestamp: { type: 'number', description: '毫秒时间戳（与 dateStr 二选一）' },
+        dateStr: { type: 'string', description: '日期字符串，如 "2026-09-05 20:00:00"' },
+      },
+    },
+    entry: 'timestampConvert',
+    code: `function timestampConvert(input) {
+  function pad(n) { return n < 10 ? '0' + n : String(n); }
+  function fmt(d) {
+    return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' '
+      + pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+  }
+  if (input && input.timestamp !== undefined && input.timestamp !== null && input.timestamp !== '') {
+    var ms = Number(input.timestamp);
+    if (isNaN(ms)) return { error: 'timestamp 不是有效数字' };
+    return { date: fmt(new Date(ms)), timestamp: ms };
+  }
+  if (input && input.dateStr) {
+    var s = String(input.dateStr).replace(/-/g, '/').replace('T', ' ');
+    var t = new Date(s).getTime();
+    if (isNaN(t)) return { error: '无法解析日期字符串: ' + input.dateStr };
+    return { date: fmt(new Date(t)), timestamp: t };
+  }
+  return { error: '需提供 timestamp 或 dateStr 之一' };
+}`,
+  },
+  {
+    name: 'regex_test',
+    description: '【示例】正则测试：返回 pattern 对 text 的全部匹配（含捕获组与位置），最多 50 条。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        pattern: { type: 'string', description: '正则表达式（不含定界符）' },
+        flags: { type: 'string', description: '正则标志，默认 "g"' },
+        text: { type: 'string', description: '被测文本' },
+      },
+      required: ['pattern', 'text'],
+    },
+    entry: 'regexTest',
+    code: `function regexTest(input) {
+  var pattern = String(input && input.pattern || '');
+  var flags = String((input && input.flags) || 'g');
+  if (flags.indexOf('g') === -1) flags += 'g';
+  var text = String((input && input.text) || '');
+  var re;
+  try { re = new RegExp(pattern, flags); } catch (e) { return { error: '正则无效: ' + e.message }; }
+  var out = [], m;
+  while ((m = re.exec(text)) !== null) {
+    out.push({ match: m[0], index: m.index, groups: m.slice(1) });
+    if (out.length >= 50) break;
+    if (m[0].length === 0) re.lastIndex++;
+  }
+  return { count: out.length, matches: out };
+}`,
+  },
+  {
+    name: 'unit_convert',
+    description: '【示例】单位换算：长度（m/km/ft/mi）、重量（kg/g/lb）、温度（C/F/K）。入参 { value, from, to }，如 { value: 100, from: "km", to: "mi" }。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        value: { type: 'number', description: '数值' },
+        from: { type: 'string', description: '源单位' },
+        to: { type: 'string', description: '目标单位' },
+      },
+      required: ['value', 'from', 'to'],
+    },
+    entry: 'unitConvert',
+    code: `function unitConvert(input) {
+  var v = Number(input && input.value);
+  var from = String((input && input.from) || '').toLowerCase();
+  var to = String((input && input.to) || '').toLowerCase();
+  if (isNaN(v)) return { error: 'value 不是有效数字' };
+  var toBase = {
+    m: 1, km: 1000, cm: 0.01, mm: 0.001, ft: 0.3048, mi: 1609.344, inch: 0.0254,
+  };
+  var weightBase = { kg: 1, g: 0.001, mg: 0.000001, t: 1000, lb: 0.45359237, oz: 0.028349523 };
+  var temps = { c: 1, f: 1, k: 1 };
+  function toC(x, u) {
+    if (u === 'c') return x;
+    if (u === 'f') return (x - 32) * 5 / 9;
+    if (u === 'k') return x - 273.15;
+    return NaN;
+  }
+  function fromC(x, u) {
+    if (u === 'c') return x;
+    if (u === 'f') return x * 9 / 5 + 32;
+    if (u === 'k') return x + 273.15;
+    return NaN;
+  }
+  var result;
+  if (toBase[from] !== undefined && toBase[to] !== undefined) {
+    result = v * toBase[from] / toBase[to];
+  } else if (weightBase[from] !== undefined && weightBase[to] !== undefined) {
+    result = v * weightBase[from] / weightBase[to];
+  } else if (temps[from] !== undefined && temps[to] !== undefined) {
+    result = fromC(toC(v, from), to);
+  } else {
+    return { error: '不支持的单位组合: ' + from + ' -> ' + to };
+  }
+  return { value: v, from: from, to: to, result: Math.round(result * 1e6) / 1e6 };
+}`,
+  },
+];
+for (const t of seedCustomTools) {
+  try {
+    const has = db.prepare('SELECT id FROM custom_tool WHERE name = ?').get(t.name);
+    if (has) continue;
+    const id = 'ct_preset_' + t.name;
+    const now = Date.now();
+    db.prepare(
+      `INSERT INTO custom_tool (id, user_id, name, description, input_schema_json, output_schema_json,
+       runtime, entry, code, dependencies_json, timeout, env_json, enabled, source, is_public, installs, updated_at, created_at)
+       VALUES (?,?,?,?,?,NULL,'node',?,NULL,?,?,NULL,1,'local',0,0,?,?)`,
+    ).run(id, 'guest', t.name, t.description, JSON.stringify(t.inputSchema), t.entry, t.code, JSON.stringify([]), 5000, now, now);
+  } catch {}
+}
+
 // 预置内置 skill：网站自动化任务（web-task-automation）—— pageAgent + 记住密码 + 定时任务
 try {
   const skillId = 'skill_web_task_automation';
