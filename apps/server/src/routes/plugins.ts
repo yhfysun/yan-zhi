@@ -11,7 +11,7 @@ import { PLUGIN_TEMPLATES } from '../plugins/templates/index.js';
 const router = Router();
 router.use(authMiddleware);
 
-const PLUGINS_DIR = path.resolve(fileURLToPath(import.meta.url), '..', '..', '..', 'plugins', 'installed');
+export const PLUGINS_DIR = path.resolve(fileURLToPath(import.meta.url), '..', '..', '..', 'plugins', 'installed');
 
 function toInfo(p: Plugin) {
   return { manifest: p.manifest, state: p.state, error: p.error, config: p.config, source: p.source };

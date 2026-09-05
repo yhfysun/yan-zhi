@@ -1,4 +1,7 @@
 import express from 'express';
+import fs from 'node:fs';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import cors from 'cors';
 import { setPlatformAdapter, getPluginManager, getToolRegistry } from '@yan-zhi/core';
 import { ensureToolsInitialized } from './mcp/index.js';
@@ -26,7 +29,7 @@ import workspaceRoutes from './routes/workspace.js';
 import memoryRoutes from './routes/memory.js';
 import scheduledTaskRoutes from './routes/scheduled-tasks.js';
 import ollamaMarketRoutes from './routes/ollama-market.js';
-import pluginRoutes from './routes/plugins.js';
+import pluginRoutes, { PLUGINS_DIR } from './routes/plugins.js';
 import gitRoutes from './routes/git.js';
 import datasourceRoutes from './routes/datasources.js';
 import sqlConsoleRoutes from './routes/sql-console.js';
@@ -123,8 +126,21 @@ try {
     await mgr.init();
     // 注册内置插件
     await mgr.registerBuiltin(gitExplorerManifest, gitExplorerModule);
-    // computer-use 高危权限（desktop-input），默认 disabled，需在插件管理页手动开启
+    // computer-use 高危权限（desktop-input），默认 disabled（仅首次注册生效，之后随 DB 状态），需在插件管理页手动开启
     await mgr.registerBuiltin(computerUseManifest, computerUseModule, false);
+    // 已安装插件重启恢复：loadFromDb 只恢复了状态，入口模块未绑定（enabled 状态下工具/路由未注册），扫描目录补绑
+    try {
+      for (const d of fs.readdirSync(PLUGINS_DIR, { withFileTypes: true })) {
+        if (!d.isDirectory()) continue;
+        const mfPath = path.join(PLUGINS_DIR, d.name, 'manifest.json');
+        if (!fs.existsSync(mfPath) || !mgr.get(d.name)) continue;
+        const mf = JSON.parse(fs.readFileSync(mfPath, 'utf8')) as { id: string; main?: string };
+        const entry = path.join(PLUGINS_DIR, d.name, mf.main || 'index.js');
+        await mgr.rebindAndReactivate(mf.id, pathToFileURL(entry).href);
+      }
+    } catch {
+      /* plugins/installed 目录不存在等，忽略 */
+    }
     const toolReg = getToolRegistry();
     const syncPluginTools = () => {
       for (const name of toolReg.names()) {

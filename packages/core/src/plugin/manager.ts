@@ -91,6 +91,14 @@ export class PluginManager {
     enabled = true,
   ): Promise<void> {
     validateManifest(manifest);
+    // loadFromDb 已从 DB 恢复过该插件：保留用户启停状态与配置（enabled 仅在首次注册时生效），
+    // 仅同步 manifest/入口模块并补完整激活——早期恢复激活时无入口模块，工具/后端路由未注册
+    if (this.plugins.has(manifest.id)) {
+      const existing = this.plugins.get(manifest.id)!;
+      existing.manifest = manifest;
+      await this.rebindAndReactivate(manifest.id, moduleOrPath);
+      return;
+    }
     const plugin: Plugin = {
       manifest,
       state: 'disabled',
@@ -106,6 +114,24 @@ export class PluginManager {
     }
     await this.upsertDb(plugin);
     if (enabled) await this.enable(manifest.id);
+  }
+
+  /** 重启恢复场景：为已从 DB 恢复的插件补绑入口模块，enabled 状态则重新完整激活 */
+  async rebindAndReactivate(id: string, moduleOrPath: PluginModule | string): Promise<void> {
+    const plugin = this.plugins.get(id);
+    if (!plugin) throw new Error(`插件不存在: ${id}`);
+    if (typeof moduleOrPath === 'string') {
+      this.entryPaths.set(id, moduleOrPath);
+    } else {
+      this.modules.set(id, moduleOrPath);
+    }
+    if (plugin.state === 'enabled') {
+      await this.upsertDb(plugin); // 同步 manifest（版本升级场景）
+      await this.disable(id); // 清掉早期无模块激活的半成品（dispose contributes）
+      await this.enable(id); // 带入口模块完整激活（工具/后端路由注册 + emit enabled）
+    } else {
+      await this.upsertDb(plugin);
+    }
   }
 
   /** 注册已安装的第三方插件（manifest + 入口路径），持久化并按需激活 */
