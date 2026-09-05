@@ -28,38 +28,24 @@
           <el-icon :size="15"><component :is="m.icon" /></el-icon>
           <span>{{ m.label }}</span>
         </router-link>
-        <el-dropdown trigger="click" popper-class="plus-menu-popper" @command="onMoreCommand">
-          <button class="title-nav-item" :class="{ active: moreActive }" type="button">
-            <el-icon :size="15"><More /></el-icon>
-            <span>更多</span>
-          </button>
-          <template #dropdown>
-            <el-dropdown-menu>
-              <el-dropdown-item v-for="m in moreMenus" :key="m.path" :command="m.path">
-                <el-icon style="margin-right:6px"><component :is="m.icon" /></el-icon>
-                <span>{{ m.label }}</span>
-              </el-dropdown-item>
-              <el-dropdown-item command="/memory" divided>
-                <el-icon style="margin-right:6px"><Memo /></el-icon>
-                <span>记忆管理</span>
-              </el-dropdown-item>
-              <el-dropdown-item command="/plugins">
-                <el-icon style="margin-right:6px"><Box /></el-icon>
-                <span>插件管理</span>
-              </el-dropdown-item>
-              <el-dropdown-item command="/settings" divided>
-                <el-icon style="margin-right:6px"><Setting /></el-icon>
-                <span>设置</span>
-              </el-dropdown-item>
-              <template v-if="pluginMenus.length">
-                <el-dropdown-item v-for="m in pluginMenus" :key="m.path" :command="m.path" divided>
-                  <el-icon style="margin-right:6px"><component :is="m.icon" /></el-icon>
-                  <span>{{ m.label }}</span>
-                </el-dropdown-item>
-              </template>
-            </el-dropdown-menu>
+        <!-- 更多：用 el-popover 而非 el-dropdown —— dropdown 会把内容包进 el-scrollbar（overflow 裁剪），
+             二级 hover 面板向右飞出会被裁掉并撑出横向滚动条；popover 内容无滚动包裹，飞出面板正常渲染 -->
+        <el-popover
+          v-model:visible="moreOpen"
+          trigger="click"
+          placement="bottom-start"
+          :show-arrow="false"
+          :width="'auto'"
+          popper-class="more-menu-popper"
+        >
+          <template #reference>
+            <button class="title-nav-item" :class="{ active: moreActive || moreOpen }" type="button">
+              <el-icon :size="15"><More /></el-icon>
+              <span>更多</span>
+            </button>
           </template>
-        </el-dropdown>
+          <HoverMenu :items="moreItems" :width="196" @select="onMoreSelect" />
+        </el-popover>
       </nav>
 
       <!-- 中部：可拖拽留白（flex:1） -->
@@ -120,10 +106,12 @@ import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import {
   Minus, FullScreen, CopyDocument, Close, Moon, Sunny, HomeFilled, ChatDotRound, Monitor, Promotion, Setting, Collection,
-  More, Cpu, Connection, Tools, Files, User, Link, Platform, MagicStick, Memo, Box, DataLine, Operation, Share,
+  More, Cpu, Tools, Files, User, Link, Platform, MagicStick, Memo, Box, DataLine, Operation, Share,
 } from '@element-plus/icons-vue';
 import { useSettingsStore, useAuthStore, usePluginStore, openSettingsDrawer } from '@yan-zhi/ui';
 import { resolvePluginIcon } from '@yan-zhi/ui/plugin-icons';
+import HoverMenu from '@yan-zhi/ui/components/HoverMenu.vue';
+import type { HoverMenuItem } from '@yan-zhi/ui/components/HoverMenu.vue';
 
 // Electron 渲染进程通过 contextBridge 注入的 API
 const api = (window as any).electronAPI;
@@ -143,35 +131,75 @@ function isActive(p: string) {
   return route.path === p || route.path.startsWith(p + '/');
 }
 
-// 「更多」下拉：功能入口 9 项 + 页面化记忆/插件 + 设置（最后）
-const moreMenus = [
-  { path: '/knowledge', label: '知识库', icon: Collection },
-  { path: '/models', label: '模型平台', icon: Cpu },
-  { path: '/mcp', label: 'MCP 连接', icon: Connection },
-  { path: '/tools', label: '工具', icon: Tools },
-  { path: '/skills', label: 'Skill', icon: Files },
-  { path: '/distill', label: 'Skill 蒸馏', icon: MagicStick },
-  { path: '/agents', label: '智能体', icon: User },
-  { path: '/connections', label: 'IM 连接', icon: Link },
-  { path: '/data-sources', label: '数据源', icon: DataLine },
-  { path: '/ontologies', label: '本体管理', icon: Share },
-  { path: '/sql-console', label: 'SQL 控制台', icon: Operation },
-  { path: '/peers', label: '客户端节点', icon: Platform },
-];
-const moreActive = computed(
-  () => moreMenus.some((m) => isActive(m.path)) || isActive('/memory') || isActive('/plugins') || isActive('/settings'),
-);
-function onMoreCommand(p: string) {
-  router.push(p);
-}
-
 // 插件注入的导航项（原 SideNav pluginNavItems 等价迁移；桌面端 when 过滤）
 const pluginStore = usePluginStore();
-const pluginMenus = computed(() =>
+const pluginMenus = computed<HoverMenuItem[]>(() =>
   pluginStore.sidebar
     .filter((it) => !it.when || it.when === 'all' || it.when === 'desktop')
-    .map((it) => ({ path: it.route, label: it.label, icon: resolvePluginIcon(it.icon) })),
+    .map((it) => ({ path: it.route, label: it.label, icon: resolvePluginIcon(it.icon) as HoverMenuItem['icon'] })),
 );
+
+// 「更多」下拉：按「能力 / 数据 / 连接」三组 hover 二级展开 + 底部独立项（记忆/插件/设置/插件注入）
+// MCP 不再单列：已并入 /tools 工具页「MCP 服务」tab
+const moreItems = computed<HoverMenuItem[]>(() => [
+  {
+    key: 'group-capability',
+    label: '能力',
+    icon: MagicStick,
+    children: [
+      { key: 'agents', label: '智能体', icon: User, path: '/agents', desc: '创建与编辑智能体' },
+      { key: 'skills', label: 'Skill', icon: Files, path: '/skills', desc: '技能商店与详情' },
+      { key: 'distill', label: 'Skill 蒸馏', icon: MagicStick, path: '/distill', desc: '沉淀会话为技能' },
+      { key: 'tools', label: '工具', icon: Tools, path: '/tools', desc: '工具库 · MCP · 远程商城' },
+    ],
+  },
+  {
+    key: 'group-data',
+    label: '数据',
+    icon: DataLine,
+    children: [
+      { key: 'knowledge', label: '知识库', icon: Collection, path: '/knowledge', desc: '文档与知识条目' },
+      { key: 'data-sources', label: '数据源', icon: DataLine, path: '/data-sources', desc: '数据库连接管理' },
+      { key: 'ontologies', label: '本体管理', icon: Share, path: '/ontologies', desc: '数据本体建模' },
+      { key: 'sql-console', label: 'SQL 控制台', icon: Operation, path: '/sql-console', desc: '查询与探索' },
+    ],
+  },
+  {
+    key: 'group-connection',
+    label: '连接',
+    icon: Link,
+    children: [
+      { key: 'models', label: '模型平台', icon: Cpu, path: '/models', desc: '模型服务接入' },
+      { key: 'connections', label: 'IM 连接', icon: Link, path: '/connections', desc: '飞书 / 企微 / 微信' },
+      { key: 'peers', label: '客户端节点', icon: Platform, path: '/peers', desc: '远程设备节点' },
+    ],
+  },
+  { key: 'divider-memory', label: '', divider: true },
+  { key: 'memory', label: '记忆管理', icon: Memo, path: '/memory' },
+  { key: 'plugins', label: '插件管理', icon: Box, path: '/plugins' },
+  { key: 'divider-settings', label: '', divider: true },
+  { key: 'settings', label: '设置', icon: Setting, path: '/settings' },
+  ...(pluginMenus.value.length
+    ? [
+        { key: 'divider-plugins', label: '', divider: true },
+        ...pluginMenus.value.map((m) => ({ ...m })),
+      ]
+    : []),
+]);
+
+const moreActive = computed(
+  () =>
+    moreItems.value.some((it) => it.children?.some((c) => c.path && isActive(c.path))) ||
+    moreItems.value.some((it) => it.path && isActive(it.path)) ||
+    pluginMenus.value.some((m) => m.path !== undefined && isActive(m.path)),
+);
+
+const moreOpen = ref(false);
+
+function onMoreSelect(item: HoverMenuItem) {
+  moreOpen.value = false;
+  if (item.path) router.push(item.path);
+}
 
 // 是否处于最大化状态
 const isMaximized = ref(false);
@@ -432,5 +460,16 @@ onUnmounted(() => {
 .win-btn--close:active {
   background: #c50f1f;
   color: #ffffff;
+}
+</style>
+
+<style>
+/* 「更多」菜单 popper（teleport 到 body，需全局作用域；不依赖 chat.css 的 plus-menu-popper） */
+.more-menu-popper {
+  border-radius: 12px !important;
+  border: 1px solid var(--glass-border) !important;
+  box-shadow: var(--shadow-lg) !important;
+  padding: 4px !important;
+  background: var(--el-bg-color-overlay, var(--glass-bg));
 }
 </style>
