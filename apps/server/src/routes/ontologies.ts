@@ -3,8 +3,10 @@ import { Router, Request, Response } from 'express';
 import { authMiddleware } from '../auth.js';
 import {
   compileOntology,
+  compileOntologyJoin,
   createOntology,
   deleteOntology,
+  digestOntologies,
   exportYaml,
   generateFromTable,
   importYaml,
@@ -73,6 +75,33 @@ router.post('/:id/compile', authMiddleware, (req: Request, res: Response) => {
   } catch (err) {
     const errors = (err as { compileErrors?: unknown }).compileErrors;
     res.status(400).json({ error: err instanceof Error ? err.message : String(err), errors });
+  }
+});
+
+// POST /api/ontologies/:id/compile-join —— 跨本体编译（v1 单跳；join 引用的对方本体须已发布）
+router.post('/:id/compile-join', authMiddleware, (req: Request, res: Response) => {
+  try {
+    res.json({ data: compileOntologyJoin(req.user!.userId, req.params.id, req.body || {}) });
+  } catch (err) {
+    const errors = (err as { compileErrors?: unknown }).compileErrors;
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err), errors });
+  }
+});
+
+// POST /api/ontologies/digest —— 语义摘要组装（默认直拼 + 非默认按问题召回），喂大模型前调用
+router.post('/digest', authMiddleware, (req: Request, res: Response) => {
+  try {
+    const body = req.body || {};
+    res.json({
+      data: {
+        yaml: digestOntologies(req.user!.userId, {
+          datasourceId: body.datasourceId || undefined,
+          question: body.question || '',
+        }),
+      },
+    });
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
   }
 });
 

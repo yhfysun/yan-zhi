@@ -9,13 +9,19 @@ import { validateOntology, checkSourceSqlAliases } from './ontology-validator.js
 import { buildTableOntologySpec, type TableSchemaLite } from './ontology-table-gen.js';
 import {
   compileOntologyQuery,
+  compileOntologyJoinQuery,
   type OntologySpec,
+  type OntologySpecWithCode,
+  type JoinIntent,
   type QueryIntent,
   type OntologyDimension,
   type OntologyTimeDimension,
   type OntologyMeasure,
+  type OntologyFilter,
+  type OntologyRelation,
 } from './ontology-compiler.js';
 import type { DialectType } from './dialect.js';
+import { buildOntologyDigest, recallConfigFromEnv } from './ontology-recall.js';
 
 // ===== 类型 =====
 
@@ -33,6 +39,7 @@ interface OntologyRow {
   time_dimensions_json: string | null;
   dimensions_json: string | null;
   measures_json: string | null;
+  filters_json: string | null;
   relations_json: string | null;
   policies_json: string | null;
   status: string;
@@ -59,7 +66,8 @@ export interface OntologyInfo {
   timeDimensions: OntologyTimeDimension[];
   dimensions: OntologyDimension[];
   measures: OntologyMeasure[];
-  relations: { left: string; right: string; cardinality: string; on: string; status?: string }[];
+  filters: OntologyFilter[];
+  relations: OntologyRelation[];
   policies: string[];
   status: string;
   version: number;
@@ -82,7 +90,8 @@ interface SaveInput {
   timeDimensions?: OntologyTimeDimension[];
   dimensions?: OntologyDimension[];
   measures?: OntologyMeasure[];
-  relations?: OntologyInfo['relations'];
+  filters?: OntologyFilter[];
+  relations?: OntologyRelation[];
   policies?: string[];
   /** 内置本体标记：项目库自动生成的本体传 true（不可删、code/数据源/物理 SQL 不可改）；用户自建留空。 */
   builtin?: boolean;
@@ -111,7 +120,8 @@ function toInfo(row: OntologyRow): OntologyInfo {
     timeDimensions: parseJsonList<OntologyTimeDimension>(row.time_dimensions_json),
     dimensions: parseJsonList<OntologyDimension>(row.dimensions_json),
     measures: parseJsonList<OntologyMeasure>(row.measures_json),
-    relations: parseJsonList<OntologyInfo['relations'][number]>(row.relations_json),
+    filters: parseJsonList<OntologyFilter>(row.filters_json),
+    relations: parseJsonList<OntologyRelation>(row.relations_json),
     policies: parseJsonList<string>(row.policies_json),
     status: row.status,
     version: row.version,
@@ -141,12 +151,13 @@ function validateSave(input: SaveInput): void {
     ...(input.timeDimensions || []).map((d) => d.expr),
     ...(input.measures || []).filter((m) => m.expr && m.expr !== '*').map((m) => m.expr),
     ...(input.entities || []).map((e) => e.expr),
+    ...(input.relations || []).map((r) => r.sourceAttr), // 关联的本体侧连接列必须是输出别名
     ...(input.policies || []),
   ];
   const errors = validateOntology({
     sourceSql: input.sourceSql,
     selectorExprs: exprs,
-    filterExprs: [],
+    filterExprs: (input.filters || []).map((f) => f.expr), // 过滤器条件同样只许引用输出别名
   });
   if (!errors.ok) {
     const first = errors.errors[0];
@@ -182,16 +193,16 @@ export function createOntology(userId: string, input: SaveInput): OntologyInfo {
     db.prepare(
       `INSERT INTO ontology
          (id, user_id, datasource_id, code, name, domain, description, synonyms_json, source_sql,
-          entities_json, time_dimensions_json, dimensions_json, measures_json, relations_json, policies_json,
+          entities_json, time_dimensions_json, dimensions_json, measures_json, filters_json, relations_json, policies_json,
           status, version, builtin, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', 1, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', 1, ?, ?, ?)`,
     ).run(
       id, userId, input.datasourceId, input.code.trim(), input.name.trim(),
       input.domain?.trim() || null, input.description?.trim() || null,
       JSON.stringify(input.synonyms || []), input.sourceSql.trim(),
       JSON.stringify(input.entities || []), JSON.stringify(input.timeDimensions || []),
       JSON.stringify(input.dimensions || []), JSON.stringify(input.measures || []),
-      JSON.stringify(input.relations || []), JSON.stringify(input.policies || []),
+      JSON.stringify(input.filters || []), JSON.stringify(input.relations || []), JSON.stringify(input.policies || []),
       input.builtin ? 1 : 0,
       now, now,
     );
@@ -212,7 +223,7 @@ export function updateOntology(userId: string, id: string, input: SaveInput): On
     validateSave({ ...input, datasourceId: row.datasource_id, code: row.code, sourceSql: row.source_sql });
     db.prepare(
       `UPDATE ontology SET name=?, domain=?, description=?, synonyms_json=?,
-         time_dimensions_json=?, dimensions_json=?, measures_json=?, policies_json=?, status='draft', updated_at=?
+         time_dimensions_json=?, dimensions_json=?, measures_json=?, filters_json=?, policies_json=?, status='draft', updated_at=?
        WHERE id=? AND user_id=?`,
     ).run(
       input.name?.trim() || row.name, input.domain?.trim() || row.domain,
@@ -220,6 +231,7 @@ export function updateOntology(userId: string, id: string, input: SaveInput): On
       JSON.stringify(input.timeDimensions || parseJsonList(row.time_dimensions_json)),
       JSON.stringify(input.dimensions || parseJsonList(row.dimensions_json)),
       JSON.stringify(input.measures || parseJsonList(row.measures_json)),
+      JSON.stringify(input.filters || parseJsonList(row.filters_json)),
       JSON.stringify(input.policies || parseJsonList(row.policies_json)),
       Date.now(), id, userId,
     );
@@ -229,7 +241,7 @@ export function updateOntology(userId: string, id: string, input: SaveInput): On
   db.prepare(
     `UPDATE ontology SET datasource_id=?, code=?, name=?, domain=?, description=?, synonyms_json=?,
        source_sql=?, entities_json=?, time_dimensions_json=?, dimensions_json=?, measures_json=?,
-       relations_json=?, policies_json=?, status='draft', updated_at=?
+       filters_json=?, relations_json=?, policies_json=?, status='draft', updated_at=?
      WHERE id=? AND user_id=?`,
   ).run(
     input.datasourceId, input.code.trim(), input.name.trim(),
@@ -237,7 +249,7 @@ export function updateOntology(userId: string, id: string, input: SaveInput): On
     JSON.stringify(input.synonyms || []), input.sourceSql.trim(),
     JSON.stringify(input.entities || []), JSON.stringify(input.timeDimensions || []),
     JSON.stringify(input.dimensions || []), JSON.stringify(input.measures || []),
-    JSON.stringify(input.relations || []), JSON.stringify(input.policies || []),
+    JSON.stringify(input.filters || []), JSON.stringify(input.relations || []), JSON.stringify(input.policies || []),
     Date.now(), id, userId,
   );
   return toInfo(getRow(userId, id)!);
@@ -272,6 +284,7 @@ function getSpec(row: OntologyRow): OntologySpec {
     dimensions: parseJsonList<OntologyDimension>(row.dimensions_json),
     timeDimensions: parseJsonList<OntologyTimeDimension>(row.time_dimensions_json),
     measures: parseJsonList<OntologyMeasure>(row.measures_json),
+    filters: parseJsonList<OntologyFilter>(row.filters_json),
   };
 }
 
@@ -293,6 +306,36 @@ function loadWithDatasource(userId: string, id: string): { row: OntologyRow; ds:
 export function compileOntology(userId: string, id: string, intent: QueryIntent): ReturnType<typeof compileOntologyQuery> {
   const { row, ds } = loadWithDatasource(userId, id);
   return compileOntologyQuery(getDialectOf(ds), getSpec(row), intent);
+}
+
+/**
+ * 跨本体编译（v1 单跳）：root 本体 + 同数据源已发布本体组 spec 集。
+ * intent.join 引用的对方本体必须是 published；root 用当前编辑本体（无论状态，便于预览）。
+ */
+export function compileOntologyJoin(userId: string, id: string, intent: JoinIntent): ReturnType<typeof compileOntologyJoinQuery> {
+  const { row, ds } = loadWithDatasource(userId, id);
+  const published = db
+    .prepare("SELECT * FROM ontology WHERE user_id = ? AND datasource_id = ? AND status = 'published'")
+    .all(userId, row.datasource_id) as OntologyRow[];
+  const specs: OntologySpecWithCode[] = [{ code: row.code, ...getSpec(row), relations: parseJsonList<OntologyRelation>(row.relations_json) }];
+  for (const r of published) {
+    if (r.id === row.id) continue;
+    specs.push({ code: r.code, ...getSpec(r), relations: parseJsonList<OntologyRelation>(r.relations_json) });
+  }
+  return compileOntologyJoinQuery(getDialectOf(ds), specs, { ...intent, root: row.code });
+}
+
+/** 语义摘要组装：默认直拼 + 非默认按问题召回（P4.2 第一版，喂大模型前调用） */
+export function digestOntologies(
+  userId: string,
+  opts: { datasourceId?: string; question?: string },
+): string {
+  const rows = (
+    opts.datasourceId
+      ? db.prepare('SELECT * FROM ontology WHERE user_id = ? AND datasource_id = ?').all(userId, opts.datasourceId)
+      : db.prepare('SELECT * FROM ontology WHERE user_id = ?').all(userId)
+  ) as OntologyRow[];
+  return buildOntologyDigest(rows.map(toInfo), opts.question || '', recallConfigFromEnv());
 }
 
 /** 数据预览：裸跑 source_sql 前 N 行（不套任何选择器/过滤器） */
@@ -331,7 +374,8 @@ interface OntologyYaml {
   time_dimensions?: OntologyTimeDimension[];
   dimensions?: OntologyDimension[];
   measures?: OntologyMeasure[];
-  relations?: OntologyInfo['relations'];
+  filters?: OntologyFilter[];
+  relations?: OntologyRelation[];
   policies?: string[];
 }
 
@@ -349,6 +393,7 @@ export function exportYaml(userId: string, id: string): string {
     time_dimensions: o.timeDimensions.length ? o.timeDimensions : undefined,
     dimensions: o.dimensions.length ? o.dimensions : undefined,
     measures: o.measures.length ? o.measures : undefined,
+    filters: o.filters.length ? o.filters : undefined,
     relations: o.relations.length ? o.relations : undefined,
     policies: o.policies.length ? o.policies : undefined,
   };
@@ -392,6 +437,7 @@ export function importYaml(userId: string, text: string): OntologyInfo {
     timeDimensions: doc.time_dimensions,
     dimensions: doc.dimensions,
     measures: doc.measures,
+    filters: doc.filters,
     relations: doc.relations,
     policies: doc.policies,
   });

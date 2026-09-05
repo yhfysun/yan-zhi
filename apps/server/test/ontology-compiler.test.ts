@@ -22,6 +22,7 @@ FROM t_order o WHERE o.is_deleted = 0`,
     { name: 'pay_amount_sum', expr: 'pay_amount', agg: 'sum', additive: 'additive' },
     { name: 'avg_order_value', expr: 'pay_amount', agg: 'avg', additive: 'non_additive' },
   ],
+  filters: [],
 };
 
 describe('compileOntologyQuery · sqlite', () => {
@@ -52,12 +53,12 @@ describe('compileOntologyQuery · sqlite', () => {
     expect(r.sql).toContain('GROUP BY');
   });
 
-  it('过滤器注入 WHERE + 行级策略语义由 source_sql 承担', () => {
+  it('过滤器注入 WHERE（裸条件原样放行，外层加括号）+ 行级策略语义由 source_sql 承担', () => {
     const r = compileOntologyQuery('sqlite', SPEC, {
       measures: [{ name: 'pay_amount_sum' }],
       filters: ["status = 'paid'", 'pay_amount > 100'],
     });
-    expect(r.sql).toContain("WHERE status = 'paid'\n  AND pay_amount > 100");
+    expect(r.sql).toContain("WHERE (status = 'paid')\n  AND (pay_amount > 100)");
   });
 
   it('默认意图取第一个度量', () => {

@@ -1172,6 +1172,7 @@ db.exec(`
     time_dimensions_json TEXT DEFAULT '[]',
     dimensions_json TEXT DEFAULT '[]',
     measures_json TEXT DEFAULT '[]',
+    filters_json TEXT DEFAULT '[]',
     relations_json TEXT DEFAULT '[]',
     policies_json TEXT DEFAULT '[]',
     status TEXT NOT NULL DEFAULT 'draft',
@@ -1185,5 +1186,7 @@ db.exec(`
 `);
 try { db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_ontology_user_code ON ontology(user_id, code)'); } catch {}
 try { db.exec('CREATE INDEX IF NOT EXISTS idx_ontology_user_ds ON ontology(user_id, datasource_id, status)'); } catch {}
+// 旧库迁移：filters_json（查询过滤器，命中才注入 WHERE；与行级策略 policies 不同）
+try { db.exec("ALTER TABLE ontology ADD COLUMN filters_json TEXT DEFAULT '[]'"); } catch {}
 
 export { db };

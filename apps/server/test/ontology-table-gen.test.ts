@@ -41,12 +41,16 @@ describe('buildTableOntologySpec', () => {
     expect(gen.sourceSql.split('AS').length - 1).toBe(TABLE.columns.length);
   });
 
-  it('数值列 → sum 度量；主键不生成度量', () => {
-    expect(gen.measures).toEqual([{ name: 'pay_amount_sum', expr: 'pay_amount', agg: 'sum' }]);
+  it('数值列 → sum 度量（带类型描述）；主键不生成度量', () => {
+    expect(gen.measures).toEqual([
+      { name: 'pay_amount_sum', expr: 'pay_amount', agg: 'sum', description: '数值列，类型 DECIMAL(12,2)' },
+    ]);
   });
 
-  it('日期时间列 → 时间维度', () => {
-    expect(gen.timeDimensions).toEqual([{ name: 'created_at', expr: 'created_at' }]);
+  it('日期时间列 → 时间维度（带类型描述）', () => {
+    expect(gen.timeDimensions).toEqual([
+      { name: 'created_at', expr: 'created_at', description: '时间列，类型 DATETIME' },
+    ]);
   });
 
   it('文本列 → 维度；主键 → 主实体', () => {

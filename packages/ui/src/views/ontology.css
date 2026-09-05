@@ -213,6 +213,15 @@
   color: var(--dw-ink-3);
   font-size: 10.5px;
 }
+/* 「查」勾选列 + 描述列 */
+.dw-root .ont-spec-table th.ont-col-check,
+.dw-root .ont-spec-table td.ont-col-check {
+  width: 36px;
+  text-align: center;
+}
+.dw-root .ont-spec-table td.ont-col-check .el-checkbox {
+  height: auto;
+}
 .dw-root .ont-role {
   display: inline-block;
   font-size: 10px;

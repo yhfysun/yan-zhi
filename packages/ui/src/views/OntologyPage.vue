@@ -125,24 +125,43 @@
             </div>
           </div>
 
-          <!-- 选择器 -->
+          <!-- 选择列 / 度量 / 时间维度 -->
           <div class="ont-fgroup">
-            <span>维度 / 度量 / 时间维度</span>
-            <small>expr 只能引用来源 SQL 的输出列别名</small>
+            <span>选择列 / 度量 / 时间维度</span>
+            <small>默认列不召回直接进摘要（未指定列时的兜底 SELECT）；非默认列按关键字召回</small>
           </div>
           <table class="ont-spec-table">
             <thead>
-              <tr><th style="width:70px">角色</th><th>名称</th><th>表达式（别名）</th><th style="width:110px">聚合</th><th style="width:36px"></th></tr>
+              <tr>
+                <th class="ont-col-check" title="参与编译预览/试跑">查</th>
+                <th style="width:70px">角色</th>
+                <th>名称</th>
+                <th>表达式（别名）</th>
+                <th style="width:104px">聚合</th>
+                <th style="width:150px">关键字（召回命中词）</th>
+                <th class="ont-col-check" title="默认选择列：直接拼进本体摘要">默认</th>
+                <th style="width:150px">描述</th>
+                <th style="width:36px"></th>
+              </tr>
             </thead>
             <tbody>
               <tr v-for="(d, i) in form.dimensions" :key="`d${i}`">
+                <td class="ont-col-check">
+                  <el-checkbox :model-value="qsel.dims[d.name] !== false" :disabled="!d.name" @change="(v: boolean) => (qsel.dims[d.name] = v)" />
+                </td>
                 <td><span class="ont-role ont-role-dim">维度</span></td>
                 <td><el-input v-model="d.name" size="small" class="dw-mono" /></td>
                 <td><el-input v-model="d.expr" size="small" class="dw-mono" /></td>
                 <td class="ont-cell-na">—</td>
+                <td><el-input v-model="d.keywordsText" size="small" placeholder="逗号分隔，如: 名称,名字" /></td>
+                <td class="ont-col-check"><el-checkbox v-model="d.isDefault" /></td>
+                <td><el-input v-model="d.description" size="small" placeholder="业务口径（选填）" /></td>
                 <td><el-button size="small" text type="danger" :icon="Delete" @click="form.dimensions.splice(i, 1)" /></td>
               </tr>
               <tr v-for="(m, i) in form.measures" :key="`m${i}`">
+                <td class="ont-col-check">
+                  <el-checkbox :model-value="qsel.meas[m.name] !== false" :disabled="!m.name" @change="(v: boolean) => (qsel.meas[m.name] = v)" />
+                </td>
                 <td><span class="ont-role ont-role-measure">度量</span></td>
                 <td><el-input v-model="m.name" size="small" class="dw-mono" /></td>
                 <td><el-input v-model="m.expr" size="small" class="dw-mono" placeholder="如 * 或列别名" /></td>
@@ -151,21 +170,119 @@
                     <el-option v-for="a in AGGS" :key="a" :label="a" :value="a" />
                   </el-select>
                 </td>
+                <td><el-input v-model="m.keywordsText" size="small" placeholder="逗号分隔" /></td>
+                <td class="ont-col-check"><el-checkbox v-model="m.isDefault" /></td>
+                <td><el-input v-model="m.description" size="small" placeholder="业务口径（选填）" /></td>
                 <td><el-button size="small" text type="danger" :icon="Delete" @click="form.measures.splice(i, 1)" /></td>
               </tr>
               <tr v-for="(t, i) in form.timeDimensions" :key="`t${i}`">
+                <td class="ont-col-check"><span class="ont-cell-na">—</span></td>
                 <td><span class="ont-role ont-role-time">时间</span></td>
                 <td><el-input v-model="t.name" size="small" class="dw-mono" /></td>
                 <td><el-input v-model="t.expr" size="small" class="dw-mono" /></td>
                 <td class="ont-cell-na">日/周/月…</td>
+                <td><el-input v-model="t.keywordsText" size="small" placeholder="逗号分隔" /></td>
+                <td class="ont-col-check"><el-checkbox v-model="t.isDefault" /></td>
+                <td><el-input v-model="t.description" size="small" placeholder="业务口径（选填）" /></td>
                 <td><el-button size="small" text type="danger" :icon="Delete" @click="form.timeDimensions.splice(i, 1)" /></td>
               </tr>
             </tbody>
           </table>
           <div class="ont-add-row">
-            <el-button size="small" text @click="form.dimensions.push({ name: '', expr: '' })">+ 维度</el-button>
-            <el-button size="small" text @click="form.measures.push({ name: '', expr: '', agg: 'sum' })">+ 度量</el-button>
-            <el-button size="small" text @click="form.timeDimensions.push({ name: '', expr: '' })">+ 时间维度</el-button>
+            <el-button size="small" text @click="addDim">+ 维度</el-button>
+            <el-button size="small" text @click="addMeasure">+ 度量</el-button>
+            <el-button size="small" text @click="addTimeDim">+ 时间维度</el-button>
+          </div>
+
+          <!-- 过滤器：命中才注入 WHERE（区别于下方强制注入的行级策略） -->
+          <div class="ont-fgroup">
+            <span>过滤器</span>
+            <small>默认过滤器直接进摘要；非默认按关键字召回。命中后条件注入 WHERE（行级策略是强制注入，两者叠加）</small>
+          </div>
+          <table class="ont-spec-table">
+            <thead>
+              <tr>
+                <th style="width:110px">名称</th>
+                <th style="width:170px">关键字（召回命中词）</th>
+                <th class="ont-col-check" title="默认过滤器：直接拼进本体摘要">默认</th>
+                <th>条件 SQL</th>
+                <th style="width:150px">描述</th>
+                <th style="width:36px"></th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="(f, i) in form.filters" :key="`f${i}`">
+                <td><el-input v-model="f.name" size="small" class="dw-mono" placeholder="如: 近30天" /></td>
+                <td><el-input v-model="f.keywordsText" size="small" placeholder="逗号分隔" /></td>
+                <td class="ont-col-check"><el-checkbox v-model="f.isDefault" /></td>
+                <td><el-input v-model="f.expr" size="small" class="dw-mono" placeholder="如: created_at >= DATE('now','-30 day')" /></td>
+                <td><el-input v-model="f.description" size="small" /></td>
+                <td><el-button size="small" text type="danger" :icon="Delete" @click="form.filters.splice(i, 1)" /></td>
+              </tr>
+            </tbody>
+          </table>
+          <div class="ont-add-row">
+            <el-button size="small" text :icon="Plus" @click="addFilter">+ 过滤器</el-button>
+          </div>
+
+          <!-- 关联关系：跨本体 JOIN 路径（N:N 经中间表展开两跳） -->
+          <div class="ont-fgroup">
+            <span>关联关系</span>
+            <small>对方本体须已发布；N:N 走中间表两跳。摘要全量拼入，编译 v1 只做单跳</small>
+          </div>
+          <table class="ont-spec-table">
+            <thead>
+              <tr>
+                <th style="width:86px">类型</th>
+                <th style="width:130px">对方本体</th>
+                <th>本体字段</th>
+                <th>对方字段</th>
+                <th v-if="hasNn">中间表</th>
+                <th v-if="hasNn">中间表.本体列</th>
+                <th v-if="hasNn">中间表.对方列</th>
+                <th style="width:130px">描述</th>
+                <th style="width:36px"></th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="(r, i) in form.relations" :key="`r${i}`">
+                <td>
+                  <el-select v-model="r.type" size="small">
+                    <el-option v-for="t in REL_TYPES" :key="t" :label="t" :value="t" />
+                  </el-select>
+                </td>
+                <td>
+                  <el-select v-model="r.target" size="small" filterable placeholder="对方本体">
+                    <el-option v-for="o in relTargetOptions" :key="o.id" :label="o.code" :value="o.code" />
+                  </el-select>
+                </td>
+                <td><el-input v-model="r.sourceAttr" size="small" class="dw-mono" placeholder="输出别名" /></td>
+                <td><el-input v-model="r.targetAttr" size="small" class="dw-mono" placeholder="对方输出别名" /></td>
+                <template v-if="hasNn">
+                  <td><el-input v-model="r.viaTable" size="small" class="dw-mono" placeholder="表名" :disabled="r.type !== 'N:N'" /></td>
+                  <td><el-input v-model="r.viaSource" size="small" class="dw-mono" placeholder="外键列" :disabled="r.type !== 'N:N'" /></td>
+                  <td><el-input v-model="r.viaTarget" size="small" class="dw-mono" placeholder="外键列" :disabled="r.type !== 'N:N'" /></td>
+                </template>
+                <td><el-input v-model="r.description" size="small" /></td>
+                <td><el-button size="small" text type="danger" :icon="Delete" @click="form.relations.splice(i, 1)" /></td>
+              </tr>
+            </tbody>
+          </table>
+          <div class="ont-add-row">
+            <el-button size="small" text :icon="Plus" @click="addRelation">+ 关联关系</el-button>
+          </div>
+
+          <!-- 查询意图（编译预览 / 试跑共用） -->
+          <div class="ont-fgroup">
+            <span>查询意图（编译预览 / 试跑）</span>
+            <small>「查」勾选要输出的列；过滤器一行一个——可填过滤器名或裸条件，按 AND 连接注入 WHERE</small>
+          </div>
+          <div class="ont-field ont-full">
+            <el-input
+              v-model="filtersText" type="textarea" :rows="2" size="small"
+              class="dw-mono" spellcheck="false"
+              placeholder="过滤器，如：created_at >= '2026-01-01'（留空 = 不过滤）"
+            />
           </div>
 
           <!-- 行级策略 -->
@@ -279,9 +396,15 @@ interface OntologyInfo {
   description: string | null;
   synonyms: string[];
   sourceSql: string;
-  dimensions: { name: string; expr: string; description?: string }[];
-  timeDimensions: { name: string; expr: string; description?: string }[];
-  measures: { name: string; expr: string; agg: string }[];
+  dimensions: { name: string; expr: string; keywords?: string[]; isDefault?: boolean; description?: string }[];
+  timeDimensions: { name: string; expr: string; keywords?: string[]; isDefault?: boolean; description?: string }[];
+  measures: { name: string; expr: string; agg: string; keywords?: string[]; isDefault?: boolean; description?: string }[];
+  filters: { name: string; expr: string; keywords?: string[]; isDefault?: boolean; description?: string }[];
+  relations: {
+    type: string; target: string; sourceAttr: string; targetAttr: string;
+    via?: { table: string; sourceColumn: string; targetColumn: string };
+    description?: string;
+  }[];
   policies: string[];
   status: string;
   version: number;
@@ -322,15 +445,53 @@ async function load(keepSelection = true) {
 let builtinRetry = false;
 
 // ===== 表单 =====
+const REL_TYPES = ['1:1', '1:N', 'N:1', 'N:N'] as const;
+
 const form = reactive({
   id: '', datasourceId: '', code: '', name: '', domain: '', description: '',
   synonymsText: '', sourceSql: '',
-  dimensions: [] as { name: string; expr: string }[],
-  measures: [] as { name: string; expr: string; agg: string }[],
-  timeDimensions: [] as { name: string; expr: string }[],
+  dimensions: [] as { name: string; expr: string; keywordsText: string; isDefault: boolean; description: string }[],
+  measures: [] as { name: string; expr: string; agg: string; keywordsText: string; isDefault: boolean; description: string }[],
+  timeDimensions: [] as { name: string; expr: string; keywordsText: string; isDefault: boolean; description: string }[],
+  filters: [] as { name: string; keywordsText: string; isDefault: boolean; expr: string; description: string }[],
+  relations: [] as {
+    type: string; target: string; sourceAttr: string; targetAttr: string;
+    viaTable: string; viaSource: string; viaTarget: string; description: string;
+  }[],
   policies: [] as string[],
   status: 'draft', version: 1, builtin: false,
 });
+// 查询意图：勾选参与编译/试跑的维度与度量（undefined 视为勾选，新加行默认勾上）
+const qsel = reactive<{ dims: Record<string, boolean>; meas: Record<string, boolean> }>({ dims: {}, meas: {} });
+// 过滤器：一行一个 WHERE 条件（过滤器名或裸条件）
+const filtersText = ref('');
+
+const relTargetOptions = computed(() =>
+  list.value.filter((o) => o.status === 'published' && o.datasourceId === form.datasourceId && o.id !== form.id),
+);
+const hasNn = computed(() => form.relations.some((r) => r.type === 'N:N'));
+
+const splitKw = (s: string): string[] =>
+  (s || '').split(/[,，\s]+/).map((x) => x.trim()).filter(Boolean);
+const joinKw = (a?: string[]): string => (a || []).join(', ');
+
+function addDim() { form.dimensions.push({ name: '', expr: '', keywordsText: '', isDefault: false, description: '' }); }
+function addMeasure() { form.measures.push({ name: '', expr: '', agg: 'sum', keywordsText: '', isDefault: false, description: '' }); }
+function addTimeDim() { form.timeDimensions.push({ name: '', expr: '', keywordsText: '', isDefault: false, description: '' }); }
+function addFilter() { form.filters.push({ name: '', keywordsText: '', isDefault: false, expr: '', description: '' }); }
+function addRelation() {
+  form.relations.push({ type: 'N:1', target: '', sourceAttr: '', targetAttr: '', viaTable: '', viaSource: '', viaTarget: '', description: '' });
+}
+
+/** 从勾选态 + 过滤器文本组装查询意图（编译预览 / 试跑共用） */
+function buildIntent() {
+  return {
+    dimensions: form.dimensions.filter((d) => d.name && d.expr && qsel.dims[d.name] !== false).map((d) => d.name),
+    measures: form.measures.filter((m) => m.name && qsel.meas[m.name] !== false).map((m) => ({ name: m.name })),
+    filters: filtersText.value.split('\n').map((s) => s.trim()).filter(Boolean),
+    limit: 50,
+  };
+}
 const dirty = ref(false);
 const saving = ref(false);
 const publishing = ref(false);
@@ -342,12 +503,22 @@ function fillForm(o: OntologyInfo) {
     id: o.id, datasourceId: o.datasourceId, code: o.code, name: o.name,
     domain: o.domain || '', description: o.description || '',
     synonymsText: o.synonyms.join('\n'), sourceSql: o.sourceSql,
-    dimensions: o.dimensions.map((d) => ({ ...d })),
-    measures: o.measures.map((m) => ({ ...m })),
-    timeDimensions: o.timeDimensions.map((d) => ({ ...d })),
+    dimensions: o.dimensions.map((d) => ({ name: d.name, expr: d.expr, keywordsText: joinKw(d.keywords), isDefault: !!d.isDefault, description: d.description || '' })),
+    measures: o.measures.map((m) => ({ name: m.name, expr: m.expr, agg: m.agg, keywordsText: joinKw(m.keywords), isDefault: !!m.isDefault, description: m.description || '' })),
+    timeDimensions: o.timeDimensions.map((t) => ({ name: t.name, expr: t.expr, keywordsText: joinKw(t.keywords), isDefault: !!t.isDefault, description: t.description || '' })),
+    filters: (o.filters || []).map((f) => ({ name: f.name, keywordsText: joinKw(f.keywords), isDefault: !!f.isDefault, expr: f.expr, description: f.description || '' })),
+    relations: (o.relations || []).map((r) => ({
+      type: r.type || 'N:1', target: r.target || '', sourceAttr: r.sourceAttr || '', targetAttr: r.targetAttr || '',
+      viaTable: r.via?.table || '', viaSource: r.via?.sourceColumn || '', viaTarget: r.via?.targetColumn || '',
+      description: r.description || '',
+    })),
     policies: [...o.policies],
     status: o.status, version: o.version, builtin: o.builtin,
   });
+  // 切换本体时重置查询意图（默认全选 + 无过滤器）
+  Object.keys(qsel.dims).forEach((k) => delete qsel.dims[k]);
+  Object.keys(qsel.meas).forEach((k) => delete qsel.meas[k]);
+  filtersText.value = '';
   dirty.value = false;
   void compilePreview();
   void loadYaml();
@@ -366,12 +537,13 @@ function openCreate() {
   Object.assign(form, {
     id: '', datasourceId: list.value[0]?.datasourceId || '', code: '', name: '', domain: '',
     description: '', synonymsText: '', sourceSql: 'SELECT\n  id AS id\nFROM t_your_table',
-    dimensions: [], measures: [], timeDimensions: [], policies: [],
+    dimensions: [], measures: [], timeDimensions: [], filters: [], relations: [], policies: [],
     status: 'draft', version: 1, builtin: false,
   });
   dirty.value = false;
 }
 
+/** UI 行 → 保存载荷（keywordsText 等纯 UI 字段不落库） */
 function payload() {
   return {
     datasourceId: form.datasourceId || list.value[0]?.datasourceId,
@@ -379,9 +551,27 @@ function payload() {
     description: form.description || undefined,
     synonyms: form.synonymsText.split('\n').map((s) => s.trim()).filter(Boolean),
     sourceSql: form.sourceSql,
-    dimensions: form.dimensions.filter((d) => d.name && d.expr),
-    measures: form.measures.filter((m) => m.name && (m.expr || m.agg === 'count')),
-    timeDimensions: form.timeDimensions.filter((d) => d.name && d.expr),
+    dimensions: form.dimensions
+      .filter((d) => d.name && d.expr)
+      .map((d) => ({ name: d.name.trim(), expr: d.expr.trim(), keywords: splitKw(d.keywordsText), isDefault: d.isDefault || undefined, description: d.description || undefined })),
+    measures: form.measures
+      .filter((m) => m.name && (m.expr || m.agg === 'count'))
+      .map((m) => ({ name: m.name.trim(), expr: m.expr.trim() || '*', agg: m.agg, keywords: splitKw(m.keywordsText), isDefault: m.isDefault || undefined, description: m.description || undefined })),
+    timeDimensions: form.timeDimensions
+      .filter((d) => d.name && d.expr)
+      .map((d) => ({ name: d.name.trim(), expr: d.expr.trim(), keywords: splitKw(d.keywordsText), isDefault: d.isDefault || undefined, description: d.description || undefined })),
+    filters: form.filters
+      .filter((f) => f.name && f.expr)
+      .map((f) => ({ name: f.name.trim(), expr: f.expr.trim(), keywords: splitKw(f.keywordsText), isDefault: f.isDefault || undefined, description: f.description || undefined })),
+    relations: form.relations
+      .filter((r) => r.target && r.sourceAttr && r.targetAttr)
+      .map((r) => ({
+        type: r.type, target: r.target, sourceAttr: r.sourceAttr.trim(), targetAttr: r.targetAttr.trim(),
+        via: r.type === 'N:N' && r.viaTable
+          ? { table: r.viaTable.trim(), sourceColumn: r.viaSource.trim(), targetColumn: r.viaTarget.trim() }
+          : undefined,
+        description: r.description || undefined,
+      })),
     policies: form.policies.map((p) => p.trim()).filter(Boolean),
   };
 }
@@ -453,13 +643,9 @@ async function compilePreview() {
   if (!form.id) return;
   compiledSql.value = '';
   runError.value = '';
-  // 默认意图：全部维度 + 全部度量（概览查询）
-  const res = await api.post<{ sql: string; warnings: string[] }>(`/ontologies/${form.id}/compile`, {
-    dimensions: form.dimensions.map((d) => d.name).filter(Boolean),
-    timeDimension: undefined,
-    measures: form.measures.filter((m) => m.name).map((m) => ({ name: m.name })),
-    limit: 50,
-  });
+  const res = await api.post<{ sql: string; warnings: string[] }>(
+    `/ontologies/${form.id}/compile`, buildIntent(),
+  );
   if ('error' in res) {
     runError.value = res.error;
     return;
@@ -525,12 +711,7 @@ async function tryRun() {
   running.value = true;
   runError.value = '';
   const res = await api.post<{ columns: string[]; rows: Record<string, unknown>[]; latencyMs: number; warnings?: string[] }>(
-    `/ontologies/${form.id}/try-run`,
-    {
-      dimensions: form.dimensions.map((d) => d.name).filter(Boolean),
-      measures: form.measures.filter((m) => m.name).map((m) => ({ name: m.name })),
-      limit: 50,
-    },
+    `/ontologies/${form.id}/try-run`, buildIntent(),
   );
   running.value = false;
   if ('error' in res) {

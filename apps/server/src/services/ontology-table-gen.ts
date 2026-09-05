@@ -68,13 +68,13 @@ export function buildTableOntologySpec(table: TableSchemaLite, dsName: string): 
       continue;
     }
     if (TIME_TYPE.test(t)) {
-      timeDimensions.push({ name: c.name, expr: c.name, description: undefined });
+      timeDimensions.push({ name: c.name, expr: c.name, description: t ? `时间列，类型 ${t}` : undefined });
     } else if (NUM_TYPE.test(t) && !/^(id|.*_id|.*_no|.*_num|.*_code)$/i.test(c.name)) {
       // 数值列 → sum 度量；但 *_id/_no/_code 等标识列虽为数值也归维度（SUM(user_id) 无意义）
-      measures.push({ name: `${c.name}_sum`, expr: c.name, agg: 'sum' });
+      measures.push({ name: `${c.name}_sum`, expr: c.name, agg: 'sum', description: t ? `数值列，类型 ${t}` : undefined });
     } else {
       // 文本/标识/其他类型 → 维度（含枚举/布尔，富化阶段再收敛）
-      dimensions.push({ name: c.name, expr: c.name });
+      dimensions.push({ name: c.name, expr: c.name, description: t ? `类型 ${t}` : undefined });
     }
   }
 
