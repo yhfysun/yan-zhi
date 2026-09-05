@@ -12,6 +12,11 @@ export async function runInSandbox(
     const vm = await import('node:vm');
     const contextObj: Record<string, unknown> = {};
     const context = vm.createContext(contextObj);
+    // 两层 IIFE：
+    // 外层在 context 全局作用域抓取标准内建（vm 裸 context 自带 JSON/Math/Date 等 ES 内建）；
+    // 内层再屏蔽宿主能力（require/process/globalThis/timer/Promise）。
+    // 不能在同一层又引用又 const globalThis —— 同作用域 const 存在 TDZ，会抛
+    // "Cannot access 'globalThis' before initialization"（历史上沙箱因此全挂）。
     const sandboxCode = `
       (function() {
         const JSON = globalThis.JSON;
@@ -28,15 +33,17 @@ export async function runInSandbox(
         const RegExp = globalThis.RegExp;
         const Map = globalThis.Map;
         const Set = globalThis.Set;
-        const require = undefined;
-        const process = undefined;
-        const global = undefined;
-        const globalThis = undefined;
-        const setTimeout = undefined;
-        const setInterval = undefined;
-        const Promise = undefined;
-        ${code}
-        return (input) => ${fnName}(input);
+        return (function() {
+          const require = undefined;
+          const process = undefined;
+          const global = undefined;
+          const globalThis = undefined;
+          const setTimeout = undefined;
+          const setInterval = undefined;
+          const Promise = undefined;
+          ${code}
+          return (input) => ${fnName}(input);
+        })();
       })()
     `;
     const wrappedFn = vm.runInContext(sandboxCode, context, {
@@ -46,7 +53,13 @@ export async function runInSandbox(
     if (typeof wrappedFn !== 'function') {
       return { content: [{ type: 'text', text: `"${fnName}" 不是一个函数` }], isError: true };
     }
-    const result = await Promise.resolve(wrappedFn(args));
+    // 关键：函数调用必须经 runInContext 执行，timeout 才罩得住函数体。
+    // 直接 wrappedFn(args) 会绕过 vm timeout —— 工具里写 while(true) 会永久挂死调用方。
+    context.__yz_fn__ = wrappedFn;
+    context.__yz_args__ = args;
+    const result = await Promise.resolve(
+      vm.runInContext('__yz_fn__(__yz_args__)', context, { timeout: options.timeout, displayErrors: true }),
+    );
     return { content: [{ type: 'text', text: typeof result === 'string' ? result : JSON.stringify(result) }], isError: false };
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
