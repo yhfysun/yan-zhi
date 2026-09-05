@@ -23,6 +23,7 @@ apps/desktop/src-tauri/Cargo.lock
 
 # Electron 构建产物
 dist-release/
+dist-release2/
 dist-download/
 apps/desktop/build/
 apps/desktop/runtime/
