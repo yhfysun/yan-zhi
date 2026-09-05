@@ -24,7 +24,12 @@ export type AliasCheckResult = AliasCheckOk | AliasCheckFail;
 
 const IDENT_RE = /^[A-Za-z_][\w$]*$/;
 
-/** 去注释（-- 与块注释）、去字符串/引号字面量，保留结构空白 */
+/** 去注释（-- 与块注释）、字符串 / 引号字面量处理：保留结构 + identifier token
+ *  - 单引号块 ('…') → 字面量，内容吞掉（避免字符串内的伪 identifier 干扰 expr 引用识别）
+ *  - 双引号块 ("…") → PG / SQLite 标识符别名（如 `"id" AS "id"`），原内容保留
+ *  - 反引号块 (`…`) → MySQL 标识符别名，原内容保留
+ *  处理完的 stripped 仍保留 token 边界（每段前后空格分隔），下游 splitTopLevelAs /
+ *  implicit-alias 提取能把 AS 后的别名正确识别。 */
 function stripLiterals(sql: string): string {
   let out = '';
   let i = 0;
@@ -42,18 +47,23 @@ function stripLiterals(sql: string): string {
     }
     const ch = sql[i];
     if (ch === "'" || ch === '"' || ch === '`') {
-      // 字符串/带引号标识符：内容吞掉（双引号标识符实际是列名，吞掉后由 AS 处理兜底）
       const quote = ch;
       out += ' ';
       i++;
       while (i < sql.length) {
         if (sql[i] === quote) {
-          if (sql[i + 1] === quote) i += 2;
-          else {
-            i++;
-            break;
+          if (sql[i + 1] === quote) {
+            out += ' ';
+            i += 2;
+            continue;
           }
-        } else i++;
+          i++;
+          out += ' ';
+          break;
+        }
+        // 字面量内容：单引号吞空；双引号 / 反引号 identifier 原样保留
+        out += quote === "'" ? ' ' : /[A-Za-z0-9_$.]/.test(sql[i]) ? sql[i] : ' ';
+        i++;
       }
       continue;
     }

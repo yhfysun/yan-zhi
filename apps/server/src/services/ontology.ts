@@ -84,6 +84,8 @@ interface SaveInput {
   measures?: OntologyMeasure[];
   relations?: OntologyInfo['relations'];
   policies?: string[];
+  /** 内置本体标记：项目库自动生成的本体传 true（不可删、code/数据源/物理 SQL 不可改）；用户自建留空。 */
+  builtin?: boolean;
 }
 
 function parseJsonList<T>(s: string | null | undefined, fallback: T[] = []): T[] {
@@ -181,8 +183,8 @@ export function createOntology(userId: string, input: SaveInput): OntologyInfo {
       `INSERT INTO ontology
          (id, user_id, datasource_id, code, name, domain, description, synonyms_json, source_sql,
           entities_json, time_dimensions_json, dimensions_json, measures_json, relations_json, policies_json,
-          status, version, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', 1, ?, ?)`,
+          status, version, builtin, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', 1, ?, ?, ?)`,
     ).run(
       id, userId, input.datasourceId, input.code.trim(), input.name.trim(),
       input.domain?.trim() || null, input.description?.trim() || null,
@@ -190,6 +192,7 @@ export function createOntology(userId: string, input: SaveInput): OntologyInfo {
       JSON.stringify(input.entities || []), JSON.stringify(input.timeDimensions || []),
       JSON.stringify(input.dimensions || []), JSON.stringify(input.measures || []),
       JSON.stringify(input.relations || []), JSON.stringify(input.policies || []),
+      input.builtin ? 1 : 0,
       now, now,
     );
   } catch (e) {
@@ -413,17 +416,18 @@ export function ensureBuiltinOntologies(userId: string): void {
     try {
       const conn = getConnector(project);
       const schema = await conn.schemaInfo();
+      console.log(`[ensureBuiltin] ds=${project.name} tables=${schema.length}`);
       for (const t of schema) {
         if (existing.has(t.name)) continue; // 已存在（含结构漂移刷新）由 generateTableOntology 的幂等逻辑兜底，避免列表期频繁写
         if (!t.columns.length) continue;
         try {
           await generateTableOntology(userId, project, t as TableSchemaLite, { builtin: true, silentConflict: true });
-        } catch {
-          // 单表失败（重名/校验）跳过，不影响其余表
+        } catch (e) {
+          console.error(`[ensureBuiltin] per-table fail: ds=${project.name} table=${t.name}`, e);
         }
       }
-    } catch {
-      // 项目库不可用时静默，下次列表重试
+    } catch (e) {
+      console.error(`[ensureBuiltin] async body failed: ds=${project.name}`, e);
     }
   })();
 }
@@ -480,6 +484,7 @@ export async function generateTableOntology(
     dimensions: gen.dimensions,
     timeDimensions: gen.timeDimensions,
     measures: gen.measures,
+    builtin: !!opts?.builtin,
   });
 }
 
