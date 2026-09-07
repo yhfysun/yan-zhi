@@ -98,3 +98,26 @@ _check_db.py
 # playwright-cli 浏览器脚本临时产物（日志 / 快照 / 截图）
 .playwright-cli/
 openspec/changes/data-ontology-agent/shots/
+
+# 一次性修复 / 诊断 / 检查脚本（用后即弃，不入库）
+scripts/patch-*.py
+scripts/patch-*.cjs
+scripts/fix-*.py
+scripts/fix-*.cjs
+scripts/diagnose-*.py
+scripts/diagnose-*.cjs
+scripts/check-*.py
+apps/server/diagnose-cdp.cjs
+
+# 根目录临时调试产物
+tmp_*
+tmp_smoke.out
+tmp_server.err
+nul
+*.bak
+
+# 移动端内置 Node.js 运行时（构建时下载，不入库）
+apps/mobile/nodejs/
+
+# 服务端临时冒烟数据
+apps/server/tmp_*
