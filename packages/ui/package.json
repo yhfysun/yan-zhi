@@ -28,6 +28,7 @@
     "element-plus": "^2.8.0",
     "highlight.js": "^11.10.0",
     "jsqr": "^1.4.0",
+    "jszip": "^3.10.1",
     "katex": "^0.16.0",
     "leaflet": "^1.9.4",
     "lucide-vue-next": "^0.460.0",

@@ -4,7 +4,7 @@ import { getPlatformAdapter } from '../../platform/types';
 
 export class FileWriteTool implements BuiltInTool {
   name = 'file_write';
-  description = 'Write content to a file at the specified path. Creates parent directories if needed. Overwrites existing files.';
+  description = '把内容写入指定路径的文件。自动创建不存在的父目录；同名文件直接覆盖。';
 
   inputSchema = {
     type: 'object',

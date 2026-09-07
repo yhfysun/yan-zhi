@@ -135,6 +135,47 @@ export const useMemoryStore = defineStore('memory', () => {
     return r.data;
   }
 
+  // ── 记忆整理（Dreaming） ──
+
+  const dreamLog = ref<any[]>([]);
+  const dreamTotal = ref(0);
+  const dreamRunning = ref(false);
+  const dreamConfig = ref<{ enabled: boolean; hour: number }>({ enabled: true, hour: 2.5 });
+
+  /** 手动触发一次记忆整理（去重/矛盾清理/过期淘汰/短期→长期提拔）。 */
+  async function runDreaming(): Promise<any> {
+    dreamRunning.value = true;
+    try {
+      const r = await api.post<any>('/memory/dream-run', {});
+      if ('error' in r) throw new Error((r as any).error);
+      return (r as any).data;
+    } finally {
+      dreamRunning.value = false;
+    }
+  }
+
+  /** 拉取整理历史（时间线展示）。 */
+  async function loadDreamLog(page = 1, pageSize = 10): Promise<void> {
+    const json = await fetchJsonRaw(`/memory/dream-log?page=${page}&pageSize=${pageSize}`);
+    if (json?.error) throw new Error(json.error);
+    dreamLog.value = json?.data || [];
+    dreamTotal.value = Number(json?.total ?? 0);
+  }
+
+  /** 拉取整理配置。 */
+  async function loadDreamConfig(): Promise<void> {
+    const json = await fetchJsonRaw('/memory/dream-config');
+    if (json?.error) throw new Error(json.error);
+    if (json?.data) dreamConfig.value = json.data;
+  }
+
+  /** 更新整理配置（enabled/hour）。 */
+  async function updateDreamConfig(patch: { enabled?: boolean; hour?: number }): Promise<void> {
+    const r = await api.patch<{ enabled: boolean; hour: number }>('/memory/dream-config', patch);
+    if ('error' in r) throw new Error(r.error);
+    dreamConfig.value = (r as any).data;
+  }
+
   return {
     rows,
     total,
@@ -148,5 +189,13 @@ export const useMemoryStore = defineStore('memory', () => {
     updateMemory,
     deleteMemory,
     createMemory,
+    dreamLog,
+    dreamTotal,
+    dreamRunning,
+    dreamConfig,
+    runDreaming,
+    loadDreamLog,
+    loadDreamConfig,
+    updateDreamConfig,
   };
 });

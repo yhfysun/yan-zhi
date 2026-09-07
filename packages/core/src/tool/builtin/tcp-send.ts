@@ -5,7 +5,7 @@ import { encodePayload, previewBuffer, type PayloadEncoding } from './raw-payloa
 
 export class TcpSendTool implements BuiltInTool {
   name = 'tcp_send';
-  description = 'Send a raw TCP payload to host:port and capture the response (banner grabbing, protocol probing, authorized targets only). payload supports \\r\\n escapes; encoding: text (default) / hex / base64. Connection closes after response or timeout.';
+  description = '向 host:port 发送原始 TCP 报文并捕获响应（banner 抓取、协议探测、仅授权目标）。payload 支持 \\\\r\\\\n 换行转义；encoding 可选 text（默认）/ hex / base64。响应到达或超时后连接关闭。';
 
   inputSchema = {
     type: 'object',

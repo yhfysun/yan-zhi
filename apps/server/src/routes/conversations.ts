@@ -89,12 +89,15 @@ router.delete('/:id', (req: Request, res: Response) => {
 });
 
 // GET /api/conversations/:id/messages
+// 历史会话还原接口：不携带 system_prompt_snapshot（快照可能很大，且只有查看提示词时才需要）。
+// 需要快照时走独立按需接口 GET /api/messages/:mid/snapshot。
+const MESSAGE_LIST_COLS = 'id, conversation_id, user_id, role, content, tool_calls_json, tool_call_id, reasoning_content, tokens, parent_tool_call_id, sub_agent_id, sub_agent_name, sub_agent_depth, created_at';
 router.get('/:id/messages', (req: Request, res: Response) => {
   const userId = req.user!.userId;
   const cid = req.params.id;
   const conv = db.prepare('SELECT id FROM conversation WHERE id = ? AND user_id = ?').get(cid, userId);
   if (!conv) { res.status(404).json({ error: '会话不存在' }); return; }
-  const rows = db.prepare('SELECT * FROM message WHERE conversation_id = ? ORDER BY created_at ASC').all(cid);
+  const rows = db.prepare(`SELECT ${MESSAGE_LIST_COLS} FROM message WHERE conversation_id = ? ORDER BY created_at ASC`).all(cid);
   res.json({ data: rows });
 });
 

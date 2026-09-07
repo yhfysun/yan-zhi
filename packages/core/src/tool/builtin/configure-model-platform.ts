@@ -7,10 +7,10 @@ import type { McpCallResult } from '../../mcp/client';
 export class ConfigureModelPlatformTool implements BuiltInTool {
   name = 'configure_model_platform';
   description =
-    'Open a model-platform configuration dialog and WAIT for the user to fill in the platform and model details. ' +
-    'Use this whenever the user wants to add or configure a model platform/model. ' +
-    'The user can provide the platform name, protocol, API URL, API key, and model ID. ' +
-    'The conversation pauses until the user submits or cancels.';
+    '弹出模型平台/模型的配置对话框，并等待用户填写完成后再继续。' +
+    '当用户希望新增或调整模型平台/模型时使用该工具。' +
+    '用户可填写平台名称、协议、API 地址、API Key、模型 ID 等信息。' +
+    '对话会暂停，直到用户保存或取消。';
   inputSchema = {
     type: 'object',
     properties: {

@@ -181,7 +181,7 @@ import { usePlatform } from '../composables/usePlatform';
 import { useSidebarState } from '../composables/useSidebarState';
 import { usePluginStore } from '../stores/plugin';
 import { resolvePluginIcon } from '../plugin-icons';
-import { isElectron } from '../api/client';
+import { isElectron, isCapacitor } from '../api/client';
 
 const route = useRoute();
 const authStore = useAuthStore();
@@ -197,12 +197,14 @@ interface NavItem {
   icon: any;
   kind: 'route' | 'settings';
   group: string;
+  /** 移动端 TabBar 不显示该项（如内置浏览器仅桌面端） */
+  hideOnMobile?: boolean;
 }
 
 const builtinNavItems: NavItem[] = [
   { path: '/home', label: '首页', tabLabel: '首页', icon: HomeFilled, kind: 'route', group: '工作台' },
   { path: '/chat', label: '任务', tabLabel: '任务', icon: ChatDotRound, kind: 'route', group: '工作台' },
-  { path: '/browser', label: '浏览器', tabLabel: '浏览器', icon: Monitor, kind: 'route', group: '工作台' },
+  { path: '/browser', label: '浏览器', tabLabel: '浏览器', icon: Monitor, kind: 'route', group: '工作台', hideOnMobile: true },
   { path: '/chat-hub', label: '消息', tabLabel: '消息', icon: Promotion, kind: 'route', group: '工作台' },
   { path: '', label: '设置', tabLabel: '设置', icon: Setting, kind: 'settings', group: '系统' },
 ];
@@ -227,7 +229,7 @@ const pluginNavItems = computed<NavItem[]>(() =>
       group: '插件',
     })),
 );
-const navItems = computed<NavItem[]>(() => [...builtinNavItems, ...pluginNavItems.value]);
+const navItems = computed<NavItem[]>(() => [...builtinNavItems, ...pluginNavItems.value].filter((i) => !(i as any).hideOnMobile || !isCapacitor));
 /** 桌面展开态按 group 分组渲染 */
 const navGroups = computed(() => {
   const groups: Array<{ label: string; items: NavItem[] }> = [];
@@ -240,7 +242,7 @@ const navGroups = computed(() => {
 });
 /** 移动端底部 TabBar：五个核心入口（对话 / 智能体 / 浏览器 / 知识库 / 设置） */
 const mobilePrimaryItems = computed<NavItem[]>(() => [
-  ...builtinNavItems.filter((i) => ['/chat', '/browser', '/chat-hub'].includes(i.path)),
+  ...builtinNavItems.filter((i) => ['/chat', '/chat-hub'].includes(i.path)),
   { path: '', label: '设置', tabLabel: '设置', icon: Setting, kind: 'settings', group: '系统' },
 ]);
 

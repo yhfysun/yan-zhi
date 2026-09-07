@@ -6,7 +6,7 @@ import type { McpCallResult } from '../../mcp/client';
 
 export class ListSubAgentsTool implements BuiltInTool {
   name = 'list_sub_agents';
-  description = 'List all sub-agents available to the current agent. Returns each sub-agent\'s id, name, and description. Call this first to discover the correct agentId before calling call_agent.';
+  description = '列出当前智能体可调用的全部子智能体，返回每个子智能体的 id、name 与 description。建议在调用 call_agent 前先调用此工具，确认可用的 agentId。';
   inputSchema = {
     type: 'object',
     properties: {},

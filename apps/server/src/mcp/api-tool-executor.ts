@@ -40,6 +40,7 @@ import {
   extractEntityGraph,
   searchAllKnowledgeBases,
   vectorSearchAll,
+  hybridSearchAll,
   listKnowledgeChunks,
   getKnowledgeGraph,
   getEntityGraph,
@@ -54,6 +55,14 @@ import {
   sendImMessage,
   testImConnector,
 } from '../services/im.js';
+import {
+  listSourcesForAgent,
+  listOntologiesForAgent,
+  searchOntologiesForAgent,
+  queryDataForAgent,
+  paginateDataForAgent,
+} from '../services/data-query.js';
+import type { QueryIntent } from '../services/ontology-compiler.js';
 
 export interface MpcToolExecutionResult {
   content: Array<{ type: string; text: string }>;
@@ -168,6 +177,8 @@ export const SUPPORTED_API_TOOLS = new Set([
   'api_plugin_list', 'api_plugin_get', 'api_plugin_enable', 'api_plugin_disable', 'api_plugin_set_config', 'api_plugin_uninstall',
   // 空间
   'api_space_list', 'api_space_create', 'api_space_update', 'api_space_delete',
+  // 数据查询（P4.1：数据源 / 本体 / 只读取数 / 翻页）
+  'api_datasource_list', 'api_ontology_search', 'api_ontology_list', 'api_data_query', 'api_data_paginate',
 ]);
 
 export async function executeApiTool(
@@ -717,10 +728,9 @@ export async function executeApiTool(
         const uid = requireUser(userId);
         const query = str(args, 'query');
         const topK = num(args, 'topK', 5);
-        // 与路由一致：优先向量检索，不可用则降级关键词
-        const vec = await vectorSearchAll(uid, query, topK);
-        if (vec) return ok({ data: vec, mode: 'vector' });
-        return ok({ data: searchAllKnowledgeBases(uid, query, topK), mode: 'keyword' });
+        // 与路由一致：RRF 混合检索（关键词+向量融合），向量不可用自动降级关键词
+        const { data, mode } = await hybridSearchAll(uid, query, topK);
+        return ok({ data, mode });
       }
       case 'api_kb_multi_hop':
         return ok(multiHopSearchKnowledge(
@@ -1002,6 +1012,50 @@ export async function executeApiTool(
         return ok({ deleted: true });
       }
 
+      // ===== 数据查询（P4.1）：数据源 / 本体检索 / 只读取数 / 翻页 =====
+      case 'api_datasource_list':
+        return ok(listSourcesForAgent(requireUser(userId)));
+      case 'api_ontology_search':
+        return ok(
+          await searchOntologiesForAgent(requireUser(userId), str(args, 'question'), {
+            ...(str(args, 'datasourceId') ? { datasourceId: str(args, 'datasourceId') } : {}),
+            limit: num(args, 'limit', 5),
+          }),
+        );
+      case 'api_ontology_list':
+        return ok(
+          await listOntologiesForAgent(requireUser(userId), {
+            ...(str(args, 'datasourceId') ? { datasourceId: str(args, 'datasourceId') } : {}),
+            ...(str(args, 'keyword') ? { keyword: str(args, 'keyword') } : {}),
+            limit: num(args, 'limit', 20),
+          }),
+        );
+      case 'api_data_query': {
+        const intent = obj(args, 'intent');
+        return ok(
+          await queryDataForAgent(requireUser(userId), {
+            ...(str(args, 'datasourceId') ? { datasourceId: str(args, 'datasourceId') } : {}),
+            ...(str(args, 'ontology') ? { ontology: str(args, 'ontology') } : {}),
+            ...(Object.keys(intent).length ? { intent: intent as QueryIntent } : {}),
+            ...(str(args, 'sql') ? { sql: str(args, 'sql') } : {}),
+            limit: num(args, 'limit', 100),
+          }),
+        );
+      }
+      case 'api_data_paginate': {
+        const intent = obj(args, 'intent');
+        return ok(
+          await paginateDataForAgent(requireUser(userId), {
+            ...(str(args, 'datasourceId') ? { datasourceId: str(args, 'datasourceId') } : {}),
+            ...(str(args, 'ontology') ? { ontology: str(args, 'ontology') } : {}),
+            ...(Object.keys(intent).length ? { intent: intent as QueryIntent } : {}),
+            ...(str(args, 'sql') ? { sql: str(args, 'sql') } : {}),
+            offset: num(args, 'offset', 0),
+            limit: num(args, 'limit', 50),
+          }),
+        );
+      }
+
       // Skill 增补：新建 / 更新
       case 'api_skill_create': {
         const uid = requireUser(userId);
@@ -1098,7 +1152,6 @@ function getBuiltinToolDefinitions() {
   return [
     { name: 'file_read', description: '读取文件内容，支持指定路径和行数范围' },
     { name: 'file_write', description: '写入内容到指定文件路径' },
-    { name: 'web_search', description: '联网搜索，获取实时信息' },
     { name: 'cmd_exec', description: '执行系统命令' },
     { name: 'ask_user', description: '向用户反问澄清问题并等待回答' },
     { name: 'confirm_user', description: '多页确认向导，逐页收集用户选择、文字回答和补充说明' },

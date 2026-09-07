@@ -217,6 +217,9 @@ watch(() => [props.modelValue, props.agent], () => {
       builtinToolsLoaded.value = true;
       toolsStore.loadBuiltinTools();
     }
+    // 自定义工具列表需在弹窗打开时加载：此前从未加载导致「自定义工具」挂载区始终显示"暂无"，
+    // 而工具商城页进入时会自行加载，两边数据不一致。重复调用幂等（覆盖 store 列表）。
+    toolsStore.loadCustomTools();
     const a = props.agent;
     form.value = {
       name: a?.name || '', description: a?.description || '', systemPrompt: a?.systemPrompt || '',

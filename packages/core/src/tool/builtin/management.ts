@@ -21,7 +21,7 @@ class ListToolsTool implements BuiltInTool {
   name = 'list_tools'; description = '列出所有可用工具';
   inputSchema = { type: 'object', properties: {}, required: [] };
   async execute() {
-    return { content: [{ type: 'text', text: '内置工具有: file_read, file_write, web_search。自定义工具请通过 /api/tools 查询' }], isError: false };
+    return { content: [{ type: 'text', text: '内置工具有: file_read, file_write 等，完整列表请通过 /api/tools/builtin 查询' }], isError: false };
   }
 }
 

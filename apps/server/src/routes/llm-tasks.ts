@@ -16,9 +16,10 @@ router.post('/tasks', (req: Request, res: Response) => {
     res.status(400).json({ error: '缺少 conversationId/platformId/modelId' });
     return;
   }
-  // systemPrompt/tools 为历史兼容字段；新前端只传 agentId/appGuide，由后端统一构建
+  // systemPrompt/tools 为历史兼容字段；新前端只传 agentId/appGuide，由后端统一构建（含会话级挂载）
   // modeFlags：输入框「+」菜单模式开关（深度思考/计划/仅回答），后端统一追加指令与裁剪工具
-  const taskId = createTask({ conversationId, userId, platformId, modelId, userContent, agentId: agentId ?? null, appGuide, systemPrompt, tools, options, modeFlags, maxSteps });
+  // includeUiTools: true —— 此路由只服务前端在线的交互式任务，UI 工具（ask_user 等）纳入工具列表并委托前端执行
+  const taskId = createTask({ conversationId, userId, platformId, modelId, userContent, agentId: agentId ?? null, appGuide, systemPrompt, tools, options, modeFlags, maxSteps, includeUiTools: true });
   res.json({ data: { taskId } });
 });
 

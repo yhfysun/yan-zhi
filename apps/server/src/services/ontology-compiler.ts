@@ -15,8 +15,6 @@ export interface OntologyEntity {
 export interface OntologyDimension {
   name: string;
   expr: string; // 引用 source_sql 输出列别名
-  keywords?: string[];   // 召回命中词：问题含其一 → 该列进 SELECT
-  isDefault?: boolean;   // 默认选择列：不召回，直接拼进本体 YAML（用户没指定列时的兜底 SELECT）
   description?: string;
   refAttr?: string;
   sampleValues?: string[];
@@ -25,8 +23,6 @@ export interface OntologyDimension {
 export interface OntologyTimeDimension {
   name: string;
   expr: string;
-  keywords?: string[];
-  isDefault?: boolean;
   description?: string;
   granularities?: TimeGrain[];
 }
@@ -36,6 +32,18 @@ export interface OntologyMeasure {
   expr: string;
   agg: 'sum' | 'count' | 'count_distinct' | 'avg' | 'min' | 'max';
   additive?: 'additive' | 'non_additive' | 'semi_additive';
+  description?: string;
+}
+
+/**
+ * 选择列（本体级查询契约，不是属性定义）：
+ * - name 引用本体的维度/度量/时间维度名
+ * - isDefault：默认选择列——不召回，无条件拼进本体摘要；
+ *   用户提问未指定查询哪些列时，编译器就用这批列兜底 SELECT
+ * - keywords：非默认选择列按问题与命中词召回
+ */
+export interface OntologySelection {
+  name: string;              // 引用本体属性名（维度/度量/时间维度）
   keywords?: string[];
   isDefault?: boolean;
   description?: string;
@@ -52,9 +60,10 @@ export interface OntologyFilter {
 
 /** 跨本体关联关系（v1 单跳；N:N 经中间表展开两跳） */
 export interface OntologyRelation {
+  source: string;            // 自身本体 code（拥有该关联的一方），与 target 构成有向边 source → target
   type: '1:1' | '1:N' | 'N:1' | 'N:N';
-  target: string;            // 对方本体 code（left 隐含为本体自身）
-  sourceAttr: string;        // 本体侧连接列（source_sql 输出别名）
+  target: string;            // 对方本体 code
+  sourceAttr: string;        // 自身本体侧连接列（source_sql 输出别名）
   targetAttr: string;        // 对方侧连接列
   via?: {                    // 仅 N:N：中间表
     table: string;           // 中间物理表名
@@ -309,8 +318,8 @@ export function compileOntologyJoinQuery(
     if (!byCode.has(code)) { errors.push(`待关联本体「${code}」不存在或未发布`); continue; }
     if (seen.has(code)) { errors.push(`本体「${code}」在 join 中重复出现`); continue; }
     seen.add(code);
-    const onRoot = root.relations.filter((r) => r.target === code);
-    const onTarget = byCode.get(code)!.relations.filter((r) => r.target === intent.root);
+    const onRoot = root.relations.filter((r) => r.source === intent.root && r.target === code);
+    const onTarget = byCode.get(code)!.relations.filter((r) => r.source === code && r.target === intent.root);
     if (onRoot.length + onTarget.length === 0) {
       errors.push(`本体「${intent.root}」与「${code}」之间没有已声明的关联关系`);
       continue;

@@ -15,7 +15,7 @@ function toBase64(str: string): string {
 
 export class PythonExecTool implements BuiltInTool {
   name = 'python_exec';
-  description = 'Execute Python code directly. Auto-detects python/python3/py. Auto-installs dependencies via pip before execution if deps are specified. Use for data processing, document generation (PPT/Word/Excel/PDF), scientific computing, etc.';
+  description = '直接执行 Python 代码。自动识别 python/python3/py 解释器；若指定了 deps 会先通过 pip 安装依赖再执行。常用于数据处理、文档生成（PPT/Word/Excel/PDF）、科学计算等。';
 
   inputSchema = {
     type: 'object',

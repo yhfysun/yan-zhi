@@ -1,10 +1,10 @@
 // 智能体 store（聊天 + 工作流统一）
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
-import type { Agent, Workflow, WorkflowNode, NodeType } from '@yan-zhi/shared';
-import { getPlatformAdapter } from '@yan-zhi/core';
+import type { Agent, Workflow, WorkflowNode, WorkflowEdge, NodeType } from '@yan-zhi/shared';
+import { getPlatformAdapter, WorkflowEngine, LlmNodeHandler, ToolNodeHandler } from '@yan-zhi/core';
 import { uid, now } from '@yan-zhi/shared';
-import { api, API_BASE } from '../api/client';
+import { api } from '../api/client';
 import { useAuthStore } from './auth';
 
 function rowToAgent(r: any): Agent {
@@ -47,7 +47,23 @@ const EMPTY_WORKFLOW: Workflow = { nodes: [], edges: [] };
 // 默认 agent 自动挂载的常用内置工具。
 // cmd_exec 涉及系统 shell 执行（仅桌面端可用且有安全风险），不自动挂载，留给用户按需开启。
 // call_agent 用于委派子智能体（如 pageAgent）。
-const DEFAULT_BUILTIN_TOOLS = ['file_read', 'file_write', 'web_search', 'call_agent', 'list_sub_agents', 'ask_user', 'confirm_user', 'task_plan', 'task_step', 'configure_model_platform'];
+// web_search / web_fetch 工具已从项目移除：联网检索与网页内容获取统一委派 pageAgent
+// （真实浏览器 browser_get_page_content 已覆盖抓正文能力）。
+// python_exec：文档处理类 skill（Word/Excel/PDF/图片/格式转换）靠 Python 脚本执行，必挂。
+const DEFAULT_BUILTIN_TOOLS = ['file_read', 'file_write', 'python_exec', 'call_agent', 'list_sub_agents', 'ask_user', 'confirm_user', 'task_plan', 'task_step', 'configure_model_platform'];
+
+/** 默认助理内置的文档处理类 skill（Word/Excel/PDF/图片/格式转换），挂载后后端注入流程指引 */
+const DEFAULT_AGENT_SKILL_IDS = [
+  'skill_docx_processing', 'skill_xlsx_data_processing', 'skill_pdf_processing',
+  'skill_image_processing', 'skill_file_convert',
+];
+
+/** 联网查询委派指引块 —— 默认助手提示词统一引用，v9 迁移按此标记增量追加 */
+const WEB_QUERY_PROMPT_BLOCK = `【联网查询 · 委派 pageAgent】
+- 遇到不懂的知识、不确定的事实，或需要实时/联网信息（新闻、行情、价格、最新文档、技术方案等）时，委派子智能体 pageAgent 联网查询：call_agent { agentId: "a_builtin_page_agent", input: "打开搜索引擎检索 <关键词>，浏览相关页面，提取并总结关键信息（附来源 URL）" }。
+- pageAgent 会用真实浏览器打开搜索引擎（如 https://www.bing.com/search?q=关键词 或 https://www.baidu.com/s?wd=关键词）检索，必要时点进具体页面深入阅读，返回带来源的总结。
+- 拿到 pageAgent 返回结果后，由你汇总成简明、有出处的结论回复用户；信息仍不足时换关键词再次委派（最多 2-3 次），仍查不到就如实说明。
+- 不确定的事实不要凭空编造，优先联网核实；委派前先想好搜索关键词，一次把任务描述清楚。`;
 
 const DEFAULT_AGENT_DATA = {
   name: 'AI 助手',
@@ -66,12 +82,20 @@ const DEFAULT_AGENT_DATA = {
 - 需要外部信息时主动调用工具
 - 工具返回的信息可能不完整，多轮调用获取全面数据
 - 用中文回复，代码需标注语言
-- 回复简洁有效，不输出无关内容`,
+- 回复简洁有效，不输出无关内容
+- 浏览器工具（browser_*）：点击/输入前必须先调 browser_get_page_content（或 browser_get_page_info）获取带编号的可交互元素列表，再用 index 参数定位目标；严禁不传 index/selector 的空参 browser_click/browser_type
+
+【子智能体与浏览器工具约束】
+- call_agent 返回结果后，基于该结果直接总结/回答用户，禁止用相同或原始任务重复派发子智能体（重复派发 = 白跑一遍且结果相同）。只有任务目标发生变化时才再次委派。
+- 浏览器操作优先委托子智能体（pageAgent）完成；如需自己调用 browser_* 工具，先 browser_get_page_content 获取编号元素列表再用 index 定位。
+
+` + WEB_QUERY_PROMPT_BLOCK,
   temperature: 0.7,
   maxTokens: 2048,
   topP: 1.0,
   frequencyPenalty: 0,
   presencePenalty: 0,
+  skillIds: DEFAULT_AGENT_SKILL_IDS,
   isDefault: true,
   config: { maxReActSteps: 10 },
 };
@@ -86,106 +110,63 @@ const DEFAULT_AGENT_ID = 'a_default_assistant';
 
 /** 默认 agent 结构版本：作为一次性迁移门槛。
  *  version < N 时执行迁移，迁移后置为 N，避免反复覆盖用户后续对工具挂载的修改（如手动清空）。 */
-const DEFAULT_AGENT_VERSION = 7;
+const DEFAULT_AGENT_VERSION = 10;
 
 // ========== E5: pageAgent（内置浏览器自动化智能体） ==========
 /** pageAgent 固定 ID：内置智能体，浏览器操作专家 */
 const PAGE_AGENT_ID = 'a_builtin_page_agent';
 
-/** pageAgent 挂载的浏览器工具集 */
+/** pageAgent 挂载的浏览器工具集 —— 四件套收口（单一执行面：预览 BrowserView，不搞两套）。
+ *  高级工具（fill_form/search/get_dom/截图等）桌面端已不再走 Playwright 回退，收口进四件套流程。 */
 const PAGE_AGENT_BUILTIN_TOOLS = [
-  'browser_navigate', 'browser_click', 'browser_type', 'browser_press_key',
-  'browser_scroll', 'browser_hover', 'browser_get_text', 'browser_get_dom',
-  'browser_wait', 'browser_screenshot',
-  'browser_fill_form', 'browser_submit_form', 'browser_search',
-  'browser_next_page', 'browser_prev_page', 'browser_wait_for', 'browser_get_visible_text',
-  'browser_select_option', 'browser_check', 'browser_uncheck', 'browser_get_page_info',
-  'browser_login_saved',
-  // C4 多标签页管理
-  'browser_new_tab', 'browser_switch_tab', 'browser_close_tab', 'browser_get_tabs',
-  // C5 网络请求监听
-  'browser_wait_for_request', 'browser_get_network_log',
-  // C6 结构化数据提取
-  'browser_extract_list',
-  // C9 视觉定位闭环
-  'browser_visual_locate',
-  // C11 文件上传/下载
-  'browser_upload', 'browser_download',
-  // C12 滚动到元素 / 可见性检测
-  'browser_scroll_into_view', 'browser_is_visible',
-  // C13 拖拽
-  'browser_drag',
-  // C14 Accessibility Tree
-  'browser_get_a11y_tree',
+  // 四件套：访问 URL / 输入内容 / 点击 / 专门获取当前页面内容
+  'browser_navigate', 'browser_type', 'browser_click', 'browser_get_page_content',
+  // 滚动：查看视口外内容 / 触发懒加载（v4 回补，四件套收口时误删导致 agent 无法滚动）
+  'browser_scroll',
+  // 登录闭环必备：向用户提问/请求确认（扫码、验证码等人工干预场景）
   'ask_user',
 ];
 
 const PAGE_AGENT_DATA = {
   name: '浏览器操作专家',
-  description: '内置 pageAgent：通过 Playwright 驱动真实浏览器，执行导航/点击/输入/截图等自动化任务',
+  description: '内置 pageAgent：直接操作预览面板中的真实浏览器窗口（BrowserView），执行导航/输入/点击/取内容等任务，操作全程可见',
   type: 'harness' as const,
-  systemPrompt: `你是一个浏览器自动化专家（pageAgent）。你通过调用浏览器工具来操作一个真实的、可见的浏览器窗口。
+  systemPrompt: `你是一个浏览器自动化专家（pageAgent）。你通过调用浏览器工具操作一个真实的、可见的浏览器窗口（预览面板），用户能实时看到你的每一步操作。
 
-能力：
+工具（仅以下六个，其他浏览器工具不可用）：
 - browser_navigate: 导航到指定 URL
-- browser_click: 点击元素（优先用元素编号 index，其次 CSS 选择器或坐标）
-- browser_type: 在输入框输入文本（优先用元素编号 index 定位输入框）
-- browser_press_key: 按键（Enter/Tab/Escape 等）
-- browser_scroll: 滚动页面
-- browser_hover: 悬停元素
-- browser_get_text: 获取元素文本
-- browser_get_dom: 获取页面 DOM 摘要
-- browser_wait: 等待指定时间
-- browser_screenshot: 截图
-- browser_fill_form: 批量填写表单（支持 text/select/checkbox/radio）
-- browser_submit_form: 提交表单（点提交按钮或回车，等待导航）
-- browser_search: 在页面搜索框输入并提交（自动识别搜索框）
-- browser_next_page / browser_prev_page: 翻页（自动识别"下一页/上一页"）
-- browser_wait_for: 智能等待（等元素/URL/文本出现）
-- browser_get_visible_text: 获取干净可见文本（过滤隐藏元素）
-- browser_select_option: 下拉选择
-- browser_check / browser_uncheck: 勾选/取消勾选
-- browser_get_page_info: 返回当前 url/title/可交互元素摘要（理解页面状态）
-- browser_login_saved: 用已保存的密码自动登录站点（需先用浏览器密码管理保存）
+- browser_type: 在输入框输入文本（支持回车提交搜索/表单）
+- browser_click: 点击元素（优先元素编号 index，其次 CSS 选择器或坐标）
+- browser_scroll: 滚动页面。传 y（正数向下/负数向上，像素，如 y=600）滚动一屏查看视口外内容；传 selector 则把目标元素滚到视野中央。用于查看长列表更多内容、触发懒加载，或让视口外的按钮/元素进入视野后再点击
+- browser_get_page_content: 一次获取当前页面完整状态：title + url + 可见正文 + 带 index 编号的可交互元素列表（已穿透 iframe/Shadow DOM）
 - ask_user: 向用户提问/请求确认（用于扫码登录等需要人工干预的场景）
 
 工作流程：
-1. 分析委派给你的任务（如"打开某网站搜索某关键词"、"每日签到领取积分"、"输入文案制作视频"）
-2. 若目标站点需要登录，优先用 browser_login_saved（传 host 或 url）自动登录已保存密码的站点
-   - 若 browser_login_saved 报未找到凭证，提示用户先在浏览器密码管理中保存该站点密码
-3. 若站点是扫码登录/验证码登录（如即梦、抖音、微信等），无法用 browser_login_saved 自动登录：
-   - browser_navigate 打开登录页（用户在浏览器面板可见）
-   - 用 ask_user 弹窗提示用户："请在浏览器面板中扫码登录/输入验证码，登录完成后点击确认"
-   - 用户在可见的浏览器面板上完成扫码/验证码登录后点击确认
-   - 用 browser_get_page_info 检查登录状态（有用户头像/昵称=已登录）
-4. browser_navigate 导航到目标页面
-5. 用 browser_get_page_info / browser_get_visible_text 了解页面结构与状态，找到目标元素
-6. 用 browser_fill_form / browser_click / browser_search / browser_select_option / browser_check 执行操作
-7. 用 browser_submit_form 提交表单，browser_next_page / browser_prev_page 翻页
-8. 必要时 browser_wait_for 等待页面加载或元素出现
-9. 用 browser_get_visible_text / browser_get_page_info 获取最终结果
-10. 返回任务结果摘要
-
-注意：
-- 优先用高级工具（fill_form/search/next_page/get_page_info），它们比逐个 click+type 更可靠
-- 使用 CSS 选择器定位元素（如 input.search-box、button#submit）
-- 如果选择器找不到元素，用 get_page_info 查看可交互元素后调整
-- 每步操作后观察结果，确认是否成功
-- 用中文返回结果摘要
+1. 分析委派给你的任务（如"打开某网站搜索某关键词"、"每日签到领取积分"）
+2. browser_navigate 打开目标页面
+3. browser_get_page_content 了解页面结构与状态，拿到带编号的可交互元素列表
+4. 用 index 定位目标元素，browser_type 输入 / browser_click 点击（搜索 = 输入关键词后回车或点搜索按钮）
+5. 页面跳转后重新 browser_get_page_content 刷新编号列表，逐步推进
+5a. 需要查看视口外的内容（长列表、懒加载、视口外按钮）时，先 browser_scroll 滚动，再重新 browser_get_page_content 拿最新状态
+6. 用 browser_get_page_content 获取最终结果（正文/搜索结果等）
+7. 返回任务结果摘要（用中文）
 
 【核心工作方式 — 元素编号定位（最重要）】
-1. 每到一个新页面或弹窗出现后，先调用 browser_get_page_info（或 browser_get_dom）获取带编号（index）的可交互元素列表，已穿透 iframe/Shadow DOM（含登录弹窗内的元素）。
-2. 用列表中的 index 直接调用 browser_click / browser_type（传 index 参数）操作目标元素。不要自己猜动态 hash class 选择器（如 input-xrB84C），不要凭截图猜坐标。
+1. 每到一个新页面或弹窗出现后，先 browser_get_page_content 获取带编号（index）的可交互元素列表，已穿透 iframe/Shadow DOM（含登录弹窗内的元素）。
+2. 用列表中的 index 直接调用 browser_click / browser_type（传 index 参数）操作目标元素。不要猜动态 hash class 选择器（如 input-xrB84C），不要凭截图猜坐标。
 3. 若 selector 匹配到多个元素，工具会返回 ambiguous 和候选列表（带编号），从中选一个 index 重试。
-4. 页面变化后 index 会失效，此时重新调用 browser_get_page_info 刷新编号列表。
-5. 每次 click/type 的返回包含 pageChanged / urlChanged / noChangeStreak：noChangeStreak ≥ 3 时会收到 warning，必须停止重复同类操作，改换定位方式（重新 get_page_info 分析）或 ask_user 请求人工介入。
+4. 页面变化后 index 会失效，重新调用 browser_get_page_content 刷新编号列表。
+5. 每次 click/type 的返回包含 pageChanged / urlChanged / noChangeStreak：noChangeStreak ≥ 3 时会收到 warning，必须停止重复同类操作，改换定位方式（重新 get_page_content 分析）或 ask_user 请求人工介入。
 
-【硬约束 — 即梦签到类任务】
-- 目标站固定：即梦签到只允许访问 https://jimeng.jianying.com/，禁止访问 dreamina.ai / dreamina.com 等国际版（国际版无中文签到入口）。
-- 登录流程：检测到未登录 → 必须 ask_user 提示用户在浏览器面板扫码登录 → 等用户确认 → browser_get_page_info 复核已登录。禁止代填手机号、禁止代填验证码（验证码需用户手机接收，代填必死循环）。
-- 登录闭环职责（最重要）：检测到未登录时，pageAgent 必须自己调 ask_user 提示用户在浏览器面板扫码/验证码登录，等用户确认后用 browser_get_page_info 复核已登录，然后继续任务。**严禁返回"需要登录"/"未登录"/"请登录"等结论给父智能体而自己停下**——登录闭环必须在 pageAgent 内完成，父智能体不参与登录决策、不会帮你扫码。ask_user 的 question 中要明确说明"请在浏览器面板中完成登录后点击确认"。即梦签到类任务在 pageAgent 内完成全部登录→签到→领取闭环。
-- 已知稳定选择器：即梦"领积分"入口 #SiderMenuCredit；登录弹窗出现后用 browser_get_page_info / browser_get_dom（已穿透 iframe/Shadow DOM）抓弹窗结构，用返回的 index 定位。
-- 定位优先级：browser_get_page_info / browser_get_dom 获取编号列表 → index 参数定位（首选）→ 稳定 id / ARIA / :contains(可见文本) 选择器 → 坐标（最后手段）。
+【登录与人工干预】
+- 检测到需要登录/扫码/验证码等人工干预场景时，用 ask_user 让用户在浏览器面板中完成，等用户确认后用 browser_get_page_content 复核状态，再继续任务；不要把"需要登录"当结论直接返回给父智能体。
+- 禁止代填验证码等只能由用户本人完成的信息。
+
+【防循环硬约束】
+- 同一工具 + 相同参数连续调用 2 次结果不变 → 立即停止重试，换其他工具或向父智能体返回已有结果。
+- 读页工具连续 3 次无法拿到目标信息 → 停止盲试，直接返回已获取的部分结果并说明缺失原因。
+- 任务要求提取搜索结果/链接列表时，只用 browser_get_page_content 的输出提取（配合 browser_scroll 翻看视口外内容），不要反复换参数重试。
+- 定位优先级：browser_get_page_content 获取编号列表 → index 参数定位（首选）→ 稳定 id / ARIA / :contains(可见文本) 选择器 → 坐标（最后手段）。
 - 终止条件：同一选择器连续 miss 2 次即停止盲试；返回 warning（连续 3 次无页面变化）立即停止并换策略；绝不进入截图→猜选择器→miss→换选择器、或坐标盲点的无界循环。`,
   temperature: 0.3,
   maxTokens: 2048,
@@ -193,7 +174,66 @@ const PAGE_AGENT_DATA = {
   frequencyPenalty: 0,
   presencePenalty: 0,
   isBuiltin: true,
-  config: { maxReActSteps: 25 },
+  config: { maxReActSteps: 50 },
+};
+
+// ========== P4.1: dataAgent（内置数据查询分析智能体） ==========
+/** dataAgent 固定 ID：内置智能体，数据查询分析专家（与 server db.ts 种子保持一致） */
+const DATA_AGENT_ID = 'a_builtin_data_agent';
+
+/** dataAgent 挂载的取数工具集 —— 本体语义层四件套 + 分析/交付/规划底座 */
+const DATA_AGENT_BUILTIN_TOOLS = [
+  // 数据查询（P4.1）
+  'api_datasource_list', 'api_ontology_search', 'api_ontology_list', 'api_data_query', 'api_data_paginate',
+  // 分析与交付
+  'python_exec', 'file_read', 'file_write', 'file_list', 'code_search',
+  // 任务规划与用户交互
+  'task_plan', 'task_step', 'ask_user', 'confirm_user',
+  // 委派
+  'call_agent', 'list_sub_agents',
+];
+
+const DATA_AGENT_SKILL_IDS = ['skill_xlsx_data_processing', 'skill_data_visualization', 'skill_markdown_doc'];
+
+const DATA_AGENT_DATA = {
+  name: '数据查询分析专家',
+  description:
+    '内置数据智能体：先检索本体语义层（项目库全表自动本体），再按查询意图只读取数、过滤、翻页，可用 python 做统计分析并交付表格/图表文件',
+  type: 'harness' as const,
+  systemPrompt: `你是「数据查询分析专家」。你通过「本体语义层」对已接入的数据源做只读取数、分析与交付，不直接猜表结构写 SQL。
+
+## 可用工具与职责
+- api_datasource_list：列出可用数据源。不传数据源 id 时默认用内置「言智项目库」（本项目自身数据库，只读）。
+- api_ontology_search：**取数第一步**，用用户的自然语言问题检索最相关的已发布本体，返回本体 code、维度/时间维度/度量/过滤器/默认选择列与语义摘要。
+- api_ontology_list：按数据源或关键字浏览本体候选（检索无果时用）。
+- api_data_query：取数。优先传 ontology（本体 code）+ intent 走语义层编译；没有合适本体时才用 sql 兜底（单条只读 SELECT）。
+- api_data_paginate：翻页（offset/limit），单页上限 200 行。
+- python_exec：对查询结果做统计/建模/计算；file_write：把结果落成交付文件。
+
+## 标准取数流程
+1. 用户问数据 → 先 api_ontology_search 找本体（看 code、默认选择列、过滤器、语义摘要）。
+2. api_data_query 传 { ontology: "<code>", intent: {...} }：
+   - dimensions：要分组/展示的**维度名**（必须是本体维度或时间维度名）
+   - measures：要聚合的**度量名** + 聚合函数（sum / count / count_distinct / avg / min / max）
+   - timeDimension：时间维度名 + 粒度（year / quarter / month / week / day / hour / minute）
+   - filters：本体**过滤器名**（或带比较符的裸 SQL 条件）
+   - orderBy / limit：默认 100 行，单次上限 1000
+3. 行数不够就 api_data_paginate 翻页，禁止一次拉全表。
+4. 回答用 markdown 表格呈现（列多时只展示关键列），并说明取数口径：用了哪个本体 code、哪些过滤器、时间范围与行数。
+
+## 硬约束
+- **只能只读**：禁止 INSERT / UPDATE / DELETE / DDL；兜底 SQL 有只读护栏，写语句会被直接拦截。
+- **字段只能引用本体已声明的维度/度量/时间维度/过滤器**，禁止凭空编造列名。工具报「字段不存在」时按报错里的可用字段改名重试，最多 2 次。
+- 找不到合适本体时，如实说明并用 api_ontology_list 给出候选本体，不要瞎写 SQL 猜表结构。
+- 结果可能截断：关注返回的 truncated 标记，必要时加过滤器缩小范围或翻页。
+- 需要深度统计分析时用 python_exec；需要交付表格/图表文件时用 file_write（category=deliverable）。`,
+  temperature: 0.2,
+  maxTokens: 2048,
+  topP: 1.0,
+  frequencyPenalty: 0,
+  presencePenalty: 0,
+  isBuiltin: true,
+  config: { maxReActSteps: 30 },
 };
 
 export const useAgentStore = defineStore('agent', () => {
@@ -233,34 +273,30 @@ export const useAgentStore = defineStore('agent', () => {
     if (agents.value.find((a) => a.id === id)) selectedId.value = id;
   }
 
+  let engine: WorkflowEngine | null = null;
+  function getEngine(): WorkflowEngine {
+    if (!engine) {
+      engine = new WorkflowEngine();
+      engine.register(new LlmNodeHandler());
+      engine.register(new ToolNodeHandler());
+      engine.register(new InputNodeHandler());
+      engine.register(new OutputNodeHandler());
+      engine.register(new CodeNodeHandler());
+      engine.register(new ConditionNodeHandler());
+      engine.register(new LoopNodeHandler());
+      engine.register(new SubAgentNodeHandler());
+      engine.register(new MemoryReadNodeHandler());
+      engine.register(new MemoryWriteNodeHandler());
+    }
+    return engine;
+  }
+
   async function loadAgents() {
     // inflight 去重：同一 store 实例内并发调用共享同一个 Promise，
     // 避免两个 loadAgents 同时 SELECT 空表后各自 INSERT 造成重复。
     if (loadInflight) return loadInflight;
     loadInflight = (async () => {
       try {
-        // 数据面统一后端：有 server 可用时智能体全部读 server（guest 默认身份）。
-        // 本地 Dexie/IPC 仅在后端不可用（web 未登录无 guest token）时兜底。
-        const useServer = useAuthStore().useServerApi;
-        if (useServer) {
-          const r = await api.get<any[]>('/agents');
-          if ('data' in r) {
-            const serverRows = r.data as any[];
-            // 数据迁移（一次性）：本地 Dexie/IPC 是历史遗留数据源，后端才是唯一数据源。
-            // 首次切到后端时，若 server 端该用户没有任何私有自定义智能体、而本地库存在私有智能体，
-            // 则把本地定义导入 server（保留原 id，保证会话/子智能体引用稳定）。幂等：server 已有则跳过。
-            const hasPrivateOnServer = serverRows.some((x) => !x.is_public && x.user_id === 'guest');
-            if (!hasPrivateOnServer) {
-              await migrateLocalAgentsToServer();
-            }
-            agents.value = serverRows.map(rowToAgent);
-            if (!selectedId.value || !agents.value.find((a) => a.id === selectedId.value)) {
-              selectedId.value = agents.value.find((a) => a.isDefault)?.id || agents.value[0]?.id || '';
-            }
-            return;
-          }
-          // 后端不可达：回退本地库
-        }
         const adapter = getPlatformAdapter();
         let rows = await adapter.db.query<any>('SELECT * FROM agent ORDER BY is_default DESC, created_at ASC');
         if (rows.length === 0) {
@@ -269,13 +305,15 @@ export const useAgentStore = defineStore('agent', () => {
           // 保证默认智能体全局唯一。兼容 web 端 Dexie（table.add 主键冲突抛错亦被 catch）。
           try {
             await adapter.db.exec(
-              `INSERT INTO agent (id, name, description, system_prompt, temperature, max_tokens, top_p, frequency_penalty, presence_penalty, is_default, builtin_tool_ids, sub_agent_ids, workflow_json, config_json, version, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              `INSERT INTO agent (id, name, description, system_prompt, temperature, max_tokens, top_p, frequency_penalty, presence_penalty, is_default, builtin_tool_ids, sub_agent_ids, skill_ids, workflow_json, config_json, version, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
               [DEFAULT_AGENT_ID, DEFAULT_AGENT_DATA.name, DEFAULT_AGENT_DATA.description, DEFAULT_AGENT_DATA.systemPrompt,
                DEFAULT_AGENT_DATA.temperature, DEFAULT_AGENT_DATA.maxTokens, DEFAULT_AGENT_DATA.topP,
                DEFAULT_AGENT_DATA.frequencyPenalty, DEFAULT_AGENT_DATA.presencePenalty, 1,
                JSON.stringify(DEFAULT_AGENT_DATA.builtinToolIds),
-               JSON.stringify([PAGE_AGENT_ID]),
+               // pageAgent（联网/浏览器）+ dataAgent（库内数据只读取数）
+               JSON.stringify([PAGE_AGENT_ID, DATA_AGENT_ID]),
+               JSON.stringify(DEFAULT_AGENT_DATA.skillIds),
                JSON.stringify(EMPTY_WORKFLOW), JSON.stringify(DEFAULT_AGENT_DATA.config), DEFAULT_AGENT_VERSION, ts, ts],
             );
           } catch {
@@ -339,6 +377,72 @@ export const useAgentStore = defineStore('agent', () => {
             'UPDATE agent SET system_prompt = ?, config_json = ?, version = ? WHERE id = ?',
             [PAGE_AGENT_DATA.systemPrompt, JSON.stringify(PAGE_AGENT_DATA.config), 2, PAGE_AGENT_ID],
           );
+          rows = await adapter.db.query<any>('SELECT * FROM agent ORDER BY is_default DESC, is_builtin DESC, created_at ASC');
+        }
+
+        // pageAgent v3 迁移 —— 工具收口四件套：操作与预览单一执行面（BrowserView 桥接），
+        // 覆盖 systemPrompt + builtin_tool_ids（剔除 Playwright 专属高级工具与 browser_login_saved）。
+        const paRowV3 = rows.find((r: any) => r.id === PAGE_AGENT_ID);
+        if (paRowV3 && (paRowV3.version === null || paRowV3.version === undefined || Number(paRowV3.version) < 3)) {
+          await adapter.db.exec(
+            'UPDATE agent SET system_prompt = ?, builtin_tool_ids = ?, version = ? WHERE id = ?',
+            [PAGE_AGENT_DATA.systemPrompt, JSON.stringify(PAGE_AGENT_BUILTIN_TOOLS), 3, PAGE_AGENT_ID],
+          );
+          rows = await adapter.db.query<any>('SELECT * FROM agent ORDER BY is_default DESC, is_builtin DESC, created_at ASC');
+        }
+
+        // pageAgent v4 迁移 —— 回补 browser_scroll：四件套收口时误删滚动工具，
+        // 导致 agent 在预览面板无法滚动（只能点击/输入，长页面内容看不全）。
+        // 内置智能体行为属产品定义，版本升级直接覆盖（与 v2/v3 同模式）。
+        const paRowV4 = rows.find((r: any) => r.id === PAGE_AGENT_ID);
+        if (paRowV4 && (paRowV4.version === null || paRowV4.version === undefined || Number(paRowV4.version) < 4)) {
+          await adapter.db.exec(
+            'UPDATE agent SET system_prompt = ?, builtin_tool_ids = ?, version = ? WHERE id = ?',
+            [PAGE_AGENT_DATA.systemPrompt, JSON.stringify(PAGE_AGENT_BUILTIN_TOOLS), 4, PAGE_AGENT_ID],
+          );
+          rows = await adapter.db.query<any>('SELECT * FROM agent ORDER BY is_default DESC, is_builtin DESC, created_at ASC');
+        }
+
+        // pageAgent v5 迁移 —— 剥离【硬约束 — 即梦签到类任务】：pageAgent 是通用浏览器
+        // 操作智能体，不携带具体站点业务规则；即梦约束已随「即梦每日签到」Skill 注入。
+        // 内置智能体行为属产品定义，版本升级直接覆盖（与 v2/v3/v4 同模式）。
+        const paRowV5 = rows.find((r: any) => r.id === PAGE_AGENT_ID);
+        if (paRowV5 && (paRowV5.version === null || paRowV5.version === undefined || Number(paRowV5.version) < 5)) {
+          await adapter.db.exec(
+            'UPDATE agent SET system_prompt = ?, builtin_tool_ids = ?, version = ? WHERE id = ?',
+            [PAGE_AGENT_DATA.systemPrompt, JSON.stringify(PAGE_AGENT_BUILTIN_TOOLS), 5, PAGE_AGENT_ID],
+          );
+          rows = await adapter.db.query<any>('SELECT * FROM agent ORDER BY is_default DESC, is_builtin DESC, created_at ASC');
+        }
+
+        // pageAgent v6 迁移 —— 最大循环步数 25 → 50：浏览器任务 25 步仍偏紧，
+        // 子智能体常因步数耗尽提前返回。内置智能体行为属产品定义，版本升级直接覆盖 config。
+        const paRowV6 = rows.find((r: any) => r.id === PAGE_AGENT_ID);
+        if (paRowV6 && (paRowV6.version === null || paRowV6.version === undefined || Number(paRowV6.version) < 6)) {
+          await adapter.db.exec(
+            'UPDATE agent SET config_json = ?, version = ? WHERE id = ?',
+            [JSON.stringify(PAGE_AGENT_DATA.config), 6, PAGE_AGENT_ID],
+          );
+          rows = await adapter.db.query<any>('SELECT * FROM agent ORDER BY is_default DESC, is_builtin DESC, created_at ASC');
+        }
+
+        // P4.1: seed dataAgent（内置数据查询分析智能体）—— 若不存在则插入，存在则不动（用户可自行调整挂载）
+        const hasDataAgent = rows.some((r: any) => r.id === DATA_AGENT_ID);
+        if (!hasDataAgent) {
+          const ts = now();
+          try {
+            await adapter.db.exec(
+              `INSERT INTO agent (id, name, description, system_prompt, temperature, max_tokens, top_p, frequency_penalty, presence_penalty, type, is_builtin, builtin_tool_ids, skill_ids, workflow_json, config_json, version, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              [DATA_AGENT_ID, DATA_AGENT_DATA.name, DATA_AGENT_DATA.description, DATA_AGENT_DATA.systemPrompt,
+               DATA_AGENT_DATA.temperature, DATA_AGENT_DATA.maxTokens, DATA_AGENT_DATA.topP,
+               DATA_AGENT_DATA.frequencyPenalty, DATA_AGENT_DATA.presencePenalty, 'harness', 1,
+               JSON.stringify(DATA_AGENT_BUILTIN_TOOLS), JSON.stringify(DATA_AGENT_SKILL_IDS),
+               JSON.stringify(EMPTY_WORKFLOW), JSON.stringify(DATA_AGENT_DATA.config), 1, ts, ts],
+            );
+          } catch {
+            // 主键冲突：已被并发调用插入，忽略
+          }
           rows = await adapter.db.query<any>('SELECT * FROM agent ORDER BY is_default DESC, is_builtin DESC, created_at ASC');
         }
 
@@ -448,6 +552,129 @@ export const useAgentStore = defineStore('agent', () => {
           }
         }
 
+        // v8 迁移 —— 默认 agent 追加「子智能体与浏览器工具」使用约束。
+        // 修复：子智能体返回结果后主 agent 用原任务重复派发（白跑一遍且结果相同）。
+        // 只追加缺失的约束块（按标记字符串检测），不覆盖用户对提示词的其他编辑。
+        const DEF_PROMPT_RULES_MARKER = '【子智能体与浏览器工具约束】';
+        const defRowV8 = rows.find((r: any) => r.is_default === 1);
+        if (defRowV8 && (defRowV8.version === null || defRowV8.version === undefined || Number(defRowV8.version) < 8)) {
+          if (!(defRowV8.system_prompt || '').includes(DEF_PROMPT_RULES_MARKER)) {
+            await adapter.db.exec(
+              'UPDATE agent SET system_prompt = ?, version = ? WHERE id = ?',
+              [(defRowV8.system_prompt || '') + `
+
+【子智能体与浏览器工具约束】
+- call_agent 返回结果后，基于该结果直接总结/回答用户，禁止用相同或原始任务重复派发子智能体（重复派发 = 白跑一遍且结果相同）。只有任务目标发生变化时才再次委派。
+- 浏览器操作优先委托子智能体（pageAgent）完成；如需自己调用 browser_* 工具，先 browser_get_page_content 获取编号元素列表再用 index 定位。`, 8, defRowV8.id],
+            );
+          } else {
+            await adapter.db.exec('UPDATE agent SET version = ? WHERE id = ?', [8, defRowV8.id]);
+          }
+          rows = await adapter.db.query<any>('SELECT * FROM agent ORDER BY is_default DESC, is_builtin DESC, created_at ASC');
+        }
+
+        // v9 迁移 —— 联网查询改由 pageAgent 承担：
+        // 1) 默认 agent 移除 web_search 工具挂载（搜索摘要质量差，联网检索统一走 pageAgent 真实浏览器）；
+        // 2) 追加【联网查询 · 委派 pageAgent】指引块（按标记增量追加，不覆盖用户对提示词的其他编辑）。
+        const WEB_QUERY_MARKER = '【联网查询 · 委派 pageAgent】';
+        const defRowV9 = rows.find((r: any) => r.is_default === 1);
+        if (defRowV9 && (defRowV9.version === null || defRowV9.version === undefined || Number(defRowV9.version) < 9)) {
+          let builtinIds: string[] = [];
+          try {
+            builtinIds = defRowV9.builtin_tool_ids ? JSON.parse(defRowV9.builtin_tool_ids) : [];
+          } catch {
+            builtinIds = [];
+          }
+          if (!Array.isArray(builtinIds)) builtinIds = [];
+          const nextIds = builtinIds.filter((n) => n !== 'web_search');
+          let promptChanged = false;
+          let nextPrompt = defRowV9.system_prompt || '';
+          if (!nextPrompt.includes(WEB_QUERY_MARKER)) {
+            nextPrompt = (nextPrompt || DEFAULT_AGENT_DATA.systemPrompt) + '\n\n' + WEB_QUERY_PROMPT_BLOCK;
+            promptChanged = true;
+          }
+          await adapter.db.exec(
+            'UPDATE agent SET builtin_tool_ids = ?, version = ? WHERE id = ?',
+            [JSON.stringify(nextIds), 9, defRowV9.id],
+          );
+          if (promptChanged) {
+            await adapter.db.exec(
+              'UPDATE agent SET system_prompt = ? WHERE id = ?',
+              [nextPrompt, defRowV9.id],
+            );
+          }
+          rows = await adapter.db.query<any>('SELECT * FROM agent ORDER BY is_default DESC, is_builtin DESC, created_at ASC');
+        }
+
+        // v10 迁移 —— 默认助理工具/技能内置升级：
+        // 1) 卸载 web_fetch（pageAgent 的 browser_get_page_content 已覆盖抓正文，对默认助理冗余）；
+        // 2) 补挂 python_exec（文档处理类 skill 靠 Python 脚本执行）；
+        // 3) 内置文档处理类 skill（Word/Excel/PDF/图片/格式转换）。只追加缺失项，不覆盖用户手动调整。
+        const DOC_SKILL_IDS = DEFAULT_AGENT_SKILL_IDS;
+        const defRowV10 = rows.find((r: any) => r.is_default === 1);
+        if (defRowV10 && (defRowV10.version === null || defRowV10.version === undefined || Number(defRowV10.version) < 10)) {
+          let builtinIds: string[] = [];
+          try {
+            builtinIds = defRowV10.builtin_tool_ids ? JSON.parse(defRowV10.builtin_tool_ids) : [];
+          } catch {
+            builtinIds = [];
+          }
+          if (!Array.isArray(builtinIds)) builtinIds = [];
+          const nextIds = builtinIds
+            .filter((n) => n !== 'web_search' && n !== 'web_fetch');
+          if (!nextIds.includes('python_exec')) nextIds.push('python_exec');
+          let skillIds: string[] = [];
+          try {
+            skillIds = defRowV10.skill_ids ? JSON.parse(defRowV10.skill_ids) : [];
+          } catch {
+            skillIds = [];
+          }
+          if (!Array.isArray(skillIds)) skillIds = [];
+          for (const sid of DOC_SKILL_IDS) {
+            if (!skillIds.includes(sid)) skillIds.push(sid);
+          }
+          await adapter.db.exec(
+            'UPDATE agent SET builtin_tool_ids = ?, skill_ids = ?, version = ? WHERE id = ?',
+            [JSON.stringify(nextIds), JSON.stringify(skillIds), 10, defRowV10.id],
+          );
+          rows = await adapter.db.query<any>('SELECT * FROM agent ORDER BY is_default DESC, is_builtin DESC, created_at ASC');
+        }
+
+        // 同步 server seed 的公共内置智能体（内置工作流智能体等）到本地库。
+        // 根因：server 启动时 seedBuiltinWorkflowAgents 写的是 server 的 data.db，
+        // 而 UI 智能体列表读的是本地库（桌面 yan-zhi.db / web Dexie）——双库分裂导致
+        // server 侧 seed 的工作流智能体 UI 永远看不到。此处拉取 /api/agents 公共行：
+        // 本地缺失则插入；本地存在且 server 版本更高则按 seed 语义覆盖定义（与 server 的
+        // WF_DEF_VERSION 版本覆盖机制对齐，server 侧只升版本时本地跟随更新）。
+        try {
+          const remote = await api.get<any>('/agents');
+          const remoteRows: any[] = Array.isArray(remote) ? remote : ((remote as any)?.data || []);
+          const publicWf = remoteRows.filter((r: any) => r.is_public === 1 && r.type === 'workflow');
+          for (const r of publicWf) {
+            const local = rows.find((x: any) => x.id === r.id);
+            const ts = now();
+            try {
+              if (!local) {
+                await adapter.db.exec(
+                  `INSERT INTO agent (id, name, description, type, is_public, is_builtin, version, workflow_json, inputs_schema_json, config_json, created_at, updated_at)
+                   VALUES (?, ?, ?, 'workflow', 1, 0, ?, ?, ?, ?, ?, ?)`,
+                  [r.id, r.name, r.description || '', r.version ?? 1, r.workflow_json || '{"nodes":[],"edges":[]}', r.inputs_schema_json || null, r.config_json || null, r.created_at || ts, ts],
+                );
+                console.log('[agent] 已同步 server 内置工作流智能体:', r.name);
+              } else if ((r.version ?? 1) > (local.version ?? 1)) {
+                await adapter.db.exec(
+                  'UPDATE agent SET name = ?, description = ?, version = ?, workflow_json = ?, updated_at = ? WHERE id = ?',
+                  [r.name, r.description || '', r.version ?? 1, r.workflow_json || '{"nodes":[],"edges":[]}', ts, r.id],
+                );
+                console.log('[agent] server 内置工作流定义升级，已同步:', r.name);
+              }
+            } catch { /* 主键冲突等单条失败忽略 */ }
+          }
+          if (publicWf.length > 0) {
+            rows = await adapter.db.query<any>('SELECT * FROM agent ORDER BY is_default DESC, is_builtin DESC, created_at ASC');
+          }
+        } catch { /* server 不可达（离线/后端未起）时跳过，不影响本地列表 */ }
+
         agents.value = rows.map(rowToAgent);
         if (!selectedId.value || !agents.value.find((a) => a.id === selectedId.value)) {
           selectedId.value = agents.value.find((a) => a.isDefault)?.id || agents.value[0]?.id || '';
@@ -459,66 +686,7 @@ export const useAgentStore = defineStore('agent', () => {
     return loadInflight;
   }
 
-  /**
-   * 一次性数据迁移：把本地 Dexie/IPC 库中的私有自定义智能体导入 server（保留原 id）。
-   * 默认 AI 助手与内置 pageAgent 由 server 侧 seed 提供，不迁移；仅迁移 is_default=0 且 is_builtin=0
-   * 的用户自定义智能体，避免与 server 内置智能体冲突。幂等：失败静默，下次 loadAgents 再触发。
-   */
-  async function migrateLocalAgentsToServer() {
-    try {
-      const adapter = getPlatformAdapter();
-      const rows = await adapter.db.query<any>('SELECT * FROM agent WHERE is_default = 0 AND is_builtin = 0');
-      if (!rows || rows.length === 0) return;
-      for (const r of rows) {
-        const a = rowToAgent(r);
-        const body: Record<string, unknown> = {
-          id: a.id,
-          name: a.name || '迁移智能体',
-          description: a.description || '',
-          avatar: a.avatar || null,
-          systemPrompt: a.systemPrompt || '',
-          temperature: a.temperature ?? 0.7,
-          maxTokens: a.maxTokens ?? 2048,
-          topP: a.topP ?? 1.0,
-          frequencyPenalty: a.frequencyPenalty ?? 0,
-          presencePenalty: a.presencePenalty ?? 0,
-          platformId: a.platformId || null,
-          modelId: a.modelId || null,
-          type: a.type || 'harness',
-          builtinToolIds: a.builtinToolIds || [],
-          customToolIds: a.customToolIds || [],
-          mcpToolMounts: a.mcpToolMounts || [],
-          skillIds: a.skillIds || [],
-          subAgentIds: a.subAgentIds || [],
-          parentAgentId: a.parentAgentId || null,
-          allowSubAgent: !!a.allowSubAgent,
-          isDefault: false,
-          isPublic: false,
-          workflow: a.workflow || EMPTY_WORKFLOW,
-          inputsSchema: a.inputsSchema || null,
-          config: a.config || null,
-          version: a.version ?? 1,
-        };
-        const rr = await api.post<any>('/agents', body);
-        if (rr && 'error' in rr) {
-          // 已存在（幂等）或 server 拒绝，忽略该条
-          continue;
-        }
-      }
-    } catch {
-      // 迁移失败不阻塞主流程，下次 loadAgents 再试
-    }
-  }
-
-  async function loadAgent(id: string) {    if (useAuthStore().useServerApi) {
-      const r = await api.get<any>(`/agents/${id}`);
-      if (r && 'data' in r) {
-        current.value = rowToAgent((r as any).data);
-      } else {
-        current.value = null;
-      }
-      return;
-    }
+  async function loadAgent(id: string) {
     const adapter = getPlatformAdapter();
     const rows = await adapter.db.query<any>('SELECT * FROM agent WHERE id = ?', [id]);
     if (rows.length > 0) current.value = rowToAgent(rows[0]);
@@ -526,12 +694,6 @@ export const useAgentStore = defineStore('agent', () => {
   }
 
   async function createAgent(name: string, description = ''): Promise<string> {
-    if (useAuthStore().useServerApi) {
-      const r = await api.post<any>('/agents', { name, description, workflow: EMPTY_WORKFLOW, version: 1 });
-      const id = (r && 'data' in r) ? (r as any).data?.id : '';
-      await loadAgents();
-      return id || '';
-    }
     const adapter = getPlatformAdapter();
     const id = uid('a_');
     const ts = now();
@@ -544,40 +706,6 @@ export const useAgentStore = defineStore('agent', () => {
   }
 
   async function createChatAgent(data: Partial<Agent>): Promise<string> {
-    if (useAuthStore().useServerApi) {
-      const defaults = defaultAgentBase();
-      const systemPrompt = data.systemPrompt || defaults.systemPrompt;
-      const config = data.config && Object.keys(data.config).length > 0
-        ? data.config
-        : (defaults.config ? { ...defaults.config, ...data.config } : data.config);
-      const body: Record<string, unknown> = {
-        name: data.name || '新智能体',
-        description: data.description || '',
-        systemPrompt,
-        temperature: data.temperature ?? defaults.temperature,
-        maxTokens: data.maxTokens ?? defaults.maxTokens,
-        topP: data.topP ?? defaults.topP,
-        frequencyPenalty: data.frequencyPenalty ?? defaults.frequencyPenalty,
-        presencePenalty: data.presencePenalty ?? defaults.presencePenalty,
-        platformId: data.platformId || '',
-        modelId: data.modelId || '',
-        type: data.type || 'harness',
-        builtinToolIds: data.builtinToolIds || [],
-        customToolIds: data.customToolIds || [],
-        mcpToolMounts: data.mcpToolMounts || [],
-        skillIds: data.skillIds || [],
-        subAgentIds: data.subAgentIds || [],
-        isDefault: false,
-        isPublic: !!data.isPublic,
-        workflow: data.workflow || EMPTY_WORKFLOW,
-        config,
-        version: 1,
-      };
-      const r = await api.post<any>('/agents', body);
-      const id = (r && 'data' in r) ? (r as any).data?.id : '';
-      await loadAgents();
-      return id || '';
-    }
     const adapter = getPlatformAdapter();
     const id = uid('a_');
     const ts = now();
@@ -619,23 +747,6 @@ export const useAgentStore = defineStore('agent', () => {
   }
 
   async function updateAgent(id: string, patch: Partial<Agent>) {
-    if (useAuthStore().useServerApi) {
-      const body: Record<string, unknown> = { ...patch };
-      // 移除 undefined 字段，server 端按提供的字段动态 SET
-      for (const k of Object.keys(body)) {
-        if (body[k] === undefined) delete body[k];
-      }
-      const r = await api.patch<any>(`/agents/${id}`, body);
-      if (r && 'data' in r) {
-        const updated = rowToAgent((r as any).data);
-        const idx = agents.value.findIndex((a) => a.id === id);
-        if (idx >= 0) agents.value[idx] = updated;
-        else agents.value.push(updated);
-        if (current.value?.id === id) current.value = updated;
-      }
-      await loadAgents();
-      return;
-    }
     const adapter = getPlatformAdapter();
     const sets: string[] = [];
     const params: unknown[] = [];
@@ -695,20 +806,12 @@ export const useAgentStore = defineStore('agent', () => {
   }
 
   /**
-   * 发布智能体到商城：把 agent 定义置 is_public=1（后端唯一数据源）。
-   * 需登录（JWT 鉴权），未登录时静默跳过。server 模式下直接 PATCH /api/agents/:id；
-   * 本地兜底模式下保留原跨库同步逻辑。
+   * 发布智能体到商城：把本地 agent 快照 upsert 到服务端 agent 表并置 is_public=1。
+   * 本地表 is_public 同步置 1。需登录（JWT 鉴权），未登录时静默跳过。
+   * agent 由本地 adapter 管理、商城读服务端 DB，故发布 = 跨库同步定义。
    */
   async function publishAgent(id: string): Promise<{ ok: boolean; error?: string }> {
     if (!useAuthStore().isLoggedIn) return { ok: false, error: '未登录，无法发布' };
-    if (useAuthStore().useServerApi) {
-      const r = await api.patch<any>(`/agents/${id}`, { isPublic: true });
-      if (r && 'error' in r) return { ok: false, error: (r as any).error };
-      const i = agents.value.findIndex((x) => x.id === id);
-      if (i >= 0) agents.value[i] = { ...agents.value[i], isPublic: true };
-      if (current.value?.id === id) current.value = { ...current.value, isPublic: true };
-      return { ok: true };
-    }
     const adapter = getPlatformAdapter();
     const rows = await adapter.db.query<any>('SELECT * FROM agent WHERE id = ?', [id]);
     if (rows.length === 0) return { ok: false, error: '智能体不存在' };
@@ -722,17 +825,9 @@ export const useAgentStore = defineStore('agent', () => {
     return { ok: true };
   }
 
-  /** 下架智能体：is_public 置 0（后端唯一数据源）。 */
+  /** 下架智能体：服务端 is_public 置 0，本地同步。 */
   async function unpublishAgent(id: string): Promise<{ ok: boolean; error?: string }> {
     if (!useAuthStore().isLoggedIn) return { ok: false, error: '未登录' };
-    if (useAuthStore().useServerApi) {
-      const r = await api.patch<any>(`/agents/${id}`, { isPublic: false });
-      if (r && 'error' in r) return { ok: false, error: (r as any).error };
-      const i = agents.value.findIndex((x) => x.id === id);
-      if (i >= 0) agents.value[i] = { ...agents.value[i], isPublic: false };
-      if (current.value?.id === id) current.value = { ...current.value, isPublic: false };
-      return { ok: true };
-    }
     const r = await api.post<any>(`/marketplace/agents/${id}/unpublish`);
     if (r && 'error' in r) return { ok: false, error: (r as any).error };
     const adapter = getPlatformAdapter();
@@ -745,33 +840,13 @@ export const useAgentStore = defineStore('agent', () => {
 
   /**
    * 从远程商城安装智能体：服务端代理调远程 install 端点（递增远程计数）并返回完整定义，
-   * 再写入 server agent 表（后端唯一数据源，保留原 id 由本地生成）。
+   * 客户端再写入本地 adapter 表（agent 由本地 adapter 管理，服务端表仅做中转）。
    */
   async function installFromMarketplace(sourceId: string, agentId: string): Promise<{ ok: boolean; error?: string }> {
     const r = await api.post<any>(`/agent-marketplace/${sourceId}/install`, { agentId });
     if (r && 'error' in r) return { ok: false, error: (r as any).error };
     const a = (r as any).data;
     if (!a) return { ok: false, error: '远程智能体数据为空' };
-    if (useAuthStore().useServerApi) {
-      const id = uid('a_');
-      const body: Record<string, unknown> = {
-        id,
-        name: a.name || '远程智能体',
-        description: a.description || '',
-        avatar: a.avatar || null,
-        workflow: a.workflow || EMPTY_WORKFLOW,
-        inputsSchema: a.inputsSchema || null,
-        config: a.config || null,
-        type: 'harness',
-        isDefault: false,
-        isPublic: false,
-        version: 1,
-      };
-      const rr = await api.post<any>('/agents', body);
-      if (rr && 'error' in rr) return { ok: false, error: (rr as any).error };
-      await loadAgents();
-      return { ok: true };
-    }
     const adapter = getPlatformAdapter();
     const id = uid('a_');
     const ts = now();
@@ -793,16 +868,6 @@ export const useAgentStore = defineStore('agent', () => {
   }
 
   async function updateWorkflow(id: string, workflow: Workflow) {
-    if (useAuthStore().useServerApi) {
-      const r = await api.patch<any>(`/agents/${id}`, { workflow });
-      if (r && 'data' in r) {
-        const updated = rowToAgent((r as any).data);
-        if (current.value?.id === id) current.value = updated;
-        const idx = agents.value.findIndex((a) => a.id === id);
-        if (idx >= 0) agents.value[idx] = updated;
-      }
-      return;
-    }
     const adapter = getPlatformAdapter();
     await adapter.db.exec(
       'UPDATE agent SET workflow_json = ?, updated_at = ? WHERE id = ?',
@@ -819,15 +884,6 @@ export const useAgentStore = defineStore('agent', () => {
     // E8: 内置智能体（如 pageAgent）不可删除
     if (agent.isBuiltin) return;
     if (agents.value.length <= 1) return;
-    if (useAuthStore().useServerApi) {
-      await api.delete(`/agents/${id}`);
-      agents.value = agents.value.filter((a) => a.id !== id);
-      if (selectedId.value === id) {
-        selectedId.value = agents.value[0]?.id || '';
-      }
-      if (current.value?.id === id) current.value = null;
-      return;
-    }
     const adapter = getPlatformAdapter();
     await adapter.db.exec('DELETE FROM agent WHERE id = ?', [id]);
     agents.value = agents.value.filter((a) => a.id !== id);
@@ -837,156 +893,22 @@ export const useAgentStore = defineStore('agent', () => {
     if (current.value?.id === id) current.value = null;
   }
 
-  /**
-   * 运行工作流（后端执行）：智能体定义存前端本地库，把定义 + sub_agent 引用的子智能体
-   * 打成 bundle 提交 POST /api/workflow/run 创建运行（server 落库 workflow_run + 异步执行），
-   * 再订阅 SSE 拿节点级进度；断线用 since=最后 seq 续传，运行结束取最终结果。
-   * 前端关闭不影响执行；MCP 连接复用后端 client-manager。
-   */
-  async function collectWorkflowBundle(row: any): Promise<{ agent: any; subAgents: Record<string, any> }> {
-    const agent = {
-      id: row.id,
-      name: row.name,
-      workflow: row.workflow_json ? JSON.parse(row.workflow_json) : { nodes: [], edges: [] },
-    };
-    const subAgents: Record<string, any> = {};
-    const seen = new Set<string>([agent.id]);
-    const queue: Workflow[] = [agent.workflow];
-    const useServer = useAuthStore().useServerApi;
-    while (queue.length > 0) {
-      const wf = queue.shift()!;
-      for (const n of wf.nodes || []) {
-        if (n.type !== 'sub_agent') continue;
-        const sid = (n.config?.subAgentId as string) || '';
-        if (!sid || seen.has(sid)) continue;
-        seen.add(sid);
-        // server 模式：后端唯一数据源，子智能体定义从后端读
-        if (useServer) {
-          const sr = await api.get<any>(`/agents/${sid}`);
-          if (sr && 'data' in sr && sr.data) {
-            const s = sr.data as any;
-            const swf: Workflow = s.workflow_json ? JSON.parse(s.workflow_json) : { nodes: [], edges: [] };
-            subAgents[sid] = { id: s.id, name: s.name, workflow: swf };
-            queue.push(swf);
-          }
-          continue;
-        }
-        const adapter = getPlatformAdapter();
-        const srows = await adapter.db.query<any>('SELECT id, name, workflow_json FROM agent WHERE id = ?', [sid]);
-        if (srows.length === 0) continue;
-        const swf: Workflow = srows[0].workflow_json ? JSON.parse(srows[0].workflow_json) : { nodes: [], edges: [] };
-        subAgents[sid] = { id: srows[0].id, name: srows[0].name, workflow: swf };
-        queue.push(swf);
-      }
-    }
-    return { agent, subAgents };
-  }
-
-  /** 消费运行事件流：节点 start/ok/error → runLogs；run:completed/failed → 最终状态。
-   *  断线自动用 since=最后 seq 重连（最多 10 次），运行结束正常返回。 */
-  async function consumeRunEvents(runId: string, signal: AbortSignal): Promise<'completed' | 'failed'> {
-    let since = 0;
-    let retries = 0;
-    for (;;) {
-      const token = localStorage.getItem('auth_token') || '';
-      const res = await fetch(`${API_BASE}/workflow/runs/${runId}/stream?since=${since}`, {
-        headers: { Authorization: `Bearer ${token}` },
-        signal,
-      });
-      if (!res.ok || !res.body) {
-        // 内存态被清理/重启 → 回查 DB 状态兜底
-        const r = await api.get<any>(`/workflow/runs/${runId}`);
-        if ('data' in r && r.data?.status && r.data.status !== 'running') {
-          for (const log of r.data.logs || []) runLogs.value.unshift(log);
-          if (r.data.status === 'completed') return 'completed';
-          throw new Error(r.data.error || '工作流运行失败');
-        }
-        throw new Error('SSE 连接失败');
-      }
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-      let runEnded = false;
-      let ended: 'completed' | 'failed' | null = null;
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const events = buffer.split('\n\n');
-        buffer = events.pop() || '';
-        for (const raw of events) {
-          const line = raw.trim();
-          if (!line.startsWith('data: ')) continue;
-          let ev: any;
-          try { ev = JSON.parse(line.slice(6)); } catch { continue; }
-          if (typeof ev.seq === 'number') since = ev.seq;
-          switch (ev.type) {
-            case 'connected': break;
-            case 'node:start':
-              runLogs.value.unshift({ nodeId: ev.nodeId, status: 'start', time: Date.now() });
-              break;
-            case 'node:ok':
-              runLogs.value.unshift({ nodeId: ev.nodeId, status: 'ok', time: Date.now() });
-              break;
-            case 'node:error':
-              runLogs.value.unshift({ nodeId: ev.nodeId, status: 'error', msg: ev.msg, time: Date.now() });
-              break;
-            case 'run:completed':
-              ended = 'completed';
-              runEnded = true;
-              break;
-            case 'run:failed':
-              ended = 'failed';
-              runEnded = true;
-              runLogs.value.unshift({ nodeId: '__end__', status: 'error', msg: ev.msg, time: Date.now() });
-              break;
-          }
-        }
-        if (runEnded) break;
-      }
-      if (ended === 'completed') return 'completed';
-      if (ended === 'failed') throw new Error('工作流运行失败');
-      // 流断开但运行未结束（网络闪断）→ since 续传重连
-      if (++retries > 10) throw new Error('SSE 多次断开，放弃续传');
-      await new Promise((r) => setTimeout(r, 800));
-    }
-  }
-
   async function runAgent(id: string, inputs: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
-    // 后端唯一数据源：server 模式下 agent 定义从后端读
-    let agentRow: any;
-    if (useAuthStore().useServerApi) {
-      const r = await api.get<any>(`/agents/${id}`);
-      if (!r || !('data' in r) || !r.data) throw new Error('智能体不存在');
-      agentRow = r.data;
-    } else {
-      const adapter = getPlatformAdapter();
-      const rows = await adapter.db.query<any>('SELECT * FROM agent WHERE id = ?', [id]);
-      if (rows.length === 0) throw new Error('智能体不存在');
-      agentRow = rows[0];
-    }
-    const { agent, subAgents } = await collectWorkflowBundle(agentRow);
+    const adapter = getPlatformAdapter();
+    const rows = await adapter.db.query<any>('SELECT * FROM agent WHERE id = ?', [id]);
+    if (rows.length === 0) throw new Error('智能体不存在');
+    const agent = rowToAgent(rows[0]);
     running.value = true;
     runLogs.value = [];
-    const ctrl = new AbortController();
     try {
-      const r = await api.post<any>('/workflow/run', { agent, subAgents, inputs });
-      if ('error' in r) throw new Error(r.error);
-      const runId = r.data?.runId as string;
-      if (!runId) throw new Error('创建运行失败：未返回 runId');
-      const outcome = await consumeRunEvents(runId, ctrl.signal);
-      // 拉最终结果（SSE 完成事件不带全量 result，统一回查一次）
-      const rr = await api.get<any>(`/workflow/runs/${runId}`);
-      if ('error' in rr) throw new Error(rr.error);
-      if (outcome === 'failed') throw new Error(rr.data?.error || '工作流运行失败');
-      return rr.data?.result || {};
+      const eng = getEngine();
+      const result = await eng.run(agent, inputs, { callStack: [id] });
+      runLogs.value.unshift({ nodeId: '__end__', status: 'ok', time: Date.now() });
+      return result;
     } catch (e: any) {
-      if (e?.name !== 'AbortError') {
-        runLogs.value.unshift({ nodeId: '__end__', status: 'error', msg: e?.message, time: Date.now() });
-      }
+      runLogs.value.unshift({ nodeId: '__end__', status: 'error', msg: e?.message, time: Date.now() });
       throw e;
     } finally {
-      ctrl.abort();
       running.value = false;
     }
   }
@@ -1022,6 +944,179 @@ export const useAgentStore = defineStore('agent', () => {
     selectedId, selectedAgent, selectAgent,
     loadAgents, loadAgent, createAgent, createChatAgent, updateAgent, updateWorkflow, deleteAgent,
     publishAgent, unpublishAgent, installFromMarketplace,
-    collectWorkflowBundle, runAgent, addNode,
+    runAgent, addNode,
   };
 });
+
+// 内置节点 handler
+import type { NodeHandler, RunContext, NodeResult } from '@yan-zhi/core';
+
+class InputNodeHandler implements NodeHandler {
+  type = 'input';
+  async execute(config: Record<string, unknown>, ctx: RunContext): Promise<NodeResult> {
+    return { output: ctx.inputs };
+  }
+}
+
+class OutputNodeHandler implements NodeHandler {
+  type = 'output';
+  async execute(config: Record<string, unknown>, ctx: RunContext): Promise<NodeResult> {
+    const key = (config.key as string) || 'result';
+    return { output: ctx.outputs.size > 0 ? Array.from(ctx.outputs.values()).pop() : ctx.inputs[key] };
+  }
+}
+
+class CodeNodeHandler implements NodeHandler {
+  type = 'code';
+  async execute(config: Record<string, unknown>, ctx: RunContext): Promise<NodeResult> {
+    const expr = (config.expression as string) || 'return null;';
+    try {
+      // 沙箱：屏蔽危险全局对象
+      const sandboxed = `"use strict"; const window=void 0,document=void 0,fetch=void 0,XMLHttpRequest=void 0,eval=void 0,Function=void 0,setTimeout=void 0,setInterval=void 0; return (function(ctx){ ${expr} })(ctx);`;
+      const fn = new Function('ctx', sandboxed);
+      const out = await Promise.race([
+        Promise.resolve(fn(ctx)),
+        new Promise<null>((_, rej) => setTimeout(() => rej(new Error('代码节点超时（3s）')), 3000)),
+      ]);
+      return { output: out };
+    } catch {
+      return { output: null };
+    }
+  }
+}
+
+class ConditionNodeHandler implements NodeHandler {
+  type = 'condition';
+  async execute(config: Record<string, unknown>, ctx: RunContext): Promise<NodeResult> {
+    const expr = (config.expression as string) || 'return true;';
+    try {
+      const fn = new Function('ctx', expr);
+      const result = fn(ctx);
+      return { output: { matched: !!result, value: result } };
+    } catch {
+      return { output: { matched: false, value: false } };
+    }
+  }
+}
+
+class LoopNodeHandler implements NodeHandler {
+  type = 'loop';
+  async execute(config: Record<string, unknown>, ctx: RunContext): Promise<NodeResult> {
+    // 引擎层已处理子图循环，这里做单机回退逻辑
+    const maxIter = Number(config.maxIterations) || 5;
+    const key = (config.iterateKey as string) || 'item';
+    const bodyExpr = (config.bodyExpr as string) || '';
+    const source = ctx.outputs.size > 0
+      ? Array.from(ctx.outputs.values()).pop()
+      : ctx.inputs;
+    const arr: unknown[] = Array.isArray(source) ? source : (source ? [source] : []);
+    const results: unknown[] = [];
+    if (bodyExpr) {
+      try {
+        const fn = new Function('ctx', `"use strict"; const window=void 0,document=void 0,fetch=void 0; return (function(ctx){ ${bodyExpr} })(ctx);`);
+        const limit = Math.min(arr.length, maxIter);
+        for (let i = 0; i < limit; i++) {
+          results.push(fn({ ...ctx, [key]: arr[i], index: i }));
+        }
+      } catch {}
+    }
+    return { output: results.length > 0 ? results : source };
+  }
+}
+
+class SubAgentNodeHandler implements NodeHandler {
+  type = 'sub_agent';
+  async execute(config: Record<string, unknown>, ctx: RunContext): Promise<NodeResult> {
+    const subAgentId = config.subAgentId as string;
+    if (!subAgentId) throw new Error('子智能体节点缺少 subAgentId');
+    const mapping = (config.inputsMapping as Record<string, unknown>) || {};
+    const subInputs: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(mapping)) {
+      if (typeof v === 'string' && v.startsWith('${') && v.endsWith('}')) {
+        const path = v.slice(2, -1).split('.').slice(1);
+        let cur: any = ctx;
+        for (const p of path) cur = cur?.[p];
+        subInputs[k] = cur;
+      } else {
+        subInputs[k] = v;
+      }
+    }
+    const adapter = getPlatformAdapter();
+    const [row] = await adapter.db.query<any>('SELECT * FROM agent WHERE id = ?', [subAgentId]);
+    if (!row) throw new Error(`子智能体不存在: ${subAgentId}`);
+    const wf: Workflow = row.workflow_json ? JSON.parse(row.workflow_json) : { nodes: [], edges: [] };
+    const subAgent: Agent = {
+      id: row.id, name: row.name, description: row.description,
+      workflow: wf, allowSubAgent: !!row.allow_sub_agent, isDefault: false, version: row.version,
+      createdAt: row.created_at, updatedAt: row.updated_at,
+    };
+    const eng = new WorkflowEngine();
+    eng.register(new LlmNodeHandler());
+    eng.register(new ToolNodeHandler());
+    eng.register(new InputNodeHandler());
+    eng.register(new OutputNodeHandler());
+    eng.register(new CodeNodeHandler());
+    eng.register(new ConditionNodeHandler());
+    eng.register(new LoopNodeHandler());
+    eng.register(new MemoryReadNodeHandler());
+    eng.register(new MemoryWriteNodeHandler());
+    const nextStack = ctx.callStack ? [...ctx.callStack, subAgentId] : [subAgentId];
+    const result = await eng.run(subAgent, subInputs, { callStack: nextStack });
+    return { output: result };
+  }
+}
+
+class MemoryReadNodeHandler implements NodeHandler {
+  type = 'memory_read';
+  async execute(config: Record<string, unknown>, ctx: RunContext): Promise<NodeResult> {
+    const agentId = (config.agentId as string) || '';
+    const query = (config.query as string) || '';
+    const topK = Number(config.topK) || 3;
+    const adapter = getPlatformAdapter();
+    let rows: any[] = [];
+    if (agentId) {
+      rows = await adapter.db.query<any>(
+        'SELECT * FROM memory WHERE agent_id = ? ORDER BY last_used_at DESC LIMIT ?',
+        [agentId, topK],
+      );
+    } else {
+      rows = await adapter.db.query<any>(
+        'SELECT * FROM memory ORDER BY last_used_at DESC LIMIT ?',
+        [topK],
+      );
+    }
+    if (query) {
+      const q = query.toLowerCase();
+      rows = rows
+        .map((r) => ({ r, score: (r.content || '').toLowerCase().includes(q) ? 1 : 0 }))
+        .filter((x) => x.score > 0)
+        .map((x) => x.r);
+    }
+    return { output: rows.map((r) => ({ id: r.id, content: r.content, tags: r.tags_json ? JSON.parse(r.tags_json) : [] })) };
+  }
+}
+
+class MemoryWriteNodeHandler implements NodeHandler {
+  type = 'memory_write';
+  async execute(config: Record<string, unknown>, ctx: RunContext): Promise<NodeResult> {
+    const agentId = (config.agentId as string) || '';
+    const contentKey = (config.contentKey as string) || 'content';
+    const tags = (config.tags as string[]) || [];
+    const upstream = ctx.outputs.size > 0 ? Array.from(ctx.outputs.values()).pop() : ctx.inputs;
+    let content = '';
+    if (typeof upstream === 'string') content = upstream;
+    else if (upstream && typeof upstream === 'object' && contentKey in (upstream as any)) {
+      content = String((upstream as any)[contentKey]);
+    } else {
+      content = JSON.stringify(upstream);
+    }
+    const adapter = getPlatformAdapter();
+    const id = uid('mem_');
+    const ts = now();
+    await adapter.db.exec(
+      'INSERT INTO memory (id, agent_id, content, tags_json, created_at, last_used_at) VALUES (?, ?, ?, ?, ?, ?)',
+      [id, agentId, content, JSON.stringify(tags), ts, ts],
+    );
+    return { output: { id, content, tags } };
+  }
+}

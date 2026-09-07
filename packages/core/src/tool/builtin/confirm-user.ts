@@ -7,10 +7,10 @@ import type { McpCallResult } from '../../mcp/client';
 export class ConfirmUserTool implements BuiltInTool {
   name = 'confirm_user';
   description =
-    'Ask the user to confirm several related items as a paginated wizard. Each page contains one question. ' +
-    'The user can choose from preset options (single or multiple), type a free-form answer, and add a supplementary note. ' +
-    'The conversation pauses until the user finishes every page. Use this instead of ask_user when you need more than one ' +
-    'decision or want to collect structured answers plus user notes before continuing.';
+    '以分页向导的形式让用户依次确认多个相关事项，每页一个问题。' +
+    '用户可从预设选项中选择（单选或多选）、输入自由文本答案、或附加补充说明。' +
+    '对话会暂停，直到用户走完所有页面。当需要一次性收集多个决策或结构化答案（并附带说明）时，' +
+    '请用 confirm_user 代替 ask_user。';
   inputSchema = {
     type: 'object',
     properties: {

@@ -90,7 +90,7 @@ export function registerKnowledgeTools(m: Map<ApiModuleName, ToolDefinition[]>) 
     },
     {
       name: 'api_kb_search_all',
-      description: '跨所有知识库（不限挂载范围）检索切片。优先向量检索，向量不可用时自动降级为关键词匹配，返回体带 mode 字段标明用了哪种',
+      description: '跨所有知识库（不限挂载范围）检索切片。默认 RRF 混合检索：关键词匹配与向量语义两路召回后融合排序（条目带 rrfScore，mode=hybrid）；向量不可用时自动降级为纯关键词（mode=keyword）',
       inputSchema: {
         type: 'object',
         properties: {

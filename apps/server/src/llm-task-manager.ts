@@ -1,14 +1,18 @@
 // LLM 任务管理器 —— 后端独立运行 ReAct 循环，前端通过 SSE 订阅。
 // 前端构建完整系统提示词 + 工具 schema 发给后端，后端负责 LLM 编排 + 工具执行。
-// 内置工具（file/cmd/web_search/browser 等）后端直接执行，刷新不中断。
+// 内置工具（file/cmd/browser 等）后端直接执行，刷新不中断。
 // UI 交互工具（ask_user/confirm_user 等）和 MCP/自定义工具委托前端，刷新时暂停等待重连。
+// 注：web_search 已移除，联网查询统一委派 pageAgent（真实浏览器搜索引擎）。
 import type { Platform, Model, Message, DeltaToolCall } from '@yan-zhi/shared';
 import { LlmClient, getToolRegistry, getApiToolRegistry, ContextWindow } from '@yan-zhi/core';
 import { db } from './db.js';
 import { ensureToolsInitialized } from './mcp/index.js';
-import { getSearchBackend } from './mcp/search-backend.js';
 import { executeApiTool } from './mcp/api-tool-executor.js';
-import { embedText } from './services/ollama-embed.js';
+import { getToolsFromDb, mcpShortIdOf, resolveMcpToolName, callMcpTool } from './mcp/client-manager.js';
+import {
+  retrieveRelevantMemories, formatMemoryContext, bumpMemoryUsage,
+  writeMemoryItems, flushMemoriesBeforeCompression, type MemoryWriteItem,
+} from './services/memory-service.js';
 import { serverState } from './state.js';
 
 export type TaskStatus = 'running' | 'completed' | 'failed' | 'aborted';
@@ -44,6 +48,10 @@ interface LlmTask {
   step: number;
   origin?: string;
   offlinePolicy?: string;
+  agentId?: string | null;
+  includeUiTools?: boolean;
+  /** 会话级 MCP 挂载的 serverId 集合（无人值守时后端直连 MCP 兜底用） */
+  mountedMcpServerIds?: string[];
 }
 
 const tasks = new Map<string, LlmTask>();
@@ -117,6 +125,17 @@ function loadSubAgentMessages(convId: string, parentToolCallId: string): Message
   return rows.map(rowToMsg);
 }
 
+// 工具结果单条上限：极端结果（如整页 DOM/网络日志几十上百 KB）入库和进入下轮上下文前先压缩，
+// 保留头尾（头部通常是关键摘要，尾部常有分页/汇总信息），中段丢弃并在原位标注。
+const MAX_TOOL_RESULT_CHARS = 48000;
+function capToolResult(result: string): string {
+  if (!result || result.length <= MAX_TOOL_RESULT_CHARS) return result;
+  const head = 40000, tail = 6000;
+  return result.slice(0, head)
+    + `\n\n...[工具结果过长已压缩：原文 ${result.length} 字符，保留头 ${head} / 尾 ${tail}，中段省略]...\n`
+    + result.slice(-tail);
+}
+
 function insertMessage(convId: string, userId: string, role: string, content: string, extra?: any): string {
   const id = 'msg_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
   const ts = Date.now();
@@ -138,10 +157,10 @@ function insertMessage(convId: string, userId: string, role: string, content: st
   return id;
 }
 
-function updateMessageContent(msgId: string, content: string, reasoning?: string, toolCalls?: any[]) {
+function updateMessageContent(msgId: string, content: string, reasoning?: string, toolCalls?: any[], tokens?: number) {
   db.prepare(
-    'UPDATE message SET content = ?, reasoning_content = ?, tool_calls_json = ? WHERE id = ?',
-  ).run(content, reasoning || null, toolCalls ? JSON.stringify(toolCalls) : null, msgId);
+    'UPDATE message SET content = ?, reasoning_content = ?, tool_calls_json = ?, tokens = COALESCE(?, tokens) WHERE id = ?',
+  ).run(content, reasoning || null, toolCalls ? JSON.stringify(toolCalls) : null, tokens ?? null, msgId);
 }
 
 /** 创建任务并启动 ReAct 循环 */
@@ -160,6 +179,8 @@ export function createTask(params: {
   maxSteps?: number;
   origin?: string;
   offlinePolicy?: string;
+  /** 交互式任务（前端在线，走 SSE）：UI 工具（ask_user 等）纳入工具列表，无人值守任务排除 */
+  includeUiTools?: boolean;
 }): string {
   // 幂等保护：同 conversationId 已有 running 任务则复用（避免重连重试创建多任务）
   for (const [id, existing] of tasks) {
@@ -185,6 +206,8 @@ export function createTask(params: {
     step: 0,
     origin: params.origin || 'chat',
     offlinePolicy: params.offlinePolicy,
+    agentId: params.agentId ?? null,
+    includeUiTools: !!params.includeUiTools,
   };
   tasks.set(taskId, task);
   emit(task, { type: 'task:created', taskId, conversationId: params.conversationId });
@@ -348,6 +371,25 @@ function normalizeToolArgs(toolName: string, args: any): any {
   return a;
 }
 
+/**
+ * 同批多导航守卫：浏览器是单活动页状态机，同一批工具调用里出现多个 browser_navigate
+ * 会互相覆盖，只有最后一个页面留存，中途的读取也只能读到当前页。
+ * 处理：只保留第一个在当前页执行，其余标记 openInNewTab —— BrowserNavigateTool 会将其
+ * 转为新开标签页（返回 tabId），模型可用读取工具的 tabId 参数分别读取各页内容。
+ */
+function markDuplicateNavigations(toolCalls: any[]): Set<string> {
+  const ids = new Set<string>();
+  let seen = 0;
+  for (const tc of toolCalls || []) {
+    const name = tc?.function?.name || tc?.toolName || '';
+    if (name === 'browser_navigate') {
+      seen++;
+      if (seen > 1 && tc?.id) ids.add(String(tc.id));
+    }
+  }
+  return ids;
+}
+
 
 /** 前端提交工具执行结果 */
 export function resolveToolResult(taskId: string, callId: string, result: string) {
@@ -443,9 +485,13 @@ async function runReActLoop(task: LlmTask, params: {
   options?: { temperature?: number; maxTokens?: number; topP?: number; reasoningEffort?: string };
   modeFlags?: { thinking?: boolean; plan?: boolean; answerOnly?: boolean };
   maxSteps?: number;
+  includeUiTools?: boolean;
 }) {
   const { conversationId: convId, userId, options } = params;
   const maxSteps = params.maxSteps || 100;
+  // 当前轮的助手占位消息 id：LLM 调用失败（429/超时/网络错误等）时把错误写进该占位消息落库，
+  // 否则刷新后占位消息内容为空，用户看不到"调用失败"的痕迹。
+  let activeAssistantMsgId: string | null = null;
 
   try {
     const platform = loadPlatform(params.platformId, userId);
@@ -464,7 +510,7 @@ async function runReActLoop(task: LlmTask, params: {
 
     const client = new LlmClient(platform, model);
     ensureToolsInitialized();
-    const registry = getToolRegistry(getSearchBackend());
+    const registry = getToolRegistry();
     const modelCaps = model.capabilities as string[] | undefined;
     const supportsTools = !modelCaps || modelCaps.length === 0 || modelCaps.includes('function_call');
 
@@ -484,15 +530,37 @@ async function runReActLoop(task: LlmTask, params: {
     }
     let systemPromptBuilt = params.systemPrompt !== undefined
       ? params.systemPrompt
-      : buildSystemPromptForBackend(params.agentId ?? null, userId, params.appGuide);
+      : buildSystemPromptForBackend(params.agentId ?? null, userId, params.appGuide, {
+          conversationId: convId,
+          includeUiTools: !!params.includeUiTools,
+          userContent: params.userContent,
+        });
+    // 记忆注入：按用户当前输入检索相关记忆（recency×relevancy×type 加权、token 预算内），
+    // 拼在 system prompt 尾部。检索失败绝不阻塞任务。
+    if (params.userContent) {
+      try {
+        const mems = await retrieveRelevantMemories(userId, params.agentId ?? null, params.userContent, {
+          conversationId: convId,
+        });
+        if (mems.length) {
+          systemPromptBuilt += '\n\n' + formatMemoryContext(mems);
+          bumpMemoryUsage(mems.map((m) => m.id));
+        }
+      } catch { /* 记忆注入失败不影响任务 */ }
+    }
     if (modePrompt.length) {
       systemPromptBuilt += '\n\n## 模式指令（用户在输入框开启，优先级高于默认行为）\n' + modePrompt.join('\n');
     }
     let toolsBuilt = params.tools !== undefined
       ? params.tools
-      : buildToolsForBackend(params.agentId ?? null, userId);
+      : buildToolsForBackend(params.agentId ?? null, userId, {
+          conversationId: convId,
+          includeUiTools: !!params.includeUiTools,
+        });
     if (modeFlags.answerOnly) toolsBuilt = [];
     const tools = supportsTools ? toolsBuilt : [];
+    // 记录会话级 MCP 挂载 serverId：无人值守（前端不在线）时后端直连 MCP 兜底
+    task.mountedMcpServerIds = getMergedMcpServerIds(params.agentId ?? null, userId, convId);
 
     // UI 交互工具 —— 必须委托前端执行（需要用户输入/确认）
     // call_agent/list_sub_agents 已改为后端直接执行（后端有会话id，能查 DB）
@@ -509,10 +577,21 @@ async function runReActLoop(task: LlmTask, params: {
       // 加载最新消息
       let messagesToSend = loadMessages(convId);
       messagesToSend = messagesToSend.filter(m => m.content || m.toolCalls || m.role === 'tool' || (m as any).reasoningContent);
-      // 上下文窗口压缩：长对话截断避免超 context window
+      // 上下文窗口压缩：超限时先抢救细节再生成结构化摘要（LLM 摘要而非硬截断）
       const ctxWindow = new ContextWindow(model.contextWindow || 8000, 6);
+      ctxWindow.setSummaryModel(platform, model);
       if (ctxWindow.needsCompression(messagesToSend)) {
-        messagesToSend = await ctxWindow.compress(messagesToSend);
+        let flushedThisRun = false; // 每个任务最多抢救一次
+        messagesToSend = await ctxWindow.compress(messagesToSend, {
+          beforeCompress: async (toCompress) => {
+            if (flushedThisRun) return;
+            flushedThisRun = true;
+            await flushMemoriesBeforeCompression(
+              { userId, conversationId: convId, agentId: task.agentId ?? null, platform, model },
+              toCompress,
+            );
+          },
+        });
       }
 
       // 使用后端统一构建的系统提示词（或历史兼容的前端传入）
@@ -554,21 +633,28 @@ async function runReActLoop(task: LlmTask, params: {
           reasoningEffort: options?.reasoningEffort,
         },
         systemPrompt: llmMessages[0]?.role === 'system' ? llmMessages[0].content : '',
-        tools: (params.tools || []).map((t: any) => ({ name: t.function.name, description: t.function.description })),
+        tools: toolsBuilt.map((t: any) => ({
+          name: t.function?.name || t.name,
+          description: t.function?.description || '',
+          parameters: t.function?.parameters,
+        })),
+        // 原模原样：content 保留模型原始输出（含 [TOOL_CALL] 块），toolCalls 原样透传不做重排
         messages: llmMessages.map(m => ({
           role: m.role,
-          content: typeof m.content === 'string' && m.content.length > 500 ? m.content.slice(0, 497) + '...' : m.content || '',
-          toolCalls: m.toolCalls?.length || 0,
+          content: typeof m.content === 'string' && m.content.length > 4000 ? m.content.slice(0, 3997) + '...' : m.content || '',
+          toolCalls: m.toolCalls,
         })),
       }, null, 2);
 
       // 添加助手占位消息
       const assistantMsgId = insertMessage(convId, userId, 'assistant', '', { systemPromptSnapshot: snap });
+      activeAssistantMsgId = assistantMsgId;
       emit(task, { type: 'message:added', message: { id: assistantMsgId, role: 'assistant', content: '', systemPromptSnapshot: snap } });
 
       // 流式请求
       let fullContent = '';
       let fullReasoning = '';
+      let usageTokens = 0; // 本轮 LLM 调用 token 用量（provider 返回 usage 时累计，供 LLM 交互日志统计）
       const toolCallAcc: DeltaToolCall[] = [];
 
       try {
@@ -582,6 +668,9 @@ async function runReActLoop(task: LlmTask, params: {
           reasoningEffort: options?.reasoningEffort,
           signal: task.abortController.signal,
         })) {
+          if (chunk.usage) {
+            usageTokens = (chunk.usage.promptTokens || 0) + (chunk.usage.completionTokens || 0);
+          }
           if (chunk.delta?.content) {
             fullContent += chunk.delta.content;
             emit(task, { type: 'chunk', content: chunk.delta.content });
@@ -635,11 +724,14 @@ async function runReActLoop(task: LlmTask, params: {
             }).join('\n');
             sysMsg.content = (sysMsg.content || '') + `\n\n## 工具调用（文本模式）\n当要调用工具时，在回复中以下格式输出（可多次调用）：\n[TOOL_CALL]{"name":"工具名","arguments":{"参数名":"参数值"}}[/TOOL_CALL]\n可用工具：\n${toolList}\n调用后等待返回结果，再继续回复。`;
           }
-          fullContent = ''; fullReasoning = ''; toolCallAcc.length = 0;
+          fullContent = ''; fullReasoning = ''; toolCallAcc.length = 0; usageTokens = 0;
           for await (const chunk of client.chatStream(llmMessages, {
             temperature: options?.temperature, maxTokens: options?.maxTokens,
             signal: task.abortController.signal,
           })) {
+            if (chunk.usage) {
+              usageTokens = (chunk.usage.promptTokens || 0) + (chunk.usage.completionTokens || 0);
+            }
             if (chunk.delta?.content) {
               fullContent += chunk.delta.content;
               emit(task, { type: 'chunk', content: chunk.delta.content });
@@ -663,9 +755,9 @@ async function runReActLoop(task: LlmTask, params: {
         const hasToolInReasoning = !hasToolInContent && (fullReasoning.toUpperCase().includes('[TOOL_CALL]') || fullReasoning.toUpperCase().includes('<FUNCTION'));
         if (hasToolInContent || hasToolInReasoning) {
           const source = hasToolInContent ? fullContent : fullReasoning;
-          const { toolCalls: parsed, cleanedContent } = parseTextModeToolCalls(source);
-          if (hasToolInContent) fullContent = cleanedContent;
-          else fullReasoning = cleanedContent;
+          // 原模原样保留模型原始输出（content/reasoning 不做剥离），仅解析出结构化 toolCalls；
+          // 前端展示时再隐藏工具块，模型下一轮也能看到自己上一轮的原始调用文本
+          const { toolCalls: parsed } = parseTextModeToolCalls(source);
           if (hasEmptyArgs && parsed.length > 0) toolCallAcc.length = 0;
           for (const tc of parsed) {
             toolCallAcc.push({ id: tc.id, function: { name: tc.name, arguments: tc.arguments } } as DeltaToolCall);
@@ -676,8 +768,9 @@ async function runReActLoop(task: LlmTask, params: {
         }
       }
 
-      // 更新助手消息
-      updateMessageContent(assistantMsgId, fullContent, fullReasoning, toolCallAcc.length > 0 ? toolCallAcc as any : undefined);
+      // 更新助手消息（tokens：provider usage 优先，缺失时按内容长度粗估，供 LLM 交互日志统计）
+      const estTokens = usageTokens || Math.round((fullContent.length + fullReasoning.length) / 2);
+      updateMessageContent(assistantMsgId, fullContent, fullReasoning, toolCallAcc.length > 0 ? toolCallAcc as any : undefined, estTokens);
       emit(task, { type: 'message:updated', messageId: assistantMsgId, content: fullContent, reasoning: fullReasoning, toolCalls: toolCallAcc.length > 0 ? toolCallAcc : undefined });
 
       // 无工具调用 → 完成
@@ -694,11 +787,13 @@ async function runReActLoop(task: LlmTask, params: {
         return;
       }
 
-      // 执行工具调用
+      // 执行工具调用（同批多导航：第 2+ 个 browser_navigate 转为新开标签页）
+      const newTabNavIds = markDuplicateNavigations(toolCallAcc);
       for (const tc of toolCallAcc) {
         const toolName = tc.function?.name || (tc as any).toolName || '';
         let args: any = {};
         try { args = JSON.parse(tc.function?.arguments || '{}'); } catch {}
+        if (newTabNavIds.has(String(tc.id || ''))) args.openInNewTab = true;
         emit(task, { type: 'tool:start', toolName, args });
 
         let result: string;
@@ -723,17 +818,32 @@ async function runReActLoop(task: LlmTask, params: {
           } catch {}
         }
 
-        // 添加工具结果消息
-        const toolMsgId = insertMessage(convId, userId, 'tool', result, { toolCallId: tc.id });
-        emit(task, { type: 'message:added', message: { id: toolMsgId, role: 'tool', content: result, toolCallId: tc.id } });
+        // 添加工具结果消息（入库前压缩，防止单条极端大结果撑爆消息表与下轮上下文）
+        const cappedResult = capToolResult(result);
+        const toolMsgId = insertMessage(convId, userId, 'tool', cappedResult, { toolCallId: tc.id });
+        emit(task, { type: 'message:added', message: { id: toolMsgId, role: 'tool', content: cappedResult, toolCallId: tc.id } });
       }
 
       // 继续下一轮 ReAct
     }
 
-    // 循环结束（达到最大步数）—— 插入提示消息
-    const tipId = insertMessage(convId, userId, 'assistant', `已达到最大循环数（${maxSteps}），请检查任务是否需要拆分或调高工具配置。`);
-    emit(task, { type: 'message:added', message: { id: tipId, role: 'assistant', content: `已达到最大循环数（${maxSteps}），请检查任务是否需要拆分或调高工具配置。` } });
+    // 循环结束（达到最大步数）—— 先请模型基于已执行的上下文做一次无工具总结，
+    // 输出进展汇报（已完成/关键结果/未完成原因/后续建议），而不是直接抛生硬的报错文案。
+    let tipText = `已达到最大循环数（${maxSteps}），请检查任务是否需要拆分或调高工具配置。`;
+    try {
+      const hist = loadMessages(convId).filter(m => m.content || m.toolCalls || m.role === 'tool');
+      const history: Message[] = hist.map(m => ({
+        id: m.id, conversationId: '', role: m.role,
+        content: m.content, toolCalls: m.toolCalls,
+        toolCallId: m.toolCallId, createdAt: m.createdAt,
+      }));
+      const summary = await summarizeOnMaxSteps(client, systemPromptBuilt, history, maxSteps, 'main');
+      if (summary) {
+        tipText = `${summary}\n\n（注：本次任务已达到最大循环步数（${maxSteps}），以上为阶段总结。如需继续，请拆分任务或调高智能体的最大循环步数配置。）`;
+      }
+    } catch { /* 总结失败回退固定文案 */ }
+    const tipId = insertMessage(convId, userId, 'assistant', tipText);
+    emit(task, { type: 'message:added', message: { id: tipId, role: 'assistant', content: tipText } });
     emit(task, { type: 'task:completed' });
     task.status = 'completed';
     void extractMemoryFromConversation(task);
@@ -744,6 +854,18 @@ async function runReActLoop(task: LlmTask, params: {
     } else {
       task.status = 'failed';
       task.error = e?.message || String(e);
+      // 失败留痕：LLM 调用失败（429/401/超时/网络错误等）也要落库——本轮助手占位消息
+      // 内容为空时直接把错误写进去，前端实时可见、刷新后也有记录；无占位消息则新增一条。
+      const errText = `（调用失败：${task.error}）`;
+      try {
+        if (activeAssistantMsgId) {
+          updateMessageContent(activeAssistantMsgId, errText);
+          emit(task, { type: 'message:updated', messageId: activeAssistantMsgId, content: errText });
+        } else {
+          const failId = insertMessage(convId, userId, 'assistant', errText);
+          emit(task, { type: 'message:added', message: { id: failId, role: 'assistant', content: errText } });
+        }
+      } catch { /* 落库失败不影响错误上报 */ }
       emit(task, { type: 'task:error', error: task.error });
     }
   }
@@ -755,7 +877,7 @@ async function runReActLoop(task: LlmTask, params: {
  *  - API 工具（api_ 前缀，操作 DB）→ 后端直接执行 executeApiTool
  *  - call_agent → 后端直接执行子 ReAct 循环
  *  - 自定义工具（custom_ 前缀，服务端沙箱）→ 后端直接执行 runInSandbox
- *  - 内置工具（file/cmd/web_search/browser 等）→ 后端直接执行，刷新不中断
+ *  - 内置工具（file/cmd/browser 等）→ 后端直接执行，刷新不中断
  *  - 未知工具 → 委托前端兜底 */
 async function executeTool(
   task: LlmTask,
@@ -774,8 +896,22 @@ async function executeTool(
   // 参数归一化兜底：模型文本模式工具调用常把 url 放到 target/address/link 等字段，补齐避免误报缺参
   args = normalizeToolArgs(toolName, args);
 
-  // MCP 工具 → 委托前端（MCP 连接在前端）
+  // UI 工具 → 委托前端（需要用户交互）；MCP 工具 → 优先委托前端（连接在前端，所见即所得），
+  // 无人值守（定时任务/IM，无 SSE 订阅者）时后端直连 MCP 兜底，避免工具永远拿不到结果
   if (isUiTool || isMcp) {
+    if (task.subscribers.size > 0) {
+      return executeToolViaFrontend(task, toolName, args, toolCallId, depth);
+    }
+    if (isMcp) {
+      const resolved = resolveMcpToolName(task.mountedMcpServerIds || [], toolName);
+      if (resolved) {
+        try {
+          return await callMcpTool(resolved.serverId, resolved.toolName, args);
+        } catch (e: any) {
+          return `MCP 工具执行失败: ${e?.message || e}`;
+        }
+      }
+    }
     return executeToolViaFrontend(task, toolName, args, toolCallId, depth);
   }
 
@@ -838,10 +974,21 @@ async function executeTool(
     return `自定义工具不存在或未启用: ${toolName}`;
   }
 
-  // 浏览器工具 → 在线（有 SSE 订阅者）委托前端 BrowserView 桥接，离线后端 Playwright
-  const isBrowser = toolName === 'browser_navigate' || toolName === 'browser_open_external';
+  // 浏览器工具 → 在线（有 SSE 订阅者）全量委托前端 BrowserView 桥接（所见即所操作，
+  // 预览面板可见虚拟鼠标/输入）。单一执行面：桌面在线时绝不回退服务端 Playwright，
+  // 否则操作与预览分裂 + headless 被风控弹验证码。委托失败直接报错让模型重试。
+  // 注意：白名单必须是全部 browser_* 前缀。若只放行 browser_navigate，会出现
+  // navigate 打预览 BrowserView、click/type 等打服务端 headless Playwright 的双浏览器分裂
+  // （Playwright 页面从未被导航 → locator.fill 30s 超时死循环）。
+  const isBrowser = toolName.startsWith('browser_');
   if (isBrowser && task.subscribers.size > 0) {
-    return executeToolViaFrontend(task, toolName, args, toolCallId, depth);
+    try {
+      return await executeToolViaFrontend(task, toolName, args, toolCallId, depth);
+    } catch (e: any) {
+      if (e?.name === 'AbortError' || task.abortController.signal.aborted) throw e;
+      // 前端委托超时/断连（SSE 瞬断、页面关闭）→ 明确报错，不静默切 Playwright
+      return `浏览器工具 ${toolName} 前端暂时不可达（SSE 断连或超时），本次未执行。请稍后重试，或告知用户检查应用窗口是否开启。`;
+    }
   }
   // 离线浏览器工具 → 检测 Playwright 可用性
   if (isBrowser) {
@@ -877,6 +1024,7 @@ function executeToolViaFrontend(task: LlmTask, toolName: string, args: any, tool
       const pending = task.pendingToolCalls.get(callId);
       if (pending) {
         task.pendingToolCalls.delete(callId);
+        console.warn(`[llm-task] 前端工具执行超时(2min): ${toolName} callId=${callId} conv=${task.conversationId}（前端刷新/断连时常见，任务将以此错误继续）`);
         pending.reject(new Error(`工具 ${toolName} 执行超时`));
       }
     }, 2 * 60 * 1000);
@@ -921,7 +1069,7 @@ async function runSubAgent(
   if (!platform || !model) return '子智能体未配置平台/模型，无法执行';
 
   // 构建子智能体工具列表
-  const registry = getToolRegistry(getSearchBackend());
+  const registry = getToolRegistry();
   const builtinIds: string[] = (() => { try { return JSON.parse(agent.builtin_tool_ids || '[]'); } catch { return []; } })();
   const subTools: any[] = [];
   const seen = new Set<string>();
@@ -950,7 +1098,11 @@ async function runSubAgent(
 
   const subAgentName = agent.name || resolvedId;
   const client = new LlmClient(platform, model);
-  const maxSteps = Math.max(agent.config_json ? (JSON.parse(agent.config_json).maxReActSteps || 100) : 100, 100);
+  // 子智能体步数上限：尊重 agent 配置的 maxReActSteps（如 pageAgent 的 50），
+  // 未配置时兜底 100。修复：旧写法 Math.max(x, 100) 把任何配置值强制抬到 ≥100，
+  // pageAgent 配置 25 步失效，子智能体陷入循环时跑满 100 步，用户只能手动终止。
+  const cfgSteps = (() => { try { return agent.config_json ? JSON.parse(agent.config_json).maxReActSteps : undefined; } catch { return undefined; } })();
+  const maxSteps = typeof cfgSteps === 'number' && cfgSteps > 0 ? Math.min(Math.floor(cfgSteps), 100) : 100;
   const systemPrompt = agent.system_prompt || '你是一个智能助手。';
   const modelCaps = model.capabilities as string[] | undefined;
   const supportsTools = !modelCaps || modelCaps.length === 0 || modelCaps.includes('function_call');
@@ -972,6 +1124,7 @@ async function runSubAgent(
       let messagesToSend = loadSubAgentMessages(task.conversationId, parentToolCallId);
       messagesToSend = messagesToSend.filter(m => m.content || m.toolCalls || m.role === 'tool' || (m as any).reasoningContent);
       const ctxWindow = new ContextWindow(model.contextWindow || 8000, 6);
+      ctxWindow.setSummaryModel(platform, model);
       if (ctxWindow.needsCompression(messagesToSend)) {
         messagesToSend = await ctxWindow.compress(messagesToSend);
       }
@@ -998,14 +1151,27 @@ async function runSubAgent(
         llmMessages[0].content += `\n\n## 工具调用（文本模式）\n当要调用工具时，在回复中以下格式输出（可多次调用）：\n[TOOL_CALL]{"name":"工具名","arguments":{"参数名":"参数值"}}[/TOOL_CALL]\n可用工具：\n${toolList}\n调用后等待返回结果，再继续回复。`;
       }
 
-      // 快照
+      // 快照（与主智能体格式对齐：包含本轮实际发给大模型的完整消息历史，内容超长截断）
       const snap = JSON.stringify({
         step, subAgent: { id: resolvedId, name: subAgentName, depth: depth + 1 },
         timestamp: new Date().toISOString(),
-        model: { id: model.modelId || model.id, alias: model.alias },
+        model: { id: model.modelId || model.id, alias: model.alias, contextWindow: model.contextWindow },
         platform: { id: platform.id, name: platform.name },
+        parameters: {
+          temperature: agent.temperature,
+          maxTokens: agent.max_tokens,
+          topP: agent.top_p,
+          frequencyPenalty: agent.frequency_penalty,
+          presencePenalty: agent.presence_penalty,
+        },
         systemPrompt,
         tools: subTools.map((t: any) => ({ name: t.function.name, description: t.function.description })),
+        // 原模原样：同主循环快照
+        messages: llmMessages.map(m => ({
+          role: m.role,
+          content: typeof m.content === 'string' && m.content.length > 4000 ? m.content.slice(0, 3997) + '...' : m.content || '',
+          toolCalls: m.toolCalls,
+        })),
       }, null, 2);
 
       // 助手占位消息
@@ -1017,6 +1183,7 @@ async function runSubAgent(
       // 流式请求
       let fullContent = '';
       let fullReasoning = '';
+      let usageTokens = 0;
       const toolCallAcc: DeltaToolCall[] = [];
 
       try {
@@ -1029,6 +1196,9 @@ async function runSubAgent(
           presencePenalty: agent.presence_penalty,
           signal: task.abortController.signal,
         })) {
+          if (chunk.usage) {
+            usageTokens = (chunk.usage.promptTokens || 0) + (chunk.usage.completionTokens || 0);
+          }
           if (chunk.delta?.content) {
             fullContent += chunk.delta.content;
             emit(task, { type: 'chunk', content: chunk.delta.content, subAgentId: resolvedId });
@@ -1081,11 +1251,12 @@ async function runSubAgent(
             }).join('\n');
             sysMsg.content = (sysMsg.content || '') + `\n\n## 工具调用（文本模式）\n当要调用工具时，在回复中以下格式输出（可多次调用）：\n[TOOL_CALL]{"name":"工具名","arguments":{"参数名":"参数值"}}[/TOOL_CALL]\n可用工具：\n${toolList}\n调用后等待返回结果，再继续回复。`;
           }
-          fullContent = ''; fullReasoning = ''; toolCallAcc.length = 0;
+          fullContent = ''; fullReasoning = ''; toolCallAcc.length = 0; usageTokens = 0;
           for await (const chunk of client.chatStream(llmMessages, {
             temperature: agent.temperature, maxTokens: agent.max_tokens,
             signal: task.abortController.signal,
           })) {
+            if (chunk.usage) { usageTokens = (chunk.usage.promptTokens || 0) + (chunk.usage.completionTokens || 0); }
             if (chunk.delta?.content) { fullContent += chunk.delta.content; emit(task, { type: 'chunk', content: chunk.delta.content, subAgentId: resolvedId }); }
             if (chunk.delta?.reasoningContent) { fullReasoning += chunk.delta.reasoningContent; emit(task, { type: 'chunk', reasoning: chunk.delta.reasoningContent, subAgentId: resolvedId }); }
           }
@@ -1115,8 +1286,8 @@ async function runSubAgent(
         }
       }
 
-      // 更新助手消息
-      updateMessageContent(assistantMsgId, fullContent, fullReasoning, toolCallAcc.length > 0 ? toolCallAcc as any : undefined);
+      // 更新助手消息（tokens 同主循环：usage 优先，缺失按内容长度粗估）
+      updateMessageContent(assistantMsgId, fullContent, fullReasoning, toolCallAcc.length > 0 ? toolCallAcc as any : undefined, usageTokens || Math.round((fullContent.length + fullReasoning.length) / 2));
       emit(task, { type: 'message:updated', messageId: assistantMsgId, content: fullContent, reasoning: fullReasoning, toolCalls: toolCallAcc.length > 0 ? toolCallAcc : undefined });
 
       // 无工具调用 → 子智能体完成
@@ -1125,12 +1296,14 @@ async function runSubAgent(
         return fullContent || '(无输出)';
       }
 
-      // 执行工具调用
+      // 执行工具调用（同批多导航：第 2+ 个 browser_navigate 转为新开标签页）
+      const newTabNavIds = markDuplicateNavigations(toolCallAcc);
       for (const tc of toolCallAcc) {
         const toolName = tc.function?.name || (tc as any).toolName || '';
         let toolArgs: any = {};
         try { toolArgs = JSON.parse(tc.function?.arguments || '{}'); } catch {}
-        emit(task, { type: 'tool:start', toolName, args, subAgentId: resolvedId });
+        if (newTabNavIds.has(String(tc.id || ''))) toolArgs.openInNewTab = true;
+        emit(task, { type: 'tool:start', toolName, args: toolArgs, subAgentId: resolvedId });
 
         let result: string;
         try {
@@ -1141,19 +1314,65 @@ async function runSubAgent(
         }
         emit(task, { type: 'tool:result', toolName, result, subAgentId: resolvedId });
 
-        const toolMsgId = insertMessage(task.conversationId, task.userId, 'tool', result, {
+        const cappedResult = capToolResult(result);
+        const toolMsgId = insertMessage(task.conversationId, task.userId, 'tool', cappedResult, {
           toolCallId: tc.id, parentToolCallId, subAgentId: resolvedId, subAgentName, subAgentDepth: depth + 1,
         });
-        emit(task, { type: 'message:added', message: { id: toolMsgId, role: 'tool', content: result, toolCallId: tc.id, parentToolCallId, subAgentId: resolvedId, subAgentName, subAgentDepth: depth + 1 } });
+        emit(task, { type: 'message:added', message: { id: toolMsgId, role: 'tool', content: cappedResult, toolCallId: tc.id, parentToolCallId, subAgentId: resolvedId, subAgentName, subAgentDepth: depth + 1 } });
       }
     }
 
     emit(task, { type: 'sub_agent:end', agentId: resolvedId, agentName: subAgentName, parentToolCallId });
-    return `子智能体已达到最大循环数（${maxSteps}）`;
+    // 达到最大步数：先请模型总结进展再返回给父智能体（父智能体可基于总结决策下一步），
+    // 总结失败回退到固定文案。
+    let resultText = `子智能体已达到最大循环数（${maxSteps}）`;
+    try {
+      const hist = loadSubAgentMessages(task.conversationId, parentToolCallId).filter(m => m.content || m.toolCalls || m.role === 'tool');
+      const history: Message[] = hist.map(m => ({
+        id: m.id, conversationId: '', role: m.role,
+        content: m.content, toolCalls: m.toolCalls,
+        toolCallId: m.toolCallId, createdAt: m.createdAt,
+      }));
+      const summary = await summarizeOnMaxSteps(client, systemPrompt, history, maxSteps, 'sub');
+      if (summary) {
+        resultText = `${summary}\n\n（注：子智能体已达到最大循环步数（${maxSteps}），以上为阶段总结。）`;
+      }
+    } catch { /* 总结失败回退固定文案 */ }
+    return resultText;
   } catch (e: any) {
     if (e?.name === 'AbortError') throw e;
     emit(task, { type: 'sub_agent:end', agentId: resolvedId, agentName: subAgentName, parentToolCallId });
     return `子智能体执行失败: ${e?.message || e}`;
+  }
+}
+
+/** 达到最大循环步数时的兜底总结：不带 tools 追加一轮对话，请模型基于已执行的操作与
+ *  结果输出进展总结（已完成 / 关键结果 / 未完成原因 / 后续建议），替代生硬的报错文案。
+ *  调用方需自行 catch；本函数内部已兜底，失败时返回 null。 */
+async function summarizeOnMaxSteps(
+  client: LlmClient,
+  systemPrompt: string,
+  history: Message[],
+  maxSteps: number,
+  kind: 'main' | 'sub',
+): Promise<string | null> {
+  try {
+    const llmMessages: Message[] = [];
+    if (systemPrompt) {
+      llmMessages.push({ id: 'sys', conversationId: '', role: 'system', content: systemPrompt, createdAt: 0 });
+    }
+    llmMessages.push(...history);
+    llmMessages.push({
+      id: 'sum', conversationId: '', role: 'user', createdAt: 0,
+      content: kind === 'sub'
+        ? `你已执行 ${maxSteps} 步，达到本子任务的最大步数限制。这是最后一轮，不能再调用任何工具。请基于以上已执行的操作与获得的结果，输出一段给父智能体的进展总结：1) 已完成的工作；2) 关键结果/数据（附来源 URL 或文件路径）；3) 未完成的部分与原因；4) 建议的后续步骤。直接输出总结正文，不要调用工具，不要输出 JSON。`
+        : `你已执行 ${maxSteps} 步，达到本次任务的最大步数限制。这是最后一轮，不能再调用任何工具。请基于以上对话与工具执行结果，向用户输出一份任务进展总结：1) 已完成的工作；2) 关键结果/数据（附来源 URL 或文件路径）；3) 未完成的部分与原因；4) 建议用户如何继续（如拆分任务、调整配置后重试）。直接输出总结正文，不要调用工具。`,
+    });
+    const resp = await client.chat(llmMessages, { temperature: 0.3, maxTokens: 1024 });
+    const text = (resp.delta?.content || '').trim();
+    return text || null;
+  } catch {
+    return null;
   }
 }
 
@@ -1176,7 +1395,7 @@ async function extractMemoryFromConversation(task: LlmTask): Promise<void> {
 
     const client = new LlmClient(platform, model);
     const resp = await client.chat([
-      { id: 'sys', conversationId: '', role: 'system', content: '你是记忆抽取助手。从对话中抽取「值得长期记住的用户信息」，输出 JSON 数组，每项形如 {"type":"agent|session|daily","content":"一句话事实"}。agent=稳定的用户偏好/背景；daily=当天的重要事件/进展；session=本会话的上下文结论。只输出 JSON，不要解释。若没有值得记的返回 []。', createdAt: 0 },
+      { id: 'sys', conversationId: '', role: 'system', content: '你是记忆抽取助手。从对话中抽取「值得长期记住的用户信息」，输出 JSON 数组，每项形如 {"type":"agent|session|daily","content":"一句话事实"}。agent=稳定的用户偏好/背景；daily=当天的重要事件/进展；session=本会话的上下文结论。若新信息与既有认知矛盾（如用户纠正了之前的偏好），可加 "conflictsWith" 字段说明被推翻的旧结论内容。相对日期（如"昨天"）转为绝对日期。只输出 JSON，不要解释。若没有值得记的返回 []。', createdAt: 0 },
       { id: 'usr', conversationId: '', role: 'user', content: transcript, createdAt: 0 },
     ], { temperature: 0.2, maxTokens: 800, responseFormat: { type: 'json_object' } });
 
@@ -1190,32 +1409,19 @@ async function extractMemoryFromConversation(task: LlmTask): Promise<void> {
       if (m) { try { items = JSON.parse(m[0]); } catch {} }
     }
 
-    const ts = Date.now();
-    const date = new Date().toISOString().slice(0, 10);
-    for (const item of items) {
-      if (!item.content || typeof item.content !== 'string') continue;
-      const type = item.type === 'daily' ? 'daily' : item.type === 'session' ? 'session' : 'agent';
-      const id = 'mem_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
-      const emb = await embedText(item.content).catch(() => null);
-      const embBytes = emb ? Buffer.from(new Float32Array(emb).buffer) : null;
-
-      if (type === 'daily') {
-        // upsert：找当天已存在的 daily 记忆
-        const existing = db.prepare(
-          `SELECT * FROM memory WHERE user_id = ? AND type = 'daily' AND metadata_json LIKE ? ORDER BY last_used_at DESC LIMIT 1`,
-        ).all(task.userId, `%"date":"${date}"%`)[0] as any;
-        if (existing) {
-          const merged = existing.content.endsWith('\n') ? existing.content + item.content : existing.content + '\n' + item.content;
-          const mergedEmb = await embedText(merged).catch(() => null);
-          const mergedEmbBytes = mergedEmb ? Buffer.from(new Float32Array(mergedEmb).buffer) : null;
-          db.prepare('UPDATE memory SET content = ?, embedding = ?, last_used_at = ? WHERE id = ?').run(merged, mergedEmbBytes, ts, existing.id);
-          continue;
-        }
-      }
-
-      db.prepare(
-        `INSERT INTO memory (id, user_id, content, tags_json, metadata_json, embedding, created_at, last_used_at, type) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      ).run(id, task.userId, item.content, '[]', JSON.stringify(type === 'daily' ? { date } : { conversationId: task.conversationId }), embBytes, ts, ts, type);
+    // 统一走 memory-service 写入：语义去重（余弦>0.92 更新原行）、冲突标记（superseded_by）、
+    // daily 按天合并、session 带会话 id、agent 记忆带 agent 归属（修复此前全部 agent_id IS NULL 的 bug）
+    const writeItems: MemoryWriteItem[] = items
+      .filter((x) => x?.content && typeof x.content === 'string')
+      .map((x) => ({
+        type: x.type === 'daily' ? 'daily' : x.type === 'session' ? 'session' : 'agent',
+        content: String(x.content),
+        metadata: x.type === 'session' ? { conversationId: task.conversationId } : {},
+        conflictsWith: typeof x.conflictsWith === 'string' && x.conflictsWith ? x.conflictsWith : undefined,
+      }));
+    if (writeItems.length) {
+      const r = await writeMemoryItems(task.userId, task.agentId ?? null, writeItems, 'extract');
+      console.log(`[memory] 抽取写入: +${r.created} 新增 / ${r.updated} 去重更新 / ${r.merged} 合并 / ${r.superseded} 冲突取代`);
     }
   } catch (e: any) {
     console.error('[memory] 抽取失败:', e?.message || e);
@@ -1236,39 +1442,131 @@ const UI_TOOL_NAMES = new Set([
   'browser_navigate', 'browser_open_external',
 ]);
 
-/** 从 DB 加载 agent 配置，构建系统提示词（不含前端依赖项） */
-export function buildSystemPromptForBackend(agentId: string | null, userId: string, appGuide?: string): string {
-  const parts: string[] = [];
+// ============================================================
+// 会话级挂载（conversation 表）—— 与前端 getMergedMounts 的会话来源对齐，
+// 保证"前端交互 / 定时任务 / IM"三条入口按同一套规则构建提示词与工具列表。
+// ============================================================
 
-  // 应用指引（用户在前端配置的全局上下文/行为约束）
+interface ConvMounts {
+  systemPrompt?: string;
+  builtinToolIds: string[];
+  skillIds: string[];
+  mcpMounts: { serverId: string; toolName: string }[];
+}
+
+function loadConversationMounts(conversationId?: string | null): ConvMounts {
+  const empty: ConvMounts = { builtinToolIds: [], skillIds: [], mcpMounts: [] };
+  if (!conversationId) return empty;
+  const conv = db.prepare('SELECT system_prompt, builtin_tool_ids_json, skill_ids_json, mcp_servers_json FROM conversation WHERE id = ?').get(conversationId) as any;
+  if (!conv) return empty;
+  const builtinToolIds: string[] = (() => { try { return JSON.parse(conv.builtin_tool_ids_json || '[]'); } catch { return []; } })();
+  const skillIds: string[] = (() => { try { return JSON.parse(conv.skill_ids_json || '[]'); } catch { return []; } })();
+  // mcp_servers_json：string[]（旧格式，全量暴露）或 [{serverId, disabledTools}]（细粒度，与前端 rowToConv 一致）
+  const mcpMounts: { serverId: string; toolName: string }[] = [];
+  try {
+    const parsed = JSON.parse(conv.mcp_servers_json || '[]');
+    if (Array.isArray(parsed)) {
+      for (const x of parsed) {
+        const sid = typeof x === 'string' ? x : (x?.serverId || x?.id || '');
+        if (!sid) continue;
+        const disabled: string[] = typeof x === 'object' && x ? (x.disabledTools || []) : [];
+        for (const t of getToolsFromDb(sid)) {
+          if (t.enabled === false || disabled.includes(t.name)) continue;
+          mcpMounts.push({ serverId: sid, toolName: t.name });
+        }
+      }
+    }
+  } catch { /* 解析失败按无挂载处理 */ }
+  return { systemPrompt: conv.system_prompt || undefined, builtinToolIds, skillIds, mcpMounts };
+}
+
+/** agent.mcp_tool_mounts ∪ 会话级 MCP 挂载：agent 中 toolName='*' 的 server 覆盖会话级同 server 细粒度挂载（与前端规则一致） */
+function mergeMcpMounts(agentMounts: any[], convMounts: { serverId: string; toolName: string }[]): { serverId: string; toolName: string }[] {
+  const merged: { serverId: string; toolName: string }[] = [...(agentMounts || [])];
+  const starServers = new Set(merged.filter((m: any) => m.toolName === '*').map((m: any) => m.serverId));
+  for (const c of convMounts) {
+    if (!starServers.has(c.serverId) && !merged.some((m: any) => m.serverId === c.serverId && m.toolName === c.toolName)) {
+      merged.push(c);
+    }
+  }
+  return merged;
+}
+
+/** 合并后的 MCP serverId 集合（executeTool 无人值守后端直连 MCP 兜底用） */
+export function getMergedMcpServerIds(agentId: string | null, userId: string, conversationId?: string | null): string[] {
+  let agentMounts: any[] = [];
+  if (agentId) {
+    const agent = db.prepare('SELECT mcp_tool_mounts FROM agent WHERE id = ? AND (user_id = ? OR is_public = 1)').get(agentId, userId) as any;
+    try { agentMounts = JSON.parse(agent?.mcp_tool_mounts || '[]'); } catch { agentMounts = []; }
+  }
+  const convMounts = loadConversationMounts(conversationId);
+  return [...new Set(mergeMcpMounts(agentMounts, convMounts.mcpMounts).map((m) => m.serverId))];
+}
+
+/** 从 DB 加载 agent + 会话挂载，构建系统提示词（单一事实来源：前端交互/定时任务/IM 共用同一套规则）。
+ *  提示词始终注入「## 可用工具」（带完整入参定义）；原生 function calling 模型同时拿到 tools schema，
+ *  文本模式模型由 runReActLoop 追加 [TOOL_CALL] 调用格式说明。 */
+export function buildSystemPromptForBackend(agentId: string | null, userId: string, appGuide?: string, opts?: {
+  conversationId?: string | null;
+  includeUiTools?: boolean;
+  userContent?: string;
+}): string {
+  const parts: string[] = [];
+  const convMounts = loadConversationMounts(opts?.conversationId);
+  const includeUiTools = !!opts?.includeUiTools;
+
+  // 应用指引（用户在前端配置的全局上下文/行为约束）：无条件注入，保证三条入口行为一致
   if (appGuide && appGuide.trim()) {
     parts.push('---\n## 应用指引\n' + appGuide.trim());
   }
 
-  // agent 系统提示词
+  // 系统提示词：会话级优先，其次 agent 级（与前端 conv.systemPrompt || agent.systemPrompt 一致）
+  let basePrompt = '';
   if (agentId) {
-    const agent = db.prepare('SELECT system_prompt, type, builtin_tool_ids FROM agent WHERE id = ? AND (user_id = ? OR is_public = 1)').get(agentId, userId) as any;
-    if (agent?.system_prompt) {
-      parts.push(agent.system_prompt);
-    }
+    const agent = db.prepare('SELECT system_prompt, type FROM agent WHERE id = ? AND (user_id = ? OR is_public = 1)').get(agentId, userId) as any;
+    basePrompt = convMounts.systemPrompt || agent?.system_prompt || '';
+    const isHarness = !agent?.type || agent.type === 'harness';
 
-    // 工具描述
-    const toolIds: string[] = agent?.builtin_tool_ids ? JSON.parse(agent.builtin_tool_ids) : [];
-    const registry = getToolRegistry(getSearchBackend());
-    const toolLines: string[] = [];
-    for (const name of toolIds) {
-      if (UI_TOOL_NAMES.has(name)) continue;
-      const tool = registry.get(name);
-      if (!tool) continue;
-      const props = (tool.inputSchema as any)?.properties || {};
-      const req: string[] = (tool.inputSchema as any)?.required || [];
-      const params = Object.entries(props).map(([k, v]: [string, any]) =>
-        `    - ${k}${req.includes(k) ? '（必填）' : ''}: ${v.description || v.type || ''}`
-      ).join('\n');
-      toolLines.push(`- \`${name}\`: ${tool.description}\n  参数：\n${params}`);
-    }
-    if (toolLines.length > 0) {
-      parts.push('---\n## 可用工具\n' + toolLines.join('\n'));
+    // 工具描述（提示词模式才注入；原生 tools 模型走 schema）
+    {
+      const registry = getToolRegistry();
+      const toolLines: string[] = [];
+
+      // 内置工具：agent ∪ 会话挂载（与 buildToolsForBackend 同一套合并规则）
+      let toolIds: string[] = [];
+      const agentRow = db.prepare('SELECT builtin_tool_ids FROM agent WHERE id = ? AND (user_id = ? OR is_public = 1)').get(agentId, userId) as any;
+      const agentToolIds: string[] = agentRow?.builtin_tool_ids ? JSON.parse(agentRow.builtin_tool_ids) : [];
+      toolIds = [...new Set([...agentToolIds, ...convMounts.builtinToolIds])];
+      for (const name of toolIds) {
+        if (!includeUiTools && UI_TOOL_NAMES.has(name)) continue;
+        const tool = registry.get(name);
+        if (!tool) continue;
+        toolLines.push(`- \`${name}\`: ${tool.description}${formatSchemaParams(tool.inputSchema)}`);
+      }
+
+      // MCP 工具（按 server 分组，暴露名与执行路由一致：mcp_{shortId}__{toolName}）
+      const mergedMcp = mergeMcpMounts((() => {
+        const row = db.prepare('SELECT mcp_tool_mounts FROM agent WHERE id = ? AND (user_id = ? OR is_public = 1)').get(agentId, userId) as any;
+        try { return JSON.parse(row?.mcp_tool_mounts || '[]'); } catch { return []; }
+      })(), convMounts.mcpMounts);
+      for (const m of mergedMcp) {
+        const serverName = (db.prepare('SELECT name FROM mcp_server WHERE id = ?').get(m.serverId) as any)?.name || m.serverId;
+        toolLines.push(`### ${serverName}`);
+        const tools = m.toolName === '*'
+          ? getToolsFromDb(m.serverId).filter((t: any) => t.enabled !== false)
+          : getToolsFromDb(m.serverId).filter((t: any) => t.name === m.toolName && t.enabled !== false);
+        for (const t of tools) {
+          toolLines.push(`- \`mcp_${mcpShortIdOf(m.serverId)}__${t.name}\`: ${t.alias || t.description || t.name}${formatSchemaParams(t.inputSchema)}`);
+        }
+      }
+
+      // 自定义工具（与 buildToolsForBackend 同一过滤规则）
+      toolLines.push(...buildCustomToolDescLines(agentId, userId, includeUiTools));
+
+      const sectionLines = toolLines.filter((l) => l.trim().length > 0);
+      if (sectionLines.length > 0) {
+        parts.push('---\n## 可用工具\n' + sectionLines.join('\n'));
+      }
     }
 
     // 子智能体描述
@@ -1282,8 +1580,9 @@ export function buildSystemPromptForBackend(agentId: string | null, userId: stri
       if (subLines.length > 0) parts.push('---\n## 可调用子智能体\n' + subLines.join('\n'));
     }
 
-    // Skills 描述 + 流程指引
-    const skillIds: string[] = agent?.skill_ids ? JSON.parse(agent.skill_ids) : [];
+    // Skills 描述 + 流程指引：agent ∪ 会话挂载
+    const agentSkillIds: string[] = agent?.skill_ids ? JSON.parse(agent.skill_ids) : [];
+    const skillIds = [...new Set([...agentSkillIds, ...convMounts.skillIds])];
     if (skillIds.length > 0) {
       const skillLines: string[] = [];
       const flowParts: string[] = [];
@@ -1304,7 +1603,6 @@ export function buildSystemPromptForBackend(agentId: string | null, userId: stri
     }
 
     // 文件产出分类规范
-    const isHarness = !agent?.type || agent.type === 'harness';
     if (isHarness) {
       parts.push([
         '---',
@@ -1315,7 +1613,11 @@ export function buildSystemPromptForBackend(agentId: string | null, userId: stri
         '规则：凡是用户最终想要的结果文件，必须显式传 category="deliverable"；只有过程性临时文件才用 intermediate。不要省略 category，也不要把交付物误标为 intermediate。',
       ].join('\n'));
     }
+  } else {
+    // 无 agent：会话级系统提示词仍然生效
+    if (convMounts.systemPrompt) basePrompt = convMounts.systemPrompt;
   }
+  if (basePrompt) parts.unshift(basePrompt);
 
   // 工作目录
   if (serverState.workspaceDir && serverState.workspaceDir.trim()) {
@@ -1328,34 +1630,72 @@ export function buildSystemPromptForBackend(agentId: string | null, userId: stri
   return parts.join('\n\n');
 }
 
-/** 从 DB 加载 agent 工具挂载，构建工具 schema（排除 UI 工具和 MCP/自定义工具） */
-export function buildToolsForBackend(agentId: string | null, userId: string): any[] {
+/** JSON Schema → 参数清单（与前端 formatToolParamsBlock 同一格式） */
+function formatSchemaParams(schema: any): string {
+  const props = schema?.properties || {};
+  const req: string[] = schema?.required || [];
+  const entries = Object.entries(props);
+  if (entries.length === 0) return '';
+  const lines = entries.map(([k, v]: [string, any]) =>
+    `    - ${k}${req.includes(k) ? '（必填）' : ''}: ${v?.description || v?.type || ''}`
+  );
+  return '\n  参数：\n' + lines.join('\n');
+}
+
+/** 自定义工具描述行：agentId 给定时按 agent.custom_tool_ids 过滤（与前端挂载规则一致），否则全量（无人值守兜底） */
+function buildCustomToolDescLines(agentId: string | null, userId: string, includeUiTools: boolean): string[] {
+  const allowed: string[] | null = (() => {
+    if (!agentId) return null;
+    const agent = db.prepare('SELECT custom_tool_ids FROM agent WHERE id = ? AND (user_id = ? OR is_public = 1)').get(agentId, userId) as any;
+    try { const ids = JSON.parse(agent?.custom_tool_ids || '[]'); return Array.isArray(ids) ? ids : []; } catch { return []; }
+  })();
+  const rows = db.prepare('SELECT id, name, description, input_schema_json, enabled FROM custom_tool WHERE user_id = ? AND enabled = 1').all(userId) as any[];
+  const lines: string[] = [];
+  for (const ct of rows) {
+    if (allowed && !allowed.includes(ct.id)) continue;
+    const exposedName = 'custom_' + (ct.id || '').replace(/[^a-zA-Z0-9]/g, '').slice(0, 8) + '_' + ct.name;
+    lines.push(`- \`${exposedName}\`: ${ct.description || ct.name}${formatSchemaParams(ct.input_schema_json ? JSON.parse(ct.input_schema_json) : null)}`);
+  }
+  return lines;
+}
+
+/** 从 DB 加载 agent + 会话挂载，构建工具 schema（三条入口共用的单一事实来源，与前端 getMergedMounts 同规则）。
+ *  opts.includeUiTools：交互式任务（前端在线）纳入 UI 工具；定时/IM 等无人值守任务排除。 */
+export function buildToolsForBackend(agentId: string | null, userId: string, opts?: {
+  conversationId?: string | null;
+  includeUiTools?: boolean;
+}): any[] {
   ensureToolsInitialized();
-  const registry = getToolRegistry(getSearchBackend());
+  const registry = getToolRegistry();
   const tools: any[] = [];
   const seen = new Set<string>();
+  const convMounts = loadConversationMounts(opts?.conversationId);
+  const includeUiTools = !!opts?.includeUiTools;
+  const skipUi = (name: string) => !includeUiTools && UI_TOOL_NAMES.has(name);
 
-  // agent 内置工具
+  // 1) 内置工具：agent 挂载 ∪ 会话级挂载
+  let toolIds: string[] = [];
   if (agentId) {
     const agent = db.prepare('SELECT builtin_tool_ids FROM agent WHERE id = ? AND (user_id = ? OR is_public = 1)').get(agentId, userId) as any;
-    const toolIds: string[] = agent?.builtin_tool_ids ? JSON.parse(agent.builtin_tool_ids) : [];
-    for (const name of toolIds) {
-      if (UI_TOOL_NAMES.has(name)) continue;
-      if (!registry.has(name)) continue;
-      if (seen.has(name)) continue;
-      seen.add(name);
-      const def = registry.get(name)!;
-      tools.push({
-        type: 'function',
-        function: { name, description: def.description, parameters: def.inputSchema },
-      });
-    }
+    toolIds = agent?.builtin_tool_ids ? JSON.parse(agent.builtin_tool_ids) : [];
+  }
+  toolIds = [...new Set([...toolIds, ...convMounts.builtinToolIds])];
+  for (const name of toolIds) {
+    if (skipUi(name)) continue;
+    if (!registry.has(name)) continue;
+    if (seen.has(name)) continue;
+    seen.add(name);
+    const def = registry.get(name)!;
+    tools.push({
+      type: 'function',
+      function: { name, description: def.description, parameters: def.inputSchema },
+    });
   }
 
-  // 无 agent 时暴露所有非 UI 内置工具
-  if (tools.length === 0 && !agentId) {
+  // 无 agent 且无会话挂载时兜底：暴露所有非 UI 内置工具
+  if (tools.length === 0 && !agentId && convMounts.builtinToolIds.length === 0) {
     for (const name of registry.names()) {
-      if (UI_TOOL_NAMES.has(name)) continue;
+      if (skipUi(name)) continue;
       if (name.startsWith('plugin_')) continue;
       if (seen.has(name)) continue;
       seen.add(name);
@@ -1367,9 +1707,46 @@ export function buildToolsForBackend(agentId: string | null, userId: string): an
     }
   }
 
-  // API 工具（记忆/知识库，后端直接执行）
+  // 2) MCP 工具：agent.mcp_tool_mounts ∪ 会话级挂载（agent '*' 覆盖会话细粒度），暴露名与执行路由一致
+  const agentMcpMounts: any[] = (() => {
+    if (!agentId) return [];
+    const agent = db.prepare('SELECT mcp_tool_mounts FROM agent WHERE id = ? AND (user_id = ? OR is_public = 1)').get(agentId, userId) as any;
+    try { return JSON.parse(agent?.mcp_tool_mounts || '[]'); } catch { return []; }
+  })();
+  const mergedMcp = mergeMcpMounts(agentMcpMounts, convMounts.mcpMounts);
+  const toolsByServer = new Map<string, any[]>();
+  const toolsOf = (sid: string) => {
+    if (!toolsByServer.has(sid)) toolsByServer.set(sid, getToolsFromDb(sid));
+    return toolsByServer.get(sid)!;
+  };
+  for (const m of mergedMcp) {
+    const shortId = mcpShortIdOf(m.serverId);
+    if (!shortId) continue;
+    const serverTools = m.toolName === '*'
+      ? toolsOf(m.serverId).filter((t: any) => t.enabled !== false)
+      : toolsOf(m.serverId).filter((t: any) => t.name === m.toolName && t.enabled !== false);
+    for (const t of serverTools) {
+      const exposedName = `mcp_${shortId}__${t.name}`;
+      if (seen.has(exposedName)) continue;
+      seen.add(exposedName);
+      tools.push({
+        type: 'function',
+        function: {
+          name: exposedName,
+          description: t.alias || t.description || t.name,
+          parameters: t.inputSchema || { type: 'object', properties: {} },
+        },
+      });
+    }
+  }
+
+  // 3) API 工具（后端直查类：记忆/知识库/数据查询，后端直接执行）
+  // 固定暴露三个通用工具；其余 api_*（如 api_data_query）按 agent 挂载 + 会话挂载动态暴露，
+  // 保证「挂载即可调用」与「没挂就不占上下文」。
   const apiRegistry = getApiToolRegistry();
-  for (const tName of ['api_memory_search', 'api_kb_search', 'api_kb_list']) {
+  const alwaysApiTools = ['api_memory_search', 'api_kb_search', 'api_kb_list'];
+  const mountedApiTools = [...toolIds, ...convMounts.builtinToolIds].filter((n) => n.startsWith('api_'));
+  for (const tName of [...alwaysApiTools, ...mountedApiTools]) {
     if (seen.has(tName)) continue;
     for (const apiTools of apiRegistry.values()) {
       const def = apiTools.find(t => t.name === tName);
@@ -1381,9 +1758,15 @@ export function buildToolsForBackend(agentId: string | null, userId: string): an
     }
   }
 
-  // 自定义工具（后端沙箱直接执行）
+  // 4) 自定义工具（后端沙箱直接执行）：agentId 给定时按 agent.custom_tool_ids 过滤（与前端挂载规则一致）
+  const allowedCustom: string[] | null = (() => {
+    if (!agentId) return null;
+    const agent = db.prepare('SELECT custom_tool_ids FROM agent WHERE id = ? AND (user_id = ? OR is_public = 1)').get(agentId, userId) as any;
+    try { const ids = JSON.parse(agent?.custom_tool_ids || '[]'); return Array.isArray(ids) ? ids : []; } catch { return []; }
+  })();
   const customTools = db.prepare('SELECT id, name, description, input_schema_json, enabled FROM custom_tool WHERE user_id = ? AND enabled = 1').all(userId) as any[];
   for (const ct of customTools) {
+    if (allowedCustom && !allowedCustom.includes(ct.id)) continue;
     const exposedName = 'custom_' + (ct.id || '').replace(/[^a-zA-Z0-9]/g, '').slice(0, 8) + '_' + ct.name;
     if (seen.has(exposedName)) continue;
     seen.add(exposedName);
@@ -1397,7 +1780,7 @@ export function buildToolsForBackend(agentId: string | null, userId: string): an
     });
   }
 
-  // call_agent + list_sub_agents（后端直接执行）
+  // 5) call_agent + list_sub_agents（后端直接执行）
   if (!seen.has('call_agent') && registry.has('call_agent')) {
     const def = registry.get('call_agent')!;
     tools.push({ type: 'function', function: { name: 'call_agent', description: def.description, parameters: def.inputSchema } });

@@ -35,7 +35,7 @@ function parsePorts(spec: string): number[] {
 
 export class PortScanTool implements BuiltInTool {
   name = 'port_scan';
-  description = 'TCP connect port scanner (use ONLY on networks/targets you own or are authorized to test). Scans a host for open ports. ports accepts "common" preset, single "443", list "80,443,8080", or range "1-1024". Returns open ports with guessed service names and scan duration.';
+  description = 'TCP 连接端口扫描（仅限自有网络或已授权的目标）。扫描一台主机的端口开放情况。ports 参数支持 "common" 预设、单个端口 "443"、端口列表 "80,443,8080" 或范围 "1-1024"。返回开放的端口、推断的服务名以及扫描耗时。';
 
   inputSchema = {
     type: 'object',

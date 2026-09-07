@@ -13,6 +13,7 @@ import {
   searchAllKnowledgeBases,
   vectorSearchChunks,
   vectorSearchAll,
+  hybridSearchAll,
   listKnowledgeChunks,
   multiHopSearchKnowledge,
   getKnowledgeGraph,
@@ -82,10 +83,9 @@ router.get('/search-all', async (req: Request, res: Response) => {
     const userId = req.user!.userId;
     const query = String(req.query.query || '');
     const topK = Number(req.query.topK) || 5;
-    // 优先向量检索，失败/不可用降级为关键词 LIKE
-    const vec = await vectorSearchAll(userId, query, topK);
-    if (vec) { res.json({ data: vec, mode: 'vector' }); return; }
-    res.json({ data: searchAllKnowledgeBases(userId, query, topK), mode: 'keyword' });
+    // RRF 混合检索：关键词 + 向量两路融合；向量不可用自动降级关键词
+    const { data, mode } = await hybridSearchAll(userId, query, topK);
+    res.json({ data, mode });
   } catch (e: unknown) {
     handleError(res, e);
   }

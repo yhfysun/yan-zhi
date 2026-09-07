@@ -15,6 +15,7 @@
     "@yan-zhi/shared": "workspace:*",
     "jszip": "^3.10.1",
     "mammoth": "^1.8.0",
+    "unpdf": "^0.12.1",
     "xlsx": "^0.18.5"
   },
   "devDependencies": {

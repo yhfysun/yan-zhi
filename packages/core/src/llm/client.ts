@@ -2,6 +2,7 @@
 // 浏览器端通过 PlatformAdapter.llmProxyBase 走后端代理（/api/llm/*），避免 CORS 且不暴露 API Key；
 // server 端（无 llmProxyBase）直连上游。
 import type { Platform, Model, Message, ChatChunk, ChatRequest } from '@yan-zhi/shared';
+import type { LlmKeyPoolAdapter } from '../platform/types';
 import { getPlatformAdapter } from '../platform/types';
 import { parseSSE } from './stream';
 import {
@@ -33,6 +34,73 @@ export class LlmClient {
     }
     if (m.toolCallId) out.tool_call_id = m.toolCallId;
     return out;
+  }
+
+  /** 发送前清洗消息序列，保证 tool 调用配对完整（严格上游违反即 400）：
+   *  - tool 消息必须有前置 assistant 的 tool_calls 且 tool_call_id 匹配，孤儿 tool 丢弃；
+   *  - assistant 的 tool_calls 若没有对应 tool 应答（压缩截断常见），剥离 tool_calls；
+   *  - assistant 无 tool_calls 时 content 置 ''（null 会被部分上游拒绝）。 */
+  private sanitizeMessages(messages: Message[]): Message[] {
+    const msgs = (messages || []).filter(m =>
+      m && (m.role === 'system' || m.role === 'user' || m.role === 'assistant' || m.role === 'tool'));
+
+    // 预计算：每个带 tool_calls 的 assistant，其调用中「在后续连续 tool 消息里被应答」的 id 集合
+    const answeredIds = new Map<Message, Set<string>>();
+    for (let i = 0; i < msgs.length; i++) {
+      const m = msgs[i];
+      if (m.role !== 'assistant' || !m.toolCalls?.length) continue;
+      const callIds = m.toolCalls.map(tc => (tc as any).id).filter(Boolean) as string[];
+      const got = new Set<string>();
+      for (let j = i + 1; j < msgs.length && msgs[j].role === 'tool'; j++) {
+        const tid = (msgs[j] as any).toolCallId || '';
+        if (tid && callIds.includes(tid)) got.add(tid);
+      }
+      answeredIds.set(m, got);
+    }
+
+    const out: Message[] = [];
+    for (const m of msgs) {
+      if (m.role === 'tool') {
+        const prevAssistant = [...out].reverse().find(x => x.role === 'assistant');
+        const got = prevAssistant ? answeredIds.get(prevAssistant) : undefined;
+        if (!(m as any).toolCallId || !got?.has((m as any).toolCallId)) continue; // 孤儿/未匹配 → 丢弃
+        out.push({ ...m, content: m.content ?? '' } as Message);
+        continue;
+      }
+      if (m.role === 'assistant') {
+        const validCalls = (m.toolCalls || []).filter(tc =>
+          (tc as any).id && ((tc as any).function?.name || (tc as any).toolName));
+        const got = answeredIds.get(m) || new Set<string>();
+        const keep = validCalls.filter(tc => got.has((tc as any).id));
+        out.push({
+          ...m,
+          content: m.content ?? '',
+          toolCalls: keep.length ? keep : undefined,
+        } as Message);
+        continue;
+      }
+      out.push(m);
+    }
+    return out;
+  }
+
+  /** 组装 OpenAI Chat Completions 请求体：只附带调用方显式传入的采样参数，
+   *  且必须使用 snake_case（camelCase 的 maxTokens/topP 等会被严格上游 400 拒绝）。 */
+  private buildOpenAIBody(messages: Message[], options: Record<string, any> | undefined, stream: boolean): any {
+    const body: any = {
+      model: this.model.modelId,
+      messages: this.sanitizeMessages(messages).map(m => this.toApiMessage(m)),
+      stream,
+    };
+    if (options?.tools?.length) body.tools = options.tools;
+    if (options?.temperature != null) body.temperature = options.temperature;
+    if (options?.maxTokens != null) body.max_tokens = options.maxTokens;
+    if (options?.topP != null) body.top_p = options.topP;
+    if (options?.frequencyPenalty != null) body.frequency_penalty = options.frequencyPenalty;
+    if (options?.presencePenalty != null) body.presence_penalty = options.presencePenalty;
+    if (options?.responseFormat) body.response_format = options.responseFormat;
+    if (options?.reasoningEffort) body.reasoning_effort = options.reasoningEffort;
+    return body;
   }
 
   private get baseUrl() { return this.platform.apiUrl.replace(/\/$/, ''); }
@@ -94,10 +162,69 @@ export class LlmClient {
         signal: options?.signal,
       });
     }
-    const headers = options?.anthropic ? await this.buildAnthropicHeaders() : await this.buildHeaders();
-    return fetch(`${this.baseUrl}/${upstreamPath}`, {
-      method: 'POST', headers, body: JSON.stringify(body), signal: options?.signal,
-    });
+    return this.directFetchWithKeyRotation(upstreamPath, body, options);
+  }
+
+  /** 直连上游 + Key 池轮换：无论什么错误（网络异常或任何非 2xx）都回写失败记录并换 Key 重试，最多 3 次。
+   *  - Token 池为空/耗尽时回退 keyring 主 Key（仅尝试一次，不重复撞同一个 Key）；
+   *  - 全部失败时返回最后一次的 Response（上层按原有逻辑提示错误），网络错误则抛出；
+   *  - 成功即回写成功（衰减失败计数），轮询按失败次数优选下一个 Key。 */
+  private async directFetchWithKeyRotation(
+    upstreamPath: string,
+    body: any,
+    options?: { signal?: AbortSignal; anthropic?: boolean },
+  ): Promise<Response> {
+    let pool: LlmKeyPoolAdapter | undefined;
+    try { pool = getPlatformAdapter().llmKeyPool; } catch { pool = undefined; }
+    const url = `${this.baseUrl}/${upstreamPath}`;
+    const buildHeaders = async (apiKey: string): Promise<HeadersInit> =>
+      options?.anthropic
+        ? { 'Content-Type': 'application/json', 'x-api-key': apiKey || '', 'anthropic-version': '2023-06-01', ...this.platform.headers }
+        : { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey || ''}`, ...this.platform.headers };
+
+    const tried = new Set<string>();
+    let lastRes: Response | null = null;
+    let lastErr: unknown = null;
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+      let headers: HeadersInit;
+      let usedKeyId: string | null = null;
+      if (pool) {
+        const t = await pool.acquire(this.platform.id, [...tried]).catch(() => null);
+        if (t) {
+          usedKeyId = t.id;
+          tried.add(t.id);
+          headers = await buildHeaders(t.apiKey);
+        } else if (lastRes || lastErr) {
+          break; // 池已耗尽且已有失败结果，不再用主 Key 重复撞
+        } else {
+          headers = options?.anthropic ? await this.buildAnthropicHeaders() : await this.buildHeaders();
+        }
+      } else {
+        // 无 Token 池适配：保持旧行为，仅尝试一次
+        headers = options?.anthropic ? await this.buildAnthropicHeaders() : await this.buildHeaders();
+      }
+
+      try {
+        const res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal: options?.signal });
+        if (res.ok) {
+          if (usedKeyId && pool) pool.reportSuccess(usedKeyId);
+          return res;
+        }
+        if (usedKeyId && pool) pool.reportFailure(usedKeyId);
+        await res.text().catch(() => {});
+        lastRes = res;
+      } catch (e) {
+        if (usedKeyId && pool) pool.reportFailure(usedKeyId);
+        const sig = options?.signal;
+        if (sig?.aborted || (e as any)?.name === 'AbortError') throw e;
+        lastErr = e;
+      }
+      if (!pool) break;
+    }
+
+    if (lastRes) return lastRes;
+    throw lastErr ?? new Error(`请求失败。URL: ${url}`);
   }
 
   async *chatStream(
@@ -108,22 +235,7 @@ export class LlmClient {
       yield* this.anthropicStream(messages, options);
       return;
     }
-    const apiMessages = messages.map(m => this.toApiMessage(m));
-    const body: any = {
-      model: this.model.modelId,
-      messages: apiMessages,
-      temperature: options?.temperature,
-      maxTokens: options?.maxTokens,
-      topP: options?.topP,
-      frequencyPenalty: options?.frequencyPenalty,
-      presencePenalty: options?.presencePenalty,
-      stream: true,
-    };
-    if (options?.tools?.length) body.tools = options.tools;
-    if (options?.responseFormat) body.response_format = options.responseFormat;
-    if (options?.reasoningEffort) {
-      body.reasoning_effort = options.reasoningEffort;
-    }
+    const body = this.buildOpenAIBody(messages, options, true);
     const urlDesc = this.proxyBase ? `${this.proxyBase}/chat/completions` : `${this.baseUrl}/v1/chat/completions`;
     let res: Response;
     try {
@@ -165,7 +277,7 @@ export class LlmClient {
     messages: Message[],
     options?: { tools?: unknown[]; temperature?: number; maxTokens?: number; topP?: number; frequencyPenalty?: number; presencePenalty?: number; reasoningEffort?: string; signal?: AbortSignal },
   ): AsyncIterable<ChatChunk> {
-    const { system, messages: aMessages } = toAnthropicMessages(messages);
+    const { system, messages: aMessages } = toAnthropicMessages(this.sanitizeMessages(messages));
     const body: any = {
       model: this.model.modelId,
       max_tokens: options?.maxTokens ?? 4096,
@@ -209,18 +321,7 @@ export class LlmClient {
     }
     // toApiMessage 返回 OpenAI 约定的 snake_case Record，与内部 Message 类型不同构；
     // 与 chatStream 一致用 any 规避 ChatRequest.messages: Message[] 的类型摩擦。
-    const body: any = {
-      model: this.model.modelId,
-      messages: messages.map(m => this.toApiMessage(m)),
-      tools: options?.tools,
-      temperature: options?.temperature,
-      maxTokens: options?.maxTokens,
-      topP: options?.topP,
-      frequencyPenalty: options?.frequencyPenalty,
-      presencePenalty: options?.presencePenalty,
-      stream: false,
-    };
-    if (options?.responseFormat) body.response_format = options.responseFormat;
+    const body = this.buildOpenAIBody(messages, options, false);
     const res = await this.upstreamFetch('v1/chat/completions', body, { signal: options?.signal });
     if (!res.ok) throw new Error(`LLM 请求失败: ${res.status} ${res.statusText}`);
     const data = await res.json();
@@ -241,7 +342,7 @@ export class LlmClient {
     messages: Message[],
     options?: { tools?: unknown[]; temperature?: number; maxTokens?: number; topP?: number; frequencyPenalty?: number; presencePenalty?: number; signal?: AbortSignal },
   ): Promise<ChatChunk> {
-    const { system, messages: aMessages } = toAnthropicMessages(messages);
+    const { system, messages: aMessages } = toAnthropicMessages(this.sanitizeMessages(messages));
     const body: any = {
       model: this.model.modelId,
       max_tokens: options?.maxTokens ?? 4096,

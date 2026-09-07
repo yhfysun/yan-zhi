@@ -470,6 +470,44 @@ export async function vectorSearchAll(userId: string, query: string, topK = 5): 
 }
 
 /**
+ * RRF 混合检索（跨所有可见库）：关键词 LIKE 与向量两路各自召回 → 倒数排名融合（RRF, k=60）合并排序。
+ * 相比「向量优先、关键词兜底」的串行策略，混合融合对专有名词（关键词强）与语义改写（向量强）两类 query 都稳健。
+ * 向量不可用（embedding 缺失/模型挂了）时自动降级为纯关键词结果。返回条目带 rrfScore 与 mode 标记。
+ */
+export async function hybridSearchAll(
+  userId: string,
+  query: string,
+  topK = 5,
+): Promise<{ data: any[]; mode: 'hybrid' | 'keyword' | 'empty' }> {
+  if (!query) throw new Error('query 为必填项');
+  const limit = Math.min(Math.max(Number(topK) || 5, 1), 30);
+  const pool = Math.min(limit * 3, 50); // 每路多召回一些，融合后截断，缓解单路排序偏差
+  const kw = searchAllKnowledgeBases(userId, query, pool);
+  const vec = await vectorSearchAll(userId, query, pool);
+  if (!vec || vec.length === 0) {
+    return { data: kw.slice(0, limit), mode: kw.length ? 'keyword' : 'empty' };
+  }
+  const K = 60;
+  const scores = new Map<string, { item: any; score: number }>();
+  const addList = (list: any[]) => {
+    list.forEach((item, i) => {
+      if (!item?.id) return;
+      const s = 1 / (K + i + 1);
+      const cur = scores.get(item.id);
+      if (cur) cur.score += s;
+      else scores.set(item.id, { item, score: s });
+    });
+  };
+  addList(kw);
+  addList(vec);
+  const merged = [...scores.values()]
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit)
+    .map((x) => ({ ...x.item, rrfScore: Number(x.score.toFixed(4)) }));
+  return { data: merged, mode: 'hybrid' };
+}
+
+/**
  * 多跳检索（知识查询工具用）：命中 → 一跳=同文档相邻片段+同库相关片段 → 二跳=一跳邻接库/文档的相似片段。
  * 返回带 hop 标记的关联链路，前端可选高亮。
  */

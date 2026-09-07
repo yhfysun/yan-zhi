@@ -51,8 +51,8 @@
           :node-types="(nodeTypes as any)"
           :default-viewport="{ x: 0, y: 0, zoom: 0.9 }"
           fit-view-on-init
-          @nodes-change="markDirty"
-          @edges-change="markDirty"
+          @nodes-change="onNodesChange"
+          @edges-change="onEdgesChange"
           @node-click="onNodeClick"
           @pane-click="selectedNodeId = ''"
         >
@@ -292,7 +292,7 @@
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted, watch, markRaw, h, defineComponent } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { VueFlow, useVueFlow, type Node, type Edge } from '@vue-flow/core';
+import { VueFlow, useVueFlow, type Node, type Edge, type NodeChange, type EdgeChange } from '@vue-flow/core';
 import '@vue-flow/core/dist/style.css';
 import '@vue-flow/core/dist/theme-default.css';
 import { ArrowLeft, Document, CaretRight, Delete, ChatDotRound, Tools, Upload, Download, Lightning, Switch, Refresh, Avatar, Reading, Memo, Grid, Setting } from '@element-plus/icons-vue';
@@ -301,7 +301,7 @@ import { useAgentStore } from '../stores/agent';
 import { usePlatformStore } from '../stores/platform';
 import { useMcpStore } from '../stores/mcp';
 import { useToolsStore } from '../stores/tools';
-import { getPlatformAdapter } from '@yan-zhi/core';
+import { api } from '../api/client';
 import { useIsMobile } from '../composables/useIsMobile';
 import type { NodeType, WorkflowNode } from '@yan-zhi/shared';
 
@@ -404,6 +404,15 @@ function markDirty() {
   dirty.value = true;
 }
 
+// 仅用户主动操作（拖动/增删节点、增删连线）才标记未保存；
+// select/dimensions 等 VueFlow 内部变化不算修改，否则一进页面/点节点就误报「未保存」。
+function onNodesChange(changes: NodeChange[]) {
+  if (changes.some((c) => (c.type === 'position' && c.dragging) || c.type === 'add' || c.type === 'remove')) markDirty();
+}
+function onEdgesChange(changes: EdgeChange[]) {
+  if (changes.some((c) => c.type === 'add' || c.type === 'remove')) markDirty();
+}
+
 function onNodeClick({ node }: { node: Node }) {
   selectedNodeId.value = node.id;
   syncCfgFromNode();
@@ -464,10 +473,9 @@ watch(
         .filter(Boolean);
       delete newCfg.tagsText;
     }
-    vfNodes.value[idx] = {
-      ...n,
-      data: { ...n.data, config: newCfg, label: labelFor(n.type as NodeType, newCfg) },
-    };
+    // 原地更新 data（不替换 node 对象，避免与 VueFlow 内部状态互踩导致 config 丢失）
+    const target = vfNodes.value[idx];
+    target.data = { ...target.data, config: newCfg, label: labelFor(target.type as NodeType, newCfg) };
     markDirty();
   },
   { deep: true },
@@ -555,18 +563,24 @@ function removeSelected() {
   markDirty();
 }
 
-watch([vfNodes, vfEdges], () => markDirty(), { deep: true });
-
-async function save() {
+async function save(): Promise<boolean> {
   const workflow = toWorkflow();
-  await store.updateWorkflow(agentId.value, workflow);
-  const adapter = getPlatformAdapter();
-  await adapter.db.exec(
-    'UPDATE agent SET name = ?, description = ? WHERE id = ?',
-    [agent.name, agent.description, agentId.value],
-  );
+  // 一次性提交 workflow + 名称/描述到后端（后端唯一数据源，不写本地遗留库），
+  // 失败时明确报错并保持「未保存」状态，不静默吞错。
+  const r = await api.patch<any>(`/agents/${agentId.value}`, {
+    name: agent.name.trim() || '未命名工作流',
+    description: agent.description,
+    workflow,
+  });
+  if (r && 'error' in r) {
+    ElMessage.error('保存失败: ' + (r as any).error);
+    return false;
+  }
+  // 刷新 store 缓存，保证列表页/子智能体下拉等处读到最新数据
+  await Promise.all([store.loadAgents(), store.loadAgent(agentId.value)]);
   dirty.value = false;
   ElMessage.success('已保存');
+  return true;
 }
 
 function toWorkflow() {
@@ -591,7 +605,7 @@ const showRunResult = ref(false);
 const runOutput = ref<unknown>(null);
 
 async function run() {
-  if (dirty.value) await save();
+  if (dirty.value && !(await save())) return;
   let inputs: Record<string, unknown> = {};
   try {
     inputs = JSON.parse(inputsText.value || '{}');

@@ -7,8 +7,8 @@ import type { McpCallResult } from '../../mcp/client';
 export class TaskPlanTool implements BuiltInTool {
   name = 'task_plan';
   description =
-    'Create or replace the visible task plan with an ordered list of steps at the start of a multi-step task, ' +
-    'so the user can follow progress. Each step starts as pending and should later be advanced via task_step.';
+    '在多步骤任务开始时创建（或替换）当前可见的任务规划，以有序步骤列表展示给用户，' +
+    '便于其跟踪进度。每个步骤初始为 pending（待执行），后续需要通过 task_step 推进状态。';
   inputSchema = {
     type: 'object',
     properties: {

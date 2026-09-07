@@ -5,7 +5,7 @@
         <pre class="snapshot-body">{{ s.content }}</pre>
       </el-tab-pane>
     </el-tabs>
-    <el-empty v-if="currentSnapshots.length === 0" description="没有找到提示词数据" :image-size="80" />
+    <el-empty v-if="currentSnapshots.length === 0" :description="snapshotLoading ? '提示词加载中…' : '没有找到提示词数据'" :image-size="80" />
   </el-dialog>
 
   <AgentEditDialog v-model="showAgentEdit" :agent="editingAgent" @saved="onAgentSaved" @deleted="onAgentDeleted" />
@@ -67,7 +67,7 @@ import WorkspaceDirDialog from '../WorkspaceDirDialog.vue';
 import DistillDialog from '../DistillDialog.vue';
 
 const {
-  snapshotDialog, snapshotActiveTab, currentSnapshots, showAgentEdit, editingAgent, onAgentSaved,
+  snapshotDialog, snapshotActiveTab, snapshotLoading, currentSnapshots, showAgentEdit, editingAgent, onAgentSaved,
   onAgentDeleted, showWorkspaceDir, workspaceDir, onWorkspaceDirSelected,
   store, platformConfigDialogVisible, platformConfigEditId, platformConfigForm, platformConfigSaving,
   onPlatformConfigCancel, onPlatformConfigSubmit, onPlatformConfigClose, showDistill, distillMessages,

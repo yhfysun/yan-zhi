@@ -147,7 +147,7 @@ function startServer() {
       serverProcess = spawn(process.execPath, [tsxPath, 'src/index.ts'], {
         cwd: serverDir,
         stdio: 'inherit',
-        env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', YANZHI_MODELS_DIR: modelsDir },
+        env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: 'http://127.0.0.1:' + CDP_PORT },
       });
     } else {
       // 回退：npx tsx（可能 ABI 不兼容，但至少能启动）
@@ -156,7 +156,7 @@ function startServer() {
         cwd: serverDir,
         stdio: 'inherit',
         shell: true,
-        env: { ...process.env, YANZHI_MODELS_DIR: modelsDir },
+        env: { ...process.env, YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: 'http://127.0.0.1:' + CDP_PORT },
       });
     }
     serverProcess.on('error', (err) => console.error('后端启动失败:', err));
@@ -172,7 +172,7 @@ function startServer() {
     logStream.write(`\n===== [${stamp()}] 后端启动 =====\n`);
     serverProcess = spawn(process.execPath, [serverPath], {
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', YANZHI_MODELS_DIR: modelsDir, ...(dataDir ? { DATA_DIR: dataDir } : {}) },
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: 'http://127.0.0.1:' + CDP_PORT, ...(dataDir ? { DATA_DIR: dataDir } : {}) },
     });
     serverProcess.stdout.on('data', (d) => logStream.write(d));
     serverProcess.stderr.on('data', (d) => logStream.write(d));
@@ -246,6 +246,30 @@ function createWindow() {
     }
   });
 
+  // 渲染进程完整重载（HMR full-reload / F5）时，隐藏并摘除所有 BrowserView。
+  // BrowserView 是主进程原生图层，生命周期不跟随渲染进程 DOM；HMR 只替换渲染模块、
+  // 主进程 browserViews Map 不动，旧组件 onUnmounted 的 hide 可能因模块闭包替换而失效，
+  // 导致预览面板已关、网页却还浮在窗口上。这里在导航起点统一摘除，是不依赖渲染状态的兜底。
+  // SPA 内部路由（pushState）不会触发 did-start-navigation，不误伤。
+  mainWindow.webContents.on('did-start-navigation', (_e, _url) => {
+    for (const entry of browserViews.values()) {
+      if (!entry.view) continue;
+      entry.visible = false;
+      entry.bounds = null;
+      applyVisibility(entry);
+    }
+  });
+
+  // 渲染层重载完成（did-finish-load）后通知渲染层"重认领"BrowserView。
+  // did-start-navigation 兜底摘除后，恢复完全依赖渲染层重挂链路；若 BrowserPanel
+  // 已挂载但占位尺寸无变化、ResizeObserver 不再触发，会一直停在摘除态（黑屏/首页占位）。
+  // 此事件让渲染层主动重跑一次 bounds 同步闸门，补齐"任何一环断了"的最后一环。
+  mainWindow.webContents.on('did-finish-load', () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('browserView:resync');
+    }
+  });
+
   // 右键菜单：在可编辑区域（输入框/textarea）显示剪切/复制/粘贴/全选
   mainWindow.webContents.on('context-menu', (_event, params) => {
     if (!params.isEditable) return;
@@ -309,7 +333,14 @@ function createWindow() {
   //   拖拽边缘缩放时每帧触发，逐帧摘挂会明显闪烁；此处只走 applyVisibility
   //   （已 attached 时仅 setBounds），配合渲染层 ResizeObserver 的 100ms 节流兜住露白。
   for (const ev of ['restore', 'maximize', 'unmaximize', 'show', 'enter-full-screen', 'leave-full-screen']) {
-    mainWindow.on(ev, () => scheduleBoundsRefresh(true));
+    mainWindow.on(ev, () => {
+      scheduleBoundsRefresh(true);
+      // 同时让渲染层重跑一次同步闸门：若隐藏期间 entry 已被置为
+      // visible=false / bounds=null（如 0 尺寸 resize 的墓碑态），
+      // 上面的强制重挂会直接跳过它且永远等不到 ResizeObserver（窗口隐藏期间
+      // 布局不变），只有渲染层重新上报有效 bounds 才能复活，否则该区域永久黑屏。
+      notifyRendererResync();
+    });
   }
   mainWindow.on('resize', () => scheduleBoundsRefresh(false));
 
@@ -355,6 +386,13 @@ function createBrowserViewFor(tabId, entry) {
   bv.setBounds({ x: 0, y: 0, width: 0, height: 0 });
 
   const wc = bv.webContents;
+
+  // 页面 title 变化 → 推送渲染层更新 tab 标题（真实网站名，而非 URL fallback）
+  wc.on('did-page-title-updated', (_e, title) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('browserView:pageTitle', tabId, title);
+    }
+  });
 
   // persist partition 的 HTTP 磁盘缓存损坏会导致 BrowserView 渲染全黑（Windows 常见）。
   // clearCache 只清 HTTP 缓存，不清 cookie/localStorage，登录态不受影响。
@@ -408,6 +446,14 @@ function createBrowserViewFor(tabId, entry) {
   wc.on('did-finish-load', () => {
     // 成功渲染后清零崩溃计数：只有"连续"崩溃才停手，偶尔一次崩溃不应永久拉黑页面
     crashCount = 0;
+    // 反自动化检测：移除 navigator.webdriver 等特征，避免百度等站点触发验证码
+    try {
+      wc.executeJavaScript(`(function(){
+        try { Object.defineProperty(navigator,'webdriver',{get:function(){return false;}}); } catch(e){}
+        try { Object.defineProperty(navigator,'languages',{get:function(){return ['zh-CN','zh','en'];}}); } catch(e){}
+        try { Object.defineProperty(navigator,'plugins',{get:function(){return [1,2,3,4,5];}}); } catch(e){}
+      })()`).catch(function(){});
+    } catch (e) {}
     // 导航到新页面会重置已注入的 CSS，需重新注入自定义滚动条 + 虚拟鼠标
     injectScrollbarCss(tabId);
     // 跨源导航会重置页面缩放，按 entry.zoomFactor 回放，避免 UI 百分比与实际缩放脱节
@@ -439,6 +485,30 @@ function createBrowserViewFor(tabId, entry) {
       event.preventDefault();
       if (wc.navigationHistory?.canGoForward?.() || wc.canGoForward?.()) wc.goForward();
     }
+  });
+
+  // 弹窗拦截：BrowserView 内页面请求 window.open / target=_blank / 中键新开时，
+  // 在预览面板同空间新开一个 tab 承载新页面，而不是弹出独立 BrowserWindow。
+  // （此前未设置该 handler，Electron 默认行为是弹新窗口 —— pageAgent 点击
+  // "新标签打开"的链接时会突然弹出系统级浏览器弹窗，脱离预览执行面。）
+  wc.setWindowOpenHandler(({ url }) => {
+    try {
+      if (/^https?:\/\//i.test(url)) {
+        evictLruTabIfNeeded();
+        const newTabId = 'tab-' + (++tabSeq);
+        ensureBrowserView(newTabId);
+        const ne = browserViews.get(newTabId);
+        if (ne) ne.scope = entry.scope || 'preview';
+        activateTab(newTabId);
+        ensureFallbackBounds(ne);
+        try { ne?.view?.webContents?.loadURL?.(url).catch(() => {}); } catch { /* ignore */ }
+        // 广播给渲染层补建 tab 壳（与 ensureActiveTab 兜底自建同一协议），预览面板即时可见
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('browserView:tabCreated', newTabId, url, entry.scope || 'preview');
+        }
+      }
+    } catch { /* ignore */ }
+    return { action: 'deny' };
   });
 
   return bv;
@@ -606,6 +676,12 @@ function refreshAllBrowserViewBounds(forceReattach = false) {
       entry.attached = false;
     }
     applyVisibility(entry);
+    // 强制重挂后主动触发一次重绘：窗口隐藏/最小化恢复后，BrowserView 的
+    // webContents 可能被合成器标记为「无需产出新帧」，仅摘挂偶发仍显示黑块，
+    // invalidate 强制其立即重绘一帧（幂等，重复调用无副作用）。
+    if (forceReattach) {
+      try { entry.view.webContents.invalidate?.(); } catch { /* ignore */ }
+    }
   }
 }
 
@@ -615,6 +691,14 @@ function refreshAllBrowserViewBounds(forceReattach = false) {
  */
 let boundsRefreshTimer = null;
 let boundsRefreshForce = false;
+
+/** 通知渲染层重跑 BrowserView 可见性/bounds 同步闸门（did-finish-load 兜底同款通道） */
+function notifyRendererResync() {
+  const win = mainWindow;
+  if (!win || win.isDestroyed()) return;
+  try { win.webContents.send('browserView:resync'); } catch { /* ignore */ }
+}
+
 function scheduleBoundsRefresh(forceReattach = false) {
   // 合并期间只要有一次请求强制重挂，就按强制处理（不能让后续的轻量 resize 把它降级）
   boundsRefreshForce = boundsRefreshForce || forceReattach;
@@ -740,14 +824,18 @@ ipcMain.handle('window-is-maximized', () => mainWindow?.isMaximized() || false);
 // 多标签页：所有通道带 tabId 参数，操作对应标签的 BrowserView
 // ============================================================
 
-// 创建新标签页，返回 tabId
+// 创建新标签页，返回 tabId。
+// scope：tab 归属空间（'preview'=对话页预览面板（agent 执行面）| 'page'=/browser 独立浏览器页）。
+// 渲染层两边 tab 列表隔离，主进程只负责记录归属，供 ensureActiveTab(scope)/R5 顶替按空间匹配。
 let tabSeq = 0;
-ipcMain.handle('browserView:createTab', () => {
+ipcMain.handle('browserView:createTab', (_e, scope) => {
   // R4：超限先按 LRU 挂起最久未激活的 tab（壳保留、激活复活），再新建，
   // 保证同时存活的 webContents ≤ MAX_TABS
   evictLruTabIfNeeded();
   const tabId = 'tab-' + (++tabSeq);
   ensureBrowserView(tabId);
+  const entry = browserViews.get(tabId);
+  if (entry) entry.scope = scope || 'preview';
   return tabId;
 });
 
@@ -756,6 +844,8 @@ ipcMain.handle('browserView:createTab', () => {
 // 非 UI 路径（pageAgent 工具 / 页面 window.close）没有渲染层参与，主进程必须在这里收口。
 ipcMain.handle('browserView:closeTab', (_e, tabId, fromUi) => {
   const entry = browserViews.get(tabId);
+  // 记住被关 tab 的归属空间：R5 顶替只在同空间内找，避免把另一空间的 tab 顶进激活位
+  const closedScope = entry?.scope || 'preview';
   if (entry) {
     // 统一走收敛函数摘除（无论当前是否挂载），再销毁 webContents
     entry.visible = false;
@@ -766,11 +856,12 @@ ipcMain.handle('browserView:closeTab', (_e, tabId, fromUi) => {
   }
   if (activeTabId === tabId) {
     activeTabId = null;
-    // R5：非 UI 路径关掉当前 tab 时主进程自行顶替最近激活的剩余 tab 并广播。
+    // R5：非 UI 路径关掉当前 tab 时主进程自行顶替同空间内最近激活的剩余 tab 并广播。
     // UI 路径渲染层也会顶替：收到 tabActivated 时若 activeTabId 已一致则忽略，幂等不打架。
     if (!fromUi) {
       let next = null, newest = -1;
       for (const [id, e] of browserViews) {
+        if ((e.scope || 'preview') !== closedScope) continue;
         const t = e.lastActiveAt || 0;
         if (t >= newest) { newest = t; next = id; }
       }
@@ -789,6 +880,49 @@ ipcMain.handle('browserView:activateTab', (_e, tabId) => {
   const entry = browserViews.get(tabId);
   if (!entry) return;
   activateTab(tabId);
+});
+
+// 确保 main.cjs 有一个属于指定空间的激活 browser tab，返回 tabId。
+// pageAgent 调 browser_* 工具时用此获取 tabId（scope='preview'），避免 tabId=null 与前端脱节，
+// 也避免用户刚在 /browser 页（page 空间）浏览过、主进程激活位还留在 page tab 上时，
+// agent 误把 page 空间的 tab 当作预览执行面（两边 tab 已隔离）。
+// 逻辑：激活 tab 属于目标 scope 直接返回；否则在同空间内找最近激活的 tab；都没有则轮询等待
+// BrowserPanel onMounted 创建（最多 3s）；超时自建（带 scope 标记并广播）。
+ipcMain.handle('browserView:ensureActiveTab', async (_e, scope) => {
+  const wantScope = scope || 'preview';
+  const scopeOf = (e) => (e && e.scope) || 'preview';
+  const findInScope = () => {
+    let best = null, newest = -1;
+    for (const [id, e] of browserViews) {
+      if (scopeOf(e) !== wantScope) continue;
+      const t = e.lastActiveAt || 0;
+      if (t >= newest) { newest = t; best = id; }
+    }
+    return best;
+  };
+  const activeEntry = activeTabId ? browserViews.get(activeTabId) : null;
+  if (activeEntry && scopeOf(activeEntry) === wantScope) {
+    return activeTabId;
+  }
+  for (let i = 0; i < 30; i++) {
+    await new Promise((r) => setTimeout(r, 100));
+    const ae = activeTabId ? browserViews.get(activeTabId) : null;
+    if (ae && scopeOf(ae) === wantScope) return activeTabId;
+    const inScope = findInScope();
+    if (inScope) { activateTab(inScope); return inScope; }
+  }
+  evictLruTabIfNeeded();
+  const tabId = 'tab-' + (++tabSeq);
+  ensureBrowserView(tabId);
+  const entry = browserViews.get(tabId);
+  if (entry) entry.scope = wantScope;
+  activateTab(tabId);
+  // 兜底自建的 tab 广播给渲染层补建 tab 壳，否则渲染层无壳即忽略 → 导航黑洞
+  // （pageAgent 在预览面板看不到任何变化，但导航真实发生了）。广播带 scope，渲染层按空间过滤。
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('browserView:tabCreated', tabId, null, wantScope);
+  }
+  return tabId;
 });
 
 ipcMain.handle('browserView:load', async (e, tabId, url) => {
@@ -847,6 +981,249 @@ ipcMain.handle('browserView:reload', (_e, tabId) => {
     return;
   }
   entry.view.webContents.reload();
+});
+
+// ============================================================
+// pageAgent 浏览器操作 IPC 直连（统一通道 browser:call）
+// 前端 dispatchToolCall 中 browser_* 工具直接走 IPC，操作当前活动 BrowserView，
+// 预览面板就是操作的页面，100% 同步可见，不依赖后端 Playwright。
+// ============================================================
+
+/** 检查 BrowserView entry 是否存活（view 存在且 webContents 未销毁） */
+function isBrowserViewAlive(entry) {
+  return !!(entry && entry.view && entry.view.webContents && !entry.view.webContents.isDestroyed());
+}
+
+/** 获取当前活动的 BrowserView，没有则创建一个默认 tab */
+function getActiveBrowserViewForAgent() {
+  // 优先用当前活动 tab
+  if (activeTabId && browserViews.has(activeTabId)) {
+    const entry = browserViews.get(activeTabId);
+    if (entry) {
+      if (!isBrowserViewAlive(entry)) {
+        // 已销毁或挂起，重新创建
+        entry.suspended = true;
+        entry.view = null;
+        ensureBrowserView(activeTabId);
+      }
+      if (isBrowserViewAlive(entry)) {
+        return entry.view;
+      }
+    }
+  }
+  // 找任意一个存活的 BrowserView
+  for (const [id, entry] of browserViews) {
+    if (isBrowserViewAlive(entry)) {
+      activateTab(id);
+      return entry.view;
+    }
+  }
+  // 都没有，创建一个默认 tab
+  const defaultTabId = 'page-agent-default';
+  const bv = ensureBrowserView(defaultTabId);
+  if (bv) {
+    activateTab(defaultTabId);
+    return bv;
+  }
+  return null;
+}
+
+/** 超时保护 */
+function withIpcTimeout(promise, ms, msg) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error(msg || '操作超时')), ms || 15000)),
+  ]);
+}
+
+/** 元素注册表：为可交互元素分配 index（注入到页面执行） */
+const ELEMENT_REGISTRY_SCRIPT = `
+(function() {
+  const w = window;
+  w.__yzElementRegistry = w.__yzElementRegistry || { elements: [], counter: 1 };
+  const reg = w.__yzElementRegistry;
+  reg.elements = [];
+  reg.counter = 1;
+  const SELECTOR = 'a, button, input, textarea, select, [role="button"], [role="link"], [role="textbox"], [contenteditable="true"], [tabindex]:not([tabindex="-1"])';
+  function collect(root, scopeId) {
+    const nodes = root.querySelectorAll(SELECTOR);
+    for (const el of nodes) {
+      if (el.offsetParent === null && el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA') continue;
+      const rect = el.getBoundingClientRect();
+      if (rect.width === 0 && rect.height === 0) continue;
+      const idx = reg.counter++;
+      el.setAttribute('data-yz-index', idx);
+      reg.elements.push({
+        index: idx,
+        tag: el.tagName.toLowerCase(),
+        type: el.type || '',
+        text: (el.innerText || el.value || el.placeholder || '').trim().slice(0, 100),
+        href: el.href || '',
+        placeholder: el.placeholder || '',
+        disabled: el.disabled || false,
+      });
+    }
+  }
+  collect(document, 'd1');
+  // 穿透同源 iframe
+  const iframes = document.querySelectorAll('iframe');
+  for (const iframe of iframes) {
+    try {
+      if (iframe.contentDocument) {
+        collect(iframe.contentDocument, 'd' + (reg.counter + 1));
+      }
+    } catch(e) { /* cross-origin */ }
+  }
+  return reg.elements;
+})();
+`;
+
+// [deprecated] browser:call 已废弃，pageAgent 统一走 browserView:action
+/** 统一 IPC 通道：browser:call */
+ipcMain.handle('browser:call', async (event, action, args) => {
+  args = args || {};
+  const bv = getActiveBrowserViewForAgent();
+  if (!bv) return { ok: false, error: '无法获取浏览器视图' };
+  const wc = bv.webContents;
+  if (wc.isDestroyed()) return { ok: false, error: '浏览器视图已销毁' };
+
+  try {
+    switch (action) {
+      // === 核心工具 ===
+      case 'navigate': {
+        let url = String(args.url || '').trim();
+        if (!url) return { ok: false, error: 'url is required' };
+        if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
+        await withIpcTimeout(wc.loadURL(url), 30000, '导航超时');
+        return { ok: true, url: wc.getURL(), title: wc.getTitle() };
+      }
+
+      case 'get_page_info': {
+        // 注入元素注册表
+        const elements = await wc.executeJavaScript(ELEMENT_REGISTRY_SCRIPT).catch(() => []);
+        return {
+          ok: true,
+          url: wc.getURL(),
+          title: wc.getTitle(),
+          elements: elements || [],
+        };
+      }
+
+      case 'click': {
+        const { index, selector, x, y } = args;
+        if (index != null) {
+          const result = await wc.executeJavaScript(`
+            (function() {
+              const el = document.querySelector('[data-yz-index="${index}"]');
+              if (!el) return { ok: false, error: '元素未找到' };
+              el.click();
+              return { ok: true };
+            })();
+          `);
+          return result;
+        }
+        if (selector) {
+          await wc.executeJavaScript(`document.querySelector(${JSON.stringify(selector)})?.click()`).catch(() => {});
+          return { ok: true };
+        }
+        if (x != null && y != null) {
+          // 坐标点击
+          wc.sendInputEvent({ type: 'mouseDown', x: Number(x), y: Number(y), button: 'left' });
+          wc.sendInputEvent({ type: 'mouseUp', x: Number(x), y: Number(y), button: 'left' });
+          return { ok: true };
+        }
+        return { ok: false, error: 'click 需要 index/selector/x+y 参数' };
+      }
+
+      case 'type': {
+        const { index, selector, text } = args;
+        if (!text) return { ok: false, error: 'text is required' };
+        let targetEl = null;
+        if (index != null) {
+          targetEl = await wc.executeJavaScript(`document.querySelector('[data-yz-index="${index}"]') ? true : false`);
+        }
+        if (targetEl || selector) {
+          const sel = index != null ? `[data-yz-index="${index}"]` : selector;
+          await wc.executeJavaScript(`
+            (function() {
+              const el = document.querySelector(${JSON.stringify(sel)});
+              if (!el) return;
+              el.focus();
+              el.value = '';
+            })();
+          `).catch(() => {});
+        }
+        // 用 insertText 输入（比 type 更可靠）
+        for (const ch of String(text)) {
+          wc.sendInputEvent({ type: 'char', keyCode: ch });
+        }
+        return { ok: true };
+      }
+
+      case 'press_key': {
+        const key = String(args.key || args.keyCode || '');
+        if (!key) return { ok: false, error: 'key is required' };
+        const keyMap = {
+          'Enter': 'Enter', 'Tab': 'Tab', 'Escape': 'Escape', 'Esc': 'Escape',
+          'Backspace': 'Backspace', 'Delete': 'Delete', 'ArrowUp': 'ArrowUp',
+          'ArrowDown': 'ArrowDown', 'ArrowLeft': 'ArrowLeft', 'ArrowRight': 'ArrowRight',
+          ' ': 'Space', 'Space': 'Space',
+        };
+        const keyCode = keyMap[key] || key;
+        wc.sendInputEvent({ type: 'keyDown', keyCode });
+        wc.sendInputEvent({ type: 'keyUp', keyCode });
+        return { ok: true };
+      }
+
+      case 'screenshot': {
+        const image = await wc.capturePage();
+        const dataUrl = image.toDataURL('image/png');
+        return { ok: true, dataUrl };
+      }
+
+      case 'get_visible_text': {
+        const text = await wc.executeJavaScript(`
+          (function() {
+            const style = document.createElement('style');
+            return document.body ? document.body.innerText : '';
+          })();
+        `).catch(() => '');
+        return { ok: true, text: String(text || '').slice(0, 10000) };
+      }
+
+      case 'wait': {
+        const ms = Math.min(Number(args.ms || args.time || 1000), 10000);
+        await new Promise(r => setTimeout(r, ms));
+        return { ok: true };
+      }
+
+      case 'get_url': {
+        return { ok: true, url: wc.getURL(), title: wc.getTitle() };
+      }
+
+      case 'back': {
+        if (wc.navigationHistory?.canGoBack?.()) wc.goBack();
+        else if (wc.canGoBack?.()) wc.goBack();
+        return { ok: true };
+      }
+
+      case 'forward': {
+        if (wc.navigationHistory?.canGoForward?.()) wc.goForward();
+        else if (wc.canGoForward?.()) wc.goForward();
+        return { ok: true };
+      }
+
+      case 'reload': {
+        wc.reload();
+        return { ok: true };
+      }
+
+      default:
+        return { ok: false, error: 'Unknown browser action: ' + action };
+    }
+  } catch (e) {
+    return { ok: false, error: e?.message || String(e) };
+  }
 });
 
 ipcMain.handle('browserView:resize', (e, tabId, x, y, width, height) => {
@@ -1041,8 +1418,12 @@ ipcMain.handle('browserView:action', async (_e, tabId, action, args) => {
   const wc = bv.webContents;
   args = args || {};
   try {
-    // 确保助手已注入
-    await injectYzAssistant(wc);
+    // 确保助手已注入。navigate 在 loadURL 完成后自行注入（见 case 'navigate'）；
+    // 其余 action 加 3s 超时兜底 —— 从未提交过文档的空 tab 上 executeJavaScript 可能挂起，
+    // 曾导致 get_page_info 等操作 20s IPC 超时。
+    if (action !== 'navigate') {
+      await Promise.race([injectYzAssistant(wc), new Promise((r) => setTimeout(r, 3000))]);
+    }
 
     const doAction = async () => {
     switch (action) {
@@ -1052,15 +1433,25 @@ ipcMain.handle('browserView:action', async (_e, tabId, action, args) => {
         if (!/^https?:\/\//i.test(cleanUrl)) return { error: `无效 URL: ${cleanUrl}` };
         activateTab(tabId || activeTabId);
         ensureFallbackBounds(entry);
-        // 等待首次缓存清理完成（并发会中止加载导致黑屏）
-        if (entry.cacheClearPromise) { await entry.cacheClearPromise; entry.cacheClearPromise = null; }
-        try {
-          await wc.loadURL(cleanUrl);
-        } catch (err) {
-          return { error: `页面加载失败（${err?.code || err?.errno || ''}）: ${cleanUrl}` };
+        // 等待首次缓存清理完成（并发会中止加载导致黑屏），加超时防缓存异常挂起
+        if (entry.cacheClearPromise) {
+          await Promise.race([entry.cacheClearPromise.catch(() => {}), new Promise((r) => setTimeout(r, 3000))]);
+          entry.cacheClearPromise = null;
         }
-        await injectYzAssistant(wc);
-        return { url: wc.getURL(), title: wc.getTitle() };
+        // loadURL 等完整加载（did-finish-load），慢站/挂起资源会远超渲染层 20s IPC 竞速 →
+        // "IPC 导航超时"。限时 12s：超时视为"已开始加载"，提前返回当前状态（内部各段限时
+        // 合计 < 18s 总闸），让模型用 browser_get_page_content / browser_wait_for 轮询加载结果。
+        let loadErr = null;
+        await Promise.race([
+          wc.loadURL(cleanUrl).catch((e) => { loadErr = e; }),
+          new Promise((r) => setTimeout(r, 12000)),
+        ]);
+        if (loadErr && !/ERR_ABORTED/.test(loadErr?.message || '')) {
+          // 真失败（DNS/拒绝连接等）才报错；ERR_ABORTED 是导航被新导航接替，视为正常
+          return { error: `页面加载失败（${loadErr?.code || loadErr?.errno || ''}）: ${cleanUrl}` };
+        }
+        await Promise.race([injectYzAssistant(wc), new Promise((r) => setTimeout(r, 1500))]);
+        return { url: wc.getURL() || cleanUrl, title: wc.getTitle(), loading: wc.isLoading() };
       }
       case 'click': {
         return await wc.executeJavaScript(`(function(){
@@ -1230,6 +1621,53 @@ ipcMain.handle('browserView:action', async (_e, tabId, action, args) => {
           return{text:visibleText(root).trim().slice(0,5000)};
         })()`);
       }
+      case 'get_page_content': {
+        // 聚合 action：title + url + 可见正文 + 可交互元素一次返回（pageAgent 四件套之"读页"），
+        // 合并 get_page_info 采集与 get_visible_text 正文，减少一次 IPC 往返
+        return await wc.executeJavaScript(`(function(){
+          var A=window.__yzAssistant;
+          var a=${JSON.stringify(args)};
+          function visibleText(el){var s='';el.childNodes.forEach(function(n){
+            if(n.nodeType===3){var t=n.textContent.trim();if(t)s+=t+' ';}
+            else if(n.nodeType===1){var st=getComputedStyle(n);if(st.display!=='none'&&st.visibility!=='hidden'&&st.opacity!=='0')s+=visibleText(n);}
+          });return s;}
+          var S='a,button,input,select,textarea,[role=button],[role=link],[role=checkbox],[role=radio],[onclick],label[for],summary,details,[tabindex]';
+          var els=[];
+          function visible(el){
+            if(el.disabled===true)return false;
+            var rect=el.getBoundingClientRect();if(rect.width<2||rect.height<2)return false;
+            if(el.offsetParent===null){
+              try{var st=el.ownerDocument.defaultView.getComputedStyle(el).position;
+                if(st!=='fixed'&&st!=='sticky')return false;}catch(e){return false;}
+            }
+            return true;
+          }
+          function collect(root){
+            var found;try{found=root.querySelectorAll(S);}catch(e){return;}
+            for(var i=0;i<found.length;i++){var el=found[i];if(visible(el))els.push(el);}
+            var all;try{all=root.querySelectorAll('*');}catch(e){return;}
+            for(var j=0;j<all.length;j++){var n=all[j];
+              if(n.shadowRoot)collect(n.shadowRoot);
+              if(n.tagName==='IFRAME'||n.tagName==='FRAME'){try{var cd=n.contentDocument;if(cd&&cd.body)collect(cd.body);}catch(e){}}
+            }
+          }
+          collect(document.documentElement);
+          var maxInteractive=a.maxInteractive||50;
+          var out=[];
+          for(var k=0;k<els.length&&out.length<maxInteractive;k++){var el=els[k];
+            var idx=A.register(el);
+            var o={index:idx,tag:el.tagName.toLowerCase(),text:(el.textContent||'').trim().slice(0,60)};
+            if(el.placeholder)o.placeholder=el.placeholder;
+            if(el.href)o.href=el.href.slice(0,200);
+            out.push(o);
+          }
+          var maxText=a.maxTextLength||5000;
+          return{url:location.href,title:document.title,
+            text:visibleText(document.body).trim().slice(0,maxText),
+            interactiveCount:els.length,interactive:out,
+            hint:'可交互元素已编号（index 字段），browser_click / browser_type 可直接用 index 参数定位'};
+        })()`);
+      }
       case 'fill_form': {
         return await wc.executeJavaScript(`(function(){
           var a=${JSON.stringify(args)};var fields=a.fields||[];var names=[];
@@ -1369,6 +1807,23 @@ ipcMain.handle('browserView:action', async (_e, tabId, action, args) => {
         const ms = Math.min(args.timeout || 1000, 10000);
         await new Promise(r => setTimeout(r, ms));
         return { waited: ms };
+      }
+      // ========== 导航控制（从 browser:call 统一迁移） ==========
+      case 'back': {
+        if (wc.navigationHistory?.canGoBack?.()) { wc.goBack(); return { success: true }; }
+        if (wc.canGoBack?.()) { wc.goBack(); return { success: true }; }
+        return { error: '无法后退' };
+      }
+      case 'forward': {
+        if (wc.navigationHistory?.canGoForward?.()) { wc.goForward(); return { success: true }; }
+        if (wc.canGoForward?.()) { wc.goForward(); return { success: true }; }
+        return { error: '无法前进' };
+      }
+      case 'reload': {
+        wc.reload(); return { success: true };
+      }
+      case 'get_url': {
+        return { url: wc.getURL(), title: wc.getTitle() };
       }
       // ========== C4 多标签页管理（桌面端单 BrowserView，降级提示） ==========
       case 'new_tab':
@@ -1588,9 +2043,16 @@ ipcMain.handle('browserView:action', async (_e, tabId, action, args) => {
     // 变化检测：对可能改变页面的操作做前后快照对比，为模型提供 pageChanged / noChangeStreak 反馈
     let beforeState = null;
     if (CHANGE_ACTIONS.has(action)) {
-      beforeState = await wc.executeJavaScript(STATE_SNAPSHOT_JS).catch(() => null);
+      beforeState = await Promise.race([
+        wc.executeJavaScript(STATE_SNAPSHOT_JS).catch(() => null),
+        new Promise((r) => setTimeout(() => r(null), 3000)),
+      ]);
     }
-    const result = await doAction();
+    // 总闸：任何 action 最多 18s（渲染层 20s 竞速之前返回明确错误，而非让渲染层猜超时）
+    const result = await Promise.race([
+      doAction(),
+      new Promise((r) => setTimeout(() => r({ error: `浏览器操作 ${action} 超时（18s）：页面可能仍在加载或无响应，请稍后用 browser_get_page_content 重试` }), 18000)),
+    ]);
     if (result && !result.error && !result.ambiguous && beforeState) {
       await new Promise(r => setTimeout(r, 500)); // 等待页面响应
       const after = await wc.executeJavaScript(STATE_SNAPSHOT_JS).catch(() => null);
@@ -1856,11 +2318,60 @@ ipcMain.handle('mcp:kill', (e, childId) => {
 // ============================================================
 // 应用启动
 // ============================================================
+
+// CDP 统一架构：开启远程调试端口，后端 Playwright 通过 CDP 连接到 Electron BrowserView，
+// 所有 browser_ 工具操作同一个浏览器实例，预览面板就是这个 BrowserView（与豆包 CNGC Browser Use 架构一致）。
+// 端口可通过环境变量 YANZHI_CDP_PORT 覆盖，默认 9222。
+const CDP_PORT = process.env.YANZHI_CDP_PORT || '9222';
+app.commandLine.appendSwitch('remote-debugging-port', CDP_PORT);
+console.log(`[cdp] 远程调试端口已开启: http://127.0.0.1:${CDP_PORT}`);
+
+// Windows 下禁用原生窗口遮挡计算：窗口最小化/隐藏后，Chromium 会把 BrowserView 的
+// webContents 标记为「被完全遮挡」而停止产出新帧；恢复显示后合成器偶发不重新绘制，
+// 表现为预览面板全黑（GPU 合成层残留）。关掉该特性可从根上规避。
+if (process.platform === 'win32') {
+  app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
+}
+
+// 单实例锁：确保同一时间只有一个 yan-zhi 实例运行，避免安装新版本后旧进程残留导致数据冲突
+const gotTheLock = app.requestSingleInstanceLock();
+if (!gotTheLock) {
+  console.log('[single-instance] 已有实例在运行，退出当前实例');
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    // 第二个实例启动时，激活当前实例的窗口
+    console.log('[single-instance] 检测到第二个实例启动，激活当前窗口');
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.focus();
+      mainWindow.show();
+    }
+  });
+}
+
 app.whenReady().then(() => {
   Menu.setApplicationMenu(null);  // 移除默认菜单栏
   if (process.platform === 'win32') {
     app.setAppUserModelId('com.yanzhi.desktop');
   }
+
+  // ============================================================
+  // UA 伪装：去掉 Electron 标识与应用名，输出标准 Chrome UA。
+  // 百度/淘宝等站点对 Electron 默认 UA 风控严格（高频弹验证码）。
+  // BrowserView 使用独立 persist:browser-view partition，两个 session 都要设。
+  // ============================================================
+  (function disguiseUserAgent() {
+    try {
+      const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const ua = session.defaultSession.getUserAgent()
+        .replace(new RegExp('\\s*Electron\\/[\\d.]+', 'g'), '')
+        .replace(new RegExp('\\s*' + esc(app.getName()) + '\\/[\\d.]+', 'g'), '');
+      const cleanUA = ua.replace(/\s{2,}/g, ' ').trim();
+      session.defaultSession.setUserAgent(cleanUA);
+      session.fromPartition('persist:browser-view').setUserAgent(cleanUA);
+    } catch { /* ignore */ }
+  })();
 
   // ============================================================
   // Content-Security-Policy：注入到主窗口所在 session 的响应头

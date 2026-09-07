@@ -1,4 +1,4 @@
-﻿# === Yan-Zhi Android Build Script (Windows) ===
+﻿﻿﻿# === Yan-Zhi Android Build Script (Windows) ===
 # 用法: powershell -ExecutionPolicy Bypass -File bin\build-android.ps1 [-Release]
 # 需要: JDK 17+（已检测）。Android SDK 缺失时自动下载 command-line tools 并安装最小组件。
 # 产物: dist-release\*.apk（由 copy-apk.cjs 拷入）

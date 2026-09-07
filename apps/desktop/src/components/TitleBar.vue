@@ -52,7 +52,7 @@
       <div class="title-spacer"></div>
 
       <!-- 登录状态：头像（绿点=已登录）/ 登录按钮 -->
-      <el-dropdown v-if="authStore.isLoggedIn" trigger="click" popper-class="sidenav-user-popper">
+      <el-dropdown v-if="authStore.isLoggedIn" trigger="click" popper-class="sidenav-user-popper" @visible-change="(v: boolean) => (avatarMenuOpen = v)">
         <span class="title-avatar" :title="authStore.user?.username">
           {{ authStore.user?.username?.slice(0, 1) || 'U' }}<i class="login-dot" />
         </span>
@@ -102,7 +102,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue';
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import {
   Minus, FullScreen, CopyDocument, Close, Moon, Sunny, HomeFilled, ChatDotRound, Monitor, Promotion, Setting, Collection,
@@ -112,6 +112,7 @@ import { useSettingsStore, useAuthStore, usePluginStore, openSettingsDrawer } fr
 import { resolvePluginIcon } from '@yan-zhi/ui/plugin-icons';
 import HoverMenu from '@yan-zhi/ui/components/HoverMenu.vue';
 import type { HoverMenuItem } from '@yan-zhi/ui/components/HoverMenu.vue';
+import { titleBarOverlayOpen } from '@yan-zhi/ui/composables/useTitleBarOverlay';
 
 // Electron 渲染进程通过 contextBridge 注入的 API
 const api = (window as any).electronAPI;
@@ -195,6 +196,10 @@ const moreActive = computed(
 );
 
 const moreOpen = ref(false);
+// 用户头像下拉展开状态：与"更多"弹层一样落在内容区上方，需一并避让 BrowserView
+const avatarMenuOpen = ref(false);
+// 浮层任一展开 → 通知 BrowserPanel 临时隐藏原生 BrowserView（关闭后自动恢复）
+watch([moreOpen, avatarMenuOpen], ([m, a]) => { titleBarOverlayOpen.value = m || a; });
 
 function onMoreSelect(item: HoverMenuItem) {
   moreOpen.value = false;

@@ -6,7 +6,7 @@ import { DEFAULT_SKIP_DIRS, joinPath } from './fs-walk';
 
 export class FileListTool implements BuiltInTool {
   name = 'file_list';
-  description = 'List files and directories at a given path. depth=1 (default) lists one level; larger depth renders a recursive tree (skips node_modules/.git/dist etc.). Use this to explore directories before reading files.';
+  description = '列出指定目录下的文件与子目录。depth=1（默认）只列当前层级；更大的 depth 渲染递归树（自动跳过 node_modules/.git/dist 等噪声目录）。常用于读取文件前先探索目录结构。';
 
   inputSchema = {
     type: 'object',

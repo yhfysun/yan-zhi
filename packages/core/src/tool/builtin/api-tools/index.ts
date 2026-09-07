@@ -2,6 +2,7 @@
 import type { ToolDefinition } from '../../types';
 import { registerAgentTools } from './agent';
 import { registerConversationTools } from './conversation';
+import { registerDataTools } from './data';
 import { registerFileTools } from './file';
 import { registerImTools } from './im';
 import { registerKnowledgeTools } from './knowledge';
@@ -39,7 +40,8 @@ export type ApiModuleName =
   | 'ollama'
   | 'git'
   | 'plugin'
-  | 'space';
+  | 'space'
+  | 'data';
 
 export const API_MODULES: ApiModuleName[] = [
   'agent',
@@ -61,6 +63,7 @@ export const API_MODULES: ApiModuleName[] = [
   'git',
   'plugin',
   'space',
+  'data',
 ];
 
 export function createApiToolRegistry(): Map<ApiModuleName, ToolDefinition[]> {
@@ -98,5 +101,6 @@ export function initApiToolRegistry(): void {
   registerGitTools(registry);
   registerPluginTools(registry);
   registerSpaceTools(registry);
+  registerDataTools(registry);
   _instance = registry;
 }

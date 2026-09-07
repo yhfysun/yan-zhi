@@ -10,7 +10,7 @@ export default defineConfig({
     environment: 'node',
     coverage: {
       provider: 'v8',
-      include: ['src/tool/builtin/web-search.ts'],
+      include: ['src/tool/builtin/*.ts'],
       reporter: ['text', 'json', 'html'],
       reportsDirectory: 'coverage',
     },

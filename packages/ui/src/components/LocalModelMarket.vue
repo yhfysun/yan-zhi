@@ -2,7 +2,14 @@
   <el-dialog v-model="visible" title="本地模型商城" width="760px" :close-on-click-modal="false" class="local-market-dialog">
     <div v-if="loading" class="market-state"><el-skeleton :rows="5" animated /></div>
     <template v-else>
-      <div class="tier-tabs">
+      <el-alert v-if="!ollamaAvailable" type="warning" :closable="false" class="ollama-missing">
+      <template #title>未检测到本机 Ollama（http://127.0.0.1:11434）</template>
+      <div class="ollama-missing-body">
+        <span>本地模型由 Ollama 提供，请先到 <a href="https://ollama.com/download" target="_blank" rel="noopener">ollama.com/download</a> 下载安装（Windows 安装后会自动在后台运行，无需手动启动），完成后点「重新检测」。已拉取的对话/向量模型（如知识库用的 bge-small-zh）都存放在 Ollama 中，不受本应用卸载影响。</span>
+        <el-button size="small" type="primary" plain :loading="loading" @click="load">重新检测</el-button>
+      </div>
+    </el-alert>
+    <div class="tier-tabs">
         <button :class="['tier-tab', { active: activeTier === 'low' }]" @click="activeTier = 'low'">
           <span class="tier-tab-label">低配版</span>
           <span class="tier-tab-desc">2-4GB 内存 · 无 GPU</span>
@@ -83,7 +90,7 @@
               <el-button size="small" type="info" plain disabled>拉取中...</el-button>
             </template>
             <template v-else>
-              <el-button v-if="!item.onDisk" size="small" type="primary" :icon="Download" @click="pull(item)">拉取</el-button>
+              <el-button v-if="!item.onDisk" size="small" type="primary" :icon="Download" :disabled="!ollamaAvailable" @click="pull(item)">拉取</el-button>
               <el-button v-if="item.onDisk" size="small" type="success" plain :loading="testing === item.key" @click="test(item)">测试</el-button>
               <el-button v-if="item.onDisk" size="small" type="danger" plain @click="remove(item)">删除</el-button>
             </template>
@@ -147,6 +154,7 @@ interface MarketItem {
 
 const loading = ref(true);
 const items = ref<MarketItem[]>([]);
+const ollamaAvailable = ref(true);
 const activeTier = ref<'low' | 'mid' | 'high' | 'ultra' | 'embedding'>('low');
 const testing = ref('');
 let pollTimer: ReturnType<typeof setInterval> | undefined;
@@ -190,6 +198,7 @@ async function load() {
     const r = await api.get<any>('/ollama-market');
     loading.value = false;
     if ('data' in r && r.data && r.data.items) {
+      ollamaAvailable.value = r.data.ollamaAvailable !== false;
       items.value = r.data.items.map((it: any) => ({
         key: it.key,
         displayName: it.displayName,
@@ -315,6 +324,10 @@ async function addOllama() {
 .tier-tab-desc { display: block; font-size: 11px; color: var(--color-text-secondary, #909399); margin-top: 2px; }
 
 .market-list { display: flex; flex-direction: column; gap: 12px; }
+
+.ollama-missing { margin-bottom: 12px; }
+.ollama-missing-body { display: flex; align-items: center; gap: 12px; font-size: 12.5px; line-height: 1.6; }
+.ollama-missing-body a { color: var(--el-color-primary, #409eff); }
 .market-card {
   border: 1px solid var(--color-border, #e4e7ed); border-radius: 12px; padding: 14px;
   transition: border-color 0.2s, box-shadow 0.2s;

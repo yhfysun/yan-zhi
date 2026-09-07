@@ -17,7 +17,7 @@ function push(items: OutlineItem[], item: OutlineItem): void {
 
 export class CodeOutlineTool implements BuiltInTool {
   name = 'code_outline';
-  description = 'Show the structural outline of a JS/TS/Vue/MJS source file: imports, classes (with methods), functions, arrow functions, interfaces/types/enums — each with line numbers. Much cheaper than reading the full file for understanding code structure; follow up with file_read for specific line ranges.';
+  description = '展示 JS/TS/Vue/MJS 源文件的结构大纲：imports、class（及其方法）、function、箭头函数、interface/type/enum 等，每条标注行号。比整文件读取便宜很多，先用此工具理解结构，再用 file_read 看具体行范围。';
 
   inputSchema = {
     type: 'object',

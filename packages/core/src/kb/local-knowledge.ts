@@ -157,23 +157,50 @@ export async function localSearch(baseId: string, query: string, topK = 5) {
   if (!rows.length) return [];
   // 有 query 向量且存在 chunk 向量 → 余弦相似度排序
   if (qVec) {
-    const scored = rows
+    const pool = Math.min(limit * 3, 50);
+    // 向量路：余弦相似度
+    const vecList = rows
       .map((r) => {
         const cv = bytesToVec(r.embedding);
-        return { row: r, score: cv ? cosine(qVec, cv) : 0, hasVec: Boolean(cv) };
+        return cv ? { row: r, score: cosine(qVec, cv) } : null;
       })
-      .filter((x) => x.hasVec)
+      .filter((x): x is { row: KbChunkRow; score: number } => x !== null)
       .sort((a, b) => b.score - a.score)
-      .slice(0, limit);
-    const qlower = query.toLowerCase();
-    const kw = rows
-      .filter((r) => r.content.toLowerCase().includes(qlower))
-      .map((r) => ({ row: r, score: 1, hasVec: false }));
-    // 合并：优先向量命中，关键词作为补充（去重）
-    const seen = new Set(scored.map((x) => x.row.id));
-    const merged = [...scored];
-    for (const k of kw) if (!seen.has(k.row.id)) { merged.push(k); seen.add(k.row.id); }
-    return merged.slice(0, limit).map((x) => x.row);
+      .slice(0, pool);
+    // 关键词路：全串命中优先，分词命中补充（长 query 分词后更稳）
+    const qLower = query.toLowerCase();
+    const terms = qLower.split(/\s+/).filter((t) => t.length >= 2);
+    const kwList = rows
+      .map((r) => {
+        const c = (r.content || '').toLowerCase();
+        if (!c) return null;
+        const exact = c.includes(qLower);
+        const byTerm = terms.length > 1 && terms.some((t) => c.includes(t));
+        if (!exact && !byTerm) return null;
+        return { row: r, score: exact ? 1 : 0.5 };
+      })
+      .filter((x): x is { row: KbChunkRow; score: number } => x !== null)
+      .sort((a, b) => b.score - a.score || a.row.content.length - b.row.content.length)
+      .slice(0, pool);
+    if (vecList.length === 0 && kwList.length === 0) return [];
+    // RRF 融合（k=60）：两路排名倒数求和，专有名词与语义改写两类 query 都稳健
+    const K = 60;
+    const scores = new Map<string, { row: KbChunkRow; score: number }>();
+    const addList = (list: Array<{ row: KbChunkRow; score: number }>) => {
+      list.forEach((x, i) => {
+        if (!x.row?.id) return;
+        const s = 1 / (K + i + 1);
+        const cur = scores.get(x.row.id);
+        if (cur) cur.score += s;
+        else scores.set(x.row.id, { row: x.row, score: s });
+      });
+    };
+    addList(kwList);
+    addList(vecList);
+    return [...scores.values()]
+      .sort((a, b) => b.score - a.score)
+      .slice(0, limit)
+      .map((x) => ({ ...x.row, rrfScore: Number(x.score.toFixed(4)) }));
   }
   // 无向量 → 关键词 LIKE 降级
   const q = `%${query}%`;

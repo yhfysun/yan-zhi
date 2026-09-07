@@ -74,7 +74,7 @@
       </button>
 
       <!-- 更多菜单 ⋮ -->
-      <el-dropdown trigger="click" @command="onMenuCommand">
+      <el-dropdown trigger="click" @visible-change="onMoreMenuVisible" @command="onMenuCommand">
         <button class="nav-btn" title="更多工具">
           <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/></svg>
         </button>
@@ -272,15 +272,18 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue';
+import { storeToRefs } from 'pinia';
 import { ElMessage } from 'element-plus';
 import { ZoomIn, ZoomOut } from '@element-plus/icons-vue';
 import { usePlatformStore } from '../stores/platform';
 import { useChatStore } from '../stores/chat';
+import { useBrowserStore, type BrowserTab } from '../stores/browser';
 import { usePlatform } from '../composables/usePlatform';
 import { LlmClient } from '@yan-zhi/core';
 import { API_BASE } from '../api/client';
 import { useRoute } from 'vue-router';
 import { settingsDrawerOpen } from '../composables/useSettingsDrawer';
+import { titleBarOverlayOpen } from '../composables/useTitleBarOverlay';
 import { useChat } from '../composables/chat/useChat';
 
 // ── 平台检测 ──
@@ -289,21 +292,19 @@ const { isDesktop } = usePlatform();
 // 检测是否在 Electron 桌面端（有 electronAPI 标识）
 const isElectron = typeof window !== 'undefined' && !!(window as any).electronAPI?.isElectron;
 
+// ── 组件空间：preview=对话页右栏预览（pageAgent 执行面）| page=/browser 独立浏览器页 ──
+// 两边 tab 列表完全隔离（各自独立的 browser store 实例）。
+const props = defineProps<{ scope?: 'preview' | 'page' }>();
+const browserScope = (props.scope || 'page') as 'preview' | 'page';
+
 // ── 多标签页管理（Electron 桌面端）──
-interface BrowserTab {
-  id: string;
-  url: string;
-  title: string;
-  loading: boolean;
-  urlInput: string;
-  history: string[];
-  histIndex: number;
-  pageZoom: number;
-  canBack: boolean;
-  canForward: boolean;
-}
-const tabs = ref<BrowserTab[]>([]);
-const activeTabId = ref<string>('');
+// tabs/激活 tab/视图状态按空间存对应 browser store：路由切换组件卸载不丢，
+// 重新挂载恢复访问状态（切到任务页再回浏览器，该空间的 tab 原样保留）。
+const browserStore = useBrowserStore(browserScope);
+const {
+  tabs, activeTabId, urlInput, history, histIndex,
+  pageZoom, electronCanBack, electronCanForward, loading,
+} = storeToRefs(browserStore);
 const activeTab = computed(() => tabs.value.find(t => t.id === activeTabId.value));
 
 // 路由 query（支持从对话页跳转并传初始 URL）
@@ -336,18 +337,13 @@ const DEFAULT_PINNED: Pin[] = [
   { name: '网易', url: 'https://www.163.com' },
 ];
 
-const urlInput = ref('');
 const homeInput = ref('');
 const urlFocused = ref(false);
 
 // ── 远程浏览器状态 ──
-const loading = ref(false);
 const viewportRef = ref<HTMLDivElement>();
 const browserViewPlaceholder = ref<HTMLDivElement>();
 const iframeKey = ref(0);
-
-// ── 页面缩放（让浏览器网页可随应用缩放）──
-const pageZoom = ref(1);
 
 /** 向同源 iframe 内部文档注入 zoom（模拟浏览器 Ctrl+/- 缩放） */
 function injectIframeZoom(zoom: number) {
@@ -399,7 +395,8 @@ async function newTab(url?: string) {
   const api = (window as any).electronAPI;
   let tabId = '';
   if (isElectron && api?.browserView?.createTab) {
-    tabId = await api.browserView.createTab();
+    // 主进程记录 tab 归属空间：agent 工具链的 ensureActiveTab('preview') 据此只认预览空间的 tab
+    tabId = await api.browserView.createTab(browserScope);
   } else {
     tabId = 'web-tab-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6);
   }
@@ -442,6 +439,14 @@ async function switchTab(tabId: string) {
   urlInput.value = tab.urlInput;
   history.value = [...tab.history];
   histIndex.value = tab.histIndex;
+  // 兜底：tab.url 由 navigate/onNavigated 实时维护，是"当前真实页面"的单一真相；
+  // 若快照历史与它脱节（历史版本只存快照、页内跳转漏记等），以 tab.url 重建当前项，
+  // 防止恢复后 currentUrl 为空而误显示起始主页。
+  if (tab.url && currentUrl.value !== tab.url) {
+    pushHistory(tab.url);
+    tab.history = [...history.value];
+    tab.histIndex = histIndex.value;
+  }
   pageZoom.value = tab.pageZoom;
   electronCanBack.value = tab.canBack;
   electronCanForward.value = tab.canForward;
@@ -560,13 +565,10 @@ function syncBrowserViewBounds(force = false) {
   }
 }
 
-// ── 历史栈（远程浏览器方案下，前端自行维护导航历史）──
-const history = ref<string[]>([]);
-const histIndex = ref(-1);
+// ── 历史栈 ──
+// history/histIndex/electronCanBack/electronCanForward 存全局 browser store（见顶部解构），
+// 此处只保留依赖它们的派生状态。
 const currentUrl = computed(() => history.value[histIndex.value] || '');
-// Electron 端用响应式变量保存 BrowserView 的可前进/后退状态
-const electronCanBack = ref(false);
-const electronCanForward = ref(false);
 const canBack = computed(() => isElectron ? electronCanBack.value : histIndex.value > 0);
 const canForward = computed(() => isElectron ? electronCanForward.value : histIndex.value < history.value.length - 1);
 const isSecure = computed(() => /^https:\/\//i.test(currentUrl.value));
@@ -620,20 +622,13 @@ const newPinName = ref('');
 const newPinUrl = ref('');
 
 // Electron 桌面端：BrowserView 是原生图层，永远覆盖主窗口 DOM 之上，
-// 任何 el-dialog / 全局设置抽屉都会被它挡住。打开时临时隐藏 BrowserView，关闭后恢复。
-// 仅限 BrowserPanel 内部弹窗（书签/历史/设置/密码）：它们长在预览面板区域内，
-// 无法避让，只能临时藏起 BrowserView。ask_user/confirm_user 已改为内联表单，不受影响。
-watch(
-  () => showBookmarks.value || showHistory.value || showSettings.value || showPasswords.value || showPasswordEditor.value || settingsDrawerOpen.value,
-  (hasDialog) => {
-    if (!isElectron) return;
-    if (hasDialog) {
-      (window as any).electronAPI.browserView.hide(activeTabId.value);
-    } else {
-      syncBrowserViewBounds();
-    }
-  },
-);
+// 任何 el-dialog / 全局设置抽屉 / "更多"下拉菜单（teleport 到 body 的 popper）展开时
+// 都落在页面区域上方，会被它挡住。统一做法：这些浮层打开期间把 BrowserView 隐藏，
+// 关闭后由 shouldBeVisible 的 watch 自动恢复（见下方单一闸门，防止节流中的 bounds 同步把视图盖回来）。
+const moreMenuOpen = ref(false);
+function onMoreMenuVisible(visible: boolean) {
+  moreMenuOpen.value = visible;
+}
 
 // 聊天区弹窗（模型平台/Skill/MCP/编辑智能体/工作目录/编辑空间/查看提示词）避让右侧预览面板：
 // 不隐藏 BrowserView（预览保持可见），而是把弹窗居中容器 .el-overlay-dialog 限制在面板左侧的可用区域，
@@ -755,6 +750,11 @@ async function navigate() {
   if (activeTab.value) {
     activeTab.value.url = target;
     activeTab.value.urlInput = target;
+    // 快照实时同步：tab.history/histIndex 只在 switchTab 时互存的话，路由切换（/browser 页 ↔
+    // 对话页预览面板）重挂后 switchTab 会恢复到过期快照（history=[]），currentUrl 清空 →
+    // showHome 误显示起始主页（"点了百度、tab 标题是百度、页面却变首页"的串扰根因）。
+    activeTab.value.history = [...history.value];
+    activeTab.value.histIndex = histIndex.value;
   }
   // Electron 桌面端：用 BrowserView 加载 URL，并同步 bounds
   if (isElectron) {
@@ -801,6 +801,9 @@ function goHome() {
   if (activeTab.value) {
     activeTab.value.url = '';
     activeTab.value.urlInput = '';
+    // 快照实时同步（同 navigate()）
+    activeTab.value.history = [];
+    activeTab.value.histIndex = -1;
   }
   // Electron 桌面端：隐藏 BrowserView，让主页可见
   if (isElectron) {
@@ -828,6 +831,8 @@ async function goBack() {
   urlInput.value = currentUrl.value;
   loading.value = true;
   iframeKey.value++;
+  // 快照实时同步（同 navigate()）
+  if (activeTab.value) { activeTab.value.history = [...history.value]; activeTab.value.histIndex = histIndex.value; }
 }
 
 async function goForward() {
@@ -847,6 +852,8 @@ async function goForward() {
   urlInput.value = currentUrl.value;
   loading.value = true;
   iframeKey.value++;
+  // 快照实时同步（同 navigate()）
+  if (activeTab.value) { activeTab.value.history = [...history.value]; activeTab.value.histIndex = histIndex.value; }
 }
 
 async function refresh() {
@@ -1037,27 +1044,49 @@ function onFrameLoad() {
 }
 
 
-// 每次导航变化 → 记录到后端（供最近浏览/常用/每日 AI 分析）
-watch(currentUrl, (u) => { if (u) recordVisit(u); });
-
 // 智能体（LLM）调 browser_navigate 时，store.currentBrowserUrl 写入 url，
 // 这里 watch 到后复用 openSite 导航 —— 让智能体打开的页面与预览面板共用同一浏览器（桌面 BrowserView）
 const chatStore = useChatStore();
+
+// 每次导航变化 → 记录到后端（供最近浏览/常用/每日 AI 分析）
+// pageAgent 导航时 skipNextRecordVisit=true，跳过记录（不记录智能体浏览历史）。
+// skip 标记只由 preview 空间实例消费：page 空间（/browser 页）的浏览照常记录，
+// 且不能误吃掉 agent 导航的 skip 标记。
+watch(currentUrl, (u) => {
+  if (!u) return;
+  if (browserScope === 'preview' && chatStore.skipNextRecordVisit) { chatStore.skipNextRecordVisit = false; return; }
+  recordVisit(u);
+});
 
 /**
  * 渲染层单一可见性闸门：整个组件只有这一处判断 BrowserView 该不该可见。
  * 主进程侧由 applyVisibility(entry) 收敛挂载/摘除，这里只负责表达意图。
  * 早期两侧各有两份重复判断（syncBrowserViewBounds / onNavigated），容易漂移。
+ *
+ * 按空间区分：
+ * - page（/browser 独立页）：整页即浏览器，随路由可见。绝不能用对话页右栏状态判断——
+ *   否则 rightPanelOpen=false 时在 /browser 导航会被闸门 hide，表现为"第一次进百度黑屏"。
+ * - preview（对话页右栏）：右栏展开且激活 tab 是浏览器时可见。
  */
-const shouldBeVisible = computed(
-  () => chatStore.rightPanelOpen && chatStore.activeTab?.kind === 'browser',
-);
+const isBrowserPageRoute = computed(() => route.name === 'browser');
+const shouldBeVisible = computed(() => {
+  // 浮层避让：任何被原生 BrowserView 挡住的弹窗/下拉打开期间，强制视为不可见
+  // （走统一闸门，ResizeObserver / 节流补帧等任何 bounds 同步都会得到"隐藏"结果，不会竞态覆盖）
+  if (moreMenuOpen.value || titleBarOverlayOpen.value || showBookmarks.value || showHistory.value ||
+      showSettings.value || showPasswords.value || showPasswordEditor.value || settingsDrawerOpen.value) return false;
+  return browserScope === 'page'
+    ? isBrowserPageRoute.value
+    : chatStore.rightPanelOpen && chatStore.activeTab?.kind === 'browser';
+});
 // 可见性变化（右栏收起展开、切 tab）立即同步一次，不等节流窗口
 watch(shouldBeVisible, () => { nextTick(() => syncBrowserViewBounds(true)); }, { flush: 'post' });
 
+// 智能体（LLM）导航通道：agent 写 currentBrowserUrl → 预览面板跟随导航。
+// 仅 preview 空间实例响应；/browser 独立页（page 空间）不跟随 agent 导航（两边已隔离）。
 watch(
   () => chatStore.currentBrowserUrl,
   (url) => {
+    if (browserScope !== 'preview') return;
     if (!url) return;
 
     openSite(url);
@@ -1369,15 +1398,26 @@ function onMenuCommand(cmd: string) {
   }
 }
 
-onMounted(() => {
-  // 初始化第一个标签页
-  newTab().then(() => {
-    // 从路由 query 接收初始 URL（对话页点链接跳转过来），在应用内预览面板打开
-    const initUrl = route.query.url;
-    if (typeof initUrl === 'string' && /^https?:\/\//i.test(initUrl)) {
-      nextTick(() => openSite(initUrl));
-    }
-  });
+onMounted(async () => {
+  // 恢复式挂载：store 中已有 tabs（路由 /browser ↔ /chat 切换、预览面板重开）时
+  // 恢复激活原 tab，绝不新建空 tab —— 否则每次挂载累积空白 tab 并把真实 tab 挤出
+  // 主进程 MAX_TABS=8 的 LRU 窗口（切回来"变回初始"的根因）。
+  const initUrl = route.query.url;
+  if (tabs.value.length > 0) {
+    const restoreId = (activeTabId.value && tabs.value.some(t => t.id === activeTabId.value))
+      ? activeTabId.value
+      : ([...tabs.value].reverse().find(t => t.url)?.id || tabs.value[tabs.value.length - 1].id);
+    // switchTab 对相同 tabId 会短路，先清空强制走完整的激活 + bounds 同步
+    activeTabId.value = '';
+    await switchTab(restoreId);
+  } else {
+    // 初始化第一个标签页
+    await newTab();
+  }
+  // 从路由 query 接收初始 URL（对话页点链接跳转过来），在应用内预览面板打开
+  if (typeof initUrl === 'string' && /^https?:\/\//i.test(initUrl)) {
+    nextTick(() => openSite(initUrl));
+  }
   fetchData();
   startDailyAnalysisScheduler();
 
@@ -1405,15 +1445,31 @@ onMounted(() => {
       }
       if (url && url !== currentUrl.value) {
         urlInput.value = url;
-        history.value[histIndex.value] = url;
+        // 起始页/空历史状态下 histIndex=-1，history[-1]=url 是无效写入 → currentUrl 永远为空、
+        // showHome 卡死（占位区不出现 → BrowserView 永远挂不上）。无有效历史项时按新导航入栈。
+        if (histIndex.value < 0 || histIndex.value >= history.value.length) {
+          pushHistory(url);
+        } else {
+          history.value[histIndex.value] = url;
+        }
         if (activeTab.value) {
           activeTab.value.url = url;
           activeTab.value.urlInput = url;
+          // 快照实时同步（同 navigate()：防止路由切换重挂后恢复到过期快照变首页）
+          activeTab.value.history = [...history.value];
+          activeTab.value.histIndex = histIndex.value;
         }
       }
       // 导航后更新可前进/后退状态
       api.browserView.canGoBack(tid).then((v: boolean) => { electronCanBack.value = v; });
       api.browserView.canGoForward(tid).then((v: boolean) => { electronCanForward.value = v; });
+    });
+    // 主进程在渲染层重载完成（did-finish-load）后的"重认领"通知：
+    // did-start-navigation 兜底会摘除全部 BrowserView，恢复依赖渲染层重挂链路；
+    // 若 BrowserPanel 已挂载但占位尺寸无变化、ResizeObserver 不再触发，会一直停在
+    // 摘除态（黑屏/首页占位）。这里收到通知后强制重跑一次可见性闸门补齐最后一环。
+    api.browserView.onResync?.(() => {
+      nextTick(() => { if (shouldBeVisible.value) syncBrowserViewBounds(true); });
     });
     // 监听页面加载完成事件（带 tabId）
     api.browserView.onLoaded(async (tid: string, _url: string) => {
@@ -1448,6 +1504,30 @@ onMounted(() => {
       if (tid === activeTabId.value) return;
       if (!tabs.value.some(t => t.id === tid)) return; // 渲染层没有该 tab 壳，无从切换
       switchTab(tid).catch(() => { /* ignore */ });
+    });
+    // 主进程兜底自建 tab（ensureActiveTab 超时自建）→ 补建 tab 壳。
+    // 没有这步渲染层"无壳即忽略"，pageAgent 导航发生在主进程但预览面板毫无变化（导航黑洞）。
+    // 按空间过滤：主进程广播带 scope，只认本空间的 tab，避免两边 tab 列表串扰。
+    api.browserView.onTabCreated?.((tid: string, url: string | null, scope?: string) => {
+      // page 空间只收明确标记为 page 的 tab；preview 空间收 preview 及未标记（旧主进程兼容）
+      const belong = scope || 'preview';
+      if (belong !== browserScope) return;
+      if (tabs.value.some(t => t.id === tid)) return;
+      tabs.value.push({
+        id: tid, url: url || '', title: '', loading: false, urlInput: url || '',
+        history: url ? [url] : [], histIndex: url ? 0 : -1, pageZoom: 1, canBack: false, canForward: false,
+      });
+      activeTabId.value = tid;
+    });
+    // 页面 title 变化 → 更新 tab 标题（真实网站名而非 URL）+ 对话页 browser tab 名
+    // 对话页 tab chip 名称只由 preview 空间实例更新（page 空间的网页标题不牵连对话页）
+    api.browserView.onTitleUpdated?.((tid: string, title: string) => {
+      const tab = tabs.value.find(t => t.id === tid);
+      if (tab && title) tab.title = title;
+      if (browserScope === 'preview' && tid === activeTabId.value && title) {
+        const bt = chatStore.previewTabs.find(t => t.kind === 'browser');
+        if (bt) bt.name = title;
+      }
     });
 
     // ResizeObserver 监听占位 div 尺寸变化，同步 BrowserView bounds

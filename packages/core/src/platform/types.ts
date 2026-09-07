@@ -37,6 +37,17 @@ export interface KeyringAdapter {
   delete(key: string): Promise<void>;
 }
 
+/** LLM Token 池适配（仅 server 端注入）：供 LlmClient 直连时换 Key 重试与失败回写。
+ *  浏览器端走后端代理（llmProxyBase），轮换逻辑在后端 llm-proxy 内实现，无需注入。 */
+export interface LlmKeyPoolAdapter {
+  /** 取一个可用 Key（排除已试过的）。返回 null 表示池为空/耗尽，调用方回退 keyring 主 Key */
+  acquire(platformId: string, excludeIds: string[]): Promise<{ id: string; apiKey: string } | null>;
+  /** 请求成功回写（衰减失败计数） */
+  reportSuccess(id: string): void;
+  /** 请求失败回写（任何错误：网络异常或非 2xx），下次 acquire 自动避开 */
+  reportFailure(id: string): void;
+}
+
 /** MCP 子进程适配器（仅桌面端） */
 export interface McpProcessAdapter {
   start(command: string, args: string[], env: Record<string, string>): Promise<string>; // 返回 childId
@@ -62,6 +73,8 @@ export interface PlatformAdapter {
   /** LLM 代理基址（如 '/api/llm'）。设置后 LlmClient 走后端代理转发，避免浏览器 CORS 并隐藏 API Key。
    *  浏览器端（web/desktop 渲染进程）注入；server 端不注入（直连上游）。 */
   llmProxyBase?: string;
+  /** LLM Token 池适配（仅 server 端注入）。设置后 LlmClient 直连失败会自动换 Key 重试并回写失败记录。 */
+  llmKeyPool?: LlmKeyPoolAdapter;
 }
 
 /** 当前平台适配器（由各端入口注入） */

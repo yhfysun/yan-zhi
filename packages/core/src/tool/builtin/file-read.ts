@@ -5,8 +5,10 @@ import { getPlatformAdapter } from '../../platform/types';
 const EXCEL_EXTENSIONS = ['xlsx', 'xls', 'csv'];
 const WORD_EXTENSIONS = ['docx'];
 const PPTX_EXTENSIONS = ['pptx'];
+const PDF_EXTENSIONS = ['pdf'];
 const LEGACY_OFFICE_EXTENSIONS = ['doc', 'ppt'];
 const MAX_ROWS = 10000;
+const OUTPUT_CAP = 64 * 1024;
 
 function base64ToBytes(b64: string): Uint8Array {
   const bin = typeof atob === 'function' ? atob(b64) : Buffer.from(b64, 'base64').toString('binary');
@@ -16,9 +18,74 @@ function base64ToBytes(b64: string): Uint8Array {
   return bytes;
 }
 
+/** 解码 XML 实体（pptx/docx 内的文本节点） */
+function decodeXmlEntities(s: string): string {
+  return s
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&')
+    .replace(/&#(\d+);/g, (_, d) => String.fromCharCode(Number(d)));
+}
+
+/** 统一输出截断：超 64KB 保留头部并提示分段读取 */
+function capOutput(text: string): string {
+  if (text.length <= OUTPUT_CAP) return text;
+  return text.slice(0, OUTPUT_CAP)
+    + `\n\n[output truncated: ${text.length} chars total, showing first 64KB. Use offset/limit to read in segments, or file_grep to locate content.]`;
+}
+
+// ── Word HTML → Markdown 轻量转换（mammoth 输出 HTML，保留标题/表格/列表结构） ──
+
+function stripInline(html: string): string {
+  return html
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&')
+    .replace(/[ \t]+/g, ' ')
+    .trim();
+}
+
+function htmlToMarkdown(html: string): string {
+  let s = html;
+  // 1) 表格 → 管道表
+  s = s.replace(/<table[\s\S]*?<\/table>/gi, (tbl) => {
+    const rows = [...tbl.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi)].map((r) =>
+      [...r[1].matchAll(/<t[dh][^>]*>([\s\S]*?)<\/t[dh]>/gi)]
+        .map((c) => (stripInline(c[1]) || ' ').replace(/\|/g, '\\|'))
+        .join(' | '),
+    ).filter((r) => r.length > 0);
+    if (rows.length === 0) return '\n\n';
+    const width = rows[0].split(' | ').length;
+    const sep = Array(width).fill('---').join(' | ');
+    return '\n\n' + [rows[0], sep, ...rows.slice(1)].map((r) => `| ${r} |`).join('\n') + '\n\n';
+  });
+  // 2) 标题
+  s = s.replace(/<h([1-6])[^>]*>([\s\S]*?)<\/h\1>/gi, (_, lvl: string, inner: string) =>
+    `\n\n${'#'.repeat(Number(lvl))} ${stripInline(inner)}\n\n`);
+  // 3) 行内强调 / 代码 / 链接（先于剥标签处理）
+  s = s.replace(/<(strong|b)[^>]*>([\s\S]*?)<\/\1>/gi, (_, __, inner: string) => `**${stripInline(inner)}**`);
+  s = s.replace(/<(em|i)[^>]*>([\s\S]*?)<\/\1>/gi, (_, __, inner: string) => `*${stripInline(inner)}*`);
+  s = s.replace(/<code[^>]*>([\s\S]*?)<\/code>/gi, (_, inner: string) => `\`${stripInline(inner)}\``);
+  s = s.replace(/<a[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi, (_, href: string, inner: string) =>
+    `[${stripInline(inner)}](${href})`);
+  // 4) 列表项
+  s = s.replace(/<li[^>]*>([\s\S]*?)<\/li>/gi, (_, inner: string) => `- ${stripInline(inner)}\n`);
+  // 5) 块级换行 / 换行符 / 丢弃图片（避免 base64 膨胀）
+  s = s.replace(/<\/(p|blockquote|ul|ol|table|div)>/gi, '\n\n');
+  s = s.replace(/<br\s*\/?>/gi, '\n');
+  s = s.replace(/<img[^>]*>/gi, '');
+  // 6) 剥掉剩余标签 + 解码实体
+  s = s.replace(/<[^>]+>/g, '');
+  s = s.replace(/&nbsp;/g, ' ')
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&');
+  // 7) 收敛空行
+  return s.replace(/\n{3,}/g, '\n\n').trim();
+}
+
 export class FileReadTool implements BuiltInTool {
   name = 'file_read';
-  description = 'Read the contents of a file. For text files returns the full content. For Excel files (.xlsx/.xls/.csv) returns tabular data — supports sheet selection, range filtering, and CSV/JSON output formats. For Word (.docx) returns extracted text. For PowerPoint (.pptx) returns text per slide. Legacy .doc/.ppt are not supported.';
+  description = '读取文件内容。文本文件返回完整内容（支持 offset/limit 按行分段）；Excel（.xlsx/.xls/.csv）返回表格数据，支持按工作表/区间读取，输出 CSV 或 JSON；Word（.docx）与 PowerPoint（.pptx）输出结构化 Markdown（标题/表格/列表/分页）；PDF 输出分页文本（--- Page N ---）。旧格式 .doc/.ppt 不支持。大文件读取前可先用 file_grep 定位。';
 
   inputSchema = {
     type: 'object',
@@ -31,6 +98,14 @@ export class FileReadTool implements BuiltInTool {
         type: 'string',
         enum: ['utf-8', 'base64'],
         description: 'Encoding to use when reading text files. Defaults to utf-8.',
+      },
+      offset: {
+        type: 'number',
+        description: 'For text files: 0-based line number to start reading from. Omit to read from the beginning.',
+      },
+      limit: {
+        type: 'number',
+        description: 'For text files: max number of lines to return (default 2000 when offset is set).',
       },
       sheet: {
         type: 'string',
@@ -72,6 +147,9 @@ export class FileReadTool implements BuiltInTool {
     if (PPTX_EXTENSIONS.includes(ext)) {
       return this.readPptx(path, fs);
     }
+    if (PDF_EXTENSIONS.includes(ext)) {
+      return this.readPdf(path, fs);
+    }
     if (LEGACY_OFFICE_EXTENSIONS.includes(ext)) {
       return {
         content: [{ type: 'text', text: `Error: 不支持老格式 .${ext}，请另存为 .${ext}x（Office 新格式）后再读取。` }],
@@ -81,17 +159,33 @@ export class FileReadTool implements BuiltInTool {
 
     try {
       const content = await fs.readFile(path);
-      // 截断防上下文爆炸：64KB 上限保留头部；超大文件建议用 code_search/code_outline 定位后再读
-      if (content.length > 64 * 1024) {
-        const text = content.slice(0, 64 * 1024)
-          + `\n\n[file truncated: ${content.length} chars total, showing first 64KB. Use code_search/code_outline to locate the relevant part, then re-read with a narrower tool.]`;
-        return { content: [{ type: 'text', text }] };
-      }
-      return { content: [{ type: 'text', text: content }] };
+      return { content: [{ type: 'text', text: this.readTextLines(content, args) }] };
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       return { content: [{ type: 'text', text: `Error reading file: ${msg}` }], isError: true };
     }
+  }
+
+  /** 文本文件按行分段读取：offset/limit 以行为单位，总输出仍受 64KB 上限 */
+  private readTextLines(content: string, args: Record<string, unknown>): string {
+    const hasOffset = args.offset != null;
+    if (!hasOffset) {
+      // 保持原行为：无 offset 时全量读取，仅做 64KB 截断
+      if (content.length > OUTPUT_CAP) {
+        return capOutput(content);
+      }
+      return content;
+    }
+    const lines = content.replace(/\r\n/g, '\n').split('\n');
+    const offset = Math.max(0, Math.floor(Number(args.offset) || 0));
+    const limit = Math.min(Math.max(Math.floor(Number(args.limit) || 2000), 1), 10000);
+    const slice = lines.slice(offset, offset + limit);
+    const header = `[lines ${offset + 1}-${Math.min(offset + slice.length, lines.length)} of ${lines.length}]`;
+    let out = `${header}\n${slice.join('\n')}`;
+    if (offset + slice.length < lines.length) {
+      out += `\n\n[truncated: ${lines.length - offset - slice.length} more lines. Continue with offset=${offset + slice.length}.]`;
+    }
+    return capOutput(out);
   }
 
   private async readExcel(
@@ -158,7 +252,7 @@ export class FileReadTool implements BuiltInTool {
             ? ` (truncated from ${json.length} rows)` : '';
           result[sn + truncatedNote] = data;
         }
-        return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+        return { content: [{ type: 'text', text: capOutput(JSON.stringify(result, null, 2)) }] };
       }
 
       // Default: CSV
@@ -178,13 +272,14 @@ export class FileReadTool implements BuiltInTool {
         }
         parts.push(`--- Sheet: ${sn} ---\n${output}`);
       }
-      return { content: [{ type: 'text', text: parts.join('\n\n') }] };
+      return { content: [{ type: 'text', text: capOutput(parts.join('\n\n')) }] };
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       return { content: [{ type: 'text', text: `Error reading Excel file: ${msg}` }], isError: true };
     }
   }
 
+  /** Word → 结构化 Markdown（mammoth 转 HTML 后转 md，保留标题/表格/列表） */
   private async readDocx(
     path: string,
     fs: ReturnType<typeof getPlatformAdapter>['fs'],
@@ -195,15 +290,18 @@ export class FileReadTool implements BuiltInTool {
       const ab = new ArrayBuffer(bytes.byteLength);
       new Uint8Array(ab).set(bytes);
       const mammoth = await import('mammoth');
-      const result = await mammoth.extractRawText({ arrayBuffer: ab });
-      const text = result.value || '';
-      return { content: [{ type: 'text', text: text || '(文档为空)' }] };
+      const result = await mammoth.convertToHtml({ arrayBuffer: ab });
+      const md = htmlToMarkdown(result.value || '');
+      const messages = (result.messages || []).filter((m) => m.type === 'warning');
+      const note = messages.length ? `\n\n[converter warnings: ${messages.length}]` : '';
+      return { content: [{ type: 'text', text: capOutput((md || '(文档为空)') + note) }] };
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       return { content: [{ type: 'text', text: `Error reading Word file: ${msg}` }], isError: true };
     }
   }
 
+  /** PPTX → 结构化 Markdown（按形状/段落解析，标题占位符 → 二级标题，段落层级 → 缩进列表） */
   private async readPptx(
     path: string,
     fs: ReturnType<typeof getPlatformAdapter>['fs'],
@@ -226,22 +324,51 @@ export class FileReadTool implements BuiltInTool {
       const parts: string[] = [];
       for (const name of slideNames) {
         const xml = await zip.file(name)!.async('string');
-        const texts: string[] = [];
-        const re = /<a:t>([\s\S]*?)<\/a:t>/g;
-        let m: RegExpExecArray | null;
-        while ((m = re.exec(xml)) !== null) {
-          const t = m[1]
-            .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
-            .replace(/&quot;/g, '"').replace(/&apos;/g, "'");
-          if (t) texts.push(t);
-        }
         const idx = parseInt(name.match(/slide(\d+)\.xml/)![1], 10);
-        parts.push(`--- Slide ${idx} ---\n${texts.join(' ') || '(空幻灯片)'}`);
+        const lines: string[] = [];
+        // 逐形状解析（<p:sp> 不嵌套，非贪婪安全）
+        const shapes = xml.match(/<p:sp[\s>][\s\S]*?<\/p:sp>/g) || [];
+        for (const sp of shapes) {
+          const isTitle = /<p:ph[^>]*type="(ctrTitle|title)"/.test(sp);
+          const paras = sp.match(/<a:p>[\s\S]*?<\/a:p>/g) || [];
+          for (const para of paras) {
+            const lvl = Number(para.match(/<a:pPr[^>]*lvl="(\d+)"/)?.[1] || 0);
+            const texts = [...para.matchAll(/<a:t>([\s\S]*?)<\/a:t>/g)].map((m) => decodeXmlEntities(m[1]).trim());
+            const text = texts.filter(Boolean).join('');
+            if (!text) continue;
+            if (isTitle) {
+              lines.push(`## ${text}`);
+            } else {
+              lines.push(`${'  '.repeat(Math.min(lvl, 4))}- ${text}`);
+            }
+          }
+        }
+        parts.push(`--- Slide ${idx} ---\n${lines.join('\n') || '(空幻灯片)'}`);
       }
-      return { content: [{ type: 'text', text: parts.join('\n\n') }] };
+      return { content: [{ type: 'text', text: capOutput(parts.join('\n\n')) }] };
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       return { content: [{ type: 'text', text: `Error reading PowerPoint file: ${msg}` }], isError: true };
+    }
+  }
+
+  /** PDF → 分页文本（unpdf / pdfjs，纯 JS 实现，Node 与桌面端可用） */
+  private async readPdf(
+    path: string,
+    fs: ReturnType<typeof getPlatformAdapter>['fs'],
+  ): Promise<McpCallResult> {
+    try {
+      const b64 = await fs.readFileBase64(path);
+      const bytes = base64ToBytes(b64);
+      const { getDocumentProxy, extractText } = await import('unpdf');
+      const pdf = await getDocumentProxy(bytes);
+      const { totalPages, text } = await extractText(pdf, { mergePages: false });
+      const pages = Array.isArray(text) ? text : [String(text)];
+      const parts = pages.map((pageText, i) => `--- Page ${i + 1}/${totalPages} ---\n${(pageText || '').trim() || '(本页无可提取文本，可能是扫描件/图片页)'}`);
+      return { content: [{ type: 'text', text: capOutput(parts.join('\n\n')) }] };
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return { content: [{ type: 'text', text: `Error reading PDF file: ${msg}` }], isError: true };
     }
   }
 }

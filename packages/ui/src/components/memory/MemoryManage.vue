@@ -35,8 +35,51 @@
         </el-input>
 
         <el-button type="primary" :icon="Plus" @click="openCreate">手动新增</el-button>
+
+        <el-tooltip content="立即执行一次记忆整理：去重、矛盾清理、过期淘汰、短期记忆提拔为长期" placement="top">
+          <el-button :icon="MagicStick" :loading="store.dreamRunning" @click="onDreamRun">立即整理</el-button>
+        </el-tooltip>
+        <el-button :icon="Clock" @click="openDreamLog">整理记录</el-button>
       </div>
     </div>
+
+    <!-- 整理记录：时间线展示每次整理的统计 -->
+    <el-dialog v-model="dreamLogOpen" title="记忆整理记录" width="560px">
+      <div v-if="dreamLogLoading" style="padding: 12px"><el-skeleton :rows="3" animated /></div>
+      <el-empty v-else-if="store.dreamLog.length === 0" description="暂无整理记录，点击「立即整理」试试" :image-size="72" />
+      <el-timeline v-else style="padding: 4px 8px">
+        <el-timeline-item
+          v-for="log in store.dreamLog"
+          :key="log.id"
+          :timestamp="formatTime(log.started_at)"
+          :type="log.error ? 'danger' : 'success'"
+        >
+          <div class="dream-log-item">
+            <span class="dream-log-title">
+              {{ log.trigger === 'manual' ? '手动整理' : '自动整理' }}
+              <el-tag v-if="log.error" size="small" type="danger">失败</el-tag>
+            </span>
+            <span v-if="log.error" class="dream-log-stats">{{ log.error }}</span>
+            <span v-else-if="parseDreamStats(log).scanned === 0" class="dream-log-stats">没有需要整理的记忆</span>
+            <span v-else class="dream-log-stats">
+              扫描 {{ parseDreamStats(log).scanned }} 条 · 提拔 {{ parseDreamStats(log).promoted }} ·
+              合并 {{ parseDreamStats(log).merged }} · 淘汰 {{ parseDreamStats(log).discarded }} ·
+              保留 {{ parseDreamStats(log).kept }}
+            </span>
+          </div>
+        </el-timeline-item>
+      </el-timeline>
+      <div v-if="store.dreamTotal > 10" class="memory-pagination">
+        <el-pagination
+          :total="store.dreamTotal"
+          :page-size="10"
+          layout="prev, pager, next"
+          small
+          background
+          @current-change="onDreamLogPage"
+        />
+      </div>
+    </el-dialog>
 
     <!-- 手动新增：弹窗。此前为内联展开表单，「手动新增」是取反开关，
          已打开时再点一次会静默关闭并丢弃已输入内容 -->
@@ -148,6 +191,11 @@
             <span class="time-cell">{{ formatTime(row.last_used_at || row.created_at) }}</span>
           </template>
         </el-table-column>
+        <el-table-column label="使用" width="70" align="center">
+          <template #default="{ row }">
+            <span class="time-cell">{{ (row as any).use_count ?? 0 }}</span>
+          </template>
+        </el-table-column>
         <el-table-column label="归属智能体" width="140">
           <template #default="{ row }">
             <span v-if="row.agent_id" class="agent-cell">{{ agentName(row.agent_id) }}</span>
@@ -179,7 +227,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
-import { Plus, Search } from '@element-plus/icons-vue';
+import { Plus, Search, MagicStick, Clock } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { useMemoryStore, useAgentStore } from '../../stores';
 import type { MemoryDimension, MemoryRow } from '../../stores/memory';
@@ -402,6 +450,59 @@ async function submitEdit() {
   }
 }
 
+// ── 记忆整理（Dreaming） ──
+const dreamLogOpen = ref(false);
+const dreamLogLoading = ref(false);
+
+function parseDreamStats(log: any): { scanned: number; promoted: number; merged: number; discarded: number; kept: number } {
+  try {
+    const s = typeof log.stats_json === 'string' ? JSON.parse(log.stats_json) : (log.stats_json || {});
+    return { scanned: s.scanned || 0, promoted: s.promoted || 0, merged: s.merged || 0, discarded: s.discarded || 0, kept: s.kept || 0 };
+  } catch {
+    return { scanned: 0, promoted: 0, merged: 0, discarded: 0, kept: 0 };
+  }
+}
+
+async function onDreamRun() {
+  try {
+    const r = await store.runDreaming();
+    const s = r || {};
+    if (s.skipped) {
+      ElMessage.info(`整理跳过：${s.skipped}`);
+    } else if (s.scanned) {
+      ElMessage.success(`整理完成：扫描 ${s.scanned} 条，提拔 ${s.promoted || 0}，合并 ${s.merged || 0}，淘汰 ${s.discarded || 0}，保留 ${s.kept || 0}`);
+    } else {
+      ElMessage.info('当前没有需要整理的记忆');
+    }
+    await reload(true);
+  } catch (e: unknown) {
+    ElMessage.error(e instanceof Error ? e.message : '整理失败');
+  }
+}
+
+async function openDreamLog() {
+  dreamLogOpen.value = true;
+  dreamLogLoading.value = true;
+  try {
+    await store.loadDreamLog(1, 10);
+  } catch (e: unknown) {
+    ElMessage.error(e instanceof Error ? e.message : '加载整理记录失败');
+  } finally {
+    dreamLogLoading.value = false;
+  }
+}
+
+async function onDreamLogPage(p: number) {
+  dreamLogLoading.value = true;
+  try {
+    await store.loadDreamLog(p, 10);
+  } catch (e: unknown) {
+    ElMessage.error(e instanceof Error ? e.message : '加载整理记录失败');
+  } finally {
+    dreamLogLoading.value = false;
+  }
+}
+
 // ── 删除 ──
 async function removeRow(row: MemoryRow) {
   try {
@@ -524,6 +625,26 @@ onMounted(async () => {
 .muted {
   color: var(--color-text-secondary);
   font-size: 12px;
+}
+
+/* 整理记录时间线 */
+.dream-log-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.dream-log-title {
+  font-size: 13px;
+  color: var(--color-text);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.dream-log-stats {
+  font-size: 12px;
+  color: var(--color-text-secondary);
 }
 
 /* 分页 */

@@ -15,5 +15,7 @@ export { useScheduledTaskStore } from './scheduledTask';
 export { usePluginStore } from './plugin';
 export type { PluginInfo } from './plugin';
 export { useGitStore } from './git';
+export { useBrowserStore } from './browser';
+export type { BrowserTab } from './browser';
 export { useMemoryStore } from './memory';
 export type { MemoryDimension, MemoryRow } from './memory';

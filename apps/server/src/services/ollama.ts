@@ -63,22 +63,29 @@ const MODEL_CATALOG: CatalogItem[] = [
 
 const pullStatus = new Map<string, { state: string; progress: number; message: string }>();
 
-async function fetchOllamaTags(): Promise<Array<{ name: string; size?: number }>> {
+async function fetchOllamaTags(): Promise<Array<{ name: string; size?: number }> | null> {
   try {
     const resp = await fetch(`${OLLAMA_BASE}/api/tags`);
-    if (!resp.ok) return [];
+    if (!resp.ok) return null;
     const data = await resp.json() as any;
     return (data?.models || []).map((m: any) => ({ name: m.name, size: m?.size }));
-  } catch { return []; }
+  } catch { return null; }
+}
+
+/** 本机 Ollama 是否可达（用于前端区分"未安装/未启动"与"没有已装模型"） */
+export async function isOllamaAvailable(): Promise<boolean> {
+  return (await fetchOllamaTags()) !== null;
 }
 
 /** 市场列表：目录 + 是否已在本机 + 拉取进度 */
 export async function listOllamaMarket() {
   const existing = await fetchOllamaTags();
+  const ollamaAvailable = existing !== null;
+  const tags = existing || [];
   // Ollama 对不带 tag 的模型会自动补 :latest，而 catalog key 可能不带 tag，
   // 同时登记原 name 与去 :latest 后缀的 name，避免已拉取模型仍显示"拉取"按钮
   const existingNames = new Set<string>();
-  for (const m of existing) {
+  for (const m of tags) {
     existingNames.add(m.name);
     if (m.name.endsWith(':latest')) existingNames.add(m.name.slice(0, -7));
   }
@@ -87,7 +94,7 @@ export async function listOllamaMarket() {
     onDisk: existingNames.has(m.key),
     download: pullStatus.get(m.key) || null,
   }));
-  return { items, existing, ollamaBaseUrl: OLLAMA_BASE };
+  return { items, existing: tags, ollamaAvailable, ollamaBaseUrl: OLLAMA_BASE };
 }
 
 /** 当前拉取进度（用于工具侧查询） */

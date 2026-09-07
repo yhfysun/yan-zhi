@@ -17,16 +17,16 @@ const desktopBetterSqlite = path.join(
 );
 
 const ESBUILD_VERSION = '0.28.2';
-const LLAMA_VERSION = '3.20.0';
 
 // 原生依赖按「构建机平台 + 架构」挑选。
 // 之前这里写死 win32-x64，在 macOS / Linux runner 上 npm 直接 EBADPLATFORM 失败，
 // 因此改成宿主平台映射（构建产物架构与构建机一致，不做交叉编译）。
+// 注：node-llama-cpp 已移除——本地模型引擎改用 Ollama，运行时无引用（孤儿依赖）。
 const PLATFORM_BINDINGS = {
-  'win32-x64': { esbuild: '@esbuild/win32-x64', llama: '@node-llama-cpp/win-x64', sqliteVec: 'sqlite-vec-windows-x64' },
-  'darwin-x64': { esbuild: '@esbuild/darwin-x64', llama: '@node-llama-cpp/mac-x64', sqliteVec: 'sqlite-vec-darwin-x64' },
-  'darwin-arm64': { esbuild: '@esbuild/darwin-arm64', llama: '@node-llama-cpp/mac-arm64-metal', sqliteVec: 'sqlite-vec-darwin-arm64' },
-  'linux-x64': { esbuild: '@esbuild/linux-x64', llama: '@node-llama-cpp/linux-x64', sqliteVec: 'sqlite-vec-linux-x64' },
+  'win32-x64': { esbuild: '@esbuild/win32-x64', sqliteVec: 'sqlite-vec-windows-x64' },
+  'darwin-x64': { esbuild: '@esbuild/darwin-x64', sqliteVec: 'sqlite-vec-darwin-x64' },
+  'darwin-arm64': { esbuild: '@esbuild/darwin-arm64', sqliteVec: 'sqlite-vec-darwin-arm64' },
+  'linux-x64': { esbuild: '@esbuild/linux-x64', sqliteVec: 'sqlite-vec-linux-x64' },
 };
 
 const hostKey = `${process.platform}-${process.arch}`;
@@ -85,12 +85,34 @@ function runCommand(file, args, options = {}) {
 
 console.log(
   `[prepare-server-runtime] 生成扁平后端运行依赖（平台 ${hostKey}，` +
-    `原生包 ${bindings.esbuild}@${ESBUILD_VERSION} / ${bindings.llama}@${LLAMA_VERSION}）...`,
+    `原生包 ${bindings.esbuild}@${ESBUILD_VERSION}）...`,
 );
 
-if (fs.existsSync(buildDir)) {
-  fs.rmSync(buildDir, { recursive: true, force: true });
+// 删除深层 node_modules 时可能因路径超长/文件占用/安全策略失败。
+// 失败时退化为「重命名让路」：不阻断构建，残留目录留待下次清理。
+function removeDirBestEffort(dir) {
+  if (!fs.existsSync(dir)) return;
+  try {
+    fs.rmSync(dir, { recursive: true, force: true });
+  } catch (err) {
+    const stale = `${dir}.stale-${Date.now()}`;
+    console.warn(`[prepare-server-runtime] 删除失败（${err.message.split('\n')[0]}），重命名为 ${path.basename(stale)}`);
+    fs.renameSync(dir, stale);
+  }
 }
+
+// 顺带清理上次残留的 stale 目录（尽力而为）
+for (const entry of fs.readdirSync(path.dirname(buildDir))) {
+  if (entry.startsWith(path.basename(buildDir) + '.stale-')) {
+    try {
+      fs.rmSync(path.join(path.dirname(buildDir), entry), { recursive: true, force: true });
+    } catch {
+      // 忽略：下次构建继续尝试
+    }
+  }
+}
+
+removeDirBestEffort(buildDir);
 fs.mkdirSync(buildDir, { recursive: true });
 
 // @yan-zhi/core、@yan-zhi/shared 不交给 npm 安装：它们是 workspace 源码包，
@@ -102,7 +124,6 @@ const pkg = {
   type: 'module',
   dependencies: {
     [bindings.esbuild]: ESBUILD_VERSION,
-    [bindings.llama]: LLAMA_VERSION,
     [bindings.sqliteVec]: '^0.1.9',
     'adm-zip': '^0.6.0',
     bcryptjs: '^2.4.3',
@@ -112,13 +133,13 @@ const pkg = {
     jsonwebtoken: '^9.0.2',
     jszip: '^3.10.1',
     mammoth: '^1.8.0',
-    'node-llama-cpp': LLAMA_VERSION,
     pg: '^8.23.0',
     playwright: '^1.62.1',
     'simple-git': '^3.36.0',
     'sqlite-vec': '^0.1.9',
     'tesseract.js': '^5.1.1',
     tsx: '^4.19.0',
+    unpdf: '^0.12.1',
     uuid: '^10.0.0',
     ws: '^8.18.0',
     xlsx: '^0.18.5',
@@ -144,14 +165,14 @@ runCommand(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['install', '--omit
 
 const tempNodeModules = path.join(buildDir, 'node_modules');
 
-for (const dep of [bindings.esbuild, bindings.llama]) {
+for (const dep of [bindings.esbuild]) {
   if (!fs.existsSync(path.join(tempNodeModules, ...dep.split('/')))) {
     throw new Error(`[prepare-server-runtime] 平台原生包未安装成功: ${dep}（${hostKey}）`);
   }
 }
 
 // better-sqlite3 会在下方使用 Electron ABI 的预编译二进制覆盖，不能在 npm install
-// 阶段触发 node-gyp 构建。这里只单独执行 esbuild / node-llama-cpp 必需的后置脚本，
+// 阶段触发 node-gyp 构建。这里只单独执行 esbuild 必需的后置脚本，
 // 避免整包开启 scripts 导致 better-sqlite3 因缺少 VS 构建失败。
 const runPackagePostinstall = (scriptPath, args = []) => {
   const resolved = path.join(tempNodeModules, scriptPath);
@@ -173,7 +194,6 @@ const runPackagePostinstall = (scriptPath, args = []) => {
 };
 
 runPackagePostinstall(path.join('esbuild', 'install.js'));
-runPackagePostinstall(path.join('node-llama-cpp', 'dist', 'cli', 'cli.js'), ['postinstall']);
 
 // 复制 workspace 源码包（排除 node_modules：里面是 pnpm 软链，复制过去会断链且徒增体积）
 const yanZhiDir = path.join(tempNodeModules, '@yan-zhi');
@@ -218,13 +238,11 @@ fs.mkdirSync(sqliteBuildDir, { recursive: true });
 fs.copyFileSync(desktopBetterSqlite, path.join(sqliteBuildDir, 'better_sqlite3.node'));
 
 assertInside(runtimeDir, runtimeNodeModules);
-if (fs.existsSync(runtimeNodeModules)) {
-  fs.rmSync(runtimeNodeModules, { recursive: true, force: true });
-}
+removeDirBestEffort(runtimeNodeModules);
 fs.cpSync(tempNodeModules, runtimeNodeModules, { recursive: true, force: true });
 
 console.log('[prepare-server-runtime] 清理临时目录:', buildDir);
-fs.rmSync(buildDir, { recursive: true, force: true });
+removeDirBestEffort(buildDir);
 
 const totalBytes = (() => {
   let sum = 0;

@@ -7,10 +7,8 @@ import type { McpCallResult } from '../../mcp/client';
 export class AskUserTool implements BuiltInTool {
   name = 'ask_user';
   description =
-    'Ask the user a clarifying question and WAIT for their answer before continuing. ' +
-    'Use this whenever you need the user to choose between options, provide missing information, ' +
-    'confirm a decision, or disambiguate a request. The conversation pauses until the user responds. ' +
-    'Prefer passing `options` so the user can pick with one click.';
+    '向用户提出一个澄清问题并等待回答后再继续。适用于需要在多个选项中让用户选、补充缺失信息、确认决策或消除歧义的场景。' +
+    '对话会暂停，直到用户作答。建议尽量传入 options 让用户一键选择。';
   inputSchema = {
     type: 'object',
     properties: {

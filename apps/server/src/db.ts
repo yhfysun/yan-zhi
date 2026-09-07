@@ -213,6 +213,7 @@ CREATE INDEX IF NOT EXISTS idx_space_user ON space(user_id);
     user_id TEXT NOT NULL REFERENCES user(id),
     name TEXT NOT NULL UNIQUE,
     description TEXT,
+    category TEXT NOT NULL DEFAULT '其他',
     input_schema_json TEXT NOT NULL,
     output_schema_json TEXT,
     runtime TEXT NOT NULL DEFAULT 'node',
@@ -292,6 +293,40 @@ for (const table of ['platform', 'model']) {
   try { db.exec(`ALTER TABLE ${table} ADD COLUMN is_builtin INTEGER NOT NULL DEFAULT 0`); } catch {}
 }
 
+// 迁移平台表（添加停顿时间范围配置，用于多 Token 轮询的请求节流）
+try { db.exec('ALTER TABLE platform ADD COLUMN pause_min_ms INTEGER NOT NULL DEFAULT 0'); } catch {}
+try { db.exec('ALTER TABLE platform ADD COLUMN pause_max_ms INTEGER NOT NULL DEFAULT 0'); } catch {}
+
+// 平台多 API Key 池：一个平台可配置多个 Token，轮询使用、失败自动切换、按失败次数优先选择。
+// fail_count 按时间窗口衰减（超过窗口未失败则视为 0），避免临时性错误永久拉低优先级。
+db.exec(`
+  CREATE TABLE IF NOT EXISTS platform_api_key (
+    id TEXT PRIMARY KEY,
+    platform_id TEXT NOT NULL REFERENCES platform(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL,
+    api_key TEXT NOT NULL,
+    label TEXT,
+    fail_count INTEGER NOT NULL DEFAULT 0,
+    last_fail_at INTEGER,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_platform_api_key_platform ON platform_api_key(platform_id, enabled, fail_count ASC);
+`);
+
+// 迁移：把 platform.api_key_enc 中的存量 Key 导入 platform_api_key 表（幂等，已存在则跳过）
+try {
+  const rows = db.prepare("SELECT id, user_id, api_key_enc FROM platform WHERE api_key_enc IS NOT NULL AND api_key_enc != ''").all() as any[];
+  const hasKey = db.prepare('SELECT 1 FROM platform_api_key WHERE platform_id = ? LIMIT 1');
+  const insertKey = db.prepare(
+    'INSERT INTO platform_api_key (id, platform_id, user_id, api_key, label, fail_count, enabled, created_at) VALUES (?, ?, ?, ?, ?, 0, 1, ?)',
+  );
+  for (const r of rows) {
+    if (hasKey.get(r.id)) continue;
+    insertKey.run(`pak_${r.id}_migrated`, r.id, r.user_id || 'guest', r.api_key_enc, '迁移Key', Date.now());
+  }
+} catch {}
+
 // 迁移 conversation 表（添加 space_id 列）
 try { db.exec('ALTER TABLE conversation ADD COLUMN space_id TEXT'); } catch {}
 // 迁移完成后才能创建引用 space_id 的索引（旧库迁移场景）
@@ -345,6 +380,9 @@ try {
 for (const t of ['custom_tool', 'agent']) {
   try { db.exec(`ALTER TABLE ${t} ADD COLUMN installs INTEGER NOT NULL DEFAULT 0`); } catch {}
 }
+
+// 迁移：custom_tool 新增 category 分类列（自定义工具归类；旧数据回填为「其他」）
+try { db.exec("ALTER TABLE custom_tool ADD COLUMN category TEXT NOT NULL DEFAULT '其他'"); } catch {}
 
 // ===== 客户端发现与聊天 =====
 db.exec(`
@@ -519,9 +557,67 @@ try {
 // 智能体完整定义（含 system_prompt 等）存前端本地库；此处种子仅为了让后端能解析
 // 默认智能体的工具挂载与子智能体关系（会话绑定默认智能体后 call_agent/list_sub_agents 可用）。
 // server agent 表无 user_id 列，归属靠 is_public=1 全局共享。
-const DEFAULT_AGENT_BUILTIN_TOOLS = ['file_read', 'file_write', 'file_list', 'code_search', 'code_outline', 'js_exec', 'http_request', 'dns_lookup', 'port_scan', 'tcp_send', 'udp_send', 'web_search', 'call_agent', 'list_sub_agents', 'ask_user', 'confirm_user', 'task_plan', 'task_step', 'configure_model_platform'];
-const PAGE_AGENT_BUILTIN_TOOLS = ['browser_navigate', 'browser_click', 'browser_type', 'browser_press_key', 'browser_scroll', 'browser_hover', 'browser_get_text', 'browser_get_dom', 'browser_wait', 'browser_screenshot', 'browser_fill_form', 'browser_submit_form', 'browser_search', 'browser_next_page', 'browser_prev_page', 'browser_wait_for', 'browser_get_visible_text', 'browser_select_option', 'browser_check', 'browser_uncheck', 'browser_get_page_info', 'browser_login_saved', 'browser_new_tab', 'browser_switch_tab', 'browser_close_tab', 'browser_get_tabs', 'browser_wait_for_request', 'browser_get_network_log', 'browser_extract_list', 'browser_visual_locate', 'browser_upload', 'browser_download', 'browser_scroll_into_view', 'browser_is_visible', 'browser_drag', 'browser_get_a11y_tree', 'ask_user'];
+// 注：此处是「默认助手可用工具」的白名单，必须与 builtin/index.ts 里 registry.register 的非 browser_* 工具对齐，
+// 否则会出现「已注册但智能体调不到」的断链（典型：内置 skill 里写了 compare_products，默认助手却没挂它）。
+// 已注册未挂载 = 工具在 UI 里看得见、LLM 调不了。新增内置工具时记得同步这里。
+const DEFAULT_AGENT_BUILTIN_TOOLS = [
+  // 文件读写
+  'file_read', 'file_write', 'file_list',
+  // 代码工具
+  'code_search', 'code_outline', 'js_exec', 'python_exec',
+  // 命令执行
+  'cmd_exec',
+  // 联网搜索
+  // web_search / web_fetch 工具已从项目移除：联网检索与网页内容获取统一委派 pageAgent
+  // （真实浏览器 browser_get_page_content 已覆盖抓正文能力）
+  // 网络安全
+  'http_request', 'dns_lookup', 'port_scan', 'tcp_send', 'udp_send',
+  // 子智能体
+  'call_agent', 'list_sub_agents',
+  // 用户交互
+  'ask_user', 'confirm_user',
+  // 任务规划
+  'task_plan', 'task_step',
+  // 模型配置
+  'configure_model_platform',
+  // 多模态 / 商品对比
+  'image_analyze', 'compare_products',
+  // 浏览器核心工具（阶段三：默认助手可直接调用，复杂多步任务仍可委派 pageAgent）
+  'browser_navigate', 'browser_get_page_info', 'browser_action_and_observe',
+  'browser_click', 'browser_type', 'browser_press_key',
+  'browser_get_visible_text', 'browser_wait_for', 'browser_screenshot',
+];
+// 默认助理内置的文档处理类 skill（Word/Excel/PDF/图片/格式转换，与前端 agent.ts 的 DEFAULT_AGENT_SKILL_IDS 对齐）。
+// 后端 buildSystemPromptForBackend 按 agent.skill_ids 注入 skill 描述与流程指引。
+const DEFAULT_AGENT_SKILL_IDS = [
+  'skill_docx_processing', 'skill_xlsx_data_processing', 'skill_pdf_processing',
+  'skill_image_processing', 'skill_file_convert',
+];
+// pageAgent 工具收口（与前端 packages/ui/src/stores/agent.ts 的 PAGE_AGENT_BUILTIN_TOOLS 对齐，
+// 含 v4 回补的 browser_scroll，共六个：四件套 + scroll + ask_user）。
+// 修复：旧版 36 个 browser_* 全量挂载 + 桌面端 get_dom 只回 "DOM 节点数"，
+// 导致子智能体拿不到链接内容，无限重试 browser_get_dom / browser_extract_list 直到用户手动终止。
+const PAGE_AGENT_BUILTIN_TOOLS = [
+  // 四件套：访问 URL / 输入内容 / 点击 / 专门获取当前页面内容
+  'browser_navigate', 'browser_type', 'browser_click', 'browser_get_page_content',
+  // 滚动：查看视口外内容 / 触发懒加载（v4 回补，四件套收口时误删导致 agent 无法滚动）
+  'browser_scroll',
+  // 登录闭环必备：向用户提问/请求确认（扫码、验证码等人工干预场景）
+  'ask_user',
+];
 // 默认智能体的 system_prompt 必须存进 server 端（后端 buildSystemPromptForBackend 直接读 agent.system_prompt 列，不再前端注入）
+// 联网查询委派指引块：默认助手提示词统一引用，旧库迁移按此标记增量追加（与前端 agent.ts 的 WEB_QUERY_PROMPT_BLOCK 保持一致）
+const WEB_QUERY_PROMPT_BLOCK = `【联网查询 · 委派 pageAgent】
+- 遇到不懂的知识、不确定的事实，或需要实时/联网信息（新闻、行情、价格、最新文档、技术方案等）时，委派子智能体 pageAgent 联网查询：call_agent { agentId: "a_builtin_page_agent", input: "打开搜索引擎检索 <关键词>，浏览相关页面，提取并总结关键信息（附来源 URL）" }。
+- pageAgent 会用真实浏览器打开搜索引擎（如 https://www.bing.com/search?q=关键词 或 https://www.baidu.com/s?wd=关键词）检索，必要时点进具体页面深入阅读，返回带来源的总结。
+- 拿到 pageAgent 返回结果后，由你汇总成简明、有出处的结论回复用户；信息仍不足时换关键词再次委派（最多 2-3 次），仍查不到就如实说明。
+- 不确定的事实不要凭空编造，优先联网核实；委派前先想好搜索关键词，一次把任务描述清楚。`;
+// 数据查询委派指引块：默认助手提示词统一引用，旧库迁移按此标记增量追加（与前端 agent.ts 保持一致）
+const DATA_QUERY_PROMPT_BLOCK = `【数据查询 · 委派 dataAgent】
+- 用户要查「项目里的数据」（对话/消息/智能体/任务/知识库/模型/定时任务等库内数据），或要按条件筛选、聚合统计、翻页、导出时，委派子智能体 dataAgent：call_agent { agentId: "a_builtin_data_agent", input: "<要查什么数据 + 维度/过滤条件/时间范围/要几行>" }。
+- dataAgent 会先检索本体语义层拿到本体 code，再按查询意图只读取数，结果以 markdown 表格返回；行数不够它会自行翻页。
+- 需要深度统计分析或交付表格/图表文件时，在委派 input 里说明，dataAgent 会用 python_exec / file_write 完成。
+- 不要自己凭空写 SQL 猜表结构：库内数据一律交给 dataAgent。`;
 const DEFAULT_AGENT_SYSTEM_PROMPT = `你是一个 ReAct（推理-行动）智能体。遵循以下规则：
 
 1. **思考**：分析用户需求并决定下一步操作。
@@ -534,45 +630,88 @@ const DEFAULT_AGENT_SYSTEM_PROMPT = `你是一个 ReAct（推理-行动）智能
 - 需要外部信息时主动调用工具
 - 工具返回的信息可能不完整，多轮调用获取全面数据
 - 用中文回复，代码需标注语言
-- 回复简洁有效，不输出无关内容`;
-const PAGE_AGENT_SYSTEM_PROMPT = `你是一个浏览器自动化专家（pageAgent）。你通过调用浏览器工具来操作一个真实的、可见的浏览器窗口。
+- 回复简洁有效，不输出无关内容
 
-能力：
+` + WEB_QUERY_PROMPT_BLOCK;
+const PAGE_AGENT_SYSTEM_PROMPT = `你是一个浏览器自动化专家（pageAgent）。你通过调用浏览器工具操作一个真实的、可见的浏览器窗口（预览面板），用户能实时看到你的每一步操作。
+
+工具（仅以下六个，其他浏览器工具不可用）：
 - browser_navigate: 导航到指定 URL
-- browser_click: 点击元素（优先用元素编号 index，其次 CSS 选择器或坐标）
-- browser_type: 在输入框输入文本（优先用元素编号 index 定位输入框）
-- browser_press_key: 按键（Enter/Tab/Escape 等）
-- browser_scroll: 滚动页面
-- browser_hover: 悬停元素
-- browser_get_text: 获取元素文本
-- browser_get_dom: 获取页面 DOM 摘要
-- browser_wait: 等待指定时间
-- browser_screenshot: 截图
-- browser_fill_form: 批量填写表单（支持 text/select/checkbox/radio）
-- browser_submit_form: 提交表单（点提交按钮或回车，等待导航）
-- browser_search: 在页面搜索框输入并提交（自动识别搜索框）
-- browser_next_page / browser_prev_page: 翻页（自动识别"下一页/上一页"）
-- browser_wait_for: 智能等待（等元素/URL/文本出现）
-- browser_get_visible_text: 获取干净可见文本（过滤隐藏元素）
-- browser_select_option: 下拉选择
-- browser_check / browser_uncheck: 勾选/取消勾选
-- browser_get_page_info: 返回当前 url/title/可交互元素摘要（理解页面状态）
-- browser_login_saved: 用已保存的密码自动登录站点（需先用浏览器密码管理保存）
+- browser_type: 在输入框输入文本（支持回车提交搜索/表单）
+- browser_click: 点击元素（优先元素编号 index，其次 CSS 选择器或坐标）
+- browser_scroll: 滚动页面。传 y（正数向下/负数向上，像素，如 y=600）滚动一屏查看视口外内容；传 selector 则把目标元素滚到视野中央。用于查看长列表更多内容、触发懒加载，或让视口外的按钮/元素进入视野后再点击
+- browser_get_page_content: 一次获取当前页面完整状态：title + url + 可见正文 + 带 index 编号的可交互元素列表（已穿透 iframe/Shadow DOM）
 - ask_user: 向用户提问/请求确认（用于扫码登录等需要人工干预的场景）
 
 工作流程：
-1. 分析委派给你的任务
-2. 若目标站点需要登录，优先用 browser_login_saved 自动登录
-3. 若扫码/验证码登录，用 ask_user 提示用户在浏览器面板完成
-4. browser_navigate 导航到目标页面
-5. 用 browser_get_page_info 了解页面结构
-6. 用 browser_fill_form / browser_click / browser_search 等执行操作
-7. 用 browser_submit_form 提交表单
-8. 必要时 browser_wait_for 等待加载
-9. 用 browser_get_visible_text 获取最终结果
-10. 返回任务结果摘要
+1. 分析委派给你的任务（如"打开某网站搜索某关键词"、"每日签到领取积分"）
+2. browser_navigate 打开目标页面
+3. browser_get_page_content 了解页面结构与状态，拿到带编号的可交互元素列表
+4. 用 index 定位目标元素，browser_type 输入 / browser_click 点击（搜索 = 输入关键词后回车或点搜索按钮）
+5. 页面跳转后重新 browser_get_page_content 刷新编号列表，逐步推进
+5a. 需要查看视口外的内容（长列表、懒加载、视口外按钮）时，先 browser_scroll 滚动，再重新 browser_get_page_content 拿最新状态
+6. 用 browser_get_page_content 获取最终结果（正文/搜索结果等）
+7. 返回任务结果摘要（用中文）
 
-注意：优先用元素编号 index 定位（最稳定），其次 CSS 选择器，最后坐标。`;
+【核心工作方式 — 元素编号定位（最重要）】
+1. 每到一个新页面或弹窗出现后，先 browser_get_page_content 获取带编号（index）的可交互元素列表，已穿透 iframe/Shadow DOM（含登录弹窗内的元素）。
+2. 用列表中的 index 直接调用 browser_click / browser_type（传 index 参数）操作目标元素。不要猜动态 hash class 选择器（如 input-xrB84C），不要凭截图猜坐标。
+3. 若 selector 匹配到多个元素，工具会返回 ambiguous 和候选列表（带编号），从中选一个 index 重试。
+4. 页面变化后 index 会失效，重新调用 browser_get_page_content 刷新编号列表。
+5. 每次 click/type 的返回包含 pageChanged / urlChanged / noChangeStreak：noChangeStreak ≥ 3 时会收到 warning，必须停止重复同类操作，改换定位方式（重新 get_page_content 分析）或 ask_user 请求人工介入。
+
+【登录与人工干预】
+- 检测到需要登录/扫码/验证码等人工干预场景时，用 ask_user 让用户在浏览器面板中完成，等用户确认后用 browser_get_page_content 复核状态，再继续任务；不要把"需要登录"当结论直接返回给父智能体。
+- 禁止代填验证码等只能由用户本人完成的信息。
+
+【防循环硬约束】
+- 同一工具 + 相同参数连续调用 2 次结果不变 → 立即停止重试，换其他工具或向父智能体返回已有结果。
+- 读页工具连续 3 次无法拿到目标信息 → 停止盲试，直接返回已获取的部分结果并说明缺失原因。
+- 任务要求提取搜索结果/链接列表时，只用 browser_get_page_content 的输出提取（配合 browser_scroll 翻看视口外内容），不要反复换参数重试。
+- 定位优先级：browser_get_page_content 获取编号列表 → index 参数定位（首选）→ 稳定 id / ARIA / :contains(可见文本) 选择器 → 坐标（最后手段）。
+- 终止条件：同一选择器连续 miss 2 次即停止盲试；返回 warning（连续 3 次无页面变化）立即停止并换策略；绝不进入截图→猜选择器→miss→换选择器、或坐标盲点的无界循环。`;
+// 数据查询智能体挂载：本体语义层取数四件套 + 通用底座（分析/文件/规划/委派）。
+// api_* 由后端直查执行（mcp/api-tool-executor.ts），其余为核心内置工具。
+const DATA_AGENT_BUILTIN_TOOLS = [
+  // 数据查询（P4.1）
+  'api_datasource_list', 'api_ontology_search', 'api_ontology_list', 'api_data_query', 'api_data_paginate',
+  // 分析与交付
+  'python_exec', 'file_read', 'file_write', 'file_list', 'code_search',
+  // 任务规划与用户交互
+  'task_plan', 'task_step', 'ask_user', 'confirm_user',
+  // 委派（需要联网/报告生成时交给其它智能体）
+  'call_agent', 'list_sub_agents',
+];
+/** 数据分析/可视化/Excel 类 skill（与 skill 表种子对齐），挂上后可直接出图表与表格文件 */
+const DATA_AGENT_SKILL_IDS = ['skill_xlsx_data_processing', 'skill_data_visualization', 'skill_markdown_doc'];
+const DATA_AGENT_SYSTEM_PROMPT = `你是「数据查询分析专家」。你通过「本体语义层」对已接入的数据源做只读取数、分析与交付，不直接猜表结构写 SQL。
+
+## 可用工具与职责
+- api_datasource_list：列出可用数据源。不传数据源 id 时默认用内置「言智项目库」（本项目自身数据库，只读）。
+- api_ontology_search：**取数第一步**，用用户的自然语言问题检索最相关的已发布本体，返回本体 code、维度/时间维度/度量/过滤器/默认选择列与语义摘要。
+- api_ontology_list：按数据源或关键字浏览本体候选（检索无果时用）。
+- api_data_query：取数。优先传 ontology（本体 code）+ intent 走语义层编译；没有合适本体时才用 sql 兜底（单条只读 SELECT）。
+- api_data_paginate：翻页（offset/limit），单页上限 200 行。
+- python_exec：对查询结果做统计/建模/计算；file_write：把结果落成交付文件。
+
+## 标准取数流程
+1. 用户问数据 → 先 api_ontology_search 找本体（看 code、默认选择列、过滤器、语义摘要）。
+2. api_data_query 传 { ontology: "<code>", intent: {...} }：
+   - dimensions：要分组/展示的**维度名**（必须是本体维度或时间维度名）
+   - measures：要聚合的**度量名** + 聚合函数（sum / count / count_distinct / avg / min / max）
+   - timeDimension：时间维度名 + 粒度（year / quarter / month / week / day / hour / minute）
+   - filters：本体**过滤器名**（或带比较符的裸 SQL 条件）
+   - orderBy / limit：默认 100 行，单次上限 1000
+3. 行数不够就 api_data_paginate 翻页，禁止一次拉全表。
+4. 回答用 markdown 表格呈现（列多时只展示关键列），并说明取数口径：用了哪个本体 code、哪些过滤器、时间范围与行数。
+
+## 硬约束
+- **只能只读**：禁止 INSERT / UPDATE / DELETE / DDL；兜底 SQL 有只读护栏，写语句会被直接拦截。
+- **字段只能引用本体已声明的维度/度量/时间维度/过滤器**，禁止凭空编造列名。工具报「字段不存在」时按报错里的可用字段改名重试，最多 2 次。
+- 找不到合适本体时，如实说明并用 api_ontology_list 给出候选本体，不要瞎写 SQL 猜表结构。
+- 结果可能截断：关注返回的 truncated 标记，必要时加过滤器缩小范围或翻页。
+- 需要深度统计分析时用 python_exec；需要交付表格/图表文件时用 file_write（category=deliverable）。`;
+
 const seedAgents: Array<Record<string, unknown>> = [
   {
     id: 'a_default_assistant',
@@ -581,33 +720,94 @@ const seedAgents: Array<Record<string, unknown>> = [
     type: 'harness',
     is_default: 1,
     builtin_tool_ids: JSON.stringify(DEFAULT_AGENT_BUILTIN_TOOLS),
-    sub_agent_ids: JSON.stringify(['a_builtin_page_agent']),
+    // pageAgent（联网/浏览器） + 数据查询分析专家（库内数据只读取数）
+    sub_agent_ids: JSON.stringify(['a_builtin_page_agent', 'a_builtin_data_agent']),
+    skill_ids: JSON.stringify(DEFAULT_AGENT_SKILL_IDS),
     system_prompt: DEFAULT_AGENT_SYSTEM_PROMPT,
   },
   {
     id: 'a_builtin_page_agent',
     name: '浏览器操作专家',
-    description: '内置 pageAgent：通过 Playwright 驱动真实浏览器，执行导航/点击/输入/截图等自动化任务',
+    description: '内置 pageAgent：直接操作预览面板中的真实浏览器窗口（BrowserView），执行导航/输入/点击/取内容等任务，操作全程可见',
     type: 'harness',
     builtin_tool_ids: JSON.stringify(PAGE_AGENT_BUILTIN_TOOLS),
     system_prompt: PAGE_AGENT_SYSTEM_PROMPT,
+    // 内置 pageAgent 定义由代码收敛，强制覆盖旧库残留（旧版 36 工具全量挂载导致死循环）
+    force_sync: true,
+    config_json: JSON.stringify({ maxReActSteps: 50 }),
+  },
+  {
+    id: 'a_builtin_data_agent',
+    name: '数据查询分析专家',
+    description:
+      '内置数据智能体：先检索本体语义层（项目库全表自动本体），再按查询意图只读取数、过滤、翻页，可用 python 做统计分析并交付表格/图表文件',
+    type: 'harness',
+    is_builtin: 1,
+    builtin_tool_ids: JSON.stringify(DATA_AGENT_BUILTIN_TOOLS),
+    skill_ids: JSON.stringify(DATA_AGENT_SKILL_IDS),
+    system_prompt: DATA_AGENT_SYSTEM_PROMPT,
+    // 内置定义由代码收敛：工具挂载/提示词/步数配置以代码为准，强制同步旧库残留
+    force_sync: true,
+    config_json: JSON.stringify({ maxReActSteps: 30 }),
   },
 ];
 for (const a of seedAgents) {
   try {
     const has = db.prepare('SELECT id FROM agent WHERE id = ?').get(a.id as string);
     if (has) {
-      // 已存在：仅在 system_prompt IS NULL 时填入（避免覆盖用户后续编辑）
-      db.prepare(
-        'UPDATE agent SET is_public = 1, user_id = COALESCE(user_id, ?), builtin_tool_ids = ?, sub_agent_ids = ?, type = ?, system_prompt = COALESCE(system_prompt, ?) WHERE id = ?'
-      ).run('guest', a.builtin_tool_ids as string, (a.sub_agent_ids as string) || '[]', a.type as string, a.system_prompt as string, a.id as string);
+      // 已存在：普通种子仅补空（避免覆盖用户后续编辑）；
+      // force_sync（内置 pageAgent）：工具/提示词/步数配置以代码为准强制同步。
+      if (a.force_sync) {
+        db.prepare(
+          'UPDATE agent SET is_public = 1, is_builtin = ?, user_id = COALESCE(user_id, ?), builtin_tool_ids = ?, sub_agent_ids = ?, skill_ids = ?, type = ?, system_prompt = ?, config_json = ? WHERE id = ?'
+        ).run(a.is_builtin || 0, 'guest', a.builtin_tool_ids as string, (a.sub_agent_ids as string) || '[]', (a.skill_ids as string) || '[]', a.type as string, a.system_prompt as string, (a.config_json as string) || null, a.id as string);
+      } else {
+        db.prepare(
+          'UPDATE agent SET is_public = 1, user_id = COALESCE(user_id, ?), builtin_tool_ids = ?, sub_agent_ids = ?, skill_ids = ?, type = ?, system_prompt = COALESCE(system_prompt, ?) WHERE id = ?'
+        ).run('guest', a.builtin_tool_ids as string, (a.sub_agent_ids as string) || '[]', (a.skill_ids as string) || '[]', a.type as string, a.system_prompt as string, a.id as string);
+      }
     } else {
       db.prepare(
-        'INSERT INTO agent (id, user_id, name, description, system_prompt, type, builtin_tool_ids, sub_agent_ids, is_default, is_public, version, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?)',
-      ).run(a.id, 'guest', a.name, a.description, a.system_prompt as string, a.type, a.builtin_tool_ids, (a.sub_agent_ids as string) || '[]', a.is_default || 0, Date.now(), Date.now());
+        'INSERT INTO agent (id, user_id, name, description, system_prompt, type, builtin_tool_ids, sub_agent_ids, skill_ids, is_default, is_public, is_builtin, version, config_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, 1, ?, ?, ?)',
+      ).run(a.id, 'guest', a.name, a.description, a.system_prompt as string, a.type, a.builtin_tool_ids, (a.sub_agent_ids as string) || '[]', (a.skill_ids as string) || '[]', a.is_default || 0, a.is_builtin || 0, (a.config_json as string) || null, Date.now(), Date.now());
     }
   } catch {}
 }
+
+// 旧库增量迁移：默认助手提示词升级（联网查询改由 pageAgent 承担）。
+// server 端普通种子对 system_prompt 仅 COALESCE 补空（避免覆盖用户编辑），旧库拿不到新指引；
+// 此处按标记增量追加，与前端 agent.ts 的 v9 迁移语义一致。
+try {
+  const MARKER = '【联网查询 · 委派 pageAgent】';
+  const defRow = db.prepare("SELECT system_prompt FROM agent WHERE id = 'a_default_assistant'").get() as { system_prompt?: string | null } | undefined;
+  if (defRow && !(defRow.system_prompt || '').includes(MARKER)) {
+    const next = (defRow.system_prompt || DEFAULT_AGENT_SYSTEM_PROMPT) + '\n\n' + WEB_QUERY_PROMPT_BLOCK;
+    db.prepare("UPDATE agent SET system_prompt = ? WHERE id = 'a_default_assistant'").run(next);
+  }
+} catch {}
+
+// 旧库增量迁移：默认助手挂载「数据查询分析专家」子智能体 + 追加委派指引（同上，按标记增量）。
+// 子智能体关系：仅补齐缺失项，不覆盖用户后续自己增删的子智能体。
+try {
+  const DATA_AGENT_ID = 'a_builtin_data_agent';
+  const MARKER = '【数据查询 · 委派 dataAgent】';
+  const row = db
+    .prepare("SELECT system_prompt, sub_agent_ids FROM agent WHERE id = 'a_default_assistant'")
+    .get() as { system_prompt?: string | null; sub_agent_ids?: string | null } | undefined;
+  if (row) {
+    let ids: string[] = [];
+    try { ids = JSON.parse(row.sub_agent_ids || '[]'); } catch { ids = []; }
+    if (Array.isArray(ids) && !ids.includes(DATA_AGENT_ID)) {
+      db.prepare("UPDATE agent SET sub_agent_ids = ? WHERE id = 'a_default_assistant'").run(
+        JSON.stringify([...ids, DATA_AGENT_ID]),
+      );
+    }
+    if (!(row.system_prompt || '').includes(MARKER)) {
+      const next = (row.system_prompt || DEFAULT_AGENT_SYSTEM_PROMPT) + '\n\n' + DATA_QUERY_PROMPT_BLOCK;
+      db.prepare("UPDATE agent SET system_prompt = ? WHERE id = 'a_default_assistant'").run(next);
+    }
+  }
+} catch {}
 
 // 预置示例自定义工具（JS + node:vm 沙箱）——开箱即用的演示/实用工具
 // 幂等：按 name 查重，已存在不覆盖（用户可能已编辑）
@@ -762,12 +962,16 @@ for (const t of seedCustomTools) {
     if (has) continue;
     const id = 'ct_preset_' + t.name;
     const now = Date.now();
+    // 注意：列顺序与 .run() 实参必须严格一一对应（code 位此前误写成 NULL，
+    // 导致 ? 只有 10 个而实参有 11 个 → better-sqlite3 抛参数过多，被 catch 吞掉，5 条预置工具一条都没插进去）。
     db.prepare(
       `INSERT INTO custom_tool (id, user_id, name, description, input_schema_json, output_schema_json,
        runtime, entry, code, dependencies_json, timeout, env_json, enabled, source, is_public, installs, updated_at, created_at)
-       VALUES (?,?,?,?,?,NULL,'node',?,NULL,?,?,NULL,1,'local',0,0,?,?)`,
+       VALUES (?,?,?,?,?,NULL,'node',?,?,?,?,NULL,1,'local',0,0,?,?)`,
     ).run(id, 'guest', t.name, t.description, JSON.stringify(t.inputSchema), t.entry, t.code, JSON.stringify([]), 5000, now, now);
-  } catch {}
+  } catch (e: unknown) {
+    console.error('[db] seedCustomTools 插入失败:', t.name, e instanceof Error ? e.message : e);
+  }
 }
 
 // 预置内置 skill：网站自动化任务（web-task-automation）—— pageAgent + 记住密码 + 定时任务
@@ -781,11 +985,17 @@ try {
       skillId, 'guest', '网站自动化任务',
       '用 pageAgent 驱动浏览器完成登录、签到、领积分、填表单、搜索、翻页、提交、制作内容等网站自动化任务，支持用已存密码自动登录，可配合定时任务每日执行。',
       JSON.stringify(['每日签到', '自动登录', '领取积分', '制作视频', '填写表单', '网站自动化']),
-      `# 网站自动化任务\n\n用内置 pageAgent 驱动真实浏览器完成网站操作任务。配合「浏览器记住密码」可自动登录已保存凭证的站点；配合「定时任务」可每日自动执行。\n\n## 流程\n1. 确认目标站点密码已在「浏览器 → 密码管理」保存\n2. 委派 pageAgent：\n   - browser_login_saved { host } 自动登录\n   - browser_get_page_info 了解页面\n   - browser_fill_form / browser_click / browser_search / browser_submit_form 执行操作\n   - browser_next_page 翻页\n   - browser_get_visible_text 获取结果\n3. 周期任务：创建 scheduled_task（cron + prompt + 绑定默认助理）\n\n## 示例\n- 每日签到：browser_login_saved → 找签到按钮 → browser_click → 确认积分\n- 制作视频：browser_login_saved → 进创作页 → browser_fill_form 填文案 → 生成 → 等待完成\n\n详见 .claude/skills/web-task-automation/SKILL.md`,
+      `# 网站自动化任务\n\n用内置 pageAgent 驱动真实浏览器（预览面板）完成网站操作任务。pageAgent 仅挂载六件套工具：browser_navigate / browser_type / browser_click / browser_scroll / browser_get_page_content / ask_user，其余浏览器工具（get_dom/fill_form/search/翻页等）不可用。配合「定时任务」可每日自动执行。\n\n## 流程\n1. 委派 pageAgent：call_agent { agentId: "a_builtin_page_agent", input: "<任务描述：目标站点 + 要执行的操作/要提取的信息>" }\n   - browser_navigate 打开目标站点\n   - browser_get_page_content 获取页面正文 + 带编号（index）可交互元素列表\n   - 需要登录时 pageAgent 会 ask_user 请用户在浏览器面板完成（扫码/验证码），确认后复核\n   - 用 index 定位：browser_type 输入 / browser_click 点击，browser_scroll 翻看视口外内容\n   - browser_get_page_content 提取最终结果并返回摘要\n2. 周期任务：创建 scheduled_task（cron + prompt + 绑定默认助理）\n\n## 示例\n- 每日签到：browser_navigate → browser_get_page_content 找签到入口 → browser_click → browser_get_page_content 确认积分\n- 搜索并提取结果：browser_navigate 搜索页 → browser_type 关键词回车 → browser_get_page_content + browser_scroll 提取结果列表\n\n详见 .claude/skills/web-task-automation/SKILL.md`,
       '自动化', 'yan-zhi', 1, 0, 'builtin', Date.now(),
     );
   } else {
-    db.prepare("UPDATE skill SET source = 'builtin' WHERE id = ?").run(skillId);
+    // 内置 skill 属产品定义：文档与工具收口（六件套）保持同步，覆盖旧版残留
+    db.prepare("UPDATE skill SET body = ?, description = ?, triggers_json = ?, source = 'builtin' WHERE id = ?").run(
+      `# 网站自动化任务\n\n用内置 pageAgent 驱动真实浏览器（预览面板）完成网站操作任务。pageAgent 仅挂载六件套工具：browser_navigate / browser_type / browser_click / browser_scroll / browser_get_page_content / ask_user，其余浏览器工具（get_dom/fill_form/search/翻页等）不可用。配合「定时任务」可每日自动执行。\n\n## 流程\n1. 委派 pageAgent：call_agent { agentId: "a_builtin_page_agent", input: "<任务描述：目标站点 + 要执行的操作/要提取的信息>" }\n   - browser_navigate 打开目标站点\n   - browser_get_page_content 获取页面正文 + 带编号（index）可交互元素列表\n   - 需要登录时 pageAgent 会 ask_user 请用户在浏览器面板完成（扫码/验证码），确认后复核\n   - 用 index 定位：browser_type 输入 / browser_click 点击，browser_scroll 翻看视口外内容\n   - browser_get_page_content 提取最终结果并返回摘要\n2. 周期任务：创建 scheduled_task（cron + prompt + 绑定默认助理）\n\n## 示例\n- 每日签到：browser_navigate → browser_get_page_content 找签到入口 → browser_click → browser_get_page_content 确认积分\n- 搜索并提取结果：browser_navigate 搜索页 → browser_type 关键词回车 → browser_get_page_content + browser_scroll 提取结果列表\n\n详见 .claude/skills/web-task-automation/SKILL.md`,
+      '用 pageAgent 驱动浏览器完成登录、签到、领积分、搜索、提取内容等网站自动化任务，可配合定时任务每日执行。',
+      JSON.stringify(['每日签到', '自动登录', '领取积分', '网站自动化']),
+      skillId,
+    );
   }
 } catch {}
 
@@ -800,11 +1010,16 @@ try {
       skillId, 'guest', '即梦每日签到',
       '每天自动登录即梦（Dreamina，字节跳动 AI 创作平台）并签到领取灵感值/积分。即梦用抖音扫码登录，首次需手动扫码，之后配合定时任务每日自动签到。',
       JSON.stringify(['即梦签到', '即梦每天签到', '即梦领积分', '即梦灵感值', 'Dreamina签到', '每日签到']),
-      `# 即梦每日签到领灵感值\n\n自动登录即梦（Dreamina，jimeng.jianying.com）完成每日签到，领取灵感值/积分。配合定时任务可每日自动执行。\n\n## ⚠️ 重要约束\n- 目标站固定 https://jimeng.jianying.com/，禁止访问 dreamina.ai 等国际版。\n- 登录只走扫码（ask_user），禁止代填手机号/验证码。\n- 登录态由 persist:browser-view partition 持久化，首次扫码后复用。\n\n## 登录说明\n即梦用抖音扫码/手机号验证码登录（非账密表单）。pageAgent 通过 ask_user 弹窗让用户在浏览器面板扫码，登录后 cookie 保留可复用。优先扫码，不要代填验证码。\n\n## 流程\n1. browser_navigate { url: "https://jimeng.jianying.com/" }\n2. browser_get_page_info → 检查登录状态（有头像=已登录，有登录按钮=未登录）\n3. 若未登录：ask_user { question: "请在浏览器面板中扫码登录即梦，登录完成后点击确认" } → 用户扫码+确认 → browser_get_page_info 确认已登录\n4. browser_get_page_info → 找"签到/打卡/领灵感"按钮\n5. browser_click { selector: "签到按钮" }\n6. browser_get_visible_text → 确认"签到成功/获得 X 灵感值"（若"今日已签到"则正常结束）\n7. 周期任务：scheduled_task cron "0 9 * * *" + prompt "登录即梦签到领灵感值"\n\n详见 .claude/skills/jimeng-daily-checkin/SKILL.md`,
+      `# 即梦每日签到领灵感值\n\n自动登录即梦（jimeng.jianying.com）完成每日签到，领取灵感值/积分。配合定时任务可每日自动执行。\n\n## ⚠️ 业务约束（随委派 input 传给 pageAgent）\n- 目标站固定 https://jimeng.jianying.com/，禁止访问 dreamina.ai 等国际版。\n- 登录只走扫码（pageAgent 会 ask_user），禁止代填手机号/验证码。\n- 登录态由 persist:browser-view partition 持久化，首次扫码后复用。\n- 已知稳定选择器：即梦"领积分"入口 #SiderMenuCredit。\n\n## 委派流程\n1. call_agent { agentId: "a_builtin_page_agent", input: "打开 https://jimeng.jianying.com/ 并检查登录状态（有头像=已登录）；未登录则 ask_user 提示用户在浏览器面板扫码登录，用户确认后用 browser_get_page_content 复核；进入'领积分'入口（#SiderMenuCredit），找到'签到/打卡/领灵感'按钮点击签到，用 browser_get_page_content 确认结果并返回摘要。目标站固定 jimeng.jianying.com，禁止访问国际版，禁止代填验证码。" }\n2. 周期任务：scheduled_task cron "0 9 * * *" + prompt "登录即梦签到领灵感值"\n\n详见 .claude/skills/jimeng-daily-checkin/SKILL.md`,
       '自动化', 'yan-zhi', 1, 0, 'builtin', Date.now(),
     );
   } else {
-    db.prepare("UPDATE skill SET source = 'builtin' WHERE id = ?").run(skillId);
+    // 内置 skill 属产品定义：pageAgent 收口六件套后，登录/操作指引随委派 input 下发，覆盖旧版残留
+    db.prepare("UPDATE skill SET body = ?, description = ?, source = 'builtin' WHERE id = ?").run(
+      `# 即梦每日签到领灵感值\n\n自动登录即梦（jimeng.jianying.com）完成每日签到，领取灵感值/积分。配合定时任务可每日自动执行。\n\n## ⚠️ 业务约束（随委派 input 传给 pageAgent）\n- 目标站固定 https://jimeng.jianying.com/，禁止访问 dreamina.ai 等国际版。\n- 登录只走扫码（pageAgent 会 ask_user），禁止代填手机号/验证码。\n- 登录态由 persist:browser-view partition 持久化，首次扫码后复用。\n- 已知稳定选择器：即梦"领积分"入口 #SiderMenuCredit。\n\n## 委派流程\n1. call_agent { agentId: "a_builtin_page_agent", input: "打开 https://jimeng.jianying.com/ 并检查登录状态（有头像=已登录）；未登录则 ask_user 提示用户在浏览器面板扫码登录，用户确认后用 browser_get_page_content 复核；进入'领积分'入口（#SiderMenuCredit），找到'签到/打卡/领灵感'按钮点击签到，用 browser_get_page_content 确认结果并返回摘要。目标站固定 jimeng.jianying.com，禁止访问国际版，禁止代填验证码。" }\n2. 周期任务：scheduled_task cron "0 9 * * *" + prompt "登录即梦签到领灵感值"\n\n详见 .claude/skills/jimeng-daily-checkin/SKILL.md`,
+      '每天自动登录即梦（Dreamina，字节跳动 AI 创作平台）并签到领取灵感值/积分。即梦用抖音扫码登录，首次需手动扫码，之后配合定时任务每日自动签到。',
+      skillId,
+    );
   }
 } catch {}
 
@@ -959,7 +1174,7 @@ try {
       id: 'skill_shopping_compare', name: '多平台购物对比', category: '购物',
       description: '多平台购物对比。用 pageAgent 去淘宝/京东/拼多多搜索同一关键词，抓取价格/销量/评分/评论/优惠/物流/店铺，汇总对比表与购买建议。',
       triggers: ['帮我比价', '对比淘宝京东拼多多', '跨平台比价', '手机比价', '零食比价', '哪个平台便宜'],
-      body: `# 多平台购物对比\n\n用 pageAgent 去淘宝/京东/拼多多搜索同一关键词，跨平台对比。\n\n## 维度\n价格/划线价/到手价、销量/月销、评分+评论摘要、优惠/券/满减/百亿补贴、物流/发货地、店铺信息\n\n## 工具\n- web_search(timeRange) 搜候选平台；browser_new_tab/switch_tab/close_tab/get_tabs 多标签并行打开各平台搜索页\n- browser_extract_list 批量提取商品列表（title/price/link/sales/rating/shop）；browser_wait_for_request 确认异步加载\n- browser_visual_locate+image_analyze 识别弹窗；browser_scroll_into_view/is_visible 处理懒加载\n- compare_products 汇总：同款匹配+到手价归一化+可信度评分+评论情感分析 → Markdown 对比报告\n\n## 流程（推荐）\n1. 确认关键词与筛选（官方/旗舰/规格）\n2. web_search(timeRange="近7天") 搜候选平台与价格区间\n3. browser_new_tab 并行打开淘宝/京东/拼多多搜索页\n4. browser_wait_for_request 等列表异步加载完成\n5. browser_extract_list 提取各平台前 N 商品；提取不到用 scroll_into_view 触发懒加载或 get_page_info+get_visible_text 兜底\n6. 按需 browser_click 进详情补评分/评论/优惠/物流\n7. compare_products 汇总比价 → 对比表+排序+评论摘要+推荐\n8. 给建议（价格/可信度/物流/售后综合）\n\n## 注意\n- 登录由 pageAgent 自处理（C3）：未登录时 pageAgent 自己 ask_user 扫码，父智能体不处理登录、不代填账号密码；cookie 持久化复用\n- 不写死选择器，每步 get_page_info 动态识别\n- 价格以详情页为准；结果仅供参考，下单以实时价为准\n- 控制节奏防反爬，遇验证码 ask_user\n\n详见 .claude/skills/multi-platform-shopping-compare/SKILL.md`,
+      body: `# 多平台购物对比\n\n用 pageAgent 去淘宝/京东/拼多多搜索同一关键词，跨平台对比。\n\n## 维度\n价格/划线价/到手价、销量/月销、评分+评论摘要、优惠/券/满减/百亿补贴、物流/发货地、店铺信息\n\n## 工具\n- 联网检索统一委派 pageAgent（真实浏览器搜索引擎）；browser_new_tab/switch_tab/close_tab/get_tabs 多标签并行打开各平台搜索页\n- browser_extract_list 批量提取商品列表（title/price/link/sales/rating/shop）；browser_wait_for_request 确认异步加载\n- browser_visual_locate+image_analyze 识别弹窗；browser_scroll_into_view/is_visible 处理懒加载\n- compare_products 汇总：同款匹配+到手价归一化+可信度评分+评论情感分析 → Markdown 对比报告\n\n## 流程（推荐）\n1. 确认关键词与筛选（官方/旗舰/规格）\n2. 委派 pageAgent 用真实浏览器搜候选平台与价格区间\n3. browser_new_tab 并行打开淘宝/京东/拼多多搜索页\n4. browser_wait_for_request 等列表异步加载完成\n5. browser_extract_list 提取各平台前 N 商品；提取不到用 scroll_into_view 触发懒加载或 get_page_info+get_visible_text 兜底\n6. 按需 browser_click 进详情补评分/评论/优惠/物流\n7. compare_products 汇总比价 → 对比表+排序+评论摘要+推荐\n8. 给建议（价格/可信度/物流/售后综合）\n\n## 注意\n- 登录由 pageAgent 自处理（C3）：未登录时 pageAgent 自己 ask_user 扫码，父智能体不处理登录、不代填账号密码；cookie 持久化复用\n- 不写死选择器，每步 get_page_info 动态识别\n- 价格以详情页为准；结果仅供参考，下单以实时价为准\n- 控制节奏防反爬，遇验证码 ask_user\n\n详见 .claude/skills/multi-platform-shopping-compare/SKILL.md`,
     },
     {
       id: 'skill_openspec_propose', name: 'OpenSpec 提案', category: '工程规范',
@@ -1020,9 +1235,27 @@ try {
   if (!cols.some((c) => c.name === 'type')) {
     db.exec(`ALTER TABLE memory ADD COLUMN type TEXT NOT NULL DEFAULT 'agent'`);
   }
+  // 使用计数：记忆被注入/检索命中时 +1，供 Dreaming 整理判断"从未使用"的淘汰候选
+  if (!cols.some((c) => c.name === 'use_count')) {
+    db.exec(`ALTER TABLE memory ADD COLUMN use_count INTEGER NOT NULL DEFAULT 0`);
+  }
 } catch {}
 try { db.exec('CREATE INDEX IF NOT EXISTS idx_memory_user_agent ON memory(user_id, agent_id, last_used_at DESC)'); } catch {}
 try { db.exec('CREATE INDEX IF NOT EXISTS idx_memory_type ON memory(user_id, type, last_used_at DESC)'); } catch {}
+
+// ===== 记忆整理（Dreaming）日志：每次整理的统计与审计 =====
+db.exec(`
+  CREATE TABLE IF NOT EXISTS memory_dream_log (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    started_at INTEGER NOT NULL,
+    finished_at INTEGER,
+    trigger TEXT NOT NULL DEFAULT 'scheduled',
+    stats_json TEXT DEFAULT '{}',
+    error TEXT
+  );
+`);
+try { db.exec('CREATE INDEX IF NOT EXISTS idx_memory_dream_log_user ON memory_dream_log(user_id, started_at DESC)'); } catch {}
 
 // ===== 对话定时任务 =====
 db.exec(`
@@ -1174,6 +1407,7 @@ db.exec(`
     measures_json TEXT DEFAULT '[]',
     filters_json TEXT DEFAULT '[]',
     relations_json TEXT DEFAULT '[]',
+    selections_json TEXT DEFAULT '[]',
     policies_json TEXT DEFAULT '[]',
     status TEXT NOT NULL DEFAULT 'draft',
     version INTEGER NOT NULL DEFAULT 1,
@@ -1188,5 +1422,29 @@ try { db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_ontology_user_code ON ontol
 try { db.exec('CREATE INDEX IF NOT EXISTS idx_ontology_user_ds ON ontology(user_id, datasource_id, status)'); } catch {}
 // 旧库迁移：filters_json（查询过滤器，命中才注入 WHERE；与行级策略 policies 不同）
 try { db.exec("ALTER TABLE ontology ADD COLUMN filters_json TEXT DEFAULT '[]'"); } catch {}
+// 旧库迁移：selections_json（本体级选择列契约：默认直拼 + 非默认关键字召回）
+try { db.exec("ALTER TABLE ontology ADD COLUMN selections_json TEXT DEFAULT '[]'"); } catch {}
+// 回填选择列：selections_json 为空时，默认把全部维度/度量/时间维度设为默认选择列，
+// 让未补语义的旧本体的语义摘要立即可用（已补 selections 的本体不动；幂等）。
+try {
+  const blank = db
+    .prepare(`SELECT id, dimensions_json, measures_json, time_dimensions_json FROM ontology WHERE selections_json IS NULL OR selections_json = '[]'`)
+    .all() as Array<{ id: string; dimensions_json: string; measures_json: string; time_dimensions_json: string }>;
+  if (blank.length) {
+    const upd = db.prepare(`UPDATE ontology SET selections_json = ? WHERE id = ?`);
+    for (const r of blank) {
+      const dims = JSON.parse(r.dimensions_json || '[]') as Array<{ name: string }>;
+      const meas = JSON.parse(r.measures_json || '[]') as Array<{ name: string }>;
+      const times = JSON.parse(r.time_dimensions_json || '[]') as Array<{ name: string }>;
+      const selections = [
+        ...dims.map((d) => ({ name: d.name, isDefault: true })),
+        ...meas.map((m) => ({ name: m.name, isDefault: true })),
+        ...times.map((t) => ({ name: t.name, isDefault: true })),
+      ];
+      if (selections.length) upd.run(JSON.stringify(selections), r.id);
+    }
+    console.log(`[db] 回填选择列 ${blank.length} 条本体`);
+  }
+} catch {}
 
 export { db };

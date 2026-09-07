@@ -71,17 +71,24 @@ export async function listEmbeddingModels() {
 // ── 平台 embedding 调用（OpenAI 兼容 /v1/embeddings）──
 
 async function embedViaPlatform(text: string, platformId: string, modelRowId: string): Promise<number[] | null> {
-  let platform = db.prepare('SELECT api_url, api_key_enc, protocol, headers_json FROM platform WHERE id = ?').get(platformId) as any;
+  let platform = db.prepare('SELECT api_url, api_key_enc, protocol, headers_json, pause_min_ms, pause_max_ms FROM platform WHERE id = ?').get(platformId) as any;
   if (!platform && platformId === 'ollama-local') {
-    platform = { api_url: OLLAMA_BASE, api_key_enc: '', protocol: 'openai', headers_json: '' };
+    platform = { api_url: OLLAMA_BASE, api_key_enc: '', protocol: 'openai', headers_json: '', pause_min_ms: 0, pause_max_ms: 0 };
   }
   if (!platform?.api_url) return null;
   let modelId = (db.prepare('SELECT model_id FROM model WHERE id = ? AND platform_id = ?').get(modelRowId, platformId) as any)?.model_id;
   if (!modelId && String(platform.api_url).includes('127.0.0.1:11434')) modelId = modelRowId;
   if (!modelId) return null;
   const baseUrl = String(platform.api_url).replace(/\/$/, '');
+  let apiKey = platform.api_key_enc || '';
+  try {
+    const { pickToken, pauseIfNeeded } = await import('./token-pool.js');
+    await pauseIfNeeded(platform);
+    const token = pickToken(platformId);
+    if (token) apiKey = token.apiKey;
+  } catch {}
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-  if (platform.api_key_enc) headers['Authorization'] = `Bearer ${platform.api_key_enc}`;
+  if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
   try {
     const extra = platform.headers_json ? JSON.parse(platform.headers_json) : {};
     Object.assign(headers, extra || {});

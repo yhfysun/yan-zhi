@@ -87,13 +87,23 @@ function filterText(f: OntologyFilter): string {
 function relationText(r: OntologyRelation): string {
   const via = r.via ? ` — via ${r.via.table}(${r.via.sourceColumn},${r.via.targetColumn})` : '';
   const desc = r.description ? `(${r.description})` : '';
-  return `${r.type} → ${r.target}.${r.targetAttr} ← 本体.${r.sourceAttr}${via}${desc}`;
+  return `${r.source}.${r.sourceAttr} ${r.type} → ${r.target}.${r.targetAttr}${via}${desc}`;
+}
+
+/** 选择列引用的字段描述（维度/度量/时间维度）回退，让摘要带上业务口径 */
+function fieldDescOf(o: OntologyInfo, name: string): string | undefined {
+  return (
+    o.dimensions.find((d) => d.name === name)?.description ||
+    o.measures.find((m) => m.name === name)?.description ||
+    o.timeDimensions.find((t) => t.name === name)?.description
+  );
 }
 
 /**
  * 组装本体语义摘要（喂大模型的紧凑文本）：
- * - 默认选择列/度量/时间维度/过滤器：无条件拼入
- * - 非默认项：按 question 召回（阈值/topK），命中才拼入
+ * - 默认选择列（本体级契约）：无条件直拼进摘要，作为「未指定列时的兜底 SELECT」
+ * - 非默认选择列：按 question 与 keywords 召回（阈值/topK），命中才拼入
+ * - 过滤器：默认直拼 + 非默认召回（同构）
  * - 关联关系数量少，全量拼入
  * - 没有任何默认项且无命中的本体整条省略（控制上下文体积）
  */
@@ -107,18 +117,16 @@ export function buildOntologyDigest(
     if (o.status !== 'published') continue;
     const lines: string[] = [];
 
-    const defaults = [
-      ...o.dimensions.filter((d) => d.isDefault).map((d) => fieldText(d, true)),
-      ...o.measures.filter((m) => m.isDefault).map((m) => fieldText(m, true)),
-      ...o.timeDimensions.filter((t) => t.isDefault).map((t) => fieldText(t, true)),
-    ];
+    // 默认选择列：无条件直拼
+    const defaults = o.selections
+      .filter((s) => s.isDefault)
+      .map((s) => fieldText({ name: s.name, keywords: s.keywords, description: s.description || fieldDescOf(o, s.name) }, true));
     if (defaults.length) lines.push(`  选择列(默认): ${defaults.join(' / ')}`);
 
-    const recalled = [
-      ...recallByKeywords(o.dimensions, question, cfg).map((h) => `${fieldText(h.item, true)} [${h.score}]`),
-      ...recallByKeywords(o.measures, question, cfg).map((h) => `${fieldText(h.item, true)} [${h.score}]`),
-      ...recallByKeywords(o.timeDimensions, question, cfg).map((h) => `${fieldText(h.item, true)} [${h.score}]`),
-    ];
+    // 非默认选择列：按问题关键字召回
+    const recalled = recallByKeywords(o.selections, question, cfg).map(
+      (h) => `${fieldText({ name: h.item.name, keywords: h.item.keywords, description: h.item.description || fieldDescOf(o, h.item.name) }, true)} [${h.score}]`,
+    );
     if (recalled.length) lines.push(`  选择列(命中): ${recalled.join(' / ')}`);
 
     const defFilters = o.filters.filter((f) => f.isDefault).map(filterText);

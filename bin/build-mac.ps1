@@ -1,4 +1,4 @@
-﻿param(
+﻿﻿﻿param(
   [switch]$NoTrigger
 )
 $ErrorActionPreference = 'Stop'

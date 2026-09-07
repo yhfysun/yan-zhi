@@ -81,17 +81,31 @@ async function emptyTargetHint(): Promise<McpCallResult> {
 // ========== 导航 ==========
 export class BrowserNavigateTool implements BuiltInTool {
   name = 'browser_navigate';
-  description = 'Navigate the in-app browser preview panel to a URL (renders inside the app, not a system browser).';
+  description = 'Navigate the in-app browser preview panel to a URL (renders inside the app, not a system browser). 注意：一次只调用一个 browser_navigate，不要在同一批并行调用多个导航（浏览器是单活动页状态机，多个导航会互相覆盖，只有最后一个页面留存）。需要同时打开多个页面时：先调用一次本工具打开第一个，其余页面改用 browser_new_tab 新开标签页（返回 tabId），读取内容时给读取类工具传对应 tabId。';
   inputSchema = {
     type: 'object',
-    properties: { url: { type: 'string', description: 'The URL to navigate to.' } },
+    properties: {
+      url: { type: 'string', description: 'The URL to navigate to.' },
+      tabId: { type: 'number', description: '可选：目标标签页 id（来自 browser_new_tab / browser_get_tabs），缺省为当前活动标签页。' },
+      openInNewTab: { type: 'boolean', description: '编排层内部参数：同一批出现多个导航时，第 2 个及之后的导航会自动转为新开标签页并返回 tabId，无需手动传。' },
+    },
     required: ['url'],
   };
   async execute(args: Record<string, unknown>): Promise<McpCallResult> {
     try {
       const url = extractUrlFromArgs(args);
       if (!url) return err('url is required');
-      const data = await callBrowserApi('/navigate', 'POST', { url }) as any;
+      // 同批多次导航：第 2+ 次转为新开标签页（避免互相覆盖）；桌面端单视图不支持 new_tab 时回退当前页导航
+      if (args.openInNewTab) {
+        try {
+          const nt = await callBrowserApi('/action', 'POST', { action: 'new_tab', url }) as any;
+          if (nt && nt.tabId !== undefined) {
+            return ok(`已在新标签页打开（同批多次导航，转为独立标签页避免互相覆盖）。\ntabId=${nt.tabId}\nURL: ${nt.url}\nTitle: ${nt.title || ''}\n后续读取该页内容时，给 browser_get_page_content / browser_get_page_info 等读取工具传 tabId=${nt.tabId}`);
+          }
+        } catch { /* 单视图环境（桌面端 BrowserView）不支持多标签页，回退当前页导航 */ }
+      }
+      const tabId = args.tabId != null ? Number(args.tabId) : undefined;
+      const data = await callBrowserApi('/navigate', 'POST', { url, tabId }) as any;
       return ok(`Navigated to ${data.url}\nTitle: ${data.title}`);
     } catch (e: any) { return err(e?.message || '导航失败'); }
   }
@@ -242,16 +256,17 @@ export class BrowserHoverTool implements BuiltInTool {
 // ========== 获取文本 ==========
 export class BrowserGetTextTool implements BuiltInTool {
   name = 'browser_get_text';
-  description = 'Get text content of an element by selector, or the entire page HTML.';
+  description = 'Get text content of an element by selector, or the entire page HTML. 可传 tabId 读取指定标签页。';
   inputSchema = {
     type: 'object',
     properties: {
+      tabId: { type: 'number', description: '可选：目标标签页 id，缺省为当前活动标签页。' },
       selector: { type: 'string', description: 'CSS selector to get text from (omit for full page content).' },
     },
   };
   async execute(args: Record<string, unknown>): Promise<McpCallResult> {
     try {
-      const data = await callBrowserApi('/action', 'POST', { action: 'get_text', selector: args.selector });
+      const data = await callBrowserApi('/action', 'POST', { action: 'get_text', tabId: args.tabId, selector: args.selector });
       const text = typeof data === 'string' ? data : ((data as any)?.text ?? JSON.stringify(data));
       return ok(text.slice(0, 8000));
     } catch (e: any) { return err(e?.message || '获取文本失败'); }
@@ -261,10 +276,11 @@ export class BrowserGetTextTool implements BuiltInTool {
 // ========== 获取 DOM ==========
 export class BrowserGetDomTool implements BuiltInTool {
   name = 'browser_get_dom';
-  description = 'Get a structured DOM tree of visible elements (excludes script/style/svg), penetrating same-origin iframes and Shadow DOM. Each node has tag, id, class, role, aria-label, text, href, placeholder, type, name, value, children. Interactive nodes (a/button/input/select/textarea etc.) carry an index number usable directly by browser_click/browser_type (index param). Use selector to scope, depth to limit tree depth, maxNodes to cap node count.';
+  description = 'Get a structured DOM tree of visible elements (excludes script/style/svg), penetrating same-origin iframes and Shadow DOM. Each node has tag, id, class, role, aria-label, text, href, placeholder, type, name, value, children. Interactive nodes (a/button/input/select/textarea etc.) carry an index number usable directly by browser_click/browser_type (index param). Use selector to scope, depth to limit tree depth, maxNodes to cap node count. 可传 tabId 读取指定标签页。';
   inputSchema = {
     type: 'object',
     properties: {
+      tabId: { type: 'number', description: '可选：目标标签页 id，缺省为当前活动标签页。' },
       selector: { type: 'string', description: 'CSS selector to scope the DOM tree (default: entire body).' },
       depth: { type: 'number', description: 'Max tree depth (default 12).' },
       maxNodes: { type: 'number', description: 'Max number of nodes to return (default 1000).' },
@@ -272,7 +288,7 @@ export class BrowserGetDomTool implements BuiltInTool {
   };
   async execute(args: Record<string, unknown>): Promise<McpCallResult> {
     try {
-      const data = await callBrowserApi('/action', 'POST', { action: 'get_dom', selector: args.selector, depth: args.depth, maxNodes: args.maxNodes }) as any;
+      const data = await callBrowserApi('/action', 'POST', { action: 'get_dom', tabId: args.tabId, selector: args.selector, depth: args.depth, maxNodes: args.maxNodes }) as any;
       if (data.error) return err(data.error);
       const iframes = data.iframes ? `\nIframes: sameOrigin=${data.iframes.sameOrigin}, crossOriginSkipped=${data.iframes.crossOriginSkipped}` : '';
       return ok(`URL: ${data.url}\nTitle: ${data.title}\nNodes: ${data.nodeCount}${iframes}\nDOM tree (interactive nodes carry "index" for browser_click/browser_type):\n${JSON.stringify(data.dom, null, 2)}`);
@@ -299,11 +315,14 @@ export class BrowserWaitTool implements BuiltInTool {
 // ========== 截图 ==========
 export class BrowserScreenshotTool implements BuiltInTool {
   name = 'browser_screenshot';
-  description = 'Take a screenshot of the current browser page. Returns base64 image data.';
-  inputSchema = { type: 'object', properties: {} };
-  async execute(): Promise<McpCallResult> {
+  description = 'Take a screenshot of the current browser page. Returns base64 image data. 可传 tabId 截取指定标签页。';
+  inputSchema = {
+    type: 'object',
+    properties: { tabId: { type: 'number', description: '可选：目标标签页 id，缺省为当前活动标签页。' } },
+  };
+  async execute(args: Record<string, unknown> = {}): Promise<McpCallResult> {
     try {
-      const data = await callBrowserApi('/action', 'POST', { action: 'screenshot' }) as any;
+      const data = await callBrowserApi('/action', 'POST', { action: 'screenshot', tabId: args.tabId }) as any;
       return ok(`Screenshot captured (${(data.base64 || '').length} bytes base64)`);
     } catch (e: any) { return err(e?.message || '截图失败'); }
   }
@@ -417,14 +436,52 @@ export class BrowserWaitForTool implements BuiltInTool {
 // ========== 获取可见文本 ==========
 export class BrowserGetVisibleTextTool implements BuiltInTool {
   name = 'browser_get_visible_text';
-  description = 'Get visible text content of the page or an element (filters hidden elements, returns clean text).';
-  inputSchema = { type: 'object', properties: { selector: { type: 'string', description: 'CSS selector (optional, defaults to full body).' } } };
+  description = 'Get visible text content of the page or an element (filters hidden elements, returns clean text). 可传 tabId 读取指定标签页。';
+  inputSchema = {
+    type: 'object',
+    properties: {
+      tabId: { type: 'number', description: '可选：目标标签页 id，缺省为当前活动标签页。' },
+      selector: { type: 'string', description: 'CSS selector (optional, defaults to full body).' },
+    },
+  };
   async execute(args: Record<string, unknown>): Promise<McpCallResult> {
     try {
-      const data = await callBrowserApi('/action', 'POST', { action: 'get_visible_text', selector: args.selector });
+      const data = await callBrowserApi('/action', 'POST', { action: 'get_visible_text', tabId: args.tabId, selector: args.selector });
       const text = typeof data === 'string' ? data : JSON.stringify(data);
       return ok(text.slice(0, 8000));
     } catch (e: any) { return err(e?.message || '获取文本失败'); }
+  }
+}
+
+// ========== 获取页面内容（pageAgent 四件套之"读页"，聚合一次给齐） ==========
+export class BrowserGetPageContentTool implements BuiltInTool {
+  name = 'browser_get_page_content';
+  description = 'Get the current page content in one call: url + title + visible text body + numbered interactive elements. 获取页面内容（标题/URL/可见正文/可交互元素），一次返回。这是读取页面的首选工具——先 navigate，操作（click/type）后用它观察结果。返回的元素带 index 编号，可直接作为 browser_click / browser_type 的 index 参数。可传 tabId 读取指定标签页（来自 browser_new_tab / browser_get_tabs），用于多页并行场景，不必先切换标签页。';
+  inputSchema = {
+    type: 'object',
+    properties: {
+      tabId: { type: 'number', description: '可选：目标标签页 id，缺省为当前活动标签页。' },
+      maxTextLength: { type: 'number', description: 'Max visible-text length in characters (default 5000, max 20000).' },
+      maxInteractive: { type: 'number', description: 'Max interactive elements to return (default 50, max 300).' },
+    },
+  };
+  async execute(args: Record<string, unknown>): Promise<McpCallResult> {
+    try {
+      const maxTextLength = Math.min(Number(args.maxTextLength) || 5000, 20000);
+      const maxInteractive = Math.min(Number(args.maxInteractive) || 50, 300);
+      const data = await callBrowserApi('/action', 'POST', { action: 'get_page_content', tabId: args.tabId, maxTextLength, maxInteractive }) as any;
+      if (data.error) return err(data.error);
+      const elems = (data.interactive || []).map((e: any) => {
+        let s = `[${e.index}] ${e.tag}`;
+        if (e.text) s += ` "${e.text.slice(0, 40)}"`;
+        if (e.placeholder) s += ` [ph:${e.placeholder}]`;
+        if (e.href) s += ` →${e.href.slice(0, 80)}`;
+        return s;
+      }).join('\n');
+      return ok(
+        `URL: ${data.url}\nTitle: ${data.title}\n\n【页面可见文本】\n${data.text || '(空)'}\n\n【可交互元素】(${data.interactiveCount} 个，编号可直接用于 browser_click/browser_type 的 index 参数)\n${elems}`
+      );
+    } catch (e: any) { return err(e?.message || '获取页面内容失败'); }
   }
 }
 
@@ -476,11 +533,14 @@ export class BrowserUncheckTool implements BuiltInTool {
 // ========== 页面信息 ==========
 export class BrowserGetPageInfoTool implements BuiltInTool {
   name = 'browser_get_page_info';
-  description = 'Get current page url, title, and a numbered list of interactive elements (penetrates same-origin iframes and Shadow DOM, up to 300). Each element has an index number — pass it as the index param of browser_click/browser_type to locate the element precisely (preferred over CSS selector, especially for dynamic hash classes and elements inside iframes/popups). Also includes selector, tag, text, position and attributes (type, placeholder, value, ariaLabel, name, role, options for select, checked).';
-  inputSchema = { type: 'object', properties: {} };
-  async execute(): Promise<McpCallResult> {
+  description = 'Get current page url, title, and a numbered list of interactive elements (penetrates same-origin iframes and Shadow DOM, up to 300). Each element has an index number — pass it as the index param of browser_click/browser_type to locate the element precisely (preferred over CSS selector, especially for dynamic hash classes and elements inside iframes/popups). Also includes selector, tag, text, position and attributes (type, placeholder, value, ariaLabel, name, role, options for select, checked). 可传 tabId 读取指定标签页，不必先切换标签页。';
+  inputSchema = {
+    type: 'object',
+    properties: { tabId: { type: 'number', description: '可选：目标标签页 id（来自 browser_new_tab / browser_get_tabs），缺省为当前活动标签页。' } },
+  };
+  async execute(args: Record<string, unknown> = {}): Promise<McpCallResult> {
     try {
-      const data = await callBrowserApi('/action', 'POST', { action: 'get_page_info' }) as any;
+      const data = await callBrowserApi('/action', 'POST', { action: 'get_page_info', tabId: args.tabId }) as any;
       if (data.error) return err(data.error);
       const elems = (data.interactive || []).slice(0, 120).map((e: any) => {
         let s = `[${e.index}] ${e.tag}`;
@@ -521,7 +581,7 @@ export class BrowserLoginSavedTool implements BuiltInTool {
 // ========== C4 多标签页管理 ==========
 export class BrowserNewTabTool implements BuiltInTool {
   name = 'browser_new_tab';
-  description = 'Open a new browser tab and optionally navigate to a URL. Returns the new tab id. 新开标签页并导航（可选 url），返回标签页 id。';
+  description = 'Open a new browser tab and optionally navigate to a URL. Returns the new tab id. 新开标签页并导航（可选 url），返回标签页 id。需要同时打开/对比多个页面时用本工具（不要并行调用多个 browser_navigate）；拿到 tabId 后可用读取类工具（browser_get_page_content 等）的 tabId 参数直接读取该页，无需切换标签页。';
   inputSchema = {
     type: 'object',
     properties: { url: { type: 'string', description: 'Optional URL to navigate the new tab to. 不传则打开空白标签页。' } },
@@ -622,6 +682,7 @@ export class BrowserExtractListTool implements BuiltInTool {
   inputSchema = {
     type: 'object',
     properties: {
+      tabId: { type: 'number', description: '可选：目标标签页 id，缺省为当前活动标签页。' },
       selector: { type: 'string', description: 'CSS selector of the list item container (e.g. ".goods-item"). 列表项容器选择器。' },
       fields: {
         type: 'object',
@@ -632,7 +693,7 @@ export class BrowserExtractListTool implements BuiltInTool {
   };
   async execute(args: Record<string, unknown>): Promise<McpCallResult> {
     try {
-      const data = await callBrowserApi('/action', 'POST', { action: 'extract_list', selector: args.selector, fields: args.fields, limit: args.limit }) as any;
+      const data = await callBrowserApi('/action', 'POST', { action: 'extract_list', tabId: args.tabId, selector: args.selector, fields: args.fields, limit: args.limit }) as any;
       if (data?.error) return err(data.error);
       return ok(`提取到 ${data.count} 条数据：\n${JSON.stringify(data.items, null, 2)}`);
     } catch (e: any) { return err(e?.message || '结构化提取失败'); }
@@ -786,14 +847,17 @@ export class BrowserDragTool implements BuiltInTool {
 // ========== C14 Accessibility Tree ==========
 export class BrowserGetA11yTreeTool implements BuiltInTool {
   name = 'browser_get_a11y_tree';
-  description = 'Get the page accessibility tree (role/name/value/children), a stable supplement to get_dom for SPA/portal. 返回页面无障碍树，作为 get_dom 的补充，对 SPA/portal 更稳。';
+  description = 'Get the page accessibility tree (role/name/value/children), a stable supplement to get_dom for SPA/portal. 返回页面无障碍树，作为 get_dom 的补充，对 SPA/portal 更稳。可传 tabId 读取指定标签页。';
   inputSchema = {
     type: 'object',
-    properties: { maxNodes: { type: 'number', description: 'Max number of nodes to return (default 200).' } },
+    properties: {
+      tabId: { type: 'number', description: '可选：目标标签页 id，缺省为当前活动标签页。' },
+      maxNodes: { type: 'number', description: 'Max number of nodes to return (default 200).' },
+    },
   };
   async execute(args: Record<string, unknown>): Promise<McpCallResult> {
     try {
-      const data = await callBrowserApi('/action', 'POST', { action: 'get_a11y_tree', maxNodes: args.maxNodes }) as any;
+      const data = await callBrowserApi('/action', 'POST', { action: 'get_a11y_tree', tabId: args.tabId, maxNodes: args.maxNodes }) as any;
       if (data?.error) return err(data.error);
       return ok(`A11y tree（${data.nodeCount} 个节点）：\n${JSON.stringify(data.tree, null, 2)}`);
     } catch (e: any) { return err(e?.message || '获取无障碍树失败'); }
@@ -820,6 +884,7 @@ export const BrowserToolClasses = [
   BrowserPrevPageTool,
   BrowserWaitForTool,
   BrowserGetVisibleTextTool,
+  BrowserGetPageContentTool,
   BrowserSelectOptionTool,
   BrowserCheckTool,
   BrowserUncheckTool,
@@ -856,6 +921,7 @@ export const BROWSER_TOOL_NAMES = [
   'browser_wait', 'browser_screenshot',
   'browser_fill_form', 'browser_submit_form', 'browser_search',
   'browser_next_page', 'browser_prev_page', 'browser_wait_for', 'browser_get_visible_text',
+  'browser_get_page_content',
   'browser_select_option', 'browser_check', 'browser_uncheck', 'browser_get_page_info',
   'browser_login_saved',
   // C4 多标签页管理

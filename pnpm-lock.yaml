@@ -4,6 +4,9 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+overrides:
+  canvas: '-'
+
 importers:
 
   .:
@@ -276,6 +279,9 @@ importers:
       mammoth:
         specifier: ^1.8.0
         version: 1.12.2
+      unpdf:
+        specifier: ^0.12.1
+        version: 0.12.2
       xlsx:
         specifier: ^0.18.5
         version: 0.18.5
@@ -352,6 +358,9 @@ importers:
       jsqr:
         specifier: ^1.4.0
         version: 1.4.0
+      jszip:
+        specifier: ^3.10.1
+        version: 3.10.1
       katex:
         specifier: ^0.16.0
         version: 0.16.47
@@ -3726,6 +3735,9 @@ packages:
   universalify@2.0.1:
     resolution: {integrity: sha512-gptHNQghINnc/vTGIk0SOFGFNXw7JVrlRUtConJRlvaw6DuX0wO5Jeko9sWrMBhh+PsYAZ7oXAiOnf/UKogyiw==}
     engines: {node: '>= 10.0.0'}
+
+  unpdf@0.12.2:
+    resolution: {integrity: sha512-3eyDFfayk+Sf5+inJ4OyhecR2BtRFEeZqUfGPdq2O8aBLau9MYL9lAP+GEcSAaVd2JWqde8Dnz38z0x7KRglaA==}
 
   unpipe@1.0.0:
     resolution: {integrity: sha512-pjy2bYhSsufwWlKwPc+l3cN7+wuJlK6uz0YdJEOlQDbl6jo/YlPi4mb8agUkVC8BF7V8NuzeyPNqRksA3hztKQ==}
@@ -7713,6 +7725,8 @@ snapshots:
   universalify@0.1.2: {}
 
   universalify@2.0.1: {}
+
+  unpdf@0.12.2: {}
 
   unpipe@1.0.0: {}
 

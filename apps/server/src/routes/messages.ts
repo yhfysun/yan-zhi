@@ -5,6 +5,15 @@ import { db } from '../db.js';
 const router = Router();
 router.use(authMiddleware);
 
+// GET /api/messages/:mid/snapshot  按需获取单条消息的提示词快照
+// 历史会话列表接口不再携带快照（减小还原流量），点「查看提示词」时才按需拉取。
+router.get('/:mid/snapshot', (req: Request, res: Response) => {
+  const userId = req.user!.userId;
+  const row = db.prepare('SELECT id, system_prompt_snapshot FROM message WHERE id = ? AND user_id = ?').get(req.params.mid, userId) as any;
+  if (!row) { res.status(404).json({ error: '消息不存在' }); return; }
+  res.json({ data: { id: row.id, systemPromptSnapshot: row.system_prompt_snapshot || null } });
+});
+
 // PATCH /api/messages/:mid
 router.patch('/:mid', (req: Request, res: Response) => {
   const userId = req.user!.userId;

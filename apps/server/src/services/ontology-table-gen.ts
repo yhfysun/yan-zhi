@@ -1,7 +1,7 @@
 // 表 → 本体规格生成器（纯函数，无 db 依赖，可单测）。
 // 用户诉求：大部分本体就是单表——选数据源的表直接生成，描述默认取表备注。
 // 启发式：文本/日期类列 → 维度；日期时间列 → 时间维度；数值列 → 度量（sum）；主键列 → 主实体。
-import type { OntologyDimension, OntologyMeasure, OntologyTimeDimension, OntologyEntity } from './ontology-compiler.js';
+import type { OntologyDimension, OntologyMeasure, OntologyTimeDimension, OntologyEntity, OntologySelection } from './ontology-compiler.js';
 
 export interface TableSchemaLite {
   name: string;
@@ -19,6 +19,8 @@ export interface TableGenResult {
   dimensions: OntologyDimension[];
   timeDimensions: OntologyTimeDimension[];
   measures: OntologyMeasure[];
+  /** 默认选择列：自动生成的本体把所有维度/度量/时间维度设为默认，未指定列时全选 */
+  selections: OntologySelection[];
 }
 
 const TEXT_TYPE = /char|text|clob|enum|json|uuid/i;
@@ -89,7 +91,14 @@ export function buildTableOntologySpec(table: TableSchemaLite, dsName: string): 
     used.add(m.name);
   }
 
-  return { code: sanitizeCode(table.name), name, description, sourceSql, entities, dimensions, timeDimensions, measures };
+  // 默认选择列：自动生成的本体把所有维度/度量/时间维度设为默认，未指定列时全选
+  const selections: OntologySelection[] = [
+    ...dimensions.map((d) => ({ name: d.name, isDefault: true })),
+    ...timeDimensions.map((t) => ({ name: t.name, isDefault: true })),
+    ...measures.map((m) => ({ name: m.name, isDefault: true })),
+  ];
+
+  return { code: sanitizeCode(table.name), name, description, sourceSql, entities, dimensions, timeDimensions, measures, selections };
 }
 
 function tableNameToEntity(t: string): string {

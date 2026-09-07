@@ -6,31 +6,18 @@ export * from './sandbox';
 
 import { ToolRegistry } from './registry';
 import { registerBuiltInTools } from './builtin/index';
-import { DuckDuckGoSearchBackend, ServerSearchBackend } from './builtin/web-search';
-import type { SearchBackend } from './builtin/web-search';
 
 let _registry: ToolRegistry | null = null;
 
 /**
  * 内置工具注册中心单例（懒初始化，首次获取时注册所有内置工具）。
- * 未传 searchBackend 时按环境选默认后端：
- * - 浏览器环境（有 window）：ServerSearchBackend，走服务端 /api/search 代理（规避 CORS）
- * - Node 环境：DuckDuckGoSearchBackend，直接 fetch DuckDuckGo
- * 保证前端无参调用也能正常 web_search，避免「no search backend configured」。
+ * 注：web_search / web_fetch 工具已从项目移除，联网检索与网页内容获取
+ * 统一委派 pageAgent（真实浏览器 browser_get_page_content 抓取页面正文）。
  */
-export function getToolRegistry(searchBackend?: SearchBackend): ToolRegistry {
+export function getToolRegistry(): ToolRegistry {
   if (!_registry) {
     _registry = new ToolRegistry();
-    const defaultBackend = typeof window !== 'undefined'
-      ? new ServerSearchBackend()
-      : new DuckDuckGoSearchBackend();
-    registerBuiltInTools(_registry, searchBackend ?? defaultBackend);
-  } else if (searchBackend) {
-    // 单例已存在：若传入新 backend（如后端 ensureToolsInitialized 传百度 Playwright），
-    // 更新 web_search 后端。避免插件初始化等无参调用先把单例锁定为 DuckDuckGo（国内不可达）
-    // 导致后续 ensureToolsInitialized 传入的百度后端被忽略、web_search 报 fetch failed。
-    const webSearch = _registry.get('web_search') as { setBackend?: (b: SearchBackend) => void } | undefined;
-    webSearch?.setBackend?.(searchBackend);
+    registerBuiltInTools(_registry);
   }
   return _registry;
 }

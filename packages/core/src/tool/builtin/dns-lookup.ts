@@ -7,7 +7,7 @@ type DnsType = (typeof TYPES)[number];
 
 export class DnsLookupTool implements BuiltInTool {
   name = 'dns_lookup';
-  description = 'DNS resolution: query A / AAAA / CNAME / MX / TXT / NS / SRV / SOA records for a domain, or reverse PTR lookup for an IP (set type=PTR). Use for network diagnostics and reconnaissance of authorized targets.';
+  description = 'DNS 解析：查询某个域名的 A / AAAA / CNAME / MX / TXT / NS / SRV / SOA 记录，或对 IP 反向 PTR 解析（type=PTR）。用于网络诊断与授权范围内的目标侦察。';
 
   inputSchema = {
     type: 'object',

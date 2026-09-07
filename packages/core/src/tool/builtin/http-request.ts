@@ -4,7 +4,7 @@ import type { McpCallResult } from '../../mcp/client';
 
 export class HttpRequestTool implements BuiltInTool {
   name = 'http_request';
-  description = 'Send a raw HTTP/HTTPS request (like curl): any method, custom headers, request body. Returns status, timing, response headers and body (truncated). Use for API testing, endpoint probing and authorized security assessment. Redirects are followed by default.';
+  description = '发送原始 HTTP/HTTPS 请求（类似 curl）：支持任意方法、自定义请求头与请求体，返回状态码、耗时、响应头与响应体（按字节数截断）。用于 API 测试、端点探活、授权范围内的安全评估。默认跟随 3xx 跳转。';
 
   inputSchema = {
     type: 'object',

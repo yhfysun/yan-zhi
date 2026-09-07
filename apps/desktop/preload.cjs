@@ -64,9 +64,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // BrowserView：嵌入外部网页（多标签页，每个 tabId 对应独立 BrowserView）
   browserView: {
-    createTab: () => ipcRenderer.invoke('browserView:createTab'),
+    createTab: (scope) => ipcRenderer.invoke('browserView:createTab', scope),
     closeTab: (tabId, fromUi) => ipcRenderer.invoke('browserView:closeTab', tabId, fromUi),
     activateTab: (tabId) => ipcRenderer.invoke('browserView:activateTab', tabId),
+    ensureActiveTab: (scope) => ipcRenderer.invoke('browserView:ensureActiveTab', scope),
     load: (tabId, url) => ipcRenderer.invoke('browserView:load', tabId, url),
     back: (tabId) => ipcRenderer.invoke('browserView:back', tabId),
     forward: (tabId) => ipcRenderer.invoke('browserView:forward', tabId),
@@ -92,5 +93,22 @@ contextBridge.exposeInMainWorld('electronAPI', {
     onTabActivated: (callback) => {
       ipcRenderer.on('browserView:tabActivated', (_e, tabId) => callback(tabId));
     },
+    // 主进程兜底自建 tab（ensureActiveTab 超时）时广播，渲染层补建 tab 壳，避免"导航黑洞"
+    onTabCreated: (callback) => {
+      ipcRenderer.on('browserView:tabCreated', (_e, tabId, url, scope) => callback(tabId, url, scope));
+    },
+    // 页面 title 变化推送，渲染层更新 tab 标题（真实网站名而非 URL）
+    onTitleUpdated: (callback) => {
+      ipcRenderer.on('browserView:pageTitle', (_e, tabId, title) => callback(tabId, title));
+    },
+    // 渲染层重载完成后主进程通知"重认领"BrowserView（黑屏兜底，见 BrowserPanel onResync）
+    onResync: (callback) => {
+      ipcRenderer.on('browserView:resync', () => callback());
+    },
+  },
+
+  // pageAgent 浏览器操作统一通道（IPC 直连 BrowserView，不依赖后端 Playwright）
+  browser: {
+    call: (action, args) => ipcRenderer.invoke('browser:call', action, args),
   },
 });

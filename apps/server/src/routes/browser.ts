@@ -43,17 +43,66 @@ async function loadChromium() {
   }
 }
 
-/** 获取或启动浏览器实例（headless 模式：不弹窗；截屏/导航/下载照常工作） */
+// ========== 阶段一改造：超时兜底 + 健康探针 + CDP 模式 + headless 可配置 ==========
+const BROWSER_MODE = (process.env.BROWSER_MODE || 'launch') as 'launch' | 'cdp';
+const CDP_ENDPOINT = process.env.CDP_ENDPOINT || 'http://127.0.0.1:9222';
+// 修复：launch 模式强制 headless。此前 BROWSER_HEADLESS=false 可在 launch 模式弹出独立
+// Chromium 有头窗口（模型调浏览器工具时桌面突然多出一个浏览器），与「单一执行面」冲突——
+// 有界面只允许 Electron 自身的 BrowserView（桌面端 BROWSER_MODE=cdp 连自己）。
+const BROWSER_HEADLESS = true;
+const OP_TIMEOUT_MS = 15000; // 所有 page 操作统一超时（解决僵尸实例导致的永久挂起）
+
+/** 操作超时兜底：任何 page 操作超过 OP_TIMEOUT_MS 则 reject */
+function withTimeout<T>(p: Promise<T>, msg = '浏览器操作超时'): Promise<T> {
+  return Promise.race([
+    p,
+    new Promise<T>((_, reject) =>
+      setTimeout(() => reject(new Error(`${msg}（${OP_TIMEOUT_MS}ms），实例可能已假死，将自动重建`)), OP_TIMEOUT_MS),
+    ),
+  ]);
+}
+
+/** 浏览器健康探针：真正执行一次 version() 请求，比 isConnected() 更可靠 */
+async function isBrowserAlive(b: any): Promise<boolean> {
+  if (!b) return false;
+  if (b.isConnected?.() === false) return false;
+  try {
+    await withTimeout(b.version?.() ?? Promise.resolve('ok'), '浏览器心跳超时');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** 强制重置浏览器状态（实例假死时调用） */
+async function resetBrowser() {
+  try { if (pageInstance && !pageInstance.isClosed?.()) await pageInstance.close().catch(() => {}); } catch {}
+  try { if (browserInstance) await browserInstance.close().catch(() => {}); } catch {}
+  browserInstance = null;
+  pageInstance = null;
+  tabs.clear();
+  activeTabId = -1;
+  nextTabId = 0;
+}
+
+/** 获取或启动浏览器实例（支持 launch / cdp 两种模式，headless 可配置） */
 async function getBrowser() {
   const { chromium } = await loadChromium();
-  if (browserInstance && browserInstance.isConnected?.()) {
+  // 健康探针：isConnected 不够，真正发一次请求验证存活
+  if (browserInstance && (await isBrowserAlive(browserInstance))) {
     lastActivityAt = Date.now();
     return browserInstance;
   }
-  // headless：headless: true 默认，不弹出可见窗口
-  browserInstance = await chromium.launch({ headless: true });
+  // 实例假死：先清理再重建
+  if (browserInstance) await resetBrowser();
+  if (BROWSER_MODE === 'cdp') {
+    // CDP 模式：连接用户真实打开的 Chrome（需启动时加 --remote-debugging-port=9222）
+    browserInstance = await withTimeout(chromium.connectOverCDP(CDP_ENDPOINT), 'CDP 连接失败');
+  } else {
+    // launch 模式：强制 headless（不允许环境变量切有头，避免弹独立浏览器窗口）
+    browserInstance = await withTimeout(chromium.launch({ headless: BROWSER_HEADLESS }), '浏览器启动失败');
+  }
   lastActivityAt = Date.now();
-  // 注册空闲超时关闭
   scheduleIdleCheck();
   return browserInstance;
 }
@@ -91,15 +140,51 @@ function attachPageListeners(page: any) {
   });
 }
 
+/**
+ * CDP 模式安全闸门：附着的是 Electron 自身（或用户真实浏览器），pages 列表里混着
+ * "应用壳窗口"（主窗口 file://dist、dev server localhost、devtools、about:blank）。
+ * 一旦选中并 goto，会命中主窗口的 will-navigate → 主进程 shell.openExternal(url) →
+ * 弹出系统浏览器独立窗口（实测 bug：智能体/任务调浏览器工具弹独立浏览器窗口）。
+ */
+function isUnsafeCdpPage(page: any): boolean {
+  let u = '';
+  try { u = page.url() || ''; } catch { return true; }
+  if (!u || u === 'about:blank') return true;
+  if (u.startsWith('file:') || u.startsWith('devtools:') || u.startsWith('chrome:') || u.startsWith('edge:')) return true;
+  if (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?/i.test(u)) return true;
+  return false;
+}
+
+/** CDP 模式选页：只挑"真实网页" target；没有就返回 null（调用方报错，禁止 newPage —— Electron 上 newPage 会弹新窗口） */
+function pickCdpPage(browser: any): any | null {
+  for (const ctx of browser.contexts()) {
+    for (const p of ctx.pages()) {
+      if (!isUnsafeCdpPage(p)) return p;
+    }
+  }
+  return null;
+}
+
 /** 创建一个新的 context + page（多标签页基础单元），可选导航到 url */
 async function createTabPage(url?: string): Promise<any> {
   const browser = await getBrowser();
-  const context = await browser.newContext({
-    viewport: { width: 1280, height: 800 },
-    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
-    locale: 'zh-CN',
-  });
-  const page = await context.newPage();
+  let context: any;
+  let page: any;
+  if (BROWSER_MODE === 'cdp') {
+    // CDP 模式：只复用"真实网页" target（绝不选中应用壳窗口、绝不 newPage 弹新窗口，见 pickCdpPage）
+    page = pickCdpPage(browser);
+    if (!page) {
+      throw new Error('CDP 模式下未找到可用的网页 target（桌面端浏览器操作应通过预览面板执行，而非服务端路由）');
+    }
+    context = page.context();
+  } else {
+    context = await browser.newContext({
+      viewport: { width: 1280, height: 800 },
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
+      locale: 'zh-CN',
+    });
+    page = await context.newPage();
+  }
   // 注入 __name polyfill：esbuild keepNames 会给 ensureYzReg 内部嵌套函数注入 __name helper，
   // page.evaluate 序列化函数体到浏览器执行时 __name 未定义会报 ReferenceError。此处全局兜底。
   await page.addInitScript({ content: 'window.__name = window.__name || ((t) => t);' });
@@ -110,11 +195,27 @@ async function createTabPage(url?: string): Promise<any> {
   return page;
 }
 
-/** 获取或创建页面（当前活动标签页） */
+/** page 健康探针：执行一次轻量 evaluate 验证 page 存活 */
+async function isPageAlive(p: any): Promise<boolean> {
+  if (!p || p.isClosed?.()) return false;
+  try {
+    await withTimeout(p.evaluate(() => 1), 'page 心跳超时');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** 获取或创建页面（当前活动标签页），含健康检查 */
 async function getPage() {
-  if (pageInstance && !pageInstance.isClosed?.()) {
+  if (pageInstance && (await isPageAlive(pageInstance))) {
     lastActivityAt = Date.now();
     return pageInstance;
+  }
+  // page 假死：重置后重建
+  if (pageInstance) {
+    try { await pageInstance.close().catch(() => {}); } catch {}
+    pageInstance = null;
   }
   // 首次：创建主标签页（tab 0）
   const page = await createTabPage();
@@ -124,6 +225,49 @@ async function getPage() {
   nextTabId = 1;
   lastActivityAt = Date.now();
   return page;
+}
+
+// ========== 阶段二：会话自动恢复 ==========
+let lastKnownUrl = '';
+let lastKnownTitle = '';
+
+/** 记录最近访问的 URL（用于会话恢复） */
+function recordPageState(url: string, title?: string) {
+  if (url && url !== 'about:blank') { lastKnownUrl = url; }
+  if (title != null) { lastKnownTitle = title; }
+}
+
+/** 会话恢复：browser 还在但 page 丢了 → 重建 page 并导航到最近 URL */
+async function recoverSession(): Promise<{ recovered: boolean; url: string }> {
+  let page: any = null;
+  try {
+    if (!browserInstance || !(await isBrowserAlive(browserInstance))) {
+      return { recovered: false, url: '' };
+    }
+    if (BROWSER_MODE === 'cdp') {
+      // CDP 模式：同样只挑真实网页 target，绝不选中应用壳窗口 / newPage 弹新窗口
+      page = pickCdpPage(browserInstance);
+      if (!page) return { recovered: false, url: '' };
+    } else {
+      const contexts = browserInstance.contexts();
+      for (const ctx of contexts) {
+        const pages = ctx.pages();
+        if (pages.length > 0) { page = pages[0]; break; }
+      }
+      if (!page) {
+        const ctx = contexts.length > 0 ? contexts[0] : await browserInstance.newContext({ viewport: { width: 1280, height: 800 } });
+        page = await ctx.newPage();
+        attachPageListeners(page);
+      }
+    }
+    pageInstance = page;
+    if (lastKnownUrl && lastKnownUrl !== page.url()) {
+      try { await page.goto(lastKnownUrl, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {}); } catch {}
+    }
+    return { recovered: true, url: page.url() };
+  } catch (e) {
+    return { recovered: false, url: '' };
+  }
 }
 
 /** 空闲超时检查：关闭浏览器释放资源 */
@@ -148,17 +292,27 @@ function scheduleIdleCheck() {
 // POST /api/browser/navigate —— 导航到 URL（返回 url + title，前端用 /render 获取 DOM）
 router.post('/navigate', async (req: Request, res: Response) => {
   try {
-    const { url, viewport } = req.body || {};
+    const { url, viewport, tabId } = req.body || {};
     if (!url) { res.status(400).json({ error: 'url 为必填项' }); return; }
-    const page = await getPage();
+    // tabId 定向：导航到指定标签页（同批多导航/多页并行场景），并切为活动页
+    let page: any;
+    const tid = tabId !== undefined && tabId !== null ? Number(tabId) : null;
+    if (tid !== null && tabs.has(tid) && !tabs.get(tid)?.isClosed?.()) {
+      page = tabs.get(tid);
+      pageInstance = page;
+      activeTabId = tid;
+    } else {
+      page = await getPage();
+    }
     // 同步前端视口大小
     if (viewport && viewport.width && viewport.height) {
       await page.setViewportSize({ width: viewport.width, height: viewport.height }).catch(() => {});
     }
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
-    const title = await page.title();
+    await withTimeout(page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }), '导航超时');
+    const title = await withTimeout(page.title(), '获取标题超时');
     const currentUrl = page.url();
     lastActivityAt = Date.now();
+    recordPageState(currentUrl, String(title || ''));
     res.json({ data: { url: currentUrl, title } });
   } catch (e: any) {
     res.status(500).json({ error: e?.message || '导航失败' });
@@ -168,8 +322,73 @@ router.post('/navigate', async (req: Request, res: Response) => {
 
 // POST /api/browser/action —— 执行浏览器动作（click/type/press/scroll/hover/get_text/get_dom/wait）
 // 页面内元素注册表 + 编号 + 稳定选择器生成（自包含无闭包，供 page.evaluate 注入）。
-// browser_get_page_info / browser_get_dom 收集可交互元素时注册并返回 index，
-// browser_click / browser_type 用 index 直接定位，免手写动态 hash class 选择器。
+// browser_get_page_info / browser_get_dom 收集可交互元素时注册并返回 index + ref，
+// browser_click / browser_type 优先用 ref（d1:e12 格式）定位，回退到 index，免手写动态 hash class 选择器。
+
+// ========== 阶段二：DOM Ref 系统（d1:e12 格式，替代易失效的全局 index） ==========
+// scopeId: 主文档=d1，同源 iframe 按发现顺序=d2,d3...
+// elementId: 元素在当前 scope 内的递增编号
+// 优势: ref 绑定文档 scope，页面内局部刷新不失效；iframe 元素有独立 scope 不会冲突
+function ensureYzRefs() {
+  const w = window as any;
+  if (w.__yzRefs) return w.__yzRefs;
+  w.__yzRefMap = w.__yzRefMap || new WeakMap();
+  w.__yzScopeCounter = w.__yzScopeCounter || 1;
+  w.__yzScopes = w.__yzScopes || new Map(); // document -> scopeId
+
+  const getScopeId = (doc: Document): string => {
+    const R = w.__yzRefs;
+    if (R.scopes.has(doc)) return R.scopes.get(doc);
+    const sid = 'd' + (R.scopeCounter++);
+    R.scopes.set(doc, sid);
+    // 给文档挂一个 elementId 计数器
+    (doc as any).__yzElCounter = (doc as any).__yzElCounter || 0;
+    return sid;
+  };
+
+  const register = (el: Element): string => {
+    const R = w.__yzRefs;
+    const existing = R.refMap.get(el);
+    if (existing) return existing;
+    const doc = el.ownerDocument || document;
+    const sid = getScopeId(doc);
+    const eid = ++((doc as any).__yzElCounter);
+    const ref = sid + ':e' + eid;
+    try { R.refMap.set(el, ref); } catch { /* ignore */ }
+    return ref;
+  };
+
+  const resolve = (ref: string): Element | null => {
+    const R = w.__yzRefs;
+    const m = /^(d\d+):e(\d+)$/.exec(ref);
+    if (!m) return null;
+    const targetSid = m[1];
+    const targetEid = Number(m[2]);
+    // 遍历所有 scope 文档，找匹配的元素
+    for (const [doc, sid] of R.scopes.entries()) {
+      if (sid !== targetSid) continue;
+      // 在该文档内遍历所有元素，找 __yzRef 匹配的
+      const all = doc.querySelectorAll('*');
+      for (let i = 0; i < all.length; i++) {
+        const el = all[i];
+        const r = R.refMap.get(el);
+        if (r === ref) return el;
+      }
+    }
+    return null;
+  };
+
+  w.__yzRefs = {
+    refMap: w.__yzRefMap,
+    scopeCounter: w.__yzScopeCounter,
+    scopes: w.__yzScopes,
+    register,
+    resolve,
+    getScopeId,
+  };
+  return w.__yzRefs;
+}
+
 function ensureYzReg() {
   const w = window as any;
   if (w.__yzReg) return w.__yzReg;
@@ -220,8 +439,14 @@ router.post('/action', async (req: Request, res: Response) => {
     const { action, text, key, x, y, timeout } = args;
     const selector = args.selector ? String(args.selector).replace(/:contains\(\s*["']([\s\S]*?)["']\s*\)/g, ':has-text("$1")') : args.selector;
     if (!action) { res.status(400).json({ error: 'action 为必填项' }); return; }
-    const page = await getPage();
+    let page = await withTimeout(getPage(), '获取浏览器页面超时（实例可能已假死，将自动重建，请重试）');
+    // tabId 定向：在指定标签页上执行动作（不切换活动页），供"按 tabId 读取/操作"场景
+    const reqTabId = args.tabId !== undefined && args.tabId !== null ? Number(args.tabId) : null;
+    if (reqTabId !== null && tabs.has(reqTabId) && !tabs.get(reqTabId)?.isClosed?.()) {
+      page = tabs.get(reqTabId);
+    }
     let result: unknown = null;
+    let _actionRetried = false;
 
     // 变化检测：操作前采集页面快照
     let beforeState: any = null;
@@ -231,13 +456,25 @@ router.post('/action', async (req: Request, res: Response) => {
 
     switch (action) {
       case 'click': {
-        if (args.index !== undefined && args.index !== null) {
-          // 元素编号定位（优先）：从页面注册表取元素并点击
+        // 阶段二：优先用 ref (d1:e12) 定位，回退到 index
+        const clickRef = args.ref ? String(args.ref) : null;
+        if (clickRef || args.index !== undefined && args.index !== null) {
           await page.evaluate(ensureYzReg);
-          const pos = await page.evaluate((idx: number) => {
+          await page.evaluate(ensureYzRefs);
+          const pos = await page.evaluate((p: { ref: string | null; idx: number | null }) => {
             const R = (window as any).__yzReg;
-            const el = R.get(idx);
-            if (!el || !el.isConnected) return { error: `index ${idx} 已失效（页面已变化），请重新调用 get_page_info 获取编号列表` };
+            const Refs = (window as any).__yzRefs;
+            let el: Element | null = null;
+            let locator = '';
+            if (p.ref && Refs) {
+              el = Refs.resolve(p.ref);
+              locator = 'ref=' + p.ref;
+            }
+            if (!el && p.idx != null) {
+              el = R.get(p.idx);
+              locator = 'index=' + p.idx;
+            }
+            if (!el || !el.isConnected) return { error: `${locator} 已失效（页面已变化），请重新调用 get_page_info 获取最新 ref/index 列表` };
             el.scrollIntoView({ block: 'center' });
             const rect = el.getBoundingClientRect();
             if (el.ownerDocument === document) return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
@@ -247,7 +484,7 @@ router.post('/action', async (req: Request, res: Response) => {
             el.dispatchEvent(new MouseEvent('mouseup', o));
             el.dispatchEvent(new MouseEvent('click', o));
             return { via: 'dom-events', iframe: true };
-          }, Number(args.index));
+          }, { ref: clickRef, idx: args.index != null ? Number(args.index) : null });
           if ((pos as any)?.error) {
             result = pos;
           } else if ((pos as any)?.x !== undefined) {
@@ -256,6 +493,14 @@ router.post('/action', async (req: Request, res: Response) => {
           } else {
             result = { success: true, index: args.index, via: 'dom-events', iframe: true };
           }
+          break;
+        }
+        // 空参兜底：ref/index/selector/坐标一个都没传 → 引导性报错（此前静默返回 {clicked:true}，什么都没点）
+        if (!selector && x === undefined && y === undefined) {
+          result = {
+            error: '未提供定位参数（index / selector / x+y）',
+            hint: '请先调用 get_page_info 或 get_page_content 获取带编号的可交互元素列表，再以 { "index": <编号> } 重新调用 click；不要传空参数。',
+          };
           break;
         }
         // 真实鼠标点击：先 move 再 click
@@ -300,12 +545,18 @@ router.post('/action', async (req: Request, res: Response) => {
         break;
       }
       case 'type': {
-        if (args.index !== undefined && args.index !== null) {
+        const typeRef = args.ref ? String(args.ref) : null;
+        if (typeRef || args.index !== undefined && args.index !== null) {
           await page.evaluate(ensureYzReg);
-          const r = await page.evaluate((p: { idx: number; text: string }) => {
+          await page.evaluate(ensureYzRefs);
+          const r = await page.evaluate((p: { ref: string | null; idx: number | null; text: string }) => {
             const R = (window as any).__yzReg;
-            const el = R.get(p.idx);
-            if (!el || !el.isConnected) return { error: `index ${p.idx} 已失效（页面已变化），请重新调用 get_page_info 获取编号列表` };
+            const Refs = (window as any).__yzRefs;
+            let el: any = null;
+            let locator = '';
+            if (p.ref && Refs) { el = Refs.resolve(p.ref) as any; locator = 'ref=' + p.ref; }
+            if (!el && p.idx != null) { el = R.get(p.idx); locator = 'index=' + p.idx; }
+            if (!el || !el.isConnected) return { error: `${locator} 已失效（页面已变化），请重新调用 get_page_info 获取最新 ref/index 列表` };
             el.scrollIntoView({ block: 'center' });
             el.focus();
             for (const ch of p.text) {
@@ -314,7 +565,7 @@ router.post('/action', async (req: Request, res: Response) => {
             }
             el.dispatchEvent(new Event('change', { bubbles: true }));
             return { success: true, index: p.idx, typed: p.text.length };
-          }, { idx: Number(args.index), text: String(text || '') });
+          }, { ref: typeRef, idx: args.index != null ? Number(args.index) : null, text: String(text || '') });
           result = r;
           break;
         }
@@ -535,6 +786,7 @@ router.post('/action', async (req: Request, res: Response) => {
       case 'get_page_info': {
         // 穿透 iframe / Shadow DOM 收集可交互元素并编号注册（含 iframe 内弹窗元素）
         await page.evaluate(ensureYzReg);
+        await page.evaluate(ensureYzRefs);
         result = await page.evaluate(() => {
           const R = (window as any).__yzReg;
           const S = 'a,button,input,select,textarea,[role=button],[role=link],[role=checkbox],[role=radio],[onclick],label[for],summary,details,[tabindex]';
@@ -566,10 +818,12 @@ router.post('/action', async (req: Request, res: Response) => {
           };
           collect(document.documentElement);
           const out: any[] = [];
+          const Refs = (window as any).__yzRefs;
           for (let k = 0; k < els.length && out.length < 300; k++) {
             const el = els[k] as any;
             const idx = R.register(el);
-            const o: any = { index: idx, tag: el.tagName.toLowerCase(), selector: R.genSel(el), text: (el.textContent || '').trim().slice(0, 60) };
+            const ref = Refs ? Refs.register(el) : String(idx);
+            const o: any = { index: idx, ref, tag: el.tagName.toLowerCase(), selector: R.genSel(el), text: (el.textContent || '').trim().slice(0, 60) };
             if (el.ownerDocument !== document) { o.iframe = true; }
             else { const rect = el.getBoundingClientRect(); o.x = Math.round(rect.x); o.y = Math.round(rect.y); o.w = Math.round(rect.width); o.h = Math.round(rect.height); }
             if (el.id) o.id = el.id;
@@ -587,6 +841,153 @@ router.post('/action', async (req: Request, res: Response) => {
           }
           return { url: location.href, title: document.title, interactiveCount: els.length, interactive: out, hint: '可交互元素已编号（index 字段），browser_click / browser_type 可直接用 index 参数定位（优先于 selector）' };
         });
+        break;
+      }
+      // ========== 阶段二：observe-act-observe 组合工具 ==========
+      case 'action_and_observe': {
+        // 执行一个子动作后自动返回最新页面状态（减少智能体往返调用）
+        const subAction = args.sub_action;
+        if (!subAction) { result = { error: 'sub_action 为必填项' }; break; }
+        // 构造子动作参数
+        const subArgs = { ...args, action: subAction };
+        delete subArgs.sub_action;
+        // 递归执行子动作（通过内部函数避免 HTTP 往返）
+        const subReq = { body: subArgs } as Request;
+        const subRes = { json: (d: any) => { result = d?.data ?? d; }, status: () => subRes } as any;
+        // 直接复用 action 处理逻辑（简化：手动执行关键子动作）
+        if (subAction === 'click' && (subArgs.ref || subArgs.index != null)) {
+          await page.evaluate(ensureYzReg);
+          await page.evaluate(ensureYzRefs);
+          const pos = await page.evaluate((p: { ref: string | null; idx: number | null }) => {
+            const R = (window as any).__yzReg;
+            const Refs = (window as any).__yzRefs;
+            let el: Element | null = null;
+            if (p.ref && Refs) el = Refs.resolve(p.ref);
+            if (!el && p.idx != null) el = R.get(p.idx);
+            if (!el || !el.isConnected) return { error: '元素已失效' };
+            el.scrollIntoView({ block: 'center' });
+            const rect = el.getBoundingClientRect();
+            return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+          }, { ref: subArgs.ref ? String(subArgs.ref) : null, idx: subArgs.index != null ? Number(subArgs.index) : null });
+          if ((pos as any)?.x !== undefined) {
+            await page.mouse.click((pos as any).x, (pos as any).y);
+          }
+        } else if (subAction === 'type' && (subArgs.ref || subArgs.index != null)) {
+          await page.evaluate(ensureYzReg);
+          await page.evaluate(ensureYzRefs);
+          await page.evaluate((p: { ref: string | null; idx: number | null; text: string }) => {
+            const R = (window as any).__yzReg;
+            const Refs = (window as any).__yzRefs;
+            let el: any = null;
+            if (p.ref && Refs) el = Refs.resolve(p.ref) as any;
+            if (!el && p.idx != null) el = R.get(p.idx) as any;
+            if (!el || !el.isConnected) return { error: '元素已失效' };
+            el.focus();
+            for (const ch of p.text) { el.value += ch; el.dispatchEvent(new Event('input', { bubbles: true })); }
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+            return { success: true };
+          }, { ref: subArgs.ref ? String(subArgs.ref) : null, idx: subArgs.index != null ? Number(subArgs.index) : null, text: String(subArgs.text || '') });
+        } else if (subAction === 'press') {
+          await page.keyboard.press(subArgs.key || 'Enter');
+        } else if (subAction === 'wait') {
+          await page.waitForTimeout(Math.min(subArgs.timeout || 1000, 10000));
+        }
+        // 等待页面稳定后自动返回最新状态
+        await page.waitForLoadState('domcontentloaded', { timeout: 5000 }).catch(() => {});
+        await page.evaluate(ensureYzReg);
+        await page.evaluate(ensureYzRefs);
+        const pageInfo = await page.evaluate(() => {
+          const R = (window as any).__yzReg;
+          const Refs = (window as any).__yzRefs;
+          const S = 'a,button,input,select,textarea,[role=button],[role=link],[role=checkbox],[role=radio],[onclick],label[for],summary,details,[tabindex]';
+          const els: Element[] = [];
+          const visible = (el: any) => {
+            if (el.disabled === true) return false;
+            const rect = el.getBoundingClientRect();
+            if (rect.width < 2 || rect.height < 2) return false;
+            if (el.offsetParent === null) {
+              try { const st = el.ownerDocument.defaultView.getComputedStyle(el).position; if (st !== 'fixed' && st !== 'sticky') return false; } catch { return false; }
+            }
+            return true;
+          };
+          const collect = (root: any) => {
+            try { const found = root.querySelectorAll(S) as NodeListOf<Element>; for (const el of Array.from(found)) { if (visible(el)) els.push(el); } } catch {}
+            try { const all = root.querySelectorAll('*') as NodeListOf<Element>; for (const n of Array.from(all)) {
+              if ((n as any).shadowRoot) collect((n as any).shadowRoot);
+              if (n.tagName === 'IFRAME' || n.tagName === 'FRAME') { try { const cd = (n as any).contentDocument; if (cd && cd.body) collect(cd.body); } catch {} }
+            }} catch {}
+          };
+          collect(document.documentElement);
+          const out: any[] = [];
+          for (let k = 0; k < els.length && out.length < 100; k++) {
+            const el = els[k] as any;
+            out.push({ index: R.register(el), ref: Refs ? Refs.register(el) : '', tag: el.tagName.toLowerCase(), text: (el.textContent || '').trim().slice(0, 50) });
+          }
+          return { url: location.href, title: document.title, interactiveCount: els.length, interactive: out };
+        }).catch(() => ({ url: page.url(), title: '', interactiveCount: 0, interactive: [] }));
+        recordPageState(pageInfo.url, pageInfo.title);
+        result = { action: subAction, pageInfo };
+        break;
+      }
+
+      // ========== 聚合读页：title + url + 可见正文 + 可交互元素一次返回（与桌面端 IPC 对齐） ==========
+      case 'get_page_content': {
+        const maxText = Math.min(Number(args.maxTextLength) || 5000, 20000);
+        const maxInteractive = Math.min(Number(args.maxInteractive) || 50, 300);
+        await page.evaluate(ensureYzReg);
+        await page.evaluate(ensureYzRefs);
+        result = await page.evaluate((a: { maxText: number; maxInteractive: number }) => {
+          const R = (window as any).__yzReg;
+          const Refs = (window as any).__yzRefs;
+          const visibleText = (el: Element): string => {
+            let s = '';
+            for (const n of Array.from(el.childNodes)) {
+              if (n.nodeType === 3) { const t = (n.textContent || '').trim(); if (t) s += t + ' '; }
+              else if (n.nodeType === 1) {
+                const st = getComputedStyle(n as Element);
+                if (st.display !== 'none' && st.visibility !== 'hidden' && st.opacity !== '0') s += visibleText(n as Element);
+              }
+            }
+            return s;
+          };
+          const S = 'a,button,input,select,textarea,[role=button],[role=link],[role=checkbox],[role=radio],[onclick],label[for],summary,details,[tabindex]';
+          const els: Element[] = [];
+          const visible = (el: any) => {
+            if (el.disabled === true) return false;
+            const rect = el.getBoundingClientRect();
+            if (rect.width < 2 || rect.height < 2) return false;
+            if (el.offsetParent === null) {
+              try { const st = el.ownerDocument.defaultView.getComputedStyle(el).position; if (st !== 'fixed' && st !== 'sticky') return false; } catch { return false; }
+            }
+            return true;
+          };
+          const collect = (root: any) => {
+            try { const found = root.querySelectorAll(S) as NodeListOf<Element>; for (const el of Array.from(found)) { if (visible(el)) els.push(el); } } catch {}
+            try { const all = root.querySelectorAll('*') as NodeListOf<Element>; for (const n of Array.from(all)) {
+              if ((n as any).shadowRoot) collect((n as any).shadowRoot);
+              if (n.tagName === 'IFRAME' || n.tagName === 'FRAME') { try { const cd = (n as any).contentDocument; if (cd && cd.body) collect(cd.body); } catch { /* 跨域跳过 */ } }
+            }} catch {}
+          };
+          collect(document.documentElement);
+          const out: any[] = [];
+          for (let k = 0; k < els.length && out.length < a.maxInteractive; k++) {
+            const el = els[k] as any;
+            const idx = R.register(el);
+            const o: any = { index: idx, ref: Refs ? Refs.register(el) : '', tag: el.tagName.toLowerCase(), text: (el.textContent || '').trim().slice(0, 60) };
+            if (el.placeholder) o.placeholder = el.placeholder;
+            if (el.href) o.href = String(el.href).slice(0, 200);
+            out.push(o);
+          }
+          return {
+            url: location.href,
+            title: document.title,
+            text: visibleText(document.body).trim().slice(0, a.maxText),
+            interactiveCount: els.length,
+            interactive: out,
+            hint: '可交互元素已编号（index 字段），browser_click / browser_type 可直接用 index 参数定位',
+          };
+        }, { maxText, maxInteractive }).catch(() => ({ url: page.url(), title: '', text: '', interactiveCount: 0, interactive: [] }));
+        recordPageState((result as any).url, (result as any).title);
         break;
       }
       // ========== C4 多标签页管理 ==========
@@ -909,7 +1310,12 @@ router.post('/action', async (req: Request, res: Response) => {
     lastActivityAt = Date.now();
     res.json({ data: result });
   } catch (e: any) {
-    res.status(500).json({ error: e?.message || '浏览器动作失败' });
+    const msg = e?.message || '浏览器动作失败';
+    if (/超时|假死|Target closed|Execution context|Protocol error|browserContext|page.closed|Connection closed/i.test(msg)) {
+      console.warn('[browser] 检测到浏览器异常，自动重置实例:', msg);
+      await resetBrowser().catch(() => {});
+    }
+    res.status(500).json({ error: msg, recoverable: true });
   }
 });
 

@@ -375,9 +375,10 @@ async function triggerRevectorize() {
   revectorizing.value = true;
   revectorizeProgress.value = { done: 0, total: 0 };
   try {
-    const r = await api.post<any>('/kb/revectorize');
-    if ('ok' in r && r.ok) {
-      const rd = r as any;
+    const resp = await api.post<any>('/kb/revectorize');
+    // api.post 统一包一层 { data: <响应体> }，需解包后判断 ok
+    const rd: any = (resp && typeof resp === 'object' && 'data' in resp) ? (resp as any).data : resp;
+    if (rd && typeof rd === 'object' && 'ok' in rd && rd.ok) {
       ElMessage.success(`重新向量化完成：${rd.done}/${rd.total} 片`);
     }
   } catch (e: unknown) {

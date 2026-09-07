@@ -17,7 +17,7 @@ router.get('/', (req: Request, res: Response) => {
 // POST /api/tools
 router.post('/', (req: Request, res: Response) => {
   const userId = req.user!.userId;
-  const { name, description, inputSchema, outputSchema, runtime, entry, code, dependencies, timeout, env } = req.body || {};
+  const { name, description, category, inputSchema, outputSchema, runtime, entry, code, dependencies, timeout, env } = req.body || {};
   if (!name || !inputSchema || !code || !entry) {
     res.status(400).json({ error: 'name, inputSchema, code, entry 为必填项' }); return;
   }
@@ -34,10 +34,10 @@ router.post('/', (req: Request, res: Response) => {
   const id = uuid();
   const now = Date.now();
   db.prepare(
-    `INSERT INTO custom_tool (id, user_id, name, description, input_schema_json, output_schema_json,
+    `INSERT INTO custom_tool (id, user_id, name, description, category, input_schema_json, output_schema_json,
      runtime, entry, code, dependencies_json, timeout, env_json, enabled, source, is_public, updated_at, created_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,1,'local',?,?,?)`,
-  ).run(id, userId, name, description || null, JSON.stringify(inputSchema),
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,1,'local',?,?,?)`,
+  ).run(id, userId, name, description || null, category || '其他', JSON.stringify(inputSchema),
     outputSchema ? JSON.stringify(outputSchema) : null, runtime || 'node', entry, code,
     dependencies ? JSON.stringify(dependencies) : null, timeout || 30000,
     env ? JSON.stringify(env) : null, req.body.isPublic ? 1 : 0, now, now);
@@ -61,6 +61,7 @@ router.patch('/:id', (req: Request, res: Response) => {
   if (req.body.timeout !== undefined) { sets.push('timeout = ?'); vals.push(req.body.timeout); }
   if (req.body.dependencies !== undefined) { sets.push('dependencies_json = ?'); vals.push(JSON.stringify(req.body.dependencies)); }
   if (req.body.isPublic !== undefined) { sets.push('is_public = ?'); vals.push(req.body.isPublic ? 1 : 0); }
+  if (req.body.category !== undefined) { sets.push('category = ?'); vals.push(req.body.category || '其他'); }
   sets.push('updated_at = ?'); vals.push(Date.now());
   if (sets.length === 0) { res.json({ data: existing }); return; }
   vals.push(tid);
@@ -125,10 +126,10 @@ router.post('/install', (req: Request, res: Response) => {
       const id = uuid();
       const now = Date.now();
       db.prepare(
-        `INSERT INTO custom_tool (id, user_id, name, description, input_schema_json, output_schema_json,
+        `INSERT INTO custom_tool (id, user_id, name, description, category, input_schema_json, output_schema_json,
          runtime, entry, code, dependencies_json, timeout, env_json, enabled, source, remote_source_id, is_public, updated_at, created_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,1,'remote',?,0,?,?)`,
-      ).run(id, userId, t.name, t.description || null, JSON.stringify(t.inputSchema || {}),
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,1,'remote',?,0,?,?)`,
+      ).run(id, userId, t.name, t.description || null, t.category || '其他', JSON.stringify(t.inputSchema || {}),
         t.outputSchema ? JSON.stringify(t.outputSchema) : null, t.runtime || 'node', t.entry, t.code,
         t.dependencies ? JSON.stringify(t.dependencies) : null, t.timeout || 30000, null, remoteSourceId, now, now);
       res.json({ data: db.prepare('SELECT * FROM custom_tool WHERE id = ?').get(id) });

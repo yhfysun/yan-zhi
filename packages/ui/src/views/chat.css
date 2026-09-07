@@ -1506,7 +1506,37 @@
 .sub-agent-depth { opacity: 0.7; }
 .sub-agent-stats { opacity: 0.65; margin-left: 4px; }
 .sub-agent-chevron { margin-left: auto; }
+.sub-agent-header-actions { display: flex; align-items: center; gap: 2px; flex-shrink: 0; }
+.sub-agent-header-actions .el-button { color: var(--color-text-secondary); }
+.sub-agent-header-actions .el-button:hover { color: var(--color-primary); }
 .sub-agent-body { padding: 6px 10px 8px; border-top: 1px dashed color-mix(in srgb, var(--color-primary) 16%, transparent); }
+.sub-agent-status { font-size: 10px; line-height: 1; padding: 2px 6px; border-radius: 999px; background: color-mix(in srgb, var(--el-color-success, #67c23a) 14%, transparent); color: var(--el-color-success, #67c23a); font-weight: 600; flex-shrink: 0; }
+.sub-agent-status.running { animation: sub-agent-pulse 1.2s ease-in-out infinite; }
+@keyframes sub-agent-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+.tool-item-note { font-size: 12px; color: var(--color-text-secondary); opacity: 0.8; }
+
+/* 子智能体结果卡片 + 主智能体「任务结果」卡片：同一种卡片语言，并列展示 */
+.sub-agent-result, .main-agent-result {
+  margin-bottom: 10px;
+  border: 1px solid color-mix(in srgb, var(--color-primary) 16%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--color-primary) 4%, transparent);
+  overflow: hidden;
+}
+.sub-agent-result-head, .main-agent-result-head {
+  display: flex; align-items: center; gap: 6px; padding: 6px 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-primary) 10%, transparent);
+  font-size: 12px; cursor: pointer; user-select: none;
+}
+.sub-agent-result-icon, .main-agent-result-icon { color: var(--color-primary); }
+.sub-agent-result-name, .main-agent-result-name { font-weight: 600; color: var(--color-primary); }
+.sub-agent-result-tag, .main-agent-result-tag { font-size: 10px; color: var(--color-text-secondary); opacity: 0.8; }
+.sub-agent-result-actions, .main-agent-result-actions { display: flex; align-items: center; gap: 2px; margin-left: auto; flex-shrink: 0; }
+.sub-agent-result-actions .el-button, .main-agent-result-actions .el-button { color: var(--color-text-secondary); }
+.sub-agent-result-actions .el-button:hover, .main-agent-result-actions .el-button:hover { color: var(--color-primary); }
+.sub-agent-result-chevron, .main-agent-result-chevron { flex-shrink: 0; color: var(--color-text-secondary); }
+.sub-agent-result-content { padding: 8px 12px 10px; font-size: 13px; line-height: 1.6; }
+.main-agent-result-content { padding: 8px 12px 10px; }
 
 /* 右侧预览面板展开时，弹窗遮罩与居中容器都限制在左侧主区域（排除预览宽度），
    弹窗在剩余区域内居中，绝不跨入预览面板（BrowserView 原生图层） */

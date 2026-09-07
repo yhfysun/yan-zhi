@@ -110,7 +110,7 @@ export const APP_GUIDE_DOCS: Array<{ name: string; content: string }> = [
 - 桌面端预览面板打开网页 → 用 Electron 自带的浏览器（BrowserView），无需额外下载 Chromium。
 - 智能体（对话里）让浏览器「打开网页」（browser_navigate）时，会在你屏幕上的预览面板同步打开并显示，和手动打开的共用同一个浏览器。
 - 服务端另有无头浏览器（Playwright）用于网页自动化抓取等；那份 Chromium 需单独安装（npx playwright install chromium），与桌面内置浏览器是两套、互不影响。
-- 内置的「web_search 搜索」也走服务端无头浏览器，直接返回搜索页文本。`,
+- 联网查询统一由子智能体 pageAgent（真实浏览器搜索引擎）完成。`,
   },
   {
     name: '多智能体与子智能体',

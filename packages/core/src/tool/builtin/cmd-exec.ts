@@ -101,7 +101,7 @@ async function checkCommandExists(main: string): Promise<{ exists: boolean; degr
 
 export class CmdExecTool implements BuiltInTool {
   name = 'cmd_exec';
-  description = 'Execute a system shell command. Supports cmd, python, java, node, git, and any other CLI. Returns stdout, stderr, and exit code. Use for running scripts, compiling code, or any shell operation. 执行前会预检命令是否存在于当前环境，避免子进程抛 ENOENT；curl/wget 缺失时建议改用 browser_navigate 或内置 fetch。';
+  description = '执行一条系统命令。支持 cmd / python / java / node / git 以及任何 CLI 工具，返回 stdout、stderr 与退出码。适用于跑脚本、编译代码或任何 shell 操作。执行前会预检命令是否存在于当前环境，避免子进程抛 ENOENT；若 curl/wget 缺失建议改用 browser_navigate 或内置 fetch。';
 
   inputSchema = {
     type: 'object',

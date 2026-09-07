@@ -1,7 +1,14 @@
 // API 客户端 —— 自动附带 JWT Token
 // Electron file:// 协议下 /api 会失效，需用 http://127.0.0.1:3001/api
 export const isElectron = typeof window !== 'undefined' && !!(window as any).electronAPI?.isElectron;
-export const API_BASE = isElectron ? 'http://127.0.0.1:3001/api' : '/api';
+export const isCapacitor = typeof window !== 'undefined' && !!(window as any).Capacitor?.isNativePlatform;
+// 移动端支持用户配置远程后端地址（方案 A：连远程节点）；未配置时走内嵌本地后端（方案 B）
+const mobileRemoteBase = typeof window !== 'undefined' ? (localStorage.getItem('mobile_api_base') || '') : '';
+export const API_BASE = isElectron
+  ? 'http://127.0.0.1:3001/api'
+  : isCapacitor
+    ? (mobileRemoteBase ? mobileRemoteBase.replace(/\/$/, '') + '/api' : 'http://127.0.0.1:3001/api')
+    : '/api';
 const BASE_URL = API_BASE;
 
 function getToken(): string | null {

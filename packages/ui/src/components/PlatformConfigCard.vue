@@ -31,9 +31,17 @@
           v-model="form.apiKey"
           type="password"
           show-password
-          :placeholder="mode === 'edit' && !apiKeyDirty ? '已设置（不修改留空即可）' : 'sk-...'"
+          :placeholder="mode === 'edit' ? '输入新 Token 可追加（留空不修改）' : 'sk-...'"
           @input="apiKeyDirty = true"
         />
+      </el-form-item>
+      <el-form-item label="请求停顿">
+        <div class="pcc-pause-range">
+          <el-input-number v-model="form.pauseMinMs" :min="0" :max="60000" :step="100" controls-position="right" size="small" />
+          <span>~</span>
+          <el-input-number v-model="form.pauseMaxMs" :min="0" :max="60000" :step="100" controls-position="right" size="small" />
+          <span class="pcc-pause-unit">ms</span>
+        </div>
       </el-form-item>
     </el-form>
     <div class="pcc-actions">
@@ -73,6 +81,8 @@ const form = reactive({
   protocol: 'openai' as Protocol,
   apiUrl: '',
   apiKey: '',
+  pauseMinMs: 0,
+  pauseMaxMs: 0,
 });
 const apiKeyDirty = ref(false);
 const testing = ref(false);
@@ -83,12 +93,16 @@ function initFromProps() {
     form.name = props.platform.name;
     form.protocol = props.platform.protocol || 'openai';
     form.apiUrl = props.platform.apiUrl;
-    form.apiKey = props.platform.apiKeyDec || '';
+    form.apiKey = '';
+    form.pauseMinMs = props.platform.pauseMinMs || 0;
+    form.pauseMaxMs = props.platform.pauseMaxMs || 0;
   } else {
     form.name = '';
     form.protocol = 'openai';
     form.apiUrl = '';
     form.apiKey = '';
+    form.pauseMinMs = 0;
+    form.pauseMaxMs = 0;
   }
   apiKeyDirty.value = false;
 }
@@ -132,15 +146,19 @@ async function save() {
         apiUrl: string;
         apiKeyEnc: string;
         headers: Record<string, string>;
+        pauseMinMs: number;
+        pauseMaxMs: number;
       }> = {
         name: form.name.trim(),
         protocol: form.protocol,
         apiUrl: form.apiUrl.trim(),
+        pauseMinMs: form.pauseMinMs,
+        pauseMaxMs: form.pauseMaxMs,
       };
-      if (apiKeyDirty.value) {
-        patch.apiKeyEnc = form.apiKey;
-      }
       await platformStore.updatePlatform(props.platform.id, patch);
+      if (apiKeyDirty.value && form.apiKey.trim()) {
+        await platformStore.addApiKey(props.platform.id, form.apiKey.trim());
+      }
       platformId = props.platform.id;
     } else {
       platformId = await platformStore.addPlatform({
@@ -150,6 +168,8 @@ async function save() {
         apiKeyEnc: form.apiKey,
         headers: {},
         status: 'unknown',
+        pauseMinMs: form.pauseMinMs,
+        pauseMaxMs: form.pauseMaxMs,
       });
     }
 
@@ -219,4 +239,6 @@ async function save() {
   gap: 8px;
   margin-top: 4px;
 }
+.pcc-pause-range { display: flex; align-items: center; gap: 6px; }
+.pcc-pause-unit { font-size: 12px; color: var(--color-text-secondary); }
 </style>

@@ -2,6 +2,8 @@ appId: com.yanzhi.desktop
 productName: 言智
 directories:
   output: ../../dist-release
+# 同 lite：原生模块 ABI 由 fix-sqlite-binding.cjs（postinstall）处理，跳过 node-gyp 重编译
+npmRebuild: false
 files:
   - dist/**/*
   - main.cjs
@@ -32,6 +34,13 @@ linux:
   target: AppImage
   icon: ../../assets/icons/icon.png
 nsis:
+  # 关闭一键安装，改为标准安装向导（可选目录、下一步）
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  allowElevation: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
   installerIcon: ../../assets/icons/icon.ico
   uninstallerIcon: ../../assets/icons/icon.ico
   artifactName: ${productName}-Setup-${version}-${arch}.${ext}

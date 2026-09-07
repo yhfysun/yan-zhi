@@ -1,143 +1,176 @@
 <template>
   <div class="page">
     <div class="page-top">
-      <div class="page-info">
-        <h2 class="page-title">工具与连接</h2>
-        <p class="page-sub">管理工具库、MCP 服务与远程商城</p>
-      </div>
+      <h2 class="page-title">工具与连接</h2>
     </div>
 
-    <!-- 三 tab：工具库 / MCP 服务 / 远程商城（MCP 由原 /mcp 独立页并入） -->
+    <!-- 四 tab：内置工具 / 自定义工具 / MCP 服务 / 远程工具商城 -->
     <el-tabs v-model="activeTab" class="tl-tabs">
-      <!-- ===== Tab：工具库（原本地商城内容直出，少一层钻入） ===== -->
-      <el-tab-pane label="工具库" name="tools">
-        <!-- 内置工具：卡片九宫格，分类默认收起 -->
-        <section class="section">
-          <h4 class="subsection-title">内置工具</h4>
-          <el-empty v-if="toolsStore.builtinTools.length === 0" description="暂无内置工具" :image-size="60" />
-          <div v-for="g in toolsStore.builtinToolGroups" :key="g.key" class="builtin-cat">
-            <div class="builtin-cat-head" @click="toggleBuiltinCat(g.key)">
-              <el-icon :size="12" class="builtin-cat-arrow" :class="{ open: isBuiltinCatOpen(g.key) }"><ArrowRight /></el-icon>
-              <span class="builtin-cat-name">{{ g.label }}</span>
-              <span class="builtin-cat-count">{{ g.tools.length }}</span>
-            </div>
-            <div v-show="isBuiltinCatOpen(g.key)" class="card-grid builtin-card-grid">
-              <div v-for="t in g.tools" :key="t.name" class="tool-card">
-                <div class="tool-card-header">
-                  <span class="tool-card-name">{{ t.name }}</span>
-                  <el-tag size="small" type="info" effect="plain">内置</el-tag>
-                </div>
-                <p class="tool-card-desc" :title="t.description">{{ t.description }}</p>
-                <div class="tool-schema-toggle">
-                  <el-button size="small" link @click="toggleSchema('builtin-' + t.name)">
-                    {{ expandedSchema['builtin-' + t.name] ? '收起' : '入参/出参' }}
-                  </el-button>
-                </div>
-                <div v-if="expandedSchema['builtin-' + t.name]" class="tool-schema-block">
-                  <div class="schema-section"><span class="schema-label">入参</span><pre class="schema-pre">{{ fmtSchema(t.inputSchema) }}</pre></div>
-                  <div class="schema-section"><span class="schema-label">出参</span><pre class="schema-pre">{{ fmtSchema(t.outputSchema) }}</pre></div>
-                </div>
-              </div>
+      <!-- ===== Tab 1：内置工具 ===== -->
+      <el-tab-pane label="内置工具" name="builtin">
+        <div class="tab-toolbar">
+          <div class="tab-search-wrap">
+            <el-icon class="tab-search-icon"><Search /></el-icon>
+            <input v-model="searchBuiltin" placeholder="搜索名称或描述…" class="tab-search-input" />
+            <el-icon v-if="searchBuiltin" class="tab-search-clear" @click="searchBuiltin = ''"><Close /></el-icon>
+          </div>
+          <div class="tab-toolbar-right">
+            <el-select v-model="builtinCatFilter" size="default" class="cat-select" placeholder="全部分类">
+              <el-option label="全部分类" value="all" />
+              <el-option
+                v-for="g in toolsStore.builtinToolGroups"
+                :key="g.key"
+                :label="`${g.label}（${g.tools.length}）`"
+                :value="g.key"
+              />
+            </el-select>
+            <div class="tab-toolbar-meta">
+              <el-tag size="small" type="info" effect="plain">共 {{ builtinFilteredAll.length }} 个</el-tag>
             </div>
           </div>
-        </section>
+        </div>
 
-        <!-- 自定义工具 -->
-        <section class="section">
-          <div class="section-header">
-            <h4 class="subsection-title">自定义工具</h4>
-            <el-button type="primary" :icon="Plus" @click="openEditor(null)" class="fab-add">新增工具</el-button>
+        <el-empty v-if="toolsStore.builtinTools.length === 0" description="暂无内置工具" :image-size="60" />
+        <el-empty v-else-if="builtinGroupsFiltered.length === 0" :description="emptyDesc(searchBuiltin, '内置工具')" :image-size="60" />
+        <div v-for="g in builtinGroupsFiltered" :key="g.key" class="builtin-cat">
+          <div class="builtin-cat-title">
+            <span class="builtin-cat-name">{{ g.label }}</span>
+            <span class="builtin-cat-count">{{ g.tools.length }}</span>
           </div>
-          <el-empty v-if="toolsStore.customTools.length === 0" description="暂无自定义工具，点击上方按钮创建" :image-size="60" />
-          <div v-else class="card-grid">
-            <div
-              v-for="t in toolsStore.customTools"
-              :key="t.id"
-              class="tool-card"
-              :class="{ disabled: !t.enabled }"
-            >
+          <div class="card-grid">
+            <div v-for="t in g.tools" :key="t.name" class="tool-card">
               <div class="tool-card-header">
                 <span class="tool-card-name">{{ t.name }}</span>
-                <el-tag size="small" :type="t.source === 'remote' ? 'primary' : 'success'" effect="plain">
-                  {{ t.source === 'remote' ? '远程' : '本地' }}
-                </el-tag>
-                <el-tag v-if="t.isPublic" size="small" type="primary" effect="plain">已公开</el-tag>
+                <el-tag size="small" type="info" effect="plain">内置</el-tag>
               </div>
-              <p class="tool-card-desc" :title="t.description || '无描述'">{{ t.description || '无描述' }}</p>
+              <p class="tool-card-desc" :title="t.description">{{ t.description }}</p>
               <div class="tool-schema-toggle">
-                <el-button size="small" link @click="toggleSchema('custom-' + t.id)">
-                  {{ expandedSchema['custom-' + t.id] ? '收起' : '入参/出参' }}
+                <el-button size="small" link @click="toggleSchema('builtin-' + t.name)">
+                  {{ expandedSchema['builtin-' + t.name] ? '收起' : '入参/出参' }}
                 </el-button>
               </div>
-              <div v-if="expandedSchema['custom-' + t.id]" class="tool-schema-block">
+              <div v-if="expandedSchema['builtin-' + t.name]" class="tool-schema-block">
                 <div class="schema-section"><span class="schema-label">入参</span><pre class="schema-pre">{{ fmtSchema(t.inputSchema) }}</pre></div>
                 <div class="schema-section"><span class="schema-label">出参</span><pre class="schema-pre">{{ fmtSchema(t.outputSchema) }}</pre></div>
               </div>
-              <div class="tool-card-foot">
-                <span class="stat">{{ t.runtime }} · {{ t.timeout }}ms</span>
-                <div class="card-actions">
-                  <el-tooltip v-if="authStore.isLoggedIn" :content="t.isPublic ? '点击下架' : '发布到商城'" placement="top">
-                    <el-switch
-                      :model-value="!!t.isPublic"
-                      size="small"
-                      @change="(v: boolean) => toolsStore.togglePublic(t.id, v)"
-                    />
-                  </el-tooltip>
+            </div>
+          </div>
+        </div>
+      </el-tab-pane>
+
+      <!-- ===== Tab 2：自定义工具 ===== -->
+      <el-tab-pane label="自定义工具" name="custom">
+        <div class="tab-toolbar">
+          <div class="tab-search-wrap">
+            <el-icon class="tab-search-icon"><Search /></el-icon>
+            <input v-model="searchCustom" placeholder="搜索名称或描述…" class="tab-search-input" />
+            <el-icon v-if="searchCustom" class="tab-search-clear" @click="searchCustom = ''"><Close /></el-icon>
+          </div>
+          <div class="tab-toolbar-right">
+            <el-select v-model="customCatFilter" size="default" class="cat-select" placeholder="全部分类">
+              <el-option label="全部分类" value="all" />
+              <el-option v-for="c in customCatOptions" :key="c.key" :label="c.label" :value="c.key" />
+            </el-select>
+            <el-button type="primary" :icon="Plus" @click="openEditor(null)" class="fab-add">新增工具</el-button>
+          </div>
+        </div>
+
+        <el-empty v-if="toolsStore.customTools.length === 0" description="暂无自定义工具，点击「新增工具」创建" :image-size="60" />
+        <el-empty v-else-if="customGroupsFiltered.length === 0" :description="emptyDesc(searchCustom, '工具')" :image-size="60" />
+        <div v-for="g in customGroupsFiltered" :key="g.category" class="builtin-cat">
+          <div class="builtin-cat-title">
+            <span class="builtin-cat-name">{{ g.category }}</span>
+            <span class="builtin-cat-count">{{ g.tools.length }}</span>
+          </div>
+          <div class="card-grid">
+          <div
+            v-for="t in g.tools"
+            :key="t.id"
+            class="tool-card"
+            :class="{ disabled: !t.enabled }"
+          >
+            <div class="tool-card-header">
+              <span class="tool-card-name">{{ t.name }}</span>
+              <el-tag size="small" :type="t.source === 'remote' ? 'primary' : 'success'" effect="plain">
+                {{ t.source === 'remote' ? '远程' : '本地' }}
+              </el-tag>
+              <el-tag v-if="t.isPublic" size="small" type="primary" effect="plain">已公开</el-tag>
+            </div>
+            <p class="tool-card-desc" :title="t.description || '无描述'">{{ t.description || '无描述' }}</p>
+            <div class="tool-schema-toggle">
+              <el-button size="small" link @click="toggleSchema('custom-' + t.id)">
+                {{ expandedSchema['custom-' + t.id] ? '收起' : '入参/出参' }}
+              </el-button>
+            </div>
+            <div v-if="expandedSchema['custom-' + t.id]" class="tool-schema-block">
+              <div class="schema-section"><span class="schema-label">入参</span><pre class="schema-pre">{{ fmtSchema(t.inputSchema) }}</pre></div>
+              <div class="schema-section"><span class="schema-label">出参</span><pre class="schema-pre">{{ fmtSchema(t.outputSchema) }}</pre></div>
+            </div>
+            <div class="tool-card-foot">
+              <span class="stat">{{ t.runtime }} · {{ t.timeout }}ms</span>
+              <div class="card-actions">
+                <el-tooltip v-if="authStore.isLoggedIn" :content="t.isPublic ? '点击下架' : '发布到商城'" placement="top">
                   <el-switch
-                    v-model="t.enabled"
+                    :model-value="!!t.isPublic"
                     size="small"
-                    @change="(v: boolean) => toolsStore.toggleEnabled(t.id, v)"
+                    @change="(v: boolean) => toolsStore.togglePublic(t.id, v)"
                   />
-                  <el-button size="small" link type="primary" :disabled="!t.enabled" @click="openRunner(t)">试运行</el-button>
-                  <el-button size="small" link @click="openEditor(t)">编辑</el-button>
-                  <el-button size="small" link type="danger" @click="delCustomTool(t.id)">删除</el-button>
-                </div>
+                </el-tooltip>
+                <el-switch
+                  v-model="t.enabled"
+                  size="small"
+                  @change="(v: boolean) => toolsStore.toggleEnabled(t.id, v)"
+                />
+                <el-button size="small" link type="primary" :disabled="!t.enabled" @click="openRunner(t)">试运行</el-button>
+                <el-button size="small" link @click="openEditor(t)">编辑</el-button>
+                <el-button size="small" link type="danger" @click="delCustomTool(t.id)">删除</el-button>
               </div>
             </div>
           </div>
-        </section>
+          </div>
+        </div>
       </el-tab-pane>
 
-      <!-- ===== Tab：MCP 服务（原 /mcp 独立页整体迁入） ===== -->
+      <!-- ===== Tab 3：MCP 服务 ===== -->
       <el-tab-pane label="MCP 服务" name="mcp" lazy>
         <McpPanel :key="focusServerId || 'mcp'" :focus-server-id="focusServerId" />
       </el-tab-pane>
 
-      <!-- ===== Tab：远程商城 ===== -->
-      <el-tab-pane label="远程商城" name="remote" lazy>
-        <!-- 远程源列表 -->
+      <!-- ===== Tab 4：远程工具商城 ===== -->
+      <el-tab-pane label="远程工具商城" name="remote" lazy>
+        <!-- 顶层：远程源列表 -->
         <div v-if="activeSourceId === null">
-          <MarketplaceShell title="远程商城" subtitle="浏览与安装其他节点公开的工具">
-            <template #actions>
-              <el-button type="primary" :icon="Plus" @click="showSourceForm = true" class="fab-add">
-                新增远程商城
-              </el-button>
-            </template>
-
-            <div class="market-grid">
-              <MarketplaceCard
-                v-for="s in toolsStore.remoteSources"
-                :key="s.id"
-                variant="remote"
-                @click="enterRemoteMarket(s)"
-              >
-                <template #icon><el-icon :size="28"><Cloudy /></el-icon></template>
-                <template #title>{{ s.name }}</template>
-                <template #description>{{ s.base_url }}</template>
-                <template #meta>远程商城</template>
-                <template #badge><el-tag size="small" type="info" effect="plain">远程</el-tag></template>
-              </MarketplaceCard>
+          <div class="tab-toolbar">
+            <div class="tab-search-wrap">
+              <el-icon class="tab-search-icon"><Search /></el-icon>
+              <input v-model="searchRemoteSource" placeholder="搜索远程源名称或 URL…" class="tab-search-input" />
+              <el-icon v-if="searchRemoteSource" class="tab-search-clear" @click="searchRemoteSource = ''"><Close /></el-icon>
             </div>
+            <el-button type="primary" :icon="Plus" @click="showSourceForm = true" class="fab-add">新增远程商城</el-button>
+          </div>
 
-            <MarketplaceEmpty
-              v-if="toolsStore.remoteSources.length === 0"
-              description="暂无远程商城，点击上方按钮添加其他节点"
-              :image-size="60"
-            />
-          </MarketplaceShell>
+          <el-empty v-if="toolsStore.remoteSources.length === 0" description="暂无远程商城，点击右上角按钮添加其他节点" :image-size="80" />
+          <el-empty v-else-if="filteredRemoteSources.length === 0" :description="emptyDesc(searchRemoteSource, '远程源')" :image-size="80" />
+          <div v-else class="market-grid">
+            <div
+              v-for="s in filteredRemoteSources"
+              :key="s.id"
+              class="market-card"
+              @click="enterRemoteMarket(s)"
+            >
+              <div class="market-card-icon"><el-icon :size="28"><Cloudy /></el-icon></div>
+              <div class="market-card-body">
+                <div class="market-card-title">
+                  {{ s.name }}
+                  <el-tag size="small" type="info" effect="plain">远程</el-tag>
+                </div>
+                <div class="market-card-desc" :title="s.base_url">{{ s.base_url }}</div>
+              </div>
+            </div>
+          </div>
         </div>
 
-        <!-- 远程源详情（tab 内钻入） -->
+        <!-- 钻入：远程源详情 -->
         <div v-else>
           <div class="sub-header">
             <el-button text size="small" @click="activeSourceId = null">
@@ -153,10 +186,22 @@
             </div>
           </div>
 
+          <div class="tab-toolbar tab-toolbar-inline">
+            <div class="tab-search-wrap">
+              <el-icon class="tab-search-icon"><Search /></el-icon>
+              <input v-model="searchRemoteTool" placeholder="在该远程源里搜索工具…" class="tab-search-input" />
+              <el-icon v-if="searchRemoteTool" class="tab-search-clear" @click="searchRemoteTool = ''"><Close /></el-icon>
+            </div>
+            <div class="tab-toolbar-meta">
+              <el-tag size="small" type="info" effect="plain">共 {{ filteredRemoteTools.length }} 个工具</el-tag>
+            </div>
+          </div>
+
           <el-empty v-if="!remoteToolsLoaded" description="正在加载远程工具..." :image-size="60" />
           <el-empty v-else-if="!remoteTools.length" description="该远程源暂无公开的自定义工具" :image-size="60" />
+          <el-empty v-else-if="filteredRemoteTools.length === 0" :description="emptyDesc(searchRemoteTool, '工具')" :image-size="60" />
           <div v-else class="card-grid">
-            <div v-for="item in remoteTools" :key="item.id" class="tool-card">
+            <div v-for="item in filteredRemoteTools" :key="item.id" class="tool-card">
               <div class="tool-card-header">
                 <span class="tool-card-name">{{ item.name }}</span>
                 <el-tag size="small" type="primary" effect="plain">远程</el-tag>
@@ -182,6 +227,7 @@
       <el-form label-width="100px">
         <el-form-item label="名称"><el-input v-model="editor.name" placeholder="工具名称（英文）" /></el-form-item>
         <el-form-item label="描述"><el-input v-model="editor.description" placeholder="给 LLM 看的描述" /></el-form-item>
+        <el-form-item label="分类"><el-input v-model="editor.category" placeholder="如：数据处理 / 自动化（默认「其他」）" /></el-form-item>
         <el-form-item label="入口函数"><el-input v-model="editor.entry" placeholder="如: myToolHandler" /></el-form-item>
         <el-form-item label="输入 Schema">
           <el-input
@@ -277,29 +323,27 @@
 import { ref, computed, onMounted } from 'vue';
 import { useRoute } from 'vue-router';
 import {
-  Plus,
-  ArrowLeft, Cloudy, ArrowRight,
+  Plus, ArrowLeft, Cloudy,
+  Search, Close,
 } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { useAuthStore } from '../stores';
 import { useToolsStore, type CustomToolItem } from '../stores/tools';
 import McpPanel from '../components/McpPanel.vue';
-import MarketplaceShell from '../components/marketplace/MarketplaceShell.vue';
-import MarketplaceCard from '../components/marketplace/MarketplaceCard.vue';
-import MarketplaceEmpty from '../components/marketplace/MarketplaceEmpty.vue';
 
+// ---- Tab 切换（支持 /mcp 重定向带来的 ?tab=mcp&focus=<id> 深链） ----
 const toolsStore = useToolsStore();
 const authStore = useAuthStore();
 const route = useRoute();
 
-// ---- Tab 切换（支持 /mcp 重定向带来的 ?tab=mcp&focus=<id> 深链） ----
-const activeTab = ref<'tools' | 'mcp' | 'remote'>('tools');
+const activeTab = ref<'builtin' | 'custom' | 'mcp' | 'remote'>('builtin');
 const focusServerId = ref<string | undefined>(undefined);
 
 onMounted(() => {
   const tab = route.query.tab;
   if (tab === 'mcp') activeTab.value = 'mcp';
   else if (tab === 'remote') activeTab.value = 'remote';
+  else if (tab === 'custom') activeTab.value = 'custom';
   const focus = route.query.focus;
   if (typeof focus === 'string' && focus) focusServerId.value = focus;
 
@@ -308,19 +352,99 @@ onMounted(() => {
   toolsStore.loadRemoteSources();
 });
 
+// ---- 搜索过滤：内置工具 ----
+const searchBuiltin = ref('');
+const matchesSearch = (query: string, name: string, desc?: string): boolean => {
+  if (!query) return true;
+  const q = query.toLowerCase();
+  return name.toLowerCase().includes(q) || (desc || '').toLowerCase().includes(q);
+};
+
+const builtinFilteredAll = computed(() =>
+  toolsStore.builtinTools.filter((t) => matchesSearch(searchBuiltin.value, t.name, t.description))
+);
+
+/** 分类下拉筛选：'all' = 全部，否则只留选中的那一类 */
+const builtinCatFilter = ref<string>('all');
+
+/**
+ * 分类区块渲染数据：先按下拉筛掉整组，再按搜索词筛组内工具，最后丢掉空组。
+ * 分类名在区块左上角展示，卡片全部铺开、不再折叠。
+ */
+const builtinGroupsFiltered = computed(() => {
+  const q = searchBuiltin.value;
+  const cat = builtinCatFilter.value;
+  return toolsStore.builtinToolGroups
+    .filter((g) => cat === 'all' || g.key === cat)
+    .map((g) => ({
+      key: g.key,
+      label: g.label,
+      tools: g.tools.filter((t) => matchesSearch(q, t.name, t.description)),
+    }))
+    .filter((g) => g.tools.length > 0);
+});
+
+// ---- 搜索过滤 + 分类：自定义工具 ----
+const searchCustom = ref('');
+const customCatFilter = ref('all');
+
+/** 按 category 分组（缺失归入「其他」），分类顺序保持稳定 */
+const customGrouped = computed(() => {
+  const map = new Map<string, CustomToolItem[]>();
+  for (const t of toolsStore.customTools) {
+    const cat = t.category || '其他';
+    if (!map.has(cat)) map.set(cat, []);
+    map.get(cat)!.push(t);
+  }
+  return Array.from(map.entries()).map(([category, tools]) => ({ category, tools }));
+});
+
+/** 分类下拉选项（含数量） */
+const customCatOptions = computed(() =>
+  customGrouped.value.map((g) => ({ key: g.category, label: `${g.category}（${g.tools.length}）` }))
+);
+
+/** 渲染数据：先按分类下拉筛整组，再按搜索词筛组内工具，最后丢空组 */
+const customGroupsFiltered = computed(() => {
+  const q = searchCustom.value;
+  const cat = customCatFilter.value;
+  return customGrouped.value
+    .filter((g) => cat === 'all' || g.category === cat)
+    .map((g) => ({
+      category: g.category,
+      tools: g.tools.filter((t) => matchesSearch(q, t.name, t.description || '')),
+    }))
+    .filter((g) => g.tools.length > 0);
+});
+
 // ---- 远程源钻入 ----
 const activeSourceId = ref<string | null>(null);
 const activeRemoteSource = computed(() =>
-  toolsStore.remoteSources.find(s => s.id === activeSourceId.value)
+  toolsStore.remoteSources.find((s) => s.id === activeSourceId.value)
 );
 
 const remoteTools = ref<any[]>([]);
 const remoteToolsLoaded = ref(false);
 
+const searchRemoteSource = ref('');
+const filteredRemoteSources = computed(() =>
+  toolsStore.remoteSources.filter((s) =>
+    matchesSearch(searchRemoteSource.value, s.name, s.base_url)
+  )
+);
+
+const searchRemoteTool = ref('');
+const filteredRemoteTools = computed(() =>
+  remoteTools.value.filter((t: any) =>
+    matchesSearch(searchRemoteTool.value, t.name || '', t.description || '')
+  )
+);
+
 function enterRemoteMarket(s: any) {
   activeSourceId.value = s.id;
   remoteToolsLoaded.value = false;
   remoteTools.value = [];
+  searchRemoteTool.value = '';
   toolsStore.fetchRemoteItems(s.id).then(() => {
     remoteTools.value = toolsStore.remoteItems[s.id] || [];
     remoteToolsLoaded.value = true;
@@ -332,13 +456,13 @@ const expandedSchema = ref<Record<string, boolean>>({});
 function toggleSchema(key: string) {
   expandedSchema.value[key] = !expandedSchema.value[key];
 }
-const builtinCatOpen = ref<Record<string, boolean>>({});
-/** 分类默认收起，用户点开后记住状态 */
-function isBuiltinCatOpen(key: string) { return builtinCatOpen.value[key] === true; }
-function toggleBuiltinCat(key: string) { builtinCatOpen.value[key] = !isBuiltinCatOpen(key); }
 function fmtSchema(schema: unknown): string {
   if (!schema || (typeof schema === 'object' && Object.keys(schema as object).length === 0)) return '（无）';
   try { return JSON.stringify(schema, null, 2); } catch { return String(schema); }
+}
+/** 搜索无结果时 el-empty 的描述（模板里嵌字符串引号容易踩 parser，统一抽出） */
+function emptyDesc(query: string, kind: string): string {
+  return `没有匹配 “${query}” 的${kind}`;
 }
 
 // ---- 自定义工具编辑器 ----
@@ -346,7 +470,7 @@ const showCustomEditor = ref(false);
 const editingTool = ref<any>(null);
 const savingCustom = ref(false);
 const editor = ref({
-  name: '', description: '', entry: '',
+  name: '', description: '', category: '其他', entry: '',
   schemaText: '{}', outputSchemaText: '', code: '', timeout: 30000, isPublic: false,
 });
 
@@ -354,20 +478,20 @@ function openEditor(t: any | null) {
   if (t) {
     editingTool.value = t;
     editor.value = {
-      name: t.name, description: t.description || '',
+      name: t.name, description: t.description || '', category: t.category || '其他',
       entry: t.entry, schemaText: JSON.stringify(t.inputSchema, null, 2),
       outputSchemaText: t.outputSchema ? JSON.stringify(t.outputSchema, null, 2) : '',
       code: t.code, timeout: t.timeout, isPublic: t.isPublic,
     };
   } else {
     editingTool.value = null;
-    editor.value = { name: '', description: '', entry: '', schemaText: '{}', outputSchemaText: '', code: '', timeout: 30000, isPublic: false };
+    editor.value = { name: '', description: '', category: '其他', entry: '', schemaText: '{}', outputSchemaText: '', code: '', timeout: 30000, isPublic: false };
   }
   showCustomEditor.value = true;
 }
 
 function resetEditor() {
-  editor.value = { name: '', description: '', entry: '', schemaText: '{}', outputSchemaText: '', code: '', timeout: 30000, isPublic: false };
+  editor.value = { name: '', description: '', category: '其他', entry: '', schemaText: '{}', outputSchemaText: '', code: '', timeout: 30000, isPublic: false };
   editingTool.value = null;
 }
 
@@ -389,10 +513,12 @@ async function saveCustomTool() {
         name: editor.value.name, description: editor.value.description,
         code: editor.value.code, entry: editor.value.entry,
         inputSchema: schema, outputSchema, timeout: editor.value.timeout, isPublic: editor.value.isPublic,
+        category: editor.value.category || '其他',
       });
     } else {
       await toolsStore.createTool({
         name: editor.value.name, description: editor.value.description,
+        category: editor.value.category || '其他',
         entry: editor.value.entry, inputSchema: schema, outputSchema,
         code: editor.value.code, timeout: editor.value.timeout, isPublic: editor.value.isPublic,
       });
@@ -518,35 +644,41 @@ async function installTool(item: any) {
   margin-bottom: 20px;
 }
 
+/* ---- tab 顶部工具栏（左搜索 / 右操作） ---- */
+.tab-toolbar {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; margin-bottom: 16px;
+}
+.tab-toolbar-inline { margin-bottom: 14px; }
+.tab-toolbar-right { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+.tab-toolbar-meta { color: var(--color-text-secondary); font-size: 12px; }
+.cat-select { width: 160px; }
+.tab-search-wrap {
+  position: relative; flex: 1; max-width: 480px;
+  display: flex; align-items: center;
+}
+.tab-search-icon {
+  position: absolute; left: 12px; top: 50%; transform: translateY(-50%);
+  color: var(--color-text-secondary); font-size: 14px; pointer-events: none;
+}
+.tab-search-input {
+  width: 100%; height: 36px; padding: 0 36px 0 34px;
+  border: 1px solid var(--glass-border); border-radius: 18px;
+  background: var(--glass-bg); backdrop-filter: var(--glass-filter);
+  -webkit-backdrop-filter: var(--glass-filter);
+  color: var(--color-text); font-size: 13px; outline: none;
+  transition: border-color 0.15s;
+}
+.tab-search-input:focus { border-color: var(--color-primary); }
+.tab-search-input::placeholder { color: var(--color-text-secondary); }
+.tab-search-clear {
+  position: absolute; right: 12px; top: 50%; transform: translateY(-50%);
+  color: var(--color-text-secondary); font-size: 14px; cursor: pointer;
+}
+.tab-search-clear:hover { color: var(--color-text); }
+
 /* ---- 分区 ---- */
 .section { margin-bottom: 32px; }
-.section-header {
-  display: flex; align-items: center; justify-content: space-between;
-  margin-bottom: 14px;
-}
-.section-header-right {
-  display: flex; align-items: center; gap: 10px;
-}
-.section-title { font-size: 15px; font-weight: 600; margin: 0; }
-
-/* ---- 商城卡片网格 ---- */
-.market-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-  gap: 14px;
-}
-
-/* ---- 子视图 ---- */
-.sub-header {
-  display: flex; align-items: center; gap: 16px;
-  margin-bottom: 24px; padding-bottom: 16px;
-  border-bottom: 1px solid var(--glass-border);
-}
-.sub-header-info { flex: 1; }
-.sub-title { margin: 0; font-size: 18px; font-weight: 700; }
-.sub-meta { font-size: 12px; color: var(--color-text-secondary); margin-top: 2px; display: block; }
-.sub-meta.url { font-family: monospace; }
-.sub-header-actions { display: flex; gap: 8px; }
 
 .subsection-title {
   margin: 0 0 12px; font-size: 13px; font-weight: 600;
@@ -554,14 +686,15 @@ async function installTool(item: any) {
   color: var(--color-text-secondary);
 }
 
-.builtin-cat { margin-bottom: 16px; border: 1px solid var(--glass-border); border-radius: 10px; overflow: hidden; }
-.builtin-cat-head { display: flex; align-items: center; gap: 8px; padding: 10px 14px; cursor: pointer; user-select: none; background: var(--glass-bg); transition: background 0.15s; }
-.builtin-cat-head:hover { background: rgba(99,102,241,0.04); }
-.builtin-cat-arrow { transition: transform 0.15s; color: var(--color-text-secondary); }
-.builtin-cat-arrow.open { transform: rotate(90deg); }
-.builtin-cat-name { font-size: 13px; font-weight: 600; color: var(--color-text); }
+/* 分类区块：分类名在左上角，卡片全铺开（无折叠） */
+.builtin-cat { margin-bottom: 26px; }
+.builtin-cat-title {
+  display: flex; align-items: center; gap: 8px;
+  margin-bottom: 12px; padding-left: 10px;
+  border-left: 3px solid var(--color-primary);
+}
+.builtin-cat-name { font-size: 14px; font-weight: 700; color: var(--color-text); }
 .builtin-cat-count { font-size: 11px; font-weight: 700; color: var(--color-text-secondary); background: rgba(15,23,42,0.06); border-radius: 10px; padding: 2px 8px; }
-.builtin-card-grid { padding: 12px 14px; }
 
 /* ---- 工具卡片（统一高度 + 描述截断）---- */
 .card-grid {
@@ -592,9 +725,54 @@ async function installTool(item: any) {
   font-size: 12px; color: var(--color-text-secondary); line-height: 1.5; margin: 0;
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
   overflow: hidden; word-break: break-word;
-  max-height: 3em; /* fallback: 2 lines × 1.5 line-height */
+  max-height: 3em;
 }
 .tool-card-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: auto; }
+
+/* ---- 商城源卡片（远程源列表）---- */
+.market-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 14px;
+}
+.market-card {
+  display: flex; align-items: center; gap: 12px;
+  padding: 14px; border: 1px solid var(--glass-border);
+  border-radius: var(--radius-md); background: var(--glass-bg);
+  backdrop-filter: var(--glass-filter); -webkit-backdrop-filter: var(--glass-filter);
+  cursor: pointer; transition: all 0.2s;
+}
+.market-card:hover {
+  transform: translateY(-2px); box-shadow: 0 8px 25px rgba(0,0,0,0.06);
+  border-color: var(--glass-border-strong);
+}
+.market-card-icon {
+  width: 44px; height: 44px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 10px; background: rgba(99,102,241,0.08); color: var(--color-primary);
+}
+.market-card-body { flex: 1; min-width: 0; }
+.market-card-title {
+  font-size: 14px; font-weight: 600; color: var(--color-text);
+  display: flex; align-items: center; gap: 8px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.market-card-desc {
+  font-size: 12px; color: var(--color-text-secondary); margin-top: 2px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* ---- 子视图（远程源详情返回头）---- */
+.sub-header {
+  display: flex; align-items: center; gap: 16px;
+  margin-bottom: 16px; padding-bottom: 16px;
+  border-bottom: 1px solid var(--glass-border);
+}
+.sub-header-info { flex: 1; }
+.sub-title { margin: 0; font-size: 18px; font-weight: 700; }
+.sub-meta { font-size: 12px; color: var(--color-text-secondary); margin-top: 2px; display: block; }
+.sub-meta.url { font-family: monospace; }
+.sub-header-actions { display: flex; gap: 8px; }
 
 /* 入参/出参展示块 */
 .tool-schema-toggle { margin-top: 4px; }
@@ -634,10 +812,9 @@ async function installTool(item: any) {
 @media (max-width: 767px) {
   .page-top { margin-bottom: 14px; }
   .page-title { font-size: 18px; }
-  .section { margin-bottom: 24px; }
-  .section-header { flex-wrap: wrap; gap: 8px; }
-  .section-header-right { flex-wrap: wrap; }
-  .sub-header { flex-wrap: wrap; gap: 10px; padding-bottom: 12px; margin-bottom: 16px; }
+  .tab-toolbar { flex-wrap: wrap; }
+  .tab-search-wrap { max-width: 100%; flex: 1 1 100%; }
+  .sub-header { flex-wrap: wrap; gap: 10px; padding-bottom: 12px; }
   .sub-header-info { width: 100%; }
   .sub-header-actions { width: 100%; justify-content: flex-end; }
   .sub-title { font-size: 16px; }

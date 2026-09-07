@@ -51,7 +51,7 @@
                 <span>智能体思考过程</span>
                 <span class="agent-process-stats">({{ round.agentStats?.reasoningCount || 0 }} 次推理，{{ round.agentStats?.toolCallCount || 0 }} 个工具调用)</span>
                 <el-icon :size="12" class="agent-process-chevron">
-                  <ArrowDown v-if="!isProcessOpen(round, ri)" />
+                  <ArrowDown v-if="isProcessOpen(round, ri)" />
                   <ArrowRight v-else />
                 </el-icon>
               </div>
@@ -102,13 +102,14 @@
                           </div>
                           <div v-if="getStepToolResult(step, tc.id)" class="tool-item-section">
                             <div class="tool-item-label">结果</div>
-                            <pre class="tool-item-json" :class="{ 'tool-item-json-error': isStepToolError(step, tc.id) }">{{ getStepToolResult(step, tc.id) }}</pre>
+                            <pre v-if="resolveToolDisplay(tc).tool !== 'call_agent'" class="tool-item-json" :class="{ 'tool-item-json-error': isStepToolError(step, tc.id) }">{{ getStepToolResult(step, tc.id) }}</pre>
+                            <div v-else class="tool-item-note">子智能体已完成，最终结果见下方卡片正文</div>
                           </div>
                           <div v-if="detectGitPath(getStepToolResult(step, tc.id))" class="tool-item-section">
                             <el-button size="small" @click="openInGit(detectGitPath(getStepToolResult(step, tc.id))!)">浏览文件</el-button>
                           </div>
                           <SubAgentRoundView
-                            v-if="tc.toolName === 'call_agent' && step.subAgentRounds?.find(r => r.toolCallId === tc.id)"
+                            v-if="resolveToolDisplay(tc).tool === 'call_agent' && step.subAgentRounds?.find(r => r.toolCallId === tc.id)"
                             :round="step.subAgentRounds!.find(r => r.toolCallId === tc.id)!"
                             :id-prefix="'sub-' + ri + '-' + si + '-' + idx"
                           />
@@ -167,42 +168,71 @@
                 </div>
               </div>
               <div class="agent-response-body">
-                <div v-if="round.finalAssistant?.reasoningContent && !round.hasAgentProcess" class="msg-reasoning">
-                  <div class="reasoning-header" @click="toggleReasoning('agent-fa-' + ri)">
-                    <el-icon><CaretRight v-if="!expandedReasoning['agent-fa-' + ri]" /><CaretBottom v-else /></el-icon>
-                    <span>思考过程</span>
+                <template v-if="round.subAgentResults?.length">
+                  <div v-for="(sr, sri) in round.subAgentResults" :key="'sar-' + ri + '-' + sri" class="sub-agent-result">
+                    <div class="sub-agent-result-head" @click="toggleSubAgentResult('sar-' + ri + '-' + sri)">
+                      <el-icon :size="13" class="sub-agent-result-icon"><ChatDotRound /></el-icon>
+                      <span class="sub-agent-result-name">{{ sr.subAgentName }}</span>
+                      <span class="sub-agent-result-tag">结果</span>
+                      <span class="sub-agent-result-actions" @click.stop>
+                        <el-tooltip content="复制 Markdown" placement="top"><el-button text size="small" circle @click="copySubAgentResultMd(sr)"><el-icon><CopyDocument /></el-icon></el-button></el-tooltip>
+                        <el-tooltip content="下载为 .md 文件" placement="top"><el-button text size="small" circle @click="downloadSubAgentResultMd(sr, sri)"><el-icon><Download /></el-icon></el-button></el-tooltip>
+                      </span>
+                      <el-icon :size="12" class="sub-agent-result-chevron"><ArrowDown v-if="!collapsedSubAgentResults['sar-' + ri + '-' + sri]" /><ArrowRight v-else /></el-icon>
+                    </div>
+                    <div v-show="!collapsedSubAgentResults['sar-' + ri + '-' + sri]" class="sub-agent-result-content" v-html="renderMarkdown(sr.finalContent)" @click="handleContentClick"></div>
                   </div>
-                  <div v-show="expandedReasoning['agent-fa-' + ri]" class="reasoning-body">{{ round.finalAssistant.reasoningContent }}</div>
+                </template>
+                <div v-if="hasMainResult(round, ri)" class="main-agent-result">
+                  <div class="main-agent-result-head" @click="toggleMainResult('mar-' + ri)">
+                    <el-icon :size="13" class="main-agent-result-icon"><ChatDotRound /></el-icon>
+                    <span class="main-agent-result-name">任务结果</span>
+                    <span class="main-agent-result-tag">主智能体</span>
+                    <span class="main-agent-result-actions" @click.stop>
+                      <el-tooltip content="复制 Markdown" placement="top"><el-button text size="small" circle @click="copyAssistantMd(round)"><el-icon><CopyDocument /></el-icon></el-button></el-tooltip>
+                      <el-tooltip content="下载为 .md 文件" placement="top"><el-button text size="small" circle @click="downloadAssistantMd(round)"><el-icon><Download /></el-icon></el-button></el-tooltip>
+                    </span>
+                    <el-icon :size="12" class="main-agent-result-chevron"><ArrowDown v-if="!collapsedMainResults['mar-' + ri]" /><ArrowRight v-else /></el-icon>
+                  </div>
+                  <div v-show="!collapsedMainResults['mar-' + ri]" class="main-agent-result-content">
+                    <div v-if="round.finalAssistant?.reasoningContent && !round.hasAgentProcess" class="msg-reasoning">
+                      <div class="reasoning-header" @click="toggleReasoning('agent-fa-' + ri)">
+                        <el-icon><CaretRight v-if="!expandedReasoning['agent-fa-' + ri]" /><CaretBottom v-else /></el-icon>
+                        <span>思考过程</span>
+                      </div>
+                      <div v-show="expandedReasoning['agent-fa-' + ri]" class="reasoning-body">{{ round.finalAssistant.reasoningContent }}</div>
+                    </div>
+                    <template v-if="round.finalAssistant?.content">
+                      <div class="msg-content" v-html="renderAssistantMarkdown(round.finalAssistant.content)" @click="handleContentClick"></div>
+                      <PlatformConfigCard
+                        v-if="parseConfigCard(round.finalAssistant.content)"
+                        :mode="parseConfigCard(round.finalAssistant.content)!.mode"
+                        :platform="getEditPlatform(round.finalAssistant.content)"
+                        :reason="getEditReason(round.finalAssistant.content)"
+                        class="msg-config-card"
+                        @saved="onConfigSaved"
+                      />
+                      <DeliverableFileCard
+                        v-if="getRoundDeliverableFiles(round).length"
+                        :files="getRoundDeliverableFiles(round)"
+                        class="msg-deliverable-card"
+                      />
+                    </template>
+                    <template v-else-if="isLastRoundStreaming(round, ri)">
+                      <!-- 有实时正文：跑马灯式流式显示 + 末尾闪烁光标 -->
+                      <div v-if="getStreamingText(round, ri)" class="msg-content streaming-content" v-html="renderStreamingContent(getStreamingText(round, ri))" @click="handleContentClick"></div>
+                      <!-- 有思考但无正文：显示正在思考 + 实时思考内容 -->
+                      <div v-else-if="getStreamingReasoning(round, ri)" class="msg-reasoning streaming-reasoning">
+                        <div class="reasoning-header"><span>正在思考…</span></div>
+                        <div class="reasoning-body">{{ getStreamingReasoning(round, ri) }}</div>
+                      </div>
+                      <!-- 刚开始无任何内容：三点初始态 -->
+                      <div v-else class="msg-content streaming">
+                        <span class="typing-dots" aria-label="正在输入"><span></span><span></span><span></span></span>
+                      </div>
+                    </template>
+                  </div>
                 </div>
-                <template v-if="round.finalAssistant?.content">
-                  <div class="msg-content" v-html="renderAssistantMarkdown(round.finalAssistant.content)" @click="handleContentClick"></div>
-                  <PlatformConfigCard
-                    v-if="parseConfigCard(round.finalAssistant.content)"
-                    :mode="parseConfigCard(round.finalAssistant.content)!.mode"
-                    :platform="getEditPlatform(round.finalAssistant.content)"
-                    :reason="getEditReason(round.finalAssistant.content)"
-                    class="msg-config-card"
-                    @saved="onConfigSaved"
-                  />
-                  <DeliverableFileCard
-                    v-if="getRoundDeliverableFiles(round).length"
-                    :files="getRoundDeliverableFiles(round)"
-                    class="msg-deliverable-card"
-                  />
-                </template>
-                <template v-else-if="isLastRoundStreaming(round, ri)">
-                  <!-- 有实时正文：跑马灯式流式显示 + 末尾闪烁光标 -->
-                  <div v-if="getStreamingText(round, ri)" class="msg-content streaming-content" v-html="renderStreamingContent(getStreamingText(round, ri))" @click="handleContentClick"></div>
-                  <!-- 有思考但无正文：显示正在思考 + 实时思考内容 -->
-                  <div v-else-if="getStreamingReasoning(round, ri)" class="msg-reasoning streaming-reasoning">
-                    <div class="reasoning-header"><span>正在思考…</span></div>
-                    <div class="reasoning-body">{{ getStreamingReasoning(round, ri) }}</div>
-                  </div>
-                  <!-- 刚开始无任何内容：三点初始态 -->
-                  <div v-else class="msg-content streaming">
-                    <span class="typing-dots" aria-label="正在输入"><span></span><span></span><span></span></span>
-                  </div>
-                </template>
               </div>
 
             </div>
@@ -210,7 +240,8 @@
 
 
           <div class="msg-actions msg-actions-assistant">
-            <el-tooltip content="复制" placement="top"><el-button text size="small" circle @click="copyMsg(round.finalAssistant!)"><el-icon><CopyDocument /></el-icon></el-button></el-tooltip>
+            <el-tooltip content="复制 Markdown" placement="top"><el-button text size="small" circle @click="copyAssistantMd(round)"><el-icon><CopyDocument /></el-icon></el-button></el-tooltip>
+            <el-tooltip content="下载为 .md 文件" placement="top"><el-button text size="small" circle @click="downloadAssistantMd(round)"><el-icon><Download /></el-icon></el-button></el-tooltip>
             <el-tooltip content="引用" placement="top"><el-button text size="small" circle @click="quoteMsg(round.finalAssistant!)"><el-icon><Link /></el-icon></el-button></el-tooltip>
             <el-tooltip content="重新生成" placement="top"><el-button text size="small" circle :disabled="store.streaming" @click="regenerateMsg"><el-icon><Refresh /></el-icon></el-button></el-tooltip>
             <el-tooltip content="蒸馏为 Skill" placement="top"><el-button text size="small" circle @click="distillAssistantMsg(round)"><el-icon><MagicStick /></el-icon></el-button></el-tooltip>
@@ -342,7 +373,7 @@
 <script setup lang="ts">
 import {
   User, ChatDotRound, CaretRight, CaretBottom, ArrowDown, ArrowRight, ArrowUp, Loading, CircleCheck,
-  CircleClose, CopyDocument, EditPen, MagicStick, Delete, View, Fold, Refresh, Setting, Link,
+  CircleClose, CopyDocument, EditPen, MagicStick, Delete, View, Fold, Refresh, Setting, Link, Download,
 } from '@element-plus/icons-vue';
 import { ref, watch, nextTick, computed } from 'vue';
 import { useRouter } from 'vue-router';
@@ -363,7 +394,8 @@ const {
   isStepToolsError, toggleTool, getStepToolStatusClass, getStepToolResult, isStepToolError, resolveToolDisplay,
   resolveToolArgs, expandedTools, toggleToolGroup, getToolGroupStatusClass, isToolGroupRunning,
   isToolGroupError, expandedToolGroups, getToolStatusClass, getToolResult, isToolError, distillAssistantMsg, regenerateMsg,
-  isToolItemOpen,
+  isToolItemOpen, collapsedSubAgentResults, toggleSubAgentResult, collapsedMainResults, toggleMainResult,
+  copySubAgentResultMd, downloadSubAgentResultMd, copyAssistantMd, downloadAssistantMd,
   selectedModelId, input, openPlatformConfig,
   userRoundIndices, activeNavRound, scrollToRound,
   showScrollBottom, showScrollTop, scrollToBottom,
@@ -421,6 +453,13 @@ function openInGit(path: string) {
 
 function renderAssistantMarkdown(content?: string) {
   let c = content || '';
+  // 模型原始输出原样入库；渲染时隐藏文本模式工具调用块（工具调用已由结构化 chip/步骤区展示），
+  // 兼容 [TOOL_CALL]{...}[/TOOL_CALL] 与 <function=xxx>...</function> 及未闭合的尾部残留
+  c = c
+    .replace(/\[TOOL_CALL\][\s\S]*?\[\/TOOL_CALL\]/gi, '')
+    .replace(/\[TOOL_CALL\][\s\S]*$/i, '')
+    .replace(/<function\s*=\s*\w+\s*>[\s\S]*?<\/function>/gi, '')
+    .replace(/<function\s*=\s*\w+\s*>[\s\S]*$/i, '');
   // 去掉平台配置卡片标记和 @@REASON@@ 分隔符（这些由 PlatformConfigCard 组件单独渲染）
   c = c.replace(/\[\[PLATFORM_CONFIG:[^\]]*\]\]\s*$/g, '').split('\n@@REASON@@\n')[0].trim();
   return c.split(/(\[tool_call\])/g).map((part) => {
@@ -446,6 +485,13 @@ function getRoundDeliverableFiles(round: MessageRound) {
 /** 智能体思考过程是否展开：流式过程中强制展开（让工具调用进度实时可见），结束后由用户控制可折叠 */
 function isProcessOpen(round: MessageRound, ri: number): boolean {
   return !!expandedAgentProcess['round-' + ri] || isLastRoundStreaming(round, ri);
+}
+
+/** 是否渲染主智能体「任务结果」卡片：有正文 / 有独立思考过程 / 正在流式输出 */
+function hasMainResult(round: MessageRound, ri: number): boolean {
+  return !!(round.finalAssistant?.content ||
+    (round.finalAssistant?.reasoningContent && !round.hasAgentProcess) ||
+    isLastRoundStreaming(round, ri));
 }
 
 /** 获取当前流式 step 的实时正文内容（跑马灯式逐步增长的 partialContent） */

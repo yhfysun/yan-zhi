@@ -6,7 +6,7 @@ import type { McpCallResult } from '../../mcp/client';
 
 export class CallAgentTool implements BuiltInTool {
   name = 'call_agent';
-  description = 'Delegate a sub-task to a specified sub-agent. The sub-agent will run with its own system prompt and mounted tools, then return the result. Use this to leverage specialized agents (e.g. pageAgent for browser automation). If unsure which agentId to use, call list_sub_agents first to discover available sub-agents and their IDs.';
+  description = '把子任务委托给指定的子智能体执行。子智能体以其独立的系统提示词与可用工具运行，并把结果返回。常用于借助专门的智能体（如 pageAgent 做浏览器自动化）。不确定该用哪个 agentId 时，可以先调用 list_sub_agents 列出可用子智能体及其 ID。';
   inputSchema = {
     type: 'object',
     properties: {

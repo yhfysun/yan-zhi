@@ -1,16 +1,16 @@
 ﻿// 聊天 store
 import { defineStore } from 'pinia';
-import { ref, computed } from 'vue';
+import { ref, computed, nextTick } from 'vue';
 import type { Conversation, Message, Platform, Model, DeltaToolCall } from '@yan-zhi/shared';
-import { getPlatformAdapter, LlmClient, ContextWindow, getToolRegistry, getApiToolRegistry } from '@yan-zhi/core';
+import { getPlatformAdapter, LlmClient, ContextWindow, getToolRegistry } from '@yan-zhi/core';
 import { uid } from '@yan-zhi/shared';
 import { useMcpStore } from './mcp';
 import { useAgentStore } from './agent';
-import { useSkillStore } from './skill';
 import { useToolsStore } from './tools';
 import { useSettingsStore } from './settings';
 import { useFileStore } from './file';
-import { api, isElectron, API_BASE } from '../api/client';
+import { useBrowserStore } from './browser';
+import { api, API_BASE } from '../api/client';
 import { useAuthStore } from './auth';
 
 // 从工具调用参数中健壮地提取 URL —— 模型常把 URL 放在非 url 字段（target/address/link/href/page 等），
@@ -27,6 +27,28 @@ function extractUrlFromArgs(args: unknown): string {
     if (strVals.length === 1) return String(strVals[0]).trim();
   }
   return '';
+}
+
+// ── 预览空间 tab 解析（agent 浏览器操作统一入口）──
+// agent 的浏览器操作必须打在预览面板**当前正在显示**的 tab 上：若让主进程按 LRU 猜
+// （ensureActiveTab），可能猜中面板旧 tab 或别的空间 tab —— 导航进了那个 tab，页面加载了
+// 但预览 UI 不跟随（onNavigated 里 tid !== activeTabId 被忽略，永远显示首页），后续
+// get_page_content 读的也不是用户看到的页面。
+async function resolvePreviewTabId(): Promise<string> {
+  const electron = (window as any).electronAPI;
+  const bs = useBrowserStore('preview');
+  const current = () =>
+    bs.activeTabId && bs.tabs.some((t) => t.id === bs.activeTabId) ? bs.activeTabId : '';
+  const tid = current();
+  if (tid) return tid;
+  // 预览面板刚被 openTab 挂载：等它 onMounted 自建首个 tab（最多 ~4s）
+  for (let i = 0; i < 40; i++) {
+    await new Promise((r) => setTimeout(r, 100));
+    const t = current();
+    if (t) return t;
+  }
+  // 兜底：主进程自建并广播（preview 面板的 onTabCreated 会补壳并激活）
+  return await electron.browserView.ensureActiveTab('preview');
 }
 
 function rowToConv(r: any): Conversation {
@@ -253,6 +275,8 @@ export const useChatStore = defineStore('chat', () => {
   });
   // currentBrowserUrl 保持可写（BrowserPanel 写入更新标题 / browser_navigate 写入触发导航）
   const currentBrowserUrl = ref('');
+  // pageAgent 导航时置 true，BrowserPanel watch(currentUrl) 跳过一次 recordVisit（不记录智能体浏览历史）
+  const skipNextRecordVisit = ref(false);
 
 
   // E12: 智能体反问弹窗 —— 等待用户回答的待处理问题（dispatchToolCall 中 await 此 Promise 以暂停 ReAct 循环）
@@ -333,9 +357,6 @@ export const useChatStore = defineStore('chat', () => {
   const taskEventCounts = new Map<string, number>(); // taskId → 已收到事件数（重连时作为 since）
 
   const isServerMode = () => !!useAuthStore().isLoggedIn;
-  // 记忆启用条件：已登录（远程服务端）或 Electron 桌面端（内置 server，guest 也可访问 memory 路由）。
-  // 之前仅 isServerMode() 门控，导致桌面端未登录时记忆完全不抽取/注入。
-  const memoryEnabled = () => isServerMode() || isElectron;
 
   function activeAgent() {
     const agentStore = useAgentStore();
@@ -379,8 +400,9 @@ export const useChatStore = defineStore('chat', () => {
       return;
     }
     const adapter = getPlatformAdapter();
+    // 与服务端对齐：历史还原不携带 system_prompt_snapshot（按需走 GET /messages/:mid/snapshot 或本地直查）
     const rows = await adapter.db.query<any>(
-      'SELECT * FROM message WHERE conversation_id = ? ORDER BY created_at ASC',
+      'SELECT id, conversation_id, user_id, role, content, tool_calls_json, tool_call_id, reasoning_content, tokens, parent_tool_call_id, sub_agent_id, sub_agent_name, sub_agent_depth, created_at FROM message WHERE conversation_id = ? ORDER BY created_at ASC',
       [convId],
     );
     messagesByConv.value[convId] = rows.map(rowToMsg);
@@ -702,8 +724,6 @@ export const useChatStore = defineStore('chat', () => {
 
   // ============ 工具命名与分发（A 组重构：内置裸名 / MCP shortId / 自定义 id 化） ============
 
-  // 工具名合法性：仅允许 [a-zA-Z0-9_-]，长度 1-64（A6）
-  const TOOL_NAME_RE = /^[a-zA-Z0-9_-]{1,64}$/;
   // 保留前缀：内置工具裸名不得以此开头，避免与 MCP/自定义工具路由冲突
   const MCP_PREFIX = 'mcp_';
   const CUSTOM_PREFIX = 'custom_';
@@ -801,18 +821,114 @@ export const useChatStore = defineStore('chat', () => {
         const rawUrl = extractUrlFromArgs(args);
         if (isElectronDesktop) {
           if (!rawUrl) return { ok: false, msg: 'browser_navigate 缺少 url 参数' };
-          // 规范化：非 http 开头补 https://（与 BrowserPanel 一致）
           const target = /^https?:\/\//i.test(rawUrl) ? rawUrl : 'https://' + rawUrl;
-          // 多 tab 模型：打开（或激活）browser tab；currentBrowserUrl 由 BrowserPanel watch 触发导航
           let host = target;
           try { host = new URL(target).hostname; } catch { /* keep raw */ }
           openTab({ kind: 'browser', name: host, url: target });
-          currentBrowserUrl.value = target; // BrowserPanel watch 到后 openSite 导航
-          browserSteps.value.push({ action: 'browser_navigate', result: `已在预览面板打开 ${target}`, time: Date.now() });
-          return { ok: true, result: `已在预览浏览器打开 ${target}` };
+          // 用预览面板当前显示的 tab 导航（面板未就绪时轮询等待其自建，见 resolvePreviewTabId）
+          const navTabId = await resolvePreviewTabId();
+          skipNextRecordVisit.value = true;
+          try {
+            const result = await Promise.race([
+              (window as any).electronAPI.browserView.action(navTabId, 'navigate', { url: target }),
+              new Promise((_, reject) => setTimeout(() => reject(new Error('IPC 导航超时（20s）')), 20000)),
+            ]) as any;
+            const ok = !result?.error;
+            const text = ok ? `已导航到 ${result.url || target}` : (result?.error || '导航失败');
+            browserSteps.value.push({ action: 'browser_navigate', result: text, time: Date.now() });
+            return { ok, result: text, msg: ok ? undefined : text };
+          } catch (e: any) {
+            return { ok: false, msg: `IPC 导航失败: ${e?.message || e}` };
+          }
         }
-        // Web 端/非桌面：走 registry.execute（服务端 Playwright），逻辑不变
+        // Web 端走后端 Playwright
+        const res = await registry.execute('browser_navigate', args as Record<string, unknown>);
+        const text = res.content?.[0]?.text ?? '';
+        browserSteps.value.push({ action: 'browser_navigate', result: text, time: Date.now() });
+        return { ok: !res.isError, result: text, msg: res.isError ? text : undefined };
       }
+
+      // 桌面端其它 browser_* 工具：统一走 browserView:action（25 action，__yzElements 注册表）
+      const isElectronDesktopBrowser = typeof window !== 'undefined' && !!(window as any).electronAPI?.isElectron;
+      if (isElectronDesktopBrowser && fullName.startsWith('browser_')) {
+        // browser_* 工具名 → browserView:action action 名（统一通道，废弃 browser:call 的 10-action 子集）
+        const actionMap: Record<string, string> = {
+          'browser_get_page_info': 'get_page_info',
+          'browser_get_page_content': 'get_page_content',
+          'browser_get_dom': 'get_dom',
+          'browser_click': 'click',
+          'browser_type': 'type',
+          'browser_press_key': 'press',
+          'browser_screenshot': 'screenshot',
+          'browser_get_visible_text': 'get_visible_text',
+          'browser_get_text': 'get_text',
+          'browser_wait': 'wait',
+          'browser_wait_for': 'wait_for',
+          'browser_scroll': 'scroll',
+          'browser_hover': 'hover',
+          'browser_back': 'back',
+          'browser_forward': 'forward',
+          'browser_reload': 'reload',
+          'browser_fill_form': 'fill_form',
+          'browser_submit_form': 'submit_form',
+          'browser_search': 'search',
+          'browser_next_page': 'next_page',
+          'browser_prev_page': 'prev_page',
+          'browser_select_option': 'select_option',
+          'browser_check': 'check',
+          'browser_uncheck': 'uncheck',
+          'browser_extract_list': 'extract_list',
+        };
+        const action = actionMap[fullName];
+        if (action) {
+          try {
+            const actTabId = await resolvePreviewTabId();
+            const result = await Promise.race([
+              (window as any).electronAPI.browserView.action(actTabId, action, args),
+              new Promise((_, reject) => setTimeout(() => reject(new Error(`IPC 调用超时（20s）: ${action}`)), 20000)),
+            ]) as any;
+            // browserView:action 返回 { error } 表示失败，否则成功
+            const ok = !result?.error;
+            let text = '';
+            if (ok) {
+              if (action === 'get_page_info') {
+                const ic = (result.interactive || []).length;
+                text = `页面: ${result.title || result.url}\n可交互元素: ${ic}${ic > 0 ? '\n' + (result.interactive || []).slice(0, 20).map((e: any) => `[${e.index}] ${e.tag}${e.text ? ': ' + e.text : ''}`).join('\n') : ''}`;
+              } else if (action === 'get_visible_text' || action === 'get_text') {
+                text = result.text || '';
+              } else if (action === 'screenshot') {
+                text = '截图已捕获';
+              } else if (action === 'get_dom') {
+                // 桌面端不把完整 DOM 回传模型（体积大且无必要）。若只回 "DOM 节点数"，
+                // 模型会因拿不到链接/文本内容而无限换参重试。给出可行动提示引导改用四件套。
+                text = `DOM 节点数: ${result.nodeCount || 0}（桌面端不返回 DOM 明细。请改用 browser_get_page_content 获取页面可见正文与带编号的可交互元素列表，不要用不同 depth/maxNodes 参数重试本工具）`;
+              } else if (action === 'get_page_content') {
+                // 聚合读页：正文 + 编号元素直接给模型（不截断，否则模型拿不到搜索结果页内容）
+                const elems = (result.interactive || []).map((e: any) => {
+                  let s = `[${e.index}] ${e.tag}`;
+                  if (e.text) s += ` "${String(e.text).slice(0, 40)}"`;
+                  if (e.placeholder) s += ` [ph:${e.placeholder}]`;
+                  if (e.href) s += ` →${String(e.href).slice(0, 80)}`;
+                  return s;
+                }).join('\n');
+                text = `URL: ${result.url}\nTitle: ${result.title}\n\n【页面可见文本】\n${result.text || '(空)'}\n\n【可交互元素】(${result.interactiveCount} 个，编号可直接用于 browser_click/browser_type 的 index 参数)\n${elems}`;
+              } else {
+                text = result.success ? `${action} 执行成功` : JSON.stringify(result).slice(0, 500);
+              }
+            } else {
+              text = result?.error || `${action} 执行失败`;
+            }
+            browserSteps.value.push({ action: fullName, result: text, time: Date.now() });
+            return { ok, result: text, msg: ok ? undefined : text };
+          } catch (e: any) {
+            return { ok: false, msg: `IPC 调用失败 (${fullName}): ${e?.message || e}` };
+          }
+        }
+        // 未映射的 browser_* 工具：桌面端单一执行面（预览 BrowserView），绝不静默回退
+        // 后端 Playwright——那会造成操作与预览两套分裂 + headless 被风控弹验证码。
+        return { ok: false, msg: `桌面端暂不支持 ${fullName}。请改用四件套工具：browser_navigate / browser_type / browser_click / browser_get_page_content` };
+      }
+
 
       // image_analyze 拦截 —— 优先 vision 多模态模型，降级服务端 Tesseract OCR
       if (fullName === 'image_analyze') {
@@ -887,36 +1003,6 @@ export const useChatStore = defineStore('chat', () => {
               confirmSignal?.removeEventListener('abort', onConfirmAbort);
               pendingConfirmation.value = null;
               resolve({ ok: true, result });
-            },
-          };
-        });
-      }
-      // E12c: configure_model_platform —— 弹出平台/模型配置表单，await 用户保存后再继续（暂停 ReAct 循环）
-      if (fullName === 'configure_model_platform') {
-        const raw = args as Record<string, unknown>;
-        return await new Promise<{ ok: boolean; result?: unknown; msg?: string }>((resolve) => {
-          pendingPlatformConfig.value = {
-            prefill: {
-              name: raw.name != null ? String(raw.name) : undefined,
-              protocol: raw.protocol === 'anthropic' || raw.protocol === 'custom' || raw.protocol === 'openai' ? raw.protocol : undefined,
-              apiUrl: raw.apiUrl != null ? String(raw.apiUrl) : undefined,
-              apiKey: raw.apiKey != null ? String(raw.apiKey) : undefined,
-              modelId: raw.modelId != null ? String(raw.modelId) : undefined,
-              alias: raw.alias != null ? String(raw.alias) : undefined,
-              contextWindow: raw.contextWindow != null ? Number(raw.contextWindow) : undefined,
-            },
-            resolve: (result) => {
-              if (result.cancelled) {
-                resolve({ ok: false, msg: result.message || '用户取消配置' });
-              } else {
-                resolve({
-                  ok: true,
-                  result: result.message || JSON.stringify({
-                    platformId: result.platformId,
-                    modelId: result.modelId,
-                  }),
-                });
-              }
             },
           };
         });
@@ -1037,270 +1123,6 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
-  /** E7: 运行子智能体（call_agent 的实际执行逻辑）—— 递归 LLM ReAct 循环，带 callStack 防递归 */
-  async function buildTools(): Promise<unknown[]> {
-    const merged = getMergedMounts();
-    const tools: unknown[] = [];
-    const mcpStore = useMcpStore();
-    const registry = getToolRegistry();
-    const toolsStore = useToolsStore();
-    const seen = new Set<string>(); // 去重：同一名工具不重复暴露
-
-    // 1) 内置工具（裸名，且不得以 mcp_/custom_ 开头，避免与保留前缀路由冲突）（A1）
-    for (const name of merged.builtinToolIds) {
-      if (!registry.has(name)) continue;
-      if (name.startsWith(MCP_PREFIX) || name.startsWith(CUSTOM_PREFIX)) continue;
-      if (seen.has(name)) continue;
-      seen.add(name);
-      const def = registry.get(name)!;
-      tools.push({
-        type: 'function',
-        function: { name, description: def.description, parameters: def.inputSchema },
-      });
-    }
-
-    // 2) MCP 工具（mcp_{shortId}__{toolName}，去双 mcp_ 前缀）（A3）
-    for (const m of merged.mcpToolMounts) {
-      const list = mcpStore.tools[m.serverId] || [];
-      const shortId = mcpShortIdOf(m.serverId);
-      for (const t of list) {
-        if (m.toolName !== '*' && m.toolName !== t.name) continue;
-        const exposedName = `${MCP_PREFIX}${shortId}__${t.name}`;
-        if (!TOOL_NAME_RE.test(exposedName)) continue; // 非法名跳过（A6）
-        if (seen.has(exposedName)) continue;
-        seen.add(exposedName);
-        tools.push({
-          type: 'function',
-          function: {
-            name: exposedName,
-            description: t.description || t.name,
-            parameters: t.inputSchema || { type: 'object', properties: {} },
-          },
-        });
-      }
-    }
-
-    // 3) 自定义工具（custom_{id前8位}_{name}，按 id 反查分发，避免裸 name 重名）（A2）
-    for (const id of merged.customToolIds) {
-      const ct = toolsStore.customTools.find(t => t.id === id);
-      if (!ct || !ct.enabled) continue;
-      const exposedName = customToolExposedName(ct.id, ct.name);
-      if (!TOOL_NAME_RE.test(exposedName)) continue; // 非法名跳过（A6）
-      if (seen.has(exposedName)) continue;
-      seen.add(exposedName);
-      tools.push({
-        type: 'function',
-        function: {
-          name: exposedName,
-          description: ct.description || ct.name,
-          parameters: ct.inputSchema || { type: 'object', properties: {} },
-        },
-      });
-    }
-
-    // 4) 记忆/知识库工具 —— 默认暴露，模型按需调用（不靠 systemPrompt 注入）
-    if (memoryEnabled()) {
-      const apiRegistry = getApiToolRegistry();
-      const autoApiTools = ['api_memory_search', 'api_kb_search', 'api_kb_list'];
-      for (const tName of autoApiTools) {
-        if (seen.has(tName)) continue;
-        let def: { name: string; description: string; inputSchema: any } | undefined;
-        for (const tools of apiRegistry.values()) {
-          const found = tools.find(t => t.name === tName);
-          if (found) { def = found; break; }
-        }
-        if (def) {
-          seen.add(tName);
-          tools.push({
-            type: 'function',
-            function: { name: def.name, description: def.description, parameters: def.inputSchema },
-          });
-        }
-      }
-    }
-
-    return tools;
-  }
-
-  function buildToolsDescription(): string {
-    const merged = getMergedMounts();
-    const mcpStore = useMcpStore();
-    const registry = getToolRegistry();
-    const lines: string[] = [];
-
-    // 内置工具（裸名，与 buildTools 暴露名保持一致）
-    if (merged.builtinToolIds.length > 0) {
-      const builtinLines: string[] = [];
-      for (const name of merged.builtinToolIds) {
-        if (!registry.has(name)) continue;
-        if (name.startsWith(MCP_PREFIX) || name.startsWith(CUSTOM_PREFIX)) continue;
-        builtinLines.push(`- \`${name}\`: ${registry.get(name)!.description}`);
-      }
-      if (builtinLines.length > 0) { lines.push('### 内置工具'); lines.push(...builtinLines); }
-    }
-
-    // MCP 工具（暴露名与 buildTools 一致：mcp_{shortId}__{toolName}，去双 mcp_ 前缀）
-    for (const m of merged.mcpToolMounts) {
-      const server = mcpStore.servers.find(s => s.id === m.serverId);
-      const list = mcpStore.tools[m.serverId] || [];
-      const enabled = m.toolName === '*' ? list : list.filter(t => t.name === m.toolName);
-      if (enabled.length === 0) continue;
-      const shortId = mcpShortIdOf(m.serverId);
-      lines.push(`### ${server?.name || m.serverId}`);
-      for (const t of enabled) {
-        const desc = t.description || '';
-        const shortDesc = desc.length > 120 ? desc.slice(0, 117) + '...' : desc;
-        lines.push(`- \`${MCP_PREFIX}${shortId}__${t.name}\`: ${shortDesc}`);
-      }
-    }
-
-    // 自定义工具（暴露名与 buildTools 一致：custom_{id前8位}_{name}）
-    if (merged.customToolIds.length > 0) {
-      const toolsStore = useToolsStore(); // 顶部已 import，修复原 require('./tools') 在 ESM/Vite 下不可用的问题（A5）
-      const customLines: string[] = [];
-      for (const id of merged.customToolIds) {
-        const ct = toolsStore.customTools.find(t => t.id === id);
-        if (!ct) continue;
-        customLines.push(`- \`${customToolExposedName(ct.id, ct.name)}\`: ${ct.description || ct.name}`);
-      }
-      if (customLines.length > 0) { lines.push('### 自定义工具'); lines.push(...customLines); }
-    }
-
-    return lines.length > 0 ? lines.join('\n') : '';
-  }
-
-  function buildSkillsDescription(): string {
-    const merged = getMergedMounts();
-    if (merged.skillIds.length === 0) return '';
-    const skillStore = useSkillStore();
-    const lines: string[] = [];
-    for (const skId of merged.skillIds) {
-      const sk = skillStore.skills.find(s => s.id === skId);
-      if (!sk || !sk.enabled) continue;
-      const desc = sk.frontmatter.description || sk.description || '';
-      const shortDesc = desc.length > 100 ? desc.slice(0, 97) + '...' : desc;
-      lines.push(`- **${sk.name}**: ${shortDesc}`);
-    }
-    return lines.length > 0 ? '可用 Skills（说出名称激活）:\n' + lines.join('\n') : '';
-  }
-
-  /** C3: 构建已激活 Skill 的流程指引文本，注入父智能体 systemPrompt，让父智能体也知道
-   *  该 ask_user、该委派 pageAgent 做什么（而非只看到 skill 名称简述就瞎决策）。
-   *  单 skill 流程注入上限 2000 字符，避免撑爆 systemPrompt。 */
-  function buildSkillsFlowPrompt(): string {
-    const merged = getMergedMounts();
-    if (merged.skillIds.length === 0) return '';
-    const skillStore = useSkillStore();
-    const parts: string[] = [];
-    for (const skId of merged.skillIds) {
-      const sk = skillStore.skills.find(s => s.id === skId);
-      if (!sk || !sk.enabled) continue;
-      const body = sk.bodyMd?.trim();
-      if (!body) continue;
-      // 截断保护：单 skill 流程注入上限 2000 字符
-      const truncated = body.length > 2000 ? body.slice(0, 2000) + '\n...(流程过长已截断)' : body;
-      parts.push(`### Skill 流程指引：${sk.name}\n${truncated}`);
-    }
-    return parts.length > 0
-      ? '## 当前任务流程指引（按 Skill 流程执行：该 ask_user 时 ask_user，该委派 pageAgent 时委派 pageAgent 并在 input 中传入流程要求）\n' + parts.join('\n\n')
-      : '';
-  }
-
-  function buildSubAgentsDescription(): string {
-    const merged = getMergedMounts();
-    if (merged.subAgentIds.length === 0) return '';
-    const agentStore = useAgentStore();
-    const lines: string[] = [];
-    for (const id of merged.subAgentIds) {
-      const sub = agentStore.agents.find(a => a.id === id);
-      if (!sub) continue;
-      lines.push(`- **${sub.name}** (id: \`${id}\`): ${sub.description || ''}`);
-    }
-    return lines.length > 0 ? '可调用子智能体:\n' + lines.join('\n') : '';
-  }
-
-
-  function buildSystemPrompt(): string {
-    const conv = conversations.value.find(c => c.id === currentConvId.value);
-    const agent = activeAgent();
-    const isHarness = !agent || !agent.type || agent.type === 'harness';
-    const parts: string[] = [];
-
-    if (conv?.systemPrompt) {
-      parts.push(conv.systemPrompt);
-    } else if (agent?.systemPrompt) {
-      parts.push(agent.systemPrompt);
-    }
-
-    // 应用使用指南：命中用户问题关键字（怎么用/如何使用/用法/操作方法/ help/guide 等）时注入
-    const lastUserMsg = [...(messagesByConv.value[currentConvId.value] || [])].reverse().find((m) => m.role === 'user');
-    const userText = lastUserMsg?.content || '';
-    const guideHit = /(怎么用|如何使用|用法|怎么使用|操作方法|使用说明|help|guide|workbuddy|yan-zhi|这个应用|这个软件|这个工具)/i.test(userText);
-    if (guideHit) {
-      const guide = useSettingsStore().settings.appGuide?.trim();
-      if (guide) parts.push('---\n## 应用使用指南\n' + guide);
-    }
-
-    if (isHarness) {
-      const toolsDesc = buildToolsDescription();
-      if (toolsDesc) parts.push('---\n## 可用工具\n' + toolsDesc);
-      const skillsDesc = buildSkillsDescription();
-      if (skillsDesc) parts.push('---\n## 可用 Skills\n' + skillsDesc);
-      // C3: 把已激活 Skill 的标准流程注入父智能体，让父智能体知道该 ask_user / 该委派 pageAgent 做什么
-      const skillsFlow = buildSkillsFlowPrompt();
-      if (skillsFlow) parts.push('---\n' + skillsFlow);
-      const subsDesc = buildSubAgentsDescription();
-      if (subsDesc) parts.push('---\n## 可调用子智能体\n' + subsDesc);
-    } else {
-      // Workflow: 保留现有 MCP 工具描述逻辑
-      const mcpStore = useMcpStore();
-      const lines: string[] = [];
-      for (const sid of mountedMcpServers.value) {
-        const server = mcpStore.servers.find(s => s.id === sid);
-        const list = mcpStore.tools[sid] || [];
-        const disabledNames = mcpDisabledTools.value[sid] || [];
-        const aliases = mcpToolAliases.value[sid] || {};
-        const enabled = list.filter((t: any) => !disabledNames.includes(t.name));
-        if (enabled.length === 0) continue;
-        const serverName = server?.name || sid;
-        lines.push(`## ${serverName}`);
-        for (const t of enabled) {
-          const desc = t.description || '无描述';
-          const shortDesc = desc.length > 120 ? desc.slice(0, 117) + '...' : desc;
-          const fnName = `${MCP_PREFIX}${mcpShortIdOf(sid)}__${t.name}`;
-          const aliasLabel = aliases[t.name] ? `（${aliases[t.name]}）` : (t.alias ? `（${t.alias}）` : '');
-          lines.push(`- \`${fnName}\`${aliasLabel}: ${shortDesc}`);
-        }
-      }
-      if (lines.length > 0) parts.push('---\n当前可调用的 MCP 工具：\n' + lines.join('\n'));
-      const skillsDesc = buildSkillsDescription();
-      if (skillsDesc) parts.push('---\n' + skillsDesc);
-      // C3: workflow 智能体也注入 Skill 流程指引
-      const skillsFlow = buildSkillsFlowPrompt();
-      if (skillsFlow) parts.push('---\n' + skillsFlow);
-    }
-
-    if (isHarness) {
-      parts.push([
-        '---',
-        '## 文件产出分类规范',
-        '你可通过 file_write 工具产出文件，必须用 category 参数正确分类：',
-        '- category="deliverable"：最终交付给用户的成果（报告、最终文档、生成的源代码、数据导出、图片成品等用户会直接使用或保存的文件）。',
-        '- category="intermediate"：过程性中间产物（调试输出、临时草稿、中间计算结果、将被后续步骤覆盖或删除的临时文件）。',
-        '规则：凡是用户最终想要的结果文件，必须显式传 category="deliverable"；只有过程性临时文件才用 intermediate。不要省略 category，也不要把交付物误标为 intermediate。',
-      ].join('\n'));
-    }
-
-    const wd = useSettingsStore().settings.workspaceDir;
-    if (wd && wd.trim()) {
-      parts.push(`---\n## 工作目录\n当前工作目录：${wd}`);
-    }
-
-    // 记忆/知识库已改为工具按需调用（api_memory_search / api_kb_search），不再注入 systemPrompt
-
-    return parts.join('\n\n');
-  }
-
   function getMaxReActSteps(): number {
     const agentStore = useAgentStore();
     const agent = agentStore.selectedAgent;
@@ -1386,6 +1208,7 @@ export const useChatStore = defineStore('chat', () => {
               arr.push({
                 id: msg.id, conversationId: convId, role: msg.role,
                 content: msg.content || '', toolCallId: msg.toolCallId,
+                parentToolCallId: msg.parentToolCallId,
                 reasoningContent: msg.role === 'assistant' ? '' : undefined,
                 toolCalls: msg.role === 'assistant' ? [] : undefined,
                 systemPromptSnapshot: msg.systemPromptSnapshot,
@@ -1576,9 +1399,11 @@ export const useChatStore = defineStore('chat', () => {
     abortControllers.set(convId, abortController);
 
     try {
-      // 前端构建完整系统提示词 + 工具 schema，发给后端
-      const systemPrompt = buildSystemPrompt();
-      const tools = await buildTools();
+      // 单一事实来源：后端统一构建 systemPrompt + tools（含 agent/会话级挂载、原生/文本模式区分）。
+      // 前端只传 agentId/appGuide 等参数，不再自建提示词与工具表（避免双轨不一致）。
+      const conv = conversations.value.find(c => c.id === convId);
+      const agent = activeAgent();
+      const appGuide = useSettingsStore().settings.appGuide;
       const maxSteps = getMaxReActSteps();
 
       const taskRes = await api.post<any>('/llm/tasks', {
@@ -1586,8 +1411,8 @@ export const useChatStore = defineStore('chat', () => {
         platformId: platform.id,
         modelId: model.id,
         userContent: options.userContent,
-        systemPrompt,
-        tools,
+        agentId: conv?.agentId || agent?.id || null,
+        appGuide,
         maxSteps,
         modeFlags: {
           thinking: thinkingMode.value,
@@ -1676,7 +1501,7 @@ export const useChatStore = defineStore('chat', () => {
     runningConvIds, isConvStreaming,
     runningToolCallIds, isToolCallRunning,
     browserSteps, rightPanelOpen, thinkingMode, planMode, answerOnly,
-    showFilePopup, previewingFile, rightPanelTab, currentBrowserUrl,
+    showFilePopup, previewingFile, rightPanelTab, currentBrowserUrl, skipNextRecordVisit,
     previewTabs, activeTabId, activeTab,
     openTab, activatePreviewTab, closePreviewTab, closeAllPreviewTabs,
     pendingQuestion, pendingConfirmation, pendingPlatformConfig, submitPendingQuestion,
@@ -1685,7 +1510,7 @@ export const useChatStore = defineStore('chat', () => {
     planSteps, planTitle, clearPlan,
     activeAgent, activeAgentId,
     loadConversations, loadMessages, createConversation, updateConversation, deleteConversation, deleteConversations,
-    addMessage, updateMessage, deleteMessage, sendMessage, regenerate, stop, buildTools,
-    buildToolsDescription, buildSkillsDescription, buildSkillsFlowPrompt, buildSubAgentsDescription, buildSystemPrompt, getMergedMounts,
+    addMessage, updateMessage, deleteMessage, sendMessage, regenerate, stop,
+    getMergedMounts,
   };
 });

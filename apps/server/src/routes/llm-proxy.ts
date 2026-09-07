@@ -1,9 +1,13 @@
-// LLM 代理转发路由 —— 前端统一走后端，后端从库读 platform 配置（api_url / api_key_enc / protocol / headers），
-// 转发到上游并透传 SSE。解决浏览器直连第三方 API 的 CORS 问题，且 API Key 不暴露给前端。
-// 前端只需传 platformId + payload（payload.model 即 modelId）。
 import { Router, Request, Response as ExpressResponse } from 'express';
 import { authMiddleware } from '../auth.js';
 import { db } from '../db.js';
+import {
+  pickToken,
+  recordSuccess,
+  recordFailure,
+  pauseIfNeeded,
+  MAX_RETRY,
+} from '../services/token-pool.js';
 
 const router = Router();
 router.use(authMiddleware);
@@ -16,7 +20,6 @@ function loadPlatform(req: Request): any | null {
   return row || null;
 }
 
-/** loadPlatform 失败时的诊断响应：附 platformId/userId，便于前端 Network 排查 */
 function platformNotFound(res: ExpressResponse, req: Request): void {
   const platformId = (req.body as any)?.platformId || req.query.platformId || '(空)';
   res.status(404).json({ error: '平台不存在', platformId, userId: req.user?.userId });
@@ -26,9 +29,8 @@ function baseUrl(p: any): string {
   return (p.api_url || '').replace(/\/$/, '');
 }
 
-function upstreamHeaders(p: any, anthropic: boolean): Record<string, string> {
+function upstreamHeaders(p: any, apiKey: string, anthropic: boolean): Record<string, string> {
   const h: Record<string, string> = { 'Content-Type': 'application/json' };
-  const apiKey = p.api_key_enc || '';
   if (anthropic) {
     h['x-api-key'] = apiKey;
     h['anthropic-version'] = '2023-06-01';
@@ -42,7 +44,6 @@ function upstreamHeaders(p: any, anthropic: boolean): Record<string, string> {
   return h;
 }
 
-/** 透传上游响应：SSE 流式则 pipe，否则透传 status + body */
 async function forward(upstream: Response, res: ExpressResponse): Promise<void> {
   const ct = upstream.headers.get('content-type') || '';
   if (ct.includes('text/event-stream') && upstream.body) {
@@ -67,55 +68,130 @@ async function forward(upstream: Response, res: ExpressResponse): Promise<void> 
   res.send(text);
 }
 
-// POST /api/llm/chat/completions  body: { platformId, payload }
+/**
+ * 带 Token 池重试的代理请求：每次选最优 Token → 停顿 → fetch，
+ * 成功则转发；无论什么错误（网络错误或任何非 2xx）都记录失败并换 Token 重试，最多 MAX_RETRY 次。
+ */
+async function proxyWithRetry(
+  p: any,
+  anthropic: boolean,
+  path: string,
+  body: any,
+  res: ExpressResponse,
+  isStream: boolean,
+): Promise<void> {
+  const url = `${baseUrl(p)}/${path}`;
+  const triedIds: string[] = [];
+  const fallbackKey = p.api_key_enc || '';
+
+  for (let attempt = 0; attempt < MAX_RETRY; attempt++) {
+    const token = pickToken(p.id, triedIds);
+    const apiKey = token?.apiKey || fallbackKey;
+    if (token) triedIds.push(token.id);
+
+    await pauseIfNeeded(p);
+
+    let upstream: Response;
+    try {
+      upstream = await fetch(url, {
+        method: 'POST',
+        headers: upstreamHeaders(p, apiKey, anthropic),
+        body: JSON.stringify(body ?? {}),
+      });
+    } catch (e: any) {
+      if (token) recordFailure(token.id);
+      if (attempt < MAX_RETRY - 1 && (token || fallbackKey)) continue;
+      res.status(502).json({ error: `代理请求失败: ${e?.message || e}` });
+      return;
+    }
+
+    if (upstream.ok) {
+      if (token) recordSuccess(token.id);
+      await forward(upstream, res);
+      return;
+    }
+
+    // 无论什么错误（不限 401/403/429/5xx）都记录失败并换 Token 重试，最多 MAX_RETRY 次
+    if (token) recordFailure(token.id);
+    if (attempt < MAX_RETRY - 1) {
+      await upstream.text().catch(() => {});
+      continue;
+    }
+
+    await forward(upstream, res);
+    return;
+  }
+
+  res.status(502).json({ error: '所有 Token 均不可用，已达到最大重试次数' });
+}
+
 router.post('/chat/completions', async (req: Request, res: ExpressResponse) => {
   const p = loadPlatform(req);
   if (!p) { platformNotFound(res, req); return; }
   try {
-    const upstream = await fetch(`${baseUrl(p)}/v1/chat/completions`, {
-      method: 'POST',
-      headers: upstreamHeaders(p, false),
-      body: JSON.stringify((req.body as any)?.payload ?? {}),
-    });
-    await forward(upstream, res);
+    await proxyWithRetry(p, false, 'v1/chat/completions', (req.body as any)?.payload, res, true);
   } catch (e: any) {
     res.status(502).json({ error: `代理请求失败: ${e?.message || e}` });
   }
 });
 
-// POST /api/llm/messages  body: { platformId, payload }  (Anthropic 协议)
 router.post('/messages', async (req: Request, res: ExpressResponse) => {
   const p = loadPlatform(req);
   if (!p) { platformNotFound(res, req); return; }
   try {
-    const upstream = await fetch(`${baseUrl(p)}/v1/messages`, {
-      method: 'POST',
-      headers: upstreamHeaders(p, true),
-      body: JSON.stringify((req.body as any)?.payload ?? {}),
-    });
-    await forward(upstream, res);
+    await proxyWithRetry(p, true, 'v1/messages', (req.body as any)?.payload, res, true);
   } catch (e: any) {
     res.status(502).json({ error: `代理请求失败: ${e?.message || e}` });
   }
 });
 
-// POST /api/llm/embeddings  body: { platformId, payload }
 router.post('/embeddings', async (req: Request, res: ExpressResponse) => {
   const p = loadPlatform(req);
   if (!p) { platformNotFound(res, req); return; }
   try {
-    const upstream = await fetch(`${baseUrl(p)}/v1/embeddings`, {
-      method: 'POST',
-      headers: upstreamHeaders(p, false),
-      body: JSON.stringify((req.body as any)?.payload ?? {}),
-    });
-    await forward(upstream, res);
+    await proxyWithRetry(p, false, 'v1/embeddings', (req.body as any)?.payload, res, false);
   } catch (e: any) {
     res.status(502).json({ error: `代理请求失败: ${e?.message || e}` });
   }
 });
 
-// GET /api/llm/models?platformId=
+/** 用 Token 池轮换拉取上游 /v1/models：无论什么错误都记录失败并换 Token，最多 MAX_RETRY 次。
+ *  最终结果（成功或最后一次失败响应）原样转发给前端。 */
+async function fetchModelsWithRetry(p: any, res: ExpressResponse): Promise<void> {
+  const triedIds: string[] = [];
+  const fallbackKey = p.api_key_enc || '';
+  for (let attempt = 0; attempt < MAX_RETRY; attempt++) {
+    const token = pickToken(p.id, triedIds);
+    const apiKey = token?.apiKey || fallbackKey;
+    if (token) triedIds.push(token.id);
+    await pauseIfNeeded(p);
+    let upstream: Response;
+    try {
+      upstream = await fetch(`${baseUrl(p)}/v1/models`, { headers: upstreamHeaders(p, apiKey, false) });
+    } catch (e: any) {
+      if (token) recordFailure(token.id);
+      if (attempt < MAX_RETRY - 1 && (token || fallbackKey)) continue;
+      res.status(502).json({ error: `代理请求失败: ${e?.message || e}` });
+      return;
+    }
+    if (upstream.ok) {
+      if (token) recordSuccess(token.id);
+      const text = await upstream.text().catch(() => '');
+      res.status(upstream.status).setHeader('Content-Type', upstream.headers.get('content-type') || 'application/json');
+      res.send(text);
+      return;
+    }
+    // 无论什么错误都记录失败并换 Token 重试，最多 MAX_RETRY 次
+    if (token) recordFailure(token.id);
+    if (attempt < MAX_RETRY - 1) { await upstream.text().catch(() => {}); continue; }
+    const text = await upstream.text().catch(() => '');
+    res.status(upstream.status).setHeader('Content-Type', upstream.headers.get('content-type') || 'application/json');
+    res.send(text);
+    return;
+  }
+  res.status(502).json({ error: '所有 Token 均不可用' });
+}
+
 router.get('/models', async (req: Request, res: ExpressResponse) => {
   const userId = req.user!.userId;
   const platformId = req.query.platformId as string;
@@ -123,20 +199,25 @@ router.get('/models', async (req: Request, res: ExpressResponse) => {
   const p = db.prepare('SELECT * FROM platform WHERE id = ? AND user_id = ?').get(platformId, userId) as any;
   if (!p) { res.status(404).json({ error: '平台不存在' }); return; }
   try {
-    const upstream = await fetch(`${baseUrl(p)}/v1/models`, { headers: upstreamHeaders(p, false) });
-    const text = await upstream.text().catch(() => '');
-    res.status(upstream.status).setHeader('Content-Type', upstream.headers.get('content-type') || 'application/json');
-    res.send(text);
+    await fetchModelsWithRetry(p, res);
   } catch (e: any) {
     res.status(502).json({ error: `代理请求失败: ${e?.message || e}` });
   }
 });
 
-// POST /api/llm/preview-models  body: { apiUrl, apiKey, headers, anthropic? }
-// 平台未保存时测试连通性 / 预览模型（绕过浏览器 CORS）。apiKey 仅临时转发，不入库。
 router.post('/preview-models', async (req: Request, res: ExpressResponse) => {
-  const { apiUrl, apiKey, headers, anthropic } = (req.body as any) || {};
+  const { apiUrl, apiKey, headers, anthropic, platformId } = (req.body as any) || {};
   if (!apiUrl) { res.status(400).json({ error: 'apiUrl 必填' }); return; }
+  // 编辑已有平台时前端拿不到明文 Key（Key 池在服务端）：apiKey 为空且带 platformId 时，
+  // 回退该平台的 Token 池轮换拉取，修复编辑弹窗「测试」按钮 401 失败的问题。
+  if (!apiKey && platformId) {
+    const p = db.prepare('SELECT * FROM platform WHERE id = ? AND user_id = ?').get(platformId, req.user!.userId) as any;
+    if (!p) { res.status(404).json({ error: '平台不存在' }); return; }
+    try { await fetchModelsWithRetry(p, res); } catch (e: any) {
+      res.status(502).json({ error: `代理请求失败: ${e?.message || e}` });
+    }
+    return;
+  }
   const h: Record<string, string> = { 'Content-Type': 'application/json' };
   if (anthropic) { h['x-api-key'] = apiKey || ''; h['anthropic-version'] = '2023-06-01'; }
   else { h['Authorization'] = `Bearer ${apiKey || ''}`; }

@@ -30,6 +30,24 @@ export interface Platform {
   lastHealthAt?: string;
   /** 是否为内置平台/模型，内置项只读 */
   isBuiltin?: boolean;
+  /** 请求停顿时间下限（毫秒），每次请求前随机停顿 [pauseMinMs, pauseMaxMs] 区间，避免短时间请求过多被限流 */
+  pauseMinMs?: number;
+  /** 请求停顿时间上限（毫秒） */
+  pauseMaxMs?: number;
+  createdAt: number;
+}
+
+/** 平台 API Key（多 Token 池中的一个条目） */
+export interface PlatformApiKey {
+  id: string;
+  platformId: string;
+  apiKey: string;
+  /** 标签/备注，如「免费Token A」 */
+  label?: string;
+  /** 累计失败次数（按时间窗口衰减：超过窗口未失败则视为 0） */
+  failCount: number;
+  lastFailAt?: number;
+  enabled: boolean;
   createdAt: number;
 }
 

@@ -5,7 +5,7 @@ import { api } from '../api/client';
 import { useAuthStore } from './auth';
 
 export interface CustomToolItem {
-  id: string; name: string; description?: string;
+  id: string; name: string; description?: string; category?: string;
   inputSchema: Record<string, unknown>; outputSchema?: Record<string, unknown>;
   runtime: string; entry: string; code: string;
   dependencies?: string[]; timeout: number;
@@ -33,7 +33,6 @@ const BUILTIN_TOOL_CATEGORIES: { key: string; label: string; prefixes?: string[]
   { key: 'file', label: '文件读写', prefixes: ['file_'] },
   { key: 'browser', label: '浏览器自动化', prefixes: ['browser_'] },
   { key: 'subagent', label: '子智能体', names: ['call_agent', 'list_sub_agents'] },
-  { key: 'search', label: '联网搜索', names: ['web_search', 'web_fetch'] },
   { key: 'cmd', label: '命令执行', names: ['cmd_exec'] },
   { key: 'code', label: '代码工具', names: ['code_search', 'code_outline', 'js_exec', 'python_exec'] },
   { key: 'network', label: '网络安全', names: ['port_scan', 'http_request', 'tcp_send', 'udp_send', 'dns_lookup'] },
@@ -45,7 +44,7 @@ const BUILTIN_TOOL_CATEGORIES: { key: string; label: string; prefixes?: string[]
 
 function rowToTool(r: any): CustomToolItem {
   return {
-    id: r.id, name: r.name, description: r.description,
+    id: r.id, name: r.name, description: r.description, category: r.category,
     inputSchema: r.input_schema_json ? JSON.parse(String(r.input_schema_json)) : {},
     outputSchema: r.output_schema_json ? JSON.parse(String(r.output_schema_json)) : undefined,
     runtime: r.runtime || 'node', entry: r.entry, code: r.code,
@@ -106,7 +105,7 @@ export const useToolsStore = defineStore('tools', () => {
   }
 
   async function createTool(data: {
-    name: string; description?: string; inputSchema: Record<string, unknown>;
+    name: string; description?: string; category?: string; inputSchema: Record<string, unknown>;
     outputSchema?: Record<string, unknown>;
     entry: string; code: string; runtime?: string; timeout?: number; isPublic?: boolean;
   }) {

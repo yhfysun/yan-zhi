@@ -352,7 +352,7 @@
               <el-icon><EditPen /></el-icon>
             </el-button>
           </el-tooltip>
-          <el-tooltip :content="store.streaming ? '终止 (停止生成)' : '发送 (Enter)'" placement="top">
+          <el-tooltip :content="store.streaming ? '停止任务' : '发送 (Enter)'" placement="top">
             <span>
               <el-button v-if="!store.streaming" type="primary" :icon="Promotion" :disabled="(!input.trim() && uploadedFiles.length === 0 && quotedUrls.length === 0) || !selectedModelId" @click="send" circle class="send-btn" />
               <el-button v-else type="danger" :icon="Close" @click="stopChat" circle class="send-btn stop-btn" />

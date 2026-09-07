@@ -6,9 +6,11 @@ import type {
   DirEntryInfo,
   FsAdapter,
   KeyringAdapter,
+  LlmKeyPoolAdapter,
   PlatformAdapter,
   ShellAdapter,
 } from '@yan-zhi/core';
+import { pickToken, recordFailure, recordSuccess } from './services/token-pool.js';
 import { serverState } from './state.js';
 
 const dbAdapter: DatabaseAdapter = {
@@ -67,6 +69,11 @@ const keyringAdapter: KeyringAdapter = {
   async get(key: string) {
     const m = key.match(/^platform:(.+):apikey$/);
     if (m) {
+      try {
+        const { getActiveApiKey } = await import('./services/token-pool.js');
+        const tokenKey = getActiveApiKey(m[1]);
+        if (tokenKey) return tokenKey;
+      } catch {}
       const { db } = await import('./db.js');
       const row = db.prepare('SELECT api_key_enc FROM platform WHERE id = ?').get(m[1]) as any;
       return row?.api_key_enc || null;
@@ -144,11 +151,26 @@ const shellAdapter: ShellAdapter = {
   },
 };
 
+/** LLM Token 池适配：对接 services/token-pool，供 LlmClient 直连时换 Key 重试并回写失败记录 */
+const llmKeyPoolAdapter: LlmKeyPoolAdapter = {
+  async acquire(platformId: string, excludeIds: string[]) {
+    const t = pickToken(platformId, excludeIds);
+    return t ? { id: t.id, apiKey: t.apiKey } : null;
+  },
+  reportSuccess(id: string) {
+    try { recordSuccess(id); } catch {}
+  },
+  reportFailure(id: string) {
+    try { recordFailure(id); } catch {}
+  },
+};
+
 export const nodeAdapter: PlatformAdapter = {
   platform: 'web',
   db: dbAdapter,
   fs: fsAdapter,
   keyring: keyringAdapter,
+  llmKeyPool: llmKeyPoolAdapter,
   shell: shellAdapter,
 };
 

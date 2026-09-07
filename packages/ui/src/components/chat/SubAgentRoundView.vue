@@ -4,7 +4,12 @@
       <el-icon :size="13" class="sub-agent-icon"><CaretRight v-if="!rootOpen" /><CaretBottom v-else /></el-icon>
       <span class="sub-agent-name">{{ round.subAgentName || round.subAgentId }}</span>
       <span class="sub-agent-depth">· 第 {{ round.depth }} 层</span>
+      <span v-if="isRunning" class="sub-agent-status running">执行中…</span>
       <span class="sub-agent-stats">({{ reasoningCount }} 次推理，{{ toolCallCount }} 个工具调用)</span>
+      <span class="sub-agent-header-actions" @click.stop>
+        <el-tooltip content="复制 Markdown" placement="top"><el-button text size="small" circle @click="copySubAgentRoundMd(round)"><el-icon><CopyDocument /></el-icon></el-button></el-tooltip>
+        <el-tooltip content="下载为 .md 文件" placement="top"><el-button text size="small" circle @click="downloadSubAgentRoundMd(round)"><el-icon><Download /></el-icon></el-button></el-tooltip>
+      </span>
       <el-icon :size="11" class="sub-agent-chevron"><ArrowDown v-if="!rootOpen" /><ArrowRight v-else /></el-icon>
     </div>
     <div v-show="rootOpen" class="sub-agent-body">
@@ -52,19 +57,24 @@
           </div>
         </div>
       </div>
+
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, computed } from 'vue';
-import { CaretRight, CaretBottom, ArrowDown, ArrowRight, CircleCheck } from '@element-plus/icons-vue';
+import { CaretRight, CaretBottom, ArrowDown, ArrowRight, CircleCheck, CopyDocument, Download } from '@element-plus/icons-vue';
 import { useChat } from '../../composables/chat/useChat';
+import { useChatStore } from '../../stores';
 import type { SubAgentRound, AgentStep } from '../../composables/chat/useChat';
 
 const props = defineProps<{ round: SubAgentRound; idPrefix: string }>();
 
-const { renderMarkdown, resolveToolDisplay, resolveToolArgs } = useChat();
+const { renderMarkdown, resolveToolDisplay, resolveToolArgs, copySubAgentRoundMd, downloadSubAgentRoundMd } = useChat();
+const chatStore = useChatStore();
+
+const isRunning = computed(() => chatStore.isToolCallRunning(props.round.toolCallId));
 
 const rootOpen = ref(true);
 const reasoningOpen = ref<Record<string, boolean>>({});

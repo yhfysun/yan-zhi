@@ -68,6 +68,14 @@ watch(
   },
   { flush: 'post', immediate: true },
 );
+// 右栏预览展开时自动折叠左侧会话列表：大模型打开预览浏览器/文件时给预览腾空间。
+// 只折叠不自动还原，用户可点左侧展开按钮手动恢复。
+watch(
+  () => store.rightPanelOpen,
+  (open) => {
+    if (open) convCollapsed.value = true;
+  },
+);
 // 离开对话页：隐藏原生 BrowserView，避免预览面板已随页面卸载而 BrowserView 仍残留在窗口上
 onBeforeUnmount(() => {
   const api = (window as any).electronAPI?.browserView;

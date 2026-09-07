@@ -12,7 +12,7 @@ function fmtValue(v: unknown): string {
 
 export class JsExecTool implements BuiltInTool {
   name = 'js_exec';
-  description = 'Execute JavaScript code in a sandboxed VM (node:vm) and capture console.log output plus the return value. Supports async/await (wrap result with return). No require/process/fs/network access inside the sandbox — use cmd_exec / file tools / python_exec for that. Use for calculations, data transformation, JSON processing, algorithm prototyping.';
+  description = '在沙箱 VM（node:vm）中执行 JavaScript，并捕获 console.log 输出与返回值。支持 async/await（用 return 包裹结果）。沙箱内禁止 require/process/fs/网络访问，需执行系统命令或文件操作请改用 cmd_exec / file_* / python_exec。适用于计算、数据转换、JSON 处理、算法原型。';
 
   inputSchema = {
     type: 'object',

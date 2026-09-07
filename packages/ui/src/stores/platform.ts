@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia';
 import { ref } from 'vue';
-import type { Platform, Model, ModelType } from '@yan-zhi/shared';
+import type { Platform, Model, ModelType, PlatformApiKey } from '@yan-zhi/shared';
 import { CHAT_MODEL_TYPES } from '@yan-zhi/shared';
 import { getPlatformAdapter, LlmClient } from '@yan-zhi/core';
 import { uid } from '@yan-zhi/shared';
@@ -19,6 +19,21 @@ function rowToPlatform(r: any): Platform {
     status: r.status === 1 ? 'healthy' : r.status === 0 ? 'down' : 'unknown',
     lastHealthAt: r.last_health_at,
     isBuiltin: !!r.is_builtin,
+    pauseMinMs: r.pause_min_ms || 0,
+    pauseMaxMs: r.pause_max_ms || 0,
+    createdAt: r.created_at,
+  };
+}
+
+function rowToApiKey(r: any): PlatformApiKey {
+  return {
+    id: r.id,
+    platformId: r.platform_id,
+    apiKey: r.api_key,
+    label: r.label,
+    failCount: r.fail_count || 0,
+    lastFailAt: r.last_fail_at || undefined,
+    enabled: !!r.enabled,
     createdAt: r.created_at,
   };
 }
@@ -95,9 +110,10 @@ function assertEditableModel(id: string) {
 export const usePlatformStore = defineStore('platform', () => {
   const platforms = ref<Platform[]>([]);
   const models = ref<Model[]>([]);
+  const apiKeys = ref<PlatformApiKey[]>([]);
   const loading = ref(false);
 
-  const on = () => useAuthStore().useServerApi;
+  const on = () => !!useAuthStore().isLoggedIn;
 
   async function loadPlatforms() {
     loading.value = true;
@@ -141,6 +157,7 @@ export const usePlatformStore = defineStore('platform', () => {
       const r = await api.post<any>('/platforms', {
         name: p.name, protocol: p.protocol, apiUrl: p.apiUrl,
         apiKeyEnc: p.apiKeyEnc, headers: p.headers,
+        pauseMinMs: p.pauseMinMs, pauseMaxMs: p.pauseMaxMs,
       });
       if ('data' in r) {
         const row = rowToPlatform(r.data);
@@ -179,7 +196,7 @@ export const usePlatformStore = defineStore('platform', () => {
     await loadPlatforms();
   }
 
-  async function updatePlatform(id: string, patch: Partial<{ name: string; protocol: string; apiUrl: string; apiKeyEnc: string; headers: Record<string, string>; status: string }>) {
+  async function updatePlatform(id: string, patch: Partial<{ name: string; protocol: string; apiUrl: string; apiKeyEnc: string; headers: Record<string, string>; status: string; pauseMinMs: number; pauseMaxMs: number }>) {
     assertEditablePlatform(id);
     if (on()) {
       const body: any = {};
@@ -188,6 +205,8 @@ export const usePlatformStore = defineStore('platform', () => {
       if (patch.apiUrl !== undefined) body.apiUrl = patch.apiUrl;
       if (patch.apiKeyEnc !== undefined) body.apiKeyEnc = patch.apiKeyEnc;
       if (patch.headers !== undefined) body.headers = patch.headers;
+      if (patch.pauseMinMs !== undefined) body.pauseMinMs = patch.pauseMinMs;
+      if (patch.pauseMaxMs !== undefined) body.pauseMaxMs = patch.pauseMaxMs;
       if (Object.keys(body).length === 0) return;
       await api.patch(`/platforms/${id}`, body);
       if (patch.apiKeyEnc) {
@@ -358,12 +377,12 @@ export const usePlatformStore = defineStore('platform', () => {
     }
   }
 
-  async function testPlatformConfig(config: { apiUrl: string; apiKey?: string; headers?: Record<string, string> }) {
+  async function testPlatformConfig(config: { apiUrl: string; apiKey?: string; headers?: Record<string, string>; platformId?: string }) {
     if (!config.apiUrl) return { ok: false, msg: 'API URL 必填' };
     const start = Date.now();
     try {
       const r = await api.post<any>('/llm/preview-models', {
-        apiUrl: config.apiUrl, apiKey: config.apiKey, headers: config.headers,
+        apiUrl: config.apiUrl, apiKey: config.apiKey, headers: config.headers, platformId: config.platformId,
       });
       const ms = Date.now() - start;
       if ('error' in r) return { ok: false, msg: r.error, durationMs: ms };
@@ -375,11 +394,11 @@ export const usePlatformStore = defineStore('platform', () => {
     }
   }
 
-  async function fetchModelsPreview(config: { apiUrl: string; apiKey?: string; headers?: Record<string, string> }) {
+  async function fetchModelsPreview(config: { apiUrl: string; apiKey?: string; headers?: Record<string, string>; platformId?: string }) {
     if (!config.apiUrl) return { ok: false, models: [] as { id: string; type?: string }[], msg: 'API URL 必填' };
     try {
       const r = await api.post<any>('/llm/preview-models', {
-        apiUrl: config.apiUrl, apiKey: config.apiKey, headers: config.headers,
+        apiUrl: config.apiUrl, apiKey: config.apiKey, headers: config.headers, platformId: config.platformId,
       });
       if ('error' in r) return { ok: false, models: [], msg: r.error };
       const data = r.data as any;
@@ -401,12 +420,62 @@ export const usePlatformStore = defineStore('platform', () => {
     }
   }
 
+  async function loadApiKeys(platformId: string) {
+    if (!on()) return;
+    try {
+      const r = await api.get<any[]>(`/platforms/${platformId}/keys`);
+      if ('data' in r) apiKeys.value = (r.data as any[]).map(rowToApiKey);
+    } catch {}
+  }
+
+  async function addApiKey(platformId: string, apiKey: string, label?: string): Promise<void> {
+    if (!on()) return;
+    await api.post(`/platforms/${platformId}/keys`, { apiKey, label });
+    await loadApiKeys(platformId);
+  }
+
+  async function updateApiKey(id: string, patch: Partial<{ apiKey: string; label: string; enabled: boolean }>, platformId: string): Promise<void> {
+    if (!on()) return;
+    await api.patch(`/platforms/keys/${id}`, patch);
+    await loadApiKeys(platformId);
+  }
+
+  async function deleteApiKey(id: string, platformId: string): Promise<void> {
+    if (!on()) return;
+    await api.delete(`/platforms/keys/${id}`);
+    await loadApiKeys(platformId);
+  }
+
+  async function resetApiKeyFailCount(id: string, platformId: string): Promise<void> {
+    if (!on()) return;
+    await api.post(`/platforms/keys/${id}/reset`);
+    await loadApiKeys(platformId);
+  }
+
+  /** 单 Key 连通性测试：后端用该 Key 直连上游 /v1/models，并回写 token 池成功/失败记录 */
+  async function testApiKey(id: string, platformId: string): Promise<{ ok: boolean; message: string; durationMs?: number }> {
+    if (!on()) return { ok: false, message: '后端未连接' };
+    try {
+      const resp = await api.post<any>(`/platforms/keys/${id}/test`);
+      await loadApiKeys(platformId);
+      // api.post 统一包一层 { data: <响应体> }（见 api/client.ts），需先解包再判断 ok
+      const body: any = (resp && typeof resp === 'object' && 'data' in resp) ? (resp as any).data : resp;
+      if (body && typeof body === 'object' && 'ok' in body) {
+        return { ok: !!body.ok, message: body.message || (body.ok ? 'Key 有效' : 'Key 无效'), durationMs: body.durationMs };
+      }
+      return { ok: false, message: (body as any)?.error || '测试失败' };
+    } catch (e: any) {
+      return { ok: false, message: e?.message || '请求异常' };
+    }
+  }
+
   return {
-    platforms, models, loading,
+    platforms, models, apiKeys, loading,
     loadPlatforms, loadModels, addPlatform, updatePlatform, deletePlatform,
     addModel, updateModel, deleteModel,
     fetchRemoteModels, testConnectivity, testModel,
     testPlatformConfig, fetchModelsPreview, startHealthCheck,
+    loadApiKeys, addApiKey, updateApiKey, deleteApiKey, resetApiKeyFailCount, testApiKey,
     /** 按 modelId 名称查找模型，兼容存量会话中存储的是内部 ID 的情况 */
     resolveModel(modelIdOrInternalId: string, platformId?: string): Model | undefined {
       const candidates = platformId

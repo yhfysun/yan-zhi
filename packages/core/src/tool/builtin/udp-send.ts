@@ -5,7 +5,7 @@ import { encodePayload, previewBuffer, type PayloadEncoding } from './raw-payloa
 
 export class UdpSendTool implements BuiltInTool {
   name = 'udp_send';
-  description = 'Send a UDP datagram to host:port and wait for a response (DNS probes, service discovery, authorized targets only). encoding: text (default) / hex / base64. Reports "sent, no response" if nothing comes back within timeout.';
+  description = '向 host:port 发送 UDP 数据报并等待响应（DNS 探测、服务发现、仅授权目标）。encoding 可选 text（默认）/ hex / base64。timeout 内未收到响应会返回 "已发送，未收到响应"。';
 
   inputSchema = {
     type: 'object',

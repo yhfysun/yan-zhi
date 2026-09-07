@@ -2,6 +2,11 @@ appId: com.yanzhi.desktop
 productName: 言智
 directories:
   output: ../../dist-release
+# 跳过 electron-builder 的原生模块重编译（node-gyp）：
+#  - better-sqlite3 的 Electron ABI 由 postinstall 的 fix-sqlite-binding.cjs 拉取预编译处理
+#  - sqlite-vec / esbuild 为 N-API 预编译，无需重编译
+#  - 否则 canvas（unpdf 的可选依赖）会被扫描到并在 Windows 上因缺 MSVC 编译失败
+npmRebuild: false
 files:
   - dist/**/*
   - main.cjs
@@ -32,6 +37,13 @@ linux:
   target: AppImage
   icon: ../../assets/icons/icon.png
 nsis:
+  # 关闭一键安装，改为标准安装向导（可选目录、下一步）
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  allowElevation: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
   installerIcon: ../../assets/icons/icon.ico
   uninstallerIcon: ../../assets/icons/icon.ico
   artifactName: ${productName}-Setup-${version}-${arch}-lite.${ext}

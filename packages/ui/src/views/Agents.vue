@@ -81,7 +81,7 @@
           :class="{ 'is-default': agent.isDefault }"
           shadow="hover"
         >
-          <div class="agent-card-head" @click="openCanvas(agent.id)">
+          <div class="agent-card-head" @click="agent.type === 'workflow' ? openCanvas(agent.id) : editAgent(agent)">
             <div class="agent-avatar">{{ (agent.name || '?').slice(0, 2) }}</div>
             <div class="agent-info">
               <div class="agent-name">

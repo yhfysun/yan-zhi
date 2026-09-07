@@ -109,7 +109,7 @@ export const useSkillStore = defineStore('skill', () => {
   const category = ref('全部');
   const search = ref('');
 
-  const on = () => useAuthStore().useServerApi;
+  const on = () => !!useAuthStore().isLoggedIn;
 
   const filteredMarket = computed(() => {
     let list = marketSkills.value;

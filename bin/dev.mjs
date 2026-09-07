@@ -250,6 +250,18 @@ function waitForPort(port, timeoutMs = 90000) {
   });
 }
 
+/** 端口立即探测（短超时）：判断调试浏览器（CDP 9222）当前是否可达 */
+function isPortOpen(port, timeoutMs = 800) {
+  return new Promise((resolve) => {
+    const sock = net.connect({ host: '127.0.0.1', port });
+    const done = (ok) => { sock.destroy(); resolve(ok); };
+    sock.setTimeout(timeoutMs);
+    sock.once('connect', () => done(true));
+    sock.once('error', () => done(false));
+    sock.once('timeout', () => done(false));
+  });
+}
+
 // ---------------------------------------------------------------- 工具链解析
 function resolveNode() {
   return process.execPath;
@@ -292,7 +304,8 @@ const KEY_DEPS = [
   'apps/desktop/node_modules/vite',
   'apps/desktop/node_modules/electron',
   'apps/server/node_modules/tsx',
-  'apps/server/node_modules/node-llama-cpp',
+  // 注：node-llama-cpp 已是孤儿依赖（本地模型引擎改用 Ollama，不在任何 package.json 中），
+  // 列在这里会导致每次启动都误触发 pnpm install 且永远装不上，故不再检查。
   'packages/ui/node_modules/vue',
   'packages/core/node_modules/xlsx',
 ];
@@ -449,6 +462,13 @@ async function main() {
 
   if (appName === 'server') {
     await freePort(3001, 'backend');
+    // 浏览器工具执行面：CDP 端口（9222）有活的调试浏览器时优先注入 cdp env（与桌面 main.cjs
+    // 同源，避免 server 另起一套 Chromium 造成双浏览器分裂）；不可达则保持 launch 模式
+    // （server 侧已强制 headless，不会再弹独立浏览器窗口）。
+    const browserEnv = (await isPortOpen(9222))
+      ? { BROWSER_MODE: 'cdp', CDP_ENDPOINT: 'http://127.0.0.1:9222' }
+      : {};
+    if (Object.keys(browserEnv).length) log('检测到 CDP 调试浏览器 (9222)，server 浏览器工具走 cdp 模式');
     // server 依赖 better-sqlite3 等 native 模块，其预编译 ABI 跟 Electron 内嵌 node 对齐。
     // 用 PATH 上的 node 启动会因 NODE_MODULE_VERSION 不匹配直接 ERR_DLOPEN_FAILED（且
     // 报错容易被终端其它输出冲掉，表现为"莫名退出"）。所以这里与打包版 main.cjs 同源：
@@ -462,14 +482,14 @@ async function main() {
         electronBin,
         [tsxCli, 'watch', 'src/index.ts'],
         path.join(ROOT, 'apps/server'),
-        { ELECTRON_RUN_AS_NODE: '1', NODE_OPTIONS: '' }
+        { ELECTRON_RUN_AS_NODE: '1', NODE_OPTIONS: '', ...browserEnv }
       );
       return;
     }
     if (!electronBin) warn('未找到 Electron 二进制，回退 PATH node 启动 server（native 模块 ABI 不匹配时会 ERR_DLOPEN_FAILED）');
     const pnpm = resolvePnpm();
     if (!pnpm) throw new Error('未找到 pnpm');
-    start('server', pnpm.cmd, [...pnpm.args, '--filter', '@yan-zhi/server', 'dev'], ROOT);
+    start('server', pnpm.cmd, [...pnpm.args, '--filter', '@yan-zhi/server', 'dev'], ROOT, browserEnv);
     return;
   }
 

@@ -47,6 +47,8 @@ export interface MessageRound {
   finalAssistant: Message | null;
   hasAgentProcess?: boolean;
   agentStats?: { stepCount: number; reasoningCount: number; toolCallCount: number };
+  /** 子智能体最终结果（已从 call_agent 工具结果提上来，直接在主内容区展示） */
+  subAgentResults?: Array<{ subAgentName: string; finalContent: string }>;
 }
 
 interface ParsedConfigCard {
@@ -209,6 +211,8 @@ function createChat() {
     protocol: 'openai',
     apiUrl: '',
     apiKey: '',
+    pauseMinMs: 0,
+    pauseMaxMs: 0,
     modelId: '',
     alias: '',
     contextWindow: 131072,
@@ -226,6 +230,8 @@ function createChat() {
       protocol: prefill?.protocol || 'openai',
       apiUrl: prefill?.apiUrl || '',
       apiKey: prefill?.apiKey || '',
+      pauseMinMs: 0,
+      pauseMaxMs: 0,
       modelId: prefill?.modelId || '',
       alias: prefill?.alias || '',
       contextWindow: Number.isFinite(Number(prefill?.contextWindow))
@@ -251,7 +257,9 @@ function createChat() {
         name: platform.name,
         protocol: platform.protocol || 'openai',
         apiUrl: platform.apiUrl,
-        apiKey: platform.apiKeyDec || '',
+        apiKey: '',
+        pauseMinMs: platform.pauseMinMs || 0,
+        pauseMaxMs: platform.pauseMaxMs || 0,
         modelId: model?.modelId || agent?.modelId || '',
         alias: model?.alias || '',
         contextWindow: model?.contextWindow || 131072,
@@ -282,9 +290,13 @@ function createChat() {
           name: f.name.trim(),
           protocol: f.protocol as any,
           apiUrl: f.apiUrl.trim(),
+          pauseMinMs: f.pauseMinMs,
+          pauseMaxMs: f.pauseMaxMs,
         };
-        if (f.apiKey.trim()) patch.apiKeyEnc = f.apiKey.trim();
         await platformStore.updatePlatform(platformId, patch);
+        if (f.apiKey.trim()) {
+          await platformStore.addApiKey(platformId, f.apiKey.trim());
+        }
       } else {
         platformId = await platformStore.addPlatform({
           name: f.name.trim(),
@@ -293,6 +305,8 @@ function createChat() {
           apiKeyEnc: f.apiKey.trim(),
           headers: {},
           status: 'unknown',
+          pauseMinMs: f.pauseMinMs,
+          pauseMaxMs: f.pauseMaxMs,
         });
         await platformStore.addModel({
           platformId,
@@ -446,6 +460,10 @@ function createChat() {
   const collapsedMessages = reactive<Record<string, boolean>>({});
   const expandedAgentProcess = reactive<Record<string, boolean>>({});
   const expandedStepTools = reactive<Record<string, boolean>>({});
+  /** 子智能体结果卡片的折叠状态（无值 = 默认展开，与工具"结束后默认折叠"相反） */
+  const collapsedSubAgentResults = reactive<Record<string, boolean>>({});
+  /** 主智能体「任务结果」卡片的折叠状态（无值 = 默认展开） */
+  const collapsedMainResults = reactive<Record<string, boolean>>({});
 
   const activeNavRound = ref<number | null>(null);
 
@@ -602,7 +620,11 @@ function createChat() {
         const stepLabel = parsed.step !== undefined ? `步骤 ${parsed.step}` : '步骤 ?';
         const ts = parsed.timestamp ? ` | ${parsed.timestamp}` : '';
         lines.push(`【${stepLabel}${ts}】`);
-        if (parsed.subAgent) lines.push(`【子智能体: ${parsed.subAgent}】`);
+        if (parsed.subAgent) {
+          const sa = parsed.subAgent;
+          const saLabel = typeof sa === 'string' ? sa : `${sa.name || sa.id || '子智能体'}${sa.depth ? `（第 ${sa.depth} 层）` : ''}`;
+          lines.push(`【子智能体: ${saLabel}】`);
+        }
         if (parsed.model) lines.push(`【模型: ${parsed.model.alias || ''} (${parsed.model.id || ''}) | 平台: ${parsed.platform?.name || ''} (${parsed.platform?.protocol || ''})】`);
         if (parsed.parameters) {
           const p = parsed.parameters;
@@ -610,9 +632,17 @@ function createChat() {
           if (ps) lines.push(`【参数: ${ps}】`);
         }
         if (Array.isArray(parsed.tools) && parsed.tools.length) lines.push(`【工具: ${parsed.tools.map((t: any) => t.name).join(', ')}】`);
-        if (Array.isArray(parsed.messages)) {
-          const ms = parsed.messages.map((m: any) => `${m.role}${m.toolCalls ? `(${m.toolCalls} toolCalls)` : ''}`).join(' → ');
-          lines.push(`【消息历史: ${ms}】`);
+        if (Array.isArray(parsed.messages) && parsed.messages.length) {
+          lines.push('');
+          lines.push('========== 消息历史（本轮实际发送） ==========');
+          for (const m of parsed.messages) {
+            lines.push(`--- [${m.role}] ---`);
+            if (m.content) lines.push(String(m.content));
+            // 工具调用原样输出（模型发什么结构就展示什么结构，不做任何重排/改名）
+            if (Array.isArray(m.toolCalls) && m.toolCalls.length) {
+              lines.push(JSON.stringify(m.toolCalls, null, 2));
+            }
+          }
         }
         if (parsed.input) lines.push(`【输入: ${String(parsed.input).slice(0, 200)}】`);
         lines.push('');
@@ -626,24 +656,60 @@ function createChat() {
 
   const snapshotDialog = ref(false);
   const snapshotActiveTab = ref('');
+  const snapshotLoading = ref(false);
   const currentSnapshots = ref<Array<{ id: string; label: string; content: string }>>([]);
-  function openSnapshotDialog(userMsg: any) {
+  function buildSnapshotEntry(m: any): { id: string; label: string; content: string } {
+    const parsed = tryParseSnapshot(m.systemPromptSnapshot);
+    const step = parsed?.step ?? 0;
+    if (m.parentToolCallId) {
+      // 子智能体快照：以子智能体名标注，避免和主智能体标签混淆
+      const subName = parsed?.subAgent?.name || m.subAgentName || '子智能体';
+      const label = step === 0 ? `任务 → ${subName}` : `${subName}（#${step}）`;
+      return { id: m.id, label, content: formatSnapshot(m.systemPromptSnapshot) };
+    }
+    const agentName = agentStore.selectedAgent?.name || '智能体';
+    const label = step === 0 ? `Human → ${agentName}` : `${agentName}（#${step}）`;
+    return { id: m.id, label, content: formatSnapshot(m.systemPromptSnapshot) };
+  }
+
+  /** 按需获取单条消息快照：内存里有直接用（本轮流式产生的消息）；历史消息走独立接口/本地库直查 */
+  async function fetchSnapshotFor(m: any): Promise<string | undefined> {
+    if (m.systemPromptSnapshot) return m.systemPromptSnapshot;
+    try {
+      if (authStore.isLoggedIn) {
+        const r = await api.get<any>(`/messages/${m.id}/snapshot`);
+        if ('data' in r) return (r.data as any)?.systemPromptSnapshot || undefined;
+        return undefined;
+      }
+      const { getPlatformAdapter } = await import('@yan-zhi/core');
+      const rows = await getPlatformAdapter().db.query<any>(
+        'SELECT system_prompt_snapshot FROM message WHERE id = ?', [m.id],
+      );
+      return rows?.[0]?.system_prompt_snapshot || undefined;
+    } catch { return undefined; }
+  }
+
+  async function openSnapshotDialog(userMsg: any) {
     const idx = store.currentMessages.indexOf(userMsg);
-    const snapshots: Array<{ id: string; label: string; content: string }> = [];
+    const candidates: any[] = [];
     for (let i = idx + 1; i < store.currentMessages.length; i++) {
       const m: any = store.currentMessages[i];
-      if (m.role === 'user') break;
-      if (m.role === 'assistant' && m.systemPromptSnapshot) {
-        const parsed = tryParseSnapshot(m.systemPromptSnapshot);
-        const step = parsed?.step ?? 0;
-        const agentName = agentStore.selectedAgent?.name || '智能体';
-        const label = step === 0 ? `Human → ${agentName}` : `${agentName}（#${step}）`;
-        snapshots.push({ id: m.id, label, content: formatSnapshot(m.systemPromptSnapshot) });
-      }
+      // 只在遇到主对话的用户消息时结束；子智能体的 user 消息带 parentToolCallId，不能中断收集
+      if (m.role === 'user' && !m.parentToolCallId) break;
+      if (m.role === 'assistant') candidates.push(m);
     }
-    currentSnapshots.value = snapshots;
-    snapshotActiveTab.value = snapshots[0]?.id || '';
+    // 先开弹窗再异步拉取，避免大数据集卡住点击响应
     snapshotDialog.value = true;
+    snapshotLoading.value = true;
+    currentSnapshots.value = [];
+    snapshotActiveTab.value = '';
+    const entries = (await Promise.all(candidates.map(async (m) => {
+      const snap = await fetchSnapshotFor(m);
+      return snap ? buildSnapshotEntry({ ...m, systemPromptSnapshot: snap }) : null;
+    }))).filter(Boolean) as Array<{ id: string; label: string; content: string }>;
+    currentSnapshots.value = entries;
+    snapshotActiveTab.value = entries[0]?.id || '';
+    snapshotLoading.value = false;
   }
 
   const isDraftMode = ref(false);
@@ -822,6 +888,23 @@ function createChat() {
     if (currentRound) rounds.push(currentRound);
 
     for (const round of rounds) {
+      // 子智能体最终回答 = call_agent 工具返回结果（role=tool 且 toolCallId == subRound.toolCallId，
+      // 归入父 step.toolResults）。把它提到主内容区直接展示，而非埋在工具结果的 pre 里。
+      const subAgentResults: Array<{ subAgentName: string; finalContent: string }> = [];
+      for (const step of round.steps) {
+        if (!step.subAgentRounds) continue;
+        for (const subRound of step.subAgentRounds) {
+          const res = step.toolResults.find(r => r.callId === subRound.toolCallId);
+          if (res && res.content) {
+            subRound.finalContent = res.content;
+            subAgentResults.push({ subAgentName: subRound.subAgentName || subRound.subAgentId, finalContent: res.content });
+            // 清除最终回答步骤的 partialContent，避免与主内容区结果双重渲染
+            const finalStep = subRound.steps.find(s => s.toolCalls.length === 0);
+            if (finalStep) finalStep.partialContent = undefined;
+          }
+        }
+      }
+      if (subAgentResults.length) round.subAgentResults = subAgentResults;
       const lastStep = round.steps[round.steps.length - 1];
       if (lastStep && !lastStep.toolCalls.length) {
         round.finalAssistant = {
@@ -833,6 +916,19 @@ function createChat() {
           createdAt: 0,
         };
         round.steps.pop();
+      }
+      // 兜底：历史数据（重启后加载）或中断的轮次可能没有收尾的纯文本助手消息
+      // （最后一轮以工具调用/子智能体结果结束），此时 finalAssistant 为 null，
+      // 主内容区的复制/下载/折叠会全部失效（引用空 id）。合成一个 finalAssistant
+      // 保证旧数据交互一致；内容为空时导出会回退到子智能体结果。
+      if (!round.finalAssistant && round.user && (round.steps.length > 0 || round.allToolCalls.length > 0)) {
+        round.finalAssistant = {
+          id: round.user.id + '-fa',
+          conversationId: '',
+          role: 'assistant',
+          content: '',
+          createdAt: 0,
+        };
       }
       round.hasAgentProcess = round.steps.length > 0 || round.allToolCalls.length > 0;
       round.agentStats = {
@@ -1746,8 +1842,8 @@ function createChat() {
 
   /** 改动①：工具项展开判定——call_agent 执行中（runningToolCallIds 包含该 toolCallId）强制展开，
    *  让 SubAgentRoundView 实时露出子智能体每一步；执行结束自动折叠回简洁态，保留手动展开（expandedTools）。 */
-  function isToolItemOpen(toolCallId: string, key: string): boolean {
-    return store.isToolCallRunning(toolCallId) || !!expandedTools[key];
+  function isToolItemOpen(toolCallId: string, key: string, extraOpen = false): boolean {
+    return extraOpen || store.isToolCallRunning(toolCallId) || !!expandedTools[key];
   }
 
   const collapsedByAuto = new Set<string>();
@@ -1905,6 +2001,121 @@ function createChat() {
     catch { ElMessage.error('复制失败'); }
   }
 
+  /* ---------- 智能体内容导出：复制 / 下载为 .md 文件 ---------- */
+
+  /** 清洗助手原始输出为可导出的 Markdown（移除工具调用块与平台配置标记，与渲染逻辑对齐） */
+  function sanitizeExportMd(content?: string): string {
+    return (content || '')
+      .replace(/\[TOOL_CALL\][\s\S]*?\[\/TOOL_CALL\]/gi, '')
+      .replace(/\[TOOL_CALL\][\s\S]*$/i, '')
+      .replace(/<function\s*=\s*\w+\s*>[\s\S]*?<\/function>/gi, '')
+      .replace(/<function\s*=\s*\w+\s*>[\s\S]*$/i, '')
+      .replace(/\[\[PLATFORM_CONFIG:[^\]]*\]\]/g, '')
+      .split(/\n?@@REASON@@\n?/)[0]
+      .trim();
+  }
+
+  /** 将子智能体一轮执行（推理正文 + 工具调用 + 最终结果）组装为 Markdown 文本 */
+  function buildSubAgentMd(round: SubAgentRound): string {
+    const lines: string[] = [];
+    lines.push(`# 子智能体「${round.subAgentName || round.subAgentId}」执行记录`);
+    lines.push('');
+    round.steps.forEach((step, i) => {
+      const hasTools = step.toolCalls.length > 0;
+      if (!step.reasoningContent && !step.partialContent && !hasTools) return;
+      lines.push(`## 步骤 ${i + 1}`);
+      lines.push('');
+      if (step.reasoningContent) {
+        lines.push('> ' + step.reasoningContent.replace(/\n/g, '\n> '));
+        lines.push('');
+      }
+      if (step.partialContent) {
+        lines.push(step.partialContent.trim());
+        lines.push('');
+      }
+      if (hasTools) {
+        lines.push(`### 工具调用（${step.toolCalls.length}）`);
+        lines.push('');
+        step.toolCalls.forEach((tc: any, idx: number) => {
+          const r = step.toolResults.find(t => t.callId === tc.id);
+          const display = resolveToolDisplay(tc);
+          lines.push(`${idx + 1}. **${display.server}/${display.tool}**`);
+          const args = resolveToolArgs(tc);
+          if (args && args !== '{}' && args !== '无') lines.push(`   - 参数：\`${String(args).replace(/\n/g, ' ').slice(0, 300)}\``);
+          if (r?.content) {
+            const preview = r.content.trim().split('\n').slice(0, 10).join('\n   ');
+            lines.push(`   - 结果：\n\n   \`\`\`\n   ${preview}${r.content.trim().split('\n').length > 10 ? '\n   ...' : ''}\n   \`\`\``);
+          }
+        });
+        lines.push('');
+      }
+    });
+    if (round.finalContent) {
+      lines.push('## 最终结果');
+      lines.push('');
+      lines.push(sanitizeExportMd(round.finalContent));
+    }
+    return lines.join('\n');
+  }
+
+  function sanitizeFilename(name: string): string {
+    return (name || 'content').replace(/[\\/:*?"<>|\s]+/g, '-').slice(0, 50) || 'content';
+  }
+
+  async function copyMdText(text: string) {
+    try { await navigator.clipboard.writeText(text.trim()); ElMessage.success('已复制 Markdown'); }
+    catch { ElMessage.error('复制失败'); }
+  }
+
+  function downloadMdFile(filename: string, text: string) {
+    const blob = new Blob([text], { type: 'text/markdown;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = window.document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+    ElMessage.success('已下载 Markdown 文件');
+  }
+
+  /** 子智能体执行记录：复制 / 下载 .md（SubAgentRoundView 头部按钮） */
+  function copySubAgentRoundMd(round: SubAgentRound) { void copyMdText(buildSubAgentMd(round)); }
+  function downloadSubAgentRoundMd(round: SubAgentRound) {
+    const name = sanitizeFilename(round.subAgentName || round.subAgentId || 'sub-agent');
+    downloadMdFile(`${name}-执行记录.md`, buildSubAgentMd(round));
+  }
+
+  /** 子智能体最终结果卡片：复制 / 下载 .md */
+  function copySubAgentResultMd(sr: { subAgentName: string; finalContent: string }) {
+    void copyMdText(sanitizeExportMd(sr.finalContent));
+  }
+  function downloadSubAgentResultMd(sr: { subAgentName: string; finalContent: string }, idx: number) {
+    const name = sanitizeFilename(sr.subAgentName || 'sub-agent');
+    downloadMdFile(`${name}-结果${idx + 1}.md`, sanitizeExportMd(sr.finalContent));
+  }
+
+  /** 主智能体回复内容（清洗后）：复制 / 下载 .md。
+   *  与展示一致：子智能体结果 + 主正文合成一份完整报告，不再是零散片段 */
+  function getAssistantExportMd(round: MessageRound): string {
+    const direct = sanitizeExportMd(round.finalAssistant?.content);
+    const subSections = (round.subAgentResults || [])
+      .map((sr) => `## 子智能体「${sr.subAgentName}」结果\n\n${sanitizeExportMd(sr.finalContent)}`)
+      .filter(Boolean);
+    const parts: string[] = [];
+    if (subSections.length) parts.push(subSections.join('\n\n'));
+    if (direct) parts.push(direct);
+    return parts.join('\n\n---\n\n');
+  }
+  function copyAssistantMd(round: MessageRound) { void copyMdText(getAssistantExportMd(round)); }
+  function downloadAssistantMd(round: MessageRound) {
+    const title = sanitizeFilename(currentConv.value?.title || 'assistant');
+    const suffix = round.finalAssistant?.id ? '-' + round.finalAssistant.id.slice(0, 6) : '';
+    downloadMdFile(`${title}${suffix}.md`, getAssistantExportMd(round));
+  }
+
+  function toggleSubAgentResult(key: string) { collapsedSubAgentResults[key] = !collapsedSubAgentResults[key]; }
+  function toggleMainResult(key: string) { collapsedMainResults[key] = !collapsedMainResults[key]; }
+
   async function editMsg(msg: Message) {
     input.value = msg.content || '';
     await nextTick();
@@ -2044,7 +2255,7 @@ function createChat() {
     mountToolSelection, toolAliasMap, mountSearch, collapsedServers, toggleServerCollapse, filteredTools, initMountSelection, isToolMounted, toggleMountTool, isAllToolsMounted, toggleAllTools, setToolAlias,
     showAgentEdit, editingAgent, debugMode,
     showWorkspaceDir, workspaceDir, hasWorkspaceDir, loadWorkspaceDir, onWorkspaceDirSelected, clearWorkspaceDir,
-    tryParseSnapshot, formatSnapshot, snapshotDialog, snapshotActiveTab, currentSnapshots, openSnapshotDialog,
+    tryParseSnapshot, formatSnapshot, snapshotDialog, snapshotActiveTab, snapshotLoading, currentSnapshots, openSnapshotDialog,
     isDraftMode, renamingId, renamingTitle, renameInputRef, ctxMenu,
     md, renderMarkdown, handleContentClick,
     currentConv, filteredConversations, messageRounds, isToolErrorContent,
@@ -2062,6 +2273,9 @@ function createChat() {
     getStepToolResult, isStepToolError, isStepToolsRunning, isStepToolsError, getStepToolGroupClass, getStepToolStatusClass,
     isToolGroupRunning, isToolGroupError, getToolGroupStatusClass, resolveToolDisplay, resolveToolArgs, safeJson, isToolError, getToolStatusClass, getToolResult,
     copyMsg, editMsg, quoteMsg, delMsg, openConvMenu, closeCtxMenu, togglePin, startRename, commitRename, deleteConv, toggleConvSelect, batchSelectAll, batchDeleteConvs,
+    collapsedSubAgentResults, toggleSubAgentResult, collapsedMainResults, toggleMainResult,
+    copySubAgentRoundMd, downloadSubAgentRoundMd, copySubAgentResultMd, downloadSubAgentResultMd,
+    copyAssistantMd, downloadAssistantMd,
     quotedUrls, addQuotedUrl, removeQuotedUrl, LONG_INPUT_THRESHOLD,
     saveMountToDb, saveMount, saveSkills,
   };

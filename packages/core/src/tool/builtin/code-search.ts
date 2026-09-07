@@ -13,7 +13,7 @@ function escapeRegex(s: string): string {
 
 export class CodeSearchTool implements BuiltInTool {
   name = 'code_search';
-  description = 'Search for a text or regex pattern inside files under a directory (like grep). Automatically skips node_modules/.git/dist. Returns matches as "path:line: content". Use include to filter files, e.g. "*.ts" or "*.ts,*.vue". Cheaper than reading whole files when locating code.';
+  description = '在指定目录下搜索文本或正则（类似 grep）。自动跳过 node_modules/.git/dist 等噪声目录。匹配项以 "路径:行号: 内容" 形式返回。可用 include 过滤文件名（如 "*.ts" 或 "*.ts,*.vue"）。比逐文件读取便宜得多，常用于先定位代码再深入阅读。';
 
   inputSchema = {
     type: 'object',

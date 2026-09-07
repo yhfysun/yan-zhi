@@ -14,7 +14,6 @@
         </span>
         <span class="right-panel-tab-title" :title="tabTitle(tab)">{{ tabTitle(tab) }}</span>
         <el-icon
-          v-if="store.previewTabs.length > 1"
           class="right-panel-tab-close"
           @click.stop="store.closePreviewTab(tab.id)"
         ><Close /></el-icon>
@@ -43,7 +42,8 @@
     </div>
 
     <div v-if="browserTab" v-show="browserTab.id === store.activeTabId" class="right-panel-body">
-      <BrowserPanel />
+      <!-- scope=preview：与 /browser 独立浏览器页的 tab 空间隔离 -->
+      <BrowserPanel scope="preview" />
     </div>
 
     <!-- 空态：无 tab 时三个入口 -->
@@ -93,9 +93,10 @@ function tabIconComp(tab: PreviewTab): Component {
   return Link;
 }
 
-/** tab 标题：file=真实文件名；browser=当前站点 hostname；git=仓库目录名 */
+/** tab 标题：file=真实文件名；browser=真实页面标题（page-title 事件写入 name），无则回退当前站点 hostname；git=仓库目录名 */
 function tabTitle(tab: PreviewTab): string {
   if (tab.kind === 'browser') {
+    if (tab.name && tab.name !== '浏览器') return tab.name;
     try {
       const h = new URL(store.currentBrowserUrl).hostname;
       if (h) return h;

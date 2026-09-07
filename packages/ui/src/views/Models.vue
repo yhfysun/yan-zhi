@@ -45,7 +45,7 @@
       <el-empty v-if="store.platforms.length === 0" description="还没有平台，点击右下角新增" />
     </div>
 
-    <el-dialog v-model="showAdd" :title="editingId ? '编辑平台' : '新增平台'" width="640px" :close-on-click-modal="false" @closed="resetForm">
+    <el-dialog v-model="showAdd" :title="editingId ? '编辑平台' : '新增平台'" width="640px" top="6vh" class="platform-edit-dialog" :close-on-click-modal="false" @closed="resetForm">
       <el-form label-width="90px">
         <el-form-item label="名称"><el-input v-model="form.name" placeholder="如：OpenAI / DeepSeek" /></el-form-item>
         <el-form-item label="协议">
@@ -60,15 +60,47 @@
           <div class="form-tip">填基础地址即可，系统自动拼接 <code>/v1/chat/completions</code>、<code>/v1/models</code> 等路径</div>
         </el-form-item>
         <el-form-item label="API Key">
-          <el-input
-            v-model="form.apiKey"
-            type="password"
-            show-password
-            :placeholder="editingId && !apiKeyDirty ? '已设置（不修改留空即可）' : 'sk-...'"
-            @input="apiKeyDirty = true"
-          />
+          <div class="apikey-list">
+            <div v-for="(k, i) in formKeys" :key="i" class="apikey-row">
+              <el-input
+                v-model="k.apiKey"
+                type="password"
+                show-password
+                placeholder="sk-..."
+                class="apikey-input"
+              />
+              <el-input v-model="k.label" placeholder="备注" class="apikey-label" />
+              <el-button :icon="Delete" circle size="small" @click="formKeys.splice(i, 1)" />
+            </div>
+            <el-button size="small" :icon="Plus" @click="formKeys.push({ apiKey: '', label: '' })">添加 Token</el-button>
+            <div class="form-tip">配置多个 Token 加权随机轮询：请求失败只降低该 Token 的被选概率（失败次数越多权重越低），不会停用；单次请求失败自动换 Token 重试（最多 3 次）。要排除某个 Token 请用开关手动停用</div>
+          </div>
+        </el-form-item>
+        <el-form-item label="请求停顿">
+          <div class="pause-range">
+            <el-input-number v-model="form.pauseMinMs" :min="0" :max="60000" :step="100" controls-position="right" placeholder="最小" />
+            <span class="pause-sep">~</span>
+            <el-input-number v-model="form.pauseMaxMs" :min="0" :max="60000" :step="100" controls-position="right" placeholder="最大" />
+            <span class="pause-unit">毫秒</span>
+          </div>
+          <div class="form-tip">每次请求前随机停顿此区间，避免短时间请求过多被限流。0 表示不停顿</div>
         </el-form-item>
       </el-form>
+
+      <div v-if="editingId" class="apikey-manage">
+        <div class="apikey-manage-title">已配置 Token（实时管理）</div>
+        <div v-for="k in store.apiKeys" :key="k.id" class="apikey-manage-row">
+          <el-switch v-model="k.enabled" size="small" :disabled="keyBusy(k.id)" @change="toggleKey(k)" />
+          <span class="apikey-manage-key" :class="{ 'apikey-disabled': !k.enabled }">{{ k.apiKey.slice(0, 8) }}****{{ k.apiKey.slice(-4) }}</span>
+          <el-tag v-if="k.label" size="small" type="info">{{ k.label }}</el-tag>
+          <el-tag v-if="!k.enabled" size="small" type="warning">已停用</el-tag>
+          <el-tag size="small" :type="k.failCount > 0 ? 'danger' : 'success'">失败 {{ k.failCount }} 次</el-tag>
+          <el-button size="small" link :loading="testingKeyId === k.id" :disabled="keyBusy(k.id)" @click="testKey(k)">测试</el-button>
+          <el-button v-if="k.failCount > 0" size="small" link @click="resetKey(k)">重置</el-button>
+          <el-button size="small" link type="danger" @click="delKey(k)">删除</el-button>
+        </div>
+        <el-empty v-if="store.apiKeys.length === 0" description="暂无 Token" :image-size="40" />
+      </div>
 
       <div class="dialog-actions-bar" v-if="!editingId">
         <el-button :loading="testingForm" :icon="Connection" @click="testForm">测试连接</el-button>
@@ -117,9 +149,9 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
-import { Plus, Connection, Download } from '@element-plus/icons-vue';
+import { Plus, Connection, Download, Delete } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import type { ModelType } from '@yan-zhi/shared';
+import type { ModelType, PlatformApiKey } from '@yan-zhi/shared';
 import { usePlatformStore } from '../stores';
 import PlatformDetail from './PlatformDetail.vue';
 import LocalModelMarket from '../components/LocalModelMarket.vue';
@@ -128,7 +160,6 @@ const store = usePlatformStore();
 const showAdd = ref(false);
 const showLocalMarket = ref(false);
 
-// 平台详情弹窗：内嵌 PlatformDetail，替代路由跳转
 const showDetail = ref(false);
 const detailId = ref('');
 const detailTitle = computed(() => {
@@ -136,9 +167,9 @@ const detailTitle = computed(() => {
   return p ? `管理模型 - ${p.name}` : '管理模型';
 });
 const editingId = ref('');
-const apiKeyDirty = ref(false);
 const testing = ref('');
-const form = ref({ name: '', protocol: 'openai', apiUrl: '', apiKey: '' });
+const form = ref({ name: '', protocol: 'openai', apiUrl: '', pauseMinMs: 0, pauseMaxMs: 0 });
+const formKeys = ref<Array<{ apiKey: string; label: string }>>([]);
 
 // 测试 / 拉取状态
 const testingForm = ref(false);
@@ -169,6 +200,7 @@ function setStatus(msg: string, type: 'ok' | 'err' = 'ok') {
 
 function openAdd() {
   resetForm();
+  formKeys.value = [{ apiKey: '', label: '' }];
   showAdd.value = true;
 }
 
@@ -182,7 +214,9 @@ async function testForm() {
   testingForm.value = true;
   formStatus.value = '';
   try {
-    const r = await store.testPlatformConfig({ apiUrl: form.value.apiUrl, apiKey: form.value.apiKey });
+    const firstKey = formKeys.value.find((k) => k.apiKey.trim())?.apiKey.trim() || '';
+    // 编辑已有平台时表单里没有明文 Key：带 platformId 让后端回退 Token 池轮换
+    const r = await store.testPlatformConfig({ apiUrl: form.value.apiUrl, apiKey: firstKey, platformId: editingId.value || undefined });
     if (r.ok) {
       setStatus(`${r.msg}（${r.durationMs}ms）`, 'ok');
       ElMessage.success(r.msg);
@@ -202,7 +236,9 @@ async function fetchModels() {
   fetchedModels.value = [];
   checkedModelIds.value = [];
   try {
-    const r = await store.fetchModelsPreview({ apiUrl: form.value.apiUrl, apiKey: form.value.apiKey });
+    const firstKey = formKeys.value.find((k) => k.apiKey.trim())?.apiKey.trim() || '';
+    // 同 testForm：编辑已有平台时无明文 Key，带 platformId 回退 Token 池
+    const r = await store.fetchModelsPreview({ apiUrl: form.value.apiUrl, apiKey: firstKey, platformId: editingId.value || undefined });
     if (r.ok) {
       fetchedModels.value = r.models;
       checkedModelIds.value = r.models.map((m: { id: string }) => m.id);
@@ -224,11 +260,12 @@ function onCheckAll(val: any) {
 function editPlatform(p: any) {
   if (p.isBuiltin) { ElMessage.warning('内置平台不可编辑'); return; }
   editingId.value = p.id;
-  apiKeyDirty.value = false;
-  form.value = { name: p.name, protocol: p.protocol || 'openai', apiUrl: p.apiUrl, apiKey: p.apiKeyDec || '' };
+  form.value = { name: p.name, protocol: p.protocol || 'openai', apiUrl: p.apiUrl, pauseMinMs: p.pauseMinMs || 0, pauseMaxMs: p.pauseMaxMs || 0 };
+  formKeys.value = [];
   fetchedModels.value = [];
   checkedModelIds.value = [];
   formStatus.value = '';
+  store.loadApiKeys(p.id);
   showAdd.value = true;
 }
 
@@ -244,21 +281,33 @@ async function save() {
         name: form.value.name,
         protocol: form.value.protocol as any,
         apiUrl: form.value.apiUrl,
+        pauseMinMs: form.value.pauseMinMs,
+        pauseMaxMs: form.value.pauseMaxMs,
       };
-      if (apiKeyDirty.value) {
-        patch.apiKeyEnc = form.value.apiKey;
-      }
       await store.updatePlatform(editingId.value, patch);
+      for (const k of formKeys.value) {
+        if (k.apiKey.trim()) {
+          await store.addApiKey(editingId.value, k.apiKey.trim(), k.label.trim() || undefined);
+        }
+      }
       ElMessage.success('已更新');
     } else {
+      const firstKey = formKeys.value.find((k) => k.apiKey.trim());
       const platformId = await store.addPlatform({
         name: form.value.name,
         protocol: form.value.protocol as any,
         apiUrl: form.value.apiUrl,
-        apiKeyEnc: form.value.apiKey,
+        apiKeyEnc: firstKey?.apiKey.trim() || '',
         headers: {},
         status: 'unknown',
+        pauseMinMs: form.value.pauseMinMs,
+        pauseMaxMs: form.value.pauseMaxMs,
       });
+      for (const k of formKeys.value) {
+        if (k.apiKey.trim() && k !== firstKey) {
+          await store.addApiKey(platformId, k.apiKey.trim(), k.label.trim() || undefined);
+        }
+      }
       for (const modelId of checkedModelIds.value) {
         await store.addModel({
           platformId,
@@ -283,11 +332,55 @@ async function save() {
 
 function resetForm() {
   editingId.value = '';
-  apiKeyDirty.value = false;
-  form.value = { name: '', protocol: 'openai', apiUrl: '', apiKey: '' };
+  form.value = { name: '', protocol: 'openai', apiUrl: '', pauseMinMs: 0, pauseMaxMs: 0 };
+  formKeys.value = [];
   formStatus.value = '';
   fetchedModels.value = [];
   checkedModelIds.value = [];
+}
+
+async function resetKey(k: PlatformApiKey) {
+  await store.resetApiKeyFailCount(k.id, k.platformId);
+  ElMessage.success('已重置失败次数');
+}
+
+// 单 Key 测试 / 启停
+const testingKeyId = ref('');
+const busyKeyIds = ref(new Set<string>());
+function keyBusy(id: string) {
+  return busyKeyIds.value.has(id) || testingKeyId.value === id;
+}
+
+async function testKey(k: PlatformApiKey) {
+  testingKeyId.value = k.id;
+  try {
+    const r = await store.testApiKey(k.id, k.platformId);
+    if (r.ok) ElMessage.success(`${r.message}（${r.durationMs ?? 0}ms）`);
+    else ElMessage.error(r.message);
+  } finally {
+    testingKeyId.value = '';
+  }
+}
+
+async function toggleKey(k: PlatformApiKey) {
+  busyKeyIds.value.add(k.id);
+  const newVal = k.enabled; // v-model 已先改值，即目标状态
+  try {
+    await store.updateApiKey(k.id, { enabled: newVal }, k.platformId);
+    ElMessage.success(newVal ? '已启用' : '已停用');
+  } catch {
+    k.enabled = !newVal; // 失败回滚开关显示
+  } finally {
+    busyKeyIds.value.delete(k.id);
+  }
+}
+
+async function delKey(k: PlatformApiKey) {
+  try {
+    await ElMessageBox.confirm('确认删除此 Token？', '提示', { type: 'warning' });
+    await store.deleteApiKey(k.id, k.platformId);
+    ElMessage.success('已删除');
+  } catch {}
 }
 
 async function test(id: string) {
@@ -424,11 +517,30 @@ async function del(id: string) {
 .fetched-item:hover { background: rgba(99, 102, 241, 0.08); }
 .model-id { font-family: "JetBrains Mono", "Cascadia Code", monospace; font-size: 12px; }
 
+.apikey-list { display: flex; flex-direction: column; gap: 8px; width: 100%; }
+.apikey-row { display: flex; align-items: center; gap: 8px; }
+.apikey-input { flex: 1; }
+.apikey-label { width: 120px; }
+.pause-range { display: flex; align-items: center; gap: 8px; }
+.pause-sep { color: var(--color-text-secondary); }
+.pause-unit { font-size: 13px; color: var(--color-text-secondary); }
+.apikey-manage { margin: 8px 0; padding: 12px; border: 1px solid var(--color-border-light); border-radius: 8px; background: var(--color-bg-secondary); }
+.apikey-manage-title { font-size: 13px; font-weight: 600; margin-bottom: 8px; }
+.apikey-manage-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--color-border-light); }
+.apikey-manage-row:last-child { border-bottom: none; }
+.apikey-manage-key { font-family: "JetBrains Mono", "Cascadia Code", monospace; font-size: 12px; flex: 1; }
+.apikey-manage-key.apikey-disabled { opacity: 0.45; text-decoration: line-through; }
+
 </style>
 
 <style>
 /* 平台详情弹窗：内容区限高独立滚动，避免模型多时撑出屏幕；
    内嵌的 .page 去掉整页 padding/滚动，并恢复被设置抽屉隐藏的页内标题 */
+/* 平台编辑弹窗：Token 配置多时内容区限高、内部上下滚动，避免弹窗撑出屏幕 */
+.platform-edit-dialog .el-dialog__body {
+  max-height: calc(88vh - 130px);
+  overflow-y: auto;
+}
 .platform-detail-dialog .el-dialog__body {
   max-height: calc(88vh - 120px);
   overflow-y: auto;

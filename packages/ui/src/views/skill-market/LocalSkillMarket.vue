@@ -6,6 +6,10 @@
         <h2 class="lm-title">本地商城</h2>
       </div>
       <div class="lm-header-right">
+        <el-select v-model="catFilter" size="default" class="cat-select" placeholder="全部分类">
+          <el-option label="全部分类" value="all" />
+          <el-option v-for="c in categoryOptions" :key="c.key" :label="c.label" :value="c.key" />
+        </el-select>
         <div class="lm-search-wrap">
           <el-icon class="lm-search-icon"><Search /></el-icon>
           <input v-model="search" placeholder="搜索..." class="lm-search-input" />
@@ -18,17 +22,19 @@
         <el-tooltip content="文件夹导入">
           <el-button circle @click="importFolder" class="lm-icon-btn"><el-icon :size="16"><FolderOpened /></el-icon></el-button>
         </el-tooltip>
+        <el-tooltip content="压缩包导入">
+          <el-button circle @click="importZip" class="lm-icon-btn"><el-icon :size="16"><Box /></el-icon></el-button>
+        </el-tooltip>
       </div>
     </header>
 
     <div class="skill-groups">
-      <div v-for="group in groupedSkills" :key="group.category" class="skill-group">
-        <div class="group-header" @click="toggleGroup(group.category)">
-          <el-icon class="group-arrow" :class="{ collapsed: !isGroupOpen(group.category) }"><ArrowRight /></el-icon>
-          <span class="group-title">{{ group.category }}</span>
-          <span class="group-count">{{ group.skills.length }}</span>
+      <div v-for="group in groupedSkills" :key="group.category" class="builtin-cat">
+        <div class="builtin-cat-title">
+          <span class="builtin-cat-name">{{ group.category }}</span>
+          <span class="builtin-cat-count">{{ group.skills.length }}</span>
         </div>
-        <div v-show="isGroupOpen(group.category)" class="skill-grid">
+        <div class="skill-grid">
           <div v-for="s in group.skills" :key="s.id" class="skill-card" @click="previewSkill(s)">
             <div class="card-top">
               <div class="card-icon" :class="{ off: !s.enabled }"><el-icon :size="24"><Files /></el-icon></div>
@@ -91,12 +97,14 @@
         <el-button type="primary" @click="doImport">导入</el-button>
       </template>
     </el-dialog>
+
+    <input ref="zipInput" type="file" accept=".zip" style="display: none" @change="onZipFile" />
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, reactive } from 'vue';
-import { Plus, Files, ArrowLeft, ArrowRight, Edit, Delete, FolderOpened, UploadFilled, Search, Close } from '@element-plus/icons-vue';
+import { ref, computed, onMounted } from 'vue';
+import { Plus, Files, ArrowLeft, Edit, Delete, FolderOpened, UploadFilled, Box, Search, Close } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { useSkillStore, useAuthStore } from '../../stores';
 import { getPlatformAdapter } from '@yan-zhi/core';
@@ -130,26 +138,29 @@ function getSkillCategory(s: Skill): string {
   return (s as any).category || (s.frontmatter as any)?.category || '其他';
 }
 
-/** 按分类分组 */
+/** 分类下拉选项（含数量） */
+const catFilter = ref('all');
+const categoryOptions = computed(() => {
+  const map = new Map<string, number>();
+  for (const s of store.skills) {
+    const cat = getSkillCategory(s);
+    map.set(cat, (map.get(cat) || 0) + 1);
+  }
+  return Array.from(map.entries()).map(([category, count]) => ({ key: category, label: `${category}（${count}）` }));
+});
+
+/** 按分类分组（分类名在区块左上角，卡片全铺开、不再折叠），再叠加分类下拉 + 搜索词筛选 */
 const groupedSkills = computed(() => {
+  const q = search.value;
   const map = new Map<string, Skill[]>();
   for (const s of filteredSkills.value) {
     const cat = getSkillCategory(s);
+    if (catFilter.value !== 'all' && cat !== catFilter.value) continue;
     if (!map.has(cat)) map.set(cat, []);
     map.get(cat)!.push(s);
   }
   return Array.from(map.entries()).map(([category, skills]) => ({ category, skills }));
 });
-
-/** 分组折叠状态（默认全展开） */
-const groupOpen = reactive<Record<string, boolean>>({});
-function isGroupOpen(cat: string): boolean {
-  if (groupOpen[cat] === undefined) groupOpen[cat] = true;
-  return groupOpen[cat];
-}
-function toggleGroup(cat: string) {
-  groupOpen[cat] = !isGroupOpen(cat);
-}
 
 const previewMd = computed(() => {
   const fm = ['---', `name: ${editor.value.name || '(未填写)'}`];
@@ -248,6 +259,29 @@ async function doImport() {
   }
 }
 
+/** 批量导入解析后的 Skill Markdown（文件夹/压缩包共用），返回导入数量 */
+async function importSkillTexts(items: { path: string; text: string }[]): Promise<number> {
+  let imported = 0;
+  const nameSet = new Set(store.skills.map(s => s.name));
+  for (const { text } of items) {
+    try {
+      const parsed = parseSkillMd(text);
+      if (!parsed.frontmatter.name) continue;
+      // 跳过已存在同名的
+      if (nameSet.has(parsed.frontmatter.name)) continue;
+      await store.createCustom(
+        parsed.frontmatter.name,
+        parsed.frontmatter.description || '',
+        parsed.bodyMd || parsed.body,
+        parsed.frontmatter.triggers || [],
+      );
+      nameSet.add(parsed.frontmatter.name);
+      imported++;
+    } catch {}
+  }
+  return imported;
+}
+
 async function importFolder() {
   try {
     const adapter = getPlatformAdapter();
@@ -260,46 +294,27 @@ async function importFolder() {
       path = await w.__TAURI__.dialog.open({ directory: true, multiple: false, title: '选择 Skill 文件夹' });
     }
     if (!path) return;
-    // 递归扫描 .md 文件
-    const mdFiles: string[] = [];
+    // 递归收集 .md 文件
+    const items: { path: string; text: string }[] = [];
     async function scan(dir: string) {
       const entries = await adapter.fs.readDir(dir);
       for (const name of entries) {
         const full = dir + '/' + name;
         try {
-          const sub = await adapter.fs.readDir(full);
           // 是子目录，递归
           await scan(full);
         } catch {
           // 是文件
-          if (name.endsWith('.md')) mdFiles.push(full);
+          if (name.endsWith('.md')) items.push({ path: full, text: await adapter.fs.readFile(full) });
         }
       }
     }
     await scan(path);
-    if (mdFiles.length === 0) {
+    if (items.length === 0) {
       ElMessage.warning('所选文件夹中没有 .md 文件');
       return;
     }
-    let imported = 0;
-    const nameSet = new Set(store.skills.map(s => s.name));
-    for (const fp of mdFiles) {
-      try {
-        const content = await adapter.fs.readFile(fp);
-        const parsed = parseSkillMd(content);
-        if (!parsed.frontmatter.name) continue;
-        // 跳过已存在同名的
-        if (nameSet.has(parsed.frontmatter.name)) continue;
-        await store.createCustom(
-          parsed.frontmatter.name,
-          parsed.frontmatter.description || '',
-          parsed.bodyMd || parsed.body,
-          parsed.frontmatter.triggers || [],
-        );
-        nameSet.add(parsed.frontmatter.name);
-        imported++;
-      } catch {}
-    }
+    const imported = await importSkillTexts(items);
     if (imported > 0) {
       ElMessage.success(`已从文件夹导入 ${imported} 个 Skill`);
     } else {
@@ -307,6 +322,44 @@ async function importFolder() {
     }
   } catch (e: any) {
     ElMessage.error('文件夹导入仅支持桌面端（需要文件系统权限）');
+  }
+}
+
+const zipInput = ref<HTMLInputElement | null>(null);
+
+function importZip() {
+  zipInput.value?.click();
+}
+
+async function onZipFile(e: Event) {
+  const input = e.target as HTMLInputElement;
+  const file = input.files?.[0];
+  // 重置 value，保证同一名文件可重复选择
+  input.value = '';
+  if (!file) return;
+  try {
+    const JSZip = (await import('jszip')).default;
+    const zip = await JSZip.loadAsync(await file.arrayBuffer());
+    const items: { path: string; text: string }[] = [];
+    for (const entry of Object.values(zip.files)) {
+      if (entry.dir) continue;
+      if (!entry.name.toLowerCase().endsWith('.md')) continue;
+      // 跳过 macOS 元数据与隐藏文件
+      if (entry.name.startsWith('__MACOSX') || /(^|\/)\./.test(entry.name)) continue;
+      items.push({ path: entry.name, text: await entry.async('string') });
+    }
+    if (items.length === 0) {
+      ElMessage.warning('压缩包中没有 .md 文件');
+      return;
+    }
+    const imported = await importSkillTexts(items);
+    if (imported > 0) {
+      ElMessage.success(`已从压缩包导入 ${imported} 个 Skill`);
+    } else {
+      ElMessage.info('没有可导入的新 Skill（可能是名称重复）');
+    }
+  } catch (err: any) {
+    ElMessage.error(err?.message || '压缩包解析失败');
   }
 }
 

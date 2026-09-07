@@ -56,11 +56,17 @@ describe('buildOntologyDigest · 默认直拼 + 非默认召回', () => {
     id: 'o1', datasourceId: 'ds', code: 'order', name: '订单', domain: null,
     description: null, synonyms: [], sourceSql: 'SELECT id AS id FROM t_order',
     dimensions: [
-      { name: 'region', expr: 'region', isDefault: true, description: '区域' },
-      { name: 'channel', expr: 'channel', keywords: ['渠道', '来源'] },
+      { name: 'region', expr: 'region', description: '区域' },
+      { name: 'channel', expr: 'channel', description: '渠道' },
     ],
     timeDimensions: [],
-    measures: [{ name: 'amount_sum', expr: 'amount', agg: 'sum' as const, isDefault: true }],
+    measures: [{ name: 'amount_sum', expr: 'amount', agg: 'sum' as const }],
+    // 本体级选择列契约：默认直拼 + 非默认按关键字召回
+    selections: [
+      { name: 'region', isDefault: true },
+      { name: 'amount_sum', isDefault: true },
+      { name: 'channel', keywords: ['渠道', '来源'] },
+    ],
     filters: [
       { name: '近30天', expr: "created_at >= DATE('now','-30 day')", isDefault: true },
       { name: '已删除', expr: 'is_deleted = 1', keywords: ['删除'] },
@@ -85,8 +91,10 @@ describe('buildOntologyDigest · 默认直拼 + 非默认召回', () => {
     const sparse = {
       ...ont,
       code: 'empty',
-      dimensions: [{ name: 'x', expr: 'x', keywords: ['不存在词'] }],
-      measures: [], filters: [], policies: [],
+      dimensions: [{ name: 'x', expr: 'x' }],
+      measures: [],
+      selections: [{ name: 'x', keywords: ['不存在词'] }],
+      filters: [], policies: [],
     };
     const digest = buildOntologyDigest([sparse], '随便问问', CFG);
     expect(digest).not.toContain('empty');
@@ -109,9 +117,9 @@ const ORDER: OntologySpecWithCode = {
   measures: [{ name: 'amount_sum', expr: 'amount', agg: 'sum' }],
   filters: [{ name: '大额', expr: 'amount > 1000' }],
   relations: [
-    { type: 'N:1', target: 'user', sourceAttr: 'user_id', targetAttr: 'user_id' },
+    { source: 'order', type: 'N:1', target: 'user', sourceAttr: 'user_id', targetAttr: 'user_id' },
     {
-      type: 'N:N', target: 'tag', sourceAttr: 'order_id', targetAttr: 'tag_id',
+      source: 'order', type: 'N:N', target: 'tag', sourceAttr: 'order_id', targetAttr: 'tag_id',
       via: { table: 't_order_tag', sourceColumn: 'order_id', targetColumn: 'tag_id' },
     },
   ],
@@ -193,7 +201,7 @@ describe('compileOntologyJoinQuery · 单跳与 via', () => {
   it('N:N 缺 via 定义拒绝', () => {
     const noVia: OntologySpecWithCode = {
       ...ORDER,
-      relations: [{ type: 'N:N', target: 'tag', sourceAttr: 'order_id', targetAttr: 'tag_id' }],
+      relations: [{ source: 'order', type: 'N:N', target: 'tag', sourceAttr: 'order_id', targetAttr: 'tag_id' }],
     };
     expect(() =>
       compileOntologyJoinQuery('sqlite', [noVia, TAG], {

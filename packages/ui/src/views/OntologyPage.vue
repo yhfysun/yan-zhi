@@ -138,9 +138,7 @@
                 <th>名称</th>
                 <th>表达式（别名）</th>
                 <th style="width:104px">聚合</th>
-                <th style="width:150px">关键字（召回命中词）</th>
-                <th class="ont-col-check" title="默认选择列：直接拼进本体摘要">默认</th>
-                <th style="width:150px">描述</th>
+                <th style="width:180px">描述</th>
                 <th style="width:36px"></th>
               </tr>
             </thead>
@@ -153,8 +151,6 @@
                 <td><el-input v-model="d.name" size="small" class="dw-mono" /></td>
                 <td><el-input v-model="d.expr" size="small" class="dw-mono" /></td>
                 <td class="ont-cell-na">—</td>
-                <td><el-input v-model="d.keywordsText" size="small" placeholder="逗号分隔，如: 名称,名字" /></td>
-                <td class="ont-col-check"><el-checkbox v-model="d.isDefault" /></td>
                 <td><el-input v-model="d.description" size="small" placeholder="业务口径（选填）" /></td>
                 <td><el-button size="small" text type="danger" :icon="Delete" @click="form.dimensions.splice(i, 1)" /></td>
               </tr>
@@ -170,8 +166,6 @@
                     <el-option v-for="a in AGGS" :key="a" :label="a" :value="a" />
                   </el-select>
                 </td>
-                <td><el-input v-model="m.keywordsText" size="small" placeholder="逗号分隔" /></td>
-                <td class="ont-col-check"><el-checkbox v-model="m.isDefault" /></td>
                 <td><el-input v-model="m.description" size="small" placeholder="业务口径（选填）" /></td>
                 <td><el-button size="small" text type="danger" :icon="Delete" @click="form.measures.splice(i, 1)" /></td>
               </tr>
@@ -181,8 +175,6 @@
                 <td><el-input v-model="t.name" size="small" class="dw-mono" /></td>
                 <td><el-input v-model="t.expr" size="small" class="dw-mono" /></td>
                 <td class="ont-cell-na">日/周/月…</td>
-                <td><el-input v-model="t.keywordsText" size="small" placeholder="逗号分隔" /></td>
-                <td class="ont-col-check"><el-checkbox v-model="t.isDefault" /></td>
                 <td><el-input v-model="t.description" size="small" placeholder="业务口径（选填）" /></td>
                 <td><el-button size="small" text type="danger" :icon="Delete" @click="form.timeDimensions.splice(i, 1)" /></td>
               </tr>
@@ -192,6 +184,42 @@
             <el-button size="small" text @click="addDim">+ 维度</el-button>
             <el-button size="small" text @click="addMeasure">+ 度量</el-button>
             <el-button size="small" text @click="addTimeDim">+ 时间维度</el-button>
+          </div>
+
+          <!-- 选择列（本体级契约）：喂给大模型的查询列清单 -->
+          <div class="ont-fgroup">
+            <span>选择列（本体级契约）</span>
+            <small>默认列不召回直接拼进摘要（未指定列时的兜底 SELECT）；非默认列按关键字召回命中才拼入</small>
+          </div>
+          <table class="ont-spec-table">
+            <thead>
+              <tr>
+                <th>字段（维度/度量/时间维度）</th>
+                <th style="width:160px">关键字（召回命中词）</th>
+                <th class="ont-col-check" title="默认选择列：直接拼进本体摘要">默认</th>
+                <th style="width:180px">描述</th>
+                <th style="width:36px"></th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="(s, i) in form.selections" :key="`s${i}`">
+                <td>
+                  <el-select v-model="s.name" size="small" filterable placeholder="选择字段" :disabled="!fieldOptions.length">
+                    <el-option v-for="fn in fieldOptions" :key="fn" :label="fn" :value="fn" />
+                  </el-select>
+                </td>
+                <td><el-input v-model="s.keywordsText" size="small" placeholder="逗号分隔，如: 名称,名字" /></td>
+                <td class="ont-col-check"><el-checkbox v-model="s.isDefault" /></td>
+                <td><el-input v-model="s.description" size="small" placeholder="业务口径（选填）" /></td>
+                <td><el-button size="small" text type="danger" :icon="Delete" @click="form.selections.splice(i, 1)" /></td>
+              </tr>
+              <tr v-if="!form.selections.length">
+                <td colspan="5" class="ont-cell-na">暂无选择列；点下方「+ 选择列」添加，或留空（自动按全部字段兜底）</td>
+              </tr>
+            </tbody>
+          </table>
+          <div class="ont-add-row">
+            <el-button size="small" text :icon="Plus" :disabled="!fieldOptions.length" @click="addSelection">+ 选择列</el-button>
           </div>
 
           <!-- 过滤器：命中才注入 WHERE（区别于下方强制注入的行级策略） -->
@@ -234,6 +262,7 @@
             <thead>
               <tr>
                 <th style="width:86px">类型</th>
+                <th style="width:120px">自身本体</th>
                 <th style="width:130px">对方本体</th>
                 <th>本体字段</th>
                 <th>对方字段</th>
@@ -251,6 +280,7 @@
                     <el-option v-for="t in REL_TYPES" :key="t" :label="t" :value="t" />
                   </el-select>
                 </td>
+                <td><el-input v-model="r.source" size="small" class="dw-mono" :disabled="form.builtin" placeholder="本体 code" /></td>
                 <td>
                   <el-select v-model="r.target" size="small" filterable placeholder="对方本体">
                     <el-option v-for="o in relTargetOptions" :key="o.id" :label="o.code" :value="o.code" />
@@ -396,12 +426,13 @@ interface OntologyInfo {
   description: string | null;
   synonyms: string[];
   sourceSql: string;
-  dimensions: { name: string; expr: string; keywords?: string[]; isDefault?: boolean; description?: string }[];
-  timeDimensions: { name: string; expr: string; keywords?: string[]; isDefault?: boolean; description?: string }[];
-  measures: { name: string; expr: string; agg: string; keywords?: string[]; isDefault?: boolean; description?: string }[];
+  dimensions: { name: string; expr: string; description?: string }[];
+  timeDimensions: { name: string; expr: string; description?: string }[];
+  measures: { name: string; expr: string; agg: string; description?: string }[];
   filters: { name: string; expr: string; keywords?: string[]; isDefault?: boolean; description?: string }[];
+  selections: { name: string; keywords?: string[]; isDefault?: boolean; description?: string }[];
   relations: {
-    type: string; target: string; sourceAttr: string; targetAttr: string;
+    source: string; type: string; target: string; sourceAttr: string; targetAttr: string;
     via?: { table: string; sourceColumn: string; targetColumn: string };
     description?: string;
   }[];
@@ -450,12 +481,13 @@ const REL_TYPES = ['1:1', '1:N', 'N:1', 'N:N'] as const;
 const form = reactive({
   id: '', datasourceId: '', code: '', name: '', domain: '', description: '',
   synonymsText: '', sourceSql: '',
-  dimensions: [] as { name: string; expr: string; keywordsText: string; isDefault: boolean; description: string }[],
-  measures: [] as { name: string; expr: string; agg: string; keywordsText: string; isDefault: boolean; description: string }[],
-  timeDimensions: [] as { name: string; expr: string; keywordsText: string; isDefault: boolean; description: string }[],
+  dimensions: [] as { name: string; expr: string; description: string }[],
+  measures: [] as { name: string; expr: string; agg: string; description: string }[],
+  timeDimensions: [] as { name: string; expr: string; description: string }[],
+  selections: [] as { name: string; isDefault: boolean; keywordsText: string; description: string }[],
   filters: [] as { name: string; keywordsText: string; isDefault: boolean; expr: string; description: string }[],
   relations: [] as {
-    type: string; target: string; sourceAttr: string; targetAttr: string;
+    source: string; type: string; target: string; sourceAttr: string; targetAttr: string;
     viaTable: string; viaSource: string; viaTarget: string; description: string;
   }[],
   policies: [] as string[],
@@ -471,16 +503,24 @@ const relTargetOptions = computed(() =>
 );
 const hasNn = computed(() => form.relations.some((r) => r.type === 'N:N'));
 
+/** 选择列可引用的字段：全部维度/度量/时间维度名 */
+const fieldOptions = computed(() =>
+  [...form.dimensions.map((d) => d.name), ...form.timeDimensions.map((t) => t.name), ...form.measures.map((m) => m.name)].filter(Boolean),
+);
+
 const splitKw = (s: string): string[] =>
   (s || '').split(/[,，\s]+/).map((x) => x.trim()).filter(Boolean);
 const joinKw = (a?: string[]): string => (a || []).join(', ');
 
-function addDim() { form.dimensions.push({ name: '', expr: '', keywordsText: '', isDefault: false, description: '' }); }
-function addMeasure() { form.measures.push({ name: '', expr: '', agg: 'sum', keywordsText: '', isDefault: false, description: '' }); }
-function addTimeDim() { form.timeDimensions.push({ name: '', expr: '', keywordsText: '', isDefault: false, description: '' }); }
+function addDim() { form.dimensions.push({ name: '', expr: '', description: '' }); }
+function addMeasure() { form.measures.push({ name: '', expr: '', agg: 'sum', description: '' }); }
+function addTimeDim() { form.timeDimensions.push({ name: '', expr: '', description: '' }); }
 function addFilter() { form.filters.push({ name: '', keywordsText: '', isDefault: false, expr: '', description: '' }); }
+function addSelection() {
+  form.selections.push({ name: fieldOptions.value[0] || '', isDefault: false, keywordsText: '', description: '' });
+}
 function addRelation() {
-  form.relations.push({ type: 'N:1', target: '', sourceAttr: '', targetAttr: '', viaTable: '', viaSource: '', viaTarget: '', description: '' });
+  form.relations.push({ source: form.code, type: 'N:1', target: '', sourceAttr: '', targetAttr: '', viaTable: '', viaSource: '', viaTarget: '', description: '' });
 }
 
 /** 从勾选态 + 过滤器文本组装查询意图（编译预览 / 试跑共用） */
@@ -503,12 +543,13 @@ function fillForm(o: OntologyInfo) {
     id: o.id, datasourceId: o.datasourceId, code: o.code, name: o.name,
     domain: o.domain || '', description: o.description || '',
     synonymsText: o.synonyms.join('\n'), sourceSql: o.sourceSql,
-    dimensions: o.dimensions.map((d) => ({ name: d.name, expr: d.expr, keywordsText: joinKw(d.keywords), isDefault: !!d.isDefault, description: d.description || '' })),
-    measures: o.measures.map((m) => ({ name: m.name, expr: m.expr, agg: m.agg, keywordsText: joinKw(m.keywords), isDefault: !!m.isDefault, description: m.description || '' })),
-    timeDimensions: o.timeDimensions.map((t) => ({ name: t.name, expr: t.expr, keywordsText: joinKw(t.keywords), isDefault: !!t.isDefault, description: t.description || '' })),
+    dimensions: o.dimensions.map((d) => ({ name: d.name, expr: d.expr, description: d.description || '' })),
+    measures: o.measures.map((m) => ({ name: m.name, expr: m.expr, agg: m.agg, description: m.description || '' })),
+    timeDimensions: o.timeDimensions.map((t) => ({ name: t.name, expr: t.expr, description: t.description || '' })),
+    selections: (o.selections || []).map((s) => ({ name: s.name, isDefault: !!s.isDefault, keywordsText: joinKw(s.keywords), description: s.description || '' })),
     filters: (o.filters || []).map((f) => ({ name: f.name, keywordsText: joinKw(f.keywords), isDefault: !!f.isDefault, expr: f.expr, description: f.description || '' })),
     relations: (o.relations || []).map((r) => ({
-      type: r.type || 'N:1', target: r.target || '', sourceAttr: r.sourceAttr || '', targetAttr: r.targetAttr || '',
+      source: r.source || form.code, type: r.type || 'N:1', target: r.target || '', sourceAttr: r.sourceAttr || '', targetAttr: r.targetAttr || '',
       viaTable: r.via?.table || '', viaSource: r.via?.sourceColumn || '', viaTarget: r.via?.targetColumn || '',
       description: r.description || '',
     })),
@@ -537,7 +578,7 @@ function openCreate() {
   Object.assign(form, {
     id: '', datasourceId: list.value[0]?.datasourceId || '', code: '', name: '', domain: '',
     description: '', synonymsText: '', sourceSql: 'SELECT\n  id AS id\nFROM t_your_table',
-    dimensions: [], measures: [], timeDimensions: [], filters: [], relations: [], policies: [],
+    dimensions: [], measures: [], timeDimensions: [], selections: [], filters: [], relations: [], policies: [],
     status: 'draft', version: 1, builtin: false,
   });
   dirty.value = false;
@@ -553,20 +594,23 @@ function payload() {
     sourceSql: form.sourceSql,
     dimensions: form.dimensions
       .filter((d) => d.name && d.expr)
-      .map((d) => ({ name: d.name.trim(), expr: d.expr.trim(), keywords: splitKw(d.keywordsText), isDefault: d.isDefault || undefined, description: d.description || undefined })),
+      .map((d) => ({ name: d.name.trim(), expr: d.expr.trim(), description: d.description || undefined })),
     measures: form.measures
       .filter((m) => m.name && (m.expr || m.agg === 'count'))
-      .map((m) => ({ name: m.name.trim(), expr: m.expr.trim() || '*', agg: m.agg, keywords: splitKw(m.keywordsText), isDefault: m.isDefault || undefined, description: m.description || undefined })),
+      .map((m) => ({ name: m.name.trim(), expr: m.expr.trim() || '*', agg: m.agg, description: m.description || undefined })),
     timeDimensions: form.timeDimensions
       .filter((d) => d.name && d.expr)
-      .map((d) => ({ name: d.name.trim(), expr: d.expr.trim(), keywords: splitKw(d.keywordsText), isDefault: d.isDefault || undefined, description: d.description || undefined })),
+      .map((d) => ({ name: d.name.trim(), expr: d.expr.trim(), description: d.description || undefined })),
+    selections: form.selections
+      .filter((s) => s.name)
+      .map((s) => ({ name: s.name.trim(), isDefault: s.isDefault || undefined, keywords: splitKw(s.keywordsText), description: s.description || undefined })),
     filters: form.filters
       .filter((f) => f.name && f.expr)
       .map((f) => ({ name: f.name.trim(), expr: f.expr.trim(), keywords: splitKw(f.keywordsText), isDefault: f.isDefault || undefined, description: f.description || undefined })),
     relations: form.relations
-      .filter((r) => r.target && r.sourceAttr && r.targetAttr)
+      .filter((r) => r.source && r.target && r.sourceAttr && r.targetAttr)
       .map((r) => ({
-        type: r.type, target: r.target, sourceAttr: r.sourceAttr.trim(), targetAttr: r.targetAttr.trim(),
+        source: r.source.trim(), type: r.type, target: r.target, sourceAttr: r.sourceAttr.trim(), targetAttr: r.targetAttr.trim(),
         via: r.type === 'N:N' && r.viaTable
           ? { table: r.viaTable.trim(), sourceColumn: r.viaSource.trim(), targetColumn: r.viaTarget.trim() }
           : undefined,
