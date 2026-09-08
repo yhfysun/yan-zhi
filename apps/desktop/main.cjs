@@ -1,4 +1,4 @@
-const { app, BrowserWindow, BrowserView, dialog, ipcMain, Menu, session, shell, clipboard, Tray, globalShortcut } = require('electron');
+const { app, BrowserWindow, BrowserView, webContents, dialog, ipcMain, Menu, session, shell, clipboard, Tray, globalShortcut } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const fsp = fs.promises;
@@ -30,6 +30,48 @@ let activeTabId = null;
 // 最近一次有效矩形（由 browserView:resize 写入），首次导航/强制重挂时作为兜底，
 // 取代写死的 480px，避免首次导航因 bounds 未同步而被判为不可见。
 let lastGoodBounds = null;
+
+// ============================================================
+// 浏览器引擎：'webview'（DOM 内嵌 <webview>，浮层可覆盖）| 'browserview'（旧原生图层）
+// webview 模式下不再创建 BrowserView：guest 由渲染层 <webview> 元素承载，
+// 主进程用 webContents.fromId(guestId) 拿到 guest，复用原有全部 action 实现（零改动）。
+// 回退：把 BROWSER_ENGINE_DEFAULT 改成 'browserview' 即整体回到旧链路。
+// ============================================================
+const BROWSER_ENGINE_DEFAULT = 'webview';
+let browserEngine = BROWSER_ENGINE_DEFAULT;
+// tabId → { scope, lastActiveAt, wcId }（wcId 由渲染层 <webview> 挂载后注册）
+const webviewTabs = new Map();
+
+function isWebviewEngine() { return browserEngine === 'webview'; }
+/** 取 guest webContents（webview 模式）；未注册/已销毁返回 null */
+function guestWebContents(tabId) {
+  const t = webviewTabs.get(tabId);
+  if (!t || !t.wcId) return null;
+  try {
+    const wc = webContents.fromId(t.wcId);
+    return wc && !wc.isDestroyed() ? wc : null;
+  } catch { return null; }
+}
+/** 等待渲染层注册 guest（<webview> 创建需要一帧） */
+async function waitForGuest(tabId, timeoutMs = 5000) {
+  if (!tabId) return null;
+  const started = Date.now();
+  for (;;) {
+    const wc = guestWebContents(tabId);
+    if (wc) return wc;
+    if (Date.now() - started > timeoutMs) return null;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+}
+/** 统一入口：按当前引擎解析 tabId 对应的 webContents */
+function resolveTabWebContents(tabId) {
+  const tid = tabId || activeTabId;
+  if (!tid) return null;
+  if (isWebviewEngine()) return guestWebContents(tid) || (activeTabId ? guestWebContents(activeTabId) : null);
+  const entry = browserViews.get(tid);
+  return entry?.view?.webContents || null;
+}
+const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // R3：摘除即静音 —— 收起右栏/切走 tab 后视频音乐不再出声（"收起了就该安静"）。
 // 如果有意保留后台音乐（如挂机听歌），把该开关设为 false 即可一行回退。
@@ -211,11 +253,15 @@ function createWindow() {
     // 不开 transparent：Windows 11 上 frame:false + 非 transparent 时 DWM 仍提供原生圆角+阴影，
     // 且 maximize/unmaximize 与边缘 resize 走原生 NCA，避免透明窗口下"全屏后缩不回/拖边缩不了"的 bug
     webPreferences: {
-      // 不再使用 <webview> 标签，改用 BrowserView
       preload: path.join(__dirname, 'preload.cjs'),
+      // webview 引擎：启用 <webview> 标签（DOM 内嵌，应用内浮层可覆盖网页）
+      webviewTag: true,
       nodeIntegration: false,
       contextIsolation: true,
       spellcheck: false,
+      // 最小化/隐藏窗口时暂停页面合成与导航事件 —— 会让"AI 上网查资料+用户最小化去干别的"时
+      // guest 导航卡在 started 而 didn't-fire did-navigate，UI 还停在首页。关闭全局后台节流。
+      backgroundThrottling: false,
     },
   });
 
@@ -244,6 +290,16 @@ function createWindow() {
       event.preventDefault();
       shell.openExternal(url);
     }
+  });
+
+  // webview 引擎：guest 安全加固 —— 无论渲染层怎么声明，guest 一律无 node 集成 + 上下文隔离 +
+  // 不加载任何 preload。外部网页永远拿不到 Node 能力与本地文件访问。
+  mainWindow.webContents.on('will-attach-webview', (event, webPreferences) => {
+    webPreferences.nodeIntegration = false;
+    webPreferences.contextIsolation = true;
+    webPreferences.nodeIntegrationInWorker = false;
+    delete webPreferences.preload;
+    delete webPreferences.preloadURL;
   });
 
   // 渲染进程完整重载（HMR full-reload / F5）时，隐藏并摘除所有 BrowserView。
@@ -796,15 +852,27 @@ async function injectScrollbarCss(tabId) {
   const entry = tabId ? browserViews.get(tabId) : (activeTabId ? browserViews.get(activeTabId) : null);
   if (!entry || !entry.view) return; // R4：挂起态无视图；复活后 did-finish-load 会重注入
   const bv = entry.view;
-  const wc = bv.webContents;
+  await injectScrollbarForWC(bv.webContents, { keyHolder: entry });
+}
+
+// 统一的滚动条注入本体：BrowserView 的 guest(bv.webContents) 与 webview 引擎的 guest(fromId) 共用。
+// 目标观感一致：隐藏原生粗白条 → 注入半透明细圆角 overlay 滚动条，并随网页深浅背景自动选色。
+// 这是对 guest 本身 insertCSS（仅操纵该页样式，无 node/无 IPC 暴露），不新增任何外部攻击面。
+async function injectScrollbarForWC(wc, opts = {}) {
+  const keyHolder = opts.keyHolder || null;
   try {
-    if (entry.scrollbarCssKey && typeof wc.removeInsertedCSS === 'function') {
-      try { await wc.removeInsertedCSS(entry.scrollbarCssKey); } catch { /* ignore */ }
-      entry.scrollbarCssKey = null;
+    if (!wc) return;
+    const keyProp = keyHolder ? () => keyHolder.scrollbarCssKey : () => wc.__yzScrollbarCssKey;
+    const setKey = keyHolder ? (k) => { keyHolder.scrollbarCssKey = k; } : (k) => { wc.__yzScrollbarCssKey = k; };
+    const cur = keyProp();
+    if (cur && typeof wc.removeInsertedCSS === 'function') {
+      try { await wc.removeInsertedCSS(cur); } catch { /* ignore */ }
+      setKey(null);
     }
     const pageDark = await detectPageDark(wc);
-    entry.scrollbarCssKey = await wc.insertCSS(scrollbarCssForTheme(pageDark ? 'dark' : 'light'));
-  } catch { /* ignore */ }
+    const key = await wc.insertCSS(scrollbarCssForTheme(pageDark ? 'dark' : 'light'));
+    setKey(key);
+  } catch { /* 跨域/页面未就绪时忽略 */ }
 }
 
 // ============================================================
@@ -824,11 +892,70 @@ ipcMain.handle('window-is-maximized', () => mainWindow?.isMaximized() || false);
 // 多标签页：所有通道带 tabId 参数，操作对应标签的 BrowserView
 // ============================================================
 
+// ---- webview 引擎：guest 注册 / 引擎查询 ----
+// 渲染层 <webview> 挂载后把 guest 的 webContentsId 注册进来，
+// 主进程即可用 webContents.fromId 复用全部 action 实现。
+ipcMain.handle('browser:engine', () => browserEngine);
+ipcMain.handle('browser:setEngine', (_e, engine) => {
+  browserEngine = engine === 'browserview' ? 'browserview' : 'webview';
+  return browserEngine;
+});
+// webview 引擎的 popup 重定向：给 guest 自身的 webContents 设 windowOpenHandler。
+// session 级 handler 拦不住 webview+allowpopups 转到二级 popup BrowserWindow 的逃逸；
+// 在每个 guest 宿主 wc 上设，才能把 window.open / target=_blank 统一重定向回【应用内新标签页】。
+function setupGuestPopupRedirect(wc) {
+  if (!wc || wc.__yzPopupWired) return;
+  wc.__yzPopupWired = true;
+  wc.setWindowOpenHandler(({ url }) => {
+    // 弹窗一律转为应用内新标签页：重定向到当前所属容器的 BrowserView 面板新建 tab
+    if (url && /^https?:/i.test(url) && mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('browser:wv:openTab', url);
+    }
+    return { action: 'deny' };
+  });
+}
+
+// 拦截网页通过 window 创建的真正二级窗口（session/guest handler 未覆盖的边缘路径），
+// 绝不放开独立系统 BrowserWindow —— 全部 deny 并重定向回主窗口广播应用内新标签。
+app.on('web-contents-created', (_e, contents) => {
+  if (!isWebviewEngine()) return;               // 仅 webview 引擎启用；旧 BrowserView 走各自逻辑
+  const type = contents.getType && contents.getType();
+  if (type === 'window' || type === 'webview') return; // 主窗口与 guest 各自处理，跳过防双重拦截
+  setupGuestPopupRedirect(contents);
+});
+
+ipcMain.handle('browser:wv:register', (_e, tabId, wcId, scope) => {
+  const t = webviewTabs.get(tabId) || { scope: scope || 'preview', lastActiveAt: Date.now(), wcId: null };
+  t.wcId = wcId;
+  if (scope) t.scope = scope;
+  t.lastActiveAt = Date.now();
+  webviewTabs.set(tabId, t);
+  if (!activeTabId) activeTabId = tabId;
+  // 给这个 guest 宿主 wc 挂弹窗重定向（window.open/target=_blank → 应用内新标签页）
+  try {
+    const wc = webContents.fromId(wcId);
+    setupGuestPopupRedirect(wc);
+  } catch { /* wcId 无效/已销毁则忽略，导航后会随新 did-finish 再注册 */ }
+  return true;
+});
+ipcMain.handle('browser:wv:unregister', (_e, tabId) => {
+  const t = webviewTabs.get(tabId);
+  if (t) { t.wcId = null; t.lastActiveAt = Date.now(); }
+  return true;
+});
+
 // 创建新标签页，返回 tabId。
 // scope：tab 归属空间（'preview'=对话页预览面板（agent 执行面）| 'page'=/browser 独立浏览器页）。
 // 渲染层两边 tab 列表隔离，主进程只负责记录归属，供 ensureActiveTab(scope)/R5 顶替按空间匹配。
 let tabSeq = 0;
 ipcMain.handle('browserView:createTab', (_e, scope) => {
+  const newTabId = 'tab-' + (++tabSeq);
+  if (isWebviewEngine()) {
+    // webview 模式：只分配 tabId 与空间归属，guest 由渲染层 <webview> 元素创建后注册
+    webviewTabs.set(newTabId, { scope: scope || 'preview', lastActiveAt: Date.now(), wcId: null });
+    if (!activeTabId) activeTabId = newTabId;
+    return newTabId;
+  }
   // R4：超限先按 LRU 挂起最久未激活的 tab（壳保留、激活复活），再新建，
   // 保证同时存活的 webContents ≤ MAX_TABS
   evictLruTabIfNeeded();
@@ -843,6 +970,30 @@ ipcMain.handle('browserView:createTab', (_e, scope) => {
 // fromUi=true 表示 UI 路径（渲染层会自行顶替相邻 tab，主进程不顶替不广播，避免双顶替抖动）；
 // 非 UI 路径（pageAgent 工具 / 页面 window.close）没有渲染层参与，主进程必须在这里收口。
 ipcMain.handle('browserView:closeTab', (_e, tabId, fromUi) => {
+  if (isWebviewEngine()) {
+    const meta = webviewTabs.get(tabId);
+    const closedScope = meta?.scope || 'preview';
+    webviewTabs.delete(tabId);
+    if (activeTabId === tabId) {
+      activeTabId = null;
+      // 非 UI 路径（pageAgent / window.close）：主进程顶替同空间内最近激活的 tab 并广播
+      if (!fromUi) {
+        let next = null, newest = -1;
+        for (const [id, t] of webviewTabs) {
+          if ((t.scope || 'preview') !== closedScope) continue;
+          if ((t.lastActiveAt || 0) >= newest) { newest = t.lastActiveAt || 0; next = id; }
+        }
+        if (next) {
+          activeTabId = next;
+          webviewTabs.get(next).lastActiveAt = Date.now();
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('browserView:tabActivated', next);
+          }
+        }
+      }
+    }
+    return;
+  }
   const entry = browserViews.get(tabId);
   // 记住被关 tab 的归属空间：R5 顶替只在同空间内找，避免把另一空间的 tab 顶进激活位
   const closedScope = entry?.scope || 'preview';
@@ -877,6 +1028,12 @@ ipcMain.handle('browserView:closeTab', (_e, tabId, fromUi) => {
 
 // 激活标签页：显示其 BrowserView，隐藏其他
 ipcMain.handle('browserView:activateTab', (_e, tabId) => {
+  if (isWebviewEngine()) {
+    activeTabId = tabId;
+    const t = webviewTabs.get(tabId);
+    if (t) t.lastActiveAt = Date.now();
+    return;
+  }
   const entry = browserViews.get(tabId);
   if (!entry) return;
   activateTab(tabId);
@@ -890,6 +1047,29 @@ ipcMain.handle('browserView:activateTab', (_e, tabId) => {
 // BrowserPanel onMounted 创建（最多 3s）；超时自建（带 scope 标记并广播）。
 ipcMain.handle('browserView:ensureActiveTab', async (_e, scope) => {
   const wantScope = scope || 'preview';
+  if (isWebviewEngine()) {
+    const scopeOfWv = (t) => (t && t.scope) || 'preview';
+    const activeMeta = activeTabId ? webviewTabs.get(activeTabId) : null;
+    if (activeMeta && scopeOfWv(activeMeta) === wantScope) return activeTabId;
+    for (let i = 0; i < 30; i++) {
+      await sleepMs(100);
+      const am = activeTabId ? webviewTabs.get(activeTabId) : null;
+      if (am && scopeOfWv(am) === wantScope) return activeTabId;
+      let best = null, newest = -1;
+      for (const [id, t] of webviewTabs) {
+        if (scopeOfWv(t) !== wantScope) continue;
+        if ((t.lastActiveAt || 0) >= newest) { newest = t.lastActiveAt || 0; best = id; }
+      }
+      if (best) { activeTabId = best; webviewTabs.get(best).lastActiveAt = Date.now(); return best; }
+    }
+    const tabId = 'tab-' + (++tabSeq);
+    webviewTabs.set(tabId, { scope: wantScope, lastActiveAt: Date.now(), wcId: null });
+    activeTabId = tabId;
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('browserView:tabCreated', tabId, null, wantScope);
+    }
+    return tabId;
+  }
   const scopeOf = (e) => (e && e.scope) || 'preview';
   const findInScope = () => {
     let best = null, newest = -1;
@@ -930,6 +1110,20 @@ ipcMain.handle('browserView:load', async (e, tabId, url) => {
   // URL 清洗：剥离模型以 markdown 反引号/引号包裹传来的格式字符
   let cleanUrl = String(url).trim().replace(/^[`"'\s]+|[`"'\s]+$/g, '');
   if (!/^https?:\/\//i.test(cleanUrl)) return { error: `无效 URL: ${cleanUrl}` };
+  if (isWebviewEngine()) {
+    // webview 模式：guest 由渲染层 <webview> 承载，等其注册后直接用 guest 导航
+    const wc = await waitForGuest(tabId);
+    if (!wc) return { error: '浏览器视图未就绪（<webview> 尚未挂载）' };
+    activeTabId = tabId || activeTabId;
+    const t = webviewTabs.get(tabId);
+    if (t) t.lastActiveAt = Date.now();
+    try {
+      await wc.loadURL(cleanUrl);
+      return { url: wc.getURL(), title: wc.getTitle() };
+    } catch (err) {
+      return { error: `页面加载失败（${err?.code || err?.errno || ''}）: ${cleanUrl}` };
+    }
+  }
   // 按需为该标签创建 BrowserView
   const bv = ensureBrowserView(tabId);
   if (!bv) return { error: '主窗口不可用' };
@@ -948,6 +1142,13 @@ ipcMain.handle('browserView:load', async (e, tabId, url) => {
 });
 
 ipcMain.handle('browserView:back', (_e, tabId) => {
+  if (isWebviewEngine()) {
+    const wc = resolveTabWebContents(tabId);
+    if (!wc) return;
+    if (wc.navigationHistory) { if (wc.navigationHistory.canGoBack()) wc.goBack(); }
+    else if (wc.canGoBack?.()) wc.goBack();
+    return;
+  }
   const entry = tabId ? browserViews.get(tabId) : (activeTabId ? browserViews.get(activeTabId) : null);
   if (!entry || !entry.view) return; // R4：挂起态无导航历史，直接忽略
   const wc = entry.view.webContents;
@@ -959,6 +1160,13 @@ ipcMain.handle('browserView:back', (_e, tabId) => {
 });
 
 ipcMain.handle('browserView:forward', (_e, tabId) => {
+  if (isWebviewEngine()) {
+    const wc = resolveTabWebContents(tabId);
+    if (!wc) return;
+    if (wc.navigationHistory) { if (wc.navigationHistory.canGoForward()) wc.goForward(); }
+    else if (wc.canGoForward?.()) wc.goForward();
+    return;
+  }
   const entry = tabId ? browserViews.get(tabId) : (activeTabId ? browserViews.get(activeTabId) : null);
   if (!entry || !entry.view) return; // R4：挂起态无导航历史，直接忽略
   const wc = entry.view.webContents;
@@ -970,6 +1178,10 @@ ipcMain.handle('browserView:forward', (_e, tabId) => {
 });
 
 ipcMain.handle('browserView:reload', (_e, tabId) => {
+  if (isWebviewEngine()) {
+    resolveTabWebContents(tabId)?.reload();
+    return;
+  }
   const entry = tabId ? browserViews.get(tabId) : (activeTabId ? browserViews.get(activeTabId) : null);
   if (!entry) return;
   // R4：挂起态等价于复活 —— 重建视图并重新加载记忆的 url
@@ -1082,9 +1294,14 @@ const ELEMENT_REGISTRY_SCRIPT = `
 /** 统一 IPC 通道：browser:call */
 ipcMain.handle('browser:call', async (event, action, args) => {
   args = args || {};
-  const bv = getActiveBrowserViewForAgent();
-  if (!bv) return { ok: false, error: '无法获取浏览器视图' };
-  const wc = bv.webContents;
+  let wc = null;
+  if (isWebviewEngine()) {
+    wc = await waitForGuest(activeTabId, 3000);
+  } else {
+    const bv = getActiveBrowserViewForAgent();
+    wc = bv?.webContents;
+  }
+  if (!wc) return { ok: false, error: '无法获取浏览器视图' };
   if (wc.isDestroyed()) return { ok: false, error: '浏览器视图已销毁' };
 
   try {
@@ -1227,6 +1444,7 @@ ipcMain.handle('browser:call', async (event, action, args) => {
 });
 
 ipcMain.handle('browserView:resize', (e, tabId, x, y, width, height) => {
+  if (isWebviewEngine()) return; // webview 由 CSS 布局，无需 bounds 同步
   const entry = tabId ? browserViews.get(tabId) : (activeTabId ? browserViews.get(activeTabId) : null);
   if (!entry) return;
   const w = Math.max(0, Math.round(width));
@@ -1250,6 +1468,7 @@ ipcMain.handle('browserView:resize', (e, tabId, x, y, width, height) => {
 });
 
 ipcMain.handle('browserView:getUrl', (_e, tabId) => {
+  if (isWebviewEngine()) return resolveTabWebContents(tabId)?.getURL() || '';
   const entry = tabId ? browserViews.get(tabId) : (activeTabId ? browserViews.get(activeTabId) : null);
   if (!entry) return '';
   if (!entry.view) return entry.url || ''; // R4：挂起态返回记忆的 url
@@ -1257,6 +1476,7 @@ ipcMain.handle('browserView:getUrl', (_e, tabId) => {
 });
 
 ipcMain.handle('browserView:hide', (_e, tabId) => {
+  if (isWebviewEngine()) return; // webview 由渲染层 CSS 控制显隐
   // 隐藏指定标签或当前激活标签
   const entry = tabId ? browserViews.get(tabId) : (activeTabId ? browserViews.get(activeTabId) : null);
   if (!entry) return;
@@ -1274,6 +1494,12 @@ ipcMain.handle('browserView:hide', (_e, tabId) => {
 });
 
 ipcMain.handle('browserView:canGoBack', (_e, tabId) => {
+  if (isWebviewEngine()) {
+    const wc = resolveTabWebContents(tabId);
+    if (!wc) return false;
+    if (wc.navigationHistory) return wc.navigationHistory.canGoBack();
+    return wc.canGoBack?.() || false;
+  }
   const entry = tabId ? browserViews.get(tabId) : (activeTabId ? browserViews.get(activeTabId) : null);
   if (!entry || !entry.view) return false; // R4：挂起态无导航历史
   const wc = entry.view.webContents;
@@ -1282,6 +1508,12 @@ ipcMain.handle('browserView:canGoBack', (_e, tabId) => {
 });
 
 ipcMain.handle('browserView:canGoForward', (_e, tabId) => {
+  if (isWebviewEngine()) {
+    const wc = resolveTabWebContents(tabId);
+    if (!wc) return false;
+    if (wc.navigationHistory) return wc.navigationHistory.canGoForward();
+    return wc.canGoForward?.() || false;
+  }
   const entry = tabId ? browserViews.get(tabId) : (activeTabId ? browserViews.get(activeTabId) : null);
   if (!entry || !entry.view) return false; // R4：挂起态无导航历史
   const wc = entry.view.webContents;
@@ -1291,6 +1523,12 @@ ipcMain.handle('browserView:canGoForward', (_e, tabId) => {
 
 // 页面缩放（BrowserView 原生 setZoomFactor）
 ipcMain.handle('browserView:setZoomFactor', (_e, tabId, factor) => {
+  if (isWebviewEngine()) {
+    const wc = resolveTabWebContents(tabId);
+    const f = Number(factor) || 1;
+    try { wc?.setZoomFactor(f); } catch { /* ignore */ }
+    return;
+  }
   const entry = tabId ? browserViews.get(tabId) : (activeTabId ? browserViews.get(activeTabId) : null);
   if (!entry) return;
   const f = Number(factor) || 1;
@@ -1301,13 +1539,23 @@ ipcMain.handle('browserView:setZoomFactor', (_e, tabId, factor) => {
 
 // 取当前实际缩放因子（单一真相源）：切换标签/恢复时前端据此校正 UI 显示
 ipcMain.handle('browserView:getZoomFactor', (_e, tabId) => {
+  if (isWebviewEngine()) {
+    try { return resolveTabWebContents(tabId)?.getZoomFactor() || 1; } catch { return 1; }
+  }
   const entry = tabId ? browserViews.get(tabId) : (activeTabId ? browserViews.get(activeTabId) : null);
   if (!entry) return 1;
   try { return entry.view.webContents.getZoomFactor() || entry.zoomFactor || 1; } catch { return entry.zoomFactor || 1; }
 });
 
 // 同步滚动条主题（应用主题切换时重新注入，颜色按网页背景自动选择）
-ipcMain.handle('browserView:setTheme', (_e, tabId) => {
+ipcMain.handle('browserView:setTheme', async (_e, tabId) => {
+  if (isWebviewEngine()) {
+    // webview 引擎：guest 由渲染层承载，用 fromId 拿 guest webContents 注入自定义滚动条样式
+    // （与 BrowserView 观感一致：隐藏原生粗滚动条 → 半透明细圆角，随页面临深色自动选色）
+    const wc = guestWebContents(tabId) || guestWebContents(activeTabId);
+    if (wc) await injectScrollbarForWC(wc);
+    return;
+  }
   injectScrollbarCss(tabId);
 });
 
@@ -1407,21 +1655,50 @@ let noChangeStreak = 0;
 const STATE_SNAPSHOT_JS = `(function(){try{var d=document.body;return{url:location.href,t:(d?d.innerText:'').slice(0,2000),n:document.querySelectorAll('a,button,input,select,textarea').length};}catch(e){return null;}})()`;
 
 ipcMain.handle('browserView:action', async (_e, tabId, action, args) => {
-  const entry = tabId ? browserViews.get(tabId) : (activeTabId ? browserViews.get(activeTabId) : null);
-  if (!entry) return { error: '浏览器未打开，请先导航到页面' };
-  // R4：挂起复活 —— pageAgent 的 navigate 等操作可能指向被 LRU 逐出/空闲卸载的 tab
-  if (!entry.view) {
-    ensureBrowserView(tabId || activeTabId);
-    if (!entry.view) return { error: '浏览器未打开，请先导航到页面' };
-  }
-  const bv = entry.view;
-  const wc = bv.webContents;
   args = args || {};
+  const entry = tabId ? browserViews.get(tabId) : (activeTabId ? browserViews.get(activeTabId) : null);
+  let wc = null;
+  if (isWebviewEngine()) {
+    // webview 引擎：guest 由渲染层 <webview> 承载，fromId 拿到后复用下面全部 action 实现
+    wc = await waitForGuest(tabId || activeTabId, 3000);
+    // navigate 是特例：面板停在"浏览器首页/主页"（无任何已导航页）时还没有 <webview>、
+    // guest 自然不存在。此时不能直接报"未打开"——应先让渲染层在该 scope 打开目标页并建出
+    // <webview>（:src=url → dom-ready → 注册 guest），再等 guest 出现后继续导航。
+    if (!wc && action === 'navigate' && args.url) {
+      const scopeMeta = (activeTabId ? webviewTabs.get(activeTabId) : null);
+      const scope = (scopeMeta && scopeMeta.scope) || 'preview';
+      const cleanUrl = String(args.url || '').trim().replace(/^[`"'\s]+|[`"'\s]+$/g, '');
+      // 广播给渲染层：匹配 scope 的浏览器面板把此 URL 作为当前页打开（复用 openSite 通道）
+      try { mainWindow.webContents.send('browser:wv:forceOpen', cleanUrl, scope); } catch { /* ignore */ }
+      // 给渲染层建 <webview>(dom-ready)+注册 guest 的时间
+      wc = await waitForGuest(tabId || activeTabId, 8000);
+    }
+    // 某些动作即便没有已建 host 也应执行（自建 / 纯查询 / 首次导航）
+    const NO_HOST_REQUIRED = new Set(['navigate', 'new_tab', 'switch_tab', 'close_tab', 'get_tabs']);
+    if (!wc && !NO_HOST_REQUIRED.has(action)) {
+      return { error: '浏览器未打开，请先导航到页面或稍后重试（<webview> 尚未就绪）' };
+    }
+    if (wc) {
+      activeTabId = tabId || activeTabId;
+      // webview 引擎：agent 全程远程控制、常无人物理点过 guest 窗口，需显式让 guest 成为
+      // 活动输入目标，保证后续 sendInputEvent(press Enter/快捷键) / 滚动/焦点能稳定路由到它。
+      // webContents.focus() 只聚焦窗口本身(不造成闪烁)，不影响页面内现有 activeElement。
+      try { if (typeof wc.focus === 'function') wc.focus(); } catch { /* ignore */ }
+    }
+  } else {
+    if (!entry) return { error: '浏览器未打开，请先导航到页面' };
+    // R4：挂起复活 —— pageAgent 的 navigate 等操作可能指向被 LRU 逐出/空闲卸载的 tab
+    if (!entry.view) {
+      ensureBrowserView(tabId || activeTabId);
+      if (!entry.view) return { error: '浏览器未打开，请先导航到页面' };
+    }
+    wc = entry.view.webContents;
+  }
   try {
     // 确保助手已注入。navigate 在 loadURL 完成后自行注入（见 case 'navigate'）；
     // 其余 action 加 3s 超时兜底 —— 从未提交过文档的空 tab 上 executeJavaScript 可能挂起，
-    // 曾导致 get_page_info 等操作 20s IPC 超时。
-    if (action !== 'navigate') {
+    // 曾导致 get_page_info 等操作 20s IPC 超时。无 host 的动作(见 NO_HOST_REQUIRED)本就无文档可注入。
+    if (action !== 'navigate' && wc) {
       await Promise.race([injectYzAssistant(wc), new Promise((r) => setTimeout(r, 3000))]);
     }
 
@@ -1431,12 +1708,15 @@ ipcMain.handle('browserView:action', async (_e, tabId, action, args) => {
         // URL 清洗：剥离模型以 markdown 反引号/引号包裹传来的格式字符
         let cleanUrl = String(args.url || '').trim().replace(/^[`"'\s]+|[`"'\s]+$/g, '');
         if (!/^https?:\/\//i.test(cleanUrl)) return { error: `无效 URL: ${cleanUrl}` };
-        activateTab(tabId || activeTabId);
-        ensureFallbackBounds(entry);
-        // 等待首次缓存清理完成（并发会中止加载导致黑屏），加超时防缓存异常挂起
-        if (entry.cacheClearPromise) {
-          await Promise.race([entry.cacheClearPromise.catch(() => {}), new Promise((r) => setTimeout(r, 3000))]);
-          entry.cacheClearPromise = null;
+        // webview 引擎没有 entry（无 bounds / 无缓存清理流程），只有 BrowserView 分支需要处理
+        if (entry) {
+          activateTab(tabId || activeTabId);
+          ensureFallbackBounds(entry);
+          // 等待首次缓存清理完成（并发会中止加载导致黑屏），加超时防缓存异常挂起
+          if (entry.cacheClearPromise) {
+            await Promise.race([entry.cacheClearPromise.catch(() => {}), new Promise((r) => setTimeout(r, 3000))]);
+            entry.cacheClearPromise = null;
+          }
         }
         // loadURL 等完整加载（did-finish-load），慢站/挂起资源会远超渲染层 20s IPC 竞速 →
         // "IPC 导航超时"。限时 12s：超时视为"已开始加载"，提前返回当前状态（内部各段限时
@@ -1536,13 +1816,31 @@ ipcMain.handle('browserView:action', async (_e, tabId, action, args) => {
       case 'scroll': {
         return await wc.executeJavaScript(`(function(){
           var a=${JSON.stringify(args)};
-          if(a.selector){var el=window.__yzAssistant.resolve(a.selector);if(!el)return{error:'元素未找到: '+a.selector};
-            el.scrollIntoView({behavior:'smooth',block:'center'});return{success:true};}
-          var dx=a.x||a.dx||0,dy=a.y||a.dy||0;
-          window.scrollBy({left:dx,top:dy,behavior:'smooth'});
-          window.__yzAssistant.showCursor(window.innerWidth/2,window.innerHeight/2,'滚动 '+(dy>0?'↓':'↑'));
-          setTimeout(function(){window.__yzAssistant.hideCursor();},500);
-          return{success:true,scrollX:window.scrollX,scrollY:window.scrollY};
+          if(window.__yzAssistant&&a.selector){var el=window.__yzAssistant.resolve(a.selector);if(!el)return{error:'元素未找到: '+a.selector};
+            el.scrollIntoView({block:'center'});return{success:true};}
+          // 缺省处理：x/y 都没给时默认向下滚 300（避免"调用了但没给 y→0 位移=白滚"）
+          var dx=a.x!=null?a.x:(a.dx||0), dy=a.y!=null?a.y:(a.dy!=null?a.dy:300);
+          // 找真正承载滚动的容器：大量页面滚动体不是 window 而是某个可滚动 div
+          function getScroller(){
+            var e=document.scrollingElement||document.documentElement;
+            if(e && e.scrollHeight>e.clientHeight+2)return e;
+            var cands=document.querySelectorAll('*');
+            for(var i=0;i<cands.length;i++){var c=cands[i];
+              if(c.scrollHeight>c.clientHeight+24&&/auto|scroll|overlay/.test(getComputedStyle(c).overflowY))return c;}
+            return e||document.documentElement;
+          }
+          var sc=getScroller();
+          // 瞬时滚动(非 smooth)：agent 需滚后立即回读，smooth 动画会滞留导致下一条 get 读到旧区
+          sc.scrollBy({left:dx,top:dy});
+          var afterSt=sc.scrollTop||0;
+          if(window.__yzAssistant){
+            var cr=sc.getBoundingClientRect?sc.getBoundingClientRect():null;
+            var cx=sc===document.scrollingElement?(sc.scrollX||0):(cr?cr.left+cr.width/2:50);
+            var cy=sc===document.scrollingElement?(window.innerHeight/2):(cr?cr.top+cr.height/2:50);
+            window.__yzAssistant.showCursor(cx,cy,'滚动 '+(dy>=0?'↓':'↑'));
+            setTimeout(function(){window.__yzAssistant.hideCursor();},600);
+          }
+          return{success:true,containerTag:sc===document.documentElement?'document':sc.tagName.toLowerCase(),scrollTop:afterSt,scrolledBy:dy};
         })()`);
       }
       case 'hover': {
@@ -1826,11 +2124,59 @@ ipcMain.handle('browserView:action', async (_e, tabId, action, args) => {
         return { url: wc.getURL(), title: wc.getTitle() };
       }
       // ========== C4 多标签页管理（桌面端单 BrowserView，降级提示） ==========
-      case 'new_tab':
-      case 'switch_tab':
-      case 'close_tab':
+      case 'new_tab': {
+        // 多标签页：webview 引擎下每个 host 是一个 <webview>，支持真新建并返回 tabId。
+        if (isWebviewEngine()) {
+          // 归属空间固定 preview：agent/browser_new_tab 面向对话右栏的浏览器 host 新开页，
+          // 不跟随 activeTab 的空间——否则若上次在 /browser(page 空间)浏览、当前又在右栏(preview)，
+          // 广播 tabCreated(scope=page) 会被 preview 的 BrowserPanel 按空间过滤而看不到新标签。
+          const scope = 'preview';
+          const target = (() => { const u = String(args.url || '').trim(); return u; })();
+          const tabId = 'tab-' + (++tabSeq);
+          webviewTabs.set(tabId, { scope, lastActiveAt: Date.now(), wcId: null });
+          activeTabId = tabId;
+          // 通知渲染层补建 host tab 壳(:src=url 会驱动新建 <webview> 并注册 guest)，并激活
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('browserView:tabCreated', tabId, target || null, scope);
+          }
+          // 等 guest spawn + 注册(渲染层 :src 后 dom-ready) → 返回新 tab 元信息
+          let wc2 = await waitForGuest(tabId, 6000);
+          if (target && wc2) {
+            try { await wc2.loadURL(/^https?:\/\//i.test(target) ? target : 'https://' + target); } catch { /* ignore */ }
+          }
+          return { tabId, url: target || (wc2 && wc2.getURL()) || '', title: (wc2 && wc2.getTitle()) || '' };
+        }
+        return { error: '该浏览器引擎不支持 new_tab' };
+      }
+      case 'switch_tab': {
+        if (isWebviewEngine()) {
+          const tid = String(args.tabId ?? activeTabId ?? '');
+          if (webviewTabs.has(tid)) { activeTabId = tid; webviewTabs.get(tid).lastActiveAt = Date.now(); return { activeTabId: tid }; }
+          return { error: '标签页不存在: ' + tid };
+        }
+        return { error: '该浏览器引擎不支持 switch_tab' };
+      }
+      case 'close_tab': {
+        if (isWebviewEngine()) {
+          const tid = String(args.tabId ?? activeTabId ?? '');
+          webviewTabs.delete(tid);
+          if (activeTabId === tid) {
+            activeTabId = null;
+            const any1 = webviewTabs.keys().next();
+            if (!any1.done) activeTabId = any1.value;
+          }
+          return { closed: true };
+        }
+        return { error: '该浏览器引擎不支持 close_tab' };
+      }
       case 'get_tabs': {
-        return { error: '桌面端暂不支持 ' + action + '（单 BrowserView 视图），请在服务端使用或改用 browser_navigate 切换页面' };
+        if (!isWebviewEngine()) return { tabs: [] };
+        const tabs2 = [];
+        for (const [id, t] of webviewTabs) {
+          const wc2 = guestWebContents(id);
+          tabs2.push({ tabId: id, url: wc2 ? wc2.getURL() : '', title: wc2 ? wc2.getTitle() : '', scope: t.scope || 'preview' });
+        }
+        return { tabs: tabs2, activeTabId };
       }
       // ========== C5 网络请求监听（桌面端用 performance API 轮询） ==========
       case 'wait_for_request': {
@@ -2370,6 +2716,20 @@ app.whenReady().then(() => {
       const cleanUA = ua.replace(/\s{2,}/g, ' ').trim();
       session.defaultSession.setUserAgent(cleanUA);
       session.fromPartition('persist:browser-view').setUserAgent(cleanUA);
+    } catch { /* ignore */ }
+  })();
+
+  // webview 引擎：网页 window.open / target=_blank / 中键新开 ——
+  // 在 partition 上统一拦截（webview 元素事件无法可靠阻止弹窗），转成应用内新标签页，
+  // 不让它逃逸成独立系统窗口。BrowserView 引擎走各自的 setWindowOpenHandler，不受影响。
+  (function interceptWebviewPopups() {
+    try {
+      session.fromPartition('persist:browser-view').setWindowOpenHandler(({ url }) => {
+        if (url && mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('browser:wv:openTab', url);
+        }
+        return { action: 'deny' };
+      });
     } catch { /* ignore */ }
   })();
 

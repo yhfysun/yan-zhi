@@ -107,8 +107,24 @@ contextBridge.exposeInMainWorld('electronAPI', {
     },
   },
 
+  // webview 引擎：网页 window.open / target=_blank 统一转应用内新标签页
+  onOpenTab: (callback) => {
+    ipcRenderer.on('browser:wv:openTab', (_e, url) => callback(url));
+  },
+  // webview 引擎：agent 首次 navigate 时主进程请求某 scope 的浏览器面板把 URL 作为当前页打开
+  // （面板还停在主页/无 <webview> 时先由此建出 guest，浏览器才算真正"打开网址"）
+  onForceOpen: (callback) => {
+    ipcRenderer.on('browser:wv:forceOpen', (_e, url, scope) => callback(url, scope));
+  },
+
   // pageAgent 浏览器操作统一通道（IPC 直连 BrowserView，不依赖后端 Playwright）
   browser: {
     call: (action, args) => ipcRenderer.invoke('browser:call', action, args),
+    // 引擎：'webview'（DOM 内嵌，浮层可覆盖）| 'browserview'（旧原生图层）
+    engine: () => ipcRenderer.invoke('browser:engine'),
+    setEngine: (engine) => ipcRenderer.invoke('browser:setEngine', engine),
+    // webview 引擎：把 <webview> 的 guest webContentsId 注册到主进程
+    wvRegister: (tabId, wcId, scope) => ipcRenderer.invoke('browser:wv:register', tabId, wcId, scope),
+    wvUnregister: (tabId) => ipcRenderer.invoke('browser:wv:unregister', tabId),
   },
 });

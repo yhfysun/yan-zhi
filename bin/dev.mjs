@@ -300,6 +300,10 @@ function resolveElectronBin() {
 // ---------------------------------------------------------------- 步骤 1: 依赖同步
 // 关键依赖目录：只要这些都在，就认为依赖齐备，跳过 install。
 // 不依赖 hash 文件（部分沙箱环境禁止覆盖写已存在文件，会导致每次误触发 install）。
+// 注意：不只查"核心启动"依赖(vite/electron/tsx)，还必须包含"运行时动态 import"的边缘依赖
+// （docx→mammoth、pdf→unpdf、二维码→qrcode/jsqr、diff→@codemirror/*）。
+// 否则依赖缺失时 APP 能起、但用户一旦打开相关页面/保存文件触发 vite 热更新 import，
+// 就会抛 "Failed to resolve import mammoth/unpdf..." 这种哑雷（曾经真实发生）。
 const KEY_DEPS = [
   'apps/desktop/node_modules/vite',
   'apps/desktop/node_modules/electron',
@@ -308,6 +312,12 @@ const KEY_DEPS = [
   // 列在这里会导致每次启动都误触发 pnpm install 且永远装不上，故不再检查。
   'packages/ui/node_modules/vue',
   'packages/core/node_modules/xlsx',
+  // 运行时动态 import 的边缘依赖（缺失时 vite 热更新才炸，须纳入检查防哑雷）
+  'packages/core/node_modules/mammoth',        // file-read.ts docx 解析
+  'packages/core/node_modules/unpdf',          // file-read.ts pdf 解析
+  'packages/ui/node_modules/qrcode',           // Connections.vue 二维码
+  'packages/ui/node_modules/jsqr',             // Connections.vue 二维码(识)
+  'packages/ui/node_modules/@codemirror/view', // CodeEditor/DiffEditor
 ];
 
 async function syncDeps() {

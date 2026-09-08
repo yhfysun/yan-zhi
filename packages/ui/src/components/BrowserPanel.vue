@@ -1,5 +1,5 @@
 <template>
-  <div class="browser-shell">
+  <div class="browser-shell" @click="hideTabCtx">
     <!-- 多标签页栏（Chrome 风格） -->
     <div class="browser-tabbar">
       <div class="tab-list">
@@ -8,15 +8,26 @@
           class="tab-item"
           :class="{ active: tab.id === activeTabId }"
           @click="switchTab(tab.id)"
+          @contextmenu.prevent="openTabContextMenu(tab.id, $event)"
         >
           <span class="tab-favicon" v-if="tab.loading">○</span>
           <span class="tab-favicon" v-else>●</span>
           <span class="tab-title">{{ tab.title || tab.url || '新标签页' }}</span>
-          <button class="tab-close" @click.stop="closeTab(tab.id)" v-if="tabs.length > 1">×</button>
+          <button class="tab-close" @click.stop="closeTab(tab.id)" v-if="tabs.length > 1" title="关闭标签页">×</button>
         </div>
         <button class="tab-new" @click="newTab()" title="新建标签页">
           <svg viewBox="0 0 24 24" width="15" height="15"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z" fill="currentColor"/></svg>
         </button>
+      </div>
+      <!-- Tab 右键批量关闭菜单 -->
+      <div v-if="tabCtx.visible" class="tab-ctx-menu" :style="{ left: tabCtx.x + 'px', top: tabCtx.y + 'px' }"
+        @click.stop @contextmenu.prevent>
+        <div class="ctx-item" @click="ctxClose('tab')">关闭该标签页</div>
+        <div class="ctx-item" @click="ctxClose('left')">关闭左侧标签页</div>
+        <div class="ctx-item" @click="ctxClose('right')">关闭右侧标签页</div>
+        <div class="ctx-item" @click="ctxClose('others')">关闭其他标签页</div>
+        <div class="ctx-sep"></div>
+        <div class="ctx-item danger" @click="ctxClose('all')">关闭全部标签页</div>
       </div>
     </div>
 
@@ -153,8 +164,27 @@
 
     <!-- 远程浏览器渲染区 -->
     <div v-else class="browser-viewport" ref="viewportRef">
-      <!-- Electron 桌面端：BrowserView 占位 div（原生 BrowserView 会覆盖此区域） -->
-      <div v-if="isElectron" ref="browserViewPlaceholder" class="browser-view-placeholder"></div>
+      <!-- Electron + webview 引擎：DOM 内嵌 <webview>，浮层可覆盖（替代原生 BrowserView 图层） -->
+      <template v-if="isWebviewEngine">
+        <webview
+          v-for="t in tabs"
+          :key="t.id"
+          :ref="bindWebviewRef(t.id)"
+          class="page-webview"
+          :class="{ 'wv-active': t.id === activeTabId }"
+          :src="t.url || 'about:blank'"
+          partition="persist:browser-view"
+          allowpopups="true"
+          @dom-ready="onWebviewReady(t.id)"
+          @did-navigate="onWebviewNavigated(t.id, $event)"
+          @did-navigate-in-page="onWebviewNavigated(t.id, $event)"
+          @page-title-updated="onWebviewTitle(t.id, $event)"
+          @did-start-loading="onWebviewLoading(t.id, true)"
+          @did-stop-loading="onWebviewLoading(t.id, false)"
+        ></webview>
+      </template>
+      <!-- Electron + 旧引擎：BrowserView 占位 div（原生 BrowserView 会覆盖此区域） -->
+      <div v-else-if="isElectron" ref="browserViewPlaceholder" class="browser-view-placeholder"></div>
       <!-- Web 端：iframe + Playwright DOM 预渲染 -->
       <iframe v-else-if="frameSrc" :key="iframeKey" :src="frameSrc" class="page-frame"
         referrerpolicy="no-referrer" @load="onFrameLoad"
@@ -292,6 +322,13 @@ const { isDesktop } = usePlatform();
 // 检测是否在 Electron 桌面端（有 electronAPI 标识）
 const isElectron = typeof window !== 'undefined' && !!(window as any).electronAPI?.isElectron;
 
+// ── 浏览器引擎 ──
+// webview：<webview> DOM 内嵌，参与正常层叠，应用内浮层（弹窗/下拉/设置抽屉）可覆盖网页 —— 与豆包一致
+// browserview：旧原生图层，永远盖在 DOM 之上（回退用）
+// 初始值与主进程 BROWSER_ENGINE_DEFAULT 保持一致，挂载后以主进程为准校正一次。
+const browserEngine = ref<'webview' | 'browserview'>('webview');
+const isWebviewEngine = computed(() => isElectron && browserEngine.value === 'webview');
+
 // ── 组件空间：preview=对话页右栏预览（pageAgent 执行面）| page=/browser 独立浏览器页 ──
 // 两边 tab 列表完全隔离（各自独立的 browser store 实例）。
 const props = defineProps<{ scope?: 'preview' | 'page' }>();
@@ -392,6 +429,7 @@ function applyElectronScrollbarTheme() {
 
 // ── 多标签页管理函数 ──
 async function newTab(url?: string) {
+  hideTabCtx();
   const api = (window as any).electronAPI;
   let tabId = '';
   if (isElectron && api?.browserView?.createTab) {
@@ -421,6 +459,7 @@ async function newTab(url?: string) {
 }
 
 async function switchTab(tabId: string) {
+  hideTabCtx();
   if (tabId === activeTabId.value) return;
   // 保存当前标签状态
   if (activeTab.value) {
@@ -470,6 +509,49 @@ async function switchTab(tabId: string) {
     } else {
       api.browserView.hide(tabId);
     }
+  }
+}
+
+// ── Tab 右键批量关闭菜单（关闭该页/左侧/右侧/其他/全部）──
+const tabCtx = ref<{ visible: boolean; x: number; y: number; tabId: string }>({ visible: false, x: 0, y: 0, tabId: '' });
+function openTabContextMenu(tabId: string, e: MouseEvent) {
+  const W = 172, H = 206, pad = 8;
+  const x = Math.min(e.clientX, window.innerWidth - W - pad);
+  const y = Math.min(e.clientY, window.innerHeight - H - pad);
+  tabCtx.value = { visible: true, x, y, tabId };
+}
+function hideTabCtx() { if (tabCtx.value.visible) tabCtx.value.visible = false; }
+async function ctxClose(mode: 'tab' | 'left' | 'right' | 'others' | 'all') {
+  const target = tabCtx.value.tabId;
+  hideTabCtx();
+  const list: string[] = [];
+  const i = tabs.value.findIndex(t => t.id === target);
+  if (mode === 'tab') { list.push(target); }
+  else if (mode === 'left' && i >= 0) { for (let k = 0; k < i; k++) list.push(tabs.value[k].id); }
+  else if (mode === 'right' && i >= 0) { for (let k = i + 1; k < tabs.value.length; k++) list.push(tabs.value[k].id); }
+  else if (mode === 'others' && i >= 0) { for (let k = 0; k < tabs.value.length; k++) if (k !== i) list.push(tabs.value[k].id); }
+  else if (mode === 'all') { for (const t of tabs.value) list.push(t.id); }
+  if (mode !== 'all') {
+    // 逐个关闭：用闭包固定待关集合(closeTab 内部会改 tabs,不能在循环里取 idx)
+    for (const id of [...list]) {
+      const idx = tabs.value.findIndex(t => t.id === id);
+      if (idx === -1) continue;
+      if (isElectron) { try { await (window as any).electronAPI.browserView.closeTab(id, true); } catch { /* ignore */ } }
+      tabs.value.splice(idx, 1);
+      if (activeTabId.value === id) {
+        const nextTab = tabs.value[idx] || tabs.value[idx - 1] || null;
+        if (nextTab) await switchTab(nextTab.id);
+        else { activeTabId.value = ''; urlInput.value = ''; history.value = []; histIndex.value = -1; }
+      }
+    }
+  } else {
+    // 关闭全部：关光后自动新建一个空白标签，避免出现空标签栏
+    for (const id of [...list]) {
+      if (isElectron) { try { await (window as any).electronAPI.browserView.closeTab(id, true); } catch { /* ignore */ } }
+      const k = tabs.value.findIndex(t => t.id === id);
+      if (k >= 0) tabs.value.splice(k, 1);
+    }
+    if (tabs.value.length === 0) await newTab();
   }
 }
 
@@ -606,7 +688,13 @@ const frequentList = ref<any[]>([]);
 const analysis = ref<any>(null);
 const analysisGenerating = ref(false);
 const analysisError = ref('');
-const showHome = computed(() => !currentUrl.value);
+// 是否停留在"起始主页"。webview 引擎以激活 tab 的 url（单 tab 真相源）为准；
+// 旧引擎/Web 端沿用历史栈(iframe/地址依赖 currentUrl)，语义不变。
+// 根因修复：曾有"tab.url 已为目标网址、currentUrl(全局历史)却为空 → 显示首页而非网页"的
+// 状态脱节；用 activeTab.url 判据可消除(URL 到了 tab 就应切走主页)。
+const showHome = computed(() => isWebviewEngine.value
+  ? !(activeTab.value && activeTab.value.url)
+  : !currentUrl.value);
 
 const pinned = ref<Pin[]>(safeGetJson('browser_pinned', DEFAULT_PINNED));
 const searchEngine = ref(safeGetString('browser_search_engine', 'baidu'));
@@ -745,9 +833,9 @@ async function navigate() {
   if (!target) return;
   pushHistory(target);
   loading.value = true;
-  iframeKey.value++;
   // 更新当前标签的 url
   if (activeTab.value) {
+    // url 变化会驱动 <webview :src> 自动加载（webview 引擎）；旧引擎/Web 端走下面显式加载
     activeTab.value.url = target;
     activeTab.value.urlInput = target;
     // 快照实时同步：tab.history/histIndex 只在 switchTab 时互存的话，路由切换（/browser 页 ↔
@@ -756,7 +844,21 @@ async function navigate() {
     activeTab.value.history = [...history.value];
     activeTab.value.histIndex = histIndex.value;
   }
-  // Electron 桌面端：用 BrowserView 加载 URL，并同步 bounds
+  // webview 引擎：由 :src 响应式驱动加载，且需等 guest 出现（Vue 渲染 <webview> 后 dom-ready 注册）
+  if (isWebviewEngine.value) {
+    const webEl = webviewEls.get(activeTabId.value);
+    if (!webEl) {
+      // guest 尚未渲染：等下一次 watch(激活 url) 兜底加载
+      await nextTick();
+      const now = webviewEls.get(activeTabId.value);
+      if (now) now.src = target;
+    }
+    // 归还控制权：导航实际由 guest 的 did-navigate 事件回写（onWebviewNavigated）
+    return;
+  }
+  loading.value = true;
+  iframeKey.value++;
+  // Electron + 旧引擎：用 BrowserView 加载 URL，并同步 bounds
   if (isElectron) {
     const tid = activeTabId.value;
     // 等待 Vue 重新渲染（browserViewPlaceholder 需要先出现在 DOM 中才能计算 bounds）
@@ -807,16 +909,25 @@ function goHome() {
   }
   // Electron 桌面端：隐藏 BrowserView，让主页可见
   if (isElectron) {
-    (window as any).electronAPI.browserView.hide(activeTabId.value);
     electronCanBack.value = false;
     electronCanForward.value = false;
   }
+  // webview 引擎：activeTab.url 清空 → :src 变 about:blank，且 v-if(!currentUrl) 隐藏视口显示主页
 }
 
 // 后退/前进/刷新（前端切换 iframe src，重新触发 /render 加载）
 async function goBack() {
   if (loading.value) return;
-  // Electron 桌面端：调用 BrowserView.goBack
+  // webview 引擎：驱动原生 back 实现的后退
+  if (isWebviewEngine.value) {
+    const webEl = webviewEls.get(activeTabId.value);
+    if (!webEl || !electronCanBack.value) return;
+    try {
+      await (window as any).electronAPI.browserView.back(activeTabId.value);
+    } catch { /* ignore */ }
+    return;
+  }
+  // Electron + 旧引擎：调用 BrowserView.goBack
   if (isElectron) {
     const tid = activeTabId.value;
     if (!electronCanBack.value) return;
@@ -837,7 +948,16 @@ async function goBack() {
 
 async function goForward() {
   if (loading.value) return;
-  // Electron 桌面端：调用 BrowserView.goForward
+  // webview 引擎：驱动原生 forward 实现的前进
+  if (isWebviewEngine.value) {
+    const webEl = webviewEls.get(activeTabId.value);
+    if (!webEl || !electronCanForward.value) return;
+    try {
+      await (window as any).electronAPI.browserView.forward(activeTabId.value);
+    } catch { /* ignore */ }
+    return;
+  }
+  // Electron + 旧引擎：调用 BrowserView.goForward
   if (isElectron) {
     const tid = activeTabId.value;
     if (!electronCanForward.value) return;
@@ -858,7 +978,19 @@ async function goForward() {
 
 async function refresh() {
   if (!currentUrl.value) return;
-  // Electron 桌面端：调用 BrowserView.reload（不检查 loading，允许刷新正在加载的页面）
+  // webview 引擎：直接 reload 激活的 guest（.src 指向相同 url 不会触发重新加载，须显式 reload）
+  if (isWebviewEngine.value) {
+    const webEl = webviewEls.get(activeTabId.value);
+    if (!webEl) return;
+    loading.value = true;
+    try {
+      await (window as any).electronAPI.browserView.reload(activeTabId.value);
+    } catch (e) {
+      console.warn('[browser] reload 失败', e);
+    }
+    return;
+  }
+  // Electron + 旧引擎：调用 BrowserView.reload（不检查 loading，允许刷新正在加载的页面）
   if (isElectron) {
     loading.value = true;
     try {
@@ -1070,16 +1202,109 @@ watch(currentUrl, (u) => {
  */
 const isBrowserPageRoute = computed(() => route.name === 'browser');
 const shouldBeVisible = computed(() => {
-  // 浮层避让：任何被原生 BrowserView 挡住的弹窗/下拉打开期间，强制视为不可见
-  // （走统一闸门，ResizeObserver / 节流补帧等任何 bounds 同步都会得到"隐藏"结果，不会竞态覆盖）
-  if (moreMenuOpen.value || titleBarOverlayOpen.value || showBookmarks.value || showHistory.value ||
-      showSettings.value || showPasswords.value || showPasswordEditor.value || settingsDrawerOpen.value) return false;
+  // 浮层避让：仅旧 BrowserView 原生图层需要（它永远盖在 DOM 上方，弹窗会被挡）。
+  // webview 引擎下网页是普通 DOM 节点，弹窗/下拉天然浮在其上，无需本地隐藏。
+  if (!isWebviewEngine.value) {
+    if (moreMenuOpen.value || titleBarOverlayOpen.value || showBookmarks.value || showHistory.value ||
+        showSettings.value || showPasswords.value || showPasswordEditor.value || settingsDrawerOpen.value) return false;
+  }
   return browserScope === 'page'
     ? isBrowserPageRoute.value
     : chatStore.rightPanelOpen && chatStore.activeTab?.kind === 'browser';
 });
 // 可见性变化（右栏收起展开、切 tab）立即同步一次，不等节流窗口
 watch(shouldBeVisible, () => { nextTick(() => syncBrowserViewBounds(true)); }, { flush: 'post' });
+
+// webview 引擎：激活 tab 切换时补一次滚动条样式注入——
+// 后台 tab 加载结束(did-stop-loading)时 onWebviewLoading 不覆盖非激活，故切回时主动重注入样式。
+watch(
+  () => (isWebviewEngine.value ? activeTabId.value : ''),
+  () => { if (isWebviewEngine.value) { nextTick(() => applyElectronScrollbarTheme()); } },
+  { flush: 'post' },
+);
+
+// ── webview 引擎：DOM 内嵌网页的元素级事件处理 ──
+// 旧引擎下这些状态由主进程推送（browserView:onNavigated/onLoaded/onTitleUpdated）；
+// webview 引擎下 guest 就在渲染层 DOM 里，直接监听元素事件，链路更短也更可靠。
+const webviewEls = new Map<string, any>();
+function setWebviewRef(tabId: string, el: any) {
+  if (el) webviewEls.set(tabId, el);
+  else webviewEls.delete(tabId);
+}
+/** 模板 ref 回调工厂：Vue 对每个 tab 生成的箭头函数参数需显式 any（strict 无隐式 any） */
+const bindWebviewRef = (tabId: string) => (el: any) => setWebviewRef(tabId, el);
+
+/** guest 挂载完成：把 webContentsId 注册给主进程，pageAgent 才能操作这个 tab */
+function onWebviewReady(tabId: string) {
+  const el = webviewEls.get(tabId);
+  if (!el) return;
+  try {
+    const id = typeof el.getWebContentsId === 'function' ? el.getWebContentsId() : null;
+    if (id) {
+      (window as any).electronAPI?.browser?.wvRegister?.(tabId, id, browserScope);
+    } else {
+      console.warn('[browser] webview.getWebContentsId 不可用，pageAgent 将无法操作该 tab');
+    }
+  } catch (e) {
+    console.warn('[browser] webview guest 注册失败', e);
+  }
+}
+
+/** 导航状态统一处理（主进程推送与 webview 元素事件共用） */
+function applyNavigated(tid: string, url: string) {
+  if (tid !== activeTabId.value || !url) return;
+  // 旧引擎：面板未打开却收到导航事件 → 隐藏图层避免残留（webview 引擎无需此兜底）
+  if (!isWebviewEngine.value && !shouldBeVisible.value) {
+    try { (window as any).electronAPI.browserView.hide(tid); } catch { /* ignore */ }
+    return;
+  }
+  if (url !== currentUrl.value) {
+    urlInput.value = url;
+    // 起始页/空历史状态下 histIndex=-1，history[-1]=url 是无效写入 → currentUrl 永远为空、
+    // showHome 卡死。无有效历史项时按新导航入栈。
+    if (histIndex.value < 0 || histIndex.value >= history.value.length) {
+      pushHistory(url);
+    } else {
+      history.value[histIndex.value] = url;
+    }
+    if (activeTab.value) {
+      activeTab.value.url = url;
+      activeTab.value.urlInput = url;
+      // 快照实时同步（防止路由切换重挂后恢复到过期快照变首页）
+      activeTab.value.history = [...history.value];
+      activeTab.value.histIndex = histIndex.value;
+    }
+  }
+  // 导航后更新可前进/后退状态
+  const api = (window as any).electronAPI;
+  api.browserView.canGoBack(tid).then((v: boolean) => { electronCanBack.value = v; });
+  api.browserView.canGoForward(tid).then((v: boolean) => { electronCanForward.value = v; });
+}
+
+/** 标题更新统一处理（主进程推送与 webview 元素事件共用） */
+function applyTitle(tid: string, title: string) {
+  const tab = tabs.value.find(t => t.id === tid);
+  if (tab && title) tab.title = title;
+  if (browserScope === 'preview' && tid === activeTabId.value && title) {
+    const bt = chatStore.previewTabs.find(t => t.kind === 'browser');
+    if (bt) bt.name = title;
+  }
+}
+
+function onWebviewNavigated(tabId: string, e: any) {
+  applyNavigated(tabId, e?.url || '');
+}
+function onWebviewTitle(tabId: string, e: any) {
+  applyTitle(tabId, e?.title || '');
+}
+function onWebviewLoading(tabId: string, isLoading: boolean) {
+  if (tabId !== activeTabId.value) return;
+  loading.value = isLoading;
+  if (activeTab.value) activeTab.value.loading = isLoading;
+  // webview 引擎：guest 原样加载完（did-stop-loading）后重注入自定义滚动条样式。
+  // 插入的 CSS 会随导航重置，需在每次加载结束都补一次与旧 BrowserView did-finish-load 一致。
+  if (!isLoading && isWebviewEngine.value) applyElectronScrollbarTheme();
+}
 
 // 智能体（LLM）导航通道：agent 写 currentBrowserUrl → 预览面板跟随导航。
 // 仅 preview 空间实例响应；/browser 独立页（page 空间）不跟随 agent 导航（两边已隔离）。
@@ -1399,6 +1624,14 @@ function onMenuCommand(cmd: string) {
 }
 
 onMounted(async () => {
+  // 引擎以主进程为准（BROWSER_ENGINE_DEFAULT）：主进程是单一真相源，
+  // 渲染层只负责按引擎渲染不同载体（<webview> 元素 vs BrowserView 占位 div）。
+  if (isElectron) {
+    try {
+      const eng = await (window as any).electronAPI?.browser?.engine?.();
+      if (eng === 'webview' || eng === 'browserview') browserEngine.value = eng;
+    } catch { /* 主进程无此 API 时保持默认值 */ }
+  }
   // 恢复式挂载：store 中已有 tabs（路由 /browser ↔ /chat 切换、预览面板重开）时
   // 恢复激活原 tab，绝不新建空 tab —— 否则每次挂载累积空白 tab 并把真实 tab 挤出
   // 主进程 MAX_TABS=8 的 LRU 窗口（切回来"变回初始"的根因）。
@@ -1435,34 +1668,17 @@ onMounted(async () => {
   if (isElectron) {
     const api = (window as any).electronAPI;
     // 监听 BrowserView 导航事件，同步地址栏 URL（带 tabId）
-    api.browserView.onNavigated((tid: string, url: string) => {
-      // 只处理当前激活标签的导航事件
-      if (tid !== activeTabId.value) return;
-      // 面板未打开却收到导航事件：隐藏图层避免残留（复用单一可见性闸门）
-      if (!shouldBeVisible.value) {
-        try { api.browserView.hide(tid); } catch { /* ignore */ }
-        return;
-      }
-      if (url && url !== currentUrl.value) {
-        urlInput.value = url;
-        // 起始页/空历史状态下 histIndex=-1，history[-1]=url 是无效写入 → currentUrl 永远为空、
-        // showHome 卡死（占位区不出现 → BrowserView 永远挂不上）。无有效历史项时按新导航入栈。
-        if (histIndex.value < 0 || histIndex.value >= history.value.length) {
-          pushHistory(url);
-        } else {
-          history.value[histIndex.value] = url;
-        }
-        if (activeTab.value) {
-          activeTab.value.url = url;
-          activeTab.value.urlInput = url;
-          // 快照实时同步（同 navigate()：防止路由切换重挂后恢复到过期快照变首页）
-          activeTab.value.history = [...history.value];
-          activeTab.value.histIndex = histIndex.value;
-        }
-      }
-      // 导航后更新可前进/后退状态
-      api.browserView.canGoBack(tid).then((v: boolean) => { electronCanBack.value = v; });
-      api.browserView.canGoForward(tid).then((v: boolean) => { electronCanForward.value = v; });
+    // 导航/标题统一走 applyNavigated / applyTitle（webview 元素事件也复用同一套，避免两份漂移）
+    api.browserView.onNavigated((tid: string, url: string) => applyNavigated(tid, url));
+    // 网页 window.open / target=_blank：主进程在 partition 上拦截后转成此事件，
+    // 统一在应用内新标签页打开，弹窗不会逃逸成系统窗口
+    (window as any).electronAPI?.onOpenTab?.((url: string) => { if (url) newTab(url); });
+    // agent 首次 navigate：主进程广播"在某 scope 打开 URL"——若面板仍停主页(无 <webview>)由此把它真正打开
+    (window as any).electronAPI?.onForceOpen?.((url: string, scope?: string) => {
+      if (scope && scope !== browserScope) return; // 只接管归属自己空间的导航
+      if (!url) return;
+      if (currentUrl.value === url) return;        // 已在目标页，不重复导航
+      openSite(url);
     });
     // 主进程在渲染层重载完成（did-finish-load）后的"重认领"通知：
     // did-start-navigation 兜底会摘除全部 BrowserView，恢复依赖渲染层重挂链路；
@@ -1521,14 +1737,10 @@ onMounted(async () => {
     });
     // 页面 title 变化 → 更新 tab 标题（真实网站名而非 URL）+ 对话页 browser tab 名
     // 对话页 tab chip 名称只由 preview 空间实例更新（page 空间的网页标题不牵连对话页）
-    api.browserView.onTitleUpdated?.((tid: string, title: string) => {
-      const tab = tabs.value.find(t => t.id === tid);
-      if (tab && title) tab.title = title;
-      if (browserScope === 'preview' && tid === activeTabId.value && title) {
-        const bt = chatStore.previewTabs.find(t => t.kind === 'browser');
-        if (bt) bt.name = title;
-      }
-    });
+    api.browserView.onTitleUpdated?.((tid: string, title: string) => applyTitle(tid, title));
+
+    // webview 引擎：网页就在 DOM 里，无需 bounds 同步 / 无需主进程推送导航事件
+    if (isWebviewEngine.value) return;
 
     // ResizeObserver 监听占位 div 尺寸变化，同步 BrowserView bounds
     browserViewResizeObserver = new ResizeObserver(() => syncBrowserViewBounds());
@@ -1649,6 +1861,20 @@ onUnmounted(() => {
 }
 .tab-new:hover { color: var(--el-text-color-primary, #202124); background: rgba(0,0,0,0.06); }
 [data-theme="dark"] .tab-new:hover { color: #fff; background: rgba(255,255,255,0.08); }
+
+/* Tab 右键批量关闭菜单 */
+.tab-ctx-menu {
+  position: fixed; min-width: 168px; z-index: 3000; padding: 4px;
+  background: var(--el-bg-color, #fff); border: 1px solid var(--el-border-color-lighter, #e0e0e0);
+  border-radius: 8px; box-shadow: 0 6px 20px rgba(0,0,0,0.14); user-select: none;
+}
+[data-theme="dark"] .tab-ctx-menu { background: #2b2d33; border-color: #3c3f45; }
+.ctx-item { padding: 7px 12px; font-size: 13px; border-radius: 6px; cursor: pointer; white-space: nowrap; color: var(--el-text-color-primary); }
+.ctx-item:hover { background: var(--el-color-primary-light-9, #f3f0ff); }
+[data-theme="dark"] .ctx-item:hover { background: rgba(124,58,237,0.22); }
+.ctx-item.danger { color: #e5484d; }
+.ctx-item.danger:hover { background: rgba(229,72,77,0.12); }
+.ctx-sep { height: 1px; margin: 4px 6px; background: var(--el-border-color-lighter, #eee); }
 
 /* Chrome 风格工具栏 */
 .browser-toolbar {
@@ -1792,6 +2018,18 @@ onUnmounted(() => {
 
 /* Electron 桌面端：BrowserView 占位 div（原生 BrowserView 会覆盖此区域） */
 .browser-view-placeholder { width: 100%; height: 100%; flex: 1; min-height: 0; }
+
+/* webview 引擎：<webview> 作为普通 DOM 节点铺满视口。
+   非激活 tab 保留渲染（后台 tab 的截图 / JS 注入仍可用），只移出视觉层，
+   不用 display:none —— 那会让 guest 停止合成，capturePage 截到空白。 */
+.page-webview {
+  position: absolute; left: 0; top: 0; right: 0; bottom: 0;
+  width: 100%; height: 100%;
+  border: 0; background: #fff;
+  opacity: 0; pointer-events: none; z-index: 0;
+}
+.page-webview.wv-active { opacity: 1; pointer-events: auto; z-index: 1; }
+[data-theme="dark"] .page-webview { background: #1b1d23; }
 
 .loading-overlay {
   position: absolute; inset: 0; display: flex; flex-direction: column;
