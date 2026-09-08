@@ -46,6 +46,10 @@
       <BrowserPanel scope="preview" />
     </div>
 
+    <div v-if="dataTab" v-show="dataTab.id === store.activeTabId" class="right-panel-body">
+      <DataQueryWorkbench v-if="dataTab.contract" :key="dataTab.id" :contract="dataTab.contract" />
+    </div>
+
     <!-- 空态：无 tab 时三个入口 -->
     <div v-if="store.previewTabs.length === 0" class="right-panel-empty">
       <button class="right-panel-empty-entry" @click="openFileEntry">
@@ -57,19 +61,23 @@
       <button v-if="hasWorkspaceDir" class="right-panel-empty-entry" @click="openGitEntry">
         <el-icon><Folder /></el-icon><span>Git 文件</span>
       </button>
+      <button class="right-panel-empty-entry" @click="store.openTab({ kind: 'data', name: '数据浏览', contract: defaultDataContract })">
+        <el-icon><Grid /></el-icon><span>数据浏览</span>
+      </button>
     </div>
   </aside>
 </template>
 
 <script setup lang="ts">
 import { computed, ref, type Component } from 'vue';
-import { Close, Document, Link, Folder } from '@element-plus/icons-vue';
+import { Close, Document, Link, Folder, Grid } from '@element-plus/icons-vue';
 import { useChat } from '../../composables/chat/useChat';
 import { useSettingsStore } from '../../stores/settings';
-import type { PreviewTab } from '../../stores/chat';
+import type { DataTabContract, PreviewTab } from '../../stores/chat';
 import FilePreview from '../FilePreview.vue';
 import BrowserPanel from '../BrowserPanel.vue';
 import ChatGitPanel from './ChatGitPanel.vue';
+import DataQueryWorkbench from './DataQueryWorkbench.vue';
 
 const { store, closeRightPanel } = useChat();
 
@@ -80,6 +88,14 @@ const hasWorkspaceDir = computed(() => !!settingsStore.settings.workspaceDir);
 const fileTabs = computed(() => store.previewTabs.filter((t) => t.kind === 'file'));
 const gitTab = computed(() => store.previewTabs.find((t) => t.kind === 'git') || null);
 const browserTab = computed(() => store.previewTabs.find((t) => t.kind === 'browser') || null);
+const dataTab = computed(() => store.previewTabs.find((t) => t.kind === 'data') || null);
+
+/** 空态「数据浏览」的默认契约：内置项目库的 conversation 表（真实存在的种子演示表） */
+const defaultDataContract: DataTabContract = {
+  title: '会话明细',
+  table: 'conversation',
+  filterCols: ['pinned'],
+};
 
 /** 仓库名（Git tab 标题） */
 const repoName = computed(() => {
@@ -90,6 +106,7 @@ const repoName = computed(() => {
 function tabIconComp(tab: PreviewTab): Component {
   if (tab.kind === 'file') return Document;
   if (tab.kind === 'git') return Folder;
+  if (tab.kind === 'data') return Grid;
   return Link;
 }
 
@@ -104,6 +121,7 @@ function tabTitle(tab: PreviewTab): string {
     return tab.name || '浏览器';
   }
   if (tab.kind === 'git') return repoName.value;
+  if (tab.kind === 'data') return tab.contract?.title || '数据浏览';
   return tab.name;
 }
 

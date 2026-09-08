@@ -14,6 +14,8 @@ export const DATASOURCE_TYPES: readonly DataSourceType[] = [
   'mysql', 'postgres', 'dm', 'oracle', 'sqlite', 'project',
 ];
 
+export type RunParam = string | number | boolean | null;
+
 export interface QueryResult {
   columns: string[];
   rows: Record<string, unknown>[];
@@ -21,6 +23,14 @@ export interface QueryResult {
   truncated: boolean;
   latencyMs: number;
 }
+
+/** 参数化执行入参：SQL 母语占位符 + 值数组（顺序对应）。 */
+export interface ParamQueryResult extends QueryResult {
+  paramCount: number;
+}
+
+/** 方言占位符形态：sqlite/mysql 用 `?`，postgres 用 `$1/$2…`，oracle/dm 拼参数化不支持 */
+export type ParamStyle = '?' | 'pg' | 'none';
 
 export interface SchemaColumn {
   name: string;
@@ -48,6 +58,8 @@ export interface Connector {
   readonly type: DataSourceType;
   test(): Promise<TestResult>;
   query(sql: string, opts?: { maxRows?: number; timeoutMs?: number }): Promise<QueryResult>;
+  /** 参数绑定执行。params 按 SQL 内占位符顺序一一对应（? 或 pg $n）。不支持时抛可读错误。 */
+  queryParam(sql: string, params: RunParam[], opts?: { maxRows?: number; timeoutMs?: number }): Promise<ParamQueryResult>;
   schemaInfo(): Promise<SchemaTable[]>;
   close(): void;
 }
@@ -164,6 +176,24 @@ class SqliteLikeConnector implements Connector {
     };
   }
 
+  async queryParam(sql: string, params: RunParam[], opts?: { maxRows?: number }): Promise<ParamQueryResult> {
+    // better-sqlite3 原生 `?` 占位 + 顺序传参即真绑定；驱动层负责类型与转义，杜绝字符串拼值
+    const start = Date.now();
+    const maxRows = opts?.maxRows ?? DEFAULT_MAX_ROWS;
+    const stmt = this.conn.prepare(sql);
+    const columns = (stmt.columns() || []).map((c) => c.name);
+    const all = stmt.all(...params) as Record<string, unknown>[];
+    const rows = all.slice(0, maxRows);
+    return {
+      columns,
+      rows,
+      rowCount: rows.length,
+      truncated: all.length > maxRows,
+      latencyMs: Date.now() - start,
+      paramCount: params.length,
+    };
+  }
+
   async schemaInfo(): Promise<SchemaTable[]> {
     const tables = this.conn
       .prepare(
@@ -200,7 +230,7 @@ class SqliteLikeConnector implements Connector {
 
 interface MysqlField { name?: string }
 type MysqlPool = {
-  query: (cfg: { sql: string; timeout?: number }) => Promise<[Record<string, unknown>[], MysqlField[]]>;
+  query: (cfg: { sql: string; values?: unknown[]; timeout?: number }) => Promise<[Record<string, unknown>[], MysqlField[]]>;
   end: () => Promise<void>;
 };
 
@@ -259,6 +289,29 @@ class MysqlConnector implements Connector {
     return { columns, rows, rowCount: rows.length, truncated: rowsAll.length > maxRows, latencyMs: Date.now() - start };
   }
 
+  async queryParam(sql: string, params: RunParam[], opts?: { maxRows?: number; timeoutMs?: number }): Promise<ParamQueryResult> {
+    // mysql2 用对象 values 字段做 `?` 绑定（driver 原生转义），防字符串拼值。
+    // 注意：不再套 withRowCap——把带绑定参数的语句包成派生表会改变占位符作用域，
+    // 行数上限由调用方(query-contract pager)在 SQL 尾部显式 LIMIT 控制，这里只做结果集截断兜底。
+    const start = Date.now();
+    const pool = await this.pool();
+    const maxRows = opts?.maxRows ?? DEFAULT_MAX_ROWS;
+    const [raw, fields] = await pool.query({
+      sql,
+      values: params,
+      timeout: opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+    });
+    const rowsAll = raw as Record<string, unknown>[];
+    const columns = Array.isArray(fields) && fields.length
+      ? fields.map((f) => f.name || '').filter(Boolean)
+      : Object.keys(rowsAll[0] || {});
+    const rows = rowsAll.slice(0, maxRows);
+    return {
+      columns, rows, rowCount: rows.length,
+      truncated: rowsAll.length > maxRows, latencyMs: Date.now() - start, paramCount: params.length,
+    };
+  }
+
   async schemaInfo(): Promise<SchemaTable[]> {
     const pool = await this.pool();
     const [rows] = await pool.query({
@@ -288,7 +341,7 @@ class MysqlConnector implements Connector {
 // ===== PostgreSQL（pg 连接池；只读数据源在会话层强制 default_transaction_read_only）=====
 
 type PgClient = {
-  query: (sql: string) => Promise<{ rows: Record<string, unknown>[]; fields: { name: string }[] }>;
+  query: (sql: string, values?: unknown[]) => Promise<{ rows: Record<string, unknown>[]; fields: { name: string }[] }>;
   release: () => void;
 };
 type PgPool = {
@@ -364,6 +417,31 @@ class PgConnector implements Connector {
         rowCount: rows.length,
         truncated: r.rows.length > maxRows,
         latencyMs: Date.now() - start,
+      };
+    } finally {
+      client.release();
+    }
+  }
+
+  async queryParam(sql: string, params: RunParam[], opts?: { maxRows?: number; timeoutMs?: number }): Promise<ParamQueryResult> {
+    // pg 用 `$1/$2…` 占位，values 数组一一对应（driver 原生绑定），防字符串拼值
+    const start = Date.now();
+    const client = await this.client();
+    try {
+      const timeout = opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+      if (timeout > 0) await client.query(`SET statement_timeout = ${Math.floor(timeout)}`);
+      const maxRows = opts?.maxRows ?? DEFAULT_MAX_ROWS;
+      // pg `$n` 占位：直接透传 values 做 driver 原生绑定；行数上限由调用方显式 LIMIT，
+      // 此处不做 withRowCap 包裹以免破坏 $n 作用域，仅结果集截断兜底。
+      const r = await client.query(sql, params);
+      const rows = r.rows.slice(0, maxRows);
+      return {
+        columns: r.fields.map((f) => f.name),
+        rows,
+        rowCount: rows.length,
+        truncated: r.rows.length > maxRows,
+        latencyMs: Date.now() - start,
+        paramCount: params.length,
       };
     } finally {
       client.release();
@@ -471,6 +549,11 @@ class OracleLikeConnector implements Connector {
     const columns = (r.metaData || []).map((m) => m.name);
     const rows = rowsAll.slice(0, maxRows);
     return { columns, rows, rowCount: rows.length, truncated: rowsAll.length > maxRows, latencyMs: Date.now() - start };
+  }
+
+  async queryParam(): Promise<ParamQueryResult> {
+    // Oracle/DM 绑定执行需 ora:bind 位置绑定，Q1 不纳入（明细主链路首要覆盖 sqlite/project + mysql/pg）
+    throw new Error(`${this.type} 驱动暂不支持参数化浏览；请改用 SQL 控制台或切换 sqlite/pg/mysql 数据源`);
   }
 
   async schemaInfo(): Promise<SchemaTable[]> {

@@ -1,7 +1,7 @@
 ﻿// 聊天 store
 import { defineStore } from 'pinia';
 import { ref, computed, nextTick } from 'vue';
-import type { Conversation, Message, Platform, Model, DeltaToolCall } from '@yan-zhi/shared';
+import type { Conversation, Message, Platform, Model, DeltaToolCall, InlineDataView } from '@yan-zhi/shared';
 import { getPlatformAdapter, LlmClient, ContextWindow, getToolRegistry } from '@yan-zhi/core';
 import { uid } from '@yan-zhi/shared';
 import { useMcpStore } from './mcp';
@@ -144,7 +144,9 @@ export interface ConfirmationAnswer {
 // 替换旧三态互斥模型（rightPanelTab 单枚举 + previewingFile 单值）：
 // 旧模型物理上无法同时打开 2 个文件。新模型 previewTabs[] 并存 + activeTabId 激活。
 // file tab 可多开（按 path 幂等）；browser/git 为单例（内容组件单实例，浏览器内部自管多 tab）。
-export type PreviewTabKind = 'file' | 'browser' | 'git';
+export type PreviewTabKind = 'file' | 'browser' | 'git' | 'data';
+/** 数据浏览契约：与 shared.InlineDataView 对齐（聊天内嵌与右栏面板公用同一结构） */
+export type DataTabContract = InlineDataView;
 export interface PreviewTab {
   id: string;
   kind: PreviewTabKind;
@@ -152,6 +154,7 @@ export interface PreviewTab {
   path?: string;       // file：文件绝对路径（幂等 key）
   url?: string;        // browser：打开时的初始 URL
   repoPath?: string;   // git：仓库路径
+  contract?: DataTabContract; // data：待浏览的查询契约
   createdAt: number;
 }
 
@@ -227,13 +230,22 @@ export const useChatStore = defineStore('chat', () => {
     () => previewTabs.value.find((t) => t.id === activeTabId.value) || null,
   );
 
-  /** 打开（或激活已存在的）预览 tab。file 按 path 幂等复用；browser/git 单例复用 */
+  /** 打开（或激活已存在的）预览 tab。file 按 path 幂等复用；browser/git 单例复用；data 单例并覆盖其契约内容 */
   function openTab(tab: Omit<PreviewTab, 'id' | 'createdAt'>): string {
     const existing =
       tab.kind === 'file' && tab.path
         ? previewTabs.value.find((t) => t.kind === 'file' && t.path === tab.path)
         : previewTabs.value.find((t) => t.kind === tab.kind);
     if (existing) {
+      if (existing.kind === 'data') {
+        // 重新打开数据浏览：沿用同一 tab，替换为最新契约，触发面板刷新
+        Object.assign(existing, {
+          name: tab.name,
+          contract: tab.contract,
+        });
+      } else if (existing.kind === 'browser' && tab.url) {
+        existing.url = tab.url;
+      }
       activeTabId.value = existing.id;
       rightPanelOpen.value = true;
       return existing.id;
@@ -268,7 +280,7 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   // ===== 兼容层：旧三态字段改为派生只读（迁移期读取点不改可跑通）=====
-  const rightPanelTab = computed<'file' | 'browser' | 'git'>(() => activeTab.value?.kind || 'file');
+  const rightPanelTab = computed<PreviewTabKind>(() => activeTab.value?.kind || 'file');
   const previewingFile = computed<{ name: string; path: string } | null>(() => {
     const t = activeTab.value;
     return t && t.kind === 'file' && t.path ? { name: t.name, path: t.path } : null;
@@ -798,6 +810,53 @@ export const useChatStore = defineStore('chat', () => {
     return null;
   }
 
+  /** 把数据浏览契约内嵌到当前会话最后一条助手消息（聊天流程里直接出动态看板） */
+  function nestDataViewIntoChat(view: InlineDataView): boolean {
+    const convId = currentConvId.value;
+    const msgs = convId ? messagesByConv.value[convId] : undefined;
+    if (!msgs?.length) return false;
+    // 取最后一条 assistant 消息（同一次回复里可先后多次 data_query_view，均挂到最后一条正文消息）
+    let target: Message | null = null;
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      if (msgs[i].role === 'assistant') {
+        // 优先存在正文或正是正在被渲染的那条（含流式中）；避免附到纯推理/空 content 中转
+        target = msgs[i];
+        break;
+      }
+    }
+    // 若没有 assistant，仍给用户消息后的首个空 slot 兜底——正常至少有一条 assistant
+    if (!target) return false;
+    // 复用已有 dataView（一个消息同源多列合约少见，直接覆盖为最新）
+    target.dataView = { ...target.dataView, ...view };
+    return true;
+  }
+
+  /** data_query_view：把模型产出的数据浏览契约【内嵌到当前聊天流程的助手消息】出动态看板。
+   *  取数完全由 DataQueryWorkbench 内 /run 参数化完成，不经大模型。 */
+  async function openDataViewFromArgs(args: unknown): Promise<{ ok: boolean; result?: unknown; msg?: string }> {
+    const a = (args || {}) as Record<string, unknown>;
+    const table = typeof a.table === 'string' && a.table.trim() ? a.table.trim() : undefined;
+    const base = typeof a.base === 'string' && a.base.trim() ? a.base.trim() : undefined;
+    if (!table && !base) {
+      return { ok: false, msg: 'data_query_view 需要 table（表名）或 base（只读 SQL）之一。取数后端参数化执行，不改此处猜数据。' };
+    }
+    const contract: DataTabContract = {
+      datasourceId: (typeof a.datasourceId === 'string' && a.datasourceId.trim()) ? a.datasourceId.trim() : undefined,
+      table,
+      base,
+      title: (typeof a.title === 'string' && a.title.trim()) ? a.title.trim() : (table || '数据浏览'),
+      filterCols: Array.isArray(a.filterCols) ? (a.filterCols as unknown[]).filter((c): c is string => typeof c === 'string') : undefined,
+    };
+    const dsInfo = (typeof a.datasourceId === 'string' && a.datasourceId.trim()) ? `（数据源 ${a.datasourceId}）` : '';
+    // 优先内嵌到聊天流程（用户对「动态看板」的定位）：消息区直接出现可交互看板
+    if (nestDataViewIntoChat(contract)) {
+      return { ok: true, result: `已在本条回复内嵌数据看板：${contract.title || table}${dsInfo}。可直接翻页/加过滤器/切表格·折线·柱·饼，全程参数化，不经大模型。` };
+    }
+    // 兜底：无助手消息上下文时开右栏数据面板
+    openTab({ kind: 'data', name: contract.title || '数据浏览', contract });
+    return { ok: true, result: `已在数据浏览面板打开：${contract.title}${table ? `（表 ${table}）` : ''}${dsInfo}。可在此翻页、加过滤器、切表格/折线/柱/饼。` };
+  }
+
   /** 统一工具调用分发（A4 分发顺序）：
    *  1) mcp_{shortId}__{toolName} → MCP callTool
    *  2) custom_{idTag}_{name}     → 服务端沙箱 /api/tools/:id/execute（沙箱依赖 node:vm，仅服务端可用）
@@ -834,6 +893,20 @@ export const useChatStore = defineStore('chat', () => {
           const target = /^https?:\/\//i.test(rawUrl) ? rawUrl : 'https://' + rawUrl;
           let host = target;
           try { host = new URL(target).hostname; } catch { /* keep raw */ }
+          // openInNewTab：真新建 host 标签页返回 tabId（不再退化成覆盖当前页）
+          if ((args as any).openInNewTab === true) {
+            let nt: any = null;
+            try {
+              nt = await (window as any).electronAPI.browserView.action(null, 'new_tab', { url: target });
+            } catch { /* ignore */ }
+            if (nt && nt.tabId !== undefined) {
+              // 新 host 已由主进程广播 tabCreated、渲染层补壳并用 :src=target 拉取页面
+              const text = `已在新标签页打开。\ntabId=${nt.tabId}\nURL: ${target}\n后续读取该页内容时给 browser_get_page_content / browser_get_page_info 等读取工具传 tabId=${nt.tabId}`;
+              browserSteps.value.push({ action: 'browser_navigate(openInNewTab)', result: text, time: Date.now() });
+              return { ok: true, result: text };
+            }
+            // 引擎不支持则回退原覆盖导航
+          }
           openTab({ kind: 'browser', name: host, url: target });
           // 用预览面板当前显示的 tab 导航（面板未就绪时轮询等待其自建，见 resolvePreviewTabId）
           const navTabId = await resolvePreviewTabId();
@@ -943,6 +1016,12 @@ export const useChatStore = defineStore('chat', () => {
       // image_analyze 拦截 —— 优先 vision 多模态模型，降级服务端 Tesseract OCR
       if (fullName === 'image_analyze') {
         return runImageAnalyze(args as { path?: string; prompt?: string; platformId?: string; modelId?: string });
+      }
+      // data_query_view —— 数据分析链路的前端收口：把数据明细/视图开进右侧「数据浏览」面板。
+      // 该工具由主智能体/子智能体在“要展示明细数据时可翻页/可切图表”时调用；取数本身由面板内的
+      // /api/query-contract/run 按参数化方式完成（不经 LLM）。这里只负责“开面板”，不做数据执行。
+      if (fullName === 'data_query_view') {
+        return await openDataViewFromArgs(args);
       }
       // E12: ask_user —— 弹出反问对话框，await 用户回答后再继续（暂停 ReAct 循环）
       if (fullName === 'ask_user') {

@@ -137,6 +137,17 @@ export interface Message {
   subAgentName?: string;
   parentToolCallId?: string;
   subAgentDepth?: number;
+  /** 内嵌于聊天消息里的动态看板（数据浏览）契约；非持久化 UI 增强，见 data-query-contract change */
+  dataView?: InlineDataView;
+}
+
+/** 聊天内嵌「数据浏览/动态看板」契约：只声明取数源 + 想要当过滤器的列；取数由面板 /run 参数化完成，不喂 LLM */
+export interface InlineDataView {
+  title?: string;
+  datasourceId?: string;
+  table?: string;
+  base?: string;
+  filterCols?: string[];
 }
 
 /** 工具调用 */

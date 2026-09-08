@@ -217,6 +217,18 @@
                         :files="getRoundDeliverableFiles(round)"
                         class="msg-deliverable-card"
                       />
+                      <!-- 动态看板（数据浏览）：模型 data_query_view 产契约后内嵌到当前助手消息，嵌套在聊天流程里 -->
+                      <div
+                        v-if="round.finalAssistant?.dataView"
+                        class="msg-inline-dataview"
+                      >
+                        <div class="dataview-title">
+                          <el-icon><Grid /></el-icon>
+                          <span>{{ round.finalAssistant.dataView.title || '数据明细' }}</span>
+                          <span class="dataview-tag">可交互数据看板</span>
+                        </div>
+                        <DataQueryWorkbench :key="round.finalAssistant.id + '-dv'" :contract="round.finalAssistant.dataView" />
+                      </div>
                     </template>
                     <template v-else-if="isLastRoundStreaming(round, ri)">
                       <!-- 有实时正文：跑马灯式流式显示 + 末尾闪烁光标 -->
@@ -374,6 +386,7 @@
 import {
   User, ChatDotRound, CaretRight, CaretBottom, ArrowDown, ArrowRight, ArrowUp, Loading, CircleCheck,
   CircleClose, CopyDocument, EditPen, MagicStick, Delete, View, Fold, Refresh, Setting, Link, Download,
+  Grid,
 } from '@element-plus/icons-vue';
 import { ref, watch, nextTick, computed } from 'vue';
 import { useRouter } from 'vue-router';
@@ -384,6 +397,7 @@ import TaskPlanCard from '../TaskPlanCard.vue';
 import PlatformConfigCard from '../PlatformConfigCard.vue';
 import SubAgentRoundView from './SubAgentRoundView.vue';
 import DeliverableFileCard from './DeliverableFileCard.vue';
+import DataQueryWorkbench from './DataQueryWorkbench.vue';
 
 const {
   store, platformStore, fileStore, messagesRef, messageRounds, formatTime, collapsedMessages, toggleMsgCollapse,
@@ -727,5 +741,43 @@ watch(activeNavRound, () => {
 @keyframes fadeInDown {
   from { opacity: 0; transform: translateY(-6px); }
   to { opacity: 1; transform: translateY(0); }
+}
+
+/* 聊天内嵌动态看板（DataQueryWorkbench）：固定高度内联在消息流里，顶部工具/过滤固定、表格独立滚动 */
+.msg-inline-dataview {
+  margin-top: 10px;
+  border: 1px solid var(--el-border-color-lighter, #e2e8f0);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--color-bg-elevated, #fff);
+  height: 340px;
+  display: flex;
+  flex-direction: column;
+}
+.dataview-title {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #334155;
+  border-bottom: 1px solid var(--el-border-color-lighter, #e2e8f0);
+  background: #f8fafc;
+}
+.dataview-tag {
+  font-weight: 400;
+  color: #64748b;
+  font-size: 11px;
+  background: #eef2ff;
+  color: #4f46e5;
+  border-radius: 4px;
+  padding: 0 6px;
+}
+.msg-inline-dataview :deep(.dqw-root) {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto;
 }
 </style>
