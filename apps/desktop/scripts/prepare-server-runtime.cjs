@@ -102,7 +102,11 @@ function removeDirBestEffort(dir) {
 }
 
 // 顺带清理上次残留的 stale 目录（尽力而为）
-for (const entry of fs.readdirSync(path.dirname(buildDir))) {
+// 先确保父目录存在：CI 干净 checkout 下 runtime/server-runtime 尚未生成，
+// 直接 readdir 会 ENOENT（旧版在 build 目录 mkdir 之前就扫父目录导致构建中断）。
+const runtimeParentDir = path.dirname(buildDir);
+fs.mkdirSync(runtimeParentDir, { recursive: true });
+for (const entry of fs.readdirSync(runtimeParentDir)) {
   if (entry.startsWith(path.basename(buildDir) + '.stale-')) {
     try {
       fs.rmSync(path.join(path.dirname(buildDir), entry), { recursive: true, force: true });
