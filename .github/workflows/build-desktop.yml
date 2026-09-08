@@ -33,13 +33,13 @@ jobs:
 
       - name: 列出构建产物（诊断用）
         run: |
-          echo "=== release-lite ==="; ls -la apps/desktop/release-lite 2>/dev/null || echo "(空)"
+          echo "=== dist-release ==="; ls -la dist-release 2>/dev/null || echo "(空)"
 
       - name: 上传 macOS DMG
         uses: actions/upload-artifact@v4
         with:
           name: macOS-DMG
-          path: apps/desktop/release-lite/*.dmg
+          path: dist-release/*.dmg
           if-no-files-found: error
 
   build-windows:
@@ -68,12 +68,12 @@ jobs:
       - name: 列出构建产物（诊断用）
         shell: pwsh
         run: |
-          Write-Output "=== release-lite ==="
-          Get-ChildItem -Path apps/desktop/release-lite -ErrorAction SilentlyContinue | Select-Object Name,Length | Format-Table -AutoSize
+          Write-Output "=== dist-release ==="
+          Get-ChildItem -Path dist-release -ErrorAction SilentlyContinue | Select-Object Name,Length | Format-Table -AutoSize
 
       - name: 上传 NSIS 安装包
         uses: actions/upload-artifact@v4
         with:
           name: Windows-Installer
-          path: apps/desktop/release-lite/*.exe
+          path: dist-release/*.exe
           if-no-files-found: error
