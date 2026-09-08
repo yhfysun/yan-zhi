@@ -1,0 +1,10 @@
+{
+  "name": "言智",
+  "short_name": "言智",
+  "description": "本地优先的跨端 AI 助手",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f8fafc",
+  "theme_color": "#3B82F6",
+  "icons": []
+}

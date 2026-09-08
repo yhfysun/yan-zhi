@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="auth-page">
     <!-- 返回上一页（桌面端无侧栏可点，进入登录页后需手动返回入口） -->
     <button class="auth-back" type="button" @click="goBack" aria-label="返回">
@@ -8,7 +8,7 @@
     <div class="auth-card">
       <div class="auth-header">
         <div class="auth-logo">
-          <el-icon :size="36"><ChatDotRound /></el-icon>
+          <img src="../assets/login-logo.png" alt="言智" draggable="false" />
         </div>
         <h2>{{ isLogin ? '登录' : '注册' }}</h2>
         <p>{{ isLogin ? '欢迎回来，登录以跨设备同步会话' : '创建账号以跨设备同步数据' }}</p>
@@ -69,7 +69,7 @@
 <script setup lang="ts">
 import { ref } from 'vue';
 import { useRouter } from 'vue-router';
-import { ChatDotRound, User, Lock, Message, ArrowLeft } from '@element-plus/icons-vue';
+import { User, Lock, Message, ArrowLeft } from '@element-plus/icons-vue';
 import { ElMessage } from 'element-plus';
 import { useAuthStore } from '../stores/auth';
 
@@ -164,14 +164,15 @@ async function submit() {
 .auth-header { text-align: center; margin-bottom: 32px; }
 
 .auth-logo {
-  width: 64px; height: 64px; border-radius: 18px;
+  width: 64px; height: 64px;
   display: inline-flex; align-items: center; justify-content: center;
-  background: var(--gradient-primary);
-  color: white; margin-bottom: 18px;
-  box-shadow: 0 0 24px rgba(124, 58, 237, 0.3);
-  transition: box-shadow 0.3s ease;
+  margin-bottom: 18px;
 }
-.auth-logo:hover { box-shadow: 0 0 36px rgba(124, 58, 237, 0.45); }
+.auth-logo img {
+  width: 48px; height: 48px;
+  object-fit: contain;
+  display: block;
+}
 
 .auth-header h2 { font-size: 24px; font-weight: 700; margin: 0 0 8px; color: var(--color-text); }
 .auth-header p { font-size: 14px; color: var(--color-text-secondary); margin: 0; }

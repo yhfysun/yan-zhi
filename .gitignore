@@ -124,3 +124,17 @@ apps/server/tmp_*
 
 # CodeBuddy 工作区数据（不入库）
 .codebuddy/
+
+# 图标重建临时输出与历史打包变体
+dist-release-block/
+apps/desktop/release-compress/
+apps/desktop/release-final/
+apps/desktop/release-fixed/
+apps/desktop/release-full/
+apps/desktop/release-lite-old-1.0/
+apps/desktop/release-lite-v2-prev/
+apps/desktop/release-lite-v3-prev/
+apps/desktop/release-lite-v4-prev/
+apps/desktop/release2/
+apps/desktop/release3/
+apps/desktop/release4/

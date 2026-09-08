@@ -5,15 +5,9 @@
 
     <!-- 内容层：pointer-events:none 使非按钮区域点击穿透到拖拽层 -->
     <div class="title-content">
-      <!-- 左侧：品牌 logo（朱砂对话气泡）+ 名称 -->
+      <!-- 左侧：品牌 logo -->
       <div class="brand">
-        <svg class="brand-logo" viewBox="0 0 24 24" role="img" aria-label="言智">
-          <path d="M12 2.5C6.8 2.5 2.5 6.3 2.5 11c0 2.8 1.5 5.3 3.8 6.9L5.2 21l4.6-2.2c.7.1 1.4.2 2.2.2 5.2 0 9.5-3.8 9.5-8.5S17.2 2.5 12 2.5z" fill="var(--color-primary)" />
-          <circle cx="8.2" cy="11" r="1.5" fill="#fff" />
-          <circle cx="12" cy="11" r="1.5" fill="#fff" />
-          <circle cx="15.8" cy="11" r="1.5" fill="#fff" />
-        </svg>
-        <span class="brand-name">言智</span>
+        <img class="brand-logo" src="../assets/titlebar-logo.png" alt="言智" draggable="false" />
       </div>
 
       <!-- 横排主导航：核心 4 页 + 更多下拉（其它功能入口 + 设置，统一收进弹层） -->
@@ -307,13 +301,9 @@ onUnmounted(() => {
   width: 22px;
   height: 22px;
   display: block;
-}
-
-.brand-name {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--color-text);
-  letter-spacing: 0.02em;
+  object-fit: contain;
+  user-select: none;
+  -webkit-user-drag: none;
 }
 
 /* 横排主导航（桌面端菜单上移标题栏） */

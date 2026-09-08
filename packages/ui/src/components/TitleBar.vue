@@ -2,8 +2,7 @@
   <div class="title-bar">
     <!-- 左侧：应用图标 + 名称 -->
     <div class="title-bar-left">
-      <span class="title-bar-icon">言</span>
-      <span class="title-bar-name">言智 Yan-Zhi</span>
+      <img class="title-bar-icon" src="../assets/titlebar-logo.png" alt="言智" draggable="false" />
     </div>
     <!-- 中间：可拖拽区域（空白） -->
     <div class="title-bar-drag"></div>
@@ -99,20 +98,10 @@ onBeforeUnmount(() => {
 .title-bar-icon {
   width: 20px;
   height: 20px;
-  border-radius: 4px;
-  background: var(--color-primary);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 12px;
-  font-weight: 700;
-  color: #fff;
-}
-
-.title-bar-name {
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--color-text-secondary);
+  object-fit: contain;
+  display: block;
+  user-select: none;
+  -webkit-user-drag: none;
 }
 
 .title-bar-drag {
