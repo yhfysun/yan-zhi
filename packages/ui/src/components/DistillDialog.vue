@@ -176,11 +176,12 @@ async function saveSkill() {
 
 <style scoped>
 .distill-body { display: flex; flex-direction: column; gap: 16px; }
+.distill-section { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .distill-section-title { font-size: 13px; font-weight: 600; color: var(--color-text-secondary); margin-bottom: 8px; }
-.distill-msgs { max-height: 200px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
+.distill-msgs { flex: 1; min-height: 120px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
 .distill-msg { padding: 8px 12px; border-radius: 8px; background: rgba(15,23,42,0.04); }
-.distill-msg.role-user { border-left: 3px solid var(--color-primary); }
-.distill-msg.role-assistant { border-left: 3px solid var(--color-accent); }
+.distill-msg.role-user { border-left: 1px solid color-mix(in srgb, var(--color-primary) 40%, transparent); }
+.distill-msg.role-assistant { border-left: 1px solid color-mix(in srgb, var(--color-accent) 40%, transparent); }
 .distill-msg-role { font-size: 12px; font-weight: 600; color: var(--color-text-secondary); }
 .distill-msg-content { font-size: 13px; white-space: pre-wrap; word-break: break-word; margin-top: 4px; font-family: inherit; }
 .distill-config-bar { display: flex; flex-wrap: wrap; gap: 8px; }

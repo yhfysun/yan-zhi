@@ -670,47 +670,57 @@ const PAGE_AGENT_SYSTEM_PROMPT = `你是一个浏览器自动化专家（pageAge
 - 任务要求提取搜索结果/链接列表时，只用 browser_get_page_content 的输出提取（配合 browser_scroll 翻看视口外内容），不要反复换参数重试。
 - 定位优先级：browser_get_page_content 获取编号列表 → index 参数定位（首选）→ 稳定 id / ARIA / :contains(可见文本) 选择器 → 坐标（最后手段）。
 - 终止条件：同一选择器连续 miss 2 次即停止盲试；返回 warning（连续 3 次无页面变化）立即停止并换策略；绝不进入截图→猜选择器→miss→换选择器、或坐标盲点的无界循环。`;
-// 数据查询智能体挂载：本体语义层取数四件套 + 通用底座（分析/文件/规划/委派）。
+// 数据查询智能体挂载：本体语义层取数工具链 + 分析/交付底座。
 // api_* 由后端直查执行（mcp/api-tool-executor.ts），其余为核心内置工具。
+// 注意：**不挂** call_agent / list_sub_agents —— 本智能体没有子智能体，挂上会让模型
+// 反复尝试「找子智能体」而放弃本体取数链（实测跑偏 140+ 步后凭空编造答案）。
 const DATA_AGENT_BUILTIN_TOOLS = [
-  // 数据查询（P4.1）
-  'api_datasource_list', 'api_ontology_search', 'api_ontology_list', 'api_data_query', 'api_data_paginate',
-  // 分析与交付
-  'python_exec', 'file_read', 'file_write', 'file_list', 'code_search',
+  // 数据源与取数
+  'api_datasource_list', 'api_data_query', 'api_data_paginate',
+  // 本体上下文链：问题召回 / 集合总览 / 单体简略 / 懒加载详情 / 属性值枚举采样
+  'api_ontology_search', 'api_ontology_overview', 'api_ontology_brief', 'api_ontology_detail', 'api_ontology_values',
+  // 分析与交付（只留统计与写文件：翻源码/列目录/读文件对取数无用，且是跑偏的主要出口）
+  'python_exec', 'file_write',
   // 任务规划与用户交互
   'task_plan', 'task_step', 'ask_user', 'confirm_user',
-  // 委派（需要联网/报告生成时交给其它智能体）
-  'call_agent', 'list_sub_agents',
 ];
-/** 数据分析/可视化/Excel 类 skill（与 skill 表种子对齐），挂上后可直接出图表与表格文件 */
-const DATA_AGENT_SKILL_IDS = ['skill_xlsx_data_processing', 'skill_data_visualization', 'skill_markdown_doc'];
+/** 数据分析/可视化/Excel 类 skill + 本体取数教材（与 skill 表种子对齐） */
+const DATA_AGENT_SKILL_IDS = ['skill_ontology_query', 'skill_xlsx_data_processing', 'skill_data_visualization', 'skill_markdown_doc'];
 const DATA_AGENT_SYSTEM_PROMPT = `你是「数据查询分析专家」。你通过「本体语义层」对已接入的数据源做只读取数、分析与交付，不直接猜表结构写 SQL。
 
-## 可用工具与职责
-- api_datasource_list：列出可用数据源。不传数据源 id 时默认用内置「言智项目库」（本项目自身数据库，只读）。
-- api_ontology_search：**取数第一步**，用用户的自然语言问题检索最相关的已发布本体，返回本体 code、维度/时间维度/度量/过滤器/默认选择列与语义摘要。
-- api_ontology_list：按数据源或关键字浏览本体候选（检索无果时用）。
-- api_data_query：取数。优先传 ontology（本体 code）+ intent 走语义层编译；没有合适本体时才用 sql 兜底（单条只读 SELECT）。
-- api_data_paginate：翻页（offset/limit），单页上限 200 行。
-- python_exec：对查询结果做统计/建模/计算；file_write：把结果落成交付文件。
+## 每轮输出格式（强制，先输出再调用）
+每次回复必须先写下面三行小结，然后**最多调用一个工具**：
+【目标】本轮要达成什么
+【上一步】上一个工具返回的要点（首轮写"无"）
+【下一步】调用哪个工具、为什么选它
+- 禁止不写小结就直接调用工具；禁止一轮同时调用多个工具；禁止调用【下一步】之外的工具。
+- 拿到 api_data_query 的 rows 后输出最终答案，不再调用工具。
 
-## 标准取数流程
-1. 用户问数据 → 先 api_ontology_search 找本体（看 code、默认选择列、过滤器、语义摘要）。
-2. api_data_query 传 { ontology: "<code>", intent: {...} }：
-   - dimensions：要分组/展示的**维度名**（必须是本体维度或时间维度名）
-   - measures：要聚合的**度量名** + 聚合函数（sum / count / count_distinct / avg / min / max）
-   - timeDimension：时间维度名 + 粒度（year / quarter / month / week / day / hour / minute）
-   - filters：本体**过滤器名**（或带比较符的裸 SQL 条件）
-   - orderBy / limit：默认 100 行，单次上限 1000
-3. 行数不够就 api_data_paginate 翻页，禁止一次拉全表。
-4. 回答用 markdown 表格呈现（列多时只展示关键列），并说明取数口径：用了哪个本体 code、哪些过滤器、时间范围与行数。
+## 通用取数流程（任何数据问题都走这一条路）
+1. 【选本体】调 api_ontology_overview 浏览全部已发布本体（或用 api_ontology_search 带 question 召回）。
+   返回里有本体 = 有可用本体：从返回的 code 里挑与用户问题最相关的一个，在【下一步】里说明理由，然后直接进入第 2 步。不要因为"描述不完全匹配"就断定没有可用本体。
+2. 【看字段】overview 返回里已含 dimensions/measures 字段名；查"有多少/多少条/多少个"直接用度量 row_count，可跳过本步。拿不准口径时调 api_ontology_brief（字段清单+过滤器名）或 api_ontology_detail（懒加载表达式/聚合/粒度，include 按需）。
+3. 【取数】api_data_query { ontology: "<code>", intent: {...} }：
+   - measures：度量名 + 聚合（sum / count / count_distinct / avg / min / max），计数用 { name: "row_count" }
+   - dimensions：分组/展示的维度名；timeDimension：时间维度名 + 粒度（year/quarter/month/week/day/hour/minute）
+   - selections：本体选择列名（一组命名字段展开并入 SELECT）；filters：过滤器名或带比较符的裸 SQL 条件
+   - 过滤器的值拿不准 → 先 api_ontology_values 采样真实取值，禁止猜值
+   - orderBy / limit：默认 100 行，上限 1000；行数不够用 api_data_paginate 翻页，禁止一次拉全表
+4. 【回答】用 markdown 表格呈现关键列，说明口径：本体 code、过滤器、时间范围、行数。需要统计/建模用 python_exec（仅限已拿到 rows 后）；交付文件用 file_write。
 
 ## 硬约束
-- **只能只读**：禁止 INSERT / UPDATE / DELETE / DDL；兜底 SQL 有只读护栏，写语句会被直接拦截。
-- **字段只能引用本体已声明的维度/度量/时间维度/过滤器**，禁止凭空编造列名。工具报「字段不存在」时按报错里的可用字段改名重试，最多 2 次。
-- 找不到合适本体时，如实说明并用 api_ontology_list 给出候选本体，不要瞎写 SQL 猜表结构。
-- 结果可能截断：关注返回的 truncated 标记，必要时加过滤器缩小范围或翻页。
-- 需要深度统计分析时用 python_exec；需要交付表格/图表文件时用 file_write（category=deliverable）。`;
+- **工具结果即事实**：api_data_query 返回的 rows 是唯一可信数据源。最终答案里的每一个数字都必须能对应到某次 rows 里的值，对不上就不许写。
+- **ontologyCount 不是业务数据**：api_ontology_overview 的 ontologyCount 是「本体（语义视图）的个数」，与任何业务数据的数量无关，严禁当作答案或参与回答。
+- **成功结果必须采信**：工具正常返回后禁止以"再验证一次"为由重复同样的调用；怀疑口径就换 intent（换度量/维度/加过滤器）查证，而不是原样重发。拿到 rows 后立即进入回答，不要继续调用工具。
+- **必须真正取数才能回答**：走到 api_data_query 拿到 rows 后再作答。没有取到数 = 没有答案，禁止凭常识、记忆或推测编造数字/列表/表格。
+- **答案里禁止出现工具结果之外的分布/明细**：如"按状态分布""按模型分布"这类分组，必须真的用对应维度 group 查过 rows 才能写；没查过就一个字都不许编。
+- **只能用本体取数链拿数据**：禁止翻源码、列目录、读文件去猜表结构。
+- **禁止空参调用与原地打转**：api_ontology_search 必须带 question；同一工具连续 2 次没进展就换流程下一步。
+- **不要找子智能体**：你没有子智能体，禁止 list_sub_agents / call_agent。
+- **不要用知识库/记忆查库内数据**：api_kb_search / api_memory_search 查不到库内数据。
+- **只读取数**：禁止 INSERT / UPDATE / DELETE / DDL；兜底 SQL 有只读护栏。
+- **字段只能引用本体已声明的维度/度量/时间维度/过滤器**，报「字段不存在」时按报错里的可用字段改名重试，最多 2 次；连续 2 次取数失败就停下如实说明原因与已尝试的本体 code。
+- 结果可能截断：关注 truncated 标记，必要时加过滤器缩小范围或翻页。`;
 
 const seedAgents: Array<Record<string, unknown>> = [
   {
@@ -748,7 +758,9 @@ const seedAgents: Array<Record<string, unknown>> = [
     system_prompt: DATA_AGENT_SYSTEM_PROMPT,
     // 内置定义由代码收敛：工具挂载/提示词/步数配置以代码为准，强制同步旧库残留
     force_sync: true,
-    config_json: JSON.stringify({ maxReActSteps: 30 }),
+    // 取数是短链路（overview → brief? → query → 回答），16 步足够；
+    // 放宽步数只会让跑偏的模型在无关工具上原地打转更久。
+    config_json: JSON.stringify({ maxReActSteps: 16 }),
   },
 ];
 for (const a of seedAgents) {
@@ -1019,6 +1031,82 @@ try {
       `# 即梦每日签到领灵感值\n\n自动登录即梦（jimeng.jianying.com）完成每日签到，领取灵感值/积分。配合定时任务可每日自动执行。\n\n## ⚠️ 业务约束（随委派 input 传给 pageAgent）\n- 目标站固定 https://jimeng.jianying.com/，禁止访问 dreamina.ai 等国际版。\n- 登录只走扫码（pageAgent 会 ask_user），禁止代填手机号/验证码。\n- 登录态由 persist:browser-view partition 持久化，首次扫码后复用。\n- 已知稳定选择器：即梦"领积分"入口 #SiderMenuCredit。\n\n## 委派流程\n1. call_agent { agentId: "a_builtin_page_agent", input: "打开 https://jimeng.jianying.com/ 并检查登录状态（有头像=已登录）；未登录则 ask_user 提示用户在浏览器面板扫码登录，用户确认后用 browser_get_page_content 复核；进入'领积分'入口（#SiderMenuCredit），找到'签到/打卡/领灵感'按钮点击签到，用 browser_get_page_content 确认结果并返回摘要。目标站固定 jimeng.jianying.com，禁止访问国际版，禁止代填验证码。" }\n2. 周期任务：scheduled_task cron "0 9 * * *" + prompt "登录即梦签到领灵感值"\n\n详见 .claude/skills/jimeng-daily-checkin/SKILL.md`,
       '每天自动登录即梦（Dreamina，字节跳动 AI 创作平台）并签到领取灵感值/积分。即梦用抖音扫码登录，首次需手动扫码，之后配合定时任务每日自动签到。',
       skillId,
+    );
+  }
+} catch {}
+
+// 预置内置 skill：本体取数与分析 —— 数据查询分析助理的「教材」：解释本体工具链/YAML 含义/SQL 生成/脚本桥接
+try {
+  const skillId = 'skill_ontology_query';
+  const ONTOLOGY_QUERY_DESC = '解释本体（语义层）工具链与 YAML 字段含义，指导按「总览→简略→详情→采值→取数」标准流程查询数据，含 SQL 生成规范与 js_exec 脚本桥接（dataQuery）用法。';
+  const ONTOLOGY_QUERY_BODY = `# 本体取数与分析指南
+
+本 skill 是「数据查询分析专家」的操作教材：解释本体工具的作用、本体 YAML 各字段含义，以及如何生成 SQL / 脚本取数。
+
+## 一、本体是什么（YAML 字段含义）
+一个「本体」= 把一段查询 SQL 包装成有业务语义的对象，大模型只看语义不看物理实现：
+- **code**：唯一标识（小写下划线），所有查询工具都用它引用本体
+- **name / description / domain**：名称、业务口径描述、所属域——选本体的依据
+- **synonyms**：同义词，用于语义检索命中
+- **dimensions（维度）**：离散的分组/展示列，如 user_id、category、status
+- **measures（度量）**：可聚合的数值列，自带聚合方式（sum/count/avg/min/max）
+- **timeDimensions（时间维度）**：时间列，可按 year/quarter/month/week/day/hour/minute 粒度截断
+- **filters（过滤器）**：预定义的 WHERE 条件，按名字引用（如「近30天」）；**policies（行级策略）**是强制注入的条件，无需也不可取消
+- **selections（选择列）**：命名的一组查询字段 = { 名称, 描述（即召回关键字）, 字段列表 }；intent.selections 按名称引用，展开为该组字段进 SELECT
+- **refAttr（标准属性）**：字段挂载的企业级统一口径（类型/单位/枚举）；带枚举的标准属性是过滤取值的权威来源
+- **relations（关联关系）**：本体之间的连接（1:1/1:N/N:1/N:N）
+- **source_sql（物理 SQL）**：只读的底层实现，大模型无需读取；字段表达式（expr）必须引用它的输出别名
+
+## 二、工具链（严格按序使用）
+1. **api_ontology_overview**：列出全部已发布本体（code/名称/描述/数据源 id·名称·类型）——第一站
+2. **api_ontology_search**：按自然语言问题召回最相关本体（含语义摘要）；问题明确可替代 overview
+3. **api_ontology_brief**：单本体的字段名清单 + 过滤器名 + 选择列契约 + 所属数据源
+4. **api_ontology_detail**：懒加载完整定义（字段表达式/聚合/粒度/过滤器条件全文/行级策略），include 选择性加载
+5. **api_ontology_values**：对字段采样取值/枚举（优先标准属性枚举 → 缓存样本 → DISTINCT 采样）；**填过滤器的值前必须调用**
+6. **api_data_query**：取数（见下）
+7. **api_data_paginate**：翻页（offset/limit，单页 ≤200）
+
+## 三、api_data_query 的两种用法
+**① 本体模式（推荐）**——语义层编译，字段受本体约束：
+\`\`\`json
+{ "ontology": "conversation", "intent": { "dimensions": ["user_id"], "measures": [{"name":"pinned_sum","agg":"sum"}], "filters": ["近30天"], "limit": 100 } }
+\`\`\`
+**② SQL 执行模式**——就是通用 SQL 执行工具：输入数据源 id + SQL，返回二维表 \`{ columns, rows, rowCount, truncated }\`：
+\`\`\`json
+{ "datasourceId": "ds_project_guest", "sql": "SELECT status AS status, COUNT(*) AS cnt FROM conversation GROUP BY status" }
+\`\`\`
+SQL 要求：单条只读 SELECT（DDL/写语句被护栏拦截）；输出列尽量带 AS 别名；能找到本体时优先用本体模式。
+
+## 四、js_exec 脚本桥接（多步处理数据）
+服务端已在 js_exec 沙箱注入异步函数 \`dataQuery({ sql, datasourceId?, limit? })\`（只读，返回同上二维表），可在脚本里多次调用做聚合/关联/格式化后一次返回：
+\`\`\`js
+const a = await dataQuery({ sql: "SELECT agent_id AS agent_id, COUNT(*) AS cnt FROM conversation GROUP BY agent_id" });
+const top = a.rows.sort((x, y) => y.cnt - x.cnt).slice(0, 5);
+return { top: top, total: a.rowCount };
+\`\`\`
+适用：需要多步查询、中间聚合、和 python 一样的数据处理流程；仍是只读，写语句会被拦截。
+
+## 五、硬约束
+- 只读；禁止 INSERT/UPDATE/DELETE/DDL
+- 字段只能来自本体声明（或 SQL 模式下确认存在的列）；报「字段不存在」按提示改名重试，最多 2 次
+- 过滤器的值先 api_ontology_values 采样，禁止编造取值
+- 结果注明口径：本体 code + 过滤器 + 时间范围 + 行数`;
+
+  const hasSkill = db.prepare('SELECT id FROM skill WHERE id = ?').get(skillId);
+  if (!hasSkill) {
+    db.prepare(
+      'INSERT INTO skill (id, user_id, name, description, triggers_json, body, category, author, enabled, installs, source, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    ).run(
+      skillId, 'guest', '本体取数与分析',
+      ONTOLOGY_QUERY_DESC,
+      JSON.stringify(['本体', '本体查询', '数据查询', '查库', 'YAML含义', '怎么查数据', 'text2sql']),
+      ONTOLOGY_QUERY_BODY,
+      '数据分析', 'yan-zhi', 1, 0, 'builtin', Date.now(),
+    );
+  } else {
+    // 内置 skill 属产品定义：文档随工具链演进，覆盖旧版残留
+    db.prepare("UPDATE skill SET body = ?, description = ?, category = '数据分析', source = 'builtin' WHERE id = ?").run(
+      ONTOLOGY_QUERY_BODY, ONTOLOGY_QUERY_DESC, skillId,
     );
   }
 } catch {}
@@ -1422,9 +1510,49 @@ try { db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_ontology_user_code ON ontol
 try { db.exec('CREATE INDEX IF NOT EXISTS idx_ontology_user_ds ON ontology(user_id, datasource_id, status)'); } catch {}
 // 旧库迁移：filters_json（查询过滤器，命中才注入 WHERE；与行级策略 policies 不同）
 try { db.exec("ALTER TABLE ontology ADD COLUMN filters_json TEXT DEFAULT '[]'"); } catch {}
+// 旧库迁移：智能体挂载的本体集合（数据查询类智能体按挂载范围取数；'[]' = 不限，可见全部已发布本体）
+try { db.exec("ALTER TABLE agent ADD COLUMN ontology_ids TEXT DEFAULT '[]'"); } catch {}
+
+// ===== 本体包（分类树，P4.5）：支持多级嵌套（包下建包）；本体通过 group_id 归入包 =====
+db.exec(`
+  CREATE TABLE IF NOT EXISTS ontology_group (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    parent_id TEXT,
+    sort_order INTEGER DEFAULT 0,
+    created_at INTEGER,
+    updated_at INTEGER
+  );
+`);
+try { db.exec('CREATE INDEX IF NOT EXISTS idx_ontology_group_user_parent ON ontology_group(user_id, parent_id)'); } catch {}
+// 旧库迁移：本体所属包
+try { db.exec('ALTER TABLE ontology ADD COLUMN group_id TEXT'); } catch {}
+
+// ===== 标准属性库（P3.7 v1）：企业级统一字段口径；本体字段通过 refAttr 引用这里的 key =====
+db.exec(`
+  CREATE TABLE IF NOT EXISTS std_attribute (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    key TEXT NOT NULL,
+    name TEXT NOT NULL,
+    data_type TEXT DEFAULT 'string',
+    unit TEXT,
+    description TEXT,
+    synonyms_json TEXT DEFAULT '[]',
+    enum_json TEXT DEFAULT '[]',
+    created_at INTEGER,
+    updated_at INTEGER
+  );
+`);
+try { db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_std_attr_user_key ON std_attribute(user_id, key)'); } catch {}
+// 树结构（P4.7）：kind=group 分组节点（可多级嵌套）/ attr 属性叶子（key/value/def）；parent_id 组装树
+try { db.exec("ALTER TABLE std_attribute ADD COLUMN parent_id TEXT"); } catch {}
+try { db.exec("ALTER TABLE std_attribute ADD COLUMN value TEXT"); } catch {}
+try { db.exec("ALTER TABLE std_attribute ADD COLUMN kind TEXT DEFAULT 'attr'"); } catch {}
 // 旧库迁移：selections_json（本体级选择列契约：默认直拼 + 非默认关键字召回）
 try { db.exec("ALTER TABLE ontology ADD COLUMN selections_json TEXT DEFAULT '[]'"); } catch {}
-// 回填选择列：selections_json 为空时，默认把全部维度/度量/时间维度设为默认选择列，
+// 回填选择列：selections_json 为空时，生成单组「全部字段」（新结构：{name, fields}），
 // 让未补语义的旧本体的语义摘要立即可用（已补 selections 的本体不动；幂等）。
 try {
   const blank = db
@@ -1436,12 +1564,8 @@ try {
       const dims = JSON.parse(r.dimensions_json || '[]') as Array<{ name: string }>;
       const meas = JSON.parse(r.measures_json || '[]') as Array<{ name: string }>;
       const times = JSON.parse(r.time_dimensions_json || '[]') as Array<{ name: string }>;
-      const selections = [
-        ...dims.map((d) => ({ name: d.name, isDefault: true })),
-        ...meas.map((m) => ({ name: m.name, isDefault: true })),
-        ...times.map((t) => ({ name: t.name, isDefault: true })),
-      ];
-      if (selections.length) upd.run(JSON.stringify(selections), r.id);
+      const allFields = [...dims, ...times, ...meas].map((x) => x.name);
+      if (allFields.length) upd.run(JSON.stringify([{ name: '全部字段', fields: allFields }]), r.id);
     }
     console.log(`[db] 回填选择列 ${blank.length} 条本体`);
   }

@@ -4,30 +4,19 @@
       <el-icon :size="20"><Expand /></el-icon>
     </el-button>
     <span class="conv-title-display">{{ currentConv?.title || '新任务' }}</span>
-    <el-dropdown class="model-pill-dropdown" trigger="click" popper-class="model-pill-popper" @command="onModelChange">
+    <AppMenu
+      class="model-pill-dropdown"
+      :items="modelMenuItems"
+      placement="bottom-start"
+      :width="280"
+      @select="onModelMenuSelect"
+    >
       <span class="model-pill">
         <span class="model-pill-dot"></span>
         <span class="model-pill-name">{{ selectedModel?.alias || selectedModel?.modelId || '选择模型' }}</span>
         <el-icon :size="12"><ArrowDown /></el-icon>
       </span>
-      <template #dropdown>
-        <el-dropdown-menu>
-          <template v-for="group in modelGroups" :key="group.platformId">
-            <el-dropdown-item disabled class="model-pill-group-label">{{ group.platformName }}</el-dropdown-item>
-            <el-dropdown-item
-              v-for="model in group.models"
-              :key="model.id"
-              :command="model.id"
-              :disabled="model.id === selectedModelId"
-              class="model-pill-option"
-            >
-              <span>{{ model.alias || model.modelId }}</span>
-              <span class="model-pill-option-id">{{ model.modelId }}</span>
-            </el-dropdown-item>
-          </template>
-        </el-dropdown-menu>
-      </template>
-    </el-dropdown>
+    </AppMenu>
     <el-tooltip content="新建任务" placement="bottom">
       <el-button size="small" circle class="new-chat-btn" @click="startNewChat()" aria-label="新建任务">
         <el-icon><EditPen /></el-icon>
@@ -90,6 +79,8 @@ import { ArrowDown, Document, Expand, FolderOpened, Fold, Grid, Monitor, Operati
 import { useChat } from '../../composables/chat/useChat';
 import { useSettingsStore } from '../../stores/settings';
 import ChatFilePanel from './ChatFilePanel.vue';
+import AppMenu from '../AppMenu.vue';
+import type { MenuNode } from '../AppMenuPanel.vue';
 
 const {
   drawerOpen, currentConv, store, isMobile, authStore,
@@ -99,6 +90,28 @@ const {
 
 const settingsStore = useSettingsStore();
 const hasWorkspaceDir = computed(() => !!settingsStore.settings.workspaceDir);
+
+/** 模型分组 → AppMenu 节点：分组标题用 group 类型，不再用 disabled 项冒充 */
+const modelMenuItems = computed<MenuNode[]>(() => {
+  const items: MenuNode[] = [];
+  for (const group of modelGroups.value) {
+    items.push({ key: `group-${group.platformId}`, label: group.platformName, type: 'group' });
+    for (const model of group.models) {
+      items.push({
+        key: model.id,
+        label: model.alias || model.modelId,
+        desc: model.modelId,
+        selected: model.id === selectedModelId.value,
+      });
+    }
+  }
+  return items;
+});
+
+function onModelMenuSelect(node: MenuNode) {
+  if (node.key === selectedModelId.value) return;
+  onModelChange(node.key);
+}
 
 function openGitTab() {
   const dir = settingsStore.settings.workspaceDir || '';
@@ -177,30 +190,3 @@ const selectedModel = computed(() => {
 }
 </style>
 
-<style>
-.model-pill-popper {
-  border-radius: 10px !important;
-  border: 1px solid var(--glass-border, rgba(15, 23, 42, 0.1)) !important;
-  box-shadow: var(--shadow-lg, 0 8px 24px rgba(15, 23, 42, 0.12)) !important;
-}
-
-.model-pill-group-label {
-  color: var(--el-text-color-secondary, #64748b) !important;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-}
-
-.model-pill-option {
-  min-width: 260px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.model-pill-option-id {
-  color: var(--el-text-color-secondary, #64748b);
-  font-size: 11px;
-}
-</style>

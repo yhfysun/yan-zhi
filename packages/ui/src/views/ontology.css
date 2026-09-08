@@ -98,6 +98,28 @@
   min-height: 0;
 }
 .dw-root .ont-mid-empty,
+/* 手写 SQL 向导：预览结果表 */
+.wiz-preview { max-height: 260px; overflow: auto; border: 1px solid var(--glass-border); border-radius: 8px; }
+
+/* 左栏双 Tab：本体 / 标准属性 */
+.ont-left-tabs { display: flex; gap: 4px; margin-bottom: 8px; }
+.ont-left-tab {
+  flex: 1; padding: 7px 0; border-radius: 8px; font-size: 13px; font-weight: 500;
+  border: 1.5px solid var(--glass-border); background: rgba(15, 23, 42, 0.01);
+  color: var(--color-text-secondary); cursor: pointer; transition: all 0.15s;
+}
+.ont-left-tab:hover { color: var(--color-text); border-color: var(--color-primary); }
+.ont-left-tab.on { color: var(--color-primary); border-color: var(--color-primary); background: color-mix(in srgb, var(--color-primary) 6%, transparent); }
+.ont-std-panel { flex: 1; min-height: 0; }
+
+/* 本体包：折叠箭头 + 拖拽高亮 */
+.ont-grp-li { cursor: pointer; user-select: none; }
+.ont-grp-fold { color: var(--color-text-secondary); transition: transform 0.15s ease; flex-shrink: 0; }
+.ont-grp-fold.open { transform: rotate(90deg); }
+.ont-grp-icon { color: var(--color-text-secondary); flex-shrink: 0; }
+.ont-grp-uncat { opacity: 0.75; }
+.ont-li.drag-over { outline: 1.5px dashed var(--color-primary); outline-offset: -2px; background: color-mix(in srgb, var(--color-primary) 8%, transparent); }
+
 .dw-root .ont-empty {
   flex: 1;
   display: flex;

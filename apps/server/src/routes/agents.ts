@@ -46,8 +46,8 @@ router.post('/', (req: Request, res: Response) => {
   const id = b.id || uuid();
   const now = Date.now();
   db.prepare(
-    `INSERT INTO agent (id, user_id, name, description, avatar, system_prompt, temperature, max_tokens, top_p, frequency_penalty, presence_penalty, platform_id, model_id, workflow_json, inputs_schema_json, config_json, parent_agent_id, allow_sub_agent, is_default, type, builtin_tool_ids, custom_tool_ids, mcp_tool_mounts, skill_ids, sub_agent_ids, is_public, version, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+    `INSERT INTO agent (id, user_id, name, description, avatar, system_prompt, temperature, max_tokens, top_p, frequency_penalty, presence_penalty, platform_id, model_id, workflow_json, inputs_schema_json, config_json, parent_agent_id, allow_sub_agent, is_default, type, builtin_tool_ids, custom_tool_ids, mcp_tool_mounts, skill_ids, sub_agent_ids, ontology_ids, is_public, version, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
   ).run(
     id, userId,
     String(b.name).trim(),
@@ -73,6 +73,7 @@ router.post('/', (req: Request, res: Response) => {
     JSON.stringify(b.mcpToolMounts || []),
     JSON.stringify(b.skillIds || []),
     JSON.stringify(b.subAgentIds || []),
+    JSON.stringify(b.ontologyIds || []),
     b.version ?? 1,
     now, now,
   );
@@ -101,7 +102,7 @@ router.patch('/:id', (req: Request, res: Response) => {
   const jsonMap: Record<string, string> = {
     workflow: 'workflow_json', inputsSchema: 'inputs_schema_json', config: 'config_json',
     builtinToolIds: 'builtin_tool_ids', customToolIds: 'custom_tool_ids', mcpToolMounts: 'mcp_tool_mounts',
-    skillIds: 'skill_ids', subAgentIds: 'sub_agent_ids',
+    skillIds: 'skill_ids', subAgentIds: 'sub_agent_ids', ontologyIds: 'ontology_ids',
   };
   for (const [k, col] of Object.entries(jsonMap)) {
     if (b[k] !== undefined) { sets.push(`${col} = ?`); vals.push(JSON.stringify(b[k])); }

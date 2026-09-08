@@ -1,0 +1,170 @@
+/* ============================================================
+   言智设计 Token —— 唯一真相源
+   由 packages/ui/src/App.vue 的非 scoped style 迁出；
+   由 App.vue 顶部 @import 引入，三端（web/desktop/mobile）同时生效。
+   ============================================================ */
+:root {
+  /* ===== 中性纸墨骨架：背景/文字/边框不绑定主题色，切主题只换强调色，全局不突兀 ===== */
+  --color-bg: #F7F5F0;
+  --color-surface: #FFFFFF;
+  --color-surface-hover: #F1EFE9;
+  --color-border: #E7E4DC;
+  --color-border-strong: #D8D5CC;
+  --color-text: #1A1A1A;
+  --color-text-secondary: #6B6B66;
+  --color-text-tertiary: #9C9B94;
+
+  /* 兼容旧玻璃变量名（组件大量引用），改为实色纸面，去除 backdrop-blur */
+  --glass-bg: #FFFFFF;
+  --glass-bg-hover: #F1EFE9;
+  --glass-border: #E7E4DC;
+  --glass-border-strong: #D8D5CC;
+  --glass-blur: 0px;
+  --glass-saturate: 100%;
+  --glass-filter: none;
+
+  /* 字体三套：宋体 display / 无衬线 body / 等宽数据 */
+  --font-display: "Songti SC", "Noto Serif SC", "Source Han Serif SC", "SimSun", Georgia, serif;
+  --font-body: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", Roboto, sans-serif;
+  --font-mono: "JetBrains Mono", "SF Mono", ui-monospace, "Cascadia Code", Consolas, monospace;
+
+  /* 主题色（applyTheme 运行时覆盖，这里为默认「朱砂」） */
+  --color-primary: #C2410C;
+  --color-primary-light: #FBEBDD;
+  --color-primary-dark: #7C2D12;
+  --color-accent: #B45309;
+  --color-success: #2F6B4F;
+  --color-warning: #B45309;
+  --color-danger: #B91C1C;
+
+  /* Element Plus theme — 中性对齐，applyTheme 会同步主色 */
+  --el-color-primary: #C2410C;
+  --el-color-primary-light-3: #D97757;
+  --el-color-primary-light-5: #E5A48B;
+  --el-color-primary-light-7: #F0C9B8;
+  --el-color-primary-light-8: #F6DDD0;
+  --el-color-primary-light-9: #FBEBDD;
+  --el-color-primary-dark-2: #7C2D12;
+
+  --gradient-primary: linear-gradient(135deg, #C2410C, #B45309);
+
+  /* 阴影：极轻、带偏移与模糊（避免零偏移光晕式"浮起感"） */
+  --shadow-sm: 0 1px 2px rgba(26, 26, 26, 0.04);
+  --shadow-md: 0 2px 8px rgba(26, 26, 26, 0.06);
+  --shadow-lg: 0 8px 24px rgba(26, 26, 26, 0.10);
+
+  /* 圆角体系：浮层 lg(14) → 内部控件 md(10) → 微控件 sm(6)，外大内小 */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 18px;
+
+  --scrollbar-size: 8px;
+  --scrollbar-thumb: rgba(26, 26, 26, 0.16);
+  --scrollbar-thumb-hover: rgba(26, 26, 26, 0.28);
+  --scrollbar-thumb-active: rgba(26, 26, 26, 0.40);
+
+  /* Responsive breakpoints (min-width values, unitless for calc) */
+  --bp-xs: 0;
+  --bp-sm: 576;
+  --bp-md: 768;
+  --bp-lg: 992;
+  --bp-xl: 1200;
+  --is-mobile: 0;
+
+  /* ===== 动效：时长三档 + 统一缓动（出场比入场快约 25%） ===== */
+  --motion-fast: 120ms;   /* hover / 按压 / 即时反馈 */
+  --motion-base: 180ms;   /* 展开 / 收起 / 常规状态变化 */
+  --motion-slow: 240ms;   /* 弹窗 / 抽屉 / 覆盖层入场 */
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);        /* 入场：自然减速 */
+  --ease-in: cubic-bezier(0.4, 0, 1, 1);             /* 出场：轻快收尾 */
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);       /* 通用标准 */
+  --ease-entrance: cubic-bezier(0.16, 1, 0.3, 1);    /* 强入场（原 slide-fade 用） */
+
+  /* ===== 层级：显式分层，消除浮层互相压盖 ===== */
+  --z-nav: 100;          /* 侧栏 / 顶栏 */
+  --z-dropdown: 2000;    /* 下拉 / 二三级菜单 */
+  --z-popover: 2100;     /* 气泡 */
+  --z-overlay: 3000;     /* 弹窗 / 抽屉 / 遮罩 */
+  --z-message: 4000;     /* 全局消息 / 通知 */
+
+  /* ===== 浮层皮肤：实色纸面 + 阴影（声明 elevation 一次：浮层用阴影不用边框） ===== */
+  --overlay-radius: var(--radius-lg);
+  --overlay-shadow: 0 12px 40px rgba(26, 26, 26, 0.14), 0 2px 8px rgba(26, 26, 26, 0.08);
+  --menu-pad: 6px;
+  --menu-item-h: 34px;
+  --menu-item-h-mobile: 44px;
+
+  /* ===== 毛玻璃统一开关：默认关闭（实色更快更干净），仅大图/地图背景区块覆盖启用 ===== */
+  --surface-blur: none;
+}
+
+/* Toggle --is-mobile on xs/sm breakpoints (max-width 767px) */
+@media (max-width: 767px) {
+  :root {
+    --is-mobile: 1;
+  }
+}
+
+[data-theme="dark"] {
+  --color-bg: #141414;
+  --color-surface: #1D1D1C;
+  --color-surface-hover: #262624;
+  --color-border: #2A2A28;
+  --color-border-strong: #3A3A37;
+  --color-text: #ECEAE4;
+  --color-text-secondary: #9A9A92;
+  --color-text-tertiary: #6F6F68;
+
+  --glass-bg: #1D1D1C;
+  --glass-bg-hover: #262624;
+  --glass-border: #2A2A28;
+  --glass-border-strong: #3A3A37;
+  --glass-filter: none;
+
+  --color-primary: #D97757;
+  --color-primary-light: rgba(217, 119, 87, 0.16);
+  --color-primary-dark: #C2410C;
+  --color-accent: #D97757;
+  --color-success: #4A8571;
+  --color-warning: #C07A5C;
+  --color-danger: #C25B4E;
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.5);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.6);
+  --scrollbar-thumb: rgba(255, 255, 255, 0.18);
+  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.32);
+  --scrollbar-thumb-active: rgba(255, 255, 255, 0.46);
+
+  --el-bg-color: #1D1D1C;
+  --el-bg-color-overlay: #262624;
+  --el-bg-color-page: #141414;
+  --el-fill-color-blank: #1D1D1C;
+  --el-fill-color: #2A2A28;
+  --el-fill-color-light: #2A2A28;
+  --el-border-color: #3A3A37;
+  --el-border-color-light: #33332F;
+  --el-border-color-lighter: #2A2A28;
+  --el-text-color-primary: #ECEAE4;
+  --el-text-color-regular: #D6D4CE;
+  --el-text-color-secondary: #9A9A92;
+  --el-text-color-placeholder: #6F6F68;
+  --el-mask-color: rgba(0, 0, 0, 0.5);
+  --el-color-primary: #D97757;
+  --el-color-primary-light-3: #C2603A;
+  --el-color-primary-light-5: #A84F2D;
+  --el-color-primary-light-7: #8E4022;
+  --el-color-primary-light-8: #7C2D12;
+  --el-color-primary-light-9: rgba(217, 119, 87, 0.16);
+  --el-color-primary-dark-2: #C2410C;
+  --el-color-success: #4A8571;
+  --el-color-success-light-9: rgba(74, 133, 113, 0.16);
+  --el-color-warning: #C07A5C;
+  --el-color-warning-light-9: rgba(192, 122, 92, 0.16);
+  --el-color-danger: #C25B4E;
+  --el-color-danger-light-9: rgba(194, 91, 78, 0.16);
+  --el-fill-color-dark: #33332F;
+
+  --overlay-shadow: 0 12px 40px rgba(0, 0, 0, 0.55), 0 2px 8px rgba(0, 0, 0, 0.40);
+}

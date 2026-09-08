@@ -25,6 +25,46 @@ export function cosine(a: number[], b: number[]): number {
   return dot / (Math.sqrt(na) * Math.sqrt(nb) || 1);
 }
 
+/**
+ * 解析抽取类 LLM 的 JSON 输出，兼容三种形态：
+ * - JSON 数组（prompt 期望的形态）；
+ * - {"items":[...]} 包装对象；
+ * - 单对象 {"type":"session","content":"..."} / {"id":"...","action":"promote",...}——
+ *   部分模型在 response_format=json_object 模式下会返回单个对象而非数组
+ *   （此前只认数组，单对象被静默丢弃，导致抽取结果恒为 0 条）。
+ * 解析失败时再尝试从文本中截取 [...] / {...} 片段。
+ */
+export function parseExtractedItems(text: string): any[] {
+  const t = String(text || '').trim();
+  if (!t) return [];
+  const fromObject = (obj: any): any[] | null => {
+    if (Array.isArray(obj)) return obj;
+    if (Array.isArray(obj?.items)) return obj.items;
+    if (obj && typeof obj === 'object'
+      && (typeof obj.content === 'string' || (obj.id && typeof obj.action === 'string'))) return [obj];
+    return null;
+  };
+  try {
+    const arr = fromObject(JSON.parse(t));
+    if (arr) return arr;
+  } catch { /* 尝试从文本截取 */ }
+  const m = t.match(/\[[\s\S]*\]/);
+  if (m) {
+    try {
+      const arr = JSON.parse(m[0]);
+      if (Array.isArray(arr)) return arr;
+    } catch { /* 忽略 */ }
+  }
+  const om = t.match(/\{[\s\S]*\}/);
+  if (om) {
+    try {
+      const arr = fromObject(JSON.parse(om[0]));
+      if (arr) return arr;
+    } catch { /* 忽略 */ }
+  }
+  return [];
+}
+
 // ── 注入配置（app_config，仿 ollama-embed.ts 模式） ──
 
 export interface MemoryInjectionConfig {
@@ -479,13 +519,9 @@ export async function flushMemoriesBeforeCompression(params: FlushParams, toComp
     ], { temperature: 0.2, maxTokens: 800, responseFormat: { type: 'json_object' } as any });
 
     const text = resp.delta?.content || '';
-    let items: any[] = [];
-    try {
-      const parsed = JSON.parse(text);
-      items = Array.isArray(parsed) ? parsed : (Array.isArray(parsed.items) ? parsed.items : []);
-    } catch {
-      const m = text.match(/\[[\s\S]*\]/);
-      if (m) { try { items = JSON.parse(m[0]); } catch {} }
+    const items = parseExtractedItems(text);
+    if (!items.length && text.trim()) {
+      console.log('[memory] 压缩前抢救: 模型输出无法解析为条目, 前120字:', text.slice(0, 120));
     }
 
     const writeItems: MemoryWriteItem[] = items

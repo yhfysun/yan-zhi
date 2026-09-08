@@ -121,3 +121,6 @@ apps/mobile/nodejs/
 
 # 服务端临时冒烟数据
 apps/server/tmp_*
+
+# CodeBuddy 工作区数据（不入库）
+.codebuddy/

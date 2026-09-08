@@ -224,6 +224,8 @@ export interface Agent {
   skillIds?: string[];
   /** Harness 挂载：子智能体 ID 列表 */
   subAgentIds?: string[];
+  /** Harness 挂载：本体 ID 列表（数据查询类智能体的取数范围；空 = 不限，可见全部已发布本体） */
+  ontologyIds?: string[];
   workflow: Workflow;
   inputsSchema?: Record<string, unknown>;
   config?: Record<string, unknown>;

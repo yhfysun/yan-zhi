@@ -148,6 +148,12 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '本体管理' },
   },
   {
+    path: '/std-attributes',
+    name: 'std-attributes',
+    component: () => import('../views/StdAttributesPage.vue'),
+    meta: { title: '标准属性' },
+  },
+  {
     path: '/sql-console',
     name: 'sql-console',
     component: () => import('../views/DataConsolePage.vue'),

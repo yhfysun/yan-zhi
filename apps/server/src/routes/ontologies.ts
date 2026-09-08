@@ -9,6 +9,8 @@ import {
   digestOntologies,
   exportYaml,
   generateFromTable,
+  createOntologyFromSql,
+  moveOntologyToGroup,
   importYaml,
   listOntologies,
   previewOntologyData,
@@ -130,6 +132,33 @@ router.post('/generate-table', authMiddleware, async (req: Request, res: Respons
     const { datasourceId, table } = req.body || {};
     if (!datasourceId || !table) throw new Error('缺少 datasourceId 或 table');
     res.json({ data: await generateFromTable(req.user!.userId, String(datasourceId), String(table)) });
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// POST /api/ontologies/create-from-sql —— 手写 SQL 向导提交：执行采样 → 自动推断属性 → 创建草稿
+router.post('/create-from-sql', authMiddleware, async (req: Request, res: Response) => {
+  try {
+    const { datasourceId, sourceSql, code, name, description, domain, groupId } = req.body || {};
+    if (!datasourceId || !sourceSql || !code || !name) throw new Error('缺少 datasourceId / sourceSql / code / name');
+    res.json({ data: await createOntologyFromSql(req.user!.userId, {
+      datasourceId: String(datasourceId), sourceSql: String(sourceSql), code: String(code), name: String(name),
+      description: description ? String(description) : undefined, domain: domain ? String(domain) : undefined,
+      groupId: groupId ? String(groupId) : undefined,
+    }) });
+  } catch (err) {
+    const errors = (err as { validationErrors?: unknown }).validationErrors;
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err), errors });
+  }
+});
+
+// POST /api/ontologies/:id/move-group —— 拖拽归组：移动本体到指定包（groupId 空 = 未分类）
+router.post('/:id/move-group', authMiddleware, (req: Request, res: Response) => {
+  try {
+    const groupId = req.body?.groupId ? String(req.body.groupId) : null;
+    moveOntologyToGroup(req.user!.userId, req.params.id, groupId);
+    res.json({ ok: true });
   } catch (err) {
     res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
   }

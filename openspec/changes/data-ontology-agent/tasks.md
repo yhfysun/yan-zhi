@@ -53,12 +53,16 @@
 
 ## P4 数据智能体 + skill 链
 
-- [ ] 4.1 api-tool-executor.ts 加 api_datasource_list/api_ontology_search/api_ontology_list/api_data_query/api_data_paginate
-- [ ] 4.2 喂给 LLM 的上下文改为**裁剪后的 YAML 片段**（分级：精简档/完整档；不含 source_sql 物理实现）
-- [ ] 4.3 seedAgents 加 `a_builtin_data_agent`（server db.ts + core schema.ts 同步）
+- [x] 4.1 api-tool-executor.ts 加 api_datasource_list/api_ontology_search/api_ontology_list/api_data_query/api_data_paginate
+      （P4.2 增补：api_ontology_overview 集合总览 / api_ontology_brief 单体简略 / api_ontology_detail 懒加载详情 / api_ontology_values 属性值·标准属性枚举召回；智能体本体挂载范围过滤全链路生效）
+- [x] 4.2 喂给 LLM 的上下文改为**裁剪后的 YAML 片段**（分级：精简档/完整档；不含 source_sql 物理实现）
+      （落地为 ontology-recall 默认直拼 + 关键字召回的语义摘要；detail 工具懒加载完整定义，不暴露 source_sql）
+- [x] 4.3 seedAgents 加 `a_builtin_data_agent`（server db.ts + core schema.ts 同步）
+      （core schema.ts 无 agent seed，改为前端 stores/agent.ts 同步 seed + v2 迁移；默认助手挂其为子智能体）
 - [ ] 4.4 seed skills 加 `skill_data_analysis`「本体数据分析」、`skill_report_doc`「数据报告生成」
+      （数据智能体已挂 skill_xlsx_data_processing / skill_data_visualization / skill_markdown_doc 过渡）
 - [ ] 4.5 前端：chat.ts PreviewTabKind 加 `data`；ChatPreviewPane.vue 加 DataResultPanel 分支（分页表/导出/转分析）
-- [ ] 4.6 `.msg-content table` markdown 表格样式；文件交付链路沿用
+- [x] 4.6 `.msg-content table` markdown 表格样式；文件交付链路沿用（chat.css 既有样式覆盖）
 - [ ] 4.7 已验证问答沉淀：`ontology_example` 命中复用 + 用作 few-shot；L3 逻辑 SQL + dry-run + 结构化错误自纠（≤2 轮）
 
 ## P5 非关系型与打磨

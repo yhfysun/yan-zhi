@@ -51,6 +51,10 @@
               <el-icon><Share /></el-icon>
               <span>本体管理</span>
             </el-dropdown-item>
+            <el-dropdown-item @click="$router.push('/std-attributes')">
+              <el-icon><Collection /></el-icon>
+              <span>标准属性</span>
+            </el-dropdown-item>
             <el-dropdown-item @click="$router.push('/sql-console')">
               <el-icon><Operation /></el-icon>
               <span>SQL 控制台</span>
@@ -126,6 +130,10 @@
             <el-dropdown-item @click="$router.push('/ontologies')">
               <el-icon><Share /></el-icon>
               <span>本体管理</span>
+            </el-dropdown-item>
+            <el-dropdown-item @click="$router.push('/std-attributes')">
+              <el-icon><Collection /></el-icon>
+              <span>标准属性</span>
             </el-dropdown-item>
             <el-dropdown-item @click="$router.push('/sql-console')">
               <el-icon><Operation /></el-icon>
@@ -634,18 +642,12 @@ function toggleTheme() {
 </style>
 
 <style>
+/* 用户菜单：圆角/边框/阴影交由 styles/menu.css 统一基座，仅保留布局定制 */
 .sidenav-user-popper {
-  border-radius: var(--radius-md) !important;
-  border: 1px solid var(--glass-border) !important;
-  box-shadow: var(--shadow-lg) !important;
-  padding: 4px !important; min-width: 140px !important;
+  min-width: 140px !important;
 }
 .sidenav-user-popper .el-dropdown-menu__item {
   display: flex; align-items: center; gap: 10px;
   padding: 10px 14px; border-radius: var(--radius-sm); font-size: 13px;
-}
-.user-dropdown-header {
-  padding: 8px 14px 4px; font-size: 12px;
-  color: var(--color-text-secondary); white-space: nowrap;
 }
 </style>

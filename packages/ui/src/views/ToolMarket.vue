@@ -690,8 +690,11 @@ async function installTool(item: any) {
 .builtin-cat { margin-bottom: 26px; }
 .builtin-cat-title {
   display: flex; align-items: center; gap: 8px;
-  margin-bottom: 12px; padding-left: 10px;
-  border-left: 3px solid var(--color-primary);
+  margin-bottom: 12px; padding-left: 0;
+}
+.builtin-cat-title::before {
+  content: ''; width: 6px; height: 6px; flex-shrink: 0;
+  border-radius: 2px; background: var(--color-primary);
 }
 .builtin-cat-name { font-size: 14px; font-weight: 700; color: var(--color-text); }
 .builtin-cat-count { font-size: 11px; font-weight: 700; color: var(--color-text-secondary); background: rgba(15,23,42,0.06); border-radius: 10px; padding: 2px 8px; }

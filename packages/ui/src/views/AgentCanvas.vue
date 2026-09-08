@@ -3,7 +3,7 @@
     <!-- 顶部工具栏 -->
     <header class="toolbar">
       <div class="toolbar-left">
-        <el-button :icon="ArrowLeft" text @click="$router.push('/agents')">返回</el-button>
+        <el-button :icon="ArrowLeft" text @click="goBack">返回</el-button>
         <el-divider direction="vertical" />
         <el-input v-model="agent.name" class="title-input" size="small" @input="markDirty" />
       </div>
@@ -313,6 +313,12 @@ const mcpStore = useMcpStore();
 const toolsStore = useToolsStore();
 
 const agentId = computed(() => route.params.id as string);
+
+// 画布只能从「智能体 → 本地智能体」列表进入，返回时通过 query 恢复该子视图，
+// 避免直接 push('/agents') 落回最外层的智能体商店视图。
+function goBack() {
+  router.push({ path: '/agents', query: { view: 'local-agents' } });
+}
 
 const isMobile = useIsMobile();
 const paletteOpen = ref(false);
@@ -634,7 +640,7 @@ async function load() {
   const a = store.current;
   if (!a) {
     ElMessage.error('智能体不存在');
-    router.push('/agents');
+    goBack();
     return;
   }
   agent.name = a.name;

@@ -412,7 +412,16 @@ export const useChatStore = defineStore('chat', () => {
     mcpToolAliases.value = conv?._mcpToolAliases ? JSON.parse(JSON.stringify(conv._mcpToolAliases)) : {};
   }
 
-  async function createConversation(title: string, opts?: { platformId?: string; modelId?: string; skillIds?: string[]; spaceId?: string }): Promise<string> {
+  async function createConversation(title: string, opts?: { platformId?: string; modelId?: string; skillIds?: string[]; spaceId?: string; agentId?: string }): Promise<string> {
+    // 未显式指定时记录当前选中的智能体，保证会话打开时能还原
+    let agentId = opts?.agentId;
+    if (!agentId) {
+      try {
+        const { useAgentStore } = await import('./agent');
+        const agentStore = useAgentStore();
+        agentId = agentStore.selectedId || agentStore.selectedAgent?.id || undefined;
+      } catch { /* agent store 未加载则忽略 */ }
+    }
     // 默认挂到当前选中的空间（null 表示"全部"则不归类，即 spaceId=null）
     let spaceId = opts?.spaceId;
     if (spaceId === undefined) {
@@ -425,6 +434,7 @@ export const useChatStore = defineStore('chat', () => {
       const r = await api.post<any>('/conversations', {
         title, platformId: opts?.platformId, modelId: opts?.modelId,
         skillIds: opts?.skillIds || [], spaceId: spaceId || null,
+        agentId: agentId || null,
       });
       if ('data' in r) {
         const row = r.data as any;
@@ -439,8 +449,8 @@ export const useChatStore = defineStore('chat', () => {
     const ts = Date.now();
     const skillIdsJson = JSON.stringify(opts?.skillIds || []);
     await adapter.db.exec(
-      'INSERT INTO conversation (id, title, platform_id, model_id, space_id, mcp_servers_json, skill_ids_json, pinned, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      [id, title, opts?.platformId || null, opts?.modelId || null, spaceId || null, '[]', skillIdsJson, 0, ts, ts],
+      'INSERT INTO conversation (id, title, agent_id, platform_id, model_id, space_id, mcp_servers_json, skill_ids_json, pinned, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [id, title, agentId || null, opts?.platformId || null, opts?.modelId || null, spaceId || null, '[]', skillIdsJson, 0, ts, ts],
     );
     await loadConversations();
     return id;
@@ -1403,7 +1413,8 @@ export const useChatStore = defineStore('chat', () => {
       // 前端只传 agentId/appGuide 等参数，不再自建提示词与工具表（避免双轨不一致）。
       const conv = conversations.value.find(c => c.id === convId);
       const agent = activeAgent();
-      const appGuide = useSettingsStore().settings.appGuide;
+      const appSettings = useSettingsStore().settings;
+      const appGuide = appSettings.appGuide;
       const maxSteps = getMaxReActSteps();
 
       const taskRes = await api.post<any>('/llm/tasks', {
@@ -1412,7 +1423,12 @@ export const useChatStore = defineStore('chat', () => {
         modelId: model.id,
         userContent: options.userContent,
         agentId: conv?.agentId || agent?.id || null,
+        // 智能体本体挂载：随任务下发（智能体编辑存本地库，server 端按此收敛取数范围）
+        ontologyIds: agent?.ontologyIds?.length ? agent.ontologyIds : undefined,
         appGuide,
+        // 记忆抽取/压缩前抢救用的模型（设置页配置；留空则后端回退任务自身模型）
+        memoryExtractPlatformId: appSettings.memoryExtractPlatformId || undefined,
+        memoryExtractModelId: appSettings.memoryExtractModelId || undefined,
         maxSteps,
         modeFlags: {
           thinking: thinkingMode.value,

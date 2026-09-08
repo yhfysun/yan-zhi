@@ -1177,6 +1177,7 @@ function createChat() {
       if (exists) {
         await store.loadMessages(store.currentConvId);
         const conv = store.conversations.find((c) => c.id === store.currentConvId);
+        applyConvAgent(conv);
         if (conv?.modelId && conv?.platformId) {
           const resolved = platformStore.resolveModel(conv.modelId, conv.platformId);
           if (resolved && CHAT_MODEL_TYPES.includes(resolved.type)) selectedModelId.value = resolved.id;
@@ -1211,12 +1212,15 @@ function createChat() {
     if (!id) return;
     isDraftMode.value = false;
     const conv = store.conversations.find((c) => c.id === id);
+    applyConvAgent(conv);
     if (conv?.modelId && conv?.platformId) {
       const resolved = platformStore.resolveModel(conv.modelId, conv.platformId);
       if (resolved && CHAT_MODEL_TYPES.includes(resolved.type)) selectedModelId.value = resolved.id;
     } else if (conv?.modelId) {
       const resolved = platformStore.resolveModel(conv.modelId);
       if (resolved && CHAT_MODEL_TYPES.includes(resolved.type)) selectedModelId.value = resolved.id;
+    } else {
+      applyAgentModel();
     }
     mountedSkillIds.value = conv?.skillIds ? [...conv.skillIds] : [];
     initMountSelection();
@@ -1234,6 +1238,22 @@ function createChat() {
       if (lastIdx >= 0) expandedAgentProcess['round-' + lastIdx] = true;
     }
   });
+
+  /** 打开历史会话时还原其绑定的智能体（会话未绑定则保持当前选择） */
+  function applyConvAgent(conv?: Conversation) {
+    const bindId = conv?.agentId;
+    if (!bindId) return;
+    if (!agentStore.agents.some((a) => a.id === bindId)) return;
+    if (agentStore.selectedId !== bindId) agentStore.selectAgent(bindId);
+  }
+
+  /** 会话未指定模型时，回落到当前智能体绑定的模型 */
+  function applyAgentModel() {
+    const agent = agentStore.selectedAgent;
+    if (agent?.modelId && chatModels.value.find((m) => m.id === agent.modelId)) {
+      selectedModelId.value = agent.modelId;
+    }
+  }
 
   function onAgentSwitch(id: string) {
     agentStore.selectAgent(id);
@@ -1332,12 +1352,15 @@ function createChat() {
     await store.loadMessages(id);
     isDraftMode.value = false;
     const conv = store.conversations.find((c) => c.id === id);
+    applyConvAgent(conv);
     if (conv?.modelId && conv?.platformId) {
       const resolved = platformStore.resolveModel(conv.modelId, conv.platformId);
       if (resolved && CHAT_MODEL_TYPES.includes(resolved.type)) selectedModelId.value = resolved.id;
     } else if (conv?.modelId) {
       const resolved = platformStore.resolveModel(conv.modelId);
       if (resolved && CHAT_MODEL_TYPES.includes(resolved.type)) selectedModelId.value = resolved.id;
+    } else {
+      applyAgentModel();
     }
     mountedSkillIds.value = conv?.skillIds ? [...conv.skillIds] : [];
     initMountSelection();

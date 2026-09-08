@@ -11,6 +11,7 @@ import {
   pollPeerMessages,
 } from '../services/peers.js';
 import { gitService } from '../services/git.js';
+import { bumpMemoryCache } from '../services/memory-service.js';
 import {
   computeNextRun,
   nextCronTime,
@@ -61,8 +62,13 @@ import {
   searchOntologiesForAgent,
   queryDataForAgent,
   paginateDataForAgent,
+  overviewOntologiesForAgent,
+  briefOntologyForAgent,
+  detailOntologyForAgent,
+  ontologyValuesForAgent,
 } from '../services/data-query.js';
 import type { QueryIntent } from '../services/ontology-compiler.js';
+import { setJsExecDataBridge } from '@yan-zhi/core';
 
 export interface MpcToolExecutionResult {
   content: Array<{ type: string; text: string }>;
@@ -177,14 +183,44 @@ export const SUPPORTED_API_TOOLS = new Set([
   'api_plugin_list', 'api_plugin_get', 'api_plugin_enable', 'api_plugin_disable', 'api_plugin_set_config', 'api_plugin_uninstall',
   // 空间
   'api_space_list', 'api_space_create', 'api_space_update', 'api_space_delete',
-  // 数据查询（P4.1：数据源 / 本体 / 只读取数 / 翻页）
+  // 数据查询（P4.1/P4.2：数据源 / 本体上下文链 / 只读取数 / 翻页）
   'api_datasource_list', 'api_ontology_search', 'api_ontology_list', 'api_data_query', 'api_data_paginate',
+  'api_ontology_overview', 'api_ontology_brief', 'api_ontology_detail', 'api_ontology_values',
 ]);
+
+/** 本体挂载范围：任务显式下发优先；否则读 server agent 表；均无 = undefined 不限 */
+function agentOntologyIds(userId: string | undefined, agentId: string | undefined, explicit?: string[]): string[] | undefined {
+  if (explicit && explicit.length) return explicit;
+  if (!agentId || !userId) return undefined;
+  try {
+    const row = db.prepare('SELECT ontology_ids FROM agent WHERE id = ? AND (user_id = ? OR is_public = 1)').get(agentId, userId) as
+      | { ontology_ids?: string | null }
+      | undefined;
+    const ids = JSON.parse(row?.ontology_ids || '[]');
+    return Array.isArray(ids) && ids.length ? ids.map(String) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+// js_exec 沙箱桥接：脚本内 dataQuery({sql, datasourceId?, limit?}) → 只读数据查询服务。
+// 本机单租户场景按 guest 身份取数（与工具面板数据一致）；只读护栏 + 行数上限在服务内强制。
+setJsExecDataBridge(async (args: { datasourceId?: string; sql: string; limit?: number }) => {
+  const r = await queryDataForAgent('guest', {
+    ...(args.datasourceId ? { datasourceId: args.datasourceId } : {}),
+    sql: String(args.sql || ''),
+    limit: Math.min(Math.max(Number(args.limit) || 200, 1), 1000),
+  });
+  return { columns: r.columns, rows: r.rows, rowCount: r.rowCount, truncated: r.truncated, sql: r.sql };
+});
 
 export async function executeApiTool(
   name: string,
   args: Record<string, unknown>,
   userId?: string,
+  agentId?: string,
+  /** 任务级显式挂载（前端随 /llm/tasks 下发）；给出时优先于 server agent 表读取 */
+  explicitOntologyIds?: string[],
 ): Promise<MpcToolExecutionResult> {
   try {
     switch (name) {
@@ -605,11 +641,15 @@ export async function executeApiTool(
         db.prepare(
           'INSERT INTO memory (id, user_id, agent_id, content, tags_json, metadata_json, embedding, created_at, last_used_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
         ).run(id, uid, str(args, 'agentId') || null, content, JSON.stringify(arr(args, 'tags')), '{}', emb, ts, ts);
+        bumpMemoryCache(uid);
         return ok(db.prepare('SELECT * FROM memory WHERE id = ?').get(id));
       }
-      case 'api_memory_delete':
-        db.prepare('DELETE FROM memory WHERE id = ? AND user_id = ?').run(str(args, 'id'), requireUser(userId));
+      case 'api_memory_delete': {
+        const uid = requireUser(userId);
+        db.prepare('DELETE FROM memory WHERE id = ? AND user_id = ?').run(str(args, 'id'), uid);
+        bumpMemoryCache(uid);
         return ok({ deleted: true });
+      }
 
       // Conversation files
       case 'api_file_list': {
@@ -1012,7 +1052,8 @@ export async function executeApiTool(
         return ok({ deleted: true });
       }
 
-      // ===== 数据查询（P4.1）：数据源 / 本体检索 / 只读取数 / 翻页 =====
+      // ===== 数据查询（P4.1/P4.2/P4.3）：数据源 / 本体上下文链 / 只读取数 / 翻页 =====
+      // agentId 给定时，本体上下文与取数范围收敛到该智能体挂载的本体集合（未挂载 = 不限）。
       case 'api_datasource_list':
         return ok(listSourcesForAgent(requireUser(userId)));
       case 'api_ontology_search':
@@ -1020,6 +1061,7 @@ export async function executeApiTool(
           await searchOntologiesForAgent(requireUser(userId), str(args, 'question'), {
             ...(str(args, 'datasourceId') ? { datasourceId: str(args, 'datasourceId') } : {}),
             limit: num(args, 'limit', 5),
+            allowed: agentOntologyIds(userId, agentId, explicitOntologyIds),
           }),
         );
       case 'api_ontology_list':
@@ -1028,8 +1070,31 @@ export async function executeApiTool(
             ...(str(args, 'datasourceId') ? { datasourceId: str(args, 'datasourceId') } : {}),
             ...(str(args, 'keyword') ? { keyword: str(args, 'keyword') } : {}),
             limit: num(args, 'limit', 20),
+            allowed: agentOntologyIds(userId, agentId, explicitOntologyIds),
           }),
         );
+      // 本体上下文链（P4.2）：集合总览 → 单体简略 → 懒加载详情 → 属性值/枚举采样
+      case 'api_ontology_overview':
+        return ok(
+          await overviewOntologiesForAgent(requireUser(userId), {
+            ...(str(args, 'datasourceId') ? { datasourceId: str(args, 'datasourceId') } : {}),
+            allowed: agentOntologyIds(userId, agentId, explicitOntologyIds),
+          }),
+        );
+      case 'api_ontology_brief':
+        return ok(await briefOntologyForAgent(requireUser(userId), str(args, 'ontology'), agentOntologyIds(userId, agentId, explicitOntologyIds)));
+      case 'api_ontology_detail': {
+        const include = obj(args, 'include');
+        return ok(
+          await detailOntologyForAgent(
+            requireUser(userId), str(args, 'ontology'),
+            Object.keys(include).length ? include : undefined,
+            agentOntologyIds(userId, agentId, explicitOntologyIds),
+          ),
+        );
+      }
+      case 'api_ontology_values':
+        return ok(await ontologyValuesForAgent(requireUser(userId), str(args, 'ontology'), str(args, 'attr'), num(args, 'limit', 20), agentOntologyIds(userId, agentId, explicitOntologyIds)));
       case 'api_data_query': {
         const intent = obj(args, 'intent');
         return ok(
@@ -1039,6 +1104,7 @@ export async function executeApiTool(
             ...(Object.keys(intent).length ? { intent: intent as QueryIntent } : {}),
             ...(str(args, 'sql') ? { sql: str(args, 'sql') } : {}),
             limit: num(args, 'limit', 100),
+            allowed: agentOntologyIds(userId, agentId, explicitOntologyIds),
           }),
         );
       }
@@ -1052,6 +1118,7 @@ export async function executeApiTool(
             ...(str(args, 'sql') ? { sql: str(args, 'sql') } : {}),
             offset: num(args, 'offset', 0),
             limit: num(args, 'limit', 50),
+            allowed: agentOntologyIds(userId, agentId, explicitOntologyIds),
           }),
         );
       }

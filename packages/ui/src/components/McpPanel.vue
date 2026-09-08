@@ -633,7 +633,7 @@ async function del(id: string) {
   max-height: 460px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px;
 }
 .tools-dialog-body::-webkit-scrollbar { width: 5px; }
-.tools-dialog-body::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.1); border-radius: 3px; }
+.tools-dialog-body::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: 999px; }
 .tools-empty { padding: 40px 0; }
 
 .tool-card-item {

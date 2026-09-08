@@ -44,6 +44,8 @@ import { computerUseManifest, computerUseModule } from './plugins/computer-use.j
 import { syncAgnesPlatformForAllUsers } from './agnes-platform/service.js';
 import { ensureProjectDataSource } from './services/datasource.js';
 import { ensureBuiltinOntologies } from './services/ontology.js';
+import stdAttributeRoutes from './routes/std-attributes.js';
+import ontologyGroupRoutes from './routes/ontology-groups.js';
 import { startScheduledTaskScheduler } from './services/scheduled-tasks.js';
 import { startMemoryDreamingScheduler } from './services/memory-dreaming.js';
 import { syncDingtalkStreamClients } from './services/dingtalk-stream.js';
@@ -92,6 +94,8 @@ app.use('/api/im', imRoutes);
 app.use('/api/datasources', datasourceRoutes);
 app.use('/api/sql-console', sqlConsoleRoutes);
 app.use('/api/ontologies', ontologyRoutes);
+app.use('/api/std-attributes', stdAttributeRoutes);
+app.use('/api/ontology-groups', ontologyGroupRoutes);
 app.use('/api/kb', kbRoutes);
 app.use('/api/mcp', mcpBridgeRoutes);
 app.use('/api/workspace', workspaceRoutes);

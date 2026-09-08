@@ -44,7 +44,7 @@ router.patch('/:id', (req: Request, res: Response) => {
 
   const sets: string[] = [];
   const vals: any[] = [];
-  const bodyFields: Record<string, string> = { title: 'title', platformId: 'platform_id', modelId: 'model_id', systemPrompt: 'system_prompt' };
+  const bodyFields: Record<string, string> = { title: 'title', platformId: 'platform_id', modelId: 'model_id', systemPrompt: 'system_prompt', agentId: 'agent_id' };
   for (const [key, col] of Object.entries(bodyFields)) {
     if (req.body[key] !== undefined) { sets.push(`${col} = ?`); vals.push(req.body[key]); }
   }

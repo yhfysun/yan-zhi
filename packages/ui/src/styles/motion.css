@@ -1,0 +1,59 @@
+/* ============================================================
+   动效层 —— Element Plus 过渡变量接管 + 弹窗入场出场 + 交互元素
+   统一过渡 + prefers-reduced-motion 降级
+   依赖 tokens.css 的 --motion-* / --ease-* 变量
+   ============================================================ */
+
+/* ===== Element Plus 过渡变量接管 =====
+   EP 的 fade / zoom / all 过渡全部引用下面这些变量，改这里即全局生效 */
+:root {
+  --el-transition-duration: 0.18s;
+  --el-transition-duration-fast: 0.12s;
+  --el-transition-function-ease-in-out-bezier: cubic-bezier(0.2, 0, 0, 1);
+  --el-transition-function-fast-bezier: cubic-bezier(0.22, 1, 0.36, 1);
+  --el-transition-fade-linear: opacity var(--el-transition-duration-fast) var(--ease-standard);
+}
+
+/* ===== 弹窗：遮罩纯淡入淡出，面板 scale + 位移（出场更快，轻快收尾） ===== */
+.dialog-fade-enter-active { animation: yz-modal-in var(--motion-base) var(--ease-out); }
+.dialog-fade-enter-active .el-overlay-dialog { animation: none; }
+.dialog-fade-enter-active .el-dialog { animation: yz-dialog-in var(--motion-slow) var(--ease-entrance); }
+
+.dialog-fade-leave-active { animation: yz-modal-out var(--motion-fast) var(--ease-in); }
+.dialog-fade-leave-active .el-overlay-dialog { animation: none; }
+.dialog-fade-leave-active .el-dialog { animation: yz-dialog-out var(--motion-base) var(--ease-in); }
+
+@keyframes yz-modal-in  { from { opacity: 0; } }
+@keyframes yz-modal-out { to   { opacity: 0; } }
+@keyframes yz-dialog-in  { from { opacity: 0; transform: translateY(8px) scale(0.97); } }
+@keyframes yz-dialog-out { to   { opacity: 0; transform: translateY(4px) scale(0.98); } }
+
+/* ===== 交互元素统一 fast 档过渡（替代原全局 * 通配 0.4s 长过渡） ===== */
+button, a,
+.el-button, .el-input__wrapper, .el-select__wrapper, .el-textarea__inner,
+.el-dropdown-menu__item, .el-tabs__item, .el-radio, .el-checkbox, .el-switch__core,
+.el-tag, .el-link, .el-pager li, .el-segmented__item, .el-rate__item {
+  transition:
+    background-color var(--motion-fast) var(--ease-standard),
+    border-color var(--motion-fast) var(--ease-standard),
+    color var(--motion-fast) var(--ease-standard),
+    box-shadow var(--motion-fast) var(--ease-standard),
+    opacity var(--motion-fast) var(--ease-standard);
+}
+
+/* 仅动合成友好属性：hover 位移/按压缩放类反馈 */
+.el-button:active { transition-duration: var(--motion-fast); }
+
+/* ===== 下拉 / 气泡出场：整体收敛为 fade + 轻位移（el-zoom-in-top 沿用 EP 变量已接管） ===== */
+.el-fade-in-enter-active,
+.el-fade-in-leave-active { transition: opacity var(--motion-fast) var(--ease-standard); }
+
+/* ===== prefers-reduced-motion：保留颜色/透明度反馈，去掉位移缩放与循环 ===== */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

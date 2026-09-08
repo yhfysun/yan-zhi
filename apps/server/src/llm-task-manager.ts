@@ -11,7 +11,7 @@ import { executeApiTool } from './mcp/api-tool-executor.js';
 import { getToolsFromDb, mcpShortIdOf, resolveMcpToolName, callMcpTool } from './mcp/client-manager.js';
 import {
   retrieveRelevantMemories, formatMemoryContext, bumpMemoryUsage,
-  writeMemoryItems, flushMemoriesBeforeCompression, type MemoryWriteItem,
+  writeMemoryItems, flushMemoriesBeforeCompression, parseExtractedItems, type MemoryWriteItem,
 } from './services/memory-service.js';
 import { serverState } from './state.js';
 
@@ -52,6 +52,11 @@ interface LlmTask {
   includeUiTools?: boolean;
   /** 会话级 MCP 挂载的 serverId 集合（无人值守时后端直连 MCP 兜底用） */
   mountedMcpServerIds?: string[];
+  /** 记忆抽取/抢救用模型（前端设置页下发；空则回退任务自身的平台/模型） */
+  memoryExtractPlatformId?: string;
+  memoryExtractModelId?: string;
+  /** 智能体挂载的本体 id 集合（前端随任务下发；空/未设置 = 取数不限本体范围） */
+  ontologyIds?: string[];
 }
 
 const tasks = new Map<string, LlmTask>();
@@ -181,6 +186,9 @@ export function createTask(params: {
   offlinePolicy?: string;
   /** 交互式任务（前端在线，走 SSE）：UI 工具（ask_user 等）纳入工具列表，无人值守任务排除 */
   includeUiTools?: boolean;
+  memoryExtractPlatformId?: string;
+  memoryExtractModelId?: string;
+  ontologyIds?: string[];
 }): string {
   // 幂等保护：同 conversationId 已有 running 任务则复用（避免重连重试创建多任务）
   for (const [id, existing] of tasks) {
@@ -208,6 +216,9 @@ export function createTask(params: {
     offlinePolicy: params.offlinePolicy,
     agentId: params.agentId ?? null,
     includeUiTools: !!params.includeUiTools,
+    memoryExtractPlatformId: params.memoryExtractPlatformId || undefined,
+    memoryExtractModelId: params.memoryExtractModelId || undefined,
+    ontologyIds: params.ontologyIds,
   };
   tasks.set(taskId, task);
   emit(task, { type: 'task:created', taskId, conversationId: params.conversationId });
@@ -586,8 +597,10 @@ async function runReActLoop(task: LlmTask, params: {
           beforeCompress: async (toCompress) => {
             if (flushedThisRun) return;
             flushedThisRun = true;
+            // 抢救同样优先用「记忆抽取模型」（小模型足够），未配置则回退任务模型
+            const memLlm = resolveMemoryExtractLlm(task) || { platform, model };
             await flushMemoriesBeforeCompression(
-              { userId, conversationId: convId, agentId: task.agentId ?? null, platform, model },
+              { userId, conversationId: convId, agentId: task.agentId ?? null, platform: memLlm.platform, model: memLlm.model },
               toCompress,
             );
           },
@@ -915,10 +928,10 @@ async function executeTool(
     return executeToolViaFrontend(task, toolName, args, toolCallId, depth);
   }
 
-  // API 工具（api_memory_search/api_kb_search 等）→ 后端直接执行
+  // API 工具（api_memory_search/api_kb_search/api_data_* 等）→ 后端直接执行；agentId 用于本体挂载范围过滤
   if (isApi) {
     try {
-      const result = await executeApiTool(toolName, args, task.userId);
+      const result = await executeApiTool(toolName, args, task.userId, task.agentId ?? undefined, task.ontologyIds);
       return result.content?.map((c: any) => c.text || '').join('') || JSON.stringify(result);
     } catch (e: any) {
       return `API 工具执行失败: ${e?.message || e}`;
@@ -1092,6 +1105,26 @@ async function runSubAgent(
           subTools.push({ type: 'function', function: { name: def.name, description: def.description, parameters: def.inputSchema } });
           break;
         }
+      }
+    }
+  }
+
+  // 记忆四件套：未挂载专属 api_* 工具链的智能体默认可用。
+  // 与 buildToolsForBackend 的「挂载优先」口径一致：挂了专属 api_* 工具（数据查询链）的
+  // 只用它挂载的，避免记忆类工具分走去取数链的注意力。
+  const hasOwnApiTools = builtinIds.some((n) => n.startsWith('api_'));
+  const SUB_ALWAYS_API_TOOLS = hasOwnApiTools
+    ? []
+    : ['api_memory_search', 'api_memory_list', 'api_memory_create', 'api_memory_delete'];
+  const apiRegistrySub = getApiToolRegistry();
+  for (const tName of SUB_ALWAYS_API_TOOLS) {
+    if (seen.has(tName)) continue;
+    for (const apiTools of apiRegistrySub.values()) {
+      const def = apiTools.find(t => t.name === tName);
+      if (def) {
+        seen.add(tName);
+        subTools.push({ type: 'function', function: { name: def.name, description: def.description, parameters: def.inputSchema } });
+        break;
       }
     }
   }
@@ -1376,6 +1409,19 @@ async function summarizeOnMaxSteps(
   }
 }
 
+/** 解析记忆抽取/压缩前抢救用模型：任务携带的「记忆抽取模型」配置（前端设置页下发）优先，
+ *  未配置、已失效或误配为非 LLM 模型时回退任务自身的平台/模型。 */
+function resolveMemoryExtractLlm(task: LlmTask): { platform: Platform; model: Model } | null {
+  if (task.memoryExtractPlatformId && task.memoryExtractModelId) {
+    const p = loadPlatform(task.memoryExtractPlatformId, task.userId);
+    const m = loadModel(task.memoryExtractModelId, task.userId);
+    if (p && m && (m.type || 'llm') === 'llm') return { platform: p, model: m };
+  }
+  const p = loadPlatform(task.platformId, task.userId);
+  const m = loadModel(task.modelId, task.userId);
+  return p && m ? { platform: p, model: m } : null;
+}
+
 /** 记忆抽取：任务完成后从会话中抽取值得长期记住的信息，写入 memory 表。
  *  非阻塞（void 调用），不影响 task:completed 事件时序。 */
 async function extractMemoryFromConversation(task: LlmTask): Promise<void> {
@@ -1389,24 +1435,23 @@ async function extractMemoryFromConversation(task: LlmTask): Promise<void> {
       return `【${role}】\n${m.content || (m.toolCalls?.length ? '(调用工具)' : '')}`;
     }).join('\n\n---\n\n');
 
-    const platform = loadPlatform(task.platformId, task.userId);
-    const model = loadModel(task.modelId, task.userId);
-    if (!platform || !model) return;
+    const llm = resolveMemoryExtractLlm(task);
+    if (!llm) return;
 
-    const client = new LlmClient(platform, model);
+    const client = new LlmClient(llm.platform, llm.model);
     const resp = await client.chat([
       { id: 'sys', conversationId: '', role: 'system', content: '你是记忆抽取助手。从对话中抽取「值得长期记住的用户信息」，输出 JSON 数组，每项形如 {"type":"agent|session|daily","content":"一句话事实"}。agent=稳定的用户偏好/背景；daily=当天的重要事件/进展；session=本会话的上下文结论。若新信息与既有认知矛盾（如用户纠正了之前的偏好），可加 "conflictsWith" 字段说明被推翻的旧结论内容。相对日期（如"昨天"）转为绝对日期。只输出 JSON，不要解释。若没有值得记的返回 []。', createdAt: 0 },
       { id: 'usr', conversationId: '', role: 'user', content: transcript, createdAt: 0 },
     ], { temperature: 0.2, maxTokens: 800, responseFormat: { type: 'json_object' } });
 
     const text = resp.delta?.content || '';
-    let items: any[] = [];
-    try {
-      const parsed = JSON.parse(text);
-      items = Array.isArray(parsed) ? parsed : (Array.isArray(parsed.items) ? parsed.items : []);
-    } catch {
-      const m = text.match(/\[[\s\S]*\]/);
-      if (m) { try { items = JSON.parse(m[0]); } catch {} }
+    // 兼容数组 / {items:[...]} / 单对象（部分模型 json_object 模式下返回单个对象而非数组，
+    // 此前只认数组导致抽取结果恒为 0 条且无任何日志）
+    const items = parseExtractedItems(text);
+    if (items.length) {
+      console.log(`[memory] 抽取: 模型返回 ${items.length} 条候选`);
+    } else if (text.trim()) {
+      console.log('[memory] 抽取: 模型输出无法解析为条目, 前120字:', text.slice(0, 120));
     }
 
     // 统一走 memory-service 写入：语义去重（余弦>0.92 更新原行）、冲突标记（superseded_by）、
@@ -1741,12 +1786,18 @@ export function buildToolsForBackend(agentId: string | null, userId: string, opt
   }
 
   // 3) API 工具（后端直查类：记忆/知识库/数据查询，后端直接执行）
-  // 固定暴露三个通用工具；其余 api_*（如 api_data_query）按 agent 挂载 + 会话挂载动态暴露，
+  // 固定暴露记忆四件套 + 知识库两个通用工具；其余 api_*（如 api_data_query）按 agent 挂载 + 会话挂载动态暴露，
   // 保证「挂载即可调用」与「没挂就不占上下文」。
   const apiRegistry = getApiToolRegistry();
-  const alwaysApiTools = ['api_memory_search', 'api_kb_search', 'api_kb_list'];
+  const alwaysApiTools = [
+    'api_memory_search', 'api_memory_list', 'api_memory_create', 'api_memory_delete',
+    'api_kb_search', 'api_kb_list',
+  ];
   const mountedApiTools = [...toolIds, ...convMounts.builtinToolIds].filter((n) => n.startsWith('api_'));
-  for (const tName of [...alwaysApiTools, ...mountedApiTools]) {
+  // 已挂载专属 api_* 工具链的（数据查询智能体等）只暴露它挂载的工具：记忆/知识库这类通用工具
+  // 对它属于干扰源 —— 实测会先去搜知识库扑空、再乱调子智能体工具，最终编造答案。
+  const apiToolNames = mountedApiTools.length ? mountedApiTools : alwaysApiTools;
+  for (const tName of apiToolNames) {
     if (seen.has(tName)) continue;
     for (const apiTools of apiRegistry.values()) {
       const def = apiTools.find(t => t.name === tName);

@@ -1,9 +1,19 @@
 // js_exec 内置工具 — 沙箱执行 JS 代码（node:vm，捕获 console 输出与返回值，支持 async/await）
+// 支持宿主注入 dataQuery 桥接函数：脚本内可调用 dataQuery({sql, datasourceId?, limit?}) 只读查数。
 import type { BuiltInTool } from '../types';
 import type { McpCallResult } from '../../mcp/client';
 
 const MAX_LOG_ENTRIES = 100;
 const MAX_LOG_LINE = 500;
+
+/** 数据查询桥接：由 server 端注入（走只读护栏的数据查询服务），浏览器端为 null */
+export type JsDataBridge = (args: { datasourceId?: string; sql: string; limit?: number }) => Promise<unknown>;
+let dataBridge: JsDataBridge | null = null;
+
+/** 宿主注入数据查询桥接（server 启动时调用；传 null 撤销） */
+export function setJsExecDataBridge(fn: JsDataBridge | null): void {
+  dataBridge = fn;
+}
 
 function fmtValue(v: unknown): string {
   if (typeof v === 'string') return v;
@@ -12,7 +22,7 @@ function fmtValue(v: unknown): string {
 
 export class JsExecTool implements BuiltInTool {
   name = 'js_exec';
-  description = '在沙箱 VM（node:vm）中执行 JavaScript，并捕获 console.log 输出与返回值。支持 async/await（用 return 包裹结果）。沙箱内禁止 require/process/fs/网络访问，需执行系统命令或文件操作请改用 cmd_exec / file_* / python_exec。适用于计算、数据转换、JSON 处理、算法原型。';
+  description = '在沙箱 VM（node:vm）中执行 JavaScript，并捕获 console.log 输出与返回值。支持 async/await（用 return 包裹结果）。沙箱内禁止 require/process/fs/网络访问，需执行系统命令或文件操作请改用 cmd_exec / file_* / python_exec。适用于计算、数据转换、JSON 处理、算法原型。服务端环境下沙箱内置异步桥接函数 dataQuery({ sql, datasourceId?, limit? })：执行只读 SQL 返回 { columns, rows, rowCount, truncated } 二维表（走只读护栏，单次上限 1000 行），可在脚本内多次调用做多步查询与数据处理。';
 
   inputSchema = {
     type: 'object',
@@ -53,7 +63,11 @@ export class JsExecTool implements BuiltInTool {
       error: pushLog('[error] '),
     };
 
-    const context = vm.createContext({ console: sandboxConsole });
+    const sandbox: Record<string, unknown> = { console: sandboxConsole };
+    if (dataBridge) {
+      sandbox.dataQuery = (args: unknown) => dataBridge!((args || {}) as { datasourceId?: string; sql: string; limit?: number });
+    }
+    const context = vm.createContext(sandbox);
     const wrapped = `(async () => {\n${code}\n})()`;
 
     let result: unknown;

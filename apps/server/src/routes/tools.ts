@@ -2,7 +2,7 @@ import { Router, Request, Response } from 'express';
 import { v4 as uuid } from 'uuid';
 import { authMiddleware } from '../auth.js';
 import { db } from '../db.js';
-import { getToolRegistry } from '@yan-zhi/core';
+import { getToolRegistry, getApiToolRegistry } from '@yan-zhi/core';
 
 const router = Router();
 router.use(authMiddleware);
@@ -107,7 +107,15 @@ router.get('/builtin', (_req: Request, res: Response) => {
     inputSchema: tool.inputSchema,
     outputSchema: tool.outputSchema || textOut,
   }));
-  res.json({ data: tools });
+  // 合并「数据查询」类 API 工具（api_ontology_* / api_data_*）：走 api 通道后端执行，
+  // 挂载/展示与内置工具一致（agent.builtin_tool_ids 挂载，后端按挂载范围暴露给大模型）。
+  const dataTools = (getApiToolRegistry().get('data') || []).map((tool) => ({
+    name: tool.name,
+    description: tool.description,
+    inputSchema: tool.inputSchema,
+    outputSchema: tool.outputSchema || textOut,
+  }));
+  res.json({ data: [...tools, ...dataTools] });
 });
 
 // POST /api/tools/install — 从远程商城安装工具

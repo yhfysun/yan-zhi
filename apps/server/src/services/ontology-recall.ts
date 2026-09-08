@@ -1,9 +1,9 @@
-// 本体语义召回 + 摘要组装（P4.2 第一版）：
-// 「默认直拼 + 非默认召回」两级组装——默认选择列/过滤器无条件进本体 YAML，
-// 非默认项按问题与 keywords 规则评分（阈值/topK 可配），命中才进。
+// 本体语义召回 + 摘要组装（P4.2）：
+// 选择列（命名查询列组：名称+描述/召回关键字+字段列表）与过滤器按 keywords 规则评分，
+// 命中的标分数进摘要；未命中的选择列只列名称与描述（紧凑）。
 // score 函数独立可替换：后续可无缝切 embedding 召回。
 import type { OntologyInfo } from './ontology.js';
-import type { OntologyFilter, OntologyRelation } from './ontology-compiler.js';
+import type { OntologyFilter, OntologyRelation, OntologySelection } from './ontology-compiler.js';
 
 export interface RecallConfig {
   /** 最低分数，低于丢弃（0~1） */
@@ -101,8 +101,7 @@ function fieldDescOf(o: OntologyInfo, name: string): string | undefined {
 
 /**
  * 组装本体语义摘要（喂大模型的紧凑文本）：
- * - 默认选择列（本体级契约）：无条件直拼进摘要，作为「未指定列时的兜底 SELECT」
- * - 非默认选择列：按 question 与 keywords 召回（阈值/topK），命中才拼入
+ * - 选择列（命名查询列组）：未命中的只列名称与描述；命中 question 的展开字段列表并标分数
  * - 过滤器：默认直拼 + 非默认召回（同构）
  * - 关联关系数量少，全量拼入
  * - 没有任何默认项且无命中的本体整条省略（控制上下文体积）
@@ -117,17 +116,17 @@ export function buildOntologyDigest(
     if (o.status !== 'published') continue;
     const lines: string[] = [];
 
-    // 默认选择列：无条件直拼
-    const defaults = o.selections
-      .filter((s) => s.isDefault)
-      .map((s) => fieldText({ name: s.name, keywords: s.keywords, description: s.description || fieldDescOf(o, s.name) }, true));
-    if (defaults.length) lines.push(`  选择列(默认): ${defaults.join(' / ')}`);
-
-    // 非默认选择列：按问题关键字召回
-    const recalled = recallByKeywords(o.selections, question, cfg).map(
-      (h) => `${fieldText({ name: h.item.name, keywords: h.item.keywords, description: h.item.description || fieldDescOf(o, h.item.name) }, true)} [${h.score}]`,
-    );
-    if (recalled.length) lines.push(`  选择列(命中): ${recalled.join(' / ')}`);
+    // 选择列（命名查询列组）：名称（描述; 命中词）→ 字段列表；按问题召回，命中的标分数
+    const selText = (s: OntologySelection, score?: number) => {
+      const kws = s.keywords?.length ? `; 命中词:${s.keywords.join('/')}` : '';
+      const desc = s.description ? `(${s.description})` : '';
+      const sc = score !== undefined ? ` [${score}]` : '';
+      return `${s.name}${desc}${kws} → ${(s.fields || []).join('/')}${sc}`;
+    };
+    const recSels = recallByKeywords(o.selections, question, cfg);
+    const plainSels = o.selections.filter((s) => !recSels.some((h) => h.item === s));
+    if (recSels.length) lines.push(`  选择列(命中): ${recSels.map((h) => selText(h.item, h.score)).join(' / ')}`);
+    if (plainSels.length) lines.push(`  选择列: ${plainSels.map((s) => selText(s)).join(' / ')}`);
 
     const defFilters = o.filters.filter((f) => f.isDefault).map(filterText);
     if (defFilters.length) lines.push(`  过滤器(默认): ${defFilters.join(' / ')}`);
@@ -137,8 +136,8 @@ export function buildOntologyDigest(
     if (o.relations.length) lines.push(`  关联: ${o.relations.map(relationText).join('；')}`);
     if (o.policies.length) lines.push(`  行级策略(强制): ${o.policies.join(' AND ')}`);
 
-    // 整条省略：无默认、无命中、无关联（策略是安全语义，有策略仍要展示）
-    const hasContent = defaults.length || recalled.length || defFilters.length || recFilters.length
+    // 整条省略：无选择列、无命中、无关联（策略是安全语义，有策略仍要展示）
+    const hasContent = o.selections.length || recFilters.length || defFilters.length
       || o.relations.length || o.policies.length;
     if (!hasContent) continue;
     blocks.push(`- ${o.code}（${o.name}）:\n${lines.join('\n')}`);

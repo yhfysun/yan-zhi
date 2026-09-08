@@ -428,7 +428,7 @@
 .msg-content table { border-collapse: collapse; margin: 8px 0; width: 100%; display: block; overflow-x: auto; }
 .msg-content th, .msg-content td { border: 1px solid var(--glass-border); padding: 6px 12px; text-align: left; word-break: break-word; }
 .msg-content th { background: rgba(0,0,0,0.03); font-weight: 600; }
-.msg-content blockquote { border-left: 3px solid var(--color-primary); padding-left: 12px; margin: 8px 0; color: var(--color-text-secondary); }
+.msg-content blockquote { border-left: 2px solid var(--color-border-strong); padding-left: 12px; margin: 8px 0; color: var(--color-text-secondary); }
 .msg-content a { color: var(--color-primary); text-decoration: none; }
 .msg-content a:hover { text-decoration: underline; }
 /* 用户气泡为深色渐变背景，紫色链接不可见，改用浅黄 + 下划线增强对比（WCAG AA） */
@@ -606,7 +606,7 @@
 
 .snapshot-dialog .el-dialog__body { padding-top: 0; }
 .snapshot-body {
-  max-height: 500px; overflow: auto; font-size: 12px; line-height: 1.6;
+  overflow: auto; font-size: 12px; line-height: 1.6;
   background: rgba(15, 23, 42, 0.03); color: var(--color-text);
   padding: 14px 16px; border-radius: 8px;
   white-space: pre-wrap; word-break: break-all;
@@ -658,8 +658,8 @@
 }
 .agent-trigger-caret { font-size: 12px; color: var(--color-text-secondary); flex-shrink: 0; }
 
-/* 智能体下拉菜单：头像 + 名称 + 描述 双行卡片 */
-.agent-switch-popper { border-radius: 12px; border: 1px solid var(--glass-border); overflow: hidden; }
+/* 智能体下拉菜单：头像 + 名称 + 描述 双行卡片（圆角/边框走 menu.css 统一基座） */
+.agent-switch-popper { overflow: hidden; }
 .agent-switch-popper .el-dropdown-menu { padding: 4px; }
 .agent-switch-popper .el-dropdown-menu__item {
   padding: 0; border-radius: 8px; margin-bottom: 2px; line-height: normal;
@@ -1020,7 +1020,7 @@
 /* Skill 挂载弹窗 - 卡片样式 */
 .skill-mount-search { margin-bottom: 14px; }
 .skill-mount-body {
-  max-height: 380px; overflow-y: auto;
+  overflow-y: auto;
   display: flex; flex-direction: column; gap: 8px;
 }
 .skill-mount-body::-webkit-scrollbar { width: 5px; }
@@ -1200,7 +1200,7 @@
   display: flex; align-items: stretch; gap: 0;
   padding: 0; border-bottom: 1px solid var(--glass-border);
   flex-shrink: 0; height: 34px;
-  overflow-x: auto; overflow-y: hidden; scrollbar-width: thin;
+  overflow-x: auto; overflow-y: hidden;
 }
 .right-panel-tabs::-webkit-scrollbar { height: 3px; }
 .right-panel-tabs::-webkit-scrollbar-thumb { background: var(--glass-border); border-radius: 2px; }
@@ -1475,8 +1475,6 @@
 }
 .minimal-popper { border-radius: 10px; border: 1px solid var(--glass-border); }
 .mount-dialog .el-dialog__body {
-  max-height: 55vh;
-  overflow-y: auto;
   padding-top: 8px;
 }
 .mount-dialog .el-dialog__body::-webkit-scrollbar { width: 5px; }
@@ -1551,7 +1549,7 @@ body.yz-right-panel-open .el-overlay-dialog {
 }
 
 /* ===== 输入框「+」聚合菜单（对齐 WorkBuddy：专家/技能/连接器/上传/目录统一入口） ===== */
-.plus-menu-popper { border-radius: var(--radius-md) !important; border: 1px solid var(--glass-border) !important; box-shadow: var(--shadow-lg) !important; padding: 4px !important; }
+.plus-menu-popper { padding: 4px !important; }
 .plus-menu { display: flex; flex-direction: column; }
 .plus-menu-item { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 10px; cursor: pointer; transition: background 0.15s; }
 .plus-menu-item:hover { background: var(--glass-bg-hover); }

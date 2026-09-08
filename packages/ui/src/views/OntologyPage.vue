@@ -1,8 +1,12 @@
 <template>
   <div class="page dw-root ont-root">
-    <!-- 左：本体列表 -->
+    <!-- 左：本体 / 标准属性 双 Tab -->
     <aside class="ont-left">
-      <div class="ont-left-bar">
+      <div class="ont-left-tabs">
+        <button class="ont-left-tab" :class="{ on: leftTab === 'ontology' }" type="button" @click="leftTab = 'ontology'">本体</button>
+        <button class="ont-left-tab" :class="{ on: leftTab === 'attributes' }" type="button" @click="leftTab = 'attributes'">标准属性</button>
+      </div>
+      <div v-if="leftTab === 'ontology'" class="ont-left-bar">
         <el-input v-model="keyword" placeholder="搜索本体" size="small" clearable :prefix-icon="Search" />
         <el-select v-model="statusFilter" size="small" class="ont-status-sel">
           <el-option label="全部状态" value="" />
@@ -11,30 +15,85 @@
         </el-select>
         <div style="display: flex; gap: 4px">
           <el-button size="small" style="flex: 1" :icon="Coin" @click="openTableDialog">从表生成</el-button>
-          <el-button size="small" style="flex: 1" :icon="Plus" @click="openCreate">手写 SQL</el-button>
+          <el-button size="small" style="flex: 1" :icon="Plus" @click="openSqlWizard">手写 SQL</el-button>
+          <el-button size="small" style="flex: 0 0 auto" :icon="FolderAdd" title="新建本体包（可多级）" @click="createGroup()" />
         </div>
       </div>
-      <div class="ont-list">
+      <div class="ont-list" @drop="onDropToRoot" @dragover.prevent>
         <div v-if="loading" class="ont-empty">加载中…</div>
-        <div v-else-if="!filtered.length" class="ont-empty">
-          {{ keyword ? '没有匹配的本体' : '正在为项目库生成内置本体…' }}
-        </div>
-        <button
-          v-for="o in filtered" :key="o.id"
-          class="ont-li" :class="{ on: o.id === selectedId }"
-          type="button" @click="selectOntology(o.id)"
-        >
-          <span class="ont-li-row">
-            <span class="dw-mono ont-li-code">{{ o.code }}</span>
-            <span style="flex: 1" />
-            <span v-if="o.builtin" class="ont-tag">内置</span>
-            <span class="ds-badge" :class="o.status === 'published' ? 'b-ok' : 'b-draft'">
-              {{ o.status === 'published' ? `v${o.version}` : '草稿' }}
-            </span>
-          </span>
-          <span class="ont-li-name">{{ o.name }}</span>
-        </button>
+        <template v-else>
+          <!-- 本体包（多级分类树）：点击折叠/展开，支持拖拽本体/包归组 -->
+          <template v-for="n in visibleNodes" :key="n.key">
+            <!-- 包节点 -->
+            <div
+              v-if="n.kind === 'group'"
+              class="ont-li ont-grp-li"
+              :class="{ 'drag-over': dragOver === n.key }"
+              :style="{ paddingLeft: 8 + n.depth * 14 + 'px' }"
+              draggable="true"
+              @click="toggleGroupFold(n.id)"
+              @dragstart="onDragGroupStart($event, n.id)"
+              @dragover.prevent.stop="dragOver = n.key"
+              @dragleave="dragOver = ''"
+              @drop.stop="onDropToGroup($event, n.id)"
+            >
+              <span class="ont-li-row">
+                <el-icon :size="11" class="ont-grp-fold" :class="{ open: !foldedGroups.has(n.id) }"><ArrowRight /></el-icon>
+                <el-icon :size="12" class="ont-grp-icon"><Folder /></el-icon>
+                <span class="ont-li-name" style="flex: 1">{{ n.name }}</span>
+                <span class="ont-tag">{{ n.count }}</span>
+                <el-dropdown trigger="click" @command="(cmd: string) => onGroupCmd(cmd, n)" @click.stop>
+                  <el-button size="small" text :icon="MoreFilled" @click.stop />
+                  <template #dropdown>
+                    <el-dropdown-menu>
+                      <el-dropdown-item command="addChild">新建子包</el-dropdown-item>
+                      <el-dropdown-item command="rename">重命名</el-dropdown-item>
+                      <el-dropdown-item command="remove" divided>删除包</el-dropdown-item>
+                    </el-dropdown-menu>
+                  </template>
+                </el-dropdown>
+              </span>
+            </div>
+            <!-- 未分类分隔行（拖拽目标：移出包） -->
+            <div
+              v-else-if="n.kind === 'uncategorized'"
+              class="ont-li ont-grp-li ont-grp-uncat"
+              :class="{ 'drag-over': dragOver === 'uncategorized' }"
+              @dragover.prevent.stop="dragOver = 'uncategorized'"
+              @dragleave="dragOver = ''"
+              @drop.stop="onDropToUncategorized($event)"
+            >
+              <span class="ont-li-row">
+                <span class="ont-li-name" style="flex: 1">未分类</span>
+                <span class="ont-tag">{{ n.count }}</span>
+              </span>
+            </div>
+            <!-- 本体叶子 -->
+            <button
+              v-else
+              class="ont-li" :class="{ on: n.ont.id === selectedId }"
+              :style="{ paddingLeft: 10 + n.depth * 14 + 'px' }"
+              draggable="true"
+              type="button" @click="selectOntology(n.ont.id)"
+              @dragstart="onDragOntStart($event, n.ont.id)"
+            >
+              <span class="ont-li-row">
+                <span class="dw-mono ont-li-code">{{ n.ont.code }}</span>
+                <span style="flex: 1" />
+                <span v-if="n.ont.builtin" class="ont-tag">内置</span>
+                <span class="ds-badge" :class="n.ont.status === 'published' ? 'b-ok' : 'b-draft'">
+                  {{ n.ont.status === 'published' ? `v${n.ont.version}` : '草稿' }}
+                </span>
+              </span>
+              <span class="ont-li-name">{{ n.ont.name }}</span>
+            </button>
+          </template>
+          <div v-if="!visibleNodes.some((n) => n.kind === 'ontology' || n.kind === 'uncategorized') && !loading" class="ont-empty">
+            {{ keyword ? '没有匹配的本体' : '正在为项目库生成内置本体…' }}
+          </div>
+        </template>
       </div>
+      <StdAttributeTree v-else class="ont-std-panel" />
     </aside>
 
     <!-- 从表生成对话框 -->
@@ -66,6 +125,86 @@
         <el-button size="small" type="primary" :disabled="!genTable" :loading="genCreating" @click="generateFromTable">
           生成本体
         </el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 手写 SQL 三步向导：选源输入 → 执行预览 → 本体信息（属性自动生成） -->
+    <el-dialog v-model="wizardOpen" title="手写 SQL 创建本体" width="700" :close-on-click-modal="false">
+      <el-steps :active="wizardStep - 1" align-center finish-status="success" size="small" style="margin-bottom: 14px">
+        <el-step title="数据源与 SQL" />
+        <el-step title="执行预览" />
+        <el-step title="本体信息" />
+      </el-steps>
+
+      <div v-show="wizardStep === 1">
+        <el-select v-model="wiz.dsId" size="small" placeholder="选择数据源" style="width: 100%">
+          <el-option v-for="d in dsOptions" :key="d.id" :label="`${d.name}（${d.type}）`" :value="d.id" />
+        </el-select>
+        <el-input
+          v-model="wiz.sql" type="textarea" :rows="9" class="dw-mono" style="margin-top: 10px"
+          placeholder="SELECT&#10;  user_id AS user_id,&#10;  amount AS amount&#10;FROM orders&#10;&#10;注意：每个输出列必须带 AS 别名（本体物理 SQL 契约）"
+        />
+        <p class="ont-hint" style="margin: 8px 0 0">下一步将实际执行这段 SQL（只读护栏，最多采样 20 行用于推断属性）。</p>
+      </div>
+
+      <div v-show="wizardStep === 2">
+        <div v-if="wiz.previewing" class="ont-empty" style="padding: 30px">执行中…</div>
+        <template v-else-if="wiz.preview">
+          <p class="ont-hint" style="margin: 0 0 6px">
+            共 <b>{{ wiz.preview.columns.length }}</b> 列 / 采样 <b>{{ wiz.preview.rows.length }}</b> 行。
+            数值列 → 度量(sum)、日期列 → 时间维度、其余 → 维度；并生成「全部字段」选择列组（创建后可改）。
+          </p>
+          <div class="wiz-preview">
+            <table class="ont-spec-table">
+              <thead><tr><th v-for="c in wiz.preview.columns" :key="c" class="dw-mono">{{ c }}</th></tr></thead>
+              <tbody>
+                <tr v-for="(r, i) in wiz.preview.rows.slice(0, 10)" :key="i">
+                  <td v-for="c in wiz.preview.columns" :key="c">{{ r[c] ?? '' }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </template>
+        <div v-else-if="wiz.error" class="ont-empty" style="padding: 20px; color: var(--el-color-danger)">{{ wiz.error }}</div>
+        <div v-else class="ont-empty" style="padding: 30px">点「执行并预览」运行 SQL</div>
+      </div>
+
+      <div v-show="wizardStep === 3">
+        <div class="ont-fgrid">
+          <div class="ont-field">
+            <label>本体 code（唯一、小写字母开头，供大模型引用）</label>
+            <el-input v-model="wiz.code" size="small" class="dw-mono" placeholder="如 order_summary" />
+          </div>
+          <div class="ont-field">
+            <label>名称</label>
+            <el-input v-model="wiz.name" size="small" placeholder="如 订单汇总" />
+          </div>
+          <div class="ont-field">
+            <label>业务域</label>
+            <el-select v-model="wiz.domain" size="small" clearable filterable allow-create default-first-option placeholder="选择或输入域">
+              <el-option v-for="d in DOMAINS" :key="d" :label="d" :value="d" />
+            </el-select>
+          </div>
+          <div class="ont-field ont-full">
+            <label>业务描述（写清口径与粒度，大模型靠它选本体）</label>
+            <el-input v-model="wiz.description" type="textarea" :rows="3" size="small" />
+          </div>
+          <div class="ont-field ont-full">
+            <label>所属本体包（可留空 = 未分类；左栏可新建多级包）</label>
+            <el-select v-model="wiz.groupId" size="small" clearable placeholder="未分类">
+              <el-option v-for="g in flatGroups" :key="g.id" :label="g.label" :value="g.id" />
+            </el-select>
+          </div>
+        </div>
+        <p class="ont-hint" style="margin: 8px 0 0">属性已按采样自动生成，创建为草稿；可在编辑区补口径后发布。</p>
+      </div>
+
+      <template #footer>
+        <el-button size="small" v-if="wizardStep > 1" @click="wizardStep--">上一步</el-button>
+        <el-button size="small" @click="wizardOpen = false">取消</el-button>
+        <el-button v-if="wizardStep === 1" size="small" type="primary" :disabled="!wiz.dsId || !wiz.sql.trim()" @click="wizardRun">执行并预览</el-button>
+        <el-button v-if="wizardStep === 2" size="small" type="primary" :disabled="!wiz.preview" @click="wizardStep = 3">下一步</el-button>
+        <el-button v-if="wizardStep === 3" size="small" type="primary" :loading="wiz.creating" @click="wizardCreate">创建本体</el-button>
       </template>
     </el-dialog>
 
@@ -104,6 +243,12 @@
               <label>名称</label>
               <el-input v-model="form.name" size="small" />
             </div>
+            <div class="ont-field">
+              <label>所属本体包（多级分类，左栏可建包）</label>
+              <el-select v-model="form.groupId" size="small" clearable placeholder="未分类">
+                <el-option v-for="g in flatGroups" :key="g.id" :label="g.label" :value="g.id" />
+              </el-select>
+            </div>
           </div>
 
           <!-- 语义 -->
@@ -111,7 +256,7 @@
           <div class="ont-fgrid">
             <div class="ont-field">
               <label>业务域</label>
-              <el-select v-model="form.domain" size="small" clearable placeholder="选择域">
+              <el-select v-model="form.domain" size="small" clearable filterable allow-create default-first-option placeholder="选择或输入域">
                 <el-option v-for="d in DOMAINS" :key="d" :label="d" :value="d" />
               </el-select>
             </div>
@@ -138,7 +283,8 @@
                 <th>名称</th>
                 <th>表达式（别名）</th>
                 <th style="width:104px">聚合</th>
-                <th style="width:180px">描述</th>
+                <th style="width:150px" title="引用标准属性库，统一名称/类型/单位/枚举口径">标准属性</th>
+                <th style="width:150px">描述</th>
                 <th style="width:36px"></th>
               </tr>
             </thead>
@@ -151,6 +297,11 @@
                 <td><el-input v-model="d.name" size="small" class="dw-mono" /></td>
                 <td><el-input v-model="d.expr" size="small" class="dw-mono" /></td>
                 <td class="ont-cell-na">—</td>
+                <td>
+                  <el-select v-model="d.refAttr" size="small" clearable filterable placeholder="挂标准属性" @change="onRefAttr(d, $event as string)">
+                    <el-option v-for="s in stdAttrList" :key="s.key" :label="`${s.key} · ${s.name}`" :value="s.key" />
+                  </el-select>
+                </td>
                 <td><el-input v-model="d.description" size="small" placeholder="业务口径（选填）" /></td>
                 <td><el-button size="small" text type="danger" :icon="Delete" @click="form.dimensions.splice(i, 1)" /></td>
               </tr>
@@ -166,6 +317,11 @@
                     <el-option v-for="a in AGGS" :key="a" :label="a" :value="a" />
                   </el-select>
                 </td>
+                <td>
+                  <el-select v-model="m.refAttr" size="small" clearable filterable placeholder="挂标准属性" @change="onRefAttr(m, $event as string)">
+                    <el-option v-for="s in stdAttrList" :key="s.key" :label="`${s.key} · ${s.name}`" :value="s.key" />
+                  </el-select>
+                </td>
                 <td><el-input v-model="m.description" size="small" placeholder="业务口径（选填）" /></td>
                 <td><el-button size="small" text type="danger" :icon="Delete" @click="form.measures.splice(i, 1)" /></td>
               </tr>
@@ -175,6 +331,7 @@
                 <td><el-input v-model="t.name" size="small" class="dw-mono" /></td>
                 <td><el-input v-model="t.expr" size="small" class="dw-mono" /></td>
                 <td class="ont-cell-na">日/周/月…</td>
+                <td class="ont-cell-na">—</td>
                 <td><el-input v-model="t.description" size="small" placeholder="业务口径（选填）" /></td>
                 <td><el-button size="small" text type="danger" :icon="Delete" @click="form.timeDimensions.splice(i, 1)" /></td>
               </tr>
@@ -186,35 +343,33 @@
             <el-button size="small" text @click="addTimeDim">+ 时间维度</el-button>
           </div>
 
-          <!-- 选择列（本体级契约）：喂给大模型的查询列清单 -->
+          <!-- 选择列：命名查询列组（名称 + 描述/召回关键字 + 字段列表），与过滤器同构 -->
           <div class="ont-fgroup">
-            <span>选择列（本体级契约）</span>
-            <small>默认列不召回直接拼进摘要（未指定列时的兜底 SELECT）；非默认列按关键字召回命中才拼入</small>
+            <span>选择列</span>
+            <small>命名的一组字段；大模型按名称引用（intent.selections），描述同时作为召回关键字</small>
           </div>
           <table class="ont-spec-table">
             <thead>
               <tr>
-                <th>字段（维度/度量/时间维度）</th>
-                <th style="width:160px">关键字（召回命中词）</th>
-                <th class="ont-col-check" title="默认选择列：直接拼进本体摘要">默认</th>
-                <th style="width:180px">描述</th>
+                <th style="width:130px">名称</th>
+                <th style="width:200px">描述（召回关键字）</th>
+                <th>字段列表（维度/度量/时间维度）</th>
                 <th style="width:36px"></th>
               </tr>
             </thead>
             <tbody>
               <tr v-for="(s, i) in form.selections" :key="`s${i}`">
+                <td><el-input v-model="s.name" size="small" class="dw-mono" placeholder="如: 基本信息" /></td>
+                <td><el-input v-model="s.keywordsText" size="small" placeholder="逗号分隔，如: 名称,名字" /></td>
                 <td>
-                  <el-select v-model="s.name" size="small" filterable placeholder="选择字段" :disabled="!fieldOptions.length">
+                  <el-select v-model="s.fields" size="small" multiple filterable collapse-tags collapse-tags-tooltip placeholder="选择字段（可多选）" :disabled="!fieldOptions.length" style="width: 100%">
                     <el-option v-for="fn in fieldOptions" :key="fn" :label="fn" :value="fn" />
                   </el-select>
                 </td>
-                <td><el-input v-model="s.keywordsText" size="small" placeholder="逗号分隔，如: 名称,名字" /></td>
-                <td class="ont-col-check"><el-checkbox v-model="s.isDefault" /></td>
-                <td><el-input v-model="s.description" size="small" placeholder="业务口径（选填）" /></td>
                 <td><el-button size="small" text type="danger" :icon="Delete" @click="form.selections.splice(i, 1)" /></td>
               </tr>
               <tr v-if="!form.selections.length">
-                <td colspan="5" class="ont-cell-na">暂无选择列；点下方「+ 选择列」添加，或留空（自动按全部字段兜底）</td>
+                <td colspan="4" class="ont-cell-na">暂无选择列；点下方「+ 选择列」添加（可选）</td>
               </tr>
             </tbody>
           </table>
@@ -406,9 +561,10 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { Search, Plus, Delete, MoreFilled, Coin } from '@element-plus/icons-vue';
+import { Search, Plus, Delete, MoreFilled, Coin, Collection, Folder, FolderAdd } from '@element-plus/icons-vue';
 import { api } from '../api/client';
 import CompileTrack, { type CompileStage } from '../components/CompileTrack.vue';
+import StdAttributeTree from '../components/StdAttributeTree.vue';
 import '../styles/data-workbench.css';
 import './datasources.css';
 import './console.css';
@@ -430,13 +586,14 @@ interface OntologyInfo {
   timeDimensions: { name: string; expr: string; description?: string }[];
   measures: { name: string; expr: string; agg: string; description?: string }[];
   filters: { name: string; expr: string; keywords?: string[]; isDefault?: boolean; description?: string }[];
-  selections: { name: string; keywords?: string[]; isDefault?: boolean; description?: string }[];
+  selections: { name: string; description?: string; keywords?: string[]; fields?: string[] }[];
   relations: {
     source: string; type: string; target: string; sourceAttr: string; targetAttr: string;
     via?: { table: string; sourceColumn: string; targetColumn: string };
     description?: string;
   }[];
   policies: string[];
+  groupId: string | null;
   status: string;
   version: number;
   builtin: boolean;
@@ -448,6 +605,34 @@ const loading = ref(true);
 const keyword = ref('');
 const statusFilter = ref('');
 const selectedId = ref('');
+/** 左栏双 Tab：本体 / 标准属性 */
+const leftTab = ref<'ontology' | 'attributes'>('ontology');
+
+// ===== 本体包（多级分类树）：折叠 + 拖拽归组 =====
+interface GroupNode { id: string; name: string; parentId: string | null; children: GroupNode[] }
+const groupTree = ref<GroupNode[]>([]);
+const groupFilter = ref('');
+/** 折叠的包（页面内存态） */
+const foldedGroups = ref(new Set<string>());
+const dragOver = ref('');
+
+function toggleGroupFold(id: string) {
+  const s = new Set(foldedGroups.value);
+  if (s.has(id)) s.delete(id); else s.add(id);
+  foldedGroups.value = s;
+}
+
+/** 树 → 扁平化（带层级与含父路径的 label），供「所属包」下拉与挂载分组 */
+function flattenGroups(nodes: GroupNode[], depth = 0, prefix = ''): Array<{ id: string; name: string; label: string; depth: number; count: number }> {
+  const out: Array<{ id: string; name: string; label: string; depth: number; count: number }> = [];
+  for (const n of nodes) {
+    const label = prefix ? `${prefix}/${n.name}` : n.name;
+    out.push({ id: n.id, name: n.name, label, depth, count: list.value.filter((o) => o.groupId === n.id).length });
+    out.push(...flattenGroups(n.children, depth + 1, label));
+  }
+  return out;
+}
+const flatGroups = computed(() => flattenGroups(groupTree.value));
 
 const filtered = computed(() =>
   list.value.filter((o) => {
@@ -457,6 +642,131 @@ const filtered = computed(() =>
     return [o.code, o.name, o.description].some((s) => (s || '').toLowerCase().includes(k));
   }),
 );
+
+type VisibleNode =
+  | { key: string; kind: 'group'; id: string; name: string; depth: number; count: number }
+  | { key: string; kind: 'uncategorized'; count: number }
+  | { key: string; kind: 'ontology'; depth: number; ont: OntologyInfo };
+
+/** 左栏可见节点：树展开（考虑折叠）+ 每个包直接挂的本体 + 未分类 */
+const visibleNodes = computed<VisibleNode[]>(() => {
+  const byGroup = new Map<string, OntologyInfo[]>();
+  const uncategorized: OntologyInfo[] = [];
+  for (const o of filtered.value) {
+    if (o.groupId && groupTree.value.length) {
+      if (!byGroup.has(o.groupId)) byGroup.set(o.groupId, []);
+      byGroup.get(o.groupId)!.push(o);
+    } else {
+      uncategorized.push(o);
+    }
+  }
+  const out: VisibleNode[] = [];
+  const walk = (nodes: GroupNode[], depth: number) => {
+    for (const n of nodes) {
+      const folded = foldedGroups.value.has(n.id);
+      out.push({ key: `g:${n.id}`, kind: 'group', id: n.id, name: n.name, depth, count: flattenGroups([n])[0].count });
+      if (folded) continue;
+      for (const o of byGroup.get(n.id) || []) {
+        out.push({ key: `o:${o.id}`, kind: 'ontology', depth: depth + 1, ont: o });
+      }
+      walk(n.children, depth + 1);
+    }
+  };
+  walk(groupTree.value, 0);
+  out.push({ key: 'uncategorized', kind: 'uncategorized', count: uncategorized.length });
+  for (const o of uncategorized) out.push({ key: `o:${o.id}`, kind: 'ontology', depth: 1, ont: o });
+  return out;
+});
+
+async function loadGroups() {
+  const res = await api.get<GroupNode[]>('/ontology-groups');
+  if (!('error' in res)) groupTree.value = res.data;
+}
+
+// ===== 拖拽归组 =====
+function onDragOntStart(e: DragEvent, ontId: string) {
+  e.dataTransfer?.setData('text/ont-id', ontId);
+}
+function onDragGroupStart(e: DragEvent, groupId: string) {
+  e.dataTransfer?.setData('text/grp-id', groupId);
+}
+async function onDropToGroup(e: DragEvent, groupId: string) {
+  dragOver.value = '';
+  const ontId = e.dataTransfer?.getData('text/ont-id');
+  const grpId = e.dataTransfer?.getData('text/grp-id');
+  try {
+    if (ontId) {
+      const res = await api.post(`/ontologies/${ontId}/move-group`, { groupId });
+      if ('error' in res) return ElMessage.error(res.error);
+      await load(true);
+    } else if (grpId && grpId !== groupId) {
+      const res = await api.post(`/ontology-groups/${grpId}/move`, { parentId: groupId });
+      if ('error' in res) return ElMessage.error(res.error);
+      await loadGroups();
+    }
+  } catch { /* 拖拽失败静默 */ }
+}
+async function onDropToUncategorized(e: DragEvent) {
+  dragOver.value = '';
+  const ontId = e.dataTransfer?.getData('text/ont-id');
+  if (!ontId) return;
+  try {
+    const res = await api.post(`/ontologies/${ontId}/move-group`, { groupId: null });
+    if ('error' in res) return ElMessage.error(res.error);
+    await load(true);
+  } catch { /* 拖拽失败静默 */ }
+}
+/** 拖包到列表空白处 = 移到根级 */
+async function onDropToRoot(e: DragEvent) {
+  dragOver.value = '';
+  const grpId = e.dataTransfer?.getData('text/grp-id');
+  if (!grpId) return;
+  try {
+    const res = await api.post(`/ontology-groups/${grpId}/move`, { parentId: null });
+    if ('error' in res) return ElMessage.error(res.error);
+    await loadGroups();
+  } catch { /* 拖拽失败静默 */ }
+}
+
+async function createGroup(parentId?: string) {
+  try {
+    const { value } = await ElMessageBox.prompt('输入本体包名称（可在包下再建包，形成多级结构）', parentId ? '新建子包' : '新建本体包', {
+      confirmButtonText: '创建', cancelButtonText: '取消', inputPlaceholder: '如 交易 / 订单',
+    });
+    const res = await api.post('/ontology-groups', { name: value, parentId: parentId || null });
+    if ('error' in res) return ElMessage.error(res.error);
+    await loadGroups();
+    ElMessage.success('本体包已创建');
+  } catch { /* 取消 */ }
+}
+
+function onGroupCmd(cmd: string, g: { id: string; name: string }) {
+  if (cmd === 'addChild') void createGroup(g.id);
+  else if (cmd === 'rename') void renameGroupPrompt(g);
+  else if (cmd === 'remove') void removeGroup(g);
+}
+
+async function renameGroupPrompt(g: { id: string; name: string }) {
+  try {
+    const { value } = await ElMessageBox.prompt('输入新名称', '重命名本体包', {
+      confirmButtonText: '保存', cancelButtonText: '取消', inputValue: g.name,
+    });
+    const res = await api.patch(`/ontology-groups/${g.id}`, { name: value });
+    if ('error' in res) return ElMessage.error(res.error);
+    await loadGroups();
+  } catch { /* 取消 */ }
+}
+
+async function removeGroup(g: { id: string; name: string }) {
+  try {
+    await ElMessageBox.confirm(`删除包「${g.name}」？其子包将上提一级，包内本体移入「未分类」。`, '提示', { type: 'warning' });
+    const res = await api.delete(`/ontology-groups/${g.id}`);
+    if ('error' in res) return ElMessage.error(res.error);
+    if (groupFilter.value === g.id) groupFilter.value = '';
+    await loadGroups();
+    ElMessage.success('已删除');
+  } catch { /* 取消 */ }
+}
 
 async function load(keepSelection = true) {
   loading.value = true;
@@ -481,16 +791,17 @@ const REL_TYPES = ['1:1', '1:N', 'N:1', 'N:N'] as const;
 const form = reactive({
   id: '', datasourceId: '', code: '', name: '', domain: '', description: '',
   synonymsText: '', sourceSql: '',
-  dimensions: [] as { name: string; expr: string; description: string }[],
-  measures: [] as { name: string; expr: string; agg: string; description: string }[],
+  dimensions: [] as { name: string; expr: string; refAttr: string; description: string }[],
+  measures: [] as { name: string; expr: string; agg: string; refAttr: string; description: string }[],
   timeDimensions: [] as { name: string; expr: string; description: string }[],
-  selections: [] as { name: string; isDefault: boolean; keywordsText: string; description: string }[],
+  selections: [] as { name: string; keywordsText: string; fields: string[] }[],
   filters: [] as { name: string; keywordsText: string; isDefault: boolean; expr: string; description: string }[],
   relations: [] as {
     source: string; type: string; target: string; sourceAttr: string; targetAttr: string;
     viaTable: string; viaSource: string; viaTarget: string; description: string;
   }[],
   policies: [] as string[],
+  groupId: '' as string,
   status: 'draft', version: 1, builtin: false,
 });
 // 查询意图：勾选参与编译/试跑的维度与度量（undefined 视为勾选，新加行默认勾上）
@@ -512,12 +823,12 @@ const splitKw = (s: string): string[] =>
   (s || '').split(/[,，\s]+/).map((x) => x.trim()).filter(Boolean);
 const joinKw = (a?: string[]): string => (a || []).join(', ');
 
-function addDim() { form.dimensions.push({ name: '', expr: '', description: '' }); }
-function addMeasure() { form.measures.push({ name: '', expr: '', agg: 'sum', description: '' }); }
+function addDim() { form.dimensions.push({ name: '', expr: '', refAttr: '', description: '' }); }
+function addMeasure() { form.measures.push({ name: '', expr: '', agg: 'sum', refAttr: '', description: '' }); }
 function addTimeDim() { form.timeDimensions.push({ name: '', expr: '', description: '' }); }
 function addFilter() { form.filters.push({ name: '', keywordsText: '', isDefault: false, expr: '', description: '' }); }
 function addSelection() {
-  form.selections.push({ name: fieldOptions.value[0] || '', isDefault: false, keywordsText: '', description: '' });
+  form.selections.push({ name: '', keywordsText: '', fields: [] });
 }
 function addRelation() {
   form.relations.push({ source: form.code, type: 'N:1', target: '', sourceAttr: '', targetAttr: '', viaTable: '', viaSource: '', viaTarget: '', description: '' });
@@ -543,10 +854,10 @@ function fillForm(o: OntologyInfo) {
     id: o.id, datasourceId: o.datasourceId, code: o.code, name: o.name,
     domain: o.domain || '', description: o.description || '',
     synonymsText: o.synonyms.join('\n'), sourceSql: o.sourceSql,
-    dimensions: o.dimensions.map((d) => ({ name: d.name, expr: d.expr, description: d.description || '' })),
-    measures: o.measures.map((m) => ({ name: m.name, expr: m.expr, agg: m.agg, description: m.description || '' })),
+    dimensions: o.dimensions.map((d) => ({ name: d.name, expr: d.expr, refAttr: (d as any).refAttr || '', description: d.description || '' })),
+    measures: o.measures.map((m) => ({ name: m.name, expr: m.expr, agg: m.agg, refAttr: (m as any).refAttr || '', description: m.description || '' })),
     timeDimensions: o.timeDimensions.map((t) => ({ name: t.name, expr: t.expr, description: t.description || '' })),
-    selections: (o.selections || []).map((s) => ({ name: s.name, isDefault: !!s.isDefault, keywordsText: joinKw(s.keywords), description: s.description || '' })),
+    selections: (o.selections || []).map((s) => ({ name: s.name, keywordsText: joinKw([...(s.keywords || []), ...(s.description ? [s.description] : [])]), fields: [...(s.fields || (s.name ? [s.name] : []))] })),
     filters: (o.filters || []).map((f) => ({ name: f.name, keywordsText: joinKw(f.keywords), isDefault: !!f.isDefault, expr: f.expr, description: f.description || '' })),
     relations: (o.relations || []).map((r) => ({
       source: r.source || form.code, type: r.type || 'N:1', target: r.target || '', sourceAttr: r.sourceAttr || '', targetAttr: r.targetAttr || '',
@@ -554,6 +865,7 @@ function fillForm(o: OntologyInfo) {
       description: r.description || '',
     })),
     policies: [...o.policies],
+    groupId: o.groupId || '',
     status: o.status, version: o.version, builtin: o.builtin,
   });
   // 切换本体时重置查询意图（默认全选 + 无过滤器）
@@ -579,6 +891,7 @@ function openCreate() {
     id: '', datasourceId: list.value[0]?.datasourceId || '', code: '', name: '', domain: '',
     description: '', synonymsText: '', sourceSql: 'SELECT\n  id AS id\nFROM t_your_table',
     dimensions: [], measures: [], timeDimensions: [], selections: [], filters: [], relations: [], policies: [],
+    groupId: groupFilter.value || '',
     status: 'draft', version: 1, builtin: false,
   });
   dirty.value = false;
@@ -594,16 +907,22 @@ function payload() {
     sourceSql: form.sourceSql,
     dimensions: form.dimensions
       .filter((d) => d.name && d.expr)
-      .map((d) => ({ name: d.name.trim(), expr: d.expr.trim(), description: d.description || undefined })),
+      .map((d) => ({ name: d.name.trim(), expr: d.expr.trim(), refAttr: d.refAttr || undefined, description: d.description || undefined })),
     measures: form.measures
       .filter((m) => m.name && (m.expr || m.agg === 'count'))
-      .map((m) => ({ name: m.name.trim(), expr: m.expr.trim() || '*', agg: m.agg, description: m.description || undefined })),
+      .map((m) => ({ name: m.name.trim(), expr: m.expr.trim() || '*', agg: m.agg, refAttr: m.refAttr || undefined, description: m.description || undefined })),
     timeDimensions: form.timeDimensions
       .filter((d) => d.name && d.expr)
       .map((d) => ({ name: d.name.trim(), expr: d.expr.trim(), description: d.description || undefined })),
     selections: form.selections
-      .filter((s) => s.name)
-      .map((s) => ({ name: s.name.trim(), isDefault: s.isDefault || undefined, keywords: splitKw(s.keywordsText), description: s.description || undefined })),
+      .filter((s) => s.name && s.fields.length)
+      .map((s) => ({
+        name: s.name.trim(),
+        // 描述即召回关键字：keywordsText 整句作 description + 分词作 keywords，双写供召回
+        description: s.keywordsText.trim() || undefined,
+        keywords: splitKw(s.keywordsText),
+        fields: s.fields,
+      })),
     filters: form.filters
       .filter((f) => f.name && f.expr)
       .map((f) => ({ name: f.name.trim(), expr: f.expr.trim(), keywords: splitKw(f.keywordsText), isDefault: f.isDefault || undefined, description: f.description || undefined })),
@@ -617,6 +936,7 @@ function payload() {
         description: r.description || undefined,
       })),
     policies: form.policies.map((p) => p.trim()).filter(Boolean),
+    groupId: form.groupId || undefined,
   };
 }
 
@@ -846,4 +1166,82 @@ async function openTableDialogPreload() {
   const res = await api.get<DsOption[]>('/datasources');
   if (!('error' in res)) dsOptions.value = res.data;
 }
+
+// ===== 手写 SQL 三步向导 =====
+const wizardOpen = ref(false);
+const wizardStep = ref(1);
+const wiz = reactive({
+  dsId: '', sql: '', previewing: false,
+  preview: null as { columns: string[]; rows: Record<string, unknown>[] } | null,
+  error: '', code: '', name: '', description: '', domain: '', groupId: '', creating: false,
+});
+
+function openSqlWizard() {
+  if (!dsOptions.value.length) void openTableDialogPreload();
+  wiz.dsId = form.datasourceId || list.value[0]?.datasourceId || dsOptions.value[0]?.id || '';
+  wiz.sql = ''; wiz.preview = null; wiz.error = '';
+  wiz.code = ''; wiz.name = ''; wiz.description = ''; wiz.domain = '';
+  wizardStep.value = 1;
+  wizardOpen.value = true;
+}
+
+async function wizardRun() {
+  wiz.previewing = true; wiz.error = ''; wiz.preview = null;
+  try {
+    const res = await api.post<any>('/sql-console/run', { dataSourceId: wiz.dsId, sql: wiz.sql, maxRows: 20 });
+    if ('error' in res) throw new Error(res.error);
+    const first = (res.data?.results || []).find((r: any) => r.status === 'ok' && r.columns?.length);
+    if (!first) throw new Error(res.data?.results?.[0]?.error || '执行结果为空');
+    wiz.preview = { columns: first.columns, rows: first.rows || [] };
+    wizardStep.value = 2;
+  } catch (e: any) {
+    wiz.error = e?.message || String(e);
+  } finally {
+    wiz.previewing = false;
+  }
+}
+
+async function wizardCreate() {
+  if (!wiz.code?.trim() || !wiz.name?.trim()) return ElMessage.warning('code 与名称必填');
+  if (!/^[a-z][a-z0-9_]*$/.test(wiz.code.trim())) return ElMessage.warning('code 只能用小写字母/数字/下划线，且以字母开头');
+  wiz.creating = true;
+  const res = await api.post<OntologyInfo>('/ontologies/create-from-sql', {
+    datasourceId: wiz.dsId, sourceSql: wiz.sql,
+    code: wiz.code.trim(), name: wiz.name.trim(),
+    description: wiz.description || undefined, domain: wiz.domain || undefined,
+    groupId: wiz.groupId || groupFilter.value || undefined,
+  });
+  wiz.creating = false;
+  if ('error' in res) return ElMessage.error(res.error);
+  ElMessage.success('已创建草稿，属性已按采样自动生成；补口径后发布即可供智能体使用');
+  wizardOpen.value = false;
+  await load(true);
+  selectedId.value = res.data.id;
+  fillForm(res.data);
+}
+
+// ===== 标准属性（左栏 Tab 内的 StdAttributeTree 管理）：此处仅加载属性清单供字段 refAttr 下拉引用 =====
+const stdAttrList = ref<Array<{ key: string; name: string; unit: string; dataType: string }>>([]);
+
+async function loadStdAttrs() {
+  const res = await api.get<any[]>('/std-attributes');
+  if ('error' in res) return;
+  const flat: any[] = [];
+  const walk = (nodes: any[]) => {
+    for (const n of nodes) {
+      if (n.kind === 'attr') flat.push(n);
+      walk(n.children || []);
+    }
+  };
+  walk(res.data || []);
+  stdAttrList.value = flat.map((s) => ({ key: s.key, name: s.name, unit: s.unit || '', dataType: s.dataType }));
+}
+
+/** 字段挂载标准属性：自动带出业务名作为描述（已有描述不覆盖） */
+function onRefAttr(row: { description?: string }, key: string) {
+  const s = stdAttrList.value.find((x) => x.key === key);
+  if (s && !row.description) row.description = s.unit ? `${s.name}（${s.unit}）` : s.name;
+}
+
+onMounted(() => { void loadStdAttrs(); void loadGroups(); });
 </script>

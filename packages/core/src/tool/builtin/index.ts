@@ -6,6 +6,7 @@ export { FileListTool } from './file-list';
 export { CodeSearchTool } from './code-search';
 export { CodeOutlineTool } from './code-outline';
 export { JsExecTool } from './js-exec';
+export { setJsExecDataBridge, type JsDataBridge } from './js-exec';
 export { PortScanTool } from './port-scan';
 export { HttpRequestTool } from './http-request';
 export { TcpSendTool } from './tcp-send';

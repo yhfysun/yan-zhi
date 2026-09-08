@@ -32,21 +32,22 @@ export interface OntologyMeasure {
   expr: string;
   agg: 'sum' | 'count' | 'count_distinct' | 'avg' | 'min' | 'max';
   additive?: 'additive' | 'non_additive' | 'semi_additive';
+  /** 挂载的标准属性 key（std_attribute），统一口径/单位/枚举 */
+  refAttr?: string;
   description?: string;
 }
 
 /**
- * 选择列（本体级查询契约，不是属性定义）：
- * - name 引用本体的维度/度量/时间维度名
- * - isDefault：默认选择列——不召回，无条件拼进本体摘要；
- *   用户提问未指定查询哪些列时，编译器就用这批列兜底 SELECT
- * - keywords：非默认选择列按问题与命中词召回
+ * 选择列（命名查询列组，与过滤器同构）：
+ * - name：选择列名（供大模型在 intent.selections 中按名引用）
+ * - description：业务描述，同时充当召回关键字（按问题命中才进摘要/被引用）
+ * - fields：字段列表，引用本体的维度/度量/时间维度名（≥1 个）
  */
 export interface OntologySelection {
-  name: string;              // 引用本体属性名（维度/度量/时间维度）
-  keywords?: string[];
-  isDefault?: boolean;
+  name: string;
   description?: string;
+  keywords?: string[];
+  fields?: string[];
 }
 
 /** 查询过滤器：命中才注入 WHERE（区别于行级策略 policies 的强制注入） */
@@ -89,6 +90,8 @@ export interface QueryIntent {
   timeDimension?: { name: string; grain?: TimeGrain };
   measures?: { name: string; agg?: string }[];
   filters?: string[];
+  /** 选择列名引用：展开为其字段列表并入 SELECT（与过滤器按名引用同构） */
+  selections?: string[];
   orderBy?: { name: string; dir?: 'asc' | 'desc' }[];
   limit?: number;
 }

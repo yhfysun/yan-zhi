@@ -23,6 +23,8 @@ import {
 } from './ontology-compiler.js';
 import type { DialectType } from './dialect.js';
 import { buildOntologyDigest, recallConfigFromEnv } from './ontology-recall.js';
+import { ensureAppGroup, APP_GROUP_NAME } from './ontology-group.js';
+import { BUILTIN_TABLE_DOCS, COMMON_FIELD_DOCS } from './ontology-docs.js';
 
 // ===== 类型 =====
 
@@ -44,6 +46,7 @@ interface OntologyRow {
   relations_json: string | null;
   selections_json: string | null;
   policies_json: string | null;
+  group_id: string | null;
   status: string;
   version: number;
   builtin: number;
@@ -72,6 +75,8 @@ export interface OntologyInfo {
   relations: OntologyRelation[];
   selections: OntologySelection[];
   policies: string[];
+  /** 所属本体包（多级分类树）；null = 未分类 */
+  groupId: string | null;
   status: string;
   version: number;
   builtin: boolean;
@@ -97,6 +102,8 @@ interface SaveInput {
   relations?: OntologyRelation[];
   selections?: OntologySelection[];
   policies?: string[];
+  /** 所属本体包（多级分类树）；缺省 = 未分类 */
+  groupId?: string;
   /** 内置本体标记：项目库自动生成的本体传 true（不可删、code/数据源/物理 SQL 不可改）；用户自建留空。 */
   builtin?: boolean;
 }
@@ -126,8 +133,19 @@ function toInfo(row: OntologyRow): OntologyInfo {
     measures: parseJsonList<OntologyMeasure>(row.measures_json),
     filters: parseJsonList<OntologyFilter>(row.filters_json),
     relations: parseJsonList<OntologyRelation>(row.relations_json),
-    selections: parseJsonList<OntologySelection>(row.selections_json),
+    selections: (() => {
+      // 旧结构兼容：早期选择列是 {name=字段名, isDefault}。若全部条目均无 fields（纯旧数据），
+      // 合并为单个「全部字段」组；混合/新结构仅补 fields=[name]。
+      const raw = parseJsonList<OntologySelection>(row.selections_json);
+      const legacy = raw.filter((s) => !s.fields?.length);
+      if (legacy.length && legacy.length === raw.length) {
+        const all = legacy.map((s) => s.name).filter(Boolean);
+        return all.length ? [{ name: '全部字段', fields: all }] : [];
+      }
+      return raw.map((s) => ({ ...s, fields: s.fields?.length ? s.fields : [s.name].filter(Boolean) }));
+    })(),
     policies: parseJsonList<string>(row.policies_json),
+    groupId: row.group_id ?? null,
     status: row.status,
     version: row.version,
     builtin: !!row.builtin,
@@ -151,7 +169,7 @@ function validateSave(input: SaveInput): void {
   if (!input.name?.trim()) throw new Error('本体名称不能为空');
   if (!input.sourceSql?.trim()) throw new Error('物理来源 SQL 不能为空');
 
-  // 选择列（本体级契约）：name 必须引用本体的某个维度/度量/时间维度
+  // 选择列（命名查询列组）：name 必填，fields 每个都必须引用本体的维度/度量/时间维度
   const fieldNames = new Set<string>([
     ...(input.dimensions || []).map((d) => d.name),
     ...(input.timeDimensions || []).map((d) => d.name),
@@ -159,8 +177,12 @@ function validateSave(input: SaveInput): void {
   ]);
   for (const s of input.selections || []) {
     if (!s.name?.trim()) throw new Error('选择列 name 不能为空');
-    if (!fieldNames.has(s.name.trim())) {
-      throw new Error(`选择列「${s.name}」未引用任何维度/度量/时间维度（可用：${[...fieldNames].join(', ') || '无'}）`);
+    const fields = (s.fields || []).filter(Boolean);
+    if (!fields.length) throw new Error(`选择列「${s.name}」至少要包含一个字段`);
+    for (const f of fields) {
+      if (!fieldNames.has(f)) {
+        throw new Error(`选择列「${s.name}」的字段「${f}」不是本体的维度/度量/时间维度（可用：${[...fieldNames].join(', ') || '无'}）`);
+      }
     }
   }
   // 关联关系：source 必须是自身本体 code（构成有向边 source → target）
@@ -219,8 +241,8 @@ export function createOntology(userId: string, input: SaveInput): OntologyInfo {
       `INSERT INTO ontology
          (id, user_id, datasource_id, code, name, domain, description, synonyms_json, source_sql,
           entities_json, time_dimensions_json, dimensions_json, measures_json, filters_json, relations_json, selections_json, policies_json,
-          status, version, builtin, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', 1, ?, ?, ?)`,
+          group_id, status, version, builtin, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', 1, ?, ?, ?)`,
     ).run(
       id, userId, input.datasourceId, input.code.trim(), input.name.trim(),
       input.domain?.trim() || null, input.description?.trim() || null,
@@ -228,6 +250,7 @@ export function createOntology(userId: string, input: SaveInput): OntologyInfo {
       JSON.stringify(input.entities || []), JSON.stringify(input.timeDimensions || []),
       JSON.stringify(input.dimensions || []), JSON.stringify(input.measures || []),
       JSON.stringify(input.filters || []), JSON.stringify(input.relations || []), JSON.stringify(input.selections || []), JSON.stringify(input.policies || []),
+      input.groupId?.trim() || null,
       input.builtin ? 1 : 0,
       now, now,
     );
@@ -248,7 +271,7 @@ export function updateOntology(userId: string, id: string, input: SaveInput): On
     validateSave({ ...input, datasourceId: row.datasource_id, code: row.code, sourceSql: row.source_sql });
     db.prepare(
       `UPDATE ontology SET name=?, domain=?, description=?, synonyms_json=?,
-         time_dimensions_json=?, dimensions_json=?, measures_json=?, filters_json=?, selections_json=?, policies_json=?, status='draft', updated_at=?
+         time_dimensions_json=?, dimensions_json=?, measures_json=?, filters_json=?, selections_json=?, policies_json=?, group_id=?, status='draft', updated_at=?
        WHERE id=? AND user_id=?`,
     ).run(
       input.name?.trim() || row.name, input.domain?.trim() || row.domain,
@@ -259,6 +282,7 @@ export function updateOntology(userId: string, id: string, input: SaveInput): On
       JSON.stringify(input.filters || parseJsonList(row.filters_json)),
       JSON.stringify(input.selections || parseJsonList<OntologySelection>(row.selections_json)),
       JSON.stringify(input.policies || parseJsonList(row.policies_json)),
+      input.groupId?.trim() || (row.group_id ?? null),
       Date.now(), id, userId,
     );
     return toInfo(getRow(userId, id)!);
@@ -267,7 +291,7 @@ export function updateOntology(userId: string, id: string, input: SaveInput): On
   db.prepare(
     `UPDATE ontology SET datasource_id=?, code=?, name=?, domain=?, description=?, synonyms_json=?,
        source_sql=?, entities_json=?, time_dimensions_json=?, dimensions_json=?, measures_json=?,
-       filters_json=?, relations_json=?, selections_json=?, policies_json=?, status='draft', updated_at=?
+       filters_json=?, relations_json=?, selections_json=?, policies_json=?, group_id=?, status='draft', updated_at=?
      WHERE id=? AND user_id=?`,
   ).run(
     input.datasourceId, input.code.trim(), input.name.trim(),
@@ -276,9 +300,23 @@ export function updateOntology(userId: string, id: string, input: SaveInput): On
     JSON.stringify(input.entities || []), JSON.stringify(input.timeDimensions || []),
     JSON.stringify(input.dimensions || []), JSON.stringify(input.measures || []),
     JSON.stringify(input.filters || []), JSON.stringify(input.relations || []), JSON.stringify(input.selections || []), JSON.stringify(input.policies || []),
+    input.groupId?.trim() || null,
     Date.now(), id, userId,
   );
   return toInfo(getRow(userId, id)!);
+}
+
+/** 移动本体到指定包（拖拽归组用）；groupId 为 null = 移入「未分类」 */
+export function moveOntologyToGroup(userId: string, id: string, groupId: string | null): void {
+  const row = getRow(userId, id);
+  if (!row) throw new Error('本体不存在');
+  if (groupId) {
+    const grp = db.prepare('SELECT id FROM ontology_group WHERE id = ? AND user_id = ?').get(groupId, userId);
+    if (!grp) throw new Error('目标本体包不存在');
+  }
+  db.prepare('UPDATE ontology SET group_id = ?, updated_at = ? WHERE id = ? AND user_id = ?').run(
+    groupId ?? null, Date.now(), id, userId,
+  );
 }
 
 export function deleteOntology(userId: string, id: string): void {
@@ -286,6 +324,18 @@ export function deleteOntology(userId: string, id: string): void {
   if (!row) throw new Error('本体不存在');
   if (row.builtin) throw new Error('内置本体不可删除（可编辑语义后发布）');
   db.prepare('DELETE FROM ontology WHERE id = ? AND user_id = ?').run(id, userId);
+  // 同步清理智能体挂载中的悬挂引用（ontology_ids 含已删除本体的置为未挂载）
+  try {
+    const agents = db.prepare("SELECT id, ontology_ids FROM agent WHERE ontology_ids IS NOT NULL AND ontology_ids != '[]'").all() as Array<{ id: string; ontology_ids: string }>;
+    for (const a of agents) {
+      try {
+        const ids = JSON.parse(a.ontology_ids) as string[];
+        if (Array.isArray(ids) && ids.includes(id)) {
+          db.prepare('UPDATE agent SET ontology_ids = ? WHERE id = ?').run(JSON.stringify(ids.filter((x) => x !== id)), a.id);
+        }
+      } catch { /* 单条解析失败忽略 */ }
+    }
+  } catch { /* agent 表无 ontology_ids 列时忽略 */ }
 }
 
 /** 发布：草稿对智能体不可见，发布即改取数口径（version 持久递增） */
@@ -508,6 +558,93 @@ export function importYaml(userId: string, text: string): OntologyInfo {
   });
 }
 
+// ===== 手写 SQL 向导（P4.4）：执行用户 SQL → 按采样值自动推断属性 → 创建草稿 =====
+
+export interface CreateFromSqlInput {
+  datasourceId: string;
+  sourceSql: string;
+  code: string;
+  name: string;
+  description?: string;
+  domain?: string;
+  groupId?: string;
+}
+
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}([ T]\d{2}:\d{2}(:\d{2}(\.\d+)?)?)?$/;
+
+/** 采样值类型启发：数值→度量(sum)，ISO 日期→时间维度，其余→维度 */
+function inferRole(col: string, samples: unknown[]): 'measure' | 'time' | 'dimension' {
+  const vals = samples.filter((v) => v !== null && v !== undefined && v !== '');
+  if (!vals.length) return 'dimension';
+  const allNum = vals.every((v) => typeof v === 'number' || (typeof v === 'string' && !Number.isNaN(Number(v))));
+  if (allNum) return 'measure';
+  const allDate = vals.every((v) => typeof v === 'string' && ISO_DATE_RE.test(String(v).trim()));
+  if (allDate) return 'time';
+  return 'dimension';
+}
+
+/**
+ * 从手写 SQL 创建本体（向导第三步提交）：
+ * 1. 只读执行 `SELECT * FROM (用户SQL) LIMIT 20` 采样；
+ * 2. 输出列（即别名）自动生成属性：数值→度量(sum)、ISO 日期→时间维度、其余→维度；
+ *    并生成一个「全部字段」选择列组（fields = 全部列）；
+ * 3. 创建为草稿（用户预览/补口径后手动发布）。
+ * 要求 SELECT 列全部带 AS 别名（本体物理 SQL 的统一契约，编译器依赖别名拼装）。
+ */
+export async function createOntologyFromSql(userId: string, input: CreateFromSqlInput): Promise<OntologyInfo> {
+  const ds = db
+    .prepare('SELECT * FROM data_source WHERE id = ? AND user_id = ?')
+    .get(input.datasourceId, userId) as DataSourceRow | undefined;
+  if (!ds) throw new Error('数据源不存在');
+  const sourceSql = (input.sourceSql || '').trim().replace(/;\s*$/, '');
+  if (!sourceSql) throw new Error('来源 SQL 不能为空');
+
+  // 别名契约前置校验：给出可读错误（编译器拼 SELECT 依赖别名）
+  const aliased = checkSourceSqlAliases(sourceSql);
+  if (!aliased.ok) {
+    throw new Error(`SQL 输出列必须有 AS 别名：${aliased.errors[0]?.message || '请为每个输出列加别名'}`);
+  }
+  if (new Set(aliased.aliases).size !== aliased.aliases.length) {
+    throw new Error(`SQL 输出列别名重复: ${aliased.aliases.join(', ')}`);
+  }
+
+  // 只读采样（向导预览阶段前端已跑过一次；此处再跑一次拿类型样本）
+  const sampleSql = `SELECT * FROM (${sourceSql}) _wiz LIMIT 20`;
+  const result = await getConnector(ds).query(sampleSql, { maxRows: 20, timeoutMs: 15_000 });
+  if (!result.columns.length) throw new Error('SQL 结果集没有输出列');
+
+  const dimensions: { name: string; expr: string; description?: string }[] = [];
+  const timeDimensions: { name: string; expr: string; description?: string }[] = [];
+  const measures: { name: string; expr: string; agg: 'sum'; description?: string }[] = [];
+  for (const col of result.columns) {
+    const samples = result.rows.map((r) => (r as Record<string, unknown>)[col]);
+    const role = inferRole(col, samples);
+    if (role === 'measure') measures.push({ name: col, expr: col, agg: 'sum' });
+    else if (role === 'time') timeDimensions.push({ name: col, expr: col });
+    else dimensions.push({ name: col, expr: col });
+  }
+  if (!dimensions.length && !measures.length && !timeDimensions.length) {
+    throw new Error('未能从 SQL 结果推断出任何属性');
+  }
+
+  // 选择列：一个「全部字段」组（fields = 全部输出列），用户可在编辑区再拆分/命名
+  const allFields = [...dimensions.map((d) => d.name), ...timeDimensions.map((t) => t.name), ...measures.map((m) => m.name)];
+
+  return createOntology(userId, {
+    datasourceId: input.datasourceId,
+    code: input.code,
+    name: input.name,
+    description: input.description,
+    domain: input.domain,
+    groupId: input.groupId,
+    sourceSql,
+    dimensions,
+    timeDimensions,
+    measures,
+    selections: [{ name: '全部字段', fields: allFields }],
+  });
+}
+
 // ===== 内置项目库自动本体（P2.5.4 的轻量版：每表一个，含列结构，语义留白待富化） =====
 
 /** 同一用户内置本体生成节流（毫秒）：避免智能体高频调用时反复扫 schema */
@@ -527,19 +664,20 @@ async function generateBuiltinOntologies(userId: string, opts?: { force?: boolea
     .prepare("SELECT * FROM data_source WHERE user_id = ? AND type = 'project'")
     .get(userId) as DataSourceRow | undefined;
   if (!project) return false;
-  const existing = new Set(
-    (db.prepare('SELECT code FROM ontology WHERE user_id = ? AND datasource_id = ?').all(userId, project.id) as {
-      code: string;
-    }[]).map((r) => r.code),
-  );
+  const existingRows = db
+    .prepare('SELECT id, code, name, description FROM ontology WHERE user_id = ? AND datasource_id = ?')
+    .all(userId, project.id) as Array<{ id: string; code: string; name: string; description: string | null }>;
+  const existing = new Set(existingRows.map((r) => r.code));
   const conn = getConnector(project);
   const schema = await conn.schemaInfo();
   console.log(`[ensureBuiltin] ds=${project.name} tables=${schema.length}`);
+  const newBuiltInIds: string[] = []; // 本次新生成/首次归包的内置本体 id（自动追加进数据智能体挂载）
   for (const t of schema) {
     if (existing.has(t.name)) continue; // 已存在（含结构漂移刷新）由 generateTableOntology 的幂等逻辑兜底，避免列表期频繁写
     if (!t.columns.length) continue;
     try {
-      await generateTableOntology(userId, project, t as TableSchemaLite, { builtin: true, silentConflict: true });
+      const created = await generateTableOntology(userId, project, t as TableSchemaLite, { builtin: true, silentConflict: true });
+      newBuiltInIds.push(created.id);
     } catch (e) {
       console.error(`[ensureBuiltin] per-table fail: ds=${project.name} table=${t.name}`, e);
     }
@@ -556,7 +694,116 @@ async function generateBuiltinOntologies(userId: string, opts?: { force?: boolea
     for (const r of draftBuiltin) upd.run(now, now, r.id);
     console.log(`[ensureBuiltin] 补齐发布 ${draftBuiltin.length} 个内置本体`);
   }
+
+  // 存量迁移：内置本体默认归入「应用本体包」（只处理 group_id 为空的；用户手动移过包的不动）
+  const ungroupedBuiltin = db
+    .prepare('SELECT id FROM ontology WHERE user_id = ? AND datasource_id = ? AND builtin = 1 AND group_id IS NULL')
+    .all(userId, project.id) as { id: string }[];
+  if (ungroupedBuiltin.length) {
+    const appGroupId = ensureAppGroup(userId);
+    const upd = db.prepare('UPDATE ontology SET group_id = ? WHERE id = ?');
+    for (const r of ungroupedBuiltin) upd.run(appGroupId, r.id);
+    newBuiltInIds.push(...ungroupedBuiltin.map((r) => r.id));
+    console.log(`[ensureBuiltin] ${ungroupedBuiltin.length} 个内置本体已归入「${APP_GROUP_NAME}」`);
+  }
+
+  // 数据查询分析助理默认挂载：首次（挂载为空）挂上「应用本体包」全部本体；
+  // 之后新生成/首次归包的内置本体自动追加（不复活用户手动移除的旧本体）。
+  syncDataAgentMounts(userId, newBuiltInIds);
+
+  // 词典驱动刷新：为内置本体补/刷业务描述（表描述 + 字段描述），内容来自 ontology-docs.ts 词典。
+  // 只在词典内容与库中不同才写（幂等）；用户手动改过的 description 若与词典不同不覆盖——
+  // 判定方式：旧值等于「自动生成模板」或与词典旧版本一致才刷，这里以「与词典当前值不一致且旧值含『自动生成』或为词典刷新产物」为准。
+  const docsChanged: string[] = [];
+  for (const r of existingRows) {
+    const doc = BUILTIN_TABLE_DOCS[r.code];
+    if (!doc?.description) continue;
+    if (r.description === doc.description) continue;
+    const isTemplate = !r.description || r.description.includes('自动生成') || r.description.includes('业务口径待补充');
+    if (!isTemplate && r.description) continue; // 用户手写的描述不覆盖
+    db.prepare('UPDATE ontology SET description = ?, name = ?, updated_at = ? WHERE id = ?').run(
+      doc.description, doc.name || r.name, Date.now(), r.id,
+    );
+    docsChanged.push(r.code);
+    // 字段描述刷新（维度/度量/时间维度按 expr=列名 挂词典描述）
+    for (const [jsonCol, role] of [['dimensions_json', 'dim'], ['measures_json', 'mea'], ['time_dimensions_json', 'time']] as const) {
+      const raw = db.prepare(`SELECT ${jsonCol} AS v FROM ontology WHERE id = ?`).get(r.id) as { v: string | null } | undefined;
+      if (!raw?.v) continue;
+      try {
+        const items = JSON.parse(raw.v) as Array<{ name: string; expr: string; description?: string }>;
+        let changed = false;
+        for (const it of items) {
+          const col = it.expr;
+          const desc = doc.fields?.[col] || COMMON_FIELD_DOCS[col];
+          if (desc && it.description !== desc) { it.description = desc; changed = true; }
+          void role;
+        }
+        if (changed) {
+          db.prepare(`UPDATE ontology SET ${jsonCol} = ? WHERE id = ?`).run(JSON.stringify(items), r.id);
+        }
+      } catch { /* JSON 解析失败忽略 */ }
+    }
+  }
+  if (docsChanged.length) console.log(`[ensureBuiltin] 已刷新 ${docsChanged.length} 个内置本体的业务描述: ${docsChanged.slice(0, 5).join(', ')}${docsChanged.length > 5 ? '…' : ''}`);
+
+  // 旧库补齐：早期生成的内置本体只有 *_sum 度量，没有行计数，
+  // 「有多少条/多少个」这种最常见问法没有可用度量 → 模型只能拿 SUM 凑数或退化写裸 SQL。
+  const needCount = db
+    .prepare('SELECT id, measures_json FROM ontology WHERE user_id = ? AND datasource_id = ? AND builtin = 1')
+    .all(userId, project.id) as { id: string; measures_json: string }[];
+  if (needCount.length) {
+    const updCount = db.prepare('UPDATE ontology SET measures_json = ?, updated_at = ? WHERE id = ?');
+    const now = Date.now();
+    let n = 0;
+    for (const r of needCount) {
+      let ms: unknown[] = [];
+      try { ms = JSON.parse(r.measures_json || '[]'); } catch { ms = []; }
+      if (!Array.isArray(ms) || ms.some((m: any) => m?.name === 'row_count')) continue;
+      ms.unshift({
+        name: 'row_count', expr: '*', agg: 'count', additive: 'additive',
+        description: '行数（记录条数）：回答「有多少/多少个/多少条」时用它',
+      });
+      updCount.run(JSON.stringify(ms), now, r.id);
+      n++;
+    }
+    if (n) console.log(`[ensureBuiltin] 补齐行计数度量（row_count）${n} 个内置本体`);
+  }
   return true;
+}
+
+/**
+ * 数据查询分析助理默认挂载「应用本体包」本体：
+ * - 挂载为空（首次）→ 挂上应用包全部本体
+ * - 之后新生成/首次归包的内置本体（newIds）自动追加进挂载
+ * - 不复活用户手动移除的旧本体（只追加 newIds / 首次初始化）
+ */
+function syncDataAgentMounts(userId: string, newIds: string[]): void {
+  const DATA_AGENT_ID = 'a_builtin_data_agent';
+  const agent = db
+    .prepare("SELECT ontology_ids FROM agent WHERE id = ? AND user_id = 'guest'")
+    .get(DATA_AGENT_ID) as { ontology_ids: string | null } | undefined;
+  if (!agent) return;
+  let ids: string[] = [];
+  try { ids = JSON.parse(agent.ontology_ids || '[]'); } catch { ids = []; }
+  if (!Array.isArray(ids)) ids = [];
+
+  if (!ids.length) {
+    // 首次初始化：挂上应用包全部本体
+    const appGroup = db
+      .prepare("SELECT id FROM ontology_group WHERE user_id = ? AND name = ? AND parent_id IS NULL")
+      .get(userId, APP_GROUP_NAME) as { id: string } | undefined;
+    if (!appGroup) return;
+    ids = (db.prepare('SELECT id FROM ontology WHERE user_id = ? AND group_id = ?').all(userId, appGroup.id) as { id: string }[])
+      .map((r) => r.id);
+    if (!ids.length) return;
+  } else {
+    // 后续：仅追加本次新生成的内置本体
+    const add = newIds.filter((id) => !ids.includes(id));
+    if (!add.length) return;
+    ids = [...ids, ...add];
+  }
+  db.prepare('UPDATE agent SET ontology_ids = ? WHERE id = ?').run(JSON.stringify(ids), DATA_AGENT_ID);
+  console.log(`[ensureBuiltin] 数据查询分析助理已挂载 ${ids.length} 个本体`);
 }
 
 /** 列表接口用：不阻塞当前请求，生成完成后下次列表可见；项目库不可用时静默，下次列表重试 */
@@ -627,6 +874,8 @@ export async function generateTableOntology(
     timeDimensions: gen.timeDimensions,
     measures: gen.measures,
     selections: gen.selections,
+    // 项目库自动生成的内置本体默认归入「应用本体包」
+    groupId: opts?.builtin ? ensureAppGroup(userId) : undefined,
     builtin: !!opts?.builtin,
   });
   // 内置（项目库自动生成）本体直接发布：结构由表元数据确定性生成、随时可取数，

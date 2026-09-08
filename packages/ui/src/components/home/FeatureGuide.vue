@@ -772,7 +772,7 @@ function enterFeature() {
 .guide-fade-enter-from, .guide-fade-leave-to { opacity: 0; }
 
 /* 弹窗入场：一次性 CSS animation（不用 Vue transition，杜绝 transitionend 冒泡导致动画反复重播「变大变小」） */
-.feature-guide { animation: guidePopIn 0.28s cubic-bezier(0.34, 1.56, 0.64, 1); }
+.feature-guide { animation: guidePopIn 0.28s var(--ease-entrance, cubic-bezier(0.16, 1, 0.3, 1)); }
 @keyframes guidePopIn {
   from { opacity: 0; transform: scale(0.92); }
   to { opacity: 1; transform: scale(1); }

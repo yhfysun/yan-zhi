@@ -1,0 +1,116 @@
+/* ============================================================
+   菜单层 —— el-dropdown / select 下拉统一皮肤
+   分组标题、条目态（hover/选中/禁用）、分隔线、长列表滚动
+   对既有 popper-class（sidenav-user-popper / model-pill-popper /
+   agent-switch-popper / plus-menu-popper / more-menu-popper /
+   file-mgr-popover）统一收敛，各处零散皮肤由组件内逐步移除
+   ============================================================ */
+
+/* ===== 下拉容器：实色、统一圆角阴影、内边距 6px ===== */
+.el-dropdown__popper.el-popper,
+.el-select__popper.el-popper {
+  border-radius: var(--overlay-radius);
+  box-shadow: var(--overlay-shadow);
+  border-color: var(--color-border);
+  overflow: hidden;
+}
+.el-dropdown-menu {
+  padding: var(--menu-pad);
+  background: transparent;
+}
+.el-dropdown-menu__item {
+  height: var(--menu-item-h);
+  line-height: var(--menu-item-h);
+  margin: 1px 2px;
+  padding: 0 10px;
+  border-radius: var(--radius-sm);
+  font-size: 13.5px;
+  color: var(--color-text);
+  transition:
+    background-color var(--motion-fast) var(--ease-standard),
+    color var(--motion-fast) var(--ease-standard);
+}
+/* 悬浮：极浅底色，无描边 */
+.el-dropdown-menu__item:not(.is-disabled):hover,
+.el-dropdown-menu__item:not(.is-disabled):focus {
+  background: var(--color-surface-hover);
+  color: var(--color-text);
+}
+/* 禁用：40% 透明度且不响应悬浮 */
+.el-dropdown-menu__item.is-disabled {
+  color: var(--color-text);
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.el-dropdown-menu__item.is-disabled:hover {
+  background: transparent;
+}
+/* 选中：主色文字 + 浅主色底（不用侧边色条） */
+.el-dropdown-menu__item.is-active,
+.el-dropdown-menu__item.selected {
+  background: color-mix(in srgb, var(--color-primary) 10%, transparent);
+  color: var(--color-primary);
+  font-weight: 600;
+}
+/* 分隔线 */
+.el-dropdown-menu__item--divided::before {
+  border-top-color: color-mix(in srgb, var(--color-border) 70%, transparent);
+  margin: 4px 0;
+}
+
+/* ===== 分组标题：取代「disabled 项冒充标题」的默认 40% 透明观感 ===== */
+.el-dropdown-menu__item.model-pill-group-label,
+.el-dropdown-menu__item.is-group-label {
+  height: 24px;
+  line-height: 24px;
+  margin-top: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  color: var(--color-text-tertiary);
+  opacity: 1;
+  cursor: default;
+  user-select: none;
+}
+.el-dropdown-menu__item.model-pill-group-label:first-child,
+.el-dropdown-menu__item.is-group-label:first-child {
+  margin-top: 0;
+}
+.el-dropdown-menu__item.model-pill-group-label:hover {
+  background: transparent;
+}
+
+/* 用户菜单头（用户名区） */
+.el-dropdown-menu .user-dropdown-header {
+  padding: 8px 12px 6px;
+  margin: 0 2px 4px;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+  pointer-events: none;
+}
+.el-dropdown-menu .user-dropdown-name {
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--color-text);
+}
+
+/* ===== 长列表：最大高度 + 统一细滚动条 =====
+   模型选择菜单已迁移至 AppMenu 组件（自带 60vh 限高），此处仅保留 el-dropdown 类长列表 */
+.agent-switch-popper .el-dropdown-menu {
+  max-height: 60vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* ===== 移动端：条目加高至触控友好 ===== */
+@media (max-width: 767px) {
+  .el-dropdown-menu__item {
+    height: var(--menu-item-h-mobile);
+    line-height: var(--menu-item-h-mobile);
+    font-size: 14px;
+  }
+  .el-dropdown-menu__item.model-pill-group-label,
+  .el-dropdown-menu__item.is-group-label {
+    height: 28px;
+    line-height: 28px;
+  }
+}

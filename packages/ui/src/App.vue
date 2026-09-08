@@ -151,141 +151,11 @@ authStore.loadUser();
 </script>
 
 <style>
-:root {
-  /* ===== 中性纸墨骨架：背景/文字/边框不绑定主题色，切主题只换强调色，全局不突兀 ===== */
-  --color-bg: #F7F5F0;
-  --color-surface: #FFFFFF;
-  --color-surface-hover: #F1EFE9;
-  --color-border: #E7E4DC;
-  --color-border-strong: #D8D5CC;
-  --color-text: #1A1A1A;
-  --color-text-secondary: #6B6B66;
-  --color-text-tertiary: #9C9B94;
-
-  /* 兼容旧玻璃变量名（组件大量引用），改为实色纸面，去除 backdrop-blur */
-  --glass-bg: #FFFFFF;
-  --glass-bg-hover: #F1EFE9;
-  --glass-border: #E7E4DC;
-  --glass-border-strong: #D8D5CC;
-  --glass-blur: 0px;
-  --glass-saturate: 100%;
-  --glass-filter: none;
-
-  /* 字体三套：宋体 display / 无衬线 body / 等宽数据 */
-  --font-display: "Songti SC", "Noto Serif SC", "Source Han Serif SC", "SimSun", Georgia, serif;
-  --font-body: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", Roboto, sans-serif;
-  --font-mono: "JetBrains Mono", "SF Mono", ui-monospace, "Cascadia Code", Consolas, monospace;
-
-  /* 主题色（applyTheme 运行时覆盖，这里为默认「朱砂」） */
-  --color-primary: #C2410C;
-  --color-primary-light: #FBEBDD;
-  --color-primary-dark: #7C2D12;
-  --color-accent: #B45309;
-  --color-success: #2F6B4F;
-  --color-warning: #B45309;
-  --color-danger: #B91C1C;
-
-  /* Element Plus theme — 中性对齐，applyTheme 会同步主色 */
-  --el-color-primary: #C2410C;
-  --el-color-primary-light-3: #D97757;
-  --el-color-primary-light-5: #E5A48B;
-  --el-color-primary-light-7: #F0C9B8;
-  --el-color-primary-light-8: #F6DDD0;
-  --el-color-primary-light-9: #FBEBDD;
-  --el-color-primary-dark-2: #7C2D12;
-
-  --gradient-primary: linear-gradient(135deg, #C2410C, #B45309);
-
-  /* 阴影：极轻，去 slop 的浮起感 */
-  --shadow-sm: 0 1px 2px rgba(26, 26, 26, 0.04);
-  --shadow-md: 0 2px 8px rgba(26, 26, 26, 0.06);
-  --shadow-lg: 0 8px 24px rgba(26, 26, 26, 0.10);
-
-  --radius-sm: 6px;
-  --radius-md: 10px;
-  --radius-lg: 14px;
-  --radius-xl: 18px;
-  --scrollbar-size: 8px;
-  --scrollbar-thumb: rgba(26, 26, 26, 0.16);
-  --scrollbar-thumb-hover: rgba(26, 26, 26, 0.28);
-  --scrollbar-thumb-active: rgba(26, 26, 26, 0.40);
-
-  /* Responsive breakpoints (min-width values, unitless for calc) */
-  --bp-xs: 0;
-  --bp-sm: 576;
-  --bp-md: 768;
-  --bp-lg: 992;
-  --bp-xl: 1200;
-  --is-mobile: 0;
-}
-
-/* Toggle --is-mobile on xs/sm breakpoints (max-width 767px) */
-@media (max-width: 767px) {
-  :root {
-    --is-mobile: 1;
-  }
-}
-
-[data-theme="dark"] {
-  --color-bg: #141414;
-  --color-surface: #1D1D1C;
-  --color-surface-hover: #262624;
-  --color-border: #2A2A28;
-  --color-border-strong: #3A3A37;
-  --color-text: #ECEAE4;
-  --color-text-secondary: #9A9A92;
-  --color-text-tertiary: #6F6F68;
-
-  --glass-bg: #1D1D1C;
-  --glass-bg-hover: #262624;
-  --glass-border: #2A2A28;
-  --glass-border-strong: #3A3A37;
-  --glass-filter: none;
-
-  --color-primary: #D97757;
-  --color-primary-light: rgba(217, 119, 87, 0.16);
-  --color-primary-dark: #C2410C;
-  --color-accent: #D97757;
-  --color-success: #4A8571;
-  --color-warning: #C07A5C;
-  --color-danger: #C25B4E;
-
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
-  --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.5);
-  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.6);
-  --scrollbar-thumb: rgba(255, 255, 255, 0.18);
-  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.32);
-  --scrollbar-thumb-active: rgba(255, 255, 255, 0.46);
-
-  --el-bg-color: #1D1D1C;
-  --el-bg-color-overlay: #262624;
-  --el-bg-color-page: #141414;
-  --el-fill-color-blank: #1D1D1C;
-  --el-fill-color: #2A2A28;
-  --el-fill-color-light: #2A2A28;
-  --el-border-color: #3A3A37;
-  --el-border-color-light: #33332F;
-  --el-border-color-lighter: #2A2A28;
-  --el-text-color-primary: #ECEAE4;
-  --el-text-color-regular: #D6D4CE;
-  --el-text-color-secondary: #9A9A92;
-  --el-text-color-placeholder: #6F6F68;
-  --el-mask-color: rgba(0, 0, 0, 0.5);
-  --el-color-primary: #D97757;
-  --el-color-primary-light-3: #C2603A;
-  --el-color-primary-light-5: #A84F2D;
-  --el-color-primary-light-7: #8E4022;
-  --el-color-primary-light-8: #7C2D12;
-  --el-color-primary-light-9: rgba(217, 119, 87, 0.16);
-  --el-color-primary-dark-2: #C2410C;
-  --el-color-success: #4A8571;
-  --el-color-success-light-9: rgba(74, 133, 113, 0.16);
-  --el-color-warning: #C07A5C;
-  --el-color-warning-light-9: rgba(192, 122, 92, 0.16);
-  --el-color-danger: #C25B4E;
-  --el-color-danger-light-9: rgba(194, 91, 78, 0.16);
-  --el-fill-color-dark: #33332F;
-}
+@import './styles/tokens.css';
+@import './styles/motion.css';
+@import './styles/overlay.css';
+@import './styles/menu.css';
+@import './styles/surface.css';
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html, body, #app { height: 100%; }
@@ -298,9 +168,6 @@ body {
   overflow: hidden;
 }
 
-* {
-  transition: background-color 0.4s ease, border-color 0.4s ease, color 0.3s ease;
-}
 
 .app-shell { display: flex; flex-direction: column; height: 100%; position: relative; overflow: hidden; }
 .app-body { flex: 1; display: flex; overflow: hidden; min-height: 0; }
@@ -442,43 +309,26 @@ body {
 }
 .glass-card:hover { border-color: var(--glass-border-strong); }
 
-/* Scrollbar — 统一细圆角样式：透明轨道、轻量滑块，hover/active 逐步加深 */
-/* Firefox 单独处理：Chromium 一旦设置 scrollbar-width/color 会改用原生滚动条，导致圆角失效 */
-@supports (-moz-appearance:none) {
-  * {
-    scrollbar-width: thin;
-    scrollbar-color: var(--scrollbar-thumb) transparent;
-  }
-
-  .mobile-theme-btn {
-    width: 32px;
-    height: 32px;
-    border: none;
-    border-radius: 8px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    background: rgba(15, 23, 42, 0.06);
-    color: var(--color-text-secondary);
-    cursor: pointer;
-    user-select: none;
-  }
-
-  .mobile-theme-btn:hover {
-    background: rgba(15, 23, 42, 0.1);
-    color: var(--color-text);
-  }
+/* Mobile theme toggle（此前被误包进 Firefox-only @supports，移出修复其永不生效的 bug） */
+.mobile-theme-btn {
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(15, 23, 42, 0.06);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  user-select: none;
+  transition: background-color var(--motion-fast) var(--ease-standard), color var(--motion-fast) var(--ease-standard);
 }
-::-webkit-scrollbar { width: var(--scrollbar-size); height: var(--scrollbar-size); }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb {
-  background: var(--scrollbar-thumb);
-  border: none !important;
-  border-radius: 999px;
+.mobile-theme-btn:hover {
+  background: rgba(15, 23, 42, 0.1);
+  color: var(--color-text);
 }
-::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-thumb-hover); }
-::-webkit-scrollbar-thumb:active { background: var(--scrollbar-thumb-active); }
-::-webkit-scrollbar-corner { background: transparent; }
+/* 滚动条已统一收敛至 styles/surface.css */
 
 /* Skeleton shimmer */
 .skeleton-shimmer {

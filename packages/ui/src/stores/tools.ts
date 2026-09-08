@@ -38,6 +38,7 @@ const BUILTIN_TOOL_CATEGORIES: { key: string; label: string; prefixes?: string[]
   { key: 'network', label: '网络安全', names: ['port_scan', 'http_request', 'tcp_send', 'udp_send', 'dns_lookup'] },
   { key: 'interact', label: '用户交互', names: ['ask_user', 'confirm_user'] },
   { key: 'task', label: '任务规划', names: ['task_plan', 'task_step'] },
+  { key: 'data', label: '数据查询（本体/SQL）', prefixes: ['api_ontology_', 'api_data_', 'api_datasource_'] },
   { key: 'image', label: '图像分析', names: ['image_analyze'] },
   { key: 'config', label: '模型配置', names: ['configure_model_platform'] },
 ];

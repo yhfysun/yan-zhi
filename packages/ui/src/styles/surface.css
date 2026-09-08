@@ -1,0 +1,78 @@
+/* ============================================================
+   表面细节层 —— 描边两档、焦点环、全局滚动条、毛玻璃开关
+   ============================================================ */
+
+/* ===== 焦点环：全站统一 focus-visible（2px 主色 + 2px 偏移） ===== */
+:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+.el-button:focus-visible,
+.el-input__wrapper:focus-within,
+.el-select .el-input__wrapper:focus-within,
+.el-dropdown-menu__item:focus-visible,
+a:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+/* 输入类组件：focus-within 环代替默认 box-shadow 光晕，避免双层焦点态 */
+.el-input__wrapper:focus-within,
+.el-select__wrapper:focus-within {
+  box-shadow: 0 0 0 1px var(--color-primary) inset;
+}
+
+/* ===== 全局滚动条：细滑块、透明轨道、hover 加深（Firefox 单独处理） =====
+   注意：@supports (-moz-appearance:none) 自 Chromium 122 起也命中（前缀别名），
+   会导致 Chromium 弃用 ::-webkit-scrollbar 定制回退原生滚动条 —— 必须用
+   @-moz-document url-prefix() 做 Firefox-only 隔离 */
+@-moz-document url-prefix() {
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--scrollbar-thumb) transparent;
+  }
+}
+::-webkit-scrollbar { width: var(--scrollbar-size); height: var(--scrollbar-size); }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border: none;
+  border-radius: 999px;
+}
+::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-thumb-hover); }
+::-webkit-scrollbar-thumb:active { background: var(--scrollbar-thumb-active); }
+::-webkit-scrollbar-corner { background: transparent; }
+
+/* 浮层内滚动区（dialog body / dropdown 长列表）继承同一套（Firefox-only 隔离） */
+@-moz-document url-prefix() {
+  .el-dialog__body,
+  .el-drawer__body,
+  .el-dropdown-menu {
+    scrollbar-width: thin;
+    scrollbar-color: var(--scrollbar-thumb) transparent;
+  }
+}
+
+/* ===== 毛玻璃开关：默认实色（--surface-blur: none） =====
+   仅首页 / 地图 / 大图背景区块按需覆盖为 blur()，普通浮层一律实色 */
+.glass-card {
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-md);
+  transition: border-color var(--motion-fast) var(--ease-standard);
+}
+.glass-card:hover {
+  border-color: var(--glass-border-strong);
+}
+
+/* ===== 深色模式：描边相对背景提亮一档，杜绝"糊边" ===== */
+[data-theme="dark"] .el-popper.is-light,
+[data-theme="dark"] .el-message,
+[data-theme="dark"] .el-notification {
+  border-color: var(--color-border-strong);
+}
+
+/* ===== 选中态规范（替代侧边色条）：浅主色底 + 主色文字 ===== */
+.is-selected-accent {
+  background: color-mix(in srgb, var(--color-primary) 10%, transparent);
+  color: var(--color-primary);
+}

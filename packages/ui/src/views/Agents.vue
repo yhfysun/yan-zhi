@@ -176,7 +176,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
-import { useRouter } from 'vue-router';
+import { useRoute, useRouter } from 'vue-router';
 import { Plus, EditPen, Delete, Setting, Lock, ArrowLeft, UserFilled, Monitor } from '@element-plus/icons-vue';
 import { ElMessageBox, ElMessage } from 'element-plus';
 import { useAgentStore } from '../stores/agent';
@@ -188,6 +188,7 @@ import MarketplaceCard from '../components/marketplace/MarketplaceCard.vue';
 import MarketplaceEmpty from '../components/marketplace/MarketplaceEmpty.vue';
 
 const router = useRouter();
+const route = useRoute();
 const store = useAgentStore();
 
 const loading = ref(false);
@@ -204,9 +205,9 @@ const remoteAgentItems = ref<any[]>([]);
 const selectedRemoteSource = ref<any>(null);
 const agentSourceForm = ref({ name: '', baseUrl: '', authType: 'none', authValue: '' });
 
-// 统计
-const builtinCount = computed(() => store.agents.filter((a) => a.isDefault).length);
-const customCount = computed(() => store.agents.filter((a) => !a.isDefault).length);
+// 统计：内置 = 默认助理 + 内置标记（pageAgent / 数据查询分析专家）
+const builtinCount = computed(() => store.agents.filter((a) => a.isDefault || a.isBuiltin).length);
+const customCount = computed(() => store.agents.filter((a) => !a.isDefault && !a.isBuiltin).length);
 
 // 视图切换
 function goToMarketplace() {
@@ -258,8 +259,28 @@ async function installRemoteAgent(agentId: string) {
 onMounted(async () => {
   loading.value = true;
   try { await store.loadAgents(); } finally { loading.value = false; }
-  loadAgentRemoteSources();
+  await loadAgentRemoteSources();
+  // 从画布等页面返回时通过 query.view 恢复子视图（本地智能体/远程商城），默认停留在商城首页
+  restoreViewFromQuery();
 });
+
+/** 按 route.query.view 恢复页内子视图 */
+function restoreViewFromQuery() {
+  const view = route.query.view;
+  if (view === 'local-agents') {
+    currentView.value = 'local-agents';
+    return;
+  }
+  if (view === 'remote-agents') {
+    const sourceId = String(route.query.source || '');
+    const source = agentRemoteSources.value.find((s: any) => s.id === sourceId);
+    if (source) {
+      goToRemoteAgents(source);
+      return;
+    }
+  }
+  currentView.value = 'marketplace';
+}
 
 function formatTime(ts: number): string {
   if (!ts) return '';

@@ -1,0 +1,205 @@
+/* ============================================================
+   浮层皮肤层 —— dialog / drawer / message-box / popper 统一外观
+   原则：实色纸面 + 阴影（elevation 只声明一次，浮层不用彩色边框）、
+   圆角外大内小、遮罩不加模糊
+   ============================================================ */
+
+/* ===== 遮罩：纯色半透，不加模糊（性能与干净度双收益） ===== */
+.el-overlay {
+  background-color: var(--el-mask-color);
+}
+
+/* ===== Dialog ===== */
+.el-dialog {
+  border-radius: var(--overlay-radius);
+  box-shadow: var(--overlay-shadow);
+  background: var(--el-bg-color);
+  overflow: hidden;
+}
+/* ===== 弹窗尺寸：视口垂直居中 + 固定高度（视口 80vh） =====
+   头部/底部固定，body 占满剩余高度并内滚；内容少时也保持 80vh */
+.el-overlay-dialog {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 16px;
+}
+.el-dialog {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  height: min(80vh, calc(100dvh - 32px));
+}
+.el-dialog__header {
+  flex-shrink: 0;
+  padding: 16px 20px 12px;
+  margin-right: 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 55%, transparent);
+}
+.el-dialog__title {
+  font-size: 16px;
+  font-weight: 650;
+  color: var(--color-text);
+  letter-spacing: 0.01em;
+}
+.el-dialog__headerbtn {
+  top: 14px;
+  right: 14px;
+}
+.el-dialog__headerbtn .el-dialog__close {
+  color: var(--color-text-tertiary);
+  transition: color var(--motion-fast) var(--ease-standard);
+}
+.el-dialog__headerbtn:hover .el-dialog__close {
+  color: var(--color-text);
+}
+.el-dialog__body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  scrollbar-gutter: stable;
+  padding: 16px 20px;
+  color: var(--color-text);
+}
+/* body 纵向 flex：普通子元素不收缩，主滚动区由下方规则拉满 */
+.el-dialog__body > * {
+  flex-shrink: 0;
+}
+/* ===== 内容型弹窗：主滚动区填满剩余高度（弹窗固定 80vh，内部不再限高） ===== */
+.el-dialog__body > .skill-mount-body,
+.el-dialog__body > .wdd-list,
+.el-dialog__body > .el-tabs,
+.el-dialog__body > .distill-body {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+/* 提示词快照：tabs → pane → pre 三级链路全部撑满 */
+.snapshot-dialog .el-dialog__body > .el-tabs {
+  display: flex;
+  flex-direction: column;
+}
+.snapshot-dialog .el-dialog__body .el-tabs__content {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+.snapshot-dialog .el-dialog__body .el-tab-pane {
+  height: 100%;
+}
+.snapshot-dialog .el-dialog__body .snapshot-body {
+  height: 100%;
+}
+.el-dialog__footer {
+  flex-shrink: 0;
+  padding: 12px 20px 16px;
+}
+/* 底部操作区：主次按钮间距 8px、右对齐 */
+.el-dialog__footer .el-button + .el-button {
+  margin-left: 8px;
+}
+
+/* ===== MessageBox ===== */
+.el-message-box {
+  border-radius: var(--overlay-radius);
+  box-shadow: var(--overlay-shadow);
+  border: none;
+  background: var(--el-bg-color);
+}
+.el-message-box__title {
+  font-size: 15px;
+  font-weight: 650;
+  color: var(--color-text);
+}
+.el-message-box__message {
+  color: var(--color-text-secondary);
+  line-height: 1.6;
+}
+.el-message-box__btns .el-button + .el-button {
+  margin-left: 8px;
+}
+
+/* ===== Drawer：纯位移入场，无缩放；统一头尾结构 ===== */
+.el-drawer {
+  background: var(--el-bg-color);
+  box-shadow: var(--overlay-shadow);
+}
+.el-drawer__header {
+  padding: 16px 20px 12px;
+  margin-bottom: 0;
+  color: var(--color-text);
+  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 55%, transparent);
+}
+.el-drawer__body {
+  padding: 16px 20px;
+}
+
+/* ===== Popper 基座（dropdown / select / tooltip 宿主）：实色 + 软阴影 + 统一圆角 ===== */
+.el-popper.is-light {
+  background: var(--el-bg-color-overlay);
+  border: 1px solid var(--color-border);
+  box-shadow: var(--shadow-lg);
+  border-radius: var(--radius-md);
+}
+.el-popper.is-dark {
+  background: var(--color-text);
+  color: var(--color-bg);
+  border-radius: 8px;
+  box-shadow: var(--shadow-md);
+}
+.el-popper.is-dark .el-popper__arrow::before {
+  background: var(--color-text);
+  border: none;
+}
+.el-popper.is-light .el-popper__arrow::before {
+  background: var(--el-bg-color-overlay);
+  border-color: var(--color-border);
+}
+
+/* ===== Message / Notification ===== */
+.el-message {
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  border: 1px solid var(--color-border);
+  background: var(--el-bg-color-overlay);
+}
+.el-notification {
+  border-radius: var(--radius-md);
+  box-shadow: var(--overlay-shadow);
+  border: 1px solid var(--color-border);
+  background: var(--el-bg-color-overlay);
+}
+
+/* ===== 弹窗内容区滚动条：低调胶囊（透明边内缩视觉 4px），hover 加深 ===== */
+.el-dialog__body::-webkit-scrollbar,
+.el-drawer__body::-webkit-scrollbar {
+  width: 8px;
+}
+.el-dialog__body::-webkit-scrollbar-thumb,
+.el-drawer__body::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+.el-dialog__body::-webkit-scrollbar-thumb:hover,
+.el-drawer__body::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+  background-clip: padding-box;
+}
+.el-dialog__body::-webkit-scrollbar-track,
+.el-drawer__body::-webkit-scrollbar-track {
+  background: transparent;
+}
+/* Firefox-only 隔离：Chromium 122+ 也命中 @supports(-moz-appearance:none)，
+   会导致其弃用 ::-webkit-scrollbar 定制回退原生滚动条 */
+@-moz-document url-prefix() {
+  .el-dialog__body,
+  .el-drawer__body {
+    scrollbar-width: thin;
+    scrollbar-color: var(--scrollbar-thumb) transparent;
+  }
+}
+
+/* ===== 气泡确认框（popconfirm）等继承 popper 基座，无需单独处理 ===== */

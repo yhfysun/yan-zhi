@@ -432,12 +432,16 @@ export async function initSchema(execFn: (sql: string) => Promise<void>): Promis
   }
   // 迁移：agent 表新增 is_builtin 列（内置智能体标记，E4）
   try { await execFn(`ALTER TABLE agent ADD COLUMN is_builtin INTEGER NOT NULL DEFAULT 0;`); } catch { /* 列已存在 */ }
+  // 迁移：agent 表新增 ontology_ids 列（本体挂载，数据查询智能体取数范围约束）
+  try { await execFn(`ALTER TABLE agent ADD COLUMN ontology_ids TEXT DEFAULT '[]';`); } catch { /* 列已存在 */ }
   // 迁移：custom_tool / agent 新增 installs 计数列（商城安装计数）
   for (const t of ['custom_tool', 'agent']) {
     try { await execFn(`ALTER TABLE ${t} ADD COLUMN installs INTEGER NOT NULL DEFAULT 0;`); } catch { /* 列已存在 */ }
   }
   // 迁移：conversation 新增 space_id 列（空间/文件夹功能）
   try { await execFn(`ALTER TABLE conversation ADD COLUMN space_id TEXT;`); } catch { /* 列已存在 */ }
+  // 迁移：conversation 新增 agent_id 列（会话记住绑定的智能体，旧库可能缺失）
+  try { await execFn(`ALTER TABLE conversation ADD COLUMN agent_id TEXT;`); } catch { /* 列已存在 */ }
   // 迁移完成后创建引用 space_id 的索引（旧库迁移场景：旧 conversation 表无 space_id 列）
   try { await execFn(`CREATE INDEX IF NOT EXISTS idx_conversation_space ON conversation(space_id);`); } catch { /* 索引已存在 */ }
   // 迁移：message 表新增子智能体关联字段（子智能体中间过程持久化）

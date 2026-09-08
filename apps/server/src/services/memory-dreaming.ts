@@ -5,7 +5,7 @@
 import { randomUUID } from 'node:crypto';
 import { db } from '../db.js';
 import { embedText } from './ollama-embed.js';
-import { vecToBytes, bumpMemoryCache } from './memory-service.js';
+import { vecToBytes, bumpMemoryCache, parseExtractedItems } from './memory-service.js';
 
 const TICK_MS = 5 * 60_000;
 const MAX_CANDIDATES = 200;
@@ -151,15 +151,12 @@ async function remReview(model: any, rows: CandidateRow[]): Promise<any[]> {
     { role: 'system', content: REM_PROMPT },
     { role: 'user', content: `## 待整理记忆\n${listing}` },
   ]);
-  try {
-    const parsed = JSON.parse(text);
-    if (Array.isArray(parsed)) return parsed;
-    if (Array.isArray(parsed.items)) return parsed.items;
-  } catch {
-    const m = text.match(/\[[\s\S]*\]/);
-    if (m) { try { return JSON.parse(m[0]); } catch {} }
+  // 兼容数组 / {items:[...]} / 单对象（部分模型 json 模式下返回单个对象而非数组）
+  const items = parseExtractedItems(text);
+  if (!items.length && text.trim()) {
+    console.log('[memory-dreaming] REM 输出无法解析, 前120字:', text.slice(0, 120));
   }
-  return [];
+  return items;
 }
 
 // ── deep 落盘 ──

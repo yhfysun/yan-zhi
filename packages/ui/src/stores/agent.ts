@@ -28,6 +28,7 @@ function rowToAgent(r: any): Agent {
     mcpToolMounts: r.mcp_tool_mounts ? JSON.parse(r.mcp_tool_mounts) : undefined,
     skillIds: r.skill_ids ? JSON.parse(r.skill_ids) : undefined,
     subAgentIds: r.sub_agent_ids ? JSON.parse(r.sub_agent_ids) : undefined,
+    ontologyIds: r.ontology_ids ? JSON.parse(r.ontology_ids) : undefined,
     workflow: wf,
     inputsSchema: r.inputs_schema_json ? JSON.parse(r.inputs_schema_json) : undefined,
     config: r.config_json ? JSON.parse(r.config_json) : undefined,
@@ -65,6 +66,13 @@ const WEB_QUERY_PROMPT_BLOCK = `【联网查询 · 委派 pageAgent】
 - 拿到 pageAgent 返回结果后，由你汇总成简明、有出处的结论回复用户；信息仍不足时换关键词再次委派（最多 2-3 次），仍查不到就如实说明。
 - 不确定的事实不要凭空编造，优先联网核实；委派前先想好搜索关键词，一次把任务描述清楚。`;
 
+/** 数据查询委派指引块 —— 默认助手提示词统一引用，v11 迁移按此标记增量追加（与 server db.ts 保持一致） */
+const DATA_QUERY_PROMPT_BLOCK = `【数据查询 · 委派 dataAgent】
+- 用户要查「项目里的数据」（对话/消息/智能体/任务/知识库/模型/定时任务等库内数据），或要按条件筛选、聚合统计、翻页、导出时，委派子智能体 dataAgent：call_agent { agentId: "a_builtin_data_agent", input: "<要查什么数据 + 维度/过滤条件/时间范围/要几行>" }。
+- dataAgent 会先检索本体语义层拿到本体 code，再按查询意图只读取数，结果以 markdown 表格返回；行数不够它会自行翻页。
+- 需要深度统计分析或交付表格/图表文件时，在委派 input 里说明，dataAgent 会用 python_exec / file_write 完成。
+- 不要自己凭空写 SQL 猜表结构：库内数据一律交给 dataAgent。`;
+
 const DEFAULT_AGENT_DATA = {
   name: 'AI 助手',
   builtinToolIds: DEFAULT_BUILTIN_TOOLS,
@@ -89,7 +97,10 @@ const DEFAULT_AGENT_DATA = {
 - call_agent 返回结果后，基于该结果直接总结/回答用户，禁止用相同或原始任务重复派发子智能体（重复派发 = 白跑一遍且结果相同）。只有任务目标发生变化时才再次委派。
 - 浏览器操作优先委托子智能体（pageAgent）完成；如需自己调用 browser_* 工具，先 browser_get_page_content 获取编号元素列表再用 index 定位。
 
-` + WEB_QUERY_PROMPT_BLOCK,
+` +
+    WEB_QUERY_PROMPT_BLOCK +
+    '\n\n' +
+    DATA_QUERY_PROMPT_BLOCK,
   temperature: 0.7,
   maxTokens: 2048,
   topP: 1.0,
@@ -181,19 +192,36 @@ const PAGE_AGENT_DATA = {
 /** dataAgent 固定 ID：内置智能体，数据查询分析专家（与 server db.ts 种子保持一致） */
 const DATA_AGENT_ID = 'a_builtin_data_agent';
 
-/** dataAgent 挂载的取数工具集 —— 本体语义层四件套 + 分析/交付/规划底座 */
+/** dataAgent 挂载的取数工具集 —— 本体上下文链 + 取数 + 分析/交付底座 */
 const DATA_AGENT_BUILTIN_TOOLS = [
-  // 数据查询（P4.1）
-  'api_datasource_list', 'api_ontology_search', 'api_ontology_list', 'api_data_query', 'api_data_paginate',
-  // 分析与交付
-  'python_exec', 'file_read', 'file_write', 'file_list', 'code_search',
+  // 数据源与取数
+  'api_datasource_list', 'api_data_query', 'api_data_paginate',
+  // 本体上下文链：问题召回 / 集合总览 / 单体简略 / 懒加载详情 / 属性值枚举采样
+  'api_ontology_search', 'api_ontology_overview', 'api_ontology_brief', 'api_ontology_detail', 'api_ontology_values',
+  // 分析与交付（只留统计与写文件：翻源码/列目录/读文件对取数无用，且是跑偏的主要出口）
+  'python_exec', 'file_write',
   // 任务规划与用户交互
   'task_plan', 'task_step', 'ask_user', 'confirm_user',
-  // 委派
-  'call_agent', 'list_sub_agents',
 ];
 
-const DATA_AGENT_SKILL_IDS = ['skill_xlsx_data_processing', 'skill_data_visualization', 'skill_markdown_doc'];
+const DATA_AGENT_SKILL_IDS = ['skill_ontology_query', 'skill_xlsx_data_processing', 'skill_data_visualization', 'skill_markdown_doc'];
+
+/**
+ * dataAgent 定义版本（升级时强制覆盖库中副本，内置智能体行为属产品定义）：
+ * v2 —— 补本体上下文工具链（overview/brief/detail/values）
+ * v3 —— 挂「本体取数与分析」skill
+ * v4 —— 卸载 call_agent / list_sub_agents，提示词加「必须真正取数、禁止编造」硬约束
+ *       （实测：模型先搜知识库扑空，再反复调 list_sub_agents 跑偏 140+ 步后凭空编造答案）
+ * v5 —— 再卸载 file_read / file_list / code_search（实测拿到本体后仍跑去翻源码），
+ *       提示词加 few-shot 示例，明确「overview 有返回 = 有可用本体，直接取数」
+ * v6 —— 提示词通用化（去掉针对单个问题的示例），强制每轮先输出
+ *       「【目标】/【上一步】/【下一步】」三行小结再调用工具，且每轮最多一个工具
+ *       （实测：模型空 content 连环并行调工具，用户看不到它在干什么）
+ * v7 —— 「结果即事实」硬约束：rows 是唯一数据源、ontologyCount（原 total）不是业务数、
+ *       成功结果必须采信禁止重复验证、未查过的分布/明细一个字不许编
+ *       （实测：模型拿到 rows=[{row_count:6}] 后不采信，反而拿 overview 的 total=39 编造全套假分布）
+ */
+const DATA_AGENT_VERSION = 7;
 
 const DATA_AGENT_DATA = {
   name: '数据查询分析专家',
@@ -202,38 +230,47 @@ const DATA_AGENT_DATA = {
   type: 'harness' as const,
   systemPrompt: `你是「数据查询分析专家」。你通过「本体语义层」对已接入的数据源做只读取数、分析与交付，不直接猜表结构写 SQL。
 
-## 可用工具与职责
-- api_datasource_list：列出可用数据源。不传数据源 id 时默认用内置「言智项目库」（本项目自身数据库，只读）。
-- api_ontology_search：**取数第一步**，用用户的自然语言问题检索最相关的已发布本体，返回本体 code、维度/时间维度/度量/过滤器/默认选择列与语义摘要。
-- api_ontology_list：按数据源或关键字浏览本体候选（检索无果时用）。
-- api_data_query：取数。优先传 ontology（本体 code）+ intent 走语义层编译；没有合适本体时才用 sql 兜底（单条只读 SELECT）。
-- api_data_paginate：翻页（offset/limit），单页上限 200 行。
-- python_exec：对查询结果做统计/建模/计算；file_write：把结果落成交付文件。
+## 每轮输出格式（强制，先输出再调用）
+每次回复必须先写下面三行小结，然后**最多调用一个工具**：
+【目标】本轮要达成什么
+【上一步】上一个工具返回的要点（首轮写"无"）
+【下一步】调用哪个工具、为什么选它
+- 禁止不写小结就直接调用工具；禁止一轮同时调用多个工具；禁止调用【下一步】之外的工具。
+- 拿到 api_data_query 的 rows 后输出最终答案，不再调用工具。
 
-## 标准取数流程
-1. 用户问数据 → 先 api_ontology_search 找本体（看 code、默认选择列、过滤器、语义摘要）。
-2. api_data_query 传 { ontology: "<code>", intent: {...} }：
-   - dimensions：要分组/展示的**维度名**（必须是本体维度或时间维度名）
-   - measures：要聚合的**度量名** + 聚合函数（sum / count / count_distinct / avg / min / max）
-   - timeDimension：时间维度名 + 粒度（year / quarter / month / week / day / hour / minute）
-   - filters：本体**过滤器名**（或带比较符的裸 SQL 条件）
-   - orderBy / limit：默认 100 行，单次上限 1000
-3. 行数不够就 api_data_paginate 翻页，禁止一次拉全表。
-4. 回答用 markdown 表格呈现（列多时只展示关键列），并说明取数口径：用了哪个本体 code、哪些过滤器、时间范围与行数。
+## 通用取数流程（任何数据问题都走这一条路）
+1. 【选本体】调 api_ontology_overview 浏览全部已发布本体（或用 api_ontology_search 带 question 召回）。
+   返回里有本体 = 有可用本体：从返回的 code 里挑与用户问题最相关的一个，在【下一步】里说明理由，然后直接进入第 2 步。不要因为"描述不完全匹配"就断定没有可用本体。
+2. 【看字段】overview 返回里已含 dimensions/measures 字段名；查"有多少/多少条/多少个"直接用度量 row_count，可跳过本步。拿不准口径时调 api_ontology_brief（字段清单+过滤器名）或 api_ontology_detail（懒加载表达式/聚合/粒度，include 按需）。
+3. 【取数】api_data_query { ontology: "<code>", intent: {...} }：
+   - measures：度量名 + 聚合（sum / count / count_distinct / avg / min / max），计数用 { name: "row_count" }
+   - dimensions：分组/展示的维度名；timeDimension：时间维度名 + 粒度（year/quarter/month/week/day/hour/minute）
+   - selections：本体选择列名（一组命名字段展开并入 SELECT）；filters：过滤器名或带比较符的裸 SQL 条件
+   - 过滤器的值拿不准 → 先 api_ontology_values 采样真实取值，禁止猜值
+   - orderBy / limit：默认 100 行，上限 1000；行数不够用 api_data_paginate 翻页，禁止一次拉全表
+4. 【回答】用 markdown 表格呈现关键列，说明口径：本体 code、过滤器、时间范围、行数。需要统计/建模用 python_exec（仅限已拿到 rows 后）；交付文件用 file_write。
 
 ## 硬约束
-- **只能只读**：禁止 INSERT / UPDATE / DELETE / DDL；兜底 SQL 有只读护栏，写语句会被直接拦截。
-- **字段只能引用本体已声明的维度/度量/时间维度/过滤器**，禁止凭空编造列名。工具报「字段不存在」时按报错里的可用字段改名重试，最多 2 次。
-- 找不到合适本体时，如实说明并用 api_ontology_list 给出候选本体，不要瞎写 SQL 猜表结构。
-- 结果可能截断：关注返回的 truncated 标记，必要时加过滤器缩小范围或翻页。
-- 需要深度统计分析时用 python_exec；需要交付表格/图表文件时用 file_write（category=deliverable）。`,
+- **工具结果即事实**：api_data_query 返回的 rows 是唯一可信数据源。最终答案里的每一个数字都必须能对应到某次 rows 里的值，对不上就不许写。
+- **ontologyCount 不是业务数据**：api_ontology_overview 的 ontologyCount 是「本体（语义视图）的个数」，与任何业务数据的数量无关，严禁当作答案或参与回答。
+- **成功结果必须采信**：工具正常返回后禁止以"再验证一次"为由重复同样的调用；怀疑口径就换 intent（换度量/维度/加过滤器）查证，而不是原样重发。拿到 rows 后立即进入回答，不要继续调用工具。
+- **必须真正取数才能回答**：走到 api_data_query 拿到 rows 后再作答。没有取到数 = 没有答案，禁止凭常识、记忆或推测编造数字/列表/表格。
+- **答案里禁止出现工具结果之外的分布/明细**：如"按状态分布""按模型分布"这类分组，必须真的用对应维度 group 查过 rows 才能写；没查过就一个字都不许编。
+- **只能用本体取数链拿数据**：禁止翻源码、列目录、读文件去猜表结构。
+- **禁止空参调用与原地打转**：api_ontology_search 必须带 question；同一工具连续 2 次没进展就换流程下一步。
+- **不要找子智能体**：你没有子智能体，禁止 list_sub_agents / call_agent。
+- **不要用知识库/记忆查库内数据**：api_kb_search / api_memory_search 查不到库内数据。
+- **只读取数**：禁止 INSERT / UPDATE / DELETE / DDL；兜底 SQL 有只读护栏。
+- **字段只能引用本体已声明的维度/度量/时间维度/过滤器**，报「字段不存在」时按报错里的可用字段改名重试，最多 2 次；连续 2 次取数失败就停下如实说明原因与已尝试的本体 code。
+- 结果可能截断：关注 truncated 标记，必要时加过滤器缩小范围或翻页。`,
   temperature: 0.2,
   maxTokens: 2048,
   topP: 1.0,
   frequencyPenalty: 0,
   presencePenalty: 0,
   isBuiltin: true,
-  config: { maxReActSteps: 30 },
+  // 取数短链路（overview → brief? → query → 回答），16 步足够；放宽只会让跑偏时打转更久
+  config: { maxReActSteps: 16 },
 };
 
 export const useAgentStore = defineStore('agent', () => {
@@ -242,7 +279,19 @@ export const useAgentStore = defineStore('agent', () => {
   const running = ref(false);
   const runLogs = ref<Array<{ nodeId: string; status: 'start' | 'ok' | 'error'; msg?: string; time: number }>>([]);
 
-  const selectedId = ref('');
+  /** 上次选中的智能体（localStorage 持久化，重启后仍保持） */
+  const LS_SELECTED_AGENT = 'last_selected_agent_id';
+  function readPersistedSelectedId(): string {
+    try { return localStorage.getItem(LS_SELECTED_AGENT) || ''; } catch { return ''; }
+  }
+  function persistSelectedId(id: string) {
+    try {
+      if (id) localStorage.setItem(LS_SELECTED_AGENT, id);
+      else localStorage.removeItem(LS_SELECTED_AGENT);
+    } catch { /* 隐私模式下 localStorage 不可用，忽略 */ }
+  }
+
+  const selectedId = ref(readPersistedSelectedId());
 
   /**
    * loadAgents 进行中的 Promise：防止同一 store 实例内并发触发重复插入。
@@ -270,7 +319,10 @@ export const useAgentStore = defineStore('agent', () => {
   }
 
   function selectAgent(id: string) {
-    if (agents.value.find((a) => a.id === id)) selectedId.value = id;
+    if (agents.value.find((a) => a.id === id)) {
+      selectedId.value = id;
+      persistSelectedId(id);
+    }
   }
 
   let engine: WorkflowEngine | null = null;
@@ -433,16 +485,28 @@ export const useAgentStore = defineStore('agent', () => {
           try {
             await adapter.db.exec(
               `INSERT INTO agent (id, name, description, system_prompt, temperature, max_tokens, top_p, frequency_penalty, presence_penalty, type, is_builtin, builtin_tool_ids, skill_ids, workflow_json, config_json, version, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
               [DATA_AGENT_ID, DATA_AGENT_DATA.name, DATA_AGENT_DATA.description, DATA_AGENT_DATA.systemPrompt,
                DATA_AGENT_DATA.temperature, DATA_AGENT_DATA.maxTokens, DATA_AGENT_DATA.topP,
                DATA_AGENT_DATA.frequencyPenalty, DATA_AGENT_DATA.presencePenalty, 'harness', 1,
                JSON.stringify(DATA_AGENT_BUILTIN_TOOLS), JSON.stringify(DATA_AGENT_SKILL_IDS),
-               JSON.stringify(EMPTY_WORKFLOW), JSON.stringify(DATA_AGENT_DATA.config), 1, ts, ts],
+               JSON.stringify(EMPTY_WORKFLOW), JSON.stringify(DATA_AGENT_DATA.config), DATA_AGENT_VERSION, ts, ts],
             );
           } catch {
             // 主键冲突：已被并发调用插入，忽略
           }
+          rows = await adapter.db.query<any>('SELECT * FROM agent ORDER BY is_default DESC, is_builtin DESC, created_at ASC');
+        }
+
+        // dataAgent v2/v3 迁移 —— 补本体上下文工具链（overview/brief/detail/values）+ 取数流程提示词
+        // + 挂「本体取数与分析」skill。内置智能体行为属产品定义，版本升级直接覆盖（与 pageAgent v2+ 同模式）。
+        const daRowV2 = rows.find((r: any) => r.id === DATA_AGENT_ID);
+        if (daRowV2 && (daRowV2.version === null || daRowV2.version === undefined || Number(daRowV2.version) < DATA_AGENT_VERSION)) {
+          await adapter.db.exec(
+            'UPDATE agent SET system_prompt = ?, builtin_tool_ids = ?, skill_ids = ?, config_json = ?, version = ? WHERE id = ?',
+            [DATA_AGENT_DATA.systemPrompt, JSON.stringify(DATA_AGENT_BUILTIN_TOOLS), JSON.stringify(DATA_AGENT_SKILL_IDS),
+             JSON.stringify(DATA_AGENT_DATA.config), DATA_AGENT_VERSION, DATA_AGENT_ID],
+          );
           rows = await adapter.db.query<any>('SELECT * FROM agent ORDER BY is_default DESC, is_builtin DESC, created_at ASC');
         }
 
@@ -676,9 +740,17 @@ export const useAgentStore = defineStore('agent', () => {
         } catch { /* server 不可达（离线/后端未起）时跳过，不影响本地列表 */ }
 
         agents.value = rows.map(rowToAgent);
-        if (!selectedId.value || !agents.value.find((a) => a.id === selectedId.value)) {
+        // 优先沿用上次选中的智能体（含 localStorage 持久化的值），否则回退到默认/第一个
+        const persisted = readPersistedSelectedId();
+        const resolvedId = [selectedId.value, persisted]
+          .map(v => agents.value.find((a) => a.id === v)?.id)
+          .find(Boolean);
+        if (!resolvedId) {
           selectedId.value = agents.value.find((a) => a.isDefault)?.id || agents.value[0]?.id || '';
+        } else if (resolvedId !== selectedId.value) {
+          selectedId.value = resolvedId;
         }
+        persistSelectedId(selectedId.value);
       } finally {
         loadInflight = null;
       }
@@ -715,8 +787,8 @@ export const useAgentStore = defineStore('agent', () => {
       ? data.config
       : (defaults.config ? { ...defaults.config, ...data.config } : data.config);
     await adapter.db.exec(
-      `INSERT INTO agent (id, name, description, system_prompt, temperature, max_tokens, top_p, frequency_penalty, presence_penalty, platform_id, model_id, type, builtin_tool_ids, custom_tool_ids, mcp_tool_mounts, skill_ids, sub_agent_ids, is_default, is_public, workflow_json, config_json, version, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO agent (id, name, description, system_prompt, temperature, max_tokens, top_p, frequency_penalty, presence_penalty, platform_id, model_id, type, builtin_tool_ids, custom_tool_ids, mcp_tool_mounts, skill_ids, sub_agent_ids, ontology_ids, is_default, is_public, workflow_json, config_json, version, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         data.name || '新智能体',
@@ -735,6 +807,7 @@ export const useAgentStore = defineStore('agent', () => {
         data.mcpToolMounts?.length ? JSON.stringify(data.mcpToolMounts) : null,
         data.skillIds?.length ? JSON.stringify(data.skillIds) : null,
         data.subAgentIds?.length ? JSON.stringify(data.subAgentIds) : null,
+        data.ontologyIds?.length ? JSON.stringify(data.ontologyIds) : null,
         0,
         data.isPublic ? 1 : 0,
         data.workflow ? JSON.stringify(data.workflow) : JSON.stringify(EMPTY_WORKFLOW),
@@ -790,6 +863,10 @@ export const useAgentStore = defineStore('agent', () => {
     if (patch.subAgentIds !== undefined) {
       sets.push('sub_agent_ids = ?');
       params.push(patch.subAgentIds.length ? JSON.stringify(patch.subAgentIds) : null);
+    }
+    if (patch.ontologyIds !== undefined) {
+      sets.push('ontology_ids = ?');
+      params.push(patch.ontologyIds.length ? JSON.stringify(patch.ontologyIds) : null);
     }
     if (patch.isDefault !== undefined) { sets.push('is_default = ?'); params.push(patch.isDefault ? 1 : 0); }
     if (patch.isPublic !== undefined) { sets.push('is_public = ?'); params.push(patch.isPublic ? 1 : 0); }
@@ -889,6 +966,7 @@ export const useAgentStore = defineStore('agent', () => {
     agents.value = agents.value.filter((a) => a.id !== id);
     if (selectedId.value === id) {
       selectedId.value = agents.value[0]?.id || '';
+      persistSelectedId(selectedId.value);
     }
     if (current.value?.id === id) current.value = null;
   }
