@@ -6,7 +6,8 @@
         <button class="ont-left-tab" :class="{ on: leftTab === 'ontology' }" type="button" @click="leftTab = 'ontology'">本体</button>
         <button class="ont-left-tab" :class="{ on: leftTab === 'attributes' }" type="button" @click="leftTab = 'attributes'">标准属性</button>
       </div>
-      <div v-if="leftTab === 'ontology'" class="ont-left-bar">
+      <template v-if="leftTab === 'ontology'">
+      <div class="ont-left-bar">
         <el-input v-model="keyword" placeholder="搜索本体" size="small" clearable :prefix-icon="Search" />
         <el-select v-model="statusFilter" size="small" class="ont-status-sel">
           <el-option label="全部状态" value="" />
@@ -93,6 +94,7 @@
           </div>
         </template>
       </div>
+      </template>
       <StdAttributeTree v-else class="ont-std-panel" />
     </aside>
 
