@@ -13,13 +13,13 @@ jobs:
     # 禁用自动发现会让 electron-builder 完全跳过签名，装出的 dmg 一启动就崩。
     # 不设该变量时，无证书环境会回退为 ad-hoc 签名，可正常分发（未公证，需右键打开）。
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: 安装 pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
 
       - name: 安装 Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: 'pnpm'
@@ -36,7 +36,7 @@ jobs:
           echo "=== dist-release ==="; ls -la dist-release 2>/dev/null || echo "(空)"
 
       - name: 上传 macOS DMG
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: macOS-DMG
           path: dist-release/*.dmg
@@ -47,13 +47,13 @@ jobs:
     env:
       CSC_IDENTITY_AUTO_DISCOVERY: "false"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: 安装 pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
 
       - name: 安装 Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: 'pnpm'
@@ -72,7 +72,7 @@ jobs:
           Get-ChildItem -Path dist-release -ErrorAction SilentlyContinue | Select-Object Name,Length | Format-Table -AutoSize
 
       - name: 上传 NSIS 安装包
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: Windows-Installer
           path: dist-release/*.exe
