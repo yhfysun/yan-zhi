@@ -4,18 +4,19 @@
 
 ## 核心理念
 
-- **语言即界面**：项目所有管理接口都是大模型可直接调用的工具，用户通过聊天即可配置模型、管理工具、安装 Skill、创建智能体
+- **语言即界面**：项目所有管理操作都是大模型可直接调用的工具，用户通过聊天即可配置模型、管理工具、安装 Skill、创建智能体
 - **协议开放**：模型接入遵循 OpenAI 兼容协议，商城互联使用标准化 REST API
-- **数据分层**：对话、配置、本地文件默认本地存储，隐私可控；**知识/记忆类共享数据**落在内置服务端（guest/登录统一，支持 public/private），方便跨设备与共享
-- **节点互联**：每个言智节点既是客户端也是服务端，可连接其他节点获取工具 / Skill / 智能体
+- **数据后端化（单库）**：业务数据（会话 / 智能体 / Skill / 平台模型 / 记忆 / 工作流执行）统一存内置服务端 `data.db`，前端只做交互、不存数据不跑引擎——关掉页面任务照常在后端执行；本机 UI 偏好（主题/布局/工作目录等）与本地文件仍存本机
+- **无登录体系（本地单用户）**：本地模式下鉴权已屏蔽，业务数据统一归属内置 `guest` 用户，前端登录态不影响数据归属；后续接入用户体系后再按 `user_id` 隔离
+- **节点互联 / 局域网访问**：每个言智节点既是客户端也是服务端，可连接其他节点获取工具 / Skill / 智能体；后端监听 `0.0.0.0`，局域网内其它设备可用浏览器直接访问本节点的 Web 界面
 
 ## 技术栈
 
 - Vue 3.5 + TypeScript + Vite 5
 - Electron（桌面，electron-builder 打包）/ Capacitor 6（移动）/ PWA（Web）
 - Element Plus + Vue Router + Pinia + Vue Flow（工作流画布）
-- SQLite + better-sqlite3（本地会话/配置）+ sqlite-vec（本地向量记忆）/ Dexie（Web 端 IndexedDB）
-- 内置 Express 后端（apps/server）统一承载**共享数据**（知识库等，guest/登录都走服务端一套 DB，支持 public/private 共享）
+- SQLite + better-sqlite3（内置服务端 `data.db`，业务数据单库统一）+ sqlite-vec（本地向量记忆）/ Dexie（Web 端历史兼容）
+- 内置 Express 后端（apps/server）统一承载**全部业务数据**（会话/智能体/Skill/平台模型/记忆/工作流，guest 单用户），并托管前端静态资源供局域网访问
 - 内置本地模型：qwen2.5-1.5b（对话）+ bge-small-zh（语义向量，知识库/记忆检索）
 - Express（后端 API）+ JWT / bcrypt（鉴权）
 - Playwright（内置浏览器自动化）
@@ -54,6 +55,7 @@ yan-zhi/
 | 智能体管理 | ✅ 已完成 | harness 与 workflow 两种类型，Vue Flow 工作流画布 |
 | 智能体商城 | ✅ 已完成 | 远程浏览并一键复制到本地 |
 | 商城服务端 | ✅ 已完成 | 本节点作为服务端暴露标准化 API + 可见性 / 鉴权控制 |
+| 局域网访问 | ✅ 已完成 | 后端 0.0.0.0 + 托管前端静态资源，局域网内设备浏览器访问 Node Web 界面（设置页含 IP 展示 + 打开浏览器按钮） |
 | 聊天接口工具化 | ✅ 已完成 | 模型 / MCP / 工具 / Skill / 智能体 / 商城 / 会话等管理接口注册为 LLM 可调用的工具 |
 | 空间 / 工作目录 | ✅ 已完成 | 选目录自动建空间，空间目录上下文注入对话 |
 | 文件分类与预览 | ✅ 已完成 | 上传 / 中间 / 交付三类，右侧预览面板内联预览 |
@@ -158,18 +160,26 @@ yan-zhi/
 - 模型 / MCP / 自定义工具 / Skill / 智能体 / 商城 / 会话等管理操作注册为 LLM 可调用的工具函数
 - 用户通过自然语言即可完成模型配置、工具管理、Skill 安装、智能体创建
 
+### 局域网访问（已实现）
+- 后端监听 `0.0.0.0`（`YZ_HOST` 可改回 `127.0.0.1` 仅本机），局域网内其它设备（手机 / 电脑）可用浏览器访问本节点的完整 Web 界面
+- 后端 `express.static` 托管前端静态资源（`WEB_DIST` 指向构建产物），访问 `http://<本机IP>:3001` 即用
+- 设置页「局域网访问」tab：展示本机局域网 IP + 端口，可「复制」或「打开浏览器」（桌面端用系统默认浏览器）
+- 无登录体系，局域网访问无需登录（数据归属本地 guest 用户）
+
 ## 三端差异化
 
 | 能力 | 桌面（Electron） | Web（PWA） | 移动（Capacitor） |
 |------|--------------|-----------|------------------|
-| 本地数据存储 | SQLite (原生) | IndexedDB (Dexie) | SQLite (原生插件) |
+| 业务数据存储 | 服务端 data.db（单库） | 服务端 data.db（单库） | 服务端 data.db（单库） |
+| 本机偏好/文件 | keyring + 文件系统 | localStorage | keyring + 应用沙箱目录 |
 | MCP stdio 子进程 | 完整支持 | 仅远程 SSE/HTTP | 仅远程 SSE/HTTP |
 | 文件系统访问 | 完整 | File System API | 受限目录 |
-| Skill 本地目录 | 文件系统 | IndexedDB 虚拟 FS | 应用沙箱目录 |
+| Skill 本地目录 | 文件系统 | 服务端 DB | 应用沙箱目录 |
 | 系统托盘/通知 | 支持 | 不支持 | 支持 |
 | 离线可用 | 支持 | 需 PWA 安装 | 支持 |
 | 自动更新 | electron-updater | Service Worker | 应用商店 |
 | 内置浏览器自动化 | 支持 | 需本机服务端 | 不支持 |
+| 局域网访问 | 后端监听 0.0.0.0，其它设备浏览器访问 | 同左（访问节点 IP） | 同左 |
 
 ## 快速开始
 
@@ -260,14 +270,16 @@ GitHub Actions（`.github/workflows/build-desktop.yml`）在构建前会自动�
 
 ## 数据存储
 
-**分层**：对话、笔记、配置、本地文件按端本地存储；**知识库等可共享数据统一存内置服务端一套 DB**（guest/登录都走服务端，`public/private` 决定可见性）。
+**单库后端化**：业务数据统一存内置服务端一套 `data.db`（前端只交互，不存数据不跑引擎）。仅本机 UI 偏好（主题/布局/工作目录/默认模型等）与本地文件留在本机。
 
 | 端 | 存储方式 |
 |----|---------|
-| 桌面端 | Electron + better-sqlite3（本地会话/配置/文件）+ 内置 server（`apps/server/data.db`，知识库等共享数据） |
-| 移动端 | Capacitor SQLite（本地会话/配置）+ 服务端（共享数据） |
-| Web 端 | 浏览器 IndexedDB（Dexie，本地会话/配置）+ 服务端（共享数据） |
-| 后端   | better-sqlite3（`apps/server/data.db`）：user / platform / 知识库(含 public/private) / 记忆 等 |
+| 桌面端 | Electron 界面 + 内置 server（`apps/server/data.db`，业务数据单库）；本机偏好走 keyring，本地文件走文件系统 |
+| 移动端 | Capacitor 界面 + 服务端（`data.db`，业务数据） |
+| Web 端 | 浏览器界面 + 服务端（`data.db`，业务数据；局域网内浏览器直接访问后端托管的前端静态资源） |
+| 后端   | better-sqlite3（`apps/server/data.db`）：user / platform / model / agent / skill / conversation / message / memory / workflow_run 等全部业务表 |
+
+> 单库收敛后前端不再持有数据副本（历史遗留的 yan-zhi.db / Dexie 分支已废弃）。本地单用户模式下业务数据归属内置 `guest` 用户，`user_id` 全程携带，后续接入用户体系可按 `user_id` 天然隔离。
 
 ## 文档导航
 

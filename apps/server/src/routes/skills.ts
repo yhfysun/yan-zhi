@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { v4 as uuid } from 'uuid';
 import { authMiddleware } from '../auth.js';
-import { db } from '../db.js';
+import { db, resetBuiltinSkill } from '../db.js';
 
 const router = Router();
 router.use(authMiddleware);
@@ -59,6 +59,14 @@ router.delete('/:id', (req: Request, res: Response) => {
   if (!existing) { res.status(404).json({ error: 'Skill 不存在' }); return; }
   db.prepare('DELETE FROM skill WHERE id = ?').run(sid);
   res.json({ ok: true });
+});
+
+// POST /api/skills/:id/reset —— 恢复内置 skill 默认值（name/description/triggers/body/category）
+router.post('/:id/reset', (req: Request, res: Response) => {
+  const ok = resetBuiltinSkill(req.params.id);
+  if (!ok) { res.status(404).json({ error: '该 Skill 不是内置 skill 或不存在，无法恢复默认' }); return; }
+  const row = db.prepare('SELECT * FROM skill WHERE id = ?').get(req.params.id);
+  res.json({ data: row });
 });
 
 export default router;

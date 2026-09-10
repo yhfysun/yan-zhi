@@ -116,7 +116,57 @@ function loadModel(modelId: string, userId: string): Model | null {
     type: row.type || 'llm',
     contextWindow: row.context_window || 8000,
     capabilities: (() => { try { return JSON.parse(row.capabilities_json || '[]'); } catch { return []; } })(),
+    description: row.description ?? undefined,
   } as any;
+}
+
+/** list_models 工具执行：列出当前用户所有已启用模型（可按 platformId/type/capability 过滤），
+ *  返回语义化文本，供 LLM 选型（图片/视频/视觉/推理等任务指定模型）。 */
+function listAvailableModels(userId: string, args: Record<string, unknown>): string {
+  const platformId = args.platformId as string | undefined;
+  const typeFilter = args.type as string | undefined;
+  const capFilter = args.capability as string | undefined;
+
+  // 查平台（含过滤）
+  let platformRows: any[];
+  if (platformId) {
+    platformRows = db.prepare('SELECT * FROM platform WHERE id = ? AND user_id = ?').all(platformId, userId) as any[];
+  } else {
+    platformRows = db.prepare('SELECT * FROM platform WHERE user_id = ?').all(userId) as any[];
+  }
+  if (platformRows.length === 0) return platformId ? `平台不存在或无权限: ${platformId}` : '当前用户未配置任何模型平台';
+
+  const lines: string[] = [];
+  let total = 0;
+  for (const p of platformRows) {
+    const models = db.prepare('SELECT * FROM model WHERE platform_id = ? AND user_id = ? AND enabled = 1').all(p.id, userId) as any[];
+    let matched: any[] = models;
+    if (typeFilter) matched = matched.filter((m: any) => (m.type || 'llm') === typeFilter);
+    if (capFilter) {
+      matched = matched.filter((m: any) => {
+        try { return (JSON.parse(m.capabilities_json || '[]')).includes(capFilter); } catch { return false; }
+      });
+    }
+    if (matched.length === 0) continue;
+
+    lines.push(`**平台 ${p.name}** (id: \`${p.id}\`, protocol: ${p.protocol || 'openai'})`);
+    for (const m of matched) {
+      total++;
+      const caps = (() => { try { return JSON.parse(m.capabilities_json || '[]'); } catch { return []; } })();
+      const type = m.type || 'llm';
+      const alias = m.alias || m.model_id;
+      const desc = m.description ? ` | 描述: ${m.description}` : '';
+      const capStr = caps.length ? ` | 能力: ${caps.join(',')}` : '';
+      lines.push(`  - ${alias} (model: \`${m.model_id}\`, id: \`${m.id}\`) [type=${type}${capStr}]${desc}`);
+    }
+  }
+
+  if (total === 0) {
+    const hint = typeFilter || capFilter ? `（过滤条件 type=${typeFilter || '-'} capability=${capFilter || '-'} 下无匹配）` : '';
+    return `未找到可用模型${hint}。可用 list_models（不带过滤）查看全部模型。`;
+  }
+  lines.unshift(`共 ${total} 个可用模型：`);
+  return lines.join('\n');
 }
 
 function loadMessages(convId: string): Message[] {
@@ -959,11 +1009,26 @@ async function executeTool(
     if (subIds.length === 0) return '当前智能体未挂载任何子智能体';
     const lines: string[] = [];
     for (const id of subIds) {
-      const sub = db.prepare('SELECT name, description FROM agent WHERE id = ? AND (user_id = ? OR is_public = 1)').get(id, task.userId) as any;
+      const sub = db.prepare('SELECT name, description, platform_id, model_id FROM agent WHERE id = ? AND (user_id = ? OR is_public = 1)').get(id, task.userId) as any;
       if (!sub) { lines.push(`- id: \`${id}\`（该子智能体已被删除）`); continue; }
-      lines.push(`- **${sub.name}** (id: \`${id}\`): ${sub.description || ''}`);
+      // 附带子智能体当前绑定的模型信息，供 call_agent 决策是否覆盖
+      let modelNote = '';
+      if (sub.platform_id || sub.model_id) {
+        const mp = sub.platform_id ? db.prepare('SELECT name FROM platform WHERE id = ?').get(sub.platform_id) as any : null;
+        const mm = sub.model_id ? db.prepare('SELECT alias, model_id, type FROM model WHERE id = ?').get(sub.model_id) as any : null;
+        const pn = mp?.name || sub.platform_id;
+        const mn = mm ? (mm.alias || mm.model_id) : sub.model_id;
+        const mt = mm?.type ? `(${mm.type})` : '';
+        modelNote = ` | 模型: ${pn}/${mn}${mt}`;
+      }
+      lines.push(`- **${sub.name}** (id: \`${id}\`): ${sub.description || ''}${modelNote}`);
     }
     return lines.join('\n');
+  }
+
+  // list_models → 后端直接查 DB，返回语义化的可用模型清单（平台 + type + capabilities + description）
+  if (toolName === 'list_models') {
+    return listAvailableModels(task.userId, args);
   }
 
   // 自定义工具 → 后端直接执行（node:vm 沙箱，避免后端→前端→后端绕圈）
@@ -1051,7 +1116,7 @@ function executeToolViaFrontend(task: LlmTask, toolName: string, args: any, tool
  *  子智能体消息写入同一会话，带 parent_tool_call_id/sub_agent_id 归属字段。 */
 async function runSubAgent(
   task: LlmTask,
-  args: { agentId?: string; input?: string },
+  args: { agentId?: string; input?: string; platformId?: string; modelId?: string },
   parentToolCallId: string,
   depth: number,
   uiTools: Set<string>,
@@ -1074,12 +1139,25 @@ async function runSubAgent(
   const agent = db.prepare('SELECT * FROM agent WHERE id = ? AND (user_id = ? OR is_public = 1)').get(resolvedId, task.userId) as any;
   if (!agent) return `子智能体不存在: ${agentId}（可调用 list_sub_agents 工具查询可用子智能体及其 ID）`;
 
-  // 解析平台/模型：子智能体配置优先，否则继承父任务
-  const platformId = agent.platform_id || task.platformId;
-  const modelId = agent.model_id || task.modelId;
-  const platform = loadPlatform(platformId, task.userId);
-  const model = loadModel(modelId, task.userId);
-  if (!platform || !model) return '子智能体未配置平台/模型，无法执行';
+  // 解析平台/模型：调用方指定 > 子智能体配置 > 父任务（主智能体当前模型）
+  const platformId = args.platformId || (agent.platform_id || task.platformId);
+  const modelId = args.modelId || (agent.model_id || task.modelId);
+  let platform = loadPlatform(platformId, task.userId);
+  let model = loadModel(modelId, task.userId);
+  if (!platform && modelId) {
+    // 仅指定了 modelId 而未指定 platformId，或 platformId 无效：尝试按 model 反查平台
+    const m = db.prepare('SELECT * FROM model WHERE id = ? AND user_id = ?').get(modelId, task.userId) as any;
+    if (m) {
+      platform = loadPlatform(m.platform_id, task.userId);
+      model = loadModel(m.id, task.userId);
+    }
+  }
+  if (!platform || !model) {
+    if (args.platformId || args.modelId) {
+      return `指定的子智能体模型不可用（platformId=${args.platformId || '-'}, modelId=${args.modelId || '-'}）。请先调用 list_models 工具查询可用平台与模型。`;
+    }
+    return '子智能体未配置平台/模型，无法执行';
+  }
 
   // 构建子智能体工具列表
   const registry = getToolRegistry();

@@ -12,6 +12,7 @@ import {
   startWorkflowRun,
   getWorkflowRun,
   subscribeWorkflowRun,
+  resolveBundleFromDb,
 } from '../workflow-runner.js';
 import type { WorkflowRunBundle } from '../workflow-runner.js';
 
@@ -21,12 +22,23 @@ router.use(authMiddleware);
 router.post('/run', (req: Request, res: Response) => {
   const userId = req.user!.userId;
   const body = req.body || {};
-  const bundle = body.agent as WorkflowRunBundle['agent'] | undefined;
-  if (!bundle || !bundle.id || !bundle.workflow || !Array.isArray(bundle.workflow.nodes)) {
-    res.status(400).json({ error: '缺少工作流定义（agent.workflow）' });
+  const inputs = (body.inputs as Record<string, unknown>) || {};
+
+  // 单库收敛：agentId 模式——后端按 id 从 data.db 读 agent 定义 + 递归收集 sub_agent，前端只传 id+inputs。
+  // 仍兼容旧「前端带完整 bundle」模式（agentId 缺失时）。
+  if (body.agentId && !body.agent) {
+    const bundle = resolveBundleFromDb(String(body.agentId));
+    if (!bundle) { res.status(404).json({ error: '智能体不存在' }); return; }
+    const runId = startWorkflowRun(bundle, inputs, userId);
+    res.json({ data: { runId } });
     return;
   }
-  const inputs = (body.inputs as Record<string, unknown>) || {};
+
+  const bundle = body.agent as WorkflowRunBundle['agent'] | undefined;
+  if (!bundle || !bundle.id || !bundle.workflow || !Array.isArray(bundle.workflow.nodes)) {
+    res.status(400).json({ error: '缺少工作流定义（agentId 或 agent.workflow）' });
+    return;
+  }
   const fullBundle: WorkflowRunBundle = { agent: bundle, subAgents: body.subAgents || {} };
   const runId = startWorkflowRun(fullBundle, inputs, userId);
   res.json({ data: { runId } });

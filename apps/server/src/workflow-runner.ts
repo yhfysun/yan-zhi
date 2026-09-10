@@ -577,6 +577,34 @@ async function executeBundle(
 // 对外入口：创建运行（异步执行 + 落库 + SSE）
 // ============================================================
 
+/**
+ * 从后端 db（data.db）按 agentId 解析工作流 bundle（主 agent + 递归收集 sub_agent 节点引用的子智能体）。
+ * 单库收敛后，智能体定义统一存 server db；sub_agent 节点执行时 ServerSubAgentNodeHandler 也会回退 db 动态读取，
+ * 但此处仍预收集入 bundle 以兼容「运行时按 bundle 优先」的解析顺序。
+ */
+export function resolveBundleFromDb(agentId: string): WorkflowRunBundle | null {
+  const row = db.prepare('SELECT id, name, workflow_json FROM agent WHERE id = ?').get(agentId) as any;
+  if (!row) return null;
+  const workflow: Workflow = (() => { try { return JSON.parse(row.workflow_json || '{"nodes":[],"edges":[]}'); } catch { return { nodes: [], edges: [] }; } })();
+  const subAgents: Record<string, WorkflowAgentDef> = {};
+  const seen = new Set<string>([agentId]);
+  const collect = (wf: Workflow) => {
+    for (const n of wf.nodes || []) {
+      if (n.type !== 'sub_agent') continue;
+      const sid = (n.config as any)?.subAgentId as string | undefined;
+      if (!sid || seen.has(sid)) continue;
+      seen.add(sid);
+      const sr = db.prepare('SELECT id, name, workflow_json FROM agent WHERE id = ?').get(sid) as any;
+      if (!sr) continue;
+      const swf: Workflow = (() => { try { return JSON.parse(sr.workflow_json || '{"nodes":[],"edges":[]}'); } catch { return { nodes: [], edges: [] }; } })();
+      subAgents[sid] = { id: sr.id, name: sr.name, workflow: swf };
+      collect(swf);
+    }
+  };
+  collect(workflow);
+  return { agent: { id: row.id, name: row.name, workflow }, subAgents };
+}
+
 export function startWorkflowRun(
   bundle: WorkflowRunBundle,
   inputs: Record<string, unknown>,

@@ -1,8 +1,6 @@
 // Skill 商店 store
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
-import { getPlatformAdapter } from '@yan-zhi/core';
-import { uid } from '@yan-zhi/shared';
 import { api } from '../api/client';
 import { useAuthStore } from './auth';
 
@@ -109,7 +107,8 @@ export const useSkillStore = defineStore('skill', () => {
   const category = ref('全部');
   const search = ref('');
 
-  const on = () => !!useAuthStore().isLoggedIn;
+  // 单库收敛：数据面恒走后端（data.db 唯一权威），本地 adapter.db 分支已废弃。
+  const on = () => useAuthStore().useServerApi; // 恒 true
 
   const filteredMarket = computed(() => {
     let list = marketSkills.value;
@@ -126,15 +125,9 @@ export const useSkillStore = defineStore('skill', () => {
   async function loadSkills() {
     loading.value = true;
     try {
-      if (on()) {
-        const r = await api.get<any[]>('/skills');
-        if ('data' in r) {
-          skills.value = (r.data as any[]).map(rowToSkill);
-        }
-      } else {
-        const adapter = getPlatformAdapter();
-        const rows = await adapter.db.query<any>('SELECT * FROM skill ORDER BY created_at DESC');
-        skills.value = rows.map(rowToSkill);
+      const r = await api.get<any[]>('/skills');
+      if ('data' in r) {
+        skills.value = (r.data as any[]).map(rowToSkill);
       }
     } finally {
       loading.value = false;
@@ -146,103 +139,49 @@ export const useSkillStore = defineStore('skill', () => {
     if (!item) throw new Error('Skill 不存在');
     if (skills.value.some((s) => s.name === name)) throw new Error('已安装');
 
-    if (on()) {
-      const r = await api.post<any>('/skills', {
-        name: item.name, description: item.description, triggers: item.triggers,
-        body: item.body, category: item.category, author: item.author,
-      });
-      if ('data' in r) {
-        skills.value.unshift(rowToSkill(r.data));
-        return (r.data as any).id;
-      }
-      throw new Error('安装失败');
+    const r = await api.post<any>('/skills', {
+      name: item.name, description: item.description, triggers: item.triggers,
+      body: item.body, category: item.category, author: item.author,
+    });
+    if ('data' in r) {
+      skills.value.unshift(rowToSkill(r.data));
+      return (r.data as any).id;
     }
-
-    const adapter = getPlatformAdapter();
-    const id = uid('sk_');
-    const fm: SkillFrontmatter = { name: item.name, description: item.description, triggers: item.triggers };
-    await adapter.db.exec(
-      'INSERT INTO skill (id, name, description, source, frontmatter_json, body_md, enabled, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-      [id, item.name, item.description, 'market', JSON.stringify(fm), item.body, 1, Date.now()],
-    );
-    await loadSkills();
-    return id;
+    throw new Error('安装失败');
   }
 
   async function createCustom(name: string, description: string, bodyMd: string, triggers: string[] = []): Promise<string> {
-    if (on()) {
-      const r = await api.post<any>('/skills', { name, description, triggers, body: bodyMd, category: '自定义' });
-      if ('data' in r) {
-        skills.value.unshift(rowToSkill(r.data));
-        return (r.data as any).id;
-      }
-      throw new Error('创建失败');
+    const r = await api.post<any>('/skills', { name, description, triggers, body: bodyMd, category: '自定义' });
+    if ('data' in r) {
+      skills.value.unshift(rowToSkill(r.data));
+      return (r.data as any).id;
     }
-
-    const adapter = getPlatformAdapter();
-    const id = uid('sk_');
-    const fm: SkillFrontmatter = { name, description, triggers };
-    await adapter.db.exec(
-      'INSERT INTO skill (id, name, description, source, frontmatter_json, body_md, enabled, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-      [id, name, description, 'local', JSON.stringify(fm), bodyMd, 1, Date.now()],
-    );
-    await loadSkills();
-    return id;
+    throw new Error('创建失败');
   }
 
   async function updateSkill(id: string, patch: { description?: string; bodyMd?: string; triggers?: string[] }) {
-    if (on()) {
-      const body: any = {};
-      if (patch.description !== undefined) body.description = patch.description;
-      if (patch.bodyMd !== undefined) body.body = patch.bodyMd;
-      if (patch.triggers !== undefined) body.triggers = patch.triggers;
-      if (Object.keys(body).length === 0) return;
-      await api.patch(`/skills/${id}`, body);
-    } else {
-      const adapter = getPlatformAdapter();
-      const s = skills.value.find((x) => x.id === id);
-      if (!s) return;
-      const newFm = { ...s.frontmatter };
-      if (patch.description !== undefined) newFm.description = patch.description;
-      if (patch.triggers !== undefined) newFm.triggers = patch.triggers;
-      const sets = ['frontmatter_json = ?'];
-      const params: unknown[] = [JSON.stringify(newFm)];
-      if (patch.description !== undefined) { sets.push('description = ?'); params.push(patch.description); }
-      if (patch.bodyMd !== undefined) { sets.push('body_md = ?'); params.push(patch.bodyMd); }
-      params.push(id);
-      await adapter.db.exec(`UPDATE skill SET ${sets.join(', ')} WHERE id = ?`, params);
-    }
+    const body: any = {};
+    if (patch.description !== undefined) body.description = patch.description;
+    if (patch.bodyMd !== undefined) body.body = patch.bodyMd;
+    if (patch.triggers !== undefined) body.triggers = patch.triggers;
+    if (Object.keys(body).length === 0) return;
+    await api.patch(`/skills/${id}`, body);
     await loadSkills();
   }
 
   async function toggleEnabled(id: string, enabled: boolean) {
-    if (on()) {
-      await api.patch(`/skills/${id}`, { enabled });
-    } else {
-      const adapter = getPlatformAdapter();
-      await adapter.db.exec('UPDATE skill SET enabled = ? WHERE id = ?', [enabled ? 1 : 0, id]);
-    }
+    await api.patch(`/skills/${id}`, { enabled });
     await loadSkills();
   }
 
-  /** 发布/下架 Skill 到商城：登录态走服务端 PATCH（同步 is_public），离线态写本地表 */
+  /** 发布/下架 Skill 到商城：走后端 PATCH（同步 is_public） */
   async function togglePublic(id: string, isPublic: boolean) {
-    if (on()) {
-      await api.patch(`/skills/${id}`, { isPublic });
-    } else {
-      const adapter = getPlatformAdapter();
-      await adapter.db.exec('UPDATE skill SET is_public = ? WHERE id = ?', [isPublic ? 1 : 0, id]);
-    }
+    await api.patch(`/skills/${id}`, { isPublic });
     await loadSkills();
   }
 
   async function uninstall(id: string) {
-    if (on()) {
-      await api.delete(`/skills/${id}`);
-    } else {
-      const adapter = getPlatformAdapter();
-      await adapter.db.exec('DELETE FROM skill WHERE id = ?', [id]);
-    }
+    await api.delete(`/skills/${id}`);
     await loadSkills();
   }
 

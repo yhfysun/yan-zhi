@@ -18,6 +18,14 @@ export class CallAgentTool implements BuiltInTool {
         type: 'string',
         description: 'The task description / input to pass to the sub-agent.',
       },
+      platformId: {
+        type: 'string',
+        description: '可选：指定子智能体用哪个模型平台(platform id)。缺省时依次用子智能体自身配置、主智能体当前模型。可先调 list_models 查询可用平台/模型。',
+      },
+      modelId: {
+        type: 'string',
+        description: '可选：指定子智能体用哪个模型(model id)。需属于给定 platformId 对应平台（不传 platformId 时自动解析平台）。缺省时依次用子智能体自身配置、主智能体当前模型。图片/视频/视觉等任务建议指定对应能力的模型。',
+      },
     },
     required: ['agentId', 'input'],
   };

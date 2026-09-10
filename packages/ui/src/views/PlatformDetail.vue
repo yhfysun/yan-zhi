@@ -56,6 +56,8 @@
           </div>
         </div>
 
+        <div v-if="m.description" class="model-card-desc">{{ m.description }}</div>
+
         <div class="model-card-foot">
           <el-input
             v-if="!m.isBuiltin"
@@ -92,7 +94,14 @@
             <el-option label="LLM" value="llm" />
             <el-option v-if="supportsEmbeddings" label="Embedding" value="embedding" />
             <el-option label="Rerank" value="rerank" />
+            <el-option label="图片生成" value="image" />
+            <el-option label="视频生成" value="video" />
+            <el-option label="音频生成" value="audio" />
+            <el-option label="语音合成(TTS)" value="tts" />
           </el-select>
+        </el-form-item>
+        <el-form-item label="描述">
+          <el-input v-model="form.description" type="textarea" :rows="2" placeholder="模型描述：用途、专长、适用场景等（供智能体选型时参考）" />
         </el-form-item>
         <el-form-item label="能力">
           <el-checkbox-group v-model="form.capabilities">
@@ -190,6 +199,7 @@ const batchSaving = ref(false);
 const form = ref({
   modelId: '', alias: '', type: 'llm', contextWindow: 131072,
   capabilities: [] as string[],
+  description: '',
   pricingInput: 0, pricingOutput: 0,
 });
 
@@ -238,6 +248,7 @@ function editModel(m: any) {
     modelId: m.modelId, alias: m.alias || '', type: m.type || 'llm',
     contextWindow: m.contextWindow || 4096,
     capabilities: [...(m.capabilities || [])],
+    description: m.description || '',
     pricingInput: m.pricing?.input || 0, pricingOutput: m.pricing?.output || 0,
   };
   showAdd.value = true;
@@ -250,6 +261,7 @@ async function addOrEditModel() {
         modelId: form.value.modelId, alias: form.value.alias,
         type: form.value.type as any, contextWindow: form.value.contextWindow,
         capabilities: form.value.capabilities,
+        description: form.value.description,
         pricing: { input: form.value.pricingInput, output: form.value.pricingOutput },
       });
       ElMessage.success('已更新');
@@ -259,6 +271,7 @@ async function addOrEditModel() {
         alias: form.value.alias, type: form.value.type as any,
         contextWindow: form.value.contextWindow, enabled: true, isDefault: false,
         capabilities: form.value.capabilities,
+        description: form.value.description,
         pricing: { input: form.value.pricingInput, output: form.value.pricingOutput },
       });
       ElMessage.success('已添加');
@@ -269,7 +282,7 @@ async function addOrEditModel() {
 
 function resetModelForm() {
   editingModelId.value = '';
-  form.value = { modelId: '', alias: '', type: 'llm', contextWindow: 131072, capabilities: [], pricingInput: 0, pricingOutput: 0 };
+  form.value = { modelId: '', alias: '', type: 'llm', contextWindow: 131072, capabilities: [], description: '', pricingInput: 0, pricingOutput: 0 };
 }
 
 async function updateAlias(row: any) { if (row.isBuiltin) return; await store.updateModel(row.id, { alias: row.alias }); }
@@ -381,6 +394,7 @@ async function testModel(row: any) {
 
 .model-card-stats { display: flex; gap: 14px; }
 .stat-item { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--color-text-secondary); }
+.model-card-desc { font-size: 12px; color: var(--color-text-secondary); line-height: 1.5; }
 
 .model-card-foot {
   display: flex; align-items: center; gap: 8px;

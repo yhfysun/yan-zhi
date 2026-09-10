@@ -143,11 +143,11 @@ export class BrowserOpenExternalTool implements BuiltInTool {
 // ========== 点击 ==========
 export class BrowserClickTool implements BuiltInTool {
   name = 'browser_click';
-  description = 'Click an element in the browser. Preferred: use the element index (index) from browser_get_page_info/browser_get_dom numbered list. Also supports CSS selector or coordinates. Uses real mouse movement. Returns pageChanged/noChangeStreak feedback; if ambiguous, a candidate list with indexes is returned.';
+  description = 'Click an element in the browser. 三种定位方式任选其一：index（元素编号，来自 browser_get_page_content / browser_get_page_info 返回的列表）、selector（CSS 选择器）、x+y（页面坐标）。index 对动态 hash class、iframe 内元素最稳；坐标仅在前两者都拿不到时使用。Uses real mouse movement. Returns pageChanged/noChangeStreak feedback; if ambiguous, a candidate list with indexes is returned.';
   inputSchema = {
     type: 'object',
     properties: {
-      index: { type: 'number', description: 'Element index from the numbered interactive-element list returned by browser_get_page_info / browser_get_dom. Preferred over selector. If stale, re-fetch the list.' },
+      index: { type: 'number', description: 'Element index from the numbered interactive-element list returned by browser_get_page_content / browser_get_page_info / browser_get_dom. 比 selector 更稳（不受动态 class、iframe 影响）。失效时重新读取页面刷新列表。' },
       selector: { type: 'string', description: 'CSS selector of the element to click. Supports :contains("text") pseudo-selector to match elements by visible text, e.g. button:contains("登录"). If multiple elements match, an ambiguous candidate list with indexes is returned.' },
       x: { type: 'number', description: 'X coordinate (last resort, if no index/selector).' },
       y: { type: 'number', description: 'Y coordinate (last resort, if no index/selector).' },
@@ -168,12 +168,12 @@ export class BrowserClickTool implements BuiltInTool {
 // ========== 输入文本 ==========
 export class BrowserTypeTool implements BuiltInTool {
   name = 'browser_type';
-  description = 'Type text into an element. Preferred: use the element index (index) from browser_get_page_info/browser_get_dom numbered list; also supports CSS selector or the currently focused element. Uses real keyboard input (per-character).';
+  description = 'Type text into an element. 定位方式：index（元素编号，来自 browser_get_page_content / browser_get_page_info）、selector（CSS 选择器），或省略两者直接输入到当前焦点元素。输入框目标不明确时先用 browser_get_page_content 找到 textarea/input 的 index。Uses real keyboard input (per-character).';
   inputSchema = {
     type: 'object',
     properties: {
       text: { type: 'string', description: 'The text to type.' },
-      index: { type: 'number', description: 'Element index from the numbered interactive-element list returned by browser_get_page_info / browser_get_dom. Preferred over selector.' },
+      index: { type: 'number', description: 'Element index from the numbered interactive-element list returned by browser_get_page_content / browser_get_page_info / browser_get_dom. 比 selector 更稳（不受动态 class、iframe 影响）。省略时输入到当前焦点元素。' },
       selector: { type: 'string', description: 'CSS selector to focus before typing (optional). Supports :contains("text") pseudo-selector. If multiple elements match, an ambiguous candidate list with indexes is returned.' },
     },
     required: ['text'],
@@ -256,7 +256,7 @@ export class BrowserHoverTool implements BuiltInTool {
 // ========== 获取文本 ==========
 export class BrowserGetTextTool implements BuiltInTool {
   name = 'browser_get_text';
-  description = 'Get text content of an element by selector, or the entire page HTML. 可传 tabId 读取指定标签页。';
+  description = 'Get text content of an element by selector, or the entire page HTML. 传 selector：只取该元素的文本；不传 selector：返回整页原始 HTML 源码（含标签，非清洗文本）。用途：核对某个元素的文本、或需要看 HTML 源码/属性值。要"页面上人能看到的文字"改用 browser_get_visible_text；要元素编号与结构改用 browser_get_page_content。可传 tabId 读取指定标签页。';
   inputSchema = {
     type: 'object',
     properties: {
@@ -276,7 +276,7 @@ export class BrowserGetTextTool implements BuiltInTool {
 // ========== 获取 DOM ==========
 export class BrowserGetDomTool implements BuiltInTool {
   name = 'browser_get_dom';
-  description = 'Get a structured DOM tree of visible elements (excludes script/style/svg), penetrating same-origin iframes and Shadow DOM. Each node has tag, id, class, role, aria-label, text, href, placeholder, type, name, value, children. Interactive nodes (a/button/input/select/textarea etc.) carry an index number usable directly by browser_click/browser_type (index param). Use selector to scope, depth to limit tree depth, maxNodes to cap node count. 可传 tabId 读取指定标签页。';
+  description = 'Get a structured DOM tree of visible elements (excludes script/style/svg), penetrating same-origin iframes and Shadow DOM. 返回带父子层级的树形结构，每个节点含 tag, id, class, role, aria-label, text, href, placeholder, type, name, value, children；可交互节点（a/button/input/select/textarea 等）带 index 编号，可直接用于 browser_click/browser_type。用途：需要看清元素的层级归属、容器关系、弹窗/portal 挂在哪个父节点下时用它——browser_get_page_content 的元素清单是扁平的，判断不了归属。参数：selector 收窄到某个子树，depth 限制树深，maxNodes 限制节点数（默认较大，长页面建议设 depth 防止输出过长）。可传 tabId 读取指定标签页。';
   inputSchema = {
     type: 'object',
     properties: {
@@ -315,15 +315,19 @@ export class BrowserWaitTool implements BuiltInTool {
 // ========== 截图 ==========
 export class BrowserScreenshotTool implements BuiltInTool {
   name = 'browser_screenshot';
-  description = 'Take a screenshot of the current browser page. Returns base64 image data. 可传 tabId 截取指定标签页。';
+  description = 'Take a screenshot of the current browser page. Returns base64 image data. 可传 tabId 截取指定标签页。传 annotate=true 时会在截图中给每个可交互元素叠加编号框（index 编号），方便视觉精确定位后按 index 操作。';
   inputSchema = {
     type: 'object',
-    properties: { tabId: { type: 'number', description: '可选：目标标签页 id，缺省为当前活动标签页。' } },
+    properties: {
+      tabId: { type: 'number', description: '可选：目标标签页 id，缺省为当前活动标签页。' },
+      annotate: { type: 'boolean', description: '是否在截图中叠加可交互元素编号框（默认 false）。用于视觉定位难以用 DOM 描述的元素。' },
+    },
   };
   async execute(args: Record<string, unknown> = {}): Promise<McpCallResult> {
     try {
-      const data = await callBrowserApi('/action', 'POST', { action: 'screenshot', tabId: args.tabId }) as any;
-      return ok(`Screenshot captured (${(data.base64 || '').length} bytes base64)`);
+      const data = await callBrowserApi('/action', 'POST', { action: 'screenshot', tabId: args.tabId, annotate: args.annotate }) as any;
+      const note = data.annotated ? '（已叠加元素编号框，编号对应 browser_click/browser_type 的 index 参数）' : '';
+      return ok(`Screenshot captured (${(data.base64 || '').length} bytes base64)${note}`);
     } catch (e: any) { return err(e?.message || '截图失败'); }
   }
 }
@@ -436,7 +440,7 @@ export class BrowserWaitForTool implements BuiltInTool {
 // ========== 获取可见文本 ==========
 export class BrowserGetVisibleTextTool implements BuiltInTool {
   name = 'browser_get_visible_text';
-  description = 'Get visible text content of the page or an element (filters hidden elements, returns clean text). 可传 tabId 读取指定标签页。';
+  description = 'Get visible text content of the page or an element (filters hidden elements, returns clean text). 只返回人眼可见的纯文本：不含元素编号、不含 DOM 结构。用途：阅读正文、抽取长文、总结页面内容，比 browser_get_page_content 省 token。传 selector 可只取某个容器内的文本。需要操作页面（点击/输入）时改用 browser_get_page_content 或 browser_get_page_info。可传 tabId 读取指定标签页。';
   inputSchema = {
     type: 'object',
     properties: {
@@ -456,7 +460,7 @@ export class BrowserGetVisibleTextTool implements BuiltInTool {
 // ========== 获取页面内容（pageAgent 四件套之"读页"，聚合一次给齐） ==========
 export class BrowserGetPageContentTool implements BuiltInTool {
   name = 'browser_get_page_content';
-  description = 'Get the current page content in one call: url + title + visible text body + numbered interactive elements. 获取页面内容（标题/URL/可见正文/可交互元素），一次返回。这是读取页面的首选工具——先 navigate，操作（click/type）后用它观察结果。返回的元素带 index 编号，可直接作为 browser_click / browser_type 的 index 参数。可传 tabId 读取指定标签页（来自 browser_new_tab / browser_get_tabs），用于多页并行场景，不必先切换标签页。';
+  description = 'Get the current page content in one call: url + title + visible text body + numbered interactive elements. 一次拿齐"内容 + 操作目标"：页面标题/URL、可见正文、以及带编号的可交互元素清单（每个元素含 index、tag、selector、type、name、placeholder、aria-label、value；输入框标注 ←可输入）。用途：既要看页面说了什么、又要知道点哪里/往哪输入时用它；click/type 之后想重新观察页面结果也用它。元素编号 index 可直接作为 browser_click / browser_type 的 index 参数，selector 也可直接作为 selector 参数。只看纯文本用 browser_get_visible_text；只要元素坐标用 browser_get_page_info；要看父子层级结构用 browser_get_dom。可传 tabId 读取指定标签页（来自 browser_new_tab / browser_get_tabs），用于多页并行场景，不必先切换标签页。';
   inputSchema = {
     type: 'object',
     properties: {
@@ -473,13 +477,23 @@ export class BrowserGetPageContentTool implements BuiltInTool {
       if (data.error) return err(data.error);
       const elems = (data.interactive || []).map((e: any) => {
         let s = `[${e.index}] ${e.tag}`;
+        if (e.type) s += `[type=${e.type}]`;
+        if (e.selector) s += ` <${e.selector}>`;
+        if (e.name) s += ` [name:${e.name}]`;
+        if (e.role) s += ` [role:${e.role}]`;
+        if (e.ariaLabel) s += ` [aria:${e.ariaLabel}]`;
         if (e.text) s += ` "${e.text.slice(0, 40)}"`;
         if (e.placeholder) s += ` [ph:${e.placeholder}]`;
+        if (e.value) s += ` [val:${e.value}]`;
+        if (e.options) s += ` [opts:${e.options.length}]`;
+        if (e.checked !== undefined) s += ` [checked:${e.checked}]`;
         if (e.href) s += ` →${e.href.slice(0, 80)}`;
+        if (e.tag === 'input' || e.tag === 'textarea' || e.role === 'textbox') s += ' ←可输入';
+        if (e.iframe) s += ' (in iframe)';
         return s;
       }).join('\n');
       return ok(
-        `URL: ${data.url}\nTitle: ${data.title}\n\n【页面可见文本】\n${data.text || '(空)'}\n\n【可交互元素】(${data.interactiveCount} 个，编号可直接用于 browser_click/browser_type 的 index 参数)\n${elems}`
+        `URL: ${data.url}\nTitle: ${data.title}\n\n【页面可见文本】\n${data.text || '(空)'}\n\n【可交互元素】(${data.interactiveCount} 个，编号可直接用于 browser_click/browser_type 的 index 参数；也可直接用 <selector> 作为 selector 参数)\n${elems}`
       );
     } catch (e: any) { return err(e?.message || '获取页面内容失败'); }
   }
@@ -533,7 +547,7 @@ export class BrowserUncheckTool implements BuiltInTool {
 // ========== 页面信息 ==========
 export class BrowserGetPageInfoTool implements BuiltInTool {
   name = 'browser_get_page_info';
-  description = 'Get current page url, title, and a numbered list of interactive elements (penetrates same-origin iframes and Shadow DOM, up to 300). Each element has an index number — pass it as the index param of browser_click/browser_type to locate the element precisely (preferred over CSS selector, especially for dynamic hash classes and elements inside iframes/popups). Also includes selector, tag, text, position and attributes (type, placeholder, value, ariaLabel, name, role, options for select, checked). 可传 tabId 读取指定标签页，不必先切换标签页。';
+  description = 'Get current page url, title, and a numbered list of interactive elements with their on-screen coordinates (x/y/w/h), penetrating same-origin iframes and Shadow DOM, up to 300. 与 browser_get_page_content 的区别：本工具不返回正文文本，但每个元素额外带屏幕坐标和 bbox 尺寸。用途：需要坐标时用——按 x+y 点击、判断元素在视口内还是被遮挡/需滚动、配合 browser_screenshot 的 annotate=true 做截图编号框叠加、按位置筛选（如"右上角的按钮"）。元素属性同样齐全（index、selector、tag、text、type、name、placeholder、value、ariaLabel、role、select 的 options、checkbox 的 checked）。可传 tabId 读取指定标签页，不必先切换标签页。';
   inputSchema = {
     type: 'object',
     properties: { tabId: { type: 'number', description: '可选：目标标签页 id（来自 browser_new_tab / browser_get_tabs），缺省为当前活动标签页。' } },
@@ -844,26 +858,6 @@ export class BrowserDragTool implements BuiltInTool {
   }
 }
 
-// ========== C14 Accessibility Tree ==========
-export class BrowserGetA11yTreeTool implements BuiltInTool {
-  name = 'browser_get_a11y_tree';
-  description = 'Get the page accessibility tree (role/name/value/children), a stable supplement to get_dom for SPA/portal. 返回页面无障碍树，作为 get_dom 的补充，对 SPA/portal 更稳。可传 tabId 读取指定标签页。';
-  inputSchema = {
-    type: 'object',
-    properties: {
-      tabId: { type: 'number', description: '可选：目标标签页 id，缺省为当前活动标签页。' },
-      maxNodes: { type: 'number', description: 'Max number of nodes to return (default 200).' },
-    },
-  };
-  async execute(args: Record<string, unknown>): Promise<McpCallResult> {
-    try {
-      const data = await callBrowserApi('/action', 'POST', { action: 'get_a11y_tree', tabId: args.tabId, maxNodes: args.maxNodes }) as any;
-      if (data?.error) return err(data.error);
-      return ok(`A11y tree（${data.nodeCount} 个节点）：\n${JSON.stringify(data.tree, null, 2)}`);
-    } catch (e: any) { return err(e?.message || '获取无障碍树失败'); }
-  }
-}
-
 /** 所有浏览器工具类列表 */
 export const BrowserToolClasses = [
   BrowserNavigateTool,
@@ -910,8 +904,6 @@ export const BrowserToolClasses = [
   BrowserIsVisibleTool,
   // C13 拖拽
   BrowserDragTool,
-  // C14 Accessibility Tree
-  BrowserGetA11yTreeTool,
 ];
 
 /** 所有浏览器工具的暴露名（裸名） */
@@ -938,6 +930,4 @@ export const BROWSER_TOOL_NAMES = [
   'browser_scroll_into_view', 'browser_is_visible',
   // C13 拖拽
   'browser_drag',
-  // C14 Accessibility Tree
-  'browser_get_a11y_tree',
 ];

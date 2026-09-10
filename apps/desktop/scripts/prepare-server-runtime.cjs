@@ -89,15 +89,23 @@ console.log(
 );
 
 // 删除深层 node_modules 时可能因路径超长/文件占用/安全策略失败。
-// 失败时退化为「重命名让路」：不阻断构建，残留目录留待下次清理。
+// 失败时退化为「重命名让路」。
+// 注意：rmSync 和 renameSync 都可能因文件被占用/符号链接而 EPERM，
+// 两者都要吞掉异常——清理失败不能阻断构建（产物已经就位，残留留待下次清理）。
 function removeDirBestEffort(dir) {
   if (!fs.existsSync(dir)) return;
   try {
     fs.rmSync(dir, { recursive: true, force: true });
+    return;
   } catch (err) {
+    console.warn(`[prepare-server-runtime] 删除失败（${err.message.split('\n')[0]}），尝试重命名让路`);
+  }
+  try {
     const stale = `${dir}.stale-${Date.now()}`;
-    console.warn(`[prepare-server-runtime] 删除失败（${err.message.split('\n')[0]}），重命名为 ${path.basename(stale)}`);
     fs.renameSync(dir, stale);
+    console.warn(`[prepare-server-runtime] 已重命名为 ${path.basename(stale)}，残留留待下次清理`);
+  } catch (err2) {
+    console.warn(`[prepare-server-runtime] 重命名也失败（${err2.message.split('\n')[0]}），忽略并继续构建`);
   }
 }
 
@@ -115,9 +123,6 @@ for (const entry of fs.readdirSync(runtimeParentDir)) {
     }
   }
 }
-
-removeDirBestEffort(buildDir);
-fs.mkdirSync(buildDir, { recursive: true });
 
 // @yan-zhi/core、@yan-zhi/shared 不交给 npm 安装：它们是 workspace 源码包，
 // 安装后再用产物目录整体覆盖，避免 npm 复制一份再丢弃的额外开销与协议差异。
@@ -152,25 +157,55 @@ const pkg = {
   },
 };
 
-fs.writeFileSync(path.join(buildDir, 'package.json'), JSON.stringify(pkg, null, 2));
-
-console.log('[prepare-server-runtime] npm install --omit=optional --ignore-scripts...');
-runCommand(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['install', '--omit=optional', '--ignore-scripts', '--no-audit', '--no-fund', '--no-package-lock'], {
-  cwd: buildDir,
-  shell: true,
-  env: {
-    ...process.env,
-    NODE_OPTIONS: '',
-    // 后端只通过浏览器路由按需使用 playwright；安装阶段跳过 Chromium 下载以控制包体。
-    PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1',
-    PLAYWRIGHT_BROWSERS_PATH: '0',
-  },
-});
+// 依赖缓存：npm install（213 个包，约 2 分钟）在依赖清单未变时完全跳过。
+// 之前每次打包都把 .build-package 删光重建，导致必定回源重装，离线/受限网络下极易卡死。
+const cacheFile = path.join(runtimeDir, '.runtime-cache.json');
+const cacheKey = JSON.stringify({ hostKey, deps: pkg.dependencies });
+const readCache = () => {
+  try {
+    return JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
+  } catch {
+    return null;
+  }
+};
+const cached = readCache();
+const needInstall = !(cached && cached.key === cacheKey && fs.existsSync(runtimeNodeModules));
 
 const tempNodeModules = path.join(buildDir, 'node_modules');
 
+if (!needInstall) {
+  console.log(
+    `[prepare-server-runtime] 依赖缓存命中（${new Date(cached.at).toLocaleString()}），跳过 npm install / postinstall`,
+  );
+} else {
+  removeDirBestEffort(buildDir);
+  fs.mkdirSync(buildDir, { recursive: true });
+  fs.writeFileSync(path.join(buildDir, 'package.json'), JSON.stringify(pkg, null, 2));
+
+  console.log('[prepare-server-runtime] npm install --omit=optional --ignore-scripts...');
+  runCommand(
+    process.platform === 'win32' ? 'npm.cmd' : 'npm',
+    ['install', '--omit=optional', '--ignore-scripts', '--no-audit', '--no-fund', '--no-package-lock'],
+    {
+      cwd: buildDir,
+      shell: true,
+      timeout: 10 * 60 * 1000,
+      env: {
+        ...process.env,
+        NODE_OPTIONS: '',
+        // 后端只通过浏览器路由按需使用 playwright；安装阶段跳过 Chromium 下载以控制包体。
+        PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1',
+        PLAYWRIGHT_BROWSERS_PATH: '0',
+      },
+    },
+  );
+}
+
+// 命中缓存时直接在 runtime/node_modules 上继续加工，不再走临时目录。
+const workNodeModules = needInstall ? tempNodeModules : runtimeNodeModules;
+
 for (const dep of [bindings.esbuild]) {
-  if (!fs.existsSync(path.join(tempNodeModules, ...dep.split('/')))) {
+  if (!fs.existsSync(path.join(workNodeModules, ...dep.split('/')))) {
     throw new Error(`[prepare-server-runtime] 平台原生包未安装成功: ${dep}（${hostKey}）`);
   }
 }
@@ -179,7 +214,7 @@ for (const dep of [bindings.esbuild]) {
 // 阶段触发 node-gyp 构建。这里只单独执行 esbuild 必需的后置脚本，
 // 避免整包开启 scripts 导致 better-sqlite3 因缺少 VS 构建失败。
 const runPackagePostinstall = (scriptPath, args = []) => {
-  const resolved = path.join(tempNodeModules, scriptPath);
+  const resolved = path.join(workNodeModules, scriptPath);
   if (!fs.existsSync(resolved)) {
     console.log(`[prepare-server-runtime] postinstall 跳过（不存在）: ${scriptPath}`);
     return;
@@ -187,7 +222,8 @@ const runPackagePostinstall = (scriptPath, args = []) => {
   console.log(`[prepare-server-runtime] postinstall: ${scriptPath}`);
   runCommand(process.execPath, [resolved, ...args], {
     cwd: path.dirname(resolved),
-
+    // 关键：之前这一步没有超时保护，受限网络/首次执行扫描时会无限等待（实测卡过 19 分钟）。
+    timeout: 3 * 60 * 1000,
     env: {
       ...process.env,
       NODE_OPTIONS: '',
@@ -197,10 +233,12 @@ const runPackagePostinstall = (scriptPath, args = []) => {
   });
 };
 
-runPackagePostinstall(path.join('esbuild', 'install.js'));
+if (needInstall) {
+  runPackagePostinstall(path.join('esbuild', 'install.js'));
+}
 
 // 复制 workspace 源码包（排除 node_modules：里面是 pnpm 软链，复制过去会断链且徒增体积）
-const yanZhiDir = path.join(tempNodeModules, '@yan-zhi');
+const yanZhiDir = path.join(workNodeModules, '@yan-zhi');
 const copyFilter = (src) => path.basename(src) !== 'node_modules';
 for (const name of ['core', 'shared']) {
   const target = path.join(yanZhiDir, name);
@@ -237,16 +275,25 @@ if (!fs.existsSync(desktopBetterSqlite)) {
       '请先运行 apps/desktop 的 postinstall 或 pnpm install。',
   );
 }
-const sqliteBuildDir = path.join(tempNodeModules, 'better-sqlite3', 'build', 'Release');
+const sqliteBuildDir = path.join(workNodeModules, 'better-sqlite3', 'build', 'Release');
 fs.mkdirSync(sqliteBuildDir, { recursive: true });
 fs.copyFileSync(desktopBetterSqlite, path.join(sqliteBuildDir, 'better_sqlite3.node'));
 
-assertInside(runtimeDir, runtimeNodeModules);
-removeDirBestEffort(runtimeNodeModules);
-fs.cpSync(tempNodeModules, runtimeNodeModules, { recursive: true, force: true });
+if (needInstall) {
+  assertInside(runtimeDir, runtimeNodeModules);
+  removeDirBestEffort(runtimeNodeModules);
+  fs.cpSync(tempNodeModules, runtimeNodeModules, { recursive: true, force: true });
 
-console.log('[prepare-server-runtime] 清理临时目录:', buildDir);
-removeDirBestEffort(buildDir);
+  // 缓存先落盘再清理：否则清理失败会把整轮 npm install（2 分钟）的收益一起丢掉。
+  fs.writeFileSync(
+    cacheFile,
+    JSON.stringify({ key: cacheKey, hostKey, at: new Date().toISOString() }, null, 2),
+  );
+  console.log('[prepare-server-runtime] 依赖缓存已写入:', path.basename(cacheFile));
+
+  console.log('[prepare-server-runtime] 清理临时目录:', buildDir);
+  removeDirBestEffort(buildDir);
+}
 
 const totalBytes = (() => {
   let sum = 0;

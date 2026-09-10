@@ -368,7 +368,9 @@ export const useChatStore = defineStore('chat', () => {
   const taskIds = new Map<string, string>(); // convId → backend taskId（用于 abort）
   const taskEventCounts = new Map<string, number>(); // taskId → 已收到事件数（重连时作为 since）
 
-  const isServerMode = () => !!useAuthStore().isLoggedIn;
+  // 单库收敛：数据面恒走后端（与 auth.useServerApi 一致）。后端 authMiddleware 本地模式已屏蔽鉴权，
+  // 无 token 也回退 guest 放行，故前端登录态不影响数据归属。本地 adapter.db 分支已废弃。
+  const isServerMode = () => useAuthStore().useServerApi; // 恒 true
 
   function activeAgent() {
     const agentStore = useAgentStore();

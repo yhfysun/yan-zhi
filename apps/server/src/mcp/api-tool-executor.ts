@@ -442,8 +442,8 @@ export async function executeApiTool(
         const uid = requireUser(userId);
         const id = uuid();
         db.prepare(
-          'INSERT INTO model (id, platform_id, user_id, model_id, alias, type, context_window, capabilities_json, pricing_json, enabled, is_default, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?)',
-        ).run(id, str(args, 'platformId'), uid, str(args, 'modelId'), str(args, 'alias') || null, str(args, 'type') || 'llm', num(args, 'contextWindow', 8000), '[]', '{}', Date.now());
+          'INSERT INTO model (id, platform_id, user_id, model_id, alias, type, context_window, capabilities_json, pricing_json, description, enabled, is_default, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?)',
+        ).run(id, str(args, 'platformId'), uid, str(args, 'modelId'), str(args, 'alias') || null, str(args, 'type') || 'llm', num(args, 'contextWindow', 8000), '[]', '{}', str(args, 'description') || null, Date.now());
         return ok(db.prepare('SELECT * FROM model WHERE id = ?').get(id));
       }
       case 'api_model_update': {
@@ -453,6 +453,9 @@ export async function executeApiTool(
         const vals: any[] = [];
         if (args.alias !== undefined) { sets.push('alias = ?'); vals.push(args.alias); }
         if (args.enabled !== undefined) { sets.push('enabled = ?'); vals.push(args.enabled ? 1 : 0); }
+        if (args.type !== undefined) { sets.push('type = ?'); vals.push(args.type); }
+        if (args.contextWindow !== undefined) { sets.push('context_window = ?'); vals.push(args.contextWindow); }
+        if (args.description !== undefined) { sets.push('description = ?'); vals.push(args.description); }
         if (sets.length === 0) return ok(db.prepare('SELECT * FROM model WHERE id = ?').get(id));
         vals.push(id, uid);
         db.prepare(`UPDATE model SET ${sets.join(', ')} WHERE id = ? AND user_id = ?`).run(...vals);

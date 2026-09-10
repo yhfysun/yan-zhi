@@ -51,6 +51,7 @@ const rowToM = (r: any) => ({
   context_window: r.context_window,
   capabilities_json: r.capabilities_json,
   pricing_json: r.pricing_json,
+  description: r.description,
   enabled: r.enabled,
   is_default: r.is_default,
   is_builtin: !!r.is_builtin,
@@ -134,14 +135,14 @@ router.post('/:pid/models', (req: Request, res: Response) => {
   const platform = db.prepare('SELECT id, is_builtin FROM platform WHERE id = ? AND user_id = ?').get(pid, userId(req));
   if (!platform) { res.status(404).json({ error: '平台不存在' }); return; }
   if ((platform as any).is_builtin) { res.status(403).json({ error: '内置平台不可添加模型' }); return; }
-  const { modelId, alias, type, contextWindow, capabilities, pricing, enabled, isDefault } = req.body || {};
+  const { modelId, alias, type, contextWindow, capabilities, pricing, enabled, isDefault, description } = req.body || {};
   if (!modelId) { res.status(400).json({ error: 'modelId 为必填项' }); return; }
   const id = uuid();
   const now = Date.now();
   db.prepare(
-    'INSERT INTO model (id, platform_id, user_id, model_id, alias, type, context_window, capabilities_json, pricing_json, enabled, is_default, is_builtin, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)',
+    'INSERT INTO model (id, platform_id, user_id, model_id, alias, type, context_window, capabilities_json, pricing_json, description, enabled, is_default, is_builtin, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)',
   ).run(id, pid, userId(req), modelId, alias || null, type || 'llm', contextWindow || 8000,
-    JSON.stringify(capabilities || []), JSON.stringify(pricing || {}),
+    JSON.stringify(capabilities || []), JSON.stringify(pricing || {}), description || null,
     enabled !== undefined ? (enabled ? 1 : 0) : 1, isDefault ? 1 : 0, now);
   res.json({ data: rowToM(db.prepare('SELECT * FROM model WHERE id = ?').get(id)) });
 });
@@ -159,6 +160,7 @@ router.patch('/models/:mid', (req: Request, res: Response) => {
   if (req.body.contextWindow !== undefined) { sets.push('context_window = ?'); vals.push(req.body.contextWindow); }
   if (req.body.capabilities !== undefined) { sets.push('capabilities_json = ?'); vals.push(JSON.stringify(req.body.capabilities)); }
   if (req.body.pricing !== undefined) { sets.push('pricing_json = ?'); vals.push(JSON.stringify(req.body.pricing)); }
+  if (req.body.description !== undefined) { sets.push('description = ?'); vals.push(req.body.description); }
   if (sets.length === 0) { res.json({ data: rowToM(row) }); return; }
   vals.push(mid);
   db.prepare(`UPDATE model SET ${sets.join(', ')} WHERE id = ?`).run(...vals);

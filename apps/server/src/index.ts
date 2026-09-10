@@ -1,6 +1,7 @@
 import express from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { pathToFileURL } from 'node:url';
 import cors from 'cors';
 import { setPlatformAdapter, getPluginManager, getToolRegistry } from '@yan-zhi/core';
@@ -111,9 +112,55 @@ app.use('/api/llm', llmTaskRoutes);
 // LLM 交互日志（按 用户/会话/模型 统计，口径：一条 assistant 消息 = 一次 LLM 调用）
 app.use('/api/llm', llmLogsRoutes);
 
-const HOST = process.env.HOST || '127.0.0.1';
-app.listen(PORT, HOST, () => {
-  console.log(`后端已启动: http://${HOST}:${PORT}`);
+// 局域网访问：无登录体系，允许多人通过浏览器访问同一节点。
+// HOST 默认 0.0.0.0（绑定所有网卡，局域网可达）；用 YZ_HOST 可显式指定（如 127.0.0.1 仅本机）。
+const HOST = process.env.YZ_HOST || process.env.HOST || '0.0.0.0';
+const PORT_NUM = PORT;
+
+// 本机局域网 IP 列表（供前端「局域网访问」按钮展示）
+app.get('/api/network/ip', (_req, res) => {
+  const out: Array<{ name: string; address: string; family: string }> = [];
+  const ifs = os.networkInterfaces();
+  for (const name of Object.keys(ifs)) {
+    for (const it of ifs[name] || []) {
+      if (it.family === 'IPv4' && !it.internal) out.push({ name, address: it.address, family: it.family });
+    }
+  }
+  res.json({ data: out, port: PORT_NUM });
+});
+
+// 前端静态资源托管（local web ui）：让局域网内浏览器访问 http://<IP>:<PORT> 直接用完整界面。
+// 优先级：WEB_DIST（打包版主进程注入）> 向上查找仓库内 apps/web/dist、apps/desktop/dist（dev 模式）。
+function resolveWebDist(): string | null {
+  if (process.env.WEB_DIST) {
+    const p = process.env.WEB_DIST;
+    if (fs.existsSync(path.join(p, 'index.html'))) return p;
+  }
+  // dev：从 src 目录向上逐级找 apps/{web,desktop}/dist
+  let dir = __dirname;
+  for (let i = 0; i < 6; i++) {
+    for (const sub of ['apps/web/dist', 'apps/desktop/dist']) {
+      const p = path.join(dir, sub);
+      if (fs.existsSync(path.join(p, 'index.html'))) return p;
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return null;
+}
+const webDist = resolveWebDist();
+if (webDist) {
+  app.use(express.static(webDist, { maxAge: '1h' }));
+  // SPA fallback：非 /api 的路径回退到 index.html（配合前端路由）
+  app.get(/^\/(?!api\/).*/, (_req, res, next) => {
+    res.sendFile(path.join(webDist, 'index.html'), (err) => { if (err) next(); });
+  });
+  console.log(`[web] 前端静态资源已托管: ${webDist}（局域网访问 http://<本机IP>:${PORT_NUM}）`);
+}
+
+app.listen(PORT_NUM, HOST, () => {
+  console.log(`后端已启动: http://${HOST === '0.0.0.0' ? '<局域网可达>' : HOST}:${PORT_NUM}`);
 });
 
 // 启动时清理已移除的内置模型平台残留记录（local-model-*）

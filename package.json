@@ -1,6 +1,6 @@
 {
   "name": "yan-zhi",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "license": "Apache-2.0",
   "description": "言智 - 语言可控的智能体平台（Electron 桌面 / Web PWA / Capacitor 移动三端）",

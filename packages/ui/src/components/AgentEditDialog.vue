@@ -208,6 +208,7 @@
 
     <template #footer>
       <el-button v-if="isEdit&&!agent?.isDefault&&!agent?.isBuiltin" type="danger" plain @click="handleDelete" style="margin-right:auto">删除</el-button>
+      <el-button v-if="isEdit&&(agent?.isBuiltin||agent?.isDefault)" plain style="margin-right:auto" @click="handleReset">恢复默认</el-button>
       <el-button @click="visible=false">取消</el-button>
       <el-button type="primary" @click="handleSave">保存</el-button>
     </template>
@@ -406,6 +407,28 @@ watch(() => [props.modelValue, props.agent], () => {
     activeTab.value = 'basic'; mountTab.value = 'tools';
   }
 }, { immediate: true });
+
+async function handleReset() {
+  if (!props.agent?.id) return;
+  try {
+    await ElMessageBox.confirm('将恢复该智能体的内置默认值（提示词/工具挂载/子智能体/配置），你的修改会被覆盖。确定？', '恢复默认', { type: 'warning' });
+  } catch { return; }
+  try {
+    const ok = await agentStore.resetAgent(props.agent.id);
+    if (!ok) { ElMessage.warning('该智能体无内置默认定义，无法恢复'); return; }
+    // 重置后回填表单，用户可直接看到恢复结果
+    const a = agentStore.agents.find((x) => x.id === props.agent!.id);
+    if (a) {
+      form.value.systemPrompt = a.systemPrompt || '';
+      form.value.builtinToolIds = [...(a.builtinToolIds || [])];
+      form.value.subAgentIds = [...(a.subAgentIds || [])];
+      form.value.skillIds = [...(a.skillIds || [])];
+    }
+    ElMessage.success('已恢复默认');
+  } catch (e: any) {
+    ElMessage.error(e?.message || '恢复失败');
+  }
+}
 
 async function handleSave() {
   if (!form.value.name?.trim()) { ElMessage.warning('名称必填'); return; }

@@ -78,6 +78,18 @@ router.patch('/:id', (req: Request, res: Response) => {
 });
 
 // DELETE /api/conversations/:id
+// DELETE /api/conversations/clear —— 批量清空当前用户全部会话与消息（设置页「清空缓存」用）
+router.delete('/clear', (req: Request, res: Response) => {
+  const userId = req.user!.userId;
+  const ids = db.prepare('SELECT id FROM conversation WHERE user_id = ?').all(userId) as any[];
+  const clear = () => {
+    for (const c of ids) db.prepare('DELETE FROM message WHERE conversation_id = ?').run(c.id);
+    db.prepare('DELETE FROM conversation WHERE user_id = ?').run(userId);
+  };
+  db.transaction(clear)();
+  res.json({ ok: true, cleared: ids.length });
+});
+
 router.delete('/:id', (req: Request, res: Response) => {
   const userId = req.user!.userId;
   const cid = req.params.id;

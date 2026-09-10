@@ -49,6 +49,7 @@ function rowToModel(r: any): Model {
     enabled: !!r.enabled,
     isDefault: !!r.is_default,
     capabilities: r.capabilities_json ? tryParse(r.capabilities_json) : undefined,
+    description: r.description || undefined,
     pricing: r.pricing_json ? tryParse(r.pricing_json) : undefined,
     lastChatTestAt: r.last_chat_test_at || undefined,
     lastChatTestOk: r.last_chat_test_ok === null ? undefined : !!r.last_chat_test_ok,
@@ -113,7 +114,8 @@ export const usePlatformStore = defineStore('platform', () => {
   const apiKeys = ref<PlatformApiKey[]>([]);
   const loading = ref(false);
 
-  const on = () => !!useAuthStore().isLoggedIn;
+  // 单库收敛：数据面恒走后端（auth.useServerApi 恒 true），本地 adapter.db 分支已废弃。
+  const on = () => useAuthStore().useServerApi; // 恒 true
 
   async function loadPlatforms() {
     loading.value = true;
@@ -235,7 +237,7 @@ export const usePlatformStore = defineStore('platform', () => {
       const r = await api.post<any>(`/platforms/${m.platformId}/models`, {
         modelId: m.modelId, alias: m.alias, type: m.type,
         contextWindow: m.contextWindow, capabilities: m.capabilities, pricing: m.pricing,
-        enabled: m.enabled, isDefault: m.isDefault,
+        description: m.description, enabled: m.enabled, isDefault: m.isDefault,
       });
       if ('data' in r) { await loadModels(m.platformId); return (r.data as any).id; }
       throw new Error('添加模型失败');
@@ -243,11 +245,12 @@ export const usePlatformStore = defineStore('platform', () => {
     const adapter = getPlatformAdapter();
     const id = uid('m_');
     await adapter.db.exec(
-      'INSERT INTO model (id, platform_id, model_id, alias, type, context_window, enabled, is_default, is_builtin, capabilities_json, pricing_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)',
+      'INSERT INTO model (id, platform_id, model_id, alias, type, context_window, enabled, is_default, is_builtin, capabilities_json, pricing_json, description) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)',
       [id, m.platformId, m.modelId, m.alias || null, m.type, m.contextWindow,
         m.enabled ? 1 : 0, m.isDefault ? 1 : 0,
         m.capabilities ? JSON.stringify(m.capabilities) : null,
-        m.pricing ? JSON.stringify(m.pricing) : null],
+        m.pricing ? JSON.stringify(m.pricing) : null,
+        m.description || null],
     );
     await loadModels(m.platformId);
     return id;
@@ -264,6 +267,7 @@ export const usePlatformStore = defineStore('platform', () => {
       if (patch.type !== undefined) body.type = patch.type;
       if (patch.capabilities !== undefined) body.capabilities = patch.capabilities;
       if (patch.pricing !== undefined) body.pricing = patch.pricing;
+      if (patch.description !== undefined) body.description = patch.description;
       if (Object.keys(body).length === 0) return;
       await api.patch(`/platforms/models/${id}`, body);
       if (patch.platformId) await loadModels(patch.platformId);
@@ -280,6 +284,7 @@ export const usePlatformStore = defineStore('platform', () => {
     if (patch.type !== undefined) { sets.push('type = ?'); params.push(patch.type); }
     if (patch.capabilities !== undefined) { sets.push('capabilities_json = ?'); params.push(JSON.stringify(patch.capabilities)); }
     if (patch.pricing !== undefined) { sets.push('pricing_json = ?'); params.push(JSON.stringify(patch.pricing)); }
+    if (patch.description !== undefined) { sets.push('description = ?'); params.push(patch.description); }
     if (sets.length === 0) return;
     params.push(id);
     await adapter.db.exec(`UPDATE model SET ${sets.join(', ')} WHERE id = ?`, params);

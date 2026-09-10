@@ -113,6 +113,24 @@
           </el-form-item>
         </el-form>
       </el-tab-pane>
+      <el-tab-pane label="局域网访问" name="lan">
+        <div class="lan-section">
+          <p class="lan-tip">局域网内其他设备（手机 / 电脑）可用浏览器访问本节点的 Web 界面，数据与本机共享同一后端。</p>
+          <div v-if="lanIps.length === 0 && !lanLoading" class="lan-empty">未检测到局域网 IP（可能未连接网络）</div>
+          <div v-else class="lan-list">
+            <div v-for="ip in lanIps" :key="ip.address" class="lan-item">
+              <div class="lan-url-box">
+                <code>{{ 'http://' + ip.address + ':' + lanPort }}</code>
+                <span class="lan-iface">{{ ip.name }}</span>
+              </div>
+              <div class="lan-actions">
+                <el-button size="small" @click="copyLanUrl(ip.address)">复制</el-button>
+                <el-button size="small" type="primary" @click="openLan(ip.address)">打开浏览器</el-button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </el-tab-pane>
       <el-tab-pane label="日志" name="logs">
         <div class="logs-tab-embed">
           <LlmLogs />
@@ -140,6 +158,7 @@ import { useSettingsStore, usePlatformStore } from '../stores';
 import { usePluginStore } from '../stores/plugin';
 import { useToolsStore } from '../stores/tools';
 import type { ThemeName } from '../stores/settings';
+import { api } from '../api/client';
 import MemoryManage from '../components/memory/MemoryManage.vue';
 import LlmLogs from './LlmLogs.vue';
 
@@ -317,9 +336,7 @@ async function importData(e: Event) {
 async function clearCache() {
   try {
     await ElMessageBox.confirm('清空缓存会删除所有会话和消息（保留平台/模型/MCP/Skill 配置），确认？', '危险操作', { type: 'warning' });
-    const adapter = (await import('@yan-zhi/core')).getPlatformAdapter();
-    await adapter.db.exec('DELETE FROM message');
-    await adapter.db.exec('DELETE FROM conversation');
+    await api.delete('/conversations/clear');
     ElMessage.success('已清空');
   } catch {}
 }
@@ -354,6 +371,55 @@ async function onMpPortChange() {
 function copyUrl() {
   navigator.clipboard.writeText(connectUrl.value).then(() => ElMessage.success('已复制连接地址'));
 }
+
+// 局域网访问
+const lanIps = ref<Array<{ name: string; address: string }>>([]);
+const lanPort = ref(3001);
+const lanLoading = ref(false);
+
+async function loadLanIps() {
+  lanLoading.value = true;
+  try {
+    const r = await api.get<any>('/network/ip');
+    const data = r && 'data' in r ? (r.data as any) : r;
+    if (data && Array.isArray(data.data)) {
+      lanIps.value = data.data.map((x: any) => ({ name: x.name, address: x.address }));
+    }
+    if (data?.port) lanPort.value = data.port;
+  } catch {
+    lanIps.value = [];
+  } finally {
+    lanLoading.value = false;
+  }
+}
+
+function copyLanUrl(ip: string) {
+  navigator.clipboard.writeText(`http://${ip}:${lanPort.value}`).then(() => ElMessage.success('已复制地址'));
+}
+
+function openLan(ip: string) {
+  const url = `http://${ip}:${lanPort.value}`;
+  const w = window as any;
+  // 桌面端优先用系统默认浏览器打开（Electron shell.openExternal），web 端回退新标签页
+  if (w.electronAPI?.shell?.openExternal) {
+    w.electronAPI.shell.openExternal(url);
+    ElMessage.success('已在系统浏览器打开');
+  } else if (w.open) {
+    w.open(url, '_blank', 'noopener,noreferrer');
+    ElMessage.success('已在新标签页打开');
+  } else {
+    ElMessage.warning('当前环境无法打开浏览器，请手动访问 ' + url);
+  }
+}
+
+function openLanFirst() {
+  if (lanIps.value.length > 0) openLan(lanIps.value[0].address);
+  else ElMessage.warning('未检测到局域网 IP');
+}
+
+onMounted(() => {
+  void loadLanIps();
+});
 
 onMounted(async () => {
   await toolsStore.loadMarketplaceConfig();
@@ -399,6 +465,15 @@ onMounted(async () => {
 .form-tip { font-size: 12px; color: var(--color-text-secondary); }
 
 .data-section { display: flex; gap: 12px; }
+.lan-section { max-width: 600px; }
+.lan-tip { color: var(--color-text-secondary); font-size: 13px; margin-bottom: 16px; }
+.lan-empty { color: var(--color-text-secondary); font-size: 13px; padding: 16px 0; }
+.lan-list { display: flex; flex-direction: column; gap: 12px; }
+.lan-item { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; background: var(--glass-bg); border: 1px solid var(--glass-border); border-radius: 10px; }
+.lan-url-box { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.lan-url-box code { font-family: "JetBrains Mono", monospace; font-size: 13px; color: var(--color-text); word-break: break-all; }
+.lan-iface { font-size: 11px; color: var(--color-text-secondary); }
+.lan-actions { display: flex; gap: 8px; flex-shrink: 0; }
 .about-section h3 { margin-bottom: 12px; }
 .about-section p { margin: 6px 0; color: var(--color-text-secondary); }
 .about-tip { font-size: 12px; opacity: 0.7; }

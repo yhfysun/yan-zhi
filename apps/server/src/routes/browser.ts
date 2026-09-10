@@ -420,9 +420,13 @@ function ensureYzReg() {
       if (el && el.__yzIndex != null && w.__yzElements[el.__yzIndex] === el) return el.__yzIndex;
       const i = w.__yzElements.push(el) - 1;
       try { el.__yzIndex = i; } catch { /* ignore */ }
+      // 记录 index → 稳定 selector 快照，供 index 失效时自动降级重定位
+      const sel = genSel(el);
+      if (sel) { w.__yzSelMap = w.__yzSelMap || new Map(); try { w.__yzSelMap.set(i, sel); } catch { /* ignore */ } }
       return i;
     },
     get(i: number) { return w.__yzElements[i]; },
+    selOf(i: number) { return (w.__yzSelMap || new Map()).get(i); },
     genSel,
   };
   return w.__yzReg;
@@ -466,6 +470,7 @@ router.post('/action', async (req: Request, res: Response) => {
             const Refs = (window as any).__yzRefs;
             let el: Element | null = null;
             let locator = '';
+            let degraded = false;
             if (p.ref && Refs) {
               el = Refs.resolve(p.ref);
               locator = 'ref=' + p.ref;
@@ -474,24 +479,33 @@ router.post('/action', async (req: Request, res: Response) => {
               el = R.get(p.idx);
               locator = 'index=' + p.idx;
             }
+            // 自动降级：ref/index 失效（SPA 重渲染导致元素对象被替换）时，用注册时记录的稳定 selector 重定位一次，
+            // 避免智能体多一次 get_page_info 往返
+            if ((!el || !el.isConnected) && p.idx != null) {
+              const snap = R.selOf(p.idx);
+              if (snap) {
+                const found = document.querySelector(snap);
+                if (found) { el = found as Element; locator = 'index=' + p.idx + '→selector=' + snap; degraded = true; }
+              }
+            }
             if (!el || !el.isConnected) return { error: `${locator} 已失效（页面已变化），请重新调用 get_page_info 获取最新 ref/index 列表` };
             el.scrollIntoView({ block: 'center' });
             const rect = el.getBoundingClientRect();
-            if (el.ownerDocument === document) return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+            if (el.ownerDocument === document) return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2, degraded };
             // iframe 内元素：坐标相对 iframe 视口，直接派发 DOM 事件
             const o = { bubbles: true, cancelable: true, clientX: rect.x + rect.width / 2, clientY: rect.y + rect.height / 2, view: el.ownerDocument.defaultView };
             el.dispatchEvent(new MouseEvent('mousedown', o));
             el.dispatchEvent(new MouseEvent('mouseup', o));
             el.dispatchEvent(new MouseEvent('click', o));
-            return { via: 'dom-events', iframe: true };
+            return { via: 'dom-events', iframe: true, degraded };
           }, { ref: clickRef, idx: args.index != null ? Number(args.index) : null });
           if ((pos as any)?.error) {
             result = pos;
           } else if ((pos as any)?.x !== undefined) {
             await page.mouse.click((pos as any).x, (pos as any).y);
-            result = { success: true, index: args.index, via: 'real-mouse' };
+            result = { success: true, index: args.index, via: 'real-mouse', autoRelocated: !!(pos as any).degraded };
           } else {
-            result = { success: true, index: args.index, via: 'dom-events', iframe: true };
+            result = { success: true, index: args.index, via: 'dom-events', iframe: true, autoRelocated: !!(pos as any).degraded };
           }
           break;
         }
@@ -556,6 +570,14 @@ router.post('/action', async (req: Request, res: Response) => {
             let locator = '';
             if (p.ref && Refs) { el = Refs.resolve(p.ref) as any; locator = 'ref=' + p.ref; }
             if (!el && p.idx != null) { el = R.get(p.idx); locator = 'index=' + p.idx; }
+            // 自动降级：ref/index 失效时用注册时的 selector 快照重定位一次
+            if ((!el || !el.isConnected) && p.idx != null) {
+              const snap = R.selOf(p.idx);
+              if (snap) {
+                const found = document.querySelector(snap);
+                if (found) { el = found as any; locator = 'index=' + p.idx + '→selector=' + snap; }
+              }
+            }
             if (!el || !el.isConnected) return { error: `${locator} 已失效（页面已变化），请重新调用 get_page_info 获取最新 ref/index 列表` };
             el.scrollIntoView({ block: 'center' });
             el.focus();
@@ -671,8 +693,50 @@ router.post('/action', async (req: Request, res: Response) => {
         break;
       }
       case 'screenshot': {
-        const buf = await page.screenshot({ fullPage: false });
-        result = { base64: buf.toString('base64') };
+        if (args.annotate) {
+          // 元素标注截图：注入覆盖层给每个可交互元素画编号框，截图后移除（豆包/WorkBuddy 级视觉辅助）
+          await page.evaluate(ensureYzReg);
+          const overlayId = '__yz_annotate_overlay';
+          await page.evaluate((oid: string) => {
+            const prev = document.getElementById(oid); if (prev) prev.remove();
+            const R = (window as any).__yzReg;
+            const S = 'a,button,input,select,textarea,[role=button],[role=link],[role=checkbox],[role=radio],[onclick],[tabindex]';
+            const ov = document.createElement('div');
+            ov.id = oid;
+            ov.style.cssText = 'position:fixed;inset:0;pointer-events:none;z-index:2147483647;';
+            const visible = (el: any) => { const r = el.getBoundingClientRect(); return r.width >= 2 && r.height >= 2 && r.top >= 0 && r.left >= 0 && r.bottom <= window.innerHeight && r.right <= window.innerWidth; };
+            const paint = (root: any) => {
+              let found: any[] = [];
+              try { found = Array.from(root.querySelectorAll(S)); } catch { return; }
+              for (const el of found) {
+                if (!visible(el)) continue;
+                const idx = R.register(el);
+                const r = el.getBoundingClientRect();
+                const b = document.createElement('div');
+                b.style.cssText = `position:fixed;left:${r.left}px;top:${r.top}px;width:${r.width}px;height:${r.height}px;border:2px solid #f97316;box-sizing:border-box;`;
+                const tag = document.createElement('span');
+                tag.textContent = String(idx);
+                tag.style.cssText = `position:fixed;left:${r.left}px;top:${Math.max(0, r.top - 18)}px;background:#f97316;color:#fff;font:bold 12px/16px sans-serif;padding:0 5px;border-radius:2px;`;
+                ov.appendChild(b); ov.appendChild(tag);
+              }
+              if ((root as any).shadowRoot) paint((root as any).shadowRoot);
+              let all: any[] = [];
+              try { all = Array.from(root.querySelectorAll('*')); } catch { return; }
+              for (const n of all) if (n.tagName === 'IFRAME') { try { const cd = n.contentDocument; if (cd) paint(cd.body); } catch {} }
+            };
+            paint(document.documentElement);
+            document.documentElement.appendChild(ov);
+          }, overlayId);
+          try {
+            const buf = await page.screenshot({ fullPage: false });
+            result = { base64: buf.toString('base64'), annotated: true };
+          } finally {
+            await page.evaluate((oid: string) => { const p = document.getElementById(oid); if (p) p.remove(); }, overlayId).catch(() => {});
+          }
+        } else {
+          const buf = await page.screenshot({ fullPage: false });
+          result = { base64: buf.toString('base64') };
+        }
         break;
       }
       case 'fill_form': {
@@ -839,7 +903,7 @@ router.post('/action', async (req: Request, res: Response) => {
             if (el.tagName === 'INPUT' && (el.type === 'radio' || el.type === 'checkbox')) o.checked = !!el.checked;
             out.push(o);
           }
-          return { url: location.href, title: document.title, interactiveCount: els.length, interactive: out, hint: '可交互元素已编号（index 字段），browser_click / browser_type 可直接用 index 参数定位（优先于 selector）' };
+          return { url: location.href, title: document.title, interactiveCount: els.length, interactive: out, hint: '可交互元素已编号（index 字段）并带屏幕坐标 x/y/w/h，browser_click / browser_type 可用 index 参数定位，也可用 selector 或 x+y 坐标' };
         });
         break;
       }
@@ -973,9 +1037,20 @@ router.post('/action', async (req: Request, res: Response) => {
           for (let k = 0; k < els.length && out.length < a.maxInteractive; k++) {
             const el = els[k] as any;
             const idx = R.register(el);
-            const o: any = { index: idx, ref: Refs ? Refs.register(el) : '', tag: el.tagName.toLowerCase(), text: (el.textContent || '').trim().slice(0, 60) };
-            if (el.placeholder) o.placeholder = el.placeholder;
+            const o: any = { index: idx, ref: Refs ? Refs.register(el) : '', tag: el.tagName.toLowerCase(), selector: R.genSel(el), text: (el.textContent || '').trim().slice(0, 60) };
+            if (el.ownerDocument !== document) { o.iframe = true; }
+            else { const rect = el.getBoundingClientRect(); o.x = Math.round(rect.x); o.y = Math.round(rect.y); o.w = Math.round(rect.width); o.h = Math.round(rect.height); }
+            if (el.id) o.id = el.id;
+            if (el.type) o.type = el.type;
             if (el.href) o.href = String(el.href).slice(0, 200);
+            if (el.placeholder) o.placeholder = el.placeholder;
+            if (el.value && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) o.value = String(el.value).slice(0, 80);
+            if (el.getAttribute('aria-label')) o.ariaLabel = el.getAttribute('aria-label');
+            if (el.name) o.name = el.name;
+            if (el.getAttribute('role')) o.role = el.getAttribute('role');
+            if (el.required) o.required = true;
+            if (el.tagName === 'SELECT') o.options = Array.from(el.options).slice(0, 30).map((op: any) => ({ v: op.value, t: op.text.trim().slice(0, 40), s: op.selected }));
+            if (el.tagName === 'INPUT' && (el.type === 'radio' || el.type === 'checkbox')) o.checked = !!el.checked;
             out.push(o);
           }
           return {
@@ -1260,31 +1335,6 @@ router.post('/action', async (req: Request, res: Response) => {
         await page.mouse.move(to.x!, to.y!, { steps: 10 });
         await page.mouse.up();
         result = { dragged: true, from, to };
-        break;
-      }
-      // ========== C14 Accessibility Tree ==========
-      case 'get_a11y_tree': {
-        const maxNodes = args.maxNodes || 200;
-        let count = 0;
-        const prune = (node: any): any => {
-          if (!node || count >= maxNodes) return null;
-          count++;
-          const out: any = { role: node.role };
-          if (node.name) out.name = node.name;
-          if (node.value) out.value = node.value;
-          if (node.checked !== undefined) out.checked = node.checked;
-          if (node.level !== undefined) out.level = node.level;
-          if (node.selected !== undefined) out.selected = node.selected;
-          if (node.children) {
-            const kids: any[] = [];
-            for (const c of node.children) { const k = prune(c); if (k) kids.push(k); }
-            if (kids.length) out.children = kids;
-          }
-          return out;
-        };
-        const snap = await page.accessibility.snapshot().catch(() => null);
-        const tree = prune(snap);
-        result = { tree, nodeCount: count };
         break;
       }
       default:

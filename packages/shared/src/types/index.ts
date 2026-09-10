@@ -62,6 +62,7 @@ export interface Model {
   enabled: boolean;
   isDefault: boolean;
   capabilities?: string[]; // function_call / vision / reasoning
+  description?: string; // 模型描述（供 list_models 工具与前端展示）
   pricing?: { input?: number; output?: number }; // 每千 token 价格（元）
   lastChatTestAt?: number;
   lastChatTestOk?: boolean;

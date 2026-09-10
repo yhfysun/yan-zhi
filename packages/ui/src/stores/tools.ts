@@ -40,7 +40,7 @@ const BUILTIN_TOOL_CATEGORIES: { key: string; label: string; prefixes?: string[]
   { key: 'task', label: '任务规划', names: ['task_plan', 'task_step'] },
   { key: 'data', label: '数据查询（本体/SQL）', prefixes: ['api_ontology_', 'api_data_', 'api_datasource_'] },
   { key: 'image', label: '图像分析', names: ['image_analyze'] },
-  { key: 'config', label: '模型配置', names: ['configure_model_platform'] },
+  { key: 'config', label: '模型配置', names: ['configure_model_platform', 'list_models'] },
 ];
 
 function rowToTool(r: any): CustomToolItem {

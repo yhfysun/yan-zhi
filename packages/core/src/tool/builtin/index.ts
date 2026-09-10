@@ -17,6 +17,7 @@ export { PythonExecTool } from './python-exec';
 export { BrowserToolClasses, BROWSER_TOOL_NAMES } from './browser';
 export { CallAgentTool } from './call-agent';
 export { ListSubAgentsTool } from './list-sub-agents';
+export { ListModelsTool } from './list-models';
 export { AskUserTool } from './ask-user';
 export { ConfirmUserTool } from './confirm-user';
 export { TaskPlanTool, TaskStepTool } from './task-plan';
@@ -42,6 +43,7 @@ import { PythonExecTool } from './python-exec';
 import { BrowserToolClasses } from './browser';
 import { CallAgentTool } from './call-agent';
 import { ListSubAgentsTool } from './list-sub-agents';
+import { ListModelsTool } from './list-models';
 import { AskUserTool } from './ask-user';
 import { ConfirmUserTool } from './confirm-user';
 import { TaskPlanTool, TaskStepTool } from './task-plan';
@@ -78,6 +80,8 @@ export function registerBuiltInTools(registry: ToolRegistry): void {
   registry.register(new CallAgentTool());
   // 子智能体列表查询工具（E7b）—— 让 LLM 动态发现可用子智能体及其 ID
   registry.register(new ListSubAgentsTool());
+  // 可用模型查询工具 —— 让 LLM 动态发现平台/模型/能力，为 call_agent 指定模型与多模态选型提供依据
+  registry.register(new ListModelsTool());
   // 交互式工具（E12）：反问弹窗 + 任务规划进度（实际执行由 UI 层 dispatchToolCall 拦截）
   registry.register(new AskUserTool());
   registry.register(new ConfirmUserTool());

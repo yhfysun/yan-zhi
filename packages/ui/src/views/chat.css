@@ -420,11 +420,57 @@
 }
 .msg-content .code-copy-btn:hover { background: color-mix(in srgb, var(--color-primary) 30%, transparent); color: white; }
 .msg-content code { font-family: "JetBrains Mono", "Cascadia Code", monospace; font-size: 0.88em; }
-.msg-content p { margin: 6px 0; }
-.msg-content p:first-child { margin-top: 0; }
-.msg-content p:last-child { margin-bottom: 0; }
-.msg-content ul, .msg-content ol { padding-left: 22px; margin: 6px 0; }
-.msg-content li { margin: 3px 0; }
+/* ===== markdown 渲染容器统一样式 =====
+   聊天里所有 v-html(renderMarkdown(...)) 的容器：.msg-content / .sub-agent-result-content /
+   .main-agent-result-content / .agent-step-partial。此前只有 .msg-content 有排版规则，
+   其余容器走浏览器默认（ol 的 padding-inline-start:40px、p 与 ol 的 margin:1em），
+   在 sub-agent 窄卡片里被 overflow:hidden 一裁，列表项首行就看不见了。这里统一收敛。 */
+.msg-content p, .sub-agent-result-content p,
+.main-agent-result-content p, .agent-step-partial p { margin: 6px 0; }
+.msg-content p:first-child, .sub-agent-result-content p:first-child,
+.main-agent-result-content p:first-child, .agent-step-partial p:first-child { margin-top: 0; }
+.msg-content p:last-child, .sub-agent-result-content p:last-child,
+.main-agent-result-content p:last-child, .agent-step-partial p:last-child { margin-bottom: 0; }
+.msg-content ul, .msg-content ol,
+.sub-agent-result-content ul, .sub-agent-result-content ol,
+.main-agent-result-content ul, .main-agent-result-content ol,
+.agent-step-partial ul, .agent-step-partial ol {
+  padding-left: 22px; margin: 6px 0; list-style-position: outside;
+}
+.msg-content li,
+.sub-agent-result-content li,
+.main-agent-result-content li,
+.agent-step-partial li { margin: 3px 0; }
+/* 嵌套列表递进缩进减半，避免深层嵌套把内容挤到容器外 */
+.msg-content ul ul, .msg-content ol ol, .msg-content ul ol, .msg-content ol ul,
+.sub-agent-result-content ul ul, .sub-agent-result-content ol ol,
+.sub-agent-result-content ul ol, .sub-agent-result-content ol ul,
+.main-agent-result-content ul ul, .main-agent-result-content ol ol,
+.main-agent-result-content ul ol, .main-agent-result-content ol ul { padding-left: 18px; margin: 2px 0; }
+.sub-agent-result-content, .main-agent-result-content, .agent-step-partial {
+  word-wrap: break-word; overflow-wrap: break-word; min-width: 0;
+}
+.sub-agent-result-content h1, .sub-agent-result-content h2, .sub-agent-result-content h3,
+.sub-agent-result-content h4, .sub-agent-result-content h5, .sub-agent-result-content h6,
+.main-agent-result-content h1, .main-agent-result-content h2, .main-agent-result-content h3,
+.main-agent-result-content h4, .main-agent-result-content h5, .main-agent-result-content h6 {
+  margin: 10px 0 6px; line-height: 1.35; font-weight: 600;
+}
+.sub-agent-result-content h1, .main-agent-result-content h1 { font-size: 1.25em; }
+.sub-agent-result-content h2, .main-agent-result-content h2 { font-size: 1.15em; }
+.sub-agent-result-content h3, .main-agent-result-content h3 { font-size: 1.05em; }
+.agent-step-partial h1, .agent-step-partial h2, .agent-step-partial h3,
+.agent-step-partial h4, .agent-step-partial h5, .agent-step-partial h6 {
+  margin: 8px 0 4px; font-size: 1.05em; font-weight: 600; line-height: 1.35;
+}
+.sub-agent-result-content blockquote, .main-agent-result-content blockquote,
+.agent-step-partial blockquote {
+  border-left: 2px solid var(--color-border-strong); padding-left: 12px; margin: 8px 0;
+  color: var(--color-text-secondary);
+}
+.sub-agent-result-content hr, .main-agent-result-content hr, .agent-step-partial hr {
+  border: none; border-top: 1px solid var(--glass-border); margin: 10px 0;
+}
 .msg-content table { border-collapse: collapse; margin: 8px 0; width: 100%; display: block; overflow-x: auto; }
 .msg-content th, .msg-content td { border: 1px solid var(--glass-border); padding: 6px 12px; text-align: left; word-break: break-word; }
 .msg-content th { background: rgba(0,0,0,0.03); font-weight: 600; }

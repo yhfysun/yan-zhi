@@ -5,7 +5,7 @@
 import { Router, Request, Response } from 'express';
 import { v4 as uuid } from 'uuid';
 import { authMiddleware } from '../auth.js';
-import { db } from '../db.js';
+import { db, resetBuiltinAgent } from '../db.js';
 
 const router = Router();
 router.use(authMiddleware);
@@ -126,6 +126,14 @@ router.delete('/:id', (req: Request, res: Response) => {
   if (!existing) { res.status(404).json({ error: '智能体不存在或无权删除' }); return; }
   db.prepare('DELETE FROM agent WHERE id = ?').run(req.params.id);
   res.json({ ok: true });
+});
+
+// POST /api/agents/:id/reset —— 恢复内置 agent 默认值（提示词/工具挂载/子智能体/skill/config）
+router.post('/:id/reset', (req: Request, res: Response) => {
+  const ok = resetBuiltinAgent(req.params.id);
+  if (!ok) { res.status(404).json({ error: '该智能体不是内置智能体或不存在，无法恢复默认' }); return; }
+  const row = db.prepare('SELECT * FROM agent WHERE id = ?').get(req.params.id);
+  res.json({ data: rowToAgentDto(row) });
 });
 
 export default router;

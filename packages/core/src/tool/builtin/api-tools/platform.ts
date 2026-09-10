@@ -8,8 +8,8 @@ export function registerPlatformTools(m: Map<ApiModuleName, ToolDefinition[]>) {
     { name: 'api_platform_update', description: '更新平台配置', inputSchema: { type: 'object', properties: { id: { type: 'string' }, name: { type: 'string' }, apiUrl: { type: 'string' } }, required: ['id'] } },
     { name: 'api_platform_delete', description: '删除平台及模型', inputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] } },
     { name: 'api_model_list', description: '列出模型', inputSchema: { type: 'object', properties: { platformId: { type: 'string' } }, required: [] } },
-    { name: 'api_model_create', description: '添加模型', inputSchema: { type: 'object', properties: { platformId: { type: 'string' }, modelId: { type: 'string' }, alias: { type: 'string' }, type: { type: 'string' }, contextWindow: { type: 'number' } }, required: ['platformId', 'modelId'] } },
-    { name: 'api_model_update', description: '更新模型', inputSchema: { type: 'object', properties: { id: { type: 'string' }, alias: { type: 'string' }, enabled: { type: 'boolean' } }, required: ['id'] } },
+    { name: 'api_model_create', description: '添加模型', inputSchema: { type: 'object', properties: { platformId: { type: 'string' }, modelId: { type: 'string' }, alias: { type: 'string' }, type: { type: 'string' }, contextWindow: { type: 'number' }, description: { type: 'string' } }, required: ['platformId', 'modelId'] } },
+    { name: 'api_model_update', description: '更新模型', inputSchema: { type: 'object', properties: { id: { type: 'string' }, alias: { type: 'string' }, type: { type: 'string' }, contextWindow: { type: 'number' }, description: { type: 'string' }, enabled: { type: 'boolean' } }, required: ['id'] } },
     { name: 'api_model_delete', description: '删除模型', inputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] } },
   ]);
 }

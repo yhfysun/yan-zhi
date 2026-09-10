@@ -12,6 +12,22 @@ const DB_PATH = path.join(dataDir, 'data.db');
 
 const db = new Database(DB_PATH);
 
+// ===== 内置种子覆盖策略（由打包/运行参数控制）=====
+// YZ_BUILTIN_OVERWRITE 取值：
+//   'always'  (默认) —— 内置 agent/skill 定义以代码为准，启动时强制覆盖旧库（历史行为）
+//   'never'   —— 永不覆盖用户对内置项的改动（用户改了保留）
+//   'migrate' —— 仅新增缺项/补空，不覆盖已存在的内置项（最保守）
+export type BuiltinOverwriteMode = 'always' | 'never' | 'migrate';
+function resolveOverwriteMode(): BuiltinOverwriteMode {
+  const v = (process.env.YZ_BUILTIN_OVERWRITE || 'always').toLowerCase();
+  if (v === 'never') return 'never';
+  if (v === 'migrate') return 'migrate';
+  return 'always';
+}
+export const BUILTIN_OVERWRITE_MODE: BuiltinOverwriteMode = resolveOverwriteMode();
+/** 强制覆盖是否开启（always 时内置定义以代码为准） */
+const overwriteEnabled = BUILTIN_OVERWRITE_MODE === 'always';
+
 db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
 
@@ -63,6 +79,7 @@ db.exec(`
     context_window INTEGER DEFAULT 8000,
     capabilities_json TEXT DEFAULT '[]',
     pricing_json TEXT DEFAULT '{}',
+    description TEXT,
     enabled INTEGER DEFAULT 1,
     is_default INTEGER DEFAULT 0,
     is_builtin INTEGER NOT NULL DEFAULT 0,
@@ -384,6 +401,9 @@ for (const t of ['custom_tool', 'agent']) {
 // 迁移：custom_tool 新增 category 分类列（自定义工具归类；旧数据回填为「其他」）
 try { db.exec("ALTER TABLE custom_tool ADD COLUMN category TEXT NOT NULL DEFAULT '其他'"); } catch {}
 
+// 迁移：model 新增 description 列（模型描述，供 list_models 工具与前端展示）
+try { db.exec('ALTER TABLE model ADD COLUMN description TEXT'); } catch {}
+
 // ===== 客户端发现与聊天 =====
 db.exec(`
   CREATE TABLE IF NOT EXISTS chat_peer (
@@ -574,6 +594,8 @@ const DEFAULT_AGENT_BUILTIN_TOOLS = [
   'http_request', 'dns_lookup', 'port_scan', 'tcp_send', 'udp_send',
   // 子智能体
   'call_agent', 'list_sub_agents',
+  // 模型查询（列出可用平台/模型/能力/描述，供选型与 call_agent 指定模型）
+  'list_models',
   // 用户交互
   'ask_user', 'confirm_user',
   // 任务规划
@@ -632,7 +654,15 @@ const DEFAULT_AGENT_SYSTEM_PROMPT = `你是一个 ReAct（推理-行动）智能
 - 用中文回复，代码需标注语言
 - 回复简洁有效，不输出无关内容
 
-` + WEB_QUERY_PROMPT_BLOCK;
+【子智能体与浏览器工具约束】
+- call_agent 返回结果后，基于该结果直接总结/回答用户，禁止用相同或原始任务重复派发子智能体（重复派发 = 白跑一遍且结果相同）。只有任务目标发生变化时才再次委派。
+- 浏览器操作优先委托子智能体（pageAgent）完成；如需自己调用 browser_* 工具，先 browser_get_page_content 获取编号元素列表再用 index 定位。
+
+【模型选型】
+- 任务需要特定模型能力（图片/视频生成、视觉识别、深度推理、长上下文等）时，先调 list_models 查询可用平台/模型及其 type/capabilities/description，再在 call_agent 里传 platformId + modelId 指定子智能体用哪个模型；不指定则子智能体用自身配置或主智能体当前模型。
+- 普通对话/文本任务没必要频繁 list_models，仅当"模型能力与任务不匹配"时才查询选型。
+
+` + WEB_QUERY_PROMPT_BLOCK + '\n\n' + DATA_QUERY_PROMPT_BLOCK;
 const PAGE_AGENT_SYSTEM_PROMPT = `你是一个浏览器自动化专家（pageAgent）。你通过调用浏览器工具操作一个真实的、可见的浏览器窗口（预览面板），用户能实时看到你的每一步操作。
 
 工具（仅以下六个，其他浏览器工具不可用）：
@@ -657,8 +687,9 @@ const PAGE_AGENT_SYSTEM_PROMPT = `你是一个浏览器自动化专家（pageAge
 1. 每到一个新页面或弹窗出现后，先 browser_get_page_content 获取带编号（index）的可交互元素列表，已穿透 iframe/Shadow DOM（含登录弹窗内的元素）。
 2. 用列表中的 index 直接调用 browser_click / browser_type（传 index 参数）操作目标元素。不要猜动态 hash class 选择器（如 input-xrB84C），不要凭截图猜坐标。
 3. 若 selector 匹配到多个元素，工具会返回 ambiguous 和候选列表（带编号），从中选一个 index 重试。
-4. 页面变化后 index 会失效，重新调用 browser_get_page_content 刷新编号列表。
-5. 每次 click/type 的返回包含 pageChanged / urlChanged / noChangeStreak：noChangeStreak ≥ 3 时会收到 warning，必须停止重复同类操作，改换定位方式（重新 get_page_content 分析）或 ask_user 请求人工介入。
+4. 页面变化后 index 会失效，工具会自动尝试用内部 selector 重定位一次（返回 autoRelocated）；仍未命中才需重新 browser_get_page_content 刷新编号列表。
+5. 视觉兜底：DOM 拿不到弹窗/portal 结构、或 index 反复失效时，用 browser_screenshot(annotate=true) 截图叠加元素编号框，结合编号定位；截图里看不清再用 browser_visual_locate + image_analyze 识别目标坐标。
+6. 每次 click/type 的返回包含 pageChanged / urlChanged / noChangeStreak：noChangeStreak ≥ 3 时会收到 warning，必须停止重复同类操作，改换定位方式（重新 get_page_content 分析）或 ask_user 请求人工介入。
 
 【登录与人工干预】
 - 检测到需要登录/扫码/验证码等人工干预场景时，用 ask_user 让用户在浏览器面板中完成，等用户确认后用 browser_get_page_content 复核状态，再继续任务；不要把"需要登录"当结论直接返回给父智能体。
@@ -668,7 +699,12 @@ const PAGE_AGENT_SYSTEM_PROMPT = `你是一个浏览器自动化专家（pageAge
 - 同一工具 + 相同参数连续调用 2 次结果不变 → 立即停止重试，换其他工具或向父智能体返回已有结果。
 - 读页工具连续 3 次无法拿到目标信息 → 停止盲试，直接返回已获取的部分结果并说明缺失原因。
 - 任务要求提取搜索结果/链接列表时，只用 browser_get_page_content 的输出提取（配合 browser_scroll 翻看视口外内容），不要反复换参数重试。
-- 定位优先级：browser_get_page_content 获取编号列表 → index 参数定位（首选）→ 稳定 id / ARIA / :contains(可见文本) 选择器 → 坐标（最后手段）。
+- 读页工具分工（按"你需要什么"选，不要为同一页重复调用多个）：
+  · browser_get_page_content —— 内容 + 操作目标：标题/正文 + 带编号的可交互元素（含 index、selector、type、name）。找"点哪里、往哪输入"用它，操作后重新观察结果也用它。
+  · browser_get_page_info —— 元素坐标：同样的编号元素，但额外给 x/y/w/h。需要按坐标点击、判断元素是否在视口内/被遮挡/需滚动、配合 browser_screenshot(annotate=true) 叠加编号框时才用它。
+  · browser_get_dom —— 父子层级树：需要看清元素归属、弹窗/portal 挂在哪个容器下时用；只要操作目标时不必调它。
+  · browser_get_visible_text —— 纯正文：只读内容、抽取长文时用，输出最小。
+- 定位元素优先级：取编号列表 → index 定位（最稳，不依赖页面结构）→ 稳定 id / ARIA / :contains(可见文本) 选择器 → 坐标（最后手段）。
 - 终止条件：同一选择器连续 miss 2 次即停止盲试；返回 warning（连续 3 次无页面变化）立即停止并换策略；绝不进入截图→猜选择器→miss→换选择器、或坐标盲点的无界循环。`;
 // 数据查询智能体挂载：本体语义层取数工具链 + 分析/交付底座。
 // api_* 由后端直查执行（mcp/api-tool-executor.ts），其余为核心内置工具。
@@ -722,7 +758,7 @@ const DATA_AGENT_SYSTEM_PROMPT = `你是「数据查询分析专家」。你通�
 - **字段只能引用本体已声明的维度/度量/时间维度/过滤器**，报「字段不存在」时按报错里的可用字段改名重试，最多 2 次；连续 2 次取数失败就停下如实说明原因与已尝试的本体 code。
 - 结果可能截断：关注 truncated 标记，必要时加过滤器缩小范围或翻页。`;
 
-const seedAgents: Array<Record<string, unknown>> = [
+export const seedAgents: Array<Record<string, unknown>> = [
   {
     id: 'a_default_assistant',
     name: 'AI 助手',
@@ -768,8 +804,9 @@ for (const a of seedAgents) {
     const has = db.prepare('SELECT id FROM agent WHERE id = ?').get(a.id as string);
     if (has) {
       // 已存在：普通种子仅补空（避免覆盖用户后续编辑）；
-      // force_sync（内置 pageAgent）：工具/提示词/步数配置以代码为准强制同步。
-      if (a.force_sync) {
+      // force_sync（内置 pageAgent/dataAgent）：工具/提示词/步数配置以代码为准强制同步。
+      // 受 BUILTIN_OVERWRITE_MODE 控制：mode='never' 时彻底不覆盖用户改动。
+      if (a.force_sync && overwriteEnabled) {
         db.prepare(
           'UPDATE agent SET is_public = 1, is_builtin = ?, user_id = COALESCE(user_id, ?), builtin_tool_ids = ?, sub_agent_ids = ?, skill_ids = ?, type = ?, system_prompt = ?, config_json = ? WHERE id = ?'
         ).run(a.is_builtin || 0, 'guest', a.builtin_tool_ids as string, (a.sub_agent_ids as string) || '[]', (a.skill_ids as string) || '[]', a.type as string, a.system_prompt as string, (a.config_json as string) || null, a.id as string);
@@ -1001,13 +1038,18 @@ try {
       '自动化', 'yan-zhi', 1, 0, 'builtin', Date.now(),
     );
   } else {
-    // 内置 skill 属产品定义：文档与工具收口（六件套）保持同步，覆盖旧版残留
-    db.prepare("UPDATE skill SET body = ?, description = ?, triggers_json = ?, source = 'builtin' WHERE id = ?").run(
-      `# 网站自动化任务\n\n用内置 pageAgent 驱动真实浏览器（预览面板）完成网站操作任务。pageAgent 仅挂载六件套工具：browser_navigate / browser_type / browser_click / browser_scroll / browser_get_page_content / ask_user，其余浏览器工具（get_dom/fill_form/search/翻页等）不可用。配合「定时任务」可每日自动执行。\n\n## 流程\n1. 委派 pageAgent：call_agent { agentId: "a_builtin_page_agent", input: "<任务描述：目标站点 + 要执行的操作/要提取的信息>" }\n   - browser_navigate 打开目标站点\n   - browser_get_page_content 获取页面正文 + 带编号（index）可交互元素列表\n   - 需要登录时 pageAgent 会 ask_user 请用户在浏览器面板完成（扫码/验证码），确认后复核\n   - 用 index 定位：browser_type 输入 / browser_click 点击，browser_scroll 翻看视口外内容\n   - browser_get_page_content 提取最终结果并返回摘要\n2. 周期任务：创建 scheduled_task（cron + prompt + 绑定默认助理）\n\n## 示例\n- 每日签到：browser_navigate → browser_get_page_content 找签到入口 → browser_click → browser_get_page_content 确认积分\n- 搜索并提取结果：browser_navigate 搜索页 → browser_type 关键词回车 → browser_get_page_content + browser_scroll 提取结果列表\n\n详见 .claude/skills/web-task-automation/SKILL.md`,
-      '用 pageAgent 驱动浏览器完成登录、签到、领积分、搜索、提取内容等网站自动化任务，可配合定时任务每日执行。',
-      JSON.stringify(['每日签到', '自动登录', '领取积分', '网站自动化']),
-      skillId,
-    );
+    // 内置 skill 属产品定义：文档与工具收口（六件套）保持同步，覆盖旧版残留。
+    // 受 BUILTIN_OVERWRITE_MODE 控制：mode='never' 时只标记内置来源，不覆盖用户改动的 body/描述/触发词。
+    if (overwriteEnabled) {
+      db.prepare("UPDATE skill SET body = ?, description = ?, triggers_json = ?, source = 'builtin' WHERE id = ?").run(
+        `# 网站自动化任务\n\n用内置 pageAgent 驱动真实浏览器（预览面板）完成网站操作任务。pageAgent 仅挂载六件套工具：browser_navigate / browser_type / browser_click / browser_scroll / browser_get_page_content / ask_user，其余浏览器工具（get_dom/fill_form/search/翻页等）不可用。配合「定时任务」可每日自动执行。\n\n## 流程\n1. 委派 pageAgent：call_agent { agentId: "a_builtin_page_agent", input: "<任务描述：目标站点 + 要执行的操作/要提取的信息>" }\n   - browser_navigate 打开目标站点\n   - browser_get_page_content 获取页面正文 + 带编号（index）可交互元素列表\n   - 需要登录时 pageAgent 会 ask_user 请用户在浏览器面板完成（扫码/验证码），确认后复核\n   - 用 index 定位：browser_type 输入 / browser_click 点击，browser_scroll 翻看视口外内容\n   - browser_get_page_content 提取最终结果并返回摘要\n2. 周期任务：创建 scheduled_task（cron + prompt + 绑定默认助理）\n\n## 示例\n- 每日签到：browser_navigate → browser_get_page_content 找签到入口 → browser_click → browser_get_page_content 确认积分\n- 搜索并提取结果：browser_navigate 搜索页 → browser_type 关键词回车 → browser_get_page_content + browser_scroll 提取结果列表\n\n详见 .claude/skills/web-task-automation/SKILL.md`,
+        '用 pageAgent 驱动浏览器完成登录、签到、领积分、搜索、提取内容等网站自动化任务，可配合定时任务每日执行。',
+        JSON.stringify(['每日签到', '自动登录', '领取积分', '网站自动化']),
+        skillId,
+      );
+    } else {
+      db.prepare("UPDATE skill SET source = 'builtin' WHERE id = ?").run(skillId);
+    }
   }
 } catch {}
 
@@ -1026,20 +1068,23 @@ try {
       '自动化', 'yan-zhi', 1, 0, 'builtin', Date.now(),
     );
   } else {
-    // 内置 skill 属产品定义：pageAgent 收口六件套后，登录/操作指引随委派 input 下发，覆盖旧版残留
-    db.prepare("UPDATE skill SET body = ?, description = ?, source = 'builtin' WHERE id = ?").run(
-      `# 即梦每日签到领灵感值\n\n自动登录即梦（jimeng.jianying.com）完成每日签到，领取灵感值/积分。配合定时任务可每日自动执行。\n\n## ⚠️ 业务约束（随委派 input 传给 pageAgent）\n- 目标站固定 https://jimeng.jianying.com/，禁止访问 dreamina.ai 等国际版。\n- 登录只走扫码（pageAgent 会 ask_user），禁止代填手机号/验证码。\n- 登录态由 persist:browser-view partition 持久化，首次扫码后复用。\n- 已知稳定选择器：即梦"领积分"入口 #SiderMenuCredit。\n\n## 委派流程\n1. call_agent { agentId: "a_builtin_page_agent", input: "打开 https://jimeng.jianying.com/ 并检查登录状态（有头像=已登录）；未登录则 ask_user 提示用户在浏览器面板扫码登录，用户确认后用 browser_get_page_content 复核；进入'领积分'入口（#SiderMenuCredit），找到'签到/打卡/领灵感'按钮点击签到，用 browser_get_page_content 确认结果并返回摘要。目标站固定 jimeng.jianying.com，禁止访问国际版，禁止代填验证码。" }\n2. 周期任务：scheduled_task cron "0 9 * * *" + prompt "登录即梦签到领灵感值"\n\n详见 .claude/skills/jimeng-daily-checkin/SKILL.md`,
-      '每天自动登录即梦（Dreamina，字节跳动 AI 创作平台）并签到领取灵感值/积分。即梦用抖音扫码登录，首次需手动扫码，之后配合定时任务每日自动签到。',
-      skillId,
-    );
+    // 内置 skill 属产品定义：pageAgent 收口六件套后，登录/操作指引随委派 input 下发，覆盖旧版残留。
+    // 受 BUILTIN_OVERWRITE_MODE 控制：mode='never' 时只标记内置来源，不覆盖用户改动。
+    if (overwriteEnabled) {
+      db.prepare("UPDATE skill SET body = ?, description = ?, source = 'builtin' WHERE id = ?").run(
+        `# 即梦每日签到领灵感值\n\n自动登录即梦（jimeng.jianying.com）完成每日签到，领取灵感值/积分。配合定时任务可每日自动执行。\n\n## ⚠️ 业务约束（随委派 input 传给 pageAgent）\n- 目标站固定 https://jimeng.jianying.com/，禁止访问 dreamina.ai 等国际版。\n- 登录只走扫码（pageAgent 会 ask_user），禁止代填手机号/验证码。\n- 登录态由 persist:browser-view partition 持久化，首次扫码后复用。\n- 已知稳定选择器：即梦"领积分"入口 #SiderMenuCredit。\n\n## 委派流程\n1. call_agent { agentId: "a_builtin_page_agent", input: "打开 https://jimeng.jianying.com/ 并检查登录状态（有头像=已登录）；未登录则 ask_user 提示用户在浏览器面板扫码登录，用户确认后用 browser_get_page_content 复核；进入'领积分'入口（#SiderMenuCredit），找到'签到/打卡/领灵感'按钮点击签到，用 browser_get_page_content 确认结果并返回摘要。目标站固定 jimeng.jianying.com，禁止访问国际版，禁止代填验证码。" }\n2. 周期任务：scheduled_task cron "0 9 * * *" + prompt "登录即梦签到领灵感值"\n\n详见 .claude/skills/jimeng-daily-checkin/SKILL.md`,
+        '每天自动登录即梦（Dreamina，字节跳动 AI 创作平台）并签到领取灵感值/积分。即梦用抖音扫码登录，首次需手动扫码，之后配合定时任务每日自动签到。',
+        skillId,
+      );
+    } else {
+      db.prepare("UPDATE skill SET source = 'builtin' WHERE id = ?").run(skillId);
+    }
   }
 } catch {}
 
 // 预置内置 skill：本体取数与分析 —— 数据查询分析助理的「教材」：解释本体工具链/YAML 含义/SQL 生成/脚本桥接
-try {
-  const skillId = 'skill_ontology_query';
-  const ONTOLOGY_QUERY_DESC = '解释本体（语义层）工具链与 YAML 字段含义，指导按「总览→简略→详情→采值→取数」标准流程查询数据，含 SQL 生成规范与 js_exec 脚本桥接（dataQuery）用法。';
-  const ONTOLOGY_QUERY_BODY = `# 本体取数与分析指南
+const ONTOLOGY_QUERY_DESC = '解释本体（语义层）工具链与 YAML 字段含义，指导按「总览→简略→详情→采值→取数」标准流程查询数据，含 SQL 生成规范与 js_exec 脚本桥接（dataQuery）用法。';
+const ONTOLOGY_QUERY_BODY = `# 本体取数与分析指南
 
 本 skill 是「数据查询分析专家」的操作教材：解释本体工具的作用、本体 YAML 各字段含义，以及如何生成 SQL / 脚本取数。
 
@@ -1092,6 +1137,8 @@ return { top: top, total: a.rowCount };
 - 过滤器的值先 api_ontology_values 采样，禁止编造取值
 - 结果注明口径：本体 code + 过滤器 + 时间范围 + 行数`;
 
+try {
+  const skillId = 'skill_ontology_query';
   const hasSkill = db.prepare('SELECT id FROM skill WHERE id = ?').get(skillId);
   if (!hasSkill) {
     db.prepare(
@@ -1104,22 +1151,26 @@ return { top: top, total: a.rowCount };
       '数据分析', 'yan-zhi', 1, 0, 'builtin', Date.now(),
     );
   } else {
-    // 内置 skill 属产品定义：文档随工具链演进，覆盖旧版残留
-    db.prepare("UPDATE skill SET body = ?, description = ?, category = '数据分析', source = 'builtin' WHERE id = ?").run(
-      ONTOLOGY_QUERY_BODY, ONTOLOGY_QUERY_DESC, skillId,
-    );
+    // 内置 skill 属产品定义：文档随工具链演进，覆盖旧版残留。mode='never' 时只标记来源不覆盖。
+    if (overwriteEnabled) {
+      db.prepare("UPDATE skill SET body = ?, description = ?, category = '数据分析', source = 'builtin' WHERE id = ?").run(
+        ONTOLOGY_QUERY_BODY, ONTOLOGY_QUERY_DESC, skillId,
+      );
+    } else {
+      db.prepare("UPDATE skill SET source = 'builtin' WHERE id = ?").run(skillId);
+    }
   }
 } catch {}
 
 // 预置内置 skill：文档处理 / 代码安全 / 清华 AIR 开源（批量 upsert）
-try {
-  const builtinSkills = [
-    {
-      id: 'skill_pptx_creation', name: 'PPT 制作', category: '文档处理',
-      description: '创建、编辑、解析 PowerPoint 演示文稿（.pptx）。通过 python-pptx 生成专业幻灯片，支持自定义布局、图表、图片、表格、演讲者备注。',
-      triggers: ['做PPT', '制作幻灯片', '生成演示文稿', '解析PPT', 'PPT制作', 'presentation'],
-      body: `# PPT 制作与编辑\n\n用 python-pptx 创建、编辑、解析 PowerPoint 演示文稿，通过 shell 执行 Python 脚本生成 .pptx。\n\n## 依赖\n\`\`\`bash\npip install python-pptx Pillow\n\`\`\`\n\n## 流程\n1. 理解需求：主题、页数、每页内容、风格\n2. 编写 python-pptx 脚本（标题页 + 内容页 + 图表/图片）\n3. shell 执行脚本生成 .pptx\n4. 回报文件路径\n\n## 设计要点\n- 配色与主题相关，深色背景配浅色文字\n- 每页有视觉元素（图片/图表/色块），避免纯文字\n- 标题 36-44pt，正文 14-16pt\n- 坐标用 Inches()，颜色用 RGBColor(r,g,b)\n\n详见 .claude/skills/pptx-creation/SKILL.md`,
-    },
+// 提升为模块级常量：seed 循环与「恢复默认」reset 接口共用同一份默认定义（数据单一来源）。
+export const builtinSkillDefaults: Array<{ id: string; name: string; category: string; description: string; triggers: string[]; body: string }> = [
+  {
+    id: 'skill_pptx_creation', name: 'PPT 制作', category: '文档处理',
+    description: '创建、编辑、解析 PowerPoint 演示文稿（.pptx）。通过 python-pptx 生成专业幻灯片，支持自定义布局、图表、图片、表格、演讲者备注。',
+    triggers: ['做PPT', '制作幻灯片', '生成演示文稿', '解析PPT', 'PPT制作', 'presentation'],
+    body: `# PPT 制作与编辑\n\n用 python-pptx 创建、编辑、解析 PowerPoint 演示文稿，通过 shell 执行 Python 脚本生成 .pptx。\n\n## 依赖\n\`\`\`bash\npip install python-pptx Pillow\n\`\`\`\n\n## 流程\n1. 理解需求：主题、页数、每页内容、风格\n2. 编写 python-pptx 脚本（标题页 + 内容页 + 图表/图片）\n3. shell 执行脚本生成 .pptx\n4. 回报文件路径\n\n## 设计要点\n- 配色与主题相关，深色背景配浅色文字\n- 每页有视觉元素（图片/图表/色块），避免纯文字\n- 标题 36-44pt，正文 14-16pt\n- 坐标用 Inches()，颜色用 RGBColor(r,g,b)\n\n详见 .claude/skills/pptx-creation/SKILL.md`,
+  },
     {
       id: 'skill_docx_processing', name: 'Word 文档处理', category: '文档处理',
       description: '创建、编辑、解析 Word 文档（.docx）。通过 python-docx 生成带格式文档，支持标题、目录、表格、图片、页眉页脚、样式。',
@@ -1288,12 +1339,15 @@ try {
       triggers: ['openspec实施', '实施变更', 'apply change', 'openspec apply', '继续实施'],
       body: `# OpenSpec 实施变更（apply）\n\n按变更的 tasks 开始/继续实施。\n\n## 流程\n读取变更 tasks → 逐项实现 → 标记完成\n\n详见 .claude/skills/openspec-apply-change/SKILL.md`,
     },
-  ];
+];
+
+// 批量 upsert 内置 skill：仅插入缺项 + 标记 source='builtin'，不覆盖用户改动的 body。
+try {
   const insertStmt = db.prepare(
     'INSERT INTO skill (id, user_id, name, description, triggers_json, body, category, author, enabled, installs, source, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
   );
   const updateStmt = db.prepare("UPDATE skill SET source = 'builtin' WHERE id = ?");
-  for (const s of builtinSkills) {
+  for (const s of builtinSkillDefaults) {
     try {
       const has = db.prepare('SELECT id FROM skill WHERE id = ?').get(s.id);
       if (!has) {
@@ -1570,5 +1624,83 @@ try {
     console.log(`[db] 回填选择列 ${blank.length} 条本体`);
   }
 } catch {}
+
+// ===== 内置数据「恢复默认」 =====
+// 用户改过内置 agent 提示词 / skill 文档后，可一键恢复成代码内置默认值。
+// 默认来源：agent 用 seedAgents，批量 skill 用 builtinSkillDefaults；3 个单独 skill 见下方内联。
+
+/** 3 个单独内置 skill 的默认定义（与 seed 保持一致的单一来源，供 reset 恢复） */
+const STANDALONE_SKILL_DEFAULTS: Record<string, { name: string; description: string; triggers: string[]; body: string; category: string }> = {
+  skill_web_task_automation: {
+    name: '网站自动化任务',
+    category: '自动化',
+    description: '用 pageAgent 驱动浏览器完成登录、签到、领积分、填表单、搜索、翻页、提交、制作内容等网站自动化任务，支持用已存密码自动登录，可配合定时任务每日执行。',
+    triggers: ['每日签到', '自动登录', '领取积分', '制作视频', '填写表单', '网站自动化'],
+    body: `# 网站自动化任务\n\n用内置 pageAgent 驱动真实浏览器（预览面板）完成网站操作任务。pageAgent 仅挂载六件套工具：browser_navigate / browser_type / browser_click / browser_scroll / browser_get_page_content / ask_user，其余浏览器工具（get_dom/fill_form/search/翻页等）不可用。配合「定时任务」可每日自动执行。\n\n## 流程\n1. 委派 pageAgent：call_agent { agentId: "a_builtin_page_agent", input: "<任务描述：目标站点 + 要执行的操作/要提取的信息>" }\n   - browser_navigate 打开目标站点\n   - browser_get_page_content 获取页面正文 + 带编号（index）可交互元素列表\n   - 需要登录时 pageAgent 会 ask_user 请用户在浏览器面板完成（扫码/验证码），确认后复核\n   - 用 index 定位：browser_type 输入 / browser_click 点击，browser_scroll 翻看视口外内容\n   - browser_get_page_content 提取最终结果并返回摘要\n2. 周期任务：创建 scheduled_task（cron + prompt + 绑定默认助理）\n\n## 示例\n- 每日签到：browser_navigate → browser_get_page_content 找签到入口 → browser_click → browser_get_page_content 确认积分\n- 搜索并提取结果：browser_navigate 搜索页 → browser_type 关键词回车 → browser_get_page_content + browser_scroll 提取结果列表\n\n详见 .claude/skills/web-task-automation/SKILL.md`,
+  },
+  skill_jimeng_daily_checkin: {
+    name: '即梦每日签到',
+    category: '自动化',
+    description: '每天自动登录即梦（Dreamina，字节跳动 AI 创作平台）并签到领取灵感值/积分。即梦用抖音扫码登录，首次需手动扫码，之后配合定时任务每日自动签到。',
+    triggers: ['即梦签到', '即梦每天签到', '即梦领积分', '即梦灵感值', 'Dreamina签到', '每日签到'],
+    body: `# 即梦每日签到领灵感值\n\n自动登录即梦（jimeng.jianying.com）完成每日签到，领取灵感值/积分。配合定时任务可每日自动执行。\n\n## ⚠️ 业务约束（随委派 input 传给 pageAgent）\n- 目标站固定 https://jimeng.jianying.com/，禁止访问 dreamina.ai 等国际版。\n- 登录只走扫码（pageAgent 会 ask_user），禁止代填手机号/验证码。\n- 登录态由 persist:browser-view partition 持久化，首次扫码后复用。\n- 已知稳定选择器：即梦"领积分"入口 #SiderMenuCredit。\n\n## 委派流程\n1. call_agent { agentId: "a_builtin_page_agent", input: "打开 https://jimeng.jianying.com/ 并检查登录状态（有头像=已登录）；未登录则 ask_user 提示用户在浏览器面板扫码登录，用户确认后用 browser_get_page_content 复核；进入'领积分'入口（#SiderMenuCredit），找到'签到/打卡/领灵感'按钮点击签到，用 browser_get_page_content 确认结果并返回摘要。目标站固定 jimeng.jianying.com，禁止访问国际版，禁止代填验证码。" }\n2. 周期任务：scheduled_task cron "0 9 * * *" + prompt "登录即梦签到领灵感值"\n\n详见 .claude/skills/jimeng-daily-checkin/SKILL.md`,
+  },
+  skill_ontology_query: {
+    name: '本体取数与分析',
+    category: '数据分析',
+    description: ONTOLOGY_QUERY_DESC,
+    triggers: ['本体', '本体查询', '数据查询', '查库', 'YAML含义', '怎么查数据', 'text2sql'],
+    body: ONTOLOGY_QUERY_BODY,
+  },
+};
+
+/** 恢复内置 agent 默认值（system_prompt / 工具挂载 / 子智能体 / skill / config）。
+ *  返回 true=已恢复，false=非内置或不存在。 */
+export function resetBuiltinAgent(agentId: string): boolean {
+  const seed = seedAgents.find((a) => a.id === agentId);
+  if (!seed) return false;
+  const row = db.prepare('SELECT id FROM agent WHERE id = ?').get(agentId);
+  if (!row) return false;
+  db.prepare(
+    'UPDATE agent SET system_prompt = ?, builtin_tool_ids = ?, sub_agent_ids = ?, skill_ids = ?, config_json = ?, type = ?, is_builtin = ?, is_public = 1 WHERE id = ?'
+  ).run(
+    seed.system_prompt as string,
+    (seed.builtin_tool_ids as string) || '[]',
+    (seed.sub_agent_ids as string) || '[]',
+    (seed.skill_ids as string) || '[]',
+    (seed.config_json as string) || null,
+    (seed.type as string) || 'harness',
+    (seed.is_builtin as number) || 0,
+    agentId,
+  );
+  return true;
+}
+
+/** 恢复内置 skill 默认值（name/description/triggers/body/category）。
+ *  返回 true=已恢复，false=非内置或不存在。 */
+export function resetBuiltinSkill(skillId: string): boolean {
+  const row = db.prepare('SELECT id FROM skill WHERE id = ?').get(skillId);
+  if (!row) return false;
+
+  // 3 个单独内置 skill（有覆盖语义的专用 skill）
+  const standalone = (STANDALONE_SKILL_DEFAULTS as Record<string, any>)[skillId];
+  if (standalone) {
+    db.prepare("UPDATE skill SET name = ?, description = ?, triggers_json = ?, body = ?, category = ?, source = 'builtin' WHERE id = ?").run(
+      standalone.name, standalone.description, JSON.stringify(standalone.triggers), standalone.body, standalone.category, skillId,
+    );
+    return true;
+  }
+
+  // 批量内置 skill
+  const batch = builtinSkillDefaults.find((s) => s.id === skillId);
+  if (batch) {
+    db.prepare("UPDATE skill SET name = ?, description = ?, triggers_json = ?, body = ?, category = ?, source = 'builtin' WHERE id = ?").run(
+      batch.name, batch.description, JSON.stringify(batch.triggers), batch.body, batch.category, skillId,
+    );
+    return true;
+  }
+
+  return false;
+}
 
 export { db };

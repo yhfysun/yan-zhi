@@ -189,7 +189,7 @@ function startServer() {
       serverProcess = spawn(process.execPath, [tsxPath, 'src/index.ts'], {
         cwd: serverDir,
         stdio: 'inherit',
-        env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: 'http://127.0.0.1:' + CDP_PORT },
+        env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: 'http://127.0.0.1:' + CDP_PORT, WEB_DIST: path.join(__dirname, '..', '..', 'apps', 'web', 'dist') },
       });
     } else {
       // 回退：npx tsx（可能 ABI 不兼容，但至少能启动）
@@ -198,7 +198,7 @@ function startServer() {
         cwd: serverDir,
         stdio: 'inherit',
         shell: true,
-        env: { ...process.env, YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: 'http://127.0.0.1:' + CDP_PORT },
+        env: { ...process.env, YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: 'http://127.0.0.1:' + CDP_PORT, WEB_DIST: path.join(__dirname, '..', '..', 'apps', 'web', 'dist') },
       });
     }
     serverProcess.on('error', (err) => console.error('后端启动失败:', err));
@@ -214,7 +214,7 @@ function startServer() {
     logStream.write(`\n===== [${stamp()}] 后端启动 =====\n`);
     serverProcess = spawn(process.execPath, [serverPath], {
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: 'http://127.0.0.1:' + CDP_PORT, ...(dataDir ? { DATA_DIR: dataDir } : {}) },
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: 'http://127.0.0.1:' + CDP_PORT, WEB_DIST: path.join(process.resourcesPath, 'server', 'web-dist'), ...(dataDir ? { DATA_DIR: dataDir } : {}) },
     });
     serverProcess.stdout.on('data', (d) => logStream.write(d));
     serverProcess.stderr.on('data', (d) => logStream.write(d));
@@ -1624,10 +1624,12 @@ async function injectYzAssistant(wc) {
     }
     // 元素注册表：可交互元素编号（index），供 click/type 直接按编号定位
     if(!window.__yzElements)window.__yzElements=[];
+    if(!window.__yzSelMap)window.__yzSelMap={};
     function register(el){
       if(el&&el.__yzIndex!=null&&window.__yzElements[el.__yzIndex]===el)return el.__yzIndex;
       var i=window.__yzElements.push(el)-1;
       try{el.__yzIndex=i;}catch(e){/* 跨域对象不可挂属性时忽略 */}
+      var sel=genSel(el);if(sel)window.__yzSelMap[i]=sel;
       return i;
     }
     // 解析选择器为元素数组（:contains 伪选择器返回全部匹配）
@@ -1761,6 +1763,11 @@ ipcMain.handle('browserView:action', async (_e, tabId, action, args) => {
           function notFound(sel){return{error:'元素未找到: '+sel,hint:'建议先调用 browser_get_page_info 获取编号元素列表，再用 index 参数定位'};}
           if(a.index!=null){
             var el=window.__yzElements&&window.__yzElements[a.index];
+            // 自动降级：index 失效时用注册时记录的 selector 快照重定位一次，避免多一次 get_page_info 往返
+            if((!el||!el.isConnected)&&window.__yzSelMap&&window.__yzSelMap[a.index]){
+              var snap=window.__yzSelMap[a.index];
+              var f=document.querySelector(snap);if(f){el=f;el.__yzIndex=a.index;window.__yzElements[a.index]=el;}
+            }
             if(!el||!el.isConnected)return{error:'index '+a.index+' 已失效（页面已变化）。请重新调用 browser_get_page_info / browser_get_dom 获取最新编号列表。'};
             return clickEl(el).then(function(r){r.index=a.index;return r;});
           }
@@ -1790,6 +1797,10 @@ ipcMain.handle('browserView:action', async (_e, tabId, action, args) => {
           }
           if(a.index!=null){
             var el=window.__yzElements&&window.__yzElements[a.index];
+            if((!el||!el.isConnected)&&window.__yzSelMap&&window.__yzSelMap[a.index]){
+              var snap=window.__yzSelMap[a.index];
+              var f=document.querySelector(snap);if(f){el=f;el.__yzIndex=a.index;window.__yzElements[a.index]=el;}
+            }
             if(!el||!el.isConnected)return{error:'index '+a.index+' 已失效（页面已变化）。请重新调用 browser_get_page_info / browser_get_dom 获取最新编号列表。'};
             return typeEl(el);
           }
@@ -1856,6 +1867,39 @@ ipcMain.handle('browserView:action', async (_e, tabId, action, args) => {
         })()`);
       }
       case 'screenshot': {
+        if (args.annotate) {
+          // 元素标注截图：注入覆盖层画编号框（与 server Playwright 端对齐），截图后移除
+          const overlayId = '__yz_annotate_overlay';
+          await wc.executeJavaScript(`(function(){
+            var oid=${JSON.stringify(overlayId)};
+            var prev=document.getElementById(oid);if(prev)prev.remove();
+            var A=window.__yzAssistant;if(!A)return false;
+            var S='a,button,input,select,textarea,[role=button],[role=link],[role=checkbox],[role=radio],[onclick],[tabindex]';
+            var ov=document.createElement('div');ov.id=oid;
+            ov.style.cssText='position:fixed;inset:0;pointer-events:none;z-index:2147483647;';
+            function visible(el){var r=el.getBoundingClientRect();return r.width>=2&&r.height>=2&&r.top>=0&&r.left>=0&&r.bottom<=window.innerHeight&&r.right<=window.innerWidth;}
+            function paint(root){
+              var found;try{found=root.querySelectorAll(S);}catch(e){return;}
+              for(var i=0;i<found.length;i++){var el=found[i];if(!visible(el))continue;
+                var idx=A.register(el);var r=el.getBoundingClientRect();
+                var b=document.createElement('div');
+                b.style.cssText='position:fixed;left:'+r.left+'px;top:'+r.top+'px;width:'+r.width+'px;height:'+r.height+'px;border:2px solid #f97316;box-sizing:border-box;';
+                var t=document.createElement('span');t.textContent=idx;
+                t.style.cssText='position:fixed;left:'+r.left+'px;top:'+Math.max(0,r.top-18)+'px;background:#f97316;color:#fff;font:bold 12px/16px sans-serif;padding:0 5px;border-radius:2px;';
+                ov.appendChild(b);ov.appendChild(t);
+              }
+              if(root.shadowRoot)paint(root.shadowRoot);
+              var all;try{all=root.querySelectorAll('*');}catch(e){return;}
+              for(var j=0;j<all.length;j++){var n=all[j];if(n.tagName==='IFRAME'){try{var cd=n.contentDocument;if(cd)paint(cd.body);}catch(e){}}}
+            }
+            paint(document.documentElement);
+            document.documentElement.appendChild(ov);
+            return true;
+          })()`);
+          const image = await wc.capturePage();
+          await wc.executeJavaScript(`(function(){var p=document.getElementById(${JSON.stringify(overlayId)});if(p)p.remove();})()`).catch(() => {});
+          return { base64: image.toDataURL().split(',')[1], annotated: true };
+        }
         const image = await wc.capturePage();
         return { base64: image.toDataURL().split(',')[1] };
       }
@@ -2349,37 +2393,6 @@ ipcMain.handle('browserView:action', async (_e, tabId, action, args) => {
         }
         await wc.sendInputEvent({ type: 'mouseButtonUp', button: 'left', x: from.to.x, y: from.to.y });
         return { dragged: true, from: from.from, to: from.to };
-      }
-      // ========== C14 Accessibility Tree（桌面端遍历 DOM aria 角色构建） ==========
-      case 'get_a11y_tree': {
-        const maxNodes = args.maxNodes || 200;
-        return await wc.executeJavaScript(`(function(){
-          var maxNodes=${maxNodes};var count=0;
-          var roleMap={'a':'link','button':'button','input':'textbox','select':'listbox','textarea':'textbox','img':'img','h1':'heading','h2':'heading','h3':'heading','h4':'heading','h5':'heading','h6':'heading','ul':'list','ol':'list','li':'listitem','table':'table','nav':'navigation','form':'form','dialog':'dialog','section':'region','article':'article','main':'main','header':'banner','footer':'contentinfo'};
-          function build(el){
-            if(count>=maxNodes)return null;
-            if(!el||el.nodeType!==1)return null;
-            var st=getComputedStyle(el);
-            if(st.display==='none'||st.visibility==='hidden')return null;
-            var role=el.getAttribute('role')||roleMap[el.tagName.toLowerCase()]||'';
-            var name=(el.getAttribute('aria-label')||'').trim();
-            if(!name){var txt=(el.textContent||'').trim();if(txt&&txt.length<80)name=txt;}
-            var value='';
-            if(el.tagName==='INPUT'||el.tagName==='TEXTAREA')value=String(el.value||'');
-            if(!role&&!name&&!value)return null;
-            count++;
-            var node={role:role};
-            if(name)node.name=name.slice(0,80);
-            if(value)node.value=value.slice(0,80);
-            if(el.getAttribute('aria-checked'))node.checked=el.getAttribute('aria-checked')==='true';
-            var kids=[];
-            for(var i=0;i<el.children.length;i++){var k=build(el.children[i]);if(k)kids.push(k);}
-            if(kids.length)node.children=kids;
-            return node;
-          }
-          var tree=build(document.body);
-          return{tree:tree,nodeCount:count};
-        })()`);
       }
       default:
         return { error: '未知操作: ' + action };
