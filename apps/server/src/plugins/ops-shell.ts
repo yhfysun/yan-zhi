@@ -17,6 +17,7 @@ export const opsShellManifest: PluginManifest = {
   id: OPS_SHELL_ID,
   name: '运维',
   version: '0.1.0',
+  category: '操作',
   description:
     '连接服务器执行命令（SSH）、上传/下载文件、管理 Docker 容器；「更多 → 运维」打开运维控制台：命令模式（xterm 终端）+ 对话模式（内置运维智能体）。默认关闭，需手动开启。',
   permissions: ['remote-shell', 'shell', 'network'],

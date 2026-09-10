@@ -6,6 +6,7 @@ export const gitExplorerManifest: PluginManifest = {
   id: 'git-explorer',
   name: 'Git 文件管理',
   version: '1.0.0',
+  category: '功能',
   description: '文件树浏览、Git 状态/差异/提交管理，对话中可打开目录',
   permissions: ['fs', 'shell', 'git'],
   contributes: {

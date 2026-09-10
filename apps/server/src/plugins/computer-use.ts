@@ -13,6 +13,7 @@ export const computerUseManifest: PluginManifest = {
   id: 'computer-use',
   name: '电脑使用',
   version: '0.1.0',
+  category: '操作',
   description:
     '智能体可操作本机软件：鼠标点击、键盘输入/快捷键、窗口激活、截屏、启动应用（Windows 全量支持；macOS 基础支持需辅助功能权限；默认关闭，需手动开启）',
   permissions: ['desktop-input', 'shell'],

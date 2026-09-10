@@ -128,6 +128,8 @@ export interface PluginManifest {
   version: string;
   author?: string;
   description?: string;
+  /** 插件分类：'功能' | '皮肤' | '操作' 或自定义类别名；缺省时前端按 contributes/permissions 推导 */
+  category?: string;
   minAppVersion?: string;
   main?: string;
   ui?: string;

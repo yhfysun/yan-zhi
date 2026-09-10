@@ -1,6 +1,18 @@
 <template>
   <div class="plugin-manager">
     <div class="pm-header">
+      <div class="pm-cats">
+        <span
+          :class="['pm-cat-chip', { active: activeCat === '' }]"
+          @click="activeCat = ''"
+        >全部 {{ pluginStore.plugins.length }}</span>
+        <span
+          v-for="(n, cat) in catCounts"
+          :key="cat"
+          :class="['pm-cat-chip', { active: activeCat === cat }]"
+          @click="activeCat = activeCat === cat ? '' : String(cat)"
+        >{{ cat }} {{ n }}</span>
+      </div>
       <div class="pm-header-actions">
         <el-input v-model="keyword" placeholder="搜索" size="small" style="width: 180px" />
         <el-button
@@ -21,6 +33,20 @@
       <div v-for="p in filtered" :key="p.manifest.id" class="pm-card">
         <div class="pm-card-head">
           <span class="pm-name">🧩 {{ p.manifest.name }}</span>
+          <el-dropdown trigger="click" @command="(cmd: string | number | object) => onPickCategory(p, cmd)">
+            <el-tag size="small" class="pm-cat-tag" :title="'点击修改分类'">{{ categoryOf(p) }}</el-tag>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item
+                  v-for="c in allCategories"
+                  :key="c"
+                  :command="c"
+                  :disabled="c === categoryOf(p)"
+                >{{ c }}</el-dropdown-item>
+                <el-dropdown-item divided command="__custom">自定义…</el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
           <span class="pm-ver">v{{ p.manifest.version }}</span>
           <el-switch
             :model-value="p.state === 'enabled'"
@@ -180,10 +206,67 @@ const PERM_LABELS: Record<string, string> = {
 const templateOpen = ref(false);
 const templateData = ref<{ manifest?: PluginManifest; code?: string; base64?: string; filename?: string } | null>(null);
 
+// ===== 插件分类 =====
+// 口径：manifest.category（声明）> 用户自定义（localStorage）> 按 contributes/permissions 推导
+const CATEGORY_PRESETS = ['功能', '皮肤', '操作'];
+const CAT_OVERRIDE_KEY = 'plugin:categories';
+const catOverrides = ref<Record<string, string>>((() => {
+  try { return JSON.parse(localStorage.getItem(CAT_OVERRIDE_KEY) || '{}'); } catch { return {}; }
+})());
+
+function derivedCategory(p: PluginInfo): string {
+  const themes = p.manifest.contributes?.themes || [];
+  if (themes.some((t) => (t as { kind?: string }).kind === 'skin')) return '皮肤';
+  if (p.manifest.category) return p.manifest.category;
+  const perms = p.manifest.permissions || [];
+  if (perms.includes('remote-shell') || perms.includes('shell') || perms.includes('desktop-input')) return '操作';
+  return '功能';
+}
+function categoryOf(p: PluginInfo): string {
+  return catOverrides.value[p.manifest.id] || derivedCategory(p);
+}
+const allCategories = computed<string[]>(() => {
+  const set = new Set<string>(CATEGORY_PRESETS);
+  for (const p of pluginStore.plugins) set.add(categoryOf(p));
+  for (const v of Object.values(catOverrides.value)) if (v) set.add(v);
+  return Array.from(set);
+});
+const catCounts = computed<Record<string, number>>(() => {
+  const m: Record<string, number> = {};
+  for (const p of pluginStore.plugins) {
+    const c = categoryOf(p);
+    m[c] = (m[c] || 0) + 1;
+  }
+  return m;
+});
+const activeCat = ref('');
+
+function persistCatOverrides() {
+  try { localStorage.setItem(CAT_OVERRIDE_KEY, JSON.stringify(catOverrides.value)); } catch { /* ignore */ }
+}
+function onPickCategory(p: PluginInfo, cmd: string | number | object) {
+  const cat = String(cmd);
+  if (cat === '__custom') {
+    ElMessageBox.prompt('输入自定义分类名称', '自定义分类', { inputValue: categoryOf(p) })
+      .then(({ value }) => {
+        const v = (value || '').trim();
+        if (!v) return;
+        catOverrides.value = { ...catOverrides.value, [p.manifest.id]: v };
+        persistCatOverrides();
+      })
+      .catch(() => {});
+    return;
+  }
+  catOverrides.value = { ...catOverrides.value, [p.manifest.id]: cat };
+  persistCatOverrides();
+}
+
 const filtered = computed(() => {
   const kw = keyword.value.toLowerCase();
   return pluginStore.plugins.filter(
-    (p) => !kw || p.manifest.name.toLowerCase().includes(kw) || p.manifest.id.includes(kw),
+    (p) =>
+      (!kw || p.manifest.name.toLowerCase().includes(kw) || p.manifest.id.includes(kw)) &&
+      (!activeCat.value || categoryOf(p) === activeCat.value),
   );
 });
 
@@ -356,8 +439,33 @@ onMounted(() => pluginStore.refresh());
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
   margin-bottom: 16px;
 }
+.pm-cats {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.pm-cat-chip {
+  font-size: 12px;
+  padding: 3px 12px;
+  border-radius: 999px;
+  cursor: pointer;
+  color: var(--el-text-color-secondary);
+  border: 1px solid var(--el-border-color-lighter);
+  user-select: none;
+  transition: all 0.15s ease;
+}
+.pm-cat-chip:hover { color: var(--el-color-primary); border-color: var(--el-color-primary); }
+.pm-cat-chip.active {
+  color: var(--el-color-primary);
+  border-color: var(--el-color-primary);
+  background: color-mix(in srgb, var(--el-color-primary) 10%, transparent);
+}
+.pm-cat-tag { cursor: pointer; }
 .pm-header h3 {
   margin: 0;
   font-size: 18px;
