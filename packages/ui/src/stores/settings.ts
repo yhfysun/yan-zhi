@@ -2,6 +2,7 @@
 import { defineStore } from 'pinia';
 import { ref, watch } from 'vue';
 import { getPlatformAdapter } from '@yan-zhi/core';
+import { API_BASE } from '../api/client';
 import { usePluginStore } from './plugin';
 
 export type ThemeName = string;
@@ -180,6 +181,16 @@ const DEFAULT_SETTINGS: AppSettings = {
 };
 
 interface ThemePalette {
+  /** palette=纯调色板（默认）；skin=带壁纸皮肤 */
+  kind?: 'palette' | 'skin';
+  category?: string;
+  preview?: string;
+  wallpaper?: {
+    light: string;
+    dark?: string;
+    mask?: number;
+    blur?: number;
+  };
   primary: string;
   primaryLight: string;
   primaryDark: string;
@@ -188,6 +199,12 @@ interface ThemePalette {
   orb1: string;
   orb2: string;
   orb3: string;
+}
+
+/** 插件包内资源 → /api/plugin-assets/:pluginId/<path> 静态地址（API_BASE 已含 /api 前缀） */
+function pluginAssetUrl(pluginId: string, rel: string): string {
+  const clean = rel.replace(/^\.?\//, '');
+  return `${API_BASE}/plugin-assets/${pluginId}/${clean}`;
 }
 
 const THEMES: Record<ThemeName, ThemePalette> = {
@@ -270,16 +287,24 @@ export const useSettingsStore = defineStore('settings', () => {
   async function update(patch: Partial<AppSettings>) {
     settings.value = { ...settings.value, ...patch };
     if (patch.theme !== undefined) applyTheme(patch.theme);
-    if (patch.darkMode !== undefined) applyDarkMode(patch.darkMode);
+    if (patch.darkMode !== undefined) {
+      applyDarkMode(patch.darkMode);
+      // 皮肤壁纸分深浅色：深浅切换后需按当前主题重取壁纸
+      applyTheme(settings.value.theme);
+    }
     await save();
   }
 
   function applyTheme(theme: ThemeName) {
     let p: ThemePalette | undefined = THEMES[theme as keyof typeof THEMES];
+    let pluginId = '';
     if (!p) {
       try {
-        const pluginTheme = usePluginStore().themes.find((t) => t.id === theme);
-        if (pluginTheme) p = pluginTheme as unknown as ThemePalette;
+        const found = usePluginStore().themes.find((t) => t.id === theme);
+        if (found) {
+          pluginId = found.pluginId;
+          p = found as unknown as ThemePalette;
+        }
       } catch {
         /* plugin store 未就绪 */
       }
@@ -302,6 +327,21 @@ export const useSettingsStore = defineStore('settings', () => {
     root.setProperty('--el-color-primary-light-8', p.primaryLight);
     root.setProperty('--el-color-primary-light-9', p.primaryLight);
     root.setProperty('--el-color-primary-dark-2', p.primaryDark);
+
+    // ===== 皮肤（带壁纸）应用：标记 data-skin 供 skin.css 切换毛玻璃表面，写入壁纸变量 =====
+    const el = document.documentElement;
+    if (p.kind === 'skin' && p.wallpaper && pluginId) {
+      const file = settings.value.darkMode ? (p.wallpaper.dark || p.wallpaper.light) : p.wallpaper.light;
+      root.setProperty('--app-wallpaper', `url("${pluginAssetUrl(pluginId, file)}")`);
+      root.setProperty('--skin-mask', String(p.wallpaper.mask ?? 0.45));
+      root.setProperty('--skin-blur', `${p.wallpaper.blur ?? 12}px`);
+      el.setAttribute('data-skin', 'on');
+    } else {
+      el.removeAttribute('data-skin');
+      root.removeProperty('--app-wallpaper');
+      root.removeProperty('--skin-mask');
+      root.removeProperty('--skin-blur');
+    }
   }
 
   function applyDarkMode(dark: boolean) {
@@ -313,5 +353,5 @@ export const useSettingsStore = defineStore('settings', () => {
     }
   }
 
-  return { settings, loaded, load, save, update, THEMES };
+  return { settings, loaded, load, save, update, applyTheme, THEMES };
 });

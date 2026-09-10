@@ -74,6 +74,36 @@
           </el-form-item>
         </el-form>
       </el-tab-pane>
+      <el-tab-pane label="皮肤" name="skin">
+        <div class="skin-page">
+          <div class="skin-page-tip">点击卡片即换肤；「源码包」可下载壁纸与清单二改，打成 .yzp 后在「插件管理」安装即为自定义皮肤</div>
+          <div v-for="cat in skinCategories" :key="cat" class="skin-cat">
+            <div class="skin-cat-label">{{ cat }}</div>
+            <div class="skin-grid">
+              <div
+                v-for="s in skinsByCategory(cat)"
+                :key="s.id"
+                :class="['skin-card', { active: settingsStore.settings.theme === s.id }]"
+                @click="setTheme(s.id)"
+              >
+                <img class="skin-thumb" :src="skinPreviewUrl(s)" :alt="s.name" loading="lazy" />
+                <div class="skin-card-body">
+                  <span class="skin-name">{{ s.name }}</span>
+                  <span
+                    class="skin-src"
+                    title="下载源码包（壁纸 + manifest + 自定义说明），二改后打成 .yzp 可作为自定义皮肤安装"
+                    @click.stop="downloadSkinSource(s)"
+                  >源码包</span>
+                </div>
+                <div v-if="settingsStore.settings.theme === s.id" class="skin-active-badge">使用中</div>
+              </div>
+            </div>
+          </div>
+          <div v-if="!allSkins.length" class="skin-empty">
+            暂无皮肤 —— 皮肤以插件形式提供，可在「插件管理」安装 .yzp 皮肤包
+          </div>
+        </div>
+      </el-tab-pane>
       <el-tab-pane label="数据" name="data">
         <div class="data-section">
           <el-button @click="exportData" :icon="Download">导出全部数据</el-button>
@@ -158,7 +188,7 @@ import { useSettingsStore, usePlatformStore } from '../stores';
 import { usePluginStore } from '../stores/plugin';
 import { useToolsStore } from '../stores/tools';
 import type { ThemeName } from '../stores/settings';
-import { api } from '../api/client';
+import { api, API_BASE } from '../api/client';
 import MemoryManage from '../components/memory/MemoryManage.vue';
 import LlmLogs from './LlmLogs.vue';
 
@@ -177,6 +207,47 @@ const themes: Array<{ value: ThemeName; label: string; color: string }> = [
   { value: 'pine', label: '松绿', color: '#2F6B4F' },
   { value: 'clay', label: '陶土', color: '#B05A45' },
 ];
+
+// ===== 皮肤库：插件贡献的 kind='skin' 主题，按分类分组展示 =====
+type SkinTheme = { id: string; name: string; category?: string; preview?: string; pluginId: string };
+const allSkins = computed<SkinTheme[]>(() =>
+  (pluginStore.themes as Array<SkinTheme & { kind?: string }>).filter((t) => t.kind === 'skin'),
+);
+const SKIN_CATEGORY_ORDER = ['动漫', '风景', '美图', '简约'];
+const skinCategories = computed(() => {
+  const seen: string[] = [];
+  for (const s of allSkins.value) {
+    const c = s.category || '简约';
+    if (!seen.includes(c)) seen.push(c);
+  }
+  return seen.sort((a, b) => {
+    const ia = SKIN_CATEGORY_ORDER.indexOf(a); const ib = SKIN_CATEGORY_ORDER.indexOf(b);
+    return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib);
+  });
+});
+function skinsByCategory(cat: string): SkinTheme[] {
+  return allSkins.value.filter((s) => (s.category || '简约') === cat);
+}
+function skinPreviewUrl(s: SkinTheme): string {
+  const file = s.preview || 'preview.webp';
+  return `${API_BASE}/plugin-assets/${s.pluginId}/${file.replace(/^\.?\//, '')}`;
+}
+async function downloadSkinSource(s: SkinTheme) {
+  try {
+    const token = localStorage.getItem('auth_token') || '';
+    const resp = await fetch(`${API_BASE}/plugins/${s.id}/export`, { headers: { Authorization: `Bearer ${token}` } });
+    const json = await resp.json();
+    if (!json?.data?.base64) { ElMessage.error(json?.error || '导出失败'); return; }
+    const bin = Uint8Array.from(atob(json.data.base64), (c) => c.charCodeAt(0));
+    const url = URL.createObjectURL(new Blob([bin], { type: 'application/zip' }));
+    const a = document.createElement('a');
+    a.href = url; a.download = json.data.filename || `${s.id}-source.zip`;
+    a.click();
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    ElMessage.error('导出失败: ' + (e as Error).message);
+  }
+}
 
 const darkMode = ref(settingsStore.settings.darkMode);
 
@@ -461,6 +532,34 @@ onMounted(async () => {
 .theme-chip:hover { background: var(--glass-bg-hover); }
 .theme-chip.active { border-color: var(--chip-color); background: color-mix(in srgb, var(--chip-color) 12%, transparent); }
 .theme-dot { width: 12px; height: 12px; border-radius: 50%; background: var(--chip-color); box-shadow: 0 0 6px var(--chip-color); }
+
+/* ===== 皮肤库（独立 tab） ===== */
+.skin-page { display: flex; flex-direction: column; gap: 18px; }
+.skin-page-tip { font-size: 12px; color: var(--color-text-secondary); }
+.skin-cat-label { font-size: 13px; font-weight: 600; color: var(--color-text); margin-bottom: 10px; }
+.skin-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; }
+.skin-card {
+  position: relative;
+  border: 2px solid var(--glass-border);
+  border-radius: 12px;
+  overflow: hidden;
+  cursor: pointer;
+  background: var(--glass-bg);
+  transition: border-color 0.18s ease, transform 0.18s ease, box-shadow 0.18s ease;
+}
+.skin-card:hover { border-color: var(--color-primary); transform: translateY(-2px); box-shadow: 0 6px 18px rgba(0,0,0,0.12); }
+.skin-card.active { border-color: var(--color-primary); box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary) 18%, transparent); }
+.skin-thumb { width: 100%; aspect-ratio: 16 / 10; object-fit: cover; display: block; }
+.skin-card-body { display: flex; align-items: center; justify-content: space-between; padding: 7px 10px; }
+.skin-name { font-size: 13px; font-weight: 600; }
+.skin-src { font-size: 11px; color: var(--color-text-secondary); cursor: pointer; border: none; background: transparent; padding: 2px 4px; border-radius: 6px; }
+.skin-src:hover { color: var(--color-primary); background: var(--glass-bg-hover); }
+.skin-active-badge {
+  position: absolute; top: 6px; right: 6px;
+  font-size: 10px; padding: 2px 8px; border-radius: 999px;
+  background: var(--color-primary); color: #fff;
+}
+.skin-empty { font-size: 13px; color: var(--color-text-secondary); }
 
 .form-tip { font-size: 12px; color: var(--color-text-secondary); }
 

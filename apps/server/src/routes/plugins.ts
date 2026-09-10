@@ -4,6 +4,7 @@ import { getPluginManager, validateManifest, ManifestError } from '@yan-zhi/core
 import type { Plugin, PluginManifest } from '@yan-zhi/core';
 import AdmZip from 'adm-zip';
 import { promises as fs } from 'node:fs';
+import { existsSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PLUGIN_TEMPLATES } from '../plugins/templates/index.js';
@@ -12,6 +13,9 @@ const router = Router();
 router.use(authMiddleware);
 
 export const PLUGINS_DIR = path.resolve(fileURLToPath(import.meta.url), '..', '..', '..', 'plugins', 'installed');
+
+/** 内置插件静态资源目录（皮肤壁纸/预览图等）：apps/server/assets/plugin-assets/<pluginId>/ */
+export const BUILTIN_ASSETS_DIR = path.resolve(fileURLToPath(import.meta.url), '..', '..', '..', 'assets', 'plugin-assets');
 
 function toInfo(p: Plugin) {
   return { manifest: p.manifest, state: p.state, error: p.error, config: p.config, source: p.source };
@@ -101,23 +105,48 @@ router.get('/:id/export', (req: Request, res: Response) => {
   try {
     if (p.source === 'builtin') {
       const tpl = PLUGIN_TEMPLATES[id];
-      if (!tpl) { res.status(404).json({ error: '该内置插件暂无源码模板' }); return; }
-      const zip = new AdmZip();
-      zip.addFile('manifest.json', Buffer.from(JSON.stringify(tpl.manifest, null, 2), 'utf8'));
-      zip.addFile('main.ts', Buffer.from(tpl.code, 'utf8'));
-      zip.addFile('README.md', Buffer.from(tpl.readme, 'utf8'));
-      res.json({
-        data: { format: 'source', filename: `${id}-${ver}-source.zip`, base64: zip.toBuffer().toString('base64') },
-      });
-    } else {
-      const dir = path.join(PLUGINS_DIR, id);
-      const zip = new AdmZip();
-      zip.addLocalFolder(dir);
-      zip.addFile('manifest.json', Buffer.from(JSON.stringify(p.manifest, null, 2), 'utf8'));
-      res.json({
-        data: { format: 'yzp', filename: `${id}-${ver}.yzp`, base64: zip.toBuffer().toString('base64') },
-      });
+      if (tpl) {
+        const zip = new AdmZip();
+        zip.addFile('manifest.json', Buffer.from(JSON.stringify(tpl.manifest, null, 2), 'utf8'));
+        zip.addFile('main.ts', Buffer.from(tpl.code, 'utf8'));
+        zip.addFile('README.md', Buffer.from(tpl.readme, 'utf8'));
+        res.json({
+          data: { format: 'source', filename: `${id}-${ver}-source.zip`, base64: zip.toBuffer().toString('base64') },
+        });
+        return;
+      }
+      // 皮肤类声明式内置插件：打包 manifest + assets/plugin-assets/<id>/ 静态资源 + README
+      const assetsDir = path.join(BUILTIN_ASSETS_DIR, id);
+      if (existsSync(assetsDir)) {
+        const zip = new AdmZip();
+        zip.addFile('manifest.json', Buffer.from(JSON.stringify(p.manifest, null, 2), 'utf8'));
+        zip.addLocalFolder(assetsDir, 'assets');
+        zip.addFile(
+          'README.md',
+          Buffer.from(
+            `# ${p.manifest.name}（皮肤包）\n\n${p.manifest.description || ''}\n\n` +
+            '## 自定义\n\n1. 替换 assets/ 下的壁纸图片（建议 2560×1600 WebP，单张 ≤800KB）\n' +
+            '2. 修改 manifest.json 中 contributes.themes 的配色/遮罩/名称\n' +
+            '3. 将整个目录打成 .zip，改后缀为 .yzp，在「插件管理」页安装即可生效\n',
+            'utf8',
+          ),
+        );
+        res.json({
+          data: { format: 'source', filename: `${id}-${ver}-source.zip`, base64: zip.toBuffer().toString('base64') },
+        });
+        return;
+      }
+      res.status(404).json({ error: '该内置插件暂无源码模板' });
+      return;
     }
+    // 已安装插件：安装目录打回 .yzp
+    const dir = path.join(PLUGINS_DIR, id);
+    const zip = new AdmZip();
+    zip.addLocalFolder(dir);
+    zip.addFile('manifest.json', Buffer.from(JSON.stringify(p.manifest, null, 2), 'utf8'));
+    res.json({
+      data: { format: 'yzp', filename: `${id}-${ver}.yzp`, base64: zip.toBuffer().toString('base64') },
+    });
   } catch (e) {
     res.status(400).json({ error: (e as Error).message });
   }
@@ -171,3 +200,39 @@ router.delete('/:id', async (req: Request, res: Response) => {
 });
 
 export default router;
+
+// ===== 插件静态资源：GET /api/plugin-assets/:pluginId/* =====
+// 皮肤壁纸/预览图等二进制资源不走 manifest（避免 base64 膨胀），按插件 id 从磁盘直读：
+//  - 已安装插件 → plugins/installed/<id>/
+//  - 内置插件   → assets/plugin-assets/<id>/（随安装包 extraResources 分发）
+// 本地模式 authMiddleware 无 token 也放行（回退本地身份），<img>/CSS url() 可直接引用。
+export const pluginAssetsRouter = Router();
+pluginAssetsRouter.use(authMiddleware);
+
+const MIME: Record<string, string> = {
+  '.webp': 'image/webp', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif', '.svg': 'image/svg+xml', '.avif': 'image/avif', '.ico': 'image/x-icon',
+};
+
+pluginAssetsRouter.get('/:pluginId/*', (req: Request, res: Response) => {
+  const { pluginId } = req.params;
+  // req.params['0'] 为通配段（Express 4）；拼接前逐段校验，杜绝路径穿越
+  const relParts = String(req.params[0] || '').split('/').filter(Boolean);
+  if (!/^[a-z][a-z0-9-]*$/i.test(pluginId) || relParts.some((s) => s === '.' || s === '..' || s.includes('\\'))) {
+    res.status(400).json({ error: '非法资源路径' });
+    return;
+  }
+  const candidates = [path.join(PLUGINS_DIR, pluginId), path.join(BUILTIN_ASSETS_DIR, pluginId)];
+  for (const base of candidates) {
+    const file = path.join(base, ...relParts);
+    if (!file.startsWith(base)) continue; // 双保险：解析后必须仍落在插件目录内
+    if (!existsSync(file) || !statSync(file).isFile()) continue;
+    const ext = path.extname(file).toLowerCase();
+    if (!MIME[ext]) { res.status(415).json({ error: '不支持的资源类型' }); return; }
+    res.setHeader('Content-Type', MIME[ext]);
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    res.sendFile(file);
+    return;
+  }
+  res.status(404).json({ error: '资源不存在' });
+});

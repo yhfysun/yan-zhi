@@ -59,6 +59,10 @@
               <el-icon><Operation /></el-icon>
               <span>SQL 控制台</span>
             </el-dropdown-item>
+            <el-dropdown-item v-for="it in pluginMoreItems" :key="'more-' + it.id" @click="$router.push(it.route)">
+              <el-icon><component :is="resolvePluginIcon(it.icon)" /></el-icon>
+              <span>{{ it.label }}</span>
+            </el-dropdown-item>
             <el-dropdown-item v-if="!isElectron" divided @click="authStore.logout()">
               <el-icon><SwitchButton /></el-icon>
               <span>退出登录</span>
@@ -138,6 +142,10 @@
             <el-dropdown-item @click="$router.push('/sql-console')">
               <el-icon><Operation /></el-icon>
               <span>SQL 控制台</span>
+            </el-dropdown-item>
+            <el-dropdown-item v-for="it in pluginMoreItems" :key="'more2-' + it.id" @click="$router.push(it.route)">
+              <el-icon><component :is="resolvePluginIcon(it.icon)" /></el-icon>
+              <span>{{ it.label }}</span>
             </el-dropdown-item>
             <el-dropdown-item divided @click="authStore.logout()">
               <el-icon><SwitchButton /></el-icon>
@@ -225,9 +233,11 @@ function matchWhen(when?: string): boolean {
   if (when === 'web') return !isDesktop && !isMobile.value;
   return true;
 }
+/** 侧栏「插件」分组：不含声明进「更多」菜单的项 */
 const pluginNavItems = computed<NavItem[]>(() =>
   pluginStore.sidebar
     .filter((item) => matchWhen(item.when))
+    .filter((item) => !item.moreGroup || item.moreGroup === 'nav')
     .map((item) => ({
       path: item.route,
       label: item.label,
@@ -236,6 +246,12 @@ const pluginNavItems = computed<NavItem[]>(() =>
       kind: 'route' as const,
       group: '插件',
     })),
+);
+/** 「更多」菜单项（Web 端渲染进用户下拉；桌面端由 TitleBar 承担） */
+const pluginMoreItems = computed(() =>
+  pluginStore.sidebar
+    .filter((item) => matchWhen(item.when))
+    .filter((item) => item.moreGroup && item.moreGroup !== 'nav'),
 );
 const navItems = computed<NavItem[]>(() => [...builtinNavItems, ...pluginNavItems.value].filter((i) => !(i as any).hideOnMobile || !isCapacitor));
 /** 桌面展开态按 group 分组渲染 */

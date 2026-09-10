@@ -30,9 +30,11 @@ export const usePluginStore = defineStore('plugin', () => {
   /** 仅聚合已启用插件 */
   const enabledPlugins = computed(() => plugins.value.filter((p) => p.state === 'enabled'));
 
-  /** 贡献的主题调色板 */
-  const themes = computed<ThemePalette[]>(() =>
-    enabledPlugins.value.flatMap((p) => p.manifest.contributes?.themes || []),
+  /** 贡献的主题调色板（附 pluginId：皮肤壁纸/预览图按 /api/plugin-assets/:pluginId/ 寻址） */
+  const themes = computed<Array<ThemePalette & { pluginId: string }>>(() =>
+    enabledPlugins.value.flatMap((p) =>
+      (p.manifest.contributes?.themes || []).map((t) => ({ ...t, pluginId: p.manifest.id })),
+    ),
   );
   /** 贡献的布局 */
   const layouts = computed<LayoutDef[]>(() =>

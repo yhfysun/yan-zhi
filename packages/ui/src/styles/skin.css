@@ -1,0 +1,108 @@
+/* ============================================================
+   皮肤层 —— data-skin="on" 时启用壁纸背景 + 毛玻璃表面
+   由 settings.applyTheme 写入：
+   --app-wallpaper: url(...)   壁纸图（按深浅色解析）
+   --skin-mask: 0~1            壁纸遮罩强度（保证文字可读）
+   --skin-blur: Npx            壁纸模糊半径（0 = 不模糊）
+   ============================================================ */
+
+/* ===== 壁纸背景：铺在 body 上（内容容器全部透明化），遮罩用 body::before =====
+   可读性基线：遮罩 + 壁纸模糊双保险。--skin-blur 默认 14px（applyTheme 未显式配置时生效），
+   模糊后的壁纸只保留色 mood，细节不与文字争夺对比度 */
+[data-skin="on"] body {
+  background: var(--app-wallpaper, var(--color-bg)) center / cover no-repeat fixed;
+}
+
+[data-skin="on"] body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background: #0f172a;
+  opacity: var(--skin-mask, 0.45);
+  backdrop-filter: blur(var(--skin-blur, 14px));
+  -webkit-backdrop-filter: blur(var(--skin-blur, 14px));
+}
+
+/* 浅色模式遮罩改白纱，避免壁纸过暗与浅色文字层冲突 */
+[data-theme="light"][data-skin="on"] body::before {
+  background: #f8fafc;
+  opacity: calc(var(--skin-mask, 0.45) * 0.9);
+}
+
+/* ===== 内容容器透明化：让壁纸透出（内容 z-index 已 ≥1，压在遮罩之上） =====
+   用 !important 压过 App.vue 中后置的实色背景规则（.platform-desktop.app-shell / 移动端 .page） */
+[data-skin="on"] .app-shell,
+[data-skin="on"] .platform-desktop.app-shell,
+[data-skin="on"] .app-body,
+[data-skin="on"] .main-content,
+[data-skin="on"] .page {
+  background: transparent !important;
+}
+
+/* ===== 可读性：文字/图标对比度加固 =====
+   图标全部继承文字色（el-icon/lucide 均为 currentColor），提文字 = 提图标；
+   默认次级灰（#6B6B66/#9C9B94）压在壁纸上会糊，皮肤模式下整体加深/提亮一档 */
+[data-skin="on"] {
+  --color-text: #141414;
+  --color-text-secondary: #4A4A45;
+  --color-text-tertiary: #71706A;
+}
+[data-theme="dark"][data-skin="on"] {
+  --color-text: #F2F0EA;
+  --color-text-secondary: #B8B8B0;
+  --color-text-tertiary: #8E8E86;
+}
+
+/* 图标密集区（Web 图标 dock / 移动 tabbar / 移动顶栏）：近实色背板，图标永远有底 */
+[data-skin="on"] .side-nav,
+[data-skin="on"] .tab-bar,
+[data-skin="on"] .mobile-topbar {
+  background: rgba(255, 255, 255, 0.93) !important;
+}
+[data-theme="dark"][data-skin="on"] .side-nav,
+[data-theme="dark"][data-skin="on"] .tab-bar,
+[data-theme="dark"][data-skin="on"] .mobile-topbar {
+  background: rgba(24, 24, 23, 0.93) !important;
+}
+
+/* ===== 毛玻璃表面：卡片/浮层半透明 + backdrop blur（WorkBuddy/Codex 质感） =====
+   透明度取高值（0.86/0.78）：优先保证面板内文字对比度，壁纸只透出色彩氛围 */
+[data-skin="on"] {
+  --glass-bg: rgba(255, 255, 255, 0.86);
+  --glass-bg-hover: rgba(255, 255, 255, 0.93);
+  --glass-filter: blur(18px) saturate(1.25);
+}
+[data-theme="dark"][data-skin="on"] {
+  --glass-bg: rgba(29, 29, 28, 0.78);
+  --glass-bg-hover: rgba(38, 38, 36, 0.86);
+  --glass-filter: blur(18px) saturate(1.15);
+}
+
+/* 桌面端标题栏/侧栏：改半透明玻璃（默认为 el-bg-color 实色） */
+[data-skin="on"] .side-nav-desktop,
+[data-skin="on"] .title-bar {
+  background: var(--glass-bg) !important;
+  backdrop-filter: var(--glass-filter);
+  -webkit-backdrop-filter: var(--glass-filter);
+}
+[data-skin="on"] .side-nav-desktop {
+  backdrop-filter: none; /* 侧栏与内容不重叠，无需二次模糊，避免性能浪费 */
+  -webkit-backdrop-filter: none;
+}
+
+/* Element Plus 弹层同步玻璃化（dialog/drawer 本体已走 --el-bg-color 实色） */
+[data-skin="on"] .el-dialog,
+[data-skin="on"] .el-drawer,
+[data-skin="on"] .el-popper.is-light {
+  background-color: color-mix(in srgb, var(--glass-bg) 88%, var(--el-bg-color));
+}
+
+/* ===== 减少动态效果偏好：壁纸遮罩保持但去掉模糊，省电省性能 ===== */
+@media (prefers-reduced-motion: reduce) {
+  [data-skin="on"] body::before {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+}

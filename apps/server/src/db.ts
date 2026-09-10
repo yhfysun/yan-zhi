@@ -722,6 +722,39 @@ const DATA_AGENT_BUILTIN_TOOLS = [
 ];
 /** 数据分析/可视化/Excel 类 skill + 本体取数教材（与 skill 表种子对齐） */
 const DATA_AGENT_SKILL_IDS = ['skill_ontology_query', 'skill_xlsx_data_processing', 'skill_data_visualization', 'skill_markdown_doc'];
+
+// 运维智能体挂载：ops-shell 插件工具（运行时名 plugin_ops-shell__<tool>）+ 用户交互。
+// 工具执行体在 ops-shell 插件内（ssh2），插件 disabled 时工具从 ToolRegistry 注销，委派会拿到明确报错。
+const OPS_AGENT_BUILTIN_TOOLS = [
+  'plugin_ops-shell__ssh_exec',
+  'plugin_ops-shell__ssh_upload',
+  'plugin_ops-shell__ssh_download',
+  'plugin_ops-shell__docker_ps',
+  'plugin_ops-shell__docker_logs',
+  'plugin_ops-shell__docker_restart',
+  // 用户交互与任务规划
+  'task_plan', 'task_step', 'ask_user', 'confirm_user',
+];
+
+const OPS_AGENT_SYSTEM_PROMPT = `你是服务器运维专家（opsAgent），负责在用户的 SSH 服务器连接上执行运维任务。
+
+## 工具与连接
+- 所有 ssh_*/docker_* 工具都需要 connection 参数（连接名称）。用户消息通常会带「当前选定连接：<名称>」，优先用它；用户明确指定其他连接名时用指定的。
+- 连接在「运维控制台」中管理；没有可用连接时如实告知用户先到「更多 → 运维 → 新建连接」添加。
+
+## 工作流程
+1. 先理解任务，需要的先探查：docker_ps 看容器、ssh_exec 跑只读命令（ps/df/free/journalctl 等）确认现状。
+2. 执行：用 ssh_exec 执行命令；改配置/传文件用 ssh_upload；容器问题用 docker_ps → docker_logs → docker_restart 链路。
+3. 验证：变更后必须回查确认（如 restart 后 docker_ps 看状态、改配置后 cat 复核）。
+4. 回答：给出关键命令输出摘要 + 结论 + 风险提示。
+
+## 硬约束
+- 危险命令（rm -rf /、mkfs、dd、shutdown、fork bomb 等）会被服务端黑名单直接拒绝，不要尝试。
+- 生产标签连接上的非只读操作需要 confirmed=true：先向用户说明将执行什么、影响什么，用户确认后再带 confirmed=true 调用；用户未确认前不要自作主张。
+- 命令失败时先读 stderr 判断原因（权限/路径/服务名/端口），最多换 2 种思路，仍失败就如实汇报已有信息。
+- 不要执行交互式命令（top/vim/apt 交互确认等），用非交互替代（free -m / sed / apt-get -y）。
+- 长输出会被截断：优先用 grep/tail/head 精确取关键行，必要时分段查看。
+- 只做用户请求范围内的操作，禁止顺带"优化"其他服务。`;
 const DATA_AGENT_SYSTEM_PROMPT = `你是「数据查询分析专家」。你通过「本体语义层」对已接入的数据源做只读取数、分析与交付，不直接猜表结构写 SQL。
 
 ## 每轮输出格式（强制，先输出再调用）
@@ -797,6 +830,19 @@ export const seedAgents: Array<Record<string, unknown>> = [
     // 取数是短链路（overview → brief? → query → 回答），16 步足够；
     // 放宽步数只会让跑偏的模型在无关工具上原地打转更久。
     config_json: JSON.stringify({ maxReActSteps: 16 }),
+  },
+  {
+    id: 'a_builtin_ops_agent',
+    name: '运维智能体',
+    description:
+      '内置运维专家：在 SSH 服务器连接上执行命令/传文件/管理 Docker 容器，配合「运维」插件的运维控制台使用（对话模式）；危险命令黑名单 + 生产连接二次确认',
+    type: 'harness',
+    is_builtin: 1,
+    builtin_tool_ids: JSON.stringify(OPS_AGENT_BUILTIN_TOOLS),
+    system_prompt: OPS_AGENT_SYSTEM_PROMPT,
+    // 内置定义由代码收敛：工具挂载/提示词以代码为准，强制同步旧库残留
+    force_sync: true,
+    config_json: JSON.stringify({ maxReActSteps: 30 }),
   },
 ];
 for (const a of seedAgents) {

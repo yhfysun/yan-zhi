@@ -2,7 +2,7 @@ import express from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { pathToFileURL } from 'node:url';
+import { pathToFileURL, fileURLToPath } from 'node:url';
 import cors from 'cors';
 import { setPlatformAdapter, getPluginManager, getToolRegistry } from '@yan-zhi/core';
 import { ensureToolsInitialized } from './mcp/index.js';
@@ -32,7 +32,7 @@ import workspaceRoutes from './routes/workspace.js';
 import memoryRoutes from './routes/memory.js';
 import scheduledTaskRoutes from './routes/scheduled-tasks.js';
 import ollamaMarketRoutes from './routes/ollama-market.js';
-import pluginRoutes, { PLUGINS_DIR } from './routes/plugins.js';
+import pluginRoutes, { pluginAssetsRouter, PLUGINS_DIR } from './routes/plugins.js';
 import gitRoutes from './routes/git.js';
 import datasourceRoutes from './routes/datasources.js';
 import sqlConsoleRoutes from './routes/sql-console.js';
@@ -43,6 +43,8 @@ import llmTaskRoutes from './routes/llm-tasks.js';
 import llmLogsRoutes from './routes/llm-logs.js';
 import { gitExplorerManifest, gitExplorerModule } from './plugins/git-explorer.js';
 import { computerUseManifest, computerUseModule } from './plugins/computer-use.js';
+import { registerBuiltinSkins } from './plugins/skins.js';
+import { opsShellManifest, opsShellModule } from './plugins/ops-shell.js';
 import { syncAgnesPlatformForAllUsers } from './agnes-platform/service.js';
 import { ensureProjectDataSource } from './services/datasource.js';
 import { ensureBuiltinOntologies } from './services/ontology.js';
@@ -106,6 +108,8 @@ app.use('/api/memory', memoryRoutes);
 app.use('/api/scheduled-tasks', scheduledTaskRoutes);
 app.use('/api/ollama-market', ollamaMarketRoutes);
 app.use('/api/plugins', pluginRoutes);
+// 插件静态资源（皮肤壁纸/预览图）：/api/plugin-assets/:pluginId/*
+app.use('/api/plugin-assets', pluginAssetsRouter);
 app.use('/api/git', gitRoutes);
 app.use('/api/llm', llmProxyRoutes);
 app.use('/api/llm', llmTaskRoutes);
@@ -137,7 +141,8 @@ function resolveWebDist(): string | null {
     if (fs.existsSync(path.join(p, 'index.html'))) return p;
   }
   // dev：从 src 目录向上逐级找 apps/{web,desktop}/dist
-  let dir = __dirname;
+  // ESM 下无 __dirname（tsx/node 原生 ESM 均报错），与 db.ts 同款写法
+  let dir = path.dirname(fileURLToPath(import.meta.url));
   for (let i = 0; i < 6; i++) {
     for (const sub of ['apps/web/dist', 'apps/desktop/dist']) {
       const p = path.join(dir, sub);
@@ -217,6 +222,12 @@ try {
     // 移动端（MOBILE_MODE）无桌面输入环境，跳过注册避免运行时崩溃
     if (!process.env.MOBILE_MODE) {
       await mgr.registerBuiltin(computerUseManifest, computerUseModule, false);
+    }
+    // 内置皮肤包：纯声明式（contributes.themes + 静态壁纸），默认启用，设置→皮肤库切换
+    await registerBuiltinSkins();
+    // ops-shell 高危权限（remote-shell），默认 disabled，需在插件管理页手动开启；移动端跳过
+    if (!process.env.MOBILE_MODE) {
+      await mgr.registerBuiltin(opsShellManifest, opsShellModule, false);
     }
     // 已安装插件重启恢复：loadFromDb 只恢复了状态，入口模块未绑定（enabled 状态下工具/路由未注册），扫描目录补绑
     try {

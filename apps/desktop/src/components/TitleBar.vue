@@ -46,7 +46,7 @@
       <div class="title-spacer"></div>
 
       <!-- 登录状态：头像（绿点=已登录）/ 登录按钮 -->
-      <el-dropdown v-if="authStore.isLoggedIn" trigger="click" popper-class="sidenav-user-popper" @visible-change="(v: boolean) => (avatarMenuOpen = v)">
+      <el-dropdown v-if="authStore.isLoggedIn" trigger="click" popper-class="sidenav-user-popper" @visible-change="(v: boolean) => (avatarMenuOpen = v)" @command="onAvatarCommand">
         <span class="title-avatar" :title="authStore.user?.username">
           {{ authStore.user?.username?.slice(0, 1) || 'U' }}<i class="login-dot" />
         </span>
@@ -126,18 +126,53 @@ function isActive(p: string) {
   return route.path === p || route.path.startsWith(p + '/');
 }
 
-// 插件注入的导航项（原 SideNav pluginNavItems 等价迁移；桌面端 when 过滤）
+// 插件注入的导航项：moreGroup 声明的进「更多」对应分组，其余进底部独立项（历史行为）
 const pluginStore = usePluginStore();
-const pluginMenus = computed<HoverMenuItem[]>(() =>
+const pluginSidebarItems = computed(() =>
   pluginStore.sidebar
-    .filter((it) => !it.when || it.when === 'all' || it.when === 'desktop')
+    .filter((it) => !it.when || it.when === 'all' || it.when === 'desktop'),
+);
+const pluginMenus = computed<HoverMenuItem[]>(() =>
+  pluginSidebarItems.value
+    .filter((it) => !it.moreGroup || it.moreGroup === 'nav')
     .map((it) => ({ path: it.route, label: it.label, icon: resolvePluginIcon(it.icon) as HoverMenuItem['icon'] })),
 );
+
+/** 插件声明的「更多」新分组（如 ops → 运维）：非 nav/capability/data/connection 的 moreGroup 值 */
+const pluginNewGroups = computed<Array<{ key: string; label: string; items: HoverMenuItem[] }>>(() => {
+  const groups: Array<{ key: string; label: string; items: HoverMenuItem[] }> = [];
+  for (const it of pluginSidebarItems.value) {
+    if (!it.moreGroup || ['nav', 'capability', 'data', 'connection'].includes(it.moreGroup)) continue;
+    let g = groups.find((x) => x.key === it.moreGroup);
+    if (!g) { g = { key: `group-${it.moreGroup}`, label: it.moreGroupLabel || it.moreGroup, items: [] }; groups.push(g); }
+    g.items.push({ key: `plugin-${it.id}`, label: it.label, icon: resolvePluginIcon(it.icon) as HoverMenuItem['icon'], path: it.route, desc: it.desc });
+  }
+  return groups;
+});
+
+/** 插件项并入既有分组（capability/data/connection） */
+function mergeIntoGroup(base: HoverMenuItem, groupKey: string): HoverMenuItem {
+  const extras = pluginSidebarItems.value.filter((it) => it.moreGroup === groupKey);
+  if (!extras.length) return base;
+  return {
+    ...base,
+    children: [
+      ...(base.children || []),
+      ...extras.map((it) => ({
+        key: `plugin-${it.id}`,
+        label: it.label,
+        icon: resolvePluginIcon(it.icon) as HoverMenuItem['icon'],
+        path: it.route,
+        desc: it.desc,
+      })),
+    ],
+  };
+}
 
 // 「更多」下拉：按「能力 / 数据 / 连接」三组 hover 二级展开 + 底部独立项（记忆/插件/设置/插件注入）
 // MCP 不再单列：已并入 /tools 工具页「MCP 服务」tab
 const moreItems = computed<HoverMenuItem[]>(() => [
-  {
+  mergeIntoGroup({
     key: 'group-capability',
     label: '能力',
     icon: MagicStick,
@@ -147,8 +182,8 @@ const moreItems = computed<HoverMenuItem[]>(() => [
       { key: 'distill', label: 'Skill 蒸馏', icon: MagicStick, path: '/distill', desc: '沉淀会话为技能' },
       { key: 'tools', label: '工具', icon: Tools, path: '/tools', desc: '工具库 · MCP · 远程商城' },
     ],
-  },
-  {
+  }, 'capability'),
+  mergeIntoGroup({
     key: 'group-data',
     label: '数据',
     icon: DataLine,
@@ -158,8 +193,8 @@ const moreItems = computed<HoverMenuItem[]>(() => [
       { key: 'ontologies', label: '本体管理', icon: Share, path: '/ontologies', desc: '数据本体建模' },
       { key: 'sql-console', label: 'SQL 控制台', icon: Operation, path: '/sql-console', desc: '查询与探索' },
     ],
-  },
-  {
+  }, 'data'),
+  mergeIntoGroup({
     key: 'group-connection',
     label: '连接',
     icon: Link,
@@ -168,7 +203,9 @@ const moreItems = computed<HoverMenuItem[]>(() => [
       { key: 'connections', label: 'IM 连接', icon: Link, path: '/connections', desc: '飞书 / 企微 / 微信' },
       { key: 'peers', label: '客户端节点', icon: Platform, path: '/peers', desc: '远程设备节点' },
     ],
-  },
+  }, 'connection'),
+  // 插件声明的新分组（如 ops-shell 的「运维」），排在连接组之后
+  ...pluginNewGroups.value.map((g) => ({ key: g.key, label: g.label, icon: Box, children: g.items })),
   { key: 'divider-memory', label: '', divider: true },
   { key: 'memory', label: '记忆管理', icon: Memo, path: '/memory' },
   { key: 'plugins', label: '插件管理', icon: Box, path: '/plugins' },
@@ -198,6 +235,12 @@ watch([moreOpen, avatarMenuOpen], ([m, a]) => { titleBarOverlayOpen.value = m ||
 function onMoreSelect(item: HoverMenuItem) {
   moreOpen.value = false;
   if (item.path) router.push(item.path);
+}
+
+// 头像下拉：el-dropdown-item 的 command 会冒泡到 el-dropdown 的 command 事件，
+// 此前未挂监听导致「设置 / 记忆管理」点击无反应
+function onAvatarCommand(cmd: string) {
+  if (cmd) router.push(cmd);
 }
 
 // 是否处于最大化状态

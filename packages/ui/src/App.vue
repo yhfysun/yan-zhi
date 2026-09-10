@@ -107,6 +107,8 @@ onMounted(async () => {
     await pluginStore.refresh();
     await syncPluginRoutes();
     resolvePluginLayout();
+    // 皮肤主题的壁纸来自插件清单：插件就绪后按当前主题重应用（启动时插件未就绪会miss）
+    settingsStore.applyTheme(settingsStore.settings.theme);
   } catch {
     // 插件加载失败不阻塞主应用
   }
@@ -114,6 +116,12 @@ onMounted(async () => {
 
 // 布局切换或插件清单变化时重新解析
 watch(() => [settingsStore.settings.layout, pluginStore.layouts], resolvePluginLayout, { deep: true });
+
+// 插件运行中启用/禁用（如插件管理页开启 ops-shell）→ 即时同步动态路由，
+// 否则 sidebar 已出现菜单入口但路由未注册，点击就是空白页
+watch(() => pluginStore.routes, () => {
+  void syncPluginRoutes();
+}, { deep: true });
 
 
 function toggleTheme() {
@@ -152,6 +160,7 @@ authStore.loadUser();
 
 <style>
 @import './styles/tokens.css';
+@import './styles/skin.css';
 @import './styles/motion.css';
 @import './styles/overlay.css';
 @import './styles/menu.css';

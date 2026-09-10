@@ -278,18 +278,26 @@ function createWindow() {
     }
   });
 
-  // 外链（http/https）用系统浏览器打开，避免在应用窗口内导航离开
+  // 外链（http/https）用系统浏览器打开，避免在应用窗口内导航离开。
+  // 例外：dev 模式下应用自身经 http://localhost:1420 提供 —— 同源导航（含 hash 路由）
+  // 是应用内跳转，绝不能甩给系统浏览器（打包版走 file:// 无此问题，此坑只在 dev 暴露）。
+  const isDevServe = process.argv.includes('--dev') && !app.isPackaged;
+  const selfOrigin = isDevServe ? 'http://localhost:1420' : null;
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (/^https?:\/\//i.test(url)) {
+    console.log('[nav] window-open:', url);
+    if (/^https?:\/\//i.test(url) && !(selfOrigin && url.startsWith(selfOrigin))) {
       shell.openExternal(url);
     }
     return { action: 'deny' };
   });
   mainWindow.webContents.on('will-navigate', (event, url) => {
-    if (/^https?:\/\//i.test(url) && url !== mainWindow.webContents.getURL()) {
-      event.preventDefault();
-      shell.openExternal(url);
-    }
+    const current = mainWindow.webContents.getURL();
+    console.log('[nav] will-navigate:', url, '| from:', current);
+    if (!/^https?:\/\//i.test(url) || url === current) return;
+    // dev 同源 = 应用自身，放行留在应用内（阻止被误判为外链）
+    if (selfOrigin && url.startsWith(selfOrigin)) return;
+    event.preventDefault();
+    shell.openExternal(url);
   });
 
   // webview 引擎：guest 安全加固 —— 无论渲染层怎么声明，guest 一律无 node 集成 + 上下文隔离 +
@@ -2572,6 +2580,7 @@ ipcMain.handle('shell:openPath', (_e, p) => {
 
 // 用系统默认浏览器打开外链（http/https），不在应用窗口内导航离开
 ipcMain.handle('shell:openExternal', (_e, url) => {
+  console.log('[nav] shell:openExternal IPC:', url);
   if (!url || !/^https?:\/\//i.test(url)) return;
   try { shell.openExternal(url); } catch {}
 });
