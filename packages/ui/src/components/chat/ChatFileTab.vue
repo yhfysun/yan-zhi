@@ -61,7 +61,7 @@
             :prefix-icon="Search"
             class="fs-filter"
           />
-          <div class="fs-tree">
+          <div class="fs-tree" @scroll="onTreeScroll">
             <template v-for="node in treeNodes" :key="node.relPath || '__root__'">
               <div
                 v-for="row in flattenTree(node)"
@@ -86,7 +86,7 @@
             <div v-if="treeLoading" class="fs-hint">加载中…</div>
             <div v-else-if="treeError" class="fs-hint fs-hint-err">{{ treeError }}</div>
             <div v-else-if="treeEntries.length === 0" class="fs-hint">目录为空</div>
-            <div v-if="treeTruncated" class="fs-hint fs-hint-warn">文件过多，已截断显示</div>
+            <div v-else-if="loadingMore" class="fs-hint">加载更多…</div>
           </div>
         </div>
 
@@ -177,7 +177,9 @@ interface TreeRow extends TreeEntry { depth: number }
 const treeEntries = ref<TreeEntry[]>([]);
 const treeLoading = ref(false);
 const treeError = ref('');
-const treeTruncated = ref(false);
+const treeHasMore = ref(false);
+const loadingMore = ref(false);
+const TREE_PAGE_SIZE = 2000;
 const expandedDirs = ref<Set<string>>(new Set());
 const filterText = ref('');
 const searchText = ref('');
@@ -187,12 +189,12 @@ async function loadTree() {
   treeLoading.value = true;
   treeError.value = '';
   try {
-    const r = await api.get<{ root: string; entries: TreeEntry[]; truncated: boolean }>(
-      `/workspace/tree?dir=${encodeURIComponent(activeDir.value)}`,
+    const r = await api.get<{ root: string; entries: TreeEntry[]; hasMore: boolean }>(
+      `/workspace/tree?dir=${encodeURIComponent(activeDir.value)}&offset=0&limit=${TREE_PAGE_SIZE}`,
     );
     if ('data' in r) {
       treeEntries.value = r.data.entries || [];
-      treeTruncated.value = !!r.data.truncated;
+      treeHasMore.value = !!r.data.hasMore;
       // 默认展开顶层目录
       const next = new Set(expandedDirs.value);
       for (const e of treeEntries.value) {
@@ -201,15 +203,45 @@ async function loadTree() {
       expandedDirs.value = next;
     } else {
       treeEntries.value = [];
+      treeHasMore.value = false;
       treeError.value = (r as any).error || '加载失败';
     }
   } catch (e: any) {
     treeEntries.value = [];
+    treeHasMore.value = false;
     treeError.value = e?.message || '加载失败';
   } finally {
     treeLoading.value = false;
   }
 }
+
+/** 滚动触底追加下一页（DFS 顺序稳定，offset = 已加载条数） */
+async function loadMore() {
+  if (loadingMore.value || treeLoading.value || !treeHasMore.value || !activeDir.value) return;
+  loadingMore.value = true;
+  try {
+    const r = await api.get<{ root: string; entries: TreeEntry[]; hasMore: boolean }>(
+      `/workspace/tree?dir=${encodeURIComponent(activeDir.value)}&offset=${treeEntries.value.length}&limit=${TREE_PAGE_SIZE}`,
+    );
+    if ('data' in r) {
+      treeEntries.value = treeEntries.value.concat(r.data.entries || []);
+      treeHasMore.value = !!r.data.hasMore;
+    }
+  } catch { /* 静默：下一轮滚动重试 */ }
+  finally { loadingMore.value = false; }
+}
+
+function onTreeScroll(e: Event) {
+  const el = e.target as HTMLElement;
+  if (el.scrollTop + el.clientHeight >= el.scrollHeight - 60) loadMore();
+}
+
+// 搜索按文件名匹配需覆盖全部文件：还有未加载页时静默拉全
+watch(searchText, (q) => {
+  if (q.trim() && treeHasMore.value && !treeLoading.value) {
+    (async () => { while (treeHasMore.value) { await loadMore(); if (loadingMore.value) break; } })();
+  }
+});
 
 // 目录切换 / 目录内容可能被智能体改动：重新拉取
 watch(activeDir, () => {
