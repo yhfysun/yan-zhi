@@ -7,6 +7,32 @@ const crypto = require('crypto');
 const http = require('http');
 
 let mainWindow = null;
+
+// ============================================================
+// userData 目录固定与历史数据迁移（productName 言智 → yan-zhi 配套）
+// db / keyring / models / server-data 全存在 Electron 默认 userData
+// （%APPDATA%\<productName>）下，productName 改名后默认目录随之变化。
+// 这里显式固定为 %APPDATA%\yan-zhi，首次启动时把历史目录整体搬入，
+// 避免升级后数据库、本地模型"全丢"。必须在 ready 前执行。
+// ============================================================
+(function migrateUserDataDir() {
+  const userDataRoot = path.join(app.getPath('appData'), 'yan-zhi');
+  const legacyCandidates = [
+    path.join(app.getPath('appData'), '言智'),                 // 0.1.x（productName=言智）
+    path.join(app.getPath('appData'), '@yan-zhi', 'desktop'), // 更早（包名 fallback）
+    path.join(app.getPath('appData'), '@yan-zhidesktop'),     // 更早变体
+  ];
+  if (!fs.existsSync(userDataRoot)) {
+    const legacy = legacyCandidates.find((p) => fs.existsSync(p));
+    if (legacy) {
+      // 同盘 rename 瞬时完成；失败（跨盘/占用）退化为递归复制
+      try { fs.renameSync(legacy, userDataRoot); }
+      catch { try { fs.cpSync(legacy, userDataRoot, { recursive: true }); } catch {} }
+    }
+  }
+  app.setPath('userData', userDataRoot);
+})();
+
 let serverProcess = null;
 let tray = null;
 let isQuitting = false;

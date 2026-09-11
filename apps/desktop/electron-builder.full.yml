@@ -1,5 +1,5 @@
 appId: com.yanzhi.desktop
-productName: 言智
+productName: yan-zhi
 directories:
   output: ../../dist-release
 # 同 lite：原生模块 ABI 由 fix-sqlite-binding.cjs（postinstall）处理，跳过 node-gyp 重编译

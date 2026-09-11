@@ -138,3 +138,10 @@ apps/desktop/release-lite-v4-prev/
 apps/desktop/release2/
 apps/desktop/release3/
 apps/desktop/release4/
+
+# electron-build.cjs 重定位输出时生成的临时配置
+apps/desktop/electron-builder.*.relocated.yml
+
+# 重定位构建输出与临时垃圾
+yanzhi-dist-release/
+_tmp_*
