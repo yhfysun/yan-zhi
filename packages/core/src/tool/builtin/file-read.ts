@@ -45,7 +45,7 @@ function stripInline(html: string): string {
     .trim();
 }
 
-function htmlToMarkdown(html: string): string {
+export function htmlToMarkdown(html: string): string {
   let s = html;
   // 1) 表格 → 管道表
   s = s.replace(/<table[\s\S]*?<\/table>/gi, (tbl) => {

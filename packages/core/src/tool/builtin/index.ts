@@ -1,4 +1,5 @@
 export { FileReadTool } from './file-read';
+export { FileToMarkdownTool } from './file-to-markdown';
 export { FileWriteTool } from './file-write';
 export { FileEditTool } from './file-edit';
 export { FileGrepTool } from './file-grep';
@@ -29,6 +30,7 @@ export { ImageAnalyzeTool } from './image-analyze';
 export { CompareProductsTool } from './compare-products';
 
 import { FileReadTool } from './file-read';
+import { FileToMarkdownTool } from './file-to-markdown';
 import { FileWriteTool } from './file-write';
 import { FileEditTool } from './file-edit';
 import { FileGrepTool } from './file-grep';
@@ -61,6 +63,8 @@ import type { ToolRegistry } from '../registry';
 /** 注册所有内置工具到 registry（web_search 已移除，联网查询统一委派 pageAgent） */
 export function registerBuiltInTools(registry: ToolRegistry): void {
   registry.register(new FileReadTool());
+  // 办公文档 → Markdown（LLM 先转 md 再用 file_read 分段读，避免直接读 office 文件）
+  registry.register(new FileToMarkdownTool());
   registry.register(new FileWriteTool());
   // 文件编辑（局部替换）与文件内容搜索（正则+上下文）——补齐「精准编辑 + 定位」能力
   registry.register(new FileEditTool());
