@@ -225,6 +225,29 @@ async function freePort(port, label) {
   }
 }
 
+/**
+ * 清理残留的 Electron 主进程（旧窗口）。
+ * freePort 按端口杀，但旧 Electron 主窗口不占 1420/3001（它只是 loadURL 加载 vite），
+ * 所以必须在启动新 Electron 之前按命令行特征过滤杀掉，否则重跑会叠出多个窗口，
+ * 用户容易点到 pull 之前的旧窗口，误以为"代码没更新"。
+ * 匹配条件：进程名是 electron，且命令行含本项目特征（apps/desktop 或 --dev 或仓库根路径）。
+ */
+async function killLingeringElectron() {
+  if (!OPT.kill) return;
+  const rootPattern = ROOT.replace(/\\/g, '\\\\');
+  const cmd = IS_WIN
+    ? `Get-CimInstance Win32_Process | Where-Object { ($_.Name -eq 'electron.exe') -and ($_.CommandLine -match 'apps.DEdesktop|--dev|${rootPattern}') } | ForEach-Object { $_.ProcessId }`
+    : `ps aux | grep -E 'electron.*apps/desktop|electron.*--dev' | grep -v grep | awk '{print $2}'`;
+  const out = capture(IS_WIN ? 'powershell' : 'bash', IS_WIN ? ['-NoProfile', '-Command', cmd] : ['-c', cmd]);
+  const pids = out.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+  if (!pids.length) return;
+  for (const pid of pids) {
+    log(`清理残留 Electron 主进程 pid=${pid}`);
+    if (IS_WIN) await run('taskkill', ['/PID', pid, '/T', '/F'], { silent: true, cwd: ROOT });
+    else await run('kill', ['-9', pid], { silent: true });
+  }
+}
+
 function waitForPort(port, timeoutMs = 90000) {
   const started = Date.now();
   return new Promise((resolve, reject) => {
@@ -534,6 +557,9 @@ async function main() {
     if (/^ELECTRON_/i.test(k)) electronEnv[k] = undefined; // 置 undefined 即从子环境删除
   }
   log('  env 净化: 已剥离 ELECTRON_* 变量，NODE_OPTIONS 置空');
+
+  // 清理残留 Electron 主进程（旧窗口不占端口，freePort 杀不到；不清理会叠窗口导致看到旧界面）
+  await killLingeringElectron();
 
   let gpuRetry = false;
   const launchElectron = (extraArgs) => {
