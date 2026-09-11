@@ -22,6 +22,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     readFile: (p) => ipcRenderer.invoke('fs:readFile', p),
     readFileBase64: (p) => ipcRenderer.invoke('fs:readFileBase64', p),
     writeFile: (p, content) => ipcRenderer.invoke('fs:writeFile', p, content),
+    writeFileBase64: (p, b64) => ipcRenderer.invoke('fs:writeFileBase64', p, b64),
     exists: (p) => ipcRenderer.invoke('fs:exists', p),
     homeDir: () => ipcRenderer.invoke('fs:homeDir'),
     mkdir: (p) => ipcRenderer.invoke('fs:mkdir', p),

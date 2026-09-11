@@ -60,6 +60,10 @@ const fsAdapter: FsAdapter = {
     await mkdir(path.dirname(filePath), { recursive: true }).catch(() => undefined);
     await writeFile(filePath, content, 'utf8');
   },
+  async writeFileBase64(filePath: string, b64: string) {
+    await mkdir(path.dirname(filePath), { recursive: true }).catch(() => undefined);
+    await writeFile(filePath, Buffer.from(b64, 'base64'));
+  },
   async exists(filePath: string) {
     return stat(filePath).then(() => true).catch(() => false);
   },

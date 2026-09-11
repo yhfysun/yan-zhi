@@ -13,11 +13,41 @@
       <div v-if="kind === 'image'" class="fp-image-wrap">
         <img :src="imageSrc" :alt="file.name" class="fp-image" />
       </div>
-      <!-- PDF -->
-      <iframe v-else-if="kind === 'pdf'" :src="pdfSrc" class="fp-pdf" frameborder="0"></iframe>
+      <!-- PDF：分页文本（提取失败降级为暂不支持卡片） -->
+      <div v-else-if="kind === 'pdf'" class="fp-pdf-pages">
+        <div v-for="(p, i) in pdfPages" :key="i" class="fp-pdf-page">
+          <div class="fp-pdf-page-tag">第 {{ i + 1 }} / {{ pdfTotal }} 页</div>
+          <pre class="fp-pdf-page-text">{{ p || '（本页无可提取文本，可能是扫描件/图片页）' }}</pre>
+        </div>
+      </div>
+      <!-- Excel：工作表 tab + 表格 -->
+      <template v-else-if="kind === 'excel'">
+        <div class="fp-sheet-tabs">
+          <button
+            v-for="(s, i) in excelSheets"
+            :key="s.name"
+            class="fp-sheet-tab"
+            :class="{ active: i === activeSheet }"
+            @click="activeSheet = i"
+          >{{ s.name }}</button>
+        </div>
+        <div class="fp-table-wrap">
+          <table class="fp-table">
+            <thead><tr><th v-for="(c, i) in activeSheetRows[0]" :key="'h' + i">{{ c }}</th></tr></thead>
+            <tbody>
+              <tr v-for="(row, r) in activeSheetRows.slice(1)" :key="r">
+                <td v-for="(c, i) in row" :key="i">{{ c }}</td>
+              </tr>
+            </tbody>
+          </table>
+          <div v-if="activeSheetTruncated" class="fp-hint fp-table-hint">超过 500 行，仅显示前 500 行</div>
+        </div>
+      </template>
+      <!-- Word（.docx）：mammoth HTML -->
+      <div v-else-if="kind === 'word'" class="fp-docx" v-html="docxHtml"></div>
       <!-- CSV 表格化（首行为表头，>1000 行截断） -->
-      <div v-else-if="kind === 'csv'" class="fp-csv-wrap">
-        <table class="fp-csv">
+      <div v-else-if="kind === 'csv'" class="fp-table-wrap">
+        <table class="fp-table">
           <thead><tr><th v-for="(c, i) in csvRows[0]" :key="'h' + i">{{ c }}</th></tr></thead>
           <tbody>
             <tr v-for="(row, r) in csvBodyRows" :key="r">
@@ -25,7 +55,7 @@
             </tr>
           </tbody>
         </table>
-        <div v-if="csvTruncated" class="fp-hint">超过 1000 行，仅显示前 1000 行</div>
+        <div v-if="csvTruncated" class="fp-hint fp-table-hint">超过 1000 行，仅显示前 1000 行</div>
       </div>
       <!-- Markdown / 纯文本（代码块带复制按钮） -->
       <div v-else-if="kind === 'text' && isMd" class="fp-text" @click="onContentClick" v-html="renderedMd"></div>
@@ -34,11 +64,11 @@
         <div class="fp-lns">{{ lineNos }}</div>
         <pre class="hljs fp-code"><code v-html="renderedCode"></code></pre>
       </div>
-      <!-- 二进制 -->
+      <!-- 暂不支持：二进制/未知格式，干净提示 + 下载 -->
       <div v-else class="fp-binary">
         <el-icon :size="40"><Document /></el-icon>
         <p>{{ file.name }}</p>
-        <p class="fp-hint">{{ humanSize }} · 二进制文件，无法预览</p>
+        <p class="fp-hint">{{ humanSize }} · {{ unsupportedNote || '暂不支持预览' }}</p>
         <el-button size="small" @click="download">下载文件</el-button>
       </div>
     </template>
@@ -51,6 +81,7 @@ import MarkdownIt from 'markdown-it';
 import hljs from 'highlight.js';
 import { Document } from '@element-plus/icons-vue';
 import { API_BASE } from '../api/client';
+import { extractExcelSheets, extractDocxHtml, extractPdfPages, type ExcelSheet } from '@yan-zhi/core';
 
 const props = defineProps<{ file: { name: string; path: string } }>();
 const emit = defineEmits<{ (e: 'close'): void }>();
@@ -60,8 +91,17 @@ const error = ref('');
 const content = ref('');
 const truncated = ref(false);
 const imageSrc = ref('');
-const pdfSrc = ref('');
-const kind = ref<'image' | 'pdf' | 'text' | 'csv' | 'binary'>('text');
+const kind = ref<'image' | 'pdf' | 'excel' | 'word' | 'text' | 'csv' | 'binary'>('text');
+const byteSize = ref(0);
+const unsupportedNote = ref('');
+// PDF 分页文本
+const pdfPages = ref<string[]>([]);
+const pdfTotal = ref(0);
+// Excel 工作表
+const excelSheets = ref<ExcelSheet[]>([]);
+const activeSheet = ref(0);
+// Word HTML
+const docxHtml = ref('');
 
 const md = new MarkdownIt({
   html: false,
@@ -80,16 +120,19 @@ const ext = computed(() => props.file.name.split('.').pop()?.toLowerCase() || ''
 const isMd = computed(() => ['md', 'markdown', 'txt'].includes(ext.value) || !ext.value);
 
 const kindBadge = computed(() => {
-  if (kind.value === 'image') return '图片';
-  if (kind.value === 'pdf') return 'PDF';
-  if (kind.value === 'csv') return 'CSV';
-  if (kind.value === 'binary') return '二进制';
-  if (isMd.value) return 'Markdown';
-  return ext.value.toUpperCase() || '文本';
+  switch (kind.value) {
+    case 'image': return '图片';
+    case 'pdf': return 'PDF';
+    case 'excel': return 'Excel';
+    case 'word': return 'Word';
+    case 'csv': return 'CSV';
+    case 'binary': return '二进制';
+    default: return isMd.value ? 'Markdown' : (ext.value.toUpperCase() || '文本');
+  }
 });
 
 const humanSize = computed(() => {
-  const bytes = new Blob([content.value]).size;
+  const bytes = byteSize.value || new Blob([content.value]).size;
   if (bytes < 1024) return bytes + ' B';
   if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
   return (bytes / 1024 / 1024).toFixed(1) + ' MB';
@@ -114,6 +157,10 @@ const lineNos = computed(() => {
   for (let i = 1; i <= n; i++) parts.push(String(i));
   return parts.join('\n');
 });
+
+// ===== Excel 工作表 =====
+const activeSheetRows = computed<string[][]>(() => excelSheets.value[activeSheet.value]?.rows || []);
+const activeSheetTruncated = computed(() => excelSheets.value[activeSheet.value]?.truncated || false);
 
 // ===== CSV 表格化 =====
 const CSV_MAX_ROWS = 1000;
@@ -147,6 +194,14 @@ function parseCsv(s: string): string[][] {
 }
 
 const IMG_EXTS = ['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'ico', 'bmp'];
+const EXCEL_EXTS = ['xlsx', 'xls'];
+const PDF_EXTS = ['pdf'];
+const WORD_EXTS = ['docx'];
+const TEXT_EXTS = new Set([
+  'md', 'markdown', 'txt', 'log', 'json', 'py', 'js', 'ts', 'jsx', 'tsx', 'vue', 'html', 'htm', 'css', 'scss', 'less',
+  'xml', 'yaml', 'yml', 'ini', 'cfg', 'conf', 'env', 'sh', 'bat', 'ps1', 'sql', 'java', 'kt', 'go', 'rs', 'c', 'h',
+  'cpp', 'hpp', 'cs', 'php', 'rb', 'swift', 'toml', 'properties', 'gitignore', 'lock',
+]);
 
 /** 图片扩展名 → data URL 的 MIME 类型 */
 function imgMime(ext: string): string {
@@ -168,38 +223,113 @@ async function loadFile() {
   content.value = '';
   truncated.value = false;
   imageSrc.value = '';
-  pdfSrc.value = '';
+  pdfPages.value = [];
+  pdfTotal.value = 0;
+  excelSheets.value = [];
+  activeSheet.value = 0;
+  docxHtml.value = '';
+  byteSize.value = 0;
+  unsupportedNote.value = '';
   try {
     const { getPlatformAdapter } = await import('@yan-zhi/core');
     const adapter = getPlatformAdapter();
-    if (IMG_EXTS.includes(ext.value)) {
+    const e = ext.value;
+
+    if (IMG_EXTS.includes(e)) {
       // 二进制图片：以 base64 读取原始字节，构造 data URL 才能正确渲染
       const b64 = await adapter.fs.readFileBase64(props.file.path);
-      imageSrc.value = `data:${imgMime(ext.value)};base64,${b64}`;
+      imageSrc.value = `data:${imgMime(e)};base64,${b64}`;
+      byteSize.value = Math.floor(b64.length * 3 / 4);
       kind.value = 'image';
-    } else if (ext.value === 'pdf') {
-      const b64 = await adapter.fs.readFileBase64(props.file.path);
-      pdfSrc.value = `data:application/pdf;base64,${b64}`;
-      kind.value = 'pdf';
-    } else {
-      const raw = await adapter.fs.readFile(props.file.path);
-      if (typeof raw === 'string') {
-        if (raw.length >= TEXT_LIMIT) {
-          content.value = raw.slice(0, TEXT_LIMIT);
-          truncated.value = true;
-        } else {
-          content.value = raw;
-        }
-        kind.value = ext.value === 'csv' ? 'csv' : 'text';
-      } else {
+      return;
+    }
+
+    if (PDF_EXTS.includes(e)) {
+      // PDF：unpdf 提取分页文本；失败（如浏览器端 worker 不可用）降级为暂不支持
+      try {
+        const b64 = await adapter.fs.readFileBase64(props.file.path);
+        byteSize.value = Math.floor(b64.length * 3 / 4);
+        const { totalPages, pages } = await extractPdfPages(b64);
+        pdfTotal.value = totalPages;
+        pdfPages.value = pages;
+        kind.value = 'pdf';
+      } catch {
         kind.value = 'binary';
+        unsupportedNote.value = '暂不支持预览';
       }
+      return;
+    }
+
+    if (EXCEL_EXTS.includes(e)) {
+      try {
+        const b64 = await adapter.fs.readFileBase64(props.file.path);
+        byteSize.value = Math.floor(b64.length * 3 / 4);
+        excelSheets.value = await extractExcelSheets(b64);
+        kind.value = 'excel';
+      } catch {
+        kind.value = 'binary';
+        unsupportedNote.value = '暂不支持预览';
+      }
+      return;
+    }
+
+    if (WORD_EXTS.includes(e)) {
+      try {
+        const b64 = await adapter.fs.readFileBase64(props.file.path);
+        byteSize.value = Math.floor(b64.length * 3 / 4);
+        docxHtml.value = await extractDocxHtml(b64);
+        kind.value = 'word';
+      } catch {
+        kind.value = 'binary';
+        unsupportedNote.value = '暂不支持预览';
+      }
+      return;
+    }
+
+    if (e === 'csv') {
+      const raw = await adapter.fs.readFile(props.file.path);
+      content.value = raw.length >= TEXT_LIMIT ? raw.slice(0, TEXT_LIMIT) : raw;
+      truncated.value = raw.length >= TEXT_LIMIT;
+      kind.value = 'csv';
+      return;
+    }
+
+    // 文本类：扩展名白名单内直接读；白名单外也尝试读，但检测到二进制特征（空字节/大量替换符）转暂不支持
+    if (TEXT_EXTS.has(e) || !e) {
+      const raw = await adapter.fs.readFile(props.file.path);
+      if (raw.length >= TEXT_LIMIT) {
+        content.value = raw.slice(0, TEXT_LIMIT);
+        truncated.value = true;
+      } else {
+        content.value = raw;
+      }
+      kind.value = 'text';
+      return;
+    }
+
+    const raw = await adapter.fs.readFile(props.file.path);
+    const isBinary = raw.includes('\u0000') || countReplacement(raw) > Math.min(raw.length, 2000) * 0.1;
+    if (isBinary) {
+      kind.value = 'binary';
+      unsupportedNote.value = e === 'doc' ? '旧版 .doc 不支持预览，建议另存为 .docx' : '暂不支持预览';
+    } else {
+      content.value = raw.length >= TEXT_LIMIT ? raw.slice(0, TEXT_LIMIT) : raw;
+      truncated.value = raw.length >= TEXT_LIMIT;
+      kind.value = 'text';
     }
   } catch (e: any) {
     error.value = '读取文件失败: ' + (e?.message || e);
   } finally {
     loading.value = false;
   }
+}
+
+/** 统计替换符数量（UTF-8 解码二进制时产生 U+FFFD），取前 2000 字符为样本 */
+function countReplacement(s: string): number {
+  let n = 0;
+  const sample = s.slice(0, 2000);
+  for (let i = 0; i < sample.length; i++) if (sample[i] === '\uFFFD') n++;
+  return n;
 }
 
 /** v-html 内容的事件委托：代码块复制按钮 */
@@ -244,7 +374,29 @@ watch(() => props.file?.path, () => { if (props.file?.path) loadFile(); }, { imm
 .fp-loading, .fp-error { padding: 40px; text-align: center; color: var(--el-text-color-secondary); }
 .fp-image-wrap { text-align: center; padding: 12px; }
 .fp-image { max-width: 100%; max-height: 70vh; border-radius: 4px; }
-.fp-pdf { width: 100%; height: 70vh; border: 0; border-top: 1px solid var(--el-border-color-lighter); }
+/* PDF 分页文本 */
+.fp-pdf-pages { flex: 1; overflow: auto; padding: 12px; }
+.fp-pdf-page { border: 1px solid var(--el-border-color-lighter); border-radius: 6px; margin-bottom: 12px; overflow: hidden; }
+.fp-pdf-page-tag { padding: 4px 10px; font-size: 11px; color: var(--el-text-color-secondary); background: var(--el-fill-color-light); border-bottom: 1px solid var(--el-border-color-lighter); }
+.fp-pdf-page-text { margin: 0; padding: 12px; font-size: 13px; line-height: 1.7; white-space: pre-wrap; word-break: break-word; font-family: inherit; color: var(--el-text-color-primary); }
+/* Excel 工作表 tab */
+.fp-sheet-tabs { display: flex; gap: 4px; padding: 8px 12px 0; flex-shrink: 0; border-bottom: 1px solid var(--el-border-color-lighter); overflow-x: auto; }
+.fp-sheet-tab {
+  padding: 4px 12px; font-size: 12px; border: 1px solid transparent; border-bottom: none;
+  border-radius: 6px 6px 0 0; background: transparent; color: var(--el-text-color-secondary);
+  cursor: pointer; white-space: nowrap;
+}
+.fp-sheet-tab.active { background: var(--el-bg-color); border-color: var(--el-border-color-lighter); color: var(--el-color-primary); font-weight: 600; }
+/* Word（mammoth HTML） */
+.fp-docx { flex: 1; overflow: auto; padding: 16px 20px; font-size: 13px; line-height: 1.7; color: var(--el-text-color-primary); }
+.fp-docx :deep(h1) { font-size: 20px; margin: 16px 0 8px; }
+.fp-docx :deep(h2) { font-size: 17px; margin: 14px 0 8px; }
+.fp-docx :deep(h3), .fp-docx :deep(h4), .fp-docx :deep(h5), .fp-docx :deep(h6) { font-size: 15px; margin: 12px 0 6px; }
+.fp-docx :deep(p) { margin: 6px 0; }
+.fp-docx :deep(ul), .fp-docx :deep(ol) { padding-left: 20px; margin: 6px 0; }
+.fp-docx :deep(table) { border-collapse: collapse; margin: 8px 0; width: 100%; }
+.fp-docx :deep(th), .fp-docx :deep(td) { border: 1px solid var(--el-border-color-lighter); padding: 4px 8px; font-size: 12px; text-align: left; }
+.fp-docx :deep(th) { background: var(--el-fill-color-light); font-weight: 600; }
 .fp-text { font-size: 13px; line-height: 1.6; padding: 12px; }
 .fp-text :deep(pre) { background: var(--el-fill-color-dark); padding: 12px; border-radius: 6px; overflow: auto; margin: 8px 0; position: relative; }
 .fp-text :deep(code) { font-family: 'Consolas', 'Monaco', monospace; font-size: 12px; }
@@ -267,15 +419,16 @@ watch(() => props.file?.path, () => { if (props.file?.path) loadFile(); }, { imm
 }
 :deep(pre:hover .fp-copy-btn) { opacity: 1; }
 :deep(.fp-copy-btn:hover) { color: var(--el-color-primary); border-color: var(--el-color-primary); }
-/* CSV 表格 */
-.fp-csv-wrap { flex: 1; overflow: auto; padding: 12px; }
-.fp-csv { border-collapse: collapse; font-size: 12px; width: 100%; }
-.fp-csv th, .fp-csv td {
+/* 表格（CSV / Excel 共用） */
+.fp-table-wrap { flex: 1; overflow: auto; padding: 12px; }
+.fp-table { border-collapse: collapse; font-size: 12px; width: 100%; }
+.fp-table th, .fp-table td {
   border: 1px solid var(--el-border-color-lighter); padding: 5px 10px;
   text-align: left; white-space: nowrap; max-width: 320px; overflow: hidden; text-overflow: ellipsis;
 }
-.fp-csv th { background: var(--el-fill-color-light); position: sticky; top: 0; font-weight: 600; }
-.fp-csv tr:hover td { background: var(--el-fill-color-lighter); }
+.fp-table th { background: var(--el-fill-color-light); position: sticky; top: 0; font-weight: 600; }
+.fp-table tr:hover td { background: var(--el-fill-color-lighter); }
+.fp-table-hint { padding-top: 8px; color: var(--el-text-color-secondary); }
 .fp-binary { text-align: center; padding: 40px; color: var(--el-text-color-secondary); display: flex; flex-direction: column; align-items: center; gap: 8px; }
 .fp-hint { font-size: 12px; }
 </style>
@@ -295,9 +448,9 @@ watch(() => props.file?.path, () => { if (props.file?.path) loadFile(); }, { imm
 .hljs-strong { font-weight: 600; }
 [data-theme="dark"] .hljs { color: #c9d1d9; }
 [data-theme="dark"] .hljs-comment, [data-theme="dark"] .hljs-quote { color: #8b949e; }
-[data-theme="dark"] .hljs-keyword, [data-theme="dark"] .hljs-selector-tag, [data-theme="dark"] .hljs-meta-keyword, [data-theme="dark"] .hljs-doctag, [data-theme="dark"] .hljs-template-tag { color: #ff7b72; }
+[data-theme="dark"] .hljs-keyword, [data-theme="dark"] .hljs-selector-tag, [data-theme="dark"] .hljs-doctag, [data-theme="dark"] .hljs-template-tag { color: #ff7b72; }
 [data-theme="dark"] .hljs-string, [data-theme="dark"] .hljs-regexp, [data-theme="dark"] .hljs-addition, [data-theme="dark"] .hljs-meta-string { color: #a5d6ff; }
-[data-theme="dark"] .hljs-number, [data-theme="dark"] .hljs-literal, [data-theme="dark"] .hljs-variable, [data-theme="dark"] .hljs-template-variable, [data-theme="dark"] .hljs-attr, [data-theme="dark"] .hljs-attribute { color: #79c0ff; }
+[data-theme="dark"] .hljs-number, [data-theme="dark"] .hljs-literal, [data-theme="dark"] .hljs-variable, [data-theme="dark"] .hljs-attr, [data-theme="dark"] .hljs-attribute { color: #79c0ff; }
 [data-theme="dark"] .hljs-title, [data-theme="dark"] .hljs-title.class_, [data-theme="dark"] .hljs-title.function_, [data-theme="dark"] .hljs-section, [data-theme="dark"] .hljs-name { color: #d2a8ff; }
 [data-theme="dark"] .hljs-type, [data-theme="dark"] .hljs-built_in, [data-theme="dark"] .hljs-builtin-name, [data-theme="dark"] .hljs-symbol, [data-theme="dark"] .hljs-bullet, [data-theme="dark"] .hljs-link { color: #ffa657; }
 [data-theme="dark"] .hljs-deletion { color: #ffd7d9; }

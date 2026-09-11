@@ -2528,6 +2528,8 @@ ipcMain.handle('fs:readFileBase64', async (e, p) => {
 
 ipcMain.handle('fs:writeFile', (e, p, content) => fsp.writeFile(p, content, 'utf-8'));
 
+ipcMain.handle('fs:writeFileBase64', (e, p, b64) => fsp.writeFile(p, Buffer.from(b64, 'base64')));
+
 ipcMain.handle('fs:exists', (e, p) => fs.existsSync(p));
 
 // 用户主目录（SFTP 本地栏的起始目录）

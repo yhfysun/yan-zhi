@@ -1618,7 +1618,13 @@ function createChat() {
             const newName = fileId + '_' + f.name;
             const newPath = filesDir + '/' + newName;
             try {
-              await adapter.fs.writeFile(newPath, f.dataUrl);
+              // dataUrl → 剥出 base64 按原始字节落盘（此前直接把 dataUrl 当文本写入，二进制文件全损坏）
+              const m = f.dataUrl.match(/^data:[^;,]*;base64,([\s\S]+)$/);
+              if (m) {
+                await adapter.fs.writeFileBase64(newPath, m[1]);
+              } else {
+                await adapter.fs.writeFile(newPath, f.dataUrl);
+              }
               await useFileStore().registerFile({
                 conversationId: convId, name: f.name, path: newPath,
                 category: 'upload', mimeType: f.type, size: f.size, source: 'user',
@@ -1644,14 +1650,14 @@ function createChat() {
           try {
             const { getPlatformAdapter } = await import('@yan-zhi/core');
             const adapter = getPlatformAdapter();
-            const fileContent = await adapter.fs.readFile(f.path);
             const ext = f.name.split('.').pop()?.toLowerCase();
-            const excelExts = ['xlsx', 'xls', 'csv'];
             let preview: string;
-            if (excelExts.includes(ext || '')) {
+            if (ext === 'xlsx' || ext === 'xls') {
+              // xlsx/xls 是二进制 zip，必须 base64 读取后解析，按 UTF-8 文本读会得到乱码
               try {
+                const b64 = await adapter.fs.readFileBase64(f.path);
                 const XLSX = await import('xlsx');
-                const wb = XLSX.read(fileContent, { type: 'string' });
+                const wb = XLSX.read(b64, { type: 'base64' });
                 const parts: string[] = [];
                 for (const sheetName of wb.SheetNames) {
                   const ws = wb.Sheets[sheetName];
@@ -1660,8 +1666,9 @@ function createChat() {
                   parts.push('Sheet: ' + sheetName + '\n' + lines.join('\n'));
                 }
                 preview = parts.join('\n\n');
-              } catch { preview = fileContent.slice(0, 500); }
+              } catch { preview = '(Excel 文件解析失败)'; }
             } else {
+              const fileContent = await adapter.fs.readFile(f.path);
               preview = fileContent.split('\n').slice(0, 6).join('\n');
             }
             fileRefs.push({
@@ -1834,7 +1841,13 @@ function createChat() {
           reader.onload = () => resolve(reader.result as string);
           reader.readAsDataURL(f);
         });
-        await adapter.fs.writeFile(newPath, content);
+        // dataUrl → 剥出 base64 按原始字节落盘（此前直接写 dataUrl 文本，二进制文件全损坏）
+        const m = content.match(/^data:[^;,]*;base64,([\s\S]+)$/);
+        if (m) {
+          await adapter.fs.writeFileBase64(newPath, m[1]);
+        } else {
+          await adapter.fs.writeFile(newPath, content);
+        }
         if (store.currentConvId) {
           try {
             await fileStore.registerFile({

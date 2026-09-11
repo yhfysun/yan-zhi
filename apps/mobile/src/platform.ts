@@ -64,6 +64,10 @@ class MobileFs implements FsAdapter {
   async writeFile(path: string, content: string): Promise<void> {
     await Filesystem.writeFile({ path, data: content, directory: Directory.Data, encoding: Encoding.UTF8, recursive: true });
   }
+  async writeFileBase64(path: string, b64: string): Promise<void> {
+    // 不传 encoding：Capacitor 将 data 按 base64 解码写入二进制
+    await Filesystem.writeFile({ path, data: b64, directory: Directory.Data, recursive: true });
+  }
   async exists(path: string): Promise<boolean> {
     try {
       await Filesystem.stat({ path, directory: Directory.Data });

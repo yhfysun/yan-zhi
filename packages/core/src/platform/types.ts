@@ -22,6 +22,8 @@ export interface FsAdapter {
   /** 以 base64 读取文件原始字节（用于图片/PDF 等二进制内容的预览） */
   readFileBase64(path: string): Promise<string>;
   writeFile(path: string, content: string): Promise<void>;
+  /** 以 base64 写入二进制文件（用于上传图片/PDF/Office 文档的原始字节落盘） */
+  writeFileBase64(path: string, b64: string): Promise<void>;
   exists(path: string): Promise<boolean>;
   mkdir(path: string): Promise<void>;
   remove(path: string): Promise<void>;

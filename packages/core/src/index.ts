@@ -10,6 +10,7 @@ export * from './db/schema';
 export * from './skill/loader';
 export * from './tool';
 export * from './plugin';
+export * from './preview';
 export {
   localListBases,
   localCreateBase,
