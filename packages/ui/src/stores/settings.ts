@@ -8,6 +8,45 @@ import { usePluginStore } from './plugin';
 export type ThemeName = string;
 export const BUILTIN_THEME_NAMES = ['cinnabar', 'ink', 'indigo', 'pine', 'clay'] as const;
 
+/** 皮肤表面定制（与 @yan-zhi/core ThemePalette['surface'] 结构一致，此处局部声明避免循环依赖） */
+type SkinSurface = {
+  glass?: string;
+  glassDark?: string;
+  glassAlpha?: number;
+  glassAlphaDark?: number;
+  border?: string;
+  borderDark?: string;
+  radius?: number;
+  buttonRadius?: number;
+  buttonText?: string;
+};
+
+/** ===== 颜色工具：hex 解析 / 混色 / WCAG 对比度 ===== */
+function hexToRgb(hex: string): [number, number, number] {
+  let h = hex.replace('#', '');
+  if (h.length === 3) h = h.split('').map((c) => c + c).join('');
+  const n = parseInt(h, 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+function mixHex(a: string, b: string, t: number): string {
+  const [r1, g1, b1] = hexToRgb(a);
+  const [r2, g2, b2] = hexToRgb(b);
+  const m = (x: number, y: number) => Math.round(x + (y - x) * t);
+  return '#' + [m(r1, r2), m(g1, g2), m(b1, b2)].map((v) => v.toString(16).padStart(2, '0')).join('');
+}
+function luminance(hex: string): number {
+  const [r, g, b] = hexToRgb(hex).map((v) => {
+    const c = v / 255;
+    return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+  });
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+function contrastRatio(a: string, b: string): number {
+  const l1 = luminance(a);
+  const l2 = luminance(b);
+  return (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05);
+}
+
 export interface AppSettings {
   theme: ThemeName;
   darkMode: boolean;
@@ -311,7 +350,18 @@ export const useSettingsStore = defineStore('settings', () => {
     }
     if (!p) return;
     const root = document.documentElement.style;
-    root.setProperty('--color-primary', p.primary);
+    const dark = settings.value.darkMode;
+    const bg = dark ? '#141414' : '#ffffff';
+
+    // ===== 主色：按对比度选可读变体 =====
+    // EP 实心按钮 = primary 背景 + 白字 → primary 与白色对比度不足 4.5 时用 primaryDark，
+    // 否则粉/青类中饱和色按钮上的白字看不清（典型如 #E86A8A 对白仅 ~2.9:1）。
+    const btnPrimary = contrastRatio(p.primary, '#ffffff') >= 4.5 ? p.primary : (p.primaryDark || p.primary);
+    // 文字/链接强调色：深色模式取与深底对比达标的变体（不足则向白混 35%）
+    const textPrimary = dark
+      ? (contrastRatio(p.primary, bg) >= 4.5 ? p.primary : mixHex(p.primary, '#ffffff', 0.35))
+      : btnPrimary;
+    root.setProperty('--color-primary', textPrimary);
     root.setProperty('--color-primary-light', p.primaryLight);
     root.setProperty('--color-primary-dark', p.primaryDark);
     root.setProperty('--color-accent', p.accent);
@@ -319,14 +369,15 @@ export const useSettingsStore = defineStore('settings', () => {
     root.setProperty('--orb-1-color', p.orb1);
     root.setProperty('--orb-2-color', p.orb2);
     root.setProperty('--orb-3-color', p.orb3);
-    // Element Plus 主色同步，避免按钮/输入框 focus 环仍停留在旧紫
-    root.setProperty('--el-color-primary', p.primary);
-    root.setProperty('--el-color-primary-light-3', p.primaryLight);
-    root.setProperty('--el-color-primary-light-5', p.primaryLight);
-    root.setProperty('--el-color-primary-light-7', p.primaryLight);
-    root.setProperty('--el-color-primary-light-8', p.primaryLight);
-    root.setProperty('--el-color-primary-light-9', p.primaryLight);
-    root.setProperty('--el-color-primary-dark-2', p.primaryDark);
+    // Element Plus 主色族：light-N 按标准混色公式（向当前模式背景色混合），
+    // 替代旧写法「全部拍平成 primaryLight」——那是按钮 plain/disabled 态看不清的根因
+    root.setProperty('--el-color-primary', btnPrimary);
+    root.setProperty('--el-color-primary-light-3', mixHex(btnPrimary, bg, 0.3));
+    root.setProperty('--el-color-primary-light-5', mixHex(btnPrimary, bg, 0.5));
+    root.setProperty('--el-color-primary-light-7', mixHex(btnPrimary, bg, 0.7));
+    root.setProperty('--el-color-primary-light-8', mixHex(btnPrimary, bg, 0.8));
+    root.setProperty('--el-color-primary-light-9', mixHex(btnPrimary, bg, 0.9));
+    root.setProperty('--el-color-primary-dark-2', mixHex(btnPrimary, '#000000', 0.2));
 
     // ===== 皮肤（带壁纸）应用：标记 data-skin 供 skin.css 切换毛玻璃表面，写入壁纸变量 =====
     const el = document.documentElement;
@@ -336,6 +387,21 @@ export const useSettingsStore = defineStore('settings', () => {
       root.setProperty('--skin-mask', String(p.wallpaper.mask ?? 0.45));
       root.setProperty('--skin-blur', `${p.wallpaper.blur ?? 12}px`);
       el.setAttribute('data-skin', 'on');
+
+      // ===== 表面定制：玻璃面板底色/边框/圆角/按钮（缺省回落默认玻璃质感） =====
+      const sf = (p as { surface?: SkinSurface }).surface;
+      const tint = dark ? (sf?.glassDark ?? '#1d1d1c') : (sf?.glass ?? '#ffffff');
+      const alpha = dark ? (sf?.glassAlphaDark ?? 0.78) : (sf?.glassAlpha ?? 0.86);
+      const border = dark ? (sf?.borderDark ?? sf?.border) : sf?.border;
+      root.setProperty('--skin-glass-tint', tint);
+      root.setProperty('--skin-glass-alpha', String(alpha));
+      root.setProperty('--skin-glass-alpha-hover', String(Math.min(alpha + 0.07, 1)));
+      if (border) root.setProperty('--skin-glass-border', border);
+      else root.removeProperty('--skin-glass-border');
+      root.setProperty('--skin-radius', `${sf?.radius ?? 12}px`);
+      root.setProperty('--skin-btn-radius', `${sf?.buttonRadius ?? 6}px`);
+      const autoBtnText = contrastRatio(btnPrimary, '#ffffff') >= 4.5 ? '#ffffff' : (dark ? '#F2F0EA' : '#141414');
+      root.setProperty('--skin-btn-text', sf?.buttonText ?? autoBtnText);
     } else {
       el.removeAttribute('data-skin');
       root.removeProperty('--app-wallpaper');

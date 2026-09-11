@@ -213,7 +213,7 @@ type SkinTheme = { id: string; name: string; category?: string; preview?: string
 const allSkins = computed<SkinTheme[]>(() =>
   (pluginStore.themes as Array<SkinTheme & { kind?: string }>).filter((t) => t.kind === 'skin'),
 );
-const SKIN_CATEGORY_ORDER = ['动漫', '风景', '美图', '简约'];
+const SKIN_CATEGORY_ORDER = ['动漫', '动物', '植物', '风景', '明星', '黑白', '美图', '传统文化', '太极', '简约'];
 const skinCategories = computed(() => {
   const seen: string[] = [];
   for (const s of allSkins.value) {

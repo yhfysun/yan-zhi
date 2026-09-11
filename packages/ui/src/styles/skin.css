@@ -51,8 +51,8 @@
   --color-text-secondary: #4A4A45;
   --color-text-tertiary: #71706A;
 
-  --glass-bg: rgba(255, 255, 255, 0.86);
-  --glass-bg-hover: rgba(255, 255, 255, 0.93);
+  --glass-bg: color-mix(in srgb, var(--skin-glass-tint, #ffffff) calc(var(--skin-glass-alpha, 0.86) * 100%), transparent);
+  --glass-bg-hover: color-mix(in srgb, var(--skin-glass-tint, #ffffff) calc(var(--skin-glass-alpha-hover, 0.93) * 100%), transparent);
   --glass-filter: blur(18px) saturate(1.25);
 
   --el-bg-color: var(--glass-bg);
@@ -75,8 +75,8 @@
   --color-text-secondary: #B8B8B0;
   --color-text-tertiary: #8E8E86;
 
-  --glass-bg: rgba(29, 29, 28, 0.78);
-  --glass-bg-hover: rgba(38, 38, 36, 0.86);
+  --glass-bg: color-mix(in srgb, var(--skin-glass-tint, #1d1d1c) calc(var(--skin-glass-alpha, 0.78) * 100%), transparent);
+  --glass-bg-hover: color-mix(in srgb, var(--skin-glass-tint, #1d1d1c) calc(var(--skin-glass-alpha-hover, 0.86) * 100%), transparent);
   --glass-filter: blur(18px) saturate(1.15);
 
   --el-bg-color: var(--glass-bg);
@@ -232,4 +232,45 @@
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
   }
+}
+
+/* ===== 皮肤表面定制（surface 配置下发）：弹层边框色 / 圆角 / 按钮 / 应用描边 =====
+   --skin-glass-border/--skin-radius/--skin-btn-radius/--skin-btn-text 由 applyTheme 按
+   主题 surface 块写入（深浅色分别解析），未配置时回落本主题默认值 */
+
+/* 弹层边框色随皮肤（置于原 token 规则之后，同特异性下后写生效） */
+[data-skin="on"] .el-dialog,
+[data-skin="on"] .el-drawer,
+[data-skin="on"] .el-message-box,
+[data-skin="on"] .el-popper.is-light {
+  border-color: var(--skin-glass-border, var(--glass-border-strong));
+}
+/* 弹窗/下拉/应用菜单：圆角随皮肤 */
+[data-skin="on"] .el-dialog,
+[data-skin="on"] .el-popper.is-light,
+[data-skin="on"] .app-menu-list {
+  border-radius: var(--skin-radius, 12px);
+}
+/* 预览窗口（文件预览 / 内置浏览器）：边框 + 圆角随皮肤 */
+[data-skin="on"] .file-preview,
+[data-skin="on"] .browser-shell {
+  border: 1px solid var(--skin-glass-border, transparent);
+  border-radius: var(--skin-radius, 12px);
+}
+/* 按钮：圆角随皮肤；实心主按钮文字色随皮肤（plain/text/link 字色走主色逻辑，不错杀） */
+[data-skin="on"] .el-button {
+  border-radius: var(--skin-btn-radius, 6px);
+}
+[data-skin="on"] .el-button--primary:not(.is-plain):not(.is-text):not(.is-link) {
+  --el-button-text-color: var(--skin-btn-text, #ffffff);
+}
+/* 应用边缘描边：窗口最外圈 1px 随皮肤边框色（modal 遮罩打开时自然被盖住） */
+[data-skin="on"] body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+  border: 1px solid var(--skin-glass-border, transparent);
+  opacity: 0.55;
 }

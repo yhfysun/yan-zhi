@@ -54,6 +54,30 @@ export interface ThemePalette {
     accent: string;
     background: string;
   }>;
+  /**
+   * 皮肤表面定制（按钮/弹窗/边框/圆角/玻璃面板），kind='skin' 时生效。
+   * 全部可选，缺省回落默认玻璃质感；深浅色模式可分别指定。
+   */
+  surface?: {
+    /** 浅色模式玻璃面板底色 tint（弹窗/侧栏/预览窗/卡片毛玻璃），默认 #ffffff */
+    glass?: string;
+    /** 深色模式玻璃面板底色 tint，默认 #1d1d1c */
+    glassDark?: string;
+    /** 浅色模式玻璃不透明度 0~1（越大越实），默认 0.86 */
+    glassAlpha?: number;
+    /** 深色模式玻璃不透明度，默认 0.78 */
+    glassAlphaDark?: number;
+    /** 浅色模式表面边框色（弹窗/抽屉/预览窗/应用边缘描边） */
+    border?: string;
+    /** 深色模式表面边框色 */
+    borderDark?: string;
+    /** 全局表面圆角 px（弹窗/卡片/预览窗/菜单），默认 12 */
+    radius?: number;
+    /** 按钮圆角 px（el-button），默认 6 */
+    buttonRadius?: number;
+    /** 实心主按钮文字色（缺省按主色对比度自动：浅主色→墨字，深主色→白字） */
+    buttonText?: string;
+  };
 }
 
 /** 布局定义（component 为前端组件路径，由 usePluginStore 解析） */
