@@ -55,6 +55,10 @@
             <div class="user-dropdown-header">
               <span class="user-dropdown-name">{{ authStore.user?.username }}</span>
             </div>
+            <el-dropdown-item command="/ops">
+              <el-icon><Monitor /></el-icon>
+              <span>运维控制台</span>
+            </el-dropdown-item>
             <el-dropdown-item command="/settings">
               <el-icon><Setting /></el-icon>
               <span>设置</span>

@@ -13,15 +13,39 @@ import type {
 import { pickToken, recordFailure, recordSuccess } from './services/token-pool.js';
 import { serverState } from './state.js';
 
+// 服务端 database adapter：委托真实的 better-sqlite3 实例（./db.ts 的 db）。
+// 注意：此处绝不能是空实现 —— @yan-zhi/core 的 PluginManager 依赖 adapter.db 建表与读写
+// plugin / plugin_storage，空实现会导致建表语句静默失效（曾致运维控制台连接保存后列表为空）。
+// 走动态 import 避免循环依赖（db.ts 本身不依赖本模块）。
+async function getDb() {
+  const { db } = await import('./db.js');
+  return db;
+}
+
 const dbAdapter: DatabaseAdapter = {
-  async exec() {
-    // 服务端工具通过 better-sqlite3 访问数据，不经过此适配器。
+  async exec(sql: string, params?: unknown[]) {
+    const db = await getDb();
+    // 带参 → 预编译执行；无参 → 交给 exec（可含多条语句 / 建表 DDL）
+    if (params && params.length) db.prepare(sql).run(...(params as never[]));
+    else db.exec(sql);
   },
-  async query() {
-    return [];
+  async query<T>(sql: string, params?: unknown[]): Promise<T[]> {
+    const db = await getDb();
+    return db.prepare(sql).all(...((params || []) as never[])) as T[];
   },
-  async transaction(fn) {
-    return fn();
+  // better-sqlite3 是同步 API，这里用 BEGIN/COMMIT 包裹异步回调仅为接口对齐；
+  // 插件系统的实际写入都是单条语句，不依赖此处的原子性。
+  async transaction<T>(fn: () => Promise<T>): Promise<T> {
+    const db = await getDb();
+    db.exec('BEGIN');
+    try {
+      const result = await fn();
+      db.exec('COMMIT');
+      return result;
+    } catch (e) {
+      try { db.exec('ROLLBACK'); } catch { /* ignore */ }
+      throw e;
+    }
   },
 };
 

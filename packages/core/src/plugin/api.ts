@@ -18,7 +18,7 @@ export interface CreateCtxDeps {
 
 /** 构造受限的 PluginContext（adapter 按 permissions 过滤） */
 export function createPluginContext(deps: CreateCtxDeps): PluginContext {
-  const adapter = createSandboxedAdapter(deps.adapter, deps.manifest.permissions || []);
+  const adapter = createSandboxedAdapter(deps.adapter, deps.manifest.permissions || [], deps.pluginId);
   return {
     id: deps.pluginId,
     log: deps.log || ((...args) => console.log(`[plugin:${deps.pluginId}]`, ...args)),

@@ -245,7 +245,7 @@ const PERM_LABELS: Record<string, string> = {
   fs: '文件系统读写',
   shell: '执行系统命令',
   git: 'Git 操作',
-  db: '数据库读写',
+  db: '数据库读写（仅插件自有表）',
   network: '网络请求',
   clipboard: '剪贴板',
   'desktop-input': '控制鼠标键盘（电脑使用）',

@@ -2530,6 +2530,9 @@ ipcMain.handle('fs:writeFile', (e, p, content) => fsp.writeFile(p, content, 'utf
 
 ipcMain.handle('fs:exists', (e, p) => fs.existsSync(p));
 
+// 用户主目录（SFTP 本地栏的起始目录）
+ipcMain.handle('fs:homeDir', () => app.getPath('home'));
+
 ipcMain.handle('fs:mkdir', (e, p) => fsp.mkdir(p, { recursive: true }));
 
 ipcMain.handle('fs:remove', (e, p) => fsp.rm(p, { recursive: true, force: true }));
@@ -2546,6 +2549,24 @@ ipcMain.handle('fs:listDirEntries', async (e, p) => {
     path: path.join(p, entry.name),
     isDir: entry.isDirectory(),
   }));
+});
+
+// 带 size/mtime 的目录列举（SFTP 文件管理器的本地栏用；与 listDirEntries 分离以免拖慢递归遍历类工具）
+ipcMain.handle('fs:listDetailed', async (e, p) => {
+  const entries = await fsp.readdir(p, { withFileTypes: true });
+  return Promise.all(
+    entries.map(async (entry) => {
+      const full = path.join(p, entry.name);
+      let size = 0;
+      let mtime = 0;
+      try {
+        const st = await fsp.lstat(full); // lstat：不跟随符号链接，链接失效也不抛
+        size = st.size;
+        mtime = st.mtimeMs;
+      } catch { /* 无法读取时保持 0 */ }
+      return { name: entry.name, path: full, isDir: entry.isDirectory(), size, mtime };
+    }),
+  );
 });
 
 // ============================================================
@@ -2620,6 +2641,16 @@ ipcMain.handle('dialog:showOpenDir', async (_e, options) => {
   });
   if (result.canceled || !result.filePaths.length) return null;
   return result.filePaths[0];
+});
+
+// 多选文件（SFTP 上传），返回绝对路径数组；取消返回 []
+ipcMain.handle('dialog:showOpenFiles', async () => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    properties: ['openFile', 'multiSelections'],
+    title: '选择要上传的文件',
+  });
+  if (result.canceled || !result.filePaths.length) return [];
+  return result.filePaths;
 });
 
 // ============================================================

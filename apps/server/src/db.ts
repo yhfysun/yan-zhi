@@ -751,6 +751,21 @@ const OPS_AGENT_BUILTIN_TOOLS = [
   'plugin_ops-shell__docker_restart',
   // 数据库连接只读查询（database 类型连接，写操作一律拒绝）
   'plugin_ops-shell__db_query',
+  // 资源管理：连接 / 目录（让模型能在对话里直接建资源）
+  'plugin_ops-shell__conn_list',
+  'plugin_ops-shell__conn_create',
+  'plugin_ops-shell__conn_update',
+  'plugin_ops-shell__conn_delete',
+  'plugin_ops-shell__conn_move',
+  'plugin_ops-shell__group_create',
+  'plugin_ops-shell__group_rename',
+  'plugin_ops-shell__group_delete',
+  // 文件管理（SFTP）：查看 / 建目录 / 改名 / 备份 / 删除
+  'plugin_ops-shell__sftp_list',
+  'plugin_ops-shell__sftp_mkdir',
+  'plugin_ops-shell__sftp_rename',
+  'plugin_ops-shell__sftp_backup',
+  'plugin_ops-shell__sftp_delete',
   // 用户交互与任务规划
   'task_plan', 'task_step', 'ask_user', 'confirm_user',
 ];
@@ -758,9 +773,17 @@ const OPS_AGENT_BUILTIN_TOOLS = [
 const OPS_AGENT_SYSTEM_PROMPT = `你是运维助手（opsAgent），负责在用户的运维连接上执行任务。连接分三类：SSH 服务器（命令/文件）、Docker 宿主机（容器管理）、数据库（只读 SQL）。
 
 ## 工具与连接
-- 所有 ssh_*/docker_*/db_query 工具都需要 connection 参数（连接名称）。用户消息通常会带「当前选定连接：<名称>（类型）」，优先用它；用户明确指定其他连接名时用指定的。
-- 连接在「运维控制台」中管理；没有可用连接时如实告知用户先到「更多 → 运维 → 新建连接」添加。
-- 类型匹配：ssh_*/docker_* 只能用于 ssh/docker 类型连接；db_query 只能用于 database 类型连接，用错类型会收到明确报错，换对应连接重试。
+- 所有 ssh_*/docker_*/db_query/sftp_* 工具都需要 connection 参数（连接名称）。用户消息通常会带「当前选定连接：<名称>（类型）」，优先用它；用户明确指定其他连接名时用指定的。
+- 连接在「运维控制台」中管理，但你也可以直接用 conn_create 帮用户建连接，不必让用户自己去界面点。
+- 类型匹配：ssh_*/docker_* 只能用于 ssh/docker 类型连接；db_query 只能用于 database 类型连接；sftp_* 不能用于 database 类型连接。用错类型会收到明确报错，换对应连接重试。
+
+## 资源与文件管理（可直接在对话里建资源）
+- conn_list：先调它看清现有连接与资源目录（改动资源前必做，同时拿到准确的连接名 / 目录名）。
+- conn_create / conn_update / conn_delete / conn_move：新建、修改、删除连接，以及把连接移动到目录。
+- group_create / group_rename / group_delete：资源目录的增 / 改 / 删。
+- sftp_list / sftp_mkdir / sftp_rename / sftp_backup / sftp_delete：看远程目录、建目录、改名、备份、删文件。
+- 用户说「建一个连接」时，缺的参数一次性问清（名称 / 主机 / 端口 / 用户名 / 密码或私钥 / 类型 / 归属目录），不要来回追问。
+- **改远程配置文件前先 sftp_backup 备份原文件再改**，这是默认习惯。
 
 ## 工作流程
 1. 先理解任务，需要的先探查：docker_ps 看容器、ssh_exec 跑只读命令（ps/df/free/journalctl 等）确认现状、db_query 跑 SHOW TABLES / SELECT 摸清表结构与数据量。
@@ -1701,6 +1724,35 @@ db.exec(`
     key TEXT PRIMARY KEY,
     value TEXT,
     updated_at INTEGER NOT NULL
+  );
+`);
+
+// ===== 插件系统（plugin / plugin_storage）=====
+// 这两张表是插件系统的持久化真相源：plugin 存 manifest/启停状态，plugin_storage 存插件私有 KV
+// （ops-shell 的连接、审计记录等都落在这里）。
+// 历史坑：@yan-zhi/core 的 PluginManager.ensureSchema() 也声明建表，但它走 adapter.db.exec，
+// 而 server 侧 adapter 曾为空实现 → 建表静默失效；且本文件此前未包含这两张表 →
+// 表从未创建，表现为「新增连接保存成功但列表永远为空」。
+// 注意 plugin_storage 不设外键：插件可写非 plugin 行的私有标记（如 __app__ 迁移标记）。
+db.exec(`
+  CREATE TABLE IF NOT EXISTS plugin (
+    id           TEXT PRIMARY KEY,
+    manifest     TEXT NOT NULL,
+    state        TEXT NOT NULL,
+    config       TEXT,
+    version      TEXT NOT NULL,
+    source       TEXT NOT NULL,
+    error        TEXT,
+    installed_at INTEGER NOT NULL,
+    updated_at   INTEGER NOT NULL
+  );
+`);
+db.exec(`
+  CREATE TABLE IF NOT EXISTS plugin_storage (
+    plugin_id TEXT NOT NULL,
+    key       TEXT NOT NULL,
+    value     TEXT,
+    PRIMARY KEY (plugin_id, key)
   );
 `);
 

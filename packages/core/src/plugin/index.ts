@@ -2,6 +2,7 @@
 export * from './types';
 export * from './registry';
 export * from './permissions';
+export * from './sandbox-db';
 export * from './manifest';
 export * from './api';
 export * from './loader';

@@ -1,4 +1,4 @@
-const { ipcRenderer, contextBridge } = require('electron');
+const { ipcRenderer, contextBridge, webUtils } = require('electron');
 
 // 通过 contextBridge 安全地暴露 API 到渲染进程
 contextBridge.exposeInMainWorld('electronAPI', {
@@ -23,10 +23,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
     readFileBase64: (p) => ipcRenderer.invoke('fs:readFileBase64', p),
     writeFile: (p, content) => ipcRenderer.invoke('fs:writeFile', p, content),
     exists: (p) => ipcRenderer.invoke('fs:exists', p),
+    homeDir: () => ipcRenderer.invoke('fs:homeDir'),
     mkdir: (p) => ipcRenderer.invoke('fs:mkdir', p),
     remove: (p) => ipcRenderer.invoke('fs:remove', p),
     readDir: (p) => ipcRenderer.invoke('fs:readDir', p),
     listDirEntries: (p) => ipcRenderer.invoke('fs:listDirEntries', p),
+    // 带 size/mtime 的目录列举（SFTP 本地栏用）
+    listDetailed: (p) => ipcRenderer.invoke('fs:listDetailed', p),
   },
 
   // Keyring
@@ -39,6 +42,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 原生对话框
   dialog: {
     showOpenDir: (options) => ipcRenderer.invoke('dialog:showOpenDir', options),
+    // 多选文件（options 可选；返回绝对路径数组，取消返回 []）
+    showOpenFiles: () => ipcRenderer.invoke('dialog:showOpenFiles'),
+  },
+
+  // 文件路径解析：拖拽 / <input type=file> 得到的 File 转绝对路径（Electron 32+ 移除 File.path）
+  getPathForFile: (file) => {
+    try {
+      return webUtils.getPathForFile(file);
+    } catch {
+      return null;
+    }
   },
 
   // 剪贴板
