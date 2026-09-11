@@ -25,7 +25,8 @@ apps/desktop/src-tauri/Cargo.lock
 dist-release/
 dist-release2/
 dist-download/
-apps/desktop/build/
+apps/desktop/build/*
+!apps/desktop/build/installer.nsh
 apps/desktop/runtime/
 apps/desktop/release-lite/
 apps/desktop/release/
