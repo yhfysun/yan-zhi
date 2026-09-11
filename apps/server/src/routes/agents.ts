@@ -1,7 +1,7 @@
 // 智能体完整 CRUD 路由（本地智能体数据统一归后端）。
 // 前端只负责展示/交互，智能体定义（含工作流/挂载/子智能体）存 server agent 表。
 // 归属：guest 为默认身份（桌面内置 server / web 未登录）；放开登录后按 user_id 隔离。
-// 内置智能体（默认 AI 助手、pageAgent）is_public=1 全局可见，user_id 归 guest 兜底。
+// 内置智能体（默认日常办公助手、pageAgent）is_public=1 全局可见，user_id 归 guest 兜底。
 import { Router, Request, Response } from 'express';
 import { v4 as uuid } from 'uuid';
 import { authMiddleware } from '../auth.js';

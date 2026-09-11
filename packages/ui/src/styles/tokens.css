@@ -95,6 +95,11 @@
   --menu-item-h: 34px;
   --menu-item-h-mobile: 44px;
 
+  /* ===== 次级控件基面：默认按钮/图标按钮/输入型小控件统一引用（皮肤层会覆盖为玻璃） ===== */
+  --btn-bg: rgba(26, 26, 26, 0.04);
+  --btn-bg-hover: rgba(26, 26, 26, 0.08);
+  --btn-border: rgba(26, 26, 26, 0.08);
+
   /* ===== 毛玻璃统一开关：默认关闭（实色更快更干净），仅大图/地图背景区块覆盖启用 ===== */
   --surface-blur: none;
 }
@@ -167,4 +172,8 @@
   --el-fill-color-dark: #33332F;
 
   --overlay-shadow: 0 12px 40px rgba(0, 0, 0, 0.55), 0 2px 8px rgba(0, 0, 0, 0.40);
+
+  --btn-bg: rgba(255, 255, 255, 0.06);
+  --btn-bg-hover: rgba(255, 255, 255, 0.10);
+  --btn-border: rgba(255, 255, 255, 0.10);
 }

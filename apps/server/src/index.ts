@@ -36,6 +36,7 @@ import pluginRoutes, { pluginAssetsRouter, PLUGINS_DIR } from './routes/plugins.
 import gitRoutes from './routes/git.js';
 import datasourceRoutes from './routes/datasources.js';
 import sqlConsoleRoutes from './routes/sql-console.js';
+import localConsoleRoutes from './routes/local-console.js';
 import queryContractRoutes from './routes/query-contract.js';
 import ontologyRoutes from './routes/ontologies.js';
 import llmProxyRoutes from './routes/llm-proxy.js';
@@ -97,6 +98,10 @@ app.use('/api/peers', peersRoutes);
 app.use('/api/im', imRoutes);
 app.use('/api/datasources', datasourceRoutes);
 app.use('/api/sql-console', sqlConsoleRoutes);
+// 本机控制台（任务侧栏）：移动端无本地 shell 场景，跳过注册
+if (!process.env.MOBILE_MODE) {
+  app.use('/api/local-console', localConsoleRoutes);
+}
 app.use('/api/query-contract', queryContractRoutes);
 app.use('/api/ontologies', ontologyRoutes);
 app.use('/api/std-attributes', stdAttributeRoutes);
@@ -181,7 +186,7 @@ try {
   if (r.seeded.length) console.log(`[agnes] 已为用户初始化平台: ${r.seeded.join(', ')}`);
 } catch (e) { console.warn('[agnes] 初始化平台失败:', e); }
 
-// 内置「调研报告生成流水线」智能体：幂等 seed（首次创建 / 版本升级覆盖修正）+ LLM 节点模型自动回填
+// 内置「调研报告生成助手」智能体：幂等 seed（首次创建 / 版本升级覆盖修正）+ LLM 节点模型自动回填
 try {
   const s = seedBuiltinWorkflowAgents(db);
   if (s.seeded.length) console.log(`[builtin-wf] 已内置工作流智能体: ${s.seeded.join(', ')}`);
@@ -218,16 +223,37 @@ try {
     await mgr.init();
     // 注册内置插件
     await mgr.registerBuiltin(gitExplorerManifest, gitExplorerModule);
-    // computer-use 高危权限（desktop-input），默认 disabled（仅首次注册生效，之后随 DB 状态），需在插件管理页手动开启
+    // computer-use 高危权限（desktop-input）：产品口径为内置插件默认开启（用户仍可在插件管理页停用）
     // 移动端（MOBILE_MODE）无桌面输入环境，跳过注册避免运行时崩溃
     if (!process.env.MOBILE_MODE) {
-      await mgr.registerBuiltin(computerUseManifest, computerUseModule, false);
+      await mgr.registerBuiltin(computerUseManifest, computerUseModule, true);
     }
     // 内置皮肤包：纯声明式（contributes.themes + 静态壁纸），默认启用，设置→皮肤库切换
     await registerBuiltinSkins();
-    // ops-shell 高危权限（remote-shell），默认 disabled，需在插件管理页手动开启；移动端跳过
+    // ops-shell 高危权限（remote-shell）：同上默认开启；移动端跳过
     if (!process.env.MOBILE_MODE) {
-      await mgr.registerBuiltin(opsShellManifest, opsShellModule, false);
+      await mgr.registerBuiltin(opsShellManifest, opsShellModule, true);
+    }
+    // 旧库一次性迁移：本版本起内置高危插件默认开启（新装库在 registerBuiltin 首次注册即启用；
+    // 旧库已存在 disabled 行不会被动到），按标记只执行一次，之后用户停用状态永久尊重
+    if (!process.env.MOBILE_MODE) {
+      try {
+        const MARKER_KEY = 'builtin_plugins_default_on_v1';
+        const done = db
+          .prepare("SELECT value FROM plugin_storage WHERE plugin_id='__app__' AND key=?")
+          .get(MARKER_KEY);
+        if (!done) {
+          for (const id of ['computer-use', 'ops-shell']) {
+            const p = mgr.get(id);
+            if (p && p.state === 'disabled') await mgr.enable(id);
+          }
+          db
+            .prepare("INSERT OR REPLACE INTO plugin_storage (plugin_id,key,value) VALUES ('__app__',?,?)")
+            .run(MARKER_KEY, JSON.stringify(Date.now()));
+        }
+      } catch (e) {
+        console.warn('[plugin] 内置插件默认开启迁移失败:', e);
+      }
     }
     // 已安装插件重启恢复：loadFromDb 只恢复了状态，入口模块未绑定（enabled 状态下工具/路由未注册），扫描目录补绑
     try {

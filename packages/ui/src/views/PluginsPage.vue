@@ -13,13 +13,3 @@
 <script setup lang="ts">
 import PluginManager from '../components/plugin/PluginManager.vue';
 </script>
-
-<style scoped>
-.plugin-manager {
-  background: var(--glass-bg);
-  backdrop-filter: var(--glass-filter);
-  border: 1px solid var(--glass-border);
-  border-radius: var(--radius-md);
-  padding: 16px;
-}
-</style>

@@ -152,7 +152,7 @@ const ROUTE_TITLES: Record<string, string> = {
 
 const pageTitle = computed(() => {
   const name = typeof route.name === 'string' ? route.name : '';
-  return ROUTE_TITLES[name] || 'AI 助手';
+  return ROUTE_TITLES[name] || '日常办公助手';
 });
 
 authStore.loadUser();
@@ -253,7 +253,7 @@ body {
     justify-content: center;
     font-size: 13px;
     font-weight: 700;
-    background: linear-gradient(135deg, rgba(124, 58, 237, 0.15), rgba(236, 72, 153, 0.15));
+    background: linear-gradient(135deg, var(--color-primary-light), color-mix(in srgb, var(--color-primary) 8%, transparent));
     color: var(--color-primary);
     cursor: pointer;
     user-select: none;
@@ -270,16 +270,10 @@ body {
 .el-button:hover { filter: brightness(1.03); }
 .el-button:active { filter: brightness(0.97); }
 .el-button:not(.el-button--text):not(.el-button--primary):not(.el-button--success):not(.el-button--warning):not(.el-button--danger) {
-  background: rgba(15,23,42,0.04); border-color: transparent;
+  background: var(--btn-bg); border-color: transparent;
 }
 .el-button:not(.el-button--text):not(.el-button--primary):not(.el-button--success):not(.el-button--warning):not(.el-button--danger):hover {
-  background: rgba(15,23,42,0.08); border-color: rgba(15,23,42,0.1);
-}
-[data-theme="dark"] .el-button:not(.el-button--text):not(.el-button--primary):not(.el-button--success):not(.el-button--warning):not(.el-button--danger) {
-  background: rgba(255,255,255,0.06);
-}
-[data-theme="dark"] .el-button:not(.el-button--text):not(.el-button--primary):not(.el-button--success):not(.el-button--warning):not(.el-button--danger):hover {
-  background: rgba(255,255,255,0.1);
+  background: var(--btn-bg-hover); border-color: var(--btn-border);
 }
 
 /* Modernize el-button loading spinner: brand-color stroke + dash animation + rounded caps */
@@ -327,14 +321,14 @@ body {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  background: rgba(15, 23, 42, 0.06);
+  background: var(--btn-bg);
   color: var(--color-text-secondary);
   cursor: pointer;
   user-select: none;
   transition: background-color var(--motion-fast) var(--ease-standard), color var(--motion-fast) var(--ease-standard);
 }
 .mobile-theme-btn:hover {
-  background: rgba(15, 23, 42, 0.1);
+  background: var(--btn-bg-hover);
   color: var(--color-text);
 }
 /* 滚动条已统一收敛至 styles/surface.css */
@@ -456,7 +450,7 @@ body {
 }
 
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
-  .dock-btn { background: rgba(255, 255, 255, 0.95); }
+  .dock-btn { background: var(--glass-bg); }
 }
 
 /* ===== add-card global ===== */
@@ -467,7 +461,7 @@ body {
 }
 .add-card:hover, .marketplace-card.add-card:hover {
   border-color: var(--color-primary);
-  background: rgba(99,102,241,0.05);
+  background: color-mix(in srgb, var(--color-primary) 5%, transparent);
 }
 .add-card-content {
   display: flex; flex-direction: column; align-items: center;
@@ -493,7 +487,7 @@ body {
     padding: 0;
     border-radius: 50%;
     font-size: 0;
-    box-shadow: 0 4px 16px rgba(124, 58, 237, 0.45);
+    box-shadow: 0 4px 16px color-mix(in srgb, var(--color-primary) 45%, transparent);
   }
   .fab-add .el-icon {
     font-size: 18px;
@@ -521,23 +515,23 @@ body {
 .is-electron .card-grid { gap: 12px; }
 .is-electron .card-grid-sm { gap: 8px; }
 
-/* 暗色主题背景（VS Code Catppuccin Mocha 风格） */
+/* 背景统一走 --color-bg（跟随 tokens.css 深浅色 + 皮肤壁纸），不再各自为政 */
 .is-electron [data-theme="dark"] .app-shell {
-  background: #1e1e2e;
+  background: var(--color-bg);
 }
 .is-electron [data-theme="dark"] .app-body {
-  background: #1e1e2e;
+  background: var(--color-bg);
 }
 .is-electron [data-theme="dark"] .main-content {
-  background: #1e1e2e;
+  background: var(--color-bg);
 }
 
-/* 浅色主题背景（VS Code 浅色风格） */
+/* 浅色主题背景 */
 .is-electron :root:not([data-theme="dark"]) .app-shell {
-  background: #f3f3f3;
+  background: var(--color-bg);
 }
 .is-electron :root:not([data-theme="dark"]) .app-body {
-  background: #f3f3f3;
+  background: var(--color-bg);
 }
 
 .local-model-download-dialog .el-dialog__body { padding: 18px 20px; }

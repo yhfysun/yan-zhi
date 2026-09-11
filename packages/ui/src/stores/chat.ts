@@ -144,7 +144,7 @@ export interface ConfirmationAnswer {
 // 替换旧三态互斥模型（rightPanelTab 单枚举 + previewingFile 单值）：
 // 旧模型物理上无法同时打开 2 个文件。新模型 previewTabs[] 并存 + activeTabId 激活。
 // file tab 可多开（按 path 幂等）；browser/git 为单例（内容组件单实例，浏览器内部自管多 tab）。
-export type PreviewTabKind = 'file' | 'browser' | 'git' | 'data';
+export type PreviewTabKind = 'file' | 'browser' | 'git' | 'data' | 'console';
 /** 数据浏览契约：与 shared.InlineDataView 对齐（聊天内嵌与右栏面板公用同一结构） */
 export type DataTabContract = InlineDataView;
 export interface PreviewTab {

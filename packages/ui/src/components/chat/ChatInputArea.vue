@@ -37,6 +37,17 @@
             <el-icon><EditPen /></el-icon>
           </el-button>
         </el-tooltip>
+        <!-- 场景标识（新会话草稿态显示，随首条消息注入场景提示词后不再出现） -->
+        <div
+          v-if="currentScene && !store.currentConvId"
+          class="scene-chip"
+          :style="{ '--scene-color': currentScene.color }"
+          :title="currentScene.desc"
+        >
+          <el-icon :size="12"><component :is="currentScene.icon" /></el-icon>
+          <span class="scene-chip-label">{{ currentScene.label }}</span>
+          <el-icon class="scene-chip-close" :size="10" @click="clearScene"><Close /></el-icon>
+        </div>
       </div>
 
       <el-input
@@ -142,7 +153,7 @@
                 <div class="plus-menu-item" :class="{ 'has-sub-open': hoverSub === 'agents' }" @mouseenter="openSub('agents', $event)" @click="openSub('agents', $event)">
                   <span class="plus-menu-ic agent">{{ (agentStore.selectedAgent?.name || '?').slice(0, 1) }}</span>
                   <div class="plus-menu-info">
-                    <div class="plus-menu-label">专家</div>
+                    <div class="plus-menu-label">助手</div>
                     <div class="plus-menu-desc">{{ agentStore.selectedAgent?.name || '选择智能体' }}</div>
                   </div>
                   <el-icon class="plus-menu-arrow"><ArrowRight /></el-icon>
@@ -212,7 +223,7 @@
                     </div>
                     <div class="plus-menu-item" @click="closePlus(() => openEditAgent(agentStore.selectedAgent))">
                       <span class="plus-menu-ic"><el-icon><EditPen /></el-icon></span>
-                      <div class="plus-menu-info"><div class="plus-menu-label">编辑当前专家</div></div>
+                      <div class="plus-menu-info"><div class="plus-menu-label">编辑当前助手</div></div>
                     </div>
                   </template>
                   <template v-else-if="hoverSub === 'skills'">
@@ -421,6 +432,7 @@ const {
   inputFocused, workspaceDir, hasWorkspaceDir, clearWorkspaceDir, showWorkspaceDir, showMount, store, showSkills, mountedSkillIds,
   skillStore, skillSearch, filteredSkillStore, toggleSkillMount,
   triggerFileUpload, input, send, agentStore, onAgentSwitch, openEditAgent, modelGroups,
+  currentScene, clearScene,
   selectedModelId, onModelChange, openPlatformConfig, startNewChat, uploadedFiles, stopChat,
   formatSize, removeFile, fileInputRef, handleFileChange,
   workspaceFiles, selectedFilePaths, toggleFileSelect,
@@ -664,3 +676,27 @@ function fileTypeMeta(name: string) {
   return FILE_TYPE_META[EXT_GROUP[ext] || 'other'];
 }
 </script>
+
+<style scoped>
+.scene-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 24px;
+  padding: 0 8px;
+  margin-left: 6px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--scene-color);
+  background: color-mix(in srgb, var(--scene-color) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--scene-color) 28%, transparent);
+  white-space: nowrap;
+}
+.scene-chip-close {
+  cursor: pointer;
+  opacity: 0.6;
+  transition: opacity 0.15s ease;
+}
+.scene-chip-close:hover { opacity: 1; }
+</style>

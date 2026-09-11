@@ -1,4 +1,4 @@
-// 内置「调研报告生成流水线」智能体：server 启动时幂等 seed。
+// 内置「调研报告生成助手」智能体：server 启动时幂等 seed。
 // 定义版本 WF_DEF_VERSION 升级时强制覆盖库中副本（用于下发修正），平时仅首次创建、不覆盖用户编辑。
 // 一条 DAG 以真实调研流程覆盖引擎全部 10 种节点类型：
 //   input(主题) → code(生成提纲) → tool(builtin task_plan) → code(拆分调研维度)
@@ -10,7 +10,7 @@ import type Database from 'better-sqlite3';
 export const WF_MAIN_ID = 'a_wf_smoke_all_nodes';
 export const WF_SUB_ID = 'a_wf_smoke_editor';
 /** 内置工作流定义版本：内容/结构修正时 +1，seed 会覆盖库中旧副本。 */
-export const WF_DEF_VERSION = 2;
+export const WF_DEF_VERSION = 3;
 
 function subWorkflow() {
   return {
@@ -106,7 +106,7 @@ function mainWorkflow() {
       config: {
         platformId: '', modelId: '',
         systemPrompt:
-          '你是「调研报告生成流水线」的成稿助手。输入是一段 JSON（子智能体提炼的调研要点）。请输出 150 字以内中文调研简报，结构包含：' +
+          '你是「调研报告生成助手」的成稿助手。输入是一段 JSON（子智能体提炼的调研要点）。请输出 150 字以内中文调研简报，结构包含：' +
           '1) 调研主题；2) 核心发现（合并要点中的现状/驱动/风险三部分）；' +
           '3) 一句话结论与建议。语气客观、条理清晰，不要输出代码块。',
         temperature: 0.3, maxTokens: 512,
@@ -156,13 +156,13 @@ export function seedBuiltinWorkflowAgents(db: Database.Database): { seeded: stri
   const defs = [
     {
       id: WF_SUB_ID,
-      name: '调研要点提炼子智能体',
-      description: '供「调研报告生成流水线」的 sub_agent 节点调用：input → code → output，从主题提炼现状/驱动/风险三方面要点',
+      name: '调研要点提炼子助手',
+      description: '供「调研报告生成助手」的 sub_agent 节点调用：input → code → output，从主题提炼现状/驱动/风险三方面要点',
       workflow: subWorkflow(),
     },
     {
       id: WF_MAIN_ID,
-      name: '调研报告生成流水线',
+      name: '调研报告生成助手',
       description:
         '以真实调研流程覆盖全部 10 种节点：input(主题) → code(生成提纲) → tool(内置 task_plan) → code(拆分维度) → loop(逐维度加工) → ' +
         'memory_write(归档) → memory_read(回查) → condition(有归档: 子智能体提炼 → LLM 成稿 / 否则: code 兜底) → output。入参 { "topic": "..." }。',

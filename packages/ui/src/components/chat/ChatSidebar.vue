@@ -7,6 +7,9 @@
       <div class="sb-tab" :class="{ active: sideTab === 'task' }" @click="sideTab = 'task'">
         <el-icon><Timer /></el-icon> 定时任务
       </div>
+      <div class="sb-tab" :class="{ active: sideTab === 'file' }" @click="sideTab = 'file'">
+        <el-icon><FolderOpened /></el-icon> 文件
+      </div>
     </div>
 
     <div v-if="sideTab === 'chat'" class="conv-list">
@@ -115,8 +118,13 @@
       </div>
     </div>
 
-    <div v-else class="task-tab">
+    <div v-else-if="sideTab === 'task'" class="task-tab">
       <ScheduledTaskDialog />
+    </div>
+
+    <!-- 文件 tab：资源管理器 / 搜索 / Git（竖排视图按钮 + 面板） -->
+    <div v-else class="task-tab file-tab-wrap">
+      <ChatFileTab />
     </div>
   </aside>
 
@@ -181,6 +189,7 @@ import {
 } from '@element-plus/icons-vue';
 import { useChat } from '../../composables/chat/useChat';
 import ScheduledTaskDialog from './ScheduledTaskDialog.vue';
+import ChatFileTab from './ChatFileTab.vue';
 
 const {
   sideTab, search, store, batchMode, toggleConvSelect,

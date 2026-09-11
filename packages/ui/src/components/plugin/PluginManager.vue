@@ -1,40 +1,68 @@
 <template>
   <div class="plugin-manager">
-    <div class="pm-header">
+    <div class="pm-toolbar">
       <div class="pm-cats">
-        <span
+        <button
           :class="['pm-cat-chip', { active: activeCat === '' }]"
           @click="activeCat = ''"
-        >全部 {{ pluginStore.plugins.length }}</span>
-        <span
+        >
+          全部<span class="pm-cat-count">{{ pluginStore.plugins.length }}</span>
+        </button>
+        <button
           v-for="(n, cat) in catCounts"
           :key="cat"
           :class="['pm-cat-chip', { active: activeCat === cat }]"
           @click="activeCat = activeCat === cat ? '' : String(cat)"
-        >{{ cat }} {{ n }}</span>
+        >
+          {{ cat }}<span class="pm-cat-count">{{ n }}</span>
+        </button>
       </div>
       <div class="pm-header-actions">
-        <el-input v-model="keyword" placeholder="搜索" size="small" style="width: 180px" />
-        <el-button
-          v-if="pluginStore.canInstall"
-          size="small"
-          type="primary"
-          style="margin-left: 8px"
-          @click="onInstall"
+        <el-input
+          v-model="keyword"
+          placeholder="搜索插件"
+          clearable
+          class="pm-search"
         >
-          安装插件(.yzp)
+          <template #prefix><el-icon><Search /></el-icon></template>
+        </el-input>
+        <el-button @click="onOpenTemplate">
+          <el-icon style="margin-right: 5px"><Document /></el-icon>开发模板
         </el-button>
-        <el-button size="small" style="margin-left: 8px" @click="onOpenTemplate">开发模板</el-button>
+        <el-button type="primary" @click="onInstall">
+          <el-icon style="margin-right: 5px"><Upload /></el-icon>安装插件 (.yzp)
+        </el-button>
       </div>
     </div>
-    <div v-if="!pluginStore.loaded" class="pm-empty">加载中…</div>
-    <div v-else-if="filtered.length === 0" class="pm-empty">暂无插件</div>
+
+    <div v-if="!pluginStore.loaded" class="pm-empty">
+      <el-skeleton :rows="3" animated style="max-width: 480px" />
+    </div>
+    <div v-else-if="filtered.length === 0" class="pm-empty">
+      <el-empty :description="keyword || activeCat ? '没有匹配的插件' : '暂无插件，安装一个试试'">
+        <el-button v-if="!keyword && !activeCat" type="primary" @click="onInstall">安装插件 (.yzp)</el-button>
+      </el-empty>
+    </div>
     <div v-else class="pm-list">
-      <div v-for="p in filtered" :key="p.manifest.id" class="pm-card">
+      <div v-for="p in filtered" :key="p.manifest.id" class="pm-card" :class="{ 'is-error': p.state === 'error' }">
         <div class="pm-card-head">
-          <span class="pm-name">🧩 {{ p.manifest.name }}</span>
+          <div class="pm-icon"><el-icon :size="20"><Box /></el-icon></div>
+          <div class="pm-title">
+            <span class="pm-name" :title="p.manifest.id">{{ p.manifest.name }}</span>
+            <span class="pm-ver">v{{ p.manifest.version }}</span>
+          </div>
+          <el-switch
+            :model-value="p.state === 'enabled'"
+            size="small"
+            @change="toggle(p)"
+          />
+        </div>
+        <div class="pm-desc">{{ p.manifest.description || '无描述' }}</div>
+        <div class="pm-perms">
           <el-dropdown trigger="click" @command="(cmd: string | number | object) => onPickCategory(p, cmd)">
-            <el-tag size="small" class="pm-cat-tag" :title="'点击修改分类'">{{ categoryOf(p) }}</el-tag>
+            <span class="pm-cat-tag" title="点击修改分类">
+              <el-icon :size="12"><Collection /></el-icon>{{ categoryOf(p) }}
+            </span>
             <template #dropdown>
               <el-dropdown-menu>
                 <el-dropdown-item
@@ -47,35 +75,28 @@
               </el-dropdown-menu>
             </template>
           </el-dropdown>
-          <span class="pm-ver">v{{ p.manifest.version }}</span>
-          <el-switch
-            :model-value="p.state === 'enabled'"
-            size="small"
-            @change="toggle(p)"
-          />
-        </div>
-        <div class="pm-desc">{{ p.manifest.description || '无描述' }}</div>
-        <div class="pm-perms">
-          <el-tag
+          <span
             v-for="perm in p.manifest.permissions || []"
             :key="perm"
-            size="small"
-            type="info"
-          >{{ perm }}</el-tag>
-          <el-tag size="small" :type="p.source === 'builtin' ? 'success' : 'warning'">
+            class="pm-perm-tag"
+            :title="PERM_LABELS[perm] || perm"
+          >{{ PERM_LABELS[perm] || perm }}</span>
+          <span class="pm-source-tag" :class="p.source === 'builtin' ? 'is-builtin' : 'is-installed'">
             {{ p.source === 'builtin' ? '内置' : '已安装' }}
-          </el-tag>
-          <el-tag v-if="p.state === 'error'" size="small" type="danger">错误</el-tag>
+          </span>
+          <span v-if="p.state === 'error'" class="pm-source-tag is-danger">错误</span>
         </div>
         <div v-if="p.error" class="pm-error">{{ p.error }}</div>
         <div class="pm-actions">
-          <el-button size="small" @click="openConfig(p)">配置</el-button>
-          <el-button size="small" @click="openDetail(p)">详情</el-button>
-          <el-button size="small" @click="onExport(p)">导出</el-button>
-          <el-button v-if="p.manifest.id === 'computer-use' && p.state === 'enabled'" size="small" @click="onAudit(p)">记录</el-button>
+          <el-button size="small" text bg @click="openConfig(p)">配置</el-button>
+          <el-button size="small" text bg @click="openDetail(p)">详情</el-button>
+          <el-button size="small" text bg @click="onExport(p)">导出</el-button>
+          <el-button v-if="p.manifest.id === 'computer-use' && p.state === 'enabled'" size="small" text bg @click="onAudit(p)">记录</el-button>
           <el-button
             v-if="p.source !== 'builtin'"
             size="small"
+            text
+            bg
             type="danger"
             @click="onUninstall(p)"
           >卸载</el-button>
@@ -83,16 +104,16 @@
       </div>
     </div>
 
-    <el-dialog v-model="configOpen" title="插件配置" width="500" :close-on-click-modal="false">
-      <el-input v-model="configText" type="textarea" :rows="10" />
+    <el-dialog v-model="configOpen" title="插件配置" width="520" :close-on-click-modal="false">
+      <el-input v-model="configText" type="textarea" :rows="10" class="pm-json-input" />
       <template #footer>
         <el-button @click="configOpen = false">取消</el-button>
         <el-button type="primary" @click="saveConfig">保存</el-button>
       </template>
     </el-dialog>
 
-    <el-dialog v-model="detailOpen" title="插件详情" width="500">
-      <pre class="pm-detail">{{ detailContent }}</pre>
+    <el-dialog v-model="detailOpen" title="插件详情" width="520">
+      <pre class="pm-detail pm-code">{{ detailContent }}</pre>
     </el-dialog>
 
     <!-- 插件开发模板 -->
@@ -132,31 +153,57 @@
     <!-- 安装向导 -->
     <el-dialog v-model="installOpen" title="安装插件" width="520" :close-on-click-modal="false">
       <div v-if="installStep === 'select'" class="install-step">
-        <p class="install-hint">选择本地 .yzp 插件包进行安装。</p>
-        <input ref="fileInputRef" type="file" accept=".yzp" style="display:none" @change="onFileChange" />
-        <el-button type="primary" :loading="installLoading" @click="fileInputRef?.click()">选择 .yzp 文件</el-button>
+        <div
+          class="install-dropzone"
+          :class="{ 'is-dragover': installDragover, 'is-loading': installLoading }"
+          @click="!installLoading && fileInputRef?.click()"
+          @dragover.prevent="installDragover = true"
+          @dragleave.prevent="installDragover = false"
+          @drop.prevent="onDropFile"
+        >
+          <input ref="fileInputRef" type="file" accept=".yzp" style="display: none" @change="onFileChange" />
+          <el-icon :size="32" class="install-dropzone-icon"><UploadFilled /></el-icon>
+          <template v-if="installLoading">
+            <div class="install-dropzone-text">正在解析插件包…</div>
+          </template>
+          <template v-else>
+            <div class="install-dropzone-text">
+              拖拽 <b>.yzp</b> 插件包到此处，或<span class="install-dropzone-link">点击选择文件</span>
+            </div>
+            <div class="install-dropzone-sub">仅支持 .yzp 格式（zip 打包的 manifest.json + 插件源码）</div>
+          </template>
+        </div>
+        <el-alert type="info" :closable="false" show-icon>
+          不会写插件？先在「开发模板」里下载脚手架，改完打包成 .yzp 再回来安装。
+        </el-alert>
       </div>
       <div v-else-if="installStep === 'confirm' && installManifest" class="install-step">
         <div class="install-manifest">
           <div class="install-mh">
-            <span class="install-mname">🧩 {{ installManifest.name }}</span>
-            <span class="install-mver">v{{ installManifest.version }}</span>
+            <div class="pm-icon"><el-icon :size="20"><Box /></el-icon></div>
+            <div>
+              <div class="install-mname">{{ installManifest.name }}</div>
+              <div class="install-mmeta">
+                <span class="install-mver">v{{ installManifest.version }}</span>
+                <span v-if="installManifest.author"> · 作者：{{ installManifest.author }}</span>
+              </div>
+            </div>
           </div>
-          <div v-if="installManifest.author" class="install-mauthor">作者：{{ installManifest.author }}</div>
           <div class="install-mdesc">{{ installManifest.description || '无描述' }}</div>
           <div class="install-mperms">
             <div class="install-perms-title">该插件将获得以下权限：</div>
             <div v-if="(installManifest.permissions || []).length === 0" class="install-no-perm">无额外权限</div>
-            <el-tag v-for="perm in installManifest.permissions || []" :key="perm" size="small" type="warning">
+            <el-tag v-for="perm in installManifest.permissions || []" :key="perm" size="small" type="warning" effect="plain">
               {{ PERM_LABELS[perm] || perm }}
             </el-tag>
           </div>
         </div>
-        <el-alert type="warning" :closable="false" show-icon style="margin-top: 12px">
+        <el-alert type="warning" :closable="false" show-icon>
           请确认你信任此插件来源。插件可在权限范围内访问你的文件系统、执行命令等。
         </el-alert>
       </div>
       <template #footer>
+        <el-button v-if="installStep === 'confirm'" @click="installStep = 'select'">重新选择</el-button>
         <el-button @click="installOpen = false">取消</el-button>
         <el-button
           v-if="installStep === 'confirm'"
@@ -172,6 +219,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
+import { Search, Document, Upload, Box, Collection, UploadFilled } from '@element-plus/icons-vue';
 import { usePluginStore, type PluginInfo } from '../../stores/plugin';
 import { api } from '../../api/client';
 import type { PluginManifest } from '@yan-zhi/core';
@@ -188,6 +236,7 @@ const detailContent = ref('');
 const installOpen = ref(false);
 const installStep = ref<'select' | 'confirm'>('select');
 const installLoading = ref(false);
+const installDragover = ref(false);
 const installBase64 = ref('');
 const installManifest = ref<PluginManifest | null>(null);
 const fileInputRef = ref<HTMLInputElement | null>(null);
@@ -375,13 +424,23 @@ function onInstall() {
   installOpen.value = true;
 }
 
+function onDropFile(e: DragEvent) {
+  installDragover.value = false;
+  const file = e.dataTransfer?.files?.[0];
+  if (file) void handleFile(file);
+}
+
 async function onFileChange(e: Event) {
   const input = e.target as HTMLInputElement;
   const file = input.files?.[0];
   if (!file) return;
+  input.value = '';
+  await handleFile(file);
+}
+
+async function handleFile(file: File) {
   if (!file.name.endsWith('.yzp')) {
     ElMessage.error('请选择 .yzp 文件');
-    input.value = '';
     return;
   }
   installLoading.value = true;
@@ -396,7 +455,6 @@ async function onFileChange(e: Event) {
     ElMessage.error((err as Error).message || '读取文件失败');
   } finally {
     installLoading.value = false;
-    input.value = '';
   }
 }
 
@@ -435,7 +493,7 @@ onMounted(() => pluginStore.refresh());
 .plugin-manager {
   padding: 16px;
 }
-.pm-header {
+.pm-toolbar {
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -446,134 +504,282 @@ onMounted(() => pluginStore.refresh());
 .pm-cats {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   flex-wrap: wrap;
 }
 .pm-cat-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   font-size: 12px;
-  padding: 3px 12px;
+  line-height: 1;
+  padding: 7px 14px;
   border-radius: 999px;
   cursor: pointer;
-  color: var(--el-text-color-secondary);
-  border: 1px solid var(--el-border-color-lighter);
+  font-family: inherit;
+  color: var(--color-text-secondary);
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
   user-select: none;
-  transition: all 0.15s ease;
+  transition: color var(--motion-fast) var(--ease-out),
+    border-color var(--motion-fast) var(--ease-out),
+    background var(--motion-fast) var(--ease-out);
 }
-.pm-cat-chip:hover { color: var(--el-color-primary); border-color: var(--el-color-primary); }
+.pm-cat-chip:hover {
+  color: var(--color-primary);
+  border-color: color-mix(in srgb, var(--color-primary) 45%, transparent);
+}
 .pm-cat-chip.active {
-  color: var(--el-color-primary);
-  border-color: var(--el-color-primary);
-  background: color-mix(in srgb, var(--el-color-primary) 10%, transparent);
+  color: var(--color-primary);
+  border-color: var(--color-primary);
+  background: var(--color-primary-light);
 }
-.pm-cat-tag { cursor: pointer; }
-.pm-header h3 {
-  margin: 0;
-  font-size: 18px;
+.pm-cat-count {
+  font-size: 11px;
+  opacity: 0.7;
 }
 .pm-header-actions {
   display: flex;
   align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.pm-search {
+  width: 200px;
 }
 .pm-empty {
-  padding: 32px;
-  text-align: center;
-  color: var(--el-text-color-secondary);
+  padding: 48px 0;
+  display: flex;
+  justify-content: center;
+  color: var(--color-text-secondary);
 }
 .pm-list {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 14px;
   align-items: start;
 }
 .pm-card {
-  border: 1px solid var(--el-border-color-lighter, rgba(15, 23, 42, 0.1));
-  border-radius: 10px;
-  padding: 14px;
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-md);
+  padding: 16px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
+  transition: transform var(--motion-base) var(--ease-out),
+    box-shadow var(--motion-base) var(--ease-out),
+    border-color var(--motion-base) var(--ease-out);
+}
+.pm-card:hover {
+  transform: translateY(-2px);
+  border-color: var(--glass-border-strong);
+  box-shadow: var(--shadow-md);
+}
+.pm-card.is-error {
+  border-color: color-mix(in srgb, var(--color-danger) 45%, transparent);
 }
 .pm-card-head {
   display: flex;
   align-items: center;
   gap: 10px;
 }
+.pm-icon {
+  width: 38px;
+  height: 38px;
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  background: color-mix(in srgb, var(--color-primary) 10%, transparent);
+  color: var(--color-primary);
+}
+.pm-title {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
 .pm-name {
   font-weight: 600;
-  flex: 1;
+  font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .pm-ver {
-  color: var(--el-text-color-secondary);
+  color: var(--color-text-tertiary);
   font-size: 12px;
+  font-family: var(--font-mono);
+  flex-shrink: 0;
 }
 .pm-desc {
-  color: var(--el-text-color-regular);
+  color: var(--color-text-secondary);
   font-size: 13px;
-  margin: 8px 0;
+  line-height: 1.5;
+  min-height: 20px;
 }
 .pm-perms {
   display: flex;
   gap: 6px;
   flex-wrap: wrap;
+  align-items: center;
+}
+.pm-cat-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--color-primary);
+  background: var(--color-primary-light);
+  transition: filter var(--motion-fast) var(--ease-out);
+}
+.pm-cat-tag:hover { filter: brightness(0.96); }
+.pm-perm-tag {
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  color: var(--color-text-secondary);
+  background: var(--color-surface-hover);
+  border: 1px solid var(--glass-border);
+}
+.pm-source-tag {
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 4px;
+}
+.pm-source-tag.is-builtin {
+  color: var(--color-success);
+  background: color-mix(in srgb, var(--color-success) 12%, transparent);
+}
+.pm-source-tag.is-installed {
+  color: var(--color-warning);
+  background: color-mix(in srgb, var(--color-warning) 12%, transparent);
+}
+.pm-source-tag.is-danger {
+  color: var(--color-danger);
+  background: color-mix(in srgb, var(--color-danger) 12%, transparent);
 }
 .pm-error {
-  color: var(--el-color-danger);
+  color: var(--color-danger);
   font-size: 12px;
-  margin-top: 6px;
+  line-height: 1.5;
 }
 .pm-actions {
-  margin-top: 10px;
+  margin-top: 2px;
+  padding-top: 10px;
+  border-top: 1px solid var(--glass-border);
   display: flex;
-  gap: 8px;
+  gap: 6px;
+  flex-wrap: wrap;
 }
 .pm-detail {
   font-size: 12px;
+  font-family: var(--font-mono);
   white-space: pre-wrap;
+  margin: 0;
 }
 .pm-code {
   max-height: 360px;
   overflow: auto;
-  background: var(--el-fill-color-light, rgba(15, 23, 42, 0.04));
-  border-radius: 8px;
+  background: var(--color-surface-hover);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-sm);
   padding: 12px;
+}
+.pm-json-input :deep(textarea) {
+  font-family: var(--font-mono);
+  font-size: 12px;
 }
 .install-step {
   min-height: 80px;
   display: flex;
   flex-direction: column;
   gap: 12px;
-  align-items: flex-start;
 }
 .install-hint {
-  color: var(--el-text-color-secondary);
+  color: var(--color-text-secondary);
   font-size: 13px;
   margin: 0;
+  line-height: 1.6;
+}
+.install-dropzone {
+  border: 1.5px dashed var(--glass-border-strong);
+  border-radius: var(--radius-md);
+  padding: 36px 20px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  text-align: center;
+  transition: border-color var(--motion-fast) var(--ease-out),
+    background var(--motion-fast) var(--ease-out);
+}
+.install-dropzone:hover {
+  border-color: var(--color-primary);
+  background: color-mix(in srgb, var(--color-primary) 4%, transparent);
+}
+.install-dropzone.is-dragover {
+  border-color: var(--color-primary);
+  background: var(--color-primary-light);
+}
+.install-dropzone.is-loading {
+  cursor: progress;
+}
+.install-dropzone-icon {
+  color: var(--color-text-tertiary);
+}
+.install-dropzone.is-dragover .install-dropzone-icon,
+.install-dropzone:hover .install-dropzone-icon {
+  color: var(--color-primary);
+}
+.install-dropzone-text {
+  font-size: 14px;
+  color: var(--color-text);
+}
+.install-dropzone-link {
+  color: var(--color-primary);
+  font-weight: 500;
+}
+.install-dropzone-sub {
+  font-size: 12px;
+  color: var(--color-text-tertiary);
 }
 .install-manifest {
   width: 100%;
+  background: var(--color-surface-hover);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-md);
+  padding: 14px;
 }
 .install-mh {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
 }
 .install-mname {
   font-weight: 600;
   font-size: 15px;
 }
-.install-mver {
-  color: var(--el-text-color-secondary);
+.install-mmeta {
+  color: var(--color-text-secondary);
   font-size: 12px;
+  margin-top: 2px;
 }
-.install-mauthor {
-  color: var(--el-text-color-secondary);
-  font-size: 12px;
-  margin-top: 4px;
+.install-mver {
+  font-family: var(--font-mono);
 }
 .install-mdesc {
-  color: var(--el-text-color-regular);
+  color: var(--color-text-secondary);
   font-size: 13px;
-  margin: 8px 0;
+  line-height: 1.5;
+  margin: 10px 0;
 }
 .install-mperms {
   margin-top: 8px;
@@ -590,6 +796,6 @@ onMounted(() => pluginStore.refresh());
 }
 .install-no-perm {
   font-size: 13px;
-  color: var(--el-text-color-secondary);
+  color: var(--color-text-secondary);
 }
 </style>

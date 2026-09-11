@@ -23,6 +23,11 @@
       </el-button>
     </el-tooltip>
     <div class="chat-topbar-actions">
+      <el-tooltip content="文件面板" placement="bottom">
+        <el-button size="small" circle :type="sideTab === 'file' ? 'primary' : ''" @click="sideTab = sideTab === 'file' ? 'chat' : 'file'" aria-label="切换文件面板">
+          <el-icon><Files /></el-icon>
+        </el-button>
+      </el-tooltip>
       <el-tooltip content="上下文栏" placement="bottom">
         <el-button size="small" circle :type="contextSidebarOpen ? 'primary' : ''" @click="toggleContextSidebar" aria-label="切换上下文栏">
           <el-icon><Grid /></el-icon>
@@ -44,6 +49,9 @@
             </el-dropdown-item>
             <el-dropdown-item @click="openGitTab" :disabled="!hasWorkspaceDir">
               <el-icon><FolderOpened /></el-icon><span>Git 文件</span>
+            </el-dropdown-item>
+            <el-dropdown-item @click="openConsoleTab">
+              <el-icon><Cpu /></el-icon><span>控制台</span>
             </el-dropdown-item>
             <el-dropdown-item divided @click="store.rightPanelOpen = !store.rightPanelOpen">
               <el-icon><Fold v-if="store.rightPanelOpen" /><Expand v-else /></el-icon>
@@ -75,7 +83,7 @@
 
 <script setup lang="ts">
 import { computed } from 'vue';
-import { ArrowDown, Document, Expand, FolderOpened, Fold, Grid, Monitor, Operation, EditPen, SwitchButton, User } from '@element-plus/icons-vue';
+import { ArrowDown, Cpu, Document, Expand, Files, FolderOpened, Fold, Grid, Monitor, Operation, EditPen, SwitchButton, User } from '@element-plus/icons-vue';
 import { useChat } from '../../composables/chat/useChat';
 import { useSettingsStore } from '../../stores/settings';
 import ChatFilePanel from './ChatFilePanel.vue';
@@ -85,7 +93,7 @@ import type { MenuNode } from '../AppMenuPanel.vue';
 const {
   drawerOpen, currentConv, store, isMobile, authStore,
   modelGroups, selectedModelId, onModelChange, contextSidebarOpen, toggleContextSidebar,
-  startNewChat,
+  sideTab, startNewChat,
 } = useChat();
 
 const settingsStore = useSettingsStore();
@@ -119,6 +127,10 @@ function openGitTab() {
   store.openTab({ kind: 'git', name: repoName, repoPath: dir });
 }
 
+function openConsoleTab() {
+  store.openTab({ kind: 'console', name: '控制台' });
+}
+
 const selectedModel = computed(() => {
   for (const group of modelGroups.value) {
     const match = group.models.find((model) => model.id === selectedModelId.value);
@@ -148,7 +160,7 @@ const selectedModel = computed(() => {
   border-radius: 999px;
   border: 1px solid var(--glass-border, rgba(15, 23, 42, 0.1));
   background: var(--el-fill-color-blank, #fff);
-  color: var(--el-text-color-primary, #1e293b);
+  color: var(--color-text);
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
@@ -157,7 +169,7 @@ const selectedModel = computed(() => {
 }
 
 .model-pill:hover {
-  border-color: var(--el-color-primary, #7c3aed);
+  border-color: var(--el-color-primary);
   box-shadow: 0 2px 8px color-mix(in srgb, var(--color-primary) 12%, transparent);
 }
 
@@ -165,8 +177,8 @@ const selectedModel = computed(() => {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: #22c55e;
-  box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.14);
+  background: var(--color-success);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-success) 16%, transparent);
   flex-shrink: 0;
 }
 

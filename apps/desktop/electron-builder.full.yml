@@ -39,6 +39,8 @@ linux:
   target: AppImage
   icon: ../../assets/icons/icon.png
 nsis:
+  # 安装/卸载时清理 Windows 图标缓存（避免任务栏显示旧版应用图标）
+  include: build/installer.nsh
   # 关闭一键安装，改为标准安装向导（可选目录、下一步）
   oneClick: false
   # perMachine=true：安装到 C:\Program Files\（覆盖旧版，需要管理员权限）

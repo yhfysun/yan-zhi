@@ -6,7 +6,7 @@
   "main": "main.cjs",
   "description": "言智 —— 语言可控的跨端智能体平台",
   "scripts": {
-    "dev": "concurrently -k -n web,server -c green,cyan \"vite\" \"node scripts/dev-server.cjs\"",
+    "dev": "node scripts/clean-icon-cache.cjs && concurrently -k -n web,server -c green,cyan \"vite\" \"node scripts/dev-server.cjs\"",
     "build": "vite build",
     "electron:dev": "concurrently \"vite\" \"electron . --dev\"",
     "electron:preview": "vite build && electron .",

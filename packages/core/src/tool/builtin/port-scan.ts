@@ -13,7 +13,8 @@ const COMMON_PORTS: Record<number, string> = {
 
 const MAX_PORTS = 65535;
 
-function parsePorts(spec: string): number[] {
+/** 解析端口规格："common" 预设 / 单端口 / 逗号列表 / "1-1024" 范围（导出供 lan_scan 复用） */
+export function parsePorts(spec: string): number[] {
   const s = (spec || 'common').trim().toLowerCase();
   if (s === 'common') return Object.keys(COMMON_PORTS).map(Number);
   const out = new Set<number>();

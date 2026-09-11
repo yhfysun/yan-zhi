@@ -5,9 +5,12 @@ export { FileGrepTool } from './file-grep';
 export { FileListTool } from './file-list';
 export { CodeSearchTool } from './code-search';
 export { CodeOutlineTool } from './code-outline';
+export { CodeRefsTool } from './code-refs';
+export { CodeGraphTool } from './code-graph';
 export { JsExecTool } from './js-exec';
 export { setJsExecDataBridge, type JsDataBridge } from './js-exec';
 export { PortScanTool } from './port-scan';
+export { LanScanTool } from './net-scan';
 export { HttpRequestTool } from './http-request';
 export { TcpSendTool } from './tcp-send';
 export { UdpSendTool } from './udp-send';
@@ -32,8 +35,11 @@ import { FileGrepTool } from './file-grep';
 import { FileListTool } from './file-list';
 import { CodeSearchTool } from './code-search';
 import { CodeOutlineTool } from './code-outline';
+import { CodeRefsTool } from './code-refs';
+import { CodeGraphTool } from './code-graph';
 import { JsExecTool } from './js-exec';
 import { PortScanTool } from './port-scan';
+import { LanScanTool } from './net-scan';
 import { HttpRequestTool } from './http-request';
 import { TcpSendTool } from './tcp-send';
 import { UdpSendTool } from './udp-send';
@@ -63,9 +69,14 @@ export function registerBuiltInTools(registry: ToolRegistry): void {
   registry.register(new FileListTool());
   registry.register(new CodeSearchTool());
   registry.register(new CodeOutlineTool());
+  // 符号定义/引用定位（对标 CodeBuddy go-to-definition / find-references 的启发式版）
+  registry.register(new CodeRefsTool());
+  // 仓库级符号依赖图（代码图：callers/callees/影响面评估）
+  registry.register(new CodeGraphTool());
   registry.register(new JsExecTool());
   // 网络安全工具族（端口扫描/HTTP/TCP/UDP/DNS —— 仅限授权目标使用）
   registry.register(new PortScanTool());
+  registry.register(new LanScanTool());
   registry.register(new HttpRequestTool());
   registry.register(new TcpSendTool());
   registry.register(new UdpSendTool());

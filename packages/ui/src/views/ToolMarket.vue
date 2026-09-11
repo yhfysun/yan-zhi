@@ -44,10 +44,13 @@
                 <el-tag size="small" type="info" effect="plain">内置</el-tag>
               </div>
               <p class="tool-card-desc" :title="t.description">{{ t.description }}</p>
-              <div class="tool-schema-toggle">
+              <div class="tool-card-foot">
                 <el-button size="small" link @click="toggleSchema('builtin-' + t.name)">
                   {{ expandedSchema['builtin-' + t.name] ? '收起' : '入参/出参' }}
                 </el-button>
+                <div class="card-actions">
+                  <el-button size="small" link type="primary" @click="openBuiltinRunner(t)">测试</el-button>
+                </div>
               </div>
               <div v-if="expandedSchema['builtin-' + t.name]" class="tool-schema-block">
                 <div class="schema-section"><span class="schema-label">入参</span><pre class="schema-pre">{{ fmtSchema(t.inputSchema) }}</pre></div>
@@ -265,15 +268,15 @@
       </template>
     </el-dialog>
 
-    <!-- ========== 试运行 Dialog（后端 /tools/:id/execute，node:vm 沙箱） ========== -->
+    <!-- ========== 试运行 Dialog（自定义工具走 /tools/:id/execute，内置工具走 /tools/builtin/execute） ========== -->
     <el-dialog
       v-model="showRunner"
-      :title="`试运行：${runningTool?.name || ''}`"
+      :title="`试运行：${runningToolName}`"
       width="560px"
       :close-on-click-modal="false"
       @close="resetRunner"
     >
-      <div class="runner-entry">入口函数：{{ runningTool?.entry }}</div>
+      <div v-if="runningTool" class="runner-entry">入口函数：{{ runningTool.entry }}</div>
       <el-input
         v-model="runnerArgsText"
         type="textarea"
@@ -328,7 +331,7 @@ import {
 } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { useAuthStore } from '../stores';
-import { useToolsStore, type CustomToolItem } from '../stores/tools';
+import { useToolsStore, type CustomToolItem, type BuiltinToolItem } from '../stores/tools';
 import McpPanel from '../components/McpPanel.vue';
 
 // ---- Tab 切换（支持 /mcp 重定向带来的 ?tab=mcp&focus=<id> 深链） ----
@@ -537,13 +540,16 @@ async function delCustomTool(id: string) {
   } catch {}
 }
 
-// ---- 试运行（POST /api/tools/:id/execute，服务端 node:vm 沙箱） ----
+// ---- 试运行（自定义工具：POST /api/tools/:id/execute；内置工具：POST /api/tools/builtin/execute） ----
 const showRunner = ref(false);
 const runningTool = ref<CustomToolItem | null>(null);
+const runningBuiltin = ref<BuiltinToolItem | null>(null);
 const runnerArgsText = ref('');
 const runnerResult = ref<string | null>(null);
 const runnerError = ref('');
 const running = ref(false);
+
+const runningToolName = computed(() => runningTool.value?.name || runningBuiltin.value?.name || '');
 
 /** 从 inputSchema.properties 生成默认参数模板（string→""，number→0，boolean→false，array/object→空结构） */
 function defaultArgsFromSchema(schema: Record<string, unknown> | undefined): string {
@@ -562,6 +568,17 @@ function defaultArgsFromSchema(schema: Record<string, unknown> | undefined): str
 
 function openRunner(t: CustomToolItem) {
   runningTool.value = t;
+  runningBuiltin.value = null;
+  runnerArgsText.value = defaultArgsFromSchema(t.inputSchema);
+  runnerResult.value = null;
+  runnerError.value = '';
+  showRunner.value = true;
+}
+
+/** 打开内置工具测试（入参同样从 inputSchema 生成默认模板，可自行改参后运行） */
+function openBuiltinRunner(t: BuiltinToolItem) {
+  runningBuiltin.value = t;
+  runningTool.value = null;
   runnerArgsText.value = defaultArgsFromSchema(t.inputSchema);
   runnerResult.value = null;
   runnerError.value = '';
@@ -570,12 +587,44 @@ function openRunner(t: CustomToolItem) {
 
 function resetRunner() {
   runningTool.value = null;
+  runningBuiltin.value = null;
   runnerArgsText.value = '';
   runnerResult.value = null;
   runnerError.value = '';
 }
 
+/** 内置工具返回 McpCallResult（{ content: [{type,text}], isError }），优先拼接纯文本展示 */
+function builtinResultText(r: unknown): string {
+  const anyR = r as any;
+  if (anyR && Array.isArray(anyR.content)) {
+    return anyR.content
+      .map((c: any) => (typeof c?.text === 'string' ? c.text : JSON.stringify(c)))
+      .filter(Boolean)
+      .join('\n');
+  }
+  return JSON.stringify(r, null, 2);
+}
+
 async function runTool() {
+  if (runningBuiltin.value) {
+    let args: Record<string, unknown> = {};
+    const text = runnerArgsText.value.trim();
+    if (text) {
+      try { args = JSON.parse(text); } catch { runnerError.value = '入参 JSON 格式错误'; runnerResult.value = null; return; }
+    }
+    running.value = true;
+    runnerError.value = '';
+    runnerResult.value = null;
+    try {
+      const r = await toolsStore.executeBuiltinTool(runningBuiltin.value.name, args);
+      const out = builtinResultText(r);
+      if (r && (r as any).isError) runnerError.value = out || '工具返回 isError=true';
+      else runnerResult.value = out;
+    } catch (e: unknown) {
+      runnerError.value = e instanceof Error ? e.message : String(e);
+    } finally { running.value = false; }
+    return;
+  }
   if (!runningTool.value) return;
   let args: Record<string, unknown> = {};
   const text = runnerArgsText.value.trim();

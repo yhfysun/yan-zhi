@@ -80,6 +80,40 @@ router.delete('/:id', (req: Request, res: Response) => {
   res.json({ ok: true });
 });
 
+// POST /api/tools/builtin/execute — 试运行内置工具（按 name 执行 registry 中的实现）
+// 注意：必须定义在 POST /:id/execute 之前，否则 "builtin" 会被当作 :id 匹配
+// body: { name: string, args?: object }
+// api_ 前缀工具走 api-tool-executor；其余走 ToolRegistry.execute；统一 60s 超时上限防挂死
+const BUILTIN_EXEC_TIMEOUT_MS = 60000;
+router.post('/builtin/execute', async (req: Request, res: Response) => {
+  const userId = req.user!.userId;
+  const name = typeof req.body?.name === 'string' ? req.body.name : '';
+  if (!name) { res.status(400).json({ error: 'name 为必填项' }); return; }
+  const rawArgs = req.body?.args;
+  const args = (rawArgs && typeof rawArgs === 'object' && !Array.isArray(rawArgs)) ? rawArgs as Record<string, unknown> : {};
+  try {
+    let result: unknown;
+    if (name.startsWith('api_')) {
+      // 数据查询类 API 工具（api_ontology_* / api_data_* 等）走后端 api 执行通道
+      const { executeApiTool } = await import('../mcp/api-tool-executor.js');
+      result = await executeApiTool(name, args, userId);
+    } else {
+      const registry = getToolRegistry();
+      if (!registry.has(name)) { res.status(404).json({ error: `内置工具 "${name}" 不存在` }); return; }
+      let timer: any;
+      const timeout = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`执行超时（${BUILTIN_EXEC_TIMEOUT_MS / 1000}s 上限）`)), BUILTIN_EXEC_TIMEOUT_MS);
+        timer?.unref?.();
+      });
+      result = await Promise.race([registry.execute(name, args), timeout]);
+      clearTimeout(timer);
+    }
+    res.json({ data: result });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || '内置工具执行失败' });
+  }
+});
+
 // POST /api/tools/:id/execute — 执行自定义工具（服务端 node:vm 沙箱）
 router.post('/:id/execute', async (req: Request, res: Response) => {
   const userId = req.user!.userId;

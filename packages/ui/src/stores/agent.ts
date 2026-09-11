@@ -73,9 +73,9 @@ const DATA_QUERY_PROMPT_BLOCK = `【数据查询 · 委派 dataAgent】
 - 不要自己凭空写 SQL 猜表结构：库内数据一律交给 dataAgent。`;
 
 const DEFAULT_AGENT_DATA = {
-  name: 'AI 助手',
+  name: '日常办公助手',
   builtinToolIds: DEFAULT_BUILTIN_TOOLS,
-  description: '默认 Harness 智能体，挂载工具/Skill/子智能体后即可使用，大模型自主 ReAct 决策',
+  description: '默认 Harness 助手，挂载工具/Skill/子助手后即可使用，大模型自主 ReAct 决策',
   type: 'harness' as const,
   systemPrompt: `你是一个 ReAct（推理-行动）智能体。遵循以下规则：
 
@@ -127,7 +127,7 @@ const DEFAULT_AGENT_ID = 'a_default_assistant';
 const DEFAULT_AGENT_VERSION = 11;
 
 // ========== E5: pageAgent（内置浏览器自动化智能体） ==========
-/** pageAgent 固定 ID：内置智能体，浏览器操作专家 */
+/** pageAgent 固定 ID：内置智能体，浏览器操作助手 */
 const PAGE_AGENT_ID = 'a_builtin_page_agent';
 
 /** pageAgent 挂载的浏览器工具集 —— 四件套收口（单一执行面：预览 BrowserView，不搞两套）。
@@ -142,10 +142,10 @@ const PAGE_AGENT_BUILTIN_TOOLS = [
 ];
 
 const PAGE_AGENT_DATA = {
-  name: '浏览器操作专家',
+  name: '浏览器操作助手',
   description: '内置 pageAgent：直接操作预览面板中的真实浏览器窗口（BrowserView），执行导航/输入/点击/取内容等任务，操作全程可见',
   type: 'harness' as const,
-  systemPrompt: `你是一个浏览器自动化专家（pageAgent）。你通过调用浏览器工具操作一个真实的、可见的浏览器窗口（预览面板），用户能实时看到你的每一步操作。
+  systemPrompt: `你是一个浏览器自动化助手（pageAgent）。你通过调用浏览器工具操作一个真实的、可见的浏览器窗口（预览面板），用户能实时看到你的每一步操作。
 
 工具（仅以下六个，其他浏览器工具不可用）：
 - browser_navigate: 导航到指定 URL
@@ -198,7 +198,7 @@ const PAGE_AGENT_DATA = {
 };
 
 // ========== P4.1: dataAgent（内置数据查询分析智能体） ==========
-/** dataAgent 固定 ID：内置智能体，数据查询分析专家（与 server db.ts 种子保持一致） */
+/** dataAgent 固定 ID：内置智能体，数据查询分析助手（与 server db.ts 种子保持一致） */
 const DATA_AGENT_ID = 'a_builtin_data_agent';
 
 /** dataAgent 挂载的取数工具集 —— 本体上下文链 + 取数 + 分析/交付底座 */
@@ -233,11 +233,11 @@ const DATA_AGENT_SKILL_IDS = ['skill_ontology_query', 'skill_xlsx_data_processin
 const DATA_AGENT_VERSION = 7;
 
 const DATA_AGENT_DATA = {
-  name: '数据查询分析专家',
+  name: '数据查询分析助手',
   description:
     '内置数据智能体：先检索本体语义层（项目库全表自动本体），再按查询意图只读取数、过滤、翻页，可用 python 做统计分析并交付表格/图表文件',
   type: 'harness' as const,
-  systemPrompt: `你是「数据查询分析专家」。你通过「本体语义层」对已接入的数据源做只读取数、分析与交付，不直接猜表结构写 SQL。
+  systemPrompt: `你是「数据查询分析助手」。你通过「本体语义层」对已接入的数据源做只读取数、分析与交付，不直接猜表结构写 SQL。
 
 ## 每轮输出格式（强制，先输出再调用）
 每次回复必须先写下面三行小结，然后**最多调用一个工具**：

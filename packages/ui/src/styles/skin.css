@@ -37,23 +37,68 @@
 [data-skin="on"] .platform-desktop.app-shell,
 [data-skin="on"] .app-body,
 [data-skin="on"] .main-content,
-[data-skin="on"] .page {
+[data-skin="on"] .page,
+[data-skin="on"] .is-electron [data-theme="dark"] .app-body,
+[data-skin="on"] .is-electron .main-content {
   background: transparent !important;
 }
 
-/* ===== 可读性：文字/图标对比度加固 =====
-   图标全部继承文字色（el-icon/lucide 均为 currentColor），提文字 = 提图标；
-   默认次级灰（#6B6B66/#9C9B94）压在壁纸上会糊，皮肤模式下整体加深/提亮一档 */
+/* ===== 皮肤模式第三套 token：让所有未显式换肤的表面统一玻璃化 =====
+   原则：面板（--glass-bg / --el-bg-color）高透下限保对比，控件填充（fill/input）低透薄纱。
+   Element Plus 输入框/表格/弹窗/下拉全部消费 --el-* 变量，改 token 即全局生效 */
 [data-skin="on"] {
   --color-text: #141414;
   --color-text-secondary: #4A4A45;
   --color-text-tertiary: #71706A;
+
+  --glass-bg: rgba(255, 255, 255, 0.86);
+  --glass-bg-hover: rgba(255, 255, 255, 0.93);
+  --glass-filter: blur(18px) saturate(1.25);
+
+  --el-bg-color: var(--glass-bg);
+  --el-bg-color-overlay: rgba(255, 255, 255, 0.94);
+  --el-bg-color-page: transparent;
+  --el-fill-color-blank: rgba(255, 255, 255, 0.55);
+  --el-fill-color: rgba(26, 26, 26, 0.045);
+  --el-fill-color-light: rgba(26, 26, 26, 0.05);
+  --el-fill-color-lighter: rgba(26, 26, 26, 0.035);
+  --el-border-color: rgba(26, 26, 26, 0.14);
+  --el-border-color-light: rgba(26, 26, 26, 0.11);
+  --el-border-color-lighter: rgba(26, 26, 26, 0.09);
+
+  --btn-bg: rgba(255, 255, 255, 0.55);
+  --btn-bg-hover: rgba(255, 255, 255, 0.75);
+  --btn-border: rgba(26, 26, 26, 0.09);
 }
 [data-theme="dark"][data-skin="on"] {
   --color-text: #F2F0EA;
   --color-text-secondary: #B8B8B0;
   --color-text-tertiary: #8E8E86;
+
+  --glass-bg: rgba(29, 29, 28, 0.78);
+  --glass-bg-hover: rgba(38, 38, 36, 0.86);
+  --glass-filter: blur(18px) saturate(1.15);
+
+  --el-bg-color: var(--glass-bg);
+  --el-bg-color-overlay: rgba(38, 38, 36, 0.92);
+  --el-bg-color-page: transparent;
+  --el-fill-color-blank: rgba(255, 255, 255, 0.05);
+  --el-fill-color: rgba(255, 255, 255, 0.06);
+  --el-fill-color-light: rgba(255, 255, 255, 0.055);
+  --el-fill-color-lighter: rgba(255, 255, 255, 0.045);
+  --el-border-color: rgba(255, 255, 255, 0.13);
+  --el-border-color-light: rgba(255, 255, 255, 0.10);
+  --el-border-color-lighter: rgba(255, 255, 255, 0.08);
+
+  --btn-bg: rgba(255, 255, 255, 0.08);
+  --btn-bg-hover: rgba(255, 255, 255, 0.14);
+  --btn-border: rgba(255, 255, 255, 0.10);
 }
+
+/* ===== 可读性：文字/图标对比度加固 =====
+   图标全部继承文字色（el-icon/lucide 均为 currentColor），提文字 = 提图标；
+   默认次级灰（#6B6B66/#9C9B94）压在壁纸上会糊，皮肤模式下整体加深/提亮一档
+   （色值已并入上方 token 块） */
 
 /* 图标密集区（Web 图标 dock / 移动 tabbar / 移动顶栏）：近实色背板，图标永远有底 */
 [data-skin="on"] .side-nav,
@@ -67,20 +112,7 @@
   background: rgba(24, 24, 23, 0.93) !important;
 }
 
-/* ===== 毛玻璃表面：卡片/浮层半透明 + backdrop blur（WorkBuddy/Codex 质感） =====
-   透明度取高值（0.86/0.78）：优先保证面板内文字对比度，壁纸只透出色彩氛围 */
-[data-skin="on"] {
-  --glass-bg: rgba(255, 255, 255, 0.86);
-  --glass-bg-hover: rgba(255, 255, 255, 0.93);
-  --glass-filter: blur(18px) saturate(1.25);
-}
-[data-theme="dark"][data-skin="on"] {
-  --glass-bg: rgba(29, 29, 28, 0.78);
-  --glass-bg-hover: rgba(38, 38, 36, 0.86);
-  --glass-filter: blur(18px) saturate(1.15);
-}
-
-/* 桌面端标题栏/侧栏：改半透明玻璃（默认为 el-bg-color 实色） */
+/* ===== 桌面端标题栏/侧栏：改半透明玻璃（默认为 el-bg-color 实色） ===== */
 [data-skin="on"] .side-nav-desktop,
 [data-skin="on"] .title-bar {
   background: var(--glass-bg) !important;
@@ -92,16 +124,111 @@
   -webkit-backdrop-filter: none;
 }
 
-/* Element Plus 弹层同步玻璃化（dialog/drawer 本体已走 --el-bg-color 实色） */
+/* ===== 任务页三栏：左栏（会话列表）/ 中栏 / 右侧预览面板统一玻璃 =====
+   组件内已消费 --glass-bg + --glass-filter（皮肤模式下自动变为半透明+模糊），
+   这里补齐只有背景没有模糊的遗漏面，并统一边框透明度 */
+[data-skin="on"] .sidebar,
+[data-skin="on"] .right-panel,
+[data-skin="on"] .chat-column,
+[data-skin="on"] .context-sidebar {
+  border-color: var(--glass-border);
+}
+[data-skin="on"] .sidebar,
+[data-skin="on"] .right-panel {
+  backdrop-filter: var(--glass-filter);
+  -webkit-backdrop-filter: var(--glass-filter);
+}
+/* 右栏 tab 条 / 左栏 tab 条：吸底吸顶小背板跟随玻璃 */
+[data-skin="on"] .right-panel-tab.active {
+  background: var(--glass-bg-hover);
+}
+[data-skin="on"] .right-panel-tab-actions {
+  background: transparent;
+}
+
+/* ===== 次级按钮玻璃化：消费 --btn-* token（App.vue 全局按钮已引用） ===== */
+
+/* ===== Element Plus 控件玻璃化：输入框 / 选择器 / 文本域 ===== */
+[data-skin="on"] .el-input__wrapper,
+[data-skin="on"] .el-textarea__inner,
+[data-skin="on"] .el-select__wrapper {
+  background-color: var(--el-fill-color-blank);
+  box-shadow: 0 0 0 1px var(--el-border-color) inset;
+}
+[data-skin="on"] .el-input__wrapper.is-focus,
+[data-skin="on"] .el-select__wrapper.is-focused {
+  box-shadow: 0 0 0 1px var(--el-color-primary) inset;
+}
+
+/* ===== 表格：面板已玻璃，行/表头去实色 ===== */
+[data-skin="on"] .el-table {
+  --el-table-bg-color: transparent;
+  --el-table-tr-bg-color: transparent;
+  --el-table-header-bg-color: transparent;
+  --el-table-fixed-box-shadow: none;
+}
+[data-skin="on"] .el-table,
+[data-skin="on"] .el-table tr,
+[data-skin="on"] .el-table th.el-table__cell,
+[data-skin="on"] .el-table td.el-table__cell {
+  background-color: transparent;
+}
+[data-skin="on"] .el-table--enable-row-hover .el-table__body tr:hover > td.el-table__cell {
+  background-color: var(--el-fill-color-light);
+}
+
+/* ===== 卡片 / tabs / card 容器 ===== */
+[data-skin="on"] .el-card {
+  --el-card-bg-color: var(--glass-bg);
+  border-color: var(--glass-border);
+}
+[data-skin="on"] .glass-card {
+  backdrop-filter: var(--glass-filter);
+  -webkit-backdrop-filter: var(--glass-filter);
+}
+[data-skin="on"] .glass-tabs {
+  background: var(--glass-bg) !important;
+  backdrop-filter: var(--glass-filter);
+  -webkit-backdrop-filter: var(--glass-filter);
+  border-color: var(--glass-border) !important;
+}
+
+/* ===== Element Plus 弹层全面玻璃化：dialog / drawer / message-box / popper =====
+   --el-bg-color / --el-bg-color-overlay 已在 token 层改为半透明，这里补模糊与边框 */
 [data-skin="on"] .el-dialog,
 [data-skin="on"] .el-drawer,
+[data-skin="on"] .el-message-box,
 [data-skin="on"] .el-popper.is-light {
-  background-color: color-mix(in srgb, var(--glass-bg) 88%, var(--el-bg-color));
+  background-color: var(--el-bg-color-overlay);
+  backdrop-filter: var(--glass-filter);
+  -webkit-backdrop-filter: var(--glass-filter);
+  border-color: var(--glass-border-strong);
+}
+[data-skin="on"] .el-dialog__header,
+[data-skin="on"] .el-dialog__body,
+[data-skin="on"] .el-dialog__footer {
+  background: transparent !important;
+}
+/* 弹窗遮罩加轻微模糊，压住壁纸细节，弹层内容更聚焦 */
+[data-skin="on"] .el-overlay {
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
 }
 
 /* ===== 减少动态效果偏好：壁纸遮罩保持但去掉模糊，省电省性能 ===== */
 @media (prefers-reduced-motion: reduce) {
   [data-skin="on"] body::before {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+  [data-skin="on"] .el-dialog,
+  [data-skin="on"] .el-drawer,
+  [data-skin="on"] .el-message-box,
+  [data-skin="on"] .el-popper.is-light,
+  [data-skin="on"] .sidebar,
+  [data-skin="on"] .right-panel,
+  [data-skin="on"] .glass-card,
+  [data-skin="on"] .glass-tabs {
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
   }

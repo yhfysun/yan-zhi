@@ -170,7 +170,7 @@
         <div class="about-section">
           <h3>言智 (Yan-Zhi)</h3>
           <p>版本：v0.1.0 (MVP)</p>
-          <p>语言可控的跨端 AI 助手 · 桌面 / Web / 移动三端统一</p>
+          <p>语言可控的跨端日常办公助手 · 桌面 / Web / 移动三端统一</p>
           <p class="about-tip">开发者：yhfysun</p>
           <p class="about-tip">源码：<a class="about-link" href="https://github.com/yhfysun/yan-zhi" target="_blank" rel="noopener">https://github.com/yhfysun/yan-zhi</a></p>
           <p class="about-tip">开源协议：Apache-2.0</p>

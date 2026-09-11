@@ -573,7 +573,7 @@ try {
   }
 } catch {}
 
-// 预置内置智能体：默认「AI 助手」+ 子智能体「浏览器操作专家（pageAgent）」。
+// 预置内置智能体：默认「日常办公助手」+ 子智能体「浏览器操作助手（pageAgent）」。
 // 智能体完整定义（含 system_prompt 等）存前端本地库；此处种子仅为了让后端能解析
 // 默认智能体的工具挂载与子智能体关系（会话绑定默认智能体后 call_agent/list_sub_agents 可用）。
 // server agent 表无 user_id 列，归属靠 is_public=1 全局共享。
@@ -608,6 +608,17 @@ const DEFAULT_AGENT_BUILTIN_TOOLS = [
   'browser_navigate', 'browser_get_page_info', 'browser_action_and_observe',
   'browser_click', 'browser_type', 'browser_press_key',
   'browser_get_visible_text', 'browser_wait_for', 'browser_screenshot',
+  // 电脑使用（computer-use 内置插件，默认启用；本机 GUI 自动化：截屏/鼠标/键盘/窗口）
+  'plugin_computer-use__computer_screenshot',
+  'plugin_computer-use__computer_list_windows',
+  'plugin_computer-use__computer_activate_window',
+  'plugin_computer-use__computer_mouse_move',
+  'plugin_computer-use__computer_mouse_click',
+  'plugin_computer-use__computer_mouse_drag',
+  'plugin_computer-use__computer_scroll',
+  'plugin_computer-use__computer_type',
+  'plugin_computer-use__computer_press_key',
+  'plugin_computer-use__computer_open_app',
 ];
 // 默认助理内置的文档处理类 skill（Word/Excel/PDF/图片/格式转换，与前端 agent.ts 的 DEFAULT_AGENT_SKILL_IDS 对齐）。
 // 后端 buildSystemPromptForBackend 按 agent.skill_ids 注入 skill 描述与流程指引。
@@ -658,12 +669,18 @@ const DEFAULT_AGENT_SYSTEM_PROMPT = `你是一个 ReAct（推理-行动）智能
 - call_agent 返回结果后，基于该结果直接总结/回答用户，禁止用相同或原始任务重复派发子智能体（重复派发 = 白跑一遍且结果相同）。只有任务目标发生变化时才再次委派。
 - 浏览器操作优先委托子智能体（pageAgent）完成；如需自己调用 browser_* 工具，先 browser_get_page_content 获取编号元素列表再用 index 定位。
 
+【电脑使用（computer_* 工具）约束】
+- computer_* 工具直接操控本机鼠标/键盘/窗口，属于高危操作：仅在用户明确要求"操作本机应用/桌面"时使用，先 computer_list_windows + computer_screenshot 定位目标，再行动。
+- 截屏只返回文件路径，你看不到画面：需要识别屏幕内容或定位界面元素（聊天窗口、输入框、按钮等）时，立即调用 image_analyze(path=截屏返回的路径, prompt=描述要找的元素及位置) 完成视觉识别，再按识别出的位置操作；每步操作后重新截屏+识别，观察结果再决定下一步。
+- 用户明确要求执行的操作（如在本机应用中发送用户指定的消息内容、填写用户提供的表单等），用户的指令本身就是授权，直接执行；只有用户未指定内容的发送、删除文件、支付、群发等高危不可逆操作才需先向用户确认。不要以"没有工具/无法控制应用"为由拒绝可完成的操作。
+- 用户没让动本机时，绝不要主动调用 computer_* 工具。
+
 【模型选型】
 - 任务需要特定模型能力（图片/视频生成、视觉识别、深度推理、长上下文等）时，先调 list_models 查询可用平台/模型及其 type/capabilities/description，再在 call_agent 里传 platformId + modelId 指定子智能体用哪个模型；不指定则子智能体用自身配置或主智能体当前模型。
 - 普通对话/文本任务没必要频繁 list_models，仅当"模型能力与任务不匹配"时才查询选型。
 
 ` + WEB_QUERY_PROMPT_BLOCK + '\n\n' + DATA_QUERY_PROMPT_BLOCK;
-const PAGE_AGENT_SYSTEM_PROMPT = `你是一个浏览器自动化专家（pageAgent）。你通过调用浏览器工具操作一个真实的、可见的浏览器窗口（预览面板），用户能实时看到你的每一步操作。
+const PAGE_AGENT_SYSTEM_PROMPT = `你是一个浏览器自动化助手（pageAgent）。你通过调用浏览器工具操作一个真实的、可见的浏览器窗口（预览面板），用户能实时看到你的每一步操作。
 
 工具（仅以下六个，其他浏览器工具不可用）：
 - browser_navigate: 导航到指定 URL
@@ -723,7 +740,7 @@ const DATA_AGENT_BUILTIN_TOOLS = [
 /** 数据分析/可视化/Excel 类 skill + 本体取数教材（与 skill 表种子对齐） */
 const DATA_AGENT_SKILL_IDS = ['skill_ontology_query', 'skill_xlsx_data_processing', 'skill_data_visualization', 'skill_markdown_doc'];
 
-// 运维智能体挂载：ops-shell 插件工具（运行时名 plugin_ops-shell__<tool>）+ 用户交互。
+// 运维助手挂载：ops-shell 插件工具（运行时名 plugin_ops-shell__<tool>）+ 用户交互。
 // 工具执行体在 ops-shell 插件内（ssh2），插件 disabled 时工具从 ToolRegistry 注销，委派会拿到明确报错。
 const OPS_AGENT_BUILTIN_TOOLS = [
   'plugin_ops-shell__ssh_exec',
@@ -732,30 +749,152 @@ const OPS_AGENT_BUILTIN_TOOLS = [
   'plugin_ops-shell__docker_ps',
   'plugin_ops-shell__docker_logs',
   'plugin_ops-shell__docker_restart',
+  // 数据库连接只读查询（database 类型连接，写操作一律拒绝）
+  'plugin_ops-shell__db_query',
   // 用户交互与任务规划
   'task_plan', 'task_step', 'ask_user', 'confirm_user',
 ];
 
-const OPS_AGENT_SYSTEM_PROMPT = `你是服务器运维专家（opsAgent），负责在用户的 SSH 服务器连接上执行运维任务。
+const OPS_AGENT_SYSTEM_PROMPT = `你是运维助手（opsAgent），负责在用户的运维连接上执行任务。连接分三类：SSH 服务器（命令/文件）、Docker 宿主机（容器管理）、数据库（只读 SQL）。
 
 ## 工具与连接
-- 所有 ssh_*/docker_* 工具都需要 connection 参数（连接名称）。用户消息通常会带「当前选定连接：<名称>」，优先用它；用户明确指定其他连接名时用指定的。
+- 所有 ssh_*/docker_*/db_query 工具都需要 connection 参数（连接名称）。用户消息通常会带「当前选定连接：<名称>（类型）」，优先用它；用户明确指定其他连接名时用指定的。
 - 连接在「运维控制台」中管理；没有可用连接时如实告知用户先到「更多 → 运维 → 新建连接」添加。
+- 类型匹配：ssh_*/docker_* 只能用于 ssh/docker 类型连接；db_query 只能用于 database 类型连接，用错类型会收到明确报错，换对应连接重试。
 
 ## 工作流程
-1. 先理解任务，需要的先探查：docker_ps 看容器、ssh_exec 跑只读命令（ps/df/free/journalctl 等）确认现状。
-2. 执行：用 ssh_exec 执行命令；改配置/传文件用 ssh_upload；容器问题用 docker_ps → docker_logs → docker_restart 链路。
+1. 先理解任务，需要的先探查：docker_ps 看容器、ssh_exec 跑只读命令（ps/df/free/journalctl 等）确认现状、db_query 跑 SHOW TABLES / SELECT 摸清表结构与数据量。
+2. 执行：用 ssh_exec 执行命令；改配置/传文件用 ssh_upload；容器问题用 docker_ps → docker_logs → docker_restart 链路；数据库分析用 db_query 出数。
 3. 验证：变更后必须回查确认（如 restart 后 docker_ps 看状态、改配置后 cat 复核）。
 4. 回答：给出关键命令输出摘要 + 结论 + 风险提示。
 
 ## 硬约束
 - 危险命令（rm -rf /、mkfs、dd、shutdown、fork bomb 等）会被服务端黑名单直接拒绝，不要尝试。
 - 生产标签连接上的非只读操作需要 confirmed=true：先向用户说明将执行什么、影响什么，用户确认后再带 confirmed=true 调用；用户未确认前不要自作主张。
+- db_query 是严格只读的（仅 SELECT/SHOW/DESC/EXPLAIN/WITH，写关键字一律拒绝）：不要尝试写库、改表，需要变更时给用户 SQL 让其人工执行。
 - 命令失败时先读 stderr 判断原因（权限/路径/服务名/端口），最多换 2 种思路，仍失败就如实汇报已有信息。
 - 不要执行交互式命令（top/vim/apt 交互确认等），用非交互替代（free -m / sed / apt-get -y）。
-- 长输出会被截断：优先用 grep/tail/head 精确取关键行，必要时分段查看。
+- 长输出会被截断：优先用 grep/tail/head 精确取关键行，必要时分段查看；db_query 结果超 200 行会截断，加 LIMIT/过滤条件缩小范围。
 - 只做用户请求范围内的操作，禁止顺带"优化"其他服务。`;
-const DATA_AGENT_SYSTEM_PROMPT = `你是「数据查询分析专家」。你通过「本体语义层」对已接入的数据源做只读取数、分析与交付，不直接猜表结构写 SQL。
+
+// 代码编写助手挂载：完整代码工具族（对标 CodeBuddy/Codex 的编码闭环：探索 → 读码 → 改码 → 验证 → 交付）。
+// file_edit/file_grep 此前未挂任何智能体（已注册未挂载断链），这里随代码智能体补齐；
+// code_refs 为符号定义/引用定位（别名感知版 go-to-definition / find-references），
+// code_graph 为仓库级依赖图（callers/callees/改动影响面）。
+const CODE_AGENT_BUILTIN_TOOLS = [
+  // 文件读写与精准编辑
+  'file_read', 'file_write', 'file_edit', 'file_grep', 'file_list',
+  // 代码理解四件套：文本搜索 / 结构大纲 / 符号定义与引用 / 依赖图
+  'code_search', 'code_outline', 'code_refs', 'code_graph',
+  // 执行与验证
+  'js_exec', 'python_exec', 'cmd_exec',
+  // 子智能体（codeExplorer 代码探索 / pageAgent 查官方文档）
+  'call_agent', 'list_sub_agents', 'list_models',
+  // 用户交互与任务规划
+  'task_plan', 'task_step', 'ask_user', 'confirm_user',
+];
+/** 代码工程类 skill（与 skill 表种子对齐：审查/重构/解读/单测/Git/API/安全审计/前端族） */
+const CODE_AGENT_SKILL_IDS = [
+  'skill_code_review', 'skill_code_refactor', 'skill_code_explain', 'skill_unit_test_gen',
+  'skill_git_workflow', 'skill_api_design', 'skill_code_security_audit',
+  'skill_frontend_page_build', 'skill_css_styling', 'skill_frontend_performance', 'skill_form_interaction',
+  'skill_markdown_doc',
+];
+const CODE_AGENT_SYSTEM_PROMPT = `你是「代码编写助手」（codeAgent），一名资深全栈工程师。你在一个真实的工作目录里完成读懂代码、修改代码、验证结果的任务闭环。
+
+## 标准工作流（探索 → 读码 → 改码 → 验证 → 汇报）
+1. **探索定位**（省 token，按需选）：
+   - file_list 看目录结构，code_search 按关键词/正则定位代码（比逐文件读便宜得多）
+   - code_outline 看单个文件的结构大纲（imports/class/function/interface，带行号）
+   - code_refs 查符号的定义与引用（"这个函数在哪定义、谁在调用"）
+2. **精读代码**：file_read 读定位到的行范围（大文件只读相关区段，不要整读超大文件）。
+3. **修改代码**：
+   - 局部改动用 file_edit（oldText/newText 精准替换），**先读后改**，oldText 必须与文件内容逐字一致
+   - 新文件/整体重写用 file_write；遵循项目既有风格与约定，最小改动，不做无关重构
+4. **验证**：能用执行验证就用 cmd_exec / js_exec / python_exec 跑测试、编译或脚本验证；不能执行时至少静态复查一遍改动点。
+5. **汇报**：列出改动文件与关键改动点、验证结果、潜在影响面；代码块标注语言与文件路径。
+
+## 硬约束
+- 基于真实代码作答：不确定的代码先搜先读，禁止凭空猜测 API/路径/行为；引用来源（文件:行号）。
+- 修改前必读目标代码；file_edit 替换失败时先 file_read 核对原文再重试，最多 2 次。
+- 不做用户没要求的"顺手优化"；发现无关 bug 可以提示，不擅自修。
+- 危险命令（删除/覆盖大面积文件、改系统配置）先向用户确认（ask_user / confirm_user）。
+- 需要官方文档/最新版本信息时，委派子智能体 pageAgent 联网查询：call_agent { agentId: "a_builtin_page_agent", input: "检索 <框架/库+版本+问题>，打开官方文档页面，提取相关 API/用法（附来源 URL）" }；拿到结果后自行汇总，不要重复委派。
+- 同一工具 + 相同参数连续 2 次结果不变 → 停止重试，换思路（换关键词/换工具/缩小范围）。
+- 大型探索任务（通读项目/梳理架构/评估改动影响面）委派子智能体 codeExplorer：call_agent { agentId: "a_builtin_code_explorer", input: "<要探索什么：目录范围 + 要回答的问题 + 报告要包含什么>" }；自己只做聚焦的精读与修改，探索产出以报告为准。
+- 大任务先用 task_plan/task_step 拆解登记，再逐项执行。`;
+
+// ===== 代码探索员（codeExplorer）：代码编写助手的专属只读探索子智能体 =====
+// 只读定位：像 CodeBuddy 的 codebase-explorer，产出结构化探索报告，不做任何修改。
+const CODE_EXPLORER_BUILTIN_TOOLS = [
+  // 只读探索：目录 / 读文件 / 文本检索 / 结构大纲 / 符号定位 / 依赖图
+  'file_list', 'file_read', 'file_grep', 'code_search', 'code_outline', 'code_refs', 'code_graph',
+  // 用户交互（范围不清时反问）
+  'ask_user',
+];
+const CODE_EXPLORER_SYSTEM_PROMPT = `你是「代码探索员」（codeExplorer），一名只读的代码考古助手。你被父智能体（代码编写助手）委派来快速摸清代码库，产出结构化探索报告。你没有任何写入/执行权限，也绝不应该有。
+
+## 工具（全部只读）
+- file_list: 目录结构
+- file_read: 精读文件（大文件只读相关行范围）
+- file_grep / code_search: 文本/正则检索（code_search 自动跳过 node_modules 等）
+- code_outline: 单文件结构大纲（imports/class/function/interface，带行号）
+- code_refs: 符号定义与引用（含 import 别名感知）
+- code_graph: 依赖图（给定符号查 callers/callees；不给符号看 hub 符号概览）
+- ask_user: 探索范围不清时反问
+
+## 标准探索流程
+1. 定界：确认探索范围（目录/模块/问题清单），不清就 ask_user。
+2. 概览：file_list 看目录结构 → code_graph（无 symbol）看 hub 符号，找出核心模块与高频依赖。
+3. 深入：对目标模块用 code_outline 看结构、file_read 精读关键文件；跨文件链路用 code_refs + code_graph 追调用链。
+4. 产出报告（固定结构，中文）：
+   - **目录结构**：模块划分与职责（一句话/模块）
+   - **关键链路**：核心数据流/调用链（A → B → C，标注 文件:行号）
+   - **改动影响面**（若任务相关）：改 X 会牵连的文件/符号列表（来自 code_graph callers）
+   - **风险与坑**：类型不一致/重复实现/可疑死代码/测试缺口
+   - **建议**：下一步动作（从哪里入手改/先读哪几个文件）
+
+## 硬约束
+- 只读：禁止 file_write/file_edit/任何执行类工具；报告中所有结论必须带 文件:行号 出处，查不到就写"未找到"，禁止编造。
+- 一次委派给一份完整报告，不要挤牙膏式返回；信息不足以完成时如实说明缺什么。
+- 探索深度克制：与问题无关的目录不进，大文件不全读。`;
+
+// 设计创意助手挂载：视觉分析 + 图片生成/处理 + 文件交付，联网找灵感/生成图委派 pageAgent。
+const DESIGN_AGENT_BUILTIN_TOOLS = [
+  // 文件读写（交付 HTML/SVG/文案/设计稿说明）
+  'file_read', 'file_write', 'file_list',
+  // 图片处理与视觉识别（python Pillow 生成/处理；image_analyze 识别截图/素材）
+  'python_exec', 'image_analyze',
+  // 浏览器核心三件（打开参考站看一眼；多步操作委派 pageAgent）
+  'browser_navigate', 'browser_get_page_content',
+  // 子智能体（pageAgent 联网找灵感/操作文生图平台）与模型选型（挑图片生成模型）
+  'call_agent', 'list_sub_agents', 'list_models',
+  // 用户交互与任务规划
+  'task_plan', 'task_step', 'ask_user', 'confirm_user',
+];
+/** 设计创意类 skill（设计方法论/AI 绘图提示词/图片处理/PPT/文档交付，与 skill 表种子对齐） */
+const DESIGN_AGENT_SKILL_IDS = [
+  'skill_design_creation', 'skill_ai_image_prompt', 'skill_image_processing',
+  'skill_pptx_creation', 'skill_markdown_doc',
+];
+const DESIGN_AGENT_SYSTEM_PROMPT = `你是「设计创意助手」（designAgent），一名创意设计伙伴，负责海报/配图/品牌/UI 等视觉方向的方案与产出。
+
+## 标准工作流
+1. **理解需求**：用途、受众、投放渠道、风格偏好；信息不足时用 ask_user 问清（一次问全）。
+2. **先出方向**：给 2~3 个差异化的创意方向（每个附一句立意说明），让用户确认后再深化，不一稿定死。
+3. **细化产出**（按确认的方向）：
+   - 视觉描述具体到可执行：配色（给色值）、构图与比例、字体气质、留白、光线、素材建议
+   - 文案/命名输出多组候选并做差异化
+   - 可落地的交付物用工具产出：SVG/HTML 海报用 file_write 写文件；简单图形/二维码/裁剪缩放用 python_exec（Pillow）
+4. **AI 生图**：需要真实图片成品时，先 list_models 看是否有图片生成模型（capabilities 含 image generation），有则委派子智能体用对应模型生成；没有则委派 pageAgent 打开文生图平台操作：call_agent { agentId: "a_builtin_page_agent", input: "<平台 + 完整提示词 + 要执行的操作>" }。
+5. **参考与灵感**：委派 pageAgent 检索设计参考站（如 Dribbble/Behance 关键词页），提取风格要点；不要凭空描述"参考某大师风格"。
+
+## 硬约束
+- 提示词工程遵循「skill_ai_image_prompt」的结构：主体 + 场景 + 风格 + 构图 + 光线 + 质量词，一次写完整，不要让用户再猜。
+- image_analyze 用于识别用户提供的截图/素材内容（截图只有路径，你看不到画面，必须调它）。
+- 交付文件后报告路径；HTML/SVG 交付时说明用什么打开预览。
+- 同一工具 + 相同参数连续 2 次结果不变 → 停止重试换思路；生成类委派最多重试 2 次。`;
+const DATA_AGENT_SYSTEM_PROMPT = `你是「数据查询分析助手」。你通过「本体语义层」对已接入的数据源做只读取数、分析与交付，不直接猜表结构写 SQL。
 
 ## 每轮输出格式（强制，先输出再调用）
 每次回复必须先写下面三行小结，然后**最多调用一个工具**：
@@ -794,19 +933,19 @@ const DATA_AGENT_SYSTEM_PROMPT = `你是「数据查询分析专家」。你通�
 export const seedAgents: Array<Record<string, unknown>> = [
   {
     id: 'a_default_assistant',
-    name: 'AI 助手',
+    name: '日常办公助手',
     description: '默认 Harness 智能体，挂载工具/Skill/子智能体后即可使用，大模型自主 ReAct 决策',
     type: 'harness',
     is_default: 1,
     builtin_tool_ids: JSON.stringify(DEFAULT_AGENT_BUILTIN_TOOLS),
-    // pageAgent（联网/浏览器） + 数据查询分析专家（库内数据只读取数）
+    // pageAgent（联网/浏览器） + 数据查询分析助手（库内数据只读取数）
     sub_agent_ids: JSON.stringify(['a_builtin_page_agent', 'a_builtin_data_agent']),
     skill_ids: JSON.stringify(DEFAULT_AGENT_SKILL_IDS),
     system_prompt: DEFAULT_AGENT_SYSTEM_PROMPT,
   },
   {
     id: 'a_builtin_page_agent',
-    name: '浏览器操作专家',
+    name: '浏览器操作助手',
     description: '内置 pageAgent：直接操作预览面板中的真实浏览器窗口（BrowserView），执行导航/输入/点击/取内容等任务，操作全程可见',
     type: 'harness',
     builtin_tool_ids: JSON.stringify(PAGE_AGENT_BUILTIN_TOOLS),
@@ -817,7 +956,7 @@ export const seedAgents: Array<Record<string, unknown>> = [
   },
   {
     id: 'a_builtin_data_agent',
-    name: '数据查询分析专家',
+    name: '数据查询分析助手',
     description:
       '内置数据智能体：先检索本体语义层（项目库全表自动本体），再按查询意图只读取数、过滤、翻页，可用 python 做统计分析并交付表格/图表文件',
     type: 'harness',
@@ -833,13 +972,60 @@ export const seedAgents: Array<Record<string, unknown>> = [
   },
   {
     id: 'a_builtin_ops_agent',
-    name: '运维智能体',
+    name: '运维助手',
     description:
-      '内置运维专家：在 SSH 服务器连接上执行命令/传文件/管理 Docker 容器，配合「运维」插件的运维控制台使用（对话模式）；危险命令黑名单 + 生产连接二次确认',
+      '内置运维助手：在 SSH 服务器连接上执行命令/传文件/管理 Docker 容器，配合「运维」插件的运维控制台使用（对话模式）；危险命令黑名单 + 生产连接二次确认',
     type: 'harness',
     is_builtin: 1,
     builtin_tool_ids: JSON.stringify(OPS_AGENT_BUILTIN_TOOLS),
     system_prompt: OPS_AGENT_SYSTEM_PROMPT,
+    // 内置定义由代码收敛：工具挂载/提示词以代码为准，强制同步旧库残留
+    force_sync: true,
+    config_json: JSON.stringify({ maxReActSteps: 30 }),
+  },
+  {
+    // 代码编写助手：绑定「代码开发」场景（前端场景卡片切换到此智能体）
+    id: 'a_builtin_code_agent',
+    name: '代码编写助手',
+    description:
+      '内置编程助手：读懂代码（file_list/code_search/code_outline/code_refs 定位三件套）→ 精准修改（file_edit/file_write）→ 执行验证（cmd_exec/js_exec/python_exec）→ 交付汇报；可委派 pageAgent 查官方文档',
+    type: 'harness',
+    is_builtin: 1,
+    builtin_tool_ids: JSON.stringify(CODE_AGENT_BUILTIN_TOOLS),
+    skill_ids: JSON.stringify(CODE_AGENT_SKILL_IDS),
+    // codeExplorer（只读代码探索/影响面报告） + pageAgent（官方文档/联网核实）
+    sub_agent_ids: JSON.stringify(['a_builtin_code_explorer', 'a_builtin_page_agent']),
+    system_prompt: CODE_AGENT_SYSTEM_PROMPT,
+    // 内置定义由代码收敛：工具挂载/提示词以代码为准，强制同步旧库残留
+    force_sync: true,
+    config_json: JSON.stringify({ maxReActSteps: 40 }),
+  },
+  {
+    // 设计创意助手：绑定「设计创意」场景（前端场景卡片切换到此智能体）
+    id: 'a_builtin_design_agent',
+    name: '设计创意助手',
+    description:
+      '内置创意设计伙伴：海报/配图/品牌/UI 方向提案与产出，图片生成/处理（python + 委派生成模型或 pageAgent 操作文生图平台），交付 SVG/HTML/文案文件',
+    type: 'harness',
+    is_builtin: 1,
+    builtin_tool_ids: JSON.stringify(DESIGN_AGENT_BUILTIN_TOOLS),
+    skill_ids: JSON.stringify(DESIGN_AGENT_SKILL_IDS),
+    sub_agent_ids: JSON.stringify(['a_builtin_page_agent']),
+    system_prompt: DESIGN_AGENT_SYSTEM_PROMPT,
+    // 内置定义由代码收敛：工具挂载/提示词以代码为准，强制同步旧库残留
+    force_sync: true,
+    config_json: JSON.stringify({ maxReActSteps: 30 }),
+  },
+  {
+    // 代码探索员：代码编写助手的专属只读探索子智能体（对标 CodeBuddy codebase-explorer）
+    id: 'a_builtin_code_explorer',
+    name: '代码探索员',
+    description:
+      '内置只读代码考古助手：目录结构/模块职责/关键调用链/改动影响面/风险点，产出带 文件:行号 出处的结构化探索报告；由代码编写助手委派，不可写不可执行',
+    type: 'harness',
+    is_builtin: 1,
+    builtin_tool_ids: JSON.stringify(CODE_EXPLORER_BUILTIN_TOOLS),
+    system_prompt: CODE_EXPLORER_SYSTEM_PROMPT,
     // 内置定义由代码收敛：工具挂载/提示词以代码为准，强制同步旧库残留
     force_sync: true,
     config_json: JSON.stringify({ maxReActSteps: 30 }),
@@ -854,8 +1040,8 @@ for (const a of seedAgents) {
       // 受 BUILTIN_OVERWRITE_MODE 控制：mode='never' 时彻底不覆盖用户改动。
       if (a.force_sync && overwriteEnabled) {
         db.prepare(
-          'UPDATE agent SET is_public = 1, is_builtin = ?, user_id = COALESCE(user_id, ?), builtin_tool_ids = ?, sub_agent_ids = ?, skill_ids = ?, type = ?, system_prompt = ?, config_json = ? WHERE id = ?'
-        ).run(a.is_builtin || 0, 'guest', a.builtin_tool_ids as string, (a.sub_agent_ids as string) || '[]', (a.skill_ids as string) || '[]', a.type as string, a.system_prompt as string, (a.config_json as string) || null, a.id as string);
+          'UPDATE agent SET is_public = 1, is_builtin = ?, user_id = COALESCE(user_id, ?), name = ?, builtin_tool_ids = ?, sub_agent_ids = ?, skill_ids = ?, type = ?, system_prompt = ?, config_json = ? WHERE id = ?'
+        ).run(a.is_builtin || 0, 'guest', a.name as string, a.builtin_tool_ids as string, (a.sub_agent_ids as string) || '[]', (a.skill_ids as string) || '[]', a.type as string, a.system_prompt as string, (a.config_json as string) || null, a.id as string);
       } else {
         db.prepare(
           'UPDATE agent SET is_public = 1, user_id = COALESCE(user_id, ?), builtin_tool_ids = ?, sub_agent_ids = ?, skill_ids = ?, type = ?, system_prompt = COALESCE(system_prompt, ?) WHERE id = ?'
@@ -869,6 +1055,12 @@ for (const a of seedAgents) {
   } catch {}
 }
 
+// 内置智能体统一改名（AI 助手 → 日常办公助手；XX专家/XX智能体 → XX助手）：
+// 默认助手无 force_sync，仅当旧库仍为旧名称时才改名（不覆盖用户自定义名称）。
+try {
+  db.prepare("UPDATE agent SET name = '日常办公助手' WHERE id = 'a_default_assistant' AND name IN ('AI 助手', 'AI助手')").run();
+} catch {}
+
 // 旧库增量迁移：默认助手提示词升级（联网查询改由 pageAgent 承担）。
 // server 端普通种子对 system_prompt 仅 COALESCE 补空（避免覆盖用户编辑），旧库拿不到新指引；
 // 此处按标记增量追加，与前端 agent.ts 的 v9 迁移语义一致。
@@ -881,7 +1073,7 @@ try {
   }
 } catch {}
 
-// 旧库增量迁移：默认助手挂载「数据查询分析专家」子智能体 + 追加委派指引（同上，按标记增量）。
+// 旧库增量迁移：默认助手挂载「数据查询分析助手」子智能体 + 追加委派指引（同上，按标记增量）。
 // 子智能体关系：仅补齐缺失项，不覆盖用户后续自己增删的子智能体。
 try {
   const DATA_AGENT_ID = 'a_builtin_data_agent';
@@ -901,6 +1093,21 @@ try {
       const next = (row.system_prompt || DEFAULT_AGENT_SYSTEM_PROMPT) + '\n\n' + DATA_QUERY_PROMPT_BLOCK;
       db.prepare("UPDATE agent SET system_prompt = ? WHERE id = 'a_default_assistant'").run(next);
     }
+  }
+} catch {}
+
+// 旧库增量迁移：电脑使用约束升级（截屏→image_analyze 视觉闭环 + 用户明确指定内容的发送直接执行）。
+// 按旧约束原句定位替换（仅默认助手带该约束块），已升级过的库不含旧句则跳过。
+try {
+  const OLD_LINE =
+    '- 每一步操作后用 computer_screenshot 观察结果再决定下一步；涉及删除文件、提交表单、发送消息等不可逆操作前，必须先向用户确认。';
+  const NEW_LINES = [
+    '- 截屏只返回文件路径，你看不到画面：需要识别屏幕内容或定位界面元素（聊天窗口、输入框、按钮等）时，立即调用 image_analyze(path=截屏返回的路径, prompt=描述要找的元素及位置) 完成视觉识别，再按识别出的位置操作；每步操作后重新截屏+识别，观察结果再决定下一步。',
+    '- 用户明确要求执行的操作（如在本机应用中发送用户指定的消息内容、填写用户提供的表单等），用户的指令本身就是授权，直接执行；只有用户未指定内容的发送、删除文件、支付、群发等高危不可逆操作才需先向用户确认。不要以"没有工具/无法控制应用"为由拒绝可完成的操作。',
+  ].join('\n');
+  const row = db.prepare("SELECT system_prompt FROM agent WHERE id = 'a_default_assistant'").get() as { system_prompt?: string | null } | undefined;
+  if (row?.system_prompt && row.system_prompt.includes(OLD_LINE)) {
+    db.prepare("UPDATE agent SET system_prompt = ? WHERE id = 'a_default_assistant'").run(row.system_prompt.replace(OLD_LINE, NEW_LINES));
   }
 } catch {}
 
@@ -1132,7 +1339,7 @@ try {
 const ONTOLOGY_QUERY_DESC = '解释本体（语义层）工具链与 YAML 字段含义，指导按「总览→简略→详情→采值→取数」标准流程查询数据，含 SQL 生成规范与 js_exec 脚本桥接（dataQuery）用法。';
 const ONTOLOGY_QUERY_BODY = `# 本体取数与分析指南
 
-本 skill 是「数据查询分析专家」的操作教材：解释本体工具的作用、本体 YAML 各字段含义，以及如何生成 SQL / 脚本取数。
+本 skill 是「数据查询分析助手」的操作教材：解释本体工具的作用、本体 YAML 各字段含义，以及如何生成 SQL / 脚本取数。
 
 ## 一、本体是什么（YAML 字段含义）
 一个「本体」= 把一段查询 SQL 包装成有业务语义的对象，大模型只看语义不看物理实现：
@@ -1384,6 +1591,18 @@ export const builtinSkillDefaults: Array<{ id: string; name: string; category: s
       description: 'OpenSpec 实施变更。按变更的 tasks 开始或继续实施，逐项完成实现任务。',
       triggers: ['openspec实施', '实施变更', 'apply change', 'openspec apply', '继续实施'],
       body: `# OpenSpec 实施变更（apply）\n\n按变更的 tasks 开始/继续实施。\n\n## 流程\n读取变更 tasks → 逐项实现 → 标记完成\n\n详见 .claude/skills/openspec-apply-change/SKILL.md`,
+    },
+    {
+      id: 'skill_design_creation', name: '设计创意方法论', category: '设计创意',
+      description: '海报/配图/品牌/UI 等视觉设计的标准方法论：需求澄清 → 多方向提案 → 视觉细化（配色/构图/字体/留白）→ 交付（SVG/HTML/文案）。',
+      triggers: ['海报设计', '设计一张图', '品牌设计', 'UI设计', '视觉方案', '创意设计'],
+      body: `# 设计创意方法论\n\n## 流程\n1. 需求澄清：用途/受众/渠道/风格偏好，一次问全\n2. 多方向提案：给 2~3 个差异化立意（每个一句话理由），确认后深化\n3. 视觉细化：\n   - 配色：主色+辅色+点缀，全部给 HEX 色值，说明比例（60/30/10）\n   - 构图：版式类型（居中/三栏/对角线/网格）、视觉动线、留白比例\n   - 字体：标题/正文字体气质（衬线/无衬线/手写）与字号层级\n   - 素材：图片风格、图标体系、装饰元素\n4. 交付：SVG/HTML 海报写文件交付；文案给多组候选；说明打开预览方式\n\n## 要点\n- 视觉描述必须可执行，禁止"高级感""大气"等模糊词\n- 参考真实设计语言（如孟菲斯/瑞士国际主义/新拟态）而非编造大师名\n\n详见 .claude/skills/design-creation/SKILL.md`,
+    },
+    {
+      id: 'skill_ai_image_prompt', name: 'AI 绘图提示词工程', category: '设计创意',
+      description: '为文生图平台（即梦/Midjourney/DALL·E 等）撰写高质量提示词：主体+场景+风格+构图+光线+质量词结构，中英文双语与参数建议。',
+      triggers: ['生成图片', '画一张图', '文生图', '绘图提示词', 'AI绘图', 'image prompt'],
+      body: `# AI 绘图提示词工程\n\n## 提示词结构（六要素，一次写全）\n1. 主体：画面核心对象 + 细节特征\n2. 场景：环境/背景/时间氛围\n3. 风格：摄影/插画/3D/水墨/赛博朋克等，可叠加艺术家风格类型（不冒充在世艺术家署名）\n4. 构图：视角（俯视/平视/特写）+ 景别 + 留白\n5. 光线：光源方向/色调（黄金时刻/霓虹/柔光棚拍）\n6. 质量词：高细节/8K/专业色彩等收尾\n\n## 输出规范\n- 中文提示词 + 英文翻译版各一份\n- 负面提示词（不想要什么）单独列出\n- 平台参数建议：比例（--ar 16:9）、风格化强度等\n- 一次给 2~3 个差异化变体供挑选\n\n## 委派生成\n- 有图片生成模型：list_models 查 capabilities 后委派\n- 无模型：pageAgent 操作文生图平台（如即梦）粘贴提示词生成并取回\n\n详见 .claude/skills/ai-image-prompt/SKILL.md`,
     },
 ];
 

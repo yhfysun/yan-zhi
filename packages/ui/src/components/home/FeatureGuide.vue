@@ -94,7 +94,7 @@ interface FeatureDetail {
 
 const FEATURE_DETAILS: Record<string, FeatureDetail> = {
   home: {
-    purpose: 'yan-zhi 一体化 AI 助手工作台，将对话、浏览器自动化、模型配置、工具、技能（Skill）、智能体（Agent）、MCP 与外部服务接入统一整合，是进入全部功能模块的门户。',
+    purpose: 'yan-zhi 一体化日常办公助手工作台，将对话、浏览器自动化、模型配置、工具、技能（Skill）、智能体（Agent）、MCP 与外部服务接入统一整合，是进入全部功能模块的门户。',
     usage: '通过首页功能列表或星球入口进入任意模块：对话（与模型流式交流）、浏览器（网页自动化与截图）、模型（管理 OpenAI/Anthropic 平台与默认模型）、工具（内置/自定义/商城工具）、Skill（技能安装与编排）、智能体（单轮与多节点工作流）、MCP（接入外部服务）、设置（全局偏好与主题）。',
     buttons: [],
   },

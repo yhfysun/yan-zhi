@@ -205,7 +205,7 @@ const remoteAgentItems = ref<any[]>([]);
 const selectedRemoteSource = ref<any>(null);
 const agentSourceForm = ref({ name: '', baseUrl: '', authType: 'none', authValue: '' });
 
-// 统计：内置 = 默认助理 + 内置标记（pageAgent / 数据查询分析专家）
+// 统计：内置 = 默认助理 + 内置标记（pageAgent / 数据查询分析助手）
 const builtinCount = computed(() => store.agents.filter((a) => a.isDefault || a.isBuiltin).length);
 const customCount = computed(() => store.agents.filter((a) => !a.isDefault && !a.isBuiltin).length);
 

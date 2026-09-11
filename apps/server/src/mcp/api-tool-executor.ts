@@ -12,6 +12,8 @@ import {
 } from '../services/peers.js';
 import { gitService } from '../services/git.js';
 import { bumpMemoryCache } from '../services/memory-service.js';
+import { readSpaceMemory, appendSpaceMemory } from '../services/space-memory.js';
+import { readBrowserMemoryOverview } from '../services/browser-memory.js';
 import {
   computeNextRun,
   nextCronTime,
@@ -129,6 +131,15 @@ function requireUser(userId?: string): string {
   return userId;
 }
 
+/** 会话 → 所属空间 ID（空间记忆类工具省略 spaceId 时的默认解析） */
+function resolveTaskSpaceId(conversationId?: string): string {
+  if (!conversationId) return '';
+  const conv = db.prepare('SELECT space_id FROM conversation WHERE id = ?').get(conversationId) as
+    | { space_id: string | null }
+    | undefined;
+  return conv?.space_id || '';
+}
+
 /** conversation_file 行 → camelCase 输出（与 /api/conversations/:id/files 保持一致） */
 function rowToFile(r: any) {
   return {
@@ -163,6 +174,8 @@ export const SUPPORTED_API_TOOLS = new Set([
   'api_marketplace_sources', 'api_marketplace_add_source', 'api_marketplace_delete_source', 'api_marketplace_browse', 'api_marketplace_install',
   'api_workspace_list_dir', 'api_workspace_search_files',
   'api_memory_search', 'api_memory_list', 'api_memory_create', 'api_memory_delete',
+  'api_space_memory_read', 'api_space_memory_append',
+  'api_browser_memory_read',
   'api_file_list', 'api_file_set_category',
   'api_peer_register', 'api_peer_list', 'api_peer_ping', 'api_chat_send', 'api_chat_poll',
   'api_im_connector_list', 'api_im_connector_create', 'api_im_connector_update', 'api_im_connector_delete', 'api_im_send',
@@ -221,6 +234,8 @@ export async function executeApiTool(
   agentId?: string,
   /** 任务级显式挂载（前端随 /llm/tasks 下发）；给出时优先于 server agent 表读取 */
   explicitOntologyIds?: string[],
+  /** 当前会话 ID：空间记忆类工具用它解析默认空间（会话归属哪个空间就读写哪个空间） */
+  conversationId?: string,
 ): Promise<MpcToolExecutionResult> {
   try {
     switch (name) {
@@ -652,6 +667,28 @@ export async function executeApiTool(
         db.prepare('DELETE FROM memory WHERE id = ? AND user_id = ?').run(str(args, 'id'), uid);
         bumpMemoryCache(uid);
         return ok({ deleted: true });
+      }
+
+      // 空间记忆文件（MEMORY.md，跨会话、所有智能体共享；spaceId 省略时取当前会话所属空间）
+      case 'api_space_memory_read': {
+        const uid = requireUser(userId);
+        const spaceId = str(args, 'spaceId') || resolveTaskSpaceId(conversationId);
+        if (!spaceId) return fail('未指定 spaceId，且当前会话未归属任何空间');
+        return ok(await readSpaceMemory(uid, spaceId));
+      }
+      case 'api_space_memory_append': {
+        const uid = requireUser(userId);
+        const spaceId = str(args, 'spaceId') || resolveTaskSpaceId(conversationId);
+        if (!spaceId) return fail('未指定 spaceId，且当前会话未归属任何空间');
+        return ok(await appendSpaceMemory(uid, spaceId, str(args, 'content')));
+      }
+      case 'api_browser_memory_read': {
+        requireUser(userId);
+        const days = Math.min(Math.max(num(args, 'days', 3), 1), 30);
+        const overview = await readBrowserMemoryOverview(days);
+        return ok(overview.content || overview.analysis
+          ? overview
+          : { days, content: '', analysis: null, note: `近 ${days} 天没有浏览器使用记录` });
       }
 
       // Conversation files

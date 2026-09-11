@@ -14,7 +14,15 @@ import { defineStore } from 'pinia';
 import { ref } from 'vue';
 import { api, API_BASE } from '../api/client';
 
-export type MemoryDimension = 'profile' | 'agent' | 'session' | 'daily';
+export type MemoryDimension = 'profile' | 'agent' | 'session' | 'daily' | 'space';
+
+export interface SpaceMemoryInfo {
+  spaceId: string;
+  spaceName: string;
+  path: string;
+  content: string;
+  exists: boolean;
+}
 
 export interface MemoryRow {
   id: string;
@@ -135,6 +143,21 @@ export const useMemoryStore = defineStore('memory', () => {
     return r.data;
   }
 
+  // ── 空间记忆文件（MEMORY.md，跨会话、该空间下所有智能体共享） ──
+
+  /** 读取空间记忆文件 */
+  async function getSpaceMemory(spaceId: string): Promise<SpaceMemoryInfo> {
+    const r = await api.get<any>(`/spaces/${spaceId}/memory`);
+    if ('error' in r) throw new Error(r.error);
+    return (r as any).data;
+  }
+
+  /** 保存空间记忆文件（整体覆盖写） */
+  async function saveSpaceMemory(spaceId: string, content: string): Promise<void> {
+    const r = await api.put<any>(`/spaces/${spaceId}/memory`, { content });
+    if ('error' in r) throw new Error(r.error);
+  }
+
   // ── 记忆整理（Dreaming） ──
 
   const dreamLog = ref<any[]>([]);
@@ -189,6 +212,8 @@ export const useMemoryStore = defineStore('memory', () => {
     updateMemory,
     deleteMemory,
     createMemory,
+    getSpaceMemory,
+    saveSpaceMemory,
     dreamLog,
     dreamTotal,
     dreamRunning,

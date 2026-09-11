@@ -124,38 +124,43 @@ for (const entry of fs.readdirSync(runtimeParentDir)) {
   }
 }
 
-// @yan-zhi/core、@yan-zhi/shared 不交给 npm 安装：它们是 workspace 源码包，
-// 安装后再用产物目录整体覆盖，避免 npm 复制一份再丢弃的额外开销与协议差异。
+// 依赖清单：以 apps/server/package.json 的 dependencies 为准自动同步，
+// 避免此处硬编码清单与业务代码新增依赖脱节（曾因漏配 ssh2 导致打包后端启动即崩、应用黑屏）。
+// - @yan-zhi/core、@yan-zhi/shared 不交给 npm 安装：它们是 workspace 源码包，
+//   后面用产物目录整体覆盖；
+// - 其余 runtime 特有依赖（平台 esbuild、xlsx/mammoth/unpdf 等传递依赖）在下方合并保留。
+const serverPkg = JSON.parse(
+  fs.readFileSync(path.join(rootDir, 'apps', 'server', 'package.json'), 'utf8'),
+);
+const serverDeps = {};
+for (const [name, ver] of Object.entries(serverPkg.dependencies || {})) {
+  if (name.startsWith('@yan-zhi/')) continue;
+  serverDeps[name] = ver;
+}
 const pkg = {
   name: 'yan-zhi-server-runtime',
   version: '0.1.0',
   private: true,
   type: 'module',
   dependencies: {
-    [bindings.esbuild]: ESBUILD_VERSION,
-    [bindings.sqliteVec]: '^0.1.9',
-    'adm-zip': '^0.6.0',
-    bcryptjs: '^2.4.3',
-    'better-sqlite3': '^11.10.0',
-    cors: '^2.8.5',
-    express: '^4.21.0',
-    jsonwebtoken: '^9.0.2',
+    // runtime 特有（非 server 直依赖）的部分，server deps 同名时以 server 版本为准
     jszip: '^3.10.1',
     mammoth: '^1.8.0',
-    pg: '^8.23.0',
-    playwright: '^1.62.1',
-    'simple-git': '^3.36.0',
-    'sqlite-vec': '^0.1.9',
-    'tesseract.js': '^5.1.1',
-    tsx: '^4.19.0',
     unpdf: '^0.12.1',
-    uuid: '^10.0.0',
-    ws: '^8.18.0',
     xlsx: '^0.18.5',
-    yaml: '^2.4.0',
-    mysql2: '^3.24.3',
+    tsx: '^4.19.0',
+    ...serverDeps,
+    [bindings.esbuild]: ESBUILD_VERSION,
+    [bindings.sqliteVec]: '^0.1.9',
   },
 };
+
+// 保险：server 依赖的每个包（除 workspace 包）都必须出现在 runtime 清单中
+for (const name of Object.keys(serverDeps)) {
+  if (!pkg.dependencies[name]) {
+    throw new Error(`[prepare-server-runtime] server 依赖 ${name} 未进入 runtime 清单（同步逻辑异常）`);
+  }
+}
 
 // 依赖缓存：npm install（213 个包，约 2 分钟）在依赖清单未变时完全跳过。
 // 之前每次打包都把 .build-package 删光重建，导致必定回源重装，离线/受限网络下极易卡死。

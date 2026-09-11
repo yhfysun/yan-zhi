@@ -1,12 +1,15 @@
-// ops-shell 内置插件：服务器运维（SSH 命令执行 / 文件传输 / Docker 管理 / 交互式终端）。
-// 形态对齐 computer-use（manifest + 入口模块 + 权限护栏 + 审计），默认 disabled，需在插件管理页手动开启。
-// 实现：ssh2（纯 JS，无原生编译）+ Docker over SSH（远程执行 docker CLI，免 dockerode/本地 socket 依赖）。
+// ops-shell 内置插件：服务器运维（SSH 命令执行 / 文件传输 / Docker 管理 / 数据库只读查询 / 交互式终端）。
+// 形态对齐 computer-use（manifest + 入口模块 + 权限护栏 + 审计），默认启用（仅首次注册生效，之后随 DB 状态）。
+// 实现：ssh2（纯 JS，无原生编译）+ Docker over SSH（远程执行 docker CLI，免 dockerode/本地 socket 依赖）
+//      + mysql2/pg 直连数据库（只读护栏，单条 SELECT/SHOW/DESC/EXPLAIN/WITH）。
 // 智能体挂载：a_builtin_ops_agent（db.ts seedAgents）绑定 plugin_ops-shell__* 工具，
 // 对话模式走现有聊天链路；命令模式为 /ops 控制台的 xterm 终端（SSE 输出 + POST 输入）。
 // 护栏：remote-shell 权限声明 / 危险命令黑名单 / 生产连接写操作二次确认 / 空闲会话回收 / 全量审计（plugin_storage.audit）。
 import { getPluginManager } from '@yan-zhi/core';
 import type { BuiltInTool, McpCallResult, PluginManifest, PluginModule } from '@yan-zhi/core';
 import { Client } from 'ssh2';
+import mysql from 'mysql2/promise';
+import pg from 'pg';
 import type { ClientChannel, ConnectConfig, SFTPWrapper } from 'ssh2';
 import { encrypt, decrypt } from '../utils/crypto.js';
 import { guard, capOutput, isProductionTag } from './ops-shell-guard.js';
@@ -19,7 +22,7 @@ export const opsShellManifest: PluginManifest = {
   version: '0.1.0',
   category: '操作',
   description:
-    '连接服务器执行命令（SSH）、上传/下载文件、管理 Docker 容器；「更多 → 运维」打开运维控制台：命令模式（xterm 终端）+ 对话模式（内置运维智能体）。默认关闭，需手动开启。',
+    '连接服务器执行命令（SSH）、上传/下载文件、管理 Docker 容器、数据库只读查询；「更多 → 运维」打开运维控制台：按连接类型呈现命令终端 / 容器面板 / SQL 查询 + 对话模式（内置运维助手）。默认开启，可在插件管理页停用。',
   permissions: ['remote-shell', 'shell', 'network'],
   contributes: {
     tools: [
@@ -29,6 +32,7 @@ export const opsShellManifest: PluginManifest = {
       'docker_ps',
       'docker_logs',
       'docker_restart',
+      'db_query',
     ],
     sidebar: [
       {
@@ -39,7 +43,7 @@ export const opsShellManifest: PluginManifest = {
         // 进「更多」下拉新建「运维」分组（桌面 TitleBar）；缺省时渲染侧栏「插件」分组
         moreGroup: 'ops',
         moreGroupLabel: '运维',
-        desc: '服务器连接 · Shell · Docker',
+        desc: '服务器 · Docker · 数据库',
         order: 10,
       },
     ],
@@ -59,8 +63,12 @@ export const opsShellManifest: PluginManifest = {
 
 // ---------- 连接管理 ----------
 
+/** 连接类型：ssh=服务器终端；docker=Docker 宿主机（over SSH）；database=数据库（只读查询） */
+type OpsConnType = 'ssh' | 'docker' | 'database';
+
 interface OpsConnection {
   id: string;
+  type: OpsConnType;
   name: string;
   host: string;
   port: number;
@@ -70,6 +78,10 @@ interface OpsConnection {
   secretEnc: string;
   /** 连接标签：含"生产/prod"的连接写操作需二次确认 */
   tag?: string;
+  /** database 类型专用：mysql / postgres */
+  dbType?: 'mysql' | 'postgres';
+  /** database 类型专用：默认连接的库名 */
+  database?: string;
   createdAt: number;
 }
 
@@ -82,7 +94,13 @@ let pluginStorage: { get<T>(key: string): Promise<T | undefined>; set(key: strin
 async function loadConnections(): Promise<StoredConnection[]> {
   if (!pluginStorage) return [];
   const rows = await pluginStorage.get<StoredConnection[]>('connections');
-  return Array.isArray(rows) ? rows : [];
+  if (!Array.isArray(rows)) return [];
+  // 旧库兼容：type 缺省视为 ssh；dbType 兜底 mysql
+  return rows.map((c) => ({
+    ...c,
+    type: c.type === 'docker' || c.type === 'database' ? c.type : 'ssh',
+    dbType: c.dbType === 'postgres' ? 'postgres' : 'mysql',
+  }));
 }
 async function saveConnections(list: StoredConnection[]): Promise<void> {
   if (!pluginStorage) return;
@@ -206,6 +224,82 @@ async function execOnConnection(conn: StoredConnection, command: string, timeout
   const out = capOutput(res.stdout);
   const errOut = capOutput(res.stderr);
   return { stdout: out.text, stderr: errOut.text, code: res.code };
+}
+
+// ---------- 数据库只读执行（mysql2 / pg 直连，每次查询独立连接） ----------
+
+/** 写操作关键字黑名单：WITH 开头的语句也要过这道闸（防 CTE 夹带 INSERT/UPDATE） */
+const DB_DENY_RE =
+  /\b(insert|update|delete|drop|alter|create|truncate|grant|revoke|replace|merge|call|set|use|kill|shutdown|copy|comment|lock|unlock|vacuum|reindex|do|listen|notify|load)\b/i;
+
+function assertReadOnly(sql: string): string {
+  const s = sql
+    .replace(/--[^\n]*/g, ' ')
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .trim()
+    .replace(/;+\s*$/, '');
+  if (!s) throw new Error('SQL 不能为空');
+  if (s.includes(';')) throw new Error('仅支持单条语句（不允许用 ; 拼接多条）');
+  if (!/^(select|show|desc|describe|explain|with)\b/i.test(s)) {
+    throw new Error('仅支持只读查询（SELECT / SHOW / DESC / EXPLAIN / WITH）');
+  }
+  if (DB_DENY_RE.test(s)) throw new Error('检测到写操作关键字，已拒绝执行');
+  return s;
+}
+
+interface DbExecResult {
+  rows: Record<string, unknown>[];
+  fields: string[];
+  truncated: boolean;
+}
+
+const DB_MAX_ROWS = 200;
+const DB_CELL_CAP = 500;
+
+async function dbExec(conn: StoredConnection, rawSql: string): Promise<DbExecResult> {
+  if (conn.type !== 'database') throw new Error(`连接「${conn.name}」不是数据库连接`);
+  const sql = assertReadOnly(rawSql);
+  const database = conn.database || '';
+  let rows: Record<string, unknown>[];
+  let fields: string[];
+  if (conn.dbType === 'postgres') {
+    const client = new pg.Client({
+      host: conn.host, port: conn.port || 5432, user: conn.username,
+      password: decrypt(conn.secretEnc), database, connectionTimeoutMillis: 10000,
+    });
+    await client.connect();
+    try {
+      const r = await client.query(sql);
+      rows = (r.rows || []) as Record<string, unknown>[];
+      fields = (r.fields || []).map((f) => f.name);
+    } finally {
+      try { await client.end(); } catch { /* ignore */ }
+    }
+  } else {
+    const c = await mysql.createConnection({
+      host: conn.host, port: conn.port || 3306, user: conn.username,
+      password: decrypt(conn.secretEnc), database, connectTimeout: 10000,
+    });
+    try {
+      const [result] = await c.query({ sql, timeout: 20000 });
+      const r = result as unknown[];
+      rows = (Array.isArray(r) ? r : []) as Record<string, unknown>[];
+      const first = rows[0];
+      fields = first ? Object.keys(first) : [];
+    } finally {
+      try { await c.end(); } catch { /* ignore */ }
+    }
+  }
+  const truncated = rows.length > DB_MAX_ROWS;
+  const capped = (truncated ? rows.slice(0, DB_MAX_ROWS) : rows).map((row) => {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(row)) {
+      const s = v === null || v === undefined ? '' : typeof v === 'object' ? JSON.stringify(v) : String(v);
+      out[k] = s.length > DB_CELL_CAP ? s.slice(0, DB_CELL_CAP) + '…' : s;
+    }
+    return out;
+  });
+  return { rows: capped, fields, truncated };
 }
 
 // ---------- 工具实现 ----------
@@ -406,6 +500,34 @@ function makeTools(): BuiltInTool[] {
         }
       },
     },
+    {
+      name: 'db_query',
+      description:
+        '在指定数据库连接（database 类型）上执行只读 SQL 查询并返回 JSON 行结果，最多 200 行。仅允许 SELECT / SHOW / DESC / EXPLAIN / WITH，任何写操作一律拒绝。',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          connection: { type: 'string', description: '连接名称（或 connectionId）' },
+          sql: { type: 'string', description: '要执行的只读 SQL（单条语句）' },
+        },
+        required: ['connection', 'sql'],
+      },
+      execute: async (args) => {
+        const conn = await resolveConn(args);
+        const sql = String(args.sql || '');
+        try {
+          const r = await dbExec(conn, sql);
+          await audit('db_query', { connection: conn.name, detail: sql.slice(0, 200), ok: true });
+          const body = r.rows.length ? JSON.stringify(r.rows, null, 1) : '（0 行）';
+          return textResult(
+            `字段: ${r.fields.join(', ') || '（无）'}\n行数: ${r.rows.length}${r.truncated ? `（已截断，仅返回前 ${DB_MAX_ROWS} 行，请加 LIMIT/过滤条件缩小范围）` : ''}\n${body}`,
+          );
+        } catch (e) {
+          await audit('db_query.rejected', { connection: conn.name, detail: sql.slice(0, 200), ok: false });
+          return textResult(`查询失败: ${(e as Error).message}`);
+        }
+      },
+    },
   ];
 }
 
@@ -434,15 +556,22 @@ const opsShellModule: PluginModule = {
         (res as { json: (d: unknown) => void }).json({ data: list.map(toClientView) });
       });
 
-      // 新建连接
+      // 新建连接（type: ssh | docker | database；docker/database 复用 SSH 字段语义，database 直连）
       r.post('/connections', async (req: unknown, res: unknown) => {
         const body = (req as { body: Record<string, unknown> }).body || {};
         const name = String(body.name || '').trim();
         const host = String(body.host || '').trim();
         const username = String(body.username || '').trim();
         const secret = String(body.secret || '');
+        const type: OpsConnType = body.type === 'docker' || body.type === 'database' ? body.type : 'ssh';
+        const dbType = body.dbType === 'postgres' ? 'postgres' : 'mysql';
+        const database = String(body.database || '').trim();
         if (!name || !host || !username || !secret) {
           (res as { status: (n: number) => { json: (d: unknown) => void } }).status(400).json({ error: 'name/host/username/secret 均必填' });
+          return;
+        }
+        if (type === 'database' && !database) {
+          (res as { status: (n: number) => { json: (d: unknown) => void } }).status(400).json({ error: '数据库连接必须指定库名（database）' });
           return;
         }
         const list = await loadConnections();
@@ -450,14 +579,17 @@ const opsShellModule: PluginModule = {
           (res as { status: (n: number) => { json: (d: unknown) => void } }).status(409).json({ error: `连接「${name}」已存在` });
           return;
         }
+        const defaultPort = type === 'database' ? (dbType === 'postgres' ? 5432 : 3306) : 22;
         const conn: StoredConnection = {
           id: `ops-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
-          name, host,
-          port: Number(body.port) > 0 ? Number(body.port) : 22,
+          type, name, host,
+          port: Number(body.port) > 0 ? Number(body.port) : defaultPort,
           username,
           authType: body.authType === 'key' ? 'key' : 'password',
           secretEnc: encrypt(secret),
           tag: body.tag ? String(body.tag) : undefined,
+          dbType: type === 'database' ? dbType : undefined,
+          database: type === 'database' ? database : undefined,
           createdAt: Date.now(),
         };
         list.push(conn);
@@ -480,17 +612,63 @@ const opsShellModule: PluginModule = {
         (res as { json: (d: unknown) => void }).json({ data: { ok: true } });
       });
 
-      // 连接测试
+      // 连接测试（按类型：ssh=echo；docker=docker ps；database=SELECT 1 直连）
       r.post('/connections/:id/test', async (req: unknown, res: unknown) => {
         const id = (req as { params: { id: string } }).params.id;
         const list = await loadConnections();
         const conn = list.find((c) => c.id === id);
         if (!conn) { (res as { status: (n: number) => { json: (d: unknown) => void } }).status(404).json({ error: '连接不存在' }); return; }
         try {
-          const r = await execOnConnection(conn, 'echo ok', 15000);
+          if (conn.type === 'database') {
+            await dbExec(conn, 'SELECT 1');
+            (res as { json: (d: unknown) => void }).json({ data: { ok: true } });
+            return;
+          }
+          const cmd = conn.type === 'docker' ? 'docker ps >/dev/null 2>&1 && echo ok' : 'echo ok';
+          const r = await execOnConnection(conn, cmd, 15000);
           (res as { json: (d: unknown) => void }).json({ data: { ok: r.stdout.includes('ok') } });
         } catch (e) {
           (res as { json: (d: unknown) => void }).json({ data: { ok: false, error: (e as Error).message } });
+        }
+      });
+
+      // 数据库面板：表列表（database 类型连接）
+      r.get('/db/tables', async (req: unknown, res: unknown) => {
+        const connId = (req as { query: Record<string, string> }).query.connectionId || '';
+        const list = await loadConnections();
+        const conn = list.find((c) => c.id === connId);
+        if (!conn) { (res as { status: (n: number) => { json: (d: unknown) => void } }).status(404).json({ error: '连接不存在' }); return; }
+        if (conn.type !== 'database') { (res as { status: (n: number) => { json: (d: unknown) => void } }).status(400).json({ error: '非数据库连接' }); return; }
+        try {
+          const r = await dbExec(
+            conn,
+            conn.dbType === 'postgres'
+              ? "SELECT tablename AS name FROM pg_tables WHERE schemaname NOT IN ('pg_catalog','information_schema') ORDER BY tablename"
+              : 'SHOW TABLES',
+          );
+          const tables = conn.dbType === 'postgres'
+            ? r.rows.map((row) => String(row.name ?? ''))
+            : r.rows.map((row) => String(Object.values(row)[0] ?? ''));
+          (res as { json: (d: unknown) => void }).json({ data: tables.filter(Boolean) });
+        } catch (e) {
+          (res as { json: (d: unknown) => void }).json({ error: (e as Error).message });
+        }
+      });
+
+      // 数据库面板：只读 SQL 查询
+      r.post('/db/query', async (req: unknown, res: unknown) => {
+        const body = (req as { body: Record<string, unknown> }).body || {};
+        const list = await loadConnections();
+        const conn = list.find((c) => c.id === String(body.connectionId || ''));
+        if (!conn) { (res as { status: (n: number) => { json: (d: unknown) => void } }).status(404).json({ error: '连接不存在' }); return; }
+        if (conn.type !== 'database') { (res as { status: (n: number) => { json: (d: unknown) => void } }).status(400).json({ error: '非数据库连接' }); return; }
+        try {
+          const r = await dbExec(conn, String(body.sql || ''));
+          await audit('db_query', { connection: conn.name, detail: String(body.sql || '').slice(0, 200), ok: true });
+          (res as { json: (d: unknown) => void }).json({ data: r });
+        } catch (e) {
+          await audit('db_query.rejected', { connection: conn.name, detail: String(body.sql || '').slice(0, 200), ok: false });
+          (res as { json: (d: unknown) => void }).json({ error: (e as Error).message });
         }
       });
 

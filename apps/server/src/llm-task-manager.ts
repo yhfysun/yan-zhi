@@ -13,6 +13,7 @@ import {
   retrieveRelevantMemories, formatMemoryContext, bumpMemoryUsage,
   writeMemoryItems, flushMemoriesBeforeCompression, parseExtractedItems, type MemoryWriteItem,
 } from './services/memory-service.js';
+import { loadSpaceMemoryForConversation, formatSpaceMemoryContext } from './services/space-memory.js';
 import { serverState } from './state.js';
 
 export type TaskStatus = 'running' | 'completed' | 'failed' | 'aborted';
@@ -609,6 +610,14 @@ async function runReActLoop(task: LlmTask, params: {
         }
       } catch { /* 记忆注入失败不影响任务 */ }
     }
+    // 空间记忆文件注入：会话归属空间时，读取空间 MEMORY.md（跨会话、所有智能体共享同一份），失败不阻塞
+    try {
+      const spaceMem = loadSpaceMemoryForConversation(convId);
+      if (spaceMem) {
+        systemPromptBuilt += '\n\n' + formatSpaceMemoryContext(spaceMem.spaceName, spaceMem.content);
+      }
+    } catch { /* 空间记忆注入失败不影响任务 */ }
+    // 浏览器记忆不做自动注入：按需召回模式，智能体需要时调用 api_browser_memory_read 工具拉取
     if (modePrompt.length) {
       systemPromptBuilt += '\n\n## 模式指令（用户在输入框开启，优先级高于默认行为）\n' + modePrompt.join('\n');
     }
@@ -981,7 +990,7 @@ async function executeTool(
   // API 工具（api_memory_search/api_kb_search/api_data_* 等）→ 后端直接执行；agentId 用于本体挂载范围过滤
   if (isApi) {
     try {
-      const result = await executeApiTool(toolName, args, task.userId, task.agentId ?? undefined, task.ontologyIds);
+      const result = await executeApiTool(toolName, args, task.userId, task.agentId ?? undefined, task.ontologyIds, task.conversationId);
       return result.content?.map((c: any) => c.text || '').join('') || JSON.stringify(result);
     } catch (e: any) {
       return `API 工具执行失败: ${e?.message || e}`;

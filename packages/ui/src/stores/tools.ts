@@ -35,7 +35,7 @@ const BUILTIN_TOOL_CATEGORIES: { key: string; label: string; prefixes?: string[]
   { key: 'subagent', label: '子智能体', names: ['call_agent', 'list_sub_agents'] },
   { key: 'cmd', label: '命令执行', names: ['cmd_exec'] },
   { key: 'code', label: '代码工具', names: ['code_search', 'code_outline', 'js_exec', 'python_exec'] },
-  { key: 'network', label: '网络安全', names: ['port_scan', 'http_request', 'tcp_send', 'udp_send', 'dns_lookup'] },
+  { key: 'network', label: '网络安全', names: ['port_scan', 'lan_scan', 'http_request', 'tcp_send', 'udp_send', 'dns_lookup'] },
   { key: 'interact', label: '用户交互', names: ['ask_user', 'confirm_user'] },
   { key: 'task', label: '任务规划', names: ['task_plan', 'task_step'] },
   { key: 'data', label: '数据查询（本体/SQL）', prefixes: ['api_ontology_', 'api_data_', 'api_datasource_'] },
@@ -129,6 +129,13 @@ export const useToolsStore = defineStore('tools', () => {
   /** 试运行自定义工具（服务端 node:vm 沙箱执行）。失败抛出后端 error 信息。 */
   async function executeTool(id: string, args: Record<string, unknown>): Promise<unknown> {
     const r = await api.post<any>(`/tools/${id}/execute`, { args });
+    if (r && 'error' in r) throw new Error((r as any).error);
+    return (r as any).data;
+  }
+
+  /** 试运行内置工具（服务端按 name 执行 ToolRegistry / api 执行器）。失败抛出后端 error 信息。 */
+  async function executeBuiltinTool(name: string, args: Record<string, unknown>): Promise<unknown> {
+    const r = await api.post<any>('/tools/builtin/execute', { name, args });
     if (r && 'error' in r) throw new Error((r as any).error);
     return (r as any).data;
   }
@@ -244,7 +251,7 @@ export const useToolsStore = defineStore('tools', () => {
   return {
     builtinTools, builtinToolGroups, customTools, remoteSources, remoteItems, loading,
     marketplaceEnabled, marketplaceAuth, marketplacePort,
-    loadBuiltinTools, loadCustomTools, createTool, updateTool, deleteTool, toggleEnabled, togglePublic, executeTool,
+    loadBuiltinTools, loadCustomTools, createTool, updateTool, deleteTool, toggleEnabled, togglePublic, executeTool, executeBuiltinTool,
     loadRemoteSources, addRemoteSource, deleteRemoteSource, testRemoteSource,
     fetchRemoteItems, installFromMarket,
     setMarketplaceConfig, setMarketplaceEnabled, loadMarketplaceConfig,

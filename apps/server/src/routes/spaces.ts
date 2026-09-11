@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { v4 as uuid } from 'uuid';
 import { authMiddleware } from '../auth.js';
 import { db } from '../db.js';
+import { readSpaceMemory, writeSpaceMemory } from '../services/space-memory.js';
 
 const router = Router();
 router.use(authMiddleware);
@@ -60,6 +61,34 @@ router.patch('/:id', (req: Request, res: Response) => {
   db.prepare(`UPDATE space SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
   const row = db.prepare('SELECT * FROM space WHERE id = ?').get(sid);
   res.json({ data: rowToSpace(row) });
+});
+
+// GET /api/spaces/:id/memory —— 读取空间记忆文件（MEMORY.md，跨会话、所有智能体共享）
+router.get('/:id/memory', async (req: Request, res: Response) => {
+  try {
+    const userId = req.user!.userId;
+    const data = await readSpaceMemory(userId, req.params.id);
+    res.json({ data });
+  } catch (e: unknown) {
+    res.status(e instanceof Error && e.message.includes('不存在') ? 404 : 500).json({
+      error: e instanceof Error ? e.message : String(e),
+    });
+  }
+});
+
+// PUT /api/spaces/:id/memory —— 整体保存空间记忆文件（前端编辑器保存）
+router.put('/:id/memory', async (req: Request, res: Response) => {
+  try {
+    const userId = req.user!.userId;
+    const content = String(req.body?.content ?? '');
+    if (content.length > 512 * 1024) { res.status(400).json({ error: '空间记忆文件过大（上限 512KB）' }); return; }
+    const r = await writeSpaceMemory(userId, req.params.id, content);
+    res.json({ data: r });
+  } catch (e: unknown) {
+    res.status(e instanceof Error && e.message.includes('不存在') ? 404 : 500).json({
+      error: e instanceof Error ? e.message : String(e),
+    });
+  }
 });
 
 // DELETE /api/spaces/:id —— 删除空间（其下会话 space_id 置空归"未归类"，目录文件不动）

@@ -1,7 +1,7 @@
 {
   "name": "言智",
   "short_name": "言智",
-  "description": "本地优先的跨端 AI 助手",
+  "description": "本地优先的跨端日常办公助手",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#F7F5F0",

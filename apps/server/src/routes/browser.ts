@@ -7,6 +7,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { db } from '../db.js';
 import { encrypt, decrypt } from '../utils/crypto.js';
+import { recordBrowserMemoryEvent, readBrowserMemory } from '../services/browser-memory.js';
 
 const router = Router();
 router.use(optionalAuth); // 浏览器功能不需要登录，有 token 就解析（可选）
@@ -313,6 +314,13 @@ router.post('/navigate', async (req: Request, res: Response) => {
     const currentUrl = page.url();
     lastActivityAt = Date.now();
     recordPageState(currentUrl, String(title || ''));
+    // 浏览器记忆：?src=agent（内置浏览器工具调用，见 core callBrowserApi）→ agent 操作；其余按用户浏览记录。
+    // 60s 内相同 url 自动去重（browser-memory 内处理），fire-and-forget 不阻塞导航响应。
+    void recordBrowserMemoryEvent({
+      url: currentUrl,
+      title: String(title || ''),
+      source: req.query.src === 'agent' ? 'agent' : 'user',
+    });
     res.json({ data: { url: currentUrl, title } });
   } catch (e: any) {
     res.status(500).json({ error: e?.message || '导航失败' });
@@ -1881,6 +1889,8 @@ async function recordVisit(entry: { url: string; title?: string; proxy?: boolean
     const trimmed = hist.length > MAX_HISTORY ? hist.slice(hist.length - MAX_HISTORY) : hist;
     ensureBrowserDataDir();
     await fs.promises.writeFile(HISTORY_FILE, JSON.stringify(trimmed));
+    // 同步沉淀到浏览器记忆文件（user 来源；fire-and-forget，失败不影响历史记录）
+    void recordBrowserMemoryEvent({ url: u, title: entry.title || parsed.host, source: 'user' });
   } catch { /* ignore */ }
 }
 
@@ -1982,6 +1992,17 @@ router.get('/analysis', (_req: Request, res: Response) => {
     res.json({ data: loadAnalysis() });
   } catch {
     res.json({ data: null });
+  }
+});
+
+// GET /api/browser/memory?days=3 —— 读取浏览器记忆文件（近 N 天浏览/操作记录，Markdown 文本）
+router.get('/memory', async (req: Request, res: Response) => {
+  try {
+    const days = Math.min(Math.max(parseInt(String(req.query.days || '3'), 10) || 3, 1), 30);
+    const content = await readBrowserMemory(days);
+    res.json({ data: { content, days } });
+  } catch {
+    res.json({ data: { content: '', days: 3 } });
   }
 });
 

@@ -346,11 +346,13 @@ export const computerUseModule: PluginModule = {
       }
     };
 
-    // -- 截屏：返回保存路径与坐标偏移（LLM 无图视觉通道，路径可 @ 引用/预览） --
+    // -- 截屏：返回保存路径与坐标偏移；模型本身看不到画面，需紧跟 image_analyze 完成视觉识别 --
     ctx.registerTool({
       name: 'computer_screenshot',
       description:
-        '截取整个虚拟屏幕，保存为 PNG 并返回绝对路径与坐标偏移信息（offsetX/offsetY 为虚拟屏幕原点，单屏时为 0）。可用 computer_list_windows 了解窗口布局',
+        '截取整个虚拟屏幕，保存为 PNG 并返回绝对路径与坐标偏移信息（offsetX/offsetY 为虚拟屏幕原点，单屏时为 0）。' +
+        '注意：本工具只返回文件路径，你无法直接看到画面——需要识别屏幕内容或定位界面元素（按钮/输入框/聊天窗口等）时，' +
+        '必须紧接着调用 image_analyze 工具（path=返回的文件路径，prompt=描述你要找的元素及其位置）完成视觉识别，再按识别结果操作。可用 computer_list_windows 了解窗口布局',
       inputSchema: { type: 'object', properties: {} },
       execute: (args) =>
         runOp(
@@ -362,7 +364,11 @@ export const computerUseModule: PluginModule = {
             if (MAC) {
               const r = await ctx.adapter.shell!.exec('screencapture', ['-x', file], { timeout: 30000 });
               if (r.exitCode !== 0) throw new Error(`截屏失败: ${r.stderr || r.stdout}`);
-              return textResult({ file, offsetX: 0, offsetY: 0, note: 'macOS：屏幕坐标与截图像素坐标一致（主屏）' });
+              return textResult({
+                file, offsetX: 0, offsetY: 0,
+                note: 'macOS：屏幕坐标与截图像素坐标一致（主屏）',
+                nextStep: `你看不到画面，请立即调用 image_analyze(path="${file}", prompt="描述屏幕内容并给出你要操作的界面元素的位置") 完成视觉识别后再操作`,
+              });
             }
             const script = `Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -383,6 +389,7 @@ Write-Output ('OK' + [string][char]9 + $b.X + [string][char]9 + $b.Y + [string][
               width: Number(w),
               height: Number(h),
               note: '坐标说明：鼠标工具使用屏幕坐标。单屏时与截图像素坐标一致；多屏时需将截图像素坐标加上 offsetX/offsetY。',
+              nextStep: `你看不到画面，请立即调用 image_analyze(path="${file}", prompt="描述屏幕内容并给出你要操作的界面元素的位置") 完成视觉识别后再操作`,
             });
           },
           {},

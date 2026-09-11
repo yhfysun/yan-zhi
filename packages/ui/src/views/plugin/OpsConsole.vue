@@ -6,7 +6,7 @@
     </div>
 
     <div class="ops-layout">
-      <!-- 左侧：连接列表 -->
+      <!-- 左侧：连接列表（按类型标记：SSH / Docker / 数据库） -->
       <aside class="ops-connections">
         <div
           v-for="c in connections"
@@ -16,123 +16,186 @@
         >
           <div class="ops-conn-main">
             <span class="ops-conn-name">{{ c.name }}</span>
+            <span class="ops-conn-type" :data-type="connType(c)">{{ TYPE_LABELS[connType(c)] }}</span>
             <el-tag v-if="c.tag" size="small" :type="isProdTag(c.tag) ? 'danger' : 'info'">{{ c.tag }}</el-tag>
           </div>
-          <div class="ops-conn-sub">{{ c.username }}@{{ c.host }}:{{ c.port }}</div>
+          <div class="ops-conn-sub">{{ connSub(c) }}</div>
           <div class="ops-conn-actions">
             <el-button link size="small" @click.stop="testConnection(c)">测试</el-button>
             <el-button link size="small" type="danger" @click.stop="removeConnection(c)">删除</el-button>
           </div>
         </div>
-        <div v-if="!connections.length" class="ops-empty">暂无连接，点右上角「新建连接」添加服务器（SSH）</div>
+        <div v-if="!connections.length" class="ops-empty">
+          暂无连接，点右上角「新建连接」添加资源（SSH 服务器 / Docker 主机 / 数据库）
+        </div>
       </aside>
 
-      <!-- 右侧：命令 / 对话 / 容器 / 操作日志 -->
+      <!-- 右侧：按连接类型呈现工作区 -->
       <section class="ops-workspace">
-        <el-tabs v-model="mode" class="ops-tabs">
-          <!-- 命令模式：xterm 终端 -->
-          <el-tab-pane label="命令模式" name="term">
-            <div class="ops-term-wrap">
-              <div class="ops-term-bar">
-                <span class="ops-term-conn">{{ activeConnection ? `${activeConnection.username}@${activeConnection.host}` : '未选择连接' }}</span>
-                <el-button v-if="!termOpen" size="small" type="primary" :disabled="!activeConnection" @click="openTerminal">连接终端</el-button>
-                <el-button v-else size="small" type="warning" @click="closeTerminal">断开</el-button>
+        <template v-if="activeConnection">
+          <el-tabs v-model="mode" class="ops-tabs">
+            <!-- SSH：命令模式（xterm 终端） -->
+            <el-tab-pane v-if="connType(activeConnection) === 'ssh'" label="命令模式" name="term">
+              <div class="ops-term-wrap">
+                <div class="ops-term-bar">
+                  <span class="ops-term-conn">{{ activeConnection.username }}@{{ activeConnection.host }}</span>
+                  <el-button v-if="!termOpen" size="small" type="primary" @click="openTerminal">连接终端</el-button>
+                  <el-button v-else size="small" type="warning" @click="closeTerminal">断开</el-button>
+                </div>
+                <div ref="termEl" v-if="termOpen" class="ops-term"></div>
+                <div v-else class="ops-term-empty">
+                  <p class="ops-term-empty-title">未连接终端</p>
+                  <p class="ops-term-empty-sub">点「连接终端」，进入交互式 SSH Shell</p>
+                </div>
               </div>
-              <div ref="termEl" v-if="termOpen" class="ops-term"></div>
-              <div v-else class="ops-term-empty">
-                <p class="ops-term-empty-title">未连接终端</p>
-                <p class="ops-term-empty-sub">选择左侧连接后点「连接终端」，进入交互式 SSH Shell</p>
-              </div>
-            </div>
-          </el-tab-pane>
+            </el-tab-pane>
 
-          <!-- 对话模式：内置运维智能体（独立会话，markdown 渲染） -->
-          <el-tab-pane label="对话模式" name="chat">
-            <div class="ops-chat">
-              <div ref="chatListEl" class="ops-chat-list" @click="onMdClick">
-                <div v-if="!chatMessages.length" class="ops-empty">
-                  与内置「运维智能体」对话：描述运维任务（如"查看 nginx 容器日志"），它会调用 ssh/docker 工具在选定连接上执行。<br />
-                  会话独立于「任务」对话页，互不干扰；执行记录可在「操作日志」查看。
+            <!-- Docker：容器面板（docker 类型连接的远程操作页） -->
+            <el-tab-pane v-if="connType(activeConnection) === 'docker'" label="容器" name="docker">
+              <div class="ops-docker">
+                <div class="ops-docker-bar">
+                  <el-button size="small" @click="loadContainers">刷新</el-button>
+                  <span v-if="containersError" class="ops-docker-error">{{ containersError }}</span>
                 </div>
-                <div v-for="m in chatMessages" :key="m.id" :class="['ops-msg', m.role]">
-                  <div class="ops-msg-role">
-                    {{ m.role === 'user' ? '我' : (m.subAgentName || '运维智能体') }}
-                    <span v-if="m.streaming" class="ops-msg-streaming">输出中…</span>
-                  </div>
-                  <!-- 用户消息纯文本；助手消息 markdown 渲染（对齐主对话：代码高亮 + 复制 + 工具调用 chip） -->
-                  <div v-if="m.role === 'user'" class="ops-msg-content">{{ m.content }}</div>
-                  <div v-else class="ops-msg-content ops-md" v-html="renderAssistantMarkdown(m.content)"></div>
-                </div>
+                <el-table v-if="containers.length" :data="containers" size="small" height="100%" class="ops-docker-table">
+                  <el-table-column prop="Names" label="名称" min-width="160" show-overflow-tooltip />
+                  <el-table-column prop="Image" label="镜像" min-width="180" show-overflow-tooltip />
+                  <el-table-column prop="State" label="状态" width="90">
+                    <template #default="{ row }">
+                      <el-tag size="small" :type="row.State === 'running' ? 'success' : 'info'">{{ row.State }}</el-tag>
+                    </template>
+                  </el-table-column>
+                  <el-table-column prop="Status" label="详情" min-width="140" show-overflow-tooltip />
+                  <el-table-column label="操作" width="150" fixed="right">
+                    <template #default="{ row }">
+                      <el-button link size="small" @click="viewLogs(row)">日志</el-button>
+                      <el-button link size="small" type="warning" @click="restartContainer(row)">重启</el-button>
+                    </template>
+                  </el-table-column>
+                </el-table>
+                <div v-else class="ops-empty">点「刷新」查看该主机上的容器</div>
               </div>
-              <div class="ops-chat-input">
+            </el-tab-pane>
+
+            <!-- 数据库：SQL 查询面板（database 类型连接的远程操作页，只读） -->
+            <el-tab-pane v-if="connType(activeConnection) === 'database'" label="数据查询" name="db">
+              <div class="ops-db">
+                <div class="ops-db-bar">
+                  <el-select
+                    v-model="dbTable"
+                    placeholder="选择表（可选）"
+                    size="small"
+                    clearable
+                    filterable
+                    class="ops-db-table-select"
+                    @visible-change="(v: boolean) => v && loadDbTables()"
+                    @change="onPickTable"
+                  >
+                    <el-option v-for="t in dbTables" :key="t" :label="t" :value="t" />
+                  </el-select>
+                  <el-button size="small" :loading="dbLoading" type="primary" :disabled="!dbSql.trim()" @click="runDbQuery">
+                    运行 (Ctrl+Enter)
+                  </el-button>
+                  <span class="form-tip">仅支持只读查询：SELECT / SHOW / DESC / EXPLAIN / WITH，写操作一律拒绝</span>
+                </div>
                 <el-input
-                  v-model="chatInput"
+                  v-model="dbSql"
                   type="textarea"
-                  :rows="2"
-                  :disabled="chatStreaming"
-                  placeholder="输入运维任务，Ctrl+Enter 发送"
-                  @keydown.ctrl.enter="sendChat"
+                  :rows="4"
+                  class="ops-db-sql"
+                  placeholder="如：SELECT * FROM users ORDER BY id DESC LIMIT 20"
+                  @keydown.ctrl.enter="runDbQuery"
                 />
-                <div class="ops-chat-actions">
-                  <span v-if="chatStreaming" class="form-tip">执行中…</span>
-                  <el-button v-if="chatStreaming" size="small" type="warning" @click="abortChat">停止</el-button>
-                  <el-button size="small" :disabled="chatStreaming || !chatInput.trim()" type="primary" @click="sendChat">发送</el-button>
+                <div v-if="dbError" class="ops-docker-error">{{ dbError }}</div>
+                <div v-if="dbResult" class="ops-db-meta">
+                  {{ dbResult.rows.length }} 行{{ dbResult.truncated ? `（已截断，仅显示前 200 行）` : '' }}
+                </div>
+                <el-table
+                  v-if="dbResult && dbResult.rows.length"
+                  :data="dbResult.rows"
+                  size="small"
+                  height="100%"
+                  class="ops-docker-table"
+                  border
+                >
+                  <el-table-column
+                    v-for="f in dbResult.fields"
+                    :key="f"
+                    :prop="f"
+                    :label="f"
+                    min-width="120"
+                    show-overflow-tooltip
+                  />
+                </el-table>
+                <div v-else-if="dbResult && !dbResult.rows.length" class="ops-empty">查询成功，0 行结果</div>
+              </div>
+            </el-tab-pane>
+
+            <!-- 对话模式：内置运维助手（所有连接类型共用，LLM 参与运维） -->
+            <el-tab-pane label="对话模式" name="chat">
+              <div class="ops-chat">
+                <div ref="chatListEl" class="ops-chat-list" @click="onMdClick">
+                  <div v-if="!chatMessages.length" class="ops-empty">
+                    与内置「运维助手」对话：描述运维任务（如"查看 nginx 容器日志"、"查一下 users 表最近 10 条"），
+                    它会调用 ssh/docker/db 工具在选定连接上执行。<br />
+                    会话独立于「任务」对话页，互不干扰；执行记录可在「操作日志」查看。
+                  </div>
+                  <div v-for="m in chatMessages" :key="m.id" :class="['ops-msg', m.role]">
+                    <div class="ops-msg-role">
+                      {{ m.role === 'user' ? '我' : (m.subAgentName || '运维助手') }}
+                      <span v-if="m.streaming" class="ops-msg-streaming">输出中…</span>
+                    </div>
+                    <!-- 用户消息纯文本；助手消息 markdown 渲染（对齐主对话：代码高亮 + 复制 + 工具调用 chip） -->
+                    <div v-if="m.role === 'user'" class="ops-msg-content">{{ m.content }}</div>
+                    <div v-else class="ops-msg-content ops-md" v-html="renderAssistantMarkdown(m.content)"></div>
+                  </div>
+                </div>
+                <div class="ops-chat-input">
+                  <el-input
+                    v-model="chatInput"
+                    type="textarea"
+                    :rows="2"
+                    :disabled="chatStreaming"
+                    placeholder="输入运维任务，Ctrl+Enter 发送"
+                    @keydown.ctrl.enter="sendChat"
+                  />
+                  <div class="ops-chat-actions">
+                    <span v-if="chatStreaming" class="form-tip">执行中…</span>
+                    <el-button v-if="chatStreaming" size="small" type="warning" @click="abortChat">停止</el-button>
+                    <el-button size="small" :disabled="chatStreaming || !chatInput.trim()" type="primary" @click="sendChat">发送</el-button>
+                  </div>
                 </div>
               </div>
-            </div>
-          </el-tab-pane>
+            </el-tab-pane>
 
-          <!-- 容器面板 -->
-          <el-tab-pane label="容器" name="docker">
-            <div class="ops-docker">
-              <div class="ops-docker-bar">
-                <el-button size="small" :disabled="!activeConnection" @click="loadContainers">刷新</el-button>
-                <span v-if="containersError" class="ops-docker-error">{{ containersError }}</span>
+            <!-- 操作日志：ssh/docker/db 工具执行审计（LLM 调用明细见「工具与连接 → LLM 日志」页） -->
+            <el-tab-pane label="操作日志" name="log">
+              <div class="ops-audit">
+                <div class="ops-docker-bar">
+                  <el-button size="small" @click="loadAudit">刷新</el-button>
+                  <span class="form-tip">ssh/docker/db 工具执行全量审计（含拒绝项）；LLM 调用明细在「工具与连接 → LLM 日志」按会话/模型统计</span>
+                </div>
+                <el-table v-if="auditEntries.length" :data="auditEntries" size="small" height="100%" class="ops-docker-table">
+                  <el-table-column label="时间" width="100">
+                    <template #default="{ row }">{{ fmtTime(row.at) }}</template>
+                  </el-table-column>
+                  <el-table-column prop="action" label="操作" width="150" show-overflow-tooltip />
+                  <el-table-column prop="connection" label="连接" width="110" show-overflow-tooltip />
+                  <el-table-column prop="detail" label="详情" min-width="260" show-overflow-tooltip />
+                  <el-table-column label="结果" width="90">
+                    <template #default="{ row }">
+                      <el-tag size="small" :type="row.ok ? 'success' : 'danger'">{{ row.ok ? '成功' : '失败/拒绝' }}</el-tag>
+                    </template>
+                  </el-table-column>
+                </el-table>
+                <div v-else class="ops-empty">暂无操作记录 —— 对话模式/工具执行的每一条 ssh/docker/db 操作都会落在这里</div>
               </div>
-              <el-table v-if="containers.length" :data="containers" size="small" height="100%" class="ops-docker-table">
-                <el-table-column prop="Names" label="名称" min-width="160" show-overflow-tooltip />
-                <el-table-column prop="Image" label="镜像" min-width="180" show-overflow-tooltip />
-                <el-table-column prop="State" label="状态" width="90">
-                  <template #default="{ row }">
-                    <el-tag size="small" :type="row.State === 'running' ? 'success' : 'info'">{{ row.State }}</el-tag>
-                  </template>
-                </el-table-column>
-                <el-table-column prop="Status" label="详情" min-width="140" show-overflow-tooltip />
-                <el-table-column label="操作" width="150" fixed="right">
-                  <template #default="{ row }">
-                    <el-button link size="small" @click="viewLogs(row)">日志</el-button>
-                    <el-button link size="small" type="warning" @click="restartContainer(row)">重启</el-button>
-                  </template>
-                </el-table-column>
-              </el-table>
-              <div v-else class="ops-empty">选择连接后点「刷新」查看容器</div>
-            </div>
-          </el-tab-pane>
-
-          <!-- 操作日志：ssh/docker 工具执行审计（LLM 调用明细见「工具与连接 → LLM 日志」页） -->
-          <el-tab-pane label="操作日志" name="log">
-            <div class="ops-audit">
-              <div class="ops-docker-bar">
-                <el-button size="small" @click="loadAudit">刷新</el-button>
-                <span class="form-tip">ssh/docker 工具执行全量审计（含拒绝项）；LLM 调用明细在「工具与连接 → LLM 日志」按会话/模型统计</span>
-              </div>
-              <el-table v-if="auditEntries.length" :data="auditEntries" size="small" height="100%" class="ops-docker-table">
-                <el-table-column label="时间" width="100">
-                  <template #default="{ row }">{{ fmtTime(row.at) }}</template>
-                </el-table-column>
-                <el-table-column prop="action" label="操作" width="150" show-overflow-tooltip />
-                <el-table-column prop="connection" label="连接" width="110" show-overflow-tooltip />
-                <el-table-column prop="detail" label="详情" min-width="260" show-overflow-tooltip />
-                <el-table-column label="结果" width="90">
-                  <template #default="{ row }">
-                    <el-tag size="small" :type="row.ok ? 'success' : 'danger'">{{ row.ok ? '成功' : '失败/拒绝' }}</el-tag>
-                  </template>
-                </el-table-column>
-              </el-table>
-              <div v-else class="ops-empty">暂无操作记录 —— 对话模式/工具执行的每一条 ssh/docker 操作都会落在这里</div>
-            </div>
-          </el-tab-pane>
-        </el-tabs>
+            </el-tab-pane>
+          </el-tabs>
+        </template>
+        <div v-else class="ops-workspace-empty">
+          <el-empty description="左侧选择或新建一个连接（SSH 服务器 / Docker 主机 / 数据库）" />
+        </div>
       </section>
     </div>
 
@@ -141,26 +204,45 @@
       <pre class="ops-log-view">{{ logDialog.content || '加载中…' }}</pre>
     </el-dialog>
 
-    <!-- 新建连接弹窗 -->
-    <el-dialog v-model="addDialog.visible" title="新建 SSH 连接" width="480px">
+    <!-- 新建连接弹窗：先选资源类型（SSH / Docker / 数据库） -->
+    <el-dialog v-model="addDialog.visible" title="新建连接" width="500px">
       <el-form label-width="90px">
-        <el-form-item label="名称"><el-input v-model="addDialog.name" placeholder="如 web-1" /></el-form-item>
+        <el-form-item label="资源类型">
+          <el-radio-group v-model="addDialog.type" @change="onTypeChange">
+            <el-radio-button value="ssh">SSH 服务器</el-radio-button>
+            <el-radio-button value="docker">Docker 主机</el-radio-button>
+            <el-radio-button value="database">数据库</el-radio-button>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item v-if="addDialog.type === 'docker'" label=" ">
+          <span class="form-tip">通过 SSH 连到宿主机管理容器（复用 docker CLI），无需暴露 Docker 端口</span>
+        </el-form-item>
+        <el-form-item v-if="addDialog.type === 'database'" label="数据库类型">
+          <el-radio-group v-model="addDialog.dbType" @change="onDbTypeChange">
+            <el-radio value="mysql">MySQL</el-radio>
+            <el-radio value="postgres">PostgreSQL</el-radio>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item label="名称"><el-input v-model="addDialog.name" placeholder="如 web-1 / 主库" /></el-form-item>
         <el-form-item label="主机"><el-input v-model="addDialog.host" placeholder="IP 或域名" /></el-form-item>
         <el-form-item label="端口"><el-input-number v-model="addDialog.port" :min="1" :max="65535" /></el-form-item>
-        <el-form-item label="用户名"><el-input v-model="addDialog.username" placeholder="root" /></el-form-item>
-        <el-form-item label="认证方式">
+        <el-form-item label="用户名"><el-input v-model="addDialog.username" :placeholder="addDialog.type === 'database' ? '数据库用户' : 'root'" /></el-form-item>
+        <el-form-item v-if="addDialog.type === 'database'" label="库名">
+          <el-input v-model="addDialog.database" placeholder="默认连接的数据库名" />
+        </el-form-item>
+        <el-form-item v-if="addDialog.type !== 'database'" label="认证方式">
           <el-radio-group v-model="addDialog.authType">
             <el-radio value="password">密码</el-radio>
             <el-radio value="key">私钥</el-radio>
           </el-radio-group>
         </el-form-item>
-        <el-form-item :label="addDialog.authType === 'key' ? '私钥' : '密码'">
+        <el-form-item :label="addDialog.type === 'database' ? '密码' : (addDialog.authType === 'key' ? '私钥' : '密码')">
           <el-input
             v-model="addDialog.secret"
-            :type="addDialog.authType === 'key' ? 'textarea' : 'password'"
+            :type="addDialog.type !== 'database' && addDialog.authType === 'key' ? 'textarea' : 'password'"
             :rows="4"
             show-password
-            :placeholder="addDialog.authType === 'key' ? 'PEM 私钥内容（OpenSSH 新格式需转 PEM）' : 'SSH 密码'"
+            :placeholder="addDialog.type !== 'database' && addDialog.authType === 'key' ? 'PEM 私钥内容（OpenSSH 新格式需转 PEM）' : '密码'"
           />
         </el-form-item>
         <el-form-item label="标签">
@@ -189,19 +271,40 @@ import { useSettingsStore } from '../../stores/settings';
 import { usePlatformStore } from '../../stores/platform';
 
 // ===== 连接管理 =====
+type ConnType = 'ssh' | 'docker' | 'database';
 interface OpsConn {
   id: string;
+  type?: ConnType;
   name: string;
   host: string;
   port: number;
   username: string;
   authType: 'password' | 'key';
   tag?: string;
+  dbType?: 'mysql' | 'postgres';
+  database?: string;
 }
+const TYPE_LABELS: Record<ConnType, string> = { ssh: 'SSH', docker: 'Docker', database: '数据库' };
 const connections = ref<OpsConn[]>([]);
 const activeConnectionId = ref('');
 const activeConnection = computed(() => connections.value.find((c) => c.id === activeConnectionId.value) || null);
-const mode = ref<'term' | 'chat' | 'docker' | 'log'>('term');
+const mode = ref<'term' | 'chat' | 'docker' | 'log' | 'db'>('term');
+
+function connType(c: OpsConn | null): ConnType {
+  return c?.type === 'docker' || c?.type === 'database' ? c.type : 'ssh';
+}
+function connSub(c: OpsConn): string {
+  if (connType(c) === 'database') {
+    return `${c.dbType === 'postgres' ? 'pgsql' : 'mysql'} · ${c.username}@${c.host}:${c.port}/${c.database || ''}`;
+  }
+  return `${c.username}@${c.host}:${c.port}`;
+}
+/** 连接类型 → 允许的工作区 tab（每种类型都有：专属远程操作页 + 对话模式 + 操作日志） */
+function tabsFor(type: ConnType): Array<'term' | 'docker' | 'db' | 'chat' | 'log'> {
+  if (type === 'ssh') return ['term', 'chat', 'log'];
+  if (type === 'docker') return ['docker', 'chat', 'log'];
+  return ['db', 'chat', 'log'];
+}
 
 function isProdTag(tag: string): boolean {
   const t = (tag || '').toLowerCase();
@@ -215,20 +318,44 @@ async function loadConnections() {
 function selectConnection(c: OpsConn) {
   activeConnectionId.value = c.id;
   if (termOpen.value) closeTerminal();
+  // 切换连接后当前 tab 可能不属于新类型（如 SSH 终端切到数据库连接），回落到该类型首个 tab
+  const allowed = tabsFor(connType(c));
+  if (!allowed.includes(mode.value)) mode.value = allowed[0];
 }
 
 const addDialog = ref({
-  visible: false, name: '', host: '', port: 22, username: 'root',
+  visible: false,
+  type: 'ssh' as ConnType,
+  name: '', host: '', port: 22, username: 'root',
   authType: 'password' as 'password' | 'key', secret: '', tag: '',
+  dbType: 'mysql' as 'mysql' | 'postgres', database: '',
 });
-function openAddDialog() { addDialog.value = { ...addDialog.value, visible: true, name: '', host: '', port: 22, username: 'root', secret: '', tag: '' }; }
+function openAddDialog() {
+  addDialog.value = {
+    visible: true, type: 'ssh', name: '', host: '', port: 22, username: 'root',
+    authType: 'password', secret: '', tag: '', dbType: 'mysql', database: '',
+  };
+}
+function onTypeChange() {
+  const d = addDialog.value;
+  d.port = d.type === 'database' ? (d.dbType === 'postgres' ? 5432 : 3306) : 22;
+  if (d.type === 'database') d.username = '';
+  else d.username = 'root';
+}
+function onDbTypeChange() {
+  const d = addDialog.value;
+  d.port = d.dbType === 'postgres' ? 5432 : 3306;
+}
 
 async function submitAddConnection() {
   const d = addDialog.value;
-  if (!d.name || !d.host || !d.secret) { ElMessage.warning('名称 / 主机 / 密钥或密码必填'); return; }
+  if (!d.name || !d.host || !d.secret) { ElMessage.warning('名称 / 主机 / 密码或私钥必填'); return; }
+  if (d.type === 'database' && !d.database) { ElMessage.warning('数据库连接必须填库名'); return; }
   const r = await api.post<OpsConn>('/plugin/ops-shell/connections', {
-    name: d.name, host: d.host, port: d.port, username: d.username,
+    type: d.type, name: d.name, host: d.host, port: d.port, username: d.username,
     authType: d.authType, secret: d.secret, tag: d.tag || undefined,
+    dbType: d.type === 'database' ? d.dbType : undefined,
+    database: d.type === 'database' ? d.database : undefined,
   });
   if ('error' in r) { ElMessage.error(r.error); return; }
   ElMessage.success('连接已保存（密钥已加密存储）');
@@ -395,10 +522,17 @@ async function sendChat() {
   let convId = localStorage.getItem(OPS_CONV_KEY);
   if (!convId) convId = await ensureOpsConversation();
 
-  // 上下文提示：把当前选定连接带给运维智能体
-  const connHint = activeConnection.value
-    ? `\n\n（当前选定连接：${activeConnection.value.name}，${activeConnection.value.username}@${activeConnection.value.host}:${activeConnection.value.port}${activeConnection.value.tag ? '，标签 ' + activeConnection.value.tag : ''}）`
-    : '\n\n（尚未在左侧选定连接，请先选择或在工具参数里指定连接名）';
+  // 上下文提示：把当前选定连接（含类型）带给运维助手
+  const c = activeConnection.value;
+  let connHint: string;
+  if (c) {
+    const typeLabel = TYPE_LABELS[connType(c)];
+    const extra =
+      connType(c) === 'database' ? `，${c.dbType === 'postgres' ? 'PostgreSQL' : 'MySQL'}，库名 ${c.database || '（未指定）'}` : '';
+    connHint = `\n\n（当前选定连接：${c.name}，类型 ${typeLabel}，${c.username}@${c.host}:${c.port}${extra}${c.tag ? '，标签 ' + c.tag : ''}）`;
+  } else {
+    connHint = '\n\n（尚未在左侧选定连接，请先选择或在工具参数里指定连接名）';
+  }
   chatInput.value = '';
   chatStreaming.value = true;
   const userMsg: OpsMsg = { id: `local-${Date.now()}`, role: 'user', content, createdAt: Date.now() };
@@ -547,7 +681,7 @@ function onMdClick(e: MouseEvent) {
   }
 }
 
-// ===== 容器面板 =====
+// ===== 容器面板（docker 类型连接） =====
 interface DockerRow { Id?: string; Names?: string; Image?: string; State?: string; Status?: string; [k: string]: unknown }
 const containers = ref<DockerRow[]>([]);
 const containersError = ref('');
@@ -582,6 +716,41 @@ async function restartContainer(row: DockerRow) {
   else ElMessage.error('error' in r ? r.error : (r as { data: { output?: string } }).data.output || '重启失败');
 }
 
+// ===== 数据库面板（database 类型连接，只读） =====
+const dbTables = ref<string[]>([]);
+const dbTable = ref('');
+const dbSql = ref('');
+const dbLoading = ref(false);
+const dbError = ref('');
+const dbResult = ref<{ rows: Record<string, unknown>[]; fields: string[]; truncated?: boolean } | null>(null);
+
+async function loadDbTables() {
+  if (!activeConnection.value) return;
+  const r = await api.get<string[]>(`/plugin/ops-shell/db/tables?connectionId=${activeConnection.value.id}`);
+  if ('data' in r) dbTables.value = r.data;
+  else dbError.value = r.error;
+}
+
+function onPickTable(t: string) {
+  if (!t) return;
+  dbSql.value = `SELECT * FROM ${t} LIMIT 20`;
+}
+
+async function runDbQuery() {
+  const c = activeConnection.value;
+  if (!c || !dbSql.value.trim() || dbLoading.value) return;
+  dbLoading.value = true;
+  dbError.value = '';
+  dbResult.value = null;
+  const r = await api.post<{ rows: Record<string, unknown>[]; fields: string[]; truncated?: boolean }>(
+    '/plugin/ops-shell/db/query',
+    { connectionId: c.id, sql: dbSql.value },
+  );
+  dbLoading.value = false;
+  if ('data' in r) dbResult.value = r.data;
+  else dbError.value = r.error;
+}
+
 // ===== 操作日志 =====
 interface AuditEntry { at: number; action: string; connection?: string; detail?: string; ok: boolean }
 const auditEntries = ref<AuditEntry[]>([]);
@@ -598,7 +767,10 @@ function fmtTime(at: number): string {
 // ===== 初始化 =====
 function init() {
   void loadConnections().then(() => {
-    if (connections.value.length && !activeConnectionId.value) activeConnectionId.value = connections.value[0].id;
+    if (connections.value.length && !activeConnectionId.value) {
+      activeConnectionId.value = connections.value[0].id;
+      mode.value = tabsFor(connType(connections.value[0]))[0];
+    }
   });
   void ensureOpsConversation().then(() => loadOpsMessages()).catch(() => { /* 对话初始化失败不阻塞 */ });
   void loadAudit();
@@ -622,7 +794,7 @@ onUnmounted(() => {
 .ops-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
 .ops-layout { flex: 1; display: flex; gap: 14px; min-height: 0; }
 .ops-connections {
-  width: 230px; flex-shrink: 0; overflow-y: auto;
+  width: 240px; flex-shrink: 0; overflow-y: auto;
   display: flex; flex-direction: column; gap: 8px;
 }
 .ops-conn-item {
@@ -632,12 +804,19 @@ onUnmounted(() => {
 }
 .ops-conn-item:hover { background: var(--glass-bg-hover); }
 .ops-conn-item.active { border-color: var(--color-primary); background: color-mix(in srgb, var(--color-primary) 6%, transparent); }
-.ops-conn-main { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
-.ops-conn-name { font-size: 13px; font-weight: 600; }
+.ops-conn-main { display: flex; align-items: center; gap: 6px; }
+.ops-conn-name { font-size: 13px; font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ops-conn-type {
+  flex-shrink: 0; font-size: 10px; padding: 1px 6px; border-radius: 4px;
+  background: var(--color-surface-hover); color: var(--color-text-secondary);
+}
+.ops-conn-type[data-type='docker'] { color: #2563eb; background: rgba(37, 99, 235, 0.1); }
+.ops-conn-type[data-type='database'] { color: var(--color-success); background: color-mix(in srgb, var(--color-success) 12%, transparent); }
 .ops-conn-sub { font-size: 11px; color: var(--color-text-secondary); margin: 3px 0 4px; word-break: break-all; }
 .ops-conn-actions { display: flex; gap: 4px; }
 .ops-empty { font-size: 12px; color: var(--color-text-secondary); padding: 16px 4px; text-align: center; }
 .ops-workspace { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.ops-workspace-empty { flex: 1; display: flex; align-items: center; justify-content: center; }
 .ops-tabs { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 .ops-tabs :deep(.el-tabs__content) { flex: 1; min-height: 0; }
 .ops-tabs :deep(.el-tab-pane) { height: 100%; }
@@ -698,10 +877,10 @@ onUnmounted(() => {
 .ops-chat-input { flex-shrink: 0; display: flex; flex-direction: column; gap: 6px; }
 .ops-chat-actions { display: flex; justify-content: flex-end; align-items: center; gap: 8px; }
 
-/* 容器 / 操作日志 */
+/* 容器 / 数据库 / 操作日志 */
 .ops-docker { height: 100%; display: flex; flex-direction: column; gap: 8px; }
 .ops-audit { height: 100%; display: flex; flex-direction: column; gap: 8px; }
-.ops-docker-bar { display: flex; align-items: center; gap: 10px; }
+.ops-docker-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .ops-docker-error { font-size: 12px; color: var(--el-color-danger); }
 .ops-docker-table { flex: 1; min-height: 0; }
 .ops-log-view {
@@ -709,4 +888,10 @@ onUnmounted(() => {
   background: var(--el-bg-color); padding: 12px; border-radius: 8px;
   white-space: pre-wrap; word-break: break-all; font-family: Consolas, monospace;
 }
+
+/* 数据库查询面板 */
+.ops-db { height: 100%; display: flex; flex-direction: column; gap: 8px; }
+.ops-db-table-select { width: 220px; }
+.ops-db-sql :deep(textarea) { font-family: Consolas, monospace; font-size: 12px; }
+.ops-db-meta { font-size: 11px; color: var(--color-text-tertiary); }
 </style>

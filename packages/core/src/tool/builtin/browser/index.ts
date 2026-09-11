@@ -25,7 +25,10 @@ async function callBrowserApi(path: string, method: 'GET' | 'POST' = 'POST', bod
   if (token) headers['Authorization'] = `Bearer ${token}`;
   // 后端 Node.js 环境用绝对 URL，前端用相对 URL
   const baseUrl = typeof window !== 'undefined' ? '' : `http://127.0.0.1:${process.env.PORT || 3001}`;
-  const res = await fetch(baseUrl + '/api/browser' + path, {
+  // 内置工具发起的导航/操作打上 agent 标记：服务端据此把智能体操作沉淀进浏览器记忆文件（区别于用户手动浏览）
+  const isAgentAction = path === '/navigate' || path === '/action';
+  const url = baseUrl + '/api/browser' + path + (isAgentAction ? (path.includes('?') ? '&' : '?') + 'src=agent' : '');
+  const res = await fetch(url, {
     method,
     headers,
     body: body !== undefined ? JSON.stringify(body) : undefined,

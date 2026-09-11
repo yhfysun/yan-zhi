@@ -20,6 +20,7 @@ import { useRouter } from 'vue-router';
 import { api } from '../../api/client';
 import type { Agent, Message, Conversation, Platform } from '@yan-zhi/shared';
 import { estimateTokens, CHAT_MODEL_TYPES } from '@yan-zhi/shared';
+import { sceneByKey, type SceneKey } from '../../config/scenes';
 
 export interface AgentStep {
   reasoningContent?: string;
@@ -468,9 +469,57 @@ function createChat() {
   const activeNavRound = ref<number | null>(null);
 
   const mountedSkillIds = ref<string[]>([]);
+
+  // ===== 会话场景（对齐 WorkBuddy 新任务页三卡片：日常办公 / 代码开发 / 设计创意）=====
+  // 场景区分方式：① 场景系统提示词（发送首条消息时注入会话 system_prompt）
+  //              ② 默认挂载 Skill（按关键词匹配技能库自动挂载）
+  //              ③ 欢迎卡片示例引导语（ChatWelcome 展示）
+  const SCENE_LS_KEY = 'yz_scene_mode';
+  const sceneMode = ref<SceneKey>((localStorage.getItem(SCENE_LS_KEY) || '') as SceneKey);
+  const sceneSkillCount = ref(0);
+  const currentScene = computed(() => sceneByKey(sceneMode.value));
+  function persistScene() {
+    try { localStorage.setItem(SCENE_LS_KEY, sceneMode.value || ''); } catch { /* ignore */ }
+  }
+  /** 选择场景：切换场景绑定的智能体（日常办公=日常办公助手 / 代码开发=代码编写助手 / 设计创意=设计创意助手），
+   *  并在草稿态把挂载重置为「场景智能体自带 Skill ∪ 场景关键词匹配 Skill」 */
+  function setScene(key: Exclude<SceneKey, ''>) {
+    sceneMode.value = key;
+    persistScene();
+    const scene = sceneByKey(key);
+    if (!scene) return;
+    // 场景联动切换智能体（onAgentSwitch 会同步更新当前会话 agent_id；草稿态只改选中）
+    if (scene.agentId && agentStore.agents.some((a) => a.id === scene.agentId) && agentStore.selectedId !== scene.agentId) {
+      onAgentSwitch(scene.agentId);
+    }
+    const matched = skillStore.skills
+      .filter((s) => {
+        const hay = ((s.name || '') + ' ' + (s.description || '')).toLowerCase();
+        return scene.skillKeywords.some((k) => hay.includes(k));
+      })
+      .map((s) => s.id);
+    sceneSkillCount.value = matched.length;
+    if (!store.currentConvId) {
+      const agentSkills = agentStore.selectedAgent?.skillIds ? [...agentStore.selectedAgent.skillIds] : [];
+      mountedSkillIds.value = [...new Set([...agentSkills, ...matched])];
+    }
+  }
+  function clearScene() {
+    sceneMode.value = '';
+    sceneSkillCount.value = 0;
+    persistScene();
+    // 不选场景 = 回到默认日常办公助手（日常办公），挂载还原为默认智能体自带 Skill
+    if (!store.currentConvId) {
+      const defAgent = agentStore.agents.find((a) => a.isDefault);
+      if (defAgent && agentStore.selectedId !== defAgent.id) onAgentSwitch(defAgent.id);
+      mountedSkillIds.value = defAgent?.skillIds ? [...defAgent.skillIds] : [];
+    }
+  }
+
+  // 对话左侧栏第三个 tab「文件」（资源管理器/搜索/Git）：选中带目录的空间时展示内容
   const drawerOpen = ref(false);
   const convCollapsed = ref(false);
-  const sideTab = ref<'chat' | 'task'>('chat');
+  const sideTab = ref<'chat' | 'task' | 'file'>('chat');
   const contextSidebarOpen = ref(false);
   const batchMode = ref(false);
   const selectedConvIds = ref<Set<string>>(new Set());
@@ -1511,8 +1560,11 @@ function createChat() {
           skillIds: [...mountedSkillIds.value],
           spaceId,
         });
-        if (agent?.systemPrompt) {
-          await store.updateConversation(id, { systemPrompt: agent.systemPrompt });
+        // 会话级 system_prompt：智能体提示词 + 场景提示词（会话级优先级高于 agent 级，需合并写入）
+        const scenePrompt = currentScene.value?.prompt || '';
+        const sysPrompt = [agent?.systemPrompt, scenePrompt].filter(Boolean).join('\n\n');
+        if (sysPrompt) {
+          await store.updateConversation(id, { systemPrompt: sysPrompt });
         }
         await saveMountToDb(id);
         await store.loadMessages(id);
@@ -2300,6 +2352,7 @@ function createChat() {
     copySubAgentRoundMd, downloadSubAgentRoundMd, copySubAgentResultMd, downloadSubAgentResultMd,
     copyAssistantMd, downloadAssistantMd,
     quotedUrls, addQuotedUrl, removeQuotedUrl, LONG_INPUT_THRESHOLD,
+    sceneMode, currentScene, sceneSkillCount, setScene, clearScene,
     saveMountToDb, saveMount, saveSkills,
   };
 }

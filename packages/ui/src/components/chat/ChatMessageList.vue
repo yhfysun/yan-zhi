@@ -264,11 +264,11 @@
       </div>
     </div>
 
-    <el-empty v-if="store.currentMessages.length === 0 && !store.streaming && selectedModelId" description="输入消息开始对话" />
+    <ChatWelcome v-if="store.currentMessages.length === 0 && !store.streaming && selectedModelId" />
 
     <div v-if="store.currentMessages.length === 0 && !store.streaming && !selectedModelId" class="welcome-card">
       <div class="welcome-icon"><el-icon :size="56"><ChatDotRound /></el-icon></div>
-      <h2>欢迎使用 AI 助手</h2>
+      <h2>欢迎使用日常办公助手</h2>
       <p v-if="platformStore.platforms.length === 0">请先配置模型平台，点击下方按钮开始</p>
       <p v-else>请在下方面板选择模型，然后开始对话</p>
       <div class="welcome-actions" v-if="platformStore.platforms.length > 0">
@@ -398,6 +398,7 @@ import PlatformConfigCard from '../PlatformConfigCard.vue';
 import SubAgentRoundView from './SubAgentRoundView.vue';
 import DeliverableFileCard from './DeliverableFileCard.vue';
 import DataQueryWorkbench from './DataQueryWorkbench.vue';
+import ChatWelcome from './ChatWelcome.vue';
 
 const {
   store, platformStore, fileStore, messagesRef, messageRounds, formatTime, collapsedMessages, toggleMsgCollapse,
@@ -681,7 +682,7 @@ watch(activeNavRound, () => {
 @keyframes inline-ask-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
 .inline-ask-icon {
   flex-shrink: 0; width: 32px; height: 32px; border-radius: 50%;
-  background: var(--color-primary, #6366f1); color: #fff;
+  background: var(--color-primary); color: #fff;
   display: flex; align-items: center; justify-content: center; font-size: 16px;
 }
 .inline-ask-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
@@ -693,12 +694,12 @@ watch(activeNavRound, () => {
   padding: 6px 14px; border: 1px solid var(--el-border-color, #2d2d3a); border-radius: 8px;
   background: transparent; color: var(--el-text-color-regular, #ccc); font-size: 13px; cursor: pointer; transition: all .15s;
 }
-.inline-ask-opt:hover { border-color: var(--color-primary, #6366f1); color: var(--color-primary, #6366f1); }
-.inline-ask-opt.is-active { border-color: var(--color-primary, #6366f1); background: var(--color-primary, #6366f1); color: #fff; }
+.inline-ask-opt:hover { border-color: var(--color-primary); color: var(--color-primary); }
+.inline-ask-opt.is-active { border-color: var(--color-primary); background: var(--color-primary); color: #fff; }
 .inline-ask-opt-text { font-style: italic; }
 .inline-ask-supplement { margin-top: 4px; }
 .inline-ask-toggle { align-self: flex-start; padding: 2px 8px; border: none; background: transparent; color: var(--color-text-secondary, #888); font-size: 12px; cursor: pointer; border-radius: 6px; transition: all .15s; }
-.inline-ask-toggle:hover { color: var(--color-primary, #6366f1); background: color-mix(in srgb, var(--color-primary) 8%, transparent); }
+.inline-ask-toggle:hover { color: var(--color-primary); background: color-mix(in srgb, var(--color-primary) 8%, transparent); }
 .inline-ask-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
 
 /* 流式跑马灯：实时正文容器 */
@@ -714,7 +715,7 @@ watch(activeNavRound, () => {
   height: 1.1em;
   margin-left: 2px;
   vertical-align: text-bottom;
-  background: var(--color-primary, #6366f1);
+  background: var(--color-primary);
   border-radius: 1px;
   box-shadow: 0 0 6px color-mix(in srgb, var(--color-primary) 55%, transparent);
   animation: streamingBlink 1.1s ease-in-out infinite;
@@ -728,8 +729,8 @@ watch(activeNavRound, () => {
   border-color: color-mix(in srgb, var(--color-primary) 28%, transparent);
   background: color-mix(in srgb, var(--color-primary) 8%, transparent);
 }
-.streaming-reasoning .reasoning-header { color: var(--color-primary, #8B5CF6); }
-.streaming-reasoning .reasoning-body { color: var(--color-text-primary, #e5e7eb); }
+.streaming-reasoning .reasoning-header { color: var(--color-primary); }
+.streaming-reasoning .reasoning-body { color: var(--color-text); }
 
 /* 思考过程区域：平滑出现动画 */
 .agent-process-header {
