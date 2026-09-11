@@ -51,7 +51,7 @@
           <el-icon v-if="view === 'explorer'" class="fs-refresh" :class="{ spinning: treeLoading }" @click="loadTree"><Refresh /></el-icon>
         </div>
 
-        <!-- 资源管理器：目录树 -->
+        <!-- 资源管理器：目录树（按目录层级懒加载：展开目录才加载其子项） -->
         <div v-if="view === 'explorer'" class="fs-body">
           <el-input
             v-model="filterText"
@@ -61,36 +61,34 @@
             :prefix-icon="Search"
             class="fs-filter"
           />
-          <div class="fs-tree" @scroll="onTreeScroll">
-            <template v-for="node in treeNodes" :key="node.relPath || '__root__'">
-              <div
-                v-for="row in flattenTree(node)"
-                v-show="rowMatch(row)"
-                :key="row.relPath"
-                class="fs-row"
-                :style="{ paddingLeft: 6 + (row.depth * 13) + 'px' }"
-                :class="{ 'is-file': !row.isDir }"
-                @click="onRowClick(row)"
-                @contextmenu.prevent
-              >
-                <el-icon v-if="row.isDir" class="fs-caret" :class="{ expanded: expandedDirs.has(row.relPath) }" @click.stop="toggleDir(row.relPath)">
-                  <CaretRight />
-                </el-icon>
-                <span v-else class="fs-caret-placeholder"></span>
-                <el-icon class="fs-file-icon" :style="{ color: fileMeta(row.name).color }">
-                  <component :is="row.isDir ? Folder : fileMeta(row.name).icon" />
-                </el-icon>
-                <span class="fs-name" :title="row.relPath">{{ row.name }}</span>
-              </div>
-            </template>
+          <div class="fs-tree">
+            <div
+              v-for="row in explorerRows"
+              v-show="rowMatch(row)"
+              :key="row.relPath"
+              class="fs-row"
+              :style="{ paddingLeft: 6 + (row.depth * 13) + 'px' }"
+              :class="{ 'is-file': !row.isDir }"
+              @click="onRowClick(row)"
+              @contextmenu.prevent
+            >
+              <el-icon v-if="row.isDir" class="fs-caret" :class="{ expanded: expandedDirs.has(row.relPath) }" @click.stop="toggleDir(row.relPath)">
+                <CaretRight />
+              </el-icon>
+              <span v-else class="fs-caret-placeholder"></span>
+              <el-icon v-if="row.loading" class="fs-file-icon fs-spin"><Loading /></el-icon>
+              <el-icon v-else class="fs-file-icon" :style="{ color: fileMeta(row.name).color }">
+                <component :is="row.isDir ? Folder : fileMeta(row.name).icon" />
+              </el-icon>
+              <span class="fs-name" :title="row.relPath">{{ row.name }}</span>
+            </div>
             <div v-if="treeLoading" class="fs-hint">加载中…</div>
             <div v-else-if="treeError" class="fs-hint fs-hint-err">{{ treeError }}</div>
-            <div v-else-if="treeEntries.length === 0" class="fs-hint">目录为空</div>
-            <div v-else-if="loadingMore" class="fs-hint">加载更多…</div>
+            <div v-else-if="rootLoaded && explorerRows.length === 0" class="fs-hint">目录为空</div>
           </div>
         </div>
 
-        <!-- 搜索：按文件名匹配 -->
+        <!-- 搜索：按文件名匹配（自动加载全树后再过滤） -->
         <div v-else-if="view === 'search'" class="fs-body">
           <el-input
             v-model="searchText"
@@ -114,7 +112,8 @@
                 </el-icon>
                 <span class="fs-name" :title="row.relPath">{{ row.name }}</span>
               </div>
-              <div v-if="searchResults.length === 0" class="fs-hint">无匹配文件</div>
+              <div v-if="fullTreeLoading" class="fs-hint">正在扫描全部文件…</div>
+              <div v-else-if="searchResults.length === 0" class="fs-hint">无匹配文件</div>
             </template>
             <div v-else class="fs-hint">输入关键词，按文件名搜索「{{ rootName }}」</div>
           </div>
@@ -132,7 +131,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
 import {
-  FolderOpened, Folder, Search, CaretRight, Refresh, Share,
+  FolderOpened, Folder, Search, CaretRight, Refresh, Share, Loading,
   Picture, Document, Tickets, Memo, Box, VideoCamera, Headset, Files,
 } from '@element-plus/icons-vue';
 import type { Component } from 'vue';
@@ -173,148 +172,178 @@ watch(
 
 // ===== 目录树数据 =====
 interface TreeEntry { name: string; relPath: string; isDir: boolean; size: number }
-interface TreeRow extends TreeEntry { depth: number }
-const treeEntries = ref<TreeEntry[]>([]);
-const treeLoading = ref(false);
-const treeError = ref('');
-const treeHasMore = ref(false);
-const loadingMore = ref(false);
+interface TreeRow extends TreeEntry { depth: number; loading?: boolean }
+/** 某个目录（按父级 relPath 索引，''=根）已加载的子项 */
+interface LoadedDir { entries: TreeEntry[]; hasMore: boolean; loading: boolean; done: boolean }
+
 const TREE_PAGE_SIZE = 2000;
+const DIR_MAX_FILES = 50000; // 单目录拉取安全上限，避免极端超大目录卡死
+
+// 按「父目录 relPath」缓存已加载子项；展开目录时按需加载，不预递归整棵树
+const loaded = ref<Record<string, LoadedDir>>({});
+const rootLoaded = ref(false);
+const treeLoading = ref(false); // 根目录加载中
+const treeError = ref('');
+const fullTreeLoading = ref(false); // 搜索/过滤时全树扫描中
 const expandedDirs = ref<Set<string>>(new Set());
 const filterText = ref('');
 const searchText = ref('');
 
+function setLoaded(key: string, v: LoadedDir) {
+  loaded.value = { ...loaded.value, [key]: v };
+}
+const enc = (s: string) => encodeURIComponent(s);
+
+/** 加载某个目录的子项（一次性拉全该目录，上限 DIR_MAX_FILES；已完整加载则缓存命中） */
+async function loadDir(parentRel: string) {
+  const prev = loaded.value[parentRel];
+  if (prev?.loading) return;
+  if (prev?.done && !prev.hasMore) return;
+  setLoaded(parentRel, { entries: prev?.entries ?? [], hasMore: prev?.hasMore ?? false, loading: true, done: false });
+  try {
+    let collected: TreeEntry[] = prev?.entries ?? [];
+    let off = collected.length;
+    let hasMore = false;
+    do {
+      const r = await api.get<{ entries: TreeEntry[]; hasMore: boolean }>(
+        `/workspace/tree?dir=${enc(activeDir.value)}&sub=${enc(parentRel)}&recursive=0&offset=${off}&limit=${TREE_PAGE_SIZE}`,
+      );
+      if (!('data' in r)) break;
+      const page = r.data.entries || [];
+      collected = off === 0 ? page : collected.concat(page);
+      hasMore = r.data.hasMore;
+      off += page.length;
+    } while (hasMore && off < DIR_MAX_FILES);
+    setLoaded(parentRel, { entries: collected, hasMore: hasMore && off < DIR_MAX_FILES, loading: false, done: true });
+  } catch {
+    setLoaded(parentRel, { entries: prev?.entries ?? [], hasMore: false, loading: false, done: true });
+  }
+}
+
+/** 根目录加载：只加载根的直接子项，默认全部折叠；点开某目录才加载其下一级 */
 async function loadTree() {
   if (!activeDir.value) return;
   treeLoading.value = true;
   treeError.value = '';
+  rootLoaded.value = false;
+  loaded.value = {};
+  expandedDirs.value = new Set();
   try {
-    const r = await api.get<{ root: string; entries: TreeEntry[]; hasMore: boolean }>(
-      `/workspace/tree?dir=${encodeURIComponent(activeDir.value)}&offset=0&limit=${TREE_PAGE_SIZE}`,
-    );
-    if ('data' in r) {
-      treeEntries.value = r.data.entries || [];
-      treeHasMore.value = !!r.data.hasMore;
-      // 默认展开顶层目录
-      const next = new Set(expandedDirs.value);
-      for (const e of treeEntries.value) {
-        if (e.isDir && !e.relPath.includes('/')) next.add(e.relPath);
-      }
-      expandedDirs.value = next;
-    } else {
-      treeEntries.value = [];
-      treeHasMore.value = false;
-      treeError.value = (r as any).error || '加载失败';
-    }
+    await loadDir('');
+    rootLoaded.value = true;
   } catch (e: any) {
-    treeEntries.value = [];
-    treeHasMore.value = false;
     treeError.value = e?.message || '加载失败';
   } finally {
     treeLoading.value = false;
   }
 }
 
-/** 滚动触底追加下一页（DFS 顺序稳定，offset = 已加载条数） */
-async function loadMore() {
-  if (loadingMore.value || treeLoading.value || !treeHasMore.value || !activeDir.value) return;
-  loadingMore.value = true;
+/** 搜索/过滤需要覆盖全部文件：递归加载整棵树并全部展开 */
+async function ensureFullTree() {
+  if (fullTreeLoading.value) return;
+  if (Object.keys(loaded.value).length === 0) await loadTree();
+  fullTreeLoading.value = true;
   try {
-    const r = await api.get<{ root: string; entries: TreeEntry[]; hasMore: boolean }>(
-      `/workspace/tree?dir=${encodeURIComponent(activeDir.value)}&offset=${treeEntries.value.length}&limit=${TREE_PAGE_SIZE}`,
-    );
-    if ('data' in r) {
-      treeEntries.value = treeEntries.value.concat(r.data.entries || []);
-      treeHasMore.value = !!r.data.hasMore;
+    const queue: string[] = [];
+    const next = new Set(expandedDirs.value);
+    const ld0 = loaded.value[''];
+    if (ld0) for (const e of ld0.entries) if (e.isDir) { next.add(e.relPath); queue.push(e.relPath); }
+    while (queue.length) {
+      const rel = queue.shift()!;
+      await loadDir(rel);
+      const ld = loaded.value[rel];
+      if (ld) for (const e of ld.entries) if (e.isDir && !next.has(e.relPath)) { next.add(e.relPath); queue.push(e.relPath); }
     }
-  } catch { /* 静默：下一轮滚动重试 */ }
-  finally { loadingMore.value = false; }
-}
-
-function onTreeScroll(e: Event) {
-  const el = e.target as HTMLElement;
-  if (el.scrollTop + el.clientHeight >= el.scrollHeight - 60) loadMore();
-}
-
-// 搜索按文件名匹配需覆盖全部文件：还有未加载页时静默拉全
-watch(searchText, (q) => {
-  if (q.trim() && treeHasMore.value && !treeLoading.value) {
-    (async () => { while (treeHasMore.value) { await loadMore(); if (loadingMore.value) break; } })();
+    expandedDirs.value = next;
+  } finally {
+    fullTreeLoading.value = false;
   }
+}
+
+function toggleDir(relPath: string) {
+  const next = new Set(expandedDirs.value);
+  if (next.has(relPath)) next.delete(relPath);
+  else { next.add(relPath); loadDir(relPath); }
+  expandedDirs.value = next;
+}
+
+/** 展开感知的目录树行（仅展开目录的子项会出现） */
+const explorerRows = computed<TreeRow[]>(() => {
+  const rows: TreeRow[] = [];
+  const walk = (parentRel: string, depth: number) => {
+    const ld = loaded.value[parentRel];
+    if (!ld) return;
+    for (const e of ld.entries) {
+      rows.push({ ...e, depth });
+      if (e.isDir && expandedDirs.value.has(e.relPath)) {
+        const child = loaded.value[e.relPath];
+        if (!child || !child.done) {
+          rows.push({ name: '加载中…', relPath: e.relPath + '/__loading__', isDir: true, size: 0, depth: depth + 1, loading: true });
+        } else {
+          walk(e.relPath, depth + 1);
+        }
+      }
+    }
+  };
+  walk('', 0);
+  return rows;
 });
 
-// 目录切换 / 目录内容可能被智能体改动：重新拉取
+/** 全树扁平行（忽略展开状态），用于搜索/过滤 */
+const allRows = computed<TreeRow[]>(() => {
+  const rows: TreeRow[] = [];
+  const walk = (parentRel: string, depth: number) => {
+    const ld = loaded.value[parentRel];
+    if (!ld) return;
+    for (const e of ld.entries) {
+      rows.push({ ...e, depth });
+      if (e.isDir) walk(e.relPath, depth + 1);
+    }
+  };
+  walk('', 0);
+  return rows;
+});
+
+function rowMatch(row: TreeRow): boolean {
+  if (row.loading) return true;
+  const q = filterText.value.trim().toLowerCase();
+  if (!q) return true;
+  return row.name.toLowerCase().includes(q);
+}
+
+const searchResults = computed<TreeEntry[]>(() => {
+  const q = searchText.value.trim().toLowerCase();
+  if (!q) return [];
+  return allRows.value.filter((e) => !e.isDir && e.name.toLowerCase().includes(q));
+});
+
+function onRowClick(row: TreeRow) {
+  if (row.loading) return;
+  if (row.isDir) toggleDir(row.relPath);
+  else openFile(row);
+}
+
+// 目录切换：重置并重新加载根目录
 watch(activeDir, () => {
   expandedDirs.value = new Set();
   filterText.value = '';
   searchText.value = '';
   loadTree();
 }, { immediate: true });
+
+// 对话有新消息时刷新根目录（智能体可能产出了新文件）
 watch(() => store.currentMessages.length, () => {
-  // 对话有新消息时刷新目录（智能体可能产出了新文件）；轻量接口，忽略失败
   if (view.value === 'explorer' && !treeLoading.value) loadTree();
 });
 
-function toggleDir(relPath: string) {
-  const next = new Set(expandedDirs.value);
-  if (next.has(relPath)) next.delete(relPath);
-  else next.add(relPath);
-  expandedDirs.value = next;
-}
-
-interface TreeNode extends TreeEntry { children: TreeNode[] }
-/** 扁平 entries → 树，再展开成带缩进层级的行（目录折叠靠 expandedDirs 过滤） */
-const treeNodes = computed<TreeNode[]>(() => {
-  const roots: TreeNode[] = [];
-  const byPath = new Map<string, TreeNode>();
-  for (const e of treeEntries.value) {
-    byPath.set(e.relPath, { ...e, children: [] });
+// 搜索 / 过滤：触发全树扫描后再匹配；清空则收回为根层级（全部折叠）
+watch([filterText, searchText], () => {
+  if (filterText.value.trim() || searchText.value.trim()) {
+    ensureFullTree();
+  } else {
+    expandedDirs.value = new Set();
   }
-  for (const e of treeEntries.value) {
-    const node = byPath.get(e.relPath)!;
-    const idx = e.relPath.lastIndexOf('/');
-    if (idx < 0) roots.push(node);
-    else {
-      const parent = byPath.get(e.relPath.slice(0, idx));
-      if (parent) parent.children.push(node);
-      else roots.push(node);
-    }
-  }
-  return roots;
 });
-
-function flattenTree(root: TreeNode): TreeRow[] {
-  const rows: TreeRow[] = [];
-  const forceExpand = !!filterText.value.trim();
-  const walk = (node: TreeNode, depth: number) => {
-    rows.push({ ...node, depth });
-    if (node.isDir && (forceExpand || expandedDirs.value.has(node.relPath))) {
-      for (const c of node.children) walk(c, depth + 1);
-    }
-  };
-  walk(root, 0);
-  return rows;
-}
-
-function rowMatch(row: TreeRow): boolean {
-  const q = filterText.value.trim().toLowerCase();
-  if (!q) return true;
-  // 过滤时强制展开路径上的父目录：只要自身或任一子孙匹配就显示
-  if (row.name.toLowerCase().includes(q)) return true;
-  if (!row.isDir) return false;
-  return treeEntries.value.some((e) => e.relPath.startsWith(row.relPath + '/') && e.name.toLowerCase().includes(q));
-}
-
-const searchResults = computed<TreeEntry[]>(() => {
-  const q = searchText.value.trim().toLowerCase();
-  if (!q) return [];
-  return treeEntries.value.filter((e) => !e.isDir && e.name.toLowerCase().includes(q));
-});
-
-function onRowClick(row: TreeRow) {
-  if (row.isDir) toggleDir(row.relPath);
-  else openFile(row);
-}
 
 /** 点击文件 → 右侧预览面板打开文件 tab */
 function openFile(row: { name: string; relPath: string }) {
@@ -454,6 +483,7 @@ function fileMeta(name: string) {
 }
 .fs-refresh:hover { color: var(--color-primary, #7c3aed); }
 .fs-refresh.spinning { animation: fs-spin 0.9s linear infinite; }
+.fs-spin { animation: fs-spin 0.9s linear infinite; }
 @keyframes fs-spin { to { transform: rotate(360deg); } }
 
 .fs-body {
