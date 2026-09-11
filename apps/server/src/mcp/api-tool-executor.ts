@@ -1201,8 +1201,8 @@ export async function executeApiTool(
         const t = db.prepare('SELECT * FROM custom_tool WHERE id = ? AND user_id = ?').get(str(args, 'id'), uid) as any;
         if (!t) return fail('工具不存在');
         if (!t.enabled) return fail('工具未启用');
-        const { runInSandbox } = await import('@yan-zhi/core');
-        return ok(await runInSandbox(t.code, t.entry, obj(args, 'args'), { timeout: t.timeout || 30000 }));
+        const { runUserCode } = await import('@yan-zhi/core');
+        return ok(await runUserCode(t.code, t.entry, obj(args, 'args'), { timeout: t.timeout || 30000, runtime: t.runtime || 'node' }));
       }
       case 'api_tool_ocr': {
         requireUser(userId);

@@ -123,8 +123,8 @@ router.post('/:id/execute', async (req: Request, res: Response) => {
   if (!t.enabled) { res.status(400).json({ error: '工具未启用' }); return; }
   const args = (req.body && req.body.args) || {};
   try {
-    const { runInSandbox } = await import('@yan-zhi/core');
-    const result = await runInSandbox(t.code, t.entry, args, { timeout: t.timeout || 30000 });
+    const { runUserCode } = await import('@yan-zhi/core');
+    const result = await runUserCode(t.code, t.entry, args, { timeout: t.timeout || 30000, runtime: t.runtime });
     res.json({ data: result });
   } catch (e: any) {
     res.status(500).json({ error: e?.message || '工具执行失败' });

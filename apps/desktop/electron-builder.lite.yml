@@ -27,6 +27,13 @@ extraResources:
   - from: dist
     to: server/web-dist
 
+  # 内置 Python 运行时（python-build-standalone，离线可用）—— 由 scripts/build-python-runtime.mjs 生成
+  - from: resources/python
+    to: python
+  # 随包 Python 脚本（doyz / security / pdf_preview）+ 预烤依赖（同目录 site-packages）
+  - from: resources/python-tools
+    to: python-tools
+
   - from: ../../assets/icons/icon.ico
     to: icon.ico
 win:

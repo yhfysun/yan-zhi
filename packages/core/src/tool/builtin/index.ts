@@ -18,6 +18,8 @@ export { UdpSendTool } from './udp-send';
 export { DnsLookupTool } from './dns-lookup';
 export { CmdExecTool } from './cmd-exec';
 export { PythonExecTool } from './python-exec';
+export { DoyzTool } from './doyz';
+export { SecurityTool } from './security';
 export { BrowserToolClasses, BROWSER_TOOL_NAMES } from './browser';
 export { CallAgentTool } from './call-agent';
 export { ListSubAgentsTool } from './list-sub-agents';
@@ -48,6 +50,8 @@ import { UdpSendTool } from './udp-send';
 import { DnsLookupTool } from './dns-lookup';
 import { CmdExecTool } from './cmd-exec';
 import { PythonExecTool } from './python-exec';
+import { DoyzTool } from './doyz';
+import { SecurityTool } from './security';
 import { BrowserToolClasses } from './browser';
 import { CallAgentTool } from './call-agent';
 import { ListSubAgentsTool } from './list-sub-agents';
@@ -87,6 +91,8 @@ export function registerBuiltInTools(registry: ToolRegistry): void {
   registry.register(new DnsLookupTool());
   registry.register(new CmdExecTool());
   registry.register(new PythonExecTool());
+  registry.register(new DoyzTool());
+  registry.register(new SecurityTool());
   // 浏览器自动化工具集（E3）
   for (const ToolClass of BrowserToolClasses) {
     registry.register(new ToolClass());

@@ -231,7 +231,13 @@
         <el-form-item label="名称"><el-input v-model="editor.name" placeholder="工具名称（英文）" /></el-form-item>
         <el-form-item label="描述"><el-input v-model="editor.description" placeholder="给 LLM 看的描述" /></el-form-item>
         <el-form-item label="分类"><el-input v-model="editor.category" placeholder="如：数据处理 / 自动化（默认「其他」）" /></el-form-item>
-        <el-form-item label="入口函数"><el-input v-model="editor.entry" placeholder="如: myToolHandler" /></el-form-item>
+        <el-form-item label="入口函数"><el-input v-model="editor.entry" placeholder="Node: 函数名；Python: 函数名（从 YZ_PY_ARGS 读入参）" /></el-form-item>
+        <el-form-item label="运行环境">
+          <el-select v-model="editor.runtime" size="default" style="width: 100%">
+            <el-option label="Node.js（默认，沙箱 vm 执行）" value="node" />
+            <el-option label="Python（内置打包解释器，离线可用）" value="python" />
+          </el-select>
+        </el-form-item>
         <el-form-item label="输入 Schema">
           <el-input
             v-model="editor.schemaText"
@@ -248,13 +254,15 @@
             placeholder='{"type":"object","properties":{"result":{"type":"string"}}}（可选）'
           />
         </el-form-item>
-        <el-form-item label="JS 代码">
+        <el-form-item :label="editor.runtime === 'python' ? 'Python 代码' : 'JS 代码'">
           <el-input
             v-model="editor.code"
             type="textarea"
             :rows="10"
             class="code-input"
-            placeholder="function myToolHandler(args) { return args.key + ' result'; }"
+            :placeholder="editor.runtime === 'python'
+              ? 'def my_tool_handler(args):\n    import os, json\n    args = json.loads(os.environ[\'YZ_PY_ARGS\'])  # base64(JSON)\n    print(json.dumps({\'result\': args.get(\'key\')}))'
+              : 'function myToolHandler(args) { return args.key + \' result\'; }'"
           />
         </el-form-item>
         <el-form-item label="超时(ms)">
@@ -473,7 +481,7 @@ const showCustomEditor = ref(false);
 const editingTool = ref<any>(null);
 const savingCustom = ref(false);
 const editor = ref({
-  name: '', description: '', category: '其他', entry: '',
+  name: '', description: '', category: '其他', entry: '', runtime: 'node',
   schemaText: '{}', outputSchemaText: '', code: '', timeout: 30000, isPublic: false,
 });
 
@@ -484,17 +492,17 @@ function openEditor(t: any | null) {
       name: t.name, description: t.description || '', category: t.category || '其他',
       entry: t.entry, schemaText: JSON.stringify(t.inputSchema, null, 2),
       outputSchemaText: t.outputSchema ? JSON.stringify(t.outputSchema, null, 2) : '',
-      code: t.code, timeout: t.timeout, isPublic: t.isPublic,
+      code: t.code, timeout: t.timeout, isPublic: t.isPublic, runtime: t.runtime || 'node',
     };
   } else {
     editingTool.value = null;
-    editor.value = { name: '', description: '', category: '其他', entry: '', schemaText: '{}', outputSchemaText: '', code: '', timeout: 30000, isPublic: false };
+    editor.value = { name: '', description: '', category: '其他', entry: '', runtime: 'node', schemaText: '{}', outputSchemaText: '', code: '', timeout: 30000, isPublic: false };
   }
   showCustomEditor.value = true;
 }
 
 function resetEditor() {
-  editor.value = { name: '', description: '', category: '其他', entry: '', schemaText: '{}', outputSchemaText: '', code: '', timeout: 30000, isPublic: false };
+  editor.value = { name: '', description: '', category: '其他', entry: '', runtime: 'node', schemaText: '{}', outputSchemaText: '', code: '', timeout: 30000, isPublic: false };
   editingTool.value = null;
 }
 
@@ -514,7 +522,7 @@ async function saveCustomTool() {
     if (editingTool.value) {
       await toolsStore.updateTool(editingTool.value.id, {
         name: editor.value.name, description: editor.value.description,
-        code: editor.value.code, entry: editor.value.entry,
+        code: editor.value.code, entry: editor.value.entry, runtime: editor.value.runtime || 'node',
         inputSchema: schema, outputSchema, timeout: editor.value.timeout, isPublic: editor.value.isPublic,
         category: editor.value.category || '其他',
       });
@@ -522,7 +530,7 @@ async function saveCustomTool() {
       await toolsStore.createTool({
         name: editor.value.name, description: editor.value.description,
         category: editor.value.category || '其他',
-        entry: editor.value.entry, inputSchema: schema, outputSchema,
+        entry: editor.value.entry, inputSchema: schema, outputSchema, runtime: editor.value.runtime || 'node',
         code: editor.value.code, timeout: editor.value.timeout, isPublic: editor.value.isPublic,
       });
     }

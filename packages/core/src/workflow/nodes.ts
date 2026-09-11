@@ -68,8 +68,8 @@ export class ToolNodeHandler implements NodeHandler {
       const adapter = getPlatformAdapter();
       const [row] = await adapter.db.query<any>('SELECT * FROM custom_tool WHERE name = ? AND enabled = 1', [toolName]);
       if (!row) throw new Error(`自定义工具不存在或已禁用: ${toolName}`);
-      const { runInSandbox } = await import('../tool/sandbox');
-      const result = await runInSandbox(row.code, row.entry, (args as Record<string, unknown>) || {}, { timeout: row.timeout || 30000 });
+      const { runUserCode } = await import('../tool/sandbox');
+      const result = await runUserCode(row.code, row.entry, (args as Record<string, unknown>) || {}, { timeout: row.timeout || 30000, runtime: row.runtime || 'node' });
       return { output: result };
     }
 

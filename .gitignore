@@ -31,6 +31,12 @@ apps/desktop/runtime/
 apps/desktop/release-lite/
 apps/desktop/release/
 
+# 内置 Python 运行时（构建时由 scripts/build-python-runtime.mjs 生成，体积大，不入库）
+# prod 运行时从 resources/ 拷贝进成品；dev 模式回退系统 python，无需此目录
+apps/desktop/resources/python/
+apps/desktop/resources/python-tools/
+apps/desktop/resources/_pbs_*/
+
 # Electron/本地调试产物
 apps/server/bsqlite-*.txt
 apps/server/smoke-*.txt

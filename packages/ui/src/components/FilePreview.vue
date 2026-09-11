@@ -13,12 +13,20 @@
       <div v-if="kind === 'image'" class="fp-image-wrap">
         <img :src="imageSrc" :alt="file.name" class="fp-image" />
       </div>
-      <!-- PDF：分页文本（提取失败降级为暂不支持卡片） -->
+      <!-- PDF：高保真栅格图（PyMuPDF 服务端渲染）优先；无图时降级为分页文本 -->
       <div v-else-if="kind === 'pdf'" class="fp-pdf-pages">
-        <div v-for="(p, i) in pdfPages" :key="i" class="fp-pdf-page">
-          <div class="fp-pdf-page-tag">第 {{ i + 1 }} / {{ pdfTotal }} 页</div>
-          <pre class="fp-pdf-page-text">{{ p || '（本页无可提取文本，可能是扫描件/图片页）' }}</pre>
-        </div>
+        <template v-if="pdfImages.length">
+          <div v-for="(img, i) in pdfImages" :key="'img' + i" class="fp-pdf-page">
+            <div class="fp-pdf-page-tag">第 {{ i + 1 }} / {{ pdfTotal }} 页</div>
+            <img :src="'data:image/png;base64,' + img" :alt="'PDF 第 ' + (i + 1) + ' 页'" class="fp-pdf-page-img" />
+          </div>
+        </template>
+        <template v-else>
+          <div v-for="(p, i) in pdfPages" :key="'txt' + i" class="fp-pdf-page">
+            <div class="fp-pdf-page-tag">第 {{ i + 1 }} / {{ pdfTotal }} 页</div>
+            <pre class="fp-pdf-page-text">{{ p || '（本页无可提取文本，可能是扫描件/图片页）' }}</pre>
+          </div>
+        </template>
       </div>
       <!-- Excel：工作表 tab + 表格 -->
       <template v-else-if="kind === 'excel'">
@@ -80,7 +88,7 @@ import { ref, watch, computed } from 'vue';
 import MarkdownIt from 'markdown-it';
 import hljs from 'highlight.js';
 import { Document } from '@element-plus/icons-vue';
-import { API_BASE } from '../api/client';
+import { API_BASE, api } from '../api/client';
 import { extractExcelSheets, extractDocxHtml, extractPdfPages, type ExcelSheet } from '@yan-zhi/core';
 
 const props = defineProps<{ file: { name: string; path: string } }>();
@@ -96,6 +104,8 @@ const byteSize = ref(0);
 const unsupportedNote = ref('');
 // PDF 分页文本
 const pdfPages = ref<string[]>([]);
+// PDF 高保真栅格图（PyMuPDF 服务端渲染，优先于文本提取）
+const pdfImages = ref<string[]>([]);
 const pdfTotal = ref(0);
 // Excel 工作表
 const excelSheets = ref<ExcelSheet[]>([]);
@@ -224,6 +234,7 @@ async function loadFile() {
   truncated.value = false;
   imageSrc.value = '';
   pdfPages.value = [];
+  pdfImages.value = [];
   pdfTotal.value = 0;
   excelSheets.value = [];
   activeSheet.value = 0;
@@ -245,13 +256,27 @@ async function loadFile() {
     }
 
     if (PDF_EXTS.includes(e)) {
-      // PDF：unpdf 提取分页文本；失败（如浏览器端 worker 不可用）降级为暂不支持
+      // PDF：优先走服务端 PyMuPDF 高保真栅格化（桌面/服务端自带打包 Python，默认启用）；
+      // 不可用（纯浏览器端无服务端 / 缺 PyMuPDF）时降级为 unpdf 分页文本提取。
       try {
         const b64 = await adapter.fs.readFileBase64(props.file.path);
         byteSize.value = Math.floor(b64.length * 3 / 4);
-        const { totalPages, pages } = await extractPdfPages(b64);
-        pdfTotal.value = totalPages;
-        pdfPages.value = pages;
+        let rasterized = false;
+        try {
+          const resp = await api.post<{ images: string[]; count: number }>('/preview/pdf', { b64, dpi: 110 });
+          if (!('error' in resp) && resp.data && Array.isArray(resp.data.images) && resp.data.images.length) {
+            pdfImages.value = resp.data.images;
+            pdfTotal.value = resp.data.count || resp.data.images.length;
+            rasterized = true;
+          }
+        } catch {
+          /* 降级文本提取 */
+        }
+        if (!rasterized) {
+          const { totalPages, pages } = await extractPdfPages(b64);
+          pdfTotal.value = totalPages;
+          pdfPages.value = pages;
+        }
         kind.value = 'pdf';
       } catch {
         kind.value = 'binary';
@@ -379,6 +404,7 @@ watch(() => props.file?.path, () => { if (props.file?.path) loadFile(); }, { imm
 .fp-pdf-page { border: 1px solid var(--el-border-color-lighter); border-radius: 6px; margin-bottom: 12px; overflow: hidden; }
 .fp-pdf-page-tag { padding: 4px 10px; font-size: 11px; color: var(--el-text-color-secondary); background: var(--el-fill-color-light); border-bottom: 1px solid var(--el-border-color-lighter); }
 .fp-pdf-page-text { margin: 0; padding: 12px; font-size: 13px; line-height: 1.7; white-space: pre-wrap; word-break: break-word; font-family: inherit; color: var(--el-text-color-primary); }
+.fp-pdf-page-img { display: block; width: 100%; height: auto; }
 /* Excel 工作表 tab */
 .fp-sheet-tabs { display: flex; gap: 4px; padding: 8px 12px 0; flex-shrink: 0; border-bottom: 1px solid var(--el-border-color-lighter); overflow-x: auto; }
 .fp-sheet-tab {

@@ -8,6 +8,10 @@ on:
 jobs:
   build-macos:
     runs-on: macos-latest
+    # 受限网络：可用仓库 Secrets 覆盖下载源 / pip 源（与本地 build-python-runtime.mjs 约定一致）
+    env:
+      YZ_PYTHON_STANDALONE_MIRROR: ${{ secrets.YZ_PYTHON_STANDALONE_MIRROR }}
+      YZ_PIP_INDEX_URL: ${{ secrets.YZ_PIP_INDEX_URL || 'https://pypi.org/simple' }}
     # 注意：这里不能设 CSC_IDENTITY_AUTO_DISCOVERY=false。
     # arm64 macOS 要求应用内的每个原生二进制都签名（如 better-sqlite3 的 dylib），
     # 禁用自动发现会让 electron-builder 完全跳过签名，装出的 dmg 一启动就崩。
@@ -46,6 +50,9 @@ jobs:
     runs-on: windows-latest
     env:
       CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      # 受限网络：可用仓库 Secrets 覆盖下载源 / pip 源（与本地 build-python-runtime.mjs 约定一致）
+      YZ_PYTHON_STANDALONE_MIRROR: ${{ secrets.YZ_PYTHON_STANDALONE_MIRROR }}
+      YZ_PIP_INDEX_URL: ${{ secrets.YZ_PIP_INDEX_URL || 'https://pypi.org/simple' }}
     steps:
       - uses: actions/checkout@v7
 

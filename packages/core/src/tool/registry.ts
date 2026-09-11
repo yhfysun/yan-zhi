@@ -64,7 +64,7 @@ export class ToolRegistry {
   }
 
   /** 从数据库加载自定义工具并注册（与内置工具重名时自动追加后缀改名，不再静默跳过） */
-  loadCustomTools(tools: Array<{ name: string; description?: string; inputSchema: Record<string, unknown>; code: string; entry: string; timeout: number }>): void {
+  loadCustomTools(tools: Array<{ name: string; description?: string; inputSchema: Record<string, unknown>; code: string; entry: string; timeout: number; runtime?: string }>): void {
     for (const t of tools) {
       let name = t.name;
       while (this.tools.has(name)) {
@@ -75,8 +75,8 @@ export class ToolRegistry {
         description: t.description || '',
         inputSchema: t.inputSchema,
         execute: async (args: Record<string, unknown>) => {
-          const { runInSandbox } = await import('./sandbox');
-          return runInSandbox(t.code, t.entry, args, { timeout: t.timeout });
+          const { runUserCode } = await import('./sandbox');
+          return runUserCode(t.code, t.entry, args, { timeout: t.timeout, runtime: t.runtime || 'node' });
         },
       });
     }

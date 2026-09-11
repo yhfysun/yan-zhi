@@ -1046,12 +1046,12 @@ async function executeTool(
     if (m) {
       const idTag = m[1];
       const tName = m[2];
-      const rows = db.prepare('SELECT id, name, code, entry, timeout, enabled FROM custom_tool WHERE user_id = ? AND enabled = 1').all(task.userId) as any[];
+      const rows = db.prepare('SELECT id, name, code, entry, timeout, enabled, runtime FROM custom_tool WHERE user_id = ? AND enabled = 1').all(task.userId) as any[];
       const tool = rows.find((r: any) => (r.id || '').replace(/[^a-zA-Z0-9]/g, '').slice(0, 8) === idTag && r.name === tName);
       if (tool) {
         try {
-          const { runInSandbox } = await import('@yan-zhi/core');
-          const result = await runInSandbox(tool.code, tool.entry, args, { timeout: tool.timeout || 30000 });
+          const { runUserCode } = await import('@yan-zhi/core');
+          const result = await runUserCode(tool.code, tool.entry, args, { timeout: tool.timeout || 30000, runtime: tool.runtime || 'node' });
           return typeof result === 'string' ? result : JSON.stringify(result);
         } catch (e: any) {
           return `工具执行失败: ${e?.message || e}`;

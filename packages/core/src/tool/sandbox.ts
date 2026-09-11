@@ -1,5 +1,28 @@
-// JS 代码沙箱执行器
+// 用户代码执行器（JS 沙箱 + Python 桥）
 import type { McpCallResult } from '../mcp/client';
+import { runPythonCode } from './builtin/python-runtime';
+
+/** 自定义工具执行选项 */
+export interface RunUserCodeOptions {
+  timeout?: number;
+  /** 执行运行时：node（默认，node:vm 沙箱）或 python（打包/系统 Python 子进程） */
+  runtime?: string;
+}
+
+/** 统一入口：按 runtime 分流。
+ *  - node  → runInSandbox（既有 node:vm 沙箱，零变动）
+ *  - python → 把 code 落到临时文件，用 Python 解释器子进程执行，入参经 YZ_PY_ARGS 注入 */
+export async function runUserCode(
+  code: string,
+  entry: string,
+  args: Record<string, unknown>,
+  opts: RunUserCodeOptions = {},
+): Promise<McpCallResult> {
+  if (opts.runtime === 'python') {
+    return runPythonCode(code, args, { timeout: opts.timeout });
+  }
+  return runInSandbox(code, entry, args, { timeout: opts.timeout || 30000 });
+}
 
 export async function runInSandbox(
   code: string,

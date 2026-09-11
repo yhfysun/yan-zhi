@@ -4,7 +4,7 @@
 // 运行状态全量落库 workflow_run（与 llm_task 同思路）：节点级 SSE 事件带单调 seq，
 // 断线用 since=seq 续传；server 重启后遗留 running 由 markOrphanWorkflowRunsInterrupted() 回收。
 import { randomUUID } from 'node:crypto';
-import { WorkflowEngine, LlmClient, runInSandbox, getToolRegistry } from '@yan-zhi/core';
+import { WorkflowEngine, LlmClient, runUserCode, getToolRegistry } from '@yan-zhi/core';
 import type { NodeHandler, RunContext, NodeResult } from '@yan-zhi/core';
 import type { Workflow, Platform, Model } from '@yan-zhi/shared';
 import { db } from './db.js';
@@ -410,7 +410,7 @@ class ServerToolNodeHandler implements NodeHandler {
         .prepare('SELECT * FROM custom_tool WHERE name = ? AND enabled = 1 AND (user_id = ? OR is_public = 1)')
         .get(toolName, userId) as any;
       if (!row) throw new Error(`自定义工具不存在或已禁用: ${toolName}`);
-      const result = await runInSandbox(row.code, row.entry, (args as Record<string, unknown>) || {}, { timeout: row.timeout || 30000 });
+      const result = await runUserCode(row.code, row.entry, (args as Record<string, unknown>) || {}, { timeout: row.timeout || 30000, runtime: row.runtime || 'node' });
       return { output: result };
     }
 

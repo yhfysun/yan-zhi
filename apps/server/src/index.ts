@@ -28,6 +28,7 @@ import peersRoutes from './routes/peers.js';
 import imRoutes from './routes/im.js';
 import kbRoutes from './routes/kb.js';
 import mcpBridgeRoutes from './mcp/index.js';
+import previewRoutes from './routes/preview.js';
 import workspaceRoutes from './routes/workspace.js';
 import memoryRoutes from './routes/memory.js';
 import scheduledTaskRoutes from './routes/scheduled-tasks.js';
@@ -120,6 +121,8 @@ app.use('/api/llm', llmProxyRoutes);
 app.use('/api/llm', llmTaskRoutes);
 // LLM 交互日志（按 用户/会话/模型 统计，口径：一条 assistant 消息 = 一次 LLM 调用）
 app.use('/api/llm', llmLogsRoutes);
+// PDF 高保真预览通道（PyMuPDF 栅格化，作为 unpdf 文本提取的升级渲染）
+app.use('/api/preview', previewRoutes);
 
 // 局域网访问：无登录体系，允许多人通过浏览器访问同一节点。
 // HOST 默认 0.0.0.0（绑定所有网卡，局域网可达）；用 YZ_HOST 可显式指定（如 127.0.0.1 仅本机）。
