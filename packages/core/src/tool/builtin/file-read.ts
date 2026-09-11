@@ -194,10 +194,11 @@ export class FileReadTool implements BuiltInTool {
     fs: ReturnType<typeof getPlatformAdapter>['fs'],
   ): Promise<McpCallResult> {
     try {
-      const content = await fs.readFile(path);
+      // xlsx/xls 是二进制 zip，必须 base64 读取后解析（UTF-8 文本读出来是乱码）
+      const b64 = await fs.readFileBase64(path);
       const XLSX = await import('xlsx');
 
-      const workbook = XLSX.read(content, { type: 'string' });
+      const workbook = XLSX.read(b64, { type: 'base64' });
       const sheetParam = args.sheet as string | undefined;
       const rangeParam = args.range as string | undefined;
       const formatParam = (args.format as string) || 'csv';
@@ -287,10 +288,11 @@ export class FileReadTool implements BuiltInTool {
     try {
       const b64 = await fs.readFileBase64(path);
       const bytes = base64ToBytes(b64);
-      const ab = new ArrayBuffer(bytes.byteLength);
-      new Uint8Array(ab).set(bytes);
       const mammoth = await import('mammoth');
-      const result = await mammoth.convertToHtml({ arrayBuffer: ab });
+      // mammoth 双构建：Node 版(lib)只认 {buffer}/{path}，browser 版收 {arrayBuffer}
+      const result = typeof Buffer !== 'undefined' && typeof Buffer.from === 'function'
+        ? await mammoth.convertToHtml({ buffer: Buffer.from(bytes) })
+        : await mammoth.convertToHtml({ arrayBuffer: (() => { const ab = new ArrayBuffer(bytes.byteLength); new Uint8Array(ab).set(bytes); return ab; })() });
       const md = htmlToMarkdown(result.value || '');
       const messages = (result.messages || []).filter((m) => m.type === 'warning');
       const note = messages.length ? `\n\n[converter warnings: ${messages.length}]` : '';

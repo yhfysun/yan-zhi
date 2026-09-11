@@ -35,12 +35,17 @@ export async function extractExcelSheets(b64: string): Promise<ExcelSheet[]> {
   return sheets;
 }
 
-/** Word（.docx）→ mammoth HTML（保留标题/表格/列表结构），供前端 v-html 渲染 */
+/** Word（.docx）→ mammoth HTML（保留标题/表格/列表结构），供前端 v-html 渲染。
+ *  mammoth 双构建：browser 版收 {arrayBuffer}，Node 版只认 {buffer}/{path}，按环境分流 */
 export async function extractDocxHtml(b64: string): Promise<string> {
   const bytes = base64ToBytes(b64);
+  const mammoth = await import('mammoth');
+  if (typeof Buffer !== 'undefined' && typeof Buffer.from === 'function') {
+    const result = await mammoth.convertToHtml({ buffer: Buffer.from(bytes) });
+    return result.value || '';
+  }
   const ab = new ArrayBuffer(bytes.byteLength);
   new Uint8Array(ab).set(bytes);
-  const mammoth = await import('mammoth');
   const result = await mammoth.convertToHtml({ arrayBuffer: ab });
   return result.value || '';
 }
