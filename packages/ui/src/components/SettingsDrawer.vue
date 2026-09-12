@@ -54,6 +54,7 @@ import {
   Collection,
   Memo,
   MagicStick,
+  Monitor,
   Close,
 } from '@element-plus/icons-vue';
 import {
@@ -86,6 +87,7 @@ const builtinSections: SettingsSection[] = [
   { section: 'memory', label: '记忆管理', icon: Memo },
 
   { section: 'connections', label: 'IM 连接', icon: Promotion },
+  { section: 'env', label: '开发环境', icon: Monitor },
   { section: 'plugins', label: '插件管理', icon: Box },
 ];
 
@@ -110,6 +112,7 @@ const builtinComponents: Record<string, ReturnType<typeof defineAsyncComponent>>
   memory: defineAsyncComponent(() => import('../components/memory/MemoryManage.vue')),
 
   connections: defineAsyncComponent(() => import('../views/Connections.vue')),
+  env: defineAsyncComponent(() => import('../views/EnvConfig.vue')),
   plugins: defineAsyncComponent(() => import('./plugin/PluginManager.vue')),
 };
 

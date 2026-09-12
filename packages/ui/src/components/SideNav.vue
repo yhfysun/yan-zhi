@@ -190,6 +190,7 @@
 import { computed } from 'vue';
 import { useRoute } from 'vue-router';
 import { ChatDotRound, Setting, User, SwitchButton, Fold, Expand, Monitor, Collection, Moon, Sunny, HomeFilled, Promotion, DataLine, Operation, Share } from '@element-plus/icons-vue';
+import { Code } from 'lucide-vue-next';
 import { useAuthStore } from '../stores/auth';
 import { useSettingsStore } from '../stores/settings';
 import { useIsMobile } from '../composables/useIsMobile';
@@ -220,6 +221,7 @@ interface NavItem {
 const builtinNavItems: NavItem[] = [
   { path: '/home', label: '首页', tabLabel: '首页', icon: HomeFilled, kind: 'route', group: '工作台' },
   { path: '/chat', label: '任务', tabLabel: '任务', icon: ChatDotRound, kind: 'route', group: '工作台' },
+  { path: '/code', label: '代码', tabLabel: '代码', icon: Code, kind: 'route', group: '工作台' },
   { path: '/browser', label: '浏览器', tabLabel: '浏览器', icon: Monitor, kind: 'route', group: '工作台', hideOnMobile: true },
   { path: '/chat-hub', label: '消息', tabLabel: '消息', icon: Promotion, kind: 'route', group: '工作台' },
   { path: '', label: '设置', tabLabel: '设置', icon: Setting, kind: 'settings', group: '系统' },

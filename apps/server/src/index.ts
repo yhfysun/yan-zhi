@@ -38,6 +38,8 @@ import gitRoutes from './routes/git.js';
 import datasourceRoutes from './routes/datasources.js';
 import sqlConsoleRoutes from './routes/sql-console.js';
 import localConsoleRoutes from './routes/local-console.js';
+import envRoutes from './routes/env.js';
+import debugRoutes from './routes/debug.js';
 import queryContractRoutes from './routes/query-contract.js';
 import ontologyRoutes from './routes/ontologies.js';
 import llmProxyRoutes from './routes/llm-proxy.js';
@@ -123,6 +125,11 @@ app.use('/api/llm', llmTaskRoutes);
 app.use('/api/llm', llmLogsRoutes);
 // PDF 高保真预览通道（PyMuPDF 栅格化，作为 unpdf 文本提取的升级渲染）
 app.use('/api/preview', previewRoutes);
+// 代码模式：开发环境（Java/Maven/Python/Node/Git）配置与探测
+if (!process.env.MOBILE_MODE) {
+  app.use('/api/env', envRoutes);
+  app.use('/api/debug', debugRoutes);
+}
 
 // 局域网访问：无登录体系，允许多人通过浏览器访问同一节点。
 // HOST 默认 0.0.0.0（绑定所有网卡，局域网可达）；用 YZ_HOST 可显式指定（如 127.0.0.1 仅本机）。

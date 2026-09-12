@@ -1,0 +1,258 @@
+// 代码模式工作台状态：打开的文件、项目目录、断点、运行配置。
+// 与聊天 store 解耦 —— 代码模式是独立页面，但右侧对话区仍复用 chat store。
+import { defineStore } from 'pinia';
+import { ref, computed, watch } from 'vue';
+import { api } from '../api/client';
+import { useSettingsStore } from './settings';
+
+export type SidebarView = 'explorer' | 'search' | 'git' | 'run';
+
+export interface OpenFile {
+  path: string;
+  name: string;
+  content: string;
+  /** 磁盘上的原文，用于脏标记比对 */
+  original: string;
+  loading: boolean;
+  error: string;
+  saving: boolean;
+  /** 打开后是否从未激活过（用于「预览态」斜体标签，暂未启用） */
+  mtime: number;
+}
+
+export interface RunConfigItem {
+  id: string;
+  name: string;
+  kind: 'java' | 'maven' | 'python' | 'node' | 'custom';
+  cwd: string;
+  mainClass?: string;
+  classpath?: string;
+  goal?: string;
+  program?: string;
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+}
+
+const LS_DIR = 'yz:code:projectDir';
+const LS_FILES = 'yz:code:openFiles';
+const LS_CFG = 'yz:code:runConfigs';
+const LS_BP = 'yz:code:breakpoints';
+
+function readJson<T>(key: string, fallback: T): T {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return fallback;
+    return JSON.parse(raw) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+export const useCodeStore = defineStore('code', () => {
+  const settingsStore = useSettingsStore();
+
+  // ===== 项目目录 =====
+  const projectDir = ref(localStorage.getItem(LS_DIR) || '');
+  function setProjectDir(dir: string) {
+    projectDir.value = dir;
+    localStorage.setItem(LS_DIR, dir);
+    // 同步到全局工作目录，保证 cmd_exec / Git 面板 / 智能体工具指向同一个根
+    if (dir && settingsStore.settings.workspaceDir !== dir) {
+      void settingsStore.update({ workspaceDir: dir });
+      void api.post('/workspace/dir', { dir });
+    }
+  }
+  // 首次进入时若未选过目录，沿用设置里的工作目录
+  if (!projectDir.value && settingsStore.settings.workspaceDir) {
+    projectDir.value = settingsStore.settings.workspaceDir;
+  }
+
+  const projectName = computed(() => {
+    const p = projectDir.value.replace(/[\\/]+$/, '');
+    return p.split(/[\\/]/).filter(Boolean).pop() || '';
+  });
+
+  // ===== 打开的文件 =====
+  const openFiles = ref<OpenFile[]>([]);
+  const activePath = ref<string | null>(null);
+
+  const activeFile = computed(() => openFiles.value.find((f) => f.path === activePath.value) || null);
+  const dirtyCount = computed(() => openFiles.value.filter((f) => f.content !== f.original).length);
+
+  function persistFiles() {
+    try {
+      localStorage.setItem(LS_FILES, JSON.stringify(openFiles.value.map((f) => ({ path: f.path, name: f.name }))));
+    } catch { /* 忽略配额错误 */ }
+  }
+
+  /** 把「路径/文件名」恢复到标签栏（内容留空，点开才读盘，避免启动时大量 IO） */
+  function rememberTabs() {
+    const saved = readJson<Array<{ path: string; name: string }>>(LS_FILES, []);
+    openFiles.value = saved
+      .filter((f) => f?.path)
+      .map((f) => ({ path: f.path, name: f.name, content: '', original: '', loading: false, error: '', saving: false, mtime: 0 }));
+    if (openFiles.value.length) activePath.value = openFiles.value[0].path;
+  }
+
+  async function openFile(path: string, name?: string) {
+    if (!path) return;
+    const exist = openFiles.value.find((f) => f.path === path);
+    if (exist) {
+      activePath.value = path;
+      if (!exist.content && !exist.error) await loadContent(path);
+      return;
+    }
+    const file: OpenFile = {
+      path,
+      name: name || path.split(/[\\/]/).pop() || path,
+      content: '',
+      original: '',
+      loading: true,
+      error: '',
+      saving: false,
+      mtime: 0,
+    };
+    openFiles.value.push(file);
+    activePath.value = path;
+    persistFiles();
+    await loadContent(path);
+  }
+
+  async function loadContent(path: string) {
+    const f = openFiles.value.find((x) => x.path === path);
+    if (!f) return;
+    f.loading = true;
+    f.error = '';
+    const r = await api.get<{ content: string; name: string; mtime: number }>(
+      `/workspace/file?path=${encodeURIComponent(path)}`,
+    );
+    f.loading = false;
+    if ('error' in r) {
+      f.error = r.error;
+      return;
+    }
+    f.content = r.data.content ?? '';
+    f.original = f.content;
+    f.name = r.data.name || f.name;
+    f.mtime = r.data.mtime || 0;
+  }
+
+  function updateContent(path: string, content: string) {
+    const f = openFiles.value.find((x) => x.path === path);
+    if (f) f.content = content;
+  }
+
+  async function saveFile(path: string): Promise<boolean> {
+    const f = openFiles.value.find((x) => x.path === path);
+    if (!f) return false;
+    f.saving = true;
+    const r = await api.put<{ ok: boolean; mtime: number }>('/workspace/file', { path, content: f.content });
+    f.saving = false;
+    if ('error' in r) {
+      f.error = r.error;
+      return false;
+    }
+    f.original = f.content;
+    f.mtime = r.data.mtime || Date.now();
+    f.error = '';
+    return true;
+  }
+
+  function closeFile(path: string) {
+    const idx = openFiles.value.findIndex((f) => f.path === path);
+    if (idx < 0) return;
+    openFiles.value.splice(idx, 1);
+    if (activePath.value === path) {
+      activePath.value = (openFiles.value[idx] || openFiles.value[idx - 1] || null)?.path ?? null;
+    }
+    persistFiles();
+  }
+
+  function closeOthers(path: string) {
+    openFiles.value = openFiles.value.filter((f) => f.path === path);
+    activePath.value = path;
+    persistFiles();
+  }
+
+  function closeAll() {
+    openFiles.value = [];
+    activePath.value = null;
+    persistFiles();
+  }
+
+  // ===== 左栏视图 =====
+  const sidebarView = ref<SidebarView>('explorer');
+
+  // ===== 断点（path → 行号） =====
+  const breakpoints = ref<Record<string, number[]>>(readJson<Record<string, number[]>>(LS_BP, {}));
+  watch(breakpoints, (v) => {
+    try { localStorage.setItem(LS_BP, JSON.stringify(v)); } catch { /* ignore */ }
+  }, { deep: true });
+
+  function toggleBreakpoint(path: string, line: number) {
+    const list = breakpoints.value[path] ? [...breakpoints.value[path]] : [];
+    const i = list.indexOf(line);
+    if (i >= 0) list.splice(i, 1);
+    else list.push(line);
+    if (list.length) breakpoints.value[path] = list.sort((a, b) => a - b);
+    else delete breakpoints.value[path];
+    breakpoints.value = { ...breakpoints.value };
+  }
+
+  function clearBreakpoints(path?: string) {
+    if (path) delete breakpoints.value[path];
+    else breakpoints.value = {};
+    breakpoints.value = { ...breakpoints.value };
+  }
+
+  // ===== 运行配置 =====
+  const runConfigs = ref<RunConfigItem[]>(readJson<RunConfigItem[]>(LS_CFG, []));
+  const activeConfigId = ref<string>('');
+  watch(runConfigs, (v) => {
+    try { localStorage.setItem(LS_CFG, JSON.stringify(v)); } catch { /* ignore */ }
+  }, { deep: true });
+
+  function saveRunConfig(cfg: RunConfigItem) {
+    const i = runConfigs.value.findIndex((c) => c.id === cfg.id);
+    if (i >= 0) runConfigs.value[i] = { ...cfg };
+    else runConfigs.value.push({ ...cfg });
+    runConfigs.value = [...runConfigs.value];
+  }
+
+  function removeRunConfig(id: string) {
+    runConfigs.value = runConfigs.value.filter((c) => c.id !== id);
+    if (activeConfigId.value === id) activeConfigId.value = '';
+  }
+
+  // ===== 跳转请求（搜索结果 / 调试断点命中 → 编辑器滚动到指定行） =====
+  const pendingReveal = ref<{ path: string; line: number; column?: number; ts: number } | null>(null);
+  function revealLine(path: string, line: number, column?: number) {
+    pendingReveal.value = { path, line, column, ts: Date.now() };
+  }
+
+  // ===== 调试命中行（编辑器高亮） =====
+  const debugActive = ref<{ path: string; line: number } | null>(null);
+  function setDebugActive(path: string, line: number) {
+    debugActive.value = line > 0 && path ? { path, line } : null;
+  }
+
+  // ===== 控制台 =====
+  const consoleOpen = ref(localStorage.getItem('yz:code:consoleOpen') !== '0');
+  function toggleConsole(open?: boolean) {
+    consoleOpen.value = open === undefined ? !consoleOpen.value : open;
+    localStorage.setItem('yz:code:consoleOpen', consoleOpen.value ? '1' : '0');
+  }
+
+  return {
+    projectDir, projectName, setProjectDir,
+    openFiles, activePath, activeFile, dirtyCount,
+    openFile, loadContent, updateContent, saveFile, closeFile, closeOthers, closeAll, rememberTabs,
+    sidebarView,
+    breakpoints, toggleBreakpoint, clearBreakpoints,
+    runConfigs, activeConfigId, saveRunConfig, removeRunConfig,
+    pendingReveal, revealLine,
+    debugActive, setDebugActive,
+    consoleOpen, toggleConsole,
+  };
+});

@@ -8,6 +8,7 @@
         class="right-panel-tab"
         :class="{ active: tab.id === store.activeTabId }"
         @click="store.activatePreviewTab(tab.id)"
+        @contextmenu.prevent="openTabCtx($event, tab)"
       >
         <span class="right-panel-tab-icon" :class="'kind-' + tab.kind">
           <el-icon><component :is="tabIconComp(tab)" /></el-icon>
@@ -73,11 +74,28 @@
       </button>
     </div>
   </aside>
+
+  <!-- 预览 tab 右键菜单 -->
+  <ul v-if="tabCtx.visible" class="ctx-menu" :style="{ top: tabCtx.y + 'px', left: tabCtx.x + 'px' }">
+    <li @click="ctxCloseCurrent">
+      <el-icon><Close /></el-icon>关闭
+    </li>
+    <li :class="{ disabled: ctxIsFirst }" @click="ctxCloseLeft">
+      <el-icon><Back /></el-icon>关闭左侧
+    </li>
+    <li :class="{ disabled: ctxIsLast }" @click="ctxCloseRight">
+      <el-icon><Right /></el-icon>关闭右侧
+    </li>
+    <li @click="ctxCloseAll">
+      <el-icon><CircleClose /></el-icon>关闭全部
+    </li>
+  </ul>
 </template>
 
 <script setup lang="ts">
-import { computed, ref, type Component } from 'vue';
-import { Close, Document, Link, Folder, Grid, Monitor } from '@element-plus/icons-vue';
+import { computed, ref, onMounted, onBeforeUnmount, type Component } from 'vue';
+import { useRouter } from 'vue-router';
+import { Close, Document, Link, Folder, Grid, Monitor, Back, Right, CircleClose } from '@element-plus/icons-vue';
 import { useChat } from '../../composables/chat/useChat';
 import { useSettingsStore } from '../../stores/settings';
 import type { DataTabContract, PreviewTab } from '../../stores/chat';
@@ -89,6 +107,7 @@ import DataQueryWorkbench from './DataQueryWorkbench.vue';
 
 const { store, closeRightPanel } = useChat();
 
+const router = useRouter();
 const settingsStore = useSettingsStore();
 const gitPanelRef = ref<InstanceType<typeof ChatGitPanel> | null>(null);
 const hasWorkspaceDir = computed(() => !!settingsStore.settings.workspaceDir);
@@ -136,7 +155,8 @@ function tabTitle(tab: PreviewTab): string {
 }
 
 function openFileEntry() {
-  store.showFilePopup = true;
+  // 文件管理弹窗已并入代码模式：这里直接进 IDE 工作台
+  router.push('/code');
 }
 function openBrowserEntry() {
   store.openTab({ kind: 'browser', name: '浏览器', url: '' });
@@ -147,4 +167,46 @@ function openGitEntry() {
 function openConsoleEntry() {
   store.openTab({ kind: 'console', name: '控制台' });
 }
+
+// ===== 预览 tab 右键菜单：关闭 / 关闭左侧 / 关闭右侧 / 关闭全部 =====
+const tabCtx = ref<{ visible: boolean; x: number; y: number; tabId: string | null }>({ visible: false, x: 0, y: 0, tabId: null });
+const ctxIsFirst = computed(() => {
+  if (!tabCtx.value.tabId) return false;
+  return store.previewTabs.findIndex((t) => t.id === tabCtx.value.tabId) <= 0;
+});
+const ctxIsLast = computed(() => {
+  if (!tabCtx.value.tabId) return false;
+  const idx = store.previewTabs.findIndex((t) => t.id === tabCtx.value.tabId);
+  return idx < 0 || idx === store.previewTabs.length - 1;
+});
+
+function openTabCtx(e: MouseEvent, tab: PreviewTab) {
+  tabCtx.value = { visible: true, x: e.clientX, y: e.clientY, tabId: tab.id };
+}
+function closeTabCtx() {
+  tabCtx.value.visible = false;
+}
+function ctxCloseCurrent() {
+  if (tabCtx.value.tabId) store.closePreviewTab(tabCtx.value.tabId);
+  closeTabCtx();
+}
+function ctxCloseLeft() {
+  if (tabCtx.value.tabId) store.closePreviewTabsLeft(tabCtx.value.tabId);
+  closeTabCtx();
+}
+function ctxCloseRight() {
+  if (tabCtx.value.tabId) store.closePreviewTabsRight(tabCtx.value.tabId);
+  closeTabCtx();
+}
+function ctxCloseAll() {
+  store.closeAllPreviewTabs();
+  closeTabCtx();
+}
+
+function onDocMouseDown(e: MouseEvent) {
+  if ((e.target as HTMLElement)?.closest('.ctx-menu')) return;
+  closeTabCtx();
+}
+onMounted(() => document.addEventListener('mousedown', onDocMouseDown, true));
+onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMouseDown, true));
 </script>

@@ -5,6 +5,8 @@ import { Router, Request, Response } from 'express';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import { authMiddleware } from '../auth.js';
+import { buildSpawnEnv, loadDevEnv } from '../services/dev-env.js';
+import { serverState } from '../state.js';
 
 const router = Router();
 
@@ -32,18 +34,23 @@ if (typeof idleTimer.unref === 'function') idleTimer.unref();
 
 function resolveShell(shell: string): { file: string; args: string[] } {
   if (process.platform === 'win32') {
+    if (shell === 'bash') return { file: 'bash.exe', args: ['--login', '-i'] };
     if (shell === 'cmd') return { file: 'cmd.exe', args: ['/q'] };
     return { file: 'powershell.exe', args: ['-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass'] };
   }
+  if (shell === 'cmd') return { file: 'sh', args: [] };
   return { file: process.env.SHELL || 'bash', args: [] };
 }
 
 // POST /api/local-console/open  { shell?: 'powershell'|'cmd', cwd?: string, cols?, rows? }
 router.post('/open', authMiddleware, (req: Request, res: Response) => {
   const body = (req.body || {}) as { shell?: string; cwd?: string };
-  const shell = body.shell === 'cmd' ? 'cmd' : body.shell === 'powershell' ? 'powershell' : 'powershell';
+  // 未指定 shell 时取「开发环境」里配置的默认 shell
+  const devEnv = loadDevEnv();
+  const shell = body.shell === 'cmd' ? 'cmd' : body.shell === 'bash' ? 'bash' : body.shell === 'powershell' ? 'powershell' : devEnv.defaultShell;
 
-  let cwd = body.cwd || process.cwd();
+  // cwd 优先级：请求参数 → 当前工作目录（workspaceDir）→ server 进程目录
+  let cwd = body.cwd || serverState.workspaceDir || process.cwd();
   try {
     if (!fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory()) cwd = process.cwd();
   } catch {
@@ -54,7 +61,8 @@ router.post('/open', authMiddleware, (req: Request, res: Response) => {
   const sessionId = `lc-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
   let child;
   try {
-    child = spawn(file, args, { cwd, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+    // 注入开发环境（JAVA_HOME / Maven / Python / Node / Git 全部前置到 PATH）
+    child = spawn(file, args, { cwd, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'], env: buildSpawnEnv(devEnv) });
   } catch (err) {
     res.status(500).json({ error: `无法启动本机 shell：${err instanceof Error ? err.message : String(err)}` });
     return;

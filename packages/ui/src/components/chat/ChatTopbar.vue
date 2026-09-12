@@ -34,16 +34,17 @@
         </el-button>
       </el-tooltip>
 
-      <ChatFilePanel />
+      <el-tooltip content="代码模式（IDE 工作台）" placement="bottom">
+        <el-button size="small" circle class="code-mode-btn" @click="goCodeMode" aria-label="进入代码模式">
+          <el-icon><Files /></el-icon>
+        </el-button>
+      </el-tooltip>
       <el-dropdown trigger="click">
         <el-button size="small" circle title="右侧栏视图" aria-label="右侧栏视图">
           <el-icon><Operation /></el-icon>
         </el-button>
         <template #dropdown>
           <el-dropdown-menu>
-            <el-dropdown-item @click="store.showFilePopup = true">
-              <el-icon><Document /></el-icon><span>文件预览</span>
-            </el-dropdown-item>
             <el-dropdown-item @click="store.openTab({ kind: 'browser', name: '浏览器', url: '' })">
               <el-icon><Monitor /></el-icon><span>浏览器预览</span>
             </el-dropdown-item>
@@ -83,12 +84,14 @@
 
 <script setup lang="ts">
 import { computed } from 'vue';
-import { ArrowDown, Cpu, Document, Expand, Files, FolderOpened, Fold, Grid, Monitor, Operation, EditPen, SwitchButton, User } from '@element-plus/icons-vue';
+import { useRouter } from 'vue-router';
+import { ArrowDown, Cpu, Expand, Files, FolderOpened, Fold, Grid, Monitor, Operation, EditPen, SwitchButton, User } from '@element-plus/icons-vue';
 import { useChat } from '../../composables/chat/useChat';
 import { useSettingsStore } from '../../stores/settings';
-import ChatFilePanel from './ChatFilePanel.vue';
 import AppMenu from '../AppMenu.vue';
 import type { MenuNode } from '../AppMenuPanel.vue';
+
+const router = useRouter();
 
 const {
   drawerOpen, currentConv, store, isMobile, authStore,
@@ -121,6 +124,11 @@ function onModelMenuSelect(node: MenuNode) {
   onModelChange(node.key);
 }
 
+/** 进入代码模式（IDE 工作台）：携带当前会话，右侧对话区继续同一会话 */
+function goCodeMode() {
+  router.push('/code');
+}
+
 function openGitTab() {
   const dir = settingsStore.settings.workspaceDir || '';
   const repoName = dir.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || 'Git';
@@ -144,6 +152,14 @@ const selectedModel = computed(() => {
 .model-pill-dropdown {
   flex-shrink: 0;
   margin-left: 2px;
+}
+
+.code-mode-btn {
+  color: var(--color-text-secondary);
+}
+.code-mode-btn:hover {
+  color: var(--color-primary);
+  border-color: var(--color-primary);
 }
 
 .new-chat-btn {

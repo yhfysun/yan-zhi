@@ -32,6 +32,12 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '任务' },
   },
   {
+    path: '/code',
+    name: 'code',
+    component: () => import('../views/CodeWorkbench.vue'),
+    meta: { title: '代码' },
+  },
+  {
     path: '/chat-hub',
     name: 'chat-hub',
     component: () => import('../views/ChatHub.vue'),
