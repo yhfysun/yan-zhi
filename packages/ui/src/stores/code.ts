@@ -49,6 +49,22 @@ function readJson<T>(key: string, fallback: T): T {
   }
 }
 
+// ===== 代码模式记忆（纯 localStorage，供 router guard 使用，不依赖 pinia）=====
+// 语义：用户停留在代码模式时离开（去首页/浏览器等），再点「任务」应恢复代码工作台，
+// 而不是掉回普通聊天布局。只有显式点代码模式里的「返回任务」才清除。
+const CODE_MODE_KEY = 'yz:code:active';
+
+export function isCodeModeActive(): boolean {
+  try { return localStorage.getItem(CODE_MODE_KEY) === '1'; } catch { return false; }
+}
+
+export function setCodeModeActive(active: boolean): void {
+  try {
+    if (active) localStorage.setItem(CODE_MODE_KEY, '1');
+    else localStorage.removeItem(CODE_MODE_KEY);
+  } catch { /* 隐私模式等场景忽略 */ }
+}
+
 export const useCodeStore = defineStore('code', () => {
   const settingsStore = useSettingsStore();
 

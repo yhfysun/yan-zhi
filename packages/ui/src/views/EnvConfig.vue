@@ -3,7 +3,7 @@
     <div class="env-head">
       <div>
         <h3 class="env-title">开发环境</h3>
-        <p class="env-sub">配置 Java / Maven / Python / Node / Git 的路径。配置会注入到代码模式的终端、运行与调试进程。</p>
+        <p class="env-sub">按工具分类配置路径与参数。配置会注入到代码模式的终端、运行与调试进程。</p>
       </div>
       <div class="env-head-actions">
         <button class="env-btn" :disabled="detecting" @click="detect">
@@ -19,73 +19,125 @@
       </div>
     </div>
 
-    <!-- 状态卡片 -->
-    <div class="env-status">
-      <div v-for="t in tools" :key="t.id" class="env-card" :class="{ ok: t.ok }">
-        <div class="env-card-top">
-          <span class="env-card-dot"></span>
-          <span class="env-card-name">{{ t.label }}</span>
-          <span class="env-card-ver">{{ t.ok ? t.version : '未就绪' }}</span>
-        </div>
-        <div class="env-card-path" :title="t.path || t.error">{{ t.ok ? t.path : t.error }}</div>
-      </div>
+    <!-- 分类 tab -->
+    <div class="env-tabs">
+      <button
+        v-for="t in TABS"
+        :key="t.key"
+        class="env-tab"
+        :class="{ on: activeTab === t.key }"
+        @click="activeTab = t.key"
+      >
+        <span
+          v-if="t.tool"
+          class="env-tab-dot"
+          :class="{ ok: currentTool?.ok, bad: currentTool && !currentTool.ok }"
+        ></span>
+        {{ t.label }}
+      </button>
     </div>
 
-    <!-- 表单 -->
-    <div class="env-form">
-      <div class="env-field">
-        <label class="env-label">JAVA_HOME（JDK 根目录）</label>
-        <div class="env-input-row">
-          <el-input v-model="form.javaHome" size="default" placeholder="如 C:\Program Files\Java\jdk-17" />
-          <button class="env-pick" @click="pick('javaHome', true)">浏览</button>
+    <div class="env-body">
+      <!-- 当前工具状态卡片（通用 tab 无对应工具） -->
+      <div v-if="currentTool" class="env-card" :class="{ ok: currentTool.ok }">
+        <div class="env-card-top">
+          <span class="env-card-dot"></span>
+          <span class="env-card-name">{{ currentTool.label }}</span>
+          <span class="env-card-ver">{{ currentTool.ok ? currentTool.version : '未就绪' }}</span>
         </div>
-        <p class="env-tip">目录下的 bin/java 会被加入 PATH；运行 Java 主类时用它。</p>
-      </div>
-
-      <div class="env-field">
-        <label class="env-label">Maven 根目录（M2_HOME）</label>
-        <div class="env-input-row">
-          <el-input v-model="form.mavenHome" size="default" placeholder="如 D:\apache-maven-3.9.6" />
-          <button class="env-pick" @click="pick('mavenHome', true)">浏览</button>
-        </div>
-        <p class="env-tip">目录下的 bin/mvn 会被加入 PATH。</p>
-      </div>
-
-      <div class="env-field">
-        <label class="env-label">Python 解释器</label>
-        <div class="env-input-row">
-          <el-input v-model="form.pythonPath" size="default" placeholder="如 C:\Python311\python.exe（留空用 PATH 里的 python）" />
-          <button class="env-pick" @click="pick('pythonPath', false)">浏览</button>
-        </div>
-        <div class="env-inline">
-          <button class="env-btn sm" :disabled="!!installing" @click="installDebugpy">
-            <el-icon v-if="installing === 'debugpy'" :size="12" class="spin"><Loading /></el-icon>
-            <el-icon v-else :size="12"><Download /></el-icon>安装 debugpy（Python 断点依赖）
-          </button>
-          <span class="env-inline-note">{{ debugpyNote }}</span>
+        <div class="env-card-path" :title="currentTool.ok ? currentTool.path : currentTool.error">
+          {{ currentTool.ok ? currentTool.path : currentTool.error }}
         </div>
       </div>
 
-      <div class="env-field">
-        <label class="env-label">Node 可执行文件</label>
-        <div class="env-input-row">
-          <el-input v-model="form.nodePath" size="default" placeholder="留空用 PATH 里的 node" />
-          <button class="env-pick" @click="pick('nodePath', false)">浏览</button>
+      <!-- ===== Java ===== -->
+      <template v-if="activeTab === 'java'">
+        <div class="env-field">
+          <label class="env-label">JAVA_HOME（JDK 根目录）</label>
+          <div class="env-input-row">
+            <el-input v-model="form.javaHome" size="default" placeholder="如 C:\Program Files\Java\jdk-17" />
+            <button class="env-pick" @click="pick('javaHome', true)">浏览</button>
+          </div>
+          <p class="env-tip">目录下的 bin/java 会被加入 PATH；运行 Java 主类、编译 classpath 都用它。</p>
         </div>
-        <p class="env-tip">Node 断点用内置 inspector，不需要额外依赖。</p>
-      </div>
-
-      <div class="env-field">
-        <label class="env-label">Git 可执行文件</label>
-        <div class="env-input-row">
-          <el-input v-model="form.gitPath" size="default" placeholder="留空用 PATH 里的 git" />
-          <button class="env-pick" @click="pick('gitPath', false)">浏览</button>
+        <div class="env-field">
+          <label class="env-label">JAVA_OPTS</label>
+          <el-input v-model="form.javaOpts" size="default" placeholder="如 -Xmx512m -Dfile.encoding=UTF-8" />
+          <p class="env-tip">运行 Java 主类时附加的 JVM 参数。</p>
         </div>
-      </div>
+      </template>
 
-      <el-divider content-position="left" class="env-divider">运行参数</el-divider>
+      <!-- ===== Maven ===== -->
+      <template v-else-if="activeTab === 'maven'">
+        <div class="env-field">
+          <label class="env-label">Maven 根目录（M2_HOME）</label>
+          <div class="env-input-row">
+            <el-input v-model="form.mavenHome" size="default" placeholder="如 D:\apache-maven-3.9.6" />
+            <button class="env-pick" @click="pick('mavenHome', true)">浏览</button>
+          </div>
+          <p class="env-tip">目录下的 bin/mvn 会被加入 PATH；Maven 运行配置直接调用它。</p>
+        </div>
+        <div class="env-field">
+          <label class="env-label">MAVEN_OPTS</label>
+          <el-input v-model="form.mavenOpts" size="default" placeholder="如 -DskipTests -o" />
+          <p class="env-tip">每次执行 Maven goal 时附加的参数。</p>
+        </div>
+      </template>
 
-      <div class="env-grid">
+      <!-- ===== Python ===== -->
+      <template v-else-if="activeTab === 'python'">
+        <div class="env-field">
+          <label class="env-label">Python 解释器</label>
+          <div class="env-input-row">
+            <el-input v-model="form.pythonPath" size="default" placeholder="如 C:\Python311\python.exe（留空用 PATH 里的 python）" />
+            <button class="env-pick" @click="pick('pythonPath', false)">浏览</button>
+          </div>
+          <p class="env-tip">运行 / 调试 Python 脚本使用的解释器。</p>
+        </div>
+        <div class="env-field">
+          <label class="env-label">pip 镜像源</label>
+          <el-input v-model="form.pipIndexUrl" size="default" placeholder="如 https://pypi.tuna.tsinghua.edu.cn/simple" />
+          <p class="env-tip">安装 debugpy 等依赖时使用；受限网络建议填国内镜像。</p>
+        </div>
+        <div class="env-field">
+          <label class="env-label">断点调试依赖</label>
+          <div class="env-inline">
+            <button class="env-btn sm" :disabled="!!installing" @click="installDebugpy">
+              <el-icon v-if="installing === 'debugpy'" :size="12" class="spin"><Loading /></el-icon>
+              <el-icon v-else :size="12"><Download /></el-icon>安装 debugpy
+            </button>
+            <span class="env-inline-note">{{ debugpyNote }}</span>
+          </div>
+          <p class="env-tip">Python 断点基于 DAP，需要 debugpy（装在 Python 环境里，不占应用体积）。</p>
+        </div>
+      </template>
+
+      <!-- ===== Node ===== -->
+      <template v-else-if="activeTab === 'node'">
+        <div class="env-field">
+          <label class="env-label">Node 可执行文件</label>
+          <div class="env-input-row">
+            <el-input v-model="form.nodePath" size="default" placeholder="留空用 PATH 里的 node" />
+            <button class="env-pick" @click="pick('nodePath', false)">浏览</button>
+          </div>
+          <p class="env-tip">Node 断点用内置 inspector（--inspect-brk），不需要额外依赖。</p>
+        </div>
+      </template>
+
+      <!-- ===== Git ===== -->
+      <template v-else-if="activeTab === 'git'">
+        <div class="env-field">
+          <label class="env-label">Git 可执行文件</label>
+          <div class="env-input-row">
+            <el-input v-model="form.gitPath" size="default" placeholder="留空用 PATH 里的 git" />
+            <button class="env-pick" @click="pick('gitPath', false)">浏览</button>
+          </div>
+          <p class="env-tip">代码模式左栏「源代码管理」与 git 相关工具使用。</p>
+        </div>
+      </template>
+
+      <!-- ===== 通用 ===== -->
+      <template v-else>
         <div class="env-field">
           <label class="env-label">终端默认 Shell</label>
           <el-select v-model="form.defaultShell" size="default" class="env-select">
@@ -93,25 +145,13 @@
             <el-option label="CMD" value="cmd" />
             <el-option label="Bash" value="bash" />
           </el-select>
+          <p class="env-tip">代码模式底部控制台新建会话时使用的 shell。</p>
         </div>
         <div class="env-field">
-          <label class="env-label">JAVA_OPTS</label>
-          <el-input v-model="form.javaOpts" size="default" placeholder="如 -Xmx512m" />
+          <label class="env-label">附加环境变量（每行一条 KEY=VALUE，注入所有终端与运行进程）</label>
+          <el-input v-model="extraEnvText" type="textarea" :rows="4" placeholder="GRADLE_USER_HOME=C:\.gradle&#10;NODE_ENV=development" />
         </div>
-        <div class="env-field">
-          <label class="env-label">MAVEN_OPTS</label>
-          <el-input v-model="form.mavenOpts" size="default" placeholder="如 -DskipTests" />
-        </div>
-        <div class="env-field">
-          <label class="env-label">pip 镜像源</label>
-          <el-input v-model="form.pipIndexUrl" size="default" placeholder="如 https://pypi.tuna.tsinghua.edu.cn/simple" />
-        </div>
-      </div>
-
-      <div class="env-field">
-        <label class="env-label">附加环境变量（每行一条 KEY=VALUE）</label>
-        <el-input v-model="extraEnvText" type="textarea" :rows="3" placeholder="GRADLE_USER_HOME=C:\.gradle" />
-      </div>
+      </template>
     </div>
 
     <!-- 安装日志 -->
@@ -123,13 +163,26 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted } from 'vue';
+import { ref, reactive, computed, onMounted } from 'vue';
 import { ElMessage } from 'element-plus';
 import { Loading, MagicStick, Select, RefreshLeft, Download } from '@element-plus/icons-vue';
 import { api } from '../api/client';
 import type { DevEnvConfig } from '../types/dev-env';
 
 interface ToolStatus { id: string; label: string; path: string; version: string; ok: boolean; error: string }
+
+type TabKey = 'java' | 'maven' | 'python' | 'node' | 'git' | 'general';
+
+const TABS: Array<{ key: TabKey; label: string; tool?: string }> = [
+  { key: 'java', label: 'Java', tool: 'java' },
+  { key: 'maven', label: 'Maven', tool: 'maven' },
+  { key: 'python', label: 'Python', tool: 'python' },
+  { key: 'node', label: 'Node', tool: 'node' },
+  { key: 'git', label: 'Git', tool: 'git' },
+  { key: 'general', label: '通用' },
+];
+
+const activeTab = ref<TabKey>('java');
 
 const form = reactive<DevEnvConfig>({
   javaHome: '', mavenHome: '', pythonPath: '', nodePath: '', gitPath: '',
@@ -142,6 +195,12 @@ const saving = ref(false);
 const installing = ref('');
 const installLog = ref('');
 const debugpyNote = ref('');
+
+const currentTool = computed<ToolStatus | null>(() => {
+  const tab = TABS.find((t) => t.key === activeTab.value);
+  if (!tab?.tool) return null;
+  return tools.value.find((t) => t.id === tab.tool) || null;
+});
 
 function parseExtraEnv(): Record<string, string> {
   const out: Record<string, string> = {};
@@ -238,7 +297,7 @@ onMounted(async () => {
 </script>
 
 <style scoped>
-.env { display: flex; flex-direction: column; gap: 16px; }
+.env { display: flex; flex-direction: column; gap: 14px; }
 
 .env-head { display: flex; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
 .env-title { margin: 0 0 4px; font-size: 15px; font-weight: 700; color: var(--color-text, #1a1a1a); }
@@ -259,15 +318,44 @@ onMounted(async () => {
 .spin { animation: env-spin 0.9s linear infinite; }
 @keyframes env-spin { to { transform: rotate(360deg); } }
 
-.env-status { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 8px; }
+/* ===== 分类 tab ===== */
+.env-tabs {
+  display: flex; align-items: center; gap: 4px; flex-wrap: wrap;
+  padding: 3px; border-radius: 10px;
+  background: var(--el-fill-color-lighter, #f6f4ef);
+  border: 1px solid var(--glass-border, #e7e4dc);
+}
+.env-tab {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 28px; padding: 0 14px; font-size: 12px; font-family: inherit;
+  border: none; border-radius: 8px; background: transparent;
+  color: var(--color-text-secondary, #6b6b66); cursor: pointer;
+  transition: all 0.15s ease;
+}
+.env-tab:hover { color: var(--color-text, #1a1a1a); }
+.env-tab.on {
+  background: var(--color-surface, #fff);
+  color: var(--color-primary, #c2410c); font-weight: 600;
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.08);
+}
+.env-tab-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--color-text-tertiary, #9c9b94); flex-shrink: 0; }
+.env-tab-dot.ok { background: var(--color-success, #2f6b4f); }
+.env-tab-dot.bad { background: var(--el-color-danger); }
+
+.env-body { display: flex; flex-direction: column; gap: 14px; }
+
+/* ===== 状态卡片 ===== */
 .env-card {
-  padding: 9px 11px; border-radius: 10px;
+  padding: 10px 12px; border-radius: 10px;
   border: 1px solid var(--glass-border, #e7e4dc);
   background: var(--color-surface, #fff);
 }
 .env-card-top { display: flex; align-items: center; gap: 6px; }
 .env-card-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--color-text-tertiary, #9c9b94); flex-shrink: 0; }
-.env-card.ok .env-card-dot { background: var(--color-success, #2f6b4f); box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-success, #2f6b4f) 18%, transparent); }
+.env-card.ok .env-card-dot {
+  background: var(--color-success, #2f6b4f);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-success, #2f6b4f) 18%, transparent);
+}
 .env-card-name { font-size: 12.5px; font-weight: 600; color: var(--color-text, #1a1a1a); }
 .env-card-ver { margin-left: auto; font-size: 11px; color: var(--color-text-tertiary, #9c9b94); }
 .env-card-path {
@@ -275,7 +363,7 @@ onMounted(async () => {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 
-.env-form { display: flex; flex-direction: column; gap: 14px; }
+/* ===== 表单 ===== */
 .env-field { display: flex; flex-direction: column; gap: 5px; }
 .env-label { font-size: 12px; font-weight: 600; color: var(--color-text, #1a1a1a); }
 .env-input-row { display: flex; gap: 6px; }
@@ -289,10 +377,9 @@ onMounted(async () => {
 .env-tip { margin: 0; font-size: 11px; color: var(--color-text-tertiary, #9c9b94); }
 .env-inline { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .env-inline-note { font-size: 11px; color: var(--color-text-tertiary, #9c9b94); }
-.env-divider { margin: 4px 0; }
-.env-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
 .env-select { width: 100%; }
 
+/* ===== 安装日志 ===== */
 .env-log { border: 1px solid var(--glass-border, #e7e4dc); border-radius: 10px; overflow: hidden; }
 .env-log-head {
   display: flex; align-items: center;

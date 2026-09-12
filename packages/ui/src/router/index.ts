@@ -4,6 +4,7 @@ import { useLicenseStore } from '../stores/license';
 import { usePluginStore } from '../stores/plugin';
 import { resolvePluginComponent } from '../plugin-component-registry';
 import { isElectron } from '../api/client';
+import { isCodeModeActive } from '../stores/code';
 
 const routes: RouteRecordRaw[] = [
   { path: '/', redirect: '/chat' },
@@ -190,6 +191,15 @@ router.beforeEach(async (to) => {
     if (!licenseStore.verified) {
       return { path: '/license' };
     }
+  }
+  // 代码模式记忆：停留在代码模式时去了别的页面，再回「任务」应恢复代码工作台。
+  // 只有代码模式里的「返回任务」按钮（先清标记再跳 /chat）才能回到普通聊天布局。
+  if (
+    to.path !== '/code' &&
+    (to.path === '/chat' || to.path.startsWith('/chat/')) &&
+    isCodeModeActive()
+  ) {
+    return { path: '/code' };
   }
 });
 

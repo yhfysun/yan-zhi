@@ -23,11 +23,6 @@
       </el-button>
     </el-tooltip>
     <div class="chat-topbar-actions">
-      <el-tooltip content="文件面板" placement="bottom">
-        <el-button size="small" circle :type="sideTab === 'file' ? 'primary' : ''" @click="sideTab = sideTab === 'file' ? 'chat' : 'file'" aria-label="切换文件面板">
-          <el-icon><Files /></el-icon>
-        </el-button>
-      </el-tooltip>
       <el-tooltip content="上下文栏" placement="bottom">
         <el-button size="small" circle :type="contextSidebarOpen ? 'primary' : ''" @click="toggleContextSidebar" aria-label="切换上下文栏">
           <el-icon><Grid /></el-icon>
@@ -36,7 +31,7 @@
 
       <el-tooltip content="代码模式（IDE 工作台）" placement="bottom">
         <el-button size="small" circle class="code-mode-btn" @click="goCodeMode" aria-label="进入代码模式">
-          <el-icon><Files /></el-icon>
+          <el-icon :size="16"><Code /></el-icon>
         </el-button>
       </el-tooltip>
       <el-dropdown trigger="click">
@@ -85,7 +80,8 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import { useRouter } from 'vue-router';
-import { ArrowDown, Cpu, Expand, Files, FolderOpened, Fold, Grid, Monitor, Operation, EditPen, SwitchButton, User } from '@element-plus/icons-vue';
+import { Code } from 'lucide-vue-next';
+import { ArrowDown, Cpu, Expand, FolderOpened, Fold, Grid, Monitor, Operation, EditPen, SwitchButton, User } from '@element-plus/icons-vue';
 import { useChat } from '../../composables/chat/useChat';
 import { useSettingsStore } from '../../stores/settings';
 import AppMenu from '../AppMenu.vue';
@@ -96,7 +92,7 @@ const router = useRouter();
 const {
   drawerOpen, currentConv, store, isMobile, authStore,
   modelGroups, selectedModelId, onModelChange, contextSidebarOpen, toggleContextSidebar,
-  sideTab, startNewChat,
+  startNewChat,
 } = useChat();
 
 const settingsStore = useSettingsStore();

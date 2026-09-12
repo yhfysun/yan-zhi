@@ -63,7 +63,7 @@
 import { ref, computed, onMounted } from 'vue';
 import { useRouter } from 'vue-router';
 import { Document, FolderOpened, ArrowDown, ArrowRight, ChatDotRound, Setting } from '@element-plus/icons-vue';
-import { useCodeStore } from '../stores/code';
+import { useCodeStore, setCodeModeActive } from '../stores/code';
 import { useChatStore } from '../stores/chat';
 import { useResizable } from '../composables/useResizable';
 import { openSettingsDrawer } from '../composables/useSettingsDrawer';
@@ -103,6 +103,8 @@ function toggleChat() {
 }
 
 function backToChat() {
+  // 显式退出代码模式：清掉记忆标记，之后回「任务」就是普通聊天布局
+  setCodeModeActive(false);
   const id = chatStore.currentConvId;
   router.push(id ? `/chat/${id}` : '/chat');
 }
@@ -117,6 +119,8 @@ const envTitle = computed(() =>
 );
 
 onMounted(async () => {
+  // 记住代码模式：去别的页面再回「任务」时恢复代码工作台（router guard 消费该标记）
+  setCodeModeActive(true);
   if (!code.projectDir) {
     // 顶栏已通过 store 初始化兜底到 settings.workspaceDir
   }
