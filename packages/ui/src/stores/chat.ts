@@ -1,4 +1,4 @@
-﻿// 聊天 store
+// 聊天 store
 import { defineStore } from 'pinia';
 import { ref, computed, nextTick } from 'vue';
 import type { Conversation, Message, Platform, Model, DeltaToolCall, InlineDataView } from '@yan-zhi/shared';
@@ -277,6 +277,20 @@ export const useChatStore = defineStore('chat', () => {
   function closeAllPreviewTabs() {
     previewTabs.value = [];
     activeTabId.value = null;
+  }
+  /** 关闭指定 tab 左侧的所有 tab；若激活项被关闭则激活锚点 tab */
+  function closePreviewTabsLeft(id: string) {
+    const idx = previewTabs.value.findIndex((t) => t.id === id);
+    if (idx <= 0) return;
+    previewTabs.value.splice(0, idx);
+    if (!previewTabs.value.some((t) => t.id === activeTabId.value)) activeTabId.value = id;
+  }
+  /** 关闭指定 tab 右侧的所有 tab；若激活项被关闭则激活锚点 tab */
+  function closePreviewTabsRight(id: string) {
+    const idx = previewTabs.value.findIndex((t) => t.id === id);
+    if (idx < 0 || idx === previewTabs.value.length - 1) return;
+    previewTabs.value.splice(idx + 1);
+    if (!previewTabs.value.some((t) => t.id === activeTabId.value)) activeTabId.value = id;
   }
 
   // ===== 兼容层：旧三态字段改为派生只读（迁移期读取点不改可跑通）=====
@@ -1600,7 +1614,7 @@ export const useChatStore = defineStore('chat', () => {
     browserSteps, rightPanelOpen, thinkingMode, planMode, answerOnly,
     showFilePopup, previewingFile, rightPanelTab, currentBrowserUrl, skipNextRecordVisit,
     previewTabs, activeTabId, activeTab,
-    openTab, activatePreviewTab, closePreviewTab, closeAllPreviewTabs,
+    openTab, activatePreviewTab, closePreviewTab, closeAllPreviewTabs, closePreviewTabsLeft, closePreviewTabsRight,
     pendingQuestion, pendingConfirmation, pendingPlatformConfig, submitPendingQuestion,
     submitPendingConfirmation, skipPendingConfirmation, cancelPendingConfirmation,
     submitPlatformConfig, cancelPlatformConfig,

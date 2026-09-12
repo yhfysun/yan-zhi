@@ -25,6 +25,8 @@ export interface FsAdapter {
   /** 以 base64 写入二进制文件（用于上传图片/PDF/Office 文档的原始字节落盘） */
   writeFileBase64(path: string, b64: string): Promise<void>;
   exists(path: string): Promise<boolean>;
+  /** 文件元信息（可选）：预览面板展示大小/修改时间；未实现端（如 Web OPFS）可省略 */
+  stat?(path: string): Promise<{ size: number; mtimeMs: number; isDir: boolean }>;
   mkdir(path: string): Promise<void>;
   remove(path: string): Promise<void>;
   readDir(path: string): Promise<string[]>;

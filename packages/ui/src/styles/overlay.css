@@ -100,6 +100,15 @@
   margin-left: 8px;
 }
 
+/* ===== 紧凑表单弹窗：高度随内容自适应（默认规则强制 80vh，小表单会大量留白） ===== */
+.compact-dialog .el-dialog {
+  height: auto;
+  max-height: min(80vh, calc(100dvh - 32px));
+}
+.compact-dialog .el-dialog__body {
+  padding-top: 20px;
+}
+
 /* ===== MessageBox ===== */
 .el-message-box {
   border-radius: var(--overlay-radius);

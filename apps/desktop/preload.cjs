@@ -24,6 +24,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     writeFile: (p, content) => ipcRenderer.invoke('fs:writeFile', p, content),
     writeFileBase64: (p, b64) => ipcRenderer.invoke('fs:writeFileBase64', p, b64),
     exists: (p) => ipcRenderer.invoke('fs:exists', p),
+    stat: (p) => ipcRenderer.invoke('fs:stat', p),
     homeDir: () => ipcRenderer.invoke('fs:homeDir'),
     mkdir: (p) => ipcRenderer.invoke('fs:mkdir', p),
     remove: (p) => ipcRenderer.invoke('fs:remove', p),
@@ -67,6 +68,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     exec: (command, args, options) => ipcRenderer.invoke('shell:exec', command, args, options),
     openPath: (p) => ipcRenderer.invoke('shell:openPath', p),
     openExternal: (url) => ipcRenderer.invoke('shell:openExternal', url),
+    showItemInFolder: (p) => ipcRenderer.invoke('shell:showItemInFolder', p),
   },
 
 

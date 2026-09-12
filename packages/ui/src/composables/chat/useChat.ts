@@ -1102,15 +1102,33 @@ function createChat() {
     showSpaceEdit.value = true;
   }
 
+  /** 新建空间：复用空间编辑对话框，id 为空表示创建模式 */
+  function openSpaceCreate() {
+    spaceEditForm.value = { id: '', name: '', dirPath: '', description: '' };
+    showSpaceEdit.value = true;
+  }
+
   async function saveSpaceEdit() {
     if (!spaceEditForm.value.name.trim()) { ElMessage.warning('名称不能为空'); return; }
-    await spaceStore.updateSpace(spaceEditForm.value.id, {
+    const payload = {
       name: spaceEditForm.value.name.trim(),
       dirPath: spaceEditForm.value.dirPath.trim() || undefined,
       description: spaceEditForm.value.description.trim() || undefined,
-    });
+    };
+    if (!spaceEditForm.value.id) {
+      try {
+        const id = await spaceStore.createSpace(payload);
+        spaceStore.selectSpace(id);
+        ElMessage.success(`空间「${payload.name}」已创建`);
+      } catch (e: any) {
+        ElMessage.error(e?.message || '创建空间失败');
+        return;
+      }
+    } else {
+      await spaceStore.updateSpace(spaceEditForm.value.id, payload);
+      ElMessage.success('空间已更新');
+    }
     showSpaceEdit.value = false;
-    ElMessage.success('空间已更新');
   }
 
   async function deleteSpaceConfirm(space: any) {
@@ -2232,7 +2250,23 @@ function createChat() {
   function openConvMenu(e: MouseEvent, conv: Conversation) {
     ctxMenu.visible = true; ctxMenu.x = e.clientX; ctxMenu.y = e.clientY; ctxMenu.conv = conv;
   }
-  function closeCtxMenu() { ctxMenu.visible = false; closeSpaceMenu(); }
+  // ========== 会话树空白区右键菜单（新建任务/新建空间） ==========
+  const treeMenu = reactive({ visible: false, x: 0, y: 0 });
+  function openTreeMenu(e: MouseEvent) {
+    // 会话项与空间节点有各自的右键菜单，命中时不弹空白区菜单
+    if ((e.target as HTMLElement)?.closest('.conv-item, .tree-space .tree-node-head')) return;
+    treeMenu.visible = true; treeMenu.x = e.clientX; treeMenu.y = e.clientY;
+  }
+  function treeMenuNewTask() {
+    closeTreeMenu();
+    startNewChat();
+  }
+  function treeMenuNewSpace() {
+    closeTreeMenu();
+    openSpaceCreate();
+  }
+  function closeTreeMenu() { treeMenu.visible = false; }
+  function closeCtxMenu() { ctxMenu.visible = false; closeSpaceMenu(); closeTreeMenu(); }
   async function togglePin(conv: Conversation | null) {
     if (!conv) return;
     await store.updateConversation(conv.id, { pinned: !conv.pinned });
@@ -2349,7 +2383,8 @@ function createChat() {
     currentConv, filteredConversations, messageRounds, isToolErrorContent,
     chatModels, modelGroups, mountableServers, tokenCount, contextLimit, tokenPercent, tokenBarColor, canSend,
     openEditAgent, openCreateAgent, onAgentSaved, onAgentDeleted,
-    showSpaceEdit, spaceEditForm, spaceMenuTarget, selectSpace, createSpaceQuick, createSpaceFromDir, showSpaceDirPicker, openSpaceEdit, saveSpaceEdit, deleteSpaceConfirm, openSpaceMenu, closeSpaceMenu, moveConvToSpace,
+    showSpaceEdit, spaceEditForm, spaceMenuTarget, selectSpace, createSpaceQuick, createSpaceFromDir, showSpaceDirPicker, openSpaceEdit, openSpaceCreate, saveSpaceEdit, deleteSpaceConfirm, openSpaceMenu, closeSpaceMenu, moveConvToSpace,
+    treeMenu, openTreeMenu, treeMenuNewTask, treeMenuNewSpace,
     fileCategories, previewInPopup, showConvFileMenu, reclassifyConvFile,
     onAgentSwitch, onModelChange,
     parseConfigCard, displayAssistantContent, getEditPlatform, getEditReason, onConfigSaved,

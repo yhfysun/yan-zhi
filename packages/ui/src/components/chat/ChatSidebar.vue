@@ -22,7 +22,7 @@
         </div>
       </div>
 
-      <div class="conv-tree">
+      <div class="conv-tree" @contextmenu.prevent="openTreeMenu($event)">
         <!-- 对话根节点：未归类会话 -->
         <div class="tree-node tree-root">
           <div class="tree-node-head" @click="toggleRootCollapse">
@@ -153,13 +153,18 @@
     </li>
   </ul>
 
-  <el-dialog v-model="showSpaceEdit" title="编辑空间" width="460px" :close-on-click-modal="false">
-    <el-form label-width="80px">
+  <el-dialog v-model="showSpaceEdit" :title="spaceEditForm.id ? '编辑空间' : '新建空间'" width="460px" :close-on-click-modal="false" class="compact-dialog">
+    <el-form label-position="top" @submit.prevent>
       <el-form-item label="名称">
-        <el-input v-model="spaceEditForm.name" placeholder="空间名称" />
+        <el-input v-model="spaceEditForm.name" placeholder="空间名称" maxlength="50" />
       </el-form-item>
       <el-form-item label="目录">
-        <el-input v-model="spaceEditForm.dirPath" placeholder="绑定的本地目录（可选）" />
+        <div class="space-dir-row">
+          <el-input v-model="spaceEditForm.dirPath" placeholder="绑定本地目录（可选）" clearable />
+          <el-button @click="dirPickerVisible = true">
+            <el-icon><FolderOpened /></el-icon>&nbsp;浏览
+          </el-button>
+        </div>
       </el-form-item>
       <el-form-item label="描述">
         <el-input v-model="spaceEditForm.description" type="textarea" :rows="2" placeholder="空间描述（可选）" />
@@ -167,29 +172,46 @@
     </el-form>
     <template #footer>
       <el-button @click="showSpaceEdit = false">取消</el-button>
-      <el-button type="primary" @click="saveSpaceEdit">保存</el-button>
+      <el-button type="primary" @click="saveSpaceEdit">{{ spaceEditForm.id ? '保存' : '创建' }}</el-button>
     </template>
   </el-dialog>
+
+  <!-- 空间目录选择器（桌面端可用原生目录选择，Web 端为内置浏览器） -->
+  <WorkspaceDirDialog v-model="dirPickerVisible" :current-path="spaceEditForm.dirPath" @selected="onSpaceDirSelected" />
 
   <ul v-if="spaceMenuTarget" class="ctx-menu" :style="{ top: spaceMenuTarget.y + 'px', left: spaceMenuTarget.x + 'px' }" @click.stop>
     <li @click="openSpaceEdit(spaceMenuTarget.space); closeSpaceMenu()">
       <el-icon><EditPen /></el-icon>编辑空间
+    </li>
+    <li @click="treeMenuNewSpace(); closeSpaceMenu()">
+      <el-icon><Plus /></el-icon>新建空间
     </li>
     <li class="danger" @click="deleteSpaceConfirm(spaceMenuTarget.space); closeSpaceMenu()">
       <el-icon><Delete /></el-icon>删除空间
     </li>
   </ul>
 
+  <!-- 会话树空白区右键菜单 -->
+  <ul v-if="treeMenu.visible" class="ctx-menu" :style="{ top: treeMenu.y + 'px', left: treeMenu.x + 'px' }">
+    <li @click="treeMenuNewTask">
+      <el-icon><ChatDotRound /></el-icon>新建任务
+    </li>
+    <li @click="treeMenuNewSpace">
+      <el-icon><FolderOpened /></el-icon>新建空间
+    </li>
+  </ul>
+
 </template>
 
 <script setup lang="ts">
-import { onMounted, onBeforeUnmount } from 'vue';
+import { ref, onMounted, onBeforeUnmount } from 'vue';
 import {
   Plus, ChatDotRound, Star, EditPen, Delete, FolderOpened, ArrowRight, Close, Search, CaretRight, Timer,
 } from '@element-plus/icons-vue';
 import { useChat } from '../../composables/chat/useChat';
 import ScheduledTaskDialog from './ScheduledTaskDialog.vue';
 import ChatFileTab from './ChatFileTab.vue';
+import WorkspaceDirDialog from '../WorkspaceDirDialog.vue';
 
 const {
   sideTab, search, store, batchMode, toggleConvSelect,
@@ -199,7 +221,19 @@ const {
   spaceStore, openSpaceMenu, openSpaceEdit, showSpaceEdit, spaceEditForm,
   saveSpaceEdit, deleteSpaceConfirm, spaceMenuTarget, closeSpaceMenu, moveConvToSpace, ctxMenu,
   togglePin, deleteConv, closeCtxMenu,
+  treeMenu, openTreeMenu, treeMenuNewTask, treeMenuNewSpace,
 } = useChat();
+
+// ===== 空间目录选择：浏览本地目录，选完自动回填路径，名称留空时以目录名带出 =====
+const dirPickerVisible = ref(false);
+function onSpaceDirSelected(path: string) {
+  spaceEditForm.value.dirPath = path;
+  if (!spaceEditForm.value.name.trim() && path) {
+    const sep = path.includes('\\') ? '\\' : '/';
+    const base = path.split(sep).filter(Boolean).pop() || '';
+    if (base) spaceEditForm.value.name = base.replace(/[:.]$/, '');
+  }
+}
 
 function onDocMouseDown(e: MouseEvent) {
   if ((e.target as HTMLElement)?.closest('.ctx-menu')) return;

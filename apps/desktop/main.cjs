@@ -2532,6 +2532,12 @@ ipcMain.handle('fs:writeFileBase64', (e, p, b64) => fsp.writeFile(p, Buffer.from
 
 ipcMain.handle('fs:exists', (e, p) => fs.existsSync(p));
 
+// 文件元信息（预览面板大小/修改时间展示用）
+ipcMain.handle('fs:stat', async (e, p) => {
+  const st = await fsp.stat(p);
+  return { size: st.size, mtimeMs: st.mtimeMs, isDir: st.isDirectory() };
+});
+
 // 用户主目录（SFTP 本地栏的起始目录）
 ipcMain.handle('fs:homeDir', () => app.getPath('home'));
 
@@ -2625,6 +2631,12 @@ ipcMain.handle('shell:exec', (e, command, args, options) => {
 ipcMain.handle('shell:openPath', (_e, p) => {
   if (!p) return;
   try { shell.openPath(p); } catch {}
+});
+
+// 在系统文件管理器中定位文件（Explorer/Finder 高亮选中）
+ipcMain.handle('shell:showItemInFolder', (_e, p) => {
+  if (!p) return;
+  try { shell.showItemInFolder(p); } catch {}
 });
 
 // 用系统默认浏览器打开外链（http/https），不在应用窗口内导航离开

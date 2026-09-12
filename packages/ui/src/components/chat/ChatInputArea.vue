@@ -12,7 +12,7 @@
           <template #dropdown>
             <el-dropdown-menu>
               <el-dropdown-item
-                v-for="ag in agentStore.agents"
+                v-for="ag in agentStore.chatAgents"
                 :key="ag.id"
                 :command="ag.id"
                 :class="{ 'is-active': ag.id === agentStore.selectedId }"
@@ -88,7 +88,7 @@
             </template>
             <template v-else-if="slashMode === 'agent'">
               <div
-                v-for="(ag, i) in agentStore.agents"
+                v-for="(ag, i) in agentStore.chatAgents"
                 :key="ag.id"
                 class="cmd-menu-item"
                 :class="{ active: i === slashIndex }"
@@ -208,7 +208,7 @@
                 <div v-if="hoverSub" class="plus-menu plus-menu-sub" :style="{ top: subTop + 'px' }" @mouseenter="cancelCloseSub">
                   <template v-if="hoverSub === 'agents'">
                     <div
-                      v-for="ag in agentStore.agents"
+                      v-for="ag in agentStore.chatAgents"
                       :key="ag.id"
                       class="plus-menu-item"
                       :class="{ 'is-active': ag.id === agentStore.selectedId }"
@@ -293,7 +293,7 @@
             </template>
             <div class="pop-select-list">
               <div
-                v-for="ag in agentStore.agents"
+                v-for="ag in agentStore.chatAgents"
                 :key="ag.id"
                 class="pop-select-item"
                 :class="{ active: ag.id === agentStore.selectedId }"
@@ -528,7 +528,7 @@ function flatModelOffset(g: { platformId: string }) {
 }
 
 function slashListLength(): number {
-  if (slashMode.value === 'agent') return agentStore.agents.length;
+  if (slashMode.value === 'agent') return agentStore.chatAgents.length;
   if (slashMode.value === 'model') return flatModels.value.length;
   return filteredCommands.value.length;
 }
@@ -557,7 +557,7 @@ function pickSlashModel(m: { id: string }) {
 
 function executeSlashActive() {
   if (slashMode.value === 'agent') {
-    const ag = agentStore.agents[slashIndex.value];
+    const ag = agentStore.chatAgents[slashIndex.value];
     if (ag) pickSlashAgent(ag);
   } else if (slashMode.value === 'model') {
     const m = flatModels.value[slashIndex.value];

@@ -46,8 +46,8 @@ router.post('/', (req: Request, res: Response) => {
   const id = b.id || uuid();
   const now = Date.now();
   db.prepare(
-    `INSERT INTO agent (id, user_id, name, description, avatar, system_prompt, temperature, max_tokens, top_p, frequency_penalty, presence_penalty, platform_id, model_id, workflow_json, inputs_schema_json, config_json, parent_agent_id, allow_sub_agent, is_default, type, builtin_tool_ids, custom_tool_ids, mcp_tool_mounts, skill_ids, sub_agent_ids, ontology_ids, is_public, version, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+    `INSERT INTO agent (id, user_id, name, description, avatar, system_prompt, temperature, max_tokens, top_p, frequency_penalty, presence_penalty, platform_id, model_id, workflow_json, inputs_schema_json, config_json, parent_agent_id, agent_kind, allow_sub_agent, is_default, type, builtin_tool_ids, custom_tool_ids, mcp_tool_mounts, skill_ids, sub_agent_ids, ontology_ids, is_public, version, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
   ).run(
     id, userId,
     String(b.name).trim(),
@@ -65,6 +65,7 @@ router.post('/', (req: Request, res: Response) => {
     b.inputsSchema ? JSON.stringify(b.inputsSchema) : null,
     b.config ? JSON.stringify(b.config) : null,
     b.parentAgentId || null,
+    b.agentKind === 'sub' ? 'sub' : 'main',
     b.allowSubAgent ? 1 : 0,
     b.isDefault ? 1 : 0,
     b.type || 'harness',
@@ -92,6 +93,8 @@ router.patch('/:id', (req: Request, res: Response) => {
   const strMap: Record<string, string> = {
     name: 'name', description: 'description', avatar: 'avatar', systemPrompt: 'system_prompt',
     platformId: 'platform_id', modelId: 'model_id', type: 'type', parentAgentId: 'parent_agent_id',
+    // 分类：main=主智能体（会话可选中）/ sub=子智能体（仅供其他智能体引用委派）
+    agentKind: 'agent_kind',
   };
   for (const [k, col] of Object.entries(strMap)) {
     if (b[k] !== undefined) { sets.push(`${col} = ?`); vals.push(b[k]); }

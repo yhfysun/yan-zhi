@@ -92,6 +92,8 @@
             </div>
           </div>
           <div class="agent-meta">
+            <el-tag v-if="agent.agentKind === 'sub'" size="small" type="warning">子智能体</el-tag>
+            <el-tag v-else size="small" type="success">主智能体</el-tag>
             <el-tag size="small" type="info">{{ agent.workflow.nodes.length }} 节点</el-tag>
             <el-tag size="small" type="info">{{ agent.workflow.edges.length }} 连线</el-tag>
             <span class="agent-time">{{ formatTime(agent.updatedAt) }}</span>

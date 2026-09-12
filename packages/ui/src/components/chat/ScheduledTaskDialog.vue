@@ -71,7 +71,7 @@
         </el-form-item>
         <el-form-item label="智能体">
           <el-select v-model="form.agentId" placeholder="不绑定则用默认智能体" clearable filterable @change="onAgentPick">
-            <el-option v-for="ag in agentStore.agents" :key="ag.id" :value="ag.id" :label="ag.name" />
+            <el-option v-for="ag in agentStore.chatAgents" :key="ag.id" :value="ag.id" :label="ag.name" />
           </el-select>
         </el-form-item>
         <el-form-item label="大模型">

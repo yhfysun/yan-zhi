@@ -8,6 +8,13 @@
             <el-form label-width="80px" label-position="left">
               <el-form-item label="名称"><el-input v-model="form.name" placeholder="智能体名称" /></el-form-item>
               <el-form-item label="描述"><el-input v-model="form.description" placeholder="简短描述" /></el-form-item>
+              <el-form-item label="分类">
+                <el-radio-group v-model="form.agentKind">
+                  <el-radio value="main">主智能体</el-radio>
+                  <el-radio value="sub">子智能体</el-radio>
+                </el-radio-group>
+                <div class="kind-hint">子智能体只能被其他智能体引用委派，不会出现在会话的智能体选择列表中</div>
+              </el-form-item>
               <el-form-item label="类型">
                 <div class="type-selector" :class="{ disabled: isEdit }">
                   <div class="type-card" :class="{ active: form.type === 'harness' }" @click="!isEdit && (form.type = 'harness')">
@@ -241,6 +248,7 @@ const builtinToolsLoaded = ref(false);
 
 const form = ref<any>({
   name: '', description: '', systemPrompt: '', modelId: '', type: 'harness',
+  agentKind: 'main',
   temperature: 0.7, maxTokens: 2048, topP: 1, frequencyPenalty: 0, presencePenalty: 0,
   reasoningEffort: '', maxReActSteps: 100,
   builtinToolIds: [], customToolIds: [], mcpToolMounts: [], skillIds: [], subAgentIds: [], ontologyIds: [],
@@ -394,6 +402,7 @@ watch(() => [props.modelValue, props.agent], () => {
     form.value = {
       name: a?.name || '', description: a?.description || '', systemPrompt: a?.systemPrompt || '',
       modelId: a?.modelId || '', type: a?.type || 'harness',
+      agentKind: a?.agentKind === 'sub' ? 'sub' : 'main',
       temperature: a?.temperature ?? 0.7, maxTokens: a?.maxTokens ?? 2048, topP: a?.topP ?? 1,
       frequencyPenalty: a?.frequencyPenalty ?? 0, presencePenalty: a?.presencePenalty ?? 0,
       reasoningEffort: (a?.config as any)?.reasoningEffort || '', maxReActSteps: (a?.config as any)?.maxReActSteps ?? 100,
@@ -437,6 +446,8 @@ async function handleSave() {
     name: form.value.name.trim(), description: form.value.description?.trim() || '',
     systemPrompt: form.value.systemPrompt || '', modelId: form.value.modelId || '',
     platformId: m?.platformId || '', type: form.value.type,
+    // 分类：main=主智能体（会话可选中）/ sub=子智能体（仅供其他智能体引用委派）
+    agentKind: form.value.agentKind === 'sub' ? 'sub' : 'main',
     temperature: form.value.temperature, maxTokens: form.value.maxTokens, topP: form.value.topP,
     frequencyPenalty: form.value.frequencyPenalty, presencePenalty: form.value.presencePenalty,
     config: { reasoningEffort: form.value.reasoningEffort || undefined, maxReActSteps: form.value.maxReActSteps },
@@ -493,6 +504,7 @@ async function handleDelete() {
 .publish-hint { font-size: 11px; color: var(--color-text-secondary); }
 
 .prompt-wrap { width: 100%; display: flex; flex-direction: column; }
+.kind-hint { margin-top: 4px; font-size: 12px; line-height: 1.5; color: var(--el-text-color-secondary); }
 .prompt-copy { align-self: flex-start; margin-top: 2px; }
 
 .type-selector { display: flex; gap: 8px; }

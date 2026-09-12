@@ -35,6 +35,8 @@ function rowToAgent(r: any): Agent {
     allowSubAgent: !!r.allow_sub_agent,
     isDefault: !!r.is_default,
     isBuiltin: !!r.is_builtin,
+    // 无该列的老库按 main 处理（子智能体仅由 seed/新建时显式标记）
+    agentKind: r.agent_kind === 'sub' ? 'sub' : 'main',
     isPublic: !!r.is_public,
     version: r.version,
     createdAt: r.created_at,
@@ -314,6 +316,17 @@ export const useAgentStore = defineStore('agent', () => {
     || agents.value[0]
   );
 
+  /**
+   * 会话可选中的智能体：过滤掉分类为 sub 的子智能体。
+   * 子智能体（如代码探索助手/高级程序助手/设计助手/前端助手）只能被其他智能体通过
+   * subAgentIds 引用委派（call_agent），不应出现在会话的智能体选择器里。
+   * 智能体管理页仍展示全部（agents），子智能体在那里可见可编辑。
+   */
+  const chatAgents = computed(() => agents.value.filter((a) => a.agentKind !== 'sub'));
+
+  /** 可作为子智能体被引用的智能体（子智能体只能被引用，不能再引用别人） */
+  const delegatableAgents = computed(() => agents.value.filter((a) => a.agentKind === 'sub'));
+
   function defaultAgentBase() {
     const def = agents.value.find((a) => a.isDefault);
     return {
@@ -395,6 +408,7 @@ export const useAgentStore = defineStore('agent', () => {
       subAgentIds: data.subAgentIds || [],
       ontologyIds: data.ontologyIds || [],
       isPublic: !!data.isPublic,
+      agentKind: data.agentKind === 'sub' ? 'sub' : 'main',
       workflow: data.workflow || EMPTY_WORKFLOW,
       config: data.config || defaults.config,
       allowSubAgent: !!data.allowSubAgent,
@@ -428,6 +442,7 @@ export const useAgentStore = defineStore('agent', () => {
     if (patch.isDefault !== undefined) body.isDefault = patch.isDefault;
     if (patch.isPublic !== undefined) body.isPublic = patch.isPublic;
     if (patch.allowSubAgent !== undefined) body.allowSubAgent = patch.allowSubAgent;
+    if (patch.agentKind !== undefined) body.agentKind = patch.agentKind === 'sub' ? 'sub' : 'main';
     if (Object.keys(body).length === 0) return;
     await api.patch(`/agents/${id}`, body);
     const idx = agents.value.findIndex((a) => a.id === id);
@@ -576,7 +591,7 @@ export const useAgentStore = defineStore('agent', () => {
 
   return {
     agents, current, running, runLogs,
-    selectedId, selectedAgent, selectAgent,
+    selectedId, selectedAgent, chatAgents, delegatableAgents, selectAgent,
     loadAgents, loadAgent, createAgent, createChatAgent, updateAgent, updateWorkflow, deleteAgent, resetAgent,
     publishAgent, unpublishAgent, installFromMarketplace,
     runAgent, addNode,

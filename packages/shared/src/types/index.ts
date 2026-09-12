@@ -246,6 +246,8 @@ export interface Agent {
   isDefault: boolean;
   /** 是否为内置智能体（harness 内置，如 pageAgent）。内置智能体不可删除、类型不可改。 */
   isBuiltin?: boolean;
+  /** 智能体分类：main=主智能体（可在会话中直接选中）/ sub=子智能体（仅供其他智能体通过 subAgentIds 引用委派，会话中不可选中） */
+  agentKind?: 'main' | 'sub';
   /** 是否发布到商城（is_public）。本地表冗余字段，发布时同步 upsert 到服务端 agent 表 */
   isPublic?: boolean;
   version: number;

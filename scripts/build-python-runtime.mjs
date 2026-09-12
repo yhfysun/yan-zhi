@@ -19,7 +19,7 @@
 //   node scripts/build-python-runtime.mjs --no-deps      # 只下载解释器，不装依赖（调试用）
 
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, rmSync, cpSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync, cpSync, readdirSync, statSync, readFileSync } from 'node:fs';
 import { writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -100,12 +100,25 @@ function pipInstall(pythonExe, deps) {
 function copyScripts() {
   rmSync(TOOLS_DIR, { recursive: true, force: true });
   mkdirSync(TOOLS_DIR, { recursive: true });
-  // 拷入 doyz/ security/ pdf_preview/ 等随包脚本目录
+  // 拷入 doyz/ security/ pdf_preview/ excel_preview/ 等随包脚本目录
   for (const entry of readdirSync(SRC_SCRIPTS)) {
     const from = path.join(SRC_SCRIPTS, entry);
     if (statSync(from).isDirectory()) {
       cpSync(from, path.join(TOOLS_DIR, entry), { recursive: true });
     }
+  }
+}
+
+// 依赖指纹文件：记录已预烤进 site-packages 的依赖清单。
+// 本地重包跳过 pip 的加速路径上，用它检测 DEPS 变化（如新增 xlrd）→ 自动增量补装，
+// 避免出现"本地打的包缺依赖、CI 打的包正常"的静默不一致。
+const DEPS_MARKER = path.join(RESOURCES, '.baked-deps.json');
+
+function readBakedDeps() {
+  try {
+    return JSON.parse(readFileSync(DEPS_MARKER, 'utf8'));
+  } catch {
+    return null;
   }
 }
 
@@ -120,6 +133,7 @@ const DEPS = [
   'beautifulsoup4==4.12.3',
   'dnspython==2.6.1',
   'PyMuPDF==1.24.10',
+  'xlrd==2.0.1',
 ];
 
 async function main() {
@@ -141,8 +155,18 @@ async function main() {
   // 改了 doyz/security/pdf 脚本后本地重包无需重下 Python 即可拿到新版。
   // 注意：若曾用 --no-deps 装过半截依赖，需 --force 强制重建。
   if (!force && havePython) {
-    console.log('检测到已有 python 运行时，跳过下载与依赖安装（用 --force 强制重建）');
+    console.log('检测到已有 python 运行时，跳过下载（用 --force 强制重建）');
+    // 依赖清单变化（如新增 xlrd）时增量补装，保证本地重包与 CI 产物一致
+    const baked = readBakedDeps();
+    const sig = JSON.stringify(DEPS);
+    if (baked?.deps !== sig) {
+      console.log('预烤依赖清单已变化（上次:', baked?.deps ? '有记录' : '无记录', '）→ 增量 pip install');
+      pipInstall(pythonExe, DEPS);
+    } else {
+      console.log('预烤依赖指纹一致，跳过 pip install');
+    }
     copyScripts();
+    writeFileSync(DEPS_MARKER, JSON.stringify({ deps: sig, at: new Date().toISOString() }, null, 2));
     console.log('完成（仅同步随包脚本）。');
     console.log('  python       →', PY_DIR);
     console.log('  python-tools →', TOOLS_DIR);

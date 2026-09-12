@@ -148,6 +148,8 @@ CREATE TABLE IF NOT EXISTS agent (
   inputs_schema_json TEXT,
   config_json TEXT,
   parent_agent_id TEXT,
+  -- 智能体分类：main=主智能体（可在会话中直接选中）/ sub=子智能体（仅供其他智能体通过 sub_agent_ids 引用委派）
+  agent_kind TEXT NOT NULL DEFAULT 'main',
   allow_sub_agent INTEGER NOT NULL DEFAULT 0,
   is_default INTEGER NOT NULL DEFAULT 0,
   version INTEGER NOT NULL DEFAULT 1,

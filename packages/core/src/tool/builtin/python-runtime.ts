@@ -8,6 +8,13 @@ import type { McpCallResult } from '../../mcp/client';
 import { getPlatformAdapter } from '../../platform/types';
 import { capToolOutput } from './output-cap';
 
+/** file:// URL → 本地路径（手工转换，避免 import 'url' 被 Vite 浏览器外部化后炸掉渲染进程 bundle） */
+function fileUrlToLocalPath(u: string): string {
+  const p = decodeURIComponent(u.replace(/^file:\/\//, ''));
+  // Windows 形如 /C:/x/y → C:/x/y
+  return /^\/[A-Za-z]:/.test(p) ? p.slice(1) : p;
+}
+
 /** 取打包的 Python 解释器路径（仅打包环境有效） */
 export function getBundledPythonPath(): string | null {
   try {
@@ -22,9 +29,9 @@ export function getBundledPythonPath(): string | null {
   }
 }
 
-/** 取随包分发的 python 脚本目录（doyz / security / pdf_preview 等）。
+/** 取随包分发的 python 脚本目录（doyz / security / pdf_preview / excel_preview 等）。
  *  prod: process.resourcesPath/python-tools（electron-builder 拷入）
- *  dev: 本文件同级的 python-scripts（packages/core/src/tool/builtin/python-scripts） */
+ *  dev: 编译产物同级（dist/tool/builtin/python-scripts），仓库源码未拷贝时回退 src 同级目录 */
 export function getPythonToolsDir(): string | null {
   try {
     const res = (process as unknown as { resourcesPath?: string }).resourcesPath;
@@ -32,8 +39,20 @@ export function getPythonToolsDir(): string | null {
       const prod = path.join(res, 'python-tools');
       if (fs.existsSync(prod)) return prod;
     }
-    const dev = path.join(__dirname, 'python-scripts');
-    if (fs.existsSync(dev)) return dev;
+    // ESM 下无 __dirname，用 import.meta.url 定位；CJS 产物回退 __dirname。
+    // 注意：此处不得静态 import 'node:url'，否则渲染进程 bundle 被 Vite 外部化直接抛错黑屏。
+    let here: string | null = null;
+    try {
+      here = path.dirname(fileUrlToLocalPath(import.meta.url));
+    } catch { /* import.meta 不可用（CJS） */ }
+    if (!here && typeof __dirname === 'string') here = __dirname;
+    if (here) {
+      const dev = path.join(here, 'python-scripts');
+      if (fs.existsSync(dev)) return dev;
+      // dist 运行（python-scripts 未拷入 dist）时回退仓库源码目录
+      const src = path.resolve(here, '../../src/tool/builtin/python-scripts');
+      if (fs.existsSync(src)) return src;
+    }
     return null;
   } catch {
     return null;
