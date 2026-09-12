@@ -15,6 +15,7 @@ import {
 } from './services/memory-service.js';
 import { loadSpaceMemoryForConversation, formatSpaceMemoryContext } from './services/space-memory.js';
 import { serverState } from './state.js';
+import { promises as fsp } from 'node:fs';
 
 export type TaskStatus = 'running' | 'completed' | 'failed' | 'aborted';
 
@@ -951,6 +952,19 @@ async function runReActLoop(task: LlmTask, params: {
  *  - 自定义工具（custom_ 前缀，服务端沙箱）→ 后端直接执行 runInSandbox
  *  - 内置工具（file/cmd/browser 等）→ 后端直接执行，刷新不中断
  *  - 未知工具 → 委托前端兜底 */
+/** 读文件文本用于修改快照；不存在/不可读返回 null（新文件场景），存在但超大返回 undefined（跳过快照防误回退）。 */
+const FILE_SNAPSHOT_MAX_BYTES = 1024 * 1024;
+async function readFileOrNull(p: string): Promise<string | null | undefined> {
+  try {
+    const stat = await fsp.stat(p);
+    if (!stat.isFile()) return undefined;
+    if (stat.size > FILE_SNAPSHOT_MAX_BYTES) return undefined;
+    return await fsp.readFile(p, 'utf-8');
+  } catch {
+    return null;
+  }
+}
+
 async function executeTool(
   task: LlmTask,
   registry: ReturnType<typeof getToolRegistry>,
@@ -959,8 +973,7 @@ async function executeTool(
   toolCallId: string,
   uiTools: Set<string>,
   depth: number = 0,
-): Promise<string> {
-  const isUiTool = uiTools.has(toolName);
+): Promise<string> {  const isUiTool = uiTools.has(toolName);
   const isMcp = toolName.startsWith('mcp_');
   const isCustom = toolName.startsWith('custom_');
   const isApi = toolName.startsWith('api_');
@@ -1090,8 +1103,22 @@ async function executeTool(
 
   // 内置工具 → 后端直接执行
   if (registry.has(toolName)) {
+    // 文件修改快照：file_write / file_edit 落盘前记下原内容，供前端 Diff 对比 / 应用 / 回退。
+    // 钩子放在 executeTool 统一出口，主循环与子智能体（call_agent）都覆盖。
+    const snapPath = (toolName === 'file_write' || toolName === 'file_edit') ? String(args?.path || '') : '';
+    const before = snapPath ? await readFileOrNull(snapPath) : null;
     const r = await registry.execute(toolName, args);
-    return typeof r === 'string' ? r : (r.content?.map((c: any) => c.text || '').join('') || JSON.stringify(r));
+    const text = typeof r === 'string' ? r : (r.content?.map((c: any) => c.text || '').join('') || JSON.stringify(r));
+    if (snapPath && before !== undefined && !text.startsWith('Error') && !text.startsWith('工具执行失败')) {
+      const after = await readFileOrNull(snapPath);
+      if (before !== after) {
+        try {
+          db.prepare('INSERT INTO file_change (id, user_id, conversation_id, task_id, path, before_content, after_content, tool, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+            .run('fc_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8), task.userId, task.conversationId, task.id, snapPath, before, after, toolName, 'pending', Date.now());
+        } catch { /* 快照失败不影响工具结果 */ }
+      }
+    }
+    return text;
   }
 
   // 未知工具 → 尝试前端兜底

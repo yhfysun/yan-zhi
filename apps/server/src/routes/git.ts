@@ -206,4 +206,55 @@ router.post('/createBranch', async (req: Request, res: Response) => {
   }
 });
 
+// ===== 合并 / 冲突解决 =====
+
+// GET /git/conflicts —— 未合并（冲突）文件清单
+router.get('/conflicts', async (req: Request, res: Response) => {
+  try {
+    res.json({ data: await gitService.conflicts(String(req.query.repo || '')) });
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message });
+  }
+});
+
+// GET /git/conflictVersions?repo=&path= —— 冲突文件 base/ours/theirs 三版本
+router.get('/conflictVersions', async (req: Request, res: Response) => {
+  try {
+    res.json({
+      data: await gitService.conflictVersions(String(req.query.repo || ''), String(req.query.path || '')),
+    });
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message });
+  }
+});
+
+// POST /git/merge —— 合并分支；冲突时 ok=false 并返回冲突清单
+router.post('/merge', async (req: Request, res: Response) => {
+  try {
+    res.json({ data: await gitService.merge(req.body.repo, req.body.branch) });
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message });
+  }
+});
+
+// POST /git/abortMerge —— 中止合并
+router.post('/abortMerge', async (req: Request, res: Response) => {
+  try {
+    await gitService.abortMerge(req.body.repo);
+    res.json({ data: { ok: true } });
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message });
+  }
+});
+
+// POST /git/resolve —— 冲突解决后标记（git add）
+router.post('/resolve', async (req: Request, res: Response) => {
+  try {
+    await gitService.resolveConflict(req.body.repo, req.body.file);
+    res.json({ data: { ok: true } });
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message });
+  }
+});
+
 export default router;

@@ -3,15 +3,19 @@
     <!-- 来源切换：项目文件 / 会话文件 -->
     <div class="exp-head">
       <div class="exp-src">
-        <button class="exp-src-btn" :class="{ on: source === 'project' }" @click="source = 'project'">项目文件</button>
-        <button class="exp-src-btn" :class="{ on: source === 'conv' }" @click="source = 'conv'">会话文件</button>
+        <button class="exp-src-btn" :class="{ on: source === 'project' }" title="项目文件" @click="source = 'project'">
+          <el-icon :size="14"><Files /></el-icon>
+        </button>
+        <button class="exp-src-btn" :class="{ on: source === 'conv' }" title="会话文件" @click="source = 'conv'">
+          <el-icon :size="14"><ChatRound /></el-icon>
+        </button>
       </div>
       <div class="exp-head-actions">
-        <el-tooltip content="新建文件" placement="bottom" :show-after="400">
-          <button class="exp-icon-btn" @click="startCreate(false)"><el-icon :size="13"><DocumentAdd /></el-icon></button>
+        <el-tooltip content="折叠所有目录" placement="bottom" :show-after="400">
+          <button class="exp-icon-btn" @click="collapseAll"><el-icon :size="13"><Fold /></el-icon></button>
         </el-tooltip>
-        <el-tooltip content="新建文件夹" placement="bottom" :show-after="400">
-          <button class="exp-icon-btn" @click="startCreate(true)"><el-icon :size="13"><FolderAdd /></el-icon></button>
+        <el-tooltip content="定位当前打开的文件" placement="bottom" :show-after="400">
+          <button class="exp-icon-btn" :class="{ off: !code.activePath }" :disabled="!code.activePath" @click="revealActiveFile"><el-icon :size="13"><Aim /></el-icon></button>
         </el-tooltip>
         <el-tooltip content="刷新" placement="bottom" :show-after="400">
           <button class="exp-icon-btn" :class="{ spin: treeLoading }" @click="reload"><el-icon :size="13"><Refresh /></el-icon></button>
@@ -31,11 +35,12 @@
       </div>
 
       <template v-else>
-        <div class="exp-root" :title="code.projectDir">
+        <button class="exp-root" :title="code.projectDir ? '点击切换项目目录' : '点击选择项目目录'" @click.stop="openProjectSwitcher">
           <el-icon :size="12"><FolderOpened /></el-icon>
           <span class="exp-root-name">{{ code.projectName }}</span>
           <span class="exp-root-path">{{ code.projectDir }}</span>
-        </div>
+          <el-icon :size="11" class="exp-root-caret"><ArrowDown /></el-icon>
+        </button>
 
         <el-input
           v-model="filterText"
@@ -62,7 +67,7 @@
           />
         </div>
 
-        <div class="exp-tree">
+        <div ref="treeRef" class="exp-tree" @contextmenu.prevent="onBgMenu($event)">
           <div
             v-for="row in rows"
             v-show="rowMatch(row)"
@@ -126,18 +131,34 @@
       <div v-if="!fileStore.files.length" class="exp-hint">当前会话还没有文件</div>
     </div>
 
-    <!-- 右键菜单 -->
+    <!-- 行右键菜单 -->
     <div
       v-if="menu"
       class="exp-menu"
       :style="{ left: menu.x + 'px', top: menu.y + 'px' }"
       @click.stop
     >
-      <button class="exp-menu-item" @click="menuOpen">打开</button>
+      <button v-if="menu.row.isDir" class="exp-menu-item" @click="menuSearchHere">在此文件夹中搜索</button>
+      <button class="exp-menu-item" @click="menuNewFile">新建文件</button>
+      <button class="exp-menu-item" @click="menuNewFolder">新建文件夹</button>
+      <button class="exp-menu-item" @click="menuOpen">{{ menu.row.isDir ? '打开 / 展开' : '打开' }}</button>
       <button class="exp-menu-item" @click="menuCopyPath">复制路径</button>
       <button class="exp-menu-item" @click="menuRename">重命名</button>
       <button class="exp-menu-item" @click="menuReveal">在文件管理器中显示</button>
       <button class="exp-menu-item danger" @click="menuDelete">删除</button>
+    </div>
+
+    <!-- 空白区右键菜单 -->
+    <div
+      v-if="bgMenu"
+      class="exp-menu"
+      :style="{ left: bgMenu.x + 'px', top: bgMenu.y + 'px' }"
+      @click.stop
+    >
+      <button class="exp-menu-item" @click="bgNewFile">新建文件</button>
+      <button class="exp-menu-item" @click="bgNewFolder">新建文件夹</button>
+      <button class="exp-menu-item" @click="bgCollapse">折叠所有目录</button>
+      <button class="exp-menu-item" @click="bgRefresh">刷新</button>
     </div>
   </div>
 </template>
@@ -146,16 +167,17 @@
 import { computed, ref, watch, nextTick, onMounted, onBeforeUnmount } from 'vue';
 import { ElMessageBox, ElMessage } from 'element-plus';
 import {
-  DocumentAdd, FolderAdd, Refresh, FolderOpened, Folder, Document, CaretRight,
-  CaretBottom, Search, Loading,
+  Refresh, FolderOpened, Folder, Document, CaretRight, ArrowDown,
+  CaretBottom, Search, Loading, Fold, Aim, Files, ChatRound,
 } from '@element-plus/icons-vue';
 import { useCodeStore } from '../../../stores/code';
 import { useFileStore } from '../../../stores/file';
 import { useChatStore } from '../../../stores/chat';
 import { api } from '../../../api/client';
 import { fileMeta } from '../fileMeta';
+import { openProjectSwitcher } from '../../../composables/useProjectSwitcher';
 
-const emit = defineEmits<{ 'pick-dir': [] }>();
+const emit = defineEmits<{ 'pick-dir': []; 'scope-search': [{ rel: string; label: string }] }>();
 const code = useCodeStore();
 const fileStore = useFileStore();
 const chatStore = useChatStore();
@@ -276,10 +298,39 @@ interface Creating { parentRel: string; isDir: boolean; name: string }
 const creating = ref<Creating | null>(null);
 const createInputRef = ref<HTMLInputElement | null>(null);
 
-function startCreate(isDir: boolean) {
+function startCreate(isDir: boolean, parentRel = '') {
   if (!code.projectDir) { emit('pick-dir'); return; }
-  creating.value = { parentRel: '', isDir, name: '' };
+  creating.value = { parentRel, isDir, name: '' };
   void nextTick(() => createInputRef.value?.focus());
+}
+
+/** 一键折叠所有目录 */
+function collapseAll() {
+  expanded.value = new Set();
+}
+
+/** 定位当前打开的文件：切到项目源、展开祖先目录、高亮并滚动到可视区 */
+async function revealActiveFile() {
+  const ap = code.activePath;
+  if (!ap || !code.projectDir) return;
+  const base = code.projectDir.replace(/[\\/]+$/, '');
+  if (!ap.startsWith(base)) return;
+  let rel = ap.slice(base.length).replace(/^[\\/]+/, '');
+  if (!rel) return;
+  rel = rel.split(/[\\/]/).join('/');
+  if (source.value !== 'project') source.value = 'project';
+  const next = new Set(expanded.value);
+  const parts = rel.split('/');
+  let acc = '';
+  for (let i = 0; i < parts.length - 1; i++) {
+    acc = acc ? acc + '/' + parts[i] : parts[i];
+    next.add(acc);
+    await loadDir(acc);
+  }
+  expanded.value = next;
+  activeRel.value = rel;
+  await nextTick();
+  treeRef.value?.querySelector('.exp-row.active')?.scrollIntoView({ block: 'center' });
 }
 
 async function submitCreate() {
@@ -301,12 +352,54 @@ async function submitCreate() {
 // ===== 右键菜单（自绘浮动菜单，避免 Element 弹窗打断操作节奏）=====
 interface RowMenu { x: number; y: number; row: TreeRow; abs: string }
 const menu = ref<RowMenu | null>(null);
+const bgMenu = ref<{ x: number; y: number } | null>(null);
+const treeRef = ref<HTMLElement | null>(null);
+
+function parentRelOf(row: TreeRow): string {
+  if (row.isDir) return row.relPath;
+  const idx = row.relPath.lastIndexOf('/');
+  return idx > 0 ? row.relPath.slice(0, idx) : '';
+}
 
 function onRowMenu(e: MouseEvent, row: TreeRow) {
   if (row.loading) return;
+  bgMenu.value = null;
   menu.value = { x: e.clientX, y: e.clientY, row, abs: joinPath(row.relPath) };
 }
+function onBgMenu(e: MouseEvent) {
+  if (!code.projectDir) return;
+  menu.value = null;
+  bgMenu.value = { x: e.clientX, y: e.clientY };
+}
 function closeMenu() { menu.value = null; }
+function closeBgMenu() { bgMenu.value = null; }
+function closeAll() { menu.value = null; bgMenu.value = null; }
+
+// ===== 行右键动作 =====
+function menuSearchHere() {
+  const m = menu.value;
+  if (!m) return;
+  closeMenu();
+  emit('scope-search', { rel: m.row.relPath, label: m.row.name });
+}
+function menuNewFile() {
+  const m = menu.value;
+  if (!m) return;
+  closeMenu();
+  startCreate(false, parentRelOf(m.row));
+}
+function menuNewFolder() {
+  const m = menu.value;
+  if (!m) return;
+  closeMenu();
+  startCreate(true, parentRelOf(m.row));
+}
+
+// ===== 空白区右键动作 =====
+function bgNewFile() { closeBgMenu(); startCreate(false, ''); }
+function bgNewFolder() { closeBgMenu(); startCreate(true, ''); }
+function bgCollapse() { closeBgMenu(); collapseAll(); }
+function bgRefresh() { closeBgMenu(); void reload(); }
 
 async function menuOpen() {
   const m = menu.value;
@@ -375,8 +468,8 @@ function menuReveal() {
   void api.post('/workspace/reveal', { path: m.abs });
 }
 
-onMounted(() => document.addEventListener('click', closeMenu));
-onBeforeUnmount(() => document.removeEventListener('click', closeMenu));
+onMounted(() => document.addEventListener('click', closeAll));
+onBeforeUnmount(() => document.removeEventListener('click', closeAll));
 
 function revealRoot() {
   if (!code.projectDir) return;
@@ -404,6 +497,13 @@ watch(() => code.projectDir, () => {
   filterText.value = '';
   void reload();
 });
+
+// 命令面板触发的资源管理器动作
+watch(() => code.explorerCommand, (c) => {
+  if (!c) return;
+  if (c.kind === 'collapse-all') collapseAll();
+  else if (c.kind === 'refresh') void reload();
+});
 </script>
 
 <style scoped>
@@ -416,15 +516,15 @@ watch(() => code.projectDir, () => {
 }
 .exp-src { display: flex; gap: 2px; flex: 1; min-width: 0; }
 .exp-src-btn {
-  height: 22px; padding: 0 8px; font-size: 11px;
-  border: none; border-radius: 6px; background: transparent;
+  width: 24px; height: 22px; display: inline-flex; align-items: center; justify-content: center;
+  padding: 0; border: none; border-radius: 6px; background: transparent;
   color: var(--color-text-secondary, #6b6b66); cursor: pointer;
   transition: all 0.15s ease;
 }
 .exp-src-btn:hover { background: var(--glass-bg-hover, #f1efe9); }
 .exp-src-btn.on {
   background: color-mix(in srgb, var(--color-primary, #c2410c) 12%, transparent);
-  color: var(--color-primary, #c2410c); font-weight: 600;
+  color: var(--color-primary, #c2410c);
 }
 .exp-head-actions { display: flex; gap: 1px; flex-shrink: 0; }
 .exp-icon-btn {
@@ -433,18 +533,25 @@ watch(() => code.projectDir, () => {
   color: var(--color-text-secondary, #6b6b66); cursor: pointer; transition: all 0.15s ease;
 }
 .exp-icon-btn:hover { background: var(--glass-bg-hover, #f1efe9); color: var(--color-primary, #c2410c); }
+.exp-icon-btn.off { opacity: 0.35; cursor: default; }
+.exp-icon-btn.off:hover { background: transparent; color: var(--color-text-secondary, #6b6b66); }
 .spin { animation: exp-spin 0.9s linear infinite; }
 @keyframes exp-spin { to { transform: rotate(360deg); } }
 
 .exp-root {
   display: flex; align-items: center; gap: 5px;
-  padding: 6px 10px; flex-shrink: 0;
+  padding: 6px 10px; flex-shrink: 0; width: 100%;
+  border: none; border-radius: 7px; background: transparent;
   font-size: 11px; color: var(--color-text-tertiary, #9c9b94);
+  font-family: inherit; text-align: left; cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
 }
+.exp-root:hover { background: var(--glass-bg-hover, #f1efe9); color: var(--color-text-secondary, #6b6b66); }
 .exp-root-name {
   font-size: 12px; font-weight: 700; color: var(--color-text, #1a1a1a); flex-shrink: 0;
 }
-.exp-root-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.exp-root-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
+.exp-root-caret { flex-shrink: 0; opacity: 0.5; }
 
 .exp-filter { flex-shrink: 0; padding: 0 8px 6px; }
 

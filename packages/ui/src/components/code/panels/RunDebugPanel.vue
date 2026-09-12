@@ -32,6 +32,11 @@
       <button class="rdp-stop" :disabled="!sessionActive" @click="stopAll">
         <el-icon :size="12"><SwitchButton /></el-icon>停止
       </button>
+      <el-tooltip content="控制台 (Ctrl+`)" placement="top" :show-after="400">
+        <button class="rdp-icon-btn" :class="{ on: code.consoleOpen }" @click="code.toggleConsole()">
+          <el-icon :size="13"><Monitor /></el-icon>
+        </button>
+      </el-tooltip>
     </div>
     <div v-if="current && !debugSupported" class="rdp-note">{{ debugHint }}</div>
 
@@ -148,7 +153,7 @@
 import { computed, ref, watch, nextTick, onBeforeUnmount } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import {
-  Plus, EditPen, Delete, CaretRight, Aim, SwitchButton, Right, Bottom, Top, Close,
+  Plus, EditPen, Delete, CaretRight, Aim, SwitchButton, Right, Bottom, Top, Close, Monitor,
 } from '@element-plus/icons-vue';
 import { api, API_BASE } from '../../../api/client';
 import { useCodeStore, type RunConfigItem } from '../../../stores/code';
@@ -411,7 +416,8 @@ onBeforeUnmount(() => { abort?.abort(); abort = null; });
 .rdp-icon-btn:disabled { opacity: 0.32; cursor: default; }
 .rdp-icon-btn.danger:hover:not(:disabled) { color: var(--el-color-danger); }
 
-.rdp-ctrl { display: flex; gap: 6px; padding: 8px; flex-shrink: 0; }
+.rdp-ctrl { display: flex; gap: 6px; padding: 8px; flex-shrink: 0; align-items: center; }
+.rdp-icon-btn.on { color: var(--color-primary, #c2410c); background: color-mix(in srgb, var(--color-primary, #c2410c) 10%, transparent); }
 .rdp-run {
   flex: 1; height: 28px; display: inline-flex; align-items: center; justify-content: center; gap: 4px;
   font-size: 12px; font-family: inherit; cursor: pointer;

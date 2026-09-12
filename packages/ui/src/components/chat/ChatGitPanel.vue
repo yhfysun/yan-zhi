@@ -18,6 +18,12 @@
       <el-button size="small" @click="doCreateBranch" title="新建分支">
         <el-icon><Plus /></el-icon>
       </el-button>
+      <el-button size="small" @click="doMerge" title="合并分支">
+        <el-icon><Share /></el-icon>
+      </el-button>
+      <el-button v-if="conflictFiles.length" size="small" type="danger" plain @click="doAbortMerge" title="中止合并（放弃冲突，恢复合并前）">
+        <el-icon><CircleClose /></el-icon>
+      </el-button>
       <el-button size="small" @click="loadAll" title="刷新">
         <el-icon><Refresh /></el-icon>
       </el-button>
@@ -36,6 +42,20 @@
     <div v-show="view === 'changes'" class="git-view-body git-changes-view">
       <div class="git-changes-scroll">
         <template v-if="changedFiles.length">
+          <!-- 冲突组：点击进冲突解决器 -->
+          <template v-if="conflictFiles.length">
+            <div class="git-group-label conflict-label">冲突 · 需手动解决（{{ conflictFiles.length }}）</div>
+            <div
+              v-for="p in conflictFiles"
+              :key="'c' + p"
+              class="git-change-row conflict-row"
+              @click="openConflict(p)"
+            >
+              <el-icon class="git-conflict-ico"><Warning /></el-icon>
+              <span class="git-change-path" :title="p">{{ p }}</span>
+              <span class="git-resolve-hint">解决 →</span>
+            </div>
+          </template>
           <!-- 未暂存组 -->
           <template v-if="unstagedFiles.length">
             <div class="git-group-label">未暂存</div>
@@ -147,13 +167,15 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { Refresh, Download, Upload, Plus, Minus } from '@element-plus/icons-vue';
+import { Refresh, Download, Upload, Plus, Minus, Share, CircleClose, Warning } from '@element-plus/icons-vue';
 import { useGitStore, type GitNumstatEntry, type GitAheadBehind } from '../../stores/git';
 import { useSettingsStore } from '../../stores/settings';
+import { useCodeStore } from '../../stores/code';
 import CodeEditor from '../CodeEditor.vue';
 
 const gitStore = useGitStore();
 const settingsStore = useSettingsStore();
+const codeStore = useCodeStore();
 
 type View = 'changes' | 'tree' | 'history';
 
@@ -237,6 +259,66 @@ const changedFiles = computed<ChangedFile[]>(() => {
 const unstagedFiles = computed(() => changedFiles.value.filter((f) => !f.staged));
 const stagedFiles = computed(() => changedFiles.value.filter((f) => f.staged));
 const stagedCount = computed(() => stagedFiles.value.length);
+
+// ===== 合并冲突 =====
+const UNMERGED_CODES = new Set(['DD', 'AU', 'UD', 'UA', 'DU', 'AA', 'UU']);
+const conflictFiles = computed<string[]>(() => {
+  const st = gitStore.status as { files?: Array<{ path: string; working_dir: string; index: string }> } | null;
+  if (!st?.files) return [];
+  return st.files
+    .filter((f) => UNMERGED_CODES.has((f.index || ' ') + (f.working_dir || ' ')))
+    .map((f) => f.path);
+});
+
+/** 点击冲突文件 → 通知代码编辑区打开冲突解决器 */
+function openConflict(rel: string) {
+  const base = repo.value.replace(/[\\/]+$/, '');
+  codeStore.openConflict(base + '/' + rel);
+  ElMessage.info('已在代码模式编辑器打开冲突解决');
+}
+
+async function doMerge() {
+  let branch = '';
+  try {
+    const { value } = await ElMessageBox.prompt('要合并进当前分支的分支名', '合并分支', {
+      confirmButtonText: '合并',
+      cancelButtonText: '取消',
+      inputPattern: /^[A-Za-z0-9._/-]+$/,
+      inputErrorMessage: '分支名只能包含字母、数字、点、下划线、斜杠、连字符',
+    });
+    branch = (value || '').trim();
+  } catch {
+    return;
+  }
+  if (!branch) return;
+  const res = await gitStore.mergeBranch(repo.value, branch);
+  if ('error' in res) {
+    ElMessage.error(res.error);
+    await loadAll();
+    return;
+  }
+  if (res.data.ok) ElMessage.success(`已合并 ${branch}`);
+  else ElMessage.warning(`合并产生 ${res.data.conflicts.length} 个冲突文件，请在下方冲突列表中解决`);
+  await loadAll();
+}
+
+async function doAbortMerge() {
+  try {
+    await ElMessageBox.confirm('中止当前合并？将放弃所有冲突处理，恢复到合并前状态。', '中止合并', {
+      confirmButtonText: '中止合并',
+      cancelButtonText: '取消',
+      type: 'warning',
+    });
+  } catch {
+    return;
+  }
+  const res = await gitStore.abortMerge(repo.value);
+  if ('error' in res) ElMessage.error(res.error);
+  else {
+    ElMessage.success('已中止合并');
+    await loadAll();
+  }
+}
 
 const logEntries = computed(() => {
   const lg = gitStore.log as {
@@ -508,6 +590,10 @@ watch(repo, () => { if (repo.value) init(); }, { immediate: true });
   color: var(--el-text-color-secondary);
   text-transform: uppercase;
 }
+.git-group-label.conflict-label { color: #ef4444; }
+.conflict-row { background: color-mix(in srgb, #ef4444 5%, transparent); }
+.git-conflict-ico { color: #ef4444; flex-shrink: 0; margin-top: 1px; }
+.git-resolve-hint { font-size: 11px; color: var(--color-primary); flex-shrink: 0; font-weight: 600; }
 .git-change-row {
   display: flex;
   align-items: flex-start;

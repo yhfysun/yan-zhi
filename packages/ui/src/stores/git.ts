@@ -124,6 +124,15 @@ export const useGitStore = defineStore('git', () => {
     return api.post('/git/createBranch', { repo, name });
   }
 
+  /** 合并分支；冲突时 ok=false 并返回冲突清单 */
+  async function mergeBranch(repo: string, branch: string) {
+    return api.post<{ ok: boolean; conflicts: string[]; message: string }>('/git/merge', { repo, branch });
+  }
+
+  async function abortMerge(repo: string) {
+    return api.post('/git/abortMerge', { repo });
+  }
+
   return {
     supported,
     status,
@@ -150,5 +159,7 @@ export const useGitStore = defineStore('git', () => {
     stageFiles,
     unstageFiles,
     createBranch,
+    mergeBranch,
+    abortMerge,
   };
 });

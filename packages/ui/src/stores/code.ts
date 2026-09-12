@@ -34,6 +34,15 @@ export interface RunConfigItem {
   env?: Record<string, string>;
 }
 
+/** 模型文件修改快照条目（/workspace/changes 返回，按路径合并后的最新一条） */
+export interface AiFileChangeItem {
+  id: string;
+  path: string;
+  tool: string;
+  createdAt: number;
+  count: number;
+}
+
 const LS_DIR = 'yz:code:projectDir';
 const LS_FILES = 'yz:code:openFiles';
 const LS_CFG = 'yz:code:runConfigs';
@@ -260,6 +269,42 @@ export const useCodeStore = defineStore('code', () => {
     localStorage.setItem('yz:code:consoleOpen', consoleOpen.value ? '1' : '0');
   }
 
+  // ===== 编辑器光标位置（状态栏 Ln/Col 显示）=====
+  const editorCursor = ref<{ line: number; col: number }>({ line: 1, col: 1 });
+  function setEditorCursor(line: number, col: number) {
+    editorCursor.value = { line, col };
+  }
+
+  // ===== 资源管理器动作信号（命令面板触发；资源管理器 watch 后执行）=====
+  const explorerCommand = ref<{ kind: 'collapse-all' | 'refresh'; ts: number } | null>(null);
+  function runExplorerCommand(kind: 'collapse-all' | 'refresh') {
+    explorerCommand.value = { kind, ts: Date.now() };
+  }
+
+  // ===== 模型文件修改快照（Diff 对比 / 应用 / 回退）=====
+  const aiChanges = ref<AiFileChangeItem[]>([]);
+  async function fetchAiChanges() {
+    const dir = projectDir.value;
+    if (!dir) { aiChanges.value = []; return; }
+    const r = await api.get<{ items: AiFileChangeItem[] }>(
+      `/workspace/changes?dir=${encodeURIComponent(dir)}`,
+    );
+    if ('error' in r) { aiChanges.value = []; return; }
+    aiChanges.value = r.data.items || [];
+  }
+  const aiChangeByPath = (path: string) =>
+    aiChanges.value.find((c) => c.path.replace(/[\\/]+/g, '/') === path.replace(/[\\/]+/g, '/'));
+
+  // ===== 冲突解决信号（git 面板点击冲突文件 → 编辑区打开冲突解决器）=====
+  const pendingConflict = ref<{ path: string; ts: number } | null>(null);
+  function openConflict(path: string) {
+    pendingConflict.value = { path, ts: Date.now() };
+  }
+
+  // 项目目录变化 / 首次进入时拉取模型修改快照
+  watch(projectDir, () => { void fetchAiChanges(); });
+  if (projectDir.value) void fetchAiChanges();
+
   return {
     projectDir, projectName, setProjectDir,
     openFiles, activePath, activeFile, dirtyCount,
@@ -270,5 +315,9 @@ export const useCodeStore = defineStore('code', () => {
     pendingReveal, revealLine,
     debugActive, setDebugActive,
     consoleOpen, toggleConsole,
+    editorCursor, setEditorCursor,
+    explorerCommand, runExplorerCommand,
+    aiChanges, fetchAiChanges, aiChangeByPath,
+    pendingConflict, openConflict,
   };
 });

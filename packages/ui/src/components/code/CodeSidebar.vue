@@ -34,8 +34,14 @@
 
     <!-- 面板 -->
     <div class="csb-panel">
-      <ExplorerPanel v-show="view === 'explorer'" @pick-dir="emit('pick-dir')" />
-      <SearchPanel v-show="view === 'search'" />
+      <ExplorerPanel v-show="view === 'explorer'" @pick-dir="emit('pick-dir')" @scope-search="onScopeSearch" />
+      <FileSearchPanel
+        v-show="view === 'search'"
+        ref="fileSearchRef"
+        mode="code"
+        :dir="code.projectDir"
+        v-model:scope="searchScope"
+      />
       <div v-show="view === 'git'" class="csb-git">
         <ChatGitPanel />
       </div>
@@ -45,12 +51,12 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, ref, nextTick } from 'vue';
 import { Files, Search, Share, Aim, Setting } from '@element-plus/icons-vue';
 import { useCodeStore, type SidebarView } from '../../stores/code';
 import { openSettingsDrawer } from '../../composables/useSettingsDrawer';
 import ExplorerPanel from './panels/ExplorerPanel.vue';
-import SearchPanel from './panels/SearchPanel.vue';
+import FileSearchPanel from './panels/FileSearchPanel.vue';
 import RunDebugPanel from './panels/RunDebugPanel.vue';
 import ChatGitPanel from '../chat/ChatGitPanel.vue';
 
@@ -61,6 +67,16 @@ const view = computed<SidebarView>({
   get: () => code.sidebarView,
   set: (v) => { code.sidebarView = v; },
 });
+
+/** 搜索范围（资源管理器右击「在此文件夹中搜索」设置，联动搜索面板） */
+const searchScope = ref<{ rel: string; label: string } | null>(null);
+const fileSearchRef = ref<InstanceType<typeof FileSearchPanel> | null>(null);
+
+function onScopeSearch(payload: { rel: string; label: string }) {
+  searchScope.value = payload;
+  code.sidebarView = 'search';
+  void nextTick(() => fileSearchRef.value?.focusQuery());
+}
 
 function openEnv() {
   openSettingsDrawer('env');

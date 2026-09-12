@@ -298,6 +298,22 @@ CREATE INDEX IF NOT EXISTS idx_space_user ON space(user_id);
   -- conversation_file 的索引：必须在表创建之后才能创建
   CREATE INDEX IF NOT EXISTS idx_conv_file_conv ON conversation_file(conversation_id);
   CREATE INDEX IF NOT EXISTS idx_conv_file_cat ON conversation_file(conversation_id, category);
+
+  -- 模型文件修改快照：file_write / file_edit 落盘前后内容，供前端 Diff 对比 / 应用 / 回退
+  CREATE TABLE IF NOT EXISTS file_change (
+    id TEXT PRIMARY KEY,
+    user_id TEXT,
+    conversation_id TEXT,
+    task_id TEXT,
+    path TEXT NOT NULL,
+    before_content TEXT,
+    after_content TEXT,
+    tool TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_file_change_path ON file_change(path);
+  CREATE INDEX IF NOT EXISTS idx_file_change_status ON file_change(status);
 `);
 
 // 迁移 mcp_tool 表（添加 alias, remark 列）

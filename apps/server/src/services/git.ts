@@ -255,6 +255,65 @@ export class GitService {
       return '';
     }
   }
+
+  // ===== 合并 / 冲突解决（IDEA 式页内冲突处理）=====
+
+  /** 未合并（冲突）文件清单：git status --porcelain 中 XY 处于未合并状态组合的文件 */
+  async conflicts(repo: string): Promise<string[]> {
+    const ws = await this.getWorkspaceDir();
+    this.assertWithinWorkspace(repo, ws);
+    const out = await this.open(repo).raw(['status', '--porcelain']);
+    const UNMERGED = new Set(['DD', 'AU', 'UD', 'UA', 'DU', 'AA', 'UU']);
+    return out
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => ({ x: line.slice(0, 1), y: line.slice(1, 2), path: line.slice(3) }))
+      .filter((e) => UNMERGED.has(e.x + e.y))
+      .map((e) => e.path);
+  }
+
+  /** 读取冲突文件三个版本：base(:1) / ours(:2) / theirs(:3)；某侧不存在返回空串 */
+  async conflictVersions(repo: string, filePath: string): Promise<{ base: string; ours: string; theirs: string }> {
+    const ws = await this.getWorkspaceDir();
+    this.assertWithinWorkspace(repo, ws);
+    const read = async (stage: number): Promise<string> => {
+      try {
+        return await this.open(repo).raw(['show', `:${stage}:${filePath}`]);
+      } catch {
+        return '';
+      }
+    };
+    const [base, ours, theirs] = await Promise.all([read(1), read(2), read(3)]);
+    return { base, ours, theirs };
+  }
+
+  /** 合并分支；冲突时不抛错，返回冲突文件清单 */
+  async merge(repo: string, branch: string): Promise<{ ok: boolean; conflicts: string[]; message: string }> {
+    const ws = await this.getWorkspaceDir();
+    this.assertWithinWorkspace(repo, ws);
+    try {
+      const out = await this.open(repo).raw(['merge', branch]);
+      return { ok: true, conflicts: [], message: out.trim() || '合并完成' };
+    } catch (e) {
+      let conflicts: string[] = [];
+      try { conflicts = await this.conflicts(repo); } catch { /* ignore */ }
+      return { ok: false, conflicts, message: (e as Error).message };
+    }
+  }
+
+  /** 中止合并，恢复到合并前状态（git merge --abort） */
+  async abortMerge(repo: string): Promise<void> {
+    const ws = await this.getWorkspaceDir();
+    this.assertWithinWorkspace(repo, ws);
+    await this.open(repo).raw(['merge', '--abort']);
+  }
+
+  /** 标记冲突已解决（git add file） */
+  async resolveConflict(repo: string, filePath: string): Promise<void> {
+    const ws = await this.getWorkspaceDir();
+    this.assertWithinWorkspace(repo, ws);
+    await this.open(repo).add([filePath]);
+  }
 }
 
 export const gitService = new GitService();

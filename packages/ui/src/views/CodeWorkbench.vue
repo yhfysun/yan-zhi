@@ -5,11 +5,16 @@
       <div class="cp-top-left">
         <span class="cp-badge"><el-icon :size="13"><Document /></el-icon></span>
         <span class="cp-title">代码</span>
-        <button class="cp-proj" :title="code.projectDir || '点击选择项目目录'" @click="showDir = true">
+        <button class="cp-proj" :class="{ open: projectSwitcherOpen }" :title="code.projectDir || '点击切换项目目录'" @click.stop="toggleProjectSwitcher">
           <el-icon :size="12"><FolderOpened /></el-icon>
           <span class="cp-proj-name">{{ code.projectName || '选择项目目录' }}</span>
           <el-icon :size="10" class="cp-proj-caret"><ArrowDown /></el-icon>
         </button>
+        <ProjectSwitcherMenu
+          v-if="projectSwitcherOpen"
+          @open-new="onOpenNewProject"
+          @close="closeProjectSwitcher"
+        />
       </div>
 
       <div class="cp-top-right">
@@ -54,22 +59,32 @@
       </section>
     </div>
 
+    <!-- ===== 底部状态栏（贯通整窗）===== -->
+    <CodeStatusBar :git-branch="gitBranch" :git-dirty="gitDirty" />
+
+    <!-- ===== 命令面板（Ctrl+Shift+P / Ctrl+P）===== -->
+    <CodeCommandPalette v-model="paletteOpen" @open-new="onOpenNewProject" />
+
     <WorkspaceDirDialog v-model="showDir" :current-path="code.projectDir" @selected="onDirSelected" />
     <ChatDialogs />
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue';
+import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue';
 import { useRouter } from 'vue-router';
 import { Document, FolderOpened, ArrowDown, ArrowRight, ChatDotRound, Setting } from '@element-plus/icons-vue';
 import { useCodeStore, setCodeModeActive } from '../stores/code';
 import { useChatStore } from '../stores/chat';
 import { useResizable } from '../composables/useResizable';
 import { openSettingsDrawer } from '../composables/useSettingsDrawer';
+import { projectSwitcherOpen, closeProjectSwitcher, toggleProjectSwitcher } from '../composables/useProjectSwitcher';
 import { api } from '../api/client';
 import CodeSidebar from '../components/code/CodeSidebar.vue';
 import CodeEditorArea from '../components/code/CodeEditorArea.vue';
+import ProjectSwitcherMenu from '../components/code/ProjectSwitcherMenu.vue';
+import CodeStatusBar from '../components/code/CodeStatusBar.vue';
+import CodeCommandPalette from '../components/code/CodeCommandPalette.vue';
 import WorkspaceDirDialog from '../components/WorkspaceDirDialog.vue';
 import ChatMessageList from '../components/chat/ChatMessageList.vue';
 import ChatInputArea from '../components/chat/ChatInputArea.vue';
@@ -86,6 +101,7 @@ const chatW = chatR.width;
 
 const showDir = ref(false);
 const chatCollapsed = ref(false);
+const paletteOpen = ref(false);
 
 const currentConvTitle = computed(
   () => chatStore.conversations.find((c) => c.id === chatStore.currentConvId)?.title || '任务对话',
@@ -95,6 +111,33 @@ function onDirSelected(dir: string) {
   code.setProjectDir(dir);
   showDir.value = false;
 }
+
+/** 顶栏「打开新项目…」：关闭下拉，打开原生目录选择对话框 */
+function onOpenNewProject() {
+  closeProjectSwitcher();
+  showDir.value = true;
+}
+
+// 下拉打开时，点击外部任意处关闭（菜单自身 stop 了冒泡）
+function onDocClickClose() {
+  if (projectSwitcherOpen.value) closeProjectSwitcher();
+}
+watch(projectSwitcherOpen, (open) => {
+  if (open) document.addEventListener('click', onDocClickClose);
+  else document.removeEventListener('click', onDocClickClose);
+});
+onBeforeUnmount(() => document.removeEventListener('click', onDocClickClose));
+
+// 命令面板快捷键：Ctrl/Cmd+P（快速打开）与 Ctrl/Cmd+Shift+P（命令）
+function onGlobalKeydown(e: KeyboardEvent) {
+  const mod = e.ctrlKey || e.metaKey;
+  if (!mod || e.altKey) return;
+  if (e.key.toLowerCase() !== 'p') return;
+  e.preventDefault();
+  paletteOpen.value = !paletteOpen.value;
+}
+onMounted(() => document.addEventListener('keydown', onGlobalKeydown));
+onBeforeUnmount(() => document.removeEventListener('keydown', onGlobalKeydown));
 
 /** 收起对话栏：宽度归零（再次点击顶栏「代码」或刷新恢复） */
 function toggleChat() {
@@ -118,12 +161,32 @@ const envTitle = computed(() =>
     : '尚未检测开发环境',
 );
 
+// ===== Git 状态（底部状态栏：分支 + 改动数）=====
+const gitBranch = ref<string | null>(null);
+const gitDirty = ref(0);
+async function refreshGitStatus() {
+  if (!code.projectDir) { gitBranch.value = null; gitDirty.value = 0; return; }
+  const r = await api.get<{
+    current?: string; files?: unknown[];
+    modified?: unknown[]; not_added?: unknown[]; created?: unknown[]; deleted?: unknown[];
+  }>(`/git/status?repo=${encodeURIComponent(code.projectDir)}`);
+  if ('error' in r) { gitBranch.value = null; gitDirty.value = 0; return; }
+  const d = r.data || {};
+  gitBranch.value = d.current || null;
+  const files = d.files;
+  gitDirty.value = Array.isArray(files)
+    ? files.length
+    : (d.modified?.length || 0) + (d.not_added?.length || 0) + (d.created?.length || 0) + (d.deleted?.length || 0);
+}
+watch(() => code.projectDir, () => void refreshGitStatus());
+
 onMounted(async () => {
   // 记住代码模式：去别的页面再回「任务」时恢复代码工作台（router guard 消费该标记）
   setCodeModeActive(true);
   if (!code.projectDir) {
     // 顶栏已通过 store 初始化兜底到 settings.workspaceDir
   }
+  void refreshGitStatus();
   const r = await api.post<Array<{ id: string; label: string; version: string; ok: boolean }>>('/env/verify', {});
   if ('error' in r) return;
   envChips.value = (r.data || [])
@@ -156,7 +219,7 @@ onMounted(async () => {
   border-bottom: 1px solid var(--glass-border, #e7e4dc);
   background: var(--color-surface, #fff);
 }
-.cp-top-left { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.cp-top-left { display: flex; align-items: center; gap: 8px; min-width: 0; position: relative; }
 .cp-badge {
   width: 24px; height: 24px; border-radius: 7px;
   display: inline-flex; align-items: center; justify-content: center;
@@ -172,7 +235,9 @@ onMounted(async () => {
 }
 .cp-proj:hover { border-color: var(--color-primary, #c2410c); color: var(--color-primary, #c2410c); }
 .cp-proj-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.cp-proj-caret { opacity: 0.6; flex-shrink: 0; }
+.cp-proj-caret { opacity: 0.6; flex-shrink: 0; transition: transform 0.15s ease; }
+.cp-proj.open { border-color: var(--color-primary, #c2410c); color: var(--color-primary, #c2410c); }
+.cp-proj.open .cp-proj-caret { transform: rotate(180deg); }
 
 .cp-top-right { display: flex; align-items: center; gap: 8px; margin-left: auto; }
 .cp-env { display: flex; align-items: center; gap: 6px; }

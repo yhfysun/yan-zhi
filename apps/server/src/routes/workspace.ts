@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { serverState } from '../state.js';
+import { db } from '../db.js';
 
 const router = Router();
 
@@ -261,8 +262,9 @@ router.post('/reveal', (req, res) => {
 });
 
 // ===== 文件内容搜索（IDE 左栏搜索面板）=====
-// GET /api/workspace/search?dir=&q=&include=&caseSensitive=0&wholeWord=0&regex=0&maxResults=500
+// GET /api/workspace/search?dir=&sub=&q=&include=&caseSensitive=0&wholeWord=0&regex=0&maxResults=500
 // 逐目录 DFS，跳过 TREE_IGNORED 与二进制，单文件上限 2MB，命中行截断到 220 字符。
+// sub：相对 dir 的子目录（留空=整项目）；命中 relPath 始终相对项目根 dir，便于前端定位/打开。
 const SEARCH_MAX_FILE_BYTES = 2 * 1024 * 1024;
 const SEARCH_MAX_DEPTH = 14;
 
@@ -270,6 +272,7 @@ interface SearchHit { file: string; relPath: string; line: number; column: numbe
 
 router.get('/search', (req, res) => {
   const dir = typeof req.query.dir === 'string' ? req.query.dir.trim() : '';
+  const sub = typeof req.query.sub === 'string' ? req.query.sub.trim() : '';
   const q = typeof req.query.q === 'string' ? req.query.q : '';
   if (!dir) return res.status(400).json({ error: '缺少 dir 参数' });
   if (!q) return res.json({ root: path.resolve(dir), hits: [], truncated: false, scanned: 0 });
@@ -280,6 +283,23 @@ router.get('/search', (req, res) => {
     if (!fs.statSync(root).isDirectory()) return res.status(400).json({ error: '不是目录' });
   } catch {
     return res.status(404).json({ error: '目录不存在或不可访问' });
+  }
+
+  // ===== 范围（sub）：必须以 root 为根的子目录，防目录穿越 =====
+  let searchRoot = root;
+  let baseRel = '';
+  if (sub) {
+    const resolved = path.resolve(root, sub);
+    if (resolved !== root && !resolved.startsWith(root + path.sep)) {
+      return res.status(400).json({ error: '搜索范围超出项目根目录' });
+    }
+    try {
+      if (!fs.statSync(resolved).isDirectory()) return res.status(400).json({ error: '搜索范围不是目录' });
+    } catch {
+      return res.status(404).json({ error: '搜索范围目录不存在或不可访问' });
+    }
+    searchRoot = resolved;
+    baseRel = sub;
   }
 
   const include = typeof req.query.include === 'string' && req.query.include.trim() ? req.query.include.trim() : '';
@@ -349,9 +369,9 @@ router.get('/search', (req, res) => {
       }
     }
   };
-  walk(root, '', 1);
+  walk(searchRoot, baseRel, 1);
 
-  res.json({ root, query: q, hits, truncated, scanned });
+  res.json({ root: path.resolve(dir), query: q, hits, truncated, scanned });
 });
 
 // GET /api/workspace/stat?path= —— 单条路径的存在性/类型（前端校验用）
@@ -364,6 +384,86 @@ router.get('/stat', (req, res) => {
   } catch {
     res.json({ path: abs, exists: false, isDir: false, size: 0, mtime: 0 });
   }
+});
+
+// ===== 模型文件修改：列表 / 内容 / 应用 / 回退 / 忽略 =====
+// file_change 由 llm-task-manager 在 file_write / file_edit 落盘前后写入快照，
+// 前端据此在编辑器里展示「模型已修改此文件」提示条 + Diff 对比 + 应用 / 回退。
+const CHANGES_LIST_MAX = 500;
+
+// GET /api/workspace/changes?dir= —— 目录下所有待处理（pending）的模型修改，按路径合并取最新一条
+router.get('/changes', (req, res) => {
+  const dir = typeof req.query.dir === 'string' ? req.query.dir.trim().replace(/[\\/]+$/, '') : '';
+  if (!dir) return res.status(400).json({ error: '缺少 dir 参数' });
+  let rows: any[] = [];
+  try {
+    rows = db.prepare("SELECT id, path, tool, created_at FROM file_change WHERE status = 'pending' ORDER BY created_at DESC LIMIT 2000").all() as any[];
+  } catch { rows = []; }
+  const under = rows.filter((r) => {
+    const p = String(r.path || '').replace(/[\\/]+$/, '');
+    return p === dir || p.startsWith(dir + '/') || p.startsWith(dir + '\\');
+  });
+  const byPath = new Map<string, { id: string; path: string; tool: string; createdAt: number; count: number }>();
+  for (const r of under) {
+    const e = byPath.get(r.path);
+    if (e) e.count++;
+    else byPath.set(r.path, { id: r.id, path: r.path, tool: r.tool, createdAt: r.created_at, count: 1 });
+  }
+  const items = [...byPath.values()].sort((a, b) => b.createdAt - a.createdAt).slice(0, CHANGES_LIST_MAX);
+  res.json({ items });
+});
+
+// GET /api/workspace/changes/content?id= —— 单条快照的前后完整内容（Diff 视图用）
+router.get('/changes/content', (req, res) => {
+  const id = String(req.query.id || '');
+  const row = id ? db.prepare('SELECT path, before_content, after_content, tool, created_at FROM file_change WHERE id = ?').get(id) as any : null;
+  if (!row) return res.status(404).json({ error: '记录不存在' });
+  res.json({ path: row.path, tool: row.tool, createdAt: row.created_at, before: row.before_content ?? null, after: row.after_content ?? null });
+});
+
+/** 同路径的所有 pending 记录统一置为某状态（回退/应用是文件级操作，历史链一并收口） */
+function markChange(id: string, status: string): any {
+  const row = db.prepare('SELECT id, path FROM file_change WHERE id = ?').get(id) as any;
+  if (!row) return null;
+  db.prepare("UPDATE file_change SET status = ? WHERE path = ? AND status = 'pending'").run(status, row.path);
+  return db.prepare('SELECT id, path, status FROM file_change WHERE id = ?').get(id);
+}
+
+// POST /api/workspace/changes/:id/apply —— 以快照 after_content 覆盖磁盘（接受模型修改）
+router.post('/changes/:id/apply', (req, res) => {
+  const row = db.prepare('SELECT id, path, after_content FROM file_change WHERE id = ?').get(req.params.id) as any;
+  if (!row) return res.status(404).json({ error: '记录不存在' });
+  if (row.after_content == null) return res.status(400).json({ error: '该记录没有可应用的内容' });
+  try {
+    fs.mkdirSync(path.dirname(row.path), { recursive: true });
+    fs.writeFileSync(row.path, row.after_content, 'utf-8');
+  } catch (e) {
+    return res.status(500).json({ error: (e as Error).message });
+  }
+  res.json({ item: markChange(row.id, 'applied') });
+});
+
+// POST /api/workspace/changes/:id/revert —— 恢复快照 before_content；新建文件（before 为空）则删除
+router.post('/changes/:id/revert', (req, res) => {
+  const row = db.prepare('SELECT id, path, before_content FROM file_change WHERE id = ?').get(req.params.id) as any;
+  if (!row) return res.status(404).json({ error: '记录不存在' });
+  try {
+    if (row.before_content == null) {
+      if (fs.existsSync(row.path)) fs.unlinkSync(row.path);
+    } else {
+      fs.writeFileSync(row.path, row.before_content, 'utf-8');
+    }
+  } catch (e) {
+    return res.status(500).json({ error: (e as Error).message });
+  }
+  res.json({ item: markChange(row.id, 'reverted'), deleted: row.before_content == null });
+});
+
+// POST /api/workspace/changes/:id/dismiss —— 忽略：不再提示，不改磁盘
+router.post('/changes/:id/dismiss', (req, res) => {
+  const item = markChange(req.params.id, 'dismissed');
+  if (!item) return res.status(404).json({ error: '记录不存在' });
+  res.json({ item });
 });
 
 export default router;
