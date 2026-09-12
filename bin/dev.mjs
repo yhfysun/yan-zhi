@@ -341,6 +341,11 @@ const KEY_DEPS = [
   'packages/ui/node_modules/qrcode',           // Connections.vue 二维码
   'packages/ui/node_modules/jsqr',             // Connections.vue 二维码(识)
   'packages/ui/node_modules/@codemirror/view', // CodeEditor/DiffEditor
+  // 代码模式（/code）按扩展名【动态 import】语言包，缺失时只有打开对应后缀才炸，
+  // 属于典型哑雷，必须纳入检查：lang-python / lang-java / legacy-modes(yaml·properties·shell)。
+  'packages/ui/node_modules/@codemirror/lang-python',
+  'packages/ui/node_modules/@codemirror/lang-java',
+  'packages/ui/node_modules/@codemirror/legacy-modes',
 ];
 
 async function syncDeps() {
