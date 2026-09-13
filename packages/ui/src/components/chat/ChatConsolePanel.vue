@@ -429,7 +429,10 @@ onUnmounted(() => {
   height: 100%;
   border-radius: 9px;
   overflow: hidden;
-  background: #0d1117;
+  /* 终端容器底：跟随皮肤凹陷层（未开皮肤时保持原深色）。
+     注意上面 xterm 的 theme.background 是**终端模拟器调色板**，故意不接皮肤——
+     终端配色需要保证 ANSI 16 色对比，换肤会破坏语义。 */
+  background: var(--skin-surface-sunken, #0d1117);
   padding: 8px;
 }
 

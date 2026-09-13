@@ -1842,7 +1842,7 @@ onUnmounted(() => {
   color: var(--el-text-color-primary, #202124);
   background: var(--el-bg-color, #fff);
 }
-[data-theme="dark"] .tab-item.active { background: #1b1d23; }
+/* 皮肤下的 tab/工具栏/主页等配色统一在文件末尾的“皮肤接管”段处理（浅色+深色都生效） */
 .tab-favicon { font-size: 7px; opacity: 0.5; flex-shrink: 0; }
 .tab-item.active .tab-favicon { opacity: 0.8; }
 .tab-title { overflow: hidden; text-overflow: ellipsis; flex: 1; }
@@ -1924,7 +1924,7 @@ onUnmounted(() => {
   border-bottom: 1px solid var(--el-border-color-lighter, #e0e0e0);
   flex-shrink: 0; overflow-x: auto;
 }
-[data-theme="dark"] .bookmarks-bar { background: #23252b; }
+[data-theme="dark"] .bookmarks-bar { background: var(--el-bg-color); }
 .bookmark-item {
   display: flex; align-items: center; gap: 4px;
   padding: 4px 10px; border-radius: 12px;
@@ -1936,8 +1936,11 @@ onUnmounted(() => {
 [data-theme="dark"] .bookmark-item:hover { background: rgba(255,255,255,0.1); }
 
 /* 起始主页 */
-.home-page { flex: 1; min-height: 0; overflow-y: auto; padding: 40px 24px 32px; background: var(--el-bg-color-page, #fafafa); }
-[data-theme="dark"] .home-page { background: #1b1d23; }
+/* 用 background-color 而非 background 简写：简写会把 background-image 一并重置成 none，
+   皮肤开启时（skin.css 里给 .browser-shell .home-page 下发了底图）会把底图清掉。
+   只改这一处，视觉与原来等价。 */
+.home-page { flex: 1; min-height: 0; overflow-y: auto; padding: 40px 24px 32px; background-color: var(--el-bg-color-page, #fafafa); }
+[data-theme="dark"] .home-page { background-color: var(--el-bg-color); }
 .home-search { display: flex; flex-direction: column; align-items: center; gap: 18px; margin-bottom: 36px; }
 .home-logo { font-size: 34px; font-weight: 700; color: var(--el-color-primary); letter-spacing: 4px; }
 .home-search-box {
@@ -1989,10 +1992,10 @@ onUnmounted(() => {
 
 /* 页面渲染区 */
 .browser-viewport { flex: 1; min-height: 0; position: relative; overflow: hidden; background: #fff; display: flex; flex-direction: column; }
-[data-theme="dark"] .browser-viewport { background: #1b1d23; }
+[data-theme="dark"] .browser-viewport { background: var(--el-bg-color); }
 /* webview/iframe：flex:1 撑满 viewport */
 .page-frame { flex: 1; width: 100%; min-width: 0; border: none; background: #fff; display: block; overflow: hidden; }
-[data-theme="dark"] .page-frame { background: #1b1d23; }
+[data-theme="dark"] .page-frame { background: var(--el-bg-color); }
 
 /* 自定义滚动条（应用层自绘，覆盖在 iframe 右侧，原生已屏蔽） */
 .custom-scrollbar {
@@ -2019,7 +2022,7 @@ onUnmounted(() => {
   opacity: 0; pointer-events: none; z-index: 0;
 }
 .page-webview.wv-active { opacity: 1; pointer-events: auto; z-index: 1; }
-[data-theme="dark"] .page-webview { background: #1b1d23; }
+[data-theme="dark"] .page-webview { background: var(--el-bg-color); }
 
 .loading-overlay {
   position: absolute; inset: 0; display: flex; flex-direction: column;
@@ -2037,7 +2040,7 @@ onUnmounted(() => {
 
 /* 桌面端原生浏览器占位（主窗口已加载外部网页，这里只做提示） */
 .native-browser-placeholder { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; background: var(--el-bg-color-page, #fafafa); }
-[data-theme="dark"] .native-browser-placeholder { background: #1b1d23; }
+[data-theme="dark"] .native-browser-placeholder { background: var(--el-bg-color); }
 .placeholder-content { text-align: center; }
 .placeholder-icon { font-size: 64px; margin-bottom: 16px; }
 .placeholder-text { font-size: 18px; color: var(--el-text-color-primary); margin-bottom: 8px; }
@@ -2063,6 +2066,5 @@ onUnmounted(() => {
 .pwd-host { font-weight: 500; font-size: 14px; }
 .pwd-sub { font-size: 12px; color: var(--el-text-color-secondary); margin-top: 2px; word-break: break-all; }
 .pwd-actions { display: flex; gap: 4px; flex-shrink: 0; }
-
 
 </style>

@@ -13,10 +13,14 @@ const PREVIEW = 'wallpaper.webp';
 
 /** 构造皮肤主题贡献块（配色取自壁纸主色调，surface 定制弹窗/边框/圆角/按钮风格） */
 /**
- * 部件图案：这里**只填文件名**，前端 settings.applySurface 统一包装为 url("...")。
- * 历史坑：此处曾写成 `url(/api/plugin-assets/xxx.webp) center/cover no-repeat`，
- * 前端再套一层 url("...") 后得到 `url("url(...) center/cover no-repeat")`——非法 CSS 值，
- * background-image 整条声明失效，导致列表/输入框/按钮/弹窗的真图背景全部不显示。
+ * 部件图案：这里**只填文件名**（包内相对路径），前端 settings.applySurface 统一包装为 url("...")。
+ * 历史坑（两度踩到，根因同一个）：务必区分「文件名」与「完整 CSS 值」——
+ *   · 曾经此处写成 `url(/api/plugin-assets/xxx.webp) center/cover no-repeat`；前端再套一层 url() 后
+ *     得到 `url("url(...) center/cover no-repeat")`，非法 CSS，background-image 整条失效；
+ *   · 又曾把前端改成「按 pluginId 无条件包 url()」，看似安全，实则把文件名包装成了**服务器地址**，
+ *     前端再包一层仍是 `url("url("...")")`，同样非法 —— 列表/输入框/按钮/弹窗/菜单/代码模式/浏览器外壳
+ *     的真图背景全部不显示。
+ * 现行方案：前端按「值形态」判断（文件名才包 url()，data:/url(/函数式值原样透传），这里保持只填文件名即可。
  */
 function skinTheme(
   id: string,

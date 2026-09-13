@@ -674,12 +674,35 @@ export const useSettingsStore = defineStore('settings', () => {
 
   /**
    * 下发表面定制（内置系列与插件皮肤共用）：
-   * 玻璃底色/透明度/边框/圆角/图案纹理/滚动条等；插件皮肤的图案为资源 URL，内置系列为 data URI
+   * 玻璃底色/透明度/边框/圆角/图案纹理/滚动条等。
+   * 图案值的两种来源必须区分对待（历史坑，见下 asset()）：
+   *   · 插件皮肤 surface 里填的是**包内文件名**（如 'dialog-bg.webp'）→ 需包装成 url(资源地址)
+   *   · 内置系列 surface 里填的是**完整 CSS 值**（data URI / linear-gradient / repeating-linear-gradient）
+   *     → 原样使用，绝不能再包一层 url()
    */
   function applySurface(sf: SkinSurface, pluginId: string | null) {
     const root = document.documentElement.style;
     const dark = settings.value.darkMode;
-    const asset = (v: string) => (pluginId ? `url("${pluginAssetUrl(pluginId, v)}")` : v);
+    /**
+     * 图案值 → 可直接写进 background-image 的 CSS 值。
+     * 判据：只有「看起来像包内相对路径的文件名」才包装 url()。
+     * 历史坑（本轮复修）：原实现只按 pluginId 分支，插件皮肤填的**文件名**被包装成
+     *   url("/api/plugin-assets/<id>/dialog-bg.webp")  —— 但那是服务器 URL，不是 CSS 值；
+     *   前端再包一层 url() 后得到 `url("url("...")")`，引号提前闭合 → 整条 background-image 失效，
+     *   导致菜单/代码模式/浏览器外壳/列表/输入框/按钮/弹窗的真图背景**全部不显示**。
+     *   更早一版是在皮肤定义里写完整 CSS 值，引出的正是同一条注释警告的 bug；两版都没堵住根因：
+     *   根因是「分辨不清文件名 vs CSS 值」，而不是「值写在哪一侧」。
+     * 现在：文件名 → url(资源地址)；其余（data: / url( / 含 '(' 的函数式值 / 含空白的多值）→ 原样透传。
+     */
+    const asset = (v: string) => {
+      if (!pluginId) return v;
+      const s = v.trim();
+      const looksLikeFile =
+        !/^(data:|https?:|url\()/i.test(s) &&
+        !s.includes('(') &&
+        !/\s/.test(s);
+      return looksLikeFile ? `url("${pluginAssetUrl(pluginId, s)}")` : s;
+    };
 
     // ===== 配色兜底链：皮肤显式值 → 由 primary 自动派生 → 主题基线 =====
     // 关键改动（P0-2）：所有兜底不再用硬编码中性灰，改从皮肤主色派生，

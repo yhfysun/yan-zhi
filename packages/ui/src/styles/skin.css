@@ -33,6 +33,11 @@
 
 /* ===== 内容容器透明化：让壁纸透出（内容 z-index 已 ≥1，压在遮罩之上） =====
    用 !important 压过 App.vue 中后置的实色背景规则（.platform-desktop.app-shell / 移动端 .page） */
+/* 注意：这里**不含** .home-page —— 该类名被两处复用：
+   views/Home.vue（应用首页，整页容器，需要透明让壁纸透出）
+   BrowserPanel.vue 的起始页（面板内的滚动内容区，需要玻璃底保证正文可读）
+   两者诉求相反，统一在此列表里 transparent!important 会把浏览器起始页也打成透明 →
+   正文直接压在壁纸上读不清。所以浏览器那个改由下方 .browser-shell .home-page 单独给底。 */
 [data-skin="on"] .app-shell,
 [data-skin="on"] .platform-desktop.app-shell,
 [data-skin="on"] .app-body,
@@ -46,10 +51,20 @@
 [data-skin="on"] .local-market,
 [data-skin="on"] .mp-home,
 [data-skin="on"] .remote-market,
-[data-skin="on"] .home-page,
 [data-skin="on"] .is-electron [data-theme="dark"] .app-body,
 [data-skin="on"] .is-electron .main-content {
   background: transparent !important;
+}
+
+/* 应用首页（views/Home.vue）：整页容器透明让壁纸透出。
+   ⚠️ 与浏览器起始页同名冲突（都叫 .home-page），这里必须让浏览器那个赢，所以：
+   · 本条**不带 !important**、且用 background-color 长属性（不碰 background 简写）——
+     简写会把 background-image 一并置为 initial，把底图灭掉；
+   · 浏览器那条（html[data-skin="on"] .browser-shell .home-page）特异性更高 (0,3,1)，
+     且它的 background-color 带 !important，所以能稳定压住本条。
+   未开皮肤时两条都不匹配，views/Home.vue 走自己的样式，不受影响。 */
+html[data-skin="on"] .home-page {
+  background-color: transparent;
 }
 
 /* ===== 页面级玻璃面板：整页为内容区的页面（无子面板覆盖）需自带玻璃背景 ===== */
@@ -712,7 +727,10 @@
   background-color: color-mix(in srgb, var(--skin-glass-tint, #1d1d1c) 90%, transparent) !important;
 }
 /* 头部文字/图标：强制与外壳玻璃底对比，杜绝白底白字（头部看不见）。
-   浅色玻璃底→深色字；深色玻璃底→浅色字。仅在皮肤开启时生效，不影响默认主题。 */
+   2026-09-13「全面接管」：原先写死 #202124 / #5f6368 / #e8eaed 三档常数，
+   与本套皮肤色相无关，切换皮肤时头部始终是同一组"Chrome 灰"。
+   改为走 --skin-text* 兜底链（皮肤显式值 → primary 派生 → 原常数），
+   深浅色不再需要各写一遍：变量本身已按当前主题派生。 */
 [data-skin="on"] .browser-tabbar,
 [data-skin="on"] .browser-toolbar,
 [data-skin="on"] .browser-tabbar .tab-item,
@@ -720,26 +738,108 @@
 [data-skin="on"] .browser-toolbar .nav-btn,
 [data-skin="on"] .browser-toolbar .url-input,
 [data-skin="on"] .browser-toolbar .url-lock,
-[data-skin="on"] .browser-toolbar .zoom-label { color: #202124 !important; }
+[data-skin="on"] .browser-toolbar .zoom-label { color: var(--skin-text, #202124) !important; }
 [data-skin="on"] .browser-tabbar .tab-favicon,
 [data-skin="on"] .browser-tabbar .tab-close,
-[data-skin="on"] .browser-toolbar .url-clear { color: #5f6368 !important; }
-[data-theme="dark"][data-skin="on"] .browser-tabbar,
-[data-theme="dark"][data-skin="on"] .browser-toolbar,
-[data-theme="dark"][data-skin="on"] .browser-tabbar .tab-item,
-[data-theme="dark"][data-skin="on"] .browser-tabbar .tab-item.active,
-[data-theme="dark"][data-skin="on"] .browser-toolbar .nav-btn,
-[data-theme="dark"][data-skin="on"] .browser-toolbar .url-input,
-[data-theme="dark"][data-skin="on"] .browser-toolbar .url-lock,
-[data-theme="dark"][data-skin="on"] .browser-toolbar .zoom-label { color: #e8eaed !important; }
-[data-theme="dark"][data-skin="on"] .browser-tabbar .tab-favicon,
-[data-theme="dark"][data-skin="on"] .browser-tabbar .tab-close,
-[data-theme="dark"][data-skin="on"] .browser-toolbar .url-clear { color: #bdc1c6 !important; }
-/* 地址栏在底图上保持玻璃胶囊质感 */
-[data-skin="on"] .url-bar {
-  background-color: var(--el-fill-color-blank);
+[data-skin="on"] .browser-toolbar .url-clear { color: var(--skin-text-tertiary, #5f6368) !important; }
+/* 地址栏在底图上保持玻璃胶囊质感。
+   html 前缀理由同下：本组件 scoped 规则特异性为 (0,2,0)，不加前缀会打平后被后加载的 chunk 压过 */
+html[data-skin="on"] .url-bar {
+  background-color: var(--skin-input-bg, var(--el-fill-color-blank));
   backdrop-filter: var(--glass-filter);
   -webkit-backdrop-filter: var(--glass-filter);
+}
+
+/* ===== 内置浏览器「内芯」接管（2026-09-13）=====
+   背景：此前皮肤只换到 tab 栏/工具栏一层外壳，tab 内容区、收藏夹栏、主页、
+   网页内容占位层仍沿用 Element Plus 默认蓝灰（--el-bg-color-page / --el-fill-color 等），
+   在浅色主题下尤其明显——切了皮肤里面还是灰的。
+   这里补齐外壳以内的所有自绘表面；BrowserView 真网页为原生层，不在换肤范围。
+
+   选择器为什么带 html 前缀（重要）：
+   BrowserPanel.vue 是 <style scoped>，编译后是 .home-page[data-v-xxxx] —— 特异性 (0,2,0)；
+   而无前缀的 [data-skin=on] .home-page 同样是 (0,2,0)。两者打平后**看加载顺序**，
+   而 BrowserPanel 的 CSS 是路由懒加载 chunk，**总在**全局 skin.css 之后注入 → 永远赢。
+   加一个 html 前缀把特异性提到 (0,2,1)，无论加载顺序如何都能稳定压住 scoped 规则。
+   （只在皮肤开启时生效：未开皮肤不匹配，组件原样式照旧） */
+html[data-skin="on"] .browser-shell {
+  background: var(--skin-surface, var(--el-bg-color, #fff));
+}
+html[data-skin="on"] .browser-tabbar,
+html[data-skin="on"] .browser-toolbar,
+html[data-skin="on"] .bookmarks-bar {
+  background: var(--skin-surface, var(--el-bg-color, #fff));
+  border-color: var(--skin-glass-border, var(--el-border-color-lighter, #e0e0e0));
+}
+html[data-skin="on"] .tab-item {
+  color: var(--skin-text-secondary, var(--el-text-color-secondary, #5f6368));
+}
+html[data-skin="on"] .tab-item.active {
+  background: var(--skin-surface-raised, var(--el-bg-color, #fff));
+  color: var(--skin-text, var(--el-text-color-primary, #202124));
+}
+html[data-skin="on"] .tab-item:hover,
+html[data-skin="on"] .tab-close:hover,
+html[data-skin="on"] .tab-new:hover,
+html[data-skin="on"] .nav-btn:hover:not(:disabled),
+html[data-skin="on"] .zoom-label:hover,
+html[data-skin="on"] .bookmark-item:hover,
+html[data-skin="on"] .site-tile:hover,
+html[data-skin="on"] .recent-item:hover,
+html[data-skin="on"] .history-row:hover {
+  background: var(--skin-surface-hover, rgba(0, 0, 0, 0.06));
+}
+html[data-skin="on"] .nav-btn,
+html[data-skin="on"] .zoom-label,
+html[data-skin="on"] .bookmark-item {
+  color: var(--skin-text-secondary, var(--el-text-color-regular, #5f6368));
+}
+html[data-skin="on"] .url-bar,
+html[data-skin="on"] .home-search-box {
+  background: var(--skin-input-bg, var(--el-fill-color-light, #fff));
+  border-color: var(--skin-input-border, var(--el-border-color, #dadce0));
+}
+html[data-skin="on"] .url-input,
+html[data-skin="on"] .home-search-input {
+  color: var(--skin-text, var(--el-text-color-primary, #202124));
+}
+html[data-skin="on"] .url-input::placeholder,
+html[data-skin="on"] .home-search-ico,
+html[data-skin="on"] .url-lock {
+  color: var(--skin-text-tertiary, var(--el-text-color-placeholder, #9aa0a6));
+}
+/* 主页：整页内容区，给玻璃底 + 菜单底图（不给透明，透明会露出壁纸导致正文不可读）
+   注意：.home-page 这个名字**两个组件都在用**（views/Home.vue 首页 + BrowserPanel 起始页），
+   所以必须挂在 .browser-shell 下限定，否则会给应用首页套上浏览器起始页的样式。 */
+/* 注意 background 简写会**重置** background-image：这里的 !important 简写会把底图一并清成
+   none!important，导致上面那行 background-image 永远不生效。所以底图必须写进同一个简写里
+   （或者全程用 background-color + 独立 background-image 两个长属性，不碰简写）。
+   这里采用「简写带 !important 打底 + 长属性补图」：简写里显式写上底图变量，
+   避免再被 !important 的 none 覆盖。 */
+html[data-skin="on"] .browser-shell .home-page {
+  background-color: var(--skin-surface, var(--el-bg-color-page, #fafafa)) !important;
+  background-image: var(--skin-menu-pattern, none);
+  background-size: var(--skin-pattern-size, cover);
+  background-repeat: var(--skin-pattern-repeat, no-repeat);
+  background-position: center;
+}
+html[data-skin="on"] .browser-shell .home-section-title,
+html[data-skin="on"] .browser-shell .placeholder-text {
+  color: var(--skin-text, var(--el-text-color-primary, #202124));
+}
+html[data-skin="on"] .browser-shell .analysis-card {
+  background: var(--skin-surface-raised, var(--el-bg-color, #fff));
+  border-color: var(--skin-glass-border, var(--el-border-color-lighter, #e0e0e0));
+}
+/* 网页内容区（BrowserView 之上/之外的占位层）：用最实的凹陷色，避开灰蒙蒙一片 */
+html[data-skin="on"] .browser-viewport,
+html[data-skin="on"] .page-frame,
+html[data-skin="on"] .page-webview,
+html[data-skin="on"] .native-browser-placeholder {
+  background: var(--skin-surface-sunken, var(--el-bg-color-page, #fafafa));
+}
+html[data-skin="on"] .loading-overlay {
+  background: var(--skin-surface, rgba(255, 255, 255, 0.7));
 }
 
 /* ============================================================

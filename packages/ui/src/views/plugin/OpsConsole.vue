@@ -1605,7 +1605,8 @@ onUnmounted(() => {
   padding: 1px 5px; border-radius: 4px;
 }
 .ops-md pre {
-  background: #0f172a; color: #e2e8f0; padding: 12px 14px; border-radius: 8px;
+  /* 代码块走皮肤「凹陷层」（未开皮肤时保持原深色，行为不变） */
+  background: var(--skin-surface-sunken, #0f172a); color: var(--skin-text, #e2e8f0); padding: 12px 14px; border-radius: 8px;
   overflow-x: auto; font-family: "JetBrains Mono", Consolas, monospace; font-size: 12px;
   margin: 8px 0; max-width: 100%; white-space: pre-wrap; word-break: break-all;
 }

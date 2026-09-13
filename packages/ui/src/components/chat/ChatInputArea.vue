@@ -337,9 +337,38 @@
         </div>
 
         <div class="toolbar-right">
+          <!-- 会话级工具权限：选择值持久化到 conversation.permission_mode，后端按此裁剪/拦截写类工具 -->
+          <el-popover placement="top-end" :width="250" trigger="click" :show-arrow="false">
+            <template #reference>
+              <!-- 注意：tooltip 不能套在 button 外层——会吃掉事件导致 popover 点不开。
+                   同模型下拉的坑，见下方 model-select-btn 注释。改用 title 属性。 -->
+              <button type="button" class="model-select-btn perm-select-btn" :class="{ 'perm-readonly': store.permissionMode === 'readonly' }" title="工具权限：限制智能体能执行的操作范围">
+                <el-icon :size="13"><Lock /></el-icon>
+                <span class="model-select-name">{{ permissionLabel }}</span>
+                <el-icon :size="11"><ArrowDown /></el-icon>
+              </button>
+            </template>
+            <div class="pop-select-list">
+              <div
+                v-for="p in PERMISSION_OPTIONS"
+                :key="p.value"
+                class="pop-select-item"
+                :class="{ active: store.permissionMode === p.value }"
+                @click="onPermissionChange(p.value)"
+              >
+                <div class="pop-perm-info">
+                  <span>{{ p.label }}</span>
+                  <span class="pop-perm-desc">{{ p.desc }}</span>
+                </div>
+                <el-icon v-if="store.permissionMode === p.value" class="pop-perm-check"><Check /></el-icon>
+              </div>
+            </div>
+          </el-popover>
           <el-popover placement="top-end" :width="240" trigger="click" :show-arrow="false">
             <template #reference>
-              <button type="button" class="model-select-btn">
+              <!-- 注意：tooltip 不能套在 button 外层——会吃掉事件导致 popover 点不开。
+                   改为让 popover 直接持有 button，tooltip 走 title 属性。 -->
+              <button type="button" class="model-select-btn" :title="`模型：${currentModelName}`">
                 <el-icon :size="13"><Cpu /></el-icon>
                 <span class="model-select-name">{{ currentModelName }}</span>
                 <el-icon :size="11"><ArrowDown /></el-icon>
@@ -444,6 +473,21 @@ const {
 
 const isCodeMode = useCodeStore().codeModeActive;
 const inputTooLong = computed(() => input.value.length > LONG_INPUT_THRESHOLD);
+
+// ===== 会话级工具权限（只读/默认/全部放行）=====
+// 选择持久化到 conversation.permission_mode；readonly 模式下后端会构建期裁剪写工具 + 运行时硬拦截
+type PermissionMode = 'readonly' | 'default' | 'full';
+const PERMISSION_OPTIONS: Array<{ value: PermissionMode; label: string; desc: string }> = [
+  { value: 'default', label: '默认权限', desc: '正常执行所有工具' },
+  { value: 'readonly', label: '只读', desc: '禁止写入/执行/委派，仅检索浏览' },
+  { value: 'full', label: '全部放行', desc: '不做限制（等同默认）' },
+];
+const permissionLabel = computed(() =>
+  PERMISSION_OPTIONS.find((p) => p.value === store.permissionMode)?.label || '默认权限',
+);
+function onPermissionChange(mode: PermissionMode) {
+  void store.setPermissionMode(mode);
+}
 
 // ===== 「+」聚合菜单（对齐 WorkBuddy：专家/模式 hover 右侧弹出子菜单，其余点击触发） =====
 const plusOpen = ref(false);

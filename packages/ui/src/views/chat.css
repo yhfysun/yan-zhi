@@ -65,6 +65,19 @@
 /* 空间弹窗：目录输入 + 浏览按钮一行排布 */
 .space-dir-row { display: flex; gap: 8px; width: 100%; }
 .space-dir-row .el-input { flex: 1; }
+/* 空间记忆弹窗：说明 + 落盘路径提示 */
+.space-memory-hint {
+  margin: 0 0 10px; font-size: 12px; line-height: 1.6;
+  color: var(--color-text-secondary, #64748b);
+}
+.space-memory-hint code {
+  padding: 1px 5px; border-radius: 4px; font-size: 11px;
+  background: var(--glass-bg, rgba(15, 23, 42, 0.05));
+}
+.space-memory-path {
+  margin: 8px 0 0; font-size: 11px; word-break: break-all;
+  color: var(--color-text-secondary, #64748b);
+}
 .tree-node { margin-bottom: 2px; }
 .tree-node-head {
   display: flex; align-items: center; gap: 6px;
@@ -415,7 +428,8 @@
 .msg-actions .el-button { color: var(--color-text-secondary); }
 .msg-actions .el-button:hover { color: var(--color-primary); }
 .msg-content pre {
-  background: #0f172a; color: #e2e8f0; padding: 12px 14px; border-radius: 8px;
+  /* 代码块走皮肤「凹陷层」（未开皮肤时保持原深色，行为不变） */
+  background: var(--skin-surface-sunken, #0f172a); color: var(--skin-text, #e2e8f0); padding: 12px 14px; border-radius: 8px;
   overflow-x: auto; font-family: "JetBrains Mono", "Cascadia Code", monospace; font-size: 13px; margin: 8px 0;
   max-width: 100%; white-space: pre-wrap; word-break: break-all;
 }
@@ -505,7 +519,7 @@
 .msg-user .msg-content ::selection { background: rgba(255,255,255,0.25); color: #fff; }
 
 /* 暗色主题下代码块背景微调，避免与页面背景完全融合 */
-[data-theme="dark"] .msg-content pre { background: #0d1117; border: 1px solid rgba(255,255,255,0.06); }
+[data-theme="dark"] .msg-content pre { background: var(--skin-surface-sunken, #0d1117); border: 1px solid rgba(255,255,255,0.06); }
 [data-theme="dark"] .msg-user .msg-content pre { background: rgba(0,0,0,0.35); }
 
 .inline-tool-chip {
@@ -684,7 +698,7 @@
   transition: border-color 0.2s ease, box-shadow 0.2s ease;
   color: var(--color-text, #333);
 }
-.input-box.focused { border-color: var(--color-primary); box-shadow: 0 6px 28px color-mix(in srgb, var(--color-primary) 13%, transparent); }
+.input-box.focused { border-color: var(--glass-border); }
 .input-textarea .el-textarea__inner {
   border: none; background: transparent; box-shadow: none !important;
   color: var(--color-text, #333); caret-color: var(--color-text, #333);
@@ -742,6 +756,11 @@
 .input-toolbar {
   display: flex; align-items: center;
   padding: 2px 8px 6px; gap: 4px;
+  /* 容器查询上下文：宽度不足时由文件末尾的 @container 规则把胶囊按钮收缩成纯图标。
+     用容器查询而非媒体查询——跟随「输入条自身宽度」而非窗口宽度，
+     右侧面板展开/侧栏折叠/抽屉弹出时同样能正确响应。 */
+  container-type: inline-size;
+  container-name: inputbar;
 }
 
 /* 上下文条：位于输入框上方，承载工作目录 / MCP / Skill / 上传 等会话上下文 */
@@ -1640,3 +1659,42 @@ body.yz-right-panel-open .el-overlay-dialog {
 .model-select-btn { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 10px; border-radius: 999px; border: 1px solid var(--glass-border); background: transparent; color: var(--color-text); font-size: 12px; cursor: pointer; transition: border-color 0.15s; }
 .model-select-btn:hover { border-color: var(--color-primary); }
 .model-select-name { max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-select-btn { flex-shrink: 0; }
+/* 会话权限下拉：readonly 时整钮转警示橙，提醒当前会话处于受限模式 */
+.perm-select-btn { max-width: 150px; }
+.perm-select-btn.perm-readonly { color: #b45309; border-color: rgba(245, 158, 11, 0.45); }
+.perm-select-btn.perm-readonly:hover { border-color: #f59e0b; }
+[data-theme="dark"] .perm-select-btn.perm-readonly { color: #fbbf24; }
+.pop-perm-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.pop-perm-desc { font-size: 11px; color: var(--color-text-secondary); font-weight: 400; }
+.pop-perm-check { color: var(--color-primary); flex-shrink: 0; }
+
+/* ===== 输入工具栏响应式收缩（容器查询）=====
+ * 目标：宽度充足时显示完整文字（分支名 / 权限 / 模型名），
+ *       变窄时逐级收缩，最终退化为纯图标按钮，避免文字被挤压或溢出。
+ * 三档断点（以 .input-toolbar 自身宽度为准）：
+ *   > 620px  完整
+ *   ≤ 620px  文字宽度收窄（仍可读）
+ *   ≤ 520px  隐藏文字与下拉箭头 → 退化为圆形图标按钮（信息移入 tooltip）
+ *   ≤ 400px  再让位非关键按钮，仅保留 新建任务 + 发送
+ * 说明：容器查询不会被 .input-toolbar 之外的同名类命中，作用范围天然受限。 */
+@container inputbar (max-width: 620px) {
+  .model-select-name { max-width: 96px; }
+  .perm-select-btn { max-width: 104px; }
+  .agent-trigger { max-width: 150px; }
+}
+@container inputbar (max-width: 520px) {
+  /* 收成图标按钮：文字 + 下拉箭头隐藏，仅保留前置图标 */
+  .model-select-btn {
+    width: 30px; height: 30px; padding: 0; gap: 0;
+    justify-content: center; border-radius: 50%;
+  }
+  .model-select-btn > .model-select-name,
+  .model-select-btn > .el-icon:last-child { display: none; }
+  .agent-trigger { max-width: 110px; }
+}
+@container inputbar (max-width: 400px) {
+  /* 极窄：新建任务让位（发送按钮是唯一不可省的操作） */
+  .toolbar-right .el-button.is-circle:not(.send-btn) { display: none; }
+  .toolbar-divider { display: none; }
+}
