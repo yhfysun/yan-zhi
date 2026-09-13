@@ -540,6 +540,67 @@ html[data-skin="on"] .home-page {
   -webkit-backdrop-filter: var(--glass-filter);
 }
 
+/* ===== 工具页卡片（ToolMarket.vue）=====
+   【2026-09-13 用户反馈"工具卡片这么怪异？"】
+   两张卡此前**不在任何皮肤规则里** → 只有纯 --glass-bg 玻璃底，在 cyber 壁纸上
+   是一块扁平的暗色方板，既不像其他卡片那样有纹理，也没有语义描边。
+   这里把它们并入卡片变体图循环（同 .el-card / .conv-item 一套 --skin-card-1..4-pattern）。
+   用 nth-of-type —— .card-grid 下全是同标签 div，均衡分布；未配 cardPatterns 的皮肤
+   回落 --glass-bg，行为与改造前一致。
+   ⚠️ 别用 nth-child：.card-grid 内子元素是同标签 div，nth-of-type 才是整数计数。 */
+[data-skin="on"] .tool-card,
+[data-skin="on"] .market-card {
+  background-color: transparent;
+  background-size: cover;
+  background-repeat: no-repeat;
+  background-position: center;
+  border-color: color-mix(in srgb, var(--color-primary) 20%, var(--glass-border));
+  border-radius: var(--skin-card-radius, 12px);
+}
+[data-skin="on"] .tool-card:nth-of-type(4n + 1),
+[data-skin="on"] .market-card:nth-of-type(4n + 1) {
+  background-image: var(--skin-card-1-pattern, var(--glass-bg)) !important;
+}
+[data-skin="on"] .tool-card:nth-of-type(4n + 2),
+[data-skin="on"] .market-card:nth-of-type(4n + 2) {
+  background-image: var(--skin-card-2-pattern, var(--glass-bg)) !important;
+  border-radius: calc(var(--skin-card-radius, 12px) * 1.4);
+}
+[data-skin="on"] .tool-card:nth-of-type(4n + 3),
+[data-skin="on"] .market-card:nth-of-type(4n + 3) {
+  background-image: var(--skin-card-3-pattern, var(--glass-bg)) !important;
+  border-color: color-mix(in srgb, var(--color-primary) 38%, transparent);
+  border-radius: calc(var(--skin-card-radius, 12px) * 0.6);
+}
+[data-skin="on"] .tool-card:nth-of-type(4n),
+[data-skin="on"] .market-card:nth-of-type(4n) {
+  background-image: var(--skin-card-4-pattern, var(--glass-bg)) !important;
+  border-radius: var(--skin-tag-radius, 8px);
+}
+/* 卡片铺图后可读性：卡内文本直接压在明暗不均的取景图上会局部看不清，
+   给卡片内所有直接子块抬 z-index 让它们位于图之上（衬底靠下方 .stat/.schema 单独处理）。 */
+[data-skin="on"] .tool-card > *,
+[data-skin="on"] .market-card > * {
+  position: relative;
+  z-index: 1;
+}
+/* 参数详情弹窗内的 schema 代码块：弹窗本身已铺 dialog 底图，
+   这里给代码区一层不透明兜底衬底，避免 JSON 长文本与底图纹理互相干扰。
+   ⚠️ 用 html 前缀提高特指度（同 ToolMarket.vue scoped 的 :root[data-theme] 规则同分），
+   否则会被组件样式按"后加载者赢"盖掉。 */
+html[data-skin="on"] .schema-detail .schema-pre {
+  background: color-mix(in srgb, var(--skin-glass-tint, #0A101C) 88%, transparent);
+  color: var(--skin-text, var(--color-text));
+}
+html[data-skin="on"] .schema-detail .schema-label {
+  color: var(--skin-text, var(--color-text));
+  opacity: 1;
+}
+[data-skin="on"] .tool-card:hover,
+[data-skin="on"] .market-card:hover {
+  border-color: color-mix(in srgb, var(--color-primary) 55%, transparent);
+}
+
 /* ===== 面板级组件补磨砂质感：卡片/列表容器/筛选区/统计表 ===== */
 [data-skin="on"] .ov-card,
 [data-skin="on"] .log-item,
@@ -583,30 +644,14 @@ html[data-skin="on"] .home-page {
 [data-skin="on"] .logs-filters:nth-of-type(4n) {
   background-image: var(--skin-card-4-pattern, var(--glass-bg));
 }
-/* 列表项：铺卡片变体图（同 4 循环），hover/active 走 token 叠在其上 */
+/* 列表行（日志行 / 消息勾选行）：与 .conv-item 同类 —— **不铺图**。
+   用户明确要求"列表里面的选项不要图片"：列表是信息密集的逐行扫描区，
+   每行一张图 = 噪音，且文字压在图上可读性差。这里只保留 hover 语义底色。 */
 [data-skin="on"] .log-item,
 [data-skin="on"] .msg-check-item {
   background-color: transparent;
-  background-size: cover;
-  background-repeat: no-repeat;
-  background-position: center;
+  background-image: none;
   border-radius: var(--skin-tag-radius, 6px);
-}
-[data-skin="on"] .log-item:nth-of-type(4n + 1),
-[data-skin="on"] .msg-check-item:nth-of-type(4n + 1) {
-  background-image: var(--skin-card-1-pattern, none);
-}
-[data-skin="on"] .log-item:nth-of-type(4n + 2),
-[data-skin="on"] .msg-check-item:nth-of-type(4n + 2) {
-  background-image: var(--skin-card-2-pattern, none);
-}
-[data-skin="on"] .log-item:nth-of-type(4n + 3),
-[data-skin="on"] .msg-check-item:nth-of-type(4n + 3) {
-  background-image: var(--skin-card-3-pattern, none);
-}
-[data-skin="on"] .log-item:nth-of-type(4n),
-[data-skin="on"] .msg-check-item:nth-of-type(4n) {
-  background-image: var(--skin-card-4-pattern, none);
 }
 [data-skin="on"] .log-item:hover,
 [data-skin="on"] .msg-check-item:hover {
@@ -1231,79 +1276,27 @@ html[data-skin="on"] .loading-overlay {
    · 玻璃底色把图洗白 —— 正是用户反馈"很亮很白，只能模糊看到图片"的来源之一
    故先改为「子项完全透明，图案由容器统一承载」。
 
-   【2026-09-13 修订 ②：用户反馈「卡片样式可以设置多点啊，然后随机多好。。。」】
-   子项全透明虽然解决了错位/洗白，但整列卡片长得一模一样 = 单调。
-   现在改为：**子项各自铺一张「卡片变体图」**，按 nth-child 循环取
-   --skin-card-1..4-pattern（build-skin-parts.mjs 从壁纸 4 个方位取景），
-   于是相邻卡片露出壁纸的不同局部 + 不同边框/圆角/投影 = "多套样式随机分配"。
-   容器（.conv-list 等）的 task-list 底图保留在最底层，子项图 cover 覆盖其上，
-   两者取景不同反而形成层次（不再是原地叠同一张图那种糊）。
+   【2026-09-13 修订 ②】用户要求"卡片样式多点、随机"时曾给子项铺卡片变体图，
+   但随后用户明确否定（截图圈出会话列表项）：**"这个就不要图片了列表里面的选项"**。
+   结论：**列表条目一律不铺图** —— 列表是高频点击的信息密集区，每行一张不同的图
+   = 视觉噪音，且文字（标题/时间）压在图上可读性差。
+   列表**容器**（.conv-list 等）的 task-list 底图保留，全列表共用一张完整图；
+   条目不铺图、不吃底色，只保留 hover/active 的语义反馈。
 
-   ⚠️ 为什么用 nth-child 而不是 JS 随机索引：
-   ① 稳定可复现（同一列表每次渲染外观一致，不会闪）；
-   ② 不需要往组件里塞状态/改 template；
-   ③ 列表增删时自动重排，永远均匀分布，不会"随机到 5 个连着同一张"。
-   观感上就是随机错落，符合用户「随机多好」的诉求。 */
+   ⚠️ 注意区分两类"卡片"（用户对不同区域的期望不同，别再统一处理）：
+   · **列表条目**（.conv-item/.space-item/.st-item）→ **不铺图**（本条，用户明确要求）
+   · **内容卡片**（.el-card/.ov-card/.glass-card/对话区 .main-agent-result 等）
+     → 铺卡片变体图 + 随机分配（见下方"卡片变体"区块与对话卡片区块） */
 [data-skin="on"] .conv-item,
 [data-skin="on"] .space-item,
 [data-skin="on"] .st-item {
   background-color: transparent !important;
-  background-size: cover !important;
-  background-repeat: no-repeat !important;
-  background-position: center !important;
+  background-image: none !important;
   border: 1px solid transparent;
-  border-radius: var(--skin-card-radius, 12px);
-  transition: background-color 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+  border-radius: var(--skin-tag-radius, 8px);
+  transition: background-color 0.15s ease, border-color 0.15s ease;
 }
-/* 变体循环：4 张卡片图轮流上（--skin-card-N-pattern 由 applySurface 下发）。
-   兜底链：未配 cardPatterns 的皮肤 → 全部回落 task-list-pattern（观感同改造前）。 */
-[data-skin="on"] .conv-item:nth-child(4n + 1),
-[data-skin="on"] .space-item:nth-child(4n + 1),
-[data-skin="on"] .st-item:nth-child(4n + 1) {
-  background-image: var(--skin-card-1-pattern, var(--skin-task-list-pattern, none)) !important;
-}
-[data-skin="on"] .conv-item:nth-child(4n + 2),
-[data-skin="on"] .space-item:nth-child(4n + 2),
-[data-skin="on"] .st-item:nth-child(4n + 2) {
-  background-image: var(--skin-card-2-pattern, var(--skin-task-list-pattern, none)) !important;
-}
-[data-skin="on"] .conv-item:nth-child(4n + 3),
-[data-skin="on"] .space-item:nth-child(4n + 3),
-[data-skin="on"] .st-item:nth-child(4n + 3) {
-  background-image: var(--skin-card-3-pattern, var(--skin-task-list-pattern, none)) !important;
-}
-[data-skin="on"] .conv-item:nth-child(4n),
-[data-skin="on"] .space-item:nth-child(4n),
-[data-skin="on"] .st-item:nth-child(4n) {
-  background-image: var(--skin-card-4-pattern, var(--skin-task-list-pattern, none)) !important;
-}
-/* 「随机」的第二层：边框色 / 圆角 / 内阴影也按同一个 4 循环走不同档位，
-   让卡片不只是"图不同"，轮廓与质感也错开（避免整列看起来还是同一套样式）。 */
-[data-skin="on"] .conv-item:nth-child(4n + 1),
-[data-skin="on"] .space-item:nth-child(4n + 1),
-[data-skin="on"] .st-item:nth-child(4n + 1) {
-  border-color: color-mix(in srgb, var(--color-primary) 22%, transparent);
-  border-radius: calc(var(--skin-card-radius, 12px) * 0.6);
-}
-[data-skin="on"] .conv-item:nth-child(4n + 2),
-[data-skin="on"] .space-item:nth-child(4n + 2),
-[data-skin="on"] .st-item:nth-child(4n + 2) {
-  border-color: color-mix(in srgb, var(--skin-text, #fff) 14%, transparent);
-  border-radius: var(--skin-card-radius, 12px);
-}
-[data-skin="on"] .conv-item:nth-child(4n + 3),
-[data-skin="on"] .space-item:nth-child(4n + 3),
-[data-skin="on"] .st-item:nth-child(4n + 3) {
-  border-color: color-mix(in srgb, var(--color-primary) 40%, transparent);
-  border-radius: var(--skin-tag-radius, 6px);
-}
-[data-skin="on"] .conv-item:nth-child(4n),
-[data-skin="on"] .space-item:nth-child(4n),
-[data-skin="on"] .st-item:nth-child(4n) {
-  border-color: color-mix(in srgb, var(--color-primary) 14%, var(--glass-border));
-  border-radius: calc(var(--skin-card-radius, 12px) * 1.5);
-}
-/* 状态态：hover / active / pinned 保留原有语义色（叠在卡片变体图之上） */
+/* 状态态：hover / active / pinned 保留原有语义色（叠在容器底图之上） */
 [data-skin="on"] .conv-item:hover,
 [data-skin="on"] .space-item:hover,
 [data-skin="on"] .st-item:hover {
