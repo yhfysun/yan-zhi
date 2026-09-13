@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { v4 as uuid } from 'uuid';
 import { authMiddleware } from '../auth.js';
 import { db } from '../db.js';
+import { normalizePermissionMode } from '../tool-permission.js';
 
 const router = Router();
 router.use(authMiddleware);
@@ -18,7 +19,7 @@ router.get('/', (_req: Request, res: Response) => {
 // POST /api/conversations
 router.post('/', (req: Request, res: Response) => {
   const userId = req.user!.userId;
-  const { title, platformId, modelId, agentId, spaceId } = req.body || {};
+  const { title, platformId, modelId, agentId, spaceId, permissionMode } = req.body || {};
   if (!title) { res.status(400).json({ error: '标题为必填项' }); return; }
   const id = uuid();
   const now = Date.now();
@@ -29,8 +30,8 @@ router.post('/', (req: Request, res: Response) => {
     if (def) resolvedAgentId = 'a_default_assistant';
   }
   db.prepare(
-    'INSERT INTO conversation (id, user_id, title, agent_id, platform_id, model_id, space_id, mcp_servers_json, skill_ids_json, pinned, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-  ).run(id, userId, title, resolvedAgentId, platformId || null, modelId || null, spaceId || null, '[]', '[]', 0, now, now);
+    'INSERT INTO conversation (id, user_id, title, agent_id, platform_id, model_id, space_id, mcp_servers_json, skill_ids_json, pinned, permission_mode, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+  ).run(id, userId, title, resolvedAgentId, platformId || null, modelId || null, spaceId || null, '[]', '[]', 0, normalizePermissionMode(permissionMode), now, now);
   const row = db.prepare('SELECT * FROM conversation WHERE id = ?').get(id);
   res.json({ data: row });
 });
@@ -52,6 +53,11 @@ router.patch('/:id', (req: Request, res: Response) => {
   if (req.body.spaceId !== undefined) {
     sets.push('space_id = ?');
     vals.push(req.body.spaceId || null);
+  }
+  // permissionMode：会话级工具权限（readonly/default/full），非法值归一化为 default
+  if (req.body.permissionMode !== undefined) {
+    sets.push('permission_mode = ?');
+    vals.push(normalizePermissionMode(req.body.permissionMode));
   }
   if (req.body.mcpServerIds !== undefined || req.body.mcpDisabledTools !== undefined) {
     const serverIds = req.body.mcpServerIds ?? (() => {

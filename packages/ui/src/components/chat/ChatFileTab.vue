@@ -580,7 +580,7 @@ function fileMeta(name: string) {
 
 .fs-act-btn:hover {
   background: var(--glass-bg-hover, rgba(15, 23, 42, 0.06));
-  color: var(--el-text-color-primary, #1e293b);
+  color: var(--skin-text, var(--el-text-color-primary, #1e293b));
 }
 
 .fs-act-btn.active {
@@ -623,7 +623,7 @@ function fileMeta(name: string) {
 .fs-panel-title {
   font-size: 12px;
   font-weight: 700;
-  color: var(--el-text-color-primary, #1e293b);
+  color: var(--skin-text, var(--el-text-color-primary, #1e293b));
   flex-shrink: 0;
 }
 
@@ -675,7 +675,7 @@ function fileMeta(name: string) {
   flex: 1; min-width: 0; height: 22px; padding: 0 6px;
   font-size: 12px; font-family: inherit;
   border: 1px solid var(--color-primary, #7c3aed); border-radius: 5px;
-  background: var(--el-color-white, #fff); color: var(--el-text-color-primary, #1e293b); outline: none;
+  background: var(--el-color-white, #fff); color: var(--skin-text, var(--el-text-color-primary, #1e293b)); outline: none;
 }
 
 .fs-tree {

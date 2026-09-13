@@ -181,10 +181,31 @@
   <!-- 空间目录选择器（桌面端可用原生目录选择，Web 端为内置浏览器） -->
   <WorkspaceDirDialog v-model="dirPickerVisible" :current-path="spaceEditForm.dirPath" @selected="onSpaceDirSelected" />
 
+  <!-- 空间记忆（MEMORY.md）：跨会话、该空间下所有智能体共享的长期记忆。
+       注意：这不是 memory 表的维度，而是挂在 space 上的一份文件，故入口在空间上而非「记忆管理」页。 -->
+  <el-dialog v-model="spaceMemoryOpen" :title="`空间记忆 · ${spaceMemoryForm.name}`" width="680px" :close-on-click-modal="false" class="compact-dialog">
+    <div v-if="spaceMemoryLoading" style="padding: 12px"><el-skeleton :rows="5" animated /></div>
+    <template v-else>
+      <p class="space-memory-hint">
+        本空间下所有会话、任意智能体共享的长期记忆（每行一条，格式建议 <code>- [日期] 内容</code>）。
+        对话中会随系统提示词注入。
+      </p>
+      <el-input v-model="spaceMemoryForm.content" type="textarea" :rows="14" placeholder="暂无内容，可在此沉淀空间级约定、关键决策与重要事实" />
+      <p v-if="spaceMemoryForm.path" class="space-memory-path">文件：{{ spaceMemoryForm.path }}</p>
+    </template>
+    <template #footer>
+      <el-button @click="spaceMemoryOpen = false">取消</el-button>
+      <el-button type="primary" :loading="spaceMemorySaving" @click="saveSpaceMemory">保存</el-button>
+    </template>
+  </el-dialog>
+
   <Teleport to="body">
 <ul v-if="spaceMenuTarget" class="ctx-menu" :style="{ top: spaceMenuTarget.y + 'px', left: spaceMenuTarget.x + 'px' }" @click.stop>
     <li @click="openSpaceEdit(spaceMenuTarget.space); closeSpaceMenu()">
       <el-icon><EditPen /></el-icon>编辑空间
+    </li>
+    <li @click="openSpaceMemory(spaceMenuTarget.space); closeSpaceMenu()">
+      <el-icon><Memo /></el-icon>空间记忆
     </li>
     <li @click="treeMenuNewSpace(); closeSpaceMenu()">
       <el-icon><Plus /></el-icon>新建空间
@@ -212,8 +233,9 @@
 <script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount } from 'vue';
 import {
-  Plus, ChatDotRound, Star, EditPen, Delete, FolderOpened, ArrowRight, Close, Search, CaretRight, Timer,
+  Plus, ChatDotRound, Star, EditPen, Delete, FolderOpened, ArrowRight, Close, Search, CaretRight, Timer, Memo,
 } from '@element-plus/icons-vue';
+import { ElMessage } from 'element-plus';
 import { useChat } from '../../composables/chat/useChat';
 import ScheduledTaskDialog from './ScheduledTaskDialog.vue';
 import ChatFileTab from './ChatFileTab.vue';
@@ -238,6 +260,45 @@ function onSpaceDirSelected(path: string) {
     const sep = path.includes('\\') ? '\\' : '/';
     const base = path.split(sep).filter(Boolean).pop() || '';
     if (base) spaceEditForm.value.name = base.replace(/[:.]$/, '');
+  }
+}
+
+// ===== 空间记忆（MEMORY.md）：读写 /api/spaces/:id/memory =====
+const spaceMemoryOpen = ref(false);
+const spaceMemoryLoading = ref(false);
+const spaceMemorySaving = ref(false);
+const spaceMemoryForm = ref({ id: '', name: '', content: '', path: '' });
+
+async function openSpaceMemory(space: any) {
+  if (!space?.id) return;
+  spaceMemoryForm.value = { id: space.id, name: space.name || '空间', content: '', path: '' };
+  spaceMemoryOpen.value = true;
+  spaceMemoryLoading.value = true;
+  try {
+    const r = await spaceStore.readSpaceMemory(space.id);
+    spaceMemoryForm.value.content = r.content;
+    spaceMemoryForm.value.path = r.path;
+  } catch (e: any) {
+    ElMessage.error(e?.message || '读取空间记忆失败');
+    spaceMemoryOpen.value = false;
+  } finally {
+    spaceMemoryLoading.value = false;
+  }
+}
+
+async function saveSpaceMemory() {
+  const { id, content } = spaceMemoryForm.value;
+  if (!id) return;
+  spaceMemorySaving.value = true;
+  try {
+    const r = await spaceStore.writeSpaceMemory(id, content);
+    spaceMemoryForm.value.path = r.path || spaceMemoryForm.value.path;
+    ElMessage.success('空间记忆已保存');
+    spaceMemoryOpen.value = false;
+  } catch (e: any) {
+    ElMessage.error(e?.message || '保存空间记忆失败');
+  } finally {
+    spaceMemorySaving.value = false;
   }
 }
 

@@ -22,6 +22,22 @@ export interface GitAheadBehind {
   behind: number;
 }
 
+/** status 接口返回的单个文件条目（simple-git 结构） */
+export interface GitStatusFile {
+  path: string;
+  index: string;
+  working_dir: string;
+}
+
+/** 分支切换结果（后端 /git/checkout 返回） */
+export interface GitCheckoutResult {
+  ok: boolean;
+  conflicts: string[];
+  dirty: string[];
+  stashed: boolean;
+  message: string;
+}
+
 export const useGitStore = defineStore('git', () => {
   const supported = ref(false);
   const status = ref<Record<string, unknown> | null>(null);
@@ -37,6 +53,17 @@ export const useGitStore = defineStore('git', () => {
   async function fetchStatus(repo: string): Promise<void> {
     const res = await api.get<Record<string, unknown>>(`/git/status?repo=${encodeURIComponent(repo)}`);
     if ('data' in res) status.value = res.data;
+  }
+
+  /** 只读当前仓库状态（不写全局 status，避免多仓库并发串数据） */
+  async function fetchStatusRaw(repo: string): Promise<{ branch: string; files: GitStatusFile[] }> {
+    const res = await api.get<Record<string, unknown>>(`/git/status?repo=${encodeURIComponent(repo)}`);
+    if (!('data' in res)) throw new Error(('error' in res && res.error) || '读取仓库状态失败');
+    const d = (res.data || {}) as { current?: string; files?: GitStatusFile[] };
+    return {
+      branch: d.current || '',
+      files: Array.isArray(d.files) ? d.files : [],
+    };
   }
 
   async function fetchFileTree(repo: string, subPath = ''): Promise<void> {
@@ -93,8 +120,35 @@ export const useGitStore = defineStore('git', () => {
   async function push(repo: string, branch?: string) {
     return api.post('/git/push', { repo, branch });
   }
-  async function checkout(repo: string, branch: string) {
-    return api.post('/git/checkout', { repo, branch });
+  /**
+   * 切换分支。strategy：check=只预检不切换 / normal=直接切 / smart=储藏后切换再恢复 / force=丢弃冲突改动
+   */
+  async function checkout(repo: string, branch: string, strategy: 'check' | 'normal' | 'smart' | 'force' = 'normal') {
+    return api.post<GitCheckoutResult>('/git/checkout', { repo, branch, strategy });
+  }
+
+  /** 冲突（未合并）文件清单 */
+  async function conflicts(repo: string): Promise<string[]> {
+    const res = await api.get<string[]>(`/git/conflicts?repo=${encodeURIComponent(repo)}`);
+    return 'data' in res ? res.data || [] : [];
+  }
+
+  /** 冲突文件三版本：base(:1) / ours(:2) / theirs(:3) */
+  async function conflictVersions(repo: string, filePath: string): Promise<{ base: string; ours: string; theirs: string }> {
+    const res = await api.get<{ base: string; ours: string; theirs: string }>(
+      `/git/conflictVersions?repo=${encodeURIComponent(repo)}&path=${encodeURIComponent(filePath)}`,
+    );
+    return 'data' in res ? res.data : { base: '', ours: '', theirs: '' };
+  }
+
+  /** 标记冲突已解决（git add） */
+  async function resolveConflict(repo: string, file: string) {
+    return api.post('/git/resolve', { repo, file });
+  }
+
+  /** 写入手动合并结果并标记已解决 */
+  async function resolveContent(repo: string, file: string, content: string) {
+    return api.post('/git/resolveContent', { repo, file, content });
   }
   async function restore(repo: string, files: string[]) {
     return api.post('/git/restore', { repo, files });
@@ -263,6 +317,7 @@ export const useGitStore = defineStore('git', () => {
     log,
     checkCapability,
     fetchStatus,
+    fetchStatusRaw,
     fetchFileTree,
     fetchBranches,
     fetchLog,
@@ -275,6 +330,10 @@ export const useGitStore = defineStore('git', () => {
     pull,
     push,
     checkout,
+    conflicts,
+    conflictVersions,
+    resolveConflict,
+    resolveContent,
     restore,
     fetchNumstat,
     fetchAheadBehind,

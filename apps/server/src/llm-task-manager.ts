@@ -6,6 +6,7 @@
 import type { Platform, Model, Message, DeltaToolCall } from '@yan-zhi/shared';
 import { LlmClient, getToolRegistry, getApiToolRegistry, ContextWindow } from '@yan-zhi/core';
 import { db } from './db.js';
+import { normalizePermissionMode, checkToolPermission, filterToolsByPermission, permissionModePrompt, type PermissionMode } from './tool-permission.js';
 import { ensureToolsInitialized } from './mcp/index.js';
 import { executeApiTool } from './mcp/api-tool-executor.js';
 import { getToolsFromDb, mcpShortIdOf, resolveMcpToolName, callMcpTool } from './mcp/client-manager.js';
@@ -59,6 +60,8 @@ interface LlmTask {
   memoryExtractModelId?: string;
   /** 智能体挂载的本体 id 集合（前端随任务下发；空/未设置 = 取数不限本体范围） */
   ontologyIds?: string[];
+  /** 会话级工具权限：readonly=只读（写类工具构建期裁剪+运行时拦截）/ default=正常 / full=全部放行 */
+  permissionMode?: 'readonly' | 'default' | 'full';
 }
 
 const tasks = new Map<string, LlmTask>();
@@ -252,6 +255,12 @@ export function createTask(params: {
   }
 
   const taskId = 'task_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  // 会话级权限模式：以 conversation 表持久化值为准（前端下拉选择后随会话保存）
+  let permissionMode: PermissionMode = 'default';
+  try {
+    const row = db.prepare('SELECT permission_mode FROM conversation WHERE id = ?').get(params.conversationId) as any;
+    permissionMode = normalizePermissionMode(row?.permission_mode);
+  } catch { /* 列未迁移等异常时按默认模式放行 */ }
   const task: LlmTask = {
     id: taskId,
     conversationId: params.conversationId,
@@ -273,6 +282,7 @@ export function createTask(params: {
     memoryExtractPlatformId: params.memoryExtractPlatformId || undefined,
     memoryExtractModelId: params.memoryExtractModelId || undefined,
     ontologyIds: params.ontologyIds,
+    permissionMode,
   };
   tasks.set(taskId, task);
   emit(task, { type: 'task:created', taskId, conversationId: params.conversationId });
@@ -598,6 +608,9 @@ async function runReActLoop(task: LlmTask, params: {
     if (modeFlags.answerOnly) {
       modePrompt.push('- 仅回答模式：本次任务禁止调用任何工具（包括搜索、文件、代码执行与子智能体），直接依据已有知识与上下文用文字回答；若信息不足，明确说明缺什么，而不是尝试调用工具。');
     }
+    // 会话级只读权限：模式指令告知模型按只读方式规划（工具列表已在下方同步裁剪，双保险）
+    const permPrompt = permissionModePrompt(task.permissionMode || 'default');
+    if (permPrompt) modePrompt.push(permPrompt);
     let systemPromptBuilt = params.systemPrompt !== undefined
       ? params.systemPrompt
       : buildSystemPromptForBackend(params.agentId ?? null, userId, params.appGuide, {
@@ -637,6 +650,9 @@ async function runReActLoop(task: LlmTask, params: {
           includeUiTools: !!params.includeUiTools,
         });
     if (modeFlags.answerOnly) toolsBuilt = [];
+    // 只读权限：构建期就把写类工具从列表里摘掉，模型根本看不到（运行时 executeTool 还有拦截兜底）。
+    // 注意：显式传入 params.tools 的场景（定时任务等）同样按会话权限裁剪，权限不因调用来源放松。
+    toolsBuilt = filterToolsByPermission(task.permissionMode || 'default', toolsBuilt);
     const tools = supportsTools ? toolsBuilt : [];
     // 记录会话级 MCP 挂载 serverId：无人值守（前端不在线）时后端直连 MCP 兜底
     task.mountedMcpServerIds = getMergedMcpServerIds(params.agentId ?? null, userId, convId);
@@ -981,7 +997,16 @@ async function executeTool(
   toolCallId: string,
   uiTools: Set<string>,
   depth: number = 0,
-): Promise<string> {  const isUiTool = uiTools.has(toolName);
+): Promise<string> {
+  // 会话级权限拦截（readonly）：写类/不可控工具在此硬拒绝。
+  // 放在函数最顶端 —— 被拒时提前 return，file_write/file_edit 的 file_change 快照钩子
+  // （registry.execute 前后那段）自然不会执行，不会残留无意义的 pending 记录。
+  const perm = checkToolPermission(task.permissionMode || 'default', toolName);
+  if (!perm.allowed) {
+    console.warn(`[llm-task] 权限拦截: conv=${task.conversationId} mode=${task.permissionMode} tool=${toolName}`);
+    return perm.reason || `工具 ${toolName} 已被会话权限拒绝执行`;
+  }
+  const isUiTool = uiTools.has(toolName);
   const isMcp = toolName.startsWith('mcp_');
   const isCustom = toolName.startsWith('custom_');
   const isApi = toolName.startsWith('api_');

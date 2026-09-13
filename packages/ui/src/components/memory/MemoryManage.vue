@@ -7,7 +7,6 @@
         <el-radio-button value="daily"><el-icon class="dim-icon"><Calendar /></el-icon> 每日记忆</el-radio-button>
         <el-radio-button value="session"><el-icon class="dim-icon"><ChatDotRound /></el-icon> 会话记忆</el-radio-button>
         <el-radio-button value="agent"><el-icon class="dim-icon"><Avatar /></el-icon> 智能体记忆</el-radio-button>
-        <el-radio-button value="space"><el-icon class="dim-icon"><Files /></el-icon> 空间记忆</el-radio-button>
       </el-radio-group>
 
       <div class="toolbar-right">
@@ -228,7 +227,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
-import { Plus, Search, MagicStick, Clock, User, Calendar, ChatDotRound, Avatar, Files } from '@element-plus/icons-vue';
+import { Plus, Search, MagicStick, Clock, User, Calendar, ChatDotRound, Avatar } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { useMemoryStore, useAgentStore } from '../../stores';
 import type { MemoryDimension, MemoryRow } from '../../stores/memory';

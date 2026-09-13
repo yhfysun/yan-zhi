@@ -769,7 +769,7 @@ async function onDelete(task: ScheduledTask) {
   user-select: none;
   font-size: 13px;
   font-weight: 600;
-  color: var(--el-text-color-primary, #1e293b);
+  color: var(--skin-text, var(--el-text-color-primary, #1e293b));
 }
 .st-group-header:hover {
   background: var(--glass-bg-hover, rgba(15, 23, 42, 0.04));
@@ -808,7 +808,7 @@ async function onDelete(task: ScheduledTask) {
   font-size: 13px;
   font-weight: 600;
   background: var(--glass-bg, #fff);
-  color: var(--el-text-color-primary, #1e293b);
+  color: var(--skin-text, var(--el-text-color-primary, #1e293b));
   outline: none;
 }
 
@@ -838,7 +838,7 @@ async function onDelete(task: ScheduledTask) {
 .st-item-name {
   font-weight: 600;
   font-size: 13px;
-  color: var(--el-text-color-primary, #1e293b);
+  color: var(--skin-text, var(--el-text-color-primary, #1e293b));
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

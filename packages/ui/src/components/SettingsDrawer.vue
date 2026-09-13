@@ -173,7 +173,7 @@ onBeforeUnmount(() => {
   background: var(--el-bg-color, #fff);
   border-left: 1px solid var(--el-border-color-lighter, rgba(15, 23, 42, 0.1));
   box-shadow: -18px 0 48px rgba(15, 23, 42, 0.22);
-  color: var(--el-text-color-primary, #1e293b);
+  color: var(--skin-text, var(--el-text-color-primary, #1e293b));
 }
 
 .settings-drawer-header {
@@ -215,7 +215,7 @@ onBeforeUnmount(() => {
 
 .settings-drawer-close:hover {
   background: var(--el-fill-color-light, rgba(15, 23, 42, 0.06));
-  color: var(--el-text-color-primary, #1e293b);
+  color: var(--skin-text, var(--el-text-color-primary, #1e293b));
 }
 
 .settings-drawer-body {
@@ -253,7 +253,7 @@ onBeforeUnmount(() => {
 
 .settings-drawer-nav-item:hover {
   background: var(--el-fill-color-light, rgba(15, 23, 42, 0.05));
-  color: var(--el-text-color-primary, #1e293b);
+  color: var(--skin-text, var(--el-text-color-primary, #1e293b));
 }
 
 .settings-drawer-nav-item.active {

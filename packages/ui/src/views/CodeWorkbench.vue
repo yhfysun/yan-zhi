@@ -40,15 +40,25 @@
             <span v-if="gitDirty" class="cp-git-dirty" :title="`${gitDirty} 处改动`">{{ gitDirty }}</span>
             <el-icon :size="10" class="cp-git-caret"><ArrowDown /></el-icon>
           </button>
-          <button class="cp-git-act" title="更新项目（拉取）" :disabled="!gitBranch || gitBusy" @click="doGitPull">
-            <el-icon :size="13"><Download /></el-icon>
+          <!-- 冲突入口：仅在存在未解决冲突时出现 -->
+          <button
+            v-if="gitConflicts.length"
+            class="cp-git-act is-conflict"
+            :title="`${gitConflicts.length} 个冲突文件待解决`"
+            @click="openConflictResolver(gitConflicts)"
+          >
+            <el-icon :size="14"><WarningFilled /></el-icon>
+            <span class="cp-git-badge danger">{{ gitConflicts.length }}</span>
           </button>
-          <button class="cp-git-commit" :disabled="!gitBranch" title="打开提交面板" @click="openGitCommit">
-            <el-icon :size="12"><Check /></el-icon>Commit
-            <span v-if="gitDirty" class="cp-git-count">{{ gitDirty }}</span>
+          <!-- 提交：图标 + 改动数徽标，点击打开提交弹窗 -->
+          <button class="cp-git-act" :class="{ 'is-on': commitOpen }" :disabled="!gitBranch" title="提交（Ctrl+K）" @click="openGitCommit">
+            <el-icon :size="14"><Check /></el-icon>
+            <span v-if="gitDirty" class="cp-git-badge">{{ gitDirty }}</span>
           </button>
-          <button class="cp-git-act" title="推送" :disabled="!gitBranch || gitBusy" @click="doGitPush">
-            <el-icon :size="13"><Upload /></el-icon>
+          <!-- 同步：拉取 / 推送 / 获取，收进一个图标下拉 -->
+          <button class="cp-git-act" :class="{ 'is-on': gitSyncDropdown }" :disabled="!gitBranch || gitBusy" title="同步：拉取 / 推送" @click.stop="toggleGitSync">
+            <el-icon :size="14"><Refresh /></el-icon>
+            <span v-if="gitAhead || gitBehind" class="cp-git-badge blue">{{ gitAhead || gitBehind }}</span>
           </button>
           <Teleport to="body">
             <div v-if="gitBranchDropdown" class="cp-task-dropdown cp-git-branch-dropdown" :style="gitBranchDropdownStyle" @click.stop>
@@ -64,6 +74,31 @@
                 <span class="cp-task-item-label">{{ b }}</span>
               </div>
               <div v-if="!gitLocalBranches.length" class="cp-task-empty">无本地分支</div>
+              <div class="cp-task-divider"></div>
+              <div class="cp-task-item cp-task-action" @click="onCreateBranch">
+                <el-icon :size="12"><Plus /></el-icon>
+                <span class="cp-task-item-label">新建分支…</span>
+              </div>
+            </div>
+          </Teleport>
+          <Teleport to="body">
+            <div v-if="gitSyncDropdown" class="cp-task-dropdown cp-git-sync-dropdown" :style="gitSyncDropdownStyle" @click.stop>
+              <div class="cp-task-section">同步</div>
+              <div class="cp-task-item" @click="doGitPull">
+                <el-icon :size="12"><Download /></el-icon>
+                <span class="cp-task-item-label">拉取（更新项目）</span>
+                <span v-if="gitBehind" class="cp-task-badge">↓{{ gitBehind }}</span>
+              </div>
+              <div class="cp-task-item" @click="doGitPush">
+                <el-icon :size="12"><Upload /></el-icon>
+                <span class="cp-task-item-label">推送</span>
+                <span v-if="gitAhead" class="cp-task-badge">↑{{ gitAhead }}</span>
+              </div>
+              <div class="cp-task-divider"></div>
+              <div class="cp-task-item" @click="doGitFetch">
+                <el-icon :size="12"><Refresh /></el-icon>
+                <span class="cp-task-item-label">获取远程更新（不合并）</span>
+              </div>
             </div>
           </Teleport>
         </div>
@@ -128,17 +163,34 @@
 
     <WorkspaceDirDialog v-model="showDir" :current-path="code.projectDir" @selected="onDirSelected" />
     <ChatDialogs />
+
+    <!-- Git 弹窗：提交 / 切换分支冲突 / 冲突解决 -->
+    <GitCommitDialog v-model="commitOpen" :repo="code.projectDir" @committed="onCommitted" />
+    <GitCheckoutConflictDialog
+      v-model="checkoutConflict.visible"
+      :repo="code.projectDir"
+      :branch="checkoutConflict.branch"
+      :files="checkoutConflict.files"
+      @resolved="onCheckoutResolved"
+    />
+    <GitConflictResolver
+      v-model="conflictResolver.visible"
+      :repo="code.projectDir"
+      :files="conflictResolver.files"
+      @aborted="refreshGitStatus"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue';
 import { useRouter } from 'vue-router';
-import { Document, FolderOpened, ArrowDown, ArrowRight, ChatDotRound, EditPen, FolderAdd, Check, Fold, Expand, Share, Download, Upload } from '@element-plus/icons-vue';
-import { ElMessage } from 'element-plus';
+import { Document, FolderOpened, ArrowDown, ArrowRight, ChatDotRound, EditPen, FolderAdd, Check, Fold, Expand, Share, Download, Upload, Refresh, WarningFilled, Plus } from '@element-plus/icons-vue';
+import { ElMessage, ElMessageBox } from 'element-plus';
 import { useCodeStore, setCodeModeActive } from '../stores/code';
 import { useChatStore } from '../stores/chat';
 import { useSpaceStore } from '../stores/space';
+import { useGitStore } from '../stores/git';
 import { useChat } from '../composables/chat/useChat';
 import { clampMenuPos } from '../utils/menuPosition';
 import { useResizable } from '../composables/useResizable';
@@ -152,12 +204,16 @@ import WorkspaceDirDialog from '../components/WorkspaceDirDialog.vue';
 import ChatMessageList from '../components/chat/ChatMessageList.vue';
 import ChatInputArea from '../components/chat/ChatInputArea.vue';
 import ChatDialogs from '../components/chat/ChatDialogs.vue';
+import GitCommitDialog from '../components/git/GitCommitDialog.vue';
+import GitCheckoutConflictDialog from '../components/git/GitCheckoutConflictDialog.vue';
+import GitConflictResolver from '../components/git/GitConflictResolver.vue';
 
 const router = useRouter();
 const code = useCodeStore();
 const chatStore = useChatStore();
 const spaceStore = useSpaceStore();
 const settingsStore = useSettingsStore();
+const gitStore = useGitStore();
 const chat = useChat();
 
 const sideR = useResizable('code_sidebar', 260, 180, 560);
@@ -235,7 +291,10 @@ function onGlobalKeydown(e: KeyboardEvent) {
   paletteOpen.value = !paletteOpen.value;
 }
 onMounted(() => document.addEventListener('keydown', onGlobalKeydown));
-onBeforeUnmount(() => document.removeEventListener('keydown', onGlobalKeydown));
+onBeforeUnmount(() => {
+  document.removeEventListener('keydown', onGlobalKeydown);
+  document.removeEventListener('keydown', onGitKeydown);
+});
 
 // ===== 任务下拉面板 =====
 const taskDropdownOpen = ref(false);
@@ -308,82 +367,196 @@ const gitBusy = ref(false);
 const gitLocalBranches = ref<string[]>([]);
 const gitBranchDropdown = ref(false);
 const gitBranchDropdownStyle = ref<Record<string, string>>({});
+const gitSyncDropdown = ref(false);
+const gitSyncDropdownStyle = ref<Record<string, string>>({});
+const gitAhead = ref(0);
+const gitBehind = ref(0);
+const gitConflicts = ref<string[]>([]);
+
+// ===== 提交弹窗 / 冲突弹窗 =====
+const commitOpen = ref(false);
+const checkoutConflict = ref<{ visible: boolean; branch: string; files: string[] }>({
+  visible: false, branch: '', files: [],
+});
+const conflictResolver = ref<{ visible: boolean; files: string[] }>({ visible: false, files: [] });
 
 async function refreshGitStatus() {
-  if (!code.projectDir) { gitBranch.value = null; gitDirty.value = 0; gitLocalBranches.value = []; return; }
-  const r = await api.get<{
-    current?: string; files?: unknown[];
-    modified?: unknown[]; not_added?: unknown[]; created?: unknown[]; deleted?: unknown[];
-  }>(`/git/status?repo=${encodeURIComponent(code.projectDir)}`);
-  if ('error' in r) { gitBranch.value = null; gitDirty.value = 0; return; }
-  const d = r.data || {};
+  if (!code.projectDir) {
+    gitBranch.value = null; gitDirty.value = 0; gitLocalBranches.value = [];
+    gitAhead.value = 0; gitBehind.value = 0; gitConflicts.value = [];
+    return;
+  }
+  const q = encodeURIComponent(code.projectDir);
+  const [stRes, brRes, cfRes] = await Promise.all([
+    api.get<{ current?: string; files?: unknown[] }>(`/git/status?repo=${q}`),
+    api.get<string[]>(`/git/branches?repo=${q}`),
+    api.get<string[]>(`/git/conflicts?repo=${q}`).catch(() => ({ data: [] as string[] })),
+  ]);
+  if ('error' in stRes) { gitBranch.value = null; gitDirty.value = 0; return; }
+  const d = stRes.data || {};
   gitBranch.value = d.current || null;
-  const files = d.files;
-  gitDirty.value = Array.isArray(files)
-    ? files.length
-    : (d.modified?.length || 0) + (d.not_added?.length || 0) + (d.created?.length || 0) + (d.deleted?.length || 0);
-  const br = await api.get<string[]>(`/git/branches?repo=${encodeURIComponent(code.projectDir)}`);
-  gitLocalBranches.value = 'data' in br
-    ? (br.data || []).filter((b) => !b.startsWith('remotes/') && !b.startsWith('origin/HEAD'))
+  gitDirty.value = Array.isArray(d.files) ? d.files.length : 0;
+  gitLocalBranches.value = 'data' in brRes
+    ? (brRes.data || []).filter((b) => !b.startsWith('remotes/') && !b.startsWith('origin/HEAD'))
     : [];
+  gitConflicts.value = 'data' in cfRes ? cfRes.data || [] : [];
+  try {
+    const ab = await gitStore.fetchAheadBehind(code.projectDir);
+    gitAhead.value = ab.ahead || 0;
+    gitBehind.value = ab.behind || 0;
+  } catch { gitAhead.value = 0; gitBehind.value = 0; }
 }
 function toggleGitBranch(e: MouseEvent) {
   if (!gitBranchDropdown.value) {
     const pos = clampMenuPos(e, 260, 400);
     gitBranchDropdownStyle.value = { left: pos.x + 'px', top: pos.y + 'px' };
   }
+  gitSyncDropdown.value = false;
   gitBranchDropdown.value = !gitBranchDropdown.value;
 }
+function toggleGitSync(e: MouseEvent) {
+  if (!gitSyncDropdown.value) {
+    const pos = clampMenuPos(e, 240, 260);
+    gitSyncDropdownStyle.value = { left: pos.x + 'px', top: pos.y + 'px' };
+  }
+  gitBranchDropdown.value = false;
+  gitSyncDropdown.value = !gitSyncDropdown.value;
+}
+
+/**
+ * 切换分支：先做冲突预检（strategy=check），有冲突时弹窗让用户选 智能检出 / 强制检出
+ */
 async function checkoutGitBranch(b: string) {
   gitBranchDropdown.value = false;
   if (b === gitBranch.value) return;
+  const repo = code.projectDir;
+  if (!repo) return;
   gitBusy.value = true;
   try {
-    await api.post('/git/checkout', { repo: code.projectDir, branch: b });
+    const pre = await gitStore.checkout(repo, b, 'check');
+    if (!('error' in pre) && pre.data.conflicts?.length) {
+      checkoutConflict.value = { visible: true, branch: b, files: pre.data.conflicts };
+      return;
+    }
+    const res = await gitStore.checkout(repo, b, 'normal');
+    if ('error' in res) throw new Error(res.error);
     ElMessage.success('已切换到 ' + b);
-    await refreshGitStatus();
   } catch (err) {
     ElMessage.error((err as Error).message);
-  } finally { gitBusy.value = false; }
+  } finally {
+    gitBusy.value = false;
+    await refreshGitStatus();
+  }
 }
+
+/** 智能检出 / 强制检出 完成后的收尾 */
+async function onCheckoutResolved(payload: { ok: boolean; conflicts: string[]; message: string }) {
+  if (payload.message) ElMessage.success(payload.message);
+  await refreshGitStatus();
+  if (payload.conflicts?.length) openConflictResolver(payload.conflicts);
+}
+
+/** 打开冲突解决器 */
+function openConflictResolver(files: string[]) {
+  if (!files.length) return;
+  conflictResolver.value = { visible: true, files: [...files] };
+}
+
+async function onCreateBranch() {
+  gitBranchDropdown.value = false;
+  try {
+    const { value } = await ElMessageBox.prompt('输入新分支名（基于当前分支创建并切换）', '新建分支', {
+      confirmButtonText: '创建', cancelButtonText: '取消', inputPlaceholder: 'feature/xxx',
+    });
+    const name = (value || '').trim();
+    if (!name) return;
+    const res = await gitStore.createBranch(code.projectDir, name);
+    if ('error' in res) throw new Error(res.error);
+    ElMessage.success('已创建并切换到 ' + name);
+    await refreshGitStatus();
+  } catch (e) {
+    if ((e as Error).message && (e as Error).message !== 'cancel') ElMessage.error((e as Error).message);
+  }
+}
+
 async function doGitPull() {
+  gitSyncDropdown.value = false;
   gitBusy.value = true;
   try {
-    await api.post('/git/pull', { repo: code.projectDir, branch: gitBranch.value || undefined });
+    const res = await gitStore.pull(code.projectDir, gitBranch.value || undefined);
+    if ('error' in res) throw new Error(res.error);
     ElMessage.success('拉取完成');
-    await refreshGitStatus();
   } catch (err) {
     ElMessage.error((err as Error).message);
-  } finally { gitBusy.value = false; }
+  } finally {
+    gitBusy.value = false;
+    await refreshGitStatus();
+    // 拉取产生冲突（rebase/merge 冲突）时直接引导解决
+    if (gitConflicts.value.length) openConflictResolver(gitConflicts.value);
+  }
 }
 async function doGitPush() {
+  gitSyncDropdown.value = false;
   gitBusy.value = true;
   try {
-    await api.post('/git/push', { repo: code.projectDir, branch: gitBranch.value || undefined });
+    const res = await gitStore.push(code.projectDir, gitBranch.value || undefined);
+    if ('error' in res) throw new Error(res.error);
     ElMessage.success('推送完成');
-    await refreshGitStatus();
   } catch (err) {
     ElMessage.error((err as Error).message);
-  } finally { gitBusy.value = false; }
+  } finally {
+    gitBusy.value = false;
+    await refreshGitStatus();
+  }
 }
-/** 打开 Git 提交面板（展开侧栏并切到源代码管理视图） */
+async function doGitFetch() {
+  gitSyncDropdown.value = false;
+  gitBusy.value = true;
+  try {
+    const res = await gitStore.fetch(code.projectDir);
+    if ('error' in res) throw new Error(res.error);
+    ElMessage.success('已获取远程更新');
+  } catch (err) {
+    ElMessage.error((err as Error).message);
+  } finally {
+    gitBusy.value = false;
+  }
+}
+
+/** 顶栏提交图标：直接打开提交弹窗（IDEA 式逐文件勾选） */
 function openGitCommit() {
-  if (sideCollapsed.value) toggleSidebar();
-  code.openGitPanel();
+  commitOpen.value = true;
 }
-// 分支下拉打开时，点击外部任意处关闭
+function onCommitted(payload: { pushed: boolean }) {
+  void refreshGitStatus();
+  if (payload.pushed) ElMessage.success('已提交并推送');
+}
+
+// 分支下拉 / 同步下拉打开时，点击外部任意处关闭
 function onDocClickCloseGit() {
   if (gitBranchDropdown.value) gitBranchDropdown.value = false;
+  if (gitSyncDropdown.value) gitSyncDropdown.value = false;
 }
-watch(gitBranchDropdown, (open) => {
-  if (open) document.addEventListener('click', onDocClickCloseGit);
+watch([gitBranchDropdown, gitSyncDropdown], ([b, s]) => {
+  if (b || s) document.addEventListener('click', onDocClickCloseGit);
   else document.removeEventListener('click', onDocClickCloseGit);
 });
 onBeforeUnmount(() => document.removeEventListener('click', onDocClickCloseGit));
 
+// Ctrl+K：打开提交弹窗（与 IDEA 一致）
+function onGitKeydown(e: KeyboardEvent) {
+  const mod = e.ctrlKey || e.metaKey;
+  if (!mod || e.altKey || e.shiftKey) return;
+  if (e.key.toLowerCase() !== 'k') return;
+  if (!code.projectDir || !gitBranch.value) return;
+  e.preventDefault();
+  commitOpen.value = true;
+}
+
 watch(() => code.projectDir, () => void refreshGitStatus());
 
 onMounted(async () => {
+  document.addEventListener('keydown', onGitKeydown);
   void refreshGitStatus();
   // 加载空间列表并同步当前项目目录对应的 space
   // 注意：loadSpaces 可能因数据库迁移问题失败，必须 catch，否则 mounted 钩子抛未处理异常
@@ -462,6 +635,7 @@ onMounted(async () => {
   color: var(--color-primary, #c2410c);
 }
 .cp-git-act {
+  position: relative;
   display: inline-flex; align-items: center; justify-content: center;
   width: 26px; height: 26px; border: 1px solid transparent; border-radius: 8px;
   background: transparent; color: var(--color-text-secondary, #6b6b66);
@@ -469,6 +643,22 @@ onMounted(async () => {
 }
 .cp-git-act:hover:not(:disabled) { border-color: var(--glass-border, #e7e4dc); color: var(--color-text, #1a1a1a); }
 .cp-git-act:disabled { opacity: 0.35; cursor: not-allowed; }
+.cp-git-act.is-on {
+  border-color: var(--color-primary, #c2410c);
+  background: color-mix(in srgb, var(--color-primary, #c2410c) 10%, transparent);
+  color: var(--color-primary, #c2410c);
+}
+.cp-git-act.is-conflict { color: #b91c1c; border-color: #fecaca; background: #fef2f2; }
+.cp-git-act.is-conflict:hover { border-color: #b91c1c; color: #b91c1c; }
+/* 角标：改动数 / 待推送 / 冲突数 */
+.cp-git-badge {
+  position: absolute; top: -4px; right: -4px;
+  min-width: 14px; height: 14px; padding: 0 3px;
+  border-radius: 7px; font-size: 9px; font-weight: 700; line-height: 14px; text-align: center;
+  background: var(--color-primary, #c2410c); color: #fff;
+}
+.cp-git-badge.blue { background: #2563eb; }
+.cp-git-badge.danger { background: #dc2626; }
 .cp-git-commit {
   display: inline-flex; align-items: center; gap: 5px;
   height: 26px; padding: 0 10px; border-radius: 8px; cursor: pointer;
@@ -484,6 +674,11 @@ onMounted(async () => {
   background: var(--color-primary, #c2410c); color: #fff;
 }
 .cp-git-branch-dropdown { width: 260px; }
+.cp-git-sync-dropdown { width: 240px; }
+.cp-task-badge {
+  margin-left: auto; font-size: 10px; font-weight: 700; padding: 0 5px; border-radius: 7px;
+  background: #eff6ff; color: #2563eb;
+}
 .cp-env { display: flex; align-items: center; gap: 6px; }
 .cp-env-set {
   display: inline-flex; align-items: center; gap: 4px;

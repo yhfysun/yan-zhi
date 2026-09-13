@@ -254,6 +254,20 @@ class WebFs implements FsAdapter {
     await writable.close();
   }
 
+  async writeFileBase64(path: string, b64: string): Promise<void> {
+    if (!this.rootHandle) throw this.unsupported('写入文件', path);
+    // 容错：若误传 data URL 则剥出纯 base64（契约是已剥前缀的 base64）
+    const raw = b64.includes(',') ? b64.slice(b64.indexOf(',') + 1) : b64;
+    const bin = atob(raw.replace(/\s/g, ''));
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    const { dir, name } = await this.resolveFile(path);
+    const fh = await dir.getFileHandle(name, { create: true });
+    const writable = await fh.createWritable();
+    await writable.write(bytes);
+    await writable.close();
+  }
+
   async exists(path: string): Promise<boolean> {
     if (!this.rootHandle) return false;
     const segs = this.parsePath(path);

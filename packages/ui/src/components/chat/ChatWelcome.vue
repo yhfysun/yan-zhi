@@ -110,7 +110,7 @@ async function focusInput() {
   margin: 0 0 6px;
   font-size: 22px;
   font-weight: 700;
-  color: var(--el-text-color-primary, #1e293b);
+  color: var(--skin-text, var(--el-text-color-primary, #1e293b));
 }
 
 .cw-sub {
@@ -166,7 +166,7 @@ async function focusInput() {
   flex: 1;
   font-size: 14px;
   font-weight: 600;
-  color: var(--el-text-color-primary, #1e293b);
+  color: var(--skin-text, var(--el-text-color-primary, #1e293b));
 }
 
 .cw-card-check { color: var(--scene-color); }

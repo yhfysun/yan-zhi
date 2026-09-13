@@ -167,10 +167,12 @@ router.post('/push', async (req: Request, res: Response) => {
   }
 });
 
+// POST /git/checkout —— strategy: check(预检) | normal | smart(储藏后切换) | force(丢弃冲突改动)
 router.post('/checkout', async (req: Request, res: Response) => {
   try {
-    await gitService.checkout(req.body.repo, req.body.branch);
-    res.json({ data: { ok: true } });
+    res.json({
+      data: await gitService.checkout(req.body.repo, req.body.branch, req.body.strategy || 'normal'),
+    });
   } catch (e) {
     res.status(400).json({ error: (e as Error).message });
   }
@@ -301,6 +303,16 @@ router.post('/abortMerge', async (req: Request, res: Response) => {
 router.post('/resolve', async (req: Request, res: Response) => {
   try {
     await gitService.resolveConflict(req.body.repo, req.body.file);
+    res.json({ data: { ok: true } });
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message });
+  }
+});
+
+// POST /git/resolveContent —— 写入手动合并结果并标记已解决
+router.post('/resolveContent', async (req: Request, res: Response) => {
+  try {
+    await gitService.resolveConflictWithContent(req.body.repo, req.body.file, String(req.body.content || ''));
     res.json({ data: { ok: true } });
   } catch (e) {
     res.status(400).json({ error: (e as Error).message });

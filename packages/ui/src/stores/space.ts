@@ -142,8 +142,28 @@ export const useSpaceStore = defineStore('space', () => {
     persistCurrentSpaceId();
   }
 
+  // ── 空间记忆文件（MEMORY.md，跨会话、该空间下所有智能体共享）──
+  // 与 memory 表无关：挂在 space 维度上，落盘路径由后端决定（绑定目录 → <dirPath>/MEMORY.md）。
+
+  /** 读取空间记忆文件。文件不存在时 exists=false、content='' */
+  async function readSpaceMemory(spaceId: string): Promise<{ content: string; path: string; exists: boolean }> {
+    const r = await api.get<any>(`/spaces/${spaceId}/memory`);
+    if ('error' in r) throw new Error((r as any).error);
+    const d = (r as any).data || {};
+    return { content: d.content || '', path: d.path || '', exists: !!d.exists };
+  }
+
+  /** 整体保存空间记忆文件（覆盖） */
+  async function writeSpaceMemory(spaceId: string, content: string): Promise<{ path: string; size: number }> {
+    const r = await api.put<any>(`/spaces/${spaceId}/memory`, { content });
+    if ('error' in r) throw new Error((r as any).error);
+    const d = (r as any).data || {};
+    return { path: d.path || '', size: Number(d.size) || 0 };
+  }
+
   return {
     spaces, loading, currentSpaceId, currentSpace,
     loadSpaces, createSpace, findOrCreateByDirPath, updateSpace, deleteSpace, selectSpace,
+    readSpaceMemory, writeSpaceMemory,
   };
 });

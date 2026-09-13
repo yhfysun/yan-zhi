@@ -266,7 +266,7 @@
 
     <ChatWelcome v-if="!isCodeMode && store.currentMessages.length === 0 && !store.streaming && selectedModelId" />
     <div v-if="isCodeMode && store.currentMessages.length === 0 && !store.streaming && selectedModelId" class="code-welcome" style="display:flex;flex-direction:column;align-items:center;justify-content:center;flex:1;gap:8px;">
-      <h2 style="font-size:20px;font-weight:600;color:var(--el-text-color-primary,#1e293b);margin:0;">代码任务</h2>
+      <h2 style="font-size:20px;font-weight:600;color:var(--skin-text,var(--el-text-color-primary,#1e293b));margin:0;">代码任务</h2>
       <p style="font-size:13px;color:var(--el-text-color-secondary,#64748b);margin:0;">描述你的需求，开始开发</p>
     </div>
 

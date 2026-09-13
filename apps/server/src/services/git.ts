@@ -90,7 +90,9 @@ export class GitService {
   async status(repo: string) {
     const ws = await this.getWorkspaceDir();
     this.assertWithinWorkspace(repo, ws);
-    const st = await this.open(repo).status();
+    // '-uall'：未跟踪目录展开为具体文件。simple-git 默认把未跟踪目录聚合成 "dir/" 一条，
+    // 前端会显示成无名行（无法 diff、无法提交），也拿不到真实的目录结构。
+    const st = await this.open(repo).status(['-uall']);
     return stripCacheEntries(st);
   }
 
@@ -221,10 +223,107 @@ export class GitService {
     await this.open(repo).push(branch ? ['origin', branch] : undefined);
   }
 
-  async checkout(repo: string, branch: string): Promise<void> {
+  // ===== 分支切换（IDEA 式冲突预检 / 智能检出 / 强制检出）=====
+
+  /** 工作区未提交改动的文件清单（含未跟踪；已排除应用缓存目录） */
+  async dirtyFiles(repo: string): Promise<string[]> {
     const ws = await this.getWorkspaceDir();
     this.assertWithinWorkspace(repo, ws);
-    await this.open(repo).checkout(branch);
+    // -uall：未跟踪目录展开为具体文件，避免返回 "dir/" 这种聚合项（既无法 diff 也无法提交）
+    const out = await this.open(repo).raw(['status', '--porcelain', '-uall']);
+    return out
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => {
+        const p = line.slice(3);
+        // 重命名格式：R  old -> new
+        const arrow = p.indexOf(' -> ');
+        return arrow >= 0 ? p.slice(arrow + 4) : p;
+      })
+      .filter((p) => !isCachePath(p));
+  }
+
+  /**
+   * 切换分支。
+   * - strategy='check'：只预检，不切换。有冲突返回 { ok:false, conflicts }
+   * - strategy='smart'：先把本地改动 stash（-u），切换后再 pop；pop 冲突时返回冲突清单
+   * - strategy='force'：丢弃冲突文件的本地改动后切换（git checkout -f）
+   * - strategy='normal'：直接切换（无冲突时）
+   */
+  async checkout(
+    repo: string,
+    branch: string,
+    strategy: 'check' | 'normal' | 'smart' | 'force' = 'normal',
+  ): Promise<{ ok: boolean; conflicts: string[]; dirty: string[]; stashed: boolean; message: string }> {
+    const ws = await this.getWorkspaceDir();
+    this.assertWithinWorkspace(repo, ws);
+    const g = this.open(repo);
+    const dirty = await this.dirtyFiles(repo);
+
+    if (dirty.length) {
+      // 目标分支与当前分支（相对 merge-base）有差异的文件集合
+      let touched: string[] = [];
+      try {
+        const out = await g.raw(['diff', '--name-only', `HEAD...${branch}`]);
+        touched = out.split('\n').filter(Boolean);
+      } catch {
+        touched = [];
+      }
+      const set = new Set(touched);
+      const conflicts = dirty.filter((f) => set.has(f));
+
+      if (conflicts.length) {
+        if (strategy === 'check') {
+          return {
+            ok: false,
+            conflicts,
+            dirty,
+            stashed: false,
+            message: `切换到 ${branch} 会覆盖 ${conflicts.length} 个文件的本地修改`,
+          };
+        }
+        if (strategy === 'smart') {
+          await g.raw(['stash', 'push', '-u', '-m', `yan-zhi: auto stash before checkout ${branch}`]);
+          await g.raw(['checkout', branch]);
+          let popConflicts: string[] = [];
+          try {
+            await g.raw(['stash', 'pop']);
+          } catch {
+            // pop 冲突：改动已恢复但带冲突标记，stash 仍在栈里（git 行为）
+            try { popConflicts = await this.conflicts(repo); } catch { popConflicts = conflicts; }
+            return {
+              ok: true,
+              conflicts: popConflicts,
+              dirty,
+              stashed: true,
+              message: popConflicts.length
+                ? '已切换分支，但恢复本地修改时产生冲突，请解决后提交'
+                : '已切换分支，但恢复本地修改失败，请检查储藏栈',
+            };
+          }
+          return {
+            ok: true,
+            conflicts: [],
+            dirty,
+            stashed: true,
+            message: `已储藏本地修改并切换到 ${branch}，改动已恢复`,
+          };
+        }
+        if (strategy === 'force') {
+          await g.raw(['checkout', '-f', branch]);
+          return {
+            ok: true,
+            conflicts: [],
+            dirty,
+            stashed: false,
+            message: `已强制切换到 ${branch}，${conflicts.length} 个冲突文件的本地修改已丢弃`,
+          };
+        }
+      }
+    }
+
+    await g.checkout(branch);
+    return { ok: true, conflicts: [], dirty, stashed: false, message: `已切换到 ${branch}` };
   }
 
   async restore(repo: string, files: string[]): Promise<void> {
@@ -323,7 +422,7 @@ export class GitService {
   async conflicts(repo: string): Promise<string[]> {
     const ws = await this.getWorkspaceDir();
     this.assertWithinWorkspace(repo, ws);
-    const out = await this.open(repo).raw(['status', '--porcelain']);
+    const out = await this.open(repo).raw(['status', '--porcelain', '-uall']);
     const UNMERGED = new Set(['DD', 'AU', 'UD', 'UA', 'DU', 'AA', 'UU']);
     return out
       .split('\n')
@@ -373,6 +472,19 @@ export class GitService {
   async resolveConflict(repo: string, filePath: string): Promise<void> {
     const ws = await this.getWorkspaceDir();
     this.assertWithinWorkspace(repo, ws);
+    await this.open(repo).add([filePath]);
+  }
+
+  /** 写入手动合并后的内容并标记为已解决（写文件 + git add） */
+  async resolveConflictWithContent(repo: string, filePath: string, content: string): Promise<void> {
+    const ws = await this.getWorkspaceDir();
+    this.assertWithinWorkspace(repo, ws);
+    const full = path.resolve(repo, filePath);
+    const repoRoot = path.resolve(repo);
+    if (full !== repoRoot && !full.startsWith(repoRoot + path.sep)) {
+      throw new Error('非法路径');
+    }
+    await fs.writeFile(full, content, 'utf-8');
     await this.open(repo).add([filePath]);
   }
 

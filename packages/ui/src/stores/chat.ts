@@ -86,6 +86,7 @@ function rowToConv(r: any): Conversation {
     builtinToolIds: r.builtin_tool_ids_json ? JSON.parse(r.builtin_tool_ids_json) : [],
     systemPrompt: r.system_prompt,
     pinned: !!r.pinned,
+    permissionMode: (r.permission_mode === 'readonly' || r.permission_mode === 'full') ? r.permission_mode : 'default',
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };
@@ -220,6 +221,18 @@ export const useChatStore = defineStore('chat', () => {
   const thinkingMode = ref(false);   // 深度思考：提示词要求充分推理后再作答
   const planMode = ref(false);       // 计划模式：先用 task_plan 登记计划再执行
   const answerOnly = ref(false);     // 仅回答：后端清空工具列表，禁一切工具调用
+  // 会话级工具权限：readonly=只读（写类工具被后端硬拦截）/ default=默认 / full=全部放行。
+  // 持久化在 conversation.permission_mode；新会话草稿态先存本地，创建会话时随 POST 落库。
+  type PermissionMode = 'readonly' | 'default' | 'full';
+  const permissionMode = ref<PermissionMode>('default');
+  /** 切换权限并持久化：已有会话立即 PATCH；草稿态只记本地（创建会话时随 POST 落库） */
+  async function setPermissionMode(mode: PermissionMode) {
+    permissionMode.value = mode;
+    const cid = currentConvId.value;
+    if (!cid) return;
+    const r = await api.patch(`/conversations/${cid}`, { permissionMode: mode });
+    if ((r as any)?.error) console.warn('[Chat] 权限模式保存失败:', (r as any).error);
+  }
   // 文件管理弹窗（el-dialog）是否显示——左侧栏「文件管理」按钮触发
   const showFilePopup = ref(false);
   // ===== 多 tab 数据模型（Phase B1）：previewTabs 并存 + activeTabId 激活 =====
@@ -424,6 +437,8 @@ export const useChatStore = defineStore('chat', () => {
       mountedMcpServers.value = conv?.mcpServerIds || [];
       mcpDisabledTools.value = conv?._mcpDisabledTools ? { ...conv._mcpDisabledTools } : {};
       mcpToolAliases.value = conv?._mcpToolAliases ? JSON.parse(JSON.stringify(conv._mcpToolAliases)) : {};
+      // 回填会话级权限模式（下拉显示与后端拦截以 conversation.permission_mode 为准）
+      permissionMode.value = conv?.permissionMode || 'default';
       void reconnectActiveTask(convId);
       return;
     }
@@ -438,6 +453,7 @@ export const useChatStore = defineStore('chat', () => {
     mountedMcpServers.value = conv?.mcpServerIds || [];
     mcpDisabledTools.value = conv?._mcpDisabledTools ? { ...conv._mcpDisabledTools } : {};
     mcpToolAliases.value = conv?._mcpToolAliases ? JSON.parse(JSON.stringify(conv._mcpToolAliases)) : {};
+    permissionMode.value = conv?.permissionMode || 'default';
   }
 
   async function createConversation(title: string, opts?: { platformId?: string; modelId?: string; skillIds?: string[]; spaceId?: string; agentId?: string }): Promise<string> {
@@ -463,6 +479,7 @@ export const useChatStore = defineStore('chat', () => {
         title, platformId: opts?.platformId, modelId: opts?.modelId,
         skillIds: opts?.skillIds || [], spaceId: spaceId || null,
         agentId: agentId || null,
+        permissionMode: permissionMode.value,
       });
       if ('data' in r) {
         const row = r.data as any;
@@ -1614,6 +1631,7 @@ export const useChatStore = defineStore('chat', () => {
     runningConvIds, isConvStreaming,
     runningToolCallIds, isToolCallRunning,
     browserSteps, rightPanelOpen, thinkingMode, planMode, answerOnly,
+    permissionMode, setPermissionMode,
     showFilePopup, previewingFile, rightPanelTab, currentBrowserUrl, skipNextRecordVisit,
     previewTabs, activeTabId, activeTab,
     openTab, activatePreviewTab, closePreviewTab, closeAllPreviewTabs, closePreviewTabsLeft, closePreviewTabsRight,

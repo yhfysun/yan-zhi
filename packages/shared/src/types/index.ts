@@ -88,6 +88,8 @@ export interface Conversation {
   builtinToolIds?: string[]; // 会话级内置工具（合并到智能体级）
   systemPrompt?: string;
   pinned: boolean;
+  /** 会话级工具权限：readonly=只读（写类工具被后端拦截）/ default=默认 / full=全部放行 */
+  permissionMode?: 'readonly' | 'default' | 'full';
   createdAt: number;
   updatedAt: number;
 }

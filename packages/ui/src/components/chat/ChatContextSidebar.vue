@@ -134,7 +134,7 @@ const mountedTools = computed(() =>
 .context-sidebar-title {
   font-size: 13px;
   font-weight: 700;
-  color: var(--el-text-color-primary, #1e293b);
+  color: var(--skin-text, var(--el-text-color-primary, #1e293b));
 }
 
 .context-sidebar-body {
@@ -176,7 +176,7 @@ const mountedTools = computed(() =>
   border: 1px solid var(--glass-border, rgba(15, 23, 42, 0.1));
   border-radius: 9px;
   background: var(--el-fill-color-blank, rgba(255, 255, 255, 0.66));
-  color: var(--el-text-color-primary, #1e293b);
+  color: var(--skin-text, var(--el-text-color-primary, #1e293b));
 }
 
 .context-item > .el-icon {

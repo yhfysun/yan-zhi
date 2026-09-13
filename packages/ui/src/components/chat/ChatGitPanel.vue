@@ -382,6 +382,13 @@
 
     <!-- 提交区（IDEA 位置：列表下方） -->
     <section class="git-commit">
+      <div class="git-commit-head">
+        <span class="git-commit-title">提交信息</span>
+        <span class="git-commit-spacer"></span>
+        <button class="git-commit-popup" title="在弹窗中逐文件勾选并提交" @click="openCommitDialog">
+          <el-icon :size="11"><FullScreen /></el-icon>弹窗提交
+        </button>
+      </div>
       <div class="git-commit-input-wrap">
         <el-input
           v-model="commitDraft[activeKey]"
@@ -462,6 +469,14 @@
         </div>
       </div>
     </el-dialog>
+
+    <!-- 提交弹窗：逐文件勾选 + AI 填充提交信息 -->
+    <GitCommitDialog
+      v-model="commitDialogOpen"
+      :repo="activeRepo || repo"
+      :repos="repoSummaries.map((r) => ({ path: r.path, name: r.name }))"
+      @committed="onDialogCommitted"
+    />
   </div>
 </template>
 
@@ -471,9 +486,10 @@ import { ElMessage, ElMessageBox } from 'element-plus';
 import {
   Refresh, RefreshRight, RefreshLeft, Plus, Minus, Document, CopyDocument, Delete, Edit,
   PriceTag, Box, DArrowRight, Check, Search, MagicStick, ArrowDown, MoreFilled, Switch,
-  Loading, Upload, Download, CaretRight, CaretBottom, View, Fold, Expand,
+  Loading, Upload, Download, CaretRight, CaretBottom, View, Fold, Expand, FullScreen,
 } from '@element-plus/icons-vue';
 import { useGitStore, type GitNumstatEntry, type GitAheadBehind } from '../../stores/git';
+import { useGitAi } from '../../composables/git/useGitAi';
 import { useSettingsStore } from '../../stores/settings';
 import { useCodeStore } from '../../stores/code';
 import { usePlatformStore } from '../../stores/platform';
@@ -481,6 +497,7 @@ import { LlmClient } from '@yan-zhi/core';
 import GitDiffViewer from './GitDiffViewer.vue';
 import GitGraphView from './GitGraphView.vue';
 import MarkdownPreview from '../code/MarkdownPreview.vue';
+import GitCommitDialog from '../git/GitCommitDialog.vue';
 
 const gitStore = useGitStore();
 const settingsStore = useSettingsStore();
@@ -548,8 +565,10 @@ const commitFileDiffLoading = ref(false);
 const reviewLoading = ref(false);
 const reviewResult = ref('');
 const aiCommitLoading = ref(false);
-const aiCommitRule = ref('conventional');
-const aiCustomRule = ref('');
+// AI 生成规则与自定义提示词：与提交弹窗共用（持久化在 localStorage）
+const ai = useGitAi();
+const aiCommitRule = ai.rule;
+const aiCustomRule = ai.customRule;
 
 const contextMenu = ref<{ visible: boolean; x: number; y: number; items: MenuItem[] }>({ visible: false, x: 0, y: 0, items: [] });
 const blameDialog = ref<{ visible: boolean; file: string; data: Array<{ hash: string; author: string; line: number; content: string }> }>({ visible: false, file: '', data: [] });
@@ -1293,38 +1312,14 @@ async function resolveAiPlatform() {
   if (!llm || !fp) throw new Error('未配置可用的 AI 模型，请先在设置中配置模型平台');
   return { platform: fp, model: llm };
 }
-function buildCommitPrompt(rule: string): string {
-  switch (rule) {
-    case 'conventional':
-      return '你是 Git commit message 生成器。根据给出的 git diff 生成 Conventional Commits 规范的提交信息。格式：type(scope): description。type 包括 feat/fix/docs/style/refactor/perf/test/chore。只输出 commit message 正文，不要解释、不要 markdown 代码块。';
-    case 'concise':
-      return '你是 Git commit message 生成器。根据给出的 git diff 用一行简短的文字概括变更内容。只输出这一行文字，不要解释、不要前缀。';
-    case 'detailed':
-      return '你是 Git commit message 生成器。根据给出的 git diff 生成提交信息：第一行是简短摘要，空一行后用正文说明具体变更内容。只输出 commit message，不要解释、不要 markdown 代码块。';
-    case 'custom':
-      return `你是 Git commit message 生成器。根据给出的 git diff 生成提交信息。规则：${aiCustomRule.value || '按你的判断生成合适的提交信息'}。只输出 commit message 正文，不要解释。`;
-    default:
-      return '你是 Git commit message 生成器。根据给出的 git diff 生成合适的提交信息。只输出 commit message 正文。';
-  }
-}
-async function callAiCommitMsg(diff: string): Promise<string> {
-  const { platform, model } = await resolveAiPlatform();
-  const client = new LlmClient(platform, model);
-  const resp = await client.chat([
-    { role: 'system', content: buildCommitPrompt(aiCommitRule.value) },
-    { role: 'user', content: `以下是 git diff，请生成 commit message：\n\n${diff}` },
-  ] as any, { temperature: 0.3, maxTokens: 512 });
-  const content = (resp.delta?.content || '').trim();
-  if (!content) throw new Error('AI 返回空内容');
-  return content.replace(/^```[\s\S]*?\n/, '').replace(/```$/, '').trim();
-}
 async function doAiCommitMsg() {
   if (!stagedFiles.value.length) return;
   aiCommitLoading.value = true;
   try {
     const diff = await gitStore.diff(activeRepo.value, { staged: true });
     if (!diff) { ElMessage.warning('无暂存内容'); return; }
-    commitDraft[activeKey.value] = await callAiCommitMsg(diff);
+    // 生成规则 / 自定义提示词与提交弹窗共用
+    commitDraft[activeKey.value] = await ai.generateCommitMessage(diff);
     ElMessage.success('已生成提交信息');
     void persist();
   } catch (e) {
@@ -1334,15 +1329,24 @@ async function doAiCommitMsg() {
 async function onAiRuleChange(rule: string) {
   if (rule === 'custom') {
     try {
-      const { value } = await ElMessageBox.prompt('输入自定义提交信息生成规则', '自定义规则', {
+      const { value } = await ElMessageBox.prompt('输入自定义提交信息生成提示词', '自定义提示词', {
         confirmButtonText: '保存', cancelButtonText: '取消',
         inputValue: aiCustomRule.value,
         inputPlaceholder: '例如：使用中文，格式为【类型】描述，类型包括新增/修复/优化/文档',
       });
-      aiCustomRule.value = value || '';
+      ai.setCustomRule(value || '');
     } catch { return; }
   }
-  aiCommitRule.value = rule;
+  ai.setRule(rule);
+}
+/** 在弹窗中提交（逐文件勾选 + AI 填充） */
+const commitDialogOpen = ref(false);
+function openCommitDialog() {
+  commitDialogOpen.value = true;
+}
+async function onDialogCommitted() {
+  commitDialogOpen.value = false;
+  await refreshAll(true);
 }
 async function doAiReview() {
   if (!changedFiles.value.length) return;
@@ -1436,6 +1440,16 @@ onUnmounted(() => { document.removeEventListener('click', onDocClick); });
 
 /* ===== 提交区（IDEA 位置：列表下方，固定底部） ===== */
 .git-commit { flex-shrink: 0; padding: 8px; border-top: 1px solid var(--color-border, rgba(15,23,42,0.1)); }
+.git-commit-head { display: flex; align-items: center; margin-bottom: 4px; }
+.git-commit-title { font-size: 11px; font-weight: 600; color: var(--color-text-secondary, #888); }
+.git-commit-spacer { flex: 1; }
+.git-commit-popup {
+  display: inline-flex; align-items: center; gap: 3px;
+  border: 1px solid var(--color-border, rgba(15,23,42,0.1)); background: transparent;
+  border-radius: 4px; padding: 2px 6px; font-size: 11px; cursor: pointer;
+  color: var(--color-primary);
+}
+.git-commit-popup:hover { background: color-mix(in srgb, var(--color-primary) 10%, transparent); }
 .git-commit-input-wrap { position: relative; }
 .git-ai-overlay { position: absolute; top: 3px; right: 3px; display: flex; align-items: center; border-radius: 4px; overflow: hidden; border: 1px solid var(--color-border, rgba(15,23,42,0.1)); background: var(--color-surface, #fff); }
 .git-ai-btn { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 24px; border: none; background: transparent; cursor: pointer; color: var(--color-primary); }

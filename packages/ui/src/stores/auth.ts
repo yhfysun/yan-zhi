@@ -16,6 +16,12 @@ export const useAuthStore = defineStore('auth', () => {
 
   const isLoggedIn = computed(() => !!user.value);
 
+  // 数据源收敛后后端为唯一数据源（桌面端 guest token 免登录，与 /api/llm/* 同库）。
+  // 各 store 的 isServerMode()/on() 依赖此标志判断是否走后端 API；
+  // 被误删会导致会话/平台等创建回退到渲染端本地库，任务写 message 撞 conversation 外键。
+  // 恒为 true（纯本地无后端场景已不再支持）。
+  const useServerApi = true;
+
   async function loadUser() {
     const token = localStorage.getItem('auth_token');
     if (!token) {
@@ -74,5 +80,5 @@ export const useAuthStore = defineStore('auth', () => {
     user.value = null;
   }
 
-  return { user, loading, error, isLoggedIn, loadUser, login, register, logout };
+  return { user, loading, error, isLoggedIn, useServerApi, loadUser, login, register, logout };
 });
