@@ -764,10 +764,19 @@ html[data-skin="on"] .home-page {
   background: var(--scrollbar-thumb-active) !important;
   filter: brightness(1.25);
 }
-/* Firefox */
-[data-skin="on"] * {
-  scrollbar-width: thin;
-  scrollbar-color: var(--scrollbar-thumb) transparent;
+/* Firefox（仅 Gecko 生效，必须与 Chromium 隔离）
+   ⚠️ 2026-09-13 修「滚动条圆角没了/皮肤不生效」的真正元凶：
+   Chromium 121+ 也实现了标准 scrollbar-width / scrollbar-color，
+   且规范规定：一旦设置了这两个标准属性，::-webkit-scrollbar* 全系自定义样式即被**整体禁用**
+   （渐变背景、999px 胶囊圆角、track 透明全部失效），回退到原生方角灰条。
+   之前裸写在所有浏览器生效 → 金箍棒渐变被标准属性"静默杀死"，用户看到的就是
+   细灰条+方角+不跟主色。包进 @supports not selector(::-webkit-scrollbar) 后：
+   Gecko（不支持 webkit 伪元素）走标准属性；Chromium 走上方 webkit 自定义滚动条。 */
+@supports not selector(::-webkit-scrollbar) {
+  [data-skin="on"] * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--scrollbar-thumb) transparent;
+  }
 }
 
 /* ============================================================

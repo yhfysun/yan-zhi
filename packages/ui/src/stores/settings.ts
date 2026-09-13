@@ -608,6 +608,9 @@ export const useSettingsStore = defineStore('settings', () => {
         const wp = series.wallpaper;
         // 内置系列自带同色主题色，取它作为配色派生输入
         currentSkinPrimary = THEMES[series.palette as keyof typeof THEMES]?.primary ?? currentBtnPrimary;
+        // 双保险：系列皮肤激活时重应用主色族（palette 可能因启动时序未成功应用，
+        // 导致 --color-primary 停留在默认色；applyPalette 不反调 applySkin，无递归）
+        applyPalette(settings.value.palette);
         root.setProperty('--app-wallpaper', `url("${dark ? wp.dark : wp.light}")`);
         root.setProperty('--skin-mask', String(wp.mask));
         root.setProperty('--skin-blur', `${wp.blur}px`);
@@ -643,6 +646,10 @@ export const useSettingsStore = defineStore('settings', () => {
     // 文字可读性改由 surfaceSunken / surfaceRaised 的不透明度分级保证，而不是把壁纸糊掉
     const file = dark ? (p.wallpaper.dark || p.wallpaper.light) : p.wallpaper.light;
     currentSkinPrimary = p.primary || currentBtnPrimary;
+    // 双保险：此处能查到皮肤主题 = plugin store 已就绪，重应用 palette 必然成功。
+    // 修复启动时序坑：load() 先于 pluginStore.refresh() 执行时 applyPalette(皮肤id) 查不到主题
+    // 直接 return，主色族停在默认朱砂——壁纸生效而主色不跟，观感"皮肤没生效/灰蒙蒙"。
+    applyPalette(settings.value.palette);
     root.setProperty('--app-wallpaper', `url("${pluginAssetUrl(pluginId, file)}")`);
     root.setProperty('--skin-mask', String(p.wallpaper.mask ?? 0.26));
     // 2026-09-13 用户反馈「图片皮肤都看不清」—— 壁纸遮罩 backdrop-filter blur 是元凶之一
@@ -799,12 +806,13 @@ export const useSettingsStore = defineStore('settings', () => {
     //   浅色图(亮度240) × (1-0.35) + 深纱(亮度10) × 0.35 ≈ 亮度 160 → 一片灰白；
     //   叠加亮白文字 rgb(239,250,254) 后对比度只有 2.43:1 → 白底白字，即用户看到的「灰蒙蒙」。
     //   这也是为什么改 --glass-bg / --el-* 变量都不起作用：背景是**图片**，不是底色。
-    // 修复：暗色下把纱罩强度提到 0.78 —— 白图被压到亮度≈56（深色底），
-    //   对比度≈10.8:1，图仍保留 22% 的纹理起伏，不再糊成一片，也保住了皮肤的图案感。
+    // 修复：暗色纱罩强度 0.78 → 0.70 —— 0.78 时白图只剩 22% 纹理起伏，用户反馈
+    //   "部件图案不清晰/一片死色"。0.70 下纹理保留 30%，白图压到亮度≈79，
+    //   亮字对比度仍有 ~7.7:1（WCAG AA 需 4.5），图案感与可读性兼顾。
     //   浅色主题不需要纱罩（浅图本来就配浅底），维持空串。
-    //   skin 可经 surface.patternScrim 覆盖；真要保留更亮的图，把它调到 0.6~0.7。
+    //   skin 可经 surface.patternScrim 覆盖；低于 ~0.62 对比度将跌破 5:1，谨慎再降。
     const scrimBase = mixHex('#0A0A0C', currentSkinPrimary, 0.12);
-    const scrimA = hexToRgba(scrimBase, sf.patternScrim ?? 0.78);
+    const scrimA = hexToRgba(scrimBase, sf.patternScrim ?? 0.70);
     const scrim = dark ? `linear-gradient(${scrimA}, ${scrimA})` : '';
     // 部件图贴合方式：小图（按钮/输入框/列表底图）必须平铺 tile，而非 cover 拉伸铺满。
     // 历史默认 cover 会把 480x270 之类的小纹理拉伸到整个侧栏/弹窗宽度（300~600px），

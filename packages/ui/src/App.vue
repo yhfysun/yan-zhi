@@ -108,7 +108,11 @@ onMounted(async () => {
     await pluginStore.refresh();
     await syncPluginRoutes();
     resolvePluginLayout();
-    // 皮肤主题的壁纸来自插件清单：插件就绪后按当前主题重应用（启动时插件未就绪会miss）
+    // 皮肤主题的壁纸与主色都来自插件清单：插件就绪后按当前设置重应用。
+    // 只补 applySkin 不补 applyPalette 的历史坑：启动时 plugin themes 未就绪，
+    // applyPalette(皮肤id) 查不到主题直接 return → 主色族(--color-primary 等)停在默认朱砂橙，
+    // 皮肤壁纸/玻璃都生效了、按钮/焦点/hover/滚动条渐变却全是默认橙色——观感即"皮肤没生效/灰蒙蒙"。
+    settingsStore.applyPalette(settingsStore.settings.palette);
     settingsStore.applySkin(settingsStore.settings.skin);
   } catch {
     // 插件加载失败不阻塞主应用
