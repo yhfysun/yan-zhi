@@ -1,6 +1,12 @@
 <template>
-  <div class="input-area">
-    <div class="input-box" :class="{ focused: inputFocused }">
+  <div
+    class="input-area"
+    @dragenter.prevent="onDragEnter"
+    @dragover.prevent="onDragOver"
+    @dragleave="onDragLeave"
+    @drop.prevent="onDrop"
+  >
+    <div class="input-box" :class="{ focused: inputFocused, 'is-dragover': dragOver }">
 
       <div class="input-agent-bar">
         <el-dropdown trigger="click" placement="bottom-start" popper-class="agent-switch-popper" @command="onAgentSwitch">
@@ -390,7 +396,7 @@
             </div>
           </el-popover>
           <el-tooltip content="新建任务" placement="top">
-            <el-button size="small" circle @click="startNewChat()">
+            <el-button size="small" circle class="new-task-btn" @click="startNewChat()">
               <el-icon><EditPen /></el-icon>
             </el-button>
           </el-tooltip>
@@ -450,7 +456,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue';
+import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue';
 import type { Component } from 'vue';
 import {
   FolderOpened, ArrowDown, ArrowRight, Connection, Files, UploadFilled, User, EditPen, Cpu, Setting, Plus,
@@ -466,7 +472,7 @@ const {
   triggerFileUpload, input, send, agentStore, onAgentSwitch, openEditAgent, modelGroups,
   currentScene, clearScene,
   selectedModelId, onModelChange, openPlatformConfig, startNewChat, uploadedFiles, stopChat,
-  formatSize, removeFile, fileInputRef, handleFileChange,
+  formatSize, removeFile, fileInputRef, handleFileChange, addFiles,
   workspaceFiles, selectedFilePaths, toggleFileSelect,
   quotedUrls, removeQuotedUrl, LONG_INPUT_THRESHOLD,
 } = useChat();
@@ -730,9 +736,66 @@ function fileTypeMeta(name: string) {
   const ext = (name.split('.').pop() || '').toLowerCase();
   return FILE_TYPE_META[EXT_GROUP[ext] || 'other'];
 }
+
+// ===== 从系统文件管理器拖入 → 加入上传列表（桌面前端，原生 drop 即可拿到 File，与上传按钮同条路径） =====
+// 不依赖 electronAPI（File 对象 + FileReader 都能拿到内容 + 文件名）。
+// web 端同样支持（只是拿不到绝对路径），所以不强求 isElectron。
+const isLikelyFileDrag = (e: DragEvent) =>
+  Array.from(e.dataTransfer?.types || []).includes('Files');
+
+const dragOver = ref(false);
+let dragDepth = 0;
+
+function onDragEnter(e: DragEvent) {
+  if (!isLikelyFileDrag(e)) return;
+  dragDepth += 1;
+  dragOver.value = true;
+}
+function onDragOver(e: DragEvent) {
+  if (!isLikelyFileDrag(e)) return;
+  // dragover 持续触发，必须 preventDefault 才能在外部来源上 drop
+  e.dataTransfer && (e.dataTransfer.dropEffect = 'copy');
+}
+function onDragLeave(e: DragEvent) {
+  if (!isLikelyFileDrag(e)) return;
+  dragDepth = Math.max(0, dragDepth - 1);
+  if (dragDepth === 0) dragOver.value = false;
+}
+function onDrop(e: DragEvent) {
+  const files = e.dataTransfer?.files;
+  if (files && files.length) addFiles(files);
+  dragDepth = 0;
+  dragOver.value = false;
+}
+// 兜底：拖出窗口 / 异常情况下未能正确配对 dragleave，重置遮罩
+function onWindowDragEnd() {
+  dragDepth = 0;
+  dragOver.value = false;
+}
+onMounted(() => {
+  window.addEventListener('dragend', onWindowDragEnd);
+  window.addEventListener('drop', onWindowDragEnd);
+});
+onBeforeUnmount(() => {
+  window.removeEventListener('dragend', onWindowDragEnd);
+  window.removeEventListener('drop', onWindowDragEnd);
+});
 </script>
 
 <style scoped>
+/* 拖入文件悬停：input 容器边框/背景轻微变化（沿用主题朱砂色） */
+.input-box.is-dragover {
+  border-color: var(--color-primary, #c2410c) !important;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-primary, #c2410c) 14%, transparent) !important;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+}
+.input-area {
+  border-radius: 14px;
+  /* 让 input-box 的边框过渡看起来更自然 */
+  display: flex;
+  flex-direction: column;
+}
+
 .scene-chip {
   display: inline-flex;
   align-items: center;
@@ -747,11 +810,22 @@ function fileTypeMeta(name: string) {
   background: color-mix(in srgb, var(--scene-color) 10%, transparent);
   border: 1px solid color-mix(in srgb, var(--scene-color) 28%, transparent);
   white-space: nowrap;
+  /* 窄屏兜底：允许被压缩，文字走省略号，避免整行溢出到右侧面板上 */
+  min-width: 0;
+  flex-shrink: 1;
+  overflow: hidden;
 }
+.scene-chip-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .scene-chip-close {
   cursor: pointer;
   opacity: 0.6;
   transition: opacity 0.15s ease;
+  flex-shrink: 0;
 }
 .scene-chip-close:hover { opacity: 1; }
+/* 极窄：先收起场景文字只留图标+关闭，把宽度让给智能体名 */
+@container inputbar (max-width: 480px) {
+  .scene-chip { padding: 0 6px; }
+  .scene-chip-label { display: none; }
+}
 </style>

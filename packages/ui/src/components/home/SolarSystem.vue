@@ -1,6 +1,62 @@
 <template>
-  <div class="solar-system" ref="containerRef">
+  <div class="solar-system" ref="containerRef" @contextmenu.prevent="onContextMenu">
     <canvas ref="canvasRef" class="solar-canvas"></canvas>
+
+    <!-- 右键菜单：太阳系常用控制 -->
+    <transition name="ctx-fade">
+      <div
+        v-if="ctxMenu.visible"
+        class="solar-ctx-menu glass-card"
+        :style="{ left: ctxMenu.x + 'px', top: ctxMenu.y + 'px' }"
+        @contextmenu.prevent
+        @click.stop
+      >
+        <div class="ctx-title">太阳系控制</div>
+        <button class="ctx-item" @click="ctxAction('togglePause')">
+          <el-icon :size="14"><component :is="isPaused ? VideoPlay : VideoPause" /></el-icon>
+          <span>{{ isPaused ? '播放动画' : '暂停动画' }}</span>
+        </button>
+        <button class="ctx-item" @click="ctxAction('resetView')">
+          <el-icon :size="14"><Refresh /></el-icon>
+          <span>重置视角</span>
+        </button>
+        <button class="ctx-item" @click="ctxAction('resumeAll')">
+          <el-icon :size="14"><RefreshRight /></el-icon>
+          <span>恢复正常运转</span>
+        </button>
+        <div class="ctx-sep"></div>
+        <button class="ctx-item" @click="ctxAction('focusEarth')">
+          <el-icon :size="14"><Aim /></el-icon>
+          <span>聚焦地球</span>
+        </button>
+        <button class="ctx-item" @click="ctxAction('focusMoon')">
+          <el-icon :size="14"><Aim /></el-icon>
+          <span>聚焦月球</span>
+        </button>
+        <div class="ctx-sep"></div>
+        <button class="ctx-item" @click="ctxAction('help')">
+          <el-icon :size="14"><QuestionFilled /></el-icon>
+          <span>操作说明</span>
+        </button>
+      </div>
+    </transition>
+
+    <!-- 操作说明浮层 -->
+    <transition name="ctx-fade">
+      <div v-if="helpVisible" class="solar-help glass-card" @click.self="helpVisible = false">
+        <div class="help-head">
+          <span>太阳系操作说明</span>
+          <button class="help-close" @click="helpVisible = false">×</button>
+        </div>
+        <ul class="help-list">
+          <li><b>左键点击星球</b>：聚焦查看该星球（面板可折叠成小图标拖动）</li>
+          <li><b>左键拖拽</b>：旋转观察视角</li>
+          <li><b>滚轮</b>：缩放（聚焦时调节与星球的距离）</li>
+          <li><b>右键空白处</b>：打开本控制菜单（暂停 / 重置 / 聚焦等）</li>
+          <li><b>月球</b>：在地球旁公转，点击可单独聚焦观察真实月面</li>
+        </ul>
+      </div>
+    </transition>
 
     <!-- 星球介绍右侧面板 -->
     <transition name="panel-slide">
@@ -55,7 +111,7 @@
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue';
 import { useRouter } from 'vue-router';
 import * as THREE from 'three';
-import { ArrowDown } from '@element-plus/icons-vue';
+import { ArrowDown, VideoPlay, VideoPause, Refresh, RefreshRight, Aim, QuestionFilled } from '@element-plus/icons-vue';
 
 const emit = defineEmits<{ 'show-earth-map': [] }>();
 const router = useRouter();
@@ -63,6 +119,12 @@ const containerRef = ref<HTMLDivElement>();
 const canvasRef = ref<HTMLCanvasElement>();
 const selectedPlanet = ref<PlanetInfo | null>(null);
 const panelCollapsed = ref(false); // 星球面板折叠状态
+/** 动画暂停状态：为 true 时行星公转/自转/星空旋转/粒子流全部停止（独立于聚焦模式） */
+const isPaused = ref(false);
+/** 右键菜单状态（相对容器坐标） */
+const ctxMenu = ref({ visible: false, x: 0, y: 0 });
+/** 操作说明浮层 */
+const helpVisible = ref(false);
 // 小星球图标拖动位置（right/bottom 偏移，相对于容器右下角）
 const miniOrbPos = ref({ right: 24, bottom: 24 });
 let miniOrbDragging = false;
@@ -87,7 +149,12 @@ const PLANETS: PlanetInfo[] = [
   { name: '土星', emoji: '✨', color: '#F4E4BC', description: '从对话记录蒸馏出可复用 Skill，配置蒸馏智能体提示词/温度，预览改造保存。', feature: 'Skill 蒸馏', route: '/distill' },
   { name: '天王星', emoji: '🤖', color: '#7FDBDA', description: 'harness 与 workflow 两种类型，Vue Flow 工作流画布，子智能体调度与记忆。', feature: '智能体', route: '/agents' },
   { name: '海王星', emoji: '🔌', color: '#4169E1', description: 'stdio / SSE / Streamable HTTP 三种传输，工具列表预览、连接日志。', feature: 'MCP 服务', route: '/mcp' },
+  // 月球（地球的卫星）——索引 9，不参与常规公转，点击可单独聚焦观察
+  { name: '月球', emoji: '🌕', color: '#C9C9C9', description: '地球唯一的天然卫星。点击查看真实月球表面，环形山与月海清晰可见。', feature: '地球卫星' },
 ];
+
+/** 月球在 PLANETS 中的索引 */
+const MOON_INDEX = 9;
 
 let scene: THREE.Scene;
 let camera: THREE.PerspectiveCamera;
@@ -101,6 +168,7 @@ let starField: THREE.Points;
 let speedLines: THREE.Points;
 let sunGlow: THREE.Mesh;
 let earthAtmosphere: THREE.Mesh;
+let moonMesh: THREE.Mesh | null = null; // 月球 mesh 引用（点击命中 + 聚焦）
 let isDragging = false;
 let dragStartX = 0;
 let dragStartY = 0;
@@ -116,6 +184,8 @@ let particleTexture: THREE.Texture;
 // 相机飞行动画
 let isFocusing = false;
 let selectedPlanetIndex = -1;
+/** 当前聚焦目标 mesh（星球或月球）——统一聚焦逻辑，月球挂在地球下用世界坐标 */
+let focusTarget: THREE.Mesh | null = null;
 let cameraTargetPos = new THREE.Vector3(0, 0, 36);
 let cameraTargetLook = new THREE.Vector3(0, 0, 0);
 let currentLook = new THREE.Vector3(0, 0, 0);
@@ -142,6 +212,7 @@ const PLANET_STATS: Record<string, { diameter: string; distance: string; period:
   '土星': { diameter: '116,460 km', distance: '9.54 AU', period: '29.5 年', feature: '壮观光环系统' },
   '天王星': { diameter: '50,724 km', distance: '19.2 AU', period: '84 年', feature: '侧向自转，冰巨星' },
   '海王星': { diameter: '49,244 km', distance: '30.1 AU', period: '165 年', feature: '最远行星，大暗斑风暴' },
+  '月球': { diameter: '3,475 km', distance: '距地球 38.4万 km', period: '27.3 天（绕地球）', feature: '地球唯一天然卫星，潮汐锁定' },
 };
 
 // ===== 程序化生成圆形光点纹理（解决粒子方块问题） =====
@@ -568,7 +639,7 @@ function createPlanets(isMobile: boolean) {
 
     // 月球——绕地球公转
     const moonGeo = new THREE.SphereGeometry(0.35, 32, 32); // 月球半径0.35（地球1.4的1/4）
-    const moonTex = createPlanetTexture('mercury'); // 复用水星纹理（灰色陨石坑）作为月球纹理
+    const moonTex = createPlanetTexture('mercury'); // 先用程序化纹理占位（灰色陨石坑）
     const moonMat = new THREE.MeshStandardMaterial({
       map: moonTex,
       roughness: 0.9,
@@ -578,12 +649,13 @@ function createPlanets(isMobile: boolean) {
       emissiveMap: moonTex,
     });
     const moon = new THREE.Mesh(moonGeo, moonMat);
-    moon.userData = { isMoon: true, orbitAngle: 0, orbitSpeed: 0.02, orbitRadius: 2.5 };
+    moon.userData = { isMoon: true, planetIndex: MOON_INDEX, orbitAngle: 0, orbitSpeed: 0.02, orbitRadius: 2.5, baseScale: 1 };
     earth.add(moon);
+    moonMesh = moon; // 记录月球引用，供点击命中与聚焦使用
 
-    // 尝试加载真实月球纹理（复用 mercury 纹理作为月球——灰色多陨石坑）
+    // 加载真实月球纹理（2K 真实月面：环形山 + 月海）
     textureLoader.load(
-      `${TEX_BASE}mercury.jpg`,
+      `${TEX_BASE}moon.jpg`,
       (realTex) => {
         realTex.colorSpace = THREE.SRGBColorSpace;
         moonMat.map = realTex;
@@ -592,7 +664,15 @@ function createPlanets(isMobile: boolean) {
         moonTex.dispose();
       },
       undefined,
-      () => { /* 加载失败，保持程序化纹理 */ }
+      () => {
+        // 月球贴图缺失时回退到水星纹理（同款灰色陨石坑）
+        textureLoader.load(
+          `${TEX_BASE}mercury.jpg`,
+          (fb) => { fb.colorSpace = THREE.SRGBColorSpace; moonMat.map = fb; moonMat.emissiveMap = fb; moonMat.needsUpdate = true; moonTex.dispose(); },
+          undefined,
+          () => { /* 保持程序化纹理 */ }
+        );
+      }
     );
   }
 
@@ -623,15 +703,17 @@ function updateCameraPosition() {
 
 function animate() {
   animationId = requestAnimationFrame(animate);
-  clock += 0.01; // 减慢整体时钟
+  if (!isPaused.value) clock += 0.01; // 暂停时冻结时钟（光晕脉动/相机呼吸一并静止）
 
-  // 行星公转 + 自转（聚焦模式下全部停止——让用户安静观察星球，不头晕）
+  const paused = isPaused.value;
+
+  // 行星公转 + 自转（聚焦模式或暂停时全部停止——让用户安静观察星球，不头晕）
   planets.forEach((p, i) => {
     if (i === 0) {
-      if (!isFocusing) p.rotation.y += 0.002; // 太阳自转：聚焦时也停
+      if (!isFocusing && !paused) p.rotation.y += 0.002; // 太阳自转
     } else {
       const data = p.userData;
-      if (!isFocusing) {
+      if (!isFocusing && !paused) {
         // 非聚焦：正常公转 + 自转
         data.orbitAngle += data.orbitSpeed;
         p.position.x = data.orbitRadius * Math.cos(data.orbitAngle);
@@ -642,9 +724,9 @@ function animate() {
     }
   });
 
-  // 月球绕地球公转（聚焦时也停）
+  // 月球绕地球公转（聚焦时停；暂停时也停）
   const earth = planets[3];
-  if (earth && !isFocusing) {
+  if (earth && !isFocusing && !paused) {
     const moon = earth.children.find((c: any) => c.userData?.isMoon);
     if (moon) {
       const md = moon.userData;
@@ -656,17 +738,17 @@ function animate() {
   }
 
   // 太阳光晕脉动
-  if (sunGlow) {
+  if (sunGlow && !paused) {
     const pulse = 1 + Math.sin(clock * 1.5) * 0.04;
     sunGlow.scale.setScalar(pulse);
     (sunGlow.material as THREE.MeshBasicMaterial).opacity = 0.28 + Math.sin(clock * 2) * 0.04;
   }
 
   // 星空缓慢旋转
-  if (starField) starField.rotation.y += 0.0002;
+  if (starField && !paused) starField.rotation.y += 0.0002;
 
   // 穿梭粒子流（减慢）
-  if (speedLines) {
+  if (speedLines && !paused) {
     const positions = speedLines.geometry.attributes.position.array as Float32Array;
     const velocities = (speedLines.geometry as any).userData.velocities as Float32Array;
     const count = velocities.length;
@@ -682,34 +764,33 @@ function animate() {
   }
 
   // 相机逻辑：聚焦模式 vs 自由模式
-  if (isFocusing && selectedPlanetIndex >= 0) {
-    // 聚焦模式：用球面坐标计算相机位置（围绕选中星球）
-    const planet = planets[selectedPlanetIndex];
-    if (planet) {
-      const pos = planet.position;
-      // 目标相机位置
-      const targetX = pos.x + focusDistance * Math.sin(focusAngleY) * Math.cos(focusAngleX);
-      const targetY = pos.y + focusDistance * Math.sin(focusAngleX);
-      const targetZ = pos.z + focusDistance * Math.cos(focusAngleY) * Math.cos(focusAngleX);
-      
-      if (focusLerp < 1) {
-        // 平滑飞行过渡：从起始位置 lerp 到目标位置
-        focusLerp = Math.min(1, focusLerp + 0.04); // 过渡速度
-        const t = focusLerp * focusLerp * (3 - 2 * focusLerp); // smoothstep
-        camera.position.x = focusStartPos.x + (targetX - focusStartPos.x) * t;
-        camera.position.y = focusStartPos.y + (targetY - focusStartPos.y) * t;
-        camera.position.z = focusStartPos.z + (targetZ - focusStartPos.z) * t;
-      } else {
-        camera.position.x = targetX;
-        camera.position.y = targetY;
-        camera.position.z = targetZ;
-      }
-      camera.lookAt(pos);
+  if (isFocusing && focusTarget) {
+    // 聚焦模式：用球面坐标计算相机位置（围绕选中星球/月球）
+    const pos = focusTarget.position.clone();
+    // 月球位置是其局部坐标，需转世界坐标（月球挂在地球下）
+    focusTarget.getWorldPosition(pos);
+    // 目标相机位置
+    const targetX = pos.x + focusDistance * Math.sin(focusAngleY) * Math.cos(focusAngleX);
+    const targetY = pos.y + focusDistance * Math.sin(focusAngleX);
+    const targetZ = pos.z + focusDistance * Math.cos(focusAngleY) * Math.cos(focusAngleX);
+
+    if (focusLerp < 1) {
+      // 平滑飞行过渡：从起始位置 lerp 到目标位置
+      focusLerp = Math.min(1, focusLerp + 0.04); // 过渡速度
+      const t = focusLerp * focusLerp * (3 - 2 * focusLerp); // smoothstep
+      camera.position.x = focusStartPos.x + (targetX - focusStartPos.x) * t;
+      camera.position.y = focusStartPos.y + (targetY - focusStartPos.y) * t;
+      camera.position.z = focusStartPos.z + (targetZ - focusStartPos.z) * t;
+    } else {
+      camera.position.x = targetX;
+      camera.position.y = targetY;
+      camera.position.z = targetZ;
     }
+    camera.lookAt(pos);
   } else {
     // 自由模式：缓慢呼吸 + 微转（呼吸叠加在用户缩放距离之上，缩放不丢失）
     cameraDistance = baseDistance + Math.sin(clock * 0.08) * 3;
-    cameraAngleY += 0.0003;
+    if (!paused) cameraAngleY += 0.0003;
     updateCameraPosition();
   }
 
@@ -779,9 +860,13 @@ function onClick(e: MouseEvent) {
   mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
   mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
   raycaster.setFromCamera(mouse, camera);
-  const intersects = raycaster.intersectObjects(planets);
+  // recursive=true：月球是地球的子 mesh（不在 planets 数组里），必须递归遍历才能命中
+  const intersects = raycaster.intersectObjects(planets, true);
   if (intersects.length > 0) {
-    const idx = intersects[0].object.userData.planetIndex;
+    // 找到命中对象本身或其祖先中带 planetIndex 的（子 mesh 如月球/大气层挂在行星下）
+    let obj: THREE.Object3D | null = intersects[0].object;
+    while (obj && obj.userData?.planetIndex === undefined) obj = obj.parent;
+    const idx = obj?.userData?.planetIndex;
     if (idx !== undefined && idx < PLANETS.length) selectPlanet(idx);
   }
 }
@@ -789,6 +874,7 @@ function onClick(e: MouseEvent) {
 // 获取选中星球的**放大后**实际半径（聚焦模式下星球放大3倍）
 function getSelectedActualRadius(): number {
   if (selectedPlanetIndex < 0) return 1;
+  if (selectedPlanetIndex === MOON_INDEX) return 0.35 * 6; // 月球放大 6 倍
   if (selectedPlanetIndex === 0) return 2.5 * 3;
   return (planets[selectedPlanetIndex].geometry as any).parameters.radius * 3;
 }
@@ -799,12 +885,14 @@ function selectPlanet(idx: number) {
   panelCollapsed.value = false; // 每次选中星球时展开面板
   miniOrbPos.value = { right: 24, bottom: 24 }; // 小星球图标默认在右下角
 
+  const isMoon = idx === MOON_INDEX;
+
   // 只显示选中的星球，隐藏其他——像地球仪一样单独展示
   planets.forEach((p, i) => {
     const mat = p.material as THREE.MeshStandardMaterial;
     if (i === idx) {
       p.visible = true;
-      p.scale.setScalar(3.0); // 放大3倍，大而清晰
+      p.scale.setScalar(isMoon ? 6.0 : 3.0); // 月球小，放大 6 倍才够看
       if (mat.emissive) {
         mat.emissive.setHex(0x888888);
         mat.emissiveIntensity = 1.8; // 更亮，细节清晰
@@ -814,26 +902,53 @@ function selectPlanet(idx: number) {
     }
   });
 
-  // 隐藏轨道线
+  // 隐藏轨道线；月球被选中时地球也要保持可见（月球挂在地球下，隐藏地球会连带隐藏月球）
   planetGroup.children.forEach((child) => {
     if (!planets.includes(child as THREE.Mesh)) {
       (child as THREE.Mesh).visible = false;
     }
   });
 
-  // 相机聚焦到选中的星球——距离近一点，星球更大更震撼
+  // 月球：不放大（保持真实比例 0.35 vs 地球 1.4），地球正常显示但略缩，
+  // 镜头贴近月球外侧，呈现"站在月球旁回望地球"的真实构图，避免地月粘连看不清。
+  if (isMoon && moonMesh) {
+    moonMesh.visible = true;
+    moonMesh.scale.setScalar(1); // 保持真实比例，靠镜头拉近来观察细节
+    const earthMesh = planets[3];
+    const earthMat = earthMesh?.material as THREE.MeshStandardMaterial;
+    if (earthMesh) {
+      earthMesh.visible = true;
+      earthMesh.scale.setScalar(1); // 地球保持原大小
+    }
+    if (earthMat) {
+      earthMat.emissive.setHex(0x222222);
+      earthMat.emissiveIntensity = 1.0;
+      earthMat.transparent = false;
+      earthMat.opacity = 1;
+    }
+  }
+
+  // 相机聚焦到选中的星球/月球——距离近一点，星球更大更震撼
   isFocusing = true;
   focusLerp = 0; // 启动平滑飞行动画
   focusStartPos.copy(camera.position); // 记录起始位置
-  const actualRadius = idx === 0 ? 2.5 * 3 : (planets[idx].geometry as any).parameters.radius * 3;
-  focusDistance = actualRadius * 1.8; // 1.8倍半径，星球充满视野
-  focusAngleX = 0.25;
+  focusTarget = isMoon ? moonMesh : planets[idx] ?? null;
+  if (isMoon) {
+    // 月球：镜头贴近月面（月球半径 0.35，取 2.2 倍半径），构图为"近景月球 + 背景地球"
+    focusDistance = 0.35 * 2.2;
+    focusAngleX = 0.12;
+  } else {
+    const actualRadius = idx === 0 ? 2.5 * 3 : (planets[idx].geometry as any).parameters.radius * 3;
+    focusDistance = actualRadius * 1.8; // 1.8 倍半径，星球充满视野
+    focusAngleX = 0.25;
+  }
   focusAngleY = 0;
 }
 
 function closePlanet() {
   selectedPlanet.value = null;
   selectedPlanetIndex = -1;
+  focusTarget = null;
 
   // 恢复所有星球显示 + 正常大小 + 正常自发光
   planets.forEach((p) => {
@@ -844,7 +959,12 @@ function closePlanet() {
       mat.emissive.setHex(0x222222);
       mat.emissiveIntensity = 1.0;
     }
+    // 地球在聚焦月球时被设为半透明，这里恢复不透明
+    mat.transparent = false;
+    mat.opacity = 1;
   });
+  // 月球也恢复原大小
+  if (moonMesh) { moonMesh.visible = true; moonMesh.scale.setScalar(1); }
 
   // 恢复所有轨道线显示
   planetGroup.children.forEach((child) => {
@@ -852,6 +972,68 @@ function closePlanet() {
   });
 
   isFocusing = false;
+}
+
+/** 暂停/播放动画（独立于聚焦模式） */
+function togglePause() {
+  isPaused.value = !isPaused.value;
+}
+
+/** 右键打开控制菜单（坐标相对容器，超出右/下边界时向内收） */
+function onContextMenu(e: MouseEvent) {
+  const container = containerRef.value;
+  if (!container) return;
+  const rect = container.getBoundingClientRect();
+  const MENU_W = 168, MENU_H = 250;
+  let x = e.clientX - rect.left;
+  let y = e.clientY - rect.top;
+  if (x + MENU_W > rect.width) x = Math.max(4, rect.width - MENU_W - 4);
+  if (y + MENU_H > rect.height) y = Math.max(4, rect.height - MENU_H - 4);
+  ctxMenu.value = { visible: true, x, y };
+  window.addEventListener('mousedown', closeCtxMenu, { once: true });
+  window.addEventListener('blur', closeCtxMenu, { once: true });
+}
+function closeCtxMenu() {
+  ctxMenu.value.visible = false;
+}
+
+/** 右键菜单动作分发 */
+function ctxAction(action: string) {
+  closeCtxMenu();
+  switch (action) {
+    case 'togglePause':
+      togglePause();
+      break;
+    case 'resetView':
+      // 关闭聚焦并复位相机（视角、距离、角度全部回默认）
+      closePlanet();
+      cameraAngleX = 0.2;
+      cameraAngleY = 0;
+      baseDistance = 36;
+      cameraDistance = 36;
+      updateCameraPosition();
+      break;
+    case 'resumeAll':
+      // 恢复正常运转：关闭聚焦面板 + 取消暂停
+      closePlanet();
+      isPaused.value = false;
+      break;
+    case 'focusEarth':
+      focusPlanetByName('地球');
+      break;
+    case 'focusMoon':
+      selectPlanet(MOON_INDEX);
+      break;
+    case 'help':
+      helpVisible.value = true;
+      break;
+  }
+}
+
+/** 按名称聚焦某个星球（未找到则忽略） */
+function focusPlanetByName(name: string) {
+  const idx = PLANETS.findIndex((p) => p.name === name);
+  if (idx >= 0) selectPlanet(idx);
 }
 
 // 小星球图标：点击展开（拖动后不触发）
@@ -903,6 +1085,74 @@ function onResize() {
 .solar-system { position: absolute; inset: 0; overflow: hidden; }
 .solar-canvas { width: 100%; height: 100%; display: block; cursor: grab; }
 .solar-canvas:active { cursor: grabbing; }
+
+/* 右键控制菜单 */
+.solar-ctx-menu {
+  position: absolute; z-index: 30;
+  min-width: 160px; padding: 6px;
+  background: rgba(10, 15, 30, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 12px;
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.55);
+  user-select: none;
+}
+.ctx-title {
+  font-size: 11px; font-weight: 700; letter-spacing: 0.05em;
+  color: rgba(255, 255, 255, 0.42);
+  padding: 6px 10px 5px;
+}
+.ctx-item {
+  display: flex; align-items: center; gap: 9px;
+  width: 100%; padding: 8px 10px;
+  border: none; background: transparent; border-radius: 8px;
+  color: rgba(255, 255, 255, 0.88);
+  font-size: 13px; font-weight: 500; text-align: left;
+  cursor: pointer; transition: background 0.15s, color 0.15s;
+}
+.ctx-item:hover {
+  background: color-mix(in srgb, var(--color-primary) 42%, transparent);
+  color: #fff;
+}
+.ctx-sep { height: 1px; margin: 5px 8px; background: rgba(255, 255, 255, 0.1); }
+
+/* 操作说明浮层 */
+.solar-help {
+  position: absolute; z-index: 30;
+  left: 50%; top: 50%; transform: translate(-50%, -50%);
+  width: 400px; max-width: calc(100% - 40px);
+  padding: 18px 20px;
+  background: rgba(10, 15, 30, 0.94);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 14px;
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
+  color: #fff;
+}
+.help-head {
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: 15px; font-weight: 700; margin-bottom: 12px;
+}
+.help-close {
+  border: none; background: transparent; color: rgba(255,255,255,0.5);
+  font-size: 20px; line-height: 1; cursor: pointer;
+}
+.help-close:hover { color: #fff; }
+.help-list { margin: 0; padding-left: 18px; }
+.help-list li {
+  font-size: 12.5px; line-height: 1.9; color: rgba(255, 255, 255, 0.72);
+}
+.help-list li b { color: #fff; font-weight: 600; }
+.help-list li::marker { color: var(--color-primary); }
+
+.ctx-fade-enter-active, .ctx-fade-leave-active { transition: opacity 0.16s ease; }
+.ctx-fade-enter-from, .ctx-fade-leave-to { opacity: 0; }
+
+@media (max-width: 767px) {
+  .solar-help { width: auto; }
+}
 
 /* 右侧滑入面板 */
 .planet-panel {

@@ -1,3 +1,10 @@
+<!--
+  WebTopBar.vue — desktop 与 web 共享的顶部横排菜单
+  - 原 desktop 版本搬自 apps/desktop/src/components/TitleBar.vue
+  - Electron API（窗口控制 / 最大化监听）以可选链调用，web 端 electronAPI=undefined 时安全跳过
+  - 拖拽区 (-webkit-app-region: drag) 在浏览器中被忽略，无副作用
+  - "/ops" 菜单项已删除：routes 表里没有该路由，web 端点击会落到根重定向（不必要）
+-->
 <template>
   <div class="title-bar">
     <!-- 拖拽背景层：铺满整条标题栏，按钮等交互元素作为兄弟叠在其上方 -->
@@ -55,10 +62,6 @@
             <div class="user-dropdown-header">
               <span class="user-dropdown-name">{{ authStore.user?.username }}</span>
             </div>
-            <el-dropdown-item command="/ops">
-              <el-icon><Monitor /></el-icon>
-              <span>运维控制台</span>
-            </el-dropdown-item>
             <el-dropdown-item command="/settings">
               <el-icon><Setting /></el-icon>
               <span>设置</span>
@@ -80,7 +83,7 @@
         </el-icon>
       </button>
 
-      <!-- 右侧：窗口控制按钮 -->
+      <!-- 右侧：窗口控制按钮（web 端 electronAPI 不可用，自动 noop） -->
       <div class="window-controls">
         <button class="win-btn" title="最小化" @click="onMinimize">
           <el-icon :size="16"><Minus /></el-icon>
@@ -106,13 +109,13 @@ import {
   Minus, FullScreen, CopyDocument, Close, Moon, Sunny, HomeFilled, ChatDotRound, Monitor, Promotion, Setting, Collection,
   More, Cpu, Tools, Files, User, Link, Platform, MagicStick, Memo, Box, DataLine, Operation, Share,
 } from '@element-plus/icons-vue';
-import { useSettingsStore, useAuthStore, usePluginStore, openSettingsDrawer } from '@yan-zhi/ui';
+import { useSettingsStore, useAuthStore, usePluginStore } from '@yan-zhi/ui';
 import { resolvePluginIcon } from '@yan-zhi/ui/plugin-icons';
-import HoverMenu from '@yan-zhi/ui/components/HoverMenu.vue';
-import type { HoverMenuItem } from '@yan-zhi/ui/components/HoverMenu.vue';
-import { titleBarOverlayOpen } from '@yan-zhi/ui/composables/useTitleBarOverlay';
+import HoverMenu from './HoverMenu.vue';
+import type { HoverMenuItem } from './HoverMenu.vue';
+import { titleBarOverlayOpen } from '../composables/useTitleBarOverlay';
 
-// Electron 渲染进程通过 contextBridge 注入的 API
+// Electron 渲染进程通过 contextBridge 注入的 API（web 端为 undefined，全部走可选链）
 const api = (window as any).electronAPI;
 const settingsStore = useSettingsStore();
 const authStore = useAuthStore();

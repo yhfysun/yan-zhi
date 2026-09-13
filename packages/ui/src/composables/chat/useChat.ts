@@ -1468,14 +1468,16 @@ function createChat() {
   function triggerFileUpload() {
     fileInputRef.value?.click();
   }
-  function handleFileChange(e: Event) {
-    const target = e.target as HTMLInputElement;
-    const files = target.files;
-    if (!files) return;
+  /** 从拖入或文件选择器加入文件。共享上传/超限/转 dataURL 逻辑。
+   *  drag-drop 时 DataTransfer.files 是 FileList，与 input.files 同形；这里宽到数组。 */
+  function addFiles(files: FileList | ArrayLike<File>) {
     const maxSize = 10 * 1024 * 1024;
-    for (let i = 0; i < files.length; i++) {
-      const f = files[i];
-      if (f.size > maxSize) { ElMessage.warning(`文件「${f.name}」超过 10MB 限制`); continue; }
+    let added = 0, skipped = 0;
+    const arr = Array.from(files as ArrayLike<File>);
+    for (let i = 0; i < arr.length; i++) {
+      const f = arr[i];
+      if (!f || !f.name) { skipped++; continue; }
+      if (f.size > maxSize) { ElMessage.warning(`文件「${f.name}」超过 10MB 限制`); skipped++; continue; }
       const reader = new FileReader();
       reader.onload = () => {
         uploadedFiles.value.push({
@@ -1484,7 +1486,16 @@ function createChat() {
         });
       };
       reader.readAsDataURL(f);
+      added++;
     }
+    if (added && skipped === 0) ElMessage.success(`已加入 ${added} 个文件`);
+    else if (added && skipped) ElMessage.warning(`已加入 ${added} 个，跳过 ${skipped} 个`);
+  }
+  function handleFileChange(e: Event) {
+    const target = e.target as HTMLInputElement;
+    const files = target.files;
+    if (!files) return;
+    addFiles(files);
     target.value = '';
   }
   function removeFile(idx: number) { uploadedFiles.value.splice(idx, 1); }
@@ -2500,7 +2511,7 @@ function createChat() {
     fileCategories, previewInPopup, showConvFileMenu, reclassifyConvFile,
     onAgentSwitch, onModelChange,
     parseConfigCard, displayAssistantContent, getEditPlatform, getEditReason, onConfigSaved,
-    startNewChat, selectConv, triggerFileUpload, handleFileChange, removeFile, formatSize, send, stopChat, regenerateMsg, shouldShowMessage, collectToolCalls,
+    startNewChat, selectConv, triggerFileUpload, addFiles, handleFileChange, removeFile, formatSize, send, stopChat, regenerateMsg, shouldShowMessage, collectToolCalls,
     filteredFiles, loadWorkspaceFiles, previewFile, toggleFileSelect, triggerFilePanelUpload, handleFilePanelUpload, deleteFileItem,
     scrollToRound, handleScroll, updateActiveNavRound, formatTime, showScrollBottom, showScrollTop, scrollToBottom,
     toggleReasoning, toggleTool, toggleToolGroup, toggleMsgCollapse, collapseEarlyOnMobile, toggleAgentProcess, toggleStepTools, isLastRoundStreaming, getStreamingStep,

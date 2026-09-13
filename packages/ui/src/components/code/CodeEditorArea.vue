@@ -91,7 +91,19 @@
     </div>
 
     <!-- ===== 编辑区 ===== -->
-    <div class="cea-body">
+    <div
+      class="cea-body"
+      @dragover.prevent="onDragOver"
+      @dragenter.prevent="onDragEnter"
+      @dragleave="onDragLeave"
+      @drop.prevent="onDrop"
+    >
+      <!-- 拖入文件时的玻璃感遮罩（仅在有外部文件正悬停时显示） -->
+      <div v-if="dragOver" class="cea-dropmask">
+        <el-icon :size="34"><Document /></el-icon>
+        <p class="cea-dropmask-title">松开以打开文件</p>
+        <p class="cea-dropmask-sub">将从 {{ dropHoverCount }} 个文件逐一打开到标签页</p>
+      </div>
       <template v-if="active">
         <div v-if="active.error" class="cea-state cea-state-err">
           <el-icon :size="26"><WarningFilled /></el-icon>
@@ -494,6 +506,93 @@ async function saveActive() {
   else if (f.error) ElMessage.error(f.error);
 }
 
+// ===== 从系统文件管理器拖入文件 → 自动打开标签页 =====
+// 仅桌面端可用：取绝对路径需要 preload 暴露的 webUtils.getPathForFile，
+// web 端 DataTransferItem 没有原生路径，drop 会被忽略（fail-soft）。
+const isDesktop = typeof window !== 'undefined' && (window as any).electronAPI?.isElectron === true;
+const getPathForFile = (file: File): string => {
+  try {
+    return ((window as any).electronAPI?.getPathForFile?.(file) as string) || '';
+  } catch {
+    return '';
+  }
+};
+const isLikelyFileDrag = (e: DragEvent) =>
+  Array.from(e.dataTransfer?.types || []).includes('Files');
+
+const dragOver = ref(false);
+let dragDepth = 0;
+let dropHoverCount = ref(0);
+
+function onDragEnter(e: DragEvent) {
+  if (!isDesktop || !isLikelyFileDrag(e)) return;
+  dragDepth += 1;
+  dropHoverCount.value = e.dataTransfer?.items?.length || 0;
+  dragOver.value = true;
+}
+function onDragOver(e: DragEvent) {
+  if (!isDesktop || !isLikelyFileDrag(e)) return;
+  // dragover 必须 preventDefault 才能在外部来源上触发 drop
+  e.dataTransfer && (e.dataTransfer.dropEffect = 'copy');
+}
+function onDragLeave(e: DragEvent) {
+  if (!isDesktop || !isLikelyFileDrag(e)) return;
+  dragDepth = Math.max(0, dragDepth - 1);
+  if (dragDepth === 0) dragOver.value = false;
+}
+
+async function openDroppedFiles(files: FileList) {
+  const opened: string[] = [];
+  const skipped: string[] = [];
+  for (const f of Array.from(files)) {
+    if (!f) continue;
+    const abs = getPathForFile(f);
+    if (!abs) { skipped.push(f.name); continue; }
+    // 仅处理本地可读的文件（拖入文件夹/未文件类型时 webUtils 会返回空）
+    void code.openFile(abs, f.name);
+    opened.push(f.name);
+  }
+  if (opened.length && skipped.length === 0) {
+    ElMessage.success(`已打开 ${opened.length} 个文件`);
+  } else if (opened.length && skipped.length) {
+    ElMessage.warning(`已打开 ${opened.length} 个，跳过 ${skipped.length} 个非文件条目`);
+  } else if (skipped.length) {
+    ElMessage.warning(`未能打开拖入的内容（${skipped[0]}${skipped.length > 1 ? ' 等' : ''}）`);
+  }
+}
+
+async function onDrop(e: DragEvent) {
+  if (!isDesktop) return;
+  const files = e.dataTransfer?.files;
+  if (files && files.length) {
+    // 调用 CodeEditorArea 自身的 onDrop，防止内部子组件 dnd 库再处理
+    await openDroppedFiles(files);
+  }
+  dragDepth = 0;
+  dragOver.value = false;
+}
+
+// 拖出窗口 / drop 结束都重置计数（保险，避免多层嵌套失败时遮罩不消失）
+function onWindowDragEnd() {
+  dragDepth = 0;
+  dragOver.value = false;
+}
+onMounted(() => {
+  // ...
+  document.addEventListener('keydown', onKeydown);
+  document.addEventListener('click', onDocClickCloseMd);
+  window.addEventListener('dragend', onWindowDragEnd);
+  window.addEventListener('drop', onWindowDragEnd);
+  void nextTick(updateTabNav);
+});
+onBeforeUnmount(() => {
+  // ...
+  document.removeEventListener('keydown', onKeydown);
+  document.removeEventListener('click', onDocClickCloseMd);
+  window.removeEventListener('dragend', onWindowDragEnd);
+  window.removeEventListener('drop', onWindowDragEnd);
+});
+
 function toggleMaxConsole() {
   if (maximized.value) {
     consoleH.value = lastHeight;
@@ -526,11 +625,15 @@ onMounted(() => {
   code.rememberTabs();
   document.addEventListener('keydown', onKeydown);
   document.addEventListener('click', onDocClickCloseMd);
+  window.addEventListener('dragend', onWindowDragEnd);
+  window.addEventListener('drop', onWindowDragEnd);
   void nextTick(updateTabNav);
 });
 onBeforeUnmount(() => {
   document.removeEventListener('keydown', onKeydown);
   document.removeEventListener('click', onDocClickCloseMd);
+  window.removeEventListener('dragend', onWindowDragEnd);
+  window.removeEventListener('drop', onWindowDragEnd);
 });
 </script>
 
@@ -552,8 +655,11 @@ onBeforeUnmount(() => {
   align-items: stretch;
   height: 36px;
   flex-shrink: 0;
-  border-bottom: 1px solid var(--glass-border, #e7e4dc);
-  background: var(--glass-bg-hover, #f1efe9);
+  /* 标签栏整条透明：不透出实心色带。边界靠 inset 阴影画 1px 细线，
+     避免用 border-bottom 占据盒高、也避免空标签时上下糊成一片 */
+  border-bottom: none;
+  background: transparent;
+  box-shadow: inset 0 -1px 0 var(--glass-border, #e7e4dc);
 }
 .cea-tabs-scroll {
   flex: 1;
@@ -571,11 +677,11 @@ onBeforeUnmount(() => {
   width: 22px;
   border: none;
   display: inline-flex; align-items: center; justify-content: center;
-  background: var(--glass-bg-hover, #f1efe9);
+  background: transparent;
   color: var(--color-text-secondary, #6b6b66);
   cursor: pointer; z-index: 2;
 }
-.cea-tab-nav:hover { color: var(--color-primary, #c2410c); background: var(--glass-bg-hover, #f1efe9); }
+.cea-tab-nav:hover { color: var(--color-primary, #c2410c); background: transparent; }
 
 .cea-tab {
   display: inline-flex;
@@ -638,6 +744,22 @@ onBeforeUnmount(() => {
 
 /* 编辑容器（包裹三态，撑满编辑区；作为 MD 悬浮切换的定位上下文） */
 .cea-edit { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; position: relative; }
+
+/* ===== 拖入文件时的全屏玻璃遮罩 ===== */
+.cea-dropmask {
+  position: absolute; inset: 8px; z-index: 30;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
+  border: 2px dashed var(--color-primary, #c2410c);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--color-primary, #c2410c) 10%, var(--color-surface, #fff));
+  color: var(--color-primary, #c2410c);
+  pointer-events: none;
+  backdrop-filter: blur(2px);
+  animation: cea-dropmask-in 0.12s ease-out;
+}
+.cea-dropmask-title { margin: 0; font-size: 14px; font-weight: 600; color: var(--color-text, #1a1a1a); }
+.cea-dropmask-sub { margin: 0; font-size: 11.5px; color: var(--color-text-secondary, #6b6b66); }
+@keyframes cea-dropmask-in { from { opacity: 0; transform: scale(0.985); } to { opacity: 1; transform: scale(1); } }
 
 /* MD 三态悬浮切换（内容区右上角） */
 .cea-md-switch { position: absolute; top: 8px; right: 14px; z-index: 20; }

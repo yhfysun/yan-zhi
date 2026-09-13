@@ -210,6 +210,20 @@ function setLoaded(key: string, v: LoadedDir) {
   loaded.value = { ...loaded.value, [key]: v };
 }
 
+/** 拉取目录页：对瞬时失败（dev 服务重启 / 网络抖动）自动重试，避免误显「目录为空」 */
+async function treeGet(parentRel: string, off: number): Promise<{ data: { entries: TreeEntry[]; hasMore: boolean } } | { error: string }> {
+  let lastErr = '加载失败';
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const r = await api.get<{ entries: TreeEntry[]; hasMore: boolean }>(
+      `/workspace/tree?dir=${enc(code.projectDir)}&sub=${enc(parentRel)}&recursive=0&offset=${off}&limit=${TREE_PAGE_SIZE}`,
+    );
+    if ('data' in r) return r;
+    lastErr = (r as { error: string }).error || '加载失败';
+    if (attempt < 2) await new Promise((res) => setTimeout(res, 400));
+  }
+  return { error: lastErr };
+}
+
 async function loadDir(parentRel: string) {
   const prev = loaded.value[parentRel];
   if (prev?.loading) return;
@@ -220,18 +234,22 @@ async function loadDir(parentRel: string) {
     let off = collected.length;
     let hasMore = false;
     do {
-      const r = await api.get<{ entries: TreeEntry[]; hasMore: boolean }>(
-        `/workspace/tree?dir=${enc(code.projectDir)}&sub=${enc(parentRel)}&recursive=0&offset=${off}&limit=${TREE_PAGE_SIZE}`,
-      );
-      if ('error' in r) break;
+      const r = await treeGet(parentRel, off);
+      // 接口报错不再静默吞掉（否则根目录会误显示「目录为空」且不给任何提示）
+      if ('error' in r) {
+        setLoaded(parentRel, { entries: collected, hasMore: false, loading: false, done: true });
+        if (!treeError.value) treeError.value = (r as { error: string }).error || '加载失败';
+        return;
+      }
       const page = r.data.entries || [];
       collected = off === 0 ? page : collected.concat(page);
       hasMore = r.data.hasMore;
       off += page.length;
     } while (hasMore && off < 50000);
     setLoaded(parentRel, { entries: collected, hasMore, loading: false, done: true });
-  } catch {
+  } catch (e: any) {
     setLoaded(parentRel, { entries: prev?.entries ?? [], hasMore: false, loading: false, done: true });
+    if (!treeError.value) treeError.value = e?.message || '加载失败';
   }
 }
 

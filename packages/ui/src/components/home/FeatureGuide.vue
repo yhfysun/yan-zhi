@@ -670,16 +670,18 @@ function enterFeature() {
   overflow: hidden;
 }
 
-/* 弹窗主体 */
+/* 弹窗主体
+   2026-09-13：原写死深色底 + #fff 白字，浅色主题下成"黑底白字"的突兀深板
+   （用户反馈「亮色系还有黑底黑字」）。改为走主题 token，深浅主题各自适配。 */
 .feature-guide {
   width: 100%; max-width: 680px; max-height: 80vh;
   display: flex; flex-direction: column;
-  background: rgba(15, 23, 42, 0.75);
+  background: color-mix(in srgb, var(--color-surface, #0f172a) 92%, transparent);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border: 1px solid var(--color-border, rgba(255, 255, 255, 0.1));
   border-radius: 16px;
-  color: #fff;
+  color: var(--color-text, #fff);
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
   overflow: hidden;
 }
@@ -698,17 +700,17 @@ function enterFeature() {
   flex-shrink: 0;
 }
 .guide-titles { display: flex; flex-direction: column; }
-.guide-name { font-size: 20px; font-weight: 700; margin: 0; color: #fff; }
+.guide-name { font-size: 20px; font-weight: 700; margin: 0; color: var(--color-text, #fff); }
 .guide-route {
-  font-size: 12px; color: rgba(255, 255, 255, 0.5);
+  font-size: 12px; color: var(--color-text-tertiary, rgba(255, 255, 255, 0.5));
   font-family: 'JetBrains Mono', 'Fira Code', Consolas, monospace;
   margin-top: 2px;
 }
 .guide-close {
   width: 32px; height: 32px; border-radius: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  background: rgba(255, 255, 255, 0.06);
-  color: rgba(255, 255, 255, 0.8);
+  border: 1px solid var(--color-border, rgba(255, 255, 255, 0.12));
+  background: color-mix(in srgb, var(--color-text, #fff) 7%, transparent);
+  color: var(--color-text-secondary, rgba(255, 255, 255, 0.8));
   font-size: 20px; line-height: 1; cursor: pointer;
   transition: all 0.2s;
 }
@@ -716,7 +718,7 @@ function enterFeature() {
 
 .guide-divider {
   height: 1px; margin: 0 24px;
-  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.15), transparent);
+  background: linear-gradient(90deg, transparent, var(--color-border, rgba(255,255,255,0.15)), transparent);
 }
 
 /* 内容区 */
@@ -728,33 +730,33 @@ function enterFeature() {
 .section-title {
   display: flex; align-items: center; gap: 8px;
   font-size: 14px; font-weight: 600;
-  color: rgba(255, 255, 255, 0.9);
+  color: var(--color-text, rgba(255, 255, 255, 0.9));
   margin-bottom: 8px;
 }
 .section-emoji { font-size: 15px; }
 .section-text {
   font-size: 13px; line-height: 1.75;
-  color: rgba(255, 255, 255, 0.7);
+  color: var(--color-text-secondary, rgba(255, 255, 255, 0.7));
   margin: 0;
 }
 .section-list {
   margin: 0; padding-left: 20px;
   font-size: 13px; line-height: 1.85;
-  color: rgba(255, 255, 255, 0.7);
+  color: var(--color-text-secondary, rgba(255, 255, 255, 0.7));
 }
 .section-list li { margin-bottom: 4px; }
 .section-list li::marker { color: var(--color-primary); }
 
-/* 代码块 */
+/* 代码块（恒为深浅皆可读的深底，代码块保持深色是通用约定） */
 .section-code {
   margin: 0; padding: 14px 16px;
-  background: rgba(0, 0, 0, 0.35);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: color-mix(in srgb, #000 72%, transparent);
+  border: 1px solid var(--color-border, rgba(255, 255, 255, 0.08));
   border-radius: 10px;
   overflow-x: auto;
   font-family: 'JetBrains Mono', 'Fira Code', Consolas, monospace;
   font-size: 12px; line-height: 1.7;
-  color: rgba(255, 255, 255, 0.85);
+  color: #E6EDF3;
   white-space: pre;
 }
 .section-code code { font-family: inherit; }
@@ -763,8 +765,8 @@ function enterFeature() {
 .guide-footer {
   display: flex; justify-content: flex-end; gap: 10px;
   padding: 14px 24px;
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
-  background: rgba(0, 0, 0, 0.15);
+  border-top: 1px solid var(--color-border, rgba(255, 255, 255, 0.08));
+  background: color-mix(in srgb, var(--color-text, #fff) 4%, transparent);
 }
 
 /* 遮罩淡入 */

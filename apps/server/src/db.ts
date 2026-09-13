@@ -995,6 +995,8 @@ const CODE_AGENT_SYSTEM_PROMPT = `你是「代码编写助手」（codeAgent）�
 | 高级程序助手 | a_builtin_backend_dev | 接口契约设计、后端/服务端业务代码编写与自测 |
 | 设计助手 | a_builtin_ui_designer | 页面设计规格：信息架构、组件树、交互态、设计令牌 |
 | 前端助手 | a_builtin_frontend_dev | 按设计规格编写前端页面代码 |
+| Java 开发助手 | a_builtin_java_agent | Java 项目专项：检测/构建（maven/gradle）/Spring Boot 分析/Java 调试（JDWP）/JUnit 测试/代码格式化/MyBatis Mapper |
+| 发布助手 | a_builtin_cicd_agent | CI/CD 流水线：检测项目类型→选模板→创建流水线→一键打包部署（JAR/散包/Docker/直接运行，复用运维 SSH 连接） |
 | 浏览器操作助手 | a_builtin_page_agent | 查官方文档、核实框架/库的准确用法与最新版本 |
 
 不确定子智能体清单时先 list_sub_agents。委派时把背景交代全：项目目录、技术栈、要做什么、约束、期望产出格式。子智能体看不到你的上下文，一次说清。
@@ -1388,27 +1390,33 @@ export const seedAgents: Array<Record<string, unknown>> = [
     config_json: JSON.stringify({ maxReActSteps: 30 }),
   },
   {
+    // Java 开发助手：代码编写助手的专属子智能体，Java 项目检测/构建/分析/调试/测试
     id: 'a_builtin_java_agent',
     name: 'Java 开发助手',
     description:
-      '内置 Java 开发助手：项目检测、Maven/Gradle 构建、Spring Boot 分析（Bean/Endpoint/配置）、Java 调试（JDWP）、JUnit 测试、代码格式化、MyBatis Mapper 分析',
+      '内置 Java 工程子智能体：项目检测、Maven/Gradle 构建、Spring Boot 分析（Bean/Endpoint/配置）、Java 调试（JDWP）、JUnit 测试、代码格式化、MyBatis Mapper 分析；由代码编写助手委派',
     type: 'harness',
     is_builtin: 1,
     builtin_tool_ids: JSON.stringify(JAVA_AGENT_BUILTIN_TOOLS),
     system_prompt: JAVA_AGENT_SYSTEM_PROMPT,
     force_sync: true,
+    // sub：仅作为子智能体被代码编写助手引用委派，不在会话的智能体选择器中出现
+    agent_kind: 'sub',
     config_json: JSON.stringify({ maxReActSteps: 30 }),
   },
   {
+    // CI/CD 发布助手：代码编写助手的专属子智能体，发布流水线创建与执行
     id: 'a_builtin_cicd_agent',
     name: '发布助手',
     description:
-      '内置发布助手：检测项目类型→创建 CI/CD 流水线→一键打包部署（打包→备份→上传→重启）。支持 JAR 包/散包/Docker/直接运行四种部署模式，复用运维插件的 SSH 连接',
+      '内置发布子智能体：检测项目类型→创建 CI/CD 流水线→一键打包部署（打包→备份→上传→重启）。支持 JAR 包/散包/Docker/直接运行四种部署模式，复用运维插件的 SSH 连接；由代码编写助手委派',
     type: 'harness',
     is_builtin: 1,
     builtin_tool_ids: JSON.stringify(CICD_AGENT_BUILTIN_TOOLS),
     system_prompt: CICD_AGENT_SYSTEM_PROMPT,
     force_sync: true,
+    // sub：仅作为子智能体被代码编写助手引用委派，不在会话的智能体选择器中出现
+    agent_kind: 'sub',
     config_json: JSON.stringify({ maxReActSteps: 30 }),
   },
   {
@@ -1417,15 +1425,16 @@ export const seedAgents: Array<Record<string, unknown>> = [
     id: 'a_builtin_code_agent',
     name: '代码编写助手',
     description:
-      '内置编程团队主智能体（架构师）：分析需求、把控项目架构与分层、统一横切能力（认证/日志/异常/校验/响应封装）避免每个接口重复实现，再把实现委派给专属子智能体（代码探索/高级程序/设计/前端）并验收集成',
+      '内置编程团队主智能体（架构师）：分析需求、把控项目架构与分层、统一横切能力（认证/日志/异常/校验/响应封装）避免每个接口重复实现，再把实现委派给专属子智能体（代码探索/高级程序/设计/前端/Java/CI·CD）并验收集成',
     type: 'harness',
     is_builtin: 1,
     builtin_tool_ids: JSON.stringify(CODE_AGENT_BUILTIN_TOOLS),
     skill_ids: JSON.stringify(CODE_AGENT_SKILL_IDS),
-    // 4 个专属子智能体 + pageAgent（官方文档/联网核实）
+    // 7 个专属子智能体（4 个核心 + Java/CI/CD 工程能力 + pageAgent 官方文档/联网核实）
     sub_agent_ids: JSON.stringify([
       'a_builtin_code_explorer', 'a_builtin_backend_dev',
       'a_builtin_ui_designer', 'a_builtin_frontend_dev',
+      'a_builtin_java_agent', 'a_builtin_cicd_agent',
       'a_builtin_page_agent',
     ]),
     system_prompt: CODE_AGENT_SYSTEM_PROMPT,

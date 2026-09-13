@@ -766,6 +766,9 @@
 .input-agent-bar {
   display: flex; align-items: center; gap: 4px;
   padding: 6px 10px 0;
+  /* min-width:0 + 允许子项收缩：窄屏时智能体名/场景 chip 走省略号，
+     而非把整行撑出 .input-box（曾溢出 33px 压到右侧面板上） */
+  min-width: 0;
 }
 .agent-edit-btn { color: var(--color-text); background: color-mix(in srgb, var(--color-primary) 8%, transparent); border-color: color-mix(in srgb, var(--color-primary) 20%, transparent); }
 .agent-edit-btn:hover { color: var(--color-primary); background: color-mix(in srgb, var(--color-primary) 16%, transparent); border-color: color-mix(in srgb, var(--color-primary) 38%, transparent); }
@@ -774,6 +777,7 @@
   display: inline-flex; align-items: center; gap: 7px;
   padding: 3px 8px 3px 4px; border-radius: 8px; cursor: pointer;
   transition: background 0.15s ease; user-select: none; max-width: 200px;
+  min-width: 0; flex-shrink: 1;
 }
 .agent-trigger:hover { background: color-mix(in srgb, var(--color-primary) 10%, transparent); }
 .agent-trigger-avatar {
@@ -1737,7 +1741,7 @@ body.yz-right-panel-open .el-overlay-dialog {
  *   > 620px  完整
  *   ≤ 620px  文字宽度收窄（仍可读）
  *   ≤ 520px  隐藏文字与下拉箭头 → 退化为圆形图标按钮（信息移入 tooltip）
- *   ≤ 400px  再让位非关键按钮，仅保留 新建任务 + 发送
+ *   ≤ 400px  再让位非关键按钮，保留 新建任务 + 发送
  * 说明：容器查询不会被 .input-toolbar 之外的同名类命中，作用范围天然受限。 */
 @container inputbar (max-width: 620px) {
   .model-select-name { max-width: 96px; }
@@ -1755,7 +1759,7 @@ body.yz-right-panel-open .el-overlay-dialog {
   .agent-trigger { max-width: 110px; }
 }
 @container inputbar (max-width: 400px) {
-  /* 极窄：新建任务让位（发送按钮是唯一不可省的操作） */
-  .toolbar-right .el-button.is-circle:not(.send-btn) { display: none; }
+  /* 极窄：让位非关键按钮，但「新建任务」是高频操作必须常驻（显式排除） */
+  .toolbar-right .el-button.is-circle:not(.send-btn):not(.new-task-btn) { display: none; }
   .toolbar-divider { display: none; }
 }

@@ -196,7 +196,12 @@ function handleInfoClick(item: HomeMenuItem) {
 }
 .home-overlay > * { pointer-events: auto; }
 
-/* 应用介绍小圆点（可拖拽，InfoFilled 图标） */
+/* 应用介绍小圆点（可拖拽，InfoFilled 图标）
+   2026-09-13 修「亮色系黑底黑字」：原写死深色底 + 白字（rgba(15,23,42,.7) / #fff），
+   首页太阳系 canvas 恒为深空黑，浅色主题下这些浮层仍按深色渲染尚可读；
+   但功能导航面板等**不压 canvas 之外的区域**在浅色主题下会与浅底冲突。
+   这里统一走主题 token：深色主题下由 data-theme 派生的 surface 就是深色，观感不变；
+   浅色主题下自动变浅底深字，不再"黑底黑字"。*/
 .intro-dot {
   position: absolute; z-index: 50;
   width: 36px; height: 36px; border-radius: 50%;
@@ -212,24 +217,26 @@ function handleInfoClick(item: HomeMenuItem) {
 .intro-dot:hover { background: color-mix(in srgb, var(--color-primary) 55%, transparent); transform: scale(1.08); }
 .intro-dot:active { cursor: grabbing; }
 
-/* 展开后的介绍卡片 */
+/* 展开后的介绍卡片（同 feature-nav-panel：跟随主题 token） */
 .app-intro {
   position: absolute; z-index: 51;
   padding: 18px 28px; text-align: center;
-  background: rgba(0, 5, 16, 0.75); border: 1px solid rgba(255,255,255,0.12);
-  border-radius: 14px; color: #fff;
+  background: var(--color-surface, rgba(0, 5, 16, 0.75));
+  border: 1px solid var(--color-border, rgba(255,255,255,0.12));
+  border-radius: 14px; color: var(--color-text, #fff);
   backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
   cursor: move; user-select: none;
 }
-.app-title { font-size: 24px; font-weight: 800; margin-bottom: 4px; color: #fff; }
-.app-en { font-size: 14px; font-weight: 400; color: rgba(255,255,255,0.6); }
-.app-subtitle { font-size: 14px; color: rgba(255,255,255,0.8); margin: 0; }
+.app-title { font-size: 24px; font-weight: 800; margin-bottom: 4px; color: var(--color-text, #fff); }
+.app-en { font-size: 14px; font-weight: 400; color: var(--color-text-secondary, rgba(255,255,255,0.6)); }
+.app-subtitle { font-size: 14px; color: var(--color-text-secondary, rgba(255,255,255,0.8)); margin: 0; }
 .intro-close {
   position: absolute; top: 8px; right: 10px;
   width: 22px; height: 22px; border-radius: 50%;
-  border: 1px solid rgba(255,255,255,0.15); background: rgba(255,255,255,0.06);
-  color: rgba(255,255,255,0.7); font-size: 14px; line-height: 1;
+  border: 1px solid var(--color-border, rgba(255,255,255,0.15));
+  background: color-mix(in srgb, var(--color-text, #fff) 8%, transparent);
+  color: var(--color-text-secondary, rgba(255,255,255,0.7)); font-size: 14px; line-height: 1;
   cursor: pointer; display: flex; align-items: center; justify-content: center;
   transition: all 0.2s;
 }
@@ -242,14 +249,17 @@ function handleInfoClick(item: HomeMenuItem) {
 .fade-enter-active, .fade-leave-active { transition: opacity 0.4s ease; }
 .fade-enter-from, .fade-leave-to { opacity: 0; }
 
-/* ===== 左上角功能导航小按钮 ===== */
+/* ===== 左上角功能导航小按钮 =====
+   此按钮悬浮在太阳系 canvas（恒深黑）之上，所以底/字保持深色更协调；
+   但浅色主题下用户切到浅色仍觉得突兀，故改为「半透明主题底 + 主题文字色」，
+   在深黑 canvas 上仍是一块可辨的浅色浮岛，不会黑吃黑。 */
 .feature-nav-btn {
   position: absolute; left: 16px; top: 16px; z-index: 50;
   width: 44px; height: 44px; border-radius: 50%;
   display: flex; align-items: center; justify-content: center;
-  background: rgba(15, 23, 42, 0.6);
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  color: rgba(255, 255, 255, 0.9);
+  background: color-mix(in srgb, var(--color-surface, #0f172a) 82%, transparent);
+  border: 1px solid var(--color-border, rgba(255, 255, 255, 0.15));
+  color: var(--color-text, rgba(255, 255, 255, 0.9));
   cursor: pointer;
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
@@ -269,18 +279,22 @@ function handleInfoClick(item: HomeMenuItem) {
 /* 关闭 glass-card 默认 hover 位移，避免按钮跳动 */
 .feature-nav-btn:hover { transform: scale(1.06); }
 
-/* ===== 功能列表面板 ===== */
+/* ===== 功能列表面板 =====
+   2026-09-13：原来底/字/边框全写死深色（rgba(15,23,42,.78) + #fff），
+   浅色主题下这块"浮在浅色页面上的深色板"就是用户说的「还有黑底黑字」。
+   改为走主题 token（--color-surface / --color-text / --color-border），
+   深浅两种主题各取所需：深色主题下视觉与原先一致，浅色主题下自动浅底深字。 */
 .feature-nav-panel {
   position: absolute; left: 16px; top: 72px; z-index: 49;
   width: 280px; max-height: calc(100vh - 96px);
   display: flex; flex-direction: column;
-  background: rgba(15, 23, 42, 0.78);
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: var(--color-surface, rgba(15, 23, 42, 0.78));
+  border: 1px solid var(--color-border, rgba(255, 255, 255, 0.12));
   border-radius: 14px;
   backdrop-filter: blur(18px);
   -webkit-backdrop-filter: blur(18px);
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
-  color: #fff;
+  color: var(--color-text, #fff);
   overflow: hidden;
 }
 .feature-nav-panel:hover { transform: none; box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4); }
@@ -288,16 +302,16 @@ function handleInfoClick(item: HomeMenuItem) {
 .feature-nav-header {
   display: flex; align-items: center; justify-content: space-between;
   padding: 14px 16px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  border-bottom: 1px solid var(--color-border, rgba(255, 255, 255, 0.08));
 }
 .feature-nav-title {
-  font-size: 14px; font-weight: 600; color: rgba(255, 255, 255, 0.9);
+  font-size: 14px; font-weight: 600; color: var(--color-text, rgba(255, 255, 255, 0.9));
   letter-spacing: 0.5px;
 }
 .feature-nav-close {
   width: 26px; height: 26px; border-radius: 6px;
-  border: none; background: rgba(255, 255, 255, 0.08);
-  color: rgba(255, 255, 255, 0.8);
+  border: none; background: color-mix(in srgb, var(--color-text, #fff) 8%, transparent);
+  color: var(--color-text-secondary, rgba(255, 255, 255, 0.8));
   font-size: 18px; line-height: 1; cursor: pointer;
   transition: all 0.2s;
 }
@@ -315,7 +329,7 @@ function handleInfoClick(item: HomeMenuItem) {
   transition: background 0.2s ease;
 }
 .feature-nav-item:hover {
-  background: rgba(255, 255, 255, 0.06);
+  background: color-mix(in srgb, var(--color-text, #fff) 7%, transparent);
 }
 .feature-nav-item-info {
   display: flex; align-items: center; gap: 10px;
@@ -330,13 +344,13 @@ function handleInfoClick(item: HomeMenuItem) {
 }
 .feature-nav-item-info:hover .feature-nav-item-icon { transform: scale(1.08); }
 .feature-nav-item-name {
-  font-size: 13px; font-weight: 500; color: rgba(255, 255, 255, 0.85);
+  font-size: 13px; font-weight: 500; color: var(--color-text, rgba(255, 255, 255, 0.85));
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .feature-nav-item-enter {
   flex-shrink: 0; color: var(--color-primary) !important;
 }
-.feature-nav-item-enter:hover { color: #fff !important; }
+.feature-nav-item-enter:hover { color: var(--color-primary) !important; filter: brightness(1.15); }
 
 /* 左侧滑出动画 */
 .slide-left-enter-active, .slide-left-leave-active { transition: all 0.28s cubic-bezier(0.22, 1, 0.36, 1); }

@@ -1,5 +1,5 @@
 <template>
-  <div class="app-shell" :class="{ 'platform-desktop': isDesktop, 'nav-collapsed': collapsed, 'is-electron': isElectron }">
+  <div class="app-shell" :class="{ 'platform-desktop': isDesktop, 'platform-web': isWeb, 'nav-collapsed': collapsed, 'is-electron': isElectron }">
 
     <!-- 内容区域 -->
     <div class="app-body">
@@ -17,8 +17,10 @@
 
         <!-- 内置默认布局 -->
         <template v-else>
-        <!-- 桌面端：竖排 SideNav 退役，主导航由 apps/desktop TitleBar 横排承担；移动端 TabBar / Web dock 不受影响 -->
-        <SideNav v-if="!isDesktop" />
+        <!-- 桌面端：竖排 SideNav 退役，主导航由 apps/desktop TitleBar 横排承担；
+             web 端：WebTopBar 在 apps/web/src/App.vue 接管主导航，SideNav 也不再渲染；
+             仅 mobile 仍保留竖排 SideNav 的 tab-bar 分支。 -->
+        <SideNav v-if="isMobile" />
         <!-- Mobile TopBar (hidden on chat page - Chat has its own topbar) -->
         <header v-if="isMobile && route.name !== 'chat'" class="mobile-topbar">
           <span class="mobile-topbar-title">{{ pageTitle }}</span>
@@ -82,7 +84,7 @@ const settingsStore = useSettingsStore();
 settingsStore.applyDarkMode(settingsStore.settings.darkMode);
 const pluginStore = usePluginStore();
 const isMobile = useIsMobile();
-const { isDesktop } = usePlatform();
+const { isDesktop, isWeb } = usePlatform();
 const { collapsed } = useSidebarState();
 
 // Electron 桌面端检测：由主进程通过 preload 注入 window.electronAPI.isElectron
@@ -201,6 +203,16 @@ body {
   padding-right: 0;
 }
 .platform-desktop .page { padding: 20px 24px; }
+
+/* ===== Web 端专属布局：WebTopBar 在外层（apps/web/src/App.vue）接管主导航，
+       此处只负责让 main-content 顶部避开 36px 顶栏，并清掉原来的 52px SideNav 留位 ===== */
+.platform-web.app-shell { --titlebar-h: 36px; }
+.platform-web .main-content {
+  margin-left: 0;                 /* web 端 SideNav 已退役（导航上移 WebTopBar），主区全宽 */
+  padding-right: 0;
+  padding-top: var(--titlebar-h); /* 顶部让出 36px 给外层 WebTopBar */
+}
+.platform-web .page { padding-top: 24px; }  /* 主区已抬出 --titlebar-h，page 内顶部留 24px，避免与原 28px 叠加 */
 .platform-desktop .page-title { font-size: 18px; }
 .platform-desktop .card-grid {
   grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));

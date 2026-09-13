@@ -4,7 +4,7 @@ import { createPinia } from 'pinia';
 import ElementPlus from 'element-plus';
 import 'element-plus/dist/index.css';
 import * as Icons from '@element-plus/icons-vue';
-import App from '@yan-zhi/ui/App.vue';
+import App from './App.vue';
 import { router } from '@yan-zhi/ui';
 import { setPlatformAdapter, initSchema } from '@yan-zhi/core';
 import { webAdapter } from './platform';
