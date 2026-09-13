@@ -113,6 +113,61 @@ export interface ThemePalette {
     buttonPattern?: string;
     /** 弹窗背景图（URL），缺省=无 */
     dialogPattern?: string;
+    /** 菜单底图（应用菜单/下拉菜单/右键菜单） */
+    menuPattern?: string;
+    /** 菜单底图暗色变体（暗色主题优先于 menuPattern） */
+    menuPatternDark?: string;
+    /** 代码模式底图（区别于壁纸的独立背景图） */
+    codePattern?: string;
+    /** 内置浏览器外壳底图（tab 栏/工具栏） */
+    browserPattern?: string;
+    /** 浏览器外壳底图暗色变体（暗色主题优先于 browserPattern） */
+    browserPatternDark?: string;
+    /** 输入框边框色（EP 输入框与自定义输入容器共用） */
+    inputBorder?: string;
+
+    /** ===== 部件图贴合方式 ===== */
+    /**
+     * 部件图（taskList/input/button/dialog/menu/code/browser）的贴合方式，默认 cover。
+     * 小尺寸纹理图（如 240×96 的按钮图、320×72 的输入框图）用 cover 会被大幅放大变糊，
+     * 应改用 repeat / repeat-x 平铺。
+     */
+    patternFit?: 'cover' | 'contain' | 'repeat' | 'repeat-x';
+    /**
+     * 暗色主题下部件图的压暗强度 0~1，默认 0.35。
+     * 越大越暗、文字对比越好；越小图案越清晰。改成主色系深色纱罩（不再用纯黑），保留皮肤色相。
+     */
+    patternScrim?: number;
+
+    /** ===== 配色兜底（可选；未配置时由 primary 自动派生） ===== */
+    /** 正文色，缺省=由主色派生 */
+    text?: string;
+    /** 次级文字色 */
+    textSecondary?: string;
+    /** 三级文字色（占位符/辅助说明） */
+    textTertiary?: string;
+    /** 主色上的文字色（实心主按钮/选中项），缺省按对比度自动 */
+    onPrimary?: string;
+    /** 面板/侧栏/顶栏底色 */
+    surfaceColor?: string;
+    /** 卡片/弹窗/下拉等抬高一层表面的底色 */
+    surfaceRaisedColor?: string;
+    /** 输入框/代码区等凹陷一层表面的底色 */
+    surfaceSunkenColor?: string;
+    /** 悬停底色 */
+    surfaceHoverColor?: string;
+    /** 选中底色 */
+    surfaceActiveColor?: string;
+    /** 输入框底色，缺省=surfaceSunkenColor */
+    inputBg?: string;
+    /** 列表底色，缺省=surfaceColor */
+    listBg?: string;
+    /** 下拉/菜单底色，缺省=surfaceRaisedColor */
+    dropdownBg?: string;
+    /** 弹窗底色，缺省=surfaceRaisedColor */
+    dialogBgColor?: string;
+    /** 弹窗遮罩色，缺省由主色派生的半透明深色 */
+    overlayTint?: string;
   };
 }
 

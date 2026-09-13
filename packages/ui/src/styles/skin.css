@@ -66,18 +66,20 @@
    原则：面板（--glass-bg / --el-bg-color）高透下限保对比，控件填充（fill/input）低透薄纱。
    Element Plus 输入框/表格/弹窗/下拉全部消费 --el-* 变量，改 token 即全局生效 */
 [data-skin="on"] {
-  --color-text: #141414;
-  --color-text-secondary: #4A4A45;
-  --color-text-tertiary: #71706A;
+  /* 配色兜底链（P0-3）：--skin-text* / --skin-surface* 由 applySurface 从皮肤主色派生，
+     未配置时 var() 回落原有固定值，老皮肤行为不变 */
+  --color-text: var(--skin-text, #141414);
+  --color-text-secondary: var(--skin-text-secondary, #4A4A45);
+  --color-text-tertiary: var(--skin-text-tertiary, #71706A);
 
   --glass-bg: color-mix(in srgb, var(--skin-glass-tint, #f5f1ea) calc(var(--skin-glass-alpha, 0.97) * 100%), transparent);
-  --glass-bg-hover: color-mix(in srgb, var(--skin-glass-tint, #f5f1ea) calc(var(--skin-glass-alpha-hover, 0.99) * 100%), transparent);
+  --glass-bg-hover: var(--skin-surface-hover, color-mix(in srgb, var(--skin-glass-tint, #f5f1ea) calc(var(--skin-glass-alpha-hover, 0.99) * 100%), transparent));
   --glass-filter: blur(var(--skin-glass-blur, 2px)) saturate(1.1);
 
   --el-bg-color: var(--glass-bg);
-  --el-bg-color-overlay: color-mix(in srgb, var(--skin-glass-tint, #f5f1ea) 97%, transparent);
+  --el-bg-color-overlay: var(--skin-dropdown-bg, color-mix(in srgb, var(--skin-glass-tint, #f5f1ea) 97%, transparent));
   --el-bg-color-page: transparent;
-  --el-fill-color-blank: color-mix(in srgb, var(--skin-glass-tint, #f5f1ea) 92%, transparent);
+  --el-fill-color-blank: var(--skin-input-bg, color-mix(in srgb, var(--skin-glass-tint, #f5f1ea) 92%, transparent));
 
   /* 数据工作台独立 token 体系接入皮肤：本体/数据源/SQL控制台面板跟随玻璃皮肤 */
   --color-surface: var(--glass-bg);
@@ -88,8 +90,8 @@
   --el-border-color-light: rgba(26, 26, 26, 0.11);
   --el-border-color-lighter: rgba(26, 26, 26, 0.09);
 
-  --btn-bg: color-mix(in srgb, var(--skin-glass-tint, #f5f1ea) 88%, transparent);
-  --btn-bg-hover: color-mix(in srgb, var(--skin-glass-tint, #f5f1ea) 95%, transparent);
+  --btn-bg: var(--skin-btn-bg-color, color-mix(in srgb, var(--skin-glass-tint, #f5f1ea) 88%, transparent));
+  --btn-bg-hover: var(--skin-btn-bg-hover, color-mix(in srgb, var(--skin-glass-tint, #f5f1ea) 95%, transparent));
   --btn-border: color-mix(in srgb, var(--color-primary) 12%, var(--el-border-color));
 
   /* 滚动条随皮肤主色变化 */
@@ -108,18 +110,18 @@
   --dw-canvas: var(--glass-bg);
 }
 [data-theme="dark"][data-skin="on"] {
-  --color-text: #F2F0EA;
-  --color-text-secondary: #B8B8B0;
-  --color-text-tertiary: #8E8E86;
+  --color-text: var(--skin-text, #F2F0EA);
+  --color-text-secondary: var(--skin-text-secondary, #B8B8B0);
+  --color-text-tertiary: var(--skin-text-tertiary, #8E8E86);
 
   --glass-bg: color-mix(in srgb, var(--skin-glass-tint, #1d1d1c) calc(var(--skin-glass-alpha, 0.95) * 100%), transparent);
-  --glass-bg-hover: color-mix(in srgb, var(--skin-glass-tint, #1d1d1c) calc(var(--skin-glass-alpha-hover, 0.98) * 100%), transparent);
+  --glass-bg-hover: var(--skin-surface-hover, color-mix(in srgb, var(--skin-glass-tint, #1d1d1c) calc(var(--skin-glass-alpha-hover, 0.98) * 100%), transparent));
   --glass-filter: blur(var(--skin-glass-blur, 2px)) saturate(1.08);
 
   --el-bg-color: var(--glass-bg);
-  --el-bg-color-overlay: color-mix(in srgb, var(--skin-glass-tint, #1d1d1c) 95%, transparent);
+  --el-bg-color-overlay: var(--skin-dropdown-bg, color-mix(in srgb, var(--skin-glass-tint, #1d1d1c) 95%, transparent));
   --el-bg-color-page: transparent;
-  --el-fill-color-blank: color-mix(in srgb, var(--skin-glass-tint, #1d1d1c) 90%, transparent);
+  --el-fill-color-blank: var(--skin-input-bg, color-mix(in srgb, var(--skin-glass-tint, #1d1d1c) 90%, transparent));
   --el-fill-color: rgba(255, 255, 255, 0.06);
   --el-fill-color-light: rgba(255, 255, 255, 0.055);
   --el-fill-color-lighter: rgba(255, 255, 255, 0.045);
@@ -127,8 +129,8 @@
   --el-border-color-light: rgba(255, 255, 255, 0.10);
   --el-border-color-lighter: rgba(255, 255, 255, 0.08);
 
-  --btn-bg: color-mix(in srgb, var(--skin-glass-tint, #1d1d1c) 82%, transparent);
-  --btn-bg-hover: color-mix(in srgb, var(--skin-glass-tint, #1d1d1c) 92%, transparent);
+  --btn-bg: var(--skin-btn-bg-color, color-mix(in srgb, var(--skin-glass-tint, #1d1d1c) 82%, transparent));
+  --btn-bg-hover: var(--skin-btn-bg-hover, color-mix(in srgb, var(--skin-glass-tint, #1d1d1c) 92%, transparent));
   --btn-border: color-mix(in srgb, var(--color-primary) 15%, var(--el-border-color));
 
   /* 滚动条随皮肤主色变化（深色模式下主色已提亮，对比度足够） */
@@ -239,14 +241,31 @@
 /* ===== 次级按钮玻璃化：消费 --btn-* token（App.vue 全局按钮已引用） ===== */
 
 /* ===== Element Plus 控件玻璃化：输入框 / 选择器 / 文本域 ===== */
+/* 输入框文字/占位符：走皮肤配色的输入级（--skin-input-text / --skin-input-placeholder） */
+[data-skin="on"] .el-input__inner,
+[data-skin="on"] .el-textarea__inner,
+[data-skin="on"] .el-select__wrapper,
+[data-skin="on"] .input-box textarea,
+[data-skin="on"] .input-box input {
+  color: var(--skin-input-text, var(--color-text));
+}
+[data-skin="on"] .el-input__inner::placeholder,
+[data-skin="on"] .el-textarea__inner::placeholder,
+[data-skin="on"] .input-box textarea::placeholder,
+[data-skin="on"] .input-box input::placeholder,
+[data-skin="on"] .el-select__placeholder.is-transparent {
+  color: var(--skin-input-placeholder, var(--color-text-tertiary));
+}
+
 [data-skin="on"] .el-input__wrapper,
 [data-skin="on"] .el-textarea__inner,
 [data-skin="on"] .el-select__wrapper {
   background-color: var(--el-fill-color-blank);
   background-image: var(--skin-input-pattern, none);
-  background-size: cover;
+  background-size: var(--skin-pattern-size, cover);
+  background-repeat: var(--skin-pattern-repeat, no-repeat);
   background-position: center;
-  box-shadow: 0 0 0 1px var(--el-border-color) inset;
+  box-shadow: 0 0 0 1px var(--skin-input-border, var(--el-border-color)) inset;
 }
 [data-skin="on"] .el-input__wrapper.is-focus,
 [data-skin="on"] .el-select__wrapper.is-focused {
@@ -336,7 +355,8 @@
 [data-skin="on"] .el-popper.is-light {
   background-color: var(--el-bg-color-overlay);
   background-image: var(--skin-dialog-pattern, none);
-  background-size: cover;
+  background-size: var(--skin-pattern-size, cover);
+  background-repeat: var(--skin-pattern-repeat, no-repeat);
   background-position: center;
   backdrop-filter: var(--glass-filter);
   -webkit-backdrop-filter: var(--glass-filter);
@@ -353,7 +373,8 @@
 /* 弹窗标题栏背景图案，皮肤可在 surface.titlebarPattern 配置 */
 [data-skin="on"] .el-dialog__header {
   background-image: var(--skin-titlebar-pattern, none);
-  background-size: cover;
+  background-size: var(--skin-pattern-size, cover);
+  background-repeat: var(--skin-pattern-repeat, no-repeat);
   background-position: center;
 }
 [data-skin="on"] .el-dialog__header,
@@ -361,13 +382,15 @@
 [data-skin="on"] .el-dialog__footer {
   background-color: transparent !important;
 }
-/* 弹窗标题栏底边：主色微光分隔线 */
+/* 弹窗标题栏底边：主色微光分隔线；底色走皮肤配色的 title 级（--skin-dialog-title-bg） */
 [data-skin="on"] .el-dialog__header {
+  background-color: var(--skin-dialog-title-bg, transparent) !important;
   border-bottom: 1px solid color-mix(in srgb, var(--color-primary) 20%, transparent);
 }
 [data-skin="on"] .el-drawer__header {
   background-image: var(--skin-titlebar-pattern, none);
-  background-size: cover;
+  background-size: var(--skin-pattern-size, cover);
+  background-repeat: var(--skin-pattern-repeat, no-repeat);
   background-position: center;
   border-bottom: 1px solid color-mix(in srgb, var(--color-primary) 20%, transparent);
 }
@@ -485,9 +508,9 @@
 [data-skin="on"] {
   --scrollbar-thumb: var(--skin-scrollbar-thumb, color-mix(in srgb, var(--color-primary) 20%, transparent));
 }
-/* 分割线色随皮肤 */
+/* 分割线色随皮肤（未配置时回落到列表分割线派生色） */
 [data-skin="on"] .el-divider {
-  border-color: var(--skin-divider-color, var(--glass-border));
+  border-color: var(--skin-divider-color, var(--skin-list-divider, var(--glass-border)));
 }
 [data-skin="on"] .el-divider__text {
   background-color: var(--glass-bg);
@@ -499,7 +522,8 @@
 [data-skin="on"] .el-button:not(.is-text):not(.is-link):not(.el-button--primary):not(.is-plain):not(.is-disabled) {
   background-color: var(--btn-bg);
   background-image: var(--skin-btn-pattern, none);
-  background-size: cover;
+  background-size: var(--skin-pattern-size, cover);
+  background-repeat: var(--skin-pattern-repeat, no-repeat);
   background-position: center;
   border-color: var(--btn-border);
 }
@@ -511,12 +535,17 @@
   background-color: var(--btn-bg);
 }
 
-/* 下拉选项 hover/selected 态走玻璃 token */
+/* 下拉选项 hover/selected 态：走皮肤配色的下拉级（--skin-dropdown-hover/active） */
 [data-skin="on"] .el-select-dropdown__item.hover,
-[data-skin="on"] .el-select-dropdown__item.selected,
 [data-skin="on"] .el-dropdown-menu__item:not(.is-disabled):hover,
 [data-skin="on"] .el-cascader-node.in-active-path {
-  background-color: var(--glass-bg-hover);
+  background-color: var(--skin-dropdown-hover, var(--glass-bg-hover));
+}
+[data-skin="on"] .el-select-dropdown__item.selected {
+  background-color: var(--skin-dropdown-active, var(--glass-bg-hover));
+  /* 选中项底色是"主色浅化/深化"的 surfaceActive，文字必须用正文色：
+     用 onPrimary 会在浅色下出现白字压浅底（实测对比度 1.3） */
+  color: var(--skin-text, var(--color-primary));
 }
 
 /* 分页：背景透明，按钮走 token */
@@ -632,7 +661,8 @@
 [data-skin="on"] .el-dropdown-menu,
 [data-skin="on"] .ctx-menu {
   background-image: var(--skin-menu-pattern, none) !important;
-  background-size: cover !important;
+  background-size: var(--skin-pattern-size, cover) !important;
+  background-repeat: var(--skin-pattern-repeat, no-repeat) !important;
   background-position: center !important;
 }
 /* 菜单 hover 项压一层主色微光，保证图案上仍清晰 */
@@ -647,14 +677,16 @@
 [data-skin="on"] .code-page {
   background: transparent !important;
   background-image: var(--skin-code-pattern, none) !important;
-  background-size: cover !important;
+  background-size: var(--skin-pattern-size, cover) !important;
+  background-repeat: var(--skin-pattern-repeat, no-repeat) !important;
   background-position: center !important;
 }
 /* 编辑器内部各子面板保持玻璃，文字区保持透明白底可读性 */
 [data-skin="on"] .code-page .cp-top,
 [data-skin="on"] .code-page .cp-side {
   background-image: var(--skin-menu-pattern, none) !important;
-  background-size: cover !important;
+  background-size: var(--skin-pattern-size, cover) !important;
+  background-repeat: var(--skin-pattern-repeat, no-repeat) !important;
   background-position: center !important;
 }
 
@@ -662,7 +694,8 @@
 [data-skin="on"] .browser-tabbar,
 [data-skin="on"] .browser-toolbar {
   background-image: var(--skin-browser-pattern, none) !important;
-  background-size: cover !important;
+  background-size: var(--skin-pattern-size, cover) !important;
+  background-repeat: var(--skin-pattern-repeat, no-repeat) !important;
   background-position: center !important;
 }
 /* tab 栏/工具栏：压薄玻璃底（45%/55%），让外壳图案清晰可见又不压图标 */
@@ -723,7 +756,8 @@
 [data-skin="on"] .fs-body,
 [data-skin="on"] .glass-card {
   background-image: var(--skin-task-list-pattern, none) !important;
-  background-size: cover !important;
+  background-size: var(--skin-pattern-size, cover) !important;
+  background-repeat: var(--skin-pattern-repeat, no-repeat) !important;
   background-position: center !important;
 }
 /* 卡片/列表容器底图之上压薄玻璃底色：20% 而非实色，保证底图纹理清晰可见 */
@@ -731,14 +765,15 @@
 [data-skin="on"] .st-list,
 [data-skin="on"] .fs-panel,
 [data-skin="on"] .fs-body {
-  background-color: color-mix(in srgb, var(--skin-glass-tint, #f5f1ea) 22%, transparent) !important;
+  background-color: var(--skin-list-bg, color-mix(in srgb, var(--skin-glass-tint, #f5f1ea) 22%, transparent)) !important;
 }
 
 /* ===== 弹窗背景图：自定义抽屉 / 内嵌管理面板（el-dialog/el-drawer/el-message-box 已有） ===== */
 [data-skin="on"] .settings-drawer,
 [data-skin="on"] .scheduled-task-panel {
   background-image: var(--skin-dialog-pattern, none) !important;
-  background-size: cover !important;
+  background-size: var(--skin-pattern-size, cover) !important;
+  background-repeat: var(--skin-pattern-repeat, no-repeat) !important;
   background-position: center !important;
 }
 
@@ -761,13 +796,18 @@
 [data-skin="on"] .tab-search-wrap,
 [data-skin="on"] .url-bar {
   background-image: var(--skin-input-pattern, none) !important;
-  background-size: cover !important;
+  background-size: var(--skin-pattern-size, cover) !important;
+  background-repeat: var(--skin-pattern-repeat, no-repeat) !important;
   background-position: center !important;
   border-color: transparent !important;
 }
 [data-skin="on"] .input-box.focused {
-  border-color: var(--color-primary) !important;
-  box-shadow: 0 6px 28px color-mix(in srgb, var(--color-primary) 16%, transparent) !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+/* 聊天输入框聚焦不上描边：压掉上面 .el-textarea__inner:focus 的 inset ring（选择器权重更高） */
+[data-skin="on"] .input-box .input-textarea .el-textarea__inner:focus {
+  box-shadow: none !important;
 }
 
 /* ===== 按钮：浏览器/文件页原生中性按钮上皮肤（图案 + 玻璃底 + 主色 hover） =====
@@ -777,7 +817,8 @@
 [data-skin="on"] .tab-new {
   background-color: var(--btn-bg) !important;
   background-image: var(--skin-btn-pattern, none) !important;
-  background-size: cover !important;
+  background-size: var(--skin-pattern-size, cover) !important;
+  background-repeat: var(--skin-pattern-repeat, no-repeat) !important;
   background-position: center !important;
 }
 [data-skin="on"] .nav-btn:hover:not(:disabled),

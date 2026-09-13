@@ -50,6 +50,39 @@ type SkinSurface = {
   browserPatternDark?: string;
   /** 输入框边框色（EP 输入框与自定义输入容器共用） */
   inputBorder?: string;
+  /** 部件图贴合方式：cover=铺满（大图）/ repeat=平铺（小纹理）/ repeat-x=横向平铺 */
+  patternFit?: 'cover' | 'contain' | 'repeat' | 'repeat-x';
+  /** 暗色下部件图压暗强度 0~1（默认 0.35；越大越暗越保文字对比，越小图案越清晰） */
+  patternScrim?: number;
+  /** ===== 配色兜底（可选；未填则按 primary 派生，见 deriveSkinTokens） ===== */
+  /** 正文色 */
+  text?: string;
+  /** 次级文字色 */
+  textSecondary?: string;
+  /** 三级文字色（占位符/辅助说明） */
+  textTertiary?: string;
+  /** 主色上的文字色 */
+  onPrimary?: string;
+  /** 面板/侧栏/顶栏底色（对应 CSS --skin-surface） */
+  surfaceColor?: string;
+  /** 卡片/弹窗/下拉等"抬高一层"的底色 */
+  surfaceRaisedColor?: string;
+  /** 输入框/代码区等"凹陷一层"的底色 */
+  surfaceSunkenColor?: string;
+  /** 悬停底色 */
+  surfaceHoverColor?: string;
+  /** 选中底色 */
+  surfaceActiveColor?: string;
+  /** 输入框底色（缺省=surfaceSunkenColor） */
+  inputBg?: string;
+  /** 列表底色（缺省=surfaceColor） */
+  listBg?: string;
+  /** 下拉/菜单底色（缺省=surfaceRaisedColor） */
+  dropdownBg?: string;
+  /** 弹窗底色（缺省=surfaceRaisedColor） */
+  dialogBgColor?: string;
+  /** 弹窗遮罩色（缺省由派生给出半透明深色） */
+  overlayTint?: string;
 };
 
 /** ===== 颜色工具：hex 解析 / 混色 / WCAG 对比度 ===== */
@@ -76,6 +109,72 @@ function contrastRatio(a: string, b: string): number {
   const l1 = luminance(a);
   const l2 = luminance(b);
   return (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05);
+}
+
+/** hex → rgba(...) 字符串 */
+function hexToRgba(hex: string, alpha: number): string {
+  const [r, g, b] = hexToRgb(hex);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+/**
+ * 皮肤配色派生（兜底链第二层）
+ * ------------------------------------------------------------------
+ * 作用：皮肤未显式配置某个颜色时，从它的 primary 自动派生出一套完整配色。
+ * 这是"暗色系灰蒙蒙"的根治手段 —— 改造前所有未配置的兜底都是硬编码中性灰
+ * （#1d1d1c / #f5f1ea），27 套皮肤里 23 套没配 glassDark，于是暗色下千篇一律的灰。
+ * 派生后每套皮肤即使一个字段都不填，也保留自己的色相。
+ *
+ * 层级关系（暗色为例）：surfaceRaised > surface > base > surfaceSunken
+ * 亮色则反过来：surfaceRaised 最白，surfaceSunken 最暗。
+ */
+function deriveSkinTokens(primary: string, dark: boolean) {
+  const p = primary || '#C2410C';
+  const base = dark ? '#0E0F12' : '#FBFBFB';
+  const ink = dark ? '#FFFFFF' : '#141414';
+
+  // ===== 文本层：正文带一点主色相，次级逐级向底色靠 =====
+  const text = mixHex(ink, p, 0.08);
+  const textSecondary = dark ? mixHex(text, base, 0.28) : mixHex(text, '#FFFFFF', 0.32);
+  // 三级文字（占位符）需保证 ≥3:1；浅色下混白 0.5 实测只有 2.74，降到 0.4
+  const textTertiary = dark ? mixHex(text, base, 0.45) : mixHex(text, '#FFFFFF', 0.4);
+  const textDisabled = dark ? mixHex(text, base, 0.6) : mixHex(text, '#FFFFFF', 0.55);
+  const onPrimary = contrastRatio(p, '#FFFFFF') >= 4.5 ? '#FFFFFF' : (dark ? '#F2F0EA' : '#141414');
+
+  // ===== 容器三级：raised（弹窗/下拉/卡片） > surface（面板） > sunken（输入框/代码区） =====
+  const surface = dark ? mixHex(base, p, 0.07) : mixHex(base, p, 0.06);
+  const surfaceRaised = dark ? mixHex(base, p, 0.13) : mixHex('#FFFFFF', p, 0.025);
+  const surfaceSunken = dark ? mixHex(base, '#000000', 0.3) : mixHex('#F1F0EE', p, 0.05);
+  const surfaceHover = dark ? mixHex(surfaceRaised, p, 0.12) : mixHex(surfaceRaised, p, 0.1);
+  const surfaceActive = dark ? mixHex(p, surfaceRaised, 0.68) : mixHex(p, '#FFFFFF', 0.8);
+  const overlayTint = hexToRgba(mixHex(base, p, 0.12), dark ? 0.6 : 0.24);
+
+  // ===== 控件层：由容器三级派生，保证同皮肤内层级一致 =====
+  return {
+    text, textSecondary, textTertiary, textDisabled, onPrimary,
+    surface, surfaceRaised, surfaceSunken, surfaceHover, surfaceActive, overlayTint,
+    inputBg: surfaceSunken,
+    inputBorder: mixHex(p, surfaceSunken, 0.55),
+    inputText: text,
+    inputPlaceholder: textTertiary,
+    listBg: surface,
+    listItemHover: surfaceHover,
+    listItemActive: surfaceActive,
+    listItemText: text,
+    listDivider: mixHex(p, surface, 0.18),
+    dropdownBg: surfaceRaised,
+    dropdownItemHover: surfaceHover,
+    dropdownItemActive: surfaceActive,
+    dropdownBorder: mixHex(p, surfaceRaised, 0.5),
+    dropdownText: text,
+    dialogBg: surfaceRaised,
+    dialogBorder: mixHex(p, surfaceRaised, 0.45),
+    dialogTitleBg: mixHex(p, surfaceRaised, 0.16),
+    dialogTitleText: text,
+    dialogText: textSecondary,
+    buttonBg: surfaceRaised,
+    buttonBgHover: surfaceHover,
+  };
 }
 
 export interface AppSettings {
@@ -399,10 +498,19 @@ export const useSettingsStore = defineStore('settings', () => {
   }
 
   async function update(patch: Partial<AppSettings>) {
-    // 选内置系列皮肤时自动切到对应主题色，保证色板与系列图案一致
-    if (patch.skin !== undefined && isBuiltinSkinId(patch.skin)) {
-      const pal = builtinSeriesPalette(patch.skin);
-      if (pal) patch = { ...patch, palette: pal };
+    // 选皮肤时自动切到皮肤自带配色，保证色板与系列图案一致。
+    // 缺陷修复：此前只有内置系列同步 palette，插件皮肤（27 套）自带的 primary/accent/gradient 全是死数据
+    // → 选了图片皮肤界面主色不变，暗色下所有皮肤看起来都是同一片灰。
+    if (patch.skin !== undefined) {
+      // 显式传了 palette 时不覆盖（保留"手动选主题色覆盖皮肤配色"的能力）
+      if (patch.palette === undefined) {
+        const pal = isBuiltinSkinId(patch.skin)
+          ? builtinSeriesPalette(patch.skin)
+          : (patch.skin || '');
+        if (pal) patch = { ...patch, palette: pal };
+        // 取消皮肤时，若当前 palette 仍指向某套皮肤自带的配色则回落默认主题色
+        else if (isSkinThemeId(settings.value.palette)) patch = { ...patch, palette: 'cinnabar' };
+      }
     }
     settings.value = { ...settings.value, ...patch };
     if (patch.palette !== undefined) applyPalette(patch.palette);
@@ -419,12 +527,29 @@ export const useSettingsStore = defineStore('settings', () => {
   /** 当前 palette 的实心按钮主色（applySkin 计算 --skin-btn-text 时需要） */
   let currentBtnPrimary = '#C2410C';
 
+  /** 当前皮肤自带的主色（配色派生链的输入，见 deriveSkinTokens） */
+  let currentSkinPrimary = '#C2410C';
+
+  /**
+   * palette id 是否指向某套皮肤自带的配色（插件 kind='skin' 主题）。
+   * 取消皮肤时用于判断是否需要回落默认主题色，避免残留上一套皮肤的主色。
+   */
+  function isSkinThemeId(id: string): boolean {
+    if (!id || isBuiltinSkinId(id)) return false;
+    try {
+      return usePluginStore().themes.some((t) => t.id === id && t.kind === 'skin');
+    } catch {
+      return false;
+    }
+  }
+
   /** 应用主题色（palette）：设置主色/强调色/渐变/球色 + EP 主色族 */
   function applyPalette(palette: ThemeName) {
     let p: ThemePalette | undefined = THEMES[palette as keyof typeof THEMES];
     if (!p) {
       try {
-        const found = usePluginStore().themes.find((t) => t.id === palette && t.kind !== 'skin');
+        // 皮肤 id 本身也是合法 palette（选皮肤时已同步），此处不再排除 kind='skin'
+        const found = usePluginStore().themes.find((t) => t.id === palette);
         if (found) {
           p = found as unknown as ThemePalette;
         }
@@ -477,6 +602,8 @@ export const useSettingsStore = defineStore('settings', () => {
       const series = builtinSeriesFor(skin);
       if (series) {
         const wp = series.wallpaper;
+        // 内置系列自带同色主题色，取它作为配色派生输入
+        currentSkinPrimary = THEMES[series.palette as keyof typeof THEMES]?.primary ?? currentBtnPrimary;
         root.setProperty('--app-wallpaper', `url("${dark ? wp.dark : wp.light}")`);
         root.setProperty('--skin-mask', String(wp.mask));
         root.setProperty('--skin-blur', `${wp.blur}px`);
@@ -508,10 +635,13 @@ export const useSettingsStore = defineStore('settings', () => {
       return;
     }
 
+    // P0-4：壁纸遮罩/模糊默认下调（原 0.45 / 12px），保证壁纸细节可辨；
+    // 文字可读性改由 surfaceSunken / surfaceRaised 的不透明度分级保证，而不是把壁纸糊掉
     const file = dark ? (p.wallpaper.dark || p.wallpaper.light) : p.wallpaper.light;
+    currentSkinPrimary = p.primary || currentBtnPrimary;
     root.setProperty('--app-wallpaper', `url("${pluginAssetUrl(pluginId, file)}")`);
-    root.setProperty('--skin-mask', String(p.wallpaper.mask ?? 0.45));
-    root.setProperty('--skin-blur', `${p.wallpaper.blur ?? 12}px`);
+    root.setProperty('--skin-mask', String(p.wallpaper.mask ?? 0.26));
+    root.setProperty('--skin-blur', `${p.wallpaper.blur ?? 5}px`);
     el.setAttribute('data-skin', 'on');
     applySurface((p as { surface?: SkinSurface }).surface ?? {}, pluginId);
   }
@@ -529,6 +659,17 @@ export const useSettingsStore = defineStore('settings', () => {
     '--skin-btn-pattern', '--skin-dialog-pattern',
     '--skin-menu-pattern', '--skin-code-pattern', '--skin-browser-pattern',
     '--skin-input-border',
+    // ===== 配色兜底链（P0-2 新增）：文本 / 容器三级 / 控件层 =====
+    '--skin-text', '--skin-text-secondary', '--skin-text-tertiary', '--skin-on-primary',
+    '--skin-surface', '--skin-surface-raised', '--skin-surface-sunken',
+    '--skin-surface-hover', '--skin-surface-active',
+    '--skin-input-bg', '--skin-input-text', '--skin-input-placeholder',
+    '--skin-list-bg', '--skin-list-hover', '--skin-list-active', '--skin-list-divider',
+    '--skin-dropdown-bg', '--skin-dropdown-hover', '--skin-dropdown-active', '--skin-dropdown-border',
+    '--skin-dialog-bg', '--skin-dialog-border', '--skin-dialog-title-bg',
+    '--skin-btn-bg-color', '--skin-btn-bg-hover',
+    // ===== 部件图贴合方式（P0-2） =====
+    '--skin-pattern-size', '--skin-pattern-repeat',
   ];
 
   /**
@@ -540,20 +681,60 @@ export const useSettingsStore = defineStore('settings', () => {
     const dark = settings.value.darkMode;
     const asset = (v: string) => (pluginId ? `url("${pluginAssetUrl(pluginId, v)}")` : v);
 
-    const tint = dark ? (sf.glassDark ?? '#1d1d1c') : (sf.glass ?? '#ffffff');
-    const alpha = dark ? (sf.glassAlphaDark ?? 0.78) : (sf.glassAlpha ?? 0.86);
+    // ===== 配色兜底链：皮肤显式值 → 由 primary 自动派生 → 主题基线 =====
+    // 关键改动（P0-2）：所有兜底不再用硬编码中性灰，改从皮肤主色派生，
+    // 27 套皮肤即使一个字段都不填，暗色下也各有各的色相，不再千篇一律的灰。
+    const dv = deriveSkinTokens(currentSkinPrimary, dark);
+
+    const tint = dark
+      ? (sf.glassDark ?? sf.surfaceColor ?? dv.surface)
+      : (sf.glass ?? sf.surfaceColor ?? dv.surface);
+    // 暗色下大面板不透明度从 0.78 降到 0.70，让壁纸透出来（0.62 会让亮壁纸上的浅字对比不足）；
+    // 输入框/弹窗等需要可读性的面走 surfaceSunken / surfaceRaised 的实心派生色，不受此值影响
+    const alpha = dark ? (sf.glassAlphaDark ?? 0.7) : (sf.glassAlpha ?? 0.86);
     const border = dark ? (sf.borderDark ?? sf.border) : sf.border;
     root.setProperty('--skin-glass-tint', tint);
     root.setProperty('--skin-glass-alpha', String(alpha));
     root.setProperty('--skin-glass-alpha-hover', String(Math.min(alpha + 0.07, 1)));
     if (border) root.setProperty('--skin-glass-border', border);
     else root.removeProperty('--skin-glass-border');
+
+    // ===== 文本层：皮肤模式下 --color-text* 由皮肤配色接管 =====
+    root.setProperty('--skin-text', sf.text ?? dv.text);
+    root.setProperty('--skin-text-secondary', sf.textSecondary ?? dv.textSecondary);
+    root.setProperty('--skin-text-tertiary', sf.textTertiary ?? dv.textTertiary);
+    root.setProperty('--skin-on-primary', sf.onPrimary ?? dv.onPrimary);
+
+    // ===== 容器三级 + 控件层 =====
+    root.setProperty('--skin-surface', sf.surfaceColor ?? dv.surface);
+    root.setProperty('--skin-surface-raised', sf.surfaceRaisedColor ?? dv.surfaceRaised);
+    root.setProperty('--skin-surface-sunken', sf.surfaceSunkenColor ?? dv.surfaceSunken);
+    root.setProperty('--skin-surface-hover', sf.surfaceHoverColor ?? dv.surfaceHover);
+    root.setProperty('--skin-surface-active', sf.surfaceActiveColor ?? dv.surfaceActive);
+    root.setProperty('--skin-input-bg', sf.inputBg ?? dv.inputBg);
+    root.setProperty('--skin-input-border', sf.inputBorder ?? dv.inputBorder);
+    root.setProperty('--skin-input-text', dv.inputText);
+    root.setProperty('--skin-input-placeholder', dv.inputPlaceholder);
+    root.setProperty('--skin-list-bg', sf.listBg ?? dv.listBg);
+    root.setProperty('--skin-list-hover', dv.listItemHover);
+    root.setProperty('--skin-list-active', dv.listItemActive);
+    root.setProperty('--skin-list-divider', dv.listDivider);
+    root.setProperty('--skin-dropdown-bg', sf.dropdownBg ?? dv.dropdownBg);
+    root.setProperty('--skin-dropdown-hover', dv.dropdownItemHover);
+    root.setProperty('--skin-dropdown-active', dv.dropdownItemActive);
+    root.setProperty('--skin-dropdown-border', dv.dropdownBorder);
+    root.setProperty('--skin-dialog-bg', sf.dialogBgColor ?? dv.dialogBg);
+    root.setProperty('--skin-dialog-border', dv.dialogBorder);
+    root.setProperty('--skin-dialog-title-bg', dv.dialogTitleBg);
+    root.setProperty('--skin-btn-bg-color', dv.buttonBg);
+    root.setProperty('--skin-btn-bg-hover', dv.buttonBgHover);
     root.setProperty('--skin-radius', `${sf.radius ?? 12}px`);
     root.setProperty('--skin-btn-radius', `${sf.buttonRadius ?? 6}px`);
     const autoBtnText = contrastRatio(currentBtnPrimary, '#ffffff') >= 4.5 ? '#ffffff' : (dark ? '#F2F0EA' : '#141414');
-    root.setProperty('--skin-btn-text', sf.buttonText ?? autoBtnText);
+    root.setProperty('--skin-btn-text', sf.buttonText ?? sf.onPrimary ?? autoBtnText);
     root.setProperty('--skin-glass-blur', `${sf.glassBlur ?? 18}px`);
-    root.setProperty('--skin-overlay-color', sf.overlayColor ?? 'transparent');
+    // 弹窗遮罩：未配置时改用派生色（带皮肤色相的半透明），不再 transparent
+    root.setProperty('--skin-overlay-color', sf.overlayColor || sf.overlayTint || dv.overlayTint);
     root.setProperty('--skin-overlay-blur', `${sf.overlayBlur ?? 4}px`);
     if (sf.borderPattern) {
       root.setProperty('--skin-border-pattern', asset(sf.borderPattern));
@@ -563,10 +744,19 @@ export const useSettingsStore = defineStore('settings', () => {
       root.removeProperty('--skin-border-pattern-slice');
     }
     // ===== 部位图案统一下发（暗色叠纱罩） =====
-    // 图案资源（尤其插件真图）只有一份、明暗不保证主题对比：暗色主题统一在最上层压一层
-    // 深色纱罩（scrim）——图案仍透出（嵌入观感），表面压暗后浅字对比可读；浅色主题原样。
-    // 内置系列暗色优先用 *PatternDark 深色变体（纱罩再叠一层，观感更沉）。
-    const scrim = dark ? 'linear-gradient(rgba(10,10,12,0.7), rgba(10,10,12,0.7))' : '';
+    // P0-4 调整：原实现压的是**纯黑** rgba(10,10,12,0.7) —— 部件图只剩 30% 可见度且色相被拉向中性灰，
+    // 这是"暗色系灰蒙蒙"最直接的元凶。改为：
+    //   1) 纱罩色用皮肤主色系的深色（保留色相），不再用纯黑；
+    //   2) 强度从 0.7 降到 0.35（皮肤可经 surface.patternScrim 覆盖）。
+    // 文字可读性由 surfaceSunken / surfaceRaised 的实心派生色保证，不靠把图压死。
+    const scrimBase = mixHex('#0A0A0C', currentSkinPrimary, 0.12);
+    const scrimA = hexToRgba(scrimBase, sf.patternScrim ?? 0.35);
+    const scrim = dark ? `linear-gradient(${scrimA}, ${scrimA})` : '';
+    // 部件图贴合方式：小图（按钮/输入框）应平铺而非拉伸铺满，否则严重糊。
+    // 默认仍为 cover（保持既有观感），皮肤可经 surface.patternFit 指定 repeat / repeat-x / contain。
+    const fit = sf.patternFit ?? 'cover';
+    root.setProperty('--skin-pattern-size', fit === 'cover' || fit === 'contain' ? fit : 'auto');
+    root.setProperty('--skin-pattern-repeat', fit === 'cover' || fit === 'contain' ? 'no-repeat' : fit);
     const themedPattern = (light?: string, darkVariant?: string) => {
       const base = dark ? (darkVariant ?? light) : light;
       if (!base) return undefined;
@@ -598,9 +788,7 @@ export const useSettingsStore = defineStore('settings', () => {
     setPattern('--skin-menu-pattern', themedPattern(sf.menuPattern, sf.menuPatternDark));
     setPattern('--skin-code-pattern', themedPattern(sf.codePattern));
     setPattern('--skin-browser-pattern', themedPattern(sf.browserPattern, sf.browserPatternDark));
-    // ===== 输入框边框色（EP 输入框 + 自定义输入容器共用） =====
-    if (sf.inputBorder) root.setProperty('--skin-input-border', sf.inputBorder);
-    else root.removeProperty('--skin-input-border');
+    // 输入框边框色（EP 输入框 + 自定义输入容器共用）—— 已在上方配色兜底块与派生色一并下发，此处不再重复
   }
 
   function applyDarkMode(dark: boolean) {
