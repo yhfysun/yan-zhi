@@ -4,10 +4,46 @@
 .chat-page.conv-collapsed .conv-toggle { left: 0; }
 
 /* ===== 侧边栏 ===== */
+/* ===== 侧边栏 =====
+   玻璃底吃 --glass-bg-panel（三栏专用，暗 0.42 / 浅 0.72）。
+   部件图 --skin-task-list-pattern 在**暗色下由 JS 置空**（近白图会把面板抬成中灰，
+   见 settings.applySurface 的推导），浅色下正常铺。 */
+/* 侧边栏（2026-09-13 用户最终要求版）：
+   · 背景层完全 transparent，让部件图原样铺在侧栏 → 用户可见的就是那张图本身
+   · 部件图贴合：cover + 居中 + 不重复 —— 一张大图铺满裁切，不挤压不变形
+   · 不再叠玻璃底 / 不再叠 backdrop-filter / 不再叠纱罩（前述"灰蒙蒙"的根本原因）
+
+   历史沿革（别改回去）：
+   · 曾用 `var(--glass-bg-panel)` (暗 .42 / 浅 .72) → 把半透黑/白罩在图上 → "图片都看不清"
+   · 曾用 `background-size: auto; background-repeat: repeat` → 小纹理被平铺成马赛克
+     → 现在用户要求"一张大图上下左右居中把容器覆盖掉"，即 cover + no-repeat + center
+   · 现：背景 = 部件图自己（图片即面板），skin.css 的全局规则已被此处按特异性 (1,0,1)
+     压住，组件级 .sidebar 加 data-v 前缀后特异性 (0,2,1)；本规则已升到 (0,3,1) 高于两者。 */
+.chat-page .sidebar,
 .sidebar {
-  width: var(--chat-sidebar-w, 280px); min-width: 0; background: var(--glass-bg); background-image: var(--skin-task-list-pattern, none); background-size: var(--skin-pattern-size, auto); background-repeat: var(--skin-pattern-repeat, repeat); background-position: center; backdrop-filter: var(--glass-filter); -webkit-backdrop-filter: var(--glass-filter);
-  border-right: 1px solid var(--glass-border); display: flex; flex-direction: column;
+  /* 布局相关：保留原 .sidebar 的基础尺寸/边框/排布 */
+  width: var(--chat-sidebar-w, 280px); min-width: 0;
+  border-right: 1px solid var(--glass-border);
+  display: flex; flex-direction: column;
   transition: width 0.25s ease; overflow: hidden;
+  /* 2026-09-13 用户最终要求版：
+     · 背景层完全 transparent，让部件图原样铺在侧栏 → 用户可见的就是那张图本身
+     · 部件图贴合：cover + 居中 + 不重复 —— 一张大图铺满裁切，不挤压不变形
+     · 不再叠玻璃底 / 不再叠 backdrop-filter / 不再叠纱罩（前述"灰蒙蒙"的根本原因）
+
+     历史沿革（别改回去）：
+     · 曾用 `var(--glass-bg-panel)` (暗 .42 / 浅 .72) → 半透黑/白罩在图上 → "图片都看不清"
+     · 曾用 `background-size: auto; background-repeat: repeat` → 小纹理被平铺成马赛克
+       现在用户要求"一张大图上下左右居中把容器覆盖掉"，即 cover + no-repeat + center
+     · 特异性 (0,3,1) 压过 skin.css 的 [data-skin=on] .sidebar (0,2,0)，
+       保证暗色下也走"图片即面板"路径。 */
+  background-color: transparent !important;
+  background-image: var(--skin-task-list-pattern, none) !important;
+  background-size: cover !important;
+  background-position: center !important;
+  background-repeat: no-repeat !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
 }
 
 .sidebar-tabs {
@@ -695,14 +731,31 @@
 /* ===== 输入区 ===== */
 /* 输入区与消息流同宽居中，三者左缘对齐 */
 .input-area { padding: 8px max(20px, calc((100% - 820px) / 2)) 18px; background: transparent; }
+/* 输入框玻璃底：皮肤模式下吃 --skin-input-bg（小面板级，暗 0.30 / 浅 0.62），
+   未开皮肤时回落原有的 rgba(255,255,255,0.6)。
+   为什么不能只靠 --glass-bg：那是通用面玻璃（暗 0.50），压在半透的 .chat-column 上
+   会叠成一层灰纱 —— 正是用户截图第二块"灰蒙蒙"。 */
+/* 输入框（2026-09-13 用户最终要求版）：
+   用户原话："输入框的不要用图片，输入框直接是背景就可以了"。
+   → 完全透明：不铺输入底图、不铺玻璃底，直接透出背景壁纸，与周围浑然一体。
+   原先两张做法都踩过坑：
+   · `background: var(--skin-input-bg)`（半透明玻璃）→ 压暗/洗淡背景 = "灰蒙蒙"
+   · `background-image: var(--skin-input-pattern)`（铺输入图）→ 扁条形输入框上
+     出现"一条跟背景不一样的图" = 割裂感
+   现在两者都清空，只保留圆角/阴影/边框这些不改变底色的装饰。 */
 .input-box {
-  background: var(--glass-bg, rgba(255,255,255,0.6)); border: 1px solid var(--glass-border);
+  background: transparent !important;
+  background-image: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  border: 1px solid var(--glass-border);
   border-radius: 24px; padding: 6px;
   box-shadow: 0 4px 24px rgba(0,0,0,0.07), 0 1px 3px rgba(0,0,0,0.04);
   transition: border-color 0.2s ease, box-shadow 0.2s ease;
   color: var(--color-text, #333);
 }
-.input-box.focused { border-color: var(--glass-border); }
+/* 聚焦态：边框换主色（在 skin.css 中已按主题强化；此处仅保证未开皮肤时也有反馈） */
+.input-box.focused { border-color: var(--color-primary); }
 .input-textarea .el-textarea__inner {
   border: none; background: transparent; box-shadow: none !important;
   color: var(--color-text, #333); caret-color: var(--color-text, #333);
@@ -1270,11 +1323,15 @@
 /* 右侧常驻面板：桌面端默认 flex:1 显示（与对话区 1:1），收起时折叠为 0；移动端受 .open 控制为底部抽屉 */
 .right-panel {
   flex: 0 0 var(--chat-right-w, 480px); min-width: 320px; display: flex; flex-direction: column;
-  background: var(--glass-bg);
-  backdrop-filter: var(--glass-filter);
-  -webkit-backdrop-filter: var(--glass-filter);
   border-left: 1px solid var(--glass-border);
   position: relative; overflow: hidden;
+  /* 2026-09-13 用户最终要求：右栏背景透明，壁纸/部件图直接透出。
+     原 `background: var(--glass-bg-panel)` 盖住壁纸（约 30% 不透明度），看不到皮肤底图。
+     改 transparent，且取消 backdrop-filter 模糊避免再次把透出的图糊掉。 */
+  background-color: transparent !important;
+  background-image: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
   transition: flex-basis 0.25s ease, min-width 0.25s ease, opacity 0.2s ease;
 }
 .right-panel:not(.open) { flex: 0 0 0; min-width: 0; width: 0; opacity: 0; pointer-events: none; border-left: none; }

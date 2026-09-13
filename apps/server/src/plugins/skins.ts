@@ -27,7 +27,10 @@ function skinTheme(
   name: string,
   category: string,
   palette: Pick<ThemePalette, 'primary' | 'primaryLight' | 'primaryDark' | 'accent' | 'gradient' | 'orb1' | 'orb2' | 'orb3'>,
-  wallpaperMask: number,
+  // 壁纸遮罩系数：2026-09-13 起已降为 0（不再压暗壁纸，见下方 wallpaper.mask）。
+  // 参数保留是为了不破坏 27 套皮肤的调用签名（每套都传了一个值），
+  // 将来若要恢复"可调遮罩"，直接用它乘一个非 0 系数即可。
+  _wallpaperMask: number,
   surface?: ThemePalette['surface'],
 ): ThemePalette {
   const autoPatterns = {
@@ -39,6 +42,16 @@ function skinTheme(
     menuPattern: 'dialog-bg.webp',
     codePattern: 'dialog-bg.webp',
     browserPattern: 'task-list-bg.webp',
+    // 滚动条纹理（2026-09-13 新增）：皮肤作者不必逐套配 scrollbarPattern，
+    // 这里给一条「金属棒 + 斜向细纹」的通用纹理，颜色跟随各皮肤 color-primary 自动出效果，
+    // 与 skin.css 内置金箍棒兜底区分开（此处显式下发 = 覆盖兜底）。
+    // 8px 宽滚动条上只做两层：斜纹（质感） + 主色横向金属渐变（光泽）。
+    scrollbarPattern:
+      'repeating-linear-gradient(45deg, rgba(255,255,255,0.22) 0 2px, transparent 2px 6px),' +
+      'linear-gradient(90deg,' +
+      ' color-mix(in srgb, var(--color-primary) 55%, #000 30%),' +
+      ' color-mix(in srgb, var(--color-primary) 55%, #FFF 45%),' +
+      ' color-mix(in srgb, var(--color-primary) 55%, #000 30%))',
   };
   return {
     id,
@@ -46,13 +59,12 @@ function skinTheme(
     kind: 'skin',
     category,
     preview: PREVIEW,
-    // 遮罩按 0.6 系数下调（2026-09-13 二次下调，原 0.8）：
-    // ① 遮罩色已改为从皮肤 surface 派生（见 skin.css body::before / --skin-overlay-tint），
-    //    不再是被写死的 #0f172a 冷灰蓝 —— 壁纸不会再被"洗成灰"；
-    // ② 因此遮罩可以更薄，让壁纸本身的水墨/霓虹细节真正透出来。
-    //    原 0.40~0.50 × 0.8 = 0.32~0.40 仍然偏厚，用户反馈"灰蒙蒙"；改 0.6 后为 0.24~0.30。
-    // 文字可读性由 surfaceSunken / surfaceRaised 的派生实色保证，不靠把壁纸压死。
-    wallpaper: { light: WALLPAPER, dark: WALLPAPER_DARK, mask: +(wallpaperMask * 0.6).toFixed(2) },
+    // 壁纸遮罩**归零**（2026-09-13 最终定稿）。
+    // 用户原话："效果完全不行不知道你在干啥，图片都看不清啊"、"你这整个模型都很暗啊"
+    // 历史沿革 0.8 → 0.6 → 0.18 → 0。前几轮都以为"少压一点"就行，其实用户要的是
+    // **不压**：壁纸原图什么亮度就显示什么亮度，遮罩无论多薄都是对图的减损。
+    // 现在 mask=0，壁纸 100% 原样呈现；文字可读性由面板自身的部件图/文字色保证。
+    wallpaper: { light: WALLPAPER, dark: WALLPAPER_DARK, mask: 0 },
     ...palette,
     ...(surface ? { surface: { ...autoPatterns, ...surface } } : { surface: autoPatterns }),
   };

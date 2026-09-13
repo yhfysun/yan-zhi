@@ -32,6 +32,8 @@ type SkinSurface = {
   cardRadius?: number;
   tagRadius?: number;
   scrollbarThumb?: string;
+  /** 滚动条 thumb 图案纹理（CSS background-image 完整值；缺省=skin.css 内置金箍棒兜底） */
+  scrollbarPattern?: string;
   dividerColor?: string;
   catTagPattern?: string;
   taskListPattern?: string;
@@ -52,8 +54,21 @@ type SkinSurface = {
   inputBorder?: string;
   /** 部件图贴合方式：cover=铺满（大图）/ repeat=平铺（小纹理）/ repeat-x=横向平铺 */
   patternFit?: 'cover' | 'contain' | 'repeat' | 'repeat-x';
-  /** 暗色下部件图压暗强度 0~1（默认 0.35；越大越暗越保文字对比，越小图案越清晰） */
+  /** 暗色下部件图压暗强度 0~1（默认 0.80；越大越暗越保文字对比，越小图案越清晰） */
   patternScrim?: number;
+  /**
+   * 部件图整体不透明度 0~1（默认 0.9）。
+   * 与 patternScrim 分工：scrim 决定"压多暗"（保文字对比），本项决定"露多少"（保图案感）。
+   * 想更清晰地看到纹理 → 调小本项（如 0.55），此时纱罩比例等效加深，文字对比不丢。
+   */
+  patternOpacity?: number;
+  /**
+   * 部件图是否为**深色图**（默认 false = 浅色图）。
+   * 决定面板上文字取深色还是浅色 —— 文字色必须与实际"图片底色"相反才可读。
+   * 内置皮肤包的 task-list-bg/input-bg 都是浅色图（亮度 ~226），故默认 false；
+   * 皮肤若自带深色系部件图，必须置 true，否则会被判成"浅底"而配深色文字 → 深底深字。
+   */
+  patternIsDark?: boolean;
   /** ===== 配色兜底（可选；未填则按 primary 派生，见 deriveSkinTokens） ===== */
   /** 正文色 */
   text?: string;
@@ -87,7 +102,55 @@ type SkinSurface = {
   wallpaperOverlayTint?: string;
   /** 壁纸遮罩色 · 深色主题（缺省由皮肤 surface 派生深色纱，保留皮肤色相） */
   wallpaperOverlayTintDark?: string;
+  /** 深色下三栏面板（左会话栏 / 中对话列 / 右预览栏）的玻璃不透明度，0~1，缺省 0.42 */
+  panelAlphaDark?: number;
+  /** 深色下输入条 / 工具条等"小面板"的玻璃不透明度，0~1，缺省 0.30 */
+  panelAlphaSmallDark?: number;
+  /** 浅色下三栏面板的玻璃不透明度，缺省 0.72（比大面玻璃更轻，避免整屏发闷） */
+  panelAlphaLight?: number;
+  /** 浅色下小面板的玻璃不透明度，缺省 0.62 */
+  panelAlphaSmallLight?: number;
 };
+
+/**
+ * ===== 皮肤自定义属性注册表（skin.css 是**唯一的默认值真相源**）=====
+ * 历史坑（2026-09-13 第三轮，"一直灰蒙蒙"的最后一层根因）：
+ * skin.css 里是这么写的 ——
+ *     --glass-bg: color-mix(in srgb, var(--skin-glass-tint, #f5f1ea) calc(var(--skin-glass-alpha, 0.97) * 100%), transparent);
+ * 内层 var() 的**回落值写死 0.97**，它只在 `--skin-glass-alpha` **完全未定义**时才生效。
+ * 而 applySkin 每次都会把它设成 0.42~0.62 —— 于是 skin.css 里那串 0.97 / 0.62 / 0.30
+ * 永远只是"看起来像默认值"的死注释，真实不透明度**永远由 JS 决定**。
+ * 后果：想通过改 CSS 把面板调透，怎么改都没反应；用户只能在 JS 里改，改了又忘，
+ * 三栏与输入条就长期停在 0.62/0.5 → 半透白/半透黑糊在壁纸上 = 观感"灰蒙蒙"。
+ *
+ * 现方案：三个部分的不透明度各占一个变量，CSS 里的回落值就是**真实默认值**，
+ * JS 只在「皮肤显式配置」或「需要按深浅模式换算」时下发覆盖：
+ *   · --skin-glass-alpha           通用玻璃（弹窗/抽屉/卡片等标准表面）
+ *   · --skin-glass-alpha-panel     三栏面板（左栏 / 中列 / 右栏）
+ *   · --skin-glass-alpha-panel-sm  小面板（输入条 / 工具条）
+ * 配色/圆角等元素级变量同理：只下发皮肤真的配了的那些，不再做"全量兜底 echo"。
+ *
+ * 之所以需要这张注册表：SSR/HMR/皮肤切换会重复 applySkin，若不主动清理，
+ * 上一套皮肤下发的旧值会残留到下一套（表现为"换了皮肤观感没变"）。
+ * ① 每次 applySurface 开头清掉本表（旧值不残留）；
+ * ② 清掉后 --glass-bg 等派生 token 回归 CSS 默认值（不会悬空引用）；
+ * ③ clearSkin（关闭皮肤）也清这张表。
+ */
+const SKIN_ELEMENT_VARS = [
+  '--skin-glass-alpha', '--skin-glass-alpha-hover',
+  '--skin-glass-alpha-panel', '--skin-glass-alpha-panel-sm',
+  '--skin-glass-blur', '--skin-glass-border', '--skin-btn-text',
+  '--skin-radius', '--skin-btn-radius', '--skin-input-radius',
+  '--skin-card-radius', '--skin-tag-radius',
+  '--skin-scrollbar-thumb', '--skin-scrollbar-thumb-pattern', '--skin-divider-color',
+  '--skin-titlebar-pattern', '--skin-overlay-color', '--skin-overlay-blur',
+  '--skin-border-pattern', '--skin-border-pattern-slice',
+  '--skin-shadow', '--skin-btn-gradient',
+  '--skin-cat-tag-pattern', '--skin-task-list-pattern', '--skin-input-pattern',
+  '--skin-btn-pattern', '--skin-dialog-pattern',
+  '--skin-menu-pattern', '--skin-code-pattern', '--skin-browser-pattern',
+  '--skin-pattern-size', '--skin-pattern-repeat',
+] as const;
 
 /** ===== 颜色工具：hex 解析 / 混色 / WCAG 对比度 ===== */
 function hexToRgb(hex: string): [number, number, number] {
@@ -119,6 +182,25 @@ function contrastRatio(a: string, b: string): number {
 function hexToRgba(hex: string, alpha: number): string {
   const [r, g, b] = hexToRgb(hex);
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+/** 相对亮度别名（语义化：用于判断"底色偏亮还是偏暗"以决定文字取深/取浅） */
+const relativeLuminance = luminance;
+
+/**
+ * 若颜色偏暗则往白色方向提亮到目标亮度附近（用于浅色主题下的玻璃底色兜底）。
+ * 皮肤作者常把 glass 也写成深色（如玻璃色 #0E1626），浅色主题直接拿来用会得到
+ * "深底 + 派生出的近黑文字" → 不可读。这里把过深的底色拉回浅色区间。
+ * 已经是浅色的原样返回，不做二次漂白。
+ */
+function lightenIfDark(hex: string, targetLum: number): string {
+  if (relativeLuminance(hex) >= 0.62) return hex;
+  let out = hex;
+  for (let i = 1; i <= 6; i += 1) {
+    out = mixHex(hex, '#FFFFFF', i / 6);
+    if (relativeLuminance(out) >= targetLum) break;
+  }
+  return out;
 }
 
 /**
@@ -660,21 +742,12 @@ export const useSettingsStore = defineStore('settings', () => {
     applySurface((p as { surface?: SkinSurface }).surface ?? {}, pluginId);
   }
 
-  /** 皮肤模式涉及的全部 CSS 变量（清除皮肤时统一移除） */
-  const SKIN_CSS_VARS = [
+  /** 皮肤模式涉及的全部 CSS 变量（清除皮肤时统一移除；与 SKIN_ELEMENT_VARS 合并去重） */
+  const SKIN_CSS_VARS = Array.from(new Set([
     '--app-wallpaper', '--skin-mask', '--skin-blur',
     '--skin-overlay-tint', '--skin-overlay-tint-light',
-    '--skin-glass-tint', '--skin-glass-alpha', '--skin-glass-alpha-hover',
-    '--skin-glass-border', '--skin-radius', '--skin-btn-radius', '--skin-btn-text',
-    '--skin-glass-blur', '--skin-overlay-color', '--skin-overlay-blur',
-    '--skin-border-pattern', '--skin-border-pattern-slice', '--skin-titlebar-pattern',
-    '--skin-shadow', '--skin-btn-gradient', '--skin-input-radius', '--skin-card-radius',
-    '--skin-tag-radius', '--skin-scrollbar-thumb', '--skin-divider-color',
-    '--skin-cat-tag-pattern', '--skin-task-list-pattern', '--skin-input-pattern',
-    '--skin-btn-pattern', '--skin-dialog-pattern',
-    '--skin-menu-pattern', '--skin-code-pattern', '--skin-browser-pattern',
-    '--skin-input-border',
-    // ===== 配色兜底链（P0-2 新增）：文本 / 容器三级 / 控件层 =====
+    '--skin-glass-tint',
+    // ===== 配色兜底链（P0-2）：文本 / 容器三级 / 控件层 =====
     '--skin-text', '--skin-text-secondary', '--skin-text-tertiary', '--skin-on-primary',
     '--skin-surface', '--skin-surface-raised', '--skin-surface-sunken',
     '--skin-surface-hover', '--skin-surface-active',
@@ -683,9 +756,13 @@ export const useSettingsStore = defineStore('settings', () => {
     '--skin-dropdown-bg', '--skin-dropdown-hover', '--skin-dropdown-active', '--skin-dropdown-border',
     '--skin-dialog-bg', '--skin-dialog-border', '--skin-dialog-title-bg',
     '--skin-btn-bg-color', '--skin-btn-bg-hover',
-    // ===== 部件图贴合方式（P0-2） =====
-    '--skin-pattern-size', '--skin-pattern-repeat',
-  ];
+    '--skin-input-border',
+    // ===== 玻璃不透明度 / 模糊 / 边框（与 96 行注册表共用）=====
+    '--skin-glass-alpha', '--skin-glass-alpha-hover',
+    '--skin-glass-alpha-panel', '--skin-glass-alpha-panel-sm',
+    '--skin-glass-blur', '--skin-glass-border',
+    ...SKIN_ELEMENT_VARS,
+  ]));
 
   /**
    * 下发表面定制（内置系列与插件皮肤共用）：
@@ -698,6 +775,9 @@ export const useSettingsStore = defineStore('settings', () => {
   function applySurface(sf: SkinSurface, pluginId: string | null) {
     const root = document.documentElement.style;
     const dark = settings.value.darkMode;
+    // 元素级变量先清空：重复 applySkin（切皮肤 / 切深浅 / HMR）时，
+    // 上一套皮肤未在本次重新下发的值不会残留（残留 = "换了皮肤观感没变"）。
+    for (const v of SKIN_ELEMENT_VARS) root.removeProperty(v);
     /**
      * 图案值 → 可直接写进 background-image 的 CSS 值。
      * 判据：只有「看起来像包内相对路径的文件名」才包装 url()。
@@ -724,58 +804,130 @@ export const useSettingsStore = defineStore('settings', () => {
     // 27 套皮肤即使一个字段都不填，暗色下也各有各的色相，不再千篇一律的灰。
     const dv = deriveSkinTokens(currentSkinPrimary, dark);
 
-    const tint = dark
+    // ===== 浅色模式玻璃底自动提亮（2026-09-13 修「亮色系黑底黑字」）=====
+    // 皮肤 manifest 里的 glass / glassDark 是成对写的，但绝大多数皮肤作者把
+    // glass 也写成深色（如赛博宵 glass:'#0E1626'、glassDark:'#0A101C'，两个都深）。
+    // 浅色主题下直接用 sf.glass → 面板底色是深蓝，而文字层走 deriveSkinTokens(dark=false)
+    // 派生出的近黑正文 → **深底近黑字**，对比度 1.0x 肉眼等于看不见（用户反馈"亮色系还有黑底黑字"）。
+    // 修复：浅色模式下若解析出的玻璃色亮度 < 0.62（明显偏深），往白里提亮到 0.9 附近，
+    // 保证浅色主题下玻璃永远是浅底；同时把文字层按"实际底色明暗"重新选向，
+    // 避免"深底 + 深字"或"浅底 + 浅字"任一侧翻车。
+    const glassRaw = dark
       ? (sf.glassDark ?? sf.surfaceColor ?? dv.surface)
       : (sf.glass ?? sf.surfaceColor ?? dv.surface);
-    // 暗色下大面板不透明度从 0.70 降到 0.50，让壁纸透出来（2026-09-13 用户反馈
+    const tint = dark ? glassRaw : lightenIfDark(glassRaw, 0.9);
+    /**
+     * 文字取深/取浅的判据 —— 按「**实际渲染出来的表面**」而非玻璃底色。
+     *
+     * 【2026-09-13 第二轮修正：部件图现在有暗色变体了】
+     * 上一版把"有部件图 ⇒ 表面是浅色"写死成 patternLum = 0.78（因为那时只有浅色图）。
+     * 现在部件图由 scripts/build-skin-parts.mjs 生成，**跟随主题取同名 -dark 变体**：
+     *   浅色主题 → task-list-bg.webp（原图裁切，亮度中等偏高）
+     *   暗色主题 → task-list-bg-dark.webp（压暗 0.62 后派生，亮度低）
+     * 因此判据必须跟着当前主题走，否则暗色下会拿暗色图配浅色文字里"再配一次浅色"，
+     * 或反过来判成深底去提浅字。简单可靠的做法：
+     *   · 暗色主题 + 部件图 → 图是暗色变体 ⇒ 表面偏深 ⇒ 用浅色文字
+     *   · 浅色主题 + 部件图 → 图是原图裁切 ⇒ 表面偏浅 ⇒ 用深色文字
+     *   · 无部件图 → 回到玻璃色亮度判据（行为与改造前一致）
+     * 皮肤仍可用 surface.patternIsDark 显式覆盖（如自带深色部件图）。
+     */
+    const hasParts = !!(sf.taskListPattern || sf.inputPattern || sf.buttonPattern || sf.dialogPattern);
+    const patternLum = sf.patternIsDark === true ? 0.12 : (dark ? 0.22 : 0.62);
+    const surfaceIsLight = hasParts
+      ? patternLum >= 0.5
+      : relativeLuminance(tint) >= 0.62;
+    const tintIsLight = surfaceIsLight;
+    const pickText = (explicit: string | undefined, fallbackLight: string, fallbackDark: string) => {
+      if (!explicit) return tintIsLight ? fallbackLight : fallbackDark;
+      const l = relativeLuminance(explicit);
+      // 底色浅而文字也浅 → 换深字；底色深而文字也深 → 换浅字
+      if (tintIsLight && l > 0.62) return fallbackLight;
+      if (!tintIsLight && l < 0.35) return fallbackDark;
+      return explicit;
+    };
+    // 暗色下大面板不透明度从 0.70 降到 0.42，让壁纸透出来（2026-09-13 用户反馈
     // 「预览背景皮肤也没有 / 最主要的背景图片都没了」：原本 0.82+blur18 几乎把右侧
-    // 预览面板糊成纯深色块，看不到壁纸）；
-    // 输入框/弹窗等需要可读性的面走 surfaceSunken / surfaceRaised 的实心派生色，不受此值影响
-    const alpha = dark ? (sf.glassAlphaDark ?? 0.5) : (sf.glassAlpha ?? 0.78);
+    // 预览面板糊成纯深色块，看不到壁纸）。
+    // 浅色下同理：皮肤 manifest 的 glassAlpha 多为 0.78~0.86（几乎全实），
+    // 壁纸被面板整块盖住 → 观感"灰蒙蒙 / 皮肤没生效"。上限收到 0.72 让壁纸透出来。
+    //
+    // ⚠️ 只有皮肤**显式配置**了 glassAlpha/glassAlphaDark 才下发。
+    //    未配置时不下发 → skin.css 的回落值（.42/.30/.72/.62）成为真实默认值。
+    //    这就是"改 CSS 就能调透明度"的前提，替代此前"JS 全量兜底 echo"的做法。
+    const alphaRaw = dark ? sf.glassAlphaDark : sf.glassAlpha;
+    const alpha = alphaRaw === undefined
+      ? undefined
+      : (dark ? alphaRaw : Math.min(alphaRaw, 0.72));
     const border = dark ? (sf.borderDark ?? sf.border) : sf.border;
     root.setProperty('--skin-glass-tint', tint);
-    root.setProperty('--skin-glass-alpha', String(alpha));
-    root.setProperty('--skin-glass-alpha-hover', String(Math.min(alpha + 0.07, 1)));
+    if (alpha !== undefined) {
+      root.setProperty('--skin-glass-alpha', String(alpha));
+      root.setProperty('--skin-glass-alpha-hover', String(Math.min(alpha + 0.07, 1)));
+    }
     if (border) root.setProperty('--skin-glass-border', border);
-    else root.removeProperty('--skin-glass-border');
+
+    // ===== 三栏面板 / 小面板的玻璃不透明度（2026-09-13 第三轮修「一直灰蒙蒙」）=====
+    // 三部分是不同观感诉求，不能再共用一个 alpha：
+    //   · 三栏面板（左栏/中列/右栏）体量大 → 更透（暗 .42 / 浅 .72），让壁纸主导观感
+    //   · 小面板（输入条/工具条/吸顶条）压在壁纸纹理上 → 更实（暗 .30 / 浅 .62）保文字可读
+    //     （.30 反直觉地更实：它不在 backdrop-filter 元素的嵌套采样链里，
+    //      底部输入条那层 blur 是按 0.30 混合进下方玻璃的，值越小越暗 → 文字越清楚）
+    // 皮肤可用 panelAlphaDark / panelAlphaSmallDark 覆盖。
+    if (dark) {
+      if (sf.panelAlphaDark !== undefined) root.setProperty('--skin-glass-alpha-panel', String(sf.panelAlphaDark));
+      if (sf.panelAlphaSmallDark !== undefined) root.setProperty('--skin-glass-alpha-panel-sm', String(sf.panelAlphaSmallDark));
+    } else {
+      if (sf.panelAlphaLight !== undefined) root.setProperty('--skin-glass-alpha-panel', String(sf.panelAlphaLight));
+      if (sf.panelAlphaSmallLight !== undefined) root.setProperty('--skin-glass-alpha-panel-sm', String(sf.panelAlphaSmallLight));
+    }
 
     // ===== 文本层：皮肤模式下 --color-text* 由皮肤配色接管 =====
-    root.setProperty('--skin-text', sf.text ?? dv.text);
-    root.setProperty('--skin-text-secondary', sf.textSecondary ?? dv.textSecondary);
-    root.setProperty('--skin-text-tertiary', sf.textTertiary ?? dv.textTertiary);
+    // 关键：用 pickText 兜底 —— 底色被提亮（或皮肤本身给了同向的深浅冲突色）时，
+    // 文本强制翻到与底色相反的一侧，杜绝"深底深字 / 浅底浅字"两类不可读。
+    const dvTextLight = deriveSkinTokens(currentSkinPrimary, false);
+    const dvTextDark = deriveSkinTokens(currentSkinPrimary, true);
+    root.setProperty('--skin-text', pickText(sf.text, dvTextLight.text, dvTextDark.text));
+    root.setProperty('--skin-text-secondary', pickText(sf.textSecondary, dvTextLight.textSecondary, dvTextDark.textSecondary));
+    root.setProperty('--skin-text-tertiary', pickText(sf.textTertiary, dvTextLight.textTertiary, dvTextDark.textTertiary));
     root.setProperty('--skin-on-primary', sf.onPrimary ?? dv.onPrimary);
 
     // ===== 容器三级 + 控件层 =====
-    root.setProperty('--skin-surface', sf.surfaceColor ?? dv.surface);
-    root.setProperty('--skin-surface-raised', sf.surfaceRaisedColor ?? dv.surfaceRaised);
-    root.setProperty('--skin-surface-sunken', sf.surfaceSunkenColor ?? dv.surfaceSunken);
-    root.setProperty('--skin-surface-hover', sf.surfaceHoverColor ?? dv.surfaceHover);
-    root.setProperty('--skin-surface-active', sf.surfaceActiveColor ?? dv.surfaceActive);
-    root.setProperty('--skin-input-bg', sf.inputBg ?? dv.inputBg);
+    // 浅色主题保护（同 tint）：皮肤若给了深色容器色（大量皮肤作者只按暗色配一遍），
+    // 直接落到浅色主题会得到深底浅字/深底深字。这里在浅色模式下统一做提亮兜底。
+    const sh = (v: string) => (dark ? v : lightenIfDark(v, 0.9));
+    root.setProperty('--skin-surface', sh(sf.surfaceColor ?? dv.surface));
+    root.setProperty('--skin-surface-raised', sh(sf.surfaceRaisedColor ?? dv.surfaceRaised));
+    root.setProperty('--skin-surface-sunken', sh(sf.surfaceSunkenColor ?? dv.surfaceSunken));
+    root.setProperty('--skin-surface-hover', sh(sf.surfaceHoverColor ?? dv.surfaceHover));
+    root.setProperty('--skin-surface-active', sh(sf.surfaceActiveColor ?? dv.surfaceActive));
+    root.setProperty('--skin-input-bg', sh(sf.inputBg ?? dv.inputBg));
     root.setProperty('--skin-input-border', sf.inputBorder ?? dv.inputBorder);
-    root.setProperty('--skin-input-text', dv.inputText);
-    root.setProperty('--skin-input-placeholder', dv.inputPlaceholder);
-    root.setProperty('--skin-list-bg', sf.listBg ?? dv.listBg);
-    root.setProperty('--skin-list-hover', dv.listItemHover);
-    root.setProperty('--skin-list-active', dv.listItemActive);
+    root.setProperty('--skin-input-text', tintIsLight ? dvTextLight.inputText : dvTextDark.inputText);
+    root.setProperty('--skin-input-placeholder', tintIsLight ? dvTextLight.inputPlaceholder : dvTextDark.inputPlaceholder);
+    root.setProperty('--skin-list-bg', sh(sf.listBg ?? dv.listBg));
+    root.setProperty('--skin-list-hover', sh(dv.listItemHover));
+    root.setProperty('--skin-list-active', sh(dv.listItemActive));
     root.setProperty('--skin-list-divider', dv.listDivider);
-    root.setProperty('--skin-dropdown-bg', sf.dropdownBg ?? dv.dropdownBg);
-    root.setProperty('--skin-dropdown-hover', dv.dropdownItemHover);
-    root.setProperty('--skin-dropdown-active', dv.dropdownItemActive);
+    root.setProperty('--skin-dropdown-bg', sh(sf.dropdownBg ?? dv.dropdownBg));
+    root.setProperty('--skin-dropdown-hover', sh(dv.dropdownItemHover));
+    root.setProperty('--skin-dropdown-active', sh(dv.dropdownItemActive));
     root.setProperty('--skin-dropdown-border', dv.dropdownBorder);
-    root.setProperty('--skin-dialog-bg', sf.dialogBgColor ?? dv.dialogBg);
+    root.setProperty('--skin-dialog-bg', sh(sf.dialogBgColor ?? dv.dialogBg));
     root.setProperty('--skin-dialog-border', dv.dialogBorder);
-    root.setProperty('--skin-dialog-title-bg', dv.dialogTitleBg);
-    root.setProperty('--skin-btn-bg-color', dv.buttonBg);
-    root.setProperty('--skin-btn-bg-hover', dv.buttonBgHover);
-    root.setProperty('--skin-radius', `${sf.radius ?? 12}px`);
-    root.setProperty('--skin-btn-radius', `${sf.buttonRadius ?? 6}px`);
+    root.setProperty('--skin-dialog-title-bg', sh(dv.dialogTitleBg));
+    root.setProperty('--skin-btn-bg-color', sh(dv.buttonBg));
+    root.setProperty('--skin-btn-bg-hover', sh(dv.buttonBgHover));
+    // 圆角：仅皮肤显式配置时下发（未配置 → 走 skin.css 默认值 12/6/6/12/6）
+    if (sf.radius !== undefined) root.setProperty('--skin-radius', `${sf.radius}px`);
+    if (sf.buttonRadius !== undefined) root.setProperty('--skin-btn-radius', `${sf.buttonRadius}px`);
     const autoBtnText = contrastRatio(currentBtnPrimary, '#ffffff') >= 4.5 ? '#ffffff' : (dark ? '#F2F0EA' : '#141414');
-    root.setProperty('--skin-btn-text', sf.buttonText ?? sf.onPrimary ?? autoBtnText);
+    const btnText = sf.buttonText ?? sf.onPrimary;
+    if (btnText) root.setProperty('--skin-btn-text', btnText);
+    else if (sf.buttonRadius !== undefined || sf.radius !== undefined) root.setProperty('--skin-btn-text', autoBtnText);
     // 2026-09-13 用户反馈「图片皮肤都看不清」—— 玻璃面板 backdrop-filter blur 是元凶之二
-    // （与壁纸遮罩 blur 叠加把壁纸+纹理都糊掉）。默认 8→0，玻璃只剩半透明底色+饱和度，
-    // 不再模糊壁纸/纹理；如需保留磨砂效果可在 surface.glassBlur 指定（>0）。
-    root.setProperty('--skin-glass-blur', `${sf.glassBlur ?? 0}px`);
+    // （与壁纸遮罩 blur 叠加把壁纸+纹理都糊掉）。默认 0（skin.css 回落值），玻璃只剩
+    // 半透明底色，不再模糊壁纸/纹理；如需磨砂效果可在 surface.glassBlur 指定（>0）。
+    if (sf.glassBlur !== undefined) root.setProperty('--skin-glass-blur', `${sf.glassBlur}px`);
     // ===== 壁纸遮罩色（2026-09-13 修「灰蒙蒙」）=====
     // 原实现遮罩色写死在 CSS 里（#0f172a 深蓝灰），任何皮肤都被同一层冷灰纱糊掉，
     // 暖色/霓虹系壁纸全部洗成灰蓝。这里下发「带皮肤色相」的遮罩色：
@@ -787,62 +939,104 @@ export const useSettingsStore = defineStore('settings', () => {
     root.setProperty('--skin-overlay-tint', sf.wallpaperOverlayTintDark ?? overlayTintDark);
     root.setProperty('--skin-overlay-tint-light', sf.wallpaperOverlayTint ?? overlayTintLight);
 
-    // 弹窗遮罩：未配置时改用派生色（带皮肤色相的半透明），不再 transparent
+    // 弹窗遮罩：未配置时用派生色（带皮肤色相的半透明）—— 派生本身已含透明度，
+    // 故与圆角/图案不同，这里恒下发（CSS 回落的 #0f172a 是无关皮肤色相的冷蓝灰）。
     root.setProperty('--skin-overlay-color', sf.overlayColor || sf.overlayTint || dv.overlayTint);
-    root.setProperty('--skin-overlay-blur', `${sf.overlayBlur ?? 4}px`);
+    if (sf.overlayBlur !== undefined) root.setProperty('--skin-overlay-blur', `${sf.overlayBlur}px`);
     if (sf.borderPattern) {
       root.setProperty('--skin-border-pattern', asset(sf.borderPattern));
       root.setProperty('--skin-border-pattern-slice', String(sf.borderPatternSlice ?? 0));
-    } else {
-      root.removeProperty('--skin-border-pattern');
-      root.removeProperty('--skin-border-pattern-slice');
     }
-    // ===== 部位图案统一下发（暗色叠纱罩） =====
-    // 【2026-09-13 二修「灰蒙蒙」，这是真正的元凶】
+    // ===== 部位图案统一下发 =====
+    // 【2026-09-13 三修「灰蒙蒙」。前两轮都没修对，根因记在这里】
     // 铺垫：皮肤包里的部件图（task-list-bg / input-bg / button-bg / dialog-bg）
-    // 都是**为浅色主题生成的浅色图**——实测 27 套皮肤的这批图平均亮度在 230~248
-    // （接近纯白，例如 skin-cyber-neon/task-list-bg.webp≈rgb(221,223,224)）。
+    // 都是**为浅色主题生成的浅色图** —— 实测 27 套皮肤这批图平均亮度 230~248
+    // （接近纯白，如 skin-cyber-neon/task-list-bg.webp ≈ rgb(221,223,224)）。
     // 而暗色主题下它们被原样铺到侧栏/输入框/按钮上，于是：
-    //   浅色图(亮度240) × (1-0.35) + 深纱(亮度10) × 0.35 ≈ 亮度 160 → 一片灰白；
-    //   叠加亮白文字 rgb(239,250,254) 后对比度只有 2.43:1 → 白底白字，即用户看到的「灰蒙蒙」。
-    //   这也是为什么改 --glass-bg / --el-* 变量都不起作用：背景是**图片**，不是底色。
-    // 修复：暗色纱罩强度 0.78 → 0.70 —— 0.78 时白图只剩 22% 纹理起伏，用户反馈
-    //   "部件图案不清晰/一片死色"。0.70 下纹理保留 30%，白图压到亮度≈79，
-    //   亮字对比度仍有 ~7.7:1（WCAG AA 需 4.5），图案感与可读性兼顾。
-    //   浅色主题不需要纱罩（浅图本来就配浅底），维持空串。
-    //   skin 可经 surface.patternScrim 覆盖；低于 ~0.62 对比度将跌破 5:1，谨慎再降。
-    const scrimBase = mixHex('#0A0A0C', currentSkinPrimary, 0.12);
-    const scrimA = hexToRgba(scrimBase, sf.patternScrim ?? 0.70);
-    const scrim = dark ? `linear-gradient(${scrimA}, ${scrimA})` : '';
-    // 部件图贴合方式：小图（按钮/输入框/列表底图）必须平铺 tile，而非 cover 拉伸铺满。
-    // 历史默认 cover 会把 480x270 之类的小纹理拉伸到整个侧栏/弹窗宽度（300~600px），
-    // 强行放大 1.5~2 倍造成肉眼可见的糊化、细节丢失。
-    // 改为默认 repeat（自然尺寸平铺）；皮肤可经 surface.patternFit 指定 cover / contain / repeat-x。
-    const fit = sf.patternFit ?? 'repeat';
-    root.setProperty('--skin-pattern-size', fit === 'cover' || fit === 'contain' ? fit : 'auto');
-    root.setProperty('--skin-pattern-repeat', fit === 'cover' || fit === 'contain' ? 'no-repeat' : fit);
+    //   浅色图(亮度240) × (1-a) + 深纱(亮度16) × a = 合成亮度
+    // 前两轮分别把 a 设成 0.70 / 0.80 并观察"好像暗了"，但没算合成值：
+    //   a=0.70 → 83（中灰）   ← 用户看到的"灰蒙蒙"本体
+    //   a=0.80 → 61           ← 仍明显偏灰
+    //   a=0.95 → 27           ← 才真正像深色面板，但纹理只剩 5%，图案等于消失
+    // 即：「暗色玻璃面板」与「浅色部件图纹理」在数学上互斥，不能既要又要。
+    // 这也解释了为什么改 --glass-bg / --el-* / 玻璃 alpha 全都"没反应" ——
+    // 灰来自**图片层**，不是底色层，调底色当然无效。
+    //
+    // 纱罩彻底取消（2026-09-13 最终定稿）。
+    // 用户原话："不要玻璃，能清晰显示图片就好了，我一直都是这个要求啊" ——
+    // 前几轮在"纱罩该多强"上反复试探（0.35 / 0.70 / 0.78 / 0.80 / 0.12）全是错方向：
+    // 只要**给部件图叠任何一层纱罩**，图就被洗淡，用户要的是原图清晰显示。
+    // 因此这里恒为 '' —— 图案值就是纯图，不带任何附加层。
+    // 文字可读性让皮肤自己通过选图的明暗来保证，不再由 CSS 兜底压暗。
+    const scrim: string = '';
+    // 部件图贴合方式：**默认 cover + 居中，不挤压**（2026-09-13 用户明确要求
+    // 「图片不要挤压......就是一张大图居中，把容器覆盖掉」）。
+    // cover = 保持宽高比、按容器裁切，是"一张大图居中覆盖"的标准做法；
+    // 对比另外两种：fill/100% 会拉伸变形（挤压），repeat 会变成平铺马赛克。
+    // 历史坑：早期默认 cover 时部件图是 480×270 小纹理，被拉到 600px 宽显糊 →
+    // 曾改为 repeat；现在部件图已改用大图（延展底），cover 才是正确贴合方式。
+    // 皮肤可经 surface.patternFit 覆盖（contain / repeat / repeat-x）。
+    if (sf.patternFit !== undefined) {
+      const fit = sf.patternFit;
+      root.setProperty('--skin-pattern-size', fit === 'repeat' || fit === 'repeat-x' ? 'auto' : fit);
+      root.setProperty('--skin-pattern-repeat', fit === 'repeat' || fit === 'repeat-x' ? fit : 'no-repeat');
+    }
+    /**
+     * 部件图取值（light / dark 双变体）。
+     *
+     * 【2026-09-13 用户反馈"输入框和侧栏很亮很白，只能模糊看到图片"的最终修复】
+     * 根因有二，缺一不可：
+     *   ① 旧的部件图本身是「整张壁纸 + 重白化」的产物（实测亮度 226+，几乎全白）
+     *      → 铺上去就是一片白，用户说"只能模糊看到图片"。已改由
+     *      scripts/build-skin-parts.mjs 从壁纸**裁切局部取景**重生成，画面清晰。
+     *   ② 即便图有内容，**暗色主题下铺浅色图**依然不对：深色应用 + 浅色图 = 刺眼一块亮板。
+     *      → 部件图现在跟壁纸一样有暗色变体（<name>-dark.webp），由构建脚本一并产出。
+     *
+     * 命名约定（与壁纸 wallpaper.webp / wallpaper-dark.webp 一致）：
+     *   浅色取 <name>.webp；暗色取 <name>-dark.webp（存在就用，缺失回落浅色图）。
+     * 皮肤若显式给了 darkVariant（如 menuPatternDark）优先用它。
+     */
     const themedPattern = (light?: string, darkVariant?: string) => {
-      const base = dark ? (darkVariant ?? light) : light;
+      if (!light && !darkVariant) return undefined;
+      let base: string | undefined;
+      if (dark) {
+        base = darkVariant
+          ?? (light && /\.webp$/i.test(light) ? light.replace(/\.webp$/i, '-dark.webp') : light);
+      } else {
+        base = light;
+      }
       if (!base) return undefined;
       const img = asset(base);
-      return scrim ? `${scrim}, ${img}` : img;
+      // 部件图整体不透明度：CSS 里以 linear-gradient(rgba(clr, a)) 形式铺在最上层，
+      // scrim 在下面负责"压暗"。两者独立 —— scrim 管对比度，本项管图案清晰度。
+      const op = sf.patternOpacity;
+      const veil = op === undefined ? '' : `linear-gradient(${hexToRgba('#000000', 1 - op)}, ${hexToRgba('#000000', 1 - op)}), `;
+      const layers = scrim ? `${scrim}, ${img}` : img;
+      return `${veil}${layers}`;
     };
     const setPattern = (name: string, value?: string) => {
       if (value) root.setProperty(name, value);
       else root.removeProperty(name);
     };
     setPattern('--skin-titlebar-pattern', themedPattern(sf.titlebarPattern));
-    if (sf.shadow) root.setProperty('--skin-shadow', sf.shadow);
-    else root.removeProperty('--skin-shadow');
-    if (sf.buttonGradient) root.setProperty('--skin-btn-gradient', sf.buttonGradient);
-    else root.removeProperty('--skin-btn-gradient');
-    root.setProperty('--skin-input-radius', `${sf.inputRadius ?? sf.buttonRadius ?? 6}px`);
-    root.setProperty('--skin-card-radius', `${sf.cardRadius ?? sf.radius ?? 12}px`);
-    root.setProperty('--skin-tag-radius', `${sf.tagRadius ?? sf.buttonRadius ?? 6}px`);
+    // 圆角：仅皮肤显式配置时下发（尊重皮肤作者意图；未配置 → skin.css 默认值）
+    if (sf.inputRadius !== undefined || sf.buttonRadius !== undefined) {
+      root.setProperty('--skin-input-radius', `${sf.inputRadius ?? sf.buttonRadius ?? 6}px`);
+    }
+    if (sf.cardRadius !== undefined || sf.radius !== undefined) {
+      root.setProperty('--skin-card-radius', `${sf.cardRadius ?? sf.radius ?? 12}px`);
+    }
+    if (sf.tagRadius !== undefined || sf.buttonRadius !== undefined) {
+      root.setProperty('--skin-tag-radius', `${sf.tagRadius ?? sf.buttonRadius ?? 6}px`);
+    }
     if (sf.scrollbarThumb) root.setProperty('--skin-scrollbar-thumb', sf.scrollbarThumb);
-    else root.removeProperty('--skin-scrollbar-thumb');
+    // 滚动条 thumb 纹理（2026-09-13 新增下发）：
+    // 此前 types.ts 已有 scrollbarPattern 字段、skin.css 也消费
+    // --skin-scrollbar-thumb-pattern，但**没有任何地方把它写进 CSS 变量** ——
+    // 皮肤 manifest 里配了也不生效（用户反馈"滚动条加点纹理图片"无反应）。
+    // 这里补上下发：皮肤给了就用皮肤的图案，否则由 skin.css 内置纹理兜底。
+    if (sf.scrollbarPattern) root.setProperty('--skin-scrollbar-thumb-pattern', sf.scrollbarPattern);
     if (sf.dividerColor) root.setProperty('--skin-divider-color', sf.dividerColor);
-    else root.removeProperty('--skin-divider-color');
     setPattern('--skin-cat-tag-pattern', themedPattern(sf.catTagPattern));
     setPattern('--skin-task-list-pattern', themedPattern(sf.taskListPattern));
     setPattern('--skin-input-pattern', themedPattern(sf.inputPattern));

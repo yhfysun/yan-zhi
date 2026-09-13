@@ -49,8 +49,8 @@ html[data-skin="on"]::before {
   pointer-events: none;
   background: var(--skin-overlay-tint, var(--skin-surface, #0f172a));
   opacity: var(--skin-mask, 0.45);
-  backdrop-filter: blur(var(--skin-blur, 14px));
-  -webkit-backdrop-filter: blur(var(--skin-blur, 14px));
+  backdrop-filter: blur(var(--skin-blur, 0px));
+  -webkit-backdrop-filter: blur(var(--skin-blur, 0px));
 }
 
 /* 浅色模式遮罩改白纱，避免壁纸过暗与浅色文字层冲突。
@@ -117,7 +117,20 @@ html[data-skin="on"] .home-page {
 
 /* ===== 皮肤模式第三套 token：让所有未显式换肤的表面统一玻璃化 =====
    原则：面板（--glass-bg / --el-bg-color）高透下限保对比，控件填充（fill/input）低透薄纱。
-   Element Plus 输入框/表格/弹窗/下拉全部消费 --el-* 变量，改 token 即全局生效 */
+   Element Plus 输入框/表格/弹窗/下拉全部消费 --el-* 变量，改 token 即全局生效
+
+   ⚠️【本文件是玻璃参数的**默认值真相源**，2026-09-13 第三轮修「一直灰蒙蒙」】
+   下面所有 var(--skin-glass-alpha*, <值>) 的**回落值就是真实默认值** ——
+   settings.applySurface 只在「皮肤显式配置」时才下发覆盖；未配置时这些变量
+   根本不定义，CSS 的回落值直接生效。因此调透明度改这里即可，不必动 JS。
+   （旧实现里 JS 每次都用 `sf.x ?? 硬编码默认` 全量下发，CSS 的回落值永远是死代码，
+     改 CSS 毫无反应 —— 这正是「一直灰蒙蒙」查不出原因的最后一层。）
+   三个部分各自独立（变量名 → 默认值 → 观感）：
+     --skin-glass-alpha            弹窗/抽屉/卡片等标准表面   暗 .50 / 浅 .82
+     --skin-glass-alpha-panel      三栏面板（左栏/中列/右栏） 暗 .42 / 浅 .72  ← 体量大，最透
+     --skin-glass-alpha-panel-sm   输入条/工具条等小面板       暗 .30 / 浅 .62  ← 压纹理上，最实
+   （小面板"更暗的 alpha 反而更实"：它不在 backdrop-filter 的嵌套采样链里，
+     作为玻璃底去混合下方内容，值越小 → 混得越黑 → 压住壁纸纹理，文字越清楚。） */
 [data-skin="on"] {
   /* 配色兜底链（P0-3）：--skin-text* / --skin-surface* 由 applySurface 从皮肤主色派生，
      未配置时 var() 回落原有固定值，老皮肤行为不变 */
@@ -140,9 +153,33 @@ html[data-skin="on"] .home-page {
   --el-text-color-placeholder: var(--skin-text-tertiary, #a8abb2);
   --el-text-color-disabled: var(--skin-text-tertiary, #c0c4cc);
 
-  --glass-bg: color-mix(in srgb, var(--skin-glass-tint, #f5f1ea) calc(var(--skin-glass-alpha, 0.97) * 100%), transparent);
-  --glass-bg-hover: var(--skin-surface-hover, color-mix(in srgb, var(--skin-glass-tint, #f5f1ea) calc(var(--skin-glass-alpha-hover, 0.99) * 100%), transparent));
-  --glass-filter: blur(var(--skin-glass-blur, 2px)) saturate(1.1);
+  /* 玻璃参数默认值（浅色）：标准 .82 / 三栏 .72 / 小面板 .62 */
+  --skin-glass-alpha: 0.82;
+  --skin-glass-alpha-hover: 0.90;
+  --skin-glass-alpha-panel: 0.72;
+  --skin-glass-alpha-panel-sm: 0.62;
+  --skin-glass-blur: 0px;
+  /* 部件图贴合方式默认值：cover + no-repeat + center。
+     2026-09-13 用户要求「图片不要挤压……就是一张大图居中，把容器覆盖掉」——
+     即部件图按容器裁切（cover），而不是拉伸变形（fill）或平铺（repeat）。
+     cover 会保持图片宽高比、超出部分裁掉，是"一张大图居中覆盖容器"的标准做法。
+     皮肤可经 surface.patternFit 覆盖为 contain / repeat / repeat-x。 */
+  --skin-pattern-size: cover;
+  --skin-pattern-repeat: no-repeat;
+  --skin-radius: 12px;
+  --skin-btn-radius: 6px;
+  --skin-input-radius: 6px;
+  --skin-card-radius: 12px;
+  --skin-tag-radius: 6px;
+
+  --glass-bg: color-mix(in srgb, var(--skin-glass-tint, #f5f1ea) calc(var(--skin-glass-alpha) * 100%), transparent);
+  --glass-bg-hover: var(--skin-surface-hover, color-mix(in srgb, var(--skin-glass-tint, #f5f1ea) calc(var(--skin-glass-alpha-hover) * 100%), transparent));
+  /* 三栏面板专用玻璃（左会话栏 / 中对话列 / 右预览栏） */
+  --glass-bg-panel: color-mix(in srgb, var(--skin-glass-tint, #f5f1ea) calc(var(--skin-glass-alpha-panel) * 100%), transparent);
+  /* 小面板专用玻璃（底部输入条 / 工具条 / 吸顶小背板） */
+  --glass-bg-panel-sm: color-mix(in srgb, var(--skin-glass-tint, #f5f1ea) calc(var(--skin-glass-alpha-panel-sm) * 100%), transparent);
+  --glass-filter: none;
+  --glass-border: var(--skin-glass-border, rgba(26, 26, 26, 0.14));
 
   --el-bg-color: var(--glass-bg);
   --el-bg-color-overlay: var(--skin-dropdown-bg, color-mix(in srgb, var(--skin-glass-tint, #f5f1ea) 97%, transparent));
@@ -190,9 +227,21 @@ html[data-skin="on"] .home-page {
   --el-text-color-placeholder: var(--skin-text-tertiary, #8D9095);
   --el-text-color-disabled: var(--skin-text-tertiary, #6C6E72);
 
-  --glass-bg: color-mix(in srgb, var(--skin-glass-tint, #1d1d1c) calc(var(--skin-glass-alpha, 0.95) * 100%), transparent);
-  --glass-bg-hover: var(--skin-surface-hover, color-mix(in srgb, var(--skin-glass-tint, #1d1d1c) calc(var(--skin-glass-alpha-hover, 0.98) * 100%), transparent));
-  --glass-filter: blur(var(--skin-glass-blur, 2px)) saturate(1.08);
+  /* 玻璃参数默认值（深色）：标准 .50 / 三栏 .42 / 小面板 .30。
+     比浅色整体更透，让暗色壁纸的霓虹细节主导观感（用户反馈"一直灰蒙蒙"的
+     主因就是深色下三栏长期停在 0.5+ 的半透黑 → 壁纸被糊成一片灰）。 */
+  --skin-glass-alpha: 0.50;
+  --skin-glass-alpha-hover: 0.62;
+  --skin-glass-alpha-panel: 0.42;
+  --skin-glass-alpha-panel-sm: 0.30;
+  --skin-glass-blur: 0px;
+
+  --glass-bg: color-mix(in srgb, var(--skin-glass-tint, #1d1d1c) calc(var(--skin-glass-alpha) * 100%), transparent);
+  --glass-bg-hover: var(--skin-surface-hover, color-mix(in srgb, var(--skin-glass-tint, #1d1d1c) calc(var(--skin-glass-alpha-hover) * 100%), transparent));
+  --glass-bg-panel: color-mix(in srgb, var(--skin-glass-tint, #1d1d1c) calc(var(--skin-glass-alpha-panel) * 100%), transparent);
+  --glass-bg-panel-sm: color-mix(in srgb, var(--skin-glass-tint, #1d1d1c) calc(var(--skin-glass-alpha-panel-sm) * 100%), transparent);
+  --glass-filter: none;
+  --glass-border: var(--skin-glass-border, rgba(255, 255, 255, 0.13));
 
   --el-bg-color: var(--glass-bg);
   --el-bg-color-overlay: var(--skin-dropdown-bg, color-mix(in srgb, var(--skin-glass-tint, #1d1d1c) 95%, transparent));
@@ -258,18 +307,88 @@ html[data-skin="on"] .home-page {
   backdrop-filter: var(--glass-filter);
   -webkit-backdrop-filter: var(--glass-filter);
 }
+/* 右栏（预览面板）无部件图，保持透明让壁纸透出（2026-09-13：不再叠玻璃底） */
+[data-skin="on"] .right-panel {
+  background-color: transparent;
+}
 
-/* ===== 中间内容列（.chat-column）：必须自带玻璃背板 =====
+/* ===== 部件图：原样清晰显示，不做玻璃/滤镜/遮罩（2026-09-13 最终定稿）=====
+   【用户需求，原话】"不要玻璃，能清晰显示图片就好了，我一直都是这个要求啊"
+                      "一张大图 cover 裁切"、"图片都看不清啊"
+
+   前几轮我一直在"玻璃透明度 / 纱罩强度 / filter 反转"上打转，全是错的方向。
+   用户要的从来只有一件事：**把皮肤图原样铺上去，看得清**。
+
+   所以这里的规则极简：
+     · background-size: cover    → 一张大图按容器裁切铺满（不挤压、不变形）
+     · background-position:center→ 居中
+     · background-repeat: no-repeat
+     · **不加 filter、不加纱罩、不加 mixed-blend** —— 原图什么色就是什么色
+     · 面板底色置为 transparent → 不留玻璃底色盖在图上面（图就是面板）
+
+   ⚠️ 与历史实现的差别（别改回去）：
+   · 曾经用 --glass-bg 玻璃底 + pattern 叠加 → 半透玻璃把图洗淡（用户：看不清）
+   · 曾经用 invert 伪元素层反色 → 图被改成另一个色（用户：图片都看不清）
+   · 曾经用 scrim 纱罩压暗 → 图被糊掉（用户：灰蒙蒙）
+   以上统统作废。面板背景 = 部件图本身，没有任何中间层。
+
+   浅色/暗色一致处理：皮肤包里的图是浅色图，浅色主题下直接铺就很协调；
+   暗色主题下保持原样 —— 图本身就是皮肤的视觉主体，不该被"适配"掉。
+   文字可读性由文字色与图的对比度决定，必要时由皮肤自身选择明/暗色系的图。 */
+[data-skin="on"] .sidebar {
+  background-color: transparent;
+  background-image: var(--skin-task-list-pattern, none);
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+}
+
+/* ===== 输入类控件：**完全透明**，直接透出背景壁纸 =====
+   【2026-09-13 用户明确要求："输入框的不要用图片，输入框直接是背景就可以了"】
+
+   为什么不铺输入底图：
+   · 输入框是**横向扁条**，任何图 cover 上去都会与周围壁纸形成"重复且割裂"的一横条
+     （用户看到的就是"输入框区域有一条跟背景不一样的图"）；
+   · 输入框此刻已经透明、下方就是壁纸，直接让它透出来才是一体的观感。
+
+   因此这里把背景图与底色都清掉，只留聚焦时的主色描边作为唯一的视觉反馈。
+   （--skin-input-pattern 变量仍由皮肤系统下发，供需要时消费；本处不再使用。） */
+[data-skin="on"] .input-box,
+[data-skin="on"] .f-keyword-wrap,
+[data-skin="on"] .lm-search-wrap,
+[data-skin="on"] .tab-search-wrap,
+[data-skin="on"] .url-bar {
+  background-color: transparent !important;
+  background-image: none !important;
+}
+
+/* 按钮类（浏览器/文件页原生按钮）：铺按钮底图（不加底色层，图原样） */
+[data-skin="on"] .nav-btn,
+[data-skin="on"] .fs-act-btn,
+[data-skin="on"] .tab-new {
+  background-color: transparent !important;
+  background-image: var(--skin-btn-pattern, none) !important;
+  background-size: cover !important;
+  background-position: center !important;
+  background-repeat: no-repeat !important;
+}
+
+
+/* ===== 中间内容列（.chat-column）：透明，让壁纸原样透出 =====
    2026-09-13 用户反馈「卡片怎么没有皮肤」的现象根因之一：
    .app-shell/.main-content/.chat-page 都被置为 transparent 让壁纸透出，
-   左栏(.sidebar)/右栏(.right-panel) 各自有 --glass-bg 背板，唯独**中间的消息列没有**，
-   于是消息气泡与「智能体回复卡片」直接浮在**原始壁纸**上——形态上就像"卡片没上皮肤"。
-   这里给内容列补一层与左右栏同源的玻璃背板（底色 + 模糊），保证三栏材质一致；
-   仅补 background-color 与 backdrop-filter，不动 background-image（避免压掉列内列表底图）。 */
+   左栏(.sidebar)/右栏(.right-panel) 各自有背板，唯独**中间的消息列没有**。
+
+   ⚠️ 2026-09-13 最终定稿（用户："不要玻璃，能清晰显示图片就好了"）：
+   中列**不铺任何玻璃底**。它承载的是消息气泡与回复卡片（各自有底色），
+   中列本身保持透明，壁纸在消息之间的留白处原样可见 —— 这才是"皮肤透到底层"。
+
+   历史坑：曾给中列加 --glass-bg（半透玻璃）→ 整列被一层半透灰罩住，
+   壁纸被洗淡、观感"灰蒙蒙"。那就是用户反复反馈的问题。现彻底移除。 */
 [data-skin="on"] .chat-column {
-  background-color: var(--glass-bg);
-  backdrop-filter: var(--glass-filter);
-  -webkit-backdrop-filter: var(--glass-filter);
+  background-color: transparent;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 /* 右栏 tab 条 / 左栏 tab 条：吸底吸顶小背板跟随玻璃 */
 [data-skin="on"] .right-panel-tab.active {
@@ -346,15 +465,17 @@ html[data-skin="on"] .home-page {
   color: var(--skin-input-placeholder, var(--color-text-tertiary));
 }
 
+/* 【2026-09-13】Element Plus 输入类控件：**完全透明**（同 .input-box，见上方说明）。
+   原 `background-color: var(--el-fill-color-blank)` 是 --skin-input-bg 的映射
+   （浅色主题下近白实底），压在图上层把图洗成"很亮很白"；而铺 input-pattern 又会让
+   扁条形的输入框出现"一条与背景不同的图"。现两者都去掉，输入框 = 透明 + 背景壁纸。
+   聚焦时用主色 inset ring 作为唯一反馈。 */
 [data-skin="on"] .el-input__wrapper,
 [data-skin="on"] .el-textarea__inner,
 [data-skin="on"] .el-select__wrapper {
-  background-color: var(--el-fill-color-blank);
-  background-image: var(--skin-input-pattern, none);
-  background-size: var(--skin-pattern-size, cover);
-  background-repeat: var(--skin-pattern-repeat, no-repeat);
-  background-position: center;
-  box-shadow: 0 0 0 1px var(--skin-input-border, var(--el-border-color)) inset;
+  background-color: transparent;
+  background-image: none;
+  box-shadow: none;
 }
 [data-skin="on"] .el-input__wrapper.is-focus,
 [data-skin="on"] .el-select__wrapper.is-focused {
@@ -757,12 +878,12 @@ html[data-skin="on"] .home-page {
   border-radius: 999px !important;
 }
 [data-skin="on"] ::-webkit-scrollbar-thumb:hover {
-  background: var(--scrollbar-thumb-hover) !important;
-  filter: brightness(1.15);
+  background: var(--skin-scrollbar-thumb-pattern) !important;
+  filter: brightness(1.18) saturate(1.15);
 }
 [data-skin="on"] ::-webkit-scrollbar-thumb:active {
-  background: var(--scrollbar-thumb-active) !important;
-  filter: brightness(1.25);
+  background: var(--skin-scrollbar-thumb-pattern) !important;
+  filter: brightness(1.32) saturate(1.3);
 }
 /* Firefox（仅 Gecko 生效，必须与 Chromium 隔离）
    ⚠️ 2026-09-13 修「滚动条圆角没了/皮肤不生效」的真正元凶：
@@ -856,12 +977,16 @@ html[data-skin="on"] .home-page {
 [data-skin="on"] .browser-tabbar .tab-favicon,
 [data-skin="on"] .browser-tabbar .tab-close,
 [data-skin="on"] .browser-toolbar .url-clear { color: var(--skin-text-tertiary, #5f6368) !important; }
-/* 地址栏在底图上保持玻璃胶囊质感。
+/* 地址栏（浏览器工具栏内的输入框）：透明 + 边框 + 投影。
+   2026-09-13 用户要求"输入框外面那个框要有阴影"，地址栏同属输入框家族，一并处理。
+   原实现给它 --skin-input-bg 实色底 → 在工具栏底图上糊出一条色带（割裂），已去掉。
    html 前缀理由同下：本组件 scoped 规则特异性为 (0,2,0)，不加前缀会打平后被后加载的 chunk 压过 */
 html[data-skin="on"] .url-bar {
-  background-color: var(--skin-input-bg, var(--el-fill-color-blank));
-  backdrop-filter: var(--glass-filter);
-  -webkit-backdrop-filter: var(--glass-filter);
+  background-color: transparent;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border: 1px solid var(--skin-glass-border, var(--glass-border));
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.24);
 }
 
 /* ===== 内置浏览器「内芯」接管（2026-09-13）=====
@@ -962,35 +1087,37 @@ html[data-skin="on"] .loading-overlay {
    ============================================================ */
 
 /* ===== 列表背景图：会话列表 / 定时任务列表 / 文件面板 / 玻璃卡片 =====
-   .chat-sidebar 已在 chat.css 消费 --skin-task-list-pattern，这里补齐其余列表容器
+   【2026-09-13 用户最终要求：「不要玻璃，能清晰显示图片就好了」】
+   原实现有两层把图洗白：
+     ① 容器铺图后再压 --skin-list-bg（浅色下近白）→ 图被白色玻璃罩住 = "很亮很白"
+     ② 子项 .conv-item 又各铺一次同图 → 与容器底图层次错位，观感糊
+   现在：只由**容器**铺图（原图，无附加色），**子项一律透明**，让容器的图透上来。
+   hover/active 仍保留语义色（叠在图上），保证交互反馈不丢。
    （!important：目标类多为 scoped 样式，注入顺序不定，统一加固保证生效） */
 [data-skin="on"] .conv-list,
 [data-skin="on"] .st-list,
 [data-skin="on"] .fs-panel,
 [data-skin="on"] .fs-body,
 [data-skin="on"] .glass-card {
+  background-color: transparent !important;
   background-image: var(--skin-task-list-pattern, none) !important;
-  background-size: var(--skin-pattern-size, cover) !important;
-  background-repeat: var(--skin-pattern-repeat, no-repeat) !important;
+  background-size: cover !important;
+  background-repeat: no-repeat !important;
   background-position: center !important;
 }
 
 /* ===== 列表「卡片」条目（会话/空间/任务行）=====
-   2026-09-13 用户反馈「卡片怎么没有皮肤」：.conv-item 这类行级卡片原先只有
-   :hover / .active 的纯色底，没有任何皮肤图案，铺在已吃皮肤的 .conv-list 之上
-   显得"脱皮"。这里给行卡片补上同一套底图 + 薄玻璃底，保证列表内外材质一致。
-   注意：hover / .active 的纯色态仍由 chat.css 的更高优先级规则覆盖（它们不用 !important，
-   而本块用了 !important，故需在下方单独回收 hover/active 的底色，避免把状态色压掉）。 */
+   【2026-09-13 修订】原实现给每个子项也铺一份同图 + 22% 玻璃底：
+   · 与容器底图叠加后两层图案错位（容器 cover 裁切，子项各自 cover，取景不同）
+   · 玻璃底色把图洗白 —— 正是用户反馈"很亮很白，只能模糊看到图片"的来源之一
+   现改为：子项完全透明，仅保留 hover/active 的状态底色。图案由容器统一承载。 */
 [data-skin="on"] .conv-item,
 [data-skin="on"] .space-item,
 [data-skin="on"] .st-item {
-  background-image: var(--skin-task-list-pattern, none) !important;
-  background-size: var(--skin-pattern-size, cover) !important;
-  background-repeat: var(--skin-pattern-repeat, no-repeat) !important;
-  background-position: center !important;
+  background-image: none !important;
   background-color: transparent !important;
 }
-/* 状态态回收：hover / active / pinned 保留原有语义色（叠加在底图之上） */
+/* 状态态：hover / active / pinned 保留原有语义色（叠在容器底图之上） */
 [data-skin="on"] .conv-item:hover,
 [data-skin="on"] .space-item:hover,
 [data-skin="on"] .st-item:hover {
@@ -1004,13 +1131,6 @@ html[data-skin="on"] .loading-overlay {
 [data-skin="on"] .conv-item.pinned {
   background-color: color-mix(in srgb, var(--color-warning) 8%, transparent) !important;
 }
-/* 卡片/列表容器底图之上压薄玻璃底色：20% 而非实色，保证底图纹理清晰可见 */
-[data-skin="on"] .conv-list,
-[data-skin="on"] .st-list,
-[data-skin="on"] .fs-panel,
-[data-skin="on"] .fs-body {
-  background-color: var(--skin-list-bg, color-mix(in srgb, var(--skin-glass-tint, #f5f1ea) 22%, transparent)) !important;
-}
 
 /* ===== 弹窗背景图：自定义抽屉 / 内嵌管理面板（el-dialog/el-drawer/el-message-box 已有） ===== */
 [data-skin="on"] .settings-drawer,
@@ -1021,11 +1141,16 @@ html[data-skin="on"] .loading-overlay {
   background-position: center !important;
 }
 
-/* ===== 输入框：背景图随皮肤（EP 控件 + 自定义输入容器）；输入框本身不带边框 ===== */
-/* 皮肤模式下输入框去描边，靠底图 + 玻璃区分区；仅在聚焦时给主色描边做反馈 */
+/* ===== 输入框：**透明**，直接透出背景壁纸（2026-09-13 用户要求） =====
+   用户原话："输入框的不要用图片，输入框直接是背景就可以了"。
+   下方原实现给输入框铺 --skin-input-pattern，会在扁条形的输入框上出现
+   一条与周围壁纸不同的图案 = "割裂感"。现统一清空：透明底 + 无图，
+   只保留聚焦时的主色描边反馈。 */
 [data-skin="on"] .el-input__wrapper,
 [data-skin="on"] .el-textarea__inner,
 [data-skin="on"] .el-select__wrapper {
+  background-color: transparent !important;
+  background-image: none !important;
   box-shadow: none !important;
 }
 [data-skin="on"] .el-input__wrapper.is-focus,
@@ -1033,36 +1158,59 @@ html[data-skin="on"] .loading-overlay {
 [data-skin="on"] .el-textarea__inner:focus {
   box-shadow: 0 0 0 1.5px var(--color-primary) inset !important;
 }
-/* 自定义输入容器：聊天输入框 / 各页搜索框 / 浏览器地址栏上皮肤图案（无边框） */
+/* 自定义输入容器：聊天输入框 / 各页搜索框 / 浏览器地址栏 —— 同样透明，透出壁纸。
+   ⚠️ 2026-09-13：**不要**在这里把 border-color 设成 transparent。
+   用户明确要求"输入框外面那个框要有阴影"——边框 + 投影是输入框唯一的立体感来源，
+   清掉边框后输入框会与壁纸糊在一起、看不出边界。这里只清背景，保留边框与投影；
+   投影在 chat.css 的 .input-box 上（0 4px 24px + 0 1px 3px），此处用 !important 保住它，
+   避免被其它层的 box-shadow: none 冲掉。 */
 [data-skin="on"] .input-box,
 [data-skin="on"] .f-keyword-wrap,
 [data-skin="on"] .lm-search-wrap,
 [data-skin="on"] .tab-search-wrap,
 [data-skin="on"] .url-bar {
-  background-image: var(--skin-input-pattern, none) !important;
-  background-size: var(--skin-pattern-size, cover) !important;
-  background-repeat: var(--skin-pattern-repeat, no-repeat) !important;
-  background-position: center !important;
-  border-color: transparent !important;
+  background-color: transparent !important;
+  background-image: none !important;
 }
+[data-skin="on"] .input-box {
+  /* 输入框外框：细边框 + 双层投影（近距贴影 + 远距柔影），在壁纸上托出输入框轮廓 */
+  border: 1px solid var(--skin-glass-border, var(--glass-border)) !important;
+  box-shadow: 0 6px 28px rgba(0, 0, 0, 0.28), 0 2px 6px rgba(0, 0, 0, 0.18) !important;
+}
+[data-theme="light"][data-skin="on"] .input-box {
+  /* 浅色主题下投影改用更柔和的冷灰，避免深投影在亮底上显得脏 */
+  box-shadow: 0 6px 26px rgba(15, 23, 42, 0.14), 0 2px 6px rgba(15, 23, 42, 0.08) !important;
+}
+
+/* ===== 底部聊天输入区 =====
+   类名是 .input-box（ChatInputArea.vue），不是 .chat-input-bar（不存在，别照抄）。
+   2026-09-13：输入框整体透明，直接透出壁纸（用户要求"输入框直接是背景"），
+   不再铺 --skin-input-bg / --skin-input-pattern（两者都会与背景形成割裂或洗白）。
+   注意：.input-area 是 .chat-column 的子级，若给它加 backdrop-filter 会形成
+   嵌套采样链 —— 父级玻璃先取样一次，子级再取样一次，越叠越糊（旧版本"灰蒙蒙"的来源之一）。 */
+/* 聚焦态：边框换主色（保持投影，只加强边框反馈）。
+   2026-09-13 修：原实现把 border 与 box-shadow 全清成 transparent/none，
+   导致输入框在任何状态下都没有轮廓（用户："输入框外面那个框要有阴影"）。 */
 [data-skin="on"] .input-box.focused {
-  border-color: transparent !important;
-  box-shadow: none !important;
+  border-color: var(--color-primary) !important;
+  box-shadow: 0 6px 30px rgba(0, 0, 0, 0.32), 0 0 0 3px color-mix(in srgb, var(--color-primary) 16%, transparent) !important;
 }
 /* 聊天输入框聚焦不上描边：压掉上面 .el-textarea__inner:focus 的 inset ring（选择器权重更高） */
 [data-skin="on"] .input-box .input-textarea .el-textarea__inner:focus {
   box-shadow: none !important;
 }
 
-/* ===== 按钮：浏览器/文件页原生中性按钮上皮肤（图案 + 玻璃底 + 主色 hover） =====
+/* ===== 按钮：浏览器/文件页原生中性按钮上皮肤（图案 + 主色 hover） =====
+   2026-09-13：去掉 `background-color: var(--btn-bg)`（半透玻璃底），
+   与"图原样清晰显示"原则一致 —— 按钮表面 = 按钮底图本身。
    注意：这些原生按钮有固定尺寸/布局假设（.fs-act-btn 还带 all:unset），不添边框防抖动 */
 [data-skin="on"] .nav-btn,
 [data-skin="on"] .fs-act-btn,
 [data-skin="on"] .tab-new {
-  background-color: var(--btn-bg) !important;
+  background-color: transparent !important;
   background-image: var(--skin-btn-pattern, none) !important;
-  background-size: var(--skin-pattern-size, cover) !important;
-  background-repeat: var(--skin-pattern-repeat, no-repeat) !important;
+  background-size: cover !important;
+  background-repeat: no-repeat !important;
   background-position: center !important;
 }
 [data-skin="on"] .nav-btn:hover:not(:disabled),
