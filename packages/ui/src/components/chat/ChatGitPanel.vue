@@ -314,14 +314,20 @@
             <em class="git-badge">{{ logEntries.length }}</em>
           </div>
           <div v-show="sections.graph" class="git-section-body">
-            <GitGraphView v-if="graphEntries.length" :commits="graphEntries" class="git-graph" @select="toggleCommit" />
             <div class="git-history">
               <div
-                v-for="c in logEntries" :key="c.hash"
+                v-for="c in historyRows" :key="c.hash"
                 class="git-history-row" :class="{ expanded: expandedCommit === c.hash }"
                 @click="toggleCommit(c.hash)" @contextmenu.prevent="onCommitContextMenu($event, c)"
               >
                 <div class="git-history-main">
+                  <svg
+                    v-if="c.graph" class="git-history-graph"
+                    :width="c.graph.width" :height="GRAPH_ROW_H" :viewBox="`0 0 ${c.graph.width} ${GRAPH_ROW_H}`"
+                  >
+                    <path v-for="(p, pi) in c.graph.paths" :key="pi" :d="p.d" :stroke="p.color" stroke-width="1.5" fill="none" />
+                    <circle v-if="c.graph.dot" class="git-graph-dot" :cx="c.graph.dot.x" :cy="GRAPH_ROW_H / 2" r="3" :fill="c.graph.dot.color" />
+                  </svg>
                   <span class="git-history-hash">{{ shortHash(c.hash) }}</span>
                   <span class="git-history-msg">{{ c.message.split('\n')[0] }}</span>
                   <span class="git-history-meta">{{ c.author_name }} · {{ timeAgo(c.date) }}</span>
@@ -380,15 +386,8 @@
       </div>
     </div>
 
-    <!-- 提交区（IDEA 位置：列表下方） -->
+    <!-- 提交区（IDEA 位置：列表下方，输入框常驻；放大进弹窗逐文件勾选） -->
     <section class="git-commit">
-      <div class="git-commit-head">
-        <span class="git-commit-title">提交信息</span>
-        <span class="git-commit-spacer"></span>
-        <button class="git-commit-popup" title="在弹窗中逐文件勾选并提交" @click="openCommitDialog">
-          <el-icon :size="11"><FullScreen /></el-icon>弹窗提交
-        </button>
-      </div>
       <div class="git-commit-input-wrap">
         <el-input
           v-model="commitDraft[activeKey]"
@@ -411,7 +410,7 @@
             <template #dropdown>
               <el-dropdown-menu>
                 <el-dropdown-item
-                  v-for="r in AI_RULES" :key="r.value" :command="r.value"
+                  v-for="r in AI_COMMIT_RULES" :key="r.value" :command="r.value"
                   :class="{ 'is-active': aiCommitRule === r.value }"
                 >
                   <div class="git-rule-item">
@@ -429,7 +428,7 @@
       </div>
       <label class="git-append">
         <el-checkbox v-model="appendMode" size="small" />
-        <span>追加到上次提交（append）</span>
+        <span>追加到上次提交（amend）</span>
       </label>
       <div class="git-commit-foot">
         <button class="git-commit-btn" :disabled="!draftText || !stagedFiles.length || busy" @click="doCommit">
@@ -437,6 +436,9 @@
         </button>
         <button class="git-commit-btn ghost" :disabled="!draftText || !stagedFiles.length || busy" @click="doCommitAndPush">
           <el-icon><Upload /></el-icon>&nbsp;提交并推送…
+        </button>
+        <button class="git-commit-expand" :disabled="busy" title="打开提交弹窗（逐文件勾选、查看差异）" @click="openCommitDialog">
+          <el-icon :size="13"><FullScreen /></el-icon>
         </button>
       </div>
     </section>
@@ -489,15 +491,15 @@ import {
   Loading, Upload, Download, CaretRight, CaretBottom, View, Fold, Expand, FullScreen,
 } from '@element-plus/icons-vue';
 import { useGitStore, type GitNumstatEntry, type GitAheadBehind } from '../../stores/git';
-import { useGitAi } from '../../composables/git/useGitAi';
 import { useSettingsStore } from '../../stores/settings';
 import { useCodeStore } from '../../stores/code';
 import { usePlatformStore } from '../../stores/platform';
 import { LlmClient } from '@yan-zhi/core';
 import GitDiffViewer from './GitDiffViewer.vue';
-import GitGraphView from './GitGraphView.vue';
 import MarkdownPreview from '../code/MarkdownPreview.vue';
 import GitCommitDialog from '../git/GitCommitDialog.vue';
+import { computeGraphLayout, segmentPath, laneX } from '../git/graphLanes';
+import { useGitAi, AI_COMMIT_RULES } from '../../composables/git/useGitAi';
 
 const gitStore = useGitStore();
 const settingsStore = useSettingsStore();
@@ -506,7 +508,6 @@ const platformStore = usePlatformStore();
 
 const emit = defineEmits<{
   (e: 'aiReview', diff: string): void;
-  (e: 'aiCommitMsg', payload: { diff: string; rule: string; customRule?: string }): void;
   (e: 'viewDiff', payload: { path: string; staged: boolean; repoPath?: string }): void;
 }>();
 
@@ -516,18 +517,18 @@ interface RepoSummary { path: string; name: string; branch: string; ahead: numbe
 
 const STATUS_CLASS: Record<string, string> = { M: 'modified', A: 'added', D: 'deleted', '?': 'untracked', R: 'renamed', U: 'conflict' };
 const UNMERGED_CODES = new Set(['DD', 'AU', 'UD', 'UA', 'DU', 'AA', 'UU']);
-const AI_RULES: Array<{ value: string; label: string; desc: string }> = [
-  { value: 'conventional', label: '标准格式', desc: 'feat/fix/docs 等类型前缀 + 简述' },
-  { value: 'concise', label: '一句话摘要', desc: '只用一行文字概括变更内容' },
-  { value: 'detailed', label: '详细描述', desc: '一行摘要 + 正文说明具体变更' },
-  { value: 'custom', label: '自定义规则', desc: '输入你自己的生成指令' },
-];
 
 const workspace = computed(() => settingsStore.settings.workspaceDir || '');
 const repo = ref('');
 const activeRepo = ref('');
 const activeKey = computed(() => activeRepo.value || repo.value);
 const activeRepoName = computed(() => activeRepo.value.split(/[\\/]/).filter(Boolean).pop() || '仓库');
+
+// 侧栏提交输入框（AI 生成与提交弹窗共用 useGitAi，规则持久化在 localStorage）
+const { rule: aiCommitRule, loading: aiCommitLoading, customRule: aiCustomRule, setRule: setAiRule, setCustomRule, generateCommitMessage } = useGitAi();
+const appendMode = ref(false);
+const commitDraft = reactive<Record<string, string>>({});
+const draftText = computed(() => (commitDraft[activeKey.value] || '').trim());
 
 const busy = ref(false);
 const gitLoading = ref(false);
@@ -545,9 +546,6 @@ const repoSummaries = ref<RepoSummary[]>([]);
 
 const filterText = ref('');
 const showUntracked = ref(true);
-const appendMode = ref(false);
-const commitDraft = reactive<Record<string, string>>({});
-const draftText = computed(() => (commitDraft[activeKey.value] || '').trim());
 
 const sections = reactive({ changes: true, repo: false, graph: false, review: false });
 const subs = reactive({ branches: true, tags: false, stash: false });
@@ -564,11 +562,6 @@ const commitFileDiffLoading = ref(false);
 
 const reviewLoading = ref(false);
 const reviewResult = ref('');
-const aiCommitLoading = ref(false);
-// AI 生成规则与自定义提示词：与提交弹窗共用（持久化在 localStorage）
-const ai = useGitAi();
-const aiCommitRule = ai.rule;
-const aiCustomRule = ai.customRule;
 
 const contextMenu = ref<{ visible: boolean; x: number; y: number; items: MenuItem[] }>({ visible: false, x: 0, y: 0, items: [] });
 const blameDialog = ref<{ visible: boolean; file: string; data: Array<{ hash: string; author: string; line: number; content: string }> }>({ visible: false, file: '', data: [] });
@@ -601,6 +594,26 @@ const conflictFiles = computed<string[]>(() => {
 const logEntries = computed(() => {
   const lg = gitStore.log as { all?: Array<{ hash: string; date: string; message: string; author_name: string; author_email?: string }> } | null;
   return lg?.all || [];
+});
+
+// ===== 分支泳道图（图与提交列表合一：每行内嵌泳道单元，整行可点） =====
+const GRAPH_ROW_H = 26;
+const graphLayout = computed(() => computeGraphLayout(graphEntries.value));
+const historyRows = computed(() => {
+  const gl = graphLayout.value;
+  return logEntries.value.map((c) => {
+    const r = gl.rows.get(c.hash);
+    return {
+      ...c,
+      graph: r && r.dot
+        ? {
+            width: gl.width,
+            paths: r.segments.map((s) => ({ d: segmentPath(s, GRAPH_ROW_H, gl.laneWidth), color: s.color })),
+            dot: { x: laneX(r.dot.x, gl.laneWidth), color: r.dot.color },
+          }
+        : null,
+    };
+  });
 });
 
 /** 按筛选词过滤文件行 */
@@ -1007,49 +1020,6 @@ async function doRestoreFile(filePath: string) {
   if ('error' in res) ElMessage.error(res.error); else ElMessage.success('已恢复');
   await refreshAll();
 }
-async function doCommit() {
-  const msg = draftText.value;
-  if (!msg) return;
-  busy.value = true;
-  try {
-    if (appendMode.value) {
-      const res = await gitStore.commitAmend(activeRepo.value, msg);
-      if ('error' in res) { ElMessage.error(res.error); return; }
-      ElMessage.success('已追加到上次提交');
-    } else {
-      const res = await gitStore.commit(activeRepo.value, msg);
-      if ('error' in res) { ElMessage.error(res.error); return; }
-      ElMessage.success('已提交');
-    }
-    commitDraft[activeKey.value] = '';
-    appendMode.value = false;
-    await refreshAll();
-  } finally {
-    busy.value = false;
-  }
-}
-
-/** 提交并推送（IDEA "Commit and Push..."） */
-async function doCommitAndPush() {
-  const msg = draftText.value;
-  if (!msg) return;
-  busy.value = true;
-  try {
-    const res = await gitStore.commit(activeRepo.value, msg);
-    if ('error' in res) { ElMessage.error(res.error); return; }
-    commitDraft[activeKey.value] = '';
-    const pushRes = await gitStore.push(activeRepo.value, currentBranch.value);
-    if ('error' in pushRes) {
-      ElMessage.warning(`已提交，但推送失败：${pushRes.error}`);
-    } else {
-      ElMessage.success('已提交并推送');
-    }
-    await refreshAll();
-  } finally {
-    busy.value = false;
-  }
-}
-
 // ===== 分支 / 远程 =====
 async function checkoutBranch(b: string) {
   if (b === currentBranch.value) return;
@@ -1312,33 +1282,6 @@ async function resolveAiPlatform() {
   if (!llm || !fp) throw new Error('未配置可用的 AI 模型，请先在设置中配置模型平台');
   return { platform: fp, model: llm };
 }
-async function doAiCommitMsg() {
-  if (!stagedFiles.value.length) return;
-  aiCommitLoading.value = true;
-  try {
-    const diff = await gitStore.diff(activeRepo.value, { staged: true });
-    if (!diff) { ElMessage.warning('无暂存内容'); return; }
-    // 生成规则 / 自定义提示词与提交弹窗共用
-    commitDraft[activeKey.value] = await ai.generateCommitMessage(diff);
-    ElMessage.success('已生成提交信息');
-    void persist();
-  } catch (e) {
-    ElMessage.error((e as Error).message);
-  } finally { aiCommitLoading.value = false; }
-}
-async function onAiRuleChange(rule: string) {
-  if (rule === 'custom') {
-    try {
-      const { value } = await ElMessageBox.prompt('输入自定义提交信息生成提示词', '自定义提示词', {
-        confirmButtonText: '保存', cancelButtonText: '取消',
-        inputValue: aiCustomRule.value,
-        inputPlaceholder: '例如：使用中文，格式为【类型】描述，类型包括新增/修复/优化/文档',
-      });
-      ai.setCustomRule(value || '');
-    } catch { return; }
-  }
-  ai.setRule(rule);
-}
 /** 在弹窗中提交（逐文件勾选 + AI 填充） */
 const commitDialogOpen = ref(false);
 function openCommitDialog() {
@@ -1348,6 +1291,79 @@ async function onDialogCommitted() {
   commitDialogOpen.value = false;
   await refreshAll(true);
 }
+
+// ===== 提交（侧栏输入框：Ctrl+Enter 提交 / Ctrl+Shift+Enter 提交并推送；放大进弹窗逐文件勾选） =====
+async function doCommit() {
+  const msg = draftText.value;
+  if (!msg) return;
+  busy.value = true;
+  try {
+    if (appendMode.value) {
+      const res = await gitStore.commitAmend(activeRepo.value, msg);
+      if ('error' in res) { ElMessage.error(res.error); return; }
+      ElMessage.success('已追加到上次提交');
+    } else {
+      const res = await gitStore.commit(activeRepo.value, msg);
+      if ('error' in res) { ElMessage.error(res.error); return; }
+      ElMessage.success('已提交');
+    }
+    commitDraft[activeKey.value] = '';
+    appendMode.value = false;
+    await refreshAll();
+  } finally {
+    busy.value = false;
+  }
+}
+
+/** 提交并推送（IDEA "Commit and Push..."） */
+async function doCommitAndPush() {
+  const msg = draftText.value;
+  if (!msg) return;
+  busy.value = true;
+  try {
+    const res = await gitStore.commit(activeRepo.value, msg);
+    if ('error' in res) { ElMessage.error(res.error); return; }
+    commitDraft[activeKey.value] = '';
+    const pushRes = await gitStore.push(activeRepo.value, currentBranch.value);
+    if ('error' in pushRes) {
+      ElMessage.warning(`已提交，但推送失败：${pushRes.error}`);
+    } else {
+      ElMessage.success('已提交并推送');
+    }
+    await refreshAll();
+  } finally {
+    busy.value = false;
+  }
+}
+
+async function doAiCommitMsg() {
+  if (!stagedFiles.value.length) return;
+  aiCommitLoading.value = true;
+  try {
+    const diff = await gitStore.diff(activeRepo.value, { staged: true });
+    if (!diff) { ElMessage.warning('无暂存内容'); return; }
+    commitDraft[activeKey.value] = await generateCommitMessage(diff);
+    ElMessage.success('已生成提交信息');
+    void persist();
+  } catch (e) {
+    ElMessage.error((e as Error).message);
+  } finally { aiCommitLoading.value = false; }
+}
+
+async function onAiRuleChange(rule: string) {
+  if (rule === 'custom') {
+    try {
+      const { value } = await ElMessageBox.prompt('输入自定义提交信息生成规则', '自定义规则', {
+        confirmButtonText: '保存', cancelButtonText: '取消',
+        inputValue: aiCustomRule.value,
+        inputPlaceholder: '例如：使用中文，格式为【类型】描述，类型包括新增/修复/优化/文档',
+      });
+      setCustomRule(value || '');
+    } catch { return; }
+  }
+  setAiRule(rule);
+}
+
 async function doAiReview() {
   if (!changedFiles.value.length) return;
   reviewLoading.value = true; reviewResult.value = '';
@@ -1438,18 +1454,8 @@ onUnmounted(() => { document.removeEventListener('click', onDocClick); });
 .git-tb-btn:disabled { opacity: 0.35; cursor: not-allowed; }
 .git-tb-btn.danger:hover:not(:disabled) { color: #ef4444; }
 
-/* ===== 提交区（IDEA 位置：列表下方，固定底部） ===== */
+/* ===== 提交区（输入框常驻列表下方；放大进弹窗） ===== */
 .git-commit { flex-shrink: 0; padding: 8px; border-top: 1px solid var(--color-border, rgba(15,23,42,0.1)); }
-.git-commit-head { display: flex; align-items: center; margin-bottom: 4px; }
-.git-commit-title { font-size: 11px; font-weight: 600; color: var(--color-text-secondary, #888); }
-.git-commit-spacer { flex: 1; }
-.git-commit-popup {
-  display: inline-flex; align-items: center; gap: 3px;
-  border: 1px solid var(--color-border, rgba(15,23,42,0.1)); background: transparent;
-  border-radius: 4px; padding: 2px 6px; font-size: 11px; cursor: pointer;
-  color: var(--color-primary);
-}
-.git-commit-popup:hover { background: color-mix(in srgb, var(--color-primary) 10%, transparent); }
 .git-commit-input-wrap { position: relative; }
 .git-ai-overlay { position: absolute; top: 3px; right: 3px; display: flex; align-items: center; border-radius: 4px; overflow: hidden; border: 1px solid var(--color-border, rgba(15,23,42,0.1)); background: var(--color-surface, #fff); }
 .git-ai-btn { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 24px; border: none; background: transparent; cursor: pointer; color: var(--color-primary); }
@@ -1465,6 +1471,9 @@ onUnmounted(() => { document.removeEventListener('click', onDocClick); });
 .git-commit-btn.ghost { background: transparent; color: var(--color-primary); }
 .git-commit-btn.ghost:hover:not(:disabled) { background: color-mix(in srgb, var(--color-primary) 10%, transparent); }
 .git-commit-btn.ghost:disabled { background: transparent; border-color: var(--color-border, rgba(15,23,42,0.12)); color: var(--color-text-tertiary, #aaa); }
+.git-commit-expand { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 30px; height: 28px; border: 1px solid var(--color-border, rgba(15,23,42,0.12)); border-radius: 4px; background: transparent; cursor: pointer; color: var(--color-text-secondary, #888); }
+.git-commit-expand:hover:not(:disabled) { color: var(--color-primary); border-color: var(--color-primary); }
+.git-commit-expand:disabled { opacity: 0.4; cursor: not-allowed; }
 
 /* ===== 筛选（固定） ===== */
 .git-filter { padding: 6px 8px; border-bottom: 1px solid var(--color-border, rgba(15,23,42,0.06)); }
@@ -1541,12 +1550,13 @@ onUnmounted(() => { document.removeEventListener('click', onDocClick); });
 .git-stash-actions button:hover { background: var(--color-border, rgba(15,23,42,0.12)); }
 .git-stash-actions button.danger:hover { color: #ef4444; }
 
-/* ===== 图形 / 历史 ===== */
-.git-graph { padding: 4px 8px; border-bottom: 1px solid var(--color-border, rgba(15,23,42,0.06)); }
+/* ===== 历史（分支泳道图内嵌每行，与列表合一） ===== */
 .git-history-row { padding: 5px 10px; cursor: pointer; border-bottom: 1px solid rgba(15,23,42,0.04); }
 .git-history-row:hover { background: var(--color-surface-hover, rgba(15,23,42,0.05)); }
 .git-history-row.expanded { background: var(--color-surface-hover, rgba(15,23,42,0.05)); }
 .git-history-main { display: flex; align-items: baseline; gap: 8px; font-size: 12px; }
+.git-history-graph { flex-shrink: 0; align-self: center; display: block; }
+.git-graph-dot { stroke: var(--color-bg, #fff); stroke-width: 1; }
 .git-history-hash { font-family: "JetBrains Mono", monospace; color: var(--color-primary); flex-shrink: 0; }
 .git-history-msg { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .git-history-meta { color: var(--color-text-secondary, #888); font-size: 11px; flex-shrink: 0; }
@@ -1596,6 +1606,8 @@ onUnmounted(() => { document.removeEventListener('click', onDocClick); });
 .git-menu-title { padding: 4px 12px 2px; font-size: 10px; font-weight: 700; text-transform: uppercase; color: var(--color-text-secondary, #999); }
 .git-menu-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .git-menu-badge { font-style: normal; font-size: 10px; font-weight: 700; border-radius: 8px; padding: 0 5px; background: rgba(15,23,42,0.1); color: var(--color-text-secondary, #666); }
+
+/* AI 提交信息生成规则下拉（双行菜单项） */
 .git-ai-rule-dropdown.el-popper { min-width: 260px !important; width: auto !important; }
 .git-ai-rule-dropdown .el-dropdown-menu__item { height: auto !important; line-height: 1.5 !important; padding: 8px 16px !important; margin: 0 0 2px !important; border-radius: 6px !important; }
 .git-rule-item { display: flex; flex-direction: column; gap: 3px; min-width: 220px; }

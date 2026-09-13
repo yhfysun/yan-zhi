@@ -152,20 +152,20 @@ function onFileClick(): void {
 .gtr-row {
   display: flex; align-items: center; gap: 6px;
   padding: 4px 10px; cursor: pointer; font-size: 13px;
-  border-bottom: 1px solid var(--glass-border-soft, #f0eee8);
+  border-bottom: 1px solid var(--color-border, #e7e4dc);
 }
-.gtr-row:hover { background: var(--glass-bg-hover, #f5f3ee); }
-.gtr-file.is-expanded { background: var(--glass-bg-hover, #f5f3ee); }
+.gtr-row:hover { background: var(--color-surface-hover, #f1efe9); }
+.gtr-file.is-expanded { background: var(--color-surface-hover, #f1efe9); }
 .gtr-dir { font-weight: 600; color: var(--color-text, #1a1a1a); }
-.gtr-caret { color: var(--color-text-muted, #9a9a9a); flex-shrink: 0; }
+.gtr-caret { color: var(--color-text-tertiary, #9a9a9a); flex-shrink: 0; }
 .gtr-file-caret { margin-left: auto; }
 .gtr-check { margin-right: 0; flex-shrink: 0; }
 .gtr-folder { color: #d9a441; flex-shrink: 0; }
 .gtr-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.gtr-dir-name { color: var(--color-text-soft, #6b6b6b); font-family: "JetBrains Mono", monospace; font-size: 12px; }
+.gtr-dir-name { color: var(--color-text-secondary, #6b6b6b); font-family: "JetBrains Mono", monospace; font-size: 12px; }
 .gtr-count {
-  font-size: 10px; color: var(--color-text-muted, #9a9a9a);
-  background: var(--glass-bg-soft, #f5f3ee); border-radius: 8px; padding: 0 6px; flex-shrink: 0;
+  font-size: 10px; color: var(--color-text-tertiary, #9a9a9a);
+  background: var(--color-surface-hover, #f1efe9); border-radius: 8px; padding: 0 6px; flex-shrink: 0;
 }
 .gtr-badge {
   width: 16px; height: 16px; flex-shrink: 0; border-radius: 3px;
@@ -185,7 +185,7 @@ function onFileClick(): void {
   font-size: 10px; padding: 0 4px; border-radius: 3px;
   background: #eef2ff; color: #4338ca; flex-shrink: 0;
 }
-.gtr-dir-tip { font-size: 11px; color: var(--color-text-muted, #9a9a9a); margin-left: auto; }
-.gtr-diff { padding: 6px 10px; background: #fff; border-bottom: 1px solid var(--glass-border-soft, #f0eee8); }
-.gtr-diff-tip { font-size: 12px; color: var(--color-text-muted, #9a9a9a); padding: 6px 0; }
+.gtr-dir-tip { font-size: 11px; color: var(--color-text-tertiary, #9a9a9a); margin-left: auto; }
+.gtr-diff { padding: 6px 10px; background: var(--color-surface, #fff); border-bottom: 1px solid var(--color-border, #e7e4dc); }
+.gtr-diff-tip { font-size: 12px; color: var(--color-text-tertiary, #9a9a9a); padding: 6px 0; }
 </style>

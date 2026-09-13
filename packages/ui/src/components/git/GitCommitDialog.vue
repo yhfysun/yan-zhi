@@ -5,6 +5,7 @@
     width="860px"
     top="6vh"
     class="git-commit-dialog"
+    append-to-body
     :close-on-click-modal="false"
     destroy-on-close
   >
@@ -83,7 +84,7 @@
             </template>
           </el-dropdown>
           <span class="gcd-spacer"></span>
-          <el-dropdown trigger="click" placement="top-end" @command="onRuleChange">
+          <el-dropdown trigger="click" placement="top-end" popper-class="git-ai-rule-dropdown" @command="onRuleChange">
             <button class="gcd-rule-btn">
               {{ currentRuleLabel }}
               <el-icon :size="10"><ArrowDown /></el-icon>
@@ -665,11 +666,11 @@ async function menuRevert(): Promise<void> {
 .gcd-branch {
   display: inline-flex; align-items: center; gap: 4px;
   font-size: 12px; padding: 2px 8px; border-radius: 10px;
-  background: var(--glass-bg-soft, #f5f3ee); color: var(--color-text-soft, #6b6b6b);
+  background: var(--color-surface-hover, #f1efe9); color: var(--color-text-secondary, #6b6b6b);
   font-family: "JetBrains Mono", monospace;
 }
 .gcd-spacer { flex: 1; }
-.gcd-count { font-size: 12px; color: var(--color-text-soft, #6b6b6b); }
+.gcd-count { font-size: 12px; color: var(--color-text-secondary, #6b6b6b); }
 .gcd-count b { color: var(--color-primary, #c2410c); }
 .gcd-link {
   border: none; background: none; cursor: pointer; font-size: 12px;
@@ -681,11 +682,11 @@ async function menuRevert(): Promise<void> {
 .gcd-filter-input { flex: 1; }
 
 .gcd-list {
-  border: 1px solid var(--glass-border, #e7e4dc);
+  border: 1px solid var(--color-border, #e7e4dc);
   border-radius: 8px; max-height: 320px; overflow: auto;
-  background: var(--glass-bg-soft, #fbfaf7);
+  background: var(--color-surface, #fff);
 }
-.gcd-empty { padding: 28px; text-align: center; font-size: 12px; color: var(--color-text-muted, #9a9a9a); }
+.gcd-empty { padding: 28px; text-align: center; font-size: 12px; color: var(--color-text-tertiary, #9a9a9a); }
 
 .gcd-msg { display: flex; flex-direction: column; gap: 8px; }
 .gcd-msg-head { display: flex; align-items: center; }
@@ -702,38 +703,43 @@ async function menuRevert(): Promise<void> {
 }
 .gcd-rule-btn {
   display: inline-flex; align-items: center; gap: 3px;
-  border: 1px solid var(--glass-border, #e7e4dc); background: #fff;
+  border: 1px solid var(--color-border, #e7e4dc); background: var(--color-surface, #fff);
   border-radius: 6px; padding: 3px 8px; font-size: 12px; cursor: pointer;
-  color: var(--color-text-soft, #6b6b6b);
+  color: var(--color-text-secondary, #6b6b6b);
 }
 .gcd-rule-btn:hover { border-color: var(--color-primary, #c2410c); color: var(--color-primary, #c2410c); }
 .gcd-rule-item { display: flex; flex-direction: column; gap: 2px; }
 .gcd-rule-label { font-size: 12px; display: inline-flex; align-items: center; gap: 4px; }
 .gcd-rule-check { color: var(--color-primary, #c2410c); }
-.gcd-rule-desc { font-size: 11px; color: var(--color-text-muted, #9a9a9a); }
+.gcd-rule-desc { font-size: 11px; color: var(--color-text-tertiary, #9a9a9a); }
 
 .gcd-msg-wrap { position: relative; }
 .gcd-ai-btn {
   position: absolute; right: 8px; bottom: 8px;
   display: inline-flex; align-items: center; gap: 4px;
-  border: 1px solid #f0d9c8; background: #fdf3ec; color: #c2410c;
+  border: 1px solid color-mix(in srgb, var(--color-primary, #c2410c) 35%, transparent);
+  background: color-mix(in srgb, var(--color-primary, #c2410c) 10%, transparent);
+  color: var(--color-primary, #c2410c);
   border-radius: 6px; padding: 3px 8px; font-size: 12px; cursor: pointer;
 }
-.gcd-ai-btn:hover:not(:disabled) { background: #fae7da; border-color: #e8b79c; }
+.gcd-ai-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-primary, #c2410c) 18%, transparent);
+  border-color: color-mix(in srgb, var(--color-primary, #c2410c) 55%, transparent);
+}
 .gcd-ai-btn:disabled { opacity: 0.45; cursor: not-allowed; }
 
-.gcd-custom { border: 1px dashed var(--glass-border, #e7e4dc); border-radius: 8px; padding: 8px; }
+.gcd-custom { border: 1px dashed var(--color-border, #e7e4dc); border-radius: 8px; padding: 8px; }
 .gcd-custom-head {
   display: flex; align-items: center; font-size: 12px;
-  color: var(--color-text-soft, #6b6b6b); margin-bottom: 6px;
+  color: var(--color-text-secondary, #6b6b6b); margin-bottom: 6px;
 }
 
-.gcd-amend { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--color-text-soft, #6b6b6b); }
+.gcd-amend { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--color-text-secondary, #6b6b6b); }
 
 .gcd-foot { display: flex; align-items: center; gap: 8px; }
 .gcd-foot-tip { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: #b91c1c; }
 .gcd-btn {
-  border: 1px solid var(--glass-border, #e7e4dc); background: #fff;
+  border: 1px solid var(--color-border, #e7e4dc); background: var(--color-surface, #fff);
   color: var(--color-text, #1a1a1a); border-radius: 6px;
   padding: 5px 14px; font-size: 13px; cursor: pointer;
 }
@@ -746,14 +752,27 @@ async function menuRevert(): Promise<void> {
 
 .gcd-menu {
   position: fixed; z-index: 4000; min-width: 168px;
-  background: #fff; border: 1px solid var(--glass-border, #e7e4dc);
+  background: var(--color-surface, #fff); border: 1px solid var(--color-border, #e7e4dc);
   border-radius: 8px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.1); padding: 4px;
 }
 .gcd-menu-item {
   display: flex; align-items: center; gap: 8px; padding: 6px 10px;
   font-size: 13px; cursor: pointer; border-radius: 6px; color: var(--color-text, #1a1a1a);
 }
-.gcd-menu-item:hover { background: var(--glass-bg-hover, #f5f3ee); }
+.gcd-menu-item:hover { background: var(--color-surface-hover, #f5f3ee); }
 .gcd-menu-item.danger { color: #b91c1c; }
-.gcd-menu-divider { height: 1px; background: var(--glass-border-soft, #f0eee8); margin: 4px 0; }
+.gcd-menu-divider { height: 1px; background: var(--color-border, #f0eee8); margin: 4px 0; }
+</style>
+
+<!-- 非 scoped：el-dropdown 把菜单浮层挂在 body，scoped data-v 不在上面。
+     浮层本身没挂自定义类时用 .el-popper 不一定命中；这里显式给了 popper-class="git-ai-rule-dropdown" -->
+<style>
+.git-ai-rule-dropdown { min-width: 280px !important; width: auto !important; }
+.git-ai-rule-dropdown .gcd-rule-item { display: flex; flex-direction: column; gap: 2px; min-width: 260px; padding: 2px 0; }
+.git-ai-rule-dropdown .gcd-rule-label { font-size: 12px; font-weight: 500; display: inline-flex; align-items: center; gap: 4px; line-height: 1.4; color: var(--color-text, #1a1a1a); }
+.git-ai-rule-dropdown .gcd-rule-check { color: var(--color-primary, #c2410c); font-size: 12px; margin-left: 4px; }
+.git-ai-rule-dropdown .gcd-rule-desc { font-size: 11px; color: var(--color-text-tertiary, #9a9a9a); line-height: 1.4; white-space: normal; margin-top: 1px; }
+/* 激活态：暗底下 desc 也得看得见 */
+.git-ai-rule-dropdown .el-dropdown-menu__item.is-active .gcd-rule-label { color: var(--color-primary, #c2410c); font-weight: 600; }
+.git-ai-rule-dropdown .el-dropdown-menu__item.is-active .gcd-rule-desc { color: color-mix(in srgb, var(--color-primary, #c2410c) 75%, transparent); }
 </style>
