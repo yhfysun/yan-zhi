@@ -645,7 +645,10 @@ export const useSettingsStore = defineStore('settings', () => {
     currentSkinPrimary = p.primary || currentBtnPrimary;
     root.setProperty('--app-wallpaper', `url("${pluginAssetUrl(pluginId, file)}")`);
     root.setProperty('--skin-mask', String(p.wallpaper.mask ?? 0.26));
-    root.setProperty('--skin-blur', `${p.wallpaper.blur ?? 5}px`);
+    // 2026-09-13 用户反馈「图片皮肤都看不清」—— 壁纸遮罩 backdrop-filter blur 是元凶之一
+    // （与玻璃面板 blur 叠加把壁纸糊掉）。默认 5→0，只保留 0.26 mask 的暗色叠加，
+    // 不再模糊壁纸本身；如需保留磨砂效果可在 surface.wallpaperBlur 指定（>0）。
+    root.setProperty('--skin-blur', `${p.wallpaper.blur ?? 0}px`);
     el.setAttribute('data-skin', 'on');
     applySurface((p as { surface?: SkinSurface }).surface ?? {}, pluginId);
   }
@@ -762,7 +765,10 @@ export const useSettingsStore = defineStore('settings', () => {
     root.setProperty('--skin-btn-radius', `${sf.buttonRadius ?? 6}px`);
     const autoBtnText = contrastRatio(currentBtnPrimary, '#ffffff') >= 4.5 ? '#ffffff' : (dark ? '#F2F0EA' : '#141414');
     root.setProperty('--skin-btn-text', sf.buttonText ?? sf.onPrimary ?? autoBtnText);
-    root.setProperty('--skin-glass-blur', `${sf.glassBlur ?? 8}px`);
+    // 2026-09-13 用户反馈「图片皮肤都看不清」—— 玻璃面板 backdrop-filter blur 是元凶之二
+    // （与壁纸遮罩 blur 叠加把壁纸+纹理都糊掉）。默认 8→0，玻璃只剩半透明底色+饱和度，
+    // 不再模糊壁纸/纹理；如需保留磨砂效果可在 surface.glassBlur 指定（>0）。
+    root.setProperty('--skin-glass-blur', `${sf.glassBlur ?? 0}px`);
     // ===== 壁纸遮罩色（2026-09-13 修「灰蒙蒙」）=====
     // 原实现遮罩色写死在 CSS 里（#0f172a 深蓝灰），任何皮肤都被同一层冷灰纱糊掉，
     // 暖色/霓虹系壁纸全部洗成灰蓝。这里下发「带皮肤色相」的遮罩色：
