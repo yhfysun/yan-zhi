@@ -17,6 +17,12 @@
 | 11 | 远程智能体商城 | ✅ 已完成 | /api/agent-marketplace 浏览+复制到本地 |
 | 12 | 商城服务端 | ✅ 已完成 | /api/marketplace API + Settings配置 |
 | 13 | 接口工具化 | ✅ 已完成 | 7个管理工具函数注册 |
+| 14 | Git 集成能力 | ✅ 已完成 | 冲突解决 UI、checkout/restore/stash/tag/revert、状态查询 |
+| 15 | AI 提交信息 | ✅ 已完成 | useGitAi 生成提交信息（标准/简洁/详细/自定义提示词） |
+| 16 | 会话只读权限 | ✅ 已完成 | readonly 拦截写类工具，conversation.permission_mode |
+| 17 | 代码工作台 | ✅ 已完成 | CodeWorkbench 文件树/编辑/Git 联动增强 |
+| 18 | 文件系统 base64 写入 | ✅ 已完成 | FsAdapter.writeFileBase64（桌面端/Web 端） |
+| 19 | 数据源收敛 | ✅ 已完成 | auth.useServerApi 恒为 true，后端唯一数据源 |
 
 ---
 
@@ -199,6 +205,36 @@
 
 ---
 
+## 阶段七：Git 集成与代码工作台
+
+### 7.1 Git 后端
+- [x] services/git.ts 扩展：checkout / restore / stash save&pop / tag create&delete / revert
+- [x] routes/git.ts：新增对应 API 端点
+- [x] stores/git.ts：前端状态与操作封装
+
+### 7.2 Git 冲突解决 UI
+- [x] GitConflictResolver：合并冲突逐段查看/选择
+- [x] GitCheckoutConflictDialog：checkout 冲突处理
+- [x] GitTreeRow：文件树行组件
+- [x] ChatGitPanel 联动代码工作台
+
+### 7.3 AI 提交信息
+- [x] useGitAi 组合式：规则（标准/简洁/详细/自定义）+ 自定义提示词持久化
+- [x] GitCommitDialog：调用 AI 生成 commit message
+
+### 7.4 会话只读权限
+- [x] tool-permission.ts：黑名单写操作 + 不可控来源（custom_/mcp_/call_agent）拦截
+- [x] conversation.permission_mode 列（readonly/default/full）+ 迁移
+- [x] 后端 checkToolPermission / filterToolsByPermission / permissionModePrompt
+
+### 7.5 代码工作台与基础设施
+- [x] CodeWorkbench 文件树/编辑/Git 联动增强
+- [x] FsAdapter.writeFileBase64（桌面端/Web 端）
+- [x] auth.useServerApi 恒为 true（数据源收敛）
+- [x] 皮肤接管 SettingsDrawer 文本色（--skin-text）
+
+---
+
 ## 数据库变更汇总
 
 ### 新增表
@@ -217,6 +253,7 @@
 | agent | ALTER | source, remote_source_id, is_public |
 | mcp_server | 不变 | — |
 | mcp_tool | 不变 | — |
+| conversation | ALTER | permission_mode |
 
 ---
 
