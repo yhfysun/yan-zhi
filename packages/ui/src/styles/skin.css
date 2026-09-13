@@ -87,6 +87,20 @@ html[data-skin="on"] .home-page {
   --color-text-secondary: var(--skin-text-secondary, #4A4A45);
   --color-text-tertiary: var(--skin-text-tertiary, #71706A);
 
+  /* ===== Element Plus 文字色族接管（浅色）=====
+     历史坑：此前只映射了 --el-bg-color* / --el-fill-color* / --el-border-color*，
+     **漏了 --el-text-color-***。而 BrowserPanel.vue 等组件的文字色几乎全部写成
+     `color: var(--el-text-color-primary, #202124)` 这类形式 —— 变量没被接管时
+     会直接落到 EP 自己的浅色默认值（#303133 等近黑），在深色/深底皮肤上就是
+     「黑字压深蓝底」不可读；这也是用户截图里浏览器起始页灰蒙蒙的直接原因。
+     这里把文字色族一并接到皮肤文字 token，**所有消费方自动跟随**，
+     不必再逐个选择器打补丁（逐个补容易漏，已实测漏了 site-name/recent-*/analysis-* 等十余处）。 */
+  --el-text-color-primary: var(--skin-text, #303133);
+  --el-text-color-regular: var(--skin-text, #606266);
+  --el-text-color-secondary: var(--skin-text-secondary, #909399);
+  --el-text-color-placeholder: var(--skin-text-tertiary, #a8abb2);
+  --el-text-color-disabled: var(--skin-text-tertiary, #c0c4cc);
+
   --glass-bg: color-mix(in srgb, var(--skin-glass-tint, #f5f1ea) calc(var(--skin-glass-alpha, 0.97) * 100%), transparent);
   --glass-bg-hover: var(--skin-surface-hover, color-mix(in srgb, var(--skin-glass-tint, #f5f1ea) calc(var(--skin-glass-alpha-hover, 0.99) * 100%), transparent));
   --glass-filter: blur(var(--skin-glass-blur, 2px)) saturate(1.1);
@@ -128,6 +142,14 @@ html[data-skin="on"] .home-page {
   --color-text: var(--skin-text, #F2F0EA);
   --color-text-secondary: var(--skin-text-secondary, #B8B8B0);
   --color-text-tertiary: var(--skin-text-tertiary, #8E8E86);
+
+  /* Element Plus 文字色族接管（深色）：浅色块已接 --skin-text*，此处只补深色兜底默认值。
+     皮肤开启时 --skin-text* 由 applySurface 注入（暗色下为浅色文字），故实际以皮肤为准。 */
+  --el-text-color-primary: var(--skin-text, #E5EAF3);
+  --el-text-color-regular: var(--skin-text, #CFD3DC);
+  --el-text-color-secondary: var(--skin-text-secondary, #A3A6AD);
+  --el-text-color-placeholder: var(--skin-text-tertiary, #8D9095);
+  --el-text-color-disabled: var(--skin-text-tertiary, #6C6E72);
 
   --glass-bg: color-mix(in srgb, var(--skin-glass-tint, #1d1d1c) calc(var(--skin-glass-alpha, 0.95) * 100%), transparent);
   --glass-bg-hover: var(--skin-surface-hover, color-mix(in srgb, var(--skin-glass-tint, #1d1d1c) calc(var(--skin-glass-alpha-hover, 0.98) * 100%), transparent));
