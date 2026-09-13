@@ -354,7 +354,7 @@ onBeforeUnmount(() => {
   canvasRef.value?.removeEventListener('mousedown', onMouseDown);
   window.removeEventListener('mousemove', onMouseMove);
   window.removeEventListener('mouseup', onMouseUp);
-  window.removeEventListener('wheel', onWheel);
+  canvasRef.value?.removeEventListener('wheel', onWheel);
   canvasRef.value?.removeEventListener('click', onClick);
   planets.forEach((p) => { p.geometry.dispose(); (p.material as THREE.Material).dispose(); });
   starField?.geometry.dispose(); (starField?.material as THREE.Material)?.dispose();
@@ -721,7 +721,10 @@ function setupInteraction() {
   canvas.addEventListener('mousedown', onMouseDown);
   window.addEventListener('mousemove', onMouseMove);
   window.addEventListener('mouseup', onMouseUp);
-  window.addEventListener('wheel', onWheel, { passive: false });
+  // 滚轮缩放只挂画布：事件目标不是 canvas（悬停在上层导航/弹窗等内容上）时根本不会触发，
+  // 上层内容保留原生滚动。此前挂在 window 上仅按容器矩形判断，而容器是全屏背景层，
+  // 导致首页任意位置滚轮都被 preventDefault 劫持去缩放太阳系（功能导航/弹窗滚不动）。
+  canvas.addEventListener('wheel', onWheel, { passive: false });
   canvas.addEventListener('click', onClick);
 }
 
@@ -753,14 +756,8 @@ function onMouseMove(e: MouseEvent) {
 }
 function onMouseUp() { isDragging = false; }
 function onWheel(e: WheelEvent) {
-  // 检查鼠标是否在太阳系容器内，不在则不处理（让外层滚动正常工作）
-  const container = containerRef.value;
-  if (!container) return;
-  const rect = container.getBoundingClientRect();
-  // 容器有有效尺寸时才做边界检查；容器尺寸为 0 时（CSS 未生效）直接处理
-  if (rect.width > 0 && rect.height > 0) {
-    if (e.clientX < rect.left || e.clientX > rect.right || e.clientY < rect.top || e.clientY > rect.bottom) return;
-  }
+  // 监听已挂在 canvas 上：能进到这里说明滚轮直接落在太阳系画布上（上层内容/弹窗的
+  // 滚轮事件不会途经 canvas，原生滚动不受影响），直接缩放即可，无需再做矩形范围判断。
   e.preventDefault();
   if (isFocusing) {
     // 聚焦模式：缩放与星球的距离，范围合理
