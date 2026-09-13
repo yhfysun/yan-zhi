@@ -48,12 +48,19 @@ router.get('/tree', (req, res) => {
 
   // 非递归：仅列 sub 目录的直接子项（逐级懒加载）
   if (!recursive) {
-    let target = root;
-    if (sub) {
-      target = path.resolve(root, sub);
-      // 防目录穿越：必须仍在 root 内
-      if (target !== root && !target.startsWith(root + path.sep)) {
-        return res.status(400).json({ error: 'sub 超出根目录范围' });
+    let target: string;
+    // sub 是绝对路径 → 直接作为目标（绕过 root 校验，用于面包屑等场景：
+    // 当前打开的文件可能在「项目根」之外，但用户希望在编辑器侧栏逐级浏览它）。
+    // sub 为空 → 目标就是 root；否则若是相对路径则必须仍在 root 内。
+    if (sub && path.isAbsolute(sub)) {
+      target = path.resolve(sub);
+    } else {
+      target = root;
+      if (sub) {
+        target = path.resolve(root, sub);
+        if (target !== root && !target.startsWith(root + path.sep)) {
+          return res.status(400).json({ error: 'sub 超出根目录范围' });
+        }
       }
     }
     let dirents: fs.Dirent[] = [];

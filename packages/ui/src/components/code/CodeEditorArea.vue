@@ -307,18 +307,25 @@ const isDirty = computed(() => {
   const f = code.activeFile;
   return !!f && f.content !== f.original;
 });
-/** 面包屑：当前文件相对项目根的路径分段（末段文件名，中间目录可点开系统文件管理器） */
+/** 面包屑：当前文件的路径分段（末段文件名，中间目录可点开下拉浏览）
+ *  当活动文件不在项目根子树下时（如项目根设为 yan-zhi-master、但打开的
+ *  文件在 Desktop/project），直接把活动文件路径当作 breadcrumb 根展示，
+ *  点击段时下拉会按该路径向后端请求（后端已支持绝对 sub）。 */
 const breadcrumbs = computed<Array<{ label: string; abs: string; isDir: boolean }>>(() => {
   const f = code.activeFile;
-  if (!f || !code.projectDir) return [];
-  const base = code.projectDir.replace(/[\\/]+$/, '');
-  const sep = code.projectDir.includes('\\') && !code.projectDir.includes('/') ? '\\' : '/';
-  const rel = f.path.startsWith(base) ? f.path.slice(base.length).replace(/^[\\/]+/, '') : f.path;
-  const parts = rel.split(/[\\/]/).filter(Boolean);
+  if (!f) return [];
+  const fullPath = f.path;
+  const base = (code.projectDir || '').replace(/[\\/]+$/, '');
+  const inRoot = !!base && (fullPath === base || fullPath.startsWith(base + '/') || fullPath.startsWith(base + '\\'));
+  const startAbs = inRoot ? base : '';
+  const startLen = startAbs ? startAbs.length : 0;
+  const sub = inRoot ? fullPath.slice(startLen).replace(/^[\\/]+/, '') : fullPath;
+  const sep = code.projectDir && code.projectDir.includes('\\') && !code.projectDir.includes('/') ? '\\' : '/';
+  const parts = sub.split(/[\\/]/).filter(Boolean);
   const segs: Array<{ label: string; abs: string; isDir: boolean }> = [];
-  let acc = base;
+  let acc = startAbs;
   for (let i = 0; i < parts.length; i++) {
-    acc = acc + sep + parts[i];
+    acc = (acc ? acc + sep : '') + parts[i];
     segs.push({ label: parts[i], abs: acc, isDir: i < parts.length - 1 });
   }
   return segs;

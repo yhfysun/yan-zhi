@@ -132,22 +132,24 @@ function parentOf(p: string): string {
 }
 
 async function fetchDir(abs: string): Promise<{ entries: Entry[] } | { error: string }> {
-  // 首选后端 /workspace/tree（web/desktop 一致，且拿到的是真实磁盘目录）
-  // dir = 项目根，sub = 目标目录相对项目根的相对路径（'' 表示项目根本身）
-  const root = props.rootDir || props.file?.abs || abs;
-  const rel = toRel(root, abs);
+  // 走后端 /workspace/tree（web/desktop 一致、读真实磁盘）
+  // 当面包屑段指向「项目根之外」的目录（如打开的文件路径不在 code.projectDir
+  // 子树下），sub 直接传绝对路径 — 后端对该形态放行（仅限 local/dev，
+  // 面包屑本身就源自用户已打开的本地文件路径，不算穿越）。
+  const root = props.rootDir || '';
+  const sub = abs;
   try {
     const r = await api.get<{ entries: Array<{ name: string; relPath: string; isDir: boolean }>; hasMore: boolean }>(
-      `/workspace/tree?dir=${encodeURIComponent(root)}&sub=${encodeURIComponent(rel)}&recursive=0&limit=2000`,
+      `/workspace/tree?dir=${encodeURIComponent(root || abs)}&sub=${encodeURIComponent(sub)}&recursive=0&limit=2000`,
     );
     if ('data' in r) {
       const list = r.data.entries || [];
-      // 后端返回的 relPath 是相对「dir」的路径，需再拼回目标目录绝对路径
       return { entries: list.map((e) => ({ name: e.name, abs: joinAbs(abs, e.name), isDir: e.isDir })) };
     }
-    // 后端不可用时再退回平台适配器
+    // 后端 4xx/5xx（不安全/不存在）→ 落到适配器兜底，让桌面端用 Rust 直接读
   } catch { /* 落到适配器兜底 */ }
 
+  // 兜底：平台适配器（桌面端能读任意绝对路径；web 端只读 OPFS 授权目录）
   try {
     const fs = getPlatformAdapter().fs;
     if (fs.listDirEntries) {
@@ -169,15 +171,6 @@ async function fetchDir(abs: string): Promise<{ entries: Entry[] } | { error: st
   } catch (e: any) {
     return { error: e?.message || '无法读取该目录' };
   }
-}
-
-/** 计算 abs 相对 root 的相对路径（统一正斜杠；abs 不在 root 下则原样返回） */
-function toRel(root: string, abs: string): string {
-  const r = root.replace(/[\\/]+$/, '').replace(/[\\/]+/g, '/');
-  const a = abs.replace(/[\\/]+$/, '').replace(/[\\/]+/g, '/');
-  if (a === r) return '';
-  if (a.startsWith(r + '/')) return a.slice(r.length + 1);
-  return a;
 }
 
 function joinAbs(dir: string, name: string): string {
