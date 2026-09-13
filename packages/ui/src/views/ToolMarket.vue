@@ -39,23 +39,23 @@
             @click="toggleBuiltinCat(g.key)"
           ><el-icon class="cat-tag-arrow"><ArrowRight v-if="builtinCollapsed[g.key]" /><ArrowDown v-else /></el-icon>{{ g.label }}<em>{{ g.tools.length }}</em></span>
           <div v-show="!builtinCollapsed[g.key]" class="card-grid">
-            <div v-for="t in g.tools" :key="t.name" class="tool-card">
+            <div
+              v-for="t in g.tools"
+              :key="t.name"
+              class="tool-card"
+              :title="'查看 ' + t.name + ' 的参数详情'"
+              @click="openSchemaDetail({ kind: '内置工具', name: t.name, description: t.description, inputSchema: t.inputSchema, outputSchema: t.outputSchema })"
+            >
               <div class="tool-card-header">
                 <span class="tool-card-name">{{ t.name }}</span>
                 <el-tag size="small" type="info" effect="plain">内置</el-tag>
               </div>
               <p class="tool-card-desc" :title="t.description">{{ t.description }}</p>
               <div class="tool-card-foot">
-                <el-button size="small" link @click="toggleSchema('builtin-' + t.name)">
-                  {{ expandedSchema['builtin-' + t.name] ? '收起' : '入参/出参' }}
-                </el-button>
-                <div class="card-actions">
+                <span class="stat hint">点击查看入参/出参</span>
+                <div class="card-actions" @click.stop>
                   <el-button size="small" link type="primary" @click="openBuiltinRunner(t)">测试</el-button>
                 </div>
-              </div>
-              <div v-if="expandedSchema['builtin-' + t.name]" class="tool-schema-block">
-                <div class="schema-section"><span class="schema-label">入参</span><pre class="schema-pre">{{ fmtSchema(t.inputSchema) }}</pre></div>
-                <div class="schema-section"><span class="schema-label">出参</span><pre class="schema-pre">{{ fmtSchema(t.outputSchema) }}</pre></div>
               </div>
             </div>
           </div>
@@ -93,6 +93,8 @@
             :key="t.id"
             class="tool-card"
             :class="{ disabled: !t.enabled }"
+            :title="'查看 ' + t.name + ' 的参数详情'"
+            @click="openSchemaDetail({ kind: t.source === 'remote' ? '远程工具' : '自定义工具', name: t.name, description: t.description || '无描述', inputSchema: t.inputSchema, outputSchema: t.outputSchema, meta: `${t.runtime} · ${t.timeout}ms` })"
           >
             <div class="tool-card-header">
               <span class="tool-card-name">{{ t.name }}</span>
@@ -102,18 +104,9 @@
               <el-tag v-if="t.isPublic" size="small" type="primary" effect="plain">已公开</el-tag>
             </div>
             <p class="tool-card-desc" :title="t.description || '无描述'">{{ t.description || '无描述' }}</p>
-            <div class="tool-schema-toggle">
-              <el-button size="small" link @click="toggleSchema('custom-' + t.id)">
-                {{ expandedSchema['custom-' + t.id] ? '收起' : '入参/出参' }}
-              </el-button>
-            </div>
-            <div v-if="expandedSchema['custom-' + t.id]" class="tool-schema-block">
-              <div class="schema-section"><span class="schema-label">入参</span><pre class="schema-pre">{{ fmtSchema(t.inputSchema) }}</pre></div>
-              <div class="schema-section"><span class="schema-label">出参</span><pre class="schema-pre">{{ fmtSchema(t.outputSchema) }}</pre></div>
-            </div>
             <div class="tool-card-foot">
               <span class="stat">{{ t.runtime }} · {{ t.timeout }}ms</span>
-              <div class="card-actions">
+              <div class="card-actions" @click.stop>
                 <el-tooltip v-if="authStore.isLoggedIn" :content="t.isPublic ? '点击下架' : '发布到商城'" placement="top">
                   <el-switch
                     :model-value="!!t.isPublic"
@@ -206,14 +199,23 @@
           <el-empty v-else-if="!remoteTools.length" description="该远程源暂无公开的自定义工具" :image-size="60" />
           <el-empty v-else-if="filteredRemoteTools.length === 0" :description="emptyDesc(searchRemoteTool, '工具')" :image-size="60" />
           <div v-else class="card-grid">
-            <div v-for="item in filteredRemoteTools" :key="item.id" class="tool-card">
+            <div
+              v-for="item in filteredRemoteTools"
+              :key="item.id"
+              class="tool-card"
+              :title="'查看 ' + item.name + ' 的参数详情'"
+              @click="openSchemaDetail({ kind: '远程工具', name: item.name, description: item.description || '无描述', inputSchema: item.inputSchema, outputSchema: item.outputSchema })"
+            >
               <div class="tool-card-header">
                 <span class="tool-card-name">{{ item.name }}</span>
                 <el-tag size="small" type="primary" effect="plain">远程</el-tag>
               </div>
               <p class="tool-card-desc" :title="item.description || '无描述'">{{ item.description || '无描述' }}</p>
               <div class="tool-card-foot">
-                <el-button size="small" type="primary" @click="installTool(item)">安装到本地</el-button>
+                <span class="stat hint">点击查看入参/出参</span>
+                <div class="card-actions" @click.stop>
+                  <el-button size="small" type="primary" @click="installTool(item)">安装到本地</el-button>
+                </div>
               </div>
             </div>
           </div>
@@ -279,11 +281,14 @@
     </el-dialog>
 
     <!-- ========== 试运行 Dialog（自定义工具走 /tools/:id/execute，内置工具走 /tools/builtin/execute） ========== -->
+    <!-- 与 schema 详情弹窗同理：文本密集，皮肤下需要实底衬底保证可读（见 skin.css .tm-solid-dialog） -->
     <el-dialog
       v-model="showRunner"
       :title="`试运行：${runningToolName}`"
       width="560px"
       :close-on-click-modal="false"
+      append-to-body
+      class="tm-solid-dialog"
       @close="resetRunner"
     >
       <div v-if="runningTool" class="runner-entry">入口函数：{{ runningTool.entry }}</div>
@@ -327,6 +332,43 @@
       <template #footer>
         <el-button @click="showSourceForm = false">取消</el-button>
         <el-button type="primary" @click="addSource">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- ========== 工具参数详情 Dialog（点击卡片打开）==========
+       【2026-09-13 用户反馈"点击卡片查看入参出参必要…做成卡片内打开一个弹窗那种，不要在当前卡片打开"】
+       原先是在卡片内部行内展开 .tool-schema-block —— 会把该卡片撑到数百像素高，
+       同行的其他卡片被 grid stretch 一起拉高、留出大片空白（"卡片这么怪异"的根因）。
+       现改为：卡片只展示摘要，点击整张卡片 → 弹窗里看完整入参/出参（长 JSON 有独立滚动区，
+       不再挤压卡片布局）。 -->
+    <el-dialog
+      v-model="showSchemaDetail"
+      :title="schemaDetail ? `${schemaDetail.name}` : '参数详情'"
+      width="720px"
+      top="6vh"
+      append-to-body
+      class="tm-solid-dialog schema-detail-dialog"
+    >
+      <div v-if="schemaDetail" class="schema-detail">
+        <div class="schema-detail-head">
+          <el-tag size="small" type="info" effect="plain">{{ schemaDetail.kind }}</el-tag>
+          <span v-if="schemaDetail.meta" class="stat">{{ schemaDetail.meta }}</span>
+          <span v-if="schemaDetail.isPublic" class="stat">已公开</span>
+        </div>
+        <p class="schema-detail-desc">{{ schemaDetail.description }}</p>
+        <div class="schema-detail-tabs">
+          <div class="schema-section">
+            <span class="schema-label">入参</span>
+            <pre class="schema-pre">{{ fmtSchema(schemaDetail.inputSchema) }}</pre>
+          </div>
+          <div class="schema-section">
+            <span class="schema-label">出参</span>
+            <pre class="schema-pre">{{ fmtSchema(schemaDetail.outputSchema) }}</pre>
+          </div>
+        </div>
+      </div>
+      <template #footer>
+        <el-button @click="showSchemaDetail = false">关闭</el-button>
       </template>
     </el-dialog>
   </div>
@@ -470,10 +512,21 @@ function enterRemoteMarket(s: any) {
   });
 }
 
-// ---- 入参/出参行内展开 ----
-const expandedSchema = ref<Record<string, boolean>>({});
-function toggleSchema(key: string) {
-  expandedSchema.value[key] = !expandedSchema.value[key];
+// ---- 入参/出参：点击卡片 → 弹窗展示（不再在卡内行内展开）----
+interface SchemaDetail {
+  kind: string;
+  name: string;
+  description: string;
+  inputSchema: unknown;
+  outputSchema: unknown;
+  meta?: string;
+  isPublic?: boolean;
+}
+const showSchemaDetail = ref(false);
+const schemaDetail = ref<SchemaDetail | null>(null);
+function openSchemaDetail(d: SchemaDetail) {
+  schemaDetail.value = d;
+  showSchemaDetail.value = true;
 }
 function fmtSchema(schema: unknown): string {
   if (!schema || (typeof schema === 'object' && Object.keys(schema as object).length === 0)) return '（无）';
@@ -772,6 +825,10 @@ async function installTool(item: any) {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
   gap: 12px;
+  /* 关键：默认 align-items:normal(=stretch) 会把同一行所有卡片撑到与最高的那张齐平，
+     于是展开「入参/出参」的那张一旦变高，同行未展开的卡片就被拉出一大片空白体，
+     观感非常怪异。改为 start —— 每张卡片保持自身内容高度，行内高低错落是正常的。 */
+  align-items: start;
 }
 .tool-card {
   background: var(--glass-bg);
@@ -782,7 +839,8 @@ async function installTool(item: any) {
   padding: 16px;
   transition: all 0.2s;
   display: flex; flex-direction: column; gap: 8px;
-  height: 100%;
+  /* 不再 height:100%（那是给 stretch 行准备的）；有图皮肤下 self-start 兜底 */
+  align-self: start;
 }
 .tool-card:hover {
   transform: translateY(-2px);
@@ -805,6 +863,7 @@ async function installTool(item: any) {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
   gap: 14px;
+  align-items: start;
 }
 .market-card {
   display: flex; align-items: center; gap: 12px;
@@ -812,6 +871,7 @@ async function installTool(item: any) {
   border-radius: var(--radius-md); background: var(--glass-bg);
   backdrop-filter: var(--glass-filter); -webkit-backdrop-filter: var(--glass-filter);
   cursor: pointer; transition: all 0.2s;
+  align-self: start;
 }
 .market-card:hover {
   transform: translateY(-2px); box-shadow: 0 8px 25px rgba(0,0,0,0.06);
@@ -845,27 +905,36 @@ async function installTool(item: any) {
 .sub-meta.url { font-family: monospace; }
 .sub-header-actions { display: flex; gap: 8px; }
 
-/* 入参/出参展示块 */
-.tool-schema-toggle { margin-top: 4px; }
-.tool-schema-toggle .el-button { font-size: 12px; padding: 0 2px; height: 22px; }
-.tool-schema-block {
-  margin-top: 6px; padding: 8px 10px; border-radius: 8px;
-  background: rgba(15, 23, 42, 0.06); border: 1px solid var(--glass-border);
-  display: flex; flex-direction: column; gap: 8px;
+/* 入参/出参：点击卡片 → 弹窗展示（卡内不再有 schema 块） */
+.tool-card { cursor: pointer; }
+.stat.hint { opacity: 0.65; transition: opacity 0.15s; }
+.tool-card:hover .stat.hint { opacity: 1; color: var(--color-primary); }
+
+.schema-detail-head {
+  display: flex; align-items: center; gap: 10px; margin-bottom: 8px;
 }
-.schema-section { display: flex; flex-direction: column; gap: 4px; }
+.schema-detail-desc {
+  margin: 0 0 14px; font-size: 13px; line-height: 1.6;
+  color: var(--color-text-secondary); word-break: break-word;
+}
+.schema-detail-tabs { display: flex; flex-direction: column; gap: 14px; }
+.schema-section { display: flex; flex-direction: column; gap: 6px; min-height: 0; }
 .schema-label {
   font-size: 11px; font-weight: 600; color: var(--color-text);
   text-transform: uppercase; letter-spacing: 0.5px; opacity: 0.85;
 }
+/* 弹窗里的 schema 独立滚动，不挤压卡片布局 */
 .schema-pre {
-  margin: 0; padding: 8px; border-radius: 6px;
+  margin: 0; padding: 10px 12px; border-radius: 6px;
   background: rgba(0, 0, 0, 0.04); color: var(--color-text);
-  font-family: "JetBrains Mono", "Cascadia Code", monospace; font-size: 11px;
-  line-height: 1.5; max-height: 220px; overflow: auto; white-space: pre-wrap; word-break: break-word;
+  font-family: "JetBrains Mono", "Cascadia Code", monospace; font-size: 12px;
+  line-height: 1.55; max-height: 32vh; overflow: auto; white-space: pre-wrap; word-break: break-word;
 }
-:root[data-theme="dark"] .tool-schema-block { background: rgba(255, 255, 255, 0.04); }
-:root[data-theme="dark"] .schema-pre { background: rgba(0, 0, 0, 0.35); }
+/* 暗色主题下的默认底衬（schema 现已移到弹窗内）。
+   ⚠️ 必须 :not([data-skin="on"])：` :root[data-theme="dark"] .schema-pre` 特指度 (0,2,0)
+   会盖掉 skin.css 的 [data-skin="on"] .schema-pre (0,1,0)，且组件样式后加载 →
+   皮肤下 pre 会回落到仅 6% 白的近乎透明底，压在壁纸弹窗图上 = 文字不可读。 */
+:root[data-theme="dark"]:not([data-skin="on"]) .schema-pre { background: rgba(255, 255, 255, 0.06); }
 :root[data-theme="dark"] .builtin-cat-count { background: rgba(255,255,255,0.08); }
 
 .card-actions { display: flex; gap: 4px; align-items: center; }
@@ -891,5 +960,12 @@ async function installTool(item: any) {
   .sub-title { font-size: 16px; }
   .card-grid { grid-template-columns: 1fr; gap: 12px; }
   .market-grid { grid-template-columns: 1fr; gap: 12px; }
+  /* 参数详情弹窗：窄屏占满宽度，schema 高度收紧 */
+  .schema-pre { max-height: 26vh; font-size: 11px; }
+}
+/* 弹窗挂在 body 下（append-to-body），scoped 命中不到 → 用 :global 提宽度 */
+:global(.tm-solid-dialog .el-dialog__body) { padding-top: 8px; }
+@media (max-width: 767px) {
+  :global(.tm-solid-dialog) { width: 94vw !important; }
 }
 </style>

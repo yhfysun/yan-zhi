@@ -584,17 +584,45 @@ html[data-skin="on"] .home-page {
   position: relative;
   z-index: 1;
 }
-/* 参数详情弹窗内的 schema 代码块：弹窗本身已铺 dialog 底图，
-   这里给代码区一层不透明兜底衬底，避免 JSON 长文本与底图纹理互相干扰。
-   ⚠️ 用 html 前缀提高特指度（同 ToolMarket.vue scoped 的 :root[data-theme] 规则同分），
-   否则会被组件样式按"后加载者赢"盖掉。 */
-html[data-skin="on"] .schema-detail .schema-pre {
-  background: color-mix(in srgb, var(--skin-glass-tint, #0A101C) 88%, transparent);
-  color: var(--skin-text, var(--color-text));
+/* 参数详情弹窗：弹窗自带 dialog 底图，但底图是"整张壁纸"取景，
+   其明暗在中部非常不均（霓虹亮、街景暗）。JSON 长文本直接压上去会局部读不清，
+   所以给弹窗**内容区**叠一层高不透明度的同色衬底（头部保留图，做视觉层次）。
+   ⚠️ 衬底只压 body 不压 header：header 是"标题条"，保留图能维持皮肤识别度。 */
+/* ===== 文本密集弹窗（.tm-solid-dialog，工具页参数详情/试运行）=====
+   弹窗自带 dialog 底图，但底图是"整张壁纸"取景，明暗在中部非常不均
+   （霓虹亮、街景暗）。文本直接压上去局部读不清，故给 body/footer 叠一层
+   高不透明度同色衬底；header 保留图以维持皮肤识别度。
+   ⚠️ 必须带 !important：上方那条 `[data-skin="on"] .el-dialog__body { transparent !important }`
+   用的是 !important，非 !important 规则一律压不过（已实测）。 */
+html[data-skin="on"] .el-dialog.tm-solid-dialog .el-dialog__body {
+  background-color: color-mix(in srgb, var(--skin-glass-tint, #0A101C) 84%, transparent) !important;
+  border-radius: 0;
 }
-html[data-skin="on"] .schema-detail .schema-label {
+html[data-skin="on"] .el-dialog.tm-solid-dialog .el-dialog__footer {
+  background-color: color-mix(in srgb, var(--skin-glass-tint, #0A101C) 84%, transparent) !important;
+}
+/* 弹窗内文本域 / 代码块：再叠一层，保证等宽与正文都稳定可读 */
+html[data-skin="on"] .el-dialog.tm-solid-dialog .schema-pre {
+  background: color-mix(in srgb, var(--skin-glass-tint, #0A101C) 92%, transparent);
+  color: var(--skin-text, var(--color-text));
+  border: 1px solid color-mix(in srgb, var(--color-primary) 20%, transparent);
+}
+html[data-skin="on"] .el-dialog.tm-solid-dialog .schema-label,
+html[data-skin="on"] .el-dialog.tm-solid-dialog .runner-entry {
   color: var(--skin-text, var(--color-text));
   opacity: 1;
+}
+html[data-skin="on"] .el-dialog.tm-solid-dialog .schema-detail-desc {
+  color: var(--skin-text, var(--color-text-secondary));
+  opacity: 0.9;
+}
+/* 弹窗内文本域：与全局"输入框透明"规则区分 —— 弹窗里是**编辑区**，
+   透明会让占位符/已输入内容压在弹窗底图上不可读，故给实底衬。
+   必须带 !important：全局 .el-textarea__inner 规则用的是透明 + !important。 */
+html[data-skin="on"] .el-dialog.tm-solid-dialog .el-textarea__inner {
+  background-color: color-mix(in srgb, var(--skin-glass-tint, #0A101C) 92%, transparent) !important;
+  color: var(--skin-text, var(--color-text)) !important;
+  border: 1px solid color-mix(in srgb, var(--color-primary) 22%, transparent);
 }
 [data-skin="on"] .tool-card:hover,
 [data-skin="on"] .market-card:hover {
@@ -722,9 +750,13 @@ html[data-skin="on"] .schema-detail .schema-label {
   background-repeat: var(--skin-pattern-repeat, no-repeat);
   background-position: center;
 }
+/* 弹窗三段默认透明，让弹窗底图贯通。
+   ⚠️ 例外：.tm-solid-dialog（工具页的「参数详情」「试运行」等**文本密集**弹窗）
+   body/footer 需要实底衬 —— 见文件末尾规则。用 :not() 排除，否则这里的
+   `!important` 会无条件压掉那边的衬底，正文压在壁纸取景图上不可读。 */
 [data-skin="on"] .el-dialog__header,
-[data-skin="on"] .el-dialog__body,
-[data-skin="on"] .el-dialog__footer {
+[data-skin="on"] .el-dialog:not(.tm-solid-dialog) .el-dialog__body,
+[data-skin="on"] .el-dialog:not(.tm-solid-dialog) .el-dialog__footer {
   background-color: transparent !important;
 }
 /* 弹窗标题栏底边：主色微光分隔线。
