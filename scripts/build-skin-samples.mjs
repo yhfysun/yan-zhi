@@ -49,7 +49,18 @@ const PARTS = [
 async function build(srcPath, skinId) {
   const outDir = join(OUT_BASE, skinId);
   if (!existsSync(outDir)) mkdirSync(outDir, { recursive: true });
-  const baseBuf = await sharp(srcPath).resize(1600, 1067, { fit: 'cover' }).png().toBuffer();
+  // 源图右下角带「AI生成 WORKBUDDY」水印（约占底部 10%）——先裁掉再归一化，
+  // 否则主壁纸会把水印原样带进皮肤包（部件取景避开角落所以不受影响）。
+  const meta = await sharp(srcPath).metadata();
+  const srcW = meta.width ?? 0;
+  const srcH = meta.height ?? 0;
+  if (srcW < 400 || srcH < 400) throw new Error(`源图尺寸异常 ${srcW}x${srcH}: ${srcPath}`);
+  const cropH = Math.round(srcH * 0.1);
+  const croppedBuf = await sharp(srcPath)
+    .extract({ left: 0, top: 0, width: srcW, height: srcH - cropH })
+    .png()
+    .toBuffer();
+  const baseBuf = await sharp(croppedBuf).resize(1600, 1067, { fit: 'cover' }).png().toBuffer();
   const base = sharp(baseBuf);
   await base.clone().webp({ quality: 82 }).toFile(join(outDir, 'wallpaper.webp'));
   for (const p of PARTS) {

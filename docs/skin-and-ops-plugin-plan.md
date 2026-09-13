@@ -1,6 +1,8 @@
 # 方案：皮肤系统 + 运维插件（shell / docker / 运维智能体）
 
-> 状态：待确认（确认后开干）
+> 状态：**已实施**（皮肤 27 套插件包 + 内置系列 5 套、ops-shell 插件、更多菜单 group:'more' 均已落地）。
+> 遗留与后续见 `docs/skin-review-and-color-contract.md`——本文档缺少的「配色契约」与「图片资源规格」
+> 两章已在那里补齐，并已实现（派生兜底链 + 部件图 fit + 对比度校验）。
 > 基于当前源码实际盘点，非推测。
 
 ---
@@ -59,11 +61,11 @@ interface ThemePalette {
   // ...现有字段不动
   kind?: 'palette' | 'skin';        // 缺省 palette，老插件不受影响
   preview?: string;                  // 皮肤预览图（插件包内相对路径）
-  wallpaper?: {                      // 壁纸（按深浅色各一张）
+  wallpaper?: {                      // 壁纸（按深浅色各一张；dark 现指向派生的 wallpaper-dark.webp）
     light: string;                   // 包内相对路径，安装后由 /plugin-assets/:id/ 静态服务
     dark: string;
     blur?: number;                   // 毛玻璃强度
-    mask?: string;                   // 遮罩透明度，保证文字可读
+    mask?: number;                   // 遮罩透明度（实现为 number，非 string），保证文字可读
   };
 }
 ```
@@ -147,7 +149,10 @@ contributes: {
 | CC0 图库（Pixabay/Pexels，Unsplash License） | 风景/美图 | 高分辨率原图打包进皮肤包，注明来源于 README |
 | 禁用 | pixiv/番剧截图/影视剧照 | 版权不可控，不进内置包 |
 
-皮肤包体积控制：单张 WebP 压缩至 ≤800KB（2560×1600），单包 ≤6MB；.yzp 安装走现有 base64 通道无压力。
+皮肤包体积控制：**实际落地值**（2026-09-13 复核）——壁纸 1600×1067 WebP q82（浅色 52~411KB，部分纯色系压得较狠属已知遗留，需源图才能重出）；另每包配一张派生的 `wallpaper-dark.webp`（深色模式用，`scripts/build-skin-dark-variants.mjs` 生成）；部件图见 `docs/skin-review-and-color-contract.md` 图片规格表。单包远小于 ≤6MB 预算，.yzp 安装走现有 base64 通道无压力。
+
+> ⚠️ 内置皮肤用 AI 生图时**必须去水印**：生成图右下角的「AI生成」角标要先裁掉再打包
+> （`scripts/build-skin-samples.mjs` 已内置裁底 10% 步骤）。skin-sample-* 四包曾把水印带进正式资源，2026-09-13 已重建修复。
 
 ### 3.5 交付形态
 

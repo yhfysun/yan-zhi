@@ -6,8 +6,9 @@
 import { getPluginManager } from '@yan-zhi/core';
 import type { PluginManifest, PluginModule, ThemePalette } from '@yan-zhi/core';
 
-/** 皮肤图片文件约定：wallpaper.webp 主壁纸（深浅色共用，遮罩区分），预览图直接复用壁纸 */
+/** 皮肤图片文件约定：wallpaper.webp 浅色壁纸，wallpaper-dark.webp 深色壁纸（构建脚本派生），预览图复用浅色壁纸 */
 const WALLPAPER = 'wallpaper.webp';
+const WALLPAPER_DARK = 'wallpaper-dark.webp';
 const PREVIEW = 'wallpaper.webp';
 
 /** 构造皮肤主题贡献块（配色取自壁纸主色调，surface 定制弹窗/边框/圆角/按钮风格） */
@@ -41,7 +42,9 @@ function skinTheme(
     kind: 'skin',
     category,
     preview: PREVIEW,
-    wallpaper: { light: WALLPAPER, dark: WALLPAPER, mask: wallpaperMask },
+    // 遮罩按 0.8 系数下调：原值 0.40~0.50 配 12px 模糊会把壁纸细节糊没，只剩一片灰调。
+    // 文字可读性改由 surfaceSunken / surfaceRaised 的派生实色保证，不靠把壁纸压死。
+    wallpaper: { light: WALLPAPER, dark: WALLPAPER_DARK, mask: +(wallpaperMask * 0.8).toFixed(2) },
     ...palette,
     ...(surface ? { surface: { ...autoPatterns, ...surface } } : { surface: autoPatterns }),
   };
@@ -728,6 +731,8 @@ export const SKIN_MANIFESTS: PluginManifest[] = [
           titlebarPattern: 'linear-gradient(180deg, rgba(46,125,107,0.08), transparent)',
           catTagPattern: 'linear-gradient(135deg, rgba(46,125,107,0.12), rgba(192,138,62,0.08))',
           buttonGradient: 'linear-gradient(135deg, #2E7D6B, #3E9B84)',
+          // 源图偏小（input 320×72 / task-list 420×300），cover 会被放大 2~3 倍变糊 → 改平铺
+          patternFit: 'repeat',
         }),
       ],
     },
@@ -761,6 +766,7 @@ export const SKIN_MANIFESTS: PluginManifest[] = [
           titlebarPattern: 'linear-gradient(180deg, rgba(232,106,138,0.08), transparent)',
           catTagPattern: 'linear-gradient(135deg, rgba(232,106,138,0.12), rgba(232,150,78,0.08))',
           buttonGradient: 'linear-gradient(135deg, #E86A8A, #F0A0B8)',
+          patternFit: 'repeat',
         }),
       ],
     },
@@ -793,6 +799,7 @@ export const SKIN_MANIFESTS: PluginManifest[] = [
           borderPatternSlice: 16,
           titlebarPattern: 'linear-gradient(180deg, rgba(75,85,99,0.07), transparent)',
           catTagPattern: 'linear-gradient(135deg, rgba(75,85,99,0.10), rgba(138,123,99,0.06))',
+          patternFit: 'repeat',
         }),
       ],
     },
@@ -826,6 +833,7 @@ export const SKIN_MANIFESTS: PluginManifest[] = [
           titlebarPattern: 'linear-gradient(180deg, rgba(63,191,160,0.08), transparent)',
           catTagPattern: 'linear-gradient(135deg, rgba(63,191,160,0.12), rgba(124,107,224,0.08))',
           buttonGradient: 'linear-gradient(135deg, #3FBFA0, #7C6BE0)',
+          patternFit: 'repeat',
         }),
       ],
     },
