@@ -5,7 +5,7 @@
 
 /* ===== 侧边栏 ===== */
 .sidebar {
-  width: var(--chat-sidebar-w, 280px); min-width: 0; background: var(--glass-bg); background-image: var(--skin-task-list-pattern, none); background-size: cover; background-position: center; backdrop-filter: var(--glass-filter); -webkit-backdrop-filter: var(--glass-filter);
+  width: var(--chat-sidebar-w, 280px); min-width: 0; background: var(--glass-bg); background-image: var(--skin-task-list-pattern, none); background-size: var(--skin-pattern-size, auto); background-repeat: var(--skin-pattern-repeat, repeat); background-position: center; backdrop-filter: var(--glass-filter); -webkit-backdrop-filter: var(--glass-filter);
   border-right: 1px solid var(--glass-border); display: flex; flex-direction: column;
   transition: width 0.25s ease; overflow: hidden;
 }
@@ -59,7 +59,8 @@
 
 .conv-list { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
 .conv-header { padding: 6px 8px; flex-shrink: 0; }
-.conv-header-row { display: flex; gap: 6px; margin-top: 6px; }
+.conv-header-row { display: flex; gap: 6px; margin-top: 6px; align-items: center; }
+.batch-hint { font-size: 12px; color: var(--color-text-secondary); opacity: 0.75; line-height: 1.4; }
 .conv-items { flex: 1; overflow-y: auto; padding: 4px; }
 .conv-tree { flex: 1; overflow-y: auto; padding: 4px 6px; }
 /* 空间弹窗：目录输入 + 浏览按钮一行排布 */
@@ -94,6 +95,9 @@
 .tree-root .tree-node-icon { color: var(--color-primary); }
 .tree-space .tree-node-icon { color: var(--color-warning); }
 .tree-node-label { font-size: 13px; font-weight: 600; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 批量模式下目录/任务节点头右侧的多选框：整组一键选/取消 */
+.tree-select-all { flex-shrink: 0; height: 18px; margin: 0; }
+.tree-select-all .el-checkbox__label { display: none; }
 .tree-count {
   font-size: 11px; color: var(--color-text-secondary);
   background: var(--glass-bg-hover); border-radius: 10px;

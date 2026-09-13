@@ -759,7 +759,7 @@ async function installTool(item: any) {
   font-size: 13px; font-weight: 600; color: var(--color-text);
   cursor: pointer; user-select: none;
   background: transparent; border: 1px solid var(--color-border-light);
-  background-image: var(--skin-cat-tag-pattern, none); background-size: cover; background-position: center;
+  background-image: var(--skin-cat-tag-pattern, none); background-size: var(--skin-pattern-size, auto); background-repeat: var(--skin-pattern-repeat, repeat); background-position: center;
   border-radius: 16px; transition: all 0.15s;
 }
 .cat-tag:hover { border-color: var(--color-primary); color: var(--color-primary); }

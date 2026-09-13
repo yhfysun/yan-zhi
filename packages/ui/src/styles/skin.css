@@ -715,7 +715,14 @@ html[data-skin="on"] .home-page {
   background-color: transparent;
 }
 
-/* ===== 全局滚动条皮肤化：--scrollbar-thumb 已定义，此处应用到 ::-webkit-scrollbar ===== */
+/* ===== 全局滚动条皮肤化：胶囊形 + 金箍棒风格金属光泽 =====
+   2026-09-13 用户反馈「圆角没了 / 都变成平角了」—— 根因是基线 surface.css 第 39 行
+   border-radius: 999px (胶囊) 被本文件原 4px (半圆) 覆盖，导致皮肤模式下方角。
+   同时用户提「加点花纹像金箍棒」—— 在 8px 细滚动条上做金属光泽 + 两端装饰环：
+   · 横向渐变：左暗 → 中亮(主色) → 右暗，模拟金属棒反光
+   · 两端 8%~14% / 86%~92% 各加一道深色环（仿金箍棒两端的金色纹带）
+   · hover/active 用 filter: brightness 而非换底色，保持纹饰完整
+   · 保留 --scrollbar-thumb 作为悬停态对照色（hover 切到非装饰态，提亮） */
 [data-skin="on"] ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
@@ -724,14 +731,30 @@ html[data-skin="on"] .home-page {
   background: transparent;
 }
 [data-skin="on"] ::-webkit-scrollbar-thumb {
-  background: var(--scrollbar-thumb);
-  border-radius: 4px;
+  /* 两端装饰带（深色环）+ 金属棒身（主色高光渐变） */
+  background:
+    linear-gradient(90deg,
+      transparent 0%, transparent 8%,
+      rgba(0, 0, 0, 0.45) 8%, rgba(0, 0, 0, 0.45) 14%,
+      transparent 14%, transparent 86%,
+      rgba(0, 0, 0, 0.45) 86%, rgba(0, 0, 0, 0.45) 92%,
+      transparent 92%, transparent 100%
+    ),
+    linear-gradient(90deg,
+      color-mix(in srgb, var(--color-primary) 70%, #000 15%),
+      color-mix(in srgb, var(--color-primary) 70%, #FFF 40%),
+      color-mix(in srgb, var(--color-primary) 70%, #000 15%)
+    );
+  border-radius: 999px;
 }
 [data-skin="on"] ::-webkit-scrollbar-thumb:hover {
+  /* hover：换为纯主色底 + 亮度提升，让纹饰淡出 */
   background: var(--scrollbar-thumb-hover);
+  filter: brightness(1.15);
 }
 [data-skin="on"] ::-webkit-scrollbar-thumb:active {
   background: var(--scrollbar-thumb-active);
+  filter: brightness(1.25);
 }
 /* Firefox */
 [data-skin="on"] * {

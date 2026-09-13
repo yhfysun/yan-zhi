@@ -101,6 +101,13 @@ export interface ThemePalette {
     tagRadius?: number;
     /** 自定义滚动条 thumb 色（覆盖默认主色低 alpha），缺省=主色 20% */
     scrollbarThumb?: string;
+    /**
+     * 自定义滚动条 thumb 图案（CSS background-image 完整值，如 linear-gradient(...)）。
+     * 用于实现「棍类武器风格」金箍棒/狼牙棒/蟠龙棍 等差异化的金属质感 +
+     * 两端装饰带。缺省 = 金箍棒默认（金色金属光泽 + 两端深色环）。
+     * 注意：仅 8px 细滚动条上的纹理，复杂图样不可用，建议 1~2 段 linear-gradient 即可。
+     */
+    scrollbarPattern?: string;
     /** 自定义分割线色（el-divider / border-bottom 分隔），缺省=glass-border */
     dividerColor?: string;
     /** 分类标签背景图案（CSS background-image 或 URL），跟主背景图呼应，缺省=透明 */
