@@ -504,9 +504,36 @@ html[data-skin="on"] .home-page {
 }
 
 /* ===== 卡片 / tabs / card 容器 ===== */
+/* 【2026-09-13 用户要求"卡片样式可以设置多点啊，然后随机多好"】
+   原先 .el-card / .ov-card 一律 --glass-bg 纯色玻璃底 → 整页卡片长得完全一样。
+   现在改为铺「卡片变体图」（--skin-card-1..4-pattern，按 nth-of-type 循环），
+   底色 transparent 让图成为卡片表面；未配 cardPatterns 的皮肤回落玻璃底（行为不变）。
+   注：用 nth-of-type（而非 nth-child）—— 这些卡片常与标题/空态节点混排，
+   nth-of-type 只数同标签元素，分布更均匀。 */
 [data-skin="on"] .el-card {
-  --el-card-bg-color: var(--glass-bg);
-  border-color: var(--glass-border);
+  --el-card-bg-color: transparent;
+  background-color: transparent;
+  background-size: cover;
+  background-repeat: no-repeat;
+  background-position: center;
+  border-color: color-mix(in srgb, var(--color-primary) 18%, var(--glass-border));
+  border-radius: var(--skin-card-radius, 12px);
+}
+[data-skin="on"] .el-card:nth-of-type(4n + 1) {
+  background-image: var(--skin-card-1-pattern, var(--glass-bg)) !important;
+}
+[data-skin="on"] .el-card:nth-of-type(4n + 2) {
+  background-image: var(--skin-card-2-pattern, var(--glass-bg)) !important;
+  border-radius: calc(var(--skin-card-radius, 12px) * 1.4);
+}
+[data-skin="on"] .el-card:nth-of-type(4n + 3) {
+  background-image: var(--skin-card-3-pattern, var(--glass-bg)) !important;
+  border-color: color-mix(in srgb, var(--color-primary) 38%, transparent);
+  border-radius: calc(var(--skin-card-radius, 12px) * 0.6);
+}
+[data-skin="on"] .el-card:nth-of-type(4n) {
+  background-image: var(--skin-card-4-pattern, var(--glass-bg)) !important;
+  border-radius: var(--skin-tag-radius, 6px);
 }
 [data-skin="on"] .glass-card {
   backdrop-filter: var(--glass-filter);
@@ -524,17 +551,62 @@ html[data-skin="on"] .home-page {
   backdrop-filter: var(--glass-filter);
   -webkit-backdrop-filter: var(--glass-filter);
 }
-/* 面板级组件统一玻璃背景 + 边框 */
+/* 面板级组件统一背景 + 边框
+   【2026-09-13】原为纯 --glass-bg 玻璃底 → 与 .el-card 同样改为卡片变体图循环。
+   兜底链保证：未配 cardPatterns 的皮肤回落 --glass-bg，观感与改造前一致。 */
 [data-skin="on"] .ov-card,
 [data-skin="on"] .stats-table-wrap,
 [data-skin="on"] .logs-filters {
-  background-color: var(--glass-bg);
+  background-color: transparent;
+  background-size: cover;
+  background-repeat: no-repeat;
+  background-position: center;
   border-color: var(--glass-border);
 }
-/* 列表项：自身透明让父面板玻璃透出，hover/active 走 token */
+[data-skin="on"] .ov-card:nth-of-type(4n + 1),
+[data-skin="on"] .stats-table-wrap:nth-of-type(4n + 1),
+[data-skin="on"] .logs-filters:nth-of-type(4n + 1) {
+  background-image: var(--skin-card-1-pattern, var(--glass-bg));
+}
+[data-skin="on"] .ov-card:nth-of-type(4n + 2),
+[data-skin="on"] .stats-table-wrap:nth-of-type(4n + 2),
+[data-skin="on"] .logs-filters:nth-of-type(4n + 2) {
+  background-image: var(--skin-card-2-pattern, var(--glass-bg));
+}
+[data-skin="on"] .ov-card:nth-of-type(4n + 3),
+[data-skin="on"] .stats-table-wrap:nth-of-type(4n + 3),
+[data-skin="on"] .logs-filters:nth-of-type(4n + 3) {
+  background-image: var(--skin-card-3-pattern, var(--glass-bg));
+}
+[data-skin="on"] .ov-card:nth-of-type(4n),
+[data-skin="on"] .stats-table-wrap:nth-of-type(4n),
+[data-skin="on"] .logs-filters:nth-of-type(4n) {
+  background-image: var(--skin-card-4-pattern, var(--glass-bg));
+}
+/* 列表项：铺卡片变体图（同 4 循环），hover/active 走 token 叠在其上 */
 [data-skin="on"] .log-item,
 [data-skin="on"] .msg-check-item {
   background-color: transparent;
+  background-size: cover;
+  background-repeat: no-repeat;
+  background-position: center;
+  border-radius: var(--skin-tag-radius, 6px);
+}
+[data-skin="on"] .log-item:nth-of-type(4n + 1),
+[data-skin="on"] .msg-check-item:nth-of-type(4n + 1) {
+  background-image: var(--skin-card-1-pattern, none);
+}
+[data-skin="on"] .log-item:nth-of-type(4n + 2),
+[data-skin="on"] .msg-check-item:nth-of-type(4n + 2) {
+  background-image: var(--skin-card-2-pattern, none);
+}
+[data-skin="on"] .log-item:nth-of-type(4n + 3),
+[data-skin="on"] .msg-check-item:nth-of-type(4n + 3) {
+  background-image: var(--skin-card-3-pattern, none);
+}
+[data-skin="on"] .log-item:nth-of-type(4n),
+[data-skin="on"] .msg-check-item:nth-of-type(4n) {
+  background-image: var(--skin-card-4-pattern, none);
 }
 [data-skin="on"] .log-item:hover,
 [data-skin="on"] .msg-check-item:hover {
@@ -557,19 +629,37 @@ html[data-skin="on"] .home-page {
   border-color: var(--glass-border) !important;
 }
 
-/* ===== Element Plus 弹层全面玻璃化：dialog / drawer / message-box / popper =====
-   --el-bg-color / --el-bg-color-overlay 已在 token 层改为半透明，这里补模糊与边框 */
+/* ===== Element Plus 弹层：铺弹窗底图（原图，不叠玻璃底色） =====
+   【2026-09-13 用户反馈"弹窗是白底，加上一点皮肤图"】
+
+   原实现 `background-color: var(--el-bg-color-overlay)` 是 --skin-dropdown-bg 的映射
+   （浅色主题 = 近白实色），**把 dialog-pattern 图整个盖在下面** → 用户看到的就是纯白弹窗，
+   皮肤图等于不存在。这与"图原样清晰显示"的整体原则相悖。
+
+   现改为：底色 transparent + 铺 --skin-dialog-pattern（dialog-bg-dark.webp / dialog-bg.webp），
+   图就是弹窗表面。文字可读性由 settings.applySurface 的 patternLum 判据保证
+   （暗色配暗色图 ⇒ 浅字；浅色配原图 ⇒ 深字）。
+   --el-bg-color-overlay 仍保留给下拉/菜单等不需要图的浮层使用。 */
 [data-skin="on"] .el-dialog,
 [data-skin="on"] .el-drawer,
-[data-skin="on"] .el-message-box,
+[data-skin="on"] .el-message-box {
+  background-color: transparent;
+  background-image: var(--skin-dialog-pattern, none);
+  background-size: cover;
+  background-repeat: no-repeat;
+  background-position: center;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border-color: var(--glass-border-strong);
+  box-shadow: var(--skin-shadow, var(--overlay-shadow));
+}
+/* 下拉 / tooltip 等小浮层：保持半透明玻璃底（面积小、需与下方内容区分层次） */
 [data-skin="on"] .el-popper.is-light {
   background-color: var(--el-bg-color-overlay);
   background-image: var(--skin-dialog-pattern, none);
-  background-size: var(--skin-pattern-size, cover);
-  background-repeat: var(--skin-pattern-repeat, no-repeat);
+  background-size: cover;
+  background-repeat: no-repeat;
   background-position: center;
-  backdrop-filter: var(--glass-filter);
-  -webkit-backdrop-filter: var(--glass-filter);
   border-color: var(--glass-border-strong);
   box-shadow: var(--skin-shadow, var(--overlay-shadow));
 }
@@ -592,9 +682,13 @@ html[data-skin="on"] .home-page {
 [data-skin="on"] .el-dialog__footer {
   background-color: transparent !important;
 }
-/* 弹窗标题栏底边：主色微光分隔线；底色走皮肤配色的 title 级（--skin-dialog-title-bg） */
+/* 弹窗标题栏底边：主色微光分隔线。
+   ⚠️ 2026-09-13：**不再给标题栏铺 --skin-dialog-title-bg 实色底**。
+   那是"抬高一层的底色"（浅色主题下近白），会把弹窗底图在标题栏区域整条盖住 →
+   上半截白、下半截有图，观感割裂。现标题栏透明，让弹窗底图一路贯通，
+   只用一条主色微光分隔线标示标题区。 */
 [data-skin="on"] .el-dialog__header {
-  background-color: var(--skin-dialog-title-bg, transparent) !important;
+  background-color: transparent !important;
   border-bottom: 1px solid color-mix(in srgb, var(--color-primary) 20%, transparent);
 }
 [data-skin="on"] .el-drawer__header {
@@ -1093,12 +1187,13 @@ html[data-skin="on"] .loading-overlay {
      ② 子项 .conv-item 又各铺一次同图 → 与容器底图层次错位，观感糊
    现在：只由**容器**铺图（原图，无附加色），**子项一律透明**，让容器的图透上来。
    hover/active 仍保留语义色（叠在图上），保证交互反馈不丢。
-   （!important：目标类多为 scoped 样式，注入顺序不定，统一加固保证生效） */
+   （!important：目标类多为 scoped 样式，注入顺序不定，统一加固保证生效）
+   ⚠️ .glass-card 已从本组移出（2026-09-13）：它是**卡片**而非列表容器，
+   统一改走下方的卡片变体循环（--skin-card-N-pattern），避免与列表容器撞图。 */
 [data-skin="on"] .conv-list,
 [data-skin="on"] .st-list,
 [data-skin="on"] .fs-panel,
-[data-skin="on"] .fs-body,
-[data-skin="on"] .glass-card {
+[data-skin="on"] .fs-body {
   background-color: transparent !important;
   background-image: var(--skin-task-list-pattern, none) !important;
   background-size: cover !important;
@@ -1106,18 +1201,109 @@ html[data-skin="on"] .loading-overlay {
   background-position: center !important;
 }
 
+/* ===== 玻璃卡片：铺卡片变体图（4 循环），与列表项同一套变体体系 ===== */
+[data-skin="on"] .glass-card {
+  background-color: transparent;
+  background-size: cover;
+  background-repeat: no-repeat;
+  background-position: center;
+  border-radius: var(--skin-card-radius, 12px);
+}
+[data-skin="on"] .glass-card:nth-of-type(4n + 1) {
+  background-image: var(--skin-card-1-pattern, var(--skin-task-list-pattern, var(--glass-bg))) !important;
+}
+[data-skin="on"] .glass-card:nth-of-type(4n + 2) {
+  background-image: var(--skin-card-2-pattern, var(--skin-task-list-pattern, var(--glass-bg))) !important;
+  border-radius: calc(var(--skin-card-radius, 12px) * 1.4);
+}
+[data-skin="on"] .glass-card:nth-of-type(4n + 3) {
+  background-image: var(--skin-card-3-pattern, var(--skin-task-list-pattern, var(--glass-bg))) !important;
+  border-radius: calc(var(--skin-card-radius, 12px) * 0.6);
+}
+[data-skin="on"] .glass-card:nth-of-type(4n) {
+  background-image: var(--skin-card-4-pattern, var(--skin-task-list-pattern, var(--glass-bg))) !important;
+  border-radius: var(--skin-tag-radius, 6px);
+}
+
 /* ===== 列表「卡片」条目（会话/空间/任务行）=====
-   【2026-09-13 修订】原实现给每个子项也铺一份同图 + 22% 玻璃底：
+   【2026-09-13 修订 ①】原实现给每个子项也铺一份同图 + 22% 玻璃底：
    · 与容器底图叠加后两层图案错位（容器 cover 裁切，子项各自 cover，取景不同）
    · 玻璃底色把图洗白 —— 正是用户反馈"很亮很白，只能模糊看到图片"的来源之一
-   现改为：子项完全透明，仅保留 hover/active 的状态底色。图案由容器统一承载。 */
+   故先改为「子项完全透明，图案由容器统一承载」。
+
+   【2026-09-13 修订 ②：用户反馈「卡片样式可以设置多点啊，然后随机多好。。。」】
+   子项全透明虽然解决了错位/洗白，但整列卡片长得一模一样 = 单调。
+   现在改为：**子项各自铺一张「卡片变体图」**，按 nth-child 循环取
+   --skin-card-1..4-pattern（build-skin-parts.mjs 从壁纸 4 个方位取景），
+   于是相邻卡片露出壁纸的不同局部 + 不同边框/圆角/投影 = "多套样式随机分配"。
+   容器（.conv-list 等）的 task-list 底图保留在最底层，子项图 cover 覆盖其上，
+   两者取景不同反而形成层次（不再是原地叠同一张图那种糊）。
+
+   ⚠️ 为什么用 nth-child 而不是 JS 随机索引：
+   ① 稳定可复现（同一列表每次渲染外观一致，不会闪）；
+   ② 不需要往组件里塞状态/改 template；
+   ③ 列表增删时自动重排，永远均匀分布，不会"随机到 5 个连着同一张"。
+   观感上就是随机错落，符合用户「随机多好」的诉求。 */
 [data-skin="on"] .conv-item,
 [data-skin="on"] .space-item,
 [data-skin="on"] .st-item {
-  background-image: none !important;
   background-color: transparent !important;
+  background-size: cover !important;
+  background-repeat: no-repeat !important;
+  background-position: center !important;
+  border: 1px solid transparent;
+  border-radius: var(--skin-card-radius, 12px);
+  transition: background-color 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
 }
-/* 状态态：hover / active / pinned 保留原有语义色（叠在容器底图之上） */
+/* 变体循环：4 张卡片图轮流上（--skin-card-N-pattern 由 applySurface 下发）。
+   兜底链：未配 cardPatterns 的皮肤 → 全部回落 task-list-pattern（观感同改造前）。 */
+[data-skin="on"] .conv-item:nth-child(4n + 1),
+[data-skin="on"] .space-item:nth-child(4n + 1),
+[data-skin="on"] .st-item:nth-child(4n + 1) {
+  background-image: var(--skin-card-1-pattern, var(--skin-task-list-pattern, none)) !important;
+}
+[data-skin="on"] .conv-item:nth-child(4n + 2),
+[data-skin="on"] .space-item:nth-child(4n + 2),
+[data-skin="on"] .st-item:nth-child(4n + 2) {
+  background-image: var(--skin-card-2-pattern, var(--skin-task-list-pattern, none)) !important;
+}
+[data-skin="on"] .conv-item:nth-child(4n + 3),
+[data-skin="on"] .space-item:nth-child(4n + 3),
+[data-skin="on"] .st-item:nth-child(4n + 3) {
+  background-image: var(--skin-card-3-pattern, var(--skin-task-list-pattern, none)) !important;
+}
+[data-skin="on"] .conv-item:nth-child(4n),
+[data-skin="on"] .space-item:nth-child(4n),
+[data-skin="on"] .st-item:nth-child(4n) {
+  background-image: var(--skin-card-4-pattern, var(--skin-task-list-pattern, none)) !important;
+}
+/* 「随机」的第二层：边框色 / 圆角 / 内阴影也按同一个 4 循环走不同档位，
+   让卡片不只是"图不同"，轮廓与质感也错开（避免整列看起来还是同一套样式）。 */
+[data-skin="on"] .conv-item:nth-child(4n + 1),
+[data-skin="on"] .space-item:nth-child(4n + 1),
+[data-skin="on"] .st-item:nth-child(4n + 1) {
+  border-color: color-mix(in srgb, var(--color-primary) 22%, transparent);
+  border-radius: calc(var(--skin-card-radius, 12px) * 0.6);
+}
+[data-skin="on"] .conv-item:nth-child(4n + 2),
+[data-skin="on"] .space-item:nth-child(4n + 2),
+[data-skin="on"] .st-item:nth-child(4n + 2) {
+  border-color: color-mix(in srgb, var(--skin-text, #fff) 14%, transparent);
+  border-radius: var(--skin-card-radius, 12px);
+}
+[data-skin="on"] .conv-item:nth-child(4n + 3),
+[data-skin="on"] .space-item:nth-child(4n + 3),
+[data-skin="on"] .st-item:nth-child(4n + 3) {
+  border-color: color-mix(in srgb, var(--color-primary) 40%, transparent);
+  border-radius: var(--skin-tag-radius, 6px);
+}
+[data-skin="on"] .conv-item:nth-child(4n),
+[data-skin="on"] .space-item:nth-child(4n),
+[data-skin="on"] .st-item:nth-child(4n) {
+  border-color: color-mix(in srgb, var(--color-primary) 14%, var(--glass-border));
+  border-radius: calc(var(--skin-card-radius, 12px) * 1.5);
+}
+/* 状态态：hover / active / pinned 保留原有语义色（叠在卡片变体图之上） */
 [data-skin="on"] .conv-item:hover,
 [data-skin="on"] .space-item:hover,
 [data-skin="on"] .st-item:hover {
@@ -1139,6 +1325,117 @@ html[data-skin="on"] .loading-overlay {
   background-size: var(--skin-pattern-size, cover) !important;
   background-repeat: var(--skin-pattern-repeat, no-repeat) !important;
   background-position: center !important;
+}
+
+/* ===== 对话区消息卡片：主智能体「任务结果」/ 子智能体结果 / 思考过程 / 工具调用组 =====
+   【2026-09-13 用户反馈"卡片样式可以设置多点啊，然后随机多好。。。"】
+   原实现这几类是**主色淡色实底**（color-mix(primary 4~5%)），整段对话里每张卡都一模一样。
+   现在改为铺卡片变体图（与列表项同一套 --skin-card-1..4-pattern），让每条消息的卡片
+   露出壁纸的不同局部 —— 对话流滚起来就是"随机错落"的卡片墙。
+
+   ⚠️ 这里不能靠 nth-child / nth-of-type（都踩过坑，实测无效）：
+   · nth-of-type 只数同标签兄弟 → .msg-reasoning 与 .main-agent-result 各自都算"第 1 个"；
+   · nth-child 数真实兄弟位次 → 但这两个类**各在独立的父容器里**（一个消息一层的
+     .agent-response-body → 内层 div），每个都恰好是父容器的第 1/2 个子元素，
+     于是全都命中同一张图（探针实测：两处都是 card-1）。
+   → 结论：CSS 选择器看不到"第几条消息"，必须由模板给出消息级索引。
+     方案：ChatMessageList.vue 在卡片上输出 :data-card-variant="ri % 4"（轮次取模），
+     CSS 按该属性取值 —— 这是真正的"按消息随机/轮转"，且稳定可复现、不依赖 JS 状态。
+
+   底色 transparent 让图成为卡片表面；hover/展开态仍叠主色语义底色保反馈。
+   兜底链：未配 cardPatterns 的皮肤 → background-image: none（回落原主色淡底）。 */
+[data-skin="on"] .main-agent-result,
+[data-skin="on"] .sub-agent-result,
+[data-skin="on"] .msg-reasoning,
+[data-skin="on"] .msg-tools-group {
+  background-color: transparent;
+  background-size: cover;
+  background-repeat: no-repeat;
+  background-position: center;
+  border-color: color-mix(in srgb, var(--color-primary) 22%, transparent);
+  border-radius: var(--skin-card-radius, 10px);
+}
+/* 按消息级索引取图（data-card-variant 由 ChatMessageList.vue 输出，值域 0~3） */
+[data-skin="on"] [data-card-variant="0"] {
+  background-image: var(--skin-card-1-pattern, none);
+}
+[data-skin="on"] [data-card-variant="1"] {
+  background-image: var(--skin-card-2-pattern, none);
+  border-radius: calc(var(--skin-card-radius, 10px) * 1.4);
+}
+[data-skin="on"] [data-card-variant="2"] {
+  background-image: var(--skin-card-3-pattern, none);
+  border-color: color-mix(in srgb, var(--color-primary) 42%, transparent);
+  border-radius: calc(var(--skin-card-radius, 10px) * 0.6);
+}
+[data-skin="on"] [data-card-variant="3"] {
+  background-image: var(--skin-card-4-pattern, none);
+  border-radius: var(--skin-tag-radius, 8px);
+}
+/* 卡片内头部/分隔线：卡上有图后，原先的淡色描边会看不清，统一提到主色 30% */
+[data-skin="on"] .main-agent-result-head,
+[data-skin="on"] .sub-agent-result-head {
+  border-bottom-color: color-mix(in srgb, var(--color-primary) 30%, transparent);
+}
+/* ⚠️ 卡片铺图后的**文字可读性兜底**（2026-09-13）：
+   壁纸取景图明暗不均，正文直接压在图上会局部看不清（用户对"看不清"的容忍度为零）。
+   这里给「卡片内容区」叠一层极淡的同色衬底 —— 只压 12~18% 的卡片底色，
+   肉眼几乎不损失图案清晰度，但把文字所在的局部拉到稳定对比度。
+   注意：衬底挂在**内容区**而不是卡片外壳，卡片边缘仍能露出完整图案。 */
+[data-skin="on"] .main-agent-result-content,
+[data-skin="on"] .sub-agent-result-content,
+[data-skin="on"] .reasoning-body,
+[data-skin="on"] .agent-response-body {
+  position: relative;
+}
+[data-skin="on"] .main-agent-result-content::before,
+[data-skin="on"] .sub-agent-result-content::before,
+[data-skin="on"] .reasoning-body::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  border-radius: inherit;
+  background: color-mix(in srgb, var(--skin-glass-tint, #1d1d1c) 38%, transparent);
+}
+[data-skin="on"] .main-agent-result-content > *,
+[data-skin="on"] .sub-agent-result-content > *,
+[data-skin="on"] .reasoning-body > * {
+  position: relative;
+  z-index: 1;
+}
+/* 卡片头部：同样给一层薄衬底，保证标题行（图标+名称+按钮）清晰 */
+[data-skin="on"] .main-agent-result-head,
+[data-skin="on"] .sub-agent-result-head,
+[data-skin="on"] .reasoning-header {
+  background: color-mix(in srgb, var(--skin-glass-tint, #1d1d1c) 32%, transparent);
+}
+/* 折叠态回复卡片 + 智能体过程头：同样是"卡片"，一并吃变体图 */
+[data-skin="on"] .agent-response-card.msg-collapsed,
+[data-skin="on"] .agent-process-header {
+  background-color: transparent;
+  background-size: cover;
+  background-repeat: no-repeat;
+  background-position: center;
+  border-color: color-mix(in srgb, var(--color-primary) 22%, transparent);
+  border-radius: var(--skin-card-radius, 12px);
+}
+[data-skin="on"] .agent-response-card.msg-collapsed:nth-of-type(4n + 1),
+[data-skin="on"] .agent-process-header:nth-of-type(4n + 1) {
+  background-image: var(--skin-card-1-pattern, none);
+}
+[data-skin="on"] .agent-response-card.msg-collapsed:nth-of-type(4n + 2),
+[data-skin="on"] .agent-process-header:nth-of-type(4n + 2) {
+  background-image: var(--skin-card-2-pattern, none);
+}
+[data-skin="on"] .agent-response-card.msg-collapsed:nth-of-type(4n + 3),
+[data-skin="on"] .agent-process-header:nth-of-type(4n + 3) {
+  background-image: var(--skin-card-3-pattern, none);
+}
+[data-skin="on"] .agent-response-card.msg-collapsed:nth-of-type(4n),
+[data-skin="on"] .agent-process-header:nth-of-type(4n) {
+  background-image: var(--skin-card-4-pattern, none);
 }
 
 /* ===== 输入框：**透明**，直接透出背景壁纸（2026-09-13 用户要求） =====

@@ -53,6 +53,29 @@ const PARTS = [
   { file: 'dialog-bg', size: [960, 640], q: 82 },
 ];
 
+/**
+ * 卡片变体取景（2026-09-13 用户反馈："卡片样式可以设置多点啊，然后随机多好。。。"）
+ * ------------------------------------------------------------------------------
+ * 需求：同一类卡片（会话行 / 空间条目 / 任务行 / 玻璃卡片 / 消息卡片）不要长得一模一样，
+ * 要有**多套样式**并**随机**分配，形成错落的"卡片墙"观感。
+ *
+ * 做法：从**同一张壁纸的 4 个不同区域**取景（不同方位 + 不同缩放），
+ * 每套皮肤产出 card-1~4-bg.webp 共 4 张卡片底图。
+ *   · 取景方位错开（左中 / 右上 / 右下 / 中左下）→ 每张卡片露出壁纸的不同局部
+ *   · 缩放不同（1.0 / 1.35 / 1.8 / 1.15）→ 纹理疏密不同，进一步拉开差异
+ *   · 尺寸统一 480×320（卡片相对容器小、像素密度够即可）
+ * CSS 侧按 nth-child 循环取图，天然就是"随机感"（且稳定可复现，不用 JS 记状态）。
+ */
+const CARD_VARIANTS = [
+  // [left%, top%, zoom]  —— extract 的 left/top 是像素，下面按壁纸实际尺寸换算
+  { file: 'card-1-bg', left: 0.00, top: 0.10, zoom: 1.0 },
+  { file: 'card-2-bg', left: 0.55, top: 0.00, zoom: 1.35 },
+  { file: 'card-3-bg', left: 0.45, top: 0.50, zoom: 1.8 },
+  { file: 'card-4-bg', left: 0.12, top: 0.42, zoom: 1.15 },
+];
+/** 卡片图输出尺寸（横版小卡） */
+const CARD_SIZE = [480, 320];
+
 /** 暗色变体参数：压暗 + 略降饱和，保证暗色主题下文字（浅色）可读 */
 const DARK_VARIANT = { brightness: 0.62, saturation: 0.85 };
 
@@ -61,6 +84,33 @@ async function partFromBase(baseBuf, size, q) {
   return sharp(baseBuf)
     .resize(size[0], size[1], { fit: 'cover' })
     .webp({ quality: q })
+    .toBuffer();
+}
+
+/**
+ * 卡片变体：从壁纸的指定区域**取景裁切**后缩放。
+ * left/top 是 0~1 的相对比例（相对"先按 zoom 放大后的图"）；
+ * zoom 越大 = 取景窗口越小 = 局部被放得越大、纹理越疏。
+ */
+async function cardFromBase(baseBuf, variant) {
+  const meta = await sharp(baseBuf).metadata();
+  const W = meta.width ?? 1280;
+  const H = meta.height ?? 720;
+  // 放大后再取窗口：窗口尺寸 = 原图 / zoom
+  const winW = Math.max(64, Math.round(W / variant.zoom));
+  const winH = Math.max(64, Math.round(H / variant.zoom));
+  // 相对比例 × 放大后的可用范围，保证窗口不越界
+  const left = Math.min(Math.max(0, variant.left), 1) * Math.max(0, W - winW);
+  const top = Math.min(Math.max(0, variant.top), 1) * Math.max(0, H - winH);
+  return sharp(baseBuf)
+    .extract({
+      left: Math.round(left),
+      top: Math.round(top),
+      width: winW,
+      height: winH,
+    })
+    .resize(CARD_SIZE[0], CARD_SIZE[1], { fit: 'cover' })
+    .webp({ quality: 82 })
     .toBuffer();
 }
 
@@ -91,6 +141,13 @@ async function build(skinDir) {
     // 暗色版：同一张壁纸的暗色变体等比缩放
     const dark = await partFromBase(darkBaseBuf, p.size, p.q);
     await sharp(dark).toFile(join(skinDir, `${p.file}-dark.webp`));
+  }
+  // 卡片变体：4 张不同取景（浅/暗各一套）
+  for (const cv of CARD_VARIANTS) {
+    const light = await cardFromBase(lightBaseBuf, cv);
+    await sharp(light).toFile(join(skinDir, `${cv.file}.webp`));
+    const dark = await cardFromBase(darkBaseBuf, cv);
+    await sharp(dark).toFile(join(skinDir, `${cv.file}-dark.webp`));
   }
   console.log(`OK ${skinId}`);
   return true;

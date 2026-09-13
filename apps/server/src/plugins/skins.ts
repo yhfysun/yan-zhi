@@ -38,6 +38,15 @@ function skinTheme(
     inputPattern: 'input-bg.webp',
     buttonPattern: 'button-bg.webp',
     dialogPattern: 'dialog-bg.webp',
+    // 卡片变体底图（2026-09-13 用户要求"卡片样式可以设置多点啊，然后随机多好"）：
+    // 4 张不同取景的卡片图，CSS 侧按 nth-child 循环取用 → 同一列卡片错落成多套外观。
+    // 由 scripts/build-skin-parts.mjs 的 CARD_VARIANTS 产出（壁纸 4 个方位 × 不同缩放）。
+    cardPatterns: [
+      'card-1-bg.webp',
+      'card-2-bg.webp',
+      'card-3-bg.webp',
+      'card-4-bg.webp',
+    ],
     // 菜单 / 代码模式 / 浏览器外壳：复用同系列真图（同包内已有资源，不新增文件）
     menuPattern: 'dialog-bg.webp',
     codePattern: 'dialog-bg.webp',

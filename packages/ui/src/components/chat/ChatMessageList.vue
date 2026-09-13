@@ -169,7 +169,7 @@
               </div>
               <div class="agent-response-body">
                 <template v-if="round.subAgentResults?.length">
-                  <div v-for="(sr, sri) in round.subAgentResults" :key="'sar-' + ri + '-' + sri" class="sub-agent-result">
+                  <div v-for="(sr, sri) in round.subAgentResults" :key="'sar-' + ri + '-' + sri" class="sub-agent-result" :data-card-variant="(ri + sri) % 4">
                     <div class="sub-agent-result-head" @click="toggleSubAgentResult('sar-' + ri + '-' + sri)">
                       <el-icon :size="13" class="sub-agent-result-icon"><ChatDotRound /></el-icon>
                       <span class="sub-agent-result-name">{{ sr.subAgentName }}</span>
@@ -183,7 +183,7 @@
                     <div v-show="!collapsedSubAgentResults['sar-' + ri + '-' + sri]" class="sub-agent-result-content" v-html="renderMarkdown(sr.finalContent)" @click="handleContentClick"></div>
                   </div>
                 </template>
-                <div v-if="hasMainResult(round, ri)" class="main-agent-result">
+                <div v-if="hasMainResult(round, ri)" class="main-agent-result" :data-card-variant="ri % 4">
                   <div class="main-agent-result-head" @click="toggleMainResult('mar-' + ri)">
                     <el-icon :size="13" class="main-agent-result-icon"><ChatDotRound /></el-icon>
                     <span class="main-agent-result-name">任务结果</span>
@@ -195,7 +195,7 @@
                     <el-icon :size="12" class="main-agent-result-chevron"><ArrowDown v-if="!collapsedMainResults['mar-' + ri]" /><ArrowRight v-else /></el-icon>
                   </div>
                   <div v-show="!collapsedMainResults['mar-' + ri]" class="main-agent-result-content">
-                    <div v-if="round.finalAssistant?.reasoningContent && !round.hasAgentProcess" class="msg-reasoning">
+                    <div v-if="round.finalAssistant?.reasoningContent && !round.hasAgentProcess" class="msg-reasoning" :data-card-variant="(ri + 1) % 4">
                       <div class="reasoning-header" @click="toggleReasoning('agent-fa-' + ri)">
                         <el-icon><CaretRight v-if="!expandedReasoning['agent-fa-' + ri]" /><CaretBottom v-else /></el-icon>
                         <span>思考过程</span>

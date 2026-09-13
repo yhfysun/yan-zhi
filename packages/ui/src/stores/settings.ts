@@ -40,6 +40,14 @@ type SkinSurface = {
   inputPattern?: string;
   buttonPattern?: string;
   dialogPattern?: string;
+  /**
+   * 卡片变体底图（多张，按序号对应 --skin-card-N-pattern）。
+   * 同一类卡片需要"多套样式 + 随机分配"时配置（会话行/空间条目/任务行/玻璃卡片）。
+   * CSS 侧按 nth-child 循环取图 —— 稳定可复现，观感即"随机"。
+   */
+  cardPatterns?: string[];
+  /** 卡片变体底图暗色变体（暗色主题优先；缺省按 <name>-dark.webp 命名约定推导） */
+  cardPatternsDark?: string[];
   /** 菜单底图（应用菜单/下拉菜单/右键菜单） */
   menuPattern?: string;
   /** 菜单底图暗色变体（p.dark 深底，暗色主题优先于 menuPattern） */
@@ -148,6 +156,9 @@ const SKIN_ELEMENT_VARS = [
   '--skin-shadow', '--skin-btn-gradient',
   '--skin-cat-tag-pattern', '--skin-task-list-pattern', '--skin-input-pattern',
   '--skin-btn-pattern', '--skin-dialog-pattern',
+  '--skin-card-1-pattern', '--skin-card-2-pattern', '--skin-card-3-pattern',
+  '--skin-card-4-pattern', '--skin-card-5-pattern', '--skin-card-6-pattern',
+  '--skin-card-count',
   '--skin-menu-pattern', '--skin-code-pattern', '--skin-browser-pattern',
   '--skin-pattern-size', '--skin-pattern-repeat',
 ] as const;
@@ -480,6 +491,8 @@ interface ThemePalette {
     inputPattern?: string;
     buttonPattern?: string;
     dialogPattern?: string;
+    cardPatterns?: string[];
+    cardPatternsDark?: string[];
     menuPattern?: string;
     codePattern?: string;
     browserPattern?: string;
@@ -1042,6 +1055,21 @@ export const useSettingsStore = defineStore('settings', () => {
     setPattern('--skin-input-pattern', themedPattern(sf.inputPattern));
     setPattern('--skin-btn-pattern', themedPattern(sf.buttonPattern));
     setPattern('--skin-dialog-pattern', themedPattern(sf.dialogPattern));
+    // ===== 卡片变体底图（多套样式 + 随机分配）=====
+    // 【2026-09-13 用户反馈："卡片样式可以设置多点啊，然后随机多好。。。"】
+    // 内置皮肤由 build-skin-parts.mjs 从壁纸 4 个不同区域取景生成 card-1~4-bg.webp，
+    // 这里逐张下发为 --skin-card-N-pattern；skin.css 按 nth-child 循环取用，
+    // 同一列卡片自然错开成多套外观（且稳定可复现，不用 JS 记随机状态）。
+    // 未配置 cardPatterns 的插件皮肤：回落单张（taskListPattern）→ 观感与改造前一致。
+    const cardList = dark
+      ? (sf.cardPatternsDark ?? sf.cardPatterns)
+      : sf.cardPatterns;
+    if (cardList && cardList.length) {
+      cardList.forEach((v, i) => {
+        setPattern(`--skin-card-${i + 1}-pattern`, themedPattern(v));
+      });
+      root.setProperty('--skin-card-count', String(Math.min(cardList.length, 6)));
+    }
     // ===== 菜单 / 代码模式 / 浏览器外壳底图 =====
     setPattern('--skin-menu-pattern', themedPattern(sf.menuPattern, sf.menuPatternDark));
     setPattern('--skin-code-pattern', themedPattern(sf.codePattern));

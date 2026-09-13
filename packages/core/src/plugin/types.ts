@@ -120,6 +120,17 @@ export interface ThemePalette {
     buttonPattern?: string;
     /** 弹窗背景图（URL），缺省=无 */
     dialogPattern?: string;
+    /**
+     * 卡片变体底图（多张，按顺序对应 --skin-card-1..N-pattern）。
+     * 用途：同一类卡片（会话行 / 空间条目 / 任务行 / 玻璃卡片 / 消息卡片）
+     * 需要"多套样式 + 随机分配"，避免整列卡片长得一模一样。
+     * CSS 侧按 nth-child 循环取图 —— 稳定可复现（不依赖 JS 记状态），观感即"随机"。
+     * 内置皮肤由 scripts/build-skin-parts.mjs 从壁纸 4 个不同区域取景生成
+     * card-1-bg.webp ~ card-4-bg.webp；缺省时回落 taskListPattern / 无图。
+     */
+    cardPatterns?: string[];
+    /** 卡片变体底图暗色变体（暗色主题优先；缺省按 <name>-dark.webp 约定推导） */
+    cardPatternsDark?: string[];
     /** 菜单底图（应用菜单/下拉菜单/右键菜单） */
     menuPattern?: string;
     /** 菜单底图暗色变体（暗色主题优先于 menuPattern） */
