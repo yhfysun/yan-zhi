@@ -360,7 +360,10 @@ export class GitService {
       const out = await this.open(repo).raw([
         'rev-list', '--left-right', '--count', `${ref}...@{upstream}`,
       ]);
-      const [behind, ahead] = out.trim().split(/\s+/).map((n) => Number(n) || 0);
+      // rev-list --left-right --count A...B 输出「A侧数 B侧数」：A=本地 ref，
+      // 第一个数是 ahead（本地独有=未推送），第二个是 behind（上游独有=可拉取）。
+      // 曾把两者装反，导致未推送显示成 ↓N「落后远程」。
+      const [ahead, behind] = out.trim().split(/\s+/).map((n) => Number(n) || 0);
       return { ahead, behind };
     } catch {
       // 无上游（未 push / 本地新仓库）时无法计算，返回 0
@@ -374,6 +377,41 @@ export class GitService {
     this.assertWithinWorkspace(repo, ws);
     if (!files.length) return;
     await this.open(repo).raw(['reset', 'HEAD', '--', ...files]);
+  }
+
+  /** 把路径追加进仓库根目录 .gitignore（去重；文件不存在则创建）。目录项保留尾部斜杠。 */
+  async ignore(repo: string, entries: string[]): Promise<{ added: string[]; skipped: string[] }> {
+    const ws = await this.getWorkspaceDir();
+    this.assertWithinWorkspace(repo, ws);
+    const wanted = Array.from(
+      new Set(
+        (entries || [])
+          .map((p) => String(p).trim().replace(/\\/g, '/').replace(/^\/+/, ''))
+          .filter(Boolean),
+      ),
+    );
+    if (!wanted.length) return { added: [], skipped: [] };
+    const giPath = path.join(repo, '.gitignore');
+    let raw = '';
+    try {
+      raw = await fs.readFile(giPath, 'utf-8');
+    } catch {
+      raw = ''; // 不存在则创建
+    }
+    const have = new Set(
+      raw.split(/\r?\n/).map((l) => l.trim()).filter(Boolean),
+    );
+    const added: string[] = [];
+    for (const p of wanted) {
+      if (have.has(p)) continue;
+      have.add(p);
+      added.push(p);
+    }
+    if (added.length) {
+      const base = raw.length ? (raw.endsWith('\n') ? raw : raw + '\n') : '';
+      await fs.writeFile(giPath, base + added.join('\n') + '\n', 'utf-8');
+    }
+    return { added, skipped: wanted.filter((p) => !added.includes(p)) };
   }
 
   /** 新建并切换到指定分支（git checkout -b） */

@@ -249,6 +249,15 @@ router.post('/unstage', async (req: Request, res: Response) => {
   }
 });
 
+// POST /git/ignore —— 把路径追加进仓库 .gitignore（去重），返回 { added, skipped }
+router.post('/ignore', async (req: Request, res: Response) => {
+  try {
+    res.json({ data: await gitService.ignore(req.body.repo, req.body.paths || []) });
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message });
+  }
+});
+
 router.post('/createBranch', async (req: Request, res: Response) => {
   try {
     await gitService.createBranch(req.body.repo, req.body.name);

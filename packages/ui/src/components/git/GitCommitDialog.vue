@@ -179,6 +179,9 @@
       <div class="gcd-menu-item" @click="menuStage">
         <el-icon><Plus /></el-icon><span>{{ menu.file?.staged ? '取消暂存' : '暂存此文件' }}</span>
       </div>
+      <div v-if="menu.file?.statusClass === 'untracked'" class="gcd-menu-item" @click="menuIgnore">
+        <el-icon><Hide /></el-icon><span>加入忽略</span>
+      </div>
       <div class="gcd-menu-divider" />
       <div class="gcd-menu-item" @click="menuCopyPath">
         <el-icon><CopyDocument /></el-icon><span>复制路径</span>
@@ -195,7 +198,7 @@ import { computed, ref, watch, onBeforeUnmount } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import {
   Share, Search, Check, ArrowDown, MagicStick, Loading,
-  View, Plus, CopyDocument, RefreshLeft, WarningFilled,
+  View, Plus, CopyDocument, RefreshLeft, WarningFilled, Hide,
 } from '@element-plus/icons-vue';
 import { useGitStore, type GitNumstatEntry, type GitStatusFile } from '../../stores/git';
 import { useGitAi, AI_COMMIT_RULES } from '../../composables/git/useGitAi';
@@ -395,6 +398,11 @@ async function load(): Promise<void> {
       const wd = f.working_dir || ' ';
       const merged = UNMERGED.has(idx + wd);
       const n = numMap.get(f.path);
+      // 未跟踪：simple-git 两侧都是 '?'；按单条输出且 staged=false（否则右键「暂存」会误走取消暂存）
+      if (idx === '?' || wd === '?') {
+        list.push(mk(f.path, '?', false, 0, 0));
+        continue;
+      }
       if (idx !== ' ' || merged) {
         list.push(mk(f.path, merged ? 'U' : idx, true, n?.added ?? 0, n?.deleted ?? 0));
       }
@@ -637,6 +645,16 @@ async function menuStage(): Promise<void> {
     : await gitStore.stageFiles(currentRepo.value, [f.path]);
   if ('error' in res) ElMessage.error(res.error);
   else void load();
+}
+/** 未跟踪文件加入 .gitignore，成功后重载（从列表消失） */
+async function menuIgnore(): Promise<void> {
+  const f = menu.value.file; closeMenu();
+  if (!f) return;
+  const res = await gitStore.ignoreFiles(currentRepo.value, [f.path]);
+  if ('error' in res) { ElMessage.error(res.error); return; }
+  if (res.data.added.length) ElMessage.success('已加入 .gitignore');
+  else ElMessage.info('该路径已在 .gitignore 中');
+  void load();
 }
 function menuCopyPath(): void {
   const f = menu.value.file; closeMenu();

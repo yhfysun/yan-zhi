@@ -488,7 +488,7 @@ import { ElMessage, ElMessageBox } from 'element-plus';
 import {
   Refresh, RefreshRight, RefreshLeft, Plus, Minus, Document, CopyDocument, Delete, Edit,
   PriceTag, Box, DArrowRight, Check, Search, MagicStick, ArrowDown, MoreFilled, Switch,
-  Loading, Upload, Download, CaretRight, CaretBottom, View, Fold, Expand, FullScreen,
+  Loading, Upload, Download, CaretRight, CaretBottom, View, Fold, Expand, FullScreen, Hide,
 } from '@element-plus/icons-vue';
 import { useGitStore, type GitNumstatEntry, type GitAheadBehind } from '../../stores/git';
 import { useSettingsStore } from '../../stores/settings';
@@ -578,6 +578,11 @@ const changedFiles = computed<ChangedFile[]>(() => {
     const idx = f.index || ' ';
     const wd = f.working_dir || ' ';
     const n = numMap.get(f.path);
+    // 未跟踪：simple-git 两侧都是 '?'，两个条件都会命中导致重复；只出一条进未跟踪组
+    if (idx === '?' || wd === '?') {
+      out.push({ path: f.path, statusChar: '?', statusClass: 'untracked', staged: false, added: 0, deleted: 0 });
+      continue;
+    }
     if (idx !== ' ') out.push({ path: f.path, statusChar: idx, statusClass: STATUS_CLASS[idx] || 'modified', staged: true, added: n?.added ?? 0, deleted: n?.deleted ?? 0 });
     if (wd !== ' ') out.push({ path: f.path, statusChar: wd, statusClass: STATUS_CLASS[wd] || 'modified', staged: false, added: n?.added ?? 0, deleted: n?.deleted ?? 0 });
   }
@@ -893,6 +898,17 @@ function onFileContextMenu(e: MouseEvent, f: ChangedFile) {
     { label: '打开差异', icon: Document, handler: () => openDiff(f) },
     { label: f.staged ? '取消暂存' : '暂存', icon: f.staged ? Minus : Plus, handler: () => toggleStage(f) },
   ];
+  // 未跟踪文件可加入 .gitignore（已跟踪文件对 gitignore 不生效，不提供）
+  const untrackedSel = multi
+    ? Array.from(new Set(changedFiles.value.filter((x) => selected.value.includes(x.path) && x.statusChar === '?').map((x) => x.path)))
+    : [f.path];
+  if (f.statusChar === '?' && untrackedSel.length) {
+    items.push({
+      label: multi ? `加入忽略选中 (${untrackedSel.length})` : '加入忽略',
+      icon: Hide, divided: true,
+      handler: () => doIgnore(untrackedSel),
+    });
+  }
   if (multi) {
     items.push({ label: `暂存选中 (${selected.value.length})`, icon: Plus, divided: true, handler: batchStage });
     items.push({ label: `取消暂存选中 (${selected.value.length})`, icon: Minus, handler: batchUnstage });
@@ -903,6 +919,19 @@ function onFileContextMenu(e: MouseEvent, f: ChangedFile) {
   }
   items.push({ label: '复制路径', icon: CopyDocument, handler: () => copyText(f.path) });
   openContextMenu(e, items);
+}
+/** 把未跟踪路径追加进仓库 .gitignore，成功后刷新（文件从未跟踪列表消失） */
+async function doIgnore(paths: string[]) {
+  if (!paths.length || !activeRepo.value) return;
+  try {
+    const res = await gitStore.ignoreFiles(activeRepo.value, paths);
+    if ('error' in res) { ElMessage.error(res.error || '加入忽略失败'); return; }
+    if (res.data.added.length) ElMessage.success(`已加入 .gitignore（${res.data.added.length} 项）`);
+    else ElMessage.info('所选路径已在 .gitignore 中');
+    await refreshAll(true);
+  } catch (e) {
+    ElMessage.error((e as Error).message || '加入忽略失败');
+  }
 }
 function onBranchContextMenu(e: MouseEvent, b: string) {
   const isCurrent = b === currentBranch.value;

@@ -178,6 +178,11 @@ export const useGitStore = defineStore('git', () => {
     return api.post('/git/unstage', { repo, files });
   }
 
+  /** 把路径追加进仓库 .gitignore（后端去重；目录项带尾斜杠）。调用方按 'error' in res 判错 */
+  async function ignoreFiles(repo: string, paths: string[]) {
+    return api.post<{ added: string[]; skipped: string[] }>('/git/ignore', { repo, paths });
+  }
+
   async function createBranch(repo: string, name: string) {
     return api.post('/git/createBranch', { repo, name });
   }
@@ -340,6 +345,7 @@ export const useGitStore = defineStore('git', () => {
     fetchTree,
     stageFiles,
     unstageFiles,
+    ignoreFiles,
     createBranch,
     mergeBranch,
     abortMerge,
