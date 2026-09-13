@@ -5,7 +5,7 @@
 | 序号 | 功能 | 状态 | 说明 |
 |------|------|------|------|
 | 1 | 聊天工作台 | ✅ 已完成 | 流式对话、Markdown渲染、多会话、工具调用可视化 |
-| 2 | 模型平台配置 | ⚠️ 部分完成 | 仅 OpenAI 协议可用，Anthropic 协议后端未实现 |
+| 2 | 模型平台配置 | ✅ 已完成 | OpenAI + Anthropic 双协议（核心 LlmClient / 后端 llm-proxy / 记忆整理 / 定时任务均支持，Anthropic 不支持 embeddings） |
 | 3 | MCP 服务管理 | ✅ 已完成 | stdio/SSE/HTTP，保持不变 |
 | 4 | Skill 本地管理 | ✅ 已完成 | 内置 + 用户自建，Markdown |
 | 5 | 智能体管理 | ✅ 已完成 | Vue Flow 画布，多节点 |

@@ -2365,6 +2365,64 @@ function createChat() {
     } catch {}
   }
 
+  // ========== 批量模式：通过右键进入（不再有「批量」按钮） ==========
+  /** 进入批量模式，并把指定会话加入已选集合 */
+  function enterBatchSelect(id: string) {
+    batchMode.value = true;
+    const next = new Set(selectedConvIds.value);
+    next.add(id);
+    selectedConvIds.value = next;
+  }
+  /** 退出批量模式并清空已选 */
+  function exitBatchMode() {
+    batchMode.value = false;
+    selectedConvIds.value = new Set();
+  }
+  /** 空白区右键「批量管理」：仅切换批量模式开关（开启时不清空已选，便于连续操作） */
+  function toggleBatchMode() {
+    if (batchMode.value) exitBatchMode();
+    else batchMode.value = true;
+  }
+  /** 批量模式下点击目录节点：切换选中该目录下全部会话（全选/全不选） */
+  function toggleSelectAllInSpace(spaceId: string) {
+    const list = conversationsBySpace.value[spaceId] || [];
+    const allSelected = list.length > 0 && list.every((c) => selectedConvIds.value.has(c.id));
+    const next = new Set(selectedConvIds.value);
+    if (allSelected) {
+      for (const c of list) next.delete(c.id);
+    } else {
+      for (const c of list) next.add(c.id);
+    }
+    selectedConvIds.value = next;
+  }
+  /** 批量模式下点击根节点（任务）：切换选中其下全部会话（全选/全不选） */
+  function toggleSelectAllInRoot() {
+    const list = rootConversations.value;
+    const allSelected = list.length > 0 && list.every((c) => selectedConvIds.value.has(c.id));
+    const next = new Set(selectedConvIds.value);
+    if (allSelected) {
+      for (const c of list) next.delete(c.id);
+    } else {
+      for (const c of list) next.add(c.id);
+    }
+    selectedConvIds.value = next;
+  }
+  /** 给定一组会话，返回整组勾选状态：checked=全选, indeterminate=部分选 */
+  function selectState(convs?: { id: string }[]) {
+    if (!convs || convs.length === 0) return { checked: false, indeterminate: false };
+    let sel = 0;
+    for (const c of convs) if (selectedConvIds.value.has(c.id)) sel++;
+    return { checked: sel === convs.length, indeterminate: sel > 0 && sel < convs.length };
+  }
+  /** 目录（空间）节点的整组勾选状态 */
+  function spaceSelectState(spaceId: string) {
+    return selectState(conversationsBySpace.value[spaceId]);
+  }
+  /** 根节点（任务）的整组勾选状态 */
+  function rootSelectState() {
+    return selectState(rootConversations.value);
+  }
+
   async function saveMountToDb(convId: string) {
     const serverIds = Object.keys(mountToolSelection).filter(sid => (mountToolSelection[sid] || []).length > 0);
     if (serverIds.length === 0) return;
@@ -2436,7 +2494,9 @@ function createChat() {
     chatModels, modelGroups, mountableServers, tokenCount, contextLimit, tokenPercent, tokenBarColor, canSend,
     openEditAgent, openCreateAgent, onAgentSaved, onAgentDeleted,
     showSpaceEdit, spaceEditForm, spaceMenuTarget, selectSpace, createSpaceQuick, createSpaceFromDir, showSpaceDirPicker, openSpaceEdit, openSpaceCreate, saveSpaceEdit, deleteSpaceConfirm, openSpaceMenu, closeSpaceMenu, moveConvToSpace,
-    treeMenu, openTreeMenu, treeMenuNewTask, treeMenuNewSpace,
+    treeMenu, openTreeMenu, treeMenuNewTask, treeMenuNewSpace, closeTreeMenu,
+    enterBatchSelect, exitBatchMode, toggleBatchMode, toggleSelectAllInSpace, toggleSelectAllInRoot,
+    spaceSelectState, rootSelectState,
     fileCategories, previewInPopup, showConvFileMenu, reclassifyConvFile,
     onAgentSwitch, onModelChange,
     parseConfigCard, displayAssistantContent, getEditPlatform, getEditReason, onConfigSaved,

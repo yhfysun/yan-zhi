@@ -16,9 +16,8 @@
       <div class="conv-header">
         <el-input v-model="search" placeholder="搜索任务" size="small" clearable :prefix-icon="Search" />
         <div class="conv-header-row">
-          <el-button size="small" @click="batchMode = !batchMode" :type="batchMode ? 'warning' : ''" style="flex:1">
-            {{ batchMode ? '取消' : '批量' }}
-          </el-button>
+          <span v-if="!batchMode" class="batch-hint">右键会话进入批量，可整目录/整任务勾选</span>
+          <el-button v-else size="small" type="warning" style="flex:1" @click="exitBatchMode">退出批量</el-button>
         </div>
       </div>
 
@@ -29,6 +28,14 @@
             <el-icon class="tree-caret" :class="{ expanded: !rootCollapsed }"><CaretRight /></el-icon>
             <el-icon class="tree-node-icon"><ChatDotRound /></el-icon>
             <span class="tree-node-label">任务</span>
+            <el-checkbox
+              v-if="batchMode"
+              class="tree-select-all"
+              :model-value="rootSelectState().checked"
+              :indeterminate="rootSelectState().indeterminate"
+              @click.stop
+              @change="toggleSelectAllInRoot"
+            />
             <span class="tree-count">{{ rootConversations.length }}</span>
             <el-icon class="tree-add-icon" @click.stop="startNewChat(null)"><Plus /></el-icon>
           </div>
@@ -39,7 +46,7 @@
               class="conv-item"
               :class="{ active: conv.id === store.currentConvId, pinned: conv.pinned, selecting: batchMode }"
               @click="batchMode ? toggleConvSelect(conv.id) : (drawerOpen = false, selectConv(conv.id))"
-              @contextmenu.prevent="!batchMode && openConvMenu($event, conv)"
+              @contextmenu.prevent="openConvMenu($event, conv)"
               @dblclick="!batchMode && startRename(conv)"
             >
               <el-checkbox v-if="batchMode" :model-value="selectedConvIds.has(conv.id)" @click.stop @change="toggleConvSelect(conv.id)" />
@@ -74,6 +81,14 @@
             <el-icon class="tree-caret" :class="{ expanded: !spaceCollapsed[sp.id] }"><CaretRight /></el-icon>
             <el-icon class="tree-node-icon"><FolderOpened /></el-icon>
             <span class="tree-node-label" :title="sp.dirPath || sp.name">{{ sp.name }}</span>
+            <el-checkbox
+              v-if="batchMode"
+              class="tree-select-all"
+              :model-value="spaceSelectState(sp.id).checked"
+              :indeterminate="spaceSelectState(sp.id).indeterminate"
+              @click.stop
+              @change="toggleSelectAllInSpace(sp.id)"
+            />
             <span class="tree-count">{{ conversationsBySpace[sp.id]?.length || 0 }}</span>
             <el-icon class="tree-add-icon" @click.stop="startNewChat(sp.id)"><Plus /></el-icon>
           </div>
@@ -84,7 +99,7 @@
               class="conv-item"
               :class="{ active: conv.id === store.currentConvId, pinned: conv.pinned, selecting: batchMode }"
               @click="batchMode ? toggleConvSelect(conv.id) : (drawerOpen = false, selectConv(conv.id))"
-              @contextmenu.prevent="!batchMode && openConvMenu($event, conv)"
+              @contextmenu.prevent="openConvMenu($event, conv)"
               @dblclick="!batchMode && startRename(conv)"
             >
               <el-checkbox v-if="batchMode" :model-value="selectedConvIds.has(conv.id)" @click.stop @change="toggleConvSelect(conv.id)" />
@@ -130,6 +145,13 @@
 
   <Teleport to="body">
 <ul v-if="ctxMenu.visible" class="ctx-menu" :style="{ top: ctxMenu.y + 'px', left: ctxMenu.x + 'px' }">
+    <li @click="(batchMode && selectedConvIds.has(ctxMenu.conv!.id) ? toggleConvSelect(ctxMenu.conv!.id) : enterBatchSelect(ctxMenu.conv!.id)); closeCtxMenu()">
+      <el-icon><Tools /></el-icon>{{ batchMode && selectedConvIds.has(ctxMenu.conv!.id) ? '移出批量选择' : '批量选择' }}
+    </li>
+    <li v-if="batchMode" @click="exitBatchMode()">
+      <el-icon><Close /></el-icon>退出批量模式
+    </li>
+    <li class="ctx-sep" />
     <li @click="togglePin(ctxMenu.conv)">
       <el-icon><Star /></el-icon>{{ ctxMenu.conv?.pinned ? '取消置顶' : '置顶' }}
     </li>
@@ -219,6 +241,10 @@
   <!-- 会话树空白区右键菜单 -->
   <Teleport to="body">
 <ul v-if="treeMenu.visible" class="ctx-menu" :style="{ top: treeMenu.y + 'px', left: treeMenu.x + 'px' }">
+    <li @click="toggleBatchMode(); closeTreeMenu()">
+      <el-icon><Tools /></el-icon>{{ batchMode ? '退出批量模式' : '批量管理' }}
+    </li>
+    <li class="ctx-sep" />
     <li @click="treeMenuNewTask">
       <el-icon><ChatDotRound /></el-icon>新建任务
     </li>
@@ -233,7 +259,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount } from 'vue';
 import {
-  Plus, ChatDotRound, Star, EditPen, Delete, FolderOpened, ArrowRight, Close, Search, CaretRight, Timer, Memo,
+  Plus, ChatDotRound, Star, EditPen, Delete, FolderOpened, ArrowRight, Close, Search, CaretRight, Timer, Memo, Tools,
 } from '@element-plus/icons-vue';
 import { ElMessage } from 'element-plus';
 import { useChat } from '../../composables/chat/useChat';
@@ -249,7 +275,9 @@ const {
   spaceStore, openSpaceMenu, openSpaceEdit, showSpaceEdit, spaceEditForm,
   saveSpaceEdit, deleteSpaceConfirm, spaceMenuTarget, closeSpaceMenu, moveConvToSpace, ctxMenu,
   togglePin, deleteConv, closeCtxMenu,
-  treeMenu, openTreeMenu, treeMenuNewTask, treeMenuNewSpace,
+  treeMenu, openTreeMenu, treeMenuNewTask, treeMenuNewSpace, closeTreeMenu,
+  enterBatchSelect, exitBatchMode, toggleBatchMode, toggleSelectAllInSpace, toggleSelectAllInRoot,
+  spaceSelectState, rootSelectState,
 } = useChat();
 
 // ===== 空间目录选择：浏览本地目录，选完自动回填路径，名称留空时以目录名带出 =====

@@ -4,6 +4,7 @@
 import { v4 as uuid } from 'uuid';
 import { db } from '../db.js';
 import { createTask, buildSystemPromptForBackend, buildToolsForBackend, loadAgentModelParams } from '../llm-task-manager.js';
+import { buildAnthropicBody } from './anthropic-body.js';
 
 const MINUTE_MS = 60_000;
 
@@ -246,7 +247,7 @@ async function callModel(
     url = `${baseUrl}/v1/messages`;
     headers['x-api-key'] = apiKey;
     headers['anthropic-version'] = '2023-06-01';
-    body = { model: model.model_id, max_tokens: 2048, messages, stream: false };
+    body = buildAnthropicBody(messages, model.model_id, 2048);
   } else {
     url = `${baseUrl}/v1/chat/completions`;
     if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;

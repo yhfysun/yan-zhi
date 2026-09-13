@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { db } from '../db.js';
 import { embedText } from './ollama-embed.js';
 import { vecToBytes, bumpMemoryCache, parseExtractedItems } from './memory-service.js';
+import { buildAnthropicBody } from './anthropic-body.js';
 
 const TICK_MS = 5 * 60_000;
 const MAX_CANDIDATES = 200;
@@ -78,7 +79,7 @@ async function callModel(model: any, messages: Array<{ role: string; content: st
     url = `${baseUrl}/v1/messages`;
     headers['x-api-key'] = model.api_key_enc || '';
     headers['anthropic-version'] = '2023-06-01';
-    body = { model: model.model_id, max_tokens: 2048, messages, stream: false };
+    body = buildAnthropicBody(messages, model.model_id, 2048);
   } else {
     url = `${baseUrl}/v1/chat/completions`;
     if (model.api_key_enc) headers['Authorization'] = `Bearer ${model.api_key_enc}`;

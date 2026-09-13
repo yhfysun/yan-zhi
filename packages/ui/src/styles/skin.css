@@ -722,17 +722,14 @@ html[data-skin="on"] .home-page {
    · 横向渐变：左暗 → 中亮(主色) → 右暗，模拟金属棒反光
    · 两端 8%~14% / 86%~92% 各加一道深色环（仿金箍棒两端的金色纹带）
    · hover/active 用 filter: brightness 而非换底色，保持纹饰完整
-   · 保留 --scrollbar-thumb 作为悬停态对照色（hover 切到非装饰态，提亮） */
-[data-skin="on"] ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
-}
-[data-skin="on"] ::-webkit-scrollbar-track {
-  background: transparent;
-}
-[data-skin="on"] ::-webkit-scrollbar-thumb {
-  /* 两端装饰带（深色环）+ 金属棒身（主色高光渐变） */
-  background:
+
+   关键修复：渐变提取到 --skin-scrollbar-thumb-pattern 变量，让 scoped CSS 里所有
+   .xxx::-webkit-scrollbar-thumb 都能消费它（金箍棒不再只走全局，被覆盖就失效）。
+   之前只改了全局规则，chat.css .file-panel-list 等 scoped 覆盖后还是灰方块。
+   同时下方 chat.css / overlay.css 等 scoped 滚动条全部改成 var(--skin-scrollbar-thumb-pattern)
+   + 999px，由本变量统一驱动；sf.scrollbarPattern 可整张皮肤换武器风格。*/
+[data-skin="on"] {
+  --skin-scrollbar-thumb-pattern:
     linear-gradient(90deg,
       transparent 0%, transparent 8%,
       rgba(0, 0, 0, 0.45) 8%, rgba(0, 0, 0, 0.45) 14%,
@@ -745,15 +742,26 @@ html[data-skin="on"] .home-page {
       color-mix(in srgb, var(--color-primary) 70%, #FFF 40%),
       color-mix(in srgb, var(--color-primary) 70%, #000 15%)
     );
-  border-radius: 999px;
+}
+[data-skin="on"] ::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+[data-skin="on"] ::-webkit-scrollbar-track {
+  background: transparent;
+}
+/* 关键：!important 强制全局胜出 scoped 覆盖（chat.css 的 .file-panel-list 等
+   都有同特异性 (0,2,0) 的 thumb 规则，仅靠顺序不可靠）*/
+[data-skin="on"] ::-webkit-scrollbar-thumb {
+  background: var(--skin-scrollbar-thumb-pattern) !important;
+  border-radius: 999px !important;
 }
 [data-skin="on"] ::-webkit-scrollbar-thumb:hover {
-  /* hover：换为纯主色底 + 亮度提升，让纹饰淡出 */
-  background: var(--scrollbar-thumb-hover);
+  background: var(--scrollbar-thumb-hover) !important;
   filter: brightness(1.15);
 }
 [data-skin="on"] ::-webkit-scrollbar-thumb:active {
-  background: var(--scrollbar-thumb-active);
+  background: var(--scrollbar-thumb-active) !important;
   filter: brightness(1.25);
 }
 /* Firefox */
