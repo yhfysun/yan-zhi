@@ -5,6 +5,8 @@
 // surface 块（玻璃面板/边框/圆角/按钮）由 settings.applyTheme 下发为 CSS 变量，skin.css 消费。
 import { getPluginManager } from '@yan-zhi/core';
 import type { PluginManifest, PluginModule, ThemePalette } from '@yan-zhi/core';
+import { materialFor } from './scrollbar-materials.js';
+import { buildScrollbarAssets } from './scrollbar-svg.js';
 
 /** 皮肤图片文件约定：wallpaper.webp 浅色壁纸，wallpaper-dark.webp 深色壁纸（构建脚本派生），预览图复用浅色壁纸 */
 const WALLPAPER = 'wallpaper.webp';
@@ -51,16 +53,23 @@ function skinTheme(
     menuPattern: 'dialog-bg.webp',
     codePattern: 'dialog-bg.webp',
     browserPattern: 'task-list-bg.webp',
-    // 滚动条纹理（2026-09-13 新增）：皮肤作者不必逐套配 scrollbarPattern，
-    // 这里给一条「金属棒 + 斜向细纹」的通用纹理，颜色跟随各皮肤 color-primary 自动出效果，
-    // 与 skin.css 内置金箍棒兜底区分开（此处显式下发 = 覆盖兜底）。
-    // 8px 宽滚动条上只做两层：斜纹（质感） + 主色横向金属渐变（光泽）。
-    scrollbarPattern:
-      'repeating-linear-gradient(45deg, rgba(255,255,255,0.22) 0 2px, transparent 2px 6px),' +
-      'linear-gradient(90deg,' +
-      ' color-mix(in srgb, var(--color-primary) 55%, #000 30%),' +
-      ' color-mix(in srgb, var(--color-primary) 55%, #FFF 45%),' +
-      ' color-mix(in srgb, var(--color-primary) 55%, #000 30%))',
+    // 滚动条造型（2026-09-13 晚 · 第四版，定稿 —— 材质剖面模型，且**每套皮肤一套配色**）：
+    // 用户原话："横向效果不是很好啊多搞几个样式配色？每个皮肤一个？"
+    //
+    // 模型演进（前三版全被否，根因是模型错，不是配色）：
+    //   v1/v2/v3 都把滚动条当"一根完整的金箍棒"（顶箍/中身/底箍），
+    //   但 thumb 长度 = 视口/内容比，**不确定**；内容略超时 thumb 仅 30~50px，
+    //   两个金箍就占满，中间棍身无处显示 → "金块 + 空隙 + 金块"，
+    //   即用户截图里的"一串断开的小方块"。横向更糟：复用竖版 body 再 repeat-x，
+    //   每片接缝处出现黑缝，彻底碎成方块。
+    // v4 改成"材质剖面"：节拍 = [金箍带 6px][棍身 18px]，沿轴 repeat 平铺，
+    //   **无论 thumb 多长**都是"箍 + 身 + 箍 + 身"的连续棍身。
+    //
+    // ⚠️ 竖版/横版必须分开素材（6 个字段）：竖版沿 Y 平铺（沿 X 做金属渐变），
+    //    横版沿 X 平铺（沿 Y 做金属渐变）。复用竖版给横条必出黑缝。
+    // ⚠️ 材质配色按皮肤取（见 scrollbar-materials.ts），结构固定、只换颜色 ——
+    //    这样横竖观感统一，也不破坏"这是根棒子"的识别度。
+    ...buildScrollbarAssets(materialFor(id)),
   };
   return {
     id,

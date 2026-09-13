@@ -102,12 +102,34 @@ export interface ThemePalette {
     /** 自定义滚动条 thumb 色（覆盖默认主色低 alpha），缺省=主色 20% */
     scrollbarThumb?: string;
     /**
-     * 自定义滚动条 thumb 图案（CSS background-image 完整值，如 linear-gradient(...)）。
-     * 用于实现「棍类武器风格」金箍棒/狼牙棒/蟠龙棍 等差异化的金属质感 +
-     * 两端装饰带。缺省 = 金箍棒默认（金色金属光泽 + 两端深色环）。
-     * 注意：仅 8px 细滚动条上的纹理，复杂图样不可用，建议 1~2 段 linear-gradient 即可。
+     * 滚动条「棍身」贴图（**竖版**，CSS background-image 完整值）。
+     * 2026-09-13 第四版定稿 —— **材质剖面模型**：
+     *   滚动条不是「一个物件」（前三版画顶箍/中身/底箍，全被否），而是「一段材质」。
+     *   一个无缝循环节拍 = [金箍带 6px][乌铁段 18px]，沿轴 repeat 平铺。
+     *   于是**无论 thumb 多长**（thumb 长度=视口/内容比，不确定）都是连续棍身。
+     *
+     * ⚠️ 竖版 / 横版必须**分素材**（下列 6 个字段一一对应）：
+     *   · 竖版 body 沿 Y 平铺 → 瓷砖内沿 X 做金属渐变（暗-亮-暗）
+     *   · 横版 body 沿 X 平铺 → 瓷砖内沿 Y 做金属渐变
+     *   若拿竖版 body 去 repeat-x（早期错法），平铺轴 X 上存在暗边
+     *   → 每片瓷砖接缝处出现黑缝，碎成「一串小方块」（用户已截图反馈）。
+     *
+     * 实现要点：
+     *  · 必须 `url("data:image/svg+xml;base64,...")`（base64），未编码的 `;utf8,` 会静默失效。
+     *  · 一律写在**独立的 background-image 长属性**里，不要塞进 `background:` 简写。
+     *  · 6 个字段建议**一起给**；缺省时回落 skin.css 内置默认（同样是 6 层变量）。
      */
-    scrollbarPattern?: string;
+    scrollbarVBody?: string;
+    /** 竖条起点端头（金箍收口，6px），缺省=内置默认 */
+    scrollbarVCap?: string;
+    /** 竖条终点端头（金箍收口镜像，6px），缺省=内置默认 */
+    scrollbarVCapFlip?: string;
+    /** 滚动条棍身贴图（**横版**，沿 X 无缝平铺），缺省=内置默认 */
+    scrollbarHBody?: string;
+    /** 横条左侧端头（6px），缺省=内置默认 */
+    scrollbarHCap?: string;
+    /** 横条右侧端头（6px），缺省=内置默认 */
+    scrollbarHCapFlip?: string;
     /** 自定义分割线色（el-divider / border-bottom 分隔），缺省=glass-border */
     dividerColor?: string;
     /** 分类标签背景图案（CSS background-image 或 URL），跟主背景图呼应，缺省=透明 */

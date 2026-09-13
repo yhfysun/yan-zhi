@@ -360,6 +360,15 @@ html[data-skin="on"] .home-page {
 [data-skin="on"] .url-bar {
   background-color: transparent !important;
   background-image: none !important;
+  /* 搜索框/地址栏此前只有投影没有边框（投影单独立体感不足，深色壁纸上尤其难辨边界）→ 补细边框。
+     .input-box 自己也命中这条，但它下面有一条更具体的规则给了同款边框，不冲突。 */
+  border: 1px solid var(--skin-input-border, var(--glass-border, var(--color-border))) !important;
+}
+[data-theme="light"][data-skin="on"] .f-keyword-wrap,
+[data-theme="light"][data-skin="on"] .lm-search-wrap,
+[data-theme="light"][data-skin="on"] .tab-search-wrap,
+[data-theme="light"][data-skin="on"] .url-bar {
+  border-color: var(--color-border) !important;
 }
 
 /* 按钮类（浏览器/文件页原生按钮）：铺按钮底图（不加底色层，图原样） */
@@ -413,6 +422,22 @@ html[data-skin="on"] .home-page {
 [data-skin="on"] .csb-bar {
   border-color: var(--glass-border);
 }
+/* 状态栏（.csb-bar —— 底部显示 dev0.1 / Ln,Col / UTF-8 那条）：
+   2026-09-13 用户反馈「下面这个黑的是啥」—— 组件里用的是 --color-surface-hover，
+   皮肤模式下没有覆盖它，于是取了暗色主题默认 #262624（一块突兀的深灰）。
+   这里补玻璃背板，跟三栏面板材质一致。
+   ⚠️ 组件是 scoped 样式、后于本文件注入，且它写的是 `background:` 简写（同特异性），
+   所以必须带 !important 才能赢（否则又被 scoped 压回去）。 */
+[data-skin="on"] .csb-bar {
+  background: var(--glass-bg) !important;
+  background-image: var(--skin-menu-pattern, none) !important;
+  background-size: var(--skin-pattern-size, cover) !important;
+  background-repeat: var(--skin-pattern-repeat, no-repeat) !important;
+  background-position: center !important;
+  color: var(--color-text-secondary);
+  backdrop-filter: var(--glass-filter);
+  -webkit-backdrop-filter: var(--glass-filter);
+}
 [data-skin="on"] .cp-top,
 [data-skin="on"] .cp-side,
 [data-skin="on"] .cp-chat,
@@ -426,8 +451,17 @@ html[data-skin="on"] .home-page {
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
 }
+/* ⚠️ 2026-09-13 用户反馈：标签栏那一条看着是一块实心色带（"这块设计成透明的？"）。
+   定稿：标签栏 .cea-tabs / 左右滚动箭头**完全透明**，壁纸直接透上来，
+   边界只留组件内 1px inset 阴影细线（不再是整条底色）。
+   注意 .cea-tabs 的背景必须显式置 transparent —— 组件是 scoped 样式、后于本文件注入，
+   若这里不给规则，scoped 的 `background: transparent` 会赢；但历史上本文件曾把它写成
+   var(--glass-bg-hover) 造成色带，所以此处保留显式声明锁死，防止回归。
+   控制台 .cea-console 仍保留玻璃背板：它承载终端文字，需要一层底衬保证可读性。 */
 [data-skin="on"] .cea-tabs,
-[data-skin="on"] .cea-tab-nav,
+[data-skin="on"] .cea-tab-nav {
+  background: transparent;
+}
 [data-skin="on"] .cea-console,
 [data-skin="on"] .code-minimap {
   background: var(--glass-bg-hover);
@@ -475,11 +509,12 @@ html[data-skin="on"] .home-page {
 [data-skin="on"] .el-select__wrapper {
   background-color: transparent;
   background-image: none;
-  box-shadow: none;
+  /* 边框由文件末段「Element Plus 输入类控件」统一给（border + 投影），此处不再清 box-shadow，
+     否则会盖掉那里的投影（本块在前，同权重靠顺序会被覆盖，但保留语义一致以免后人误会）。 */
 }
 [data-skin="on"] .el-input__wrapper.is-focus,
 [data-skin="on"] .el-select__wrapper.is-focused {
-  box-shadow: 0 0 0 1px var(--el-color-primary) inset;
+  border-color: var(--color-primary);
 }
 
 /* ===== 表格：面板已玻璃，行透明，表头补玻璃质感 ===== */
@@ -1007,33 +1042,90 @@ html[data-skin="on"] .el-dialog.tm-solid-dialog .el-textarea__inner {
   background-color: transparent;
 }
 
-/* ===== 全局滚动条皮肤化：胶囊形 + 金箍棒风格金属光泽 =====
-   2026-09-13 用户反馈「圆角没了 / 都变成平角了」—— 根因是基线 surface.css 第 39 行
-   border-radius: 999px (胶囊) 被本文件原 4px (半圆) 覆盖，导致皮肤模式下方角。
-   同时用户提「加点花纹像金箍棒」—— 在 8px 细滚动条上做金属光泽 + 两端装饰环：
-   · 横向渐变：左暗 → 中亮(主色) → 右暗，模拟金属棒反光
-   · 两端 8%~14% / 86%~92% 各加一道深色环（仿金箍棒两端的金色纹带）
-   · hover/active 用 filter: brightness 而非换底色，保持纹饰完整
+/* ===== 全局滚动条皮肤化：胶囊形 + 棍类武器花纹 =====
+   ⚠️⚠️⚠️ 2026-09-13 血泪大坑（四连击，务必读完再动这段）：
+   现象链：加花纹 → 「滚动条都没了」（thumb 彻底消失，连底色都没有）。
+   用 CDP 注入对照实验逐层定位，最终结论：
 
-   关键修复：渐变提取到 --skin-scrollbar-thumb-pattern 变量，让 scoped CSS 里所有
-   .xxx::-webkit-scrollbar-thumb 都能消费它（金箍棒不再只走全局，被覆盖就失效）。
-   之前只改了全局规则，chat.css .file-panel-list 等 scoped 覆盖后还是灰方块。
-   同时下方 chat.css / overlay.css 等 scoped 滚动条全部改成 var(--skin-scrollbar-thumb-pattern)
-   + 999px，由本变量统一驱动；sf.scrollbarPattern 可整张皮肤换武器风格。*/
+   坑1 · SVG data URI 未编码
+     `url("data:image/svg+xml;utf8,<svg …>")` 里的 `<` 直接判无效值。必须 percent-encode
+     （`<`→`%3C`、`>`→`%3E`、`#`→`%23`）。
+
+   坑2 · **`url()` 与渐变不能混在同一个 background 值里**（webkit 滚动条伪元素专属限制）：
+       · `background: linear-gradient(...)`                    → ✅
+       · `background: url("…%3Csvg…")`                         → ✅
+       · `background: linear-gradient(...), url("…")`          → ❌ 整条 background 被丢弃
+       · `background: var(--x)`（--x 内含 渐变+url 混合）        → ❌ 同样丢弃
+     CDP 读 CSSOM 实锤：混合规则解析后只剩 `{ border-radius }`，background 整条不见。
+     —— 所以**永远不要在滚动条 thumb 上引入 url()**。
+
+   坑3 · **渐变的色标（color stop）只能是颜色，不能是另一个渐变**：
+       `linear-gradient(90deg, transparent 16%, repeating-linear-gradient(...) 0%, ...)`
+       这种"用渐变当色标去裁中段"的写法 → ❌ 整条无效。
+       修法：纹理层**整条铺满**，中段以外的遮挡交给**上层的两端装饰带**去做。
+
+   坑4 · `background` 简写里同时有 `background-color` 会被重置，颜色与图要**分开声明**。
+
+   🔑 **最终解法（2026-09-13 晚定稿）：SVG 用 base64 编码贴图**
+   上面坑1 说的"未编码 SVG 无效"其实**不是"不能混用 url() 与渐变"** —— 那是当时的误判。
+   CDP 四组对照实测（pp1~pp4）证明：**只要把 SVG 改成 base64 编码，url() 与渐变可以自由混用**，
+   CSSOM 也完整保留。所以这里**正式采用贴图方案**：
+     · 纹饰 = base64 SVG 平铺（`background-size` 控制格大小）
+     · 底色 = `background-color` 单独声明（不与 image 混在简写里）
+     · 装饰带 = 渐变层叠在 image 之上
+   —— 贴图观感远好于纯渐变模拟，且不占额外文件。
+
+   结构（第一层在最上）：
+   ① 两端装饰带（渐变，最上，盖住贴图两端）
+   ② 鱼鳞贴图（base64 SVG，8px 平铺）
+   ③ 菱形点纹贴图（base64 SVG，4px 平铺，错位）
+   ④ 棍身金属反光（渐变，最底）
+   → 头/尾同色（深箍 + 亮线），中段主色 + 贴图纹理，即用户要的「头尾一样、中间不一样」。*/
 [data-skin="on"] {
-  --skin-scrollbar-thumb-pattern:
-    linear-gradient(90deg,
-      transparent 0%, transparent 8%,
-      rgba(0, 0, 0, 0.45) 8%, rgba(0, 0, 0, 0.45) 14%,
-      transparent 14%, transparent 86%,
-      rgba(0, 0, 0, 0.45) 86%, rgba(0, 0, 0, 0.45) 92%,
-      transparent 92%, transparent 100%
-    ),
-    linear-gradient(90deg,
-      color-mix(in srgb, var(--color-primary) 70%, #000 15%),
-      color-mix(in srgb, var(--color-primary) 70%, #FFF 40%),
-      color-mix(in srgb, var(--color-primary) 70%, #000 15%)
-    );
+  /* ===== 金箍棒滚动条（2026-09-13 晚 · 第四版，定稿）=====
+     前三版全被否掉（"花纹丑" → "样子还是很丑" → "横向一串小方块"），
+     根因在**模型选错**：前三版都把滚动条当成「一根完整的金箍棒」来画 ——
+     顶金箍 / 中乌铁身 / 底金箍，用 3 层 background 钉在 thumb 的 top/bottom。
+     但 thumb 长度 = 视口/内容比，**是不确定的**：内容只超一点时 thumb 仅 30~50px，
+     两个金箍（各 14px）就把 thumb 占满，中间棍身没空间显示 →
+     视觉上就是「金块 + 空隙 + 金块」，即用户截图里的"一串断开的小方块"。
+     横向更糟：横条高仅 8px，复用竖版 body（内部是左右暗边渐变）再 repeat-x，
+     每 16px 出现一条黑缝，彻底碎成方块。
+
+     第四版换了模型 —— 滚动条不是「一个物件」，是「一段材质」：
+       画的是金箍棒**沿轴向的剖面**，一个无缝循环的节拍 = [金箍带 6px][乌铁段 18px]，
+       用 repeat-y / repeat-x 沿轴平铺。于是**无论 thumb 多长**看到的都是
+       「金箍 + 乌铁 + 金箍 + 乌铁 ……」的连续棍身，既像金箍棒，又天然表达"这是被拉长的棒子"。
+
+     两个必须遵守的工程约束（否则必然出接缝/错位）：
+       ① 瓷砖在**平铺轴两端必须同色**：竖版 body 沿 Y 平铺 → 瓷砖内沿 X 做金属渐变
+          （暗-亮-暗的圆柱感），沿 Y 是纯色循环；横版反之。
+          ⚠️ 若用竖版 body 去 repeat-x（v3 的错法），平铺轴 X 上存在暗边
+          → 每片瓷砖接缝处出现黑缝。
+       ② 竖版与横版共用同一节拍（24px / 金箍带 6px），横竖观感才一致。
+
+     收口：thumb 两端各贴一张 6px 的「金箍端头」（cap / capFlip），
+     让棍子有实体收尾而不是被硬切断。cap 只在 thumb 长度足够时才有存在感，
+     长度不足时也不会破坏循环（它与 body 起始的金箍带同色，视觉连续）。
+
+     8px 厚度的物理约束：只保留「暗边 / 亮带 / 暗边」三带 + 金箍带两条压边线，
+     更细的花纹在这个厚度上会退化成噪点。 */
+  --skin-scrollbar-v-body: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI4IiBoZWlnaHQ9IjI0IiB2aWV3Qm94PSIwIDAgOCAyNCI+CjxkZWZzPgogIDxsaW5lYXJHcmFkaWVudCBpZD0iZ2J2IiB4MT0iMCIgeTE9IjAiIHgyPSIxIiB5Mj0iMCI+CiAgICA8c3RvcCBvZmZzZXQ9IjAiICAgIHN0b3AtY29sb3I9IiMwMDAwMDAiLz4KICAgIDxzdG9wIG9mZnNldD0iMC4xNCIgc3RvcC1jb2xvcj0iIzE0MTUxMyIvPgogICAgPHN0b3Agb2Zmc2V0PSIwLjM2IiBzdG9wLWNvbG9yPSIjMzMzNDJGIi8+CiAgICA8c3RvcCBvZmZzZXQ9IjAuNDUiIHN0b3AtY29sb3I9IiM4NDgzN0YiLz4KICAgIDxzdG9wIG9mZnNldD0iMC41MiIgc3RvcC1jb2xvcj0iI0EzQTI5QyIvPgogICAgPHN0b3Agb2Zmc2V0PSIwLjY0IiBzdG9wLWNvbG9yPSIjODQ4MzdGIi8+CiAgICA8c3RvcCBvZmZzZXQ9IjAuODYiIHN0b3AtY29sb3I9IiMxNDE1MTMiLz4KICAgIDxzdG9wIG9mZnNldD0iMSIgICAgc3RvcC1jb2xvcj0iIzAwMDAwMCIvPgogIDwvbGluZWFyR3JhZGllbnQ+CiAgPGxpbmVhckdyYWRpZW50IGlkPSJnY3YiIHgxPSIwIiB5MT0iMCIgeDI9IjEiIHkyPSIwIj4KICAgIDxzdG9wIG9mZnNldD0iMCIgICAgc3RvcC1jb2xvcj0iIzE0MEQwMiIvPgogICAgPHN0b3Agb2Zmc2V0PSIwLjE0IiBzdG9wLWNvbG9yPSIjNEEzNzBDIi8+CiAgICA8c3RvcCBvZmZzZXQ9IjAuMzYiIHN0b3AtY29sb3I9IiM4QTZGMkUiLz4KICAgIDxzdG9wIG9mZnNldD0iMC40NSIgc3RvcC1jb2xvcj0iI0NGQjM3MCIvPgogICAgPHN0b3Agb2Zmc2V0PSIwLjUyIiBzdG9wLWNvbG9yPSIjRjRFM0FFIi8+CiAgICA8c3RvcCBvZmZzZXQ9IjAuNjQiIHN0b3AtY29sb3I9IiNDRkIzNzAiLz4KICAgIDxzdG9wIG9mZnNldD0iMC44NiIgc3RvcC1jb2xvcj0iIzRBMzcwQyIvPgogICAgPHN0b3Agb2Zmc2V0PSIxIiAgICBzdG9wLWNvbG9yPSIjMTQwRDAyIi8+CiAgPC9saW5lYXJHcmFkaWVudD4KPC9kZWZzPgo8cmVjdCB4PSIwIiB5PSIwIiB3aWR0aD0iOCIgaGVpZ2h0PSIyNCIgZmlsbD0idXJsKCNnYnYpIi8+CjxyZWN0IHg9IjAiIHk9IjAiIHdpZHRoPSI4IiBoZWlnaHQ9IjYiIGZpbGw9InVybCgjZ2N2KSIvPgo8cmVjdCB4PSIwIiB5PSIwLjU1IiB3aWR0aD0iOCIgaGVpZ2h0PSIwLjc1IiBmaWxsPSIjMTQwRDAyIiBvcGFjaXR5PSIwLjkiLz4KPHJlY3QgeD0iMCIgeT0iNC43IiB3aWR0aD0iOCIgaGVpZ2h0PSIwLjc1IiBmaWxsPSIjMTQwRDAyIiBvcGFjaXR5PSIwLjkiLz4KPHJlY3QgeD0iMCIgeT0iNi4yIiB3aWR0aD0iOCIgaGVpZ2h0PSIwLjUiIGZpbGw9IiNGNEUzQUUiIG9wYWNpdHk9IjAuMjIiLz4KPC9zdmc+");
+  --skin-scrollbar-v-cap: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI4IiBoZWlnaHQ9IjYiIHZpZXdCb3g9IjAgMCA4IDYiPgo8ZGVmcz4KICA8bGluZWFyR3JhZGllbnQgaWQ9ImdldiIgeDE9IjAiIHkxPSIwIiB4Mj0iMSIgeTI9IjAiPgogICAgPHN0b3Agb2Zmc2V0PSIwIiAgICBzdG9wLWNvbG9yPSIjMTQwRDAyIi8+CiAgICA8c3RvcCBvZmZzZXQ9IjAuMTQiIHN0b3AtY29sb3I9IiM0QTM3MEMiLz4KICAgIDxzdG9wIG9mZnNldD0iMC4zNiIgc3RvcC1jb2xvcj0iIzhBNkYyRSIvPgogICAgPHN0b3Agb2Zmc2V0PSIwLjQ1IiBzdG9wLWNvbG9yPSIjQ0ZCMzcwIi8+CiAgICA8c3RvcCBvZmZzZXQ9IjAuNTIiIHN0b3AtY29sb3I9IiNGNEUzQUUiLz4KICAgIDxzdG9wIG9mZnNldD0iMC42NCIgc3RvcC1jb2xvcj0iI0NGQjM3MCIvPgogICAgPHN0b3Agb2Zmc2V0PSIwLjg2IiBzdG9wLWNvbG9yPSIjNEEzNzBDIi8+CiAgICA8c3RvcCBvZmZzZXQ9IjEiICAgIHN0b3AtY29sb3I9IiMxNDBEMDIiLz4KICA8L2xpbmVhckdyYWRpZW50Pgo8L2RlZnM+CjxyZWN0IHg9IjAiIHk9IjAiIHdpZHRoPSI4IiBoZWlnaHQ9IjYiIHJ4PSIzIiBmaWxsPSJ1cmwoI2dldikiLz4KPHJlY3QgeD0iMCIgeT0iMC41NSIgd2lkdGg9IjgiIGhlaWdodD0iMC43NSIgZmlsbD0iIzE0MEQwMiIgb3BhY2l0eT0iMC45Ii8+Cjwvc3ZnPg==");
+  --skin-scrollbar-v-capflip: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI4IiBoZWlnaHQ9IjYiIHZpZXdCb3g9IjAgMCA4IDYiPgo8ZGVmcz4KICA8bGluZWFyR3JhZGllbnQgaWQ9ImdldmYiIHgxPSIwIiB5MT0iMCIgeDI9IjEiIHkyPSIwIj4KICAgIDxzdG9wIG9mZnNldD0iMCIgICAgc3RvcC1jb2xvcj0iIzE0MEQwMiIvPgogICAgPHN0b3Agb2Zmc2V0PSIwLjE0IiBzdG9wLWNvbG9yPSIjNEEzNzBDIi8+CiAgICA8c3RvcCBvZmZzZXQ9IjAuMzYiIHN0b3AtY29sb3I9IiM4QTZGMkUiLz4KICAgIDxzdG9wIG9mZnNldD0iMC40NSIgc3RvcC1jb2xvcj0iI0NGQjM3MCIvPgogICAgPHN0b3Agb2Zmc2V0PSIwLjUyIiBzdG9wLWNvbG9yPSIjRjRFM0FFIi8+CiAgICA8c3RvcCBvZmZzZXQ9IjAuNjQiIHN0b3AtY29sb3I9IiNDRkIzNzAiLz4KICAgIDxzdG9wIG9mZnNldD0iMC44NiIgc3RvcC1jb2xvcj0iIzRBMzcwQyIvPgogICAgPHN0b3Agb2Zmc2V0PSIxIiAgICBzdG9wLWNvbG9yPSIjMTQwRDAyIi8+CiAgPC9saW5lYXJHcmFkaWVudD4KPC9kZWZzPgo8cmVjdCB4PSIwIiB5PSIwIiB3aWR0aD0iOCIgaGVpZ2h0PSI2IiByeD0iMyIgZmlsbD0idXJsKCNnZXZmKSIvPgo8cmVjdCB4PSIwIiB5PSI0LjciIHdpZHRoPSI4IiBoZWlnaHQ9IjAuNzUiIGZpbGw9IiMxNDBEMDIiIG9wYWNpdHk9IjAuOSIvPgo8L3N2Zz4=");
+  --skin-scrollbar-h-body: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSI4IiB2aWV3Qm94PSIwIDAgMjQgOCI+CjxkZWZzPgogIDxsaW5lYXJHcmFkaWVudCBpZD0iZ2JoIiB4MT0iMCIgeTE9IjAiIHgyPSIwIiB5Mj0iMSI+CiAgICA8c3RvcCBvZmZzZXQ9IjAiICAgIHN0b3AtY29sb3I9IiMwMDAwMDAiLz4KICAgIDxzdG9wIG9mZnNldD0iMC4xNCIgc3RvcC1jb2xvcj0iIzE0MTUxMyIvPgogICAgPHN0b3Agb2Zmc2V0PSIwLjM2IiBzdG9wLWNvbG9yPSIjMzMzNDJGIi8+CiAgICA8c3RvcCBvZmZzZXQ9IjAuNDUiIHN0b3AtY29sb3I9IiM4NDgzN0YiLz4KICAgIDxzdG9wIG9mZnNldD0iMC41MiIgc3RvcC1jb2xvcj0iI0EzQTI5QyIvPgogICAgPHN0b3Agb2Zmc2V0PSIwLjY0IiBzdG9wLWNvbG9yPSIjODQ4MzdGIi8+CiAgICA8c3RvcCBvZmZzZXQ9IjAuODYiIHN0b3AtY29sb3I9IiMxNDE1MTMiLz4KICAgIDxzdG9wIG9mZnNldD0iMSIgICAgc3RvcC1jb2xvcj0iIzAwMDAwMCIvPgogIDwvbGluZWFyR3JhZGllbnQ+CiAgPGxpbmVhckdyYWRpZW50IGlkPSJnY2giIHgxPSIwIiB5MT0iMCIgeDI9IjAiIHkyPSIxIj4KICAgIDxzdG9wIG9mZnNldD0iMCIgICAgc3RvcC1jb2xvcj0iIzE0MEQwMiIvPgogICAgPHN0b3Agb2Zmc2V0PSIwLjE0IiBzdG9wLWNvbG9yPSIjNEEzNzBDIi8+CiAgICA8c3RvcCBvZmZzZXQ9IjAuMzYiIHN0b3AtY29sb3I9IiM4QTZGMkUiLz4KICAgIDxzdG9wIG9mZnNldD0iMC40NSIgc3RvcC1jb2xvcj0iI0NGQjM3MCIvPgogICAgPHN0b3Agb2Zmc2V0PSIwLjUyIiBzdG9wLWNvbG9yPSIjRjRFM0FFIi8+CiAgICA8c3RvcCBvZmZzZXQ9IjAuNjQiIHN0b3AtY29sb3I9IiNDRkIzNzAiLz4KICAgIDxzdG9wIG9mZnNldD0iMC44NiIgc3RvcC1jb2xvcj0iIzRBMzcwQyIvPgogICAgPHN0b3Agb2Zmc2V0PSIxIiAgICBzdG9wLWNvbG9yPSIjMTQwRDAyIi8+CiAgPC9saW5lYXJHcmFkaWVudD4KPC9kZWZzPgo8cmVjdCB4PSIwIiB5PSIwIiB3aWR0aD0iMjQiIGhlaWdodD0iOCIgZmlsbD0idXJsKCNnYmgpIi8+CjxyZWN0IHg9IjAiIHk9IjAiIHdpZHRoPSI2IiBoZWlnaHQ9IjgiIGZpbGw9InVybCgjZ2NoKSIvPgo8cmVjdCB4PSIwLjU1IiB5PSIwIiB3aWR0aD0iMC43NSIgaGVpZ2h0PSI4IiBmaWxsPSIjMTQwRDAyIiBvcGFjaXR5PSIwLjkiLz4KPHJlY3QgeD0iNC43IiB5PSIwIiB3aWR0aD0iMC43NSIgaGVpZ2h0PSI4IiBmaWxsPSIjMTQwRDAyIiBvcGFjaXR5PSIwLjkiLz4KPHJlY3QgeD0iNi4yIiB5PSIwIiB3aWR0aD0iMC41IiBoZWlnaHQ9IjgiIGZpbGw9IiNGNEUzQUUiIG9wYWNpdHk9IjAuMjIiLz4KPC9zdmc+");
+  --skin-scrollbar-h-cap: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI2IiBoZWlnaHQ9IjgiIHZpZXdCb3g9IjAgMCA2IDgiPgo8ZGVmcz4KICA8bGluZWFyR3JhZGllbnQgaWQ9ImdlaCIgeDE9IjAiIHkxPSIwIiB4Mj0iMCIgeTI9IjEiPgogICAgPHN0b3Agb2Zmc2V0PSIwIiAgICBzdG9wLWNvbG9yPSIjMTQwRDAyIi8+CiAgICA8c3RvcCBvZmZzZXQ9IjAuMTQiIHN0b3AtY29sb3I9IiM0QTM3MEMiLz4KICAgIDxzdG9wIG9mZnNldD0iMC4zNiIgc3RvcC1jb2xvcj0iIzhBNkYyRSIvPgogICAgPHN0b3Agb2Zmc2V0PSIwLjQ1IiBzdG9wLWNvbG9yPSIjQ0ZCMzcwIi8+CiAgICA8c3RvcCBvZmZzZXQ9IjAuNTIiIHN0b3AtY29sb3I9IiNGNEUzQUUiLz4KICAgIDxzdG9wIG9mZnNldD0iMC42NCIgc3RvcC1jb2xvcj0iI0NGQjM3MCIvPgogICAgPHN0b3Agb2Zmc2V0PSIwLjg2IiBzdG9wLWNvbG9yPSIjNEEzNzBDIi8+CiAgICA8c3RvcCBvZmZzZXQ9IjEiICAgIHN0b3AtY29sb3I9IiMxNDBEMDIiLz4KICA8L2xpbmVhckdyYWRpZW50Pgo8L2RlZnM+CjxyZWN0IHg9IjAiIHk9IjAiIHdpZHRoPSI2IiBoZWlnaHQ9IjgiIHJ4PSIzIiBmaWxsPSJ1cmwoI2dlaCkiLz4KPHJlY3QgeD0iMC41NSIgeT0iMCIgd2lkdGg9IjAuNzUiIGhlaWdodD0iOCIgZmlsbD0iIzE0MEQwMiIgb3BhY2l0eT0iMC45Ii8+Cjwvc3ZnPg==");
+  --skin-scrollbar-h-capflip: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI2IiBoZWlnaHQ9IjgiIHZpZXdCb3g9IjAgMCA2IDgiPgo8ZGVmcz4KICA8bGluZWFyR3JhZGllbnQgaWQ9ImdlaGYiIHgxPSIwIiB5MT0iMCIgeDI9IjAiIHkyPSIxIj4KICAgIDxzdG9wIG9mZnNldD0iMCIgICAgc3RvcC1jb2xvcj0iIzE0MEQwMiIvPgogICAgPHN0b3Agb2Zmc2V0PSIwLjE0IiBzdG9wLWNvbG9yPSIjNEEzNzBDIi8+CiAgICA8c3RvcCBvZmZzZXQ9IjAuMzYiIHN0b3AtY29sb3I9IiM4QTZGMkUiLz4KICAgIDxzdG9wIG9mZnNldD0iMC40NSIgc3RvcC1jb2xvcj0iI0NGQjM3MCIvPgogICAgPHN0b3Agb2Zmc2V0PSIwLjUyIiBzdG9wLWNvbG9yPSIjRjRFM0FFIi8+CiAgICA8c3RvcCBvZmZzZXQ9IjAuNjQiIHN0b3AtY29sb3I9IiNDRkIzNzAiLz4KICAgIDxzdG9wIG9mZnNldD0iMC44NiIgc3RvcC1jb2xvcj0iIzRBMzcwQyIvPgogICAgPHN0b3Agb2Zmc2V0PSIxIiAgICBzdG9wLWNvbG9yPSIjMTQwRDAyIi8+CiAgPC9saW5lYXJHcmFkaWVudD4KPC9kZWZzPgo8cmVjdCB4PSIwIiB5PSIwIiB3aWR0aD0iNiIgaGVpZ2h0PSI4IiByeD0iMyIgZmlsbD0idXJsKCNnZWhmKSIvPgo8cmVjdCB4PSI0LjciIHk9IjAiIHdpZHRoPSIwLjc1IiBoZWlnaHQ9IjgiIGZpbGw9IiMxNDBEMDIiIG9wYWNpdHk9IjAuOSIvPgo8L3N2Zz4=");
+  /* 竖条：端头(下) / 端头(上) / 棍身(repeat-y) —— 棍身铺满，端头压在两端 */
+  --skin-scrollbar-v-pattern: var(--skin-scrollbar-v-capflip), var(--skin-scrollbar-v-cap), var(--skin-scrollbar-v-body);
+  --skin-scrollbar-v-size: 100% 6px, 100% 6px, 100% 24px;
+  --skin-scrollbar-v-repeat: no-repeat, no-repeat, repeat-y;
+  --skin-scrollbar-v-pos: center bottom, center top, center center;
+  /* 横条：端头(右) / 端头(左) / 棍身(repeat-x) */
+  --skin-scrollbar-h-pattern: var(--skin-scrollbar-h-capflip), var(--skin-scrollbar-h-cap), var(--skin-scrollbar-h-body);
+  --skin-scrollbar-h-size: 6px 100%, 6px 100%, 24px 100%;
+  --skin-scrollbar-h-repeat: no-repeat, no-repeat, repeat-x;
+  --skin-scrollbar-h-pos: right center, left center, center center;
 }
 [data-skin="on"] ::-webkit-scrollbar {
   width: 8px;
@@ -1042,28 +1134,33 @@ html[data-skin="on"] .el-dialog.tm-solid-dialog .el-textarea__inner {
 [data-skin="on"] ::-webkit-scrollbar-track {
   background: transparent;
 }
-/* 关键：!important 强制全局胜出 scoped 覆盖（chat.css 的 .file-panel-list 等
-   都有同特异性 (0,2,0) 的 thumb 规则，仅靠顺序不可靠）*/
+/* ⚠️ 必须用**独立声明**（background-image / -size / -repeat / -position / -color），
+   不要用 `background:` 简写 —— 简写会把 color 重置掉，
+   且贴图 + 渐变混在简写里对 webkit 滚动条伪元素更脆弱（见文件头部坑4）。 */
 [data-skin="on"] ::-webkit-scrollbar-thumb {
-  background: var(--skin-scrollbar-thumb-pattern) !important;
+  background-image: var(--skin-scrollbar-v-pattern) !important;
+  background-size: var(--skin-scrollbar-v-size) !important;
+  background-repeat: var(--skin-scrollbar-v-repeat) !important;
+  background-position: var(--skin-scrollbar-v-pos) !important;
+  background-color: transparent !important;
   border-radius: 999px !important;
 }
+/* 横向滚动条：改用**横版专用素材**（body 沿 X 无缝平铺）。
+   ⚠️ 绝不可复用竖版 body：竖版内部是「左右暗边」渐变，repeat-x 时每片接缝处
+   出现黑缝 → 碎成一串方块（v3 的教训，用户已截图反馈）。 */
+[data-skin="on"] ::-webkit-scrollbar-thumb:horizontal {
+  background-image: var(--skin-scrollbar-h-pattern) !important;
+  background-size: var(--skin-scrollbar-h-size) !important;
+  background-repeat: var(--skin-scrollbar-h-repeat) !important;
+  background-position: var(--skin-scrollbar-h-pos) !important;
+}
 [data-skin="on"] ::-webkit-scrollbar-thumb:hover {
-  background: var(--skin-scrollbar-thumb-pattern) !important;
-  filter: brightness(1.18) saturate(1.15);
+  filter: brightness(1.22) saturate(1.1);
 }
 [data-skin="on"] ::-webkit-scrollbar-thumb:active {
-  background: var(--skin-scrollbar-thumb-pattern) !important;
-  filter: brightness(1.32) saturate(1.3);
+  filter: brightness(1.4) saturate(1.2);
 }
-/* Firefox（仅 Gecko 生效，必须与 Chromium 隔离）
-   ⚠️ 2026-09-13 修「滚动条圆角没了/皮肤不生效」的真正元凶：
-   Chromium 121+ 也实现了标准 scrollbar-width / scrollbar-color，
-   且规范规定：一旦设置了这两个标准属性，::-webkit-scrollbar* 全系自定义样式即被**整体禁用**
-   （渐变背景、999px 胶囊圆角、track 透明全部失效），回退到原生方角灰条。
-   之前裸写在所有浏览器生效 → 金箍棒渐变被标准属性"静默杀死"，用户看到的就是
-   细灰条+方角+不跟主色。包进 @supports not selector(::-webkit-scrollbar) 后：
-   Gecko（不支持 webkit 伪元素）走标准属性；Chromium 走上方 webkit 自定义滚动条。 */
+
 @supports not selector(::-webkit-scrollbar) {
   [data-skin="on"] * {
     scrollbar-width: thin;
@@ -1093,14 +1190,15 @@ html[data-skin="on"] .el-dialog.tm-solid-dialog .el-textarea__inner {
 }
 
 /* ===== 代码模式独立底图：区别于全局壁纸（同系列不同图案，细格网+角饰） =====
-   注意：.code-page 在上方透明化列表中，此处同特异性规则写在后面即覆盖；
-   只动背景，不改任何布局尺寸/栅格，避免与代码布局改动冲突 */
+   ⚠️ 2026-09-13 反转：用户反馈「标签栏透明了，但看不到背景」——
+   原因：.code-page 被 .skin-code-pattern（dialog-bg-dark.webp）铺了整张图，
+   标签栏透上去看到的是这张"代码区底图"而不是壁纸。
+   定稿：取消代码区独立底图，让整个代码工作台透到全局壁纸上去。
+   顶栏/边栏仍用 .skin-menu-pattern 做玻璃背板（局部图案），不影响本条。
+   配套：.cea-tabs / .cea-tab-nav 已在前一处改为 transparent，让壁纸透进标签栏。 */
 [data-skin="on"] .code-page {
   background: transparent !important;
-  background-image: var(--skin-code-pattern, none) !important;
-  background-size: var(--skin-pattern-size, cover) !important;
-  background-repeat: var(--skin-pattern-repeat, no-repeat) !important;
-  background-position: center !important;
+  background-image: none !important;
 }
 /* 编辑器内部各子面板保持玻璃，文字区保持透明白底可读性 */
 [data-skin="on"] .code-page .cp-top,
@@ -1473,12 +1571,32 @@ html[data-skin="on"] .loading-overlay {
 [data-skin="on"] .el-select__wrapper {
   background-color: transparent !important;
   background-image: none !important;
+  /* 【2026-09-13 修】原实现 box-shadow: none 会把 border 一起清掉
+     （Element Plus 的 el-input__wrapper 用 box-shadow 画 1px 边框，不是 border 属性），
+     于是弹窗/表单里的输入框全部"无轮廓"，用户报「边框还是显示出来吧要不然看不清」。
+     现改为与 .input-box 同款的实边框 + 投影（见下方 .input-box 段同一套视觉语言）。 */
   box-shadow: none !important;
+  border: 1px solid var(--skin-input-border, var(--glass-border, var(--color-border))) !important;
+}
+/* 输入类控件的外轮廓投影：近距贴影 + 远距柔影，在壁纸上托出控件边界 */
+[data-skin="on"] .el-input__wrapper,
+[data-skin="on"] .el-textarea__inner,
+[data-skin="on"] .el-select__wrapper,
+[data-skin="on"] .el-input-number .el-input__wrapper {
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.22), 0 1px 4px rgba(0, 0, 0, 0.14) !important;
+}
+[data-theme="light"][data-skin="on"] .el-input__wrapper,
+[data-theme="light"][data-skin="on"] .el-textarea__inner,
+[data-theme="light"][data-skin="on"] .el-select__wrapper,
+[data-theme="light"][data-skin="on"] .el-input-number .el-input__wrapper {
+  border-color: var(--color-border) !important;
+  box-shadow: 0 4px 16px rgba(15, 23, 42, 0.10), 0 1px 3px rgba(15, 23, 42, 0.06) !important;
 }
 [data-skin="on"] .el-input__wrapper.is-focus,
 [data-skin="on"] .el-select__wrapper.is-focused,
 [data-skin="on"] .el-textarea__inner:focus {
-  box-shadow: 0 0 0 1.5px var(--color-primary) inset !important;
+  border-color: var(--color-primary) !important;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.26), 0 0 0 3px color-mix(in srgb, var(--color-primary) 16%, transparent) !important;
 }
 /* 自定义输入容器：聊天输入框 / 各页搜索框 / 浏览器地址栏 —— 同样透明，透出壁纸。
    ⚠️ 2026-09-13：**不要**在这里把 border-color 设成 transparent。
@@ -1493,6 +1611,15 @@ html[data-skin="on"] .loading-overlay {
 [data-skin="on"] .url-bar {
   background-color: transparent !important;
   background-image: none !important;
+  /* 搜索框/地址栏此前只有投影没有边框（投影单独立体感不足，深色壁纸上尤其难辨边界）→ 补细边框。
+     .input-box 自己也命中这条，但它下面有一条更具体的规则给了同款边框，不冲突。 */
+  border: 1px solid var(--skin-input-border, var(--glass-border, var(--color-border))) !important;
+}
+[data-theme="light"][data-skin="on"] .f-keyword-wrap,
+[data-theme="light"][data-skin="on"] .lm-search-wrap,
+[data-theme="light"][data-skin="on"] .tab-search-wrap,
+[data-theme="light"][data-skin="on"] .url-bar {
+  border-color: var(--color-border) !important;
 }
 [data-skin="on"] .input-box {
   /* 输入框外框：细边框 + 双层投影（近距贴影 + 远距柔影），在壁纸上托出输入框轮廓 */
@@ -1510,16 +1637,28 @@ html[data-skin="on"] .loading-overlay {
    不再铺 --skin-input-bg / --skin-input-pattern（两者都会与背景形成割裂或洗白）。
    注意：.input-area 是 .chat-column 的子级，若给它加 backdrop-filter 会形成
    嵌套采样链 —— 父级玻璃先取样一次，子级再取样一次，越叠越糊（旧版本"灰蒙蒙"的来源之一）。 */
-/* 聚焦态：边框换主色（保持投影，只加强边框反馈）。
-   2026-09-13 修：原实现把 border 与 box-shadow 全清成 transparent/none，
-   导致输入框在任何状态下都没有轮廓（用户："输入框外面那个框要有阴影"）。 */
-[data-skin="on"] .input-box.focused {
-  border-color: var(--color-primary) !important;
-  box-shadow: 0 6px 30px rgba(0, 0, 0, 0.32), 0 0 0 3px color-mix(in srgb, var(--color-primary) 16%, transparent) !important;
+/* 聚焦态：用户要求"任务输入框聚焦时不要边框变化"。
+   原实现把 border 换成主色、加 3px 主色光晕；现保留 resting 的边框+投影，
+   聚焦只换 caret（textarea 原生）/ 不换容器。悬停同理。 */
+[data-skin="on"] .input-box.focused,
+[data-skin="on"] .input-box:hover {
+  border-color: var(--skin-input-border, var(--glass-border, var(--color-border))) !important;
+  box-shadow: 0 6px 28px rgba(0, 0, 0, 0.28), 0 2px 6px rgba(0, 0, 0, 0.18) !important;
 }
-/* 聊天输入框聚焦不上描边：压掉上面 .el-textarea__inner:focus 的 inset ring（选择器权重更高） */
+[data-theme="light"][data-skin="on"] .input-box.focused,
+[data-theme="light"][data-skin="on"] .input-box:hover {
+  border-color: var(--color-border) !important;
+  box-shadow: 0 6px 26px rgba(15, 23, 42, 0.14), 0 2px 6px rgba(15, 23, 42, 0.08) !important;
+}
+/* 任务输入框内部的 textarea：聚焦时也不出任何边框 / ring —— 用户原话
+   "就一个地方不要显示，就是输入框里面的文字区域的框去掉，选中也不要有"。
+   这里压掉上面那条 [data-skin="on"] .el-textarea__inner:focus 的 3px 主色光晕，
+   同时把边框和 box-shadow 强制落回 resting 一致。 */
+[data-skin="on"] .input-box .input-textarea .el-textarea__inner,
 [data-skin="on"] .input-box .input-textarea .el-textarea__inner:focus {
+  border: 0 !important;
   box-shadow: none !important;
+  background: transparent !important;
 }
 
 /* ===== 按钮：浏览器/文件页原生中性按钮上皮肤（图案 + 主色 hover） =====

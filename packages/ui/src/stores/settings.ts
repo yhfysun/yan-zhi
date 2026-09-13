@@ -32,8 +32,24 @@ type SkinSurface = {
   cardRadius?: number;
   tagRadius?: number;
   scrollbarThumb?: string;
-  /** 滚动条 thumb 图案纹理（CSS background-image 完整值；缺省=skin.css 内置金箍棒兜底） */
-  scrollbarPattern?: string;
+  /**
+   * 滚动条「棍身」贴图（**竖版**，CSS background-image 完整值）。
+   * 缺省 = skin.css 内置**金箍棒材质剖面**（无缝循环：[金箍带 6px][乌铁段 18px]，沿轴平铺）。
+   * ⚠️ 竖版 / 横版**必须分素材**（6 个字段一一对应）：
+   *   竖版 body 沿 Y 平铺（沿 X 做金属渐变）；横版 body 沿 X 平铺（沿 Y 做金属渐变）。
+   *   拿竖版去 repeat-x 会在接缝处留黑缝 → 横条碎成「一串小方块」（已踩坑）。
+   */
+  scrollbarVBody?: string;
+  /** 竖条起点端头（金箍收口，6px） */
+  scrollbarVCap?: string;
+  /** 竖条终点端头（镜像，6px） */
+  scrollbarVCapFlip?: string;
+  /** 棍身贴图（**横版**，沿 X 无缝平铺） */
+  scrollbarHBody?: string;
+  /** 横条左侧端头（6px） */
+  scrollbarHCap?: string;
+  /** 横条右侧端头（6px） */
+  scrollbarHCapFlip?: string;
   dividerColor?: string;
   catTagPattern?: string;
   taskListPattern?: string;
@@ -150,7 +166,19 @@ const SKIN_ELEMENT_VARS = [
   '--skin-glass-blur', '--skin-glass-border', '--skin-btn-text',
   '--skin-radius', '--skin-btn-radius', '--skin-input-radius',
   '--skin-card-radius', '--skin-tag-radius',
-  '--skin-scrollbar-thumb', '--skin-scrollbar-thumb-pattern', '--skin-divider-color',
+  '--skin-scrollbar-thumb', '--skin-scrollbar-thumb-pattern',
+  '--skin-scrollbar-thumb-color', '--skin-scrollbar-thumb-size',
+  '--skin-scrollbar-thumb-repeat', '--skin-scrollbar-thumb-pos',
+  // 金箍棒材质剖面（2026-09-13 第四版）：6 个素材变量 + 3+3 个层配置变量。
+  // ⚠️ 素材与层配置必须一起清理 —— 只清一半会让下一套皮肤继承上一套的
+  //    size/repeat（层数不匹配时整条 background 被浏览器丢弃）。
+  '--skin-scrollbar-v-body', '--skin-scrollbar-v-cap', '--skin-scrollbar-v-capflip',
+  '--skin-scrollbar-v-pattern', '--skin-scrollbar-v-size',
+  '--skin-scrollbar-v-repeat', '--skin-scrollbar-v-pos',
+  '--skin-scrollbar-h-body', '--skin-scrollbar-h-cap', '--skin-scrollbar-h-capflip',
+  '--skin-scrollbar-h-pattern', '--skin-scrollbar-h-size',
+  '--skin-scrollbar-h-repeat', '--skin-scrollbar-h-pos',
+  '--skin-divider-color',
   '--skin-titlebar-pattern', '--skin-overlay-color', '--skin-overlay-blur',
   '--skin-border-pattern', '--skin-border-pattern-slice',
   '--skin-shadow', '--skin-btn-gradient',
@@ -1043,12 +1071,16 @@ export const useSettingsStore = defineStore('settings', () => {
       root.setProperty('--skin-tag-radius', `${sf.tagRadius ?? sf.buttonRadius ?? 6}px`);
     }
     if (sf.scrollbarThumb) root.setProperty('--skin-scrollbar-thumb', sf.scrollbarThumb);
-    // 滚动条 thumb 纹理（2026-09-13 新增下发）：
-    // 此前 types.ts 已有 scrollbarPattern 字段、skin.css 也消费
-    // --skin-scrollbar-thumb-pattern，但**没有任何地方把它写进 CSS 变量** ——
-    // 皮肤 manifest 里配了也不生效（用户反馈"滚动条加点纹理图片"无反应）。
-    // 这里补上下发：皮肤给了就用皮肤的图案，否则由 skin.css 内置纹理兜底。
-    if (sf.scrollbarPattern) root.setProperty('--skin-scrollbar-thumb-pattern', sf.scrollbarPattern);
+    // 滚动条「金箍棒材质」下发（2026-09-13 第四版）：
+    // 6 个变量一一对应 skin.css 的 --skin-scrollbar-{v,h}-{body,cap,capflip}。
+    // ⚠️ 竖版 / 横版必须分开给：横条若复用竖版 body，repeat-x 时接缝处会留黑缝，
+    //    横条碎成「一串小方块」（用户已截图反馈）。皮肤的 manifest 里两者都要配。
+    if (sf.scrollbarVBody) root.setProperty('--skin-scrollbar-v-body', sf.scrollbarVBody);
+    if (sf.scrollbarVCap) root.setProperty('--skin-scrollbar-v-cap', sf.scrollbarVCap);
+    if (sf.scrollbarVCapFlip) root.setProperty('--skin-scrollbar-v-capflip', sf.scrollbarVCapFlip);
+    if (sf.scrollbarHBody) root.setProperty('--skin-scrollbar-h-body', sf.scrollbarHBody);
+    if (sf.scrollbarHCap) root.setProperty('--skin-scrollbar-h-cap', sf.scrollbarHCap);
+    if (sf.scrollbarHCapFlip) root.setProperty('--skin-scrollbar-h-capflip', sf.scrollbarHCapFlip);
     if (sf.dividerColor) root.setProperty('--skin-divider-color', sf.dividerColor);
     setPattern('--skin-cat-tag-pattern', themedPattern(sf.catTagPattern));
     setPattern('--skin-task-list-pattern', themedPattern(sf.taskListPattern));
