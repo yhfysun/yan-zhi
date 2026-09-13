@@ -112,7 +112,7 @@ export const SKIN_MANIFESTS: PluginManifest[] = [
           orb2: '#A78BFA',
           orb3: '#0EA5E9',
         }, 0.5, {
-          glass: '#0E1626', glassDark: '#0A101C', glassAlpha: 0.80, glassAlphaDark: 0.82,
+          glass: '#0E1626', glassDark: '#0A101C', glassAlpha: 0.78, glassAlphaDark: 0.55,
           border: 'rgba(56,189,248,0.45)', borderDark: 'rgba(56,189,248,0.40)',
           radius: 8, buttonRadius: 4, buttonText: '#EAF6FF',
           shadow: '0 0 0 1px rgba(56,189,248,0.3), 0 8px 32px rgba(10,16,28,0.6)',

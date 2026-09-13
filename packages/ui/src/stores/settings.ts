@@ -717,9 +717,11 @@ export const useSettingsStore = defineStore('settings', () => {
     const tint = dark
       ? (sf.glassDark ?? sf.surfaceColor ?? dv.surface)
       : (sf.glass ?? sf.surfaceColor ?? dv.surface);
-    // 暗色下大面板不透明度从 0.78 降到 0.70，让壁纸透出来（0.62 会让亮壁纸上的浅字对比不足）；
+    // 暗色下大面板不透明度从 0.70 降到 0.50，让壁纸透出来（2026-09-13 用户反馈
+    // 「预览背景皮肤也没有 / 最主要的背景图片都没了」：原本 0.82+blur18 几乎把右侧
+    // 预览面板糊成纯深色块，看不到壁纸）；
     // 输入框/弹窗等需要可读性的面走 surfaceSunken / surfaceRaised 的实心派生色，不受此值影响
-    const alpha = dark ? (sf.glassAlphaDark ?? 0.7) : (sf.glassAlpha ?? 0.86);
+    const alpha = dark ? (sf.glassAlphaDark ?? 0.5) : (sf.glassAlpha ?? 0.78);
     const border = dark ? (sf.borderDark ?? sf.border) : sf.border;
     root.setProperty('--skin-glass-tint', tint);
     root.setProperty('--skin-glass-alpha', String(alpha));
@@ -760,7 +762,7 @@ export const useSettingsStore = defineStore('settings', () => {
     root.setProperty('--skin-btn-radius', `${sf.buttonRadius ?? 6}px`);
     const autoBtnText = contrastRatio(currentBtnPrimary, '#ffffff') >= 4.5 ? '#ffffff' : (dark ? '#F2F0EA' : '#141414');
     root.setProperty('--skin-btn-text', sf.buttonText ?? sf.onPrimary ?? autoBtnText);
-    root.setProperty('--skin-glass-blur', `${sf.glassBlur ?? 18}px`);
+    root.setProperty('--skin-glass-blur', `${sf.glassBlur ?? 8}px`);
     // ===== 壁纸遮罩色（2026-09-13 修「灰蒙蒙」）=====
     // 原实现遮罩色写死在 CSS 里（#0f172a 深蓝灰），任何皮肤都被同一层冷灰纱糊掉，
     // 暖色/霓虹系壁纸全部洗成灰蓝。这里下发「带皮肤色相」的遮罩色：
@@ -798,9 +800,11 @@ export const useSettingsStore = defineStore('settings', () => {
     const scrimBase = mixHex('#0A0A0C', currentSkinPrimary, 0.12);
     const scrimA = hexToRgba(scrimBase, sf.patternScrim ?? 0.78);
     const scrim = dark ? `linear-gradient(${scrimA}, ${scrimA})` : '';
-    // 部件图贴合方式：小图（按钮/输入框）应平铺而非拉伸铺满，否则严重糊。
-    // 默认仍为 cover（保持既有观感），皮肤可经 surface.patternFit 指定 repeat / repeat-x / contain。
-    const fit = sf.patternFit ?? 'cover';
+    // 部件图贴合方式：小图（按钮/输入框/列表底图）必须平铺 tile，而非 cover 拉伸铺满。
+    // 历史默认 cover 会把 480x270 之类的小纹理拉伸到整个侧栏/弹窗宽度（300~600px），
+    // 强行放大 1.5~2 倍造成肉眼可见的糊化、细节丢失。
+    // 改为默认 repeat（自然尺寸平铺）；皮肤可经 surface.patternFit 指定 cover / contain / repeat-x。
+    const fit = sf.patternFit ?? 'repeat';
     root.setProperty('--skin-pattern-size', fit === 'cover' || fit === 'contain' ? fit : 'auto');
     root.setProperty('--skin-pattern-repeat', fit === 'cover' || fit === 'contain' ? 'no-repeat' : fit);
     const themedPattern = (light?: string, darkVariant?: string) => {
