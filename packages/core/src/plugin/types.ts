@@ -168,6 +168,10 @@ export interface ThemePalette {
     dialogBgColor?: string;
     /** 弹窗遮罩色，缺省由主色派生的半透明深色 */
     overlayTint?: string;
+    /** 壁纸遮罩色 · 浅色主题，缺省由皮肤 surface 派生暖白纱 */
+    wallpaperOverlayTint?: string;
+    /** 壁纸遮罩色 · 深色主题，缺省由皮肤 surface 派生深色纱（保留皮肤色相） */
+    wallpaperOverlayTintDark?: string;
   };
 }
 

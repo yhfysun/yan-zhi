@@ -6,29 +6,67 @@
    --skin-blur: Npx            壁纸模糊半径（0 = 不模糊）
    ============================================================ */
 
-/* ===== 壁纸背景：铺在 body 上（内容容器全部透明化），遮罩用 body::before =====
+/* ===== 壁纸背景：铺在 html 上（内容容器全部透明化），遮罩用 html::before =====
    可读性基线：遮罩 + 壁纸模糊双保险。--skin-blur 默认 14px（applyPalette/applySkin 未显式配置时生效），
-   模糊后的壁纸只保留色 mood，细节不与文字争夺对比度 */
-[data-skin="on"] body {
+   模糊后的壁纸只保留色 mood，细节不与文字争夺对比度。
+
+   ⚠️ 选择器为什么是 `html[data-skin="on"]` 而不是 `[data-skin="on"] html`（2026-09-13 修，血泪坑）：
+   后者是**后代选择器**，要求「html 的某个祖先带着 data-skin」。而 html 是文档根元素、
+   **没有任何祖先** → 该规则**永远不匹配**，静默失效（不报错、可能出现在 computed 之外的
+   stylesheet 列表里，极具迷惑性）。同理 `[data-skin="on"] html::before` 也永不匹配。
+   正确写法是 `html[data-skin="on"]`（属性挂在与 html 同一元素上）。
+   这个 bug 导致壁纸/遮罩整层没生效，html 只剩 index.html 内联的 #1e1e2e 灰紫兜底
+   —— 这正是「整屏灰蒙蒙」的第三个来源。
+
+   ⚠️ 为什么挂在 html 而不是 body：
+   backdrop-filter 的取样边界是「最近的 backdrop root」。当壁纸铺在 body、遮罩挂在
+   body::before（自身带 backdrop-filter）时，body 这一层就成了 backdrop root，
+   于是 .sidebar / .title-bar 等**子级玻璃层**的 backdrop-filter 取不到壁纸，
+   只能取到该 root 之下的**空白画布（白）** → 深色玻璃 82% + 白 18% = 一层灰白雾。
+   把壁纸与遮罩一起提到 html（玻璃层的共同祖先、且在 backdrop root 之外），
+   子级玻璃就能正常取样到壁纸，灰白雾消失。
+   ——注意 body 必须同步置为透明，否则实色 body 会再次挡住 html 壁纸。 */
+html[data-skin="on"] {
   background: var(--app-wallpaper, var(--color-bg)) center / cover no-repeat fixed;
 }
 
-[data-skin="on"] body::before {
+html[data-skin="on"] body {
+  background: transparent;
+}
+
+/* 壁纸遮罩色（2026-09-13 修「灰蒙蒙」）：
+   原实现把遮罩色写死成 #0f172a（深蓝灰）+ opacity 0.4 + blur 5px。
+   后果：无论皮肤是什么色相（暖粉的琴月、霓虹青紫的赛博宵、青绿的松风……），
+   壁纸都被同一层冷灰纱糊掉 4 成并模糊 5px —— 实测琴月皮肤壁纸的暖棕色
+   被洗成 rgb(15,23,42) 主导的灰蓝，整屏「灰蒙蒙」。
+   现改为从皮肤自身派生：--skin-overlay-tint 优先取皮肤 surface 色相
+   （applySurface 下发），未配置时回落皮肤 surface 变量，最后才回落原深蓝灰兜底。 */
+html[data-skin="on"]::before {
   content: '';
   position: fixed;
   inset: 0;
   z-index: 0;
   pointer-events: none;
-  background: #0f172a;
+  background: var(--skin-overlay-tint, var(--skin-surface, #0f172a));
   opacity: var(--skin-mask, 0.45);
   backdrop-filter: blur(var(--skin-blur, 14px));
   -webkit-backdrop-filter: blur(var(--skin-blur, 14px));
 }
 
-/* 浅色模式遮罩改白纱，避免壁纸过暗与浅色文字层冲突 */
-[data-theme="light"][data-skin="on"] body::before {
-  background: #f8fafc;
+/* 浅色模式遮罩改白纱，避免壁纸过暗与浅色文字层冲突。
+   同样不再写死白色，而是走皮肤浅色 surface（未配置时回落原 #f8fafc） */
+html[data-theme="light"][data-skin="on"]::before {
+  background: var(--skin-overlay-tint-light, var(--skin-surface, #f8fafc));
   opacity: calc(var(--skin-mask, 0.45) * 0.9);
+}
+
+/* html 层兜底底色（2026-09-13）：
+   皮肤模式下 html 已是壁纸层，一旦壁纸加载慢/失败，透出的就是 html 的底色。
+   而 html 底色默认来自 index.html 内联样式 / Element Plus 暗色主题的 #1E1E2E（灰紫），
+   这正是「灰蒙蒙」的来源之一。皮肤模式下把 html 底色接到皮肤 surface，
+   保证兜底色也随皮肤色相。（与上面的壁纸简写共存：简写失败时仍留有底色。） */
+html[data-skin="on"] {
+  background-color: var(--skin-surface, transparent);
 }
 
 /* ===== 内容容器透明化：让壁纸透出（内容 z-index 已 ≥1，压在遮罩之上） =====
@@ -88,13 +126,14 @@ html[data-skin="on"] .home-page {
   --color-text-tertiary: var(--skin-text-tertiary, #71706A);
 
   /* ===== Element Plus 文字色族接管（浅色）=====
-     历史坑：此前只映射了 --el-bg-color* / --el-fill-color* / --el-border-color*，
-     **漏了 --el-text-color-***。而 BrowserPanel.vue 等组件的文字色几乎全部写成
-     `color: var(--el-text-color-primary, #202124)` 这类形式 —— 变量没被接管时
+     历史坑：此前只映射了 --el-bg-color / --el-fill-color / --el-border-color 三族，
+     漏掉了「文字色族」（primary/regular/secondary/placeholder/disabled）。
+     而 BrowserPanel.vue 等组件的文字色几乎全部写成
+     color: var(--el-text-color-primary, #202124) 这类形式 —— 变量没被接管时
      会直接落到 EP 自己的浅色默认值（#303133 等近黑），在深色/深底皮肤上就是
      「黑字压深蓝底」不可读；这也是用户截图里浏览器起始页灰蒙蒙的直接原因。
-     这里把文字色族一并接到皮肤文字 token，**所有消费方自动跟随**，
-     不必再逐个选择器打补丁（逐个补容易漏，已实测漏了 site-name/recent-*/analysis-* 等十余处）。 */
+     这里把文字色族一并接到皮肤文字 token，所有消费方自动跟随，
+     不必再逐个选择器打补丁（逐个补容易漏，已实测漏了 site-name/recent/analysis 等十余处）。 */
   --el-text-color-primary: var(--skin-text, #303133);
   --el-text-color-regular: var(--skin-text, #606266);
   --el-text-color-secondary: var(--skin-text-secondary, #909399);
@@ -216,6 +255,19 @@ html[data-skin="on"] .home-page {
 }
 [data-skin="on"] .sidebar,
 [data-skin="on"] .right-panel {
+  backdrop-filter: var(--glass-filter);
+  -webkit-backdrop-filter: var(--glass-filter);
+}
+
+/* ===== 中间内容列（.chat-column）：必须自带玻璃背板 =====
+   2026-09-13 用户反馈「卡片怎么没有皮肤」的现象根因之一：
+   .app-shell/.main-content/.chat-page 都被置为 transparent 让壁纸透出，
+   左栏(.sidebar)/右栏(.right-panel) 各自有 --glass-bg 背板，唯独**中间的消息列没有**，
+   于是消息气泡与「智能体回复卡片」直接浮在**原始壁纸**上——形态上就像"卡片没上皮肤"。
+   这里给内容列补一层与左右栏同源的玻璃背板（底色 + 模糊），保证三栏材质一致；
+   仅补 background-color 与 backdrop-filter，不动 background-image（避免压掉列内列表底图）。 */
+[data-skin="on"] .chat-column {
+  background-color: var(--glass-bg);
   backdrop-filter: var(--glass-filter);
   -webkit-backdrop-filter: var(--glass-filter);
 }
@@ -440,7 +492,7 @@ html[data-skin="on"] .home-page {
 
 /* ===== 减少动态效果偏好：壁纸遮罩保持但去掉模糊，省电省性能 ===== */
 @media (prefers-reduced-motion: reduce) {
-  [data-skin="on"] body::before {
+  html[data-skin="on"]::before {
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
   }
@@ -881,6 +933,36 @@ html[data-skin="on"] .loading-overlay {
   background-size: var(--skin-pattern-size, cover) !important;
   background-repeat: var(--skin-pattern-repeat, no-repeat) !important;
   background-position: center !important;
+}
+
+/* ===== 列表「卡片」条目（会话/空间/任务行）=====
+   2026-09-13 用户反馈「卡片怎么没有皮肤」：.conv-item 这类行级卡片原先只有
+   :hover / .active 的纯色底，没有任何皮肤图案，铺在已吃皮肤的 .conv-list 之上
+   显得"脱皮"。这里给行卡片补上同一套底图 + 薄玻璃底，保证列表内外材质一致。
+   注意：hover / .active 的纯色态仍由 chat.css 的更高优先级规则覆盖（它们不用 !important，
+   而本块用了 !important，故需在下方单独回收 hover/active 的底色，避免把状态色压掉）。 */
+[data-skin="on"] .conv-item,
+[data-skin="on"] .space-item,
+[data-skin="on"] .st-item {
+  background-image: var(--skin-task-list-pattern, none) !important;
+  background-size: var(--skin-pattern-size, cover) !important;
+  background-repeat: var(--skin-pattern-repeat, no-repeat) !important;
+  background-position: center !important;
+  background-color: transparent !important;
+}
+/* 状态态回收：hover / active / pinned 保留原有语义色（叠加在底图之上） */
+[data-skin="on"] .conv-item:hover,
+[data-skin="on"] .space-item:hover,
+[data-skin="on"] .st-item:hover {
+  background-color: var(--glass-bg-hover) !important;
+}
+[data-skin="on"] .conv-item.active,
+[data-skin="on"] .space-item.active,
+[data-skin="on"] .st-item.active {
+  background-color: color-mix(in srgb, var(--color-primary) 10%, transparent) !important;
+}
+[data-skin="on"] .conv-item.pinned {
+  background-color: color-mix(in srgb, var(--color-warning) 8%, transparent) !important;
 }
 /* 卡片/列表容器底图之上压薄玻璃底色：20% 而非实色，保证底图纹理清晰可见 */
 [data-skin="on"] .conv-list,

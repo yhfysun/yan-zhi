@@ -46,9 +46,13 @@ function skinTheme(
     kind: 'skin',
     category,
     preview: PREVIEW,
-    // 遮罩按 0.8 系数下调：原值 0.40~0.50 配 12px 模糊会把壁纸细节糊没，只剩一片灰调。
-    // 文字可读性改由 surfaceSunken / surfaceRaised 的派生实色保证，不靠把壁纸压死。
-    wallpaper: { light: WALLPAPER, dark: WALLPAPER_DARK, mask: +(wallpaperMask * 0.8).toFixed(2) },
+    // 遮罩按 0.6 系数下调（2026-09-13 二次下调，原 0.8）：
+    // ① 遮罩色已改为从皮肤 surface 派生（见 skin.css body::before / --skin-overlay-tint），
+    //    不再是被写死的 #0f172a 冷灰蓝 —— 壁纸不会再被"洗成灰"；
+    // ② 因此遮罩可以更薄，让壁纸本身的水墨/霓虹细节真正透出来。
+    //    原 0.40~0.50 × 0.8 = 0.32~0.40 仍然偏厚，用户反馈"灰蒙蒙"；改 0.6 后为 0.24~0.30。
+    // 文字可读性由 surfaceSunken / surfaceRaised 的派生实色保证，不靠把壁纸压死。
+    wallpaper: { light: WALLPAPER, dark: WALLPAPER_DARK, mask: +(wallpaperMask * 0.6).toFixed(2) },
     ...palette,
     ...(surface ? { surface: { ...autoPatterns, ...surface } } : { surface: autoPatterns }),
   };

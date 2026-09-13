@@ -83,6 +83,10 @@ type SkinSurface = {
   dialogBgColor?: string;
   /** 弹窗遮罩色（缺省由派生给出半透明深色） */
   overlayTint?: string;
+  /** 壁纸遮罩色 · 浅色主题（缺省由皮肤 surface 派生暖白纱） */
+  wallpaperOverlayTint?: string;
+  /** 壁纸遮罩色 · 深色主题（缺省由皮肤 surface 派生深色纱，保留皮肤色相） */
+  wallpaperOverlayTintDark?: string;
 };
 
 /** ===== 颜色工具：hex 解析 / 混色 / WCAG 对比度 ===== */
@@ -649,6 +653,7 @@ export const useSettingsStore = defineStore('settings', () => {
   /** 皮肤模式涉及的全部 CSS 变量（清除皮肤时统一移除） */
   const SKIN_CSS_VARS = [
     '--app-wallpaper', '--skin-mask', '--skin-blur',
+    '--skin-overlay-tint', '--skin-overlay-tint-light',
     '--skin-glass-tint', '--skin-glass-alpha', '--skin-glass-alpha-hover',
     '--skin-glass-border', '--skin-radius', '--skin-btn-radius', '--skin-btn-text',
     '--skin-glass-blur', '--skin-overlay-color', '--skin-overlay-blur',
@@ -756,6 +761,17 @@ export const useSettingsStore = defineStore('settings', () => {
     const autoBtnText = contrastRatio(currentBtnPrimary, '#ffffff') >= 4.5 ? '#ffffff' : (dark ? '#F2F0EA' : '#141414');
     root.setProperty('--skin-btn-text', sf.buttonText ?? sf.onPrimary ?? autoBtnText);
     root.setProperty('--skin-glass-blur', `${sf.glassBlur ?? 18}px`);
+    // ===== 壁纸遮罩色（2026-09-13 修「灰蒙蒙」）=====
+    // 原实现遮罩色写死在 CSS 里（#0f172a 深蓝灰），任何皮肤都被同一层冷灰纱糊掉，
+    // 暖色/霓虹系壁纸全部洗成灰蓝。这里下发「带皮肤色相」的遮罩色：
+    //   暗色 → 皮肤 surface 往黑里压一点（保留主色相的深色纱）
+    //   浅色 → 皮肤 surface 往白里提（暖白纱）
+    // CSS 侧 var() 回落保证未下发时不崩。
+    const overlayTintDark = mixHex(dv.surface, '#000000', 0.25);
+    const overlayTintLight = mixHex(dv.surface, '#FFFFFF', 0.55);
+    root.setProperty('--skin-overlay-tint', sf.wallpaperOverlayTintDark ?? overlayTintDark);
+    root.setProperty('--skin-overlay-tint-light', sf.wallpaperOverlayTint ?? overlayTintLight);
+
     // 弹窗遮罩：未配置时改用派生色（带皮肤色相的半透明），不再 transparent
     root.setProperty('--skin-overlay-color', sf.overlayColor || sf.overlayTint || dv.overlayTint);
     root.setProperty('--skin-overlay-blur', `${sf.overlayBlur ?? 4}px`);
@@ -767,13 +783,20 @@ export const useSettingsStore = defineStore('settings', () => {
       root.removeProperty('--skin-border-pattern-slice');
     }
     // ===== 部位图案统一下发（暗色叠纱罩） =====
-    // P0-4 调整：原实现压的是**纯黑** rgba(10,10,12,0.7) —— 部件图只剩 30% 可见度且色相被拉向中性灰，
-    // 这是"暗色系灰蒙蒙"最直接的元凶。改为：
-    //   1) 纱罩色用皮肤主色系的深色（保留色相），不再用纯黑；
-    //   2) 强度从 0.7 降到 0.35（皮肤可经 surface.patternScrim 覆盖）。
-    // 文字可读性由 surfaceSunken / surfaceRaised 的实心派生色保证，不靠把图压死。
+    // 【2026-09-13 二修「灰蒙蒙」，这是真正的元凶】
+    // 铺垫：皮肤包里的部件图（task-list-bg / input-bg / button-bg / dialog-bg）
+    // 都是**为浅色主题生成的浅色图**——实测 27 套皮肤的这批图平均亮度在 230~248
+    // （接近纯白，例如 skin-cyber-neon/task-list-bg.webp≈rgb(221,223,224)）。
+    // 而暗色主题下它们被原样铺到侧栏/输入框/按钮上，于是：
+    //   浅色图(亮度240) × (1-0.35) + 深纱(亮度10) × 0.35 ≈ 亮度 160 → 一片灰白；
+    //   叠加亮白文字 rgb(239,250,254) 后对比度只有 2.43:1 → 白底白字，即用户看到的「灰蒙蒙」。
+    //   这也是为什么改 --glass-bg / --el-* 变量都不起作用：背景是**图片**，不是底色。
+    // 修复：暗色下把纱罩强度提到 0.78 —— 白图被压到亮度≈56（深色底），
+    //   对比度≈10.8:1，图仍保留 22% 的纹理起伏，不再糊成一片，也保住了皮肤的图案感。
+    //   浅色主题不需要纱罩（浅图本来就配浅底），维持空串。
+    //   skin 可经 surface.patternScrim 覆盖；真要保留更亮的图，把它调到 0.6~0.7。
     const scrimBase = mixHex('#0A0A0C', currentSkinPrimary, 0.12);
-    const scrimA = hexToRgba(scrimBase, sf.patternScrim ?? 0.35);
+    const scrimA = hexToRgba(scrimBase, sf.patternScrim ?? 0.78);
     const scrim = dark ? `linear-gradient(${scrimA}, ${scrimA})` : '';
     // 部件图贴合方式：小图（按钮/输入框）应平铺而非拉伸铺满，否则严重糊。
     // 默认仍为 cover（保持既有观感），皮肤可经 surface.patternFit 指定 repeat / repeat-x / contain。
