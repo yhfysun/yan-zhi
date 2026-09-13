@@ -32,6 +32,13 @@ const OUT_BASE = join(ROOT, 'apps', 'server', 'assets', 'plugin-assets');
 
 /** 源图文件名关键字 → 皮肤包 id（新增样例皮肤时在此补一行即可） */
 const MAPPING = [
+  // 2026-09-13 重生成批次：dev/skin_regenerated/<skinId>.source.png（ImageGen 出图，部分带右下角水印，靠裁底去掉）。
+  // key 带 .source 后缀且必须排在旧关键字前面——旧 key 'aurora' 是 'aurora.source' 的子串，顺序反了会误匹配。
+  { key: 'ink-mono.source', skinId: 'skin-ink-mono' },
+  { key: 'mountain-dawn.source', skinId: 'skin-mountain-dawn' },
+  { key: 'aurora.source', skinId: 'skin-aurora' },
+  { key: 'grand-line.source', skinId: 'skin-grand-line' },
+  { key: 'ninja-village.source', skinId: 'skin-ninja-village' },
   { key: 'landscape', skinId: 'skin-sample-dawn' },
   { key: 'anime', skinId: 'skin-sample-sakura' },
   { key: 'ink_wash', skinId: 'skin-sample-ink' },

@@ -14,14 +14,15 @@
 | P1-1 | 部位 `fit` 字段 | ✅ 机制已落地（4 套源图偏小的样例皮肤已启用 repeat） |
 | P1-2 | WCAG 对比度校验 | ✅ 并入 `scripts/verify-skin-series.mts`，32 套 × 明暗全通过 |
 | P1-3a | 深色壁纸变体 | ✅ 全 27 包派生 `wallpaper-dark.webp`（`scripts/build-skin-dark-variants.mjs`），`skins.ts` wallpaper.dark 已指向，校验清单已纳入 |
-| P1-3b | 压缩过度壁纸重出（ink-mono 52KB / mountain-dawn 67KB / aurora 81KB） | ⬜ 三套均无源图，无法重出；需补源图后跑 `build-skin-samples.mjs` 同流程 |
+| P1-3b | 压缩过度壁纸重出（ink-mono 52KB / mountain-dawn 67KB / aurora 81KB） | ✅ 2026-09-13 ImageGen 重出（源图 `dev/skin_regenerated/<skinId>.source.png`），连同 grand-line / ninja-village 共 5 套换新图 |
 | P1-3c | 壁纸水印清理 | ✅ 全 27 包目检：仅 skin-sample-* 四包带入「AI生成」水印（源图右下角），`build-skin-samples.mjs` 增加裁底 10% 步骤后重建，复检无水印 |
 | P2 | 计划文档状态与过时规格订正 | ✅ 状态已标注；图片规格（2560×1600/≤800KB → 实际 1600×1067 + 深色变体）、mask 类型、去水印注意事项已订正 |
 
-### 遗留风险（非水印，需产品决策）
+### IP 风险（2026-09-13 已解决）
 
-- `skin-grand-line`（路飞/草帽海贼团）、`skin-ninja-village`（鸣人/木叶村）为明显动漫 IP 形象，
-  与计划文档 §3.4「禁用番剧形象」的来源约束冲突，商用有版权风险，建议后续换图。
+- ~~`skin-grand-line`（路飞/草帽海贼团）、`skin-ninja-village`（鸣人/木叶村）为明显动漫 IP 形象~~
+  已用 ImageGen 重出**原创**题材替换：伟大航路 → 原创帆船航海落日，忍道 → 原创忍者村落暮色，
+  均无任何既有作品角色/标志元素，源图存 `dev/skin_regenerated/`。
 
 验证：`vue-tsc --noEmit` 零错误；`apps/web vite build` 通过；
 `verify-skin-series.mts` 输出「32 套 × 明暗两模式，阈值 正文≥4.5 / 次级≥3 + ALL SVG OK / ASSETS OK」。
