@@ -2,207 +2,183 @@
  * 移动端内嵌 Node.js 后端构建脚本
  *
  * 功能：
- * 1. 编译 apps/server（tsc）
- * 2. 编译 packages/core 和 packages/shared（tsc，临时 tsconfig）
- * 3. 把所有编译产物复制到 apps/mobile/nodejs/dist/
- * 4. 生成移动端 package.json（已存在，确认依赖）
- * 5. 输出构建结果摘要
+ * 1. 复用 apps/server 的 tsc 编译产物（rootDir=../..，已包含 core/shared）
+ * 2. 复制到 apps/mobile/nodejs/dist/（保持 monorepo 目录结构以解析 workspace import）
+ * 3. 为 @yan-zhi/core 与 @yan-zhi/shared 生成 node_modules stub（ESM 解析需要）
+ * 4. 生成启动入口 apps/mobile/nodejs/index.js
+ * 5. 把整个 nodejs/ 同步到 dist/nodejs/（Capacitor webDir=dist，插件按 nodeDir 加载）
  *
  * 用法：node scripts/build-mobile-server.cjs
  *
  * 注意：
- * - better-sqlite3、sqlite-vec 等原生模块需在 Android 构建环境中安装匹配 ABI 的版本
- * - playwright、tesseract.js 已从移动端依赖中移除
- * - 本脚本只负责编译和打包，不负责 Android 原生集成（见 docs/移动端内嵌后端集成指南.md）
+ * - 本脚本只做编译产物的搬运与拼装，不负责 Android 原生集成
+ * - better-sqlite3 / sqlite-vec 为原生模块，需匹配内嵌 Node 运行时的 ABI
  */
 
-const fs = require('fs');
-const path = require('path');
-const { execSync } = require('child_process');
+const fs = require('node:fs');
+const path = require('node:path');
 
-const ROOT = path.resolve(__dirname, '..', '..');
+// __dirname = <root>/apps/mobile/scripts
+// ROOT 需要回到仓库根：scripts -> mobile -> apps -> root
+const ROOT = path.resolve(__dirname, '..', '..', '..');
 const SERVER_DIR = path.join(ROOT, 'apps', 'server');
-const CORE_DIR = path.join(ROOT, 'packages', 'core');
-const SHARED_DIR = path.join(ROOT, 'packages', 'shared');
-const MOBILE_NODE_DIR = path.join(ROOT, 'apps', 'mobile', 'nodejs');
-const DIST_DIR = path.join(MOBILE_NODE_DIR, 'dist');
+const SERVER_DIST = path.join(SERVER_DIR, 'dist');
+const MOBILE_DIR = path.join(ROOT, 'apps', 'mobile');
+const NODEJS_DIR = path.join(MOBILE_DIR, 'nodejs');
+const NODEJS_DIST = path.join(NODEJS_DIR, 'dist');
+const WEB_DIST = path.join(MOBILE_DIR, 'dist');
 
 function log(msg) { console.log('[build-mobile-server]', msg); }
 function error(msg) { console.error('[build-mobile-server][ERROR]', msg); }
 
-function run(cmd, cwd) {
-  log('RUN: ' + cmd + (cwd ? ' (cwd: ' + path.relative(ROOT, cwd) + ')' : ''));
-  execSync(cmd, { cwd: cwd || ROOT, stdio: 'inherit', shell: true });
+function copyRecursive(src, dest) {
+  const stat = fs.statSync(src);
+  if (stat.isDirectory()) {
+    fs.mkdirSync(dest, { recursive: true });
+    for (const name of fs.readdirSync(src)) {
+      copyRecursive(path.join(src, name), path.join(dest, name));
+    }
+  } else {
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    fs.copyFileSync(src, dest);
+  }
 }
 
-function copyDir(src, dest) {
-  if (!fs.existsSync(src)) { log('SKIP copy (not found): ' + path.relative(ROOT, src)); return; }
-  fs.mkdirSync(dest, { recursive: true });
-  // 用 robocopy 在 Windows 上更可靠，但跨平台用 node 递归
-  function copyRecursive(s, d) {
-    const stat = fs.statSync(s);
-    if (stat.isDirectory()) {
-      fs.mkdirSync(d, { recursive: true });
-      for (const name of fs.readdirSync(s)) {
-        copyRecursive(path.join(s, name), path.join(d, name));
-      }
-    } else {
-      fs.copyFileSync(s, d);
-    }
+function copyDirIfExists(src, dest, label) {
+  if (!fs.existsSync(src)) {
+    error('未找到 ' + label + '，期望路径: ' + src);
+    return false;
   }
   copyRecursive(src, dest);
-  log('COPIED: ' + path.relative(ROOT, src) + ' -> ' + path.relative(ROOT, dest));
+  log('已复制 ' + label + ' -> ' + path.relative(ROOT, dest));
+  return true;
 }
 
 // ── 步骤 1：清理旧产物 ──
 log('=== 步骤 1: 清理旧产物 ===');
-if (fs.existsSync(DIST_DIR)) {
-  fs.rmSync(DIST_DIR, { recursive: true, force: true });
-  log('已清理 ' + path.relative(ROOT, DIST_DIR));
+if (fs.existsSync(NODEJS_DIST)) {
+  fs.rmSync(NODEJS_DIST, { recursive: true, force: true });
 }
-fs.mkdirSync(DIST_DIR, { recursive: true });
+fs.mkdirSync(NODEJS_DIST, { recursive: true });
+log('已重建 ' + path.relative(ROOT, NODEJS_DIST));
 
-// ── 步骤 2：编译 server ──
-log('=== 步骤 2: 编译 apps/server ===');
-try {
-  run('pnpm run build', SERVER_DIR);
-} catch (e) {
-  error('server 编译失败，但继续尝试复制已有产物（可能是 typecheck 错误，非致命）');
-}
+// ── 步骤 2：复用 apps/server 编译产物 ──
+// server 的 tsconfig rootDir 为 ../..，故 dist 下同时包含：
+//   apps/server/src        -> server 自身
+//   packages/core/src      -> @yan-zhi/core
+//   packages/shared/src    -> @yan-zhi/shared
+log('=== 步骤 2: 复制 server 编译产物 ===');
+const okServer = copyDirIfExists(
+  path.join(SERVER_DIST, 'apps', 'server', 'src'),
+  path.join(NODEJS_DIST, 'apps', 'server', 'src'),
+  'server 产物',
+);
+const okCore = copyDirIfExists(
+  path.join(SERVER_DIST, 'packages', 'core', 'src'),
+  path.join(NODEJS_DIST, 'packages', 'core', 'src'),
+  '@yan-zhi/core 产物',
+);
+const okShared = copyDirIfExists(
+  path.join(SERVER_DIST, 'packages', 'shared', 'src'),
+  path.join(NODEJS_DIST, 'packages', 'shared', 'src'),
+  '@yan-zhi/shared 产物',
+);
 
-// server 的 tsconfig rootDir=../..，输出在 dist/apps/server/src/
-const serverDistSrc = path.join(SERVER_DIR, 'dist', 'apps', 'server', 'src');
-const serverDistAlt = path.join(SERVER_DIR, 'dist', 'src');
-if (fs.existsSync(serverDistSrc)) {
-  copyDir(serverDistSrc, path.join(DIST_DIR, 'server'));
-} else if (fs.existsSync(serverDistAlt)) {
-  copyDir(serverDistAlt, path.join(DIST_DIR, 'server'));
-} else {
-  error('未找到 server 编译产物，期望路径: ' + serverDistSrc + ' 或 ' + serverDistAlt);
-}
-
-// ── 步骤 3：编译 core 和 shared ──
-log('=== 步骤 3: 编译 packages/core 和 packages/shared ===');
-
-function compilePackage(pkgDir, pkgName) {
-  log('编译 ' + pkgName + '...');
-  // 创建临时 tsconfig
-  const tempTsconfig = path.join(pkgDir, 'tsconfig.mobile-build.json');
-  const tsconfig = {
-    extends: path.join(ROOT, 'tsconfig.base.json'),
-    compilerOptions: {
-      outDir: path.join(pkgDir, 'dist-mobile'),
-      rootDir: path.join(pkgDir, 'src'),
-      module: 'ESNext',
-      moduleResolution: 'Bundler',
-      target: 'ES2022',
-      esModuleInterop: true,
-      skipLibCheck: true,
-      declaration: false,
-      declarationMap: false,
-    },
-    include: ['src/**/*'],
-  };
-  fs.writeFileSync(tempTsconfig, JSON.stringify(tsconfig, null, 2));
-  try {
-    run('npx tsc -p ' + tempTsconfig, pkgDir);
-  } catch (e) {
-    error(pkgName + ' 编译有错误（可能是类型错误，非致命），继续复制产物');
-  }
-  // 清理临时 tsconfig
-  fs.rmSync(tempTsconfig, { force: true });
-
-  const pkgDist = path.join(pkgDir, 'dist-mobile', 'src');
-  if (fs.existsSync(pkgDist)) {
-    copyDir(pkgDist, path.join(DIST_DIR, pkgName));
-  } else {
-    error('未找到 ' + pkgName + ' 编译产物: ' + pkgDist);
-  }
-}
-
-compilePackage(CORE_DIR, 'core');
-compilePackage(SHARED_DIR, 'shared');
-
-// ── 步骤 4：生成启动入口（重写 index.js 以匹配实际目录结构）──
-log('=== 步骤 4: 生成启动入口 ===');
-const indexJs = `/**
- * 言智移动端内嵌 Node.js 后端启动入口（构建生成）
- * 实际 server 代码在 ./server/，core/shared 在 ./core/ 和 ./shared/
- */
-import path from 'node:path';
-import fs from 'node:fs';
-import { fileURLToPath, pathToFileURL } from 'node:url';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-
-// 数据目录：原生层通过 ANDROID_DATA_DIR 传入应用私有目录
-const dataDir = process.env.ANDROID_DATA_DIR
-  || path.join(process.env.HOME || process.env.USERPROFILE || '.', 'yan-zhi-data');
-fs.mkdirSync(dataDir, { recursive: true });
-process.env.DATA_DIR = dataDir;
-
-// 端口与监听地址：仅本机回环
-process.env.PORT = process.env.PORT || '3001';
-process.env.HOST = '127.0.0.1';
-
-// 移动端模式标记
-process.env.MOBILE_MODE = '1';
-process.env.DISABLE_PLAYWRIGHT = '1';
-process.env.DISABLE_COMPUTER_USE = '1';
-
-console.log('[mobile-server] 数据目录:', dataDir);
-console.log('[mobile-server] 监听: http://127.0.0.1:' + process.env.PORT);
-
-// 启动 server（需要先注册 core/shared 的路径别名，因为编译产物中 import '@yan-zhi/core' 不会自动解析）
-// 方案：用 import-map 或直接修改 import 路径。这里用动态 import + 路径重写。
-// 更简单：在 node_modules 中创建 @yan-zhi/core 和 @yan-zhi/shared 的软链接/目录
-const nodeModulesDir = path.join(__dirname, 'node_modules');
-fs.mkdirSync(path.join(nodeModulesDir, '@yan-zhi'), { recursive: true });
-for (const [pkg, dir] of [['core', 'core'], ['shared', 'shared']]) {
-  const target = path.join(nodeModulesDir, '@yan-zhi', pkg);
-  const source = path.join(__dirname, dir);
-  if (!fs.existsSync(target) && fs.existsSync(source)) {
-    // 创建 package.json 指向编译产物
-    fs.mkdirSync(target, { recursive: true });
-    fs.writeFileSync(path.join(target, 'package.json'), JSON.stringify({
-      name: '@yan-zhi/' + pkg,
-      version: '0.1.0',
-      type: 'module',
-      main: './index.js',
-    }, null, 2));
-    // 复制编译产物
-    copyDirSync(source, target);
-  }
-}
-
-function copyDirSync(src, dest) {
-  fs.mkdirSync(dest, { recursive: true });
-  for (const name of fs.readdirSync(src)) {
-    const s = path.join(src, name);
-    const d = path.join(dest, name);
-    if (fs.statSync(s).isDirectory()) copyDirSync(s, d);
-    else fs.copyFileSync(s, d);
-  }
-}
-
-// 启动 server
-try {
-  await import(pathToFileURL(path.join(__dirname, 'server', 'index.js')).href);
-} catch (err) {
-  console.error('[mobile-server] 启动失败:', err);
+if (!okServer) {
+  error('server 产物缺失。请先运行: pnpm --filter @yan-zhi/server build');
   process.exit(1);
 }
-`;
-fs.writeFileSync(path.join(MOBILE_NODE_DIR, 'index.js'), indexJs);
-log('已生成启动入口: apps/mobile/nodejs/index.js');
+if (!okCore || !okShared) {
+  log('提示: core/shared 产物不完整，workspace import 可能解析失败');
+}
 
-// ── 步骤 5：输出摘要 ──
+// ── 步骤 3：为 workspace 包生成 node_modules stub ──
+// 编译产物中的 import '@yan-zhi/core' 需要在 node_modules 下可解析
+log('=== 步骤 3: 生成 workspace stub ===');
+const stubSpecs = [
+  { pkg: 'core', srcDir: path.join(NODEJS_DIST, 'packages', 'core', 'src') },
+  { pkg: 'shared', srcDir: path.join(NODEJS_DIST, 'packages', 'shared', 'src') },
+];
+for (const spec of stubSpecs) {
+  if (!fs.existsSync(spec.srcDir)) continue;
+  const target = path.join(NODEJS_DIST, 'node_modules', '@yan-zhi', spec.pkg);
+  fs.rmSync(target, { recursive: true, force: true });
+  copyRecursive(spec.srcDir, target);
+  fs.writeFileSync(
+    path.join(target, 'package.json'),
+    JSON.stringify(
+      {
+        name: '@yan-zhi/' + spec.pkg,
+        version: '0.1.0',
+        type: 'module',
+        main: './index.js',
+      },
+      null,
+      2,
+    ),
+  );
+  log('stub 已生成: @yan-zhi/' + spec.pkg);
+}
+
+// ── 步骤 4：生成启动入口 ──
+log('=== 步骤 4: 生成启动入口 ===');
+const indexJs = [
+  '/**',
+  ' * 言智移动端内嵌 Node.js 后端启动入口（由 build-mobile-server.cjs 生成，请勿手改）',
+  ' * 运行于 Capawesome Capacitor-NodeJS 插件提供的 Node 运行时内。',
+  ' */',
+  "import path from 'node:path';",
+  "import fs from 'node:fs';",
+  "import { fileURLToPath, pathToFileURL } from 'node:url';",
+  '',
+  'const __dirname = path.dirname(fileURLToPath(import.meta.url));',
+  '',
+  '// 数据目录：优先用插件提供的可写目录，未设置时回退到工程目录',
+  'const dataDir = process.env.NODEJS_MOBILE_DATA_DIR',
+  '  || process.env.ANDROID_DATA_DIR',
+  "  || path.join(__dirname, 'yan-zhi-data');",
+  'fs.mkdirSync(dataDir, { recursive: true });',
+  'process.env.DATA_DIR = dataDir;',
+  '',
+  '// 仅监听本机回环，供 WebView 访问',
+  "process.env.PORT = process.env.PORT || '3001';",
+  "process.env.HOST = '127.0.0.1';",
+  '',
+  '// 移动端模式标记：server 据此禁用桌面专属能力',
+  "process.env.MOBILE_MODE = '1';",
+  "process.env.DISABLE_PLAYWRIGHT = '1';",
+  "process.env.DISABLE_COMPUTER_USE = '1';",
+  '',
+  "console.log('[mobile-server] 数据目录:', dataDir);",
+  "console.log('[mobile-server] 监听: http://127.0.0.1:' + process.env.PORT);",
+  '',
+  '// 启动 server（路径与 tsc rootDir=../.. 的输出结构一致）',
+  'try {',
+  "  await import(pathToFileURL(path.join(__dirname, 'dist', 'apps', 'server', 'src', 'index.js')).href);",
+  '} catch (err) {',
+  "  console.error('[mobile-server] 启动失败:', err);",
+  '  process.exit(1);',
+  '}',
+  '',
+].join('\n');
+fs.writeFileSync(path.join(NODEJS_DIR, 'index.js'), indexJs);
+log('已生成: ' + path.relative(ROOT, path.join(NODEJS_DIR, 'index.js')));
+
+// ── 步骤 5：同步到 dist/nodejs/（Capacitor webDir=dist，插件按 nodeDir 加载）──
+log('=== 步骤 5: 同步到 dist/nodejs ===');
+const webNodejs = path.join(WEB_DIST, 'nodejs');
+if (!fs.existsSync(WEB_DIST)) {
+  error('未找到前端构建产物 ' + WEB_DIST + '，请先运行 vite build');
+  process.exit(1);
+}
+if (fs.existsSync(webNodejs)) {
+  fs.rmSync(webNodejs, { recursive: true, force: true });
+}
+copyRecursive(NODEJS_DIR, webNodejs);
+log('已同步: ' + path.relative(ROOT, webNodejs));
+
+// ── 步骤 6：摘要 ──
 log('=== 构建完成 ===');
-log('产物目录: ' + path.relative(ROOT, DIST_DIR));
-const distContents = fs.existsSync(DIST_DIR) ? fs.readdirSync(DIST_DIR) : [];
-log('dist 子目录: ' + distContents.join(', '));
-log('');
-log('下一步：');
-log('  1. 在 apps/mobile/nodejs/ 下运行 npm install 安装依赖（需 Android 构建环境）');
-log('  2. 参考 docs/移动端内嵌后端集成指南.md 完成 Android 原生集成');
-log('  3. 运行 pnpm build:mobile:android 构建 APK');
+const entry = path.join(webNodejs, 'dist', 'apps', 'server', 'src', 'index.js');
+log('后端入口: ' + (fs.existsSync(entry) ? path.relative(ROOT, entry) : '缺失!'));
+log('nodejs 工程: ' + path.relative(ROOT, webNodejs));
