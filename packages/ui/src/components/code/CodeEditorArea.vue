@@ -28,19 +28,50 @@
       </button>
     </div>
 
-    <!-- ===== 面包屑：当前文件相对项目根的路径 ===== -->
-    <div v-if="breadcrumbs.length" class="cea-crumbs">
-      <el-icon :size="12" class="cea-crumb-ico"><FolderOpened /></el-icon>
+    <!-- ===== 面包屑：当前文件相对项目根的路径 =====
+         左键点目录段 → 弹出该目录下拉（逐级展开、点文件即打开）
+         右键目录段 / 最外层文件夹图标 → 保留「在系统文件管理器中打开」 -->
+    <div v-if="breadcrumbs.length" ref="crumbbarRef" class="cea-crumbs">
+      <el-icon
+        :size="12"
+        class="cea-crumb-ico"
+        title="在系统文件管理器中打开项目根"
+        @click="revealBreadcrumbDir(code.projectDir)"
+      ><FolderOpened /></el-icon>
       <template v-for="(seg, i) in breadcrumbs" :key="seg.abs">
         <span v-if="i" class="cea-crumb-sep">›</span>
         <button
           v-if="seg.isDir"
           class="cea-crumb"
-          :title="seg.abs"
-          @click="revealBreadcrumbDir(seg.abs)"
+          :class="{ open: crumbsFor?.abs === seg.abs }"
+          :title="seg.abs + '（点击浏览目录内容，右键在文件管理器中打开）'"
+          @click="openCrumbDropdown($event, seg)"
+          @contextmenu.prevent="revealBreadcrumbDir(seg.abs)"
         >{{ seg.label }}</button>
-        <span v-else class="cea-crumb current" :title="seg.abs">{{ seg.label }}</span>
+        <span
+          v-else
+          class="cea-crumb current"
+          :title="seg.abs"
+          @contextmenu.prevent="revealBreadcrumbDir(seg.abs)"
+        >{{ seg.label }}</span>
       </template>
+    </div>
+
+    <!-- 面包屑目录下拉：position:fixed 自带脱离父级 overflow 的能力，
+         无需 Teleport（Teleport 在 v-if 切换时会命中 null 锚点 patch 崩溃） -->
+    <div
+      v-if="crumbsFor"
+      class="cea-crumbs-pop"
+      :style="crumbsPos"
+    >
+      <BreadcrumbDropdown
+        :file="crumbsFor"
+        :root-dir="code.projectDir"
+        :active-abs="code.activePath || ''"
+        :arrow-left="crumbsArrow"
+        @close="closeCrumbDropdown"
+        @opened="onCrumbFileOpened"
+      />
     </div>
 
     <!-- ===== 模型修改提示条：对比 / 处理 ===== -->
@@ -214,6 +245,7 @@ import { useResizableV } from '../../composables/useResizableV';
 import { api } from '../../api/client';
 import CodeEditorPane from './CodeEditorPane.vue';
 import MarkdownPreview from './MarkdownPreview.vue';
+import BreadcrumbDropdown from './BreadcrumbDropdown.vue';
 import ChatConsolePanel from '../chat/ChatConsolePanel.vue';
 
 const emit = defineEmits<{ 'pick-dir': [] }>();
@@ -295,6 +327,45 @@ const breadcrumbs = computed<Array<{ label: string; abs: string; isDir: boolean 
 function revealBreadcrumbDir(abs: string) {
   void api.post('/workspace/reveal', { path: abs });
 }
+
+// ===== 面包屑目录下拉（左键点目录段：就地浏览该目录，点文件即打开）=====
+const crumbbarRef = ref<HTMLElement | null>(null);
+const crumbsFor = ref<{ abs: string; label: string } | null>(null);
+const crumbsPos = ref<Record<string, string>>({});
+const crumbsArrow = ref(18);
+
+function openCrumbDropdown(e: MouseEvent, seg: { label: string; abs: string }) {
+  e.stopPropagation();
+  const el = e.currentTarget as HTMLElement | null;
+  const barRect = crumbbarRef.value?.getBoundingClientRect();
+  const segRect = el?.getBoundingClientRect();
+  const width = 340;
+  const pad = 8;
+  const left = Math.max(pad, Math.min(segRect?.left ?? barRect?.left ?? pad, window.innerWidth - width - pad));
+  const top = (segRect?.bottom ?? barRect?.bottom ?? 0) + 4;
+  crumbsPos.value = { left: left + 'px', top: top + 'px' };
+  crumbsArrow.value = segRect && barRect ? Math.max(14, segRect.left - left + segRect.width / 2) : 18;
+  crumbsFor.value = { abs: seg.abs, label: seg.label };
+}
+
+function closeCrumbDropdown() {
+  crumbsFor.value = null;
+}
+
+function onCrumbFileOpened(payload: { abs: string; name: string }) {
+  void code.openFile(payload.abs, payload.name);
+}
+
+/** 点外部才关闭：crumb 条与下拉自身内部的点击不触发关闭 */
+function onDocClickCloseCrumbs(e: MouseEvent) {
+  const t = e.target as HTMLElement | null;
+  if (t && (t.closest('.cea-crumbs') || t.closest('.cea-crumbs-pop'))) return;
+  closeCrumbDropdown();
+}
+
+watch(() => code.activePath, () => closeCrumbDropdown());
+onMounted(() => document.addEventListener('click', onDocClickCloseCrumbs));
+onBeforeUnmount(() => document.removeEventListener('click', onDocClickCloseCrumbs));
 
 /** 编辑器光标变化 → 状态栏 Ln/Col */
 function onCursor(e: { line: number; col: number }) {
@@ -723,7 +794,16 @@ onBeforeUnmount(() => {
   cursor: pointer; transition: background 0.12s ease, color 0.12s ease;
 }
 .cea-crumb:hover { background: var(--glass-bg-hover, #f1efe9); color: var(--color-primary, #c2410c); }
+.cea-crumb.open {
+  background: color-mix(in srgb, var(--color-primary, #c2410c) 12%, transparent);
+  color: var(--color-primary, #c2410c);
+}
 .cea-crumb.current { color: var(--color-text, #1a1a1a); font-weight: 600; cursor: default; }
 .cea-crumb.current:hover { background: transparent; color: var(--color-text, #1a1a1a); }
 .cea-crumb-sep { color: var(--color-text-tertiary, #9c9b94); opacity: 0.6; flex-shrink: 0; padding: 0 1px; }
+.cea-crumb-ico { cursor: pointer; transition: color 0.12s ease; }
+.cea-crumb-ico:hover { color: var(--color-primary, #c2410c); }
+
+/* 面包屑目录下拉的定位容器（自身不再画背景，交给子组件） */
+.cea-crumbs-pop { position: fixed; z-index: 9999; }
 </style>
