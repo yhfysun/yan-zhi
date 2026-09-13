@@ -1,4 +1,5 @@
 import { ref, computed, reactive, watch, onMounted, onUnmounted, nextTick } from 'vue';
+import { clampMenuPos } from '../../utils/menuPosition';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import MarkdownIt from 'markdown-it';
 import hljs from 'highlight.js';
@@ -15,6 +16,7 @@ import {
   useSettingsStore,
 } from '../../stores';
 import { useGitStore } from '../../stores/git';
+import { isCodeModeActive, useCodeStore } from '../../stores/code';
 import { useIsMobile } from '../useIsMobile';
 import { useRouter } from 'vue-router';
 import { api } from '../../api/client';
@@ -1146,7 +1148,7 @@ function createChat() {
   function openSpaceMenu(e: MouseEvent, space: any) {
     e.preventDefault();
     e.stopPropagation();
-    spaceMenuTarget.value = { x: e.clientX, y: e.clientY, space };
+    spaceMenuTarget.value = { ...clampMenuPos(e), space };
   }
 
   function closeSpaceMenu() {
@@ -1164,7 +1166,8 @@ function createChat() {
     // 未设置、占位默认值、或 URL（可能被误设为浏览器导航 URL）时，不自动建空间
     if (!wd || wd === 'workspace' || /^https?:\/\//i.test(wd)) return undefined;
     try {
-      const existed = spaceStore.spaces.find((s) => s.dirPath === wd);
+      const norm = wd.replace(/[\\/]+$/, '');
+      const existed = spaceStore.spaces.find((s) => s.dirPath && s.dirPath.replace(/[\\/]+$/, '') === norm);
       if (existed) return existed.id;
       const sep = wd.includes('/') ? '/' : '\\';
       const baseName = wd.split(sep).filter(Boolean).pop() || wd;
@@ -1209,11 +1212,30 @@ function createChat() {
     ElMessage.success('已更改分类');
   }
 
+  /** 自愈：持久化的默认平台/模型若失效（被删/库重置/账号切换），回退到第一个可用对话模型 */
+  async function healStalePlatform() {
+    const dp = settingsStore.settings.defaultPlatformId;
+    const dm = settingsStore.settings.defaultModelId;
+    const dpOk = !!dp && platformStore.platforms.some((p) => p.id === dp);
+    const dmOk = !!dm && platformStore.models.some((m) => m.id === dm && m.enabled);
+    if (dpOk && dmOk) return;
+    const firstChat = platformStore.models.find((m) => m.enabled && CHAT_MODEL_TYPES.includes(m.type));
+    const fbPlatform = firstChat ? platformStore.platforms.find((p) => p.id === firstChat.platformId) : undefined;
+    const nextP = fbPlatform?.id || platformStore.platforms[0]?.id || '';
+    const nextM = firstChat?.id || '';
+    if (nextP !== dp || nextM !== dm) {
+      await settingsStore.update({ defaultPlatformId: nextP, defaultModelId: nextM });
+    }
+  }
+
   onMounted(async () => {
     await agentStore.loadAgents();
     await store.loadConversations();
     await platformStore.loadPlatforms();
     await platformStore.loadModels();
+    // 自愈：持久化的默认平台/模型若已失效（被删/库重置/账号切换），回退到第一个可用平台/模型，
+    // 避免 stale defaultPlatformId 触发 404 且导致聊天无法发送（消息发出去不显示）
+    await healStalePlatform();
     await mcpStore.loadServers();
     await skillStore.loadSkills();
     spaceStore.loadSpaces();
@@ -1404,6 +1426,10 @@ function createChat() {
     mountedSkillIds.value = [];
     input.value = '';
     quotedUrls.value = [];
+    if (isCodeModeActive()) {
+      setScene('code');
+      if (spaceId === undefined) spaceId = useCodeStore().projectSpaceId;
+    }
     if (spaceId !== undefined) {
       spaceStore.selectSpace(spaceId);
       if (spaceId) {
@@ -1479,7 +1505,7 @@ function createChat() {
     let host = u;
     try { host = new URL(u).host; } catch { /* 非 URL 原样展示 */ }
     quotedUrls.value = [...quotedUrls.value, { url: u, name: host }];
-    ElMessage.success('已引用到对话');
+    ElMessage.success('已引用到任务');
   }
   function removeQuotedUrl(url: string) {
     quotedUrls.value = quotedUrls.value.filter((q) => q.url !== url);
@@ -1504,7 +1530,12 @@ function createChat() {
       quotedUrls.value = [];
 
       // 每次发送都确保工作目录对应空间存在（幂等：已存在则复用，失败则下次仍可重试）
-      const spaceId = await ensureWorkspaceSpace();
+      let spaceId = await ensureWorkspaceSpace();
+      // 代码模式：优先使用当前项目绑定的 spaceId，确保会话归入正确项目
+      if (isCodeModeActive()) {
+        const codeSid = useCodeStore().projectSpaceId;
+        if (codeSid) spaceId = codeSid;
+      }
       if (store.currentConvId && !store.conversations.some((c) => c.id === store.currentConvId)) {
         store.currentConvId = '';
       }
@@ -1541,9 +1572,25 @@ function createChat() {
     }
 
     const content = input.value;
-    const model = platformStore.models.find((m) => m.id === selectedModelId.value);
+    let model = platformStore.models.find((m) => m.id === selectedModelId.value);
     let platform: Platform | undefined = platformStore.platforms.find((p) => p.id === model?.platformId);
-    if (!platform || !model) { ElMessage.error('平台或模型不存在'); return; }
+    if (!platform || !model) {
+      // 自愈回退：选第一个可用的对话模型，避免 stale 平台导致整条消息发不出去也不显示
+      const alt = platformStore.models.find((m) => m.enabled && CHAT_MODEL_TYPES.includes(m.type));
+      if (alt) {
+        const altPlatform = platformStore.platforms.find((p) => p.id === alt.platformId);
+        if (altPlatform) {
+          model = alt;
+          platform = altPlatform;
+          selectedModelId.value = alt.id;
+          await settingsStore.update({ defaultPlatformId: altPlatform.id, defaultModelId: alt.id });
+        }
+      }
+    }
+    if (!platform || !model) {
+      ElMessage.error('未配置可用的模型平台，请先到「设置 → 模型平台」添加并启用一个模型');
+      return;
+    }
 
     if (!CHAT_MODEL_TYPES.includes(model.type)) {
       ElMessage.warning('「' + (model.alias || model.modelId) + '」不是对话模型（类型：' + model.type + '），不支持聊天功能');
@@ -1569,7 +1616,12 @@ function createChat() {
     try {
       const agent = agentStore.selectedAgent;
       // 每次发送都确保工作目录对应空间存在（幂等：已存在则复用，失败则下次仍可重试）
-      const spaceId = await ensureWorkspaceSpace();
+      let spaceId = await ensureWorkspaceSpace();
+      // 代码模式：优先使用当前项目绑定的 spaceId，确保会话归入正确项目
+      if (isCodeModeActive()) {
+        const codeSid = useCodeStore().projectSpaceId;
+        if (codeSid) spaceId = codeSid;
+      }
       if (!store.currentConvId) {
         const title = titleFromContent(userContent.trim()) || '网页引用';
         const id = await store.createConversation(title, {
@@ -2248,14 +2300,14 @@ function createChat() {
   async function delMsg(msg: Message) { await store.deleteMessage(msg.id); }
 
   function openConvMenu(e: MouseEvent, conv: Conversation) {
-    ctxMenu.visible = true; ctxMenu.x = e.clientX; ctxMenu.y = e.clientY; ctxMenu.conv = conv;
+    const _p = clampMenuPos(e); ctxMenu.visible = true; ctxMenu.x = _p.x; ctxMenu.y = _p.y; ctxMenu.conv = conv;
   }
   // ========== 会话树空白区右键菜单（新建任务/新建空间） ==========
   const treeMenu = reactive({ visible: false, x: 0, y: 0 });
   function openTreeMenu(e: MouseEvent) {
     // 会话项与空间节点有各自的右键菜单，命中时不弹空白区菜单
     if ((e.target as HTMLElement)?.closest('.conv-item, .tree-space .tree-node-head')) return;
-    treeMenu.visible = true; treeMenu.x = e.clientX; treeMenu.y = e.clientY;
+    const _p2 = clampMenuPos(e); treeMenu.visible = true; treeMenu.x = _p2.x; treeMenu.y = _p2.y;
   }
   function treeMenuNewTask() {
     closeTreeMenu();

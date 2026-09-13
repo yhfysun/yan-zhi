@@ -264,13 +264,17 @@
       </div>
     </div>
 
-    <ChatWelcome v-if="store.currentMessages.length === 0 && !store.streaming && selectedModelId" />
+    <ChatWelcome v-if="!isCodeMode && store.currentMessages.length === 0 && !store.streaming && selectedModelId" />
+    <div v-if="isCodeMode && store.currentMessages.length === 0 && !store.streaming && selectedModelId" class="code-welcome" style="display:flex;flex-direction:column;align-items:center;justify-content:center;flex:1;gap:8px;">
+      <h2 style="font-size:20px;font-weight:600;color:var(--el-text-color-primary,#1e293b);margin:0;">代码任务</h2>
+      <p style="font-size:13px;color:var(--el-text-color-secondary,#64748b);margin:0;">描述你的需求，开始开发</p>
+    </div>
 
     <div v-if="store.currentMessages.length === 0 && !store.streaming && !selectedModelId" class="welcome-card">
       <div class="welcome-icon"><el-icon :size="56"><ChatDotRound /></el-icon></div>
       <h2>欢迎使用日常办公助手</h2>
       <p v-if="platformStore.platforms.length === 0">请先配置模型平台，点击下方按钮开始</p>
-      <p v-else>请在下方面板选择模型，然后开始对话</p>
+      <p v-else>请在下方面板选择模型，然后开始任务</p>
       <div class="welcome-actions" v-if="platformStore.platforms.length > 0">
         <el-button @click="input = '帮我写一段 Python 代码'; $nextTick(() => { const ta = document.querySelector('.input-textarea textarea') as HTMLTextAreaElement; if (ta) ta.focus(); })">帮我写一段 Python 代码</el-button>
         <el-button @click="input = '解释什么是机器学习'; $nextTick(() => { const ta = document.querySelector('.input-textarea textarea') as HTMLTextAreaElement; if (ta) ta.focus(); })">解释什么是机器学习</el-button>
@@ -393,6 +397,7 @@ import { useRouter } from 'vue-router';
 import { useChat } from '../../composables/chat/useChat';
 import type { MessageRound } from '../../composables/chat/useChat';
 import { useSettingsStore } from '../../stores/settings';
+import { useCodeStore } from '../../stores/code';
 import TaskPlanCard from '../TaskPlanCard.vue';
 import PlatformConfigCard from '../PlatformConfigCard.vue';
 import SubAgentRoundView from './SubAgentRoundView.vue';
@@ -418,6 +423,7 @@ const {
   confirmCurrentPage, confirmMultiSelect, confirmChecked, confirmSingle, confirmShowText,
   confirmText, confirmSupplement, onConfirmSkip, onConfirmNext,
 } = useChat();
+const isCodeMode = useCodeStore().codeModeActive;
 const askSupplementOpen = ref(false);
 const confirmSupplementOpen = ref(false);
 const document = window.document;
@@ -765,13 +771,13 @@ watch(activeNavRound, () => {
   font-weight: 600;
   color: #334155;
   border-bottom: 1px solid var(--el-border-color-lighter, #e2e8f0);
-  background: #f8fafc;
+  background: var(--glass-bg);
 }
 .dataview-tag {
   font-weight: 400;
   color: #64748b;
   font-size: 11px;
-  background: #eef2ff;
+  background: var(--glass-bg-hover);
   color: #4f46e5;
   border-radius: 4px;
   padding: 0 6px;

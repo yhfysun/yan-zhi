@@ -4,7 +4,7 @@ import { getPluginManager, validateManifest, ManifestError } from '@yan-zhi/core
 import type { Plugin, PluginManifest } from '@yan-zhi/core';
 import AdmZip from 'adm-zip';
 import { promises as fs } from 'node:fs';
-import { existsSync, statSync } from 'node:fs';
+import { existsSync, statSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PLUGIN_TEMPLATES } from '../plugins/templates/index.js';
@@ -131,6 +131,23 @@ router.get('/:id/export', (req: Request, res: Response) => {
             'utf8',
           ),
         );
+        res.json({
+          data: { format: 'source', filename: `${id}-${ver}-source.zip`, base64: zip.toBuffer().toString('base64') },
+        });
+        return;
+      }
+      // 直接读取实际源码文件（ops-shell / cicd-pipeline / java-suite 等未维护模板副本的内置插件）
+      const srcFile = path.resolve(fileURLToPath(import.meta.url), '..', '..', 'plugins', `${id}.ts`);
+      if (existsSync(srcFile)) {
+        const zip = new AdmZip();
+        zip.addFile('manifest.json', Buffer.from(JSON.stringify(p.manifest, null, 2), 'utf8'));
+        zip.addFile(`${id}.ts`, Buffer.from(readFileSync(srcFile, 'utf8'), 'utf8'));
+        zip.addFile('README.md', Buffer.from(
+          `# ${p.manifest.name}\n\n${p.manifest.description || ''}\n\n` +
+          `## 源码\n\n入口文件：${id}.ts\n\n` +
+          '## 二次开发\n\n1. 修改源码后重新构建项目\n2. 重启服务生效\n',
+          'utf8',
+        ));
         res.json({
           data: { format: 'source', filename: `${id}-${ver}-source.zip`, base64: zip.toBuffer().toString('base64') },
         });

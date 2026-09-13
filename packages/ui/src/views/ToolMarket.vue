@@ -33,11 +33,12 @@
         <el-empty v-if="toolsStore.builtinTools.length === 0" description="暂无内置工具" :image-size="60" />
         <el-empty v-else-if="builtinGroupsFiltered.length === 0" :description="emptyDesc(searchBuiltin, '内置工具')" :image-size="60" />
         <div v-for="g in builtinGroupsFiltered" :key="g.key" class="builtin-cat">
-          <div class="builtin-cat-title">
-            <span class="builtin-cat-name">{{ g.label }}</span>
-            <span class="builtin-cat-count">{{ g.tools.length }}</span>
-          </div>
-          <div class="card-grid">
+          <span
+            class="cat-tag"
+            :class="{ collapsed: builtinCollapsed[g.key] }"
+            @click="toggleBuiltinCat(g.key)"
+          ><el-icon class="cat-tag-arrow"><ArrowRight v-if="builtinCollapsed[g.key]" /><ArrowDown v-else /></el-icon>{{ g.label }}<em>{{ g.tools.length }}</em></span>
+          <div v-show="!builtinCollapsed[g.key]" class="card-grid">
             <div v-for="t in g.tools" :key="t.name" class="tool-card">
               <div class="tool-card-header">
                 <span class="tool-card-name">{{ t.name }}</span>
@@ -81,11 +82,12 @@
         <el-empty v-if="toolsStore.customTools.length === 0" description="暂无自定义工具，点击「新增工具」创建" :image-size="60" />
         <el-empty v-else-if="customGroupsFiltered.length === 0" :description="emptyDesc(searchCustom, '工具')" :image-size="60" />
         <div v-for="g in customGroupsFiltered" :key="g.category" class="builtin-cat">
-          <div class="builtin-cat-title">
-            <span class="builtin-cat-name">{{ g.category }}</span>
-            <span class="builtin-cat-count">{{ g.tools.length }}</span>
-          </div>
-          <div class="card-grid">
+          <span
+            class="cat-tag"
+            :class="{ collapsed: customCollapsed[g.category] }"
+            @click="toggleCustomCat(g.category)"
+          ><el-icon class="cat-tag-arrow"><ArrowRight v-if="customCollapsed[g.category]" /><ArrowDown v-else /></el-icon>{{ g.category }}<em>{{ g.tools.length }}</em></span>
+          <div v-show="!customCollapsed[g.category]" class="card-grid">
           <div
             v-for="t in g.tools"
             :key="t.id"
@@ -331,11 +333,11 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue';
+import { ref, reactive, computed, onMounted } from 'vue';
 import { useRoute } from 'vue-router';
 import {
   Plus, ArrowLeft, Cloudy,
-  Search, Close,
+  Search, Close, ArrowRight, ArrowDown,
 } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { useAuthStore } from '../stores';
@@ -349,6 +351,12 @@ const route = useRoute();
 
 const activeTab = ref<'builtin' | 'custom' | 'mcp' | 'remote'>('builtin');
 const focusServerId = ref<string | undefined>(undefined);
+
+// ---- 分类折叠 ----
+const builtinCollapsed = reactive<Record<string, boolean>>({});
+const customCollapsed = reactive<Record<string, boolean>>({});
+function toggleBuiltinCat(key: string) { builtinCollapsed[key] = !builtinCollapsed[key]; }
+function toggleCustomCat(cat: string) { customCollapsed[cat] = !customCollapsed[cat]; }
 
 onMounted(() => {
   const tab = route.query.tab;
@@ -743,18 +751,21 @@ async function installTool(item: any) {
   color: var(--color-text-secondary);
 }
 
-/* 分类区块：分类名在左上角，卡片全铺开（无折叠） */
-.builtin-cat { margin-bottom: 26px; }
-.builtin-cat-title {
-  display: flex; align-items: center; gap: 8px;
-  margin-bottom: 12px; padding-left: 0;
+/* 分类标签：短小inline按钮，透明背景，旁边空白露背景，点击折叠/展开 */
+.builtin-cat { margin-bottom: 14px; }
+.cat-tag {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 4px 12px; margin-bottom: 8px;
+  font-size: 13px; font-weight: 600; color: var(--color-text);
+  cursor: pointer; user-select: none;
+  background: transparent; border: 1px solid var(--color-border-light);
+  background-image: var(--skin-cat-tag-pattern, none); background-size: cover; background-position: center;
+  border-radius: 16px; transition: all 0.15s;
 }
-.builtin-cat-title::before {
-  content: ''; width: 6px; height: 6px; flex-shrink: 0;
-  border-radius: 2px; background: var(--color-primary);
-}
-.builtin-cat-name { font-size: 14px; font-weight: 700; color: var(--color-text); }
-.builtin-cat-count { font-size: 11px; font-weight: 700; color: var(--color-text-secondary); background: rgba(15,23,42,0.06); border-radius: 10px; padding: 2px 8px; }
+.cat-tag:hover { border-color: var(--color-primary); color: var(--color-primary); }
+.cat-tag.collapsed { opacity: 0.5; }
+.cat-tag-arrow { font-size: 12px; flex-shrink: 0; }
+.cat-tag em { font-style: normal; font-size: 11px; font-weight: 700; color: var(--color-text-secondary); }
 
 /* ---- 工具卡片（统一高度 + 描述截断）---- */
 .card-grid {

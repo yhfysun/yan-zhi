@@ -322,9 +322,10 @@
     </div>
 
     <!-- 资源 / 目录 右键菜单（自绘，与文件页同款） -->
-    <div
+    <Teleport to="body">
+<div
       v-if="treeCtx.visible"
-      class="ops-ctxmenu"
+      class="ctx-menu"
       :style="{ left: treeCtx.x + 'px', top: treeCtx.y + 'px' }"
       @click.stop
       @contextmenu.prevent
@@ -357,6 +358,7 @@
         <div class="ops-ctxmenu-item" @click="ctxNewGroup">新建目录</div>
       </template>
     </div>
+</Teleport>
 
     <!-- 窗口标签右键菜单 -->
     <div
@@ -403,6 +405,7 @@ import {
   opsConnections,
   opsCollapsedGroups,
 } from './opsSession';
+import { clampMenuPos } from '../../utils/menuPosition';
 import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue';
 import {
   Folder, FolderOpened, Fold, Expand,
@@ -1222,14 +1225,14 @@ const ctxConnGroupId = computed(() => treeCtx.value.conn?.groupId || '');
 const ctxCanFile = computed(() => !!treeCtx.value.conn && connType(treeCtx.value.conn) !== 'database');
 
 function onConnCtx(c: OpsConn, ev: MouseEvent) {
-  treeCtx.value = { visible: true, x: ev.clientX, y: ev.clientY, conn: c, group: null };
+  treeCtx.value = { visible: true, ...clampMenuPos(ev), conn: c, group: null };
 }
 function onGroupCtx(g: GroupNode, ev: MouseEvent) {
-  treeCtx.value = { visible: true, x: ev.clientX, y: ev.clientY, conn: null, group: g };
+  treeCtx.value = { visible: true, ...clampMenuPos(ev), conn: null, group: g };
 }
 /** 列表空白处右键：只给「新建」（连接 / 目录） */
 function onTreeCtx(ev: MouseEvent) {
-  treeCtx.value = { visible: true, x: ev.clientX, y: ev.clientY, conn: null, group: null };
+  treeCtx.value = { visible: true, ...clampMenuPos(ev), conn: null, group: null };
 }
 function closeTreeCtx() {
   treeCtx.value = { ...treeCtx.value, visible: false };
@@ -1258,7 +1261,7 @@ const tabCtx = ref<{ visible: boolean; x: number; y: number; win: OpsWin | null 
   visible: false, x: 0, y: 0, win: null,
 });
 function onWinCtx(w: OpsWin, ev: MouseEvent) {
-  tabCtx.value = { visible: true, x: ev.clientX, y: ev.clientY, win: w };
+  tabCtx.value = { visible: true, ...clampMenuPos(ev), win: w };
 }
 function closeTabCtx() {
   tabCtx.value = { ...tabCtx.value, visible: false };
@@ -1453,19 +1456,7 @@ onUnmounted(() => {
 .ops-conn-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ops-conn-testing { font-size: 11px; color: var(--color-text-tertiary); flex-shrink: 0; }
 
-/* 资源 / 目录 右键菜单 */
-.ops-ctxmenu {
-  position: fixed; z-index: 3000; min-width: 132px; padding: 4px;
-  background: var(--color-surface); border: 1px solid var(--glass-border);
-  border-radius: 8px; box-shadow: var(--shadow-lg);
-}
-.ops-ctxmenu-item {
-  padding: 6px 10px; border-radius: 6px; font-size: 12px; cursor: pointer;
-  color: var(--color-text); white-space: nowrap;
-}
-.ops-ctxmenu-item:hover { background: var(--ops-row-hover); }
-.ops-ctxmenu-item.is-disabled { opacity: 0.45; pointer-events: none; }
-.ops-ctxmenu-item.is-danger { color: var(--el-color-danger); }
+
 
 /* ===== 工作区 ===== */
 .ops-workspace { flex: 1; min-width: 0; display: flex; flex-direction: column; }

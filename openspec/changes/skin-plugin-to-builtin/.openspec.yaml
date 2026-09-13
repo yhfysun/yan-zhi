@@ -1,0 +1,3 @@
+schema: spec-driven
+created: 2026-09-13
+goal: 在保留插件皮肤声明式形态（skins.ts + assets/plugin-assets 真图资源 + 皮肤库入口）的前提下，从每套壁纸派生补齐 卡片/滚动图(横幅)/新建任务三卡/下拉框/浏览器外壳专属图 等缺失部位（每套由 5 图扩至 11 图），并修复皮肤模式下下拉框白底白字；内置系列 skinSeries.ts 保持程序化不动。

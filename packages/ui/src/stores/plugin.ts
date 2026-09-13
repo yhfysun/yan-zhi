@@ -118,6 +118,7 @@ export const usePluginStore = defineStore('plugin', () => {
     settingsTabs,
     chatEnhancers,
     toolDecls,
+    enabledPlugins,
     refresh,
     enable,
     disable,

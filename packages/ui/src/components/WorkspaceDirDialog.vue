@@ -463,12 +463,13 @@ function clearDir() {
   display: none;
 }
 .wdd-list {
+  max-height: 300px;
   overflow-y: auto;
   border: 1px solid var(--glass-border);
   border-radius: 8px;
 }
 .wdd-list::-webkit-scrollbar { width: 5px; }
-.wdd-list::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: 999px; }
+.wdd-list::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.1); border-radius: 3px; }
 .wdd-state {
   display: flex;
   align-items: center;

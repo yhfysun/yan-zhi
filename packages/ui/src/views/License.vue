@@ -83,7 +83,7 @@ async function submit() {
   justify-content: center;
   min-height: 100%;
   padding: 24px;
-  background: var(--color-bg);
+  background: var(--glass-bg);
 }
 .auth-card {
   width: 440px;

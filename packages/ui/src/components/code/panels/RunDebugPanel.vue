@@ -510,7 +510,7 @@ onBeforeUnmount(() => { abort?.abort(); abort = null; });
   flex: 1; min-height: 0; overflow: auto; margin: 0; padding: 6px;
   font-family: var(--font-mono, "Cascadia Code", Consolas, monospace); font-size: 11px; line-height: 1.55;
   white-space: pre-wrap; word-break: break-all;
-  background: var(--el-fill-color-lighter, #faf9f6); border-radius: 7px;
+  background: var(--color-surface-hover); border-radius: 7px;
   color: var(--color-text-secondary, #6b6b66);
 }
 </style>

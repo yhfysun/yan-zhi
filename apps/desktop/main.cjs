@@ -212,7 +212,7 @@ function startServer() {
     const tsxPath = path.join(serverDir, 'node_modules', 'tsx', 'dist', 'cli.mjs');
     if (fs.existsSync(tsxPath)) {
       console.log('[后端] 用 Electron Node.js + tsx 启动:', tsxPath);
-      serverProcess = spawn(process.execPath, [tsxPath, 'src/index.ts'], {
+      serverProcess = spawn(process.execPath, [tsxPath, 'watch', 'src/index.ts'], {
         cwd: serverDir,
         stdio: 'inherit',
         env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: 'http://127.0.0.1:' + CDP_PORT, WEB_DIST: path.join(__dirname, '..', '..', 'apps', 'web', 'dist') },
@@ -220,7 +220,7 @@ function startServer() {
     } else {
       // 回退：npx tsx（可能 ABI 不兼容，但至少能启动）
       console.warn('[后端] tsx CLI 未找到，回退到 npx tsx（可能 ABI 不兼容）');
-      serverProcess = spawn('npx', ['tsx', 'src/index.ts'], {
+      serverProcess = spawn('npx', ['tsx', 'watch', 'src/index.ts'], {
         cwd: serverDir,
         stdio: 'inherit',
         shell: true,

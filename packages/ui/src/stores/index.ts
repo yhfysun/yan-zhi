@@ -19,3 +19,4 @@ export { useBrowserStore } from './browser';
 export type { BrowserTab } from './browser';
 export { useMemoryStore } from './memory';
 export type { MemoryDimension, MemoryRow } from './memory';
+export { useCicdStore } from './cicd';

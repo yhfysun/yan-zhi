@@ -7,6 +7,7 @@ import {
   recordFailure,
   pauseIfNeeded,
   MAX_RETRY,
+  shouldRetryStatus,
 } from '../services/token-pool.js';
 
 const router = Router();
@@ -70,7 +71,8 @@ async function forward(upstream: Response, res: ExpressResponse): Promise<void> 
 
 /**
  * 带 Token 池重试的代理请求：每次选最优 Token → 停顿 → fetch，
- * 成功则转发；无论什么错误（网络错误或任何非 2xx）都记录失败并换 Token 重试，最多 MAX_RETRY 次。
+ * 成功则转发；失败（401/403/429/5xx/网络错误）则记录并换 Token 重试，最多 MAX_RETRY 次。
+ * 业务错误（如 400 模型不支持）不换 Token，直接转发给前端。
  */
 async function proxyWithRetry(
   p: any,
@@ -111,11 +113,12 @@ async function proxyWithRetry(
       return;
     }
 
-    // 无论什么错误（不限 401/403/429/5xx）都记录失败并换 Token 重试，最多 MAX_RETRY 次
-    if (token) recordFailure(token.id);
-    if (attempt < MAX_RETRY - 1) {
-      await upstream.text().catch(() => {});
-      continue;
+    if (shouldRetryStatus(upstream.status)) {
+      if (token) recordFailure(token.id);
+      if (attempt < MAX_RETRY - 1) {
+        await upstream.text().catch(() => {});
+        continue;
+      }
     }
 
     await forward(upstream, res);
@@ -155,43 +158,6 @@ router.post('/embeddings', async (req: Request, res: ExpressResponse) => {
   }
 });
 
-/** 用 Token 池轮换拉取上游 /v1/models：无论什么错误都记录失败并换 Token，最多 MAX_RETRY 次。
- *  最终结果（成功或最后一次失败响应）原样转发给前端。 */
-async function fetchModelsWithRetry(p: any, res: ExpressResponse): Promise<void> {
-  const triedIds: string[] = [];
-  const fallbackKey = p.api_key_enc || '';
-  for (let attempt = 0; attempt < MAX_RETRY; attempt++) {
-    const token = pickToken(p.id, triedIds);
-    const apiKey = token?.apiKey || fallbackKey;
-    if (token) triedIds.push(token.id);
-    await pauseIfNeeded(p);
-    let upstream: Response;
-    try {
-      upstream = await fetch(`${baseUrl(p)}/v1/models`, { headers: upstreamHeaders(p, apiKey, false) });
-    } catch (e: any) {
-      if (token) recordFailure(token.id);
-      if (attempt < MAX_RETRY - 1 && (token || fallbackKey)) continue;
-      res.status(502).json({ error: `代理请求失败: ${e?.message || e}` });
-      return;
-    }
-    if (upstream.ok) {
-      if (token) recordSuccess(token.id);
-      const text = await upstream.text().catch(() => '');
-      res.status(upstream.status).setHeader('Content-Type', upstream.headers.get('content-type') || 'application/json');
-      res.send(text);
-      return;
-    }
-    // 无论什么错误都记录失败并换 Token 重试，最多 MAX_RETRY 次
-    if (token) recordFailure(token.id);
-    if (attempt < MAX_RETRY - 1) { await upstream.text().catch(() => {}); continue; }
-    const text = await upstream.text().catch(() => '');
-    res.status(upstream.status).setHeader('Content-Type', upstream.headers.get('content-type') || 'application/json');
-    res.send(text);
-    return;
-  }
-  res.status(502).json({ error: '所有 Token 均不可用' });
-}
-
 router.get('/models', async (req: Request, res: ExpressResponse) => {
   const userId = req.user!.userId;
   const platformId = req.query.platformId as string;
@@ -199,25 +165,47 @@ router.get('/models', async (req: Request, res: ExpressResponse) => {
   const p = db.prepare('SELECT * FROM platform WHERE id = ? AND user_id = ?').get(platformId, userId) as any;
   if (!p) { res.status(404).json({ error: '平台不存在' }); return; }
   try {
-    await fetchModelsWithRetry(p, res);
+    const triedIds: string[] = [];
+    const fallbackKey = p.api_key_enc || '';
+    for (let attempt = 0; attempt < MAX_RETRY; attempt++) {
+      const token = pickToken(p.id, triedIds);
+      const apiKey = token?.apiKey || fallbackKey;
+      if (token) triedIds.push(token.id);
+      await pauseIfNeeded(p);
+      let upstream: Response;
+      try {
+        upstream = await fetch(`${baseUrl(p)}/v1/models`, { headers: upstreamHeaders(p, apiKey, false) });
+      } catch (e: any) {
+        if (token) recordFailure(token.id);
+        if (attempt < MAX_RETRY - 1 && (token || fallbackKey)) continue;
+        res.status(502).json({ error: `代理请求失败: ${e?.message || e}` });
+        return;
+      }
+      if (upstream.ok) {
+        if (token) recordSuccess(token.id);
+        const text = await upstream.text().catch(() => '');
+        res.status(upstream.status).setHeader('Content-Type', upstream.headers.get('content-type') || 'application/json');
+        res.send(text);
+        return;
+      }
+      if (shouldRetryStatus(upstream.status)) {
+        if (token) recordFailure(token.id);
+        if (attempt < MAX_RETRY - 1) { await upstream.text().catch(() => {}); continue; }
+      }
+      const text = await upstream.text().catch(() => '');
+      res.status(upstream.status).setHeader('Content-Type', upstream.headers.get('content-type') || 'application/json');
+      res.send(text);
+      return;
+    }
+    res.status(502).json({ error: '所有 Token 均不可用' });
   } catch (e: any) {
     res.status(502).json({ error: `代理请求失败: ${e?.message || e}` });
   }
 });
 
 router.post('/preview-models', async (req: Request, res: ExpressResponse) => {
-  const { apiUrl, apiKey, headers, anthropic, platformId } = (req.body as any) || {};
+  const { apiUrl, apiKey, headers, anthropic } = (req.body as any) || {};
   if (!apiUrl) { res.status(400).json({ error: 'apiUrl 必填' }); return; }
-  // 编辑已有平台时前端拿不到明文 Key（Key 池在服务端）：apiKey 为空且带 platformId 时，
-  // 回退该平台的 Token 池轮换拉取，修复编辑弹窗「测试」按钮 401 失败的问题。
-  if (!apiKey && platformId) {
-    const p = db.prepare('SELECT * FROM platform WHERE id = ? AND user_id = ?').get(platformId, req.user!.userId) as any;
-    if (!p) { res.status(404).json({ error: '平台不存在' }); return; }
-    try { await fetchModelsWithRetry(p, res); } catch (e: any) {
-      res.status(502).json({ error: `代理请求失败: ${e?.message || e}` });
-    }
-    return;
-  }
   const h: Record<string, string> = { 'Content-Type': 'application/json' };
   if (anthropic) { h['x-api-key'] = apiKey || ''; h['anthropic-version'] = '2023-06-01'; }
   else { h['Authorization'] = `Bearer ${apiKey || ''}`; }

@@ -5,7 +5,7 @@ import { ref, computed, watch } from 'vue';
 import { api } from '../api/client';
 import { useSettingsStore } from './settings';
 
-export type SidebarView = 'explorer' | 'search' | 'git' | 'run';
+export type SidebarView = 'explorer' | 'search' | 'git' | 'run' | 'plugins';
 
 export interface OpenFile {
   path: string;
@@ -72,7 +72,11 @@ export function setCodeModeActive(active: boolean): void {
     if (active) localStorage.setItem(CODE_MODE_KEY, '1');
     else localStorage.removeItem(CODE_MODE_KEY);
   } catch { /* 隐私模式等场景忽略 */ }
+  codeModeActiveRef.value = active;
 }
+
+/** 响应式代码模式标记（供组件 v-if 判断，进入/退出代码模式时即时更新） */
+const codeModeActiveRef = ref(isCodeModeActive());
 
 export const useCodeStore = defineStore('code', () => {
   const settingsStore = useSettingsStore();
@@ -98,6 +102,12 @@ export const useCodeStore = defineStore('code', () => {
     return p.split(/[\\/]/).filter(Boolean).pop() || '';
   });
 
+  // ===== 项目目录关联的 spaceId（用于代码模式会话分组）=====
+  const projectSpaceId = ref<string | null>(null);
+  function setProjectSpaceId(id: string | null) {
+    projectSpaceId.value = id;
+  }
+
   // ===== 打开的文件 =====
   const openFiles = ref<OpenFile[]>([]);
   const activePath = ref<string | null>(null);
@@ -117,7 +127,10 @@ export const useCodeStore = defineStore('code', () => {
     openFiles.value = saved
       .filter((f) => f?.path)
       .map((f) => ({ path: f.path, name: f.name, content: '', original: '', loading: false, error: '', saving: false, mtime: 0 }));
-    if (openFiles.value.length) activePath.value = openFiles.value[0].path;
+    if (openFiles.value.length) {
+      activePath.value = openFiles.value[0].path;
+      void loadContent(openFiles.value[0].path);
+    }
   }
 
   async function openFile(path: string, name?: string) {
@@ -208,6 +221,11 @@ export const useCodeStore = defineStore('code', () => {
 
   // ===== 左栏视图 =====
   const sidebarView = ref<SidebarView>('explorer');
+
+  /** 展开侧栏并切到 Git 视图（顶栏 Git 按钮 / Commit 按钮调用） */
+  function openGitPanel() {
+    sidebarView.value = 'git';
+  }
 
   // ===== 断点（path → 行号） =====
   const breakpoints = ref<Record<string, number[]>>(readJson<Record<string, number[]>>(LS_BP, {}));
@@ -307,9 +325,11 @@ export const useCodeStore = defineStore('code', () => {
 
   return {
     projectDir, projectName, setProjectDir,
+    projectSpaceId, setProjectSpaceId,
+    codeModeActive: codeModeActiveRef,
     openFiles, activePath, activeFile, dirtyCount,
     openFile, loadContent, updateContent, saveFile, closeFile, closeOthers, closeAll, rememberTabs,
-    sidebarView,
+    sidebarView, openGitPanel,
     breakpoints, toggleBreakpoint, clearBreakpoints,
     runConfigs, activeConfigId, saveRunConfig, removeRunConfig,
     pendingReveal, revealLine,

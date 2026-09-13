@@ -68,42 +68,51 @@
         <el-button type="primary" :icon="Plus" @click="createAgent" class="fab-add">新建智能体</el-button>
       </header>
 
-      <div v-loading="loading" class="agent-grid">
+      <div v-loading="loading">
         <template v-if="loading">
           <el-skeleton v-for="n in 4" :key="n" animated style="padding:16px">
             <template #template><el-skeleton-item variant="text" style="width:60%" /><el-skeleton-item variant="text" style="width:40%" /><el-skeleton-item variant="rect" style="height:40px;margin-top:8px" /></template>
           </el-skeleton>
         </template>
-        <el-card
-          v-for="agent in store.agents"
-          :key="agent.id"
-          class="agent-card"
-          :class="{ 'is-default': agent.isDefault }"
-          shadow="hover"
-        >
-          <div class="agent-card-head" @click="agent.type === 'workflow' ? openCanvas(agent.id) : editAgent(agent)">
-            <div class="agent-avatar">{{ (agent.name || '?').slice(0, 2) }}</div>
-            <div class="agent-info">
-              <div class="agent-name">
-                <el-icon v-if="agent.isDefault" class="lock-icon"><Lock /></el-icon>
-                {{ agent.name }}
+        <div v-for="g in groupedAgents" :key="g.key" class="agent-cat">
+          <span
+            class="cat-tag"
+            :class="{ collapsed: agentCollapsed[g.key] }"
+            @click="toggleAgentCat(g.key)"
+          ><el-icon class="cat-tag-arrow"><ArrowRight v-if="agentCollapsed[g.key]" /><ArrowDown v-else /></el-icon>{{ g.label }}</span>
+          <div v-show="!agentCollapsed[g.key]" class="agent-grid">
+            <el-card
+              v-for="agent in g.agents"
+              :key="agent.id"
+              class="agent-card"
+              :class="{ 'is-default': agent.isDefault }"
+              shadow="hover"
+            >
+              <div class="agent-card-head" @click="agent.type === 'workflow' ? openCanvas(agent.id) : editAgent(agent)">
+                <div class="agent-avatar">{{ (agent.name || '?').slice(0, 2) }}</div>
+                <div class="agent-info">
+                  <div class="agent-name">
+                    <el-icon v-if="agent.isDefault" class="lock-icon"><Lock /></el-icon>
+                    {{ agent.name }}
+                  </div>
+                  <div class="agent-desc">{{ agent.description || '暂无描述' }}</div>
+                </div>
               </div>
-              <div class="agent-desc">{{ agent.description || '暂无描述' }}</div>
-            </div>
+              <div class="agent-meta">
+                <el-tag v-if="agent.agentKind === 'sub'" size="small" type="warning">子智能体</el-tag>
+                <el-tag v-else size="small" type="success">主智能体</el-tag>
+                <el-tag size="small" type="info">{{ agent.workflow.nodes.length }} 节点</el-tag>
+                <el-tag size="small" type="info">{{ agent.workflow.edges.length }} 连线</el-tag>
+                <span class="agent-time">{{ formatTime(agent.updatedAt) }}</span>
+              </div>
+              <div class="agent-actions" @click.stop>
+                <el-button text size="small" :icon="EditPen" @click="editAgent(agent)">编辑</el-button>
+                <el-button v-if="agent.type === 'workflow'" text size="small" :icon="Setting" @click="openCanvas(agent.id)">设计</el-button>
+                <el-button v-if="!agent.isDefault && !agent.isBuiltin" text size="small" type="danger" :icon="Delete" @click="remove(agent)">删除</el-button>
+              </div>
+            </el-card>
           </div>
-          <div class="agent-meta">
-            <el-tag v-if="agent.agentKind === 'sub'" size="small" type="warning">子智能体</el-tag>
-            <el-tag v-else size="small" type="success">主智能体</el-tag>
-            <el-tag size="small" type="info">{{ agent.workflow.nodes.length }} 节点</el-tag>
-            <el-tag size="small" type="info">{{ agent.workflow.edges.length }} 连线</el-tag>
-            <span class="agent-time">{{ formatTime(agent.updatedAt) }}</span>
-          </div>
-          <div class="agent-actions" @click.stop>
-            <el-button text size="small" :icon="EditPen" @click="editAgent(agent)">编辑</el-button>
-            <el-button v-if="agent.type === 'workflow'" text size="small" :icon="Setting" @click="openCanvas(agent.id)">设计</el-button>
-            <el-button v-if="!agent.isDefault && !agent.isBuiltin" text size="small" type="danger" :icon="Delete" @click="remove(agent)">删除</el-button>
-          </div>
-        </el-card>
+        </div>
       </div>
 
       <el-empty v-if="!loading && store.agents.length === 0" description="还没有智能体，点击右上角新建">
@@ -177,9 +186,9 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue';
+import { ref, reactive, computed, onMounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { Plus, EditPen, Delete, Setting, Lock, ArrowLeft, UserFilled, Monitor } from '@element-plus/icons-vue';
+import { Plus, EditPen, Delete, Setting, Lock, ArrowLeft, UserFilled, Monitor, ArrowRight, ArrowDown } from '@element-plus/icons-vue';
 import { ElMessageBox, ElMessage } from 'element-plus';
 import { useAgentStore } from '../stores/agent';
 import { api } from '../api/client';
@@ -210,6 +219,26 @@ const agentSourceForm = ref({ name: '', baseUrl: '', authType: 'none', authValue
 // 统计：内置 = 默认助理 + 内置标记（pageAgent / 数据查询分析助手）
 const builtinCount = computed(() => store.agents.filter((a) => a.isDefault || a.isBuiltin).length);
 const customCount = computed(() => store.agents.filter((a) => !a.isDefault && !a.isBuiltin).length);
+
+// ---- 本地智能体分类分组 ----
+interface AgentGroup { key: string; label: string; agents: Agent[]; }
+const groupedAgents = computed<AgentGroup[]>(() => {
+  const builtin: Agent[] = [];
+  const main: Agent[] = [];
+  const sub: Agent[] = [];
+  for (const a of store.agents) {
+    if (a.isDefault || a.isBuiltin) builtin.push(a);
+    else if (a.agentKind === 'sub') sub.push(a);
+    else main.push(a);
+  }
+  const groups: AgentGroup[] = [];
+  if (builtin.length) groups.push({ key: 'builtin', label: `内置智能体（${builtin.length}）`, agents: builtin });
+  if (main.length) groups.push({ key: 'main', label: `主智能体（${main.length}）`, agents: main });
+  if (sub.length) groups.push({ key: 'sub', label: `子智能体（${sub.length}）`, agents: sub });
+  return groups;
+});
+const agentCollapsed = reactive<Record<string, boolean>>({});
+function toggleAgentCat(key: string) { agentCollapsed[key] = !agentCollapsed[key]; }
 
 // 视图切换
 function goToMarketplace() {
@@ -343,6 +372,19 @@ async function remove(agent: Agent) {
 .connect-dot.unknown { background: #94a3b8; }
 
 /* ===== 智能体卡片网格 ===== */
+.agent-cat { margin-bottom: 14px; }
+.cat-tag {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 4px 12px; margin-bottom: 8px;
+  font-size: 13px; font-weight: 600; color: var(--color-text);
+  cursor: pointer; user-select: none;
+  background: transparent; border: 1px solid var(--color-border-light);
+  background-image: var(--skin-cat-tag-pattern, none); background-size: cover; background-position: center;
+  border-radius: 16px; transition: all 0.15s;
+}
+.cat-tag:hover { border-color: var(--color-primary); color: var(--color-primary); }
+.cat-tag.collapsed { opacity: 0.5; }
+.cat-tag-arrow { font-size: 12px; flex-shrink: 0; }
 .agent-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 20px; }
 .agent-card {
   background: var(--glass-bg);

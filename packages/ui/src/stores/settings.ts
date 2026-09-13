@@ -4,6 +4,7 @@ import { ref, watch } from 'vue';
 import { getPlatformAdapter } from '@yan-zhi/core';
 import { API_BASE } from '../api/client';
 import { usePluginStore } from './plugin';
+import { BUILTIN_SKIN_SERIES, isBuiltinSkinId, builtinSeriesFor, builtinSeriesPalette } from '../styles/skinSeries';
 
 export type ThemeName = string;
 export const BUILTIN_THEME_NAMES = ['cinnabar', 'ink', 'indigo', 'pine', 'clay'] as const;
@@ -19,6 +20,36 @@ type SkinSurface = {
   radius?: number;
   buttonRadius?: number;
   buttonText?: string;
+  glassBlur?: number;
+  overlayColor?: string;
+  overlayBlur?: number;
+  borderPattern?: string;
+  borderPatternSlice?: number;
+  titlebarPattern?: string;
+  shadow?: string;
+  buttonGradient?: string;
+  inputRadius?: number;
+  cardRadius?: number;
+  tagRadius?: number;
+  scrollbarThumb?: string;
+  dividerColor?: string;
+  catTagPattern?: string;
+  taskListPattern?: string;
+  inputPattern?: string;
+  buttonPattern?: string;
+  dialogPattern?: string;
+  /** 菜单底图（应用菜单/下拉菜单/右键菜单） */
+  menuPattern?: string;
+  /** 菜单底图暗色变体（p.dark 深底，暗色主题优先于 menuPattern） */
+  menuPatternDark?: string;
+  /** 代码模式底图（区别于壁纸的独立背景图） */
+  codePattern?: string;
+  /** 内置浏览器外壳底图（tab 栏/工具栏） */
+  browserPattern?: string;
+  /** 浏览器外壳底图暗色变体（暗色主题优先于 browserPattern） */
+  browserPatternDark?: string;
+  /** 输入框边框色（EP 输入框与自定义输入容器共用） */
+  inputBorder?: string;
 };
 
 /** ===== 颜色工具：hex 解析 / 混色 / WCAG 对比度 ===== */
@@ -48,7 +79,10 @@ function contrastRatio(a: string, b: string): number {
 }
 
 export interface AppSettings {
-  theme: ThemeName;
+  /** 主题色 id（cinnabar/ink/indigo/pine/clay 或插件贡献的 palette） */
+  palette: ThemeName;
+  /** 皮肤 id（空=无皮肤/纯调色板；非空=插件贡献的 kind='skin' 主题） */
+  skin: ThemeName;
   darkMode: boolean;
   defaultPlatformId: string;
   defaultModelId: string;
@@ -204,7 +238,8 @@ export const APP_GUIDE_DOCS: Array<{ name: string; content: string }> = [
 export const DEFAULT_APP_GUIDE = APP_GUIDE_DOCS.map((d) => d.content).join('\n\n---\n\n');
 
 const DEFAULT_SETTINGS: AppSettings = {
-  theme: 'cinnabar',
+  palette: 'cinnabar',
+  skin: '',
   darkMode: true,
   defaultPlatformId: '',
   defaultModelId: '',
@@ -238,6 +273,33 @@ interface ThemePalette {
   orb1: string;
   orb2: string;
   orb3: string;
+  surface?: {
+    glass?: string;
+    glassDark?: string;
+    glassAlpha?: number;
+    glassAlphaDark?: number;
+    border?: string;
+    borderDark?: string;
+    radius?: number;
+    buttonRadius?: number;
+    buttonText?: string;
+    glassBlur?: number;
+    overlayColor?: string;
+    overlayBlur?: number;
+    borderPattern?: string;
+    borderPatternSlice?: number;
+    titlebarPattern?: string;
+    shadow?: string;
+    catTagPattern?: string;
+    taskListPattern?: string;
+    inputPattern?: string;
+    buttonPattern?: string;
+    dialogPattern?: string;
+    menuPattern?: string;
+    codePattern?: string;
+    browserPattern?: string;
+    inputBorder?: string;
+  };
 }
 
 /** 插件包内资源 → /api/plugin-assets/:pluginId/<path> 静态地址（API_BASE 已含 /api 前缀） */
@@ -310,11 +372,24 @@ export const useSettingsStore = defineStore('settings', () => {
     const raw = await adapter.keyring.get(STORAGE_KEY);
     if (raw) {
       try {
-        settings.value = { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
+        const parsed = JSON.parse(raw);
+        // 迁移旧 `theme` 字段 → `palette` + `skin`（正交拆分前 theme 同时承载两者）
+        if (parsed.theme !== undefined && parsed.palette === undefined && parsed.skin === undefined) {
+          if ((BUILTIN_THEME_NAMES as readonly string[]).includes(parsed.theme)) {
+            parsed.palette = parsed.theme;
+            parsed.skin = '';
+          } else {
+            parsed.skin = parsed.theme;
+            parsed.palette = 'cinnabar';
+          }
+          delete parsed.theme;
+        }
+        settings.value = { ...DEFAULT_SETTINGS, ...parsed };
       } catch {}
     }
     loaded.value = true;
-    applyTheme(settings.value.theme);
+    applyPalette(settings.value.palette);
+    applySkin(settings.value.skin);
     applyDarkMode(settings.value.darkMode);
   }
 
@@ -324,24 +399,33 @@ export const useSettingsStore = defineStore('settings', () => {
   }
 
   async function update(patch: Partial<AppSettings>) {
+    // 选内置系列皮肤时自动切到对应主题色，保证色板与系列图案一致
+    if (patch.skin !== undefined && isBuiltinSkinId(patch.skin)) {
+      const pal = builtinSeriesPalette(patch.skin);
+      if (pal) patch = { ...patch, palette: pal };
+    }
     settings.value = { ...settings.value, ...patch };
-    if (patch.theme !== undefined) applyTheme(patch.theme);
+    if (patch.palette !== undefined) applyPalette(patch.palette);
+    if (patch.skin !== undefined) applySkin(patch.skin);
     if (patch.darkMode !== undefined) {
       applyDarkMode(patch.darkMode);
-      // 皮肤壁纸分深浅色：深浅切换后需按当前主题重取壁纸
-      applyTheme(settings.value.theme);
+      // 深浅切换后需重应用 palette（EP 色族按模式重算）和 skin（壁纸分深浅色）
+      applyPalette(settings.value.palette);
+      applySkin(settings.value.skin);
     }
     await save();
   }
 
-  function applyTheme(theme: ThemeName) {
-    let p: ThemePalette | undefined = THEMES[theme as keyof typeof THEMES];
-    let pluginId = '';
+  /** 当前 palette 的实心按钮主色（applySkin 计算 --skin-btn-text 时需要） */
+  let currentBtnPrimary = '#C2410C';
+
+  /** 应用主题色（palette）：设置主色/强调色/渐变/球色 + EP 主色族 */
+  function applyPalette(palette: ThemeName) {
+    let p: ThemePalette | undefined = THEMES[palette as keyof typeof THEMES];
     if (!p) {
       try {
-        const found = usePluginStore().themes.find((t) => t.id === theme);
+        const found = usePluginStore().themes.find((t) => t.id === palette && t.kind !== 'skin');
         if (found) {
-          pluginId = found.pluginId;
           p = found as unknown as ThemePalette;
         }
       } catch {
@@ -354,10 +438,8 @@ export const useSettingsStore = defineStore('settings', () => {
     const bg = dark ? '#141414' : '#ffffff';
 
     // ===== 主色：按对比度选可读变体 =====
-    // EP 实心按钮 = primary 背景 + 白字 → primary 与白色对比度不足 4.5 时用 primaryDark，
-    // 否则粉/青类中饱和色按钮上的白字看不清（典型如 #E86A8A 对白仅 ~2.9:1）。
     const btnPrimary = contrastRatio(p.primary, '#ffffff') >= 4.5 ? p.primary : (p.primaryDark || p.primary);
-    // 文字/链接强调色：深色模式取与深底对比达标的变体（不足则向白混 35%）
+    currentBtnPrimary = btnPrimary;
     const textPrimary = dark
       ? (contrastRatio(p.primary, bg) >= 4.5 ? p.primary : mixHex(p.primary, '#ffffff', 0.35))
       : btnPrimary;
@@ -369,8 +451,6 @@ export const useSettingsStore = defineStore('settings', () => {
     root.setProperty('--orb-1-color', p.orb1);
     root.setProperty('--orb-2-color', p.orb2);
     root.setProperty('--orb-3-color', p.orb3);
-    // Element Plus 主色族：light-N 按标准混色公式（向当前模式背景色混合），
-    // 替代旧写法「全部拍平成 primaryLight」——那是按钮 plain/disabled 态看不清的根因
     root.setProperty('--el-color-primary', btnPrimary);
     root.setProperty('--el-color-primary-light-3', mixHex(btnPrimary, bg, 0.3));
     root.setProperty('--el-color-primary-light-5', mixHex(btnPrimary, bg, 0.5));
@@ -378,36 +458,149 @@ export const useSettingsStore = defineStore('settings', () => {
     root.setProperty('--el-color-primary-light-8', mixHex(btnPrimary, bg, 0.8));
     root.setProperty('--el-color-primary-light-9', mixHex(btnPrimary, bg, 0.9));
     root.setProperty('--el-color-primary-dark-2', mixHex(btnPrimary, '#000000', 0.2));
+  }
 
-    // ===== 皮肤（带壁纸）应用：标记 data-skin 供 skin.css 切换毛玻璃表面，写入壁纸变量 =====
+  /** 应用皮肤（skin）：设置壁纸/表面定制/玻璃化开关；skin 为空则清除皮肤模式 */
+  function applySkin(skin: ThemeName) {
+    const root = document.documentElement.style;
     const el = document.documentElement;
-    if (p.kind === 'skin' && p.wallpaper && pluginId) {
-      const file = settings.value.darkMode ? (p.wallpaper.dark || p.wallpaper.light) : p.wallpaper.light;
-      root.setProperty('--app-wallpaper', `url("${pluginAssetUrl(pluginId, file)}")`);
-      root.setProperty('--skin-mask', String(p.wallpaper.mask ?? 0.45));
-      root.setProperty('--skin-blur', `${p.wallpaper.blur ?? 12}px`);
-      el.setAttribute('data-skin', 'on');
+    const dark = settings.value.darkMode;
 
-      // ===== 表面定制：玻璃面板底色/边框/圆角/按钮（缺省回落默认玻璃质感） =====
-      const sf = (p as { surface?: SkinSurface }).surface;
-      const tint = dark ? (sf?.glassDark ?? '#1d1d1c') : (sf?.glass ?? '#ffffff');
-      const alpha = dark ? (sf?.glassAlphaDark ?? 0.78) : (sf?.glassAlpha ?? 0.86);
-      const border = dark ? (sf?.borderDark ?? sf?.border) : sf?.border;
-      root.setProperty('--skin-glass-tint', tint);
-      root.setProperty('--skin-glass-alpha', String(alpha));
-      root.setProperty('--skin-glass-alpha-hover', String(Math.min(alpha + 0.07, 1)));
-      if (border) root.setProperty('--skin-glass-border', border);
-      else root.removeProperty('--skin-glass-border');
-      root.setProperty('--skin-radius', `${sf?.radius ?? 12}px`);
-      root.setProperty('--skin-btn-radius', `${sf?.buttonRadius ?? 6}px`);
-      const autoBtnText = contrastRatio(btnPrimary, '#ffffff') >= 4.5 ? '#ffffff' : (dark ? '#F2F0EA' : '#141414');
-      root.setProperty('--skin-btn-text', sf?.buttonText ?? autoBtnText);
-    } else {
+    if (!skin) {
       el.removeAttribute('data-skin');
-      root.removeProperty('--app-wallpaper');
-      root.removeProperty('--skin-mask');
-      root.removeProperty('--skin-blur');
+      for (const v of SKIN_CSS_VARS) root.removeProperty(v);
+      return;
     }
+
+    // ===== 内置系列皮肤：不依赖插件，定义见 styles/skinSeries.ts =====
+    if (isBuiltinSkinId(skin)) {
+      const series = builtinSeriesFor(skin);
+      if (series) {
+        const wp = series.wallpaper;
+        root.setProperty('--app-wallpaper', `url("${dark ? wp.dark : wp.light}")`);
+        root.setProperty('--skin-mask', String(wp.mask));
+        root.setProperty('--skin-blur', `${wp.blur}px`);
+        el.setAttribute('data-skin', 'on');
+        applySurface(series.surface as unknown as SkinSurface, null);
+        return;
+      }
+      // 系列定义缺失（理论上不会发生）→ 回落无皮肤
+      el.removeAttribute('data-skin');
+      for (const v of SKIN_CSS_VARS) root.removeProperty(v);
+      return;
+    }
+
+    // ===== 插件贡献的皮肤 =====
+    let p: ThemePalette | undefined;
+    let pluginId = '';
+    try {
+      const found = usePluginStore().themes.find((t) => t.id === skin && t.kind === 'skin');
+      if (found) {
+        pluginId = found.pluginId;
+        p = found as unknown as ThemePalette;
+      }
+    } catch {
+      /* plugin store 未就绪 */
+    }
+    if (!p || !p.wallpaper || !pluginId) {
+      el.removeAttribute('data-skin');
+      for (const v of SKIN_CSS_VARS) root.removeProperty(v);
+      return;
+    }
+
+    const file = dark ? (p.wallpaper.dark || p.wallpaper.light) : p.wallpaper.light;
+    root.setProperty('--app-wallpaper', `url("${pluginAssetUrl(pluginId, file)}")`);
+    root.setProperty('--skin-mask', String(p.wallpaper.mask ?? 0.45));
+    root.setProperty('--skin-blur', `${p.wallpaper.blur ?? 12}px`);
+    el.setAttribute('data-skin', 'on');
+    applySurface((p as { surface?: SkinSurface }).surface ?? {}, pluginId);
+  }
+
+  /** 皮肤模式涉及的全部 CSS 变量（清除皮肤时统一移除） */
+  const SKIN_CSS_VARS = [
+    '--app-wallpaper', '--skin-mask', '--skin-blur',
+    '--skin-glass-tint', '--skin-glass-alpha', '--skin-glass-alpha-hover',
+    '--skin-glass-border', '--skin-radius', '--skin-btn-radius', '--skin-btn-text',
+    '--skin-glass-blur', '--skin-overlay-color', '--skin-overlay-blur',
+    '--skin-border-pattern', '--skin-border-pattern-slice', '--skin-titlebar-pattern',
+    '--skin-shadow', '--skin-btn-gradient', '--skin-input-radius', '--skin-card-radius',
+    '--skin-tag-radius', '--skin-scrollbar-thumb', '--skin-divider-color',
+    '--skin-cat-tag-pattern', '--skin-task-list-pattern', '--skin-input-pattern',
+    '--skin-btn-pattern', '--skin-dialog-pattern',
+    '--skin-menu-pattern', '--skin-code-pattern', '--skin-browser-pattern',
+    '--skin-input-border',
+  ];
+
+  /**
+   * 下发表面定制（内置系列与插件皮肤共用）：
+   * 玻璃底色/透明度/边框/圆角/图案纹理/滚动条等；插件皮肤的图案为资源 URL，内置系列为 data URI
+   */
+  function applySurface(sf: SkinSurface, pluginId: string | null) {
+    const root = document.documentElement.style;
+    const dark = settings.value.darkMode;
+    const asset = (v: string) => (pluginId ? `url("${pluginAssetUrl(pluginId, v)}")` : v);
+
+    const tint = dark ? (sf.glassDark ?? '#1d1d1c') : (sf.glass ?? '#ffffff');
+    const alpha = dark ? (sf.glassAlphaDark ?? 0.78) : (sf.glassAlpha ?? 0.86);
+    const border = dark ? (sf.borderDark ?? sf.border) : sf.border;
+    root.setProperty('--skin-glass-tint', tint);
+    root.setProperty('--skin-glass-alpha', String(alpha));
+    root.setProperty('--skin-glass-alpha-hover', String(Math.min(alpha + 0.07, 1)));
+    if (border) root.setProperty('--skin-glass-border', border);
+    else root.removeProperty('--skin-glass-border');
+    root.setProperty('--skin-radius', `${sf.radius ?? 12}px`);
+    root.setProperty('--skin-btn-radius', `${sf.buttonRadius ?? 6}px`);
+    const autoBtnText = contrastRatio(currentBtnPrimary, '#ffffff') >= 4.5 ? '#ffffff' : (dark ? '#F2F0EA' : '#141414');
+    root.setProperty('--skin-btn-text', sf.buttonText ?? autoBtnText);
+    root.setProperty('--skin-glass-blur', `${sf.glassBlur ?? 18}px`);
+    root.setProperty('--skin-overlay-color', sf.overlayColor ?? 'transparent');
+    root.setProperty('--skin-overlay-blur', `${sf.overlayBlur ?? 4}px`);
+    if (sf.borderPattern) {
+      root.setProperty('--skin-border-pattern', asset(sf.borderPattern));
+      root.setProperty('--skin-border-pattern-slice', String(sf.borderPatternSlice ?? 0));
+    } else {
+      root.removeProperty('--skin-border-pattern');
+      root.removeProperty('--skin-border-pattern-slice');
+    }
+    // ===== 部位图案统一下发（暗色叠纱罩） =====
+    // 图案资源（尤其插件真图）只有一份、明暗不保证主题对比：暗色主题统一在最上层压一层
+    // 深色纱罩（scrim）——图案仍透出（嵌入观感），表面压暗后浅字对比可读；浅色主题原样。
+    // 内置系列暗色优先用 *PatternDark 深色变体（纱罩再叠一层，观感更沉）。
+    const scrim = dark ? 'linear-gradient(rgba(10,10,12,0.7), rgba(10,10,12,0.7))' : '';
+    const themedPattern = (light?: string, darkVariant?: string) => {
+      const base = dark ? (darkVariant ?? light) : light;
+      if (!base) return undefined;
+      const img = asset(base);
+      return scrim ? `${scrim}, ${img}` : img;
+    };
+    const setPattern = (name: string, value?: string) => {
+      if (value) root.setProperty(name, value);
+      else root.removeProperty(name);
+    };
+    setPattern('--skin-titlebar-pattern', themedPattern(sf.titlebarPattern));
+    if (sf.shadow) root.setProperty('--skin-shadow', sf.shadow);
+    else root.removeProperty('--skin-shadow');
+    if (sf.buttonGradient) root.setProperty('--skin-btn-gradient', sf.buttonGradient);
+    else root.removeProperty('--skin-btn-gradient');
+    root.setProperty('--skin-input-radius', `${sf.inputRadius ?? sf.buttonRadius ?? 6}px`);
+    root.setProperty('--skin-card-radius', `${sf.cardRadius ?? sf.radius ?? 12}px`);
+    root.setProperty('--skin-tag-radius', `${sf.tagRadius ?? sf.buttonRadius ?? 6}px`);
+    if (sf.scrollbarThumb) root.setProperty('--skin-scrollbar-thumb', sf.scrollbarThumb);
+    else root.removeProperty('--skin-scrollbar-thumb');
+    if (sf.dividerColor) root.setProperty('--skin-divider-color', sf.dividerColor);
+    else root.removeProperty('--skin-divider-color');
+    setPattern('--skin-cat-tag-pattern', themedPattern(sf.catTagPattern));
+    setPattern('--skin-task-list-pattern', themedPattern(sf.taskListPattern));
+    setPattern('--skin-input-pattern', themedPattern(sf.inputPattern));
+    setPattern('--skin-btn-pattern', themedPattern(sf.buttonPattern));
+    setPattern('--skin-dialog-pattern', themedPattern(sf.dialogPattern));
+    // ===== 菜单 / 代码模式 / 浏览器外壳底图 =====
+    setPattern('--skin-menu-pattern', themedPattern(sf.menuPattern, sf.menuPatternDark));
+    setPattern('--skin-code-pattern', themedPattern(sf.codePattern));
+    setPattern('--skin-browser-pattern', themedPattern(sf.browserPattern, sf.browserPatternDark));
+    // ===== 输入框边框色（EP 输入框 + 自定义输入容器共用） =====
+    if (sf.inputBorder) root.setProperty('--skin-input-border', sf.inputBorder);
+    else root.removeProperty('--skin-input-border');
   }
 
   function applyDarkMode(dark: boolean) {
@@ -419,5 +612,5 @@ export const useSettingsStore = defineStore('settings', () => {
     }
   }
 
-  return { settings, loaded, load, save, update, applyTheme, THEMES };
+  return { settings, loaded, load, save, update, applyPalette, applySkin, applyDarkMode, THEMES };
 });

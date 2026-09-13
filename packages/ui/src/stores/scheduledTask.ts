@@ -6,6 +6,22 @@ import { uid } from '@yan-zhi/shared';
 import { api } from '../api/client';
 import { useAuthStore } from './auth';
 
+/** 调度配置（对齐 WorkBuddy：周期 / 间隔 + 有效期） */
+export interface ScheduleConfig {
+  mode: 'cycle' | 'interval';
+  type?: 'once' | 'daily' | 'weekly' | 'biweekly' | 'monthly' | 'yearly';
+  datetime?: number;
+  time?: string;
+  dayOfWeek?: number;
+  anchor?: number;
+  dayOfMonth?: number;
+  month?: number;
+  days?: number;
+  hours?: number;
+  minutes?: number;
+  daysOfWeek?: number[];
+}
+
 /** 对话定时任务 */
 export interface ScheduledTask {
   id: string;
@@ -22,6 +38,12 @@ export interface ScheduledTask {
   modelId?: string | null;
   /** 绑定的空间：任务发起会话归属的空间 */
   spaceId?: string | null;
+  /** 所属分组 */
+  groupId?: string | null;
+  /** 新调度模型：结构化调度配置（周期/间隔） */
+  schedule?: ScheduleConfig | null;
+  /** 有效期截止时间戳（ms），过期自动停用 */
+  expireAt?: number | null;
   /** 任务类型：chat=对话式（ReAct 循环）；workflow=工作流 */
   taskType?: 'chat' | 'workflow';
   /** 工作流智能体 id（仅 workflow 类型；用于界面展示名称） */
@@ -47,11 +69,22 @@ export interface ScheduledTaskInput {
   platformId?: string | null;
   modelId?: string | null;
   spaceId?: string | null;
+  groupId?: string | null;
+  schedule?: ScheduleConfig | null;
+  expireAt?: number | null;
   taskType?: 'chat' | 'workflow';
   workflowAgentId?: string | null;
   workflowBundle?: { agent: any; subAgents?: Record<string, any> } | null;
   workflowInputs?: Record<string, unknown> | null;
   enabled?: boolean;
+}
+
+export interface ScheduledTaskGroup {
+  id: string;
+  name: string;
+  sortOrder?: number;
+  createdAt?: number;
+  updatedAt?: number;
 }
 
 function rowToTask(r: any): ScheduledTask {
@@ -66,6 +99,9 @@ function rowToTask(r: any): ScheduledTask {
     platformId: r.platform_id ?? r.platformId ?? null,
     modelId: r.model_id ?? r.modelId ?? null,
     spaceId: r.space_id ?? r.spaceId ?? null,
+    groupId: r.group_id ?? r.groupId ?? null,
+    schedule: r.schedule_json ? (typeof r.schedule_json === 'string' ? JSON.parse(r.schedule_json) : r.schedule_json) : r.schedule ?? null,
+    expireAt: r.expire_at ?? r.expireAt ?? null,
     taskType: (r.task_type ?? r.taskType ?? 'chat') as 'chat' | 'workflow',
     workflowAgentId: r.workflow_agent_id ?? r.workflowAgentId ?? null,
     workflowBundle: r.workflow_bundle_json ? (typeof r.workflow_bundle_json === 'string' ? JSON.parse(r.workflow_bundle_json) : r.workflow_bundle_json) : r.workflowBundle ?? null,
@@ -83,6 +119,7 @@ export const useScheduledTaskStore = defineStore('scheduledTask', () => {
   const loading = ref(false);
   /** 定时任务弹窗显隐（顶栏按钮触发） */
   const dialogVisible = ref(false);
+  const groups = ref<ScheduledTaskGroup[]>([]);
 
   const isServerMode = () => useAuthStore().useServerApi;
 
@@ -104,6 +141,62 @@ export const useScheduledTaskStore = defineStore('scheduledTask', () => {
     }
   }
 
+  async function loadGroups() {
+    if (isServerMode()) {
+      const r = await api.get<any[]>("/scheduled-tasks/groups");
+      if ("data" in r) {
+        groups.value = (r.data as any[]).map((g: any) => ({ id: g.id, name: g.name, sortOrder: g.sort_order, createdAt: g.created_at, updatedAt: g.updated_at }));
+      }
+    } else {
+      const adapter = getPlatformAdapter();
+      const rows = await adapter.db.query<any>("SELECT * FROM scheduled_task_group ORDER BY sort_order ASC, created_at ASC");
+      groups.value = rows.map((g: any) => ({ id: g.id, name: g.name, sortOrder: g.sort_order, createdAt: g.created_at, updatedAt: g.updated_at }));
+    }
+  }
+
+  async function createGroup(name: string): Promise<ScheduledTaskGroup> {
+    if (isServerMode()) {
+      const r = await api.post<any>("/scheduled-tasks/groups", { name });
+      if ("data" in r) {
+        const g = r.data as any;
+        const group: ScheduledTaskGroup = { id: g.id, name: g.name, sortOrder: g.sort_order, createdAt: g.created_at, updatedAt: g.updated_at };
+        groups.value.push(group);
+        return group;
+      }
+      throw new Error((r as { error?: string }).error || "创建分组失败");
+    }
+    const adapter = getPlatformAdapter();
+    const id = uid("stg_");
+    const now = Date.now();
+    const maxRows = await adapter.db.query<any>("SELECT MAX(sort_order) AS m FROM scheduled_task_group");
+    const maxOrder = maxRows[0]?.m ?? 0;
+    await adapter.db.exec("INSERT INTO scheduled_task_group (id, name, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?)", [id, name, maxOrder + 1, now, now]);
+    await loadGroups();
+    return groups.value.find((g) => g.id === id) || { id, name, sortOrder: maxOrder + 1, createdAt: now, updatedAt: now };
+  }
+
+  async function renameGroup(id: string, name: string) {
+    if (isServerMode()) {
+      const r = await api.patch(`/scheduled-tasks/groups/${id}`, { name });
+      if ("error" in r) throw new Error((r as { error?: string }).error || "重命名分组失败");
+    } else {
+      const adapter = getPlatformAdapter();
+      await adapter.db.exec("UPDATE scheduled_task_group SET name = ?, updated_at = ? WHERE id = ?", [name, Date.now(), id]);
+    }
+    await loadGroups();
+  }
+
+  async function deleteGroup(id: string) {
+    if (isServerMode()) {
+      await api.delete(`/scheduled-tasks/groups/${id}`);
+    } else {
+      const adapter = getPlatformAdapter();
+      await adapter.db.exec("UPDATE scheduled_task SET group_id = NULL WHERE group_id = ?", [id]);
+      await adapter.db.exec("DELETE FROM scheduled_task_group WHERE id = ?", [id]);
+    }
+    await Promise.all([loadGroups(), loadTasks()]);
+  }
+
   async function createTask(input: ScheduledTaskInput): Promise<ScheduledTask> {
     if (isServerMode()) {
       const r = await api.post<any>('/scheduled-tasks', input);
@@ -120,9 +213,10 @@ export const useScheduledTaskStore = defineStore('scheduledTask', () => {
     const enabled = input.enabled !== false;
     const taskType = input.taskType === 'workflow' ? 'workflow' : 'chat';
     await adapter.db.exec(
-      'INSERT INTO scheduled_task (id, name, prompt, cron_expr, interval_minutes, conversation_id, agent_id, platform_id, model_id, space_id, task_type, workflow_bundle_json, workflow_inputs_json, workflow_agent_id, enabled, last_run_at, next_run_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO scheduled_task (id, name, prompt, cron_expr, interval_minutes, conversation_id, agent_id, platform_id, model_id, space_id, group_id, schedule_json, expire_at, task_type, workflow_bundle_json, workflow_inputs_json, workflow_agent_id, enabled, last_run_at, next_run_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
       [id, input.name, input.prompt || null, input.cronExpr || null, input.intervalMinutes || null,
-        input.conversationId || null, input.agentId || null, input.platformId || null, input.modelId || null, input.spaceId || null,
+        input.conversationId || null, input.agentId || null, input.platformId || null, input.modelId || null, input.spaceId || null, input.groupId || null,
+        input.schedule ? JSON.stringify(input.schedule) : null, input.expireAt || null,
         taskType,
         taskType === 'workflow' ? JSON.stringify(input.workflowBundle || null) : null,
         taskType === 'workflow' ? JSON.stringify(input.workflowInputs || {}) : null,
@@ -151,6 +245,9 @@ export const useScheduledTaskStore = defineStore('scheduledTask', () => {
       if (patch.platformId !== undefined) { sets.push('platform_id = ?'); params.push(patch.platformId || null); }
       if (patch.modelId !== undefined) { sets.push('model_id = ?'); params.push(patch.modelId || null); }
       if (patch.spaceId !== undefined) { sets.push('space_id = ?'); params.push(patch.spaceId || null); }
+      if (patch.groupId !== undefined) { sets.push('group_id = ?'); params.push(patch.groupId || null); }
+      if (patch.schedule !== undefined) { sets.push('schedule_json = ?'); params.push(patch.schedule ? JSON.stringify(patch.schedule) : null); }
+      if (patch.expireAt !== undefined) { sets.push('expire_at = ?'); params.push(patch.expireAt || null); }
       if (patch.taskType !== undefined) { sets.push('task_type = ?'); params.push(patch.taskType === 'workflow' ? 'workflow' : 'chat'); }
       if (patch.workflowAgentId !== undefined) { sets.push('workflow_agent_id = ?'); params.push(patch.workflowAgentId || null); }
       if (patch.workflowBundle !== undefined) { sets.push('workflow_bundle_json = ?'); params.push(patch.workflowBundle ? JSON.stringify(patch.workflowBundle) : null); }
@@ -189,7 +286,8 @@ export const useScheduledTaskStore = defineStore('scheduledTask', () => {
   }
 
   return {
-    tasks, loading, dialogVisible,
-    loadTasks, createTask, updateTask, deleteTask, runTask,
+    tasks, loading, dialogVisible, groups,
+    loadTasks, loadGroups, createTask, updateTask, deleteTask, runTask,
+    createGroup, renameGroup, deleteGroup,
   };
 });

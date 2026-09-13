@@ -17,6 +17,11 @@ import {
 const router = Router();
 router.use(authMiddleware);
 
+/** 内置「本地模型」(Ollama) 平台的确定性 ID：任何机器一致（与 ollama-embed.ts 的特判/内存兜底对齐）。
+ *  注意避开 local-model-% 前缀——index.ts 启动清理会删除该前缀的残留行。 */
+export const LOCAL_MODEL_PLATFORM_ID = 'ollama-local';
+const OLLAMA_DEFAULT_URL = 'http://127.0.0.1:11434';
+
 const rowToP = (r: any) => ({
   id: r.id,
   name: r.name,
@@ -79,6 +84,18 @@ router.post('/', (req: Request, res: Response) => {
     try { addApiKey(id, userId(req), apiKeyEnc, '默认Key'); } catch {}
   }
   const row = db.prepare('SELECT * FROM platform WHERE id = ?').get(id);
+  res.json({ data: rowToP(row) });
+});
+
+// POST /ensure-local —— 幂等创建内置「本地模型」(Ollama) 平台，确定性 ID：ollama-local。
+// 前端本地模型商城接入 Ollama 时调用，替代随机 ID 的 POST /（跨机器 ID 一致）。
+router.post('/ensure-local', (req: Request, res: Response) => {
+  const uid = userId(req);
+  db.prepare(
+    `INSERT OR IGNORE INTO platform (id, user_id, name, protocol, api_url, api_key_enc, headers_json, status, is_builtin, pause_min_ms, pause_max_ms, created_at)
+     VALUES (?, ?, '本地模型', 'openai', ?, '', '{}', 1, 0, 0, 0, ?)`,
+  ).run(LOCAL_MODEL_PLATFORM_ID, uid, OLLAMA_DEFAULT_URL, Date.now());
+  const row = db.prepare('SELECT * FROM platform WHERE id = ?').get(LOCAL_MODEL_PLATFORM_ID);
   res.json({ data: rowToP(row) });
 });
 
@@ -197,13 +214,16 @@ router.post('/models/batch', (req: Request, res: Response) => {
   const updateStmt = db.prepare(
     'UPDATE model SET type = ?, enabled = 1 WHERE platform_id = ? AND user_id = ? AND model_id = ? AND is_builtin = 0',
   );
+  // 内置本地模型平台的模型行使用确定性 ID（ollama-local__<model_id>），跨机器一致
+  const newRowId = (modelId: string) =>
+    platformId === LOCAL_MODEL_PLATFORM_ID ? `${LOCAL_MODEL_PLATFORM_ID}__${modelId}` : uuid();
 
   db.transaction(() => {
     for (const m of models) {
       if (existingIds.has(m.modelId)) {
         updateStmt.run(m.type || 'llm', platformId, uid, m.modelId);
       } else {
-        insertStmt.run(uuid(), platformId, uid, m.modelId, m.alias || null, m.type || 'llm', m.contextWindow || 8000,
+        insertStmt.run(newRowId(m.modelId), platformId, uid, m.modelId, m.alias || null, m.type || 'llm', m.contextWindow || 8000,
           JSON.stringify(m.capabilities || []), JSON.stringify(m.pricing || {}),
           m.enabled !== undefined ? (m.enabled ? 1 : 0) : 1, m.isDefault ? 1 : 0, now);
       }
@@ -308,5 +328,64 @@ router.post('/keys/:kid/test', async (req: Request, res: Response) => {
     res.json({ ok: false, status: 0, message: `网络错误: ${e?.message || e}`, durationMs: Date.now() - started });
   }
 });
+
+/** 历史版本给内置「本地模型」(Ollama) 平台生成过随机 ID（uuid / p_ / m_ 前缀行），
+ *  导致不同电脑上的内置数据 ID 不一致、悬空引用无法对账。
+ *  启动时统一迁移为确定性 ID：平台 ollama-local、模型行 ollama-local__<model_id>，
+ *  并同步全部引用（model / conversation / scheduled_task / agent / platform_api_key / app_config）。
+ *  幂等：无旧平台行时直接返回；目标行已存在时合并删除旧行。 */
+export function migrateLegacyLocalPlatformRows(): void {
+  const legacy = db.prepare(
+    "SELECT id FROM platform WHERE id != ? AND api_url LIKE '%11434%'",
+  ).all(LOCAL_MODEL_PLATFORM_ID) as any[];
+  for (const p of legacy) {
+    const oldId = p.id;
+    db.transaction(() => {
+      // 平台/模型 ID 改名过程中存在中间悬挂态（子表先指向新 ID、父行后改名），
+      // 延迟外键约束到 COMMIT 时统一校验（此时所有行已一致）
+      db.pragma('defer_foreign_keys = ON');
+      // 模型行 → 确定性 ID（ollama-local__<model_id>）
+      const models = db.prepare('SELECT id FROM model WHERE platform_id = ?').all(oldId) as any[];
+      for (const m of models) {
+        const modelId = (db.prepare('SELECT model_id FROM model WHERE id = ?').get(m.id) as any)?.model_id;
+        if (!modelId) continue;
+        const newId = `${LOCAL_MODEL_PLATFORM_ID}__${modelId}`;
+        const dup = db.prepare('SELECT id FROM model WHERE id = ?').get(newId);
+        if (dup) {
+          db.prepare('UPDATE conversation SET model_id = ? WHERE model_id = ?').run(newId, m.id);
+          db.prepare('UPDATE scheduled_task SET model_id = ? WHERE model_id = ?').run(newId, m.id);
+          db.prepare('UPDATE agent SET model_id = ? WHERE model_id = ?').run(newId, m.id);
+          db.prepare('DELETE FROM model WHERE id = ?').run(m.id);
+        } else {
+          db.prepare('UPDATE conversation SET model_id = ?, platform_id = ? WHERE model_id = ?').run(newId, LOCAL_MODEL_PLATFORM_ID, m.id);
+          db.prepare('UPDATE scheduled_task SET model_id = ?, platform_id = ? WHERE model_id = ?').run(newId, LOCAL_MODEL_PLATFORM_ID, m.id);
+          db.prepare('UPDATE agent SET model_id = ?, platform_id = ? WHERE model_id = ?').run(newId, LOCAL_MODEL_PLATFORM_ID, m.id);
+          db.prepare('UPDATE model SET id = ?, platform_id = ? WHERE id = ?').run(newId, LOCAL_MODEL_PLATFORM_ID, m.id);
+        }
+      }
+      // 平台行：目标行不存在则原地改名；已存在（如 ensure-local 先建）则合并删除旧行
+      const target = db.prepare('SELECT id FROM platform WHERE id = ?').get(LOCAL_MODEL_PLATFORM_ID);
+      if (!target) {
+        db.prepare('UPDATE platform SET id = ? WHERE id = ?').run(LOCAL_MODEL_PLATFORM_ID, oldId);
+      } else {
+        db.prepare('DELETE FROM model WHERE platform_id = ?').run(oldId);
+        db.prepare('DELETE FROM platform WHERE id = ?').run(oldId);
+      }
+      db.prepare('UPDATE platform_api_key SET platform_id = ? WHERE platform_id = ?').run(LOCAL_MODEL_PLATFORM_ID, oldId);
+      // app_config.embedding_config 里的 platformId 引用同步
+      try {
+        const row = db.prepare("SELECT value FROM app_config WHERE key = 'embedding_config'").get() as any;
+        if (row?.value) {
+          const cfg = JSON.parse(row.value);
+          if (cfg?.platformId === oldId) {
+            cfg.platformId = LOCAL_MODEL_PLATFORM_ID;
+            db.prepare("UPDATE app_config SET value = ? WHERE key = 'embedding_config'").run(JSON.stringify(cfg));
+          }
+        }
+      } catch { /* 配置损坏不阻塞迁移主流程 */ }
+    })();
+    console.log(`[migrate] 本地模型平台已迁移为确定性 ID: ${oldId} -> ${LOCAL_MODEL_PLATFORM_ID}`);
+  }
+}
 
 export default router;

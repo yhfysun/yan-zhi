@@ -1,24 +1,21 @@
 # 言智 (Yan-Zhi)
 
-语言可控的个人 AI 工作台 — 面向个人开发者的一站式**工作 / 开发 / 运维**助手：把重复性事务（签到、数据查询、部署运维、代码提交、文档生成）交给智能体定时自动执行，临时任务则用自然语言即席调度浏览器、电脑键鼠、SSH 终端、数据库等真实工具，随机应变。覆盖桌面（Electron）、Web（PWA）、移动端（Capacitor）三端，统一一套 Vue 3 代码库。
+语言可控的智能体平台 — 一款所有管理功能均可通过自然语言操控的跨端 AI 助手应用，覆盖桌面（Electron）、Web（PWA）、移动端（Capacitor）三端，统一一套 Vue 3 代码库。
 
 ## 核心理念
 
-- **语言即界面**：项目所有管理操作都是大模型可直接调用的工具，用户通过聊天即可配置模型、管理工具、安装 Skill、创建智能体
-- **重复的交给定时，突发的交给对话**：周期性事务由定时任务驱动智能体自动执行（cron 到点开会话跑任务）；临时需求用自然语言即席调度工具与子智能体，随机应变
-- **真实工具触达**：不止聊天——浏览器自动化、电脑键鼠操作（computer-use）、SSH / Docker / 数据库（ops-shell）、Git、Python 执行，动作落在真实系统上
+- **语言即界面**：项目所有管理接口都是大模型可直接调用的工具，用户通过聊天即可配置模型、管理工具、安装 Skill、创建智能体
 - **协议开放**：模型接入遵循 OpenAI 兼容协议，商城互联使用标准化 REST API
-- **数据后端化（单库）**：业务数据（会话 / 智能体 / Skill / 平台模型 / 记忆 / 工作流执行）统一存内置服务端 `data.db`，前端只做交互、不存数据不跑引擎——关掉页面任务照常在后端执行；本机 UI 偏好（主题/布局/工作目录等）与本地文件仍存本机
-- **无登录体系（本地单用户）**：本地模式下鉴权已屏蔽，业务数据统一归属内置 `guest` 用户，前端登录态不影响数据归属；后续接入用户体系后再按 `user_id` 隔离
-- **节点互联 / 局域网访问**：每个言智节点既是客户端也是服务端，可连接其他节点获取工具 / Skill / 智能体；后端监听 `0.0.0.0`，局域网内其它设备可用浏览器直接访问本节点的 Web 界面
+- **数据分层**：对话、配置、本地文件默认本地存储，隐私可控；**知识/记忆类共享数据**落在内置服务端（guest/登录统一，支持 public/private），方便跨设备与共享
+- **节点互联**：每个言智节点既是客户端也是服务端，可连接其他节点获取工具 / Skill / 智能体
 
 ## 技术栈
 
 - Vue 3.5 + TypeScript + Vite 5
 - Electron（桌面，electron-builder 打包）/ Capacitor 6（移动）/ PWA（Web）
 - Element Plus + Vue Router + Pinia + Vue Flow（工作流画布）
-- SQLite + better-sqlite3（内置服务端 `data.db`，业务数据单库统一）+ sqlite-vec（本地向量记忆）/ Dexie（Web 端历史兼容）
-- 内置 Express 后端（apps/server）统一承载**全部业务数据**（会话/智能体/Skill/平台模型/记忆/工作流，guest 单用户），并托管前端静态资源供局域网访问
+- SQLite + better-sqlite3（本地会话/配置）+ sqlite-vec（本地向量记忆）/ Dexie（Web 端 IndexedDB）
+- 内置 Express 后端（apps/server）统一承载**共享数据**（知识库等，guest/登录都走服务端一套 DB，支持 public/private 共享）
 - 内置本地模型：qwen2.5-1.5b（对话）+ bge-small-zh（语义向量，知识库/记忆检索）
 - Express（后端 API）+ JWT / bcrypt（鉴权）
 - Playwright（内置浏览器自动化）
@@ -33,17 +30,21 @@ yan-zhi/
 │   ├── mobile/       # Capacitor 移动端（SQLite 插件 + 应用沙箱）
 │   ├── server/       # Express API 服务（独立后端 + 商城服务端 + Playwright 浏览器）
 │   └── web/          # 纯 Web PWA（Dexie / IndexedDB）
+│   │   ├── electron-builder.{lite,full,mac}.yml  # 三套打包配置，产物统一输出到 dist-release/
+│   │   └── scripts/  # prepare-server-runtime / build-python-runtime / electron-build 等构建脚本
+│   ├── mobile/       # Capacitor 移动端（SQLite 插件 + 应用沙箱）
+│   ├── server/       # Express API 服务（独立后端 + 商城服务端 + Playwright 浏览器）
+│   └── web/          # 纯 Web PWA（Dexie / IndexedDB）
 ├── packages/
 │   ├── ui/           # 共享 Vue 组件、路由、视图、状态管理（stores）
 │   ├── core/         # 业务核心：LLM 客户端、MCP、工具注册与沙箱、工作流、记忆
 │   └── shared/       # 类型定义与通用工具
-├── docs/             # 设计文档（design.md）/ 任务规划（tasks.md）
-├── .trae/documents/  # 需求规划（four-features-plan.md / implementation-tasklist.md）
+├── docs/             # 设计文档与方案（design.md / tasks.md / 各方案 md）
 ├── openspec/         # OpenSpec 变更管理（changes/）
-├── assets/           # 应用图标（icon.png / icon.ico）
-├── pnpm-workspace.yaml
-└── package.json
-```
+├── scripts/          # 根级脚本（build-python-runtime.mjs / gen-license.mjs 等）
+├── assets/           # 应用图标（icon.png / icon.ico / icon.icns）
+├── .github/workflows/ # GitHub Actions（build-desktop.yml 桌面打包 / ci.yml 类型检查与测试）
+├── dist-release/     # 打包产物输出目录（.gitignore，lite/full/mac/.apk 平铺靠 artifactName 区分）
 
 ## 功能状态
 
@@ -57,7 +58,6 @@ yan-zhi/
 | 智能体管理 | ✅ 已完成 | harness 与 workflow 两种类型，Vue Flow 工作流画布 |
 | 智能体商城 | ✅ 已完成 | 远程浏览并一键复制到本地 |
 | 商城服务端 | ✅ 已完成 | 本节点作为服务端暴露标准化 API + 可见性 / 鉴权控制 |
-| 局域网访问 | ✅ 已完成 | 后端 0.0.0.0 + 托管前端静态资源，局域网内设备浏览器访问 Node Web 界面（设置页含 IP 展示 + 打开浏览器按钮） |
 | 聊天接口工具化 | ✅ 已完成 | 模型 / MCP / 工具 / Skill / 智能体 / 商城 / 会话等管理接口注册为 LLM 可调用的工具 |
 | 空间 / 工作目录 | ✅ 已完成 | 选目录自动建空间，空间目录上下文注入对话 |
 | 文件分类与预览 | ✅ 已完成 | 上传 / 中间 / 交付三类，右侧预览面板内联预览 |
@@ -66,18 +66,24 @@ yan-zhi/
 | 消息中心 | ✅ 已完成 | 多会话聊天中心：应用内助手 + 言智节点互聊（Peers）+ IM 渠道聚合 |
 | 对话模式开关 | ✅ 已完成 | 深度思考 / 计划 / 仅回答（输入框「+」菜单，前后端 modeFlags） |
 | IM 集成 | ✅ 代码就绪 | 飞书闭环 + 企业微信（AES 解密/XML）+ 个人微信通道；真实联调需开放平台账号与公网回调 |
+| 数据本体智能体 | 🚧 方案阶段 | openspec 方案 v2 评审中；SQL 方言适配层（mysql/postgres/dm/oracle/sqlite）已落地 |
+| 局域网访问 | ✅ 已完成 | 后端 0.0.0.0 + 托管前端静态资源，局域网内设备浏览器访问 Node Web 界面（设置页含 IP 展示 + 打开浏览器按钮） |
 | 插件系统 | ✅ 已完成 | `.yzp` 插件包，8 类扩展点（工具/皮肤/布局/路由/设置/对话增强/后端路由），权限声明、安装/导出/启停 |
-| 皮肤系统 | ✅ 已完成 | 皮肤即插件：壁纸/遮罩/毛玻璃、分类预览，皮肤库切换，可二改重装自定义 |
-| ops-shell 运维插件 | ✅ 已完成 | SSH 命令 / SFTP / Docker / 数据库只读查询 / xterm 终端 + 运维智能体，护栏与全量审计 |
+| 皮肤系统 | ✅ 已完成 | 皮肤即插件：壁纸/遮罩/毛玻璃、分类预览，23 款预置皮肤 + surface 深度定制，可二改重装自定义 |
+| ops-shell 运维插件 | ✅ 已完成 | SSH 命令 / SFTP 文件管理 / Docker / 数据库只读查询 / xterm 终端 + 运维智能体，护栏与全量审计 |
 | computer-use 电脑操作 | ✅ 已完成 | 鼠标/键盘/窗口/截屏/启动应用（Windows 实现），急停与黑名单护栏，默认关闭 |
 | 定时任务 | ✅ 已完成 | cron / 固定间隔，到点自动创建会话执行；配合预置 skill 形成每日自动化链路 |
-| Git 集成 | ✅ 已完成 | 对话内 Git 面板 + `git_status/diff/log/commit/file_tree` LLM 工具 |
+| Git 集成 | ✅ 已完成 | 对话内 Git 面板 + `git_status/diff/log/commit/file_tree` LLM 工具 + 三栏式冲突解决 |
 | 五维记忆管理 | ✅ 已完成 | 画像/智能体/会话/每日/空间五维 + 管理界面 + 自动整理（去重/矛盾清理/提拔） |
 | 网络工具族 | ✅ 已完成 | `port_scan` / `lan_scan` / `dns_lookup` / `tcp` / `udp`（授权运维场景） |
-| Python 执行 | ✅ 已完成 | `python_exec` 自动装依赖，数据分析 / 文档生成 |
+| Python 执行 | ✅ 已完成 | 内置 python-build-standalone 运行时（离线随包）+ `python_exec` 自动装依赖 + doyz 文档/网安工具 |
 | LLM 代理与 Token 池 | ✅ 已完成 | OpenAI/Anthropic 双协议转发，多 key 轮换 / 熔断 / 重试 / 调用日志 |
 | License 授权 | ✅ 已完成 | RSA 验签 + MAC 机器绑定 + 90 天试用码（商用闭环） |
-| 数据本体智能体 | 🚧 代码就绪 | 多数据源（MySQL/PG/达梦/Oracle/SQLite/CSV/HTTP-JSON）+ 语义层（LLM 出 DSL、引擎拼 SQL）+ SQL 控制台 + 数据分析智能体 |
+| 数据查询契约 / 动态看板 | ✅ 已完成 | 大模型产 QueryContract + 参数化受控执行（不走大模型）+ 对话内动态看板 |
+| 代码工作台（/code） | ✅ 已完成 | IDE 风格代码模式：目录树懒加载、CodeMirror 多语言高亮、文件 tab、环境配置分 tab、任务面板改造为工作台 |
+| 文档预览与转换 | ✅ 已完成 | `file_to_markdown` 内置工具（Word/Excel/PDF→Markdown）+ Excel 样式化预览 + PDF 渲染 |
+| 插件分类 | ✅ 已完成 | 功能 / 皮肤 / 操作 / 自定义四类分组，插件市场按类浏览 |
+| 智能体改名助手 | ✅ 已完成 | 内置智能体统一改名为「助手」，对齐用户心智模型 |
 
 > 已知缺口：浏览器自动化依赖本机显示环境，远程无头服务器需 Xvfb，移动端已屏蔽；Anthropic 官方无公开模型列表接口（部分兼容网关支持），因此「拉取模型」对纯 Anthropic 平台可能为空，需手动添加模型。
 
@@ -173,67 +179,18 @@ yan-zhi/
 - 模型 / MCP / 自定义工具 / Skill / 智能体 / 商城 / 会话等管理操作注册为 LLM 可调用的工具函数
 - 用户通过自然语言即可完成模型配置、工具管理、Skill 安装、智能体创建
 
-### 插件系统（已实现）
-- 插件包 `.yzp`（zip 格式）：声明式贡献 8 类扩展点——**工具 / 主题皮肤 / 布局 / 侧栏入口 / 前端路由 / 设置面板 / 对话增强器 / 后端路由**
-- 权限声明（fs / shell / git / db / network / clipboard / desktop-input / remote-shell）+ 安装 / 导出 / 启用禁用
-- **皮肤即插件**：壁纸 / 遮罩 / 毛玻璃、分类（动漫/风景/美图/简约）与预览图，设置→皮肤库切换；可下载源码包二改后重装实现自定义
-- 内置插件：ops-shell（运维）、computer-use（电脑操作）、git-explorer（Git）等
-
-### 运维插件 ops-shell（已实现）
-- SSH 命令执行、SFTP 上传下载、Docker 容器管理（over SSH）、数据库只读查询（mysql / postgres，仅 SELECT 类语句）
-- 双模式：**xterm 交互终端**（SSE 实时）+ **运维智能体对话**（自然语言下指令）
-- 护栏：危险命令黑名单、生产连接写操作二次确认、空闲会话回收、连接信息 AES-256-GCM 密文存储、全量操作审计
-
-### 电脑操作 computer-use（已实现，默认关闭）
-- 智能体操作本机：鼠标点击 / 移动 / 拖拽、键盘输入 / 快捷键、窗口激活 / 枚举、截屏、启动应用
-- Windows 用 PowerShell + Win32 P/Invoke 实现，零原生依赖
-- 护栏：10 分钟滚动窗口操作上限、危险组合键 / 进程黑名单、急停（Ctrl+Alt+Esc）、默认禁止操作应用自身窗口、全操作审计
-
-### 定时任务与自动化（已实现）
-- cron 表达式（分钟粒度）或固定间隔，绑定会话 / 智能体 / 平台模型 / 空间，到点自动创建会话执行
-- 支持立即运行、启停、下次执行时间预览与调度器热刷新
-- 与预置 skill 配合形成「每日自动执行」链路：**网站自动化任务**（pageAgent 登录 / 签到 / 领积分 / 填表单）、**即梦每日签到**（登录态持久化 + 定时执行）
-
-### Git 集成（已实现）
-- 对话内 Git 面板：分支切换、ahead/behind、拉取 / 推送 / 新建分支、变更 / 文件树 / 历史三视图、内联 diff、暂存操作
-- `git_status / git_diff / git_log / git_commit / git_file_tree` 注册为 LLM 可调用工具，自然语言即可提交代码
-
-### 五维记忆管理（已实现）
-- 记忆分五维：**用户画像 / 智能体记忆 / 会话记忆 / 每日记忆 / 空间记忆**（每空间一份 MEMORY.md）
-- 记忆管理界面：关键词搜索、手动增删
-- 「立即整理」（memory-dreaming）：自动去重、矛盾清理、过期淘汰、短期记忆提拔为长期，附整理记录日志
-
-### 数据本体与多数据源（代码就绪）
-- 多数据源接入：MySQL / PostgreSQL / 达梦 / Oracle / SQLite / 内置库 / CSV / HTTP-JSON（连接加密、测试连接、拉取库表结构）
-- 语义层 Text2Semantic2SQL：LLM 只输出受控 DSL（code / 选择器 / 过滤器 / 属性），引擎确定性拼 SQL；启动时自动扫描项目库生成全表本体
-- SQL 控制台（多语句 / 分页导出 / 只读拦截）+ 数据查询分析智能体 + 对话内动态看板（query contract，参数化执行不走大模型）
-
-### 其他实用工具（已实现）
-- **Python 执行**：`python_exec` 自动探测解释器、按需 pip 装依赖后执行（数据分析 / PPT / Word / Excel / PDF 生成）
-- **网络工具族**：`port_scan`（并发端口扫描）、`lan_scan`（网段主机发现）、`dns_lookup`、`tcp_send` / `udp_send`——面向局域网运维场景
-- **商品比价**：`compare_products` 同款对齐（标题核心词 + 规格）、到手价归一、可信度评分、价格异常检测
-- **LLM 代理**：对外 OpenAI / Anthropic 双协议转发，Token 池多 key 轮换 / 失败熔断 / 重试 / 调用日志
-
-### 局域网访问（已实现）
-- 后端监听 `0.0.0.0`（`YZ_HOST` 可改回 `127.0.0.1` 仅本机），局域网内其它设备（手机 / 电脑）可用浏览器访问本节点的完整 Web 界面
-- 后端 `express.static` 托管前端静态资源（`WEB_DIST` 指向构建产物），访问 `http://<本机IP>:3001` 即用
-- 设置页「局域网访问」tab：展示本机局域网 IP + 端口，可「复制」或「打开浏览器」（桌面端用系统默认浏览器）
-- 无登录体系，局域网访问无需登录（数据归属本地 guest 用户）
-
 ## 三端差异化
 
 | 能力 | 桌面（Electron） | Web（PWA） | 移动（Capacitor） |
 |------|--------------|-----------|------------------|
-| 业务数据存储 | 服务端 data.db（单库） | 服务端 data.db（单库） | 服务端 data.db（单库） |
-| 本机偏好/文件 | keyring + 文件系统 | localStorage | keyring + 应用沙箱目录 |
+| 本地数据存储 | SQLite (原生) | IndexedDB (Dexie) | SQLite (原生插件) |
 | MCP stdio 子进程 | 完整支持 | 仅远程 SSE/HTTP | 仅远程 SSE/HTTP |
 | 文件系统访问 | 完整 | File System API | 受限目录 |
-| Skill 本地目录 | 文件系统 | 服务端 DB | 应用沙箱目录 |
+| Skill 本地目录 | 文件系统 | IndexedDB 虚拟 FS | 应用沙箱目录 |
 | 系统托盘/通知 | 支持 | 不支持 | 支持 |
 | 离线可用 | 支持 | 需 PWA 安装 | 支持 |
 | 自动更新 | electron-updater | Service Worker | 应用商店 |
 | 内置浏览器自动化 | 支持 | 需本机服务端 | 不支持 |
-| 局域网访问 | 后端监听 0.0.0.0，其它设备浏览器访问 | 同左（访问节点 IP） | 同左 |
 
 ## 快速开始
 
@@ -303,6 +260,10 @@ pnpm build:web
 > - **精简版也内嵌 bge 向量模型**：语义检索（知识库/记忆）开箱即用，无需联网下载；两者差异主要在不带 1.1GB 的 qwen 本地对话模型。
 > - 精简版不含 qwen，本地对话默认不可用，需通过模型平台配置外部 LLM（OpenAI / Anthropic 兼容网关）。
 
+### 内置 Python 运行时
+
+桌面端打包时由 `scripts/build-python-runtime.mjs` 拉取 **python-build-standalone**（各平台预编译独立 Python），随包分发到 `resources/python/`，离线可用。随包还附带 `resources/python-tools/`（doyz 文档处理 / 网安工具 / PDF 预览脚本 + 预烤 site-packages）。受限网络下可通过仓库 Secrets `YZ_PYTHON_STANDALONE_MIRROR` / `YZ_PIP_INDEX_URL` 覆盖下载源。
+
 ### 内置模型（qwen / bge）与国内下载
 
 模型文件被 `.gitignore` 排除（`apps/server/models/`、`*.gguf`），不随仓库分发。构建或开发前需先补齐：
@@ -320,26 +281,26 @@ pnpm --filter @yan-zhi/server download:models --llm
 - `qwen2.5-1.5b-instruct-q4_k_m.gguf`（1.1GB）— 本地对话模型
 - `bge-small-zh-v1.5-q8_0.gguf`（26MB）— 中文语义向量模型（知识库/记忆检索）
 
-GitHub Actions（`.github/workflows/build-desktop.yml`）在构建前会自动执行 `download:models`，并产出轻量版安装包到 `dist-release/`（完整版需本地手动 `pnpm build:desktop:full` 触发）。
+GitHub Actions（`.github/workflows/build-desktop.yml`）在 push 到 `master` / `dev0.1` 或手动触发时，分别于 macOS 和 Windows runner 上构建**轻量版**安装包（.dmg / .exe），产物上传为 artifact。CI 不跑完整版（体积大、内嵌模型），完整版需本地手动 `pnpm build:desktop:full` 触发。另有 `.github/workflows/ci.yml` 在 PR 和 push 时跑 typecheck / lint / test 做质量卡关。
 
 ## 数据存储
 
-**单库后端化**：业务数据统一存内置服务端一套 `data.db`（前端只交互，不存数据不跑引擎）。仅本机 UI 偏好（主题/布局/工作目录/默认模型等）与本地文件留在本机。
+**分层**：对话、笔记、配置、本地文件按端本地存储；**知识库等可共享数据统一存内置服务端一套 DB**（guest/登录都走服务端，`public/private` 决定可见性）。
 
 | 端 | 存储方式 |
 |----|---------|
-| 桌面端 | Electron 界面 + 内置 server（`apps/server/data.db`，业务数据单库）；本机偏好走 keyring，本地文件走文件系统 |
-| 移动端 | Capacitor 界面 + 服务端（`data.db`，业务数据） |
-| Web 端 | 浏览器界面 + 服务端（`data.db`，业务数据；局域网内浏览器直接访问后端托管的前端静态资源） |
-| 后端   | better-sqlite3（`apps/server/data.db`）：user / platform / model / agent / skill / conversation / message / memory / workflow_run 等全部业务表 |
-
-> 单库收敛后前端不再持有数据副本（历史遗留的 yan-zhi.db / Dexie 分支已废弃）。本地单用户模式下业务数据归属内置 `guest` 用户，`user_id` 全程携带，后续接入用户体系可按 `user_id` 天然隔离。
+| 桌面端 | Electron + better-sqlite3（本地会话/配置/文件）+ 内置 server（`apps/server/data.db`，知识库等共享数据） |
+| 移动端 | Capacitor SQLite（本地会话/配置）+ 服务端（共享数据） |
+| Web 端 | 浏览器 IndexedDB（Dexie，本地会话/配置）+ 服务端（共享数据） |
+| 后端   | better-sqlite3（`apps/server/data.db`）：user / platform / 知识库(含 public/private) / 记忆 等 |
 
 ## 文档导航
 
-- 需求与实现规划：`.trae/documents/four-features-plan.md`、` .trae/documents/implementation-tasklist.md`
 - 设计与任务规划：`docs/design.md`、`docs/tasks.md`
+- 方案与修复文档：`docs/` 下按主题组织（浏览器重构 / 皮肤与运维插件 / 数据源收敛 / 桌面端自动更新 / 移动端内嵌后端 等）
 - 变更管理：遵循 `openspec/` 的 OpenSpec 流程（`openspec/changes/` 下按变更组织 spec）
+- 近期更新与风险分析：`项目近期更新与风险分析.md`（随版本快照更新）
+- 变更日志：`CHANGELOG.md`
 
 ## 项目重命名指南
 

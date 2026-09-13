@@ -2,7 +2,7 @@
   <aside class="sidebar">
     <div class="sidebar-tabs">
       <div class="sb-tab" :class="{ active: sideTab === 'chat' }" @click="sideTab = 'chat'">
-        <el-icon><ChatDotRound /></el-icon> 会话
+        <el-icon><ChatDotRound /></el-icon> 任务
       </div>
       <div class="sb-tab" :class="{ active: sideTab === 'task' }" @click="sideTab = 'task'">
         <el-icon><Timer /></el-icon> 定时任务
@@ -14,7 +14,7 @@
 
     <div v-if="sideTab === 'chat'" class="conv-list">
       <div class="conv-header">
-        <el-input v-model="search" placeholder="搜索会话" size="small" clearable :prefix-icon="Search" />
+        <el-input v-model="search" placeholder="搜索任务" size="small" clearable :prefix-icon="Search" />
         <div class="conv-header-row">
           <el-button size="small" @click="batchMode = !batchMode" :type="batchMode ? 'warning' : ''" style="flex:1">
             {{ batchMode ? '取消' : '批量' }}
@@ -28,7 +28,7 @@
           <div class="tree-node-head" @click="toggleRootCollapse">
             <el-icon class="tree-caret" :class="{ expanded: !rootCollapsed }"><CaretRight /></el-icon>
             <el-icon class="tree-node-icon"><ChatDotRound /></el-icon>
-            <span class="tree-node-label">会话</span>
+            <span class="tree-node-label">任务</span>
             <span class="tree-count">{{ rootConversations.length }}</span>
             <el-icon class="tree-add-icon" @click.stop="startNewChat(null)"><Plus /></el-icon>
           </div>
@@ -60,7 +60,7 @@
                 <el-icon class="scheduled-badge"><Timer /></el-icon>
               </el-tooltip>
             </div>
-            <div v-if="!rootCollapsed && rootConversations.length === 0" class="tree-empty">{{ search ? '无匹配' : '暂无会话' }}</div>
+            <div v-if="!rootCollapsed && rootConversations.length === 0" class="tree-empty">{{ search ? '无匹配' : '暂无任务' }}</div>
           </div>
         </div>
 
@@ -105,7 +105,7 @@
                 <el-icon class="scheduled-badge"><Timer /></el-icon>
               </el-tooltip>
             </div>
-            <div v-if="!spaceCollapsed[sp.id] && (!conversationsBySpace[sp.id] || conversationsBySpace[sp.id].length === 0)" class="tree-empty">{{ search ? '无匹配' : '暂无会话' }}</div>
+            <div v-if="!spaceCollapsed[sp.id] && (!conversationsBySpace[sp.id] || conversationsBySpace[sp.id].length === 0)" class="tree-empty">{{ search ? '无匹配' : '暂无任务' }}</div>
           </div>
         </div>
 
@@ -128,7 +128,8 @@
     </div>
   </aside>
 
-  <ul v-if="ctxMenu.visible" class="ctx-menu" :style="{ top: ctxMenu.y + 'px', left: ctxMenu.x + 'px' }">
+  <Teleport to="body">
+<ul v-if="ctxMenu.visible" class="ctx-menu" :style="{ top: ctxMenu.y + 'px', left: ctxMenu.x + 'px' }">
     <li @click="togglePin(ctxMenu.conv)">
       <el-icon><Star /></el-icon>{{ ctxMenu.conv?.pinned ? '取消置顶' : '置顶' }}
     </li>
@@ -152,6 +153,7 @@
       <el-icon><Delete /></el-icon>删除
     </li>
   </ul>
+</Teleport>
 
   <el-dialog v-model="showSpaceEdit" :title="spaceEditForm.id ? '编辑空间' : '新建空间'" width="460px" :close-on-click-modal="false" class="compact-dialog">
     <el-form label-position="top" @submit.prevent>
@@ -179,7 +181,8 @@
   <!-- 空间目录选择器（桌面端可用原生目录选择，Web 端为内置浏览器） -->
   <WorkspaceDirDialog v-model="dirPickerVisible" :current-path="spaceEditForm.dirPath" @selected="onSpaceDirSelected" />
 
-  <ul v-if="spaceMenuTarget" class="ctx-menu" :style="{ top: spaceMenuTarget.y + 'px', left: spaceMenuTarget.x + 'px' }" @click.stop>
+  <Teleport to="body">
+<ul v-if="spaceMenuTarget" class="ctx-menu" :style="{ top: spaceMenuTarget.y + 'px', left: spaceMenuTarget.x + 'px' }" @click.stop>
     <li @click="openSpaceEdit(spaceMenuTarget.space); closeSpaceMenu()">
       <el-icon><EditPen /></el-icon>编辑空间
     </li>
@@ -190,9 +193,11 @@
       <el-icon><Delete /></el-icon>删除空间
     </li>
   </ul>
+</Teleport>
 
   <!-- 会话树空白区右键菜单 -->
-  <ul v-if="treeMenu.visible" class="ctx-menu" :style="{ top: treeMenu.y + 'px', left: treeMenu.x + 'px' }">
+  <Teleport to="body">
+<ul v-if="treeMenu.visible" class="ctx-menu" :style="{ top: treeMenu.y + 'px', left: treeMenu.x + 'px' }">
     <li @click="treeMenuNewTask">
       <el-icon><ChatDotRound /></el-icon>新建任务
     </li>
@@ -200,6 +205,7 @@
       <el-icon><FolderOpened /></el-icon>新建空间
     </li>
   </ul>
+</Teleport>
 
 </template>
 

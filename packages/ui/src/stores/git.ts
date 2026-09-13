@@ -83,6 +83,10 @@ export const useGitStore = defineStore('git', () => {
   async function commit(repo: string, message: string, files?: string[]) {
     return api.post('/git/commit', { repo, message, files });
   }
+  /** 追加到上次提交（--amend） */
+  async function commitAmend(repo: string, message?: string) {
+    return api.post('/git/commitAmend', { repo, message });
+  }
   async function pull(repo: string, branch?: string) {
     return api.post('/git/pull', { repo, branch });
   }
@@ -133,6 +137,124 @@ export const useGitStore = defineStore('git', () => {
     return api.post('/git/abortMerge', { repo });
   }
 
+  // ===== fetch / stash / tag / blame / revert / reset / cherry-pick / rebase =====
+  async function fetch(repo: string, remote?: string, branch?: string) {
+    return api.post('/git/fetch', { repo, remote, branch });
+  }
+  async function stashSave(repo: string, message?: string) {
+    return api.post('/git/stashSave', { repo, message });
+  }
+  async function stashList(repo: string): Promise<string[]> {
+    const res = await api.get<string[]>(`/git/stashList?repo=${encodeURIComponent(repo)}`);
+    return 'data' in res ? res.data : [];
+  }
+  async function stashPop(repo: string, index = 0) {
+    return api.post('/git/stashPop', { repo, index });
+  }
+  async function stashApply(repo: string, index = 0) {
+    return api.post('/git/stashApply', { repo, index });
+  }
+  async function stashDrop(repo: string, index = 0) {
+    return api.post('/git/stashDrop', { repo, index });
+  }
+  async function tagCreate(repo: string, name: string, message?: string, ref?: string) {
+    return api.post('/git/tagCreate', { repo, name, message, ref });
+  }
+  async function tagList(repo: string): Promise<string[]> {
+    const res = await api.get<string[]>(`/git/tagList?repo=${encodeURIComponent(repo)}`);
+    return 'data' in res ? res.data : [];
+  }
+  async function tagDelete(repo: string, name: string) {
+    return api.post('/git/tagDelete', { repo, name });
+  }
+  async function blame(repo: string, file: string) {
+    const res = await api.get<Array<{ hash: string; author: string; line: number; content: string }>>(
+      `/git/blame?repo=${encodeURIComponent(repo)}&file=${encodeURIComponent(file)}`,
+    );
+    return 'data' in res ? res.data : [];
+  }
+  async function revert(repo: string, commit: string) {
+    return api.post('/git/revert', { repo, commit });
+  }
+  async function reset(repo: string, mode: 'soft' | 'mixed' | 'hard', target: string) {
+    return api.post('/git/reset', { repo, mode, target });
+  }
+  async function cherryPick(repo: string, commit: string) {
+    return api.post('/git/cherryPick', { repo, commit });
+  }
+  async function rebase(repo: string, branch: string) {
+    return api.post('/git/rebase', { repo, branch });
+  }
+  async function rebaseAbort(repo: string) {
+    return api.post('/git/rebaseAbort', { repo });
+  }
+  async function remoteBranches(repo: string): Promise<string[]> {
+    const res = await api.get<string[]>(`/git/remoteBranches?repo=${encodeURIComponent(repo)}`);
+    return 'data' in res ? res.data : [];
+  }
+  async function deleteBranch(repo: string, name: string) {
+    return api.post('/git/deleteBranch', { repo, name });
+  }
+  async function renameBranch(repo: string, oldName: string, newName: string) {
+    return api.post('/git/renameBranch', { repo, oldName, newName });
+  }
+  async function diffTree(repo: string, commit: string): Promise<Array<{ status: string; path: string }>> {
+    const res = await api.get<Array<{ status: string; path: string }>>(
+      `/git/diffTree?repo=${encodeURIComponent(repo)}&commit=${encodeURIComponent(commit)}`,
+    );
+    return 'data' in res ? res.data : [];
+  }
+  async function commitDiff(repo: string, commit: string, file?: string): Promise<string> {
+    const q = file ? `&file=${encodeURIComponent(file)}` : '';
+    const res = await api.get<string>(
+      `/git/commitDiff?repo=${encodeURIComponent(repo)}&commit=${encodeURIComponent(commit)}${q}`,
+    );
+    return 'data' in res ? res.data : '';
+  }
+  async function graph(repo: string, n = 50): Promise<Array<{
+    hash: string; parents: string[]; refs: string[]; subject: string;
+    authorName: string; authorEmail: string; date: string;
+  }>> {
+    const res = await api.get<Array<{
+      hash: string; parents: string[]; refs: string[]; subject: string;
+      authorName: string; authorEmail: string; date: string;
+    }>>(`/git/graph?repo=${encodeURIComponent(repo)}&n=${n}`);
+    return 'data' in res ? res.data : [];
+  }
+  // ===== 面板缓存（后端落在仓库内 .yan-zhi/git-cache.json，随仓库走）=====
+  async function readRepoCache(repo: string): Promise<Record<string, unknown> | null> {
+    const res = await api.get<Record<string, unknown> | null>(
+      `/git/cache?repo=${encodeURIComponent(repo)}`,
+    );
+    if (!('data' in res)) return null;
+    const c = res.data as Record<string, unknown> | null;
+    return c && typeof c === 'object' ? c : null;
+  }
+
+  async function writeRepoCache(repo: string, data: Record<string, unknown>, ui?: Record<string, unknown>) {
+    return api.post('/git/cache', { repo, data, ui: ui || {} });
+  }
+
+  async function clearRepoCache(repo: string) {
+    return api.delete(`/git/cache?repo=${encodeURIComponent(repo)}`);
+  }
+
+  async function discoverAll(dir: string): Promise<Array<{ path: string; branch: string; ahead: number; behind: number }>> {
+    const res = await api.get<Array<{ path: string; branch: string; ahead: number; behind: number }>>(
+      `/git/discoverAll?dir=${encodeURIComponent(dir)}`,
+    );
+    return 'data' in res ? res.data : [];
+  }
+  async function batchPull(repos: string[]) {
+    return api.post('/git/batchPull', { repos });
+  }
+  async function batchPush(repos: string[]) {
+    return api.post('/git/batchPush', { repos });
+  }
+  async function batchCheckout(repos: string[], branch: string) {
+    return api.post('/git/batchCheckout', { repos, branch });
+  }
+
   return {
     supported,
     status,
@@ -149,6 +271,7 @@ export const useGitStore = defineStore('git', () => {
     show,
     add,
     commit,
+    commitAmend,
     pull,
     push,
     checkout,
@@ -161,5 +284,33 @@ export const useGitStore = defineStore('git', () => {
     createBranch,
     mergeBranch,
     abortMerge,
+    fetch,
+    stashSave,
+    stashList,
+    stashPop,
+    stashApply,
+    stashDrop,
+    tagCreate,
+    tagList,
+    tagDelete,
+    blame,
+    revert,
+    reset,
+    cherryPick,
+    rebase,
+    rebaseAbort,
+    remoteBranches,
+    deleteBranch,
+    renameBranch,
+    diffTree,
+    commitDiff,
+    graph,
+    discoverAll,
+    readRepoCache,
+    writeRepoCache,
+    clearRepoCache,
+    batchPull,
+    batchPush,
+    batchCheckout,
   };
 });

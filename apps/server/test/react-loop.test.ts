@@ -389,8 +389,7 @@ describe('ReActLoopHistoryReplay', () => {
     buildToolsForBackend(AGENT_ID, USER_ID);
 
     hoisted.db.prepare = origPrepare;
-    // 注意：buildToolsForBackend 现在会先查 agent.custom_tool_ids（挂载过滤），再查 custom_tool 表本体
-    const customToolSql = sqls.find(s => s.includes('FROM custom_tool'));
+    const customToolSql = sqls.find(s => s.includes('custom_tool'));
     expect(customToolSql).toBeDefined();
     expect(customToolSql).toContain('input_schema_json');
     expect(customToolSql).not.toMatch(/input_schema[^_]/); // 不能有裸 input_schema（无 _json 后缀）

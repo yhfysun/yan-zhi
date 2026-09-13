@@ -1,5 +1,6 @@
 // 核心类型定义（对应数据库实体）
 export * from './marketplace.js';
+export * from './cicd.js';
 
 /** 平台协议类型 */
 export type Protocol = 'openai' | 'anthropic' | 'custom';

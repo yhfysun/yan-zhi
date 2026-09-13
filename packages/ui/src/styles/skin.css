@@ -1,13 +1,13 @@
 /* ============================================================
    皮肤层 —— data-skin="on" 时启用壁纸背景 + 毛玻璃表面
-   由 settings.applyTheme 写入：
+   由 settings.applyPalette/applySkin 写入：
    --app-wallpaper: url(...)   壁纸图（按深浅色解析）
    --skin-mask: 0~1            壁纸遮罩强度（保证文字可读）
    --skin-blur: Npx            壁纸模糊半径（0 = 不模糊）
    ============================================================ */
 
 /* ===== 壁纸背景：铺在 body 上（内容容器全部透明化），遮罩用 body::before =====
-   可读性基线：遮罩 + 壁纸模糊双保险。--skin-blur 默认 14px（applyTheme 未显式配置时生效），
+   可读性基线：遮罩 + 壁纸模糊双保险。--skin-blur 默认 14px（applyPalette/applySkin 未显式配置时生效），
    模糊后的壁纸只保留色 mood，细节不与文字争夺对比度 */
 [data-skin="on"] body {
   background: var(--app-wallpaper, var(--color-bg)) center / cover no-repeat fixed;
@@ -38,9 +38,28 @@
 [data-skin="on"] .app-body,
 [data-skin="on"] .main-content,
 [data-skin="on"] .page,
+[data-skin="on"] .code-page,
+[data-skin="on"] .chat-page,
+[data-skin="on"] .browser-page,
+[data-skin="on"] .git-explorer,
+[data-skin="on"] .sftp-panel,
+[data-skin="on"] .local-market,
+[data-skin="on"] .mp-home,
+[data-skin="on"] .remote-market,
+[data-skin="on"] .home-page,
 [data-skin="on"] .is-electron [data-theme="dark"] .app-body,
 [data-skin="on"] .is-electron .main-content {
   background: transparent !important;
+}
+
+/* ===== 页面级玻璃面板：整页为内容区的页面（无子面板覆盖）需自带玻璃背景 ===== */
+[data-skin="on"] .auth-page,
+[data-skin="on"] .canvas-page,
+[data-skin="on"] .java-suite,
+[data-skin="on"] .cicd-console {
+  background: var(--glass-bg) !important;
+  backdrop-filter: var(--glass-filter);
+  -webkit-backdrop-filter: var(--glass-filter);
 }
 
 /* ===== 皮肤模式第三套 token：让所有未显式换肤的表面统一玻璃化 =====
@@ -51,14 +70,17 @@
   --color-text-secondary: #4A4A45;
   --color-text-tertiary: #71706A;
 
-  --glass-bg: color-mix(in srgb, var(--skin-glass-tint, #ffffff) calc(var(--skin-glass-alpha, 0.86) * 100%), transparent);
-  --glass-bg-hover: color-mix(in srgb, var(--skin-glass-tint, #ffffff) calc(var(--skin-glass-alpha-hover, 0.93) * 100%), transparent);
-  --glass-filter: blur(18px) saturate(1.25);
+  --glass-bg: color-mix(in srgb, var(--skin-glass-tint, #f5f1ea) calc(var(--skin-glass-alpha, 0.97) * 100%), transparent);
+  --glass-bg-hover: color-mix(in srgb, var(--skin-glass-tint, #f5f1ea) calc(var(--skin-glass-alpha-hover, 0.99) * 100%), transparent);
+  --glass-filter: blur(var(--skin-glass-blur, 2px)) saturate(1.1);
 
   --el-bg-color: var(--glass-bg);
-  --el-bg-color-overlay: rgba(255, 255, 255, 0.94);
+  --el-bg-color-overlay: color-mix(in srgb, var(--skin-glass-tint, #f5f1ea) 97%, transparent);
   --el-bg-color-page: transparent;
-  --el-fill-color-blank: rgba(255, 255, 255, 0.55);
+  --el-fill-color-blank: color-mix(in srgb, var(--skin-glass-tint, #f5f1ea) 92%, transparent);
+
+  /* 数据工作台独立 token 体系接入皮肤：本体/数据源/SQL控制台面板跟随玻璃皮肤 */
+  --color-surface: var(--glass-bg);
   --el-fill-color: rgba(26, 26, 26, 0.045);
   --el-fill-color-light: rgba(26, 26, 26, 0.05);
   --el-fill-color-lighter: rgba(26, 26, 26, 0.035);
@@ -66,23 +88,38 @@
   --el-border-color-light: rgba(26, 26, 26, 0.11);
   --el-border-color-lighter: rgba(26, 26, 26, 0.09);
 
-  --btn-bg: rgba(255, 255, 255, 0.55);
-  --btn-bg-hover: rgba(255, 255, 255, 0.75);
-  --btn-border: rgba(26, 26, 26, 0.09);
+  --btn-bg: color-mix(in srgb, var(--skin-glass-tint, #f5f1ea) 88%, transparent);
+  --btn-bg-hover: color-mix(in srgb, var(--skin-glass-tint, #f5f1ea) 95%, transparent);
+  --btn-border: color-mix(in srgb, var(--color-primary) 12%, var(--el-border-color));
+
+  /* 滚动条随皮肤主色变化 */
+  --scrollbar-thumb: color-mix(in srgb, var(--color-primary) 20%, transparent);
+  --scrollbar-thumb-hover: color-mix(in srgb, var(--color-primary) 35%, transparent);
+  --scrollbar-thumb-active: color-mix(in srgb, var(--color-primary) 50%, transparent);
+}
+
+/* 数据工作台 .dw-root 独立 token 体系在皮肤模式下接入玻璃皮肤 */
+[data-skin="on"] .dw-root {
+  --dw-surface: var(--glass-bg);
+  --dw-canvas: var(--glass-bg);
+}
+[data-theme="dark"][data-skin="on"] .dw-root {
+  --dw-surface: var(--glass-bg);
+  --dw-canvas: var(--glass-bg);
 }
 [data-theme="dark"][data-skin="on"] {
   --color-text: #F2F0EA;
   --color-text-secondary: #B8B8B0;
   --color-text-tertiary: #8E8E86;
 
-  --glass-bg: color-mix(in srgb, var(--skin-glass-tint, #1d1d1c) calc(var(--skin-glass-alpha, 0.78) * 100%), transparent);
-  --glass-bg-hover: color-mix(in srgb, var(--skin-glass-tint, #1d1d1c) calc(var(--skin-glass-alpha-hover, 0.86) * 100%), transparent);
-  --glass-filter: blur(18px) saturate(1.15);
+  --glass-bg: color-mix(in srgb, var(--skin-glass-tint, #1d1d1c) calc(var(--skin-glass-alpha, 0.95) * 100%), transparent);
+  --glass-bg-hover: color-mix(in srgb, var(--skin-glass-tint, #1d1d1c) calc(var(--skin-glass-alpha-hover, 0.98) * 100%), transparent);
+  --glass-filter: blur(var(--skin-glass-blur, 2px)) saturate(1.08);
 
   --el-bg-color: var(--glass-bg);
-  --el-bg-color-overlay: rgba(38, 38, 36, 0.92);
+  --el-bg-color-overlay: color-mix(in srgb, var(--skin-glass-tint, #1d1d1c) 95%, transparent);
   --el-bg-color-page: transparent;
-  --el-fill-color-blank: rgba(255, 255, 255, 0.05);
+  --el-fill-color-blank: color-mix(in srgb, var(--skin-glass-tint, #1d1d1c) 90%, transparent);
   --el-fill-color: rgba(255, 255, 255, 0.06);
   --el-fill-color-light: rgba(255, 255, 255, 0.055);
   --el-fill-color-lighter: rgba(255, 255, 255, 0.045);
@@ -90,9 +127,14 @@
   --el-border-color-light: rgba(255, 255, 255, 0.10);
   --el-border-color-lighter: rgba(255, 255, 255, 0.08);
 
-  --btn-bg: rgba(255, 255, 255, 0.08);
-  --btn-bg-hover: rgba(255, 255, 255, 0.14);
-  --btn-border: rgba(255, 255, 255, 0.10);
+  --btn-bg: color-mix(in srgb, var(--skin-glass-tint, #1d1d1c) 82%, transparent);
+  --btn-bg-hover: color-mix(in srgb, var(--skin-glass-tint, #1d1d1c) 92%, transparent);
+  --btn-border: color-mix(in srgb, var(--color-primary) 15%, var(--el-border-color));
+
+  /* 滚动条随皮肤主色变化（深色模式下主色已提亮，对比度足够） */
+  --scrollbar-thumb: color-mix(in srgb, var(--color-primary) 25%, transparent);
+  --scrollbar-thumb-hover: color-mix(in srgb, var(--color-primary) 40%, transparent);
+  --scrollbar-thumb-active: color-mix(in srgb, var(--color-primary) 55%, transparent);
 }
 
 /* ===== 可读性：文字/图标对比度加固 =====
@@ -100,16 +142,16 @@
    默认次级灰（#6B6B66/#9C9B94）压在壁纸上会糊，皮肤模式下整体加深/提亮一档
    （色值已并入上方 token 块） */
 
-/* 图标密集区（Web 图标 dock / 移动 tabbar / 移动顶栏）：近实色背板，图标永远有底 */
+/* 图标密集区（Web 图标 dock / 移动 tabbar / 移动顶栏）：近实色皮肤背板，跟随皮肤色调 */
 [data-skin="on"] .side-nav,
 [data-skin="on"] .tab-bar,
 [data-skin="on"] .mobile-topbar {
-  background: rgba(255, 255, 255, 0.93) !important;
+  background: var(--glass-bg) !important;
 }
 [data-theme="dark"][data-skin="on"] .side-nav,
 [data-theme="dark"][data-skin="on"] .tab-bar,
 [data-theme="dark"][data-skin="on"] .mobile-topbar {
-  background: rgba(24, 24, 23, 0.93) !important;
+  background: var(--glass-bg) !important;
 }
 
 /* ===== 桌面端标题栏/侧栏：改半透明玻璃（默认为 el-bg-color 实色） ===== */
@@ -146,6 +188,54 @@
   background: transparent;
 }
 
+/* ===== SettingsDrawer 自定义抽屉玻璃化（非 el-drawer，需单独补模糊） ===== */
+[data-skin="on"] .settings-drawer {
+  backdrop-filter: var(--glass-filter);
+  -webkit-backdrop-filter: var(--glass-filter);
+}
+
+/* ===== 开发模式面板：顶栏 / 左侧栏 / 编辑器 / 右侧对话栏统一玻璃 =====
+   组件内已消费 --glass-bg + --glass-filter，这里补齐边框透明度 + 模糊遗漏面 */
+[data-skin="on"] .cp-top,
+[data-skin="on"] .cp-side,
+[data-skin="on"] .cp-chat,
+[data-skin="on"] .cea,
+[data-skin="on"] .csb-bar {
+  border-color: var(--glass-border);
+}
+[data-skin="on"] .cp-top,
+[data-skin="on"] .cp-side,
+[data-skin="on"] .cp-chat,
+[data-skin="on"] .cea {
+  backdrop-filter: var(--glass-filter);
+  -webkit-backdrop-filter: var(--glass-filter);
+}
+/* 编辑器区域（.cea）在皮肤模式下背景透明：让壁纸直接透出，子面板（标签栏/控制台）自带玻璃背景 */
+[data-skin="on"] .cea {
+  background: transparent !important;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+[data-skin="on"] .cea-tabs,
+[data-skin="on"] .cea-tab-nav,
+[data-skin="on"] .cea-console,
+[data-skin="on"] .code-minimap {
+  background: var(--glass-bg-hover);
+}
+[data-skin="on"] .code-editor-pane {
+  background: transparent !important;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+/* CodeMirror 所有背景层透明：oneDark 主题自带 #282c34 深蓝灰背景须全面压过 */
+[data-skin="on"] .code-editor-pane .cm-editor,
+[data-skin="on"] .code-editor-pane .cm-scroller,
+[data-skin="on"] .code-editor-pane .cm-gutters,
+[data-skin="on"] .code-editor-pane .cm-content,
+[data-skin="on"] .code-editor-pane .cm-line {
+  background: transparent !important;
+}
+
 /* ===== 次级按钮玻璃化：消费 --btn-* token（App.vue 全局按钮已引用） ===== */
 
 /* ===== Element Plus 控件玻璃化：输入框 / 选择器 / 文本域 ===== */
@@ -153,6 +243,9 @@
 [data-skin="on"] .el-textarea__inner,
 [data-skin="on"] .el-select__wrapper {
   background-color: var(--el-fill-color-blank);
+  background-image: var(--skin-input-pattern, none);
+  background-size: cover;
+  background-position: center;
   box-shadow: 0 0 0 1px var(--el-border-color) inset;
 }
 [data-skin="on"] .el-input__wrapper.is-focus,
@@ -160,18 +253,22 @@
   box-shadow: 0 0 0 1px var(--el-color-primary) inset;
 }
 
-/* ===== 表格：面板已玻璃，行/表头去实色 ===== */
+/* ===== 表格：面板已玻璃，行透明，表头补玻璃质感 ===== */
 [data-skin="on"] .el-table {
   --el-table-bg-color: transparent;
   --el-table-tr-bg-color: transparent;
-  --el-table-header-bg-color: transparent;
+  --el-table-header-bg-color: var(--glass-bg);
   --el-table-fixed-box-shadow: none;
 }
 [data-skin="on"] .el-table,
 [data-skin="on"] .el-table tr,
-[data-skin="on"] .el-table th.el-table__cell,
 [data-skin="on"] .el-table td.el-table__cell {
   background-color: transparent;
+}
+[data-skin="on"] .el-table th.el-table__cell {
+  background-color: var(--glass-bg);
+  backdrop-filter: var(--glass-filter);
+  -webkit-backdrop-filter: var(--glass-filter);
 }
 [data-skin="on"] .el-table--enable-row-hover .el-table__body tr:hover > td.el-table__cell {
   background-color: var(--el-fill-color-light);
@@ -185,6 +282,44 @@
 [data-skin="on"] .glass-card {
   backdrop-filter: var(--glass-filter);
   -webkit-backdrop-filter: var(--glass-filter);
+}
+
+/* ===== 面板级组件补磨砂质感：卡片/列表容器/筛选区/统计表 ===== */
+[data-skin="on"] .ov-card,
+[data-skin="on"] .log-item,
+[data-skin="on"] .stats-table-wrap,
+[data-skin="on"] .logs-filters,
+[data-skin="on"] .stats-section,
+[data-skin="on"] .msg-check-item,
+[data-skin="on"] .builtin-cat-title {
+  backdrop-filter: var(--glass-filter);
+  -webkit-backdrop-filter: var(--glass-filter);
+}
+/* 面板级组件统一玻璃背景 + 边框 */
+[data-skin="on"] .ov-card,
+[data-skin="on"] .stats-table-wrap,
+[data-skin="on"] .logs-filters {
+  background-color: var(--glass-bg);
+  border-color: var(--glass-border);
+}
+/* 列表项：自身透明让父面板玻璃透出，hover/active 走 token */
+[data-skin="on"] .log-item,
+[data-skin="on"] .msg-check-item {
+  background-color: transparent;
+}
+[data-skin="on"] .log-item:hover,
+[data-skin="on"] .msg-check-item:hover {
+  background-color: var(--glass-bg-hover);
+}
+
+/* 输入框/搜索框容器补磨砂质感 */
+[data-skin="on"] .f-keyword-wrap,
+[data-skin="on"] .lm-search-wrap,
+[data-skin="on"] .tab-search-wrap {
+  backdrop-filter: var(--glass-filter);
+  -webkit-backdrop-filter: var(--glass-filter);
+  background-color: var(--el-fill-color-blank);
+  border-color: var(--glass-border);
 }
 [data-skin="on"] .glass-tabs {
   background: var(--glass-bg) !important;
@@ -200,19 +335,47 @@
 [data-skin="on"] .el-message-box,
 [data-skin="on"] .el-popper.is-light {
   background-color: var(--el-bg-color-overlay);
+  background-image: var(--skin-dialog-pattern, none);
+  background-size: cover;
+  background-position: center;
   backdrop-filter: var(--glass-filter);
   -webkit-backdrop-filter: var(--glass-filter);
   border-color: var(--glass-border-strong);
+  box-shadow: var(--skin-shadow, var(--overlay-shadow));
+}
+/* 弹窗边框装饰图案（border-image），皮肤可在 surface.borderPattern 配置 SVG/PNG */
+[data-skin="on"] .el-dialog,
+[data-skin="on"] .el-drawer,
+[data-skin="on"] .el-message-box {
+  border-image-source: var(--skin-border-pattern, none);
+  border-image-slice: var(--skin-border-pattern-slice, 0);
+}
+/* 弹窗标题栏背景图案，皮肤可在 surface.titlebarPattern 配置 */
+[data-skin="on"] .el-dialog__header {
+  background-image: var(--skin-titlebar-pattern, none);
+  background-size: cover;
+  background-position: center;
 }
 [data-skin="on"] .el-dialog__header,
 [data-skin="on"] .el-dialog__body,
 [data-skin="on"] .el-dialog__footer {
-  background: transparent !important;
+  background-color: transparent !important;
 }
-/* 弹窗遮罩加轻微模糊，压住壁纸细节，弹层内容更聚焦 */
+/* 弹窗标题栏底边：主色微光分隔线 */
+[data-skin="on"] .el-dialog__header {
+  border-bottom: 1px solid color-mix(in srgb, var(--color-primary) 20%, transparent);
+}
+[data-skin="on"] .el-drawer__header {
+  background-image: var(--skin-titlebar-pattern, none);
+  background-size: cover;
+  background-position: center;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-primary) 20%, transparent);
+}
+/* 弹窗遮罩：皮肤可定制遮罩色与模糊半径 */
 [data-skin="on"] .el-overlay {
-  backdrop-filter: blur(4px);
-  -webkit-backdrop-filter: blur(4px);
+  background: var(--skin-overlay-color, transparent);
+  backdrop-filter: blur(var(--skin-overlay-blur, 4px));
+  -webkit-backdrop-filter: blur(var(--skin-overlay-blur, 4px));
 }
 
 /* ===== 减少动态效果偏好：壁纸遮罩保持但去掉模糊，省电省性能 ===== */
@@ -235,7 +398,7 @@
 }
 
 /* ===== 皮肤表面定制（surface 配置下发）：弹层边框色 / 圆角 / 按钮 / 应用描边 =====
-   --skin-glass-border/--skin-radius/--skin-btn-radius/--skin-btn-text 由 applyTheme 按
+   --skin-glass-border/--skin-radius/--skin-btn-radius/--skin-btn-text 由 applyPalette/applySkin 按
    主题 surface 块写入（深浅色分别解析），未配置时回落本主题默认值 */
 
 /* 弹层边框色随皮肤（置于原 token 规则之后，同特异性下后写生效） */
@@ -273,4 +436,358 @@
   pointer-events: none;
   border: 1px solid var(--skin-glass-border, transparent);
   opacity: 0.55;
+}
+
+/* ===== 卡片/面板悬停：主色微光描边（皮肤模式下视觉层次感增强） ===== */
+[data-skin="on"] .el-card:hover {
+  border-color: color-mix(in srgb, var(--color-primary) 30%, var(--glass-border));
+  box-shadow: 0 4px 16px color-mix(in srgb, var(--color-primary) 8%, transparent);
+}
+[data-skin="on"] .glass-card:hover {
+  border-color: color-mix(in srgb, var(--color-primary) 30%, var(--glass-border));
+  box-shadow: 0 4px 16px color-mix(in srgb, var(--color-primary) 8%, transparent);
+}
+
+/* ===== 次级按钮悬停：主色微光（皮肤模式下按钮反馈更鲜明） ===== */
+[data-skin="on"] .el-button:not(.is-disabled):not(.el-button--primary):hover {
+  border-color: color-mix(in srgb, var(--color-primary) 25%, var(--btn-border));
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--color-primary) 6%, transparent);
+}
+/* 主按钮：皮肤阴影增强（按下时有立体感） */
+[data-skin="on"] .el-button--primary:not(.is-plain):not(.is-text):not(.is-link):not(.is-disabled) {
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--color-primary) 20%, transparent);
+}
+[data-skin="on"] .el-button--primary:not(.is-plain):not(.is-text):not(.is-link):not(.is-disabled):hover {
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--color-primary) 30%, transparent);
+}
+
+/* ===== 皮肤可配置项扩展：按钮渐变/输入框圆角/卡片圆角/标签圆角/滚动条/分割线 ===== */
+/* 主按钮渐变背景（surface.buttonGradient 配置时覆盖纯色 primary） */
+[data-skin="on"] .el-button--primary:not(.is-plain):not(.is-text):not(.is-link) {
+  background-image: var(--skin-btn-gradient, none);
+}
+/* 输入框圆角随皮肤 */
+[data-skin="on"] .el-input__wrapper,
+[data-skin="on"] .el-textarea__inner,
+[data-skin="on"] .el-select__wrapper {
+  border-radius: var(--skin-input-radius, 6px);
+}
+/* 卡片圆角随皮肤 */
+[data-skin="on"] .el-card,
+[data-skin="on"] .glass-card {
+  border-radius: var(--skin-card-radius, 12px);
+}
+/* 标签圆角随皮肤 */
+[data-skin="on"] .el-tag {
+  border-radius: var(--skin-tag-radius, 6px);
+}
+/* 自定义滚动条 thumb 色（覆盖默认主色低 alpha） */
+[data-skin="on"] {
+  --scrollbar-thumb: var(--skin-scrollbar-thumb, color-mix(in srgb, var(--color-primary) 20%, transparent));
+}
+/* 分割线色随皮肤 */
+[data-skin="on"] .el-divider {
+  border-color: var(--skin-divider-color, var(--glass-border));
+}
+[data-skin="on"] .el-divider__text {
+  background-color: var(--glass-bg);
+}
+
+/* ===== EP 控件全面皮肤化：按钮/下拉选项/分页/勾选/标签页/空态/表单 ===== */
+
+/* 默认按钮（非 primary/text/link/plain）走 --btn-bg 玻璃 token + 皮肤背景图 */
+[data-skin="on"] .el-button:not(.is-text):not(.is-link):not(.el-button--primary):not(.is-plain):not(.is-disabled) {
+  background-color: var(--btn-bg);
+  background-image: var(--skin-btn-pattern, none);
+  background-size: cover;
+  background-position: center;
+  border-color: var(--btn-border);
+}
+[data-skin="on"] .el-button:not(.is-text):not(.is-link):not(.el-button--primary):not(.is-plain):not(.is-disabled):hover {
+  background-color: var(--btn-bg-hover);
+}
+/* plain 按钮也走 token */
+[data-skin="on"] .el-button.is-plain:not(.is-disabled):not(.el-button--primary) {
+  background-color: var(--btn-bg);
+}
+
+/* 下拉选项 hover/selected 态走玻璃 token */
+[data-skin="on"] .el-select-dropdown__item.hover,
+[data-skin="on"] .el-select-dropdown__item.selected,
+[data-skin="on"] .el-dropdown-menu__item:not(.is-disabled):hover,
+[data-skin="on"] .el-cascader-node.in-active-path {
+  background-color: var(--glass-bg-hover);
+}
+
+/* 分页：背景透明，按钮走 token */
+[data-skin="on"] .el-pagination {
+  background-color: transparent;
+  --el-pagination-button-color: var(--color-text);
+  --el-pagination-bg-color: transparent;
+}
+[data-skin="on"] .el-pagination .btn-prev,
+[data-skin="on"] .el-pagination .btn-next,
+[data-skin="on"] .el-pagination .el-pager li {
+  background-color: var(--btn-bg);
+  border-color: var(--btn-border);
+}
+[data-skin="on"] .el-pagination .el-pager li.is-active {
+  background-color: var(--color-primary);
+  color: var(--skin-btn-text, #fff);
+}
+
+/* 勾选框/单选/开关：容器透明，控件本身保留 EP 默认 */
+[data-skin="on"] .el-checkbox,
+[data-skin="on"] .el-radio,
+[data-skin="on"] .el-switch {
+  background-color: transparent;
+}
+[data-skin="on"] .el-checkbox__inner {
+  background-color: var(--el-fill-color-blank);
+  border-color: var(--el-border-color);
+}
+[data-skin="on"] .el-checkbox.is-checked .el-checkbox__inner,
+[data-skin="on"] .el-radio.is-checked .el-radio__inner {
+  background-color: var(--color-primary);
+  border-color: var(--color-primary);
+}
+
+/* 标签页 nav 背景透明（内容区由各页面面板自行玻璃化） */
+[data-skin="on"] .el-tabs__nav-wrap,
+[data-skin="on"] .el-tabs__header {
+  background-color: transparent;
+}
+[data-skin="on"] .el-tabs__item.is-active {
+  color: var(--color-primary);
+}
+
+/* 空态/表单/描述列表/折叠面板：背景透明 */
+[data-skin="on"] .el-empty,
+[data-skin="on"] .el-form,
+[data-skin="on"] .el-form-item,
+[data-skin="on"] .el-descriptions,
+[data-skin="on"] .el-collapse,
+[data-skin="on"] .el-collapse-item__header,
+[data-skin="on"] .el-collapse-item__wrap {
+  background-color: transparent;
+}
+[data-skin="on"] .el-collapse-item__header:hover {
+  background-color: var(--glass-bg-hover);
+}
+
+/* 标签走玻璃 */
+[data-skin="on"] .el-tag {
+  background-color: var(--btn-bg);
+  border-color: var(--btn-border);
+}
+
+/* 按钮组容器透明 */
+[data-skin="on"] .el-button-group {
+  background-color: transparent;
+}
+
+/* 滑块/进度条/步骤条：轨道走 token */
+[data-skin="on"] .el-slider__runway {
+  background-color: var(--el-fill-color-light);
+}
+[data-skin="on"] .el-progress-bar__outer {
+  background-color: var(--el-fill-color-light);
+}
+[data-skin="on"] .el-steps {
+  background-color: transparent;
+}
+
+/* ===== 全局滚动条皮肤化：--scrollbar-thumb 已定义，此处应用到 ::-webkit-scrollbar ===== */
+[data-skin="on"] ::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+[data-skin="on"] ::-webkit-scrollbar-track {
+  background: transparent;
+}
+[data-skin="on"] ::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 4px;
+}
+[data-skin="on"] ::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+}
+[data-skin="on"] ::-webkit-scrollbar-thumb:active {
+  background: var(--scrollbar-thumb-active);
+}
+/* Firefox */
+[data-skin="on"] * {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+
+/* ============================================================
+   内置系列皮肤扩展部位：菜单 / 代码模式 / 浏览器外壳
+   变量由 applySurface 下发（内置系列 data URI / 插件皮肤资源 URL），
+   未配置时回落 none，不影响无皮肤与纯调色板模式
+   ============================================================ */
+
+/* ===== 菜单底图：应用菜单面板 / Element 下拉 / 右键菜单（挂点多为 scoped 样式，统一加固） ===== */
+[data-skin="on"] .app-menu-list,
+[data-skin="on"] .el-dropdown-menu,
+[data-skin="on"] .ctx-menu {
+  background-image: var(--skin-menu-pattern, none) !important;
+  background-size: cover !important;
+  background-position: center !important;
+}
+/* 菜单 hover 项压一层主色微光，保证图案上仍清晰 */
+[data-skin="on"] .app-menu-list .menu-item:hover,
+[data-skin="on"] .el-dropdown-menu__item:not(.is-disabled):hover {
+  background-color: color-mix(in srgb, var(--color-primary) 10%, var(--glass-bg-hover)) !important;
+}
+
+/* ===== 代码模式独立底图：区别于全局壁纸（同系列不同图案，细格网+角饰） =====
+   注意：.code-page 在上方透明化列表中，此处同特异性规则写在后面即覆盖；
+   只动背景，不改任何布局尺寸/栅格，避免与代码布局改动冲突 */
+[data-skin="on"] .code-page {
+  background: transparent !important;
+  background-image: var(--skin-code-pattern, none) !important;
+  background-size: cover !important;
+  background-position: center !important;
+}
+/* 编辑器内部各子面板保持玻璃，文字区保持透明白底可读性 */
+[data-skin="on"] .code-page .cp-top,
+[data-skin="on"] .code-page .cp-side {
+  background-image: var(--skin-menu-pattern, none) !important;
+  background-size: cover !important;
+  background-position: center !important;
+}
+
+/* ===== 内置浏览器外壳底图：tab 栏 + 工具栏（BrowserView 网页内容区为原生层，无法也不应换肤） ===== */
+[data-skin="on"] .browser-tabbar,
+[data-skin="on"] .browser-toolbar {
+  background-image: var(--skin-browser-pattern, none) !important;
+  background-size: cover !important;
+  background-position: center !important;
+}
+/* tab 栏/工具栏：压薄玻璃底（45%/55%），让外壳图案清晰可见又不压图标 */
+[data-skin="on"] .browser-tabbar {
+  background-color: color-mix(in srgb, var(--skin-glass-tint, #f5f1ea) 45%, transparent) !important;
+}
+[data-skin="on"] .browser-toolbar {
+  background-color: color-mix(in srgb, var(--skin-glass-tint, #f5f1ea) 55%, transparent) !important;
+}
+[data-theme="dark"][data-skin="on"] .browser-tabbar,
+[data-theme="dark"][data-skin="on"] .browser-toolbar {
+  /* 暗色系：底图走 --skin-browser-pattern 的深色变体（applySurface 暗色时下发，插件皮肤无变体则不下发），
+     这里保留近不透明深玻璃垫底：无图时兜底深底，杜绝白底白字 */
+  background-color: color-mix(in srgb, var(--skin-glass-tint, #1d1d1c) 90%, transparent) !important;
+}
+/* 头部文字/图标：强制与外壳玻璃底对比，杜绝白底白字（头部看不见）。
+   浅色玻璃底→深色字；深色玻璃底→浅色字。仅在皮肤开启时生效，不影响默认主题。 */
+[data-skin="on"] .browser-tabbar,
+[data-skin="on"] .browser-toolbar,
+[data-skin="on"] .browser-tabbar .tab-item,
+[data-skin="on"] .browser-tabbar .tab-item.active,
+[data-skin="on"] .browser-toolbar .nav-btn,
+[data-skin="on"] .browser-toolbar .url-input,
+[data-skin="on"] .browser-toolbar .url-lock,
+[data-skin="on"] .browser-toolbar .zoom-label { color: #202124 !important; }
+[data-skin="on"] .browser-tabbar .tab-favicon,
+[data-skin="on"] .browser-tabbar .tab-close,
+[data-skin="on"] .browser-toolbar .url-clear { color: #5f6368 !important; }
+[data-theme="dark"][data-skin="on"] .browser-tabbar,
+[data-theme="dark"][data-skin="on"] .browser-toolbar,
+[data-theme="dark"][data-skin="on"] .browser-tabbar .tab-item,
+[data-theme="dark"][data-skin="on"] .browser-tabbar .tab-item.active,
+[data-theme="dark"][data-skin="on"] .browser-toolbar .nav-btn,
+[data-theme="dark"][data-skin="on"] .browser-toolbar .url-input,
+[data-theme="dark"][data-skin="on"] .browser-toolbar .url-lock,
+[data-theme="dark"][data-skin="on"] .browser-toolbar .zoom-label { color: #e8eaed !important; }
+[data-theme="dark"][data-skin="on"] .browser-tabbar .tab-favicon,
+[data-theme="dark"][data-skin="on"] .browser-tabbar .tab-close,
+[data-theme="dark"][data-skin="on"] .browser-toolbar .url-clear { color: #bdc1c6 !important; }
+/* 地址栏在底图上保持玻璃胶囊质感 */
+[data-skin="on"] .url-bar {
+  background-color: var(--el-fill-color-blank);
+  backdrop-filter: var(--glass-filter);
+  -webkit-backdrop-filter: var(--glass-filter);
+}
+
+/* ============================================================
+   皮肤部位覆盖补全（第二轮）：列表 / 弹窗 / 输入框+边框 / 按钮
+   目标：不只 Element Plus 类名，项目自定义容器类也统一吃到皮肤图案
+   ============================================================ */
+
+/* ===== 列表背景图：会话列表 / 定时任务列表 / 文件面板 / 玻璃卡片 =====
+   .chat-sidebar 已在 chat.css 消费 --skin-task-list-pattern，这里补齐其余列表容器
+   （!important：目标类多为 scoped 样式，注入顺序不定，统一加固保证生效） */
+[data-skin="on"] .conv-list,
+[data-skin="on"] .st-list,
+[data-skin="on"] .fs-panel,
+[data-skin="on"] .fs-body,
+[data-skin="on"] .glass-card {
+  background-image: var(--skin-task-list-pattern, none) !important;
+  background-size: cover !important;
+  background-position: center !important;
+}
+/* 卡片/列表容器底图之上压薄玻璃底色：20% 而非实色，保证底图纹理清晰可见 */
+[data-skin="on"] .conv-list,
+[data-skin="on"] .st-list,
+[data-skin="on"] .fs-panel,
+[data-skin="on"] .fs-body {
+  background-color: color-mix(in srgb, var(--skin-glass-tint, #f5f1ea) 22%, transparent) !important;
+}
+
+/* ===== 弹窗背景图：自定义抽屉 / 内嵌管理面板（el-dialog/el-drawer/el-message-box 已有） ===== */
+[data-skin="on"] .settings-drawer,
+[data-skin="on"] .scheduled-task-panel {
+  background-image: var(--skin-dialog-pattern, none) !important;
+  background-size: cover !important;
+  background-position: center !important;
+}
+
+/* ===== 输入框：背景图随皮肤（EP 控件 + 自定义输入容器）；输入框本身不带边框 ===== */
+/* 皮肤模式下输入框去描边，靠底图 + 玻璃区分区；仅在聚焦时给主色描边做反馈 */
+[data-skin="on"] .el-input__wrapper,
+[data-skin="on"] .el-textarea__inner,
+[data-skin="on"] .el-select__wrapper {
+  box-shadow: none !important;
+}
+[data-skin="on"] .el-input__wrapper.is-focus,
+[data-skin="on"] .el-select__wrapper.is-focused,
+[data-skin="on"] .el-textarea__inner:focus {
+  box-shadow: 0 0 0 1.5px var(--color-primary) inset !important;
+}
+/* 自定义输入容器：聊天输入框 / 各页搜索框 / 浏览器地址栏上皮肤图案（无边框） */
+[data-skin="on"] .input-box,
+[data-skin="on"] .f-keyword-wrap,
+[data-skin="on"] .lm-search-wrap,
+[data-skin="on"] .tab-search-wrap,
+[data-skin="on"] .url-bar {
+  background-image: var(--skin-input-pattern, none) !important;
+  background-size: cover !important;
+  background-position: center !important;
+  border-color: transparent !important;
+}
+[data-skin="on"] .input-box.focused {
+  border-color: var(--color-primary) !important;
+  box-shadow: 0 6px 28px color-mix(in srgb, var(--color-primary) 16%, transparent) !important;
+}
+
+/* ===== 按钮：浏览器/文件页原生中性按钮上皮肤（图案 + 玻璃底 + 主色 hover） =====
+   注意：这些原生按钮有固定尺寸/布局假设（.fs-act-btn 还带 all:unset），不添边框防抖动 */
+[data-skin="on"] .nav-btn,
+[data-skin="on"] .fs-act-btn,
+[data-skin="on"] .tab-new {
+  background-color: var(--btn-bg) !important;
+  background-image: var(--skin-btn-pattern, none) !important;
+  background-size: cover !important;
+  background-position: center !important;
+}
+[data-skin="on"] .nav-btn:hover:not(:disabled),
+[data-skin="on"] .fs-act-btn:hover,
+[data-skin="on"] .fs-act-btn.active,
+[data-skin="on"] .tab-new:hover {
+  background-color: color-mix(in srgb, var(--color-primary) 12%, var(--btn-bg-hover)) !important;
+}
+/* 自定义右键菜单项 hover 随皮肤主色（ctx-menu 容器底图已上） */
+[data-skin="on"] .ctx-menu li:hover,
+[data-skin="on"] .ctx-item:hover {
+  background-color: color-mix(in srgb, var(--color-primary) 12%, transparent) !important;
 }

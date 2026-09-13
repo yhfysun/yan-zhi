@@ -12,7 +12,7 @@ import conversationRoutes from './routes/conversations.js';
 import messageRoutes from './routes/messages.js';
 import spaceRoutes from './routes/spaces.js';
 import fileRoutes from './routes/files.js';
-import platformRoutes from './routes/platforms.js';
+import platformRoutes, { migrateLegacyLocalPlatformRows } from './routes/platforms.js';
 import { seedBuiltinWorkflowAgents, ensureBuiltinWorkflowModel } from './builtin-workflow-agents.js';
 import agentRoutes from './routes/agents.js';
 import workflowRoutes from './routes/workflow.js';
@@ -49,6 +49,8 @@ import { gitExplorerManifest, gitExplorerModule } from './plugins/git-explorer.j
 import { computerUseManifest, computerUseModule } from './plugins/computer-use.js';
 import { registerBuiltinSkins } from './plugins/skins.js';
 import { opsShellManifest, opsShellModule } from './plugins/ops-shell.js';
+import { cicdManifest, cicdModule } from './plugins/cicd-pipeline.js';
+import { javaSuiteManifest, javaSuiteModule } from './plugins/java-suite.js';
 import { syncAgnesPlatformForAllUsers } from './agnes-platform/service.js';
 import { ensureProjectDataSource } from './services/datasource.js';
 import { ensureBuiltinOntologies } from './services/ontology.js';
@@ -190,6 +192,11 @@ try {
   console.log('[cleanup] 已清理内置模型平台残留记录');
 } catch (e) { console.warn('[cleanup] 清理内置模型平台残留失败:', e); }
 
+// 启动时把历史随机 ID 的内置「本地模型」平台迁移为确定性 ID（ollama-local），跨机器一致
+try {
+  migrateLegacyLocalPlatformRows();
+} catch (e) { console.warn('[migrate] 本地模型平台迁移失败:', e); }
+
 // 启动时为所有用户惰性初始化 agnes 线上平台及其模型（仅首次 seed，已存在不覆盖）
 try {
   const r = syncAgnesPlatformForAllUsers();
@@ -243,6 +250,10 @@ try {
     // ops-shell 高危权限（remote-shell）：同上默认开启；移动端跳过
     if (!process.env.MOBILE_MODE) {
       await mgr.registerBuiltin(opsShellManifest, opsShellModule, true);
+    // CICD 流水线插件：本地一键发布（打包→备份→上传→重启），复用 ops-shell SSH 连接
+    await mgr.registerBuiltin(cicdManifest, cicdModule, true);
+    // Java 开发套件：Maven/Gradle/Spring Boot/调试/测试/格式化/MyBatis
+    await mgr.registerBuiltin(javaSuiteManifest, javaSuiteModule, true);
     }
     // 旧库一次性迁移：本版本起内置高危插件默认开启（新装库在 registerBuiltin 首次注册即启用；
     // 旧库已存在 disabled 行不会被动到），按标记只执行一次，之后用户停用状态永久尊重

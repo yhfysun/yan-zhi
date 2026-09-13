@@ -12,6 +12,35 @@ router.get('/capability', (_req: Request, res: Response) => {
   res.json({ data: { supported: !!adapter.shell, platform: adapter.platform } });
 });
 
+// ===== 面板缓存：落在仓库内 .yan-zhi/git-cache.json（隐藏目录，应用独有）=====
+// 纯文件读写，不依赖 shell，故放在 501 门禁之前
+router.get('/cache', async (req: Request, res: Response) => {
+  try {
+    res.json({ data: await gitService.readCache(String(req.query.repo || '')) });
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message });
+  }
+});
+
+router.post('/cache', async (req: Request, res: Response) => {
+  try {
+    const body = (req.body || {}) as { repo?: string; data?: Record<string, unknown>; ui?: Record<string, unknown> };
+    await gitService.writeCache(String(body.repo || ''), { data: body.data || {}, ui: body.ui || {} });
+    res.json({ data: { ok: true } });
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message });
+  }
+});
+
+router.delete('/cache', async (req: Request, res: Response) => {
+  try {
+    await gitService.clearCache(String(req.query.repo || ''));
+    res.json({ data: { ok: true } });
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message });
+  }
+});
+
 // 以下路由需 shell 能力（桌面端/服务端），Web/Mobile 返回 501
 router.use((_req: Request, res: Response, next) => {
   if (!getPlatformAdapter().shell) {
@@ -63,6 +92,18 @@ router.get('/log', async (req: Request, res: Response) => {
   }
 });
 
+router.get('/graph', async (req: Request, res: Response) => {
+  try {
+    res.json({
+      data: await gitService.graph(String(req.query.repo || ''), {
+        n: Number(req.query.n) || 50,
+      }),
+    });
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message });
+  }
+});
+
 router.get('/branches', async (req: Request, res: Response) => {
   try {
     res.json({ data: await gitService.branches(String(req.query.repo || '')) });
@@ -93,6 +134,15 @@ router.post('/add', async (req: Request, res: Response) => {
 router.post('/commit', async (req: Request, res: Response) => {
   try {
     await gitService.commit(req.body.repo, req.body.message, req.body.files);
+    res.json({ data: { ok: true } });
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message });
+  }
+});
+
+router.post('/commitAmend', async (req: Request, res: Response) => {
+  try {
+    await gitService.commitAmend(req.body.repo, req.body.message);
     res.json({ data: { ok: true } });
   } catch (e) {
     res.status(400).json({ error: (e as Error).message });
@@ -252,6 +302,224 @@ router.post('/resolve', async (req: Request, res: Response) => {
   try {
     await gitService.resolveConflict(req.body.repo, req.body.file);
     res.json({ data: { ok: true } });
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message });
+  }
+});
+
+// ===== fetch / stash / tag / blame / revert / reset / cherry-pick / rebase =====
+
+router.post('/fetch', async (req: Request, res: Response) => {
+  try {
+    const out = await gitService.fetch(req.body.repo, req.body.remote, req.body.branch);
+    res.json({ data: { ok: true, message: out } });
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message });
+  }
+});
+
+router.post('/stashSave', async (req: Request, res: Response) => {
+  try {
+    const out = await gitService.stashSave(req.body.repo, req.body.message);
+    res.json({ data: { ok: true, message: out } });
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message });
+  }
+});
+
+router.get('/stashList', async (req: Request, res: Response) => {
+  try {
+    res.json({ data: await gitService.stashList(String(req.query.repo || '')) });
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message });
+  }
+});
+
+router.post('/stashPop', async (req: Request, res: Response) => {
+  try {
+    const out = await gitService.stashPop(req.body.repo, req.body.index ?? 0);
+    res.json({ data: { ok: true, message: out } });
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message });
+  }
+});
+
+router.post('/stashApply', async (req: Request, res: Response) => {
+  try {
+    const out = await gitService.stashApply(req.body.repo, req.body.index ?? 0);
+    res.json({ data: { ok: true, message: out } });
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message });
+  }
+});
+
+router.post('/stashDrop', async (req: Request, res: Response) => {
+  try {
+    const out = await gitService.stashDrop(req.body.repo, req.body.index ?? 0);
+    res.json({ data: { ok: true, message: out } });
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message });
+  }
+});
+
+router.post('/tagCreate', async (req: Request, res: Response) => {
+  try {
+    await gitService.tagCreate(req.body.repo, req.body.name, req.body.message, req.body.ref);
+    res.json({ data: { ok: true } });
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message });
+  }
+});
+
+router.get('/tagList', async (req: Request, res: Response) => {
+  try {
+    res.json({ data: await gitService.tagList(String(req.query.repo || '')) });
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message });
+  }
+});
+
+router.post('/tagDelete', async (req: Request, res: Response) => {
+  try {
+    await gitService.tagDelete(req.body.repo, req.body.name);
+    res.json({ data: { ok: true } });
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message });
+  }
+});
+
+router.get('/blame', async (req: Request, res: Response) => {
+  try {
+    res.json({
+      data: await gitService.blame(String(req.query.repo || ''), String(req.query.file || '')),
+    });
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message });
+  }
+});
+
+router.post('/revert', async (req: Request, res: Response) => {
+  try {
+    const out = await gitService.revert(req.body.repo, req.body.commit);
+    res.json({ data: { ok: true, message: out } });
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message });
+  }
+});
+
+router.post('/reset', async (req: Request, res: Response) => {
+  try {
+    const out = await gitService.reset(req.body.repo, req.body.mode, req.body.target);
+    res.json({ data: { ok: true, message: out } });
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message });
+  }
+});
+
+router.post('/cherryPick', async (req: Request, res: Response) => {
+  try {
+    const out = await gitService.cherryPick(req.body.repo, req.body.commit);
+    res.json({ data: { ok: true, message: out } });
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message });
+  }
+});
+
+router.post('/rebase', async (req: Request, res: Response) => {
+  try {
+    const out = await gitService.rebase(req.body.repo, req.body.branch);
+    res.json({ data: { ok: true, message: out } });
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message });
+  }
+});
+
+router.post('/rebaseAbort', async (req: Request, res: Response) => {
+  try {
+    await gitService.rebaseAbort(req.body.repo);
+    res.json({ data: { ok: true } });
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message });
+  }
+});
+
+router.get('/remoteBranches', async (req: Request, res: Response) => {
+  try {
+    res.json({ data: await gitService.remoteBranches(String(req.query.repo || '')) });
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message });
+  }
+});
+
+router.post('/deleteBranch', async (req: Request, res: Response) => {
+  try {
+    await gitService.deleteBranch(req.body.repo, req.body.name);
+    res.json({ data: { ok: true } });
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message });
+  }
+});
+
+router.post('/renameBranch', async (req: Request, res: Response) => {
+  try {
+    await gitService.renameBranch(req.body.repo, req.body.oldName, req.body.newName);
+    res.json({ data: { ok: true } });
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message });
+  }
+});
+
+router.get('/diffTree', async (req: Request, res: Response) => {
+  try {
+    res.json({
+      data: await gitService.diffTree(String(req.query.repo || ''), String(req.query.commit || '')),
+    });
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message });
+  }
+});
+
+router.get('/commitDiff', async (req: Request, res: Response) => {
+  try {
+    res.json({
+      data: await gitService.commitDiff(
+        String(req.query.repo || ''),
+        String(req.query.commit || ''),
+        req.query.file as string | undefined,
+      ),
+    });
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message });
+  }
+});
+
+router.get('/discoverAll', async (req: Request, res: Response) => {
+  try {
+    res.json({ data: await gitService.discoverAll(String(req.query.dir || '')) });
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message });
+  }
+});
+
+router.post('/batchPull', async (req: Request, res: Response) => {
+  try {
+    res.json({ data: await gitService.batchPull(req.body.repos || []) });
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message });
+  }
+});
+
+router.post('/batchPush', async (req: Request, res: Response) => {
+  try {
+    res.json({ data: await gitService.batchPush(req.body.repos || []) });
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message });
+  }
+});
+
+router.post('/batchCheckout', async (req: Request, res: Response) => {
+  try {
+    res.json({ data: await gitService.batchCheckout(req.body.repos || [], req.body.branch) });
   } catch (e) {
     res.status(400).json({ error: (e as Error).message });
   }

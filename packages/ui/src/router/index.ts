@@ -3,7 +3,7 @@ import { createRouter, createWebHashHistory, type RouteRecordRaw } from 'vue-rou
 import { useLicenseStore } from '../stores/license';
 import { usePluginStore } from '../stores/plugin';
 import { resolvePluginComponent } from '../plugin-component-registry';
-import { isElectron } from '../api/client';
+import { isElectron, isCapacitor } from '../api/client';
 import { isCodeModeActive } from '../stores/code';
 
 const routes: RouteRecordRaw[] = [
@@ -179,7 +179,17 @@ const router = createRouter({
   routes,
 });
 
+// 移动端（Capacitor）屏蔽的重功能路由：开发模式/浏览器/Skill蒸馏/本体/SQL控制台/数据源/节点/IM连接
+const MOBILE_BLOCKED_PATHS = new Set([
+  '/code', '/browser', '/distill', '/ontologies', '/std-attributes',
+  '/sql-console', '/data-sources', '/peers', '/connections',
+]);
+
 router.beforeEach(async (to) => {
+  // 移动端重功能路由重定向到对话页，避免手动输 URL 进入
+  if (isCapacitor && MOBILE_BLOCKED_PATHS.has(to.path)) {
+    return { path: '/chat' };
+  }
   // 桌面端本地单机应用无登录概念：/login 直接回对话页
   if (isElectron && to.path === '/login') {
     return { path: '/chat' };

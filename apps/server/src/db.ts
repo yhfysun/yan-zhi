@@ -786,6 +786,8 @@ const OPS_AGENT_BUILTIN_TOOLS = [
   'plugin_ops-shell__sftp_rename',
   'plugin_ops-shell__sftp_backup',
   'plugin_ops-shell__sftp_delete',
+  // 本地 Python（数据处理/脚本辅助）
+  'python_exec',
   // 用户交互与任务规划
   'task_plan', 'task_step', 'ask_user', 'confirm_user',
 ];
@@ -819,6 +821,143 @@ const OPS_AGENT_SYSTEM_PROMPT = `你是运维助手（opsAgent），负责在用
 - 不要执行交互式命令（top/vim/apt 交互确认等），用非交互替代（free -m / sed / apt-get -y）。
 - 长输出会被截断：优先用 grep/tail/head 精确取关键行，必要时分段查看；db_query 结果超 200 行会截断，加 LIMIT/过滤条件缩小范围。
 - 只做用户请求范围内的操作，禁止顺带"优化"其他服务。`;
+
+
+
+// ===== Java 开发助手 =====
+const JAVA_AGENT_BUILTIN_TOOLS = [
+  // Java 项目检测与分析
+  'plugin_java-suite__java_detect_project',
+  'plugin_java-suite__java_find_classes',
+  // Maven
+  'plugin_java-suite__maven_parse_pom',
+  'plugin_java-suite__maven_dependency_tree',
+  'plugin_java-suite__maven_exec',
+  'plugin_java-suite__maven_effective_pom',
+  // Gradle
+  'plugin_java-suite__gradle_parse',
+  'plugin_java-suite__gradle_tasks',
+  'plugin_java-suite__gradle_exec',
+  // Spring Boot
+  'plugin_java-suite__spring_analyze',
+  'plugin_java-suite__spring_list_beans',
+  'plugin_java-suite__spring_list_endpoints',
+  'plugin_java-suite__spring_parse_config',
+  // Java 调试
+  'plugin_java-suite__java_debug_launch',
+  'plugin_java-suite__java_debug_attach',
+  'plugin_java-suite__java_debug_stop',
+  'plugin_java-suite__java_debug_set_breakpoint',
+  'plugin_java-suite__java_debug_step',
+  'plugin_java-suite__java_debug_continue',
+  'plugin_java-suite__java_debug_eval',
+  'plugin_java-suite__java_debug_status',
+  // 测试
+  'plugin_java-suite__java_test_run',
+  'plugin_java-suite__java_test_list',
+  // 格式化
+  'plugin_java-suite__java_format',
+  // MyBatis
+  'plugin_java-suite__mybatis_analyze_mappers',
+  // 文件操作
+  'file_read', 'file_write', 'file_edit', 'file_grep', 'file_list',
+  'code_search', 'code_outline',
+  // 命令执行
+  'cmd_exec', 'python_exec',
+  // 任务规划与用户交互
+  'task_plan', 'task_step', 'ask_user', 'confirm_user',
+];
+
+const JAVA_AGENT_SYSTEM_PROMPT = `你是 Java 开发助手（javaAgent），负责帮用户处理 Java 项目的开发、构建、分析、调试、测试等任务。
+
+## 核心能力
+- **项目管理**：检测项目类型（Maven/Gradle/Spring Boot），解析构建文件，依赖分析
+- **构建**：执行 Maven/Gradle 构建命令，查看依赖树，打包部署
+- **Spring Boot**：分析 Bean（Controller/Service/Repository）、API Endpoint、配置文件
+- **调试**：启动调试会话（JDWP），设置断点，单步执行，表达式求值
+- **测试**：运行 JUnit/TestNG 测试，查看测试结果
+- **格式化**：google-java-format / spotless 代码格式化
+- **MyBatis**：分析 Mapper XML，SQL 语句提取
+
+## 工作流程
+1. **了解项目**：先用 java_detect_project 检测项目类型和结构
+2. **分析需求**：根据用户请求确定需要执行的操作
+3. **执行**：
+   - 构建：maven_exec / gradle_exec
+   - 分析：spring_analyze / spring_list_endpoints / mybatis_analyze_mappers
+   - 调试：java_debug_launch → java_debug_set_breakpoint → java_debug_continue
+   - 测试：java_test_run
+   - 格式化：java_format
+4. **反馈**：给出执行结果摘要 + 关键信息
+
+## 常见场景
+- "帮我看看这个项目的结构" → java_detect_project + maven_parse_pom
+- "列出所有 API 接口" → spring_list_endpoints
+- "打包项目" → maven_exec (clean package -DskipTests)
+- "运行测试" → java_test_run
+- "分析 MyBatis Mapper" → mybatis_analyze_mappers
+- "调试启动" → java_debug_launch
+
+## 硬约束
+- 构建命令在项目目录本地执行
+- 调试需要先构建（确保 classpath 有产物）
+- 不要自动修改 pom.xml / build.gradle 等构建配置
+- 大型项目构建可能较慢，合理设置超时`;
+
+// ===== CI/CD 发布智能体 =====
+const CICD_AGENT_BUILTIN_TOOLS = [
+  // CICD 流水线管理
+  'plugin_cicd-pipeline__cicd_list_pipelines',
+  'plugin_cicd-pipeline__cicd_create_pipeline',
+  'plugin_cicd-pipeline__cicd_update_pipeline',
+  'plugin_cicd-pipeline__cicd_delete_pipeline',
+  'plugin_cicd-pipeline__cicd_run_pipeline',
+  'plugin_cicd-pipeline__cicd_list_runs',
+  'plugin_cicd-pipeline__cicd_get_run',
+  'plugin_cicd-pipeline__cicd_detect_project',
+  'plugin_cicd-pipeline__cicd_list_templates',
+  // 运维连接管理（复用 ops-shell，查看/创建 SSH 连接）
+  'plugin_ops-shell__conn_list',
+  'plugin_ops-shell__conn_create',
+  'plugin_ops-shell__ssh_exec',
+  'plugin_ops-shell__ssh_upload',
+  // 文件操作（读取项目文件确认构建配置）
+  'file_read', 'file_list', 'file_grep',
+  // 本地命令执行（检测构建工具版本等）
+  'cmd_exec', 'python_exec',
+  // 任务规划与用户交互
+  'task_plan', 'task_step', 'ask_user', 'confirm_user',
+];
+
+const CICD_AGENT_SYSTEM_PROMPT = `你是发布助手（cicdAgent），负责帮用户创建和管理 CI/CD 发布流水线，实现"开发完成→一键发布"。
+
+## 核心能力
+- 检测项目类型（Maven/Gradle/NPM/Docker），推荐合适的流水线模板
+- 创建/修改/删除流水线，配置部署步骤和目标服务器
+- 执行流水线：打包→备份→上传→重启，实时反馈执行进度
+- 查看执行历史和日志
+
+## 工作流程
+1. **了解项目**：用 cicd_detect_project 检测项目类型，file_list/file_read 查看构建文件（pom.xml/build.gradle/package.json/Dockerfile）
+2. **了解部署目标**：用 conn_list 查看已有 SSH 连接；如果没有，帮用户创建（conn_create）
+3. **创建流水线**：
+   - 先用 cicd_list_templates 查看可用模板
+   - 根据项目类型推荐模板（Spring Boot→jar-deploy，散包→scattered-deploy，Docker→docker-deploy）
+   - 用 cicd_create_pipeline 创建，配置好步骤的 connectionId/remotePath 等
+4. **执行发布**：用 cicd_run_pipeline 执行，返回执行结果
+5. **问题排查**：失败时查看日志，分析原因，给出修复建议
+
+## 打包方式
+- **JAR 包**：mvn clean package -DskipTests，产物 target/*.jar，全量上传覆盖
+- **散包**：lib/*.jar + classes，增量上传只传变化的 jar 包
+- **Docker**：docker build → push → 远程 pull + docker-compose up
+- **直接运行**：打包→上传→kill 旧进程→nohup 启动新进程
+
+## 硬约束
+- 执行发布前必须向用户确认（confirm_user），特别是生产环境
+- 部署目标的服务器连接必须已创建且可连通
+- 构建命令在本地执行，部署命令在远程 SSH 执行
+- 不要自动修改项目的构建配置文件（pom.xml 等），只读取分析`;
 
 // ===== 代码编写智能体团队（架构师 + 4 个专属子智能体）=====
 // 分工：架构师（codeAgent）只做需求分析 / 架构把控 / 横切关注点统一设计 / 委派 / 验收，
@@ -1245,6 +1384,30 @@ export const seedAgents: Array<Record<string, unknown>> = [
     builtin_tool_ids: JSON.stringify(OPS_AGENT_BUILTIN_TOOLS),
     system_prompt: OPS_AGENT_SYSTEM_PROMPT,
     // 内置定义由代码收敛：工具挂载/提示词以代码为准，强制同步旧库残留
+    force_sync: true,
+    config_json: JSON.stringify({ maxReActSteps: 30 }),
+  },
+  {
+    id: 'a_builtin_java_agent',
+    name: 'Java 开发助手',
+    description:
+      '内置 Java 开发助手：项目检测、Maven/Gradle 构建、Spring Boot 分析（Bean/Endpoint/配置）、Java 调试（JDWP）、JUnit 测试、代码格式化、MyBatis Mapper 分析',
+    type: 'harness',
+    is_builtin: 1,
+    builtin_tool_ids: JSON.stringify(JAVA_AGENT_BUILTIN_TOOLS),
+    system_prompt: JAVA_AGENT_SYSTEM_PROMPT,
+    force_sync: true,
+    config_json: JSON.stringify({ maxReActSteps: 30 }),
+  },
+  {
+    id: 'a_builtin_cicd_agent',
+    name: '发布助手',
+    description:
+      '内置发布助手：检测项目类型→创建 CI/CD 流水线→一键打包部署（打包→备份→上传→重启）。支持 JAR 包/散包/Docker/直接运行四种部署模式，复用运维插件的 SSH 连接',
+    type: 'harness',
+    is_builtin: 1,
+    builtin_tool_ids: JSON.stringify(CICD_AGENT_BUILTIN_TOOLS),
+    system_prompt: CICD_AGENT_SYSTEM_PROMPT,
     force_sync: true,
     config_json: JSON.stringify({ maxReActSteps: 30 }),
   },
@@ -2083,6 +2246,22 @@ try { db.exec('ALTER TABLE scheduled_task ADD COLUMN workflow_bundle_json TEXT')
 try { db.exec('ALTER TABLE scheduled_task ADD COLUMN workflow_inputs_json TEXT'); } catch {}
 try { db.exec("ALTER TABLE scheduled_task ADD COLUMN workflow_agent_id TEXT"); } catch {}
 try { db.exec('ALTER TABLE conversation ADD COLUMN scheduled_task_id TEXT'); } catch {}
+// 定时任务分组
+try { db.exec('ALTER TABLE scheduled_task ADD COLUMN group_id TEXT'); } catch {}
+// 新调度模型：结构化调度配置 + 有效期（到期自动停用）
+try { db.exec('ALTER TABLE scheduled_task ADD COLUMN schedule_json TEXT'); } catch {}
+try { db.exec('ALTER TABLE scheduled_task ADD COLUMN expire_at INTEGER'); } catch {}
+db.exec(`
+  CREATE TABLE IF NOT EXISTS scheduled_task_group (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES user(id),
+    name TEXT NOT NULL,
+    sort_order INTEGER DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+`);
+try { db.exec('CREATE INDEX IF NOT EXISTS idx_scheduled_task_group_user ON scheduled_task_group(user_id, sort_order)'); } catch {}
 
 // ===== 应用全局配置（key-value）=====
 db.exec(`

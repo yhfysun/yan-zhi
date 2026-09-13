@@ -77,6 +77,42 @@ export interface ThemePalette {
     buttonRadius?: number;
     /** 实心主按钮文字色（缺省按主色对比度自动：浅主色→墨字，深主色→白字） */
     buttonText?: string;
+    /** 玻璃模糊半径 px（面板/弹窗 backdrop-filter），默认 18 */
+    glassBlur?: number;
+    /** 弹窗遮罩色（el-overlay 背景），默认透明 */
+    overlayColor?: string;
+    /** 弹窗遮罩模糊半径 px，默认 4 */
+    overlayBlur?: number;
+    /** 弹窗边框装饰图案（CSS border-image-source 或 URL），默认 none */
+    borderPattern?: string;
+    /** 弹窗边框装饰切片（border-image-slice），默认 0 */
+    borderPatternSlice?: number;
+    /** 弹窗标题栏背景图案（URL 或 CSS background-image），默认 none */
+    titlebarPattern?: string;
+    /** 弹窗/卡片阴影（CSS box-shadow），默认使用 --overlay-shadow */
+    shadow?: string;
+    /** 实心主按钮渐变背景（CSS background-image），缺省=纯色 primary */
+    buttonGradient?: string;
+    /** 输入框圆角 px（el-input/el-select/el-textarea），缺省=buttonRadius */
+    inputRadius?: number;
+    /** 卡片圆角 px（el-card/glass-card），缺省=radius */
+    cardRadius?: number;
+    /** 标签/徽标圆角 px（el-tag），缺省=buttonRadius */
+    tagRadius?: number;
+    /** 自定义滚动条 thumb 色（覆盖默认主色低 alpha），缺省=主色 20% */
+    scrollbarThumb?: string;
+    /** 自定义分割线色（el-divider / border-bottom 分隔），缺省=glass-border */
+    dividerColor?: string;
+    /** 分类标签背景图案（CSS background-image 或 URL），跟主背景图呼应，缺省=透明 */
+    catTagPattern?: string;
+    /** 任务列表背景图（URL），缺省=无 */
+    taskListPattern?: string;
+    /** 输入框背景图（URL），缺省=无 */
+    inputPattern?: string;
+    /** 按钮背景图（URL，叠加在 buttonGradient 之上），缺省=无 */
+    buttonPattern?: string;
+    /** 弹窗背景图（URL），缺省=无 */
+    dialogPattern?: string;
   };
 }
 
@@ -154,6 +190,8 @@ export interface PluginManifest {
   description?: string;
   /** 插件分类：'功能' | '皮肤' | '操作' 或自定义类别名；缺省时前端按 contributes/permissions 推导 */
   category?: string;
+  /** 插件类型：'application'=通用功能插件（侧栏菜单展示），'code'=代码模式专用插件（代码模式"更多"入口展示）。缺省='application' */
+  kind?: 'application' | 'code';
   minAppVersion?: string;
   main?: string;
   ui?: string;

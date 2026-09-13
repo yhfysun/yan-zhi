@@ -39,7 +39,7 @@
     </div>
 
     <div v-if="gitTab" v-show="gitTab.id === store.activeTabId" class="right-panel-body">
-      <ChatGitPanel ref="gitPanelRef" />
+      <ChatGitPanel ref="gitPanelRef" @viewDiff="onViewDiff" />
     </div>
 
     <div v-if="browserTab" v-show="browserTab.id === store.activeTabId" class="right-panel-body">
@@ -76,7 +76,8 @@
   </aside>
 
   <!-- 预览 tab 右键菜单 -->
-  <ul v-if="tabCtx.visible" class="ctx-menu" :style="{ top: tabCtx.y + 'px', left: tabCtx.x + 'px' }">
+  <Teleport to="body">
+<ul v-if="tabCtx.visible" class="ctx-menu" :style="{ top: tabCtx.y + 'px', left: tabCtx.x + 'px' }">
     <li @click="ctxCloseCurrent">
       <el-icon><Close /></el-icon>关闭
     </li>
@@ -90,10 +91,12 @@
       <el-icon><CircleClose /></el-icon>关闭全部
     </li>
   </ul>
+</Teleport>
 </template>
 
 <script setup lang="ts">
 import { computed, ref, onMounted, onBeforeUnmount, type Component } from 'vue';
+import { clampMenuPos } from '../../utils/menuPosition';
 import { useRouter } from 'vue-router';
 import { Close, Document, Link, Folder, Grid, Monitor, Back, Right, CircleClose } from '@element-plus/icons-vue';
 import { useChat } from '../../composables/chat/useChat';
@@ -112,6 +115,13 @@ const settingsStore = useSettingsStore();
 const gitPanelRef = ref<InstanceType<typeof ChatGitPanel> | null>(null);
 const hasWorkspaceDir = computed(() => !!settingsStore.settings.workspaceDir);
 
+/** git 面板双击文件 → 打开文件预览 */
+function onViewDiff(payload: { path: string; staged: boolean; repoPath?: string }) {
+  const base = payload.repoPath || settingsStore.settings.workspaceDir || '';
+  const full = base ? base.replace(/[\\/]+$/, '') + '/' + payload.path : payload.path;
+  store.openTab({ kind: 'file', name: payload.path.split(/[\\/]/).pop() || payload.path, path: full });
+}
+
 const fileTabs = computed(() => store.previewTabs.filter((t) => t.kind === 'file'));
 const gitTab = computed(() => store.previewTabs.find((t) => t.kind === 'git') || null);
 const browserTab = computed(() => store.previewTabs.find((t) => t.kind === 'browser') || null);
@@ -120,7 +130,7 @@ const consoleTab = computed(() => store.previewTabs.find((t) => t.kind === 'cons
 
 /** 空态「数据浏览」的默认契约：内置项目库的 conversation 表（真实存在的种子演示表） */
 const defaultDataContract: DataTabContract = {
-  title: '会话明细',
+  title: '任务明细',
   table: 'conversation',
   filterCols: ['pinned'],
 };
@@ -181,7 +191,7 @@ const ctxIsLast = computed(() => {
 });
 
 function openTabCtx(e: MouseEvent, tab: PreviewTab) {
-  tabCtx.value = { visible: true, x: e.clientX, y: e.clientY, tabId: tab.id };
+  tabCtx.value = { visible: true, ...clampMenuPos(e), tabId: tab.id };
 }
 function closeTabCtx() {
   tabCtx.value.visible = false;

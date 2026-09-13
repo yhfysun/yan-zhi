@@ -11,6 +11,12 @@ const WALLPAPER = 'wallpaper.webp';
 const PREVIEW = 'wallpaper.webp';
 
 /** 构造皮肤主题贡献块（配色取自壁纸主色调，surface 定制弹窗/边框/圆角/按钮风格） */
+/**
+ * 部件图案：这里**只填文件名**，前端 settings.applySurface 统一包装为 url("...")。
+ * 历史坑：此处曾写成 `url(/api/plugin-assets/xxx.webp) center/cover no-repeat`，
+ * 前端再套一层 url("...") 后得到 `url("url(...) center/cover no-repeat")`——非法 CSS 值，
+ * background-image 整条声明失效，导致列表/输入框/按钮/弹窗的真图背景全部不显示。
+ */
 function skinTheme(
   id: string,
   name: string,
@@ -19,6 +25,16 @@ function skinTheme(
   wallpaperMask: number,
   surface?: ThemePalette['surface'],
 ): ThemePalette {
+  const autoPatterns = {
+    taskListPattern: 'task-list-bg.webp',
+    inputPattern: 'input-bg.webp',
+    buttonPattern: 'button-bg.webp',
+    dialogPattern: 'dialog-bg.webp',
+    // 菜单 / 代码模式 / 浏览器外壳：复用同系列真图（同包内已有资源，不新增文件）
+    menuPattern: 'dialog-bg.webp',
+    codePattern: 'dialog-bg.webp',
+    browserPattern: 'task-list-bg.webp',
+  };
   return {
     id,
     name,
@@ -27,7 +43,7 @@ function skinTheme(
     preview: PREVIEW,
     wallpaper: { light: WALLPAPER, dark: WALLPAPER, mask: wallpaperMask },
     ...palette,
-    ...(surface ? { surface } : {}),
+    ...(surface ? { surface: { ...autoPatterns, ...surface } } : { surface: autoPatterns }),
   };
 }
 
@@ -55,6 +71,12 @@ export const SKIN_MANIFESTS: PluginManifest[] = [
           glass: '#FFF5F7', glassDark: '#241B20', glassAlpha: 0.84,
           border: 'rgba(232,106,138,0.35)', borderDark: 'rgba(232,106,138,0.30)',
           radius: 14, buttonRadius: 18,
+          shadow: '0 8px 32px rgba(36,27,32,0.4), 0 2px 8px rgba(232,106,138,0.15)',
+          borderPattern: 'repeating-linear-gradient(45deg, transparent, transparent 12px, rgba(232,106,138,0.12) 12px, rgba(232,106,138,0.12) 14px)',
+          borderPatternSlice: 12,
+          titlebarPattern: 'linear-gradient(180deg, rgba(232,106,138,0.06), transparent)',
+          catTagPattern: 'linear-gradient(135deg, rgba(232,106,138,0.10), rgba(159,59,85,0.06))',
+          buttonGradient: 'linear-gradient(135deg, #E86A8A, #D9506F)',
         }),
       ],
     },
@@ -82,6 +104,12 @@ export const SKIN_MANIFESTS: PluginManifest[] = [
           glass: '#0E1626', glassDark: '#0A101C', glassAlpha: 0.80, glassAlphaDark: 0.82,
           border: 'rgba(56,189,248,0.45)', borderDark: 'rgba(56,189,248,0.40)',
           radius: 8, buttonRadius: 4, buttonText: '#EAF6FF',
+          shadow: '0 0 0 1px rgba(56,189,248,0.3), 0 8px 32px rgba(10,16,28,0.6)',
+          borderPattern: 'repeating-linear-gradient(0deg, transparent, transparent 8px, rgba(56,189,248,0.15) 8px, rgba(56,189,248,0.15) 9px)',
+          borderPatternSlice: 8,
+          titlebarPattern: 'linear-gradient(180deg, rgba(56,189,248,0.08), transparent)',
+          catTagPattern: 'linear-gradient(135deg, rgba(56,189,248,0.12), rgba(139,92,246,0.08))',
+          buttonGradient: 'linear-gradient(135deg, #38BDF8, #A78BFA)',
         }),
       ],
     },
@@ -568,6 +596,12 @@ export const SKIN_MANIFESTS: PluginManifest[] = [
           glass: '#FAF6EA', glassDark: '#191410', glassAlpha: 0.86,
           border: 'rgba(176,141,46,0.45)',
           radius: 8, buttonRadius: 6,
+          shadow: '0 8px 32px rgba(25,20,16,0.5), 0 2px 8px rgba(176,141,46,0.2)',
+          borderPattern: 'repeating-linear-gradient(90deg, transparent, transparent 20px, rgba(176,141,46,0.15) 20px, rgba(176,141,46,0.15) 22px)',
+          borderPatternSlice: 20,
+          titlebarPattern: 'linear-gradient(180deg, rgba(176,141,46,0.08), transparent)',
+          catTagPattern: 'linear-gradient(135deg, rgba(176,141,46,0.12), rgba(120,90,30,0.06))',
+          buttonGradient: 'linear-gradient(135deg, #B08D2E, #C9A94E)',
         }),
       ],
     },
@@ -595,6 +629,11 @@ export const SKIN_MANIFESTS: PluginManifest[] = [
           glass: '#F9F1E6', glassDark: '#20140D', glassAlpha: 0.87,
           border: 'rgba(193,101,58,0.40)',
           radius: 8, buttonRadius: 6,
+          shadow: '0 8px 32px rgba(32,20,13,0.45), 0 2px 8px rgba(193,101,58,0.15)',
+          borderPattern: 'repeating-linear-gradient(0deg, transparent, transparent 10px, rgba(193,101,58,0.10) 10px, rgba(193,101,58,0.10) 12px)',
+          borderPatternSlice: 10,
+          titlebarPattern: 'linear-gradient(180deg, rgba(193,101,58,0.06), transparent)',
+          catTagPattern: 'linear-gradient(135deg, rgba(193,101,58,0.10), rgba(150,70,40,0.06))',
         }),
       ],
     },
@@ -649,6 +688,144 @@ export const SKIN_MANIFESTS: PluginManifest[] = [
           glass: '#F2F4F7', glassDark: '#14181F', glassAlpha: 0.88,
           border: 'rgba(62,74,102,0.40)',
           radius: 10, buttonRadius: 8,
+          shadow: '0 8px 32px rgba(20,24,31,0.4), 0 2px 8px rgba(62,74,102,0.15)',
+          borderPattern: 'repeating-linear-gradient(45deg, transparent, transparent 14px, rgba(62,74,102,0.10) 14px, rgba(62,74,102,0.10) 16px)',
+          borderPatternSlice: 14,
+          titlebarPattern: 'linear-gradient(180deg, rgba(62,74,102,0.06), transparent)',
+          catTagPattern: 'linear-gradient(135deg, rgba(62,74,102,0.10), rgba(40,50,70,0.06))',
+        }),
+      ],
+    },
+  },
+
+  // ===== 真图样例皮肤（AI 生成壁纸 + 由壁纸分区裁切的同系列部件图）=====
+  {
+    id: 'skin-sample-dawn',
+    name: '晨山晓色',
+    version: '1.0.0',
+    category: '皮肤',
+    author: 'yan-zhi',
+    description: '风景系列 · 层叠青绿远山与晨光河面，配青碧暖金主色（真图样例）',
+    permissions: [],
+    contributes: {
+      themes: [
+        skinTheme('skin-sample-dawn', '晨山晓色', '风景', {
+          primary: '#2E7D6B',
+          primaryLight: '#E3F1EC',
+          primaryDark: '#1B5147',
+          accent: '#C08A3E',
+          gradient: 'linear-gradient(135deg, #2E7D6B, #C08A3E)',
+          orb1: '#2E7D6B',
+          orb2: '#5FA892',
+          orb3: '#1B5147',
+        }, 0.34, {
+          glass: '#F1F6F3', glassDark: '#101E1B', glassAlpha: 0.84,
+          border: 'rgba(46,125,107,0.35)',
+          radius: 12, buttonRadius: 8,
+          shadow: '0 8px 32px rgba(16,30,27,0.35), 0 2px 8px rgba(46,125,107,0.14)',
+          borderPattern: 'repeating-linear-gradient(45deg, transparent, transparent 12px, rgba(46,125,107,0.10) 12px, rgba(46,125,107,0.10) 14px)',
+          borderPatternSlice: 12,
+          titlebarPattern: 'linear-gradient(180deg, rgba(46,125,107,0.08), transparent)',
+          catTagPattern: 'linear-gradient(135deg, rgba(46,125,107,0.12), rgba(192,138,62,0.08))',
+          buttonGradient: 'linear-gradient(135deg, #2E7D6B, #3E9B84)',
+        }),
+      ],
+    },
+  },
+  {
+    id: 'skin-sample-sakura',
+    name: '樱铁道的午后',
+    version: '1.0.0',
+    category: '皮肤',
+    author: 'yan-zhi',
+    description: '动漫系列 · 樱花铁道口与暮色天空，配樱粉暖橘主色（真图样例）',
+    permissions: [],
+    contributes: {
+      themes: [
+        skinTheme('skin-sample-sakura', '樱铁道的午后', '动漫', {
+          primary: '#E86A8A',
+          primaryLight: '#FBE3E9',
+          primaryDark: '#9F3B55',
+          accent: '#E8964E',
+          gradient: 'linear-gradient(135deg, #E86A8A, #E8964E)',
+          orb1: '#E86A8A',
+          orb2: '#F0A0B8',
+          orb3: '#9F3B55',
+        }, 0.36, {
+          glass: '#FFF5F7', glassDark: '#241B20', glassAlpha: 0.84,
+          border: 'rgba(232,106,138,0.35)', borderDark: 'rgba(232,106,138,0.30)',
+          radius: 14, buttonRadius: 14,
+          shadow: '0 8px 32px rgba(36,27,32,0.38), 0 2px 8px rgba(232,106,138,0.15)',
+          borderPattern: 'repeating-linear-gradient(45deg, transparent, transparent 12px, rgba(232,106,138,0.12) 12px, rgba(232,106,138,0.12) 14px)',
+          borderPatternSlice: 12,
+          titlebarPattern: 'linear-gradient(180deg, rgba(232,106,138,0.08), transparent)',
+          catTagPattern: 'linear-gradient(135deg, rgba(232,106,138,0.12), rgba(232,150,78,0.08))',
+          buttonGradient: 'linear-gradient(135deg, #E86A8A, #F0A0B8)',
+        }),
+      ],
+    },
+  },
+  {
+    id: 'skin-sample-ink',
+    name: '水墨远山',
+    version: '1.0.0',
+    category: '皮肤',
+    author: 'yan-zhi',
+    description: '传统文化系列 · 水墨远山留白与松枝剪影，配墨灰黛色主色（真图样例）',
+    permissions: [],
+    contributes: {
+      themes: [
+        skinTheme('skin-sample-ink', '水墨远山', '传统文化', {
+          primary: '#4B5563',
+          primaryLight: '#ECEDEE',
+          primaryDark: '#252B33',
+          accent: '#8A7B63',
+          gradient: 'linear-gradient(135deg, #4B5563, #252B33)',
+          orb1: '#4B5563',
+          orb2: '#8A7B63',
+          orb3: '#252B33',
+        }, 0.3, {
+          glass: '#F4F4F2', glassDark: '#15171A', glassAlpha: 0.86,
+          border: 'rgba(75,85,99,0.32)',
+          radius: 10, buttonRadius: 6,
+          shadow: '0 8px 32px rgba(21,23,26,0.35), 0 2px 8px rgba(75,85,99,0.12)',
+          borderPattern: 'repeating-linear-gradient(0deg, transparent, transparent 16px, rgba(75,85,99,0.08) 16px, rgba(75,85,99,0.08) 17px)',
+          borderPatternSlice: 16,
+          titlebarPattern: 'linear-gradient(180deg, rgba(75,85,99,0.07), transparent)',
+          catTagPattern: 'linear-gradient(135deg, rgba(75,85,99,0.10), rgba(138,123,99,0.06))',
+        }),
+      ],
+    },
+  },
+  {
+    id: 'skin-sample-aurora',
+    name: '极光雪原',
+    version: '1.0.0',
+    category: '皮肤',
+    author: 'yan-zhi',
+    description: '风景系列 · 夜空极光与冰湖倒影，配青紫冷色主色（真图样例）',
+    permissions: [],
+    contributes: {
+      themes: [
+        skinTheme('skin-sample-aurora', '极光雪原', '风景', {
+          primary: '#3FBFA0',
+          primaryLight: '#DFF5F0',
+          primaryDark: '#1E6B5C',
+          accent: '#7C6BE0',
+          gradient: 'linear-gradient(135deg, #3FBFA0, #7C6BE0)',
+          orb1: '#3FBFA0',
+          orb2: '#7C6BE0',
+          orb3: '#1E6B5C',
+        }, 0.32, {
+          glass: '#EEF6F5', glassDark: '#0E1720', glassAlpha: 0.84, glassAlphaDark: 0.86,
+          border: 'rgba(63,191,160,0.35)', borderDark: 'rgba(124,107,224,0.30)',
+          radius: 12, buttonRadius: 10,
+          shadow: '0 8px 32px rgba(14,23,32,0.45), 0 2px 8px rgba(63,191,160,0.14)',
+          borderPattern: 'repeating-linear-gradient(90deg, transparent, transparent 10px, rgba(63,191,160,0.10) 10px, rgba(63,191,160,0.10) 11px)',
+          borderPatternSlice: 10,
+          titlebarPattern: 'linear-gradient(180deg, rgba(63,191,160,0.08), transparent)',
+          catTagPattern: 'linear-gradient(135deg, rgba(63,191,160,0.12), rgba(124,107,224,0.08))',
+          buttonGradient: 'linear-gradient(135deg, #3FBFA0, #7C6BE0)',
         }),
       ],
     },

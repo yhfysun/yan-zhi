@@ -412,8 +412,8 @@
 .ont-tgen-li .ont-tag {
   font-size: 10px;
   color: #7c3aed;
-  background: #f1ecfe;
-  border: 1px solid #ddd0fb;
+  background: var(--glass-bg-hover);
+  border: 1px solid var(--glass-border);
   border-radius: 3px;
   padding: 0 5px;
   flex-shrink: 0;

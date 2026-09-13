@@ -79,6 +79,7 @@ import { useSidebarState } from './composables/useSidebarState';
 const route = useRoute();
 const authStore = useAuthStore();
 const settingsStore = useSettingsStore();
+settingsStore.applyDarkMode(settingsStore.settings.darkMode);
 const pluginStore = usePluginStore();
 const isMobile = useIsMobile();
 const { isDesktop } = usePlatform();
@@ -108,7 +109,7 @@ onMounted(async () => {
     await syncPluginRoutes();
     resolvePluginLayout();
     // 皮肤主题的壁纸来自插件清单：插件就绪后按当前主题重应用（启动时插件未就绪会miss）
-    settingsStore.applyTheme(settingsStore.settings.theme);
+    settingsStore.applySkin(settingsStore.settings.skin);
   } catch {
     // 插件加载失败不阻塞主应用
   }
@@ -146,6 +147,10 @@ const ROUTE_TITLES: Record<string, string> = {
   skills: 'Skill 商店',
   distill: 'Skill 蒸馏',
   agents: '智能体',
+  'agent-canvas': '智能体画布',
+  'platform-detail': '平台详情',
+  'skill-detail': 'Skill 详情',
+  code: '代码',
   settings: '设置',
   login: '登录',
 };

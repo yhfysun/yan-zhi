@@ -25,59 +25,33 @@ declare global {
 /** 本地单用户模式固定身份（数据都在本地，登录已屏蔽）。 */
 const LOCAL_USER: JwtPayload = { userId: 'guest', username: 'guest' };
 
-/** 必须登录的中间件 —— 本地模式已屏蔽鉴权：有合法 token 就用其身份，否则回退本地固定身份放行。
- *  恢复登录鉴权时，把下面回退分支改回 `res.status(401).json({ error: '未登录' }); return;` 即可。 */
-export function authMiddleware(req: Request, res: Response, next: NextFunction) {
-  const header = req.headers.authorization;
-  if (header && header.startsWith('Bearer ')) {
-    try {
-      const payload = jwt.verify(header.slice(7), JWT_SECRET) as JwtPayload;
-      req.user = payload;
-      next();
-      return;
-    } catch {
-      // token 无效，回退本地身份
-    }
-  }
+/** 本地单用户模式恒定 guest 身份：忽略 Authorization token。
+ *  历史教训（2026-09-13）：此前"有合法 token 就用其身份"的分支，会因前端 localStorage
+ *  残留旧 JWT（JWT_SECRET 为硬编码默认值，旧 token 永久验签通过）导致请求身份 ≠ 'guest'，
+ *  而全库数据 user_id 均为 'guest'，按身份过滤后表现为：平台下拉为空、模型 0 个、
+ *  平台/模型查询 404「平台不存在」、聊天消息发出去不显示。
+ *  恢复多用户鉴权时：改回「有合法 token 用其身份，否则 401」即可（见 git 历史）。 */
+export function authMiddleware(req: Request, _res: Response, next: NextFunction) {
   req.user = LOCAL_USER;
   next();
 }
 
-/** 可选登录：有 token 就解析，没有不报错 */
+/** 可选登录：本地模式下同样恒定 guest 身份（调用方依赖 req.user 存在）。 */
 export function optionalAuth(req: Request, _res: Response, next: NextFunction) {
-  const header = req.headers.authorization;
-  if (header && header.startsWith('Bearer ')) {
-    try {
-      req.user = jwt.verify(header.slice(7), JWT_SECRET) as JwtPayload;
-    } catch {}
-  }
+  req.user = LOCAL_USER;
   next();
 }
 
-/** 访客/登录双模：有合法 token 用其身份；否则以内置 guest 身份（用于共享知识库等 public 资源）。 */
+/** 访客/登录双模：本地模式下恒定 guest 身份。 */
 export function guestOrAuth(req: Request, _res: Response, next: NextFunction) {
-  const header = req.headers.authorization;
-  if (header && header.startsWith('Bearer ')) {
-    try {
-      req.user = jwt.verify(header.slice(7), JWT_SECRET) as JwtPayload;
-      next();
-      return;
-    } catch {
-      // 无效 token 回退 guest
-    }
-  }
-  req.user = { userId: 'guest', username: 'guest' };
+  req.user = LOCAL_USER;
   next();
 }
 
-/** 从 Authorization Bearer token 中解析用户，供非 Express 中间件上下文使用。 */
-export function resolveJwtUser(header?: string): JwtPayload | null {
-  if (!header || !header.startsWith('Bearer ')) return null;
-  try {
-    return jwt.verify(header.slice(7), JWT_SECRET) as JwtPayload;
-  } catch {
-    return null;
-  }
+/** 从 Authorization Bearer token 中解析用户，供非 Express 中间件上下文使用。
+ *  本地模式下恒定返回 guest 身份（与全库数据 user_id 一致）。 */
+export function resolveJwtUser(_header?: string): JwtPayload {
+  return LOCAL_USER;
 }
 
 // POST /api/auth/register

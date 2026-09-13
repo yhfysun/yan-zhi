@@ -316,6 +316,16 @@ CREATE TABLE IF NOT EXISTS scheduled_task (
 );
 CREATE INDEX IF NOT EXISTS idx_scheduled_task_enabled ON scheduled_task(enabled, next_run_at);
 
+-- 定时任务分组
+CREATE TABLE IF NOT EXISTS scheduled_task_group (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  sort_order INTEGER DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_scheduled_task_group_order ON scheduled_task_group(sort_order);
+
 -- 插件
 CREATE TABLE IF NOT EXISTS plugin (
   id          TEXT PRIMARY KEY,
@@ -456,6 +466,13 @@ export async function initSchema(execFn: (sql: string) => Promise<void>): Promis
     try { await execFn(`ALTER TABLE message ADD COLUMN ${col.name} ${col.def};`); } catch { /* 列已存在 */ }
   }
   try { await execFn(`CREATE INDEX IF NOT EXISTS idx_message_parent_tc ON message(parent_tool_call_id);`); } catch { /* 索引已存在 */ }
+  // 迁移：message 归属用户（server 侧 INSERT / 按用户删除均带此列，旧库缺列会报 no such column: user_id）
+  try { await execFn(`ALTER TABLE message ADD COLUMN user_id TEXT;`); } catch { /* 列已存在 */ }
+  // 迁移：scheduled_task 新增 group_id 列（定时任务分组）
+  try { await execFn(`ALTER TABLE scheduled_task ADD COLUMN group_id TEXT;`); } catch { /* 列已存在 */ }
+  // 迁移：新调度模型 schedule_json / expire_at
+  try { await execFn(`ALTER TABLE scheduled_task ADD COLUMN schedule_json TEXT;`); } catch { /* 列已存在 */ }
+  try { await execFn(`ALTER TABLE scheduled_task ADD COLUMN expire_at INTEGER;`); } catch { /* 列已存在 */ }
 }
 
 /** 内置 skill 种子数据（三端共用，桌面端/移动端本地 sqlite 与服务端均会 upsert） */

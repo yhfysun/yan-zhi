@@ -67,18 +67,125 @@ export function nextCronTime(expr: string, from: number): number | null {
   return null;
 }
 
-/** 计算任务下一次运行时间：interval_minutes 优先，其次 cron_expr；都没有返回 null */
-export function computeNextRun(
-  task: { interval_minutes?: number | null; cron_expr?: string | null },
-  from = Date.now(),
-): number | null {
-  if (task.interval_minutes && task.interval_minutes > 0) {
-    return from + task.interval_minutes * MINUTE_MS;
+// ===== 新调度模型（对齐 WorkBuddy：周期 / 间隔 + 有效期） =====
+interface ScheduleConfig {
+  mode: 'cycle' | 'interval';
+  type?: 'once' | 'daily' | 'weekly' | 'biweekly' | 'monthly' | 'yearly';
+  datetime?: number;
+  time?: string; // "HH:mm"
+  dayOfWeek?: number; // 0-6，0=周日（JS getDay 语义）
+  anchor?: number; // 双周基准时间戳（创建时间）
+  dayOfMonth?: number;
+  month?: number; // 1-12
+  days?: number;
+  hours?: number;
+  minutes?: number;
+  daysOfWeek?: number[]; // 0-6 白名单
+}
+
+function parseTime(time?: string): { h: number; m: number } | null {
+  if (!time) return null;
+  const mm = time.match(/^(\d{1,2}):(\d{1,2})$/);
+  if (!mm) return null;
+  const h = parseInt(mm[1], 10);
+  const m = parseInt(mm[2], 10);
+  if (h < 0 || h > 23 || m < 0 || m > 59) return null;
+  return { h, m };
+}
+
+/** 解析 schedule_json；非法返回 null */
+export function parseSchedule(raw?: string | null): ScheduleConfig | null {
+  if (!raw) return null;
+  try {
+    const s = JSON.parse(raw);
+    return s && typeof s === 'object' ? (s as ScheduleConfig) : null;
+  } catch {
+    return null;
   }
-  if (task.cron_expr && task.cron_expr.trim()) {
-    return nextCronTime(task.cron_expr, from);
+}
+
+/** 计算 schedule 在 from 之后的下一次触发时间；无效返回 null */
+export function computeNextFromSchedule(schedule: ScheduleConfig, from: number): number | null {
+  if (!schedule) return null;
+  if (schedule.mode === 'interval') {
+    const totalMin = (schedule.days || 0) * 24 * 60 + (schedule.hours || 0) * 60 + (schedule.minutes || 0);
+    if (totalMin <= 0) return null;
+    const stepMs = totalMin * MINUTE_MS;
+    let t = from + stepMs;
+    const dows = schedule.daysOfWeek && schedule.daysOfWeek.length ? schedule.daysOfWeek : null;
+    if (!dows) return t;
+    for (let i = 0; i < 366 * 24 * 60; i++) {
+      if (dows.includes(new Date(t).getDay())) return t;
+      t += stepMs;
+    }
+    return null;
+  }
+  if (schedule.type === 'once') {
+    return schedule.datetime && schedule.datetime > from ? schedule.datetime : null;
+  }
+  const tp = parseTime(schedule.time);
+  if (!tp) return null;
+  const base = new Date(from);
+  switch (schedule.type) {
+    case 'daily': {
+      const d = new Date(base);
+      d.setHours(tp.h, tp.m, 0, 0);
+      if (d.getTime() <= from) d.setDate(d.getDate() + 1);
+      return d.getTime();
+    }
+    case 'weekly': {
+      const dow = (((schedule.dayOfWeek ?? 0) % 7) + 7) % 7;
+      const d = new Date(base);
+      d.setHours(tp.h, tp.m, 0, 0);
+      let diff = (dow - d.getDay() + 7) % 7;
+      if (diff === 0 && d.getTime() <= from) diff = 7;
+      d.setDate(d.getDate() + diff);
+      return d.getTime();
+    }
+    case 'biweekly': {
+      const dow = (((schedule.dayOfWeek ?? 0) % 7) + 7) % 7;
+      const anchor = schedule.anchor || base.getTime();
+      const a = new Date(anchor);
+      a.setHours(tp.h, tp.m, 0, 0);
+      const diff = (dow - a.getDay() + 7) % 7;
+      a.setDate(a.getDate() + diff);
+      let t = a.getTime();
+      while (t <= from) t += 14 * 24 * 60 * MINUTE_MS;
+      return t;
+    }
+    case 'monthly': {
+      const dom = schedule.dayOfMonth ?? 1;
+      let d = new Date(base.getFullYear(), base.getMonth(), dom, tp.h, tp.m, 0, 0);
+      if (d.getTime() <= from) d = new Date(base.getFullYear(), base.getMonth() + 1, dom, tp.h, tp.m, 0, 0);
+      return d.getTime();
+    }
+    case 'yearly': {
+      const month = schedule.month ?? 1;
+      const dom = schedule.dayOfMonth ?? 1;
+      let d = new Date(base.getFullYear(), month - 1, dom, tp.h, tp.m, 0, 0);
+      if (d.getTime() <= from) d = new Date(base.getFullYear() + 1, month - 1, dom, tp.h, tp.m, 0, 0);
+      return d.getTime();
+    }
   }
   return null;
+}
+
+/** 计算任务下一次运行时间：interval_minutes 优先，其次 cron_expr；都没有返回 null */
+export function computeNextRun(
+  task: { interval_minutes?: number | null; cron_expr?: string | null; schedule_json?: string | null; expire_at?: number | null },
+  from = Date.now(),
+): number | null {
+  let next: number | null = null;
+  const schedule = parseSchedule(task.schedule_json);
+  if (schedule) {
+    next = computeNextFromSchedule(schedule, from);
+  } else if (task.interval_minutes && task.interval_minutes > 0) {
+    next = from + task.interval_minutes * MINUTE_MS;
+  } else if (task.cron_expr && task.cron_expr.trim()) {
+    next = nextCronTime(task.cron_expr, from);
+  }
+  if (next !== null && task.expire_at && next > task.expire_at) return null;
+  return next;
 }
 
 /** 选默认模型：优先用户自建的默认模型，其次内置默认模型，最后任意启用的 LLM */
@@ -260,9 +367,12 @@ export async function runScheduledTask(task: any): Promise<ScheduledTaskRunResul
 /** 更新任务调度状态（last_run_at, next_run_at, conversation updated_at） */
 function finishTask(task: any, convId: string, now: number, ok: boolean, error?: string): ScheduledTaskRunResult {
   db.prepare('UPDATE conversation SET updated_at = ? WHERE id = ?').run(Date.now(), convId);
-  const next = task.enabled ? computeNextRun(task, now) : null;
-  db.prepare('UPDATE scheduled_task SET last_run_at = ?, next_run_at = ?, updated_at = ? WHERE id = ?').run(
-    now, next, now, task.id,
+  const schedule = parseSchedule(task.schedule_json);
+  const isOnce = schedule?.mode === 'cycle' && schedule?.type === 'once';
+  const stillEnabled = task.enabled && !isOnce;
+  const next = stillEnabled ? computeNextRun(task, now) : null;
+  db.prepare('UPDATE scheduled_task SET last_run_at = ?, next_run_at = ?, enabled = ?, updated_at = ? WHERE id = ?').run(
+    now, next, stillEnabled ? 1 : 0, now, task.id,
   );
   return { ok, error, conversationId: convId };
 }
@@ -277,6 +387,12 @@ async function tick() {
   ticking = true;
   try {
     const now = Date.now();
+    const expired = db
+      .prepare('SELECT id FROM scheduled_task WHERE enabled = 1 AND expire_at IS NOT NULL AND expire_at <= ?')
+      .all(now) as any[];
+    for (const t of expired) {
+      db.prepare('UPDATE scheduled_task SET enabled = 0, next_run_at = NULL, updated_at = ? WHERE id = ?').run(now, t.id);
+    }
     const due = db
       .prepare('SELECT * FROM scheduled_task WHERE enabled = 1 AND next_run_at IS NOT NULL AND next_run_at <= ?')
       .all(now) as any[];

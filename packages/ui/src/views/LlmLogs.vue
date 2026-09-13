@@ -44,46 +44,50 @@
       </div>
     </div>
 
-    <!-- 筛选区（固定顶部，不随列表滚动） -->
+    <!-- 筛选区（单行紧凑） -->
     <div class="logs-filters">
       <div class="filters-row">
-        <el-select v-model="filters.userId" placeholder="全部用户" clearable class="f-filter" @change="applyFilters">
+        <el-select v-model="filters.userId" placeholder="全部用户" clearable size="small" class="f-filter" @change="applyFilters">
           <el-option v-for="u in options.users" :key="u.id" :label="`${u.username} (${u.cnt})`" :value="u.id" />
         </el-select>
-        <el-select v-model="filters.conversationId" placeholder="全部会话" clearable filterable class="f-filter f-grow" @change="applyFilters">
+        <el-select v-model="filters.conversationId" placeholder="全部会话" clearable filterable size="small" class="f-filter" @change="applyFilters">
           <el-option v-for="c in options.conversations" :key="c.id" :label="`${c.title}${c.username ? ' · ' + c.username : ''} (${c.cnt})`" :value="c.id" />
         </el-select>
-        <el-select v-model="filters.modelId" placeholder="全部模型" clearable class="f-filter" @change="applyFilters">
+        <el-select v-model="filters.modelId" placeholder="全部模型" clearable size="small" class="f-filter" @change="applyFilters">
           <el-option v-for="m in options.models" :key="m.id || 'null'" :label="`${m.alias || m.name || '未知'}${m.platform_name ? ' · ' + m.platform_name : ''} (${m.cnt})`" :value="m.id" />
         </el-select>
-        <el-select v-model="filters.subAgent" placeholder="智能体" clearable class="f-filter" @change="applyFilters">
+        <el-select v-model="filters.subAgent" placeholder="智能体" clearable size="small" class="f-filter" @change="applyFilters">
           <el-option label="主智能体" value="0" />
           <el-option label="子智能体" value="1" />
         </el-select>
-        <el-select v-model="filters.range" placeholder="时间范围" class="f-filter" @change="applyFilters">
+        <el-select v-model="filters.range" placeholder="时间范围" size="small" class="f-filter" @change="applyFilters">
           <el-option label="全部时间" value="" />
           <el-option label="近 24 小时" value="24h" />
           <el-option label="近 7 天" value="7d" />
           <el-option label="近 30 天" value="30d" />
         </el-select>
-      </div>
-      <div class="filters-row">
         <div class="f-keyword-wrap">
           <el-icon class="f-kw-icon"><Search /></el-icon>
-          <input v-model="filters.keyword" placeholder="搜索响应内容 / 会话标题..." class="f-keyword" @keyup.enter="applyFilters" />
+          <input v-model="filters.keyword" placeholder="搜索响应/会话标题..." class="f-keyword" @keyup.enter="applyFilters" />
         </div>
-        <el-button :icon="Search" @click="applyFilters">查询</el-button>
+        <el-button size="small" :icon="Search" @click="applyFilters">查询</el-button>
       </div>
     </div>
 
-    <!-- 统计 tab -->
+    <!-- 统计 tab（可折叠） -->
     <div class="stats-section">
-      <el-radio-group v-model="statsBy" size="small" @change="loadStats">
-        <el-radio-button label="user">按用户</el-radio-button>
-        <el-radio-button label="conversation">按会话</el-radio-button>
-        <el-radio-button label="model">按模型</el-radio-button>
-      </el-radio-group>
-      <div class="stats-table-wrap">
+      <div class="stats-header">
+        <el-radio-group v-model="statsBy" size="small" @change="loadStats">
+          <el-radio-button label="user">按用户</el-radio-button>
+          <el-radio-button label="conversation">按会话</el-radio-button>
+          <el-radio-button label="model">按模型</el-radio-button>
+        </el-radio-group>
+        <el-button size="small" text @click="statsCollapsed = !statsCollapsed">
+          <el-icon><ArrowDown v-if="statsCollapsed" /><ArrowUp v-else /></el-icon>
+          {{ statsCollapsed ? '展开统计' : '收起' }}
+        </el-button>
+      </div>
+      <div v-show="!statsCollapsed" class="stats-table-wrap">
         <table class="stats-table">
           <thead>
             <tr>
@@ -155,7 +159,8 @@
 
       <div v-if="total > pageSize" class="logs-pager">
         <el-pagination
-          layout="prev, pager, next, total"
+          small
+          layout="total, prev, pager, next"
           :total="total"
           :page-size="pageSize"
           :current-page="page"
@@ -171,7 +176,7 @@
 import { onMounted, reactive, ref } from 'vue';
 import {
   Refresh, Download, Search, User, ChatDotRound, ChatLineRound, Coin,
-  ArrowDown, Loading,
+  ArrowDown, ArrowUp, Loading,
 } from '@element-plus/icons-vue';
 import { api } from '../api/client';
 
@@ -190,6 +195,7 @@ const filters = reactive<{ userId: string; conversationId: string; modelId: stri
   userId: '', conversationId: '', modelId: '', subAgent: '', range: '', keyword: '',
 });
 const statsBy = ref('user');
+const statsCollapsed = ref(false);
 
 function fmtNum(n: any): string {
   const v = Number(n) || 0;
@@ -371,19 +377,16 @@ onMounted(() => {
 
 /* 筛选区 */
 .logs-filters {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 14px 16px;
-  border-radius: 14px;
+  padding: 10px 12px;
+  border-radius: 12px;
   background: var(--el-bg-color, #fff);
   border: 1px solid var(--glass-border);
-  margin-bottom: 16px;
+  margin-bottom: 12px;
   flex-shrink: 0;
 }
-.filters-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
-.f-filter { width: 170px; }
-.f-grow { flex: 1; min-width: 200px; }
+.filters-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.f-filter { width: 140px; }
+.f-grow { flex: 1; min-width: 180px; }
 .f-keyword-wrap {
   flex: 1; min-width: 220px;
   display: flex; align-items: center;
@@ -401,15 +404,16 @@ onMounted(() => {
 .stats-section {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  margin-bottom: 16px;
+  gap: 8px;
+  margin-bottom: 12px;
   flex-shrink: 0;
 }
+.stats-header { display: flex; justify-content: space-between; align-items: center; }
 .stats-table-wrap {
   border: 1px solid var(--glass-border);
   border-radius: 12px;
   overflow: auto;
-  max-height: 240px;
+  max-height: 200px;
   background: var(--el-bg-color, #fff);
 }
 .stats-table { width: 100%; border-collapse: collapse; font-size: 13px; }

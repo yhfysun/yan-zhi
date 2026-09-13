@@ -51,14 +51,8 @@ class DesktopFs implements FsAdapter {
   async writeFile(path: string, content: string): Promise<void> {
     await api.fs.writeFile(path, content);
   }
-  async writeFileBase64(path: string, b64: string): Promise<void> {
-    await api.fs.writeFileBase64(path, b64);
-  }
   async exists(path: string): Promise<boolean> {
     return api.fs.exists(path);
-  }
-  async stat(path: string): Promise<{ size: number; mtimeMs: number; isDir: boolean }> {
-    return api.fs.stat(path);
   }
   async mkdir(path: string): Promise<void> {
     await api.fs.mkdir(path);

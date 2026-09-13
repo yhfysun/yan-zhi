@@ -11,7 +11,7 @@ router.use(authMiddleware);
 // POST /api/llm/tasks  创建任务
 router.post('/tasks', (req: Request, res: Response) => {
   const userId = req.user!.userId;
-  const { conversationId, platformId, modelId, userContent, agentId, appGuide, systemPrompt, tools, options, modeFlags, maxSteps, memoryExtractPlatformId, memoryExtractModelId, ontologyIds } = req.body || {};
+  const { conversationId, platformId, modelId, userContent, agentId, appGuide, systemPrompt, tools, options, modeFlags, maxSteps, memoryExtractPlatformId, memoryExtractModelId, ontologyIds, workspaceDir } = req.body || {};
   if (!conversationId || !platformId || !modelId) {
     res.status(400).json({ error: '缺少 conversationId/platformId/modelId' });
     return;
@@ -21,7 +21,7 @@ router.post('/tasks', (req: Request, res: Response) => {
   // memoryExtractPlatformId/ModelId：前端设置页下发的记忆抽取模型（任务完成后抽取/压缩前抢救用）
   // includeUiTools: true —— 此路由只服务前端在线的交互式任务，UI 工具（ask_user 等）纳入工具列表并委托前端执行
   // ontologyIds：前端随任务下发的智能体本体挂载（智能体编辑存本地库，server 库不持有，须显式传递）
-  const taskId = createTask({ conversationId, userId, platformId, modelId, userContent, agentId: agentId ?? null, appGuide, systemPrompt, tools, options, modeFlags, maxSteps, memoryExtractPlatformId, memoryExtractModelId, ontologyIds: Array.isArray(ontologyIds) ? ontologyIds.map(String) : undefined, includeUiTools: true });
+  const taskId = createTask({ conversationId, userId, platformId, modelId, userContent, agentId: agentId ?? null, appGuide, systemPrompt, tools, options, modeFlags, maxSteps, memoryExtractPlatformId, memoryExtractModelId, ontologyIds: Array.isArray(ontologyIds) ? ontologyIds.map(String) : undefined, includeUiTools: true, workspaceDir: typeof workspaceDir === 'string' ? workspaceDir : undefined });
   res.json({ data: { taskId } });
 });
 

@@ -1,5 +1,5 @@
 <template>
-  <aside class="context-sidebar" :class="{ open: contextSidebarOpen }" aria-label="对话上下文栏">
+  <aside class="context-sidebar" :class="{ open: contextSidebarOpen }" aria-label="任务上下文栏">
     <header class="context-sidebar-header">
       <div class="context-sidebar-title">上下文</div>
       <el-button size="small" circle @click="toggleContextSidebar" aria-label="关闭上下文栏">

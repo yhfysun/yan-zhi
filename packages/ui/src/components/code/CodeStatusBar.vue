@@ -53,7 +53,7 @@ function goGit() {
   display: flex; align-items: center; justify-content: space-between;
   height: 24px; flex-shrink: 0; padding: 0 10px;
   font-size: 11.5px; color: var(--color-text-secondary, #6b6b66);
-  background: var(--el-fill-color-lighter, #f3f1ec);
+  background: var(--color-surface-hover);
   border-top: 1px solid var(--glass-border, #e7e4dc);
   user-select: none;
 }

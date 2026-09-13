@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+    branches: [master, dev0.1]
+  pull_request:
+    branches: [master, dev0.1]
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: 安装 pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: 'pnpm'
+
+      - name: 安装依赖
+        run: pnpm install
+
+      - name: 类型检查（typecheck）
+        run: pnpm typecheck
+
+      - name: 单元测试（core + server）
+        run: pnpm --filter @yan-zhi/core --filter @yan-zhi/server test

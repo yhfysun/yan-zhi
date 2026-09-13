@@ -241,6 +241,8 @@ export function createTask(params: {
   memoryExtractPlatformId?: string;
   memoryExtractModelId?: string;
   ontologyIds?: string[];
+  /** 前端显式下发的工作目录：优先于全局 serverState.workspaceDir 注入 system prompt */
+  workspaceDir?: string;
 }): string {
   // 幂等保护：同 conversationId 已有 running 任务则复用（避免重连重试创建多任务）
   for (const [id, existing] of tasks) {
@@ -549,6 +551,7 @@ async function runReActLoop(task: LlmTask, params: {
   modeFlags?: { thinking?: boolean; plan?: boolean; answerOnly?: boolean };
   maxSteps?: number;
   includeUiTools?: boolean;
+  workspaceDir?: string;
 }) {
   const { conversationId: convId, userId, options } = params;
   const maxSteps = params.maxSteps || 100;
@@ -557,18 +560,22 @@ async function runReActLoop(task: LlmTask, params: {
   let activeAssistantMsgId: string | null = null;
 
   try {
-    const platform = loadPlatform(params.platformId, userId);
-    const model = loadModel(params.modelId, userId);
-    if (!platform || !model) {
-      emit(task, { type: 'task:error', error: '平台或模型不存在' });
-      task.status = 'failed';
-      return;
-    }
-
-    // 添加用户消息
+    // 用户消息无条件先落库并推送：消息显示不应依赖平台/模型有效性（平台失效时用户消息也必须可见）
     if (params.userContent !== undefined) {
       const msgId = insertMessage(convId, userId, 'user', params.userContent);
       emit(task, { type: 'message:added', message: { id: msgId, role: 'user', content: params.userContent } });
+    }
+
+    const platform = loadPlatform(params.platformId, userId);
+    const model = loadModel(params.modelId, userId);
+    if (!platform || !model) {
+      // 平台/模型失效：错误提示作为 assistant 消息落库+推送（刷新后仍可见），只发 task:error 前端仅 toast、刷新即丢
+      const errMsg = `平台或模型不存在或已失效（platformId: ${params.platformId}），请在「设置 → 模型平台」重新选择可用模型后重试。`;
+      const aid = insertMessage(convId, userId, 'assistant', errMsg);
+      emit(task, { type: 'message:added', message: { id: aid, role: 'assistant', content: errMsg } });
+      emit(task, { type: 'task:error', error: '平台或模型不存在' });
+      task.status = 'failed';
+      return;
     }
 
     const client = new LlmClient(platform, model);
@@ -597,6 +604,7 @@ async function runReActLoop(task: LlmTask, params: {
           conversationId: convId,
           includeUiTools: !!params.includeUiTools,
           userContent: params.userContent,
+          workspaceDir: params.workspaceDir,
         });
     // 记忆注入：按用户当前输入检索相关记忆（recency×relevancy×type 加权、token 预算内），
     // 拼在 system prompt 尾部。检索失败绝不阻塞任务。
@@ -1669,6 +1677,7 @@ export function buildSystemPromptForBackend(agentId: string | null, userId: stri
   conversationId?: string | null;
   includeUiTools?: boolean;
   userContent?: string;
+  workspaceDir?: string;
 }): string {
   const parts: string[] = [];
   const convMounts = loadConversationMounts(opts?.conversationId);
@@ -1778,9 +1787,10 @@ export function buildSystemPromptForBackend(agentId: string | null, userId: stri
   }
   if (basePrompt) parts.unshift(basePrompt);
 
-  // 工作目录
-  if (serverState.workspaceDir && serverState.workspaceDir.trim()) {
-    parts.push(`---\n## 工作目录\n当前工作目录：${serverState.workspaceDir}`);
+  // 工作目录：优先使用请求显式下发的 workspaceDir，回退到全局 serverState.workspaceDir
+  const effectiveWorkspaceDir = (opts?.workspaceDir && opts.workspaceDir.trim()) || serverState.workspaceDir;
+  if (effectiveWorkspaceDir && effectiveWorkspaceDir.trim()) {
+    parts.push(`---\n## 工作目录\n当前工作目录：${effectiveWorkspaceDir}`);
   }
 
   // 当前时间

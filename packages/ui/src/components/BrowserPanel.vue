@@ -20,7 +20,8 @@
         </button>
       </div>
       <!-- Tab 右键批量关闭菜单 -->
-      <div v-if="tabCtx.visible" class="tab-ctx-menu" :style="{ left: tabCtx.x + 'px', top: tabCtx.y + 'px' }"
+      <Teleport to="body">
+<div v-if="tabCtx.visible" class="ctx-menu" :style="{ left: tabCtx.x + 'px', top: tabCtx.y + 'px' }"
         @click.stop @contextmenu.prevent>
         <div class="ctx-item" @click="ctxClose('tab')">关闭该标签页</div>
         <div class="ctx-item" @click="ctxClose('left')">关闭左侧标签页</div>
@@ -29,6 +30,7 @@
         <div class="ctx-sep"></div>
         <div class="ctx-item danger" @click="ctxClose('all')">关闭全部标签页</div>
       </div>
+</Teleport>
     </div>
 
     <!-- Chrome 风格工具栏 -->
@@ -51,7 +53,7 @@
       </button>
 
       <!-- 引用到对话：把当前页面 URL 作为引用 chip 加入聊天输入区 -->
-      <button class="nav-btn" @click="addQuotedUrl(currentUrl)" :disabled="!currentUrl" title="引用到对话">
+      <button class="nav-btn" @click="addQuotedUrl(currentUrl)" :disabled="!currentUrl" title="引用到任务">
         <svg viewBox="0 0 24 24" width="18" height="18"><path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
       </button>
 
@@ -1862,19 +1864,7 @@ onUnmounted(() => {
 .tab-new:hover { color: var(--el-text-color-primary, #202124); background: rgba(0,0,0,0.06); }
 [data-theme="dark"] .tab-new:hover { color: #fff; background: rgba(255,255,255,0.08); }
 
-/* Tab 右键批量关闭菜单 */
-.tab-ctx-menu {
-  position: fixed; min-width: 168px; z-index: 3000; padding: 4px;
-  background: var(--el-bg-color, #fff); border: 1px solid var(--el-border-color-lighter, #e0e0e0);
-  border-radius: 8px; box-shadow: 0 6px 20px rgba(0,0,0,0.14); user-select: none;
-}
-[data-theme="dark"] .tab-ctx-menu { background: var(--el-bg-color-overlay); border-color: var(--el-border-color); }
-.ctx-item { padding: 7px 12px; font-size: 13px; border-radius: 6px; cursor: pointer; white-space: nowrap; color: var(--el-text-color-primary); }
-.ctx-item:hover { background: var(--el-color-primary-light-9, #f3f0ff); }
-[data-theme="dark"] .ctx-item:hover { background: rgba(124,58,237,0.22); }
-.ctx-item.danger { color: #e5484d; }
-.ctx-item.danger:hover { background: rgba(229,72,77,0.12); }
-.ctx-sep { height: 1px; margin: 4px 6px; background: var(--el-border-color-lighter, #eee); }
+
 
 /* Chrome 风格工具栏 */
 .browser-toolbar {

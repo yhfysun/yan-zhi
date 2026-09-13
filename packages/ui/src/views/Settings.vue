@@ -13,9 +13,9 @@
               <div
                 v-for="t in themes"
                 :key="t.value"
-                :class="['theme-chip', { active: settingsStore.settings.theme === t.value }]"
+                :class="['theme-chip', { active: settingsStore.settings.palette === t.value }]"
                 :style="{ '--chip-color': t.color }"
-                @click="setTheme(t.value)"
+                @click="setPalette(t.value)"
               >
                 <div class="theme-dot"></div>
                 <span>{{ t.label }}</span>
@@ -62,7 +62,7 @@
           </el-form-item>
           <el-form-item label="启用上下文压缩">
             <el-switch v-model="enableCompression" />
-            <span class="form-tip" style="margin-left: 12px">超长会话时自动摘要压缩</span>
+            <span class="form-tip" style="margin-left: 12px">超长任务时自动摘要压缩</span>
           </el-form-item>
           <el-form-item label="上下文保留条数">
             <el-input-number v-model="keepRecent" :min="2" :max="50" />
@@ -76,31 +76,80 @@
       </el-tab-pane>
       <el-tab-pane label="皮肤" name="skin">
         <div class="skin-page">
-          <div class="skin-page-tip">点击卡片即换肤；「源码包」可下载壁纸与清单二改，打成 .yzp 后在「插件管理」安装即为自定义皮肤</div>
-          <div v-for="cat in skinCategories" :key="cat" class="skin-cat">
-            <div class="skin-cat-label">{{ cat }}</div>
+          <div class="skin-page-tip">主题色与皮肤独立选择 —— 主题色决定按钮/链接/强调色，皮肤决定壁纸/玻璃/边框风格。可只选主题色（纯调色板），也可主题色 + 皮肤任意组合。</div>
+
+          <div class="skin-section">
+            <div class="skin-section-label">主题色</div>
+            <div class="theme-grid">
+              <div
+                v-for="t in themes"
+                :key="t.value"
+                :class="['theme-chip', { active: settingsStore.settings.palette === t.value }]"
+                :style="{ '--chip-color': t.color }"
+                @click="setPalette(t.value)"
+              >
+                <div class="theme-dot"></div>
+                <span>{{ t.label }}</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="skin-section">
+            <div class="skin-section-label">内置系列皮肤 <span class="skin-section-hint">（成套换肤：壁纸 + 菜单 + 代码模式 + 浏览器外壳 + 弹窗/输入框/按钮/列表纹理，选中后自动搭配同色主题）</span></div>
             <div class="skin-grid">
               <div
-                v-for="s in skinsByCategory(cat)"
-                :key="s.id"
-                :class="['skin-card', { active: settingsStore.settings.theme === s.id }]"
-                @click="setTheme(s.id)"
+                v-for="bs in builtinSeries"
+                :key="bs.id"
+                :class="['skin-card', { active: settingsStore.settings.skin === bs.id }]"
+                @click="setBuiltinSeries(bs)"
               >
-                <img class="skin-thumb" :src="skinPreviewUrl(s)" :alt="s.name" loading="lazy" />
+                <img class="skin-thumb" :src="bs.preview" :alt="bs.name" loading="lazy" />
                 <div class="skin-card-body">
-                  <span class="skin-name">{{ s.name }}</span>
-                  <span
-                    class="skin-src"
-                    title="下载源码包（壁纸 + manifest + 自定义说明），二改后打成 .yzp 可作为自定义皮肤安装"
-                    @click.stop="downloadSkinSource(s)"
-                  >源码包</span>
+                  <span class="skin-name">{{ bs.name }}</span>
+                  <span class="skin-src builtin-tag">内置</span>
                 </div>
-                <div v-if="settingsStore.settings.theme === s.id" class="skin-active-badge">使用中</div>
+                <div v-if="settingsStore.settings.skin === bs.id" class="skin-active-badge">使用中</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="skin-section">
+            <div class="skin-section-label">皮肤 <span class="skin-section-hint">（插件皮肤包；不选则纯调色板模式）</span></div>
+            <div class="skin-grid">
+              <div
+                :class="['skin-card', 'skin-card-none', { active: !settingsStore.settings.skin }]"
+                @click="setSkin('')"
+              >
+                <div class="skin-thumb-none"><span>纯调色板</span></div>
+                <div class="skin-card-body"><span class="skin-name">无皮肤</span></div>
+                <div v-if="!settingsStore.settings.skin" class="skin-active-badge">使用中</div>
+              </div>
+            </div>
+            <div v-for="cat in skinCategories" :key="cat" class="skin-cat">
+              <div class="skin-cat-label">{{ cat }}</div>
+              <div class="skin-grid">
+                <div
+                  v-for="s in skinsByCategory(cat)"
+                  :key="s.id"
+                  :class="['skin-card', { active: settingsStore.settings.skin === s.id }]"
+                  @click="setSkin(s.id)"
+                >
+                  <img class="skin-thumb" :src="skinPreviewUrl(s)" :alt="s.name" loading="lazy" />
+                  <div class="skin-card-body">
+                    <span class="skin-name">{{ s.name }}</span>
+                    <span
+                      class="skin-src"
+                      title="下载源码包（壁纸 + manifest + 自定义说明），二改后打成 .yzp 可作为自定义皮肤安装"
+                      @click.stop="downloadSkinSource(s)"
+                    >源码包</span>
+                  </div>
+                  <div v-if="settingsStore.settings.skin === s.id" class="skin-active-badge">使用中</div>
+                </div>
               </div>
             </div>
           </div>
           <div v-if="!allSkins.length" class="skin-empty">
-            暂无皮肤 —— 皮肤以插件形式提供，可在「插件管理」安装 .yzp 皮肤包
+            更多皮肤以插件形式提供，可在「插件管理」安装 .yzp 皮肤包（上方内置系列开箱即用）
           </div>
         </div>
       </el-tab-pane>
@@ -112,10 +161,10 @@
           <el-button type="danger" @click="clearCache" :icon="Delete">清空缓存</el-button>
         </div>
       </el-tab-pane>
-      <el-tab-pane label="记忆管理" name="memory">
+      <el-tab-pane v-if="!embedded" label="记忆管理" name="memory">
         <MemoryManage />
       </el-tab-pane>
-      <el-tab-pane label="商城服务端" name="marketplace">
+      <el-tab-pane v-if="!embedded" label="商城服务端" name="marketplace">
         <el-form label-width="160px" style="max-width: 600px">
           <el-form-item label="启用商城服务端">
             <el-switch v-model="mpEnabled" @change="onMpToggle" />
@@ -143,7 +192,7 @@
           </el-form-item>
         </el-form>
       </el-tab-pane>
-      <el-tab-pane label="局域网访问" name="lan">
+      <el-tab-pane v-if="!embedded" label="局域网访问" name="lan">
         <div class="lan-section">
           <p class="lan-tip">局域网内其他设备（手机 / 电脑）可用浏览器访问本节点的 Web 界面，数据与本机共享同一后端。</p>
           <div v-if="lanIps.length === 0 && !lanLoading" class="lan-empty">未检测到局域网 IP（可能未连接网络）</div>
@@ -182,6 +231,8 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue';
+const props = withDefaults(defineProps<{ embedded?: boolean }>(), { embedded: false });
+const embedded = computed(() => props.embedded);
 import { Download, Delete, Upload } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { useSettingsStore, usePlatformStore } from '../stores';
@@ -207,6 +258,15 @@ const themes: Array<{ value: ThemeName; label: string; color: string }> = [
   { value: 'pine', label: '松绿', color: '#2F6B4F' },
   { value: 'clay', label: '陶土', color: '#B05A45' },
 ];
+
+// ===== 内置系列皮肤：每个主题色一套成套纹理（壁纸/菜单/代码模式/浏览器外壳/部件），无需插件 =====
+import { BUILTIN_SKIN_SERIES } from '../styles/skinSeries';
+const builtinSeries = BUILTIN_SKIN_SERIES;
+
+function setBuiltinSeries(bs: { id: string }) {
+  // update 内部会自动把 palette 同步到系列对应主题色
+  settingsStore.update({ skin: bs.id });
+}
 
 // ===== 皮肤库：插件贡献的 kind='skin' 主题，按分类分组展示 =====
 type SkinTheme = { id: string; name: string; category?: string; preview?: string; pluginId: string };
@@ -285,8 +345,12 @@ onMounted(async () => {
   }
 });
 
-function setTheme(t: ThemeName) {
-  settingsStore.update({ theme: t });
+function setPalette(t: ThemeName) {
+  settingsStore.update({ palette: t });
+}
+
+function setSkin(s: string) {
+  settingsStore.update({ skin: s });
 }
 
 function setLayout(id: string) {
@@ -342,23 +406,25 @@ watch([memoryExtractPlatformId, memoryExtractModelId], async ([pid, mid]) => {
 
 async function exportData() {
   try {
-    // 简化版：导出所有 DB 表为 JSON
-    const tables = ['platform', 'model', 'conversation', 'message', 'mcp_server', 'mcp_tool', 'agent', 'skill'];
+    const adapter = (await import('@yan-zhi/core')).getPlatformAdapter();
+    // 动态读取所有用户表（排除 sqlite 内部表和向量索引表）
+    const tableRows = await adapter.db.query<{ name: string }>(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'vec_%' AND name NOT LIKE '_%'",
+    );
+    const identRe = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
+    const tables = tableRows.map((r) => r.name).filter((n) => identRe.test(n));
     const data: Record<string, unknown> = {};
     for (const t of tables) {
-      try {
-        const adapter = (await import('@yan-zhi/core')).getPlatformAdapter();
-        data[t] = await adapter.db.query(`SELECT * FROM ${t}`);
-      } catch {}
+      try { data[t] = await adapter.db.query(`SELECT * FROM "${t}"`); } catch {}
     }
-    const blob = new Blob([JSON.stringify({ exportedAt: new Date().toISOString(), data }, null, 2)], { type: 'application/json' });
+    const blob = new Blob([JSON.stringify({ exportedAt: new Date().toISOString(), version: 1, tables: tables.length, data }, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
     a.download = `ai-assistant-backup-${Date.now()}.json`;
     a.click();
     URL.revokeObjectURL(url);
-    ElMessage.success('已导出');
+    ElMessage.success(`已导出 ${tables.length} 张表`);
   } catch (e: any) {
     ElMessage.error(e?.message || '导出失败');
   }
@@ -382,20 +448,26 @@ async function importData(e: Event) {
       '导入确认',
       { type: 'warning' },
     );
+    // 表名/列名白名单校验：只允许合法 SQL 标识符，防注入
+    const identRe = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
+    const tableNames = Object.keys(backup.data).filter((t) => identRe.test(t));
     const adapter = (await import('@yan-zhi/core')).getPlatformAdapter();
-    for (const [table, rows] of Object.entries(backup.data)) {
-      if (!Array.isArray(rows) || rows.length === 0) continue;
-      // 先清空目标表
-      await adapter.db.exec(`DELETE FROM ${table}`);
-      // 逐行插入
-      for (const row of rows as Record<string, unknown>[]) {
-        const cols = Object.keys(row);
-        const placeholders = cols.map(() => '?').join(', ');
-        const values = cols.map((c) => row[c]);
-        await adapter.db.exec(`INSERT INTO ${table} (${cols.join(', ')}) VALUES (${placeholders})`, values);
+    // 事务化导入：中途失败自动回滚，不丢数据
+    await adapter.db.transaction(async () => {
+      for (const table of tableNames) {
+        const rows = backup.data[table];
+        if (!Array.isArray(rows) || rows.length === 0) continue;
+        await adapter.db.exec(`DELETE FROM "${table}"`);
+        for (const row of rows as Record<string, unknown>[]) {
+          const cols = Object.keys(row).filter((c) => identRe.test(c));
+          if (cols.length === 0) continue;
+          const placeholders = cols.map(() => '?').join(', ');
+          const values = cols.map((c) => row[c]);
+          await adapter.db.exec(`INSERT INTO "${table}" (${cols.map((c) => `"${c}"`).join(', ')}) VALUES (${placeholders})`, values);
+        }
       }
-    }
-    ElMessage.success('已导入，刷新页面后生效');
+    });
+    ElMessage.success(`已导入 ${tableNames.length} 张表，刷新页面后生效`);
     // 重置文件 input，允许重复导入同一文件
     if (fileInput.value) fileInput.value.value = '';
   } catch (e: any) {
@@ -406,7 +478,7 @@ async function importData(e: Event) {
 
 async function clearCache() {
   try {
-    await ElMessageBox.confirm('清空缓存会删除所有会话和消息（保留平台/模型/MCP/Skill 配置），确认？', '危险操作', { type: 'warning' });
+    await ElMessageBox.confirm('清空缓存会删除所有任务和消息（保留平台/模型/MCP/Skill 配置），确认？', '危险操作', { type: 'warning' });
     await api.delete('/conversations/clear');
     ElMessage.success('已清空');
   } catch {}
@@ -554,12 +626,24 @@ onMounted(async () => {
 .skin-name { font-size: 13px; font-weight: 600; }
 .skin-src { font-size: 11px; color: var(--color-text-secondary); cursor: pointer; border: none; background: transparent; padding: 2px 4px; border-radius: 6px; }
 .skin-src:hover { color: var(--color-primary); background: var(--glass-bg-hover); }
+.builtin-tag {
+  font-size: 10px; padding: 1px 6px; border-radius: 5px; cursor: default;
+  color: var(--color-primary); background: color-mix(in srgb, var(--color-primary) 12%, transparent);
+}
 .skin-active-badge {
   position: absolute; top: 6px; right: 6px;
   font-size: 10px; padding: 2px 8px; border-radius: 999px;
   background: var(--color-primary); color: #fff;
 }
 .skin-empty { font-size: 13px; color: var(--color-text-secondary); }
+.skin-section { display: flex; flex-direction: column; gap: 10px; }
+.skin-section-label { font-size: 14px; font-weight: 600; color: var(--color-text); }
+.skin-section-hint { font-size: 12px; font-weight: 400; color: var(--color-text-secondary); }
+.skin-card-none .skin-thumb-none {
+  width: 100%; aspect-ratio: 16 / 10; display: flex; align-items: center; justify-content: center;
+  background: linear-gradient(135deg, var(--glass-bg), var(--glass-bg-hover));
+  color: var(--color-text-secondary); font-size: 14px; font-weight: 600;
+}
 
 .form-tip { font-size: 12px; color: var(--color-text-secondary); }
 

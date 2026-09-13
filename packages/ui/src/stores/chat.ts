@@ -1525,6 +1525,8 @@ export const useChatStore = defineStore('chat', () => {
         memoryExtractPlatformId: appSettings.memoryExtractPlatformId || undefined,
         memoryExtractModelId: appSettings.memoryExtractModelId || undefined,
         maxSteps,
+        // 显式下发工作目录：后端优先使用此值注入 system prompt，避免多会话/多项目并发时全局单例互相覆盖
+        workspaceDir: appSettings.workspaceDir || undefined,
         modeFlags: {
           thinking: thinkingMode.value,
           plan: planMode.value,

@@ -11,11 +11,11 @@
         <div class="pane-header">
           <div class="pane-title">
             <el-icon><ChatDotRound /></el-icon>
-            <span>对话记录</span>
+            <span>任务记录</span>
           </div>
           <el-input
             v-model="convSearch"
-            placeholder="搜索会话"
+            placeholder="搜索任务"
             size="small"
             clearable
             class="pane-search"
@@ -34,7 +34,7 @@
             <el-icon><ChatDotRound /></el-icon>
             <span class="conv-title">{{ conv.title }}</span>
           </div>
-          <el-empty v-if="filteredConversations.length === 0" :image-size="40" description="无会话" />
+          <el-empty v-if="filteredConversations.length === 0" :image-size="40" description="无任务" />
         </div>
 
         <!-- 消息勾选列表 -->
@@ -43,19 +43,52 @@
             <span>消息勾选</span>
             <el-tag size="small" type="primary" effect="plain">已选 {{ selectedMessages.length }}</el-tag>
           </div>
+          <!-- 消息操作工具条：全选/反选/清空 + 角色筛选 -->
+          <div v-if="selectedConvId" class="msg-toolbar">
+            <el-button-group size="small">
+              <el-button @click="toggleAll(true)">全选</el-button>
+              <el-button @click="invertSelection">反选</el-button>
+              <el-button @click="toggleAll(false)">清空</el-button>
+            </el-button-group>
+            <el-radio-group v-model="msgRoleFilter" size="small">
+              <el-radio-button value="all">全部</el-radio-button>
+              <el-radio-button value="user">用户</el-radio-button>
+              <el-radio-button value="assistant">助手</el-radio-button>
+            </el-radio-group>
+          </div>
           <div v-if="!selectedConvId" class="msg-empty">
-            <el-empty :image-size="50" description="请先选择会话" />
+            <el-empty :image-size="50" description="请先选择任务" />
           </div>
           <div v-else class="msg-check-list">
             <div
-              v-for="msg in convMessages"
+              v-for="msg in filteredConvMessages"
               :key="msg.id"
               class="msg-check-item"
-              :class="`role-${msg.role}`"
+              :class="[`role-${msg.role}`, { 'is-checked': msgChecked[msg.id], 'is-excluded': msgPerm[msg.id] === 'excluded', 'is-required': msgPerm[msg.id] === 'required' }]"
+              @click="toggleMsg(msg.id)"
             >
-              <el-checkbox v-model="msgChecked[msg.id]" />
-              <span class="msg-check-role">{{ msg.role === 'user' ? '用户' : '助手' }}</span>
-              <pre class="msg-check-content">{{ (msg.content || '').slice(0, 160) }}{{ (msg.content || '').length > 160 ? '...' : '' }}</pre>
+              <el-checkbox v-model="msgChecked[msg.id]" size="large" @click.stop />
+              <div class="msg-check-body">
+                <div class="msg-check-meta">
+                  <span class="msg-check-role">{{ msg.role === 'user' ? '用户' : '助手' }}</span>
+                  <button
+                    type="button"
+                    class="msg-perm-btn"
+                    :class="`perm-${msgPerm[msg.id] || 'normal'}`"
+                    :title="permTitle(msgPerm[msg.id])"
+                    @click.stop="cyclePerm(msg.id)"
+                  >
+                    <el-icon :size="13"><component :is="permIcon(msgPerm[msg.id])" /></el-icon>
+                  </button>
+                </div>
+                <pre class="msg-check-content">{{ msgExpanded[msg.id] ? (msg.content || '') : (msg.content || '').slice(0, 160) + ((msg.content || '').length > 160 ? '...' : '') }}</pre>
+                <button
+                  v-if="(msg.content || '').length > 160"
+                  type="button"
+                  class="msg-expand-btn"
+                  @click.stop="msgExpanded[msg.id] = !msgExpanded[msg.id]"
+                >{{ msgExpanded[msg.id] ? '收起' : '展开全文' }}</button>
+              </div>
             </div>
           </div>
         </div>
@@ -483,6 +516,7 @@ import { ref, computed, reactive, onMounted } from 'vue';
 import {
   EditPen, Refresh, Check, Delete, MagicStick, ArrowDown, ArrowUp, ChatDotRound,
   Upload, Download, Close, Setting, List, CircleClose, CircleCheck,
+  Lock, Unlock, View,
 } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { useDistillStore, useChatStore, usePlatformStore, useAuthStore, useSkillStore } from '../stores';
@@ -509,6 +543,9 @@ const convSearch = ref('');
 const selectedConvId = ref('');
 const convMessages = ref<any[]>([]);
 const msgChecked = reactive<Record<string, boolean>>({});
+const msgExpanded = reactive<Record<string, boolean>>({});
+const msgPerm = reactive<Record<string, 'normal' | 'required' | 'excluded'>>({});
+const msgRoleFilter = ref<'all' | 'user' | 'assistant'>('all');
 const distilling = ref(false);
 
 // 中屏：蒸馏指令
@@ -542,11 +579,56 @@ const filteredConversations = computed(() => {
   return chatStore.conversations.filter((c) => c.title.toLowerCase().includes(q));
 });
 
+const filteredConvMessages = computed(() => {
+  if (msgRoleFilter.value === 'all') return convMessages.value;
+  return convMessages.value.filter((m) => m.role === msgRoleFilter.value);
+});
 const selectedMessages = computed(() => {
   return convMessages.value
-    .filter((m) => msgChecked[m.id])
+    .filter((m) => {
+      const perm = msgPerm[m.id] || 'normal';
+      if (perm === 'excluded') return false;
+      if (perm === 'required') return true;
+      return msgChecked[m.id];
+    })
     .map((m) => ({ role: m.role, content: m.content || '' }));
 });
+function toggleMsg(id: string) {
+  if (msgPerm[id] === 'excluded' || msgPerm[id] === 'required') return;
+  msgChecked[id] = !msgChecked[id];
+}
+function toggleAll(val: boolean) {
+  for (const m of convMessages.value) {
+    const perm = msgPerm[m.id] || 'normal';
+    if (perm === 'excluded') continue;
+    if (perm === 'required') { msgChecked[m.id] = true; continue; }
+    msgChecked[m.id] = val;
+  }
+}
+function invertSelection() {
+  for (const m of convMessages.value) {
+    const perm = msgPerm[m.id] || 'normal';
+    if (perm === 'excluded' || perm === 'required') continue;
+    msgChecked[m.id] = !msgChecked[m.id];
+  }
+}
+function cyclePerm(id: string) {
+  const cur = msgPerm[id] || 'normal';
+  const next = cur === 'normal' ? 'required' : cur === 'required' ? 'excluded' : 'normal';
+  msgPerm[id] = next;
+  if (next === 'required') msgChecked[id] = true;
+  if (next === 'excluded') msgChecked[id] = false;
+}
+function permIcon(perm: string) {
+  if (perm === 'required') return Lock;
+  if (perm === 'excluded') return CircleClose;
+  return Unlock;
+}
+function permTitle(perm: string) {
+  if (perm === 'required') return '必选（蒸馏时强制包含）';
+  if (perm === 'excluded') return '排除（蒸馏时跳过）';
+  return '正常（点击切换权限）';
+}
 
 // 已完成的蒸馏任务（用于右屏蒸馏结果列表）
 const doneDistillTasks = computed(() =>
@@ -627,7 +709,11 @@ async function selectConv(convId: string) {
     await chatStore.loadMessages(convId);
     convMessages.value = [...chatStore.currentMessages];
   }
-  for (const m of convMessages.value) msgChecked[m.id] = false;
+  for (const m of convMessages.value) {
+    msgChecked[m.id] = false;
+    msgExpanded[m.id] = false;
+    msgPerm[m.id] = 'normal';
+  }
 }
 
 /** 蒸馏左屏勾选的消息 */
@@ -640,7 +726,7 @@ async function doDistill() {
   try {
     const conv = chatStore.conversations.find((c) => c.id === selectedConvId.value);
     const taskId = await distillStore.distill(selectedMessages.value, {
-      title: `来自「${conv?.title || '会话'}」`,
+      title: `来自「${conv?.title || '任务'}」`,
     });
     ElMessage.success('蒸馏完成');
     // 自动切换右屏到蒸馏结果，并选中刚生成的任务
@@ -669,7 +755,7 @@ async function doOneClickGenerate() {
       const taskId = await distillStore.distill(selectedMessages.value, {
         title: refineInstruction.value.trim()
           ? `一键生成：${refineInstruction.value.slice(0, 20)}`
-          : `来自「${conv?.title || '会话'}」`,
+          : `来自「${conv?.title || '任务'}」`,
       });
       rightViewMode.value = 'distill';
       selectedTaskId.value = taskId;
@@ -911,20 +997,45 @@ function onTogglePublic() {
 .msg-check-list {
   flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 6px;
 }
+.msg-toolbar {
+  display: flex; justify-content: space-between; align-items: center; gap: 8px;
+  margin-bottom: 8px; flex-shrink: 0;
+}
 .msg-check-item {
   display: flex; align-items: flex-start; gap: 8px;
-  padding: 6px 8px; border-radius: 6px; background: rgba(15,23,42,0.03);
+  padding: 8px 10px; border-radius: 8px; background: var(--btn-bg);
+  cursor: pointer; transition: background 0.15s, box-shadow 0.15s;
 }
+.msg-check-item:hover { background: rgba(15,23,42,0.06); }
+.msg-check-item.is-checked { background: color-mix(in srgb, var(--color-primary) 10%, transparent); box-shadow: inset 2px 0 0 var(--color-primary); }
+.msg-check-item.is-excluded { opacity: 0.45; cursor: not-allowed; }
+.msg-check-item.is-required { background: color-mix(in srgb, var(--color-accent) 12%, transparent); box-shadow: inset 2px 0 0 var(--color-accent); }
 .msg-check-item.role-user { border-left: 1px solid color-mix(in srgb, var(--color-primary) 40%, transparent); }
 .msg-check-item.role-assistant { border-left: 1px solid color-mix(in srgb, var(--color-accent) 40%, transparent); }
+.msg-check-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.msg-check-meta { display: flex; justify-content: space-between; align-items: center; }
 .msg-check-role {
   font-size: 11px; font-weight: 600; color: var(--color-text-secondary);
-  flex-shrink: 0; padding-top: 2px;
+  flex-shrink: 0;
 }
+.msg-perm-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; border: none; border-radius: 6px;
+  background: transparent; cursor: pointer; color: var(--color-text-secondary);
+  transition: background 0.15s, color 0.15s;
+}
+.msg-perm-btn:hover { background: rgba(15,23,42,0.08); }
+.msg-perm-btn.perm-required { color: var(--color-accent); }
+.msg-perm-btn.perm-excluded { color: var(--el-color-danger); }
 .msg-check-content {
   font-size: 12px; white-space: pre-wrap; word-break: break-word; flex: 1;
   font-family: inherit; color: var(--color-text-secondary); margin: 0;
 }
+.msg-expand-btn {
+  align-self: flex-start; border: none; background: transparent;
+  color: var(--color-primary); font-size: 11px; cursor: pointer; padding: 2px 4px;
+}
+.msg-expand-btn:hover { text-decoration: underline; }
 
 .pane-footer {
   display: flex; justify-content: space-between; align-items: center;
@@ -955,7 +1066,7 @@ function onTogglePublic() {
 .task-list { display: flex; flex-direction: column; gap: 10px; }
 .task-card {
   padding: 12px 14px; border-radius: 8px;
-  background: rgba(15,23,42,0.03); border: 1px solid var(--glass-border);
+  background: var(--btn-bg); border: 1px solid var(--glass-border);
 }
 .task-card-header { display: flex; align-items: center; gap: 10px; cursor: pointer; }
 .task-title {
@@ -1063,7 +1174,7 @@ function onTogglePublic() {
 .skill-section { display: flex; flex-direction: column; }
 .fm-grid {
   display: flex; flex-direction: column; gap: 6px;
-  background: rgba(15,23,42,0.03); padding: 10px 12px; border-radius: 6px;
+  background: var(--btn-bg); padding: 10px 12px; border-radius: 6px;
 }
 .fm-row { display: flex; align-items: flex-start; gap: 10px; font-size: 13px; }
 .fm-key {

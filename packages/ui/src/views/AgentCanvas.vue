@@ -286,6 +286,46 @@
       </div>
       <el-empty v-else description="无输出" />
     </el-dialog>
+
+    <!-- 运行入参对话框：工作流含 input 节点时，运行前先收集必填入参 -->
+    <el-dialog v-model="inputDialogVisible" title="填写运行入参" width="560px" top="8vh">
+      <el-alert type="info" :closable="false" show-icon class="input-hint">
+        该工作流包含入参节点，请先填写以下参数再运行。
+      </el-alert>
+      <el-form label-position="top" size="small" class="input-form">
+        <el-form-item
+          v-for="f in inputFields"
+          :key="f.name"
+          :label="`${f.title}${f.required ? ' *' : ''}`"
+        >
+          <div v-if="f.description" class="field-desc">{{ f.description }}</div>
+          <el-input
+            v-if="f.type === 'string'"
+            v-model="inputForm[f.name]"
+            :placeholder="f.name"
+          />
+          <el-input-number
+            v-else-if="f.type === 'number' || f.type === 'integer'"
+            v-model="inputForm[f.name]"
+            :controls="false"
+            class="full-width"
+          />
+          <el-switch
+            v-else-if="f.type === 'boolean'"
+            v-model="inputForm[f.name]"
+          />
+          <el-input
+            v-else
+            v-model="inputForm[f.name]"
+            :placeholder="f.name"
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="inputDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="store.running" @click="confirmRun">运行</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -610,14 +650,90 @@ function toWorkflow() {
 const showRunResult = ref(false);
 const runOutput = ref<unknown>(null);
 
-async function run() {
-  if (dirty.value && !(await save())) return;
-  let inputs: Record<string, unknown> = {};
+// ── 运行入参对话框：工作流含 input 节点时，运行前先收集必填入参 ──
+const inputDialogVisible = ref(false);
+const inputForm = ref<Record<string, any>>({});
+const inputFields = ref<{ name: string; type: string; title: string; description?: string; required: boolean }[]>([]);
+
+/** 从工作流的 input 节点 Schema 收集入参字段；无则返回空数组（直接运行，沿用旧逻辑） */
+function collectInputFields(): { name: string; type: string; title: string; description?: string; required: boolean }[] {
+  const wf = store.current?.workflow;
+  if (!wf?.nodes) return [];
+  const map: Record<string, { name: string; type: string; title: string; description?: string; required: boolean }> = {};
+  for (const n of wf.nodes) {
+    if (n.type !== 'input') continue;
+    const schema = (n.config as any)?.schema;
+    if (!schema || typeof schema !== 'object') continue;
+    const props = schema.properties || {};
+    const required = Array.isArray(schema.required) ? schema.required : [];
+    for (const [key, defRaw] of Object.entries(props)) {
+      const def = (defRaw || {}) as any;
+      map[key] = {
+        name: key,
+        type: typeof def.type === 'string' ? def.type : 'string',
+        title: def.title || def.description || key,
+        description: def.description,
+        required: required.includes(key),
+      };
+    }
+  }
+  return Object.values(map);
+}
+
+function parseInputs(): Record<string, unknown> {
   try {
-    inputs = JSON.parse(inputsText.value || '{}');
+    return JSON.parse(inputsText.value || '{}');
   } catch {
     ElMessage.warning('输入参数 JSON 解析失败，已使用空对象');
+    return {};
   }
+}
+
+async function run() {
+  if (dirty.value && !(await save())) return;
+  const fields = collectInputFields();
+  if (fields.length > 0) {
+    inputFields.value = fields;
+    const prev = parseInputs();
+    const form: Record<string, any> = {};
+    for (const f of fields) {
+      if (prev[f.name] !== undefined) form[f.name] = prev[f.name];
+      else if (f.type === 'boolean') form[f.name] = false;
+      else if (f.type === 'number' || f.type === 'integer') form[f.name] = null;
+      else form[f.name] = '';
+    }
+    inputForm.value = form;
+    inputDialogVisible.value = true;
+    return;
+  }
+  await doRun(parseInputs());
+}
+
+async function confirmRun() {
+  for (const f of inputFields.value) {
+    if (f.required && f.type !== 'boolean' &&
+      (inputForm.value[f.name] === '' || inputForm.value[f.name] === null || inputForm.value[f.name] === undefined)) {
+      ElMessage.warning(`请填写必填项：${f.title}`);
+      return;
+    }
+  }
+  const inputs: Record<string, unknown> = {};
+  for (const f of inputFields.value) {
+    let v = inputForm.value[f.name];
+    if (f.type === 'number' || f.type === 'integer') {
+      v = (v === '' || v === null || v === undefined) ? undefined : Number(v);
+    } else if (f.type === 'boolean') {
+      v = !!v;
+    }
+    if (v !== undefined) inputs[f.name] = v;
+  }
+  // 同步回文本框，保证「智能体设置」里的 JSON 与本次运行入参一致
+  inputsText.value = JSON.stringify(inputs);
+  inputDialogVisible.value = false;
+  await doRun(inputs);
+}
+
+async function doRun(inputs: Record<string, unknown>) {
   showRunResult.value = true;
   runOutput.value = null;
   try {
@@ -672,7 +788,7 @@ onMounted(load);
   flex-direction: column;
   height: 100vh;
   height: 100dvh;
-  background: var(--color-bg);
+  background: var(--glass-bg);
 }
 .toolbar {
   display: flex;
@@ -833,6 +949,22 @@ onMounted(load);
   font-size: 12px;
   overflow-x: auto;
   max-height: 240px;
+}
+.input-hint {
+  margin-bottom: 14px;
+}
+.input-form {
+  max-height: 60vh;
+  overflow-y: auto;
+}
+.field-desc {
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  margin-bottom: 4px;
+  line-height: 1.4;
+}
+.full-width {
+  width: 100%;
 }
 
 .grid-bg {

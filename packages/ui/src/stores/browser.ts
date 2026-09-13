@@ -33,7 +33,6 @@ function browserStoreSetup() {
   const electronCanBack = ref(false);
   const electronCanForward = ref(false);
   const loading = ref(false);
-
   return { tabs, activeTabId, urlInput, history, histIndex, pageZoom, electronCanBack, electronCanForward, loading };
 }
 

@@ -40,7 +40,7 @@
       <!-- 未绑定目录：提示 -->
       <div v-if="!activeDir" class="fs-empty">
         <el-icon :size="22"><Folder /></el-icon>
-        <p>当前会话未绑定带目录的空间</p>
+        <p>当前任务未绑定带目录的空间</p>
         <p class="fs-empty-sub">给空间设置「目录」后，这里可浏览空间内的文件、搜索和查看 Git</p>
       </div>
 
@@ -125,34 +125,39 @@
 
         <!-- Git：复用 Git 面板（目录跟随空间 dirPath 同步的 workspaceDir） -->
         <div v-else class="fs-body fs-git-body">
-          <ChatGitPanel />
+          <ChatGitPanel @viewDiff="onGitViewDiff" />
         </div>
       </template>
     </div>
 
-    <!-- 行右键菜单 -->
-    <ul v-if="rowMenu" class="fs-menu" :style="{ top: rowMenu.y + 'px', left: rowMenu.x + 'px' }" @click.stop>
-      <li v-if="rowMenu.row.isDir" @click="menuSearchHere"><el-icon><Search /></el-icon>在此文件夹中搜索</li>
-      <li @click="menuNewFile"><el-icon><Document /></el-icon>新建文件</li>
-      <li @click="menuNewFolder"><el-icon><Folder /></el-icon>新建文件夹</li>
-      <li @click="menuOpen">{{ rowMenu.row.isDir ? '打开 / 展开' : '打开' }}</li>
-      <li @click="menuCopyPath"><el-icon><DocumentCopy /></el-icon>复制路径</li>
-      <li @click="menuReveal"><el-icon><FolderOpened /></el-icon>在文件管理器显示</li>
-      <li class="danger" @click="menuDelete"><el-icon><Delete /></el-icon>删除</li>
-    </ul>
+    <!-- 行右键菜单：传送到 body，脱离 .sidebar 的 backdrop-filter containing block，保证 fixed 定位相对视窗 -->
+    <Teleport to="body">
+      <ul v-if="rowMenu" class="ctx-menu" :style="{ top: rowMenu.y + 'px', left: rowMenu.x + 'px' }" @click.stop>
+        <li v-if="rowMenu.row.isDir" @click="menuSearchHere"><el-icon><Search /></el-icon>在此文件夹中搜索</li>
+        <li @click="menuNewFile"><el-icon><Document /></el-icon>新建文件</li>
+        <li @click="menuNewFolder"><el-icon><Folder /></el-icon>新建文件夹</li>
+        <li @click="menuOpen">{{ rowMenu.row.isDir ? '打开 / 展开' : '打开' }}</li>
+        <li @click="menuCopyPath"><el-icon><DocumentCopy /></el-icon>复制路径</li>
+        <li @click="menuReveal"><el-icon><FolderOpened /></el-icon>在文件管理器显示</li>
+        <li class="danger" @click="menuDelete"><el-icon><Delete /></el-icon>删除</li>
+      </ul>
+    </Teleport>
 
     <!-- 空白区右键菜单 -->
-    <ul v-if="bgMenu" class="fs-menu" :style="{ top: bgMenu.y + 'px', left: bgMenu.x + 'px' }" @click.stop>
-      <li @click="bgNewFile"><el-icon><Document /></el-icon>新建文件</li>
-      <li @click="bgNewFolder"><el-icon><Folder /></el-icon>新建文件夹</li>
-      <li @click="bgCollapse"><el-icon><Fold /></el-icon>折叠所有目录</li>
-      <li @click="bgRefresh"><el-icon><Refresh /></el-icon>刷新</li>
-    </ul>
+    <Teleport to="body">
+      <ul v-if="bgMenu" class="ctx-menu" :style="{ top: bgMenu.y + 'px', left: bgMenu.x + 'px' }" @click.stop>
+        <li @click="bgNewFile"><el-icon><Document /></el-icon>新建文件</li>
+        <li @click="bgNewFolder"><el-icon><Folder /></el-icon>新建文件夹</li>
+        <li @click="bgCollapse"><el-icon><Fold /></el-icon>折叠所有目录</li>
+        <li @click="bgRefresh"><el-icon><Refresh /></el-icon>刷新</li>
+      </ul>
+    </Teleport>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, ref, watch, nextTick, onMounted, onBeforeUnmount } from 'vue';
+import { clampMenuPos } from '../../utils/menuPosition';
 import {
   FolderOpened, Folder, Search, CaretRight, Refresh, Share, Loading,
   Picture, Document, Tickets, Memo, Box, VideoCamera, Headset, Files,
@@ -172,6 +177,13 @@ const spaceStore = useSpaceStore();
 const settingsStore = useSettingsStore();
 
 const view = ref<'explorer' | 'search' | 'git'>('explorer');
+
+/** git 面板双击文件 → 打开文件预览 */
+function onGitViewDiff(payload: { path: string; staged: boolean; repoPath?: string }) {
+  const base = payload.repoPath || activeDir.value || settingsStore.settings.workspaceDir || '';
+  const full = base ? base.replace(/[\\/]+$/, '') + '/' + payload.path : payload.path;
+  store.openTab({ kind: 'file', name: payload.path.split(/[\\/]/).pop() || payload.path, path: full });
+}
 
 /** 当前生效空间：优先当前会话所属空间，其次全局选中的空间 */
 const activeSpace = computed(() => {
@@ -435,12 +447,12 @@ function parentRelOf(row: TreeRow): string {
 function onRowMenu(e: MouseEvent, row: TreeRow) {
   if (row.loading) return;
   bgMenu.value = null;
-  rowMenu.value = { x: e.clientX, y: e.clientY, row };
+  rowMenu.value = { ...clampMenuPos(e), row };
 }
 function onBgMenu(e: MouseEvent) {
   if (!activeDir.value) return;
   rowMenu.value = null;
-  bgMenu.value = { x: e.clientX, y: e.clientY };
+  bgMenu.value = { ...clampMenuPos(e) };
 }
 function closeMenus() { rowMenu.value = null; bgMenu.value = null; }
 
@@ -497,7 +509,7 @@ const searchScope = ref<{ rel: string; label: string } | null>(null);
 const fileSearchRef = ref<InstanceType<typeof FileSearchPanel> | null>(null);
 
 function onDocMouseDown(e: MouseEvent) {
-  if ((e.target as HTMLElement)?.closest('.fs-menu')) return;
+  if ((e.target as HTMLElement)?.closest('.ctx-menu')) return;
   closeMenus();
 }
 onMounted(() => document.addEventListener('mousedown', onDocMouseDown, true));
@@ -716,21 +728,5 @@ function fileMeta(name: string) {
 
 .fs-git-body { padding: 0; }
 
-/* ===== 右键菜单 ===== */
-.fs-menu {
-  position: fixed; z-index: 3000; min-width: 176px;
-  margin: 0; padding: 4px; list-style: none;
-  border-radius: 10px;
-  background: var(--el-color-white, #fff);
-  border: 1px solid var(--glass-border, rgba(15, 23, 42, 0.12));
-  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.14);
-}
-.fs-menu li {
-  display: flex; align-items: center; gap: 7px;
-  height: 28px; padding: 0 10px; font-size: 12px; font-family: inherit;
-  border-radius: 6px; color: var(--el-text-color-primary, #1e293b); cursor: pointer;
-}
-.fs-menu li:hover { background: var(--glass-bg-hover, rgba(15, 23, 42, 0.06)); }
-.fs-menu li.danger { color: var(--el-color-danger, #ef4444); }
-.fs-menu li.danger:hover { background: color-mix(in srgb, var(--el-color-danger) 10%, transparent); }
+
 </style>

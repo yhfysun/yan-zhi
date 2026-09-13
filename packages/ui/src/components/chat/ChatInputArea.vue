@@ -55,7 +55,7 @@
         v-model="input"
         type="textarea"
         :autosize="{ minRows: 3, maxRows: 12 }"
-        placeholder="输入消息，Enter 发送，Shift+Enter 换行；输入 / 打开命令，@ 引用文件"
+        :placeholder="isCodeMode ? '描述代码任务，Enter 发送，Shift+Enter 换行；输入 / 打开命令，@ 引用文件' : '输入消息，Enter 发送，Shift+Enter 换行；输入 / 打开命令，@ 引用文件'"
         @keydown.enter.exact="onEnter"
         @keydown.up="onKeyUp"
         @keydown.down="onKeyDown"
@@ -204,8 +204,9 @@
                 </div>
               </div>
               <!-- hover 右侧弹出的子菜单（专家列表 / 模式开关） -->
+              <Teleport to="body">
               <transition name="plus-sub-fade">
-                <div v-if="hoverSub" class="plus-menu plus-menu-sub" :style="{ top: subTop + 'px' }" @mouseenter="cancelCloseSub">
+                <div v-if="hoverSub" class="plus-menu plus-menu-sub" :style="{ top: subTop + 'px', left: subLeft + 'px' }" @mouseenter="cancelCloseSub">
                   <template v-if="hoverSub === 'agents'">
                     <div
                       v-for="ag in agentStore.chatAgents"
@@ -280,6 +281,7 @@
                   </template>
                 </div>
               </transition>
+              </Teleport>
             </div>
           </el-popover>
         </div>
@@ -427,6 +429,7 @@ import {
   Operation, Search, Link,
 } from '@element-plus/icons-vue';
 import { useChat } from '../../composables/chat/useChat';
+import { useCodeStore } from '../../stores/code';
 
 const {
   inputFocused, workspaceDir, hasWorkspaceDir, clearWorkspaceDir, showWorkspaceDir, showMount, store, showSkills, mountedSkillIds,
@@ -439,6 +442,7 @@ const {
   quotedUrls, removeQuotedUrl, LONG_INPUT_THRESHOLD,
 } = useChat();
 
+const isCodeMode = useCodeStore().codeModeActive;
 const inputTooLong = computed(() => input.value.length > LONG_INPUT_THRESHOLD);
 
 // ===== 「+」聚合菜单（对齐 WorkBuddy：专家/模式 hover 右侧弹出子菜单，其余点击触发） =====
@@ -449,14 +453,21 @@ function pickPlusAgent(id: string) { onAgentSwitch(id); closePlus(); }
 // hover 子菜单：记录触发行 offsetTop，子菜单绝对定位对齐该行
 const hoverSub = ref<'agents' | 'modes' | 'skills' | null>(null);
 const subTop = ref(0);
+const subLeft = ref(0);
 let subCloseTimer: ReturnType<typeof setTimeout> | undefined;
 function openSub(kind: 'agents' | 'modes' | 'skills', evt: MouseEvent) {
   if (subCloseTimer) { clearTimeout(subCloseTimer); subCloseTimer = undefined; }
   if (kind === 'skills') skillSearch.value = '';
   const el = evt.currentTarget as HTMLElement;
-  if (hoverSub.value === kind && subTop.value === el.offsetTop) return;
+  const wrap = el.closest('.plus-menu-wrap') as HTMLElement | null;
+  if (wrap) {
+    const wr = wrap.getBoundingClientRect();
+    const er = el.getBoundingClientRect();
+    const subW = 260;
+    subLeft.value = wr.right + 10 + subW > window.innerWidth ? wr.left - subW - 10 : wr.right + 10;
+    subTop.value = Math.min(er.top, window.innerHeight - 400);
+  }
   hoverSub.value = kind;
-  subTop.value = el.offsetTop;
 }
 function closeSubNow() { hoverSub.value = null; }
 function scheduleCloseSub() {
@@ -493,11 +504,11 @@ const slashQuery = ref('');
 const slashIndex = ref(0);
 
 const COMMANDS: Array<{ cmd: string; hint: string; icon: Component }> = [
-  { cmd: '/agent', hint: '切换当前对话智能体', icon: User },
+  { cmd: '/agent', hint: '切换当前任务智能体', icon: User },
   { cmd: '/model', hint: '切换使用的模型', icon: Cpu },
   { cmd: '/skill', hint: '挂载 / 卸载 Skill', icon: Files },
   { cmd: '/dir', hint: '设置工作目录', icon: FolderOpened },
-  { cmd: '/new', hint: '新建会话', icon: Plus },
+  { cmd: '/new', hint: '新建任务', icon: Plus },
 ];
 
 const filteredCommands = computed(() => {

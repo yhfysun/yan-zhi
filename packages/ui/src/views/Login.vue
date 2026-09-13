@@ -11,7 +11,7 @@
           <img src="../assets/login-logo.png" alt="言智" draggable="false" />
         </div>
         <h2>{{ isLogin ? '登录' : '注册' }}</h2>
-        <p>{{ isLogin ? '欢迎回来，登录以跨设备同步会话' : '创建账号以跨设备同步数据' }}</p>
+        <p>{{ isLogin ? '欢迎回来，登录以跨设备同步任务' : '创建账号以跨设备同步数据' }}</p>
       </div>
 
       <el-form @submit.prevent="submit" class="auth-form">
@@ -109,7 +109,7 @@ async function submit() {
   min-height: 100%;
   padding: 24px;
   position: relative;
-  background: var(--color-bg);
+  background: var(--glass-bg);
 }
 
 /* 返回按钮：固定在登录页左上角 */

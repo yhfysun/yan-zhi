@@ -112,9 +112,10 @@
     <input ref="folderInput" type="file" webkitdirectory multiple style="display: none" @change="onFolderInput" />
 
     <!-- 右键菜单：轻量自绘，避免 el-dropdown 在隐藏容器中的注入/定位问题 -->
-    <div
+    <Teleport to="body">
+<div
       v-if="ctx.visible"
-      class="sftp-ctxmenu"
+      class="ctx-menu"
       :style="{ left: ctx.x + 'px', top: ctx.y + 'px' }"
       @click.stop
       @contextmenu.prevent
@@ -135,11 +136,13 @@
         <div class="sftp-ctxmenu-item is-danger" @click="deleteSelected(); closeCtx()">删除</div>
       </template>
     </div>
+</Teleport>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue';
+import { clampMenuPos } from '../../utils/menuPosition';
 import {
   ArrowUp, Connection, Document, Download, EditPen,
   Folder, FolderAdd, FolderOpened, HomeFilled, Link, Refresh, Upload,
@@ -303,12 +306,12 @@ function onRemoteClick(ev: MouseEvent, e: RemoteEntry, idx: number) {
 const ctx = ref({ visible: false, x: 0, y: 0, name: '', isDir: false });
 function onRemoteCtx(e: RemoteEntry, ev: MouseEvent) {
   if (!remoteSelected.value.has(e.name)) remoteSelected.value = new Set([e.name]);
-  ctx.value = { visible: true, x: ev.clientX, y: ev.clientY, name: e.name, isDir: e.type === 'dir' };
+  ctx.value = { visible: true, ...clampMenuPos(ev), name: e.name, isDir: e.type === 'dir' };
 }
 /** 空白处右键：只提供上传 / 新建目录（上传目标是当前目录） */
 function onListCtx(ev: MouseEvent) {
   remoteSelected.value = new Set();
-  ctx.value = { visible: true, x: ev.clientX, y: ev.clientY, name: '', isDir: false };
+  ctx.value = { visible: true, ...clampMenuPos(ev), name: '', isDir: false };
 }
 function openCtxDir() {
   remotePath.value = joinRemote(remotePath.value, ctx.value.name);
@@ -705,13 +708,5 @@ onUnmounted(() => {
 }
 .sftp-dropzone :deep(.el-icon) { font-size: 22px; }
 
-/* ===== 右键菜单 ===== */
-.sftp-ctxmenu {
-  position: fixed; z-index: 3000; min-width: 108px; padding: 4px;
-  background: var(--color-surface); border: 1px solid var(--glass-border);
-  border-radius: 8px; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.16);
-}
-.sftp-ctxmenu-item { padding: 6px 10px; border-radius: 6px; font-size: 12px; cursor: pointer; color: var(--color-text); }
-.sftp-ctxmenu-item:hover { background: var(--glass-bg-hover); }
-.sftp-ctxmenu-item.is-danger { color: var(--el-color-danger); }
+
 </style>

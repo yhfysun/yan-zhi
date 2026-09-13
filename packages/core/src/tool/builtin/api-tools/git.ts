@@ -147,5 +147,167 @@ export function registerGitTools(m: Map<ApiModuleName, ToolDefinition[]>) {
         required: ['repo', 'path'],
       },
     },
+    {
+      name: 'api_git_fetch',
+      description: '从远程仓库抓取更新（不合并到工作区）。相当于 git fetch',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          repo: REPO,
+          remote: { type: 'string', description: '可选，远程名，默认 origin' },
+          branch: { type: 'string', description: '可选，指定分支' },
+        },
+        required: ['repo'],
+      },
+    },
+    {
+      name: 'api_git_stash_save',
+      description: '储藏当前工作区改动（git stash push）。可通过 message 指定储藏说明',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          repo: REPO,
+          message: { type: 'string', description: '可选，储藏说明' },
+        },
+        required: ['repo'],
+      },
+    },
+    {
+      name: 'api_git_stash_list',
+      description: '列出所有储藏（git stash list）',
+      inputSchema: {
+        type: 'object',
+        properties: { repo: REPO },
+        required: ['repo'],
+      },
+    },
+    {
+      name: 'api_git_stash_pop',
+      description: '弹出储藏（git stash pop），应用并删除该储藏',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          repo: REPO,
+          index: { type: 'number', description: '可选，储藏索引，默认 0' },
+        },
+        required: ['repo'],
+      },
+    },
+    {
+      name: 'api_git_tag_create',
+      description: '创建 Git 标签。可指定 message 创建附注标签，否则创建轻量标签',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          repo: REPO,
+          name: { type: 'string', description: '标签名' },
+          message: { type: 'string', description: '可选，附注标签说明' },
+        },
+        required: ['repo', 'name'],
+      },
+    },
+    {
+      name: 'api_git_tag_list',
+      description: '列出所有 Git 标签',
+      inputSchema: {
+        type: 'object',
+        properties: { repo: REPO },
+        required: ['repo'],
+      },
+    },
+    {
+      name: 'api_git_tag_delete',
+      description: '删除 Git 标签',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          repo: REPO,
+          name: { type: 'string', description: '要删除的标签名' },
+        },
+        required: ['repo', 'name'],
+      },
+    },
+    {
+      name: 'api_git_blame',
+      description: '追溯文件每行的最后修改信息（git blame）。返回每行的提交哈希、作者、行号、内容',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          repo: REPO,
+          file: { type: 'string', description: '要追溯的文件路径' },
+        },
+        required: ['repo', 'file'],
+      },
+    },
+    {
+      name: 'api_git_revert',
+      description: '撤销指定提交（git revert），产生一个反向新提交。不会丢失工作区改动',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          repo: REPO,
+          commit: { type: 'string', description: '要撤销的提交哈希' },
+        },
+        required: ['repo', 'commit'],
+      },
+    },
+    {
+      name: 'api_git_reset',
+      description: '重置 HEAD 到指定目标（git reset --mode target）。hard 模式会丢失未提交改动，谨慎使用',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          repo: REPO,
+          mode: { type: 'string', enum: ['soft', 'mixed', 'hard'], description: '重置模式' },
+          target: { type: 'string', description: '目标提交哈希或分支' },
+        },
+        required: ['repo', 'mode', 'target'],
+      },
+    },
+    {
+      name: 'api_git_cherry_pick',
+      description: '挑选指定提交到当前分支（git cherry-pick）',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          repo: REPO,
+          commit: { type: 'string', description: '要挑选的提交哈希' },
+        },
+        required: ['repo', 'commit'],
+      },
+    },
+    {
+      name: 'api_git_rebase',
+      description: '将当前分支变基到指定分支（git rebase branch）',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          repo: REPO,
+          branch: { type: 'string', description: '变基目标分支' },
+        },
+        required: ['repo', 'branch'],
+      },
+    },
+    {
+      name: 'api_git_merge',
+      description: '合并指定分支到当前分支（git merge branch）。冲突时返回冲突文件清单',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          repo: REPO,
+          branch: { type: 'string', description: '要合并的分支名' },
+        },
+        required: ['repo', 'branch'],
+      },
+    },
+    {
+      name: 'api_git_remote_branches',
+      description: '列出远程分支（git branch -r）',
+      inputSchema: {
+        type: 'object',
+        properties: { repo: REPO },
+        required: ['repo'],
+      },
+    },
   ]);
 }

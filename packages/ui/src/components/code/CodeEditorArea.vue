@@ -93,12 +93,7 @@
             @acted="onAiActed"
             @close="showDiff = false"
           />
-          <!-- 合并冲突解决（IDEA 式块级选择） -->
-          <CodeConflictEditor
-            v-else-if="conflictMode"
-            @resolved="onConflictResolved"
-            @cancel="conflictMode = false"
-          />
+
           <!-- 非 MD：原 CM6 源码编辑器（带断点/调试/跳转） -->
           <CodeEditorPane
             v-else-if="!activeIsMd"
@@ -166,6 +161,13 @@
         </div>
       </div>
     </div>
+
+    <!-- 合并冲突解决弹窗（三栏 IDE 风格） -->
+    <CodeConflictEditor
+      v-if="conflictMode"
+      @resolved="onConflictResolved"
+      @cancel="conflictMode = false"
+    />
 
     <!-- ===== 可上下拖动的控制台 ===== -->
     <template v-if="code.consoleOpen">
@@ -461,7 +463,9 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: var(--color-surface, #fff);
+  background: var(--glass-bg, #fff);
+  backdrop-filter: var(--glass-filter);
+  -webkit-backdrop-filter: var(--glass-filter);
 }
 
 /* ===== 标签栏 ===== */
@@ -471,7 +475,7 @@ onBeforeUnmount(() => {
   height: 36px;
   flex-shrink: 0;
   border-bottom: 1px solid var(--glass-border, #e7e4dc);
-  background: var(--el-fill-color-lighter, #faf9f6);
+  background: var(--glass-bg-hover, #f1efe9);
 }
 .cea-tabs-scroll {
   flex: 1;
@@ -489,7 +493,7 @@ onBeforeUnmount(() => {
   width: 22px;
   border: none;
   display: inline-flex; align-items: center; justify-content: center;
-  background: var(--el-fill-color-lighter, #faf9f6);
+  background: var(--glass-bg-hover, #f1efe9);
   color: var(--color-text-secondary, #6b6b66);
   cursor: pointer; z-index: 2;
 }
@@ -649,11 +653,11 @@ onBeforeUnmount(() => {
   border-bottom: 1px solid var(--glass-border, #e7e4dc);
 }
 .cea-ai-bar {
-  background: color-mix(in srgb, var(--color-primary, #c2410c) 7%, var(--el-fill-color-lighter, #faf9f6));
+  background: color-mix(in srgb, var(--color-primary, #c2410c) 7%, var(--color-surface-hover));
   color: var(--color-primary, #c2410c);
 }
 .cea-conflict-bar {
-  background: color-mix(in srgb, #ef4444 8%, var(--el-fill-color-lighter, #faf9f6));
+  background: color-mix(in srgb, #ef4444 8%, var(--color-surface-hover));
   color: #ef4444;
 }
 .cea-ai-text { color: var(--color-text, #1a1a1a); }
@@ -687,7 +691,7 @@ onBeforeUnmount(() => {
   flex: 0 0 auto;
   display: flex; flex-direction: column;
   border-top: 1px solid var(--glass-border, #e7e4dc);
-  background: var(--el-fill-color-lighter, #faf9f6);
+  background: var(--glass-bg-hover, #f1efe9);
   overflow: hidden;
 }
 .cea-console-head {

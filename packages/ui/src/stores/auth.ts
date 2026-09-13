@@ -16,10 +16,6 @@ export const useAuthStore = defineStore('auth', () => {
 
   const isLoggedIn = computed(() => !!user.value);
 
-  // 数据面恒走后端（useServerApi 恒 true：guest token 免登录，后端为唯一数据源）。
-  // 各 store 统一经 auth.useServerApi 读取，避免各自维护开关导致分流竞态。
-  const useServerApi = true;
-
   async function loadUser() {
     const token = localStorage.getItem('auth_token');
     if (!token) {
@@ -78,5 +74,5 @@ export const useAuthStore = defineStore('auth', () => {
     user.value = null;
   }
 
-  return { user, loading, error, isLoggedIn, useServerApi, loadUser, login, register, logout };
+  return { user, loading, error, isLoggedIn, loadUser, login, register, logout };
 });

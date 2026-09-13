@@ -6,7 +6,7 @@
         <button class="exp-src-btn" :class="{ on: source === 'project' }" title="项目文件" @click="source = 'project'">
           <el-icon :size="14"><Files /></el-icon>
         </button>
-        <button class="exp-src-btn" :class="{ on: source === 'conv' }" title="会话文件" @click="source = 'conv'">
+        <button class="exp-src-btn" :class="{ on: source === 'conv' }" title="任务文件" @click="source = 'conv'">
           <el-icon :size="14"><ChatRound /></el-icon>
         </button>
       </div>
@@ -128,13 +128,14 @@
           <div v-if="!(fileStore.filesByCategory[cat.key] || []).length" class="exp-hint exp-hint-sm">暂无{{ cat.label }}</div>
         </template>
       </template>
-      <div v-if="!fileStore.files.length" class="exp-hint">当前会话还没有文件</div>
+      <div v-if="!fileStore.files.length" class="exp-hint">当前任务还没有文件</div>
     </div>
 
     <!-- 行右键菜单 -->
-    <div
+    <Teleport to="body">
+<div
       v-if="menu"
-      class="exp-menu"
+      class="ctx-menu"
       :style="{ left: menu.x + 'px', top: menu.y + 'px' }"
       @click.stop
     >
@@ -147,11 +148,13 @@
       <button class="exp-menu-item" @click="menuReveal">在文件管理器中显示</button>
       <button class="exp-menu-item danger" @click="menuDelete">删除</button>
     </div>
+</Teleport>
 
     <!-- 空白区右键菜单 -->
-    <div
+    <Teleport to="body">
+<div
       v-if="bgMenu"
-      class="exp-menu"
+      class="ctx-menu"
       :style="{ left: bgMenu.x + 'px', top: bgMenu.y + 'px' }"
       @click.stop
     >
@@ -160,11 +163,13 @@
       <button class="exp-menu-item" @click="bgCollapse">折叠所有目录</button>
       <button class="exp-menu-item" @click="bgRefresh">刷新</button>
     </div>
+</Teleport>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, ref, watch, nextTick, onMounted, onBeforeUnmount } from 'vue';
+import { clampMenuPos } from '../../../utils/menuPosition';
 import { ElMessageBox, ElMessage } from 'element-plus';
 import {
   Refresh, FolderOpened, Folder, Document, CaretRight, ArrowDown,
@@ -364,12 +369,12 @@ function parentRelOf(row: TreeRow): string {
 function onRowMenu(e: MouseEvent, row: TreeRow) {
   if (row.loading) return;
   bgMenu.value = null;
-  menu.value = { x: e.clientX, y: e.clientY, row, abs: joinPath(row.relPath) };
+  menu.value = { ...clampMenuPos(e), row, abs: joinPath(row.relPath) };
 }
 function onBgMenu(e: MouseEvent) {
   if (!code.projectDir) return;
   menu.value = null;
-  bgMenu.value = { x: e.clientX, y: e.clientY };
+  bgMenu.value = { ...clampMenuPos(e) };
 }
 function closeMenu() { menu.value = null; }
 function closeBgMenu() { bgMenu.value = null; }
@@ -614,22 +619,5 @@ watch(() => code.explorerCommand, (c) => {
 .exp-cat-name { flex: 1; }
 .exp-cat-count { font-size: 10.5px; color: var(--color-text-tertiary, #9c9b94); }
 
-/* ===== 右键菜单 ===== */
-.exp-menu {
-  position: fixed; z-index: 3000; min-width: 168px;
-  padding: 4px; border-radius: 10px;
-  background: var(--color-surface, #fff);
-  border: 1px solid var(--glass-border, #e7e4dc);
-  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.14);
-  display: flex; flex-direction: column; gap: 1px;
-}
-.exp-menu-item {
-  display: block; width: 100%; text-align: left;
-  height: 28px; padding: 0 10px; font-size: 12px; font-family: inherit;
-  border: none; border-radius: 6px; background: transparent;
-  color: var(--color-text, #1a1a1a); cursor: pointer; transition: background 0.12s ease;
-}
-.exp-menu-item:hover { background: var(--glass-bg-hover, #f1efe9); }
-.exp-menu-item.danger { color: var(--el-color-danger); }
-.exp-menu-item.danger:hover { background: color-mix(in srgb, var(--el-color-danger) 10%, transparent); }
+
 </style>

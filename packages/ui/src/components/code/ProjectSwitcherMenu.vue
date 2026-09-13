@@ -99,7 +99,7 @@ function clearCurrent() {
   padding: 8px 12px;
   font-size: 11px; font-weight: 700; color: var(--color-text, #1a1a1a);
   border-bottom: 1px solid var(--glass-border, #e7e4dc);
-  background: var(--el-fill-color-lighter, #f6f4ef);
+  background: var(--color-surface-hover);
 }
 .psw-head-hint { font-size: 10px; font-weight: 400; color: var(--color-text-tertiary, #9c9b94); }
 
@@ -138,7 +138,7 @@ function clearCurrent() {
 .psw-foot {
   display: flex; gap: 6px; padding: 8px;
   border-top: 1px solid var(--glass-border, #e7e4dc);
-  background: var(--el-fill-color-lighter, #f6f4ef);
+  background: var(--color-surface-hover);
 }
 .psw-foot-btn {
   flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 5px;

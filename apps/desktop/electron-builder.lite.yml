@@ -60,6 +60,8 @@ nsis:
   allowElevation: true
   createDesktopShortcut: true
   createStartMenuShortcut: true
+  # 快捷方式显示名（桌面/开始菜单），productName 保持英文用于安装目录和安装包文件名
+  shortcutName: 言智
   installerIcon: ../../assets/icons/icon.ico
   uninstallerIcon: ../../assets/icons/icon.ico
   artifactName: ${productName}-Setup-${version}-${arch}-lite.${ext}

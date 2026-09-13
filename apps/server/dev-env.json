@@ -1,0 +1,12 @@
+{
+  "javaHome": "C:\\APP\\Java\\jdk-17.0.11",
+  "mavenHome": "",
+  "pythonPath": "",
+  "nodePath": "C:\\Program Files\\nodejs\\node.exe",
+  "gitPath": "C:\\Program Files\\Git\\bin\\git.exe",
+  "defaultShell": "powershell",
+  "extraEnv": {},
+  "javaOpts": "",
+  "mavenOpts": "",
+  "pipIndexUrl": ""
+}

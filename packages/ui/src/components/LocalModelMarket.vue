@@ -232,22 +232,15 @@ async function pull(item: MarketItem) {
   await ensureOllamaPlatform();
 }
 
-/** 确保本地模型（Ollama）平台存在并刷新其模型列表，拉取/完成时调用 */
+/** 确保本地模型（Ollama）平台存在并刷新其模型列表，拉取/完成时调用。
+ *  走后端 ensure-local：内置平台使用确定性 ID（ollama-local），跨机器一致。 */
 async function ensureOllamaPlatform() {
   try {
-    let p = (platformStore.platforms as any[]).find((x) => x?.apiUrl && x.apiUrl.includes('127.0.0.1:11434'));
-    if (!p) {
-      const platformId = await platformStore.addPlatform({
-        name: '本地模型', protocol: 'openai' as any, apiUrl: 'http://127.0.0.1:11434',
-        apiKeyEnc: '', headers: {}, status: 'unknown',
-      });
-      await platformStore.loadPlatforms();
-      p = platformStore.platforms.find((x: any) => x.id === platformId);
-    }
-    if (p) {
-      await platformStore.fetchRemoteModels(p.id).catch(() => undefined);
-      await platformStore.loadModels();
-    }
+    const r = await api.post<any>('/platforms/ensure-local');
+    if ('error' in r || !r.data?.id) return;
+    await platformStore.loadPlatforms();
+    await platformStore.fetchRemoteModels(r.data.id).catch(() => undefined);
+    await platformStore.loadModels();
   } catch { /* 忽略：平台创建/刷新失败不影响拉取 */ }
 }
 
@@ -285,16 +278,10 @@ async function remove(item: MarketItem) {
 async function addOllama() {
   if (ollamaConnected.value) { ElMessage.info('Ollama 已接入，无需重复添加'); return; }
   try {
-    const platformId = await platformStore.addPlatform({
-      name: '本地模型',
-      protocol: 'openai' as any,
-      apiUrl: 'http://127.0.0.1:11434',
-      apiKeyEnc: '',
-      headers: {},
-      status: 'unknown',
-    });
+    const r = await api.post<any>('/platforms/ensure-local');
+    if ('error' in r || !r.data?.id) { ElMessage.error('接入失败'); return; }
     try {
-      await platformStore.fetchRemoteModels(platformId);
+      await platformStore.fetchRemoteModels(r.data.id);
       ElMessage.success('已接入 Ollama 并拉取模型列表');
     } catch {
       ElMessage.warning('已创建平台，但拉取模型失败——请确认 Ollama 正在运行');

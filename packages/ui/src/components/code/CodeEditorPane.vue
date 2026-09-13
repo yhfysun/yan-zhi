@@ -44,7 +44,7 @@ const props = withDefaults(defineProps<{
   breakpoints: () => [],
   activeLine: null,
   reveal: null,
-  minimap: true,
+  minimap: false,
 });
 
 const emit = defineEmits<{
@@ -103,10 +103,11 @@ onMounted(() => {
           scheduleMinimap();
         }),
         EditorView.theme({
-          '&': { height: '100%', fontSize: '13px' },
+          '&': { height: '100%', fontSize: '13px', backgroundColor: 'transparent' },
           '.cm-scroller': {
             fontFamily: 'var(--font-mono, "JetBrains Mono", "Cascadia Code", Consolas, monospace)',
             lineHeight: '1.55',
+            backgroundColor: 'transparent',
           },
           '.cm-gutters': { borderRight: '1px solid var(--glass-border, #e7e4dc)', background: 'transparent' },
           '.cm-activeLine': { backgroundColor: 'color-mix(in srgb, var(--color-primary, #c2410c) 6%, transparent)' },
@@ -294,20 +295,27 @@ defineExpose({
   min-width: 0;
   height: 100%;
   overflow: hidden;
-  background: var(--color-surface, #fff);
+  background: var(--glass-bg, #fff);
 }
 .code-editor-pane :deep(.cm-editor) {
   height: 100%;
+  background: transparent !important;
 }
 .code-editor-pane :deep(.cm-editor.cm-focused) {
   outline: none;
+}
+.code-editor-pane :deep(.cm-scroller) {
+  background: transparent !important;
+}
+.code-editor-pane :deep(.cm-gutters) {
+  background: transparent !important;
 }
 .code-minimap {
   flex: 0 0 74px;
   width: 74px;
   height: 100%;
   cursor: pointer;
-  background: var(--el-fill-color-lighter, #faf9f6);
+  background: var(--glass-bg-hover, #f1efe9);
   border-left: 1px solid var(--glass-border, #e7e4dc);
   opacity: 0.85;
 }

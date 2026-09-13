@@ -197,7 +197,7 @@ function run(it: PaletteItem) {
 }
 .ccp-mode {
   flex-shrink: 0; font-size: 10.5px; color: var(--color-text-tertiary, #9c9b94);
-  padding: 2px 7px; border-radius: 999px; background: var(--el-fill-color-lighter, #f3f1ec);
+  padding: 2px 7px; border-radius: 999px; background: var(--color-surface-hover);
 }
 .ccp-list { max-height: 46vh; overflow-y: auto; padding: 6px; }
 .ccp-list::-webkit-scrollbar { width: 6px; }

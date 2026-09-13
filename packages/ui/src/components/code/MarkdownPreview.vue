@@ -50,7 +50,7 @@ function onContentClick(e: MouseEvent) {
 }
 .md-preview :deep(.md-pre) {
   position: relative;
-  background: var(--el-fill-color-dark);
+  background: var(--color-surface-hover);
   padding: 12px;
   border-radius: 6px;
   overflow: auto;
@@ -59,8 +59,8 @@ function onContentClick(e: MouseEvent) {
 .md-preview :deep(code) { font-family: 'Consolas', 'Monaco', monospace; font-size: 12px; }
 .md-preview :deep(.md-copy-btn) {
   position: absolute; top: 6px; right: 6px;
-  padding: 2px 8px; font-size: 11px; border: 1px solid var(--el-border-color);
-  border-radius: 4px; background: var(--el-bg-color); color: var(--el-text-color-secondary);
+  padding: 2px 8px; font-size: 11px; border: 1px solid var(--color-border);
+  border-radius: 4px; background: var(--color-surface); color: var(--color-text-secondary);
   cursor: pointer; opacity: 0; transition: opacity 0.15s;
 }
 .md-preview :deep(pre:hover .md-copy-btn) { opacity: 1; }

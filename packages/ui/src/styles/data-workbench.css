@@ -77,6 +77,19 @@ html.dark .dw-root {
   --dw-void: #0E1013;
   --dw-void-2: #16181D;
   --dw-void-3: #2C303A;
+  /* 状态色深色覆盖：soft 必须是深底，否则浅底 + 浅字 = 白底白字 */
+  --dw-brand: #A78BFA;
+  --dw-brand-soft: #2A2342;
+  --dw-brand-line: #3D2E5E;
+  --dw-signal: #34D399;
+  --dw-signal-soft: #14302B;
+  --dw-signal-line: #1E4A42;
+  --dw-caution: #FBBF24;
+  --dw-caution-soft: #33280E;
+  --dw-caution-line: #4D3D14;
+  --dw-danger: #F472B6;
+  --dw-danger-soft: #331824;
+  --dw-danger-line: #4D2436;
 }
 
 .dw-root .dw-mono {

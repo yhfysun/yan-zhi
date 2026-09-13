@@ -3,23 +3,14 @@
     <!-- 顶部：维度切换 + 工具栏 -->
     <div class="memory-toolbar">
       <el-radio-group v-model="dimension" size="default" @change="onDimensionChange">
-        <el-radio-button value="profile">用户个人画像</el-radio-button>
-        <el-radio-button value="agent">智能体记忆</el-radio-button>
-        <el-radio-button value="session">会话记忆</el-radio-button>
-        <el-radio-button value="daily">每日记忆</el-radio-button>
-        <el-radio-button value="space">空间记忆</el-radio-button>
+        <el-radio-button value="profile"><el-icon class="dim-icon"><User /></el-icon> 用户画像</el-radio-button>
+        <el-radio-button value="daily"><el-icon class="dim-icon"><Calendar /></el-icon> 每日记忆</el-radio-button>
+        <el-radio-button value="session"><el-icon class="dim-icon"><ChatDotRound /></el-icon> 会话记忆</el-radio-button>
+        <el-radio-button value="agent"><el-icon class="dim-icon"><Avatar /></el-icon> 智能体记忆</el-radio-button>
+        <el-radio-button value="space"><el-icon class="dim-icon"><Files /></el-icon> 空间记忆</el-radio-button>
       </el-radio-group>
 
       <div class="toolbar-right">
-        <el-select
-          v-if="dimension === 'space'"
-          v-model="spaceMemorySpaceId"
-          placeholder="选择空间"
-          style="width: 180px"
-          @change="onSpaceMemorySpaceChange"
-        >
-          <el-option v-for="s in spaces" :key="s.id" :label="s.name" :value="s.id" />
-        </el-select>
         <el-select
           v-if="dimension === 'agent'"
           v-model="agentFilter"
@@ -33,7 +24,6 @@
         </el-select>
 
         <el-input
-          v-if="dimension !== 'space'"
           v-model="keyword"
           placeholder="关键词搜索记忆内容"
           clearable
@@ -45,16 +35,12 @@
           </template>
         </el-input>
 
-        <el-button v-if="dimension !== 'space'" type="primary" :icon="Plus" @click="openCreate">手动新增</el-button>
+        <el-button type="primary" :icon="Plus" @click="openCreate">手动新增</el-button>
 
-        <el-tooltip v-if="dimension === 'space'" content="保存空间记忆文件（MEMORY.md，跨会话、该空间下所有智能体共享）" placement="top">
-          <el-button type="primary" :icon="Checked" :loading="spaceSaving" :disabled="!spaceMemorySpaceId" @click="submitSpaceMemory">保存</el-button>
-        </el-tooltip>
-
-        <el-tooltip v-if="dimension !== 'space'" content="立即执行一次记忆整理：去重、矛盾清理、过期淘汰、短期记忆提拔为长期" placement="top">
+        <el-tooltip content="立即执行一次记忆整理：去重、矛盾清理、过期淘汰、短期记忆提拔为长期" placement="top">
           <el-button :icon="MagicStick" :loading="store.dreamRunning" @click="onDreamRun">立即整理</el-button>
         </el-tooltip>
-        <el-button v-if="dimension !== 'space'" :icon="Clock" @click="openDreamLog">整理记录</el-button>
+        <el-button :icon="Clock" @click="openDreamLog">整理记录</el-button>
       </div>
     </div>
 
@@ -158,33 +144,8 @@
       </el-form>
     </FormDialog>
 
-    <!-- 空间记忆：每个空间一份 MEMORY.md 文件，跨会话、该空间下所有智能体共享 -->
-    <div v-if="dimension === 'space'" class="memory-table-wrap glass-sub space-memory-editor">
-      <div v-if="spaceMemoryLoading" class="table-state"><el-skeleton :rows="5" animated /></div>
-      <template v-else>
-        <div class="space-memory-meta">
-          <span class="muted">文件：{{ spaceMemoryPath || '—' }}</span>
-          <span class="muted">未选择空间时无内容</span>
-        </div>
-        <el-empty
-          v-if="!spaceMemorySpaceId"
-          description="选择一个空间以查看/编辑其记忆文件"
-          :image-size="80"
-        />
-        <el-input
-          v-else
-          v-model="spaceMemoryContent"
-          type="textarea"
-          :rows="16"
-          resize="vertical"
-          :placeholder="'# 空间记忆（Markdown）\n每行一条长期记忆，如：\n- [2026-09-10] 项目使用 pnpm monorepo，构建用 turbo'"
-          class="space-memory-textarea"
-        />
-      </template>
-    </div>
-
     <!-- 列表 -->
-    <div v-if="dimension !== 'space'" class="memory-table-wrap glass-sub">
+    <div class="memory-table-wrap glass-sub">
       <div v-if="store.loading" class="table-state"><el-skeleton :rows="4" animated /></div>
       <el-empty
         v-else-if="store.rows.length === 0"
@@ -252,7 +213,7 @@
     </div>
 
     <!-- 分页 -->
-    <div v-if="dimension !== 'space' && store.total > 0" class="memory-pagination">
+    <div v-if="store.total > 0" class="memory-pagination">
       <el-pagination
         :current-page="store.page"
         :page-size="store.pageSize"
@@ -267,15 +228,14 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
-import { Plus, Search, MagicStick, Clock, Checked } from '@element-plus/icons-vue';
+import { Plus, Search, MagicStick, Clock, User, Calendar, ChatDotRound, Avatar, Files } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { useMemoryStore, useAgentStore, useSpaceStore } from '../../stores';
+import { useMemoryStore, useAgentStore } from '../../stores';
 import type { MemoryDimension, MemoryRow } from '../../stores/memory';
 import FormDialog from '../FormDialog.vue';
 
 const store = useMemoryStore();
 const agentStore = useAgentStore();
-const spaceStore = useSpaceStore();
 
 const dimension = ref<MemoryDimension>('profile');
 const agentFilter = ref<string>('');
@@ -308,47 +268,9 @@ const dimensionHint = computed(() => {
     case 'agent': return '将绑定到所选智能体，仅该智能体可见';
     case 'session': return '会话级记忆，跨会话不保留上下文';
     case 'daily': return '每日记忆，按日期沉淀';
-    case 'space': return '空间记忆文件（MEMORY.md），跨会话、该空间下所有智能体共享';
     default: return '';
   }
 });
-
-// ── 空间记忆（MEMORY.md） ──
-const spaces = computed(() => spaceStore.spaces || []);
-const spaceMemorySpaceId = ref<string>('');
-const spaceMemoryContent = ref<string>('');
-const spaceMemoryPath = ref<string>('');
-const spaceMemoryLoading = ref(false);
-const spaceSaving = ref(false);
-
-async function onSpaceMemorySpaceChange(spaceId: string) {
-  spaceMemoryContent.value = '';
-  spaceMemoryPath.value = '';
-  if (!spaceId) return;
-  spaceMemoryLoading.value = true;
-  try {
-    const info = await store.getSpaceMemory(spaceId);
-    spaceMemoryContent.value = info.content || '';
-    spaceMemoryPath.value = info.path || '';
-  } catch (e: unknown) {
-    ElMessage.error(e instanceof Error ? e.message : '读取空间记忆失败');
-  } finally {
-    spaceMemoryLoading.value = false;
-  }
-}
-
-async function submitSpaceMemory() {
-  if (!spaceMemorySpaceId.value) return;
-  spaceSaving.value = true;
-  try {
-    await store.saveSpaceMemory(spaceMemorySpaceId.value, spaceMemoryContent.value);
-    ElMessage.success('空间记忆已保存，本空间下所有会话与智能体共享生效');
-  } catch (e: unknown) {
-    ElMessage.error(e instanceof Error ? e.message : '保存空间记忆失败');
-  } finally {
-    spaceSaving.value = false;
-  }
-}
 
 const emptyHint = computed(() => {
   if (keyword.value.trim()) return '没有匹配的记忆';
@@ -405,21 +327,10 @@ async function reload(keepPage = false) {
 }
 
 function onDimensionChange() {
-  // 切换维度：重置智能体筛选与分页（空间记忆走文件编辑器，不走列表接口）
+  // 切换维度：重置智能体筛选与分页
   agentFilter.value = '';
   showCreateForm.value = false;
   editOpen.value = false;
-  if (dimension.value === 'space') {
-    if (!spaces.value.length) {
-      spaceStore.loadSpaces().catch(() => { /* 静默，下拉为空 */ });
-    }
-    // 默认选中当前空间，便于直接编辑
-    if (!spaceMemorySpaceId.value && spaceStore.currentSpaceId) {
-      spaceMemorySpaceId.value = spaceStore.currentSpaceId;
-      void onSpaceMemorySpaceChange(spaceMemorySpaceId.value);
-    }
-    return;
-  }
   reload();
 }
 
@@ -634,8 +545,6 @@ onMounted(async () => {
   }
   await reload();
 });
-
-// 空间记忆编辑器样式
 </script>
 
 <style scoped>
@@ -652,6 +561,7 @@ onMounted(async () => {
   gap: 12px;
   flex-wrap: wrap;
 }
+.dim-icon { margin-right: 4px; vertical-align: -2px; }
 
 .toolbar-right {
   display: flex;
@@ -757,25 +667,5 @@ onMounted(async () => {
   .memory-form {
     max-width: 100%;
   }
-}
-
-/* 空间记忆编辑器 */
-.space-memory-editor {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.space-memory-meta {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-
-.space-memory-textarea :deep(.el-textarea__inner) {
-  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 12.5px;
-  line-height: 1.7;
 }
 </style>

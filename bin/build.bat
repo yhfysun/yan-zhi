@@ -56,7 +56,7 @@ call pnpm --filter @yan-zhi/desktop electron:build:full
 if %ERRORLEVEL% NEQ 0 exit /b 1
 echo.
 echo Build complete
-echo   Output: dist-release\ (yan-zhi-Setup-*-full.exe)
+echo   Output: dist-release\ (言智-Setup-*-full.exe)
 exit /b 0
 
 :BuildDesktopLite
@@ -69,7 +69,7 @@ call pnpm --filter @yan-zhi/desktop electron:build:lite
 if %ERRORLEVEL% NEQ 0 exit /b 1
 echo.
 echo Build complete
-echo   Output: dist-release\ (yan-zhi-Setup-*-lite.exe)
+echo   Output: dist-release\ (言智-Setup-*-lite.exe)
 exit /b 0
 
 :BuildMobileAndroid

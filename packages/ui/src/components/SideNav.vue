@@ -174,14 +174,15 @@
         <el-icon :size="20"><component :is="item.icon" /></el-icon>
         <span class="tab-bar-label">{{ item.tabLabel || item.label }}</span>
       </router-link>
-      <router-link
+      <button
         v-else
-        to="/settings"
+        type="button"
         class="tab-bar-item"
+        @click="openSettingsDrawer('general')"
       >
         <el-icon :size="20"><component :is="item.icon" /></el-icon>
         <span class="tab-bar-label">{{ item.tabLabel || item.label }}</span>
-      </router-link>
+      </button>
     </template>
   </nav>
 </template>
@@ -190,7 +191,8 @@
 import { computed } from 'vue';
 import { useRoute } from 'vue-router';
 import { ChatDotRound, Setting, User, SwitchButton, Fold, Expand, Monitor, Collection, Moon, Sunny, HomeFilled, Promotion, DataLine, Operation, Share } from '@element-plus/icons-vue';
-import { Code } from 'lucide-vue-next';
+import { Code, Bot } from 'lucide-vue-next';
+import { openSettingsDrawer } from '../composables/useSettingsDrawer';
 import { useAuthStore } from '../stores/auth';
 import { useSettingsStore } from '../stores/settings';
 import { useIsMobile } from '../composables/useIsMobile';
@@ -221,7 +223,7 @@ interface NavItem {
 const builtinNavItems: NavItem[] = [
   { path: '/home', label: '首页', tabLabel: '首页', icon: HomeFilled, kind: 'route', group: '工作台' },
   { path: '/chat', label: '任务', tabLabel: '任务', icon: ChatDotRound, kind: 'route', group: '工作台' },
-  { path: '/code', label: '代码', tabLabel: '代码', icon: Code, kind: 'route', group: '工作台' },
+  { path: '/code', label: '代码', tabLabel: '代码', icon: Code, kind: 'route', group: '工作台', hideOnMobile: true },
   { path: '/browser', label: '浏览器', tabLabel: '浏览器', icon: Monitor, kind: 'route', group: '工作台', hideOnMobile: true },
   { path: '/chat-hub', label: '消息', tabLabel: '消息', icon: Promotion, kind: 'route', group: '工作台' },
   { path: '', label: '设置', tabLabel: '设置', icon: Setting, kind: 'settings', group: '系统' },
@@ -255,7 +257,7 @@ const pluginMoreItems = computed(() =>
     .filter((item) => matchWhen(item.when))
     .filter((item) => item.moreGroup && item.moreGroup !== 'nav'),
 );
-const navItems = computed<NavItem[]>(() => [...builtinNavItems, ...pluginNavItems.value].filter((i) => !(i as any).hideOnMobile || !isCapacitor));
+const navItems = computed<NavItem[]>(() => [...builtinNavItems, ...pluginNavItems.value].filter((i) => !(i as any).hideOnMobile || !isMobile.value));
 /** 桌面展开态按 group 分组渲染 */
 const navGroups = computed(() => {
   const groups: Array<{ label: string; items: NavItem[] }> = [];
@@ -266,10 +268,13 @@ const navGroups = computed(() => {
   }
   return groups;
 });
-/** 移动端底部 TabBar：五个核心入口（对话 / 智能体 / 浏览器 / 知识库 / 设置） */
+/** 移动端底部 TabBar：五个核心入口（任务 / 智能体 / 知识库 / 消息 / 我的） */
 const mobilePrimaryItems = computed<NavItem[]>(() => [
-  ...builtinNavItems.filter((i) => ['/chat', '/chat-hub'].includes(i.path)),
-  { path: '', label: '设置', tabLabel: '设置', icon: Setting, kind: 'settings', group: '系统' },
+  builtinNavItems.find((i) => i.path === '/chat')!,
+  { path: '/agents', label: '智能体', tabLabel: '智能体', icon: Bot, kind: 'route', group: '工作台' },
+  { path: '/knowledge', label: '知识库', tabLabel: '知识库', icon: Collection, kind: 'route', group: '工作台' },
+  builtinNavItems.find((i) => i.path === '/chat-hub')!,
+  { path: '', label: '我的', tabLabel: '我的', icon: Setting, kind: 'settings', group: '系统' },
 ]);
 
 function isActive(path: string) {

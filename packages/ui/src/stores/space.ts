@@ -87,6 +87,15 @@ export const useSpaceStore = defineStore('space', () => {
     return id;
   }
 
+  /** 按 dirPath 查找空间，找不到则创建。返回 spaceId */
+  async function findOrCreateByDirPath(dirPath: string): Promise<string> {
+    const norm = dirPath.replace(/[\\/]+$/, '');
+    const existing = spaces.value.find((s) => s.dirPath && s.dirPath.replace(/[\\/]+$/, '') === norm);
+    if (existing) return existing.id;
+    const name = norm.split(/[\\/]/).filter(Boolean).pop() || '项目';
+    return createSpace({ name, dirPath });
+  }
+
   async function updateSpace(id: string, patch: { name?: string; dirPath?: string; description?: string; sortOrder?: number }) {
     if (isServerMode()) {
       const body: any = {};
@@ -135,6 +144,6 @@ export const useSpaceStore = defineStore('space', () => {
 
   return {
     spaces, loading, currentSpaceId, currentSpace,
-    loadSpaces, createSpace, updateSpace, deleteSpace, selectSpace,
+    loadSpaces, createSpace, findOrCreateByDirPath, updateSpace, deleteSpace, selectSpace,
   };
 });

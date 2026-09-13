@@ -111,7 +111,7 @@
         <div class="ds-field ds-switches">
           <el-checkbox v-if="form.type === 'mysql' || form.type === 'postgres'" v-model="form.ssl">SSL</el-checkbox>
           <el-checkbox v-model="form.allowWrite">允许写操作</el-checkbox>
-          <span class="ds-hint">写操作默认关闭，执行时还需在会话中限时开启</span>
+          <span class="ds-hint">写操作默认关闭，执行时还需在任务中限时开启</span>
         </div>
 
         <!-- 失败诊断：只给"重新测试"等于让用户盲查；错误码展开可解释 -->

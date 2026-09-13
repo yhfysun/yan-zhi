@@ -94,7 +94,7 @@ interface OpsConnection {
   createdAt: number;
 }
 
-interface StoredConnection extends Omit<OpsConnection, 'secretEnc'> {
+export interface StoredConnection extends Omit<OpsConnection, 'secretEnc'> {
   secretEnc: string;
 }
 
@@ -107,7 +107,7 @@ interface OpsGroup {
 
 let pluginStorage: { get<T>(key: string): Promise<T | undefined>; set(key: string, value: unknown): Promise<void> } | null = null;
 
-async function loadConnections(): Promise<StoredConnection[]> {
+export async function loadConnections(): Promise<StoredConnection[]> {
   if (!pluginStorage) return [];
   const rows = await pluginStorage.get<StoredConnection[]>('connections');
   if (!Array.isArray(rows)) return [];
@@ -251,7 +251,7 @@ interface PoolEntry {
 const sshPool = new Map<string, PoolEntry>();
 const IDLE_TIMEOUT_MS = 600000;
 
-function getSsh(conn: StoredConnection): Promise<Client> {
+export function getSsh(conn: StoredConnection): Promise<Client> {
   const cached = sshPool.get(conn.id);
   if (cached) {
     cached.lastUsed = Date.now();
@@ -331,7 +331,7 @@ function joinRemotePath(base: string, name: string): string {
   return `${base.replace(/\/+$/, '')}/${name}`;
 }
 
-function getSftp(conn: StoredConnection): Promise<SFTPWrapper> {
+export function getSftp(conn: StoredConnection): Promise<SFTPWrapper> {
   return getSsh(conn).then(
     (client) =>
       new Promise<SFTPWrapper>((resolve, reject) =>
@@ -426,7 +426,7 @@ export function copyRemoteFile(sftp: SFTPWrapper, from: string, to: string): Pro
   });
 }
 
-async function statRemote(sftp: SFTPWrapper, path: string): Promise<{ mode: number; size: number; mtime: number; isDir: boolean }> {
+export async function statRemote(sftp: SFTPWrapper, path: string): Promise<{ mode: number; size: number; mtime: number; isDir: boolean }> {
   const st = await new Promise<{ mode: number; size: number; mtime: number }>((resolve, reject) =>
     sftp.stat(path, (err, s) => (err ? reject(err) : resolve(s as never))),
   );
@@ -434,7 +434,7 @@ async function statRemote(sftp: SFTPWrapper, path: string): Promise<{ mode: numb
 }
 
 /** fastPut 封装：带 step 进度回调（transferred 为已传字节，total 为文件总大小） */
-function sftpFastPut(sftp: SFTPWrapper, localPath: string, remotePath: string, onStep: (transferred: number, total: number) => void): Promise<void> {
+export function sftpFastPut(sftp: SFTPWrapper, localPath: string, remotePath: string, onStep: (transferred: number, total: number) => void): Promise<void> {
   return new Promise<void>((resolve, reject) =>
     sftp.fastPut(localPath, remotePath, { step: (transferred, _chunk, total) => onStep(transferred, total) }, (err) => (err ? reject(err) : resolve())),
   );
@@ -448,7 +448,7 @@ function sftpFastGet(sftp: SFTPWrapper, remotePath: string, localPath: string, o
 }
 
 /** 逐级创建远程目录（ssh2 mkdir 不支持 recursive），忽略已存在 */
-async function ensureRemoteDir(sftp: SFTPWrapper, dirPath: string): Promise<void> {
+export async function ensureRemoteDir(sftp: SFTPWrapper, dirPath: string): Promise<void> {
   const segs = dirPath.split('/').filter(Boolean);
   let cur = '';
   for (const seg of segs) {
@@ -465,7 +465,7 @@ async function ensureRemoteDir(sftp: SFTPWrapper, dirPath: string): Promise<void
  * @param relPrefix 追加到每个结果 rel 前的前缀（用于上传时保留目录结构）
  * @returns [{ abs: 文件绝对路径, rel: 相对路径（含 relPrefix） }]
  */
-function collectLocalFiles(dirAbs: string, relPrefix = ''): Array<{ abs: string; rel: string }> {
+export function collectLocalFiles(dirAbs: string, relPrefix = ''): Array<{ abs: string; rel: string }> {
   const base = dirAbs.replace(/\\/g, '/').replace(/\/+$/, '');
   const list: Array<{ abs: string; rel: string }> = [];
   for (const name of readdirSync(base)) {
@@ -546,7 +546,7 @@ async function audit(action: string, opts: { connection?: string; detail?: strin
 
 // ---------- SSH 命令执行 ----------
 
-function sshExec(client: Client, command: string, timeoutMs: number): Promise<{ stdout: string; stderr: string; code: number | null }> {
+export function sshExec(client: Client, command: string, timeoutMs: number): Promise<{ stdout: string; stderr: string; code: number | null }> {
   return new Promise((resolve, reject) => {
     let stdout = '';
     let stderr = '';
@@ -574,7 +574,7 @@ function textResult(text: string): McpCallResult {
   return { content: [{ type: 'text', text }] } as McpCallResult;
 }
 
-async function execOnConnection(conn: StoredConnection, command: string, timeoutMs: number): Promise<{ stdout: string; stderr: string; code: number | null }> {
+export async function execOnConnection(conn: StoredConnection, command: string, timeoutMs: number): Promise<{ stdout: string; stderr: string; code: number | null }> {
   const client = await getSsh(conn);
   const res = await sshExec(client, command, timeoutMs);
   const out = capOutput(res.stdout);

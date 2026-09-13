@@ -30,11 +30,12 @@
 
     <div class="skill-groups">
       <div v-for="group in groupedSkills" :key="group.category" class="builtin-cat">
-        <div class="builtin-cat-title">
-          <span class="builtin-cat-name">{{ group.category }}</span>
-          <span class="builtin-cat-count">{{ group.skills.length }}</span>
-        </div>
-        <div class="skill-grid">
+        <span
+          class="cat-tag"
+          :class="{ collapsed: collapsedCats[group.category] }"
+          @click="toggleCat(group.category)"
+        ><el-icon class="cat-tag-arrow"><ArrowRight v-if="collapsedCats[group.category]" /><ArrowDown v-else /></el-icon>{{ group.category }}<em>{{ group.skills.length }}</em></span>
+        <div v-show="!collapsedCats[group.category]" class="skill-grid">
           <div v-for="s in group.skills" :key="s.id" class="skill-card" @click="previewSkill(s)">
             <div class="card-top">
               <div class="card-icon" :class="{ off: !s.enabled }"><el-icon :size="24"><Files /></el-icon></div>
@@ -103,8 +104,8 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue';
-import { Plus, Files, ArrowLeft, Edit, Delete, FolderOpened, UploadFilled, Box, Search, Close } from '@element-plus/icons-vue';
+import { ref, reactive, computed, onMounted } from 'vue';
+import { Plus, Files, ArrowLeft, ArrowRight, ArrowDown, Edit, Delete, FolderOpened, UploadFilled, Box, Search, Close } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { useSkillStore, useAuthStore } from '../../stores';
 import { getPlatformAdapter } from '@yan-zhi/core';
@@ -161,6 +162,10 @@ const groupedSkills = computed(() => {
   }
   return Array.from(map.entries()).map(([category, skills]) => ({ category, skills }));
 });
+
+/** 分类折叠状态：默认全展开 */
+const collapsedCats = reactive<Record<string, boolean>>({});
+function toggleCat(cat: string) { collapsedCats[cat] = !collapsedCats[cat]; }
 
 const previewMd = computed(() => {
   const fm = ['---', `name: ${editor.value.name || '(未填写)'}`];
@@ -435,6 +440,22 @@ function parseSkillMd(md: string): { frontmatter: any; bodyMd: string; body: str
   font-size: 12px; color: var(--color-text-secondary);
   background: rgba(124,58,237,0.08); padding: 2px 8px; border-radius: 10px;
 }
+
+/* 分类标签：短小inline按钮，透明背景，旁边空白露背景，点击折叠/展开 */
+.builtin-cat { margin-bottom: 14px; }
+.cat-tag {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 4px 12px; margin-bottom: 8px;
+  font-size: 13px; font-weight: 600; color: var(--color-text);
+  cursor: pointer; user-select: none;
+  background: transparent; border: 1px solid var(--color-border-light);
+  background-image: var(--skin-cat-tag-pattern, none); background-size: cover; background-position: center;
+  border-radius: 16px; transition: all 0.15s;
+}
+.cat-tag:hover { border-color: var(--color-primary); color: var(--color-primary); }
+.cat-tag.collapsed { opacity: 0.5; }
+.cat-tag-arrow { font-size: 12px; flex-shrink: 0; }
+.cat-tag em { font-style: normal; font-size: 11px; font-weight: 700; color: var(--color-text-secondary); }
 
 .skill-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(220px, 100%), 1fr)); gap: 12px; }
 .skill-card {

@@ -4,31 +4,78 @@
     <header class="cp-top">
       <div class="cp-top-left">
         <span class="cp-badge"><el-icon :size="13"><Document /></el-icon></span>
-        <span class="cp-title">代码</span>
-        <button class="cp-proj" :class="{ open: projectSwitcherOpen }" :title="code.projectDir || '点击切换项目目录'" @click.stop="toggleProjectSwitcher">
+        <span class="cp-title">当前项目</span>
+        <button class="cp-proj" :class="{ open: projDropdownOpen }" :title="code.projectDir || '点击切换项目目录'" @click.stop="toggleProjDropdown">
           <el-icon :size="12"><FolderOpened /></el-icon>
           <span class="cp-proj-name">{{ code.projectName || '选择项目目录' }}</span>
           <el-icon :size="10" class="cp-proj-caret"><ArrowDown /></el-icon>
         </button>
-        <ProjectSwitcherMenu
-          v-if="projectSwitcherOpen"
-          @open-new="onOpenNewProject"
-          @close="closeProjectSwitcher"
-        />
+        <button class="cp-side-toggle" :title="sideCollapsed ? '展开侧栏' : '收起侧栏'" @click="toggleSidebar">
+          <el-icon :size="14"><Fold v-if="!sideCollapsed" /><Expand v-else /></el-icon>
+        </button>
+        <Teleport to="body">
+          <div v-if="projDropdownOpen" class="cp-task-dropdown cp-proj-dropdown" :style="projDropdownStyle" @click.stop>
+            <div class="cp-task-section">项目目录</div>
+            <div v-for="d in recentDirs" :key="d" class="cp-task-item" :class="{ active: d === code.projectDir }" :title="d" @click="selectProject(d)">
+              <el-icon :size="12"><FolderOpened /></el-icon>
+              <span class="cp-task-item-label">{{ basename(d) }}</span>
+              <el-icon v-if="d === code.projectDir" :size="12" class="cp-task-check"><Check /></el-icon>
+            </div>
+            <div v-if="!recentDirs.length" class="cp-task-empty">暂无最近项目</div>
+            <div class="cp-task-divider"></div>
+            <div class="cp-task-item cp-task-action" @click="onOpenNewProject">
+              <el-icon :size="12"><FolderAdd /></el-icon>
+              <span class="cp-task-item-label">打开新项目…</span>
+            </div>
+          </div>
+        </Teleport>
       </div>
 
       <div class="cp-top-right">
-        <div class="cp-env" :title="envTitle">
-          <span v-for="t in envChips" :key="t.id" class="cp-env-chip" :class="{ off: !t.ok }">
-            <span class="cp-env-dot"></span>{{ t.label }}<template v-if="t.ok"> {{ t.version }}</template>
-          </span>
-          <button class="cp-env-set" @click="openSettingsDrawer('env')">
-            <el-icon :size="12"><Setting /></el-icon>环境
+        <!-- IDEA 风格 Git 区：分支切换 + Commit + 推送/拉取 -->
+        <div v-if="code.projectDir" class="cp-git">
+          <button class="cp-git-branch" :title="gitBranch || '非 Git 仓库'" @click.stop="toggleGitBranch">
+            <el-icon :size="12"><Share /></el-icon>
+            <span class="cp-git-branch-name">{{ gitBranch || 'no-git' }}</span>
+            <span v-if="gitDirty" class="cp-git-dirty" :title="`${gitDirty} 处改动`">{{ gitDirty }}</span>
+            <el-icon :size="10" class="cp-git-caret"><ArrowDown /></el-icon>
+          </button>
+          <button class="cp-git-act" title="更新项目（拉取）" :disabled="!gitBranch || gitBusy" @click="doGitPull">
+            <el-icon :size="13"><Download /></el-icon>
+          </button>
+          <button class="cp-git-commit" :disabled="!gitBranch" title="打开提交面板" @click="openGitCommit">
+            <el-icon :size="12"><Check /></el-icon>Commit
+            <span v-if="gitDirty" class="cp-git-count">{{ gitDirty }}</span>
+          </button>
+          <button class="cp-git-act" title="推送" :disabled="!gitBranch || gitBusy" @click="doGitPush">
+            <el-icon :size="13"><Upload /></el-icon>
+          </button>
+          <Teleport to="body">
+            <div v-if="gitBranchDropdown" class="cp-task-dropdown cp-git-branch-dropdown" :style="gitBranchDropdownStyle" @click.stop>
+              <div class="cp-task-section">本地分支</div>
+              <div
+                v-for="b in gitLocalBranches"
+                :key="'gb' + b"
+                class="cp-task-item"
+                :class="{ active: b === gitBranch }"
+                @click="checkoutGitBranch(b)"
+              >
+                <el-icon :size="12"><Check v-if="b === gitBranch" /><Share v-else /></el-icon>
+                <span class="cp-task-item-label">{{ b }}</span>
+              </div>
+              <div v-if="!gitLocalBranches.length" class="cp-task-empty">无本地分支</div>
+            </div>
+          </Teleport>
+        </div>
+
+        <div class="cp-env">
+          <button class="cp-env-set" :class="{ active: !chatCollapsed }" :title="chatCollapsed ? '打开任务' : '收起任务'" @click="toggleChat">
+            <el-icon :size="12"><ChatDotRound /></el-icon>任务
           </button>
         </div>
-        <el-tooltip content="返回任务对话" placement="bottom" :show-after="400">
+        <el-tooltip content="退出开发模式" placement="bottom" :show-after="400">
           <button class="cp-back" @click="backToChat">
-            <el-icon :size="13"><ChatDotRound /></el-icon>返回任务
+            <el-icon :size="13"><ChatDotRound /></el-icon>退出开发模式
           </button>
         </el-tooltip>
       </div>
@@ -36,8 +83,8 @@
 
     <!-- ===== 三栏主体：左项目面板 | 中编辑器 | 右对话 ===== -->
     <div class="cp-body">
-      <CodeSidebar class="cp-side" @pick-dir="showDir = true" />
-      <div class="rs-handle" :class="{ dragging: sideR.dragging.value }" @mousedown="sideR.startDrag($event, 'left')"></div>
+      <CodeSidebar v-show="!sideCollapsed" class="cp-side" @pick-dir="showDir = true" />
+      <div v-show="!sideCollapsed" class="rs-handle" :class="{ dragging: sideR.dragging.value }" @mousedown="sideR.startDrag($event, 'left')"></div>
 
       <CodeEditorArea @pick-dir="showDir = true" />
 
@@ -45,12 +92,26 @@
 
       <section class="cp-chat">
         <div class="cp-chat-head">
-          <el-icon :size="13" class="cp-chat-icon"><ChatDotRound /></el-icon>
-          <span class="cp-chat-title">{{ currentConvTitle }}</span>
+          <button class="cp-task-trigger" :class="{ active: taskDropdownOpen }" @click.stop="toggleTaskDropdown">
+            <el-icon :size="13" class="cp-chat-icon"><ChatDotRound /></el-icon>
+            <span class="cp-chat-title">{{ currentConvTitle }}</span>
+            <el-icon :size="10" class="cp-task-caret"><ArrowDown /></el-icon>
+          </button>
           <span class="cp-chat-spacer"></span>
-          <button class="cp-chat-btn" title="收起对话栏" @click="toggleChat">
+          <button class="cp-chat-btn" title="新建任务" @click="newTask">
+            <el-icon :size="12"><EditPen /></el-icon>
+          </button>
+          <button class="cp-chat-btn" title="收起任务栏" @click="toggleChat">
             <el-icon :size="12"><ArrowRight /></el-icon>
           </button>
+          <div v-if="taskDropdownOpen" class="cp-task-dropdown" :style="taskDropdownStyle" @click.stop>
+            <div class="cp-task-section">任务列表</div>
+            <div v-for="conv in currentSpaceConvs" :key="conv.id" class="cp-task-item" :class="{ active: conv.id === chatStore.currentConvId }" @click="selectTask(conv.id)">
+              <span class="cp-task-dot"></span>
+              <span class="cp-task-item-label">{{ conv.title }}</span>
+            </div>
+            <div v-if="!currentSpaceConvs.length" class="cp-task-empty">暂无任务，发送消息自动创建</div>
+          </div>
         </div>
         <div class="cp-chat-msgs">
           <ChatMessageList />
@@ -73,16 +134,18 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue';
 import { useRouter } from 'vue-router';
-import { Document, FolderOpened, ArrowDown, ArrowRight, ChatDotRound, Setting } from '@element-plus/icons-vue';
+import { Document, FolderOpened, ArrowDown, ArrowRight, ChatDotRound, EditPen, FolderAdd, Check, Fold, Expand, Share, Download, Upload } from '@element-plus/icons-vue';
+import { ElMessage } from 'element-plus';
 import { useCodeStore, setCodeModeActive } from '../stores/code';
 import { useChatStore } from '../stores/chat';
+import { useSpaceStore } from '../stores/space';
+import { useChat } from '../composables/chat/useChat';
+import { clampMenuPos } from '../utils/menuPosition';
 import { useResizable } from '../composables/useResizable';
-import { openSettingsDrawer } from '../composables/useSettingsDrawer';
-import { projectSwitcherOpen, closeProjectSwitcher, toggleProjectSwitcher } from '../composables/useProjectSwitcher';
 import { api } from '../api/client';
+import { useSettingsStore } from '../stores/settings';
 import CodeSidebar from '../components/code/CodeSidebar.vue';
 import CodeEditorArea from '../components/code/CodeEditorArea.vue';
-import ProjectSwitcherMenu from '../components/code/ProjectSwitcherMenu.vue';
 import CodeStatusBar from '../components/code/CodeStatusBar.vue';
 import CodeCommandPalette from '../components/code/CodeCommandPalette.vue';
 import WorkspaceDirDialog from '../components/WorkspaceDirDialog.vue';
@@ -93,6 +156,9 @@ import ChatDialogs from '../components/chat/ChatDialogs.vue';
 const router = useRouter();
 const code = useCodeStore();
 const chatStore = useChatStore();
+const spaceStore = useSpaceStore();
+const settingsStore = useSettingsStore();
+const chat = useChat();
 
 const sideR = useResizable('code_sidebar', 260, 180, 560);
 const chatR = useResizable('code_chat', 420, 300, 900);
@@ -101,10 +167,14 @@ const chatW = chatR.width;
 
 const showDir = ref(false);
 const chatCollapsed = ref(false);
+const sideCollapsed = ref(false);
 const paletteOpen = ref(false);
 
+// 在子组件创建前就标记代码模式，确保 ChatMessageList 首次渲染时 isCodeMode 已为 true
+setCodeModeActive(true);
+
 const currentConvTitle = computed(
-  () => chatStore.conversations.find((c) => c.id === chatStore.currentConvId)?.title || '任务对话',
+  () => chatStore.conversations.find((c) => c.id === chatStore.currentConvId)?.title || '任务',
 );
 
 function onDirSelected(dir: string) {
@@ -112,17 +182,45 @@ function onDirSelected(dir: string) {
   showDir.value = false;
 }
 
+// ===== 项目目录下拉 =====
+const projDropdownOpen = ref(false);
+const projDropdownStyle = ref<Record<string, string>>({});
+const recentDirs = computed(() => {
+  const list = (settingsStore.settings.recentWorkspaceDirs || []).filter(Boolean);
+  const set = new Set(list);
+  if (code.projectDir && !set.has(code.projectDir)) set.add(code.projectDir);
+  return Array.from(set);
+});
+function basename(p: string): string {
+  const clean = p.replace(/[\\/]+$/, '');
+  return clean.split(/[\\/]/).filter(Boolean).pop() || clean;
+}
+function toggleProjDropdown(e: MouseEvent) {
+  if (!projDropdownOpen.value) {
+    const pos = clampMenuPos(e, 280, 400);
+    projDropdownStyle.value = { left: pos.x + 'px', top: pos.y + 'px' };
+  }
+  projDropdownOpen.value = !projDropdownOpen.value;
+}
+function selectProject(dir: string) {
+  code.setProjectDir(dir);
+  const list = (settingsStore.settings.recentWorkspaceDirs || []).filter((d) => d && d !== dir);
+  list.unshift(dir);
+  void settingsStore.update({ recentWorkspaceDirs: list.slice(0, 8) });
+  projDropdownOpen.value = false;
+}
+
 /** 顶栏「打开新项目…」：关闭下拉，打开原生目录选择对话框 */
 function onOpenNewProject() {
-  closeProjectSwitcher();
+  projDropdownOpen.value = false;
   showDir.value = true;
 }
 
-// 下拉打开时，点击外部任意处关闭（菜单自身 stop 了冒泡）
+// 下拉打开时，点击外部任意处关闭
 function onDocClickClose() {
-  if (projectSwitcherOpen.value) closeProjectSwitcher();
+  if (projDropdownOpen.value) projDropdownOpen.value = false;
 }
-watch(projectSwitcherOpen, (open) => {
+watch(projDropdownOpen, (open) => {
   if (open) document.addEventListener('click', onDocClickClose);
   else document.removeEventListener('click', onDocClickClose);
 });
@@ -139,10 +237,60 @@ function onGlobalKeydown(e: KeyboardEvent) {
 onMounted(() => document.addEventListener('keydown', onGlobalKeydown));
 onBeforeUnmount(() => document.removeEventListener('keydown', onGlobalKeydown));
 
+// ===== 任务下拉面板 =====
+const taskDropdownOpen = ref(false);
+const taskDropdownStyle = ref<Record<string, string>>({});
+function toggleTaskDropdown(e: MouseEvent) {
+  if (!taskDropdownOpen.value) {
+    const pos = clampMenuPos(e, 260, 400);
+    taskDropdownStyle.value = { left: pos.x + 'px', top: pos.y + 'px' };
+  }
+  taskDropdownOpen.value = !taskDropdownOpen.value;
+}
+const currentSpaceConvs = computed(() =>
+  chatStore.conversations.filter((c) => c.spaceId === code.projectSpaceId),
+);
+function selectTask(id: string) {
+  void chat.selectConv(id);
+  taskDropdownOpen.value = false;
+}
+function newTask() {
+  void chat.startNewChat(code.projectSpaceId);
+  taskDropdownOpen.value = false;
+}
+function onDocClickCloseTask() {
+  if (taskDropdownOpen.value) taskDropdownOpen.value = false;
+}
+watch(taskDropdownOpen, (open) => {
+  if (open) document.addEventListener('click', onDocClickCloseTask);
+  else document.removeEventListener('click', onDocClickCloseTask);
+});
+
+// ===== 项目目录 → space 同步 =====
+async function syncProjectSpace() {
+  if (!code.projectDir) { code.setProjectSpaceId(null); return; }
+  try {
+    const sid = await spaceStore.findOrCreateByDirPath(code.projectDir);
+    code.setProjectSpaceId(sid);
+  } catch { /* ignore */ }
+}
+// 切换项目目录：同步 space → 重新拉取会话列表 → 进入新任务草稿（避免残留上个项目的任务内容）
+watch(() => code.projectDir, async () => {
+  await syncProjectSpace();
+  await chatStore.loadConversations();
+  await chat.startNewChat(code.projectSpaceId);
+});
+
 /** 收起对话栏：宽度归零（再次点击顶栏「代码」或刷新恢复） */
 function toggleChat() {
   chatCollapsed.value = !chatCollapsed.value;
   chatW.value = chatCollapsed.value ? 0 : 420;
+}
+
+/** 收起/展开左侧栏 */
+function toggleSidebar() {
+  sideCollapsed.value = !sideCollapsed.value;
+  sideW.value = sideCollapsed.value ? 0 : 260;
 }
 
 function backToChat() {
@@ -152,20 +300,17 @@ function backToChat() {
   router.push(id ? `/chat/${id}` : '/chat');
 }
 
-// ===== 环境状态条 =====
-interface EnvChip { id: string; label: string; version: string; ok: boolean }
-const envChips = ref<EnvChip[]>([]);
-const envTitle = computed(() =>
-  envChips.value.length
-    ? envChips.value.map((t) => `${t.label} ${t.ok ? t.version : '未配置'}`).join(' · ')
-    : '尚未检测开发环境',
-);
 
-// ===== Git 状态（底部状态栏：分支 + 改动数）=====
+// ===== Git 状态（顶部 Git 区 + 底部状态栏：分支 + 改动数）=====
 const gitBranch = ref<string | null>(null);
 const gitDirty = ref(0);
+const gitBusy = ref(false);
+const gitLocalBranches = ref<string[]>([]);
+const gitBranchDropdown = ref(false);
+const gitBranchDropdownStyle = ref<Record<string, string>>({});
+
 async function refreshGitStatus() {
-  if (!code.projectDir) { gitBranch.value = null; gitDirty.value = 0; return; }
+  if (!code.projectDir) { gitBranch.value = null; gitDirty.value = 0; gitLocalBranches.value = []; return; }
   const r = await api.get<{
     current?: string; files?: unknown[];
     modified?: unknown[]; not_added?: unknown[]; created?: unknown[]; deleted?: unknown[];
@@ -177,26 +322,74 @@ async function refreshGitStatus() {
   gitDirty.value = Array.isArray(files)
     ? files.length
     : (d.modified?.length || 0) + (d.not_added?.length || 0) + (d.created?.length || 0) + (d.deleted?.length || 0);
+  const br = await api.get<string[]>(`/git/branches?repo=${encodeURIComponent(code.projectDir)}`);
+  gitLocalBranches.value = 'data' in br
+    ? (br.data || []).filter((b) => !b.startsWith('remotes/') && !b.startsWith('origin/HEAD'))
+    : [];
 }
+function toggleGitBranch(e: MouseEvent) {
+  if (!gitBranchDropdown.value) {
+    const pos = clampMenuPos(e, 260, 400);
+    gitBranchDropdownStyle.value = { left: pos.x + 'px', top: pos.y + 'px' };
+  }
+  gitBranchDropdown.value = !gitBranchDropdown.value;
+}
+async function checkoutGitBranch(b: string) {
+  gitBranchDropdown.value = false;
+  if (b === gitBranch.value) return;
+  gitBusy.value = true;
+  try {
+    await api.post('/git/checkout', { repo: code.projectDir, branch: b });
+    ElMessage.success('已切换到 ' + b);
+    await refreshGitStatus();
+  } catch (err) {
+    ElMessage.error((err as Error).message);
+  } finally { gitBusy.value = false; }
+}
+async function doGitPull() {
+  gitBusy.value = true;
+  try {
+    await api.post('/git/pull', { repo: code.projectDir, branch: gitBranch.value || undefined });
+    ElMessage.success('拉取完成');
+    await refreshGitStatus();
+  } catch (err) {
+    ElMessage.error((err as Error).message);
+  } finally { gitBusy.value = false; }
+}
+async function doGitPush() {
+  gitBusy.value = true;
+  try {
+    await api.post('/git/push', { repo: code.projectDir, branch: gitBranch.value || undefined });
+    ElMessage.success('推送完成');
+    await refreshGitStatus();
+  } catch (err) {
+    ElMessage.error((err as Error).message);
+  } finally { gitBusy.value = false; }
+}
+/** 打开 Git 提交面板（展开侧栏并切到源代码管理视图） */
+function openGitCommit() {
+  if (sideCollapsed.value) toggleSidebar();
+  code.openGitPanel();
+}
+// 分支下拉打开时，点击外部任意处关闭
+function onDocClickCloseGit() {
+  if (gitBranchDropdown.value) gitBranchDropdown.value = false;
+}
+watch(gitBranchDropdown, (open) => {
+  if (open) document.addEventListener('click', onDocClickCloseGit);
+  else document.removeEventListener('click', onDocClickCloseGit);
+});
+onBeforeUnmount(() => document.removeEventListener('click', onDocClickCloseGit));
+
 watch(() => code.projectDir, () => void refreshGitStatus());
 
 onMounted(async () => {
-  // 记住代码模式：去别的页面再回「任务」时恢复代码工作台（router guard 消费该标记）
-  setCodeModeActive(true);
-  if (!code.projectDir) {
-    // 顶栏已通过 store 初始化兜底到 settings.workspaceDir
-  }
   void refreshGitStatus();
-  const r = await api.post<Array<{ id: string; label: string; version: string; ok: boolean }>>('/env/verify', {});
-  if ('error' in r) return;
-  envChips.value = (r.data || [])
-    .filter((t) => ['java', 'maven', 'python', 'node'].includes(t.id))
-    .map((t) => ({
-      id: t.id,
-      label: t.id === 'java' ? 'Java' : t.id === 'maven' ? 'Maven' : t.id === 'python' ? 'Python' : 'Node',
-      version: t.version || '',
-      ok: !!t.ok,
-    }));
+  // 加载空间列表并同步当前项目目录对应的 space
+  // 注意：loadSpaces 可能因数据库迁移问题失败，必须 catch，否则 mounted 钩子抛未处理异常
+  void spaceStore.loadSpaces().then(() => void syncProjectSpace()).catch((e) => {
+    console.warn('[CodeWorkbench] 空间列表加载失败：', e);
+  });
 });
 </script>
 
@@ -208,7 +401,7 @@ onMounted(async () => {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  background: var(--color-bg, #f7f5f0);
+
   overflow: hidden;
 }
 
@@ -217,7 +410,9 @@ onMounted(async () => {
   display: flex; align-items: center; gap: 10px;
   height: 42px; padding: 0 12px; flex-shrink: 0;
   border-bottom: 1px solid var(--glass-border, #e7e4dc);
-  background: var(--color-surface, #fff);
+  background: var(--glass-bg, #fff);
+  backdrop-filter: var(--glass-filter);
+  -webkit-backdrop-filter: var(--glass-filter);
 }
 .cp-top-left { display: flex; align-items: center; gap: 8px; min-width: 0; position: relative; }
 .cp-badge {
@@ -226,6 +421,13 @@ onMounted(async () => {
   color: #fff; background: var(--color-primary, #c2410c);
 }
 .cp-title { font-size: 13.5px; font-weight: 700; color: var(--color-text, #1a1a1a); }
+.cp-side-toggle {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; border: 1px solid var(--glass-border, #e7e4dc); border-radius: 8px;
+  background: transparent; color: var(--color-text-secondary, #6b6b66); cursor: pointer;
+  transition: all 0.15s ease;
+}
+.cp-side-toggle:hover { border-color: var(--color-primary, #c2410c); color: var(--color-primary, #c2410c); }
 .cp-proj {
   display: inline-flex; align-items: center; gap: 5px;
   height: 26px; padding: 0 9px; max-width: 320px;
@@ -240,19 +442,49 @@ onMounted(async () => {
 .cp-proj.open .cp-proj-caret { transform: rotate(180deg); }
 
 .cp-top-right { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+
+/* ===== IDEA 风格 Git 区 ===== */
+.cp-git { display: flex; align-items: center; gap: 4px; margin-right: 4px; }
+.cp-git-branch {
+  display: inline-flex; align-items: center; gap: 5px;
+  height: 26px; padding: 0 9px; max-width: 200px;
+  border: 1px solid var(--glass-border, #e7e4dc); border-radius: 8px;
+  background: transparent; color: var(--color-text-secondary, #6b6b66);
+  font-size: 12px; font-family: inherit; cursor: pointer; transition: all 0.15s ease;
+}
+.cp-git-branch:hover { border-color: var(--color-primary, #c2410c); color: var(--color-primary, #c2410c); }
+.cp-git-branch-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: "JetBrains Mono", monospace; }
+.cp-git-caret { opacity: 0.6; flex-shrink: 0; }
+.cp-git-dirty {
+  flex-shrink: 0; font-size: 10px; font-weight: 700; line-height: 15px;
+  min-width: 16px; text-align: center; border-radius: 8px; padding: 0 4px;
+  background: color-mix(in srgb, var(--color-primary, #c2410c) 16%, transparent);
+  color: var(--color-primary, #c2410c);
+}
+.cp-git-act {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; border: 1px solid transparent; border-radius: 8px;
+  background: transparent; color: var(--color-text-secondary, #6b6b66);
+  cursor: pointer; transition: all 0.15s ease;
+}
+.cp-git-act:hover:not(:disabled) { border-color: var(--glass-border, #e7e4dc); color: var(--color-text, #1a1a1a); }
+.cp-git-act:disabled { opacity: 0.35; cursor: not-allowed; }
+.cp-git-commit {
+  display: inline-flex; align-items: center; gap: 5px;
+  height: 26px; padding: 0 10px; border-radius: 8px; cursor: pointer;
+  border: 1px solid var(--glass-border, #e7e4dc); background: transparent;
+  color: var(--color-text-secondary, #6b6b66);
+  font-size: 12px; font-weight: 600; font-family: inherit; transition: all 0.15s ease;
+}
+.cp-git-commit:hover:not(:disabled) { border-color: var(--color-primary, #c2410c); color: var(--color-primary, #c2410c); }
+.cp-git-commit:disabled { opacity: 0.35; cursor: not-allowed; }
+.cp-git-count {
+  font-size: 10px; font-weight: 700; line-height: 15px; min-width: 16px; text-align: center;
+  border-radius: 8px; padding: 0 4px;
+  background: var(--color-primary, #c2410c); color: #fff;
+}
+.cp-git-branch-dropdown { width: 260px; }
 .cp-env { display: flex; align-items: center; gap: 6px; }
-.cp-env-chip {
-  display: inline-flex; align-items: center; gap: 4px;
-  height: 22px; padding: 0 8px; border-radius: 999px;
-  font-size: 11px; color: var(--color-text-secondary, #6b6b66);
-  background: var(--el-fill-color-lighter, #f6f4ef);
-}
-.cp-env-chip.off { opacity: 0.45; }
-.cp-env-dot {
-  width: 6px; height: 6px; border-radius: 50%;
-  background: var(--color-success, #2f6b4f);
-}
-.cp-env-chip.off .cp-env-dot { background: var(--color-text-tertiary, #9c9b94); }
 .cp-env-set {
   display: inline-flex; align-items: center; gap: 4px;
   height: 24px; padding: 0 9px; border-radius: 8px; cursor: pointer;
@@ -261,6 +493,11 @@ onMounted(async () => {
   font-size: 11.5px; font-family: inherit; transition: all 0.15s ease;
 }
 .cp-env-set:hover { border-color: var(--color-primary, #c2410c); color: var(--color-primary, #c2410c); }
+.cp-env-set.active {
+  border-color: var(--color-primary, #c2410c);
+  background: color-mix(in srgb, var(--color-primary, #c2410c) 10%, transparent);
+  color: var(--color-primary, #c2410c);
+}
 
 .cp-back {
   display: inline-flex; align-items: center; gap: 5px;
@@ -277,7 +514,9 @@ onMounted(async () => {
 .cp-side {
   flex: 0 0 var(--code-side-w, 260px);
   min-width: 0;
-  background: var(--color-surface, #fff);
+  background: var(--glass-bg, #fff);
+  backdrop-filter: var(--glass-filter);
+  -webkit-backdrop-filter: var(--glass-filter);
   border-right: 1px solid var(--glass-border, #e7e4dc);
   overflow: hidden;
 }
@@ -300,7 +539,9 @@ onMounted(async () => {
   flex: 0 0 var(--code-chat-w, 420px);
   min-width: 0;
   display: flex; flex-direction: column;
-  background: var(--color-surface, #fff);
+  background: var(--glass-bg, #fff);
+  backdrop-filter: var(--glass-filter);
+  -webkit-backdrop-filter: var(--glass-filter);
   border-left: 1px solid var(--glass-border, #e7e4dc);
   overflow: hidden;
 }
@@ -322,6 +563,42 @@ onMounted(async () => {
 }
 .cp-chat-btn:hover { background: var(--glass-bg-hover, #f1efe9); color: var(--color-text, #1a1a1a); }
 .cp-chat-msgs { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+
+/* ===== 任务下拉面板 ===== */
+.cp-task-trigger {
+  display: inline-flex; align-items: center; gap: 5px;
+  height: 26px; padding: 0 8px; border-radius: 7px; border: none;
+  background: transparent; cursor: pointer; font-family: inherit;
+  transition: all 0.15s ease;
+}
+.cp-task-trigger:hover { background: var(--glass-bg-hover, #f1efe9); }
+.cp-task-trigger.active { background: var(--glass-bg-hover, #f1efe9); }
+.cp-task-caret { color: var(--color-text-tertiary, #9c9b94); transition: transform 0.15s ease; }
+.cp-task-trigger.active .cp-task-caret { transform: rotate(180deg); }
+.cp-task-dropdown {
+  position: fixed; z-index: 9999; width: 260px; max-height: 400px; overflow-y: auto;
+  background: var(--glass-bg, #fff); border: 1px solid var(--glass-border, #e7e4dc);
+  border-radius: 10px; box-shadow: 0 8px 24px rgba(0,0,0,0.12);
+  padding: 6px 0;
+}
+.cp-task-section {
+  font-size: 10.5px; font-weight: 600; color: var(--color-text-tertiary, #9c9b94);
+  padding: 6px 12px 3px; text-transform: uppercase; letter-spacing: 0.5px;
+}
+.cp-task-divider { height: 1px; margin: 4px 8px; background: var(--glass-border, #e7e4dc); }
+.cp-task-item {
+  display: flex; align-items: center; gap: 7px; padding: 6px 12px;
+  cursor: pointer; border-radius: 6px; margin: 0 4px; transition: background 0.12s ease;
+}
+.cp-task-item:hover { background: var(--glass-bg-hover, #f1efe9); }
+.cp-task-item.active { background: color-mix(in srgb, var(--color-primary, #c2410c) 10%, transparent); color: var(--color-primary, #c2410c); }
+.cp-task-item-label { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.cp-task-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--color-text-tertiary, #9c9b94); flex-shrink: 0; }
+.cp-task-item.active .cp-task-dot { background: var(--color-primary, #c2410c); }
+.cp-task-empty { font-size: 11.5px; color: var(--color-text-tertiary, #9c9b94); padding: 4px 12px 8px; }
+.cp-task-check { color: var(--color-primary, #c2410c); flex-shrink: 0; }
+.cp-task-action { color: var(--color-primary, #c2410c); font-weight: 600; }
+.cp-proj-dropdown { width: 280px; }
 
 @media (max-width: 1100px) {
   .cp-chat { display: none; }

@@ -42,6 +42,10 @@ const BUILTIN_TOOL_CATEGORIES: { key: string; label: string; prefixes?: string[]
   { key: 'data', label: '数据查询（本体/SQL）', prefixes: ['api_ontology_', 'api_data_', 'api_datasource_'] },
   { key: 'image', label: '图像分析', names: ['image_analyze'] },
   { key: 'config', label: '模型配置', names: ['configure_model_platform', 'list_models'] },
+  { key: 'plugin-java', label: 'Java 开发', prefixes: ['plugin_java-suite__'] },
+  { key: 'plugin-cicd', label: 'CI/CD 流水线', prefixes: ['plugin_cicd-pipeline__'] },
+  { key: 'plugin-ops', label: '运维', prefixes: ['plugin_ops-shell__'] },
+  { key: 'plugin-other', label: '其他插件', prefixes: ['plugin_'] },
 ];
 
 function rowToTool(r: any): CustomToolItem {

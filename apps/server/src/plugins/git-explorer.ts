@@ -11,6 +11,10 @@ export const gitExplorerManifest: PluginManifest = {
   permissions: ['fs', 'shell', 'git'],
   contributes: {
     tools: ['git_status', 'git_diff', 'git_log', 'git_commit', 'git_file_tree'],
+    routes: [
+      { path: '/git-explorer', name: 'git-explorer', component: 'views/plugin/GitExplorer.vue', meta: { desktopOnly: true } },
+    ],
+    // 不挂侧栏/「更多」入口：Git 统一走对话页 Git 面板与代码模式侧栏，避免导航里出现重复项
   },
 };
 
@@ -106,6 +110,137 @@ export const gitExplorerModule: PluginModule = {
         textResult(await gitService.fileTree(String(args.repo), (args.path as string) || '')),
     });
 
-    ctx.log('git-explorer 插件已激活，注册 5 个 git 工具');
+    ctx.registerTool({
+      name: 'git_fetch',
+      description: '从远程抓取更新（不合并）',
+      inputSchema: {
+        type: 'object',
+        properties: { repo: { type: 'string' }, remote: { type: 'string' }, branch: { type: 'string' } },
+        required: ['repo'],
+      },
+      execute: async (args) => textResult(await gitService.fetch(String(args.repo), (args.remote as string) || 'origin', args.branch as string | undefined)),
+    });
+
+    ctx.registerTool({
+      name: 'git_stash_save',
+      description: '储藏当前改动',
+      inputSchema: {
+        type: 'object',
+        properties: { repo: { type: 'string' }, message: { type: 'string' } },
+        required: ['repo'],
+      },
+      execute: async (args) => textResult(await gitService.stashSave(String(args.repo), args.message as string | undefined)),
+    });
+
+    ctx.registerTool({
+      name: 'git_stash_list',
+      description: '列出所有储藏',
+      inputSchema: { type: 'object', properties: { repo: { type: 'string' } }, required: ['repo'] },
+      execute: async (args) => textResult(await gitService.stashList(String(args.repo))),
+    });
+
+    ctx.registerTool({
+      name: 'git_stash_pop',
+      description: '弹出储藏',
+      inputSchema: {
+        type: 'object',
+        properties: { repo: { type: 'string' }, index: { type: 'number' } },
+        required: ['repo'],
+      },
+      execute: async (args) => textResult(await gitService.stashPop(String(args.repo), (args.index as number) || 0)),
+    });
+
+    ctx.registerTool({
+      name: 'git_tag_create',
+      description: '创建标签',
+      inputSchema: {
+        type: 'object',
+        properties: { repo: { type: 'string' }, name: { type: 'string' }, message: { type: 'string' } },
+        required: ['repo', 'name'],
+      },
+      execute: async (args) => { await gitService.tagCreate(String(args.repo), String(args.name), args.message as string | undefined); return textResult({ ok: true }); },
+    });
+
+    ctx.registerTool({
+      name: 'git_tag_list',
+      description: '列出所有标签',
+      inputSchema: { type: 'object', properties: { repo: { type: 'string' } }, required: ['repo'] },
+      execute: async (args) => textResult(await gitService.tagList(String(args.repo))),
+    });
+
+    ctx.registerTool({
+      name: 'git_blame',
+      description: '追溯文件每行的修改信息',
+      inputSchema: {
+        type: 'object',
+        properties: { repo: { type: 'string' }, file: { type: 'string' } },
+        required: ['repo', 'file'],
+      },
+      execute: async (args) => textResult(await gitService.blame(String(args.repo), String(args.file))),
+    });
+
+    ctx.registerTool({
+      name: 'git_revert',
+      description: '撤销指定提交（产生反向提交）',
+      inputSchema: {
+        type: 'object',
+        properties: { repo: { type: 'string' }, commit: { type: 'string' } },
+        required: ['repo', 'commit'],
+      },
+      execute: async (args) => textResult(await gitService.revert(String(args.repo), String(args.commit))),
+    });
+
+    ctx.registerTool({
+      name: 'git_reset',
+      description: '重置 HEAD 到指定目标',
+      inputSchema: {
+        type: 'object',
+        properties: { repo: { type: 'string' }, mode: { type: 'string', enum: ['soft', 'mixed', 'hard'] }, target: { type: 'string' } },
+        required: ['repo', 'mode', 'target'],
+      },
+      execute: async (args) => textResult(await gitService.reset(String(args.repo), args.mode as 'soft' | 'mixed' | 'hard', String(args.target))),
+    });
+
+    ctx.registerTool({
+      name: 'git_cherry_pick',
+      description: '挑选提交到当前分支',
+      inputSchema: {
+        type: 'object',
+        properties: { repo: { type: 'string' }, commit: { type: 'string' } },
+        required: ['repo', 'commit'],
+      },
+      execute: async (args) => textResult(await gitService.cherryPick(String(args.repo), String(args.commit))),
+    });
+
+    ctx.registerTool({
+      name: 'git_rebase',
+      description: '变基到指定分支',
+      inputSchema: {
+        type: 'object',
+        properties: { repo: { type: 'string' }, branch: { type: 'string' } },
+        required: ['repo', 'branch'],
+      },
+      execute: async (args) => textResult(await gitService.rebase(String(args.repo), String(args.branch))),
+    });
+
+    ctx.registerTool({
+      name: 'git_merge',
+      description: '合并指定分支到当前分支',
+      inputSchema: {
+        type: 'object',
+        properties: { repo: { type: 'string' }, branch: { type: 'string' } },
+        required: ['repo', 'branch'],
+      },
+      execute: async (args) => textResult(await gitService.merge(String(args.repo), String(args.branch))),
+    });
+
+    ctx.registerTool({
+      name: 'git_branches',
+      description: '列出本地和远程分支',
+      inputSchema: { type: 'object', properties: { repo: { type: 'string' } }, required: ['repo'] },
+      execute: async (args) => textResult({ local: await gitService.branches(String(args.repo)), remote: await gitService.remoteBranches(String(args.repo)) }),
+    });
+
+    ctx.log('git-explorer 插件已激活，注册 git 工具');
   },
 };

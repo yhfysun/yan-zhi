@@ -30,6 +30,18 @@ export { TaskPlanTool, TaskStepTool } from './task-plan';
 export { ConfigureModelPlatformTool } from './configure-model-platform';
 export { ImageAnalyzeTool } from './image-analyze';
 export { CompareProductsTool } from './compare-products';
+// 搜索后端原语（server MCP web_search 后端使用；web_search 不再注册为内置工具）
+export {
+  FetchSearchBackend,
+  DuckDuckGoSearchBackend,
+  BingApiSearchBackend,
+  ServerSearchBackend,
+  type SearchBackend,
+  type SearchResult,
+  type SearchSummarizer,
+  type FetchSearchConfig,
+  type TimeRange,
+} from './web-search';
 
 import { FileReadTool } from './file-read';
 import { FileToMarkdownTool } from './file-to-markdown';

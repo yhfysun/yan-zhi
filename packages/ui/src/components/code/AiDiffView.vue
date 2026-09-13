@@ -121,7 +121,7 @@ async function act(kind: 'apply' | 'revert' | 'dismiss') {
   padding: 0 10px;
   flex-shrink: 0;
   border-bottom: 1px solid var(--glass-border, #e7e4dc);
-  background: color-mix(in srgb, var(--color-primary, #c2410c) 6%, var(--el-fill-color-lighter, #faf9f6));
+  background: color-mix(in srgb, var(--color-primary, #c2410c) 6%, var(--color-surface-hover));
   font-size: 12px;
 }
 .ai-diff-title {
