@@ -188,6 +188,34 @@ export interface McpServer {
   autoReconnect: boolean;
   reconnectInterval: number;
   autoConnect: boolean;
+  /** 绑定的凭证 ID（mcp_credential.id）；连接时自动注入对应鉴权头/环境变量 */
+  authCredentialId?: string | null;
+}
+
+/** MCP 凭证/令牌保险库条目（列表不含明文 secret） */
+export interface McpCredential {
+  id: string;
+  name: string;
+  scheme: 'bearer' | 'raw'; // bearer: Authorization: Bearer <secret>；raw: <key>: <secret>
+  target: 'header' | 'env'; // 注入请求头或 stdio 环境变量
+  key?: string | null; // raw 模式的头名/环境变量名
+  hasSecret: boolean;
+  createdAt: number;
+}
+
+/** 入站 MCP 访问凭证（对外签发，外部客户端带此连接我们的 MCP 服务）。不回显明文/哈希。 */
+export interface McpAccessKey {
+  id: string;
+  name: string;
+  keyPrefix: string; // 明文前缀（如 yzk_a1b2c3...），仅用于列表辨识
+  createdAt: number;
+  expiresAt: number | null;
+  lastUsedAt: number | null;
+}
+
+/** 签发访问凭证时的一次性返回（含明文 key，仅此一次） */
+export interface McpAccessKeyCreated extends McpAccessKey {
+  key: string;
 }
 
 /** MCP 工具 */

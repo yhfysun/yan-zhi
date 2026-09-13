@@ -132,17 +132,17 @@ router.get('/', (req: Request, res: Response) => {
 // POST /api/mcp-servers
 router.post('/', (req: Request, res: Response) => {
   const userId = req.user!.userId;
-  const { name, transport, command, args, env, url, headers, autoReconnect, reconnectInterval, autoConnect } = req.body || {};
+  const { name, transport, command, args, env, url, headers, autoReconnect, reconnectInterval, autoConnect, authCredentialId } = req.body || {};
   if (!name || !transport) { res.status(400).json({ error: '名称和传输协议为必填项' }); return; }
 
   const id = uuid();
   const now = Date.now();
   db.prepare(
-    'INSERT INTO mcp_server (id, user_id, name, transport, command, args_json, env_json, url, headers_json, auto_reconnect, reconnect_interval, auto_connect, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    'INSERT INTO mcp_server (id, user_id, name, transport, command, args_json, env_json, url, headers_json, auto_reconnect, reconnect_interval, auto_connect, auth_credential_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
   ).run(id, userId, name, transport, command || null, JSON.stringify(args || []),
     JSON.stringify(env || {}), url || null, JSON.stringify(headers || {}),
     autoReconnect !== undefined ? (autoReconnect ? 1 : 0) : 1, reconnectInterval || 5000,
-    autoConnect ? 1 : 0, now);
+    autoConnect ? 1 : 0, authCredentialId || null, now);
   const row = db.prepare('SELECT * FROM mcp_server WHERE id = ?').get(id);
   res.json({ data: row });
 });
@@ -169,6 +169,7 @@ router.patch('/:id', (req: Request, res: Response) => {
   if (body.autoReconnect !== undefined) pushVal('auto_reconnect', body.autoReconnect ? 1 : 0);
   if (body.reconnectInterval !== undefined) pushVal('reconnect_interval', body.reconnectInterval || 5000);
   if (body.autoConnect !== undefined) pushVal('auto_connect', body.autoConnect ? 1 : 0);
+  if (body.authCredentialId !== undefined) pushVal('auth_credential_id', body.authCredentialId || null);
   if (sets.length === 0) { res.json({ data: existing }); return; }
   vals.push(sid);
   db.prepare(`UPDATE mcp_server SET ${sets.join(', ')} WHERE id = ?`).run(...vals);

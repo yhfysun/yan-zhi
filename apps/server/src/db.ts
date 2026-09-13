@@ -187,6 +187,7 @@ db.exec(`
     auto_reconnect INTEGER DEFAULT 1,
     reconnect_interval INTEGER DEFAULT 5000,
     auto_connect INTEGER DEFAULT 0,
+    auth_credential_id TEXT,
     created_at INTEGER NOT NULL
   );
 
@@ -199,6 +200,32 @@ db.exec(`
     alias TEXT,
     remark TEXT,
     UNIQUE(mcp_server_id, name)
+  );
+
+  -- MCP 凭证/令牌保险库：secret 用 utils/crypto.ts 的 AES-256-GCM 加密（secret_enc），明文永不落库、列表不回显
+  CREATE TABLE IF NOT EXISTS mcp_credential (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES user(id),
+    name TEXT NOT NULL,
+    scheme TEXT NOT NULL DEFAULT 'bearer',  -- bearer: Authorization: Bearer <secret>；raw: <key>: <secret>
+    target TEXT NOT NULL DEFAULT 'header',  -- header: 注入请求头；env: 注入 stdio 环境变量
+    key TEXT,                              -- scheme=raw 时的头名/环境变量名；bearer 可空
+    secret_enc TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+
+  -- 入站 MCP 访问凭证：对外签发，外部 MCP 客户端带此凭证连接我们的 MCP 服务。
+  -- key 明文仅创建时返回一次；库内只存 SHA-256 哈希（key_hash），key_prefix 仅用于列表展示。
+  -- 每个 key 绑定到某个 user_id，外部客户端以该用户身份操作（访问其对话/知识库/工具）。
+  CREATE TABLE IF NOT EXISTS mcp_access_key (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES user(id),
+    name TEXT NOT NULL,
+    key_hash TEXT NOT NULL,
+    key_prefix TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER,          -- 可空；非空过期后拒绝
+    last_used_at INTEGER         -- 可空；最近一次成功鉴权时间
   );
 
   CREATE TABLE IF NOT EXISTS skill (
@@ -322,6 +349,9 @@ for (const col of ['alias', 'remark']) {
 }
 // enabled 列：前端 store 一直在读写它，但建表语句里从未创建过，老库会直接报 no such column
 try { db.exec('ALTER TABLE mcp_tool ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1'); } catch {}
+
+// 迁移 mcp_server 表（绑定凭证：auth_credential_id 指向 mcp_credential.id）
+try { db.exec('ALTER TABLE mcp_server ADD COLUMN auth_credential_id TEXT'); } catch {}
 
 // 迁移平台/模型表（添加内置标记）
 for (const table of ['platform', 'model']) {
@@ -821,6 +851,52 @@ const OPS_AGENT_SYSTEM_PROMPT = `你是运维助手（opsAgent），负责在用
 - 不要执行交互式命令（top/vim/apt 交互确认等），用非交互替代（free -m / sed / apt-get -y）。
 - 长输出会被截断：优先用 grep/tail/head 精确取关键行，必要时分段查看；db_query 结果超 200 行会截断，加 LIMIT/过滤条件缩小范围。
 - 只做用户请求范围内的操作，禁止顺带"优化"其他服务。`;
+
+// ===== 安全助手（sec-lab）=====
+const SEC_AGENT_BUILTIN_TOOLS = [
+  // 授权范围管理（动手前必查、目标未授权先登记）
+  'plugin_sec-lab__scope_list',
+  'plugin_sec-lab__scope_add',
+  'plugin_sec-lab__scope_remove',
+  // A 轨自研能力（零依赖，开箱即用）
+  'plugin_sec-lab__recon',
+  'plugin_sec-lab__portscan',
+  'plugin_sec-lab__webprobe',
+  // B 轨外部工具链（检测到 nmap/nuclei 等时接管；未安装自动降级到 A 轨）
+  'plugin_sec-lab__toolchain',
+  // 报告
+  'plugin_sec-lab__sec_report',
+  // 任务规划与用户交互
+  'task_plan', 'task_step', 'ask_user', 'confirm_user',
+];
+
+const SEC_AGENT_SYSTEM_PROMPT = `你是安全助手（secAgent），在用户已授权的目标范围内做安全评估：侦察、端口与服务识别、Web 漏洞探测、配置审计，最后产出带严重度分级的报告。
+
+## 合规硬约束（最高优先级，任何情况下不得绕过）
+- **只对自有资产或持有书面授权的目标动手。** 执行任何带 target 的工具前必须先 scope_list 确认目标已登记且未过期。
+- 目标不在授权范围内：**立即停止**，告诉用户「该目标未登记授权」，并引导用 scope_add 登记（授权人 / 证明材料 / 有效期 / 允许的最高风险级）。不要尝试换工具、换写法绕过。
+- 护栏会在服务端强制拦截越界请求并记录审计，反复尝试只会污染审计记录。
+- 不做任何破坏性动作（DoS、删改数据、清日志、反弹 shell、横向移动到范围外目标）。
+
+## 工具用法
+- scope_list：动手前先看授权清单，确认目标与允许的最高风险级（passive/active/intrusive）。
+- scope_add：用户明确目标已获授权时，主动帮他登记（问清授权人与有效期；不填视为长期）。
+- recon（passive）：目标画像——DNS 记录、TLS 证书有效期与协议版本、HTTP 安全响应头、子域发现。**探索阶段先跑它**。
+- portscan（active）：端口与服务识别，ports 支持 "common"（默认，快）/"80,443"/"1-1024"/"all"（最慢，谨慎）。
+- webprobe（active）：Web 面——敏感路径与备份文件、Cookie 安全标志、CORS、组件指纹（Shiro/ThinkPHP/Jenkins 等）。
+- toolchain：先 action=detect 看本机有哪些外部工具（nmap/nuclei/nikto…）；有的话 action=run 接管，没有就用 A 轨工具，不要向用户抱怨缺工具。
+- sec_report：收尾时汇总历史发现项出 Markdown 报告，可按 target 过滤。
+
+## 工作流程
+1. **确认授权**：scope_list → 目标未登记则引导登记后再继续。
+2. **先被动后主动**：recon 摸清暴露面 → 再决定要不要 portscan / webprobe。
+3. **侵入性动作**（爆破、注入验证）属于 intrusive 级，默认关闭。确需使用时：先向用户说明目标、动作、可能影响，用 confirm_user 取得确认，并提醒需在插件配置中开启「交战模式」。
+4. **收敛与报告**：把发现项按严重度（critical/high/medium/low/info）归类，给出可执行的修复建议，最后 sec_report 出报告。
+
+## 输出要求
+- 用中文。先给结论（暴露面如何、最严重的问题是什么），再给证据，最后给修复建议。
+- 每条发现项标明严重度与影响，不要只罗列原始工具输出。
+- 不确定的判断要说明不确定性，不要为了显得专业而夸大风险。`;
 
 
 
@@ -1386,6 +1462,18 @@ export const seedAgents: Array<Record<string, unknown>> = [
     builtin_tool_ids: JSON.stringify(OPS_AGENT_BUILTIN_TOOLS),
     system_prompt: OPS_AGENT_SYSTEM_PROMPT,
     // 内置定义由代码收敛：工具挂载/提示词以代码为准，强制同步旧库残留
+    force_sync: true,
+    config_json: JSON.stringify({ maxReActSteps: 30 }),
+  },
+  {
+    id: 'a_builtin_sec_agent',
+    name: '安全助手',
+    description:
+      '内置安全助手：在已授权目标上做侦察（DNS/TLS/HTTP/子域）、端口与服务识别、Web 漏洞探测与配置审计，产出带严重度分级的报告；授权范围校验 + 危险动作黑名单 + 全量审计，配合「安全工作台」插件使用',
+    type: 'harness',
+    is_builtin: 1,
+    builtin_tool_ids: JSON.stringify(SEC_AGENT_BUILTIN_TOOLS),
+    system_prompt: SEC_AGENT_SYSTEM_PROMPT,
     force_sync: true,
     config_json: JSON.stringify({ maxReActSteps: 30 }),
   },

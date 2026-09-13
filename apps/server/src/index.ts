@@ -17,6 +17,9 @@ import { seedBuiltinWorkflowAgents, ensureBuiltinWorkflowModel } from './builtin
 import agentRoutes from './routes/agents.js';
 import workflowRoutes from './routes/workflow.js';
 import mcpRoutes from './routes/mcp.js';
+import mcpCredentialRoutes from './routes/mcp-credentials.js';
+import mcpAccessKeyRoutes from './routes/mcp-access-keys.js';
+import { createInboundMcpRouter } from './mcp/inbound-server.js';
 import skillRoutes from './routes/skills.js';
 import toolsRoutes from './routes/tools.js';
 import toolMarketplaceRoutes from './routes/tool-marketplace-sources.js';
@@ -51,6 +54,7 @@ import { registerBuiltinSkins } from './plugins/skins.js';
 import { opsShellManifest, opsShellModule } from './plugins/ops-shell.js';
 import { cicdManifest, cicdModule } from './plugins/cicd-pipeline.js';
 import { javaSuiteManifest, javaSuiteModule } from './plugins/java-suite.js';
+import { secLabManifest, secLabModule } from './plugins/sec-lab.js';
 import { syncAgnesPlatformForAllUsers } from './agnes-platform/service.js';
 import { ensureProjectDataSource } from './services/datasource.js';
 import { ensureBuiltinOntologies } from './services/ontology.js';
@@ -87,6 +91,10 @@ app.use('/api/platforms', platformRoutes);
 app.use('/api/agents', agentRoutes);
 app.use('/api/workflow', workflowRoutes);
 app.use('/api/mcp-servers', mcpRoutes);
+app.use('/api/mcp-credentials', mcpCredentialRoutes);
+app.use('/api/mcp-access-keys', mcpAccessKeyRoutes);
+// 入站 MCP 服务端：作为 MCP server 被外部客户端连接（SSE + Streamable HTTP）
+app.use('/mcp', createInboundMcpRouter());
 app.use('/api/skills', skillRoutes);
 app.use('/api/tools', toolsRoutes);
 app.use('/api/tool-marketplace', toolMarketplaceRoutes);
@@ -254,6 +262,8 @@ try {
     await mgr.registerBuiltin(cicdManifest, cicdModule, true);
     // Java 开发套件：Maven/Gradle/Spring Boot/调试/测试/格式化/MyBatis
     await mgr.registerBuiltin(javaSuiteManifest, javaSuiteModule, true);
+    // 安全工作台：授权范围内的侦察/扫描/审计（护栏：授权范围 + 危险动作黑名单 + 全量审计）
+    await mgr.registerBuiltin(secLabManifest, secLabModule, true);
     }
     // 旧库一次性迁移：本版本起内置高危插件默认开启（新装库在 registerBuiltin 首次注册即启用；
     // 旧库已存在 disabled 行不会被动到），按标记只执行一次，之后用户停用状态永久尊重

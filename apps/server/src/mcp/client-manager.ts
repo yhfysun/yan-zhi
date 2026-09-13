@@ -9,6 +9,7 @@ import { randomBytes } from 'node:crypto';
 import type { McpServer, McpTool } from '@yan-zhi/shared';
 import { McpClient } from '@yan-zhi/core';
 import { db } from '../db.js';
+import { decrypt } from '../utils/crypto.js';
 import { StdioMcpClient, type McpCallResult } from './stdio-client.js';
 
 export type { McpCallResult };
@@ -25,8 +26,30 @@ const connections = new Map<string, Connection>();
 /** serverId → 连接中的 Promise，避免并发重复连接 */
 const connecting = new Map<string, Promise<Connection>>();
 
+/**
+ * 若 server 绑定了凭证（auth_credential_id），解密后按 scheme/target 注入到 headers 或 env。
+ * 凭证行必须归属同一 user_id（所有权校验），防止越权使用他人凭证。
+ */
+function applyBoundCredential(server: McpServer, row: any): void {
+  const credId = row.auth_credential_id;
+  if (!credId) return;
+  const cred = db.prepare('SELECT * FROM mcp_credential WHERE id = ? AND user_id = ?').get(credId, row.user_id) as any;
+  if (!cred) return;
+  let secret: string;
+  try { secret = decrypt(cred.secret_enc); } catch { return; }
+  const isHeader = (cred.target || 'header') === 'header';
+  const headerKey = cred.key || (cred.scheme === 'bearer' ? 'Authorization' : 'Authorization');
+  const headerValue = cred.scheme === 'bearer' ? `Bearer ${secret}` : secret;
+  if (isHeader) {
+    server.headers = { ...(server.headers || {}), [headerKey]: headerValue };
+  } else {
+    const envKey = cred.key || (cred.scheme === 'bearer' ? 'AUTH_TOKEN' : 'TOKEN');
+    server.env = { ...(server.env || {}), [envKey]: cred.scheme === 'bearer' ? `Bearer ${secret}` : secret };
+  }
+}
+
 function rowToServer(row: any): McpServer {
-  return {
+  const server: McpServer = {
     id: row.id,
     name: row.name,
     transport: row.transport || 'stdio',
@@ -40,6 +63,8 @@ function rowToServer(row: any): McpServer {
     reconnectInterval: row.reconnect_interval || 5000,
     autoConnect: !!row.auto_connect,
   };
+  applyBoundCredential(server, row);
+  return server;
 }
 
 export function loadServer(serverId: string, userId?: string): McpServer | null {

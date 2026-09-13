@@ -1,7 +1,7 @@
 // MCP store
 import { defineStore } from 'pinia';
 import { ref } from 'vue';
-import type { McpServer, McpTransport, McpTool } from '@yan-zhi/shared';
+import type { McpServer, McpTransport, McpTool, McpCredential, McpAccessKey, McpAccessKeyCreated } from '@yan-zhi/shared';
 import { getPlatformAdapter, McpClient } from '@yan-zhi/core';
 import { uid } from '@yan-zhi/shared';
 import { api } from '../api/client';
@@ -29,6 +29,8 @@ export const useMcpStore = defineStore('mcp', () => {
   const tools = ref<Record<string, McpTool[]>>({});
   const resources = ref<Record<string, any[]>>({});
   const prompts = ref<Record<string, any[]>>({});
+  const credentials = ref<McpCredential[]>([]);
+  const accessKeys = ref<McpAccessKey[]>([]);
   const connecting = ref('');
   const logs = ref<Record<string, Array<{ time: number; method: string; ok: boolean; msg?: string }>>>({});
   const mcpTestClient = ref<McpClient | null>(null);
@@ -104,11 +106,13 @@ export const useMcpStore = defineStore('mcp', () => {
     command?: string; args?: string[]; env?: Record<string, string>;
     url?: string; headers?: Record<string, string>;
     autoReconnect?: boolean; reconnectInterval?: number; autoConnect?: boolean;
+    authCredentialId?: string | null;
   }): Promise<McpServer> {
     if (on()) {
       const r = await api.post<any>('/mcp-servers', data);
       if ('data' in r) {
         const s = rowToServer(r.data);
+        s.authCredentialId = (r.data as any).auth_credential_id || null;
         servers.value.unshift(s);
         return s;
       }
@@ -123,10 +127,10 @@ export const useMcpStore = defineStore('mcp', () => {
       data.url || null,
       data.headers ? JSON.stringify(data.headers) : '{}',
       0, data.autoReconnect !== false ? 1 : 0, data.reconnectInterval || 5000,
-      data.autoConnect ? 1 : 0, Date.now(),
+      data.autoConnect ? 1 : 0, data.authCredentialId || null, Date.now(),
     ];
     await adapter.db.exec(
-      'INSERT INTO mcp_server (id, name, transport, command, args_json, env_json, url, headers_json, status, auto_reconnect, reconnect_interval, auto_connect, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO mcp_server (id, name, transport, command, args_json, env_json, url, headers_json, status, auto_reconnect, reconnect_interval, auto_connect, auth_credential_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
       row,
     );
     const server: McpServer = {
@@ -135,6 +139,7 @@ export const useMcpStore = defineStore('mcp', () => {
       url: data.url, headers: data.headers || {},
       status: 'disconnected', autoReconnect: data.autoReconnect !== false,
       reconnectInterval: data.reconnectInterval || 5000, autoConnect: data.autoConnect !== false,
+      authCredentialId: data.authCredentialId || null,
     };
     servers.value.unshift(server);
     return server;
@@ -425,6 +430,67 @@ export const useMcpStore = defineStore('mcp', () => {
     }
   }
 
+  // ===== MCP 凭证/令牌保险库 =====
+  async function loadCredentials() {
+    if (!on()) { credentials.value = []; return; }
+    const r = await api.get<any[]>('/mcp-credentials');
+    if ('data' in r) credentials.value = r.data as McpCredential[];
+  }
+
+  async function createCredential(data: {
+    name: string; scheme: 'bearer' | 'raw'; target: 'header' | 'env';
+    key?: string; secret: string;
+  }): Promise<McpCredential> {
+    const r = await api.post<any>('/mcp-credentials', data);
+    if ('data' in r) {
+      const c = r.data as McpCredential;
+      const idx = credentials.value.findIndex((x) => x.id === c.id);
+      if (idx === -1) credentials.value.unshift(c); else credentials.value[idx] = c;
+      return c;
+    }
+    throw new Error('创建凭证失败');
+  }
+
+  async function generateCredentialToken(bytes?: number): Promise<string> {
+    const r = await api.post<any>('/mcp-credentials/generate', { bytes });
+    if ('data' in r && r.data?.token) return r.data.token;
+    throw new Error('生成令牌失败');
+  }
+
+  async function revealCredential(id: string): Promise<string> {
+    const r = await api.get<any>(`/mcp-credentials/${id}/secret`);
+    if ('data' in r && r.data?.secret) return r.data.secret;
+    throw new Error('查看凭证失败');
+  }
+
+  async function deleteCredential(id: string) {
+    await api.delete(`/mcp-credentials/${id}`);
+    credentials.value = credentials.value.filter((c) => c.id !== id);
+  }
+
+  // ===== 入站 MCP 访问凭证（对外签发，绑定到当前用户） =====
+  async function loadAccessKeys() {
+    if (!on()) { accessKeys.value = []; return; }
+    const r = await api.get<any[]>('/mcp-access-keys');
+    if ('data' in r) accessKeys.value = r.data as McpAccessKey[];
+  }
+
+  async function createAccessKey(name: string, expiresInDays?: number): Promise<McpAccessKeyCreated> {
+    const r = await api.post<any>('/mcp-access-keys', { name, expiresInDays });
+    if ('data' in r) {
+      const k = r.data as McpAccessKeyCreated;
+      const idx = accessKeys.value.findIndex((x) => x.id === k.id);
+      if (idx === -1) accessKeys.value.unshift(k); else accessKeys.value[idx] = k;
+      return k;
+    }
+    throw new Error('签发访问凭证失败');
+  }
+
+  async function revokeAccessKey(id: string) {
+    await api.delete(`/mcp-access-keys/${id}`);
+    accessKeys.value = accessKeys.value.filter((k) => k.id !== id);
+  }
+
   function addLog(serverId: string, method: string, ok: boolean, msg?: string) {
     if (!logs.value[serverId]) logs.value[serverId] = [];
     logs.value[serverId].unshift({ time: Date.now(), method, ok, msg });
@@ -436,9 +502,11 @@ export const useMcpStore = defineStore('mcp', () => {
   }
 
   return {
-    servers, tools, resources, prompts, connecting,
+    servers, tools, resources, prompts, connecting, credentials, accessKeys,
     loadServers, addServer, updateServer, deleteServer,
     connect, disconnect, updateToolMeta, setToolEnabled, callTool, readResource, getPrompt,
     testServerConfig, cancelTest, getLogs, isDesktop, isStdioSupported,
+    loadCredentials, createCredential, generateCredentialToken, revealCredential, deleteCredential,
+    loadAccessKeys, createAccessKey, revokeAccessKey,
   };
 });

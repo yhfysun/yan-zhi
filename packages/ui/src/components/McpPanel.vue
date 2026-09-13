@@ -1,5 +1,9 @@
 <template>
   <div class="mcp-panel">
+    <el-segmented v-model="activeTab" :options="tabOptions" class="mcp-tabs" />
+
+    <!-- 服务管理 -->
+    <template v-if="activeTab === 'servers'">
     <!-- 面板工具栏：搜索 + 新增（原独立页 page-top 的精简版，供 tab 内嵌使用） -->
     <div class="mcp-panel-toolbar">
       <div class="mcp-search-wrap">
@@ -24,6 +28,7 @@
               <el-tag :type="s.transport === 'stdio' ? '' : s.transport === 'sse' ? 'success' : 'warning'" size="small" effect="light">
                 {{ s.transport.toUpperCase() }}
               </el-tag>
+              <el-tag v-if="s.authCredentialId" type="info" size="small" effect="plain"><el-icon><Lock /></el-icon> 已鉴权</el-tag>
             </div>
           </div>
         </div>
@@ -67,6 +72,72 @@
         </div>
       </div>
     </div>
+    </template>
+
+    <!-- 凭证/令牌保险库 -->
+    <template v-else-if="activeTab === 'credentials'">
+      <div class="mcp-panel-toolbar">
+        <div class="cred-hint">集中生成、加密存储 MCP 服务鉴权令牌，绑定到服务后连接时自动注入（明文不落库、列表不回显）。</div>
+        <el-button type="primary" @click="openCredAdd" :icon="Plus" class="fab-add">新增凭证</el-button>
+      </div>
+
+      <el-empty v-if="store.credentials.length === 0" description="暂无凭证，点击右上角生成第一个" :image-size="120" />
+      <div v-else class="cred-list">
+        <div v-for="c in store.credentials" :key="c.id" class="cred-item">
+          <div class="cred-main">
+            <div class="cred-name">{{ c.name }}</div>
+            <div class="cred-meta">
+              <el-tag size="small" effect="light">{{ c.scheme === 'bearer' ? 'Bearer' : 'Raw' }}</el-tag>
+              <el-tag size="small" effect="plain" type="info">{{ c.target === 'header' ? '请求头' : '环境变量' }}</el-tag>
+              <span v-if="c.scheme === 'raw' && c.key" class="cred-key">{{ c.key }}</span>
+              <span class="cred-time">创建于 {{ new Date(c.createdAt).toLocaleDateString() }}</span>
+            </div>
+          </div>
+          <div class="cred-actions">
+            <el-button size="small" @click="revealCred(c)" round>查看</el-button>
+            <el-button size="small" type="danger" plain @click="delCred(c)" round>删除</el-button>
+          </div>
+        </div>
+      </div>
+    </template>
+
+    <!-- 对外访问：入站 MCP 访问凭证 -->
+    <template v-else>
+      <div class="mcp-panel-toolbar">
+        <div class="cred-hint">签发访问凭证，把我们的内置/自定义工具以 MCP 服务形式开放给外部客户端。凭证绑定到你的账号，外部以你的身份调用。</div>
+        <el-button type="primary" @click="openKeyAdd" :icon="Plus" class="fab-add">签发凭证</el-button>
+      </div>
+
+      <el-alert type="info" :closable="false" show-icon class="endpoint-box" style="margin-bottom:14px">
+        <template #title>接入端点</template>
+        <div class="endpoint-url">
+          <code>{{ mcpEndpoint }}</code>
+          <el-button link type="primary" size="small" @click="copyText(mcpEndpoint)">复制</el-button>
+        </div>
+        <div class="endpoint-tip">
+          外部 MCP 客户端（如 Claude Desktop、我们自己的 McpClient）连接该端点，请求头携带
+          <code>Authorization: Bearer &lt;访问凭证&gt;</code>，即可列出并调用你的工具。
+        </div>
+      </el-alert>
+
+      <el-empty v-if="store.accessKeys.length === 0" description="尚未签发访问凭证" :image-size="120" />
+      <div v-else class="cred-list">
+        <div v-for="k in store.accessKeys" :key="k.id" class="cred-item">
+          <div class="cred-main">
+            <div class="cred-name">{{ k.name }}</div>
+            <div class="cred-meta">
+              <el-tag size="small" effect="plain" type="info" class="mono">{{ k.keyPrefix }}…</el-tag>
+              <span class="cred-time">签发于 {{ new Date(k.createdAt).toLocaleDateString() }}</span>
+              <span v-if="k.lastUsedAt" class="cred-time">上次使用 {{ new Date(k.lastUsedAt).toLocaleString() }}</span>
+              <span v-if="k.expiresAt" class="cred-time">过期 {{ new Date(k.expiresAt).toLocaleDateString() }}</span>
+            </div>
+          </div>
+          <div class="cred-actions">
+            <el-button size="small" type="danger" plain @click="revokeKey(k)" round>撤销</el-button>
+          </div>
+        </div>
+      </div>
+    </template>
 
     <el-dialog v-model="showAdd" title="新增 MCP 服务" width="560px" :close-on-click-modal="false" @close="cancelDialog">
       <el-form label-width="100px">
@@ -96,9 +167,15 @@
             </div>
           </el-form-item>
           <el-form-item label="Headers">
-            <el-input v-model="headersText" type="textarea" :rows="2" placeholder="Key: Value 一行一个（可选）" />
+            <el-input v-model="headersText" type="textarea" :rows="2" placeholder="Key: Value 一行一个（可选，手动填可不绑凭证）" />
           </el-form-item>
         </template>
+        <el-form-item label="绑定凭证">
+          <el-select v-model="form.authCredentialId" placeholder="不绑定（手动在 Headers 填鉴权）" clearable filterable style="width:100%">
+            <el-option v-for="c in store.credentials" :key="c.id" :label="`${c.name}（${c.scheme === 'bearer' ? 'Bearer' : 'Raw'}/${c.target === 'header' ? '头' : '环境变量'}）`" :value="c.id" />
+          </el-select>
+          <div class="form-tip">绑定后连接时自动注入对应鉴权头/环境变量，无需再手写 Headers。</div>
+        </el-form-item>
         <el-form-item label="自动重连"><el-switch v-model="form.autoReconnect" /></el-form-item>
         <el-form-item label="重连间隔"><el-input-number v-model="form.reconnectInterval" :min="1000" :step="1000" style="width:180px" /> ms</el-form-item>
         <el-form-item label="启动时连接"><el-switch v-model="form.autoConnect" /></el-form-item>
@@ -122,6 +199,75 @@
       <template #footer>
         <el-button @click="cancelDialog">取消</el-button>
         <el-button type="primary" :loading="saving" @click="save">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 新增/编辑凭证 -->
+    <el-dialog v-model="credDialog" :title="credForm.id ? '编辑凭证' : '新增凭证'" width="520px" :close-on-click-modal="false" @close="credDialog = false">
+      <el-form label-width="90px">
+        <el-form-item label="名称">
+          <el-input v-model="credForm.name" placeholder="如：GitHub PAT" />
+        </el-form-item>
+        <el-form-item label="注入方式">
+          <el-segmented v-model="credForm.scheme" :options="[{ label: 'Bearer', value: 'bearer' }, { label: 'Raw', value: 'raw' }]" />
+        </el-form-item>
+        <el-form-item label="注入位置">
+          <el-segmented v-model="credForm.target" :options="[{ label: '请求头', value: 'header' }, { label: '环境变量', value: 'env' }]" />
+        </el-form-item>
+        <el-form-item v-if="credForm.scheme === 'raw'" label="键名">
+          <el-input v-model="credForm.key" :placeholder="credForm.target === 'header' ? '如 X-API-Key' : '如 API_TOKEN'" />
+        </el-form-item>
+        <el-form-item label="密钥">
+          <el-input v-model="credForm.secret" type="textarea" :rows="3" :placeholder="credForm.scheme === 'bearer' ? '粘贴或生成 Bearer 令牌' : '粘贴或生成密钥'" />
+          <div class="form-tip">
+            <el-button link type="primary" size="small" :loading="genBusy" @click="genToken">生成随机令牌</el-button>
+            <span> · 提交后加密存储，明文仅可在「查看」中一次性获取</span>
+          </div>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="credDialog = false">取消</el-button>
+        <el-button type="primary" :loading="credSaving" @click="saveCred">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 查看明文 -->
+    <el-dialog v-model="revealDialog" :title="`查看凭证明文：${revealName}`" width="520px">
+      <el-alert type="warning" :closable="false" show-icon title="请妥善保存" description="明文仅在本次查看时返回，关闭后不可再获取，请立即复制。" style="margin-bottom:12px" />
+      <el-input :model-value="revealText" type="textarea" :rows="3" readonly />
+      <template #footer>
+        <el-button @click="revealDialog = false">关闭</el-button>
+        <el-button type="primary" @click="copyText(revealText)">复制</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 签发入站访问凭证 -->
+    <el-dialog v-model="keyDialog" title="签发访问凭证" width="520px" :close-on-click-modal="false" @close="closeKeyDialog">
+      <template v-if="!createdKey">
+        <el-form label-width="90px">
+          <el-form-item label="名称">
+            <el-input v-model="keyForm.name" placeholder="如：给同事小王的接入凭证" />
+          </el-form-item>
+          <el-form-item label="有效期">
+            <el-input-number v-model="keyForm.expiresInDays" :min="1" :max="3650" controls-position="right" style="width:180px" /> 天（留空=永久）
+          </el-form-item>
+        </el-form>
+      </template>
+      <template v-else>
+        <el-alert type="warning" :closable="false" show-icon title="凭证已生成，请立即复制" description="明文仅显示这一次，关闭对话框后将无法再次查看，请妥善保存。" style="margin-bottom:12px" />
+        <el-input :model-value="createdKey" type="textarea" :rows="3" readonly />
+        <div class="form-tip">
+          <el-button link type="primary" size="small" @click="copyText(createdKey)">复制凭证</el-button>
+        </div>
+      </template>
+      <template #footer>
+        <template v-if="!createdKey">
+          <el-button @click="keyDialog = false">取消</el-button>
+          <el-button type="primary" :loading="keySaving" @click="saveKey">签发</el-button>
+        </template>
+        <template v-else>
+          <el-button type="primary" @click="keyDialog = false">完成</el-button>
+        </template>
       </template>
     </el-dialog>
 
@@ -234,7 +380,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue';
-import { Plus, Connection, More, Link, Document, Switch, Tickets, List, Delete as DeleteIcon, Search, Close } from '@element-plus/icons-vue';
+import { Plus, Connection, More, Link, Document, Switch, Tickets, List, Delete as DeleteIcon, Search, Close, Lock } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { useMcpStore } from '../stores';
 import type { McpTransport, McpTool } from '@yan-zhi/shared';
@@ -245,6 +391,12 @@ const props = defineProps<{
 }>();
 
 const store = useMcpStore();
+const activeTab = ref<'servers' | 'credentials'>('servers');
+const tabOptions = [
+  { label: 'MCP 服务', value: 'servers' },
+  { label: '凭证管理', value: 'credentials' },
+  { label: '对外访问', value: 'inbound' },
+];
 const showAdd = ref(false);
 const searchQuery = ref('');
 const toolsDialog = ref(false);
@@ -258,6 +410,7 @@ const currentServerId = ref('');
 const form = ref({
   name: '', transport: 'stdio' as McpTransport,
   command: '', url: '', autoReconnect: true, reconnectInterval: 5000, autoConnect: true,
+  authCredentialId: '' as string,
 });
 const argsText = ref('');
 const envText = ref('');
@@ -268,6 +421,121 @@ const saving = ref(false);
 const formStatus = ref('');
 const formStatusType = ref<'ok' | 'err'>('ok');
 const previewTools = ref<McpTool[]>([]);
+
+// ===== 凭证/令牌保险库 =====
+const credDialog = ref(false);
+const credSaving = ref(false);
+const genBusy = ref(false);
+const credForm = ref({
+  id: '', name: '', scheme: 'bearer' as 'bearer' | 'raw', target: 'header' as 'header' | 'env',
+  key: '', secret: '',
+});
+const revealDialog = ref(false);
+const revealName = ref('');
+const revealText = ref('');
+
+function openCredAdd() {
+  credForm.value = { id: '', name: '', scheme: 'bearer', target: 'header', key: '', secret: '' };
+  credDialog.value = true;
+}
+
+async function genToken() {
+  genBusy.value = true;
+  try {
+    credForm.value.secret = await store.generateCredentialToken();
+  } catch (e: any) {
+    ElMessage.error(e?.message || '生成失败');
+  } finally {
+    genBusy.value = false;
+  }
+}
+
+async function saveCred() {
+  if (!credForm.value.name.trim()) { ElMessage.warning('请填写名称'); return; }
+  if (!credForm.value.secret.trim()) { ElMessage.warning('请填写或生成密钥'); return; }
+  if (credForm.value.scheme === 'raw' && !credForm.value.key.trim()) { ElMessage.warning('Raw 模式需填写键名'); return; }
+  credSaving.value = true;
+  try {
+    await store.createCredential({
+      name: credForm.value.name.trim(), scheme: credForm.value.scheme, target: credForm.value.target,
+      key: credForm.value.key.trim() || undefined, secret: credForm.value.secret.trim(),
+    });
+    credDialog.value = false;
+    ElMessage.success('凭证已加密保存');
+  } catch (e: any) {
+    ElMessage.error(e?.message || '保存失败');
+  } finally {
+    credSaving.value = false;
+  }
+}
+
+async function revealCred(c: any) {
+  try {
+    revealText.value = await store.revealCredential(c.id);
+    revealName.value = c.name;
+    revealDialog.value = true;
+  } catch (e: any) {
+    ElMessage.error(e?.message || '查看失败');
+  }
+}
+
+async function delCred(c: any) {
+  try {
+    await ElMessageBox.confirm(`删除凭证「${c.name}」？已绑定的服务将失去鉴权，需重新配置。`, '提示', { type: 'warning' });
+    await store.deleteCredential(c.id);
+    ElMessage.success('已删除');
+  } catch {}
+}
+
+async function copyText(t: string) {
+  try {
+    await navigator.clipboard.writeText(t);
+    ElMessage.success('已复制');
+  } catch {
+    ElMessage.warning('复制失败，请手动选择');
+  }
+}
+
+// ===== 入站 MCP 访问凭证 =====
+const mcpEndpoint = `${location.origin}/mcp`;
+const keyDialog = ref(false);
+const keySaving = ref(false);
+const keyForm = ref({ name: '', expiresInDays: undefined as number | undefined });
+const createdKey = ref('');
+
+function openKeyAdd() {
+  keyForm.value = { name: '', expiresInDays: undefined };
+  createdKey.value = '';
+  keyDialog.value = true;
+}
+
+async function saveKey() {
+  if (!keyForm.value.name.trim()) { ElMessage.warning('请填写名称'); return; }
+  keySaving.value = true;
+  try {
+    const r = await store.createAccessKey(keyForm.value.name.trim(), keyForm.value.expiresInDays);
+    createdKey.value = r.key;
+    ElMessage.success('凭证已签发');
+  } catch (e: any) {
+    ElMessage.error(e?.message || '签发失败');
+  } finally {
+    keySaving.value = false;
+  }
+}
+
+function closeKeyDialog() {
+  // 关闭后明文不再可见，刷新列表
+  createdKey.value = '';
+  store.loadAccessKeys();
+}
+
+async function revokeKey(k: any) {
+  try {
+    await ElMessageBox.confirm(`撤销访问凭证「${k.name}」？外部客户端将立即失去接入权限。`, '提示', { type: 'warning' });
+    await store.revokeAccessKey(k.id);
+    ElMessage.success('已撤销');
+  } catch {}
+}
 
 const toolEnabledMap = ref<Record<string, boolean>>({});
 const expandedDescs = ref<Record<string, boolean>>({});
@@ -340,6 +608,8 @@ const stdioUnsupportedTitle = computed(() =>
 
 onMounted(async () => {
   await store.loadServers();
+  await store.loadCredentials();
+  await store.loadAccessKeys();
   // 深链聚焦：原 /mcp/:id 直达，迁移后由 /tools?focus=<id> 传入
   if (props.focusServerId && store.servers.some((s) => s.id === props.focusServerId)) {
     showTools(props.focusServerId);
@@ -423,6 +693,7 @@ async function save() {
       command: form.value.command, args, env, url: form.value.url, headers,
       autoReconnect: form.value.autoReconnect, reconnectInterval: form.value.reconnectInterval,
       autoConnect: form.value.autoConnect,
+      authCredentialId: form.value.authCredentialId || null,
     });
     showAdd.value = false;
     resetForm();
@@ -436,7 +707,7 @@ async function save() {
 }
 
 function resetForm() {
-  form.value = { name: '', transport: store.isStdioSupported() ? 'stdio' : 'sse', command: '', url: '', autoReconnect: true, reconnectInterval: 5000, autoConnect: true };
+  form.value = { name: '', transport: store.isStdioSupported() ? 'stdio' : 'sse', command: '', url: '', autoReconnect: true, reconnectInterval: 5000, autoConnect: true, authCredentialId: '' };
   argsText.value = ''; envText.value = ''; headersText.value = '';
   formStatus.value = ''; previewTools.value = [];
 }
@@ -703,6 +974,19 @@ async function del(id: string) {
 }
 :root[data-theme="dark"] .tool-schema-block { background: rgba(255, 255, 255, 0.04); }
 :root[data-theme="dark"] .schema-pre { background: rgba(0, 0, 0, 0.35); }
+
+.cred-time { font-size: 12px; color: var(--color-text-secondary); }
+.mono { font-family: "JetBrains Mono", "Cascadia Code", monospace; }
+
+/* 入站访问端点信息框 */
+.endpoint-box { text-align: left; }
+.endpoint-url { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
+.endpoint-url code, .endpoint-tip code {
+  font-family: "JetBrains Mono", "Cascadia Code", monospace;
+  background: rgba(15, 23, 42, 0.06); padding: 2px 6px; border-radius: 4px; font-size: 12px;
+}
+.endpoint-url code { color: var(--color-primary); }
+.endpoint-tip { font-size: 12px; color: var(--color-text-secondary); line-height: 1.6; }
 
 @media (max-width: 767px) {
   .mcp-panel-toolbar { flex-wrap: wrap; }
