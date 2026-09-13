@@ -20,7 +20,7 @@ import { isCodeModeActive, useCodeStore } from '../../stores/code';
 import { useIsMobile } from '../useIsMobile';
 import { useRouter } from 'vue-router';
 import { api } from '../../api/client';
-import type { Agent, Message, Conversation, Platform } from '@yan-zhi/shared';
+import type { Agent, Message, Conversation, Platform, Model } from '@yan-zhi/shared';
 import { estimateTokens, CHAT_MODEL_TYPES } from '@yan-zhi/shared';
 import { sceneByKey, type SceneKey } from '../../config/scenes';
 
@@ -385,6 +385,8 @@ function createChat() {
 
   const input = ref('');
   const inputFocused = ref(false);
+  // 文本输入区 DOM 引用（el-input 实例）—— editQueued 时把焦点拉回输入框
+  const inputRef = ref<any>();
   const fileInputRef = ref<HTMLInputElement>();
   const uploadedFiles = ref<Array<{ name: string; size: number; type: string; dataUrl: string }>>([]);
 
@@ -1582,6 +1584,22 @@ function createChat() {
       return;
     }
 
+    // ===== 任务运行中 → 追加队列（不打断当前任务）=====
+    // 此前是「输入框禁用 + 直接 return」，表现为「一个会话跑着，别的会话/新建会话就发不出消息」。
+    // 现在：本会话在跑就入队（可点「立即发送」注入下一轮），切到别的会话则完全不受影响。
+    const runningConv = store.currentConvId;
+    if (runningConv && store.isConvStreaming(runningConv)) {
+      if (uploadedFiles.value.length > 0) {
+        ElMessage.warning('任务进行中的追加消息暂不支持附件，请等任务结束后再发送带附件的消息');
+        return;
+      }
+      const queueText = input.value.trim();
+      if (!queueText) return;
+      store.enqueueMessage(runningConv, queueText);
+      input.value = '';
+      return;
+    }
+
     const content = input.value;
     let model = platformStore.models.find((m) => m.id === selectedModelId.value);
     let platform: Platform | undefined = platformStore.platforms.find((p) => p.id === model?.platformId);
@@ -1620,10 +1638,13 @@ function createChat() {
 
     if (!userContent.trim()) { ElMessage.warning('请输入消息'); return; }
 
-    if (store.currentConvId && !store.conversations.some((c) => c.id === store.currentConvId)) {
+    // 全程锁定目标会话：下面有多个 await（建空间/建会话/落盘附件），期间用户若切换会话，
+    // 消息与任务仍须归属「点发送那一刻」的会话，否则多会话并行时会串台。
+    let convId = store.currentConvId;
+    if (convId && !store.conversations.some((c) => c.id === convId)) {
+      convId = '';
       store.currentConvId = '';
     }
-
     try {
       const agent = agentStore.selectedAgent;
       // 每次发送都确保工作目录对应空间存在（幂等：已存在则复用，失败则下次仍可重试）
@@ -1633,7 +1654,7 @@ function createChat() {
         const codeSid = useCodeStore().projectSpaceId;
         if (codeSid) spaceId = codeSid;
       }
-      if (!store.currentConvId) {
+      if (!convId) {
         const title = titleFromContent(userContent.trim()) || '网页引用';
         const id = await store.createConversation(title, {
           platformId: platform.id,
@@ -1641,14 +1662,15 @@ function createChat() {
           skillIds: [...mountedSkillIds.value],
           spaceId,
         });
+        convId = id;
         // 会话级 system_prompt：智能体提示词 + 场景提示词（会话级优先级高于 agent 级，需合并写入）
         const scenePrompt = currentScene.value?.prompt || '';
         const sysPrompt = [agent?.systemPrompt, scenePrompt].filter(Boolean).join('\n\n');
         if (sysPrompt) {
-          await store.updateConversation(id, { systemPrompt: sysPrompt });
+          await store.updateConversation(convId, { systemPrompt: sysPrompt });
         }
-        await saveMountToDb(id);
-        await store.loadMessages(id);
+        await saveMountToDb(convId);
+        await store.loadMessages(convId);
         isDraftMode.value = false;
       } else {
         // 已有会话：补齐平台/模型，并把会话归入工作目录对应空间（若尚未归入）
@@ -1661,7 +1683,7 @@ function createChat() {
           updates.spaceId = spaceId;
         }
         if (Object.keys(updates).length) {
-          await store.updateConversation(store.currentConvId, updates);
+          await store.updateConversation(convId, updates);
         }
       }
 
@@ -1670,15 +1692,15 @@ function createChat() {
         try {
           const { getPlatformAdapter } = await import('@yan-zhi/core');
           const adapter = getPlatformAdapter();
-          const convId = store.currentConvId || 'default';
-          const filesDir = 'workspace/uploads/' + convId;
+          const upsConvId = convId || 'default';
+          const filesDir = 'workspace/uploads/' + upsConvId;
           try { await adapter.fs.mkdir(filesDir); } catch {}
           const total = userContent.length;
           const name = 'paste_' + Date.now() + '.txt';
           const newPath = filesDir + '/' + name;
           await adapter.fs.writeFile(newPath, userContent);
           await useFileStore().registerFile({
-            conversationId: convId, name, path: newPath,
+            conversationId: upsConvId, name, path: newPath,
             category: 'upload', mimeType: 'text/plain', size: new Blob([userContent]).size, source: 'user',
           });
           userContent = userContent.slice(0, 200) + `\n（输入过长，全文 ${total} 字已存为附件，路径: ${newPath}）`;
@@ -1690,8 +1712,8 @@ function createChat() {
         try {
           const { getPlatformAdapter } = await import('@yan-zhi/core');
           const adapter = getPlatformAdapter();
-          const convId = store.currentConvId || 'default';
-          const filesDir = 'workspace/uploads/' + convId;
+          const upsConvId = convId || 'default';
+          const filesDir = 'workspace/uploads/' + upsConvId;
           try { await adapter.fs.mkdir(filesDir); } catch {}
           const fileParts: string[] = [];
           for (const f of files) {
@@ -1779,7 +1801,7 @@ function createChat() {
         frequencyPenalty: agent?.frequencyPenalty,
         presencePenalty: agent?.presencePenalty,
         reasoningEffort: (agent?.config as any)?.reasoningEffort || undefined,
-      });
+      }, convId);
 
     } catch (e: any) {
       if (e?.name === 'AbortError') return;
@@ -1796,9 +1818,9 @@ function createChat() {
       const last = msgs[msgs.length - 1];
       if (last && last.role === 'assistant' && !last.content) {
         await store.updateMessage(last.id, { content: fullContent });
-      } else if (store.currentConvId) {
+      } else if (convId) {
         await store.addMessage({
-          conversationId: store.currentConvId,
+          conversationId: convId,
           role: 'assistant',
           content: fullContent,
         });
@@ -1812,8 +1834,92 @@ function createChat() {
     store.stop();
   }
 
+  // ===== 追加消息队列（任务运行中在输入框上方堆叠，可「立即发送 / 编辑 / 删除」）=====
+  const queuedList = computed(() => store.queuedOf(store.currentConvId));
+
+  /** 解析某会话应使用的平台/模型：优先会话自身绑定，回落当前选择，再回落第一个可用对话模型 */
+  function resolveConvPlatformModel(convId: string): { platform: Platform; model: Model } | null {
+    const conv = store.conversations.find((c) => c.id === convId);
+    let model = platformStore.models.find((m) => m.id === selectedModelId.value);
+    if (conv?.modelId) {
+      const resolved = conv.platformId
+        ? platformStore.resolveModel(conv.modelId, conv.platformId)
+        : platformStore.resolveModel(conv.modelId);
+      if (resolved) model = resolved;
+    }
+    let platform = platformStore.platforms.find((p) => p.id === model?.platformId);
+    if (platform && model && CHAT_MODEL_TYPES.includes(model.type)) return { platform, model };
+    // 自愈回退：选第一个可用的对话模型
+    const alt = platformStore.models.find((m) => m.enabled && CHAT_MODEL_TYPES.includes(m.type));
+    const altPlatform = alt ? platformStore.platforms.find((p) => p.id === alt.platformId) : undefined;
+    if (alt && altPlatform) return { platform: altPlatform, model: alt };
+    return null;
+  }
+
+  /** 把某会话排队的追加消息合并成一条，起新一轮任务发送（任务收尾后自动调用 / 「立即发送」降级路径） */
+  async function flushQueuedAfterTask(convId: string) {
+    const items = store.takeQueuedMessages(convId);
+    if (!items.length) return;
+    const text = items.map((i) => i.content).join('\n\n').trim();
+    if (!text) return;
+    const pm = resolveConvPlatformModel(convId);
+    if (!pm) {
+      ElMessage.warning('追加消息未发送：未配置可用的对话模型');
+      return;
+    }
+    const agent = agentStore.selectedAgent;
+    try {
+      await store.sendMessage(text, pm.platform, pm.model, undefined, {
+        temperature: agent?.temperature,
+        maxTokens: agent?.maxTokens,
+        topP: agent?.topP,
+        frequencyPenalty: agent?.frequencyPenalty,
+        presencePenalty: agent?.presencePenalty,
+        reasoningEffort: (agent?.config as any)?.reasoningEffort || undefined,
+      }, convId);
+    } catch (e: any) {
+      console.error('[Chat] 追加消息发送失败:', e);
+      ElMessage.error('追加消息发送失败：' + (e?.message || e));
+    }
+  }
+
+  /** 「立即发送」：注入运行中的任务，模型下一轮 LLM 调用时带上（不等整个任务结束） */
+  async function sendQueuedNow(id: string) {
+    const convId = store.currentConvId;
+    if (!convId) return;
+    const injected = await store.injectQueuedMessage(convId, id);
+    if (injected) { ElMessage.success('已追加，模型下一轮将带上'); return; }
+    // 任务已结束（或注入失败）→ 退回普通发送，起新一轮
+    await flushQueuedAfterTask(convId);
+  }
+
+  /** 「编辑」：消息回到输入框，队列里移除该条 */
+  function editQueued(id: string) {
+    const convId = store.currentConvId;
+    if (!convId) return;
+    const item = store.queuedOf(convId).find((q) => q.id === id);
+    if (!item) return;
+    input.value = item.content;
+    store.removeQueuedMessage(convId, id);
+    void nextTick(() => {
+      try { (inputRef.value as any)?.focus?.(); } catch { /* ignore */ }
+    });
+  }
+
+  /** 「删除」：从追加队列移除 */
+  function removeQueued(id: string) {
+    const convId = store.currentConvId;
+    if (!convId) return;
+    store.removeQueuedMessage(convId, id);
+  }
+
+  // 任务收尾（完成/中止/失败）→ 自动把该会话排队的追加消息发出去
+  store.onTaskFinished((convId) => { void flushQueuedAfterTask(convId); });
+
   async function regenerateMsg() {
-    if (!store.currentConvId || store.streaming) return;
+    // 锁定目标会话：regenerate 流程跨越 await，期间用户若切会话，任务会落到错误会话。
+    const convId = store.currentConvId;
+    if (!convId || store.streaming) return;
     const model = platformStore.models.find((m) => m.id === selectedModelId.value);
     const platform = platformStore.platforms.find((p) => p.id === model?.platformId);
     if (!platform || !model) { ElMessage.error('平台或模型不存在'); return; }
@@ -1826,7 +1932,7 @@ function createChat() {
         frequencyPenalty: agent?.frequencyPenalty,
         presencePenalty: agent?.presencePenalty,
         reasoningEffort: (agent?.config as any)?.reasoningEffort || undefined,
-      });
+      }, convId);
     } catch (e: any) {
       ElMessage.error(e?.message || '重新生成失败');
     }
@@ -2488,7 +2594,7 @@ function createChat() {
     askText, askSupplement, askSingle, askChecked, askShowText, askDialogVisible, askMultiSelect, resetAskForm, onAskSubmit, onAskSkip, onAskDialogClose,
     confirmText, confirmSingle, confirmChecked, confirmShowText, confirmSupplement, confirmDialogVisible, confirmCurrentPage, confirmMultiSelect, resetConfirmForm, onConfirmNext, onConfirmSkip, onConfirmDialogClose,
     platformConfigSaving, manualPlatformConfigVisible, platformConfigEditId, platformConfigForm, platformConfigDialogVisible, resetPlatformConfigForm, openPlatformConfig, onPlatformConfigSubmit, onPlatformConfigCancel, onPlatformConfigClose,
-    input, inputFocused, fileInputRef, uploadedFiles,
+    input, inputFocused, inputRef, fileInputRef, uploadedFiles,
 
     browserActive, currentBrowserLabel, closeRightPanel, toggleRightPanel,
     expandedFileCategories, fileSearch, workspaceFiles, selectedFilePaths, filePanelUploadRef, search, messagesRef, showMount, showSkills, skillSearch, filteredSkillStore, toggleSkillMount,
@@ -2511,6 +2617,7 @@ function createChat() {
     fileCategories, previewInPopup, showConvFileMenu, reclassifyConvFile,
     onAgentSwitch, onModelChange,
     parseConfigCard, displayAssistantContent, getEditPlatform, getEditReason, onConfigSaved,
+    queuedList, sendQueuedNow, editQueued, removeQueued, flushQueuedAfterTask,
     startNewChat, selectConv, triggerFileUpload, addFiles, handleFileChange, removeFile, formatSize, send, stopChat, regenerateMsg, shouldShowMessage, collectToolCalls,
     filteredFiles, loadWorkspaceFiles, previewFile, toggleFileSelect, triggerFilePanelUpload, handleFilePanelUpload, deleteFileItem,
     scrollToRound, handleScroll, updateActiveNavRound, formatTime, showScrollBottom, showScrollTop, scrollToBottom,

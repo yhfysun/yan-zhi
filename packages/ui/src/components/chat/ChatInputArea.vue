@@ -56,6 +56,38 @@
         </div>
       </div>
 
+      <!-- 追加消息队列：任务运行中发送的消息堆叠在输入框上方。
+           限高 + 可滚动，逐条可「立即发送 / 编辑 / 删除」；任务收尾后未发出的会自动补发。 -->
+      <div v-if="queuedList.length > 0" class="queue-panel">
+        <div class="queue-head">
+          <el-icon :size="12"><Clock /></el-icon>
+          <span class="queue-head-text">{{ queuedList.length }} 条追加消息 · 任务本轮结束后自动发送</span>
+        </div>
+        <div class="queue-list">
+          <div v-for="(q, i) in queuedList" :key="q.id" class="queue-item">
+            <span class="queue-idx">{{ i + 1 }}</span>
+            <div class="queue-text">{{ q.content }}</div>
+            <div class="queue-actions">
+              <el-tooltip content="立即发送（下一轮调用大模型时带上）" placement="top">
+                <button type="button" class="queue-btn" aria-label="立即发送" @click="sendQueuedNow(q.id)">
+                  <el-icon :size="13"><Promotion /></el-icon>
+                </button>
+              </el-tooltip>
+              <el-tooltip content="编辑（回到输入框）" placement="top">
+                <button type="button" class="queue-btn" aria-label="编辑" @click="editQueued(q.id)">
+                  <el-icon :size="13"><EditPen /></el-icon>
+                </button>
+              </el-tooltip>
+              <el-tooltip content="删除" placement="top">
+                <button type="button" class="queue-btn danger" aria-label="删除" @click="removeQueued(q.id)">
+                  <el-icon :size="13"><Delete /></el-icon>
+                </button>
+              </el-tooltip>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <el-input
         ref="inputRef"
         v-model="input"
@@ -66,7 +98,6 @@
         @keydown.up="onKeyUp"
         @keydown.down="onKeyDown"
         @keydown.esc="onEsc"
-        :disabled="store.streaming"
         @focus="inputFocused = true"
         @blur="inputFocused = false"
         class="input-textarea"
@@ -461,7 +492,7 @@ import type { Component } from 'vue';
 import {
   FolderOpened, ArrowDown, ArrowRight, Connection, Files, UploadFilled, User, EditPen, Cpu, Setting, Plus,
   Promotion, Close, Lock, Check, Picture, Document, Tickets, Box, VideoCamera, Headset, Memo, ChatDotRound,
-  Operation, Search, Link,
+  Operation, Search, Link, Delete, Clock,
 } from '@element-plus/icons-vue';
 import { useChat } from '../../composables/chat/useChat';
 import { useCodeStore } from '../../stores/code';
@@ -472,6 +503,7 @@ const {
   triggerFileUpload, input, send, agentStore, onAgentSwitch, openEditAgent, modelGroups,
   currentScene, clearScene,
   selectedModelId, onModelChange, openPlatformConfig, startNewChat, uploadedFiles, stopChat,
+  queuedList, sendQueuedNow, editQueued, removeQueued,
   formatSize, removeFile, fileInputRef, handleFileChange, addFiles,
   workspaceFiles, selectedFilePaths, toggleFileSelect,
   quotedUrls, removeQuotedUrl, LONG_INPUT_THRESHOLD,
@@ -664,7 +696,9 @@ function onEnter(e: KeyboardEvent) {
     if (f) pickAtFile(f);
     return;
   }
-  if (!store.streaming) send();
+  // 任务运行中不再拦：send() 内部会判断——本会话在跑就入队到输入框上方，
+  // 切到别的会话则正常发送（此前这里直接 return，是「跑着就发不出消息」的根因）。
+  send();
 }
 
 function onKeyUp(e: KeyboardEvent) {
@@ -794,6 +828,113 @@ onBeforeUnmount(() => {
   /* 让 input-box 的边框过渡看起来更自然 */
   display: flex;
   flex-direction: column;
+}
+
+/* ===== 追加消息队列（任务运行中，堆叠在输入框上方）===== */
+.queue-panel {
+  margin: 8px 0 6px;
+  border-radius: 10px;
+  border: 1px solid var(--color-border, rgba(0, 0, 0, 0.08));
+  background: var(--color-surface, rgba(127, 127, 127, 0.05));
+  overflow: hidden;
+  flex: 0 0 auto;
+}
+.queue-head {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 9px;
+  font-size: 11.5px;
+  color: var(--color-text-secondary, #8a8f98);
+  border-bottom: 1px solid var(--color-border, rgba(0, 0, 0, 0.06));
+}
+.queue-head-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 高度可控的关键：限高约 3 条，超出内部滚动，绝不把输入区撑高 */
+.queue-list {
+  max-height: 130px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+/* 细滚动条：只写 ::-webkit-*。不要同时写 scrollbar-width/color ——
+   Chromium 121+ 一设标准属性就禁用 ::-webkit-scrollbar，反而变成粗条。 */
+.queue-list::-webkit-scrollbar { width: 6px; }
+.queue-list::-webkit-scrollbar-track { background: transparent; }
+.queue-list::-webkit-scrollbar-thumb {
+  background: rgba(127, 127, 127, 0.28);
+  border-radius: 3px;
+}
+.queue-list::-webkit-scrollbar-thumb:hover { background: rgba(127, 127, 127, 0.45); }
+
+.queue-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  padding: 6px 7px;
+  border-radius: 8px;
+  background: var(--color-bg-subtle, rgba(127, 127, 127, 0.05));
+  border: 1px solid var(--color-border, rgba(0, 0, 0, 0.06));
+}
+.queue-idx {
+  flex: 0 0 auto;
+  width: 15px;
+  height: 15px;
+  margin-top: 1px;
+  border-radius: 50%;
+  background: var(--color-primary, #c2410c);
+  color: #fff;
+  font-size: 10px;
+  line-height: 15px;
+  text-align: center;
+}
+.queue-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--color-text, #1f2328);
+  white-space: pre-wrap;
+  word-break: break-word;
+  /* 单条最多 2 行，超长省略——完整内容点「编辑」回到输入框查看 */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.queue-actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.queue-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-text-secondary, #8a8f98);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.queue-btn:hover {
+  background: color-mix(in srgb, var(--color-primary, #c2410c) 10%, transparent);
+  color: var(--color-primary, #c2410c);
+}
+.queue-btn.danger:hover {
+  background: rgba(239, 68, 68, 0.1);
+  color: #ef4444;
 }
 
 .scene-chip {

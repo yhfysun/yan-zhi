@@ -174,7 +174,7 @@
           :ref="bindWebviewRef(t.id)"
           class="page-webview"
           :class="{ 'wv-active': t.id === activeTabId }"
-          :src="t.url || 'about:blank'"
+          :src="t.srcUrl || 'about:blank'"
           partition="persist:browser-view"
           allowpopups="true"
           @dom-ready="onWebviewReady(t.id)"
@@ -303,13 +303,13 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue';
+import { ref, computed, onMounted, onUnmounted, watch, nextTick, type Ref } from 'vue';
 import { storeToRefs } from 'pinia';
 import { ElMessage } from 'element-plus';
 import { ZoomIn, ZoomOut } from '@element-plus/icons-vue';
 import { usePlatformStore } from '../stores/platform';
 import { useChatStore } from '../stores/chat';
-import { useBrowserStore, type BrowserTab } from '../stores/browser';
+import { useBrowserStore, claimPopup, type BrowserTab } from '../stores/browser';
 import { usePlatform } from '../composables/usePlatform';
 import { LlmClient } from '@yan-zhi/core';
 import { API_BASE } from '../api/client';
@@ -333,18 +333,46 @@ const isWebviewEngine = computed(() => isElectron && browserEngine.value === 'we
 
 // ── 组件空间：preview=对话页右栏预览（pageAgent 执行面）| page=/browser 独立浏览器页 ──
 // 两边 tab 列表完全隔离（各自独立的 browser store 实例）。
-const props = defineProps<{ scope?: 'preview' | 'page' }>();
-const browserScope = (props.scope || 'page') as 'preview' | 'page';
+// 多会话隔离：preview 后可追加 :<convId>（ChatPreviewPane 传 preview:<currentConvId>），
+// 不同会话的 tab/激活/历史互不串台，浏览器工具的 get_page_content/click 等都路由到对应会话的 tab。
+const props = defineProps<{ scope?: string }>();
+const browserScope = (props.scope || 'page');
 
 // ── 多标签页管理（Electron 桌面端）──
 // tabs/激活 tab/视图状态按空间存对应 browser store：路由切换组件卸载不丢，
 // 重新挂载恢复访问状态（切到任务页再回浏览器，该空间的 tab 原样保留）。
+//
+// 关键：pinia 的 setup 形式 store 经 useStore() 访问时**会自动 unwrap ref**，
+// 直接 `browserStore.tabs` 拿到的是 `BrowserTab[]`（不是 Ref），写 `.value` 就崩。
+// 必须 `storeToRefs(store)` 才能保留 ref 形态给响应式 / 模板 / watch 用。
+// 之前用 `as Ref<...>` 强转把数组当 ref 用，`history.value[histIndex.value]` 变成
+// `string[][number]` —— `string[].value === undefined` → 「Cannot read properties
+// of undefined (reading 'undefined')」，关 tab 触发响应式刷新时立刻挂。
 const browserStore = useBrowserStore(browserScope);
+// 动态 defineStore 的返回类型与静态 Store 不严格匹配（storeToRefs 要 StoreGeneric）；
+// 运行时 storeToRefs 实际能正确取出 ref，这里用 `as any` 跳过编译期类型检查。
 const {
-  tabs, activeTabId, urlInput, history, histIndex,
-  pageZoom, electronCanBack, electronCanForward, loading,
-} = storeToRefs(browserStore);
-const activeTab = computed(() => tabs.value.find(t => t.id === activeTabId.value));
+  tabs,
+  activeTabId,
+  urlInput,
+  history,
+  histIndex,
+  pageZoom,
+  electronCanBack,
+  electronCanForward,
+  loading,
+} = storeToRefs(browserStore as any) as unknown as {
+  tabs: Ref<BrowserTab[]>;
+  activeTabId: Ref<string>;
+  urlInput: Ref<string>;
+  history: Ref<string[]>;
+  histIndex: Ref<number>;
+  pageZoom: Ref<number>;
+  electronCanBack: Ref<boolean>;
+  electronCanForward: Ref<boolean>;
+  loading: Ref<boolean>;
+};
+const activeTab = computed(() => tabs.value.find((t: BrowserTab) => t.id === activeTabId.value));
 
 // 路由 query（支持从对话页跳转并传初始 URL）
 const route = useRoute();
@@ -443,6 +471,7 @@ async function newTab(url?: string) {
   const tab: BrowserTab = {
     id: tabId,
     url: url || '',
+    srcUrl: url || '',
     title: '',
     loading: false,
     urlInput: url || '',
@@ -488,6 +517,9 @@ async function switchTab(tabId: string) {
     tab.history = [...history.value];
     tab.histIndex = histIndex.value;
   }
+  // guest 已不在（面板重挂 / 从主页切出后 <webview> 是新建的）→ 把 srcUrl 对齐真实 URL。
+  // 否则新挂的 <webview> 会按旧的 srcUrl 加载，页面"跳回上一个地址"。
+  if (tab.url && !webviewEls.has(tabId)) tab.srcUrl = tab.url;
   pageZoom.value = tab.pageZoom;
   electronCanBack.value = tab.canBack;
   electronCanForward.value = tab.canForward;
@@ -511,6 +543,8 @@ async function switchTab(tabId: string) {
     } else {
       api.browserView.hide(tabId);
     }
+    // 切回标签后以主进程实际状态为准刷新一次前进/后退（本地栈仍在，取不到也不影响可用）
+    await syncNavState(tabId);
   }
 }
 
@@ -539,6 +573,7 @@ async function ctxClose(mode: 'tab' | 'left' | 'right' | 'others' | 'all') {
       const idx = tabs.value.findIndex(t => t.id === id);
       if (idx === -1) continue;
       if (isElectron) { try { await (window as any).electronAPI.browserView.closeTab(id, true); } catch { /* ignore */ } }
+      webviewEls.delete(id);
       tabs.value.splice(idx, 1);
       if (activeTabId.value === id) {
         const nextTab = tabs.value[idx] || tabs.value[idx - 1] || null;
@@ -552,6 +587,7 @@ async function ctxClose(mode: 'tab' | 'left' | 'right' | 'others' | 'all') {
       if (isElectron) { try { await (window as any).electronAPI.browserView.closeTab(id, true); } catch { /* ignore */ } }
       const k = tabs.value.findIndex(t => t.id === id);
       if (k >= 0) tabs.value.splice(k, 1);
+      webviewEls.delete(id);
     }
     if (tabs.value.length === 0) await newTab();
   }
@@ -566,6 +602,8 @@ async function closeTab(tabId: string) {
     const api = (window as any).electronAPI;
     await api.browserView.closeTab(tabId, true);
   }
+  // 关闭即清空：该 tab 的前进/后退轨迹随 tab 对象一起丢弃，guest 引用也一并摘掉
+  webviewEls.delete(tabId);
   tabs.value.splice(idx, 1);
   // 如果关闭的是当前标签，切换到相邻标签
   if (activeTabId.value === tabId) {
@@ -577,6 +615,8 @@ async function closeTab(tabId: string) {
       urlInput.value = '';
       history.value = [];
       histIndex.value = -1;
+      electronCanBack.value = false;
+      electronCanForward.value = false;
     }
   }
 }
@@ -653,8 +693,14 @@ function syncBrowserViewBounds(force = false) {
 // history/histIndex/electronCanBack/electronCanForward 存全局 browser store（见顶部解构），
 // 此处只保留依赖它们的派生状态。
 const currentUrl = computed(() => history.value[histIndex.value] || '');
-const canBack = computed(() => isElectron ? electronCanBack.value : histIndex.value > 0);
-const canForward = computed(() => isElectron ? electronCanForward.value : histIndex.value < history.value.length - 1);
+// 本地栈是兜底真值：主进程原生状态取不到（guest 未注册/视图回收）时按钮仍可用，
+// 走 loadFromStack 直接加载上一/下一项，不再"恒灰点不动"。
+const canBack = computed(() => isElectron
+  ? (electronCanBack.value || histIndex.value > 0)
+  : histIndex.value > 0);
+const canForward = computed(() => isElectron
+  ? (electronCanForward.value || histIndex.value < history.value.length - 1)
+  : histIndex.value < history.value.length - 1);
 const isSecure = computed(() => /^https:\/\//i.test(currentUrl.value));
 const currentHost = computed(() => { try { return new URL(currentUrl.value).host; } catch { return ''; } });
 
@@ -803,12 +849,117 @@ function normalizeUrl(raw: string): string {
   return eng.url(url);
 }
 
+// ── 残留 IPC 监听器守卫 ──
+// preload 只提供 on*（没有对应的 off），右栏按 browser tab 的 v-if 反复挂载会不断累积监听器：
+// 已卸载实例的闭包依然会响应主进程广播并 newTab —— 这是"点一个链接开出 5 个 tab"的另一半原因
+// （另一半是主进程 session 级 + guest 级两个 handler 各广播一次）。
+let componentAlive = true;
+function aliveGuard<A extends any[]>(fn: (...args: A) => void) {
+  return (...args: A) => { if (componentAlive) fn(...args); };
+}
+
+// ── 每标签页的本地导航栈（前进/后退的兜底真值来源）──
+// 桌面端原生历史（BrowserView/webview guest）可能因 guest 未注册、跨进程重建等原因取不到，
+// 表现为"后退/前进按钮一直灰着或点了没反应"。这里自己维护一份每 tab 的轨迹栈并设 20 条
+// 上限：既能兜底驱动导航，也让地址栏/按钮状态不依赖主进程。tab 关闭 → 该栈随 tab 一起清空。
+const MAX_TAB_HISTORY = 20;
+
 function pushHistory(url: string) {
+  if (!url) return;
+  // 与当前项相同不入栈（did-navigate 会对同一跳回调多次）
+  if (history.value[histIndex.value] === url) return;
   if (histIndex.value < history.value.length - 1) {
     history.value = history.value.slice(0, histIndex.value + 1);
   }
   history.value.push(url);
   histIndex.value = history.value.length - 1;
+  const over = history.value.length - MAX_TAB_HISTORY;
+  if (over > 0) {
+    history.value = history.value.slice(over);
+    histIndex.value = Math.max(0, histIndex.value - over);
+  }
+}
+
+/** 把当前历史栈/指针写回激活 tab（路由切换重挂后不丢轨迹） */
+function snapshotToTab() {
+  const t = activeTab.value;
+  if (!t) return;
+  t.history = [...history.value];
+  t.histIndex = histIndex.value;
+}
+
+/** 主动导航的"待落地 URL"：did-navigate 回写时若与它不同（重定向）→ 原地替换，不新增一条 */
+let pendingNavUrl = '';
+
+/**
+ * 页面导航（did-navigate / 页内跳转 / 原生前进后退）后把本地栈与真实页面对齐：
+ * 命中相邻项说明是原生前进/后退；否则按新跳入栈（此前是"原地替换"，导致栈里永远只有一条）。
+ */
+function syncStackFromNavigation(url: string) {
+  const idx = histIndex.value;
+  if (history.value[idx] === url) return;
+  if (idx > 0 && history.value[idx - 1] === url) { histIndex.value = idx - 1; pendingNavUrl = ''; return; }
+  if (history.value[idx + 1] === url) { histIndex.value = idx + 1; pendingNavUrl = ''; return; }
+  if (pendingNavUrl && history.value[idx] === pendingNavUrl) {
+    history.value[idx] = url; // 主动导航后发生重定向：修正当前项
+    pendingNavUrl = '';
+    return;
+  }
+  pendingNavUrl = '';
+  pushHistory(url);
+}
+
+/** 只移动栈指针、不加载页面（原生 back/forward 已把页面切走，用它同步 UI 与指针） */
+function stepStack(delta: number) {
+  const next = histIndex.value + delta;
+  if (next < 0 || next >= history.value.length) return;
+  histIndex.value = next;
+  urlInput.value = history.value[next] || '';
+  snapshotToTab();
+}
+
+/** 本地栈兜底导航：直接加载指定栈项（原生历史不可用时才走这条） */
+async function loadFromStack(index: number) {
+  const target = history.value[index];
+  if (!target) return;
+  histIndex.value = index;
+  urlInput.value = target;
+  loading.value = true;
+  const tid = activeTabId.value;
+  const tab = activeTab.value;
+  if (isWebviewEngine.value) {
+    if (tab) { tab.srcUrl = target; tab.url = target; }
+    await nextTick();
+    const el = await waitWebviewEl(tid);
+    if (el && el.getAttribute('src') !== target) {
+      el.src = target; // :src 已是 target 时赋值不触发加载，需显式 load
+    } else {
+      try { await (window as any).electronAPI.browserView.load(tid, target); } catch { /* ignore */ }
+    }
+  } else if (isElectron) {
+    if (tab) tab.url = target;
+    try { await (window as any).electronAPI.browserView.load(tid, target); } catch { /* ignore */ }
+  } else {
+    iframeKey.value++;
+  }
+  snapshotToTab();
+  if (tab) tab.urlInput = target;
+  setTimeout(() => { loading.value = false; }, 15000);
+}
+
+/** 同步主进程的原生可前进/后退状态到 UI（失败不影响本地栈兜底） */
+async function syncNavState(tid = activeTabId.value) {
+  if (!isElectron || !tid) return;
+  const api = (window as any).electronAPI;
+  try {
+    const [b, f] = await Promise.all([api.browserView.canGoBack(tid), api.browserView.canGoForward(tid)]);
+    electronCanBack.value = !!b;
+    electronCanForward.value = !!f;
+    if (activeTab.value) {
+      activeTab.value.canBack = electronCanBack.value;
+      activeTab.value.canForward = electronCanForward.value;
+    }
+  } catch { /* 主进程不可用时保持本地栈判定 */ }
 }
 
 
@@ -833,27 +984,28 @@ const frameSrc = computed(() => {
 async function navigate() {
   const target = normalizeUrl(urlInput.value);
   if (!target) return;
+  pendingNavUrl = target;
   pushHistory(target);
   loading.value = true;
   // 更新当前标签的 url
   if (activeTab.value) {
-    // url 变化会驱动 <webview :src> 自动加载（webview 引擎）；旧引擎/Web 端走下面显式加载
     activeTab.value.url = target;
     activeTab.value.urlInput = target;
+    // srcUrl 只在"主动导航"时推进：页面自己点链接跳转只更新 url（见 applyNavigated），
+    // 回写 :src 会让 webview 重新 loadURL → 历史栈出现两条相同记录 → 后退"看着没动"。
+    activeTab.value.srcUrl = target;
     // 快照实时同步：tab.history/histIndex 只在 switchTab 时互存的话，路由切换（/browser 页 ↔
     // 对话页预览面板）重挂后 switchTab 会恢复到过期快照（history=[]），currentUrl 清空 →
     // showHome 误显示起始主页（"点了百度、tab 标题是百度、页面却变首页"的串扰根因）。
-    activeTab.value.history = [...history.value];
-    activeTab.value.histIndex = histIndex.value;
+    snapshotToTab();
   }
   // webview 引擎：由 :src 响应式驱动加载，且需等 guest 出现（Vue 渲染 <webview> 后 dom-ready 注册）
   if (isWebviewEngine.value) {
-    const webEl = webviewEls.get(activeTabId.value);
-    if (!webEl) {
-      // guest 尚未渲染：等下一次 watch(激活 url) 兜底加载
-      await nextTick();
-      const now = webviewEls.get(activeTabId.value);
-      if (now) now.src = target;
+    // 首次导航时 <webview> 可能刚随 showHome 切走而新建，等元素出现再确认 src 已生效；
+    // 元素迟迟不出现就交给主进程 waitForGuest 兜底（否则"第一次点链接没反应"）。
+    const el = await waitWebviewEl(activeTabId.value);
+    if (!el) {
+      try { await (window as any).electronAPI.browserView.load(activeTabId.value, target); } catch { /* ignore */ }
     }
     // 归还控制权：导航实际由 guest 的 did-navigate 事件回写（onWebviewNavigated）
     return;
@@ -873,13 +1025,7 @@ async function navigate() {
     } catch (e) {
       console.warn('[browser] BrowserView load 失败', e);
     }
-    // 更新可前进/后退状态
-    electronCanBack.value = await (window as any).electronAPI.browserView.canGoBack(tid);
-    electronCanForward.value = await (window as any).electronAPI.browserView.canGoForward(tid);
-    if (activeTab.value) {
-      activeTab.value.canBack = electronCanBack.value;
-      activeTab.value.canForward = electronCanForward.value;
-    }
+    await syncNavState(tid);
   }
   // 超时保护：15 秒后自动清除 loading
   setTimeout(() => { loading.value = false; }, 15000);
@@ -904,8 +1050,9 @@ function goHome() {
   urlInput.value = '';
   if (activeTab.value) {
     activeTab.value.url = '';
+    activeTab.value.srcUrl = '';
     activeTab.value.urlInput = '';
-    // 快照实时同步（同 navigate()）
+    // 快照实时同步（同 navigate()）：回主页即清空该 tab 的前进/后退轨迹
     activeTab.value.history = [];
     activeTab.value.histIndex = -1;
   }
@@ -917,25 +1064,22 @@ function goHome() {
   // webview 引擎：activeTab.url 清空 → :src 变 about:blank，且 v-if(!currentUrl) 隐藏视口显示主页
 }
 
-// 后退/前进/刷新（前端切换 iframe src，重新触发 /render 加载）
+// 后退/前进/刷新
+// 两条路径：
+//  ① 原生历史可用 → 走原生 back/forward（保留 SPA/表单/滚动状态），栈指针同步移动一格；
+//  ② 原生不可用（guest 未注册、视图被回收、主进程取不到状态）→ 用本地栈兜底直接加载上一/下一项。
+// 之前只走 ① 且把可用性完全交给主进程，取不到状态就"按钮恒灰、点了没反应"。
 async function goBack() {
   if (loading.value) return;
-  // webview 引擎：驱动原生 back 实现的后退
-  if (isWebviewEngine.value) {
-    const webEl = webviewEls.get(activeTabId.value);
-    if (!webEl || !electronCanBack.value) return;
-    try {
-      await (window as any).electronAPI.browserView.back(activeTabId.value);
-    } catch { /* ignore */ }
-    return;
-  }
-  // Electron + 旧引擎：调用 BrowserView.goBack
+  const tid = activeTabId.value;
   if (isElectron) {
-    const tid = activeTabId.value;
-    if (!electronCanBack.value) return;
-    await (window as any).electronAPI.browserView.back(tid);
-    electronCanBack.value = await (window as any).electronAPI.browserView.canGoBack(tid);
-    electronCanForward.value = await (window as any).electronAPI.browserView.canGoForward(tid);
+    if (electronCanBack.value) {
+      try { await (window as any).electronAPI.browserView.back(tid); } catch { /* ignore */ }
+      stepStack(-1);
+      syncNavState(tid);
+      return;
+    }
+    if (histIndex.value > 0) await loadFromStack(histIndex.value - 1);
     return;
   }
   // Web 端：更新历史栈 + 重新加载
@@ -944,28 +1088,20 @@ async function goBack() {
   urlInput.value = currentUrl.value;
   loading.value = true;
   iframeKey.value++;
-  // 快照实时同步（同 navigate()）
-  if (activeTab.value) { activeTab.value.history = [...history.value]; activeTab.value.histIndex = histIndex.value; }
+  snapshotToTab();
 }
 
 async function goForward() {
   if (loading.value) return;
-  // webview 引擎：驱动原生 forward 实现的前进
-  if (isWebviewEngine.value) {
-    const webEl = webviewEls.get(activeTabId.value);
-    if (!webEl || !electronCanForward.value) return;
-    try {
-      await (window as any).electronAPI.browserView.forward(activeTabId.value);
-    } catch { /* ignore */ }
-    return;
-  }
-  // Electron + 旧引擎：调用 BrowserView.goForward
+  const tid = activeTabId.value;
   if (isElectron) {
-    const tid = activeTabId.value;
-    if (!electronCanForward.value) return;
-    await (window as any).electronAPI.browserView.forward(tid);
-    electronCanBack.value = await (window as any).electronAPI.browserView.canGoBack(tid);
-    electronCanForward.value = await (window as any).electronAPI.browserView.canGoForward(tid);
+    if (electronCanForward.value) {
+      try { await (window as any).electronAPI.browserView.forward(tid); } catch { /* ignore */ }
+      stepStack(1);
+      syncNavState(tid);
+      return;
+    }
+    if (histIndex.value < history.value.length - 1) await loadFromStack(histIndex.value + 1);
     return;
   }
   // Web 端：更新历史栈 + 重新加载
@@ -974,8 +1110,7 @@ async function goForward() {
   urlInput.value = currentUrl.value;
   loading.value = true;
   iframeKey.value++;
-  // 快照实时同步（同 navigate()）
-  if (activeTab.value) { activeTab.value.history = [...history.value]; activeTab.value.histIndex = histIndex.value; }
+  snapshotToTab();
 }
 
 async function refresh() {
@@ -1233,6 +1368,23 @@ function setWebviewRef(tabId: string, el: any) {
   if (el) webviewEls.set(tabId, el);
   else webviewEls.delete(tabId);
 }
+
+/**
+ * 等 <webview> 元素出现（v-if 主页切走后元素是新建的，比导航早一帧）。
+ * 拿到元素就交给 :src 驱动；拿不到则返回 null，由调用方退化为主进程 load（waitForGuest 兜底）。
+ */
+function waitWebviewEl(tabId: string, timeoutMs = 1500): Promise<any> {
+  const existed = webviewEls.get(tabId);
+  if (existed) return Promise.resolve(existed);
+  return new Promise((resolve) => {
+    const started = Date.now();
+    const timer = setInterval(() => {
+      const el = webviewEls.get(tabId);
+      if (el) { clearInterval(timer); resolve(el); }
+      else if (Date.now() - started > timeoutMs) { clearInterval(timer); resolve(null); }
+    }, 50);
+  });
+}
 /** 模板 ref 回调工厂：Vue 对每个 tab 生成的箭头函数参数需显式 any（strict 无隐式 any） */
 const bindWebviewRef = (tabId: string) => (el: any) => setWebviewRef(tabId, el);
 
@@ -1262,25 +1414,19 @@ function applyNavigated(tid: string, url: string) {
   }
   if (url !== currentUrl.value) {
     urlInput.value = url;
-    // 起始页/空历史状态下 histIndex=-1，history[-1]=url 是无效写入 → currentUrl 永远为空、
-    // showHome 卡死。无有效历史项时按新导航入栈。
-    if (histIndex.value < 0 || histIndex.value >= history.value.length) {
-      pushHistory(url);
-    } else {
-      history.value[histIndex.value] = url;
-    }
+    // 与本地栈对齐：命中相邻项＝原生前进/后退；否则按新跳入栈（页内点链接也留轨迹）。
+    // 注意：这里只更新 url，**不回写 srcUrl** —— 回写会让 <webview> 再 loadURL 一次，
+    // 历史栈里多出一条重复记录，"点后退页面看着没动"就是这么来的。
+    syncStackFromNavigation(url);
     if (activeTab.value) {
       activeTab.value.url = url;
       activeTab.value.urlInput = url;
       // 快照实时同步（防止路由切换重挂后恢复到过期快照变首页）
-      activeTab.value.history = [...history.value];
-      activeTab.value.histIndex = histIndex.value;
+      snapshotToTab();
     }
   }
   // 导航后更新可前进/后退状态
-  const api = (window as any).electronAPI;
-  api.browserView.canGoBack(tid).then((v: boolean) => { electronCanBack.value = v; });
-  api.browserView.canGoForward(tid).then((v: boolean) => { electronCanForward.value = v; });
+  syncNavState(tid);
 }
 
 /** 标题更新统一处理（主进程推送与 webview 元素事件共用） */
@@ -1671,26 +1817,38 @@ onMounted(async () => {
     const api = (window as any).electronAPI;
     // 监听 BrowserView 导航事件，同步地址栏 URL（带 tabId）
     // 导航/标题统一走 applyNavigated / applyTitle（webview 元素事件也复用同一套，避免两份漂移）
-    api.browserView.onNavigated((tid: string, url: string) => applyNavigated(tid, url));
+    api.browserView.onNavigated(aliveGuard((tid: string, url: string) => applyNavigated(tid, url)));
     // 网页 window.open / target=_blank：主进程在 partition 上拦截后转成此事件，
     // 统一在应用内新标签页打开，弹窗不会逃逸成系统窗口
-    (window as any).electronAPI?.onOpenTab?.((url: string) => { if (url) newTab(url); });
+    (window as any).electronAPI?.onOpenTab?.(aliveGuard((url: string, scope?: string) => {
+      if (!url) return;
+      // 只接管归属自己空间的弹窗：主进程按"发起弹窗的 guest 属于哪个 tab"标注 scope，
+      // 避免对话页预览与 /browser 独立页同时各开一个 tab（"点一下开出俩"的主因之一）。
+      // scope 标注滞后时退而求其次：本面板正可见就接管（用户看得见的地方优先），
+      // 既不归属本空间、又不可见，就不抢这个弹窗。
+      const mine = scope ? scope === browserScope : true;
+      if (!mine && !shouldBeVisible.value) return;
+      // 去重：同一次点击会被 session 级 + guest 级两个 handler 重复投递，
+      // 且面板反复挂载留下的旧监听器也会各消费一次（不挡就是"一下开 5 个"）。
+      if (!claimPopup(url)) return;
+      newTab(url);
+    }));
     // agent 首次 navigate：主进程广播"在某 scope 打开 URL"——若面板仍停主页(无 <webview>)由此把它真正打开
-    (window as any).electronAPI?.onForceOpen?.((url: string, scope?: string) => {
+    (window as any).electronAPI?.onForceOpen?.(aliveGuard((url: string, scope?: string) => {
       if (scope && scope !== browserScope) return; // 只接管归属自己空间的导航
       if (!url) return;
       if (currentUrl.value === url) return;        // 已在目标页，不重复导航
       openSite(url);
-    });
+    }));
     // 主进程在渲染层重载完成（did-finish-load）后的"重认领"通知：
     // did-start-navigation 兜底会摘除全部 BrowserView，恢复依赖渲染层重挂链路；
     // 若 BrowserPanel 已挂载但占位尺寸无变化、ResizeObserver 不再触发，会一直停在
     // 摘除态（黑屏/首页占位）。这里收到通知后强制重跑一次可见性闸门补齐最后一环。
-    api.browserView.onResync?.(() => {
+    api.browserView.onResync?.(aliveGuard(() => {
       nextTick(() => { if (shouldBeVisible.value) syncBrowserViewBounds(true); });
-    });
+    }));
     // 监听页面加载完成事件（带 tabId）
-    api.browserView.onLoaded(async (tid: string, _url: string) => {
+    api.browserView.onLoaded(aliveGuard(async (tid: string, _url: string) => {
       if (tid !== activeTabId.value) return;
       loading.value = false;
       if (activeTab.value) activeTab.value.loading = false;
@@ -1707,39 +1865,39 @@ onMounted(async () => {
           }
         } catch { /* ignore */ }
       }
-    });
+    }));
     // 渲染进程崩溃且自动重载超过上限（主进程 CRASH_RELOAD_LIMIT=3）：
     // 只收尾 loading 状态，避免转圈不停。不新增任何可见 UI。
-    api.browserView.onCrashed?.((tid: string, reason: string) => {
+    api.browserView.onCrashed?.(aliveGuard((tid: string, reason: string) => {
       if (tid !== activeTabId.value) return;
       loading.value = false;
       if (activeTab.value) activeTab.value.loading = false;
       console.warn('[BrowserPanel] 页面渲染进程崩溃且自动重载已达上限：', reason);
-    });
+    }));
     // 非 UI 路径（pageAgent 工具 / 页面 window.close）关闭当前 tab 时，主进程自行顶替并广播。
     // activeTabId 已一致则忽略（幂等）：UI 路径下渲染层自身也会顶替，避免两次 switchTab 抖动。
-    api.browserView.onTabActivated?.((tid: string) => {
+    api.browserView.onTabActivated?.(aliveGuard((tid: string) => {
       if (tid === activeTabId.value) return;
       if (!tabs.value.some(t => t.id === tid)) return; // 渲染层没有该 tab 壳，无从切换
       switchTab(tid).catch(() => { /* ignore */ });
-    });
+    }));
     // 主进程兜底自建 tab（ensureActiveTab 超时自建）→ 补建 tab 壳。
     // 没有这步渲染层"无壳即忽略"，pageAgent 导航发生在主进程但预览面板毫无变化（导航黑洞）。
     // 按空间过滤：主进程广播带 scope，只认本空间的 tab，避免两边 tab 列表串扰。
-    api.browserView.onTabCreated?.((tid: string, url: string | null, scope?: string) => {
+    api.browserView.onTabCreated?.(aliveGuard((tid: string, url: string | null, scope?: string) => {
       // page 空间只收明确标记为 page 的 tab；preview 空间收 preview 及未标记（旧主进程兼容）
       const belong = scope || 'preview';
       if (belong !== browserScope) return;
       if (tabs.value.some(t => t.id === tid)) return;
       tabs.value.push({
-        id: tid, url: url || '', title: '', loading: false, urlInput: url || '',
+        id: tid, url: url || '', srcUrl: url || '', title: '', loading: false, urlInput: url || '',
         history: url ? [url] : [], histIndex: url ? 0 : -1, pageZoom: 1, canBack: false, canForward: false,
       });
       activeTabId.value = tid;
-    });
+    }));
     // 页面 title 变化 → 更新 tab 标题（真实网站名而非 URL）+ 对话页 browser tab 名
     // 对话页 tab chip 名称只由 preview 空间实例更新（page 空间的网页标题不牵连对话页）
-    api.browserView.onTitleUpdated?.((tid: string, title: string) => applyTitle(tid, title));
+    api.browserView.onTitleUpdated?.(aliveGuard((tid: string, title: string) => applyTitle(tid, title)));
 
     // webview 引擎：网页就在 DOM 里，无需 bounds 同步 / 无需主进程推送导航事件
     if (isWebviewEngine.value) return;
@@ -1772,6 +1930,9 @@ watch(browserViewPlaceholder, (el, oldEl) => {
 });
 
 onUnmounted(() => {
+  // 卸载即让本实例注册过的 IPC 监听全部失效：preload 只提供 on*（没有 off），
+  // 不这样的话旧实例的闭包会继续 newTab / 改状态（"点一下开出 5 个 tab"的元凶之一）。
+  componentAlive = false;
   if (syncTimer !== null) {
     clearTimeout(syncTimer);
     syncTimer = null;
@@ -1809,6 +1970,11 @@ onUnmounted(() => {
   if (isElectron) {
     for (const tab of tabs.value) {
       try { (window as any).electronAPI.browserView.hide(tab.id); } catch { /* ignore */ }
+    }
+    // 多会话隔离：关闭本 scope 名下所有 tab，避免切会话后旧 webview 长期占用主进程 MAX_TABS 窗口。
+    // page（/browser 独立浏览器页）不主动清——用户离开再回来还要恢复。
+    if (browserScope.startsWith('preview:')) {
+      try { (window as any).electronAPI?.browserView?.closeAllTabs?.(browserScope, true); } catch { /* ignore */ }
     }
   }
 });

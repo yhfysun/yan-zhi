@@ -934,16 +934,37 @@ ipcMain.handle('browser:setEngine', (_e, engine) => {
   browserEngine = engine === 'browserview' ? 'browserview' : 'webview';
   return browserEngine;
 });
+// 弹窗广播去重 + 归属空间标注。
+// 一次 target=_blank 点击会同时命中「guest 级 + session 级」两个 setWindowOpenHandler，
+// 两条路各广播一次 → 渲染层（还有它反复挂载残留的监听器）就会开出 2~N 个 tab。
+// 收敛成"同一 URL 1.5 秒窗口内只广播一次"，并带上 scope 让对应空间的面板独享。
+const popupBroadcastGuard = new Map();
+function currentTabScope() {
+  try {
+    const t = activeTabId ? webviewTabs.get(activeTabId) : null;
+    return (t && t.scope) || 'preview';
+  } catch { return 'preview'; }
+}
+function broadcastOpenTab(url, scope) {
+  if (!url || !mainWindow || mainWindow.isDestroyed()) return;
+  const now = Date.now();
+  const last = popupBroadcastGuard.get(url) || 0;
+  if (now - last < 1500) return;         // 同一次点击的第二条通道：丢弃
+  popupBroadcastGuard.set(url, now);
+  for (const [u, t] of popupBroadcastGuard) if (now - t > 10000) popupBroadcastGuard.delete(u);
+  mainWindow.webContents.send('browser:wv:openTab', url, scope || currentTabScope());
+}
+
 // webview 引擎的 popup 重定向：给 guest 自身的 webContents 设 windowOpenHandler。
 // session 级 handler 拦不住 webview+allowpopups 转到二级 popup BrowserWindow 的逃逸；
 // 在每个 guest 宿主 wc 上设，才能把 window.open / target=_blank 统一重定向回【应用内新标签页】。
-function setupGuestPopupRedirect(wc) {
+function setupGuestPopupRedirect(wc, scope) {
   if (!wc || wc.__yzPopupWired) return;
   wc.__yzPopupWired = true;
   wc.setWindowOpenHandler(({ url }) => {
     // 弹窗一律转为应用内新标签页：重定向到当前所属容器的 BrowserView 面板新建 tab
-    if (url && /^https?:/i.test(url) && mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('browser:wv:openTab', url);
+    if (url && /^https?:/i.test(url)) {
+      broadcastOpenTab(url, scope || currentTabScope());
     }
     return { action: 'deny' };
   });
@@ -968,7 +989,7 @@ ipcMain.handle('browser:wv:register', (_e, tabId, wcId, scope) => {
   // 给这个 guest 宿主 wc 挂弹窗重定向（window.open/target=_blank → 应用内新标签页）
   try {
     const wc = webContents.fromId(wcId);
-    setupGuestPopupRedirect(wc);
+    setupGuestPopupRedirect(wc, t.scope);
   } catch { /* wcId 无效/已销毁则忽略，导航后会随新 did-finish 再注册 */ }
   return true;
 });
@@ -1003,7 +1024,8 @@ ipcMain.handle('browserView:createTab', (_e, scope) => {
 // 关闭标签页，销毁对应 BrowserView
 // fromUi=true 表示 UI 路径（渲染层会自行顶替相邻 tab，主进程不顶替不广播，避免双顶替抖动）；
 // 非 UI 路径（pageAgent 工具 / 页面 window.close）没有渲染层参与，主进程必须在这里收口。
-ipcMain.handle('browserView:closeTab', (_e, tabId, fromUi) => {
+// 关闭单个 tab 的纯逻辑（IPC handler + closeAllTabs 共用）
+function closeTabById(tabId, fromUi) {
   if (isWebviewEngine()) {
     const meta = webviewTabs.get(tabId);
     const closedScope = meta?.scope || 'preview';
@@ -1058,6 +1080,26 @@ ipcMain.handle('browserView:closeTab', (_e, tabId, fromUi) => {
       }
     }
   }
+}
+
+ipcMain.handle('browserView:closeTab', (_e, tabId, fromUi) => {
+  closeTabById(tabId, !!fromUi);
+});
+
+// 关闭某空间下的所有 tab（多会话隔离：BrowserPanel 卸载/切换会话时调用，避免 tab 在主进程长期堆积占满 MAX_TABS）。
+// UI 路径（fromUi=true）下不做 R5 顶替——调用方就是要离开。
+ipcMain.handle('browserView:closeAllTabs', (_e, scope, fromUi) => {
+  const wantScope = scope || 'preview';
+  const ids = [];
+  if (isWebviewEngine()) {
+    for (const [id, t] of webviewTabs) if ((t.scope || 'preview') === wantScope) ids.push(id);
+  } else {
+    for (const [id, e] of browserViews) if ((e.scope || 'preview') === wantScope) ids.push(id);
+  }
+  for (const id of ids) {
+    try { closeTabById(id, !!fromUi); } catch { /* ignore */ }
+  }
+  return { closed: ids.length };
 });
 
 // 激活标签页：显示其 BrowserView，隐藏其他
@@ -2818,9 +2860,7 @@ app.whenReady().then(() => {
   (function interceptWebviewPopups() {
     try {
       session.fromPartition('persist:browser-view').setWindowOpenHandler(({ url }) => {
-        if (url && mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.webContents.send('browser:wv:openTab', url);
-        }
+        broadcastOpenTab(url);
         return { action: 'deny' };
       });
     } catch { /* ignore */ }

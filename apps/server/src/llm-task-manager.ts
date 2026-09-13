@@ -62,6 +62,10 @@ interface LlmTask {
   ontologyIds?: string[];
   /** 会话级工具权限：readonly=只读（写类工具构建期裁剪+运行时拦截）/ default=正常 / full=全部放行 */
   permissionMode?: 'readonly' | 'default' | 'full';
+  /** 运行中由前端「立即发送」注入的追加用户消息 id（已落库）。
+   *  非空即表示还有未消费的用户输入：本轮模型即便不再调工具，也不能直接 finish，
+   *  必须再跑一轮把这些消息带进上下文。 */
+  pendingInjects: string[];
 }
 
 const tasks = new Map<string, LlmTask>();
@@ -283,11 +287,32 @@ export function createTask(params: {
     memoryExtractModelId: params.memoryExtractModelId || undefined,
     ontologyIds: params.ontologyIds,
     permissionMode,
+    pendingInjects: [],
   };
   tasks.set(taskId, task);
   emit(task, { type: 'task:created', taskId, conversationId: params.conversationId });
   void runReActLoop(task, params);
   return taskId;
+}
+
+/** 运行中注入用户追加消息（输入框「立即发送」）。
+ *  语义：消息立即落库并推送给前端可见，模型在**下一轮** LLM 调用时从 loadMessages 读到它；
+ *  为此把 msgId 记进 task.pendingInjects —— 本轮即便模型不再调工具也不 finish，多跑一轮把消息带上。
+ *  与「排队等任务结束」的区别就在这里：排队消息不落库、不打断本轮，等任务结束后由前端起新任务。
+ *  @returns 'injected' 已注入运行中任务 | 'no-task' 该会话无运行中任务（前端应走正常发送） */
+export function injectUserMessage(conversationId: string, content: string, userId: string): 'injected' | 'no-task' {
+  const text = String(content || '');
+  if (!text.trim()) return 'no-task';
+  let target: LlmTask | undefined;
+  for (const t of tasks.values()) {
+    // 只注入到「本用户的、该会话的、运行中」任务：既防越权，也保证 pendingInjects 生效
+    if (t.conversationId === conversationId && t.status === 'running' && t.userId === userId) { target = t; break; }
+  }
+  if (!target) return 'no-task';
+  const msgId = insertMessage(conversationId, target.userId, 'user', text);
+  emit(target, { type: 'message:added', message: { id: msgId, role: 'user', content: text } });
+  target.pendingInjects.push(msgId);
+  return 'injected';
 }
 
 /** 订阅任务事件（从 since 索引开始重放 + 后续实时事件） */
@@ -872,6 +897,12 @@ async function runReActLoop(task: LlmTask, params: {
 
       // 无工具调用 → 完成
       if (toolCallAcc.length === 0) {
+        // 「立即发送」的追加消息还没被消费：不能在此 finish，再跑一轮让模型看到它们。
+        // 消息已由 injectUserMessage 落库，下一轮 loadMessages(convId) 自然带上，这里只清标记并续循环。
+        if (task.pendingInjects.length > 0) {
+          task.pendingInjects = [];
+          continue;
+        }
         // 空回复兜底：上一轮工具调用后模型返回空内容（常见于工具全失败），补提示避免用户看到空白
         if (!fullContent && !fullReasoning && step > 0) {
           const tip = '（助手未返回有效内容，可能是工具调用失败导致。请重试或换一种问法。）';
@@ -1176,8 +1207,10 @@ function executeToolViaFrontend(task: LlmTask, toolName: string, args: any, tool
       }
     }, 2 * 60 * 1000);
     task.pendingToolCalls.set(callId, { resolve, reject, toolName, callId, requestedAt: Date.now(), timer });
-    // 通知前端执行工具
-    emit(task, { type: 'tool:execute', callId, toolName, args, toolCallId, depth });
+    // 通知前端执行工具。
+    // conversationId 必须随事件下发：多会话并行时前端要据此把工具路由到「发起它的那个会话」
+    // 的执行面（浏览器 tab / 工作目录等），否则会打到用户当前正在看的会话上，造成跨会话串数据。
+    emit(task, { type: 'tool:execute', callId, toolName, args, toolCallId, depth, conversationId: task.conversationId });
   });
 }
 

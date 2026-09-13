@@ -43,8 +43,9 @@
     </div>
 
     <div v-if="browserTab" v-show="browserTab.id === store.activeTabId" class="right-panel-body">
-      <!-- scope=preview：与 /browser 独立浏览器页的 tab 空间隔离 -->
-      <BrowserPanel scope="preview" />
+      <!-- scope=preview:<convId>：每个会话的浏览器 tab/激活/历史独立，互不串台。
+           切换会话时 key 变化强制重建组件，主进程 old scope 的 tab 会被摘除。 -->
+      <BrowserPanel v-if="store.currentConvId" :key="store.currentConvId" :scope="`preview:${store.currentConvId}`" />
     </div>
 
     <div v-if="dataTab" v-show="dataTab.id === store.activeTabId" class="right-panel-body">

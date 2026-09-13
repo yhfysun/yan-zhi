@@ -2,7 +2,7 @@
 import { Router, Request, Response } from 'express';
 import { authMiddleware } from '../auth.js';
 import {
-  createTask, subscribe, abortTask, getActiveTasks, getTask, getTaskRow, resolveToolResult,
+  createTask, subscribe, abortTask, getActiveTasks, getTask, getTaskRow, resolveToolResult, injectUserMessage,
 } from '../llm-task-manager.js';
 
 const router = Router();
@@ -58,6 +58,21 @@ router.post('/tasks/:id/abort', (req: Request, res: Response) => {
   const taskId = req.params.id;
   abortTask(taskId);
   res.json({ ok: true });
+});
+
+// POST /api/llm/tasks/inject  运行中追加用户消息（输入框「立即发送」）
+// 语义：消息立即落库并推送可见，模型在下一轮 LLM 调用时带上（不等整个任务结束）。
+// 无运行中任务时返回 no-task，前端应退回普通发送（起新任务）。
+// 注意：必须注册在 /tasks/:id 之前，否则会被 :id 通配吃掉。
+router.post('/tasks/inject', (req: Request, res: Response) => {
+  const userId = req.user!.userId;
+  const { conversationId, content } = req.body || {};
+  if (!conversationId || typeof content !== 'string' || !content.trim()) {
+    res.status(400).json({ error: '缺少 conversationId/content' });
+    return;
+  }
+  const result = injectUserMessage(String(conversationId), content, userId);
+  res.json({ data: { status: result } });
 });
 
 // POST /api/llm/tasks/:id/tool-result  前端提交工具执行结果

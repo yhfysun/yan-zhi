@@ -3,7 +3,18 @@ import vue from '@vitejs/plugin-vue';
 import { resolve } from 'path';
 
 export default defineConfig({
-  plugins: [vue()],
+  plugins: [
+    // 关键：<webview> 是 Electron 提供的自定义元素（custom element），
+    // 不在 HTML 标准标签集里，Vue 默认会尝试当组件解析 → "Failed to resolve component: webview"。
+    // 注册到 isCustomElement 后编译器跳过它、走原生 createElement，渲染层才能拿到 Electron 提供的 webview 实例。
+    vue({
+      template: {
+        compilerOptions: {
+          isCustomElement: (tag) => tag === 'webview',
+        },
+      },
+    }),
+  ],
   resolve: {
     // 关键：packages/*/src 下有 tsc 编译残留 .js（8月24日旧产物）。Vite 默认 .js 优先于 .ts，
     // 会导致前端加载旧 .js（缺新功能导出，如 localAddDoc → SyntaxError）。让 .ts 优先。

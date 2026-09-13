@@ -83,6 +83,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   browserView: {
     createTab: (scope) => ipcRenderer.invoke('browserView:createTab', scope),
     closeTab: (tabId, fromUi) => ipcRenderer.invoke('browserView:closeTab', tabId, fromUi),
+    // 关闭指定 scope 下的所有 tab（多会话隔离：切换会话/卸载 BrowserPanel 时调用，避免 tab 堆积）
+    closeAllTabs: (scope, fromUi) => ipcRenderer.invoke('browserView:closeAllTabs', scope, fromUi),
     activateTab: (tabId) => ipcRenderer.invoke('browserView:activateTab', tabId),
     ensureActiveTab: (scope) => ipcRenderer.invoke('browserView:ensureActiveTab', scope),
     load: (tabId, url) => ipcRenderer.invoke('browserView:load', tabId, url),
@@ -126,7 +128,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // webview 引擎：网页 window.open / target=_blank 统一转应用内新标签页
   onOpenTab: (callback) => {
-    ipcRenderer.on('browser:wv:openTab', (_e, url) => callback(url));
+    // scope：弹窗归属空间（preview/page），渲染层据此只让对应的面板接管，避免两边同时开 tab
+    ipcRenderer.on('browser:wv:openTab', (_e, url, scope) => callback(url, scope));
   },
   // webview 引擎：agent 首次 navigate 时主进程请求某 scope 的浏览器面板把 URL 作为当前页打开
   // （面板还停在主页/无 <webview> 时先由此建出 guest，浏览器才算真正"打开网址"）

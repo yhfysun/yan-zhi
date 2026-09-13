@@ -34,11 +34,13 @@ function extractUrlFromArgs(args: unknown): string {
 // （ensureActiveTab），可能猜中面板旧 tab 或别的空间 tab —— 导航进了那个 tab，页面加载了
 // 但预览 UI 不跟随（onNavigated 里 tid !== activeTabId 被忽略，永远显示首页），后续
 // get_page_content 读的也不是用户看到的页面。
-async function resolvePreviewTabId(): Promise<string> {
+async function resolvePreviewTabId(convId?: string): Promise<string> {
   const electron = (window as any).electronAPI;
-  const bs = useBrowserStore('preview');
+  // 多会话隔离：convId 决定 scope；未传则退化为通用 preview（兼容旧调用点）。
+  const scope = convId ? `preview:${convId}` : 'preview';
+  const bs: any = useBrowserStore(scope);
   const current = () =>
-    bs.activeTabId && bs.tabs.some((t) => t.id === bs.activeTabId) ? bs.activeTabId : '';
+    bs.activeTabId && bs.tabs.some((t: any) => t.id === bs.activeTabId) ? bs.activeTabId : '';
   const tid = current();
   if (tid) return tid;
   // 预览面板刚被 openTab 挂载：等它 onMounted 自建首个 tab（最多 ~4s）
@@ -48,7 +50,7 @@ async function resolvePreviewTabId(): Promise<string> {
     if (t) return t;
   }
   // 兜底：主进程自建并广播（preview 面板的 onTabCreated 会补壳并激活）
-  return await electron.browserView.ensureActiveTab('preview');
+  return await electron.browserView.ensureActiveTab(scope);
 }
 
 function rowToConv(r: any): Conversation {
@@ -167,6 +169,13 @@ export interface PendingConfirmation {
   resolve: (result: Record<string, unknown>) => void;
 }
 
+/** 任务运行期间用户追加的消息（输入框上方的待发队列条目） */
+export interface QueuedMessage {
+  id: string;
+  content: string;
+  createdAt: number;
+}
+
 export interface PendingPlatformConfig {
   prefill: {
     name?: string;
@@ -233,6 +242,82 @@ export const useChatStore = defineStore('chat', () => {
     const r = await api.patch(`/conversations/${cid}`, { permissionMode: mode });
     if ((r as any)?.error) console.warn('[Chat] 权限模式保存失败:', (r as any).error);
   }
+  /** 任务运行期间用户追加的消息（输入框上方的队列）。
+   *  按 conversationId 分桶——多会话并行时各会话的追加列表互不干扰。
+   *  默认等当前任务结束后由前端合并成新一轮发送；点「立即发送」则 POST /llm/tasks/inject，
+   *  立即落库并在下一轮 LLM 调用时带上（不等整个任务结束）。 */
+  const queuedByConv = ref<Record<string, QueuedMessage[]>>({});
+
+  /** 取某会话的追加队列（只读视图，空数组兜底） */
+  function queuedOf(convId: string): QueuedMessage[] {
+    if (!convId) return [];
+    return queuedByConv.value[convId] || [];
+  }
+
+  /** 任务结束（completed/aborted/error）回调。供上层在任务收尾后自动发出排队的追加消息。
+   *  异步派发（宏任务）——调用点位于 SSE 消费栈内，此时 runningConvIds 尚未清理，
+   *  同步派发会让随后的 callLlm 撞上「同会话互斥」直接 return，追加消息被静默丢弃。 */
+  const taskFinishHooks = new Set<(convId: string) => void>();
+  function onTaskFinished(fn: (convId: string) => void): () => void {
+    taskFinishHooks.add(fn);
+    return () => { taskFinishHooks.delete(fn); };
+  }
+  function emitTaskFinished(convId: string) {
+    if (taskFinishHooks.size === 0) return;
+    setTimeout(() => {
+      for (const fn of [...taskFinishHooks]) {
+        try { fn(convId); } catch (e) { console.error('[Chat] 任务结束回调异常:', e); }
+      }
+    }, 30);
+  }
+
+  /** 入队一条追加消息。返回新条目（便于 UI 定位/滚动）。 */
+  function enqueueMessage(convId: string, content: string): QueuedMessage {
+    const text = String(content ?? '');
+    const item: QueuedMessage = {
+      id: 'q_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+      content: text,
+      createdAt: Date.now(),
+    };
+    (queuedByConv.value[convId] ||= []).push(item);
+    return item;
+  }
+
+  function removeQueuedMessage(convId: string, id: string) {
+    const arr = queuedByConv.value[convId];
+    if (!arr) return;
+    queuedByConv.value[convId] = arr.filter((q) => q.id !== id);
+  }
+
+  function updateQueuedMessage(convId: string, id: string, content: string) {
+    const arr = queuedByConv.value[convId];
+    if (!arr) return;
+    const hit = arr.find((q) => q.id === id);
+    if (hit) hit.content = content;
+  }
+
+  /** 取出并清空某会话的全部待发消息（任务结束后合并成新一轮时使用） */
+  function takeQueuedMessages(convId: string): QueuedMessage[] {
+    const arr = queuedByConv.value[convId] || [];
+    delete queuedByConv.value[convId];
+    return arr;
+  }
+
+  /** 「立即发送」：注入到运行中的任务，模型下一轮带上。
+   *  @returns true=已注入；false=该会话已无运行中任务（调用方应退回普通发送） */
+  async function injectQueuedMessage(convId: string, id: string): Promise<boolean> {
+    const arr = queuedByConv.value[convId];
+    const hit = arr?.find((q) => q.id === id);
+    if (!hit) return false;
+    const r = await api.post<any>('/llm/tasks/inject', { conversationId: convId, content: hit.content });
+    const status = (r as any)?.data?.status;
+    if (status === 'injected') {
+      removeQueuedMessage(convId, id);
+      return true;
+    }
+    return false;
+  }
+
   // 文件管理弹窗（el-dialog）是否显示——左侧栏「文件管理」按钮触发
   const showFilePopup = ref(false);
   // ===== 多 tab 数据模型（Phase B1）：previewTabs 并存 + activeTabId 激活 =====
@@ -563,6 +648,7 @@ export const useChatStore = defineStore('chat', () => {
       currentConvId.value = '';
     }
     delete messagesByConv.value[id];
+    delete queuedByConv.value[id];
     await loadConversations();
   }
 
@@ -581,6 +667,7 @@ export const useChatStore = defineStore('chat', () => {
       currentConvId.value = '';
     }
     for (const id of ids) delete messagesByConv.value[id];
+    for (const id of ids) delete queuedByConv.value[id];
     await loadConversations();
   }
 
@@ -895,7 +982,7 @@ export const useChatStore = defineStore('chat', () => {
    *  2) custom_{idTag}_{name}     → 服务端沙箱 /api/tools/:id/execute（沙箱依赖 node:vm，仅服务端可用）
    *  3) 裸名                       → ToolRegistry.execute（内置工具，经平台适配器执行）
    *  重名不误路由：三类前缀互斥，裸名不得以 mcp_/custom_ 开头。 */
-  async function dispatchToolCall(fullName: string, args: unknown, ctx?: { parentToolCallId?: string; depth?: number }): Promise<{ ok: boolean; result?: unknown; msg?: string }> {
+  async function dispatchToolCall(fullName: string, args: unknown, ctx?: { parentToolCallId?: string; depth?: number; convId?: string }): Promise<{ ok: boolean; result?: unknown; msg?: string }> {
     const mcpStore = useMcpStore();
     const registry = getToolRegistry();
 
@@ -941,8 +1028,9 @@ export const useChatStore = defineStore('chat', () => {
             // 引擎不支持则回退原覆盖导航
           }
           openTab({ kind: 'browser', name: host, url: target });
-          // 用预览面板当前显示的 tab 导航（面板未就绪时轮询等待其自建，见 resolvePreviewTabId）
-          const navTabId = await resolvePreviewTabId();
+          // 用预览面板当前显示的 tab 导航（面板未就绪时轮询等待其自建，见 resolvePreviewTabId）。
+          // 多会话隔离：按当前任务所属 convId 取 scope，避免与其它会话的浏览器面板互相串台。
+          const navTabId = await resolvePreviewTabId(ctx?.convId);
           skipNextRecordVisit.value = true;
           try {
             const result = await Promise.race([
@@ -998,7 +1086,7 @@ export const useChatStore = defineStore('chat', () => {
         const action = actionMap[fullName];
         if (action) {
           try {
-            const actTabId = await resolvePreviewTabId();
+            const actTabId = await resolvePreviewTabId(ctx?.convId);
             const result = await Promise.race([
               (window as any).electronAPI.browserView.action(actTabId, action, args),
               new Promise((_, reject) => setTimeout(() => reject(new Error(`IPC 调用超时（20s）: ${action}`)), 20000)),
@@ -1415,7 +1503,11 @@ export const useChatStore = defineStore('chat', () => {
             // 去重：重放时跳过已执行的 tool:execute（避免重复调工具/弹窗）
             if (executedToolCallIds.has(callId)) break;
             executedToolCallIds.add(callId);
-            const ctx = ptcId ? { parentToolCallId: ptcId, depth: evtDepth ?? 1 } : undefined;
+            // 多会话隔离：把当前任务所属 convId 传给工具分发（浏览器工具按 convId 取 scope，
+            // 不同会话的 tab/激活/历史互不串台，避免会话 A 调 browser_get_page_content 读到会话 B 的页面）。
+            const ctx = ptcId
+              ? { parentToolCallId: ptcId, depth: evtDepth ?? 1, convId }
+              : { convId };
             try {
               const r = await dispatchToolCall(toolName, args, ctx);
               const resultStr = r.ok
@@ -1459,9 +1551,9 @@ export const useChatStore = defineStore('chat', () => {
             try { await useFileStore().loadConversationFiles(event.conversationId || convId); } catch {}
             break;
           }
-          case 'task:completed': flushNow(convId); return;
-          case 'task:aborted': flushNow(convId); return;
-          case 'task:error': flushNow(convId); throw new Error(event.error || '任务执行失败');
+          case 'task:completed': flushNow(convId); emitTaskFinished(convId); return;
+          case 'task:aborted': flushNow(convId); emitTaskFinished(convId); return;
+          case 'task:error': flushNow(convId); emitTaskFinished(convId); throw new Error(event.error || '任务执行失败');
         }
       }
     }
@@ -1511,8 +1603,11 @@ export const useChatStore = defineStore('chat', () => {
       reasoningEffort?: string;
     },
     onChunk?: (chunk: { content?: string; reasoning?: string }) => void,
+    convIdOverride?: string,
   ): Promise<void> {
-    const convId = currentConvId.value;
+    // convIdOverride：发送流程跨越多个 await，期间用户可能切换会话。
+    // 调用方可显式锁定目标会话，避免消息/任务落到「发送开始时」之外的会话上（多会话并行时必现串台）。
+    const convId = convIdOverride || currentConvId.value;
     if (!convId) throw new Error('未选择会话');
     if (runningConvIds.value.has(convId)) return;
 
@@ -1580,8 +1675,9 @@ export const useChatStore = defineStore('chat', () => {
     model: Model,
     onChunk?: (chunk: { content?: string; reasoning?: string }) => void,
     options?: { temperature?: number; maxTokens?: number; topP?: number; frequencyPenalty?: number; presencePenalty?: number; reasoningEffort?: string },
+    convIdOverride?: string,
   ): Promise<void> {
-    return callLlm(platform, model, { userContent, ...options }, onChunk);
+    return callLlm(platform, model, { userContent, ...options }, onChunk, convIdOverride);
   }
 
   function stop(convId?: string) {
@@ -1617,18 +1713,22 @@ export const useChatStore = defineStore('chat', () => {
     model: Model,
     onChunk?: (chunk: { content?: string; reasoning?: string }) => void,
     options?: { temperature?: number; maxTokens?: number; topP?: number; frequencyPenalty?: number; presencePenalty?: number; reasoningEffort?: string },
+    convIdOverride?: string,
   ): Promise<void> {
-    if (!currentConvId.value) throw new Error('未选择会话');
-    const lastAssistant = [...currentMessages.value].reverse().find((m) => m.role === 'assistant');
+    const cid = convIdOverride || currentConvId.value;
+    if (!cid) throw new Error('未选择会话');
+    const lastAssistant = [...(messagesByConv.value[cid] || [])].reverse().find((m) => m.role === 'assistant');
     if (lastAssistant) {
       await deleteMessage(lastAssistant.id);
     }
-    return callLlm(platform, model, { ...options }, onChunk);
+    return callLlm(platform, model, { ...options }, onChunk, cid);
   }
 
   return {
     conversations, currentMessages, streaming, currentConvId, mountedMcpServers, mcpDisabledTools, mcpToolAliases,
     runningConvIds, isConvStreaming,
+    queuedByConv, queuedOf, enqueueMessage, removeQueuedMessage, updateQueuedMessage, takeQueuedMessages, injectQueuedMessage,
+    onTaskFinished,
     runningToolCallIds, isToolCallRunning,
     browserSteps, rightPanelOpen, thinkingMode, planMode, answerOnly,
     permissionMode, setPermissionMode,
