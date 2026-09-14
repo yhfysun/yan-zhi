@@ -54,10 +54,12 @@ const EMPTY_WORKFLOW: Workflow = { nodes: [], edges: [] };
 // python_exec：文档处理类 skill（Word/Excel/PDF/图片/格式转换）靠 Python 脚本执行，必挂。
 const DEFAULT_BUILTIN_TOOLS = ['file_read', 'file_write', 'python_exec', 'call_agent', 'list_sub_agents', 'list_models', 'ask_user', 'confirm_user', 'task_plan', 'task_step', 'configure_model_platform'];
 
-/** 默认助理内置的文档处理类 skill（Word/Excel/PDF/图片/格式转换），挂载后后端注入流程指引 */
+/** 默认助理内置的 skill：文档处理类 + 桌面应用自动化（computer-use 通用 SOP + 系统管理护栏），挂载后后端注入流程指引。
+ *  与 apps/server/src/db.ts 的 DEFAULT_AGENT_SKILL_IDS 保持对齐。 */
 const DEFAULT_AGENT_SKILL_IDS = [
   'skill_docx_processing', 'skill_xlsx_data_processing', 'skill_pdf_processing',
   'skill_image_processing', 'skill_file_convert',
+  'skill_desktop_app_automation',
 ];
 
 /** 联网查询委派指引块 —— 默认助手提示词统一引用，v9 迁移按此标记增量追加 */

@@ -1025,6 +1025,8 @@ export const PLUGIN_TEMPLATES: Record<string, PluginTemplate> = {
           'computer_list_windows',
           'computer_activate_window',
           'computer_open_app',
+          'computer_list_processes',
+          'computer_list_installed_apps',
         ],
       },
       config: {

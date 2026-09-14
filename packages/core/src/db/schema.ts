@@ -829,6 +829,16 @@ export const BUILTIN_SKILLS_SEED = [
     author: 'openspec',
     bodyMd: `# OpenSpec 实施变更（apply）\n\n按变更的 tasks 开始/继续实施。\n\n## 流程\n读取变更 tasks → 逐项实现 → 标记完成\n\n详见 .claude/skills/openspec-apply-change/SKILL.md`,
   },
+  {
+    id: 'skill_desktop_app_automation',
+    name: '桌面应用自动化',
+    description: '用 computer-use 插件操作本机桌面应用（微信/QQ/邮件/文件管理等任意有窗口的软件）与系统管理（安装/卸载应用、强制删除残留、注册表清理）：通用 SOP = 找窗口→激活→核对操作对象→截图定位→按钮优先提交→截图核验；含各应用发送快捷键差异（微信 Ctrl+Enter/发送按钮，Enter 需开启回车发送）、纠错时效（微信 2 分钟撤回）与资金操作红线（红包/转账只提醒不代操作）。',
+    source: 'builtin',
+    triggers: ['桌面自动化', '操作电脑', '操作应用', '帮我操作软件', '发微信', '微信发消息', '自动发微信', '发QQ消息', '卸载应用', '安装应用', '强制删除文件', '清理注册表残留'],
+    category: '自动化',
+    author: 'yan-zhi',
+    bodyMd: `# 桌面应用自动化\n\n用「电脑使用」(computer-use) 插件操作本机桌面应用（微信/QQ/钉钉/邮件客户端/文件管理器等任意有窗口的软件），并可做系统级维护（安装/卸载应用、强制删除残留、注册表清理）。**不写死任何路径/版本**：应用在哪、叫什么，一律先用工具扫出来。\n\n## 通用 SOP（每步截图核验，禁止盲点盲按）\n0. 前提：插件管理页已启用「电脑使用」；目标应用已登录（登录/扫码/验证码一律请用户自己完成，禁止代操作）；锁屏先唤醒解锁。\n1. 找应用：不确定名称/路径时先 computer_list_installed_apps { nameFilter }（已装应用+安装目录+exe 路径）、computer_list_processes（正在运行的）或 computer_list_windows { processName }（有窗口的），不要猜路径。\n2. 激活：computer_activate_window { pid }。\n3. 核对操作对象（必做，防误操作）：computer_screenshot + image_analyze 确认当前窗口/会话/文档与用户目标一致（聊天应用=防发错群，文件操作=防删错目录）；有歧义 ask_user。\n4. 定位与操作：元素位置以截图识别为准，禁止盲猜坐标；同一元素连续失败 2 次即停下说明。\n5. 提交/发送：优先点界面按钮（「发送」「提交」「保存」），快捷键作备选——语义因应用和用户设置而异（见速查表）。\n6. 结果核验（必做）：再截图确认生效（消息气泡出现/状态变化/对话框关闭）；失败重试一次，仍失败换方式或如实报告。\n7. 回报：做了什么 + 结果证据 + 异常。\n\n## 提交快捷键速查（因应用而异，勿混用）\n- 微信：绿色「发送(S)」按钮 或 Ctrl+Enter（默认不开「回车键发送」，单独 Enter 无效；Shift+Enter 是换行）\n- QQ：Ctrl+Enter 或「发送」按钮\n- 通用表单/对话框：Enter 可能是提交也可能只是切焦点，先截图识别\n- 拿不准时先点按钮；按钮灰的再用快捷键，然后截图核验\n\n## 系统管理操作（高危，必须先确认）\n- 卸载应用 computer_uninstall_app / 安装应用 computer_install_app / 强制删除残留 computer_force_delete / 注册表清理 computer_registry_delete：先 computer_list_installed_apps 查清单 → confirm_user 逐项列出将做什么 → 用户同意后才传 confirm: true 执行。\n- 注册表删除会自动导出 .reg 备份；强制删除不进回收站不可恢复；安装 .exe 必须用确认过的静默参数，不确定就改用 winget 或让用户手动装。\n\n## 纠错时效\n不可逆操作第一时间处理与报告：微信消息 2 分钟内可右键「撤回」；文件删除进回收站可还原（computer_force_delete 除外——不可恢复）。超时无法撤销→如实告知，不谎报。\n\n## 安全红线\n- 资金操作（红包/转账/支付/收款确认）一律只提醒用户，禁止代操作\n- 密码/验证码/证件号等敏感信息不写入要发送的内容\n- 用户已明确指定的操作直接执行；未指定内容的发送/删除/支付/群发等先确认\n- 应用 UI 随版本变化，一切以截图+image_analyze 识别为准\n\n详见 .claude/skills/desktop-app-automation/SKILL.md`,
+  },
 ];
 
 /**

@@ -396,6 +396,11 @@ try {
 try { db.exec('ALTER TABLE conversation ADD COLUMN space_id TEXT'); } catch {}
 // 迁移完成后才能创建引用 space_id 的索引（旧库迁移场景）
 try { db.exec('CREATE INDEX IF NOT EXISTS idx_conversation_space ON conversation(space_id)'); } catch {}
+// 迁移 conversation 表（添加 permission_mode 列：会话级工具权限 readonly/default/full）。
+// 该列由 routes/conversations.ts 的 INSERT 与 llm-task-manager 的 SELECT 使用，
+// 之前只在新库 CREATE TABLE 中存在、旧库无增量迁移 → 打包版旧库新建会话必报
+// "table conversation has no column named permission_mode"（500）。
+try { db.exec("ALTER TABLE conversation ADD COLUMN permission_mode TEXT DEFAULT 'default'"); } catch {}
 
 // 迁移 message 表（添加 system_prompt_snapshot 列 + 子智能体归属列）
 try { db.exec('ALTER TABLE message ADD COLUMN system_prompt_snapshot TEXT'); } catch {}
@@ -670,11 +675,13 @@ const DEFAULT_AGENT_BUILTIN_TOOLS = [
   'plugin_computer-use__computer_press_key',
   'plugin_computer-use__computer_open_app',
 ];
-// 默认助理内置的文档处理类 skill（Word/Excel/PDF/图片/格式转换，与前端 agent.ts 的 DEFAULT_AGENT_SKILL_IDS 对齐）。
+// 默认助理内置的 skill：文档处理类（Word/Excel/PDF/图片/格式转换）+ 桌面应用自动化
+// （computer-use 通用 SOP + 系统管理护栏，与前端 agent.ts 的 DEFAULT_AGENT_SKILL_IDS 对齐）。
 // 后端 buildSystemPromptForBackend 按 agent.skill_ids 注入 skill 描述与流程指引。
 const DEFAULT_AGENT_SKILL_IDS = [
   'skill_docx_processing', 'skill_xlsx_data_processing', 'skill_pdf_processing',
   'skill_image_processing', 'skill_file_convert',
+  'skill_desktop_app_automation',
 ];
 // pageAgent 工具收口（与前端 packages/ui/src/stores/agent.ts 的 PAGE_AGENT_BUILTIN_TOOLS 对齐，
 // 含 v4 回补的 browser_scroll，共六个：四件套 + scroll + ask_user）。
@@ -1931,6 +1938,43 @@ try {
   }
 } catch {}
 
+// 预置内置 skill：桌面应用自动化（desktop-app-automation）—— computer-use 操作桌面应用 + 系统管理（安装/卸载/强删/注册表）的经验收口。
+// 通用化：不写死任何应用路径/版本，应用与路径一律先用 computer_list_installed_apps/list_windows 扫出来。
+const DESKTOP_AUTO_DESC = '用 computer-use 插件操作本机桌面应用（微信/QQ/邮件/文件管理等）与系统管理（安装/卸载/强删/注册表清理）：通用 SOP=找窗口→激活→核对对象→截图定位→按钮优先提交→截图核验；含快捷键差异（微信 Ctrl+Enter/发送按钮，Enter 需开启回车发送）、纠错时效（微信 2 分钟撤回）与资金红线（红包/转账只提醒不代操作）。';
+const DESKTOP_AUTO_TRIGGERS = ['桌面自动化', '操作电脑', '操作应用', '帮我操作软件', '发微信', '微信发消息', '自动发微信', '发QQ消息', '卸载应用', '安装应用', '强制删除文件', '清理注册表残留'];
+const DESKTOP_AUTO_BODY = `# 桌面应用自动化\n\n用「电脑使用」(computer-use) 插件操作本机桌面应用（微信/QQ/钉钉/邮件客户端/文件管理器等任意有窗口的软件），并可做系统级维护（安装/卸载应用、强制删除残留、注册表清理）。**不写死任何路径/版本**：应用在哪、叫什么，一律先用工具扫出来。\n\n## 通用 SOP（每步截图核验，禁止盲点盲按）\n0. 前提：插件管理页已启用「电脑使用」；目标应用已登录（登录/扫码/验证码一律请用户自己完成，禁止代操作）；锁屏先唤醒解锁。\n1. 找应用：不确定名称/路径时先 computer_list_installed_apps { nameFilter }（已装应用+安装目录+exe 路径）、computer_list_processes（正在运行的）或 computer_list_windows { processName }（有窗口的），不要猜路径。\n2. 激活：computer_activate_window { pid }。\n3. 核对操作对象（必做，防误操作）：computer_screenshot + image_analyze 确认当前窗口/会话/文档与用户目标一致（聊天应用=防发错群，文件操作=防删错目录）；有歧义 ask_user。\n4. 定位与操作：元素位置以截图识别为准，禁止盲猜坐标；同一元素连续失败 2 次即停下说明。\n5. 提交/发送：优先点界面按钮（「发送」「提交」「保存」），快捷键作备选——语义因应用和用户设置而异（见速查表）。\n6. 结果核验（必做）：再截图确认生效（消息气泡出现/状态变化/对话框关闭）；失败重试一次，仍失败换方式或如实报告。\n7. 回报：做了什么 + 结果证据 + 异常。\n\n## 提交快捷键速查（因应用而异，勿混用）\n- 微信：绿色「发送(S)」按钮 或 Ctrl+Enter（默认不开「回车键发送」，单独 Enter 无效；Shift+Enter 是换行）\n- QQ：Ctrl+Enter 或「发送」按钮\n- 通用表单/对话框：Enter 可能是提交也可能只是切焦点，先截图识别\n- 拿不准时先点按钮；按钮灰的再用快捷键，然后截图核验\n\n## 系统管理操作（高危，必须先确认）\n- 卸载应用 computer_uninstall_app / 安装应用 computer_install_app / 强制删除残留 computer_force_delete / 注册表清理 computer_registry_delete：先 computer_list_installed_apps 查清单 → confirm_user 逐项列出将做什么 → 用户同意后才传 confirm: true 执行。\n- 注册表删除会自动导出 .reg 备份；强制删除不进回收站不可恢复；安装 .exe 必须用确认过的静默参数，不确定就改用 winget 或让用户手动装。\n\n## 纠错时效\n不可逆操作第一时间处理与报告：微信消息 2 分钟内可右键「撤回」；文件删除进回收站可还原（computer_force_delete 除外——不可恢复）。超时无法撤销→如实告知，不谎报。\n\n## 安全红线\n- 资金操作（红包/转账/支付/收款确认）一律只提醒用户，禁止代操作\n- 密码/验证码/证件号等敏感信息不写入要发送的内容\n- 用户已明确指定的操作直接执行；未指定内容的发送/删除/支付/群发等先确认\n- 应用 UI 随版本变化，一切以截图+image_analyze 识别为准\n\n详见 .claude/skills/desktop-app-automation/SKILL.md`;
+
+try {
+  const skillId = 'skill_desktop_app_automation';
+  const hasSkill = db.prepare('SELECT id FROM skill WHERE id = ?').get(skillId);
+  if (!hasSkill) {
+    db.prepare(
+      'INSERT INTO skill (id, user_id, name, description, triggers_json, body, category, author, enabled, installs, source, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    ).run(
+      skillId, 'guest', '桌面应用自动化',
+      DESKTOP_AUTO_DESC,
+      JSON.stringify(DESKTOP_AUTO_TRIGGERS),
+      DESKTOP_AUTO_BODY,
+      '自动化', 'yan-zhi', 1, 0, 'builtin', Date.now(),
+    );
+  } else {
+    // 内置 skill 属产品定义：桌面自动化经验（SOP/快捷键差异/系统管理护栏）随版本沉淀，覆盖旧版残留。
+    // 受 BUILTIN_OVERWRITE_MODE 控制：mode='never' 时只标记内置来源，不覆盖用户改动。
+    if (overwriteEnabled) {
+      db.prepare("UPDATE skill SET body = ?, description = ?, triggers_json = ?, source = 'builtin' WHERE id = ?").run(
+        DESKTOP_AUTO_BODY, DESKTOP_AUTO_DESC, JSON.stringify(DESKTOP_AUTO_TRIGGERS), skillId,
+      );
+    } else {
+      db.prepare("UPDATE skill SET source = 'builtin' WHERE id = ?").run(skillId);
+    }
+  }
+} catch {}
+
+// 清理旧版残留：skill_wechat_desktop_send 为通用化之前的写死微信版本（从未随版本发布），从 dev 库移除
+try {
+  db.prepare("DELETE FROM skill WHERE id = 'skill_wechat_desktop_send' AND source = 'builtin'").run();
+} catch {}
+
 // 预置内置 skill：本体取数与分析 —— 数据查询分析助理的「教材」：解释本体工具链/YAML 含义/SQL 生成/脚本桥接
 const ONTOLOGY_QUERY_DESC = '解释本体（语义层）工具链与 YAML 字段含义，指导按「总览→简略→详情→采值→取数」标准流程查询数据，含 SQL 生成规范与 js_exec 脚本桥接（dataQuery）用法。';
 const ONTOLOGY_QUERY_BODY = `# 本体取数与分析指南
@@ -2603,6 +2647,13 @@ const STANDALONE_SKILL_DEFAULTS: Record<string, { name: string; description: str
     description: '每天自动登录即梦（Dreamina，字节跳动 AI 创作平台）并签到领取灵感值/积分。即梦用抖音扫码登录，首次需手动扫码，之后配合定时任务每日自动签到。',
     triggers: ['即梦签到', '即梦每天签到', '即梦领积分', '即梦灵感值', 'Dreamina签到', '每日签到'],
     body: `# 即梦每日签到领灵感值\n\n自动登录即梦（jimeng.jianying.com）完成每日签到，领取灵感值/积分。配合定时任务可每日自动执行。\n\n## ⚠️ 业务约束（随委派 input 传给 pageAgent）\n- 目标站固定 https://jimeng.jianying.com/，禁止访问 dreamina.ai 等国际版。\n- 登录只走扫码（pageAgent 会 ask_user），禁止代填手机号/验证码。\n- 登录态由 persist:browser-view partition 持久化，首次扫码后复用。\n- 已知稳定选择器：即梦"领积分"入口 #SiderMenuCredit。\n\n## 委派流程\n1. call_agent { agentId: "a_builtin_page_agent", input: "打开 https://jimeng.jianying.com/ 并检查登录状态（有头像=已登录）；未登录则 ask_user 提示用户在浏览器面板扫码登录，用户确认后用 browser_get_page_content 复核；进入'领积分'入口（#SiderMenuCredit），找到'签到/打卡/领灵感'按钮点击签到，用 browser_get_page_content 确认结果并返回摘要。目标站固定 jimeng.jianying.com，禁止访问国际版，禁止代填验证码。" }\n2. 周期任务：scheduled_task cron "0 9 * * *" + prompt "登录即梦签到领灵感值"\n\n详见 .claude/skills/jimeng-daily-checkin/SKILL.md`,
+  },
+  skill_desktop_app_automation: {
+    name: '桌面应用自动化',
+    category: '自动化',
+    description: DESKTOP_AUTO_DESC,
+    triggers: DESKTOP_AUTO_TRIGGERS,
+    body: DESKTOP_AUTO_BODY,
   },
   skill_ontology_query: {
     name: '本体取数与分析',
