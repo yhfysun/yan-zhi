@@ -61,7 +61,7 @@
       <button class="right-panel-empty-entry" @click="openFileEntry">
         <el-icon><Document /></el-icon><span>文件预览</span>
       </button>
-      <button class="right-panel-empty-entry" @click="openBrowserEntry">
+      <button v-if="supportsBrowser" class="right-panel-empty-entry" @click="openBrowserEntry">
         <el-icon><Link /></el-icon><span>浏览器预览</span>
       </button>
       <button v-if="hasWorkspaceDir" class="right-panel-empty-entry" @click="openGitEntry">
@@ -101,6 +101,7 @@ import { clampMenuPos } from '../../utils/menuPosition';
 import { useRouter } from 'vue-router';
 import { Close, Document, Link, Folder, Grid, Monitor, Back, Right, CircleClose } from '@element-plus/icons-vue';
 import { useChat } from '../../composables/chat/useChat';
+import { usePlatform } from '../../composables/usePlatform';
 import { useSettingsStore } from '../../stores/settings';
 import type { DataTabContract, PreviewTab } from '../../stores/chat';
 import FilePreview from '../FilePreview.vue';
@@ -110,6 +111,8 @@ import ChatConsolePanel from './ChatConsolePanel.vue';
 import DataQueryWorkbench from './DataQueryWorkbench.vue';
 
 const { store, closeRightPanel } = useChat();
+// E12: 移动端不支持内置浏览器——隐藏「浏览器预览」入口
+const { supportsBrowser } = usePlatform();
 
 const router = useRouter();
 const settingsStore = useSettingsStore();

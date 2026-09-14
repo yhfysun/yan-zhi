@@ -244,8 +244,8 @@ export const useChatStore = defineStore('chat', () => {
   }
   /** 任务运行期间用户追加的消息（输入框上方的队列）。
    *  按 conversationId 分桶——多会话并行时各会话的追加列表互不干扰。
-   *  默认等当前任务结束后由前端合并成新一轮发送；点「立即发送」则 POST /llm/tasks/inject，
-   *  立即落库并在下一轮 LLM 调用时带上（不等整个任务结束）。 */
+   *  默认等当前任务结束后由前端逐条串行发送（每轮只发一条，链式排空）；
+   *  点「立即发送」则 POST /llm/tasks/inject，立即落库并在下一轮 LLM 调用时带上（不等整个任务结束）。 */
   const queuedByConv = ref<Record<string, QueuedMessage[]>>({});
 
   /** 取某会话的追加队列（只读视图，空数组兜底） */
@@ -296,11 +296,20 @@ export const useChatStore = defineStore('chat', () => {
     if (hit) hit.content = content;
   }
 
-  /** 取出并清空某会话的全部待发消息（任务结束后合并成新一轮时使用） */
+  /** 取出并清空某会话的全部待发消息（保留给需要一次性排空的场景） */
   function takeQueuedMessages(convId: string): QueuedMessage[] {
     const arr = queuedByConv.value[convId] || [];
     delete queuedByConv.value[convId];
     return arr;
+  }
+
+  /** 只取出队首一条待发消息（逐条发送模式：发完这条任务收尾后由回调再取下一条，链式排空队列） */
+  function takeFirstQueuedMessage(convId: string): QueuedMessage | null {
+    const arr = queuedByConv.value[convId];
+    if (!arr || arr.length === 0) return null;
+    const [first] = arr.splice(0, 1);
+    if (arr.length === 0) delete queuedByConv.value[convId];
+    return first;
   }
 
   /** 「立即发送」：注入到运行中的任务，模型下一轮带上。
@@ -1003,6 +1012,14 @@ export const useChatStore = defineStore('chat', () => {
       if (fullName.startsWith(MCP_PREFIX) || fullName.startsWith(CUSTOM_PREFIX)) {
         return { ok: false, msg: '内置工具名与保留前缀冲突: ' + fullName };
       }
+      // E12: 移动端无内置浏览器容器，也不走服务端 Playwright——所有 browser_* 工具统一拦截并提示
+      let browserPlatform = 'web';
+      try { browserPlatform = getPlatformAdapter().platform; } catch { /* 兜底按 web */ }
+      if (browserPlatform === 'mobile' && fullName.startsWith('browser_')) {
+        const msgText = `当前平台（移动端）不支持内置浏览器工具 ${fullName}，无法打开/操作网页。请改用 web_search 等方式获取网络信息`;
+        browserSteps.value.push({ action: fullName, result: msgText, time: Date.now() });
+        return { ok: false, msg: msgText };
+      }
       // B 方案：智能体调 browser_navigate 时，桌面端桥接到预览面板的 BrowserView（共用同一浏览器）。
       // 通过 store.currentBrowserUrl 命令 BrowserPanel 导航，模型打开的页面在预览面板同步显示。
       if (fullName === 'browser_navigate') {
@@ -1284,49 +1301,60 @@ export const useChatStore = defineStore('chat', () => {
 
     const { usePlatformStore } = await import('./platform');
     const platformStore = usePlatformStore();
-    let platform: Platform | undefined;
-    let model: Model | undefined;
+
+    // 依次尝试多个 vision 候选：capabilities 元数据经常缺标记（多模态模型被误判为纯文本），
+    // 所以当前会话模型也要尝试——看图失败会在这里自然降级到下一候选，最终才落 OCR。
+    const tried = new Set<string>();
+    const attemptVision = async (p: Platform | undefined, m: Model | undefined): Promise<string | null> => {
+      if (!p || !m) return null;
+      const key = `${p.id}/${m.id}`;
+      if (tried.has(key)) return null;
+      tried.add(key);
+      try {
+        const client = new LlmClient(p, m);
+        const text = await client.visionAnalyze(base64, mime, prompt);
+        if (text) return text;
+        console.warn('[image_analyze] vision 返回空，换下一候选:', m.modelId);
+        return null;
+      } catch (e: any) {
+        console.warn('[image_analyze] vision 失败，换下一候选:', m.modelId, e?.message || e);
+        return null;
+      }
+    };
 
     if (args.platformId && args.modelId) {
-      platform = platformStore.platforms.find((p) => p.id === args.platformId);
-      model = platformStore.models.find((m) => m.id === args.modelId && m.platformId === args.platformId);
-      if (model && !(model.capabilities || []).includes('vision')) {
-        return { ok: false, msg: `模型 ${model.modelId} 不支持 vision（capabilities 未含 vision）` };
+      const p = platformStore.platforms.find((p) => p.id === args.platformId);
+      const m = platformStore.models.find((m) => m.id === args.modelId && m.platformId === args.platformId);
+      if (m && !(m.capabilities || []).includes('vision')) {
+        return { ok: false, msg: `模型 ${m.modelId} 不支持 vision（capabilities 未含 vision）` };
       }
+      const viaExplicit = await attemptVision(p, m);
+      if (viaExplicit) return { ok: true, result: viaExplicit };
     } else {
+      // 1) 当前会话模型优先： capabilities 未回填的平台很多，不能因缺标记就把多模态模型跳过。
+      //    当前模型看图成功 = 主对话模型直接"看见"，无需额外配置任何独立 vision 模型。
       const conv = conversations.value.find((c) => c.id === currentConvId.value);
       if (conv?.platformId && conv?.modelId) {
         const resolved = platformStore.resolveModel(conv.modelId, conv.platformId);
-        if (resolved && (resolved.capabilities || []).includes('vision')) {
-          platform = platformStore.platforms.find((p) => p.id === conv.platformId);
-          model = resolved;
+        if (resolved) {
+          const viaConv = await attemptVision(platformStore.platforms.find((p) => p.id === conv.platformId), resolved);
+          if (viaConv) return { ok: true, result: viaConv };
         }
       }
-      if (!model) {
-        const visionModel = platformStore.models.find((m) => m.enabled && (m.capabilities || []).includes('vision'));
-        if (visionModel) {
-          model = visionModel;
-          platform = platformStore.platforms.find((p) => p.id === visionModel.platformId);
-        }
+      // 2) 任一启用且显式标记 vision 的模型
+      const visionModel = platformStore.models.find((m) => m.enabled && (m.capabilities || []).includes('vision'));
+      if (visionModel) {
+        const viaAny = await attemptVision(platformStore.platforms.find((p) => p.id === visionModel.platformId), visionModel);
+        if (viaAny) return { ok: true, result: viaAny };
       }
     }
 
-    if (platform && model) {
-      try {
-        const client = new LlmClient(platform, model);
-        const text = await client.visionAnalyze(base64, mime, prompt);
-        return { ok: true, result: text || '(模型返回空)' };
-      } catch (e: any) {
-        // vision 失败，继续降级 OCR
-        console.warn('[image_analyze] vision 失败，降级 OCR:', e?.message || e);
-      }
-    }
-
+    // 3) 全部 vision 候选失败/不存在 → OCR 降级
     try {
       const r = await api.post<any>('/tools/ocr', { image: base64, lang: 'chi_sim+eng' });
       if ('error' in r) return { ok: false, msg: r.error };
       const text = r.data?.text || '';
-      const note = platform && model ? '' : '\n\n[注: 未配置可用的 vision 模型，使用 OCR 降级，仅提取文字]';
+      const note = '\n\n[注: 所有 vision 候选均不可用或看图失败，本次为 OCR 降级，仅提取文字。中文界面/高分辨率截图下 OCR 乱码率高，结果仅供参考]';
       return { ok: true, result: (text || '(OCR 未识别到文字)') + note };
     } catch (e: any) {
       return { ok: false, msg: '图片识别失败（vision 与 OCR 均不可用）: ' + (e?.message || e) };
@@ -1693,6 +1721,11 @@ export const useChatStore = defineStore('chat', () => {
         method: 'POST', headers: { Authorization: `Bearer ${token}` },
       }).catch(() => {});
     }
+    // 手动终止时 SSE 连接已被 abort，后端随后的「task:aborted」事件不会再到达前端，
+    // task:aborted 分支里的 emitTaskFinished 走不到 → 排队的追加消息不会自动发送。
+    // 这里手动补发一次结束回调；即便与 task:completed 双发也安全
+    // （flushQueuedAfterTask 有按会话在途守卫，重复触发只处理一条，不会撞同会话互斥丢消息）。
+    if (controller || taskId) emitTaskFinished(target);
     if (pendingPlatformConfig.value) {
       cancelPlatformConfig();
     }
@@ -1727,7 +1760,7 @@ export const useChatStore = defineStore('chat', () => {
   return {
     conversations, currentMessages, streaming, currentConvId, mountedMcpServers, mcpDisabledTools, mcpToolAliases,
     runningConvIds, isConvStreaming,
-    queuedByConv, queuedOf, enqueueMessage, removeQueuedMessage, updateQueuedMessage, takeQueuedMessages, injectQueuedMessage,
+    queuedByConv, queuedOf, enqueueMessage, removeQueuedMessage, updateQueuedMessage, takeQueuedMessages, takeFirstQueuedMessage, injectQueuedMessage,
     onTaskFinished,
     runningToolCallIds, isToolCallRunning,
     browserSteps, rightPanelOpen, thinkingMode, planMode, answerOnly,

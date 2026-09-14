@@ -18,6 +18,7 @@ import {
 import { useGitStore } from '../../stores/git';
 import { isCodeModeActive, useCodeStore } from '../../stores/code';
 import { useIsMobile } from '../useIsMobile';
+import { usePlatform } from '../usePlatform';
 import { useRouter } from 'vue-router';
 import { api } from '../../api/client';
 import type { Agent, Message, Conversation, Platform, Model } from '@yan-zhi/shared';
@@ -73,6 +74,8 @@ function createChat() {
   const fileStore = useFileStore();
   const distillStore = useDistillStore();
   const isMobile = useIsMobile();
+  // E12: 移动端不支持内置浏览器——浏览器 tab/面板相关逻辑统一门控
+  const { supportsBrowser } = usePlatform();
 
   // Skill 蒸馏弹窗状态
   const showDistill = ref(false);
@@ -403,6 +406,7 @@ function createChat() {
   // 此处兜底其他 browser_* 工具只 push step 不开 tab 的场景）
   watch(() => store.browserSteps.length, (n, o) => {
     if (o === 0 && n > 0) {
+      if (!supportsBrowser) return; // E12: 移动端不打开浏览器 tab（步骤日志仅留在面板外/消息里）
       if (!store.previewTabs.some((t) => t.kind === 'browser')) {
         store.openTab({ kind: 'browser', name: '浏览器', url: '' });
       } else {
@@ -806,6 +810,11 @@ function createChat() {
       const href = a.getAttribute('href') || '';
       if (/^https?:\/\//i.test(href)) {
         e.preventDefault();
+        // E12: 移动端无内置浏览器——回退系统方式打开（Capacitor Browser 插件/新窗口）
+        if (!supportsBrowser) {
+          window.open(href, '_blank');
+          return;
+        }
         // 打开（或激活）browser tab；先置空再设，确保 BrowserPanel 的 watch currentBrowserUrl 触发（重复点同一链接也能重新导航）
         let host = href;
         try { host = new URL(href).hostname || href; } catch { /* keep raw */ }
@@ -1808,22 +1817,35 @@ function createChat() {
       console.error('[Chat] 发送失败:', e);
 
       const reason = e?.message || '请求失败';
-      const tipText = '⚠️ 平台无法访问，请在下方修正平台配置。';
-      const marker = platform
-        ? `\n[[PLATFORM_CONFIG:edit:${platform.id}]]`
-        : '\n[[PLATFORM_CONFIG:create]]';
-      const fullContent = `${tipText}\n@@REASON@@\n${reason}${marker}`;
-
+      // 按错误类型区分提示：401（Key 无效）/404（URL 不对）/网络不通才是平台配置问题，
+      // 引导用户修正配置；400（请求格式错误，如 tool_calls 配对）/429（频率超限）与配置无关，
+      // 不再展示「平台无法访问」提示与 PLATFORM_CONFIG 配置卡片，避免误导用户改配置。
+      const statusMatch = /^LLM 请求失败: (\d{3})/.exec(reason);
+      const isConfigIssue = statusMatch
+        ? ['401', '404'].includes(statusMatch[1])
+        : /代理或网络不通/.test(reason);
       const msgs = store.currentMessages;
       const last = msgs[msgs.length - 1];
-      if (last && last.role === 'assistant' && !last.content) {
-        await store.updateMessage(last.id, { content: fullContent });
-      } else if (convId) {
-        await store.addMessage({
-          conversationId: convId,
-          role: 'assistant',
-          content: fullContent,
-        });
+      // 服务端任务失败时已把「（调用失败：…）」写入会话（message:updated 先于 task:error 到达），
+      // 非配置类错误（400/429 等）不再重复追加前端提示；配置类错误仍追加引导卡片。
+      const serverReported = !!(last && last.role === 'assistant' &&
+        typeof last.content === 'string' && last.content.startsWith('（调用失败：'));
+      if (isConfigIssue || !serverReported) {
+        const tipText = isConfigIssue ? '⚠️ 平台无法访问，请在下方修正平台配置。' : '⚠️ 调用失败。';
+        // 配置类错误走 @@REASON@@ 结构（PlatformConfigCard 单独渲染原因）；非配置类用纯文本，
+        // 避免无卡片时 @@REASON@@ 字面量泄漏到正文。
+        const fullContent = isConfigIssue
+          ? `${tipText}\n@@REASON@@\n${reason}${platform ? `\n[[PLATFORM_CONFIG:edit:${platform.id}]]` : '\n[[PLATFORM_CONFIG:create]]'}`
+          : `${tipText}\n${reason}`;
+        if (last && last.role === 'assistant' && !last.content) {
+          await store.updateMessage(last.id, { content: fullContent });
+        } else if (convId) {
+          await store.addMessage({
+            conversationId: convId,
+            role: 'assistant',
+            content: fullContent,
+          });
+        }
       }
       await nextTick();
       scrollToBottom();
@@ -1856,18 +1878,30 @@ function createChat() {
     return null;
   }
 
-  /** 把某会话排队的追加消息合并成一条，起新一轮任务发送（任务收尾后自动调用 / 「立即发送」降级路径） */
+  /** 逐条发送排队的追加消息（任务收尾后自动触发）。
+   *  每轮只取队首一条起新一轮任务，不做合并——多条时等这条任务结束，
+   *  收尾回调再次触发本函数取下一条，链式串行排空队列。 */
+  // 按会话的在途守卫：同会话已有一次 flush 在发送时，其余触发直接跳过，
+  // 消息留在队列里等在途那条任务收尾回调取下一条（emitTaskFinished 双发时防止第二条撞互斥被静默丢弃）
+  const flushingConvs = new Set<string>();
   async function flushQueuedAfterTask(convId: string) {
-    const items = store.takeQueuedMessages(convId);
-    if (!items.length) return;
-    const text = items.map((i) => i.content).join('\n\n').trim();
-    if (!text) return;
+    if (flushingConvs.has(convId)) return;
+    // 先确认有可用对话模型再取消息，避免取出来发不出去导致消息丢失
     const pm = resolveConvPlatformModel(convId);
     if (!pm) {
       ElMessage.warning('追加消息未发送：未配置可用的对话模型');
       return;
     }
+    // 跳过空内容条目，取到第一条非空的为止（链路不能断，否则后续消息卡死在队列里）
+    let text = '';
+    for (;;) {
+      const item = store.takeFirstQueuedMessage(convId);
+      if (!item) return;
+      const t = item.content.trim();
+      if (t) { text = t; break; }
+    }
     const agent = agentStore.selectedAgent;
+    flushingConvs.add(convId);
     try {
       await store.sendMessage(text, pm.platform, pm.model, undefined, {
         temperature: agent?.temperature,
@@ -1880,6 +1914,8 @@ function createChat() {
     } catch (e: any) {
       console.error('[Chat] 追加消息发送失败:', e);
       ElMessage.error('追加消息发送失败：' + (e?.message || e));
+    } finally {
+      flushingConvs.delete(convId);
     }
   }
 

@@ -77,6 +77,7 @@ import { resolvePluginComponent } from './plugin-component-registry';
 import { useIsMobile } from './composables/useIsMobile';
 import { usePlatform } from './composables/usePlatform';
 import { useSidebarState } from './composables/useSidebarState';
+import { installSelectAllScope } from './utils/selectAllScope';
 
 const route = useRoute();
 const authStore = useAuthStore();
@@ -100,6 +101,8 @@ function resolvePluginLayout() {
 }
 
 onMounted(async () => {
+  // 全局 Ctrl+A 只作用于当前"窗口"（弹窗/抽屉/浮层/主内容区），不再全选整个应用
+  installSelectAllScope();
   try {
     await settingsStore.load();
   } catch {

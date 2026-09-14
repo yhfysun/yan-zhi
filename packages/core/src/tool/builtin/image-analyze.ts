@@ -6,7 +6,7 @@ import type { McpCallResult } from '../../mcp/client';
 
 export class ImageAnalyzeTool implements BuiltInTool {
   name = 'image_analyze';
-  description = '分析图像文件。支持常见格式（png/jpg/jpeg/gif/webp/bmp）。如配置了具备视觉能力的 LLM，会调用它返回更丰富的理解（物体、文字、场景、对问题的回答）；否则回退到服务端 Tesseract OCR（只做文字抽取）。可传 prompt 对图像提出具体问题。';
+  description = '分析图像文件。支持常见格式（png/jpg/jpeg/gif/webp/bmp）。优先用当前会话模型直接看图（多模态模型无需额外配置）；当前模型看不了或失败时依次尝试其它启用的 vision 模型，最后才回退服务端 Tesseract OCR（只做文字抽取，中文界面乱码率高）。可传 prompt 对图像提出具体问题。';
 
   inputSchema = {
     type: 'object',

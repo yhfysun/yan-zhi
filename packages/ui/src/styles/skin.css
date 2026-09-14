@@ -1471,29 +1471,64 @@ html[data-skin="on"] .loading-overlay {
 [data-skin="on"] .sub-agent-result,
 [data-skin="on"] .msg-reasoning,
 [data-skin="on"] .msg-tools-group {
-  background-color: transparent;
-  background-size: cover;
-  background-repeat: no-repeat;
-  background-position: center;
+  /* 【2026-09-14 修"卡片背景图慢慢放大、最终模糊"】不再整卡 cover 铺图：
+     流式输出时卡片高度持续增长，cover 每帧重算 —— 部件图只有 480×320，
+     长结果卡片（上千 px 高）最终被放大 5~6 倍，肉眼可见"慢慢放大→糊掉"。
+     改为固定高度顶部图带（见下方 ::before）：图带缩放只取决于卡宽（稳定不变），
+     与卡高彻底解耦；图带底部渐隐进卡片底色。卡片底色改为半透明主色衬底，
+     与图带渐隐末端同色，过渡无缝。 */
+  position: relative;
+  z-index: 0;
+  --skin-card-tint: color-mix(in srgb, var(--color-primary) 10%,
+    color-mix(in srgb, var(--skin-surface, var(--color-bg, #f8fafc)) 90%, transparent));
+  background-color: var(--skin-card-tint);
   border-color: color-mix(in srgb, var(--color-primary) 22%, transparent);
   border-radius: var(--skin-card-radius, 10px);
 }
-/* 按消息级索引取图（data-card-variant 由 ChatMessageList.vue 输出，值域 0~3） */
+/* 按消息级索引取图（data-card-variant 由 ChatMessageList.vue 输出，值域 0~3）
+   【2026-09-14】变体规则改为只声明 --skin-card-img 自定义属性，由卡片外壳的
+   ::before 图带统一消费 —— 图不再直接铺在卡片上（会随卡高被 cover 拉伸放大）。 */
 [data-skin="on"] [data-card-variant="0"] {
-  background-image: var(--skin-card-1-pattern, none);
+  --skin-card-img: var(--skin-card-1-pattern, none);
 }
 [data-skin="on"] [data-card-variant="1"] {
-  background-image: var(--skin-card-2-pattern, none);
+  --skin-card-img: var(--skin-card-2-pattern, none);
   border-radius: calc(var(--skin-card-radius, 10px) * 1.4);
 }
 [data-skin="on"] [data-card-variant="2"] {
-  background-image: var(--skin-card-3-pattern, none);
+  --skin-card-img: var(--skin-card-3-pattern, none);
   border-color: color-mix(in srgb, var(--color-primary) 42%, transparent);
   border-radius: calc(var(--skin-card-radius, 10px) * 0.6);
 }
 [data-skin="on"] [data-card-variant="3"] {
-  background-image: var(--skin-card-4-pattern, none);
+  --skin-card-img: var(--skin-card-4-pattern, none);
   border-radius: var(--skin-tag-radius, 8px);
+}
+/* 顶部装饰图带：固定高度 + cover。
+   · 缩放只随卡宽（卡宽在对话流中稳定）→ 不会随流式输出"慢慢放大"，也不会超出
+     部件图原生尺寸多少倍而模糊（480×320 → 常见卡宽约 1.3~1.6 倍静态上限）。
+   · z-index:-1：压在卡片底色之上、内容文字之下（卡片外壳已建 stacking context）。
+   · 底部 45%→98% 渐隐进 --skin-card-tint，与卡片底色无缝衔接；
+     矮卡片（折叠的工具组等）height:min(...,100%) 自动缩到卡高，不会外溢。 */
+[data-skin="on"] .main-agent-result::before,
+[data-skin="on"] .sub-agent-result::before,
+[data-skin="on"] .msg-reasoning::before,
+[data-skin="on"] .msg-tools-group::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: min(var(--skin-card-band-h, 240px), 100%);
+  z-index: -1;
+  pointer-events: none;
+  border-radius: inherit;
+  background-image:
+    linear-gradient(to bottom, transparent 45%, var(--skin-card-tint, rgba(148, 163, 184, 0.08)) 98%),
+    var(--skin-card-img, none);
+  background-size: 100% 100%, cover;
+  background-position: 0 0, center top;
+  background-repeat: no-repeat, no-repeat;
 }
 /* 卡片内头部/分隔线：卡上有图后，原先的淡色描边会看不清，统一提到主色 30% */
 [data-skin="on"] .main-agent-result-head,

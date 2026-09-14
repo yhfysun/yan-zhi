@@ -23,5 +23,8 @@ export function usePlatform() {
     isDesktop: platform === 'desktop',
     isWeb: platform === 'web',
     isMobile: platform === 'mobile',
+    // E12: 内置浏览器能力门控——桌面端走 BrowserView/webview，Web 端走服务端 Playwright，
+    // 移动端（Capacitor 本地应用）既无原生浏览器容器也无服务端 Playwright，标记不支持。
+    supportsBrowser: platform !== 'mobile',
   };
 }

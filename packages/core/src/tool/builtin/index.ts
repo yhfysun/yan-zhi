@@ -94,17 +94,18 @@ export function registerBuiltInTools(registry: ToolRegistry): void {
   // 仓库级符号依赖图（代码图：callers/callees/影响面评估）
   registry.register(new CodeGraphTool());
   registry.register(new JsExecTool());
-  // 网络安全工具族（端口扫描/HTTP/TCP/UDP/DNS —— 仅限授权目标使用）
-  registry.register(new PortScanTool());
-  registry.register(new LanScanTool());
+  // 网络安全工具族（port_scan/lan_scan/tcp_send/udp_send/dns_lookup/security）已停止注册（2026-09-14 工具瘦身：
+  // 渗透调试向、日常任务用不到，security 还依赖 python 运行时；源码保留，需要时恢复下一行即可）。
+  // registry.register(new PortScanTool());
+  // registry.register(new LanScanTool());
   registry.register(new HttpRequestTool());
-  registry.register(new TcpSendTool());
-  registry.register(new UdpSendTool());
-  registry.register(new DnsLookupTool());
+  // registry.register(new TcpSendTool());
+  // registry.register(new UdpSendTool());
+  // registry.register(new DnsLookupTool());
   registry.register(new CmdExecTool());
   registry.register(new PythonExecTool());
   registry.register(new DoyzTool());
-  registry.register(new SecurityTool());
+  // registry.register(new SecurityTool());  // 已停注册：低频 + 依赖 python（见上）
   // 浏览器自动化工具集（E3）
   for (const ToolClass of BrowserToolClasses) {
     registry.register(new ToolClass());
@@ -122,8 +123,8 @@ export function registerBuiltInTools(registry: ToolRegistry): void {
   registry.register(new TaskStepTool());
   registry.register(new ConfigureModelPlatformTool());
   registry.register(new ImageAnalyzeTool());
-  // 跨平台比价引擎（C10）—— pageAgent 多平台购物对比汇总
-  registry.register(new CompareProductsTool());
+  // compare_products 比价工具已停止注册（2026-09-14 工具瘦身：购物场景专用、低频；源码保留）
+  // registry.register(new CompareProductsTool());
 }
 
 /** 注册管理工具函数到 registry */

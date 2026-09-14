@@ -40,7 +40,7 @@
         </el-button>
         <template #dropdown>
           <el-dropdown-menu>
-            <el-dropdown-item @click="store.openTab({ kind: 'browser', name: '浏览器', url: '' })">
+            <el-dropdown-item v-if="supportsBrowser" @click="store.openTab({ kind: 'browser', name: '浏览器', url: '' })">
               <el-icon><Monitor /></el-icon><span>浏览器预览</span>
             </el-dropdown-item>
             <el-dropdown-item @click="openGitTab" :disabled="!hasWorkspaceDir">
@@ -83,6 +83,7 @@ import { useRouter } from 'vue-router';
 import { Code } from 'lucide-vue-next';
 import { ArrowDown, Cpu, Expand, FolderOpened, Fold, Grid, Monitor, Operation, EditPen, SwitchButton, User } from '@element-plus/icons-vue';
 import { useChat } from '../../composables/chat/useChat';
+import { usePlatform } from '../../composables/usePlatform';
 import { useSettingsStore } from '../../stores/settings';
 import AppMenu from '../AppMenu.vue';
 import type { MenuNode } from '../AppMenuPanel.vue';
@@ -96,6 +97,8 @@ const {
 } = useChat();
 
 const settingsStore = useSettingsStore();
+// E12: 移动端不支持内置浏览器——隐藏「浏览器预览」下拉入口
+const { supportsBrowser } = usePlatform();
 const hasWorkspaceDir = computed(() => !!settingsStore.settings.workspaceDir);
 
 /** 模型分组 → AppMenu 节点：分组标题用 group 类型，不再用 disabled 项冒充 */

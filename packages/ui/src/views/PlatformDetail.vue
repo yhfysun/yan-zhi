@@ -111,7 +111,21 @@
           </el-checkbox-group>
         </el-form-item>
         <el-form-item label="上下文窗口">
-          <el-input-number v-model="form.contextWindow" :min="512" :step="1024" />
+          <div class="ctx-editor">
+            <div class="ctx-input-row">
+              <el-input-number v-model="form.contextWindowK" :min="1" :step="16" :precision="0" />
+              <span class="form-tip">K tokens</span>
+            </div>
+            <div class="ctx-presets">
+              <el-button
+                v-for="p in ctxPresets"
+                :key="p.k"
+                size="small"
+                :type="form.contextWindowK === p.k ? 'primary' : ''"
+                @click="form.contextWindowK = p.k"
+              >{{ p.label }}</el-button>
+            </div>
+          </div>
         </el-form-item>
         <el-form-item label="输入价格">
           <el-input-number v-model="form.pricingInput" :min="0" :step="0.001" :precision="4" />
@@ -128,10 +142,24 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="showBatchContext" title="批量设置上下文窗口" width="380px" :close-on-click-modal="false">
+    <el-dialog v-model="showBatchContext" title="批量设置上下文窗口" width="420px" :close-on-click-modal="false">
       <el-form label-width="100px">
         <el-form-item label="上下文窗口">
-          <el-input-number v-model="batchContextWindow" :min="512" :step="1024" />
+          <div class="ctx-editor">
+            <div class="ctx-input-row">
+              <el-input-number v-model="batchContextWindowK" :min="1" :step="16" :precision="0" />
+              <span class="form-tip">K tokens</span>
+            </div>
+            <div class="ctx-presets">
+              <el-button
+                v-for="p in ctxPresets"
+                :key="p.k"
+                size="small"
+                :type="batchContextWindowK === p.k ? 'primary' : ''"
+                @click="batchContextWindowK = p.k"
+              >{{ p.label }}</el-button>
+            </div>
+          </div>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -194,10 +222,22 @@ const testResult = ref<{ ok: boolean; msg: string; durationMs?: number; finishRe
 const batchMode = ref(false);
 const selectedModelIds = ref<Set<string>>(new Set());
 const showBatchContext = ref(false);
-const batchContextWindow = ref(131072);
+const batchContextWindowK = ref(128);
 const batchSaving = ref(false);
+// 上下文窗口预设档位（K tokens 为单位；1M = 1024K = 1048576 tokens，存储层仍存 token 数）
+const ctxPresets = [
+  { k: 8, label: '8K' },
+  { k: 16, label: '16K' },
+  { k: 32, label: '32K' },
+  { k: 64, label: '64K' },
+  { k: 128, label: '128K' },
+  { k: 200, label: '200K' },
+  { k: 256, label: '256K' },
+  { k: 512, label: '512K' },
+  { k: 1024, label: '1M' },
+];
 const form = ref({
-  modelId: '', alias: '', type: 'llm', contextWindow: 131072,
+  modelId: '', alias: '', type: 'llm', contextWindowK: 128,
   capabilities: [] as string[],
   description: '',
   pricingInput: 0, pricingOutput: 0,
@@ -226,7 +266,11 @@ function closeModelDialog() {
 }
 
 function formatWindow(n: number): string {
-  if (n >= 1000) return `${(n / 1000).toFixed(0)}K`;
+  if (n >= 1048576) {
+    const m = n / 1048576;
+    return `${m % 1 === 0 ? m : m.toFixed(1)}M`;
+  }
+  if (n >= 1024) return `${Math.round(n / 1024)}K`;
   return String(n);
 }
 
@@ -246,7 +290,7 @@ function editModel(m: any) {
   editingModelId.value = m.id;
   form.value = {
     modelId: m.modelId, alias: m.alias || '', type: m.type || 'llm',
-    contextWindow: m.contextWindow || 4096,
+    contextWindowK: Math.max(1, Math.round((m.contextWindow || 4096) / 1024)),
     capabilities: [...(m.capabilities || [])],
     description: m.description || '',
     pricingInput: m.pricing?.input || 0, pricingOutput: m.pricing?.output || 0,
@@ -259,7 +303,7 @@ async function addOrEditModel() {
     if (editingModelId.value) {
       await store.updateModel(editingModelId.value, {
         modelId: form.value.modelId, alias: form.value.alias,
-        type: form.value.type as any, contextWindow: form.value.contextWindow,
+        type: form.value.type as any, contextWindow: (form.value.contextWindowK || 128) * 1024,
         capabilities: form.value.capabilities,
         description: form.value.description,
         pricing: { input: form.value.pricingInput, output: form.value.pricingOutput },
@@ -269,7 +313,7 @@ async function addOrEditModel() {
       await store.addModel({
         platformId: platformId.value, modelId: form.value.modelId,
         alias: form.value.alias, type: form.value.type as any,
-        contextWindow: form.value.contextWindow, enabled: true, isDefault: false,
+        contextWindow: (form.value.contextWindowK || 128) * 1024, enabled: true, isDefault: false,
         capabilities: form.value.capabilities,
         description: form.value.description,
         pricing: { input: form.value.pricingInput, output: form.value.pricingOutput },
@@ -282,7 +326,7 @@ async function addOrEditModel() {
 
 function resetModelForm() {
   editingModelId.value = '';
-  form.value = { modelId: '', alias: '', type: 'llm', contextWindow: 131072, capabilities: [], description: '', pricingInput: 0, pricingOutput: 0 };
+  form.value = { modelId: '', alias: '', type: 'llm', contextWindowK: 128, capabilities: [], description: '', pricingInput: 0, pricingOutput: 0 };
 }
 
 async function updateAlias(row: any) { if (row.isBuiltin) return; await store.updateModel(row.id, { alias: row.alias }); }
@@ -304,7 +348,7 @@ async function applyBatchContext() {
   batchSaving.value = true;
   try {
     for (const id of selectedModelIds.value) {
-      await store.updateModel(id, { contextWindow: batchContextWindow.value });
+      await store.updateModel(id, { contextWindow: (batchContextWindowK.value || 128) * 1024 });
     }
     ElMessage.success(`已设置 ${selectedModelIds.value.size} 个模型的上下文窗口`);
     selectedModelIds.value = new Set();
@@ -413,6 +457,9 @@ async function testModel(row: any) {
 .add-card:hover { color: var(--color-primary); border-color: var(--color-primary); background: rgba(59,130,246,0.04); }
 
 .form-tip { font-size: 12px; color: var(--color-text-secondary); margin-left: 8px; }
+.ctx-editor { display: flex; flex-direction: column; gap: 8px; width: 100%; }
+.ctx-input-row { display: flex; align-items: center; }
+.ctx-presets { display: flex; gap: 6px; flex-wrap: wrap; }
 .test-result { padding: 12px; }
 .test-detail { margin-top: -8px; padding: 0 24px 12px; font-size: 13px; color: var(--color-text-secondary); line-height: 1.8; }
 

@@ -1,5 +1,11 @@
 <template>
   <div class="browser-shell" @click="hideTabCtx">
+    <!-- E12: 移动端不支持内置浏览器——整面板占位提示 -->
+    <div v-if="!supportsBrowser" class="browser-unsupported">
+      <p class="bu-title">当前平台不支持内置浏览器</p>
+      <p class="bu-sub">内置浏览器仅支持桌面端与 Web 端，移动端请在电脑上使用，或用系统浏览器打开链接。</p>
+    </div>
+    <template v-else>
     <!-- 多标签页栏（Chrome 风格） -->
     <div class="browser-tabbar">
       <div class="tab-list">
@@ -299,6 +305,7 @@
         <el-button size="small" type="primary" @click="savePasswordForm">保存</el-button>
       </template>
     </el-dialog>
+    </template>
   </div>
 </template>
 
@@ -319,7 +326,7 @@ import { titleBarOverlayOpen } from '../composables/useTitleBarOverlay';
 import { useChat } from '../composables/chat/useChat';
 
 // ── 平台检测 ──
-const { isDesktop } = usePlatform();
+const { isDesktop, supportsBrowser } = usePlatform();
 
 // 检测是否在 Electron 桌面端（有 electronAPI 标识）
 const isElectron = typeof window !== 'undefined' && !!(window as any).electronAPI?.isElectron;
@@ -2232,5 +2239,19 @@ onUnmounted(() => {
 .pwd-host { font-weight: 500; font-size: 14px; }
 .pwd-sub { font-size: 12px; color: var(--el-text-color-secondary); margin-top: 2px; word-break: break-all; }
 .pwd-actions { display: flex; gap: 4px; flex-shrink: 0; }
+
+/* E12: 移动端不支持内置浏览器的占位提示 */
+.browser-unsupported {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 32px 24px;
+  text-align: center;
+}
+.browser-unsupported .bu-title { font-size: 16px; font-weight: 600; color: var(--el-text-color-primary); margin: 0; }
+.browser-unsupported .bu-sub { font-size: 13px; color: var(--el-text-color-secondary); margin: 0; max-width: 320px; line-height: 1.6; }
 
 </style>
