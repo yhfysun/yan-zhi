@@ -35,6 +35,52 @@ export class LlmClient {
     return out;
   }
 
+  /**
+   * 发送前清洗 tool 消息，杜绝上游 400 "tool_calls must be followed by tool messages"。
+   * - sendTools=false（模型不支持 function calling）：剥除 assistant 的 tool_calls、把 tool 角色
+   *   降级为 user（携带 [工具结果] 前缀），否则上游对「无 tools 数组却带 tool 角色/tool_calls」直接 400。
+   * - sendTools=true：保留 assistant.tool_calls，但剥除没有对应 tool 消息的孤儿 tool_call，并丢弃
+   *   孤儿 tool 消息，保证每个 tool_calls 都紧随其回应，配对完整。
+   * 两种情况下都丢弃剥除 tool_calls 后变为空内容且无 tool_calls 的 assistant 消息。
+   */
+  private sanitizeToolMessages(messages: any[], sendTools: boolean): any[] {
+    const stripToolMeta = (m: any) => {
+      const { tool_calls, tool_call_id, ...rest } = m;
+      return rest;
+    };
+    if (!sendTools) {
+      return messages
+        .map((m) => {
+          if (m.role === 'tool') return { role: 'user', content: `[工具结果] ${m.content || ''}` };
+          return stripToolMeta(m);
+        })
+        .filter((m) => m.content || m.role !== 'assistant');
+    }
+    const toolCallIds = new Set(
+      messages
+        .filter((m) => m.role === 'tool' && m.tool_call_id)
+        .map((m) => m.tool_call_id as string),
+    );
+    const out: any[] = [];
+    for (const m of messages) {
+      if (m.role === 'assistant' && Array.isArray(m.tool_calls) && m.tool_calls.length) {
+        const kept = m.tool_calls.filter((tc: any) => tc?.id && toolCallIds.has(tc.id));
+        if (kept.length === 0) {
+          out.push(stripToolMeta(m));
+        } else {
+          out.push({ ...m, tool_calls: kept });
+        }
+      } else if (m.role === 'tool') {
+        if (toolCallIds.has(m.tool_call_id)) out.push(m);
+      } else {
+        out.push(m);
+      }
+    }
+    return out.filter(
+      (m) => m.role !== 'assistant' || (m.content && String(m.content).trim()) || (Array.isArray(m.tool_calls) && m.tool_calls.length),
+    );
+  }
+
   private get baseUrl() { return this.platform.apiUrl.replace(/\/$/, ''); }
   private get isAnthropic() { return this.platform.protocol === 'anthropic'; }
   /** Anthropic 官方协议不提供 embeddings 接口，上层 UI 应据此隐藏相关入口。 */
@@ -108,7 +154,7 @@ export class LlmClient {
       yield* this.anthropicStream(messages, options);
       return;
     }
-    const apiMessages = messages.map(m => this.toApiMessage(m));
+    const apiMessages = this.sanitizeToolMessages(messages.map(m => this.toApiMessage(m)), !!options?.tools?.length);
     const body: any = {
       model: this.model.modelId,
       messages: apiMessages,
@@ -138,14 +184,11 @@ export class LlmClient {
     }
     if (!res.ok || !res.body) {
       const text = await res.text().catch(() => '');
-      // Ollama 小模型不支持 tools：去掉 tools + 清理消息中的 tool_calls/tool 角色后重试
-      if (res.status === 400 && /does not support tools/i.test(text) && body.tools) {
+      // 工具相关 400 兜底：模型不支持 tools / 历史含孤儿 tool_calls（未配对）。
+      // 去掉 tools 并把 tool 角色降级为 user 后重试，避免把 400 直接抛给用户。
+      if (res.status === 400 && /does not support tools|tool_calls must be followed|insufficient tool messages following tool_calls/i.test(text) && body.tools) {
         delete body.tools;
-        body.messages = (body.messages as any[]).map((m: any) => {
-          if (m.role === 'tool') return { role: 'user', content: `[工具结果] ${m.content || ''}` };
-          if (m.tool_calls) { const { tool_calls, tool_call_id, ...rest } = m; return rest; }
-          return m;
-        }).filter((m: any) => m.content || m.role !== 'assistant');
+        body.messages = this.sanitizeToolMessages(body.messages as any[], false);
         const retryRes = await this.upstreamFetch('v1/chat/completions', body, { signal: options?.signal });
         if (retryRes.ok && retryRes.body) {
           yield* parseSSE(retryRes.body);
@@ -211,7 +254,7 @@ export class LlmClient {
     // 与 chatStream 一致用 any 规避 ChatRequest.messages: Message[] 的类型摩擦。
     const body: any = {
       model: this.model.modelId,
-      messages: messages.map(m => this.toApiMessage(m)),
+      messages: this.sanitizeToolMessages(messages.map(m => this.toApiMessage(m)), !!options?.tools?.length),
       tools: options?.tools,
       temperature: options?.temperature,
       maxTokens: options?.maxTokens,

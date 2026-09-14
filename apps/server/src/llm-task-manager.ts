@@ -418,6 +418,88 @@ function parseLenientToolCall(jsonStr: string): { name: string; arguments: any }
   return null;
 }
 
+/**
+ * 解析工具调用的 arguments 字符串。历史上这里直接 JSON.parse + 空 catch：
+ * 流式拼接被截断/格式错误时静默回退 {}，工具以空参数执行，报
+ * "code is required / path is required / command is required" —— 参数明明传了却像没传。
+ * 现改为：直接解析 → 剥 markdown 代码围栏再解析 → 提取首个平衡 {...} 块；全部失败返回 null + 错误说明，
+ * 由调用方落库 tool 结果消息（保持 tool_calls 配对）并提示模型重试，绝不带着空参数硬执行。
+ */
+function parseToolArguments(raw: string | undefined | null): { args: any; err?: string } {
+  const s = String(raw || '').trim();
+  if (!s || s === '{}') return { args: {} };
+  try { return { args: JSON.parse(s) }; } catch {}
+  // 剥 ```json ... ``` 围栏后重试
+  const unfenced = s.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim();
+  if (unfenced && unfenced !== s) {
+    try { return { args: JSON.parse(unfenced) }; } catch {}
+  }
+  // 提取首个平衡的 {...} 块（正确处理字符串内的引号/转义/嵌套）
+  const start = unfenced.indexOf('{');
+  if (start >= 0) {
+    let depth = 0, inStr = false, esc = false;
+    for (let i = start; i < unfenced.length; i++) {
+      const ch = unfenced[i];
+      if (inStr) {
+        if (esc) esc = false;
+        else if (ch === '\\') esc = true;
+        else if (ch === '"') inStr = false;
+        continue;
+      }
+      if (ch === '"') inStr = true;
+      else if (ch === '{') depth++;
+      else if (ch === '}') {
+        depth--;
+        if (depth === 0) {
+          try { return { args: JSON.parse(unfenced.slice(start, i + 1)) }; } catch {}
+          break;
+        }
+      }
+    }
+  }
+  return { args: null, err: `arguments 不是合法 JSON（原始片段: ${s.slice(0, 200)}${s.length > 200 ? '…' : ''}）` };
+}
+
+/**
+ * 检查工具调用是否缺少 schema 声明的必填参数，返回缺失的参数名列表。
+ * 找不到工具定义或无 required 声明时返回空数组（不拦截）。
+ * 兼容两种定义形态：OpenAI function 格式 {function:{name, parameters}} 与 {name, inputSchema}。
+ * 背景：模型输出的 tool_call arguments 为空/残缺（输出被 maxTokens 截断、流中断、小模型幻觉）时，
+ * 历史上会带着 {} 硬执行，报 "keys 不能为空 / 参数 x 必须是数字 / path 为必填项" 这类对模型无指导性的错误，
+ * 模型盲目重试同样截断 → 死循环。在 executeTool 统一出口先拦一道，给出可行动的重试指引。
+ */
+function missingRequiredArgs(toolDefs: any[] | undefined, toolName: string, args: any): string[] {
+  try {
+    if (!Array.isArray(toolDefs) || !toolName) return [];
+    const def = toolDefs.find((t: any) => t?.function?.name === toolName || t?.name === toolName);
+    if (!def) return [];
+    const schema = def.function?.parameters || def.inputSchema;
+    const required: string[] = Array.isArray(schema?.required) ? schema.required : [];
+    if (required.length === 0) return [];
+    const o = args && typeof args === 'object' && !Array.isArray(args) ? args : {};
+    return required.filter((k) => {
+      const v = (o as Record<string, unknown>)[k];
+      if (v === undefined || v === null) return true;
+      if (typeof v === 'string' && v.trim() === '') return true;
+      if (Array.isArray(v) && v.length === 0) return true;
+      return false;
+    });
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * 判定是否为中止类错误。client.ts 会把 fetch 流中断包装成普通 Error("请求被中止（…）")，
+ * parseSSE 抛出的 DOMException 消息为 "This operation was aborted"——两者 name 都可能不是
+ * 'AbortError'，只判 name 会把用户主动中止/流中断误标为「任务失败」。
+ */
+function isAbortError(e: any): boolean {
+  if (e?.name === 'AbortError') return true;
+  const msg = String(e?.message || e || '');
+  return /请求被中止|operation was aborted|was aborted/i.test(msg);
+}
+
 /** 从 content 中解析所有 [TOOL_CALL] 块和 <function=xxx> XML 块（大小写不敏感），返回工具调用数组 + 清理后的 content */
 function parseTextModeToolCalls(fullContent: string): { toolCalls: { id: string; name: string; arguments: string }[]; cleanedContent: string } {
   const toolCalls: { id: string; name: string; arguments: string }[] = [];
@@ -830,7 +912,7 @@ async function runReActLoop(task: LlmTask, params: {
           }
         }
       } catch (e: any) {
-        if (e?.name === 'AbortError') throw e;
+        if (isAbortError(e)) throw e;
         // 重试不带 tools
         if (/does not support tools|not support.*tool/i.test(e?.message || '') && tools.length > 0) {
           // 追加文本模式工具调用格式说明后重试
@@ -919,16 +1001,32 @@ async function runReActLoop(task: LlmTask, params: {
       const newTabNavIds = markDuplicateNavigations(toolCallAcc);
       for (const tc of toolCallAcc) {
         const toolName = tc.function?.name || (tc as any).toolName || '';
-        let args: any = {};
-        try { args = JSON.parse(tc.function?.arguments || '{}'); } catch {}
+        const parsedArgs = parseToolArguments(tc.function?.arguments);
+        if (parsedArgs.args === null) {
+          // 参数解析失败：必须落库 tool 结果保持配对，并明确告诉模型重试（绝不带空参数硬执行）
+          const errMsg = capToolResult(`参数解析失败，本工具未执行。${parsedArgs.err}\n请重新调用 ${toolName}，确保 arguments 是完整、合法的 JSON 对象。`);
+          const errId = insertMessage(convId, userId, 'tool', errMsg, { toolCallId: tc.id });
+          emit(task, { type: 'message:added', message: { id: errId, role: 'tool', content: errMsg, toolCallId: tc.id } });
+          continue;
+        }
+        const args: any = parsedArgs.args;
         if (newTabNavIds.has(String(tc.id || ''))) args.openInNewTab = true;
         emit(task, { type: 'tool:start', toolName, args });
 
         let result: string;
         try {
-          result = await executeTool(task, registry, toolName, args, tc.id || '', UI_TOOLS, 0);
+          result = await executeTool(task, registry, toolName, args, tc.id || '', UI_TOOLS, 0, toolsBuilt);
         } catch (e: any) {
-          if (e?.name === 'AbortError') throw e;
+          if (isAbortError(e)) {
+            // 中止也必须落库 tool 结果：否则库里留下孤儿 assistant.tool_calls（无对应 tool 消息），
+            // 本会话下次重放历史时上游 400 "tool_calls must be followed by tool messages"。
+            try {
+              const abortResult = capToolResult('[已中止] 用户中断了工具执行');
+              const abortMsgId = insertMessage(convId, userId, 'tool', abortResult, { toolCallId: tc.id });
+              emit(task, { type: 'message:added', message: { id: abortMsgId, role: 'tool', content: abortResult, toolCallId: tc.id } });
+            } catch { /* 落库失败不影响中止流程（发送侧 sanitize 仍会兜底配对） */ }
+            throw e;
+          }
           result = `工具执行失败: ${e?.message || e}`;
         }
         emit(task, { type: 'tool:result', toolName, result });
@@ -976,7 +1074,7 @@ async function runReActLoop(task: LlmTask, params: {
     task.status = 'completed';
     void extractMemoryFromConversation(task);
   } catch (e: any) {
-    if (e?.name === 'AbortError') {
+    if (isAbortError(e)) {
       task.status = 'aborted';
       emit(task, { type: 'task:aborted' });
     } else {
@@ -1028,6 +1126,7 @@ async function executeTool(
   toolCallId: string,
   uiTools: Set<string>,
   depth: number = 0,
+  toolDefs: any[] = [],
 ): Promise<string> {
   // 会话级权限拦截（readonly）：写类/不可控工具在此硬拒绝。
   // 放在函数最顶端 —— 被拒时提前 return，file_write/file_edit 的 file_change 快照钩子
@@ -1044,6 +1143,15 @@ async function executeTool(
 
   // 参数归一化兜底：模型文本模式工具调用常把 url 放到 target/address/link 等字段，补齐避免误报缺参
   args = normalizeToolArgs(toolName, args);
+
+  // 必填参数防护：arguments 为空/残缺（maxTokens 截断、流中断）时不带空参硬执行，直接给模型可行动的指引
+  const missingArgs = missingRequiredArgs(toolDefs, toolName, args);
+  if (missingArgs.length > 0) {
+    return `工具 ${toolName} 未执行：arguments 缺少必填参数（${missingArgs.join('、')}）。` +
+      `常见原因是上一轮模型输出被 maxTokens 截断导致参数丢失。` +
+      `请立即用完整 JSON 参数重新调用 ${toolName}，重试时先在心里把参数写完整再输出；` +
+      `若连续 2 次仍失败，请停止重试并告知用户：在智能体设置中调大 maxTokens（建议 ≥8192）后重试。`;
+  }
 
   // UI 工具 → 委托前端（需要用户交互）；MCP 工具 → 优先委托前端（连接在前端，所见即所得），
   // 无人值守（定时任务/IM，无 SSE 订阅者）时后端直连 MCP 兜底，避免工具永远拿不到结果
@@ -1449,7 +1557,7 @@ async function runSubAgent(
           }
         }
       } catch (e: any) {
-        if (e?.name === 'AbortError') throw e;
+        if (isAbortError(e)) throw e;
         // 重试不带 tools
         if (/does not support tools|not support.*tool/i.test(e?.message || '') && tools.length > 0) {
           const sysMsg = llmMessages[0];
@@ -1513,16 +1621,36 @@ async function runSubAgent(
       const newTabNavIds = markDuplicateNavigations(toolCallAcc);
       for (const tc of toolCallAcc) {
         const toolName = tc.function?.name || (tc as any).toolName || '';
-        let toolArgs: any = {};
-        try { toolArgs = JSON.parse(tc.function?.arguments || '{}'); } catch {}
+        const parsedArgs = parseToolArguments(tc.function?.arguments);
+        if (parsedArgs.args === null) {
+          // 参数解析失败：同样落库 tool 结果（带子智能体归属字段）保持配对，并提示模型重试
+          const errMsg = capToolResult(`参数解析失败，本工具未执行。${parsedArgs.err}\n请重新调用 ${toolName}，确保 arguments 是完整、合法的 JSON 对象。`);
+          const errId = insertMessage(task.conversationId, task.userId, 'tool', errMsg, {
+            toolCallId: tc.id, parentToolCallId, subAgentId: resolvedId, subAgentName, subAgentDepth: depth + 1,
+          });
+          emit(task, { type: 'message:added', message: { id: errId, role: 'tool', content: errMsg, toolCallId: tc.id, parentToolCallId, subAgentId: resolvedId, subAgentName, subAgentDepth: depth + 1 } });
+          continue;
+        }
+        const toolArgs: any = parsedArgs.args;
         if (newTabNavIds.has(String(tc.id || ''))) toolArgs.openInNewTab = true;
         emit(task, { type: 'tool:start', toolName, args: toolArgs, subAgentId: resolvedId });
 
         let result: string;
         try {
-          result = await executeTool(task, registry, toolName, toolArgs, tc.id || '', uiTools, depth + 1);
+          result = await executeTool(task, registry, toolName, toolArgs, tc.id || '', uiTools, depth + 1, subTools);
         } catch (e: any) {
-          if (e?.name === 'AbortError') throw e;
+          if (isAbortError(e)) {
+            // 中止也必须落库 tool 结果（子智能体消息带归属字段）：否则库里留下孤儿
+            // assistant.tool_calls，本会话下次重放历史时上游 400 配对校验失败。
+            try {
+              const abortResult = capToolResult('[已中止] 用户中断了工具执行');
+              const abortMsgId = insertMessage(task.conversationId, task.userId, 'tool', abortResult, {
+                toolCallId: tc.id, parentToolCallId, subAgentId: resolvedId, subAgentName, subAgentDepth: depth + 1,
+              });
+              emit(task, { type: 'message:added', message: { id: abortMsgId, role: 'tool', content: abortResult, toolCallId: tc.id, parentToolCallId, subAgentId: resolvedId, subAgentName, subAgentDepth: depth + 1 } });
+            } catch { /* 落库失败不影响中止流程（发送侧 sanitize 仍会兜底配对） */ }
+            throw e;
+          }
           result = `工具执行失败: ${e?.message || e}`;
         }
         emit(task, { type: 'tool:result', toolName, result, subAgentId: resolvedId });
@@ -1553,7 +1681,7 @@ async function runSubAgent(
     } catch { /* 总结失败回退固定文案 */ }
     return resultText;
   } catch (e: any) {
-    if (e?.name === 'AbortError') throw e;
+    if (isAbortError(e)) throw e;
     emit(task, { type: 'sub_agent:end', agentId: resolvedId, agentName: subAgentName, parentToolCallId });
     return `子智能体执行失败: ${e?.message || e}`;
   }
