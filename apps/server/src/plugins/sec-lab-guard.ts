@@ -294,7 +294,7 @@ export type GuardResult = { ok: true; scope?: ScopeEntry } | { ok: false; reason
  */
 export function guard(i: GuardInput): GuardResult {
   // 无需目标的工具（范围管理 / 报告 / 规则 / 狩猎 / 资产台账）直接放行，但仍过命令黑名单
-  const NO_TARGET_TOOLS = ['scope_list', 'scope_add', 'scope_remove', 'sec_report', 'detect_rules', 'log_hunt', 'asset_monitor'];
+  const NO_TARGET_TOOLS = ['scope_list', 'scope_add', 'scope_remove', 'sec_report', 'detect_rules', 'log_hunt', 'asset_monitor', 'host_env', 'range_deploy', 'range_list', 'range_stop', 'android_launch'];
   const needsTarget = !NO_TARGET_TOOLS.includes(i.tool);
 
   if (i.command) {

@@ -121,7 +121,7 @@
             :class="['sec-tab', { active: tab === t.value }]"
             role="tab"
             :aria-selected="tab === t.value"
-            @click="tab = t.value"
+            @click="switchTab(t.value)"
           >
             <span class="sec-tab-num">{{ t.num }}</span>
             <span class="sec-tab-name">{{ t.name }}</span>
@@ -412,6 +412,144 @@
             </div>
           </article>
         </div>
+
+        <!-- ========= Tab 7：环境 / 靶场（宿主机 Docker + Android，仅本机） ========= -->
+        <div v-show="tab === 'env'" class="sec-pane">
+          <div class="sec-pane-head">
+            <span class="sec-pane-tag sec-pane-tag-info">host_env · range · android　仅本机基础设施，不向任何外部目标发起流量</span>
+          </div>
+
+          <div class="sec-row sec-row-ctl">
+            <el-button class="sec-cta" size="small" type="primary" :loading="envLoading" @click="probeEnv">⟳ 重新探测</el-button>
+            <span class="sec-env-note">检查宿主机 Docker / Android SDK，为靶场部署与移动端测试做前提检查。</span>
+            <span class="sec-spacer" />
+          </div>
+
+          <div v-if="hostEnv" class="sec-env-grid">
+            <article class="sec-frame sec-frame-env" :data-up="hostEnv.docker.available && hostEnv.docker.daemonUp">
+              <header class="sec-frame-head sec-frame-head-sm">
+                <span class="sec-frame-title">docker</span>
+                <span class="sec-frame-hint">{{ hostEnv.docker.available ? (hostEnv.docker.daemonUp ? 'daemon 可达' : 'daemon 未响应') : '未检测到' }}</span>
+              </header>
+              <div class="sec-env-body">
+                <div class="sec-env-line"><span class="sec-meta-k">version</span><code>{{ hostEnv.docker.version || '—' }}</code></div>
+                <div class="sec-env-line"><span class="sec-meta-k">compose</span><code>{{ hostEnv.docker.composeV2 ? 'v2 可用' : '不可用' }}</code></div>
+                <div class="sec-env-note2">{{ hostEnv.docker.note }}</div>
+              </div>
+            </article>
+            <article class="sec-frame sec-frame-env" :data-up="hostEnv.android.adbAvailable || hostEnv.android.emulatorAvailable">
+              <header class="sec-frame-head sec-frame-head-sm">
+                <span class="sec-frame-title">android</span>
+                <span class="sec-frame-hint">{{ hostEnv.android.adbAvailable || hostEnv.android.emulatorAvailable ? 'SDK 可用' : '未检测到' }}</span>
+              </header>
+              <div class="sec-env-body">
+                <div class="sec-env-line"><span class="sec-meta-k">adb</span><code>{{ hostEnv.android.adbAvailable ? '可用' : '缺失' }}</code></div>
+                <div class="sec-env-line"><span class="sec-meta-k">emulator</span><code>{{ hostEnv.android.emulatorAvailable ? '可用' : '缺失' }}</code></div>
+                <div class="sec-env-line"><span class="sec-meta-k">AVD</span><code>{{ hostEnv.android.avds.length ? hostEnv.android.avds.join(', ') : '—' }}</code></div>
+                <div class="sec-env-line"><span class="sec-meta-k">运行中</span><code>{{ hostEnv.android.running.join(', ') || '—' }}</code></div>
+                <div class="sec-env-note2">{{ hostEnv.android.note }}</div>
+              </div>
+            </article>
+          </div>
+          <div v-else class="sec-empty">尚未探测。点击「重新探测」检查宿主机 Docker 与 Android 环境。</div>
+
+          <article class="sec-frame sec-frame-out">
+            <header class="sec-frame-head sec-frame-head-sm">
+              <span class="sec-frame-title">range deploy</span>
+              <span class="sec-frame-hint">白名单漏洞训练镜像 · 仅本机 Docker · label=yan-zhi-range</span>
+            </header>
+            <div class="sec-row sec-row-ctl">
+              <label class="sec-field sec-field-grow">
+                <span class="sec-field-k">template</span>
+                <el-select v-model="rangeForm.template" size="small" class="sec-input">
+                  <el-option v-for="t in rangeTemplates" :key="t.id" :label="`${t.name}（:${t.defaultHostPort}）`" :value="t.id" />
+                </el-select>
+              </label>
+              <label class="sec-field">
+                <span class="sec-field-k">hostPort</span>
+                <el-input v-model="rangeForm.hostPortText" size="small" class="sec-input" :placeholder="`默认 ${rangeTemplates.find((t) => t.id === rangeForm.template)?.defaultHostPort ?? ''}`" />
+              </label>
+              <span class="sec-spacer" />
+              <el-button class="sec-cta" size="small" type="primary" :loading="running" @click="deployRange">▶ 部署靶场</el-button>
+              <el-button class="sec-cta-ghost" size="small" @click="refreshInstances">刷新列表</el-button>
+            </div>
+            <div v-if="rangeInsts.length" class="sec-range-list">
+              <div v-for="ri in rangeInsts" :key="ri.name" class="sec-range-row">
+                <code class="sec-range-name">{{ ri.name }}</code>
+                <span class="sec-range-meta">{{ ri.image }}　→　http://localhost:{{ ri.hostPort }}　{{ ri.status }}</span>
+                <span class="sec-spacer" />
+                <el-button size="small" type="danger" plain @click="stopRangeInst(ri.name)">停止</el-button>
+              </div>
+            </div>
+            <div v-else class="sec-empty sec-empty-sm">当前没有运行中的靶场容器。</div>
+          </article>
+
+          <article class="sec-frame sec-frame-out">
+            <header class="sec-frame-head sec-frame-head-sm">
+              <span class="sec-frame-title">android avd</span>
+              <span class="sec-frame-hint">移动端安全测试环境（冷启动约 1–3 分钟）</span>
+            </header>
+            <div class="sec-row sec-row-ctl">
+              <label class="sec-field sec-field-grow">
+                <span class="sec-field-k">avd</span>
+                <el-select v-model="avdSel" size="small" class="sec-input" :disabled="!hostEnv?.android.avds.length" placeholder="先探测出 AVD 列表">
+                  <el-option v-for="a in hostEnv?.android.avds || []" :key="a" :label="a" :value="a" />
+                </el-select>
+              </label>
+              <span class="sec-spacer" />
+              <el-button class="sec-cta" size="small" type="primary" :loading="running" :disabled="!hostEnv?.android.emulatorAvailable" @click="launchAvd">▶ 启动模拟器</el-button>
+            </div>
+          </article>
+
+          <article class="sec-frame sec-frame-out">
+            <header class="sec-frame-head sec-frame-head-sm">
+              <span class="sec-dot-out" :class="{ active: running }" />
+              <span class="sec-frame-title">output</span>
+              <span class="sec-frame-hint">部署 / 启动输出</span>
+            </header>
+            <div class="sec-out-wrap" :class="{ scanning: running }">
+              <div v-if="result" class="sec-out">{{ result }}</div>
+              <div v-else class="sec-empty">靶场部署与模拟器启动的执行输出会显示在这里。</div>
+            </div>
+          </article>
+        </div>
+
+        <!-- ========= Tab 8：能力边界（明确不实现 + 规划中） ========= -->
+        <div v-show="tab === 'boundary'" class="sec-pane">
+          <article class="sec-frame sec-frame-note sec-frame-note-lock">
+            <header class="sec-frame-head sec-frame-head-sm">
+              <span class="sec-frame-title">not-implemented</span>
+              <span class="sec-frame-hint">明确不实现 · 合规红线 · 永不开放</span>
+            </header>
+            <div class="sec-boundary-grid">
+              <div v-for="b in BOUNDARY_LOCKED" :key="b.name" class="sec-bcard sec-bcard-lock">
+                <div class="sec-bcard-head">
+                  <span class="sec-bcard-lockicon" />
+                  <span class="sec-bcard-name">{{ b.name }}</span>
+                  <el-tag size="small" type="danger" effect="plain">明确不实现</el-tag>
+                </div>
+                <div class="sec-bcard-reason">{{ b.reason }}</div>
+                <div class="sec-bcard-detail">{{ b.detail }}</div>
+              </div>
+            </div>
+          </article>
+
+          <article class="sec-frame sec-frame-list">
+            <header class="sec-frame-head sec-frame-head-sm">
+              <span class="sec-frame-title">roadmap</span>
+              <span class="sec-frame-hint">规划中 · 后续版本</span>
+            </header>
+            <div class="sec-boundary-grid">
+              <div v-for="r in ROADMAP" :key="r.name" class="sec-bcard">
+                <div class="sec-bcard-head">
+                  <el-tag size="small" type="info" effect="plain">{{ r.phase }}</el-tag>
+                  <span class="sec-bcard-name">{{ r.name }}</span>
+                </div>
+                <div class="sec-bcard-detail">{{ r.note }}</div>
+              </div>
+            </div>
+          </article>
+        </div>
       </section>
     </div>
 
@@ -484,7 +622,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue';
 import { Close, QuestionFilled } from '@element-plus/icons-vue';
-import { ElMessage } from 'element-plus';
+import { ElMessage, ElMessageBox } from 'element-plus';
 import { api } from '../../api/client';
 
 const BASE = '/plugin/sec-lab';
@@ -497,6 +635,8 @@ const TABS = [
   { value: 'easm',     num: '04', name: '资产',   sub: 'ASSETS',   badge: '' },
   { value: 'findings', num: '05', name: '发现项', sub: 'FIND',     badge: '0' },
   { value: 'audit',    num: '06', name: '审计',   sub: 'AUDIT',    badge: '0' },
+  { value: 'env',      num: '07', name: '环境',   sub: 'RANGE',    badge: '' },
+  { value: 'boundary', num: '08', name: '边界',   sub: 'SCOPE',    badge: '' },
 ] as const;
 
 const BASIC_TOOLS = [
@@ -564,6 +704,89 @@ const easmtValueHint = computed(() => {
     default: return '';
   }
 });
+
+// ---------- 环境/靶场 tab（宿主机 Docker + Android，仅本机） ----------
+interface RangeTemplateRow { id: string; name: string; image: string; containerPort: number; defaultHostPort: number; description: string; tags: string[]; source: string }
+interface RangeInst { name: string; image: string; hostPort: number; containerPort: number; state: string; status: string }
+interface HostEnvData {
+  platform: string; checkedAt: number;
+  docker: { available: boolean; daemonUp: boolean; version?: string; composeV2: boolean; note: string };
+  android: { adbAvailable: boolean; emulatorAvailable: boolean; sdkRoot?: string; avds: string[]; running: string[]; note: string };
+}
+const hostEnv = ref<HostEnvData | null>(null);
+const envLoading = ref(false);
+const rangeTemplates = ref<RangeTemplateRow[]>([]);
+const rangeInsts = ref<RangeInst[]>([]);
+const rangeForm = reactive<{ template: string; hostPortText: string }>({ template: 'dvwa', hostPortText: '' });
+const avdSel = ref('');
+
+async function probeEnv() {
+  envLoading.value = true;
+  try {
+    const d = await unwrap<HostEnvData>(api.get(`${BASE}/hostenv`));
+    if (d) hostEnv.value = d;
+    const t = await unwrap<RangeTemplateRow[]>(api.get(`${BASE}/ranges`));
+    if (t) rangeTemplates.value = t;
+    const i = await unwrap<RangeInst[]>(api.get(`${BASE}/ranges/instances`));
+    if (i) rangeInsts.value = i;
+    const a = hostEnv.value?.android;
+    if (a && a.avds.length && !a.avds.includes(avdSel.value)) avdSel.value = a.avds[0];
+  } finally { envLoading.value = false; }
+}
+
+async function refreshInstances() {
+  const i = await unwrap<RangeInst[]>(api.get(`${BASE}/ranges/instances`));
+  if (i) rangeInsts.value = i;
+}
+
+async function deployRange() {
+  const tpl = rangeTemplates.value.find((t) => t.id === rangeForm.template);
+  if (!tpl) return;
+  const hp = Number(rangeForm.hostPortText) || tpl.defaultHostPort;
+  try {
+    await ElMessageBox.confirm(
+      `将在本机 Docker 部署已知漏洞训练镜像「${tpl.name}」（${tpl.image}），映射到 localhost:${hp}。该镜像自带大量漏洞，仅限隔离/本机环境用于授权演练，演练后请及时停止。`,
+      '靶场部署确认',
+      { confirmButtonText: '部署', cancelButtonText: '取消', type: 'warning' },
+    );
+  } catch { return; }
+  await postRun('range_deploy', { template: rangeForm.template, hostPort: hp, confirmed: true });
+  await refreshInstances();
+}
+
+async function stopRangeInst(name: string) {
+  await postRun('range_stop', { name, confirmed: true });
+  await refreshInstances();
+}
+
+async function launchAvd() {
+  if (!avdSel.value) { ElMessage.warning('请选择 AVD'); return; }
+  await postRun('android_launch', { avd: avdSel.value, confirmed: true });
+}
+
+// ---------- 能力边界 tab（明确不实现 + 规划中） ----------
+const BOUNDARY_LOCKED = [
+  { name: '匿名化 / 代理跳板 / 流量隐匿', reason: '属攻击侧需求，与"授权评估"定位直接冲突', detail: '不做 Tor 链、代理池轮换、指纹混淆等流量隐匿能力。' },
+  { name: '免杀 / 载荷生成 / C2 框架', reason: '合规红线：只做检测验证，不做武器化', detail: 'attack_sim 只复现行为特征（只读系统命令），不生成任何恶意载荷、不做免杀、不建 C2。' },
+  { name: '公网随机目标批量扫描', reason: '授权模型天然拒绝：目标必须在 scope 内', detail: '未登记授权的目标一律拒绝；公网资产还必须先完成归属验证（asset_monitor verify）。' },
+  { name: '移动端插件注册（MOBILE_MODE）', reason: '移动端无本地 shell 与扫描环境', detail: '移动端不注册 sec-lab；Android 靶场探测仅在桌面端「环境」Tab 提供。' },
+];
+const ROADMAP = [
+  { phase: 'P1', name: '`/` 命令扩展（/scan 等）', note: '输入框注册扩展点，命令直达工具' },
+  { phase: 'P1', name: '@ 剧本召唤', note: '多步编排一键执行、可分享' },
+  { phase: 'P1', name: '外部工具 adapter 深度解析', note: 'nuclei / sqlmap 结构化输出对齐 A 轨' },
+  { phase: 'P2', name: '剧本市场 + CVE 离线库', note: '内置剧本包与离线漏洞匹配' },
+  { phase: 'P2', name: '合规基线检查表', note: '等保 2.0 / CIS Benchmark / OWASP Top 10' },
+  { phase: 'P2', name: '定时巡检', note: '资产快照定期 diff，影子资产告警' },
+  { phase: 'P3', name: '团队协作 / 交战隔离', note: '多用户授权范围隔离与协作' },
+  { phase: 'P3', name: '报告 Word/PDF 导出', note: '走 doyz 文档通道' },
+  { phase: '规划', name: 'Caldera / Atomic Red Team 集成', note: '企业级 BAS 攻击模拟' },
+];
+
+function switchTab(v: string) {
+  tab.value = v;
+  if (v === 'env' && !hostEnv.value) void probeEnv();
+}
 
 // ---------- 登记授权 dialog ----------
 const showAdd = ref(false);
@@ -1217,4 +1440,61 @@ onMounted(async () => { await loadAll(); await loadToolchain(); });
 }
 .sec-console :deep(*::-webkit-scrollbar-thumb:hover) { background: var(--sc-fg-3); }
 .sec-console :deep(*::-webkit-scrollbar-track) { background: transparent; }
+
+/* ============================================================
+   ▍ 07 · 环境 / 靶场（host_env · range · android）
+   ============================================================ */
+.sec-env-note { font-size: 12px; color: var(--sc-fg-3); }
+.sec-env-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
+  margin-bottom: 10px;
+}
+.sec-frame-env { border: 1px solid var(--sc-line); background: var(--sc-bg); }
+.sec-frame-env[data-up="true"] .sec-frame-title { color: var(--sc-green); }
+.sec-frame-env[data-up="false"] .sec-frame-title { color: var(--sc-fg-3); }
+.sec-env-body {
+  padding: 8px 12px 10px;
+  display: flex; flex-direction: column; gap: 4px;
+}
+.sec-env-line { display: flex; align-items: baseline; gap: 10px; font-size: 12px; }
+.sec-env-line .sec-meta-k { min-width: 64px; }
+.sec-env-line code { color: var(--sc-fg-2); word-break: break-all; }
+.sec-env-note2 { font-size: 11px; color: var(--sc-fg-3); margin-top: 2px; line-height: 1.5; }
+.sec-range-list {
+  padding: 0 12px 10px;
+  display: flex; flex-direction: column; gap: 6px;
+}
+.sec-range-row {
+  display: flex; align-items: center; gap: 10px;
+  border: 1px dashed var(--sc-line); padding: 6px 10px;
+  background: var(--sc-bg-2);
+}
+.sec-range-name { font-size: 12px; color: var(--sc-amber); white-space: nowrap; }
+.sec-range-meta { font-size: 12px; color: var(--sc-fg-2); word-break: break-all; }
+
+/* ============================================================
+   ▍ 08 · 能力边界（明确不实现 · 规划中）
+   ============================================================ */
+.sec-boundary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 10px;
+  padding: 10px 12px 12px;
+}
+.sec-bcard {
+  border: 1px solid var(--sc-line);
+  background: var(--sc-bg-2);
+  padding: 10px 12px;
+  display: flex; flex-direction: column; gap: 6px;
+}
+.sec-bcard-lock { border-style: dashed; border-color: var(--sc-line-2); }
+.sec-bcard-head { display: flex; align-items: center; gap: 8px; }
+.sec-bcard-lockicon {
+  width: 8px; height: 8px; flex: none;
+  background: var(--sc-red);
+  display: inline-block;
+}
+.sec-bcard-name { font-size: 13px; font-weight: 600; color: var(--sc-fg); flex: 1; }
+.sec-bcard-reason { font-size: 12px; color: var(--sc-amber); }
+.sec-bcard-detail { font-size: 11.5px; color: var(--sc-fg-3); line-height: 1.6; }
 </style>

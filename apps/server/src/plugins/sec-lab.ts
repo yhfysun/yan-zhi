@@ -22,6 +22,9 @@ import { detectAll, detectTool, runExternal, TOOLCHAIN, INTRUSIVE_TOOLS } from '
 import { runAttackSim, renderSimReport, PLAYBOOKS, TECHNIQUES } from './sec-lab-tools/attacksim.js';
 import { runDetectRules, runLogHunt, RULES } from './sec-lab-tools/blueteam.js';
 import { runEasm, type Asset, type Snapshot } from './sec-lab-tools/easm.js';
+import {
+  runHostEnv, runRangeDeploy, runRangeList, runRangeStop, runAndroidLaunch, RANGE_TEMPLATES, probeHostEnv, listRanges,
+} from './sec-lab-tools/hostenv.js';
 
 export const SEC_LAB_ID = 'sec-lab';
 
@@ -38,6 +41,7 @@ export const secLabManifest: PluginManifest = {
       'scope_list', 'scope_add', 'scope_remove',
       'recon', 'portscan', 'webprobe', 'toolchain', 'sec_report',
       'attack_sim', 'detect_rules', 'log_hunt', 'asset_monitor', 'sim_report',
+      'host_env', 'range_deploy', 'range_list', 'range_stop', 'android_launch',
     ],
     sidebar: [
       {
@@ -698,6 +702,94 @@ function assetMonitorTool(): BuiltInTool {
   };
 }
 
+// ---------- 宿主机环境 + 靶场 + 安卓虚拟化（本地基础设施，非对外扫描） ----------
+
+function hostEnvTool(): BuiltInTool {
+  return {
+    name: 'host_env',
+    description:
+      '探测本机安全实验室基础设施：Docker 守护进程/版本/compose、Android SDK（adb/emulator/AVD 列表/运行中的模拟器）。只读探测，不发起任何外部流量。靶场部署与移动端测试的前提检查。',
+    inputSchema: { type: 'object', properties: {}, required: [] },
+    async execute(args) {
+      return withGuard('host_env', args, async () => runHostEnv());
+    },
+  };
+}
+
+function rangeDeployTool(): BuiltInTool {
+  return {
+    name: 'range_deploy',
+    description:
+      '在**本机 Docker** 上部署一个靶场容器（仅白名单内的已知漏洞训练镜像：dvwa / juice-shop / webgoat / mutillidae）。容器统一打 label=yan-zhi-range，便于列举与清理。需 confirmed=true 人工确认；拒绝任意白名单外镜像。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        template: { type: 'string', description: '靶场模板 id：dvwa / juice-shop / webgoat / mutillidae' },
+        hostPort: { type: 'number', description: '映射到宿主机的端口（默认按模板）' },
+        confirmed: { type: 'boolean', description: '必须为 true 才真正部署' },
+      },
+      required: ['template'],
+    },
+    async execute(args) {
+      return withGuard('range_deploy', args, async () =>
+        runRangeDeploy({ template: String(args.template || ''), hostPort: typeof args.hostPort === 'number' ? args.hostPort : undefined, confirmed: args.confirmed === true }),
+      );
+    },
+  };
+}
+
+function rangeListTool(): BuiltInTool {
+  return {
+    name: 'range_list',
+    description: '列举本模块起的所有运行中靶场容器（label=yan-zhi-range）：名称、镜像、访问端口、状态。',
+    inputSchema: { type: 'object', properties: {}, required: [] },
+    async execute(args) {
+      return withGuard('range_list', args, async () => runRangeList());
+    },
+  };
+}
+
+function rangeStopTool(): BuiltInTool {
+  return {
+    name: 'range_stop',
+    description: '停止并移除一个靶场容器（仅本模块起的、label=yan-zhi-range 的容器，防误删）。需 confirmed=true。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: '容器名（range_list 可见，形如 yz-range-dvwa-8081）' },
+        confirmed: { type: 'boolean', description: '必须为 true 才真正停止' },
+      },
+      required: ['name'],
+    },
+    async execute(args) {
+      return withGuard('range_stop', args, async () =>
+        runRangeStop({ name: String(args.name || ''), confirmed: args.confirmed === true }),
+      );
+    },
+  };
+}
+
+function androidLaunchTool(): BuiltInTool {
+  return {
+    name: 'android_launch',
+    description:
+      '在本地启动一个 Android 虚拟设备（AVD）用于移动端安全测试。需 confirmed=true。仅本机 emulator，不触碰任何外部目标。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        avd: { type: 'string', description: 'AVD 名称（host_env 探测得到的列表）' },
+        confirmed: { type: 'boolean', description: '必须为 true 才真正启动' },
+      },
+      required: ['avd'],
+    },
+    async execute(args) {
+      return withGuard('android_launch', args, async () =>
+        runAndroidLaunch({ avd: String(args.avd || ''), confirmed: args.confirmed === true }),
+      );
+    },
+  };
+}
+
 // ---------- 后端路由（控制台页面用） ----------
 
 function registerRoutes(ctx: PluginContext) {
@@ -751,6 +843,11 @@ function registerRoutes(ctx: PluginContext) {
         detect_rules: { factory: detectRulesTool, opts: { requester: 'human' }, passRunner: true },
         log_hunt: { factory: logHuntTool, opts: { requester: 'human' }, passRunner: true },
         asset_monitor: { factory: assetMonitorTool, opts: { requester: 'human' }, passRunner: true },
+        host_env: { factory: hostEnvTool, opts: { requester: 'human' }, passRunner: true },
+        range_deploy: { factory: rangeDeployTool, opts: { requester: 'human' }, passRunner: true },
+        range_list: { factory: rangeListTool, opts: { requester: 'human' }, passRunner: true },
+        range_stop: { factory: rangeStopTool, opts: { requester: 'human' }, passRunner: true },
+        android_launch: { factory: androidLaunchTool, opts: { requester: 'human' }, passRunner: true },
       };
       const entry = map[tool];
       if (!entry) return fail(res, 400, `未知工具 ${tool}`);
@@ -780,6 +877,21 @@ function registerRoutes(ctx: PluginContext) {
       json(res, { data: await loadConfig() });
     });
 
+    // 主机环境探测（Docker / Android）
+    r.get('/hostenv', async (_req: unknown, res: unknown) => {
+      json(res, { data: await probeHostEnv() });
+    });
+
+    // 靶场模板白名单
+    r.get('/ranges', async (_req: unknown, res: unknown) => {
+      json(res, { data: RANGE_TEMPLATES });
+    });
+
+    // 运行中的靶场容器（label=yan-zhi-range）
+    r.get('/ranges/instances', async (_req: unknown, res: unknown) => {
+      json(res, { data: await listRanges() });
+    });
+
     r.post('/config', async (req: unknown, res: unknown) => {
       const patch = bodyOf(req) as Partial<SecConfig>;
       const next = { ...(await loadConfig()), ...patch };
@@ -798,6 +910,7 @@ export const secLabModule: PluginModule = {
       scopeListTool(), scopeAddTool(), scopeRemoveTool(),
       reconTool(), portscanTool(), webprobeTool(), toolchainTool(), secReportTool(),
       attackSimTool(), simReportTool(), detectRulesTool(), logHuntTool(), assetMonitorTool(),
+      hostEnvTool(), rangeDeployTool(), rangeListTool(), rangeStopTool(), androidLaunchTool(),
     ]) {
       ctx.registerTool(t);
     }
