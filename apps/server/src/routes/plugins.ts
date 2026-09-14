@@ -15,7 +15,28 @@ router.use(authMiddleware);
 export const PLUGINS_DIR = path.resolve(fileURLToPath(import.meta.url), '..', '..', '..', 'plugins', 'installed');
 
 /** 内置插件静态资源目录（皮肤壁纸/预览图等）：apps/server/assets/plugin-assets/<pluginId>/ */
-export const BUILTIN_ASSETS_DIR = path.resolve(fileURLToPath(import.meta.url), '..', '..', '..', 'assets', 'plugin-assets');
+// 资源位置随运行布局不同而变化：
+//  - dev / 源码运行：apps/server/src/routes → 上溯到 apps/server/assets/plugin-assets
+//  - 打包版（electron-builder extraResources）：resources/server/assets/plugin-assets
+//    （编译产物 routes 在 resources/server/dist/apps/server/src/routes）
+//  - 早期实现写死「上溯 3 级 / 5 级」猜路径，dev/打包/源码三种布局级数不同，极易 off-by-one
+//    → 打包版皮肤壁纸 404（资源随包带上了，但代码解析到错误目录）。
+//  现改为「从本文件逐级向上查找首个存在的 assets/plugin-assets」，无论哪种布局都能命中，
+//  彻底消除对目录层级的假设，避免「dev 能、打包不能」反复出现。
+function resolveBuiltinAssetsDir(): string {
+  const start = path.dirname(fileURLToPath(import.meta.url));
+  let cur = start;
+  for (let i = 0; i < 12; i++) {
+    const cand = path.join(cur, 'assets', 'plugin-assets');
+    if (existsSync(cand)) return cand;
+    const parent = path.dirname(cur);
+    if (parent === cur) break;
+    cur = parent;
+  }
+  // 兜底：保持原 dev 相对路径（理论上不会走到，仅防极端布局）
+  return path.resolve(start, '..', '..', '..', 'assets', 'plugin-assets');
+}
+export const BUILTIN_ASSETS_DIR = resolveBuiltinAssetsDir();
 
 function toInfo(p: Plugin) {
   return { manifest: p.manifest, state: p.state, error: p.error, config: p.config, source: p.source };
