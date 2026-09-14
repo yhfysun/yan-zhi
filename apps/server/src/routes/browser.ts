@@ -742,8 +742,10 @@ router.post('/action', async (req: Request, res: Response) => {
             await page.evaluate((oid: string) => { const p = document.getElementById(oid); if (p) p.remove(); }, overlayId).catch(() => {});
           }
         } else {
-          const buf = await page.screenshot({ fullPage: false });
-          result = { base64: buf.toString('base64') };
+          // fullPage=true 截整页长图（Playwright 滚动拼接，与窗口/面板是否显示完整无关）；默认只截视口
+          const fullPage = !!args.fullPage;
+          const buf = await page.screenshot({ fullPage });
+          result = { base64: buf.toString('base64'), ...(fullPage ? { fullPage: true } : {}) };
         }
         break;
       }

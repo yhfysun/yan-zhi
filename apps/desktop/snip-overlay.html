@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>yan-zhi 截图</title>
+<style>
+  html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #000; cursor: crosshair; user-select: none; }
+  #shot { position: absolute; inset: 0; width: 100%; height: 100%; -webkit-user-drag: none; }
+  /* 经典手法：选区 div 用超大 box-shadow 把选区外的画面压暗，免去四块遮罩拼接 */
+  #sel { position: absolute; display: none; border: 1.5px solid #3b82f6; box-shadow: 0 0 0 100000px rgba(0, 0, 0, 0.45); z-index: 10; }
+  #badge { position: absolute; display: none; z-index: 11; background: rgba(24, 24, 27, 0.92); color: #fff; font: 12px/1 -apple-system, 'Segoe UI', 'Microsoft YaHei', sans-serif; padding: 5px 8px; border-radius: 4px; pointer-events: none; white-space: nowrap; }
+  #hint { position: absolute; top: 18px; left: 50%; transform: translateX(-50%); z-index: 12; background: rgba(24, 24, 27, 0.92); color: #e5e7eb; font: 13px/1.4 -apple-system, 'Segoe UI', 'Microsoft YaHei', sans-serif; padding: 8px 16px; border-radius: 8px; pointer-events: none; white-space: nowrap; }
+  #hint b { color: #60a5fa; font-weight: 600; }
+</style>
+</head>
+<body>
+<img id="shot" alt="" />
+<div id="sel"></div>
+<div id="badge"></div>
+<div id="hint">拖拽框选截图区域 · <b>双击 / Enter</b> 确认 · <b>Esc / 右键</b> 取消</div>
+<script>
+(function () {
+  var img = document.getElementById('shot');
+  var sel = document.getElementById('sel');
+  var badge = document.getElementById('badge');
+  var hint = document.getElementById('hint');
+  var startX = 0, startY = 0, dragging = false, hasSel = false;
+  var lastUpAt = 0;
+
+  function valid() { return hasSel && sel.offsetWidth >= 2 && sel.offsetHeight >= 2; }
+  function showSel(x, y, w, h) {
+    hasSel = true;
+    sel.style.display = 'block';
+    sel.style.left = x + 'px'; sel.style.top = y + 'px';
+    sel.style.width = Math.max(0, w) + 'px'; sel.style.height = Math.max(0, h) + 'px';
+    badge.style.display = 'block';
+    badge.textContent = w + ' × ' + h;
+    // 尺寸徽章放选区下方，贴近屏幕底部时翻到上方
+    var bh = 26;
+    badge.style.left = x + 'px';
+    badge.style.top = (y + h + 6 + bh > window.innerHeight ? y - bh - 6 : y + h + 6) + 'px';
+  }
+  function clearSel() {
+    hasSel = false; dragging = false;
+    sel.style.display = 'none'; badge.style.display = 'none';
+  }
+  function confirm() {
+    if (!valid()) return;
+    window.snipAPI.confirm({ x: sel.offsetLeft, y: sel.offsetTop, width: sel.offsetWidth, height: sel.offsetHeight });
+  }
+  function cancel() { window.snipAPI.cancel(); }
+
+  document.addEventListener('contextmenu', function (e) { e.preventDefault(); cancel(); });
+  document.addEventListener('mousedown', function (e) {
+    if (e.button !== 0) return;
+    // 双击的第二下按下不重置选区，让随后的 dblclick 完成确认
+    if (valid() && Date.now() - lastUpAt < 350) return;
+    dragging = true; hasSel = false;
+    startX = e.clientX; startY = e.clientY;
+    showSel(startX, startY, 0, 0);
+  });
+  window.addEventListener('mousemove', function (e) {
+    if (!dragging) return;
+    var x = Math.min(startX, e.clientX), y = Math.min(startY, e.clientY);
+    var w = Math.abs(e.clientX - startX), h = Math.abs(e.clientY - startY);
+    showSel(x, y, w, h);
+  });
+  window.addEventListener('mouseup', function () {
+    if (!dragging) return;
+    dragging = false; lastUpAt = Date.now();
+    // 单击（选区过小）视为重新开始，不保留误触的小框
+    if (!valid()) clearSel();
+  });
+  document.addEventListener('dblclick', function () { confirm(); });
+  window.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') { e.preventDefault(); cancel(); }
+    else if (e.key === 'Enter') { e.preventDefault(); confirm(); }
+  });
+
+  // 拉取冻结画面 → 加载完成后通知主进程显示窗口（避免先露出黑屏）
+  window.snipAPI.getImage().then(function (info) {
+    if (!info || !info.dataUrl) { cancel(); return; }
+    img.onload = function () {
+      hint.style.opacity = '1';
+      window.snipAPI.ready();
+    };
+    img.onerror = function () { cancel(); };
+    img.src = info.dataUrl;
+  }).catch(function () { cancel(); });
+})();
+</script>
+</body>
+</html>

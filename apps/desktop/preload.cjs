@@ -63,6 +63,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     writeText: (text) => ipcRenderer.invoke('clipboard:writeText', text),
   },
 
+  // 屏幕截图（框选）：invoke 挂起直到用户在框选窗确认（返回 { ok, dataUrl, width, height }）
+  // 或取消（{ ok:false, cancelled:true }）。仅桌面端存在，渲染层据此决定是否显示截图按钮。
+  screenshot: {
+    capture: () => ipcRenderer.invoke('screenshot:capture'),
+  },
+
   // Shell
   shell: {
     exec: (command, args, options) => ipcRenderer.invoke('shell:exec', command, args, options),

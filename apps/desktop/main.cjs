@@ -1,4 +1,4 @@
-const { app, BrowserWindow, BrowserView, webContents, dialog, ipcMain, Menu, session, shell, clipboard, Tray, globalShortcut } = require('electron');
+const { app, BrowserWindow, BrowserView, webContents, dialog, ipcMain, Menu, session, shell, clipboard, Tray, globalShortcut, desktopCapturer, screen: electronScreen } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const fsp = fs.promises;
@@ -361,6 +361,8 @@ function createWindow() {
   });
 
   // 右键菜单：在可编辑区域（输入框/textarea）显示剪切/复制/粘贴/全选
+  // 注意「全选」不能用 role:'selectAll' —— 它会全选整个应用文档（弹窗底下的界面一起选中）。
+  // 这里改为限定作用域：输入框内只选该输入框；其余按渲染层 selectAllScope 的容器规则选。
   mainWindow.webContents.on('context-menu', (_event, params) => {
     if (!params.isEditable) return;
     const template = [
@@ -369,7 +371,16 @@ function createWindow() {
       { label: '复制', role: 'copy', enabled: params.editFlags.canCopy },
       { label: '剪切', role: 'cut', enabled: params.editFlags.canCut },
       { type: 'separator' },
-      { label: '全选', role: 'selectAll' },
+      {
+        label: '全选',
+        click: () => {
+          mainWindow.webContents.executeJavaScript(
+            '(() => { const a = document.activeElement; if (!a) return;' +
+            ' if (a instanceof HTMLInputElement || a instanceof HTMLTextAreaElement) { a.select(); return; }' +
+            ' if (document.execCommand) document.execCommand("selectAll", false); })()'
+          ).catch(() => {});
+        },
+      },
     ];
     Menu.buildFromTemplate(template).popup(mainWindow);
   });
@@ -2793,6 +2804,123 @@ ipcMain.handle('mcp:kill', (e, childId) => {
   if (!entry) return;
   try { entry.child.kill('SIGTERM'); } catch {}
   mcpChildren.delete(childId);
+});
+
+
+// ============================================================
+// 屏幕截图（聊天输入框「截图」按钮，桌面端专属）
+// 流程：主窗口先隐藏（对齐微信截图，避免截进自己）→ desktopCapturer 抓全部
+// 屏幕的原始分辨率「冻结画面」→ 在光标所在显示器铺全屏框选窗展示冻结图 →
+// 用户拖拽选区（Enter/双击确认，Esc/右键取消）→ 主进程按 物理/逻辑 比例裁剪
+// 原图 → PNG dataURL 经 invoke 返回发起截图的渲染进程（全程挂起，无推送通道）。
+// ============================================================
+let snipSession = null;
+
+/** 收尾：关框选窗、还原主窗口、结算 invoke 的 Promise（幂等，重复调用无害） */
+function finishSnip(result) {
+  const s = snipSession;
+  if (!s || s.settled) return;
+  s.settled = true;
+  snipSession = null;
+  try { if (s.overlay && !s.overlay.isDestroyed()) s.overlay.destroy(); } catch {}
+  try { if (s.win && !s.win.isDestroyed() && !s.win.isVisible()) s.win.show(); } catch {}
+  try { s.resolve(result); } catch {}
+}
+
+ipcMain.handle('screenshot:capture', async (e) => {
+  if (snipSession) return { ok: false, error: '已有截图会话进行中' };
+  const win = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
+  try {
+    // 1. 隐藏主窗口，等 DWM 把窗口从屏幕移除后再抓屏
+    if (win) win.hide();
+    await sleepMs(260);
+
+    // 2. 抓取所有屏幕的原始分辨率画面（thumbnailSize 给到最大物理像素，避免被缩放）
+    const displays = electronScreen.getAllDisplays();
+    const maxW = Math.max(...displays.map((d) => Math.ceil(d.size.width * d.scaleFactor)));
+    const maxH = Math.max(...displays.map((d) => Math.ceil(d.size.height * d.scaleFactor)));
+    const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: maxW, height: maxH } });
+    if (!sources.length) {
+      if (win) win.show();
+      return { ok: false, error: '未获取到屏幕画面（macOS 需在系统设置中授予"屏幕录制"权限）' };
+    }
+    const targetDisplay = electronScreen.getDisplayNearestPoint(electronScreen.getCursorScreenPoint());
+    // display_id 匹配不上时（部分驱动为空），退化为选画面宽高比最接近目标显示器的源
+    const source = sources.find((s) => String(s.display_id) === String(targetDisplay.id))
+      || sources.slice().sort((a, b) => {
+        const ta = a.thumbnail.getSize(), tb = b.thumbnail.getSize();
+        const ar = targetDisplay.size.width / targetDisplay.size.height;
+        return Math.abs(ta.width / ta.height - ar) - Math.abs(tb.width / tb.height - ar);
+      })[0];
+    const image = source?.thumbnail;
+    if (!image || image.isEmpty()) {
+      if (win) win.show();
+      return { ok: false, error: '截取的画面为空' };
+    }
+
+    // 3. 全屏框选窗：铺在光标所在显示器上，展示「冻结画面」
+    const b = targetDisplay.bounds;
+    const overlay = new BrowserWindow({
+      x: b.x, y: b.y, width: b.width, height: b.height,
+      frame: false, show: false, resizable: false, movable: false,
+      minimizable: false, maximizable: false, fullscreenable: false,
+      enableLargerThanScreen: true, hasShadow: false, skipTaskbar: true,
+      alwaysOnTop: true, backgroundColor: '#000000',
+      webPreferences: {
+        preload: path.join(__dirname, 'snip-preload.cjs'),
+        nodeIntegration: false, contextIsolation: true, backgroundThrottling: false,
+      },
+    });
+    overlay.setAlwaysOnTop(true, 'screen-saver');
+    let resolveFn;
+    const p = new Promise((resolve) => { resolveFn = resolve; });
+    snipSession = { sender: e.sender, win, image, display: targetDisplay, overlay, settled: false, resolve: resolveFn };
+    overlay.on('closed', () => finishSnip({ ok: false, cancelled: true }));
+    overlay.webContents.on('did-fail-load', () => finishSnip({ ok: false, error: '截图组件加载失败' }));
+    await overlay.loadFile(path.join(__dirname, 'snip-overlay.html'));
+    return await p;
+  } catch (err) {
+    finishSnip({ ok: false, error: '截图失败: ' + (err?.message || err) });
+    return { ok: false, error: '截图失败: ' + (err?.message || err) };
+  }
+});
+
+// 框选窗拉取冻结画面（页面加载完成后立即调用，主进程此时不显示窗口，避免黑屏闪烁）
+ipcMain.handle('snip:get-image', (e) => {
+  const s = snipSession;
+  if (!s || !s.overlay || e.sender !== s.overlay.webContents) return null;
+  return { dataUrl: s.image.toDataURL(), width: s.display.size.width, height: s.display.size.height };
+});
+
+// 冻结图加载完成 → 显示框选窗并抢焦点（键盘 Esc/Enter 才能生效）
+ipcMain.on('snip:ready', (e) => {
+  const s = snipSession;
+  if (!s || !s.overlay || e.sender !== s.overlay.webContents) return;
+  try { s.overlay.show(); s.overlay.focus(); } catch {}
+});
+
+// 确认选区：选区是框选窗的逻辑像素，冻结图是物理像素，按实际宽度比换算后裁剪
+ipcMain.on('snip:confirm', (e, rect) => {
+  const s = snipSession;
+  if (!s || !s.overlay || e.sender !== s.overlay.webContents) return;
+  try {
+    const size = s.image.getSize();
+    const ratio = size.width / s.display.size.width;
+    const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+    const x = clamp(Math.round(rect.x * ratio), 0, size.width - 1);
+    const y = clamp(Math.round(rect.y * ratio), 0, size.height - 1);
+    const w = clamp(Math.round(rect.width * ratio), 1, size.width - x);
+    const h = clamp(Math.round(rect.height * ratio), 1, size.height - y);
+    const cropped = s.image.crop({ x, y, width: w, height: h });
+    finishSnip({ ok: true, dataUrl: cropped.toDataURL(), width: w, height: h });
+  } catch (err) {
+    finishSnip({ ok: false, error: '裁剪截图失败: ' + (err?.message || err) });
+  }
+});
+
+ipcMain.on('snip:cancel', (e) => {
+  const s = snipSession;
+  if (s && s.overlay && e.sender === s.overlay.webContents) finishSnip({ ok: false, cancelled: true });
 });
 
 

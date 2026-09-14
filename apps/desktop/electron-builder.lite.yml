@@ -12,6 +12,8 @@ files:
   - main.cjs
   - preload.cjs
   - browser-preload.cjs
+  - snip-preload.cjs
+  - snip-overlay.html
 extraResources:
   - from: ../server/dist
     to: server/dist

@@ -98,6 +98,7 @@
         @keydown.up="onKeyUp"
         @keydown.down="onKeyDown"
         @keydown.esc="onEsc"
+        @paste="onPaste"
         @focus="inputFocused = true"
         @blur="inputFocused = false"
         class="input-textarea"
@@ -321,6 +322,11 @@
               </Teleport>
             </div>
           </el-popover>
+          <el-tooltip v-if="canScreenshot" content="截图：框选屏幕区域，作为图片附件发给智能体" placement="top">
+            <el-button size="small" circle class="ctx-btn" :disabled="snipping" @click="startScreenshot">
+              <el-icon><Camera /></el-icon>
+            </el-button>
+          </el-tooltip>
         </div>
 
         <div class="toolbar-mobile-selects">
@@ -489,8 +495,9 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue';
 import type { Component } from 'vue';
+import { ElMessage } from 'element-plus';
 import {
-  FolderOpened, ArrowDown, ArrowRight, Connection, Files, UploadFilled, User, EditPen, Cpu, Setting, Plus,
+  FolderOpened, ArrowDown, ArrowRight, Connection, Files, UploadFilled, User, EditPen, Cpu, Setting, Plus, Camera,
   Promotion, Close, Lock, Check, Picture, Document, Tickets, Box, VideoCamera, Headset, Memo, ChatDotRound,
   Operation, Search, Link, Delete, Clock,
 } from '@element-plus/icons-vue';
@@ -500,7 +507,7 @@ import { useCodeStore } from '../../stores/code';
 const {
   inputFocused, workspaceDir, hasWorkspaceDir, clearWorkspaceDir, showWorkspaceDir, showMount, store, showSkills, mountedSkillIds,
   skillStore, skillSearch, filteredSkillStore, toggleSkillMount,
-  triggerFileUpload, input, send, agentStore, onAgentSwitch, openEditAgent, modelGroups,
+  triggerFileUpload, input, inputRef, send, agentStore, onAgentSwitch, openEditAgent, modelGroups,
   currentScene, clearScene,
   selectedModelId, onModelChange, openPlatformConfig, startNewChat, uploadedFiles, stopChat,
   queuedList, sendQueuedNow, editQueued, removeQueued,
@@ -525,6 +532,33 @@ const permissionLabel = computed(() =>
 );
 function onPermissionChange(mode: PermissionMode) {
   void store.setPermissionMode(mode);
+}
+
+// ===== 截图（桌面端专属）：调主进程全屏框选截图，结果作为图片附件加入输入框 =====
+// 仅 electronAPI.screenshot 存在（桌面 preload 注入）时显示按钮；web / 移动端自动隐藏。
+const canScreenshot = typeof window !== 'undefined' && !!(window as any).electronAPI?.screenshot;
+const snipping = ref(false);
+async function startScreenshot() {
+  if (snipping.value || !canScreenshot) return;
+  snipping.value = true;
+  try {
+    const res = await (window as any).electronAPI.screenshot.capture();
+    if (res?.ok && res.dataUrl) {
+      const blob = await (await fetch(res.dataUrl)).blob();
+      const ts = new Date();
+      const pad = (n: number) => String(n).padStart(2, '0');
+      const name = `截图_${ts.getFullYear()}${pad(ts.getMonth() + 1)}${pad(ts.getDate())}_${pad(ts.getHours())}${pad(ts.getMinutes())}${pad(ts.getSeconds())}.png`;
+      addFiles([new File([blob], name, { type: 'image/png' })]);
+      inputRef.value?.focus();
+    } else if (res && res.ok === false && !res.cancelled && res.error) {
+      ElMessage.error(`截图失败：${res.error}`);
+    }
+    // 用户取消（cancelled）静默返回，不打扰
+  } catch (err: any) {
+    ElMessage.error(`截图失败：${err?.message || err}`);
+  } finally {
+    snipping.value = false;
+  }
 }
 
 // ===== 「+」聚合菜单（对齐 WorkBuddy：专家/模式 hover 右侧弹出子菜单，其余点击触发） =====
@@ -769,6 +803,16 @@ const EXT_GROUP: Record<string, string> = {
 function fileTypeMeta(name: string) {
   const ext = (name.split('.').pop() || '').toLowerCase();
   return FILE_TYPE_META[EXT_GROUP[ext] || 'other'];
+}
+
+// ===== 剪贴板粘贴文件 / 图片：截图、从资源管理器复制的文件都会出现在 clipboardData.files 里。
+// 有文件时拦截默认行为并走 addFiles（与拖拽/上传同一条路径）；纯文本粘贴不拦截，保持默认。
+function onPaste(e: ClipboardEvent) {
+  const files = e.clipboardData?.files;
+  if (files && files.length) {
+    e.preventDefault();
+    addFiles(files);
+  }
 }
 
 // ===== 从系统文件管理器拖入 → 加入上传列表（桌面前端，原生 drop 即可拿到 File，与上传按钮同条路径） =====

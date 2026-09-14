@@ -95,6 +95,11 @@
                             <ArrowRight v-else />
                           </el-icon>
                         </div>
+                        <!-- 截图类工具（computer_screenshot 等）：流式期间在工具卡片下内嵌展示画面，任务结束自动移除 -->
+                        <div v-if="isRoundLive(round, ri) && resolveScreenshotUrl(getStepToolResult(step, tc.id))" class="tool-item-shot">
+                          <img :src="API_BASE + (resolveScreenshotUrl(getStepToolResult(step, tc.id)) || '')" alt="屏幕截图" />
+                          <span class="tool-item-shot-note">截图预览 · 仅流式期间展示，结束后自动清理</span>
+                        </div>
                         <div v-show="isToolItemOpen(tc.id, 'agent-step-' + ri + '-' + si + '-' + idx)" class="tool-item-body">
                           <div class="tool-item-section">
                             <div class="tool-item-label">参数</div>
@@ -394,6 +399,7 @@ import {
 } from '@element-plus/icons-vue';
 import { ref, watch, nextTick, computed } from 'vue';
 import { useRouter } from 'vue-router';
+import { API_BASE } from '../../api/client';
 import { useChat } from '../../composables/chat/useChat';
 import type { MessageRound } from '../../composables/chat/useChat';
 import { useSettingsStore } from '../../stores/settings';
@@ -506,6 +512,23 @@ function getRoundDeliverableFiles(round: MessageRound) {
 /** 智能体思考过程是否展开：流式过程中强制展开（让工具调用进度实时可见），结束后由用户控制可折叠 */
 function isProcessOpen(round: MessageRound, ri: number): boolean {
   return !!expandedAgentProcess['round-' + ri] || isLastRoundStreaming(round, ri);
+}
+
+// ===== 截图工具结果内嵌预览（仅流式期间） =====
+// 截图类工具（computer_screenshot 等）在结果 JSON 里带 screenshotUrl；流式进行中在
+// 工具卡片下方直接展示画面，任务结束（store.streaming 变 false）后由响应式自动移除，
+// 历史消息重载时也不展示——「即用即弃，不留存」。临时文件由插件清理器在 30 分钟后回收。
+/** 从工具结果文本解析内嵌预览地址；非 JSON / 无 screenshotUrl 返回 null */
+function resolveScreenshotUrl(resultText: string | null): string | null {
+  if (!resultText) return null;
+  try {
+    const j = JSON.parse(resultText) as { screenshotUrl?: unknown };
+    return typeof j.screenshotUrl === 'string' && j.screenshotUrl.startsWith('/') ? j.screenshotUrl : null;
+  } catch { return null; }
+}
+/** 该轮是否仍在流式进行（仅最后一轮 + 当前会话在跑），决定截图是否展示；任务结束即随响应式移除 */
+function isRoundLive(round: MessageRound, ri: number): boolean {
+  return store.streaming && ri === messageRounds.value.length - 1;
 }
 
 /** 是否渲染主智能体「任务结果」卡片：有正文 / 有独立思考过程 / 正在流式输出 */
@@ -786,5 +809,27 @@ watch(activeNavRound, () => {
   flex: 1 1 auto;
   min-height: 0;
   height: auto;
+}
+
+/* ===== 截图类工具内嵌预览（仅流式期间渲染，任务结束随响应式移除） ===== */
+.tool-item-shot {
+  margin: 8px 0 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 420px;
+}
+.tool-item-shot img {
+  width: 100%;
+  max-height: 260px;
+  object-fit: contain;
+  border-radius: 8px;
+  border: 1px solid var(--glass-border, rgba(127, 127, 127, 0.25));
+  background: rgba(127, 127, 127, 0.08);
+}
+.tool-item-shot-note {
+  font-size: 11px;
+  color: var(--color-text-tertiary, #999);
+  line-height: 1.4;
 }
 </style>

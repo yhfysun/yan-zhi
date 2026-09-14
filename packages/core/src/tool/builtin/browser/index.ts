@@ -318,18 +318,19 @@ export class BrowserWaitTool implements BuiltInTool {
 // ========== 截图 ==========
 export class BrowserScreenshotTool implements BuiltInTool {
   name = 'browser_screenshot';
-  description = 'Take a screenshot of the current browser page. Returns base64 image data. 可传 tabId 截取指定标签页。传 annotate=true 时会在截图中给每个可交互元素叠加编号框（index 编号），方便视觉精确定位后按 index 操作。';
+  description = 'Take a screenshot of the current browser page. Returns base64 image data. 可传 tabId 截取指定标签页。fullPage=true 截整页长图（滚动拼接整个页面，不受窗口/面板显示不全影响）；默认只截当前可视区域。传 annotate=true 时会在截图中给每个可交互元素叠加编号框（index 编号），方便视觉精确定位后按 index 操作（annotate 与 fullPage 互斥，annotate 优先）。';
   inputSchema = {
     type: 'object',
     properties: {
       tabId: { type: 'number', description: '可选：目标标签页 id，缺省为当前活动标签页。' },
+      fullPage: { type: 'boolean', description: '是否截整页长图（默认 false 只截视口）。需要完整页面内容（报告配图、长文存档）时传 true。' },
       annotate: { type: 'boolean', description: '是否在截图中叠加可交互元素编号框（默认 false）。用于视觉定位难以用 DOM 描述的元素。' },
     },
   };
   async execute(args: Record<string, unknown> = {}): Promise<McpCallResult> {
     try {
-      const data = await callBrowserApi('/action', 'POST', { action: 'screenshot', tabId: args.tabId, annotate: args.annotate }) as any;
-      const note = data.annotated ? '（已叠加元素编号框，编号对应 browser_click/browser_type 的 index 参数）' : '';
+      const data = await callBrowserApi('/action', 'POST', { action: 'screenshot', tabId: args.tabId, annotate: args.annotate, fullPage: args.fullPage }) as any;
+      const note = data.annotated ? '（已叠加元素编号框，编号对应 browser_click/browser_type 的 index 参数）' : (data.fullPage ? '（整页长图）' : '');
       return ok(`Screenshot captured (${(data.base64 || '').length} bytes base64)${note}`);
     } catch (e: any) { return err(e?.message || '截图失败'); }
   }
