@@ -40,7 +40,7 @@
         </el-dropdown>
         <el-tooltip content="编辑当前智能体" placement="top">
           <el-button size="small" circle class="agent-edit-btn" @click="openEditAgent(agentStore.selectedAgent)">
-            <el-icon><EditPen /></el-icon>
+            <el-icon><Setting /></el-icon>
           </el-button>
         </el-tooltip>
         <!-- 场景标识（新会话草稿态显示，随首条消息注入场景提示词后不再出现） -->
@@ -322,11 +322,33 @@
               </Teleport>
             </div>
           </el-popover>
-          <el-tooltip v-if="canScreenshot" content="截图：框选屏幕区域，作为图片附件发给智能体" placement="top">
-            <el-button size="small" circle class="ctx-btn" :disabled="snipping" @click="startScreenshot">
-              <el-icon><Camera /></el-icon>
-            </el-button>
-          </el-tooltip>
+          <!-- 截图按钮（对齐微信设计）：主体点击即框选；右侧小箭头下拉 =
+               「截图时隐藏本应用窗口」勾选项 + 快捷键设置入口。tooltip 带快捷键。 -->
+          <div v-if="canScreenshot" class="shot-btn-group">
+            <el-tooltip :content="shotTooltip" placement="top">
+              <el-button size="small" circle class="ctx-btn shot-main" :disabled="snipping" @click="startScreenshot">
+                <el-icon><Camera /></el-icon>
+              </el-button>
+            </el-tooltip>
+            <el-dropdown trigger="click" placement="top-end" popper-class="shot-menu-popper" @command="onShotMenu">
+              <button type="button" class="shot-caret" :disabled="snipping" aria-label="截图设置">
+                <el-icon><ArrowDown /></el-icon>
+              </button>
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item command="toggleHideApp">
+                    <span class="shot-menu-row">
+                      <span>截图时隐藏本应用窗口</span>
+                      <el-icon v-if="shotHideApp" class="shot-menu-check"><Check /></el-icon>
+                    </span>
+                  </el-dropdown-item>
+                  <el-dropdown-item command="openSettings" divided>
+                    <span class="shot-menu-row"><span>截图快捷键设置…</span></span>
+                  </el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
+          </div>
         </div>
 
         <div class="toolbar-mobile-selects">
@@ -447,17 +469,33 @@
       </div>
     </div>
 
+    <!-- 附件 chip：hover 弹出固定尺寸预览卡（图片等比例缩放 / PDF 首页 / 表格 / 文本 / Word） -->
     <div v-if="uploadedFiles.length > 0" class="file-chips">
-      <div v-for="(f, idx) in uploadedFiles" :key="idx" class="file-chip">
-        <el-icon class="file-chip-icon" :style="{ color: fileTypeMeta(f.name).color }">
-          <component :is="fileTypeMeta(f.name).icon" />
-        </el-icon>
-        <span class="file-chip-name">{{ f.name }}</span>
-        <span class="file-chip-size">{{ formatSize(f.size) }}</span>
-        <el-button size="small" link class="file-chip-remove" @click="removeFile(idx)">
-          <el-icon><Close /></el-icon>
-        </el-button>
-      </div>
+      <el-popover
+        v-for="(f, idx) in uploadedFiles"
+        :key="idx"
+        placement="top"
+        trigger="hover"
+        :width="320"
+        :show-after="260"
+        :hide-after="60"
+        :show-arrow="false"
+        popper-class="atp-popper"
+      >
+        <template #reference>
+          <div class="file-chip">
+            <el-icon class="file-chip-icon" :style="{ color: fileTypeMeta(f.name).color }">
+              <component :is="fileTypeMeta(f.name).icon" />
+            </el-icon>
+            <span class="file-chip-name">{{ f.name }}</span>
+            <span class="file-chip-size">{{ formatSize(f.size) }}</span>
+            <el-button size="small" link class="file-chip-remove" @click="removeFile(idx)">
+              <el-icon><Close /></el-icon>
+            </el-button>
+          </div>
+        </template>
+        <AttachmentPreview :file="f" />
+      </el-popover>
     </div>
 
     <div v-if="selectedWorkFiles.length > 0" class="file-chips ref-chips">
@@ -502,7 +540,10 @@ import {
   Operation, Search, Link, Delete, Clock,
 } from '@element-plus/icons-vue';
 import { useChat } from '../../composables/chat/useChat';
+import AttachmentPreview from './AttachmentPreview.vue';
 import { useCodeStore } from '../../stores/code';
+import { useSettingsStore } from '../../stores';
+import { useRouter } from 'vue-router';
 
 const {
   inputFocused, workspaceDir, hasWorkspaceDir, clearWorkspaceDir, showWorkspaceDir, showMount, store, showSkills, mountedSkillIds,
@@ -538,11 +579,34 @@ function onPermissionChange(mode: PermissionMode) {
 // 仅 electronAPI.screenshot 存在（桌面 preload 注入）时显示按钮；web / 移动端自动隐藏。
 const canScreenshot = typeof window !== 'undefined' && !!(window as any).electronAPI?.screenshot;
 const snipping = ref(false);
+
+// ===== 截图按钮微信式设计：tooltip 带快捷键 + 下拉「隐藏窗口」开关 =====
+const router = useRouter();
+const settingsStore2 = useSettingsStore();
+const shotHideApp = computed(() => settingsStore2.settings.screenshotHideApp !== false);
+const shotTooltip = computed(() => {
+  const acc = String(settingsStore2.settings.screenshotAccelerator ?? '')
+    .replace(/Control/g, 'Ctrl').replace(/\+/g, '+');
+  return acc ? `截图（${acc}）` : '截图';
+});
+function onShotMenu(cmd: string | number | object) {
+  if (cmd === 'toggleHideApp') {
+    void settingsStore2.update({ screenshotHideApp: !shotHideApp.value });
+  } else if (cmd === 'openSettings') {
+    void (router as any)?.push?.('/settings');
+  }
+}
+
 async function startScreenshot() {
   if (snipping.value || !canScreenshot) return;
   snipping.value = true;
   try {
-    const res = await (window as any).electronAPI.screenshot.capture();
+    // 先清掉可能残留的上一次框选会话（必备自愈：主进程侧已有同名兜底，
+    // 这里让未升级的主进程也能被复用，避免「已有截图会话进行中」把用户卡死）
+    try { await (window as any).electronAPI.screenshot.cancel(); } catch { /* 旧主进程无此接口，忽略 */ }
+    // 截图时是否隐藏本应用窗口：设置页可关（用户想截自己界面里的内容）
+    const hideApp = useSettingsStore().settings.screenshotHideApp !== false;
+    const res = await (window as any).electronAPI.screenshot.capture({ hideApp });
     if (res?.ok && res.dataUrl) {
       const blob = await (await fetch(res.dataUrl)).blob();
       const ts = new Date();
@@ -853,7 +917,33 @@ function onWindowDragEnd() {
 onMounted(() => {
   window.addEventListener('dragend', onWindowDragEnd);
   window.addEventListener('drop', onWindowDragEnd);
+  // 全局截图热键：ipcRenderer.on 是按进程累加的监听器，组件重复挂载会导致一次热键
+  // 触发 N 次；这里用 window 上的标记保证整个渲染进程只绑一次。
+  if (canScreenshot) {
+    const w = window as any;
+    if (!w.__yzShotHotkeyBound) {
+      w.__yzShotHotkeyBound = true;
+      w.electronAPI.screenshot.onHotkey(() => { void startScreenshot(); });
+      void syncScreenshotHotkey();
+    }
+  }
 });
+
+// 把本地保存的快捷键同步给主进程：主进程启动时只注册了内置默认值，用户改过的组合
+// 必须在这里补注册。先读再比对，避免每次挂载都 unregister/register 造成抖动。
+async function syncScreenshotHotkey() {
+  try {
+    const api = (window as any).electronAPI?.screenshot;
+    if (!api) return;
+    const wanted = String(useSettingsStore().settings.screenshotAccelerator ?? 'Control+Alt+A');
+    const cur = await api.getAccelerator();
+    if ((cur?.accelerator || '') === wanted) return;
+    const r = await api.setAccelerator(wanted);
+    if (r && r.ok === false && r.error) console.warn('[截图快捷键]', r.error);
+  } catch {
+    /* 热键同步失败不阻断界面 */
+  }
+}
 onBeforeUnmount(() => {
   window.removeEventListener('dragend', onWindowDragEnd);
   window.removeEventListener('drop', onWindowDragEnd);
@@ -1012,5 +1102,20 @@ onBeforeUnmount(() => {
 @container inputbar (max-width: 480px) {
   .scene-chip { padding: 0 6px; }
   .scene-chip-label { display: none; }
+}
+</style>
+
+<!-- 附件 hover 预览浮层外壳：el-popper 会 teleport 到 body，样式必须写在非 scoped 块里 -->
+<style>
+/* ⚠️ 用固定色而非 --glass-* 变量：皮肤模式下玻璃 token 是半透明的，
+   预览卡下面会透出弹窗底图，白底内容会变脏。这里只要一层干净投影。 */
+.atp-popper.el-popper {
+  padding: 0 !important;
+  border: none !important;
+  background: transparent !important;
+  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.24) !important;
+}
+.atp-popper.el-popper.is-light {
+  background-image: none !important;
 }
 </style>

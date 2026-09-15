@@ -97,7 +97,7 @@
                         </div>
                         <!-- 截图类工具（computer_screenshot 等）：流式期间在工具卡片下内嵌展示画面，任务结束自动移除 -->
                         <div v-if="isRoundLive(round, ri) && resolveScreenshotUrl(getStepToolResult(step, tc.id))" class="tool-item-shot">
-                          <img :src="API_BASE + (resolveScreenshotUrl(getStepToolResult(step, tc.id)) || '')" alt="屏幕截图" />
+                          <img :src="resolveScreenshotUrl(getStepToolResult(step, tc.id)) || ''" alt="屏幕截图" />
                           <span class="tool-item-shot-note">截图预览 · 仅流式期间展示，结束后自动清理</span>
                         </div>
                         <div v-show="isToolItemOpen(tc.id, 'agent-step-' + ri + '-' + si + '-' + idx)" class="tool-item-body">
@@ -522,8 +522,12 @@ function isProcessOpen(round: MessageRound, ri: number): boolean {
 function resolveScreenshotUrl(resultText: string | null): string | null {
   if (!resultText) return null;
   try {
-    const j = JSON.parse(resultText) as { screenshotUrl?: unknown };
-    return typeof j.screenshotUrl === 'string' && j.screenshotUrl.startsWith('/') ? j.screenshotUrl : null;
+    const u = (JSON.parse(resultText) as { screenshotUrl?: unknown }).screenshotUrl;
+    if (typeof u !== 'string' || !u) return null;
+    // 服务端的临时区路径要拼 API_BASE；data: URL 是"临时区不可写"时的兜底，直接内联展示
+    if (u.startsWith('/')) return API_BASE + u;
+    if (u.startsWith('data:image/')) return u;
+    return null;
   } catch { return null; }
 }
 /** 该轮是否仍在流式进行（仅最后一轮 + 当前会话在跑），决定截图是否展示；任务结束即随响应式移除 */

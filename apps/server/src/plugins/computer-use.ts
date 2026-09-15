@@ -234,6 +234,25 @@ public class CU {
     }, IntPtr.Zero);
     return ok;
   }
+  // 按标题关键字定位窗口并返回 pid\\t标题\\tL,T,R,B（屏幕坐标）。找不到返回空串。
+  // 顺带把窗口还原到前台（最小化状态下 GetWindowRect 拿到的是 -32000 之类的离屏坐标），
+  // 否则按一个错误矩形去 CopyFromScreen 只会截到一片黑。
+  public static string FindByTitle(string title) {
+    string found = "";
+    EnumWindows((h, l) => {
+      var t = new StringBuilder(512); GetWindowText(h, t, 512);
+      if (t.Length == 0) return true;
+      if (t.ToString().IndexOf(title, StringComparison.OrdinalIgnoreCase) < 0) return true;
+      if (!IsWindowVisible(h)) return true;
+      ShowWindow(h, 9); SetForegroundWindow(h);
+      uint pid; GetWindowThreadProcessId(h, out pid);
+      RECT r; GetWindowRect(h, out r);
+      if (r.R - r.L <= 0 || r.B - r.T <= 0) return true;
+      found = pid + "\\t" + t + "\\t" + r.L + "," + r.T + "," + r.R + "," + r.B;
+      return false;
+    }, IntPtr.Zero);
+    return found;
+  }
 }
 '@`;
 
@@ -461,13 +480,15 @@ export const computerUseModule: PluginModule = {
     ctx.registerTool({
       name: 'computer_screenshot',
       description:
-        '截取整个虚拟屏幕，保存为 PNG 并返回绝对路径与坐标偏移信息（offsetX/offsetY 为虚拟屏幕原点，单屏时为 0）。' +
+        '截取屏幕画面并保存为 PNG：默认截取整个虚拟屏幕；传 window 时只截某个应用/窗口（模糊匹配标题，如 "钉钉"、"Excel"、"记事本"、"言智"，命中后自动把该窗口还原到前台再截），便于单独查看某个软件的界面、避免其它窗口干扰。' +
+        '返回绝对路径、窗口/虚拟屏的左上角坐标（offsetX/offsetY）与尺寸，截图内像素坐标 + offset = 屏幕坐标，可直接喂给鼠标工具。' +
         '注意：本工具只返回文件路径，你无法直接看到画面——需要识别屏幕内容或定位界面元素（按钮/输入框/聊天窗口等）时，' +
         '必须紧接着调用 image_analyze 工具（path=返回的文件路径，prompt=描述你要找的元素及其位置）完成视觉识别，再按识别结果操作。可用 computer_list_windows 了解窗口布局。' +
         '临时截图约 30 分钟后自动清理；如需长期保留且任务已设置工作目录，传 save_as（相对工作目录的路径，如 "shots/登录页.png"）同时存一份到工作目录',
       inputSchema: {
         type: 'object',
         properties: {
+          window: { type: 'string', description: '可选。只截取指定窗口：传标题关键字（如"钉钉"、"Excel"、"记事本"），大小写不敏感地匹配第一个可见窗口并自动还原到前台。匹配不到会返回当前所有可见窗口列表，可用列表里的准确标题重试。留空=截取整个桌面' },
           save_as: { type: 'string', description: '可选。相对工作目录的保存路径（如 shots/登录页.png）；任务未设置工作目录时忽略此参数' },
         },
       },
@@ -475,6 +496,7 @@ export const computerUseModule: PluginModule = {
         runOp(
           'screenshot',
           async () => {
+            const winKey = String((args as Record<string, unknown>)?.window || '').trim();
             const dir = screenshotsDir();
             await (await import('node:fs/promises')).mkdir(dir, { recursive: true });
             const file = path.join(dir, `screenshot-${Date.now()}.png`);
@@ -490,6 +512,71 @@ export const computerUseModule: PluginModule = {
                 await (await import('node:fs/promises')).copyFile(file, target);
                 keptTo = target;
               }
+            }
+            // ---- 按窗口截图：先把目标窗口还原到前台，再按它的矩形抓屏 ----
+            // 价值：让模型面对"某个具体软件"而不是整张混了很多窗口的桌面，且截图像素到
+            // 屏幕坐标的换算依旧成立（offsetX/offsetY 就是窗口左上角）。
+            if (winKey) {
+              const done = (extra: Record<string, unknown>) => textResult({
+                file, screenshotUrl, ...extra, ...(keptTo ? { keptTo } : {}),
+                note: '按窗口截图：offsetX/offsetY 为该窗口左上角在屏幕坐标系中的位置（截图像素坐标 + offset = 屏幕坐标，可直接喂给鼠标工具）。screenshotUrl 供对话界面展示，与识别无关',
+                nextStep: `你看不到画面，请立即调用 image_analyze(path="${file}", prompt="描述窗口内容并给出你要操作的界面元素的位置") 完成视觉识别后再操作`,
+              });
+              if (MAC) {
+                const rb = await osa(ctx.adapter.shell!, `
+tell application "System Events"
+  set _p to first process whose name contains "${osaStr(winKey)}"
+  set frontmost of _p to true
+  delay 0.4
+  set _w to window 1 of _p
+  set _pos to position of _w
+  set _size to size of _w
+  return ((item 1 of _pos) as text) & "," & ((item 2 of _pos) as text) & "," & ((item 1 of _size) as text) & "," & ((item 2 of _size) as text)
+end tell`, 20000);
+                const nums = (rb.stdout || '').trim().split(',').map((n) => Number(n));
+                if (nums.length !== 4 || nums.some((n) => !Number.isFinite(n))) {
+                  throw new Error(`未取到窗口区域（${winKey}）：${(rb.stderr || rb.stdout || '').trim().slice(0, 300)}`);
+                }
+                const [wx, wy, ww, wh] = nums;
+                const rc = await ctx.adapter.shell!.exec('screencapture', ['-x', '-R', `${wx},${wy},${ww},${wh}`, file], { timeout: 30000 });
+                if (rc.exitCode !== 0) throw new Error(`截屏失败: ${rc.stderr || rc.stdout}`);
+                return done({ window: winKey, offsetX: wx, offsetY: wy, width: ww, height: wh });
+              }
+              const script = `${PS_BASE}
+$name = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${b64Arg(winKey)}'))
+$found = [CU]::FindByTitle($name)
+if (-not $found) {
+  Write-Output ([CU]::ListWindows())
+  exit 2
+}
+$f = $found.Split([string][char]9)
+Start-Sleep -Milliseconds 300
+$rect = $f[2].Split(',')
+$x = [int]$rect[0]; $y = [int]$rect[1]; $w = [int]$rect[2] - $x; $h = [int]$rect[3] - $y
+if ($w -le 0 -or $h -le 0) { Write-Output '窗口尺寸无效'; exit 3 }
+Add-Type -AssemblyName System.Drawing
+$bmp = New-Object System.Drawing.Bitmap($w, $h)
+$g = [System.Drawing.Graphics]::FromImage($bmp)
+$g.CopyFromScreen($x, $y, 0, 0, (New-Object System.Drawing.Size($w, $h)))
+$bmp.Save('${file}', [System.Drawing.Imaging.ImageFormat]::Png)
+$g.Dispose(); $bmp.Dispose()
+Write-Output ('OK' + [string][char]9 + $f[0] + [string][char]9 + $f[1] + [string][char]9 + $x + [string][char]9 + $y + [string][char]9 + $w + [string][char]9 + $h)`;
+              const r = await ps(ctx.adapter.shell!, script, 30000);
+              const out = String(r.stdout || '').replace(/^\uFEFF/, '').trim();
+              if (r.exitCode !== 0 || !/^OK\t/.test(out)) {
+                const list = out.split('\n').filter(Boolean)
+                  .map((ln) => { const c = ln.split(String.fromCharCode(9)); return c[1] ? `${c[1]}（pid ${c[0]}）` : ln; })
+                  .slice(0, 20).join(' / ');
+                throw new Error(
+                  `没有找到标题含「${winKey}」的可见窗口。当前可见窗口：${list || '（无）'}`
+                  + (r.stderr ? ` ｜ 错误输出：${String(r.stderr).trim().slice(0, 200)}` : ''),
+                );
+              }
+              const [, pid, title, wx, wy, ww, wh] = out.split(String.fromCharCode(9));
+              return done({
+                window: title, pid: Number(pid),
+                offsetX: Number(wx), offsetY: Number(wy), width: Number(ww), height: Number(wh),
+              });
             }
             if (MAC) {
               const r = await ctx.adapter.shell!.exec('screencapture', ['-x', file], { timeout: 30000 });
@@ -930,6 +1017,34 @@ Write-Output 'OK'`;
               }
               const script = `${PS_BASE}
 $target = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${b64Arg(target)}'))
+if (-not [IO.File]::Exists($target)) {
+  $ap = $null
+  $exeName = [IO.Path]::GetFileName($target)
+  if ($exeName -notmatch '[\\\\/]') {
+    foreach ($hive in @('HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths', 'HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths')) {
+      $k = Join-Path $hive $exeName
+      if (-not ($k -like '*.exe')) { $k = $k + '.exe' }
+      if (Test-Path $k) { $v = (Get-ItemProperty $k).'(default)'; if ($v -and [IO.File]::Exists($v)) { $ap = $v; break } }
+    }
+  }
+  if (-not $ap) {
+    $nm = [IO.Path]::GetFileNameWithoutExtension($target)
+    $names = @($nm)
+    if ($nm -match '^wechat$') { $names += '微信' }
+    $lnkDirs = @("$env:APPDATA\\Microsoft\\Windows\\Start Menu\\Programs", "$env:ProgramData\\Microsoft\\Windows\\Start Menu\\Programs")
+    foreach ($n in $names) {
+      $lnk = Get-ChildItem $lnkDirs -Recurse -Filter '*.lnk' -ErrorAction SilentlyContinue |
+        Where-Object { $_.BaseName -like ("*" + $n + "*") } |
+        Sort-Object @{Expression={ $_.BaseName -eq $n };Descending=$true}, FullName | Select-Object -First 1
+      if ($lnk) {
+        $tp = $null
+        try { $tp = (New-Object -ComObject WScript.Shell).CreateShortcut($lnk.FullName).TargetPath } catch {}
+        if ($tp -and [IO.File]::Exists($tp)) { $ap = $tp } else { $ap = $lnk.FullName }
+      }
+    }
+  }
+  if ($ap) { $target = $ap }
+}
 $name = [System.IO.Path]::GetFileNameWithoutExtension($target)
 $candidates = Get-Process -ErrorAction SilentlyContinue | Where-Object {
   $_.ProcessName -eq $name -or ($_.Path -and ([System.IO.Path]::GetFileNameWithoutExtension($_.Path)) -eq $name)
@@ -974,8 +1089,9 @@ if ($candidates) {
     ctx.registerTool({
       name: 'computer_list_installed_apps',
       description:
-        '列出本机已安装的应用（来自卸载注册表）：名称 / 版本 / 发布者 / 安装目录 / 主程序 exe 路径。' +
-        '这是"应用目录"，配合 computer_open_app 使用——拿不准目标叫什么、exe 路径在哪时先查它，避免盲目启动',
+        '列出本机已安装的应用（来自卸载注册表）：名称 / 版本 / 发布者 / 安装目录 / 主程序 exe 路径 / exeExists（exe 是否真实存在）。' +
+        'nameFilter 不区分大小写，匹配名称、安装目录、exe 路径与注册表键名（中文应用名如「微信」用中文名或英文目录名如 Weixin 过滤）。' +
+        '同名列出多条时选 exeExists=true 的（false 的是卸载残留）。这是"应用目录"，配合 computer_open_app 使用——拿不准目标叫什么、exe 路径在哪时先查它，避免盲目启动',
       inputSchema: {
         type: 'object',
         properties: {
@@ -992,7 +1108,7 @@ if ($candidates) {
               if (r.exitCode !== 0) throw new Error(`应用枚举失败: ${r.stderr || r.stdout}`);
               return textResult({ apps: r.stdout.trim().split(',').map((s) => s.trim()).filter(Boolean).map((n) => ({ name: n })), note: 'macOS v1 仅返回已运行应用名，安装清单暂不可用' });
             }
-            const nameFilter = args.nameFilter ? String(args.nameFilter) : '';
+            const nameFilter = args.nameFilter ? String(args.nameFilter).replace(/['"`]/g, '') : '';
             const limitN = Math.min(500, Math.max(1, Number(args.limit) || 250));
             const script = `$paths = @(
   'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*',
@@ -1009,11 +1125,20 @@ foreach ($p in $paths) {
       publisher = $_.Publisher
       installLocation = $_.InstallLocation
       exePath = $icon
+      regKey = $_.PSChildName
     }
   }
 }
-$filtered = $out | Where-Object { $_.name -like "*${nameFilter}*" }
-$filtered | Sort-Object name | Select-Object -First ${limitN} | ConvertTo-Json -Compress -Depth 3`;
+$q = '${nameFilter}'
+$filtered = $out | Where-Object {
+  ($_.name -like "*$q*") -or ($_.installLocation -like "*$q*") -or ($_.exePath -like "*$q*") -or ($_.regKey -like "*$q*")
+}
+foreach ($a in $filtered) {
+  $ok = $false
+  if ($a.exePath) { $ok = [IO.File]::Exists($a.exePath) }
+  $a | Add-Member -NotePropertyName exeExists -NotePropertyValue $ok
+}
+$filtered | Sort-Object @{Expression='exeExists';Descending=$true}, name | Select-Object -First ${limitN} | ConvertTo-Json -Compress -Depth 3`;
             const r = await ps(ctx.adapter.shell!, script);
             if (r.exitCode !== 0) throw new Error(`应用枚举失败: ${r.stderr || r.stdout}`);
             let apps: unknown = [];

@@ -1,4 +1,4 @@
-const { app, BrowserWindow, BrowserView, webContents, dialog, ipcMain, Menu, session, shell, clipboard, Tray, globalShortcut, desktopCapturer, screen: electronScreen } = require('electron');
+const { app, BrowserWindow, BrowserView, webContents, dialog, ipcMain, Menu, session, shell, clipboard, Tray, globalShortcut, desktopCapturer, nativeImage, screen: electronScreen } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const fsp = fs.promises;
@@ -2808,13 +2808,150 @@ ipcMain.handle('mcp:kill', (e, childId) => {
 
 
 // ============================================================
-// 屏幕截图（聊天输入框「截图」按钮，桌面端专属）
-// 流程：主窗口先隐藏（对齐微信截图，避免截进自己）→ desktopCapturer 抓全部
-// 屏幕的原始分辨率「冻结画面」→ 在光标所在显示器铺全屏框选窗展示冻结图 →
-// 用户拖拽选区（Enter/双击确认，Esc/右键取消）→ 主进程按 物理/逻辑 比例裁剪
-// 原图 → PNG dataURL 经 invoke 返回发起截图的渲染进程（全程挂起，无推送通道）。
+// 屏幕截图（聊天输入框「截图」按钮 / 全局快捷键，桌面端专属）
+// 流程（对齐微信截图）：desktopCapturer 抓全部屏幕原始分辨率「冻结画面」→
+// 光标所在显示器铺全屏框选窗（加载完立刻亮出深色遮罩，冻结图随后异步换上，
+// 绝不让用户「点了没反应」）→ 拖拽选区（Enter/双击确认，Esc/右键取消）→
+// 主进程按 物理/逻辑 比例裁剪原图 → PNG dataURL 返回发起截图的渲染进程。
+// hideApp=false 时主窗口不隐藏（用户想截自己界面时用，设置页可开关）。
 // ============================================================
 let snipSession = null;
+
+/** 黑帧样本落盘（每次覆盖），排障时可直接看这张"黑图"到底是什么 */
+function saveBlackSample(img) {
+  try {
+    fs.mkdirSync(snipLogDir(), { recursive: true });
+    fs.writeFileSync(path.join(snipLogDir(), 'snip-black.png'), img.toPNG());
+    snipLog('black frame sample saved: logs/snip-black.png');
+  } catch {}
+}
+/** snip 专用日志：终端 + 落盘双写（排障时直接读 %APPDATA%/yan-zhi/logs/snip.log） */
+const snipLogDir = () => path.join(app.getPath('userData'), 'logs');
+function snipLog(...args) {
+  const line = args.map((a) => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ');
+  console.log('[snip]', line);
+  try {
+    fs.mkdirSync(snipLogDir(), { recursive: true });
+    fs.appendFileSync(path.join(snipLogDir(), 'snip.log'), new Date().toISOString() + ' ' + line + '\n', 'utf8');
+  } catch {}
+}
+
+// ============================================================
+// 原生 GDI 抓屏（对齐微信/QQ/截图工具的技术路线）
+// Electron 的 desktopCapturer 经 Chromium GPU 进程转发，部分 NVIDIA 机器上
+// 缩略图全黑。原生工具（微信/QQ/PixPin/Snipaste）都走系统级 GDI/DXGI。
+// 这里用 Windows 自带的 .NET 编译器（csc，所有 Win10/11 都有）在首次使用时
+// 现编一个几十 KB 的抓屏小工具（CopyFromScreen，GDI），之后每次截屏直接调
+// 它，毫秒级返回，完全绕开 Chromium。编译失败自动落回 desktopCapturer 管线。
+// ============================================================
+const GDI_CAP_CS = `
+using System;
+using System.Drawing;
+using System.Drawing.Imaging;
+using System.Runtime.InteropServices;
+
+static class ScreenCap {
+  [DllImport("user32.dll")] static extern bool SetProcessDPIAware();
+  [DllImport("user32.dll")] static extern int GetSystemMetrics(int i);
+
+  static int Main(string[] args) {
+    try { SetProcessDPIAware(); } catch {}
+    try {
+      string outPath = args.Length > 0 ? args[0] : "screen.png";
+      int x = GetSystemMetrics(76), y = GetSystemMetrics(77);
+      int w = GetSystemMetrics(78), h = GetSystemMetrics(79);
+      if (w <= 0 || h <= 0) { Console.Error.WriteLine("no screen"); return 2; }
+      using (Bitmap bmp = new Bitmap(w, h, PixelFormat.Format32bppArgb))
+      using (Graphics g = Graphics.FromImage(bmp)) {
+        g.CopyFromScreen(x, y, 0, 0, new Size(w, h), CopyPixelOperation.SourceCopy);
+        bmp.Save(outPath, ImageFormat.Png);
+      }
+      Console.WriteLine("OK " + w.ToString() + "x" + h.ToString());
+      return 0;
+    } catch (Exception e) {
+      Console.Error.WriteLine(e.Message);
+      return 1;
+    }
+  }
+}
+`;
+let gdiExePath = null;
+let gdiCompileTried = false;
+
+async function ensureGdiCapExe() {
+  if (gdiExePath || gdiCompileTried) return gdiExePath;
+  gdiCompileTried = true;
+  if (process.platform !== 'win32') return null;
+  try {
+    const dir = path.join(app.getPath('userData'), 'bin');
+    const exe = path.join(dir, 'yan-zhi-screencap.exe');
+    if (fs.existsSync(exe)) { gdiExePath = exe; return exe; }
+    const csc = ['C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe', 'C:\\Windows\\Microsoft.NET\\Framework\\v4.0.30319\\csc.exe']
+      .find((p) => fs.existsSync(p));
+    if (!csc) { snipLog('WARN no csc, gdi pipeline unavailable'); return null; }
+    fs.mkdirSync(dir, { recursive: true });
+    const srcPath = path.join(dir, 'screencap.cs');
+    fs.writeFileSync(srcPath, GDI_CAP_CS, 'utf8');
+    await new Promise((resolve, reject) => {
+      execFile(csc, ['/nologo', '/out:' + exe, '/r:System.Drawing.dll', srcPath], { timeout: 30000, windowsHide: true }, (err, so, se) => {
+        if (err) reject(new Error((se || err.message || '').trim()));
+        else resolve();
+      });
+    });
+    gdiExePath = exe;
+    snipLog('gdi helper compiled:', exe);
+  } catch (e) {
+    snipLog('WARN gdi helper compile failed:', e?.message || e);
+  }
+  return gdiExePath;
+}
+
+/** GDI 抓整个虚拟屏幕（物理像素），裁出目标显示器矩形；失败返回 null */
+async function captureViaGdi(targetDisplay) {
+  try {
+    const exe = await ensureGdiCapExe();
+    if (!exe) return null;
+    const out = path.join(app.getPath('temp'), 'yz-snip-' + Date.now() + '.png');
+    await new Promise((resolve, reject) => {
+      execFile(exe, [out], { timeout: 8000, windowsHide: true }, (err) => (err ? reject(err) : resolve()));
+    });
+    let full = nativeImage.createFromPath(out);
+    try { fs.unlinkSync(out); } catch {}
+    if (full.isEmpty()) return null;
+    const sf = targetDisplay.scaleFactor || 1;
+    const size = full.getSize();
+    const x = Math.max(0, Math.round(targetDisplay.bounds.x * sf));
+    const y = Math.max(0, Math.round(targetDisplay.bounds.y * sf));
+    const w = Math.min(size.width - x, Math.round(targetDisplay.bounds.width * sf));
+    const h = Math.min(size.height - y, Math.round(targetDisplay.bounds.height * sf));
+    if (w <= 0 || h <= 0) return full;
+    return full.crop({ x, y, width: w, height: h });
+  } catch (e) {
+    snipLog('WARN gdi capture failed:', e?.message || e);
+    return null;
+  }
+}
+
+/** 黑帧检测：部分显卡硬件加速下 desktopCapturer 返回全黑缩略图。5×5 采样 25 点全黑即判定 */
+function isAllBlackImage(img) {
+  try {
+    const { width, height } = img.getSize();
+    if (!width || !height) return true;
+    const buf = img.toBitmap(); // BGRA
+    const stride = Math.floor(buf.length / height);
+    for (let gy = 0; gy < 5; gy++) {
+      for (let gx = 0; gx < 5; gx++) {
+        const x = Math.min(width - 1, Math.floor(((gx + 0.5) * width) / 5));
+        const y = Math.min(height - 1, Math.floor(((gy + 0.5) * height) / 5));
+        const o = y * stride + x * 4;
+        if (buf[o] > 8 || buf[o + 1] > 8 || buf[o + 2] > 8) return false;
+      }
+    }
+    return true;
+  } catch {
+    return false; // 采样失败不误判，放行走正常流程
+  }
+}
 
 /** 收尾：关框选窗、还原主窗口、结算 invoke 的 Promise（幂等，重复调用无害） */
 function finishSnip(result) {
@@ -2822,40 +2959,72 @@ function finishSnip(result) {
   if (!s || s.settled) return;
   s.settled = true;
   snipSession = null;
+  try { if (s.timer) clearTimeout(s.timer); } catch {}
+  try { if (s.readyTimer) clearTimeout(s.readyTimer); } catch {}
   try { if (s.overlay && !s.overlay.isDestroyed()) s.overlay.destroy(); } catch {}
   try { if (s.win && !s.win.isDestroyed() && !s.win.isVisible()) s.win.show(); } catch {}
   try { s.resolve(result); } catch {}
 }
 
-ipcMain.handle('screenshot:capture', async (e) => {
-  if (snipSession) return { ok: false, error: '已有截图会话进行中' };
+ipcMain.handle('screenshot:capture', async (e, opts) => {
+  // hideApp 由渲染层按设置传入；缺省/旧渲染层一律按隐藏处理（兼容行为不变）
+  const hideApp = !(opts && opts.hideApp === false);
+  snipLog('capture start, hideApp=' + hideApp);
+  // 上一次会话还可能挂着（用户没确认也没取消就切回主窗口再次点按钮 / 再按一次快捷键）。
+  // 这时把旧会话静默取消、直接开新的一次，而不是抛「已有截图会话进行中」把用户卡死——
+  // 卡死后没有任何 UI 能清理它，只能重启应用。
+  if (snipSession) finishSnip({ ok: false, cancelled: true });
   const win = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
   try {
-    // 1. 隐藏主窗口，等 DWM 把窗口从屏幕移除后再抓屏
-    if (win) win.hide();
+    // 0. 先隐藏主窗口（可关），等 DWM 把窗口从屏幕移除
+    if (win && hideApp) win.hide();
     await sleepMs(260);
 
-    // 2. 抓取所有屏幕的原始分辨率画面（thumbnailSize 给到最大物理像素，避免被缩放）
     const displays = electronScreen.getAllDisplays();
     const maxW = Math.max(...displays.map((d) => Math.ceil(d.size.width * d.scaleFactor)));
     const maxH = Math.max(...displays.map((d) => Math.ceil(d.size.height * d.scaleFactor)));
-    const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: maxW, height: maxH } });
-    if (!sources.length) {
-      if (win) win.show();
-      return { ok: false, error: '未获取到屏幕画面（macOS 需在系统设置中授予"屏幕录制"权限）' };
+    let image = null;
+    let targetDisplay = electronScreen.getDisplayNearestPoint(electronScreen.getCursorScreenPoint());
+    let chosenSource = null;
+
+    // 1. 首选原生 GDI 管线：与微信/QQ/截图小工具同款系统级 API（CopyFromScreen），
+    //    抓一帧桌面冻结，绕开 Chromium GPU 进程——黑帧在这条路上根本不存在。
+    const gdi = await captureViaGdi(targetDisplay);
+    if (gdi && !isAllBlackImage(gdi)) {
+      image = gdi;
+      snipLog('native gdi OK', gdi.getSize());
+    } else {
+      if (gdi) saveBlackSample(gdi);
+      snipLog('gdi unavailable/black -> desktopCapturer');
     }
-    const targetDisplay = electronScreen.getDisplayNearestPoint(electronScreen.getCursorScreenPoint());
-    // display_id 匹配不上时（部分驱动为空），退化为选画面宽高比最接近目标显示器的源
-    const source = sources.find((s) => String(s.display_id) === String(targetDisplay.id))
-      || sources.slice().sort((a, b) => {
-        const ta = a.thumbnail.getSize(), tb = b.thumbnail.getSize();
-        const ar = targetDisplay.size.width / targetDisplay.size.height;
-        return Math.abs(ta.width / ta.height - ar) - Math.abs(tb.width / tb.height - ar);
-      })[0];
-    const image = source?.thumbnail;
-    if (!image || image.isEmpty()) {
-      if (win) win.show();
-      return { ok: false, error: '截取的画面为空' };
+
+    // 2. desktopCapturer 管线（GDI 不可用时）：黑帧自动重试，第三次降一半分辨率
+    if (!image) {
+      for (let attempt = 0; attempt < 3 && !image; attempt++) {        await sleepMs(attempt === 0 ? 0 : 420);
+        const scale = attempt >= 2 ? 0.5 : 1;
+        const sources = await desktopCapturer.getSources({
+          types: ['screen'],
+          thumbnailSize: { width: Math.round(maxW * scale), height: Math.round(maxH * scale) },
+        });
+        if (!sources.length) break;
+        targetDisplay = electronScreen.getDisplayNearestPoint(electronScreen.getCursorScreenPoint());
+        // display_id 匹配不上时（部分驱动为空），退化为选画面宽高比最接近目标显示器的源
+        const source = sources.find((s) => String(s.display_id) === String(targetDisplay.id))
+          || sources.slice().sort((a, b) => {
+            const ta = a.thumbnail.getSize(), tb = b.thumbnail.getSize();
+            const ar = targetDisplay.size.width / targetDisplay.size.height;
+            return Math.abs(ta.width / ta.height - ar) - Math.abs(tb.width / tb.height - ar);
+          })[0];
+        const img = source?.thumbnail;
+        const black = !img || img.isEmpty() || isAllBlackImage(img);
+        snipLog(`attempt#${attempt + 1} sources=${sources.length} size=${img ? JSON.stringify(img.getSize()) : 'n/a'} black=${black}`);
+        if (!black) { image = img; chosenSource = source; }
+        else if (img) saveBlackSample(img);
+      }
+      if (!image) {
+        if (win) win.show();
+        return { ok: false, error: '屏幕画面捕获异常（全黑）。已把样本存到 logs/snip-black.png，请联系开发者排查' };
+      }
     }
 
     // 3. 全屏框选窗：铺在光标所在显示器上，展示「冻结画面」
@@ -2872,12 +3041,43 @@ ipcMain.handle('screenshot:capture', async (e) => {
       },
     });
     overlay.setAlwaysOnTop(true, 'screen-saver');
+    // 框选窗排障通道：页面 console / preload 加载失败 / 渲染进程崩溃 全部转发到主进程日志
+    overlay.webContents.on('console-message', (...args) => {
+      const ev = args[0];
+      const msg = ev && typeof ev === 'object' && typeof ev.message === 'string' ? ev.message : args[2];
+      snipLog('page>', msg);
+    });
+    overlay.webContents.on('preload-error', (_ev, pp, err) => snipLog('WARN preload error:', pp, String(err?.message || err)));
+    overlay.webContents.on('render-process-gone', (_ev, d) => {
+      snipLog('WARN renderer gone:', d?.reason);
+      finishSnip({ ok: false, error: '截图窗口崩溃（' + (d?.reason || 'unknown') + '）' });
+    });
     let resolveFn;
     const p = new Promise((resolve) => { resolveFn = resolve; });
-    snipSession = { sender: e.sender, win, image, display: targetDisplay, overlay, settled: false, resolve: resolveFn };
+    snipSession = { sender: e.sender, win, image, display: targetDisplay, overlay, settled: false, armedAt: Date.now(), resolve: resolveFn };
     overlay.on('closed', () => finishSnip({ ok: false, cancelled: true }));
     overlay.webContents.on('did-fail-load', () => finishSnip({ ok: false, error: '截图组件加载失败' }));
+    // 焦点离开框选窗（用户切到别的软件/点了别的地方）即自动取消——对齐微信截图。
+    // 这是会话悬挂最主要的解药：没有它，用户「点了截图又去干别的」就会把 session 永久卡住。
+    // armedAt 保护：窗口刚 show 的头 800ms 内系统可能先派发一次 blur，忽略以免尚未开始就被关掉。
+    overlay.on('blur', () => {
+      const s = snipSession;
+      if (s && Date.now() - s.armedAt > 800) finishSnip({ ok: false, cancelled: true });
+    });
+    // 终极兜底：极端情况下（进程收不到 closed/blur、用户跑开不回来）也能在 5 分钟后自愈，
+    // 保证 snipSession 不会永久占位。
+    snipSession.timer = setTimeout(() => {
+      if (snipSession && snipSession.overlay === overlay) finishSnip({ ok: false, cancelled: true });
+    }, 5 * 60 * 1000);
     await overlay.loadFile(path.join(__dirname, 'snip-overlay.html'));
+    // 关键：页面本身很小，loadFile 完就立刻亮窗 + 抢焦点，深色遮罩马上可见（对齐微信体感）。
+    // 冻结图由页面异步换上；不再等 snip:ready 才显示——旧逻辑只要页面渲染卡一下，
+    // 用户看到的就是「点了按钮什么都没发生」。
+    const s2 = snipSession;
+    if (s2 && s2.overlay === overlay) {
+      s2.armedAt = Date.now();
+      try { overlay.show(); overlay.focus(); snipLog('overlay shown'); } catch (err) { snipLog('WARN show failed', String(err)); }
+    }
     return await p;
   } catch (err) {
     finishSnip({ ok: false, error: '截图失败: ' + (err?.message || err) });
@@ -2885,21 +3085,26 @@ ipcMain.handle('screenshot:capture', async (e) => {
   }
 });
 
-// 框选窗拉取冻结画面（页面加载完成后立即调用，主进程此时不显示窗口，避免黑屏闪烁）
+// 框选窗拉取冻结画面（GDI/desktopCapturer 已在主进程验黑通过，页面直接用）
 ipcMain.handle('snip:get-image', (e) => {
   const s = snipSession;
   if (!s || !s.overlay || e.sender !== s.overlay.webContents) return null;
   return { dataUrl: s.image.toDataURL(), width: s.display.size.width, height: s.display.size.height };
 });
 
-// 冻结图加载完成 → 显示框选窗并抢焦点（键盘 Esc/Enter 才能生效）
+// 冻结图加载完成 → 页面回报就绪。窗口此刻已显示，这里只做一次补抢焦点
+//（个别 Windows 环境下 show 后焦点会被系统收回，键盘 Esc/Enter 才能生效）
 ipcMain.on('snip:ready', (e) => {
   const s = snipSession;
   if (!s || !s.overlay || e.sender !== s.overlay.webContents) return;
-  try { s.overlay.show(); s.overlay.focus(); } catch {}
+  s.ready = true;
+  try { if (s.readyTimer) clearTimeout(s.readyTimer); } catch {}
+  try { if (s.overlay.isFocused() !== true) s.overlay.focus(); } catch {}
 });
 
-// 确认选区：选区是框选窗的逻辑像素，冻结图是物理像素，按实际宽度比换算后裁剪
+// 确认选区：优先采用框选窗页面合成好的成品图（冻结图裁剪 + 标注层已合成，
+// dataUrl 由页面传回）；页面没给 dataUrl（旧版/合成失败）才退回主进程自行裁剪。
+// 选区是框选窗的逻辑像素，冻结图是物理像素，按实际宽度比换算后裁剪。
 ipcMain.on('snip:confirm', (e, rect) => {
   const s = snipSession;
   if (!s || !s.overlay || e.sender !== s.overlay.webContents) return;
@@ -2911,8 +3116,14 @@ ipcMain.on('snip:confirm', (e, rect) => {
     const y = clamp(Math.round(rect.y * ratio), 0, size.height - 1);
     const w = clamp(Math.round(rect.width * ratio), 1, size.width - x);
     const h = clamp(Math.round(rect.height * ratio), 1, size.height - y);
-    const cropped = s.image.crop({ x, y, width: w, height: h });
-    finishSnip({ ok: true, dataUrl: cropped.toDataURL(), width: w, height: h });
+    let dataUrl;
+    if (rect && typeof rect.dataUrl === 'string' && rect.dataUrl.startsWith('data:image/png')) {
+      dataUrl = rect.dataUrl;
+    } else {
+      const cropped = s.image.crop({ x, y, width: w, height: h });
+      dataUrl = cropped.toDataURL();
+    }
+    finishSnip({ ok: true, dataUrl, width: w, height: h });
   } catch (err) {
     finishSnip({ ok: false, error: '裁剪截图失败: ' + (err?.message || err) });
   }
@@ -2922,6 +3133,96 @@ ipcMain.on('snip:cancel', (e) => {
   const s = snipSession;
   if (s && s.overlay && e.sender === s.overlay.webContents) finishSnip({ ok: false, cancelled: true });
 });
+
+// 框选窗「保存到本地」：弹系统保存框（默认图片文件夹 + 时间戳名）并写 PNG。
+// 不结算截图会话——保存后框选窗保留，用户可继续标注或确认插入输入框。
+ipcMain.handle('snip:save', async (e, dataUrl) => {
+  const s = snipSession;
+  if (!s || !s.overlay || e.sender !== s.overlay.webContents) return { ok: false, error: '会话已结束' };
+  if (typeof dataUrl !== 'string' || !dataUrl.startsWith('data:image/png')) return { ok: false, error: '图片数据无效' };
+  try {
+    const ts = new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    const name = `截图_${ts.getFullYear()}${pad(ts.getMonth() + 1)}${pad(ts.getDate())}_${pad(ts.getHours())}${pad(ts.getMinutes())}${pad(ts.getSeconds())}.png`;
+    let pictures = '';
+    try { pictures = app.getPath('pictures'); } catch { pictures = app.getPath('userData'); }
+    const r = await dialog.showSaveDialog(s.overlay, {
+      title: '保存截图',
+      defaultPath: path.join(pictures || app.getPath('userData'), name),
+      filters: [{ name: 'PNG 图片', extensions: ['png'] }],
+    });
+    if (r.canceled || !r.filePath) return { ok: false, cancelled: true };
+    await fsp.writeFile(r.filePath, Buffer.from(dataUrl.replace(/^data:image\/png;base64,/, ''), 'base64'));
+    snipLog('saved to', r.filePath);
+    return { ok: true, path: r.filePath };
+  } catch (err) {
+    snipLog('WARN save failed:', String(err?.message || err));
+    return { ok: false, error: String(err?.message || err) };
+  }
+});
+
+// ============================================================
+// 截图全局快捷键
+// 为什么必须有：截图是"在外面看到什么东西想发给智能体"的动作，此时 yan-zhi 多半
+// 不在前台（用户正在看钉钉/Excel/浏览器）。globalShortcut 由系统层面注册，任意应用
+// 在前台都能触发；触发后先还原主窗口（可能最小化/隐藏）再通知渲染层走同一条框选流程。
+// ============================================================
+const DEFAULT_SHOT_ACCEL = 'Control+Alt+A';
+let shotAccel = null;
+
+/** 热键实际动作：把主窗口拉回前台，再通知渲染层开始框选 */
+function triggerScreenshotHotkey() {
+  if (snipSession) return; // 已在框选中，忽略重复按下
+  const win = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
+  if (!win) return;
+  try {
+    if (win.isMinimized()) win.restore();
+    if (!win.isVisible()) win.show();
+    win.focus();
+    // 留一帧让窗口完成显示/聚焦，紧接着的 hide+抓屏才不会截到半透明过渡态
+    setTimeout(() => {
+      try { win.webContents.send('shortcut:screenshot'); } catch {}
+    }, 80);
+  } catch {}
+}
+
+/**
+ * 注册（或重注册）截图热键；传空串表示禁用。
+ * 返回 { ok, accelerator, error? } —— 注册失败几乎都是被系统或其它应用占用，
+ * 需要把原因回传渲染层提示用户换一个，而不是静默失效。
+ */
+function setScreenshotHotkey(accel) {
+  try { if (shotAccel) { globalShortcut.unregister(shotAccel); shotAccel = null; } } catch {}
+  const target = String(accel || '').trim();
+  if (!target) {
+    console.log('[hotkey] 截图快捷键已禁用');
+    return { ok: true, accelerator: '', disabled: true };
+  }
+  try {
+    const okReg = globalShortcut.register(target, () => triggerScreenshotHotkey());
+    if (!okReg) {
+      console.warn('[hotkey] 截图快捷键注册失败（已被占用）:', target);
+      return { ok: false, accelerator: target, error: '快捷键已被系统或其它应用占用，请换一个组合' };
+    }
+    shotAccel = target;
+    console.log('[hotkey] 已注册截图快捷键 ' + target);
+    return { ok: true, accelerator: target };
+  } catch (err) {
+    return { ok: false, accelerator: target, error: String(err?.message || err) };
+  }
+}
+
+// 渲染层主动清理：截图界面上任何入口在开始新一次截图前先调一次，
+// 保证上一次残留的会话不会把自己挡在门外（同样的判重在 screenshot:capture 入口也有，
+// 双层保险：一层给未升级的主进程，一层给从别处发起的调用）。
+ipcMain.handle('screenshot:cancel', () => {
+  if (!snipSession) return { ok: true, cancelled: false };
+  finishSnip({ ok: false, cancelled: true });
+  return { ok: true, cancelled: true };
+});
+
+ipcMain.handle('shortcut:getScreenshot', () => ({ accelerator: shotAccel || '' }));
+ipcMain.handle('shortcut:setScreenshot', (_e, accel) => setScreenshotHotkey(accel));
 
 
 // ============================================================
@@ -3047,6 +3348,10 @@ app.whenReady().then(() => {
   } catch (e) {
     console.warn('[panic] 急停热键注册失败:', e);
   }
+
+  // 截图热键：先按内置默认值占坑；渲染层读到本地设置后会用保存过的组合重注册一次
+  // （默认组合被占用时静默降级为"未注册"，由设置页显示冲突让用户改）
+  setScreenshotHotkey(DEFAULT_SHOT_ACCEL);
 
   // 健康检查：轮询后端 /api/health，就绪后创建窗口（替代固定 1.5s 延迟）
   const checkHealth = (retries = 0) => {

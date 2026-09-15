@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "main": "main.cjs",
-  "description": "言智 Electron 桌面端（含内置后端运行时，electron-builder 打包）",
+  "description": "言智 - 语言可控的智能体平台",
   "scripts": {
     "dev": "concurrently -k -n web,server -c green,cyan \"vite\" \"node scripts/dev-server.cjs\"",
     "build": "vite build",

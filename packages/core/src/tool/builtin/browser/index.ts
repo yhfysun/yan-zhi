@@ -40,6 +40,42 @@ async function callBrowserApi(path: string, method: 'GET' | 'POST' = 'POST', bod
   return json.data ?? json;
 }
 
+/**
+ * 把浏览器截图落到本机临时区，让会话界面能把它显示出来。
+ *
+ * 为什么要落盘而不是直接塞 base64：桌面端一次全页截图常在数百 KB~数 MB，
+ * 若内联进工具结果会跟着消息一起持久化到数据库，体积和内存都不划算。
+ * 统一走 computer-use 那套「临时区 + 30 分钟回收」规则（同目录、同命名
+ * screenshot-<时间戳>.png），由插件的清理器回收；插件没启用时这里自带轻量清理。
+ *
+ * 失败一律返回 null：展示是增强能力，不能因为它让"截图"这个动作本身失败。
+ */
+async function saveShotToTemp(base64: string): Promise<{ file: string; screenshotUrl: string } | null> {
+  try {
+    if (!base64 || typeof window !== 'undefined') return null;
+    const fsp = await import('node:fs/promises');
+    const nodePath = await import('node:path');
+    const dir = process.env.DATA_DIR
+      ? nodePath.join(process.env.DATA_DIR, 'screenshots')
+      : nodePath.resolve('screenshots');
+    await fsp.mkdir(dir, { recursive: true });
+    // 顺带回收过期文件（computer-use 插件未启用时没人扫这个目录）
+    try {
+      for (const name of await fsp.readdir(dir)) {
+        if (!/^screenshot-\d+\.png$/.test(name)) continue;
+        const f = nodePath.join(dir, name);
+        const st = await fsp.stat(f);
+        if (st.isFile() && Date.now() - st.mtimeMs > 30 * 60 * 1000) await fsp.rm(f, { force: true });
+      }
+    } catch { /* 清理失败不影响本次保存 */ }
+    const file = nodePath.join(dir, `screenshot-${Date.now()}.png`);
+    await fsp.writeFile(file, Buffer.from(base64, 'base64'));
+    return { file, screenshotUrl: `/api/plugin/computer-use/screenshots/${nodePath.basename(file)}` };
+  } catch {
+    return null;
+  }
+}
+
 function ok(text: string): McpCallResult {
   return { content: [{ type: 'text', text }] };
 }
@@ -330,8 +366,24 @@ export class BrowserScreenshotTool implements BuiltInTool {
   async execute(args: Record<string, unknown> = {}): Promise<McpCallResult> {
     try {
       const data = await callBrowserApi('/action', 'POST', { action: 'screenshot', tabId: args.tabId, annotate: args.annotate, fullPage: args.fullPage }) as any;
-      const note = data.annotated ? '（已叠加元素编号框，编号对应 browser_click/browser_type 的 index 参数）' : (data.fullPage ? '（整页长图）' : '');
-      return ok(`Screenshot captured (${(data.base64 || '').length} bytes base64)${note}`);
+      const b64 = String(data.base64 || '');
+      const detail = data.annotated
+        ? '（已叠加元素编号框，编号对应 browser_click/browser_type 的 index 参数）'
+        : (data.fullPage ? '（整页长图）' : '');
+      // 落一份到临时区：让用户能在会话里看到这一张图（模型依旧通过 image_analyze 识别）
+      const saved = await saveShotToTemp(b64);
+      const shotUrl = saved?.screenshotUrl || (b64 ? `data:image/png;base64,${b64}` : '');
+      const payload: Record<string, unknown> = {
+        captured: true,
+        bytes: b64.length,
+        ...detail ? { detail } : {},
+        ...(saved?.file ? { file: saved.file } : {}),
+        ...(shotUrl ? { screenshotUrl: shotUrl } : {}),
+        note: '截图已保存，screenshotUrl 供界面展示；你本身看不到画面，需要理解页面内容或定位元素时，请继续调用 image_analyze 工具分析这张图',
+        ...(saved?.file ? { nextStep: `你看不到画面，需要识别页面内容时调用 image_analyze(path="${saved.file}", prompt="描述页面内容并给出目标元素的位置")` } : {}),
+      };
+      // 保持返回结果是可被界面解析的 JSON：ChatMessageList 会读 screenshotUrl 把图显示在工具卡片下
+      return ok(JSON.stringify(payload));
     } catch (e: any) { return err(e?.message || '截图失败'); }
   }
 }

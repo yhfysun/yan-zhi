@@ -66,7 +66,19 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 屏幕截图（框选）：invoke 挂起直到用户在框选窗确认（返回 { ok, dataUrl, width, height }）
   // 或取消（{ ok:false, cancelled:true }）。仅桌面端存在，渲染层据此决定是否显示截图按钮。
   screenshot: {
-    capture: () => ipcRenderer.invoke('screenshot:capture'),
+    capture: (opts) => ipcRenderer.invoke('screenshot:capture', opts),
+    // 开新截图前先清理可能残留的旧会话（对未升级的主进程返回异常，调用处需静默）
+    cancel: () => ipcRenderer.invoke('screenshot:cancel'),
+    // 框选窗内「保存到本地」：主进程弹系统保存框并写 PNG，返回 { ok, path } | { ok:false, cancelled }
+    save: (dataUrl) => ipcRenderer.invoke('snip:save', dataUrl),
+    // 全局热键回调：可能来自任意前台应用，与主窗口按钮走同一条框选流程
+    onHotkey: (callback) => {
+      ipcRenderer.on('shortcut:screenshot', () => callback());
+    },
+    // 读取当前生效的热键（Electron accelerator 串，如 'Control+Alt+A'；空串=未注册/禁用）
+    getAccelerator: () => ipcRenderer.invoke('shortcut:getScreenshot'),
+    // 设置热键，返回 { ok, accelerator, error? }（被占用时 ok=false 并给出原因）
+    setAccelerator: (accel) => ipcRenderer.invoke('shortcut:setScreenshot', accel),
   },
 
   // Shell

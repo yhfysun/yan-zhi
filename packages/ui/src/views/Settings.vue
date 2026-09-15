@@ -57,7 +57,7 @@
               <el-select v-model="memoryExtractModelId" placeholder="抽取模型" style="width:140px" clearable :disabled="!memoryExtractPlatformId">
                 <el-option v-for="m in availableMemoryExtractModels" :key="m.id" :label="m.alias || m.modelId" :value="m.id" />
               </el-select>
-              <span class="form-tip">留空则使用默认模型，仍不可用则自动回退本地小模型</span>
+              <span class="form-tip">留空则自动跟随全局默认模型（如 agens 3.0 Flash，支持视觉），不可用时才回退本地小模型</span>
             </div>
           </el-form-item>
           <el-form-item label="启用上下文压缩">
@@ -68,9 +68,24 @@
             <el-input-number v-model="keepRecent" :min="2" :max="50" />
             <span class="form-tip" style="margin-left: 12px">触发压缩时保留的最近消息条数</span>
           </el-form-item>
-          <el-form-item label="压缩触发阈值">
-            <el-input-number v-model="maxContextTokens" :min="1000" :step="1000" />
-            <span class="form-tip" style="margin-left: 12px">token 数超过此值时触发压缩</span>
+          <!-- 压缩触发阈值已移除：是否压缩由所选模型的上下文窗口配置自动决定 -->
+          <!-- 桌面端专属：截图全局快捷键（web / 移动端无本地截图能力，自动隐藏） -->
+          <el-form-item v-if="canScreenshot" label="截图快捷键">
+            <el-input
+              :model-value="shotAccelDisplay"
+              readonly
+              placeholder="点此框后按下组合键"
+              style="width: 210px"
+              @keydown.capture.prevent="onShotAccelKeyDown"
+            />
+            <div style="display: inline-flex; gap: 8px; margin-left: 8px">
+              <el-button size="small" @click="resetShotAccel">恢复默认</el-button>
+              <el-button size="small" :disabled="!shotAccel" @click="clearShotAccel">禁用</el-button>
+            </div>
+          </el-form-item>
+          <!-- 桌面端专属：截图时是否隐藏本应用窗口（想截自己界面时关掉） -->
+          <el-form-item v-if="canScreenshot" label="截图隐藏本应用">
+            <el-switch v-model="screenshotHideApp" />
           </el-form-item>
         </el-form>
       </el-tab-pane>
@@ -314,10 +329,77 @@ const darkMode = ref(settingsStore.settings.darkMode);
 const defaultPlatformId = ref('');
 const defaultModelId = ref('');
 const keepRecent = ref(6);
-const maxContextTokens = ref(8000);
 const enableCompression = ref(true);
 const memoryExtractPlatformId = ref('');
 const memoryExtractModelId = ref('');
+
+// ===== 截图全局快捷键（仅桌面端）=====
+const canScreenshot = typeof window !== 'undefined' && !!(window as any).electronAPI?.screenshot;
+const DEFAULT_SHOT_ACCEL = 'Control+Alt+A';
+const shotAccel = ref(String(settingsStore.settings.screenshotAccelerator ?? DEFAULT_SHOT_ACCEL));
+// store 是异步加载的，加载完成后把持久化值灌进来（不覆盖用户此刻正在录制的值）
+watch(
+  () => settingsStore.settings.screenshotAccelerator,
+  (v) => { if (typeof v === 'string') shotAccel.value = v; },
+);
+const shotAccelDisplay = computed(() =>
+  shotAccel.value ? shotAccel.value.replace(/Control/g, 'Ctrl').replace(/\+/g, ' + ') : '未启用',
+);
+// 截图时是否隐藏本应用窗口（双向绑定到 store，store.update 负责持久化）
+const screenshotHideApp = computed({
+  get: () => settingsStore.settings.screenshotHideApp !== false,
+  set: (v: boolean) => { void settingsStore.update({ screenshotHideApp: v }); },
+});
+
+/** KeyboardEvent.key → Electron accelerator 名 */
+const ACCEL_KEY_MAP: Record<string, string> = {
+  ' ': 'Space', ArrowUp: 'Up', ArrowDown: 'Down', ArrowLeft: 'Left', ArrowRight: 'Right',
+  Escape: 'Escape', Enter: 'Enter', Tab: 'Tab', Backspace: 'Backspace', Delete: 'Delete',
+  Insert: 'Insert', Home: 'Home', End: 'End', PageUp: 'PageUp', PageDown: 'PageDown',
+};
+const ACCEL_SPECIAL = new Set([...Object.values(ACCEL_KEY_MAP), ...['F1', 'F2', 'F3', 'F4', 'F5', 'F6', 'F7', 'F8', 'F9', 'F10', 'F11', 'F12', 'PrintScreen', 'Numlock']]);
+
+/** 从按键事件拼出 accelerator 串；组合不合法（无修饰键 / 单键 Tab 等）返回 null */
+function accelFromEvent(e: KeyboardEvent): string | null {
+  let base = '';
+  if (e.key.length === 1 && /\S/.test(e.key)) base = e.key.toUpperCase();
+  else if (ACCEL_KEY_MAP[e.key]) base = ACCEL_KEY_MAP[e.key];
+  else if (ACCEL_SPECIAL.has(e.key)) base = e.key;
+  if (!base) return null;
+  // 单修饰键（只按 Ctrl）不算完整组合
+  if (['Control', 'Shift', 'Alt', 'Meta'].includes(e.key)) return null;
+  const mods: string[] = [];
+  if (e.ctrlKey) mods.push('Control');
+  if (e.altKey) mods.push('Alt');
+  if (e.shiftKey) mods.push('Shift');
+  if (e.metaKey) mods.push('Meta');
+  // 必须带修饰键：否则普通打字会被当成热键吃掉整个键盘
+  if (!mods.length) return null;
+  return [...mods, base].join('+');
+}
+
+async function applyShotAccel(accel: string) {
+  const api = (window as any).electronAPI?.screenshot;
+  if (!api) return;
+  const r = await api.setAccelerator(accel).catch(() => null);
+  if (r && r.ok === false) {
+    ElMessage.error(r.error || '快捷键设置失败');
+    return;
+  }
+  shotAccel.value = accel;
+  await settingsStore.update({ screenshotAccelerator: accel });
+  ElMessage.success(accel ? `截图快捷键已设为 ${shotAccelDisplay.value}` : '截图快捷键已禁用');
+}
+function onShotAccelKeyDown(e: KeyboardEvent) {
+  const accel = accelFromEvent(e);
+  if (!accel) {
+    ElMessage.warning('请按住 Ctrl / Alt / Shift 再按一个键');
+    return;
+  }
+  void applyShotAccel(accel);
+}
+function resetShotAccel() { void applyShotAccel(DEFAULT_SHOT_ACCEL); }
+function clearShotAccel() { void applyShotAccel(''); }
 
 const availableDefaultModels = computed(() =>
   platformStore.models.filter((m) => m.platformId === defaultPlatformId.value && m.enabled),
@@ -333,7 +415,6 @@ onMounted(async () => {
   defaultModelId.value = settingsStore.settings.defaultModelId;
   darkMode.value = settingsStore.settings.darkMode;
   keepRecent.value = settingsStore.settings.keepRecent;
-  maxContextTokens.value = settingsStore.settings.maxContextTokens;
   enableCompression.value = settingsStore.settings.enableCompression;
   memoryExtractPlatformId.value = settingsStore.settings.memoryExtractPlatformId;
   memoryExtractModelId.value = settingsStore.settings.memoryExtractModelId;
@@ -342,6 +423,23 @@ onMounted(async () => {
   }
   if (memoryExtractPlatformId.value) {
     await platformStore.loadModels(memoryExtractPlatformId.value);
+  }
+  // 抽取模型未配置 → 自动跟随全局默认模型（通常是 agens 视觉模型），不再落到本地小模型
+  if (!memoryExtractPlatformId.value || !memoryExtractModelId.value) {
+    const pid = settingsStore.settings.defaultPlatformId || defaultPlatformId.value;
+    const mid = settingsStore.settings.defaultModelId || defaultModelId.value;
+    if (pid && mid) {
+      if (pid !== memoryExtractPlatformId.value) await platformStore.loadModels(pid);
+      const def = platformStore.models.find((m) => m.id === mid && m.enabled);
+      if (def) {
+        memoryExtractPlatformId.value = def.platformId;
+        memoryExtractModelId.value = def.id;
+        await settingsStore.update({
+          memoryExtractPlatformId: memoryExtractPlatformId.value,
+          memoryExtractModelId: memoryExtractModelId.value,
+        });
+      }
+    }
   }
 });
 
@@ -374,11 +472,10 @@ async function onPlatformChange() {
   });
 }
 
-watch([defaultModelId, keepRecent, maxContextTokens, enableCompression], async () => {
+watch([defaultModelId, keepRecent, enableCompression], async () => {
   await settingsStore.update({
     defaultModelId: defaultModelId.value,
     keepRecent: keepRecent.value,
-    maxContextTokens: maxContextTokens.value,
     enableCompression: enableCompression.value,
   });
 });

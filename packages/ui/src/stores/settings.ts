@@ -23,6 +23,8 @@ type SkinSurface = {
   glassBlur?: number;
   overlayColor?: string;
   overlayBlur?: number;
+  /** 弹窗表面（底图）磨砂半径 px，默认 8 */
+  dialogBlur?: number;
   borderPattern?: string;
   borderPatternSlice?: number;
   titlebarPattern?: string;
@@ -180,6 +182,7 @@ const SKIN_ELEMENT_VARS = [
   '--skin-scrollbar-h-repeat', '--skin-scrollbar-h-pos',
   '--skin-divider-color',
   '--skin-titlebar-pattern', '--skin-overlay-color', '--skin-overlay-blur',
+  '--skin-dialog-blur',
   '--skin-border-pattern', '--skin-border-pattern-slice',
   '--skin-shadow', '--skin-btn-gradient',
   '--skin-cat-tag-pattern', '--skin-task-list-pattern', '--skin-input-pattern',
@@ -311,17 +314,30 @@ export interface AppSettings {
   defaultPlatformId: string;
   defaultModelId: string;
   keepRecent: number;
-  maxContextTokens: number;
   enableCompression: boolean;
   workspaceDir: string;
   /** 工作目录最近使用记录（目录选择器 chip 快捷入口，新选择的目录提到最前，最多 5 个） */
   recentWorkspaceDirs: string[];
   appGuide: string;
-  /** 记忆抽取模型配置：空则默认本地小模型 */
+  /** 记忆抽取模型配置：空则跟随全局默认模型（通常是 agens 视觉模型），不可用时才回退本地小模型 */
   memoryExtractPlatformId: string;
   memoryExtractModelId: string;
+  /** 知识库图谱抽取模型：空则跟随全局默认模型，再不可用才回退本地 Ollama */
+  graphExtractPlatformId: string;
+  graphExtractModelId: string;
   /** 当前布局 id；'default' 为内置布局，其它值由插件 contributes.layouts 提供 */
   layout: string;
+  /**
+   * 桌面端截图全局快捷键（Electron accelerator 串，如 'Control+Alt+A'）。
+   * 空串 = 用户禁用。仅桌面端生效；web / 移动端忽略此字段。
+   * 注意：真正注册在主进程，这里存的是"用户想要的值"，启动时由设置页/输入框同步给主进程。
+   */
+  screenshotAccelerator: string;
+  /**
+   * 截图时是否隐藏本应用窗口（对齐微信截图默认隐藏）。
+   * 想截自己界面里的内容时关掉它；仅桌面端生效。
+   */
+  screenshotHideApp: boolean;
 }
 
 /**
@@ -390,6 +406,7 @@ export const APP_GUIDE_DOCS: Array<{ name: string; content: string }> = [
 - 库内可用「关系图谱」查看 库→文档→分片 的网状结构，点分片看全文；也可切「分片列表」。
 - 知识查询：让 AI 调「知识库检索」工具（api_kb_search），不指定库时跨所有可见库做多跳检索，返回关联片段。
 - 对话时，应用会把与问题相关的知识片段自动注入提示词，帮助回答「这个功能怎么用」。
+- **按智能体挂载知识库**：在智能体编辑页「高级配置 → 知识库」勾选若干库后，该智能体的知识库检索范围即收敛到这些库（不挂载则跨全部可见库检索），便于多库场景下按需隔离。默认智能体已挂载内置「应用使用说明」。
 - 内置「应用使用说明」就是一个公开知识库，本页内容即来自它。`,
   },
   {
@@ -468,14 +485,17 @@ const DEFAULT_SETTINGS: AppSettings = {
   defaultPlatformId: '',
   defaultModelId: '',
   keepRecent: 6,
-  maxContextTokens: 8000,
   enableCompression: true,
   workspaceDir: '',
   recentWorkspaceDirs: [],
   appGuide: DEFAULT_APP_GUIDE,
   memoryExtractPlatformId: '',
   memoryExtractModelId: '',
+  graphExtractPlatformId: '',
+  graphExtractModelId: '',
   layout: 'default',
+  screenshotAccelerator: 'Control+Alt+A',
+  screenshotHideApp: true,
 };
 
 interface ThemePalette {
@@ -510,6 +530,8 @@ interface ThemePalette {
     glassBlur?: number;
     overlayColor?: string;
     overlayBlur?: number;
+    /** 弹窗表面（底图）磨砂半径 px，默认 8 */
+    dialogBlur?: number;
     borderPattern?: string;
     borderPatternSlice?: number;
     titlebarPattern?: string;
@@ -984,6 +1006,8 @@ export const useSettingsStore = defineStore('settings', () => {
     // 故与圆角/图案不同，这里恒下发（CSS 回落的 #0f172a 是无关皮肤色相的冷蓝灰）。
     root.setProperty('--skin-overlay-color', sf.overlayColor || sf.overlayTint || dv.overlayTint);
     if (sf.overlayBlur !== undefined) root.setProperty('--skin-overlay-blur', `${sf.overlayBlur}px`);
+    // 弹窗表面磨砂（skin.css 的 .el-dialog::before 消费），默认 8px 走 CSS 回落
+    if (sf.dialogBlur !== undefined) root.setProperty('--skin-dialog-blur', `${sf.dialogBlur}px`);
     if (sf.borderPattern) {
       root.setProperty('--skin-border-pattern', asset(sf.borderPattern));
       root.setProperty('--skin-border-pattern-slice', String(sf.borderPatternSlice ?? 0));
