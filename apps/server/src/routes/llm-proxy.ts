@@ -158,6 +158,28 @@ router.post('/embeddings', async (req: Request, res: ExpressResponse) => {
   }
 });
 
+// 生图代理（能力测试「图片生成」/ UI 侧调用）：OpenAI 标准 /v1/images/generations
+router.post('/images/generations', async (req: Request, res: ExpressResponse) => {
+  const p = loadPlatform(req);
+  if (!p) { platformNotFound(res, req); return; }
+  try {
+    await proxyWithRetry(p, false, 'v1/images/generations', (req.body as any)?.payload, res, false);
+  } catch (e: any) {
+    res.status(502).json({ error: `代理请求失败: ${e?.message || e}` });
+  }
+});
+
+// 生视频代理（能力测试「视频生成」/ UI 侧调用）：/v1/videos（agnes 异步任务提交）
+router.post('/videos', async (req: Request, res: ExpressResponse) => {
+  const p = loadPlatform(req);
+  if (!p) { platformNotFound(res, req); return; }
+  try {
+    await proxyWithRetry(p, false, 'v1/videos', (req.body as any)?.payload, res, false);
+  } catch (e: any) {
+    res.status(502).json({ error: `代理请求失败: ${e?.message || e}` });
+  }
+});
+
 router.get('/models', async (req: Request, res: ExpressResponse) => {
   const userId = req.user!.userId;
   const platformId = req.query.platformId as string;

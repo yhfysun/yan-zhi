@@ -57,7 +57,7 @@
               <el-select v-model="memoryExtractModelId" placeholder="抽取模型" style="width:140px" clearable :disabled="!memoryExtractPlatformId">
                 <el-option v-for="m in availableMemoryExtractModels" :key="m.id" :label="m.alias || m.modelId" :value="m.id" />
               </el-select>
-              <span class="form-tip">留空则自动跟随全局默认模型（如 agens 3.0 Flash，支持视觉），不可用时才回退本地小模型</span>
+              <span class="form-tip">留空则自动跟随全局默认模型（如 agnes 3.0 Flash，支持视觉），不可用时才回退本地小模型</span>
             </div>
           </el-form-item>
           <el-form-item label="启用上下文压缩">
@@ -424,7 +424,7 @@ onMounted(async () => {
   if (memoryExtractPlatformId.value) {
     await platformStore.loadModels(memoryExtractPlatformId.value);
   }
-  // 抽取模型未配置 → 自动跟随全局默认模型（通常是 agens 视觉模型），不再落到本地小模型
+  // 抽取模型未配置 → 自动跟随全局默认模型（通常是 agnes 视觉模型），不再落到本地小模型
   if (!memoryExtractPlatformId.value || !memoryExtractModelId.value) {
     const pid = settingsStore.settings.defaultPlatformId || defaultPlatformId.value;
     const mid = settingsStore.settings.defaultModelId || defaultModelId.value;

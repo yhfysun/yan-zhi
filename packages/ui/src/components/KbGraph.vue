@@ -85,7 +85,7 @@
         </el-form-item>
       </el-form>
       <div class="extract-dialog-tip">
-        默认使用全局默认模型（如 agens 3.0 Flash）；云端不可用时自动回退本地 Ollama。
+        默认使用全局默认模型（如 agnes 3.0 Flash）；云端不可用时自动回退本地 Ollama。
         上传文档触发的自动提取始终用全局默认模型。
       </div>
       <template #footer>

@@ -1,7 +1,8 @@
 import { db } from '../db.js';
 
 /**
- * agens 线上平台内置初始化（平台正确名称：agens，代码里曾误写为 agnes）。
+ * agnes 线上平台内置初始化（平台正确名称：agnes，与接口域名 apihub.agnes-ai.com 一致；
+ * 2026-09-14 曾误改成 agens，2026-09-15 改回，并附启动自愈迁移纠正已写错的显示名/别名）。
  *
  * 设计要点：
  * - 确定性 id（agens-${userId}），重复调用幂等，不会产生重复记录。
@@ -15,9 +16,9 @@ import { db } from '../db.js';
  *   llm-proxy 会轮询使用、失败自动切换；用户后续在 UI 添加/删除的 Key 不受影响。
  */
 
-export const AGENS_PLATFORM_NAME = 'agens';
+export const AGENS_PLATFORM_NAME = 'agnes';
 export const AGENS_API_URL = 'https://apihub.agnes-ai.com';
-/** 全局默认对话模型（agens 平台，2026-09 接口最新列表） */
+/** 全局默认对话模型（agnes 平台，2026-09 接口最新列表） */
 export const AGENS_DEFAULT_MODEL_ID = 'agnes-3.0-flash';
 /** 新建/拉取模型时的默认上下文窗口：256K */
 export const DEFAULT_CONTEXT_WINDOW = 262144;
@@ -65,18 +66,18 @@ interface AgensModelSeed {
 // 注意：接口不返回 context_window / capabilities，这两个值是我们侧的默认值，
 // 已存在的模型行不会被本文件的迁移覆盖（「以数据库为准」）。
 const AGENS_MODELS: AgensModelSeed[] = [
-  { modelId: 'agnes-3.0-flash', alias: 'agens 3.0 Flash', type: 'llm', isDefault: true },
-  { modelId: 'agnes-2.5-pro', alias: 'agens 2.5 Pro', type: 'llm' },
-  { modelId: 'agnes-2.5-pro-alpha', alias: 'agens 2.5 Pro Alpha', type: 'llm' },
-  { modelId: 'agnes-2.5-pro-beta', alias: 'agens 2.5 Pro Beta', type: 'llm' },
-  { modelId: 'agnes-2.5-flash', alias: 'agens 2.5 Flash', type: 'llm' },
-  { modelId: 'agnes-2.0-flash', alias: 'agens 2.0 Flash', type: 'llm' },
-  { modelId: 'agnes-image-2.5-flash', alias: 'agens Image 2.5 Flash', type: 'image' },
-  { modelId: 'agnes-image-2.1-flash', alias: 'agens Image 2.1 Flash', type: 'image' },
-  { modelId: 'agnes-image-2.0-flash', alias: 'agens Image 2.0 Flash', type: 'image' },
-  { modelId: 'agnes-video-2.5', alias: 'agens Video 2.5', type: 'video' },
-  { modelId: 'agnes-video-2.5-flash', alias: 'agens Video 2.5 Flash', type: 'video' },
-  { modelId: 'agnes-video-v2.0', alias: 'agens Video v2.0', type: 'video' },
+  { modelId: 'agnes-3.0-flash', alias: 'agnes 3.0 Flash', type: 'llm', isDefault: true },
+  { modelId: 'agnes-2.5-pro', alias: 'agnes 2.5 Pro', type: 'llm' },
+  { modelId: 'agnes-2.5-pro-alpha', alias: 'agnes 2.5 Pro Alpha', type: 'llm' },
+  { modelId: 'agnes-2.5-pro-beta', alias: 'agnes 2.5 Pro Beta', type: 'llm' },
+  { modelId: 'agnes-2.5-flash', alias: 'agnes 2.5 Flash', type: 'llm' },
+  { modelId: 'agnes-2.0-flash', alias: 'agnes 2.0 Flash', type: 'llm' },
+  { modelId: 'agnes-image-2.5-flash', alias: 'agnes Image 2.5 Flash', type: 'image' },
+  { modelId: 'agnes-image-2.1-flash', alias: 'agnes Image 2.1 Flash', type: 'image' },
+  { modelId: 'agnes-image-2.0-flash', alias: 'agnes Image 2.0 Flash', type: 'image' },
+  { modelId: 'agnes-video-2.5', alias: 'agnes Video 2.5', type: 'video' },
+  { modelId: 'agnes-video-2.5-flash', alias: 'agnes Video 2.5 Flash', type: 'video' },
+  { modelId: 'agnes-video-v2.0', alias: 'agnes Video v2.0', type: 'video' },
 ];
 
 /** 历史库里平台 id 曾是 agnes-${userId}（拼写错误），升级后统一为 agens-${userId}。 */
@@ -107,15 +108,16 @@ export function renameLegacyAgensPlatformId(userId: string): boolean {
     db.prepare('UPDATE agent SET platform_id = ? WHERE platform_id = ?').run(to, from);
     db.prepare('UPDATE conversation SET platform_id = ? WHERE platform_id = ?').run(to, from);
     db.prepare('UPDATE scheduled_task SET platform_id = ? WHERE platform_id = ?').run(to, from);
-    // 顺带把历史上误写的平台名/别名前缀纠正过来（只动 agnes- 开头的 id 前缀与 'agnes ' 别名前缀）
-    db.prepare("UPDATE platform SET name = ? WHERE id = ? AND name = 'agnes'").run(AGENS_PLATFORM_NAME, to);
+    // 顺带纠正历史写错的平台显示名（id 是内部标识保持 agens- 前缀，仅名称回正为 agnes）
+    db.prepare("UPDATE platform SET name = ? WHERE id = ? AND name = 'agens'").run(AGENS_PLATFORM_NAME, to);
   })();
   return true;
 }
 
 /**
- * 已存在的 agens 平台：补齐接口新增但本地缺失的模型（INSERT OR IGNORE，不覆盖已有行），
- * 并把历史误写的别名前缀 'agnes ' 纠正为 'agens '。
+ * 已存在的 agnes 平台：补齐接口新增但本地缺失的模型（INSERT OR IGNORE，不覆盖已有行），
+ * 并做启动自愈：平台显示名 'agens' → 'agnes'、别名前缀 'agens ' → 'agnes '
+ * （2026-09-14 误改名 agens 的回滚迁移，仅动显示层，不动平台 id）。
  */
 export function syncAgensModelCatalog(userId: string, platformId: string): { added: string[] } {
   const added: string[] = [];
@@ -124,7 +126,8 @@ export function syncAgensModelCatalog(userId: string, platformId: string): { add
       (id, platform_id, user_id, model_id, alias, type, context_window, capabilities_json, pricing_json, enabled, is_default, is_builtin, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, '[]', '{}', 1, 0, 0, ?)`,
   );
-  const fixAlias = db.prepare("UPDATE model SET alias = REPLACE(alias, 'agnes ', 'agens ') WHERE platform_id = ? AND alias LIKE 'agnes %' AND is_builtin = 0");
+  const fixName = db.prepare("UPDATE platform SET name = 'agnes' WHERE id = ? AND name = 'agens'");
+  const fixAlias = db.prepare("UPDATE model SET alias = REPLACE(alias, 'agens ', 'agnes ') WHERE platform_id = ? AND alias LIKE 'agens %' AND is_builtin = 0");
   const fillAlias = db.prepare("UPDATE model SET alias = ? WHERE platform_id = ? AND model_id = ? AND (alias IS NULL OR alias = '') AND is_builtin = 0");
   const now = Date.now();
   db.transaction(() => {
@@ -149,6 +152,7 @@ export function syncAgensModelCatalog(userId: string, platformId: string): { add
       );
       added.push(m.modelId);
     }
+    fixName.run(platformId);
     fixAlias.run(platformId);
   })();
   return { added };

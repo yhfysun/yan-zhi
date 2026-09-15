@@ -100,6 +100,11 @@
                           <img :src="resolveScreenshotUrl(getStepToolResult(step, tc.id)) || ''" alt="屏幕截图" />
                           <span class="tool-item-shot-note">截图预览 · 仅流式期间展示，结束后自动清理</span>
                         </div>
+                        <!-- 文生视频工具（api_video_generate）：流式期间在工具卡片下内嵌视频预览 -->
+                        <div v-if="isRoundLive(round, ri) && resolveVideoUrl(getStepToolResult(step, tc.id))" class="tool-item-shot">
+                          <video :src="resolveVideoUrl(getStepToolResult(step, tc.id)) || ''" controls preload="metadata" class="tool-item-video"></video>
+                          <span class="tool-item-shot-note">视频预览 · 仅流式期间展示，成片链接见回复正文</span>
+                        </div>
                         <div v-show="isToolItemOpen(tc.id, 'agent-step-' + ri + '-' + si + '-' + idx)" class="tool-item-body">
                           <div class="tool-item-section">
                             <div class="tool-item-label">参数</div>
@@ -530,6 +535,18 @@ function resolveScreenshotUrl(resultText: string | null): string | null {
     return null;
   } catch { return null; }
 }
+
+// 文生视频工具（api_video_generate）在结果 JSON 里带 videoUrl；与截图同规则：流式期间内嵌 <video> 预览
+function resolveVideoUrl(resultText: string | null): string | null {
+  if (!resultText) return null;
+  try {
+    const u = (JSON.parse(resultText) as { videoUrl?: unknown }).videoUrl;
+    if (typeof u !== 'string' || !u) return null;
+    if (u.startsWith('/')) return API_BASE + u;
+    if (/^https?:\/\//.test(u)) return u;
+    return null;
+  } catch { return null; }
+}
 /** 该轮是否仍在流式进行（仅最后一轮 + 当前会话在跑），决定截图是否展示；任务结束即随响应式移除 */
 function isRoundLive(round: MessageRound, ri: number): boolean {
   return store.streaming && ri === messageRounds.value.length - 1;
@@ -830,6 +847,13 @@ watch(activeNavRound, () => {
   border-radius: 8px;
   border: 1px solid var(--glass-border, rgba(127, 127, 127, 0.25));
   background: rgba(127, 127, 127, 0.08);
+}
+.tool-item-video {
+  width: 100%;
+  max-height: 260px;
+  border-radius: 8px;
+  border: 1px solid var(--glass-border, rgba(127, 127, 127, 0.25));
+  background: rgba(0, 0, 0, 0.35);
 }
 .tool-item-shot-note {
   font-size: 11px;

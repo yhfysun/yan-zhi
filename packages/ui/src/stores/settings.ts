@@ -319,7 +319,7 @@ export interface AppSettings {
   /** 工作目录最近使用记录（目录选择器 chip 快捷入口，新选择的目录提到最前，最多 5 个） */
   recentWorkspaceDirs: string[];
   appGuide: string;
-  /** 记忆抽取模型配置：空则跟随全局默认模型（通常是 agens 视觉模型），不可用时才回退本地小模型 */
+  /** 记忆抽取模型配置：空则跟随全局默认模型（通常是 agnes 视觉模型），不可用时才回退本地小模型 */
   memoryExtractPlatformId: string;
   memoryExtractModelId: string;
   /** 知识库图谱抽取模型：空则跟随全局默认模型，再不可用才回退本地 Ollama */

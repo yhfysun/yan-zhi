@@ -754,7 +754,7 @@ function parseJsonOf(text: string): any {
 }
 
 /** 增量提取实体图谱的模型解析链：
- *  ① 调用方显式指定（设置页「图谱抽取模型」下发）→ ② 全局默认模型（is_default=1 的 llm，通常是 agens 云端模型）
+ *  ① 调用方显式指定（设置页「图谱抽取模型」下发）→ ② 全局默认模型（is_default=1 的 llm，通常是 agnes 云端模型）
  *  → ③ null = 走本地 Ollama 兜底。 */
 function resolveGraphExtractLlm(userId: string, prefer?: { platformId?: string; modelId?: string }): { platform: any; model: any } | null {
   void userId;

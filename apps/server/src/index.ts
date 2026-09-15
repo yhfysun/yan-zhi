@@ -128,6 +128,30 @@ app.use('/api/ollama-market', ollamaMarketRoutes);
 app.use('/api/plugins', pluginRoutes);
 // 插件静态资源（皮肤壁纸/预览图）：/api/plugin-assets/:pluginId/*
 app.use('/api/plugin-assets', pluginAssetsRouter);
+
+// AI 媒体产物访问（api_image_generate / api_video_generate 落盘的持久文件，区别于截图 30 分钟临时区）
+const GENERATED_MEDIA_DIRS: Record<string, string> = { images: 'generated-images', videos: 'generated-videos' };
+app.get('/api/generated/:kind/:name', (req, res) => {
+  const dirName = GENERATED_MEDIA_DIRS[String(req.params.kind || '')];
+  const name = String(req.params.name || '');
+  if (!dirName || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name) || name.includes('..')) {
+    res.status(404).json({ error: 'not found' });
+    return;
+  }
+  const dir = process.env.DATA_DIR ? path.join(process.env.DATA_DIR, dirName) : path.resolve(dirName);
+  const file = path.join(dir, name);
+  try {
+    if (!fs.existsSync(file) || !fs.statSync(file).isFile()) {
+      res.status(404).json({ error: 'not found' });
+      return;
+    }
+  } catch {
+    res.status(404).json({ error: 'not found' });
+    return;
+  }
+  res.setHeader('Cache-Control', 'public, max-age=86400');
+  res.sendFile(file);
+});
 app.use('/api/git', gitRoutes);
 app.use('/api/llm', llmProxyRoutes);
 app.use('/api/llm', llmTaskRoutes);

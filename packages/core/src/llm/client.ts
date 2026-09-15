@@ -11,15 +11,15 @@ import {
   anthropicResponseToChunk,
 } from './anthropic';
 
-/** 能力测试种类：chat=基础问答、vision=视觉识图、function_call=工具调用、embedding=向量、image=图片生成 */
-export type CapabilityTestKind = 'chat' | 'vision' | 'function_call' | 'embedding' | 'image';
+/** 能力测试种类：chat=基础问答、vision=视觉识图、function_call=工具调用、embedding=向量、image=图片生成、video=视频生成 */
+export type CapabilityTestKind = 'chat' | 'vision' | 'function_call' | 'embedding' | 'image' | 'video';
 
 export interface CapabilityTestResult {
   kind: CapabilityTestKind;
   label: string;
   ok: boolean;
   durationMs: number;
-  /** 通过后应自动勾选的能力：chat → reasoning（能问答即具备推理） */
+  /** 通过后应自动勾选的能力：chat → reasoning（能问答即具备推理）；image → image；video → video */
   capability?: string;
   msg: string;
   /** 模型实际回答摘要，便于人工判断误判 */
@@ -32,6 +32,7 @@ export const CAPABILITY_TEST_LABELS: Record<CapabilityTestKind, string> = {
   function_call: '工具调用',
   embedding: '向量嵌入',
   image: '图片生成',
+  video: '视频生成',
 };
 
 /** 视觉能力测试用图：16×16 纯红 PNG（79B 内嵌，不依赖外部资源） */
@@ -524,6 +525,32 @@ export class LlmClient {
         return { kind, label, ok: true, durationMs: Date.now() - start, msg: `向量维度 ${vec.length}` };
       }
 
+      // video：视频生成（提交异步任务即算受理通过，不等待出片——完整出片要 1-5 分钟，
+      // 每次测试会消耗一次生成额度）。mode:'text' 是 agnes 专有约定，其他平台不带。
+      if (kind === 'video') {
+        const isAgnes = /agnes-ai\.com/i.test(this.baseUrl);
+        const res = await this.upstreamFetch('v1/videos', {
+          model: this.model.modelId,
+          prompt: 'a red balloon floating gently in the sky',
+          seconds: '5',
+          size: '720P',
+          ...(isAgnes ? { mode: 'text' } : {}),
+        });
+        const text = await res.text().catch(() => '');
+        if (!res.ok) return fail(`HTTP ${res.status} ${res.statusText}`, text.slice(0, 120));
+        let taskId = '';
+        try {
+          const j = JSON.parse(text);
+          taskId = String(j?.task_id || j?.taskId || j?.id || '');
+        } catch { /* ignore */ }
+        if (!taskId) return fail('任务提交未返回 task_id', text.slice(0, 120));
+        return {
+          kind, label, ok: true, durationMs: Date.now() - start, capability: 'video',
+          msg: '视频任务已受理（异步出片通常 1-5 分钟，本次测试提交了 5 秒 720P 任务）',
+          detail: taskId,
+        };
+      }
+
       // image：图片生成（最小尺寸，成本可控）
       const res = await this.upstreamFetch('v1/images/generations', {
         model: this.model.modelId,
@@ -538,7 +565,7 @@ export class LlmClient {
       const data = await res.json();
       const first = data?.data?.[0];
       if (!first?.url && !first?.b64_json) return fail('未返回图片');
-      return { kind, label, ok: true, durationMs: Date.now() - start, msg: '生图正常' };
+      return { kind, label, ok: true, durationMs: Date.now() - start, capability: 'image', msg: '生图正常' };
     } catch (e: any) {
       const msg = e?.message || '请求异常';
       // 网络抖动（首连超时/连接被重置）与限流（429）都很常见，稍等后自动重试一次，避免误判成"模型不支持"

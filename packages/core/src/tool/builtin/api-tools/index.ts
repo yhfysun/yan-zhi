@@ -8,6 +8,7 @@ import { registerImTools } from './im';
 import { registerKnowledgeTools } from './knowledge';
 import { registerMarketplaceTools } from './marketplace';
 import { registerMcpTools } from './mcp';
+import { registerMediaTools } from './media';
 import { registerMemoryTools } from './memory';
 import { registerMessageTools } from './message';
 import { registerOllamaTools } from './ollama';
@@ -30,6 +31,7 @@ export type ApiModuleName =
   | 'skill'
   | 'tool'
   | 'marketplace'
+  | 'media'
   | 'workspace'
   | 'memory'
   | 'file'
@@ -52,6 +54,7 @@ export const API_MODULES: ApiModuleName[] = [
   'skill',
   'tool',
   'marketplace',
+  'media',
   'workspace',
   'memory',
   'file',
@@ -90,6 +93,7 @@ export function initApiToolRegistry(): void {
   registerSkillTools(registry);
   registerToolTools(registry);
   registerMarketplaceTools(registry);
+  registerMediaTools(registry);
   registerWorkspaceTools(registry);
   registerMemoryTools(registry);
   registerFileTools(registry);

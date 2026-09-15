@@ -279,12 +279,21 @@ const batchSaving = ref(false);
 // 上下文窗口预设档位（K tokens 为单位；1M = 1024K = 1048576 tokens，存储层仍存 token 数）
 // 只保留 1M 快捷档：默认档已经是 256K，档位按钮太多反而占版面
 const ctxPresets = [{ k: 1024, label: '1M' }];
-/** 能力项与对应测试：推理用「基础问答」测（能问答即具备多步推理） */
-const capDefs = [
+/** 能力项与对应测试：推理用「基础问答」测（能问答即具备多步推理）；图片/视频生成仅对应类型模型显示 */
+const CAP_DEFS = [
   { value: 'function_call', label: '函数调用', kind: 'function_call' },
   { value: 'vision', label: '视觉', kind: 'vision' },
   { value: 'reasoning', label: '推理（问答）', kind: 'chat' },
+  { value: 'image', label: '图片生成', kind: 'image' },
+  { value: 'video', label: '视频生成', kind: 'video' },
 ];
+const capDefs = computed(() =>
+  CAP_DEFS.filter((c) => {
+    if (c.value === 'image') return form.value.type === 'image';
+    if (c.value === 'video') return form.value.type === 'video';
+    return true;
+  }),
+);
 const capTesting = ref('');
 
 const form = ref({
@@ -302,7 +311,7 @@ onMounted(async () => {
 function back() { router.push('/models'); }
 
 function capabilityLabel(cap: string) {
-  const m: Record<string, string> = { function_call: '函数调用', vision: '视觉', reasoning: '推理' };
+  const m: Record<string, string> = { function_call: '函数调用', vision: '视觉', reasoning: '推理', image: '图片生成', video: '视频生成' };
   return m[cap] || cap;
 }
 
@@ -458,6 +467,7 @@ function testKindsOf(m: any): { kind: string; label: string }[] {
   ];
   if (m.type === 'embedding') base.push({ kind: 'embedding', label: '向量嵌入' });
   if (m.type === 'image') base.push({ kind: 'image', label: '图片生成' });
+  if (m.type === 'video') base.push({ kind: 'video', label: '视频生成' });
   return base;
 }
 
@@ -486,6 +496,9 @@ async function autoDetectCapabilities(m: any) {
   testing.value = m.id;
   try {
     const kinds = ['chat', 'vision', 'function_call'];
+    // 按模型类型追加专属测试项（image/video 的三项基础测试对它们通常必失败，专属项才是有效信号）
+    if (m.type === 'image') kinds.push('image');
+    if (m.type === 'video') kinds.push('video');
     const list: { kind: string; label: string; ok: boolean; msg: string; durationMs: number }[] = [];
     const applied: string[] = [];
     for (const k of kinds) {

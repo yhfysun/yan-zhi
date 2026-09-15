@@ -308,9 +308,9 @@ export const usePlatformStore = defineStore('platform', () => {
   }
 
   /**
-   * 单项能力测试：chat / vision / function_call / embedding / image。
-   * 通过且该能力可勾选（chat→reasoning、vision→vision、function_call→function_call）时，
-   * 默认自动把能力写回模型（autoApply=false 可只测不写）。
+   * 单项能力测试：chat / vision / function_call / embedding / image / video。
+   * 通过且该能力可勾选（chat→reasoning、vision→vision、function_call→function_call、
+   * image→image、video→video）时，默认自动把能力写回模型（autoApply=false 可只测不写）。
    */
   async function testModelCapability(
     modelId: string,

@@ -1,7 +1,8 @@
 import { v4 as uuid } from 'uuid';
-import { readdir, stat } from 'node:fs/promises';
+import { readdir, stat, mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { db } from '../db.js';
+import { AGENS_API_URL } from '../agens-platform/service.js';
 import { serverState } from '../state.js';
 import {
   upsertPeer,
@@ -199,6 +200,8 @@ export const SUPPORTED_API_TOOLS = new Set([
   // 数据查询（P4.1/P4.2：数据源 / 本体上下文链 / 只读取数 / 翻页）
   'api_datasource_list', 'api_ontology_search', 'api_ontology_list', 'api_data_query', 'api_data_paginate',
   'api_ontology_overview', 'api_ontology_brief', 'api_ontology_detail', 'api_ontology_values',
+  // AI 媒体生成（文生图/文生视频，agnes 平台）
+  'api_image_generate', 'api_video_generate', 'api_video_status',
 ]);
 
 /** 本体挂载范围：任务显式下发优先；否则读 server agent 表；均无 = undefined 不限 */
@@ -241,6 +244,455 @@ setJsExecDataBridge(async (args: { datasourceId?: string; sql: string; limit?: n
   });
   return { columns: r.columns, rows: r.rows, rowCount: r.rowCount, truncated: r.truncated, sql: r.sql };
 });
+
+// ===== AI 媒体生成（api_image_generate / api_video_generate / api_video_status）=====
+// agnes 平台的生图/生视频模型走专用端点（不在 chat/completions 通道）：
+// - 生图：POST /v1/images/generations（OpenAI 标准，同步）
+// - 生视频：POST /v1/videos {mode:'text'} → GET /v1/videos/{taskId} 轮询（异步）
+// Key 来源：platform_api_key 的 Token 池（与 llm-proxy 同源），429/401/403 自动换下一把。
+function loadAgensMediaCtx(): { baseUrl: string; keys: string[] } {
+  const plat = db
+    .prepare("SELECT id, api_url, api_key_enc FROM platform WHERE api_url LIKE '%agnes-ai.com%' ORDER BY created_at ASC LIMIT 1")
+    .get() as { id: string; api_url: string; api_key_enc: string | null } | undefined;
+  const baseUrl = String(plat?.api_url || process.env.AGNES_API_URL || AGENS_API_URL).replace(/\/+$/, '');
+  const keys: string[] = [];
+  if (process.env.AGENS_API_KEY) keys.push(process.env.AGENS_API_KEY);
+  if (plat) {
+    const rows = db
+      .prepare('SELECT api_key FROM platform_api_key WHERE platform_id = ? AND enabled = 1 ORDER BY fail_count ASC, id ASC')
+      .all(plat.id) as { api_key: string }[];
+    for (const r of rows) if (r.api_key) keys.push(r.api_key);
+    if (plat.api_key_enc) keys.push(plat.api_key_enc);
+  }
+  return { baseUrl, keys: [...new Set(keys)] };
+}
+
+function bumpAgensKeyFail(apiKey: string): void {
+  try { db.prepare('UPDATE platform_api_key SET fail_count = fail_count + 1 WHERE api_key = ?').run(apiKey); } catch { /* 忽略 */ }
+}
+
+/**
+ * 媒体工具的平台解析：默认 agnes；传了 platformId 或 model（模型 id/别名，配合 list_models 发现）
+ * 则路由到任意已配置平台（OpenAI 兼容生图/生视频端点），key 池按 platform_api_key 通用加载。
+ */
+/** 媒体平台上下文（扁平结构，ok=false 时看 error） */
+interface MediaPlatformCtx {
+  ok: boolean;
+  error: string;
+  baseUrl: string;
+  keys: string[];
+  isAgnes: boolean;
+}
+
+function resolveMediaPlatform(args: Record<string, unknown>, userId?: string | null): MediaPlatformCtx {
+  const modelRef = str(args, 'model').trim();
+  const platformId = str(args, 'platformId').trim();
+  if (!modelRef && !platformId) {
+    const agens = loadAgensMediaCtx();
+    return { ok: true, error: '', baseUrl: agens.baseUrl, keys: agens.keys, isAgnes: true };
+  }
+  const platRow = (() => {
+    if (platformId) {
+      return db.prepare('SELECT id, api_url, api_key_enc FROM platform WHERE id = ?').get(platformId);
+    }
+    const cond = userId ? 'AND m.user_id = ?' : '';
+    const params: unknown[] = userId ? [modelRef, modelRef, userId] : [modelRef, modelRef];
+    return db.prepare(
+      `SELECT p.id, p.api_url, p.api_key_enc FROM model m JOIN platform p ON p.id = m.platform_id
+        WHERE (m.model_id = ? OR m.alias = ?) AND m.enabled = 1 ${cond}
+        ORDER BY m.id LIMIT 1`,
+    ).get(...params);
+  })() as { id: string; api_url: string; api_key_enc: string | null } | undefined;
+  if (!platRow) {
+    return { ok: false, error: '未找到对应的平台/模型。可先调用 list_models（type=image 或 video）查询可用的媒体模型，再传 model（模型 id 或别名）与 platformId；都不传则默认用 agnes 平台。', baseUrl: '', keys: [], isAgnes: false };
+  }
+  const keys: string[] = [];
+  const rows = db.prepare('SELECT api_key FROM platform_api_key WHERE platform_id = ? AND enabled = 1 ORDER BY fail_count ASC, id ASC')
+    .all(platRow.id) as { api_key: string }[];
+  for (const r of rows) if (r.api_key) keys.push(r.api_key);
+  if (platRow.api_key_enc) keys.push(platRow.api_key_enc);
+  const baseUrl = String(platRow.api_url || '').replace(/\/+$/, '');
+  if (!baseUrl) return { ok: false, error: '该平台未配置 API 地址，请先在模型平台里补全', baseUrl: '', keys: [], isAgnes: false };
+  if (!keys.length) return { ok: false, error: '该平台没有可用的 API Key，请先在模型平台里配置', baseUrl, keys: [], isAgnes: false };
+  return { ok: true, error: '', baseUrl, keys: [...new Set(keys)], isAgnes: /agnes-ai\.com/i.test(baseUrl) };
+}
+
+async function fetchWithTimeout(url: string, init: any, timeoutMs: number): Promise<Response> {
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: ctl.signal });
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+/** 媒体产物落盘目录（持久保存，区别于截图 30 分钟临时区）：DATA_DIR/generated-images|videos */
+function mediaDir(kind: 'images' | 'videos'): string {
+  const sub = kind === 'images' ? 'generated-images' : 'generated-videos';
+  return process.env.DATA_DIR ? path.join(process.env.DATA_DIR, sub) : path.resolve(sub);
+}
+
+async function downloadBinary(url: string, timeoutMs = 180000): Promise<Buffer> {
+  const res = await fetchWithTimeout(url, { method: 'GET' }, timeoutMs);
+  if (!res.ok) throw new Error(`下载失败 HTTP ${res.status}`);
+  return Buffer.from(await res.arrayBuffer());
+}
+
+function extFromUrl(url: string, fallback: string): string {
+  const m = /\.(png|jpe?g|webp|gif|mp4|webm|mov)(?=$|[?#])/i.exec(url);
+  return m ? `.${m[1].toLowerCase().replace('jpeg', 'jpg')}` : fallback;
+}
+
+/** 解析参考图输入（URL / dataURL / 裸 base64 / 本机路径）→ multipart 用的 Blob */
+async function toImageBlob(v: string): Promise<{ blob: Blob; name: string } | null> {
+  try {
+    const s = v.trim();
+    if (/^https?:\/\//i.test(s)) {
+      const buf = await downloadBinary(s);
+      return { blob: new Blob([new Uint8Array(buf)]), name: path.basename(new URL(s).pathname) || 'ref.png' };
+    }
+    const dataUrl = /^data:(image\/[a-zA-Z0-9+.-]+);base64,([\s\S]+)$/.exec(s);
+    if (dataUrl) return { blob: new Blob([new Uint8Array(Buffer.from(dataUrl[2], 'base64'))]), name: 'ref.png' };
+    if (s.length > 512 && /^[A-Za-z0-9+/=\r\n]+$/.test(s.slice(0, 512))) {
+      return { blob: new Blob([new Uint8Array(Buffer.from(s.replace(/\s+/g, ''), 'base64'))]), name: 'ref.png' };
+    }
+    // 本机路径（如 api_image_generate 之前落盘的 file）
+    const fsp = await import('node:fs/promises');
+    const buf = await fsp.readFile(s);
+    return { blob: new Blob([new Uint8Array(buf)]), name: path.basename(s) };
+  } catch {
+    return null;
+  }
+}
+
+/** 解析帧输入（图生视频/关键帧）：URL/dataURL 直接透传；base64/本机路径转 dataURL */
+async function toFrameRef(v: string): Promise<string | null> {
+  try {
+    const s = v.trim();
+    if (/^(https?:\/\/|data:image\/)/i.test(s)) return s;
+    let buf: Buffer;
+    let mime = 'image/png';
+    const dataUrl = /^data:(image\/[a-zA-Z0-9+.-]+);base64,([\s\S]+)$/.exec(s);
+    if (dataUrl) return s;
+    if (s.length > 512 && /^[A-Za-z0-9+/=\r\n]+$/.test(s.slice(0, 512))) {
+      buf = Buffer.from(s.replace(/\s+/g, ''), 'base64');
+    } else {
+      const fsp = await import('node:fs/promises');
+      buf = await fsp.readFile(s);
+      if (s.toLowerCase().endsWith('.jpg') || s.toLowerCase().endsWith('.jpeg')) mime = 'image/jpeg';
+      else if (s.toLowerCase().endsWith('.webp')) mime = 'image/webp';
+    }
+    return `data:${mime};base64,${buf.toString('base64')}`;
+  } catch {
+    return null;
+  }
+}
+
+/** 从视频任务响应的多层结构里尽力提取视频地址 */
+function extractVideoUrl(j: any): string {
+  const cands = [
+    j?.url, j?.video_url, j?.videoUrl, j?.output?.url, j?.output?.video_url,
+    j?.data?.[0]?.url, j?.data?.[0]?.video_url, j?.content?.url, j?.result?.url,
+    j?.metadata?.url, j?.metadata?.video_url,
+  ];
+  for (const c of cands) if (typeof c === 'string' && c.startsWith('http')) return c;
+  return '';
+}
+
+function taskStatus(j: any): string {
+  return String(j?.status || j?.data?.status || j?.task_status || '').toLowerCase();
+}
+
+/** 生图/图生图响应的共用处理：取 data[0].url（或 b64），下载落盘，返回统一 JSON */
+async function handleImageResult(j: any, model: string, prompt: string): Promise<MpcToolExecutionResult> {
+  const item = j?.data?.[0] || {};
+  const remoteUrl: string = typeof item.url === 'string' ? item.url : '';
+  let localFile = '';
+  let localUrl = '';
+  try {
+    const buf = remoteUrl
+      ? await downloadBinary(remoteUrl)
+      : (item.b64_json ? Buffer.from(String(item.b64_json), 'base64') : null);
+    if (buf && buf.length > 0) {
+      const dir = mediaDir('images');
+      await mkdir(dir, { recursive: true });
+      const file = path.join(dir, `image-${Date.now()}${extFromUrl(remoteUrl, '.png')}`);
+      await writeFile(file, buf);
+      localFile = file;
+      localUrl = `/api/generated/images/${path.basename(file)}`;
+    }
+  } catch { /* 落盘失败不影响结果，remoteUrl 仍可用 */ }
+  if (!remoteUrl && !localUrl) return fail(`生图响应里没有图片地址：${JSON.stringify(j).slice(0, 300)}`);
+  return ok(JSON.stringify({
+    ok: true,
+    model,
+    prompt,
+    remoteUrl: remoteUrl || undefined,
+    screenshotUrl: localUrl || undefined,
+    file: localFile || undefined,
+    revisedPrompt: item.revised_prompt || undefined,
+    note: '图片已生成。回复正文请用 markdown 图片语法 ![](remoteUrl) 内嵌展示该图；screenshotUrl 为本机备份（/api/generated/images/...）。',
+  }));
+}
+
+async function mediaGenerateImage(args: Record<string, unknown>, userId?: string | null): Promise<MpcToolExecutionResult> {
+  const prompt = str(args, 'prompt').trim();
+  if (!prompt) return fail('prompt 为必填项');
+  const model = str(args, 'model') || 'agnes-image-2.5-flash';
+  const size = str(args, 'size');
+  const ctx = resolveMediaPlatform(args, userId);
+  if (!ctx.ok) return fail(ctx.error);
+  const baseUrl = ctx.baseUrl;
+  const keys = ctx.keys;
+  if (!keys.length) return fail('未找到该平台的 API Key（Token 池为空），请先在模型平台里配置');
+
+  // 图生图/多图合成：带参考图时走 /v1/images/edits（multipart，端点透传；上游未开放时返回原始报错）
+  const imagesRaw = args.images;
+  const imageList: string[] = Array.isArray(imagesRaw)
+    ? imagesRaw.map((v) => String(v)).filter((v) => v.trim())
+    : (typeof imagesRaw === 'string' && imagesRaw.trim() ? [imagesRaw.trim()] : []);
+  if (imageList.length) {
+    const blobs: { blob: Blob; name: string }[] = [];
+    for (const ref of imageList) {
+      const r = await toImageBlob(ref);
+      if (!r) return fail(`参考图不可读（支持 URL / base64 / 本机路径）：${String(ref).slice(0, 80)}`);
+      blobs.push(r);
+    }
+    let lastErr = '';
+    for (const key of keys) {
+      const fd = new FormData();
+      fd.append('model', model);
+      fd.append('prompt', size ? `${prompt}（目标尺寸 ${size}）` : prompt);
+      for (const b of blobs) fd.append('image', b.blob, b.name);
+      let res: Response;
+      try {
+        res = await fetchWithTimeout(`${baseUrl}/v1/images/edits`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${key}` },
+          body: fd,
+        }, 180000);
+      } catch (e: unknown) {
+        lastErr = e instanceof Error ? e.message : String(e);
+        continue;
+      }
+      const text = await res.text();
+      if (res.status === 429 || res.status === 401 || res.status === 403) {
+        bumpAgensKeyFail(key);
+        lastErr = `HTTP ${res.status}: ${text.slice(0, 200)}`;
+        continue;
+      }
+      if (!res.ok) return fail(`图生图请求失败 HTTP ${res.status}（平台编辑通道上游可能暂未开放）：${text.slice(0, 300)}`);
+      let j: any;
+      try { j = JSON.parse(text); } catch { return fail('图生图响应不是合法 JSON'); }
+      return await handleImageResult(j, model, prompt);
+    }
+    return fail(`所有 agnes Key 均不可用（限频或无效）：${lastErr}`);
+  }
+
+  let lastErr = '';
+  for (const key of keys) {
+    let res: Response;
+    try {
+      res = await fetchWithTimeout(`${baseUrl}/v1/images/generations`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model, prompt, n: 1, ...(size ? { size } : {}) }),
+      }, 180000);
+    } catch (e: unknown) {
+      lastErr = e instanceof Error ? e.message : String(e);
+      continue;
+    }
+    const text = await res.text();
+    if (res.status === 429 || res.status === 401 || res.status === 403) {
+      bumpAgensKeyFail(key);
+      lastErr = `HTTP ${res.status}: ${text.slice(0, 200)}`;
+      continue;
+    }
+    if (!res.ok) return fail(`生图请求失败 HTTP ${res.status}: ${text.slice(0, 300)}`);
+    let j: any;
+    try { j = JSON.parse(text); } catch { return fail('生图响应不是合法 JSON'); }
+    return await handleImageResult(j, model, prompt);
+  }
+  return fail(`所有 agnes Key 均不可用（限频或无效）：${lastErr}`);
+}
+
+async function mediaGenerateVideo(args: Record<string, unknown>, userId?: string | null): Promise<MpcToolExecutionResult> {
+  const prompt = str(args, 'prompt').trim();
+  if (!prompt) return fail('prompt 为必填项');
+  const model = str(args, 'model') || 'agnes-video-2.5-flash';
+  const seconds = str(args, 'seconds') || '5';
+  const size = str(args, 'size') || '720P';
+  const waitMinutes = Math.min(Math.max(num(args, 'waitMinutes', 8), 1), 10);
+  const ctx = resolveMediaPlatform(args, userId);
+  if (!ctx.ok) return fail(ctx.error);
+  const baseUrl = ctx.baseUrl;
+  const keys = ctx.keys;
+  const isAgnes = ctx.isAgnes;
+  if (!keys.length) return fail('未找到该平台的 API Key（Token 池为空），请先在模型平台里配置');
+
+  // 1) 提交任务（429/401/403 换下一把 key）
+  // 图生视频/关键帧：firstFrame/lastFrame 透传为 first_frame/last_frame（字段名已被接口识别，
+  // 但 mode 路由当前未开放——提交会得到明确报错，平台开放后零改动生效）
+  const firstFrameRaw = str(args, 'firstFrame').trim();
+  const lastFrameRaw = str(args, 'lastFrame').trim();
+  let firstFrameRef = '';
+  let lastFrameRef = '';
+  if (firstFrameRaw) {
+    firstFrameRef = await toFrameRef(firstFrameRaw) || '';
+    if (!firstFrameRef) return fail(`首帧图不可读（支持 URL / base64 / 本机路径）：${firstFrameRaw.slice(0, 80)}`);
+  }
+  if (lastFrameRaw) {
+    lastFrameRef = await toFrameRef(lastFrameRaw) || '';
+    if (!lastFrameRef) return fail(`尾帧图不可读（支持 URL / base64 / 本机路径）：${lastFrameRaw.slice(0, 80)}`);
+  }
+  const MEDIA_NOT_OPEN_HINT = '图生视频/关键帧功能在 agnes API 侧尚未开放（接口的 mode 参数当前只接受 "text"）。请改用纯文字提示词生成视频，或等平台开放后重试。';
+  let taskId = '';
+  let submitKey = '';
+  let lastErr = '';
+  for (const key of keys) {
+    let res: Response;
+    try {
+      res = await fetchWithTimeout(`${baseUrl}/v1/videos`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model, prompt, seconds, size,
+          // mode:'text' 是 agnes 专有约定（其他 OpenAI 兼容平台不接受多余参数）
+          ...(isAgnes ? { mode: 'text' } : {}),
+          // agnes：first_frame/last_frame（字段名已识别，路由开放前报「暂未开放」）；
+          // 其他平台：OpenAI Sora 风格 input_reference
+          ...(isAgnes
+            ? {
+              ...(firstFrameRef ? { first_frame: firstFrameRef } : {}),
+              ...(lastFrameRef ? { last_frame: lastFrameRef } : {}),
+            }
+            : { ...(firstFrameRef ? { input_reference: firstFrameRef } : {}) }),
+        }),
+      }, 60000);
+    } catch (e: unknown) {
+      lastErr = e instanceof Error ? e.message : String(e);
+      continue;
+    }
+    const text = await res.text();
+    if (res.status === 429 || res.status === 401 || res.status === 403) {
+      bumpAgensKeyFail(key);
+      lastErr = `HTTP ${res.status}: ${text.slice(0, 200)}`;
+      continue;
+    }
+    if (!res.ok) {
+      if (isAgnes && /media fields|invalid mode/i.test(text)) return fail(MEDIA_NOT_OPEN_HINT);
+      return fail(`视频任务提交失败 HTTP ${res.status}: ${text.slice(0, 300)}`);
+    }
+    try {
+      const j = JSON.parse(text);
+      taskId = String(j?.task_id || j?.taskId || j?.id || j?.video_id || '');
+    } catch { /* ignore */ }
+    if (!taskId) return fail(`视频任务响应里没有 task_id：${text.slice(0, 300)}`);
+    // 任务归属提交它的那把 key（换 key 查会报 task_not_exist，2026-09-15 实测），轮询/下载必须沿用
+    submitKey = key;
+    break;
+  }
+  if (!taskId) return fail(`所有 agnes Key 均不可用（限频或无效）：${lastErr}`);
+
+  // 2) 轮询直到完成/失败/超时（用提交时的同一把 key）
+  const pollKey = submitKey;
+  const deadline = Date.now() + waitMinutes * 60 * 1000;
+  let status = '';
+  let finalJson: any = null;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 10000));
+    try {
+      const res = await fetchWithTimeout(`${baseUrl}/v1/videos/${taskId}`, {
+        headers: { Authorization: `Bearer ${pollKey}` },
+      }, 30000);
+      const text = await res.text();
+      if (res.ok) {
+        try {
+          finalJson = JSON.parse(text);
+          status = taskStatus(finalJson);
+        } catch { /* 下轮再试 */ }
+      }
+    } catch { /* 网络抖动下轮再试 */ }
+    if (['completed', 'succeeded', 'success', 'finished', 'done'].includes(status)) break;
+    if (['failed', 'error', 'cancelled', 'canceled'].includes(status)) {
+      return fail(`视频任务失败（taskId=${taskId}）：${JSON.stringify(finalJson).slice(0, 400)}`);
+    }
+  }
+  if (!['completed', 'succeeded', 'success', 'finished', 'done'].includes(status)) {
+    return ok(JSON.stringify({
+      ok: false,
+      pending: true,
+      model,
+      taskId,
+      status: status || 'processing',
+      note: `视频任务已提交且仍在处理中（等待 ${waitMinutes} 分钟未完成）。可用 api_video_status 工具传 taskId=${taskId} 继续查询，不要重复提交同样的任务。`,
+    }));
+  }
+
+  // 3) 拿视频地址（响应带 url 优先；否则试 /content 直下）
+  const remoteUrl = extractVideoUrl(finalJson);
+  let localFile = '';
+  let localUrl = '';
+  try {
+    const buf = remoteUrl
+      ? await downloadBinary(remoteUrl, 300000)
+      : await (async () => {
+        const res = await fetchWithTimeout(`${baseUrl}/v1/videos/${taskId}/content`, {
+          headers: { Authorization: `Bearer ${pollKey}` },
+        }, 300000);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return Buffer.from(await res.arrayBuffer());
+      })();
+    if (buf.length > 0) {
+      const dir = mediaDir('videos');
+      await mkdir(dir, { recursive: true });
+      const file = path.join(dir, `video-${Date.now()}${extFromUrl(remoteUrl, '.mp4')}`);
+      await writeFile(file, buf);
+      localFile = file;
+      localUrl = `/api/generated/videos/${path.basename(file)}`;
+    }
+  } catch { /* 落盘失败不影响结果，remoteUrl 仍可用 */ }
+
+  return ok(JSON.stringify({
+    ok: true,
+    model,
+    taskId,
+    status,
+    remoteUrl: remoteUrl || undefined,
+    videoUrl: localUrl || undefined,
+    file: localFile || undefined,
+    note: '视频已生成。回复正文请给出视频链接（remoteUrl 或 videoUrl），并说明时长与分辨率；file 为本机文件路径。',
+  }));
+}
+
+async function mediaVideoStatus(args: Record<string, unknown>, userId?: string | null): Promise<MpcToolExecutionResult> {
+  const taskId = str(args, 'taskId').trim();
+  if (!taskId) return fail('taskId 为必填项');
+  const ctx = resolveMediaPlatform(args, userId);
+  if (!ctx.ok) return fail(ctx.error);
+  const { baseUrl, keys } = ctx;
+  if (!keys.length) return fail('未找到该平台的 API Key');
+  // 任务归属提交它的 key；这里不知道是哪把，逐把试到命中（task_not_exist 换下一把）
+  let lastErr = '';
+  for (const key of keys) {
+    const res = await fetchWithTimeout(`${baseUrl}/v1/videos/${taskId}`, {
+      headers: { Authorization: `Bearer ${key}` },
+    }, 30000).catch(() => null);
+    if (!res) { lastErr = '网络错误'; continue; }
+    const text = await res.text();
+    if (!res.ok) { lastErr = `HTTP ${res.status}: ${text.slice(0, 200)}`; continue; }
+    try {
+      const j = JSON.parse(text);
+      const url = extractVideoUrl(j);
+      return ok(JSON.stringify({ taskId, status: taskStatus(j), remoteUrl: url || undefined, raw: j }));
+    } catch {
+      lastErr = `响应不是合法 JSON：${text.slice(0, 200)}`;
+    }
+  }
+  return fail(`查询失败：${lastErr}`);
+}
+
 
 export async function executeApiTool(
   name: string,
@@ -1272,6 +1724,14 @@ export async function executeApiTool(
       // IM 增补：测试连接器
       case 'api_im_connector_test':
         return ok(await testImConnector(requireUser(userId), str(args, 'id')));
+
+      // AI 媒体生成（文生图/图生图/文生视频/图生视频，默认 agnes，支持任意已配置平台）
+      case 'api_image_generate':
+        return await mediaGenerateImage(args, userId);
+      case 'api_video_generate':
+        return await mediaGenerateVideo(args, userId);
+      case 'api_video_status':
+        return await mediaVideoStatus(args, userId);
 
       default:
         return fail(`未实现的 API 工具: ${name}`);

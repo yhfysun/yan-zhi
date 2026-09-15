@@ -207,7 +207,7 @@ export const BUILTIN_TABLE_DOCS: Record<string, TableDoc> = {
   },
   platform: {
     name: '模型平台',
-    description: '模型平台连接表：OpenAI 兼容等协议的 API 地址与密钥配置（agens 为内置云端平台）。',
+    description: '模型平台连接表：OpenAI 兼容等协议的 API 地址与密钥配置（agnes 为内置云端平台）。',
     fields: { name: '平台名称', protocol: '协议类型', base_url: 'API 地址', api_key: 'API 密钥（加密）' },
   },
   platform_api_key: {
