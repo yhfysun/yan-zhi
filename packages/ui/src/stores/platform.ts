@@ -6,6 +6,7 @@ import { getPlatformAdapter, LlmClient } from '@yan-zhi/core';
 import type { CapabilityTestKind, CapabilityTestResult } from '@yan-zhi/core';
 import { uid } from '@yan-zhi/shared';
 import { api } from '../api/client';
+import { DEFAULT_CONTEXT_WINDOW } from '../utils/context-window';
 import { useAuthStore } from './auth';
 
 function rowToPlatform(r: any): Platform {
@@ -354,7 +355,7 @@ export const usePlatformStore = defineStore('platform', () => {
     if (on()) {
       await api.post('/platforms/models/batch', {
         platformId,
-        models: list.map((m) => ({ modelId: m.id, type: inferModelType(m.id, m.type), contextWindow: 262144 })),
+        models: list.map((m) => ({ modelId: m.id, type: inferModelType(m.id, m.type), contextWindow: DEFAULT_CONTEXT_WINDOW })),
       });
     } else {
       const adapter = getPlatformAdapter();
@@ -378,7 +379,7 @@ export const usePlatformStore = defineStore('platform', () => {
         } else {
           await adapter.db.exec(
             'INSERT INTO model (id, platform_id, model_id, type, context_window, enabled, is_default) VALUES (?, ?, ?, ?, ?, ?, ?)',
-            [uid('m_'), platformId, item.id, type, 262144, 1, 0],
+            [uid('m_'), platformId, item.id, type, DEFAULT_CONTEXT_WINDOW, 1, 0],
           );
         }
       }

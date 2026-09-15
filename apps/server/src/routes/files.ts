@@ -2,9 +2,18 @@ import { Router, Request, Response } from 'express';
 import { v4 as uuid } from 'uuid';
 import { authMiddleware } from '../auth.js';
 import { db } from '../db.js';
+import { resolveArtifactDirFor, ensureArtifactDirFor } from '../services/artifact-dir.js';
+import type { FileCategory } from '@yan-zhi/shared';
 
 const router = Router();
 router.use(authMiddleware);
+
+const FILE_CATEGORIES: FileCategory[] = ['upload', 'intermediate', 'deliverable'];
+
+function parseCategory(v: unknown): FileCategory {
+  const s = String(v || '');
+  return (FILE_CATEGORIES as string[]).includes(s) ? (s as FileCategory) : 'intermediate';
+}
 
 function rowToFile(r: any) {
   return {
@@ -21,6 +30,21 @@ function rowToFile(r: any) {
     createdAt: r.created_at,
   };
 }
+
+// GET /api/conversations/:id/artifact-dir?category=upload —— 解析产物目录（可选建目录）
+// 前端落盘（上传附件等）先取此目录再写入，保证与服务端媒体落盘走同一套规范。
+router.get('/:id/artifact-dir', (req: Request, res: Response) => {
+  const userId = req.user!.userId;
+  const cid = req.params.id;
+  const conv = db.prepare('SELECT id FROM conversation WHERE id = ? AND user_id = ?').get(cid, userId);
+  if (!conv) { res.status(404).json({ error: '会话不存在' }); return; }
+  const category = parseCategory(req.query.category);
+  const ensure = req.query.ensure === '1' || req.query.ensure === 'true';
+  const info = ensure
+    ? ensureArtifactDirFor({ conversationId: cid, category })
+    : resolveArtifactDirFor({ conversationId: cid, category });
+  res.json({ data: { category, dir: info.dir, relDir: info.relDir, root: info.root, title: info.title } });
+});
 
 // GET /api/conversations/:id/files —— 列出会话的所有文件
 router.get('/:id/files', (req: Request, res: Response) => {
@@ -46,7 +70,7 @@ router.post('/:id/files', (req: Request, res: Response) => {
   const now = Date.now();
   db.prepare(
     'INSERT INTO conversation_file (id, conversation_id, user_id, space_id, name, path, category, mime_type, size, source, message_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-  ).run(id, cid, userId, conv.space_id || null, name, path, category || 'intermediate', mimeType || null, size || 0, source || 'agent', messageId || null, now);
+  ).run(id, cid, userId, conv.space_id || null, name, path, parseCategory(category), mimeType || null, size || 0, source || 'agent', messageId || null, now);
   const row = db.prepare('SELECT * FROM conversation_file WHERE id = ?').get(id);
   res.json({ data: rowToFile(row) });
 });

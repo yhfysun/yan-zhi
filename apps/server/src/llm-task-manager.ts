@@ -16,9 +16,12 @@ import {
 } from './services/memory-service.js';
 import { loadSpaceMemoryForConversation, formatSpaceMemoryContext } from './services/space-memory.js';
 import { serverState } from './state.js';
+import { resolveArtifactDirFor } from './services/artifact-dir.js';
+import { modelSupportsTools } from './services/model-caps.js';
+import { DEFAULT_CONTEXT_WINDOW } from './constants.js';
 import { promises as fsp } from 'node:fs';
 
-export type TaskStatus = 'running' | 'completed' | 'failed' | 'aborted';
+export type TaskStatus = 'running' | 'completed' | 'failed' | 'aborted' | 'paused';
 
 export interface SSEEvent {
   type: string;
@@ -62,6 +65,11 @@ interface LlmTask {
   ontologyIds?: string[];
   /** 会话级工具权限：readonly=只读（写类工具构建期裁剪+运行时拦截）/ default=正常 / full=全部放行 */
   permissionMode?: 'readonly' | 'default' | 'full';
+  /** 暂停旗标（工具边界暂停语义）：置位后主循环/子智能体循环/前端委托入口在边界处挂起，
+   *  正在执行的单个动作不打断（原子操作，中途掐断会留半状态页面）。resume 后从边界继续。 */
+  paused?: boolean;
+  /** 暂停挂起点：resumeTask 时逐个 resolve 放行 */
+  pauseWaiters?: Array<() => void>;
   /** 运行中由前端「立即发送」注入的追加用户消息 id（已落库）。
    *  非空即表示还有未消费的用户输入：本轮模型即便不再调工具，也不能直接 finish，
    *  必须再跑一轮把这些消息带进上下文。 */
@@ -123,7 +131,7 @@ function loadModel(modelId: string, userId: string): Model | null {
     modelId: row.model_id,
     alias: row.alias,
     type: row.type || 'llm',
-    contextWindow: row.context_window || 262144,
+    contextWindow: row.context_window || DEFAULT_CONTEXT_WINDOW,
     capabilities: (() => { try { return JSON.parse(row.capabilities_json || '[]'); } catch { return []; } })(),
     description: row.description ?? undefined,
   } as any;
@@ -329,8 +337,9 @@ export function subscribe(taskId: string, since: number, onEvent: (event: SSEEve
   }
   return () => {
     task.subscribers.delete(onEvent);
-    // 最后一个订阅者断开：给 pendingToolCalls 设 15 秒宽限期，超时则 reject（避免等 2 分钟）
-    if (task.subscribers.size === 0 && task.status === 'running') {
+    // 最后一个订阅者断开：给 pendingToolCalls 设 15 秒宽限期，超时则 reject（避免等 2 分钟）。
+    // ⚠️ paused 态跳过：任务挂起是用户主动行为，宽限 reject 会把恢复后的工具链误杀。
+    if (task.subscribers.size === 0 && task.status === 'running' && !task.paused) {
       for (const [id, pending] of task.pendingToolCalls) {
         if (pending.timer) continue; // 已有 timer 不重复设
         pending.timer = setTimeout(() => {
@@ -351,11 +360,58 @@ export function abortTask(taskId: string) {
   if (!task) return;
   task.abortController.abort();
   task.status = 'aborted';
+  // abort 优先于暂停：先放行所有暂停挂起者（它们醒来后看到 aborted 信号即退出）
+  if (task.pauseWaiters) {
+    for (const w of task.pauseWaiters) { try { w(); } catch {} }
+    task.pauseWaiters = [];
+  }
+  task.paused = false;
   for (const [, pending] of task.pendingToolCalls) {
     if (pending.timer) clearTimeout(pending.timer);
     pending.reject(new DOMException('Aborted', 'AbortError'));
   }
   task.pendingToolCalls.clear();
+}
+
+/** 工具边界暂停：边界处（主循环迭代/子智能体循环/前端委托入口）挂起，正在执行的动作跑完为止。
+ *  status 标记 paused 并广播 SSE，前端据此切按钮态 + 解除输入锁定。 */
+export function pauseTask(taskId: string): boolean {
+  const task = tasks.get(taskId);
+  if (!task || task.status !== 'running') return false;
+  if (task.paused) return true;
+  task.paused = true;
+  task.status = 'paused';
+  emit(task, { type: 'task:paused' });
+  return true;
+}
+
+/** 恢复执行：放行所有挂起者，回到 running 并广播 SSE。 */
+export function resumeTask(taskId: string): boolean {
+  const task = tasks.get(taskId);
+  if (!task || !task.paused) return false;
+  task.paused = false;
+  task.status = 'running';
+  emit(task, { type: 'task:resumed' });
+  const waiters = task.pauseWaiters || [];
+  task.pauseWaiters = [];
+  for (const w of waiters) { try { w(); } catch {} }
+  return true;
+}
+
+/**
+ * 边界等待：task.paused 时挂起当前异步流程直到 resume / abort。
+ * 每次醒来后复检 aborted —— abort 时已放行所有 waiter，这里做二次确认。
+ * 必须在「每轮迭代开头 / 每个工具发起前」调用，保证挂起点之间没有半途动作。
+ */
+async function waitIfPaused(task: LlmTask): Promise<void> {
+  if (!task.paused) return;
+  await new Promise<void>((resolve) => {
+    const waiter = () => resolve();
+    (task.pauseWaiters ||= []).push(waiter);
+  });
+  if (task.abortController.signal.aborted) throw new DOMException('Aborted', 'AbortError');
+  // resume 后若再次被 pause（快速往返），递归等待下一次放行
+  if (task.paused) return waitIfPaused(task);
 }
 
 function unattendedToolResult(toolName: string): string {
@@ -699,7 +755,7 @@ async function runReActLoop(task: LlmTask, params: {
     ensureToolsInitialized();
     const registry = getToolRegistry();
     const modelCaps = model.capabilities as string[] | undefined;
-    const supportsTools = !modelCaps || modelCaps.length === 0 || modelCaps.includes('function_call');
+    const supportsTools = modelSupportsTools(modelCaps);
 
     // 后端统一构建 systemPrompt/tools（单一事实来源）：前端只传 agentId/appGuide。
     // 历史兼容：显式传 systemPrompt/tools 则优先（定时任务等场景）。
@@ -771,8 +827,13 @@ async function runReActLoop(task: LlmTask, params: {
       'image_analyze',
     ]);
 
+    // 媒体生成工具（后端直执行，产物落会话交付目录）：成功后要登记到 conversation_file，
+    // 否则产物只存在于对话气泡里，文件管理列表看不到。
+    const MEDIA_TOOLS = new Set(['api_image_generate', 'api_video_generate']);
+
     for (let step = 0; step < maxSteps; step++) {
       if (task.abortController.signal.aborted) throw new DOMException('Aborted', 'AbortError');
+      await waitIfPaused(task); // 工具边界暂停：挂起时停在这里，resume/abort 后继续
       task.step = step;
       emit(task, { type: 'step', step });
 
@@ -780,7 +841,7 @@ async function runReActLoop(task: LlmTask, params: {
       let messagesToSend = loadMessages(convId);
       messagesToSend = messagesToSend.filter(m => m.content || m.toolCalls || m.role === 'tool' || (m as any).reasoningContent);
       // 上下文窗口压缩：超限时先抢救细节再生成结构化摘要（LLM 摘要而非硬截断）
-      const ctxWindow = new ContextWindow(model.contextWindow || 262144, 6);
+      const ctxWindow = new ContextWindow(model.contextWindow || DEFAULT_CONTEXT_WINDOW, 6);
       ctxWindow.setSummaryModel(platform, model);
       if (ctxWindow.needsCompression(messagesToSend)) {
         let flushedThisRun = false; // 每个任务最多抢救一次
@@ -1044,6 +1105,28 @@ async function runReActLoop(task: LlmTask, params: {
           } catch {}
         }
 
+        // 媒体产物（生图/生视频）落盘即注册：产物由服务端直接写进会话交付目录，
+        // 不登记的话文件管理里永远看不到（此前只有 file_write 会登记，导致生图产物只出现在对话里）。
+        if (MEDIA_TOOLS.has(toolName) && !result.startsWith('工具执行失败')) {
+          try {
+            const media = JSON.parse(result) as { type?: string; file?: string; ok?: boolean };
+            const filePath = String(media?.file || '');
+            // 产物落盘失败时工具只回远端 URL（没有本机文件），此时无处可登记
+            if (media?.ok !== false && filePath) {
+              const sep = filePath.includes('/') ? '/' : '\\';
+              const fileName = filePath.split(sep).pop() || filePath;
+              const isVideo = media?.type === 'video' || toolName === 'api_video_generate';
+              // 产物就在本机，顺手取真实字节数（文件管理里显示大小，而不是 0）
+              let size = 0;
+              try { size = (await fsp.stat(filePath)).size; } catch { /* 取不到就留 0 */ }
+              // 生图/生视频默认归交付物（用户要的东西），与 mediaTarget 的落盘分类保持一致
+              const cfId = 'cf_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+              db.prepare('INSERT INTO conversation_file (id, conversation_id, user_id, space_id, name, path, category, mime_type, size, source, message_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(cfId, convId, userId, null, fileName, filePath, 'deliverable', isVideo ? 'video/mp4' : 'image/png', size, 'agent', assistantMsgId, Date.now());
+              emit(task, { type: 'file:registered', conversationId: convId });
+            }
+          } catch { /* 结果非 JSON 或登记失败：不影响对话 */ }
+        }
+
         // 添加工具结果消息（入库前压缩，防止单条极端大结果撑爆消息表与下轮上下文）
         const cappedResult = capToolResult(result);
         const toolMsgId = insertMessage(convId, userId, 'tool', cappedResult, { toolCallId: tc.id });
@@ -1299,10 +1382,12 @@ async function executeTool(
 
 /** 通过 SSE 委托前端执行工具，等待前端 POST 结果回来。
  *  事件有缓冲：前端刷新断开时事件不丢失，重连后重放并执行。 */
-function executeToolViaFrontend(task: LlmTask, toolName: string, args: any, toolCallId: string, depth: number = 0): Promise<string> {
+async function executeToolViaFrontend(task: LlmTask, toolName: string, args: any, toolCallId: string, depth: number = 0): Promise<string> {
+  // 工具发起前的暂停边界：暂停中不发新工具（正在跑的前一个动作已在各自的 await 里自然跑完）
+  await waitIfPaused(task);
   // 无人值守（无前端 SSE 订阅者）：UI/MCP 工具无法委托前端，直接返回提示让模型自行决策
   if (task.subscribers.size === 0) {
-    return Promise.resolve(unattendedToolResult(toolName));
+    return unattendedToolResult(toolName);
   }
   return new Promise<string>((resolve, reject) => {
     const callId = 'tc_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -1426,7 +1511,7 @@ async function runSubAgent(
   const maxSteps = typeof cfgSteps === 'number' && cfgSteps > 0 ? Math.min(Math.floor(cfgSteps), 100) : 100;
   const systemPrompt = agent.system_prompt || '你是一个智能助手。';
   const modelCaps = model.capabilities as string[] | undefined;
-  const supportsTools = !modelCaps || modelCaps.length === 0 || modelCaps.includes('function_call');
+  const supportsTools = modelSupportsTools(modelCaps);
   const tools = supportsTools ? subTools : [];
 
   emit(task, { type: 'sub_agent:start', agentId: resolvedId, agentName: subAgentName, parentToolCallId, depth: depth + 1 });
@@ -1440,11 +1525,12 @@ async function runSubAgent(
   try {
     for (let step = 0; step < maxSteps; step++) {
       if (task.abortController.signal.aborted) throw new DOMException('Aborted', 'AbortError');
+      await waitIfPaused(task); // 子智能体循环同样尊重任务级暂停（pageAgent 常由 call_agent 委派）
 
       // 加载子智能体自己的消息（按 parent_tool_call_id 过滤，避免上下文污染）
       let messagesToSend = loadSubAgentMessages(task.conversationId, parentToolCallId);
       messagesToSend = messagesToSend.filter(m => m.content || m.toolCalls || m.role === 'tool' || (m as any).reasoningContent);
-      const ctxWindow = new ContextWindow(model.contextWindow || 262144, 6);
+      const ctxWindow = new ContextWindow(model.contextWindow || DEFAULT_CONTEXT_WINDOW, 6);
       ctxWindow.setSummaryModel(platform, model);
       if (ctxWindow.needsCompression(messagesToSend)) {
         messagesToSend = await ctxWindow.compress(messagesToSend);
@@ -1977,6 +2063,26 @@ export function buildSystemPromptForBackend(agentId: string | null, userId: stri
   const effectiveWorkspaceDir = (opts?.workspaceDir && opts.workspaceDir.trim()) || serverState.workspaceDir;
   if (effectiveWorkspaceDir && effectiveWorkspaceDir.trim()) {
     parts.push(`---\n## 工作目录\n当前工作目录：${effectiveWorkspaceDir}`);
+  }
+
+  // 产物目录规范：直接把解析好的目录交给模型，省掉模型自己拼「日期-任务名」的出错空间。
+  // 与文件产出分类规范（category）配套：category 决定落在哪个目录。
+  {
+    const convId = opts?.conversationId || '';
+    const uploadDir = resolveArtifactDirFor({ conversationId: convId, category: 'upload' }).dir;
+    const intermediateDir = resolveArtifactDirFor({ conversationId: convId, category: 'intermediate' }).dir;
+    const deliverableDir = resolveArtifactDirFor({ conversationId: convId, category: 'deliverable' }).dir;
+    parts.push([
+      '---',
+      '## 产物目录',
+      '所有产出按分类归档，file_write 的 path 必须写在下面对应目录内（不要写到工作目录根、临时目录或其他位置）：',
+      `- 用户上传文件目录：${uploadDir}`,
+      `- 中间产物目录：${intermediateDir}`,
+      `- 交付文件目录：${deliverableDir}`,
+      '需与 category 参数保持一致：category="deliverable" 写交付目录，category="intermediate" 写中间目录。',
+      '界面已内置「导出 Word」：把回复正文（markdown，含图片）直接转成 .docx，因此不需要自己用 python_exec 生成 Word 文件；',
+      '需要交付 Word 时，把内容写成规范的 markdown 正文（图片用 ![](url)）即可。',
+    ].join('\n'));
   }
 
   // 当前时间

@@ -7,6 +7,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   maximize: () => ipcRenderer.send('window-maximize'),
   close: () => ipcRenderer.send('window-close'),
   isMaximized: () => ipcRenderer.invoke('window-is-maximized'),
+  // 界面刷新（顶栏刷新按钮）：由主进程执行 reloadIgnoringCache，界面卡住时的自救出口
+  reload: () => ipcRenderer.send('window-reload'),
   // 平台标识
   platform: process.platform,
   isElectron: true,
@@ -61,6 +63,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
   clipboard: {
     readText: () => ipcRenderer.invoke('clipboard:readText'),
     writeText: (text) => ipcRenderer.invoke('clipboard:writeText', text),
+    // 写入图片（dataURL）——媒体预览右键「复制」用
+    writeImage: (dataUrl) => ipcRenderer.invoke('clipboard:writeImage', dataUrl),
+  },
+
+  // 系统保存框（媒体右键「另存为」）
+  dialog: {
+    saveFile: (opts) => ipcRenderer.invoke('dialog:saveFile', opts),
   },
 
   // 屏幕截图（框选）：invoke 挂起直到用户在框选窗确认（返回 { ok, dataUrl, width, height }）

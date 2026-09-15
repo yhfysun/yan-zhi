@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS model (
   model_id TEXT NOT NULL,
   alias TEXT,
   type TEXT NOT NULL DEFAULT 'llm',
-  context_window INTEGER DEFAULT 262144,
+  context_window INTEGER DEFAULT 1048576,
   enabled INTEGER NOT NULL DEFAULT 1,
   is_default INTEGER NOT NULL DEFAULT 0,
   capabilities_json TEXT,

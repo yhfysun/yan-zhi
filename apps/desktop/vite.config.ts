@@ -36,6 +36,12 @@ export default defineConfig({
   server: {
     port: 1420,
     strictPort: true,
+    // 本机 chokidar 监听会静默挂掉（改 packages/ui 不触发 HMR，实测 2026-09-15）：
+    // 轮询兜底，保证 packages/* 源码改动一定能被看到。
+    watch: {
+      usePolling: true,
+      interval: 500,
+    },
     // 代理后端 API（与 apps/web 对齐：/api -> http://localhost:3001）
     // 否则桌面端 /api/auth/login 等请求会落到 vite dev server 上返回 404
     proxy: {

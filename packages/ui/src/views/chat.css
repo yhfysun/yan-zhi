@@ -349,6 +349,33 @@
   opacity: 0.7;
   font-weight: 500;
 }
+/* ===== 正文图片（模型总结 md 里的 ![](url)）=====
+   严格限高：小占位常驻，双击/右键进入放大查看，避免大图撑破一屏 */
+.msg-image {
+  display: block;
+  max-width: 100%;
+  max-height: 160px;
+  width: auto;
+  height: auto;
+  margin: 6px 0;
+  border-radius: 8px;
+  border: 1px solid var(--glass-border);
+  object-fit: contain;
+  cursor: zoom-in;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.msg-image:hover {
+  border-color: var(--color-primary);
+  box-shadow: 0 2px 10px color-mix(in srgb, var(--color-primary) 16%, transparent);
+}
+/* 用户消息气泡里的图片：浅色描边改白色系，避免深底上描边发灰 */
+.msg-user .msg-image {
+  border-color: rgba(255, 255, 255, 0.35);
+}
+@media (max-width: 767px) {
+  .msg-image { max-height: 120px; }
+}
+
 .msg-content {
   padding: 12px 16px; border-radius: 16px; line-height: 1.65;
   word-wrap: break-word; overflow-wrap: break-word;
@@ -364,8 +391,7 @@
   box-sizing: border-box;
 }
 .msg-user .msg-content {
-  background: var(--gradient-primary);
-  color: white; border-bottom-right-radius: 4px; box-shadow: 0 2px 10px color-mix(in srgb, var(--color-primary) 22%, transparent);
+  background: var(--gradient-primary);  color: white; border-bottom-right-radius: 4px; box-shadow: 0 2px 10px color-mix(in srgb, var(--color-primary) 22%, transparent);
   /* inline-block 让气泡贴合内容宽度（shrink-to-fit 经典实现）：短消息收缩、长消息触 max-width:100%(即 .msg-block 85%) 换行。
      不用 width:fit-content，因 .msg-content 有 overflow-y:auto(BFC)，fit-content+max-width:100% 会循环依赖失效。 */
   display: inline-block;
@@ -936,6 +962,35 @@
 }
 .pop-select-item:hover { background: color-mix(in srgb, var(--color-primary) 10%, transparent); }
 .pop-select-item.active { color: var(--color-primary); font-weight: 600; background: color-mix(in srgb, var(--color-primary) 14%, transparent); }
+
+/* 模型项：名称占满，右侧常显当前上下文窗口（hover 弹出面板可改） */
+.pop-select-model { gap: 8px; }
+.pop-select-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pop-select-ctx { flex-shrink: 0; font-size: 11.5px; font-weight: 400; color: var(--color-text-secondary); font-variant-numeric: tabular-nums; }
+.pop-select-item.active .pop-select-ctx { color: var(--color-primary); }
+/* 上下文窗口面板浮层（Teleport 到 body，坐标由调用方计算；动画复用 plus-sub-fade） */
+.ctx-panel-pop { position: fixed; z-index: 10000; }
+
+/* 正文里的本机路径：点击直接进预览（文件）或目录树（目录），不必自己找目录 */
+.file-path-link {
+  color: var(--color-primary);
+  text-decoration: none;
+  border-bottom: 1px dashed color-mix(in srgb, var(--color-primary) 45%, transparent);
+  cursor: pointer;
+  word-break: break-all;
+}
+.file-path-link:hover {
+  border-bottom-style: solid;
+  background: color-mix(in srgb, var(--color-primary) 8%, transparent);
+}
+.file-path-link.code-inline-path {
+  font-family: 'Consolas', 'Monaco', monospace;
+  font-size: 0.92em;
+  padding: 1px 4px;
+  border-radius: 4px;
+  border-bottom: none;
+  background: color-mix(in srgb, var(--color-primary) 8%, transparent);
+}
 
 .minimal-select {
   display: flex; align-items: center; gap: 2px;

@@ -429,7 +429,7 @@
               </div>
             </div>
           </el-popover>
-          <el-popover placement="top-end" :width="240" trigger="click" :show-arrow="false">
+          <el-popover v-model:visible="modelPopOpen" placement="top-end" :width="260" trigger="click" :show-arrow="false">
             <template #reference>
               <!-- 注意：tooltip 不能套在 button 外层——会吃掉事件导致 popover 点不开。
                    改为让 popover 直接持有 button，tooltip 走 title 属性。 -->
@@ -445,15 +445,37 @@
                 <div
                   v-for="m in g.models"
                   :key="m.id"
-                  class="pop-select-item"
+                  class="pop-select-item pop-select-model"
                   :class="{ active: m.id === selectedModelId }"
+                  @mouseenter="openCtxPanel(m, $event)"
+                  @mouseleave="scheduleCloseCtxPanel"
                   @click="onModelChange(m.id)"
                 >
-                  <span>{{ m.alias || m.modelId }}</span>
+                  <span class="pop-select-name">{{ m.alias || m.modelId }}</span>
+                  <span class="pop-select-ctx">{{ formatContextWindow(m.contextWindow) }}</span>
                 </div>
               </template>
             </div>
           </el-popover>
+          <!-- 模型项 hover → 左侧弹出上下文窗口快捷设置（与顶栏模型菜单共用同一面板组件） -->
+          <Teleport to="body">
+            <transition name="plus-sub-fade">
+              <div
+                v-if="ctxPanelModel"
+                ref="ctxPanelEl"
+                class="ctx-panel-pop"
+                :style="{ top: ctxPanelTop + 'px', left: ctxPanelLeft + 'px' }"
+                @mouseenter="cancelCloseCtxPanel"
+                @mouseleave="scheduleCloseCtxPanel"
+              >
+                <ModelContextPanel
+                  :name="ctxPanelModel.alias || ctxPanelModel.modelId"
+                  :context-window="ctxPanelModel.contextWindow"
+                  @change="onCtxWindowChange"
+                />
+              </div>
+            </transition>
+          </Teleport>
           <el-tooltip content="新建任务" placement="top">
             <el-button size="small" circle class="new-task-btn" @click="startNewChat()">
               <el-icon><EditPen /></el-icon>
@@ -541,8 +563,11 @@ import {
 } from '@element-plus/icons-vue';
 import { useChat } from '../../composables/chat/useChat';
 import AttachmentPreview from './AttachmentPreview.vue';
+import ModelContextPanel from './ModelContextPanel.vue';
 import { useCodeStore } from '../../stores/code';
-import { useSettingsStore } from '../../stores';
+import { useSettingsStore, usePlatformStore } from '../../stores';
+import { formatContextWindow } from '../../utils/context-window';
+import type { Model } from '@yan-zhi/shared';
 import { useRouter } from 'vue-router';
 
 const {
@@ -673,6 +698,83 @@ const currentModelName = computed(() => {
     if (m) return m.alias || m.modelId;
   }
   return '选择模型';
+});
+
+// ===== 模型上下文窗口快捷设置（hover 模型项 → 左侧浮层，对齐 WorkBuddy）=====
+// 保存写回 model 表（platformStore.updateModel），与「配置模型平台」里的上下文窗口是同一个值
+const platformStore = usePlatformStore();
+const modelPopOpen = ref(false);
+const ctxPanelModelId = ref('');
+const ctxPanelTop = ref(0);
+const ctxPanelLeft = ref(0);
+let ctxCloseTimer: ReturnType<typeof setTimeout> | undefined;
+
+// 按 id 实时反查：updateModel 后 store 会重建 models 数组，持有旧对象引用会读不到新值
+const ctxPanelModel = computed<Model | null>(() => {
+  if (!ctxPanelModelId.value) return null;
+  for (const g of modelGroups.value) {
+    const m = g.models.find((x) => x.id === ctxPanelModelId.value);
+    if (m) return m;
+  }
+  return null;
+});
+
+const CTX_PANEL_W = 244;
+const CTX_PANEL_GAP = 10;
+
+function openCtxPanel(m: Model, evt: MouseEvent) {
+  cancelCloseCtxPanel();
+  const el = evt.currentTarget as HTMLElement;
+  const r = el.getBoundingClientRect();
+  // 模型下拉贴右下角展开，优先往左弹；左边放不下再翻到右侧
+  const left = r.left - CTX_PANEL_W - CTX_PANEL_GAP;
+  ctxPanelLeft.value = left >= 8 ? left : Math.min(r.right + CTX_PANEL_GAP, window.innerWidth - CTX_PANEL_W - 8);
+  ctxPanelTop.value = Math.max(8, Math.min(r.top - 6, window.innerHeight - 210));
+  ctxPanelModelId.value = m.id;
+}
+function scheduleCloseCtxPanel() {
+  if (ctxCloseTimer) clearTimeout(ctxCloseTimer);
+  // 延迟关闭：留出指针从模型项移入浮层的时间
+  ctxCloseTimer = setTimeout(() => { ctxPanelModelId.value = ''; }, 150);
+}
+function cancelCloseCtxPanel() {
+  if (ctxCloseTimer) { clearTimeout(ctxCloseTimer); ctxCloseTimer = undefined; }
+}
+function closeCtxPanelNow() {
+  cancelCloseCtxPanel();
+  ctxPanelModelId.value = '';
+}
+async function onCtxWindowChange(tokens: number) {
+  const m = ctxPanelModel.value;
+  if (!m) return;
+  try {
+    await platformStore.updateModel(m.id, { contextWindow: tokens });
+  } catch (err: any) {
+    ElMessage.error(err?.message || '上下文窗口保存失败');
+  }
+}
+watch(modelPopOpen, (v) => { if (!v) closeCtxPanelNow(); });
+
+// 浮层 Teleport 到 body，落在模型下拉的 popper 之外 —— el-popover 的「外部点击」判定
+// 会把面板内的点击当成外部而收掉整个下拉。在 window 捕获阶段挡下（早于 document 层判定），
+// 只阻止传播不影响默认行为，面板里的输入框仍可正常聚焦。
+const ctxPanelEl = ref<HTMLElement | null>(null);
+function onCtxPanelMousedownCapture(ev: MouseEvent) {
+  const el = ctxPanelEl.value;
+  if (!el) return;
+  const t = ev.target as Node | null;
+  if (t && (t === el || el.contains(t))) ev.stopPropagation();
+}
+watch(
+  () => !!ctxPanelModel.value,
+  (open) => {
+    if (open) window.addEventListener('mousedown', onCtxPanelMousedownCapture, true);
+    else window.removeEventListener('mousedown', onCtxPanelMousedownCapture, true);
+  },
+);
+onBeforeUnmount(() => {
+  window.removeEventListener('mousedown', onCtxPanelMousedownCapture, true);
+  cancelCloseCtxPanel();
 });
 
 // ===== D2 `/` 命令菜单 =====

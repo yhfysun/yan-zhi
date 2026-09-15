@@ -2,7 +2,8 @@ import { v4 as uuid } from 'uuid';
 import { readdir, stat, mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { db } from '../db.js';
-import { AGENS_API_URL } from '../agens-platform/service.js';
+import { DEFAULT_CONTEXT_WINDOW } from '../constants.js';
+import { AGENS_API_URL, inferCapabilitiesFromModelId } from '../agens-platform/service.js';
 import { serverState } from '../state.js';
 import {
   upsertPeer,
@@ -15,6 +16,7 @@ import { gitService } from '../services/git.js';
 import { bumpMemoryCache } from '../services/memory-service.js';
 import { readSpaceMemory, appendSpaceMemory } from '../services/space-memory.js';
 import { readBrowserMemoryOverview } from '../services/browser-memory.js';
+import { ensureArtifactDirFor } from '../services/artifact-dir.js';
 import {
   computeNextRun,
   nextCronTime,
@@ -327,10 +329,29 @@ async function fetchWithTimeout(url: string, init: any, timeoutMs: number): Prom
   }
 }
 
-/** 媒体产物落盘目录（持久保存，区别于截图 30 分钟临时区）：DATA_DIR/generated-images|videos */
-function mediaDir(kind: 'images' | 'videos'): string {
-  const sub = kind === 'images' ? 'generated-images' : 'generated-videos';
-  return process.env.DATA_DIR ? path.join(process.env.DATA_DIR, sub) : path.resolve(sub);
+/**
+ * 媒体产物的落盘目录 + 对应的访问地址前缀。
+ *
+ * 两者必须成对解析，否则会出现「文件落在规范目录、URL 却指向旧全局目录」的 404：
+ * - 有会话：落 .yan-zhi 规范的交付目录，URL 走三段式（静态服务按会话定位）
+ * - 无会话（定时任务 / IM 等入口没有 conversationId）：退回旧的全局目录，URL 走两段式
+ */
+function mediaTarget(opts: {
+  conversationId?: string;
+  kind: 'images' | 'videos';
+}): { dir: string; urlBase: string } {
+  const convId = (opts.conversationId || '').trim();
+  if (convId) {
+    return {
+      dir: ensureArtifactDirFor({ conversationId: convId, category: 'deliverable' }).dir,
+      urlBase: `/api/generated/${opts.kind}/${convId}`,
+    };
+  }
+  const sub = opts.kind === 'images' ? 'generated-images' : 'generated-videos';
+  return {
+    dir: process.env.DATA_DIR ? path.join(process.env.DATA_DIR, sub) : path.resolve(sub),
+    urlBase: `/api/generated/${opts.kind}`,
+  };
 }
 
 async function downloadBinary(url: string, timeoutMs = 180000): Promise<Buffer> {
@@ -404,10 +425,22 @@ function taskStatus(j: any): string {
   return String(j?.status || j?.data?.status || j?.task_status || '').toLowerCase();
 }
 
-/** 生图/图生图响应的共用处理：取 data[0].url（或 b64），下载落盘，返回统一 JSON */
-async function handleImageResult(j: any, model: string, prompt: string): Promise<MpcToolExecutionResult> {
+/**
+ * 生图/图生图响应的共用处理：取 data[0].url（或 b64），下载落盘，返回精简契约。
+ *
+ * 返回契约刻意保持最小：{type, url, description} —— 界面按 url 直接渲染预览，
+ * 不需要模型在正文里贴路径，也不会出现「本机备份 A:/B:」这类复述。
+ * 本机绝对路径放在 file 字段（供右键「另存为 / 打开所在目录」使用）。
+ */
+async function handleImageResult(
+  j: any,
+  model: string,
+  prompt: string,
+  conversationId?: string,
+): Promise<MpcToolExecutionResult> {
   const item = j?.data?.[0] || {};
   const remoteUrl: string = typeof item.url === 'string' ? item.url : '';
+  const description = String(item.revised_prompt || prompt || '').trim();
   let localFile = '';
   let localUrl = '';
   try {
@@ -415,28 +448,30 @@ async function handleImageResult(j: any, model: string, prompt: string): Promise
       ? await downloadBinary(remoteUrl)
       : (item.b64_json ? Buffer.from(String(item.b64_json), 'base64') : null);
     if (buf && buf.length > 0) {
-      const dir = mediaDir('images');
-      await mkdir(dir, { recursive: true });
-      const file = path.join(dir, `image-${Date.now()}${extFromUrl(remoteUrl, '.png')}`);
+      const target = mediaTarget({ conversationId, kind: 'images' });
+      await mkdir(target.dir, { recursive: true });
+      const file = path.join(target.dir, `image-${Date.now()}${extFromUrl(remoteUrl, '.png')}`);
       await writeFile(file, buf);
       localFile = file;
-      localUrl = `/api/generated/images/${path.basename(file)}`;
+      localUrl = `${target.urlBase}/${path.basename(file)}`;
     }
   } catch { /* 落盘失败不影响结果，remoteUrl 仍可用 */ }
   if (!remoteUrl && !localUrl) return fail(`生图响应里没有图片地址：${JSON.stringify(j).slice(0, 300)}`);
   return ok(JSON.stringify({
     ok: true,
+    type: 'image',
     model,
-    prompt,
-    remoteUrl: remoteUrl || undefined,
-    screenshotUrl: localUrl || undefined,
+    url: localUrl || remoteUrl,
+    description,
     file: localFile || undefined,
-    revisedPrompt: item.revised_prompt || undefined,
-    note: '图片已生成。回复正文请用 markdown 图片语法 ![](remoteUrl) 内嵌展示该图；screenshotUrl 为本机备份（/api/generated/images/...）。',
   }));
 }
 
-async function mediaGenerateImage(args: Record<string, unknown>, userId?: string | null): Promise<MpcToolExecutionResult> {
+async function mediaGenerateImage(
+  args: Record<string, unknown>,
+  userId?: string | null,
+  conversationId?: string,
+): Promise<MpcToolExecutionResult> {
   const prompt = str(args, 'prompt').trim();
   if (!prompt) return fail('prompt 为必填项');
   const model = str(args, 'model') || 'agnes-image-2.5-flash';
@@ -485,7 +520,7 @@ async function mediaGenerateImage(args: Record<string, unknown>, userId?: string
       if (!res.ok) return fail(`图生图请求失败 HTTP ${res.status}（平台编辑通道上游可能暂未开放）：${text.slice(0, 300)}`);
       let j: any;
       try { j = JSON.parse(text); } catch { return fail('图生图响应不是合法 JSON'); }
-      return await handleImageResult(j, model, prompt);
+      return await handleImageResult(j, model, prompt, conversationId);
     }
     return fail(`所有 agnes Key 均不可用（限频或无效）：${lastErr}`);
   }
@@ -512,12 +547,16 @@ async function mediaGenerateImage(args: Record<string, unknown>, userId?: string
     if (!res.ok) return fail(`生图请求失败 HTTP ${res.status}: ${text.slice(0, 300)}`);
     let j: any;
     try { j = JSON.parse(text); } catch { return fail('生图响应不是合法 JSON'); }
-    return await handleImageResult(j, model, prompt);
+    return await handleImageResult(j, model, prompt, conversationId);
   }
   return fail(`所有 agnes Key 均不可用（限频或无效）：${lastErr}`);
 }
 
-async function mediaGenerateVideo(args: Record<string, unknown>, userId?: string | null): Promise<MpcToolExecutionResult> {
+async function mediaGenerateVideo(
+  args: Record<string, unknown>,
+  userId?: string | null,
+  conversationId?: string,
+): Promise<MpcToolExecutionResult> {
   const prompt = str(args, 'prompt').trim();
   if (!prompt) return fail('prompt 为必填项');
   const model = str(args, 'model') || 'agnes-video-2.5-flash';
@@ -635,38 +674,47 @@ async function mediaGenerateVideo(args: Record<string, unknown>, userId?: string
   let localFile = '';
   let localUrl = '';
   try {
-    const buf = remoteUrl
-      ? await downloadBinary(remoteUrl, 300000)
-      : await (async () => {
-        const res = await fetchWithTimeout(`${baseUrl}/v1/videos/${taskId}/content`, {
-          headers: { Authorization: `Bearer ${pollKey}` },
-        }, 300000);
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        return Buffer.from(await res.arrayBuffer());
-      })();
+    let buf: Buffer | null = null;
+    if (remoteUrl) {
+      try {
+        buf = await downloadBinary(remoteUrl, 300000);
+      } catch {
+        // 产物 CDN 域名（platform-outputs.*）可能本机直连不通（2026-09-15 实测：
+        // agnes-ai.com 主域 200，platform-outputs.agnes-ai.space 连接超时），
+        // 此时回退主域 /content 端点直下——它挂在 API 主域上，与提交/轮询同源可达
+        buf = null;
+      }
+    }
+    if (!buf || buf.length === 0) {
+      const res = await fetchWithTimeout(`${baseUrl}/v1/videos/${taskId}/content`, {
+        headers: { Authorization: `Bearer ${pollKey}` },
+      }, 300000);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      buf = Buffer.from(await res.arrayBuffer());
+    }
     if (buf.length > 0) {
-      const dir = mediaDir('videos');
-      await mkdir(dir, { recursive: true });
-      const file = path.join(dir, `video-${Date.now()}${extFromUrl(remoteUrl, '.mp4')}`);
+      const target = mediaTarget({ conversationId, kind: 'videos' });
+      await mkdir(target.dir, { recursive: true });
+      const file = path.join(target.dir, `video-${Date.now()}${extFromUrl(remoteUrl, '.mp4')}`);
       await writeFile(file, buf);
       localFile = file;
-      localUrl = `/api/generated/videos/${path.basename(file)}`;
+      localUrl = `${target.urlBase}/${path.basename(file)}`;
     }
   } catch { /* 落盘失败不影响结果，remoteUrl 仍可用 */ }
 
   return ok(JSON.stringify({
     ok: true,
+    type: 'video',
     model,
     taskId,
     status,
-    remoteUrl: remoteUrl || undefined,
-    videoUrl: localUrl || undefined,
+    url: localUrl || remoteUrl,
+    description: `${prompt}（${seconds} 秒 · ${size}）`,
     file: localFile || undefined,
-    note: '视频已生成。回复正文请给出视频链接（remoteUrl 或 videoUrl），并说明时长与分辨率；file 为本机文件路径。',
   }));
 }
 
-async function mediaVideoStatus(args: Record<string, unknown>, userId?: string | null): Promise<MpcToolExecutionResult> {
+async function mediaVideoStatus(args: Record<string, unknown>, userId?: string | null, conversationId?: string): Promise<MpcToolExecutionResult> {
   const taskId = str(args, 'taskId').trim();
   if (!taskId) return fail('taskId 为必填项');
   const ctx = resolveMediaPlatform(args, userId);
@@ -684,8 +732,41 @@ async function mediaVideoStatus(args: Record<string, unknown>, userId?: string |
     if (!res.ok) { lastErr = `HTTP ${res.status}: ${text.slice(0, 200)}`; continue; }
     try {
       const j = JSON.parse(text);
-      const url = extractVideoUrl(j);
-      return ok(JSON.stringify({ taskId, status: taskStatus(j), remoteUrl: url || undefined, raw: j }));
+      const st = taskStatus(j);
+      const remoteUrl = extractVideoUrl(j);
+      // 补查到已完成却没落过盘的视频，就地补落盘 —— 任务超时后模型都会走这里补查，
+      // 不补的话产物永远停在远程 url（CDN 直连不通时连画面都没有）
+      let localFile = '';
+      let localUrl = '';
+      if (['completed', 'succeeded', 'success', 'finished', 'done'].includes(st)) {
+        try {
+          let buf: Buffer | null = null;
+          if (remoteUrl) {
+            try { buf = await downloadBinary(remoteUrl, 300000); } catch { buf = null; }
+          }
+          if (!buf || buf.length === 0) {
+            const r2 = await fetchWithTimeout(`${baseUrl}/v1/videos/${taskId}/content`, {
+              headers: { Authorization: `Bearer ${key}` },
+            }, 300000);
+            if (r2.ok) buf = Buffer.from(await r2.arrayBuffer());
+          }
+          if (buf && buf.length > 0) {
+            const target = mediaTarget({ conversationId, kind: 'videos' });
+            await mkdir(target.dir, { recursive: true });
+            const file = path.join(target.dir, `video-${Date.now()}${extFromUrl(remoteUrl, '.mp4')}`);
+            await writeFile(file, buf);
+            localFile = file;
+            localUrl = `${target.urlBase}/${path.basename(file)}`;
+          }
+        } catch { /* 补落盘失败不影响状态查询结果 */ }
+      }
+      return ok(JSON.stringify({
+        taskId, status: st,
+        // 补落盘成功时给完整媒体契约，前端卡片与文件登记按新生成同样处理
+        ...(localUrl ? { ok: true, type: 'video', url: localUrl, file: localFile } : {}),
+        ...(localUrl ? {} : { remoteUrl: remoteUrl || undefined }),
+        ...(localFile ? {} : { raw: j }),
+      }));
     } catch {
       lastErr = `响应不是合法 JSON：${text.slice(0, 200)}`;
     }
@@ -923,9 +1004,12 @@ export async function executeApiTool(
       case 'api_model_create': {
         const uid = requireUser(userId);
         const id = uuid();
+        const newModelId = str(args, 'modelId');
+        const caps = Array.isArray(args.capabilities) ? (args.capabilities as string[]) : [];
         db.prepare(
           'INSERT INTO model (id, platform_id, user_id, model_id, alias, type, context_window, capabilities_json, pricing_json, description, enabled, is_default, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?)',
-        ).run(id, str(args, 'platformId'), uid, str(args, 'modelId'), str(args, 'alias') || null, str(args, 'type') || 'llm', num(args, 'contextWindow', 262144), '[]', '{}', str(args, 'description') || null, Date.now());
+        ).run(id, str(args, 'platformId'), uid, newModelId, str(args, 'alias') || null, str(args, 'type') || 'llm', num(args, 'contextWindow', DEFAULT_CONTEXT_WINDOW),
+          JSON.stringify(caps.length ? caps : inferCapabilitiesFromModelId(newModelId)), '{}', str(args, 'description') || null, Date.now());
         return ok(db.prepare('SELECT * FROM model WHERE id = ?').get(id));
       }
       case 'api_model_update': {
@@ -1727,11 +1811,11 @@ export async function executeApiTool(
 
       // AI 媒体生成（文生图/图生图/文生视频/图生视频，默认 agnes，支持任意已配置平台）
       case 'api_image_generate':
-        return await mediaGenerateImage(args, userId);
+        return await mediaGenerateImage(args, userId, conversationId);
       case 'api_video_generate':
-        return await mediaGenerateVideo(args, userId);
+        return await mediaGenerateVideo(args, userId, conversationId);
       case 'api_video_status':
-        return await mediaVideoStatus(args, userId);
+        return await mediaVideoStatus(args, userId, conversationId);
 
       default:
         return fail(`未实现的 API 工具: ${name}`);

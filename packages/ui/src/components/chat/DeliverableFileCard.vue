@@ -1,6 +1,26 @@
 <template>
   <div class="deliverable-grid">
-    <div v-for="f in files" :key="f.id" class="deliverable-file-card" @click="preview(f)">
+    <div
+      v-for="f in files"
+      :key="f.id"
+      class="deliverable-file-card"
+      :class="{ 'has-thumb': isVideo(f) }"
+      @click="preview(f)"
+      @contextmenu.prevent="openMenu($event, f)"
+    >
+      <!-- 视频交付物：静止显示首帧；hover 放大并静音自动播 5 秒；点击进预览播放 -->
+      <video
+        v-if="isVideo(f)"
+        ref="thumbEls"
+        class="deliverable-video-thumb"
+        :class="{ 'is-hover': hoverId === f.id }"
+        :src="videoSrc(f)"
+        preload="metadata"
+        muted
+        playsinline
+        @mouseenter="onThumbEnter(f.id, $event)"
+        @mouseleave="onThumbLeave($event)"
+      ></video>
       <span class="deliverable-file-name" :title="f.name">{{ f.name }}</span>
       <div class="deliverable-file-bottom">
         <span class="deliverable-file-meta">{{ formatTime(f.createdAt) }}</span>
@@ -16,15 +36,74 @@
 <script setup lang="ts">
 import { Download, FolderOpened } from '@element-plus/icons-vue';
 import { ElMessage } from 'element-plus';
-import { computed } from 'vue';
+import { computed, ref, onBeforeUnmount } from 'vue';
 import type { ConversationFile } from '@yan-zhi/shared';
 import { getPlatformAdapter } from '@yan-zhi/core';
 import { useChatStore } from '../../stores/chat';
+import { openMediaMenu } from '../../composables/useMediaPreview';
 
 const props = defineProps<{ files: ConversationFile[] }>();
 
 const adapter = getPlatformAdapter();
 const canReveal = computed(() => !!adapter.shell && adapter.platform === 'desktop');
+
+const IMAGE_EXT_RE = /\.(png|jpe?g|webp|gif|bmp|svg|avif)$/i;
+const VIDEO_EXT_RE = /\.(mp4|webm|mov|m4v|ogg)$/i;
+
+/** 视频交付物：卡片显示首帧画面 */
+function isVideo(f: ConversationFile): boolean {
+  return (f.mimeType || '').startsWith('video/') || VIDEO_EXT_RE.test(f.name || '');
+}
+
+/* ===== 视频缩略 hover 预览：放大 + 静音播 5 秒，移开即停回首帧 ===== */
+const hoverId = ref<string | null>(null);
+const hoverTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+function onThumbEnter(id: string, ev: MouseEvent) {
+  hoverId.value = id;
+  const el = ev.currentTarget as HTMLVideoElement | null;
+  if (!el) return;
+  try { el.currentTime = 0; } catch { /* 未加载完 seek 抛错忽略 */ }
+  el.play().catch(() => { /* 自动播放被策略拒绝时保持首帧 */ });
+  const t = setTimeout(() => {
+    hoverId.value = null;
+    el.pause();
+    try { el.currentTime = 0.1; } catch { /* 同上 */ }
+    hoverTimers.delete(id);
+  }, 5000);
+  const prev = hoverTimers.get(id);
+  if (prev) clearTimeout(prev);
+  hoverTimers.set(id, t);
+}
+function onThumbLeave(ev: MouseEvent) {
+  const el = ev.currentTarget as HTMLVideoElement | null;
+  hoverId.value = null;
+  if (!el) return;
+  el.pause();
+  try { el.currentTime = 0.1; } catch { /* 同上 */ }
+}
+onBeforeUnmount(() => { for (const t of hoverTimers.values()) clearTimeout(t); hoverTimers.clear(); });
+
+/**
+ * 视频缩略地址：桌面端文件在本地磁盘，<video> 直接读本地路径；
+ * 浏览器端走 /api/generated 三段式（会话 id + 文件名唯一定位）。
+ * #t=0.1 媒体片段让 preload=metadata 即渲染出首帧画面。
+ */
+function videoSrc(f: ConversationFile): string {
+  const name = (f.name || '').replace(/[?#].*$/, '');
+  if (adapter.platform === 'desktop') {
+    const p = (f.path || '').replace(/\\/g, '/');
+    return p && !p.includes('#') ? `${p}#t=0.1` : p;
+  }
+  if (!f.conversationId || !name) return '';
+  return `/api/generated/videos/${f.conversationId}/${encodeURIComponent(name)}#t=0.1`;
+}
+
+/** 交付卡片右键 → 复用媒体菜单（另存为 / 打开所在目录 / 复制路径） */
+function openMenu(e: MouseEvent, f: ConversationFile) {
+  const isImage = (f.mimeType || '').startsWith('image/') || IMAGE_EXT_RE.test(f.name || '');
+  openMediaMenu(e, { src: '', path: f.path, name: f.name, kind: isImage ? 'image' : 'file' });
+}
 
 /** 格式化修改时间：MM-DD HH:mm */
 function formatTime(t: number | string | undefined): string {
@@ -105,6 +184,26 @@ async function reveal(f: ConversationFile) {
   border-color: var(--color-primary);
   background: var(--glass-bg-hover);
   box-shadow: 0 1px 6px color-mix(in srgb, var(--color-primary) 20%, transparent);
+}
+/* 视频缩略：占卡片主体，底部压文件名条；hover 放大突出画面 */
+.deliverable-video-thumb {
+  width: 100%;
+  height: 72px;
+  object-fit: cover;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.35);
+  display: block;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+.deliverable-video-thumb.is-hover {
+  transform: scale(1.3);
+  transform-origin: left top;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.28);
+  position: relative;
+  z-index: 5;
+}
+.deliverable-file-card.has-thumb .deliverable-file-name {
+  font-size: 11.5px;
 }
 /* 文件名：一行省略，hover 时展开完整显示 */
 .deliverable-file-name {

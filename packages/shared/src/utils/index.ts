@@ -47,3 +47,23 @@ export {
   statementAt,
   type SqlStatement,
 } from './sql-text';
+
+// ===== 服务端资源地址解析（API_BASE 已含 /api，拼接必须按「站点根」）=====
+export { serverOrigin, resolveServerUrl } from './server-url';
+
+// ===== 产物目录规范（前端落盘与后端落盘共用同一套规则）=====
+// 这里导出的是「规范本身」：目录名常量 + 纯路径函数。
+// 落盘侧的根解析（查 DB / 读工作目录）在 apps/server/src/services/artifact-dir.ts，
+// 因为它依赖服务端状态，不属于共享层。
+export {
+  ARTIFACT_ROOT_NAME,
+  ARTIFACT_TASKS_DIR,
+  ARTIFACT_CATEGORY_DIRS,
+  ARTIFACT_TASK_FALLBACK,
+  sanitizeArtifactTaskName,
+  formatArtifactDate,
+  buildArtifactTaskDirName,
+  buildArtifactRelDir,
+  buildArtifactRelDirCandidates,
+  joinArtifactPath,
+} from './artifact-paths';

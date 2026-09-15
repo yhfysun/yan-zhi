@@ -8,6 +8,9 @@
       <el-button size="small" text bg title="在文件管理器中显示此文件" @click="openContainingFolder">
         <el-icon><FolderOpened /></el-icon>&nbsp;目录
       </el-button>
+      <el-button size="small" text bg title="另存为到其他位置" @click="saveAs">
+        <el-icon><Download /></el-icon>&nbsp;另存为
+      </el-button>
       <!-- Markdown：阅读 / 编辑 / 分屏（左源码右实时预览）三态 -->
       <div v-if="isMdText" class="fp-seg">
         <button :class="{ on: mdMode === 'read' }" @click="switchMdMode('read')">阅读</button>
@@ -49,6 +52,10 @@
       <!-- 图片 -->
       <div v-if="kind === 'image'" class="fp-image-wrap">
         <img :src="imageSrc" :alt="file.name" class="fp-image" />
+      </div>
+      <!-- 视频：原生播放器内嵌播放（超大文件在下方走 binary 降级） -->
+      <div v-else-if="kind === 'video'" class="fp-video-wrap">
+        <video :src="videoSrc" class="fp-video" controls preload="metadata"></video>
       </div>
       <!-- PDF：高保真栅格图（pdf.js 客户端渲染）优先；无图时降级为分页文本 -->
       <div v-else-if="kind === 'pdf'" class="fp-pdf-pages">
@@ -153,6 +160,7 @@
         <p class="fp-hint">{{ unsupportedNote || '暂不支持预览' }}</p>
         <div class="fp-binary-actions">
           <el-button size="small" type="primary" @click="openWithSystemApp">用本机应用打开</el-button>
+          <el-button size="small" @click="saveAs">另存为</el-button>
           <el-button size="small" @click="openContainingFolder">打开目录</el-button>
         </div>
       </div>
@@ -165,7 +173,7 @@ import { ref, watch, computed, onMounted, onBeforeUnmount } from 'vue';
 import MarkdownIt from 'markdown-it';
 import hljs from 'highlight.js';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { Document, EditPen, FolderOpened } from '@element-plus/icons-vue';
+import { Document, Download, EditPen, FolderOpened } from '@element-plus/icons-vue';
 import { extractPdfPages } from '@yan-zhi/core';
 import { renderPdfToImages } from '../utils/pdf-render';
 import { parseExcelStyled, type ExcelStyledSheet } from '../utils/excel-styled';
@@ -178,7 +186,8 @@ const error = ref('');
 const content = ref('');
 const truncated = ref(false);
 const imageSrc = ref('');
-const kind = ref<'image' | 'pdf' | 'excel' | 'text' | 'csv' | 'binary'>('text');
+const videoSrc = ref('');
+const kind = ref<'image' | 'video' | 'pdf' | 'excel' | 'text' | 'csv' | 'binary'>('text');
 const byteSize = ref(0);
 const unsupportedNote = ref('');
 /** 文件修改时间（stat 可用时显示） */
@@ -338,6 +347,30 @@ async function openContainingFolder() {
   }
 }
 
+/** 另存为：桌面端走系统保存框（按源文件路径复制，不读字节）；Web 端用 blob 触发下载 */
+async function saveAs() {
+  try {
+    const api = (window as unknown as { electronAPI?: { dialog?: { saveFile?: (o: any) => Promise<any> } } }).electronAPI;
+    if (api?.dialog?.saveFile) {
+      const r = await api.dialog.saveFile({ defaultName: props.file.name, sourcePath: props.file.path });
+      if (r?.ok) ElMessage.success('已保存到 ' + r.path);
+      else if (r && !r.cancelled) ElMessage.error('保存失败: ' + (r.error || '未知错误'));
+      return;
+    }
+    const { getPlatformAdapter } = await import('@yan-zhi/core');
+    const b64 = await getPlatformAdapter().fs.readFileBase64(props.file.path);
+    const bin = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+    const url = URL.createObjectURL(new Blob([bin]));
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = props.file.name;
+    a.click();
+    URL.revokeObjectURL(url);
+  } catch (e: any) {
+    ElMessage.error('另存为失败: ' + (e?.message || e));
+  }
+}
+
 const md = new MarkdownIt({
   html: false,
   linkify: true,
@@ -480,6 +513,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onGlobalKeydown, t
 const kindBadge = computed(() => {
   switch (kind.value) {
     case 'image': return '图片';
+    case 'video': return '视频';
     case 'pdf': return 'PDF';
     case 'excel': return 'Excel';
     case 'csv': return 'CSV';
@@ -603,6 +637,9 @@ function parseCsv(s: string): string[][] {
 }
 
 const IMG_EXTS = ['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'ico', 'bmp'];
+const VIDEO_EXTS = ['mp4', 'webm', 'mov', 'm4v', 'ogv', 'mkv'];
+/** 视频内嵌播放的体积上限：超过则降级为「本机应用打开 / 另存为」，避免整段字节读进内存 */
+const VIDEO_INLINE_MAX = 80 * 1024 * 1024;
 const EXCEL_EXTS = ['xlsx', 'xls'];
 const PDF_EXTS = ['pdf'];
 const WORD_EXTS = ['docx', 'doc'];
@@ -621,6 +658,25 @@ function imgMime(ext: string): string {
     case 'svg': return 'image/svg+xml';
     case 'webp': return 'image/webp';
     default: return 'image/' + ext;
+  }
+}
+
+/** 视频扩展名 → Blob 的 MIME 类型 */
+function videoMime(ext: string): string {
+  switch (ext) {
+    case 'mov': return 'video/quicktime';
+    case 'mkv': return 'video/x-matroska';
+    case 'ogv': return 'video/ogg';
+    case 'm4v': return 'video/x-m4v';
+    default: return 'video/' + ext;
+  }
+}
+
+/** 释放视频 Blob URL（换文件 / 卸载时必须回收，否则整段视频字节常驻内存） */
+function revokeVideoSrc() {
+  if (videoSrc.value) {
+    URL.revokeObjectURL(videoSrc.value);
+    videoSrc.value = '';
   }
 }
 
@@ -663,6 +719,24 @@ async function loadFile() {
       imageSrc.value = `data:${imgMime(e)};base64,${b64}`;
       byteSize.value = Math.floor(b64.length * 3 / 4);
       kind.value = 'image';
+      return;
+    }
+
+    if (VIDEO_EXTS.includes(e)) {
+      // 视频：读字节 → Blob URL → 原生播放器。超限不内嵌（整段读进内存会拖垮渲染进程），
+      // 降级到「本机应用打开 / 另存为」，与其它不可内嵌格式同一出口。
+      const size = byteSize.value || (await adapter.fs.stat?.(props.file.path))?.size || 0;
+      if (size > VIDEO_INLINE_MAX) {
+        kind.value = 'binary';
+        unsupportedNote.value = `视频 ${(size / 1024 / 1024).toFixed(0)}MB 超过 ${VIDEO_INLINE_MAX / 1024 / 1024}MB，未内嵌播放，可用本机应用打开或另存为`;
+        return;
+      }
+      const b64 = await adapter.fs.readFileBase64(props.file.path);
+      byteSize.value = Math.floor(b64.length * 3 / 4);
+      const bin = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+      revokeVideoSrc();
+      videoSrc.value = URL.createObjectURL(new Blob([bin], { type: videoMime(e) }));
+      kind.value = 'video';
       return;
     }
 
@@ -817,6 +891,9 @@ watch(() => props.file?.path, () => { if (props.file?.path) loadFile(); }, { imm
 .fp-loading, .fp-error { padding: 40px; text-align: center; color: var(--el-text-color-secondary); }
 .fp-image-wrap { text-align: center; padding: 12px; }
 .fp-image { max-width: 100%; max-height: 70vh; border-radius: 4px; }
+/* 视频：原生播放器居中，深色底避免黑边突兀 */
+.fp-video-wrap { display: flex; justify-content: center; align-items: center; padding: 12px; flex: 1; min-height: 0; }
+.fp-video { max-width: 100%; max-height: 72vh; border-radius: 4px; background: #000; outline: none; }
 /* PDF 分页文本 */
 .fp-pdf-pages { flex: 1; overflow: auto; padding: 12px; }
 .fp-pdf-page { border: 1px solid var(--el-border-color-lighter); border-radius: 6px; margin-bottom: 12px; overflow: hidden; }

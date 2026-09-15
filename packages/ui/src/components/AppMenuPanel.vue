@@ -13,12 +13,12 @@
         :class="{
           'is-disabled': item.disabled,
           'is-selected': item.selected,
-          'has-sub': hasChildren(item),
+          'has-sub': hasSub(item),
           'is-open': activeKey === nodeKey(item, idx),
         }"
         role="menuitem"
-        :aria-haspopup="hasChildren(item) ? 'menu' : undefined"
-        :aria-expanded="hasChildren(item) ? activeKey === nodeKey(item, idx) : undefined"
+        :aria-haspopup="hasSub(item) ? 'menu' : undefined"
+        :aria-expanded="hasSub(item) ? activeKey === nodeKey(item, idx) : undefined"
         :tabindex="item.disabled ? -1 : 0"
         @mouseenter="onItemEnter(item, idx, $event)"
         @mouseleave="onItemLeave(item)"
@@ -29,30 +29,33 @@
         <span class="app-menu-label">{{ item.label }}</span>
         <span v-if="item.desc" class="app-menu-desc">{{ item.desc }}</span>
         <el-icon v-if="item.selected" class="app-menu-check"><Check /></el-icon>
-        <el-icon v-else-if="hasChildren(item)" class="app-menu-arrow"><ArrowRight /></el-icon>
+        <el-icon v-else-if="hasSub(item)" class="app-menu-arrow"><ArrowRight /></el-icon>
       </div>
     </template>
 
-    <!-- 二/三级子面板：绝对定位，右侧空间不足自动翻转 -->
-    <transition name="app-menu-sub">
-      <div
-        v-if="activeItem"
-        ref="subRef"
-        class="app-menu-sub"
-        :class="{ 'is-flip': subFlip }"
-        :style="{ top: subTop + 'px' }"
-        @mouseenter="cancelClose"
-        @mouseleave="scheduleClose"
-        @keydown="onSubKeydown"
-      >
-        <AppMenuPanel
-          :items="activeItem.children ?? []"
-          :level="(level ?? 1) + 1"
-          @select="(n) => emit('select', n)"
-          @close-sub="closeSubNow"
-        />
-      </div>
-    </transition>
+    <!-- 二/三级子面板：Teleport 到 body + fixed 定位，避免被父面板的 overflow 裁剪 -->
+    <Teleport to="body">
+      <transition name="app-menu-sub">
+        <div
+          v-if="activeItem"
+          ref="subRef"
+          class="app-menu-sub"
+          :style="{ top: subTop + 'px', left: subLeft + 'px' }"
+          @mouseenter="cancelClose"
+          @mouseleave="scheduleClose"
+          @keydown="onSubKeydown"
+        >
+          <AppMenuPanel
+            :items="activeItem.children ?? []"
+            :level="(level ?? 1) + 1"
+            @select="(n) => emit('select', n)"
+            @close-sub="closeSubNow"
+            @sub-open="emit('sub-open')"
+            @sub-close="emit('sub-close')"
+          />
+        </div>
+      </transition>
+    </Teleport>
   </div>
 </template>
 
@@ -73,7 +76,7 @@ export interface MenuNode {
 </script>
 
 <script setup lang="ts">
-import { nextTick, ref } from 'vue';
+import { nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
 import type { Component } from 'vue';
 import { ArrowRight, Check } from '@element-plus/icons-vue';
 
@@ -86,19 +89,27 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'select', node: MenuNode): void;
   (e: 'close-sub'): void;
+  /** 子面板已展开：父级据此抑制「鼠标移出主面板即关闭」的判定（子面板 Teleport 到 body，不算主面板内部） */
+  (e: 'sub-open'): void;
+  (e: 'sub-close'): void;
 }>();
+
+/** 子面板宽度与最大高度估算（用于视口边界钳制） */
+const SUB_PANEL_W = 244;
+const SUB_PANEL_MAX_H = 320;
 
 const itemRefs = ref<HTMLElement[]>([]);
 const activeKey = ref<string | null>(null);
 const activeItem = ref<MenuNode | null>(null);
 const subTop = ref(0);
-const subFlip = ref(false);
+const subLeft = ref(0);
 const subRef = ref<HTMLElement | null>(null);
 
 let openTimer: ReturnType<typeof setTimeout> | null = null;
 let closeTimer: ReturnType<typeof setTimeout> | null = null;
 
-function hasChildren(item: MenuNode): boolean {
+/** 有子菜单：hover/点击展开二级面板，且点击不触发 select */
+function hasSub(item: MenuNode): boolean {
   return !!item.children?.length;
 }
 function nodeKey(item: MenuNode, idx: number): string {
@@ -108,7 +119,7 @@ function nodeKey(item: MenuNode, idx: number): string {
 /* ===== 子面板开关：悬浮 120ms 展开 / 200ms 宽容收起 ===== */
 function onItemEnter(item: MenuNode, idx: number, ev: MouseEvent) {
   if (openTimer) { clearTimeout(openTimer); openTimer = null; }
-  if (hasChildren(item)) {
+  if (hasSub(item)) {
     const key = nodeKey(item, idx);
     if (activeKey.value === key) return;
     openTimer = setTimeout(() => openSub(item, idx, ev), 120);
@@ -117,7 +128,7 @@ function onItemEnter(item: MenuNode, idx: number, ev: MouseEvent) {
   }
 }
 function onItemLeave(item: MenuNode) {
-  if (!hasChildren(item)) return;
+  if (!hasSub(item)) return;
   scheduleClose();
 }
 function openSub(item: MenuNode, idx: number, ev?: Event) {
@@ -127,18 +138,30 @@ function openSub(item: MenuNode, idx: number, ev?: Event) {
   activeKey.value = key;
   activeItem.value = item;
   const el = (ev?.currentTarget as HTMLElement | null) ?? null;
-  if (el) {
-    subTop.value = Math.max(0, el.offsetTop - 2);
-    // 右侧空间不足 → 翻转到左侧（留 232px：220 面板 + 12 间距）
-    const right = el.getBoundingClientRect().right;
-    subFlip.value = right + 232 > window.innerWidth && right - 232 > 8;
-  }
+  if (el) placeSub(el);
+  emit('sub-open');
   nextTick(() => subRef.value?.focus?.());
+}
+
+/**
+ * 子面板定位：默认贴菜单项右侧展开，右侧空间不足翻到左侧；
+ * 纵向钳制在视口内，避免靠近底部时被切掉。
+ */
+function placeSub(el: HTMLElement) {
+  const r = el.getBoundingClientRect();
+  const gap = 6;
+  const right = r.right + gap;
+  subLeft.value = right + SUB_PANEL_W > window.innerWidth - 8
+    ? Math.max(8, r.left - SUB_PANEL_W - gap)
+    : right;
+  subTop.value = Math.max(8, Math.min(r.top - 4, window.innerHeight - SUB_PANEL_MAX_H - 8));
 }
 function closeSubNow() {
   cancelClose();
+  const had = !!activeItem.value;
   activeKey.value = null;
   activeItem.value = null;
+  if (had) emit('sub-close');
 }
 function scheduleClose() {
   cancelClose();
@@ -147,17 +170,27 @@ function scheduleClose() {
   }, 200);
 }
 function openKey_clear() {
+  const had = !!activeItem.value;
   activeKey.value = null;
   activeItem.value = null;
+  if (had) emit('sub-close');
 }
 function cancelClose() {
   if (closeTimer) { clearTimeout(closeTimer); closeTimer = null; }
   if (openTimer) { clearTimeout(openTimer); openTimer = null; }
 }
 
+/* ===== 主面板滚动后锚点失效 → 直接收起子面板（子面板自身滚动不触发） ===== */
+function onDocScroll(ev: Event) {
+  if (!activeItem.value) return;
+  const t = ev.target as Node | null;
+  if (t && subRef.value?.contains(t)) return;
+  closeSubNow();
+}
+
 function onItemClick(item: MenuNode, ev: MouseEvent) {
   if (item.disabled) return;
-  if (hasChildren(item)) {
+  if (hasSub(item)) {
     const idx = (ev.currentTarget as HTMLElement)
       ? Array.from(itemRefs.value).indexOf(ev.currentTarget as HTMLElement)
       : -1;
@@ -184,7 +217,7 @@ function onItemKeydown(item: MenuNode, idx: number, ev: KeyboardEvent) {
     case 'ArrowDown': focusSibling(el, 1); ev.preventDefault(); break;
     case 'ArrowUp': focusSibling(el, -1); ev.preventDefault(); break;
     case 'ArrowRight':
-      if (hasChildren(item)) { cancelClose(); openSub(item, idx, ev); }
+      if (hasSub(item)) { cancelClose(); openSub(item, idx, ev); }
       ev.preventDefault();
       break;
     case 'ArrowLeft':
@@ -208,6 +241,12 @@ function onSubKeydown(ev: KeyboardEvent) {
     ev.stopPropagation();
   }
 }
+
+onMounted(() => document.addEventListener('scroll', onDocScroll, true));
+onBeforeUnmount(() => {
+  cancelClose();
+  document.removeEventListener('scroll', onDocScroll, true);
+});
 
 defineExpose({ closeSubNow });
 </script>
@@ -307,10 +346,9 @@ defineExpose({ closeSubNow });
   background: color-mix(in srgb, var(--color-border) 70%, transparent);
 }
 
-/* ===== 子面板：同皮肤，右向展开（空间不足翻转） ===== */
+/* ===== 子面板：同皮肤，Teleport 到 body 后走 fixed（坐标由 placeSub 计算） ===== */
 .app-menu-sub {
-  position: absolute;
-  left: calc(100% + 6px);
+  position: fixed;
   min-width: 220px;
   max-width: 320px;
   max-height: 60vh;
@@ -321,11 +359,7 @@ defineExpose({ closeSubNow });
   border: 1px solid var(--color-border);
   background: var(--el-bg-color-overlay, var(--glass-bg));
   box-shadow: var(--overlay-shadow, var(--shadow-lg));
-  z-index: 1;
-}
-.app-menu-sub.is-flip {
-  left: auto;
-  right: calc(100% + 6px);
+  z-index: calc(var(--z-dropdown, 2000) + 1);
 }
 
 .app-menu-sub-enter-active,

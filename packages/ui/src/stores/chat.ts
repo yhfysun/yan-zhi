@@ -224,6 +224,13 @@ export const useChatStore = defineStore('chat', () => {
   const mcpToolAliases = ref<Record<string, Record<string, string>>>({});
   // E11: 浏览器面板步骤日志 —— dispatchToolCall 中 browser_* 工具执行后推送
   const browserSteps = ref<Array<{ action: string; result: string; time: number }>>([]);
+  // Agent 浏览器实况控制：agent 驱动浏览器期间的状态旗标。
+  // expanded：预览面板全屏放大（原地 fixed class，DOM 不动 —— Teleport 会搬 webview 导致页面重载）；
+  // userDismissed：用户手动收起后本次浏览器任务内不再自动展开（不跟人抢 UI，按钮仍可手动开合）；
+  // lockInput：agent 操作期间锁住网页视口的鼠标/键盘（工具条不盖，暂停/停止/收起始终可点）。
+  const browserExpanded = ref(false);
+  const browserUserDismissed = ref(false);
+  const browserLockInput = ref(false);
   // 右侧预览面板是否展开；默认**关闭**（进入聊天页先看到纯聊天区，点了文件/网站才展开右栏）
   const rightPanelOpen = ref(false);
   // 输入框「+」菜单模式开关（对齐 WorkBuddy）：随请求透传 modeFlags，后端统一追加指令/裁剪工具
@@ -1582,6 +1589,8 @@ export const useChatStore = defineStore('chat', () => {
           case 'task:completed': flushNow(convId); emitTaskFinished(convId); return;
           case 'task:aborted': flushNow(convId); emitTaskFinished(convId); return;
           case 'task:error': flushNow(convId); emitTaskFinished(convId); throw new Error(event.error || '任务执行失败');
+          case 'task:paused': pausedConvIds.value.add(convId); browserLockInput.value = false; break;
+          case 'task:resumed': pausedConvIds.value.delete(convId); break;
         }
       }
     }
@@ -1731,6 +1740,42 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+  // ── Agent 浏览器实况控制：暂停 / 恢复 ──
+  // 语义（后端同步实现）：工具边界暂停 —— 当前动作跑完即挂起，不发起下一个工具/下一轮模型请求。
+  // 暂停即自动解除输入锁定（用户点暂停的意图就是接管），恢复后重新锁定。
+  const pausedConvIds = ref<Set<string>>(new Set());
+  const browserPaused = computed(() => !!currentConvId.value && pausedConvIds.value.has(currentConvId.value));
+
+  async function pauseTask(convId?: string) {
+    const target = convId || currentConvId.value;
+    const taskId = target ? taskIds.get(target) : undefined;
+    if (!taskId) return;
+    pausedConvIds.value.add(target!);
+    browserLockInput.value = false; // 暂停 = 用户接管
+    const token = localStorage.getItem('auth_token') || '';
+    try {
+      await fetch(`${API_BASE}/llm/tasks/${taskId}/pause`, {
+        method: 'POST', headers: { Authorization: `Bearer ${token}` },
+      });
+    } catch { /* SSE task:paused 分支会再同步一次状态 */ }
+  }
+
+  async function resumeTask(convId?: string) {
+    const target = convId || currentConvId.value;
+    const taskId = target ? taskIds.get(target) : undefined;
+    if (!taskId) return;
+    pausedConvIds.value.delete(target!);
+    if (runningConvIds.value.has(target!) && browserSteps.value.length > 0) {
+      browserLockInput.value = true; // 恢复 = agent 继续驾驶
+    }
+    const token = localStorage.getItem('auth_token') || '';
+    try {
+      await fetch(`${API_BASE}/llm/tasks/${taskId}/resume`, {
+        method: 'POST', headers: { Authorization: `Bearer ${token}` },
+      });
+    } catch { /* ignore */ }
+  }
+
   async function ensureMcpConnections() {
     const mcpStore = useMcpStore();
     for (const sid of mountedMcpServers.value) {
@@ -1760,6 +1805,8 @@ export const useChatStore = defineStore('chat', () => {
   return {
     conversations, currentMessages, streaming, currentConvId, mountedMcpServers, mcpDisabledTools, mcpToolAliases,
     runningConvIds, isConvStreaming,
+    browserExpanded, browserUserDismissed, browserLockInput, browserPaused, pausedConvIds,
+    pauseTask, resumeTask,
     queuedByConv, queuedOf, enqueueMessage, removeQueuedMessage, updateQueuedMessage, takeQueuedMessages, takeFirstQueuedMessage, injectQueuedMessage,
     onTaskFinished,
     runningToolCallIds, isToolCallRunning,

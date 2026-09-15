@@ -126,7 +126,7 @@
         </el-form-item>
         <el-form-item label="能力">
           <el-checkbox-group v-model="form.capabilities" class="cap-group">
-            <span v-for="c in capDefs" :key="c.value" class="cap-item">
+            <span v-for="c in CAP_DEFS" :key="c.value" class="cap-item">
               <el-checkbox :value="c.value">{{ c.label }}</el-checkbox>
               <el-button
                 size="small" text type="primary"
@@ -274,12 +274,12 @@ const testResult = ref<{
 const batchMode = ref(false);
 const selectedModelIds = ref<Set<string>>(new Set());
 const showBatchContext = ref(false);
-const batchContextWindowK = ref(256);
+const batchContextWindowK = ref(1024);
 const batchSaving = ref(false);
 // 上下文窗口预设档位（K tokens 为单位；1M = 1024K = 1048576 tokens，存储层仍存 token 数）
-// 只保留 1M 快捷档：默认档已经是 256K，档位按钮太多反而占版面
+// 只保留 1M 快捷档：默认档已经是 1M，档位按钮太多反而占版面
 const ctxPresets = [{ k: 1024, label: '1M' }];
-/** 能力项与对应测试：推理用「基础问答」测（能问答即具备多步推理）；图片/视频生成仅对应类型模型显示 */
+/** 能力项与对应测试：推理用「基础问答」测（能问答即具备多步推理）；图片/视频生成对所有模型放开 */
 const CAP_DEFS = [
   { value: 'function_call', label: '函数调用', kind: 'function_call' },
   { value: 'vision', label: '视觉', kind: 'vision' },
@@ -287,17 +287,12 @@ const CAP_DEFS = [
   { value: 'image', label: '图片生成', kind: 'image' },
   { value: 'video', label: '视频生成', kind: 'video' },
 ];
-const capDefs = computed(() =>
-  CAP_DEFS.filter((c) => {
-    if (c.value === 'image') return form.value.type === 'image';
-    if (c.value === 'video') return form.value.type === 'video';
-    return true;
-  }),
-);
+// 能力不按模型类型收窄：平台目录里的 type 常与实际能力不符（如媒体模型被标成 llm），
+// 一律放开勾选与测试，以实测结果为准（通过自动勾上，不通过不勾）
 const capTesting = ref('');
 
 const form = ref({
-  modelId: '', alias: '', type: 'llm', contextWindowK: 256,
+  modelId: '', alias: '', type: 'llm', contextWindowK: 1024,
   capabilities: ['reasoning'] as string[],
   description: '',
   pricingInput: 0, pricingOutput: 0,
@@ -356,7 +351,7 @@ function editModel(m: any) {
   editingModelId.value = m.id;
   form.value = {
     modelId: m.modelId, alias: m.alias || '', type: m.type || 'llm',
-    contextWindowK: Math.max(1, Math.round((m.contextWindow || 262144) / 1024)),
+    contextWindowK: Math.max(1, Math.round((m.contextWindow || 1048576) / 1024)),
     // 历史模型未标能力且是 llm → 预勾「推理」（能问答即具备），其它能力仍以数据库为准
     capabilities: (m.capabilities || []).length
       ? [...(m.capabilities || [])]
@@ -372,7 +367,7 @@ async function addOrEditModel() {
     if (editingModelId.value) {
       await store.updateModel(editingModelId.value, {
         modelId: form.value.modelId, alias: form.value.alias,
-        type: form.value.type as any, contextWindow: (form.value.contextWindowK || 128) * 1024,
+        type: form.value.type as any, contextWindow: (form.value.contextWindowK || 1024) * 1024,
         capabilities: form.value.capabilities,
         description: form.value.description,
         pricing: { input: form.value.pricingInput, output: form.value.pricingOutput },
@@ -382,7 +377,7 @@ async function addOrEditModel() {
       await store.addModel({
         platformId: platformId.value, modelId: form.value.modelId,
         alias: form.value.alias, type: form.value.type as any,
-        contextWindow: (form.value.contextWindowK || 256) * 1024, enabled: true, isDefault: false,
+        contextWindow: (form.value.contextWindowK || 1024) * 1024, enabled: true, isDefault: false,
         capabilities: form.value.capabilities,
         description: form.value.description,
         pricing: { input: form.value.pricingInput, output: form.value.pricingOutput },
@@ -395,7 +390,7 @@ async function addOrEditModel() {
 
 function resetModelForm() {
   editingModelId.value = '';
-  form.value = { modelId: '', alias: '', type: 'llm', contextWindowK: 256, capabilities: ['reasoning'], description: '', pricingInput: 0, pricingOutput: 0 };
+  form.value = { modelId: '', alias: '', type: 'llm', contextWindowK: 1024, capabilities: ['reasoning'], description: '', pricingInput: 0, pricingOutput: 0 };
 }
 
 async function updateAlias(row: any) { if (row.isBuiltin) return; await store.updateModel(row.id, { alias: row.alias }); }
@@ -417,7 +412,7 @@ async function applyBatchContext() {
   batchSaving.value = true;
   try {
     for (const id of selectedModelIds.value) {
-      await store.updateModel(id, { contextWindow: (batchContextWindowK.value || 256) * 1024 });
+      await store.updateModel(id, { contextWindow: (batchContextWindowK.value || 1024) * 1024 });
     }
     ElMessage.success(`已设置 ${selectedModelIds.value.size} 个模型的上下文窗口`);
     selectedModelIds.value = new Set();
@@ -459,15 +454,16 @@ async function testModel(row: any) {
 
 /** 每种模型类型可跑的测试项 */
 function testKindsOf(m: any): { kind: string; label: string }[] {
-  // 所有模型都给全三项（问答/视觉/工具）——不支持会在结果里如实报失败，不该出现空下拉
+  // 所有模型都给全项（问答/视觉/工具/图片/视频）——平台目录的 type 常与实际能力不符，
+  // 不按类型收窄；不支持会在结果里如实报失败，通过的那项自动勾上
   const base = [
     { kind: 'chat', label: '基础问答' },
     { kind: 'vision', label: '视觉识图' },
     { kind: 'function_call', label: '工具调用' },
+    { kind: 'image', label: '图片生成' },
+    { kind: 'video', label: '视频生成' },
   ];
   if (m.type === 'embedding') base.push({ kind: 'embedding', label: '向量嵌入' });
-  if (m.type === 'image') base.push({ kind: 'image', label: '图片生成' });
-  if (m.type === 'video') base.push({ kind: 'video', label: '视频生成' });
   return base;
 }
 
@@ -491,14 +487,13 @@ async function runCapabilityTest(m: any, kind: string) {
   } finally { testing.value = ''; }
 }
 
-/** 自动检测：跑 chat / vision / function_call，把通过的写回能力 */
+/** 自动检测：跑全部能力项（问答/视觉/工具/图片/视频），把通过的写回能力 */
 async function autoDetectCapabilities(m: any) {
   testing.value = m.id;
   try {
-    const kinds = ['chat', 'vision', 'function_call'];
-    // 按模型类型追加专属测试项（image/video 的三项基础测试对它们通常必失败，专属项才是有效信号）
-    if (m.type === 'image') kinds.push('image');
-    if (m.type === 'video') kinds.push('video');
+    // 不按模型类型收窄：图片/视频项对所有模型都跑，通过即勾上，不通过就不勾
+    const kinds = ['chat', 'vision', 'function_call', 'image', 'video'];
+    if (m.type === 'embedding') kinds.push('embedding');
     const list: { kind: string; label: string; ok: boolean; msg: string; durationMs: number }[] = [];
     const applied: string[] = [];
     for (const k of kinds) {

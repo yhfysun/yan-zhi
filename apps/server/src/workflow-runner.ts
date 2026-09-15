@@ -8,6 +8,7 @@ import { WorkflowEngine, LlmClient, runUserCode, getToolRegistry } from '@yan-zh
 import type { NodeHandler, RunContext, NodeResult } from '@yan-zhi/core';
 import type { Workflow, Platform, Model } from '@yan-zhi/shared';
 import { db } from './db.js';
+import { DEFAULT_CONTEXT_WINDOW } from './constants.js';
 import { callMcpTool, loadServer, getToolsFromDb, mcpShortIdOf } from './mcp/client-manager.js';
 
 export interface WorkflowAgentDef {
@@ -176,7 +177,7 @@ function loadModelRow(modelId: string, userId: string): Model | null {
     modelId: row.model_id,
     alias: row.alias,
     type: row.type || 'llm',
-    contextWindow: row.context_window || 262144,
+    contextWindow: row.context_window || DEFAULT_CONTEXT_WINDOW,
     capabilities: (() => { try { return JSON.parse(row.capabilities_json || '[]'); } catch { return []; } })(),
   } as any;
 }

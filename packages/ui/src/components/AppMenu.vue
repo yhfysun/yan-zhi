@@ -23,7 +23,13 @@
         @mouseleave="scheduleClose"
         @keydown="onPanelKeydown"
       >
-        <AppMenuPanel :items="items" :level="1" @select="onSelect" />
+        <AppMenuPanel
+          :items="items"
+          :level="1"
+          @select="onSelect"
+          @sub-open="onSubOpen"
+          @sub-close="onSubClose"
+        />
       </div>
     </Transition>
   </Teleport>
@@ -56,6 +62,8 @@ const anchorRef = ref<HTMLElement | null>(null);
 const panelRef = ref<HTMLElement | null>(null);
 const open = ref(false);
 const panelPos = ref({ left: 0, top: 0 });
+/** 子面板是否展开（子面板 Teleport 到 body，不在 panel 内，需单独跟踪） */
+const subOpen = ref(false);
 
 const panelStyle = computed(() => ({
   left: `${panelPos.value.left}px`,
@@ -77,6 +85,7 @@ function show() {
 function hide() {
   if (!open.value) return;
   open.value = false;
+  subOpen.value = false;
   emit('close');
   unbindGlobal();
 }
@@ -121,10 +130,24 @@ function onLeaveTrigger() {
 }
 function scheduleClose() {
   cancelClose();
-  triggerTimer = setTimeout(hide, 200);
+  triggerTimer = setTimeout(() => {
+    // 子面板展开时不关：指针移向 Teleport 出去的子面板会先触发主面板的 mouseleave
+    if (subOpen.value) return;
+    hide();
+  }, 200);
 }
 function cancelClose() {
   if (triggerTimer) { clearTimeout(triggerTimer); triggerTimer = null; }
+}
+
+/* ===== 子面板开合：展开时抑制关闭判定，收起时若指针已不在主面板则整体关闭 ===== */
+function onSubOpen() {
+  subOpen.value = true;
+  cancelClose();
+}
+function onSubClose() {
+  subOpen.value = false;
+  if (!panelRef.value?.matches(':hover')) scheduleClose();
 }
 
 /* ===== 选择 / 键盘 ===== */
@@ -142,9 +165,11 @@ function onPanelKeydown(ev: KeyboardEvent) {
 
 /* ===== 全局监听：外部点击 / 滚动重定位 / 窗口变化关闭 ===== */
 function onDocMousedown(ev: MouseEvent) {
-  const t = ev.target as Node;
-  if (panelRef.value?.contains(t)) return;
-  if (anchorRef.value?.contains(t)) return;
+  const t = ev.target as HTMLElement | null;
+  if (panelRef.value?.contains(t as Node)) return;
+  if (anchorRef.value?.contains(t as Node)) return;
+  // 子面板 Teleport 到 body，不在 panelRef 内 —— 命中时不关，否则点档位会连菜单一起关掉
+  if (t?.closest?.('.app-menu-sub')) return;
   hide();
 }
 function onWinChange() {

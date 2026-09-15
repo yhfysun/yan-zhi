@@ -9,9 +9,9 @@
     <div class="atp-body">
       <div v-if="state === 'loading'" class="atp-tip">预览生成中…</div>
 
-      <!-- 图片：等比例缩放，完整放进固定框（不裁切、不变形） -->
+      <!-- 图片：等比例缩放，完整放进固定框（不裁切、不变形）；双击放大查看 -->
       <div v-else-if="kind === 'image'" class="atp-stage atp-stage-paper">
-        <img :src="file.dataUrl" :alt="file.name" class="atp-img" />
+        <img :src="file.dataUrl" :alt="file.name" class="atp-img" @dblclick="zoomImage" />
       </div>
 
       <!-- PDF：pdf.js 栅格化首页 -->
@@ -61,6 +61,7 @@ const PREVIEW_CACHE = new Map<string, PreviewPayload>();
 import { ref, computed, onMounted } from 'vue';
 import { Document } from '@element-plus/icons-vue';
 import { extractExcelSheets, extractDocxHtml } from '@yan-zhi/core';
+import { openMediaViewer } from '../../composables/useMediaPreview';
 
 /**
  * 附件悬浮预览卡：输入框下方 chip 的 hover 弹层内容。
@@ -127,6 +128,12 @@ const humanSize = computed(() => {
 function b64Of(dataUrl: string): string {
   const i = dataUrl.indexOf(',');
   return i >= 0 ? dataUrl.slice(i + 1) : dataUrl;
+}
+
+/** 用户上传的图片双击放大：与聊天区图片走同一个灯箱 */
+function zoomImage() {
+  if (kind.value !== 'image') return;
+  openMediaViewer({ src: props.file.dataUrl, kind: 'image', name: props.file.name });
 }
 
 /** base64 → UTF-8 文本（只解前 ~120KB，够显示开头即可，避免大文件卡界面） */

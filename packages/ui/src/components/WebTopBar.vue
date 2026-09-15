@@ -47,6 +47,11 @@
           </template>
           <HoverMenu :items="moreItems" :width="196" @select="onMoreSelect" />
         </el-popover>
+
+        <!-- 刷新：界面卡住/白屏时的自助恢复出口（紧接「更多」之后） -->
+        <button class="title-nav-item title-nav-item--icon" type="button" title="刷新界面" @click="onReload">
+          <el-icon :size="15"><Refresh /></el-icon>
+        </button>
       </nav>
 
       <!-- 中部：可拖拽留白（flex:1） -->
@@ -107,7 +112,7 @@ import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import {
   Minus, FullScreen, CopyDocument, Close, Moon, Sunny, HomeFilled, ChatDotRound, Monitor, Promotion, Setting, Collection,
-  More, Cpu, Tools, Files, User, Link, Platform, MagicStick, Memo, Box, DataLine, Operation, Share,
+  More, Cpu, Tools, Files, User, Link, Platform, MagicStick, Memo, Box, DataLine, Operation, Share, Refresh,
 } from '@element-plus/icons-vue';
 import { useSettingsStore, useAuthStore, usePluginStore } from '@yan-zhi/ui';
 import { resolvePluginIcon } from '@yan-zhi/ui/plugin-icons';
@@ -242,6 +247,16 @@ watch([moreOpen, avatarMenuOpen], ([m, a]) => { titleBarOverlayOpen.value = m ||
 function onMoreSelect(item: HoverMenuItem) {
   moreOpen.value = false;
   if (item.path) router.push(item.path);
+}
+
+// 刷新界面：桌面端交主进程做硬刷新（丢弃渲染进程缓存），Web 端退回浏览器重载。
+// 用于界面卡住 / 白屏时的一键自救；只重载前端，不重启后端进程。
+function onReload() {
+  moreOpen.value = false;
+  try {
+    if (typeof api?.reload === 'function') { api.reload(); return; }
+  } catch { /* 主进程不可达 → 退回页面重载 */ }
+  window.location.reload();
 }
 
 // 头像下拉：el-dropdown-item 的 command 会冒泡到 el-dropdown 的 command 事件，
@@ -392,6 +407,11 @@ onUnmounted(() => {
   background: color-mix(in srgb, var(--color-primary) 12%, transparent);
   color: var(--color-primary);
   font-weight: 500;
+}
+
+/* 纯图标导航项（刷新）：收窄左右内边距，与带文字的项视觉对齐 */
+.title-nav-item--icon {
+  padding: 0 8px;
 }
 
 /* 登录头像（绿点=已登录）/ 登录按钮 */

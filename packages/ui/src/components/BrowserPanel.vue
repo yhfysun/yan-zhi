@@ -1,5 +1,5 @@
 <template>
-  <div class="browser-shell" @click="hideTabCtx">
+  <div class="browser-shell" :class="{ 'shell-expanded': browserExpanded }" @keydown="onShellKeydown" @click="hideTabCtx">
     <!-- E12: 移动端不支持内置浏览器——整面板占位提示 -->
     <div v-if="!supportsBrowser" class="browser-unsupported">
       <p class="bu-title">当前平台不支持内置浏览器</p>
@@ -92,6 +92,25 @@
         <svg viewBox="0 0 24 24" width="18" height="18"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M7 11V7a5 5 0 0110 0v4M5 11h14a2 2 0 012 2v7a2 2 0 01-2 2H5a2 2 0 01-2-2v-7a2 2 0 012-2z"/></svg>
       </button>
 
+      <!-- Agent 实况控制组：暂停/恢复/停止（仅浏览器任务运行中显示，按会话感知） -->
+      <template v-if="liveControlVisible">
+        <button v-if="isConvStreamingNow && !pausedNow" class="nav-btn live-btn live-pause" @click="onPauseTask" title="暂停（当前动作完成后挂起）">
+          <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>
+        </button>
+        <button v-else-if="pausedNow" class="nav-btn live-btn live-resume" @click="onResumeTask" title="恢复执行">
+          <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>
+        </button>
+        <button class="nav-btn live-btn live-stop" @click="onStopTask" title="停止任务">
+          <svg viewBox="0 0 24 24" width="16" height="16"><rect x="6" y="6" width="12" height="12" rx="1.5" fill="currentColor"/></svg>
+        </button>
+      </template>
+
+      <!-- 全屏实况开关：原地放大（DOM 不动，避免 webview 重载） -->
+      <button class="nav-btn" :class="{ active: browserExpanded }" @click="toggleExpanded" :title="browserExpanded ? '收起全屏 (Esc)' : '全屏实况'">
+        <svg v-if="!browserExpanded" viewBox="0 0 24 24" width="18" height="18"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>
+        <svg v-else viewBox="0 0 24 24" width="18" height="18"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/></svg>
+      </button>
+
       <!-- 更多菜单 ⋮ -->
       <el-dropdown trigger="click" @visible-change="onMoreMenuVisible" @command="onMenuCommand">
         <button class="nav-btn" title="更多工具">
@@ -172,6 +191,18 @@
 
     <!-- 远程浏览器渲染区 -->
     <div v-else class="browser-viewport" ref="viewportRef">
+      <!-- Agent 实况锁定 shield：agent 驱动浏览器期间挡住人的一切输入（点击/双击/右键/键盘）。
+           只盖视口区不盖工具条 —— 暂停/停止/收起始终可点。capture 阶段拦截 + preventDefault。 -->
+      <div
+        v-if="inputLocked"
+        class="agent-lock-shield"
+        @mousedown.prevent.stop
+        @click.prevent.stop
+        @dblclick.prevent.stop
+        @contextmenu.prevent.stop
+        @wheel.prevent.stop
+        @keydown.capture.prevent.stop
+      ></div>
       <!-- Electron + webview 引擎：DOM 内嵌 <webview>，浮层可覆盖（替代原生 BrowserView 图层） -->
       <template v-if="isWebviewEngine">
         <webview
@@ -356,6 +387,43 @@ const browserScope = (props.scope || 'page');
 // `string[][number]` —— `string[].value === undefined` → 「Cannot read properties
 // of undefined (reading 'undefined')」，关 tab 触发响应式刷新时立刻挂。
 const browserStore = useBrowserStore(browserScope);
+
+// ── Agent 实况控制（放大/锁定/暂停/停止）──
+// 只在对话页预览空间启用：page 空间（/browser 独立页）没有聊天任务上下文。
+const chatStore = useChatStore();
+const isPreviewScope = browserScope === 'preview' || browserScope.startsWith('preview:');
+const browserExpanded = computed({
+  get: () => isPreviewScope && chatStore.browserExpanded,
+  set: (v: boolean) => { if (isPreviewScope) chatStore.browserExpanded = v; },
+});
+const inputLocked = computed(() =>
+  isPreviewScope && chatStore.browserLockInput && !chatStore.browserPaused
+  && (chatStore.streaming || chatStore.runningConvIds.size > 0),
+);
+const liveControlVisible = computed(() => isPreviewScope && chatStore.browserSteps.length > 0);
+const isConvStreamingNow = computed(() => isPreviewScope && chatStore.streaming);
+const pausedNow = computed(() => isPreviewScope && chatStore.browserPaused);
+function toggleExpanded() {
+  if (browserExpanded.value) {
+    // 手动收起 = 本次浏览器任务内不再自动放大
+    browserExpanded.value = false;
+    chatStore.browserUserDismissed = true;
+  } else {
+    browserExpanded.value = true;
+    chatStore.browserUserDismissed = false;
+  }
+}
+// Esc 收起全屏（展开态才拦截，避免影响页面内 Esc 语义）
+function onShellKeydown(e: KeyboardEvent) {
+  if (e.key === 'Escape' && browserExpanded.value) {
+    e.stopPropagation();
+    browserExpanded.value = false;
+    chatStore.browserUserDismissed = true;
+  }
+}
+function onStopTask() { chatStore.stop(); }
+function onPauseTask() { void chatStore.pauseTask(); }
+function onResumeTask() { void chatStore.resumeTask(); }
 // 动态 defineStore 的返回类型与静态 Store 不严格匹配（storeToRefs 要 StoreGeneric）；
 // 运行时 storeToRefs 实际能正确取出 ref，这里用 `as any` 跳过编译期类型检查。
 const {
@@ -1322,7 +1390,7 @@ function onFrameLoad() {
 
 // 智能体（LLM）调 browser_navigate 时，store.currentBrowserUrl 写入 url，
 // 这里 watch 到后复用 openSite 导航 —— 让智能体打开的页面与预览面板共用同一浏览器（桌面 BrowserView）
-const chatStore = useChatStore();
+// 注：chatStore 已在上方（Agent 实况控制区）声明，此处复用同一实例
 
 // 每次导航变化 → 记录到后端（供最近浏览/常用/每日 AI 分析）
 // pageAgent 导航时 skipNextRecordVisit=true，跳过记录（不记录智能体浏览历史）。
@@ -1990,6 +2058,43 @@ onUnmounted(() => {
 
 <style scoped>
 .browser-shell { flex: 1; display: flex; flex-direction: column; overflow: hidden; background: var(--el-bg-color, #fff); min-height: 0; }
+
+/* ── 全屏实况（原地放大）：纯样式切换，DOM 节点不动。
+   ⚠️ 禁用 Teleport：<webview>（iframe 同理）DOM 被搬动 → guest 重挂载 → 页面重载、
+   agent 操作到一半的表单/滚动状态全丢。fixed 定位让面板铺满窗口，背后加遮罩盖住聊天区。 */
+.browser-shell.shell-expanded {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+}
+/* 展开态背后遮罩：盖住聊天区（webview 不透明，正常看不到；作为页面加载白屏期的视觉过渡） */
+.browser-shell.shell-expanded::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  background: var(--el-mask-color, rgba(0, 0, 0, 0.5));
+}
+
+/* ── Agent 实况锁定 shield：透明覆盖层，挡视口区的一切人为输入。
+   capture 阶段拦截；工具条在视口区之外，不受影响（暂停/停止/收起始终可点）。 */
+.agent-lock-shield {
+  position: absolute;
+  inset: 0;
+  z-index: 20;              /* 盖过 .page-webview(z-index:1)、loading-overlay(z-index:5)、custom-scrollbar(z-index:30) 之下的滚动条 */
+  background: transparent;
+  cursor: not-allowed;
+  pointer-events: auto;
+}
+
+/* ── 实况控制按钮（暂停/恢复/停止）── */
+.live-btn { position: relative; }
+.live-pause { color: var(--el-color-warning, #b45309); }
+.live-pause:hover:not(:disabled) { background: color-mix(in srgb, var(--el-color-warning, #b45309) 14%, transparent) !important; }
+.live-resume { color: var(--el-color-success, #15803d); }
+.live-resume:hover:not(:disabled) { background: color-mix(in srgb, var(--el-color-success, #15803d) 14%, transparent) !important; }
+.live-stop { color: var(--el-color-danger, #dc2626); }
+.live-stop:hover:not(:disabled) { background: color-mix(in srgb, var(--el-color-danger, #dc2626) 14%, transparent) !important; }
 
 /* 多标签页栏（Chrome 风格） */
 .browser-tabbar {

@@ -2,7 +2,7 @@
 import { Router, Request, Response } from 'express';
 import { authMiddleware } from '../auth.js';
 import {
-  createTask, subscribe, abortTask, getActiveTasks, getTask, getTaskRow, resolveToolResult, injectUserMessage,
+  createTask, subscribe, abortTask, pauseTask, resumeTask, getActiveTasks, getTask, getTaskRow, resolveToolResult, injectUserMessage,
 } from '../llm-task-manager.js';
 
 const router = Router();
@@ -57,6 +57,30 @@ router.get('/tasks/:id/stream', (req: Request, res: Response) => {
 router.post('/tasks/:id/abort', (req: Request, res: Response) => {
   const taskId = req.params.id;
   abortTask(taskId);
+  res.json({ ok: true });
+});
+
+// POST /api/llm/tasks/:id/pause  暂停任务（工具边界暂停：当前动作跑完即挂起）
+router.post('/tasks/:id/pause', (req: Request, res: Response) => {
+  const taskId = req.params.id;
+  const ok = pauseTask(taskId);
+  if (!ok) {
+    const task = getTask(taskId);
+    res.status(task ? 409 : 404).json({ error: task ? '任务不在 running 状态，无法暂停' : '任务不存在' });
+    return;
+  }
+  res.json({ ok: true });
+});
+
+// POST /api/llm/tasks/:id/resume  恢复暂停中的任务
+router.post('/tasks/:id/resume', (req: Request, res: Response) => {
+  const taskId = req.params.id;
+  const ok = resumeTask(taskId);
+  if (!ok) {
+    const task = getTask(taskId);
+    res.status(task ? 409 : 404).json({ error: task ? '任务未处于暂停态' : '任务不存在' });
+    return;
+  }
   res.json({ ok: true });
 });
 

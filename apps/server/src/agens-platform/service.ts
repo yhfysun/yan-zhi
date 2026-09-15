@@ -1,4 +1,8 @@
 import { db } from '../db.js';
+import { DEFAULT_CONTEXT_WINDOW } from '../constants.js';
+
+// 常量本体在 constants.ts（零依赖模块），这里 re-export 保持既有引用路径可用
+export { DEFAULT_CONTEXT_WINDOW };
 
 /**
  * agnes 线上平台内置初始化（平台正确名称：agnes，与接口域名 apihub.agnes-ai.com 一致；
@@ -9,7 +13,8 @@ import { db } from '../db.js';
  * - is_builtin = 0：保留为普通平台，用户仍可在 UI 里拉取/编辑/删除模型与改 key，
  *   避免 platforms 路由对内置平台的写保护（403）挡住后续管理。
  * - 仅在平台不存在时首次写入；已存在则完全不覆盖用户改过的字段（上下文/别名/能力），
- *   只补齐「接口新增但本地缺失」的模型（如 agnes-3.0-flash）与默认模型切换。
+ *   只补齐「接口新增但本地缺失」的模型（如 agnes-3.0-flash）、按模型名补齐媒体能力
+ *   （agnes-image-* → image、agnes-video-* → video）与默认模型切换。
  * - api_key 明文存 api_key_enc，与现有本地平台 key 存储方式一致。
  *   优先读环境变量 AGENS_API_KEY（兼容旧 AGNES_API_KEY），未设置则用内置默认 key。
  * - 多 Token 池：内置多个 Key 灌入 platform_api_key 表（幂等，INSERT OR IGNORE），
@@ -20,8 +25,6 @@ export const AGENS_PLATFORM_NAME = 'agnes';
 export const AGENS_API_URL = 'https://apihub.agnes-ai.com';
 /** 全局默认对话模型（agnes 平台，2026-09 接口最新列表） */
 export const AGENS_DEFAULT_MODEL_ID = 'agnes-3.0-flash';
-/** 新建/拉取模型时的默认上下文窗口：256K */
-export const DEFAULT_CONTEXT_WINDOW = 262144;
 
 const AGENS_API_KEYS: { key: string; label: string }[] = [
   { key: 'sk-S1CZPrMVMv86pfXnfDdPGc6v5aMJ6wFSoFMK23Elfi6dEIYi', label: '内置Key 1' },
@@ -60,6 +63,34 @@ interface AgensModelSeed {
   contextWindow?: number;
   capabilities?: string[];
   isDefault?: boolean;
+}
+
+/**
+ * 按模型名推断能力（大小写不敏感）：名字含 image → 图片生成；含 video → 视频生成。
+ * 平台目录接口不返回 capabilities，但 agnes 媒体模型的命名规律稳定
+ * （agnes-image-*、agnes-video-*，含大小写混写如 AGNES-Image-*），
+ * 因此以名称为准自动带上，免去在 UI 里逐个手勾。
+ * 注意：llm 模型名里不含 image/video，因此不会因此被判定为「不支持工具调用」
+ * （llm-task-manager 的 supportsTools 判定：能力非空且不含 function_call 时裁掉工具）。
+ */
+export function inferCapabilitiesFromModelId(modelId: string): string[] {
+  const id = String(modelId || '').toLowerCase();
+  const caps: string[] = [];
+  if (id.includes('image')) caps.push('image');
+  if (id.includes('video')) caps.push('video');
+  return caps;
+}
+
+/** seed / 补齐时的能力口径：seed 里显式声明优先，否则按模型名推断 */
+function capabilitiesForModel(m: AgensModelSeed): string[] {
+  return m.capabilities?.length ? m.capabilities : inferCapabilitiesFromModelId(m.modelId);
+}
+
+function parseCaps(json: string | null | undefined): string[] {
+  try {
+    const v = JSON.parse(json || '[]');
+    return Array.isArray(v) ? v : [];
+  } catch { return []; }
 }
 
 // 来自 GET https://apihub.agnes-ai.com/v1/models 的真实列表（2026-09-14 拉取，共 12 个）。
@@ -116,28 +147,39 @@ export function renameLegacyAgensPlatformId(userId: string): boolean {
 
 /**
  * 已存在的 agnes 平台：补齐接口新增但本地缺失的模型（INSERT OR IGNORE，不覆盖已有行），
- * 并做启动自愈：平台显示名 'agens' → 'agnes'、别名前缀 'agens ' → 'agnes '
+ * 并做启动自愈：平台显示名 'agens' → 'agnes'、别名前缀 'agens ' → 'agnes '、
+ * 媒体模型能力按名称补齐（model_id 含 image/video 的行自动带上对应能力，只增不减）
  * （2026-09-14 误改名 agens 的回滚迁移，仅动显示层，不动平台 id）。
  */
-export function syncAgensModelCatalog(userId: string, platformId: string): { added: string[] } {
+export function syncAgensModelCatalog(userId: string, platformId: string): { added: string[]; capsFilled: string[] } {
   const added: string[] = [];
+  const capsFilled: string[] = [];
   const insertModel = db.prepare(
     `INSERT OR IGNORE INTO model
       (id, platform_id, user_id, model_id, alias, type, context_window, capabilities_json, pricing_json, enabled, is_default, is_builtin, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, '[]', '{}', 1, 0, 0, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, '{}', 1, 0, 0, ?)`,
   );
   const fixName = db.prepare("UPDATE platform SET name = 'agnes' WHERE id = ? AND name = 'agens'");
   const fixAlias = db.prepare("UPDATE model SET alias = REPLACE(alias, 'agens ', 'agnes ') WHERE platform_id = ? AND alias LIKE 'agens %' AND is_builtin = 0");
   const fillAlias = db.prepare("UPDATE model SET alias = ? WHERE platform_id = ? AND model_id = ? AND (alias IS NULL OR alias = '') AND is_builtin = 0");
+  const updateCaps = db.prepare('UPDATE model SET capabilities_json = ? WHERE id = ?');
   const now = Date.now();
   db.transaction(() => {
     for (const m of AGENS_MODELS) {
       const exists = db
-        .prepare('SELECT id FROM model WHERE platform_id = ? AND model_id = ? LIMIT 1')
-        .get(platformId, m.modelId) as { id: string } | undefined;
+        .prepare('SELECT id, capabilities_json FROM model WHERE platform_id = ? AND model_id = ? LIMIT 1')
+        .get(platformId, m.modelId) as { id: string; capabilities_json: string | null } | undefined;
       if (exists) {
         // 拉取远程模型进来的行别名可能为空（卡片只显示 model_id），按目录补一个
         fillAlias.run(m.alias, platformId, m.modelId);
+        // 能力按名称补齐：只加不减，用户手动勾上的其它能力不受影响
+        const want = capabilitiesForModel(m);
+        const cur = parseCaps(exists.capabilities_json);
+        const merged = Array.from(new Set([...cur, ...want]));
+        if (merged.length > cur.length) {
+          updateCaps.run(JSON.stringify(merged), exists.id);
+          capsFilled.push(m.modelId);
+        }
         continue;
       }
       insertModel.run(
@@ -148,6 +190,7 @@ export function syncAgensModelCatalog(userId: string, platformId: string): { add
         m.alias,
         m.type,
         m.contextWindow || DEFAULT_CONTEXT_WINDOW,
+        JSON.stringify(capabilitiesForModel(m)),
         now,
       );
       added.push(m.modelId);
@@ -155,7 +198,7 @@ export function syncAgensModelCatalog(userId: string, platformId: string): { add
     fixName.run(platformId);
     fixAlias.run(platformId);
   })();
-  return { added };
+  return { added, capsFilled };
 }
 
 /**
@@ -186,7 +229,7 @@ export function ensureAgensPlatform(userId: string): { platformId: string; creat
   const insertModel = db.prepare(
     `INSERT INTO model
       (id, platform_id, user_id, model_id, alias, type, context_window, capabilities_json, pricing_json, enabled, is_default, is_builtin, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, '[]', '{}', 1, ?, 0, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, '{}', 1, ?, 0, ?)`,
   );
 
   db.transaction(() => {
@@ -200,6 +243,7 @@ export function ensureAgensPlatform(userId: string): { platformId: string; creat
         m.alias,
         m.type,
         m.contextWindow || DEFAULT_CONTEXT_WINDOW,
+        JSON.stringify(capabilitiesForModel(m)),
         m.isDefault ? 1 : 0,
         now,
       );
@@ -275,18 +319,28 @@ export function migrateAgensDefaultModel(userId: string): boolean {
   return true;
 }
 
+/** api_url 指向本机的平台（Ollama / LM Studio 等）——它们的窗口受本地硬件与模型本身限制，不参与默认档迁移 */
+const LOCAL_PLATFORM_URL_LIKE = ['%127.0.0.1%', '%localhost%', '%0.0.0.0%', '%[::1]%'];
+
 /**
- * 一次性把「小于 256K」的模型上下文窗口统一提到 256K（默认档）。
- * 已经是 1M 等更大档位的保留不动（用户手动调大的值不被回退）。
- * 通过 app_config 打标记，只执行一次，重启不会反复覆盖用户后续的小窗口设置。
+ * 一次性把「小于 1M」的模型上下文窗口统一提到 1M（默认档）。
+ * - 已经是 1M 及以上档位的保留不动（用户手动调大的值不被回退）
+ * - 本机平台（Ollama 等）跳过：本地小模型真实窗口只有 32K/64K，强行抬到 1M 会让
+ *   上下文压缩不触发而直接超限报错
+ * - 通过 app_config 打标记（v2），只执行一次，重启不会反复覆盖用户后续的小窗口设置
  */
 export function bumpModelContextWindowToDefault(): number {
-  const markerKey = 'model_ctx_default_256k_v1';
+  const markerKey = 'model_ctx_default_1m_v2';
   const done = db.prepare('SELECT value FROM app_config WHERE key = ?').get(markerKey) as { value: string } | undefined;
   if (done) return 0;
+  const notLocal = LOCAL_PLATFORM_URL_LIKE.map(() => 'api_url LIKE ?').join(' OR ');
   const changed = db
-    .prepare('UPDATE model SET context_window = ? WHERE context_window IS NULL OR context_window < ?')
-    .run(DEFAULT_CONTEXT_WINDOW, DEFAULT_CONTEXT_WINDOW).changes;
+    .prepare(
+      `UPDATE model SET context_window = ?
+        WHERE (context_window IS NULL OR context_window < ?)
+          AND platform_id NOT IN (SELECT id FROM platform WHERE ${notLocal})`,
+    )
+    .run(DEFAULT_CONTEXT_WINDOW, DEFAULT_CONTEXT_WINDOW, ...LOCAL_PLATFORM_URL_LIKE).changes;
   db.prepare(
     'INSERT INTO app_config (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at',
   ).run(markerKey, String(changed), Date.now());
@@ -303,6 +357,7 @@ export function syncAgensPlatformForAllUsers(): {
   migrated: string[];
   renamed: string[];
   addedModels: string[];
+  capsFilled: string[];
 } {
   const users = db.prepare('SELECT id FROM user').all() as { id: string }[];
   const seeded: string[] = [];
@@ -310,6 +365,7 @@ export function syncAgensPlatformForAllUsers(): {
   const migrated: string[] = [];
   const renamed: string[] = [];
   const addedModels: string[] = [];
+  const capsFilled: string[] = [];
   for (const u of users) {
     if (renameLegacyAgensPlatformId(u.id)) renamed.push(u.id);
     dedupeAgensPlatforms(u.id);
@@ -320,8 +376,9 @@ export function syncAgensPlatformForAllUsers(): {
       skipped.push(u.id);
       const s = syncAgensModelCatalog(u.id, r.platformId);
       if (s.added.length) addedModels.push(...s.added);
+      if (s.capsFilled.length) capsFilled.push(...s.capsFilled);
       if (migrateAgensDefaultModel(u.id)) migrated.push(u.id);
     }
   }
-  return { seeded, skipped, migrated, renamed, addedModels };
+  return { seeded, skipped, migrated, renamed, addedModels, capsFilled };
 }

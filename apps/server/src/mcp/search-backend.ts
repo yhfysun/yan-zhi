@@ -7,6 +7,7 @@
 // PlaywrightSearchBackend 已删除：抓搜索引擎结果页 DOM 是错误路径，反爬/验证码/改版都会崩，
 // 且依赖宿主机 chromium 安装。需要 Bing/Baidu 结果请用 Bing API（YANZHI_BING_API_KEY）。
 import { FetchSearchBackend, DuckDuckGoSearchBackend, BingApiSearchBackend, type SearchBackend, type SearchResult, type SearchSummarizer } from '@yan-zhi/core';
+import { DEFAULT_CONTEXT_WINDOW } from '../constants.js';
 
 // Re-export 给 server 测试用（避免测试里 import @yan-zhi/core 后 instanceof 比对失败）
 export { FetchSearchBackend, DuckDuckGoSearchBackend, BingApiSearchBackend };
@@ -187,7 +188,7 @@ export function createLlmSummarizer(): SearchSummarizer {
         modelId: picked.model_id,
         alias: picked.alias,
         type: 'llm',
-        contextWindow: 262144,
+        contextWindow: DEFAULT_CONTEXT_WINDOW,
         capabilities: [],
       };
       const client = new LlmClient(platform as any, model as any);

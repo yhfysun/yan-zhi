@@ -16,7 +16,7 @@
             @click="collapsedMessages[round.user.id] ? toggleMsgCollapse(round.user.id) : null"
           >
             <div v-show="!collapsedMessages[round.user.id]">
-              <div v-if="round.user.content" class="msg-content" v-html="renderMarkdown(round.user.content)" @click="handleContentClick"></div>
+              <div v-if="round.user.content" class="msg-content" v-html="renderMarkdown(round.user.content)" @click="handleContentClick" @dblclick="handleContentDblClick" @contextmenu="handleContentContextMenu"></div>
             </div>
             <div v-show="collapsedMessages[round.user.id]" class="msg-collapsed-placeholder">
               <span class="collapsed-line">{{ (round.user.content || '').replace(/\n/g, ' ').slice(0, 120) }}</span>
@@ -100,11 +100,6 @@
                           <img :src="resolveScreenshotUrl(getStepToolResult(step, tc.id)) || ''" alt="屏幕截图" />
                           <span class="tool-item-shot-note">截图预览 · 仅流式期间展示，结束后自动清理</span>
                         </div>
-                        <!-- 文生视频工具（api_video_generate）：流式期间在工具卡片下内嵌视频预览 -->
-                        <div v-if="isRoundLive(round, ri) && resolveVideoUrl(getStepToolResult(step, tc.id))" class="tool-item-shot">
-                          <video :src="resolveVideoUrl(getStepToolResult(step, tc.id)) || ''" controls preload="metadata" class="tool-item-video"></video>
-                          <span class="tool-item-shot-note">视频预览 · 仅流式期间展示，成片链接见回复正文</span>
-                        </div>
                         <div v-show="isToolItemOpen(tc.id, 'agent-step-' + ri + '-' + si + '-' + idx)" class="tool-item-body">
                           <div class="tool-item-section">
                             <div class="tool-item-label">参数</div>
@@ -115,8 +110,8 @@
                             <pre v-if="resolveToolDisplay(tc).tool !== 'call_agent'" class="tool-item-json" :class="{ 'tool-item-json-error': isStepToolError(step, tc.id) }">{{ getStepToolResult(step, tc.id) }}</pre>
                             <div v-else class="tool-item-note">子智能体已完成，最终结果见下方卡片正文</div>
                           </div>
-                          <div v-if="detectGitPath(getStepToolResult(step, tc.id))" class="tool-item-section">
-                            <el-button size="small" @click="openInGit(detectGitPath(getStepToolResult(step, tc.id))!)">浏览文件</el-button>
+                          <div v-if="detectPath(getStepToolResult(step, tc.id))" class="tool-item-section">
+                            <el-button size="small" @click="openPath(detectPath(getStepToolResult(step, tc.id))!)">浏览文件</el-button>
                           </div>
                           <SubAgentRoundView
                             v-if="resolveToolDisplay(tc).tool === 'call_agent' && step.subAgentRounds?.find(r => r.toolCallId === tc.id)"
@@ -159,6 +154,8 @@
                             <ArrowRight v-else />
                           </el-icon>
                         </div>
+                        <!-- 生图/生视频产物已抽到整轮「媒体产物」常驻条（见 agent-response-body 前），
+                             折叠体只留参数/结果明细 —— 思考过程收起也不藏媒体 -->
                         <div v-show="expandedTools['round-' + ri + '-' + idx]" class="tool-item-body">
                           <div class="tool-item-section">
                             <div class="tool-item-label">参数</div>
@@ -168,14 +165,18 @@
                             <div class="tool-item-label">结果</div>
                             <pre class="tool-item-json" :class="{ 'tool-item-json-error': isToolError(tc.id) }">{{ getToolResult(tc.id) }}</pre>
                           </div>
-                          <div v-if="detectGitPath(getToolResult(tc.id))" class="tool-item-section">
-                            <el-button size="small" @click="openInGit(detectGitPath(getToolResult(tc.id))!)">浏览文件</el-button>
+                          <div v-if="detectPath(getToolResult(tc.id))" class="tool-item-section">
+                            <el-button size="small" @click="openPath(detectPath(getToolResult(tc.id))!)">浏览文件</el-button>
                           </div>
                         </div>
                       </div>
                     </div>
                   </div>
                 </div>
+              </div>
+              <!-- 整轮媒体产物常驻条：思考过程/工具组折叠与否都不藏媒体，hover 浮层放大、右键取用 -->
+              <div v-if="getRoundMedia(round).length" class="round-media-strip">
+                <ToolMediaPreview v-for="(m, mi) in getRoundMedia(round)" :key="'rm-' + ri + '-' + mi" :media="m" />
               </div>
               <div class="agent-response-body">
                 <template v-if="round.subAgentResults?.length">
@@ -190,7 +191,7 @@
                       </span>
                       <el-icon :size="12" class="sub-agent-result-chevron"><ArrowDown v-if="!collapsedSubAgentResults['sar-' + ri + '-' + sri]" /><ArrowRight v-else /></el-icon>
                     </div>
-                    <div v-show="!collapsedSubAgentResults['sar-' + ri + '-' + sri]" class="sub-agent-result-content" v-html="renderMarkdown(sr.finalContent)" @click="handleContentClick"></div>
+                    <div v-show="!collapsedSubAgentResults['sar-' + ri + '-' + sri]" class="sub-agent-result-content" v-html="renderMarkdown(sr.finalContent)" @click="handleContentClick" @dblclick="handleContentDblClick" @contextmenu="handleContentContextMenu"></div>
                   </div>
                 </template>
                 <div v-if="hasMainResult(round, ri)" class="main-agent-result" :data-card-variant="ri % 4">
@@ -201,6 +202,7 @@
                     <span class="main-agent-result-actions" @click.stop>
                       <el-tooltip content="复制 Markdown" placement="top"><el-button text size="small" circle @click="copyAssistantMd(round)"><el-icon><CopyDocument /></el-icon></el-button></el-tooltip>
                       <el-tooltip content="下载为 .md 文件" placement="top"><el-button text size="small" circle @click="downloadAssistantMd(round)"><el-icon><Download /></el-icon></el-button></el-tooltip>
+                      <el-tooltip content="导出 Word" placement="top"><el-button text size="small" circle @click="exportAssistantDocx(round)"><el-icon><Document /></el-icon></el-button></el-tooltip>
                     </span>
                     <el-icon :size="12" class="main-agent-result-chevron"><ArrowDown v-if="!collapsedMainResults['mar-' + ri]" /><ArrowRight v-else /></el-icon>
                   </div>
@@ -213,7 +215,7 @@
                       <div v-show="expandedReasoning['agent-fa-' + ri]" class="reasoning-body">{{ round.finalAssistant.reasoningContent }}</div>
                     </div>
                     <template v-if="round.finalAssistant?.content">
-                      <div class="msg-content" v-html="renderAssistantMarkdown(round.finalAssistant.content)" @click="handleContentClick"></div>
+                      <div class="msg-content" v-html="renderAssistantMarkdown(round.finalAssistant.content)" @click="handleContentClick" @dblclick="handleContentDblClick" @contextmenu="handleContentContextMenu"></div>
                       <PlatformConfigCard
                         v-if="parseConfigCard(round.finalAssistant.content)"
                         :mode="parseConfigCard(round.finalAssistant.content)!.mode"
@@ -242,7 +244,7 @@
                     </template>
                     <template v-else-if="isLastRoundStreaming(round, ri)">
                       <!-- 有实时正文：跑马灯式流式显示 + 末尾闪烁光标 -->
-                      <div v-if="getStreamingText(round, ri)" class="msg-content streaming-content" v-html="renderStreamingContent(getStreamingText(round, ri))" @click="handleContentClick"></div>
+                      <div v-if="getStreamingText(round, ri)" class="msg-content streaming-content" v-html="renderStreamingContent(getStreamingText(round, ri))" @click="handleContentClick" @dblclick="handleContentDblClick" @contextmenu="handleContentContextMenu"></div>
                       <!-- 有思考但无正文：显示正在思考 + 实时思考内容 -->
                       <div v-else-if="getStreamingReasoning(round, ri)" class="msg-reasoning streaming-reasoning">
                         <div class="reasoning-header"><span>正在思考…</span></div>
@@ -264,6 +266,7 @@
           <div class="msg-actions msg-actions-assistant">
             <el-tooltip content="复制 Markdown" placement="top"><el-button text size="small" circle @click="copyAssistantMd(round)"><el-icon><CopyDocument /></el-icon></el-button></el-tooltip>
             <el-tooltip content="下载为 .md 文件" placement="top"><el-button text size="small" circle @click="downloadAssistantMd(round)"><el-icon><Download /></el-icon></el-button></el-tooltip>
+            <el-tooltip content="导出 Word" placement="top"><el-button text size="small" circle @click="exportAssistantDocx(round)"><el-icon><Document /></el-icon></el-button></el-tooltip>
             <el-tooltip content="引用" placement="top"><el-button text size="small" circle @click="quoteMsg(round.finalAssistant!)"><el-icon><Link /></el-icon></el-button></el-tooltip>
             <el-tooltip content="重新生成" placement="top"><el-button text size="small" circle :disabled="store.streaming" @click="regenerateMsg"><el-icon><Refresh /></el-icon></el-button></el-tooltip>
             <el-tooltip content="蒸馏为 Skill" placement="top"><el-button text size="small" circle @click="distillAssistantMsg(round)"><el-icon><MagicStick /></el-icon></el-button></el-tooltip>
@@ -393,6 +396,11 @@
         <el-icon><ArrowDown /></el-icon>
       </button>
     </transition>
+
+    <!-- 媒体放大灯箱 + 右键菜单（Teleport 到 body，全聊天区共用一个实例） -->
+    <MediaViewer />
+    <MediaContextMenu />
+    <MediaHoverFloat />
   </div>
 </template>
 
@@ -400,14 +408,13 @@
 import {
   User, ChatDotRound, CaretRight, CaretBottom, ArrowDown, ArrowRight, ArrowUp, Loading, CircleCheck,
   CircleClose, CopyDocument, EditPen, MagicStick, Delete, View, Fold, Refresh, Setting, Link, Download,
-  Grid,
+  Grid, Document,
 } from '@element-plus/icons-vue';
 import { ref, watch, nextTick, computed } from 'vue';
+import { ElMessage } from 'element-plus';
 import { useRouter } from 'vue-router';
-import { API_BASE } from '../../api/client';
 import { useChat } from '../../composables/chat/useChat';
 import type { MessageRound } from '../../composables/chat/useChat';
-import { useSettingsStore } from '../../stores/settings';
 import { useCodeStore } from '../../stores/code';
 import TaskPlanCard from '../TaskPlanCard.vue';
 import PlatformConfigCard from '../PlatformConfigCard.vue';
@@ -415,10 +422,16 @@ import SubAgentRoundView from './SubAgentRoundView.vue';
 import DeliverableFileCard from './DeliverableFileCard.vue';
 import DataQueryWorkbench from './DataQueryWorkbench.vue';
 import ChatWelcome from './ChatWelcome.vue';
+import MediaViewer from '../media/MediaViewer.vue';
+import MediaContextMenu from '../media/MediaContextMenu.vue';
+import MediaHoverFloat from '../media/MediaHoverFloat.vue';
+import ToolMediaPreview from './ToolMediaPreview.vue';
+import { exportMarkdownDocx, absoluteMediaSrc, mediaOfTool, type MediaTarget } from '../../composables/useMediaPreview';
 
 const {
   store, platformStore, fileStore, messagesRef, messageRounds, formatTime, collapsedMessages, toggleMsgCollapse,
-  renderMarkdown, handleContentClick, copyMsg, editMsg, quoteMsg, distillUserMsg, delMsg,
+  renderMarkdown, handleContentClick, handleContentDblClick, handleContentContextMenu,
+  copyMsg, editMsg, quoteMsg, distillUserMsg, delMsg,
   openSnapshotDialog, isLastRoundStreaming, getStreamingStep, parseConfigCard, getEditPlatform,
   getEditReason, onConfigSaved, expandedReasoning, toggleReasoning, expandedAgentProcess,
   toggleAgentProcess, expandedStepTools, toggleStepTools, getStepToolGroupClass, isStepToolsRunning,
@@ -428,6 +441,7 @@ const {
   isToolItemOpen, collapsedSubAgentResults, toggleSubAgentResult, collapsedMainResults, toggleMainResult,
   copySubAgentResultMd, downloadSubAgentResultMd, copyAssistantMd, downloadAssistantMd,
   selectedModelId, input, openPlatformConfig,
+  openPath,
   userRoundIndices, activeNavRound, scrollToRound,
   showScrollBottom, showScrollTop, scrollToBottom,
   askMultiSelect, askChecked, askSingle, askShowText, askText, askSupplement, onAskSubmit, onAskSkip,
@@ -469,18 +483,12 @@ watch(
   { flush: 'post' },
 );
 
-/** 从工具结果文本中检测目录绝对路径，用于「浏览文件」 */
-function detectGitPath(text: unknown): string | null {
+/** 从工具结果文本中检测本机路径（文件或目录），供「浏览文件」入口使用 */
+function detectPath(text: unknown): string | null {
   if (text == null) return null;
   const s = typeof text === 'string' ? text : JSON.stringify(text);
   const m = s.match(/(?:[A-Za-z]:[\\/][^\s"'<>|]+)|(?:\/(?:home|Users|root|tmp|opt|var|src|projects|code|workspace)[^\s"'<>|]*)/);
   return m ? m[0].replace(/["',]+$/, '') : null;
-}
-function openInGit(path: string) {
-  const settingsStore = useSettingsStore();
-  settingsStore.update({ workspaceDir: path });
-  const repoName = path.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || 'Git';
-  store.openTab({ kind: 'git', name: repoName, repoPath: path });
 }
 
 function renderAssistantMarkdown(content?: string) {
@@ -523,30 +531,63 @@ function isProcessOpen(round: MessageRound, ri: number): boolean {
 // 截图类工具（computer_screenshot 等）在结果 JSON 里带 screenshotUrl；流式进行中在
 // 工具卡片下方直接展示画面，任务结束（store.streaming 变 false）后由响应式自动移除，
 // 历史消息重载时也不展示——「即用即弃，不留存」。临时文件由插件清理器在 30 分钟后回收。
-/** 从工具结果文本解析内嵌预览地址；非 JSON / 无 screenshotUrl 返回 null */
+/**
+ * 从工具结果文本解析内嵌预览地址；非 JSON / 无 screenshotUrl 返回 null。
+ * 地址补全统一走 absoluteMediaSrc（API_BASE 已含 /api，服务端地址自身也带 /api）。
+ */
 function resolveScreenshotUrl(resultText: string | null): string | null {
   if (!resultText) return null;
   try {
-    const u = (JSON.parse(resultText) as { screenshotUrl?: unknown }).screenshotUrl;
+    const j = JSON.parse(resultText) as { screenshotUrl?: unknown; type?: unknown };
+    const u = j.screenshotUrl;
     if (typeof u !== 'string' || !u) return null;
-    // 服务端的临时区路径要拼 API_BASE；data: URL 是"临时区不可写"时的兜底，直接内联展示
-    if (u.startsWith('/')) return API_BASE + u;
-    if (u.startsWith('data:image/')) return u;
-    return null;
+    // 带 type 的是生图产物（走产品预览通道，常驻展示），这里只认临时截图
+    if (j.type === 'image') return null;
+    return absoluteMediaSrc(u);
   } catch { return null; }
 }
 
-// 文生视频工具（api_video_generate）在结果 JSON 里带 videoUrl；与截图同规则：流式期间内嵌 <video> 预览
-function resolveVideoUrl(resultText: string | null): string | null {
-  if (!resultText) return null;
-  try {
-    const u = (JSON.parse(resultText) as { videoUrl?: unknown }).videoUrl;
-    if (typeof u !== 'string' || !u) return null;
-    if (u.startsWith('/')) return API_BASE + u;
-    if (/^https?:\/\//.test(u)) return u;
-    return null;
-  } catch { return null; }
+/**
+ * 生图 / 生视频产物解析已抽到 composables/useMediaPreview 的 mediaOfTool（带缓存），
+ * 供本组件与 ToolMediaPreview 共用，避免两处模板各写一套。
+ */
+
+/** 整轮的媒体产物列表（图 + 视频按工具调用顺序）：供「媒体产物」常驻条渲染。
+ *  媒体必须常驻展示 —— 思考过程/工具组折叠与否都不影响，折叠体里右键也点不到媒体本体。
+ *  注意 steps 与 allToolCalls 是同一批调用的两种视图，二选一遍历，避免媒体重复。 */
+function getRoundMedia(round: MessageRound): MediaTarget[] {
+  const out: MediaTarget[] = [];
+  const push = (result: unknown) => {
+    const text = typeof result === 'string' ? result : result == null ? '' : JSON.stringify(result);
+    const img = mediaOfTool(text, 'image');
+    if (img) out.push(img);
+    const vid = mediaOfTool(text, 'video');
+    if (vid) out.push(vid);
+  };
+  if (round.steps.length) {
+    for (const step of round.steps) {
+      for (const tc of step.toolCalls) push(getStepToolResult(step, tc.id));
+    }
+  } else {
+    for (const tc of round.allToolCalls) push(getToolResult(tc.id));
+  }
+  return out;
 }
+
+/**
+ * 导出整轮任务结果为 Word：以主智能体最终正文（markdown）为准，
+ * 正文里的图片按出现顺序内嵌，段落文字去掉 md 标记后写入。
+ */
+async function exportAssistantDocx(round: MessageRound) {
+  const md = round.finalAssistant?.content || '';
+  if (!md.trim()) {
+    ElMessage.info('当前没有可导出的正文');
+    return;
+  }
+  const title = (round.user?.content || '任务结果').replace(/\s+/g, ' ').trim().slice(0, 40) || '任务结果';
+  await exportMarkdownDocx(md, title);
+}
+
 /** 该轮是否仍在流式进行（仅最后一轮 + 当前会话在跑），决定截图是否展示；任务结束即随响应式移除 */
 function isRoundLive(round: MessageRound, ri: number): boolean {
   return store.streaming && ri === messageRounds.value.length - 1;
@@ -832,6 +873,22 @@ watch(activeNavRound, () => {
   height: auto;
 }
 
+/* ===== 整轮媒体产物常驻条 ===== */
+/* 位置在思考过程/结果卡片之间，任何折叠都不影响它显示；
+   横向 wrap 排列，媒体本体小图展示，hover 放大走 body 浮层（MediaHoverFloat） */
+.round-media-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 8px 0 4px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--color-primary) 12%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--color-primary) 4%, transparent);
+}
+.round-media-strip :deep(.tool-item-media) { margin-top: 0; }
+.round-media-strip + .agent-response-body { margin-top: 2px; }
+
 /* ===== 截图类工具内嵌预览（仅流式期间渲染，任务结束随响应式移除） ===== */
 .tool-item-shot {
   margin: 8px 0 4px;
@@ -842,18 +899,11 @@ watch(activeNavRound, () => {
 }
 .tool-item-shot img {
   width: 100%;
-  max-height: 260px;
+  max-height: 180px;
   object-fit: contain;
   border-radius: 8px;
   border: 1px solid var(--glass-border, rgba(127, 127, 127, 0.25));
   background: rgba(127, 127, 127, 0.08);
-}
-.tool-item-video {
-  width: 100%;
-  max-height: 260px;
-  border-radius: 8px;
-  border: 1px solid var(--glass-border, rgba(127, 127, 127, 0.25));
-  background: rgba(0, 0, 0, 0.35);
 }
 .tool-item-shot-note {
   font-size: 11px;

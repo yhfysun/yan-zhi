@@ -12,6 +12,8 @@ import {
   recordSuccess,
   recordFailure,
 } from '../services/token-pool.js';
+import { DEFAULT_CONTEXT_WINDOW } from '../constants.js';
+import { inferCapabilitiesFromModelId } from '../agens-platform/service.js';
 
 
 const router = Router();
@@ -21,8 +23,15 @@ router.use(authMiddleware);
  *  注意避开 local-model-% 前缀——index.ts 启动清理会删除该前缀的残留行。 */
 export const LOCAL_MODEL_PLATFORM_ID = 'ollama-local';
 const OLLAMA_DEFAULT_URL = 'http://127.0.0.1:11434';
-/** 新建/拉取模型时的默认上下文窗口：256K（agens-platform/service.ts 的 DEFAULT_CONTEXT_WINDOW 同值） */
-const DEFAULT_CONTEXT_WINDOW = 262144;
+/** 新建/拉取模型时的默认上下文窗口：1M（常量定义在 constants.ts，前后端口径一致） */
+
+/**
+ * 模型能力口径：调用方显式传了就用传的，否则按模型名推断
+ * （名字含 image → 图片生成；含 video → 视频生成，大小写不敏感）。
+ */
+function resolveCapabilities(modelId: string, capabilities?: string[]): string[] {
+  return capabilities?.length ? capabilities : inferCapabilitiesFromModelId(modelId);
+}
 
 const rowToP = (r: any) => ({
   id: r.id,
@@ -161,7 +170,7 @@ router.post('/:pid/models', (req: Request, res: Response) => {
   db.prepare(
     'INSERT INTO model (id, platform_id, user_id, model_id, alias, type, context_window, capabilities_json, pricing_json, description, enabled, is_default, is_builtin, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)',
   ).run(id, pid, userId(req), modelId, alias || null, type || 'llm', contextWindow || DEFAULT_CONTEXT_WINDOW,
-    JSON.stringify(capabilities || []), JSON.stringify(pricing || {}), description || null,
+    JSON.stringify(resolveCapabilities(modelId, capabilities)), JSON.stringify(pricing || {}), description || null,
     enabled !== undefined ? (enabled ? 1 : 0) : 1, isDefault ? 1 : 0, now);
   res.json({ data: rowToM(db.prepare('SELECT * FROM model WHERE id = ?').get(id)) });
 });
@@ -226,7 +235,7 @@ router.post('/models/batch', (req: Request, res: Response) => {
         updateStmt.run(m.type || 'llm', platformId, uid, m.modelId);
       } else {
         insertStmt.run(newRowId(m.modelId), platformId, uid, m.modelId, m.alias || null, m.type || 'llm', m.contextWindow || DEFAULT_CONTEXT_WINDOW,
-          JSON.stringify(m.capabilities || []), JSON.stringify(m.pricing || {}),
+          JSON.stringify(resolveCapabilities(m.modelId, m.capabilities)), JSON.stringify(m.pricing || {}),
           m.enabled !== undefined ? (m.enabled ? 1 : 0) : 1, m.isDefault ? 1 : 0, now);
       }
     }

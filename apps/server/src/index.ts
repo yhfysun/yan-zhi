@@ -12,6 +12,8 @@ import conversationRoutes from './routes/conversations.js';
 import messageRoutes from './routes/messages.js';
 import spaceRoutes from './routes/spaces.js';
 import fileRoutes from './routes/files.js';
+import { resolveArtifactDirFor, findArtifactFileInDirs } from './services/artifact-dir.js';
+import { buildArtifactRelDir, buildArtifactRelDirCandidates } from '@yan-zhi/shared';
 import platformRoutes, { migrateLegacyLocalPlatformRows } from './routes/platforms.js';
 import { seedBuiltinWorkflowAgents, ensureBuiltinWorkflowModel } from './builtin-workflow-agents.js';
 import agentRoutes from './routes/agents.js';
@@ -130,16 +132,12 @@ app.use('/api/plugins', pluginRoutes);
 app.use('/api/plugin-assets', pluginAssetsRouter);
 
 // AI 媒体产物访问（api_image_generate / api_video_generate 落盘的持久文件，区别于截图 30 分钟临时区）
+// 三段式：/api/generated/:kind/:conversationId/:name —— 按产物目录规范定位到该会话的交付目录
+// 两段式：/api/generated/:kind/:name —— 兼容规范落地前落在 DATA_DIR/generated-* 的历史文件
 const GENERATED_MEDIA_DIRS: Record<string, string> = { images: 'generated-images', videos: 'generated-videos' };
-app.get('/api/generated/:kind/:name', (req, res) => {
-  const dirName = GENERATED_MEDIA_DIRS[String(req.params.kind || '')];
-  const name = String(req.params.name || '');
-  if (!dirName || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name) || name.includes('..')) {
-    res.status(404).json({ error: 'not found' });
-    return;
-  }
-  const dir = process.env.DATA_DIR ? path.join(process.env.DATA_DIR, dirName) : path.resolve(dirName);
-  const file = path.join(dir, name);
+const SAFE_MEDIA_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+function sendMediaFile(res: any, file: string) {
   try {
     if (!fs.existsSync(file) || !fs.statSync(file).isFile()) {
       res.status(404).json({ error: 'not found' });
@@ -151,6 +149,99 @@ app.get('/api/generated/:kind/:name', (req, res) => {
   }
   res.setHeader('Cache-Control', 'public, max-age=86400');
   res.sendFile(file);
+}
+
+app.get('/api/generated/:kind/:conversationId/:name', (req, res) => {
+  const kind = String(req.params.kind || '');
+  const conversationId = String(req.params.conversationId || '');
+  const name = String(req.params.name || '');
+  if (!GENERATED_MEDIA_DIRS[kind] || !conversationId || !SAFE_MEDIA_NAME.test(name) || name.includes('..')) {
+    res.status(404).json({ error: 'not found' });
+    return;
+  }
+  // 媒体默认落交付目录；中间目录一并探测，兼容分类调整前落盘的文件。
+  // 每个分类内先试会话 id 主目录，miss 再回退旧「日期-标题」目录（历史产物零搬运）。
+  for (const category of ['deliverable', 'intermediate'] as const) {
+    const info = resolveArtifactDirFor({ conversationId, category });
+    const primaryRel = buildArtifactRelDir({ conversationId, title: info.title, category });
+    const candidates = buildArtifactRelDirCandidates({
+      conversationId,
+      title: info.title,
+      category,
+      hasLegacyDir: info.relDir !== primaryRel,
+    });
+    const file = findArtifactFileInDirs(candidates, info.root, name);
+    if (file) {
+      sendMediaFile(res, file);
+      return;
+    }
+  }
+  res.status(404).json({ error: 'not found' });
+});
+
+app.get('/api/generated/:kind/:name', (req, res) => {
+  const dirName = GENERATED_MEDIA_DIRS[String(req.params.kind || '')];
+  const name = String(req.params.name || '');
+  if (!dirName || !SAFE_MEDIA_NAME.test(name) || name.includes('..')) {
+    res.status(404).json({ error: 'not found' });
+    return;
+  }
+  const dir = process.env.DATA_DIR ? path.join(process.env.DATA_DIR, dirName) : path.resolve(dirName);
+  sendMediaFile(res, path.join(dir, name));
+});
+
+// 媒体代理：老产物记录可能只有远程 url（agnes 产物 CDN 域 platform-outputs.* 本机直连超时 +
+// 无 Access-Control-Allow-Origin，渲染层 fetch 会被 CORS 拦死 —— <img> 预览不受限所以能显示，
+// 但「另存为/复制」要 fetch 字节就挂）。统一从服务端代理取流：服务端无 CORS 限制，
+// 失败时还能走平台主域回退（与生成工具的落盘回退同一套判断）。
+app.get('/api/media/proxy', async (req, res) => {
+  const raw = String(req.query.url || '');
+  let target: URL;
+  try {
+    target = new URL(raw);
+  } catch {
+    res.status(400).json({ error: 'bad url' });
+    return;
+  }
+  // 只代理 http(s)，且只放行已知媒体产物域 + 通用 https（内网 SSRF 风险低：本服务面向局域网无鉴权，
+  // 仍拦掉内网环回地址防止被当跳板）
+  if (!/^https?:$/.test(target.protocol)) {
+    res.status(400).json({ error: 'bad protocol' });
+    return;
+  }
+  const host = target.hostname;
+  if (
+    /^(localhost|127\.|0\.0\.0\.0|\[::1\]|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/i.test(host) ||
+    host === '::1'
+  ) {
+    res.status(400).json({ error: 'blocked host' });
+    return;
+  }
+  try {
+    const timeout = AbortSignal.timeout(120000);
+    let upstream = await fetch(target.href, { signal: timeout }).catch(() => null);
+    // 远程产物域直连失败 → agnes 产物走主域回退：/images/t2i/<taskId>/xxx.png ↔ 主域无对应端点，
+    // 但 /v1/videos/{taskId}/content 覆盖视频；图片无主域回退端点，原样报 502
+    if ((!upstream || !upstream.ok) && /platform-outputs\.agnes-ai\.space/i.test(host) && /\/videos\//.test(target.pathname)) {
+      const taskId = /videos\/([^/]+)\//.exec(target.pathname)?.[1] || '';
+      if (taskId) {
+        upstream = await fetch(`https://www.agnes-ai.com/v1/videos/${taskId}/content`, { signal: timeout }).catch(() => null);
+      }
+    }
+    if (!upstream || !upstream.ok) {
+      res.status(502).json({ error: `upstream ${upstream ? upstream.status : 'unreachable'}` });
+      return;
+    }
+    const ct = upstream.headers.get('content-type');
+    if (ct) res.setHeader('Content-Type', ct);
+    const cl = upstream.headers.get('content-length');
+    if (cl) res.setHeader('Content-Length', cl);
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    const buf = Buffer.from(await upstream.arrayBuffer());
+    res.send(buf);
+  } catch (e: unknown) {
+    res.status(502).json({ error: e instanceof Error ? e.message : 'proxy failed' });
+  }
 });
 app.use('/api/git', gitRoutes);
 app.use('/api/llm', llmProxyRoutes);
@@ -230,19 +321,20 @@ try {
 } catch (e) { console.warn('[migrate] 本地模型平台迁移失败:', e); }
 
 // 启动时为所有用户惰性初始化 agens 线上平台及其模型
-// （首次 seed；已存在则只补齐接口新增模型 + 纠正历史 id/别名拼写，不覆盖用户改过的字段）
+// （首次 seed；已存在则只补齐接口新增模型 + 纠正历史 id/别名拼写 + 按名称补齐媒体能力，不覆盖用户改过的字段）
 try {
   const r = syncAgensPlatformForAllUsers();
   if (r.renamed.length) console.log(`[agens] 已纠正历史平台 id 拼写: ${r.renamed.join(', ')}`);
   if (r.seeded.length) console.log(`[agens] 已为用户初始化平台: ${r.seeded.join(', ')}`);
   if (r.addedModels.length) console.log(`[agens] 已补齐新模型: ${[...new Set(r.addedModels)].join(', ')}`);
+  if (r.capsFilled.length) console.log(`[agens] 已按模型名补齐能力: ${[...new Set(r.capsFilled)].join(', ')}`);
   if (r.migrated.length) console.log(`[agens] 默认模型已切到 agnes-3.0-flash: ${r.migrated.join(', ')}`);
 } catch (e) { console.warn('[agens] 初始化平台失败:', e); }
 
-// 一次性把小于 256K 的模型上下文窗口提到 256K（1M 等更大档位保留不动）
+// 一次性把小于 1M 的模型上下文窗口提到 1M（本机平台如 Ollama 跳过，已 ≥1M 的保留不动）
 try {
   const n = bumpModelContextWindowToDefault();
-  if (n) console.log(`[model] 上下文窗口默认提到 256K，共更新 ${n} 个模型`);
+  if (n) console.log(`[model] 上下文窗口默认提到 1M，共更新 ${n} 个模型`);
 } catch (e) { console.warn('[model] 上下文窗口默认值迁移失败:', e); }
 
 // 一次性把智能体 max_tokens 旧默认 2048 提到 65536：

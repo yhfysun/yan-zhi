@@ -76,7 +76,7 @@ db.exec(`
     model_id TEXT NOT NULL,
     alias TEXT,
     type TEXT DEFAULT 'llm',
-    context_window INTEGER DEFAULT 262144,
+    context_window INTEGER DEFAULT 1048576,
     capabilities_json TEXT DEFAULT '[]',
     pricing_json TEXT DEFAULT '{}',
     description TEXT,

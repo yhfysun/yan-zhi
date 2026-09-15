@@ -1,9 +1,9 @@
 /* ============================================================
    菜单层 —— el-dropdown / select 下拉统一皮肤
    分组标题、条目态（hover/选中/禁用）、分隔线、长列表滚动
-   对既有 popper-class（sidenav-user-popper / model-pill-popper /
-   agent-switch-popper / plus-menu-popper / more-menu-popper /
-   file-mgr-popover）统一收敛，各处零散皮肤由组件内逐步移除
+   对既有 popper-class（sidenav-user-popper / agent-switch-popper /
+   plus-menu-popper / more-menu-popper / file-mgr-popover）统一收敛，
+   各处零散皮肤由组件内逐步移除
    ============================================================ */
 
 /* ===== 下拉容器：实色、统一圆角阴影、内边距 6px ===== */
@@ -59,7 +59,6 @@
 }
 
 /* ===== 分组标题：取代「disabled 项冒充标题」的默认 40% 透明观感 ===== */
-.el-dropdown-menu__item.model-pill-group-label,
 .el-dropdown-menu__item.is-group-label {
   height: 24px;
   line-height: 24px;
@@ -72,12 +71,8 @@
   cursor: default;
   user-select: none;
 }
-.el-dropdown-menu__item.model-pill-group-label:first-child,
 .el-dropdown-menu__item.is-group-label:first-child {
   margin-top: 0;
-}
-.el-dropdown-menu__item.model-pill-group-label:hover {
-  background: transparent;
 }
 
 /* 用户菜单头（用户名区） */
@@ -108,7 +103,6 @@
     line-height: var(--menu-item-h-mobile);
     font-size: 14px;
   }
-  .el-dropdown-menu__item.model-pill-group-label,
   .el-dropdown-menu__item.is-group-label {
     height: 28px;
     line-height: 28px;

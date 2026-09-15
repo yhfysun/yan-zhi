@@ -2,6 +2,7 @@ import { v4 as uuid } from 'uuid';
 import { readFile } from 'node:fs/promises';
 import { db, hasSqliteVec } from '../db.js';
 import { embedText, ollamaChat } from './ollama-embed.js';
+import { DEFAULT_CONTEXT_WINDOW } from '../constants.js';
 import { LlmClient } from '@yan-zhi/core';
 
 function now() {
@@ -788,7 +789,7 @@ async function graphChatViaLlm(llm: { platform: any; model: any }, system: strin
       modelId: llm.model.model_id,
       alias: llm.model.alias,
       type: llm.model.type || 'llm',
-      contextWindow: llm.model.context_window || 262144,
+      contextWindow: llm.model.context_window || DEFAULT_CONTEXT_WINDOW,
       capabilities: (() => { try { return JSON.parse(llm.model.capabilities_json || '[]'); } catch { return []; } })(),
     };
     const client = new LlmClient(platform as any, model as any);

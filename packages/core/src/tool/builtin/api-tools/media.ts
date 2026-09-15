@@ -32,8 +32,9 @@ export function registerMediaTools(m: Map<ApiModuleName, ToolDefinition[]>) {
         '文生图：按文字描述生成一张图片（默认 agnes-image-2.5-flash；也支持其他平台的生图模型，用 model+platformId 指定，先用 list_models 查询）。' +
         'prompt 要具体（主体/场景/风格/构图/光线/质量词），支持中英文。' +
         '可选 images 传入参考图（URL/base64/本机路径，可多张）做图生图/多图合成/构图保留编辑。' +
-        '返回 JSON：remoteUrl 为图片公网地址（回复正文请用 markdown ![](remoteUrl) 内嵌展示），' +
-        'screenshotUrl/file 为本机备份路径。',
+        '工具返回 {type, url, description} —— 界面已按 url 自动渲染图片预览，' +
+        '因此正文里不要贴 JSON、不要贴本机绝对路径、不要复述「本机备份」，也不要重复附图；' +
+        '确实需要图文混排说明时才用 markdown ![](url) 引用，且同一张图最多出现一次。',
       inputSchema: {
         type: 'object',
         properties: {
@@ -56,7 +57,8 @@ export function registerMediaTools(m: Map<ApiModuleName, ToolDefinition[]>) {
         'prompt 描述镜头内容与运镜（场景运动控制通过提示词实现）。为异步任务，工具内部轮询直到出片（通常 1-5 分钟）。' +
         '可选 firstFrame/lastFrame 传入首/尾帧参考图做图生视频/关键帧动画（平台 API 当前仅开放文生视频，' +
         '传入帧会得到明确的「暂未开放」提示，平台开放后自动生效）。' +
-        '返回 JSON：remoteUrl/videoUrl 为视频地址（回复正文请给出可点击链接或 markdown 内嵌），file 为本机文件路径。',
+        '工具返回 {type, url, description} —— 界面会把视频折叠成一行文件名入口，正文只需一句话说明运镜与时长，' +
+        '不要贴 JSON、不要贴本机绝对路径。',
       inputSchema: {
         type: 'object',
         properties: {

@@ -152,3 +152,8 @@ apps/desktop/electron-builder.*.relocated.yml
 # 重定位构建输出与临时垃圾
 yanzhi-dist-release/
 _tmp_*
+
+# 运行时数据（浏览器历史等，不入库）
+workspace/
+# 临时 demo 页
+list-fix-demo.html

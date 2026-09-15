@@ -1,5 +1,7 @@
 import { ref, computed, reactive, watch, onMounted, onUnmounted, nextTick } from 'vue';
 import { clampMenuPos } from '../../utils/menuPosition';
+import { DEFAULT_CONTEXT_WINDOW } from '../../utils/context-window';
+import { hasLocalPath, isLocalPath, normalizePath, resolveOpenTarget, splitLocalPaths } from '../../utils/file-open';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import MarkdownIt from 'markdown-it';
 import hljs from 'highlight.js';
@@ -22,8 +24,15 @@ import { usePlatform } from '../usePlatform';
 import { useRouter } from 'vue-router';
 import { api } from '../../api/client';
 import type { Agent, Message, Conversation, Platform, Model } from '@yan-zhi/shared';
-import { estimateTokens, CHAT_MODEL_TYPES } from '@yan-zhi/shared';
+import { estimateTokens, CHAT_MODEL_TYPES, buildArtifactRelDir, joinArtifactPath } from '@yan-zhi/shared';
 import { sceneByKey, type SceneKey } from '../../config/scenes';
+import {
+  selectMedia,
+  openMediaViewer,
+  openMediaMenu,
+  copySelectedMedia,
+  absoluteMediaSrc,
+} from '../useMediaPreview';
 
 export interface AgentStep {
   reasoningContent?: string;
@@ -221,7 +230,7 @@ function createChat() {
     pauseMaxMs: 0,
     modelId: '',
     alias: '',
-    contextWindow: 262144,
+    contextWindow: DEFAULT_CONTEXT_WINDOW,
   });
   const platformConfigDialogVisible = computed({
     get: () => !!store.pendingPlatformConfig || manualPlatformConfigVisible.value,
@@ -242,7 +251,7 @@ function createChat() {
       alias: prefill?.alias || '',
       contextWindow: Number.isFinite(Number(prefill?.contextWindow))
         ? Number(prefill?.contextWindow)
-        : 262144,
+        : DEFAULT_CONTEXT_WINDOW,
     };
   }
 
@@ -268,7 +277,7 @@ function createChat() {
         pauseMaxMs: platform.pauseMaxMs || 0,
         modelId: model?.modelId || agent?.modelId || '',
         alias: model?.alias || '',
-        contextWindow: model?.contextWindow || 262144,
+        contextWindow: model?.contextWindow || DEFAULT_CONTEXT_WINDOW,
       };
     } else {
       resetPlatformConfigForm();
@@ -319,7 +328,7 @@ function createChat() {
           modelId: f.modelId.trim(),
           alias: f.alias.trim() || f.modelId.trim().split('/').pop() || f.modelId.trim(),
           type: 'llm' as any,
-          contextWindow: Number(f.contextWindow) || 262144,
+          contextWindow: Number(f.contextWindow) || DEFAULT_CONTEXT_WINDOW,
           enabled: true,
           isDefault: false,
           capabilities: ['function_call'],
@@ -412,8 +421,32 @@ function createChat() {
       } else {
         store.rightPanelOpen = true;
       }
+      // 自动放大（设计定稿）：agent 首次触发浏览器工具时展开全屏实况；
+      // 用户手动收起过（本次任务内）则不再自动弹，避免跟人抢 UI
+      if (!store.browserUserDismissed) store.browserExpanded = true;
     }
     // n===0 时不强制切回 file，避免清空时面板闪一下；保留当前 tab（默认 file/git）
+  });
+  // 浏览器任务生命周期：首次 browser 步骤 → 进入"agent 驾驶"态（锁输入 + 重置手动收起标记）；
+  // 步骤日志清空（任务收尾/reset）→ 退出实况态：解除锁定、收起全屏、清手动收起标记。
+  watch(() => store.browserSteps.length, (n, o) => {
+    if (o === 0 && n > 0) {
+      store.browserUserDismissed = false;
+      store.browserLockInput = true;
+    } else if (n === 0 && o > 0) {
+      store.browserLockInput = false;
+      store.browserExpanded = false;
+      store.browserUserDismissed = false;
+    }
+  });
+  // 任务结束（completed/aborted/failed）兜底清理：SSE 步骤日志可能未清空，这里强制退出实况态
+  store.onTaskFinished(() => {
+    if (store.browserExpanded || store.browserLockInput) {
+      store.browserLockInput = false;
+      store.browserExpanded = false;
+      store.browserUserDismissed = false;
+    }
+    store.pausedConvIds.clear();
   });
   // 桌面端：右侧面板开合 / tab 切换与原生 BrowserView 图层联动，避免关闭面板后即梦页面仍浮在窗口上
   watch(() => store.rightPanelOpen, (open) => {
@@ -659,6 +692,64 @@ function createChat() {
     }
   }
 
+  /**
+   * 统一的「打开路径」入口 —— 文件与目录都从这里走，各处入口不再各写各的。
+   *
+   * 背景：此前消息里的「浏览文件」按钮直接切 Git 目录树，点一个文件也要被丢进
+   * 目录里自己找；正文里的本机路径则完全不可点。通用阅读能力（FilePreview）其实
+   * 早就有，缺的只是统一入口。
+   *
+   * 规则：
+   *  - 文件 → 预览窗 file tab，交给 FilePreview 通用阅读逻辑：
+   *           图片 / PDF / Excel / CSV / Markdown / 代码 / 文本内嵌渲染，
+   *           不可内嵌的格式降级为「名称+大小+路径 + 本机应用打开 + 打开目录」。
+   *  - 目录 → 预览窗 git tab（目录树浏览，可继续点进里面的文件）。
+   *  - stat 不可用（Web/OPFS 等端）→ 按文件处理，由 FilePreview 自身给出结果或报错，不静默吞。
+   */
+  async function openPath(path: string, opts?: { name?: string; forceDir?: boolean }) {
+    const p = normalizePath(path);
+    if (!p) return;
+
+    let isDir = !!opts?.forceDir;
+    if (!isDir) {
+      try {
+        const { getPlatformAdapter } = await import('@yan-zhi/core');
+        const st = await getPlatformAdapter().fs.stat?.(p);
+        isDir = !!st?.isDir;
+      } catch {
+        /* stat 不可用（Web/OPFS 等端）：按文件处理，由 FilePreview 给出结果或报错 */
+      }
+    }
+
+    const t = resolveOpenTarget(p, isDir);
+    const name = opts?.name || t.name;
+    if (t.kind === 'dir') store.openTab({ kind: 'git', name, repoPath: t.path });
+    else store.openTab({ kind: 'file', name, path: t.path });
+  }
+
+  /** 在系统文件管理器中定位/打开（桌面端）。目录直接在文件管理器里打开，文件则选中它 */
+  async function revealInSystem(path: string, asDir = false) {
+    const p = String(path || '').trim();
+    if (!p) return;
+    const electron = (window as unknown as { electronAPI?: any }).electronAPI;
+    try {
+      if (electron?.shell?.showItemInFolder) {
+        await electron.shell.showItemInFolder(p);
+        return;
+      }
+      const { getPlatformAdapter } = await import('@yan-zhi/core');
+      const shell = getPlatformAdapter().shell;
+      if (!shell) throw new Error('无 shell 能力');
+      const isWin = /win/i.test(navigator.platform);
+      const isMac = /mac/i.test(navigator.platform);
+      if (isWin) await shell.exec('explorer.exe', [asDir ? p : `/select,${p}`]);
+      else if (isMac) await shell.exec('open', asDir ? [p] : ['-R', p]);
+      else await shell.exec('xdg-open', [asDir ? p : p.slice(0, p.lastIndexOf('/')) || p]);
+    } catch {
+      ElMessage.info('仅桌面端支持在文件管理器中打开');
+    }
+  }
+
   function tryParseSnapshot(raw?: string): any {
     if (!raw) return null;
     try { return JSON.parse(raw); } catch { return null; }
@@ -795,6 +886,70 @@ function createChat() {
 
   function renderMarkdown(c: string) { return md.render(c || ''); }
 
+  // 正文图片：统一缩略。模型在总结 md 里输出 ![](url) 是允许的，但尺寸必须严格受控
+  // （此前无 renderer，图片按原始尺寸渲染，大图撑破一屏）。
+  // src 必须补成可请求地址：模型贴的 /api/generated/... 是站点根相对路径，
+  // 打包版桌面端页面在 file:// 下解析不到后端（dev 下靠 vite 的 /api 代理才碰巧能用）。
+  // 双击 / 右键进入放大查看、另存为、打开所在目录、复制（事件委托在 handleContentClick）。
+  md.renderer.rules.image = (tokens: any[], idx: number, options: any, env: any, self: any) => {
+    const token = tokens[idx];
+    const src = absoluteMediaSrc(token.attrGet('src') || '');
+    const alt = self.renderInlineAsText(token.children || [], options, env);
+    const title = token.attrGet('title') || '';
+    return `<img class="msg-image" src="${md.utils.escapeHtml(src)}" alt="${md.utils.escapeHtml(alt)}"${
+      title ? ` title="${md.utils.escapeHtml(title)}"` : ''
+    } data-msg-media="image" loading="lazy" draggable="false" />`;
+  };
+
+  // ===== 正文里的本机路径 → 可点击，直接进预览（不必先自己找目录）=====
+  // 识别口径见 utils/file-open.ts：只认绝对路径，相对路径与网页链接不参与，避免误伤。
+  function pathLinkHtml(p: string, extraCls = '') {
+    const esc = md.utils.escapeHtml(p);
+    return `<a class="file-path-link${extraCls ? ' ' + extraCls : ''}" data-file-path="${esc}" title="点击查看：${esc}">${esc}</a>`;
+  }
+
+  // 行内代码里的路径：整段就是一条路径才转（`const p = "C:\a"` 这类片段不转）
+  md.renderer.rules.code_inline = (tokens: any[], idx: number) => {
+    const raw: string = tokens[idx].content || '';
+    if (isLocalPath(raw)) return pathLinkHtml(raw, 'code-inline-path');
+    return `<code>${md.utils.escapeHtml(raw)}</code>`;
+  };
+
+  // 正文裸路径（默认 text 规则即 escapeHtml，这里分段转义并在路径处插入链接）
+  md.renderer.rules.text = (tokens: any[], idx: number, _options: any, env: any) => {
+    const content: string = tokens[idx].content || '';
+    if ((env && env.inLink) || !hasLocalPath(content)) {
+      return md.utils.escapeHtml(content);
+    }
+    return splitLocalPaths(content)
+      .map((seg) => (seg.type === 'path' ? pathLinkHtml(seg.value) : md.utils.escapeHtml(seg.value)))
+      .join('');
+  };
+
+  // 链接文本内打标记：`[C:\a\b.md](主要链接)` 不再嵌一层 a（HTML 不允许 a 套 a）
+  const origLinkOpen = md.renderer.rules.link_open
+    || ((tokens: any[], idx: number, o: any, _e: any, self: any) => self.renderToken(tokens, idx, o));
+  md.renderer.rules.link_open = (tokens: any[], idx: number, options: any, env: any, self: any) => {
+    if (env) env.inLink = true;
+    return origLinkOpen(tokens, idx, options, env, self);
+  };
+  const origLinkClose = md.renderer.rules.link_close
+    || ((tokens: any[], idx: number, o: any, _e: any, self: any) => self.renderToken(tokens, idx, o));
+  md.renderer.rules.link_close = (tokens: any[], idx: number, options: any, env: any, self: any) => {
+    if (env) env.inLink = false;
+    return origLinkClose(tokens, idx, options, env, self);
+  };
+
+  /** 常见媒体扩展名 —— 正文里这类链接不当作网页打开，而是直接播放/预览 */
+  const MEDIA_EXT_RE = /\.(mp4|webm|mov|m4v|ogg|ogv|mp3|wav|m4a|flac)(?=$|[?#])/i;
+  const IMAGE_EXT_RE = /\.(png|jpe?g|webp|gif|bmp|svg|avif)(?=$|[?#])/i;
+
+  function mediaKindOfUrl(url: string): 'image' | 'video' | null {
+    if (IMAGE_EXT_RE.test(url)) return 'image';
+    if (MEDIA_EXT_RE.test(url)) return 'video';
+    return null;
+  }
+
   function handleContentClick(e: MouseEvent) {
     const t = e.target as HTMLElement;
     if (t.classList.contains('code-copy-btn')) {
@@ -804,10 +959,33 @@ function createChat() {
       }).catch(() => ElMessage.error('复制失败'));
       return;
     }
-    // 链接：在对话页预览面板的浏览器 tab 打开（不跳系统浏览器、不离开对话页）
+    // 正文图片：单击即选中（Ctrl+C 复制对象），双击放大
+    const img = t.closest('img.msg-image') as HTMLImageElement | null;
+    if (img) {
+      selectMedia({ src: img.getAttribute('src') || '', kind: 'image', name: img.getAttribute('alt') || '' });
+      return;
+    }
+    // 点到别处即取消选中，避免 Ctrl+C 误复制上一次点过的图片
+    selectMedia(null);
+    // 正文里的本机路径链接：文件直接进预览、目录进目录树，不必自己找目录
+    const pathEl = t.closest('[data-file-path]') as HTMLElement | null;
+    if (pathEl) {
+      e.preventDefault();
+      void openPath(pathEl.getAttribute('data-file-path') || '');
+      return;
+    }
+    // 链接：媒体文件直接在预览灯箱播放/查看；网页在对话页预览面板的浏览器 tab 打开
     const a = t.closest('a');
     if (a) {
       const href = a.getAttribute('href') || '';
+      if (/^https?:\/\//i.test(href) || href.startsWith('/')) {
+        const kind = mediaKindOfUrl(href);
+        if (kind) {
+          e.preventDefault();
+          openMediaViewer({ src: href, kind, name: (a.textContent || '').trim() || href.split('/').pop() || '' });
+          return;
+        }
+      }
       if (/^https?:\/\//i.test(href)) {
         e.preventDefault();
         // E12: 移动端无内置浏览器——回退系统方式打开（Capacitor Browser 插件/新窗口）
@@ -823,6 +1001,43 @@ function createChat() {
         nextTick(() => { store.currentBrowserUrl = href; });
       }
     }
+  }
+
+  /** 正文双击：图片放大查看 */
+  function handleContentDblClick(e: MouseEvent) {
+    const img = (e.target as HTMLElement).closest('img.msg-image') as HTMLImageElement | null;
+    if (!img) return;
+    e.preventDefault();
+    openMediaViewer({
+      src: img.getAttribute('src') || '',
+      kind: 'image',
+      name: img.getAttribute('alt') || '',
+    });
+  }
+
+  /** 正文右键：图片走媒体菜单，其余不拦截（保留浏览器默认菜单） */
+  function handleContentContextMenu(e: MouseEvent) {
+    const img = (e.target as HTMLElement).closest('img.msg-image') as HTMLImageElement | null;
+    if (!img) return;
+    e.preventDefault();
+    openMediaMenu(e, {
+      src: img.getAttribute('src') || '',
+      kind: 'image',
+      name: img.getAttribute('alt') || '',
+    });
+  }
+
+  /**
+   * 全局 Ctrl/Cmd+C：选中了消息里的图片时复制图片本身。
+   * 有文本选区、或在输入框内时不拦截，保留浏览器/输入框默认的文本复制。
+   */
+  async function handleGlobalKeydown(e: KeyboardEvent) {
+    if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== 'c') return;
+    const el = e.target as HTMLElement | null;
+    if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) return;
+    const sel = window.getSelection();
+    if (sel && !sel.isCollapsed && (sel.toString() || '').trim()) return;
+    if (await copySelectedMedia()) e.preventDefault();
   }
 
   const currentConv = computed(() => store.conversations.find((c) => c.id === store.currentConvId));
@@ -1038,7 +1253,7 @@ function createChat() {
   );
   const contextLimit = computed(() => {
     const m = platformStore.models.find((x) => x.id === selectedModelId.value);
-    return m?.contextWindow || 262144;
+    return m?.contextWindow || DEFAULT_CONTEXT_WINDOW;
   });
   const tokenPercent = computed(() => Math.min(100, Math.round((tokenCount.value / contextLimit.value) * 100)));
   const tokenBarColor = computed(() => {
@@ -1291,6 +1506,7 @@ function createChat() {
     }
 
     document.addEventListener('click', closeCtxMenu);
+    document.addEventListener('keydown', handleGlobalKeydown);
 
     nextTick(() => {
       if (messagesRef.value) messagesRef.value.addEventListener('scroll', handleScroll);
@@ -1300,6 +1516,7 @@ function createChat() {
 
   onUnmounted(() => {
     document.removeEventListener('click', closeCtxMenu);
+    document.removeEventListener('keydown', handleGlobalKeydown);
     if (messagesRef.value) messagesRef.value.removeEventListener('scroll', handleScroll);
   });
 
@@ -1437,6 +1654,12 @@ function createChat() {
     mountedSkillIds.value = [];
     input.value = '';
     quotedUrls.value = [];
+    // 退出浏览器实况态：新会话不继承上一会话的放大/锁定（browserSteps 是全局单例，跨会话残留）
+    store.browserSteps.length = 0;
+    store.browserExpanded = false;
+    store.browserLockInput = false;
+    store.browserUserDismissed = false;
+    store.pausedConvIds.clear();
     if (isCodeModeActive()) {
       setScene('code');
       if (spaceId === undefined) spaceId = useCodeStore().projectSpaceId;
@@ -1455,6 +1678,9 @@ function createChat() {
   async function selectConv(id: string) {
     await store.loadMessages(id);
     isDraftMode.value = false;
+    // 切会话即退出浏览器实况态：锁定/放大只属于发起浏览器任务的那个会话
+    store.browserExpanded = false;
+    store.browserLockInput = false;
     const conv = store.conversations.find((c) => c.id === id);
     applyConvAgent(conv);
     if (conv?.modelId && conv?.platformId) {
@@ -1702,7 +1928,7 @@ function createChat() {
           const { getPlatformAdapter } = await import('@yan-zhi/core');
           const adapter = getPlatformAdapter();
           const upsConvId = convId || 'default';
-          const filesDir = 'workspace/uploads/' + upsConvId;
+          const filesDir = await resolveArtifactDirFor('upload');
           try { await adapter.fs.mkdir(filesDir); } catch {}
           const total = userContent.length;
           const name = 'paste_' + Date.now() + '.txt';
@@ -1722,7 +1948,7 @@ function createChat() {
           const { getPlatformAdapter } = await import('@yan-zhi/core');
           const adapter = getPlatformAdapter();
           const upsConvId = convId || 'default';
-          const filesDir = 'workspace/uploads/' + upsConvId;
+          const filesDir = await resolveArtifactDirFor('upload');
           try { await adapter.fs.mkdir(filesDir); } catch {}
           const fileParts: string[] = [];
           for (const f of files) {
@@ -1854,6 +2080,12 @@ function createChat() {
 
   function stopChat() {
     store.stop();
+  }
+
+  /** 全屏实况收起（用户手动）：本次浏览器任务内不再自动放大 */
+  function dismissBrowserExpanded() {
+    store.browserExpanded = false;
+    store.browserUserDismissed = true;
   }
 
   // ===== 追加消息队列（任务运行中在输入框上方堆叠，可「立即发送 / 编辑 / 删除」）=====
@@ -2043,6 +2275,46 @@ function createChat() {
 
   function triggerFilePanelUpload() { filePanelUploadRef.value?.click(); }
 
+  /**
+   * 解析产物目录（上传 / 中间 / 交付三分类）。
+   *
+   * 优先向服务端要 —— 服务端用同一套 shared 规则解析，并顺带 mkdir -p，
+   * 与媒体落盘、提示词注入保持目录一致；服务端不可用时按 shared 规则本地兜底，
+   * 保证上传不中断。
+   *
+   * 桌面端拿绝对路径（adapter 直写磁盘）；浏览器/移动端的文件系统根就是用户
+   * 选定的目录，因此用相对路径。
+   */
+  async function resolveArtifactDirFor(
+    category: 'upload' | 'intermediate' | 'deliverable',
+  ): Promise<string> {
+    const { getPlatformAdapter } = await import('@yan-zhi/core');
+    const adapter = getPlatformAdapter();
+    const conv = currentConv.value;
+    // 兜底路径也走主规则：优先按会话 id 归档（与服务端落盘一致），无会话上下文才退旧命名
+    const rel = buildArtifactRelDir({
+      conversationId: store.currentConvId,
+      title: conv?.title,
+      createdAt: (conv as any)?.createdAt || Date.now(),
+      category,
+    });
+    const ws = (settingsStore.settings.workspaceDir || '').trim();
+
+    if (store.currentConvId) {
+      const r = await api.get<{ dir?: string; relDir?: string }>(
+        `/conversations/${store.currentConvId}/artifact-dir?category=${category}&ensure=1`,
+      );
+      if ('data' in r && r.data) {
+        const picked = adapter.platform === 'desktop' ? r.data.dir : r.data.relDir;
+        if (picked) return picked;
+      }
+    }
+
+    // 兜底：桌面端挂到工作目录，其余按相对用户根目录
+    if (adapter.platform === 'desktop') return joinArtifactPath(ws || 'workspace', rel);
+    return ws ? rel : joinArtifactPath('workspace', rel);
+  }
+
   async function handleFilePanelUpload(e: Event) {
     const target = e.target as HTMLInputElement;
     const files = target.files;
@@ -2050,8 +2322,7 @@ function createChat() {
     try {
       const { getPlatformAdapter } = await import('@yan-zhi/core');
       const adapter = getPlatformAdapter();
-      const convId = store.currentConvId || 'default';
-      const filesDir = 'workspace/uploads/' + convId;
+      const filesDir = await resolveArtifactDirFor('upload');
       const dirExists = await adapter.fs.exists(filesDir);
       if (!dirExists) await adapter.fs.mkdir(filesDir);
       for (let i = 0; i < files.length; i++) {
@@ -2633,6 +2904,7 @@ function createChat() {
     input, inputFocused, inputRef, fileInputRef, uploadedFiles,
 
     browserActive, currentBrowserLabel, closeRightPanel, toggleRightPanel,
+    dismissBrowserExpanded,
     expandedFileCategories, fileSearch, workspaceFiles, selectedFilePaths, filePanelUploadRef, search, messagesRef, showMount, showSkills, skillSearch, filteredSkillStore, toggleSkillMount,
     selectedModelId, expandedReasoning, expandedTools, expandedToolGroups, collapsedToolGroups, collapsedMessages, expandedAgentProcess, expandedStepTools, activeNavRound,
     userRoundIndices, mountedSkillIds, drawerOpen, convCollapsed, sideTab, contextSidebarOpen, toggleContextSidebar, batchMode, selectedConvIds,
@@ -2642,7 +2914,8 @@ function createChat() {
     showWorkspaceDir, workspaceDir, hasWorkspaceDir, loadWorkspaceDir, onWorkspaceDirSelected, clearWorkspaceDir,
     tryParseSnapshot, formatSnapshot, snapshotDialog, snapshotActiveTab, snapshotLoading, currentSnapshots, openSnapshotDialog,
     isDraftMode, renamingId, renamingTitle, renameInputRef, ctxMenu,
-    md, renderMarkdown, handleContentClick,
+    md, renderMarkdown, handleContentClick, handleContentDblClick, handleContentContextMenu,
+    openPath, revealInSystem,
     currentConv, filteredConversations, messageRounds, isToolErrorContent,
     chatModels, modelGroups, mountableServers, tokenCount, contextLimit, tokenPercent, tokenBarColor, canSend,
     openEditAgent, openCreateAgent, onAgentSaved, onAgentDeleted,
@@ -2656,6 +2929,7 @@ function createChat() {
     queuedList, sendQueuedNow, editQueued, removeQueued, flushQueuedAfterTask,
     startNewChat, selectConv, triggerFileUpload, addFiles, handleFileChange, removeFile, formatSize, send, stopChat, regenerateMsg, shouldShowMessage, collectToolCalls,
     filteredFiles, loadWorkspaceFiles, previewFile, toggleFileSelect, triggerFilePanelUpload, handleFilePanelUpload, deleteFileItem,
+    resolveArtifactDirFor,
     scrollToRound, handleScroll, updateActiveNavRound, formatTime, showScrollBottom, showScrollTop, scrollToBottom,
     toggleReasoning, toggleTool, toggleToolGroup, toggleMsgCollapse, collapseEarlyOnMobile, toggleAgentProcess, toggleStepTools, isLastRoundStreaming, getStreamingStep,
     isToolItemOpen,

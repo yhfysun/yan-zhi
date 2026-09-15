@@ -153,6 +153,7 @@ import { Plus, Connection, Download, Delete } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import type { ModelType, PlatformApiKey } from '@yan-zhi/shared';
 import { usePlatformStore } from '../stores';
+import { DEFAULT_CONTEXT_WINDOW } from '../utils/context-window';
 import PlatformDetail from './PlatformDetail.vue';
 import LocalModelMarket from '../components/LocalModelMarket.vue';
 
@@ -314,7 +315,7 @@ async function save() {
           modelId,
           alias: modelId.split('/').pop() || modelId,
           type: (fetchedModels.value.find((m: any) => m.id === modelId)?.type || 'llm') as ModelType,
-          contextWindow: 262144,
+          contextWindow: DEFAULT_CONTEXT_WINDOW,
           enabled: true,
           isDefault: false,
         });
