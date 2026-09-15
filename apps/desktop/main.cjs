@@ -1680,9 +1680,11 @@ async function injectYzAssistant(wc) {
     if(!r){r=document.createElement('div');r.id='__yz-ring';document.body.appendChild(r);}
     if(!b){b=document.createElement('div');b.id='__yz-badge';b.style.display='none';document.body.appendChild(b);}
     function showCursor(x,y,label){c.style.display='';c.style.left=x+'px';c.style.top=y+'px';
-      if(label){b.style.display='';b.textContent=label;b.style.left=x+'px';b.style.top=y+'px';}else{b.style.display='none';}}
+      if(label){b.style.display='';b.textContent=label;b.style.left=x+'px';b.style.top=y+'px';}else{b.style.display='none';}
+      window.__yzLastCursor={x:x,y:y,label:label||'',at:Date.now()};}
     function hideCursor(){c.style.display='none';b.style.display='none';}
     function clickAt(x,y){c.style.display='';c.style.left=x+'px';c.style.top=y+'px';c.classList.add('clicking');
+      window.__yzLastCursor={x:x,y:y,label:'',at:Date.now(),kind:'click'};
       r.style.display='';r.style.left=x+'px';r.style.top=y+'px';r.classList.remove('active');void r.offsetWidth;r.classList.add('active');
       setTimeout(function(){c.classList.remove('clicking');},200);
       var el=document.elementFromPoint(x,y);if(el){var o={bubbles:true,cancelable:true,clientX:x,clientY:y,view:window};
@@ -2515,6 +2517,26 @@ ipcMain.handle('browserView:action', async (_e, tabId, action, args) => {
         if (noChangeStreak >= 3) {
           result.warning = '连续 ' + noChangeStreak + ' 次操作页面无任何变化，操作可能未生效。请停止重复同类操作：改用 index 精确定位（先 browser_get_page_info 获取编号列表）、重新分析页面、或 ask_user 请求人工介入。';
         }
+      }
+    }
+
+    // Agent 虚拟鼠标广播：动作若触发了 guest 内光标（click/type/scroll/hover 等），
+    // 读回最后坐标，按页面缩放换算后广播给渲染层在 webview 上方画宿主层常驻光标。
+    // guest 内瞬时光标（0.5s 闪现 + 被 shield 盖住）用户看不见，宿主层这一份才是给用户看的。
+    if (wc && !wc.isDestroyed()) {
+      const tabIdForCursor = tabId || activeTabId;
+      const CURSOR_READ_JS = `(function(){try{var L=window.__yzLastCursor;if(!L)return null;
+        window.__yzLastCursor=null;return{cx:L.x,cy:L.y,label:L.label||'',kind:L.kind||''};}catch(e){return null;}})()`;
+      const cur = await Promise.race([
+        wc.executeJavaScript(CURSOR_READ_JS).catch(() => null),
+        new Promise((r) => setTimeout(() => r(null), 800)),
+      ]);
+      if (cur && cur.cx != null && mainWindow && !mainWindow.isDestroyed()) {
+        let zoom = 1;
+        try { zoom = await Promise.race([wc.getZoomFactor(), new Promise((r) => setTimeout(() => r(1), 300))]); } catch { /* ignore */ }
+        const zx = (typeof cur.cx === 'number') ? cur.cx * zoom : cur.cx;
+        const zy = (typeof cur.cy === 'number') ? cur.cy * zoom : cur.cy;
+        try { mainWindow.webContents.send('browserView:cursor', tabIdForCursor, zx, zy, cur.label || '', cur.kind || ''); } catch { /* ignore */ }
       }
     }
     return result;

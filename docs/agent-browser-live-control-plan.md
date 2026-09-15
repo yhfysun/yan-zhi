@@ -134,7 +134,7 @@
 ## 6. 设计决策（已定，2026-09-15）
 
 1. **放大形态** → **① 面板全屏浮层**（原地 fixed class）。③独立大窗会搬 DOM（webview 重载，v2 教训）直接排除；②预览列最大化只作为 browserview 引擎的降级路径，不是主方案。
-2. **自动放大** → **自动**。agent 首次触发浏览器工具时自动展开全屏浮层（复用 `useChat.ts:413` 那个 browserSteps 首次出现 watch 的时机点），任务结束自动收回。用户手动收起后本次任务内**不再自动弹**（避免跟人抢 UI），工具条按钮始终可手动开合。
+2. **自动放大** → ~~自动~~ → **已推翻（2026-09-15 深夜，用户实测反馈）**：自动 inset:0 全屏会盖住聊天页，用户要的是"打开预览面板"而不是"接管整窗"。现行为：agent 触发浏览器工具只**打开预览面板**（openTab/rightPanelOpen），全屏是纯手动选项（工具条 ⛶ 按钮 + Esc 收起），任务结束兜底收回。
 3. **锁定强度** → **挡点击 + 键盘 + 右键**，工具条（暂停/停止/收起）不盖、始终可点。不做"只挡点击"的弱模式——AI 操作中允许人滚动/选字，光标焦点就会跟人抢，pageAgent 读页和输入都会受干扰，锁定意义减半。
 
 ## 7. v2 自审记录（2026-09-15 晚）
@@ -173,3 +173,31 @@
 
 **遗留（本期不做，同方案 §2.1 降级路径）**
 - browserview 引擎（回退引擎）下：放大降级为预览列最大化、锁定走 `wc.setIgnoreMouseEvents`（`browserView:setInputLock` IPC 未加）。当前默认 webview 引擎不受影响
+
+## 10. 修正轮（2026-09-15 深夜，用户实测两项反馈）
+
+用户实测反馈：①"AI操作浏览器的时候聊天页面都没了？直接最大化？不是打开预览面板？" ②"鼠标样式也没有啊"。
+
+**根因 1（自动全屏盖聊天）**：`useChat.ts` browserSteps 首次出现 watch 里 `browserExpanded = true`（§6 决策 2 的实施）→ `.browser-shell` 变 `position:fixed; inset:0; z-index:2000` 盖满整窗。决策本身错了——用户要"打开预览面板"（openTab 已自带 rightPanelOpen=true），不是接管整窗。
+
+**根因 2（虚拟鼠标看不见）**：guest 内 `#__yz-cursor` 三重缺陷——(a) 只在 click/type/scroll/hover 瞬时显示 500~600ms 就 `setTimeout(hideCursor)`，操作序列大部分时间（get_page_info 等读取类）毫无反馈；(b) 渲染在 guest 层，被宿主 `.agent-lock-shield`（z-index 20）盖住；(c) webview 引擎下 guest 坐标系与宿主面板不一致（页面缩放 zoomFactor ≠ 1 时坐标错位）。
+
+**修正（最小改动）**
+
+| 文件 | 改动 |
+|---|---|
+| `packages/ui/src/composables/chat/useChat.ts` | **删自动全屏**（watch 只开面板/激活 tab，不再置 browserExpanded）；生命周期 watch n===0 分支保留收起；`startNewChat / selectConv / onTaskFinished` 增加 `store.clearAgentCursor()` |
+| `packages/ui/src/stores/chat.ts` | 新增 `agentCursor` 状态（tabId/x/y/label/kind/at）+ `onAgentCursor`（1.2s 自动淡出）+ `clearAgentCursor` |
+| `apps/desktop/main.cjs` | `injectYzAssistant` 的 `showCursor/clickAt` 写 `window.__yzLastCursor` 记录坐标；`browserView:action` 收尾读回坐标（一次性清空），按 zoomFactor 换算后 `mainWindow.webContents.send('browserView:cursor', tabId, x, y, label, kind)` |
+| `apps/desktop/preload.cjs` | `browserView.onCursor` 桥接 |
+| `packages/ui/src/components/BrowserPanel.vue` | 订阅 `onCursor` → `chatStore.onAgentCursor`；视口内新增 `.agent-cursor` 宿主层常驻光标（z-index 25 盖过 shield 20，pointer-events:none，`key=at` 重放出现动画，click 时缩放脉冲，label 蓝底徽标，1.2s 淡出）；按 tabId 过滤（多 tab 隔离） |
+
+**验证**
+- ✅ `vue-tsc --noEmit`（packages/ui）零错误
+- ✅ `node --check` main.cjs / preload.cjs 零错误
+- ✅ 全量 vitest 280/286 —— 6 个失败仍为既有欠账（react-loop 2 / ontology-recall 2 / ontology-table-gen 2），无新增回归
+
+**待用户实测**
+- agent 操作浏览器 → 右侧预览面板打开（聊天页仍在），不再全屏接管
+- 点击/输入/滚动/悬停时面板内出现蓝色虚拟鼠标 + 动作徽标（输入/滚动/悬停/搜索/填写），1.2s 后淡出；全屏态同样可见
+- 全屏仍是手动（⛶ 按钮 / Esc 收起）

@@ -240,6 +240,21 @@
         <p>正在加载...</p>
       </div>
 
+      <!-- Agent 虚拟鼠标（宿主层常驻）：webview 引擎下 guest 内光标被 shield 盖住且瞬闪看不见，
+           主进程动作完成后广播坐标，这里画在 webview/shield 之上。仅预览空间 + 有步骤日志时显示。 -->
+      <div
+        v-if="agentCursorVisible && cursorPos"
+        class="agent-cursor"
+        :class="{ 'cursor-clicking': cursorPos.kind === 'click' }"
+        :key="cursorPos.at"
+        :style="{ left: cursorPos.x + 'px', top: cursorPos.y + 'px' }"
+      >
+        <svg class="cursor-arrow" width="26" height="26" viewBox="0 0 28 28">
+          <path d="M5 3L5 20L10 16L13 22L16 21L13 15L19 15Z" fill="#4a9eff" stroke="white" stroke-width="1.5"/>
+        </svg>
+        <span v-if="cursorPos.label" class="cursor-label">{{ cursorPos.label }}</span>
+      </div>
+
     </div>
 
 
@@ -401,6 +416,14 @@ const inputLocked = computed(() =>
   && (chatStore.streaming || chatStore.runningConvIds.size > 0),
 );
 const liveControlVisible = computed(() => isPreviewScope && chatStore.browserSteps.length > 0);
+// Agent 虚拟鼠标：只认当前激活 tab 的坐标（多 tab 隔离），预览空间 + 浏览器实况期才显示
+const agentCursorVisible = computed(() => isPreviewScope && chatStore.browserSteps.length > 0);
+const cursorPos = computed(() => {
+  const c = chatStore.agentCursor;
+  if (!c) return null;
+  if (c.tabId && c.tabId !== activeTabId.value) return null;
+  return c;
+});
 const isConvStreamingNow = computed(() => isPreviewScope && chatStore.streaming);
 const pausedNow = computed(() => isPreviewScope && chatStore.browserPaused);
 function toggleExpanded() {
@@ -1973,6 +1996,10 @@ onMounted(async () => {
     // 页面 title 变化 → 更新 tab 标题（真实网站名而非 URL）+ 对话页 browser tab 名
     // 对话页 tab chip 名称只由 preview 空间实例更新（page 空间的网页标题不牵连对话页）
     api.browserView.onTitleUpdated?.(aliveGuard((tid: string, title: string) => applyTitle(tid, title)));
+    // Agent 虚拟鼠标广播：主进程动作完成后推送 guest 坐标（已按缩放换算）→ store 统一管理淡出
+    api.browserView.onCursor?.(aliveGuard((tid: string, x: number, y: number, label: string, kind: string) => {
+      chatStore.onAgentCursor(tid, x, y, label, kind);
+    }));
 
     // webview 引擎：网页就在 DOM 里，无需 bounds 同步 / 无需主进程推送导航事件
     if (isWebviewEngine.value) return;
@@ -2085,6 +2112,37 @@ onUnmounted(() => {
   background: transparent;
   cursor: not-allowed;
   pointer-events: auto;
+}
+
+/* ── Agent 虚拟鼠标（宿主层常驻）：盖过 shield(20)，坐标已按缩放换算，淡出 1.2s。
+   pointer-events:none 不挡任何输入；key=at 触发重新挂载重放出现动画。 */
+.agent-cursor {
+  position: absolute;
+  z-index: 25;
+  pointer-events: none;
+  width: 0;
+  height: 0;
+  animation: agent-cursor-in .18s ease-out;
+  filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.35));
+}
+@keyframes agent-cursor-in {
+  from { transform: scale(0.4); opacity: 0; }
+  to { transform: scale(1); opacity: 1; }
+}
+.agent-cursor .cursor-arrow { position: absolute; left: -4px; top: -2px; }
+.agent-cursor.cursor-clicking .cursor-arrow { transform: scale(0.6); transform-origin: 4px 4px; }
+.agent-cursor .cursor-label {
+  position: absolute;
+  left: 14px;
+  top: 16px;
+  background: #4a9eff;
+  color: #fff;
+  font-size: 12px;
+  line-height: 1;
+  padding: 3px 8px;
+  border-radius: 10px;
+  white-space: nowrap;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
 }
 
 /* ── 实况控制按钮（暂停/恢复/停止）── */

@@ -411,8 +411,10 @@ function createChat() {
     if (!u) return '网站';
     try { return new URL(u).hostname || u; } catch { return u; }
   });
-  // browserSteps 首次出现：确保 browser tab 存在并展开面板（browser_navigate 桥接已自带 openTab，
-  // 此处兜底其他 browser_* 工具只 push step 不开 tab 的场景）
+  // browserSteps 首次出现：确保 browser tab 存在并打开预览面板（browser_navigate 桥接已自带 openTab，
+  // 此处兜底其他 browser_* 工具只 push step 不开 tab 的场景）。
+  // ⚠️ 不自动全屏：agent 操作浏览器时只打开预览面板，全屏是用户手动选项（工具条 ⛶ 按钮），
+  // 自动 inset:0 会盖住聊天页 —— 用户明确不要这个行为。
   watch(() => store.browserSteps.length, (n, o) => {
     if (o === 0 && n > 0) {
       if (!supportsBrowser) return; // E12: 移动端不打开浏览器 tab（步骤日志仅留在面板外/消息里）
@@ -421,14 +423,12 @@ function createChat() {
       } else {
         store.rightPanelOpen = true;
       }
-      // 自动放大（设计定稿）：agent 首次触发浏览器工具时展开全屏实况；
-      // 用户手动收起过（本次任务内）则不再自动弹，避免跟人抢 UI
-      if (!store.browserUserDismissed) store.browserExpanded = true;
     }
     // n===0 时不强制切回 file，避免清空时面板闪一下；保留当前 tab（默认 file/git）
   });
-  // 浏览器任务生命周期：首次 browser 步骤 → 进入"agent 驾驶"态（锁输入 + 重置手动收起标记）；
-  // 步骤日志清空（任务收尾/reset）→ 退出实况态：解除锁定、收起全屏、清手动收起标记。
+  // 浏览器任务生命周期：首次 browser 步骤 → 进入"agent 驾驶"态（锁输入）；
+  // 步骤日志清空（任务收尾/reset）→ 退出实况态：解除锁定、清手动收起标记。
+  // （不自动收起全屏：全屏已是纯手动，用户开着的就让它开着直到任务结束兜底清理）
   watch(() => store.browserSteps.length, (n, o) => {
     if (o === 0 && n > 0) {
       store.browserUserDismissed = false;
@@ -447,6 +447,7 @@ function createChat() {
       store.browserUserDismissed = false;
     }
     store.pausedConvIds.clear();
+    store.clearAgentCursor();
   });
   // 桌面端：右侧面板开合 / tab 切换与原生 BrowserView 图层联动，避免关闭面板后即梦页面仍浮在窗口上
   watch(() => store.rightPanelOpen, (open) => {
@@ -1660,6 +1661,7 @@ function createChat() {
     store.browserLockInput = false;
     store.browserUserDismissed = false;
     store.pausedConvIds.clear();
+    store.clearAgentCursor();
     if (isCodeModeActive()) {
       setScene('code');
       if (spaceId === undefined) spaceId = useCodeStore().projectSpaceId;
@@ -1681,6 +1683,7 @@ function createChat() {
     // 切会话即退出浏览器实况态：锁定/放大只属于发起浏览器任务的那个会话
     store.browserExpanded = false;
     store.browserLockInput = false;
+    store.clearAgentCursor();
     const conv = store.conversations.find((c) => c.id === id);
     applyConvAgent(conv);
     if (conv?.modelId && conv?.platformId) {

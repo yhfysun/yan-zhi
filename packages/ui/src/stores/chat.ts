@@ -231,6 +231,22 @@ export const useChatStore = defineStore('chat', () => {
   const browserExpanded = ref(false);
   const browserUserDismissed = ref(false);
   const browserLockInput = ref(false);
+  // Agent 虚拟鼠标（宿主层渲染）：主进程 browserView:action 动作完成后广播 guest 坐标，
+  // BrowserPanel 在 webview 上方画常驻光标（webview 引擎下 guest 内瞬时光标会被 shield
+  // 盖住且只闪现 0.5s，等于看不见）。tabId 用于多面板实例归属判断；at 用于重触发 CSS 动画。
+  const agentCursor = ref<{ tabId: string | null; x: number; y: number; label: string; kind: string; at: number } | null>(null);
+  let agentCursorHideTimer: ReturnType<typeof setTimeout> | null = null;
+  /** 最后一次动作后光标停留多久淡出 */
+  const AGENT_CURSOR_LINGER_MS = 1200;
+  function onAgentCursor(tabId: string | null, x: number, y: number, label: string, kind: string) {
+    agentCursor.value = { tabId, x, y, label, kind, at: Date.now() };
+    if (agentCursorHideTimer) clearTimeout(agentCursorHideTimer);
+    agentCursorHideTimer = setTimeout(() => { agentCursor.value = null; }, AGENT_CURSOR_LINGER_MS);
+  }
+  function clearAgentCursor() {
+    if (agentCursorHideTimer) { clearTimeout(agentCursorHideTimer); agentCursorHideTimer = null; }
+    agentCursor.value = null;
+  }
   // 右侧预览面板是否展开；默认**关闭**（进入聊天页先看到纯聊天区，点了文件/网站才展开右栏）
   const rightPanelOpen = ref(false);
   // 输入框「+」菜单模式开关（对齐 WorkBuddy）：随请求透传 modeFlags，后端统一追加指令/裁剪工具
@@ -1806,6 +1822,7 @@ export const useChatStore = defineStore('chat', () => {
     conversations, currentMessages, streaming, currentConvId, mountedMcpServers, mcpDisabledTools, mcpToolAliases,
     runningConvIds, isConvStreaming,
     browserExpanded, browserUserDismissed, browserLockInput, browserPaused, pausedConvIds,
+    agentCursor, onAgentCursor, clearAgentCursor,
     pauseTask, resumeTask,
     queuedByConv, queuedOf, enqueueMessage, removeQueuedMessage, updateQueuedMessage, takeQueuedMessages, takeFirstQueuedMessage, injectQueuedMessage,
     onTaskFinished,

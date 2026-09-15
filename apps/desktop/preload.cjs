@@ -151,6 +151,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     onResync: (callback) => {
       ipcRenderer.on('browserView:resync', () => callback());
     },
+    // Agent 虚拟鼠标广播：主进程在 browserView:action 完成后推送 guest 光标坐标（已按缩放换算）
+    onCursor: (callback) => {
+      ipcRenderer.on('browserView:cursor', (_e, tabId, x, y, label, kind) => callback(tabId, x, y, label, kind));
+    },
   },
 
   // webview 引擎：网页 window.open / target=_blank 统一转应用内新标签页
