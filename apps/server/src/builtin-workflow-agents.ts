@@ -194,7 +194,7 @@ export function seedBuiltinWorkflowAgents(db: Database.Database): { seeded: stri
   return { seeded, restored };
 }
 
-/** LLM 节点模型自动回填：platformId/modelId 为空时，优先 agnes 平台的 flash 模型（免费额度友好）。 */
+/** LLM 节点模型自动回填：platformId/modelId 为空时，优先 agens 平台的 flash 模型（免费额度友好）。 */
 export function ensureBuiltinWorkflowModel(db: Database.Database): { filled: boolean } {
   try {
     const row = db.prepare('SELECT workflow_json FROM agent WHERE id = ?').get(WF_MAIN_ID) as { workflow_json: string } | undefined;
@@ -207,10 +207,10 @@ export function ensureBuiltinWorkflowModel(db: Database.Database): { filled: boo
       const hasModel = db.prepare('SELECT id FROM model WHERE platform_id = ? AND model_id = ?').get(llm.config.platformId, llm.config.modelId);
       if (hasModel) return { filled: false };
     }
-    // 优先 agnes 平台 + flash；退而求其次任何平台的 flash；再退任意平台首个模型
+    // 优先 agens 平台 + flash；退而求其次任何平台的 flash；再退任意平台首个模型
     const pick = (sql: string) => db.prepare(sql).get() as { platform_id: string; model_id: string } | undefined;
     const m =
-      pick("SELECT platform_id, model_id FROM model WHERE platform_id LIKE 'agnes-%' AND model_id LIKE '%flash%' LIMIT 1") ||
+      pick("SELECT platform_id, model_id FROM model WHERE (platform_id LIKE 'agens-%' OR platform_id LIKE 'agnes-%') AND model_id LIKE '%flash%' ORDER BY (model_id = 'agnes-3.0-flash') DESC LIMIT 1") ||
       pick("SELECT platform_id, model_id FROM model WHERE model_id LIKE '%flash%' LIMIT 1") ||
       pick('SELECT platform_id, model_id FROM model LIMIT 1');
     if (!m) return { filled: false };

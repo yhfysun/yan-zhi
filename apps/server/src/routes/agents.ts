@@ -46,8 +46,8 @@ router.post('/', (req: Request, res: Response) => {
   const id = b.id || uuid();
   const now = Date.now();
   db.prepare(
-    `INSERT INTO agent (id, user_id, name, description, avatar, system_prompt, temperature, max_tokens, top_p, frequency_penalty, presence_penalty, platform_id, model_id, workflow_json, inputs_schema_json, config_json, parent_agent_id, agent_kind, allow_sub_agent, is_default, type, builtin_tool_ids, custom_tool_ids, mcp_tool_mounts, skill_ids, sub_agent_ids, ontology_ids, is_public, version, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+    `INSERT INTO agent (id, user_id, name, description, avatar, system_prompt, temperature, max_tokens, top_p, frequency_penalty, presence_penalty, platform_id, model_id, workflow_json, inputs_schema_json, config_json, parent_agent_id, agent_kind, allow_sub_agent, is_default, type, builtin_tool_ids, custom_tool_ids, mcp_tool_mounts, skill_ids, sub_agent_ids, ontology_ids, knowledge_base_ids, category, is_public, version, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
   ).run(
     id, userId,
     String(b.name).trim(),
@@ -55,7 +55,7 @@ router.post('/', (req: Request, res: Response) => {
     b.avatar || null,
     b.systemPrompt || null,
     b.temperature ?? 0.7,
-    b.maxTokens ?? 2048,
+    b.maxTokens ?? 65536,
     b.topP ?? 1.0,
     b.frequencyPenalty ?? 0,
     b.presencePenalty ?? 0,
@@ -75,6 +75,8 @@ router.post('/', (req: Request, res: Response) => {
     JSON.stringify(b.skillIds || []),
     JSON.stringify(b.subAgentIds || []),
     JSON.stringify(b.ontologyIds || []),
+    JSON.stringify(b.knowledgeBaseIds || []),
+    b.category || '',
     b.version ?? 1,
     now, now,
   );
@@ -106,9 +108,16 @@ router.patch('/:id', (req: Request, res: Response) => {
     workflow: 'workflow_json', inputsSchema: 'inputs_schema_json', config: 'config_json',
     builtinToolIds: 'builtin_tool_ids', customToolIds: 'custom_tool_ids', mcpToolMounts: 'mcp_tool_mounts',
     skillIds: 'skill_ids', subAgentIds: 'sub_agent_ids', ontologyIds: 'ontology_ids',
+    knowledgeBaseIds: 'knowledge_base_ids',
+  };
+  const strMap2: Record<string, string> = {
+    category: 'category',
   };
   for (const [k, col] of Object.entries(jsonMap)) {
     if (b[k] !== undefined) { sets.push(`${col} = ?`); vals.push(JSON.stringify(b[k])); }
+  }
+  for (const [k, col] of Object.entries(strMap2)) {
+    if (b[k] !== undefined) { sets.push(`${col} = ?`); vals.push(b[k]); }
   }
   for (const [k, col] of Object.entries({ isDefault: 'is_default', allowSubAgent: 'allow_sub_agent', isPublic: 'is_public' })) {
     if (b[k] !== undefined) { sets.push(`${col} = ?`); vals.push(b[k] ? 1 : 0); }

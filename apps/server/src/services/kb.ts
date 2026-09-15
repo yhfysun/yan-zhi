@@ -2,6 +2,7 @@ import { v4 as uuid } from 'uuid';
 import { readFile } from 'node:fs/promises';
 import { db, hasSqliteVec } from '../db.js';
 import { embedText, ollamaChat } from './ollama-embed.js';
+import { LlmClient } from '@yan-zhi/core';
 
 function now() {
   return Date.now();
@@ -752,14 +753,73 @@ function parseJsonOf(text: string): any {
   try { return m ? JSON.parse(m[0]) : null; } catch { return null; }
 }
 
-/** 增量提取实体图谱：对未处理文档的分片，用本地大模型抽取 + 与已有图谱融合。返回是否有可用本地模型。 */
-export async function extractEntityGraph(userId: string, baseId: string): Promise<{ ok: boolean; processed: number; error?: string }> {
+/** 增量提取实体图谱的模型解析链：
+ *  ① 调用方显式指定（设置页「图谱抽取模型」下发）→ ② 全局默认模型（is_default=1 的 llm，通常是 agens 云端模型）
+ *  → ③ null = 走本地 Ollama 兜底。 */
+function resolveGraphExtractLlm(userId: string, prefer?: { platformId?: string; modelId?: string }): { platform: any; model: any } | null {
+  void userId;
+  const candidates: Array<{ pid: string; mid: string }> = [];
+  if (prefer?.platformId && prefer?.modelId) candidates.push({ pid: prefer.platformId, mid: prefer.modelId });
+  const def = db
+    .prepare("SELECT id, platform_id FROM model WHERE is_default = 1 AND type = 'llm' AND enabled = 1 ORDER BY created_at DESC LIMIT 1")
+    .get() as { id: string; platform_id: string } | undefined;
+  if (def) candidates.push({ pid: def.platform_id, mid: def.id });
+  for (const c of candidates) {
+    const p = db.prepare('SELECT * FROM platform WHERE id = ?').get(c.pid) as any;
+    const m = db.prepare('SELECT * FROM model WHERE id = ?').get(c.mid) as any;
+    if (p && m && m.enabled) return { platform: p, model: m };
+  }
+  return null;
+}
+
+/** 用解析出的云端模型发一次抽取请求；失败返回 null（由调用方回退本地 Ollama） */
+async function graphChatViaLlm(llm: { platform: any; model: any }, system: string, user: string, maxTokens: number): Promise<string | null> {
+  try {
+    const platform = {
+      id: llm.platform.id,
+      name: llm.platform.name,
+      protocol: llm.platform.protocol || 'openai',
+      apiUrl: llm.platform.api_url,
+      headers: (() => { try { return JSON.parse(llm.platform.headers_json || '{}'); } catch { return {}; } })(),
+    };
+    const model = {
+      id: llm.model.id,
+      platformId: llm.model.platform_id,
+      modelId: llm.model.model_id,
+      alias: llm.model.alias,
+      type: llm.model.type || 'llm',
+      contextWindow: llm.model.context_window || 262144,
+      capabilities: (() => { try { return JSON.parse(llm.model.capabilities_json || '[]'); } catch { return []; } })(),
+    };
+    const client = new LlmClient(platform as any, model as any);
+    const r = await client.chat(
+      [
+        { id: 'sys', conversationId: '', role: 'system', content: system, createdAt: 0 },
+        { id: 'u', conversationId: '', role: 'user', content: user, createdAt: 0 },
+      ],
+      { temperature: 0.2, maxTokens },
+    );
+    const content = String(r.delta?.content || r.delta?.reasoningContent || '').trim();
+    return content || null;
+  } catch {
+    return null;
+  }
+}
+
+/** 增量提取实体图谱：对未处理文档的分片抽取 + 与已有图谱融合。
+ *  模型链：设置下发的图谱抽取模型 → 全局默认模型（云端）→ 本地 Ollama 兜底。 */
+export async function extractEntityGraph(
+  userId: string,
+  baseId: string,
+  prefer?: { platformId?: string; modelId?: string },
+): Promise<{ ok: boolean; processed: number; error?: string }> {
   const base = getKnowledgeBase(userId, baseId);
   const unprocessed = db.prepare(
     'SELECT id FROM knowledge_doc WHERE base_id = ? AND id NOT IN (SELECT doc_id FROM kb_processed_doc WHERE base_id = ?)',
   ).all(base.id, baseId) as any[];
   if (unprocessed.length === 0) return { ok: true, processed: 0 };
   const ts = now();
+  const llm = resolveGraphExtractLlm(userId, prefer);
   let fused = graphSnapshot(baseId);
   let processed = 0;
   for (const doc of unprocessed) {
@@ -768,15 +828,19 @@ export async function extractEntityGraph(userId: string, baseId: string): Promis
     for (const c of chunks) {
       const prompt =
         `现有实体图谱（JSON）：\n${JSON.stringify(fused)}\n\n---\n\n新的知识分片（chunkId=${c.id}）：\n${c.content}`;
-      const res = await ollamaChat(
-        [{ role: 'system', content: EXTRACT_SYSTEM }, { role: 'user', content: prompt }],
-        { temperature: 0.2, maxTokens: 1200 },
-      );
-      if (!res?.content) {
-        // Ollama 不可用时中止增量，返回提示（已处理的正常落库）
-        return { ok: false, processed, error: 'Ollama 不可用或无 chat 模型，无法抽取实体图谱' };
+      let content = llm ? await graphChatViaLlm(llm, EXTRACT_SYSTEM, prompt, 1600) : null;
+      if (!content) {
+        // 云端不可用/未配置 → 本地 Ollama 兜底（保持旧行为）
+        const res = await ollamaChat(
+          [{ role: 'system', content: EXTRACT_SYSTEM }, { role: 'user', content: prompt }],
+          { temperature: 0.2, maxTokens: 1200 },
+        );
+        content = res?.content || '';
       }
-      const parsed = parseJsonOf(res.content);
+      if (!content) {
+        return { ok: false, processed, error: llm ? '云端模型请求失败且本地 Ollama 不可用，无法抽取实体图谱' : 'Ollama 不可用或无 chat 模型，无法抽取实体图谱' };
+      }
+      const parsed = parseJsonOf(content);
       if (parsed && Array.isArray(parsed.entities)) {
         // 融合：以解析结果为新的 fused（模型已按规则与 old 融合）
         fused = {

@@ -187,7 +187,7 @@ export function createLlmSummarizer(): SearchSummarizer {
         modelId: picked.model_id,
         alias: picked.alias,
         type: 'llm',
-        contextWindow: 8000,
+        contextWindow: 262144,
         capabilities: [],
       };
       const client = new LlmClient(platform as any, model as any);

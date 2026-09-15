@@ -216,6 +216,21 @@ function agentOntologyIds(userId: string | undefined, agentId: string | undefine
   }
 }
 
+/** 知识库挂载范围：任务显式下发优先；否则读 server agent 表；均无 = undefined 不限（跨全部可见库检索） */
+function agentKnowledgeBaseIds(userId: string | undefined, agentId: string | undefined, explicit?: string[]): string[] | undefined {
+  if (explicit && explicit.length) return explicit;
+  if (!agentId || !userId) return undefined;
+  try {
+    const row = db.prepare('SELECT knowledge_base_ids FROM agent WHERE id = ? AND (user_id = ? OR is_public = 1)').get(agentId, userId) as
+      | { knowledge_base_ids?: string | null }
+      | undefined;
+    const ids = JSON.parse(row?.knowledge_base_ids || '[]');
+    return Array.isArray(ids) && ids.length ? ids.map(String) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 // js_exec 沙箱桥接：脚本内 dataQuery({sql, datasourceId?, limit?}) → 只读数据查询服务。
 // 本机单租户场景按 guest 身份取数（与工具面板数据一致）；只读护栏 + 行数上限在服务内强制。
 setJsExecDataBridge(async (args: { datasourceId?: string; sql: string; limit?: number }) => {
@@ -458,7 +473,7 @@ export async function executeApiTool(
         const id = uuid();
         db.prepare(
           'INSERT INTO model (id, platform_id, user_id, model_id, alias, type, context_window, capabilities_json, pricing_json, description, enabled, is_default, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?)',
-        ).run(id, str(args, 'platformId'), uid, str(args, 'modelId'), str(args, 'alias') || null, str(args, 'type') || 'llm', num(args, 'contextWindow', 8000), '[]', '{}', str(args, 'description') || null, Date.now());
+        ).run(id, str(args, 'platformId'), uid, str(args, 'modelId'), str(args, 'alias') || null, str(args, 'type') || 'llm', num(args, 'contextWindow', 262144), '[]', '{}', str(args, 'description') || null, Date.now());
         return ok(db.prepare('SELECT * FROM model WHERE id = ?').get(id));
       }
       case 'api_model_update': {
@@ -781,21 +796,24 @@ export async function executeApiTool(
         return ok({ deleted: true });
       case 'api_kb_search': {
         const q = str(args, 'query');
-        const baseIds = (arr(args, 'baseIds') as string[]).map((b) => String(b)).filter(Boolean);
+        const explicitBaseIds = (arr(args, 'baseIds') as string[]).map((b) => String(b)).filter(Boolean);
+        // 知识库检索范围：agent 显式绑定优先 + 任务下发；均无 = 不限（跨全部可见库）。
+        // 语义：不绑则全可用，绑则限定到绑定库（agent 挂载的知识库）。
+        const scope: string[] = agentKnowledgeBaseIds(userId, agentId, explicitBaseIds.length ? explicitBaseIds : undefined) || explicitBaseIds;
         const hops = num(args, 'hops', 3);
         // 实体导向多跳查询，按知识库分组返回（{ 库id: [切片...] }）；单库/多库指定都走同一逻辑，天然分组
-        const grouped = entityGraphSearchGrouped(requireUser(userId), q, baseIds, hops, num(args, 'topK', 3));
+        const grouped = entityGraphSearchGrouped(requireUser(userId), q, scope, hops, num(args, 'topK', 3));
         const total = Object.values(grouped).reduce((s: number, a: any[]) => s + a.length, 0);
-        if (total > 0) return ok({ grouped, total });
+        if (total > 0) return ok({ grouped, total, scoped: !!scope.length });
         // 实体图谱为空（未抽取/无实体）→ 退化关键词多跳，按库分组
         const kw = multiHopSearchKnowledge(requireUser(userId), q, num(args, 'topK', 3), hops);
         const kwGrouped: Record<string, any[]> = {};
         for (const c of kw) {
-          if (baseIds.length && !baseIds.includes(c.baseId)) continue;
+          if (scope.length && !scope.includes(c.baseId)) continue;
           (kwGrouped[c.baseId] ||= []).push(c);
         }
         const kwTotal = Object.values(kwGrouped).reduce((s: number, a: any[]) => s + a.length, 0);
-        return ok({ grouped: kwGrouped, total: kwTotal });
+        return ok({ grouped: kwGrouped, total: kwTotal, scoped: !!scope.length });
       }
       case 'api_kb_builtin_guide_reset': {
         const uid = requireUser(userId);
@@ -810,21 +828,29 @@ export async function executeApiTool(
         const topK = num(args, 'topK', 5);
         // 与路由一致：RRF 混合检索（关键词+向量融合），向量不可用自动降级关键词
         const { data, mode } = await hybridSearchAll(uid, query, topK);
-        return ok({ data, mode });
+        // 按 agent 绑定的知识库范围收敛（不绑则全可用）
+        const scope = agentKnowledgeBaseIds(userId, agentId);
+        const filtered = scope ? data.filter((c: any) => scope.includes(c.baseId)) : data;
+        return ok({ data: filtered, mode, scoped: !!scope });
       }
-      case 'api_kb_multi_hop':
-        return ok(multiHopSearchKnowledge(
+      case 'api_kb_multi_hop': {
+        // 按 agent 绑定的知识库范围收敛（不绑则全可用）
+        const scope = agentKnowledgeBaseIds(userId, agentId);
+        const rows = multiHopSearchKnowledge(
           requireUser(userId),
           str(args, 'query'),
           num(args, 'topK', 3),
           num(args, 'hops', 2),
-        ));
+        );
+        return ok(scope ? rows.filter((c: any) => scope.includes(c.baseId)) : rows);
+      }
       case 'api_kb_entity_search':
         return ok(entityGraphSearch(
           requireUser(userId),
           str(args, 'query'),
           num(args, 'hops', 3),
           num(args, 'topK', 3),
+          agentKnowledgeBaseIds(userId, agentId),
         ));
       case 'api_kb_chunks':
         return ok(listKnowledgeChunks(requireUser(userId), str(args, 'baseId'), str(args, 'docId') || undefined));

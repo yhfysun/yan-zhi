@@ -196,8 +196,11 @@ router.get('/:id/documents', (req: Request, res: Response) => {
 router.post('/:id/documents', async (req: Request, res: Response) => {
   try {
     const data = await addKnowledgeDoc(req.user!.userId, req.params.id, req.body || {});
-    // 自动增量提取（fire-and-forget，不阻塞响应；本地模型慢）
-    extractEntityGraph(req.user!.userId, req.params.id).catch(() => undefined);
+    // 自动增量提取（fire-and-forget，不阻塞响应）；模型链：设置下发的图谱抽取模型 → 全局默认模型 → 本地 Ollama
+    extractEntityGraph(req.user!.userId, req.params.id, {
+      platformId: typeof (req.body || {}).graphExtractPlatformId === 'string' ? req.body.graphExtractPlatformId : undefined,
+      modelId: typeof (req.body || {}).graphExtractModelId === 'string' ? req.body.graphExtractModelId : undefined,
+    }).catch(() => undefined);
     res.json({ data });
   } catch (e: unknown) {
     handleError(res, e);
@@ -233,10 +236,14 @@ router.get('/:id/entity-graph', (req: Request, res: Response) => {
   }
 });
 
-// POST /api/kb/:id/graph/extract —— 增量提取/融合实体图谱（用本地大模型），未处理文档自动处理
+// POST /api/kb/:id/graph/extract —— 增量提取/融合实体图谱，未处理文档自动处理。
+// body 可选 { graphExtractPlatformId, graphExtractModelId }（设置页「图谱抽取模型」），缺省用全局默认模型 → 本地 Ollama
 router.post('/:id/graph/extract', async (req: Request, res: Response) => {
   try {
-    const r = await extractEntityGraph(req.user!.userId, req.params.id);
+    const r = await extractEntityGraph(req.user!.userId, req.params.id, {
+      platformId: typeof (req.body || {}).graphExtractPlatformId === 'string' ? req.body.graphExtractPlatformId : undefined,
+      modelId: typeof (req.body || {}).graphExtractModelId === 'string' ? req.body.graphExtractModelId : undefined,
+    });
     res.json({ data: r });
   } catch (e: unknown) {
     handleError(res, e);

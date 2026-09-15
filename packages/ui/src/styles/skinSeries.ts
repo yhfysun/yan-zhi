@@ -303,7 +303,9 @@ function buildSeries(): BuiltinSkinSeries[] {
         border: `color-mix(in srgb, ${p.primary} 22%, #E5DECF)`,
         borderDark: `color-mix(in srgb, ${p.primary} 30%, #2E2A26)`,
         radius: 14, buttonRadius: 8, glassBlur: 16,
-        overlayColor: darkOverlay(id), overlayBlur: 5,
+        // 弹窗遮罩模糊：与 skin.css 的 --skin-overlay-blur 默认值保持一致（14px）。
+        // 内置系列显式下发了 overlayBlur，改 CSS 回落值对它们无效 —— 要调两边一起改。
+        overlayColor: darkOverlay(id), overlayBlur: 14,
         catTagPattern: uriOf(catTag(p, m)),
         taskListPattern: uriOf(taskList(p, m)),
         inputPattern: uriOf(inputPat(p, m)),

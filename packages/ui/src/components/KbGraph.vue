@@ -3,7 +3,7 @@
     <div class="kb-graph-head">
       <span class="section-label">{{ isEntityMode ? '实体关系图谱（点实体查看来源切片）' : '关系图谱（库 → 文档 → 分片）' }}</span>
       <div class="kb-graph-actions">
-        <el-button size="small" type="primary" :icon="MagicStick" :loading="extractingNow" @click="extractGraph">{{ isEntityMode ? '重新提取实体图谱' : '提取实体图谱' }}</el-button>
+        <el-button size="small" type="primary" :icon="MagicStick" :loading="extractingNow" @click="openExtractDialog">{{ isEntityMode ? '重新提取实体图谱' : '提取实体图谱' }}</el-button>
         <el-button size="small" :icon="Refresh" @click="load">刷新</el-button>
         <el-button size="small" :icon="Search" @click="fitView">适应</el-button>
         <el-button size="small" :icon="ZoomIn" @click="zoomIn">+</el-button>
@@ -69,6 +69,30 @@
         </div>
       </div>
     </div>
+
+    <!-- 提取模型选择：默认跟随全局默认模型，可临时改 -->
+    <el-dialog v-model="extractDialogVisible" title="提取实体图谱" width="460px" :close-on-click-modal="false">
+      <el-form label-width="90px">
+        <el-form-item label="抽取平台">
+          <el-select v-model="dPlatformId" placeholder="留空 = 全局默认模型" style="width: 100%" clearable @visible-change="(v: boolean) => v && loadPlatformsOnce()" @change="dModelId = ''">
+            <el-option v-for="p in platformStore.platforms" :key="p.id" :label="p.name" :value="p.id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="抽取模型">
+          <el-select v-model="dModelId" placeholder="留空 = 该平台默认模型" style="width: 100%" clearable :disabled="!dPlatformId">
+            <el-option v-for="m in dModels" :key="m.id" :label="m.alias || m.modelId" :value="m.id" />
+          </el-select>
+        </el-form-item>
+      </el-form>
+      <div class="extract-dialog-tip">
+        默认使用全局默认模型（如 agens 3.0 Flash）；云端不可用时自动回退本地 Ollama。
+        上传文档触发的自动提取始终用全局默认模型。
+      </div>
+      <template #footer>
+        <el-button @click="extractDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="extractingNow" @click="extractGraph">开始提取</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -80,6 +104,17 @@ import '@vue-flow/core/dist/theme-default.css';
 import { Refresh, Search, ZoomIn, ZoomOut, MagicStick, FullScreen, Aim } from '@element-plus/icons-vue';
 import { ElMessage } from 'element-plus';
 import { api } from '../api/client';
+import { usePlatformStore } from '../stores';
+import { useSettingsStore } from '../stores/settings';
+
+const platformStore = usePlatformStore();
+const settingsStore = useSettingsStore();
+let platformsLoaded = false;
+async function loadPlatformsOnce() {
+  if (platformsLoaded) return;
+  platformsLoaded = true;
+  await platformStore.loadPlatforms();
+}
 
 const props = defineProps<{ baseId: string }>();
 
@@ -238,13 +273,49 @@ async function load() {
 const entityChunkMap = ref<Map<string, string[]>>(new Map());
 const allChunks = ref<any[]>([]);
 
+// ===== 提取弹窗：选模型（默认跟随全局默认模型，选择会被记住） =====
+const extractDialogVisible = ref(false);
+const dPlatformId = ref('');
+const dModelId = ref('');
+const dModels = computed(() => platformStore.models.filter((m) => m.platformId === dPlatformId.value && m.enabled));
+
+async function openExtractDialog() {
+  await loadPlatformsOnce();
+  // 预填：上次的选择 → 全局默认模型
+  const savedPid = settingsStore.settings.graphExtractPlatformId;
+  const savedMid = settingsStore.settings.graphExtractModelId;
+  if (savedPid) {
+    dPlatformId.value = savedPid;
+    await platformStore.loadModels(savedPid);
+    dModelId.value = savedMid && dModels.value.some((m) => m.id === savedMid) ? savedMid : '';
+  } else {
+    const pid = settingsStore.settings.defaultPlatformId;
+    const mid = settingsStore.settings.defaultModelId;
+    if (pid) {
+      dPlatformId.value = pid;
+      await platformStore.loadModels(pid);
+      dModelId.value = mid && dModels.value.some((m) => m.id === mid) ? mid : '';
+    } else {
+      dPlatformId.value = '';
+      dModelId.value = '';
+    }
+  }
+  extractDialogVisible.value = true;
+}
+
 async function extractGraph() {
   const base = props.baseId;
   extractingByBase.value = { ...extractingByBase.value, [base]: true };
   try {
-    await api.post(`/kb/${base}/graph/extract`, {});
-    ElMessage.success('已开始增量提取实体图谱（本地模型处理中，可稍后刷新）');
-    // 稍等片刻后重载（本地模型可能较慢，这里只是尝试立即刷新）
+    await api.post(`/kb/${base}/graph/extract`, {
+      graphExtractPlatformId: dPlatformId.value || undefined,
+      graphExtractModelId: dModelId.value || undefined,
+    });
+    // 记住本次选择，下次弹窗预填
+    settingsStore.update({ graphExtractPlatformId: dPlatformId.value, graphExtractModelId: dModelId.value });
+    extractDialogVisible.value = false;
+    ElMessage.success('已开始增量提取实体图谱（处理中，可稍后刷新）');
+    // 稍等片刻后重载（模型处理需要时间，这里只是尝试立即刷新）
     await load();
   } catch (e: unknown) {
     ElMessage.error(e instanceof Error ? e.message : '提取失败');
@@ -306,4 +377,5 @@ defineExpose({ load });
 .kb-entity-slice { border: 1px solid var(--glass-border); border-radius: 6px; overflow: hidden; }
 .kb-entity-slice-title { font-size: 11px; padding: 3px 6px; background: var(--glass-border, rgba(0,0,0,0.05)); color: var(--color-text-secondary); }
 .kb-entity-slice-body { margin: 0; padding: 6px; font-size: 11px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; max-height: 90px; overflow-y: auto; font-family: inherit; color: var(--color-text); }
+.extract-dialog-tip { font-size: 12px; color: var(--color-text-secondary); line-height: 1.6; padding: 0 4px; }
 </style>

@@ -23,7 +23,13 @@
     </div>
 
     <div class="model-grid">
-      <div v-for="m in models" :key="m.id" class="model-card" :class="{ disabled: !m.enabled }">
+      <div
+        v-for="m in models"
+        :key="m.id"
+        class="model-card"
+        :class="{ disabled: !m.enabled }"
+        @click="onCardClick(m)"
+      >
         <el-checkbox
           v-if="batchMode && !m.isBuiltin"
           :model-value="selectedModelIds.has(m.id)"
@@ -37,7 +43,7 @@
             <div class="model-card-name">{{ m.alias || m.modelId }}</div>
             <div class="model-card-id">{{ m.modelId }}</div>
           </div>
-          <el-switch v-if="!m.isBuiltin" v-model="m.enabled" size="small" @change="toggleEnabled(m)" />
+          <el-switch v-if="!m.isBuiltin" v-model="m.enabled" size="small" @click.stop @change="toggleEnabled(m)" />
         </div>
 
         <div class="model-card-tags">
@@ -64,11 +70,26 @@
             v-model="m.alias"
             size="small"
             placeholder="别名（可选）"
+            @click.stop
             @change="updateAlias(m)"
             class="alias-input"
           />
-          <div class="model-card-actions">
-            <el-button size="small" :loading="testing === m.id" @click="testModel(m)">测试</el-button>
+          <div class="model-card-actions" @click.stop>
+            <el-dropdown trigger="click" @command="(k: string) => runCapabilityTest(m, k)">
+              <el-button size="small" :loading="testing === m.id">
+                测试<el-icon class="el-icon--right"><ArrowDown /></el-icon>
+              </el-button>
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item v-for="k in testKindsOf(m)" :key="k.kind" :command="k.kind">
+                    {{ k.label }}
+                  </el-dropdown-item>
+                  <el-dropdown-item command="__auto" divided>
+                    自动检测全部并勾选
+                  </el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
             <el-button v-if="!m.isBuiltin" size="small" text @click="editModel(m)">编辑</el-button>
             <el-button v-if="!m.isBuiltin && !m.isDefault" size="small" text @click="setDefault(m)">设为默认</el-button>
             <el-button size="small" type="danger" text @click="del(m)">删除</el-button>
@@ -104,23 +125,30 @@
           <el-input v-model="form.description" type="textarea" :rows="2" placeholder="模型描述：用途、专长、适用场景等（供智能体选型时参考）" />
         </el-form-item>
         <el-form-item label="能力">
-          <el-checkbox-group v-model="form.capabilities">
-            <el-checkbox value="function_call">函数调用</el-checkbox>
-            <el-checkbox value="vision">视觉</el-checkbox>
-            <el-checkbox value="reasoning">推理</el-checkbox>
+          <el-checkbox-group v-model="form.capabilities" class="cap-group">
+            <span v-for="c in capDefs" :key="c.value" class="cap-item">
+              <el-checkbox :value="c.value">{{ c.label }}</el-checkbox>
+              <el-button
+                size="small" text type="primary"
+                :loading="capTesting === c.kind"
+                @click="testCapabilityInForm(c)"
+              >测试</el-button>
+            </span>
           </el-checkbox-group>
+          <div class="form-tip cap-tip">
+            点「测试」实测该能力，通过后自动勾上（推理＝多步问答，能正常问答即默认具备）
+          </div>
         </el-form-item>
         <el-form-item label="上下文窗口">
           <div class="ctx-editor">
             <div class="ctx-input-row">
               <el-input-number v-model="form.contextWindowK" :min="1" :step="16" :precision="0" />
               <span class="form-tip">K tokens</span>
-            </div>
-            <div class="ctx-presets">
               <el-button
                 v-for="p in ctxPresets"
                 :key="p.k"
                 size="small"
+                class="ctx-preset-btn"
                 :type="form.contextWindowK === p.k ? 'primary' : ''"
                 @click="form.contextWindowK = p.k"
               >{{ p.label }}</el-button>
@@ -149,12 +177,11 @@
             <div class="ctx-input-row">
               <el-input-number v-model="batchContextWindowK" :min="1" :step="16" :precision="0" />
               <span class="form-tip">K tokens</span>
-            </div>
-            <div class="ctx-presets">
               <el-button
                 v-for="p in ctxPresets"
                 :key="p.k"
                 size="small"
+                class="ctx-preset-btn"
                 :type="batchContextWindowK === p.k ? 'primary' : ''"
                 @click="batchContextWindowK = p.k"
               >{{ p.label }}</el-button>
@@ -169,12 +196,28 @@
     </el-dialog>
 
     <!-- 测试结果 -->
-    <el-dialog v-model="testResultDialog" title="模型测试结果" width="480px">
+    <el-dialog v-model="testResultDialog" :title="testResult.title || '模型测试结果'" width="520px">
       <div class="test-result">
-        <el-result :icon="testResult.ok ? 'success' : 'error'" :title="testResult.ok ? '连通正常' : '连通失败'" :sub-title="testResult.msg" />
-        <div v-if="testResult.ok" class="test-detail">
+        <el-result
+          v-if="!testResult.list?.length"
+          :icon="testResult.ok ? 'success' : 'error'"
+          :title="testResult.ok ? '测试通过' : '测试未通过'"
+          :sub-title="testResult.msg"
+        />
+        <div v-else class="cap-result-list">
+          <div v-for="r in testResult.list" :key="r.kind" class="cap-result-row">
+            <el-tag size="small" :type="r.ok ? 'success' : 'danger'" effect="light">{{ r.label }}</el-tag>
+            <span class="cap-result-msg">{{ r.ok ? '通过' : '未通过' }} · {{ r.msg }}</span>
+            <span class="cap-result-ms">{{ r.durationMs }}ms</span>
+          </div>
+        </div>
+        <div v-if="testResult.ok && !testResult.list?.length" class="test-detail">
           <div>耗时：{{ testResult.durationMs }}ms</div>
-          <div>finish_reason：{{ testResult.finishReason || '-' }}</div>
+          <div v-if="testResult.finishReason">finish_reason：{{ testResult.finishReason }}</div>
+        </div>
+        <div v-if="testResult.detail" class="test-detail">模型回答：{{ testResult.detail }}</div>
+        <div v-if="testResult.applied?.length" class="test-detail">
+          已自动勾选能力：{{ testResult.applied.join('、') }}
         </div>
       </div>
     </el-dialog>
@@ -195,7 +238,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { Plus, ArrowLeft, Expand } from '@element-plus/icons-vue';
+import { Plus, ArrowLeft, Expand, ArrowDown } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { usePlatformStore } from '../stores';
 
@@ -218,27 +261,35 @@ const editingModelId = ref('');
 const fetching = ref(false);
 const testing = ref('');
 const testResultDialog = ref(false);
-const testResult = ref<{ ok: boolean; msg: string; durationMs?: number; finishReason?: string }>({ ok: false, msg: '' });
+const testResult = ref<{
+  ok: boolean;
+  msg: string;
+  title?: string;
+  durationMs?: number;
+  finishReason?: string;
+  detail?: string;
+  applied?: string[];
+  list?: { kind: string; label: string; ok: boolean; msg: string; durationMs: number }[];
+}>({ ok: false, msg: '' });
 const batchMode = ref(false);
 const selectedModelIds = ref<Set<string>>(new Set());
 const showBatchContext = ref(false);
-const batchContextWindowK = ref(128);
+const batchContextWindowK = ref(256);
 const batchSaving = ref(false);
 // 上下文窗口预设档位（K tokens 为单位；1M = 1024K = 1048576 tokens，存储层仍存 token 数）
-const ctxPresets = [
-  { k: 8, label: '8K' },
-  { k: 16, label: '16K' },
-  { k: 32, label: '32K' },
-  { k: 64, label: '64K' },
-  { k: 128, label: '128K' },
-  { k: 200, label: '200K' },
-  { k: 256, label: '256K' },
-  { k: 512, label: '512K' },
-  { k: 1024, label: '1M' },
+// 只保留 1M 快捷档：默认档已经是 256K，档位按钮太多反而占版面
+const ctxPresets = [{ k: 1024, label: '1M' }];
+/** 能力项与对应测试：推理用「基础问答」测（能问答即具备多步推理） */
+const capDefs = [
+  { value: 'function_call', label: '函数调用', kind: 'function_call' },
+  { value: 'vision', label: '视觉', kind: 'vision' },
+  { value: 'reasoning', label: '推理（问答）', kind: 'chat' },
 ];
+const capTesting = ref('');
+
 const form = ref({
-  modelId: '', alias: '', type: 'llm', contextWindowK: 128,
-  capabilities: [] as string[],
+  modelId: '', alias: '', type: 'llm', contextWindowK: 256,
+  capabilities: ['reasoning'] as string[],
   description: '',
   pricingInput: 0, pricingOutput: 0,
 });
@@ -285,13 +336,22 @@ async function fetchRemote() {
   } finally { fetching.value = false; }
 }
 
+/** 卡片整块可点：直接进编辑，省得去找卡片右下角那个小到看不见的「编辑」 */
+function onCardClick(m: any) {
+  if (batchMode.value) { toggleModelSelect(m.id); return; }
+  editModel(m);
+}
+
 function editModel(m: any) {
   if (m.isBuiltin) { ElMessage.warning('内置模型不可编辑'); return; }
   editingModelId.value = m.id;
   form.value = {
     modelId: m.modelId, alias: m.alias || '', type: m.type || 'llm',
-    contextWindowK: Math.max(1, Math.round((m.contextWindow || 4096) / 1024)),
-    capabilities: [...(m.capabilities || [])],
+    contextWindowK: Math.max(1, Math.round((m.contextWindow || 262144) / 1024)),
+    // 历史模型未标能力且是 llm → 预勾「推理」（能问答即具备），其它能力仍以数据库为准
+    capabilities: (m.capabilities || []).length
+      ? [...(m.capabilities || [])]
+      : (m.type || 'llm') === 'llm' ? ['reasoning'] : [],
     description: m.description || '',
     pricingInput: m.pricing?.input || 0, pricingOutput: m.pricing?.output || 0,
   };
@@ -313,7 +373,7 @@ async function addOrEditModel() {
       await store.addModel({
         platformId: platformId.value, modelId: form.value.modelId,
         alias: form.value.alias, type: form.value.type as any,
-        contextWindow: (form.value.contextWindowK || 128) * 1024, enabled: true, isDefault: false,
+        contextWindow: (form.value.contextWindowK || 256) * 1024, enabled: true, isDefault: false,
         capabilities: form.value.capabilities,
         description: form.value.description,
         pricing: { input: form.value.pricingInput, output: form.value.pricingOutput },
@@ -326,7 +386,7 @@ async function addOrEditModel() {
 
 function resetModelForm() {
   editingModelId.value = '';
-  form.value = { modelId: '', alias: '', type: 'llm', contextWindowK: 128, capabilities: [], description: '', pricingInput: 0, pricingOutput: 0 };
+  form.value = { modelId: '', alias: '', type: 'llm', contextWindowK: 256, capabilities: ['reasoning'], description: '', pricingInput: 0, pricingOutput: 0 };
 }
 
 async function updateAlias(row: any) { if (row.isBuiltin) return; await store.updateModel(row.id, { alias: row.alias }); }
@@ -348,7 +408,7 @@ async function applyBatchContext() {
   batchSaving.value = true;
   try {
     for (const id of selectedModelIds.value) {
-      await store.updateModel(id, { contextWindow: (batchContextWindowK.value || 128) * 1024 });
+      await store.updateModel(id, { contextWindow: (batchContextWindowK.value || 256) * 1024 });
     }
     ElMessage.success(`已设置 ${selectedModelIds.value.size} 个模型的上下文窗口`);
     selectedModelIds.value = new Set();
@@ -383,9 +443,85 @@ async function testModel(row: any) {
   testing.value = row.id;
   try {
     const r = await store.testModel(row.id);
-    testResult.value = r;
+    testResult.value = { ...r, title: `连通测试 · ${row.modelId}` };
     testResultDialog.value = true;
   } finally { testing.value = ''; }
+}
+
+/** 每种模型类型可跑的测试项 */
+function testKindsOf(m: any): { kind: string; label: string }[] {
+  // 所有模型都给全三项（问答/视觉/工具）——不支持会在结果里如实报失败，不该出现空下拉
+  const base = [
+    { kind: 'chat', label: '基础问答' },
+    { kind: 'vision', label: '视觉识图' },
+    { kind: 'function_call', label: '工具调用' },
+  ];
+  if (m.type === 'embedding') base.push({ kind: 'embedding', label: '向量嵌入' });
+  if (m.type === 'image') base.push({ kind: 'image', label: '图片生成' });
+  return base;
+}
+
+/** 卡片下拉：单项测试 / 自动检测全部 */
+async function runCapabilityTest(m: any, kind: string) {
+  if (kind === '__auto') { await autoDetectCapabilities(m); return; }
+  testing.value = m.id;
+  try {
+    const r = await store.testModelCapability(m.id, kind as any);
+    testResult.value = {
+      ok: r.ok,
+      msg: r.msg,
+      title: `${r.label} · ${m.modelId}`,
+      durationMs: r.durationMs,
+      detail: r.detail,
+      applied: r.ok && r.capability ? [capabilityLabel(r.capability)] : [],
+    };
+    testResultDialog.value = true;
+  } catch (e: any) {
+    ElMessage.error(e?.message || '测试失败');
+  } finally { testing.value = ''; }
+}
+
+/** 自动检测：跑 chat / vision / function_call，把通过的写回能力 */
+async function autoDetectCapabilities(m: any) {
+  testing.value = m.id;
+  try {
+    const kinds = ['chat', 'vision', 'function_call'];
+    const list: { kind: string; label: string; ok: boolean; msg: string; durationMs: number }[] = [];
+    const applied: string[] = [];
+    for (const k of kinds) {
+      const r = await store.testModelCapability(m.id, k as any);
+      list.push({ kind: k, label: r.label, ok: r.ok, msg: r.msg, durationMs: r.durationMs });
+      if (r.ok && r.capability) applied.push(capabilityLabel(r.capability));
+    }
+    testResult.value = {
+      ok: list.some((x) => x.ok),
+      msg: `通过 ${list.filter((x) => x.ok).length}/${list.length} 项`,
+      title: `自动检测 · ${m.modelId}`,
+      list,
+      applied,
+    };
+    testResultDialog.value = true;
+  } catch (e: any) {
+    ElMessage.error(e?.message || '自动检测失败');
+  } finally { testing.value = ''; }
+}
+
+/** 编辑弹窗里：点某个能力旁的「测试」，通过即勾上 */
+async function testCapabilityInForm(c: { value: string; label: string; kind: string }) {
+  if (!editingModelId.value) { ElMessage.warning('请先保存模型，再测试能力'); return; }
+  capTesting.value = c.kind;
+  try {
+    // autoApply=false：编辑态只回显结果，由用户决定是否保存；通过则顺手勾上
+    const r = await store.testModelCapability(editingModelId.value, c.kind as any, { autoApply: false });
+    if (r.ok) {
+      if (!form.value.capabilities.includes(c.value)) form.value.capabilities.push(c.value);
+      ElMessage.success(`${c.label}：通过（${r.durationMs}ms）${r.detail ? ` — ${r.detail}` : ''}`);
+    } else {
+      ElMessage.warning(`${c.label}：未通过 — ${r.msg}`);
+    }
+  } catch (e: any) {
+    ElMessage.error(e?.message || '测试失败');
+  } finally { capTesting.value = ''; }
 }
 </script>
 
@@ -408,7 +544,7 @@ async function testModel(row: any) {
   background: var(--glass-bg); backdrop-filter: var(--glass-filter); -webkit-backdrop-filter: var(--glass-filter);
   border: 1px solid var(--glass-border); border-radius: var(--radius-md);
   padding: 16px; display: flex; flex-direction: column; gap: 12px;
-  transition: all 0.2s ease;
+  transition: all 0.2s ease; cursor: pointer;
 }
 .model-card-check { position: absolute; top: 16px; left: 16px; z-index: 1; }
 .model-card:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(0,0,0,0.06); border-color: var(--glass-border-strong); }
@@ -459,9 +595,18 @@ async function testModel(row: any) {
 .form-tip { font-size: 12px; color: var(--color-text-secondary); margin-left: 8px; }
 .ctx-editor { display: flex; flex-direction: column; gap: 8px; width: 100%; }
 .ctx-input-row { display: flex; align-items: center; }
-.ctx-presets { display: flex; gap: 6px; flex-wrap: wrap; }
+.ctx-preset-btn { margin-left: 8px; }
 .test-result { padding: 12px; }
 .test-detail { margin-top: -8px; padding: 0 24px 12px; font-size: 13px; color: var(--color-text-secondary); line-height: 1.8; }
+
+/* 能力测试：每个能力后跟一个「测试」按钮 */
+.cap-group { display: flex; flex-wrap: wrap; gap: 4px 18px; align-items: center; }
+.cap-item { display: inline-flex; align-items: center; gap: 2px; }
+.cap-tip { margin-left: 0; margin-top: 6px; line-height: 1.6; }
+.cap-result-list { display: flex; flex-direction: column; gap: 10px; padding: 4px 24px 8px; }
+.cap-result-row { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.cap-result-msg { color: var(--color-text-secondary); flex: 1; min-width: 0; }
+.cap-result-ms { color: var(--color-text-secondary); font-size: 12px; }
 
 /* Desktop: show header actions, hide mobile toolbar/FAB */
 .header-actions-desktop { display: flex; }

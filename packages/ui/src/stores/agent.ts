@@ -15,7 +15,7 @@ function rowToAgent(r: any): Agent {
     avatar: r.avatar,
     systemPrompt: r.system_prompt || '',
     temperature: r.temperature ?? 0.7,
-    maxTokens: r.max_tokens ?? 2048,
+    maxTokens: r.max_tokens ?? 65536,
     topP: r.top_p ?? 1.0,
     frequencyPenalty: r.frequency_penalty ?? 0,
     presencePenalty: r.presence_penalty ?? 0,
@@ -28,6 +28,8 @@ function rowToAgent(r: any): Agent {
     skillIds: r.skill_ids ? JSON.parse(r.skill_ids) : undefined,
     subAgentIds: r.sub_agent_ids ? JSON.parse(r.sub_agent_ids) : undefined,
     ontologyIds: r.ontology_ids ? JSON.parse(r.ontology_ids) : undefined,
+    knowledgeBaseIds: r.knowledge_base_ids ? JSON.parse(r.knowledge_base_ids) : undefined,
+    category: r.category || '',
     workflow: wf,
     inputsSchema: r.inputs_schema_json ? JSON.parse(r.inputs_schema_json) : undefined,
     config: r.config_json ? JSON.parse(r.config_json) : undefined,
@@ -109,11 +111,13 @@ const DEFAULT_AGENT_DATA = {
     '\n\n' +
     DATA_QUERY_PROMPT_BLOCK,
   temperature: 0.7,
-  maxTokens: 2048,
+  maxTokens: 65536,
   topP: 1.0,
   frequencyPenalty: 0,
   presencePenalty: 0,
   skillIds: DEFAULT_AGENT_SKILL_IDS,
+  knowledgeBaseIds: ['builtin-app-guide'],
+  category: '默认',
   isDefault: true,
   config: { maxReActSteps: 10 },
 };
@@ -193,7 +197,7 @@ const PAGE_AGENT_DATA = {
 - 定位元素优先级：取编号列表 → index 定位（最稳，不依赖页面结构）→ 稳定 id / ARIA / :contains(可见文本) 选择器 → 坐标（最后手段）。
 - 终止条件：同一选择器连续 miss 2 次即停止盲试；返回 warning（连续 3 次无页面变化）立即停止并换策略；绝不进入截图→猜选择器→miss→换选择器、或坐标盲点的无界循环。`,
   temperature: 0.3,
-  maxTokens: 2048,
+  maxTokens: 65536,
   topP: 1.0,
   frequencyPenalty: 0,
   presencePenalty: 0,
@@ -277,7 +281,7 @@ const DATA_AGENT_DATA = {
 - **字段只能引用本体已声明的维度/度量/时间维度/过滤器**，报「字段不存在」时按报错里的可用字段改名重试，最多 2 次；连续 2 次取数失败就停下如实说明原因与已尝试的本体 code。
 - 结果可能截断：关注 truncated 标记，必要时加过滤器缩小范围或翻页。`,
   temperature: 0.2,
-  maxTokens: 2048,
+  maxTokens: 65536,
   topP: 1.0,
   frequencyPenalty: 0,
   presencePenalty: 0,
@@ -409,6 +413,8 @@ export const useAgentStore = defineStore('agent', () => {
       skillIds: data.skillIds || [],
       subAgentIds: data.subAgentIds || [],
       ontologyIds: data.ontologyIds || [],
+      knowledgeBaseIds: data.knowledgeBaseIds || [],
+      category: data.category || '',
       isPublic: !!data.isPublic,
       agentKind: data.agentKind === 'sub' ? 'sub' : 'main',
       workflow: data.workflow || EMPTY_WORKFLOW,
@@ -425,7 +431,7 @@ export const useAgentStore = defineStore('agent', () => {
     const body: any = {};
     const strMap: Record<string, string> = {
       name: 'name', description: 'description', avatar: 'avatar', systemPrompt: 'systemPrompt',
-      platformId: 'platformId', modelId: 'modelId', type: 'type',
+      platformId: 'platformId', modelId: 'modelId', type: 'type', category: 'category',
     };
     const numMap: Record<string, string> = {
       temperature: 'temperature', maxTokens: 'maxTokens', topP: 'topP',
@@ -434,6 +440,7 @@ export const useAgentStore = defineStore('agent', () => {
     const listMap: Record<string, string> = {
       builtinToolIds: 'builtinToolIds', customToolIds: 'customToolIds', mcpToolMounts: 'mcpToolMounts',
       skillIds: 'skillIds', subAgentIds: 'subAgentIds', ontologyIds: 'ontologyIds',
+      knowledgeBaseIds: 'knowledge_base_ids',
     };
     for (const [k, v] of Object.entries(strMap)) if ((patch as any)[k] !== undefined) body[v] = (patch as any)[k];
     for (const [k, v] of Object.entries(numMap)) if ((patch as any)[k] !== undefined) body[v] = (patch as any)[k];
@@ -577,7 +584,7 @@ export const useAgentStore = defineStore('agent', () => {
 
   function defaultNodeConfig(type: NodeType): Record<string, unknown> {
     switch (type) {
-      case 'llm': return { platformId: '', modelId: '', systemPrompt: '', temperature: 0.7, maxTokens: 2048 };
+      case 'llm': return { platformId: '', modelId: '', systemPrompt: '', temperature: 0.7, maxTokens: 65536 };
       case 'tool': return { toolSource: 'mcp', mcpServerId: '', toolName: '', arguments: {} };
       case 'input': return { schema: {} };
       case 'output': return { key: 'result' };

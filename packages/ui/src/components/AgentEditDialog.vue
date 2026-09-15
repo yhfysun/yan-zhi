@@ -15,6 +15,10 @@
                 </el-radio-group>
                 <div class="kind-hint">子智能体只能被其他智能体引用委派，不会出现在会话的智能体选择列表中</div>
               </el-form-item>
+              <el-form-item label="分类标签">
+                <el-input v-model="form.category" placeholder="如：工作 / 研发 / 生活（用于智能体列表分组，可留空）" />
+                <div class="kind-hint">自定义分类标签，与上方「主/子智能体」相互独立，用于智能体列表侧栏分组与筛选</div>
+              </el-form-item>
               <el-form-item label="类型">
                 <div class="type-selector" :class="{ disabled: isEdit }">
                   <div class="type-card" :class="{ active: form.type === 'harness' }" @click="!isEdit && (form.type = 'harness')">
@@ -100,6 +104,10 @@
               <button class="mount-tab" :class="{ active: mountTab === 'ontologies' }" @click="mountTab = 'ontologies'">
                 <el-icon :size="14"><Collection /></el-icon> 本体
                 <span class="badge">{{ form.ontologyIds?.length || 0 }}</span>
+              </button>
+              <button class="mount-tab" :class="{ active: mountTab === 'knowledge' }" @click="mountTab = 'knowledge'">
+                <el-icon :size="14"><Notebook /></el-icon> 知识库
+                <span class="badge">{{ form.knowledgeBaseIds?.length || 0 }}</span>
               </button>
             </div>
 
@@ -207,6 +215,17 @@
                   </div>
                 </div>
               </template>
+              <template v-else-if="mountTab === 'knowledge'">
+                <div class="ont-mount-hint">
+                  挂载后该智能体的知识库检索范围收敛到这些库；不挂载则跨全部可见知识库检索（绑则限定）。内置「应用使用说明」为系统默认库，始终可选。
+                </div>
+                <div class="chip-wrap" v-loading="kbLoading">
+                  <label v-for="kb in kbList" :key="kb.id" class="chip" :class="{ on: form.knowledgeBaseIds.includes(kb.id) }" :title="kb.description">
+                    <input type="checkbox" :value="kb.id" v-model="form.knowledgeBaseIds" hidden />{{ kb.name }}<span v-if="kb.id === 'builtin-app-guide'" class="kb-default-tag">默认</span>
+                  </label>
+                  <span v-if="!kbLoading && !kbList.length" class="mt-empty">暂无知识库</span>
+                </div>
+              </template>
             </div>
           </div>
         </el-tab-pane>
@@ -224,7 +243,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, reactive } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { User, EditPen, Cpu, Setting, Connection, Share, Files, Switch, ArrowRight, Collection, CopyDocument, Search } from '@element-plus/icons-vue';
+import { User, EditPen, Cpu, Setting, Connection, Share, Files, Switch, ArrowRight, Collection, CopyDocument, Search, Notebook } from '@element-plus/icons-vue';
 import type { Agent } from '@yan-zhi/shared';
 import { useAgentStore, usePlatformStore, useMcpStore, useSkillStore, useToolsStore, useAuthStore } from '../stores';
 import { api } from '../api/client';
@@ -249,9 +268,10 @@ const builtinToolsLoaded = ref(false);
 const form = ref<any>({
   name: '', description: '', systemPrompt: '', modelId: '', type: 'harness',
   agentKind: 'main',
-  temperature: 0.7, maxTokens: 2048, topP: 1, frequencyPenalty: 0, presencePenalty: 0,
+  temperature: 0.7, maxTokens: 65536, topP: 1, frequencyPenalty: 0, presencePenalty: 0,
   reasoningEffort: '', maxReActSteps: 100,
-  builtinToolIds: [], customToolIds: [], mcpToolMounts: [], skillIds: [], subAgentIds: [], ontologyIds: [],
+  builtinToolIds: [], customToolIds: [], mcpToolMounts: [], skillIds: [], subAgentIds: [], ontologyIds: [], knowledgeBaseIds: [],
+  category: '',
   isPublic: false,
 });
 
@@ -344,6 +364,23 @@ function toggleBuiltinCat(key: string) { builtinCatOpen.value[key] = !isBuiltinC
 const customToolList = computed(() => toolsStore.customTools.filter((t: any) => t.enabled));
 const mcpServerList = computed(() => mcpStore.servers);
 const skillList = computed(() => skillStore.skills.filter((s: any) => s.enabled));
+// 知识库挂载：可挂载的知识库列表（含内置「应用使用说明」默认库）
+const kbList = ref<Array<{ id: string; name: string; description?: string; builtin?: boolean; defaultMounted?: boolean }>>([]);
+const kbLoading = ref(false);
+async function loadKbs() {
+  if (kbLoading.value) return;
+  kbLoading.value = true;
+  try {
+    const res = await api.get<any[]>('/kb');
+    if (!('error' in res)) {
+      kbList.value = (res.data || []).map((b: any) => ({
+        id: b.id, name: b.name, description: b.description,
+        builtin: !!b.builtin, defaultMounted: !!b.defaultMounted,
+      }));
+    }
+  } catch { /* server 不可达时保持空列表 */ }
+  finally { kbLoading.value = false; }
+}
 // 内置智能体（如 pageAgent）也允许出现在子智能体列表中，默认助理可看到并确认已挂载的 pageAgent
 const subAgentList = computed(() => agentStore.agents.filter(a => a.id !== props.agent?.id));
 const modelGroups = computed(() => {
@@ -398,12 +435,14 @@ watch(() => [props.modelValue, props.agent], () => {
     void skillStore.loadSkills();
     // 本体列表：挂载页数据源（只列已发布本体，与智能体取数范围口径一致）
     void loadOntologies();
+    // 知识库列表：挂载页数据源
+    void loadKbs();
     const a = props.agent;
     form.value = {
       name: a?.name || '', description: a?.description || '', systemPrompt: a?.systemPrompt || '',
       modelId: a?.modelId || '', type: a?.type || 'harness',
       agentKind: a?.agentKind === 'sub' ? 'sub' : 'main',
-      temperature: a?.temperature ?? 0.7, maxTokens: a?.maxTokens ?? 2048, topP: a?.topP ?? 1,
+      temperature: a?.temperature ?? 0.7, maxTokens: a?.maxTokens ?? 65536, topP: a?.topP ?? 1,
       frequencyPenalty: a?.frequencyPenalty ?? 0, presencePenalty: a?.presencePenalty ?? 0,
       reasoningEffort: (a?.config as any)?.reasoningEffort || '', maxReActSteps: (a?.config as any)?.maxReActSteps ?? 100,
       builtinToolIds: a?.builtinToolIds ? [...a.builtinToolIds] : [],
@@ -411,6 +450,8 @@ watch(() => [props.modelValue, props.agent], () => {
       mcpToolMounts: a?.mcpToolMounts ? [...a.mcpToolMounts] : [],
       skillIds: a?.skillIds ? [...a.skillIds] : [], subAgentIds: a?.subAgentIds ? [...a.subAgentIds] : [],
       ontologyIds: a?.ontologyIds ? [...a.ontologyIds] : [],
+      knowledgeBaseIds: a?.knowledgeBaseIds ? [...a.knowledgeBaseIds] : [],
+      category: a?.category || '',
       isPublic: !!a?.isPublic,
     };
     activeTab.value = 'basic'; mountTab.value = 'tools';
@@ -452,8 +493,10 @@ async function handleSave() {
     frequencyPenalty: form.value.frequencyPenalty, presencePenalty: form.value.presencePenalty,
     config: { reasoningEffort: form.value.reasoningEffort || undefined, maxReActSteps: form.value.maxReActSteps },
     builtinToolIds: form.value.builtinToolIds, customToolIds: form.value.customToolIds,
-    mcpToolMounts: form.value.mcpToolMounts, skillIds: form.value.skillIds, subAgentIds: form.value.subAgentIds,
+    mcpToolMounts: form.value.mcpToolMounts,     skillIds: form.value.skillIds, subAgentIds: form.value.subAgentIds,
     ontologyIds: form.value.ontologyIds,
+    knowledgeBaseIds: form.value.knowledgeBaseIds,
+    category: form.value.category || '',
   };
   // 发布状态由 publishAgent/unpublishAgent 单独管理（同步本地 + 服务端），不随普通字段写入
   const wasPublic = !!props.agent?.isPublic;
@@ -583,6 +626,7 @@ async function handleDelete() {
   border-color: var(--color-primary); background: rgba(99,102,241,0.08);
   color: var(--color-primary); font-weight: 600;
 }
+.kb-default-tag { font-size: 10px; font-weight: 700; color: var(--color-primary); margin-left: 2px; }
 
 .tool-cat { margin-bottom: 6px; }
 .tool-cat-head { display: flex; align-items: center; gap: 5px; cursor: pointer; padding: 3px 0; user-select: none; }

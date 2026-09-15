@@ -68,56 +68,73 @@
         <el-button type="primary" :icon="Plus" @click="createAgent" class="fab-add">新建智能体</el-button>
       </header>
 
-      <div v-loading="loading">
-        <template v-if="loading">
-          <el-skeleton v-for="n in 4" :key="n" animated style="padding:16px">
-            <template #template><el-skeleton-item variant="text" style="width:60%" /><el-skeleton-item variant="text" style="width:40%" /><el-skeleton-item variant="rect" style="height:40px;margin-top:8px" /></template>
-          </el-skeleton>
-        </template>
-        <div v-for="g in groupedAgents" :key="g.key" class="agent-cat">
-          <span
-            class="cat-tag"
-            :class="{ collapsed: agentCollapsed[g.key] }"
-            @click="toggleAgentCat(g.key)"
-          ><el-icon class="cat-tag-arrow"><ArrowRight v-if="agentCollapsed[g.key]" /><ArrowDown v-else /></el-icon>{{ g.label }}</span>
-          <div v-show="!agentCollapsed[g.key]" class="agent-grid">
-            <el-card
-              v-for="agent in g.agents"
-              :key="agent.id"
-              class="agent-card"
-              :class="{ 'is-default': agent.isDefault }"
-              shadow="hover"
-            >
-              <div class="agent-card-head" @click="agent.type === 'workflow' ? openCanvas(agent.id) : editAgent(agent)">
-                <div class="agent-avatar">{{ (agent.name || '?').slice(0, 2) }}</div>
-                <div class="agent-info">
-                  <div class="agent-name">
-                    <el-icon v-if="agent.isDefault" class="lock-icon"><Lock /></el-icon>
-                    {{ agent.name }}
-                  </div>
-                  <div class="agent-desc">{{ agent.description || '暂无描述' }}</div>
-                </div>
-              </div>
-              <div class="agent-meta">
-                <el-tag v-if="agent.agentKind === 'sub'" size="small" type="warning">子智能体</el-tag>
-                <el-tag v-else size="small" type="success">主智能体</el-tag>
-                <el-tag size="small" type="info">{{ agent.workflow.nodes.length }} 节点</el-tag>
-                <el-tag size="small" type="info">{{ agent.workflow.edges.length }} 连线</el-tag>
-                <span class="agent-time">{{ formatTime(agent.updatedAt) }}</span>
-              </div>
-              <div class="agent-actions" @click.stop>
-                <el-button text size="small" :icon="EditPen" @click="editAgent(agent)">编辑</el-button>
-                <el-button v-if="agent.type === 'workflow'" text size="small" :icon="Setting" @click="openCanvas(agent.id)">设计</el-button>
-                <el-button v-if="!agent.isDefault && !agent.isBuiltin" text size="small" type="danger" :icon="Delete" @click="remove(agent)">删除</el-button>
-              </div>
-            </el-card>
+      <div class="agents-layout">
+        <!-- 分类侧栏：按自定义分类标签分组筛选 -->
+        <aside class="cat-sidebar" v-if="!loading">
+          <div class="cat-sidebar-title">分类</div>
+          <div class="cat-side-item" :class="{ active: selectedCategory === '' }" @click="selectedCategory = ''">
+            全部<span class="cat-side-count">{{ store.agents.length }}</span>
           </div>
+          <div
+            v-for="c in categories"
+            :key="c.key"
+            class="cat-side-item"
+            :class="{ active: selectedCategory === c.key }"
+            @click="selectedCategory = c.key"
+          >{{ c.label }}<span class="cat-side-count">{{ c.count }}</span></div>
+        </aside>
+
+        <div class="agents-content" v-loading="loading">
+          <template v-if="loading">
+            <el-skeleton v-for="n in 4" :key="n" animated style="padding:16px">
+              <template #template><el-skeleton-item variant="text" style="width:60%" /><el-skeleton-item variant="text" style="width:40%" /><el-skeleton-item variant="rect" style="height:40px;margin-top:8px" /></template>
+            </el-skeleton>
+          </template>
+          <div v-for="g in groupedAgents" :key="g.key" class="agent-cat">
+            <span
+              class="cat-tag"
+              :class="{ collapsed: agentCollapsed[g.key] }"
+              @click="toggleAgentCat(g.key)"
+            ><el-icon class="cat-tag-arrow"><ArrowRight v-if="agentCollapsed[g.key]" /><ArrowDown v-else /></el-icon>{{ g.label }}</span>
+            <div v-show="!agentCollapsed[g.key]" class="agent-grid">
+              <el-card
+                v-for="agent in g.agents"
+                :key="agent.id"
+                class="agent-card"
+                :class="{ 'is-default': agent.isDefault }"
+                shadow="hover"
+              >
+                <div class="agent-card-head" @click="agent.type === 'workflow' ? openCanvas(agent.id) : editAgent(agent)">
+                  <div class="agent-avatar">{{ (agent.name || '?').slice(0, 2) }}</div>
+                  <div class="agent-info">
+                    <div class="agent-name">
+                      <el-icon v-if="agent.isDefault" class="lock-icon"><Lock /></el-icon>
+                      {{ agent.name }}
+                    </div>
+                    <div class="agent-desc">{{ agent.description || '暂无描述' }}</div>
+                  </div>
+                </div>
+                <div class="agent-meta">
+                  <el-tag v-if="agent.agentKind === 'sub'" size="small" type="warning">子智能体</el-tag>
+                  <el-tag v-else size="small" type="success">主智能体</el-tag>
+                  <el-tag v-if="agent.category" size="small" type="info">{{ agent.category }}</el-tag>
+                  <el-tag size="small" type="info">{{ agent.workflow.nodes.length }} 节点</el-tag>
+                  <el-tag size="small" type="info">{{ agent.workflow.edges.length }} 连线</el-tag>
+                  <span class="agent-time">{{ formatTime(agent.updatedAt) }}</span>
+                </div>
+                <div class="agent-actions" @click.stop>
+                  <el-button text size="small" :icon="EditPen" @click="editAgent(agent)">编辑</el-button>
+                  <el-button v-if="agent.type === 'workflow'" text size="small" :icon="Setting" @click="openCanvas(agent.id)">设计</el-button>
+                  <el-button v-if="!agent.isDefault && !agent.isBuiltin" text size="small" type="danger" :icon="Delete" @click="remove(agent)">删除</el-button>
+                </div>
+              </el-card>
+            </div>
+          </div>
+          <el-empty v-if="!loading && store.agents.length === 0" description="还没有智能体，点击右上角新建">
+            <el-button type="primary" :icon="Plus" @click="createAgent">立即创建</el-button>
+          </el-empty>
         </div>
       </div>
-
-      <el-empty v-if="!loading && store.agents.length === 0" description="还没有智能体，点击右上角新建">
-        <el-button type="primary" :icon="Plus" @click="createAgent">立即创建</el-button>
-      </el-empty>
     </template>
 
     <!-- ===== 远程智能体列表页 ===== -->
@@ -222,11 +239,32 @@ const customCount = computed(() => store.agents.filter((a) => !a.isDefault && !a
 
 // ---- 本地智能体分类分组 ----
 interface AgentGroup { key: string; label: string; agents: Agent[]; }
+// 自定义分类标签筛选（侧栏）：'' = 全部；'__uncat__' = 未分类
+const selectedCategory = ref('');
+const categories = computed(() => {
+  const map = new Map<string, number>();
+  let uncat = 0;
+  for (const a of store.agents) {
+    const c = (a.category || '').trim();
+    if (c) map.set(c, (map.get(c) || 0) + 1);
+    else uncat += 1;
+  }
+  const items = [...map.entries()]
+    .map(([label, count]) => ({ key: label, label, count }))
+    .sort((a, b) => a.label.localeCompare(b.label, 'zh-CN'));
+  if (uncat) items.push({ key: '__uncat__', label: '未分类', count: uncat });
+  return items;
+});
+const visibleAgents = computed(() => {
+  if (!selectedCategory.value) return store.agents;
+  if (selectedCategory.value === '__uncat__') return store.agents.filter((a) => !(a.category || '').trim());
+  return store.agents.filter((a) => (a.category || '').trim() === selectedCategory.value);
+});
 const groupedAgents = computed<AgentGroup[]>(() => {
   const builtin: Agent[] = [];
   const main: Agent[] = [];
   const sub: Agent[] = [];
-  for (const a of store.agents) {
+  for (const a of visibleAgents.value) {
     if (a.isDefault || a.isBuiltin) builtin.push(a);
     else if (a.agentKind === 'sub') sub.push(a);
     else main.push(a);
@@ -371,6 +409,28 @@ async function remove(agent: Agent) {
 .connect-dot.disconnected,
 .connect-dot.unknown { background: #94a3b8; }
 
+/* ===== 智能体列表：侧栏 + 内容布局 ===== */
+.agents-layout { display: flex; gap: 16px; align-items: flex-start; }
+.cat-sidebar {
+  flex-shrink: 0; width: 168px;
+  position: sticky; top: 12px;
+  display: flex; flex-direction: column; gap: 4px;
+  padding: 10px 8px;
+  background: var(--glass-bg); border: 1px solid var(--glass-border); border-radius: var(--radius-md);
+  max-height: calc(100vh - 160px); overflow-y: auto;
+}
+.cat-sidebar-title { font-size: 11px; font-weight: 700; color: var(--color-text-secondary); text-transform: uppercase; padding: 2px 8px 6px; }
+.cat-side-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 6px;
+  padding: 7px 10px; border-radius: 8px; cursor: pointer; user-select: none;
+  font-size: 13px; color: var(--color-text-secondary); transition: all 0.15s;
+}
+.cat-side-item:hover { background: rgba(99,102,241,0.06); color: var(--color-text); }
+.cat-side-item.active { background: rgba(99,102,241,0.12); color: var(--color-primary); font-weight: 600; }
+.cat-side-count { font-size: 11px; font-weight: 600; color: var(--color-text-secondary); background: rgba(15,23,42,0.06); border-radius: 8px; padding: 0 6px; }
+.cat-side-item.active .cat-side-count { color: var(--color-primary); background: rgba(99,102,241,0.15); }
+.agents-content { flex: 1; min-width: 0; }
+
 /* ===== 智能体卡片网格 ===== */
 .agent-cat { margin-bottom: 14px; }
 .cat-tag {
@@ -426,6 +486,8 @@ async function remove(agent: Agent) {
 
 @media (max-width: 767px) {
   .marketplace-grid, .agent-grid { grid-template-columns: 1fr; gap: 12px; }
+  .agents-layout { flex-direction: column; gap: 10px; }
+  .cat-sidebar { width: 100%; position: static; max-height: none; flex-direction: row; flex-wrap: wrap; }
   .sub-header { flex-wrap: wrap; gap: 10px; }
   .sub-header-info { width: 100%; }
   .agent-actions { flex-wrap: wrap; }

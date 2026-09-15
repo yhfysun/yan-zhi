@@ -3,6 +3,7 @@ import { ref } from 'vue';
 import type { Platform, Model, ModelType, PlatformApiKey } from '@yan-zhi/shared';
 import { CHAT_MODEL_TYPES } from '@yan-zhi/shared';
 import { getPlatformAdapter, LlmClient } from '@yan-zhi/core';
+import type { CapabilityTestKind, CapabilityTestResult } from '@yan-zhi/core';
 import { uid } from '@yan-zhi/shared';
 import { api } from '../api/client';
 import { useAuthStore } from './auth';
@@ -306,6 +307,30 @@ export const usePlatformStore = defineStore('platform', () => {
     return { ok: r.ok, durationMs: r.durationMs, msg: r.ok ? `连通正常（${r.durationMs}ms）` : (r.msg || '请求失败') };
   }
 
+  /**
+   * 单项能力测试：chat / vision / function_call / embedding / image。
+   * 通过且该能力可勾选（chat→reasoning、vision→vision、function_call→function_call）时，
+   * 默认自动把能力写回模型（autoApply=false 可只测不写）。
+   */
+  async function testModelCapability(
+    modelId: string,
+    kind: CapabilityTestKind,
+    opts?: { autoApply?: boolean },
+  ): Promise<CapabilityTestResult> {
+    const empty: CapabilityTestResult = { kind, label: '', ok: false, durationMs: 0, msg: '模型不存在' };
+    const m = models.value.find((x) => x.id === modelId);
+    if (!m) return empty;
+    const p = platforms.value.find((x) => x.id === m.platformId);
+    if (!p) return { ...empty, msg: '平台不存在' };
+    const client = new LlmClient(p, m);
+    const r = await client.capabilityTest(kind);
+    if (r.ok && r.capability && opts?.autoApply !== false) {
+      const cur = m.capabilities || [];
+      if (!cur.includes(r.capability)) await updateModel(modelId, { capabilities: [...cur, r.capability] });
+    }
+    return r;
+  }
+
   async function deleteModel(id: string) {
 
     if (on()) {
@@ -329,7 +354,7 @@ export const usePlatformStore = defineStore('platform', () => {
     if (on()) {
       await api.post('/platforms/models/batch', {
         platformId,
-        models: list.map((m) => ({ modelId: m.id, type: inferModelType(m.id, m.type), contextWindow: 131072 })),
+        models: list.map((m) => ({ modelId: m.id, type: inferModelType(m.id, m.type), contextWindow: 262144 })),
       });
     } else {
       const adapter = getPlatformAdapter();
@@ -353,7 +378,7 @@ export const usePlatformStore = defineStore('platform', () => {
         } else {
           await adapter.db.exec(
             'INSERT INTO model (id, platform_id, model_id, type, context_window, enabled, is_default) VALUES (?, ?, ?, ?, ?, ?, ?)',
-            [uid('m_'), platformId, item.id, type, 131072, 1, 0],
+            [uid('m_'), platformId, item.id, type, 262144, 1, 0],
           );
         }
       }
@@ -478,7 +503,7 @@ export const usePlatformStore = defineStore('platform', () => {
     platforms, models, apiKeys, loading,
     loadPlatforms, loadModels, addPlatform, updatePlatform, deletePlatform,
     addModel, updateModel, deleteModel,
-    fetchRemoteModels, testConnectivity, testModel,
+    fetchRemoteModels, testConnectivity, testModel, testModelCapability,
     testPlatformConfig, fetchModelsPreview, startHealthCheck,
     loadApiKeys, addApiKey, updateApiKey, deleteApiKey, resetApiKeyFailCount, testApiKey,
     /** 按 modelId 名称查找模型，兼容存量会话中存储的是内部 ID 的情况 */

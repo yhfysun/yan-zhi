@@ -269,6 +269,10 @@ export interface Agent {
   subAgentIds?: string[];
   /** Harness 挂载：本体 ID 列表（数据查询类智能体的取数范围；空 = 不限，可见全部已发布本体） */
   ontologyIds?: string[];
+  /** Harness 挂载：知识库 ID 列表（知识库检索范围；空/未设置 = 不限，跨全部可见知识库检索；非空 = 仅检索这些库） */
+  knowledgeBaseIds?: string[];
+  /** 智能体自定义分类标签（自由文本，用于智能体列表分组/筛选；与 agentKind 主从分类相互独立） */
+  category?: string;
   workflow: Workflow;
   inputsSchema?: Record<string, unknown>;
   config?: Record<string, unknown>;

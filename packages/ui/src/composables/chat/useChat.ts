@@ -221,7 +221,7 @@ function createChat() {
     pauseMaxMs: 0,
     modelId: '',
     alias: '',
-    contextWindow: 131072,
+    contextWindow: 262144,
   });
   const platformConfigDialogVisible = computed({
     get: () => !!store.pendingPlatformConfig || manualPlatformConfigVisible.value,
@@ -242,7 +242,7 @@ function createChat() {
       alias: prefill?.alias || '',
       contextWindow: Number.isFinite(Number(prefill?.contextWindow))
         ? Number(prefill?.contextWindow)
-        : 131072,
+        : 262144,
     };
   }
 
@@ -268,7 +268,7 @@ function createChat() {
         pauseMaxMs: platform.pauseMaxMs || 0,
         modelId: model?.modelId || agent?.modelId || '',
         alias: model?.alias || '',
-        contextWindow: model?.contextWindow || 131072,
+        contextWindow: model?.contextWindow || 262144,
       };
     } else {
       resetPlatformConfigForm();
@@ -319,7 +319,7 @@ function createChat() {
           modelId: f.modelId.trim(),
           alias: f.alias.trim() || f.modelId.trim().split('/').pop() || f.modelId.trim(),
           type: 'llm' as any,
-          contextWindow: Number(f.contextWindow) || 131072,
+          contextWindow: Number(f.contextWindow) || 262144,
           enabled: true,
           isDefault: false,
           capabilities: ['function_call'],
@@ -1038,7 +1038,7 @@ function createChat() {
   );
   const contextLimit = computed(() => {
     const m = platformStore.models.find((x) => x.id === selectedModelId.value);
-    return m?.contextWindow || 8000;
+    return m?.contextWindow || 262144;
   });
   const tokenPercent = computed(() => Math.min(100, Math.round((tokenCount.value / contextLimit.value) * 100)));
   const tokenBarColor = computed(() => {

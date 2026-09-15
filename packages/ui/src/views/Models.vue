@@ -314,7 +314,7 @@ async function save() {
           modelId,
           alias: modelId.split('/').pop() || modelId,
           type: (fetchedModels.value.find((m: any) => m.id === modelId)?.type || 'llm') as ModelType,
-          contextWindow: 131072,
+          contextWindow: 262144,
           enabled: true,
           isDefault: false,
         });

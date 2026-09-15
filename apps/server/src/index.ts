@@ -55,7 +55,7 @@ import { opsShellManifest, opsShellModule } from './plugins/ops-shell.js';
 import { cicdManifest, cicdModule } from './plugins/cicd-pipeline.js';
 import { javaSuiteManifest, javaSuiteModule } from './plugins/java-suite.js';
 import { secLabManifest, secLabModule } from './plugins/sec-lab.js';
-import { syncAgnesPlatformForAllUsers } from './agnes-platform/service.js';
+import { syncAgensPlatformForAllUsers, bumpModelContextWindowToDefault } from './agens-platform/service.js';
 import { ensureProjectDataSource } from './services/datasource.js';
 import { ensureBuiltinOntologies } from './services/ontology.js';
 import stdAttributeRoutes from './routes/std-attributes.js';
@@ -205,11 +205,36 @@ try {
   migrateLegacyLocalPlatformRows();
 } catch (e) { console.warn('[migrate] 本地模型平台迁移失败:', e); }
 
-// 启动时为所有用户惰性初始化 agnes 线上平台及其模型（仅首次 seed，已存在不覆盖）
+// 启动时为所有用户惰性初始化 agens 线上平台及其模型
+// （首次 seed；已存在则只补齐接口新增模型 + 纠正历史 id/别名拼写，不覆盖用户改过的字段）
 try {
-  const r = syncAgnesPlatformForAllUsers();
-  if (r.seeded.length) console.log(`[agnes] 已为用户初始化平台: ${r.seeded.join(', ')}`);
-} catch (e) { console.warn('[agnes] 初始化平台失败:', e); }
+  const r = syncAgensPlatformForAllUsers();
+  if (r.renamed.length) console.log(`[agens] 已纠正历史平台 id 拼写: ${r.renamed.join(', ')}`);
+  if (r.seeded.length) console.log(`[agens] 已为用户初始化平台: ${r.seeded.join(', ')}`);
+  if (r.addedModels.length) console.log(`[agens] 已补齐新模型: ${[...new Set(r.addedModels)].join(', ')}`);
+  if (r.migrated.length) console.log(`[agens] 默认模型已切到 agnes-3.0-flash: ${r.migrated.join(', ')}`);
+} catch (e) { console.warn('[agens] 初始化平台失败:', e); }
+
+// 一次性把小于 256K 的模型上下文窗口提到 256K（1M 等更大档位保留不动）
+try {
+  const n = bumpModelContextWindowToDefault();
+  if (n) console.log(`[model] 上下文窗口默认提到 256K，共更新 ${n} 个模型`);
+} catch (e) { console.warn('[model] 上下文窗口默认值迁移失败:', e); }
+
+// 一次性把智能体 max_tokens 旧默认 2048 提到 65536：
+// 2048 会让推理型模型输出中途截断 → tool_call 参数残缺 → 反复重试死循环（2026-09-14 实锤根因）。
+// 只动恰好等于旧默认值 2048 的行，用户手调过的其它值不碰。
+try {
+  const key = 'agent_max_tokens_64k_v1';
+  const done = db.prepare('SELECT value FROM app_config WHERE key = ?').get(key);
+  if (!done) {
+    const n = db.prepare('UPDATE agent SET max_tokens = 65536 WHERE max_tokens = 2048').run().changes;
+    db.prepare(
+      'INSERT INTO app_config (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at',
+    ).run(key, String(n), Date.now());
+    if (n) console.log(`[agent] max_tokens 默认提到 65536，共更新 ${n} 个智能体`);
+  }
+} catch (e) { console.warn('[agent] max_tokens 迁移失败:', e); }
 
 // 内置「调研报告生成助手」智能体：幂等 seed（首次创建 / 版本升级覆盖修正）+ LLM 节点模型自动回填
 try {

@@ -81,8 +81,10 @@ export interface ThemePalette {
     glassBlur?: number;
     /** 弹窗遮罩色（el-overlay 背景），默认透明 */
     overlayColor?: string;
-    /** 弹窗遮罩模糊半径 px，默认 4 */
+    /** 弹窗遮罩模糊半径 px，默认 14 */
     overlayBlur?: number;
+    /** 弹窗表面（底图）磨砂半径 px，默认 8；0 = 不磨砂 */
+    dialogBlur?: number;
     /** 弹窗边框装饰图案（CSS border-image-source 或 URL），默认 none */
     borderPattern?: string;
     /** 弹窗边框装饰切片（border-image-slice），默认 0 */

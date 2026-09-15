@@ -123,7 +123,7 @@ function loadModel(modelId: string, userId: string): Model | null {
     modelId: row.model_id,
     alias: row.alias,
     type: row.type || 'llm',
-    contextWindow: row.context_window || 8000,
+    contextWindow: row.context_window || 262144,
     capabilities: (() => { try { return JSON.parse(row.capabilities_json || '[]'); } catch { return []; } })(),
     description: row.description ?? undefined,
   } as any;
@@ -780,7 +780,7 @@ async function runReActLoop(task: LlmTask, params: {
       let messagesToSend = loadMessages(convId);
       messagesToSend = messagesToSend.filter(m => m.content || m.toolCalls || m.role === 'tool' || (m as any).reasoningContent);
       // 上下文窗口压缩：超限时先抢救细节再生成结构化摘要（LLM 摘要而非硬截断）
-      const ctxWindow = new ContextWindow(model.contextWindow || 8000, 6);
+      const ctxWindow = new ContextWindow(model.contextWindow || 262144, 6);
       ctxWindow.setSummaryModel(platform, model);
       if (ctxWindow.needsCompression(messagesToSend)) {
         let flushedThisRun = false; // 每个任务最多抢救一次
@@ -1444,7 +1444,7 @@ async function runSubAgent(
       // 加载子智能体自己的消息（按 parent_tool_call_id 过滤，避免上下文污染）
       let messagesToSend = loadSubAgentMessages(task.conversationId, parentToolCallId);
       messagesToSend = messagesToSend.filter(m => m.content || m.toolCalls || m.role === 'tool' || (m as any).reasoningContent);
-      const ctxWindow = new ContextWindow(model.contextWindow || 8000, 6);
+      const ctxWindow = new ContextWindow(model.contextWindow || 262144, 6);
       ctxWindow.setSummaryModel(platform, model);
       if (ctxWindow.needsCompression(messagesToSend)) {
         messagesToSend = await ctxWindow.compress(messagesToSend);

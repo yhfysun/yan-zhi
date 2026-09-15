@@ -810,11 +810,51 @@ html[data-skin="on"] .el-dialog.tm-solid-dialog .el-textarea__inner {
   background-position: center;
   border-bottom: 1px solid color-mix(in srgb, var(--color-primary) 20%, transparent);
 }
-/* 弹窗遮罩：皮肤可定制遮罩色与模糊半径 */
+/* 弹窗遮罩：皮肤可定制遮罩色与模糊半径。
+   2026-09-14 用户要求「弹窗的皮肤加点模糊度」：背后画面默认 4px → 14px，
+   弹窗打开时主界面明显退到景深之外，弹窗与背景分层更清楚。
+   皮肤可用 surface.overlayBlur 覆盖（内置系列见 styles/skinSeries.ts）。 */
 [data-skin="on"] .el-overlay {
   background: var(--skin-overlay-color, transparent);
-  backdrop-filter: blur(var(--skin-overlay-blur, 4px));
-  -webkit-backdrop-filter: blur(var(--skin-overlay-blur, 4px));
+  backdrop-filter: blur(var(--skin-overlay-blur, 14px));
+  -webkit-backdrop-filter: blur(var(--skin-overlay-blur, 14px));
+}
+/* 自定义抽屉（SettingsDrawer）遮罩：与 el-overlay 同步（组件里写死 3px） */
+[data-skin="on"] .settings-drawer-mask {
+  background: var(--skin-overlay-color, var(--el-mask-color));
+  backdrop-filter: blur(var(--skin-overlay-blur, 14px));
+  -webkit-backdrop-filter: blur(var(--skin-overlay-blur, 14px));
+}
+
+/* ===== 弹窗表面磨砂层（2026-09-14「弹窗加点模糊度」）=====
+   弹窗自身铺的是皮肤底图（--skin-dialog-pattern，不透明），所以**直接给 .el-dialog
+   加 backdrop-filter 是无效的** —— 元素自己的背景不参与它自身的 backdrop 采样。
+   这里用伪元素垫在内容之下：伪元素的 backdrop 包含宿主已绘制的背景图，
+   于是被模糊的正是那张弹窗底图（边缘硬截断，不会像 filter:blur 那样羽化溢出）。
+   · z-index:-1 + 宿主 isolation:isolate ⇒ 伪元素压在宿主背景之上、内容之下，
+     且被限制在宿主层叠上下文内（不会漏到 .el-overlay 遮罩后面去）。
+   · 宿主 position：.el-dialog / .el-message-box 是 relative，.el-drawer 是 absolute，
+     均已定位，伪元素 inset:0 定位正确（勿改这几个宿主的 position）。
+   强度：默认 8px（保留底图色块与构图，只柔化细节）；皮肤可用 surface.dialogBlur
+   覆盖，0 = 不磨砂。 */
+[data-skin="on"] .el-dialog,
+[data-skin="on"] .el-drawer,
+[data-skin="on"] .el-message-box,
+[data-skin="on"] .settings-drawer {
+  isolation: isolate;
+}
+[data-skin="on"] .el-dialog::before,
+[data-skin="on"] .el-drawer::before,
+[data-skin="on"] .el-message-box::before,
+[data-skin="on"] .settings-drawer::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  pointer-events: none;
+  backdrop-filter: blur(var(--skin-dialog-blur, 8px));
+  -webkit-backdrop-filter: blur(var(--skin-dialog-blur, 8px));
 }
 
 /* ===== 减少动态效果偏好：壁纸遮罩保持但去掉模糊，省电省性能 ===== */

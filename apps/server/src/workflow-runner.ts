@@ -176,7 +176,7 @@ function loadModelRow(modelId: string, userId: string): Model | null {
     modelId: row.model_id,
     alias: row.alias,
     type: row.type || 'llm',
-    contextWindow: row.context_window || 8000,
+    contextWindow: row.context_window || 262144,
     capabilities: (() => { try { return JSON.parse(row.capabilities_json || '[]'); } catch { return []; } })(),
   } as any;
 }

@@ -11,6 +11,33 @@ import {
   anthropicResponseToChunk,
 } from './anthropic';
 
+/** 能力测试种类：chat=基础问答、vision=视觉识图、function_call=工具调用、embedding=向量、image=图片生成 */
+export type CapabilityTestKind = 'chat' | 'vision' | 'function_call' | 'embedding' | 'image';
+
+export interface CapabilityTestResult {
+  kind: CapabilityTestKind;
+  label: string;
+  ok: boolean;
+  durationMs: number;
+  /** 通过后应自动勾选的能力：chat → reasoning（能问答即具备推理） */
+  capability?: string;
+  msg: string;
+  /** 模型实际回答摘要，便于人工判断误判 */
+  detail?: string;
+}
+
+export const CAPABILITY_TEST_LABELS: Record<CapabilityTestKind, string> = {
+  chat: '基础问答',
+  vision: '视觉识图',
+  function_call: '工具调用',
+  embedding: '向量嵌入',
+  image: '图片生成',
+};
+
+/** 视觉能力测试用图：16×16 纯红 PNG（79B 内嵌，不依赖外部资源） */
+const VISION_TEST_PNG_B64 =
+  'iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAFklEQVR4nGO4o6ZGEmIY1TCqYfhqAAATqigQ9JeO5gAAAABJRU5ErkJggg==';
+
 export class LlmClient {
   constructor(
     private platform: Platform,
@@ -407,6 +434,119 @@ export class LlmClient {
       };
     } catch (e: any) {
       return { ok: false, durationMs: Date.now() - start, msg: e?.message || '请求异常' };
+    }
+  }
+
+  /**
+   * 单项能力测试。返回结构化结果，命中即代表该模型具备对应能力
+   * （chat 通过 → reasoning：推理本质上就是多步问答，能正常问答即默认具备）。
+   */
+  async capabilityTest(kind: CapabilityTestKind, retried = false): Promise<CapabilityTestResult> {
+    const start = Date.now();
+    const label = CAPABILITY_TEST_LABELS[kind] || kind;
+    const fail = (msg: string, detail?: string): CapabilityTestResult => ({
+      kind, label, ok: false, durationMs: Date.now() - start, msg, detail,
+    });
+    try {
+      if (kind === 'chat') {
+        // max_tokens 给足：推理型模型（如 agnes-2.5-flash）会先吐 reasoning_content，
+        // 给太小会只剩思考、正文为空 → 误判成不可用
+        const r = await this.chat(
+          [{ id: 't', conversationId: '', role: 'user', content: '请只回答一个数字：1+1 等于几？', createdAt: 0 }],
+          { maxTokens: 128 },
+        );
+        const text = String(r.delta?.content || '').trim();
+        const think = String(r.delta?.reasoningContent || '').trim();
+        if (!text && !think) return fail('未返回任何内容');
+        return {
+          kind, label, ok: true, durationMs: Date.now() - start, capability: 'reasoning',
+          msg: text ? '问答正常' : '问答正常（仅返回思考过程，未给出最终答案）',
+          detail: (text || think).slice(0, 120),
+        };
+      }
+
+      if (kind === 'vision') {
+        const imagePart = this.isAnthropic
+          ? { type: 'image', source: { type: 'base64', media_type: 'image/png', data: VISION_TEST_PNG_B64 } }
+          : { type: 'image_url', image_url: { url: `data:image/png;base64,${VISION_TEST_PNG_B64}` } };
+        const r = await this.chat(
+          [{ id: 't', conversationId: '', role: 'user', content: [
+            { type: 'text', text: '这张图片的主色调是什么？只回答一个颜色词，例如：红色。' },
+            imagePart,
+          ] as any, createdAt: 0 }],
+          { maxTokens: 128 },
+        );
+        const text = String(r.delta?.content || r.delta?.reasoningContent || '').trim();
+        if (!text) return fail('未返回任何内容');
+        // 模型/网关不支持图片时通常不会报错，而是回一段"我看不到图片"——按拒答判失败
+        const refused = /无法(查看|识别|看到|处理)|看不到|不能(查看|识别|看到)|不支持(图|视)|不是图片|没有图|i can'?t see|i cannot see|unable to (see|view)|no image|text only/i.test(text);
+        if (refused) return fail('模型拒绝/无法读取图片', text.slice(0, 120));
+        return {
+          kind, label, ok: true, durationMs: Date.now() - start, capability: 'vision',
+          msg: '识图正常', detail: text.slice(0, 120),
+        };
+      }
+
+      if (kind === 'function_call') {
+        const tools = [{
+          type: 'function',
+          function: {
+            name: 'get_weather',
+            description: '查询指定城市今天的天气',
+            parameters: { type: 'object', properties: { city: { type: 'string', description: '城市名' } }, required: ['city'] },
+          },
+        }];
+        const r = await this.chat(
+          [{ id: 't', conversationId: '', role: 'user', content: '北京今天天气怎么样？请调用工具查询。', createdAt: 0 }],
+          { tools, maxTokens: 160 },
+        );
+        const calls = r.delta?.toolCalls || [];
+        const name = calls[0] ? (calls[0] as any).function?.name || (calls[0] as any).toolName : '';
+        if (!calls.length) {
+          // 有些网关把工具调用以纯文本吐出，给个温和提示但仍判失败（能力不可靠）
+          return fail('未返回 tool_calls', String(r.delta?.content || '').slice(0, 120));
+        }
+        return {
+          kind, label, ok: true, durationMs: Date.now() - start, capability: 'function_call',
+          msg: name ? `已调用 ${name}` : '工具调用正常',
+        };
+      }
+
+      if (kind === 'embedding') {
+        const res = await this.upstreamFetch('v1/embeddings', { model: this.model.modelId, input: ['ping'] });
+        if (!res.ok) {
+          const text = await res.text().catch(() => '');
+          return fail(`HTTP ${res.status} ${res.statusText}`, text.slice(0, 120));
+        }
+        const data = await res.json();
+        const vec = data?.data?.[0]?.embedding;
+        if (!Array.isArray(vec) || !vec.length) return fail('未返回向量');
+        return { kind, label, ok: true, durationMs: Date.now() - start, msg: `向量维度 ${vec.length}` };
+      }
+
+      // image：图片生成（最小尺寸，成本可控）
+      const res = await this.upstreamFetch('v1/images/generations', {
+        model: this.model.modelId,
+        prompt: 'a small red dot on a white background',
+        n: 1,
+        size: '256x256',
+      });
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        return fail(`HTTP ${res.status} ${res.statusText}`, text.slice(0, 120));
+      }
+      const data = await res.json();
+      const first = data?.data?.[0];
+      if (!first?.url && !first?.b64_json) return fail('未返回图片');
+      return { kind, label, ok: true, durationMs: Date.now() - start, msg: '生图正常' };
+    } catch (e: any) {
+      const msg = e?.message || '请求异常';
+      // 网络抖动（首连超时/连接被重置）与限流（429）都很常见，稍等后自动重试一次，避免误判成"模型不支持"
+      if (!retried && /fetch failed|network|ETIMEDOUT|ECONNRESET|socket hang up|terminated|\b429\b|too many requests/i.test(msg)) {
+        await new Promise((r) => setTimeout(r, 1500));
+        return this.capabilityTest(kind, true);
+      }
+      return fail(msg);
     }
   }
 
