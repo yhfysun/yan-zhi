@@ -34,6 +34,7 @@
           <span>协议：{{ p.protocol }}</span>
           <span class="meta-sep">·</span>
           <span>{{ modelCount(p.id) }} 个模型</span>
+          <el-tag v-if="p.llmEnabled === false" size="small" type="info" effect="dark">已隐藏</el-tag>
         </div>
         <div class="card-actions">
           <el-button size="small" :loading="testing === p.id" @click="test(p.id)">测试</el-button>

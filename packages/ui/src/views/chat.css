@@ -720,6 +720,10 @@
 .tool-item-chevron { color: var(--color-text-secondary); flex-shrink: 0; }
 
 .tool-item-body { padding: 0 12px 8px 26px; }
+/* 工具产出的图片/视频：贴在工具卡片上、折叠体之外 —— 工具收起时也常显（生图结果一眼可见）。
+   左内边距与 .tool-item-body 对齐，视觉上仍归属这条工具。 */
+.tool-item-media-inline { padding: 0 12px 8px 26px; }
+.tool-item-media-inline .tool-item-media { margin-top: 0; }
 .tool-item-section { margin-top: 6px; }
 .tool-item-label {
   font-size: 9px; font-weight: 700; text-transform: uppercase;
@@ -968,6 +972,24 @@
 .pop-select-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pop-select-ctx { flex-shrink: 0; font-size: 11.5px; font-weight: 400; color: var(--color-text-secondary); font-variant-numeric: tabular-nums; }
 .pop-select-item.active .pop-select-ctx { color: var(--color-primary); }
+
+/* 模型下拉：搜索框固定顶部、模型列表独立滚动（几百个模型也不整页滚） */
+.pop-select-models { display: flex; flex-direction: column; max-height: 340px; overflow: hidden; }
+.pop-model-search { flex-shrink: 0; margin-bottom: 6px; }
+.pop-model-scroll { flex: 1; min-height: 0; overflow-y: auto; }
+/* 平台分组标题：可点击折叠，左侧箭头 + 该平台可见模型数 */
+.pop-model-group {
+  display: flex; align-items: center; gap: 5px; cursor: pointer;
+  position: sticky; top: 0; z-index: 1;
+  padding: 5px 12px 3px;
+  background: var(--glass-bg, rgba(255, 255, 255, 0.92));
+  backdrop-filter: var(--glass-filter); -webkit-backdrop-filter: var(--glass-filter);
+}
+.pop-model-group:hover { color: var(--color-primary); }
+.pop-model-caret { flex-shrink: 0; }
+.pop-model-platform { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pop-model-count { flex-shrink: 0; font-size: 10.5px; font-weight: 500; opacity: 0.75; }
+.pop-model-empty { padding: 14px 12px; text-align: center; font-size: 12px; color: var(--color-text-secondary); }
 /* 上下文窗口面板浮层（Teleport 到 body，坐标由调用方计算；动画复用 plus-sub-fade） */
 .ctx-panel-pop { position: fixed; z-index: 10000; }
 

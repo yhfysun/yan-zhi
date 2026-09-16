@@ -42,6 +42,8 @@ const rowToP = (r: any) => ({
   headers_json: r.headers_json,
   status: r.status,
   last_health_at: r.last_health_at,
+  /** 平台级「可供大模型调用」总开关：0 = 该平台全部模型对下拉与智能体动态选型不可见 */
+  llm_enabled: r.llm_enabled === undefined || r.llm_enabled === null ? 1 : r.llm_enabled,
   is_builtin: !!r.is_builtin,
   pause_min_ms: r.pause_min_ms || 0,
   pause_max_ms: r.pause_max_ms || 0,
@@ -69,6 +71,8 @@ const rowToM = (r: any) => ({
   pricing_json: r.pricing_json,
   description: r.description,
   enabled: r.enabled,
+  /** 用户自控可见性：0 = 该模型不进模型下拉，也不参与智能体动态选型 */
+  visible: r.visible === undefined || r.visible === null ? 1 : r.visible,
   is_default: r.is_default,
   is_builtin: !!r.is_builtin,
   created_at: r.created_at,
@@ -124,8 +128,16 @@ router.patch('/:id', (req: Request, res: Response) => {
   const pid = req.params.id;
   const existing = db.prepare('SELECT * FROM platform WHERE id = ? AND user_id = ?').get(pid, userId(req));
   if (!existing) { res.status(404).json({ error: '平台不存在' }); return; }
+  const { name, protocol, apiUrl, apiKeyEnc, headers, pauseMinMs, pauseMaxMs, llmEnabled } = req.body || {};
+  const configTouched = [name, protocol, apiUrl, apiKeyEnc, headers, pauseMinMs, pauseMaxMs].some((v) => v !== undefined);
+  // 「可供大模型调用」是使用偏好而非连接配置，内置平台也允许切（内置平台的连接信息才禁改）
+  if (llmEnabled !== undefined) {
+    db.prepare('UPDATE platform SET llm_enabled = ? WHERE id = ?').run(llmEnabled ? 1 : 0, pid);
+    if (!configTouched) {
+      res.json({ data: rowToP(db.prepare('SELECT * FROM platform WHERE id = ?').get(pid)) }); return;
+    }
+  }
   if ((existing as any).is_builtin) { res.status(403).json({ error: '内置平台不可编辑' }); return; }
-  const { name, protocol, apiUrl, apiKeyEnc, headers, pauseMinMs, pauseMaxMs } = req.body || {};
   const sets: string[] = [];
   const vals: any[] = [];
   if (name !== undefined) { sets.push('name = ?'); vals.push(name); }
@@ -179,6 +191,13 @@ router.patch('/models/:mid', (req: Request, res: Response) => {
   const mid = req.params.mid;
   const row = db.prepare('SELECT * FROM model WHERE id = ? AND user_id = ?').get(mid, userId(req)) as any;
   if (!row) { res.status(404).json({ error: '模型不存在' }); return; }
+  // 可见性是使用偏好，内置模型同样可切；别名/默认值/上下文窗口等配置才只读
+  if (req.body.visible !== undefined) {
+    db.prepare('UPDATE model SET visible = ? WHERE id = ?').run(req.body.visible ? 1 : 0, mid);
+    const others = ['alias', 'isDefault', 'contextWindow', 'capabilities', 'pricing', 'description']
+      .some((k) => req.body[k] !== undefined);
+    if (!others) { res.json({ data: rowToM(db.prepare('SELECT * FROM model WHERE id = ?').get(mid)) }); return; }
+  }
   if (row.is_builtin) { res.status(403).json({ error: '内置模型不可编辑' }); return; }
   const sets: string[] = [];
   const vals: any[] = [];

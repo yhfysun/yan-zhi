@@ -189,15 +189,19 @@ export interface PendingPlatformConfig {
   resolve: (result: { cancelled: boolean; platformId?: string; modelId?: string; message?: string }) => void;
 }
 
-export type PlanStepStatus = 'pending' | 'running' | 'done' | 'failed';
-
-export interface PlanStep {
-  id: string;
-  title: string;
-  description?: string;
-  status: PlanStepStatus;
-  note?: string;
-}
+// 任务计划的类型与分桶逻辑收敛在 plan-buckets（纯函数，可脱离 pinia 单测）。
+// 这里 re-export 保持既有导入路径不变（外部有 `import type { PlanStep } from '../stores/chat'`）。
+export type { PlanStep, PlanStepStatus } from './plan-buckets';
+import {
+  planKeyOf as resolvePlanKey,
+  readPlan,
+  removePlan,
+  removePlans,
+  applyTaskPlan,
+  applyTaskStep,
+  type PlanMap,
+  type PlanStep as PlanStepT,
+} from './plan-buckets';
 
 export const useChatStore = defineStore('chat', () => {
   const conversations = ref<Conversation[]>([]);
@@ -441,9 +445,19 @@ export const useChatStore = defineStore('chat', () => {
   const pendingConfirmation = ref<PendingConfirmation | null>(null);
   // E12c: 模型平台配置弹窗 —— configure_model_platform 工具触发，等待用户填写并保存平台/模型
   const pendingPlatformConfig = ref<PendingPlatformConfig | null>(null);
-  // E12: 任务规划进度 —— task_plan / task_step 工具写入，UI 渲染 todo 卡片
-  const planTitle = ref('');
-  const planSteps = ref<PlanStep[]>([]);
+  // E12: 任务规划进度 —— task_plan / task_step 工具写入，UI 渲染 todo 卡片。
+  // **必须按会话分桶**：计划是「某一次任务的执行清单」，归属产生它的那个会话。
+  // 早先用 planTitle / planSteps 两个全局 ref，A 会话登记的计划会原样出现在 B 会话里（串台）。
+  // 分桶与变更规则在 plan-buckets.ts（纯函数），此处只做响应式包装。
+  const plansByConv = ref<PlanMap>({});
+  /** 当前查看会话的计划键；也可显式传会话 id 取别的会话 */
+  function planKeyOf(convId?: string | null): string {
+    return resolvePlanKey(currentConvId.value, convId);
+  }
+  /** 当前查看会话的计划标题（无计划时为空串，卡片侧兜底为「任务计划」） */
+  const planTitle = computed(() => readPlan(plansByConv.value, planKeyOf())?.title || '');
+  /** 当前查看会话的计划步骤（其他会话的计划不会出现在这里） */
+  const planSteps = computed<PlanStepT[]>(() => readPlan(plansByConv.value, planKeyOf())?.steps || []);
 
   /** 用户提交反问弹窗的回答（或在未提供选项时填入文本）；答案作为该工具调用的 result 回写并继续循环 */
   function submitPendingQuestion(answer: string, supplement?: string) {
@@ -503,10 +517,9 @@ export const useChatStore = defineStore('chat', () => {
   function cancelPlatformConfig() {
     submitPlatformConfig({ cancelled: true, message: '用户关闭了模型平台配置弹窗' });
   }
-  /** 清空当前任务计划（用户关闭进度卡片时调用） */
-  function clearPlan() {
-    planTitle.value = '';
-    planSteps.value = [];
+  /** 清空当前任务计划（用户关闭进度卡片时调用）。只清当前查看的会话，别会话的计划不受影响 */
+  function clearPlan(convId?: string | null) {
+    plansByConv.value = removePlan(plansByConv.value, planKeyOf(convId));
   }
   let abortControllers = new Map<string, AbortController>();
   const taskIds = new Map<string, string>(); // convId → backend taskId（用于 abort）
@@ -681,6 +694,8 @@ export const useChatStore = defineStore('chat', () => {
     }
     delete messagesByConv.value[id];
     delete queuedByConv.value[id];
+    // 一并清掉该会话的计划，避免 plansByConv 里留孤儿键
+    plansByConv.value = removePlan(plansByConv.value, id);
     await loadConversations();
   }
 
@@ -700,6 +715,8 @@ export const useChatStore = defineStore('chat', () => {
     }
     for (const id of ids) delete messagesByConv.value[id];
     for (const id of ids) delete queuedByConv.value[id];
+    // 一并清掉被删会话的计划，避免 plansByConv 里留孤儿键
+    plansByConv.value = removePlans(plansByConv.value, ids);
     await loadConversations();
   }
 
@@ -1258,35 +1275,18 @@ export const useChatStore = defineStore('chat', () => {
         });
       }
       // E12: task_plan —— 创建/替换任务计划，渲染进度卡片
+      // 计划写入【发起该任务的会话】而非当前查看的会话：多会话并行时 A 会话的
+      // 计划不得跑到 B 会话的卡片里（ctx.convId 由 SSE tool:execute 透传）。
       if (fullName === 'task_plan') {
-        const steps = Array.isArray((args as Record<string, unknown>).steps)
-          ? ((args as Record<string, unknown>).steps as any[])
-          : [];
-        planTitle.value = String((args as Record<string, unknown>).title || '任务计划');
-        planSteps.value = steps
-          .filter((s: any) => s && s.title)
-          .map((s: any) => ({
-            id: uid(),
-            title: String(s.title),
-            description: s.description ? String(s.description) : undefined,
-            status: 'pending' as PlanStepStatus,
-          }));
-        return { ok: true, result: `已创建任务计划「${planTitle.value}」，共 ${planSteps.value.length} 步` };
+        const r = applyTaskPlan(plansByConv.value, planKeyOf(ctx?.convId), args as Record<string, unknown>);
+        plansByConv.value = r.map;
+        return r.outcome;
       }
-      // E12: task_step —— 更新某一步状态，刷新进度卡片
+      // E12: task_step —— 更新某一步状态，刷新进度卡片（同样只动本会话的计划）
       if (fullName === 'task_step') {
-        const idx = Number((args as Record<string, unknown>).index);
-        const status = String((args as Record<string, unknown>).status || 'done') as PlanStepStatus;
-        const note = (args as Record<string, unknown>).note != null ? String((args as Record<string, unknown>).note) : undefined;
-        if (!Number.isFinite(idx) || idx < 1 || idx > planSteps.value.length) {
-          return { ok: false, msg: `task_step 的 index 超出范围（1-${planSteps.value.length}）` };
-        }
-        const step = planSteps.value[idx - 1];
-        if (step) {
-          step.status = status;
-          if (note !== undefined) step.note = note;
-        }
-        return { ok: true, result: `已更新第 ${idx} 步状态为 ${status}` };
+        const r = applyTaskStep(plansByConv.value, planKeyOf(ctx?.convId), args as Record<string, unknown>);
+        plansByConv.value = r.map;
+        return r.outcome;
       }
       const res = await registry.execute(fullName, args as Record<string, unknown>);
       const text = res.content?.[0]?.text ?? '';

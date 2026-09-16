@@ -65,6 +65,7 @@ db.exec(`
     api_key_enc TEXT,
     headers_json TEXT DEFAULT '{}',
     status INTEGER DEFAULT 1,
+    llm_enabled INTEGER NOT NULL DEFAULT 1,
     is_builtin INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL
   );
@@ -81,6 +82,7 @@ db.exec(`
     pricing_json TEXT DEFAULT '{}',
     description TEXT,
     enabled INTEGER DEFAULT 1,
+    visible INTEGER NOT NULL DEFAULT 1,
     is_default INTEGER DEFAULT 0,
     is_builtin INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL
@@ -363,6 +365,9 @@ for (const table of ['platform', 'model']) {
 // 迁移平台表（添加停顿时间范围配置，用于多 Token 轮询的请求节流）
 try { db.exec('ALTER TABLE platform ADD COLUMN pause_min_ms INTEGER NOT NULL DEFAULT 0'); } catch {}
 try { db.exec('ALTER TABLE platform ADD COLUMN pause_max_ms INTEGER NOT NULL DEFAULT 0'); } catch {}
+// 平台级「可供大模型调用」总开关：0 = 该平台下所有模型对模型下拉与智能体动态选型全部不可见，
+// 用于一键屏蔽模型上百个的平台。与 status（健康检查）无关，默认开。
+try { db.exec('ALTER TABLE platform ADD COLUMN llm_enabled INTEGER NOT NULL DEFAULT 1'); } catch {}
 
 // 平台多 API Key 池：一个平台可配置多个 Token，轮询使用、失败自动切换、按失败次数优先选择。
 // fail_count 按时间窗口衰减（超过窗口未失败则视为 0），避免临时性错误永久拉低优先级。
@@ -466,6 +471,11 @@ try { db.exec("ALTER TABLE custom_tool ADD COLUMN category TEXT NOT NULL DEFAULT
 
 // 迁移：model 新增 description 列（模型描述，供 list_models 工具与前端展示）
 try { db.exec('ALTER TABLE model ADD COLUMN description TEXT'); } catch {}
+
+// 迁移：model 新增 visible 列（用户自控单个模型是否对模型下拉 / 智能体动态选型可见）。
+// 不复用 enabled —— enabled 在「拉取模型」时会被同步逻辑改写（远端消失置 0、重新出现置 1），
+// 用户手动隐藏的选择会被下一次同步冲掉，故单独一列存用户意图。
+try { db.exec('ALTER TABLE model ADD COLUMN visible INTEGER NOT NULL DEFAULT 1'); } catch {}
 
 // ===== 客户端发现与聊天 =====
 db.exec(`

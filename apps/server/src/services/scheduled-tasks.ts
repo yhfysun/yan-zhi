@@ -189,7 +189,9 @@ export function computeNextRun(
   return next;
 }
 
-/** 选默认模型：优先用户自建的默认模型，其次内置默认模型，最后任意启用的 LLM */
+/** 选默认模型：优先用户自建的默认模型，其次内置默认模型，最后任意启用的 LLM。
+ *  只认「可见」的模型与平台 —— 被用户隐藏的模型不该被自动选中。
+ *  注意 findTaskModel 里任务显式绑定的模型不走这里，用户在任务里选过的照常可用。 */
 function findDefaultModel(userId: string): any | null {
   return (
     db
@@ -197,7 +199,7 @@ function findDefaultModel(userId: string): any | null {
 
         `SELECT m.id, m.platform_id, m.model_id, p.api_url, p.api_key_enc, p.protocol, p.headers_json, p.pause_min_ms, p.pause_max_ms
          FROM model m JOIN platform p ON p.id = m.platform_id
-         WHERE m.user_id = ? AND m.enabled = 1 AND m.type = 'llm'
+         WHERE m.user_id = ? AND m.enabled = 1 AND m.type = 'llm' AND m.visible = 1 AND p.llm_enabled = 1
          ORDER BY CASE
            WHEN m.is_default = 1 AND p.is_builtin = 0 THEN 0
            WHEN m.is_default = 1 THEN 1

@@ -29,6 +29,8 @@ export interface Platform {
   headers?: Record<string, string>;
   status: 'healthy' | 'down' | 'unknown';
   lastHealthAt?: string;
+  /** 平台级「可供大模型调用」总开关：false = 该平台下全部模型对模型下拉与智能体动态选型隐藏 */
+  llmEnabled?: boolean;
   /** 是否为内置平台/模型，内置项只读 */
   isBuiltin?: boolean;
   /** 请求停顿时间下限（毫秒），每次请求前随机停顿 [pauseMinMs, pauseMaxMs] 区间，避免短时间请求过多被限流 */
@@ -61,6 +63,8 @@ export interface Model {
   type: ModelType;
   contextWindow: number;
   enabled: boolean;
+  /** 用户自控可见性：false = 该模型不进模型下拉，也不参与智能体动态选型（与远端同步无关） */
+  visible?: boolean;
   isDefault: boolean;
   capabilities?: string[]; // function_call / vision / reasoning
   description?: string; // 模型描述（供 list_models 工具与前端展示）

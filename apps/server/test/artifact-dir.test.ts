@@ -44,7 +44,12 @@ const hoisted = vi.hoisted(() => {
   return { db, conversations, spaces, serverState: { workspaceDir: '' } };
 });
 
-vi.mock('../src/db.js', () => ({ db: hoisted.db, hasSqliteVec: false }));
+vi.mock('../src/db.js', () => ({
+  db: hoisted.db,
+  hasSqliteVec: false,
+  // resolveArtifactRoot 的最终兜底根：与真实 db.ts 的 dataDir 同口径（读 DATA_DIR，绝对路径）
+  get dataDir() { return process.env.DATA_DIR || ''; },
+}));
 vi.mock('../src/state.js', () => ({ serverState: hoisted.serverState }));
 
 import {

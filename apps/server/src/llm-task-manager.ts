@@ -137,26 +137,27 @@ function loadModel(modelId: string, userId: string): Model | null {
   } as any;
 }
 
-/** list_models 工具执行：列出当前用户所有已启用模型（可按 platformId/type/capability 过滤），
- *  返回语义化文本，供 LLM 选型（图片/视频/视觉/推理等任务指定模型）。 */
+/** list_models 工具执行：列出当前用户所有已启用且对模型可见的模型（可按 platformId/type/capability 过滤），
+ *  返回语义化文本，供 LLM 选型（图片/视频/视觉/推理等任务指定模型）。
+ *  可见性口径与前端模型下拉一致：查不到的平台/模型，智能体也不该动态选中。 */
 function listAvailableModels(userId: string, args: Record<string, unknown>): string {
   const platformId = args.platformId as string | undefined;
   const typeFilter = args.type as string | undefined;
   const capFilter = args.capability as string | undefined;
 
-  // 查平台（含过滤）
+  // 查平台（含过滤）：平台级总开关关掉即整平台不可见
   let platformRows: any[];
   if (platformId) {
-    platformRows = db.prepare('SELECT * FROM platform WHERE id = ? AND user_id = ?').all(platformId, userId) as any[];
+    platformRows = db.prepare('SELECT * FROM platform WHERE id = ? AND user_id = ? AND llm_enabled = 1').all(platformId, userId) as any[];
   } else {
-    platformRows = db.prepare('SELECT * FROM platform WHERE user_id = ?').all(userId) as any[];
+    platformRows = db.prepare('SELECT * FROM platform WHERE user_id = ? AND llm_enabled = 1').all(userId) as any[];
   }
-  if (platformRows.length === 0) return platformId ? `平台不存在或无权限: ${platformId}` : '当前用户未配置任何模型平台';
+  if (platformRows.length === 0) return platformId ? `平台不存在或未对模型开放: ${platformId}` : '当前用户未配置任何可用于大模型的模型平台';
 
   const lines: string[] = [];
   let total = 0;
   for (const p of platformRows) {
-    const models = db.prepare('SELECT * FROM model WHERE platform_id = ? AND user_id = ? AND enabled = 1').all(p.id, userId) as any[];
+    const models = db.prepare('SELECT * FROM model WHERE platform_id = ? AND user_id = ? AND enabled = 1 AND visible = 1').all(p.id, userId) as any[];
     let matched: any[] = models;
     if (typeFilter) matched = matched.filter((m: any) => (m.type || 'llm') === typeFilter);
     if (capFilter) {
@@ -829,7 +830,9 @@ async function runReActLoop(task: LlmTask, params: {
 
     // 媒体生成工具（后端直执行，产物落会话交付目录）：成功后要登记到 conversation_file，
     // 否则产物只存在于对话气泡里，文件管理列表看不到。
-    const MEDIA_TOOLS = new Set(['api_image_generate', 'api_video_generate']);
+    // api_video_status：视频任务超时后模型用它补查，补查命中时同样会就地落盘并返回完整媒体契约，
+    // 不登记的话这条补落盘的产物同样进不了交付目录。
+    const MEDIA_TOOLS = new Set(['api_image_generate', 'api_video_generate', 'api_video_status']);
 
     for (let step = 0; step < maxSteps; step++) {
       if (task.abortController.signal.aborted) throw new DOMException('Aborted', 'AbortError');
@@ -1100,7 +1103,7 @@ async function runReActLoop(task: LlmTask, params: {
             const fileName = filePath.split(sep).pop() || filePath;
             const category = (args.category as string) === 'deliverable' ? 'deliverable' : 'intermediate';
             const cfId = 'cf_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
-            db.prepare('INSERT INTO conversation_file (id, conversation_id, user_id, space_id, name, path, category, mime_type, size, source, message_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(cfId, convId, userId, null, fileName, filePath, category, null, 0, 'agent', assistantMsgId, Date.now());
+            db.prepare('INSERT INTO conversation_file (id, conversation_id, user_id, space_id, name, path, category, mime_type, size, source, message_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(cfId, convId, userId, null, fileName, filePath, category, null, 0, 'agent', assistantMsgId, Date.now());
             emit(task, { type: 'file:registered', conversationId: convId });
           } catch {}
         }
@@ -1121,10 +1124,14 @@ async function runReActLoop(task: LlmTask, params: {
               try { size = (await fsp.stat(filePath)).size; } catch { /* 取不到就留 0 */ }
               // 生图/生视频默认归交付物（用户要的东西），与 mediaTarget 的落盘分类保持一致
               const cfId = 'cf_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
-              db.prepare('INSERT INTO conversation_file (id, conversation_id, user_id, space_id, name, path, category, mime_type, size, source, message_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(cfId, convId, userId, null, fileName, filePath, 'deliverable', isVideo ? 'video/mp4' : 'image/png', size, 'agent', assistantMsgId, Date.now());
+              db.prepare('INSERT INTO conversation_file (id, conversation_id, user_id, space_id, name, path, category, mime_type, size, source, message_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(cfId, convId, userId, null, fileName, filePath, 'deliverable', isVideo ? 'video/mp4' : 'image/png', size, 'agent', assistantMsgId, Date.now());
               emit(task, { type: 'file:registered', conversationId: convId });
             }
-          } catch { /* 结果非 JSON 或登记失败：不影响对话 */ }
+          } catch (e: any) {
+            // 登记失败不能静默：否则「产物没进交付目录」这类问题只能靠猜。
+            // 落盘已成功，这里只丢登记，打印出来便于定位（不打断对话）。
+            console.warn('[media] 交付文件登记失败:', e?.message || e);
+          }
         }
 
         // 添加工具结果消息（入库前压缩，防止单条极端大结果撑爆消息表与下轮上下文）
@@ -1452,6 +1459,17 @@ async function runSubAgent(
       return `指定的子智能体模型不可用（platformId=${args.platformId || '-'}, modelId=${args.modelId || '-'}）。请先调用 list_models 工具查询可用平台与模型。`;
     }
     return '子智能体未配置平台/模型，无法执行';
+  }
+  // 智能体显式点名的模型必须是「可见」的：用户把模型/平台设为不可见后，list_models 已不再返回它，
+  // 这里再兜一道，防止模型凭上下文记忆硬点一个已隐藏的模型。
+  // 子智能体自身配置的模型（agent.model_id）不受此限 —— 那是用户在智能体配置里显式选过的。
+  if (args.modelId) {
+    const vis = db.prepare(
+      'SELECT m.visible, p.llm_enabled FROM model m JOIN platform p ON p.id = m.platform_id WHERE m.id = ?',
+    ).get(model.id) as any;
+    if (vis && (Number(vis.visible) === 0 || Number(vis.llm_enabled) === 0)) {
+      return `指定的模型已被设为不可见（modelId=${model.id}），不能动态调用。请调用 list_models 重新选择可用模型。`;
+    }
   }
 
   // 构建子智能体工具列表

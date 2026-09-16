@@ -100,6 +100,9 @@
                           <img :src="resolveScreenshotUrl(getStepToolResult(step, tc.id)) || ''" alt="屏幕截图" />
                           <span class="tool-item-shot-note">截图预览 · 仅流式期间展示，结束后自动清理</span>
                         </div>
+                        <!-- 本条调用产出的图片 / 视频：贴在工具卡片上（折叠体之外）—— 展开状态无关，收起也能看到。
+                             展开体里再放一份会重复，故只此一处；hover 浮层放大、双击进灯箱、右键取用。 -->
+                        <ToolMediaPreview v-if="toolMedia(getStepToolResult(step, tc.id))" :media="toolMedia(getStepToolResult(step, tc.id))!" class="tool-item-media-inline" />
                         <div v-show="isToolItemOpen(tc.id, 'agent-step-' + ri + '-' + si + '-' + idx)" class="tool-item-body">
                           <div class="tool-item-section">
                             <div class="tool-item-label">参数</div>
@@ -154,9 +157,9 @@
                             <ArrowRight v-else />
                           </el-icon>
                         </div>
-                        <!-- 生图/生视频产物已抽到整轮「媒体产物」常驻条（见 agent-response-body 前），
-                             折叠体只留参数/结果明细 —— 思考过程收起也不藏媒体 -->
-                        <div v-show="expandedTools['round-' + ri + '-' + idx]" class="tool-item-body">
+                        <!-- 本条调用产出的图片 / 视频：贴在工具卡片上（折叠体之外）—— 展开状态无关，收起也能看到 -->
+                          <ToolMediaPreview v-if="toolMedia(getToolResult(tc.id))" :media="toolMedia(getToolResult(tc.id))!" class="tool-item-media-inline" />
+                          <div v-show="expandedTools['round-' + ri + '-' + idx]" class="tool-item-body">
                           <div class="tool-item-section">
                             <div class="tool-item-label">参数</div>
                             <pre class="tool-item-json">{{ resolveToolArgs(tc) }}</pre>
@@ -173,10 +176,6 @@
                     </div>
                   </div>
                 </div>
-              </div>
-              <!-- 整轮媒体产物常驻条：思考过程/工具组折叠与否都不藏媒体，hover 浮层放大、右键取用 -->
-              <div v-if="getRoundMedia(round).length" class="round-media-strip">
-                <ToolMediaPreview v-for="(m, mi) in getRoundMedia(round)" :key="'rm-' + ri + '-' + mi" :media="m" />
               </div>
               <div class="agent-response-body">
                 <template v-if="round.subAgentResults?.length">
@@ -224,11 +223,6 @@
                         class="msg-config-card"
                         @saved="onConfigSaved"
                       />
-                      <DeliverableFileCard
-                        v-if="getRoundDeliverableFiles(round).length"
-                        :files="getRoundDeliverableFiles(round)"
-                        class="msg-deliverable-card"
-                      />
                       <!-- 动态看板（数据浏览）：模型 data_query_view 产契约后内嵌到当前助手消息，嵌套在聊天流程里 -->
                       <div
                         v-if="round.finalAssistant?.dataView"
@@ -257,6 +251,14 @@
                     </template>
                   </div>
                 </div>
+                <!-- 交付目录产物卡片：挂在整轮消息最末尾（思考过程/工具组折叠与否都不藏）。
+                     生图/生视频由服务端直接落交付目录并登记，这里按消息 id 命中展示。
+                     放在整轮末尾（而非原「任务结果」卡片正文内）——正文为空时也要能看到交付物。 -->
+                <DeliverableFileCard
+                  v-if="getRoundDeliverableFiles(round).length"
+                  :files="getRoundDeliverableFiles(round)"
+                  class="msg-deliverable-card"
+                />
               </div>
 
             </div>
@@ -396,12 +398,14 @@
         <el-icon><ArrowDown /></el-icon>
       </button>
     </transition>
-
-    <!-- 媒体放大灯箱 + 右键菜单（Teleport 到 body，全聊天区共用一个实例） -->
-    <MediaViewer />
-    <MediaContextMenu />
-    <MediaHoverFloat />
   </div>
+
+  <!-- 媒体放大灯箱 + 右键菜单 + hover 浮层（Teleport 到 body，全聊天区共用一个实例）。
+       必须挂在模板根节点：之前落在横岗列表（v-if="navListVisible"）里，
+       只有鼠标划过右侧横岗时组件才存在 —— hover 浮层与右键菜单平时根本没挂载，点了没反应。 -->
+  <MediaViewer />
+  <MediaContextMenu />
+  <MediaHoverFloat />
 </template>
 
 <script setup lang="ts">
@@ -548,30 +552,13 @@ function resolveScreenshotUrl(resultText: string | null): string | null {
 }
 
 /**
- * 生图 / 生视频产物解析已抽到 composables/useMediaPreview 的 mediaOfTool（带缓存），
- * 供本组件与 ToolMediaPreview 共用，避免两处模板各写一套。
+ * 单条工具结果里的媒体产物（生图 / 生视频）：解析走 useMediaPreview.mediaOfTool（带缓存）。
+ * 展示位置在工具调用的折叠区里（参数/结果下方）—— 展开这条工具就能看到图，
+ * 与「交付目录卡片」（读 conversation_file 登记项）是两件独立的事。
  */
-
-/** 整轮的媒体产物列表（图 + 视频按工具调用顺序）：供「媒体产物」常驻条渲染。
- *  媒体必须常驻展示 —— 思考过程/工具组折叠与否都不影响，折叠体里右键也点不到媒体本体。
- *  注意 steps 与 allToolCalls 是同一批调用的两种视图，二选一遍历，避免媒体重复。 */
-function getRoundMedia(round: MessageRound): MediaTarget[] {
-  const out: MediaTarget[] = [];
-  const push = (result: unknown) => {
-    const text = typeof result === 'string' ? result : result == null ? '' : JSON.stringify(result);
-    const img = mediaOfTool(text, 'image');
-    if (img) out.push(img);
-    const vid = mediaOfTool(text, 'video');
-    if (vid) out.push(vid);
-  };
-  if (round.steps.length) {
-    for (const step of round.steps) {
-      for (const tc of step.toolCalls) push(getStepToolResult(step, tc.id));
-    }
-  } else {
-    for (const tc of round.allToolCalls) push(getToolResult(tc.id));
-  }
-  return out;
+function toolMedia(result: unknown): MediaTarget | null {
+  const text = typeof result === 'string' ? result : result == null ? '' : JSON.stringify(result);
+  return mediaOfTool(text, 'image') || mediaOfTool(text, 'video');
 }
 
 /**
@@ -872,22 +859,6 @@ watch(activeNavRound, () => {
   min-height: 0;
   height: auto;
 }
-
-/* ===== 整轮媒体产物常驻条 ===== */
-/* 位置在思考过程/结果卡片之间，任何折叠都不影响它显示；
-   横向 wrap 排列，媒体本体小图展示，hover 放大走 body 浮层（MediaHoverFloat） */
-.round-media-strip {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin: 8px 0 4px;
-  padding: 8px 10px;
-  border: 1px solid color-mix(in srgb, var(--color-primary) 12%, transparent);
-  border-radius: 10px;
-  background: color-mix(in srgb, var(--color-primary) 4%, transparent);
-}
-.round-media-strip :deep(.tool-item-media) { margin-top: 0; }
-.round-media-strip + .agent-response-body { margin-top: 2px; }
 
 /* ===== 截图类工具内嵌预览（仅流式期间渲染，任务结束随响应式移除） ===== */
 .tool-item-shot {

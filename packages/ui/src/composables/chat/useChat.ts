@@ -1225,9 +1225,14 @@ function createChat() {
     } catch { return false; }
   }
 
+  /** 可供对话使用的模型：模型自身可见（visible）+ 所属平台总开关打开（llmEnabled）+ 类型是对话类。
+   *  平台模型动辄几百个时，用户靠 platform.llmEnabled 一键屏蔽整个平台、靠 model.visible 屏蔽单个模型。 */
   const chatModels = computed(() =>
     platformStore.models.filter((m) =>
-      m.enabled && CHAT_MODEL_TYPES.includes(m.type),
+      m.enabled &&
+      m.visible !== false &&
+      CHAT_MODEL_TYPES.includes(m.type) &&
+      platformStore.platforms.find((p) => p.id === m.platformId)?.llmEnabled !== false,
     ),
   );
 

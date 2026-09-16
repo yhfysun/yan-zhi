@@ -17,6 +17,7 @@ import { bumpMemoryCache } from '../services/memory-service.js';
 import { readSpaceMemory, appendSpaceMemory } from '../services/space-memory.js';
 import { readBrowserMemoryOverview } from '../services/browser-memory.js';
 import { ensureArtifactDirFor } from '../services/artifact-dir.js';
+import { downloadMediaBinary } from '../services/media-fetch.js';
 import {
   computeNextRun,
   nextCronTime,
@@ -294,14 +295,16 @@ function resolveMediaPlatform(args: Record<string, unknown>, userId?: string | n
     return { ok: true, error: '', baseUrl: agens.baseUrl, keys: agens.keys, isAgnes: true };
   }
   const platRow = (() => {
+    // 平台 PATCH 里用户可以把平台/模型设为「对大模型不可见」——
+    // 不可见的模型智能体就不该再动态选中它，故取平台与模型时都带可见性闸门。
     if (platformId) {
-      return db.prepare('SELECT id, api_url, api_key_enc FROM platform WHERE id = ?').get(platformId);
+      return db.prepare('SELECT id, api_url, api_key_enc FROM platform WHERE id = ? AND llm_enabled = 1').get(platformId);
     }
     const cond = userId ? 'AND m.user_id = ?' : '';
     const params: unknown[] = userId ? [modelRef, modelRef, userId] : [modelRef, modelRef];
     return db.prepare(
       `SELECT p.id, p.api_url, p.api_key_enc FROM model m JOIN platform p ON p.id = m.platform_id
-        WHERE (m.model_id = ? OR m.alias = ?) AND m.enabled = 1 ${cond}
+        WHERE (m.model_id = ? OR m.alias = ?) AND m.enabled = 1 AND m.visible = 1 AND p.llm_enabled = 1 ${cond}
         ORDER BY m.id LIMIT 1`,
     ).get(...params);
   })() as { id: string; api_url: string; api_key_enc: string | null } | undefined;
@@ -354,10 +357,12 @@ function mediaTarget(opts: {
   };
 }
 
+/**
+ * 下载媒体字节。走 services/media-fetch 的统一入口：直连优先，直连不通的本机自动改走
+ * 本机代理隧道（agnes 产物 CDN 在部分网络直连超时，不兜底就永远落不了盘）。
+ */
 async function downloadBinary(url: string, timeoutMs = 180000): Promise<Buffer> {
-  const res = await fetchWithTimeout(url, { method: 'GET' }, timeoutMs);
-  if (!res.ok) throw new Error(`下载失败 HTTP ${res.status}`);
-  return Buffer.from(await res.arrayBuffer());
+  return downloadMediaBinary(url, timeoutMs);
 }
 
 function extFromUrl(url: string, fallback: string): string {
@@ -455,7 +460,11 @@ async function handleImageResult(
       localFile = file;
       localUrl = `${target.urlBase}/${path.basename(file)}`;
     }
-  } catch { /* 落盘失败不影响结果，remoteUrl 仍可用 */ }
+  } catch (e: unknown) {
+    // 落盘失败不影响对话（远端 url 仍可预览），但必须留痕：
+    // 产物没进交付目录 / 消息末尾没有交付卡片，根因往往就是这里。
+    console.warn(`[media] 生图产物落盘失败（来源：${remoteUrl ? '远端地址' : 'b64'}）：${e instanceof Error ? e.message : String(e)}`);
+  }
   if (!remoteUrl && !localUrl) return fail(`生图响应里没有图片地址：${JSON.stringify(j).slice(0, 300)}`);
   return ok(JSON.stringify({
     ok: true,
@@ -700,7 +709,9 @@ async function mediaGenerateVideo(
       localFile = file;
       localUrl = `${target.urlBase}/${path.basename(file)}`;
     }
-  } catch { /* 落盘失败不影响结果，remoteUrl 仍可用 */ }
+  } catch (e: unknown) {
+    console.warn(`[media] 生视频产物落盘失败（来源：${remoteUrl ? '远端地址' : '上游直出'}）：${e instanceof Error ? e.message : String(e)}`);
+  }
 
   return ok(JSON.stringify({
     ok: true,

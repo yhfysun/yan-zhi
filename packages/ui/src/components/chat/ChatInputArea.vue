@@ -352,7 +352,7 @@
         </div>
 
         <div class="toolbar-mobile-selects">
-          <el-popover placement="top" trigger="click" :width="220" :show-arrow="false">
+          <el-popover v-model:visible="agentPopOpen" placement="top" trigger="click" :width="220" :show-arrow="false">
             <template #reference>
               <el-button size="small" circle>
                 <el-icon><User /></el-icon>
@@ -364,7 +364,7 @@
                 :key="ag.id"
                 class="pop-select-item"
                 :class="{ active: ag.id === agentStore.selectedId }"
-                @click="onAgentSwitch(ag.id); agentStore.selectAgent(ag.id)"
+                @click="onAgentSwitch(ag.id); agentStore.selectAgent(ag.id); agentPopOpen = false"
               >
                 <el-icon v-if="ag.isDefault" style="font-size:12px"><Lock /></el-icon>
                 <span>{{ ag.name }}</span>
@@ -378,7 +378,7 @@
             </el-button>
           </el-tooltip>
 
-          <el-popover placement="top" trigger="click" :width="240" :show-arrow="false">
+          <el-popover v-model:visible="modelPopOpenCompact" placement="top" trigger="click" :width="240" :show-arrow="false">
             <template #reference>
               <el-button size="small" circle>
                 <el-icon><Cpu /></el-icon>
@@ -392,7 +392,7 @@
                   :key="m.id"
                   class="pop-select-item"
                   :class="{ active: m.id === selectedModelId }"
-                  @click="onModelChange(m.id)"
+                  @click="pickModel(m.id)"
                 >
                   <span>{{ m.alias || m.modelId }}</span>
                 </div>
@@ -439,22 +439,44 @@
                 <el-icon :size="11"><ArrowDown /></el-icon>
               </button>
             </template>
-            <div class="pop-select-list">
-              <template v-for="g in modelGroups" :key="g.platformId">
-                <div class="pop-select-label">{{ g.platformName }}</div>
-                <div
-                  v-for="m in g.models"
-                  :key="m.id"
-                  class="pop-select-item pop-select-model"
-                  :class="{ active: m.id === selectedModelId }"
-                  @mouseenter="openCtxPanel(m, $event)"
-                  @mouseleave="scheduleCloseCtxPanel"
-                  @click="onModelChange(m.id)"
-                >
-                  <span class="pop-select-name">{{ m.alias || m.modelId }}</span>
-                  <span class="pop-select-ctx">{{ formatContextWindow(m.contextWindow) }}</span>
-                </div>
-              </template>
+            <div class="pop-select-list pop-select-models">
+              <!-- 几百个模型的平台靠搜索定位；平台分组可整体折叠，收起后只留一行标题 -->
+              <el-input
+                v-model="modelSearch"
+                size="small"
+                placeholder="搜索模型"
+                clearable
+                class="pop-model-search"
+              >
+                <template #prefix><el-icon><Search /></el-icon></template>
+              </el-input>
+              <div class="pop-model-scroll">
+                <template v-for="g in filteredModelGroups" :key="g.platformId">
+                  <div class="pop-select-label pop-model-group" @click="togglePlatformGroup(g.platformId)">
+                    <el-icon :size="12" class="pop-model-caret">
+                      <ArrowDown v-if="isPlatformExpanded(g.platformId)" />
+                      <ArrowRight v-else />
+                    </el-icon>
+                    <span class="pop-model-platform">{{ g.platformName }}</span>
+                    <span class="pop-model-count">{{ g.models.length }}</span>
+                  </div>
+                  <template v-if="isPlatformExpanded(g.platformId)">
+                    <div
+                      v-for="m in g.models"
+                      :key="m.id"
+                      class="pop-select-item pop-select-model"
+                      :class="{ active: m.id === selectedModelId }"
+                      @mouseenter="openCtxPanel(m, $event)"
+                      @mouseleave="scheduleCloseCtxPanel"
+                      @click="pickModel(m.id)"
+                    >
+                      <span class="pop-select-name">{{ m.alias || m.modelId }}</span>
+                      <span class="pop-select-ctx">{{ formatContextWindow(m.contextWindow) }}</span>
+                    </div>
+                  </template>
+                </template>
+                <div v-if="!filteredModelGroups.length" class="pop-model-empty">没有匹配的模型</div>
+              </div>
             </div>
           </el-popover>
           <!-- 模型项 hover → 左侧弹出上下文窗口快捷设置（与顶栏模型菜单共用同一面板组件） -->
@@ -704,6 +726,53 @@ const currentModelName = computed(() => {
 // 保存写回 model 表（platformStore.updateModel），与「配置模型平台」里的上下文窗口是同一个值
 const platformStore = usePlatformStore();
 const modelPopOpen = ref(false);
+/** 窄屏工具条（toolbar-mobile-selects）里的模型按钮有独立浮层。
+ *  两个 el-popover 绝不能共用同一个 visible：popover 内容 Teleport 到 body，
+ *  被 display:none 藏起来的容器也照样渲染，点一次两边会同时弹出来。 */
+const modelPopOpenCompact = ref(false);
+/** 智能体下拉：点选后同样要主动收起（trigger=click 只在点浮层外部时才关） */
+const agentPopOpen = ref(false);
+
+/** 下拉搜索关键字：按别名 / 模型 id 过滤（有些平台动辄五六百个模型，只能靠搜） */
+const modelSearch = ref('');
+/** 折叠的平台分组 id：搜索状态下忽略折叠，命中项一律展开 */
+const collapsedPlatforms = ref<string[]>([]);
+function isPlatformExpanded(platformId: string): boolean {
+  if (modelSearch.value.trim()) return true;
+  return !collapsedPlatforms.value.includes(platformId);
+}
+function togglePlatformGroup(platformId: string) {
+  if (modelSearch.value.trim()) return;
+  const i = collapsedPlatforms.value.indexOf(platformId);
+  if (i >= 0) collapsedPlatforms.value.splice(i, 1);
+  else collapsedPlatforms.value.push(platformId);
+}
+/** 下拉里真正渲染的分组：先按关键字过滤，空的平台整组丢掉，命中多的排前面 */
+const filteredModelGroups = computed(() => {
+  const kw = modelSearch.value.trim().toLowerCase();
+  const groups = modelGroups.value
+    .map((g) => ({
+      ...g,
+      models: kw
+        ? g.models.filter((m) => `${m.alias || ''} ${m.modelId}`.toLowerCase().includes(kw))
+        : g.models,
+    }))
+    .filter((g) => g.models.length > 0);
+  return kw ? groups.slice().sort((a, b) => b.models.length - a.models.length) : groups;
+});
+
+/**
+ * 选中模型：切模型 + 立即收起下拉。
+ * el-popover 的 trigger="click" 只在点击「浮层外部」时收起，点浮层内的模型项不会关，
+ * 所以必须显式置 false（否则选中后下拉框一直挂在那挡住输入框）。
+ * 两个浮层（桌面/窄屏）都要收，上下文窗口浮层是 Teleport 到 body 的独立层，一并收掉。
+ */
+function pickModel(modelId: string) {
+  onModelChange(modelId);
+  modelPopOpen.value = false;
+  modelPopOpenCompact.value = false;
+  closeCtxPanelNow();
+}
 const ctxPanelModelId = ref('');
 const ctxPanelTop = ref(0);
 const ctxPanelLeft = ref(0);
@@ -753,7 +822,9 @@ async function onCtxWindowChange(tokens: number) {
     ElMessage.error(err?.message || '上下文窗口保存失败');
   }
 }
-watch(modelPopOpen, (v) => { if (!v) closeCtxPanelNow(); });
+// 下拉收起时一并收掉上下文窗口浮层、清掉搜索词（下次打开是干净列表）
+watch(modelPopOpen, (v) => { if (!v) { closeCtxPanelNow(); modelSearch.value = ''; } });
+watch(modelPopOpenCompact, (v) => { if (!v) closeCtxPanelNow(); });
 
 // 浮层 Teleport 到 body，落在模型下拉的 popper 之外 —— el-popover 的「外部点击」判定
 // 会把面板内的点击当成外部而收掉整个下拉。在 window 捕获阶段挡下（早于 document 层判定），

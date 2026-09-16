@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import path from 'node:path';
 import { v4 as uuid } from 'uuid';
 import { authMiddleware } from '../auth.js';
 import { db } from '../db.js';
@@ -15,13 +16,40 @@ function parseCategory(v: unknown): FileCategory {
   return (FILE_CATEGORIES as string[]).includes(s) ? (s as FileCategory) : 'intermediate';
 }
 
+/**
+ * 修正历史记录里的相对路径。
+ *
+ * 早期版本 resolveArtifactRoot 在「无空间 + 无工作目录 + 未设 DATA_DIR」时返回空串，
+ * 导致落盘目录与登记进 conversation_file 的 path 都是相对的（如 `.yan-zhi\tasks\...`）。
+ * 渲染层按自己的 cwd 去读就必然 ENOENT（「图片落盘了但预览/另存为报不存在」）。
+ * 根因已在 artifact-dir 修掉；这里兜读取侧：凡是「相对 + 看起来是产物目录」的路径，
+ * 用该会话自己的产物根补成绝对路径再返回，历史记录无需搬运即可正常打开。
+ *
+ * 导出仅供单测（stored-path-normalize.test.ts）钉住行为。
+ */
+export function normalizeStoredPath(p: string, conversationId: string, category: FileCategory): string {
+  const raw = String(p || '');
+  if (!raw) return raw;
+  // 已是绝对路径（Windows 盘符 / UNC / POSIX 根）：原样返回
+  if (/^[A-Za-z]:[\\/]/.test(raw) || raw.startsWith('\\\\') || raw.startsWith('/')) return raw;
+  // 只修产物目录形态的相对路径，避免把用户自己的相对路径误解析
+  const stripped = raw.replace(/^\.\//, '').replace(/^\.\\/, '');
+  if (!/^\.yan-zhi[\\/]/.test(stripped)) return raw;
+  // 用该会话自己的产物根（会考虑空间目录/工作目录），保证与会话归属一致
+  const root = resolveArtifactDirFor({ conversationId, category }).root;
+  return path.join(root, stripped);
+}
+
+/** 单测别名：直接暴露内部函数，避免测试去构造 Express 请求 */
+export const normalizeStoredPathForTest = normalizeStoredPath;
+
 function rowToFile(r: any) {
   return {
     id: r.id,
     conversationId: r.conversation_id,
     spaceId: r.space_id,
     name: r.name,
-    path: r.path,
+    path: normalizeStoredPath(r.path, r.conversation_id, parseCategory(r.category)),
     category: r.category,
     mimeType: r.mime_type,
     size: r.size,

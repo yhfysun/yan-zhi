@@ -10,13 +10,43 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   buildArtifactRelDir,
   joinArtifactPath,
   type FileCategory,
 } from '@yan-zhi/shared';
-import { db } from '../db.js';
+import * as dbModule from '../db.js';
 import { serverState } from '../state.js';
+
+const { db } = dbModule;
+
+/** 本模块所在目录（ESM 下 __dirname 不存在，与 db.ts 同一套写法） */
+const hereDir = path.dirname(fileURLToPath(import.meta.url));
+
+/**
+ * 数据根（绝对路径）。
+ *
+ * 惰性 + 兜底读取，而不是 `import { dataDir }` 静态解构：
+ *  - db.ts 的 dataDir = DATA_DIR || <db.ts 所在目录>/..，恒为绝对路径，是本模块的最终兜底根；
+ *  - 但不少单测 `vi.mock('../src/db.js')` 只提供 db/hasSqliteVec，静态解构会拿到 undefined，
+ *    于是 path.join(undefined, ...) 抛错，连带把不相关测试（react-loop / memory-inject）弄挂 ——
+ *    这种「mock 少给一个字段就崩」的脆弱性不该留在生产代码里。
+ * 逐级兜底，任何情况下都返回绝对路径。
+ */
+function resolveDataDir(): string {
+  // 注意：vitest 的 vi.mock('db.js') 会对**未声明**的导出直接抛错（不只是返回 undefined），
+  // 「No "dataDir" export is defined on the mock」——所以动态读取也必须包 try/catch，
+  // 否则单测里 mock 少给一个字段就会把不相关的链路（react-loop / memory-inject）连带弄挂。
+  try {
+    const fromDb = (dbModule as { dataDir?: string }).dataDir;
+    if (typeof fromDb === 'string' && fromDb.trim()) return fromDb.trim();
+  } catch { /* mock 未提供该导出：走下面的兜底 */ }
+  const fromEnv = (process.env.DATA_DIR || '').trim();
+  if (fromEnv) return fromEnv;
+  // 最后的兜底：src/services → 上溯两级到 apps/server（与 db.ts 的 __dirname/.. 同口径）
+  return path.resolve(hereDir, '..', '..');
+}
 
 export interface ArtifactDirResult {
   /** 可直接落盘的目录（绝对路径；根缺失时为相对数据根的相对路径） */
@@ -59,13 +89,19 @@ function conversationArtifactMeta(conversationId: string): {
 /**
  * 解析产物根目录。
  * 空间目录（用户显式绑定）> 全局工作目录 > 数据根。
+ *
+ * 数据根必须复用 db.ts 的 dataDir（绝对路径），不能退化成空串：
+ * 三级都空时（dev 模式不设 DATA_DIR、会话未绑空间、未选工作目录）返回空串会让
+ * joinArtifactPath 产出**相对路径**，落盘位置随服务端进程 cwd 漂移，且登记进
+ * conversation_file 的 path 也是相对的 —— 渲染层按自己的 cwd 去读必 ENOENT
+ * （曾表现为「图片落盘成功但预览窗/另存为报 readFileBase64 不存在」）。
  */
 export function resolveArtifactRoot(spaceDir?: string | null): string {
   const space = (spaceDir || '').trim();
   if (space) return space;
   const ws = (serverState.workspaceDir || '').trim();
   if (ws) return ws;
-  return (process.env.DATA_DIR || '').trim();
+  return resolveDataDir();
 }
 
 /** 基础解析：不做磁盘探测，直接按主规则给目录 */

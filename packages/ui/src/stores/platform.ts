@@ -20,6 +20,7 @@ function rowToPlatform(r: any): Platform {
     headers: r.headers_json ? tryParse(r.headers_json) : {},
     status: r.status === 1 ? 'healthy' : r.status === 0 ? 'down' : 'unknown',
     lastHealthAt: r.last_health_at,
+    llmEnabled: r.llm_enabled === undefined || r.llm_enabled === null ? true : !!r.llm_enabled,
     isBuiltin: !!r.is_builtin,
     pauseMinMs: r.pause_min_ms || 0,
     pauseMaxMs: r.pause_max_ms || 0,
@@ -49,6 +50,7 @@ function rowToModel(r: any): Model {
     type: r.type,
     contextWindow: r.context_window,
     enabled: !!r.enabled,
+    visible: r.visible === undefined || r.visible === null ? true : !!r.visible,
     isDefault: !!r.is_default,
     capabilities: r.capabilities_json ? tryParse(r.capabilities_json) : undefined,
     description: r.description || undefined,
@@ -200,8 +202,10 @@ export const usePlatformStore = defineStore('platform', () => {
     await loadPlatforms();
   }
 
-  async function updatePlatform(id: string, patch: Partial<{ name: string; protocol: string; apiUrl: string; apiKeyEnc: string; headers: Record<string, string>; status: string; pauseMinMs: number; pauseMaxMs: number }>) {
-    assertEditablePlatform(id);
+  async function updatePlatform(id: string, patch: Partial<{ name: string; protocol: string; apiUrl: string; apiKeyEnc: string; headers: Record<string, string>; status: string; pauseMinMs: number; pauseMaxMs: number; llmEnabled: boolean }>) {
+    // llmEnabled（可供大模型调用）是使用偏好，内置平台也允许切；改连接配置才校验可编辑性
+    const onlyVisibility = Object.keys(patch).every((k) => k === 'llmEnabled');
+    if (!onlyVisibility) assertEditablePlatform(id);
     if (on()) {
       const body: any = {};
       if (patch.name !== undefined) body.name = patch.name;
@@ -211,6 +215,7 @@ export const usePlatformStore = defineStore('platform', () => {
       if (patch.headers !== undefined) body.headers = patch.headers;
       if (patch.pauseMinMs !== undefined) body.pauseMinMs = patch.pauseMinMs;
       if (patch.pauseMaxMs !== undefined) body.pauseMaxMs = patch.pauseMaxMs;
+      if (patch.llmEnabled !== undefined) body.llmEnabled = patch.llmEnabled;
       if (Object.keys(body).length === 0) return;
       await api.patch(`/platforms/${id}`, body);
       if (patch.apiKeyEnc) {
@@ -226,6 +231,7 @@ export const usePlatformStore = defineStore('platform', () => {
       if (patch.apiUrl !== undefined) { sets.push('api_url = ?'); params.push(patch.apiUrl); }
       if (patch.apiKeyEnc !== undefined) { sets.push('api_key_enc = ?'); params.push(patch.apiKeyEnc); }
       if (patch.headers !== undefined) { sets.push('headers_json = ?'); params.push(JSON.stringify(patch.headers)); }
+      if (patch.llmEnabled !== undefined) { sets.push('llm_enabled = ?'); params.push(patch.llmEnabled ? 1 : 0); }
       if (sets.length === 0) return;
       params.push(id);
       await adapter.db.exec(`UPDATE platform SET ${sets.join(', ')} WHERE id = ?`, params);
@@ -259,12 +265,16 @@ export const usePlatformStore = defineStore('platform', () => {
   }
 
   async function updateModel(id: string, patch: Partial<Model>) {
-    assertEditableModel(id);
+    // visible（是否对下拉/智能体可见）是使用偏好，内置模型也允许切；
+    // 改别名/默认值/上下文窗口等配置才校验可编辑性。
+    const onlyVisibility = Object.keys(patch).every((k) => k === 'visible');
+    if (!onlyVisibility) assertEditableModel(id);
     if (on()) {
       const body: any = {};
       if (patch.alias !== undefined) body.alias = patch.alias;
       if (patch.contextWindow !== undefined) body.contextWindow = patch.contextWindow;
       if (patch.enabled !== undefined) body.enabled = patch.enabled;
+      if (patch.visible !== undefined) body.visible = patch.visible;
       if (patch.isDefault !== undefined) body.isDefault = patch.isDefault;
       if (patch.type !== undefined) body.type = patch.type;
       if (patch.capabilities !== undefined) body.capabilities = patch.capabilities;
@@ -282,6 +292,7 @@ export const usePlatformStore = defineStore('platform', () => {
     if (patch.alias !== undefined) { sets.push('alias = ?'); params.push(patch.alias); }
     if (patch.contextWindow !== undefined) { sets.push('context_window = ?'); params.push(patch.contextWindow); }
     if (patch.enabled !== undefined) { sets.push('enabled = ?'); params.push(patch.enabled ? 1 : 0); }
+    if (patch.visible !== undefined) { sets.push('visible = ?'); params.push(patch.visible ? 1 : 0); }
     if (patch.isDefault !== undefined) { sets.push('is_default = ?'); params.push(patch.isDefault ? 1 : 0); }
     if (patch.type !== undefined) { sets.push('type = ?'); params.push(patch.type); }
     if (patch.capabilities !== undefined) { sets.push('capabilities_json = ?'); params.push(JSON.stringify(patch.capabilities)); }

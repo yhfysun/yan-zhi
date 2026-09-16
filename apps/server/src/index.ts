@@ -13,6 +13,7 @@ import messageRoutes from './routes/messages.js';
 import spaceRoutes from './routes/spaces.js';
 import fileRoutes from './routes/files.js';
 import { resolveArtifactDirFor, findArtifactFileInDirs } from './services/artifact-dir.js';
+import { downloadMediaBinary } from './services/media-fetch.js';
 import { buildArtifactRelDir, buildArtifactRelDirCandidates } from '@yan-zhi/shared';
 import platformRoutes, { migrateLegacyLocalPlatformRows } from './routes/platforms.js';
 import { seedBuiltinWorkflowAgents, ensureBuiltinWorkflowModel } from './builtin-workflow-agents.js';
@@ -135,7 +136,30 @@ app.use('/api/plugin-assets', pluginAssetsRouter);
 // 三段式：/api/generated/:kind/:conversationId/:name —— 按产物目录规范定位到该会话的交付目录
 // 两段式：/api/generated/:kind/:name —— 兼容规范落地前落在 DATA_DIR/generated-* 的历史文件
 const GENERATED_MEDIA_DIRS: Record<string, string> = { images: 'generated-images', videos: 'generated-videos' };
-const SAFE_MEDIA_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+/**
+ * 媒体文件名是否安全：只禁「路径分隔符 / 空字节 / .. / 控制字符」，其余放行。
+ *
+ * 为什么不用允许列表：早先写死 `^[A-Za-z0-9][A-Za-z0-9._-]*$`，只认 ASCII ——
+ * 但 file_write 产出的交付物常是「手机推荐报告.png」这类中文名，一律被 404 拒掉，
+ * 表现为「交付卡片缩略图裂开」。中文、空格、括号都该放行。
+ * 真正的目录穿越由「禁分隔符 + 禁 .. + 后续按目录拼接」共同保证。
+ */
+function isSafeMediaName(name: string): boolean {
+  if (!name || name.length > 180) return false;
+  if (name === '.' || name === '..') return false;             // 目录自身 / 上级
+  if (name.includes('..')) return false;                       // 上级目录穿越
+  if (/[/\\]/.test(name)) return false;                        // 路径分隔符（含 Windows 反斜杠）
+  // eslint-disable-next-line no-control-regex
+  if (/[\u0000-\u001f\u007f]/.test(name)) return false;         // 空字节与控制字符
+  if (name.trim() !== name) return false;                      // 前后空白（易造成定位歧义）
+  return true;
+}
+/** 媒体代理回传时的 Content-Type（按扩展名，缺省 octet-stream） */
+const MEDIA_MIME_BY_EXT: Record<string, string> = {
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp',
+  '.gif': 'image/gif', '.bmp': 'image/bmp', '.svg': 'image/svg+xml', '.avif': 'image/avif',
+  '.mp4': 'video/mp4', '.webm': 'video/webm', '.mov': 'video/quicktime', '.m4v': 'video/x-m4v',
+};
 
 function sendMediaFile(res: any, file: string) {
   try {
@@ -155,7 +179,7 @@ app.get('/api/generated/:kind/:conversationId/:name', (req, res) => {
   const kind = String(req.params.kind || '');
   const conversationId = String(req.params.conversationId || '');
   const name = String(req.params.name || '');
-  if (!GENERATED_MEDIA_DIRS[kind] || !conversationId || !SAFE_MEDIA_NAME.test(name) || name.includes('..')) {
+  if (!GENERATED_MEDIA_DIRS[kind] || !conversationId || !isSafeMediaName(name)) {
     res.status(404).json({ error: 'not found' });
     return;
   }
@@ -182,7 +206,7 @@ app.get('/api/generated/:kind/:conversationId/:name', (req, res) => {
 app.get('/api/generated/:kind/:name', (req, res) => {
   const dirName = GENERATED_MEDIA_DIRS[String(req.params.kind || '')];
   const name = String(req.params.name || '');
-  if (!dirName || !SAFE_MEDIA_NAME.test(name) || name.includes('..')) {
+  if (!dirName || !isSafeMediaName(name)) {
     res.status(404).json({ error: 'not found' });
     return;
   }
@@ -218,26 +242,24 @@ app.get('/api/media/proxy', async (req, res) => {
     return;
   }
   try {
-    const timeout = AbortSignal.timeout(120000);
-    let upstream = await fetch(target.href, { signal: timeout }).catch(() => null);
-    // 远程产物域直连失败 → agnes 产物走主域回退：/images/t2i/<taskId>/xxx.png ↔ 主域无对应端点，
-    // 但 /v1/videos/{taskId}/content 覆盖视频；图片无主域回退端点，原样报 502
-    if ((!upstream || !upstream.ok) && /platform-outputs\.agnes-ai\.space/i.test(host) && /\/videos\//.test(target.pathname)) {
-      const taskId = /videos\/([^/]+)\//.exec(target.pathname)?.[1] || '';
-      if (taskId) {
-        upstream = await fetch(`https://www.agnes-ai.com/v1/videos/${taskId}/content`, { signal: timeout }).catch(() => null);
+    let buf: Buffer;
+    try {
+      // 直连拿不到的本机自动改走本机代理隧道（产物 CDN 在部分网络直连超时）
+      buf = await downloadMediaBinary(target.href, 120000);
+    } catch (e: unknown) {
+      // 视频产物仍拿不到时回退 agnes 主域的 content 端点（与生成工具的落盘回退同一套判断）；
+      // 图片没有主域对应端点，原样抛出。
+      if (/platform-outputs\.agnes-ai\.space/i.test(host) && /\/videos\//.test(target.pathname)) {
+        const taskId = /videos\/([^/]+)\//.exec(target.pathname)?.[1] || '';
+        if (!taskId) throw e;
+        buf = await downloadMediaBinary(`https://www.agnes-ai.com/v1/videos/${taskId}/content`, 120000);
+      } else {
+        throw e;
       }
     }
-    if (!upstream || !upstream.ok) {
-      res.status(502).json({ error: `upstream ${upstream ? upstream.status : 'unreachable'}` });
-      return;
-    }
-    const ct = upstream.headers.get('content-type');
-    if (ct) res.setHeader('Content-Type', ct);
-    const cl = upstream.headers.get('content-length');
-    if (cl) res.setHeader('Content-Length', cl);
+    res.setHeader('Content-Type', MEDIA_MIME_BY_EXT[path.extname(target.pathname).toLowerCase()] || 'application/octet-stream');
+    res.setHeader('Content-Length', String(buf.length));
     res.setHeader('Cache-Control', 'public, max-age=86400');
-    const buf = Buffer.from(await upstream.arrayBuffer());
     res.send(buf);
   } catch (e: unknown) {
     res.status(502).json({ error: e instanceof Error ? e.message : 'proxy failed' });

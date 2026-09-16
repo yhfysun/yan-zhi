@@ -15,6 +15,15 @@
       </div>
     </header>
 
+    <!-- 平台级总开关：关掉后本平台全部模型对模型下拉与智能体动态选型隐藏（模型行保留，随时可恢复） -->
+    <div class="llm-expose-bar" :class="{ off: platform?.llmEnabled === false }">
+      <div class="llm-expose-text">
+        <span class="llm-expose-title">可供大模型调用</span>
+        <span class="llm-expose-desc">关闭后本平台全部模型对模型下拉与智能体选型隐藏；模型本身不会删除</span>
+      </div>
+      <el-switch :model-value="platform?.llmEnabled !== false" :loading="llmExposeSaving" @change="togglePlatformLlm" />
+    </div>
+
     <div v-if="batchMode" class="batch-toolbar">
       <span>已选 {{ selectedModelIds.size }} 个</span>
       <el-button size="small" :disabled="models.length === 0" @click="batchSelectAll">全选</el-button>
@@ -27,7 +36,7 @@
         v-for="m in models"
         :key="m.id"
         class="model-card"
-        :class="{ disabled: !m.enabled }"
+        :class="{ disabled: !m.enabled, 'llm-hidden': m.visible === false }"
         @click="onCardClick(m)"
       >
         <el-checkbox
@@ -49,6 +58,7 @@
         <div class="model-card-tags">
           <el-tag size="small" :type="m.type === 'llm' ? '' : 'info'" effect="light">{{ m.type }}</el-tag>
           <el-tag v-if="m.isDefault" size="small" type="warning" effect="dark">默认</el-tag>
+          <el-tag v-if="m.visible === false" size="small" type="info" effect="dark">已隐藏</el-tag>
           <el-tag v-if="m.isBuiltin" size="small" type="warning" effect="dark">内置</el-tag>
           <el-tag v-for="cap in (m.capabilities || [])" :key="cap" size="small" type="info">
             {{ capabilityLabel(cap) }}
@@ -90,6 +100,7 @@
                 </el-dropdown-menu>
               </template>
             </el-dropdown>
+            <el-button size="small" text @click="toggleVisible(m)">{{ m.visible === false ? '恢复可见' : '隐藏' }}</el-button>
             <el-button v-if="!m.isBuiltin" size="small" text @click="editModel(m)">编辑</el-button>
             <el-button v-if="!m.isBuiltin && !m.isDefault" size="small" text @click="setDefault(m)">设为默认</el-button>
             <el-button size="small" type="danger" text @click="del(m)">删除</el-button>
@@ -395,6 +406,31 @@ function resetModelForm() {
 
 async function updateAlias(row: any) { if (row.isBuiltin) return; await store.updateModel(row.id, { alias: row.alias }); }
 async function toggleEnabled(row: any) { if (row.isBuiltin) return; await store.updateModel(row.id, { enabled: row.enabled }); }
+
+/** 平台级「可供大模型调用」总开关：关掉后整个平台的模型对下拉与智能体选型隐藏 */
+const llmExposeSaving = ref(false);
+async function togglePlatformLlm(v: string | number | boolean) {
+  const pid = platformId.value;
+  if (!pid) return;
+  llmExposeSaving.value = true;
+  try {
+    await store.updatePlatform(pid, { llmEnabled: !!v });
+    ElMessage.success(v ? '已恢复：本平台模型可供大模型调用' : '已隐藏：本平台模型不再参与调用');
+  } catch (e: any) {
+    ElMessage.error(e?.message || '设置失败');
+  } finally {
+    llmExposeSaving.value = false;
+  }
+}
+
+/** 单模型可见性：内置模型也能隐藏（使用偏好），只影响下拉与智能体选型，不动远端同步结果 */
+async function toggleVisible(row: any) {
+  try {
+    await store.updateModel(row.id, { visible: row.visible === false });
+  } catch (e: any) {
+    ElMessage.error(e?.message || '设置失败');
+  }
+}
 async function setDefault(row: any) { if (row.isBuiltin) { ElMessage.warning('内置模型不可设为默认'); return; } await store.updateModel(row.id, { isDefault: true }); ElMessage.success(`已设为默认：${row.modelId}`); }
 
 function toggleModelSelect(id: string) {
@@ -548,6 +584,17 @@ async function testCapabilityInForm(c: { value: string; label: string; kind: str
   gap: 14px;
 }
 
+/* 平台级开关条：开启=常态，关闭时整条弱化并给出边框提示 */
+.llm-expose-bar {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  margin-bottom: 14px; padding: 10px 16px;
+  background: var(--glass-bg); border: 1px solid var(--glass-border); border-radius: 10px;
+}
+.llm-expose-bar.off { border-color: color-mix(in srgb, var(--color-primary) 35%, transparent); }
+.llm-expose-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.llm-expose-title { font-size: 13px; font-weight: 600; color: var(--color-text); }
+.llm-expose-desc { font-size: 11.5px; color: var(--color-text-secondary); }
+
 .model-card { position: relative;
   background: var(--glass-bg); backdrop-filter: var(--glass-filter); -webkit-backdrop-filter: var(--glass-filter);
   border: 1px solid var(--glass-border); border-radius: var(--radius-md);
@@ -564,6 +611,8 @@ async function testCapabilityInForm(c: { value: string; label: string; kind: str
 }
 .batch-toolbar span:first-child { font-weight: 600; }
 .model-card.disabled { opacity: 0.6; }
+/* 已隐藏的模型：卡面弱化 + 虚线边框，一眼看出它不参与调用（与停用区分：停用是远端不可用） */
+.model-card.llm-hidden { opacity: 0.5; border-style: dashed; }
 .model-card-top { display: flex; align-items: center; gap: 12px; }
 .model-card-icon {
   width: 40px; height: 40px; border-radius: 10px;

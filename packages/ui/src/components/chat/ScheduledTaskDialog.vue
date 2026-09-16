@@ -211,7 +211,16 @@
           </el-select>
         </el-form-item>
         <el-form-item label="大模型">
-          <el-select v-model="form.modelId" placeholder="不绑定则用默认模型" clearable filterable @change="onModelPick">
+          <!-- filterable 的 el-select 点选后不会自动收起（留给用户继续筛选），
+               这里选中即主动 blur 收起，否则下拉一直挂着挡住下面的表单项 -->
+          <el-select
+            ref="modelSelectRef"
+            v-model="form.modelId"
+            placeholder="不绑定则用默认模型"
+            clearable
+            filterable
+            @change="onModelPick"
+          >
             <el-option-group v-for="group in modelGroups" :key="group.platformId" :label="group.platformName">
               <el-option v-for="model in group.models" :key="model.id" :value="model.id" :label="model.alias || model.modelId" />
             </el-option-group>
@@ -471,6 +480,8 @@ function onAgentPick(agentId: string) {
 }
 
 function onModelPick(modelId: string) {
+  // 选中即收起下拉：filterable 的 el-select 默认点选后保持展开
+  closeModelSelect();
   if (!modelId) { form.platformId = ''; return; }
   for (const group of modelGroups.value) {
     if (group.models.find((m) => m.id === modelId)) {
@@ -478,6 +489,14 @@ function onModelPick(modelId: string) {
       return;
     }
   }
+}
+
+/** 收起「大模型」下拉（filterable select 不会自动关，需显式 blur 触发失焦收起） */
+const modelSelectRef = ref<any>(null);
+function closeModelSelect() {
+  nextTick(() => {
+    try { modelSelectRef.value?.blur?.(); } catch { /* 组件未挂载/结构差异时忽略 */ }
+  });
 }
 
 function resetSchedule() {

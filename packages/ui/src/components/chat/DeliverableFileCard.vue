@@ -4,23 +4,36 @@
       v-for="f in files"
       :key="f.id"
       class="deliverable-file-card"
-      :class="{ 'has-thumb': isVideo(f) }"
+      :class="{ 'has-thumb': hasThumb(f) }"
       @click="preview(f)"
       @contextmenu.prevent="openMenu($event, f)"
     >
-      <!-- 视频交付物：静止显示首帧；hover 放大并静音自动播 5 秒；点击进预览播放 -->
+      <!-- 视频交付物：静止显示首帧；hover 走 body 级浮层放大并静音自动播 5 秒；双击进灯箱播放 -->
       <video
         v-if="isVideo(f)"
-        ref="thumbEls"
-        class="deliverable-video-thumb"
-        :class="{ 'is-hover': hoverId === f.id }"
-        :src="videoSrc(f)"
+        class="deliverable-thumb"
+        :src="thumbSrc(f)"
         preload="metadata"
         muted
         playsinline
-        @mouseenter="onThumbEnter(f.id, $event)"
-        @mouseleave="onThumbLeave($event)"
+        @error="onThumbError(f)"
+        @mouseenter="onThumbEnter($event, f)"
+        @mouseleave="onThumbLeave"
+        @dblclick.stop="zoom(f)"
       ></video>
+      <!-- 图片交付物：同卡片尺寸缩略；hover 走同一套浮层放大；双击进灯箱（滚轮缩放） -->
+      <img
+        v-else-if="isImage(f)"
+        class="deliverable-thumb"
+        :src="thumbSrc(f)"
+        :alt="f.name"
+        loading="lazy"
+        draggable="false"
+        @error="onThumbError(f)"
+        @mouseenter="onThumbEnter($event, f)"
+        @mouseleave="onThumbLeave"
+        @dblclick.stop="zoom(f)"
+      />
       <span class="deliverable-file-name" :title="f.name">{{ f.name }}</span>
       <div class="deliverable-file-bottom">
         <span class="deliverable-file-meta">{{ formatTime(f.createdAt) }}</span>
@@ -40,7 +53,14 @@ import { computed, ref, onBeforeUnmount } from 'vue';
 import type { ConversationFile } from '@yan-zhi/shared';
 import { getPlatformAdapter } from '@yan-zhi/core';
 import { useChatStore } from '../../stores/chat';
-import { openMediaMenu } from '../../composables/useMediaPreview';
+import {
+  absoluteMediaSrc,
+  openMediaMenu,
+  openMediaViewer,
+  openMediaHover,
+  closeMediaHover,
+  type MediaTarget,
+} from '../../composables/useMediaPreview';
 
 const props = defineProps<{ files: ConversationFile[] }>();
 
@@ -50,60 +70,84 @@ const canReveal = computed(() => !!adapter.shell && adapter.platform === 'deskto
 const IMAGE_EXT_RE = /\.(png|jpe?g|webp|gif|bmp|svg|avif)$/i;
 const VIDEO_EXT_RE = /\.(mp4|webm|mov|m4v|ogg)$/i;
 
-/** 视频交付物：卡片显示首帧画面 */
 function isVideo(f: ConversationFile): boolean {
   return (f.mimeType || '').startsWith('video/') || VIDEO_EXT_RE.test(f.name || '');
 }
-
-/* ===== 视频缩略 hover 预览：放大 + 静音播 5 秒，移开即停回首帧 ===== */
-const hoverId = ref<string | null>(null);
-const hoverTimers = new Map<string, ReturnType<typeof setTimeout>>();
-
-function onThumbEnter(id: string, ev: MouseEvent) {
-  hoverId.value = id;
-  const el = ev.currentTarget as HTMLVideoElement | null;
-  if (!el) return;
-  try { el.currentTime = 0; } catch { /* 未加载完 seek 抛错忽略 */ }
-  el.play().catch(() => { /* 自动播放被策略拒绝时保持首帧 */ });
-  const t = setTimeout(() => {
-    hoverId.value = null;
-    el.pause();
-    try { el.currentTime = 0.1; } catch { /* 同上 */ }
-    hoverTimers.delete(id);
-  }, 5000);
-  const prev = hoverTimers.get(id);
-  if (prev) clearTimeout(prev);
-  hoverTimers.set(id, t);
+function isImage(f: ConversationFile): boolean {
+  return (f.mimeType || '').startsWith('image/') || IMAGE_EXT_RE.test(f.name || '');
 }
-function onThumbLeave(ev: MouseEvent) {
-  const el = ev.currentTarget as HTMLVideoElement | null;
-  hoverId.value = null;
-  if (!el) return;
-  el.pause();
-  try { el.currentTime = 0.1; } catch { /* 同上 */ }
+/** 图片 / 视频才有缩略图；其余（docx / md / xlsx…）只出文件名卡 */
+function hasThumb(f: ConversationFile): boolean {
+  return isVideo(f) || isImage(f);
 }
-onBeforeUnmount(() => { for (const t of hoverTimers.values()) clearTimeout(t); hoverTimers.clear(); });
 
 /**
- * 视频缩略地址：桌面端文件在本地磁盘，<video> 直接读本地路径；
- * 浏览器端走 /api/generated 三段式（会话 id + 文件名唯一定位）。
- * #t=0.1 媒体片段让 preload=metadata 即渲染出首帧画面。
+ * 媒体访问地址：统一走服务端 /api/generated 三段式（会话 id + 文件名唯一定位到交付目录）。
+ * 桌面端也一样 —— 直接把本地绝对路径喂给 <img>/<video> 是不成立的：
+ * 渲染进程页面是 http(s) 源，`C:/...` 会被 URL 解析器当成 c: 协议，图直接裂。
+ * 只有拿不到会话 id 的历史数据才退回本地路径（至少还能交给系统打开）。
  */
-function videoSrc(f: ConversationFile): string {
+function plainSrc(f: ConversationFile): string {
   const name = (f.name || '').replace(/[?#].*$/, '');
-  if (adapter.platform === 'desktop') {
-    const p = (f.path || '').replace(/\\/g, '/');
-    return p && !p.includes('#') ? `${p}#t=0.1` : p;
+  if (f.conversationId && name) {
+    const kind = isVideo(f) ? 'videos' : 'images';
+    return absoluteMediaSrc(`/api/generated/${kind}/${f.conversationId}/${encodeURIComponent(name)}`);
   }
-  if (!f.conversationId || !name) return '';
-  return `/api/generated/videos/${f.conversationId}/${encodeURIComponent(name)}#t=0.1`;
+  return (f.path || '').replace(/\\/g, '/');
 }
 
-/** 交付卡片右键 → 复用媒体菜单（另存为 / 打开所在目录 / 复制路径） */
-function openMenu(e: MouseEvent, f: ConversationFile) {
-  const isImage = (f.mimeType || '').startsWith('image/') || IMAGE_EXT_RE.test(f.name || '');
-  openMediaMenu(e, { src: '', path: f.path, name: f.name, kind: isImage ? 'image' : 'file' });
+/** 缩略图地址：视频补 #t=0.1 媒体片段，preload=metadata 即渲染出首帧画面 */
+function thumbSrc(f: ConversationFile): string {
+  // 已触发过加载失败的文件改用本地绝对路径直读（见 onThumbError）
+  if (fallbackSrcs.value[f.id]) return fallbackSrcs.value[f.id]!;
+  const src = plainSrc(f);
+  if (!src) return '';
+  if (isVideo(f)) return src.includes('#') ? src : `${src}#t=0.1`;
+  return src;
 }
+
+/**
+ * 缩略图加载失败时的回退：桌面端改用 file:// 直读本地文件。
+ *
+ * 为什么需要：plainSrc 走的是服务端 /api/generated 三段式，若服务端未启动、
+ * 路由 404（如文件名不在白名单）或产物已被清理，图会裂且没有任何提示。
+ * 桌面端页面本身是 file:// 源，本地文件可直接读，作为最后兜底。
+ * 只在第一次失败时切换（避免失败→换源→再失败的死循环）。
+ */
+const fallbackSrcs = ref<Record<string, string>>({});
+function onThumbError(f: ConversationFile) {
+  if (fallbackSrcs.value[f.id]) return;              // 已回退过，不再重复
+  if (adapter.platform !== 'desktop') return;        // Web 端无本地文件可读
+  const raw = (f.path || '').replace(/\\/g, '/');
+  if (!raw) return;
+  const url = raw.startsWith('/') ? `file://${raw}` : `file:///${raw}`;
+  fallbackSrcs.value = { ...fallbackSrcs.value, [f.id]: f.conversationId && isVideo(f) ? `${url}#t=0.1` : url };
+}
+
+/** 交付文件 → 统一媒体对象：hover 浮层 / 灯箱 / 右键菜单共用同一份描述 */
+function mediaOf(f: ConversationFile): MediaTarget {
+  const kind = isVideo(f) ? 'video' : isImage(f) ? 'image' : 'file';
+  return { src: plainSrc(f), path: f.path, name: f.name, kind };
+}
+
+/* ===== hover：统一走 MediaHoverFloat（body 级浮层），卡内放大必被容器裁剪，故不在卡内做 transform ===== */
+function onThumbEnter(ev: MouseEvent, f: ConversationFile) {
+  const el = ev.currentTarget as HTMLElement | null;
+  if (!el) return;
+  openMediaHover(el, mediaOf(f));
+}
+function onThumbLeave() {
+  closeMediaHover();
+}
+/** 双击进灯箱：图片放大查看（滚轮缩放），视频全屏播放 */
+function zoom(f: ConversationFile) {
+  openMediaViewer(mediaOf(f));
+}
+/** 右键 → 复用媒体菜单：放大查看 / 播放 · 另存为… · 打开所在目录 · 复制图片 · 复制路径 */
+function openMenu(e: MouseEvent, f: ConversationFile) {
+  openMediaMenu(e, mediaOf(f));
+}
+onBeforeUnmount(() => closeMediaHover());
 
 /** 格式化修改时间：MM-DD HH:mm */
 function formatTime(t: number | string | undefined): string {
@@ -114,7 +158,7 @@ function formatTime(t: number | string | undefined): string {
   return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-/** 点击卡片即预览 */
+/** 单击卡片即预览（打开右侧预览窗 tab） */
 function preview(f: ConversationFile) {
   const store = useChatStore();
   store.openTab({ kind: 'file', name: f.name, path: f.path });
@@ -185,22 +229,15 @@ async function reveal(f: ConversationFile) {
   background: var(--glass-bg-hover);
   box-shadow: 0 1px 6px color-mix(in srgb, var(--color-primary) 20%, transparent);
 }
-/* 视频缩略：占卡片主体，底部压文件名条；hover 放大突出画面 */
-.deliverable-video-thumb {
+/* 图片 / 视频缩略：占卡片主体，底部压文件名条；放大交给 body 级浮层，卡内不改尺寸 */
+.deliverable-thumb {
   width: 100%;
   height: 72px;
   object-fit: cover;
   border-radius: 6px;
   background: rgba(0, 0, 0, 0.35);
   display: block;
-  transition: transform 0.15s ease, box-shadow 0.15s ease;
-}
-.deliverable-video-thumb.is-hover {
-  transform: scale(1.3);
-  transform-origin: left top;
-  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.28);
-  position: relative;
-  z-index: 5;
+  user-select: none;
 }
 .deliverable-file-card.has-thumb .deliverable-file-name {
   font-size: 11.5px;
