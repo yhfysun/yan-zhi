@@ -1,4 +1,4 @@
-const { app, BrowserWindow, BrowserView, webContents, dialog, ipcMain, Menu, session, shell, clipboard, Tray, globalShortcut, desktopCapturer, nativeImage, screen: electronScreen } = require('electron');
+const { app, BrowserWindow, BrowserView, webContents, dialog, ipcMain, Menu, session, shell, clipboard, Tray, globalShortcut, desktopCapturer, nativeImage, screen: electronScreen, safeStorage } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const fsp = fs.promises;
@@ -134,10 +134,24 @@ function getDb() {
 
 // ============================================================
 // Keyring（JSON 文件存储，主进程单例缓存）
+//
+// 敏感值（授权码 / 平台 API Key）用 Electron safeStorage 加密后落盘：
+// 底层是 Windows DPAPI / macOS Keychain / Linux libsecret，密钥绑当前用户账户，
+// 把 keyring.json 复制到别的机器或别的账户下解不开 —— 明文时代任何拿到该文件的
+// 人都能直接读走平台 API Key（真实上游密钥），这比授权码泄露严重得多。
+//
+// 加解密纯逻辑在 keyring-crypto.cjs（可单测、零依赖），这里只负责 IO 与接线。
 // ============================================================
+const {
+  isSensitiveKeyringKey,
+  encryptKeyringValue,
+  decryptKeyringValue,
+} = require('./keyring-crypto.cjs');
+
 function getKeyringPath() {
   return path.join(app.getPath('userData'), 'keyring.json');
 }
+
 /** 读取 keyring JSON（不存在时返回空对象） */
 async function readKeyring() {
   const p = getKeyringPath();
@@ -922,18 +936,134 @@ async function injectScrollbarForWC(wc, opts = {}) {
 
 // ============================================================
 // IPC：窗口控制（自定义标题栏按钮调用）
+// ------------------------------------------------------------
+// ★ 一律按 **事件发起方所在窗口** 解析（winOf），不能固定操作 mainWindow：
+//   子窗口（diff 独立窗口）复用同一套 preload，若这里写死 mainWindow，
+//   在子窗口点最小化/最大化会作用到主窗口上。
 // ============================================================
-ipcMain.on('window-minimize', () => mainWindow?.minimize());
-ipcMain.on('window-maximize', () => {
-  if (!mainWindow) return;
-  if (mainWindow.isMaximized()) mainWindow.unmaximize();
-  else mainWindow.maximize();
+/**
+ * 取事件发起方所在的窗口。
+ * 注意：主窗口若已被销毁，BrowserWindow.fromWebContents 仍可能返回子窗口，
+ * 因此这里只在「确实解析不到」时才回落到 mainWindow。
+ */
+function winOf(event) {
+  try {
+    return BrowserWindow.fromWebContents(event.sender) || mainWindow;
+  } catch {
+    return mainWindow;
+  }
+}
+
+/** 子窗口登记表：key → BrowserWindow（同 key 只允许一个，重复打开则聚焦） */
+const childWindows = new Map();
+
+/** 取子窗口的 URL：与主窗口同源同路径，只换 hash（dev 是 http，打包是 file）
+ *  带上 szwin=1 标记：渲染层据此知道「自己跑在独立子窗口里」，
+ *  从而渲染「回到主窗口」这类只在子窗口才成立的操作。 */
+function childUrl(hashRoute) {
+  const base = mainWindow?.webContents.getURL() || '';
+  const clean = base.split('#')[0];
+  if (!clean) return null; // 主窗口还没就绪（正常不会走到）
+  const sep = hashRoute.includes('?') ? '&' : '?';
+  return `${clean}#${hashRoute}${sep}szwin=1`;
+}
+
+ipcMain.on('window-minimize', (event) => winOf(event)?.minimize());
+ipcMain.on('window-maximize', (event) => {
+  const w = winOf(event);
+  if (!w) return;
+  if (w.isMaximized()) w.unmaximize();
+  else w.maximize();
 });
-ipcMain.on('window-close', () => mainWindow?.close());
-ipcMain.handle('window-is-maximized', () => mainWindow?.isMaximized() || false);
+ipcMain.on('window-close', (event) => {
+  const w = winOf(event);
+  // 主窗口关闭 = 隐藏到托盘（守护模式）；子窗口关闭 = 真正关闭
+  if (w && w !== mainWindow) w.close();
+  else mainWindow?.close();
+});
+ipcMain.handle('window-is-maximized', (event) => winOf(event)?.isMaximized() || false);
 // 界面刷新（顶栏刷新按钮）：走 webContents.reloadIgnoringCache 而非渲染层 location.reload()，
 // 前者会丢弃渲染进程缓存的旧资源，界面卡死/白屏后更容易恢复
-ipcMain.on('window-reload', () => mainWindow?.webContents.reloadIgnoringCache());
+ipcMain.on('window-reload', (event) => winOf(event)?.webContents.reloadIgnoringCache());
+
+// ============================================================
+// IPC：独立子窗口（diff / 冲突解决等需要「像 IDE 那样另开一个窗口」的场景）
+// ------------------------------------------------------------
+// 设计要点：
+//   · 子窗口复用主窗口的 preload，窗口控制通道按 winOf 解析（见上）。
+//   · 加载同一应用的专用 hash 路由，不需要另建打包入口。
+//   · 非模态：不设 parent，可自由拖到另一块屏幕 / 与主窗口并排（IDE 的 separate window 语义）。
+// ============================================================
+ipcMain.handle('child-window:open', (event, opts = {}) => {
+  const key = String(opts.key || 'default');
+  const route = String(opts.route || '/diff-window');
+  const existing = childWindows.get(key);
+  if (existing && !existing.isDestroyed()) {
+    if (existing.isMinimized()) existing.restore();
+    existing.focus();
+    return { ok: true, reused: true };
+  }
+  const url = childUrl(route);
+  if (!url) return { ok: false, error: 'main window not ready' };
+
+  const win = new BrowserWindow({
+    icon: getAppIconPath(),
+    width: Number(opts.width) || 1280,
+    height: Number(opts.height) || 860,
+    minWidth: 640,
+    minHeight: 420,
+    frame: false,              // 与主窗口一致：无边框 + 自定义标题栏
+    titleBarStyle: 'hidden',
+    backgroundColor: '#1D1D1C',
+    show: false,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.cjs'),
+      webviewTag: true,
+      nodeIntegration: false,
+      contextIsolation: true,
+      spellcheck: false,
+      backgroundThrottling: false,
+    },
+  });
+
+  win.once('ready-to-show', () => win.show());
+  // 关窗即清理登记，避免 key 被已销毁窗口占住
+  win.on('closed', () => { childWindows.delete(key); });
+  win.webContents.setWindowOpenHandler(({ url: u }) => {
+    if (/^https?:\/\//i.test(u)) shell.openExternal(u);
+    return { action: 'deny' };
+  });
+
+  void win.loadURL(url);
+  childWindows.set(key, win);
+  return { ok: true, reused: false };
+});
+
+/** 子窗口是否处于最大化（渲染层据此切换按钮图标） */
+ipcMain.handle('child-window:is-maximized', (event) => winOf(event)?.isMaximized() || false);
+
+/** 聚焦主窗口（子窗口里「回到主窗口」用） */
+ipcMain.handle('child-window:focus-main', () => {
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.focus();
+  return true;
+});
+
+/**
+ * 子窗口的初始载荷中转。
+ * 渲染层无法直接把 Vue 状态交给另一个窗口，故开窗前先 put、子窗口就绪后 take。
+ * 只保留最近一次（子窗口按 key 唯一，语义足够）；子窗口取走后立即清除。
+ */
+const childPayloads = new Map();
+ipcMain.handle('child-window:put-payload', (_e, key, payload) => {
+  childPayloads.set(String(key), payload);
+  return true;
+});
+ipcMain.handle('child-window:take-payload', (_e, key) => {
+  const k = String(key);
+  const v = childPayloads.get(k);
+  childPayloads.delete(k);
+  return v ?? null;
+});
 
 // ============================================================
 // IPC：BrowserView 导航控制（前进/后退/刷新/resize/URL）
@@ -2656,17 +2786,32 @@ ipcMain.handle('fs:listDetailed', async (e, p) => {
 });
 
 // ============================================================
-// IPC：Keyring（JSON 文件存储）
+// IPC：Keyring（JSON 文件存储；敏感值 safeStorage 加密）
 // ============================================================
 ipcMain.handle('keyring:set', async (e, key, value) => {
   const data = await readKeyring();
-  data[key] = value;
+  if (isSensitiveKeyringKey(key)) {
+    const enc = encryptKeyringValue(safeStorage, value);
+    // 加密不可用时退回明文：宁可弱保护也不能让用户存不进 API Key（否则应用不可用）
+    data[key] = enc !== null ? enc : value;
+  } else {
+    data[key] = value;
+  }
   await writeKeyring(data);
 });
 
 ipcMain.handle('keyring:get', async (e, key) => {
   const data = await readKeyring();
-  return Object.prototype.hasOwnProperty.call(data, key) ? data[key] : null;
+  if (!Object.prototype.hasOwnProperty.call(data, key)) return null;
+  if (!isSensitiveKeyringKey(key)) return data[key];
+  const dec = decryptKeyringValue(safeStorage, data[key]);
+  if (!dec.ok) {
+    // 解密失败 = 换机器/换账户/文件被拷走。返回 null（等同未设置）并明确告警 ——
+    // 绝不要把 enc:v1: 这串密文当 API Key 返回，否则上游 401 且无从排查。
+    console.warn(`[keyring] 键 ${key} 解密失败，按未设置处理:`, dec.reason);
+    return null;
+  }
+  return dec.value;
 });
 
 ipcMain.handle('keyring:delete', async (e, key) => {

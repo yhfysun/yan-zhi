@@ -12,6 +12,7 @@ files:
   - snip-preload.cjs
   - snip-overlay.html
   - snip-overlay.js
+  - keyring-crypto.cjs
 extraResources:
   - from: ../server/dist
     to: server/dist
@@ -33,6 +34,10 @@ extraResources:
   # 随包 Python 脚本（doyz / security / pdf_preview）+ 预烤依赖（同目录 site-packages）
   - from: resources/python-tools
     to: python-tools
+
+  # 注：ffmpeg 不随包。改为运行时按平台从官方静态构建源下载到数据目录（<dataDir>/ffmpeg），
+  # 由 api_tool_executor 的 media_install_ffmpeg 触发。理由：随包要为每个平台预置二进制
+  # （体积 +~200MB，且 mac/linux 构建无法在 Windows CI 上准备），按需下载各平台各取所需。
 
   - from: ../../assets/icons/icon.ico
     to: icon.ico

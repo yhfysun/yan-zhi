@@ -29,3 +29,8 @@ jobs:
 
       - name: 单元测试（core + server）
         run: pnpm --filter @yan-zhi/core --filter @yan-zhi/server test
+
+      # desktop 用 node --test（该包不依赖 vitest）。当前覆盖 keyring 敏感值加解密：
+      # 兼容语义（旧明文照常读 / 密文解不开显式失败）在真机上几乎无法构造验证，只能靠单测钉住。
+      - name: 单元测试（desktop）
+        run: pnpm --filter @yan-zhi/desktop test

@@ -19,8 +19,7 @@
     "build:mobile-server": "pnpm --filter @yan-zhi/mobile build:mobile-server",
     "build:mobile:ios": "pnpm --filter @yan-zhi/mobile build:ios",
     "typecheck": "pnpm -r typecheck",
-    "lint": "pnpm -r lint",
-    "gen:license": "node scripts/gen-license.mjs"
+    "lint": "pnpm -r lint"
   },
   "devDependencies": {
     "@types/markdown-it": "^14.2.0",

@@ -16,7 +16,8 @@
     "electron:build:mac": "pnpm --filter @yan-zhi/server build && vite build && node ./scripts/prepare-server-runtime.cjs && node ./scripts/clean-broken-symlinks.cjs && node ./scripts/electron-build.cjs electron-builder.mac.yml --mac",
     "prepare:server-runtime": "node ./scripts/prepare-server-runtime.cjs",
     "postinstall": "node ./scripts/fix-sqlite-binding.cjs || true",
-    "typecheck": "vue-tsc --noEmit"
+    "typecheck": "vue-tsc --noEmit",
+    "test": "node --test \"test/**/*.test.cjs\""
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.0",

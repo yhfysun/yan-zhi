@@ -91,8 +91,13 @@ apps/server/models/
 # llama-server 预编译二进制（构建时从 llama.cpp release 下载，不入库）
 apps/server/bin/
 
-# 授权码私钥（仅本地生成授权码用，绝不入库；公钥 apps/server/src/license-public-key.pem 可入库）
+# 授权码签发侧（私钥 + 签发工具）：只在签发者本机存在，绝不入库。
+# 应用侧只需要公钥（apps/server/src/license-public-key.pem，可入库）与验签逻辑。
+# 签发工具本身不含私钥，但它与本目录的私钥同处一地 —— 入库会随 clone 分发到
+# 任何构建机，把「私钥和工具放一起」的事故面放大，故一并忽略。
 scripts/license-private-key.pem
+scripts/gen-license.mjs
+scripts/license-manager.html
 
 # 测试覆盖率 / TS 构建缓存 / 临时产物
 coverage/
@@ -157,3 +162,6 @@ _tmp_*
 workspace/
 # 临时 demo 页
 list-fix-demo.html
+
+# 运行时按需下载的 ffmpeg 二进制（media_install_ffmpeg 落盘位置，约 196MB，不入库）
+apps/server/ffmpeg/

@@ -1,5 +1,7 @@
 // API 客户端 —— 自动附带 JWT Token
 // Electron file:// 协议下 /api 会失效，需用 http://127.0.0.1:3001/api
+import { getLicenseCodeSync } from './license-code';
+
 export const isElectron = typeof window !== 'undefined' && !!(window as any).electronAPI?.isElectron;
 export const isCapacitor = typeof window !== 'undefined' && !!(window as any).Capacitor?.isNativePlatform;
 // 移动端支持用户配置远程后端地址（方案 A：连远程节点）；未配置时走内嵌本地后端（方案 B）
@@ -19,13 +21,12 @@ function getToken(): string | null {
   }
 }
 
-/** 本地已存授权码。授权门禁（后端 YZ_LICENSE_GUARD=1）开启时所有业务接口都要带上。 */
+/** 本地已存授权码。授权门禁（后端 YZ_LICENSE_GUARD=1）开启时所有业务接口都要带上。
+ *
+ *  取值走 license-code 模块的内存缓存：授权码已改为存 keyring（桌面端 DPAPI 加密），
+ *  异步 IO 不适合放在同步的请求头构造里。缓存由授权 store 在启动时填充。 */
 export function getLicenseCode(): string | null {
-  try {
-    return localStorage.getItem('license_code');
-  } catch {
-    return null;
-  }
+  return getLicenseCodeSync();
 }
 
 /**

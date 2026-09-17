@@ -15,6 +15,7 @@ files:
   - snip-preload.cjs
   - snip-overlay.html
   - snip-overlay.js
+  - keyring-crypto.cjs
 extraResources:
   - from: ../server/dist
     to: server/dist
@@ -36,6 +37,8 @@ extraResources:
   # 随包 Python 脚本（doyz / security / pdf_preview）+ 预烤依赖（同目录 site-packages）
   - from: resources/python-tools
     to: python-tools
+
+  # 注：ffmpeg 不随包，运行时按平台按需下载到数据目录（见 media_install_ffmpeg）。
 
   - from: ../../assets/icons/icon.ico
     to: icon.ico

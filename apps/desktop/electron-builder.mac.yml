@@ -12,6 +12,7 @@ files:
   - snip-preload.cjs
   - snip-overlay.html
   - snip-overlay.js
+  - keyring-crypto.cjs
 extraResources:
   - from: ../server/dist
     to: server/dist
@@ -33,6 +34,9 @@ extraResources:
   # 随包 Python 脚本（doyz / security / pdf_preview）+ 预烤依赖（同目录 site-packages）
   - from: resources/python-tools
     to: python-tools
+
+  # 注：ffmpeg 不随包 —— mac 侧尤其不该随包（Windows CI 上无法准备 darwin 构建）。
+  # 运行时按当前平台从 evermeet.cx 下载（ffmpeg 与 ffprobe 两个 zip），见 media_install_ffmpeg。
 
   - from: ../../assets/icons/icon.icns
     to: icon.icns

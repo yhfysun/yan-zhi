@@ -1,9 +1,15 @@
 // License Store：授权码校验（后端验签，前端只存码 + 调接口）
+//
+// 授权码不再直接写 localStorage：改由 api/license-code 模块持久化到 keyring
+// （桌面端底层 DPAPI/Keychain 加密）。该模块同时维护内存缓存，供同步的请求头构造读取。
 import { defineStore } from 'pinia';
 import { ref } from 'vue';
 import { api } from '../api/client';
-
-const LICENSE_KEY = 'license_code';
+import {
+  loadLicenseCode,
+  persistLicenseCode,
+  clearLicenseCode,
+} from '../api/license-code';
 
 export interface VerifyResult {
   valid: boolean;
@@ -39,13 +45,13 @@ export const useLicenseStore = defineStore('license', () => {
   /** 启动时校验本地已存授权码（只跑一次有效校验）。无本地码时尝试预置试用码自动填充。 */
   async function init() {
     if (initialized.value) return;
-    const code = localStorage.getItem(LICENSE_KEY);
+    const code = await loadLicenseCode();
     if (!code) {
       // 首次运行：尝试预置试用授权码自动激活
       const def = await api.get<VerifyResult & { code: string }>('/license/default');
       initialized.value = true;
       if ('data' in def && def.data.valid) {
-        localStorage.setItem(LICENSE_KEY, def.data.code);
+        await persistLicenseCode(def.data.code);
         verified.value = true;
         info.value = def.data;
         machineMac.value = def.data.machineMac;
@@ -65,7 +71,7 @@ export const useLicenseStore = defineStore('license', () => {
       machineId.value = result.data.machineIdLocal || '';
       identitySource.value = result.data.identitySource;
     } else {
-      localStorage.removeItem(LICENSE_KEY);
+      await clearLicenseCode();
       verified.value = false;
       info.value = 'data' in result ? result.data : null;
     }
@@ -83,7 +89,7 @@ export const useLicenseStore = defineStore('license', () => {
       error.value = result.data.reason || '授权码无效';
       return false;
     }
-    localStorage.setItem(LICENSE_KEY, code);
+    await persistLicenseCode(code);
     verified.value = true;
     initialized.value = true;
     info.value = result.data;
@@ -93,8 +99,8 @@ export const useLicenseStore = defineStore('license', () => {
     return true;
   }
 
-  function deactivate() {
-    localStorage.removeItem(LICENSE_KEY);
+  async function deactivate() {
+    await clearLicenseCode();
     verified.value = false;
     info.value = null;
   }

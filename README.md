@@ -41,7 +41,7 @@ yan-zhi/
 │   └── shared/       # 类型定义与通用工具
 ├── docs/             # 设计文档与方案（design.md / tasks.md / 各方案 md）
 ├── openspec/         # OpenSpec 变更管理（changes/）
-├── scripts/          # 根级脚本（build-python-runtime.mjs / gen-license.mjs 等）
+├── scripts/          # 根级脚本（build-python-runtime.mjs / electron-build 等构建脚本）
 ├── assets/           # 应用图标（icon.png / icon.ico / icon.icns）
 ├── .github/workflows/ # GitHub Actions（build-desktop.yml 桌面打包 / ci.yml 类型检查与测试）
 ├── dist-release/     # 打包产物输出目录（.gitignore，lite/full/mac/.apk 平铺靠 artifactName 区分）
@@ -293,6 +293,31 @@ GitHub Actions（`.github/workflows/build-desktop.yml`）在 push 到 `master` /
 | 移动端 | Capacitor SQLite（本地会话/配置）+ 服务端（共享数据） |
 | Web 端 | 浏览器 IndexedDB（Dexie，本地会话/配置）+ 服务端（共享数据） |
 | 后端   | better-sqlite3（`apps/server/data.db`）：user / platform / 知识库(含 public/private) / 记忆 等 |
+
+**敏感值加密**：桌面端 keyring（`userData/keyring.json`）里的授权码与平台 API Key 用 Electron `safeStorage` 加密后落盘（底层 Windows DPAPI / macOS Keychain / Linux libsecret），密钥绑当前用户账户 —— 复制该文件到其他机器或账户解不开。加解密纯逻辑在 `apps/desktop/keyring-crypto.cjs`（单测：`pnpm --filter @yan-zhi/desktop test`）。界面偏好（主题、工作目录等）保持明文，便于人工排查。
+
+## 授权体系
+
+**RSA-2048 签名授权码，应用侧只验签、无签发能力**：
+
+| 侧 | 位置 | 说明 |
+|----|------|------|
+| 验签（应用内） | `apps/server/src/license.ts` + `license-public-key.pem` | 只有 `crypto.createVerify`，**全仓库无 `createSign`**（除签发脚本） |
+| 门禁 | `apps/server/src/license-guard.ts` | 校验 `x-license` 头；**默认关闭**，`YZ_LICENSE_GUARD=1` 开启（局域网/多用户部署用） |
+| 绑定 | `machineId`（主板 UUID 哈希）优先，`mac` 兜底 | 抗网卡变动；两者都空 = 不限机器。老码不失效 |
+| 签发（**不入库**） | `scripts/gen-license.mjs` + `license-private-key.pem` | 私钥与签发工具仅存在于签发者本机，见 `.gitignore` |
+
+> ⚠️ 签发侧（私钥 + 生成工具）**不随仓库分发**，也不打进任何安装包。换机器签发需手工搬私钥，切勿复制到构建机。
+
+签发授权码（在持有私钥的机器上执行，工具不在库中，需手工放置）：
+
+```bash
+node scripts/gen-license.mjs --days 30                                    # 30 天有效、不限机器
+node scripts/gen-license.mjs --days 365 --machine-id <授权页「机器标识」>   # 绑定机器（推荐）
+node scripts/gen-license.mjs --forever                                    # 永不过期
+```
+
+`--machine-id` 与 `--mac` 二选一：前者按机器标识绑定（抗网卡变动），后者是给已发出的老客户端补码用的旧口径。机器标识从应用的授权页直接复制。
 
 ## 文档导航
 
