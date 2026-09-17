@@ -71,14 +71,6 @@ export function recallByKeywords<T extends { keywords?: string[] }>(
 
 // ===== 摘要组装 =====
 
-interface DigestField { name: string; keywords?: string[]; isDefault?: boolean; description?: string }
-
-function fieldText(f: DigestField, withDesc: boolean): string {
-  const kws = f.keywords?.length ? `; 命中词:${f.keywords.join('/')}` : '';
-  const desc = withDesc && f.description ? `(${f.description})` : '';
-  return `${f.name}${desc}${kws}`;
-}
-
 function filterText(f: OntologyFilter): string {
   const kws = f.keywords?.length ? `; 命中词:${f.keywords.join('/')}` : '';
   return `${f.name} → ${f.expr}${kws}`;
@@ -101,10 +93,10 @@ function fieldDescOf(o: OntologyInfo, name: string): string | undefined {
 
 /**
  * 组装本体语义摘要（喂大模型的紧凑文本）：
- * - 选择列（命名查询列组）：未命中的只列名称与描述；命中 question 的展开字段列表并标分数
- * - 过滤器：默认直拼 + 非默认召回（同构）
+ * - 选择列（命名查询列组）：全部无条件展示（未命中只列名称与描述）；命中 question 的额外标分数
+ * - 过滤器：默认直拼 + 非默认召回（双轨）
  * - 关联关系数量少，全量拼入
- * - 没有任何默认项且无命中的本体整条省略（控制上下文体积）
+ * - 无任何可取数入口（无选择列/过滤器/关联/策略）的本体整条省略（控制上下文体积）
  */
 export function buildOntologyDigest(
   ontologies: OntologyInfo[],
@@ -136,7 +128,9 @@ export function buildOntologyDigest(
     if (o.relations.length) lines.push(`  关联: ${o.relations.map(relationText).join('；')}`);
     if (o.policies.length) lines.push(`  行级策略(强制): ${o.policies.join(' AND ')}`);
 
-    // 整条省略：无选择列、无命中、无关联（策略是安全语义，有策略仍要展示）
+    // 整条省略判据：无任何可取数入口。
+    // 选择列是模型唯一的取数入口，只要存在就必须展示（否则模型不知道这个本体能查什么），
+    // 因此这里不能按「是否有默认项/命中项」判定（旧口径，已随选择列语义收敛一并修正）。
     const hasContent = o.selections.length || recFilters.length || defFilters.length
       || o.relations.length || o.policies.length;
     if (!hasContent) continue;

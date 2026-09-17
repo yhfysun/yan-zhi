@@ -174,7 +174,7 @@ const hoisted = vi.hoisted(() => {
     setSummaryModel(_p: any, _m: any) {}
   }
 
-  return { db, mockRegistry, MockLlmClient, MockContextWindow, llmChunksQueue, conversations, messages };
+  return { db, mockRegistry, MockLlmClient, MockContextWindow, llmChunksQueue, conversations, messages, agents, customTools };
 });
 
 // ── mock 依赖模块 ──────────────────────────────────────────────────────────
@@ -266,9 +266,9 @@ describe('ReActLoopHistoryReplay', () => {
   // ─────────────────────────────────────────────────────────────────────
   // 场景2 (历史会话 71453caf): "分析今年哪些手机值得入手"
   //   历史故障: web_search → fetch failed → web_search(arguments={}) → "query is required" → 卡死
-  //   修复后: 工具返回错误 → 模型基于错误自行修正 → 继续回答 → completed
+  //   修复后: 缺参由后端前置校验拦下并给出可自纠指引 → 模型据此修正 → 继续回答 → completed
   // ─────────────────────────────────────────────────────────────────────
-  it('场景2: 工具参数丢失时返回错误提示，模型自行修正后流程走完', async () => {
+  it('场景2: 工具参数丢失时返回可自纠的错误提示，模型自行修正后流程走完', async () => {
     const convId = 'conv_test_scene2';
     hoisted.conversations[convId] = { id: convId, user_id: USER_ID, title: '分析今年哪些手机值得入手', agent_id: AGENT_ID, platform_id: PLATFORM_ID, model_id: MODEL_ID };
 
@@ -277,7 +277,7 @@ describe('ReActLoopHistoryReplay', () => {
       { delta: { reasoningContent: '让我搜索一下相关信息。' } },
       { delta: { content: '[TOOL_CALL]{"name":"web_search","arguments":{}}[/TOOL_CALL]' } },
     ]);
-    // 第2轮：模型收到 "query is required" 错误后，基于已有知识直接回答
+    // 第2轮：模型收到参数缺失提示后，基于已有知识直接回答
     hoisted.llmChunksQueue.push([
       { delta: { content: '搜索工具提示需要 query 参数。让我基于已有知识回答：\n\n2026年值得入手的手机推荐：\n1. **iPhone 17 Pro** - 苹果旗舰\n2. **华为 Mate 70** - 国产旗舰\n3. **小米 17** - 性价比之选' } },
     ]);
@@ -291,11 +291,16 @@ describe('ReActLoopHistoryReplay', () => {
     expect(events.some(e => e.type === 'task:completed')).toBe(true);
     expect(events.some(e => e.type === 'task:error')).toBe(false);
 
-    // web_search 返回了 "query is required" 错误（工具参数校验）
+    // 断言「意图」而非具体文案：
+    //   意图 = 工具未执行时，模型必须拿到「缺哪个参数 + 该重调哪个工具」的可自纠信息。
+    //   2026-09-14（3ad840f）起这类缺参由后端前置校验直接拦下并给出指引，
+    //   不再落到工具自身执行，故不再出现工具自带的 "query is required"。
     const toolResults = events.filter(e => e.type === 'tool:result');
     const searchResult = toolResults.find(e => e.toolName === 'web_search');
     expect(searchResult).toBeDefined();
-    expect(searchResult!.result).toContain('query is required');
+    expect(searchResult!.result).toMatch(/缺少必填参数/);
+    expect(searchResult!.result).toContain('query');       // 指出缺的是哪个参数
+    expect(searchResult!.result).toContain('web_search');  // 指出该重调哪个工具
 
     // 流程继续走到了第2轮（模型基于错误自行修正）
     const steps = events.filter(e => e.type === 'step');
@@ -379,20 +384,44 @@ describe('ReActLoopHistoryReplay', () => {
   });
 
   // ─────────────────────────────────────────────────────────────────────
-  // 场景5: buildToolsForBackend 查询用 input_schema_json（修复 no such column: input_schema）
-  // ─────────────────────────────────────────────────────────────────────
-  it('场景5: buildToolsForBackend 查 custom_tool 用 input_schema_json 列名', () => {
-    const sqls: string[] = [];
-    const origPrepare = hoisted.db.prepare.bind(hoisted.db);
-    hoisted.db.prepare = (sql: string) => { sqls.push(sql); return origPrepare(sql); };
+  // 场景5: 自定义工具暴露的参数 schema 正确透传（原「SQL 列名拼接」断言已随实现演进失效）
+  //   历史失败原因: 旧断言遍历 db.prepare 收到的 SQL 找含 custom_tool 的语句，但
+  //     buildToolsForBackend 是【从 agent 表开始查】，第一条 `SELECT custom_tool_ids FROM agent`
+  //     就命中了 includes('custom_tool') → 断言必然失败（对 mock 行为过拟合）。
+  //   现改为断言真实意图：自定义工具出现在返回的工具列表里，且 parameters 取自 input_schema_json。
+  // ────────────────────────────────────────────────────────────────────
+  it('场景5: buildToolsForBackend 暴露自定义工具且 parameters 取自 input_schema_json', () => {
+    const schema = {
+      type: 'object',
+      properties: { city: { type: 'string', description: '城市名' } },
+      required: ['city'],
+    };
+    hoisted.customTools.push({
+      id: 'ct_weather1', name: 'weather', description: '查询城市天气',
+      input_schema_json: JSON.stringify(schema), enabled: 1,
+    });
+    // agent 未挂自定义工具时 allowedCustom 为空数组 → 需先挂载
+    const agent = hoisted.agents[AGENT_ID];
+    const prevCustomIds = agent.custom_tool_ids;
+    agent.custom_tool_ids = JSON.stringify(['ct_weather1']);
 
-    buildToolsForBackend(AGENT_ID, USER_ID);
+    try {
+      const tools = buildToolsForBackend(AGENT_ID, USER_ID);
+      const exposed = tools.find((t: any) => t.function?.name?.endsWith('_weather'));
+      expect(exposed).toBeDefined();
+      expect(exposed.function.name).toBe('custom_ctweathe_weather');
+      expect(exposed.function.description).toBe('查询城市天气');
+      // parameters 必须透传 input_schema_json 的内容（而非裸 input_schema 列名拼接）
+      expect(exposed.function.parameters).toEqual(schema);
 
-    hoisted.db.prepare = origPrepare;
-    const customToolSql = sqls.find(s => s.includes('custom_tool'));
-    expect(customToolSql).toBeDefined();
-    expect(customToolSql).toContain('input_schema_json');
-    expect(customToolSql).not.toMatch(/input_schema[^_]/); // 不能有裸 input_schema（无 _json 后缀）
+      // 反向验证：agent 未挂载该工具时不暴露（allowedCustom 过滤生效）
+      agent.custom_tool_ids = null;
+      const toolsNoMount = buildToolsForBackend(AGENT_ID, USER_ID);
+      expect(toolsNoMount.some((t: any) => t.function?.name?.endsWith('_weather'))).toBe(false);
+    } finally {
+      agent.custom_tool_ids = prevCustomIds;
+      hoisted.customTools.length = 0;
+    }
   });
 
   // ─────────────────────────────────────────────────────────────────────

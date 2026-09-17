@@ -51,7 +51,7 @@ describe('recallByKeywords · 阈值与 topK', () => {
   });
 });
 
-describe('buildOntologyDigest · 默认直拼 + 非默认召回', () => {
+describe('buildOntologyDigest · 选择列无条件展示 + keywords 召回', () => {
   const ont = {
     id: 'o1', datasourceId: 'ds', code: 'order', name: '订单', domain: null,
     description: null, synonyms: [], sourceSql: 'SELECT id AS id FROM t_order',
@@ -77,17 +77,25 @@ describe('buildOntologyDigest · 默认直拼 + 非默认召回', () => {
     createdAt: 0, updatedAt: 0, publishedAt: 0,
   };
 
-  it('默认项无条件出现；非默认命中才出现', () => {
+  it('选择列：全部无条件展示，命中问题的额外标分数', () => {
     const digest = buildOntologyDigest([ont], '看下渠道销量', CFG);
-    expect(digest).toContain('选择列(默认)');
-    expect(digest).toContain('region');
-    expect(digest).toContain('channel'); // 「渠道」子串命中 0.8
+    // 语义变更（2026-09-08）：选择列不再有「默认直拼」分支 ——
+    // 契约收敛为「命名查询列组 + keywords 召回」：所有选择列无条件进「选择列」，
+    // 带 keywords 且命中问题的额外进「选择列(命中)」并标分数。
+    expect(digest).toContain('选择列(命中): channel'); // 「渠道」子串命中
+    expect(digest).toContain('[0.8]');
+    expect(digest).toContain('选择列: region →');
+    expect(digest).toContain('amount_sum →');
+    expect(digest).not.toContain('选择列(默认)'); // 旧分支已不存在
+    // 过滤器仍是「默认直拼 + 命中召回」双轨：默认项无条件出现
     expect(digest).toContain('过滤器(默认)');
     expect(digest).toContain("created_at >= DATE('now','-30 day')");
-    expect(digest).not.toContain('已删除'); // 未命中
+    expect(digest).not.toContain('已删除'); // 「删除」未命中
   });
 
-  it('无默认且无命中的本体整条省略', () => {
+  it('有选择列即展示（即使无默认且未命中）；连选择列都没有才整条省略', () => {
+    // 省略判据同步收敛（2026-09-08）：从「无默认项且无命中」改为「无任何可取数入口」——
+    // 选择列是模型唯一的取数入口，只要存在就必须展示，否则模型不知道这个本体能查什么。
     const sparse = {
       ...ont,
       code: 'empty',
@@ -97,7 +105,13 @@ describe('buildOntologyDigest · 默认直拼 + 非默认召回', () => {
       filters: [], policies: [],
     };
     const digest = buildOntologyDigest([sparse], '随便问问', CFG);
-    expect(digest).not.toContain('empty');
+    expect(digest).toContain('empty');
+    expect(digest).toContain('选择列: x'); // 未命中 → 走「选择列」而非「选择列(命中)」
+    expect(digest).not.toContain('选择列(命中)');
+
+    // 真·空本体（无选择列/过滤器/关联/策略）才整条省略
+    const bare = { ...sparse, code: 'bare', selections: [] };
+    expect(buildOntologyDigest([bare], '随便问问', CFG)).toBe('');
   });
 
   it('draft 本体不进摘要', () => {
