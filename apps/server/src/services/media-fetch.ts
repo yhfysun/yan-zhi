@@ -132,10 +132,29 @@ export function markDirectBlocked(url: string) {
 }
 
 /**
+ * 从 CONNECT 响应字节流里分离出「状态码」与「响应头之后的剩余字节」。
+ *
+ * 为什么需要单独成函数：CONNECT 响应头与 TLS ServerHello 常在同一 TCP 包里到达，
+ * 剩余字节必须 unshift 回 socket，否则等于丢掉 TLS 握手数据 ——
+ * 症状是小文件偶尔能过、大文件必然 ECONNRESET，在真实网络里几乎无法复现验证，故用纯函数钉住。
+ * status=0 表示响应头尚未收全，调用方应继续累积。
+ */
+export function splitConnectResponse(head: Buffer): { status: number; leftover: Buffer } {
+  const text = head.toString('latin1');
+  const idx = text.indexOf('\r\n\r\n');
+  if (idx === -1) return { status: 0, leftover: Buffer.alloc(0) };
+  const status = Number((/HTTP\/\d(?:\.\d)? (\d+)/.exec(text) || [])[1] || 0);
+  // latin1 是单字节编码，字符下标即字节偏移
+  return { status, leftover: head.subarray(idx + 4) };
+}
+
+/**
  * 经本机代理 CONNECT 隧道 + TLS 发起 GET。
  * 隧道建好后交给 node:https 的标准响应解析（chunked / content-length 都不用自己处理）。
+ * 会跟随 3xx 重定向 —— 下载源（gyan.dev / GitHub releases / evermeet 等）普遍先回 303/302，
+ * 不跟随就会拿到一个空 body 并误报成「下载失败 HTTP 303」。
  */
-function proxyTunnelGet(url: string, proxy: ProxyEndpoint, timeoutMs: number): Promise<Buffer> {
+function proxyTunnelGet(url: string, proxy: ProxyEndpoint, timeoutMs: number, redirectsLeft = 5): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     let target: URL;
     try { target = new URL(url); } catch { reject(new Error('非法媒体地址')); return; }
@@ -156,18 +175,20 @@ function proxyTunnelGet(url: string, proxy: ProxyEndpoint, timeoutMs: number): P
           socket.once('connect', () => {
             socket.write(`CONNECT ${target.hostname}:${port} HTTP/1.1\r\nHost: ${target.hostname}:${port}\r\n\r\n`);
           });
-          let head = '';
+          let head = Buffer.alloc(0);
           const onData = (chunk: Buffer) => {
-            head += chunk.toString('latin1');
-            const idx = head.indexOf('\r\n\r\n');
-            if (idx === -1) return;
+            head = Buffer.concat([head, chunk]);
+            const { status, leftover } = splitConnectResponse(head);
+            if (status === 0) return; // 响应头还没收全，继续累积
             socket.removeListener('data', onData);
-            const status = Number((/HTTP\/\d(?:\.\d)? (\d+)/.exec(head) || [])[1] || 0);
             if (status !== 200) {
               socket.destroy();
               cb(new Error(`代理 CONNECT 失败 HTTP ${status}`));
               return;
             }
+            // 关键：把「响应头之后」的字节还回 socket。CONNECT 响应头与 TLS ServerHello 常同包到达，
+            // 丢掉剩余字节 = 丢 TLS 握手数据 → 小文件偶尔能过、大文件必然 ECONNRESET（极难定位）。
+            if (leftover.length > 0) socket.unshift(leftover);
             const tlsSocket = tls.connect({ socket, servername: target.hostname });
             tlsSocket.once('secureConnect', () => cb(null, tlsSocket));
             tlsSocket.once('error', (e) => cb(e));
@@ -177,9 +198,21 @@ function proxyTunnelGet(url: string, proxy: ProxyEndpoint, timeoutMs: number): P
         },
       },
       (res) => {
-        if ((res.statusCode || 0) !== 200) {
+        const code = res.statusCode || 0;
+        // 跟随重定向（相对 Location 也要能解析）
+        if (code >= 300 && code < 400) {
+          const loc = res.headers.location;
           res.resume();
-          reject(new Error(`下载失败 HTTP ${res.statusCode}`));
+          if (!loc) { reject(new Error(`代理下载收到 ${code} 但无 Location`)); return; }
+          if (redirectsLeft <= 0) { reject(new Error('代理下载重定向次数过多')); return; }
+          let next: string;
+          try { next = new URL(loc, url).toString(); } catch { reject(new Error(`重定向地址非法: ${loc}`)); return; }
+          proxyTunnelGet(next, proxy, timeoutMs, redirectsLeft - 1).then(resolve, reject);
+          return;
+        }
+        if (code !== 200) {
+          res.resume();
+          reject(new Error(`下载失败 HTTP ${code}`));
           return;
         }
         const chunks: Buffer[] = [];

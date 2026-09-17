@@ -42,6 +42,7 @@ import workspaceRoutes from './routes/workspace.js';
 import memoryRoutes from './routes/memory.js';
 import scheduledTaskRoutes from './routes/scheduled-tasks.js';
 import ollamaMarketRoutes from './routes/ollama-market.js';
+import ttsPackRoutes from './routes/tts-packs.js';
 import pluginRoutes, { pluginAssetsRouter, PLUGINS_DIR } from './routes/plugins.js';
 import gitRoutes from './routes/git.js';
 import datasourceRoutes from './routes/datasources.js';
@@ -138,6 +139,7 @@ app.use('/api/workspace', workspaceRoutes);
 app.use('/api/memory', memoryRoutes);
 app.use('/api/scheduled-tasks', scheduledTaskRoutes);
 app.use('/api/ollama-market', ollamaMarketRoutes);
+app.use('/api/tts-packs', ttsPackRoutes);
 app.use('/api/plugins', pluginRoutes);
 // 插件静态资源（皮肤壁纸/预览图）：/api/plugin-assets/:pluginId/*
 app.use('/api/plugin-assets', pluginAssetsRouter);

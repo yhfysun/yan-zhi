@@ -86,5 +86,95 @@ export function registerMediaTools(m: Map<ApiModuleName, ToolDefinition[]>) {
         required: ['taskId'],
       },
     },
+    {
+      name: 'api_tts_speak',
+      description:
+        '文字转语音：把一段文本合成为语音文件，返回 {type:"audio", file, url}。' +
+        '三层引擎（自动按序尝试、失败自动降级，返回里带 engine 来源）：' +
+        '① 模型层（传 model+platformId 点名，或用库中 audio 型模型）；' +
+        '② **Edge 在线合成**（默认层，免费无需 Key，中文普通话 6 个音色、另有方言与港台，质量高）；' +
+        '③ 系统本地语音（离线兜底，Windows WinRT/OneCore 或 SAPI、macOS say）。' +
+        '多角色场景传 character（角色名）：按角色名推断性别并分配对应性别音色（男主→男声、女主→女声），' +
+        '同一角色跨多次调用锁定同一音色、不同角色尽量不同。也可用 voice 显式指定。' +
+        '适合分镜台词配音、朗读长文。单次 ≤ 5000 字，过长分段；不做声音克隆（合规红线）。',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          text: { type: 'string', description: '要合成的文本（台词/旁白）' },
+          character: { type: 'string', description: '可选，角色名（如"男主"/"女主"/"旁白"/"少年"/"爷爷"）。传入后自动按角色名推断性别并分配对应性别音色，同一角色锁定同一音色。多角色短剧强烈建议传它' },
+          voice: { type: 'string', description: '可选，显式音色（优先级最高）。Edge 音色名形如 zh-CN-YunxiNeural（用 api_tts_voices 查询）；系统音色名形如 Microsoft Huihui；模型层为 alloy/echo 等' },
+          model: { type: 'string', description: '可选，TTS 模型（如 tts-1）；传了就走模型层' },
+          platformId: { type: 'string', description: '可选，指定平台 id（配合 model 使用）' },
+          rate: { type: 'number', description: '可选，语速 -10~10，0 为正常（各层会自动折算为对应格式）' },
+        },
+        required: ['text'],
+      },
+    },
+    {
+      name: 'api_tts_voices',
+      description:
+        '列出可用音色，返回三层各自的能力：' +
+        '**edge**（Edge 在线，默认层）——中文普通话 6 个音色（4 男 2 女风格各异），另有辽宁/陕西方言与港台音色，质量高；' +
+        '**system**（本机离线兜底）——真实枚举系统已装音色（含性别与容量评估）；' +
+        '**model**（模型层音色名）。' +
+        '做多角色配音前调用它可了解有哪些声音；也可用于排查「传了 voice 却没生效」。',
+      inputSchema: { type: 'object', properties: {}, required: [] },
+    },
+    {
+      name: 'api_srt_generate',
+      description:
+        '生成 SRT 字幕文件：把台词/旁白条目编成字幕。cues 每条 {text, duration}（时长按顺序累加推算时间轴）或 {start, end, text}（显式秒）。' +
+        '返回 {type:"file", file, url}。分镜表每镜自带时长 → 时间轴纯计算生成，无需语音识别。' +
+        '生成的 SRT 可交给 media_compose 的 subtitle 操作烧进视频。',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          cues: {
+            type: 'array',
+            description: '字幕条目，按播放顺序',
+            items: {
+              type: 'object',
+              properties: {
+                text: { type: 'string', description: '台词/旁白文本' },
+                duration: { type: 'number', description: '持续秒数（不传 start/end 时用，缺省 3）' },
+                start: { type: 'number', description: '可选，显式起始秒' },
+                end: { type: 'number', description: '可选，显式结束秒' },
+              },
+              required: ['text'],
+            },
+          },
+        },
+        required: ['cues'],
+      },
+    },
+    {
+      name: 'media_install_ffmpeg',
+      description:
+        '下载安装 ffmpeg（媒体合成的依赖：配音混入视频、拼接、烧字幕都需要它）。' +
+        '按当前平台从官方静态构建源下载到应用数据目录，一次安装长期可用。' +
+        '当 media_compose 报「尚未安装 ffmpeg」时调用本工具；调用前应先用 confirm_user 告知用户即将下载（约 100MB+），征得同意再装。' +
+        '已安装时直接返回可用状态（幂等）。',
+      inputSchema: { type: 'object', properties: {}, required: [] },
+    },
+    {
+      name: 'media_compose',
+      description:
+        '音视频合成（基于 ffmpeg）：① dub 把配音音频混进视频（默认替换原音轨，keepAudio=true 时与人声混合）；② concat 按顺序拼接多段视频；③ subtitle 把 SRT 字幕烧录进画面。' +
+        '输入一律为本机文件绝对路径（前序工具返回的 file 字段）。返回 {type:"video", file, url}。' +
+        'concat 要求各段编码参数一致（copy 直拼），不一致会报错——先用同参数生成。未找到 ffmpeg 时会给出明确的放置/配置指引。',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          op: { type: 'string', enum: ['dub', 'concat', 'subtitle'], description: '合成操作' },
+          video: { type: 'string', description: 'dub/subtitle：视频文件本机绝对路径' },
+          audio: { type: 'string', description: 'dub：配音音频本机绝对路径' },
+          keepAudio: { type: 'boolean', description: 'dub 可选，true=配音与原音轨混合（amix），false/缺省=替换原音轨' },
+          videos: { type: 'array', items: { type: 'string' }, description: 'concat：按顺序的视频路径列表（≥2）' },
+          srt: { type: 'string', description: 'subtitle：SRT 字幕文件本机绝对路径（api_srt_generate 的产出）' },
+          output: { type: 'string', description: '可选，输出文件名（如 final.mp4）；不传自动命名' },
+        },
+        required: ['op'],
+      },
+    },
   ]);
 }

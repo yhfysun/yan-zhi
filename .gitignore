@@ -165,3 +165,10 @@ list-fix-demo.html
 
 # 运行时按需下载的 ffmpeg 二进制（media_install_ffmpeg 落盘位置，约 196MB，不入库）
 apps/server/ffmpeg/
+
+# 运行时按需下载的语音引擎与模型（sherpa-onnx 原生库约 22MB + 语音包约 31MB，不入库）
+apps/server/sherpa/
+apps/server/tts-models/
+
+# TTS 试听与合成产物（运行时生成，不入库）
+apps/server/generated-audios/

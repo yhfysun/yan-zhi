@@ -225,6 +225,9 @@
           </div>
         </div>
       </el-tab-pane>
+      <el-tab-pane label="语音包" name="voicepack">
+        <VoicePackPanel />
+      </el-tab-pane>
       <el-tab-pane label="日志" name="logs">
         <div class="logs-tab-embed">
           <LlmLogs />
@@ -257,6 +260,7 @@ import type { ThemeName } from '../stores/settings';
 import { api, API_BASE } from '../api/client';
 import MemoryManage from '../components/memory/MemoryManage.vue';
 import LlmLogs from './LlmLogs.vue';
+import VoicePackPanel from '../components/VoicePackPanel.vue';
 
 const settingsStore = useSettingsStore();
 const platformStore = usePlatformStore();

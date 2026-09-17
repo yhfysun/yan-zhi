@@ -1,10 +1,15 @@
 import { v4 as uuid } from 'uuid';
 import { readdir, stat, mkdir, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { execFile } from 'node:child_process';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { db } from '../db.js';
 import { DEFAULT_CONTEXT_WINDOW } from '../constants.js';
 import { AGENS_API_URL, inferCapabilitiesFromModelId } from '../agens-platform/service.js';
 import { serverState } from '../state.js';
+import { resolveFfmpeg, installFfmpeg } from './ffmpeg-runtime.js';
+import { buildSrt, type SrtCue } from './srt.js';
 import {
   upsertPeer,
   listPeers,
@@ -18,6 +23,61 @@ import { readSpaceMemory, appendSpaceMemory } from '../services/space-memory.js'
 import { readBrowserMemoryOverview } from '../services/browser-memory.js';
 import { ensureArtifactDirFor } from '../services/artifact-dir.js';
 import { downloadMediaBinary } from '../services/media-fetch.js';
+import { systemSpeak, listSystemVoices, pickVoiceForRole, describeVoiceCapacity, inferRoleGender } from './tts-sapi.js';
+import { listEdgeVoices, edgeSpeak, pickEdgeVoiceForRole, defaultEdgeVoice, type EdgeVoice } from './edge-tts.js';
+import { localSpeak, pcmToWav, parseLocalVoice, pickSpeakerForRole, resolveSherpaLib } from './sherpa-tts.js';
+import { listTtsPacks } from '../services/tts-packs.js';
+
+/**
+ * 找第一个已安装的本地语音包（用于本地合成）。
+ * 返回 null = 没装（这是正常状态，不是错误 —— 本地语音只是三层兜底之一）。
+ */
+async function findInstalledLocalPack(): Promise<{ id: string; dir: string } | null> {
+  if (!resolveSherpaLib().available) return null;
+  try {
+    const packs = await listTtsPacks();
+    // modelDir 已由 listTtsPacks 解析为「真实可用目录」（下载位或手动放置位）
+    const hit = packs.find((p) => p.installed);
+    return hit ? { id: hit.id, dir: hit.modelDir } : null;
+  } catch {
+    return null;
+  }
+}
+
+/** 本地层的说话人分配：显式编号优先 → 角色预置表 → 散列兜底（保证同角色恒定同声音）。 */
+const localSpeakerAssignments = new Map<string, Map<string, number>>();
+function resolveLocalSpeaker(explicitVoice: string, character: string, conversationId: string | undefined): number {
+  const parsed = parseLocalVoice(explicitVoice, character);
+  if (parsed !== null) return parsed;
+  if (!character) return 0;
+  const key = conversationId || '__global__';
+  let m = localSpeakerAssignments.get(key);
+  if (!m) { m = new Map(); localSpeakerAssignments.set(key, m); }
+  const existing = m.get(character);
+  if (existing !== undefined) return existing;
+  const used = new Set(m.values());
+  const sid = pickSpeakerForRole(character, used);
+  m.set(character, sid);
+  return sid;
+}
+
+/** Edge 音色列表缓存（网络请求较慢，进程内缓存 30 分钟足够）。 */
+let edgeVoiceCache: { at: number; voices: EdgeVoice[] } | null = null;
+async function getEdgeVoices(force = false): Promise<EdgeVoice[]> {
+  if (!force && edgeVoiceCache && Date.now() - edgeVoiceCache.at < 30 * 60 * 1000) return edgeVoiceCache.voices;
+  const voices = await listEdgeVoices();
+  edgeVoiceCache = { at: Date.now(), voices };
+  return voices;
+}
+
+/** Edge 层的角色→音色分配缓存（与系统层分开，音色名体系不同）。 */
+const edgeRoleAssignments = new Map<string, Map<string, string>>();
+function edgeAssignmentFor(conversationId: string | undefined): Map<string, string> {
+  const key = conversationId || '__global__';
+  let m = edgeRoleAssignments.get(key);
+  if (!m) { m = new Map(); edgeRoleAssignments.set(key, m); }
+  return m;
+}
 import {
   computeNextRun,
   nextCronTime,
@@ -205,6 +265,10 @@ export const SUPPORTED_API_TOOLS = new Set([
   'api_ontology_overview', 'api_ontology_brief', 'api_ontology_detail', 'api_ontology_values',
   // AI 媒体生成（文生图/文生视频，agnes 平台）
   'api_image_generate', 'api_video_generate', 'api_video_status',
+  // 文字转语音（模型层 + 系统语音兜底）+ 音色枚举
+  'api_tts_speak', 'api_tts_voices',
+  // 合成层：字幕生成 + ffmpeg 音视频合成（含按需下载 ffmpeg）
+  'api_srt_generate', 'media_compose', 'media_install_ffmpeg',
 ]);
 
 /** 本体挂载范围：任务显式下发优先；否则读 server agent 表；均无 = undefined 不限 */
@@ -339,9 +403,10 @@ async function fetchWithTimeout(url: string, init: any, timeoutMs: number): Prom
  * - 有会话：落 .yan-zhi 规范的交付目录，URL 走三段式（静态服务按会话定位）
  * - 无会话（定时任务 / IM 等入口没有 conversationId）：退回旧的全局目录，URL 走两段式
  */
-function mediaTarget(opts: {
+/** 产物落盘位置（导出供语音包试听等服务复用，保证与工具产物同一目录与访问通道）。 */
+export function mediaTarget(opts: {
   conversationId?: string;
-  kind: 'images' | 'videos';
+  kind: 'images' | 'videos' | 'audios' | 'files';
 }): { dir: string; urlBase: string } {
   const convId = (opts.conversationId || '').trim();
   if (convId) {
@@ -350,7 +415,10 @@ function mediaTarget(opts: {
       urlBase: `/api/generated/${opts.kind}/${convId}`,
     };
   }
-  const sub = opts.kind === 'images' ? 'generated-images' : 'generated-videos';
+  const sub = opts.kind === 'images' ? 'generated-images'
+    : opts.kind === 'audios' ? 'generated-audios'
+    : opts.kind === 'files' ? 'generated-files'
+    : 'generated-videos';
   return {
     dir: process.env.DATA_DIR ? path.join(process.env.DATA_DIR, sub) : path.resolve(sub),
     urlBase: `/api/generated/${opts.kind}`,
@@ -559,6 +627,456 @@ async function mediaGenerateImage(
     return await handleImageResult(j, model, prompt, conversationId);
   }
   return fail(`所有 agnes Key 均不可用（限频或无效）：${lastErr}`);
+}
+
+// ===== TTS（api_tts_speak）：模型层优先，系统语音兜底 =====
+// 模型层走 OpenAI 兼容 POST /v1/audio/speech（二进制音频响应）；
+// 系统层走 Windows SAPI / macOS say（离线可用）。双层失败才报错，错误信息带上各层原因。
+
+function hasConfiguredTtsModel(userId?: string | null): boolean {
+  try {
+    const cond = userId ? 'AND m.user_id = ?' : '';
+    const params: unknown[] = userId ? [userId] : [];
+    const row = db.prepare(
+      `SELECT m.id FROM model m JOIN platform p ON p.id = m.platform_id
+        WHERE m.enabled = 1 AND m.visible = 1 AND p.llm_enabled = 1
+          AND (m.type = 'audio' OR m.capabilities LIKE '%audio%' OR m.capabilities LIKE '%tts%' OR m.capabilities LIKE '%speech%') ${cond}
+        LIMIT 1`,
+    ).get(...params);
+    return !!row;
+  } catch { return false; }
+}
+
+async function ttsViaModel(
+  args: Record<string, unknown>,
+  text: string,
+  voice: string,
+  userId?: string | null,
+  conversationId?: string,
+): Promise<{ ok: true; result: MpcToolExecutionResult } | { ok: false; error: string }> {
+  const model = str(args, 'model') || 'tts-1';
+  const ctx = resolveMediaPlatform(args, userId);
+  if (!ctx.ok) return { ok: false, error: ctx.error };
+  if (!ctx.keys.length) return { ok: false, error: '未找到该平台的 API Key（Token 池为空），请先在模型平台里配置' };
+  let lastErr = '';
+  for (const key of ctx.keys) {
+    let res: Response;
+    try {
+      res = await fetchWithTimeout(`${ctx.baseUrl}/v1/audio/speech`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model, input: text, voice: voice || 'alloy', response_format: 'mp3' }),
+      }, 180000);
+    } catch (e: unknown) {
+      lastErr = e instanceof Error ? e.message : String(e);
+      continue;
+    }
+    if (res.status === 429 || res.status === 401 || res.status === 403) {
+      bumpAgensKeyFail(key);
+      lastErr = `HTTP ${res.status}`;
+      continue;
+    }
+    if (!res.ok) {
+      lastErr = `HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`;
+      continue;
+    }
+    const buf = Buffer.from(await res.arrayBuffer());
+    if (!buf.length) { lastErr = '响应体为空'; continue; }
+    const target = mediaTarget({ conversationId, kind: 'audios' });
+    await mkdir(target.dir, { recursive: true });
+    const file = path.join(target.dir, `audio-${Date.now()}.mp3`);
+    await writeFile(file, buf);
+    return { ok: true, result: ok(JSON.stringify({
+      ok: true, type: 'audio', engine: 'model', model, voice: voice || 'alloy',
+      url: `${target.urlBase}/${path.basename(file)}`, file, bytes: buf.length,
+    })) };
+  }
+  return { ok: false, error: lastErr || '未知错误' };
+}
+
+/** 列出可用音色：本地语音包（离线）+ Edge 在线 + 系统本地 + 模型层。 */
+async function mediaTtsVoices(): Promise<MpcToolExecutionResult> {
+  const out: Record<string, unknown> = { ok: true };
+  // 0) 本地语音包（离线多音色，装了才可用）
+  try {
+    const engine = resolveSherpaLib();
+    const packs = await listTtsPacks();
+    const installed = packs.filter((p) => p.installed);
+    out.local = {
+      available: installed.length > 0,
+      engineAvailable: engine.available,
+      ...(installed.length
+        ? {
+          models: installed.map((p) => ({ id: p.id, name: p.name, speakers: p.speakers, sampleRate: p.sampleRate })),
+          note: '本地语音完全离线可用。传 voice: "local:<说话人编号>" 指定音色；传 character 会自动分配。',
+        }
+        : { note: '未安装语音包，可在 设置 → 语音包 中下载（约 31MB，174 个中文说话人）' }),
+      ...(engine.available ? {} : { engineError: engine.error }),
+    };
+  } catch (e: unknown) {
+    out.local = { available: false, error: e instanceof Error ? e.message : String(e) };
+  }
+  // 1) Edge 在线音色（中文普通话 8 个，男女齐全，质量高）
+  try {
+    const voices = await getEdgeVoices(true);
+    const zh = voices.filter((v) => String(v.culture).startsWith('zh'));
+    out.edge = {
+      available: true,
+      note: 'Edge 在线合成（免费、无需 Key、质量高于系统语音）。离线时会自动回落。',
+      total: voices.length,
+      zhVoices: zh.map((v) => ({ name: v.name, gender: v.gender, culture: v.culture })),
+      zhCount: zh.length,
+      zhMale: zh.filter((v) => v.gender === 'Male').length,
+      zhFemale: zh.filter((v) => v.gender === 'Female').length,
+    };
+  } catch (e: unknown) {
+    out.edge = { available: false, error: e instanceof Error ? e.message : String(e), note: 'Edge 不可用（可能是离线）时会自动使用系统语音' };
+  }
+  // 2) 系统本地音色（离线兜底）
+  try {
+    const sys = await listSystemVoices();
+    if (sys === null) {
+      out.system = { available: false, note: '当前平台无离线语音引擎（仅 Windows / macOS）' };
+    } else {
+      const cap = describeVoiceCapacity(sys, 3);
+      out.system = { available: true, voices: sys, distinctVoices: cap.distinctVoices, capacityNote: cap.note };
+    }
+  } catch (e: unknown) {
+    out.system = { available: false, error: e instanceof Error ? e.message : String(e) };
+  }
+  // 3) 模型层音色名
+  out.model = {
+    note: '模型层音色取决于所用平台；以下是 OpenAI 兼容 /v1/audio/speech 的常见音色名',
+    voices: ['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer'],
+    hint: hasConfiguredTtsModel(null)
+      ? '库中已配置 audio 型模型，传 model+platformId 即可走模型层'
+      : '库中未配置 audio 型模型',
+  };
+  out.priority = 'api_tts_speak 选音色顺序：显式传 model/platformId 走模型层 → 已装语音包走本地（离线）→ Edge 在线 → 系统语音';
+  out.tip = '多角色短剧：传 character（如"男主"/"女主"）即可自动按性别/编号分配不同音色，无需手查音色表。';
+  return ok(JSON.stringify(out));
+}
+
+/**
+ * 角色 → 音色映射缓存（进程内）。
+ *
+ * 为什么需要缓存：多角色短剧会为每个角色的每句台词分别调 api_tts_speak，
+ * 每次调用都是独立进程级请求，若不缓存，同一角色会被分配到不同音色 ——
+ * 表现为「同一角色声音忽男忽女」，而每次调用单看都成功、无从察觉。
+ * 键用「会话 + 角色名」：不同会话的角色表互不干扰。
+ */
+const roleVoiceAssignments = new Map<string, Map<string, string>>();
+
+function assignmentFor(conversationId: string | undefined, role: string): Map<string, string> {
+  const key = conversationId || '__global__';
+  let m = roleVoiceAssignments.get(key);
+  if (!m) { m = new Map(); roleVoiceAssignments.set(key, m); }
+  return m;
+}
+
+/** 解析本次要用的音色：显式 voice 优先；否则按角色自动分配并锁定。
+ *  仅用于系统语音层 —— 系统音色名（如 Microsoft Huihui）对模型层无效。 */
+async function resolveSpeakVoice(
+  explicitVoice: string,
+  character: string,
+  conversationId: string | undefined,
+): Promise<string> {
+  if (explicitVoice) return explicitVoice;
+  if (!character) return '';
+  const assigned = assignmentFor(conversationId, character);
+  // 已分配过直接复用（保证同角色同音色）
+  const existing = assigned.get(character);
+  if (existing) return existing;
+  let voices: Array<{ name: string; culture: string }> = [];
+  try {
+    voices = (await listSystemVoices()) || [];
+  } catch {
+    // 枚举失败则退化为「不指定音色」，让引擎按默认语言自选（好过整体失败）
+    return '';
+  }
+  const chosen = pickVoiceForRole(voices, character, assigned);
+  return chosen || '';
+}
+
+/** 模型层音色：只在显式传 voice 时使用；否则让平台用自身默认音色。
+ *  防止把系统音色名（Microsoft Huihui 等）误传给模型端点导致 400。 */
+const MODEL_VOICE_WHITELIST = ['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer'];
+function resolveModelVoice(args: Record<string, unknown>): string {
+  const v = str(args, 'voice').trim();
+  if (v && MODEL_VOICE_WHITELIST.includes(v.toLowerCase())) return v.toLowerCase();
+  return '';
+}
+
+async function mediaSpeak(
+  args: Record<string, unknown>,
+  userId?: string | null,
+  conversationId?: string,
+): Promise<MpcToolExecutionResult> {
+  const text = str(args, 'text').trim();
+  if (!text) return fail('text 为必填项');
+  if (text.length > 5000) return fail(`文本过长（${text.length} 字），请分段调用（单次 ≤ 5000 字）`);
+  const character = str(args, 'character').trim();
+  const rate = num(args, 'rate', 0);
+  const errors: string[] = [];
+  // 系统语音层的音色（只用于最后的兜底分支；Edge 层有自己的音色体系，不能混用）
+  const explicitVoice = str(args, 'voice').trim();
+
+  // 模型层：显式点名（model/platformId）或库里有 audio 型模型才尝试；失败自动回落系统层。
+  // 注意用 resolveModelVoice（白名单）而非系统音色 —— 两者命名体系不同，混用会 400。
+  const wantModel = !!str(args, 'model').trim() || !!str(args, 'platformId').trim() || hasConfiguredTtsModel(userId);
+  if (wantModel) {
+    const m = await ttsViaModel(args, text, resolveModelVoice(args), userId, conversationId);
+    if (m.ok) return m.result;
+    errors.push(`模型层：${m.error}`);
+  } else {
+    errors.push('模型层：未配置 audio 型模型（可传 model+platformId 点名启用）');
+  }
+
+  // 本地语音层（第三层，但排在 Edge 之前）：装了语音包就完全离线可用，音色上百。
+  // 用户诉求是「离线也要多音色」，故本地模型优先于在线 Edge；
+  // 未装语音包时这一步自然跳过（不报错），继续走 Edge。
+  const target = mediaTarget({ conversationId, kind: 'audios' });
+  await mkdir(target.dir, { recursive: true });
+  try {
+    const localPack = await findInstalledLocalPack();
+    if (localPack) {
+      const speakerId = resolveLocalSpeaker(explicitVoice, character, conversationId);
+      const { samples, sampleRate } = await localSpeak(text, {
+        modelDir: localPack.dir,
+        speakerId,
+        speed: 1 + Math.max(-10, Math.min(10, rate)) / 10,
+      });
+      const file = path.join(target.dir, `audio-${Date.now()}.wav`);
+      const wav = pcmToWav(samples, sampleRate);
+      await writeFile(file, wav);
+      return ok(JSON.stringify({
+        ok: true, type: 'audio', engine: 'local', voice: `local:${speakerId}`,
+        model: localPack.id,
+        ...(character ? { character } : {}),
+        url: `${target.urlBase}/${path.basename(file)}`, file, bytes: wav.length,
+      }));
+    }
+    errors.push('本地语音层：未安装语音包（可在 设置 → 语音包 下载）');
+  } catch (e: unknown) {
+    errors.push(`本地语音层：${e instanceof Error ? e.message : String(e)}`);
+  }
+
+  // Edge 层：免费在线合成，中文音色远多于系统语音（本机系统仅 3 个、Edge 有 8 个）。
+  // 离线会失败 → 不中断，记下原因后回落系统语音，保证「至少有产出」。
+  try {
+    const voices = await getEdgeVoices();
+    if (voices.length) {
+      // 显式 voice 是 Edge 音色名时直用；否则按角色推断性别分配 Edge 音色
+      const explicit = str(args, 'voice').trim();
+      const wantGender = character ? inferRoleGender(character) : '';
+      let edgeVoice = '';
+      if (explicit && voices.some((v) => v.name === explicit)) {
+        edgeVoice = explicit;
+      } else if (character) {
+        edgeVoice = pickEdgeVoiceForRole(voices, character, edgeAssignmentFor(conversationId), wantGender);
+      } else {
+        edgeVoice = defaultEdgeVoice(voices, wantGender);
+      }
+      if (edgeVoice) {
+        const r = await edgeSpeak(text, { voice: edgeVoice, rate });
+        const file = path.join(target.dir, `audio-${Date.now()}.mp3`);
+        await writeFile(file, r.buffer);
+        return ok(JSON.stringify({
+          ok: true, type: 'audio', engine: 'edge', voice: edgeVoice,
+          ...(character ? { character } : {}),
+          url: `${target.urlBase}/${path.basename(file)}`, file, bytes: r.buffer.length,
+        }));
+      }
+    }
+    errors.push('Edge 层：未取得可用音色');
+  } catch (e: unknown) {
+    errors.push(`Edge 层：${e instanceof Error ? e.message : String(e)}`);
+  }
+
+  // 系统层兜底（离线可用；不做声音克隆）
+  try {
+    const outFile = path.join(target.dir, `audio-${Date.now()}.wav`);
+    // 系统层只认自家音色名：显式传的 Edge 音色名（zh-CN-*）在这里无效，交给角色分配/引擎默认
+    const sysVoice = explicitVoice && !/^[a-z]{2}-[A-Z]{2}-/.test(explicitVoice)
+      ? explicitVoice
+      : await resolveSpeakVoice('', character, conversationId);
+    const r = await systemSpeak(text, { voice: sysVoice || undefined, rate, outFile });
+    if (r) {
+      // 传了角色但本机音色不够时，把「声音会重复」讲明白 —— 否则用户以为多角色已生效
+      let capacityNote: string | undefined;
+      if (character) {
+        try {
+          const sys = (await listSystemVoices()) || [];
+          const cap = describeVoiceCapacity(sys, assignmentFor(conversationId, character).size);
+          if (!cap.adequate) capacityNote = cap.note;
+        } catch { /* 容量评估失败不影响配音结果 */ }
+      }
+      return ok(JSON.stringify({
+        ok: true, type: 'audio', engine: r.engine, voice: sysVoice || 'auto',
+        ...(character ? { character } : {}),
+        ...(capacityNote ? { capacityNote } : {}),
+        url: `${target.urlBase}/${path.basename(r.file)}`, file: r.file, bytes: r.bytes,
+      }));
+    }
+    errors.push('系统语音：当前系统无离线引擎（仅支持 Windows SAPI / macOS say）');
+  } catch (e: unknown) {
+    errors.push(`系统语音：${e instanceof Error ? e.message : String(e)}`);
+  }
+  return fail(errors.join('；'));
+}
+
+// ===== 合成层（api_srt_generate / media_compose）：字幕与音视频混流 =====
+// 设计取舍：不做剪辑台。分镜表每镜自带时长 → 时间轴是已知量，字幕纯计算生成（零 ASR），
+// 合成只需 concat / 混音 / 烧字幕三种确定性操作。ffmpeg 经 ffmpeg-runtime 定位（随包 > PATH）。
+
+/** 跑一次 ffmpeg，失败时把 stderr 尾部带出来（定位编码/参数问题只能靠它）。 */
+function runFfmpeg(bin: string, args: string[], timeoutMs: number): Promise<{ ok: boolean; stderr: string }> {
+  return new Promise((resolve) => {
+    execFile(bin, args, { timeout: timeoutMs, windowsHide: true, maxBuffer: 16 * 1024 * 1024 }, (err, _stdout, stderr) => {
+      if (err) resolve({ ok: false, stderr: String(stderr || err.message).slice(-1200) });
+      else resolve({ ok: true, stderr: '' });
+    });
+  });
+}
+
+/** 输入文件校验：一律要求本机已存在的绝对路径（相对路径在不同 cwd 下会静默错文件）。 */
+function requireLocalFile(v: unknown, label: string): { ok: true; file: string } | { ok: false; error: string } {
+  const s = String(v ?? '').trim();
+  if (!s) return { ok: false, error: `${label} 必填` };
+  if (!path.isAbsolute(s)) return { ok: false, error: `${label} 需要本机绝对路径：${s}` };
+  if (!existsSync(s)) return { ok: false, error: `${label} 文件不存在：${s}` };
+  return { ok: true, file: s };
+}
+
+/** 合成层依赖 ffmpeg：缺失时给出「一键下载」引导（工具名+目录+下载源），而不是让用户自己猜。 */
+function ffmpegMissingHint(st: { error: string; installDir: string; downloadUrl: string }): string {
+  return [
+    st.error,
+    '',
+    '处理方式：调用 media_install_ffmpeg 由我自动下载安装' + (st.downloadUrl ? `（源：${st.downloadUrl}）` : '（当前平台无自动源）'),
+    `或手动放入目录：${st.installDir}`,
+    '建议先向用户确认再下载（文件较大，约 100MB+）。',
+  ].join('\n');
+}
+
+async function mediaInstallFfmpeg(): Promise<MpcToolExecutionResult> {
+  const before = await resolveFfmpeg();
+  if (before.ok) {
+    return ok(JSON.stringify({ ok: true, alreadyInstalled: true, source: before.source, dir: path.dirname(before.ffmpeg) }));
+  }
+  const r = await installFfmpeg((msg) => console.log(`[ffmpeg] ${msg}`));
+  if (!r.ok) return fail(`${r.message}${r.dir ? `\n可手动放入目录：${r.dir}` : ''}`);
+  const after = await resolveFfmpeg();
+  return ok(JSON.stringify({
+    ok: true, installed: true, source: after.source,
+    dir: r.dir, ffmpeg: after.ffmpeg, ffprobe: after.ffprobe,
+    note: '安装完成，媒体合成（media_compose）现在可用。',
+  }));
+}
+
+async function mediaSrtGenerate(
+  args: Record<string, unknown>,
+  conversationId?: string,
+): Promise<MpcToolExecutionResult> {
+  const raw = args.cues;
+  if (!Array.isArray(raw) || raw.length === 0) return fail('cues 必填且为非空数组');
+  const cues: SrtCue[] = raw.map((c) => {
+    const o = (c || {}) as Record<string, unknown>;
+    return {
+      text: String(o.text ?? ''),
+      duration: typeof o.duration === 'number' ? o.duration : undefined,
+      start: typeof o.start === 'number' ? o.start : undefined,
+      end: typeof o.end === 'number' ? o.end : undefined,
+    };
+  });
+  const built = buildSrt(cues);
+  if (!built.ok) return fail(built.error);
+  try {
+    const target = mediaTarget({ conversationId, kind: 'files' });
+    await mkdir(target.dir, { recursive: true });
+    const file = path.join(target.dir, `subtitle-${Date.now()}.srt`);
+    // SRT 播放器普遍按 UTF-8 解析；显式写 UTF-8（Windows 默认编码会导致中文乱码）
+    await writeFile(file, built.srt, 'utf8');
+    return ok(JSON.stringify({
+      ok: true, type: 'file', kind: 'srt', cues: built.count,
+      url: `${target.urlBase}/${path.basename(file)}`, file,
+    }));
+  } catch (e: unknown) {
+    return fail(`字幕落盘失败：${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
+async function mediaCompose(
+  args: Record<string, unknown>,
+  conversationId?: string,
+): Promise<MpcToolExecutionResult> {
+  const op = str(args, 'op').trim();
+  if (!['dub', 'concat', 'subtitle'].includes(op)) return fail('op 必须是 dub / concat / subtitle 之一');
+
+  const ff = await resolveFfmpeg();
+  if (!ff.ok) return fail(ffmpegMissingHint(ff));
+
+  const target = mediaTarget({ conversationId, kind: 'videos' });
+  const tmpDir = path.join(tmpdir(), `yz-compose-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+  await mkdir(target.dir, { recursive: true });
+  await mkdir(tmpDir, { recursive: true });
+
+  const nameArg = str(args, 'output').trim();
+  const safeName = nameArg && /^[A-Za-z0-9._-]+$/.test(nameArg) ? nameArg : `composed-${Date.now()}.mp4`;
+  const outFile = path.join(target.dir, safeName);
+
+  try {
+    let r: { ok: boolean; stderr: string };
+
+    if (op === 'concat') {
+      const list = Array.isArray(args.videos) ? args.videos.map((v) => String(v)) : [];
+      if (list.length < 2) return fail('concat 需要 videos 数组且至少 2 段');
+      const files: string[] = [];
+      for (let i = 0; i < list.length; i++) {
+        const c = requireLocalFile(list[i], `videos[${i}]`);
+        if (!c.ok) return fail(c.error);
+        files.push(c.file);
+      }
+      // concat demuxer 的路径转义：单引号内嵌需写成 '\''，Windows 反斜杠需转正斜杠
+      const listFile = path.join(tmpDir, 'concat.txt');
+      const body = files.map((f) => `file '${f.replace(/\\/g, '/').replace(/'/g, "'\\''")}'`).join('\n');
+      await writeFile(listFile, body, 'utf8');
+      // -c copy 直拼（要求各段参数一致；不一致会明确报错，不静默转码降质）
+      r = await runFfmpeg(ff.ffmpeg, ['-y', '-f', 'concat', '-safe', '0', '-i', listFile, '-c', 'copy', outFile], 600000);
+      if (!r.ok) return fail(`拼接失败（各段编码参数可能不一致，需用同参数生成；-c copy 不做重编码）：${r.stderr}`);
+    } else if (op === 'dub') {
+      const v = requireLocalFile(args.video, 'video');
+      if (!v.ok) return fail(v.error);
+      const a = requireLocalFile(args.audio, 'audio');
+      if (!a.ok) return fail(a.error);
+      const keep = args.keepAudio === true;
+      // 替换音轨 vs 与原声混合（amix 降权避免削波）
+      const filter = keep ? ['-filter_complex', '[0:a][1:a]amix=inputs=2:duration=first:dropout_transition=2[a]', '-map', '0:v', '-map', '[a]'] : ['-map', '0:v', '-map', '1:a'];
+      r = await runFfmpeg(ff.ffmpeg, [
+        '-y', '-i', v.file, '-i', a.file,
+        ...filter,
+        '-c:v', 'copy', '-c:a', 'aac', '-shortest', outFile,
+      ], 600000);
+      if (!r.ok) return fail(`配音合成失败：${r.stderr}`);
+    } else {
+      const v = requireLocalFile(args.video, 'video');
+      if (!v.ok) return fail(v.error);
+      const s = requireLocalFile(args.srt, 'srt');
+      if (!s.ok) return fail(s.error);
+      // subtitles 滤镜的路径要转义（Windows 盘符冒号与反斜杠在 filtergraph 里是特殊字符）
+      const esc = s.file.replace(/\\/g, '/').replace(/:/g, '\\:');
+      r = await runFfmpeg(ff.ffmpeg, ['-y', '-i', v.file, '-vf', `subtitles='${esc}'`, '-c:a', 'copy', outFile], 600000);
+      if (!r.ok) return fail(`字幕烧录失败：${r.stderr}`);
+    }
+
+    const size = (await stat(outFile)).size;
+    return ok(JSON.stringify({
+      ok: true, type: 'video', engine: 'ffmpeg', source: ff.source,
+      url: `${target.urlBase}/${path.basename(outFile)}`, file: outFile, bytes: size,
+    }));
+  } catch (e: unknown) {
+    return fail(`合成失败：${e instanceof Error ? e.message : String(e)}`);
+  }
 }
 
 async function mediaGenerateVideo(
@@ -1827,6 +2345,16 @@ export async function executeApiTool(
         return await mediaGenerateVideo(args, userId, conversationId);
       case 'api_video_status':
         return await mediaVideoStatus(args, userId, conversationId);
+      case 'api_tts_speak':
+        return await mediaSpeak(args, userId, conversationId);
+      case 'api_tts_voices':
+        return await mediaTtsVoices();
+      case 'api_srt_generate':
+        return await mediaSrtGenerate(args, conversationId);
+      case 'media_compose':
+        return await mediaCompose(args, conversationId);
+      case 'media_install_ffmpeg':
+        return await mediaInstallFfmpeg();
 
       default:
         return fail(`未实现的 API 工具: ${name}`);
