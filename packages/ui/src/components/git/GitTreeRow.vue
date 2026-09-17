@@ -53,10 +53,22 @@
           <CaretRight v-if="expandedKey !== node.file!.key" /><CaretBottom v-else />
         </el-icon>
       </div>
-      <!-- 内联差异 -->
+      <!-- 内联差异：plain 模式（宿主已有一层容器，避免工具栏套工具栏） -->
       <div v-if="expandedKey === node.file!.key" class="gtr-diff">
         <div v-if="diffLoading" class="gtr-diff-tip">加载差异…</div>
-        <GitDiffViewer v-else-if="expandedDiff" :diff-text="expandedDiff" :file-name="node.path" />
+        <template v-else-if="expandedDiff">
+          <div class="gtr-diff-head">
+            <span class="gtr-diff-stat">
+              <em class="add">+{{ node.file!.added }}</em>
+              <em class="del">−{{ node.file!.deleted }}</em>
+            </span>
+            <span class="gtr-diff-spacer"></span>
+            <button class="gtr-diff-act" title="在新窗口打开" @click.stop="openInWindow">
+              <el-icon :size="11"><Open /></el-icon>新窗口
+            </button>
+          </div>
+          <GitDiffViewer :diff-text="expandedDiff" :file-name="node.path" plain />
+        </template>
         <div v-else class="gtr-diff-tip">无差异内容（新增或二进制文件）</div>
       </div>
     </template>
@@ -86,8 +98,9 @@
 
 <script setup lang="ts">
 import { computed } from 'vue';
-import { CaretRight, CaretBottom, Folder } from '@element-plus/icons-vue';
+import { CaretRight, CaretBottom, Folder, Open } from '@element-plus/icons-vue';
 import GitDiffViewer from '../chat/GitDiffViewer.vue';
+import { supportsChildWindow, openChildWindow } from '../../utils/childWindow';
 
 // 递归自引用：显式声明组件名，保证模板内 <GitTreeRow> 能解析到自身
 defineOptions({ name: 'GitTreeRow' });
@@ -146,6 +159,24 @@ function onFileClick(): void {
   const f = props.node.file;
   if (f && !f.isDirEntry) emit('expand', f);
 }
+
+/**
+ * 内联差异的「在新窗口打开」。
+ * plain 模式下 DiffBody 不带工具栏（避免嵌套观感），放大的入口由这里提供。
+ * 桌面端开真·独立窗口；其它环境退化为「切换到应用内全屏弹窗」由父级处理，
+ * 这里只负责能开则开、开不了就什么都不做（父级另有入口）。
+ */
+async function openInWindow(): Promise<void> {
+  const f = props.node.file;
+  if (!f || !supportsChildWindow) return;
+  await openChildWindow({
+    key: 'diff-viewer',
+    route: '/diff-window',
+    payload: { diffText: props.expandedDiff || '', fileName: props.node.path, title: '差异' },
+    width: 1280,
+    height: 860,
+  });
+}
 </script>
 
 <style scoped>
@@ -188,4 +219,23 @@ function onFileClick(): void {
 .gtr-dir-tip { font-size: 11px; color: var(--color-text-tertiary, #9a9a9a); margin-left: auto; }
 .gtr-diff { padding: 6px 10px; background: var(--color-surface, #fff); border-bottom: 1px solid var(--color-border, #e7e4dc); }
 .gtr-diff-tip { font-size: 12px; color: var(--color-text-tertiary, #9a9a9a); padding: 6px 0; }
+
+/* 内联差异的自有头部（统计 + 放大入口）——DiffBody 在 plain 模式下不带工具栏 */
+.gtr-diff-head {
+  display: flex; align-items: center; gap: 6px;
+  padding: 2px 2px 6px;
+  border-bottom: 1px solid var(--color-border, #f0eee8);
+  margin-bottom: 6px;
+}
+.gtr-diff-stat { display: inline-flex; gap: 6px; font-family: "JetBrains Mono", monospace; font-size: 11px; }
+.gtr-diff-stat .add { color: #10b981; font-style: normal; font-weight: 700; }
+.gtr-diff-stat .del { color: #ef4444; font-style: normal; font-weight: 700; }
+.gtr-diff-spacer { flex: 1; }
+.gtr-diff-act {
+  display: inline-flex; align-items: center; gap: 3px;
+  border: 1px solid var(--color-border, #e7e4dc); background: var(--color-surface, #fff);
+  border-radius: 5px; padding: 2px 7px; font-size: 11px; cursor: pointer;
+  color: var(--color-text-secondary, #6b6b6b);
+}
+.gtr-diff-act:hover { border-color: var(--color-primary, #c2410c); color: var(--color-primary, #c2410c); }
 </style>

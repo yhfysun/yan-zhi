@@ -13,6 +13,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
   platform: process.platform,
   isElectron: true,
 
+  // 独立子窗口（diff / 冲突解决等「另开一个窗口」的场景）
+  childWindow: {
+    // 打开（或聚焦已有）子窗口；route 走应用内的 hash 路由
+    open: (opts) => ipcRenderer.invoke('child-window:open', opts),
+    isMaximized: () => ipcRenderer.invoke('child-window:is-maximized'),
+    focusMain: () => ipcRenderer.invoke('child-window:focus-main'),
+    // 开窗前投递初始载荷（diff 文本 / 冲突路径等），子窗口就绪后取走
+    putPayload: (key, payload) => ipcRenderer.invoke('child-window:put-payload', key, payload),
+    takePayload: (key) => ipcRenderer.invoke('child-window:take-payload', key),
+  },
+
   // 数据库
   db: {
     exec: (sql, params) => ipcRenderer.invoke('db:exec', sql, params),

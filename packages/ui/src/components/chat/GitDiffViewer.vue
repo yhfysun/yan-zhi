@@ -1,166 +1,78 @@
+<!--
+  GitDiffViewer.vue — 差异查看器
+  · 默认（内嵌）：自带工具栏（导航 / 并排统一 / 放大），底部可拖高。
+  · plain：只输出差异本体，不带工具栏 —— 用于「宿主已有一层容器」的场景
+    （提交弹窗内联展开、文件树行内展开），避免工具栏套工具栏的嵌套观感。
+  · 放大：桌面端开真·独立窗口；Web/移动端降级为应用内全屏弹窗。
+  实现细节全部复用 DiffBody.vue（并排/统一切换、左右拖宽、行号固定、差异导航）。
+-->
 <template>
-  <div class="diff-viewer">
-    <div class="diff-toolbar">
-      <span class="diff-file-name">{{ fileName || '差异' }}</span>
-      <span class="diff-stats">
-        <em class="diff-stat-add">+{{ stat.added }}</em>
-        <em class="diff-stat-del">−{{ stat.deleted }}</em>
-      </span>
+  <DiffBody
+    :diff-text="diffText"
+    :file-name="fileName"
+    :fullscreen="false"
+    :plain="plain"
+    @toggle-fullscreen="openFullscreen"
+  />
+
+  <!-- 全屏差异（Web/移动端降级路径）：Teleport 由 el-dialog 自身承担 -->
+  <el-dialog
+    v-if="!plain"
+    v-model="fullscreenOpen"
+    :title="fileName || '差异'"
+    width="96%"
+    top="2vh"
+    class="diff-fullscreen-dialog"
+    append-to-body
+    destroy-on-close
+  >
+    <div class="dfd-body">
+      <DiffBody
+        :diff-text="diffText"
+        :file-name="fileName"
+        :fullscreen="true"
+        @toggle-fullscreen="fullscreenOpen = false"
+      />
     </div>
-    <div v-if="hunks.length" class="diff-body">
-      <div v-for="(hunk, hi) in hunks" :key="hi" class="diff-hunk">
-        <div class="diff-hunk-header">{{ hunk.header }}</div>
-        <div class="diff-hunk-content">
-          <div class="diff-gutter-left">
-            <div v-for="(row, i) in hunk.rows" :key="'l' + i" class="diff-gutter-cell" :class="row.leftType">
-              {{ row.leftNum || '' }}
-            </div>
-          </div>
-          <div class="diff-code-left">
-            <div v-for="(row, i) in hunk.rows" :key="'l' + i" class="diff-code-cell" :class="row.leftType">
-              <pre>{{ row.leftContent }}</pre>
-            </div>
-          </div>
-          <div class="diff-gutter-right">
-            <div v-for="(row, i) in hunk.rows" :key="'r' + i" class="diff-gutter-cell" :class="row.rightType">
-              {{ row.rightNum || '' }}
-            </div>
-          </div>
-          <div class="diff-code-right">
-            <div v-for="(row, i) in hunk.rows" :key="'r' + i" class="diff-code-cell" :class="row.rightType">
-              <pre>{{ row.rightContent }}</pre>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-    <div v-else class="diff-empty">无差异内容</div>
-  </div>
+  </el-dialog>
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue';
+import { ref, watch } from 'vue';
+import DiffBody from './DiffBody.vue';
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   diffText: string;
   fileName?: string;
-}>();
+  /** 纯内容模式：不渲染工具栏与全屏弹窗，交给宿主容器提供放大能力 */
+  plain?: boolean;
+}>(), { fileName: '', plain: false });
 
-interface DiffRow {
-  leftNum: number | null;
-  rightNum: number | null;
-  leftType: 'context' | 'removed' | 'empty';
-  rightType: 'context' | 'added' | 'empty';
-  leftContent: string;
-  rightContent: string;
-}
-interface DiffHunk {
-  header: string;
-  rows: DiffRow[];
-}
+const fullscreenOpen = ref(false);
+// 无差异内容时不值得全屏，但保留按钮（用户可能想看文件名/统计）——故不拦截。
+function openFullscreen(): void { fullscreenOpen.value = true; }
 
-const parsed = computed(() => {
-  const text = props.diffText || '';
-  const lines = text.split('\n');
-  const hunks: DiffHunk[] = [];
-  let currentHunk: DiffHunk | null = null;
-  let oldNum = 0;
-  let newNum = 0;
-  let added = 0;
-  let deleted = 0;
-
-  for (const line of lines) {
-    if (line.startsWith('diff --git') || line.startsWith('index ') || line.startsWith('Binary files')) continue;
-    if (line.startsWith('--- ') || line.startsWith('+++ ')) continue;
-    if (line.startsWith('@@ ')) {
-      const m = line.match(/@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
-      if (m) {
-        oldNum = Number(m[1]);
-        newNum = Number(m[2]);
-      }
-      currentHunk = { header: line, rows: [] };
-      hunks.push(currentHunk);
-      continue;
-    }
-    if (!currentHunk) continue;
-
-    if (line.startsWith('-')) {
-      deleted++;
-      currentHunk.rows.push({
-        leftNum: oldNum++, rightNum: null,
-        leftType: 'removed', rightType: 'empty',
-        leftContent: line.slice(1), rightContent: '',
-      });
-    } else if (line.startsWith('+')) {
-      added++;
-      currentHunk.rows.push({
-        leftNum: null, rightNum: newNum++,
-        leftType: 'empty', rightType: 'added',
-        leftContent: '', rightContent: line.slice(1),
-      });
-    } else {
-      const content = line.startsWith(' ') ? line.slice(1) : line;
-      currentHunk.rows.push({
-        leftNum: oldNum++, rightNum: newNum++,
-        leftType: 'context', rightType: 'context',
-        leftContent: content, rightContent: content,
-      });
-    }
-  }
-  return { hunks, added, deleted };
-});
-
-const hunks = computed(() => parsed.value.hunks);
-const stat = computed(() => ({ added: parsed.value.added, deleted: parsed.value.deleted }));
+// 内容变了（切文件/切 commit）自动关掉全屏，避免停在上一个文件的全屏视图上
+watch(() => [props.diffText, props.fileName], () => { fullscreenOpen.value = false; });
 </script>
 
 <style scoped>
-.diff-viewer {
-  border: 1px solid var(--el-border-color-lighter, rgba(15,23,42,0.1));
-  border-radius: 6px; overflow: hidden; font-size: 12px;
-  font-family: "JetBrains Mono", "Consolas", monospace;
+.dfd-body {
+  height: 88vh;
+  min-height: 320px;
+  display: flex;
+  flex-direction: column;
 }
-.diff-toolbar {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 4px 10px; background: var(--el-fill-color-light, rgba(15,23,42,0.04));
-  border-bottom: 1px solid var(--el-border-color-lighter);
+</style>
+
+<style>
+/* el-dialog 渲染在 body 上，需非 scoped；去掉 body 内边距让差异区吃满 */
+.diff-fullscreen-dialog .el-dialog__body {
+  padding: 0 12px 12px;
+  overflow: hidden;
 }
-.diff-file-name { font-weight: 600; color: var(--el-text-color-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.diff-stats { display: inline-flex; gap: 6px; flex-shrink: 0; }
-.diff-stat-add { color: #10b981; font-style: normal; font-weight: 700; }
-.diff-stat-del { color: #ef4444; font-style: normal; font-weight: 700; }
-.diff-body { max-height: 400px; overflow: auto; }
-.diff-hunk { border-bottom: 1px solid var(--el-border-color-lighter); }
-.diff-hunk:last-child { border-bottom: none; }
-.diff-hunk-header {
-  padding: 3px 10px; background: var(--el-fill-color, rgba(15,23,42,0.06));
-  color: var(--el-text-color-secondary); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+.diff-fullscreen-dialog .el-dialog__header {
+  margin-right: 0;
+  padding-bottom: 12px;
 }
-.diff-hunk-content { display: grid; grid-template-columns: 40px 1fr 40px 1fr; }
-.diff-gutter-left, .diff-gutter-right {
-  background: var(--el-fill-color-light, rgba(15,23,42,0.03));
-  border-right: 1px solid var(--el-border-color-lighter);
-}
-.diff-gutter-right { border-right: none; border-left: 1px solid var(--el-border-color-lighter); }
-.diff-gutter-cell {
-  padding: 0 4px; text-align: right; color: var(--el-text-color-placeholder);
-  font-size: 11px; line-height: 18px; height: 18px; overflow: hidden;
-}
-.diff-code-left, .diff-code-right { min-width: 0; }
-.diff-code-cell {
-  height: 18px; overflow: hidden; line-height: 18px;
-}
-.diff-code-cell pre {
-  margin: 0; padding: 0 6px; white-space: pre; overflow: hidden;
-  text-overflow: ellipsis; font-size: 12px; line-height: 18px;
-}
-.diff-code-cell.context pre { color: var(--el-text-color-primary); }
-.diff-code-cell.removed { background: rgba(239, 68, 68, 0.08); }
-.diff-code-cell.removed pre { color: #c0392b; }
-.diff-code-cell.added { background: rgba(16, 185, 129, 0.08); }
-.diff-code-cell.added pre { color: #0a7d54; }
-.diff-code-cell.empty pre { color: transparent; }
-.diff-gutter-cell.removed { background: rgba(239, 68, 68, 0.06); }
-.diff-gutter-cell.added { background: rgba(16, 185, 129, 0.06); }
-.diff-empty { padding: 16px; text-align: center; color: var(--el-text-color-secondary); }
 </style>

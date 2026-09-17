@@ -506,6 +506,11 @@ const settingsStore = useSettingsStore();
 const codeStore = useCodeStore();
 const platformStore = usePlatformStore();
 
+const props = withDefaults(defineProps<{
+  /** 显式指定仓库根目录；不传则自动取「开发模式项目目录 / 办公模式工作目录」 */
+  repo?: string;
+}>(), { repo: '' });
+
 const emit = defineEmits<{
   (e: 'aiReview', diff: string): void;
   (e: 'viewDiff', payload: { path: string; staged: boolean; repoPath?: string }): void;
@@ -518,7 +523,17 @@ interface RepoSummary { path: string; name: string; branch: string; ahead: numbe
 const STATUS_CLASS: Record<string, string> = { M: 'modified', A: 'added', D: 'deleted', '?': 'untracked', R: 'renamed', U: 'conflict' };
 const UNMERGED_CODES = new Set(['DD', 'AU', 'UD', 'UA', 'DU', 'AA', 'UU']);
 
-const workspace = computed(() => settingsStore.settings.workspaceDir || '');
+/**
+ * 当前要查看的仓库根目录。
+ * ★ 必须同时认「开发模式的项目目录」与「办公模式的工作目录」：
+ *   开发模式的工作目录由 codeStore.projectDir 承载（左侧「当前项目」），
+ *   而 settingsStore.workspaceDir 是办公模式那份 —— 二者不一定相同。
+ *   原来只取 workspaceDir，导致开发模式源码管理面板拿不到仓库 → 永远「变更 0」。
+ * 优先级：显式传入的 repo prop > 开发模式项目目录 > 设置里的工作目录。
+ */
+const workspace = computed(
+  () => props.repo || codeStore.projectDir || settingsStore.settings.workspaceDir || '',
+);
 const repo = ref('');
 const activeRepo = ref('');
 const activeKey = computed(() => activeRepo.value || repo.value);
@@ -860,7 +875,11 @@ async function init(force = false) {
     void persist();
   }
 }
-defineExpose({ init });
+defineExpose({
+  init,
+  /** 强制重新拉取（外部 git 操作后调用，保证左右两侧数据同源同步） */
+  refresh: () => refreshAll(true),
+});
 
 // ===== 交互 =====
 function toggleSection(name: keyof typeof sections) { sections[name] = !sections[name]; void persist(); }
@@ -1444,10 +1463,22 @@ async function doBatchCheckoutPrompt() {
 }
 
 // ===== 生命周期 =====
+/**
+ * 工作目录变化 → 重新拉取仓库数据。
+ * ★ 这是「变更 0 / 工作区干净」的关键修复点：
+ *   面板此前只在 workspaceDir 变化时初始化，而开发模式的工作目录来自 codeStore.projectDir，
+ *   两者不同 → watch 永不触发 → init 从未执行 → gitStore.status 恒为 null → 列表永远为空。
+ *   即使值相同也要初始化一次（首次挂载时 watch 不触发），故这里用 immediate + 值守卫。
+ */
+let lastInitRepo = '';
 watch(workspace, (v) => {
   repo.value = v || '';
   activeRepo.value = '';
-  if (repo.value) void init();
+  if (!repo.value) return;
+  // 同一个仓库不重复初始化（避免切视图/重渲染时反复请求）；但首次必须跑
+  if (repo.value === lastInitRepo) return;
+  lastInitRepo = repo.value;
+  void init();
 }, { immediate: true });
 
 function onDocClick() { closeContextMenu(); }
