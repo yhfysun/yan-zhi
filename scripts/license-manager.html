@@ -148,7 +148,11 @@
         </div>
       </div>
       <div style="margin-top:14px">
-        <label>绑定 MAC（可选，留空则所有机器可用）</label>
+        <label>绑定机器标识（推荐，16 位十六进制，留空则所有机器可用）</label>
+        <input type="text" id="machineId" placeholder="如 8F3A1C9D2E5B7046（授权页「机器标识」复制）" class="mono">
+      </div>
+      <div style="margin-top:14px">
+        <label>绑定 MAC（老口径，仅用于已发老客户端；与机器标识二选一）</label>
         <input type="text" id="mac" placeholder="如 AA:BB:CC:DD:EE:FF" class="mono">
       </div>
       <div class="actions">
@@ -308,10 +312,14 @@ $('genBtn').onclick = async () => {
   }
 
   let mac = $('mac').value.trim().toUpperCase();
+  let machineId = $('machineId').value.trim().toUpperCase();
   if (mac && !/^([0-9A-F]{2}:){5}[0-9A-F]{2}$/.test(mac)) { toast('MAC 格式应为 XX:XX:XX:XX:XX:XX'); return; }
+  if (machineId && !/^[0-9A-F]{16}$/.test(machineId)) { toast('机器标识应为 16 位十六进制'); return; }
+  if (mac && machineId) { toast('机器标识与 MAC 只能填一个'); return; }
   if (!mac) mac = null;
+  if (!machineId) machineId = null;
 
-  const payload = JSON.stringify({ expireAt, mac });
+  const payload = JSON.stringify({ expireAt, mac, machineId });
   let key, sig;
   try {
     const der = pemToBytes(pem);
@@ -324,8 +332,9 @@ $('genBtn').onclick = async () => {
   $('resultCard').style.display = 'block';
   $('resultMeta').innerHTML =
     `<span class="k">过期</span><span class="v">${fmtDate(expireAt)}</span>` +
+    `<span class="k">绑定机器标识</span><span class="v">${machineId || '不限制'}</span>` +
     `<span class="k">绑定 MAC</span><span class="v">${mac || '不限制'}</span>`;
-  history.unshift({ code, expireAt, mac, ts: new Date() });
+  history.unshift({ code, expireAt, mac, machineId, ts: new Date() });
   renderHistory();
   toast('授权码已生成');
 };
@@ -338,7 +347,7 @@ function renderHistory() {
   el.innerHTML = history.map(h => `
     <div class="hist-item">
       <div class="meta">
-        <div>${fmtDate(h.expireAt)} · ${h.mac || '不限MAC'}</div>
+        <div>${fmtDate(h.expireAt)} · ${h.machineId || h.mac || '不限机器'}</div>
         <div class="code">${h.code}</div>
       </div>
       <button class="btn btn-ghost btn-sm" onclick="copyText('${h.code.replace(/'/g, "\\'")}')">复制</button>
@@ -374,7 +383,9 @@ $('parseBtn').onclick = async () => {
     ['签名验证', sigOk ? '<span class="badge badge-ok">有效</span>' : '<span class="badge badge-err">无效（被篡改）</span>'],
     ['过期时间', fmtDate(payload.expireAt)],
     ['当前是否过期', payload.expireAt === null ? '<span class="badge badge-info">永不过期</span>' : (expired ? '<span class="badge badge-err">已过期</span>' : '<span class="badge badge-ok">未过期</span>')],
+    ['绑定机器标识', payload.machineId || '不限制（所有机器可用）'],
     ['绑定 MAC', payload.mac || '不限制（所有机器可用）'],
+    ['绑定口径', payload.machineId ? '按机器标识（优先）' : (payload.mac ? '按 MAC（老口径）' : '不限机器')],
   ];
   out.innerHTML = '<div class="kv">' + rows.map(r => `<span class="k">${r[0]}</span><span class="v">${r[1]}</span>`).join('') + '</div>';
 };

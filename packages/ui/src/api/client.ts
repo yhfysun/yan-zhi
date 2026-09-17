@@ -19,6 +19,32 @@ function getToken(): string | null {
   }
 }
 
+/** 本地已存授权码。授权门禁（后端 YZ_LICENSE_GUARD=1）开启时所有业务接口都要带上。 */
+export function getLicenseCode(): string | null {
+  try {
+    return localStorage.getItem('license_code');
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 给直连（不走 apiFetch）的请求补上鉴权与授权头。
+ *
+ * 为什么需要：SSE 流、tool-result 这类请求直接用 fetch，各自重复拼 Authorization；
+ * 授权门禁上线后如果漏补 x-license，会表现为「界面正常但聊天流 403」这种局部故障。
+ * 统一走这里，新增直连请求不再需要各自记住两套头。
+ * 传 undefined 的 value 会被跳过，便于调用方保留自己的 Content-Type（如 SSE 不设 JSON）。
+ */
+export function buildRequestHeaders(extra?: Record<string, string>): Record<string, string> {
+  const headers: Record<string, string> = { ...(extra || {}) };
+  const token = getToken();
+  if (token && !headers['Authorization']) headers['Authorization'] = `Bearer ${token}`;
+  const license = getLicenseCode();
+  if (license && !headers['x-license']) headers['x-license'] = license;
+  return headers;
+}
+
 export function setToken(t: string | null) {
   try {
     if (t) localStorage.setItem('auth_token', t);
@@ -36,6 +62,8 @@ export async function apiFetch<T = any>(
     ...((options.headers as Record<string, string> | undefined) || {}),
   };
   if (token) headers['Authorization'] = `Bearer ${token}`;
+  const licenseCode = getLicenseCode();
+  if (licenseCode) headers['x-license'] = licenseCode;
 
   const res = await fetch(BASE_URL + path, { ...options, headers });
   const json = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));

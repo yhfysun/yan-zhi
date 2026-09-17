@@ -365,7 +365,7 @@ import { useChatStore } from '../stores/chat';
 import { useBrowserStore, claimPopup, type BrowserTab } from '../stores/browser';
 import { usePlatform } from '../composables/usePlatform';
 import { LlmClient } from '@yan-zhi/core';
-import { API_BASE } from '../api/client';
+import { API_BASE, buildRequestHeaders } from '../api/client';
 import { useRoute } from 'vue-router';
 import { settingsDrawerOpen } from '../composables/useSettingsDrawer';
 import { titleBarOverlayOpen } from '../composables/useTitleBarOverlay';
@@ -1401,7 +1401,7 @@ function onFrameLoad() {
 
   // 同步地址栏（页面可能发生重定向，从后端 state 取真实 URL）
   try {
-    fetch(`${API_BASE}/browser/state`).then(r => r.json()).then(resp => {
+    fetch(`${API_BASE}/browser/state`, { headers: buildRequestHeaders() }).then(r => r.json()).then(resp => {
       if (resp.data?.url && resp.data.url !== currentUrl.value) {
         urlInput.value = resp.data.url;
         history.value[histIndex.value] = resp.data.url;
@@ -1569,7 +1569,7 @@ async function recordVisit(url: string) {
   try {
     await fetch(`${API_BASE}/browser/history`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: buildRequestHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ url }),
     });
   } catch { /* 后端不可用则忽略，不影响浏览 */ }
@@ -1578,8 +1578,8 @@ async function recordVisit(url: string) {
 async function fetchData() {
   try {
     const [h, a] = await Promise.all([
-      fetch(`${API_BASE}/browser/history?days=30&limit=20`).then(r => r.json()),
-      fetch(`${API_BASE}/browser/analysis`).then(r => r.json()),
+      fetch(`${API_BASE}/browser/history?days=30&limit=20`, { headers: buildRequestHeaders() }).then(r => r.json()),
+      fetch(`${API_BASE}/browser/analysis`, { headers: buildRequestHeaders() }).then(r => r.json()),
     ]);
     recentList.value = (h.data && h.data.recent) || [];
     frequentList.value = (h.data && h.data.frequent) || [];
@@ -1615,7 +1615,7 @@ async function generateAnalysis() {
     const platform = llm && ps.platforms.find(p => p.id === llm.platformId);
     if (!llm || !platform) return; // 未配置 → 静默跳过
 
-    const statsRes = await fetch(`${API_BASE}/browser/stats`).then(r => r.json());
+    const statsRes = await fetch(`${API_BASE}/browser/stats`, { headers: buildRequestHeaders() }).then(r => r.json());
     const stats = statsRes.data;
     if (!stats) return;
 
@@ -1630,7 +1630,7 @@ async function generateAnalysis() {
     const payload = { ...parsed, date: stats.date, model: llm.modelId };
     await fetch(`${API_BASE}/browser/analysis`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: buildRequestHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(payload),
     });
     analysis.value = payload;
@@ -1761,12 +1761,8 @@ const revealedPwd = ref<Record<string, string>>({});
 const pwdForm = ref({ name: '', url: '', host: '', username: '', password: '' });
 
 function getAuthHeader(): Record<string, string> {
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-  try {
-    const token = localStorage.getItem('auth_token');
-    if (token) headers['Authorization'] = `Bearer ${token}`;
-  } catch {}
-  return headers;
+  // 统一走 api 客户端的头构造：同时补 Authorization 与授权门禁要求的 x-license
+  return buildRequestHeaders({ 'Content-Type': 'application/json' });
 }
 
 async function callPwdApi(p: string, method = 'GET', body?: any): Promise<any> {

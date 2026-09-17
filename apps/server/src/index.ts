@@ -8,6 +8,7 @@ import { setPlatformAdapter, getPluginManager, getToolRegistry } from '@yan-zhi/
 import { ensureToolsInitialized } from './mcp/index.js';
 import authRoutes from './auth.js';
 import licenseRoutes from './license.js';
+import { requireLicense, isLicenseGuardEnabled } from './license-guard.js';
 import conversationRoutes from './routes/conversations.js';
 import messageRoutes from './routes/messages.js';
 import spaceRoutes from './routes/spaces.js';
@@ -17,6 +18,8 @@ import { downloadMediaBinary } from './services/media-fetch.js';
 import { buildArtifactRelDir, buildArtifactRelDirCandidates } from '@yan-zhi/shared';
 import platformRoutes, { migrateLegacyLocalPlatformRows } from './routes/platforms.js';
 import { seedBuiltinWorkflowAgents, ensureBuiltinWorkflowModel } from './builtin-workflow-agents.js';
+import { markOrphanWorkflowRunsInterrupted } from './workflow-runner.js';
+import { markOrphanTasksInterrupted, resumeWorkflowDeliveries } from './llm-task-manager.js';
 import agentRoutes from './routes/agents.js';
 import workflowRoutes from './routes/workflow.js';
 import mcpRoutes from './routes/mcp.js';
@@ -86,6 +89,13 @@ app.get('/api/health', (_req, res) => {
 
 app.use('/api/auth', authRoutes);
 app.use('/api/license', licenseRoutes);
+// 授权门禁：必须在**所有业务路由之前**挂载，否则后注册的路由不受保护。
+// 默认关闭（本地模式打开即用），YZ_LICENSE_GUARD=1 时开启 —— 用于局域网/多用户部署，
+// 挡住绕过前端路由守卫直接请求 API 的路径。豁免清单见 license-guard.ts 的 EXEMPT_PREFIXES。
+app.use('/api', requireLicense);
+if (isLicenseGuardEnabled()) {
+  console.log('[license] 授权门禁已启用（YZ_LICENSE_GUARD=1）：业务 API 需携带 x-license 头');
+}
 app.use('/api/conversations', conversationRoutes);
 app.use('/api/conversations', fileRoutes);
 app.use('/api/messages', messageRoutes);
@@ -135,7 +145,7 @@ app.use('/api/plugin-assets', pluginAssetsRouter);
 // AI 媒体产物访问（api_image_generate / api_video_generate 落盘的持久文件，区别于截图 30 分钟临时区）
 // 三段式：/api/generated/:kind/:conversationId/:name —— 按产物目录规范定位到该会话的交付目录
 // 两段式：/api/generated/:kind/:name —— 兼容规范落地前落在 DATA_DIR/generated-* 的历史文件
-const GENERATED_MEDIA_DIRS: Record<string, string> = { images: 'generated-images', videos: 'generated-videos' };
+const GENERATED_MEDIA_DIRS: Record<string, string> = { images: 'generated-images', videos: 'generated-videos', audios: 'generated-audios', files: 'generated-files' };
 /**
  * 媒体文件名是否安全：只禁「路径分隔符 / 空字节 / .. / 控制字符」，其余放行。
  *
@@ -329,6 +339,15 @@ if (webDist) {
 app.listen(PORT_NUM, HOST, () => {
   console.log(`后端已启动: http://${HOST === '0.0.0.0' ? '<局域网可达>' : HOST}:${PORT_NUM}`);
 });
+
+// 启动时回收上次进程遗留的运行/任务：llm_task 与 workflow_run 的 running 状态不会自己结束，
+// 不回收会永远卡在 running。随后补投遗留的工作流反写 —— 顺序不能反：先标 failed，补投才有失败可写。
+try {
+  const orphanTasks = markOrphanTasksInterrupted();
+  const orphanRuns = markOrphanWorkflowRunsInterrupted();
+  if (orphanTasks || orphanRuns) console.log(`[cleanup] 已回收遗留任务 ${orphanTasks} 条、遗留工作流运行 ${orphanRuns} 条`);
+  resumeWorkflowDeliveries();
+} catch (e) { console.warn('[cleanup] 遗留运行回收/补投失败:', e); }
 
 // 启动时清理已移除的内置模型平台残留记录（local-model-*）
 try {

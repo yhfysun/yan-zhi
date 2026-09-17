@@ -9,7 +9,10 @@ export interface VerifyResult {
   valid: boolean;
   expireAt: string | null;
   mac: string | null;
+  machineId: string | null;
   machineMac: string;
+  machineIdLocal: string | null;
+  identitySource: string;
   reason?: string;
 }
 
@@ -18,11 +21,19 @@ export const useLicenseStore = defineStore('license', () => {
   const initialized = ref(false);
   const info = ref<VerifyResult | null>(null);
   const machineMac = ref('');
+  /** 本机稳定机器标识（主板 UUID 哈希）。签发方按它绑定，比 MAC 抗网卡变动。 */
+  const machineId = ref('');
+  /** 机器标识来源，读不到硬件信息时会显示 fallback-composite。 */
+  const identitySource = ref('');
   const error = ref('');
 
   async function fetchMachineInfo() {
-    const result = await api.get<{ mac: string; hostname: string }>('/license/machine-info');
-    if ('data' in result) machineMac.value = result.data.mac;
+    const result = await api.get<{ mac: string; machineId: string | null; source: string; hostname: string }>('/license/machine-info');
+    if ('data' in result) {
+      machineMac.value = result.data.mac;
+      machineId.value = result.data.machineId || '';
+      identitySource.value = result.data.source;
+    }
   }
 
   /** 启动时校验本地已存授权码（只跑一次有效校验）。无本地码时尝试预置试用码自动填充。 */
@@ -38,6 +49,8 @@ export const useLicenseStore = defineStore('license', () => {
         verified.value = true;
         info.value = def.data;
         machineMac.value = def.data.machineMac;
+        machineId.value = def.data.machineIdLocal || '';
+        identitySource.value = def.data.identitySource;
       } else {
         verified.value = false;
       }
@@ -49,6 +62,8 @@ export const useLicenseStore = defineStore('license', () => {
       verified.value = true;
       info.value = result.data;
       machineMac.value = result.data.machineMac;
+      machineId.value = result.data.machineIdLocal || '';
+      identitySource.value = result.data.identitySource;
     } else {
       localStorage.removeItem(LICENSE_KEY);
       verified.value = false;
@@ -73,6 +88,8 @@ export const useLicenseStore = defineStore('license', () => {
     initialized.value = true;
     info.value = result.data;
     machineMac.value = result.data.machineMac;
+    machineId.value = result.data.machineIdLocal || '';
+    identitySource.value = result.data.identitySource;
     return true;
   }
 
@@ -82,5 +99,5 @@ export const useLicenseStore = defineStore('license', () => {
     info.value = null;
   }
 
-  return { verified, initialized, info, machineMac, error, init, activate, deactivate, fetchMachineInfo };
+  return { verified, initialized, info, machineMac, machineId, identitySource, error, init, activate, deactivate, fetchMachineInfo };
 });

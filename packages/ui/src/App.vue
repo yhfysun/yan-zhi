@@ -1,8 +1,15 @@
 <template>
-  <div class="app-shell" :class="{ 'platform-desktop': isDesktop, 'platform-web': isWeb, 'nav-collapsed': collapsed, 'is-electron': isElectron }">
+  <div class="app-shell" :class="{ 'platform-desktop': isDesktop, 'platform-web': isWeb, 'nav-collapsed': collapsed, 'is-electron': isElectron, 'is-bare': isBareRoute }">
+
+    <!-- 独立子窗口（如差异窗口）：不套任何应用外壳，整窗交由页面自绘标题栏 -->
+    <template v-if="isBareRoute">
+      <main class="main-content full">
+        <router-view />
+      </main>
+    </template>
 
     <!-- 内容区域 -->
-    <div class="app-body">
+    <div v-else class="app-body">
       <template v-if="$route.name === 'login' || $route.name === 'license'">
         <main class="main-content full">
           <router-view />
@@ -58,7 +65,8 @@
       </template>
     </div>
 
-    <SettingsDrawer />
+    <!-- 独立子窗口：无应用抽屉（设置浮层属于主窗口的导航体验） -->
+    <SettingsDrawer v-if="!isBareRoute" />
   </div>
 </template>
 
@@ -73,11 +81,17 @@ import SideNav from './components/SideNav.vue';
 import SettingsDrawer from './components/SettingsDrawer.vue';
 import { syncPluginRoutes } from './router';
 import { resolvePluginComponent } from './plugin-component-registry';
+import { useLicenseStore } from './stores/license';
 
 import { useIsMobile } from './composables/useIsMobile';
 import { usePlatform } from './composables/usePlatform';
 import { useSidebarState } from './composables/useSidebarState';
 import { installSelectAllScope } from './utils/selectAllScope';
+import * as modeModule from './stores/mode';
+import { useChat } from './composables/chat/useChat';
+import { useChatStore } from './stores/chat';
+import { useAgentStore } from './stores/agent';
+import { useCodeStore } from './stores/code';
 
 const route = useRoute();
 const authStore = useAuthStore();
@@ -90,6 +104,13 @@ const { collapsed } = useSidebarState();
 
 // Electron 桌面端检测：由主进程通过 preload 注入 window.electronAPI.isElectron
 const isElectron = typeof window !== 'undefined' && !!(window as any).electronAPI?.isElectron;
+
+/**
+ * 独立子窗口路由（meta.bare）：不套应用外壳。
+ * 用于桌面端开真窗口承载 diff 等重视图 —— 子窗口自己画标题栏与窗口控制，
+ * 若再套一层 SideNav / 顶栏就会出现「窗口里还有一整套应用导航」的错位。
+ */
+const isBareRoute = computed(() => route.meta?.bare === true);
 
 /** 当前插件布局组件（懒加载函数）；null 表示用内置默认布局 */
 const pluginLayoutLoader = shallowRef<(() => Promise<unknown>) | null>(null);
@@ -108,7 +129,18 @@ onMounted(async () => {
   } catch {
     // 设置读取失败时仍允许应用正常渲染
   }
-  // 拉取插件清单并同步动态路由 / 布局
+  await bootPluginLayer();
+});
+
+/**
+ * 拉插件清单并同步动态路由 / 布局。
+ *
+ * 为什么单独抽成一个函数还要能被重跑：授权门禁（后端 YZ_LICENSE_GUARD=1）开启时，
+ * 首次启动停在授权页 → 此刻没有授权码，`/plugins` 会被 403 拒掉（它不属于豁免清单）。
+ * 若只在 onMounted 跑一次，用户激活后插件路由/皮肤/布局全缺，必须重启应用才恢复 ——
+ * 所以激活成功后要重跑这一段。未启用门禁时行为不变（onMounted 里跑一次）。
+ */
+async function bootPluginLayer() {
   try {
     await pluginStore.refresh();
     await syncPluginRoutes();
@@ -122,6 +154,12 @@ onMounted(async () => {
   } catch {
     // 插件加载失败不阻塞主应用
   }
+}
+
+// 激活成功后补跑插件层：授权页拿不到 /plugins，激活后必须重新拉一次（见 bootPluginLayer 注释）
+const licenseStore = useLicenseStore();
+watch(() => licenseStore.verified, (now, before) => {
+  if (now && !before) void bootPluginLayer();
 });
 
 // 布局切换或插件清单变化时重新解析
@@ -170,6 +208,46 @@ const pageTitle = computed(() => {
 });
 
 authStore.loadUser();
+
+// ===== 按模式记忆会话与智能体（用户拍板 2026-09-16：办公/代码互切要切会话+切智能体）=====
+// 每个模式各记一份「当前会话 + 当前智能体」；切模式时旧模式存档、新模式恢复（没有存档则开新任务草稿）。
+// 注意：只切视图上下文，不新建会话、不清消息（决策 10 契约仍然成立——切换的是「回到哪个会话」）。
+{
+  const { activeMode } = modeModule;
+  const chat = useChat();
+  const chatStore = useChatStore();
+  const agentStore = useAgentStore();
+  const codeStore = useCodeStore();
+  const CTX_KEY = 'yz:mode:ctx';
+  type ModeCtx = Record<string, { conv: string; agent: string }>;
+  const readCtx = (): ModeCtx => { try { return JSON.parse(localStorage.getItem(CTX_KEY) || '{}') as ModeCtx; } catch { return {}; } };
+  const writeCtx = (c: ModeCtx) => { try { localStorage.setItem(CTX_KEY, JSON.stringify(c)); } catch { /* ignore */ } };
+
+  watch(activeMode, async (m, old) => {
+    if (!old || old === m) return;
+    // 1) 旧模式存档：当前会话 + 当前智能体
+    const ctx = readCtx();
+    ctx[old] = { conv: chatStore.currentConvId || '', agent: agentStore.selectedId || '' };
+    writeCtx(ctx);
+    // 2) 新模式恢复：智能体先行（office 默认日常办公助手；dev 默认代码编写助手）
+    const saved = ctx[m];
+    const fallbackAgent = m === 'dev' ? 'a_builtin_code_agent' : 'a_default_assistant';
+    const agentId = saved?.agent || fallbackAgent;
+    if (agentId && agentStore.agents.some((a) => a.id === agentId) && agentStore.selectedId !== agentId) {
+      chat.onAgentSwitch(agentId);
+    }
+    // 3) 会话：有存档且存在且归属正确 → 恢复；否则开该模式的任务草稿（dev 绑定项目空间）
+    const convId = saved?.conv || '';
+    const savedConv = convId ? chatStore.conversations.find((c) => c.id === convId) : undefined;
+    // dev 模式：会话必须属于当前项目空间（防止历史脏数据把办公会话带进开发模式）
+    const belongs = m !== 'dev' || (savedConv && savedConv.spaceId === codeStore.projectSpaceId);
+    if (savedConv && belongs) {
+      await chat.selectConv(convId);
+    } else {
+      await chat.startNewChat(m === 'dev' ? codeStore.projectSpaceId : undefined);
+    }
+  });
+}
 </script>
 
 <style>

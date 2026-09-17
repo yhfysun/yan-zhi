@@ -155,7 +155,7 @@ import { ElMessage, ElMessageBox } from 'element-plus';
 import {
   Plus, EditPen, Delete, CaretRight, Aim, SwitchButton, Right, Bottom, Top, Close, Monitor,
 } from '@element-plus/icons-vue';
-import { api, API_BASE } from '../../../api/client';
+import { api, API_BASE, buildRequestHeaders } from '../../../api/client';
 import { useCodeStore, type RunConfigItem } from '../../../stores/code';
 
 const code = useCodeStore();
@@ -238,7 +238,7 @@ async function openStream(url: string, onMsg: (data: any) => void) {
   const token = localStorage.getItem('auth_token') || '';
   try {
     const resp = await fetch(`${API_BASE}${url}`, {
-      headers: { Authorization: `Bearer ${token}` },
+      headers: buildRequestHeaders({ Authorization: `Bearer ${token}` }),
       signal: abort!.signal,
     });
     const reader = resp.body?.getReader();

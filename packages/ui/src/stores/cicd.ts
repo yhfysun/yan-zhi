@@ -1,7 +1,7 @@
 // CICD 流水线 store（前端）
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
-import { api } from '../api/client';
+import { api, buildRequestHeaders } from '../api/client';
 import type {
   CicdPipeline,
   CicdRun,
@@ -101,10 +101,10 @@ export const useCicdStore = defineStore('cicd', () => {
 
       fetch(url, {
         method: 'POST',
-        headers: {
+        headers: buildRequestHeaders({
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`,
-        },
+        }),
         body: JSON.stringify({ targetId }),
       }).then(async (resp) => {
         const reader = resp.body?.getReader();

@@ -11,8 +11,12 @@
 
       <div class="machine-info">
         <div class="machine-row">
-          <span class="machine-label">本机 MAC</span>
-          <code class="machine-value">{{ machineMac || '读取中…' }}</code>
+          <span class="machine-label">机器标识</span>
+          <code class="machine-value">{{ machineId || '读取中…' }}</code>
+        </div>
+        <div class="machine-row">
+          <span class="machine-label">网卡 MAC</span>
+          <code class="machine-value machine-value-sub">{{ machineMac || '读取中…' }}</code>
         </div>
       </div>
 
@@ -53,10 +57,12 @@ const loading = ref(false);
 const error = ref('');
 const hint = ref('');
 const machineMac = ref('');
+const machineId = ref('');
 
 onMounted(async () => {
   await licenseStore.fetchMachineInfo();
   machineMac.value = licenseStore.machineMac;
+  machineId.value = licenseStore.machineId;
   if (licenseStore.info && !licenseStore.verified) {
     hint.value = licenseStore.info.reason || '原授权码已失效，请重新输入';
   }
@@ -115,11 +121,13 @@ async function submit() {
 }
 [data-theme="dark"] .machine-info { background: rgba(255, 255, 255, 0.05); }
 .machine-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.machine-row + .machine-row { margin-top: 6px; }
 .machine-label { font-size: 12px; color: var(--color-text-secondary); }
 .machine-value {
   font-size: 12px; font-family: ui-monospace, monospace;
   color: var(--color-primary); user-select: all;
 }
+.machine-value-sub { color: var(--color-text-secondary); }
 .auth-form { display: flex; flex-direction: column; gap: 14px; }
 .code-input :deep(.el-textarea__inner) {
   font-family: ui-monospace, monospace; font-size: 12px; line-height: 1.6;

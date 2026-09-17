@@ -10,7 +10,7 @@ import { useToolsStore } from './tools';
 import { useSettingsStore } from './settings';
 import { useFileStore } from './file';
 import { useBrowserStore } from './browser';
-import { api, API_BASE } from '../api/client';
+import { api, API_BASE, buildRequestHeaders } from '../api/client';
 import { useAuthStore } from './auth';
 
 // 从工具调用参数中健壮地提取 URL —— 模型常把 URL 放在非 url 字段（target/address/link/href/page 等），
@@ -1402,7 +1402,8 @@ export const useChatStore = defineStore('chat', () => {
   ): Promise<void> {
     const token = localStorage.getItem('auth_token') || '';
     const sseRes = await fetch(`${API_BASE}/llm/tasks/${taskId}/stream?since=${since}`, {
-      headers: { Authorization: `Bearer ${token}` },
+      // SSE 请求走 fetch（非 EventSource），可以带自定义头 → 授权门禁开启时需附 x-license
+      headers: buildRequestHeaders(token ? { Authorization: `Bearer ${token}` } : undefined),
       signal,
     });
     if (!sseRes.ok || !sseRes.body) throw new Error('SSE 连接失败');
@@ -1569,7 +1570,7 @@ export const useChatStore = defineStore('chat', () => {
                 try {
                   const resp = await fetch(`${API_BASE}/llm/tasks/${taskId}/tool-result`, {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${t}` },
+                    headers: buildRequestHeaders({ 'Content-Type': 'application/json', Authorization: `Bearer ${t}` }),
                     body: JSON.stringify({ callId, result: resultStr }),
                   });
                   if (!resp.ok && retry < 2) { await new Promise(r => setTimeout(r, 1000)); return postResult(retry + 1); }
@@ -1585,7 +1586,7 @@ export const useChatStore = defineStore('chat', () => {
                 try {
                   const resp = await fetch(`${API_BASE}/llm/tasks/${taskId}/tool-result`, {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${t}` },
+                    headers: buildRequestHeaders({ 'Content-Type': 'application/json', Authorization: `Bearer ${t}` }),
                     body: JSON.stringify({ callId, result: `工具执行失败: ${e?.message || e}` }),
                   });
                   if (!resp.ok && retry < 2) { await new Promise(r => setTimeout(r, 1000)); return postError(retry + 1); }
@@ -1743,7 +1744,7 @@ export const useChatStore = defineStore('chat', () => {
     if (taskId) {
       const token = localStorage.getItem('auth_token') || '';
       void fetch(`${API_BASE}/llm/tasks/${taskId}/abort`, {
-        method: 'POST', headers: { Authorization: `Bearer ${token}` },
+        method: 'POST', headers: buildRequestHeaders({ Authorization: `Bearer ${token}` }),
       }).catch(() => {});
     }
     // 手动终止时 SSE 连接已被 abort，后端随后的「task:aborted」事件不会再到达前端，
@@ -1771,7 +1772,7 @@ export const useChatStore = defineStore('chat', () => {
     const token = localStorage.getItem('auth_token') || '';
     try {
       await fetch(`${API_BASE}/llm/tasks/${taskId}/pause`, {
-        method: 'POST', headers: { Authorization: `Bearer ${token}` },
+        method: 'POST', headers: buildRequestHeaders({ Authorization: `Bearer ${token}` }),
       });
     } catch { /* SSE task:paused 分支会再同步一次状态 */ }
   }
@@ -1787,7 +1788,7 @@ export const useChatStore = defineStore('chat', () => {
     const token = localStorage.getItem('auth_token') || '';
     try {
       await fetch(`${API_BASE}/llm/tasks/${taskId}/resume`, {
-        method: 'POST', headers: { Authorization: `Bearer ${token}` },
+        method: 'POST', headers: buildRequestHeaders({ Authorization: `Bearer ${token}` }),
       });
     } catch { /* ignore */ }
   }

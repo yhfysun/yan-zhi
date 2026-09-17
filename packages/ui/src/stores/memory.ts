@@ -12,7 +12,7 @@
 //   daily（每日记忆）      → type=daily
 import { defineStore } from 'pinia';
 import { ref } from 'vue';
-import { api, API_BASE } from '../api/client';
+import { api, API_BASE, buildRequestHeaders } from '../api/client';
 
 export type MemoryDimension = 'profile' | 'agent' | 'session' | 'daily';
 
@@ -59,9 +59,12 @@ function readToken(): string | null {
 
 /** 直接 fetch 拿完整 JSON：list 接口顶层带 total/page/pageSize，api 客户端会解包 data 丢失分页信息，故单独处理。 */
 async function fetchJsonRaw(path: string): Promise<any> {
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-  const token = readToken();
-  if (token) headers['Authorization'] = `Bearer ${token}`;
+  // 直连 fetch（api 客户端会解包 data 丢失分页信息）：授权门禁开启时同样要带 x-license
+  const headers = buildRequestHeaders({ 'Content-Type': 'application/json' });
+  if (!headers['Authorization']) {
+    const token = readToken();
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+  }
   const res = await fetch(API_BASE + path, { headers });
   return res.json().catch(() => ({ error: `HTTP ${res.status}` }));
 }

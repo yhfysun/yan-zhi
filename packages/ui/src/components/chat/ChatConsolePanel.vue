@@ -78,7 +78,7 @@ import { Close, Plus, Cpu, Promotion, Brush, RefreshRight, SwitchButton, Monitor
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
-import { api, API_BASE } from '../../api/client';
+import { api, API_BASE, buildRequestHeaders } from '../../api/client';
 
 type ShellKind = 'powershell' | 'cmd' | 'bash';
 const isWin = navigator.platform.toLowerCase().includes('win');
@@ -215,7 +215,7 @@ async function openSession(s: ConsoleSession) {
     const decoder = makeOutputDecoder();
     try {
       const resp = await fetch(`${API_BASE}/local-console/${s.sessionId}/stream`, {
-        headers: { Authorization: `Bearer ${token}` },
+        headers: buildRequestHeaders({ Authorization: `Bearer ${token}` }),
         signal: s.streamController!.signal,
       });
       const reader = resp.body?.getReader();
