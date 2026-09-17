@@ -10,6 +10,7 @@ import type { Workflow, Platform, Model } from '@yan-zhi/shared';
 import { db } from './db.js';
 import { DEFAULT_CONTEXT_WINDOW } from './constants.js';
 import { callMcpTool, loadServer, getToolsFromDb, mcpShortIdOf } from './mcp/client-manager.js';
+import { executeApiTool } from './mcp/api-tool-executor.js';
 
 export interface WorkflowAgentDef {
   id: string;
@@ -21,6 +22,18 @@ export interface WorkflowRunBundle {
   agent: WorkflowAgentDef;
   /** sub_agent 节点引用的子智能体定义（前端本地库解析后随请求带上） */
   subAgents?: Record<string, WorkflowAgentDef>;
+}
+
+/** 反写投递上下文：工作流跑完后往哪个会话、以哪个子智能体身份写回。
+ *  定义在本文件（而非 llm-task-manager）：startWorkflowRun 要把它落库，
+ *  且 workflow-runner 不能反向依赖 llm-task-manager（会成环）。 */
+export interface WorkflowDeliveryCtx {
+  conversationId: string;
+  userId: string;
+  taskId: string;
+  agentId: string;
+  agentName: string;
+  parentToolCallId: string;
 }
 
 export interface WorkflowRunLog {
@@ -102,6 +115,22 @@ export function markOrphanWorkflowRunsInterrupted(): number {
     return r.changes;
   } catch {
     return 0;
+  }
+}
+
+/** 反写成功后清除待投递标记；写回失败则保留，重启后由 resumeWorkflowDeliveries 重试。 */
+export function markWorkflowDelivered(runId: string): void {
+  try {
+    db.prepare('UPDATE workflow_run SET delivery_json = NULL, updated_at = ? WHERE id = ?').run(Date.now(), runId);
+  } catch { /* 标记失败只影响重试语义，不抛 */ }
+}
+
+/** 待补投的运行（delivery_json 非空）：含「跑完未反写」与「跑挂未通知」两类。 */
+export function loadPendingWorkflowDeliveries(): Array<{ id: string; status: string; result_json: string | null; error: string | null; delivery_json: string }> {
+  try {
+    return db.prepare('SELECT id, status, result_json, error, delivery_json FROM workflow_run WHERE delivery_json IS NOT NULL ORDER BY created_at ASC').all() as any;
+  } catch {
+    return [];
   }
 }
 
@@ -313,8 +342,11 @@ class ServerLlmNodeHandler implements NodeHandler {
   type = 'llm';
 
   async execute(config: Record<string, unknown>, ctx: RunContext): Promise<NodeResult> {
-    const platformId = config.platformId as string;
-    const modelId = config.modelId as string;
+    // 节点自带 platformId/modelId 优先；留空时回退到调用方透传的 __platformId/__modelId
+    // （harness 通过 call_agent 委派工作流时，父任务把自己的平台/模型带进来，
+    //  避免用户自建工作流的 llm 节点因未配置模型而直接抛错中断）
+    const platformId = (config.platformId as string) || (ctx.inputs?.__platformId as string) || '';
+    const modelId = (config.modelId as string) || (ctx.inputs?.__modelId as string) || '';
     const userId = (ctx.inputs?.__userId as string) || 'guest';
     if (!platformId || !modelId) throw new Error('LLM 节点缺少 platformId/modelId');
 
@@ -415,6 +447,18 @@ class ServerToolNodeHandler implements NodeHandler {
       return { output: result };
     }
 
+    // api_* 工具（媒体生成/合成/取数等）：走 server 的 executeApiTool。
+    // 注意：这些工具不在 core 的 getToolRegistry() 里，所以 toolSource:'builtin' 分支找不到它们——
+    // 想让工作流用 api_* 必须显式写 toolSource:'api'。会话 ID 从 inputs 透传（媒体落盘按会话分目录）。
+    if (toolSource === 'api') {
+      const conversationId = (ctx.inputs?.__conversationId as string) || undefined;
+      const r = await executeApiTool(toolName, (args as Record<string, unknown>) || {}, userId, undefined, undefined, conversationId);
+      const text = r.content.map((c) => c.text || '').join('');
+      // 工具失败要以异常抛出，让引擎把节点标红并停止下游 —— 静默把错误串当产出会污染整条 DAG
+      if (r.isError) throw new Error(text || `api 工具执行失败: ${toolName}`);
+      return { output: text };
+    }
+
     // MCP（默认）：先做归属校验（防止跨用户调用他人 server）
     const mcpServerId = config.mcpServerId as string;
     if (!mcpServerId) throw new Error('MCP 工具节点缺少 mcpServerId');
@@ -440,6 +484,9 @@ class ServerSubAgentNodeHandler implements NodeHandler {
     if (!subAgentId) throw new Error('子智能体节点缺少 subAgentId');
     const mapping = (config.inputsMapping as Record<string, unknown>) || {};
     const subInputs: Record<string, unknown> = { __userId: this.userId };
+    // 透传模型回退上下文：子工作流的 llm 节点同样可能未配置模型
+    if (ctx.inputs?.__platformId) subInputs.__platformId = ctx.inputs.__platformId;
+    if (ctx.inputs?.__modelId) subInputs.__modelId = ctx.inputs.__modelId;
     for (const [k, v] of Object.entries(mapping)) {
       if (typeof v === 'string' && v.startsWith('${') && v.endsWith('}')) {
         const path = v.slice(2, -1).split('.').slice(1);
@@ -547,10 +594,12 @@ function createServerEngine(
 
 /**
  * 执行一次工作流（核心 DAG 循环，由 startWorkflowRun 调度）。
+ * 前端直接跑与 call_agent 委派共用这一个入口，不另设同步分支。
  * agent 定义由前端随请求带上（智能体定义存前端本地库）；sub_agent 节点优先解析 bundle，
  * 找不到再回退 server db。执行过程中前端断开也不影响（状态在 run + DB）。
+ * run 传 null 时降级为「纯执行」：不落 run 表、不发 SSE、不做事件包装。
  */
-async function executeBundle(
+export async function executeBundle(
   bundle: WorkflowRunBundle,
   inputs: Record<string, unknown>,
   userId: string,
@@ -610,6 +659,8 @@ export function startWorkflowRun(
   bundle: WorkflowRunBundle,
   inputs: Record<string, unknown>,
   userId: string,
+  /** call_agent 委派时传入：记录反写目标，跑完/中断后据此补投。前端直接跑不传。 */
+  delivery?: WorkflowDeliveryCtx,
 ): string {
   const runId = 'wfr_' + randomUUID().replace(/-/g, '').slice(0, 20);
   const now = Date.now();
@@ -629,8 +680,8 @@ export function startWorkflowRun(
   runs.set(runId, run);
   try {
     db.prepare(
-      'INSERT INTO workflow_run (id, user_id, agent_id, agent_name, bundle_json, inputs_json, status, logs_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-    ).run(runId, userId, bundle.agent.id, bundle.agent.name || null, JSON.stringify(bundle), JSON.stringify(inputs || {}), 'running', '[]', now, now);
+      'INSERT INTO workflow_run (id, user_id, agent_id, agent_name, bundle_json, inputs_json, status, logs_json, delivery_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    ).run(runId, userId, bundle.agent.id, bundle.agent.name || null, JSON.stringify(bundle), JSON.stringify(inputs || {}), 'running', '[]', delivery ? JSON.stringify(delivery) : null, now, now);
   } catch {}
 
   void (async () => {

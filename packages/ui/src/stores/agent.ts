@@ -5,6 +5,7 @@ import type { Agent, Workflow, WorkflowNode, WorkflowEdge, NodeType } from '@yan
 import { uid } from '@yan-zhi/shared';
 import { api } from '../api/client';
 import { useAuthStore } from './auth';
+import { isChatSelectableAgent } from '../utils/agentSelectable';
 
 function rowToAgent(r: any): Agent {
   const wf: Workflow = r.workflow_json ? JSON.parse(r.workflow_json) : { nodes: [], edges: [] };
@@ -323,12 +324,17 @@ export const useAgentStore = defineStore('agent', () => {
   );
 
   /**
-   * 会话可选中的智能体：过滤掉分类为 sub 的子智能体。
-   * 子智能体（如代码探索助手/高级程序助手/设计助手/前端助手）只能被其他智能体通过
-   * subAgentIds 引用委派（call_agent），不应出现在会话的智能体选择器里。
-   * 智能体管理页仍展示全部（agents），子智能体在那里可见可编辑。
+   * 会话可选中的智能体：过滤掉 sub 子智能体与 workflow 工作流型智能体。
+   *
+   * 规则与理由见 utils/agentSelectable.ts（纯函数，有单测钉住）。要点：
+   * - sub 子智能体只能被其他智能体通过 subAgentIds 引用委派（call_agent）；
+   * - **workflow 工作流型智能体不是对话智能体**：它没有 system_prompt 也没有 builtin_tool_ids，
+   *   选中它当会话智能体会让后端按 harness 跑 ReAct → 提示词空、工具 0，
+   *   静默退化成闲聊且 DAG 永不启动（「不反问、不产出、不出视频」的真因）。
+   *   agent_kind 对工作流是列默认值 'main'，所以必须按 type 再排一道。
+   * 智能体管理页仍展示全部（agents），工作流在那里可见、可编辑、可运行。
    */
-  const chatAgents = computed(() => agents.value.filter((a) => a.agentKind !== 'sub'));
+  const chatAgents = computed(() => agents.value.filter((a) => isChatSelectableAgent(a)));
 
   /** 可作为子智能体被引用的智能体（子智能体只能被引用，不能再引用别人） */
   const delegatableAgents = computed(() => agents.value.filter((a) => a.agentKind === 'sub'));

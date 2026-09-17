@@ -17,7 +17,7 @@ import { resolveArtifactDirFor, findArtifactFileInDirs } from './services/artifa
 import { downloadMediaBinary } from './services/media-fetch.js';
 import { buildArtifactRelDir, buildArtifactRelDirCandidates } from '@yan-zhi/shared';
 import platformRoutes, { migrateLegacyLocalPlatformRows } from './routes/platforms.js';
-import { seedBuiltinWorkflowAgents, ensureBuiltinWorkflowModel } from './builtin-workflow-agents.js';
+import { seedBuiltinWorkflowAgents, ensureBuiltinWorkflowModel, cleanupLegacyDiagAgents } from './builtin-workflow-agents.js';
 import { markOrphanWorkflowRunsInterrupted } from './workflow-runner.js';
 import { markOrphanTasksInterrupted, resumeWorkflowDeliveries } from './llm-task-manager.js';
 import agentRoutes from './routes/agents.js';
@@ -403,6 +403,19 @@ try {
   const f = ensureBuiltinWorkflowModel(db);
   if (f.filled) console.log('[builtin-wf] 内置工作流 LLM 节点已自动回填模型');
 } catch (e) { console.warn('[builtin-wf] 初始化失败:', e); }
+
+// 历史遗留诊断智能体清理：删掉手工创建的 diag_min_loop（含其 workflow_run），
+// 并把挂在它上面的会话重绑到真正的智能体 —— 必须先重绑再删，否则会话的
+// agent 级工具挂载 / 子智能体 / MCP 挂载会因悬空 id 全线静默失效。
+// 幂等：删完 WHERE 不再命中，不需要标记位。
+try {
+  const c = cleanupLegacyDiagAgents(db);
+  if (c.deletedAgents || c.reboundConversations || c.deletedRuns) {
+    console.log(
+      `[cleanup] 已清理遗留诊断智能体：agent ${c.deletedAgents} 行、workflow_run ${c.deletedRuns} 条、重绑会话 ${c.reboundConversations} 个`,
+    );
+  }
+} catch (e) { console.warn('[cleanup] 遗留诊断智能体清理失败:', e); }
 
 // 数据面预热（P4.1）：内置项目库数据源 + 全表自动本体。
 // 异步生成不阻塞启动；生成完即 published，智能体启动后可直接取数（首次调用也会同步兜底等待）。

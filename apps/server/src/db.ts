@@ -2575,6 +2575,10 @@ db.exec(`
 `);
 try { db.exec('CREATE INDEX IF NOT EXISTS idx_workflow_run_user ON workflow_run(user_id, created_at DESC)'); } catch {}
 
+// 工作流反写投递上下文：call_agent 委派的运行在此记录「跑完后往哪个会话反写」。
+// 非空 = 待投递；成功反写后置回 NULL（重启后按此补投，写回失败会保留以便重试）。
+try { db.exec("ALTER TABLE workflow_run ADD COLUMN delivery_json TEXT"); } catch {}
+
 // ===== 多数据源（P1 数据源底座）=====
 // 密码用 utils/crypto.ts 的 AES-256-GCM 加密（password_enc），接口永不回显明文。
 // type: mysql|postgres|dm|oracle|sqlite|project（project=应用自身 data.db，builtin=1）

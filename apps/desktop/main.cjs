@@ -132,6 +132,28 @@ function getDb() {
   return db;
 }
 
+/**
+ * 历史遗留诊断智能体清理（IPC 库 yan-zhi.db）。
+ *
+ * `diag_min_loop` 是 2026-09 排查 loop 节点时手工建的 workflow 调试载体，不是内置智能体，
+ * 只残留在数据里。后端 data.db 那份由 server 启动时自行清理（cleanupLegacyDiagAgents），
+ * 但本库是 Electron 主进程独占的单例，后端进程碰不到，所以在这里单独清一次。
+ *
+ * 幂等：删完 WHERE 不再命中。带 is_builtin = 0 兜底，避免误删将来复用了该 id 的内置智能体。
+ */
+function cleanupLegacyDiagAgent() {
+  try {
+    const d = getDb();
+    const row = d.prepare("SELECT id FROM agent WHERE id = 'diag_min_loop' AND is_builtin = 0").get();
+    if (!row) return;
+    const convs = d.prepare("UPDATE conversation SET agent_id = NULL WHERE agent_id = 'diag_min_loop'").run().changes;
+    const n = d.prepare("DELETE FROM agent WHERE id = 'diag_min_loop' AND is_builtin = 0").run().changes;
+    console.log(`[cleanup] 已清理遗留诊断智能体 diag_min_loop（agent ${n} 行${convs ? `，解绑会话 ${convs} 个` : ''}）`);
+  } catch (err) {
+    console.warn('[cleanup] 遗留诊断智能体清理失败:', err && err.message ? err.message : err);
+  }
+}
+
 // ============================================================
 // Keyring（JSON 文件存储，主进程单例缓存）
 //
@@ -3803,6 +3825,7 @@ app.whenReady().then(() => {
   } catch (err) {
     console.error('数据库初始化失败:', err);
   }
+  cleanupLegacyDiagAgent();
   startServer();
 
   // computer-use 急停热键：Ctrl+Alt+Esc → 通知后端 panic（冻结输入工具并禁用插件）。

@@ -19,7 +19,18 @@ import { serverState } from './state.js';
 import { resolveArtifactDirFor } from './services/artifact-dir.js';
 import { modelSupportsTools } from './services/model-caps.js';
 import { DEFAULT_CONTEXT_WINDOW } from './constants.js';
+import {
+  startWorkflowRun, subscribeWorkflowRun, getWorkflowRun, resolveBundleFromDb,
+  markWorkflowDelivered, loadPendingWorkflowDeliveries, type WorkflowDeliveryCtx,
+} from './workflow-runner.js';
+import {
+  isWorkflowAgent, extractWorkflowInputFields, mapWorkflowInputs,
+  classifyWorkflowOutput, buildWorkflowReceipt, withAbortAndTimeout,
+} from './services/workflow-delegate.js';
 import { promises as fsp } from 'node:fs';
+
+/** 工作流结果反写的 I/O 上限：反写本身很快，超时只为防异常挂住。 */
+const WORKFLOW_DELIVERY_TIMEOUT_MS = 30 * 1000;
 
 export type TaskStatus = 'running' | 'completed' | 'failed' | 'aborted' | 'paused';
 
@@ -664,6 +675,33 @@ export function getTask(taskId: string): LlmTask | undefined {
   return tasks.get(taskId);
 }
 
+// ── 会话级通知总线 ──
+// 为什么需要：原先只有「任务级」SSE，任务一结束就没有任何订阅方了。
+// 后台工作流跑完时那一轮对话往往早已结束，反写内容只能等下次刷新才可见。
+// 这层总线让「不属于任何运行中任务的消息」也能实时推给在线前端，
+// 同时作为后续其他通知类能力（定时提醒、异步工具回调、外部事件入站等）的公共底座。
+const conversationListeners = new Map<string, Set<(e: SSEEvent) => void>>();
+
+/** 订阅某个会话的事件（与任务无关）。返回取消订阅函数。 */
+export function subscribeConversation(conversationId: string, onEvent: (e: SSEEvent) => void): () => void {
+  let set = conversationListeners.get(conversationId);
+  if (!set) { set = new Set(); conversationListeners.set(conversationId, set); }
+  set.add(onEvent);
+  return () => {
+    set!.delete(onEvent);
+    if (set!.size === 0) conversationListeners.delete(conversationId);
+  };
+}
+
+/** 向会话的所有在线订阅方推事件；无人在线时静默（内容已落库，刷新即可见）。 */
+function emitConversation(conversationId: string, event: SSEEvent): void {
+  const set = conversationListeners.get(conversationId);
+  if (!set) return;
+  for (const cb of [...set]) {
+    try { cb(event); } catch { /* 单个订阅者异常不影响其他人 */ }
+  }
+}
+
 /** 清理已完成的任务（定期调用） */
 export function cleanupTasks(maxAgeMs: number = 30 * 60 * 1000) {
   const now = Date.now();
@@ -738,6 +776,42 @@ async function runReActLoop(task: LlmTask, params: {
     if (params.userContent !== undefined) {
       const msgId = insertMessage(convId, userId, 'user', params.userContent);
       emit(task, { type: 'message:added', message: { id: msgId, role: 'user', content: params.userContent } });
+    }
+
+    // 工作流型智能体不能当会话智能体跑 ReAct。
+    //
+    // **必须放在平台/模型校验之前**：绑定错类型是比「平台没配好」更根本的错误。
+    // 若放在后面，平台失效时会先报「平台或模型不存在」，把用户引向错误的排查方向
+    // （去设置里反复换模型），而真正的原因（选错了智能体类型）被完全掩盖。
+    //
+    // 背景：会话直接绑定 workflow 型智能体时，agent.system_prompt 为 NULL、builtin_tool_ids 为 []，
+    // 于是系统提示词里既没有角色定义也没有「## 可用工具」段，工具表更是几乎为空
+    // （连 ask_user/confirm_user 都进不来 —— 兜底分支要求 agentId 为空才触发）。
+    // 结果是模型拿到一句闲聊就按闲聊答，表现为「不反问、不产出、DAG 也永不启动」，
+    // 而且全程不报错、日志无痕，极难归因。
+    //
+    // 正常入口有三条，都不经过会话智能体：① 智能体页画布「运行」；
+    // ② 定时任务 taskType='workflow'；③ 对话智能体用 call_agent 委派（走 runWorkflowSubAgent）。
+    if (params.agentId) {
+      const boundAgent = db.prepare('SELECT id, name, type, workflow_json FROM agent WHERE id = ? AND (user_id = ? OR is_public = 1)').get(params.agentId, userId) as any;
+      if (isWorkflowAgent(boundAgent)) {
+        const wfName = boundAgent?.name || params.agentId;
+        const errMsg = [
+          `「${wfName}」是**工作流型智能体**，不能作为会话智能体对话 —— 它跑的是固定流程（DAG），没有对话提示词与工具集。`,
+          '',
+          '请改用以下任一方式触发：',
+          '1. **直接运行**：到「智能体」页打开它的画布，点右上角「运行」并填写入参；',
+          '2. **定时触发**：新建定时任务时把类型选为「工作流」，绑定该工作流；',
+          '3. **让对话智能体委派**：在「AI 短剧导演」等对话智能体的会话里说明需求，由它通过 call_agent 启动该工作流（完成结果会自动写回本对话）。',
+          '',
+          '如果想做「一句话主题 → 分镜/出图/配音/成片」，请直接切到 **AI 短剧导演** 智能体再描述需求。',
+        ].join('\n');
+        const aid = insertMessage(convId, userId, 'assistant', errMsg);
+        emit(task, { type: 'message:added', message: { id: aid, role: 'assistant', content: errMsg } });
+        emit(task, { type: 'task:error', error: '工作流型智能体不能作为会话智能体' });
+        task.status = 'failed';
+        return;
+      }
     }
 
     const platform = loadPlatform(params.platformId, userId);
@@ -832,7 +906,7 @@ async function runReActLoop(task: LlmTask, params: {
     // 否则产物只存在于对话气泡里，文件管理列表看不到。
     // api_video_status：视频任务超时后模型用它补查，补查命中时同样会就地落盘并返回完整媒体契约，
     // 不登记的话这条补落盘的产物同样进不了交付目录。
-    const MEDIA_TOOLS = new Set(['api_image_generate', 'api_video_generate', 'api_video_status']);
+    const MEDIA_TOOLS = new Set(['api_image_generate', 'api_video_generate', 'api_video_status', 'api_tts_speak', 'api_srt_generate', 'media_compose']);
 
     for (let step = 0; step < maxSteps; step++) {
       if (task.abortController.signal.aborted) throw new DOMException('Aborted', 'AbortError');
@@ -1118,13 +1192,13 @@ async function runReActLoop(task: LlmTask, params: {
             if (media?.ok !== false && filePath) {
               const sep = filePath.includes('/') ? '/' : '\\';
               const fileName = filePath.split(sep).pop() || filePath;
-              const isVideo = media?.type === 'video' || toolName === 'api_video_generate';
               // 产物就在本机，顺手取真实字节数（文件管理里显示大小，而不是 0）
               let size = 0;
               try { size = (await fsp.stat(filePath)).size; } catch { /* 取不到就留 0 */ }
-              // 生图/生视频默认归交付物（用户要的东西），与 mediaTarget 的落盘分类保持一致
+              // 生图/生视频/语音默认归交付物（用户要的东西），与 mediaTarget 的落盘分类保持一致。
+              // mime 按扩展名推断：图片落盘固定带扩展名（extFromUrl 兜底 .png），视频 mp4，音频 wav/mp3。
               const cfId = 'cf_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
-              db.prepare('INSERT INTO conversation_file (id, conversation_id, user_id, space_id, name, path, category, mime_type, size, source, message_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(cfId, convId, userId, null, fileName, filePath, 'deliverable', isVideo ? 'video/mp4' : 'image/png', size, 'agent', assistantMsgId, Date.now());
+              db.prepare('INSERT INTO conversation_file (id, conversation_id, user_id, space_id, name, path, category, mime_type, size, source, message_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(cfId, convId, userId, null, fileName, filePath, 'deliverable', guessMime(fileName), size, 'agent', assistantMsgId, Date.now());
               emit(task, { type: 'file:registered', conversationId: convId });
             }
           } catch (e: any) {
@@ -1293,8 +1367,19 @@ async function executeTool(
     if (subIds.length === 0) return '当前智能体未挂载任何子智能体';
     const lines: string[] = [];
     for (const id of subIds) {
-      const sub = db.prepare('SELECT name, description, platform_id, model_id FROM agent WHERE id = ? AND (user_id = ? OR is_public = 1)').get(id, task.userId) as any;
+      const sub = db.prepare('SELECT name, description, platform_id, model_id, type, inputs_schema_json, workflow_json FROM agent WHERE id = ? AND (user_id = ? OR is_public = 1)').get(id, task.userId) as any;
       if (!sub) { lines.push(`- id: \`${id}\`（该子智能体已被删除）`); continue; }
+      // 类型标注：工作流型是跑固定 DAG 的流水线，入参形态与对话型不同。
+      // 不标注的话模型只能靠名字猜，会把工作流当对话型委派，拿到一段无关空谈。
+      if (isWorkflowAgent(sub)) {
+        // 用 extractWorkflowInputFields：内置工作流的 inputs_schema_json 为 NULL，
+        // 真正 schema 在 workflow_json 的 input 节点里。只读列的话这里会显示「未声明」，
+        // 模型就不知道要传 topic，委派必然传成 key=input 而 DAG 读 ctx.inputs.topic。
+        const fields = extractWorkflowInputFields(sub);
+        const inputsNote = fields.length > 0 ? `入参: {${fields.join(', ')}}` : '入参: 未声明';
+        lines.push(`- **${sub.name}** (id: \`${id}\`, 类型: 工作流): ${sub.description || ''} | ${inputsNote}`);
+        continue;
+      }
       // 附带子智能体当前绑定的模型信息，供 call_agent 决策是否覆盖
       let modelNote = '';
       if (sub.platform_id || sub.model_id) {
@@ -1414,17 +1499,204 @@ async function executeToolViaFrontend(task: LlmTask, toolName: string, args: any
   });
 }
 
-/** call_agent 后端执行：查 DB agent 配置，递归跑子 ReAct 循环。
- *  子智能体消息写入同一会话，带 parent_tool_call_id/sub_agent_id 归属字段。 */
+/**
+ * 工作流型子智能体：后台启动一次 DAG，立即返回回执，完成后把结果反写回对话。
+ *
+ * 为什么不同步等：一条流水线可能跑几分钟，同步 await 会把主智能体的 ReAct 循环挂死，
+ * 用户在这期间什么都做不了。异步化后 call_agent 立刻返回，流水线在后台跑完再回调，
+ * 这才是长任务该有的形态（与 startWorkflowRun 的落库 + SSE 机制天然契合）。
+ */
+async function runWorkflowSubAgent(
+  task: LlmTask,
+  agent: any,
+  args: { agentId?: string; input?: unknown; platformId?: string; modelId?: string },
+  parentToolCallId: string,
+  depth: number,
+): Promise<string> {
+  const resolvedId = String(agent.id || '');
+  const subAgentName = agent.name || resolvedId;
+
+  const fields = extractWorkflowInputFields(agent);
+  const mapped = mapWorkflowInputs(args.input, fields);
+  if (!mapped.ok) return mapped.error;
+
+  // 模型回退上下文：工作流 llm 节点未配置模型时用它兜底（见 ServerLlmNodeHandler）
+  const inputs: Record<string, unknown> = { ...mapped.inputs };
+  const platformId = args.platformId || agent.platform_id || task.platformId;
+  const modelId = args.modelId || agent.model_id || task.modelId;
+  if (platformId) inputs.__platformId = platformId;
+  if (modelId) inputs.__modelId = modelId;
+
+  const bundle = resolveBundleFromDb(resolvedId);
+  if (!bundle) return `[工作流启动失败] 工作流智能体不存在: ${resolvedId}`;
+
+  // 后台执行：startWorkflowRun 内部就是 fire-and-forget，落 workflow_run 表 + 发 SSE。
+  // 绝不能 await —— 否则整轮对话会被一条流水线挂死。
+  const runId = startWorkflowRun(bundle, inputs, task.userId);
+
+  emit(task, { type: 'sub_agent:start', agentId: resolvedId, agentName: subAgentName, parentToolCallId, depth: depth + 1, runId });
+
+  watchWorkflowRun(runId, {
+    conversationId: task.conversationId,
+    userId: task.userId,
+    taskId: task.id,
+    agentId: resolvedId,
+    agentName: subAgentName,
+    parentToolCallId,
+  });
+
+  return buildWorkflowReceipt(subAgentName, runId);
+}
+
+/** 订阅一次运行，终态时把产物反写回对话。 */
+function watchWorkflowRun(runId: string, ctx: WorkflowDeliveryCtx): void {
+  const unsub = subscribeWorkflowRun(runId, 0, (ev) => {
+    if (ev.type !== 'run:completed' && ev.type !== 'run:failed') return;
+    unsub();
+    const failedMsg = ev.type === 'run:failed' ? (ev.msg || '未知错误') : undefined;
+    void deliverWorkflowResult(runId, ctx, failedMsg);
+  });
+}
+
+/** 反写调度：失败要可见（产物跑出来了却没进对话，用户会以为没执行）。 */
+async function deliverWorkflowResult(runId: string, ctx: WorkflowDeliveryCtx, failedMsg?: string): Promise<void> {
+  try {
+    // 用一个「永不中止」的 signal，只为套超时：反写不该被任务中止波及 ——
+    // 流水线已经跑完了，结果值得留下。
+    await withAbortAndTimeout(
+      writeBackWorkflow(runId, ctx, failedMsg),
+      new AbortController().signal,
+      WORKFLOW_DELIVERY_TIMEOUT_MS,
+    );
+    // 成功才清除待投递标记；失败保留，重启后由 resumeWorkflowDeliveries 重试
+    markWorkflowDelivered(runId);
+  } catch (e: any) {
+    console.warn('[workflow] 结果反写失败（保留待重启补投）:', e?.message || e);
+  }
+}
+
+/** 文字 → 直接输出成消息；文件 → 落盘 + 登记交付物 + 输出引用。 */
+async function writeBackWorkflow(runId: string, ctx: WorkflowDeliveryCtx, failedMsg?: string): Promise<void> {
+  if (failedMsg) {
+    pushConversationMessage(ctx, `[工作流执行失败] ${failedMsg}`, 'assistant');
+    return;
+  }
+  const output = loadWorkflowOutput(runId);
+  for (const item of classifyWorkflowOutput(output)) {
+    if (item.kind === 'text') pushConversationMessage(ctx, item.text, 'assistant');
+    else await deliverWorkflowFile(ctx, item);
+  }
+}
+
+/** 运行产物：优先内存（本进程内跑完的），回落 DB（重启后补投的场景）。 */
+function loadWorkflowOutput(runId: string): Record<string, unknown> {
+  const run = getWorkflowRun(runId);
+  if (run?.result) return run.result as Record<string, unknown>;
+  try {
+    const row = db.prepare('SELECT result_json FROM workflow_run WHERE id = ?').get(runId) as any;
+    if (row?.result_json) return JSON.parse(row.result_json);
+  } catch { /* 解析失败按空产物处理，反写时会给明确提示 */ }
+  return {};
+}
+
+/**
+ * 服务启动补偿：上次进程遗留的待反写运行统一补投。
+ * 必须在 markOrphanWorkflowRunsInterrupted() 之后调用 —— running 先被标 failed，这里才有失败可写；
+ * 跑完但没来得及反写的（completed + delivery_json 非空）则按成功补投。
+ */
+export function resumeWorkflowDeliveries(): number {
+  let scheduled = 0;
+  try {
+    for (const r of loadPendingWorkflowDeliveries()) {
+      let ctx: WorkflowDeliveryCtx;
+      try { ctx = JSON.parse(r.delivery_json); } catch { markWorkflowDelivered(r.id); continue; }
+      const failedMsg = r.status === 'completed' ? undefined : (r.error || '服务重启导致运行中断');
+      void deliverWorkflowResult(r.id, ctx, failedMsg);
+      scheduled++;
+    }
+    if (scheduled > 0) console.log(`[workflow] 已调度 ${scheduled} 条遗留工作流结果的补投`);
+  } catch (e: any) {
+    console.warn('[workflow] 补投调度失败:', e?.message || e);
+  }
+  return scheduled;
+}
+
+async function deliverWorkflowFile(ctx: WorkflowDeliveryCtx, item: { name: string; path?: string; content?: string; encoding?: 'utf8' | 'base64' }): Promise<void> {
+  let filePath = item.path || '';
+  // 只有内容没有路径 → 写进会话交付目录（产物必须是真实文件，不能只躺在消息里）
+  if (!filePath && item.content) {
+    const { dir } = resolveArtifactDirFor({ conversationId: ctx.conversationId, category: 'deliverable' });
+    await fsp.mkdir(dir, { recursive: true });
+    filePath = `${dir}/${item.name}`;
+    await fsp.writeFile(filePath, item.content, item.encoding === 'base64' ? 'base64' : 'utf8');
+  }
+  if (!filePath) return;
+
+  let size = 0;
+  try { size = (await fsp.stat(filePath)).size; } catch { /* 取不到就留 0 */ }
+
+  const msgId = pushConversationMessage(ctx, `[工作流交付文件] ${item.name}\n路径：${filePath}`, 'assistant');
+  try {
+    const cfId = 'cf_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+    db.prepare('INSERT INTO conversation_file (id, conversation_id, user_id, space_id, name, path, category, mime_type, size, source, message_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(cfId, ctx.conversationId, ctx.userId, null, item.name, filePath, 'deliverable', guessMime(item.name), size, 'agent', msgId, Date.now());
+    notifyConversation(ctx, { type: 'file:registered', conversationId: ctx.conversationId });
+  } catch (e: any) {
+    // 落盘已成功，这里只丢登记：不能静默，打印出来便于定位
+    console.warn('[workflow] 交付文件登记失败:', e?.message || e);
+  }
+}
+
+function guessMime(name: string): string {
+  const ext = (name.split('.').pop() || '').toLowerCase();
+  const map: Record<string, string> = {
+    png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif',
+    mp4: 'video/mp4', webm: 'video/webm', mp3: 'audio/mpeg', wav: 'audio/wav', m4a: 'audio/mp4',
+    pdf: 'application/pdf', json: 'application/json', csv: 'text/csv',
+    md: 'text/markdown', txt: 'text/plain', html: 'text/html', srt: 'application/x-subrip',
+  };
+  return map[ext] || 'application/octet-stream';
+}
+
+/** 往会话里写一条消息：先落库（保证刷新可见），再推给在线订阅方。 */
+function pushConversationMessage(ctx: WorkflowDeliveryCtx, content: string, role: string): string {
+  const extra = {
+    parentToolCallId: ctx.parentToolCallId,
+    subAgentId: ctx.agentId,
+    subAgentName: ctx.agentName,
+    subAgentDepth: 1,
+  };
+  const msgId = insertMessage(ctx.conversationId, ctx.userId, role, content, extra);
+  notifyConversation(ctx, {
+    type: 'message:added',
+    message: { id: msgId, role, content, ...extra },
+  });
+  return msgId;
+}
+
+/** 通知会话：任务还活着就复用任务 SSE（前端已在订阅）；任务已结束则走会话级总线。 */
+function notifyConversation(ctx: WorkflowDeliveryCtx, event: SSEEvent): void {
+  const task = getTask(ctx.taskId);
+  if (task && task.status === 'running') { emit(task, event); return; }
+  emitConversation(ctx.conversationId, event);
+}
+
+/** call_agent 后端执行：查 DB agent 配置，按智能体类型分派。
+ *  - workflow 型 → 跑一次 DAG，把 output 节点产物作为工具结果返回；
+ *  - 其余（harness 型）→ 递归跑子 ReAct 循环，子智能体消息写入同一会话，
+ *    带 parent_tool_call_id/sub_agent_id 归属字段。
+ *  两条路共用前奏（参数校验 / 别名解析 / 查 agent 行），调用方 dispatchToolCall 无需感知差异。 */
 async function runSubAgent(
   task: LlmTask,
-  args: { agentId?: string; input?: string; platformId?: string; modelId?: string },
+  args: { agentId?: string; input?: unknown; platformId?: string; modelId?: string },
   parentToolCallId: string,
   depth: number,
   uiTools: Set<string>,
 ): Promise<string> {
   const agentId = args.agentId || (args as any).agent_id || (args as any).id;
-  const input = args.input || (args as any).sub_task || (args as any).task || (args as any).query;
+  // input 允许是对象（多入参工作流的推荐用法）；harness 分支一律按文本处理
+  const rawInput = args.input || (args as any).sub_task || (args as any).task || (args as any).query;
+  const input = typeof rawInput === 'string' ? rawInput : rawInput ? JSON.stringify(rawInput) : '';
   if (!agentId) return 'agentId 为必填项。请先调用 list_sub_agents 工具查看可用子智能体及其 ID，然后在 call_agent 的 arguments 中传入 agentId（如 "a_builtin_page_agent"）和 input（任务描述）参数。';
   if (!input) return 'input 为必填项。请在 call_agent 的 arguments 中传入 input 参数（描述要让子智能体执行的任务），例如 {"agentId":"a_builtin_page_agent","input":"打开网站并执行操作"}';
   if (depth >= 1) return '子智能体不能再调用子智能体（深度仅允许 1 层）';
@@ -1440,6 +1712,13 @@ async function runSubAgent(
   // 查 DB agent 配置
   const agent = db.prepare('SELECT * FROM agent WHERE id = ? AND (user_id = ? OR is_public = 1)').get(resolvedId, task.userId) as any;
   if (!agent) return `子智能体不存在: ${agentId}（可调用 list_sub_agents 工具查询可用子智能体及其 ID）`;
+
+  // 按智能体类型分派：工作流型跑 DAG，其余走 ReAct。
+  // 必须在这里分（在解析平台/模型之前）—— 工作流没有 system_prompt / builtin_tool_ids，
+  // 走 ReAct 会退化成「你是一个智能助手」+ 零工具，返回一段无关空谈且完全不报错。
+  if (isWorkflowAgent(agent)) {
+    return runWorkflowSubAgent(task, agent, args, parentToolCallId, depth);
+  }
 
   // 解析平台/模型：调用方指定 > 子智能体配置 > 父任务（主智能体当前模型）
   const platformId = args.platformId || (agent.platform_id || task.platformId);

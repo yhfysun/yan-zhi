@@ -105,7 +105,7 @@
                 shadow="hover"
               >
                 <div class="agent-card-head" @click="agent.type === 'workflow' ? openCanvas(agent.id) : editAgent(agent)">
-                  <div class="agent-avatar">{{ (agent.name || '?').slice(0, 2) }}</div>
+                  <div class="agent-avatar"><el-icon :size="22"><component :is="agentIconOf(agent.id, agent.name)" /></el-icon></div>
                   <div class="agent-info">
                     <div class="agent-name">
                       <el-icon v-if="agent.isDefault" class="lock-icon"><Lock /></el-icon>
@@ -160,7 +160,7 @@
       <div v-else class="agent-grid">
         <el-card v-for="item in remoteAgentItems" :key="item.id" class="agent-card remote-agent-card" shadow="hover">
           <div class="agent-card-head">
-            <div class="agent-avatar remote-avatar">{{ (item.name || '?').slice(0, 2) }}</div>
+            <div class="agent-avatar remote-avatar"><el-icon :size="22"><component :is="agentIconOf(item.id, item.name)" /></el-icon></div>
             <div class="agent-info">
               <div class="agent-name">{{ item.name }}</div>
               <div class="agent-desc">{{ item.description || '暂无描述' }}</div>
@@ -208,6 +208,7 @@ import { useRoute, useRouter } from 'vue-router';
 import { Plus, EditPen, Delete, Setting, Lock, ArrowLeft, UserFilled, Monitor, ArrowRight, ArrowDown } from '@element-plus/icons-vue';
 import { ElMessageBox, ElMessage } from 'element-plus';
 import { useAgentStore } from '../stores/agent';
+import { resolveAgentIcon as agentIconOf } from '../utils/agentIcon';
 import { api } from '../api/client';
 import type { Agent } from '@yan-zhi/shared';
 import AgentEditDialog from '../components/AgentEditDialog.vue';
