@@ -56,6 +56,11 @@
     <div class="sec-grid">
       <!-- ============ 左栏 ============ -->
       <aside class="sec-col-left">
+        <!-- 任务段（决策 13 / 5f.5）：四模式同构会话列表，授权/资产之上 -->
+        <section class="sec-frame sec-frame-tasks">
+          <TaskListSection :space-id="null" />
+        </section>
+
         <!-- 左上：授权目录 -->
         <section class="sec-frame">
           <header class="sec-frame-head">
@@ -107,6 +112,8 @@
 
       <!-- ============ 右栏 ============ -->
       <section class="sec-col-right">
+        <!-- 命令模式（lead=human）：现有扫描控制台原样保留（任务 8.2），v-show 保活不卸载 -->
+        <div v-show="lead === 'human'" class="sec-ws">
         <header class="sec-frame-head sec-frame-head-tab">
           <span class="sec-num">04</span>
           <span class="sec-frame-title">EXEC</span>
@@ -550,8 +557,57 @@
             </div>
           </article>
         </div>
+        </div><!-- /.sec-ws 命令模式 -->
+
+        <!-- AI 模式（lead=ai）：对话即执行界面（任务 8.1 / 8.3）。
+             对话只是「人通过对话发起扫描」的入口：所有执行仍走既有授权范围校验 +
+             危险动作黑名单 + HUMAN_ONLY 闸门 + 全量审计，不放宽任何权限（任务 8.6 红线）。 -->
+        <div v-show="lead === 'ai'" class="sec-ai">
+          <div ref="secChatListEl" class="sec-ai-list" @click="onSecMdClick">
+            <div v-if="!secMessages.length" class="sec-ai-welcome">
+              <el-icon :size="30" class="sec-ai-welcome-icon"><ChatDotRound /></el-icon>
+              <p class="sec-ai-welcome-title">安全助手</p>
+              <p class="sec-ai-welcome-sub">
+                描述安全任务，我来执行：目标画像、端口/Web 探测、检测规则、日志狩猎、报告……<br />
+                仅限已登记授权的目标；危险动作需人工确认，全程留痕。
+              </p>
+            </div>
+            <div v-for="m in secMessages" :key="m.id" :class="['sec-ai-msg', m.role === 'user' ? 'msg-user' : 'msg-assistant']">
+              <div class="sec-ai-avatar" :class="m.role === 'user' ? 'avatar-user' : 'avatar-assistant'">
+                <el-icon :size="15"><component :is="m.role === 'user' ? User : ChatDotRound" /></el-icon>
+              </div>
+              <div class="sec-ai-body">
+                <div class="sec-ai-meta">
+                  <span class="sec-ai-name">{{ m.role === 'user' ? '我' : (m.subAgentName || '安全助手') }}</span>
+                  <span v-if="m.createdAt" class="sec-ai-time">{{ fmtTime(m.createdAt) }}</span>
+                  <span v-if="m.streaming" class="sec-ai-streaming">输出中…</span>
+                </div>
+                <div v-if="m.role === 'user'" class="sec-ai-content">{{ m.content }}</div>
+                <div v-else class="sec-ai-content sec-ai-md" v-html="renderSecMarkdown(m.content)"></div>
+              </div>
+            </div>
+          </div>
+          <div class="sec-ai-input">
+            <el-input
+              v-model="secChatInput"
+              type="textarea"
+              :rows="2"
+              :disabled="secChatStreaming"
+              placeholder="输入安全任务，Ctrl+Enter 发送"
+              @keydown.ctrl.enter="sendSecChat"
+            />
+            <div class="sec-ai-actions">
+              <span v-if="secChatStreaming" class="sec-ai-hint">执行中…</span>
+              <el-button v-if="secChatStreaming" size="small" type="warning" @click="abortSecChat">停止</el-button>
+              <el-button size="small" :disabled="secChatStreaming || !secChatInput.trim()" type="primary" @click="sendSecChat">发送</el-button>
+            </div>
+          </div>
+        </div><!-- /.sec-ai AI 模式 -->
       </section>
     </div>
+
+    <!-- 主导方悬浮胶囊（任务 8.4：命令模式 ↔ AI 模式，右下角，不占布局行） -->
+    <LeadToggle :model-value="lead" mode="sec" @update:model-value="onLeadChange" />
 
     <!-- ============ 登记授权目标 ============ -->
     <el-dialog v-model="showAdd" title="登记授权目标" width="520px">
@@ -620,12 +676,228 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue';
-import { Close, QuestionFilled } from '@element-plus/icons-vue';
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from 'vue';
+import { ChatDotRound, Close, QuestionFilled, User } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { api } from '../../api/client';
+import { api, API_BASE } from '../../api/client';
+import { useSettingsStore } from '../../stores/settings';
+import { usePlatformStore } from '../../stores/platform';
+import TaskListSection from '../../components/workbench/TaskListSection.vue';
+import LeadToggle from '../../components/workbench/LeadToggle.vue';
+import { activeMode, leadOf, setLead, type LeadMode } from '../../stores/mode';
+import { useChat } from '../../composables/chat/useChat';
+import MarkdownIt from 'markdown-it';
+import hljs from 'highlight.js';
 
 const BASE = '/plugin/sec-lab';
+
+// ============================================================
+// 主导方双形态（任务 8.1–8.6）：human = 命令模式（现有控制台，原样保留）
+// ai = AI 模式（对话居中）。对话只做「人通过对话发起扫描」的入口，
+// 所有执行仍由 sec-lab 既有授权范围校验 / 危险动作黑名单 / HUMAN_ONLY /
+// 全量审计兜底 —— 不新增任何绕过路径。
+// ============================================================
+const lead = computed<LeadMode>(() => leadOf(activeMode.value));
+function onLeadChange(v: LeadMode) {
+  setLead(activeMode.value, v);
+}
+
+// ---------- AI 模式对话：单会话（绑定 a_builtin_sec_agent），状态本地保留 ----------
+const SEC_AGENT_ID = 'a_builtin_sec_agent';
+interface SecMsg { id: string; role: string; content: string; subAgentName?: string | null; createdAt?: number; streaming?: boolean }
+const secMessages = ref<SecMsg[]>([]);
+const secChatInput = ref('');
+const secChatStreaming = ref(false);
+const secConvId = ref('');
+const secChatListEl = ref<HTMLElement | null>(null);
+let secAbort: AbortController | null = null;
+
+// 平台/模型（与运维控制台同口径：读设置里的默认平台与模型）
+const settingsStore = useSettingsStore();
+const platformStore = usePlatformStore();
+
+async function ensureSecConversation(): Promise<string> {
+  if (secConvId.value) return secConvId.value;
+  const r = await api.post<any>('/conversations', { title: '安全控制台', agentId: SEC_AGENT_ID });
+  if ('error' in r) throw new Error(r.error);
+  secConvId.value = (r.data as any).id as string;
+  return secConvId.value;
+}
+
+async function loadSecMessages() {
+  if (!secConvId.value) return;
+  const r = await api.get<any[]>(`/conversations/${secConvId.value}/messages`);
+  if ('data' in r) {
+    secMessages.value = (r.data as any[]).map((m) => ({
+      id: m.id, role: m.role, content: m.content || '',
+      subAgentName: m.sub_agent_name || null, createdAt: m.created_at,
+    }));
+  }
+}
+
+function scrollSecBottom() {
+  void nextTick(() => { if (secChatListEl.value) secChatListEl.value.scrollTop = secChatListEl.value.scrollHeight; });
+}
+
+/** 上下文提示：把当前授权范围带给安全助手（只传目标值，不传凭据） */
+function scopeHint(): string {
+  if (!scopes.value.length) return '\n\n（当前未登记任何授权目标——请提醒用户先在控制台登记授权范围，不得扫描未授权目标。）';
+  const list = scopes.value.map((s) => `${s.value}［${s.environment || 'internal'} / ${s.maxRisk}${s.expired ? ' / 已过期' : ''}］`).join('；');
+  return `\n\n（当前授权范围（仅可对这些目标操作）：${list}）`;
+}
+
+async function sendSecChat() {
+  const content = secChatInput.value.trim();
+  if (!content || secChatStreaming.value) return;
+  const platform = platformStore.platforms.find((p) => p.id === settingsStore.settings.defaultPlatformId);
+  const model = platformStore.models.find((m) => m.id === settingsStore.settings.defaultModelId);
+  if (!platform || !model) {
+    ElMessage.warning('请先在「设置」配置默认平台与模型（AI 模式需要）');
+    return;
+  }
+  try {
+    await ensureSecConversation();
+  } catch (e) {
+    ElMessage.error('创建会话失败: ' + (e as Error).message);
+    return;
+  }
+  secChatInput.value = '';
+  secChatStreaming.value = true;
+  secMessages.value.push({ id: `local-${Date.now()}`, role: 'user', content, createdAt: Date.now() });
+  scrollSecBottom();
+  const prompt = content + scopeHint();
+
+  secAbort = new AbortController();
+  try {
+    const taskRes = await api.post<any>('/llm/tasks', {
+      conversationId: secConvId.value,
+      platformId: platform.id,
+      modelId: model.id,
+      userContent: prompt,
+      agentId: SEC_AGENT_ID,
+    });
+    if ('error' in taskRes) throw new Error(taskRes.error);
+    await subscribeSecTask(taskRes.data.taskId as string, secAbort);
+  } catch (e) {
+    if ((e as Error).name !== 'AbortError') ElMessage.error('执行失败: ' + (e as Error).message);
+  } finally {
+    secChatStreaming.value = false;
+    secAbort = null;
+    await loadSecMessages();
+    scrollSecBottom();
+  }
+}
+
+async function abortSecChat() {
+  secAbort?.abort();
+  if (!secConvId.value) return;
+  try {
+    const token = localStorage.getItem('auth_token') || '';
+    const r = await api.get<any[]>(`/llm/tasks/active?conversationId=${secConvId.value}`);
+    const taskId = ('data' in r && r.data?.[0]?.id) || null;
+    if (taskId) await fetch(`${API_BASE}/llm/tasks/${taskId}/abort`, { method: 'POST', headers: { Authorization: `Bearer ${token}` } });
+  } catch { /* 忽略 */ }
+}
+
+/** SSE 订阅（与运维控制台同协议；状态完全本地，不碰全局 chat store） */
+async function subscribeSecTask(taskId: string, ac: AbortController): Promise<void> {
+  const token = localStorage.getItem('auth_token') || '';
+  const resp = await fetch(`${API_BASE}/llm/tasks/${taskId}/stream?since=0`, {
+    headers: { Authorization: `Bearer ${token}` },
+    signal: ac.signal,
+  });
+  if (!resp.ok || !resp.body) throw new Error('SSE 连接失败');
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const events = buffer.split('\n\n');
+    buffer = events.pop() || '';
+    for (const rawEvent of events) {
+      const line = rawEvent.trim();
+      if (!line.startsWith('data: ')) continue;
+      let event: any;
+      try { event = JSON.parse(line.slice(6)); } catch { continue; }
+      if (event.type === 'message:added') {
+        const msg = event.message;
+        if (!secMessages.value.some((m) => m.id === msg.id)) {
+          secMessages.value.push({
+            id: msg.id, role: msg.role, content: msg.content || '',
+            subAgentName: msg.subAgentName || msg.sub_agent_name || null,
+            streaming: msg.role === 'assistant', createdAt: Date.now(),
+          });
+        }
+        scrollSecBottom();
+      } else if (event.type === 'chunk') {
+        const list = secMessages.value;
+        for (let i = list.length - 1; i >= 0; i--) {
+          if (list[i].role === 'assistant' && list[i].streaming) {
+            if (event.content) list[i].content += event.content;
+            scrollSecBottom();
+            break;
+          }
+        }
+      } else if (event.type === 'task:completed' || event.type === 'task:error' || event.type === 'task:aborted') {
+        for (const m of secMessages.value) m.streaming = false;
+        if (event.type === 'task:error' && event.error) {
+          secMessages.value.push({ id: `err-${Date.now()}`, role: 'assistant', content: `⚠️ ${event.error}`, createdAt: Date.now() });
+        }
+        scrollSecBottom();
+        return;
+      }
+    }
+  }
+  for (const m of secMessages.value) m.streaming = false;
+}
+
+// ---------- 助手消息 markdown 渲染（对齐运维控制台口径） ----------
+const secMd = new MarkdownIt({
+  html: false, linkify: true, breaks: true,
+  highlight(str: string, lang: string): string {
+    const codeClass = lang ? ` class="language-${lang}"` : '';
+    const langLabel = lang ? `<span class="code-lang">${lang}</span>` : '';
+    if (lang && hljs.getLanguage(lang)) {
+      try {
+        const h = hljs.highlight(str, { language: lang }).value;
+        return `<pre class="hljs sec-code">${langLabel}<button class="code-copy-btn" data-code="${encodeURIComponent(str)}">复制</button><code${codeClass}>${h}</code></pre>`;
+      } catch {}
+    }
+    return `<pre class="hljs sec-code">${langLabel}<button class="code-copy-btn" data-code="${encodeURIComponent(str)}">复制</button><code${codeClass}>${secMd.utils.escapeHtml(str)}</code></pre>`;
+  },
+});
+
+function renderSecMarkdown(content?: string): string {
+  let c = content || '';
+  c = c
+    .replace(/\[TOOL_CALL\][\s\S]*?\[\/TOOL_CALL\]/gi, '')
+    .replace(/\[TOOL_CALL\][\s\S]*$/i, '')
+    .replace(/<function\s*=\s*\w+\s*>[\s\S]*?<\/function>/gi, '')
+    .replace(/<function\s*=\s*\w+\s*>[\s\S]*$/i, '');
+  c = c.replace(/\[\[PLATFORM_CONFIG:[^\]]*\]\]\s*$/g, '').split('\n@@REASON@@\n')[0].trim();
+  return c.split(/(\[tool_call\])/g).map((part) => {
+    if (part === '[tool_call]') return '<span class="sec-inline-tool">⚙ 正在调用工具</span>';
+    return secMd.render(part);
+  }).join('');
+}
+
+function onSecMdClick(e: MouseEvent) {
+  const t = e.target as HTMLElement;
+  if (t.classList.contains('code-copy-btn')) {
+    const rawCode = t.getAttribute('data-code') || '';
+    navigator.clipboard.writeText(decodeURIComponent(rawCode)).then(() => {
+      t.textContent = '已复制'; setTimeout(() => { t.textContent = '复制'; }, 1500);
+    }).catch(() => {});
+    return;
+  }
+  const a = (t as HTMLElement).closest('a');
+  if (a) {
+    const href = a.getAttribute('href') || '';
+    if (/^https?:\/\//i.test(href)) { e.preventDefault(); window.open(href, '_blank', 'noopener'); }
+  }
+}
 
 // ---------- Tab 描述（决定顺序、编号、分类标签） ----------
 const TABS = [
@@ -935,7 +1207,18 @@ async function runEasm() {
   await postRun('asset_monitor', args);
 }
 
-onMounted(async () => { await loadAll(); await loadToolchain(); });
+const chatApi = useChat();
+onMounted(async () => {
+  await loadAll();
+  await loadToolchain();
+  // 任务 8.5：进入安全模式时切到 sec 场景（场景提示词只影响后续消息的 system prompt，不动历史）。
+  // 双重断言：config/scenes.ts 的 SceneKey 正在由另一处改动扩展（ops / sec），
+  // 这里不阻塞对方的编译——场景不存在时 setScene 内部不生效，已用 try 兜底。
+  try { chatApi.setScene('sec' as unknown as Parameters<typeof chatApi.setScene>[0]); } catch { /* 场景缺失不阻塞控制台 */ }
+  // AI 模式会话：同页切换回来消息还在（secConvId 仍在内存）
+  if (secConvId.value) void loadSecMessages();
+});
+onUnmounted(() => { secAbort?.abort(); });
 </script>
 
 <style scoped>
@@ -1497,4 +1780,122 @@ onMounted(async () => { await loadAll(); await loadToolchain(); });
 .sec-bcard-name { font-size: 13px; font-weight: 600; color: var(--sc-fg); flex: 1; }
 .sec-bcard-reason { font-size: 12px; color: var(--sc-amber); }
 .sec-bcard-detail { font-size: 11.5px; color: var(--sc-fg-3); line-height: 1.6; }
+
+/* ============================================================
+   主导方双形态补充（任务 8.1–8.4）
+   ============================================================ */
+/* 定位基准：右下角主导方悬浮胶囊（LeadToggle） */
+.sec-console { position: relative; }
+
+/* 命令模式容器：承接原右栏直接子元素的 flex 语义（包一层 v-show 保活） */
+.sec-ws {
+  flex: 1; min-height: 0; min-width: 0;
+  display: flex; flex-direction: column; gap: 12px;
+}
+
+/* 左栏任务段：限高约 40%，超出滚动 */
+.sec-frame-tasks {
+  flex: 0 0 auto;
+  height: 34%;
+  min-height: 120px;
+  max-height: 40%;
+  display: flex; flex-direction: column;
+  overflow: hidden;
+}
+.sec-frame-tasks :deep(.tls) { height: 100%; }
+
+/* AI 模式对话区（与运维控制台 chat 视图同构） */
+.sec-ai {
+  flex: 1; min-height: 0;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.sec-ai-list {
+  flex: 1; min-height: 0; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 16px; padding: 8px 6px 14px;
+}
+.sec-ai-welcome {
+  flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 8px; text-align: center; color: var(--sc-fg-2); padding: 24px;
+}
+.sec-ai-welcome-icon { color: var(--color-primary); }
+.sec-ai-welcome-title { margin: 0; font-size: 14px; font-weight: 600; color: var(--sc-fg); }
+.sec-ai-welcome-sub { margin: 0; font-size: 12px; line-height: 1.8; max-width: 380px; }
+
+.sec-ai-msg { display: flex; gap: 10px; animation: secMsgIn 0.28s cubic-bezier(0.16, 1, 0.3, 1); }
+@keyframes secMsgIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+.sec-ai-msg.msg-user { flex-direction: row-reverse; }
+.sec-ai-avatar {
+  width: 30px; height: 30px; border-radius: 9px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  color: #fff; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+.sec-ai-avatar.avatar-user { background: linear-gradient(135deg, var(--color-primary), var(--color-primary-dark)); }
+.sec-ai-avatar.avatar-assistant { background: linear-gradient(135deg, var(--color-accent), var(--color-primary-dark)); }
+.sec-ai-body { min-width: 0; max-width: calc(100% - 40px); display: flex; flex-direction: column; }
+.sec-ai-msg.msg-user .sec-ai-body { align-items: flex-end; flex: 1 1 0; }
+.sec-ai-meta { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; padding: 0 4px; }
+.sec-ai-name { font-size: 12px; font-weight: 600; color: var(--sc-fg-2); }
+.sec-ai-time { font-size: 11px; color: var(--sc-fg-3); }
+.sec-ai-streaming { font-size: 11px; color: var(--color-primary); }
+.sec-ai-content { font-size: 13px; line-height: 1.65; word-break: break-word; overflow-wrap: break-word; padding: 10px 14px; border-radius: 14px; }
+.sec-ai-msg.msg-user .sec-ai-content {
+  background: var(--gradient-primary); color: #fff;
+  border-bottom-right-radius: 4px;
+  box-shadow: 0 2px 10px color-mix(in srgb, var(--color-primary) 22%, transparent);
+  display: inline-block; max-width: 100%;
+}
+.sec-ai-msg.msg-assistant .sec-ai-content { background: transparent; border-radius: 0; padding: 2px 2px 0; }
+
+.sec-ai-md p { margin: 6px 0; }
+.sec-ai-md p:first-child { margin-top: 0; }
+.sec-ai-md p:last-child { margin-bottom: 0; }
+.sec-ai-md ul, .sec-ai-md ol { padding-left: 20px; margin: 6px 0; list-style-position: outside; }
+.sec-ai-md li { margin: 3px 0; }
+.sec-ai-md code {
+  font-family: "JetBrains Mono", Consolas, monospace; font-size: 0.88em;
+  background: color-mix(in srgb, var(--sc-fg) 8%, transparent);
+  padding: 1px 5px; border-radius: 4px;
+}
+.sec-ai-md pre {
+  background: var(--skin-surface-sunken, #0f172a); color: var(--skin-text, #e2e8f0);
+  padding: 12px 14px; border-radius: 8px;
+  overflow-x: auto; font-family: "JetBrains Mono", Consolas, monospace; font-size: 12px;
+  margin: 8px 0; max-width: 100%; white-space: pre-wrap; word-break: break-all;
+}
+.sec-ai-md pre code { background: transparent; padding: 0; color: inherit; }
+.sec-ai-md blockquote {
+  margin: 8px 0; padding: 4px 12px; border-left: 3px solid var(--color-primary);
+  background: color-mix(in srgb, var(--color-primary) 6%, transparent); border-radius: 0 6px 6px 0;
+}
+.sec-ai-md table { border-collapse: collapse; margin: 8px 0; font-size: 12px; max-width: 100%; display: block; overflow-x: auto; }
+.sec-ai-md th, .sec-ai-md td { border: 1px solid var(--glass-border); padding: 4px 10px; text-align: left; }
+.sec-ai-md th { background: var(--glass-bg-hover); font-weight: 600; }
+.sec-ai-md a { color: var(--color-primary); }
+.sec-ai-md h1, .sec-ai-md h2, .sec-ai-md h3, .sec-ai-md h4 { margin: 10px 0 6px; font-size: 13.5px; }
+.sec-inline-tool {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 11px; color: var(--color-primary);
+  background: color-mix(in srgb, var(--color-primary) 10%, transparent);
+  border-radius: 6px; padding: 2px 8px; margin: 2px 0;
+}
+
+.sec-ai-input {
+  flex-shrink: 0;
+  background: var(--color-surface); border: 1px solid var(--glass-border);
+  border-radius: 16px; padding: 6px;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.07), 0 1px 3px rgba(0, 0, 0, 0.04);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+.sec-ai-input:focus-within {
+  border-color: var(--color-primary);
+  box-shadow: 0 6px 28px color-mix(in srgb, var(--color-primary) 13%, transparent);
+}
+.sec-ai-input :deep(.el-textarea__inner) {
+  border: none; background: transparent; box-shadow: none !important;
+  padding: 8px 10px; border-radius: 10px; font-size: 13px; line-height: 1.6; resize: none;
+}
+.sec-ai-input :deep(.el-textarea__inner::placeholder) { color: var(--sc-fg-3); opacity: 0.8; }
+.sec-ai-actions { display: flex; align-items: center; gap: 8px; padding: 0 6px 2px; }
+.sec-ai-actions :deep(.el-button + .el-button) { margin-left: 0; }
+.sec-ai-hint { font-size: 11px; color: var(--sc-fg-3); }
 </style>

@@ -1,24 +1,30 @@
 <template>
   <div class="csb">
-    <!-- 活动条 -->
+    <!-- ===== 最左侧竖条：两种形态统一（用户拍板 2026-09-16：AI 模式也要有全部菜单）=====
+         任务 + 资源管理器 + 搜索 + Git + 运行 + 控制台 + 插件 + 开发环境 -->
     <div class="csb-bar">
+      <el-tooltip content="任务" placement="right" :show-after="300">
+        <button class="csb-act" :class="{ on: leadTab === 'task' }" @click="leadTab = 'task'">
+          <el-icon :size="17"><ChatDotRound /></el-icon>
+        </button>
+      </el-tooltip>
       <el-tooltip content="资源管理器" placement="right" :show-after="300">
-        <button class="csb-act" :class="{ on: view === 'explorer' }" @click="view = 'explorer'">
+        <button class="csb-act" :class="{ on: leadTab === 'file' && view === 'explorer' }" @click="openFileView('explorer')">
           <el-icon :size="17"><Files /></el-icon>
         </button>
       </el-tooltip>
       <el-tooltip content="搜索（文件内容）" placement="right" :show-after="300">
-        <button class="csb-act" :class="{ on: view === 'search' }" @click="view = 'search'">
+        <button class="csb-act" :class="{ on: leadTab === 'file' && view === 'search' }" @click="openFileView('search')">
           <el-icon :size="17"><Search /></el-icon>
         </button>
       </el-tooltip>
       <el-tooltip content="源代码管理" placement="right" :show-after="300">
-        <button class="csb-act" :class="{ on: view === 'git' }" @click="view = 'git'">
+        <button class="csb-act" :class="{ on: leadTab === 'file' && view === 'git' }" @click="openFileView('git')">
           <el-icon :size="17"><Share /></el-icon>
         </button>
       </el-tooltip>
       <el-tooltip content="运行与调试" placement="right" :show-after="300">
-        <button class="csb-act" :class="{ on: view === 'run' }" @click="view = 'run'">
+        <button class="csb-act" :class="{ on: leadTab === 'file' && view === 'run' }" @click="openFileView('run')">
           <el-icon :size="17"><Aim /></el-icon>
         </button>
       </el-tooltip>
@@ -30,7 +36,7 @@
 
       <!-- 插件入口（代码类型插件列表） -->
       <el-tooltip content="插件" placement="right" :show-after="300">
-        <button class="csb-act" :class="{ on: view === 'plugins' }" @click="view = 'plugins'">
+        <button class="csb-act" :class="{ on: leadTab === 'file' && view === 'plugins' }" @click="openFileView('plugins')">
           <el-icon :size="17"><Box /></el-icon>
         </button>
       </el-tooltip>
@@ -44,39 +50,42 @@
       </el-tooltip>
     </div>
 
-    <!-- 面板 -->
-    <div class="csb-panel">
-      <ExplorerPanel v-show="view === 'explorer'" @pick-dir="emit('pick-dir')" @scope-search="onScopeSearch" />
-      <FileSearchPanel
-        v-show="view === 'search'"
-        ref="fileSearchRef"
-        mode="code"
-        :dir="code.projectDir"
-        v-model:scope="searchScope"
-      />
-      <div v-show="view === 'git'" class="csb-git">
-        <ChatGitPanel @viewDiff="onViewDiff" />
-      </div>
-      <RunDebugPanel v-show="view === 'run'" />
+    <!-- ===== 内容列：单面板，由竖条切换 ===== -->
+    <div class="csb-col">
+      <div class="csb-panel">
+        <TaskListSection v-show="leadTab === 'task'" :space-id="code.projectSpaceId" />
+        <ExplorerPanel v-show="leadTab === 'file' && view === 'explorer'" @pick-dir="emit('pick-dir')" @scope-search="onScopeSearch" />
+        <FileSearchPanel
+          v-show="leadTab === 'file' && view === 'search'"
+          ref="fileSearchRef"
+          mode="code"
+          :dir="code.projectDir"
+          v-model:scope="searchScope"
+        />
+        <div v-show="leadTab === 'file' && view === 'git'" class="csb-git">
+          <ChatGitPanel ref="gitPanelRef" :repo="code.projectDir" @viewDiff="onViewDiff" />
+        </div>
+        <RunDebugPanel v-show="leadTab === 'file' && view === 'run'" />
 
-      <!-- 插件列表面板 -->
-      <div v-show="view === 'plugins'" class="csb-plugin-list">
-        <div class="plugin-list-header">插件</div>
-        <div class="plugin-list-body">
-          <div
-            v-for="p in codePlugins"
-            :key="p.id"
-            class="plugin-card"
-            @click="openPluginDialog(p)"
-          >
-            <div class="plugin-card-icon">{{ p.label.charAt(0) }}</div>
-            <div class="plugin-card-info">
-              <div class="plugin-card-name">{{ p.label }}</div>
-              <div class="plugin-card-desc">{{ p.desc || p.route }}</div>
+        <!-- 插件列表面板 -->
+        <div v-show="leadTab === 'file' && view === 'plugins'" class="csb-plugin-list">
+          <div class="plugin-list-header">插件</div>
+          <div class="plugin-list-body">
+            <div
+              v-for="p in codePlugins"
+              :key="p.id"
+              class="plugin-card"
+              @click="openPluginDialog(p)"
+            >
+              <div class="plugin-card-icon">{{ p.label.charAt(0) }}</div>
+              <div class="plugin-card-info">
+                <div class="plugin-card-name">{{ p.label }}</div>
+                <div class="plugin-card-desc">{{ p.desc || p.route }}</div>
+              </div>
             </div>
-          </div>
-          <div v-if="!codePlugins.length" class="plugin-list-empty">
-            暂无代码插件
+            <div v-if="!codePlugins.length" class="plugin-list-empty">
+              暂无代码插件
+            </div>
           </div>
         </div>
       </div>
@@ -96,25 +105,56 @@
         <JavaSuite v-if="activePluginId === 'java-suite'" />
       </div>
     </el-dialog>
+
+    <!-- git 差异对比弹窗（点变更文件 / 打开差异按钮） -->
+    <el-dialog
+      v-model="diffDialog.open"
+      :title="'差异对比 · ' + diffDialog.file"
+      width="82%"
+      top="4vh"
+      class="csb-diff-dialog"
+      destroy-on-close
+    >
+      <div v-loading="diffDialog.loading" class="csb-diff-body">
+        <GitDiffViewer v-if="!diffDialog.loading" :diff-text="diffDialog.text" :file-name="diffDialog.file" />
+      </div>
+    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, ref, nextTick, onMounted } from 'vue';
-import { Files, Search, Share, Aim, Setting, Monitor, Box } from '@element-plus/icons-vue';
+import { computed, ref, nextTick, onMounted, watch } from 'vue';
+import { ElMessage } from 'element-plus';
+import { Files, Search, Share, Aim, Setting, Monitor, Box, ChatDotRound } from '@element-plus/icons-vue';
 import { useCodeStore, type SidebarView } from '../../stores/code';
 import { usePluginStore } from '../../stores/plugin';
+import { useGitStore } from '../../stores/git';
 import { openSettingsDrawer } from '../../composables/useSettingsDrawer';
 import ExplorerPanel from './panels/ExplorerPanel.vue';
 import FileSearchPanel from './panels/FileSearchPanel.vue';
 import RunDebugPanel from './panels/RunDebugPanel.vue';
 import ChatGitPanel from '../chat/ChatGitPanel.vue';
+import GitDiffViewer from '../chat/GitDiffViewer.vue';
 import CicdConsole from '../../views/plugin/CicdConsole.vue';
 import JavaSuite from '../../views/plugin/JavaSuite.vue';
+import TaskListSection from '../workbench/TaskListSection.vue';
 
 const emit = defineEmits<{ 'pick-dir': [] }>();
+
 const code = useCodeStore();
 const pluginStore = usePluginStore();
+
+/**
+ * 左栏选中项：task = 任务列表；file = 文件类面板（由 view 决定具体哪个）。
+ * 两种形态统一走这一条竖条（用户拍板 2026-09-16）。
+ */
+const leadTab = ref<'task' | 'file'>('file');
+
+/** 点文件类图标：切到文件面板并定位到对应视图 */
+function openFileView(v: SidebarView) {
+  leadTab.value = 'file';
+  view.value = v;
+}
 
 const view = computed<SidebarView>({
   get: () => code.sidebarView,
@@ -141,28 +181,53 @@ const codePlugins = computed(() =>
 const pluginDialogVisible = ref(false);
 const pluginDialogTitle = ref('');
 const activePluginId = ref('');
-
 function openPluginDialog(p: { id: string; label: string }) {
   activePluginId.value = p.id;
   pluginDialogTitle.value = p.label;
   pluginDialogVisible.value = true;
 }
 
-function onScopeSearch(payload: { rel: string; label: string }) {
-  searchScope.value = payload;
-  code.sidebarView = 'search';
+function onScopeSearch(scope: { rel: string; label: string }) {
+  searchScope.value = scope;
+  view.value = 'search';
   void nextTick(() => fileSearchRef.value?.focusQuery());
 }
 
 function openEnv() {
-  openSettingsDrawer('env');
+  void openSettingsDrawer('env');
 }
 
-/** git 面板双击文件 → 在编辑区域打开 */
-function onViewDiff(payload: { path: string; staged: boolean; repoPath?: string }) {
-  const base = payload.repoPath || code.projectDir || '';
-  const full = base ? base.replace(/[\\/]+$/, '') + '/' + payload.path : payload.path;
-  void code.openFile(full);
+// ===== git 差异弹窗（用户拍板：点变更文件开 diff 对比，全屏弹窗即可，不必进编辑器）=====
+const gitStore = useGitStore();
+/**
+ * git 面板引用：用于在「切到源码管理视图」时确保数据已加载。
+ * 面板自身也会在挂载/工作目录变化时初始化，这里只做兜底刷新，
+ * 避免用户在别处做了 git 操作（如顶部提交）后切回来看到旧数据。
+ */
+const gitPanelRef = ref<InstanceType<typeof ChatGitPanel> | null>(null);
+const diffDialog = ref<{ open: boolean; loading: boolean; text: string; file: string }>({
+  open: false, loading: false, text: '', file: '',
+});
+
+// 切到源码管理视图 → 刷新一次，保证与顶部状态栏（每次直接请求 /git/status）同源
+watch([view, leadTab], ([v, t]) => {
+  if (v === 'git' && t === 'file') {
+    void nextTick(() => gitPanelRef.value?.refresh?.());
+  }
+});
+
+async function onViewDiff(payload: { path: string; staged: boolean; repoPath?: string }) {
+  const repo = payload.repoPath || code.projectDir || '';
+  if (!repo) { ElMessage.warning('未选择项目目录，无法查看差异'); return; }
+  diffDialog.value = { open: true, loading: true, text: '', file: payload.path };
+  try {
+    const text = await gitStore.diff(repo, { file: payload.path, staged: payload.staged });
+    diffDialog.value.text = text || '// 无差异';
+  } catch {
+    diffDialog.value.text = '// 加载差异失败';
+  } finally {
+    diffDialog.value.loading = false;
+  }
 }
 
 onMounted(() => {
@@ -173,6 +238,9 @@ onMounted(() => {
 <style scoped>
 .csb { display: flex; height: 100%; min-height: 0; overflow: hidden; }
 
+/* 内容列：竖条右侧的单面板 */
+.csb-col { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
+/* ===== 以下样式恢复自原文件（竖条/面板/插件列表）===== */
 .csb-bar {
   flex: 0 0 42px; width: 42px;
   display: flex; flex-direction: column; align-items: center; gap: 3px;
@@ -230,6 +298,9 @@ onMounted(() => {
 
 /* 插件弹窗 */
 .plugin-dialog-body { height: 75vh; overflow: auto; }
+
+/* git 差异对比弹窗 */
+.csb-diff-body { min-height: 300px; max-height: 78vh; overflow: auto; }
 </style>
 
 <style>

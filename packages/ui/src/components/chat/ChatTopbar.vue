@@ -10,6 +10,8 @@
       </el-button>
     </el-tooltip>
     <div class="chat-topbar-actions">
+      <!-- 模式切换已统一收进主顶栏模式下拉（WebTopBar ModeSwitcher），此处不再重复入口 -->
+
       <el-tooltip content="上下文栏" placement="bottom">
         <el-button size="small" circle :type="contextSidebarOpen ? 'primary' : ''" @click="toggleContextSidebar" aria-label="切换上下文栏">
           <el-icon><Grid /></el-icon>
@@ -18,11 +20,6 @@
 
       <ChatFilePanel />
 
-      <el-tooltip content="代码模式（IDE 工作台）" placement="bottom">
-        <el-button size="small" circle class="code-mode-btn" @click="goCodeMode" aria-label="进入代码模式">
-          <el-icon :size="16"><Code /></el-icon>
-        </el-button>
-      </el-tooltip>
       <el-dropdown trigger="click">
         <el-button size="small" circle title="右侧栏视图" aria-label="右侧栏视图">
           <el-icon><Operation /></el-icon>
@@ -68,15 +65,11 @@
 
 <script setup lang="ts">
 import { computed } from 'vue';
-import { useRouter } from 'vue-router';
-import { Code } from 'lucide-vue-next';
-import { Cpu, Expand, FolderOpened, Fold, Grid, Monitor, Operation, EditPen, SwitchButton, User } from '@element-plus/icons-vue';
+import { Cpu, Expand, FolderOpened, Fold, Grid, Monitor, Operation, EditPen, SwitchButton, User, ChatDotRound, Platform, Lock } from '@element-plus/icons-vue';
 import { useChat } from '../../composables/chat/useChat';
 import { usePlatform } from '../../composables/usePlatform';
 import { useSettingsStore } from '../../stores/settings';
 import ChatFilePanel from './ChatFilePanel.vue';
-
-const router = useRouter();
 
 const {
   drawerOpen, currentConv, store, isMobile, authStore,
@@ -89,10 +82,9 @@ const settingsStore = useSettingsStore();
 const { supportsBrowser } = usePlatform();
 const hasWorkspaceDir = computed(() => !!settingsStore.settings.workspaceDir);
 
-/** 进入代码模式（IDE 工作台）：携带当前会话，右侧对话区继续同一会话 */
-function goCodeMode() {
-  router.push('/code');
-}
+// 「代码模式」圆形按钮已删（决策 1）：进入开发模式统一走顶栏模式下拉。
+
+// 模式切换统一走主顶栏 ModeSwitcher，此处不再保留重复入口
 
 function openGitTab() {
   const dir = settingsStore.settings.workspaceDir || '';
@@ -106,17 +98,9 @@ function openConsoleTab() {
 </script>
 
 <style scoped>
-.code-mode-btn {
-  color: var(--color-text-secondary);
-}
-.code-mode-btn:hover {
-  color: var(--color-primary);
-  border-color: var(--color-primary);
-}
-
 .new-chat-btn {
   flex-shrink: 0;
   margin-left: 6px;
 }
-</style>
 
+</style>

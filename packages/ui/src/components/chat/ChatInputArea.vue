@@ -11,7 +11,7 @@
       <div class="input-agent-bar">
         <el-dropdown trigger="click" placement="bottom-start" popper-class="agent-switch-popper" @command="onAgentSwitch">
           <div class="agent-trigger" @click.stop>
-            <span class="agent-trigger-avatar">{{ (agentStore.selectedAgent?.name || '?').slice(0, 1) }}</span>
+            <span class="agent-trigger-avatar"><el-icon :size="14"><component :is="agentIconOf(agentStore.selectedAgent?.id, agentStore.selectedAgent?.name)" /></el-icon></span>
             <span class="agent-trigger-name">{{ agentStore.selectedAgent?.name || '选择智能体' }}</span>
             <el-icon class="agent-trigger-caret"><ArrowDown /></el-icon>
           </div>
@@ -24,7 +24,7 @@
                 :class="{ 'is-active': ag.id === agentStore.selectedId }"
               >
                 <div class="agent-opt">
-                  <span class="agent-opt-avatar">{{ (ag.name || '?').slice(0, 1) }}</span>
+                  <span class="agent-opt-avatar"><el-icon :size="16"><component :is="agentIconOf(ag.id, ag.name)" /></el-icon></span>
                   <div class="agent-opt-info">
                     <span class="agent-opt-name">
                       <el-icon v-if="ag.isDefault" class="agent-opt-lock"><Lock /></el-icon>
@@ -132,7 +132,7 @@
                 :class="{ active: i === slashIndex }"
                 @click="pickSlashAgent(ag)"
               >
-                <span class="cmd-opt-avatar">{{ (ag.name || '?').slice(0, 1) }}</span>
+                <span class="cmd-opt-avatar"><el-icon :size="15"><component :is="agentIconOf(ag.id, ag.name)" /></el-icon></span>
                 <div class="cmd-menu-info">
                   <div class="cmd-menu-label">{{ ag.name }}</div>
                   <div class="cmd-menu-desc">{{ ag.description || '—' }}</div>
@@ -189,7 +189,7 @@
             <div class="plus-menu-wrap" @mouseleave="scheduleCloseSub">
               <div class="plus-menu">
                 <div class="plus-menu-item" :class="{ 'has-sub-open': hoverSub === 'agents' }" @mouseenter="openSub('agents', $event)" @click="openSub('agents', $event)">
-                  <span class="plus-menu-ic agent">{{ (agentStore.selectedAgent?.name || '?').slice(0, 1) }}</span>
+                  <span class="plus-menu-ic"><el-icon><component :is="agentIconOf(agentStore.selectedAgent?.id, agentStore.selectedAgent?.name)" /></el-icon></span>
                   <div class="plus-menu-info">
                     <div class="plus-menu-label">助手</div>
                     <div class="plus-menu-desc">{{ agentStore.selectedAgent?.name || '选择智能体' }}</div>
@@ -253,7 +253,7 @@
                       :class="{ 'is-active': ag.id === agentStore.selectedId }"
                       @click="pickPlusAgent(ag.id)"
                     >
-                      <span class="plus-menu-ic agent">{{ (ag.name || '?').slice(0, 1) }}</span>
+                      <span class="plus-menu-ic"><el-icon><component :is="agentIconOf(ag.id, ag.name)" /></el-icon></span>
                       <div class="plus-menu-info">
                         <div class="plus-menu-label">{{ ag.name }}</div>
                         <div class="plus-menu-desc">{{ ag.description || '未填写描述' }}</div>
@@ -589,6 +589,7 @@ import ModelContextPanel from './ModelContextPanel.vue';
 import { useCodeStore } from '../../stores/code';
 import { useSettingsStore, usePlatformStore } from '../../stores';
 import { formatContextWindow } from '../../utils/context-window';
+import { resolveAgentIcon as agentIconOf } from '../../utils/agentIcon';
 import type { Model } from '@yan-zhi/shared';
 import { useRouter } from 'vue-router';
 

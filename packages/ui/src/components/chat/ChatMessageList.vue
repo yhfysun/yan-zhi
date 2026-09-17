@@ -280,9 +280,20 @@
     </div>
 
     <ChatWelcome v-if="!isCodeMode && store.currentMessages.length === 0 && !store.streaming && selectedModelId" />
-    <div v-if="isCodeMode && store.currentMessages.length === 0 && !store.streaming && selectedModelId" class="code-welcome" style="display:flex;flex-direction:column;align-items:center;justify-content:center;flex:1;gap:8px;">
-      <h2 style="font-size:20px;font-weight:600;color:var(--skin-text,var(--el-text-color-primary,#1e293b));margin:0;">代码任务</h2>
-      <p style="font-size:13px;color:var(--el-text-color-secondary,#64748b);margin:0;">描述你的需求，开始开发</p>
+    <div v-if="isCodeMode && store.currentMessages.length === 0 && !store.streaming && selectedModelId" class="code-welcome">
+      <div class="code-welcome-greeting">
+        <div class="code-welcome-avatar"><el-icon :size="24"><Monitor /></el-icon></div>
+        <h2 class="code-welcome-title">代码任务</h2>
+        <p class="code-welcome-sub">选择一个任务模板，或直接在下方输入你的需求</p>
+      </div>
+      <SceneCarousel
+        :scenes="DEV_TPLS"
+        :active-key="devTplKey"
+        :agent-label="devAgentLabel"
+        dense
+        @pick="pickDevTpl"
+        @example="applyDevExample"
+      />
     </div>
 
     <div v-if="store.currentMessages.length === 0 && !store.streaming && !selectedModelId" class="welcome-card">
@@ -426,6 +437,8 @@ import SubAgentRoundView from './SubAgentRoundView.vue';
 import DeliverableFileCard from './DeliverableFileCard.vue';
 import DataQueryWorkbench from './DataQueryWorkbench.vue';
 import ChatWelcome from './ChatWelcome.vue';
+import SceneCarousel from './SceneCarousel.vue';
+import { DEV_TPLS } from '../../config/devTpls';
 import MediaViewer from '../media/MediaViewer.vue';
 import MediaContextMenu from '../media/MediaContextMenu.vue';
 import MediaHoverFloat from '../media/MediaHoverFloat.vue';
@@ -444,7 +457,7 @@ const {
   isToolGroupError, expandedToolGroups, getToolStatusClass, getToolResult, isToolError, distillAssistantMsg, regenerateMsg,
   isToolItemOpen, collapsedSubAgentResults, toggleSubAgentResult, collapsedMainResults, toggleMainResult,
   copySubAgentResultMd, downloadSubAgentResultMd, copyAssistantMd, downloadAssistantMd,
-  selectedModelId, input, openPlatformConfig,
+  selectedModelId, input, openPlatformConfig, agentStore, skillStore, mountedSkillIds, onAgentSwitch,
   openPath,
   userRoundIndices, activeNavRound, scrollToRound,
   showScrollBottom, showScrollTop, scrollToBottom,
@@ -454,6 +467,37 @@ const {
 } = useChat();
 const isCodeMode = useCodeStore().codeModeActive;
 const askSupplementOpen = ref(false);
+
+// ===== 开发模式空态：代码任务模板轮播（tasks 5i，复用 SceneCarousel）=====
+const devTplKey = ref('');
+
+function devAgentLabel(id: string): string {
+  return agentStore.agents.find((a) => a.id === id)?.name || '代码编写助手';
+}
+
+/**
+ * 点模板卡：切到该模板绑定的子智能体 + 挂载它的 skill 组合。
+ * - 智能体不存在（未启用/未内置）时不改选中，仅提示
+ * - skill 只保留真实存在的 id（避免挂到不存在的 skill 造成空挂载）
+ */
+function pickDevTpl(key: string) {
+  const picked = DEV_TPLS.find((t) => t.key === key);
+  if (!picked) return;
+  if (devTplKey.value === picked.key) { devTplKey.value = ''; return; }
+  devTplKey.value = picked.key;
+
+  if (picked.agentId && agentStore.agents.some((a) => a.id === picked.agentId)) {
+    if (agentStore.selectedId !== picked.agentId) onAgentSwitch(picked.agentId);
+  }
+  const valid = picked.skillIds.filter((id) => skillStore.skills.some((s) => s.id === id));
+  if (valid.length) mountedSkillIds.value = valid;
+}
+
+function applyDevExample(text: string) {
+  input.value = text;
+  const ta = document.querySelector('.input-textarea textarea') as HTMLTextAreaElement | null;
+  if (ta) { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }
+}
 const confirmSupplementOpen = ref(false);
 const document = window.document;
 const router = useRouter();
@@ -748,6 +792,45 @@ watch(activeNavRound, () => {
 </script>
 
 <style scoped>
+/* ===== 开发模式空态：版式对齐办公模式 .chat-welcome（max-width / padding / 居中问候语）===== */
+/* ===== 开发模式空态：版式对齐办公模式（尺寸不缩，整块在可视区上下居中）=====
+   .messages 是 flex:1 的滚动容器，用 min-height + flex 居中即可稳定生效 */
+.code-welcome {
+  max-width: 720px;
+  margin: 0 auto;
+  min-height: 100%;
+  justify-content: center;
+  padding: 20px;
+  /* 底部多留一段：内容盒变小 → 居中点随之上移，问候语「稍微往上点」（与办公模式同口径） */
+  padding-bottom: 76px;
+  display: flex;
+  flex-direction: column;
+  /* 问候语与卡片之间拉大间距（文字视觉上更靠上） */
+  gap: 34px;
+  width: 100%;
+}
+.code-welcome-greeting { text-align: center; }
+/* 与办公模式 cw-avatar 同款小图标 */
+.code-welcome-avatar {
+  width: 44px; height: 44px;
+  margin: 0 auto 10px;
+  border-radius: 13px;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--color-primary, #7c3aed);
+  background: color-mix(in srgb, var(--color-primary, #7c3aed) 12%, transparent);
+}
+.code-welcome-title {
+  margin: 0 0 4px;
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--skin-text, var(--el-text-color-primary, #1e293b));
+}
+.code-welcome-sub {
+  margin: 0;
+  font-size: 13px;
+  color: var(--el-text-color-secondary, #64748b);
+}
+
 .inline-ask-card {
   display: flex; gap: 10px; margin: 12px auto; padding: 14px 16px;
   max-width: 85%;

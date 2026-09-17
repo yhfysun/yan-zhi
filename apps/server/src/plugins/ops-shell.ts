@@ -103,6 +103,8 @@ interface OpsGroup {
   id: string;
   name: string;
   createdAt: number;
+  /** 父目录 id；为空 = 顶层目录。支持目录嵌套（拖拽形成子目录） */
+  parentId?: string;
 }
 
 let pluginStorage: { get<T>(key: string): Promise<T | undefined>; set(key: string, value: unknown): Promise<void> } | null = null;
@@ -1362,20 +1364,28 @@ const opsShellModule: PluginModule = {
         jsonRes(res).json({ data: await loadGroups() });
       });
 
-      // 新建目录（同级重名拒绝）
+      // 新建目录（同级重名拒绝；parentId 省略 = 顶层目录）
       r.post('/groups', async (req: unknown, res: unknown) => {
         const body = (req as { body: Record<string, unknown> }).body || {};
         const name = String(body.name || '').trim();
         if (!name) { failRes(res, 400, '目录名称必填'); return; }
+        const parentId = String(body.parentId ?? '').trim();
         const list = await loadGroups();
-        if (list.some((g) => g.name === name)) { failRes(res, 409, `目录「${name}」已存在`); return; }
-        const group: OpsGroup = { id: `grp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`, name, createdAt: Date.now() };
+        if (parentId && !list.some((g) => g.id === parentId)) { failRes(res, 404, '父目录不存在'); return; }
+        if (list.some((g) => g.name === name && (g.parentId || '') === parentId)) {
+          failRes(res, 409, `当前层级下已存在目录「${name}」`); return;
+        }
+        const group: OpsGroup = {
+          id: `grp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+          name, createdAt: Date.now(),
+        };
+        if (parentId) group.parentId = parentId;
         list.push(group);
         try { await saveGroups(list); } catch (e) { failRes(res, 500, (e as Error).message); return; }
         jsonRes(res).json({ data: group });
       });
 
-      // 重命名目录
+      // 重命名目录（同级重名拒绝）
       r.put('/groups/:id', async (req: unknown, res: unknown) => {
         const id = (req as { params: { id: string } }).params.id;
         const body = (req as { body: Record<string, unknown> }).body || {};
@@ -1384,21 +1394,70 @@ const opsShellModule: PluginModule = {
         const list = await loadGroups();
         const idx = list.findIndex((g) => g.id === id);
         if (idx < 0) { failRes(res, 404, '目录不存在'); return; }
-        if (list.some((g) => g.id !== id && g.name === name)) { failRes(res, 409, `目录「${name}」已存在`); return; }
+        const parentId = list[idx].parentId || '';
+        if (list.some((g) => g.id !== id && g.name === name && (g.parentId || '') === parentId)) {
+          failRes(res, 409, `当前层级下已存在目录「${name}」`); return;
+        }
         list[idx] = { ...list[idx], name };
         try { await saveGroups(list); } catch (e) { failRes(res, 500, (e as Error).message); return; }
         jsonRes(res).json({ data: list[idx] });
       });
 
-      // 删除目录：其下连接回落为「未分组」（连接本身不删）
+      // 移动目录（拖拽：parentId 传空 = 移到顶层）
+      // 防环：不能移到自己或自己的子孙目录下（否则树断了，前端渲染会丢节点）
+      r.put('/groups/:id/parent', async (req: unknown, res: unknown) => {
+        const id = (req as { params: { id: string } }).params.id;
+        const body = (req as { body: Record<string, unknown> }).body || {};
+        const parentId = String(body.parentId ?? '').trim();
+        const list = await loadGroups();
+        const idx = list.findIndex((g) => g.id === id);
+        if (idx < 0) { failRes(res, 404, '目录不存在'); return; }
+        if (parentId) {
+          if (parentId === id) { failRes(res, 400, '不能把目录移到自己下面'); return; }
+          if (!list.some((g) => g.id === parentId)) { failRes(res, 404, '目标父目录不存在'); return; }
+          // 向上遍历祖先链，命中自己说明目标是自己的子孙
+          let cur: OpsGroup | undefined = list.find((g) => g.id === parentId);
+          const guard = new Set<string>();
+          while (cur && !guard.has(cur.id)) {
+            guard.add(cur.id);
+            if (cur.id === id) { failRes(res, 400, '不能把目录移到自己的子目录下（会形成环）'); return; }
+            cur = cur.parentId ? list.find((g) => g.id === cur!.parentId) : undefined;
+          }
+          const targetLevel = list.filter((g) => (g.parentId || '') === parentId);
+          if (targetLevel.some((g) => g.id !== id && g.name === list[idx].name)) {
+            failRes(res, 409, `目标层级下已存在目录「${list[idx].name}」`); return;
+          }
+          list[idx] = { ...list[idx], parentId };
+        } else {
+          delete list[idx].parentId;
+          const top = list.filter((g) => !g.parentId);
+          if (top.some((g) => g.id !== id && g.name === list[idx].name)) {
+            failRes(res, 409, `顶层已存在目录「${list[idx].name}」`); return;
+          }
+        }
+        try { await saveGroups(list); } catch (e) { failRes(res, 500, (e as Error).message); return; }
+        jsonRes(res).json({ data: list[idx] });
+      });
+
+      // 删除目录：其下连接回落为「未分组」，子目录上提到父层级（都不删实体）
       r.delete('/groups/:id', async (req: unknown, res: unknown) => {
         const id = (req as { params: { id: string } }).params.id;
         const groups = await loadGroups();
-        if (!groups.some((g) => g.id === id)) { failRes(res, 404, '目录不存在'); return; }
+        const target = groups.find((g) => g.id === id);
+        if (!target) { failRes(res, 404, '目录不存在'); return; }
+        const grandparent = target.parentId || '';
         const conns = await loadConnections();
         for (const c of conns) if (c.groupId === id) delete c.groupId;
+        const next = groups
+          .filter((g) => g.id !== id)
+          .map((g) => {
+            if ((g.parentId || '') !== id) return g;
+            const copy: OpsGroup = { ...g };
+            if (grandparent) copy.parentId = grandparent; else delete copy.parentId;
+            return copy;
+          });
         try {
-          await saveGroups(groups.filter((g) => g.id !== id));
+          await saveGroups(next);
           await saveConnections(conns);
         } catch (e) { failRes(res, 500, (e as Error).message); return; }
         jsonRes(res).json({ data: { ok: true } });
@@ -1926,6 +1985,40 @@ const opsShellModule: PluginModule = {
       r.get('/audit', async (_req: unknown, res: unknown) => {
         const list = (pluginStorage ? await pluginStorage.get<AuditEntry[]>('audit') : []) || [];
         (res as { json: (d: unknown) => void }).json({ data: list.slice(-200).reverse() });
+      });
+
+      // 实时面板指标（只读遥测）：运维控制台左栏底部面板轮询消费。
+      // 全部为只读命令，不入审计 —— 10s 轮询会把 500 条审计上限刷爆。
+      r.get('/metrics', async (req: unknown, res: unknown) => {
+        const q = (req as { query: Record<string, string> }).query || {};
+        const connectionId = String(q.connectionId || '');
+        const list = await loadConnections();
+        const conn = list.find((c) => c.id === connectionId);
+        if (!conn) { failRes(res, 404, '连接不存在'); return; }
+        if (conn.type === 'database') { failRes(res, 400, '数据库连接不支持指标采集'); return; }
+        const cmds = [
+          'cat /proc/loadavg 2>/dev/null',
+          'free -m 2>/dev/null',
+          'df -hP / 2>/dev/null | tail -1',
+          'ps aux --sort=-%cpu 2>/dev/null | head -6',
+          'ps aux --sort=-%mem 2>/dev/null | head -6',
+        ];
+        try {
+          const parts = await Promise.all(
+            cmds.map((c) => execOnConnection(conn, c, 8000).catch(() => ({ stdout: '', stderr: '', code: 1 }))),
+          );
+          jsonRes(res).json({
+            data: {
+              loadavg: parts[0].stdout.trim(),
+              mem: parts[1].stdout.trim(),
+              disk: parts[2].stdout.trim(),
+              topCpu: parts[3].stdout.trim(),
+              topMem: parts[4].stdout.trim(),
+            },
+          });
+        } catch (e) {
+          failRes(res, 500, (e as Error).message);
+        }
       });
 
       // 终端会话（命令模式）：open 返回 sessionId，SSE 读输出，POST 写输入

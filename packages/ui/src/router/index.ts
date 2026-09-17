@@ -4,10 +4,18 @@ import { useLicenseStore } from '../stores/license';
 import { usePluginStore } from '../stores/plugin';
 import { resolvePluginComponent } from '../plugin-component-registry';
 import { isElectron, isCapacitor } from '../api/client';
-import { isCodeModeActive } from '../stores/code';
+import { activeMode, modeRoute } from '../stores/mode';
 
 const routes: RouteRecordRaw[] = [
   { path: '/', redirect: '/chat' },
+  {
+    // 独立子窗口承载的差异查看器（桌面端开真窗口时加载这条路由）。
+    // meta.bare = 不套应用外壳（无侧栏/顶栏），整窗交给页面自己画标题栏。
+    path: '/diff-window',
+    name: 'diff-window',
+    component: () => import('../views/DiffWindow.vue'),
+    meta: { title: '差异', bare: true, guest: true },
+  },
   {
     path: '/home',
     name: 'home',
@@ -202,14 +210,14 @@ router.beforeEach(async (to) => {
       return { path: '/license' };
     }
   }
-  // 代码模式记忆：停留在代码模式时去了别的页面，再回「任务」应恢复代码工作台。
-  // 只有代码模式里的「返回任务」按钮（先清标记再跳 /chat）才能回到普通聊天布局。
+  // 模式记忆（泛化）：停留在非办公模式时去了别的页面，再回「任务」应恢复该模式工作台。
+  // 四模式是同一份工作上下文的四个视图，切换入口统一在顶栏模式下拉（原「任务」项）。
   if (
     to.path !== '/code' &&
     (to.path === '/chat' || to.path.startsWith('/chat/')) &&
-    isCodeModeActive()
+    activeMode.value !== 'office'
   ) {
-    return { path: '/code' };
+    return { path: modeRoute(activeMode.value) };
   }
 });
 

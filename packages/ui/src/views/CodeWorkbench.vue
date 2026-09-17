@@ -1,9 +1,11 @@
 <template>
-  <div class="code-page" :style="{ '--code-side-w': sideW + 'px', '--code-chat-w': chatW + 'px' }">
+  <div class="code-page" :class="`is-lead-${lead}`" :style="{ '--code-side-w': sideW + 'px', '--code-chat-w': chatW + 'px', '--code-ai-editor-w': aiEditorR.width.value + 'px' }">
     <!-- ===== 顶栏：项目 / 环境 / 返回任务 ===== -->
     <header class="cp-top">
       <div class="cp-top-left">
-        <span class="cp-badge"><el-icon :size="13"><Document /></el-icon></span>
+        <span class="cp-mode-badge" title="开发模式（切换请用顶栏模式下拉）">
+          <el-icon :size="13"><Monitor /></el-icon>开发模式
+        </span>
         <span class="cp-title">当前项目</span>
         <button class="cp-proj" :class="{ open: projDropdownOpen }" :title="code.projectDir || '点击切换项目目录'" @click.stop="toggleProjDropdown">
           <el-icon :size="12"><FolderOpened /></el-icon>
@@ -104,56 +106,114 @@
         </div>
 
         <div class="cp-env">
-          <button class="cp-env-set" :class="{ active: !chatCollapsed }" :title="chatCollapsed ? '打开任务' : '收起任务'" @click="toggleChat">
+          <!-- AI 模式：右侧按钮 = 编辑器开/关；编辑模式：= 任务栏开/关（现状） -->
+          <button
+            v-if="lead === 'ai'"
+            class="cp-env-set"
+            :class="{ active: editorOpen }"
+            :title="editorOpen ? '收起编辑器' : '打开编辑器'"
+            @click="editorOpen = !editorOpen"
+          >
+            <el-icon :size="12"><Monitor /></el-icon>编辑
+          </button>
+          <button
+            v-else
+            class="cp-env-set"
+            :class="{ active: !chatCollapsed }"
+            :title="chatCollapsed ? '打开任务' : '收起任务'"
+            @click="toggleChat"
+          >
             <el-icon :size="12"><ChatDotRound /></el-icon>任务
           </button>
         </div>
-        <el-tooltip content="退出开发模式" placement="bottom" :show-after="400">
-          <button class="cp-back" @click="backToChat">
-            <el-icon :size="13"><ChatDotRound /></el-icon>退出开发模式
-          </button>
-        </el-tooltip>
       </div>
     </header>
 
-    <!-- ===== 三栏主体：左项目面板 | 中编辑器 | 右对话 ===== -->
+    <!-- ===== 主体：双形态（5a / 5m.2 / 5m.3），两种形态都是三屏，只是中/右互换
+         AI 模式  ：左任务/文件 tab │ 中任务聊天      │ 右编辑器
+         编辑模式：左活动条+任务+树 │ 中编辑器        │ 右任务
+         一切用 v-show 保活：切形态不重开文件、不换会话、不重连终端 ===== -->
     <div class="cp-body">
-      <CodeSidebar v-show="!sideCollapsed" class="cp-side" @pick-dir="showDir = true" />
+      <!-- 左栏：两种形态都保留；活动条仅编辑模式（AI 模式左栏是「任务/文件」双 tab） -->
+      <CodeSidebar v-show="!sideCollapsed" class="cp-side" :activity-bar="lead === 'human'" @pick-dir="showDir = true" />
       <div v-show="!sideCollapsed" class="rs-handle" :class="{ dragging: sideR.dragging.value }" @mousedown="sideR.startDrag($event, 'left')"></div>
 
-      <CodeEditorArea @pick-dir="showDir = true" />
-
-      <div class="rs-handle" :class="{ dragging: chatR.dragging.value }" @mousedown="chatR.startDrag($event, 'right')"></div>
-
-      <section class="cp-chat">
-        <div class="cp-chat-head">
-          <button class="cp-task-trigger" :class="{ active: taskDropdownOpen }" @click.stop="toggleTaskDropdown">
-            <el-icon :size="13" class="cp-chat-icon"><ChatDotRound /></el-icon>
-            <span class="cp-chat-title">{{ currentConvTitle }}</span>
-            <el-icon :size="10" class="cp-task-caret"><ArrowDown /></el-icon>
-          </button>
-          <span class="cp-chat-spacer"></span>
-          <button class="cp-chat-btn" title="新建任务" @click="newTask">
-            <el-icon :size="12"><EditPen /></el-icon>
-          </button>
-          <button class="cp-chat-btn" title="收起任务栏" @click="toggleChat">
-            <el-icon :size="12"><ArrowRight /></el-icon>
-          </button>
-          <div v-if="taskDropdownOpen" class="cp-task-dropdown" :style="taskDropdownStyle" @click.stop>
-            <div class="cp-task-section">任务列表</div>
-            <div v-for="conv in currentSpaceConvs" :key="conv.id" class="cp-task-item" :class="{ active: conv.id === chatStore.currentConvId }" @click="selectTask(conv.id)">
-              <span class="cp-task-dot"></span>
-              <span class="cp-task-item-label">{{ conv.title }}</span>
+      <!-- ===== AI 模式：中栏任务聊天 │ 右栏编辑器 ===== -->
+      <template v-if="lead === 'ai'">
+        <section class="cp-ai-main">
+          <div class="cp-ai-chat">
+            <div class="cp-chat-head">
+              <el-icon :size="13" class="cp-chat-icon"><ChatDotRound /></el-icon>
+              <span class="cp-chat-title">{{ currentConvTitle }}</span>
+              <span class="cp-chat-spacer"></span>
+              <button class="cp-chat-btn" title="新建任务" @click="newTask">
+                <el-icon :size="12"><EditPen /></el-icon>
+              </button>
             </div>
-            <div v-if="!currentSpaceConvs.length" class="cp-task-empty">暂无任务，发送消息自动创建</div>
+            <div class="cp-chat-msgs">
+              <ChatMessageList />
+            </div>
+            <ChatInputArea />
           </div>
-        </div>
-        <div class="cp-chat-msgs">
-          <ChatMessageList />
-        </div>
-        <ChatInputArea />
-      </section>
+        </section>
+
+        <div class="rs-handle" :class="{ dragging: aiEditorR.dragging.value }" @mousedown="aiEditorR.startDrag($event, 'right')"></div>
+
+        <!-- 右栏编辑器（三屏结构；点左栏文件自动打开，见 watch(code.activePath)） -->
+        <section class="cp-ai-editor-pane" :class="{ open: editorOpen }">
+          <div class="cp-ai-editor-head">
+            <el-icon :size="13" class="cp-chat-icon"><Monitor /></el-icon>
+            <span class="cp-drawer-title">{{ code.activeFile?.name || '编辑器' }}</span>
+            <span class="cp-chat-spacer"></span>
+            <button class="cp-chat-btn" title="收起编辑器" @click="editorOpen = false">
+              <el-icon :size="12"><ArrowRight /></el-icon>
+            </button>
+          </div>
+          <div class="cp-ai-editor-body">
+            <CodeEditorArea @pick-dir="showDir = true" />
+          </div>
+        </section>
+      </template>
+
+      <!-- ===== 编辑模式：中栏编辑器 │ 右栏任务对话（现状零结构改动） ===== -->
+      <template v-else>
+        <CodeEditorArea @pick-dir="showDir = true" />
+
+        <div class="rs-handle" :class="{ dragging: chatR.dragging.value }" @mousedown="chatR.startDrag($event, 'right')"></div>
+
+        <section class="cp-chat">
+          <div class="cp-chat-head">
+            <button class="cp-task-trigger" :class="{ active: taskDropdownOpen }" @click.stop="toggleTaskDropdown">
+              <el-icon :size="13" class="cp-chat-icon"><ChatDotRound /></el-icon>
+              <span class="cp-chat-title">{{ currentConvTitle }}</span>
+              <el-icon :size="10" class="cp-task-caret"><ArrowDown /></el-icon>
+            </button>
+            <span class="cp-chat-spacer"></span>
+            <button class="cp-chat-btn" title="新建任务" @click="newTask">
+              <el-icon :size="12"><EditPen /></el-icon>
+            </button>
+            <button class="cp-chat-btn" title="收起任务栏" @click="toggleChat">
+              <el-icon :size="12"><ArrowRight /></el-icon>
+            </button>
+            <div v-if="taskDropdownOpen" class="cp-task-dropdown" :style="taskDropdownStyle" @click.stop>
+              <div class="cp-task-section">任务列表</div>
+              <div v-for="conv in currentSpaceConvs" :key="conv.id" class="cp-task-item" :class="{ active: conv.id === chatStore.currentConvId }" @click="selectTask(conv.id)">
+                <span class="cp-task-dot"></span>
+                <span class="cp-task-item-label">{{ conv.title }}</span>
+              </div>
+              <div v-if="!currentSpaceConvs.length" class="cp-task-empty">暂无任务，发送消息自动创建</div>
+            </div>
+          </div>
+          <div class="cp-chat-msgs">
+            <ChatMessageList />
+          </div>
+          <ChatInputArea />
+        </section>
+      </template>
     </div>
+
+    <!-- 主导方悬浮胶囊（右下角，不占布局行；办公模式不渲染） -->
+    <LeadToggle :model-value="lead" mode="dev" @update:model-value="onLeadChange" />
 
     <!-- ===== 底部状态栏（贯通整窗）===== -->
     <CodeStatusBar :git-branch="gitBranch" :git-dirty="gitDirty" />
@@ -184,10 +244,10 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue';
-import { useRouter } from 'vue-router';
-import { Document, FolderOpened, ArrowDown, ArrowRight, ChatDotRound, EditPen, FolderAdd, Check, Fold, Expand, Share, Download, Upload, Refresh, WarningFilled, Plus } from '@element-plus/icons-vue';
+import { FolderOpened, ArrowDown, ArrowRight, ChatDotRound, EditPen, FolderAdd, Check, Fold, Expand, Share, Download, Upload, Refresh, WarningFilled, Plus, Monitor, Close } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { useCodeStore, setCodeModeActive } from '../stores/code';
+import { activeMode, leadOf, setLead, type LeadMode } from '../stores/mode';
 import { useChatStore } from '../stores/chat';
 import { useSpaceStore } from '../stores/space';
 import { useGitStore } from '../stores/git';
@@ -200,6 +260,7 @@ import CodeSidebar from '../components/code/CodeSidebar.vue';
 import CodeEditorArea from '../components/code/CodeEditorArea.vue';
 import CodeStatusBar from '../components/code/CodeStatusBar.vue';
 import CodeCommandPalette from '../components/code/CodeCommandPalette.vue';
+import LeadToggle from '../components/workbench/LeadToggle.vue';
 import WorkspaceDirDialog from '../components/WorkspaceDirDialog.vue';
 import ChatMessageList from '../components/chat/ChatMessageList.vue';
 import ChatInputArea from '../components/chat/ChatInputArea.vue';
@@ -208,7 +269,6 @@ import GitCommitDialog from '../components/git/GitCommitDialog.vue';
 import GitCheckoutConflictDialog from '../components/git/GitCheckoutConflictDialog.vue';
 import GitConflictResolver from '../components/git/GitConflictResolver.vue';
 
-const router = useRouter();
 const code = useCodeStore();
 const chatStore = useChatStore();
 const spaceStore = useSpaceStore();
@@ -218,6 +278,8 @@ const chat = useChat();
 
 const sideR = useResizable('code_sidebar', 260, 180, 560);
 const chatR = useResizable('code_chat', 420, 300, 900);
+/** AI 模式右栏编辑器宽度（三屏结构，与编辑模式的分栏各自记忆宽度） */
+const aiEditorR = useResizable('code_ai_editor', 520, 300, 1100);
 const sideW = sideR.width;
 const chatW = chatR.width;
 
@@ -225,6 +287,29 @@ const showDir = ref(false);
 const chatCollapsed = ref(false);
 const sideCollapsed = ref(false);
 const paletteOpen = ref(false);
+
+// ===== 主导方双形态（tasks 5a / 5e / 6b）=====
+// ai  → 对话居中占主视觉，编辑器降为可开合的右/下区（AI 模式）
+// human → 编辑器居中、任务在右栏（编辑模式，= 改造前现状，零结构改动）
+const lead = computed<LeadMode>(() => leadOf(activeMode.value));
+/** AI 模式右栏编辑器展开态（三屏结构；默认展开，可收起为纯对话两屏） */
+const editorOpen = ref(true);
+
+/** 切形态：只改 lead（重排 chatPlacement）——不换会话、不重开文件、不重连终端 */
+function onLeadChange(v: LeadMode) {
+  setLead(activeMode.value, v);
+}
+
+/**
+ * 点文件 → 自动展开 AI 模式右栏编辑器（决策 5a.1「点文件时自动展开」）。
+ * 订阅 code.activePath：资源管理器双击 / Git 面板 / 面包屑等所有开文件路径都会经过它。
+ */
+watch(
+  () => code.activePath,
+  (p) => {
+    if (p && lead.value === 'ai') editorOpen.value = true;
+  },
+);
 
 // 在子组件创建前就标记代码模式，确保 ChatMessageList 首次渲染时 isCodeMode 已为 true
 setCodeModeActive(true);
@@ -351,13 +436,8 @@ function toggleSidebar() {
   sideCollapsed.value = !sideCollapsed.value;
   sideW.value = sideCollapsed.value ? 0 : 260;
 }
-
-function backToChat() {
-  // 显式退出代码模式：清掉记忆标记，之后回「任务」就是普通聊天布局
-  setCodeModeActive(false);
-  const id = chatStore.currentConvId;
-  router.push(id ? `/chat/${id}` : '/chat');
-}
+// 「退出开发模式」按钮已删（决策 1）：模式切换统一走顶栏模式下拉；
+// 旧 backToChat 的「清标记回 /chat」职责由模式下拉承担（setMode('office') + router.push）。
 
 
 // ===== Git 状态（顶部 Git 区 + 底部状态栏：分支 + 改动数）=====
@@ -574,6 +654,8 @@ onMounted(async () => {
   min-height: 0;
   display: flex;
   flex-direction: column;
+  /* 定位基准：右下角悬浮胶囊（LeadToggle）相对此容器定位 */
+  position: relative;
 
   overflow: hidden;
 }
@@ -588,10 +670,13 @@ onMounted(async () => {
   -webkit-backdrop-filter: var(--glass-filter);
 }
 .cp-top-left { display: flex; align-items: center; gap: 8px; min-width: 0; position: relative; }
-.cp-badge {
-  width: 24px; height: 24px; border-radius: 7px;
-  display: inline-flex; align-items: center; justify-content: center;
-  color: #fff; background: var(--color-primary, #c2410c);
+/* 只读模式徽标：回答「我在哪个模式」，不可点（切换一律走顶栏模式下拉） */
+.cp-mode-badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  height: 24px; padding: 0 9px; border-radius: 7px;
+  font-size: 12px; font-weight: 500; flex-shrink: 0;
+  color: var(--color-primary, #c2410c);
+  background: color-mix(in srgb, var(--color-primary, #c2410c) 10%, transparent);
 }
 .cp-title { font-size: 13.5px; font-weight: 700; color: var(--color-text, #1a1a1a); }
 .cp-side-toggle {
@@ -694,17 +779,48 @@ onMounted(async () => {
   color: var(--color-primary, #c2410c);
 }
 
-.cp-back {
-  display: inline-flex; align-items: center; gap: 5px;
-  height: 28px; padding: 0 12px; border-radius: 8px; cursor: pointer;
-  border: 1px solid transparent;
-  background: var(--color-primary, #c2410c); color: #fff;
-  font-size: 12px; font-weight: 600; font-family: inherit; transition: all 0.15s ease;
-}
-.cp-back:hover { filter: brightness(1.06); }
-
 /* ===== 主体 ===== */
 .cp-body { flex: 1; min-height: 0; display: flex; overflow: hidden; }
+
+/* ===== AI 模式：三屏结构 = 左任务/文件 │ 中任务聊天 │ 右编辑器 =====
+   chatPlacement='center' 指对话在中间（非右侧）；编辑器仍在右栏。
+   用 width 过渡而非 translateX：收/展是「分栏宽度变化」，不是浮层。
+   注意：CodeSidebar / CodeEditorArea / 右栏对话 全部 v-show 保活。 */
+.cp-ai-main {
+  flex: 1; min-width: 0; display: flex; flex-direction: column;
+  overflow: hidden;
+  background: var(--glass-bg, #fff);
+  backdrop-filter: var(--glass-filter);
+  -webkit-backdrop-filter: var(--glass-filter);
+}
+.cp-ai-chat { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+
+/* 右栏编辑器（三屏第三屏）：收起时宽度归零，对话自动占满 */
+.cp-ai-editor-pane {
+  flex: 0 0 var(--code-ai-editor-w, 520px);
+  width: var(--code-ai-editor-w, 520px);
+  min-width: 0;
+  display: flex; flex-direction: column;
+  background: var(--glass-bg, #fff);
+  backdrop-filter: var(--glass-filter);
+  -webkit-backdrop-filter: var(--glass-filter);
+  border-left: 1px solid var(--glass-border, #e7e4dc);
+  overflow: hidden;
+  transition: flex-basis 0.2s cubic-bezier(0.22, 0.61, 0.36, 1), width 0.2s cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+.cp-ai-editor-pane:not(.open) { flex-basis: 0; width: 0; border-left: none; }
+.cp-ai-editor-head {
+  display: flex; align-items: center; gap: 6px;
+  height: 32px; padding: 0 10px; flex-shrink: 0;
+  border-bottom: 1px solid var(--glass-border, #e7e4dc);
+}
+/* 右栏标题：显示当前打开的文件名 */
+.cp-drawer-title {
+  font-size: 12px; font-weight: 600; color: var(--color-text, #1a1a1a);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.cp-ai-editor-body { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.cp-drawer-body { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
 
 .cp-side {
   flex: 0 0 var(--code-side-w, 260px);

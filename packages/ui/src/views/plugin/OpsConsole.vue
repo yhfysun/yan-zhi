@@ -8,45 +8,79 @@
         :style="{ width: asideW + 'px' }"
         @contextmenu.prevent="onTreeCtx"
       >
+        <!-- 任务段（决策 13 / 5f.4）：四模式同构，读同一份会话列表；资源树之下保留 -->
+        <div class="ops-side-tasks">
+          <TaskListSection :space-id="null" />
+        </div>
         <div class="ops-tree-head">
           <span class="ops-tree-title">资源</span>
+          <button class="ops-tree-new" type="button" title="新增资源" @click.stop="openAddDialog">
+            <el-icon :size="12"><Plus /></el-icon>
+          </button>
         </div>
-        <div class="ops-tree">
-          <template v-for="g in groupTree" :key="g.id">
-            <!-- 目录行（无目录时为扁平列表，不渲染表头）；操作走右键菜单 -->
+        <!-- 资源树：目录可嵌套（子目录在前、资源在后），支持拖拽调整归属 -->
+        <div
+          class="ops-tree"
+          :class="{ 'is-dragging': !!dragKind, 'is-root-drop': dropTargetId === '__root__' }"
+          @dragover="onDragOverGroup($event, '__root__')"
+          @dragleave="onDragLeaveGroup('__root__')"
+          @drop="onDropOnGroup('__root__')"
+        >
+          <template v-for="row in treeRows" :key="row.kind + ':' + row.id">
+            <!-- 目录行：可折叠；右键出操作菜单；可作为拖拽源与目标 -->
             <div
-              v-if="groups.length"
+              v-if="row.kind === 'group'"
               class="ops-group-row"
-              @click="toggleGroup(g.id)"
-              @contextmenu.prevent.stop="onGroupCtx(g, $event)"
+              :class="{
+                'is-drop': dropTargetId === row.id,
+                'is-drag-src': dragKind === 'group' && dragId === row.id,
+              }"
+              :style="{ paddingLeft: 5 + row.depth * 12 + 'px' }"
+              :draggable="row.id !== UNGROUPED"
+              @dragstart.stop="onRowDragStart($event, 'group', row.id)"
+              @dragend="onRowDragEnd"
+              @dragover.stop="onDragOverGroup($event, row.id)"
+              @dragleave="onDragLeaveGroup(row.id)"
+              @drop.stop="onDropOnGroup(row.id)"
+              @click="toggleGroup(row.id)"
+              @contextmenu.prevent.stop="row.id === UNGROUPED ? onTreeCtx($event) : onGroupCtx(row.group!, $event)"
             >
               <el-icon class="ops-group-caret">
-                <ArrowDown v-if="isExpanded(g.id)" /><ArrowRight v-else />
+                <ArrowDown v-if="isExpanded(row.id)" /><ArrowRight v-else />
               </el-icon>
               <el-icon class="ops-group-folder"><Folder /></el-icon>
-              <span class="ops-group-name" :title="g.name">{{ g.name }}</span>
-              <span class="ops-group-count">{{ g.items.length }}</span>
+              <span class="ops-group-name" :title="row.name">{{ row.name }}</span>
+              <span class="ops-group-count">{{ row.group!.items.length }}</span>
             </div>
 
-            <div v-show="!groups.length || isExpanded(g.id)" class="ops-group-body">
-              <div
-                v-for="c in g.items"
-                :key="c.id"
-                :class="['ops-conn-row', { active: isConnActive(c.id) }]"
-                :title="connTitle(c)"
-                @click="openConnection(c)"
-                @contextmenu.prevent.stop="onConnCtx(c, $event)"
-              >
-                <span class="ops-conn-dot" :data-type="connType(c)" />
-                <span class="ops-conn-name">{{ c.name }}</span>
-                <span v-if="testingId === c.id" class="ops-conn-testing">测试中…</span>
-                <el-tag v-if="c.tag" size="small" :type="isProdTag(c.tag) ? 'danger' : 'info'">{{ c.tag }}</el-tag>
-              </div>
-              <div v-if="!g.items.length" class="ops-group-empty">
-                {{ g.real ? '目录下暂无资源' : '暂无资源，在列表空白处右键新建连接' }}
-              </div>
+            <!-- 资源行：点击打开；右键出操作菜单；可拖入目录 -->
+            <div
+              v-else
+              class="ops-conn-row"
+              :class="{
+                active: isConnActive(row.id),
+                'is-drag-src': dragKind === 'conn' && dragId === row.id,
+              }"
+              :style="{ paddingLeft: 8 + row.depth * 12 + 'px' }"
+              :title="connTitle(row.conn!)"
+              draggable="true"
+              @dragstart.stop="onRowDragStart($event, 'conn', row.id)"
+              @dragend="onRowDragEnd"
+              @click="openConnection(row.conn!)"
+              @contextmenu.prevent.stop="onConnCtx(row.conn!, $event)"
+            >
+              <span class="ops-conn-dot" :data-type="connType(row.conn!)" />
+              <span class="ops-conn-name">{{ row.name }}</span>
+              <span v-if="testingId === row.id" class="ops-conn-testing">测试中…</span>
+              <el-tag v-if="row.conn!.tag" size="small" :type="isProdTag(row.conn!.tag) ? 'danger' : 'info'">{{ row.conn!.tag }}</el-tag>
             </div>
           </template>
+          <div v-if="!treeRows.length" class="ops-group-empty">暂无资源，在列表空白处右键新建连接</div>
+        </div>
+
+        <!-- 实时面板（任务 7.4）：跟随当前激活连接（SSH / Docker），10s 轮询只读指标 -->
+        <div v-if="activeConn && connType(activeConn) !== 'database'" class="ops-side-metrics">
+          <OpsMetricsPanel :connection-id="activeConn.id" :conn-name="activeConn.name" />
         </div>
       </aside>
 
@@ -231,9 +265,12 @@
                               <div v-else class="ops-msg-content ops-md" v-html="renderAssistantMarkdown(m.content)"></div>
                             </div>
                           </div>
+                          <!-- AI 模式：每一步渲染成可展开步骤卡（工具名 + 状态 + 耗时 + 真实输出） -->
+                          <OpsStepCards :steps="stepsOf(w)" />
                         </div>
                         <div class="ops-chat-input">
                           <el-input
+                            :ref="(el: any) => setChatInputEl(w.id, el)"
                             v-model="w.chatInput"
                             type="textarea"
                             :rows="2"
@@ -245,6 +282,60 @@
                             <span v-if="w.chatStreaming" class="form-tip">执行中…</span>
                             <el-button v-if="w.chatStreaming" size="small" type="warning" @click="abortWinChat(w)">停止</el-button>
                             <el-button size="small" :disabled="w.chatStreaming || !w.chatInput.trim()" type="primary" @click="sendWinChat(w)">发送</el-button>
+                          </div>
+                          <!-- 底部命令行（任务 7.7）：显示当前执行到第几步 / 需要确认的步骤；点击聚焦输入框追加指令 -->
+                          <div class="ops-cmdline" :class="{ running: w.chatStreaming, confirm: cmdlineNeedConfirm(w) }" @click="focusChatInput(w)">
+                            <span class="ops-cmdline-prompt">›</span>
+                            <span class="ops-cmdline-text">{{ cmdlineText(w) }}</span>
+                            <span class="ops-cmdline-caret">▌</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <!-- 命令模式底部折叠条（任务 7.8）：展开是真对话，与 AI 模式共用同一份窗口会话 -->
+                      <div v-show="w.view !== 'chat'" class="ops-cmdchat" :class="{ open: !!w.cmdChatOpen }">
+                        <div class="ops-cmdchat-bar" @click="toggleCmdChat(w)">
+                          <el-icon :size="12"><ChatDotRound /></el-icon>
+                          <span class="ops-cmdchat-title">AI 助手</span>
+                          <span class="ops-cmdchat-preview">{{ chatPreview(w) }}</span>
+                          <span class="ops-cmdchat-spacer"></span>
+                          <el-icon :size="11"><ArrowUp v-if="w.cmdChatOpen" /><ArrowDown v-else /></el-icon>
+                        </div>
+                        <div v-show="w.cmdChatOpen" class="ops-cmdchat-body">
+                          <div :ref="(el: any) => setStripEl(w.id, el)" class="ops-cmdchat-msgs" @click="onMdClick">
+                            <div v-if="!w.chatMessages.length" class="ops-cmdchat-empty">描述运维任务让助手执行，或点下面的快捷指令</div>
+                            <div v-for="m in w.chatMessages" :key="'s' + m.id" :class="['ops-msg', 'ops-msg-sm', m.role === 'user' ? 'msg-user' : 'msg-assistant']">
+                              <div class="ops-msg-body">
+                                <div class="ops-msg-meta">
+                                  <span class="ops-msg-role-name">{{ m.role === 'user' ? '我' : (m.subAgentName || '运维助手') }}</span>
+                                  <span v-if="m.streaming" class="ops-msg-streaming">输出中…</span>
+                                </div>
+                                <div v-if="m.role === 'user'" class="ops-msg-content">{{ m.content }}</div>
+                                <div v-else class="ops-msg-content ops-md" v-html="renderAssistantMarkdown(m.content)"></div>
+                              </div>
+                            </div>
+                            <OpsStepCards :steps="stepsOf(w)" compact />
+                          </div>
+                          <div class="ops-cmdchat-chips">
+                            <button
+                              v-for="q in QUICK_CMDS"
+                              :key="q"
+                              class="ops-chip"
+                              type="button"
+                              :disabled="w.chatStreaming"
+                              @click="runQuickCmd(w, q)"
+                            >{{ q }}</button>
+                          </div>
+                          <div class="ops-cmdchat-input">
+                            <el-input
+                              v-model="w.chatInput"
+                              size="small"
+                              :disabled="w.chatStreaming"
+                              placeholder="追加指令，Enter 发送"
+                              @keydown.enter="sendWinChat(w)"
+                            />
+                            <el-button v-if="w.chatStreaming" size="small" type="warning" @click="abortWinChat(w)">停止</el-button>
+                            <el-button size="small" type="primary" :disabled="w.chatStreaming || !w.chatInput.trim()" @click="sendWinChat(w)">发送</el-button>
                           </div>
                         </div>
                       </div>
@@ -343,13 +434,14 @@
             class="ops-ctxmenu-item"
             :class="{ 'is-disabled': ctxConnGroupId === gg.id }"
             @click="ctxMoveTo(gg.id)"
-          >移动到「{{ gg.name }}」</div>
+          >移动到「{{ groupPath(gg) }}」</div>
           <div v-if="ctxConnGroupId" class="ops-ctxmenu-item" @click="ctxMoveTo('')">移出目录</div>
         </template>
         <div class="ops-ctxmenu-item is-danger" @click="ctxRemove">删除连接</div>
       </template>
       <template v-else-if="treeCtx.group">
         <div class="ops-ctxmenu-item" @click="ctxRenameGroup">重命名目录</div>
+        <div class="ops-ctxmenu-item" @click="ctxNewSubGroup">在此目录下新建子目录</div>
         <div class="ops-ctxmenu-item is-danger" @click="ctxRemoveGroup">删除目录</div>
       </template>
       <template v-else>
@@ -380,6 +472,9 @@
 
     <!-- 新建 / 编辑连接弹窗（同一个表单组件，回填即编辑） -->
     <OpsConnectionDialog ref="connDialogRef" @saved="onConnectionSaved" />
+
+    <!-- 主导方悬浮胶囊（任务 7.9 / 7.10）：AI 模式=对话居中（chat 视图），命令模式=终端等主视图 -->
+    <LeadToggle :model-value="lead" mode="ops" @update:model-value="onLeadChange" />
   </div>
 </template>
 
@@ -389,6 +484,7 @@ import {
   type ConnType,
   type OpsGroup,
   type OpsWin,
+  type OpsToolCall,
   type TermHandle,
   type DockerRow,
   type DbResult,
@@ -396,6 +492,7 @@ import {
   VIEW_LABEL,
   PRIMARY_VIEW,
   TYPE_VIEWS,
+  buildSteps,
   opsWindows,
   opsActiveWinId,
   opsFilePanelOpen,
@@ -406,10 +503,10 @@ import {
   opsCollapsedGroups,
 } from './opsSession';
 import { clampMenuPos } from '../../utils/menuPosition';
-import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue';
+import { ref, computed, nextTick, onMounted, onUnmounted, watch } from 'vue';
 import {
   Folder, FolderOpened, Fold, Expand,
-  ArrowDown, ArrowRight, Close,
+  ArrowDown, ArrowRight, ArrowUp, Close, Plus,
   Monitor, Box, DataLine, ChatDotRound, User,
 } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
@@ -423,6 +520,11 @@ import { useSettingsStore } from '../../stores/settings';
 import { usePlatformStore } from '../../stores/platform';
 import SftpPanel from './SftpPanel.vue';
 import OpsConnectionDialog, { type OpsConn } from './OpsConnectionDialog.vue';
+import OpsMetricsPanel from '../../components/ops/OpsMetricsPanel.vue';
+import OpsStepCards from '../../components/ops/OpsStepCards.vue';
+import TaskListSection from '../../components/workbench/TaskListSection.vue';
+import LeadToggle from '../../components/workbench/LeadToggle.vue';
+import { activeMode, leadOf, setLead, type LeadMode } from '../../stores/mode';
 import { useResizable } from '../../composables/useResizable';
 
 // 类型与常量定义见上方 <script> 模块块（跨路由切换需要保留的会话状态也在那里）
@@ -447,6 +549,25 @@ function toggleAside() {
   asideCollapsed.value = !asideCollapsed.value;
 }
 const testingId = ref('');
+
+// ===== 主导方双形态（任务 7.9 / 7.10）=====
+// ai（AI 模式）→ 激活窗口切到 chat 视图（对话即执行界面）；human（命令模式）→ 切回主视图（终端等）。
+// 切换只换视图（switchWinView），终端 PTY / 会话全部 v-show 保活，不重连。
+const lead = computed<LeadMode>(() => leadOf(activeMode.value));
+function applyLeadToActiveWin() {
+  const w = activeWin.value;
+  if (!w) return;
+  if (lead.value === 'ai' && w.view !== 'chat') switchWinView(w, 'chat');
+  else if (lead.value === 'human' && w.view === 'chat') switchWinView(w, PRIMARY_VIEW[connType(connOf(w))]);
+}
+watch(lead, () => applyLeadToActiveWin());
+function onLeadChange(v: LeadMode) {
+  setLead(activeMode.value, v); // watch(lead) 统一应用，这里不重复切
+}
+/** AI 模式下新开连接默认进对话视图；命令模式保持原主视图 */
+function preferredView(connTypeKey: ConnType): ViewKey {
+  return lead.value === 'ai' ? 'chat' : PRIMARY_VIEW[connTypeKey];
+}
 
 // 资源树数据同样来自模块作用域（切回来先渲染旧数据，init() 再刷新）
 const groups = opsGroups;
@@ -516,6 +637,7 @@ function newWin(c: OpsConn, view: ViewKey): OpsWin {
     containers: [], containersError: '',
     dbTables: [], dbTable: '', dbSql: '', dbLoading: false, dbError: '', dbResult: null,
     conversationId: '', chatMessages: [], chatInput: '', chatStreaming: false,
+    cmdChatOpen: false,
   };
 }
 
@@ -525,7 +647,7 @@ function newWin(c: OpsConn, view: ViewKey): OpsWin {
  */
 function openConnection(c: OpsConn, want: 'primary' | 'chat' | 'file' = 'primary') {
   if (want === 'file' && connType(c) === 'database') want = 'primary';
-  const targetView: ViewKey = want === 'chat' ? 'chat' : PRIMARY_VIEW[connType(c)];
+  const targetView: ViewKey = want === 'chat' ? 'chat' : preferredView(connType(c));
   if (want === 'file') filePanelOpen.value = true;
   const exist = windows.value.find((w) => w.connectionId === c.id && w.view === targetView);
   if (exist) {
@@ -540,7 +662,7 @@ function openConnection(c: OpsConn, want: 'primary' | 'chat' | 'file' = 'primary
 
 /** 强制新开一个窗口（同一连接可多开） */
 function openConnectionNew(c: OpsConn) {
-  const w = newWin(c, PRIMARY_VIEW[connType(c)]);
+  const w = newWin(c, preferredView(connType(c)));
   windows.value.push(w);
   activateWindow(w.id);
   if (w.view === 'term') void openTerminal(w);
@@ -859,15 +981,92 @@ async function loadWinMessages(w: OpsWin) {
     w.chatMessages = (r.data as any[]).map((m) => ({
       id: m.id, role: m.role, content: m.content || '',
       subAgentName: m.sub_agent_name || null, createdAt: m.created_at,
+      // 工具调用：assistant.tool_calls_json 发起 → role=tool 的结果消息回填（步骤卡数据源）
+      toolCalls: parseToolCalls(m.tool_calls_json),
+      toolCallId: m.tool_call_id || undefined,
     }));
   }
+}
+/** tool_calls_json 可能是字符串或数组（后端取法不同），统一解析成数组 */
+function parseToolCalls(raw: unknown): OpsToolCall[] | undefined {
+  if (!raw) return undefined;
+  let v: unknown = raw;
+  if (typeof v === 'string') {
+    try { v = JSON.parse(v); } catch { return undefined; }
+  }
+  if (!Array.isArray(v)) return undefined;
+  const out: OpsToolCall[] = [];
+  for (const t of v) {
+    const fn = (t as any)?.function;
+    const name = String((t as any)?.name || fn?.name || '');
+    if (!name) continue;
+    out.push({
+      id: String((t as any)?.id || ''),
+      name,
+      arguments: typeof fn?.arguments === 'string' ? fn.arguments : (fn?.arguments ? JSON.stringify(fn.arguments) : ''),
+    });
+  }
+  return out.length ? out : undefined;
 }
 
 function scrollChatBottom(w: OpsWin) {
   void nextTick(() => {
     const el = chatEls.get(w.id);
     if (el) el.scrollTop = el.scrollHeight;
+    const sel = stripEls.get(w.id);
+    if (sel) sel.scrollTop = sel.scrollHeight;
   });
+}
+
+// ===== AI 模式步骤卡 + 底部命令行（任务 7.6 / 7.7）=====
+// 步骤完全由消息推导（assistant.toolCalls 发起 + role=tool 结果回填），后端零改动。
+function stepsOf(w: OpsWin) {
+  return buildSteps(w.chatMessages);
+}
+/** 底部命令行文案：正在执行第 N 步 / 需确认 / 等待指令 */
+function cmdlineText(w: OpsWin): string {
+  const steps = stepsOf(w);
+  if (!steps.length) return '输入运维任务或追加指令，我来执行';
+  const running = steps.find((s) => s.status === 'running');
+  if (running) return `正在执行第 ${running.index} 步 · ${running.toolName}`;
+  const pending = steps.find((s) => s.needConfirm && s.status === 'done');
+  if (pending) return `第 ${pending.index} 步「${pending.toolName}」需确认 · 回复「确认执行」继续`;
+  const last = steps[steps.length - 1];
+  return `已完成 ${steps.length} 步（最后：${last.toolName}）· 可继续追加指令`;
+}
+function cmdlineNeedConfirm(w: OpsWin): boolean {
+  return stepsOf(w).some((s) => s.needConfirm && s.status === 'done');
+}
+/** 点击命令行 = 聚焦输入框，支持自然语言追加指令 */
+const chatInputEls = new Map<string, { focus: () => void } | null>();
+function setChatInputEl(id: string, el: unknown) {
+  chatInputEls.set(id, (el as { focus: () => void } | null) || null);
+}
+function focusChatInput(w: OpsWin) {
+  chatInputEls.get(w.id)?.focus();
+}
+
+// ===== 命令模式底部折叠对话条（任务 7.8）=====
+const QUICK_CMDS = ['查看系统负载', '磁盘占用排查', '查看最近容器日志', '检查服务端口'];
+const stripEls = new Map<string, HTMLElement>();
+function setStripEl(id: string, el: unknown) {
+  if (el) stripEls.set(id, el as HTMLElement);
+  else stripEls.delete(id);
+}
+function toggleCmdChat(w: OpsWin) {
+  w.cmdChatOpen = !w.cmdChatOpen;
+  if (w.cmdChatOpen) scrollChatBottom(w);
+}
+/** 折叠条上的一句话预览（最后一条消息的头部） */
+function chatPreview(w: OpsWin): string {
+  const last = [...w.chatMessages].reverse().find((m) => m.content?.trim());
+  if (!last) return w.chatStreaming ? '执行中…' : '展开让助手帮你执行';
+  const head = last.content.replace(/\s+/g, ' ').trim().slice(0, 40);
+  return `${last.role === 'user' ? '我' : '助手'}：${head}`;
+}
+function runQuickCmd(w: OpsWin, q: string) {
+  w.chatInput = q;
+  void sendWinChat(w);
 }
 
 async function sendWinChat(w: OpsWin) {
@@ -969,6 +1168,8 @@ async function subscribeWinTask(w: OpsWin, taskId: string, ac: AbortController):
             id: msg.id, role: msg.role, content: msg.content || '',
             subAgentName: msg.subAgentName || msg.sub_agent_name || null,
             streaming: msg.role === 'assistant', createdAt: Date.now(),
+            toolCalls: parseToolCalls(msg.toolCalls ?? msg.tool_calls_json),
+            toolCallId: msg.toolCallId || msg.tool_call_id || undefined,
           });
         }
         scrollChatBottom(w);
@@ -1131,18 +1332,141 @@ function isProdTag(tag: string): boolean {
   return t.includes('生产') || t.includes('prod');
 }
 
-// ===== 左侧目录树 =====
-const groupTree = computed(() => {
-  const tree = groups.value.map((g) => ({
-    id: g.id,
-    name: g.name,
-    real: true,
-    items: connections.value.filter((c) => c.groupId === g.id),
-  }));
+// ===== 左侧目录树（支持目录嵌套：子目录 + 资源；拖拽调整归属）=====
+interface GroupNode {
+  id: string; name: string; real: boolean;
+  parentId: string;
+  items: OpsConn[];
+  children: GroupNode[];
+}
+/** 渲染行：把树摊平，目录行与资源行都带 depth 缩进（避免递归组件） */
+interface TreeRow {
+  kind: 'group' | 'conn';
+  id: string;
+  name: string;
+  depth: number;
+  group?: GroupNode;
+  conn?: OpsConn;
+}
+
+const groupTree = computed<GroupNode[]>(() => {
+  const build = (parentId: string): GroupNode[] =>
+    groups.value
+      .filter((g) => (g.parentId || '') === parentId)
+      .map((g) => ({
+        id: g.id, name: g.name, real: true, parentId,
+        items: connections.value.filter((c) => c.groupId === g.id),
+        children: build(g.id),
+      }));
+  const roots = build('');
   const loose = connections.value.filter((c) => !c.groupId || !groups.value.some((g) => g.id === c.groupId));
-  if (loose.length || !tree.length) tree.push({ id: UNGROUPED, name: '未分组', items: loose, real: false });
-  return tree;
+  if (loose.length || !roots.length) {
+    roots.push({ id: UNGROUPED, name: '未分组', real: false, parentId: '', items: loose, children: [] });
+  }
+  return roots;
 });
+
+/** 摊平后的渲染行：目录 →（展开时）子目录 → 本目录资源 */
+const treeRows = computed<TreeRow[]>(() => {
+  const out: TreeRow[] = [];
+  const walk = (nodes: GroupNode[], depth: number) => {
+    for (const n of nodes) {
+      out.push({ kind: 'group', id: n.id, name: n.name, depth, group: n });
+      if (n.id !== UNGROUPED && !isExpanded(n.id)) continue;
+      walk(n.children, depth + 1);
+      for (const c of n.items) out.push({ kind: 'conn', id: c.id, name: c.name, depth: depth + 1, conn: c });
+    }
+  };
+  walk(groupTree.value, 0);
+  return out;
+});
+
+// ===== 拖拽：资源拖进目录 / 目录拖进目录（后端带防环校验）=====
+const dragKind = ref<'' | 'conn' | 'group'>('');
+const dragId = ref('');
+const dropTargetId = ref('');
+
+function onRowDragStart(e: DragEvent, kind: 'conn' | 'group', id: string) {
+  dragKind.value = kind;
+  dragId.value = id;
+  try {
+    e.dataTransfer?.setData('text/plain', `${kind}:${id}`);
+    if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
+  } catch { /* 忽略 */ }
+}
+function onRowDragEnd() {
+  dragKind.value = '';
+  dragId.value = '';
+  dropTargetId.value = '';
+}
+/** 目标目录是否是被拖目录的子孙（前端先挡一层，后端还有一道） */
+function isDescendantOf(groupId: string, maybeAncestorId: string): boolean {
+  let cur = groups.value.find((g) => g.id === groupId);
+  const guard = new Set<string>();
+  while (cur && !guard.has(cur.id)) {
+    guard.add(cur.id);
+    if (cur.id === maybeAncestorId) return true;
+    cur = cur.parentId ? groups.value.find((g) => g.id === cur!.parentId) : undefined;
+  }
+  return false;
+}
+/** 能否落到该目录（root = 顶层/未分组） */
+function canDropOn(groupId: string): boolean {
+  if (!dragKind.value) return false;
+  if (dragKind.value === 'conn') {
+    const c = connections.value.find((x) => x.id === dragId.value);
+    if (!c) return false;
+    return groupId === '__root__' ? !!c.groupId : c.groupId !== groupId;
+  }
+  if (groupId === dragId.value) return false;
+  if (groupId !== '__root__' && isDescendantOf(groupId, dragId.value)) return false;
+  const g = groups.value.find((x) => x.id === dragId.value);
+  if (!g) return false;
+  return groupId === '__root__' ? !!g.parentId : (g.parentId || '') !== groupId;
+}
+function onDragOverGroup(e: DragEvent, groupId: string) {
+  if (!canDropOn(groupId)) return;
+  e.preventDefault();
+  if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+  dropTargetId.value = groupId;
+}
+function onDragLeaveGroup(groupId: string) {
+  if (dropTargetId.value === groupId) dropTargetId.value = '';
+}
+async function onDropOnGroup(groupId: string) {
+  const kind = dragKind.value;
+  const id = dragId.value;
+  onRowDragEnd();
+  if (!kind || !id || !canDropOn(groupId)) return;
+  try {
+    if (kind === 'conn') {
+      await moveConnToGroup(id, groupId === '__root__' ? '' : groupId);
+    } else {
+      await moveGroupToParent(id, groupId === '__root__' ? '' : groupId);
+    }
+  } catch (e) {
+    ElMessage.error((e as Error).message);
+  }
+}
+/** 移动资源归属目录（groupId 空 = 未分组） */
+async function moveConnToGroup(connId: string, groupId: string) {
+  const r = await api.put(`/plugin/ops-shell/connections/${connId}/group`, { groupId });
+  if ('error' in r) throw new Error(r.error);
+  await loadConnections();
+  const name = connections.value.find((c) => c.id === connId)?.name || '资源';
+  const target = groupId ? (groups.value.find((g) => g.id === groupId)?.name || '目录') : '未分组';
+  ElMessage.success(`「${name}」已移到 ${target}`);
+}
+/** 移动目录到目标父目录（parentId 空 = 顶层） */
+async function moveGroupToParent(groupId: string, parentId: string) {
+  const r = await api.put<OpsGroup>(`/plugin/ops-shell/groups/${groupId}/parent`, { parentId });
+  if ('error' in r) throw new Error(r.error);
+  await loadGroups();
+  const name = groups.value.find((g) => g.id === groupId)?.name || '目录';
+  const target = parentId ? (groups.value.find((g) => g.id === parentId)?.name || '目录') : '顶层';
+  ElMessage.success(`「${name}」已移到 ${target}`);
+}
+
 function isExpanded(id: string): boolean {
   return !collapsed.value.has(id);
 }
@@ -1162,16 +1486,26 @@ async function loadGroups() {
   if ('data' in r) groups.value = r.data;
 }
 
-// ===== 目录（分类分组）管理 =====
-async function promptNewGroup() {
-  const r = await ElMessageBox.prompt('目录名称', '新建目录', {
+// ===== 目录（分类分组）管理：支持嵌套（parentId 为空 = 顶层）=====
+async function promptNewGroup(parentId = '') {
+  const parent = parentId ? groups.value.find((g) => g.id === parentId) : null;
+  const r = await ElMessageBox.prompt(parent ? `在「${parent.name}」下新建子目录` : '新建顶层目录', '新建目录', {
     confirmButtonText: '创建', cancelButtonText: '取消', inputPlaceholder: '如 生产环境 / 测试机 / 数据库',
     inputValidator: (v: string) => (v && v.trim() ? true : '名称不能为空'),
   }).catch(() => null);
   if (!r) return;
-  const res = await api.post<{ id: string; name: string }>('/plugin/ops-shell/groups', { name: r.value.trim() });
+  const res = await api.post<{ id: string; name: string }>('/plugin/ops-shell/groups', {
+    name: r.value.trim(),
+    ...(parentId ? { parentId } : {}),
+  });
   if ('error' in res) { ElMessage.error(res.error); return; }
   await loadGroups();
+  // 新建子目录时自动展开父目录，避免「建了但看不见」
+  if (parentId) {
+    const s = new Set(collapsed.value);
+    s.delete(parentId);
+    collapsed.value = s;
+  }
   ElMessage.success(`目录「${res.data.name}」已创建`);
 }
 
@@ -1191,8 +1525,13 @@ async function onGroupCmd(cmd: string, groupId: string) {
   }
   if (cmd === 'remove') {
     const count = connections.value.filter((c) => c.groupId === g.id).length;
+    const kids = groups.value.filter((x) => (x.parentId || '') === g.id).length;
+    const tail = [
+      count ? `其中 ${count} 个资源会移回「未分组」` : '',
+      kids ? `${kids} 个子目录会上提到上一层` : '',
+    ].filter(Boolean).join('，');
     const ok = await ElMessageBox.confirm(
-      `删除目录「${g.name}」？${count ? `其中 ${count} 个资源会移回「未分组」，资源本身不会删除。` : ''}`,
+      `删除目录「${g.name}」？${tail ? `${tail}；` : ''}资源与子目录本身不会删除。`,
       '确认', { type: 'warning' },
     ).then(() => true).catch(() => false);
     if (!ok) return;
@@ -1217,8 +1556,8 @@ async function onConnCmd(cmd: string, c: OpsConn) {
 // ===== 资源 / 目录 右键菜单 =====
 // 原来把「新窗口 / 文件管理 / 测试 / ⋯」做成行内 hover 按钮，绝对定位会盖住连接名，
 // 现统一改为右键菜单（自绘，理由同文件页：避开 el-dropdown 在容器内的定位问题）
-type GroupNode = { id: string; name: string; real: boolean; items: OpsConn[] };
-const treeCtx = ref<{ visible: boolean; x: number; y: number; conn: OpsConn | null; group: GroupNode | null }>({
+type TreeCtxGroup = { id: string; name: string; real: boolean; items: OpsConn[] };
+const treeCtx = ref<{ visible: boolean; x: number; y: number; conn: OpsConn | null; group: TreeCtxGroup | null }>({
   visible: false, x: 0, y: 0, conn: null, group: null,
 });
 const ctxConnGroupId = computed(() => treeCtx.value.conn?.groupId || '');
@@ -1227,7 +1566,7 @@ const ctxCanFile = computed(() => !!treeCtx.value.conn && connType(treeCtx.value
 function onConnCtx(c: OpsConn, ev: MouseEvent) {
   treeCtx.value = { visible: true, ...clampMenuPos(ev), conn: c, group: null };
 }
-function onGroupCtx(g: GroupNode, ev: MouseEvent) {
+function onGroupCtx(g: TreeCtxGroup, ev: MouseEvent) {
   treeCtx.value = { visible: true, ...clampMenuPos(ev), conn: null, group: g };
 }
 /** 列表空白处右键：只给「新建」（连接 / 目录） */
@@ -1255,6 +1594,25 @@ function ctxRemoveGroup() { const g = treeCtx.value.group; if (g) void onGroupCm
 // 空白处右键的两个新建入口
 function ctxNewConnection() { openAddDialog(); closeTreeCtx(); }
 function ctxNewGroup() { void promptNewGroup(); closeTreeCtx(); }
+function ctxNewSubGroup() {
+  const g = treeCtx.value.group;
+  if (g) void promptNewGroup(g.id);
+  closeTreeCtx();
+}
+/** 目录完整路径（嵌套时用 / 连接，便于「移动到」菜单区分同名子目录） */
+function groupPath(g: OpsGroup): string {
+  const chain: string[] = [g.name];
+  let cur = g;
+  const guard = new Set<string>();
+  while (cur.parentId && !guard.has(cur.parentId)) {
+    guard.add(cur.parentId);
+    const p = groups.value.find((x) => x.id === cur.parentId);
+    if (!p) break;
+    chain.unshift(p.name);
+    cur = p;
+  }
+  return chain.join(' / ');
+}
 
 // ===== 窗口标签右键菜单 =====
 const tabCtx = ref<{ visible: boolean; x: number; y: number; win: OpsWin | null }>({
@@ -1363,6 +1721,8 @@ init();
 // 从别的页面切回来：把仍然活着的终端接回新容器（不重开 PTY），并滚到底部
 onMounted(() => {
   void nextTick(() => {
+    // 恢复主导方形态（AI 模式下激活窗口回到 chat 视图）
+    applyLeadToActiveWin();
     for (const w of windows.value) {
       const h = terms.get(w.id);
       if (h) attachTerm(h, w);
@@ -1383,10 +1743,32 @@ onUnmounted(() => {
 <style scoped>
 .ops-console {
   display: flex; flex-direction: column; height: 100%; overflow: hidden;
+  /* 定位基准：右下角悬浮胶囊（LeadToggle）相对此容器定位 */
+  position: relative;
   /* 列表 hover / 右键菜单 hover 统一底色：行与菜单共用同一个**不透明**色，
      半透明色叠两层会形成硬边色带（原来 hover 按钮那版就是这里脏） */
   --ops-row-hover: color-mix(in srgb, var(--color-primary) 7%, var(--color-surface));
   --ops-row-active: color-mix(in srgb, var(--color-primary) 13%, var(--color-surface));
+}
+
+/* 左栏任务段（决策 13 / 5f.4）：在上、限高约 40%，超出滚动；资源树在下保留 */
+.ops-side-tasks {
+  flex: 0 0 auto;
+  height: 34%;
+  min-height: 120px;
+  max-height: 40%;
+  display: flex; flex-direction: column;
+  border-bottom: 1px solid var(--glass-border);
+  padding-bottom: 4px; margin-bottom: 6px;
+}
+.ops-side-tasks :deep(.tls) { height: 100%; }
+
+/* 左栏底部实时面板（任务 7.4） */
+.ops-side-metrics {
+  flex: 0 0 auto;
+  border-top: 1px solid var(--glass-border);
+  padding-top: 6px;
+  margin-top: 6px;
 }
 .ops-layout { flex: 1; display: flex; gap: 6px; min-height: 0; position: relative; }
 .ops-connections {
@@ -1424,7 +1806,35 @@ onUnmounted(() => {
   padding: 0 2px 6px; flex-shrink: 0;
 }
 .ops-tree-title { font-size: 12px; font-weight: 600; color: var(--color-text-secondary); }
+
+/* 新增资源：与任务段「新建任务」同规格（20px 圆钮，hover 主色浅底） */
+.ops-tree-new {
+  display: flex; align-items: center; justify-content: center;
+  width: 20px; height: 20px; flex-shrink: 0;
+  border: none; border-radius: 6px;
+  background: transparent; color: var(--color-text-tertiary);
+  cursor: pointer; transition: background 0.15s ease, color 0.15s ease;
+}
+.ops-tree-new:hover {
+  background: color-mix(in srgb, var(--color-primary) 10%, transparent);
+  color: var(--color-primary);
+}
 .ops-tree { flex: 1; min-height: 0; overflow-y: auto; }
+
+/* 拖拽：整树进入拖拽态时给可放目标一点提示；目录行命中 = 主色描边 + 浅底 */
+.ops-tree.is-root-drop {
+  outline: 1px dashed color-mix(in srgb, var(--color-primary) 55%, transparent);
+  outline-offset: -3px;
+  border-radius: 8px;
+}
+.ops-group-row.is-drop {
+  background: color-mix(in srgb, var(--color-primary) 16%, transparent);
+  color: var(--color-primary);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-primary) 45%, transparent);
+}
+.ops-group-row.is-drag-src,
+.ops-conn-row.is-drag-src { opacity: 0.45; }
+.ops-group-row, .ops-conn-row { transition: background 0.12s ease, box-shadow 0.12s ease, opacity 0.12s ease; }
 .ops-group-row {
   display: flex; align-items: center; gap: 5px; padding: 5px 5px;
   border-radius: 6px; cursor: pointer; font-size: 12px; color: var(--color-text-secondary);
@@ -1509,9 +1919,10 @@ onUnmounted(() => {
 .ops-win-head-actions :deep(.el-button + .el-button) { margin-left: 0; }
 .ops-term-hint { font-size: 11px; color: var(--color-text-tertiary); }
 
-/* 模式切换：右下角浮动图标按钮（不占窗口头那一行高度） */
+/* 模式切换：右下角浮动图标按钮（不占窗口头那一行高度）。
+   右偏移 60px：给主导方悬浮胶囊（LeadToggle，right:16）让位，两者不重叠 */
 .ops-view-fab {
-  position: absolute; right: 16px; bottom: 16px; z-index: 8;
+  position: absolute; right: 60px; bottom: 16px; z-index: 8;
   width: 34px; height: 34px; border-radius: 50%;
   display: flex; align-items: center; justify-content: center;
   cursor: pointer; color: var(--color-text-secondary);
@@ -1639,6 +2050,69 @@ onUnmounted(() => {
 .ops-chat-input :deep(.el-textarea__inner::placeholder) { color: var(--color-text-secondary); opacity: 0.8; }
 .ops-chat-actions { display: flex; align-items: center; gap: 8px; padding: 0 6px 2px; }
 .ops-chat-actions :deep(.el-button + .el-button) { margin-left: 0; }
+
+/* ===== 底部命令行（任务 7.7）：AI 模式输入框下的单行状态条 ===== */
+.ops-cmdline {
+  display: flex; align-items: center; gap: 6px;
+  padding: 5px 8px; margin-top: 6px;
+  border-radius: 8px; cursor: text;
+  border: 1px solid var(--glass-border);
+  background: color-mix(in srgb, var(--color-text) 3%, transparent);
+  font-family: Consolas, monospace; font-size: 11px;
+  color: var(--color-text-secondary);
+  overflow: hidden;
+}
+.ops-cmdline:hover { border-color: color-mix(in srgb, var(--color-primary) 40%, transparent); }
+.ops-cmdline.running { color: var(--color-primary); border-color: color-mix(in srgb, var(--color-primary) 35%, transparent); }
+.ops-cmdline.confirm { color: var(--el-color-warning, #c2740b); border-color: color-mix(in srgb, var(--el-color-warning, #c2740b) 45%, transparent); }
+.ops-cmdline-prompt { flex-shrink: 0; font-weight: 700; }
+.ops-cmdline-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ops-cmdline-caret { flex-shrink: 0; animation: opsCaret 1s steps(2, start) infinite; }
+@keyframes opsCaret { 0%, 50% { opacity: 1; } 50.01%, 100% { opacity: 0.15; } }
+
+/* ===== 命令模式底部折叠对话条（任务 7.8）===== */
+.ops-cmdchat {
+  flex: 0 0 auto;
+  border-top: 1px solid var(--glass-border);
+  background: var(--color-surface);
+  display: flex; flex-direction: column;
+  max-height: 46%;
+}
+.ops-cmdchat-bar {
+  display: flex; align-items: center; gap: 6px;
+  height: 28px; padding: 0 8px; flex-shrink: 0;
+  cursor: pointer; user-select: none;
+  font-size: 11.5px; color: var(--color-text-secondary);
+}
+.ops-cmdchat-bar:hover { background: var(--glass-bg-hover); color: var(--color-primary); }
+.ops-cmdchat-title { font-weight: 600; flex-shrink: 0; }
+.ops-cmdchat-preview {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 10.5px; color: var(--color-text-tertiary);
+}
+.ops-cmdchat-spacer { flex: 1; }
+.ops-cmdchat-body {
+  display: flex; flex-direction: column; min-height: 0;
+  padding: 4px 8px 8px; gap: 6px;
+}
+.ops-cmdchat-msgs {
+  flex: 1; min-height: 90px; max-height: 220px; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 8px; padding-right: 2px;
+}
+.ops-cmdchat-empty { font-size: 11px; color: var(--color-text-tertiary); padding: 6px 2px; }
+/* 折叠条里的消息泡：去掉头像、缩小字号（省空间，功能不减） */
+.ops-msg-sm { gap: 0; }
+.ops-msg-sm .ops-msg-content { font-size: 12px; padding: 6px 10px; }
+.ops-cmdchat-chips { display: flex; flex-wrap: wrap; gap: 5px; flex-shrink: 0; }
+.ops-chip {
+  border: 1px solid var(--glass-border); border-radius: 10px;
+  background: transparent; color: var(--color-text-secondary);
+  font-size: 10.5px; font-family: inherit; padding: 2px 8px; cursor: pointer;
+  transition: all 0.15s ease;
+}
+.ops-chip:hover:not(:disabled) { border-color: var(--color-primary); color: var(--color-primary); }
+.ops-chip:disabled { opacity: 0.45; cursor: not-allowed; }
+.ops-cmdchat-input { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
 
 /* 操作日志 */
 .ops-audit { height: 100%; display: flex; flex-direction: column; gap: 8px; min-height: 0; }

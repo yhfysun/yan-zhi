@@ -842,7 +842,9 @@
 .agent-trigger-avatar {
   width: 22px; height: 22px; border-radius: 6px; flex-shrink: 0;
   display: inline-flex; align-items: center; justify-content: center;
-  background: var(--gradient-primary); color: #fff; font-size: 11px; font-weight: 700;
+  /* 与「+」菜单的 .plus-menu-ic 同一视觉规范：主色 10% 底 + 主色图标 */
+  background: color-mix(in srgb, var(--color-primary) 10%, transparent);
+  color: var(--color-primary);
 }
 .agent-trigger-name {
   font-size: 13px; font-weight: 600; color: var(--color-text);
@@ -1811,7 +1813,11 @@ body.yz-right-panel-open .el-overlay-dialog {
 .plus-menu-item:hover { background: var(--glass-bg-hover); }
 .plus-menu-item.is-active { background: color-mix(in srgb, var(--color-primary) 8%, transparent); }
 .plus-menu-ic { flex-shrink: 0; width: 28px; height: 28px; border-radius: 8px; display: flex; align-items: center; justify-content: center; background: color-mix(in srgb, var(--color-primary) 10%, transparent); color: var(--color-primary); font-size: 13px; font-weight: 600; }
-.plus-menu-ic.agent { background: var(--color-primary); color: #fff; }
+/* `/agent` 斜杠命令里的助手项图标：此前该 span 放的是纯文字、无样式定义，
+   换成图标后必须补色块，否则图标会裸贴在文字旁（与其它处不一致）。 */
+.cmd-opt-avatar { flex-shrink: 0; width: 28px; height: 28px; border-radius: 8px; display: flex; align-items: center; justify-content: center; background: color-mix(in srgb, var(--color-primary) 10%, transparent); color: var(--color-primary); }
+/* 注：.plus-menu-ic.agent（实底白字首字块）已废弃 —— 助手项改用与其它项一致的图标色块
+   （见 utils/agentIcon.ts）。保留首字块样式只会让「助手」看起来仍与技能/MCP 不统一。 */
 .plus-menu-info { flex: 1; min-width: 0; }
 .plus-menu-label { font-size: 13px; font-weight: 500; color: var(--color-text); line-height: 1.3; }
 .plus-menu-desc { font-size: 11.5px; color: var(--color-text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 170px; }

@@ -12,9 +12,10 @@ import type { OpsConn } from './OpsConnectionDialog.vue';
 
 export type ViewKey = 'term' | 'container' | 'db' | 'chat';
 export type ConnType = 'ssh' | 'docker' | 'database';
-export interface OpsGroup { id: string; name: string; createdAt: number }
+export interface OpsGroup { id: string; name: string; createdAt: number; parentId?: string }
 export interface DockerRow { Id?: string; Names?: string; Image?: string; State?: string; Status?: string; [k: string]: unknown }
 export interface DbResult { rows: Record<string, unknown>[]; fields: string[]; truncated?: boolean }
+export interface OpsToolCall { id: string; name: string; arguments?: string }
 export interface OpsMsg {
   id: string;
   role: 'user' | 'assistant' | string;
@@ -22,6 +23,25 @@ export interface OpsMsg {
   subAgentName?: string | null;
   streaming?: boolean;
   createdAt: number;
+  /** assistant 消息发起的工具调用（步骤卡的来源） */
+  toolCalls?: OpsToolCall[];
+  /** role === 'tool' 的结果消息回填到哪个 toolCallId */
+  toolCallId?: string;
+}
+
+/** 一个执行步骤（由 assistant.toolCalls + 对应 tool 结果消息推导，无后端改动） */
+export interface OpsStep {
+  index: number;
+  callId: string;
+  toolName: string;
+  argsText: string;
+  status: 'running' | 'done' | 'failed';
+  /** 工具真实输出（tool 结果消息的 content） */
+  output: string;
+  /** 耗时 ms（tool 结果时间 - 发起时间）；未知为 null */
+  durationMs: number | null;
+  /** 输出/参数里出现确认要求（生产连接二次确认等） */
+  needConfirm: boolean;
 }
 
 /**
@@ -56,6 +76,8 @@ export interface OpsWin {
   chatMessages: OpsMsg[];
   chatInput: string;
   chatStreaming: boolean;
+  /** 命令模式底部折叠对话条是否展开（任务 7.8；与 AI 模式共用同一份会话） */
+  cmdChatOpen: boolean;
 }
 
 export interface TermHandle {
@@ -80,6 +102,32 @@ export const TYPE_VIEWS: Record<ConnType, ViewKey[]> = {
   docker: ['container', 'chat'],
   database: ['db', 'chat'],
 };
+
+/** 从窗口消息推导执行步骤：assistant.toolCalls 发起 → role=tool 消息回填输出 */
+export function buildSteps(messages: OpsMsg[]): OpsStep[] {
+  const out: OpsStep[] = [];
+  let idx = 0;
+  for (const m of messages) {
+    if (m.role !== 'assistant' || !m.toolCalls?.length) continue;
+    for (const tc of m.toolCalls) {
+      idx += 1;
+      const result = messages.find((r) => r.role === 'tool' && r.toolCallId === tc.id);
+      const raw = result?.content || '';
+      const failed = /^(执行失败|错误|Error)/i.test(raw.trim()) || /失败[:：]/.test(raw.slice(0, 80));
+      out.push({
+        index: idx,
+        callId: tc.id,
+        toolName: tc.name || 'tool',
+        argsText: tc.arguments || '',
+        status: result ? (failed ? 'failed' : 'done') : 'running',
+        output: raw,
+        durationMs: result && result.createdAt && m.createdAt ? Math.max(0, result.createdAt - m.createdAt) : null,
+        needConfirm: /确认|confirmed/i.test(raw) || /确认|confirmed/i.test(tc.arguments || ''),
+      });
+    }
+  }
+  return out;
+}
 
 // ===== 跨路由切换保留的会话状态 =====
 export const opsWindows = ref<OpsWin[]>([]);

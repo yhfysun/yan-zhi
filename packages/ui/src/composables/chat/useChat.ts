@@ -1,5 +1,6 @@
 import { ref, computed, reactive, watch, onMounted, onUnmounted, nextTick } from 'vue';
 import { clampMenuPos } from '../../utils/menuPosition';
+import { isChatSelectableAgent } from '../../utils/agentSelectable';
 import { DEFAULT_CONTEXT_WINDOW } from '../../utils/context-window';
 import { hasLocalPath, isLocalPath, normalizePath, resolveOpenTarget, splitLocalPaths } from '../../utils/file-open';
 import { ElMessage, ElMessageBox } from 'element-plus';
@@ -1488,9 +1489,16 @@ function createChat() {
     const showDebugs = new URLSearchParams(location.search).get('showDebugs') === 'true';
     if (showDebugs) { debugMode.value = true; }
 
-    const lastConv = store.conversations[0];
-    if (lastConv) {
-      await selectConv(lastConv.id);
+    // ★ 仅应用首次启动时自动恢复最近会话。
+    //   useChat 的 onMounted 会随 ChatMessageList 每次挂载重跑（切模式=重新挂载），
+    //   若无条件 selectConv(conversations[0]) 会把「按模式记忆的会话/草稿」覆盖成全局最新会话
+    //   —— 这就是「办公/代码互切后对话不切换」的元凶之一。
+    if (!chatBootInitDone) {
+      chatBootInitDone = true;
+      const lastConv = store.conversations[0];
+      if (lastConv && !store.currentConvId) {
+        await selectConv(lastConv.id);
+      }
     }
 
     if (store.currentConvId) {
@@ -1567,6 +1575,12 @@ function createChat() {
     const bindId = conv?.agentId;
     if (!bindId) return;
     if (!agentStore.agents.some((a) => a.id === bindId)) return;
+    // 历史会话可能绑定的是 workflow 型智能体（旧版选择器未过滤时选上的，如「龙珠里面打斗名场面」那条）。
+    // 那种绑定已由后端硬拦截兜住并给出指引，这里不该把选择器也拉回它 ——
+    // 否则用户打开会话就看到一个不可对话的智能体被选中，点发送只会反复吃拦截提示。
+    // 保持当前选择，让用户自行切到可对话的智能体（如「AI 短剧导演」）。
+    const bound = agentStore.agents.find((a) => a.id === bindId);
+    if (!isChatSelectableAgent(bound)) return;
     if (agentStore.selectedId !== bindId) agentStore.selectAgent(bindId);
   }
 
@@ -2737,8 +2751,9 @@ function createChat() {
   // ========== 会话树空白区右键菜单（新建任务/新建空间） ==========
   const treeMenu = reactive({ visible: false, x: 0, y: 0 });
   function openTreeMenu(e: MouseEvent) {
-    // 会话项与空间节点有各自的右键菜单，命中时不弹空白区菜单
-    if ((e.target as HTMLElement)?.closest('.conv-item, .tree-space .tree-node-head')) return;
+    // 会话项与空间节点有各自的右键菜单，命中时不弹空白区菜单。
+    // 办公侧栏用 .conv-item / .tree-space，四模式任务段（TaskListSection）用 .tls-item / .tls-group-head。
+    if ((e.target as HTMLElement)?.closest('.conv-item, .tree-space .tree-node-head, .tls-item, .tls-group-head')) return;
     const _p2 = clampMenuPos(e); treeMenu.visible = true; treeMenu.x = _p2.x; treeMenu.y = _p2.y;
   }
   function treeMenuNewTask() {
@@ -2954,6 +2969,9 @@ function createChat() {
 }
 
 let instance: ReturnType<typeof createChat> | null = null;
+
+/** 应用级一次性标记：自动恢复最近会话只在首次启动执行（切模式重挂载不覆盖） */
+let chatBootInitDone = false;
 
 export function useChat() {
   if (!instance) instance = createChat();

@@ -58,25 +58,27 @@ function readJson<T>(key: string, fallback: T): T {
   }
 }
 
-// ===== 代码模式记忆（纯 localStorage，供 router guard 使用，不依赖 pinia）=====
-// 语义：用户停留在代码模式时离开（去首页/浏览器等），再点「任务」应恢复代码工作台，
-// 而不是掉回普通聊天布局。只有显式点代码模式里的「返回任务」才清除。
-const CODE_MODE_KEY = 'yz:code:active';
+// ===== 代码模式记忆（薄封装 → stores/mode.ts，调用方 4 处不改行为）=====
+// 语义升级：原单点标记 yz:code:active 泛化为四模式 yz:mode（office|dev|ops|sec）。
+// 兼容层保留导出，避免一次性改 useChat.ts / router / ChatMessageList / ChatInputArea。
+import { isCodeModeActiveCompat, setCodeModeActiveCompat, activeMode } from './mode';
 
 export function isCodeModeActive(): boolean {
-  try { return localStorage.getItem(CODE_MODE_KEY) === '1'; } catch { return false; }
+  return isCodeModeActiveCompat();
 }
 
 export function setCodeModeActive(active: boolean): void {
-  try {
-    if (active) localStorage.setItem(CODE_MODE_KEY, '1');
-    else localStorage.removeItem(CODE_MODE_KEY);
-  } catch { /* 隐私模式等场景忽略 */ }
-  codeModeActiveRef.value = active;
+  setCodeModeActiveCompat(active);
 }
 
-/** 响应式代码模式标记（供组件 v-if 判断，进入/退出代码模式时即时更新） */
-const codeModeActiveRef = ref(isCodeModeActive());
+/**
+ * 响应式「是否处于开发模式」布尔标记（供组件 v-if / v-show 判断）。
+ *
+ * ⚠️ 必须是 boolean，不能直接转发 activeModeRef —— 后者是 Ref<AppMode>（'office'|'dev'|'ops'|'sec'，
+ * 非空字符串恒为真），会让 `!isCodeMode` 这类判断在办公模式下也得到 false，
+ * 导致 ChatMessageList 的欢迎区（含场景轮播）在办公模式彻底不渲染。
+ */
+const codeModeActiveRef = computed(() => activeMode.value === 'dev');
 
 export const useCodeStore = defineStore('code', () => {
   const settingsStore = useSettingsStore();

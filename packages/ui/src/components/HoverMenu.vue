@@ -4,30 +4,44 @@
       <template v-for="(item, idx) in items" :key="item.key ?? item.label ?? idx">
         <!-- 分隔线项 -->
         <div v-if="item.divider" class="hm-divider" />
-        <!-- 含子菜单：hover / 点击均展开二级 -->
+        <!-- 含子菜单：hover / 点击均展开二级（禁用项不展开） -->
         <div
           v-else-if="item.children?.length"
           class="hm-item"
-          :class="{ 'is-open': openKey === groupKey(item, idx) }"
+          :class="{ 'is-open': openKey === groupKey(item, idx), 'is-disabled': item.disabled }"
           :data-hm-key="groupKey(item, idx)"
+          :title="item.disabled ? item.disabledReason : undefined"
           @mouseenter="openItem(item, idx, $event)"
           @click="openItem(item, idx, $event)"
         >
           <span v-if="item.icon" class="hm-ic"><el-icon :size="15"><component :is="item.icon" /></el-icon></span>
           <div class="hm-info">
             <div class="hm-label">{{ item.label }}</div>
-            <div v-if="item.desc" class="hm-desc">{{ item.desc }}</div>
+            <div v-if="item.disabled ? item.disabledReason : item.desc" class="hm-desc">
+              {{ item.disabled ? item.disabledReason : item.desc }}
+            </div>
           </div>
-          <el-icon class="hm-arrow"><ArrowRight /></el-icon>
+          <el-icon v-if="item.disabled" class="hm-lock" title="不可用"><Lock /></el-icon>
+          <el-icon v-else class="hm-arrow"><ArrowRight /></el-icon>
         </div>
-        <!-- 叶子项 -->
-        <div v-else class="hm-item" @mouseenter="closeSubNow" @click="pick(item)">
+        <!-- 叶子项（禁用项不可点） -->
+        <div
+          v-else
+          class="hm-item"
+          :class="{ 'is-disabled': item.disabled }"
+          :title="item.disabled ? item.disabledReason : undefined"
+          @mouseenter="closeSubNow"
+          @click="pick(item)"
+        >
           <span v-if="item.icon" class="hm-ic"><el-icon :size="15"><component :is="item.icon" /></el-icon></span>
           <div class="hm-info">
             <div class="hm-label">{{ item.label }}</div>
-            <div v-if="item.desc" class="hm-desc">{{ item.desc }}</div>
+            <div v-if="item.disabled ? item.disabledReason : item.desc" class="hm-desc">
+              {{ item.disabled ? item.disabledReason : item.desc }}
+            </div>
           </div>
-          <el-icon v-if="item.check" class="hm-check"><Check /></el-icon>
+          <el-icon v-if="item.disabled" class="hm-lock" title="不可用"><Lock /></el-icon>
+          <el-icon v-else-if="item.check" class="hm-check"><Check /></el-icon>
         </div>
       </template>
     </div>
@@ -40,14 +54,19 @@
           v-for="child in activeItem.children"
           :key="child.key ?? child.label"
           class="hm-item"
+          :class="{ 'is-disabled': child.disabled }"
+          :title="child.disabled ? child.disabledReason : undefined"
           @click="pick(child)"
         >
           <span v-if="child.icon" class="hm-ic"><el-icon :size="15"><component :is="child.icon" /></el-icon></span>
           <div class="hm-info">
             <div class="hm-label">{{ child.label }}</div>
-            <div v-if="child.desc" class="hm-desc">{{ child.desc }}</div>
+            <div v-if="child.disabled ? child.disabledReason : child.desc" class="hm-desc">
+              {{ child.disabled ? child.disabledReason : child.desc }}
+            </div>
           </div>
-          <el-icon v-if="child.check" class="hm-check"><Check /></el-icon>
+          <el-icon v-if="child.disabled" class="hm-lock" title="不可用"><Lock /></el-icon>
+          <el-icon v-else-if="child.check" class="hm-check"><Check /></el-icon>
         </div>
       </div>
     </transition>
@@ -57,7 +76,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 import type { Component } from 'vue';
-import { ArrowRight, Check } from '@element-plus/icons-vue';
+import { ArrowRight, Check, Lock } from '@element-plus/icons-vue';
 
 export interface HoverMenuItem {
   /** 稳定 key（缺省用 label） */
@@ -74,6 +93,10 @@ export interface HoverMenuItem {
   children?: HoverMenuItem[];
   /** 叶子项选中态对勾 */
   check?: boolean;
+  /** 不可用：置灰 + 不可点 + 右侧锁图标（title/desc 显示 disabledReason） */
+  disabled?: boolean;
+  /** 不可用原因（替代 desc 展示） */
+  disabledReason?: string;
 }
 
 const props = defineProps<{
@@ -104,7 +127,7 @@ function groupKey(item: HoverMenuItem, idx: number): string {
 
 /** hover / 点击一级分组项：展开其二级面板（面板 top 对齐被 hover 项） */
 function openItem(item: HoverMenuItem, idx: number, ev: MouseEvent) {
-  if (!item.children?.length) return;
+  if (!item.children?.length || item.disabled) return; // 禁用项不展开二级
   cancelClose();
   const key = groupKey(item, idx);
   if (openKey.value === key) return;
@@ -136,6 +159,7 @@ function cancelClose() {
 }
 
 function pick(item: HoverMenuItem) {
+  if (item.disabled) return; // 禁用项不触发选中
   closeSubNow();
   emit('select', item);
 }
@@ -167,6 +191,15 @@ defineExpose({ closeSubNow });
 
 .hm-item:hover {
   background: var(--glass-bg-hover);
+}
+
+/* 禁用项：置灰、不可点、不响应悬浮 */
+.hm-item.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+.hm-item.is-disabled:hover {
+  background: transparent;
 }
 
 .hm-item.is-open {
@@ -203,12 +236,20 @@ defineExpose({ closeSubNow });
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 170px;
+  /* 宽度跟随 .hm-info（flex:1 + min-width:0）由容器决定，没有硬上限。
+     历史坑：曾写死 max-width:170px → 模式下拉的描述（「写代码 · 改 Bug · 读项目」）
+     在 196px 容器里被截成「写代码 · 改 Bug · 读…」，看起来像文案没写完。 */
 }
 
 .hm-arrow {
   font-size: 12px;
   color: var(--color-text-secondary);
+  flex-shrink: 0;
+}
+
+.hm-lock {
+  font-size: 12px;
+  color: var(--color-text-tertiary);
   flex-shrink: 0;
 }
 
@@ -257,5 +298,22 @@ defineExpose({ closeSubNow });
 .hm-sub-fade-leave-to {
   opacity: 0;
   transform: translateX(-4px);
+}
+</style>
+
+<style>
+/* ============================================================
+   HoverMenu 浮层皮肤（非 scoped：popper 由 el-popover Teleport 到 body）
+   ★ 统一入口：顶栏两个 hover 菜单（「更多」= more-menu-popper、
+   「模式」= mode-switcher-popper）都加 yz-menu-popper 类，外观在这一处定义，
+   组件不再各自写一套（历史问题：两边各写一套 → 图标/圆角/底色漂移，
+   用户一眼看出「不是统一的」）。
+   ============================================================ */
+.yz-menu-popper {
+  border-radius: 12px !important;
+  border: 1px solid var(--glass-border) !important;
+  box-shadow: var(--shadow-lg) !important;
+  padding: 4px !important;
+  background: var(--el-bg-color-overlay, var(--glass-bg));
 }
 </style>

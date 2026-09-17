@@ -2,6 +2,23 @@
   <div class="cea">
     <!-- ===== 文件标签栏（无滚动条；滚轮/Shift+滚轮横向滚动；两侧悬浮箭头） ===== -->
     <div class="cea-tabs">
+      <!-- 标签右键菜单（IDEA 风格） -->
+      <Teleport to="body">
+        <div
+          v-if="tabMenu.open"
+          class="cea-tab-menu"
+          :style="{ left: tabMenu.x + 'px', top: tabMenu.y + 'px' }"
+          @click.stop
+        >
+          <button class="cea-tab-mi" type="button" @click="closeFromMenu">关闭</button>
+          <button class="cea-tab-mi" type="button" @click="closeOthers">关闭其他</button>
+          <button class="cea-tab-mi" type="button" @click="closeToRight">关闭右侧</button>
+          <button class="cea-tab-mi" type="button" @click="closeAllTabs">关闭全部</button>
+          <div class="cea-tab-mdiv"></div>
+          <button class="cea-tab-mi" type="button" @click="copyTabPath">复制路径</button>
+          <button class="cea-tab-mi" type="button" @click="revealTabInFolder">在文件管理器中打开</button>
+        </div>
+      </Teleport>
       <button v-show="canScrollLeft" class="cea-tab-nav" title="向左滚动" @click="scrollTabs(-1)">
         <el-icon :size="12"><ArrowLeft /></el-icon>
       </button>
@@ -490,12 +507,85 @@ function close(path: string) {
   code.closeFile(path);
 }
 
-function onTabMenu(_e: MouseEvent, path: string) {
-  const f = code.openFiles.find((x) => x.path === path);
-  if (!f) return;
-  void ElMessageBox.confirm(`关闭「${f.name}」？`, '关闭标签', {
-    confirmButtonText: '关闭', cancelButtonText: '取消',
-  }).then(() => code.closeFile(path)).catch(() => { /* 取消 */ });
+/**
+ * 标签右键菜单：IDEA 风格全套（关闭 / 关闭其他 / 关闭右侧 / 关闭全部 / 复制路径 / 在文件管理器打开）
+ */
+const tabMenu = ref<{ open: boolean; x: number; y: number; path: string }>({ open: false, x: 0, y: 0, path: '' });
+
+function onTabMenu(e: MouseEvent, path: string) {
+  tabMenu.value = { open: true, x: e.clientX, y: e.clientY, path };
+}
+function closeTabMenu() {
+  if (tabMenu.value.open) tabMenu.value.open = false;
+}
+watch(() => tabMenu.value.open, (open) => {
+  if (open) document.addEventListener('click', closeTabMenu, { once: true });
+});
+
+async function closeFromMenu() {
+  const p = tabMenu.value.path;
+  closeTabMenu();
+  close(p);
+}
+
+async function closeOthers() {
+  const p = tabMenu.value.path;
+  closeTabMenu();
+  const dirtyOthers = code.openFiles.filter((f) => f.path !== p && f.content !== f.original);
+  if (dirtyOthers.length) {
+    try {
+      await ElMessageBox.confirm(`有 ${dirtyOthers.length} 个文件未保存，确定关闭其他标签吗？`, '未保存', {
+        confirmButtonText: '关闭不保存', cancelButtonText: '取消', type: 'warning',
+      });
+    } catch { return; }
+  }
+  code.closeOthers(p);
+}
+
+async function closeToRight() {
+  const p = tabMenu.value.path;
+  closeTabMenu();
+  const idx = code.openFiles.findIndex((f) => f.path === p);
+  if (idx < 0) return;
+  const right = code.openFiles.slice(idx + 1);
+  const dirty = right.filter((f) => f.content !== f.original);
+  if (dirty.length) {
+    try {
+      await ElMessageBox.confirm(`右侧有 ${dirty.length} 个文件未保存，确定关闭吗？`, '未保存', {
+        confirmButtonText: '关闭不保存', cancelButtonText: '取消', type: 'warning',
+      });
+    } catch { return; }
+  }
+  for (const f of right) code.closeFile(f.path);
+}
+
+async function closeAllTabs() {
+  closeTabMenu();
+  const dirty = code.openFiles.filter((f) => f.content !== f.original);
+  if (dirty.length) {
+    try {
+      await ElMessageBox.confirm(`有 ${dirty.length} 个文件未保存，确定关闭全部吗？`, '未保存', {
+        confirmButtonText: '关闭不保存', cancelButtonText: '取消', type: 'warning',
+      });
+    } catch { return; }
+  }
+  code.closeAll();
+}
+
+function copyTabPath() {
+  const p = tabMenu.value.path;
+  closeTabMenu();
+  void navigator.clipboard?.writeText(p).then(
+    () => ElMessage.success('已复制路径'),
+    () => ElMessage.warning('复制失败'),
+  );
+}
+
+function revealTabInFolder() {
+  const p = tabMenu.value.path;
+  closeTabMenu();
+  const api = (window as any).electronAPI;
+  if (api?.revealPath) void api.revealPath(p);
 }
 
 async function saveActive() {
@@ -638,6 +728,36 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
+/* ===== 标签右键菜单（IDEA 风格）===== */
+.cea-tab-menu {
+  position: fixed;
+  z-index: 9999;
+  min-width: 172px;
+  padding: 4px;
+  border-radius: 8px;
+  border: 1px solid var(--glass-border, #e7e4dc);
+  background: var(--glass-bg, #fff);
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.14);
+  backdrop-filter: var(--glass-filter);
+  -webkit-backdrop-filter: var(--glass-filter);
+}
+.cea-tab-mi {
+  display: block;
+  width: 100%;
+  padding: 6px 10px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  text-align: left;
+  font-size: 12.5px;
+  font-family: inherit;
+  color: var(--color-text, #1f2430);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.cea-tab-mi:hover { background: var(--glass-bg-hover, #f1efe9); color: var(--color-primary, #4f46e5); }
+.cea-tab-mdiv { height: 1px; margin: 4px 6px; background: var(--glass-border, #e7e4dc); }
+
 .cea {
   flex: 1;
   min-width: 0;

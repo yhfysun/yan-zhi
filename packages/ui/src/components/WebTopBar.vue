@@ -20,7 +20,21 @@
       <!-- 横排主导航：核心 4 页 + 更多下拉（其它功能入口 + 设置，统一收进弹层） -->
       <nav class="title-nav">
         <router-link
-          v-for="m in navMenus"
+          v-for="m in navMenus.slice(0, 1)"
+          :key="m.path"
+          :to="m.path"
+          class="title-nav-item"
+          :class="{ active: isActive(m.path) }"
+        >
+          <el-icon :size="15"><component :is="m.icon" /></el-icon>
+          <span>{{ m.label }}</span>
+        </router-link>
+
+        <!-- 模式切换（四模式工作台）：首页之后、其余导航之前，hover 展开 -->
+        <ModeSwitcher v-model="modeSwitcherOpen" />
+
+        <router-link
+          v-for="m in navMenus.slice(1)"
           :key="m.path"
           :to="m.path"
           class="title-nav-item"
@@ -30,14 +44,21 @@
           <span>{{ m.label }}</span>
         </router-link>
         <!-- 更多：用 el-popover 而非 el-dropdown —— dropdown 会把内容包进 el-scrollbar（overflow 裁剪），
-             二级 hover 面板向右飞出会被裁掉并撑出横向滚动条；popover 内容无滚动包裹，飞出面板正常渲染 -->
+             二级 hover 面板向右飞出会被裁掉并撑出横向滚动条；popover 内容无滚动包裹，飞出面板正常渲染
+             ★ 2026-09-17：trigger=click → hover（与左侧「办公」模式下拉同一交互口径，用户拍板
+             「不用点击才显示」）。show/hide-after 120ms 与 ModeSwitcher 一致：
+             鼠标只是划过顶栏去点右侧「刷新」时不会闪出大菜单；穿过按钮→浮层的间隙也不会误关
+             （el-popover 的 enterable 默认 true，进入浮层即保持展开）。 -->
         <el-popover
           v-model:visible="moreOpen"
-          trigger="click"
+          :disabled="moreSuppressed"
+          trigger="hover"
+          :show-after="120"
+          :hide-after="120"
           placement="bottom-start"
           :show-arrow="false"
           :width="'auto'"
-          popper-class="more-menu-popper"
+          popper-class="yz-menu-popper more-menu-popper"
         >
           <template #reference>
             <button class="title-nav-item" :class="{ active: moreActive || moreOpen }" type="button">
@@ -119,6 +140,7 @@ import { resolvePluginIcon } from '@yan-zhi/ui/plugin-icons';
 import HoverMenu from './HoverMenu.vue';
 import type { HoverMenuItem } from './HoverMenu.vue';
 import { titleBarOverlayOpen } from '../composables/useTitleBarOverlay';
+import ModeSwitcher from './workbench/ModeSwitcher.vue';
 
 // Electron 渲染进程通过 contextBridge 注入的 API（web 端为 undefined，全部走可选链）
 const api = (window as any).electronAPI;
@@ -130,7 +152,6 @@ const router = useRouter();
 // 横排主导航：核心 4 页
 const navMenus = [
   { path: '/home', label: '首页', icon: HomeFilled },
-  { path: '/chat', label: '任务', icon: ChatDotRound },
   { path: '/browser', label: '浏览器', icon: Monitor },
   { path: '/chat-hub', label: '消息', icon: Promotion },
 ];
@@ -238,21 +259,36 @@ const moreActive = computed(
     pluginMenus.value.some((m) => m.path !== undefined && isActive(m.path)),
 );
 
-const moreOpen = ref(false);
+const moreOpen = ref(false)
+const modeSwitcherOpen = ref(false);
 // 用户头像下拉展开状态：与"更多"弹层一样落在内容区上方，需一并避让 BrowserView
 const avatarMenuOpen = ref(false);
 // 浮层任一展开 → 通知 BrowserPanel 临时隐藏原生 BrowserView（关闭后自动恢复）
-watch([moreOpen, avatarMenuOpen], ([m, a]) => { titleBarOverlayOpen.value = m || a; });
+watch([moreOpen, avatarMenuOpen, modeSwitcherOpen], ([m, a, s]) => { titleBarOverlayOpen.value = m || a || s; });
+
+/**
+ * 「更多」点选后短暂屏蔽 hover：trigger=hover 时，点了菜单项 → 路由跳转触发重渲染，
+ * 而鼠标此刻仍在浮层区域 → el-popover 立刻又判定「hover 中」把浮层重开
+ * （实测：点「记忆管理」跳 /memory 后浮层依旧可见）。屏蔽 300ms 让鼠标有时间移开。
+ */
+const moreSuppressed = ref(false);
+let moreSuppressTimer: ReturnType<typeof setTimeout> | null = null;
+function suppressMore() {
+  moreSuppressed.value = true;
+  moreOpen.value = false;
+  if (moreSuppressTimer) clearTimeout(moreSuppressTimer);
+  moreSuppressTimer = setTimeout(() => { moreSuppressed.value = false; moreSuppressTimer = null; }, 300);
+}
 
 function onMoreSelect(item: HoverMenuItem) {
-  moreOpen.value = false;
+  suppressMore();
   if (item.path) router.push(item.path);
 }
 
 // 刷新界面：桌面端交主进程做硬刷新（丢弃渲染进程缓存），Web 端退回浏览器重载。
 // 用于界面卡住 / 白屏时的一键自救；只重载前端，不重启后端进程。
 function onReload() {
-  moreOpen.value = false;
+  suppressMore();
   try {
     if (typeof api?.reload === 'function') { api.reload(); return; }
   } catch { /* 主进程不可达 → 退回页面重载 */ }
@@ -318,6 +354,7 @@ onUnmounted(() => {
     window.removeEventListener('resize', resizeHandler);
     resizeHandler = null;
   }
+  if (moreSuppressTimer) { clearTimeout(moreSuppressTimer); moreSuppressTimer = null; }
 });
 </script>
 
@@ -529,12 +566,6 @@ onUnmounted(() => {
 </style>
 
 <style>
-/* 「更多」菜单 popper（teleport 到 body，需全局作用域；不依赖 chat.css 的 plus-menu-popper） */
-.more-menu-popper {
-  border-radius: 12px !important;
-  border: 1px solid var(--glass-border) !important;
-  box-shadow: var(--shadow-lg) !important;
-  padding: 4px !important;
-  background: var(--el-bg-color-overlay, var(--glass-bg));
-}
+/* 「更多」菜单 popper：外观统一由 HoverMenu.vue 的 .yz-menu-popper 基座提供
+   （此前这里另写一份 → 与模式下拉漂移；保留 .more-menu-popper 仅作定位/调试锚点） */
 </style>
