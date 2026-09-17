@@ -8,11 +8,11 @@
 
 ### Requirement: Lead toggle is a floating capsule, not a toolbar row
 
-The lead toggle (`智能体` / `手动`, worded `AI 模式` / `命令模式` in 运维 and 安全) SHALL render as a floating capsule anchored to the bottom-right of the mode's working area, and SHALL NOT occupy a layout row or be placed inside the mode top bar.
+The lead toggle (worded `AI 模式` / `编辑模式` in 开发, `AI 模式` / `命令模式` in 运维 and 安全) SHALL render as a floating capsule anchored to the bottom-right of the mode's working area, and SHALL NOT occupy a layout row or be placed inside the mode top bar. 办公 mode SHALL NOT render a lead toggle.
 
 #### Scenario: Capsule does not consume layout space
 
-- **WHEN** any mode renders
+- **WHEN** 开发, 运维, or 安全 mode renders
 - **THEN** the lead toggle floats above the working area (bottom-right), consumes no layout row, and the mode top bar contains no lead toggle
 
 #### Scenario: Capsule does not block content interaction
@@ -22,22 +22,8 @@ The lead toggle (`智能体` / `手动`, worded `AI 模式` / `命令模式` in 
 
 #### Scenario: Short labels
 
-- **WHEN** the toggle renders in 办公 or 开发 mode
-- **THEN** the two options read 智能体 and 手动 respectively
-
-### Requirement: Office mode's two forms are visually distinct
-
-办公 mode's two forms SHALL differ visibly, not merely by an optional panel: the 智能体 form gives the conversation the full width with no side panels and an enlarged welcome area, while the 手动 form narrows the conversation and shows a context panel and a preview panel side by side.
-
-#### Scenario: 智能体 form is full width
-
-- **WHEN** 办公 mode is in the 智能体 form
-- **THEN** the conversation occupies the full width, no context/preview side panels are shown, and the welcome area is rendered larger
-
-#### Scenario: 手动 form shows context and preview
-
-- **WHEN** 办公 mode is in the 手动 form
-- **THEN** the conversation column is narrowed and both a context panel and a preview panel are shown side by side
+- **WHEN** the capsule renders in 运维 or 安全 mode
+- **THEN** the two options read AI 模式 and 命令模式 respectively; in 开发 mode they read AI 模式 and 编辑模式
 
 ### Requirement: Task list is available in every mode
 
@@ -225,38 +211,143 @@ When the viewport narrows, sidebars and toolbars SHALL degrade by hiding text an
 - **WHEN** a step requires confirmation
 - **THEN** the bottom command line lets the user confirm or continue in natural language
 
-### Requirement: Every mode has an AI-led and a human-led form
+### Requirement: Dev mode task cards reuse the office card implementation
 
-Each of the four modes SHALL provide two forms selected by a lead toggle (`[AI 主导 | 人工主导]`) placed in the mode top bar next to the read-only mode badge. The lead determines where the conversation sits: AI-led places the conversation in the center as the primary surface, human-led keeps the working surface in the center with the conversation in the right column. The lead choice SHALL be persisted per mode.
+代码 mode's task template cards SHALL reuse the same card styles and interactions as 办公 mode's scene cards (`ChatWelcome.vue` `.cw-card` family), differing only in data source.
+
+#### Scenario: Cards look and behave like office cards
+
+- **WHEN** the user views task templates in 开发 mode's AI form
+- **THEN** they render with the same card styles, selection highlight, hover behaviour, and expand-on-select interaction as 办公 mode's scene cards
+
+#### Scenario: Only the data differs
+
+- **WHEN** the card grid renders in 开发 mode
+- **THEN** it is driven by the dev template list instead of the office scene list, with the same component/CSS, so the two never drift apart
+
+### Requirement: Dev mode activity bar is kept only in the editing form
+
+The vertical activity bar in 开发 mode (resource explorer, file search, source control, run & debug, console, plugins, dev environment — `CodeSidebar.vue` `.csb-bar`) SHALL be shown only in the editing form and hidden in the AI form.
+
+#### Scenario: Activity bar visible in editing form
+
+- **WHEN** 开发 mode is in its editing form
+- **THEN** the vertical activity bar and its panels are present at the far left, as today
+
+#### Scenario: Activity bar hidden in AI form
+
+- **WHEN** 开发 mode is in its AI form
+- **THEN** the activity bar and its panels are hidden, leaving the left column as the task list only, with the task conversation in the center and the editor on the right
+
+### Requirement: Ops SFTP panes support mutual drag-and-drop transfer
+
+运维 mode's file management panes SHALL support dragging files and folders between the local and remote panes in both directions, with the drag direction determining the operation (local→remote = upload, remote→local = download).
+
+#### Scenario: Drag direction decides operation
+
+- **WHEN** the user drags an item from the local pane onto the remote pane
+- **THEN** it uploads, and dragging from the remote pane onto the local pane downloads
+
+#### Scenario: Direction hint on hover
+
+- **WHEN** a dragged item hovers over the opposite pane
+- **THEN** that pane highlights and shows a direction hint such as 「↑ 上传到 /app/order-service」 or 「↓ 下载到 ~/work/...」
+
+#### Scenario: Same-pane drag is inert
+
+- **WHEN** the user drags an item within the same pane
+- **THEN** nothing happens, since cross-directory moves require an explicit menu action
+
+#### Scenario: Folders transfer recursively
+
+- **WHEN** the user drags a folder
+- **THEN** the whole directory tree is uploaded or downloaded recursively with per-file progress
+
+#### Scenario: Name conflicts require confirmation
+
+- **WHEN** the target already contains a file with the same name
+- **THEN** the user is asked to overwrite, skip, or rename, and production connections additionally go through the existing confirmation gate
+
+#### Scenario: Path traversal is rejected
+
+- **WHEN** a recursive download would resolve outside the pane's displayed root
+- **THEN** the transfer is rejected
+
+### Requirement: Office mode keeps its file management and preview entries
+
+The 办公 mode top bar SHALL keep both the file management entry (`ChatFilePanel`) and the right-panel view entry (the dropdown offering browser preview / Git files / console / collapse), which SHALL remain reachable when the layout is reworked.
+
+#### Scenario: Both entries remain available
+
+- **WHEN** the user is in 办公 mode
+- **THEN** the file management entry and the right-panel view dropdown are both present and usable in the mode top bar
+
+#### Scenario: Entries survive narrow width
+
+- **WHEN** the viewport narrows
+- **THEN** these entries degrade to icon-only buttons but are not removed
+
+### Requirement: Default palette is refreshed and a lightweight built-in skin ships
+
+The default palette in `tokens.css` SHALL be refreshed away from the current 朱砂 orange-red toward a neutral, modern scheme, and a lightweight built-in skin SHALL be provided that uses small tile patterns only, without any full-size wallpaper.
+
+#### Scenario: Neutral modern default palette
+
+- **WHEN** no theme or skin is selected
+- **THEN** the app renders with the refreshed neutral palette (cool neutral surfaces and an indigo-family primary) rather than the current warm 朱砂 orange-red
+
+#### Scenario: Lightweight skin has no wallpaper
+
+- **WHEN** the lightweight built-in skin is selected
+- **THEN** no wallpaper image is used; only small seamless tile patterns (task list / input / button / dialog) are applied
+
+#### Scenario: Existing skins are unaffected
+
+- **WHEN** any of the existing 27 skins is selected
+- **THEN** its own palette overrides the defaults at runtime, with no interaction from the palette change
+
+#### Scenario: Default font stays on the option list
+
+- **WHEN** the display font default is reconsidered
+- **THEN** the serif display font becomes an option that cultural skins may keep, rather than an unconditional default
+
+### Requirement: Dev, ops and security modes have two forms selected by a floating capsule
+
+开发 / 运维 / 安全 modes SHALL each provide two forms selected by a lead toggle rendered as a floating capsule anchored to the bottom-right of the mode's working area (`LeadToggle.vue`), NOT a control in the mode top bar (办公 mode has no lead toggle). The lead determines where the conversation sits: AI-led places the conversation in the center as the primary surface, human-led keeps the working surface in the center with the conversation in the right column (开发) or embedded inline with the console (运维/安全). Capsule wording: 开发 `[AI 模式 | 编辑模式]`, 运维/安全 `[AI 模式 | 命令模式]`. The lead choice SHALL be persisted per mode with defaults `{ dev: 'human', ops: 'human', sec: 'human' }` (开发默认编辑器居中即现状，运维/安全默认命令模式).
+
+#### Scenario: Capsule wording per mode
+
+- **WHEN** the floating capsule renders in 开发 mode
+- **THEN** its two options read AI 模式 and 编辑模式, and in 运维 or 安全 mode they read AI 模式 and 命令模式
 
 #### Scenario: Developer mode mirrors layout by lead
 
-- **WHEN** the user is in 开发 mode with the lead set to 人工主导
+- **WHEN** the user is in 开发 mode with the lead set to 编辑模式 (human)
 - **THEN** the editor occupies the center and the conversation is in the right column (the current `CodeWorkbench` layout)
 
 #### Scenario: Developer mode with AI lead
 
-- **WHEN** the user switches 开发 mode to AI 主导
+- **WHEN** the user switches 开发 mode to AI 模式
 - **THEN** the conversation occupies the center and the editor becomes a collapsible region that auto-expands when the user opens a file
 
 #### Scenario: Lead is remembered per mode
 
-- **WHEN** the user sets 开发 to 人工主导 and 运维 to AI 主导, then restarts the app
-- **THEN** each mode restores its own lead setting
+- **WHEN** the user sets 开发 to 编辑模式 and 运维 to AI 模式, then restarts the app
+- **THEN** each mode restores its own lead setting with the defaults `{ dev: 'human', ops: 'human', sec: 'human' }`
 
 #### Scenario: Switching lead does not reload state
 
 - **WHEN** the user toggles the lead in a mode with an open terminal session, open editor tabs, and an ongoing conversation
-- **THEN** the terminal stays connected, the editor tabs stay open, and the conversation history is unchanged (only the layout changes)
+- **THEN** the terminal stays connected, the editor tabs stay open, and the conversation history is unchanged (only the layout changes, all surfaces kept alive with `v-show`)
 
 ### Requirement: Ops and security modes embed the conversation inline with the console
 
-The 运维 and 安全 modes SHALL provide the conversation embedded in the same region as the console rather than only in a right column. Both modes SHALL expose an explicit 「命令模式 / AI 模式」 switch in the mode top bar.
+The 运维 and 安全 modes SHALL provide the conversation embedded in the same region as the console rather than only in a right column. Both modes SHALL expose an explicit 「命令模式 / AI 模式」 switch via the floating lead capsule (bottom-right), replacing the hidden floating corner button (`ops-view-fab`).
 
 #### Scenario: Ops console view switch is explicit
 
 - **WHEN** the user opens a connection window in 运维 mode
-- **THEN** an explicit 命令模式 / AI 模式 switch is shown in the top bar (not only the small floating corner button), and switching preserves the window's conversation and SSH session
+- **THEN** an explicit 命令模式 / AI 模式 switch is available via the floating capsule (replacing the small floating corner button), and switching preserves the window's conversation and SSH session
 
 #### Scenario: Ops command mode with collapsible chat strip
 
@@ -473,20 +564,20 @@ The system SHALL render the 办公 mode welcome area as a manually draggable 3D 
 
 The system SHALL provide a shared workbench shell (`WorkbenchShell.vue`) with a mode top bar slot, a collapsible resizable left aside slot, a center main slot, and a collapsible resizable right 任务 slot that hosts the shared chat components. The 开发, 运维, and 安全 modes SHALL all render through this shell.
 
-#### Scenario: Right 任务 panel present in every non-office mode
+#### Scenario: Conversation panel placement follows the lead
 
 - **WHEN** the user is in 开发, 运维, or 安全 mode
-- **THEN** a right 任务 panel renders with the shared message list and input area, and it can be collapsed and resized
+- **THEN** the shared message list and input area render at the placement given by `chatPlacementOf(mode, lead)`: right column in 开发's 编辑模式, center in AI 模式, and inline with the console (collapsible strip) in 运维/安全's 命令模式, and the panel can be collapsed and resized
 
 #### Scenario: 运维 mode layout
 
 - **WHEN** the user is in 运维 mode
-- **THEN** the left aside shows the resource tree (servers / Docker / databases), the center shows the terminal / SFTP / database workspace, and the right panel shows the 任务 conversation
+- **THEN** the left aside shows the resource tree (servers / Docker / databases, plus the release projects in AI form), the center shows the terminal / conversation workspace, and the right pane shows file management (identical in both forms)
 
 #### Scenario: 安全 mode layout
 
 - **WHEN** the user is in 安全 mode
-- **THEN** the left aside shows authorization scopes and assets, the center keeps the compliance ribbon above the recon / scan / audit workspace, and the right panel shows the 任务 conversation
+- **THEN** the left aside shows authorization scopes and assets, the center keeps the compliance ribbon above the recon / scan / audit workspace (or the conversation in AI form), and the right pane shows findings & output
 
 #### Scenario: Business logic preserved
 

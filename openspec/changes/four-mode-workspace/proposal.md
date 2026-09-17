@@ -86,13 +86,13 @@
 
 | 模式 | AI 主导 | 人工主导 | 复用情况 |
 |---|---|---|---|
-| 办公 | 对话居中（现状） | 对话居中 + 右侧面板展开（现状） | 零结构改动，只加切换控件 |
+| 办公 | —（单一形态，不提供切换） | — | 零结构改动 |
 | 开发 | 对话居中 + 编辑器可开合 | 编辑器居中 + 右栏对话（**现状即此**） | AI 主导为新增，人工主导零改动 |
 | 运维 | 对话居中 + 终端可开合（**已有 `chat` 视图**） | 终端居中 + 底部**对话折叠条**（**已有 `term` 视图**） | **已有视图体系，只改入口显隐 + 加融合条** |
 | 安全 | 对话居中 + 扫描输出可开合（新增） | 扫描控制台居中 + 底部对话折叠条（新增） | 控制台零改动，新增 chat 视图 |
 
-- 切换控件 = 模式顶栏的分段控件 `[AI 主导 | 人工主导]`（运维/安全措辞为 `[AI 模式 | 命令模式]`），与只读模式徽标相邻，不新增独立按钮。
-- 持久化 `yz:mode:lead`（**按模式分别记忆**）；默认 `{ office:'ai', dev:'human', ops:'ai', sec:'ai' }`（开发默认编辑器居中 = 现状）。
+- 切换控件 = **右下角悬浮胶囊**（`LeadToggle.vue`，不占布局行；开发 `[AI 模式 | 编辑模式]`、运维/安全 `[AI 模式 | 命令模式]`）；**办公模式不提供形态切换、不显示胶囊**。
+- 持久化 `yz:mode:lead`（**按模式分别记忆**）；默认 `{ dev:'human', ops:'human', sec:'human' }`（开发默认编辑器居中 = 现状，运维/安全默认命令模式；办公无 lead）。
 - **切形态不换会话、不重开文件、不重连终端** —— 只改排布（`v-show` 保活，见 design.md 决策 3.7）。
 - 抽取 `components/workbench/WorkbenchShell.vue`，`chatPlacement` 参数化（`center`/`right`/`inline`），四模式共用 `ChatMessageList` + `ChatInputArea` + `useChat`。
 
@@ -180,7 +180,7 @@
 
 **新增**
 - `packages/ui/src/components/workbench/WorkbenchShell.vue` — 四模式共用外壳，`chatPlacement: 'center'|'right'|'inline'` 参数化对话位置
-- `packages/ui/src/components/workbench/LeadToggle.vue` — 主导方分段控件 `[AI 主导 | 人工主导]`
+- `packages/ui/src/components/workbench/LeadToggle.vue` — 主导方切换悬浮胶囊（右下角，不占布局行；办公不渲染）
 - `packages/ui/src/components/chat/SceneCarousel.vue` — 3D 循环轮播
 - `packages/ui/src/components/chat/AgentPicker.vue` — 智能体下拉（分组 + 搜索 + 折叠），从 `ChatInputArea.vue:11-45` 抽出
 - `packages/ui/src/stores/mode.ts` — 模式 + 主导方状态与持久化（取代 `stores/code.ts` 的 `isCodeModeActive`）
