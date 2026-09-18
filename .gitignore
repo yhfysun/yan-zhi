@@ -172,3 +172,7 @@ apps/server/tts-models/
 
 # TTS 试听与合成产物（运行时生成，不入库）
 apps/server/generated-audios/
+
+# 媒体/字幕/图片产物（运行时生成，不入库；与 generated-audios 同一性质）
+apps/server/generated-images/
+apps/server/generated-files/
