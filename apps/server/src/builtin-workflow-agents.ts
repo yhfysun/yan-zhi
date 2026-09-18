@@ -6,6 +6,7 @@
 //        → memory_write(归档) → memory_read(回查历史) → condition(true: sub_agent → llm 成稿 / false: code 兜底)
 //        → output(调研报告)
 import type Database from 'better-sqlite3';
+import { normalizeModelId } from './services/model-resolve.js';
 
 export const WF_MAIN_ID = 'a_wf_smoke_all_nodes';
 export const WF_SUB_ID = 'a_wf_smoke_editor';
@@ -399,8 +400,11 @@ export function seedBuiltinWorkflowAgents(db: Database.Database): { seeded: stri
  */
 export function ensureBuiltinWorkflowModel(db: Database.Database): { filled: boolean } {
   let anyFilled = false;
-  // 优先 agnes 平台 + flash；退而求其次任何平台的 flash；再退任意平台首个模型
-  const pick = (sql: string) => db.prepare(sql).get() as { platform_id: string; model_id: string } | undefined;
+  // 优先 agnes 平台 + flash；退而求其次任何平台的 flash；再退任意平台首个模型。
+  // **必须取 id（主键）**：运行时按主键解析模型，写 model_id（裸名）会直接报
+  // 「模型不存在」——这正是短剧流水线曾经跑不起来的原因（裸名 agnes-3.0-flash
+  // 对不上主键 agens-guest-agnes-3.0-flash）。model_id 只作展示与 API 传参。
+  const pick = (sql: string) => db.prepare(sql).get() as { id: string; platform_id: string; model_id: string } | undefined;
   for (const agentId of [WF_MAIN_ID, WF_DRAMA_ID]) {
     try {
       const row = db.prepare('SELECT workflow_json FROM agent WHERE id = ?').get(agentId) as { workflow_json: string } | undefined;
@@ -408,23 +412,42 @@ export function ensureBuiltinWorkflowModel(db: Database.Database): { filled: boo
       const wf = JSON.parse(row.workflow_json);
       const llms = (wf.nodes || []).filter((n: { type: string }) => n.type === 'llm');
       if (!llms.length) continue;
-      // 每个 llm 节点独立判断：节点自带模型且库中存在则跳过该节点
+      // 每个 llm 节点独立判断：节点自带模型且**能解析到**（主键或存量 API 名）才跳过。
+      // 存量裸名也算「有模型」，交由下面的规范化改写，否则会误判为「缺模型」
+      // 并整批覆盖用户已选的模型。
       const need = llms.filter((llm: any) => {
         if (!llm.config) return false;
-        if (!llm.config.modelId) return true;
-        const hasModel = db.prepare('SELECT id FROM model WHERE platform_id = ? AND model_id = ?').get(llm.config.platformId, llm.config.modelId);
-        return !hasModel;
+        const cur = llm.config.modelId;
+        if (!cur) return true;
+        return !normalizeModelId(db, cur, llm.config.platformId);
       });
-      if (!need.length) continue;
-      const m =
-        pick("SELECT platform_id, model_id FROM model WHERE (platform_id LIKE 'agens-%' OR platform_id LIKE 'agnes-%') AND model_id LIKE '%flash%' ORDER BY (model_id = 'agnes-3.0-flash') DESC LIMIT 1") ||
-        pick("SELECT platform_id, model_id FROM model WHERE model_id LIKE '%flash%' LIMIT 1") ||
-        pick('SELECT platform_id, model_id FROM model LIMIT 1');
-      if (!m) continue;
-      for (const llm of need) {
-        llm.config.platformId = m.platform_id;
-        llm.config.modelId = m.model_id;
+      // 规范化：即便不需要回填，也要把存量裸名改写成主键（幂等，仅在有变化时才写库）。
+      // 写库必须写主键 —— 运行时按主键解析，继续存 API 名会让脏数据长期被依赖。
+      let normalized = false;
+      for (const llm of llms) {
+        const cur = llm.config?.modelId;
+        if (!cur) continue;
+        const pk = normalizeModelId(db, cur, llm.config.platformId);
+        if (pk && pk !== cur) {
+          llm.config.modelId = pk;
+          normalized = true;
+        }
       }
+
+      if (need.length) {
+        const m =
+          pick("SELECT id, platform_id, model_id FROM model WHERE (platform_id LIKE 'agens-%' OR platform_id LIKE 'agnes-%') AND model_id LIKE '%flash%' ORDER BY (model_id = 'agnes-3.0-flash') DESC LIMIT 1") ||
+          pick("SELECT id, platform_id, model_id FROM model WHERE model_id LIKE '%flash%' LIMIT 1") ||
+          pick('SELECT id, platform_id, model_id FROM model LIMIT 1');
+        if (!m) continue;
+        for (const llm of need) {
+          llm.config.platformId = m.platform_id;
+          llm.config.modelId = m.id; // 主键，非 model_id
+        }
+      } else if (!normalized) {
+        continue; // 既不需要回填也没有需要规范化的值
+      }
+
       db.prepare('UPDATE agent SET workflow_json = ?, updated_at = ? WHERE id = ?').run(JSON.stringify(wf), Date.now(), agentId);
       anyFilled = true;
     } catch (e) {
