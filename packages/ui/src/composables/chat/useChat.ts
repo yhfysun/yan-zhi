@@ -20,6 +20,7 @@ import {
 } from '../../stores';
 import { useGitStore } from '../../stores/git';
 import { isCodeModeActive, useCodeStore } from '../../stores/code';
+import { activeMode } from '../../stores/mode';
 import { useIsMobile } from '../useIsMobile';
 import { usePlatform } from '../usePlatform';
 import { useRouter } from 'vue-router';
@@ -1684,6 +1685,10 @@ function createChat() {
     if (isCodeModeActive()) {
       setScene('code');
       if (spaceId === undefined) spaceId = useCodeStore().projectSpaceId;
+    } else if (activeMode.value === 'wf') {
+      // 工作流模式的新会话要带上工作流场景人格（参数补全 / 节点排障视角），
+      // 否则场景定义了却从不激活 —— 与开发模式挂 code 场景同一套机制。
+      setScene('wf');
     }
     if (spaceId !== undefined) {
       spaceStore.selectSpace(spaceId);

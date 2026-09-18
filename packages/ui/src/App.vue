@@ -229,19 +229,36 @@ authStore.loadUser();
     const ctx = readCtx();
     ctx[old] = { conv: chatStore.currentConvId || '', agent: agentStore.selectedId || '' };
     writeCtx(ctx);
-    // 2) 新模式恢复：智能体先行（office 默认日常办公助手；dev 默认代码编写助手）
+    // 2) 新模式恢复：智能体先行
+    // dev → 代码编写助手；wf → 工作流助手（工作流模式的 AI 形态宿主，负责补参/调工作流/解读结果）；
+    // 其余模式回落日常办公助手。缺了 wf 这一支的话，进工作流模式只能绑「日常办公助手」+
+    // 工作流场景提示词，人格与职责对不上（助手不知道该去调工作流）。
     const saved = ctx[m];
-    const fallbackAgent = m === 'dev' ? 'a_builtin_code_agent' : 'a_default_assistant';
+    const fallbackAgent =
+      m === 'dev' ? 'a_builtin_code_agent' : m === 'wf' ? 'a_builtin_workflow_assistant' : 'a_default_assistant';
     const agentId = saved?.agent || fallbackAgent;
     if (agentId && agentStore.agents.some((a) => a.id === agentId) && agentStore.selectedId !== agentId) {
       chat.onAgentSwitch(agentId);
     }
-    // 3) 会话：有存档且存在且归属正确 → 恢复；否则开该模式的任务草稿（dev 绑定项目空间）
+    // 3) ★ 先按新模式重载会话列表，再做归属判断。
+    //
+    // 为什么必须先重载：`conversations` 里装的还是**上一个模式**的列表
+    // （loadConversations 按 mode 过滤，切模式前没重新拉过）。不重载的话，
+    // 下面的 find 会拿旧列表去找新模式的会话 —— 找不到倒也罢了，
+    // 更糟的是若存档里恰好存着一个别的模式的 convId，就会被"恢复"进新模式的界面。
+    await chatStore.loadConversations();
+
+    // 4) 会话：有存档、存在、且**确实是本模式的** → 恢复；否则开该模式的草稿。
     const convId = saved?.conv || '';
     const savedConv = convId ? chatStore.conversations.find((c) => c.id === convId) : undefined;
-    // dev 模式：会话必须属于当前项目空间（防止历史脏数据把办公会话带进开发模式）
-    const belongs = m !== 'dev' || (savedConv && savedConv.spaceId === codeStore.projectSpaceId);
-    if (savedConv && belongs) {
+    // 归属校验两道：
+    //   a) mode 必须等于当前模式（会话按模式隔离；迁移后存量会话都归 office）
+    //   b) dev 还必须属于当前项目空间（防止历史脏数据把办公会话带进开发模式）
+    const belongs =
+      !!savedConv &&
+      (savedConv.mode || 'office') === m &&
+      (m !== 'dev' || savedConv.spaceId === codeStore.projectSpaceId);
+    if (belongs) {
       await chat.selectConv(convId);
     } else {
       await chat.startNewChat(m === 'dev' ? codeStore.projectSpaceId : undefined);

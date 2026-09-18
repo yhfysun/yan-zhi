@@ -41,7 +41,7 @@
 <script setup lang="ts">
 import { computed, ref, watch, onMounted, onBeforeUnmount } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { Check, Lock, ChatDotRound, Monitor, Platform } from '@element-plus/icons-vue';
+import { Check, Lock, ChatDotRound, Monitor, Platform, Connection } from '@element-plus/icons-vue';
 import {
   activeMode, MODE_DEFS, setMode, modeRoute,
   type AppMode, type ModeDef,
@@ -92,7 +92,7 @@ function onTriggerClick() {
   router.push(modeRoute(activeMode.value));
 }
 
-const ICONS: Record<string, unknown> = { ChatDotRound, Monitor, Platform, Lock };
+const ICONS: Record<string, unknown> = { ChatDotRound, Monitor, Platform, Lock, Connection };
 function iconOf(name: string) {
   return ICONS[name] || ChatDotRound;
 }

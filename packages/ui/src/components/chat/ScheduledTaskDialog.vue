@@ -130,9 +130,44 @@
             <el-option v-for="g in taskStore.groups" :key="g.id" :value="g.id" :label="g.name" />
           </el-select>
         </el-form-item>
-        <el-form-item label="提示词">
+        <el-form-item label="任务类型">
+          <el-radio-group v-model="form.taskType">
+            <el-radio value="chat">对话任务</el-radio>
+            <el-radio value="workflow">工作流任务</el-radio>
+          </el-radio-group>
+          <div class="st-hint">
+            {{ form.taskType === 'workflow' ? '按固定入参直接运行工作流流水线，产出自动回写到会话' : '把提示词定时发给智能体，由它自主决策' }}
+          </div>
+        </el-form-item>
+
+        <!-- 对话任务：提示词 -->
+        <el-form-item v-if="form.taskType === 'chat'" label="提示词">
           <el-input v-model="form.prompt" type="textarea" :rows="4" placeholder="定时发送给模型的提示词" />
         </el-form-item>
+
+        <!-- 工作流任务：选工作流 + 填固定入参 -->
+        <template v-else>
+          <el-form-item label="工作流">
+            <el-select v-model="form.workflowAgentId" placeholder="选择要定时运行的工作流" filterable>
+              <el-option
+                v-for="w in wfStore.agents.value"
+                :key="w.id"
+                :value="w.id"
+                :label="`${w.name}（${w.nodeCount} 节点）`"
+              />
+            </el-select>
+          </el-form-item>
+          <el-form-item v-for="f in wfFields" :key="f.key" :label="f.label || f.key">
+            <el-input
+              v-model="form.workflowInputs[f.key]"
+              :placeholder="(f.required ? '必填 · ' : '可选 · ') + (f.description || '')"
+              :type="f.type === 'array' || f.type === 'object' ? 'textarea' : 'text'"
+              :rows="2"
+              clearable
+            />
+          </el-form-item>
+          <div v-if="form.workflowAgentId && !wfFields.length" class="st-hint">该工作流未声明入参，可直接运行</div>
+        </template>
         <el-form-item label="定时方式">
           <el-radio-group v-model="form.scheduleMode">
             <el-radio value="cycle">周期</el-radio>
@@ -261,13 +296,14 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted, onBeforeUnmount, nextTick } from 'vue';
+import { ref, reactive, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue';
 import { clampMenuPos } from '../../utils/menuPosition';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import {
   Delete, EditPen, Plus, VideoPlay, Search, CaretRight, FolderOpened, ChatDotRound,
 } from '@element-plus/icons-vue';
 import { useScheduledTaskStore, type ScheduledTask, type ScheduleConfig } from '../../stores/scheduledTask';
+import { useWorkflowStore } from '../../stores/workflow';
 import { useChat } from '../../composables/chat/useChat';
 
 const taskStore = useScheduledTaskStore();
@@ -285,10 +321,28 @@ const renamingGroupName = ref('');
 const renameInputRef = ref<HTMLInputElement | null>(null);
 const collapsedGroups = ref<Record<string, boolean>>({});
 
+// 工作流任务用：可选工作流清单 + 选中工作流的入参字段
+const wfStore = useWorkflowStore();
+const wfFields = computed(() => {
+  const w = wfStore.agents.value.find((a) => a.id === form.workflowAgentId);
+  return w?.fields || [];
+});
+// 数组/对象入参在提交前统一解析成真值（后端按类型预检，传字符串会被拦）
+watch(
+  () => [form.taskType, form.workflowAgentId] as const,
+  () => {
+    if (form.taskType === 'workflow' && wfStore.agents.value.length === 0) void wfStore.loadAgents();
+  },
+);
+
 const WEEK_LABELS = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
 
 const form = reactive({
   name: '',
+  // 任务类型：对话任务走 ReAct（prompt 驱动）；工作流任务直接起 DAG（固定入参）
+  taskType: 'chat' as 'chat' | 'workflow',
+  workflowAgentId: '' as string,
+  workflowInputs: {} as Record<string, unknown>,
   prompt: '',
   scheduleMode: 'cycle' as 'cycle' | 'interval',
   cycleType: 'daily' as 'once' | 'daily' | 'weekly' | 'biweekly' | 'monthly' | 'yearly',
@@ -579,6 +633,9 @@ function openCreate(groupId?: string) {
   editingId.value = null;
   form.name = '';
   form.prompt = '';
+  form.taskType = 'chat';
+  form.workflowAgentId = '';
+  form.workflowInputs = {};
   resetSchedule();
   form.bindConversation = !!currentConv.value;
   form.agentId = agentStore.selectedId || '';
@@ -594,6 +651,11 @@ function openEdit(task: ScheduledTask) {
   editingId.value = task.id;
   form.name = task.name;
   form.prompt = task.prompt || '';
+  // 工作流任务回填类型与固定入参（否则编辑一条工作流任务会退化成对话任务）
+  form.taskType = task.taskType === 'workflow' ? 'workflow' : 'chat';
+  form.workflowAgentId = task.workflowAgentId || '';
+  form.workflowInputs = { ...(task.workflowInputs || {}) };
+  if (form.taskType === 'workflow' && wfStore.agents.value.length === 0) void wfStore.loadAgents();
   if (task.schedule) {
     applySchedule(task.schedule);
   } else if (task.intervalMinutes && task.intervalMinutes > 0) {
@@ -669,7 +731,17 @@ function formatTime(ts: number): string {
 
 async function onSave() {
   if (!form.name.trim()) { ElMessage.warning('请填写任务名称'); return; }
-  if (!form.prompt.trim()) { ElMessage.warning('请填写提示词'); return; }
+  // 按任务类型分别校验：工作流任务不读 prompt，缺的是工作流本身与它的必填入参
+  if (form.taskType === 'workflow') {
+    if (!form.workflowAgentId) { ElMessage.warning('请选择要运行的工作流'); return; }
+    const wf = wfStore.agents.value.find((a) => a.id === form.workflowAgentId);
+    const missing = (wf?.fields || [])
+      .filter((f) => f.required && (form.workflowInputs[f.key] === undefined || form.workflowInputs[f.key] === ''))
+      .map((f) => f.label || f.key);
+    if (missing.length) { ElMessage.warning(`请填写必填入参：${missing.join('、')}`); return; }
+  } else if (!form.prompt.trim()) {
+    ElMessage.warning('请填写提示词'); return;
+  }
   if (form.scheduleMode === 'cycle' && form.cycleType === 'once' && !form.onceDate) {
     ElMessage.warning('请选择单次任务的执行日期'); return;
   }
@@ -679,7 +751,11 @@ async function onSave() {
   const schedule = buildSchedule();
   const input: any = {
     name: form.name.trim(),
+    taskType: form.taskType,
     prompt: form.prompt.trim(),
+    // 工作流任务：绑定的工作流 + 固定入参（后端据此直接起 DAG，不走 prompt）
+    workflowAgentId: form.taskType === 'workflow' ? (form.workflowAgentId || null) : null,
+    workflowInputs: form.taskType === 'workflow' ? form.workflowInputs : null,
     conversationId: form.bindConversation && currentConv.value ? currentConv.value.id : null,
     agentId: form.agentId || null,
     platformId: form.platformId || null,
@@ -749,6 +825,14 @@ async function onDelete(task: ScheduledTask) {
 </script>
 
 <style scoped>
+/* 任务类型/入参的说明文字（比 el-form-item 默认提示更紧凑） */
+.st-hint {
+  font-size: 11px;
+  color: var(--el-text-color-secondary);
+  line-height: 1.6;
+  margin-top: 4px;
+  width: 100%;
+}
 .scheduled-task-panel {
   display: flex;
   flex-direction: column;

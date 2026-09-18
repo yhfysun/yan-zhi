@@ -1,8 +1,8 @@
-// 四模式状态（stores/mode.ts）—— 迁移与语义回归测试。
+// 模式状态（stores/mode.ts）—— 迁移与语义回归测试。
 //
-// 钉住的契约（openspec four-mode-workspace 决策 4 / 决策 10）：
+// 钉住的契约（openspec four-mode-workspace 决策 4 / 决策 10，+ workflow-mode 新增 wf）：
 //   1) 旧 yz:code:active === '1' 启动迁移为 dev 并删除旧键（只迁移一次）；
-//   2) 默认 lead：{ office: null, dev: 'human', ops: 'human', sec: 'human' }，
+//   2) 默认 lead：{ office: null, dev: 'human', ops: 'human', sec: 'human', wf: 'human' }，
 //      持久化坏数据回默认，office 永远无 lead；
 //   3) setMode('office') 相当于旧的 setCodeModeActive(false)（薄封装语义不变）；
 //   4) chatPlacementOf 形态矩阵与设计文档逐格一致；
@@ -77,12 +77,14 @@ describe('主导方（lead）默认与持久化', () => {
     (globalThis as Record<string, unknown>).localStorage = new LocalStorageStub() as unknown as Storage;
   });
 
-  it('默认值：office 无 lead；dev/ops/sec 均 human（决策记录 #5）', async () => {
+  it('默认值：office 无 lead；dev/ops/sec/wf 均 human（决策记录 #5 + workflow-mode）', async () => {
     const m = await freshModule(new LocalStorageStub());
     expect(m.leadOf('office')).toBe('ai'); // office 无 lead 时的回落值，但不参与 UI
     expect(m.leadOf('dev')).toBe('human');
     expect(m.leadOf('ops')).toBe('human');
     expect(m.leadOf('sec')).toBe('human');
+    // 工作流模式默认「运行模式」= 人工主导（先手动跑通，符合调试优先直觉）
+    expect(m.leadOf('wf')).toBe('human');
   });
 
   it('setLead 写入并读回（office 拒绝写入）', async () => {
@@ -147,6 +149,12 @@ describe('chatPlacementOf 形态矩阵（决策 3.1）', () => {
     expect(m.chatPlacementOf('dev', 'human')).toBe('right');
   });
 
+  it('wf：ai → center；human → right（运行台居中，对话靠边）', async () => {
+    const m = await freshModule(new LocalStorageStub());
+    expect(m.chatPlacementOf('wf', 'ai')).toBe('center');
+    expect(m.chatPlacementOf('wf', 'human')).toBe('right');
+  });
+
   it('ops / sec：ai → center；human → inline', async () => {
     const m = await freshModule(new LocalStorageStub());
     for (const k of ['ops', 'sec'] as const) {
@@ -161,17 +169,22 @@ describe('模式定义完整性（路由与插件依赖）', () => {
     (globalThis as Record<string, unknown>).localStorage = new LocalStorageStub() as unknown as Storage;
   });
 
-  it('四模式定义与 openspec 表格一致', async () => {
+  it('五模式定义与 openspec 表格一致（含新增的 wf）', async () => {
     const m = await freshModule(new LocalStorageStub());
-    expect(m.MODE_DEFS.map((d) => d.key)).toEqual(['office', 'dev', 'ops', 'sec']);
+    expect(m.MODE_DEFS.map((d) => d.key)).toEqual(['office', 'dev', 'ops', 'sec', 'wf']);
     expect(m.modeRoute('office')).toBe('/chat');
     expect(m.modeRoute('dev')).toBe('/code');
     expect(m.modeRoute('ops')).toBe('/ops');
     expect(m.modeRoute('sec')).toBe('/sec');
+    expect(m.modeRoute('wf')).toBe('/workflow');
     // pluginId 必须与插件 manifest.id 完全一致（运行时已核实：/api/plugins 返回 ops-shell / sec-lab）
     expect(m.MODE_DEFS.find((d) => d.key === 'ops')?.pluginId).toBe('ops-shell');
     expect(m.MODE_DEFS.find((d) => d.key === 'sec')?.pluginId).toBe('sec-lab');
     expect(m.MODE_DEFS.find((d) => d.key === 'ops')?.desktopOnly).toBe(true);
+    // 工作流模式无插件依赖、三端可用（ModeSwitcher 对无 pluginId 的模式不置灰）
+    const wf = m.MODE_DEFS.find((d) => d.key === 'wf');
+    expect(wf?.pluginId).toBeUndefined();
+    expect(wf?.desktopOnly).toBeUndefined();
   });
 });
 

@@ -20,6 +20,11 @@ function rowToTask(r: any) {
     modelId: r.model_id,
     spaceId: r.space_id,
     groupId: r.group_id,
+    // 任务类型与工作流字段（DB 列早已预留，此前只差这层读写）
+    taskType: r.task_type === 'workflow' ? 'workflow' : 'chat',
+    workflowAgentId: r.workflow_agent_id ?? null,
+    workflowBundle: (() => { try { return r.workflow_bundle_json ? JSON.parse(r.workflow_bundle_json) : null; } catch { return null; } })(),
+    workflowInputs: (() => { try { return r.workflow_inputs_json ? JSON.parse(r.workflow_inputs_json) : null; } catch { return null; } })(),
     schedule: parseSchedule(r.schedule_json),
     expireAt: r.expire_at ?? null,
     enabled: !!r.enabled,
@@ -58,21 +63,37 @@ router.get('/', (req: Request, res: Response) => {
 router.post('/', (req: Request, res: Response) => {
   const userId = req.user!.userId;
   const { name, prompt, cronExpr, intervalMinutes, conversationId, agentId, platformId, modelId, spaceId, groupId, schedule, expireAt, enabled } = req.body || {};
+  const { taskType, workflowAgentId, workflowBundle, workflowInputs } = req.body || {};
   if (!name || !String(name).trim()) { res.status(400).json({ error: '任务名称为必填项' }); return; }
   const scheduleError = validateSchedule(intervalMinutes, cronExpr, schedule);
   if (scheduleError) { res.status(400).json({ error: scheduleError }); return; }
+
+  // 工作流型任务必须指定工作流（否则调度时才发现跑不了，白等一个周期）
+  const isWorkflowTask = taskType === 'workflow';
+  if (isWorkflowTask && !workflowAgentId && !workflowBundle?.agent?.workflow) {
+    res.status(400).json({ error: '工作流任务需要指定 workflowAgentId' });
+    return;
+  }
+  if (!isWorkflowTask && !prompt) {
+    res.status(400).json({ error: '对话任务需要填写 prompt' });
+    return;
+  }
 
   const id = uuid();
   const now = Date.now();
   const isEnabled = enabled === undefined ? true : !!enabled;
   const scheduleJson = schedule ? JSON.stringify(schedule) : null;
   db.prepare(
-    'INSERT INTO scheduled_task (id, user_id, name, prompt, cron_expr, interval_minutes, conversation_id, agent_id, platform_id, model_id, space_id, group_id, schedule_json, expire_at, enabled, last_run_at, next_run_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)',
+    'INSERT INTO scheduled_task (id, user_id, name, prompt, cron_expr, interval_minutes, conversation_id, agent_id, platform_id, model_id, space_id, group_id, schedule_json, expire_at, enabled, task_type, workflow_agent_id, workflow_bundle_json, workflow_inputs_json, last_run_at, next_run_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)',
   ).run(
     id, userId, String(name).trim(), prompt || null, cronExpr || null, intervalMinutes || null,
     ownConversationId(userId, conversationId), agentId || null, platformId || null, modelId || null, spaceId || null, groupId || null,
     scheduleJson, expireAt || null,
     isEnabled ? 1 : 0,
+    isWorkflowTask ? 'workflow' : 'chat',
+    workflowAgentId || null,
+    workflowBundle ? JSON.stringify(workflowBundle) : null,
+    workflowInputs ? JSON.stringify(workflowInputs) : null,
     isEnabled ? computeNextRun({ interval_minutes: intervalMinutes, cron_expr: cronExpr, schedule_json: scheduleJson, expire_at: expireAt || null }, now) : null,
     now, now,
   );
@@ -115,6 +136,14 @@ router.patch('/:id', (req: Request, res: Response) => {
   if (body.schedule !== undefined) { sets.push('schedule_json = ?'); vals.push(body.schedule ? JSON.stringify(body.schedule) : null); }
   if (body.expireAt !== undefined) { sets.push('expire_at = ?'); vals.push(body.expireAt || null); }
   if (body.enabled !== undefined) { sets.push('enabled = ?'); vals.push(body.enabled ? 1 : 0); }
+  // 工作流字段：允许改类型与绑定的工作流/入参（改类型时校验对应的必填项）
+  if (body.taskType !== undefined) {
+    const t = body.taskType === 'workflow' ? 'workflow' : 'chat';
+    sets.push('task_type = ?'); vals.push(t);
+  }
+  if (body.workflowAgentId !== undefined) { sets.push('workflow_agent_id = ?'); vals.push(body.workflowAgentId || null); }
+  if (body.workflowBundle !== undefined) { sets.push('workflow_bundle_json = ?'); vals.push(body.workflowBundle ? JSON.stringify(body.workflowBundle) : null); }
+  if (body.workflowInputs !== undefined) { sets.push('workflow_inputs_json = ?'); vals.push(body.workflowInputs ? JSON.stringify(body.workflowInputs) : null); }
   if (sets.length === 0) { res.json({ data: rowToTask(existing) }); return; }
 
   // 停用清空 next_run_at；调度配置变化或重新启用时从现在起重算

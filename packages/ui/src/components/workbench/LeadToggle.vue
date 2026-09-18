@@ -27,7 +27,7 @@
 
 <script setup lang="ts">
 import { computed } from 'vue';
-import { MagicStick, Monitor, Grid } from '@element-plus/icons-vue';
+import { MagicStick, Monitor, Grid, Connection } from '@element-plus/icons-vue';
 import type { AppMode, LeadMode } from '../../stores/mode';
 
 const props = withDefaults(defineProps<{
@@ -40,9 +40,13 @@ const emit = defineEmits<{
   (e: 'update:modelValue', v: LeadMode): void;
 }>();
 
-/** 人工侧的名称与图标：开发=编辑模式，运维/安全=命令模式 */
-const humanLabel = computed(() => (props.mode === 'dev' ? '编辑模式' : '命令模式'));
-const humanIcon = computed(() => (props.mode === 'dev' ? Monitor : Grid));
+/** 人工侧的名称与图标：开发=编辑模式，工作流=运行模式，运维/安全=命令模式 */
+const humanLabel = computed(() =>
+  props.mode === 'dev' ? '编辑模式' : props.mode === 'wf' ? '运行模式' : '命令模式',
+);
+const humanIcon = computed(() =>
+  props.mode === 'dev' ? Monitor : props.mode === 'wf' ? Connection : Grid,
+);
 
 /** 按钮显示的是「点了会切到哪里」：当前 ai → 显示人工侧图标，反之显示 AI 图标 */
 const nextLabel = computed(() => (props.modelValue === 'ai' ? humanLabel.value : 'AI 模式'));

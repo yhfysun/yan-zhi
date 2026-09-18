@@ -7,7 +7,7 @@
 //   - 「共享的是上下文，不是界面状态」
 import { ref, computed, watch, type ComputedRef, type Ref } from 'vue';
 
-export type AppMode = 'office' | 'dev' | 'ops' | 'sec';
+export type AppMode = 'office' | 'dev' | 'ops' | 'sec' | 'wf';
 /** 主导方：ai = 对话居中；human = 工作区居中（编辑器/终端/控制台），对话靠边 */
 export type LeadMode = 'ai' | 'human';
 /** 对话位置排布：center = 居中主视觉；right = 右栏；inline = 与控制台同区（折叠条/步骤卡） */
@@ -33,6 +33,8 @@ export const MODE_DEFS: ModeDef[] = [
   // 写成 'ops' / 'sec' 会导致插件明明已启用却判定为「未启用」而置灰。
   { key: 'ops', label: '运维模式', icon: 'Platform', desc: '服务器 · Docker · 数据库', route: '/ops', pluginId: 'ops-shell', desktopOnly: true },
   { key: 'sec', label: '安全模式', icon: 'Lock', desc: '侦察 · 扫描 · 审计', route: '/sec', pluginId: 'sec-lab', desktopOnly: true },
+  // 工作流模式：无插件依赖（三端可用），承载「运行模式（人工填参执行）/ AI 模式（工作流助手）」两种形态
+  { key: 'wf', label: '工作流模式', icon: 'Connection', desc: '运行 · 调试 · 定时', route: '/workflow' },
 ];
 
 const MODE_KEY = 'yz:mode';
@@ -45,6 +47,7 @@ const LEAD_DEFAULTS: Record<AppMode, LeadMode | null> = {
   dev: 'human',
   ops: 'human',
   sec: 'human',
+  wf: 'human', // 默认运行模式（人工填参执行），调试优先
 };
 
 function readStoredMode(): AppMode {
@@ -129,6 +132,7 @@ export const activeLead: ComputedRef<LeadMode> = computed(() => leadOf(activeMod
 export function chatPlacementOf(m: AppMode, lead: LeadMode): ChatPlacement {
   if (m === 'office') return 'center';
   if (m === 'dev') return lead === 'ai' ? 'center' : 'right';
+  if (m === 'wf') return lead === 'ai' ? 'center' : 'right'; // 运行模式：运行台居中 + 对话在右
   return lead === 'ai' ? 'center' : 'inline'; // ops / sec
 }
 

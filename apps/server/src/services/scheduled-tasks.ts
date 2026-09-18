@@ -5,6 +5,8 @@ import { v4 as uuid } from 'uuid';
 import { db } from '../db.js';
 import { createTask, buildSystemPromptForBackend, buildToolsForBackend, loadAgentModelParams } from '../llm-task-manager.js';
 import { buildAnthropicBody } from './anthropic-body.js';
+import { startWorkflowRun, resolveBundleFromDb, type WorkflowRunBundle } from '../workflow-runner.js';
+import { buildWorkflowInputFieldDefs } from './workflow-delegate.js';
 
 const MINUTE_MS = 60_000;
 
@@ -288,6 +290,75 @@ export interface ScheduledTaskRunResult {
 const INSERT_MESSAGE =
   'INSERT INTO message (id, conversation_id, user_id, role, content, tool_calls_json, tool_call_id, reasoning_content, system_prompt_snapshot, tokens, created_at) VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?)';
 
+/**
+ * 工作流型定时任务的执行分支（task_type='workflow'）。
+ *
+ * 与 chat 分支的区别：不起 ReAct、不拼 `[定时任务]` 前缀 prompt、不需要「确定模型」
+ * （模型由工作流各节点自己声明）。只做三件事：
+ *   1) 解析工作流 bundle（agentId 优先，兼容早期把定义存在任务行里的写法）；
+ *   2) 校验入参齐全（缺必填直接落一条失败消息，别起一个注定跑出无意义产出的运行）；
+ *   3) startWorkflowRun 并**带 delivery** → 跑完自动回写到绑定会话（复用既有反写链路，
+ *      重启后也能靠 delivery_json 补投）。
+ */
+async function runWorkflowScheduledTask(
+  task: any,
+  convId: string,
+  userId: string,
+  now: number,
+): Promise<ScheduledTaskRunResult> {
+  const wfAgentId = task.workflow_agent_id || '';
+  const inputs: Record<string, unknown> = (() => {
+    try { return JSON.parse(task.workflow_inputs_json || '{}'); } catch { return {}; }
+  })();
+
+  const bundle = (() => {
+    if (wfAgentId) return resolveBundleFromDb(wfAgentId);
+    // 兼容：任务行里直接存了完整定义（早期前端写法）
+    try {
+      const raw = JSON.parse(task.workflow_bundle_json || 'null');
+      if (raw?.agent?.workflow) return raw as WorkflowRunBundle;
+    } catch { /* 忽略坏数据 */ }
+    return null;
+  })();
+
+  if (!bundle) {
+    const errorMsg = wfAgentId ? `工作流不存在或已被删除：${wfAgentId}` : '未指定工作流（workflow_agent_id 为空）';
+    db.prepare(INSERT_MESSAGE).run(uuid(), convId, userId, 'assistant', `[定时任务执行失败] ${errorMsg}`, 0, Date.now());
+    return finishTask(task, convId, now, false, errorMsg);
+  }
+
+  // 入参预检：缺必填就不要起了 —— 工作流缺参会跑出「看似正常实则无意义」的产出且不报错
+  const row = db
+    .prepare('SELECT inputs_schema_json, workflow_json FROM agent WHERE id = ?')
+    .get(bundle.agent.id) as any;
+  const fields = buildWorkflowInputFieldDefs(row || {});
+  const missing = fields
+    .filter((f) => f.required && (inputs[f.key] === undefined || inputs[f.key] === null || inputs[f.key] === ''))
+    .map((f) => f.label || f.key);
+  if (missing.length > 0) {
+    const errorMsg = `定时任务「${task.name}」缺少必填入参：${missing.join('、')}`;
+    db.prepare(INSERT_MESSAGE).run(uuid(), convId, userId, 'assistant', `[定时任务执行失败] ${errorMsg}`, 0, Date.now());
+    return finishTask(task, convId, now, false, errorMsg);
+  }
+
+  const runId = startWorkflowRun(bundle, inputs, userId, {
+    conversationId: convId,
+    userId,
+    taskId: task.id,
+    agentId: bundle.agent.id,
+    agentName: bundle.agent.name || bundle.agent.id,
+    parentToolCallId: `sched_${task.id}`,
+  });
+
+  db.prepare(INSERT_MESSAGE).run(
+    uuid(), convId, userId, 'assistant',
+    `[定时任务] 已启动工作流「${bundle.agent.name || bundle.agent.id}」（运行 ${runId}），跑完会自动回写结果。`,
+    0, Date.now(),
+  );
+  // 调度状态照常推进：运行本身是异步的，不阻塞调度器
+  return finishTask(task, convId, now, true);
+}
+
 /** 执行一次定时任务：复用/创建会话 → 创建后端任务走 ReAct 循环 → 更新调度状态 */
 export async function runScheduledTask(task: any): Promise<ScheduledTaskRunResult> {
   const now = Date.now();
@@ -309,6 +380,13 @@ export async function runScheduledTask(task: any): Promise<ScheduledTaskRunResul
       task.id, now, now,
     );
     db.prepare('UPDATE scheduled_task SET conversation_id = ?, updated_at = ? WHERE id = ?').run(convId, now, task.id);
+  }
+
+  // 1b. 工作流型任务：不进 ReAct 循环，直接起 DAG。
+  //     必须放在「确定模型 / 构建提示词」之前 —— 工作流自己决定每个节点用哪个模型，
+  //     走 chat 那套会白算一遍模型、还会把 `[定时任务] xxx` 拼进 prompt（工作流不读 prompt）。
+  if (task.task_type === 'workflow') {
+    return runWorkflowScheduledTask(task, convId, userId, now);
   }
 
   // 2. 确定模型：优先 task 指定，其次 agent 默认，最后任意启用 LLM

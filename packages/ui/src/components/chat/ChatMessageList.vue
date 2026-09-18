@@ -279,7 +279,23 @@
       </div>
     </div>
 
-    <ChatWelcome v-if="!isCodeMode && store.currentMessages.length === 0 && !store.streaming && selectedModelId" />
+    <!-- 工作流模式专属空态：办公模式的场景轮播欢迎卡是「白底大卡 + 三张场景卡」，
+         塞进工作流模式 352px 的对话窄栏会又白又挤（深色主题下尤其刺眼）。
+         这里给一份窄栏友好的极简引导，与「开发模式专属空态」同一思路。 -->
+    <div v-if="isWorkflowMode && store.currentMessages.length === 0 && !store.streaming && selectedModelId" class="wf-welcome">
+      <div class="wf-welcome-avatar"><el-icon :size="22"><Connection /></el-icon></div>
+      <div class="wf-welcome-title">工作流助手</div>
+      <div class="wf-welcome-sub">左侧选一个工作流直接运行；<br>或在这里说需求，我帮你调已挂载的工作流。</div>
+      <div class="wf-welcome-tips">
+        <div class="wf-welcome-tip" v-for="t in WF_TIPS" :key="t" @click="applyWfTip(t)">
+          <el-icon :size="12"><ChatLineSquare /></el-icon>
+          <span>{{ t }}</span>
+        </div>
+      </div>
+      <div class="wf-welcome-foot">提示：点上方「可用工作流」勾选几个，我就能用 wf_&lt;id&gt; 工具调用它们</div>
+    </div>
+
+    <ChatWelcome v-if="!isCodeMode && !isWorkflowMode && store.currentMessages.length === 0 && !store.streaming && selectedModelId" />
     <div v-if="isCodeMode && store.currentMessages.length === 0 && !store.streaming && selectedModelId" class="code-welcome">
       <div class="code-welcome-greeting">
         <div class="code-welcome-avatar"><el-icon :size="24"><Monitor /></el-icon></div>
@@ -423,7 +439,7 @@
 import {
   User, ChatDotRound, CaretRight, CaretBottom, ArrowDown, ArrowRight, ArrowUp, Loading, CircleCheck,
   CircleClose, CopyDocument, EditPen, MagicStick, Delete, View, Fold, Refresh, Setting, Link, Download,
-  Grid, Document,
+  Grid, Document, Connection, ChatLineSquare,
 } from '@element-plus/icons-vue';
 import { ref, watch, nextTick, computed } from 'vue';
 import { ElMessage } from 'element-plus';
@@ -431,6 +447,7 @@ import { useRouter } from 'vue-router';
 import { useChat } from '../../composables/chat/useChat';
 import type { MessageRound } from '../../composables/chat/useChat';
 import { useCodeStore } from '../../stores/code';
+import { activeMode } from '../../stores/mode';
 import TaskPlanCard from '../TaskPlanCard.vue';
 import PlatformConfigCard from '../PlatformConfigCard.vue';
 import SubAgentRoundView from './SubAgentRoundView.vue';
@@ -467,6 +484,19 @@ const {
 } = useChat();
 const isCodeMode = useCodeStore().codeModeActive;
 const askSupplementOpen = ref(false);
+
+// ===== 工作流模式空态 =====
+// 与开发模式同一思路：不给它套办公模式的场景轮播欢迎卡（白底大卡塞窄栏很丑）
+const isWorkflowMode = computed(() => activeMode.value === 'wf');
+const WF_TIPS = [
+  '运行短剧流水线并看每个节点的输出',
+  '这次运行卡在哪个节点了',
+  '把上次跑挂的那条重跑一遍',
+];
+/** 点引导语：填进输入框（用 useChat 实例，它与输入框是同一个单例） */
+function applyWfTip(t: string) {
+  input.value = t;
+}
 
 // ===== 开发模式空态：代码任务模板轮播（tasks 5i，复用 SceneCarousel）=====
 const devTplKey = ref('');
@@ -829,6 +859,64 @@ watch(activeNavRound, () => {
   margin: 0;
   font-size: 13px;
   color: var(--el-text-color-secondary, #64748b);
+}
+
+/* ===== 工作流模式空态（窄栏友好，不铺白底大卡）===== */
+/* 注意：父级 .messages 是可滚动 flex 容器，子项 min-height:100% 会按内容盒算，
+   实测会出现「偏上 + 右侧被裁」。改用 flex:1 撑满剩余高度，居中才可靠。 */
+.wf-welcome {
+  flex: 1 0 auto;
+  width: 100%;
+  min-height: 0;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  gap: 9px;
+  padding: 20px 20px 64px;
+  text-align: center;
+  box-sizing: border-box;
+  overflow: hidden;
+}
+.wf-welcome-avatar {
+  width: 42px; height: 42px; border-radius: 13px; flex: none;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--color-primary, #7c3aed);
+  background: color-mix(in srgb, var(--color-primary, #7c3aed) 12%, transparent);
+}
+.wf-welcome-title {
+  font-size: 15px; font-weight: 600;
+  color: var(--skin-text, var(--el-text-color-primary, #1e293b));
+}
+.wf-welcome-sub {
+  font-size: 12px; line-height: 1.7; max-width: 100%;
+  color: var(--el-text-color-secondary, #64748b);
+}
+.wf-welcome-tips {
+  display: flex; flex-direction: column; gap: 5px;
+  width: 100%; max-width: 100%; margin-top: 4px;
+}
+/* 引导语做成可点小条（比白底大卡轻得多，窄栏也放得下） */
+.wf-welcome-tip {
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 9px; border-radius: 8px; cursor: pointer;
+  font-size: 12px; text-align: left; width: 100%; box-sizing: border-box;
+  color: var(--el-text-color-regular, #475569);
+  background: var(--glass-bg, rgba(148,163,184,0.08));
+  border: 1px solid var(--glass-border, transparent);
+  transition: border-color .15s, color .15s;
+}
+.wf-welcome-tip span {
+  flex: 1; min-width: 0;
+  /* 窄栏放不下时换行而不是省略号（引导语被截成「运行短剧流水线并看…」等于没说） */
+  line-height: 1.5;
+}
+.wf-welcome-tip:hover {
+  border-color: var(--color-primary, #7c3aed);
+  color: var(--color-primary, #7c3aed);
+}
+.wf-welcome-foot {
+  margin-top: 2px; font-size: 11px; line-height: 1.6;
+  color: var(--el-text-color-placeholder, #94a3b8);
+  max-width: 100%;
 }
 
 .inline-ask-card {

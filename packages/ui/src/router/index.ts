@@ -47,6 +47,13 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '代码' },
   },
   {
+    // 工作流模式（第五模式，stores/mode.ts 的 wf）：运行台 + 任务对话，两形态由 LeadToggle 切换
+    path: '/workflow',
+    name: 'workflow',
+    component: () => import('../views/WorkflowWorkbench.vue'),
+    meta: { title: '工作流' },
+  },
+  {
     path: '/chat-hub',
     name: 'chat-hub',
     component: () => import('../views/ChatHub.vue'),
