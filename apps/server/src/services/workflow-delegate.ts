@@ -106,6 +106,272 @@ export function extractWorkflowInputFields(agent: {
 }
 
 /**
+ * 节点「运行时可覆盖」字段的默认白名单（按节点类型）。
+ *
+ * 为什么需要默认表：运行台让用户临时改模型/温度这类参数，但节点参数动辄七八项，
+ * 全放开会把表单撑爆。所以默认只放行「改了不会破坏上下游契约」的少数几项：
+ *   - llm 的模型/采样参数：换模型、调温度是最常见的临时调整，且不影响下游字段
+ *   - loop 的迭代上限、memory_read 的召回条数：纯数值，安全
+ *   - **不放开** code.expression / condition.expression / tool.toolName：
+ *     改这些等于改流程逻辑或换工具，会让下游 arguments 与输出结构对不上，
+ *     属于「改画布」而不是「改一次运行」—— 要改请回画布。
+ * 节点若在 config.runtimeOverridable 里显式声明，则以声明为准（声明优先，默认表兜底）。
+ */
+export const DEFAULT_OVERRIDABLE: Record<string, string[]> = {
+  llm: ['platformId', 'modelId', 'temperature', 'maxTokens'],
+  loop: ['maxIterations'],
+  memory_read: ['topK'],
+};
+
+/**
+ * 可覆盖项的字段元数据（运行面板据此渲染正确的控件）。
+ *
+ * 关键点：**必须带上画布当前值**。运行面板要显示「当前：xxx」，让用户知道不填会用哪个模型；
+ * 只给字段名的话，用户面对一个空输入框根本不知道默认值是什么，只能瞎填。
+ */
+export interface OverridableFieldMeta {
+  key: string;
+  label: string;
+  /** 控件类型：model/platform = 下拉（选项由前端 store 提供）；number/string = 输入框 */
+  control: 'model' | 'platform' | 'number' | 'string' | 'boolean';
+  /** 画布上的当前值（"不覆盖就用这个"） */
+  current?: unknown;
+}
+
+export interface OverridableNodeDef {
+  nodeId: string;
+  nodeType: string;
+  /** 节点显示名（画布 label/title，缺省用 nodeId） */
+  label: string;
+  fields: OverridableFieldMeta[];
+}
+
+/** 覆盖字段的中文标签 */
+const OVERRIDE_LABELS: Record<string, string> = {
+  platformId: '模型平台',
+  modelId: '模型',
+  temperature: '温度（0~2）',
+  maxTokens: '最大输出长度',
+  maxIterations: '最大迭代次数',
+  topK: '召回条数',
+};
+
+/** 每个字段该用什么控件 */
+const OVERRIDE_CONTROLS: Record<string, OverridableFieldMeta['control']> = {
+  platformId: 'platform',
+  modelId: 'model',
+  temperature: 'number',
+  maxTokens: 'number',
+  maxIterations: 'number',
+  topK: 'number',
+};
+
+function metaOf(nodeConfig: Record<string, unknown> | null | undefined, key: string): OverridableFieldMeta {
+  return {
+    key,
+    label: OVERRIDE_LABELS[key] || key,
+    control: OVERRIDE_CONTROLS[key] || 'string',
+    current: nodeConfig ? (nodeConfig as Record<string, unknown>)[key] : undefined,
+  };
+}
+
+/** 取某节点允许运行时覆盖的字段（显式声明优先，否则按节点类型给默认值） */
+export function overridableFieldsOf(node: { type?: string; config?: Record<string, unknown> | null }): string[] {
+  const declared = (node?.config as any)?.runtimeOverridable;
+  if (Array.isArray(declared)) return declared.filter((k: unknown) => typeof k === 'string');
+  return DEFAULT_OVERRIDABLE[node?.type || ''] || [];
+}
+
+/**
+ * 收集工作流里所有「有可覆盖字段」的节点，供运行台渲染「覆盖节点配置」折叠区。
+ * 只有真正有字段的节点才返回 —— 否则每个工作流都会拖出一堆空分组。
+ */
+export function collectOverridableNodes(workflowJson: string | null | undefined): OverridableNodeDef[] {
+  if (!workflowJson) return [];
+  try {
+    const wf = JSON.parse(workflowJson) as { nodes?: any[] };
+    const out: OverridableNodeDef[] = [];
+    for (const n of Array.isArray(wf?.nodes) ? wf!.nodes : []) {
+      const keys = overridableFieldsOf(n);
+      if (!n?.id || keys.length === 0) continue;
+      const label = String(n?.config?.label || n?.config?.title || n?.id || '');
+      out.push({
+        nodeId: String(n.id),
+        nodeType: String(n.type || ''),
+        label,
+        fields: keys.map((k) => metaOf(n?.config, k)),
+      });
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+/** 运行表单字段定义（供运行台生成表单 / 工作流注册为工具的 inputSchema） */
+export interface WorkflowInputFieldDef {
+  key: string;
+  label: string;
+  type: 'string' | 'number' | 'boolean' | 'array' | 'object';
+  required: boolean;
+  description?: string;
+  options?: string[];
+  default?: unknown;
+}
+
+/**
+ * 常见入参 key 的中文标签兜底。
+ *
+ * 为什么需要：简写 schema（`{ topic: 'string' }`）里没有人类可读的名字，
+ * 运行表单直接把 key 甩出去就是「topic / roles」这种英文，用户看不懂要填什么。
+ * 这里给高频 key 兜一层中文；更准确的名字应由工作流作者在 schema 里用 label 显式声明
+ * （富写法 `{ topic: { type:'string', label:'短剧主题' } }`），显式声明永远优先。
+ */
+const INPUT_LABEL_HINTS: Record<string, string> = {
+  topic: '主题',
+  subject: '主题',
+  title: '标题',
+  roles: '角色名单',
+  characters: '角色名单',
+  name: '名称',
+  names: '名称列表',
+  content: '内容',
+  text: '文本',
+  query: '查询内容',
+  keyword: '关键词',
+  keywords: '关键词',
+  url: '链接',
+  urls: '链接列表',
+  lang: '语言',
+  language: '语言',
+  style: '风格',
+  format: '输出格式',
+  count: '数量',
+  num: '数量',
+  size: '数量',
+  duration: '时长',
+  scenes: '镜头/场景列表',
+  shots: '镜头列表',
+  prompt: '提示词',
+  instruction: '指令',
+  city: '城市',
+  date: '日期',
+  file: '文件路径',
+  path: '文件路径',
+  target: '目标',
+  goal: '目标',
+  audience: '目标受众',
+};
+
+/** 从 'string[]（可选，限定角色名…）' 里拆出类型与括号内说明 */
+function splitShorthand(raw: string): { typePart: string; note: string } {
+  const m = raw.match(/^(.*?)[（(]([\s\S]*)[）)]\s*$/);
+  if (!m) return { typePart: raw.trim(), note: '' };
+  return { typePart: m[1].trim(), note: m[2].trim() };
+}
+
+/**
+ * 简写类型推断：{ topic: 'string' } / { roles: 'string[]（可选）' } 这类写法。
+ * 注意：括号里的内容**不是类型**，是作者写给使用者的说明，必须当描述用而不是拿去判类型。
+ */
+function inferTypeFromShorthand(v: string): WorkflowInputFieldDef['type'] {
+  const s = splitShorthand(v).typePart.toLowerCase();
+  if (/boolean|布尔|是否/.test(s)) return 'boolean';
+  if (/number|int|float|数字|数值/.test(s)) return 'number';
+  if (/\[\]|array|数组|列表/.test(s)) return 'array';
+  if (/object|json|对象/.test(s)) return 'object';
+  return 'string';
+}
+
+function normalizeType(t: unknown): WorkflowInputFieldDef['type'] {
+  const s = String(t || '').toLowerCase();
+  if (s === 'boolean') return 'boolean';
+  if (s === 'number' || s === 'integer') return 'number';
+  if (s === 'array') return 'array';
+  if (s === 'object') return 'object';
+  return 'string';
+}
+
+/** 取 input 节点的原始 schema 对象（内置工作流落在 workflow_json 的 input 节点 config.schema） */
+function readInputSchemaObject(agent: { inputs_schema_json?: string | null; workflow_json?: string | null }): Record<string, unknown> | null {
+  const tryParse = (raw?: string | null): unknown => {
+    if (!raw) return null;
+    try { return JSON.parse(raw); } catch { return null; }
+  };
+  const fromColumn = tryParse(agent?.inputs_schema_json);
+  if (fromColumn && typeof fromColumn === 'object' && !Array.isArray(fromColumn) && Object.keys(fromColumn).length > 0) {
+    return fromColumn as Record<string, unknown>;
+  }
+  const wf = tryParse(agent?.workflow_json) as { nodes?: unknown[] } | null;
+  const nodes = Array.isArray(wf?.nodes) ? wf!.nodes : [];
+  for (const n of nodes) {
+    if ((n as any)?.type !== 'input') continue;
+    const schema = (n as any)?.config?.schema;
+    if (schema && typeof schema === 'object' && !Array.isArray(schema) && Object.keys(schema).length > 0) {
+      return schema as Record<string, unknown>;
+    }
+  }
+  return null;
+}
+
+/**
+ * 生成运行表单的字段定义。
+ *
+ * 与 extractWorkflowInputFields 的区别：那个只回字段名（委派时映射用），
+ * 这个要回类型/是否必填/说明/枚举，运行台据此渲染表单、工作流注册为工具时据此生成 inputSchema。
+ * schema 两种写法都支持：简写 { topic: 'string' } 与 JSON Schema { properties: {...}, required: [...] }。
+ */
+export function buildWorkflowInputFieldDefs(agent: {
+  inputs_schema_json?: string | null;
+  workflow_json?: string | null;
+} | null | undefined): WorkflowInputFieldDef[] {
+  const schema = readInputSchemaObject(agent || {});
+  if (!schema) return [];
+  const props = schema.properties;
+  if (props && typeof props === 'object' && !Array.isArray(props)) {
+    const requiredList = Array.isArray(schema.required) ? schema.required.map(String) : [];
+    return Object.entries(props as Record<string, any>).map(([key, p]) => {
+      // 富写法的两种形态：{ topic: { type, label, description } } 或 { topic: { title, ... } }
+      const v = p && typeof p === 'object' && !Array.isArray(p) ? p : {};
+      const desc = v.description || v.hint || '';
+      // 标签优先级：显式 label/title（作者最懂） > 中文兜底表（短、专为标签设计）> description > 裸 key。
+      // 把 description 排在兜底表之后是刻意的：description 往往是整句话，当标签会撑破表单。
+      const label = v.label || v.title || INPUT_LABEL_HINTS[key] || desc || key;
+      return {
+        key,
+        label: String(label),
+        type: normalizeType(v.type),
+        required: requiredList.includes(key),
+        // description 与 label 相同时不再重复（否则表单里标签和提示一模一样）
+        description: desc && desc !== label ? String(desc) : undefined,
+        options: Array.isArray(v.enum) ? v.enum.map(String) : undefined,
+        default: v.default,
+      };
+    });
+  }
+  return Object.entries(schema).map(([key, v]) => {
+    const raw = typeof v === 'string' ? v : (v && typeof v === 'object' ? '' : String(v ?? ''));
+    const { note } = splitShorthand(raw);
+    const explicitLabel = v && typeof v === 'object' && !Array.isArray(v)
+      ? ((v as any).label || (v as any).title)
+      : '';
+    const label = explicitLabel || INPUT_LABEL_HINTS[key] || key;
+    // 说明优先级：schema 里的描述 > 括号内说明 > label 兜底
+    const description = (v && typeof v === 'object' && (v as any).description)
+      || note
+      || (label !== key ? label : undefined);
+    return {
+      key,
+      label: String(label),
+      type: inferTypeFromShorthand(raw),
+      // 「（可选…）」是作者显式写的可选标记；没写就按必填处理（保守：宁可多问一次）
+      required: !/可选|optional|非必填|可省略/i.test(raw),
+      description: description ? String(description) : undefined,
+    };
+  });
+}
+
+/**
  * 把 call_agent 的 input 映射成工作流的结构化 inputs。
  *
  * 关键约定：映射不出来就**明确报错并把 schema 回给模型**，绝不静默兜底猜 ——

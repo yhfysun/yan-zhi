@@ -19,6 +19,7 @@ import { buildArtifactRelDir, buildArtifactRelDirCandidates } from '@yan-zhi/sha
 import platformRoutes, { migrateLegacyLocalPlatformRows } from './routes/platforms.js';
 import { seedBuiltinWorkflowAgents, ensureBuiltinWorkflowModel, cleanupLegacyDiagAgents } from './builtin-workflow-agents.js';
 import { markOrphanWorkflowRunsInterrupted } from './workflow-runner.js';
+import { syncWorkflowTools } from './services/workflow-tool-registry.js';
 import { markOrphanTasksInterrupted, resumeWorkflowDeliveries } from './llm-task-manager.js';
 import agentRoutes from './routes/agents.js';
 import workflowRoutes from './routes/workflow.js';
@@ -403,6 +404,15 @@ try {
   const f = ensureBuiltinWorkflowModel(db);
   if (f.filled) console.log('[builtin-wf] 内置工作流 LLM 节点已自动回填模型');
 } catch (e) { console.warn('[builtin-wf] 初始化失败:', e); }
+
+// 把每个工作流注册成 wf_<agentId> 工具（工作流模式 AI 形态的调用通道）。
+// 必须在内置工作流 seed 之后跑：先有 agent 行才有工具可注册。
+// 全量注册不占模型上下文 —— 真正发给模型的只有会话 builtin_tool_ids 里挂载的那几个。
+try {
+  const t = syncWorkflowTools();
+  if (t.registered.length) console.log(`[workflow-tools] 已注册工作流工具 ${t.registered.length} 个: ${t.registered.join(', ')}`);
+  if (t.removed.length) console.log(`[workflow-tools] 已注销失效工作流工具 ${t.removed.length} 个`);
+} catch (e) { console.warn('[workflow-tools] 注册失败:', e); }
 
 // 历史遗留诊断智能体清理：删掉手工创建的 diag_min_loop（含其 workflow_run），
 // 并把挂在它上面的会话重绑到真正的智能体 —— 必须先重绑再删，否则会话的

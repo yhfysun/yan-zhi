@@ -4,10 +4,14 @@
 // 运行状态全量落库 workflow_run（与 llm_task 同思路）：节点级 SSE 事件带单调 seq，
 // 断线用 since=seq 续传；server 重启后遗留 running 由 markOrphanWorkflowRunsInterrupted() 回收。
 import { randomUUID } from 'node:crypto';
-import { WorkflowEngine, LlmClient, runUserCode, getToolRegistry } from '@yan-zhi/core';
+import { writeFileSync, statSync } from 'node:fs';
+import { WorkflowEngine, LlmClient, runUserCode, getToolRegistry, createRunContext, buildSubgraphPlan } from '@yan-zhi/core';
 import type { NodeHandler, RunContext, NodeResult } from '@yan-zhi/core';
 import type { Workflow, Platform, Model } from '@yan-zhi/shared';
 import { db } from './db.js';
+import { ensureArtifactDirFor } from './services/artifact-dir.js';
+import { overridableFieldsOf } from './services/workflow-delegate.js';
+import { findModelRow, rowToModel } from './services/model-resolve.js';
 import { DEFAULT_CONTEXT_WINDOW } from './constants.js';
 import { callMcpTool, loadServer, getToolsFromDb, mcpShortIdOf } from './mcp/client-manager.js';
 import { executeApiTool } from './mcp/api-tool-executor.js';
@@ -48,7 +52,7 @@ export interface WorkflowRunLog {
 // ============================================================
 
 export interface WorkflowRunEvent {
-  type: 'run:started' | 'node:start' | 'node:ok' | 'node:error' | 'run:completed' | 'run:failed';
+  type: 'run:started' | 'node:start' | 'node:ok' | 'node:error' | 'run:completed' | 'run:failed' | 'run:aborted' | 'run:paused';
   seq?: number;
   nodeId?: string;
   nodeType?: string;
@@ -60,7 +64,8 @@ interface WorkflowRunState {
   id: string;
   userId: string;
   agentId: string;
-  status: 'running' | 'completed' | 'failed';
+  /** aborted = 用户主动取消；paused = 单节点调试停在断点（均可继续/重跑） */
+  status: 'running' | 'completed' | 'failed' | 'aborted' | 'paused';
   seq: number;
   events: WorkflowRunEvent[];
   subscribers: Set<(e: WorkflowRunEvent) => void>;
@@ -68,6 +73,17 @@ interface WorkflowRunState {
   result: Record<string, unknown> | null;
   error: string | null;
   createdAt: number;
+  /** 取消控制器：signal 一路传到引擎，节点之间检查 */
+  abort: AbortController;
+  /** 节点输出快照（单节点调试：改变量后从某节点继续，不重跑上游） */
+  snapshots: Map<string, unknown>;
+  /** 本次运行的输入（调试续跑时用来复原 ctx） */
+  inputs: Record<string, unknown>;
+  /** 工作流定义（调试续跑要用，避免重新查库） */
+  bundle: WorkflowRunBundle;
+  /** 结束信号：调试接口需要 await 跑完再返回快照 */
+  finished: Promise<void>;
+  settle: () => void;
 }
 
 const runs = new Map<string, WorkflowRunState>();
@@ -111,7 +127,10 @@ export function getWorkflowRun(runId: string): WorkflowRunState | null {
 /** server 启动时回收：上次进程遗留的 running 一律标记 failed（与 markOrphanTasksInterrupted 同语义）。 */
 export function markOrphanWorkflowRunsInterrupted(): number {
   try {
-    const r = db.prepare("UPDATE workflow_run SET status = 'failed', error = '服务重启导致运行中断', updated_at = ? WHERE status = 'running'").run(Date.now());
+    // running（正常执行中）与 paused（调试断点）都要回收：
+    // 两者的续跑都依赖内存里的 snapshots / abort，进程重启后这些全没了，
+    // 继续挂着会让 UI 上出现「永远停在断点、点了继续却报运行不存在」的幽灵记录。
+    const r = db.prepare("UPDATE workflow_run SET status = 'failed', error = '服务重启导致运行中断', updated_at = ? WHERE status IN ('running', 'paused')").run(Date.now());
     return r.changes;
   } catch {
     return 0;
@@ -150,10 +169,35 @@ export function cleanupOldWorkflowRuns(): number {
 
 const NODE_ID_KEY = '__nodeId';
 
-function annotateBundle(bundle: WorkflowRunBundle): WorkflowRunBundle {
+/**
+ * 按节点允许覆盖的字段白名单筛出覆盖值（声明优先、默认表兜底）。
+ * 白名单外的键一律丢弃 —— 避免「改一个模型参数把提示词一起冲掉」这类无声的配置漂移。
+ */
+function pickNodeOverrides(node: { id: string; type?: string; config?: Record<string, unknown> | null }, incoming: Record<string, unknown> | undefined): Record<string, unknown> {
+  if (!incoming) return {};
+  const allow = overridableFieldsOf(node);
+  if (allow.length === 0) return {};
+  const out: Record<string, unknown> = {};
+  for (const k of allow) {
+    if (Object.prototype.hasOwnProperty.call(incoming, k)) out[k] = incoming[k];
+  }
+  return out;
+}
+
+function annotateBundle(
+  bundle: WorkflowRunBundle,
+  overrides?: Record<string, Record<string, unknown>>,
+): WorkflowRunBundle {
   const annotateWorkflow = (wf: Workflow): Workflow => ({
     ...wf,
-    nodes: (wf.nodes || []).map((n) => ({ ...n, config: { ...(n.config || {}), [NODE_ID_KEY]: n.id } })),
+    nodes: (wf.nodes || []).map((n) => ({
+      ...n,
+      config: {
+        ...(n.config || {}),
+        ...pickNodeOverrides(n, overrides?.[n.id]),
+        [NODE_ID_KEY]: n.id,
+      },
+    })),
   });
   return {
     agent: { ...bundle.agent, workflow: annotateWorkflow(bundle.agent.workflow) },
@@ -171,6 +215,8 @@ function wrapHandler(h: NodeHandler, run: WorkflowRunState): NodeHandler {
       emitRunEvent(run, { type: 'node:start', nodeId, nodeType: h.type });
       try {
         const r = await h.execute(config, ctx);
+        // 节点输出快照：单节点调试「改变量后从此节点继续」要用，避免重跑上游（省 LLM 调用）
+        run.snapshots.set(nodeId, r.output);
         emitRunEvent(run, { type: 'node:ok', nodeId, nodeType: h.type });
         return r;
       } catch (e: any) {
@@ -197,18 +243,17 @@ function loadPlatformRow(platformId: string, userId: string): Platform | null {
   } as any;
 }
 
-function loadModelRow(modelId: string, userId: string): Model | null {
-  const row = db.prepare('SELECT * FROM model WHERE id = ? AND user_id = ?').get(modelId, userId) as any;
+/**
+ * 按标识取一行模型。
+ *
+ * 解析规则集中在 `services/model-resolve.ts`（先主键、再兼容 API 名，不做模糊匹配），
+ * 与预检集合、seed 回填共用同一口径 —— 三处任何一处单独改都会让
+ * 「预检放行 → 运行时报模型不存在」这种最难受的故障重现。
+ */
+function loadModelRow(modelId: string, userId: string, platformId?: string): Model | null {
+  const row = findModelRow(db, modelId, userId, platformId);
   if (!row) return null;
-  return {
-    id: row.id,
-    platformId: row.platform_id,
-    modelId: row.model_id,
-    alias: row.alias,
-    type: row.type || 'llm',
-    contextWindow: row.context_window || DEFAULT_CONTEXT_WINDOW,
-    capabilities: (() => { try { return JSON.parse(row.capabilities_json || '[]'); } catch { return []; } })(),
-  } as any;
+  return rowToModel(row, DEFAULT_CONTEXT_WINDOW);
 }
 
 function upstreamValue(ctx: RunContext): unknown {
@@ -351,7 +396,7 @@ class ServerLlmNodeHandler implements NodeHandler {
     if (!platformId || !modelId) throw new Error('LLM 节点缺少 platformId/modelId');
 
     const platform = loadPlatformRow(platformId, userId);
-    const model = loadModelRow(modelId, userId);
+    const model = loadModelRow(modelId, userId, platformId);
     if (!platform) throw new Error(`平台不存在: ${platformId}`);
     if (!model) throw new Error(`模型不存在: ${modelId}`);
 
@@ -604,9 +649,15 @@ export async function executeBundle(
   inputs: Record<string, unknown>,
   userId: string,
   run: WorkflowRunState | null,
+  /** 节点参数覆盖（运行台）：{ [nodeId]: { key: value } }，只生效于白名单内的字段 */
+  overrides?: Record<string, Record<string, unknown>>,
+  /** 取消信号：引擎在每个节点之间检查 */
+  signal?: AbortSignal,
+  /** 单节点调试：执行完这个节点后暂停 */
+  stopAtNodeId?: string,
 ): Promise<Record<string, unknown>> {
   const logs = run ? run.logs : [];
-  const annotated = run ? annotateBundle(bundle) : bundle;
+  const annotated = run ? annotateBundle(bundle, overrides) : bundle;
   const eng = createServerEngine(annotated, userId, logs, run);
   if (run) emitRunEvent(run, { type: 'run:started', msg: bundle.agent.name || bundle.agent.id });
   logs.push({ nodeId: '__start__', status: 'ok', msg: bundle.agent.name || bundle.agent.id, time: Date.now() });
@@ -614,6 +665,8 @@ export async function executeBundle(
     const result = await eng.run(annotated.agent as any, { ...inputs, __userId: userId }, {
       callStack: [bundle.agent.id],
       onNodeEvent: run ? (e) => emitRunEvent(run, e) : undefined,
+      signal,
+      stopAtNodeId,
     });
     logs.push({ nodeId: '__end__', status: 'ok', time: Date.now() });
     return result;
@@ -626,6 +679,237 @@ export async function executeBundle(
 // ============================================================
 // 对外入口：创建运行（异步执行 + 落库 + SSE）
 // ============================================================
+
+// ============================================================
+// 取消运行
+// ============================================================
+
+/**
+ * 取消一次运行。
+ *
+ * 只置状态 + 发信号，不强行 kill：引擎在**节点之间**检查 signal 后自行退出，
+ * 所以正在跑的 LLM 请求会跑完当前这一跳才停（这是刻意的 —— 中断到一半的
+ * LLM 响应没法产出可用结果，还不如让它落地，代价只是多等几秒）。
+ * 已完成的节点产物保留在 snapshots 里，方便「从失败节点继续」。
+ */
+export function cancelWorkflowRun(runId: string): boolean {
+  const run = runs.get(runId);
+  if (!run || (run.status !== 'running' && run.status !== 'paused')) return false;
+  run.abort.abort();
+  run.status = 'aborted';
+  run.error = '已取消';
+  emitRunEvent(run, { type: 'run:aborted', msg: '已取消' });
+  persistRun(run);
+  run.settle();
+  return true;
+}
+
+// ============================================================
+// 单节点调试（抄 Dify 的 step-run：跑到指定节点 / 单跑一个节点 / 改变量后继续）
+// ============================================================
+
+export interface DebugSnapshot {
+  nodeId: string;
+  output: unknown;
+}
+
+function snapshotList(run: WorkflowRunState): DebugSnapshot[] {
+  return Array.from(run.snapshots.entries()).map(([nodeId, output]) => ({ nodeId, output }));
+}
+
+/** 复原调试上下文：inputs + 已执行节点输出快照（可覆盖） */
+function restoreCtx(run: WorkflowRunState, variableOverrides?: Record<string, unknown>): RunContext {
+  const ctx = createRunContext({ ...(run.inputs || {}), __userId: run.userId }, [run.agentId], run.abort.signal);
+  for (const [nodeId, output] of run.snapshots) ctx.set(nodeId, output);
+  for (const [nodeId, output] of Object.entries(variableOverrides || {})) ctx.set(nodeId, output);
+  return ctx;
+}
+
+/**
+ * 跑到指定节点后暂停（step-run）。返回到断点为止的所有节点输出快照。
+ * 同步等待：因为调用方要立刻拿到快照渲染变量检查器。
+ */
+export async function debugRunTo(
+  bundle: WorkflowRunBundle,
+  inputs: Record<string, unknown>,
+  userId: string,
+  stopAtNodeId: string,
+  overrides?: Record<string, Record<string, unknown>>,
+): Promise<{ runId: string; snapshots: DebugSnapshot[]; status: string }> {
+  const runId = startWorkflowRun(bundle, inputs, userId, undefined, overrides, stopAtNodeId);
+  const run = runs.get(runId);
+  if (run) await run.finished;
+  const after = runs.get(runId);
+  return {
+    runId,
+    snapshots: after ? snapshotList(after) : [],
+    status: after?.status || 'unknown',
+  };
+}
+
+/** 单跑一个节点（用已有快照 + 覆盖值作为上下文，不重跑上游） */
+export async function debugRunNode(
+  runId: string,
+  nodeId: string,
+  variableOverrides?: Record<string, unknown>,
+): Promise<{ output: unknown; snapshots: DebugSnapshot[] }> {
+  const run = runs.get(runId);
+  if (!run) throw new Error('运行不存在或已结束（调试快照只在内存保留 30 分钟）');
+  const node = (run.bundle?.agent?.workflow?.nodes || []).find((n: any) => n.id === nodeId);
+  if (!node) throw new Error(`节点不存在: ${nodeId}`);
+  const annotated = annotateBundle(run.bundle);
+  const eng = createServerEngine(annotated, run.userId, run.logs, run);
+  const ctx = restoreCtx(run, variableOverrides);
+  // stopAtNodeId = 本节点 → plan 里只有它一个，跑完即停
+  await eng.runPlan({ pending: [nodeId] } as any, annotated.agent as any, ctx, {
+    callStack: [run.agentId],
+    onNodeEvent: (e) => emitRunEvent(run, e as any),
+    signal: run.abort.signal,
+    stopAtNodeId: nodeId,
+  });
+  const output = ctx.get(nodeId);
+  run.snapshots.set(nodeId, output);
+  return { output, snapshots: snapshotList(run) };
+}
+
+/** 从某个节点继续跑（改完变量后推进下游，不重跑上游） */
+export async function debugRunFrom(
+  runId: string,
+  fromNodeId: string,
+  variableOverrides?: Record<string, unknown>,
+): Promise<{ snapshots: DebugSnapshot[]; status: string }> {
+  const run = runs.get(runId);
+  if (!run) throw new Error('运行不存在或已结束（调试快照只在内存保留 30 分钟）');
+  const nodes = run.bundle?.agent?.workflow?.nodes || [];
+  const edges = run.bundle?.agent?.workflow?.edges || [];
+  if (!nodes.some((n: any) => n.id === fromNodeId)) throw new Error(`节点不存在: ${fromNodeId}`);
+  // 断点/取消过的运行要能接着跑：清掉终止态与已 abort 的信号
+  if (run.status !== 'running') {
+    run.status = 'running';
+    run.error = null;
+    if (run.abort.signal.aborted) run.abort = new AbortController();
+  }
+  const annotated = annotateBundle(run.bundle);
+  const eng = createServerEngine(annotated, run.userId, run.logs, run);
+  const ctx = restoreCtx(run, variableOverrides);
+  const nodeMap = new Map(nodes.map((n: any) => [n.id, n]));
+  const plan = buildSubgraphPlan(nodeMap as any, fromNodeId, edges as any);
+  try {
+    await eng.runPlan(plan, annotated.agent as any, ctx, {
+      callStack: [run.agentId],
+      onNodeEvent: (e) => emitRunEvent(run, e as any),
+      signal: run.abort.signal,
+    });
+    for (const [k, v] of ctx.outputs) run.snapshots.set(k, v);
+    run.status = 'paused'; // 继续跑完仍停在调试态，可再选节点继续
+    emitRunEvent(run, { type: 'run:paused', msg: `已从 ${fromNodeId} 继续`, result: run.result ?? undefined });
+  } catch (e: any) {
+    if (e?.name !== 'WorkflowAbortError') {
+      run.status = 'failed';
+      run.error = e?.message || '继续运行失败';
+      emitRunEvent(run, { type: 'run:failed', msg: run.error || undefined });
+    }
+    throw e;
+  } finally {
+    persistRun(run);
+  }
+  return { snapshots: snapshotList(run), status: run.status };
+}
+
+// ============================================================
+// 手动运行的产物落盘
+// ============================================================
+
+/**
+ * 手动运行（运行台触发）成功后的产物落盘。
+ *
+ * 为什么必须有：`deliverWorkflowFile` 依赖 `WorkflowDeliveryCtx.conversationId`，
+ * 而运行台是**没有会话**的 —— 之前的实现里这类运行的产物只躺在 `workflow_run.result_json`，
+ * 用户跑完短剧流水线却拿不到图片/音频文件，会以为没执行。
+ *
+ * 归属策略：借用一个「虚拟会话 id」= 运行本身（`wfr_xxx`），产物落到
+ * `.yan-zhi/tasks/<runId>/deliverable/`，会话归属写 runId —— 这样运行历史里能回查、
+ * 又不会串进任何真实会话的文件列表。
+ *
+ * 注意：这里**不 import llm-task-manager**（会与它的反向依赖成环）。落盘所需的
+ * `ensureArtifactDirFor` 与本模块已有依赖同源，直接做文件写入 + conversation_file 登记。
+ */
+function isDeliverableOutput(output: unknown): output is Record<string, unknown> {
+  return !!output && typeof output === 'object' && !Array.isArray(output);
+}
+
+/**
+ * 从运行结果里提取「文件型产物」并落盘。
+ *
+ * 识别口径与 classifyWorkflowOutput 保持一致（那边在 llm-task-manager 里，不能反向 import）：
+ *   - 显式文件项：{ name, path? , content? , encoding? }
+ *   - 显式文件数组：files / artifacts / deliverables
+ * 找不到就当纯文本运行，不落盘（不猜）。
+ */
+export function extractFileArtifacts(output: unknown): Array<{ name: string; path?: string; content?: string; encoding?: 'utf8' | 'base64' }> {
+  if (!isDeliverableOutput(output)) return [];
+  const out: Array<{ name: string; path?: string; content?: string; encoding?: 'utf8' | 'base64' }> = [];
+  const push = (v: unknown) => {
+    if (!v || typeof v !== 'object' || Array.isArray(v)) return;
+    const o = v as Record<string, unknown>;
+    const name = typeof o.name === 'string' ? o.name : '';
+    const p = typeof o.path === 'string' ? o.path : '';
+    if (!name && !p) return;
+    out.push({
+      name: name || p.split(/[/\\]/).pop() || 'artifact',
+      path: p || undefined,
+      content: typeof o.content === 'string' ? o.content : undefined,
+      encoding: o.encoding === 'base64' ? 'base64' : 'utf8',
+    });
+  };
+  for (const key of ['files', 'artifacts', 'deliverables']) {
+    const arr = (output as Record<string, unknown>)[key];
+    if (Array.isArray(arr)) arr.forEach(push);
+  }
+  return out;
+}
+
+/**
+ * 运行成功后的落盘（供路由在 run:completed 时调用）。
+ * 落盘失败只记日志、不影响运行状态 —— 运行本身是成功的。
+ */
+export function persistRunArtifacts(
+  runId: string,
+  output: Record<string, unknown> | null,
+  userId: string,
+  agentName: string,
+): number {
+  const items = extractFileArtifacts(output);
+  if (!items.length) return 0;
+  let saved = 0;
+  try {
+    const { dir } = ensureArtifactDirFor({ conversationId: runId, category: 'deliverable' });
+    for (const item of items) {
+      let filePath = item.path || '';
+      if (!filePath && item.content) {
+        filePath = `${dir}/${item.name}`;
+        writeFileSync(filePath, item.content, item.encoding === 'base64' ? 'base64' : 'utf8');
+      }
+      if (!filePath) continue;
+      let size = 0;
+      try { size = statSync(filePath).size; } catch { /* 取不到留 0 */ }
+      const fileId = 'wfart_' + randomUUID().replace(/-/g, '').slice(0, 16);
+      // 会话归属写 runId：既不串进真实会话的文件列表，运行历史又能按它回查
+      try {
+        db.prepare(
+          'INSERT OR IGNORE INTO conversation_file (id, conversation_id, user_id, name, path, size, category, source, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        ).run(fileId, runId, userId, item.name, filePath, size, 'deliverable', 'workflow', Date.now());
+      } catch (e: any) {
+        console.warn(`[workflow] 产物登记失败 ${item.name}:`, e?.message || e);
+      }
+      saved++;
+    }
+    if (saved) console.log(`[workflow] 运行 ${runId}（${agentName}）已落盘 ${saved} 个产物到 ${dir}`);
+  } catch (e: any) {
+    console.warn(`[workflow] 运行产物落盘失败 ${runId}:`, e?.message || e);
+  }
+  return saved;
+}
 
 /**
  * 从后端 db（data.db）按 agentId 解析工作流 bundle（主 agent + 递归收集 sub_agent 节点引用的子智能体）。
@@ -661,9 +945,14 @@ export function startWorkflowRun(
   userId: string,
   /** call_agent 委派时传入：记录反写目标，跑完/中断后据此补投。前端直接跑不传。 */
   delivery?: WorkflowDeliveryCtx,
+  /** 节点参数覆盖（运行台手动运行时传入） */
+  overrides?: Record<string, Record<string, unknown>>,
+  /** 单节点调试：执行完这个节点后暂停 */
+  stopAtNodeId?: string,
 ): string {
   const runId = 'wfr_' + randomUUID().replace(/-/g, '').slice(0, 20);
   const now = Date.now();
+  let settle = () => {};
   const run: WorkflowRunState = {
     id: runId,
     userId,
@@ -676,6 +965,12 @@ export function startWorkflowRun(
     result: null,
     error: null,
     createdAt: now,
+    abort: new AbortController(),
+    snapshots: new Map(),
+    inputs,
+    bundle,
+    finished: new Promise<void>((r) => { settle = r; }),
+    settle: () => settle(),
   };
   runs.set(runId, run);
   try {
@@ -686,16 +981,42 @@ export function startWorkflowRun(
 
   void (async () => {
     try {
-      const result = await executeBundle(bundle, inputs, userId, run);
+      const result = await executeBundle(bundle, inputs, userId, run, overrides, run.abort.signal, stopAtNodeId);
       run.result = result;
-      run.status = 'completed';
-      emitRunEvent(run, { type: 'run:completed', result });
+      if (run.status === 'running') {
+        if (stopAtNodeId) {
+          // 断点暂停：不是失败也不是完成，UI 上要能「从此节点继续」
+          run.status = 'paused';
+          emitRunEvent(run, { type: 'run:paused', msg: `已停在节点 ${stopAtNodeId}`, result });
+        } else {
+          run.status = 'completed';
+          emitRunEvent(run, { type: 'run:completed', result });
+          // 无 delivery（手动运行台触发）→ 产物自己落盘，否则用户拿不到文件
+          if (!delivery) {
+            try {
+              persistRunArtifacts(runId, result, userId, bundle.agent.name || bundle.agent.id);
+            } catch (e: any) {
+              console.warn('[workflow] 产物落盘异常:', e?.message || e);
+            }
+          }
+        }
+      }
     } catch (e: any) {
-      run.error = e?.message || '工作流执行失败';
-      run.status = 'failed';
-      emitRunEvent(run, { type: 'run:failed', msg: run.error || undefined });
+      // 取消是用户主动行为：状态与文案在 cancelWorkflowRun 里已经落好，这里不再覆盖成 failed
+      if (e?.name === 'WorkflowAbortError') {
+        if (run.status === 'running') {
+          run.status = 'aborted';
+          run.error = e?.message || '运行已取消';
+          emitRunEvent(run, { type: 'run:aborted', msg: run.error || undefined });
+        }
+      } else if (run.status === 'running') {
+        run.error = e?.message || '工作流执行失败';
+        run.status = 'failed';
+        emitRunEvent(run, { type: 'run:failed', msg: run.error || undefined });
+      }
     } finally {
       persistRun(run);
+      run.settle();
       // 已结束的运行保留一段时间供前端回查（由 cleanupOldWorkflowRuns 兜底清理）
       setTimeout(() => runs.delete(runId), 30 * 60 * 1000).unref?.();
     }

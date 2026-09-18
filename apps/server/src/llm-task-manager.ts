@@ -6,7 +6,7 @@
 import type { Platform, Model, Message, DeltaToolCall } from '@yan-zhi/shared';
 import { LlmClient, getToolRegistry, getApiToolRegistry, ContextWindow } from '@yan-zhi/core';
 import { db } from './db.js';
-import { normalizePermissionMode, checkToolPermission, filterToolsByPermission, permissionModePrompt, type PermissionMode } from './tool-permission.js';
+import { normalizePermissionMode, checkToolPermission, filterToolsByPermission, permissionModePrompt, checkWorkflowPermission, type PermissionMode } from './tool-permission.js';
 import { ensureToolsInitialized } from './mcp/index.js';
 import { executeApiTool } from './mcp/api-tool-executor.js';
 import { getToolsFromDb, mcpShortIdOf, resolveMcpToolName, callMcpTool } from './mcp/client-manager.js';
@@ -26,7 +26,11 @@ import {
 import {
   isWorkflowAgent, extractWorkflowInputFields, mapWorkflowInputs,
   classifyWorkflowOutput, buildWorkflowReceipt, withAbortAndTimeout,
+  buildWorkflowInputFieldDefs,
 } from './services/workflow-delegate.js';
+import {
+  isWorkflowToolName, workflowAgentIdOfTool,
+} from './services/workflow-tool-registry.js';
 import { promises as fsp } from 'node:fs';
 
 /** 工作流结果反写的 I/O 上限：反写本身很快，超时只为防异常挂住。 */
@@ -1352,6 +1356,77 @@ async function executeTool(
     return runSubAgent(task, args, toolCallId, depth, uiTools);
   }
 
+  // wf_<agentId> → 工作流工具（工作流模式：AI 模式下的主要调用通道）
+  //
+  // 与 call_agent 的关键区别：参数已是结构化对象（工具 schema 由 input 节点生成），
+  // 不需要 mapWorkflowInputs 那套「文本 → 结构化」的猜法，所以不做别名解析、不做单键兜底。
+  // 缺必填项就直接退回让模型补参 —— 静默兜底会跑出一份看似正常、实则无意义的产出。
+  if (isWorkflowToolName(toolName)) {
+    if (depth >= 1) return '子智能体不能再调用工作流（深度仅允许 1 层）';
+    const wfAgentId = workflowAgentIdOfTool(toolName);
+    const row = db
+      .prepare('SELECT id, name, inputs_schema_json, workflow_json FROM agent WHERE id = ?')
+      .get(wfAgentId) as any;
+    if (!row) return `工作流不存在或已被删除: ${wfAgentId}`;
+
+    // 只读会话下按**实际节点内容**判定（含 tool 写工具 / sub_agent / code 里的 fs、child_process）。
+    // 不能只靠 checkToolPermission 的前缀拦截：会把纯取数的流水线一并误伤。
+    const wfPerm = checkWorkflowPermission(task.permissionMode || 'default', (() => {
+      try { return JSON.parse(row.workflow_json || '{}'); } catch { return null; }
+    })(), toolName);
+    if (!wfPerm.allowed) {
+      console.warn(`[llm-task] 工作流权限拦截: conv=${task.conversationId} mode=${task.permissionMode} wf=${wfAgentId}`);
+      return wfPerm.reason || `工作流 ${wfAgentId} 已被会话权限拒绝执行`;
+    }
+
+    const fields = buildWorkflowInputFieldDefs(row);
+    const argsObj = (args && typeof args === 'object' && !Array.isArray(args) ? args : {}) as Record<string, unknown>;
+    // 只认 schema 里声明过的键，避免模型把 toolName/agentId 之类的杂项也塞进 inputs
+    const inputs: Record<string, unknown> = {};
+    for (const f of fields) {
+      if (Object.prototype.hasOwnProperty.call(argsObj, f.key)) inputs[f.key] = argsObj[f.key];
+    }
+    const missing = fields.filter((f) => f.required && (inputs[f.key] === undefined || inputs[f.key] === '')).map((f) => f.key);
+    if (missing.length > 0) {
+      return `缺少必填入参：${missing.join('、')}。该工作流需要：${JSON.stringify(
+        Object.fromEntries(fields.map((f) => [f.key, f.required ? '<必填>' : '<可选>'])),
+      )}`;
+    }
+    // 未声明入参的工作流：把对象原样透传（保持与 /workflow/run 一致的行为）
+    const finalInputs = fields.length === 0 ? argsObj : inputs;
+
+    const bundle = resolveBundleFromDb(wfAgentId);
+    if (!bundle) return `工作流定义解析失败: ${wfAgentId}`;
+
+    const delivery: WorkflowDeliveryCtx = {
+      conversationId: task.conversationId,
+      userId: task.userId,
+      taskId: task.id,
+      agentId: task.agentId || '',
+      agentName: row.name || wfAgentId,
+      parentToolCallId: toolCallId,
+    };
+    const runId = startWorkflowRun(bundle, finalInputs, task.userId, delivery);
+
+    // ★ 必须订阅终态，否则「跑完了但没人通知」。
+    //
+    // 这里漏过一次（真实故障）：只调了 startWorkflowRun 传 delivery，没有 watchWorkflowRun。
+    // 表现为——运行能正常跑完、status=completed、delivery_json 也落了库，
+    // 但**对话里永远收不到完成通知**（deliverWorkflowResult 从来没有被调用过），
+    // 用户看到的就是「启动了，然后没有下文」。
+    //
+    // 两条链路的分工：
+    //   delivery（第 4 参）→ 落 workflow_run.delivery_json，供**重启后**补投；
+    //   watchWorkflowRun   → 当前进程内订阅事件，跑完**立刻**反写。
+    // 少任何一条都会漏：只有 delivery 要等重启，只有 watch 则进程重启就丢。
+    //
+    // 长流程（十几分钟）不必担心任务已经结束 —— notifyConversation 会在
+    // 任务不再 running 时自动改走会话级 SSE 总线，前端照样收得到。
+    watchWorkflowRun(runId, delivery);
+
+    return buildWorkflowReceipt(row.name || wfAgentId, runId);
+  }
+
   // list_sub_agents → 后端直接查 DB
   if (toolName === 'list_sub_agents') {
     const conv = db.prepare('SELECT agent_id FROM conversation WHERE id = ?').get(task.conversationId) as any;
@@ -1576,7 +1651,7 @@ async function deliverWorkflowResult(runId: string, ctx: WorkflowDeliveryCtx, fa
 }
 
 /** 文字 → 直接输出成消息；文件 → 落盘 + 登记交付物 + 输出引用。 */
-async function writeBackWorkflow(runId: string, ctx: WorkflowDeliveryCtx, failedMsg?: string): Promise<void> {
+export async function writeBackWorkflow(runId: string, ctx: WorkflowDeliveryCtx, failedMsg?: string): Promise<void> {
   if (failedMsg) {
     pushConversationMessage(ctx, `[工作流执行失败] ${failedMsg}`, 'assistant');
     return;

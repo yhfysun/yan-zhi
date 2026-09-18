@@ -3,6 +3,7 @@ import { v4 as uuid } from 'uuid';
 import { authMiddleware } from '../auth.js';
 import { db } from '../db.js';
 import { normalizePermissionMode } from '../tool-permission.js';
+import { WF_TOOL_PREFIX, MAX_WF_TOOLS_PER_CONVERSATION } from '../services/workflow-tool-registry.js';
 
 const router = Router();
 router.use(authMiddleware);
@@ -98,7 +99,22 @@ router.patch('/:id', (req: Request, res: Response) => {
     sets.push('mcp_servers_json = ?'); vals.push(JSON.stringify(serversJson));
   }
   if (req.body.skillIds !== undefined) { sets.push('skill_ids_json = ?'); vals.push(JSON.stringify(req.body.skillIds)); }
-  if (req.body.builtinToolIds !== undefined) { sets.push('builtin_tool_ids_json = ?'); vals.push(JSON.stringify(req.body.builtinToolIds)); }
+  if (req.body.builtinToolIds !== undefined) {
+    // 工作流工具（wf_*）挂载上限校验。
+    // 为什么要有上限：每个 wf_* 工具都带完整参数 schema，挂太多会占满上下文、
+    // 且模型在十几个相似流水线里选择时准确率明显下降。超出直接拒绝并说明，不静默截断。
+    const ids: unknown = req.body.builtinToolIds;
+    if (Array.isArray(ids)) {
+      const wfIds = ids.filter((x) => typeof x === 'string' && x.startsWith(WF_TOOL_PREFIX));
+      if (wfIds.length > MAX_WF_TOOLS_PER_CONVERSATION) {
+        res.status(400).json({
+          error: `一次最多挂载 ${MAX_WF_TOOLS_PER_CONVERSATION} 个工作流（当前 ${wfIds.length} 个）—— 挂太多会让模型难以选择`,
+        });
+        return;
+      }
+    }
+    sets.push('builtin_tool_ids_json = ?'); vals.push(JSON.stringify(ids));
+  }
   if (req.body.pinned !== undefined) { sets.push('pinned = ?'); vals.push(req.body.pinned ? 1 : 0); }
   if (sets.length === 0) { res.json({ data: existing }); return; }
 
