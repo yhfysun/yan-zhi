@@ -7,7 +7,7 @@ import { usePluginStore } from './plugin';
 import { BUILTIN_SKIN_SERIES, isBuiltinSkinId, builtinSeriesFor, builtinSeriesPalette } from '../styles/skinSeries';
 
 export type ThemeName = string;
-export const BUILTIN_THEME_NAMES = ['cinnabar', 'ink', 'indigo', 'pine', 'clay'] as const;
+export const BUILTIN_THEME_NAMES = ['cinnabar', 'ink', 'indigo', 'pine', 'clay', 'cloud', 'bamboo', 'ripple', 'porcelain', 'dune'] as const;
 
 /** 皮肤表面定制（与 @yan-zhi/core ThemePalette['surface'] 结构一致，此处局部声明避免循环依赖） */
 type SkinSurface = {
@@ -257,7 +257,7 @@ function lightenIfDark(hex: string, targetLum: number): string {
  * 亮色则反过来：surfaceRaised 最白，surfaceSunken 最暗。
  */
 function deriveSkinTokens(primary: string, dark: boolean) {
-  const p = primary || '#C2410C';
+  const p = primary || '#C7382E';
   const base = dark ? '#0E0F12' : '#FBFBFB';
   const ink = dark ? '#FFFFFF' : '#141414';
 
@@ -479,9 +479,10 @@ export const APP_GUIDE_DOCS: Array<{ name: string; content: string }> = [
 export const DEFAULT_APP_GUIDE = APP_GUIDE_DOCS.map((d) => d.content).join('\n\n---\n\n');
 
 const DEFAULT_SETTINGS: AppSettings = {
-  palette: 'cinnabar',
-  skin: '',
-  darkMode: true,
+  // 默认皮肤 = 瓷·冰（白瓷 + 冰块），默认亮色模式（2026-09-18 用户指定）
+  palette: 'porcelain',
+  skin: 'builtin:porcelain',
+  darkMode: false,
   defaultPlatformId: '',
   defaultModelId: '',
   keepRecent: 6,
@@ -517,6 +518,25 @@ interface ThemePalette {
   orb1: string;
   orb2: string;
   orb3: string;
+  /**
+   * 暗色模式专用配色（2026-09-18 补全）。
+   * ⚠️ 这个约定**早已存在于 @yan-zhi/core 的 ThemePalette**，但内置主题一个都没配、
+   *    applyPalette 也从没读过它 → 实际效果是"亮暗共用一个主色，暗色下只靠对比度算法提亮"，
+   *    所以同一个主题切到暗色时并没有自己的设计。这里按既有约定补齐（不新造机制）。
+   * 缺省字段一律回落到亮色值，向后兼容未配置的主题与插件皮肤。
+   */
+  dark?: Partial<{
+    primary: string;
+    primaryLight: string;
+    primaryDark: string;
+    accent: string;
+    /** 暗色模式下用于对比度计算的底色（缺省 #141414） */
+    background: string;
+  }>;
+  /** 暗色模式主渐变（缺省回落到 gradient） */
+  gradientDark?: string;
+  /** 暗色模式光晕三色（缺省回落 orb1~3） */
+  orbDark?: { orb1: string; orb2: string; orb3: string };
   surface?: {
     glass?: string;
     glassDark?: string;
@@ -557,55 +577,141 @@ function pluginAssetUrl(pluginId: string, rel: string): string {
 }
 
 const THEMES: Record<ThemeName, ThemePalette> = {
+  // ===== 经典系列（「新中式·明快」，与 styles/skinSeries.ts 色板保持一致）=====
+  // ⚠️ 每个主题都给一套 dark：暗色下**主色需要提亮**（不是把亮色硬压到深底上，那样对比度不够、
+  //    按钮和链接会发闷），accent/gradient/orb 同步调亮，保持同色调但更"发光"。
   cinnabar: {
-    primary: '#C2410C',
-    primaryLight: '#FBEBDD',
-    primaryDark: '#7C2D12',
-    accent: '#B45309',
-    gradient: 'linear-gradient(135deg, #C2410C, #B45309)',
-    orb1: '#C2410C',
-    orb2: '#D97706',
-    orb3: '#B45309',
+    primary: '#C7382E',
+    primaryLight: '#F9E7E4',
+    primaryDark: '#8E2318',
+    accent: '#E06A50',
+    gradient: 'linear-gradient(135deg, #C7382E, #E06A50)',
+    orb1: '#C7382E',
+    orb2: '#E06A50',
+    orb3: '#F09A82',
+    dark: { primary: '#E0594A', primaryLight: '#3A1F1B', primaryDark: '#B03528', accent: '#F08A6E' },
+    gradientDark: 'linear-gradient(135deg, #E0594A, #F08A6E)',
+    orbDark: { orb1: '#E0594A', orb2: '#F08A6E', orb3: '#8E2318' },
   },
   ink: {
-    primary: '#57534E',
-    primaryLight: '#EDEAE5',
-    primaryDark: '#292524',
-    accent: '#78716C',
-    gradient: 'linear-gradient(135deg, #57534E, #292524)',
-    orb1: '#57534E',
-    orb2: '#78716C',
-    orb3: '#44403C',
+    primary: '#3A3F47',
+    primaryLight: '#E9EAEC',
+    primaryDark: '#1E2126',
+    accent: '#6B7280',
+    gradient: 'linear-gradient(135deg, #3A3F47, #6B7280)',
+    orb1: '#3A3F47',
+    orb2: '#6B7280',
+    orb3: '#A9B0B8',
+    dark: { primary: '#AEB6C0', primaryLight: '#22262C', primaryDark: '#7C8590', accent: '#D2D8DE' },
+    gradientDark: 'linear-gradient(135deg, #AEB6C0, #D2D8DE)',
+    orbDark: { orb1: '#AEB6C0', orb2: '#D2D8DE', orb3: '#3A3F47' },
   },
   indigo: {
-    primary: '#2C4A6E',
-    primaryLight: '#E2E9F0',
-    primaryDark: '#1B3150',
-    accent: '#3B82A8',
-    gradient: 'linear-gradient(135deg, #2C4A6E, #3B82A8)',
-    orb1: '#2C4A6E',
-    orb2: '#3B82A8',
-    orb3: '#5B8CB8',
+    primary: '#2864A8',
+    primaryLight: '#E4EEF8',
+    primaryDark: '#173A6B',
+    accent: '#4C8BD0',
+    gradient: 'linear-gradient(135deg, #2864A8, #4C8BD0)',
+    orb1: '#2864A8',
+    orb2: '#4C8BD0',
+    orb3: '#8FB8E5',
+    dark: { primary: '#5E9BE0', primaryLight: '#162438', primaryDark: '#3D74B5', accent: '#8FBEF0' },
+    gradientDark: 'linear-gradient(135deg, #5E9BE0, #8FBEF0)',
+    orbDark: { orb1: '#5E9BE0', orb2: '#8FBEF0', orb3: '#2864A8' },
   },
   pine: {
-    primary: '#2F6B4F',
-    primaryLight: '#E1EDE6',
-    primaryDark: '#1D4A36',
-    accent: '#4A8571',
-    gradient: 'linear-gradient(135deg, #2F6B4F, #4A8571)',
-    orb1: '#2F6B4F',
-    orb2: '#4A8571',
-    orb3: '#5FA184',
+    primary: '#2E7D5B',
+    primaryLight: '#E3F0E9',
+    primaryDark: '#1C5540',
+    accent: '#4FA97F',
+    gradient: 'linear-gradient(135deg, #2E7D5B, #4FA97F)',
+    orb1: '#2E7D5B',
+    orb2: '#4FA97F',
+    orb3: '#8FCBB2',
+    dark: { primary: '#57BE8E', primaryLight: '#13291F', primaryDark: '#3E9A70', accent: '#8BD8B1' },
+    gradientDark: 'linear-gradient(135deg, #57BE8E, #8BD8B1)',
+    orbDark: { orb1: '#57BE8E', orb2: '#8BD8B1', orb3: '#2E7D5B' },
   },
   clay: {
-    primary: '#B05A45',
-    primaryLight: '#F3E2DC',
-    primaryDark: '#7E3B2A',
-    accent: '#C07A5C',
-    gradient: 'linear-gradient(135deg, #B05A45, #C07A5C)',
-    orb1: '#B05A45',
-    orb2: '#C07A5C',
-    orb3: '#C98A72',
+    primary: '#C4704F',
+    primaryLight: '#F7E8DF',
+    primaryDark: '#8E4527',
+    accent: '#E09778',
+    gradient: 'linear-gradient(135deg, #C4704F, #E09778)',
+    orb1: '#C4704F',
+    orb2: '#E09778',
+    orb3: '#F2C0A6',
+    dark: { primary: '#E08F68', primaryLight: '#382218', primaryDark: '#BE6B41', accent: '#F0B597' },
+    gradientDark: 'linear-gradient(135deg, #E08F68, #F0B597)',
+    orbDark: { orb1: '#E08F68', orb2: '#F0B597', orb3: '#8E4527' },
+  },
+  // ===== 简约系列（与 styles/skinSeries.ts 的同名色板一一对应）=====
+  cloud: {
+    primary: '#5B8DB8',
+    primaryLight: '#E9F2F9',
+    primaryDark: '#35648E',
+    accent: '#8FB8DA',
+    gradient: 'linear-gradient(135deg, #5B8DB8, #8FB8DA)',
+    orb1: '#5B8DB8',
+    orb2: '#8FB8DA',
+    orb3: '#BCD6EC',
+    dark: { primary: '#7FB2DC', primaryLight: '#182B3A', primaryDark: '#5B8DB8', accent: '#A9CEEA' },
+    gradientDark: 'linear-gradient(135deg, #7FB2DC, #A9CEEA)',
+    orbDark: { orb1: '#7FB2DC', orb2: '#A9CEEA', orb3: '#5B8DB8' },
+  },
+  bamboo: {
+    primary: '#6CA96E',
+    primaryLight: '#EAF3EA',
+    primaryDark: '#417347',
+    accent: '#94C496',
+    gradient: 'linear-gradient(135deg, #6CA96E, #94C496)',
+    orb1: '#6CA96E',
+    orb2: '#94C496',
+    orb3: '#C0DEBE',
+    dark: { primary: '#8DCB8F', primaryLight: '#1B2A1C', primaryDark: '#6BA56D', accent: '#B0DDB1' },
+    gradientDark: 'linear-gradient(135deg, #8DCB8F, #B0DDB1)',
+    orbDark: { orb1: '#8DCB8F', orb2: '#B0DDB1', orb3: '#6CA96E' },
+  },
+  ripple: {
+    primary: '#2AA198',
+    primaryLight: '#E4F4F4',
+    primaryDark: '#177774',
+    accent: '#58C4C0',
+    gradient: 'linear-gradient(135deg, #2AA198, #58C4C0)',
+    orb1: '#2AA198',
+    orb2: '#58C4C0',
+    orb3: '#97DFDB',
+    dark: { primary: '#4CC7BE', primaryLight: '#122B2A', primaryDark: '#2FA59B', accent: '#88E0DB' },
+    gradientDark: 'linear-gradient(135deg, #4CC7BE, #88E0DB)',
+    orbDark: { orb1: '#4CC7BE', orb2: '#88E0DB', orb3: '#2AA198' },
+  },
+  /* 瓷·冰（白瓷 + 冰块）：底=甜白（白如凝脂）；主色=月白冷蓝灰 #7C9AAD（有蓝调、不是绿调）；
+     与云霁（饱和天蓝）、涟碧（湖青）区分：瓷冰是"白为主 + 冷蓝灰棱线"，近看才见色。 */
+  porcelain: {
+    primary: '#7C9AAD',
+    primaryLight: '#EAF2F6',
+    primaryDark: '#4E6B80',
+    accent: '#B7D3E0',
+    gradient: 'linear-gradient(135deg, #7C9AAD, #B7D3E0)',
+    orb1: '#7C9AAD',
+    orb2: '#B7D3E0',
+    orb3: '#DCEAF0',
+    dark: { primary: '#A8C6D8', primaryLight: '#1A242C', primaryDark: '#7C9AAD', accent: '#CBE0EB' },
+    gradientDark: 'linear-gradient(135deg, #A8C6D8, #CBE0EB)',
+    orbDark: { orb1: '#A8C6D8', orb2: '#CBE0EB', orb3: '#4E6B80' },
+  },
+  dune: {
+    primary: '#C99559',
+    primaryLight: '#F6EDDC',
+    primaryDark: '#96682F',
+    accent: '#E2B87A',
+    gradient: 'linear-gradient(135deg, #C99559, #E2B87A)',
+    orb1: '#C99559',
+    orb2: '#E2B87A',
+    orb3: '#F2D6A8',
+    dark: { primary: '#E0B072', primaryLight: '#332415', primaryDark: '#C08F4C', accent: '#F2D3A0' },
+    gradientDark: 'linear-gradient(135deg, #E0B072, #F2D3A0)',
+    orbDark: { orb1: '#E0B072', orb2: '#F2D3A0', orb3: '#96682F' },
   },
 };
 
@@ -674,10 +780,10 @@ export const useSettingsStore = defineStore('settings', () => {
   }
 
   /** 当前 palette 的实心按钮主色（applySkin 计算 --skin-btn-text 时需要） */
-  let currentBtnPrimary = '#C2410C';
+  let currentBtnPrimary = '#C7382E';
 
   /** 当前皮肤自带的主色（配色派生链的输入，见 deriveSkinTokens） */
-  let currentSkinPrimary = '#C2410C';
+  let currentSkinPrimary = '#C7382E';
 
   /**
    * palette id 是否指向某套皮肤自带的配色（插件 kind='skin' 主题）。
@@ -709,22 +815,34 @@ export const useSettingsStore = defineStore('settings', () => {
     if (!p) return;
     const root = document.documentElement.style;
     const dark = settings.value.darkMode;
-    const bg = dark ? '#141414' : '#ffffff';
+    const bg = dark ? (p.dark?.background || '#141414') : '#ffffff';
+
+    // ===== 暗色专用配色（2026-09-18）：按当前模式取用，缺省回落亮色值 =====
+    // 约定来自 @yan-zhi/core 的 ThemePalette.dark（此前内置主题都没配、这里也没读）。
+    const dv = dark ? p.dark : undefined;
+    const cPrimary = dv?.primary ?? p.primary;
+    const cPrimaryLight = dv?.primaryLight ?? p.primaryLight;
+    const cPrimaryDark = dv?.primaryDark ?? p.primaryDark;
+    const cAccent = dv?.accent ?? p.accent;
+    const cGradient = (dark ? p.gradientDark : undefined) ?? (dark && dv?.primary
+      ? `linear-gradient(135deg, ${dv.primary}, ${dv.accent ?? p.accent})`
+      : p.gradient);
+    const orb = dark && p.orbDark ? p.orbDark : { orb1: p.orb1, orb2: p.orb2, orb3: p.orb3 };
 
     // ===== 主色：按对比度选可读变体 =====
-    const btnPrimary = contrastRatio(p.primary, '#ffffff') >= 4.5 ? p.primary : (p.primaryDark || p.primary);
+    const btnPrimary = contrastRatio(cPrimary, '#ffffff') >= 4.5 ? cPrimary : (cPrimaryDark || cPrimary);
     currentBtnPrimary = btnPrimary;
     const textPrimary = dark
-      ? (contrastRatio(p.primary, bg) >= 4.5 ? p.primary : mixHex(p.primary, '#ffffff', 0.35))
+      ? (contrastRatio(cPrimary, bg) >= 4.5 ? cPrimary : mixHex(cPrimary, '#ffffff', 0.35))
       : btnPrimary;
     root.setProperty('--color-primary', textPrimary);
-    root.setProperty('--color-primary-light', p.primaryLight);
-    root.setProperty('--color-primary-dark', p.primaryDark);
-    root.setProperty('--color-accent', p.accent);
-    root.setProperty('--gradient-primary', p.gradient);
-    root.setProperty('--orb-1-color', p.orb1);
-    root.setProperty('--orb-2-color', p.orb2);
-    root.setProperty('--orb-3-color', p.orb3);
+    root.setProperty('--color-primary-light', cPrimaryLight);
+    root.setProperty('--color-primary-dark', cPrimaryDark);
+    root.setProperty('--color-accent', cAccent);
+    root.setProperty('--gradient-primary', cGradient);
+    root.setProperty('--orb-1-color', orb.orb1);
+    root.setProperty('--orb-2-color', orb.orb2);
+    root.setProperty('--orb-3-color', orb.orb3);
     root.setProperty('--el-color-primary', btnPrimary);
     root.setProperty('--el-color-primary-light-3', mixHex(btnPrimary, bg, 0.3));
     root.setProperty('--el-color-primary-light-5', mixHex(btnPrimary, bg, 0.5));
@@ -742,6 +860,7 @@ export const useSettingsStore = defineStore('settings', () => {
 
     if (!skin) {
       el.removeAttribute('data-skin');
+      el.removeAttribute('data-skin-scrollbar');
       for (const v of SKIN_CSS_VARS) root.removeProperty(v);
       return;
     }
@@ -752,7 +871,10 @@ export const useSettingsStore = defineStore('settings', () => {
       if (series) {
         const wp = series.wallpaper;
         // 内置系列自带同色主题色，取它作为配色派生输入
-        currentSkinPrimary = THEMES[series.palette as keyof typeof THEMES]?.primary ?? currentBtnPrimary;
+        // ⚠️ 必须按当前深浅模式取：暗色下要用主题的 dark.primary，否则面板/文字派生色
+        //    仍按亮色主色算，暗色壁纸上会出现"派生出来的浅色容器 + 浅色文字"。
+        const tp = THEMES[series.palette as keyof typeof THEMES];
+        currentSkinPrimary = (dark ? tp?.dark?.primary : undefined) ?? tp?.primary ?? currentBtnPrimary;
         // 双保险：系列皮肤激活时重应用主色族（palette 可能因启动时序未成功应用，
         // 导致 --color-primary 停留在默认色；applyPalette 不反调 applySkin，无递归）
         applyPalette(settings.value.palette);
@@ -765,6 +887,7 @@ export const useSettingsStore = defineStore('settings', () => {
       }
       // 系列定义缺失（理论上不会发生）→ 回落无皮肤
       el.removeAttribute('data-skin');
+      el.removeAttribute('data-skin-scrollbar');
       for (const v of SKIN_CSS_VARS) root.removeProperty(v);
       return;
     }
@@ -783,6 +906,7 @@ export const useSettingsStore = defineStore('settings', () => {
     }
     if (!p || !p.wallpaper || !pluginId) {
       el.removeAttribute('data-skin');
+      el.removeAttribute('data-skin-scrollbar');
       for (const v of SKIN_CSS_VARS) root.removeProperty(v);
       return;
     }
@@ -790,7 +914,8 @@ export const useSettingsStore = defineStore('settings', () => {
     // P0-4：壁纸遮罩/模糊默认下调（原 0.45 / 12px），保证壁纸细节可辨；
     // 文字可读性改由 surfaceSunken / surfaceRaised 的不透明度分级保证，而不是把壁纸糊掉
     const file = dark ? (p.wallpaper.dark || p.wallpaper.light) : p.wallpaper.light;
-    currentSkinPrimary = p.primary || currentBtnPrimary;
+    // 同上：暗色下优先取该主题的 dark.primary，让面板/文字派生色跟着暗色设计走
+    currentSkinPrimary = (dark ? p.dark?.primary : undefined) ?? p.primary ?? currentBtnPrimary;
     // 双保险：此处能查到皮肤主题 = plugin store 已就绪，重应用 palette 必然成功。
     // 修复启动时序坑：load() 先于 pluginStore.refresh() 执行时 applyPalette(皮肤id) 查不到主题
     // 直接 return，主色族停在默认朱砂——壁纸生效而主色不跟，观感"皮肤没生效/灰蒙蒙"。
@@ -1093,6 +1218,20 @@ export const useSettingsStore = defineStore('settings', () => {
     }
     if (sf.tagRadius !== undefined || sf.buttonRadius !== undefined) {
       root.setProperty('--skin-tag-radius', `${sf.tagRadius ?? sf.buttonRadius ?? 6}px`);
+    }
+    /**
+     * 滚动条形态开关（2026-09-18 用户要求：「非图片皮肤滚动条不用图片，
+     * 就对应的配色加上下圆形就好了」）。
+     *   · 图片皮肤（插件皮肤包 pluginId 非空，或皮肤自带滚动条贴图）→ data-skin-scrollbar="image"
+     *     走 skin.css 的金箍棒材质贴图分支；
+     *   · 其余（内置系列等程序化/纯配色皮肤）→ 不带该属性，走纯色 thumb + 999px 圆角（上下圆头），
+     *     颜色取 --skin-scrollbar-thumb（皮肤主色派生）→ --scrollbar-thumb。
+     * ⚠️ 必须显式 removeAttribute：从图片皮肤切回内置系列时旧开关会残留。
+     */
+    if (pluginId || sf.scrollbarVBody || sf.scrollbarHBody) {
+      document.documentElement.setAttribute('data-skin-scrollbar', 'image');
+    } else {
+      document.documentElement.removeAttribute('data-skin-scrollbar');
     }
     if (sf.scrollbarThumb) root.setProperty('--skin-scrollbar-thumb', sf.scrollbarThumb);
     // 滚动条「金箍棒材质」下发（2026-09-13 第四版）：

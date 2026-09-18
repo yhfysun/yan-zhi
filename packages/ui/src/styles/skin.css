@@ -960,9 +960,19 @@ html[data-skin="on"] .el-dialog.tm-solid-dialog .el-textarea__inner {
 [data-skin="on"] .el-tag {
   border-radius: var(--skin-tag-radius, 6px);
 }
-/* 自定义滚动条 thumb 色（覆盖默认主色低 alpha） */
+/* 自定义滚动条 thumb 色（覆盖默认主色低 alpha）
+   ⚠️ 深色必须另给一份：上方 [data-theme="dark"][data-skin="on"]（特指度 0,2,0）里
+      已定义过 --scrollbar-thumb，会压过本块（0,1,0）→ 漏了深色这条，
+      皮肤下发的 --skin-scrollbar-thumb 在深色模式下永远不生效。 */
 [data-skin="on"] {
   --scrollbar-thumb: var(--skin-scrollbar-thumb, color-mix(in srgb, var(--color-primary) 20%, transparent));
+  --scrollbar-thumb-hover: color-mix(in srgb, var(--scrollbar-thumb) 76%, var(--color-primary));
+  --scrollbar-thumb-active: color-mix(in srgb, var(--scrollbar-thumb) 56%, var(--color-primary));
+}
+[data-theme="dark"][data-skin="on"] {
+  --scrollbar-thumb: var(--skin-scrollbar-thumb, color-mix(in srgb, var(--color-primary) 25%, transparent));
+  --scrollbar-thumb-hover: color-mix(in srgb, var(--scrollbar-thumb) 74%, var(--color-primary));
+  --scrollbar-thumb-active: color-mix(in srgb, var(--scrollbar-thumb) 54%, var(--color-primary));
 }
 /* 分割线色随皮肤（未配置时回落到列表分割线派生色） */
 [data-skin="on"] .el-divider {
@@ -1174,10 +1184,31 @@ html[data-skin="on"] .el-dialog.tm-solid-dialog .el-textarea__inner {
 [data-skin="on"] ::-webkit-scrollbar-track {
   background: transparent;
 }
-/* ⚠️ 必须用**独立声明**（background-image / -size / -repeat / -position / -color），
-   不要用 `background:` 简写 —— 简写会把 color 重置掉，
-   且贴图 + 渐变混在简写里对 webkit 滚动条伪元素更脆弱（见文件头部坑4）。 */
+/* ===== 非图片皮肤（内置系列 / 纯配色皮肤）：纯色 + 上下圆头 =====
+   2026-09-18 用户要求：「非图片皮肤滚动条不用图片，就对应配色加上下圆形就好了」。
+   即不套金箍棒那套贴图素材 —— 直接用皮肤主色派生出的 thumb 色（--skin-scrollbar-thumb
+   → --scrollbar-thumb），配 999px 圆角（胶囊，上下两端自然成圆头）。
+   判定由 JS 侧下发：只有「图片皮肤」（插件皮肤包，applySurface 的 pluginId 非空，
+   或皮肤自带滚动条贴图）才会带 data-skin-scrollbar="image"，走下方贴图分支。 */
 [data-skin="on"] ::-webkit-scrollbar-thumb {
+  background-color: var(--scrollbar-thumb) !important;
+  background-image: none !important;
+  border: none;
+  border-radius: 999px !important;
+}
+[data-skin="on"] ::-webkit-scrollbar-thumb:hover {
+  background-color: var(--scrollbar-thumb-hover) !important;
+}
+[data-skin="on"] ::-webkit-scrollbar-thumb:active {
+  background-color: var(--scrollbar-thumb-active) !important;
+}
+
+/* ===== 图片皮肤：金箍棒材质贴图（仅 data-skin-scrollbar="image" 时启用） =====
+   ⚠️ 必须用**独立声明**（background-image / -size / -repeat / -position / -color），
+   不要用 `background:` 简写 —— 简写会把 color 重置掉，
+   且贴图 + 渐变混在简写里对 webkit 滚动条伪元素更脆弱（见文件头部坑4）。
+   特指度 (0,2,0) 高于上面的纯色分支 (0,1,0)，故能整组覆盖。 */
+[data-skin="on"][data-skin-scrollbar="image"] ::-webkit-scrollbar-thumb {
   background-image: var(--skin-scrollbar-v-pattern) !important;
   background-size: var(--skin-scrollbar-v-size) !important;
   background-repeat: var(--skin-scrollbar-v-repeat) !important;
@@ -1188,16 +1219,18 @@ html[data-skin="on"] .el-dialog.tm-solid-dialog .el-textarea__inner {
 /* 横向滚动条：改用**横版专用素材**（body 沿 X 无缝平铺）。
    ⚠️ 绝不可复用竖版 body：竖版内部是「左右暗边」渐变，repeat-x 时每片接缝处
    出现黑缝 → 碎成一串方块（v3 的教训，用户已截图反馈）。 */
-[data-skin="on"] ::-webkit-scrollbar-thumb:horizontal {
+[data-skin="on"][data-skin-scrollbar="image"] ::-webkit-scrollbar-thumb:horizontal {
   background-image: var(--skin-scrollbar-h-pattern) !important;
   background-size: var(--skin-scrollbar-h-size) !important;
   background-repeat: var(--skin-scrollbar-h-repeat) !important;
   background-position: var(--skin-scrollbar-h-pos) !important;
 }
-[data-skin="on"] ::-webkit-scrollbar-thumb:hover {
+[data-skin="on"][data-skin-scrollbar="image"] ::-webkit-scrollbar-thumb:hover {
+  background-color: transparent !important;
   filter: brightness(1.22) saturate(1.1);
 }
-[data-skin="on"] ::-webkit-scrollbar-thumb:active {
+[data-skin="on"][data-skin-scrollbar="image"] ::-webkit-scrollbar-thumb:active {
+  background-color: transparent !important;
   filter: brightness(1.4) saturate(1.2);
 }
 

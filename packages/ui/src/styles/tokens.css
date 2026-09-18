@@ -28,25 +28,27 @@
   --font-body: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", Roboto, sans-serif;
   --font-mono: "JetBrains Mono", "SF Mono", ui-monospace, "Cascadia Code", Consolas, monospace;
 
-  /* 主题色（applyPalette/applySkin 运行时覆盖，这里为默认「朱砂」） */
-  --color-primary: #C2410C;
-  --color-primary-light: #FBEBDD;
-  --color-primary-dark: #7C2D12;
-  --color-accent: #B45309;
-  --color-success: #2F6B4F;
-  --color-warning: #B45309;
+  /* 主题色（applyPalette/applySkin 运行时覆盖，这里为默认「瓷·冰」白瓷系冷蓝灰）
+     ⚠️ 默认皮肤已改为 builtin:porcelain + 亮色模式（DEFAULT_SETTINGS），
+        这里必须跟着改，否则首帧会先闪一下朱砂红再跳到瓷冰。 */
+  --color-primary: #7C9AAD;
+  --color-primary-light: #EAF2F6;
+  --color-primary-dark: #4E6B80;
+  --color-accent: #B7D3E0;
+  --color-success: #2E7D5B;
+  --color-warning: #C99559;
   --color-danger: #B91C1C;
 
   /* Element Plus theme — 中性对齐，applyPalette/applySkin 会同步主色 */
-  --el-color-primary: #C2410C;
-  --el-color-primary-light-3: #D97757;
-  --el-color-primary-light-5: #E5A48B;
-  --el-color-primary-light-7: #F0C9B8;
-  --el-color-primary-light-8: #F6DDD0;
-  --el-color-primary-light-9: #FBEBDD;
-  --el-color-primary-dark-2: #7C2D12;
+  --el-color-primary: #7C9AAD;
+  --el-color-primary-light-3: #9DB4C3;
+  --el-color-primary-light-5: #B8C9D3;
+  --el-color-primary-light-7: #D3DEE4;
+  --el-color-primary-light-8: #E0E8EC;
+  --el-color-primary-light-9: #EDF2F4;
+  --el-color-primary-dark-2: #4E6B80;
 
-  --gradient-primary: linear-gradient(135deg, #C2410C, #B45309);
+  --gradient-primary: linear-gradient(135deg, #7C9AAD, #B7D3E0);
 
   /* 阴影：极轻、带偏移与模糊（避免零偏移光晕式"浮起感"） */
   --shadow-sm: 0 1px 2px rgba(26, 26, 26, 0.04);
@@ -127,12 +129,12 @@
   --glass-border-strong: #3A3A37;
   --glass-filter: none;
 
-  --color-primary: #D97757;
-  --color-primary-light: rgba(217, 119, 87, 0.16);
-  --color-primary-dark: #C2410C;
-  --color-accent: #D97757;
-  --color-success: #4A8571;
-  --color-warning: #C07A5C;
+  --color-primary: #DE5F4F;
+  --color-primary-light: rgba(222, 95, 79, 0.16);
+  --color-primary-dark: #8E2318;
+  --color-accent: #DE5F4F;
+  --color-success: #4FA97F;
+  --color-warning: #E2B87A;
   --color-danger: #C25B4E;
 
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
@@ -156,13 +158,13 @@
   --el-text-color-secondary: #9A9A92;
   --el-text-color-placeholder: #6F6F68;
   --el-mask-color: rgba(0, 0, 0, 0.5);
-  --el-color-primary: #D97757;
-  --el-color-primary-light-3: #C2603A;
-  --el-color-primary-light-5: #A84F2D;
-  --el-color-primary-light-7: #8E4022;
-  --el-color-primary-light-8: #7C2D12;
-  --el-color-primary-light-9: rgba(217, 119, 87, 0.16);
-  --el-color-primary-dark-2: #C2410C;
+  --el-color-primary: #DE5F4F;
+  --el-color-primary-light-3: #CE5344;
+  --el-color-primary-light-5: #BE4739;
+  --el-color-primary-light-7: #AE3B2E;
+  --el-color-primary-light-8: #8E2318;
+  --el-color-primary-light-9: rgba(222, 95, 79, 0.16);
+  --el-color-primary-dark-2: #B03528;
   --el-color-success: #4A8571;
   --el-color-success-light-9: rgba(74, 133, 113, 0.16);
   --el-color-warning: #C07A5C;

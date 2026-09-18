@@ -271,11 +271,16 @@ const tab = ref('general');
 const fileInput = ref<HTMLInputElement | null>(null);
 
 const themes: Array<{ value: ThemeName; label: string; color: string }> = [
-  { value: 'cinnabar', label: '朱砂', color: '#C2410C' },
-  { value: 'ink', label: '松烟', color: '#57534E' },
-  { value: 'indigo', label: '靛青', color: '#2C4A6E' },
-  { value: 'pine', label: '松绿', color: '#2F6B4F' },
-  { value: 'clay', label: '陶土', color: '#B05A45' },
+  { value: 'cinnabar', label: '朱砂', color: '#C7382E' },
+  { value: 'ink', label: '松烟', color: '#3A3F47' },
+  { value: 'indigo', label: '靛青', color: '#2864A8' },
+  { value: 'pine', label: '松绿', color: '#2E7D5B' },
+  { value: 'clay', label: '陶土', color: '#C4704F' },
+  { value: 'cloud', label: '云霁', color: '#5B8DB8' },
+  { value: 'bamboo', label: '竹篁', color: '#6CA96E' },
+  { value: 'ripple', label: '涟碧', color: '#2AA198' },
+  { value: 'porcelain', label: '瓷冰', color: '#9BAEAC' },
+  { value: 'dune', label: '砂丘', color: '#C99559' },
 ];
 
 // ===== 内置系列皮肤：每个主题色一套成套纹理（壁纸/菜单/代码模式/浏览器外壳/部件），无需插件 =====
