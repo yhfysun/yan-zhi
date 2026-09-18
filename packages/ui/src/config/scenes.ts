@@ -6,18 +6,23 @@
 //
 // 目录结构（openspec four-mode-workspace 决策 5）：
 // - SCENES 全量目录（含 code / ops / sec —— code 保留给开发模式自动切换，ops/sec 是模式场景）
-// - WELCOME_SCENES 欢迎卡渲染子集（10 张办公岗位卡，排除 code/ops/sec）
-// - 新增 8 个办公岗位一律挂 a_default_assistant + 岗位提示词（不新建内置智能体）
+// - WELCOME_SCENES 欢迎卡渲染子集（12 张办公岗位卡，排除 code/ops/sec）
+// - 新增办公岗位一律挂 a_default_assistant + 岗位提示词（不新建内置智能体）
+//   例外（用户拍板）：translate / business 两个岗位有专属内置智能体
+//   （a_builtin_translate_agent / a_builtin_business_agent），因为术语一致性、
+//   回译校验、经营测算这些方法论需要专属提示词 + 专属技能，复用默认助手会串味。
 import type { Component } from 'vue';
 import {
   Suitcase, Monitor, Brush, Coin, TrendCharts, Promotion, User, Sell,
-  ScaleToOriginal, DataAnalysis, Service,
+  ScaleToOriginal, DataAnalysis, Service, Connection, Notebook, Shop,
 } from '@element-plus/icons-vue';
 
 export type SceneKey =
   | 'office' | 'code' | 'design'
   | 'admin' | 'finance' | 'operation' | 'hr' | 'sales' | 'legal' | 'data' | 'service'
+  | 'translate' | 'business'
   | 'ops' | 'sec'
+  | 'wf'
   | '';
 
 export interface SceneDef {
@@ -216,6 +221,42 @@ export const SCENES: SceneDef[] = [
     ].join('\n'),
     skillKeywords: ['客服', '售后', '话术', '工单', '投诉', '客户服务', 'faq'],
   },
+  {
+    key: 'translate',
+    label: '多语翻译',
+    icon: Notebook,
+    color: '#0d9488',
+    desc: '各国语言资料互译 · 术语一致',
+    examples: ['把这份英文合同翻成中文，附术语表', '这篇技术文档做成中英对照', '这张日文说明书扫描件翻成中文'],
+    agentId: 'a_builtin_translate_agent',
+    prompt: [
+      '## 当前场景：多语翻译',
+      '用户处于多语翻译场景，你是一名专业翻译：',
+      '- 先判清语种方向、领域用途（法律/技术/商务/营销）与交付形态（只要译文/中对照/附术语表），信息不足一次问全。',
+      '- 动笔前先建术语表并全篇锁定译法；长文档分块翻译，保持指代与上下文一致。',
+      '- 交付前做漏译、数字、回译、术语一致性四项自检；数字与专有名词零改动。',
+      '- 法律/医疗/金融等专业文本，交付时注明"译文仅供参考，正式用途请由专业机构审校"。',
+    ].join('\n'),
+    skillKeywords: ['翻译', '多语言', '本地化', '术语', '中英', 'translate', 'i18n'],
+  },
+  {
+    key: 'business',
+    label: '生意经营',
+    icon: Shop,
+    color: '#b45309',
+    desc: '开店测算 · 经营诊断 · 合规',
+    examples: ['帮我算下开一家社区小面馆要多少钱、多久回本', '电动车店最近不赚钱，帮我拆一下问题在哪', '棋牌室开业需要办哪些手续、有哪些不能碰的'],
+    agentId: 'a_builtin_business_agent',
+    prompt: [
+      '## 当前场景：生意经营',
+      '用户处于小微生意经营场景，你是一名懂经营、懂算账、懂合规的生意伙伴（覆盖餐饮、电动车、棋牌室等实体业态）：',
+      '- 先摸清条件再算账：业态阶段、位置规模、投入与固定支出、客流客单与毛利、想解决什么；信息不足一次问全，缺数就用经验区间先算一版并标注假设。',
+      '- 测算必须可复算：给公式、中间值与结论（盈亏平衡、回本周期、真实到手率等）；不编造行业数据，要参考就说明来源。',
+      '- 合规红线不可协商：涉赌、违规解除电动车限速与改装、无证经营等一律不做，只给合规替代做法。',
+      '- 不说空话：每条建议给具体动作、量化目标与时间点；专业文本注明以当地主管部门口径为准。',
+    ].join('\n'),
+    skillKeywords: ['生意', '开店', '创业', '经营', '选址', '测算', '餐饮', '电动车', '棋牌室'],
+  },
   // ===== 以下为模式场景：不出现在欢迎卡，由模式挂载时自动激活 =====
   {
     key: 'code',
@@ -271,11 +312,30 @@ export const SCENES: SceneDef[] = [
     ].join('\n'),
     skillKeywords: ['安全', '扫描', '探测', '漏洞', '加固', '审计', '蓝队', '报告'],
   },
+  {
+    key: 'wf',
+    label: '工作流',
+    icon: Connection,
+    color: '#7c3aed',
+    desc: '运行 · 调试 · 定时',
+    examples: ['运行「短剧流水线」并看每个节点的输出', '这次运行卡在哪个节点了', '把上次那条跑挂的记录重跑一遍'],
+    // 工作流模式的宿主智能体：工作流助手（负责补参 / 调 wf_* 工具 / 解读结果）
+    agentId: 'a_builtin_workflow_assistant',
+    prompt: [
+      '## 当前场景：工作流',
+      '用户处于工作流模式，你是一名工作流运行助手：',
+      '- 关注「运行」这件事：入参是否完整、卡在哪个节点、节点输出是什么、失败原因怎么修。',
+      '- 用户提到某个工作流时，先确认入参齐全再执行；缺参就一次性问清，不要逐个追问。',
+      '- 解释运行结果时按「节点顺序」讲：哪个节点产出了什么，最终结论是什么。',
+      '- 失败时定位到具体节点，说明是入参问题、模型问题还是工具问题，并给可执行的修改建议。',
+    ].join('\n'),
+    skillKeywords: ['工作流', '流程', '编排', '自动化', '运行', '定时', '节点', 'workflow'],
+  },
 ];
 
-/** 欢迎卡渲染子集：10 张办公岗位卡（排除 code/ops/sec 模式场景） */
+/** 欢迎卡渲染子集：12 张办公岗位卡（排除 code/ops/sec/wf 模式场景） */
 export const WELCOME_SCENES: SceneDef[] = SCENES.filter(
-  (s) => !['code', 'ops', 'sec'].includes(s.key),
+  (s) => !['code', 'ops', 'sec', 'wf'].includes(s.key),
 );
 
 export function sceneByKey(key: SceneKey): SceneDef | null {

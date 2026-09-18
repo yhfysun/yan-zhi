@@ -9,6 +9,7 @@
 import {
   Monitor, DataAnalysis, Platform, Lock, VideoCamera, Brush, Search, Box,
   User, SetUp, Files, Reading, Cpu, Promotion, ChatDotRound, Suitcase,
+  Notebook, Shop,
 } from '@element-plus/icons-vue';
 import type { Component } from 'vue';
 
@@ -40,6 +41,10 @@ export const AGENT_ICON_BY_ID: Record<string, Component> = {
   a_builtin_storyboard_agent: VideoCamera,
   // 发布 / CI-CD
   a_builtin_cicd_agent: Promotion,
+  // 多语翻译
+  a_builtin_translate_agent: Notebook,
+  // 小微生意经营
+  a_builtin_business_agent: Shop,
 };
 
 /**
@@ -52,6 +57,13 @@ export const AGENT_ICON_BY_ID: Record<string, Component> = {
  */
 const AGENT_ICON_BY_KEYWORD: Array<[RegExp, Component]> = [
   [/短剧|分镜|导演|剧本/, VideoCamera],
+  // 翻译（放在「写作/文档」之前：翻译助手的活是译，不是写）。
+  // 用词覆盖实际起名习惯：翻译 / 中英互译 / 多语言 / 本地化 / 笔译口译 / 译员。
+  [/翻译|多语|本地化|互译|中英|英译|笔译|口译|译员|translate|i18n/i, Notebook],
+  // 小微生意经营 —— 必须排在「设计/数据」之前：
+  // 「门店经营分析」「生意数据复盘」这类名字里都含「分析/数据」，
+  // 排在后面会被通用词抢走（实测踩过）。这里认的都是高度专指的词。
+  [/生意|开店|经营|创业|盈亏/, Shop],
   [/设计|创意|视觉|海报|ui|美工/i, Brush],
   [/数据|分析|报表|统计|bi\b/i, DataAnalysis],
   [/运维|服务器|docker|部署|sre/i, Platform],

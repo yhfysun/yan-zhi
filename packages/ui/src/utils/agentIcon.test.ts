@@ -28,10 +28,13 @@ const BUILTIN_AGENT_IDS = [
   'a_builtin_backend_dev',
   'a_builtin_ui_designer',
   'a_builtin_frontend_dev',
+  // 办公岗位两个专属助手：多语翻译 / 小微生意经营
+  'a_builtin_translate_agent',
+  'a_builtin_business_agent',
 ];
 
 describe('内置助手 id 必须全部登记图标（漏登记 = 静默退化首字块）', () => {
-  it('14 个内置 id 都能命中 AGENT_ICON_BY_ID', () => {
+  it('16 个内置 id 都能命中 AGENT_ICON_BY_ID', () => {
     const missing = BUILTIN_AGENT_IDS.filter((id) => !AGENT_ICON_BY_ID[id]);
     expect(missing).toEqual([]);
   });
@@ -91,6 +94,29 @@ describe('resolveAgentIcon · 关键词优先级（顺序即优先级）', () =>
     for (const n of ['周报撰写', '会议纪要整理', '公文起草']) {
       expect(resolveAgentIcon('', n)).toBe(AGENT_ICON_BY_ID.a_default_assistant);
     }
+  });
+
+  it('★ 翻译类用途词命中翻译图标，且不被「文档/写作」规则抢走', () => {
+    // 回归：翻译规则必须排在文档规则之前，否则「文档翻译」会命中办公图标
+    for (const n of ['文档翻译', '多语言本地化', '中英互译助手']) {
+      expect(resolveAgentIcon('', n)).toBe(AGENT_ICON_BY_ID.a_builtin_translate_agent);
+    }
+  });
+
+  it('★ 生意经营用途词命中生意图标', () => {
+    for (const n of ['个人生意助手', '开店测算', '门店经营分析']) {
+      expect(resolveAgentIcon('', n)).toBe(AGENT_ICON_BY_ID.a_builtin_business_agent);
+    }
+  });
+
+  it('两个新内置 id 各走专属图标，不互相串味也不落兜底', () => {
+    const t = resolveAgentIcon('a_builtin_translate_agent', '翻译助手');
+    const b = resolveAgentIcon('a_builtin_business_agent', '个人生意助手');
+    expect(t).toBe(AGENT_ICON_BY_ID.a_builtin_translate_agent);
+    expect(b).toBe(AGENT_ICON_BY_ID.a_builtin_business_agent);
+    expect(t).not.toBe(b);
+    expect(t).not.toBe(AGENT_FALLBACK_ICON);
+    expect(b).not.toBe(AGENT_FALLBACK_ICON);
   });
 });
 
