@@ -113,6 +113,7 @@ db.exec(`
     skill_ids_json TEXT DEFAULT '[]',
     system_prompt TEXT,
     pinned INTEGER DEFAULT 0,
+    mode TEXT DEFAULT 'office',
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
   );
@@ -410,6 +411,24 @@ try { db.exec('CREATE INDEX IF NOT EXISTS idx_conversation_space ON conversation
 // 之前只在新库 CREATE TABLE 中存在、旧库无增量迁移 → 打包版旧库新建会话必报
 // "table conversation has no column named permission_mode"（500）。
 try { db.exec("ALTER TABLE conversation ADD COLUMN permission_mode TEXT DEFAULT 'default'"); } catch {}
+
+// 迁移 conversation 表（添加 mode 列：会话按模式隔离）。
+//
+// 背景：四模式最初的设计契约是「模式 = 同一份上下文的若干视图，不持有会话池」，
+// 所以会话一直共享、列表也不过滤。实际用下来这个决策不成立 ——
+// 工作流模式的下拉里会混进办公/开发的会话，用户明确要求隔离。
+//
+// 这里只做**存量归属**（用户拍板：全归 office）+ 索引；新建会话由
+// routes/conversations.ts 写入真实模式。
+//
+// ★ 默认值必须是 'office' 而不是留空：留空会让存量会话在任何模式下都查不到
+// （列表按 mode = 当前模式过滤），等于让用户觉得"我的会话全没了"。
+try { db.exec("ALTER TABLE conversation ADD COLUMN mode TEXT DEFAULT 'office'"); } catch {}
+// 老库补值：ALTER 加的默认值只对新行生效？SQLite 的 ADD COLUMN DEFAULT 会给存量行回填，
+// 但若历史数据里已有 NULL（早于本迁移被别的路径写入），这里再兜一次，保证不为空。
+try { db.exec("UPDATE conversation SET mode = 'office' WHERE mode IS NULL OR mode = ''"); } catch {}
+// 列表查询是「按模式 + 用户」过滤并按 updated_at 排序，走复合索引
+try { db.exec('CREATE INDEX IF NOT EXISTS idx_conversation_mode ON conversation(user_id, mode, updated_at)'); } catch {}
 
 // 迁移 message 表（添加 system_prompt_snapshot 列 + 子智能体归属列）
 try { db.exec('ALTER TABLE message ADD COLUMN system_prompt_snapshot TEXT'); } catch {}

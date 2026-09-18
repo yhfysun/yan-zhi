@@ -94,6 +94,13 @@ export interface Conversation {
   pinned: boolean;
   /** 会话级工具权限：readonly=只读（写类工具被后端拦截）/ default=默认 / full=全部放行 */
   permissionMode?: 'readonly' | 'default' | 'full';
+  /**
+   * 归属模式：会话按模式隔离，列表只显示当前模式的。
+   *
+   * 创建时由前端写入当前模式，之后**不可变更**（改 mode 会让会话"跳"到
+   * 别的模式列表里，归属语义就乱了）。存量会话在迁移时统一归 'office'。
+   */
+  mode?: 'office' | 'dev' | 'ops' | 'sec' | 'wf';
   createdAt: number;
   updatedAt: number;
 }

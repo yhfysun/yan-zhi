@@ -7,9 +7,33 @@ import { normalizePermissionMode } from '../tool-permission.js';
 const router = Router();
 router.use(authMiddleware);
 
-// GET /api/conversations
-router.get('/', (_req: Request, res: Response) => {
-  const userId = _req.user!.userId;
+// GET /api/conversations[?mode=wf]
+//
+// mode 传了 → 只回该模式的会话（会话按模式隔离，用户拍板 2026-09-18）；
+// 不传 → 回全部（管理类/统计类调用仍需要全量，不能强制过滤）。
+//
+// ★ 为什么过滤放在后端而不是前端：前端过滤只是"看不见"，会话仍会被其它
+// 按 conversations 循环的逻辑（批量删除、导出、计数）扫到，容易出现
+// "删了别的模式的会话"这类越界操作。DB 层收口才是真隔离。
+//
+// 存量会话在迁移时统一归 'office'（db.ts 的 ALTER + UPDATE），
+// 所以这里不需要再兜 NULL —— 若真出现 NULL，用 mode IS ? 会漏，
+// 因此显式把 NULL 视为 office。
+const VALID_MODES = new Set(['office', 'dev', 'ops', 'sec', 'wf']);
+
+router.get('/', (req: Request, res: Response) => {
+  const userId = req.user!.userId;
+  const mode = typeof req.query.mode === 'string' ? req.query.mode : '';
+  // 非法 mode 视为「不过滤」而不是「查不到」：前端传错值时不该让用户看到空列表
+  if (mode && VALID_MODES.has(mode)) {
+    const rows = db.prepare(
+      `SELECT * FROM conversation
+       WHERE user_id = ? AND COALESCE(NULLIF(mode, ''), 'office') = ?
+       ORDER BY pinned DESC, updated_at DESC`,
+    ).all(userId, mode);
+    res.json({ data: rows });
+    return;
+  }
   const rows = db.prepare(
     'SELECT * FROM conversation WHERE user_id = ? ORDER BY pinned DESC, updated_at DESC',
   ).all(userId);
@@ -19,7 +43,7 @@ router.get('/', (_req: Request, res: Response) => {
 // POST /api/conversations
 router.post('/', (req: Request, res: Response) => {
   const userId = req.user!.userId;
-  const { title, platformId, modelId, agentId, spaceId, permissionMode } = req.body || {};
+  const { title, platformId, modelId, agentId, spaceId, permissionMode, mode } = req.body || {};
   if (!title) { res.status(400).json({ error: '标题为必填项' }); return; }
   const id = uuid();
   const now = Date.now();
@@ -30,8 +54,10 @@ router.post('/', (req: Request, res: Response) => {
     if (def) resolvedAgentId = 'a_default_assistant';
   }
   db.prepare(
-    'INSERT INTO conversation (id, user_id, title, agent_id, platform_id, model_id, space_id, mcp_servers_json, skill_ids_json, pinned, permission_mode, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-  ).run(id, userId, title, resolvedAgentId, platformId || null, modelId || null, spaceId || null, '[]', '[]', 0, normalizePermissionMode(permissionMode), now, now);
+    'INSERT INTO conversation (id, user_id, title, agent_id, platform_id, model_id, space_id, mcp_servers_json, skill_ids_json, pinned, permission_mode, mode, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+  ).run(id, userId, title, resolvedAgentId, platformId || null, modelId || null, spaceId || null, '[]', '[]', 0, normalizePermissionMode(permissionMode),
+    // 归属模式：前端建会话时带上当前模式；缺省 office（与存量迁移口径一致）
+    VALID_MODES.has(String(mode)) ? String(mode) : 'office', now, now);
   const row = db.prepare('SELECT * FROM conversation WHERE id = ?').get(id);
   res.json({ data: row });
 });

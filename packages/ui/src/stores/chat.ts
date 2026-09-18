@@ -12,6 +12,8 @@ import { useFileStore } from './file';
 import { useBrowserStore } from './browser';
 import { api, API_BASE, buildRequestHeaders } from '../api/client';
 import { useAuthStore } from './auth';
+// 会话按模式隔离：loadConversations / createConversation 都要知道"当前在哪个模式"
+import { activeMode } from './mode';
 
 // 从工具调用参数中健壮地提取 URL —— 模型常把 URL 放在非 url 字段（target/address/link/href/page 等），
 // 或直接把 arguments 写成 JSON 字符串。只认 args.url 会导致「缺少 url 参数」误报。
@@ -89,6 +91,9 @@ function rowToConv(r: any): Conversation {
     systemPrompt: r.system_prompt,
     pinned: !!r.pinned,
     permissionMode: (r.permission_mode === 'readonly' || r.permission_mode === 'full') ? r.permission_mode : 'default',
+    // 归属模式。空值按 office 兜底（与后端迁移口径一致），
+    // 否则老数据会在所有模式下都"隐身"——列表按 mode 过滤，NULL 匹配不上任何模式。
+    mode: (['office', 'dev', 'ops', 'sec', 'wf'].includes(r.mode) ? r.mode : 'office') as Conversation['mode'],
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };
@@ -539,9 +544,20 @@ export const useChatStore = defineStore('chat', () => {
     return agentStore.selectedId;
   }
 
-  async function loadConversations() {
+  /**
+ * 加载会话列表。
+ *
+ * ★ 按**当前模式**过滤（用户拍板 2026-09-18）：会话是分模式隔离的，
+ * 工作流模式不该看到办公/开发的会话。过滤条件下推到后端（SQL 层），
+ * 不是前端"看不见"——前端过滤仍会把别的模式的会话带进批量删除/计数这类循环。
+ *
+ * 读的是 `activeMode` 的**当前值**而不是缓存的快照：切模式后 App.vue 会重新调用本函数，
+ * 若这里捕获的是旧模式，列表会串。
+ */
+async function loadConversations() {
+    const mode = activeMode.value;
     if (isServerMode()) {
-      const r = await api.get<any[]>('/conversations');
+      const r = await api.get<any[]>(`/conversations?mode=${encodeURIComponent(mode)}`);
       if ('data' in r) {
         conversations.value = (r.data as any[]).map(rowToConv);
       } else {
@@ -549,8 +565,15 @@ export const useChatStore = defineStore('chat', () => {
       }
       return;
     }
+    // 本地（Electron IPC）通道：同样按模式过滤。
+    // 用 COALESCE 兜空值，与后端 GET /conversations 的口径保持一致。
     const adapter = getPlatformAdapter();
-    const rows = await adapter.db.query<any>('SELECT * FROM conversation ORDER BY pinned DESC, updated_at DESC');
+    const rows = await adapter.db.query<any>(
+      `SELECT * FROM conversation
+       WHERE COALESCE(NULLIF(mode, ''), 'office') = ?
+       ORDER BY pinned DESC, updated_at DESC`,
+      [mode],
+    );
     conversations.value = rows.map(rowToConv);
   }
 
@@ -610,6 +633,8 @@ export const useChatStore = defineStore('chat', () => {
         skillIds: opts?.skillIds || [], spaceId: spaceId || null,
         agentId: agentId || null,
         permissionMode: permissionMode.value,
+        // 归属模式：会话按模式隔离，建的时候定归属（之后不可改）
+        mode: activeMode.value,
       });
       if ('data' in r) {
         const row = r.data as any;
@@ -624,8 +649,8 @@ export const useChatStore = defineStore('chat', () => {
     const ts = Date.now();
     const skillIdsJson = JSON.stringify(opts?.skillIds || []);
     await adapter.db.exec(
-      'INSERT INTO conversation (id, title, agent_id, platform_id, model_id, space_id, mcp_servers_json, skill_ids_json, pinned, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      [id, title, agentId || null, opts?.platformId || null, opts?.modelId || null, spaceId || null, '[]', skillIdsJson, 0, ts, ts],
+      'INSERT INTO conversation (id, title, agent_id, platform_id, model_id, space_id, mcp_servers_json, skill_ids_json, pinned, mode, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [id, title, agentId || null, opts?.platformId || null, opts?.modelId || null, spaceId || null, '[]', skillIdsJson, 0, activeMode.value, ts, ts],
     );
     await loadConversations();
     return id;
