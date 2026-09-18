@@ -45,6 +45,43 @@ export const useGitStore = defineStore('git', () => {
   const branches = ref<string[]>([]);
   const log = ref<Record<string, unknown> | null>(null);
 
+  /**
+   * Git 状态版本号（单一事实来源）。
+   *
+   * ★ 为什么需要：界面上有**两份** git 快照，各自发请求、各自刷新 ——
+   *   · 顶栏（CodeWorkbench 的 gitBranch / gitDirty / gitAhead / gitBehind 本地 ref）
+   *   · 侧栏源码管理面板（ChatGitPanel 的 aheadBehind + gitStore.status）
+   *   于是任何一侧刷新后另一侧都是陈旧值。实测现象：侧栏已显示「变更 0 / ↑7」，
+   *   顶栏还停在「↑1」——看起来像「刷新了但没同步」。
+   *
+   * 口径：**只由「会改变仓库状态」的写操作 bump**（提交/推送/拉取/检出/储藏…），
+   * 纯读接口（status / diff / log / 缓存读写）绝不 bump —— 否则订阅方 refresh 会再触发
+   * bump，直接成环。
+   *
+   * 订阅方（顶栏与侧栏）watch 它之后各自重新拉取，用哪份 repo 路径由各自决定
+   * （顶栏用 code.projectDir，侧栏用 activeRepo，可能不同仓库）。
+   */
+  const statusVersion = ref(0);
+  function bumpStatusVersion() { statusVersion.value += 1; }
+
+  /**
+   * 包一层写操作：执行后统一 bump。
+   * 用包装器而不是逐个方法里写 bump，是为了避免漏写 —— 漏一个就重现
+   * 「这条路径刷新了那边没跟」的原始 bug。
+   *
+   * ⚠️ 只管**会改变仓库状态**的方法。特别注意 `writeRepoCache`（写的是面板缓存，
+   *    不是仓库）**不能** bump：侧栏 refreshAll 结束会 persist() 写缓存，
+   *    若它也 bump，就成 refresh → persist → bump → refresh 的死循环。
+   */
+  function withBump<A extends unknown[], R>(fn: (...args: A) => Promise<R>) {
+    return async (...args: A): Promise<R> => {
+      const r = await fn(...args);
+      // 失败也 bump：失败时更需要让两侧回到真实状态（这条分支不抛异常，返回 { error }）
+      bumpStatusVersion();
+      return r;
+    };
+  }
+
   async function checkCapability(): Promise<void> {
     const res = await api.get<{ supported: boolean }>('/git/capability');
     supported.value = 'data' in res ? res.data.supported : false;
@@ -320,6 +357,9 @@ export const useGitStore = defineStore('git', () => {
     fileTree,
     branches,
     log,
+    // ★ 状态版本号：顶栏与侧栏都 watch 它做跨区同步（见文件顶部注释）
+    statusVersion,
+    bumpStatusVersion,
     checkCapability,
     fetchStatus,
     fetchStatusRaw,
@@ -329,53 +369,58 @@ export const useGitStore = defineStore('git', () => {
     readFile,
     diff,
     show,
-    add,
-    commit,
-    commitAmend,
-    pull,
-    push,
-    checkout,
+    // ===== 写操作：一律 withBump（会改变仓库状态，需通知另一侧重新拉取）=====
+    // 新增写接口务必加进这一段；纯读接口（status/diff/log/缓存/列表类）**不要**包，
+    // 否则订阅方 refresh 里的读请求会再 bump → statusVersion 自激成环。
+    add: withBump(add),
+    commit: withBump(commit),
+    commitAmend: withBump(commitAmend),
+    pull: withBump(pull),
+    push: withBump(push),
+    checkout: withBump(checkout),
     conflicts,
     conflictVersions,
-    resolveConflict,
-    resolveContent,
-    restore,
+    resolveConflict: withBump(resolveConflict),
+    resolveContent: withBump(resolveContent),
+    restore: withBump(restore),
     fetchNumstat,
     fetchAheadBehind,
     fetchTree,
-    stageFiles,
-    unstageFiles,
-    ignoreFiles,
-    createBranch,
-    mergeBranch,
-    abortMerge,
-    fetch,
-    stashSave,
+    stageFiles: withBump(stageFiles),
+    unstageFiles: withBump(unstageFiles),
+    ignoreFiles: withBump(ignoreFiles),
+    createBranch: withBump(createBranch),
+    mergeBranch: withBump(mergeBranch),
+    abortMerge: withBump(abortMerge),
+    fetch: withBump(fetch),
+    stashSave: withBump(stashSave),
     stashList,
-    stashPop,
-    stashApply,
-    stashDrop,
-    tagCreate,
+    stashPop: withBump(stashPop),
+    stashApply: withBump(stashApply),
+    stashDrop: withBump(stashDrop),
+    tagCreate: withBump(tagCreate),
     tagList,
-    tagDelete,
+    tagDelete: withBump(tagDelete),
     blame,
-    revert,
-    reset,
-    cherryPick,
-    rebase,
-    rebaseAbort,
+    revert: withBump(revert),
+    reset: withBump(reset),
+    cherryPick: withBump(cherryPick),
+    rebase: withBump(rebase),
+    rebaseAbort: withBump(rebaseAbort),
     remoteBranches,
-    deleteBranch,
-    renameBranch,
+    deleteBranch: withBump(deleteBranch),
+    renameBranch: withBump(renameBranch),
     diffTree,
     commitDiff,
     graph,
     discoverAll,
     readRepoCache,
+    // ⚠️ 缓存写/清**不 bump**：面板 refreshAll 收尾会 persist() 写缓存，
+    //    若它也 bump 就成 refresh → persist → bump → refresh 死循环。
     writeRepoCache,
     clearRepoCache,
-    batchPull,
-    batchPush,
-    batchCheckout,
+    batchPull: withBump(batchPull),
+    batchPush: withBump(batchPush),
+    batchCheckout: withBump(batchCheckout),
   };
 });

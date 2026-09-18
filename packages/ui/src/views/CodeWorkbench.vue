@@ -251,6 +251,8 @@ import { activeMode, leadOf, setLead, type LeadMode } from '../stores/mode';
 import { useChatStore } from '../stores/chat';
 import { useSpaceStore } from '../stores/space';
 import { useGitStore } from '../stores/git';
+// 刷新合并闸门：本组件的写操作收尾刷新与 statusVersion 跨区 watch 会同时触发（见 refreshGitStatus 注释）
+import { createRefreshGate } from '../utils/refreshGate';
 import { useChat } from '../composables/chat/useChat';
 import { clampMenuPos } from '../utils/menuPosition';
 import { useResizable } from '../composables/useResizable';
@@ -460,7 +462,7 @@ const checkoutConflict = ref<{ visible: boolean; branch: string; files: string[]
 });
 const conflictResolver = ref<{ visible: boolean; files: string[] }>({ visible: false, files: [] });
 
-async function refreshGitStatus() {
+async function refreshGitStatusInner() {
   if (!code.projectDir) {
     gitBranch.value = null; gitDirty.value = 0; gitLocalBranches.value = [];
     gitAhead.value = 0; gitBehind.value = 0; gitConflicts.value = [];
@@ -486,6 +488,19 @@ async function refreshGitStatus() {
     gitBehind.value = ab.behind || 0;
   } catch { gitAhead.value = 0; gitBehind.value = 0; }
 }
+
+/**
+ * 带合并语义的刷新入口（调用方一律用这个，不要再直接调 Inner）。
+ *
+ * 为什么需要合并：本组件自己的写操作（检出/新建分支/拉取/推送/获取）在 finally 里
+ * 会调刷新，而这些写操作现在还会 bump `gitStore.statusVersion` → 下面那个跨区 watch
+ * 也会调刷新。两条路几乎同时到 → 同一份数据请求多遍（提交一次能打出 3~4 个 /git/status）。
+ *
+ * 闸门保证：并发合并、结束后补跑一次；且 await 的调用方在整轮结束后才返回，
+ * 所以 `await refreshGitStatus(); if (gitConflicts.value.length) …` 这类后续判断
+ * 读到的仍是新数据（拉取后的冲突提示依赖这一点）。
+ */
+const refreshGitStatus = createRefreshGate(refreshGitStatusInner, 'CodeWorkbench.git');
 function toggleGitBranch(e: MouseEvent) {
   if (!gitBranchDropdown.value) {
     const pos = clampMenuPos(e, 260, 400);
@@ -634,6 +649,16 @@ function onGitKeydown(e: KeyboardEvent) {
 }
 
 watch(() => code.projectDir, () => void refreshGitStatus());
+
+/**
+ * 跨区同步：侧栏源码管理面板（ChatGitPanel）里提交/推送/检出后，顶栏这份快照不会自己更新
+ * —— 两边各发各的请求、各存各的 ref。实测现象：侧栏已「变更 0 / ↑7」，顶栏还停在「↑1」。
+ *
+ * 订阅 store 的 statusVersion（写操作统一 bump）后重新拉取本组件这份。
+ * 与操作方收尾刷新（finally 里那次）重合时由 refreshGitStatus 的闸门合并，
+ * 不会重复打请求 —— 所以这里可以放心直接调。
+ */
+watch(() => gitStore.statusVersion, () => void refreshGitStatus());
 
 onMounted(async () => {
   document.addEventListener('keydown', onGitKeydown);

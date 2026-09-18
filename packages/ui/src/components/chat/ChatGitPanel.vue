@@ -500,6 +500,8 @@ import MarkdownPreview from '../code/MarkdownPreview.vue';
 import GitCommitDialog from '../git/GitCommitDialog.vue';
 import { computeGraphLayout, segmentPath, laneX } from '../git/graphLanes';
 import { useGitAi, AI_COMMIT_RULES } from '../../composables/git/useGitAi';
+// 刷新合并闸门：本面板写操作收尾刷新与 statusVersion 跨区 watch 会同时触发
+import { createRefreshGate } from '../../utils/refreshGate';
 
 const gitStore = useGitStore();
 const settingsStore = useSettingsStore();
@@ -758,7 +760,7 @@ async function loadSummaries() {
   );
 }
 
-async function refreshAll(force = false) {
+async function refreshAllInner(force = false) {
   if (!repo.value) return;
   busy.value = true;
   try {
@@ -771,6 +773,29 @@ async function refreshAll(force = false) {
     gitLoading.value = false;
     void persist();
   }
+}
+
+/**
+ * 带合并语义的刷新入口。
+ *
+ * 与顶栏同理：本面板自己的写操作（提交/推送/拉取/检出…）收尾会调 refreshAll，
+ * 而这些写操作现在还会 bump `gitStore.statusVersion` → 跨区 watch 也会调一次
+ * → 同一份数据请求两遍。
+ *
+ * ⚠️ force 语义在合并时取「并集」：只要有一路要求 force（连多仓库摘要一起刷新），
+ *    补跑那次也带 force。否则用户在工具条点「刷新」的强制语义会被并发调用吞掉。
+ */
+let pendingForce = false;
+const runRefreshCycle = createRefreshGate(async () => {
+  const f = pendingForce;
+  pendingForce = false;
+  await refreshAllInner(f);
+}, 'ChatGitPanel.git');
+
+/** 对外保持 `refreshAll(force?)` 的原签名，调用点无需改动 */
+function refreshAll(force = false): Promise<void> {
+  if (force) pendingForce = true;
+  return runRefreshCycle();
 }
 
 async function switchRepo(p: string) {
@@ -1480,6 +1505,16 @@ watch(workspace, (v) => {
   lastInitRepo = repo.value;
   void init();
 }, { immediate: true });
+
+/**
+ * 跨区同步（反向）：顶栏的 Git 区（CodeWorkbench）里提交/推送/拉取/切分支后，
+ * 本面板这份快照不会自己更新 —— 两边各发各的请求（顶栏用 code.projectDir、
+ * 本面板用 activeRepo，可能不是同一个仓库）。
+ * 订阅 store 的 statusVersion 后重新拉取，保证两侧看到同一份事实。
+ *
+ * 用 refreshAll(false)：不做 loadSummaries（多仓库发现较贵），只刷当前仓库的详细数据。
+ */
+watch(() => gitStore.statusVersion, () => { if (repo.value) void refreshAll(false); });
 
 function onDocClick() { closeContextMenu(); }
 onMounted(() => { document.addEventListener('click', onDocClick); });
