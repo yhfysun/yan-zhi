@@ -1,10 +1,10 @@
-import Database from 'better-sqlite3';
 import fs from 'node:fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 // 办公岗位专属内置智能体定义（纯数据，不 import db，便于单测直接断言）
 import { builtinOfficeAgentDefs } from './builtin-office-agents.js';
 import { createRequire } from 'node:module';
+import { openSqlite, type YzSqliteDb } from './services/sqlite-driver.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // dataDir 单一真相源：以 db.ts 所在目录为基准，其他模块一律 import 复用，禁止自行重算
@@ -12,7 +12,17 @@ export const dataDir = process.env.DATA_DIR || path.join(__dirname, '..');
 fs.mkdirSync(dataDir, { recursive: true });
 const DB_PATH = path.join(dataDir, 'data.db');
 
-const db = new Database(DB_PATH);
+// ===== 驱动自适配（移动端数据库改造核心）=====
+// 优先原生 better-sqlite3（桌面/常规服务端，历史行为）；加载失败（移动端内嵌
+// nodejs-mobile 为 Node 18 ABI 108，没有匹配的 .node 二进制）自动回退 sql.js
+//（WASM，零原生依赖），接口面与 better-sqlite3 同构，业务代码无感。
+// 顶部 await：本模块与全部消费方均为 ESM（Node 18+ 支持 TLA），保证下游
+// import { db } 拿到的必是已就绪连接。
+const opened = await openSqlite(DB_PATH);
+export const db: YzSqliteDb = opened.db;
+/** 当前生效的 SQLite 驱动（better-sqlite3 原生 / sql.js WASM 回退） */
+export const DB_DRIVER: 'better-sqlite3' | 'sql.js' = opened.driver;
+console.log('[db] SQLite 驱动:', DB_DRIVER, '→', DB_PATH);
 
 // ===== 内置种子覆盖策略（由打包/运行参数控制）=====
 // YZ_BUILTIN_OVERWRITE 取值：
@@ -34,18 +44,23 @@ db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
 
 // 加载 sqlite-vec 扩展（向量记忆检索 memory_vec 表 + 知识库向量检索依赖此扩展）
-// sqlite-vec 是 SQLite 原生扩展（非 Node addon），无需 electron-rebuild
+// sqlite-vec 是 SQLite 原生扩展（非 Node addon），无需 electron-rebuild；
+// 但它是原生二进制，sql.js（WASM 驱动）下无法 loadExtension → 自然走降级分支
 let sqliteVecLoaded = false;
-try {
-  const require = createRequire(import.meta.url);
-  const sqliteVec = require('sqlite-vec');
-  const vecPath = sqliteVec.getLoadablePath();
-  db.loadExtension(vecPath);
-  sqliteVecLoaded = true;
-  console.log('[db] sqlite-vec 扩展已加载:', vecPath);
-} catch (err: unknown) {
-  const msg = err instanceof Error ? err.message : String(err);
-  console.warn('[db] sqlite-vec 扩展加载失败，向量检索功能将降级为关键词检索:', msg);
+if (DB_DRIVER === 'better-sqlite3') {
+  try {
+    const require = createRequire(import.meta.url);
+    const sqliteVec = require('sqlite-vec');
+    const vecPath = sqliteVec.getLoadablePath();
+    db.loadExtension!(vecPath);
+    sqliteVecLoaded = true;
+    console.log('[db] sqlite-vec 扩展已加载:', vecPath);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn('[db] sqlite-vec 扩展加载失败，向量检索功能将降级为关键词检索:', msg);
+  }
+} else {
+  console.warn('[db] sql.js（WASM）驱动不支持加载 sqlite-vec，向量检索功能降级为关键词检索');
 }
 export const hasSqliteVec = sqliteVecLoaded;
 
@@ -2980,5 +2995,3 @@ export function resetBuiltinSkill(skillId: string): boolean {
 
   return false;
 }
-
-export { db };

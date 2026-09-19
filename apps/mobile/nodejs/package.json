@@ -1,0 +1,35 @@
+{
+  "name": "@yan-zhi/mobile-server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "言智移动端内嵌 Node.js 后端（apps/server 的移动端适配版）",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "adm-zip": "^0.6.0",
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "express": "^4.21.0",
+    "jsonwebtoken": "^9.0.2",
+    "mysql2": "^3.24.3",
+    "pg": "^8.23.0",
+    "simple-git": "^3.36.0",
+    "sql.js": "^1.13.0",
+    "sqlite-vec": "^0.1.9",
+    "ssh2": "^1.17.0",
+    "uuid": "^10.0.0",
+    "ws": "^8.18.0",
+    "yaml": "^2.9.0"
+  },
+  "comments": {
+    "removed": "playwright（移动端无浏览器自动化环境）、tesseract.js（移动端 OCR 按需）、better-sqlite3（见下）",
+    "better-sqlite3": "★ 不入内嵌包：nodejs-mobile 是 Node 18（ABI 108），装不到匹配的原生二进制，db.ts 已做驱动自适配 —— 加载失败自动回退 sql.js（WASM，纯依赖零原生），见 apps/server/src/services/sqlite-driver.ts",
+    "sql.js": "WASM SQLite 回退驱动，数据落盘由驱动层防抖持久化",
+    "sqlite-vec": "原生扩展 WASM 下加载不了，db.ts 自动降级为关键词检索；保留声明无害",
+    "ssh2": "ops-shell 插件静态 import，必须随包（纯 JS 实现，无原生二进制）",
+    "workspace-deps": "@yan-zhi/core 和 @yan-zhi/shared 由构建脚本从 monorepo 打包到 node_modules stub"
+  }
+}

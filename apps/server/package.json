@@ -25,6 +25,7 @@
     "pg": "^8.23.0",
     "playwright": "^1.62.1",
     "simple-git": "^3.36.0",
+    "sql.js": "^1.14.2",
     "sqlite-vec": "^0.1.9",
     "ssh2": "^1.17.0",
     "tesseract.js": "^5.1.1",

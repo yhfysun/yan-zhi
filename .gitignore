@@ -12,6 +12,7 @@ dist/
 *.js.map
 *.d.ts
 *.d.ts.map
+!apps/server/src/sql-js.d.ts
 !*.config.js
 !vitest.config.ts
 !eslint.config.*
@@ -136,8 +137,11 @@ tmp_server.err
 nul
 *.bak
 
-# 移动端内置 Node.js 运行时（构建时下载，不入库）
-apps/mobile/nodejs/
+# 内嵌后端工程（apps/mobile/nodejs）：package.json 是源码要入库；
+# dist / node_modules / index.js（构建脚本生成）不入库
+apps/mobile/nodejs/dist/
+apps/mobile/nodejs/node_modules/
+apps/mobile/nodejs/index.js
 
 # 服务端临时冒烟数据
 apps/server/tmp_*

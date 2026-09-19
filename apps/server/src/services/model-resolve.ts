@@ -17,7 +17,7 @@
 //
 // 三处必须同口径：运行时解析（本模块）、预检集合（routes/workflow.ts）、seed 回填
 // （builtin-workflow-agents.ts）。任何一处单独改都会让「预检放行 → 运行报错」重现。
-import type { Database } from 'better-sqlite3';
+import type { YzSqliteDb } from './sqlite-driver.js';
 import type { Model } from '@yan-zhi/shared';
 
 /** 池化查询：status 与行结构保持与 workflow-runner 既有实现一致 */
@@ -41,7 +41,7 @@ export interface ModelRowLike {
  * @returns 原始行；未命中返回 undefined
  */
 export function findModelRow(
-  db: Database,
+  db: YzSqliteDb,
   modelId: string,
   userId: string,
   platformId?: string,
@@ -98,7 +98,7 @@ export function rowToModel(row: ModelRowLike, defaultContextWindow: number): Mod
  * 已是主键时原样返回；未命中返回 null（调用方自行决定是否回填默认模型）。
  */
 export function normalizeModelId(
-  db: Database,
+  db: YzSqliteDb,
   modelId: string,
   platformId?: string,
 ): string | null {

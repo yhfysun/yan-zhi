@@ -120,6 +120,28 @@ for (const spec of stubSpecs) {
   log('stub 已生成: @yan-zhi/' + spec.pkg);
 }
 
+// ── 步骤 3.5：安装内嵌后端运行依赖 ──
+// 此前缺这一步：nodejs/node_modules 从未生成，内嵌后端在手机上 import express 直接
+// MODULE_NOT_FOUND。依赖清单在 nodejs/package.json —— **刻意不含 better-sqlite3**
+//（nodejs-mobile 是 Node 18 ABI 108，原生二进制装不到；db.ts 驱动自适配回退 sql.js）。
+// 插件会把整个 nodejs/ 目录（含 node_modules）打进 APK assets。
+log('=== 步骤 3.5: 安装内嵌后端依赖 (npm install) ===');
+if (process.env.YZ_SKIP_MOBILE_NPM === '1' && fs.existsSync(path.join(NODEJS_DIR, 'node_modules'))) {
+  log('YZ_SKIP_MOBILE_NPM=1 且 node_modules 已存在，跳过');
+} else {
+  const { spawnSync } = require('node:child_process');
+  const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+  const r = spawnSync(npmCmd, ['install', '--omit=dev', '--no-audit', '--no-fund', '--loglevel=error'], {
+    cwd: NODEJS_DIR,
+    stdio: 'inherit',
+  });
+  if (r.status !== 0) {
+    error('npm install 失败（exit=' + r.status + '），内嵌后端将缺依赖无法启动');
+    process.exit(1);
+  }
+  log('依赖安装完成');
+}
+
 // ── 步骤 4：生成启动入口 ──
 log('=== 步骤 4: 生成启动入口 ===');
 const indexJs = [

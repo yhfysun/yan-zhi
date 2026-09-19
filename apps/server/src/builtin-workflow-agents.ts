@@ -5,7 +5,7 @@
 //        → loop(loop_body: code 逐维度加工 / loop_exit: 继续)
 //        → memory_write(归档) → memory_read(回查历史) → condition(true: sub_agent → llm 成稿 / false: code 兜底)
 //        → output(调研报告)
-import type Database from 'better-sqlite3';
+import type { YzSqliteDb } from './services/sqlite-driver.js';
 import { normalizeModelId } from './services/model-resolve.js';
 
 export const WF_MAIN_ID = 'a_wf_smoke_all_nodes';
@@ -339,7 +339,7 @@ function dramaWorkflow() {
  * - 存在且 version < WF_DEF_VERSION → 覆盖（下发定义修正，如还原被改坏的画布）；
  * - 其余情况跳过，保护用户在画布上的编辑。
  */
-export function seedBuiltinWorkflowAgents(db: Database.Database): { seeded: string[]; restored: string[] } {
+export function seedBuiltinWorkflowAgents(db: YzSqliteDb): { seeded: string[]; restored: string[] } {
   const seeded: string[] = [];
   const restored: string[] = [];
   const defs = [
@@ -398,7 +398,7 @@ export function seedBuiltinWorkflowAgents(db: Database.Database): { seeded: stri
  * 覆盖全部内置工作流 —— 此前只处理 WF_MAIN_ID，新增工作流的 llm 节点会因缺模型在运行时报
  * 「LLM 节点缺少 platformId/modelId」。
  */
-export function ensureBuiltinWorkflowModel(db: Database.Database): { filled: boolean } {
+export function ensureBuiltinWorkflowModel(db: YzSqliteDb): { filled: boolean } {
   let anyFilled = false;
   // 优先 agnes 平台 + flash；退而求其次任何平台的 flash；再退任意平台首个模型。
   // **必须取 id（主键）**：运行时按主键解析模型，写 model_id（裸名）会直接报
@@ -481,7 +481,7 @@ export function ensureBuiltinWorkflowModel(db: Database.Database): { filled: boo
  * 精确相等永远匹配不上 —— 必须按前缀匹配，并取最长命中（避免短提示词误吃其它会话）。
  * 命中不了再退默认助手，不写死具体 id，避免把「哪个场景建的会话」焊死在清理逻辑里。
  */
-export function cleanupLegacyDiagAgents(db: Database.Database): { deletedAgents: number; reboundConversations: number; deletedRuns: number } {
+export function cleanupLegacyDiagAgents(db: YzSqliteDb): { deletedAgents: number; reboundConversations: number; deletedRuns: number } {
   const result = { deletedAgents: 0, reboundConversations: 0, deletedRuns: 0 };
   try {
     const row = db.prepare('SELECT id FROM agent WHERE id = ? AND is_builtin = 0').get(LEGACY_DIAG_AGENT_ID);
