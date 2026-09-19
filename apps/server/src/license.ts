@@ -15,9 +15,90 @@ cInEgmQ8Gf7Wfg9hHLpr7aoWMM6jJGrPmtj6SONg8GW6SPXg9O3BuS5AN8azgevF
 gQIDAQAB
 -----END PUBLIC KEY-----`;
 
-/** 预置试用授权码：90 天有效、不限 MAC。打包进 exe，首次运行自动填充激活。
- *  过期后用户需在授权页输入新码（用 scripts/gen-license.mjs 重新生成并替换此处）。 */
-const DEFAULT_LICENSE = 'eyJleHBpcmVBdCI6IjIwMjYtMTEtMjdUMTU6NTk6NTkuMDAwWiIsIm1hYyI6bnVsbH0.tCYpMoarqyDNAwA-LYaLJHejyAzfLa7yJI7SE_TlDSSzaEUlHQEY47lGY4NbUMXjSLIRkJhfbruwyUL01ZcsSid52N94JEysBXQkDhH2eWsZTWVMasclFv5xVUPne8GYOcODLBRjrMNmokyAlimyPHltk_FRITkagWSU7vP07xXd2rT-1jK0SGQaWlxcAQwdCTMnoFvSxeGYR-TDTb0SCy6_D8bUcu-CL6yIH2gZWJFsc_dC-sU4TzGuwVwPR1QVusVjiLFbBys6ekU-Vgt6Z4cy3QXjGoJUgyutPYeoicktDjdvnUMQFppX64VQrdXiU196SuVJZiaDE2Mup1aUjw';
+// ───────────────────────────── 版本档（edition） ─────────────────────────────
+
+/** 能力档位。写在授权码 payload 里（参与签名，客户端改不了）。 */
+export type Edition = 'lite' | 'basic' | 'pro';
+
+/** 档位 → 放行的模式。**这是全仓库唯一的模式清单** —— 前端只消费接口下发的 modes，
+ *  不自己维护一份，否则迟早两处漂移（改了一边忘了另一边，表现为「码升了但界面没放开」）。 */
+export const EDITION_MODES: Record<Edition, readonly string[]> = {
+  lite: ['office'],
+  basic: ['office', 'wf', 'dev'],
+  pro: ['office', 'wf', 'dev', 'ops', 'sec'],
+};
+
+export const EDITIONS: readonly Edition[] = ['lite', 'basic', 'pro'];
+
+/**
+ * 授权码里缺失或非法 edition 时的兜底档位。
+ *
+ * ★ 必须是 pro，不能是 lite/basic：本字段是后加的，已经发出去的存量码全都没有它。
+ *   若兜底成低档，客户升级客户端后模式会集体消失 —— 这是最不可接受的回归。
+ *   宁可让无字段的老码保持全量，也不能让它掉权限。
+ */
+export const FALLBACK_EDITION: Edition = 'pro';
+
+/** 解析授权码 payload 里的 edition：非法/缺失一律回落到 FALLBACK_EDITION（保护存量码）。 */
+export function resolveEdition(raw: unknown): Edition {
+  return typeof raw === 'string' && (EDITIONS as readonly string[]).includes(raw)
+    ? (raw as Edition)
+    : FALLBACK_EDITION;
+}
+
+/**
+ * 构建档（这个包本身是什么档）与授权档是两个维度，不要混：
+ *  - 构建档决定「包里有没有对应功能的入口」，由打包脚本经 YZ_EDITION 注入；
+ *  - 授权档决定「这张码允许开到几档」，写在码里。
+ *  实际放行 = 两者取交集（见 allowedModes）。
+ *
+ * 非法/缺失值的兜底与 resolveEdition **刻意相反**：构建档回落到最保守的 lite 而不是 pro。
+ * 理由：构建档来自打包环境的 env，写错属于工程事故，此时按最小权限跑比按全量跑安全。
+ * （dev 模式没有 env，会落到 lite —— 但 html 端默认按 basic 走，见 DEFAULT_BUILD_EDITION。）
+ */
+export const DEFAULT_BUILD_EDITION: Edition = 'basic';
+
+export function resolveBuildEdition(raw: unknown): Edition {
+  return typeof raw === 'string' && (EDITIONS as readonly string[]).includes(raw)
+    ? (raw as Edition)
+    : DEFAULT_BUILD_EDITION;
+}
+
+/** 构建档 ∩ 授权档 → 实际放行的模式。两个维度任一不放行，该模式就不出现。 */
+export function allowedModes(build: Edition, licensed: Edition): string[] {
+  const buildSet = new Set(EDITION_MODES[build]);
+  return EDITION_MODES[licensed].filter((m) => buildSet.has(m));
+}
+
+/** 预置试用授权码：按档位各一份，打包进 exe，首次运行自动填充激活。
+ *
+ *  每档带自己档位的码，这样「阉割版开箱只有办公」「基础版开箱三模式」天然成立，
+ *  不依赖界面去猜。高级版（pro 构建档）默认也带 basic 码 —— 用户拍板：默认携带基础版，
+ *  要让高级功能生效需换成 pro 码。
+ *
+ *  过期后用户需在授权页输入新码（用 scripts/gen-license.mjs --edition <档> 重新签发）。 */
+const DEFAULT_LICENSE_BY_EDITION: Record<Edition, string> = {
+  lite: 'eyJleHBpcmVBdCI6IjIwMjYtMTItMThUMTU6NTk6NTkuMDAwWiIsIm1hYyI6bnVsbCwibWFjaGluZUlkIjpudWxsLCJlZGl0aW9uIjoibGl0ZSJ9.BESuCh5F6m8ttjqhucCRfStWXC4lNgbIuhMLkP6VW5AyZ9NIzzx4UTFsfm4taxFOEqRVJ5O0N5cSmz31jK63I_HeNdEEUyrG8mGVvGrbSx8jxF3tV3kcCEJR8rML_fJG0B7EtpKu6M-4xL7qAIFuP6tcbvLZXsET1bkSKud3vDUPRDNX6ZOxFvVJheWhYoRaWzNqHYpYoqvTQ_ctKG9g15rGXdYkdoZsCS8S42_j71uu9srX1XKMk4EgHgMQRqjEMjpIKF0E5ejfzkcVxY9V0rnvwR98x88Vo1IFyIpTCqIau9R-E80rD8P2jzZ8qqPQ4OqfELG9ecGRydv6cc57OA',
+  basic: 'eyJleHBpcmVBdCI6IjIwMjYtMTItMThUMTU6NTk6NTkuMDAwWiIsIm1hYyI6bnVsbCwibWFjaGluZUlkIjpudWxsLCJlZGl0aW9uIjoiYmFzaWMifQ.BJ00-OFzQ3Oi1SIdA0MI6XqH3535RAiEFdoXpPnGP5ptQnlpTBf7BTOYTcRm06YZI8WmEPAAioDyHLJr4hEIM0yC2Y8u8r0kilNeKh85JW7PeW35rQJBL8y14SmwSUOQpiZDq4QgRugIGmEqOKwnI9NZ6GA1DColAr2MR_aZzZ6lRl36WLfWv4EwHVKV7fPIma-vnkNyqIF90VLjeyR0MEcdz1g9xbV3iUnDOCMXTdDoKmp8jDTW2iL4ix2rzFyVB-A1mpfilOy_hXNpCMTBjsTsAufRZ_V8OUMQEOwVTZH6xNYz4zSRTn7_ut2DyYbbuoXnybGRIRii3fnhie0ajA',
+  pro: 'eyJleHBpcmVBdCI6IjIwMjYtMTItMThUMTU6NTk6NTkuMDAwWiIsIm1hYyI6bnVsbCwibWFjaGluZUlkIjpudWxsLCJlZGl0aW9uIjoicHJvIn0.LRzfq_pI_3gnAdwCCanblHWNMnYMmG8qgNL8alvrwsyWWkInesU8VqtRHEjkcWN1bB2VXTNJRvhj-uVdgJssSbMuidNFAJG4ouRUJWr6K1CTc5jJbZUicG25J7czBzqlI8Y-kqdS9eB6yg4LcRM1zCM7_2knS2jjmiEih7nbTQEHAROHHKQPKSbE4FlmNn3X4N9-kF5HF2bESm7b0g46r2hhDh8vw6-7VTuuowgR98dipv9WIB-8Crl-4Wk_4ekXEQrJQiGxzuniL5TZSEgJYflSpmx0G_XiBtk_BQb1SbplIb6XBMK8dPKTrJjGC_a9MXAfu9jXiIs7zXVXmOFCgg',
+};
+
+/** 本包预置的授权码。
+ *
+ *  ★ 预置码档位与构建档**是两个独立设置**，不要合并：
+ *    用户拍板「高级版全量包默认携带基础版授权码」—— 即 pro 构建档 + basic 预置码。
+ *    若这里直接取构建档，高级包开箱就成了全量档，与产品口径不符。
+ *
+ *  优先级：YZ_DEFAULT_LICENSE（整码覆盖，人工兜底）> YZ_DEFAULT_EDITION（档位）> basic。 */
+export function getDefaultLicenseCode(): string {
+  const envCode = process.env.YZ_DEFAULT_LICENSE;
+  if (envCode && envCode.trim()) return envCode.trim();
+  const envEdition = process.env.YZ_DEFAULT_EDITION;
+  const edition = typeof envEdition === 'string' && (EDITIONS as readonly string[]).includes(envEdition)
+    ? (envEdition as Edition)
+    : DEFAULT_BUILD_EDITION;
+  return DEFAULT_LICENSE_BY_EDITION[edition];
+}
 
 const router = Router();
 
@@ -27,6 +108,8 @@ export interface LicensePayload {
   mac: string | null;
   /** 新绑定字段：稳定机器指纹（见 computeMachineId），不填=不限机器。 */
   machineId?: string | null;
+  /** 能力档位。缺失 → FALLBACK_EDITION（pro），保证存量码不掉权限。 */
+  edition?: string | null;
 }
 
 /** 本机标识：machineId 为主（跨网卡变化稳定），mac 保留用于展示与老码校验。 */
@@ -46,6 +129,12 @@ export interface VerifyResult {
   /** 本机实际机器标识，供授权页展示给签发方绑定用。 */
   machineIdLocal: string | null;
   identitySource: string;
+  /** 本包构建档（这个包本身是什么档）。 */
+  buildEdition: Edition;
+  /** 授权码档位（非法/缺失已回落到 pro）。 */
+  edition: Edition;
+  /** 实际放行的模式（构建档 ∩ 授权档）。前端直接消费，不自己维护清单。 */
+  modes: string[];
   reason?: string;
 }
 
@@ -190,8 +279,9 @@ export function resetMachineIdentityCache(): void {
 export function verifyLicenseCode(
   code: string,
   identity: MachineIdentity = getMachineIdentity(),
+  buildEdition: Edition = resolveBuildEdition(process.env.YZ_EDITION),
 ): VerifyResult {
-  return verifyLicenseCodeWithKey(code, LICENSE_PUBLIC_KEY, identity);
+  return verifyLicenseCodeWithKey(code, LICENSE_PUBLIC_KEY, identity, buildEdition);
 }
 
 /**
@@ -206,15 +296,22 @@ export function verifyLicenseCodeWithKey(
   code: string,
   publicKey: string,
   identity: MachineIdentity = getMachineIdentity(),
+  /** 本包构建档。默认从 env 解析；抽成参数是为了让单测能跑「三档构建 × 三档授权」的组合。 */
+  buildEdition: Edition = resolveBuildEdition(process.env.YZ_EDITION),
 ): VerifyResult {
   const { mac: machineMac, machineId: machineIdLocal, source: identitySource } = identity;
+
+  // 早期失败分支（还没解析出 payload）用兜底档：此时 valid=false，前端会停在授权页，
+  // modes 取什么都不会真的放行，取兜底档只是让返回结构统一，便于前端与排障。
+  const earlyFail = (reason: string): VerifyResult => ({
+    valid: false, expireAt: null, mac: null, machineId: null,
+    machineMac, machineIdLocal, identitySource,
+    buildEdition, edition: FALLBACK_EDITION,
+    modes: allowedModes(buildEdition, FALLBACK_EDITION), reason,
+  });
+
   const parts = code.split('.');
-  if (parts.length !== 2) {
-    return {
-      valid: false, expireAt: null, mac: null, machineId: null,
-      machineMac, machineIdLocal, identitySource, reason: '授权码格式错误',
-    };
-  }
+  if (parts.length !== 2) return earlyFail('授权码格式错误');
   const [payloadB64, sigB64] = parts;
 
   let payloadStr: string;
@@ -225,15 +322,16 @@ export function verifyLicenseCodeWithKey(
     signature = base64urlDecode(sigB64);
     payload = JSON.parse(payloadStr) as LicensePayload;
   } catch {
-    return {
-      valid: false, expireAt: null, mac: null, machineId: null,
-      machineMac, machineIdLocal, identitySource, reason: '授权码解析失败',
-    };
+    return earlyFail('授权码解析失败');
   }
+
+  // payload 已解析：失败分支也能带上真实档位，排障时能直接看出「这码是什么档」。
+  const edition = resolveEdition(payload.edition);
 
   const invalid = (reason: string): VerifyResult => ({
     valid: false, expireAt: payload.expireAt ?? null, mac: payload.mac ?? null,
-    machineId: payload.machineId ?? null, machineMac, machineIdLocal, identitySource, reason,
+    machineId: payload.machineId ?? null, machineMac, machineIdLocal, identitySource,
+    buildEdition, edition, modes: allowedModes(buildEdition, edition), reason,
   });
 
   const verify = crypto.createVerify('sha256');
@@ -271,6 +369,7 @@ export function verifyLicenseCodeWithKey(
   return {
     valid: true, expireAt: payload.expireAt ?? null, mac: payload.mac ?? null,
     machineId: payload.machineId ?? null, machineMac, machineIdLocal, identitySource,
+    buildEdition, edition, modes: allowedModes(buildEdition, edition),
   };
 }
 
@@ -289,8 +388,9 @@ router.get('/machine-info', (_req: Request, res: Response) => {
 
 // GET /api/license/default —— 返回预置试用授权码及当前校验状态（前端首次启动自动填充用）
 router.get('/default', (_req: Request, res: Response) => {
-  const result = verifyLicenseCode(DEFAULT_LICENSE);
-  res.json({ data: { code: DEFAULT_LICENSE, ...result } });
+  const code = getDefaultLicenseCode();
+  const result = verifyLicenseCode(code);
+  res.json({ data: { code, ...result } });
 });
 
 // POST /api/license/verify —— 校验授权码，body: { code }

@@ -1,7 +1,10 @@
 appId: com.yanzhi.desktop
 productName: yan-zhi
 directories:
-  output: ../../dist-release
+  # 默认输出到仓库根 dist-release。可用环境变量 YZ_OUTPUT_DIR 覆盖 ——
+  # 用途：上一次构建的 win-unpacked/app.asar 被占用（杀软扫描 / 残留进程）时，
+  # electron-builder 会因删不掉旧 asar 而中断；换个输出目录即可绕开，不必等锁释放。
+  output: ${env.YZ_OUTPUT_DIR}
 # 跳过 electron-builder 的原生模块重编译（node-gyp）：
 #  - better-sqlite3 的 Electron ABI 由 postinstall 的 fix-sqlite-binding.cjs 拉取预编译处理
 #  - sqlite-vec / esbuild 为 N-API 预编译，无需重编译
@@ -16,13 +19,16 @@ files:
   - snip-overlay.html
   - snip-overlay.js
   - keyring-crypto.cjs
+  # 版本档配置（scripts/set-edition.cjs 生成）：main.cjs 运行时读它拿构建档与预置码档。
+  # ★ 漏登记 = 打包版读不到档位 → 落到兜底档（basic），且「阉割版只有办公」这条会静默失效。
+  - edition.json
 extraResources:
   - from: ../server/dist
     to: server/dist
   - from: ../server/assets
     to: server/assets
-  - from: ../server/src
-    to: server/src
+  # ★ 刻意不打包 ../server/src（后端源码）：生产模式只跑 server/dist 的编译产物，
+  #   源码随包 = 把 license.ts 验签逻辑明文交给客户。详见 full.yml 同位置注释。
   - from: runtime/server-runtime/node_modules
     to: server/node_modules
   - from: ../server/package.json
@@ -70,4 +76,7 @@ nsis:
   shortcutName: 言智
   installerIcon: ../../assets/icons/icon.ico
   uninstallerIcon: ../../assets/icons/icon.ico
-  artifactName: ${productName}-Setup-${version}-${arch}-lite.${ext}
+  # 产物名带版本档后缀（lite / basic / pro），由 scripts/set-edition.cjs → electron-build.cjs
+  # 以环境变量注入。本文件与 electron-builder.full.yml **内容等价**（逐行比对过，只差这一行），
+  # 两份都保留只是历史命名习惯；新构建请用 .full.yml，或在脚本里明确指向其一。
+  artifactName: ${productName}-Setup-${version}-${arch}${env.YZ_ARTIFACT_SUFFIX}.${ext}

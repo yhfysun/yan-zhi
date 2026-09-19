@@ -1,7 +1,8 @@
 appId: com.yanzhi.desktop
 productName: yan-zhi
 directories:
-  output: ../../dist-release
+  # 默认输出到仓库根 dist-release；可用 YZ_OUTPUT_DIR 覆盖。详见 lite.yml 同位置注释。
+  output: ${env.YZ_OUTPUT_DIR}
 # 同 lite：原生模块 ABI 由 fix-sqlite-binding.cjs（postinstall）处理，跳过 node-gyp 重编译
 npmRebuild: false
 files:
@@ -13,13 +14,15 @@ files:
   - snip-overlay.html
   - snip-overlay.js
   - keyring-crypto.cjs
+  # 版本档配置（scripts/set-edition.cjs 生成）；漏登记 → 打包版读不到档位，落到兜底档
+  - edition.json
 extraResources:
   - from: ../server/dist
     to: server/dist
   - from: ../server/assets
     to: server/assets
-  - from: ../server/src
-    to: server/src
+  # ★ 刻意不打包 ../server/src（后端源码）：生产模式只跑 server/dist 的编译产物。
+  #   详见 electron-builder.full.yml 同位置注释。
   - from: runtime/server-runtime/node_modules
     to: server/node_modules
   - from: ../server/package.json
@@ -48,6 +51,7 @@ mac:
   # 无开发者证书时走 ad-hoc 签名；关闭 hardenedRuntime/gatekeeperAssess 以免卡在校验
   hardenedRuntime: false
   gatekeeperAssess: false
-  artifactName: ${productName}-${version}-${arch}-mac.${ext}
+  # 产物名带版本档后缀（lite / basic / pro），由 scripts/set-edition.cjs → electron-build.cjs 注入
+  artifactName: ${productName}-${version}-${arch}-mac${env.YZ_ARTIFACT_SUFFIX}.${ext}
 dmg:
-  artifactName: ${productName}-${version}-${arch}-mac.dmg
+  artifactName: ${productName}-${version}-${arch}-mac${env.YZ_ARTIFACT_SUFFIX}.dmg
