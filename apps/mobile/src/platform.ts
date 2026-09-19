@@ -6,6 +6,21 @@ import { Preferences } from '@capacitor/preferences';
 // 授权码读取：与 apiFetch 的 x-license 头共用同一来源，避免两条路径口径漂移。
 import { getLicenseCodeSync } from '@yan-zhi/ui/api/license-code';
 
+/**
+ * LLM 代理基址：远程模式代理到远程节点的 /api/llm，内嵌模式代理到本机 127.0.0.1:3001。
+ * 与 packages/ui/src/api/client.ts 的 API_BASE 同口径（mobile_api_base 优先，回退内嵌）。
+ * 不设的话 LlmClient 会从 WebView 直连上游 —— 除了把 API Key 暴露在端上直连请求里，
+ * Anthropic 直连还要求浏览器专用头，Token 池/熔断也全部绕过。改地址靠 reload 重算，
+ * 模块加载时取一次即可。
+ */
+function resolveLlmProxyBase(): string {
+  try {
+    const remote = localStorage.getItem('mobile_api_base') || '';
+    if (remote) return remote.replace(/\/+$/, '') + '/api/llm';
+  } catch { /* ignore */ }
+  return 'http://127.0.0.1:3001/api/llm';
+}
+
 /** 移动端 SQLite 数据库（Capacitor SQLite 插件） */
 class MobileDatabase implements DatabaseAdapter {
   private sqlite = new SQLiteConnection(CapacitorSQLite);
@@ -109,6 +124,8 @@ export const mobileAdapter: PlatformAdapter = {
   db: new MobileDatabase(),
   fs: new MobileFs(),
   keyring: new MobileKeyring(),
+  // LLM 请求统一走后端代理（内嵌 127.0.0.1:3001 或远程节点），见 resolveLlmProxyBase
+  llmProxyBase: resolveLlmProxyBase(),
   // 移动端不支持 MCP stdio（仅支持远程 sse/http）
   // 授权码读取器：内嵌后端同样会开授权门禁，走代理的 LLM 请求需带 x-license。
   // 与 apiFetch 共用同一来源（UI 的 license-code 内存缓存）。
