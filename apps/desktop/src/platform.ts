@@ -8,6 +8,9 @@ import type {
   McpProcessAdapter,
   ShellAdapter,
 } from '@yan-zhi/core';
+// 授权码读取：走 UI 的 license-code 模块（keyring 加载 + 同步内存缓存），
+// 与 apiFetch 的 x-license 头共用同一来源，避免两条路径口径漂移。
+import { getLicenseCodeSync } from '@yan-zhi/ui/api/license-code';
 
 // 渲染进程通过 contextBridge 注入的全局 API
 const api = (window as any).electronAPI;
@@ -122,4 +125,8 @@ export const desktopAdapter: PlatformAdapter = {
   // LLM 走后端代理（/api/llm/*）：API Key 不暴露给前端，后端从库读配置转发。
   // Electron file:// 下用绝对地址（与 packages/ui api/client.ts 的 API_BASE 一致）。
   llmProxyBase: 'http://127.0.0.1:3001/api/llm',
+  // 授权码读取器：走代理的 LLM 请求必须带 x-license，否则开启门禁的部署一律 403。
+  // 复用 UI 的 license-code 模块（含 keyring 加载 + 内存缓存），与 apiFetch 的口径完全一致 ——
+  // 这正是之前出问题的根源：两条路径各建一套头，代理这条路漏了授权码。
+  getLicenseCode: () => getLicenseCodeSync(),
 };

@@ -23,11 +23,14 @@ apps/desktop/src-tauri/Cargo.lock
 
 # Electron 构建产物
 dist-release/
-# 分档打包的独立输出目录（build-all-editions.cjs 生成），与 dist-release/ 同性质。
+# 分档打包的独立输出目录（build-all-editions.cjs --separate 生成），与 dist-release/ 同性质。
 # 上一行 `dist-release/` 是精确匹配，不覆盖 dist-release-lite/ 这类兄弟目录。
 dist-release-lite/
 dist-release-basic/
 dist-release-pro/
+# build-all-editions.cjs 的 YZ_ALL_OUT_DIR 允许自定义任意输出目录名，
+# 约定用 dist-release-* 前缀 → 用通配兜住，避免每换一次目录名就要补一条规则。
+dist-release-*/
 dist-release2/
 dist-download/
 apps/desktop/build/*

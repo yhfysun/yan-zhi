@@ -3395,6 +3395,16 @@ function finishSnip(result) {
   if (!s || s.settled) return;
   s.settled = true;
   snipSession = null;
+  // 会话结束统一留痕：此前 confirm / cancel / blur 三条出口都不写日志，日志会断在
+  // 「overlay shown」之后，无法区分「用户正常按 Esc」与「被 blur 误取消」。原因是
+  // 排障时最该知道的信息，交给这一次调用兜底输出。
+  try {
+    const how = result && result.ok ? 'ok'
+      : result && result.cancelled ? 'cancelled'
+      : 'error';
+    const detail = result && result.error ? ' (' + result.error + ')' : '';
+    snipLog('finish: ' + how + detail);
+  } catch {}
   try { if (s.timer) clearTimeout(s.timer); } catch {}
   try { if (s.readyTimer) clearTimeout(s.readyTimer); } catch {}
   try { if (s.composeTimer) clearTimeout(s.composeTimer); } catch {}
@@ -3478,7 +3488,13 @@ ipcMain.handle('screenshot:capture', async (e, opts) => {
     overlay.removeAllListeners('blur');
     overlay.on('blur', () => {
       const s = snipSession;
-      if (s && !s.busy && Date.now() - s.armedAt > 500) finishSnip({ ok: false, cancelled: true });
+      const elapsed = s ? Date.now() - s.armedAt : -1;
+      const guarded = elapsed <= 500;
+      // 记录每次 blur 及距 show 的时长。blur 是「穿透 → 下层被激活 → 本窗失焦」这条
+      // 故障链的必经点：穿透时 elapsed 通常远大于 500ms（用户是看清界面后才点的），
+      // 据此可与「刚 show 就被系统抢焦点」的正常情况区分开。
+      snipLog('overlay blur, elapsed=' + elapsed + 'ms' + (guarded ? ' (armed guard, ignored)' : ''));
+      if (s && !s.busy && !guarded) finishSnip({ ok: false, cancelled: true });
     });
     // 终极兜底：极端情况下（进程收不到 closed/blur、用户跑开不回来）也能在 5 分钟后自愈，
     // 保证 snipSession 不会永久占位。

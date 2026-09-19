@@ -38,6 +38,12 @@ const EXEMPT_PREFIXES: readonly string[] = [
   '/generated',     // <img>/<video>/<audio> src，交付卡片缩略图依赖
   '/media/proxy',   // 同上：媒体代理给 <img> 用
   '/plugin-assets', // 皮肤壁纸走 CSS url() 与 <img>
+  // 电脑使用插件的截图临时区：对话里用 <img src> 内嵌展示，同样带不了请求头。
+  // ★ 只豁免 screenshots 子路径，不豁免整个 /plugin/computer-use —— 同前缀下的
+  //   /audit（操作审计）等接口是 fetch 调用、能带头，不该跟着放宽。
+  // 该路径本身已有「文件名白名单 + 解析后必须在临时区内」两道防护（见 computer-use.ts），
+  // 泄露的只是本机刚生成的截图，与 /generated 同性质。
+  '/plugin/computer-use/screenshots',
   '/network/ip',    // 局域网地址展示，无敏感信息
 ];
 

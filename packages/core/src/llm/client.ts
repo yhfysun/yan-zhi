@@ -141,12 +141,26 @@ export class LlmClient {
     };
   }
 
-  /** 走后端代理时的鉴权头：带本地 JWT token（后端 authMiddleware 放行本地模式） */
+  /** 走后端代理时的鉴权头：本地 JWT token + 授权码。
+   *
+   *  ★ 必须带 x-license：后端授权门禁（YZ_LICENSE_GUARD=1）会校验每个 /api 请求的
+   *    x-license 头，缺失一律 403「未提供授权码」。历史上这里只带了 Authorization，
+   *    症状很具迷惑性 —— 同一个「测试」动作，走 apiFetch 的路径（POST /llm/preview-models）
+   *    自动带上了 x-license 所以正常，而走 LlmClient 代理的路径（GET /llm/models、
+   *    聊天流、拉模型列表）全部 403，看起来像「某个功能坏了」而非「认证头漏了」。
+   *
+   *  授权码通过适配器注入（见 PlatformAdapter.getLicenseCode）：它是平台相关的存储
+   *  （桌面端 keyring 加密 + 内存缓存），core 不该直接读。未注入时（如 server 端
+   *  直连上游、不经过本函数）跳过，不影响原有行为。 */
   private proxyAuthHeaders(): HeadersInit {
     const h: Record<string, string> = { 'Content-Type': 'application/json' };
     try {
       const token = typeof localStorage !== 'undefined' ? localStorage.getItem('auth_token') : null;
       if (token) h['Authorization'] = `Bearer ${token}`;
+    } catch {}
+    try {
+      const license = getPlatformAdapter().getLicenseCode?.();
+      if (license) h['x-license'] = license;
     } catch {}
     return h;
   }
@@ -332,7 +346,7 @@ export class LlmClient {
 
   async listModels(): Promise<{ id: string; type?: string }[]> {
     if (this.isAnthropic) {
-      // Anthropic 官方无公开模型列表接口；兼容网关（如 OpenRouter）可能支持
+      // 拉取失败（上游不支持 /v1/models 等）时返回空列表，由 UI 引导手动添加模型 ID
       try {
         const res = await this.fetchModels();
         if (!res.ok) return [];
