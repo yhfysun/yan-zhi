@@ -35,6 +35,7 @@ import agentMarketplaceRoutes from './routes/agent-marketplace-sources.js';
 import marketplaceRoutes from './routes/marketplace.js';
 import browserRoutes from './routes/browser.js';
 import peersRoutes from './routes/peers.js';
+import lanRoutes from './routes/lan.js';
 import imRoutes from './routes/im.js';
 import kbRoutes from './routes/kb.js';
 import mcpBridgeRoutes from './mcp/index.js';
@@ -123,6 +124,8 @@ app.use('/api/marketplace', marketplaceRoutes);
     app.use('/api/browser', browserRoutes);
   }
 app.use('/api/peers', peersRoutes);
+// 局域网节点发现：扫本机私网 /24 上的其他言智节点（移动端「设为后端」/ 商城源地址来源）
+app.use('/api/lan', lanRoutes);
 app.use('/api/im', imRoutes);
 app.use('/api/datasources', datasourceRoutes);
 app.use('/api/sql-console', sqlConsoleRoutes);

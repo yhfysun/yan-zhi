@@ -30,8 +30,9 @@ function intToIp(n: number): string {
  * - 通配符：192.168.1.*
  * - 单 IP：192.168.1.10
  * 超过 MAX_HOSTS 时返回空列表（视为无效规格）。
+ * （export 供 server 侧 LAN 节点发现复用，避免同一展开逻辑两处实现漂移）
  */
-function expandTargets(spec: string): string[] {
+export function expandTargets(spec: string): string[] {
   const s = (spec || '').trim();
   if (!s) return [];
 
@@ -72,10 +73,11 @@ function expandTargets(spec: string): string[] {
   return ipToInt(s) !== null ? [s] : [];
 }
 
-type ProbeResult = 'open' | 'refused' | 'timeout' | 'unreachable';
+export type ProbeResult = 'open' | 'refused' | 'timeout' | 'unreachable';
 
-/** TCP 探测：区分 open（连接成功）/ refused（RST，主机存活但端口关闭）/ timeout / unreachable */
-function probeHost(net: typeof import('node:net'), host: string, port: number, timeout: number): Promise<ProbeResult> {
+/** TCP 探测：区分 open（连接成功）/ refused（RST，主机存活但端口关闭）/ timeout / unreachable
+ *  （export 供 server 侧 LAN 节点发现复用） */
+export function probeHost(net: typeof import('node:net'), host: string, port: number, timeout: number): Promise<ProbeResult> {
   return new Promise((resolve) => {
     const socket = new net.Socket();
     let done = false;

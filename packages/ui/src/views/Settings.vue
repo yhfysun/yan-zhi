@@ -237,6 +237,28 @@
             </div>
           </div>
         </div>
+        <!-- 节点发现：扫描同网段其他言智节点。移动端一键设为后端（经本端后端扫描，避开 WebView 混合内容拦截） -->
+        <div class="lan-section" style="margin-top: 16px">
+          <div style="display: flex; align-items: center; justify-content: space-between">
+            <p class="lan-tip" style="margin: 0">扫描同网段（/24）内、端口 {{ lanPort }} 上的其他言智节点。移动端可一键设为后端；桌面 / Web 可复制地址用于商城源或节点互聊。</p>
+            <el-button size="small" :loading="nodeScanning" style="margin-left: 12px; flex-shrink: 0" @click="scanLanNodes">扫描节点</el-button>
+          </div>
+          <div v-if="lanNodes.length > 0" class="lan-list">
+            <div v-for="n in lanNodes" :key="n.ip + ':' + n.port" class="lan-item">
+              <div class="lan-url-box">
+                <code>{{ 'http://' + n.ip + ':' + n.port }}</code>
+                <span class="lan-iface">{{ n.isSelf ? '本机' : '言智节点' }}</span>
+              </div>
+              <div class="lan-actions">
+                <el-button v-if="isCapacitor" size="small" type="primary" @click="useNodeAsBackend(n)">设为后端</el-button>
+                <el-button size="small" @click="copyNodeUrl(n)">复制</el-button>
+              </div>
+            </div>
+          </div>
+          <div v-else-if="!nodeScanning && nodeScanDone" class="lan-empty">
+            未发现其他言智节点（确认对方已启动、与本机同网段且端口为 {{ lanPort }}）
+          </div>
+        </div>
       </el-tab-pane>
       <el-tab-pane label="语音包" name="voicepack">
         <VoicePackPanel />
@@ -697,6 +719,42 @@ function openLan(ip: string) {
 function openLanFirst() {
   if (lanIps.value.length > 0) openLan(lanIps.value[0].address);
   else ElMessage.warning('未检测到局域网 IP');
+}
+
+// ===== 局域网节点发现（扫描经本端后端做，移动端可一键设为后端）=====
+const lanNodes = ref<Array<{ ip: string; port: number; isSelf: boolean }>>([]);
+const nodeScanning = ref(false);
+const nodeScanDone = ref(false);
+
+async function scanLanNodes() {
+  nodeScanning.value = true;
+  try {
+    const r = await api.post<any>('/lan/discover-nodes', {});
+    const data = r && 'data' in r ? (r.data as any) : r;
+    lanNodes.value = Array.isArray(data?.data?.nodes) ? data.data.nodes : [];
+    if (!lanNodes.value.length) ElMessage.info(`扫描完成（${Math.round((data?.durationMs || 0) / 100) / 10}s），未发现言智节点`);
+  } catch (e) {
+    lanNodes.value = [];
+    ElMessage.error('扫描失败: ' + ((e as Error).message || '未知错误'));
+  } finally {
+    nodeScanning.value = false;
+    nodeScanDone.value = true;
+  }
+}
+
+function useNodeAsBackend(n: { ip: string; port: number }) {
+  try {
+    setMobileApiBase(`http://${n.ip}:${n.port}`);
+  } catch (e) {
+    ElMessage.error((e as Error).message || '保存失败');
+    return;
+  }
+  ElMessage.success(`已设为后端 http://${n.ip}:${n.port}，正在重载…`);
+  setTimeout(() => location.reload(), 600);
+}
+
+function copyNodeUrl(n: { ip: string; port: number }) {
+  navigator.clipboard.writeText(`http://${n.ip}:${n.port}`).then(() => ElMessage.success('已复制地址'));
 }
 
 onMounted(() => {

@@ -11,7 +11,7 @@ export { CodeGraphTool } from './code-graph';
 export { JsExecTool } from './js-exec';
 export { setJsExecDataBridge, type JsDataBridge } from './js-exec';
 export { PortScanTool } from './port-scan';
-export { LanScanTool } from './net-scan';
+export { LanScanTool, probeHost, expandTargets, type ProbeResult } from './net-scan';
 export { HttpRequestTool } from './http-request';
 export { TcpSendTool } from './tcp-send';
 export { UdpSendTool } from './udp-send';
