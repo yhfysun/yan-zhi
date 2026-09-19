@@ -11,6 +11,34 @@ import type { McpCallResult, PluginManifest, PluginModule } from '@yan-zhi/core'
 import type { ShellAdapter } from '@yan-zhi/core';
 import { db } from '../db.js';
 import { serverState } from '../state.js';
+import {
+  OS_SETTINGS,
+  SETTINGS_PAGES,
+  SYSTEM_INFO_SCRIPT,
+  buildMonitorListScript,
+  findSetting,
+  findSettingsPage,
+  normalizeSettingValue,
+  toRegExePath,
+  backupFileName,
+  buildOsSettingsReadScript,
+  buildOsSettingsWriteScript,
+  buildWmiBrightnessScript,
+  buildOpenPageScript,
+  parseSystemInfo,
+  parseMonitorList,
+  parseWriteResult,
+  parseMonitorSetResult,
+  parseSettingValue,
+  clampPct,
+  buildDdcSetScript,
+  EFFECT_TEXT,
+  BROADCAST_AREAS,
+  BACKUP_KEEP,
+  PS_HEAD,
+  rgbFromAbgr,
+  asArray,
+} from './computer-use-system.js';
 
 export const computerUseManifest: PluginManifest = {
   id: 'computer-use',
@@ -18,7 +46,7 @@ export const computerUseManifest: PluginManifest = {
   version: '0.1.0',
   category: '操作',
   description:
-    '智能体可操作本机软件：鼠标点击、键盘输入/快捷键、窗口激活、截屏、启动应用（Windows 全量支持；macOS 基础支持需辅助功能权限）；系统管理：安装/卸载应用、强制删除残留文件、注册表键清理（高危操作全部需用户确认后传 confirm:true 才执行）；默认关闭，需手动开启',
+    '智能体可操作本机软件：鼠标点击、键盘输入/快捷键、窗口激活、截屏、启动应用（Windows 全量支持；macOS 基础支持需辅助功能权限）；系统体检与设置：读取整机硬件/显示/配色配置（只读，无需确认）、按白名单读写系统设置项（写入前自动备份注册表）、显示器亮度对比度调节；系统管理：安装/卸载应用、强制删除残留文件、注册表键清理（高危操作全部需用户确认后传 confirm:true 才执行）；默认关闭，需手动开启',
   permissions: ['desktop-input', 'shell'],
   contributes: {
     tools: [
@@ -34,6 +62,10 @@ export const computerUseManifest: PluginManifest = {
       'computer_open_app',
       'computer_list_processes',
       'computer_list_installed_apps',
+      'computer_system_info',
+      'computer_os_settings',
+      'computer_monitor_control',
+      'computer_open_panel',
       'computer_uninstall_app',
       'computer_install_app',
       'computer_force_delete',
@@ -1203,6 +1235,101 @@ $filtered | Sort-Object @{Expression='exeExists';Descending=$true}, name | Selec
         ),
     });
 
+    /**
+     * 只读通道：与 runOp 一样记审计，但**不计入 maxOps 输入操作上限**。
+     * 理由：maxOps 防的是输入自动化失控（狂点狂敲）；体检/读设置是只读的，
+     * 让它们吃掉配额会导致「诊断阶段把配额用完、真要点击时被拦」，属于自伤。
+     */
+    const runRead = async (
+      op: string,
+      fn: () => Promise<McpCallResult>,
+      auditDetail: Record<string, unknown>,
+    ): Promise<McpCallResult> => {
+      try {
+        const result = await fn();
+        try {
+          const list = (await ctx.storage.get<Array<unknown>>('audit')) || [];
+          list.push({ t: Date.now(), op, detail: auditDetail, readOnly: true });
+          await ctx.storage.set('audit', list.slice(-100));
+        } catch {
+          /* 审计失败不阻断操作 */
+        }
+        return result;
+      } catch (e) {
+        return errResult(e);
+      }
+    };
+
+    // ===== 只读体检：整机 / 显示 / 配色配置 =====
+    // 存在的意义：视觉模型不可用时，智能体靠截图+OCR 会直接卡死；本工具给出**客观参数**，
+    // 让诊断不再依赖"看懂画面"。零风险、无需确认、可默认开启。
+    ctx.registerTool({
+      name: 'computer_system_info',
+      description:
+        '读取本机系统与显示配置（只读，不做任何修改，无需用户确认）。一次返回：' +
+        '操作系统版本/构建号/架构/安装与开机时间/运行时长；整机厂商型号与内存；' +
+        '显卡型号/驱动版本与日期/当前分辨率/刷新率；显示器面板厂商与型号（EDID）、序列号、生产年份；' +
+        '每块屏幕的设备名/分辨率/是否主屏/DPI 与缩放百分比；应用与系统的明暗主题、透明效果；' +
+        '强调色；高对比度开关；颜色滤镜开关与类型；夜间模式开关（启发式）；ICC 色彩配置文件关联与已装配置文件清单。' +
+        '★ 排查"屏幕颜色不对/发灰/发蓝/太刺眼、界面变暗、字体模糊、缩放不对"时**先调本工具**：' +
+        '它不依赖看图，能直接区分「系统配色被改」还是「显卡驱动输出/ICC 导致」，避免在设置界面里瞎点。' +
+        '若发现问题需要修改，用 computer_os_settings 改设置、computer_monitor_control 调亮度对比度；' +
+        '色温/伽马/ICC 这类脚本改不了的项，用 computer_open_panel 打开对应设置页让用户自己点。' +
+        '★ 涉及"界面颜色不对"时，必须先跑本工具拿到客观参数，再决定改什么——不要凭截图猜测',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          sections: {
+            type: 'string',
+            description:
+              '可选。只看某几类信息，逗号分隔：os（系统）/hardware（整机与显卡）/display（显示器与缩放）' +
+              '/appearance（主题/强调色/对比度/滤镜/夜间模式）/icc（色彩配置文件）。留空=全部返回',
+          },
+        },
+      },
+      execute: (args) =>
+        runRead(
+          'system_info',
+          async () => {
+            if (MAC) {
+              const r = await osa(ctx.adapter.shell!, 'return (system version of (system info))', 20000);
+              return textOut(`macOS 暂只支持基础信息（深度体检目前仅 Windows）：系统版本 ${(r.stdout || '').trim()}`);
+            }
+            const r = await ps(ctx.adapter.shell!, SYSTEM_INFO_SCRIPT, 40000);
+            if (r.exitCode !== 0 && !r.stdout.trim()) {
+              throw new Error(`系统体检失败: ${(r.stderr || r.stdout || '未知错误').slice(0, 300)}`);
+            }
+            const info = parseSystemInfo(r.stdout);
+            // 按 sections 过滤（未指定则全量）
+            const wanted = String((args as Record<string, unknown>)?.sections ?? '')
+              .split(',')
+              .map((s) => s.trim().toLowerCase())
+              .filter(Boolean);
+            const want = (name: string) => wanted.length === 0 || wanted.includes(name);
+            const all = wanted.length === 0;
+            const payload: Record<string, unknown> = {};
+            if (want('os')) { payload.os = info.os; payload.computer = info.computer; }
+            if (want('hardware')) payload.gpus = info.gpus;
+            if (want('display')) { payload.monitors = info.monitors; payload.screens = info.screens; payload.systemDpi = info.systemDpi; }
+            if (want('appearance')) {
+              payload.theme = info.theme;
+              payload.dwm = info.dwm;
+              payload.highContrast = info.highContrast;
+              payload.colorFilter = info.colorFilter;
+              payload.nightLight = info.nightLight;
+            }
+            if (want('icc')) payload.icc = info.icc;
+            if (all) {
+              payload.note =
+                '夜间模式为启发式判断（Windows 无公开 API 读该状态）；色温/伽马/饱和度属显卡驱动私有通道，' +
+                '本工具只能读系统层与显示器层参数。修改用 computer_os_settings / computer_monitor_control';
+            }
+            return textResult(payload);
+          },
+          {},
+        ),
+    });
+
     // ===== 系统管理类工具（高危：必须先经用户确认，参数 confirm=true 才执行） =====
 
     /** 高危操作确认闸门：未确认直接报错，引导智能体先 confirm_user */
@@ -1481,7 +1608,332 @@ if (Test-Path -LiteralPath $k) { Write-Output 'STILL_EXISTS' } else { Write-Outp
       },
     });
 
-    ctx.log(`computer-use 插件已激活（maxOps=${maxOps}/10min，allowSelfWindowClick=${allowSelfWindowClick}），注册 16 个 computer_* 工具（含 4 个需确认的系统管理工具）`);
+    // ===== 系统设置读写（白名单 + 自动备份） =====
+    // 设计要点：**不是任意注册表编辑器**。只放行 OS_SETTINGS 白名单里的键，全部在 HKCU
+    // （当前用户）下 → 免管理员、不弹 UAC、误改只影响当前用户。写入前一律 reg export 备份。
+
+    /** 备份目录（与 registry_delete 共用），保留最近 N 份避免无限堆积 */
+    function registryBackupDir(): string {
+      return process.env.DATA_DIR
+        ? path.join(process.env.DATA_DIR, 'registry-backups')
+        : path.resolve('registry-backups');
+    }
+
+    /** 只保留最近 200 份备份（按文件名里的时间戳排序），其余删除；失败静默 */
+    function pruneRegistryBackups(keep = BACKUP_KEEP): void {
+      try {
+        const dir = registryBackupDir();
+        if (!fs.existsSync(dir)) return;
+        const files = fs.readdirSync(dir).filter((f) => f.endsWith('.reg'));
+        if (files.length <= keep) return;
+        for (const f of files.sort().slice(0, files.length - keep)) {
+          try { fs.rmSync(path.join(dir, f), { force: true }); } catch { /* 单个失败不影响其余 */ }
+        }
+      } catch { /* 清理失败不影响写入 */ }
+    }
+
+    /** 读多条设置项（走一次 PowerShell），失败时返回空数组由调用方按「未设置」处理 */
+    async function readSettingSpecs(
+      specs: Array<{ key: string; regPath: string; valueName: string }>,
+    ): Promise<Array<{ key: string; exists: boolean; value: unknown; error?: string | null }>> {
+      if (process.platform !== 'win32') return [];
+      try {
+        const r = await ps(ctx.adapter.shell!, buildOsSettingsReadScript(specs), 30000);
+        const parsed = JSON.parse((r.stdout || '').trim() || '[]');
+        // ★ 用 asArray 归一：PowerShell 在**单元素**时给的是对象而非数组（实测踩过）
+        return asArray<Record<string, unknown>>(parsed).map((row) => {
+          const raw = parseSettingValue(row.value);
+          // 空串视同未设置，避免「'' 被当成有效值」再被写回去
+          const blank = raw === null || String(raw).trim() === '';
+          return {
+            key: String(row.key ?? ''),
+            exists: !!row.exists && !blank,
+            value: blank ? null : raw,
+            error: row.error ? String(row.error) : null,
+          };
+        });
+      } catch {
+        return [];
+      }
+    }
+
+    /** 设置项 → 返回给模型的结构（把原始注册表值翻译成人话） */
+    function describeSettingValue(def: (typeof OS_SETTINGS)[number], exists: boolean, value: unknown): Record<string, unknown> {
+      const base: Record<string, unknown> = { key: def.key, label: def.label, desc: def.desc, effect: def.effect, exists };
+      // ★ 空串也算「未设置」：PowerShell 的 Get-ItemProperty 对不存在的值有时返回 '' 而非 null，
+      //   若当成有效值透给模型，模型可能把 '' 再写回去（实测会把 DWord 静默写成 0）。
+      const blank = value === null || value === undefined || String(value).trim() === '';
+      if (!exists || blank) {
+        base.value = null;
+        base.readable = '未设置（使用系统默认）';
+        return base;
+      }
+      if (def.kind === 'color') {
+        const hex = rgbFromAbgr(Number(value));
+        base.value = Number(value);
+        base.readable = hex;
+        return base;
+      }
+      base.value = value;
+      if (def.kind === 'choice' && def.enumMap) base.readable = def.enumMap[String(value)] ?? String(value);
+      else if (def.kind === 'flag') base.readable = Number(value) === 1 ? '开启' : '关闭';
+      else base.readable = String(value);
+      return base;
+    }
+
+    ctx.registerTool({
+      name: 'computer_os_settings',
+      description:
+        '读取/修改系统设置项（写入前自动备份注册表，需用户确认）。**只支持白名单内的设置项**，' +
+        '全部位于当前用户注册表（HKCU）下，因此不需要管理员权限、不会弹 UAC。' +
+        '三个 action：list=列出所有可改项及当前值（只读）；read=读指定项（只读，无需 confirm）；' +
+        'write=修改指定项（需 confirm:true，写入前自动 reg export 备份到 DATA_DIR/registry-backups/，' +
+        '误改可双击 .reg 还原）。' +
+        '白名单覆盖：应用/系统明暗主题、透明效果、标题栏是否显示主题色、强调色、高对比度、颜色滤镜开关与类型。' +
+        '★ 排查"颜色不对"的标准流程：先 computer_system_info 体检 → 用本工具 list 看当前值 →' +
+        '发现是颜色滤镜/高对比度被开了就用 write 关掉（这是整屏变色的头号元凶）。' +
+        '★ 改不了的项不要硬来：每显示器的 DPI 缩放**刻意不在白名单**（写错会让桌面难以操作且需注销才生效）；' +
+        '色温/伽马/ICC/夜间模式属驱动或私有通道，用 computer_open_panel 打开对应页面让用户自己点。' +
+        '返回值会标注 effect（生效方式：immediate 立即 / relogin 需注销 / restart 需重启）',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          action: { type: 'string', enum: ['list', 'read', 'write'], description: 'list=列出全部可改项与当前值；read=读指定项；write=改指定项' },
+          key: { type: 'string', description: 'read/write 必填。设置项逻辑键名，如 theme.apps / a11y.colorFilterActive，用 action=list 获取完整清单' },
+          value: {
+            type: 'string',
+            description:
+              'write 必填。目标值：开关类传 开/关（或 on/off、1/0）；choice 类传数字或中文（如 theme.apps 传 浅色/深色）；' +
+              '颜色类传 #RRGGBB；数字类传数字',
+          },
+          confirm: { type: 'boolean', description: 'write 操作必须先向用户确认后传 true' },
+        },
+        required: ['action'],
+      },
+      execute: (args) => {
+        const action = String(args.action ?? '').trim().toLowerCase();
+        if (action === 'list') {
+          return runRead('os_settings_list', async () => {
+            const specs = OS_SETTINGS.map((s) => ({ key: s.key, regPath: s.regPath, valueName: s.valueName }));
+            const current = await readSettingSpecs(specs);
+            const settings = OS_SETTINGS.map((def) => {
+              const hit = current.find((c) => c.key === def.key);
+              return describeSettingValue(def, !!hit?.exists, hit?.value);
+            });
+            return textResult({
+              settings,
+              pages: SETTINGS_PAGES.map((p) => ({ key: p.key, label: p.label })),
+              note: '以上是全部可改项。修改用 action=write（需 confirm:true）；in-panel 项（色温/伽马/ICC 等）用 computer_open_panel 打开让用户自己点',
+            });
+          }, {});
+        }
+        if (action === 'read') {
+          const key = String(args.key ?? '').trim();
+          return runRead('os_settings_read', async () => {
+            const def = findSetting(key);
+            if (!def) throw new Error(`未知设置项「${key}」，可用项请先调 action=list`);
+            const current = await readSettingSpecs([{ key: def.key, regPath: def.regPath, valueName: def.valueName }]);
+            const hit = current[0];
+            return textResult(describeSettingValue(def, !!hit?.exists, hit?.value));
+          }, { key });
+        }
+        // write
+        return (async () => {
+          try {
+            const key = String(args.key ?? '').trim();
+            const def = findSetting(key);
+            if (!def) throw new Error(`未知设置项「${key}」，可用项请先调 action=list`);
+            requireConfirm(args as Record<string, unknown>, `修改「${def.label}」`);
+            const { regValue, display, regType } = normalizeSettingValue(def, args.value);
+            if (process.platform !== 'win32') throw new Error('系统设置读写目前仅支持 Windows');
+            const backupFile = path.join(registryBackupDir(), backupFileName(def.regPath, def.valueName, Date.now()));
+            const script = buildOsSettingsWriteScript({
+              regPath: def.regPath,
+              valueName: def.valueName,
+              regType,
+              value: regValue,
+              backupFile,
+              broadcast: BROADCAST_AREAS, // 全部广播一次，让主题/颜色改动即时可见
+            });
+            const r = await ps(ctx.adapter.shell!, script, 60000);
+            const parsed = parseWriteResult(r.stdout);
+            if (!parsed.ok) throw new Error(parsed.error ?? '设置写入失败');
+            pruneRegistryBackups();
+            return textResult({
+              ok: true,
+              key: def.key,
+              label: def.label,
+              wrote: display,
+              effect: def.effect,
+              effectText: EFFECT_TEXT[def.effect],
+              backup: parsed.backup,
+              restoredBy: parsed.backup ? `误改可双击还原: ${parsed.backup}` : '本项原本未设置（首次创建），未产生备份',
+              verifiedValue: parsed.value,
+            });
+          } catch (e) {
+            return errResult(e);
+          }
+        })();
+      },
+    });
+
+    // ===== 显示硬件控制（亮度 / 对比度） =====
+    // 内屏走 WMI（笔记本常见），外接屏走 DDC/CI。**只有亮度和对比度**：
+    // 色温/伽马/饱和度是显卡驱动私有通道，DDC/CI 在消费级屏上普遍不支持 → 不承诺。
+    ctx.registerTool({
+      name: 'computer_monitor_control',
+      description:
+        '调节显示器亮度/对比度（硬件层，走 DDC/CI 或 WMI，改变显示器自身背光而非软件滤镜）。' +
+        '两种 action：list=列出所有显示器及支持的调节能力（只读，无需确认）；' +
+        'set=设置亮度/对比度百分比 0~100（需 confirm:true）。' +
+        '★ 内屏（笔记本自带屏）通常只支持亮度（走 WMI）；外接屏走 DDC/CI 可支持亮度+对比度，' +
+        '但部分显示器/扩展坞不支持 DDC/CI → 会明确返回「不支持」，此时用显示器机身按键或厂商工具。' +
+        '★ 本工具**只能调亮度和对比度**：色温（发蓝/发黄）、伽马、饱和度、锐度属于显卡驱动的私有接口，' +
+        '没有任何稳定的脚本通道 → 这类需求请用 computer_open_panel 打开系统设置，或引导用户改显卡控制面板' +
+        '（Intel 显卡命令中心 / NVIDIA 控制面板 → 显示 → 调整桌面颜色设置）',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          action: { type: 'string', enum: ['list', 'set'], description: 'list=列出显示器与可调能力；set=设置亮度/对比度' },
+          index: { type: 'number', description: 'set 必填。显示器序号，取自 action=list 的 ddc[].index' },
+          brightness: { type: 'number', description: 'set 可选。亮度百分比 0~100；不传则不改' },
+          contrast: { type: 'number', description: 'set 可选。对比度百分比 0~100；不传则不改（仅外接屏/DCC 支持）' },
+          primary: { type: 'boolean', description: 'set 可选。为 true 时忽略 index，直接作用于主屏（笔记本内屏优先，走 WMI）' },
+          confirm: { type: 'boolean', description: 'set 操作必须先向用户确认后传 true' },
+        },
+        required: ['action'],
+      },
+      execute: (args) => {
+        const action = String(args.action ?? '').trim().toLowerCase();
+        if (action === 'list') {
+          return runRead('monitor_list', async () => {
+            if (MAC) return textOut('macOS 显示器亮度控制暂未实现（本工具目前仅 Windows）');
+            const r = await ps(ctx.adapter.shell!, buildMonitorListScript(), 40000);
+            if (r.exitCode !== 0 && !r.stdout.trim()) {
+              throw new Error(`显示器枚举失败: ${(r.stderr || r.stdout || '未知错误').slice(0, 300)}`);
+            }
+            const list = parseMonitorList(r.stdout);
+            return textResult({
+              ddc: list.ddc.map((m) => ({
+                index: m.index,
+                description: m.description,
+                brightness: m.brightness ? `${m.brightness.cur}/${m.brightness.max}` : '不支持',
+                contrast: m.contrast ? `${m.contrast.cur}/${m.contrast.max}` : '不支持',
+              })),
+              builtinPanelWmi: { available: list.wmiAvailable, displays: list.wmi },
+              usage: '用 set 调：外接屏传 index；调笔记本内屏亮度传 primary:true 或 index 对应外接屏之外的屏幕',
+              unsupported: '色温/伽马/饱和度不在本工具范围内（显卡驱动私有通道），需在显卡控制面板调整',
+            });
+          }, {});
+        }
+        // set
+        return (async () => {
+          try {
+            requireConfirm(args as Record<string, unknown>, '调节显示器亮度/对比度');
+            if (process.platform !== 'win32') throw new Error('显示器控制目前仅支持 Windows');
+            const wantB = args.brightness === undefined || args.brightness === null ? null : clampPct(args.brightness);
+            const wantC = args.contrast === undefined || args.contrast === null ? null : clampPct(args.contrast);
+            if (wantB === null && wantC === null) throw new Error('至少要传 brightness 或 contrast 之一');
+            const primary = args.primary === true;
+            if (!primary && args.index === undefined) throw new Error('请传 index（取自 action=list 的 ddc[].index）或 primary:true');
+
+            const results: Array<{ field: string; ok: boolean; value?: string; error?: string }> = [];
+            const notes: string[] = [];
+
+            // 主屏：优先走 WMI（笔记本内屏），失败再回落到 DDC
+            if (primary) {
+              if (wantB !== null) {
+                const r = await ps(ctx.adapter.shell!, buildWmiBrightnessScript(wantB), 30000);
+                const parsed = parseMonitorSetResult(r.stdout);
+                const hit = parsed.lines.find((l) => l.field === 'brightness');
+                if (hit?.ok) results.push({ field: '内置屏亮度', ok: true, value: `${Number(hit.value) || wantB}%` });
+                else notes.push(`WMI 亮度未生效：${hit?.error ?? '本机不支持内置屏亮度控制'}（将尝试 DDC/CI）`);
+              } else {
+                notes.push('对比度对内置屏不可调（笔记本内屏一般不支持），已跳过');
+              }
+            }
+
+            // DDC/CI：外接屏，或主屏 WMI 未命中时的回落
+            const needDdc = !primary || (wantB !== null && results.length === 0) || wantC !== null;
+            if (needDdc) {
+              const idx = primary ? 0 : Math.max(0, Math.round(Number(args.index) || 0));
+              const script = buildDdcSetScript(idx, wantB, wantC);
+              const r = await ps(ctx.adapter.shell!, script, 40000);
+              if (r.exitCode !== 0 && !r.stdout.trim()) {
+                notes.push(`DDC/CI 调用失败：${(r.stderr || r.stdout || '未知错误').slice(0, 200)}`);
+              } else {
+                const parsed = parseMonitorSetResult(r.stdout);
+                for (const l of parsed.lines) {
+                  results.push({ field: l.field === 'brightness' ? '亮度' : '对比度', ok: l.ok, value: l.value, error: l.error });
+                }
+                if (parsed.lines.length === 0) notes.push('该显示器未返回可解析结果（可能不支持 DDC/CI）');
+              }
+            }
+
+            const anyOk = results.some((r) => r.ok);
+            return textResult({
+              ok: anyOk,
+              results,
+              notes: notes.length ? notes : undefined,
+              hint: anyOk ? undefined : '若显示器不支持 DDC/CI：用显示器机身按键，或厂商工具（如 LG OnScreen Control / Dell Display Manager）调整',
+            });
+          } catch (e) {
+            return errResult(e);
+          }
+        })();
+      },
+    });
+
+    // ===== 打开设置页面（脚本改不了的项，交给用户点） =====
+    // 价值：色温/伽马/ICC/夜间模式没有稳定脚本通道，与其干说"你自己去设置里找"，
+    // 不如直接把对应页面弹到用户面前 —— 至少省掉"在哪一页"的沟通成本。
+    ctx.registerTool({
+      name: 'computer_open_panel',
+      description:
+        '打开 Windows 系统设置页面/控制面板小程序（只读跳转，不改任何配置，无需确认）。' +
+        '用于脚本改不了的项：让用户自己在页面里点几下。' +
+        '可选页面：display（显示/分辨率/缩放）、advanceddisplay（高级显示：刷新率/色彩格式/HDR）、' +
+        'nightlight（夜间模式＝色温）、colorfilter（颜色滤镜）、highcontrast（高对比度）、' +
+        'graphics（图形设置/GPU 偏好）、personalization（个性化：颜色与主题）、' +
+        'colormanagement（颜色管理：ICC 色彩配置文件）。' +
+        '★ 典型用法：诊断出"色温偏蓝"而 computer_os_settings 改不了 → 调本工具打开 nightlight 或 colormanagement，' +
+        '并同时告诉用户在该页面把哪一项调成什么值',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          page: {
+            type: 'string',
+            description: '页面键名：display / advanceddisplay / nightlight / colorfilter / highcontrast / graphics / personalization / colormanagement',
+          },
+        },
+        required: ['page'],
+      },
+      execute: (args) =>
+        runRead(
+          'open_panel',
+          async () => {
+            if (MAC) return textOut('本工具目前仅支持 Windows 设置页跳转');
+            const key = String(args.page ?? '').trim();
+            const page = findSettingsPage(key);
+            if (!page) {
+              throw new Error(
+                `未知页面「${key}」。可用：${SETTINGS_PAGES.map((p) => `${p.key}（${p.label}）`).join(' / ')}`,
+              );
+            }
+            const r = await ps(ctx.adapter.shell!, buildOpenPageScript(page), 20000);
+            const out = (r.stdout || '').trim();
+            if (out.includes('ERR:')) throw new Error(`打开设置页失败: ${out.slice(out.indexOf('ERR:') + 4).trim()}`);
+            return textResult({ ok: true, page: page.key, label: page.label, opened: page.uri ?? page.cmd?.file });
+          },
+          { page: String(args.page ?? '') },
+        ),
+    });
+
+    ctx.log(
+      `computer-use 插件已激活（maxOps=${maxOps}/10min，allowSelfWindowClick=${allowSelfWindowClick}），` +
+        `注册 ${computerUseManifest.contributes?.tools?.length ?? 0} 个 computer_* 工具` +
+        `（含 3 个只读：system_info / os_settings(read,list) / monitor_control(list) 与 4 个需确认的系统管理工具）`,
+    );
   },
   deactivate: async () => {
     // 停止清理器（临时截图文件保留到下次启用再回收，避免禁用期间误删用户还想看的图）
