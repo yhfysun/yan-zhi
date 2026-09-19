@@ -1,5 +1,4 @@
 const { spawn } = require('child_process');
-const fs = require('fs');
 const path = require('path');
 
 const DEFAULT_ELECTRON_MIRROR = 'https://npmmirror.com/mirrors/electron/';
@@ -17,76 +16,55 @@ if (!env.ELECTRON_BUILDER_BINARIES_MIRROR && !isCI) {
   env.ELECTRON_BUILDER_BINARIES_MIRROR = DEFAULT_BINARIES_MIRROR;
 }
 
-/**
- * 版本档 → 产物名后缀。
- *
- * 从 edition.json（scripts/set-edition.cjs 写入）读，再以环境变量交给 electron-builder
- * —— yml 里写 `-${env.YZ_ARTIFACT_SUFFIX}` 使用。
- *
- * ★ 必须是**环境变量**而不是读文件：electron-builder 的 yml 不支持读任意 JSON。
- *   而它展开 `${env.X}` 时若变量不存在会直接抛 InvalidConfigurationError（不是忽略），
- *   所以这里必须保证一定注入：读不到 edition.json 时回落到 '-basic' 而不是留空。
- */
-function resolveArtifactSuffix() {
-  const fromEnv = process.env.YZ_ARTIFACT_SUFFIX;
-  if (fromEnv) return fromEnv;
-  try {
-    const p = path.join(__dirname, '..', 'edition.json');
-    const cfg = JSON.parse(fs.readFileSync(p, 'utf8'));
-    if (cfg && typeof cfg.artifactSuffix === 'string' && cfg.artifactSuffix) return cfg.artifactSuffix;
-  } catch {
-    /* edition.json 不存在（未跑 set-edition）：走兜底 */
-  }
-  return '-basic';
-}
+const { resolveArtifactSuffix, clearAppOutDirs } = require('./lib/pack-helpers.cjs');
 
-env.YZ_ARTIFACT_SUFFIX = resolveArtifactSuffix();
+env.YZ_ARTIFACT_SUFFIX = resolveArtifactSuffix({
+  fromEnv: process.env.YZ_ARTIFACT_SUFFIX,
+  editionJsonPath: path.join(__dirname, '..', 'edition.json'),
+});
 console.log(`[electron-build] 产物后缀: ${env.YZ_ARTIFACT_SUFFIX}`);
 
 /**
- * 上一次构建残留的 app.asar 是否被占用？
+ * 清理上一次构建残留的 appOutDir（win-unpacked 等）并打印处置提示。
  *
- * ★ 为什么需要这个检测：electron-builder 打包前会清空 `<output>/win-unpacked` 重写 app.asar。
- *   而那份 asar 有 200MB+，常被**实时杀软扫描**或刚退出的应用进程短暂持有句柄。
- *   Windows 下此时删除会 EBUSY，electron-builder 直接中断，报错却指向
- *   `app-builder.exe process failed ERR_ELECTRON_BUILDER_CANNOT_EXECUTE`（看不出是锁），
- *   排查成本很高。判别特征：文件**可读可写、但不可重命名/删除**。
+ * 清理逻辑本身在 lib/pack-helpers.cjs（可单测）；这里只负责呈现与退出码。
+ * ★ 为什么是「报错退出」而不是「换个目录」：产物路径必须可预测。
+ *   自动改到 dist-release-<时间戳> 会让产物散落多处（旧版行为），正是要避免的结果。
  */
-function isAsarLocked(outputDir) {
-  const asar = path.join(outputDir, 'win-unpacked', 'resources', 'app.asar');
-  if (!fs.existsSync(asar)) return false;
-  const probe = asar + '.lockprobe';
-  try {
-    fs.renameSync(asar, probe);
-    fs.renameSync(probe, asar);   // 可重命名 → 没锁，改回去
-    return false;
-  } catch {
-    return true;                  // EBUSY/EPERM → 被占用
+function clearStaleAppOutDir(outputDir) {
+  const { removed, failed } = clearAppOutDirs(outputDir);
+  for (const p of removed) {
+    console.log(`[electron-build] 已清理旧产物目录: ${path.basename(p)}`);
   }
+  if (!failed.length) return;
+
+  const first = failed[0];
+  console.error('');
+  console.error('========================================================');
+  console.error(`  ✗ 无法清理旧产物目录（${first.code}）`);
+  console.error(`    ${first.dir}`);
+  console.error('--------------------------------------------------------');
+  console.error('  常见原因：');
+  console.error('    · 言智应用仍在运行（请彻底退出，含托盘图标）');
+  console.error('    · 杀毒软件正在扫描上一轮产物（实时防护持有 app.asar 句柄）');
+  console.error('    · 另有构建进程在跑（同一输出目录不能并发构建）');
+  console.error('  处置（任选其一）：');
+  console.error('    1) 彻底退出言智与其它构建终端后重跑');
+  console.error('    2) 换输出目录：YZ_OUTPUT_DIR=dist-release-new node scripts/electron-build.cjs <config.yml>');
+  console.error('    3) 给项目目录加杀软排除项，避免反复发生');
+  console.error('========================================================');
+  console.error('');
+  process.exit(1);
 }
 
 if (!env.YZ_OUTPUT_DIR) {
   env.YZ_OUTPUT_DIR = path.resolve(__dirname, '..', '..', '..', 'dist-release');
-
-  // 锁检测 + 自动换目录：不因上一轮的残留把这次构建卡死，也不必让用户手动清理。
-  // 仅在**用户没显式指定** YZ_OUTPUT_DIR 时兜底（显式指定就尊重用户选择）。
-  if (isAsarLocked(env.YZ_OUTPUT_DIR)) {
-    const fallback = `${env.YZ_OUTPUT_DIR}-${Date.now()}`;
-    console.warn('');
-    console.warn('========================================================');
-    console.warn('  ⚠ 检测到上次构建的 app.asar 被占用（杀软扫描 / 残留进程）');
-    console.warn('--------------------------------------------------------');
-    console.warn('  electron-builder 会因删不掉它而中断，因此本次改输出到:');
-    console.warn('    ' + fallback);
-    console.warn('');
-    console.warn('  想回到默认目录 dist-release，请先彻底退出言智应用，或删除:');
-    console.warn('    ' + path.join(env.YZ_OUTPUT_DIR, 'win-unpacked'));
-    console.warn('  （亦可给项目目录加杀软排除项，避免反复发生）');
-    console.warn('========================================================');
-    console.warn('');
-    env.YZ_OUTPUT_DIR = fallback;
-  }
 }
+
+// 旧产物先清干净：清不掉就明确报错退出，**不静默改输出到 dist-release-<时间戳>**。
+// 静默换目录 = 产物散落多处、用户找不到包（旧版行为）。
+// 需要换目录请显式指定 YZ_OUTPUT_DIR，或用 build-all-editions.cjs --separate。
+clearStaleAppOutDir(env.YZ_OUTPUT_DIR);
 console.log(`[electron-build] 输出目录: ${env.YZ_OUTPUT_DIR}`);
 
 const config = process.argv[2];
