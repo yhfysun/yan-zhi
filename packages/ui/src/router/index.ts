@@ -4,7 +4,7 @@ import { useLicenseStore } from '../stores/license';
 import { usePluginStore } from '../stores/plugin';
 import { resolvePluginComponent } from '../plugin-component-registry';
 import { isElectron, isCapacitor } from '../api/client';
-import { activeMode, modeRoute } from '../stores/mode';
+import { activeMode, modeRoute, visibleModeDefs, isModeLicensed, type AppMode } from '../stores/mode';
 
 const routes: RouteRecordRaw[] = [
   { path: '/', redirect: '/chat' },
@@ -27,6 +27,14 @@ const routes: RouteRecordRaw[] = [
     name: 'license',
     component: () => import('../views/License.vue'),
     meta: { title: '授权激活', guest: true },
+  },
+  {
+    // 授权管理（已激活后从「更多」进）：看当前码/版本档位/机器绑定，并可换码。
+    // 与 /license 的分工见 LicenseManage.vue 顶部注释。
+    path: '/license-manage',
+    name: 'license-manage',
+    component: () => import('../views/LicenseManage.vue'),
+    meta: { title: '授权管理' },
   },
   {
     path: '/login',
@@ -200,6 +208,27 @@ const MOBILE_BLOCKED_PATHS = new Set([
   '/sql-console', '/data-sources', '/peers', '/connections',
 ]);
 
+/**
+ * 模式路由 → 模式 key。授权分级（版本档）据此拦截**未授权模式**的路由。
+ *
+ * 为什么要在这里拦：前端隐藏入口只挡住了"点得着"的路径，手输 `#/ops`、
+ * 历史书签、外部跳转仍能直达 —— 这层是「前端入口禁用」的兜底，缺了它等于没禁。
+ * 注意运维/安全是插件贡献的路由（`syncPluginRoutes` 动态加），也要一并覆盖。
+ */
+const MODE_ROUTE_KEYS: Record<string, AppMode> = {
+  '/chat': 'office',
+  '/workflow': 'wf',
+  '/code': 'dev',
+  '/ops': 'ops',
+  '/sec': 'sec',
+};
+
+/** 未授权模式的重定向落点：第一个可见模式的路由（阉割版 = /chat）。 */
+function firstLicensedRoute(): string {
+  const first = visibleModeDefs.value[0];
+  return first ? modeRoute(first.key) : '/chat';
+}
+
 router.beforeEach(async (to) => {
   // 移动端重功能路由重定向到对话页，避免手动输 URL 进入
   if (isCapacitor && MOBILE_BLOCKED_PATHS.has(to.path)) {
@@ -217,12 +246,21 @@ router.beforeEach(async (to) => {
       return { path: '/license' };
     }
   }
+  // ★ 版本档门禁：目标路由属于未授权模式 → 挡回首个可见模式。
+  //   必须在 licenseStore.init() 之后 —— 授权信息（放行模式清单）是 init 时拿到的，
+  //   放在前面会因 modes 未就绪而全部放行（等于没拦）。
+  const targetMode = MODE_ROUTE_KEYS[to.path];
+  if (targetMode && !isModeLicensed(targetMode)) {
+    return { path: firstLicensedRoute() };
+  }
   // 模式记忆（泛化）：停留在非办公模式时去了别的页面，再回「任务」应恢复该模式工作台。
   // 四模式是同一份工作上下文的四个视图，切换入口统一在顶栏模式下拉（原「任务」项）。
   if (
     to.path !== '/code' &&
     (to.path === '/chat' || to.path.startsWith('/chat/')) &&
-    activeMode.value !== 'office'
+    activeMode.value !== 'office' &&
+    // 当前模式已失权时不再跳回它（否则换低档码后 /chat 会被弹到一个不该存在的模式）
+    isModeLicensed(activeMode.value)
   ) {
     return { path: modeRoute(activeMode.value) };
   }

@@ -11,31 +11,35 @@
   - 浮层展开时通知 BrowserPanel 避让原生 BrowserView（复用 titleBarOverlayOpen）
 -->
 <template>
-  <el-popover
-    v-model:visible="open"
-    :disabled="suppressHover"
-    trigger="hover"
-    :show-after="120"
-    :hide-after="120"
-    placement="bottom-start"
-    :show-arrow="false"
-    :width="'auto'"
-    popper-class="yz-menu-popper mode-switcher-popper"
-  >
-    <template #reference>
-      <button
-        class="title-nav-item mode-switcher"
-        :class="{ active: onModeRoute }"
-        type="button"
-        :title="triggerTitle"
-        @click="onTriggerClick"
-      >
-        <el-icon :size="15"><component :is="currentIcon" /></el-icon>
-        <span class="mode-label">{{ shortLabel(currentDef) }}</span>
-      </button>
-    </template>
-    <HoverMenu :items="menuItems" :width="216" @select="onPick" />
-  </el-popover>
+  <!-- 只有一个可见模式时不渲染下拉（阉割版仅办公：单选下拉无意义，且多一个无内容的浮层入口）。
+       用 v-if 而非把内容置空 —— 后者会留下一个可点但空白的气泡。 -->
+  <span v-if="hasChoice" class="mode-switcher-anchor">
+    <el-popover
+      v-model:visible="open"
+      :disabled="suppressHover"
+      trigger="hover"
+      :show-after="120"
+      :hide-after="120"
+      placement="bottom-start"
+      :show-arrow="false"
+      :width="'auto'"
+      popper-class="yz-menu-popper mode-switcher-popper"
+    >
+      <template #reference>
+        <button
+          class="title-nav-item mode-switcher"
+          :class="{ active: onModeRoute }"
+          type="button"
+          :title="triggerTitle"
+          @click="onTriggerClick"
+        >
+          <el-icon :size="15"><component :is="currentIcon" /></el-icon>
+          <span class="mode-label">{{ shortLabel(currentDef) }}</span>
+        </button>
+      </template>
+      <HoverMenu :items="menuItems" :width="216" @select="onPick" />
+    </el-popover>
+  </span>
 </template>
 
 <script setup lang="ts">
@@ -43,7 +47,7 @@ import { computed, ref, watch, onMounted, onBeforeUnmount } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { Check, Lock, ChatDotRound, Monitor, Platform, Connection } from '@element-plus/icons-vue';
 import {
-  activeMode, MODE_DEFS, setMode, modeRoute,
+  activeMode, MODE_DEFS, setMode, modeRoute, visibleModeDefs,
   type AppMode, type ModeDef,
 } from '../../stores/mode';
 import { usePluginStore } from '../../stores/plugin';
@@ -74,8 +78,15 @@ function suppress() {
 }
 
 // 当前模式徽标：图标 + 名称（窄宽时 .mode-label 隐藏，仅图标）
-const currentDef = computed<ModeDef>(() => MODE_DEFS.find((d) => d.key === activeMode.value) || MODE_DEFS[0]);
+// ★ 从「可见模式」里找而不是 MODE_DEFS 全量：低档码下当前模式若不在可见集合里
+//   （理论上 store 已回落 office，这里再兜一层），也不会渲染出一个已失权的标签。
+const currentDef = computed<ModeDef>(
+  () => visibleModeDefs.value.find((d) => d.key === activeMode.value) || visibleModeDefs.value[0] || MODE_DEFS[0],
+);
 const currentIcon = computed(() => iconOf(currentDef.value.icon));
+
+/** 可见模式多于一个才渲染下拉：阉割版仅办公时整条模式入口不该出现。 */
+const hasChoice = computed(() => visibleModeDefs.value.length > 1);
 
 /** 顶栏按钮选中态：当前路由就是该模式的路由（与「浏览器/消息」active 口径一致） */
 const onModeRoute = computed(() => route.path === modeRoute(activeMode.value));
@@ -102,9 +113,13 @@ function shortLabel(def: ModeDef): string {
   return def.label.replace(/模式$/, '');
 }
 
-/** 菜单条目：结构交给 HoverMenu 渲染（check = 当前模式，disabled = 插件未启用/仅桌面端） */
+/** 菜单条目：结构交给 HoverMenu 渲染（check = 当前模式，disabled = 插件未启用/仅桌面端）
+ *
+ *  ★ 只遍历 visibleModeDefs：未授权的模式**完全隐藏**（用户拍板）——
+ *    不出现置灰项、不带「需升级」提示文字。授权是硬边界，不是可选项。
+ */
 const menuItems = computed<HoverMenuItem[]>(() =>
-  MODE_DEFS.map((def) => {
+  visibleModeDefs.value.map((def) => {
     const base = {
       key: def.key,
       label: shortLabel(def),
@@ -193,6 +208,12 @@ export default { name: 'ModeSwitcher' };
      必须自带，否则真实 hover/click 全部失效（合成事件测不出来，只能真鼠标验证） */
   pointer-events: auto;
   transition: background 0.15s ease, color 0.15s ease;
+}
+
+/* 外层定位锚点：只做包裹，不参与布局（避免多包一层 span 后与相邻导航项的间距变化） */
+.mode-switcher-anchor {
+  display: inline-flex;
+  -webkit-app-region: no-drag;
 }
 
 .mode-switcher:hover {

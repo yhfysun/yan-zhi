@@ -5,6 +5,7 @@
 import { defineStore } from 'pinia';
 import { ref } from 'vue';
 import { api } from '../api/client';
+import { setLicensedModes } from './mode';
 import {
   loadLicenseCode,
   persistLicenseCode,
@@ -19,8 +20,21 @@ export interface VerifyResult {
   machineMac: string;
   machineIdLocal: string | null;
   identitySource: string;
+  /** 本包构建档（lite/basic/pro）。 */
+  buildEdition?: string;
+  /** 授权码档位。 */
+  edition?: string;
+  /** 实际放行的模式（后端已算好「构建档 ∩ 授权档」）。 */
+  modes?: string[];
   reason?: string;
 }
+
+/** 版本档的中文展示名，供授权页与排障使用。 */
+export const EDITION_LABELS: Record<string, string> = {
+  lite: '阉割版',
+  basic: '基础版',
+  pro: '高级版',
+};
 
 export const useLicenseStore = defineStore('license', () => {
   const verified = ref(false);
@@ -31,7 +45,36 @@ export const useLicenseStore = defineStore('license', () => {
   const machineId = ref('');
   /** 机器标识来源，读不到硬件信息时会显示 fallback-composite。 */
   const identitySource = ref('');
+  /** 本包构建档（lite/basic/pro），由后端下发。 */
+  const buildEdition = ref('');
+  /** 授权码档位（lite/basic/pro）。 */
+  const edition = ref('');
+  /** 当前生效的授权码明文（供授权管理页展示；不含私钥，泄露无签发价值）。 */
+  const currentCode = ref('');
   const error = ref('');
+
+  /** 把授权结果里的档位信息同步给 mode store —— 模式下拉与左栏入口据它收敛。 */
+  function applyEdition(data: VerifyResult | null) {
+    if (data && data.valid) {
+      buildEdition.value = data.buildEdition || '';
+      edition.value = data.edition || '';
+      setLicensedModes(data.modes || null);
+    } else {
+      buildEdition.value = data?.buildEdition || '';
+      edition.value = data?.edition || '';
+      setLicensedModes(null);
+    }
+  }
+
+  /** 从 keyring 读回当前授权码（授权管理页展示用）。 */
+  async function loadCurrentCode(): Promise<string> {
+    try {
+      currentCode.value = (await loadLicenseCode()) || '';
+    } catch {
+      currentCode.value = '';
+    }
+    return currentCode.value;
+  }
 
   async function fetchMachineInfo() {
     const result = await api.get<{ mac: string; machineId: string | null; source: string; hostname: string }>('/license/machine-info');
@@ -57,11 +100,15 @@ export const useLicenseStore = defineStore('license', () => {
         machineMac.value = def.data.machineMac;
         machineId.value = def.data.machineIdLocal || '';
         identitySource.value = def.data.identitySource;
+        applyEdition(def.data);
       } else {
         verified.value = false;
+        applyEdition('data' in def ? def.data : null);
       }
+      await loadCurrentCode();
       return;
     }
+    currentCode.value = code;
     const result = await api.post<VerifyResult>('/license/verify', { code });
     initialized.value = true;
     if ('data' in result && result.data.valid) {
@@ -70,10 +117,12 @@ export const useLicenseStore = defineStore('license', () => {
       machineMac.value = result.data.machineMac;
       machineId.value = result.data.machineIdLocal || '';
       identitySource.value = result.data.identitySource;
+      applyEdition(result.data);
     } else {
       await clearLicenseCode();
       verified.value = false;
       info.value = 'data' in result ? result.data : null;
+      applyEdition('data' in result ? result.data : null);
     }
   }
 
@@ -96,6 +145,8 @@ export const useLicenseStore = defineStore('license', () => {
     machineMac.value = result.data.machineMac;
     machineId.value = result.data.machineIdLocal || '';
     identitySource.value = result.data.identitySource;
+    currentCode.value = code;
+    applyEdition(result.data);
     return true;
   }
 
@@ -103,7 +154,16 @@ export const useLicenseStore = defineStore('license', () => {
     await clearLicenseCode();
     verified.value = false;
     info.value = null;
+    currentCode.value = '';
+    // 掉授权即收回所有模式权限（回到「未拿到授权信息」态，由路由守卫把人拦在授权页）
+    buildEdition.value = '';
+    edition.value = '';
+    setLicensedModes(null);
   }
 
-  return { verified, initialized, info, machineMac, machineId, identitySource, error, init, activate, deactivate, fetchMachineInfo };
+  return {
+    verified, initialized, info, machineMac, machineId, identitySource,
+    buildEdition, edition, currentCode, error,
+    init, activate, deactivate, fetchMachineInfo, loadCurrentCode,
+  };
 });

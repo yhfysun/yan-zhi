@@ -63,6 +63,10 @@
               <el-icon><component :is="resolvePluginIcon(it.icon)" /></el-icon>
               <span>{{ it.label }}</span>
             </el-dropdown-item>
+            <el-dropdown-item divided @click="$router.push('/license-manage')">
+              <el-icon><Key /></el-icon>
+              <span>授权管理</span>
+            </el-dropdown-item>
             <el-dropdown-item v-if="!isElectron" divided @click="authStore.logout()">
               <el-icon><SwitchButton /></el-icon>
               <span>退出登录</span>
@@ -147,6 +151,10 @@
               <el-icon><component :is="resolvePluginIcon(it.icon)" /></el-icon>
               <span>{{ it.label }}</span>
             </el-dropdown-item>
+            <el-dropdown-item divided @click="$router.push('/license-manage')">
+              <el-icon><Key /></el-icon>
+              <span>授权管理</span>
+            </el-dropdown-item>
             <el-dropdown-item divided @click="authStore.logout()">
               <el-icon><SwitchButton /></el-icon>
               <span>退出登录</span>
@@ -190,7 +198,7 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import { useRoute } from 'vue-router';
-import { ChatDotRound, Setting, User, SwitchButton, Fold, Expand, Monitor, Collection, Moon, Sunny, HomeFilled, Promotion, DataLine, Operation, Share } from '@element-plus/icons-vue';
+import { ChatDotRound, Setting, User, SwitchButton, Fold, Expand, Monitor, Collection, Moon, Sunny, HomeFilled, Promotion, DataLine, Operation, Share, Key } from '@element-plus/icons-vue';
 import { Code, Bot } from 'lucide-vue-next';
 import { openSettingsDrawer } from '../composables/useSettingsDrawer';
 import { useAuthStore } from '../stores/auth';
@@ -199,6 +207,7 @@ import { useIsMobile } from '../composables/useIsMobile';
 import { usePlatform } from '../composables/usePlatform';
 import { useSidebarState } from '../composables/useSidebarState';
 import { usePluginStore } from '../stores/plugin';
+import { visibleModeDefs, isModeLicensed } from '../stores/mode';
 import { resolvePluginIcon } from '../plugin-icons';
 import { isElectron, isCapacitor } from '../api/client';
 
@@ -218,16 +227,34 @@ interface NavItem {
   group: string;
   /** 移动端 TabBar 不显示该项（如内置浏览器仅桌面端） */
   hideOnMobile?: boolean;
+  /** 该项属于哪个模式（用于授权收敛）；不填 = 与模式无关。 */
+  mode?: string;
 }
 
 const builtinNavItems: NavItem[] = [
   { path: '/home', label: '首页', tabLabel: '首页', icon: HomeFilled, kind: 'route', group: '工作台' },
   { path: '/chat', label: '任务', tabLabel: '任务', icon: ChatDotRound, kind: 'route', group: '工作台' },
-  { path: '/code', label: '代码', tabLabel: '代码', icon: Code, kind: 'route', group: '工作台', hideOnMobile: true },
+  { path: '/code', label: '代码', tabLabel: '代码', icon: Code, kind: 'route', group: '工作台', hideOnMobile: true, mode: 'dev' },
   { path: '/browser', label: '浏览器', tabLabel: '浏览器', icon: Monitor, kind: 'route', group: '工作台', hideOnMobile: true },
   { path: '/chat-hub', label: '消息', tabLabel: '消息', icon: Promotion, kind: 'route', group: '工作台' },
   { path: '', label: '设置', tabLabel: '设置', icon: Setting, kind: 'settings', group: '系统' },
 ];
+
+/** 模式路由 → 模式 key：插件贡献的入口（如运维 /ops、安全 /sec）与内置项共用同一套授权判定。 */
+const MODE_ROUTES: Record<string, string> = {
+  '/chat': 'office',
+  '/workflow': 'wf',
+  '/code': 'dev',
+  '/ops': 'ops',
+  '/sec': 'sec',
+};
+
+/** 该路由是否属于「当前授权未放行」的模式。非模式路由（/home、/settings 等）一律放行。 */
+function routeBlockedByLicense(path: string): boolean {
+  const mode = MODE_ROUTES[path];
+  if (!mode) return false;
+  return !isModeLicensed(mode as Parameters<typeof isModeLicensed>[0]);
+}
 
 const pluginStore = usePluginStore();
 function matchWhen(when?: string): boolean {
@@ -237,11 +264,12 @@ function matchWhen(when?: string): boolean {
   if (when === 'web') return !isDesktop && !isMobile.value;
   return true;
 }
-/** 侧栏「插件」分组：不含声明进「更多」菜单的项 */
+/** 侧栏「插件」分组：不含声明进「更多」菜单的项。未授权模式的插件入口一并滤掉。 */
 const pluginNavItems = computed<NavItem[]>(() =>
   pluginStore.sidebar
     .filter((item) => matchWhen(item.when))
     .filter((item) => !item.moreGroup || item.moreGroup === 'nav')
+    .filter((item) => !routeBlockedByLicense(item.route))
     .map((item) => ({
       path: item.route,
       label: item.label,
@@ -251,13 +279,19 @@ const pluginNavItems = computed<NavItem[]>(() =>
       group: '插件',
     })),
 );
-/** 「更多」菜单项（Web 端渲染进用户下拉；桌面端由 TitleBar 承担） */
+/** 「更多」菜单项（Web 端渲染进用户下拉；桌面端由 TitleBar 承担）。未授权模式的入口同样滤掉。 */
 const pluginMoreItems = computed(() =>
   pluginStore.sidebar
     .filter((item) => matchWhen(item.when))
-    .filter((item) => item.moreGroup && item.moreGroup !== 'nav'),
+    .filter((item) => item.moreGroup && item.moreGroup !== 'nav')
+    .filter((item) => !routeBlockedByLicense(item.route)),
 );
-const navItems = computed<NavItem[]>(() => [...builtinNavItems, ...pluginNavItems.value].filter((i) => !(i as any).hideOnMobile || !isMobile.value));
+/** 内置条目按授权过滤：读 visibleModeDefs 是响应式的，换码后左栏会即时收敛（无需重启）。 */
+const navItems = computed<NavItem[]>(() =>
+  [...builtinNavItems, ...pluginNavItems.value]
+    .filter((i) => !(i as any).hideOnMobile || !isMobile.value)
+    .filter((i) => !i.mode || visibleModeDefs.value.some((d) => d.key === i.mode)),
+);
 /** 桌面展开态按 group 分组渲染 */
 const navGroups = computed(() => {
   const groups: Array<{ label: string; items: NavItem[] }> = [];

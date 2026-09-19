@@ -133,7 +133,7 @@ import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import {
   Minus, FullScreen, CopyDocument, Close, Moon, Sunny, HomeFilled, ChatDotRound, Monitor, Promotion, Setting, Collection,
-  More, Cpu, Tools, Files, User, Link, Platform, MagicStick, Memo, Box, DataLine, Operation, Share, Refresh,
+  More, Cpu, Tools, Files, User, Link, Platform, MagicStick, Memo, Box, DataLine, Operation, Share, Refresh, Key,
 } from '@element-plus/icons-vue';
 import { useSettingsStore, useAuthStore, usePluginStore } from '@yan-zhi/ui';
 import { resolvePluginIcon } from '@yan-zhi/ui/plugin-icons';
@@ -242,6 +242,7 @@ const moreItems = computed<HoverMenuItem[]>(() => [
   { key: 'divider-memory', label: '', divider: true },
   { key: 'memory', label: '记忆管理', icon: Memo, path: '/memory' },
   { key: 'plugins', label: '插件管理', icon: Box, path: '/plugins' },
+  { key: 'license-manage', label: '授权管理', icon: Key, path: '/license-manage' },
   { key: 'divider-settings', label: '', divider: true },
   { key: 'settings', label: '设置', icon: Setting, path: '/settings' },
   ...(pluginMenus.value.length

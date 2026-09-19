@@ -41,6 +41,44 @@ const MODE_KEY = 'yz:mode';
 const LEGACY_CODE_KEY = 'yz:code:active';
 const LEAD_KEY = 'yz:mode:lead';
 
+// ─────────────────── 版本档：模式可见性（授权分级） ───────────────────
+//
+// ★ 模式清单的唯一权威在**后端** `apps/server/src/license.ts` 的 `EDITION_MODES`。
+//   前端只消费 `/api/license/verify` 返回的 `modes`（已算好「构建档 ∩ 授权档」），
+//   绝不在这里再维护一份 —— 两处清单必然漂移，表现为「码升了但界面没放开」，
+//   而且这种漂移只有真机换码才会暴露。
+//
+// 未拿到授权信息前（首屏、离线、接口失败）用「全可见」兜底而不是「全隐藏」：
+// 隐藏会让首屏闪一下再补回（视觉抖动），且授权接口失败时用户会以为功能没了。
+// 真正的硬约束在路由守卫与服务端，这里只是渲染收敛。
+
+/** 授权放行的模式。null = 尚未拿到授权信息（此时不做收敛）。 */
+const licensedModes: Ref<string[] | null> = ref(null);
+
+/** 写入授权放行的模式（由 stores/license 在 init/activate 成功后调用）。 */
+export function setLicensedModes(modes: string[] | null): void {
+  licensedModes.value = Array.isArray(modes) && modes.length ? modes.slice() : null;
+  // 当前模式一旦失权（换成了低档码），必须回落 —— 否则界面停在一个不该存在的模式上，
+  // 工作台会渲染出空壳（模式本身没了但 activeMode 还指着它）。
+  if (licensedModes.value && !licensedModes.value.includes(activeMode.value)) {
+    activeMode.value = 'office';
+  }
+}
+
+/** 该模式是否被当前授权放行。未拿到授权信息时一律放行（见上方说明）。 */
+export function isModeLicensed(m: AppMode): boolean {
+  if (!licensedModes.value) return true;
+  return licensedModes.value.includes(m);
+}
+
+/** 当前授权下可见的模式定义（模式下拉 / 左栏入口都读它）。 */
+export const visibleModeDefs: ComputedRef<ModeDef[]> = computed(() =>
+  MODE_DEFS.filter((d) => isModeLicensed(d.key)),
+);
+
+/** 响应式暴露给组件（computed 直接用于模板）。 */
+export const licensedModesRef = licensedModes;
+
 /** 主导方默认值（决策 4 / 决策记录 #5）：办公无 lead；dev 默认编辑器居中（= 现状）；ops/sec 默认命令模式 */
 const LEAD_DEFAULTS: Record<AppMode, LeadMode | null> = {
   office: null,
@@ -163,5 +201,10 @@ function defineModeStore() {
     modeDefOf,
     modeRoute,
     chatPlacementOf,
+    // 版本档：模式可见性
+    licensedModes: licensedModesRef,
+    visibleModeDefs,
+    setLicensedModes,
+    isModeLicensed,
   };
 }

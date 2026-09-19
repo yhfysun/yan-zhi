@@ -9,14 +9,14 @@
         <p class="auth-subtitle">请输入授权码以激活应用</p>
       </div>
 
+      <!-- ★ 机器标识与 MAC 不上屏（用户拍板）：设备指纹不该外露。
+           绑定能力**完好无损** —— 应用内部用 getMachineIdentity() 自动读取机器指纹，
+           验签时按它比对，与「是否把值显示给用户看」无关。
+           签发方要按机器绑定时，让用户在机器上跑一次授权码即可，无需抄写标识。 -->
       <div class="machine-info">
         <div class="machine-row">
-          <span class="machine-label">机器标识</span>
-          <code class="machine-value">{{ machineId || '读取中…' }}</code>
-        </div>
-        <div class="machine-row">
-          <span class="machine-label">网卡 MAC</span>
-          <code class="machine-value machine-value-sub">{{ machineMac || '读取中…' }}</code>
+          <span class="machine-label">版本档位</span>
+          <code class="machine-value">{{ editionText || '读取中…' }}</code>
         </div>
       </div>
 
@@ -45,9 +45,9 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
+import { ref, onMounted, computed } from 'vue';
 import { useRouter } from 'vue-router';
-import { useLicenseStore } from '../stores/license';
+import { useLicenseStore, EDITION_LABELS } from '../stores/license';
 
 const router = useRouter();
 const licenseStore = useLicenseStore();
@@ -56,13 +56,27 @@ const code = ref('');
 const loading = ref(false);
 const error = ref('');
 const hint = ref('');
-const machineMac = ref('');
-const machineId = ref('');
+
+/** 版本档位展示：优先用授权码档位（生效档），没有则退回包本身档位。
+ *  ★ 只读 store 而不是本地 ref —— 用户换了码后这里要跟着变。
+ *  注：机器标识与 MAC 已按要求不再上屏，故这里也不再 fetchMachineInfo。 */
+const editionText = computed(() => {
+  const ed = licenseStore.edition || licenseStore.buildEdition;
+  if (!ed) return '';
+  const label = EDITION_LABELS[ed] || ed;
+  const modes = licenseStore.info?.modes;
+  return modes && modes.length ? `${label}（${ed}）· 可用 ${modes.length} 个模式` : `${label}（${ed}）`;
+});
 
 onMounted(async () => {
-  await licenseStore.fetchMachineInfo();
-  machineMac.value = licenseStore.machineMac;
-  machineId.value = licenseStore.machineId;
+  // 停在授权页时（未激活）主动校验一次预置码：这样「版本档位」能显示出来 ——
+  // 用户至少知道自己拿到的包是什么档，排障与对账都靠它。
+  // init() 内部有 initialized 幂等，重复调用无副作用。
+  try {
+    await licenseStore.init();
+  } catch {
+    /* 授权接口不可用不阻塞本页渲染 */
+  }
   if (licenseStore.info && !licenseStore.verified) {
     hint.value = licenseStore.info.reason || '原授权码已失效，请重新输入';
   }
@@ -125,9 +139,8 @@ async function submit() {
 .machine-label { font-size: 12px; color: var(--color-text-secondary); }
 .machine-value {
   font-size: 12px; font-family: ui-monospace, monospace;
-  color: var(--color-primary); user-select: all;
+  color: var(--color-primary);
 }
-.machine-value-sub { color: var(--color-text-secondary); }
 .auth-form { display: flex; flex-direction: column; gap: 14px; }
 .code-input :deep(.el-textarea__inner) {
   font-family: ui-monospace, monospace; font-size: 12px; line-height: 1.6;
