@@ -984,8 +984,13 @@ html[data-skin="on"] .el-dialog.tm-solid-dialog .el-textarea__inner {
 
 /* ===== EP 控件全面皮肤化：按钮/下拉选项/分页/勾选/标签页/空态/表单 ===== */
 
-/* 默认按钮（非 primary/text/link/plain）走 --btn-bg 玻璃 token + 皮肤背景图 */
-[data-skin="on"] .el-button:not(.is-text):not(.is-link):not(.el-button--primary):not(.is-plain):not(.is-disabled) {
+/* 默认按钮（非 primary/text/link/plain）走 --btn-bg 玻璃 token + 皮肤背景图
+   ⚠️ 必须同时排除 success/warning/danger/info 这些**语义色实心按钮**：
+      它们由 Element Plus 给出实心底 + 白字（--el-button-text-color: var(--el-color-white)）。
+      皮肤只排除 primary 时，这些按钮的底色会被换成浅色玻璃、文字仍是白的
+      → **白字压浅底，字几乎看不见**（实测「删除」按钮看不清就是这条造成的）。
+      语义色是功能性的（危险/警告需要一眼可辨），不该被皮肤中性化，故整类排除。 */
+[data-skin="on"] .el-button:not(.is-text):not(.is-link):not(.el-button--primary):not(.el-button--success):not(.el-button--warning):not(.el-button--danger):not(.el-button--info):not(.is-plain):not(.is-disabled) {
   background-color: var(--btn-bg);
   background-image: var(--skin-btn-pattern, none);
   background-size: var(--skin-pattern-size, cover);
@@ -993,11 +998,11 @@ html[data-skin="on"] .el-dialog.tm-solid-dialog .el-textarea__inner {
   background-position: center;
   border-color: var(--btn-border);
 }
-[data-skin="on"] .el-button:not(.is-text):not(.is-link):not(.el-button--primary):not(.is-plain):not(.is-disabled):hover {
+[data-skin="on"] .el-button:not(.is-text):not(.is-link):not(.el-button--primary):not(.el-button--success):not(.el-button--warning):not(.el-button--danger):not(.el-button--info):not(.is-plain):not(.is-disabled):hover {
   background-color: var(--btn-bg-hover);
 }
-/* plain 按钮也走 token */
-[data-skin="on"] .el-button.is-plain:not(.is-disabled):not(.el-button--primary) {
+/* plain 按钮也走 token（同样排除语义色：plain 语义按钮靠自身边框+字色表达，不该被玻璃化） */
+[data-skin="on"] .el-button.is-plain:not(.is-disabled):not(.el-button--primary):not(.el-button--success):not(.el-button--warning):not(.el-button--danger):not(.el-button--info) {
   background-color: var(--btn-bg);
 }
 
