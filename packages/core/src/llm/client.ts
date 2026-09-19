@@ -346,7 +346,7 @@ export class LlmClient {
 
   async listModels(): Promise<{ id: string; type?: string }[]> {
     if (this.isAnthropic) {
-      // Anthropic 官方无公开模型列表接口；兼容网关（如 OpenRouter）可能支持
+      // 拉取失败（上游不支持 /v1/models 等）时返回空列表，由 UI 引导手动添加模型 ID
       try {
         const res = await this.fetchModels();
         if (!res.ok) return [];

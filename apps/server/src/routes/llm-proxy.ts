@@ -196,7 +196,8 @@ router.get('/models', async (req: Request, res: ExpressResponse) => {
       await pauseIfNeeded(p);
       let upstream: Response;
       try {
-        upstream = await fetch(`${baseUrl(p)}/v1/models`, { headers: upstreamHeaders(p, apiKey, false) });
+        // 按平台协议选鉴权头：Anthropic 用 x-api-key，Bearer 会被官方 API 直接 401
+        upstream = await fetch(`${baseUrl(p)}/v1/models`, { headers: upstreamHeaders(p, apiKey, p.protocol === 'anthropic') });
       } catch (e: any) {
         if (token) recordFailure(token.id);
         if (attempt < MAX_RETRY - 1 && (token || fallbackKey)) continue;

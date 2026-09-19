@@ -20,10 +20,50 @@ export interface AnthropicRequest {
   messages: Array<{ role: 'user' | 'assistant'; content: unknown[] }>;
 }
 
+/** data URL（data:image/png;base64,xxx）→ Anthropic image base64 source；非 data URL 返回 null */
+function imageDataUrlToSource(url: string): Record<string, unknown> | null {
+  const m = /^data:([^;,]+);base64,(.+)$/i.exec(url.trim());
+  if (!m) return null;
+  return { type: 'image', source: { type: 'base64', media_type: m[1], data: m[2] } };
+}
+
+/**
+ * 单条消息 content → Anthropic content block 数组。
+ * - 字符串：包成单个 text block（空串返回空数组，由调用方兜底）
+ * - 数组：逐块映射 —— OpenAI 风格 image_url（data URL / http(s) URL）转 Anthropic image
+ *   source；已是 Anthropic 风格的块（如 vision 测试直接构造的 image block）原样透传
+ */
+function toAnthropicBlocks(content: unknown): Array<Record<string, unknown>> {
+  if (typeof content === 'string') {
+    return content ? [{ type: 'text', text: content }] : [];
+  }
+  if (!Array.isArray(content)) {
+    return content ? [{ type: 'text', text: String(content) }] : [];
+  }
+  const out: Array<Record<string, unknown>> = [];
+  for (const b of content as any[]) {
+    if (!b || typeof b !== 'object') continue;
+    if (b.type === 'text') {
+      const text = typeof b.text === 'string' ? b.text : String(b.text ?? '');
+      if (text) out.push({ type: 'text', text });
+    } else if (b.type === 'image_url') {
+      const url = String(b.image_url?.url || '');
+      const base64 = imageDataUrlToSource(url);
+      if (base64) { out.push(base64); continue; }
+      if (/^https?:\/\//i.test(url)) {
+        out.push({ type: 'image', source: { type: 'url', url } });
+      }
+    } else {
+      out.push(b);
+    }
+  }
+  return out;
+}
+
 /**
  * 将内部 Message[] 转换为 Anthropic 请求：
  * - system 角色的消息提取为顶层 `system` 字段
- * - user/assistant 转成 content block 数组
+ * - user/assistant 转成 content block 数组（字符串或 OpenAI 风格多模态数组均可）
  * - assistant 的 toolCalls 转成 tool_use block
  * - tool 角色的消息聚合为紧跟其后的 user 消息中的 tool_result block
  */
@@ -55,10 +95,11 @@ export function toAnthropicMessages(messages: Message[]): AnthropicRequest {
     }
     flushToolResults();
     if (m.role === 'user') {
-      out.push({ role: 'user', content: [{ type: 'text', text: m.content || '' }] });
+      const blocks = toAnthropicBlocks(m.content);
+      out.push({ role: 'user', content: blocks.length ? blocks : [{ type: 'text', text: '' }] });
     } else if (m.role === 'assistant') {
       const content: Array<Record<string, unknown>> = [];
-      if (m.content) content.push({ type: 'text', text: m.content });
+      content.push(...toAnthropicBlocks(m.content));
       for (const tc of m.toolCalls || []) {
         content.push({
           type: 'tool_use',
@@ -108,55 +149,60 @@ export async function* parseAnthropicSSE(stream: ReadableStream<Uint8Array>): As
     dataStr = '';
   };
 
+  // 结算当前挂起的事件帧：空行触发，流末尾兜底（末帧可能不带尾随空行）。
+  // type 优先取 JSON 内的 ev.type，网关省略 event: 行时也能解析。
+  const emitPending = function* (): Generator<ChatChunk> {
+    if (!dataStr) return;
+    let ev: any = null;
+    try {
+      ev = JSON.parse(dataStr);
+    } catch {
+      ev = null;
+    }
+    if (ev) {
+      const type = ev.type || eventType;
+      if (type === 'message_start') {
+        inputTokens = ev.message?.usage?.input_tokens ?? 0;
+      } else if (type === 'content_block_start') {
+        if (ev.content_block?.type === 'tool_use') {
+          const toolIdx = toolSeq++;
+          blockToTool[ev.index] = toolIdx;
+          const tc: DeltaToolCall = {
+            index: toolIdx,
+            id: ev.content_block.id,
+            type: 'function',
+            function: { name: ev.content_block.name, arguments: '' },
+          };
+          yield { delta: { toolCalls: [tc] } } as ChatChunk;
+        }
+      } else if (type === 'content_block_delta') {
+        const d = ev.delta || {};
+        if (d.type === 'text_delta') {
+          yield { delta: { content: d.text } } as ChatChunk;
+        } else if (d.type === 'input_json_delta') {
+          const toolIdx = blockToTool[ev.index];
+          if (toolIdx !== undefined) {
+            const tc: DeltaToolCall = { index: toolIdx, function: { arguments: d.partial_json } };
+            yield { delta: { toolCalls: [tc] } } as ChatChunk;
+          }
+        } else if (d.type === 'thinking_delta') {
+          yield { delta: { reasoningContent: d.thinking } } as ChatChunk;
+        }
+      } else if (type === 'message_delta') {
+        const usage = ev.usage
+          ? { promptTokens: inputTokens, completionTokens: ev.usage.output_tokens ?? 0 }
+          : undefined;
+        yield { finishReason: ev.delta?.stop_reason, usage } as ChatChunk;
+      }
+    }
+    reset();
+  };
+
   const processLines = function* (lines: string[]): Generator<ChatChunk> {
     for (const line of lines) {
       const trimmed = line.trim();
       if (!trimmed) {
-        if (eventType && dataStr) {
-          let ev: any = null;
-          try {
-            ev = JSON.parse(dataStr);
-          } catch {
-            ev = null;
-          }
-          if (ev) {
-            const type = ev.type || eventType;
-            if (type === 'message_start') {
-              inputTokens = ev.message?.usage?.input_tokens ?? 0;
-            } else if (type === 'content_block_start') {
-              if (ev.content_block?.type === 'tool_use') {
-                const toolIdx = toolSeq++;
-                blockToTool[ev.index] = toolIdx;
-                const tc: DeltaToolCall = {
-                  index: toolIdx,
-                  id: ev.content_block.id,
-                  type: 'function',
-                  function: { name: ev.content_block.name, arguments: '' },
-                };
-                yield { delta: { toolCalls: [tc] } } as ChatChunk;
-              }
-            } else if (type === 'content_block_delta') {
-              const d = ev.delta || {};
-              if (d.type === 'text_delta') {
-                yield { delta: { content: d.text } } as ChatChunk;
-              } else if (d.type === 'input_json_delta') {
-                const toolIdx = blockToTool[ev.index];
-                if (toolIdx !== undefined) {
-                  const tc: DeltaToolCall = { index: toolIdx, function: { arguments: d.partial_json } };
-                  yield { delta: { toolCalls: [tc] } } as ChatChunk;
-                }
-              } else if (d.type === 'thinking_delta') {
-                yield { delta: { reasoningContent: d.thinking } } as ChatChunk;
-              }
-            } else if (type === 'message_delta') {
-              const usage = ev.usage
-                ? { promptTokens: inputTokens, completionTokens: ev.usage.output_tokens ?? 0 }
-                : undefined;
-              yield { finishReason: ev.delta?.stop_reason, usage } as ChatChunk;
-            }
-          }
-          reset();
-        }
+        yield* emitPending();
         continue;
       }
       if (trimmed.startsWith('event:')) {
@@ -179,6 +225,7 @@ export async function* parseAnthropicSSE(stream: ReadableStream<Uint8Array>): As
     // 处理流末尾可能残留、无尾随空行的最后一帧
     if (buffer.trim()) {
       yield* processLines(buffer.split('\n'));
+      yield* emitPending();
     }
   } finally {
     reader.releaseLock();
