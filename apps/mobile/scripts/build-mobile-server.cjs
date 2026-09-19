@@ -141,6 +141,20 @@ if (process.env.YZ_SKIP_MOBILE_NPM === '1' && fs.existsSync(path.join(NODEJS_DIR
     error('npm install 失败（exit=' + r.status + (r.error ? ', ' + r.error.message : '') + '），内嵌后端将缺依赖无法启动');
     process.exit(1);
   }
+  // npm 包自带的 *.gz 预压缩文件（如 bcryptjs/dist/bcrypt.min.js.gz）会和
+  // nodejs-mobile 插件构建期的 gzip 任务撞出「Duplicate resources」，
+  // Gradle mergeDebugAssets 直接失败 —— 运行时不需要它们，统一剥掉。
+  let gzRemoved = 0;
+  const stripGz = (dir) => {
+    for (const name of fs.readdirSync(dir)) {
+      const full = path.join(dir, name);
+      const st = fs.statSync(full);
+      if (st.isDirectory()) stripGz(full);
+      else if (name.endsWith('.gz')) { fs.rmSync(full); gzRemoved++; }
+    }
+  };
+  stripGz(path.join(NODEJS_DIR, 'node_modules'));
+  log('已剥离依赖内 *.gz 预压缩文件 ' + gzRemoved + ' 个');
   log('依赖安装完成');
 }
 

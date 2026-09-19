@@ -178,3 +178,24 @@ Remove-Item -Recurse -Force app\build, build
 - **`mobile_api_base`**：读取在 `packages/ui/src/api/client.ts`，写入入口在
   设置 → 通用 → 后端服务地址（`setMobileApiBase`）；`BASE_URL` 是模块级常量，
   保存后靠 `location.reload()` 一次性生效，新增模块级常量捕获 API_BASE 时注意这点。
+
+## 打包排障：nodejs-mobile 原生库 ninja/CMake 构建失败（路径过长）
+
+**症状**：`assembleDebug` 在 `:capawesome-capacitor-nodejs:buildCMakeDebug[arm64-v8a]`
+失败，日志含 `CMake_OBJECT_PATH_MAX`/`has 243 characters...maximum 250` 警告与
+`ninja: error: manifest 'build.ninja' still dirty after 100 tries`。
+
+**原因**：插件原生库在 `node_modules/.pnpm/@capawesome+capacitor-nodejs@*/android/.cxx`
+下构建，pnpm 的 store 路径过长，native-lib.cpp.o 的完整路径逼近/超过 250 字符上限，
+CMake 每轮都重写 build.ninja → ninja 判定 manifest 永远脏。
+
+**解决（本机已采用）**：把插件目录复制到**短真实路径**（如 `C:\yz-libs\capnodejs`，
+复制后删掉其中的 `.cxx`），再把 `android/capacitor.settings.gradle` 里
+`:capawesome-capacitor-nodejs` 的 `projectDir` 指向该路径（注意：该文件会被
+`cap update` 重新生成，每次 capacitor update 后需要重打补丁），然后正常
+`assembleDebug`。构建成功实测 2026-09-19。
+
+**附带坑**：`app:mergeDebugAssets` 报 `Duplicate resources`（`xxx.js` 与 `xxx.js.gz`）
+—— npm 包自带的 .gz 预压缩文件与插件 gzip 任务撞车。build-mobile-server.cjs 已在
+安装依赖后自动剥离 `*.gz`；若手工同步 assets 前遇到，删掉 nodejs/node_modules 下
+所有 .gz 再 sync 即可。
