@@ -1,5 +1,5 @@
 <template>
-  <div class="app-shell" :class="{ 'platform-desktop': isDesktop, 'platform-web': isWeb, 'nav-collapsed': collapsed, 'is-electron': isElectron, 'is-bare': isBareRoute }">
+  <div class="app-shell" :class="{ 'platform-desktop': isDesktop, 'platform-web': isWeb, 'platform-mobile': isMobilePlatform, 'nav-collapsed': collapsed, 'is-electron': isElectron, 'is-bare': isBareRoute }">
 
     <!-- 独立子窗口（如差异窗口）：不套任何应用外壳，整窗交由页面自绘标题栏 -->
     <template v-if="isBareRoute">
@@ -83,7 +83,7 @@ import { syncPluginRoutes } from './router';
 import { resolvePluginComponent } from './plugin-component-registry';
 import { useLicenseStore } from './stores/license';
 
-import { useIsMobile } from './composables/useIsMobile';
+import { useMobileShell } from './composables/useMobileShell';
 import { usePlatform } from './composables/usePlatform';
 import { useSidebarState } from './composables/useSidebarState';
 import { installSelectAllScope } from './utils/selectAllScope';
@@ -98,8 +98,11 @@ const authStore = useAuthStore();
 const settingsStore = useSettingsStore();
 settingsStore.applyDarkMode(settingsStore.settings.darkMode);
 const pluginStore = usePluginStore();
-const isMobile = useIsMobile();
-const { isDesktop, isWeb } = usePlatform();
+/** 移动外壳判定：视口窄 或 跑在 Capacitor 端（详见 useMobileShell 注释）。
+ *  ★ 与下方 isMobilePlatform 的分工：本变量管「用哪套壳」，isMobilePlatform 管
+ *    「加哪个平台类名」。Capacitor 横屏时前者 true、后者也 true，桌面端两者都 false。 */
+const isMobile = useMobileShell();
+const { isDesktop, isWeb, isMobile: isMobilePlatform } = usePlatform();
 const { collapsed } = useSidebarState();
 
 // Electron 桌面端检测：由主进程通过 preload 注入 window.electronAPI.isElectron
@@ -326,57 +329,55 @@ body {
 /* 可滚动页面：.page 自管滚动 */
 .page { padding: 28px 36px; flex: 1; overflow-y: auto; }
 
-/* Mobile TopBar */
+/* Mobile TopBar
+   ★ 样式不再只挂 @media：模板用 v-if="isMobile"（移动外壳判定）控制存在性，
+     元素在桌面端根本不会渲染。Capacitor 横屏时视口 >767px，媒体查询不命中 →
+     元素渲染了却停在 display:none，即「转横屏后自绘顶栏消失」。故与 TabBar 同理，
+     样式与存在性判定保持一致，不再重复用宽度门控。 */
 .mobile-topbar {
-  display: none;
+  display: flex;
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 48px;
+  padding: 0 16px;
+  padding-top: env(safe-area-inset-top, 0px);
+  background: var(--glass-bg);
+  backdrop-filter: var(--glass-filter);
+  -webkit-backdrop-filter: var(--glass-filter);
+  border-bottom: 1px solid var(--glass-border);
+  z-index: 50;
+  align-items: center;
+  justify-content: space-between;
 }
 
-@media (max-width: 767px) {
-  .mobile-topbar {
-    display: flex;
-    position: fixed;
-    top: 0;
-    left: 0;
-    right: 0;
-    height: 48px;
-    padding: 0 16px;
-    padding-top: env(safe-area-inset-top, 0px);
-    background: var(--glass-bg);
-    backdrop-filter: var(--glass-filter);
-    -webkit-backdrop-filter: var(--glass-filter);
-    border-bottom: 1px solid var(--glass-border);
-    z-index: 50;
-    align-items: center;
-    justify-content: space-between;
-  }
+.mobile-topbar-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--color-text);
+  flex: 1;
+}
 
-  .mobile-topbar-title {
-    font-size: 16px;
-    font-weight: 700;
-    color: var(--color-text);
-    flex: 1;
-  }
+.mobile-topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
 
-  .mobile-topbar-actions {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-
-  .mobile-user-avatar {
-    width: 32px;
-    height: 32px;
-    border-radius: 8px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 13px;
-    font-weight: 700;
-    background: linear-gradient(135deg, var(--color-primary-light), color-mix(in srgb, var(--color-primary) 8%, transparent));
-    color: var(--color-primary);
-    cursor: pointer;
-    user-select: none;
-  }
+.mobile-user-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 700;
+  background: linear-gradient(135deg, var(--color-primary-light), color-mix(in srgb, var(--color-primary) 8%, transparent));
+  color: var(--color-primary);
+  cursor: pointer;
+  user-select: none;
 }
 
 .slide-fade-enter-active { transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1); }
@@ -488,7 +489,13 @@ body {
   gap: 12px;
 }
 
-/* ===== Mobile: skeleton + global overrides ===== */
+/* ===== Mobile: skeleton + global overrides =====
+   ★ 选择器口径说明：这里同时列出 `.platform-mobile`（Capacitor 端，与宽度无关）与
+     `@media (max-width:767px)`（桌面/Web 的窄窗降级）。两者是并集：
+       · Capacitor 横屏 —— 视口 >767px，媒体查询不命中，靠 platform-mobile 分支兜住
+         （否则固定顶栏与 TabBar 会盖住内容区，因为留白规则没生效）。
+       · 桌面端/Web 端 —— 永不进 Capacitor，platform-mobile 不出现，行为等同改动前。
+   注意每条规则都带 !important（原有约定），跨分支复制时必须保持一致，否则优先级会打架。 */
 @media (max-width: 767px) {
   .app-shell { flex-direction: column; }
   .main-content {
@@ -519,6 +526,28 @@ body {
   /* Dialogs: compact (keep Element Plus centering: el-overlay-dialog is fixed+flex,
      el-dialog must stay absolute so the parent's justify/align-center works) */
   .el-overlay { z-index: 9999 !important; overflow-y: auto !important; padding: 0 !important; }
+}
+
+/* Capacitor 端：与上方媒体查询同规则的并集分支（横屏时视口宽，只有这里能命中）。
+   只保留「内容区让位」与「禁止横向溢出」这两件与屏幕尺寸无关、必须生效的事。 */
+.platform-mobile .app-shell { flex-direction: column; }
+.platform-mobile .main-content {
+  margin-left: 0 !important;
+  padding: 0 !important;
+  padding-top: calc(48px + env(safe-area-inset-top, 0px)) !important;
+  padding-bottom: calc(56px + env(safe-area-inset-bottom, 0px)) !important;
+}
+.platform-mobile .main-content.is-chat {
+  padding-top: env(safe-area-inset-top, 0px) !important;
+  padding-bottom: 0 !important;
+}
+.platform-mobile .main-content.full {
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+}
+.platform-mobile { max-width: 100vw; overflow-x: hidden; }
+
+@media (max-width: 767px) {
   .el-overlay-dialog { display: flex !important; justify-content: center !important; align-items: center !important; padding-top: calc(48px + env(safe-area-inset-top, 0px)) !important; padding-bottom: calc(56px + env(safe-area-inset-bottom, 0px)) !important; }
   .el-dialog {
     z-index: 9999 !important;

@@ -203,7 +203,7 @@ import { Code, Bot } from 'lucide-vue-next';
 import { openSettingsDrawer } from '../composables/useSettingsDrawer';
 import { useAuthStore } from '../stores/auth';
 import { useSettingsStore } from '../stores/settings';
-import { useIsMobile } from '../composables/useIsMobile';
+import { useMobileShell } from '../composables/useMobileShell';
 import { usePlatform } from '../composables/usePlatform';
 import { useSidebarState } from '../composables/useSidebarState';
 import { usePluginStore } from '../stores/plugin';
@@ -214,7 +214,9 @@ import { isElectron, isCapacitor } from '../api/client';
 const route = useRoute();
 const authStore = useAuthStore();
 const settingsStore = useSettingsStore();
-const isMobile = useIsMobile();
+/** 移动外壳判定（视口窄 或 Capacitor 端）。见 useMobileShell 注释：
+ *  用宽度断点会在 Capacitor 横屏时误判成 Web，底部 TabBar 与自绘顶栏会一起消失。 */
+const isMobile = useMobileShell();
 const { isDesktop } = usePlatform();
 const { collapsed, toggle } = useSidebarState();
 
@@ -522,81 +524,80 @@ function toggleTheme() {
   text-align: left;
 }
 
-/* ===== Mobile bottom TabBar ===== */
+/* ===== Mobile bottom TabBar =====
+   ★ 样式不再挂在 @media (max-width: 767px) 下：模板用 v-if="isMobile"（移动外壳判定）
+     控制存在性，元素在桌面端根本不会渲染，宽度条件属于重复门控。
+     原先挂媒体查询的坏处：Capacitor 横屏（视口常 800px+）时元素渲染了却没有样式
+     （.tab-bar 停在 display:none），表现为「转横屏后底部导航整个消失」。
+     现在样式与存在性判定一致，横竖屏都正常。 */
 .tab-bar {
-  display: none;
+  display: flex;
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 56px;
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  background: var(--glass-bg);
+  backdrop-filter: var(--glass-filter);
+  -webkit-backdrop-filter: var(--glass-filter);
+  border-top: 1px solid var(--glass-border);
+  z-index: 100;
+  justify-content: space-around;
+  align-items: flex-start;
+  padding-top: 6px;
 }
 
-@media (max-width: 767px) {
-  .tab-bar {
-    display: flex;
-    position: fixed;
-    bottom: 0;
-    left: 0;
-    right: 0;
-    height: 56px;
-    padding-bottom: env(safe-area-inset-bottom, 0px);
-    background: var(--glass-bg);
-    backdrop-filter: var(--glass-filter);
-    -webkit-backdrop-filter: var(--glass-filter);
-    border-top: 1px solid var(--glass-border);
-    z-index: 100;
-    justify-content: space-around;
-    align-items: flex-start;
-    padding-top: 6px;
-  }
+.tab-bar-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  gap: 3px;
+  min-width: 0;
+  min-height: 44px;
+  text-decoration: none;
+  color: var(--color-text-secondary);
+  font-size: 10px;
+  font-weight: 500;
+  border-radius: 10px;
+  padding: 4px 2px;
+  margin: 0 2px;
+  transition: color 0.18s ease, background-color 0.18s ease;
+  position: relative;
+  border: none; background: transparent; font-family: inherit;
+}
 
-  .tab-bar-item {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    flex: 1;
-    gap: 3px;
-    min-width: 0;
-    min-height: 44px;
-    text-decoration: none;
-    color: var(--color-text-secondary);
-    font-size: 10px;
-    font-weight: 500;
-    border-radius: 10px;
-    padding: 4px 2px;
-    margin: 0 2px;
-    transition: color 0.18s ease, background-color 0.18s ease;
-    position: relative;
-    border: none; background: transparent; font-family: inherit;
-  }
+.tab-bar-item:hover {
+  color: var(--color-text);
+}
 
-  .tab-bar-item:hover {
-    color: var(--color-text);
-  }
+.tab-bar-item.active {
+  color: var(--color-primary);
+  background: rgba(124, 58, 237, 0.1);
+}
 
-  .tab-bar-item.active {
-    color: var(--color-primary);
-    background: rgba(124, 58, 237, 0.1);
-  }
+.tab-bar-item.active .el-icon {
+  transform: translateY(-1px) scale(1.06);
+  transition: transform 0.18s ease;
+}
 
-  .tab-bar-item.active .el-icon {
-    transform: translateY(-1px) scale(1.06);
-    transition: transform 0.18s ease;
-  }
+.tab-bar-item.active::before {
+  content: '';
+  position: absolute;
+  top: -6px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 18px;
+  height: 3px;
+  background: var(--color-primary);
+  border-radius: 0 0 2px 2px;
+}
 
-  .tab-bar-item.active::before {
-    content: '';
-    position: absolute;
-    top: -6px;
-    left: 50%;
-    transform: translateX(-50%);
-    width: 18px;
-    height: 3px;
-    background: var(--color-primary);
-    border-radius: 0 0 2px 2px;
-  }
-
-  .tab-bar-label {
-    font-size: 10px;
-    line-height: 1;
-  }
+.tab-bar-label {
+  font-size: 10px;
+  line-height: 1;
 }
 
 .tab-bar-more {
