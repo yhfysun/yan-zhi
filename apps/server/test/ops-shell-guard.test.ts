@@ -1,6 +1,6 @@
 // ops-shell 护栏单测：危险命令黑名单 / 只读判定 / 生产确认策略 / 输出截断 / 标签判定
 import { describe, it, expect } from 'vitest';
-import { isDangerous, isReadonly, guard, capOutput, isProductionTag } from './ops-shell-guard';
+import { isDangerous, isReadonly, guard, capOutput, isProductionTag } from '../src/plugins/ops-shell-guard';
 
 describe('isDangerous 危险命令黑名单', () => {
   it('拦截 rm -rf 及常见变体', () => {
