@@ -225,6 +225,69 @@ function ensureServerDataDir() {
   return dataDir;
 }
 
+/**
+ * 版本档环境变量：从 `edition.json`（打包期由 scripts/set-edition.cjs 生成）读出，
+ * 传给后端进程。后端据此算「构建档 ∩ 授权档」并把放行模式随 /api/license/verify 下发。
+ *
+ * 为什么必须显式传：electron-builder 的 env 段只作用于**构建进程**，而运行时的后端进程
+ * 是 main.cjs 自己 spawn 的 —— 不传就等于这个包没有档位信息，会落到兜底档。
+ *
+ * ★ 开发模式恒为 pro 全量：开发者要能见到所有模式与入口。否则改 dev/ops/sec 相关代码时
+ *   界面上根本没入口，得先想办法弄一张 pro 码才能调 —— 本末倒置。
+ *
+ * 为什么用 `app.isPackaged` 而不是环境变量开关：**env 是客户可改的**，
+ * 用它做档位开关等于把分档作废（客户设 `YZ_EDITION=pro` 就白拿高级版）。
+ * `app.isPackaged` 由 Electron 依据「是否从 asar 包启动」判定，运行期无法伪造。
+ *
+ * 文件缺失（如打包产物未登记 edition.json）时返回空对象：后端会用自己的默认档兜底，
+ * 不因读不到档位而启动失败。
+ */
+function readEditionEnv() {
+  if (!app.isPackaged) {
+    console.log('[版本档] 开发模式 → 高级版全量（pro，构建档与预置码档均为 pro）');
+    return { YZ_EDITION: 'pro', YZ_DEFAULT_EDITION: 'pro' };
+  }
+  try {
+    const p = path.join(__dirname, 'edition.json');
+    if (!fs.existsSync(p)) {
+      console.warn('[版本档] 未找到 edition.json，后端将使用默认档（basic）');
+      return {};
+    }
+    const cfg = JSON.parse(fs.readFileSync(p, 'utf8'));
+    if (!cfg || typeof cfg.edition !== 'string') return {};
+    const env = { YZ_EDITION: cfg.edition };
+    // 预置码档位与构建档是两件事（高级包带基础版码），故单独传，不合并。
+    if (typeof cfg.defaultEdition === 'string') env.YZ_DEFAULT_EDITION = cfg.defaultEdition;
+    console.log('[版本档] 构建档=' + cfg.edition + ' 预置码档=' + (cfg.defaultEdition || '(默认)'));
+    return env;
+  } catch (e) {
+    console.warn('[版本档] edition.json 读取失败，后端将使用默认档:', e && e.message);
+    return {};
+  }
+}
+
+const editionEnv = readEditionEnv();
+
+/**
+ * 授权门禁开关：`YZ_LICENSE_GUARD=1` 时后端会校验每个 `/api` 请求的 x-license 头，
+ * 未激活/过期一律 403（见 apps/server/src/license-guard.ts）。
+ *
+ * ★ **只在打包版开启，dev 保持关闭**（用户 2026-09-19 拍板「开」）：
+ *   - 不开的话，前端路由守卫 + localStorage 是唯一防线 —— 改一行 localStorage 或
+ *     直接 curl /api 就能绕过整个授权，等于没做授权。
+ *   - dev 不开是因为：本地恒 guest、开发调试/冒烟脚本/seed 脚本都会因无授权码被 403，
+ *     本地开发环境开这个只有坏处没有好处（客户拿不到 dev 环境）。
+ *
+ * 返回对象而非常量：与 editionEnv 一起展开进 spawn 的 env，保持注入方式一致。
+ */
+function readGuardEnv() {
+  if (!app.isPackaged) return {};
+  console.log('[授权门禁] 打包版已开启（YZ_LICENSE_GUARD=1）');
+  return { YZ_LICENSE_GUARD: '1' };
+}
+
+const guardEnv = readGuardEnv();
+
 function startServer() {
   const serverDir = path.join(__dirname, '..', 'server');
   // 模型目录统一放在 Electron userData/models，商城下载/引擎加载都从这里找
@@ -251,7 +314,7 @@ function startServer() {
       serverProcess = spawn(process.execPath, [tsxPath, 'watch', 'src/index.ts'], {
         cwd: serverDir,
         stdio: 'inherit',
-        env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: 'http://127.0.0.1:' + CDP_PORT, WEB_DIST: path.join(__dirname, '..', '..', 'apps', 'web', 'dist') },
+        env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: 'http://127.0.0.1:' + CDP_PORT, WEB_DIST: path.join(__dirname, '..', '..', 'apps', 'web', 'dist'), ...editionEnv, ...guardEnv },
       });
     } else {
       // 回退：npx tsx（可能 ABI 不兼容，但至少能启动）
@@ -260,7 +323,7 @@ function startServer() {
         cwd: serverDir,
         stdio: 'inherit',
         shell: true,
-        env: { ...process.env, YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: 'http://127.0.0.1:' + CDP_PORT, WEB_DIST: path.join(__dirname, '..', '..', 'apps', 'web', 'dist') },
+        env: { ...process.env, YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: 'http://127.0.0.1:' + CDP_PORT, WEB_DIST: path.join(__dirname, '..', '..', 'apps', 'web', 'dist'), ...editionEnv, ...guardEnv },
       });
     }
     serverProcess.on('error', (err) => console.error('后端启动失败:', err));
@@ -276,7 +339,7 @@ function startServer() {
     logStream.write(`\n===== [${stamp()}] 后端启动 =====\n`);
     serverProcess = spawn(process.execPath, [serverPath], {
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: 'http://127.0.0.1:' + CDP_PORT, WEB_DIST: path.join(process.resourcesPath, 'server', 'web-dist'), ...(dataDir ? { DATA_DIR: dataDir } : {}) },
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: 'http://127.0.0.1:' + CDP_PORT, WEB_DIST: path.join(process.resourcesPath, 'server', 'web-dist'), ...(dataDir ? { DATA_DIR: dataDir } : {}), ...editionEnv, ...guardEnv },
     });
     serverProcess.stdout.on('data', (d) => logStream.write(d));
     serverProcess.stderr.on('data', (d) => logStream.write(d));

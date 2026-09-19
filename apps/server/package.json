@@ -5,7 +5,7 @@
   "type": "module",
   "description": "言智后端服务：Express API、鉴权、商城服务端与 Playwright 浏览器自动化",
   "scripts": {
-    "dev": "tsx watch src/index.ts",
+    "dev": "node scripts/dev.cjs",
     "build": "tsc && node scripts/fix-esm-extensions.cjs",
     "start": "node dist/apps/server/src/index.js",
     "test": "vitest run",

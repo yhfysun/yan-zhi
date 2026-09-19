@@ -217,21 +217,25 @@ pnpm dev:mobile
 
 ```bash
 # 桌面端（生成 .exe 安装包，需 MSVC Build Tools + electron-builder）
-# 所有桌面端产物统一输出到根目录 dist-release/，靠 artifactName 区分 lite/full/mac
-pnpm build:desktop
-#   默认（electron-builder.full.yml）产物：dist-release/言智-Setup-<version>-<arch>-full.exe
-#   完整版：内嵌后端服务与本地模型（models/），不带模型的完整功能，安装包较大
-
-# 精简版（electron-builder.lite.yml，不含本地模型）
-pnpm --filter @yan-zhi/desktop electron:build:lite
-#   产物：dist-release/言智-Setup-<version>-<arch>-lite.exe
+# 所有桌面端产物统一输出到根目录 dist-release/，靠 artifactName 区分版本档
+#
+# ★ 版本档（能力分级）：lite / basic / pro，决定这个包能开哪些模式。
+#   打包脚本内部会先跑 set-edition.cjs 写 apps/desktop/edition.json，
+#   再注入 YZ_ARTIFACT_SUFFIX 决定产物名后缀 —— 三档共用同一份 yml。
+pnpm --filter @yan-zhi/desktop electron:build:basic   # 基础版（默认）
+#   产物：dist-release/yan-zhi-Setup-<version>-<arch>-basic.exe
+pnpm --filter @yan-zhi/desktop electron:build:lite    # 阉割版
+#   产物：dist-release/yan-zhi-Setup-<version>-<arch>-lite.exe
+pnpm --filter @yan-zhi/desktop electron:build:pro     # 高级版（全量）
+#   产物：dist-release/yan-zhi-Setup-<version>-<arch>-pro.exe
+pnpm build:desktop                                    # 等价 electron:build:basic
 
 # macOS 版（electron-builder.mac.yml，需在 macOS 上构建）
 pnpm --filter @yan-zhi/desktop electron:build:mac
-#   产物：dist-release/言智-<version>-<arch>-mac.dmg / .zip
+#   产物：dist-release/yan-zhi-<version>-<arch>-mac-basic.dmg / .zip
 
-# 构建步骤（桌面端共用）：先 server build → vite build → prepare-server-runtime（打平后端依赖）→ electron-builder
-# `pnpm build:desktop` 等价 `pnpm --filter @yan-zhi/desktop electron:build:full`
+# 构建步骤（桌面端共用）：先 server build → vite build → prepare-server-runtime（打平后端依赖）
+#                       → set-edition（写版本档）→ electron-builder
 
 # 移动端 Android（APK 构建后自动拷贝到 dist-release/）
 pnpm build:mobile:android
@@ -250,7 +254,30 @@ pnpm build:web
 - 受限网络下 `electron-builder` 下载 Electron 二进制与 NSIS 打包器可能失败，需配置国内镜像（如 `ELECTRON_MIRROR` / npmmirror）
 - 安装程序会自动处理 WebView2 / VC++ 运行库（若无）
 
-### 完整版 vs 精简版
+### 版本档（能力分级）
+
+三档由 `apps/desktop/edition.json`（打包期由 `scripts/set-edition.cjs` 生成）区分，控制**模式可见性**：
+
+| 版本档 | 命令 | 放行的模式 | 开箱默认授权码 |
+|--------|------|-----------|---------------|
+| 阉割版 `lite` | `electron:build:lite` | 仅办公 | lite 码（**90 天**） |
+| 基础版 `basic` | `electron:build:basic` | 办公 · 工作流 · 开发 | basic 码（**90 天**） |
+| 高级版 `pro` | `electron:build:pro` | 全部五个模式 | **basic 码**（需 pro 码解锁全量） |
+
+> - **实际放行 = 构建档 ∩ 授权档**：阉割版即使拿到 pro 码也只有办公模式；高级版拿 basic 码只有三模式。
+> - 授权码档位由签发时勾选（`gen-license.mjs --edition` / `license-manager.html` 的「版本」单选组）。
+> - **存量老码无 `edition` 字段 → 按高级版处理**，保证已发出的码不掉权限。
+> - **预置码为 90 天试用口径、不绑机器**（绑了会让所有用户的包开箱即失效）。
+>   到期后需重新签发替换 `apps/server/src/license.ts` 的 `DEFAULT_LICENSE_BY_EDITION`。
+>   时长口径由 `test/license-edition.test.ts` 的守门用例钉住（85~95 天），改错会立刻变红。
+>
+> **打包不含后端源码**：`extraResources` 刻意不打包 `../server/src`。
+> 生产模式只运行 `server/dist/...` 的编译产物 —— 源码随包等于把 `license.ts` 的验签逻辑
+> 明文交给客户，改一行即可绕过授权。
+
+### 模型版本（与上表无关）
+
+> ⚠️ 下表的 full / lite 指**是否内嵌本地 qwen 模型**，与上面的能力档位无关，两者曾是同名但语义不同的维度。
 
 | 版本 | 配置 | 内嵌模型 | 典型体积 |
 |------|------|---------|---------|
@@ -312,10 +339,20 @@ GitHub Actions（`.github/workflows/build-desktop.yml`）在 push 到 `master` /
 签发授权码（在持有私钥的机器上执行，工具不在库中，需手工放置）：
 
 ```bash
-node scripts/gen-license.mjs --days 30                                    # 30 天有效、不限机器
+node scripts/gen-license.mjs --days 30                                    # 30 天有效、不限机器（默认基础版）
 node scripts/gen-license.mjs --days 365 --machine-id <授权页「机器标识」>   # 绑定机器（推荐）
-node scripts/gen-license.mjs --forever                                    # 永不过期
+node scripts/gen-license.mjs --forever --edition pro                      # 永不过期 + 高级版
 ```
+
+**`--edition` 勾选版本档**（默认 `basic`）：
+
+| 取值 | 放行的模式 |
+|------|-----------|
+| `lite` | 仅办公 |
+| `basic` | 办公 · 工作流 · 开发 |
+| `pro` | 全部五个模式 |
+
+> 浏览器版签发工具 `scripts/license-manager.html` 有对应的「版本」单选组，并会在解析授权码时展示档位（无该字段的老码显示「按高级版处理」）。
 
 `--machine-id` 与 `--mac` 二选一：前者按机器标识绑定（抗网卡变动），后者是给已发出的老客户端补码用的旧口径。机器标识从应用的授权页直接复制。
 

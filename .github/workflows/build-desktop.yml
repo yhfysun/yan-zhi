@@ -32,8 +32,11 @@ jobs:
         run: pnpm install
 
 
-      - name: 构建 macOS 轻量版
-        run: pnpm --filter @yan-zhi/desktop electron:build:lite
+      # 版本档（lite / basic / pro）由 `electron:build:*` 脚本内部的 set-edition.cjs 写入
+      # apps/desktop/edition.json，无需在此额外设置 env —— 产物名后缀由 electron-build.cjs
+      # 自动注入 YZ_ARTIFACT_SUFFIX。本 workflow 只出基础版包（mac 侧同样如此）。
+      - name: 构建 macOS 基础版
+        run: pnpm --filter @yan-zhi/desktop electron:build:basic
 
       - name: 列出构建产物（诊断用）
         run: |
@@ -69,8 +72,8 @@ jobs:
         run: pnpm install
 
 
-      - name: 构建 Windows 轻量版
-        run: pnpm --filter @yan-zhi/desktop electron:build:lite
+      - name: 构建 Windows 基础版
+        run: pnpm --filter @yan-zhi/desktop electron:build:basic
 
       - name: 列出构建产物（诊断用）
         shell: pwsh
