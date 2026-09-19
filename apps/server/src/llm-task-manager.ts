@@ -18,6 +18,9 @@ import { loadSpaceMemoryForConversation, formatSpaceMemoryContext } from './serv
 import { serverState } from './state.js';
 import { resolveArtifactDirFor } from './services/artifact-dir.js';
 import { modelSupportsTools } from './services/model-caps.js';
+// 模型标识解析：统一走 services/model-resolve（主键优先 + 存量裸名回退），
+// 不在此另写查询 —— 同一件事两处实现必然漂移。
+import { findModelRow, rowToModel } from './services/model-resolve.js';
 import { DEFAULT_CONTEXT_WINDOW } from './constants.js';
 import {
   startWorkflowRun, subscribeWorkflowRun, getWorkflowRun, resolveBundleFromDb,
@@ -137,19 +140,25 @@ function loadPlatform(platformId: string, userId: string): Platform | null {
   } as any;
 }
 
-function loadModel(modelId: string, userId: string): Model | null {
-  const row = db.prepare('SELECT * FROM model WHERE id = ? AND user_id = ?').get(modelId, userId) as any;
+/**
+ * 按标识取模型。**复用 services/model-resolve 的 findModelRow**，不要在这里另写一套查询。
+ *
+ * ★ 为什么必须两种标识都认：一个模型有两个标识 —— 主键 `model.id`（如
+ *   `agens-guest-agnes-3.0-flash`）与业务名 `model.model_id`（如 `agnes-3.0-flash`）。
+ *   历史上写库用的是业务名，后来统一改成写主键（避免同业务名跨平台歧义），
+ *   **但存量会话没有回填迁移** —— 那些老会话里存的还是业务名。
+ *   只按主键查会让它们一律报「平台或模型不存在」，而前端下拉、模型平台测试都正常
+ *   （它们走的是主键），表现为「模型明明在、点测试也通，就是发不出去」这种极难归因的现象。
+ *
+ * ★ 这里曾一度手写了「主键查不到就按 model_id 查」的兜底，但那是**重复造轮子且更弱**：
+ *   findModelRow 除了两种标识，还处理了「同 API 名跨平台不串用」（带 platformId 时加平台约束）
+ *   与「命中存量裸名时打 warn 提示迁移」，并有 test/model-resolve.test.ts 守着。
+ *   同一件事在两处实现必然漂移，故改为直接调用。
+ */
+function loadModel(modelId: string, userId: string, platformId?: string): Model | null {
+  const row = findModelRow(db, modelId, userId, platformId);
   if (!row) return null;
-  return {
-    id: row.id,
-    platformId: row.platform_id,
-    modelId: row.model_id,
-    alias: row.alias,
-    type: row.type || 'llm',
-    contextWindow: row.context_window || DEFAULT_CONTEXT_WINDOW,
-    capabilities: (() => { try { return JSON.parse(row.capabilities_json || '[]'); } catch { return []; } })(),
-    description: row.description ?? undefined,
-  } as any;
+  return rowToModel(row, DEFAULT_CONTEXT_WINDOW);
 }
 
 /** list_models 工具执行：列出当前用户所有已启用且对模型可见的模型（可按 platformId/type/capability 过滤），
@@ -819,7 +828,8 @@ async function runReActLoop(task: LlmTask, params: {
     }
 
     const platform = loadPlatform(params.platformId, userId);
-    const model = loadModel(params.modelId, userId);
+    // 带上 platformId：存量裸名回退时限定平台，避免同 API 名跨平台误命中另一个模型
+    const model = loadModel(params.modelId, userId, params.platformId);
     if (!platform || !model) {
       // 平台/模型失效：错误提示作为 assistant 消息落库+推送（刷新后仍可见），只发 task:error 前端仅 toast、刷新即丢
       const errMsg = `平台或模型不存在或已失效（platformId: ${params.platformId}），请在「设置 → 模型平台」重新选择可用模型后重试。`;
@@ -1799,13 +1809,15 @@ async function runSubAgent(
   const platformId = args.platformId || (agent.platform_id || task.platformId);
   const modelId = args.modelId || (agent.model_id || task.modelId);
   let platform = loadPlatform(platformId, task.userId);
-  let model = loadModel(modelId, task.userId);
+  let model = loadModel(modelId, task.userId, platformId);
   if (!platform && modelId) {
     // 仅指定了 modelId 而未指定 platformId，或 platformId 无效：尝试按 model 反查平台
-    const m = db.prepare('SELECT * FROM model WHERE id = ? AND user_id = ?').get(modelId, task.userId) as any;
-    if (m) {
-      platform = loadPlatform(m.platform_id, task.userId);
-      model = loadModel(m.id, task.userId);
+    // ★ 这里也必须走 findModelRow（两种标识都认）：子智能体配置里存的可能是业务名，
+    //   裸查主键会查不到 → 平台反查失败 → 整个子智能体调用报「模型不存在」。
+    const mRow = findModelRow(db, modelId, task.userId);
+    if (mRow) {
+      platform = loadPlatform(mRow.platform_id, task.userId);
+      model = loadModel(mRow.id, task.userId, mRow.platform_id);
     }
   }
   if (!platform || !model) {
@@ -2180,11 +2192,11 @@ async function summarizeOnMaxSteps(
 function resolveMemoryExtractLlm(task: LlmTask): { platform: Platform; model: Model } | null {
   if (task.memoryExtractPlatformId && task.memoryExtractModelId) {
     const p = loadPlatform(task.memoryExtractPlatformId, task.userId);
-    const m = loadModel(task.memoryExtractModelId, task.userId);
+    const m = loadModel(task.memoryExtractModelId, task.userId, task.memoryExtractPlatformId);
     if (p && m && (m.type || 'llm') === 'llm') return { platform: p, model: m };
   }
   const p = loadPlatform(task.platformId, task.userId);
-  const m = loadModel(task.modelId, task.userId);
+  const m = loadModel(task.modelId, task.userId, task.platformId);
   return p && m ? { platform: p, model: m } : null;
 }
 
