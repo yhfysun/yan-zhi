@@ -79,6 +79,20 @@ export interface PlatformAdapter {
   llmProxyBase?: string;
   /** LLM Token 池适配（仅 server 端注入）。设置后 LlmClient 直连失败会自动换 Key 重试并回写失败记录。 */
   llmKeyPool?: LlmKeyPoolAdapter;
+  /**
+   * 授权码读取器（浏览器端注入）。走后端 LLM 代理时，请求必须带 `x-license` 头，
+   * 否则开启授权门禁（YZ_LICENSE_GUARD=1）的部署会一律 403。
+   *
+   * 为什么必须由外部注入而不是 core 自己读：授权码的存放是**平台相关**的
+   * （桌面端走 DPAPI 加密的 keyring、Web/移动端各有实现，且带内存缓存以支持同步取值），
+   * 而 packages/core 是平台无关层，不该知道这些约定。
+   * 与 llmProxyBase / llmKeyPool 同一套路：差异由边缘层注入，core 只管用。
+   *
+   * 返回 null 表示当前无授权码（未激活）——此时照常发请求，让后端决定是否放行
+   * （dev 模式未开门禁时不带也能通）。这里不做前置拦截：把「有没有权限」的判断
+   * 统一留给后端，避免前后端两套口径。
+   */
+  getLicenseCode?: () => string | null;
 }
 
 /** 当前平台适配器（由各端入口注入） */

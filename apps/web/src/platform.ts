@@ -1,6 +1,9 @@
 // Web 平台适配器 - 使用 Dexie (IndexedDB) 模拟 SQLite，keyring 持久化到 Dexie
 import type { PlatformAdapter, DatabaseAdapter, FsAdapter, KeyringAdapter, DirEntryInfo } from '@yan-zhi/core';
 import Dexie from 'dexie';
+// 授权码读取：走 UI 的 license-code 模块（keyring 加载 + 同步内存缓存），
+// 与 apiFetch 的 x-license 头共用同一来源，避免两条路径口径漂移。
+import { getLicenseCodeSync } from '@yan-zhi/ui/api/license-code';
 
 /** 浏览器端明确的能力边界错误，用于替代裸 throw */
 class WebPlatformNotSupportedError extends Error {
@@ -440,6 +443,9 @@ export const webAdapter: PlatformAdapter = {
   keyring: new WebKeyring(webDb),
   // LLM 走后端代理（/api/llm/*）：API Key 不暴露给前端，后端从库读配置转发。
   llmProxyBase: '/api/llm',
+  // 授权码读取器：走代理的 LLM 请求必须带 x-license，否则开启门禁的部署一律 403。
+  // 与 apiFetch 共用同一来源（UI 的 license-code 内存缓存），避免两条路径口径漂移。
+  getLicenseCode: () => getLicenseCodeSync(),
   // Web 端不支持 MCP stdio
 };
 

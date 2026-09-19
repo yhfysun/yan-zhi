@@ -3,6 +3,8 @@ import type { PlatformAdapter, DatabaseAdapter, FsAdapter, KeyringAdapter } from
 import { CapacitorSQLite, SQLiteConnection, SQLiteDBConnection } from '@capacitor-community/sqlite';
 import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
 import { Preferences } from '@capacitor/preferences';
+// 授权码读取：与 apiFetch 的 x-license 头共用同一来源，避免两条路径口径漂移。
+import { getLicenseCodeSync } from '@yan-zhi/ui/api/license-code';
 
 /** 移动端 SQLite 数据库（Capacitor SQLite 插件） */
 class MobileDatabase implements DatabaseAdapter {
@@ -108,4 +110,7 @@ export const mobileAdapter: PlatformAdapter = {
   fs: new MobileFs(),
   keyring: new MobileKeyring(),
   // 移动端不支持 MCP stdio（仅支持远程 sse/http）
+  // 授权码读取器：内嵌后端同样会开授权门禁，走代理的 LLM 请求需带 x-license。
+  // 与 apiFetch 共用同一来源（UI 的 license-code 内存缓存）。
+  getLicenseCode: () => getLicenseCodeSync(),
 };
