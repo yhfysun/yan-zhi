@@ -131,12 +131,14 @@ if (process.env.YZ_SKIP_MOBILE_NPM === '1' && fs.existsSync(path.join(NODEJS_DIR
 } else {
   const { spawnSync } = require('node:child_process');
   const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+  // shell:true 必须：新版 Node 出于 CVE-2024-27980 对 .cmd/.bat 直接 spawn 一律 EINVAL
   const r = spawnSync(npmCmd, ['install', '--omit=dev', '--no-audit', '--no-fund', '--loglevel=error'], {
     cwd: NODEJS_DIR,
     stdio: 'inherit',
+    shell: process.platform === 'win32',
   });
   if (r.status !== 0) {
-    error('npm install 失败（exit=' + r.status + '），内嵌后端将缺依赖无法启动');
+    error('npm install 失败（exit=' + r.status + (r.error ? ', ' + r.error.message : '') + '），内嵌后端将缺依赖无法启动');
     process.exit(1);
   }
   log('依赖安装完成');
