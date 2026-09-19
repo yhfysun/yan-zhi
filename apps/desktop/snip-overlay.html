@@ -5,7 +5,16 @@
 <title>yan-zhi 截图</title>
 <style>
   /* 透明实时遮罩：窗口透明，实时屏幕透过可见；暗幕/选区阴影负责「屏幕变暗」 */
-  html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: transparent; cursor: crosshair; user-select: none; }
+  html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; cursor: crosshair; user-select: none; }
+  html { background: transparent; }
+  /* ★ 不可删：Windows 透明窗的命中测试按「像素 alpha」判定 —— alpha=0 的像素点击会直接
+     穿透到下层应用，把它激活，本窗随即收到 blur 被取消（表现为「单击就退出」，且在
+     show 后 500ms 的 armedAt 保护期内外行为不一致，所以感觉「不稳定」）。
+     而 #dim / #winHi / #sel 恰恰都用「挖洞」方式留出全透明区域压暗四周，
+     洞的位置正是用户要点击的位置（窗口矩形内 / 选区内）→ 必然穿透。
+     这里给 body 铺一层 1.2% 的近乎不可见基底（视觉上等同全透明），
+     保证任何像素 alpha 都 > 0，从根上堵死穿透。删掉这行 Windows 上必现该 bug。 */
+  body { background: rgba(0, 0, 0, 0.012); }
   #dim { position: absolute; inset: 0; z-index: 1; background: rgba(0, 0, 0, 0.45); pointer-events: none; }
   #ink, #preview { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 2; pointer-events: none; }
   #preview { z-index: 3; }
