@@ -165,3 +165,16 @@ Remove-Item -Recurse -Force app\build, build
 **解决（短期）**：让 `db.ts` 在检测到 `NODE_MODULE_VERSION !== 108` 时跳过 better-sqlite3，回退到 `sqlite3`（异步）或纯 JS 实现。
 
 **解决（长期）**：用 `node-pre-gyp` 给每个移动 ABI 单独下载 prebuild；或上游 `nodejs-mobile` 升级到 Node 22。
+
+## 已踩坑经验（防复发，来自 issues 台账留档）
+
+- **viewport 必须 `viewport-fit=cover`**：`apps/mobile/index.html` 少了它，样式里
+  20+ 处 `env(safe-area-inset-*)` 恒为 0 —— 刘海屏顶栏被状态栏压、底部被手势条盖。
+- **移动端样式别只挂 `@media (max-width:767px)`**：元素已由 `v-if="isMobile"` 门控，
+  再挂媒体查询是重复门控；Capacitor 横屏（视口常 800px+）会「渲染了但没样式」，
+  表现为底部 TabBar / 自绘顶栏整体消失。
+- **初始化链新增 `await` 步骤时，必须保证最终走到 `app.mount`**（main.ts 的
+  `.finally` 兜底）：任一步 reject 曾导致纯白屏、无任何提示，只能翻 logcat。
+- **`mobile_api_base`**：读取在 `packages/ui/src/api/client.ts`，写入入口在
+  设置 → 通用 → 后端服务地址（`setMobileApiBase`）；`BASE_URL` 是模块级常量，
+  保存后靠 `location.reload()` 一次性生效，新增模块级常量捕获 API_BASE 时注意这点。
