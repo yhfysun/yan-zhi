@@ -2,7 +2,10 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <!-- viewport-fit=cover 是 env(safe-area-inset-*) 生效的前提：
+         不加这一项，Android 上所有安全区变量恒为 0px，刘海/挖孔屏的顶栏会被状态栏压住、
+         底部 TabBar 会被手势条盖掉。样式里 20+ 处 env(safe-area-inset-*) 全靠它。 -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
     <title>言智</title>
   </head>
   <body>
