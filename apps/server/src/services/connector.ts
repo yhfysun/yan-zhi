@@ -3,10 +3,28 @@
 // 只读约束：连接器层面尽力强制（PG 会话只读 / SQLite readonly 连接），SQL 文本级护栏在路由层（sql-guard）。
 import fs from 'node:fs';
 import path from 'path';
-import Database from 'better-sqlite3';
+import { createRequire } from 'node:module';
 import { encrypt, decrypt } from '../utils/crypto.js';
 import { dataDir } from '../db.js';
 import type { DialectType } from './dialect.js';
+
+let BetterDatabase: any | null = null;
+/** 懒加载 better-sqlite3。
+ *  ★ 不能静态 import：内嵌后端（nodejs-mobile）没有原生包，模块加载期直接崩，
+ *  会把 MySQL/PostgreSQL 数据源一起拖死。只在真正建 SQLite 连接时才 require，
+ *  失败抛可读错误。 */
+function getBetterDatabase(): any {
+  if (!BetterDatabase) {
+    try {
+      BetterDatabase = createRequire(import.meta.url)('better-sqlite3');
+    } catch {
+      throw new Error(
+        'SQLite 文件数据源需要原生 better-sqlite3 驱动，当前运行环境（移动端内嵌后端）未内置；MySQL / PostgreSQL 数据源不受影响',
+      );
+    }
+  }
+  return BetterDatabase;
+}
 
 export type DataSourceType = DialectType | 'project';
 
@@ -137,7 +155,7 @@ function withRowCap(sql: string, maxRows: number): string {
 
 class SqliteLikeConnector implements Connector {
   readonly type: DataSourceType;
-  private conn: Database.Database;
+  private conn: import('better-sqlite3').Database;
 
   constructor(type: DataSourceType, file: string, allowWrite: boolean) {
     this.type = type;
@@ -147,7 +165,7 @@ class SqliteLikeConnector implements Connector {
       const hint = type === 'project' ? `（DATA_DIR=${process.env.DATA_DIR || '(未设置，按 server 源码目录推断)'}）` : '';
       throw new Error(`SQLite 文件不存在: ${file}${hint}`);
     }
-    this.conn = new Database(file, { readonly, fileMustExist: true });
+    this.conn = getBetterDatabase()(file, { readonly, fileMustExist: true });
   }
 
   async test(): Promise<TestResult> {
