@@ -89,37 +89,63 @@ bin\setup-env.bat --mobile         REM 仅移动端
 
 打包前自动检查关键依赖，失败时给出明确错误信息，然后调用 `pnpm build:*`。
 
+**桌面端版本档**：`lite`（阉割版，仅办公）/ `basic`（基础版）/ `pro`（高级版）。
+`desktop` 与 `desktop:all` 等价，**一次打出三档包，产物统一落在 `dist-release/`**，
+靠文件名后缀区分（`-lite` / `-basic` / `-pro`）。
+
+> 三档会各跑一次 electron-builder（约 3 分钟/档），不是「编一次复用三个壳」——
+> 因为 `edition.json` 是**打进 app.asar 内部**的，档位属编译期固化。
+> 详情见 `apps/desktop/scripts/build-all-editions.cjs` 头部注释。
+
 **.sh 参数：**
 
 ```bash
-bash bin/build.sh desktop         # 桌面端完整版 (Electron -> .exe/.dmg)
-bash bin/build.sh desktop:full    # 同上，显式指定完整版
-bash bin/build.sh desktop:lite    # 桌面端轻量版 (不内置 qwen 推理模型，包更小)
+bash bin/build.sh desktop         # 桌面端三档全出 (lite + basic + pro)
+bash bin/build.sh desktop:all     # 同上（显式）
+bash bin/build.sh desktop:lite    # 只出阉割版
+bash bin/build.sh desktop:basic   # 只出基础版
+bash bin/build.sh desktop:pro     # 只出高级版
+bash bin/build.sh desktop:full    # 同 desktop:basic（历史命令，保留兼容）
 bash bin/build.sh mobile:android  # Android APK
 bash bin/build.sh mobile:ios      # iOS IPA (需 macOS)
 bash bin/build.sh web             # Web 端 -> apps/web/dist/
 bash bin/build.sh server          # 服务端 -> apps/server/dist/
-bash bin/build.sh all             # server -> web -> desktop:full 依次
+bash bin/build.sh all             # server -> web -> desktop:all 依次
 ```
 
 **.bat 参数：**
 
 ```cmd
-bin\build.bat desktop             REM 桌面端完整版
-bin\build.bat desktop:full        REM 同上，显式指定完整版
-bin\build.bat desktop:lite        REM 桌面端轻量版
+bin\build.bat desktop             REM 桌面端三档全出
+bin\build.bat desktop:all         REM 同上（显式）
+bin\build.bat desktop:lite        REM 只出阉割版
+bin\build.bat desktop:basic       REM 只出基础版
+bin\build.bat desktop:pro         REM 只出高级版
+bin\build.bat desktop:full        REM 同 desktop:basic（历史命令，保留兼容）
 bin\build.bat mobile:android      REM Android APK
 bin\build.bat web                 REM Web 端
 bin\build.bat server              REM 服务端
-bin\build.bat all                 REM 全量打包 (server -> web -> desktop:full)
+bin\build.bat all                 REM 全量打包 (server -> web -> desktop:all)
+```
+
+**输出目录散落怎么办**：默认所有桌面端产物都在 `dist-release/`。
+若该目录里的 `win-unpacked` 被残留进程 / 杀软扫描占用导致无法清理，
+脚本会**明确报错并给出处置步骤**（不会自动改到别的目录）。
+此时可换目录或改成逐档独立目录：
+
+```bash
+# 换统一输出目录
+YZ_ALL_OUT_DIR=dist-release-new pnpm build:desktop:all
+
+# 每档独立目录（dist-release-lite/ basic/ pro/）
+node apps/desktop/scripts/build-all-editions.cjs --separate
 ```
 
 ## 项目各端构建产物位置
 
 | 端                  | 产物路径 |
 |---------------------|---------|
-| 桌面端 (Electron 完整版) | `apps/desktop/release-full/` |
-| 桌面端 (Electron 轻量版) | `apps/desktop/release-lite/` |
+| 桌面端 (Electron)    | `dist-release/`（安装包名带档位后缀 `-lite` / `-basic` / `-pro`，另含免安装版 `win-unpacked/`） |
 | Web 端              | `apps/web/dist/` |
 | 服务端              | `apps/server/dist/` |
 | Android            | `apps/mobile/android/app/build/outputs/apk/` |
@@ -131,9 +157,10 @@ bin\build.bat all                 REM 全量打包 (server -> web -> desktop:ful
 
 - Node.js 20+、pnpm 9+
 - Python 3 + Visual Studio Build Tools 2022（用于编译 better-sqlite3 / sqlite-vec 原生模块；`postinstall` 会按 Electron ABI 自动 rebuild）
-- 打包前脚本会自动下载内置模型 (qwen + bge) 与 llama-server 二进制（不进 git，构建前必须补齐）
+- 内置模型引擎已改为 **Ollama**，打包不再下载 qwen / llama-server
+- 可选：内置 Python 运行时（`apps/desktop/resources/python`，由 `node scripts/build-python-runtime.mjs` 生成，
+  体积大、不入库）。**缺失不影响出包**，但成品会回退系统 python 且随包 Python 脚本缺失
 - Electron 自带运行时，无需用户额外安装 WebView2
-- 完整版内置全部模型 + llama-server；轻量版仅内置 bge embedding 模型 + llama-server，包更小
 
 ### 移动端 (Capacitor)
 

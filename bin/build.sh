@@ -2,7 +2,9 @@
 # ============================================================
 # 言智 (Yan-Zhi) 打包/构建脚本
 # 用法: bash bin/build.sh <target>
-#   target: desktop | desktop:full | desktop:lite | mobile:android | mobile:ios | web | server | all
+#   target: desktop | desktop:all | desktop:full | desktop:basic | desktop:lite | desktop:pro
+#           mobile:android | mobile:ios | web | server | all
+#   desktop 与 desktop:all 等价（三档一次打出，产物统一落在 dist-release/）
 # ============================================================
 set -euo pipefail
 
@@ -12,7 +14,8 @@ BOLD='\033[1m' NC='\033[0m'
 TARGET="${1:-}"
 if [ -z "$TARGET" ]; then
   echo -e "${RED}用法: bash bin/build.sh <target>${NC}"
-  echo "  target: desktop | desktop:full | desktop:lite | mobile:android | mobile:ios | web | server | all"
+  echo "  target: desktop | desktop:all | desktop:full | desktop:basic | desktop:lite | desktop:pro"
+  echo "          mobile:android | mobile:ios | web | server | all"
   exit 1
 fi
 
@@ -26,26 +29,50 @@ prepare_desktop_resources() {
   echo ""
 }
 
-build_desktop_full() {
+# 三档一次打出（lite + basic + pro），产物统一落在 dist-release/
+build_desktop_all() {
   echo ""
-  echo -e "${BOLD}${CYAN}══════ 打包桌面端 Electron (完整版) ══════${NC}"
+  echo -e "${BOLD}${CYAN}══════ 打包桌面端 Electron (三档：lite + basic + pro) ══════${NC}"
   echo ""
   prepare_desktop_resources
-  pnpm --filter @yan-zhi/desktop electron:build:full
+  pnpm --filter @yan-zhi/desktop electron:build:all
   echo ""
   echo -e "${GREEN}打包完成${NC}"
-  echo "  产物目录: apps/desktop/release-full/"
+  echo "  产物目录: dist-release/"
+  echo "    言智-Setup-*-lite.exe / -basic.exe / -pro.exe"
+}
+
+build_desktop_basic() {
+  echo ""
+  echo -e "${BOLD}${CYAN}══════ 打包桌面端 Electron (基础版) ══════${NC}"
+  echo ""
+  prepare_desktop_resources
+  pnpm --filter @yan-zhi/desktop electron:build:basic
+  echo ""
+  echo -e "${GREEN}打包完成${NC}"
+  echo "  产物目录: dist-release/"
 }
 
 build_desktop_lite() {
   echo ""
-  echo -e "${BOLD}${CYAN}══════ 打包桌面端 Electron (轻量版) ══════${NC}"
+  echo -e "${BOLD}${CYAN}══════ 打包桌面端 Electron (阉割版) ══════${NC}"
   echo ""
   prepare_desktop_resources
   pnpm --filter @yan-zhi/desktop electron:build:lite
   echo ""
   echo -e "${GREEN}打包完成${NC}"
-  echo "  产物目录: apps/desktop/release-lite/"
+  echo "  产物目录: dist-release/"
+}
+
+build_desktop_pro() {
+  echo ""
+  echo -e "${BOLD}${CYAN}══════ 打包桌面端 Electron (高级版) ══════${NC}"
+  echo ""
+  prepare_desktop_resources
+  pnpm --filter @yan-zhi/desktop electron:build:pro
+  echo ""
+  echo -e "${GREEN}打包完成${NC}"
+  echo "  产物目录: dist-release/"
 }
 
 build_mobile_android() {
@@ -96,8 +123,10 @@ build_server() {
 }
 
 case "$TARGET" in
-  desktop|desktop:full) build_desktop_full ;;
+  desktop|desktop:all)  build_desktop_all ;;
+  desktop:full|desktop:basic) build_desktop_basic ;;
   desktop:lite)         build_desktop_lite ;;
+  desktop:pro)          build_desktop_pro ;;
   mobile:android)       build_mobile_android ;;
   mobile:ios)           build_mobile_ios ;;
   web)                  build_web ;;
@@ -105,11 +134,12 @@ case "$TARGET" in
   all)
     build_server
     build_web
-    build_desktop_full
+    build_desktop_all
     ;;
   *)
     echo -e "${RED}未知目标: $TARGET${NC}"
-    echo "  可用: desktop | desktop:full | desktop:lite | mobile:android | mobile:ios | web | server | all"
+    echo "  可用: desktop | desktop:all | desktop:full | desktop:basic | desktop:lite | desktop:pro"
+    echo "        mobile:android | mobile:ios | web | server | all"
     exit 1
     ;;
 esac

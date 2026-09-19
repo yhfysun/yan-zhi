@@ -3,24 +3,30 @@ setlocal enabledelayedexpansion
 
 :: === Yan-Zhi Build Script ===
 :: Usage: bin\build.bat <target>
-::   target: desktop | desktop:full | desktop:lite | mobile:android | mobile:ios | web | server | all
+::   target: desktop | desktop:all | desktop:full | desktop:basic | desktop:lite | desktop:pro
+::           mobile:android | mobile:ios | web | server | all
+::   desktop 与 desktop:all 等价（三档一次打出，产物统一落在 dist-release\）
 
 set TARGET=%1
 set INTERACTIVE=0
 if "%TARGET%"=="" (
     set INTERACTIVE=1
-    set TARGET=desktop:lite
-    echo No target given, defaulting to desktop:lite
+    set TARGET=desktop:all
+    echo No target given, defaulting to desktop:all ^(three editions^)
     echo Usage: bin\build.bat ^<target^>
-    echo   target: desktop ^| desktop:full ^| desktop:lite ^| mobile:android ^| mobile:ios ^| web ^| server ^| all
+    echo   target: desktop ^| desktop:all ^| desktop:full ^| desktop:basic ^| desktop:lite ^| desktop:pro
+    echo           mobile:android ^| mobile:ios ^| web ^| server ^| all
 )
 
 set "ROOT_DIR=%~dp0.."
 cd /d "%ROOT_DIR%"
 
-if "%TARGET%"=="desktop"         call :BuildDesktopFull
-if "%TARGET%"=="desktop:full"    call :BuildDesktopFull
+if "%TARGET%"=="desktop"         call :BuildDesktopAll
+if "%TARGET%"=="desktop:all"     call :BuildDesktopAll
+if "%TARGET%"=="desktop:full"    call :BuildDesktopBasic
+if "%TARGET%"=="desktop:basic"   call :BuildDesktopBasic
 if "%TARGET%"=="desktop:lite"    call :BuildDesktopLite
+if "%TARGET%"=="desktop:pro"     call :BuildDesktopPro
 if "%TARGET%"=="mobile:android"  call :BuildMobileAndroid
 if "%TARGET%"=="mobile:ios"      call :BuildMobileIos
 if "%TARGET%"=="web"             call :BuildWeb
@@ -30,7 +36,7 @@ if "%TARGET%"=="all" (
     if !ERRORLEVEL! NEQ 0 exit /b 1
     call :BuildWeb
     if !ERRORLEVEL! NEQ 0 exit /b 1
-    call :BuildDesktopFull
+    call :BuildDesktopAll
     if !ERRORLEVEL! NEQ 0 exit /b 1
 )
 
@@ -46,22 +52,36 @@ echo ====== Skip model download (use Ollama) ======
 echo.
 exit /b 0
 
-:BuildDesktopFull
+:: 三档一次打出（lite + basic + pro），产物统一落在 dist-release\
+:BuildDesktopAll
 echo.
-echo ====== Build Desktop (Electron, full) ======
+echo ====== Build Desktop (Electron, all three editions) ======
 echo.
 call :PrepareDesktopResources
 if %ERRORLEVEL% NEQ 0 exit /b 1
-call pnpm --filter @yan-zhi/desktop electron:build:full
+call pnpm --filter @yan-zhi/desktop electron:build:all
 if %ERRORLEVEL% NEQ 0 exit /b 1
 echo.
 echo Build complete
-echo   Output: dist-release\ (言智-Setup-*-full.exe)
+echo   Output: dist-release\ (yan-zhi-Setup-*-lite.exe / -basic.exe / -pro.exe)
+exit /b 0
+
+:BuildDesktopBasic
+echo.
+echo ====== Build Desktop (Electron, basic edition) ======
+echo.
+call :PrepareDesktopResources
+if %ERRORLEVEL% NEQ 0 exit /b 1
+call pnpm --filter @yan-zhi/desktop electron:build:basic
+if %ERRORLEVEL% NEQ 0 exit /b 1
+echo.
+echo Build complete
+echo   Output: dist-release\ (yan-zhi-Setup-*-basic.exe)
 exit /b 0
 
 :BuildDesktopLite
 echo.
-echo ====== Build Desktop (Electron, lite) ======
+echo ====== Build Desktop (Electron, lite edition) ======
 echo.
 call :PrepareDesktopResources
 if %ERRORLEVEL% NEQ 0 exit /b 1
@@ -69,7 +89,20 @@ call pnpm --filter @yan-zhi/desktop electron:build:lite
 if %ERRORLEVEL% NEQ 0 exit /b 1
 echo.
 echo Build complete
-echo   Output: dist-release\ (言智-Setup-*-lite.exe)
+echo   Output: dist-release\ (yan-zhi-Setup-*-lite.exe)
+exit /b 0
+
+:BuildDesktopPro
+echo.
+echo ====== Build Desktop (Electron, pro edition) ======
+echo.
+call :PrepareDesktopResources
+if %ERRORLEVEL% NEQ 0 exit /b 1
+call pnpm --filter @yan-zhi/desktop electron:build:pro
+if %ERRORLEVEL% NEQ 0 exit /b 1
+echo.
+echo Build complete
+echo   Output: dist-release\ (yan-zhi-Setup-*-pro.exe)
 exit /b 0
 
 :BuildMobileAndroid
