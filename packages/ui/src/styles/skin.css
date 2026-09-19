@@ -997,6 +997,14 @@ html[data-skin="on"] .el-dialog.tm-solid-dialog .el-textarea__inner {
   background-repeat: var(--skin-pattern-repeat, no-repeat);
   background-position: center;
   border-color: var(--btn-border);
+  /* ★ 文字色必须跟着**按钮自己的底色**走，不能沿用 --el-text-color-regular（= --skin-text）。
+     后者是按面板底色判定的，与按钮底色不是同一个基准 —— 面板判「浅底深字」而按钮底色偏深时，
+     就会出现深字压深底，按钮看着像**空白块**（用户反馈「默认按钮文字看不到」）。
+     --skin-btn-text-default 由 stores/settings 按按钮底色算好对比度后下发；
+     未下发时（非皮肤模式 / 旧缓存）回落到 EP 默认，保持原行为。 */
+  --el-button-text-color: var(--skin-btn-text-default, var(--el-text-color-regular));
+  --el-button-hover-text-color: var(--skin-btn-text-default, var(--el-text-color-regular));
+  --el-button-active-text-color: var(--skin-btn-text-default, var(--el-text-color-regular));
 }
 [data-skin="on"] .el-button:not(.is-text):not(.is-link):not(.el-button--primary):not(.el-button--success):not(.el-button--warning):not(.el-button--danger):not(.el-button--info):not(.is-plain):not(.is-disabled):hover {
   background-color: var(--btn-bg-hover);

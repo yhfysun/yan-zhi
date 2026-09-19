@@ -1105,6 +1105,29 @@ export const useSettingsStore = defineStore('settings', () => {
     root.setProperty('--skin-dialog-title-bg', sh(dv.dialogTitleBg));
     root.setProperty('--skin-btn-bg-color', sh(dv.buttonBg));
     root.setProperty('--skin-btn-bg-hover', sh(dv.buttonBgHover));
+    // ===== 默认（中性）按钮的文字色：必须按**按钮自己的底色**算，不能复用 --skin-text =====
+    //
+    // 背景：Element Plus 中性按钮的文字色是 --el-button-text-color: var(--el-text-color-regular)，
+    // 而 skin.css 把它映射成 --skin-text —— 那是按**面板底色**（surfaceIsLight）判定的文字色。
+    // 两者基准不同：面板判「浅底→深字」时，按钮底色却可能是深色（皮肤 buttonBg 或玻璃色），
+    // 于是出现「深字压深底 / 浅字压浅底」→ 按钮看起来像**一个空白块，字几乎不见**
+    // （用户反馈「默认的图标文字看不到，就是个空白按钮一样」）。
+    //
+    // 修法：按按钮底色单独算一次对比度，下发到 --skin-btn-text-default，
+    // 由 skin.css 只作用于中性按钮（语义色/主色按钮各有自己的字色，不受影响）。
+    // 阈值取 4.5（WCAG AA 正文级）——比 primary 那处更严一档：中性按钮用得最多，
+    // 且它没有主色底衬托，可读性更依赖这个值。
+    {
+      const btnBgSolid = sh(dv.buttonBg);
+      // 对比度函数只吃 hex（hexToRgb 对 rgba/变量名会算出 NaN）。皮肤配的是 hex 时正常走；
+      // 万一被写成非 hex，跳过下发 → skin.css 回落到 EP 默认字色，不至于把字刷成透明/黑。
+      const defText = /^#[0-9a-f]{3,8}$/i.test(btnBgSolid)
+        ? (contrastRatio(btnBgSolid, '#ffffff') >= 4.5 ? '#ffffff'
+          : contrastRatio(btnBgSolid, '#141414') >= 4.5 ? '#141414'
+            : (dark ? '#F2F0EA' : '#141414'))
+        : '';
+      if (defText) root.setProperty('--skin-btn-text-default', defText);
+    }
     // 圆角：仅皮肤显式配置时下发（未配置 → 走 skin.css 默认值 12/6/6/12/6）
     if (sf.radius !== undefined) root.setProperty('--skin-radius', `${sf.radius}px`);
     if (sf.buttonRadius !== undefined) root.setProperty('--skin-btn-radius', `${sf.buttonRadius}px`);
