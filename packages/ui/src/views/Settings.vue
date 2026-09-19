@@ -87,6 +87,19 @@
           <el-form-item v-if="canScreenshot" label="截图隐藏本应用">
             <el-switch v-model="screenshotHideApp" />
           </el-form-item>
+          <!-- 移动端专属：远程后端地址（连自建节点；不配则走 APK 内嵌本地后端） -->
+          <el-form-item v-if="isCapacitor" label="后端服务地址">
+            <el-input
+              v-model="mobileApiBaseInput"
+              placeholder="https://your-node.example.com（留空用内嵌本地后端）"
+              clearable
+            />
+            <div style="display: inline-flex; gap: 8px; margin-top: 8px">
+              <el-button size="small" type="primary" @click="saveMobileApiBase">保存并重载</el-button>
+              <el-button size="small" :disabled="!getMobileApiBase()" @click="clearMobileApiBase">恢复内嵌后端</el-button>
+            </div>
+            <span class="form-tip" style="margin-left: 12px">当前生效：{{ API_BASE }}。保存后自动重载一次；重载前已建立的流式连接需重开会话。</span>
+          </el-form-item>
         </el-form>
       </el-tab-pane>
       <el-tab-pane label="皮肤" name="skin">
@@ -257,7 +270,7 @@ import { useSettingsStore, usePlatformStore } from '../stores';
 import { usePluginStore } from '../stores/plugin';
 import { useToolsStore } from '../stores/tools';
 import type { ThemeName } from '../stores/settings';
-import { api, API_BASE } from '../api/client';
+import { api, API_BASE, isCapacitor, getMobileApiBase, setMobileApiBase } from '../api/client';
 import MemoryManage from '../components/memory/MemoryManage.vue';
 import LlmLogs from './LlmLogs.vue';
 import VoicePackPanel from '../components/VoicePackPanel.vue';
@@ -334,6 +347,26 @@ async function downloadSkinSource(s: SkinTheme) {
 }
 
 const darkMode = ref(settingsStore.settings.darkMode);
+
+// ===== 移动端远程后端地址（仅 Capacitor 环境显示）=====
+// 保存即 location.reload()：BASE_URL 是模块级常量，改动靠重载一次性生效，
+// 免去用户手动杀进程重启（这是 mobile_api_base 此前「无写入入口、改了不生效」的收尾）。
+const mobileApiBaseInput = ref(isCapacitor ? getMobileApiBase() : '');
+function saveMobileApiBase(): void {
+  try {
+    setMobileApiBase(mobileApiBaseInput.value);
+  } catch (e) {
+    ElMessage.error((e as Error).message || '保存失败');
+    return;
+  }
+  ElMessage.success('已保存，正在重载…');
+  setTimeout(() => location.reload(), 600);
+}
+function clearMobileApiBase(): void {
+  setMobileApiBase('');
+  ElMessage.success('已恢复内嵌本地后端，正在重载…');
+  setTimeout(() => location.reload(), 600);
+}
 
 const defaultPlatformId = ref('');
 const defaultModelId = ref('');

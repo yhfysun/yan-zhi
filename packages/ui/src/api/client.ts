@@ -5,13 +5,42 @@ import { getLicenseCodeSync } from './license-code';
 export const isElectron = typeof window !== 'undefined' && !!(window as any).electronAPI?.isElectron;
 export const isCapacitor = typeof window !== 'undefined' && !!(window as any).Capacitor?.isNativePlatform;
 // 移动端支持用户配置远程后端地址（方案 A：连远程节点）；未配置时走内嵌本地后端（方案 B）
-const mobileRemoteBase = typeof window !== 'undefined' ? (localStorage.getItem('mobile_api_base') || '') : '';
+const mobileRemoteBase = getMobileApiBase();
 export const API_BASE = isElectron
   ? 'http://127.0.0.1:3001/api'
   : isCapacitor
     ? (mobileRemoteBase ? mobileRemoteBase.replace(/\/$/, '') + '/api' : 'http://127.0.0.1:3001/api')
     : '/api';
 const BASE_URL = API_BASE;
+
+const MOBILE_API_BASE_KEY = 'mobile_api_base';
+
+/** 当前配置的移动端远程后端地址；未配置返回 ''（走 APK 内嵌本地后端） */
+export function getMobileApiBase(): string {
+  try {
+    return localStorage.getItem(MOBILE_API_BASE_KEY) || '';
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * 写入移动端远程后端地址；传空串 = 清除配置，回落内嵌本地后端。
+ * 只校验 http(s) 形态并去尾斜杠，不做连通性探测（探测交给「测试」入口或用户）。
+ * ⚠️ BASE_URL 是模块级常量：本函数写完后**新值不会自动作用于已建立的请求**，
+ * 设置页保存后需 location.reload() 一次性重载生效（免用户手动重启 App）。
+ */
+export function setMobileApiBase(url: string): string {
+  const trimmed = (url || '').trim().replace(/\/+$/, '');
+  if (trimmed && !/^https?:\/\//i.test(trimmed)) {
+    throw new Error('API 地址必须以 http:// 或 https:// 开头');
+  }
+  try {
+    if (trimmed) localStorage.setItem(MOBILE_API_BASE_KEY, trimmed);
+    else localStorage.removeItem(MOBILE_API_BASE_KEY);
+  } catch { /* ignore */ }
+  return trimmed;
+}
 
 function getToken(): string | null {
   try {
