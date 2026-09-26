@@ -3,8 +3,8 @@ import path from 'node:path';
 import { v4 as uuid } from 'uuid';
 import { authMiddleware } from '../auth.js';
 import { db } from '../db.js';
-import { resolveArtifactDirFor, ensureArtifactDirFor } from '../services/artifact-dir.js';
-import type { FileCategory } from '@yan-zhi/shared';
+import { resolveArtifactDirFor, ensureArtifactDirFor, findArtifactFileAcrossRoots, resolveRegisteredFilePath } from '../services/artifact-dir.js';
+import { buildArtifactRelDir, buildArtifactRelDirCandidates, type FileCategory } from '@yan-zhi/shared';
 
 const router = Router();
 router.use(authMiddleware);
@@ -84,6 +84,45 @@ router.get('/:id/files', (req: Request, res: Response) => {
     'SELECT * FROM conversation_file WHERE conversation_id = ? ORDER BY category ASC, created_at ASC',
   ).all(cid);
   res.json({ data: rows.map(rowToFile) });
+});
+
+/**
+ * GET /api/conversations/:id/file-path?name=xxx —— 定位文件在**当前**产物根下的真实路径。
+ *
+ * ★★★ 为什么需要（2026-09-23，见 issues/产物根目录漂移导致媒体404-20260919.md）：
+ *
+ *   产物根是"读取时重算"的，而历史文件用的是**落盘当时**的根。工作目录一变，
+ *   会话里 `conversation_file.path` 记的位置就可能读不到 → 前端预览报
+ *   「能看到但预览不行」。前端的 FilePreview 此前是**裸读登记路径**，路径错了无从自愈。
+ *
+ *   本接口是前端预览的权威兜底：按「跨根探测 → 登记路径（含相对路径补齐）」依次找，
+ *   找到就返回绝对路径，让前端重读一次。找不到则 404（前端如实报错，不静默）。
+ */
+router.get('/:id/file-path', (req: Request, res: Response) => {
+  const userId = req.user!.userId;
+  const cid = req.params.id;
+  const conv = db.prepare('SELECT id FROM conversation WHERE id = ? AND user_id = ?').get(cid, userId);
+  if (!conv) { res.status(404).json({ error: '会话不存在' }); return; }
+  const name = String(req.query.name || '').trim();
+  if (!name) { res.status(400).json({ error: 'name 为必填项' }); return; }
+
+  // ① 跨根探测：把可能用过的产物根都按规范相对目录试一遍
+  for (const category of ['deliverable', 'intermediate', 'upload'] as const) {
+    const info = resolveArtifactDirFor({ conversationId: cid, category });
+    const primaryRel = buildArtifactRelDir({ conversationId: cid, title: info.title, category });
+    const candidates = buildArtifactRelDirCandidates({
+      conversationId: cid,
+      title: info.title,
+      category,
+      hasLegacyDir: info.relDir !== primaryRel,
+    });
+    const hit = findArtifactFileAcrossRoots(candidates, name);
+    if (hit) { res.json({ data: { path: hit, via: 'cross-root' } }); return; }
+  }
+  // ② 登记路径兜底：信任 conversation_file.path（含相对路径按候选根补齐）
+  const registered = resolveRegisteredFilePath(cid, name);
+  if (registered) { res.json({ data: { path: registered, via: 'registered' } }); return; }
+  res.status(404).json({ error: '文件已不在任何已知产物目录中' });
 });
 
 // POST /api/conversations/:id/files —— 注册一个文件记录（不处理上传字节流，仅记录元数据）

@@ -185,3 +185,142 @@ export function findArtifactFileInDirs(
   }
   return null;
 }
+
+/**
+ * 方案 A（救回已有文件，见 issues/产物根目录漂移导致媒体404-20260919.md）：
+ * 跨根探测 —— 在**其它候选根**下按同样的规范相对目录找同名文件。
+ *
+ * ★ 为什么必须要有：产物根是「读取时重新计算」的，而历史文件落盘时用的是**当时**的根。
+ *   工作目录一变，按当前根解析就必然 miss（实测一份库里出现 3 个根）。
+ *   本函数把「所有可能用过的根」都试一遍，历史产物零搬运即可恢复可读。
+ *
+ * ★ 为什么这几个候选：与 resolveArtifactRoot 的三级回落同源，外加
+ *   `apps/server`（dev 模式不设 DATA_DIR 且服务端 cwd 在 apps/server 时的兜底根）。
+ */
+export function findArtifactFileAcrossRoots(relDirs: string[], fileName: string): string | null {
+  const seen = new Set<string>();
+  const candidates: string[] = [];
+  const push = (r?: string | null) => {
+    const v = (r || '').trim();
+    if (!v) return;
+    const key = path.resolve(v).toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    candidates.push(v);
+  };
+  push(serverState.workspaceDir);
+  push(resolveDataDir());
+  // dev 模式常见的第二个根：服务端自身目录（<repo>/apps/server）
+  push(path.resolve(hereDir, '..', '..'));
+  // 仓库根（dev 模式 <repo>/apps/server/.yan-zhi 与 <repo>/.yan-zhi 都出现过）
+  push(path.resolve(hereDir, '..', '..', '..'));
+
+  for (const root of candidates) {
+    const hit = findArtifactFileInDirs(relDirs, root, fileName);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+/**
+ * 方案 B（治本，见同一 issue）：**信任登记路径**。
+ *
+ * conversation_file.path 是**落盘时写下的权威位置**；产物根漂移是"读取时重算"造成的，
+ * 因此读取侧应优先按登记路径解析，而不是重算根。
+ *
+ * @param conversationId 会话 id
+ * @param fileName        文件名（用于在会话内定位对应记录）
+ * @returns 真实存在的绝对路径；登记的是相对路径时会按各候选根补齐后探测
+ *
+ * ★ 相对路径的历史记录：按 DATA_DIR / apps/server / 仓库根 / 当前 cwd 依次补齐再探测
+ *   （历史数据里有 1 条相对路径，若不补齐永远读不到）。
+ */
+export function resolveRegisteredFilePath(
+  conversationId: string,
+  fileName: string,
+): string | null {
+  if (!conversationId || !fileName) return null;
+  let row: { path?: string } | undefined;
+  try {
+    row = db
+      .prepare('SELECT path FROM conversation_file WHERE conversation_id = ? AND name = ? ORDER BY created_at DESC LIMIT 1')
+      .get(conversationId, fileName) as { path?: string } | undefined;
+  } catch {
+    return null;
+  }
+  const raw = (row?.path || '').trim();
+  if (!raw) return null;
+
+  const isAbs = path.isAbsolute(raw) || /^[A-Za-z]:[\\/]/.test(raw);
+  const candidates: string[] = [];
+  if (isAbs) {
+    candidates.push(raw);
+  } else {
+    // 相对路径：按各候选根补齐（禁止按 cwd 直接拼 —— 那正是漂移的源头）
+    const roots: string[] = [];
+    const pushRoot = (r?: string | null) => { const v = (r || '').trim(); if (v) roots.push(v); };
+    pushRoot(serverState.workspaceDir);
+    pushRoot(resolveDataDir());
+    pushRoot(path.resolve(hereDir, '..', '..'));
+    pushRoot(path.resolve(hereDir, '..', '..', '..'));
+    pushRoot(process.cwd());
+    for (const r of roots) candidates.push(path.resolve(r, raw));
+  }
+
+  for (const c of candidates) {
+    try {
+      if (fs.existsSync(c) && fs.statSync(c).isFile()) return c;
+    } catch {
+      /* 试下一个 */
+    }
+  }
+  return null;
+}
+
+/**
+ * 一次性回填：把 conversation_file 里的**相对路径**补成绝对路径。
+ *
+ * ★ 为什么需要：历史数据里存在相对路径登记（实测 1 条），
+ *   它随进程 cwd 漂移，任何按根的解析都读不到。回填成绝对路径后即固化。
+ *   幂等：已是绝对路径的记录跳过。
+ *
+ * @returns { scanned, fixed, unresolved } —— 扫描数 / 修正数 / 补齐后仍不存在文件数
+ */
+export function backfillRelativeArtifactPaths(): { scanned: number; fixed: number; unresolved: number } {
+  let scanned = 0, fixed = 0, unresolved = 0;
+  try {
+    const rows = db
+      .prepare("SELECT id, path FROM conversation_file WHERE path IS NOT NULL AND path != ''")
+      .all() as Array<{ id: string; path: string }>;
+    for (const r of rows) {
+      const p = String(r.path || '').trim();
+      if (!p) continue;
+      scanned++;
+      if (path.isAbsolute(p) || /^[A-Za-z]:[\\/]/.test(p)) continue;   // 已固化，跳过
+      // 按候选根补齐到真实存在的那个
+      const roots: string[] = [];
+      const pushRoot = (x?: string | null) => { const v = (x || '').trim(); if (v) roots.push(v); };
+      pushRoot(serverState.workspaceDir);
+      pushRoot(resolveDataDir());
+      pushRoot(path.resolve(hereDir, '..', '..'));
+      pushRoot(path.resolve(hereDir, '..', '..', '..'));
+      pushRoot(process.cwd());
+      let hit: string | null = null;
+      for (const root of roots) {
+        const abs = path.resolve(root, p);
+        try { if (fs.existsSync(abs)) { hit = abs; break; } } catch { /* next */ }
+      }
+      if (hit) {
+        try {
+          db.prepare('UPDATE conversation_file SET path = ? WHERE id = ?').run(hit, r.id);
+          fixed++;
+        } catch { /* 单条失败不影响其它 */ }
+      } else {
+        unresolved++;
+      }
+    }
+  } catch (e: unknown) {
+    console.warn('[artifact-dir] 相对路径回填失败:', e instanceof Error ? e.message : e);
+  }
+  return { scanned, fixed, unresolved };
+}

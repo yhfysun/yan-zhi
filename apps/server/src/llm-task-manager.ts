@@ -1166,8 +1166,9 @@ async function runReActLoop(task: LlmTask, params: {
         emit(task, { type: 'tool:start', toolName, args });
 
         let result: string;
+        const toolMetaOut: { value?: Record<string, unknown> | null } = {};
         try {
-          result = await executeTool(task, registry, toolName, args, tc.id || '', UI_TOOLS, 0, toolsBuilt);
+          result = await executeTool(task, registry, toolName, args, tc.id || '', UI_TOOLS, 0, toolsBuilt, toolMetaOut);
         } catch (e: any) {
           if (isAbortError(e)) {
             // 中止也必须落库 tool 结果：否则库里留下孤儿 assistant.tool_calls（无对应 tool 消息），
@@ -1184,16 +1185,26 @@ async function runReActLoop(task: LlmTask, params: {
         emit(task, { type: 'tool:result', toolName, result });
 
         // file_write 成功后注册到 conversation_file（分类管理，前端文件面板展示）
-        if (toolName === 'file_write' && args.path && !result.startsWith('工具执行失败')) {
-          try {
-            const filePath = String(args.path);
-            const sep = filePath.includes('/') ? '/' : '\\';
-            const fileName = filePath.split(sep).pop() || filePath;
-            const category = (args.category as string) === 'deliverable' ? 'deliverable' : 'intermediate';
-            const cfId = 'cf_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
-            db.prepare('INSERT INTO conversation_file (id, conversation_id, user_id, space_id, name, path, category, mime_type, size, source, message_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(cfId, convId, userId, null, fileName, filePath, category, null, 0, 'agent', assistantMsgId, Date.now());
-            emit(task, { type: 'file:registered', conversationId: convId });
-          } catch {}
+        // ★★★ 必须用**工具回传的实际落盘路径**（_meta.path），不能用模型传的 args.path：
+        //   现在落盘位置由服务端按会话目录决定（见 executeTool 内的 artifactDirs），
+        //   模型给的 path 已不参与定位。若仍登记 args.path，conversation_file 里会写进
+        //   一个**并不存在的位置** → 文件管理点开就 404（用户报的"能看到但预览不行"）。
+        if (toolName === 'file_write' && !result.startsWith('工具执行失败')) {
+          const fwMeta = toolMetaOut.value as { path?: string; name?: string; category?: string; bytes?: number } | null;
+          const filePath = String(fwMeta?.path || '');
+          if (filePath) {
+            try {
+              const fileName = String(fwMeta?.name || '') || (filePath.split(/[/\\]/).pop() || filePath);
+              const category = fwMeta?.category === 'deliverable' ? 'deliverable' : 'intermediate';
+              const size = Number(fwMeta?.bytes) || 0;
+              const cfId = 'cf_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+              db.prepare('INSERT INTO conversation_file (id, conversation_id, user_id, space_id, name, path, category, mime_type, size, source, message_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(cfId, convId, userId, null, fileName, filePath, category, guessMime(fileName), size, 'agent', assistantMsgId, Date.now());
+              emit(task, { type: 'file:registered', conversationId: convId });
+            } catch (e: any) {
+              // 登记失败不能静默：否则"文件产出了但文件管理里没有/点开 404"只能靠猜
+              console.warn('[file_write] 文件登记失败:', e?.message || e);
+            }
+          }
         }
 
         // 媒体产物（生图/生视频）落盘即注册：产物由服务端直接写进会话交付目录，
@@ -1305,6 +1316,15 @@ async function executeTool(
   uiTools: Set<string>,
   depth: number = 0,
   toolDefs: any[] = [],
+  /**
+   * 出参：工具回传的 `_meta`（如 file_write 的 { path, name, category, bytes, beforeContent }）。
+   * ★ 为什么用出参而不是改返回类型：本函数返回的是**给模型看的文本**，
+   *   而 `_meta` 是给**调用方做副作用**的（登记 conversation_file / 写 Diff 快照）。
+   *   混在一起会让"模型看到盘上路径"（不希望），也让改返回类型牵动两个调用点。
+   *   file_write 的落盘路径只有工具自己知道（目录来自 ctx、文件名由它推导），
+   *   所以必须由它回传，调用方才能登记到正确位置。
+   */
+  metaOut?: { value?: Record<string, unknown> | null },
 ): Promise<string> {
   // 会话级权限拦截（readonly）：写类/不可控工具在此硬拒绝。
   // 放在函数最顶端 —— 被拒时提前 return，file_write/file_edit 的 file_change 快照钩子
@@ -1535,13 +1555,52 @@ async function executeTool(
 
   // 内置工具 → 后端直接执行
   if (registry.has(toolName)) {
-    // 文件修改快照：file_write / file_edit 落盘前记下原内容，供前端 Diff 对比 / 应用 / 回退。
-    // 钩子放在 executeTool 统一出口，主循环与子智能体（call_agent）都覆盖。
-    const snapPath = (toolName === 'file_write' || toolName === 'file_edit') ? String(args?.path || '') : '';
+    // ★★★ 代码层面把产物目录算好直接传给工具（2026-09-23，用户口径：
+    //     「路径不应该方法里面自己判断？还用大模型传？」「代码层面直接传入啊」）。
+    //
+    //   此前 file_write 的 path 是**必填、由模型编**：文件被写到工作区任意位置，
+    //   服务端静态媒体路由只认规范目录 → 登记进 conversation_file 的文件
+    //   预览/另存为一律 404（"能看到但预览不行"）。
+    //
+    //   这里用与媒体产物**同一个** resolveArtifactDirFor（单一出口）算出两个分类目录，
+    //   工具只负责拼文件名 —— core 侧零业务知识，也不做回调注入。
+    const artifactDirs = (() => {
+      const convId = task.conversationId;
+      if (!convId) return undefined;
+      try {
+        return {
+          intermediate: resolveArtifactDirFor({ conversationId: convId, category: 'intermediate' }).dir,
+          deliverable: resolveArtifactDirFor({ conversationId: convId, category: 'deliverable' }).dir,
+          upload: resolveArtifactDirFor({ conversationId: convId, category: 'upload' }).dir,
+        };
+      } catch (e: any) {
+        // 目录解析失败不能静默：否则又退回"按模型给的 path 写"，问题原样复现。
+        console.warn('[llm-task] 产物目录解析失败，file_write 将退回旧行为:', e?.message || e);
+        return undefined;
+      }
+    })();
+    const toolCtx = { conversationId: task.conversationId, userId: task.userId, artifactDirs };
+
+    // 文件修改快照：file_edit 落盘前记下原内容，供前端 Diff 对比 / 应用 / 回退。
+    // ★ file_write 不走这里 —— 它的落盘路径由工具按会话目录决定，调用方执行前无法预知，
+    //   故由工具自身在落盘前读原内容并经 _meta.beforeContent 回传（见 file-write.ts）。
+    const snapPath = (toolName === 'file_edit') ? String(args?.path || '') : '';
     const before = snapPath ? await readFileOrNull(snapPath) : null;
-    const r = await registry.execute(toolName, args);
+    const r = await registry.execute(toolName, args, toolCtx);
     const text = typeof r === 'string' ? r : (r.content?.map((c: any) => c.text || '').join('') || JSON.stringify(r));
-    if (snapPath && before !== undefined && !text.startsWith('Error') && !text.startsWith('工具执行失败')) {
+    const meta = (r as any)?._meta as { path?: string; beforeContent?: string | null } | undefined;
+    // 把 _meta 交给调用方（供登记 conversation_file / 写 Diff 快照）
+    if (metaOut) metaOut.value = (meta as Record<string, unknown> | undefined) || null;
+    if (toolName === 'file_write' && meta?.path) {
+      // file_write：路径与 before 都来自工具回传（落盘即权威）
+      const after = await readFileOrNull(meta.path);
+      if (meta.beforeContent !== after) {
+        try {
+          db.prepare('INSERT INTO file_change (id, user_id, conversation_id, task_id, path, before_content, after_content, tool, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+            .run('fc_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8), task.userId, task.conversationId, task.id, meta.path, meta.beforeContent ?? null, after, toolName, 'pending', Date.now());
+        } catch { /* 快照失败不影响工具结果 */ }
+      }
+    } else if (snapPath && before !== undefined && !text.startsWith('Error') && !text.startsWith('工具执行失败')) {
       const after = await readFileOrNull(snapPath);
       if (before !== after) {
         try {

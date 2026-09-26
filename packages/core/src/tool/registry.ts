@@ -1,5 +1,5 @@
 // 内置工具注册中心
-import type { BuiltInTool, ToolDefinition } from './types';
+import type { BuiltInTool, ToolDefinition, ToolContext } from './types';
 import type { McpCallResult } from '../mcp/client';
 
 export class ToolRegistry {
@@ -37,7 +37,7 @@ export class ToolRegistry {
     return Array.from(this.tools.keys());
   }
 
-  async execute(name: string, args: Record<string, unknown>): Promise<McpCallResult> {
+  async execute(name: string, args: Record<string, unknown>, ctx?: ToolContext): Promise<McpCallResult> {
     const tool = this.tools.get(name);
     if (!tool) {
       return {
@@ -45,7 +45,9 @@ export class ToolRegistry {
         isError: true,
       };
     }
-    return tool.execute(args);
+    // ★ ctx 由执行器注入（会话上下文 + 产物路径解析），模型看不到也传不了。
+    //   老工具签名是 execute(args)，多传一个参数对它们是安全的（JS 忽略多余实参）。
+    return tool.execute(args, ctx);
   }
 
   /** 导出为 OpenAI function calling 的 tools 数组 */

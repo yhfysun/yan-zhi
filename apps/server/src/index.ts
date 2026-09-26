@@ -13,7 +13,7 @@ import conversationRoutes from './routes/conversations.js';
 import messageRoutes from './routes/messages.js';
 import spaceRoutes from './routes/spaces.js';
 import fileRoutes from './routes/files.js';
-import { resolveArtifactDirFor, findArtifactFileInDirs } from './services/artifact-dir.js';
+import { resolveArtifactDirFor, findArtifactFileInDirs, findArtifactFileAcrossRoots, resolveRegisteredFilePath, backfillRelativeArtifactPaths } from './services/artifact-dir.js';
 import { downloadMediaBinary } from './services/media-fetch.js';
 import { buildArtifactRelDir, buildArtifactRelDirCandidates } from '@yan-zhi/shared';
 import platformRoutes, { migrateLegacyLocalPlatformRows } from './routes/platforms.js';
@@ -213,6 +213,36 @@ app.get('/api/generated/:kind/:conversationId/:name', (req, res) => {
     const file = findArtifactFileInDirs(candidates, info.root, name);
     if (file) {
       sendMediaFile(res, file);
+      return;
+    }
+  }
+  // ★★ 方案 A（2026-09-23，见 issues/产物根目录漂移导致媒体404-20260919.md）：
+  //   上面只按【当前产物根】找。而产物根是**读取时重算**的，历史文件用的是**当时**的根 ——
+  //   工作目录一变就必然 miss（实测一份库里出现 3 个根：
+  //   <仓库根>、<仓库根>/apps/server、以及相对路径）。
+  //   ⇒ 追加跨根探测：把可能用过的根都按同样的规范相对目录试一遍，历史产物零搬运即恢复可读。
+  for (const category of ['deliverable', 'intermediate'] as const) {
+    const info = resolveArtifactDirFor({ conversationId, category });
+    const primaryRel = buildArtifactRelDir({ conversationId, title: info.title, category });
+    const candidates = buildArtifactRelDirCandidates({
+      conversationId,
+      title: info.title,
+      category,
+      hasLegacyDir: info.relDir !== primaryRel,
+    });
+    const file = findArtifactFileAcrossRoots(candidates, name);
+    if (file) {
+      sendMediaFile(res, file);
+      return;
+    }
+  }
+  // ★★ 方案 B（治本）：**信任登记路径** —— conversation_file.path 是落盘时写下的权威位置，
+  //   它的存在意义就是"别再重算根"。放在最后作为终极兜底：前两步是按规范目录找，
+  //   这一步直接按登记绝对路径取（含相对路径的历史记录，会按候选根补齐后探测）。
+  {
+    const registered = resolveRegisteredFilePath(conversationId, name);
+    if (registered) {
+      sendMediaFile(res, registered);
       return;
     }
   }
@@ -437,6 +467,18 @@ try {
   ensureBuiltinOntologies('guest');
   console.log('[data] 内置项目库数据源与自动本体预热已触发');
 } catch (e) { console.warn('[data] 数据面预热失败:', e); }
+
+// 产物路径一次性回填（2026-09-23）：把 conversation_file 里的**相对路径**补成绝对路径。
+// ★ 为什么需要：历史数据里有相对路径登记（实测 1 条），它随进程 cwd 漂移，
+//   任何"按当前产物根解析"的读取都读不到 → 表现为「图片生成时能看到、后来预览打不开」。
+//   回填成绝对路径后即固化（配合静态路由的方案 A/B，见 services/artifact-dir.ts）。
+//   幂等：已是绝对路径的行跳过；只在启动时跑一次，开销可忽略。
+try {
+  const bf = backfillRelativeArtifactPaths();
+  if (bf.fixed || bf.unresolved) {
+    console.log(`[artifact] 产物路径回填：扫描 ${bf.scanned} 条，修正 ${bf.fixed} 条，仍无法定位 ${bf.unresolved} 条`);
+  }
+} catch (e) { console.warn('[artifact] 产物路径回填失败:', e); }
 
 // 启动对话定时任务调度器（内部有 guard，只会启动一次）
 startScheduledTaskScheduler();

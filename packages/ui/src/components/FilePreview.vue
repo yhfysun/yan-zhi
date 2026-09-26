@@ -682,6 +682,70 @@ function revokeVideoSrc() {
 
 const TEXT_LIMIT = 2000000; // 2MB：超限截断并在元信息条提示
 
+/**
+ * 读取文件字节，路径失效时**自动向服务端要真实路径**后重试一次。
+ *
+ * ★★★ 为什么需要（2026-09-23 用户反馈「生成的图片能看到但是预览不行啊」）：
+ *
+ *   产物根是「读取时重算」的，历史文件用的是**落盘当时**的根。工作目录一变，
+ *   会话里 `conversation_file.path` 记的路径就可能指向不存在的位置 ——
+ *   实测一份库里出现 3 个根（仓库根 / apps/server / 相对路径），
+ *   于是"生成时能看到、后来预览打不开"（见 issues/产物根目录漂移导致媒体404-20260919.md）。
+ *
+ *   缩略图卡片有 onThumbError 兜底（走 /api/generated），但**预览面板此前是裸读**，
+ *   路径错了就只报一句「读取文件失败」，用户无从下手。
+ *
+ *   ⇒ 这里统一走"先按登记路径读；读不到就问服务端要权威路径；再读不到才报错并说明原因"。
+ *     服务端侧已实现"信任登记路径 + 跨根探测"（artifact-dir 的方案 A/B）。
+ */
+async function readFileWithFallback(
+  adapter: { fs: { readFileBase64: (p: string) => Promise<string> } },
+): Promise<string> {
+  const first = props.file.path;
+  try {
+    return await adapter.fs.readFileBase64(first);
+  } catch (err) {
+    // 只在"文件不存在"这类可恢复错误上兜底；其它错误（权限等）直接抛，避免掩盖问题
+    const relocated = await resolveServerSidePath();
+    if (!relocated || relocated === first) throw err;
+    return await adapter.fs.readFileBase64(relocated);
+  }
+}
+
+/**
+ * 文本读取版兜底（与 readFileWithFallback 同口径，只是用 readFile 读 UTF-8）。
+ */
+async function readTextWithFallback(
+  adapter: { fs: { readFile: (p: string) => Promise<string> } },
+): Promise<string> {
+  const first = props.file.path;
+  try {
+    return await adapter.fs.readFile(first);
+  } catch (err) {
+    const relocated = await resolveServerSidePath();
+    if (!relocated || relocated === first) throw err;
+    return await adapter.fs.readFile(relocated);
+  }
+}
+
+/**
+ * 向服务端询问该文件在**当前**产物根下的真实位置（走 artifact-dir 的跨根/登记路径解析）。
+ * 返回 null 表示服务端也定位不到（此时如实报错，不静默）。
+ */
+async function resolveServerSidePath(): Promise<string | null> {
+  const convId = (props.file as { conversationId?: string }).conversationId;
+  const name = props.file.name;
+  if (!convId || !name) return null;
+  try {
+    const { api } = await import('../api/client');
+    const r = await api.get<{ path?: string }>(`/conversations/${convId}/file-path?name=${encodeURIComponent(name)}`);
+    if ('data' in r && r.data?.path) return r.data.path;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 async function loadFile() {
   loading.value = true;
   error.value = '';
@@ -715,7 +779,8 @@ async function loadFile() {
 
     if (IMG_EXTS.includes(e)) {
       // 二进制图片：以 base64 读取原始字节，构造 data URL 才能正确渲染
-      const b64 = await adapter.fs.readFileBase64(props.file.path);
+      // ★ 走 readFileWithFallback：登记路径失效时自动向服务端要真实路径（产物根漂移兜底）
+      const b64 = await readFileWithFallback(adapter);
       imageSrc.value = `data:${imgMime(e)};base64,${b64}`;
       byteSize.value = Math.floor(b64.length * 3 / 4);
       kind.value = 'image';
@@ -731,7 +796,7 @@ async function loadFile() {
         unsupportedNote.value = `视频 ${(size / 1024 / 1024).toFixed(0)}MB 超过 ${VIDEO_INLINE_MAX / 1024 / 1024}MB，未内嵌播放，可用本机应用打开或另存为`;
         return;
       }
-      const b64 = await adapter.fs.readFileBase64(props.file.path);
+      const b64 = await readFileWithFallback(adapter);
       byteSize.value = Math.floor(b64.length * 3 / 4);
       const bin = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
       revokeVideoSrc();
@@ -829,7 +894,7 @@ async function loadFile() {
       return;
     }
 
-    const raw = await adapter.fs.readFile(props.file.path);
+    const raw = await readTextWithFallback(adapter);
     const isBinary = raw.includes('\u0000') || countReplacement(raw) > Math.min(raw.length, 2000) * 0.1;
     if (isBinary) {
       kind.value = 'binary';
@@ -840,7 +905,13 @@ async function loadFile() {
       kind.value = 'text';
     }
   } catch (e: any) {
-    error.value = '读取文件失败: ' + (e?.message || e);
+    // ★ 错误信息要能指导用户：路径失效是「产物根漂移」的典型表现（见 readFileWithFallback 注释），
+    //   直接报 "读取文件失败: ENOENT" 用户无从下手，因此补一句可操作的说明。
+    const msg = String(e?.message || e);
+    const looksMissing = /ENOENT|not found|不存在|no such file/i.test(msg);
+    error.value = looksMissing
+      ? `找不到文件：${props.file.path}（产物目录可能已随工作目录变化，可尝试在文件管理里重新生成或另存为）`
+      : '读取文件失败: ' + msg;
   } finally {
     loading.value = false;
     // 快照时间线以本次加载内容为基线，供撤回/重做
