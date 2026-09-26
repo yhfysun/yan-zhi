@@ -75,7 +75,16 @@ const AGENT_ICON_BY_KEYWORD: Array<[RegExp, Component]> = [
   [/文档|写作|word|ppt|excel|办公|公文|邮件|会议|纪要|周报|汇报|表格/i, Suitcase],
 ];
 
-/** 兜底图标：无法判定用途时的通用「智能体」图标 */
+/** 兜底图标：无法判定用途时的通用「智能体」图标。
+ *
+ * ★★ 必须**与底部 TabBar 的四个图标互不重叠**，否则"没登记用途的助手"会与常驻导航撞脸：
+ *   - TabBar 是：ChatDotRound / Cpu / **UserFilled（实心）** / Setting（见 SideNav.mobilePrimaryItems）
+ *   - agent 表 avatar 列内置 seed 全为 NULL → 大量助手会落到这个兜底图标
+ *   ⇒ 兜底取**线框 `User`**：与 TabBar 的**实心 `UserFilled`** 形状不同（一个 circle+path、
+ *     一个实心 path），用户能一眼区分；语义仍是"通用智能体"。
+ *   ★ 这个配对关系是易错点：TabBar 从线框改实心时，兜底必须同时从实心改回线框
+ *     （曾一度两边都是实心 → 又开始撞脸）。由
+ *     `composables/mobileIconUniqueness.test.ts` 双向守门。 */
 export const AGENT_FALLBACK_ICON: Component = User;
 
 /**

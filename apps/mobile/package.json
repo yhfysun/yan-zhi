@@ -7,11 +7,13 @@
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc && vite build",
+    "icons:android": "node scripts/gen-android-icons.cjs",
     "build:mobile:server": "node scripts/build-mobile-server.cjs",
-    "build:android": "vite build && node scripts/build-mobile-server.cjs && cap sync android && cap build android && node ./scripts/copy-apk.cjs",
+    "build:android": "node scripts/gen-android-icons.cjs && vite build && node scripts/build-mobile-server.cjs && cap sync android && cap build android && node ./scripts/copy-apk.cjs",
     "build:ios": "vite build && node scripts/build-mobile-server.cjs && cap sync ios && cap build ios",
     "sync": "cap sync",
-    "typecheck": "vue-tsc --noEmit"
+    "typecheck": "vue-tsc --noEmit",
+    "test": "vitest run"
   },
   "dependencies": {
     "@capacitor-community/sqlite": "^8.1.1",
@@ -36,6 +38,7 @@
     "@vitejs/plugin-vue": "^5.1.0",
     "typescript": "^5.6.0",
     "vite": "^5.4.0",
+    "vitest": "^3.2.7",
     "vue-tsc": "^2.1.0"
   }
 }

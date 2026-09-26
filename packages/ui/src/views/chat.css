@@ -1,5 +1,5 @@
 /* ===== 布局 ===== */
-.chat-page { display: flex; flex: 1; position: relative; min-height: 0; }
+.chat-page { display: flex; flex: 1; position: relative; min-height: 0; min-width: 0; }
 .chat-page.conv-collapsed .sidebar { overflow: hidden; border: none; }
 .chat-page.conv-collapsed .conv-toggle { left: 0; }
 
@@ -195,10 +195,17 @@
 
 /* ===== 主区 ===== */
 /* chat-main 改为行布局：左 = chat-column（顶栏+消息+输入区），右 = right-panel（文件管理/浏览器预览） */
-.chat-main { flex: 1; display: flex; flex-direction: row; min-width: 0; }
+/* ★★ min-height:0 是这条链的关键一环，漏了会让「输入框挡住消息」：
+   flex 子项默认 min-height:auto → 拒绝收缩到内容以下 →
+   .chat-main 被内容撑到 1844px（父 .chat-page 只有 828px）→
+   .chat-column/.messages 都拿不到高度约束（scrollHeight == clientHeight）→
+   .messages 完全不能滚，而 .input-area 是 sticky 定位 → 浮在消息上把内容压住。
+   典型症状：滚动条在外层 main-content 上（整页滚），而不是消息区自己滚。
+   ★ 同源：min-width:0 解决横向、min-height:0 解决纵向，两者必须成对出现。 */
+.chat-main { flex: 1; display: flex; flex-direction: row; min-width: 0; min-height: 0; }
 /* relative 作为消息内浮动元素（round-nav）的定位锚点：
    它此前用 fixed 定位会相对视口，开右侧面板时跑到预览区上 */
-.chat-column { flex: 1; display: flex; flex-direction: column; min-width: 0; position: relative; container-type: inline-size; }
+.chat-column { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; position: relative; container-type: inline-size; }
 
 /* ===== 面板拖拽分隔条 ===== */
 .rs-handle {
@@ -795,6 +802,30 @@
   word-break: normal; overflow-wrap: break-word;
 }
 .input-textarea .el-textarea__inner::placeholder { color: var(--color-text-secondary, #999); opacity: 0.8; }
+
+/* ★★ 移动端输入框「收起 / 展开」两态（用户拍板「默认 1 行，点击后变大」）。
+   ⚠️ 为什么必须走 CSS 而不是 autosize 的 minRows：
+   Element Plus 的 calcTextareaHeight 用 `value || placeholder` 估算高度，
+   而本输入框 placeholder 较长（"输入消息，Enter 发送，Shift+Enter 换行；…"）
+   → **placeholder 把高度顶到 2 行**（实测展开态 40px），
+   于是 minRows:1 压不下去、minRows:3 也上不去 —— 两态都卡在 2 行附近，
+   甚至出现「点开反而比收起更矮」的反直觉效果（收起 44px vs 展开 40px）。
+   正解：两态都显式给高度。
+     · 收起：恰好 1 行
+     · 展开：恰好 3 行起（内容多时由 autosize 继续往上长到 12 行）
+   ★ 类名由模板按 isMobileShell 门控，桌面端两个类都不挂 → 零影响。 */
+.input-textarea.is-collapsed .el-textarea__inner,
+.input-textarea.is-expanded .el-textarea__inner {
+  min-height: 0 !important;
+}
+.input-textarea.is-collapsed .el-textarea__inner {
+  height: calc(1.6em + 20px) !important;   /* 1 行行高(1.6em) + 上下内边距(10px×2) */
+  overflow-y: hidden;
+}
+.input-textarea.is-expanded .el-textarea__inner {
+  /* 3 行：行高 ×3 + 内边距。不做 max-height 限制，让 autosize 继续长 */
+  height: calc(1.6em * 3 + 20px) !important;
+}
 .input-agent-bar {
   display: flex; align-items: center; gap: 4px;
   padding: 6px 10px 0;
@@ -968,6 +999,15 @@
 }
 .pop-select-item:hover { background: color-mix(in srgb, var(--color-primary) 10%, transparent); }
 .pop-select-item.active { color: var(--color-primary); font-weight: 600; background: color-mix(in srgb, var(--color-primary) 14%, transparent); }
+/* 窄屏智能体浮层：左头像块 + 名称 + 默认锁（与顶栏 agent-bar 的排布一致） */
+.pop-select-avatar {
+  width: 26px; height: 26px; border-radius: 8px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: color-mix(in srgb, var(--color-primary) 14%, transparent);
+  color: var(--color-primary);
+}
+.pop-select-item-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pop-select-lock { flex-shrink: 0; font-size: 11px; color: var(--color-text-secondary); }
 
 /* 模型项：名称占满，右侧常显当前上下文窗口（hover 弹出面板可改） */
 .pop-select-model { gap: 8px; }
@@ -1592,18 +1632,35 @@
   }
   /* 移动端 topbar 较矮，相应减小偏移 */
   .round-group { scroll-margin-top: 56px; }
-  /* input area lives above tab bar */
-  .messages { padding: 8px 16px calc(140px + env(safe-area-inset-bottom, 0px)) 8px; }
+
+  /* ★★ 输入区与消息区是**纵向排列的兄弟**，不是层叠关系。
+     历史遗留（已修）：这里曾是
+       .messages { padding-bottom: calc(140px + env(...)) }   ← 给重叠打补丁
+       .input-area { position: sticky; bottom: 56px }          ← 硬抬输入框
+     成因是外壳（App.vue）给对话页 `padding-bottom: 0`，TabBar 会盖住输入框，
+     于是用 sticky 把输入框抬离 56px —— 但 sticky 是相对滚动容器吸附，
+     输入框因此与消息区**重叠 56px**，只好再给消息区塞 140px 底部留白。
+     两层补丁叠着，表现为「滚到底后最后一条上方多出 94px 空白」+「输入框浮在内容上」。
+     现在外壳已统一给足 TabBar 留白（--mobile-tabbar-h），输入框回归静态流即可，
+     消息区只需正常的呼吸间距。 */
+  .messages { padding: 8px 16px 24px 8px; }
 
   .input-area {
-    position: sticky; bottom: 56px; z-index: 100;
+    position: relative; z-index: 100;
+    /* 静态流里的兄弟节点：不许被 flex 压缩（否则输入框会被消息区挤扁） */
+    flex: none;
     padding: 6px 8px 8px;
     padding-bottom: calc(8px + env(safe-area-inset-bottom, 0px));
     border-top: 1px solid var(--glass-border);
     background: var(--glass-bg);
   }
   .input-box { border-radius: 12px; }
-  .input-agent-bar { display: none; }
+  /* ★ 移动端智能体切换移到输入框上方（用户拍板「智能体切换放到输入框上面区域」）。
+     桌面端这一条是常驻的（含智能体 + 编辑 + 场景 chip），移动端此前整条 display:none，
+     改为**保留智能体与编辑、隐藏场景 chip 的额外留白**，让工具条少一个按钮。 */
+  .input-agent-bar { display: flex; padding: 8px 10px 0; }
+  .input-agent-bar .agent-trigger { max-width: 150px; }
+  .input-agent-bar .el-button.is-circle { width: 28px; height: 28px; }
   .input-textarea .el-textarea__inner { font-size: 15px; padding: 8px 8px; }
   .input-toolbar { padding: 4px 6px; gap: 3px; }
   .toolbar-left { display: flex; align-items: center; gap: 3px; }
@@ -1614,6 +1671,14 @@
   /* ensure toolbar buttons/icons stay visible on mobile */
   .input-toolbar .el-button { flex-shrink: 0; }
   .minimal-select { flex-shrink: 0; }
+
+  /* ★★ 移动端工具条精简（用户拍板：只留 `+` / 切换智能体 / 切换模型）。
+     右侧的**权限胶囊**与**模型胶囊**在窄屏整体隐藏 —— 它们的功能已经分别搬到
+     `+` 菜单（工具权限子菜单）与 toolbar-mobile-selects（切换模型按钮）。
+     ★ 不隐藏「发送」与「新建任务」：前者是唯一提交入口，后者是高频动作。
+     （此前 400px 一排曾有 8 个按钮、两个同图标齿轮，就是这里没收敛。） */
+  .toolbar-right > .perm-select-btn { display: none; }
+  .toolbar-right > .model-select-btn { display: none; }
 
   /* 移动端：右面板改为右侧覆盖式抽屉，覆盖在对话页之上，不挤压对话区 */
   .right-panel {
@@ -1644,6 +1709,39 @@
   .msg { margin-bottom: 10px; gap: 8px; }
   .msg-actions { opacity: 0.6; }
 }
+
+/* ===== Capacitor 端：与上方 767px 媒体查询**同规则的并集分支** =====
+   ★★ 为什么必须单独写一份（本项目反复踩坑，别删）：
+   `@media (max-width:767px)` 是**按视口宽度**判定的，而 Capacitor 端
+   **横屏时视口常达 800px+**（如 2400×1080 @3x = 800px 宽）→ 媒体查询不命中 →
+   移动端外壳（顶栏/TabBar 由 v-if 渲染，与宽度无关）明明在，布局却退回桌面形态。
+   实测横屏 880×420：`.chat-page` 的 flexDirection 是 `row`、消息区 paddingBottom 变成
+   桌面的 60px —— 侧栏变回常驻、消息与输入框的纵向排布失效。
+   这里只补**与屏幕方向无关、必须生效**的结构性规则（纵向排布 / 输入框位置 /
+   让位），不做字号、间距这类纯视觉微调（那些横屏退回桌面值是可接受的）。 */
+.platform-mobile .chat-page { flex-direction: column; }
+.platform-mobile .conv-toggle { display: none; }
+/* 横屏也不该出现横向拖拽分隔条（触屏） */
+.platform-mobile .rs-handle { display: none; }
+/* 输入区与消息区是纵向兄弟，输入框不许被压缩（与竖屏同规则） */
+.platform-mobile .input-area { flex: none; }
+/* 侧栏在 Capacitor 端恒为抽屉（横屏也不常驻） */
+.platform-mobile .sidebar {
+  position: fixed; left: 0; top: 0; bottom: 0; z-index: 200;
+  transform: translateX(-100%); width: 280px;
+  transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.platform-mobile .chat-page.drawer-open .sidebar {
+  transform: translateX(0);
+  box-shadow: 0 0 30px rgba(0,0,0,0.2);
+}
+/* ★ 工具条精简在 Capacitor 端**恒生效**（含横屏 800px+，媒体查询不命中）。
+   不这么做的话横屏会退回「权限胶囊 + 模型胶囊」两行按钮，与竖屏形态不一致。 */
+.platform-mobile .toolbar-right > .perm-select-btn,
+.platform-mobile .toolbar-right > .model-select-btn { display: none; }
+/* 智能体切换在输入框上方（与竖屏同规则，横屏也要在） */
+.platform-mobile .input-agent-bar { display: flex; }
+.platform-mobile .toolbar-mobile-selects { display: flex; align-items: center; gap: 3px; }
 
 /* E12: 智能体反问弹窗 */
 .ask-user-dialog .el-dialog__body { padding: 16px 20px; }
@@ -1871,7 +1969,9 @@ body.yz-right-panel-open .el-overlay-dialog {
   .agent-trigger { max-width: 110px; }
 }
 @container inputbar (max-width: 400px) {
-  /* 极窄：让位非关键按钮，但「新建任务」是高频操作必须常驻（显式排除） */
-  .toolbar-right .el-button.is-circle:not(.send-btn):not(.new-task-btn) { display: none; }
+  /* 极窄：toolbar-right 已只剩「权限 / 模型 / 发送」三个必需项（原「新建任务」圆钮已移除），
+     不再隐藏任何按钮，只压缩间距与发送钮尺寸，避免整排挤到换行。 */
+  .toolbar-right { gap: 4px; }
+  .send-btn { width: 32px; height: 32px; margin-left: 4px; }
   .toolbar-divider { display: none; }
 }

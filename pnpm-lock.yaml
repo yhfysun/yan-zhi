@@ -143,6 +143,9 @@ importers:
       vite:
         specifier: ^5.4.0
         version: 5.4.21(@types/node@26.1.1)
+      vitest:
+        specifier: ^3.2.7
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@26.1.1)(jsdom@25.0.1)
       vue-tsc:
         specifier: ^2.1.0
         version: 2.2.12(typescript@5.9.3)

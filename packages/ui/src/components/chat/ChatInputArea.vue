@@ -40,7 +40,9 @@
         </el-dropdown>
         <el-tooltip content="编辑当前智能体" placement="top">
           <el-button size="small" circle class="agent-edit-btn" @click="openEditAgent(agentStore.selectedAgent)">
-            <el-icon><Setting /></el-icon>
+            <!-- 用 Tools 而非 Setting：Setting 是 TabBar「我的」的图标（移动端常驻同屏），
+                 且"配置这个智能体的能力"用工具语义更贴切（2026-09-21 实测齿轮 3 处重复）。 -->
+            <el-icon><Tools /></el-icon>
           </el-button>
         </el-tooltip>
         <!-- 场景标识（新会话草稿态显示，随首条消息注入场景提示词后不再出现） -->
@@ -88,20 +90,32 @@
         </div>
       </div>
 
+      <!-- ★ 移动端「默认小、点击变大」（用户拍板：默认 1 行，点击展开）：
+           收起态给容器挂 `is-collapsed`，由 CSS 把 textarea 压成**恰好一行**
+           （`.input-textarea .el-textarea__inner { height: 行高 + 内边距 }`），
+           聚焦后去掉该类 → textarea 回到 autosize 的 3~12 行。
+           ⚠️ 为什么不靠 autosize 的 minRows=1：Element Plus 算高度时用
+           `value || placeholder`，本输入框 placeholder 较长（"输入消息，Enter 发送…"）
+           → **placeholder 把 1 行顶成 2 行**，minRows 形同虚设（实测 taHeight 恒 40px）。
+           走 CSS 才能真正压到一行，且桌面端完全不受影响（类名只在移动端挂）。 -->
       <el-input
         ref="inputRef"
         v-model="input"
         type="textarea"
-        :autosize="{ minRows: 3, maxRows: 12 }"
-        :placeholder="isCodeMode ? '描述代码任务，Enter 发送，Shift+Enter 换行；输入 / 打开命令，@ 引用文件' : '输入消息，Enter 发送，Shift+Enter 换行；输入 / 打开命令，@ 引用文件'"
+        :autosize="inputAutosize"
+        class="input-textarea"
+        :class="{
+          'is-collapsed': isMobileShell && !mobileExpanded,
+          'is-expanded': isMobileShell && mobileExpanded,
+        }"
+        :placeholder="inputPlaceholder"
         @keydown.enter.exact="onEnter"
         @keydown.up="onKeyUp"
         @keydown.down="onKeyDown"
         @keydown.esc="onEsc"
         @paste="onPaste"
-        @focus="inputFocused = true"
-        @blur="inputFocused = false"
-        class="input-textarea"
+        @focus="onInputFocus"
+        @blur="onInputBlur"
       />
 
       <!-- 命令 / 文件引用浮层 -->
@@ -188,14 +202,11 @@
             </template>
             <div class="plus-menu-wrap" @mouseleave="scheduleCloseSub">
               <div class="plus-menu">
-                <div class="plus-menu-item" :class="{ 'has-sub-open': hoverSub === 'agents' }" @mouseenter="openSub('agents', $event)" @click="openSub('agents', $event)">
-                  <span class="plus-menu-ic"><el-icon><component :is="agentIconOf(agentStore.selectedAgent?.id, agentStore.selectedAgent?.name)" /></el-icon></span>
-                  <div class="plus-menu-info">
-                    <div class="plus-menu-label">助手</div>
-                    <div class="plus-menu-desc">{{ agentStore.selectedAgent?.name || '选择智能体' }}</div>
-                  </div>
-                  <el-icon class="plus-menu-arrow"><ArrowRight /></el-icon>
-                </div>
+                <!-- ★★ 原第一项「助手」（hover 展开助手列表 + 点击切换）已删除：
+                     它与**输入框上方**的 `.input-agent-bar` 智能体下拉是同一个动作
+                     （都调 agentStore.select / onAgentSwitch），属于"同一动作两个入口"。
+                     用户 2026-08-21 拍板的口径是「智能体切换移到输入框上方」，
+                     所以保留上方下拉、去掉这里这份（2026-09-21 复核确认冗余）。 -->
                 <div class="plus-menu-item" :class="{ 'has-sub-open': hoverSub === 'skills' }" @mouseenter="openSub('skills', $event)" @click="openSub('skills', $event)">
                   <span class="plus-menu-ic"><el-icon><Files /></el-icon></span>
                   <div class="plus-menu-info">
@@ -219,6 +230,17 @@
                   </div>
                   <el-icon class="plus-menu-arrow"><ArrowRight /></el-icon>
                 </div>
+                <!-- 工具权限：窄屏不再单独占一个工具条按钮（用户拍板「权限放到加号按钮里面」），
+                     桌面端工具条上仍保留独立的权限胶囊，此处是它的窄屏落点。
+                     两侧写同一个 store.permissionMode，避免两种真相。 -->
+                <div class="plus-menu-item" :class="{ 'has-sub-open': hoverSub === 'perm' }" @mouseenter="openSub('perm', $event)" @click="openSub('perm', $event)">
+                  <span class="plus-menu-ic"><el-icon><Lock /></el-icon></span>
+                  <div class="plus-menu-info">
+                    <div class="plus-menu-label">工具权限</div>
+                    <div class="plus-menu-desc">{{ permissionLabel }}</div>
+                  </div>
+                  <el-icon class="plus-menu-arrow"><ArrowRight /></el-icon>
+                </div>
                 <div class="plus-menu-divider"></div>
                 <div class="plus-menu-item" @mouseenter="closeSubNow" @click="closePlus(triggerFileUpload)">
                   <span class="plus-menu-ic"><el-icon><UploadFilled /></el-icon></span>
@@ -232,12 +254,11 @@
                   </div>
                 </div>
                 <div class="plus-menu-divider"></div>
-                <div class="plus-menu-item" @mouseenter="closeSubNow" @click="closePlus(() => startNewChat())">
-                  <span class="plus-menu-ic"><el-icon><EditPen /></el-icon></span>
-                  <div class="plus-menu-info"><div class="plus-menu-label">新建任务</div></div>
-                </div>
+                <!-- 「新建任务」在顶栏与左栏任务树都有常驻入口 → 此处去掉，避免同一动作三处入口 -->
                 <div class="plus-menu-item" @mouseenter="closeSubNow" @click="closePlus(openPlatformConfig)">
-                  <span class="plus-menu-ic"><el-icon><Setting /></el-icon></span>
+                  <!-- 这里就是「配置模型平台」的主入口，图标与侧栏 TabBar 的「我的」(Setting)、
+                       以及空态 CTA 都不同，互不撞脸。 -->
+                  <span class="plus-menu-ic"><el-icon><Coin /></el-icon></span>
                   <div class="plus-menu-info"><div class="plus-menu-label">配置模型平台</div></div>
                 </div>
               </div>
@@ -245,27 +266,10 @@
               <Teleport to="body">
               <transition name="plus-sub-fade">
                 <div v-if="hoverSub" class="plus-menu plus-menu-sub" :style="{ top: subTop + 'px', left: subLeft + 'px' }" @mouseenter="cancelCloseSub">
-                  <template v-if="hoverSub === 'agents'">
-                    <div
-                      v-for="ag in agentStore.chatAgents"
-                      :key="ag.id"
-                      class="plus-menu-item"
-                      :class="{ 'is-active': ag.id === agentStore.selectedId }"
-                      @click="pickPlusAgent(ag.id)"
-                    >
-                      <span class="plus-menu-ic"><el-icon><component :is="agentIconOf(ag.id, ag.name)" /></el-icon></span>
-                      <div class="plus-menu-info">
-                        <div class="plus-menu-label">{{ ag.name }}</div>
-                        <div class="plus-menu-desc">{{ ag.description || '未填写描述' }}</div>
-                      </div>
-                      <el-icon v-if="ag.id === agentStore.selectedId" class="plus-menu-check"><Check /></el-icon>
-                    </div>
-                    <div class="plus-menu-item" @click="closePlus(() => openEditAgent(agentStore.selectedAgent))">
-                      <span class="plus-menu-ic"><el-icon><EditPen /></el-icon></span>
-                      <div class="plus-menu-info"><div class="plus-menu-label">编辑当前助手</div></div>
-                    </div>
-                  </template>
-                  <template v-else-if="hoverSub === 'skills'">
+                  <!-- 原 `hoverSub === 'agents'` 分支（助手列表 + 编辑当前助手）已随主菜单「助手」项一并删除：
+                       选助手 = 输入框上方的 .input-agent-bar 下拉；编辑助手 = 同区域的 Tools 圆钮。
+                       两处入口都在输入框上方，不再在 + 菜单里重复一份。 -->
+                  <template v-if="hoverSub === 'skills'">
                     <div class="plus-sub-search" @mousedown.stop>
                       <el-input v-model="skillSearch" placeholder="搜索技能" size="small" :prefix-icon="Search" clearable />
                     </div>
@@ -291,7 +295,7 @@
                       <div class="plus-menu-info"><div class="plus-menu-label">管理技能</div></div>
                     </div>
                   </template>
-                  <template v-else>
+                  <template v-else-if="hoverSub === 'modes'">
                     <div class="plus-menu-item" @click.stop>
                       <span class="plus-menu-ic"><el-icon><ChatDotRound /></el-icon></span>
                       <div class="plus-menu-info">
@@ -315,6 +319,23 @@
                         <div class="plus-menu-desc">不调用工具，直接作答</div>
                       </div>
                       <el-switch v-model="store.answerOnly" size="small" @click.stop />
+                    </div>
+                  </template>
+                  <!-- 工具权限子菜单：与桌面端工具条的权限胶囊同一个 store.permissionMode -->
+                  <template v-else-if="hoverSub === 'perm'">
+                    <div
+                      v-for="p in PERMISSION_OPTIONS"
+                      :key="p.value"
+                      class="plus-menu-item"
+                      :class="{ 'is-active': store.permissionMode === p.value }"
+                      @click="closePlus(() => onPermissionChange(p.value))"
+                    >
+                      <span class="plus-menu-ic"><el-icon><Lock /></el-icon></span>
+                      <div class="plus-menu-info">
+                        <div class="plus-menu-label">{{ p.label }}</div>
+                        <div class="plus-menu-desc">{{ p.desc }}</div>
+                      </div>
+                      <el-icon v-if="store.permissionMode === p.value" class="plus-menu-check"><Check /></el-icon>
                     </div>
                   </template>
                 </div>
@@ -351,52 +372,61 @@
           </div>
         </div>
 
-        <div class="toolbar-mobile-selects">
-          <el-popover v-model:visible="agentPopOpen" placement="top" trigger="click" :width="220" :show-arrow="false">
+        <!-- 窄屏专属补充项。用户拍板（2026-08-21 二次澄清）：
+               · 智能体切换**移到输入框上方**（见 .input-agent-bar）→ 这里不再放
+               · 工具条只留：`+`（含工具权限）/ 切换模型 / 新增任务 / 发送
+             ★★ 必须 `v-if="isMobileShell"`：不能只靠 CSS 隐藏 ——
+               el-popover 的内容是 Teleport 到 body 的，**父容器 display:none 对它无效**，
+               只隐藏不卸载会让弹层"隐身但可弹"，与桌面端胶囊一起造成"点一次两个弹窗"。
+               加 v-if 后与桌面胶囊严格互斥（同一时刻只有一个模型入口存在于 DOM）。 -->
+        <div v-if="isMobileShell" class="toolbar-mobile-selects">
+          <!-- 切换模型（窄屏入口）。
+               ★★ 与桌面端那个模型胶囊是**两个独立的 el-popover**，但**绝不能共用同一个 visible**：
+               Element Plus 的 popover 内容是 Teleport 到 body 的，**不受父容器 display:none 影响** ——
+               窄屏下桌面胶囊虽然被 CSS 隐藏，它的 popover 内容照样会渲染出来。
+               两者共用 `modelPopOpen` 时，点一次移动端按钮 → 两个弹窗同时打开
+               （用户 2026-09-22 报的「模型下拉点击两个弹窗」）。
+               故移动端用**独立的** `mobileModelPopOpen`。
+               ★ 真机 isMobilePlatform=true 时桌面那个 popover 是 v-if 不渲染，不会出现双开；
+                 但"窄窗 Web / 桌面预览"下两者都在 DOM 里，共用 visible 必然双开（实测复现）。 -->
+          <el-popover v-model:visible="mobileModelPopOpen" placement="top" trigger="click" :width="260" :show-arrow="false">
             <template #reference>
-              <el-button size="small" circle>
-                <el-icon><User /></el-icon>
+              <el-button size="small" circle class="mobile-model-btn" :title="`切换模型：${currentModelName}`">
+                <!-- 用 Aim 而非 Cpu：Cpu 是 TabBar「模型」项的图标（移动端常驻同屏），
+                     这里若再用 Cpu，一屏会出现两个相同的「芯片」图标
+                     （2026-09-21 实测 fp=1rogz5v 两组重复）。 -->
+                <el-icon><Aim /></el-icon>
               </el-button>
             </template>
-            <div class="pop-select-list">
-              <div
-                v-for="ag in agentStore.chatAgents"
-                :key="ag.id"
-                class="pop-select-item"
-                :class="{ active: ag.id === agentStore.selectedId }"
-                @click="onAgentSwitch(ag.id); agentStore.selectAgent(ag.id); agentPopOpen = false"
-              >
-                <el-icon v-if="ag.isDefault" style="font-size:12px"><Lock /></el-icon>
-                <span>{{ ag.name }}</span>
+            <div class="pop-select-list pop-select-models">
+              <el-input v-model="modelSearch" size="small" placeholder="搜索模型" clearable class="pop-model-search">
+                <template #prefix><el-icon><Search /></el-icon></template>
+              </el-input>
+              <div class="pop-model-scroll">
+                <template v-for="g in filteredModelGroups" :key="g.platformId">
+                  <div class="pop-select-label pop-model-group" @click="togglePlatformGroup(g.platformId)">
+                    <el-icon :size="12" class="pop-model-caret">
+                      <ArrowDown v-if="isPlatformExpanded(g.platformId)" />
+                      <ArrowRight v-else />
+                    </el-icon>
+                    <span class="pop-model-platform">{{ g.platformName }}</span>
+                    <span class="pop-model-count">{{ g.models.length }}</span>
+                  </div>
+                  <template v-if="isPlatformExpanded(g.platformId)">
+                    <div
+                      v-for="m in g.models"
+                      :key="m.id"
+                      class="pop-select-item pop-select-model"
+                      :class="{ active: m.id === selectedModelId }"
+                      @click="pickModel(m.id)"
+                    >
+                      <span class="pop-select-name">{{ m.alias || m.modelId }}</span>
+                      <span class="pop-select-ctx">{{ formatContextWindow(m.contextWindow) }}</span>
+                    </div>
+                  </template>
+                </template>
+                <div v-if="!filteredModelGroups.length" class="pop-model-empty">没有匹配的模型</div>
               </div>
-            </div>
-          </el-popover>
-
-          <el-tooltip content="编辑当前智能体" placement="top">
-            <el-button size="small" circle @click="openEditAgent(agentStore.selectedAgent)">
-              <el-icon><EditPen /></el-icon>
-            </el-button>
-          </el-tooltip>
-
-          <el-popover v-model:visible="modelPopOpenCompact" placement="top" trigger="click" :width="240" :show-arrow="false">
-            <template #reference>
-              <el-button size="small" circle>
-                <el-icon><Cpu /></el-icon>
-              </el-button>
-            </template>
-            <div class="pop-select-list">
-              <template v-for="g in modelGroups" :key="g.platformId">
-                <div class="pop-select-label">{{ g.platformName }}</div>
-                <div
-                  v-for="m in g.models"
-                  :key="m.id"
-                  class="pop-select-item"
-                  :class="{ active: m.id === selectedModelId }"
-                  @click="pickModel(m.id)"
-                >
-                  <span>{{ m.alias || m.modelId }}</span>
-                </div>
-              </template>
             </div>
           </el-popover>
         </div>
@@ -429,7 +459,12 @@
               </div>
             </div>
           </el-popover>
-          <el-popover v-model:visible="modelPopOpen" placement="top-end" :width="260" trigger="click" :show-arrow="false">
+          <!-- ★★ 桌面端模型胶囊：`v-if="!isMobileShell"` 必须加。
+               原实现只靠 CSS 在窄屏 `display:none` 隐藏它，但 el-popover 的内容是
+               **Teleport 到 body** 的，父容器隐藏对弹层无效 —— 于是窄屏点移动端模型钮时，
+               这个（被隐藏但仍存在于 DOM 的）popover 也会一起弹出来 → 「点一次两个弹窗」。
+               加 v-if 后与 .toolbar-mobile-selects 严格互斥（同一时刻只有一个模型入口存在）。 -->
+          <el-popover v-if="!isMobileShell" v-model:visible="modelPopOpen" placement="top-end" :width="260" trigger="click" :show-arrow="false">
             <template #reference>
               <!-- 注意：tooltip 不能套在 button 外层——会吃掉事件导致 popover 点不开。
                    改为让 popover 直接持有 button，tooltip 走 title 属性。 -->
@@ -498,9 +533,18 @@
               </div>
             </transition>
           </Teleport>
-          <el-tooltip content="新建任务" placement="top">
-            <el-button size="small" circle class="new-task-btn" @click="startNewChat()">
-              <el-icon><EditPen /></el-icon>
+          <!-- 「新建任务」入口已收敛：只保留顶栏 ChatTopbar 与左侧栏任务树的「+」。
+               此处原有一个 EditPen 圆钮，与顶栏同名同图标 → 一行工具条里两个完全相同的按钮，
+               且加号菜单里还有第三处。输入框工具条至此只留「上下文/权限/模型/发送」四类主动作。 -->
+          <!-- 「新建任务」入口：用户 2026-08-21 明确要求移动端工具条保留它
+               （此前一轮按「只留顶栏 + 侧栏」删掉了，本轮按新口径加回移动端）。
+               ★ 只在移动端分支渲染：桌面端仍由顶栏 + 侧栏树承担，避免一排三个入口。 -->
+          <el-tooltip v-if="isMobileShell" content="新建任务" placement="top">
+            <el-button size="small" circle class="mobile-new-task-btn" @click="startNewChat()">
+              <!-- 用 FolderAdd 而非 EditPen/DocumentAdd：EditPen 是顶栏「新建任务」的图标，
+                   而顶栏是一个容器（Active 态下图标会落在胶囊底色里 → 视觉上仍像两个相同图标）。
+                   换 FolderAdd（"新建"语义，形状与 EditPen/DocumentAdd 都不同）彻底避开。 -->
+              <el-icon><FolderAdd /></el-icon>
             </el-button>
           </el-tooltip>
           <el-tooltip :content="store.streaming ? '停止任务' : '发送 (Enter)'" placement="top">
@@ -581,7 +625,7 @@ import { ElMessage } from 'element-plus';
 import {
   FolderOpened, ArrowDown, ArrowRight, Connection, Files, UploadFilled, User, EditPen, Cpu, Setting, Plus, Camera,
   Promotion, Close, Lock, Check, Picture, Document, Tickets, Box, VideoCamera, Headset, Memo, ChatDotRound,
-  Operation, Search, Link, Delete, Clock,
+  Operation, Search, Link, Delete, Clock, Tools, Coin, DocumentAdd, Aim, FolderAdd,
 } from '@element-plus/icons-vue';
 import { useChat } from '../../composables/chat/useChat';
 import AttachmentPreview from './AttachmentPreview.vue';
@@ -627,6 +671,59 @@ function onPermissionChange(mode: PermissionMode) {
 // 仅 electronAPI.screenshot 存在（桌面 preload 注入）时显示按钮；web / 移动端自动隐藏。
 const canScreenshot = typeof window !== 'undefined' && !!(window as any).electronAPI?.screenshot;
 const snipping = ref(false);
+
+// ===== 移动端输入框：默认 1 行，点击（聚焦）后展开 =====
+// 用户拍板：「输入框一开始就很小点击后在变大」「默认 1 行，点击展开」。
+//
+// 判定用平台/视口并集（与 App.vue 的移动外壳口径一致）：
+//   · Capacitor 端：platform==='mobile'，**不受视口宽度影响**（横屏视口 800px+ 也算）
+//   · 桌面/Web 窄窗：用 matchMedia 767px 断点
+// 这样桌面端行为逐字不变（platform 恒非 mobile，且宽视口不命中断点 → minRows 恒 3）。
+const isMobileShell = ref(false);
+try {
+  const adapterPlatform = ((): string => {
+    try { return (window as any).Capacitor?.isNativePlatform ? 'mobile' : ''; } catch { return ''; }
+  })();
+  const mq = window.matchMedia('(max-width: 767px)');
+  const sync = () => { isMobileShell.value = adapterPlatform === 'mobile' || mq.matches; };
+  sync();
+  mq.addEventListener('change', sync);
+} catch { /* 非浏览器环境（SSR/测试）→ 保持 false，桌面行为 */ }
+
+/** 是否处于「已展开」态。聚焦即展开；失焦后**有内容则保持展开**（避免边打字边收）。 */
+const mobileExpanded = ref(false);
+// 注：inputFocused 由 useChat 提供（上方已解构），这里复用同一个 ref，不另建。
+
+const inputAutosize = computed(() => {
+  if (!isMobileShell.value) return { minRows: 3, maxRows: 12 };   // 桌面端：完全不变
+  return mobileExpanded.value ? { minRows: 3, maxRows: 12 } : { minRows: 1, maxRows: 1 };
+});
+
+/**
+ * 占位文案。
+ * ★ 移动端收起态只有 1 行高，长的桌面提示（"输入消息，Enter 发送，Shift+Enter 换行；
+ * 输入 / 打开命令，@ 引用文件"）会被裁掉半截（实测截图里后半句直接看不见）→
+ * 移动端换短文案。桌面端保持原文案不变。
+ */
+const inputPlaceholder = computed(() => {
+  if (isMobileShell.value) return isCodeMode ? '描述代码任务…' : '输入消息…';
+  return isCodeMode
+    ? '描述代码任务，Enter 发送，Shift+Enter 换行；输入 / 打开命令，@ 引用文件'
+    : '输入消息，Enter 发送，Shift+Enter 换行；输入 / 打开命令，@ 引用文件';
+});
+
+function onInputFocus(e: FocusEvent) {
+  inputFocused.value = true;
+  if (isMobileShell.value) mobileExpanded.value = true;
+  // 原模板里 @focus 只置 inputFocused，这里保持等价行为（不拦截事件）
+  void e;
+}
+function onInputBlur(e: FocusEvent) {
+  inputFocused.value = false;
+  // 失焦且有内容 → 保持展开（下次点击继续接着写，不用再点一次）
+  if (isMobileShell.value && !String(input.value || '').trim()) mobileExpanded.value = false;
+  void e;
+}
 
 // ===== 截图按钮微信式设计：tooltip 带快捷键 + 下拉「隐藏窗口」开关 =====
 const router = useRouter();
@@ -676,14 +773,13 @@ async function startScreenshot() {
 // ===== 「+」聚合菜单（对齐 WorkBuddy：专家/模式 hover 右侧弹出子菜单，其余点击触发） =====
 const plusOpen = ref(false);
 function closePlus(fn?: () => void) { fn?.(); plusOpen.value = false; hoverSub.value = null; }
-function pickPlusAgent(id: string) { onAgentSwitch(id); closePlus(); }
 
 // hover 子菜单：记录触发行 offsetTop，子菜单绝对定位对齐该行
-const hoverSub = ref<'agents' | 'modes' | 'skills' | null>(null);
+const hoverSub = ref<'modes' | 'skills' | 'perm' | null>(null);
 const subTop = ref(0);
 const subLeft = ref(0);
 let subCloseTimer: ReturnType<typeof setTimeout> | undefined;
-function openSub(kind: 'agents' | 'modes' | 'skills', evt: MouseEvent) {
+function openSub(kind: 'modes' | 'skills' | 'perm', evt: MouseEvent) {
   if (subCloseTimer) { clearTimeout(subCloseTimer); subCloseTimer = undefined; }
   if (kind === 'skills') skillSearch.value = '';
   const el = evt.currentTarget as HTMLElement;
@@ -726,13 +822,13 @@ const currentModelName = computed(() => {
 // ===== 模型上下文窗口快捷设置（hover 模型项 → 左侧浮层，对齐 WorkBuddy）=====
 // 保存写回 model 表（platformStore.updateModel），与「配置模型平台」里的上下文窗口是同一个值
 const platformStore = usePlatformStore();
+/** 桌面端模型胶囊的弹层开关。 */
 const modelPopOpen = ref(false);
-/** 窄屏工具条（toolbar-mobile-selects）里的模型按钮有独立浮层。
- *  两个 el-popover 绝不能共用同一个 visible：popover 内容 Teleport 到 body，
- *  被 display:none 藏起来的容器也照样渲染，点一次两边会同时弹出来。 */
-const modelPopOpenCompact = ref(false);
-/** 智能体下拉：点选后同样要主动收起（trigger=click 只在点浮层外部时才关） */
-const agentPopOpen = ref(false);
+/** ★ 窄屏模型钮的弹层开关 —— **必须与 modelPopOpen 分开**：
+ *  两者是两个独立 el-popover，popover 内容 Teleport 到 body 不受父容器 display:none 影响，
+ *  共用同一个 visible 会导致"点一次弹两个窗"（用户 2026-09-22 报）。
+ *  已配色 `v-if` 互斥（移动端壳隐藏桌面胶囊、反之亦然），双保险。 */
+const mobileModelPopOpen = ref(false);
 
 /** 下拉搜索关键字：按别名 / 模型 id 过滤（有些平台动辄五六百个模型，只能靠搜） */
 const modelSearch = ref('');
@@ -766,12 +862,11 @@ const filteredModelGroups = computed(() => {
  * 选中模型：切模型 + 立即收起下拉。
  * el-popover 的 trigger="click" 只在点击「浮层外部」时收起，点浮层内的模型项不会关，
  * 所以必须显式置 false（否则选中后下拉框一直挂在那挡住输入框）。
- * 两个浮层（桌面/窄屏）都要收，上下文窗口浮层是 Teleport 到 body 的独立层，一并收掉。
+ * 上下文窗口浮层是 Teleport 到 body 的独立层，一并收掉。
  */
 function pickModel(modelId: string) {
   onModelChange(modelId);
   modelPopOpen.value = false;
-  modelPopOpenCompact.value = false;
   closeCtxPanelNow();
 }
 const ctxPanelModelId = ref('');
@@ -824,8 +919,10 @@ async function onCtxWindowChange(tokens: number) {
   }
 }
 // 下拉收起时一并收掉上下文窗口浮层、清掉搜索词（下次打开是干净列表）
-watch(modelPopOpen, (v) => { if (!v) { closeCtxPanelNow(); modelSearch.value = ''; } });
-watch(modelPopOpenCompact, (v) => { if (!v) closeCtxPanelNow(); });
+// ★ 两个开关都要收尾（移动端与桌面端各自的弹层），漏一个会留下"幽灵弹层"没被清理
+watch([modelPopOpen, mobileModelPopOpen], ([desktopOpen, mobileOpen]) => {
+  if (!desktopOpen && !mobileOpen) { closeCtxPanelNow(); modelSearch.value = ''; }
+});
 
 // 浮层 Teleport 到 body，落在模型下拉的 popper 之外 —— el-popover 的「外部点击」判定
 // 会把面板内的点击当成外部而收掉整个下拉。在 window 捕获阶段挡下（早于 document 层判定），

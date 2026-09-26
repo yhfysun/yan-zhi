@@ -3,6 +3,8 @@ import type { PlatformAdapter, DatabaseAdapter, FsAdapter, KeyringAdapter } from
 import { CapacitorSQLite, SQLiteConnection, SQLiteDBConnection } from '@capacitor-community/sqlite';
 import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
 import { Preferences } from '@capacitor/preferences';
+// 路径归一化：绝对路径 vs Directory.Data 相对路径（见 path-utils.ts 说明）
+import { toFsArg } from './path-utils';
 // 授权码读取：与 apiFetch 的 x-license 头共用同一来源，避免两条路径口径漂移。
 import { getLicenseCodeSync } from '@yan-zhi/ui/api/license-code';
 
@@ -68,26 +70,39 @@ class MobileDatabase implements DatabaseAdapter {
   }
 }
 
-/** 移动端文件系统（Capacitor Filesystem 插件） */
+/**
+ * 移动端文件系统（Capacitor Filesystem 插件）
+ *
+ * ★★ 路径归一化见 `./path-utils.ts` 的 `toFileUri`（附详细根因说明）：
+ * `Directory.Data` 下的 `path` 必须是**相对路径**，而后端产出的是**绝对路径** ——
+ * 直接混用会让 Capacitor 二次拼接根目录，得到
+ * `/data/user/0/<pkg>/files/data/data/<pkg>/files/...`（路径重复、文件不存在）。
+ * 所以绝对路径一律走 `file://` 直连。
+ */
 class MobileFs implements FsAdapter {
+  /** 统一入参：绝对路径 → file://（不传 directory）；相对路径 → Directory.Data。 */
+  private arg(path: string): { path: string; directory?: Directory } {
+    return toFsArg(path, Directory.Data);
+  }
+
   async readFile(path: string): Promise<string> {
-    const result = await Filesystem.readFile({ path, directory: Directory.Data, encoding: Encoding.UTF8 });
+    const result = await Filesystem.readFile({ ...this.arg(path), encoding: Encoding.UTF8 });
     return result.data as string;
   }
   async readFileBase64(path: string): Promise<string> {
-    const result = await Filesystem.readFile({ path, directory: Directory.Data });
+    const result = await Filesystem.readFile(this.arg(path));
     return result.data as string;
   }
   async writeFile(path: string, content: string): Promise<void> {
-    await Filesystem.writeFile({ path, data: content, directory: Directory.Data, encoding: Encoding.UTF8, recursive: true });
+    await Filesystem.writeFile({ ...this.arg(path), data: content, encoding: Encoding.UTF8, recursive: true });
   }
   async writeFileBase64(path: string, b64: string): Promise<void> {
     // 不传 encoding：Capacitor 将 data 按 base64 解码写入二进制
-    await Filesystem.writeFile({ path, data: b64, directory: Directory.Data, recursive: true });
+    await Filesystem.writeFile({ ...this.arg(path), data: b64, recursive: true });
   }
   async exists(path: string): Promise<boolean> {
     try {
-      await Filesystem.stat({ path, directory: Directory.Data });
+      await Filesystem.stat(this.arg(path));
       return true;
     } catch {
       return false;
@@ -97,10 +112,10 @@ class MobileFs implements FsAdapter {
     // Capacitor mkdir 递归创建在 writeFile 时已处理
   }
   async remove(path: string): Promise<void> {
-    await Filesystem.deleteFile({ path, directory: Directory.Data });
+    await Filesystem.deleteFile(this.arg(path));
   }
   async readDir(path: string): Promise<string[]> {
-    const result = await Filesystem.readdir({ path, directory: Directory.Data });
+    const result = await Filesystem.readdir(this.arg(path));
     return result.files.map((f) => f.name);
   }
 }

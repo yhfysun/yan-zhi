@@ -26,14 +26,22 @@
         <template v-else>
         <!-- 桌面端：竖排 SideNav 退役，主导航由 apps/desktop TitleBar 横排承担；
              web 端：WebTopBar 在 apps/web/src/App.vue 接管主导航，SideNav 也不再渲染；
-             仅 mobile 仍保留竖排 SideNav 的 tab-bar 分支。 -->
+             仅 Capacitor 端仍保留竖排 SideNav 的 tab-bar 分支。 -->
         <SideNav v-if="isMobile" />
-        <!-- Mobile TopBar (hidden on chat page - Chat has its own topbar) -->
-        <header v-if="isMobile && route.name !== 'chat'" class="mobile-topbar">
+        <!-- Mobile TopBar —— ★ 仅 Capacitor 端渲染（见 mobileShellAsRoot 注释）：
+             桌面/Web 端的窄窗口已有外层 WebTopBar，再画一条会双标题栏重叠。
+
+             ★ 移动端顶栏只承担两件事（主导航已下移到 TabBar，见 SideNav 的 .tab-bar）：
+               ① 定位：当前会话标题（chat）或页面名（其它页）
+               ② 身份：主题切换 + 头像/登录（低频但必须有出口）
+             原先还放着「首页/浏览器/消息/更多」横排导航 —— 那是把桌面顶栏照搬过来，
+             竖屏下既挤又和 TabBar 语义重复。
+             （对话页的搜索在会话列表抽屉里，不在此重复造一个入口。） -->
+        <header v-if="mobileShellAsRoot && route.name !== 'chat'" class="mobile-topbar">
           <span class="mobile-topbar-title">{{ pageTitle }}</span>
           <div class="mobile-topbar-actions">
             <el-tooltip :content="settingsStore.settings.darkMode ? '切换浅色模式' : '切换深色模式'" placement="bottom">
-              <button class="mobile-theme-btn" type="button" aria-label="切换主题" @click="toggleTheme">
+              <button class="mobile-icon-btn" type="button" aria-label="切换主题" @click="toggleTheme">
                 <el-icon :size="17"><component :is="settingsStore.settings.darkMode ? Sunny : Moon" /></el-icon>
               </button>
             </el-tooltip>
@@ -51,9 +59,11 @@
                 </el-dropdown-menu>
               </template>
             </el-dropdown>
-            <router-link v-else to="/login" class="mobile-user-avatar" style="text-decoration:none;font-size:14px">
-              <el-icon :size="18"><User /></el-icon>
-            </router-link>
+            <button v-else class="mobile-user-avatar" type="button" aria-label="登录" @click="$router.push('/login')">
+              <!-- 用 Avatar 而非线框 User：User 已在 TabBar「智能体」上（移动端常驻同屏），
+                   同图标同时可见会被当成"重复"（2026-09-21 实测 3 处人形图标）。 -->
+              <el-icon :size="17"><Avatar /></el-icon>
+            </button>
           </div>
         </header>
         <main class="main-content" :class="{ 'is-chat': route.name === 'chat' }">
@@ -73,7 +83,7 @@
 <script setup lang="ts">
 import { computed, onMounted, shallowRef, watch } from 'vue';
 import { useRoute } from 'vue-router';
-import { User, SwitchButton, Moon, Sunny } from '@element-plus/icons-vue';
+import { Avatar, SwitchButton, Moon, Sunny } from '@element-plus/icons-vue';
 import { useAuthStore } from './stores/auth';
 import { useSettingsStore } from './stores/settings';
 import { usePluginStore } from './stores/plugin';
@@ -104,6 +114,33 @@ const pluginStore = usePluginStore();
 const isMobile = useMobileShell();
 const { isDesktop, isWeb, isMobile: isMobilePlatform } = usePlatform();
 const { collapsed } = useSidebarState();
+
+/**
+ * ★★ 是否由「本共享壳」承担顶部导航条 / 底部 TabBar。
+ *
+ * 背景（真实的适配 bug）：`isMobile` = 视口窄 **或** Capacitor 端。桌面端与 Web 端的
+ * 根组件（`apps/desktop/src/App.vue` / `apps/web/src/App.vue`）**无条件**渲染 WebTopBar，
+ * 而本共享壳在视口 <768px 时也会切到移动外壳（`mobile-topbar` + 底部 TabBar）。
+ * 两者叠加的后果（实测 400/640px）：
+ *   ① 顶部两条 36px + 48px 的横条，`mobile-topbar-title` 直接被 WebTopBar 压住；
+ *   ② 底部 TabBar 与上方导航的语义重复 —— 窄屏同时存在两套主导航；
+ *   ③ 内容区顶部留白按 48px 算，与 WebTopBar 的 36px 对不上。
+ *
+ * 处置：**只有 Capacitor 端才用自绘 mobile-topbar + TabBar**。桌面端/Web 端的窄窗口
+ * 不套移动外壳，而是走 SideNav 的「宽屏 dock 紧凑形态」——语义上仍是 52px dock，
+ * 与 WebTopBar 并存不冲突。
+ *
+ * ⚠️ 不能直接把 `isMobile` 改回宽度断点：Capacitor 横屏（视口 800+px）时会误判成 Web，
+ * 底部 TabBar 与自绘顶栏一起消失（见 useMobileShell 注释里的历史坑）。
+ * 所以要区分**两件事**：
+ *   · `isMobile`              —— 「是否按移动交互渲染」（TabBar 项、when='mobile' 插件项、
+ *                                窄屏留白/字号）→ 保持「视口窄 或 Capacitor」并集；
+ *   · `mobileShellAsRoot`     —— 「本壳是否自己画顶栏/底栏」→ **仅 Capacitor**。
+ *
+ * 口径来源：`openspec/specs/PLATFORM.md`「移动端使用底部 TabBar」——
+ * 移动端指 Capacitor 容器；桌面/Web 的窄窗口只是窄窗降级，不应变成移动端外壳。
+ */
+const mobileShellAsRoot = isMobilePlatform;
 
 // Electron 桌面端检测：由主进程通过 preload 注入 window.electronAPI.isElectron
 const isElectron = typeof window !== 'undefined' && !!(window as any).electronAPI?.isElectron;
@@ -330,18 +367,25 @@ body {
 .page { padding: 28px 36px; flex: 1; overflow-y: auto; }
 
 /* Mobile TopBar
-   ★ 样式不再只挂 @media：模板用 v-if="isMobile"（移动外壳判定）控制存在性，
+   ★ 样式不再只挂 @media：模板用 v-if="mobileShellAsRoot"（平台判定）控制存在性，
      元素在桌面端根本不会渲染。Capacitor 横屏时视口 >767px，媒体查询不命中 →
      元素渲染了却停在 display:none，即「转横屏后自绘顶栏消失」。故与 TabBar 同理，
-     样式与存在性判定保持一致，不再重复用宽度门控。 */
+     样式与存在性判定保持一致，不再重复用宽度门控。
+
+   ★★ 高度与底部 TabBar 统一走变量，供 .main-content 留白消费（此前是三处写死：
+      顶栏 48 / TabBar 56 / 留白 calc(48px) 与 calc(56px)，改一处漏两处）。
+      顶栏从 48 → 44：移动端顶栏只放标题+两个图标，44px 已达触控舒适上限；
+      省下的 4px 让首屏多显示小半行消息。 */
+.app-shell { --mobile-topbar-h: 44px; --mobile-tabbar-h: 56px; }
+
 .mobile-topbar {
   display: flex;
   position: fixed;
   top: 0;
   left: 0;
   right: 0;
-  height: 48px;
-  padding: 0 16px;
+  height: var(--mobile-topbar-h);
+  padding: 0 12px;
   padding-top: env(safe-area-inset-top, 0px);
   background: var(--glass-bg);
   backdrop-filter: var(--glass-filter);
@@ -349,26 +393,52 @@ body {
   border-bottom: 1px solid var(--glass-border);
   z-index: 50;
   align-items: center;
-  justify-content: space-between;
+  gap: 8px;
 }
 
 .mobile-topbar-title {
   font-size: 16px;
-  font-weight: 700;
+  font-weight: 600;
   color: var(--color-text);
   flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .mobile-topbar-actions {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+/* 顶栏图标按钮：44×44 触控区（视觉 30px 图标底），与 TabBar 项观感一致 */
+.mobile-icon-btn {
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.mobile-icon-btn:hover, .mobile-icon-btn:active {
+  background: var(--glass-bg-hover);
+  color: var(--color-text);
 }
 
 .mobile-user-avatar {
-  width: 32px;
-  height: 32px;
-  border-radius: 8px;
+  width: 34px;
+  height: 34px;
+  border: none;
+  border-radius: 10px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -490,31 +560,18 @@ body {
 }
 
 /* ===== Mobile: skeleton + global overrides =====
-   ★ 选择器口径说明：这里同时列出 `.platform-mobile`（Capacitor 端，与宽度无关）与
-     `@media (max-width:767px)`（桌面/Web 的窄窗降级）。两者是并集：
-       · Capacitor 横屏 —— 视口 >767px，媒体查询不命中，靠 platform-mobile 分支兜住
-         （否则固定顶栏与 TabBar 会盖住内容区，因为留白规则没生效）。
-       · 桌面端/Web 端 —— 永不进 Capacitor，platform-mobile 不出现，行为等同改动前。
+   ★ 选择器口径说明（2026-09-20 修正）：
+     · `.platform-mobile` —— Capacitor 端。自绘顶栏(48) + 底部 TabBar(56) 的**内容区留白**
+       只归它管，且不挂媒体查询（横屏视口宽时同样要生效）。
+     · `@media (max-width:767px)` —— 桌面/Web 的窄窗降级。**只管内容本身的紧凑化**
+       （页面内边距、卡片列数、弹窗），不再替「移动外壳」留白。
+   ⚠️ 曾经的错误做法：媒体查询里也给 `.main-content` 加 48px 顶 + 56px 底留白。
+     但桌面/Web 端窄窗口根本不渲染 mobile-topbar / TabBar（它们是 Capacitor 专属）→
+     顶部多留 48px 白、底部多留 56px 白，而真正提供导航的 WebTopBar 只有 36px。
    注意每条规则都带 !important（原有约定），跨分支复制时必须保持一致，否则优先级会打架。 */
 @media (max-width: 767px) {
   .app-shell { flex-direction: column; }
-  .main-content {
-    margin-left: 0 !important;
-    padding: 0 !important;
-    /* keep content clear of the fixed top bar (48px) and bottom tab bar (56px) */
-    padding-top: calc(48px + env(safe-area-inset-top, 0px)) !important;
-    padding-bottom: calc(56px + env(safe-area-inset-bottom, 0px)) !important;
-  }
-  /* chat page manages its own safe-area + input spacing */
-  .main-content.is-chat {
-    padding-top: env(safe-area-inset-top, 0px) !important;
-    padding-bottom: 0 !important;
-  }
-  /* login is full-screen with no chrome */
-  .main-content.full {
-    padding-top: 0 !important;
-    padding-bottom: 0 !important;
-  }
+  /* 窄窗一律禁止横向溢出（各端通用） */
   html, body, #app, .app-shell, .main-content { max-width: 100vw; overflow-x: hidden; }
 
   /* Global layout classes — compact */
@@ -528,24 +585,42 @@ body {
   .el-overlay { z-index: 9999 !important; overflow-y: auto !important; padding: 0 !important; }
 }
 
-/* Capacitor 端：与上方媒体查询同规则的并集分支（横屏时视口宽，只有这里能命中）。
-   只保留「内容区让位」与「禁止横向溢出」这两件与屏幕尺寸无关、必须生效的事。 */
+/* Capacitor 端：自绘顶栏 + 底部 TabBar 的内容区让位。
+   ★ 不挂媒体查询 —— 横屏时视口宽，媒体查询不命中，只有这里能兜住。
+   ★★ 高度一律走 .app-shell 上的变量（--mobile-topbar-h / --mobile-tabbar-h），
+      与 .mobile-topbar / .tab-bar 自身的 height 同源 —— 三处写死高度是此前
+      「改一处漏两处、留白对不上」的根因。 */
 .platform-mobile .app-shell { flex-direction: column; }
 .platform-mobile .main-content {
   margin-left: 0 !important;
   padding: 0 !important;
-  padding-top: calc(48px + env(safe-area-inset-top, 0px)) !important;
-  padding-bottom: calc(56px + env(safe-area-inset-bottom, 0px)) !important;
+  padding-top: calc(var(--mobile-topbar-h, 44px) + env(safe-area-inset-top, 0px)) !important;
+  padding-bottom: calc(var(--mobile-tabbar-h, 56px) + env(safe-area-inset-bottom, 0px)) !important;
 }
+/* 对话页（is-chat）在移动端**同样需要底部留白**（给 TabBar 让位）。
+   ★★ 这里曾写 `padding-bottom: 0`，代价是 chat.css 只能用
+   `.input-area { position: sticky; bottom: 56px }` 把输入框硬抬起来 ——
+   而 sticky 是「相对滚动容器吸附」，输入框因此**与消息区重叠 56px**，
+   再用 `.messages { padding-bottom: 140px }` 打补丁。两层补丁叠着，
+   表现为「滚到底后最后一条消息上方多出一大截空白（实测 94px）」
+   且输入框浮在内容上（用户报的「输入框挡住内容」）。
+   正解：底部留白交给外壳统一给，chat.css 里输入框回归静态流。
+   顶部仍为 0：对话页有自己的 chat-topbar，不需要外壳再让一次。 */
 .platform-mobile .main-content.is-chat {
   padding-top: env(safe-area-inset-top, 0px) !important;
-  padding-bottom: 0 !important;
+  padding-bottom: calc(var(--mobile-tabbar-h, 56px) + env(safe-area-inset-bottom, 0px)) !important;
 }
 .platform-mobile .main-content.full {
   padding-top: 0 !important;
   padding-bottom: 0 !important;
 }
 .platform-mobile { max-width: 100vw; overflow-x: hidden; }
+
+/* ★ Capacitor 端：顶栏已显示当前页名（如「设置」），而页面里还有自己的
+   <h2 class="page-title">（Settings.vue 的「设置」）→ 同屏两个一模一样的标题，白占一行。
+   移动端顶栏承担定位职责后，页内大标题是冗余的 —— 整个隐藏。
+   ★ .page-sub（副标题）保留：它是有信息量的说明文字，不是重复。 */
+.platform-mobile .page-title { display: none; }
 
 @media (max-width: 767px) {
   .el-overlay-dialog { display: flex !important; justify-content: center !important; align-items: center !important; padding-top: calc(48px + env(safe-area-inset-top, 0px)) !important; padding-bottom: calc(56px + env(safe-area-inset-bottom, 0px)) !important; }

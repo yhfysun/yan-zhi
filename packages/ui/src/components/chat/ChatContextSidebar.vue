@@ -231,4 +231,33 @@ const mountedTools = computed(() =>
     transform: translateX(0);
   }
 }
+
+/* ★★ 移动外壳专属样式**必须再写一份 `.platform-mobile`**。
+   `@media (max-width:767px)` 按视口宽判定，而 Capacitor **横屏视口常 800px+**
+   → 媒体查询不命中，但移动外壳（TabBar 由 v-if 渲染、与宽度无关）明明在。
+   实测横屏 880×420：本组件回落到底态 `flex: 0 0 0; width: 0`（只有 1px 宽），
+   内部文字被挤成 **22×153 的竖排单条**（「暂无已挂载知识库」等 4 处）——
+   属于 ADAPTATION-NOTES 五号坑「文字竖排」+ 十四号坑「只挂媒体查询」的叠加。
+   竖屏分支里的字号/间距微调不必搬过来（横屏退回桌面值可接受），
+   这里只放**与屏幕方向无关、必须生效**的结构性定位。 */
+.platform-mobile .context-sidebar {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 250;
+  width: min(320px, 86vw);
+  min-width: 0;
+  flex-basis: auto;
+  transform: translateX(100%);
+  transition: transform 0.26s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.2s ease;
+  box-shadow: -18px 0 36px rgba(15, 23, 42, 0.18);
+}
+
+.platform-mobile .context-sidebar.open {
+  flex-basis: auto;
+  min-width: min(320px, 86vw);
+  width: min(320px, 86vw);
+  transform: translateX(0);
+}
 </style>

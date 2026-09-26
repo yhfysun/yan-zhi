@@ -27,7 +27,7 @@
             <el-tooltip content="复制" placement="top"><el-button text size="small" circle @click="copyMsg(round.user)"><el-icon><CopyDocument /></el-icon></el-button></el-tooltip>
             <el-tooltip content="引用" placement="top"><el-button text size="small" circle @click="quoteMsg(round.user)"><el-icon><Link /></el-icon></el-button></el-tooltip>
             <el-tooltip content="编辑" placement="top"><el-button text size="small" circle @click="editMsg(round.user)"><el-icon><EditPen /></el-icon></el-button></el-tooltip>
-            <el-tooltip content="蒸馏为 Skill" placement="top"><el-button text size="small" circle @click="distillUserMsg(round.user)"><el-icon><MagicStick /></el-icon></el-button></el-tooltip>
+            <el-tooltip content="蒸馏为 Skill" placement="top"><el-button text size="small" circle @click="distillUserMsg(round.user)"><el-icon><Files /></el-icon></el-button></el-tooltip>
             <el-tooltip content="删除" placement="top"><el-button text size="small" circle @click="delMsg(round.user)"><el-icon><Delete /></el-icon></el-button></el-tooltip>
             <el-tooltip content="查看提示词" placement="top"><el-button text size="small" circle @click="openSnapshotDialog(round.user)"><el-icon><View /></el-icon></el-button></el-tooltip>
           </div>
@@ -271,7 +271,7 @@
             <el-tooltip content="导出 Word" placement="top"><el-button text size="small" circle @click="exportAssistantDocx(round)"><el-icon><Document /></el-icon></el-button></el-tooltip>
             <el-tooltip content="引用" placement="top"><el-button text size="small" circle @click="quoteMsg(round.finalAssistant!)"><el-icon><Link /></el-icon></el-button></el-tooltip>
             <el-tooltip content="重新生成" placement="top"><el-button text size="small" circle :disabled="store.streaming" @click="regenerateMsg"><el-icon><Refresh /></el-icon></el-button></el-tooltip>
-            <el-tooltip content="蒸馏为 Skill" placement="top"><el-button text size="small" circle @click="distillAssistantMsg(round)"><el-icon><MagicStick /></el-icon></el-button></el-tooltip>
+            <el-tooltip content="蒸馏为 Skill" placement="top"><el-button text size="small" circle @click="distillAssistantMsg(round)"><el-icon><Files /></el-icon></el-button></el-tooltip>
             <el-tooltip content="删除" placement="top"><el-button text size="small" circle @click="delMsg(round.finalAssistant!)"><el-icon><Delete /></el-icon></el-button></el-tooltip>
             <el-tooltip content="折叠" placement="top"><el-button text size="small" circle @click.stop="toggleMsgCollapse(round.finalAssistant!.id)"><el-icon><Fold /></el-icon></el-button></el-tooltip>
           </div>
@@ -323,7 +323,16 @@
         <el-button @click="input = '帮我分析这个项目的结构'; $nextTick(() => { const ta = document.querySelector('.input-textarea textarea') as HTMLTextAreaElement; if (ta) ta.focus(); })">帮我分析这个项目的结构</el-button>
       </div>
       <el-button type="primary" size="large" round @click="openPlatformConfig" style="margin-top:8px">
-        <el-icon><Setting /></el-icon> 配置模型
+        <!-- 用 TakeawayBox 而非 Setting：Setting 是 TabBar「我的」的图标（移动端常驻同屏），
+             2026-09-21 实测齿轮图标 3 处重复。
+             ★ 曾想用 Brick —— 它在 `dist/types/components/brick.vue.d.ts` 里有定义，
+             但 **`dist/index.js` 的运行时导出里没有**（d.ts 与 index 不同步）→
+             页面抛 `does not provide an export named 'Brick'` → **路由启动失败、整页白屏**。
+             故此处必须选一个"确实在运行时 index 里"的名字（由
+             `composables/mobileIconUniqueness.test.ts` 附带校验）。
+             ★ `.el-button > .el-icon + 裸文本节点` 之间没有间距来源（Element 只给 span 加
+             margin）→ 会渲染成「图标紧贴文字」。这里加显式间距类修正。 -->
+        <el-icon class="btn-icon-gap"><TakeawayBox /></el-icon> 配置模型
       </el-button>
     </div>
   </div>
@@ -438,7 +447,7 @@
 <script setup lang="ts">
 import {
   User, ChatDotRound, CaretRight, CaretBottom, ArrowDown, ArrowRight, ArrowUp, Loading, CircleCheck,
-  CircleClose, CopyDocument, EditPen, MagicStick, Delete, View, Fold, Refresh, Setting, Link, Download,
+  CircleClose, CopyDocument, EditPen, Files, Delete, View, Fold, Refresh, TakeawayBox, Link, Download,
   Grid, Document, Connection, ChatLineSquare,
 } from '@element-plus/icons-vue';
 import { ref, watch, nextTick, computed } from 'vue';
@@ -1051,5 +1060,12 @@ watch(activeNavRound, () => {
   font-size: 11px;
   color: var(--color-text-tertiary, #999);
   line-height: 1.4;
+}
+
+/* ★ el-button 里「el-icon + 裸文本节点」之间没有间距来源 ——
+   Element Plus 只给 `> span` 加 margin，直接写文本时会渲染成「⚙配置模型」紧贴。
+   用显式 margin-right 兜住（放 scoped 里安全：el-icon 是模板节点，带 data-v 属性）。 */
+.btn-icon-gap {
+  margin-right: 6px;
 }
 </style>

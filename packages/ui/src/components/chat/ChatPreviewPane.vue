@@ -20,8 +20,11 @@
         ><Close /></el-icon>
       </div>
       <div class="right-panel-tab-actions">
+        <!-- ★ 用 Minus 而非 Close：Close 在本组件里已经是"关闭单个 tab"的语义，
+             同一行再放一个 Close 当"收起面板"，图标同形、语义不同 →
+             用户按 svg 指纹看到的是"两个一样的 ×"（2026-09-21 实测 2 处重复）。 -->
         <el-button size="small" circle @click="closeRightPanel" title="收起面板">
-          <el-icon><Close /></el-icon>
+          <el-icon><Minus /></el-icon>
         </el-button>
       </div>
     </div>
@@ -99,7 +102,7 @@
 import { computed, ref, onMounted, onBeforeUnmount, type Component } from 'vue';
 import { clampMenuPos } from '../../utils/menuPosition';
 import { useRouter } from 'vue-router';
-import { Close, Document, Link, Folder, Grid, Monitor, Back, Right, CircleClose } from '@element-plus/icons-vue';
+import { Close, Minus, Document, Link, Folder, Grid, Monitor, Back, Right, CircleClose } from '@element-plus/icons-vue';
 import { useChat } from '../../composables/chat/useChat';
 import { usePlatform } from '../../composables/usePlatform';
 import { useSettingsStore } from '../../stores/settings';

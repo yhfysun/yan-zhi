@@ -17,10 +17,12 @@
         <img class="brand-logo" src="../assets/titlebar-logo.png" alt="言智" draggable="false" />
       </div>
 
-      <!-- 横排主导航：核心 4 页 + 更多下拉（其它功能入口 + 设置，统一收进弹层） -->
+      <!-- 横排主导航：核心 3 页 + 更多下拉（其它功能入口 + 设置，统一收进弹层）
+           ★ 窄屏（≤860px）只保留「当前页」那一项，其余导航项收进「更多 → 页面」分组。
+           顶栏在窄屏放不下「首页/办公/浏览器/消息」四段文字，硬铺会把文字挤成竖排两行。 -->
       <nav class="title-nav">
         <router-link
-          v-for="m in navMenus.slice(0, 1)"
+          v-for="m in navBefore"
           :key="m.path"
           :to="m.path"
           class="title-nav-item"
@@ -34,7 +36,7 @@
         <ModeSwitcher v-model="modeSwitcherOpen" />
 
         <router-link
-          v-for="m in navMenus.slice(1)"
+          v-for="m in navAfter"
           :key="m.path"
           :to="m.path"
           class="title-nav-item"
@@ -149,15 +151,36 @@ const authStore = useAuthStore();
 const route = useRoute();
 const router = useRouter();
 
-// 横排主导航：核心 4 页
+// 横排主导航：核心 3 页
 const navMenus = [
   { path: '/home', label: '首页', icon: HomeFilled },
   { path: '/browser', label: '浏览器', icon: Monitor },
   { path: '/chat-hub', label: '消息', icon: Promotion },
 ];
+
+/**
+ * 窄屏判定（≤860px）：顶栏放不下「首页/办公/浏览器/消息」四段文字 ——
+ * 实测 390px 下「浏览器」被挤成三行、「首页/消息」两行，整条顶栏视觉崩坏。
+ * 窄屏策略：只保留**当前所在页**那一个导航项，其余全部收进「更多 → 页面」分组。
+ * 用 matchMedia 而非 CSS 媒体查询：要真的从 v-for 里拿掉节点（不是 display:none），
+ * 否则「更多」菜单里会出现与顶栏重复的项。
+ */
+const NARROW_QUERY = '(max-width: 860px)';
+const isNarrow = ref(false);
+let narrowMq: MediaQueryList | null = null;
+const onNarrowChange = (e: MediaQueryListEvent | MediaQueryList) => { isNarrow.value = e.matches; };
+
 function isActive(p: string) {
   return route.path === p || route.path.startsWith(p + '/');
 }
+
+/** 窄屏下顶栏保留的项：当前页优先；若当前不在任何导航页（如 /settings），回落首页。 */
+const narrowKeep = computed(() => {
+  const hit = navMenus.find((m) => isActive(m.path));
+  return hit ? [hit] : navMenus.slice(0, 1);
+});
+const navBefore = computed(() => (isNarrow.value ? narrowKeep.value : navMenus.slice(0, 1)));
+const navAfter = computed(() => (isNarrow.value ? [] : navMenus.slice(1)));
 
 // 插件注入的导航项：moreGroup 声明的进「更多」对应分组，其余进底部独立项（历史行为）
 const pluginStore = usePluginStore();
@@ -205,6 +228,23 @@ function mergeIntoGroup(base: HoverMenuItem, groupKey: string): HoverMenuItem {
 // 「更多」下拉：按「能力 / 数据 / 连接」三组 hover 二级展开 + 底部独立项（记忆/插件/设置/插件注入）
 // MCP 不再单列：已并入 /tools 工具页「MCP 服务」tab
 const moreItems = computed<HoverMenuItem[]>(() => [
+  // ★ 窄屏专属：顶栏放不下的导航项（浏览器/消息）从「更多」补齐，避免窄屏失去入口
+  ...(isNarrow.value
+    ? [
+        {
+          key: 'group-pages-narrow',
+          label: '页面',
+          icon: Monitor,
+          children: navMenus.map((m) => ({
+            key: `nav-${m.path}`,
+            label: m.label,
+            icon: m.icon as HoverMenuItem['icon'],
+            path: m.path,
+            check: isActive(m.path),
+          })),
+        },
+      ]
+    : []),
   mergeIntoGroup({
     key: 'group-capability',
     label: '能力',
@@ -334,6 +374,13 @@ onMounted(async () => {
     await settingsStore.load();
   } catch {}
 
+  // 窄屏判定：与顶栏 v-for 门控同一个断点，必须真监听（窗口拖窄要即时收起）
+  try {
+    narrowMq = window.matchMedia(NARROW_QUERY);
+    onNarrowChange(narrowMq);
+    narrowMq.addEventListener('change', onNarrowChange);
+  } catch { /* 老浏览器无 matchMedia.addListener → 退化为始终宽屏布局 */ }
+
   if (!api) return;
   try {
     // 初始化最大化状态
@@ -354,6 +401,10 @@ onUnmounted(() => {
   if (resizeHandler) {
     window.removeEventListener('resize', resizeHandler);
     resizeHandler = null;
+  }
+  if (narrowMq) {
+    try { narrowMq.removeEventListener('change', onNarrowChange); } catch { /* ignore */ }
+    narrowMq = null;
   }
   if (moreSuppressTimer) { clearTimeout(moreSuppressTimer); moreSuppressTimer = null; }
 });
@@ -415,6 +466,17 @@ onUnmounted(() => {
   align-items: center;
   gap: 2px;
   margin-left: 10px;
+  /* 顶栏可横向收缩，浮层与窗口控件优先（窄屏时导航项由 JS 门控减到 1 项） */
+  min-width: 0;
+  flex-shrink: 0;
+}
+
+/* 窄屏（≤860px）：导航只剩「当前页 + 更多 + 刷新」，收紧内边距与品牌区留白 */
+@media (max-width: 860px) {
+  .brand { padding: 0 8px; }
+  .title-nav { margin-left: 4px; }
+  .title-nav-item { padding: 0 8px; gap: 4px; }
+  .title-spacer { min-width: 4px; }
 }
 
 .title-nav-item {
@@ -434,7 +496,13 @@ onUnmounted(() => {
   -webkit-app-region: no-drag;
   app-region: no-drag;
   transition: background 0.15s ease, color 0.15s ease;
+  /* ★ 文字绝不换行：顶栏高度只有 36px，一旦折行「浏览器」会占三行把整条顶栏撑乱
+     （实测 390px 宽下就是如此）。flex 子项默认 min-width:auto 会阻止收缩 → 显式 nowrap。 */
+  white-space: nowrap;
+  flex-shrink: 0;
 }
+
+.title-nav-item > span { white-space: nowrap; }
 
 .title-nav-item:hover {
   background: var(--glass-bg-hover);

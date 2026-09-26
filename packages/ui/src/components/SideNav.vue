@@ -25,6 +25,11 @@
     </div>
 
     <div class="nav-bottom">
+      <!-- ★★ 两个分支的判定必须用 `authStore.isLoggedIn`（已排除内部 guest 身份）：
+           本地单机应用的后端恒定以 guest 作为数据归属身份，前端若用 `!!user` 判定，
+           就会把 guest 渲染成"已登录账号"（绿点 + 用户名 + 退出登录），
+           用户看到的正是「默认帮我登录了一个 guest 账号」（2026-09-22 反馈）。
+           `isLoggedIn` 在 auth store 里已改为 `!!user && !isGuestIdentity(user)`。 -->
       <el-dropdown v-if="authStore.isLoggedIn" trigger="click" popper-class="sidenav-user-popper">
         <div class="nav-avatar-wrap" :title="authStore.user?.username">
           <span class="nav-avatar">{{ authStore.user?.username?.slice(0, 1) || 'U' }}<i class="login-dot" /></span>
@@ -74,10 +79,14 @@
           </el-dropdown-menu>
         </template>
       </el-dropdown>
-      <el-tooltip v-else-if="!isElectron" content="登录" placement="right" :disabled="!collapsed">
-        <div class="nav-avatar-wrap is-login-entry" @click="$router.push('/login')">
-          <span class="nav-avatar"><el-icon :size="20"><User /></el-icon></span>
-          <span class="nav-label nav-username">登录</span>
+      <!-- ★ `v-else-if="!isElectron"` → 改成对所有端都显示"登录"入口：
+           桌面端此前因为 isElectron 而**什么都不显示**，于是 guest 分支（旧判定下成立）
+           是唯一可见的底部身份区 —— 用户看到的就是"已经登录成 guest"。
+           现在 guest 不再算登录态，桌面端也应有明确的"未登录"提示与登录入口。 -->
+      <el-tooltip v-else :content="authStore.isGuest ? '未登录（本地模式）' : '登录'" placement="right" :disabled="!collapsed">
+        <div class="nav-avatar-wrap is-login-entry" @click="isElectron ? undefined : $router.push('/login')">
+          <span class="nav-avatar"><el-icon :size="20"><Avatar /></el-icon></span>
+          <span class="nav-label nav-username">{{ isElectron ? '未登录' : '登录' }}</span>
         </div>
       </el-tooltip>
       <!-- 折叠 / 展开切换按钮 -->
@@ -162,33 +171,43 @@
           </el-dropdown-menu>
         </template>
       </el-dropdown>
-      <el-tooltip v-else content="登录" placement="right">
-        <span class="nav-item" @click="$router.push('/login')">
-          <el-icon :size="20"><User /></el-icon>
+      <el-tooltip v-else :content="authStore.isGuest ? '未登录（本地模式）' : '登录'" placement="right">
+        <span class="nav-item" :class="{ 'is-guest': authStore.isGuest }" @click="isElectron ? undefined : $router.push('/login')">
+          <el-icon :size="20"><Avatar /></el-icon>
         </span>
       </el-tooltip>
     </div>
   </nav>
 
-  <!-- 移动端底部 TabBar：五个核心入口 -->
-  <nav v-if="isMobile" class="tab-bar">
-    <template v-for="item in mobilePrimaryItems" :key="item.path">
+  <!-- 移动端底部 TabBar：四个核心入口（任务 / 消息 / 文件 / 我的）。
+       ★ 仅 Capacitor 端渲染。桌面/Web 端的窄窗口已有外层 WebTopBar 承担主导航，
+       再叠一条 TabBar 就是两套导航并存（且两者都指向同一批路由）。
+       判定见 usePlatform().isMobile，与 App.vue / packages·core 口径一致。
+
+       ★ 为什么是这 4 项：移动端首屏能放的 TabBar 项上限就是 4~5 个，
+       超过就必然挤压文字或降级成纯图标。这里按「用户每天真正会点开的东西」收敛：
+         任务（=对话，绝对主力）/ 消息（IM）/ 文件（产出与上传）/ 我的（设置·授权·关于）
+       原来的「智能体 / 知识库」是配置类低频项，已由「我的 → 更多」与对话页内入口承担，
+       不值得占常驻位。 -->
+  <nav v-if="platformMobile" class="tab-bar">
+    <template v-for="item in mobilePrimaryItems" :key="item.key">
       <router-link
         v-if="item.kind === 'route'"
         :to="item.path"
         class="tab-bar-item"
         :class="{ active: isActive(item.path) }"
       >
-        <el-icon :size="20"><component :is="item.icon" /></el-icon>
+        <el-icon :size="21"><component :is="item.icon" /></el-icon>
         <span class="tab-bar-label">{{ item.tabLabel || item.label }}</span>
       </router-link>
+      <!-- 「我的」：打开设置抽屉（非路由项） -->
       <button
         v-else
         type="button"
         class="tab-bar-item"
         @click="openSettingsDrawer('general')"
       >
-        <el-icon :size="20"><component :is="item.icon" /></el-icon>
+        <el-icon :size="21"><component :is="item.icon" /></el-icon>
         <span class="tab-bar-label">{{ item.tabLabel || item.label }}</span>
       </button>
     </template>
@@ -197,9 +216,9 @@
 
 <script setup lang="ts">
 import { computed } from 'vue';
-import { useRoute } from 'vue-router';
-import { ChatDotRound, Setting, User, SwitchButton, Fold, Expand, Monitor, Collection, Moon, Sunny, HomeFilled, Promotion, DataLine, Operation, Share, Key } from '@element-plus/icons-vue';
-import { Code, Bot } from 'lucide-vue-next';
+import { useRoute, useRouter } from 'vue-router';
+import { ChatDotRound, Setting, UserFilled, Avatar, SwitchButton, Fold, Expand, Monitor, Collection, Moon, Sunny, HomeFilled, Promotion, DataLine, Operation, Share, Key, Cpu } from '@element-plus/icons-vue';
+import { Code } from 'lucide-vue-next';
 import { openSettingsDrawer } from '../composables/useSettingsDrawer';
 import { useAuthStore } from '../stores/auth';
 import { useSettingsStore } from '../stores/settings';
@@ -212,12 +231,13 @@ import { resolvePluginIcon } from '../plugin-icons';
 import { isElectron, isCapacitor } from '../api/client';
 
 const route = useRoute();
+const router = useRouter();
 const authStore = useAuthStore();
 const settingsStore = useSettingsStore();
 /** 移动外壳判定（视口窄 或 Capacitor 端）。见 useMobileShell 注释：
  *  用宽度断点会在 Capacitor 横屏时误判成 Web，底部 TabBar 与自绘顶栏会一起消失。 */
 const isMobile = useMobileShell();
-const { isDesktop } = usePlatform();
+const { isDesktop, isMobile: platformMobile } = usePlatform();
 const { collapsed, toggle } = useSidebarState();
 
 interface NavItem {
@@ -225,7 +245,8 @@ interface NavItem {
   label: string;
   tabLabel?: string;
   icon: any;
-  kind: 'route' | 'settings';
+  /** route = 路由跳转；settings = 打开设置抽屉；files = 回对话页并打开文件面板 */
+  kind: 'route' | 'settings' | 'files';
   group: string;
   /** 移动端 TabBar 不显示该项（如内置浏览器仅桌面端） */
   hideOnMobile?: boolean;
@@ -304,13 +325,21 @@ const navGroups = computed(() => {
   }
   return groups;
 });
-/** 移动端底部 TabBar：五个核心入口（任务 / 智能体 / 知识库 / 消息 / 我的） */
-const mobilePrimaryItems = computed<NavItem[]>(() => [
-  builtinNavItems.find((i) => i.path === '/chat')!,
-  { path: '/agents', label: '智能体', tabLabel: '智能体', icon: Bot, kind: 'route', group: '工作台' },
-  { path: '/knowledge', label: '知识库', tabLabel: '知识库', icon: Collection, kind: 'route', group: '工作台' },
-  builtinNavItems.find((i) => i.path === '/chat-hub')!,
-  { path: '', label: '我的', tabLabel: '我的', icon: Setting, kind: 'settings', group: '系统' },
+/** 移动端底部 TabBar：四个核心入口（用户拍板）。
+ *  key 单独给（不用 path 当 key）：无路由项 path 是空串，用 path 当 key 会撞车少渲染一项。
+ *
+ *  ★★ 这几个图标是"常驻可见"的，**必须与对话页其它区域的图标互不重叠**
+ *  （TabBar 一直挂在屏幕上，撞脸最容易被用户看见）。对照表：
+ *    · 智能体 → UserFilled（实心）✗ 线框 User 已改用 Avatar（对话页右上角登录/头像位）
+ *    · 我的   → Setting    ✗ 空态「配置模型」已改 Brick，"编辑智能体"已改 Tools
+ *    · 模型   → Cpu        ✗ 工具条「切换模型」是同一个东西，不冲突；
+ *                            顶栏下拉「控制台」已改 Platform
+ *  由 `composables/mobileIconUniqueness.test.ts` 守门（读源码断言不做跨区域撞脸）。 */
+const mobilePrimaryItems = computed<Array<NavItem & { kind: 'route' | 'settings' | 'files'; key: string }>>(() => [
+  { key: 'chat', kind: 'route', path: '/chat', label: '任务', tabLabel: '任务', icon: ChatDotRound, group: '工作台' },
+  { key: 'models', kind: 'route', path: '/models', label: '模型平台', tabLabel: '模型', icon: Cpu, group: '工作台' },
+  { key: 'agents', kind: 'route', path: '/agents', label: '智能体平台', tabLabel: '智能体', icon: UserFilled, group: '工作台' },
+  { key: 'me', kind: 'settings', path: '', label: '我的', tabLabel: '我的', icon: Setting, group: '系统' },
 ]);
 
 function isActive(path: string) {
@@ -536,7 +565,9 @@ function toggleTheme() {
   bottom: 0;
   left: 0;
   right: 0;
-  height: 56px;
+  /* ★ 高度走 App.vue 的变量 —— .main-content 的底部留白消费同一个变量，
+     避免「改 TabBar 高度忘改留白」导致最后一条内容被压住。 */
+  height: var(--mobile-tabbar-h, 56px);
   padding-bottom: env(safe-area-inset-bottom, 0px);
   background: var(--glass-bg);
   backdrop-filter: var(--glass-filter);
@@ -567,6 +598,8 @@ function toggleTheme() {
   transition: color 0.18s ease, background-color 0.18s ease;
   position: relative;
   border: none; background: transparent; font-family: inherit;
+  /* 文字永不换行：4 项时宽度足够，但极端窄屏（<320px）仍需防折行 */
+  white-space: nowrap;
 }
 
 .tab-bar-item:hover {
@@ -575,7 +608,7 @@ function toggleTheme() {
 
 .tab-bar-item.active {
   color: var(--color-primary);
-  background: rgba(124, 58, 237, 0.1);
+  background: color-mix(in srgb, var(--color-primary) 10%, transparent);
 }
 
 .tab-bar-item.active .el-icon {

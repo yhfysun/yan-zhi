@@ -16,7 +16,9 @@
           <p class="app-subtitle">语言可控的智能体平台</p>
         </div>
       </transition>
-      <!-- 折叠时的小圆点 -->
+      <!-- 折叠时的小圆点。
+           ★★ 初始位置必须避开左上角的「功能导航」按钮（见 INTRO_DOT_INIT 注释：
+           两者都 z-index:50，旧初始值实测重叠 28×28px）。 -->
       <div v-if="!introExpanded" class="intro-dot" :style="introStyle"
         @mousedown="startDragIntro" @click="onIntroClick" title="言智介绍">
         <el-icon :size="16"><InfoFilled /></el-icon>
@@ -94,13 +96,33 @@ interface FeatureInfo {
 
 const isMobile = useIsMobile();
 const showEarthMap = ref(false);
-const showFeatureNav = ref(isMobile.value);
+/** 功能导航面板是否展开。
+ *
+ * ★★ 恒为 false（默认收起），**不可写成 `ref(isMobile.value)`**：
+ *   原实现让移动端一进首页就整屏展开这个面板（实测覆盖率 73%），
+ *   把首页主体（地球 canvas / 场景卡）整个盖住，用户感知为「首页一进去就错乱」。
+ *   桌面端本来就是默认收起，移动端没有理由默认展开 —— 由用户点左上角按钮再开。
+ *   由 `composables/mobileShellOwnership.test.ts` 守门（禁止 ref(isMobile.value) 写法）。 */
+const showFeatureNav = ref(false);
 const guideVisible = ref(false);
 const currentFeature = ref<FeatureInfo | null>(null);
 
 // ── 应用介绍：可拖拽小按钮 ──
 const introExpanded = ref(false);
-const introPos = ref({ x: 24, y: 24 }); // 小按钮/卡片位置
+/**
+ * 小圆点的初始位置。
+ *
+ * ★★ 必须避开左上角的「功能导航」按钮，否则两个圆形浮层叠在一起：
+ *   实测（390×844 移动端）旧初始值 `{x:24, y:24}`（相对 .home-page，视口 y 再加 44px 顶栏）
+ *   渲染为视口 (24,68,36×36)，而 `.feature-nav-btn` 在视口 (12,56,40×40)、z-index 同为 50 →
+ *   **重叠 28×28px**，截图里表现为"一个深色月牙压在圆钮上"，用户直接报「UI 错乱」。
+ *   ⇒ 改为**同一行右侧**（按钮 left 12 + 宽 40 + 间距 8 = 60，top 保持 12）：
+ *   视口占位 (60,56,36×36) 与按钮完全错开，且不额外占用纵向空间。
+ *   用户拖拽后位置会被自身 state 覆盖，这里只影响初始值。
+ *   由 `composables/mobileIconUniqueness.test.ts` 守门（断言初始位置不与功能导航按钮重叠）。
+ */
+const INTRO_DOT_INIT = { x: 60, y: 12 };
+const introPos = ref({ ...INTRO_DOT_INIT });
 const introStyle = computed(() => ({ left: introPos.value.x + 'px', top: introPos.value.y + 'px' }));
 const router = useRouter();
 let introDragging = false;
@@ -286,7 +308,18 @@ function handleInfoClick(item: HomeMenuItem) {
    深浅两种主题各取所需：深色主题下视觉与原先一致，浅色主题下自动浅底深字。 */
 .feature-nav-panel {
   position: absolute; left: 16px; top: 72px; z-index: 49;
-  width: 280px; max-height: calc(100vh - 96px);
+  /* ★★ 高度必须扣掉"下方还剩多少空间"，否则面板会伸到底部固定栏底下被压住：
+     原写法 `max-height: calc(100vh - 96px)` 只扣了顶部 96px，**完全没考虑 TabBar**。
+     实测移动端面板 bottom = 852、TabBar top = 788 → **底部 64px 被 TabBar 盖住**，
+     列表第 14 项「记忆管理」整项看不见（fullyVisibleItems = 13/14）。
+
+     ★ 为什么用 `%` 而不是 `dvh` 重算：本元素是 `.home-page` 的绝对定位子元素，
+     而 `.home-page` 是 `flex: 1`（高度确定），其底边**已经**等于 TabBar 顶边
+     （外壳在 `.platform-mobile .main-content` 上给了 `padding-bottom: var(--mobile-tabbar-h)`）。
+     所以「容器高度 - top - 底部呼吸」天然避开了固定栏 —— 与平台/横竖屏无关，
+     不必再依赖任何变量，也就不会出现"改一处漏一处"。 */
+  width: 280px;
+  max-height: calc(100% - 72px - 12px);
   display: flex; flex-direction: column;
   background: var(--color-surface, rgba(15, 23, 42, 0.78));
   border: 1px solid var(--color-border, rgba(255, 255, 255, 0.12));
@@ -365,5 +398,19 @@ function handleInfoClick(item: HomeMenuItem) {
   .app-desc { font-size: 12px; }
   .feature-nav-btn { left: 12px; top: 12px; width: 40px; height: 40px; }
   .feature-nav-panel { left: 12px; top: 60px; width: calc(100vw - 24px); max-width: 320px; }
+}
+
+/* ★★ 移动外壳专属定位：**必须再写一份 `.platform-mobile`**。
+   `@media (max-width:767px)` 按视口宽判定，而 Capacitor **横屏视口常 800px+**
+   → 媒体查询不命中，但移动外壳（TabBar 由 v-if 渲染，与宽度无关）明明在。
+   实测横屏 880×420：面板落在桌面坐标 `left:16/top:72`，且
+   `max-height` 按桌面算 → 面板 bottom 440 > vh 420，**底边越出视口**、列表只剩 36% 可见。
+   与 `ADAPTATION-NOTES.md` 十四号坑同源（凡移动外壳专属样式都要写两份）。 */
+.platform-mobile .feature-nav-btn { left: 12px; top: 12px; width: 40px; height: 40px; }
+.platform-mobile .feature-nav-panel {
+  left: 12px;
+  top: 60px;
+  width: min(320px, calc(100vw - 24px));
+  max-height: calc(100% - 60px - 12px);
 }
 </style>

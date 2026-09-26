@@ -6,7 +6,9 @@
     <span class="conv-title-display">{{ currentConv?.title || '新任务' }}</span>
     <el-tooltip content="新建任务" placement="bottom">
       <el-button size="small" circle class="new-chat-btn" @click="startNewChat()" aria-label="新建任务">
-        <el-icon><EditPen /></el-icon>
+        <!-- 用 DocumentAdd（"新建文档"）而非 EditPen：EditPen 已被输入框工具条的
+             「新建任务」圆钮占用，两者同屏会撞脸（2026-09-21 实测 2 处重复）。 -->
+        <el-icon><DocumentAdd /></el-icon>
       </el-button>
     </el-tooltip>
     <div class="chat-topbar-actions">
@@ -14,7 +16,9 @@
 
       <el-tooltip content="上下文栏" placement="bottom">
         <el-button size="small" circle :type="contextSidebarOpen ? 'primary' : ''" @click="toggleContextSidebar" aria-label="切换上下文栏">
-          <el-icon><Grid /></el-icon>
+          <!-- 用 DataLine 而非 Grid：Grid 已被右侧面板空态的「数据浏览」占用，
+               两者同屏会撞脸（2026-09-21 实测 2 处重复）。 -->
+          <el-icon><DataLine /></el-icon>
         </el-button>
       </el-tooltip>
 
@@ -33,7 +37,9 @@
               <el-icon><FolderOpened /></el-icon><span>Git 文件</span>
             </el-dropdown-item>
             <el-dropdown-item @click="openConsoleTab">
-              <el-icon><Cpu /></el-icon><span>控制台</span>
+              <!-- 原为 Cpu：与 TabBar「模型」项同图标，下拉展开时同屏撞脸（2026-09-21 实测）。
+                   控制台 = 服务端/平台控制台，用 Platform 更贴语义。 -->
+              <el-icon><Platform /></el-icon><span>控制台</span>
             </el-dropdown-item>
             <el-dropdown-item divided @click="store.rightPanelOpen = !store.rightPanelOpen">
               <el-icon><Fold v-if="store.rightPanelOpen" /><Expand v-else /></el-icon>
@@ -57,7 +63,7 @@
         </template>
       </el-dropdown>
       <router-link v-else-if="isMobile" to="/login" class="mobile-user-avatar" style="text-decoration:none;font-size:14px">
-        <el-icon :size="18"><User /></el-icon>
+        <el-icon :size="18"><Avatar /></el-icon>
       </router-link>
     </div>
   </div>
@@ -65,7 +71,7 @@
 
 <script setup lang="ts">
 import { computed } from 'vue';
-import { Cpu, Expand, FolderOpened, Fold, Grid, Monitor, Operation, EditPen, SwitchButton, User, ChatDotRound, Platform, Lock } from '@element-plus/icons-vue';
+import { Expand, FolderOpened, Fold, DataLine, Monitor, Operation, DocumentAdd, SwitchButton, Avatar, Platform } from '@element-plus/icons-vue';
 import { useChat } from '../../composables/chat/useChat';
 import { usePlatform } from '../../composables/usePlatform';
 import { useSettingsStore } from '../../stores/settings';

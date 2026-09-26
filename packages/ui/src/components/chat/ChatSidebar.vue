@@ -16,12 +16,12 @@
       <div class="conv-header">
         <el-input v-model="search" placeholder="搜索任务" size="small" clearable :prefix-icon="Search" />
         <div class="conv-header-row">
-          <span v-if="!batchMode" class="batch-hint">右键会话进入批量，可整目录/整任务勾选</span>
+          <span v-if="!batchMode" class="batch-hint">{{ isTouchShell ? '长按会话进入批量，可整目录/整任务勾选' : '右键会话进入批量，可整目录/整任务勾选' }}</span>
           <el-button v-else size="small" type="warning" style="flex:1" @click="exitBatchMode">退出批量</el-button>
         </div>
       </div>
 
-      <div class="conv-tree" @contextmenu.prevent="openTreeMenu($event)">
+      <div class="conv-tree" @contextmenu.prevent="openTreeMenu($event)" v-on="bindLongPress((ev) => openTreeMenu(ev))">
         <!-- 对话根节点：未归类会话 -->
         <div class="tree-node tree-root">
           <div class="tree-node-head" @click="toggleRootCollapse">
@@ -47,6 +47,7 @@
               :class="{ active: conv.id === store.currentConvId, pinned: conv.pinned, selecting: batchMode }"
               @click="batchMode ? toggleConvSelect(conv.id) : (drawerOpen = false, selectConv(conv.id))"
               @contextmenu.prevent="openConvMenu($event, conv)"
+              v-on="bindLongPress((ev) => openConvMenu(ev, conv))"
               @dblclick="!batchMode && startRename(conv)"
             >
               <el-checkbox v-if="batchMode" :model-value="selectedConvIds.has(conv.id)" @click.stop @change="toggleConvSelect(conv.id)" />
@@ -77,6 +78,7 @@
             class="tree-node-head"
             @click="toggleSpaceCollapse(sp.id)"
             @contextmenu.prevent="openSpaceMenu($event, sp)"
+            v-on="bindLongPress((ev) => openSpaceMenu(ev, sp))"
           >
             <el-icon class="tree-caret" :class="{ expanded: !spaceCollapsed[sp.id] }"><CaretRight /></el-icon>
             <el-icon class="tree-node-icon"><FolderOpened /></el-icon>
@@ -100,6 +102,7 @@
               :class="{ active: conv.id === store.currentConvId, pinned: conv.pinned, selecting: batchMode }"
               @click="batchMode ? toggleConvSelect(conv.id) : (drawerOpen = false, selectConv(conv.id))"
               @contextmenu.prevent="openConvMenu($event, conv)"
+              v-on="bindLongPress((ev) => openConvMenu(ev, conv))"
               @dblclick="!batchMode && startRename(conv)"
             >
               <el-checkbox v-if="batchMode" :model-value="selectedConvIds.has(conv.id)" @click.stop @change="toggleConvSelect(conv.id)" />
@@ -263,6 +266,8 @@ import {
 } from '@element-plus/icons-vue';
 import { ElMessage } from 'element-plus';
 import { useChat } from '../../composables/chat/useChat';
+import { bindLongPress } from '../../composables/useLongPress';
+import { useMobileShell } from '../../composables/useMobileShell';
 import ScheduledTaskDialog from './ScheduledTaskDialog.vue';
 import ChatFileTab from './ChatFileTab.vue';
 import WorkspaceDirDialog from '../WorkspaceDirDialog.vue';
@@ -279,6 +284,15 @@ const {
   enterBatchSelect, exitBatchMode, toggleBatchMode, toggleSelectAllInSpace, toggleSelectAllInRoot,
   spaceSelectState, rootSelectState,
 } = useChat();
+
+/**
+ * 是否触屏形态（窄视口 或 Capacitor）。
+ * 只用于**文案**：触屏上要说「长按」，桌面/Web 上说「右键」——
+ * 否则用户按提示操作却按不出来（2026-09-22 反馈的「长按没有实现」）。
+ * ★ 交互本身不依赖它：`bindLongPress` 内部按 `pointerType === 'touch'` 判定，
+ *   鼠标右键照常走原生 contextmenu，两侧互不影响。
+ */
+const isTouchShell = useMobileShell();
 
 // ===== 空间目录选择：浏览本地目录，选完自动回填路径，名称留空时以目录名带出 =====
 const dirPickerVisible = ref(false);
