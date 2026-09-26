@@ -25,6 +25,7 @@ import { useIsMobile } from '../useIsMobile';
 import { usePlatform } from '../usePlatform';
 import { useRouter } from 'vue-router';
 import { api } from '../../api/client';
+import { waitForBackend } from '../../api/backend-ready';
 import type { Agent, Message, Conversation, Platform, Model } from '@yan-zhi/shared';
 import { estimateTokens, CHAT_MODEL_TYPES, buildArtifactRelDir, joinArtifactPath } from '@yan-zhi/shared';
 import { sceneByKey, type SceneKey } from '../../config/scenes';
@@ -1446,23 +1447,120 @@ function createChat() {
     ElMessage.success('已更改分类');
   }
 
-  /** 自愈：持久化的默认平台/模型若失效（被删/库重置/账号切换），回退到第一个可用对话模型 */
-  async function healStalePlatform() {
+  /**
+ * 自愈：持久化的默认平台/模型若失效（被删/库重置/账号切换），回退到第一个可用对话模型。
+ *
+ * ★★ 必须区分「列表为空」的两种原因（这是「默认模型丢失」反复修不好的真根因）：
+ *   ① **还没成功拉到**（移动端内嵌后端冷启动、网络抖动）→ 此时 platforms/models 都是空，
+ *      若照常回退，nextM 会是空串，于是把 settings 里的 defaultModelId **改写成空**
+ *      —— 用户的默认模型被永久抹掉，之后即使后端就绪、重试成功也**救不回来**。
+ *      表现为「刚进移动端模型平台没初始化、输入框没有默认挂载」，且重启也复现。
+ *   ② **确实拉到了但没有可用对话模型** → 这时才应该回退（保留原有的自愈语义）。
+ *
+ * 判据用 platformStore 的 platformsLoaded / modelsLoaded（只有成功响应才置 true）。
+ * 两个都没就绪 → 直接 return，不碰用户配置。
+ */
+async function healStalePlatform() {
     const dp = settingsStore.settings.defaultPlatformId;
     const dm = settingsStore.settings.defaultModelId;
     const dpOk = !!dp && platformStore.platforms.some((p) => p.id === dp);
     const dmOk = !!dm && platformStore.models.some((m) => m.id === dm && m.enabled);
     if (dpOk && dmOk) return;
+    // ★ 数据未就绪：不改配置（否则会把有效的默认值清空）
+    if (!platformStore.platformsLoaded || !platformStore.modelsLoaded) {
+      // 「持久化值在当前列表里查不到」但列表又没拉全 —— 无法判定失效，保持原样
+      if (dp || dm) return;
+    }
     const firstChat = platformStore.models.find((m) => m.enabled && CHAT_MODEL_TYPES.includes(m.type));
     const fbPlatform = firstChat ? platformStore.platforms.find((p) => p.id === firstChat.platformId) : undefined;
-    const nextP = fbPlatform?.id || platformStore.platforms[0]?.id || '';
-    const nextM = firstChat?.id || '';
+    // ★ 兜底一律回落到**原值**（dp / dm），不再有 `|| ''` 收尾 ——
+    //   拿不到候选时就保持现状，绝不把用户配置写成空串。
+    const nextP = fbPlatform?.id || platformStore.platforms[0]?.id || dp;
+    const nextM = firstChat?.id || dm;
     if (nextP !== dp || nextM !== dm) {
       await settingsStore.update({ defaultPlatformId: nextP, defaultModelId: nextM });
     }
   }
 
+  /**
+   * 数据就绪后补挂默认模型。
+   *
+   * 场景：onMounted 时平台/模型还没拉到（移动端内嵌后端冷启动），
+   * 上面的 `selectedModelId` 分支因 `chatModels` 为空而**什么都不选** ——
+   * 于是输入框停在「选择模型」空态，用户必须手动进模型页点一下。
+   *
+   * 这里：只要还没选中模型，就等 `modelsLoaded` 变真后补选一次
+   * （优先数据库的 is_default → settings → 第一个可用对话模型，与 mounted 同口径）。
+   * 用一个 once 标记防止反复触发；选到即停。
+   */
+  let modelPickedAfterReady = false;
+  function ensureModelWhenReady() {
+    if (selectedModelId.value) { modelPickedAfterReady = true; return; }
+
+    // ★★ 数据已就绪 → 根本不需要挂 watch，直接补选一次即可。
+    //   这条早退不只是优化，更是**修掉一个致命 bug**：
+    //   原实现在任何情况下都调用 `watch(..., { immediate: true })`，
+    //   而 immediate 回调是**同步执行**的 —— 回调体里引用了 `const stop`，
+    //   此时 `stop` 还处在 TDZ（尚未初始化）→ 抛
+    //   `ReferenceError: Cannot access 'stop' before initialization`。
+    //   该错误发生在 onMounted 的 await 恢复之后，**直接冒泡成未捕获异常**，
+    //   导致 `Chat.vue` 整页挂载失败：页面上只剩底部 TabBar + 一句智能体名，
+    //   对话区/顶栏/输入框全部不渲染 —— 这就是用户报的「UI 还错乱了」。
+    if (platformStore.modelsLoaded) {
+      const def = chatModels.value.find((m) => m.isDefault);
+      const settingsModel = chatModels.value.find((m) => m.id === settingsStore.settings.defaultModelId);
+      const first = def || settingsModel || chatModels.value[0];
+      if (first) { selectedModelId.value = first.id; modelPickedAfterReady = true; }
+      return;
+    }
+
+    // ★★ `{ immediate: true }` 的回调是**同步执行**的，而它需要能"自我注销"。
+    //   任何在 watch() **返回之后**才赋值的变量（`const stop = watch(...)` 或
+    //   `const unwatch = watch(...)`）在回调里都是 TDZ → 一访问就抛
+    //   `ReferenceError: Cannot access 'stop' before initialization`。
+    //   正解：用一个**在外层作用域声明的可变槽位** unwatch，回调里只读它、
+    //   且读之前判真（首次同步执行时它还是 undefined，属于合法值，不会抛）。
+    let unwatch: (() => void) | null = null;
+    /** 统一的停止入口：拿到 watch 句柄后调用才真的注销。 */
+    const stopWatch = () => { if (unwatch) { unwatch(); unwatch = null; } };
+
+    unwatch = watch(
+      () => [platformStore.modelsLoaded, platformStore.platformsLoaded],
+      async () => {
+        if (modelPickedAfterReady) return;
+        if (!platformStore.modelsLoaded) return;
+        // 已有选择（用户手动选/会话带出）就不再干预
+        if (selectedModelId.value) { modelPickedAfterReady = true; stopWatch(); return; }
+        const def = chatModels.value.find((m) => m.isDefault);
+        const settingsModel = chatModels.value.find((m) => m.id === settingsStore.settings.defaultModelId);
+        const first = def || settingsModel || chatModels.value[0];
+        if (first) {
+          selectedModelId.value = first.id;
+          modelPickedAfterReady = true;
+          stopWatch();
+        }
+      },
+      { immediate: true },
+    );
+
+    // 兜底：30s 后无论如何停掉这个监听，避免长期挂着
+    setTimeout(() => { if (!modelPickedAfterReady) stopWatch(); }, 30000);
+  }
+
   onMounted(async () => {
+    // ★★★ 首屏数据初始化的第一道门：先等后端就绪。
+    //
+    // 真机顺序是「WebView 先加载前端 → 内嵌 Node 后端后启动」，若不等就发请求，
+    // 会出现**极不对称的半初始化**（2026-09-22 实测）：
+    //   · loadAgents()（排第一，无重试）→ 网络错误 → agents 静默变成 []，**永久为空**；
+    //   · loadPlatforms()（有 getWithRetry，重试 ~10.5s）→ 重试期间后端起来了 → 成功；
+    //   · loadSkills()（排更后）→ 那时后端已就绪 → 成功。
+    // 结果就是用户看到的「数据初始化不行，要点进模型平台/智能体平台才有数据」。
+    //
+    // `waitForBackend` 有幂等记忆：授权校验（路由守卫）里已经等过一次，
+    // 这里立即返回、零开销；只有在"授权校验超时放行"等边角情况下才真正等待。
+    await waitForBackend();
+
     await agentStore.loadAgents();
     await store.loadConversations();
     await platformStore.loadPlatforms();
@@ -1470,6 +1568,9 @@ function createChat() {
     // 自愈：持久化的默认平台/模型若已失效（被删/库重置/账号切换），回退到第一个可用平台/模型，
     // 避免 stale defaultPlatformId 触发 404 且导致聊天无法发送（消息发出去不显示）
     await healStalePlatform();
+    // ★ 数据没就绪时 mounted 阶段选不出模型（chatModels 为空）→ 先不选，
+    //   挂一个「就绪后补选」的等待，避免用户看到空输入框却不知道在等什么。
+    ensureModelWhenReady();
     await mcpStore.loadServers();
     await skillStore.loadSkills();
     spaceStore.loadSpaces();

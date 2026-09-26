@@ -5,6 +5,7 @@
 import { defineStore } from 'pinia';
 import { ref } from 'vue';
 import { api } from '../api/client';
+import { waitForBackend } from '../api/backend-ready';
 import { setLicensedModes } from './mode';
 import {
   loadLicenseCode,
@@ -88,6 +89,27 @@ export const useLicenseStore = defineStore('license', () => {
   /** 启动时校验本地已存授权码（只跑一次有效校验）。无本地码时尝试预置试用码自动填充。 */
   async function init() {
     if (initialized.value) return;
+
+    // ★★★ 先等后端就绪再校验授权 —— 这是移动端冷启动的关键一步。
+    //
+    // 真机顺序是「WebView 先加载前端 → 内嵌 Node 后端后启动」，此时若直接发请求：
+    // 请求失败 → 校验不出结果 → 路由守卫把用户挡在 #/license，
+    // 或（修复前）异常击穿路由启动 → .chat-page 永不挂载 → 各 store 的 onMounted 不执行
+    // → 平台/模型/智能体全空（用户："数据初始化不行，要点进那两个页面才有"）。
+    //
+    // 放在这里而不是各 store：授权校验是**路由守卫里的第一道**，
+    // 它过了才会挂载页面、才会跑 useChat.onMounted —— 一次等待，全局受益。
+    // `waitForBackend` 有幂等记忆，就绪后立即返回，不引入额外延迟。
+    const beReady = await waitForBackend();
+    if (!beReady) {
+      // 超时：不把用户永久挡在授权页。置 initialized 让守卫放行（门户大开好过整站打不开），
+      // 后续业务请求失败时会各自走自己的错误路径；后端一旦起来，各页 onMounted 仍能补拉。
+      initialized.value = true;
+      verified.value = false;
+      error.value = '后端服务未就绪';
+      return;
+    }
+
     const code = await loadLicenseCode();
     if (!code) {
       // 首次运行：尝试预置试用授权码自动激活

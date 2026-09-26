@@ -154,6 +154,7 @@ import { Plus, Connection, Download, Delete } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import type { ModelType, PlatformApiKey } from '@yan-zhi/shared';
 import { usePlatformStore } from '../stores';
+import { waitForBackend } from '../api/backend-ready';
 import { DEFAULT_CONTEXT_WINDOW } from '../utils/context-window';
 import PlatformDetail from './PlatformDetail.vue';
 import LocalModelMarket from '../components/LocalModelMarket.vue';
@@ -187,7 +188,10 @@ const isIndeterminate = computed(() => checkedModelIds.value.length > 0 && check
 
 // 以数据库 status 为准，不进页自动 ping（避免线上平台因瞬时抖动被误判掉线）。
 // 需要校验时由用户手动点"测试连通性"按钮。
-onMounted(() => {
+onMounted(async () => {
+  // ★ 与 useChat 同口径：先等后端就绪再拉，避免移动端冷启动时静默拿到空数据
+  //   （`loadPlatforms` 内部虽有 getWithRetry，但这里等待能让首帧就拿到数据、少一次空态闪烁）。
+  await waitForBackend();
   store.loadPlatforms();
 });
 

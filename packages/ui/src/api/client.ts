@@ -112,7 +112,30 @@ export async function apiFetch<T = any>(
   const licenseCode = getLicenseCode();
   if (licenseCode) headers['x-license'] = licenseCode;
 
-  const res = await fetch(BASE_URL + path, { ...options, headers });
+  const res = await fetch(BASE_URL + path, { ...options, headers }).catch((e: unknown) => {
+    // ★★★ 网络层错误**必须转成 ApiError 返回，绝不能抛出去**。
+    //
+    // 背景（2026-09-22 定位到的移动端"数据不初始化"根因）：
+    //   Capacitor 真机的启动顺序是「WebView 先加载前端 → 内嵌 Node 后端后启动」，
+    //   于是**首个请求必然打在一个还没监听的后端上** → `ERR_CONNECTION_REFUSED`
+    //   → `fetch` 抛 `TypeError: Failed to fetch`。
+    //   而本函数原先没有 catch，异常直接冒泡：
+    //     ① `licenseStore.init()` 挂掉 → 路由守卫 `await init()` 抛错 →
+    //        **`[Vue Router] Unexpected error when starting the router`** →
+    //        `.chat-page` 从未挂载 → `useChat.onMounted()` 根本没执行 →
+    //        **平台/模型/智能体/技能全是空的**（用户："数据初始化不行"）；
+    //     ② 任何一处调用方（如 mounted hook）也会被这一下打死
+    //        （`Unhandled error during execution of mounted hook`）。
+    //   ★ 这与 ApiError 的设计意图一致：**失败是返回值，不是异常** ——
+    //     只有"网络层没接住"这个漏洞让异常漏了出去。
+    //   返回 status: 0 作为"未拿到 HTTP 响应"的哨兵值，调用方据此区分
+    //   「后端不可达（可重试）」与「后端明确拒绝（4xx/5xx）」。
+    void e;
+    return null;
+  });
+  if (!res) {
+    return { error: 'NETWORK_UNREACHABLE', status: 0 };
+  }
   const json = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
   if (!res.ok) {
     // 本地模式已屏蔽鉴权，401 不再清 token 跳登录

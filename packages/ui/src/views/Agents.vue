@@ -210,6 +210,7 @@ import { ElMessageBox, ElMessage } from 'element-plus';
 import { useAgentStore } from '../stores/agent';
 import { resolveAgentIcon as agentIconOf } from '../utils/agentIcon';
 import { api } from '../api/client';
+import { waitForBackend } from '../api/backend-ready';
 import type { Agent } from '@yan-zhi/shared';
 import AgentEditDialog from '../components/AgentEditDialog.vue';
 import MarketplaceShell from '../components/marketplace/MarketplaceShell.vue';
@@ -327,6 +328,9 @@ async function installRemoteAgent(agentId: string) {
 }
 
 onMounted(async () => {
+  // ★ 与 useChat 同口径：`loadAgents` 自身没有重试，后端未就绪时会**静默清空**成 []
+  //   （2026-09-22 实测：冷启动下 agents 永久为 0）。这里先等就绪。
+  await waitForBackend();
   loading.value = true;
   try { await store.loadAgents(); } finally { loading.value = false; }
   await loadAgentRemoteSources();
