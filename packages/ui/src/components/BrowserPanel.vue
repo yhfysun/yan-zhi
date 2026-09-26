@@ -2157,7 +2157,7 @@ onUnmounted(() => {
   padding: 0 4px; height: 36px; flex-shrink: 0;
 }
 [data-theme="dark"] .browser-tabbar { background: var(--el-bg-color); }
-.tab-list { display: flex; align-items: flex-end; overflow-x: auto; overflow-y: hidden; height: 100%; flex: 1; }
+.tab-list { display: flex; align-items: flex-end; overflow-x: auto; overflow-y: hidden; height: 100%; flex: 1; min-width: 0; }
 .tab-list::-webkit-scrollbar { height: 0; }
 .tab-item {
   display: inline-flex; align-items: center; gap: 6px;
@@ -2285,8 +2285,43 @@ onUnmounted(() => {
 .home-search-box:focus-within { border-color: var(--el-color-primary); box-shadow: 0 1px 8px color-mix(in srgb, var(--el-color-primary) 18%, transparent); }
 .home-search-ico { color: var(--el-text-color-secondary, #9aa0a6); flex-shrink: 0; }
 .home-search-input { flex: 1; border: none; outline: none; background: transparent; font-size: 16px; color: var(--el-text-color-primary, #202124); }
-.home-search-btn { border: none; background: var(--el-color-primary); color: #fff; height: 36px; padding: 0 20px; border-radius: 18px; cursor: pointer; font-size: 14px; }
+.home-search-btn { border: none; background: var(--el-color-primary); color: #fff; height: 36px; padding: 0 20px; border-radius: 18px; cursor: pointer; font-size: 14px; flex-shrink: 0; }
 .home-search-btn:hover { filter: brightness(1.05); }
+
+/* ===== 窄屏适配 =====
+   工具栏一行固定放了 5 个导航钮 + 引用 + 地址栏 + 缩放组(≈130px) + 收藏 + 密码 + 全屏 + 更多
+   ≈ 14 个控件、总固定宽约 560px，且**没有任何一项可收缩**（都写了 flex-shrink:0）。
+   实测 640px 起地址栏被挤没、缩放组被推出右缘（zoom-group@537）；400px 更严重
+   （url-bar@417 / zoom-group@537）。
+   处置：≤900px 收起次要控件（缩放组、密码管理——两者「更多」菜单里都有等价入口），
+   保证「导航按钮 + 地址栏」这条主链路完整；≤560px 再收起「用系统浏览器打开」
+   （内部打开已可用，外部打开非必需）。地址栏本身加 min-width 兜底，绝不被压成 0。 */
+@media (max-width: 900px) {
+  .browser-toolbar { padding: 6px 8px; gap: 2px; }
+  .nav-btn { width: 30px; height: 30px; }
+  .url-bar { min-width: 120px; padding: 0 10px; }
+  /* 缩放组与密码管理：收进「更多」菜单（那边已有等价入口） */
+  .zoom-group,
+  .browser-toolbar > .nav-btn[title="密码管理"] { display: none; }
+}
+
+@media (max-width: 560px) {
+  .browser-toolbar { gap: 1px; }
+  .nav-btn { width: 28px; height: 28px; }
+  .nav-btn > svg { width: 16px; height: 16px; }
+  .url-bar { min-width: 90px; }
+  .url-input { font-size: 13px; }
+  /* 「用系统浏览器打开」在窄屏收起：面板内已能正常浏览 */
+  .browser-toolbar > .nav-btn[title="用系统浏览器打开"] { display: none; }
+  /* 起始页搜索框：窄屏去掉「搜索」按钮的横向占位，回车即可提交 */
+  .home-page { padding: 24px 12px 20px; }
+  .home-logo { font-size: 26px; letter-spacing: 2px; }
+  .home-search-box { width: 100%; height: 44px; padding: 0 6px 0 12px; }
+  .home-search-input { font-size: 14px; }
+  .home-search-btn { padding: 0 12px; height: 32px; font-size: 13px; }
+  .site-grid { grid-template-columns: repeat(auto-fill, minmax(72px, 1fr)); gap: 10px; }
+  .home-section { width: 100%; }
+}
 
 .home-section { width: min(880px, 96%); margin: 0 auto 28px; }
 .home-section-title { font-size: 14px; font-weight: 600; color: var(--el-text-color-primary, #202124); margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }

@@ -841,6 +841,9 @@ async function installTool(item: any) {
   display: flex; flex-direction: column; gap: 8px;
   /* 不再 height:100%（那是给 stretch 行准备的）；有图皮肤下 self-start 兜底 */
   align-self: start;
+  /* ★ 网格子项默认 min-width:auto → 卡片内的长 tool id / 长描述会把列撑破
+     （实测 400px 下卡片右缘到 424px）。显式 min-width:0 才允许真收缩。 */
+  min-width: 0;
 }
 .tool-card:hover {
   transform: translateY(-2px);
@@ -848,8 +851,8 @@ async function installTool(item: any) {
   border-color: var(--glass-border-strong);
 }
 .tool-card.disabled { opacity: 0.5; }
-.tool-card-header { display: flex; align-items: center; gap: 6px; }
-.tool-card-name { font-family: monospace; font-size: 13px; font-weight: 600; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tool-card-header { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.tool-card-name { font-family: monospace; font-size: 13px; font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tool-card-desc {
   font-size: 12px; color: var(--color-text-secondary); line-height: 1.5; margin: 0;
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
@@ -960,6 +963,17 @@ async function installTool(item: any) {
   .sub-title { font-size: 16px; }
   .card-grid { grid-template-columns: 1fr; gap: 12px; }
   .market-grid { grid-template-columns: 1fr; gap: 12px; }
+  /* tab 条 5 项在窄屏溢出：Element 默认只在 hover 出箭头，触屏够不着 → nav-scroll 自己横向滚动。
+     注意不要动 nav-wrap 的 overflow（它是 nav-scroll 的宽度约束来源，改成 visible 会照旧撑破）。 */
+  .tl-tabs :deep(.el-tabs__nav-scroll) {
+    overflow-x: auto; overflow-y: hidden; -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+  .tl-tabs :deep(.el-tabs__nav-scroll::-webkit-scrollbar) { display: none; }
+  .tl-tabs :deep(.el-tabs__nav-prev),
+  .tl-tabs :deep(.el-tabs__nav-next) { display: none; }
+  .tl-tabs :deep(.el-tabs__item) { white-space: nowrap; }
+  .tool-card { padding: 13px; }
   /* 参数详情弹窗：窄屏占满宽度，schema 高度收紧 */
   .schema-pre { max-height: 26vh; font-size: 11px; }
 }

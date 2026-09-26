@@ -711,6 +711,10 @@ watch(() => agentStore.agents.length, ensureFixedAgent);
 
 <style scoped>
 .wf-page { display: flex; flex-direction: column; height: 100%; min-height: 0; position: relative; }
+/* 窄屏堆叠后总高超过视口，整页滚动交给 .wf-body；此处只解除 height 锁定 */
+@media (max-width: 900px) {
+  .wf-page { height: auto; min-height: 100%; }
+}
 .wf-top {
   display: flex; align-items: center; gap: 10px; padding: 8px 14px;
   border-bottom: 1px solid var(--el-border-color-lighter); flex: none;
@@ -966,5 +970,83 @@ watch(() => agentStore.agents.length, ensureFixedAgent);
   /* AI 形态下它是右固定栏 → 宽度也走变量，可以拖拽 */
   flex: 0 0 var(--wf-main-w, 400px); width: var(--wf-main-w, 400px); min-width: 0;
   border-left: 1px solid var(--el-border-color-lighter);
+}
+
+/* ===== 窄屏：三栏改纵向堆叠 =====
+   本页三栏宽度全部走变量（side 260 / chat 352 / main 400），桌面端合理；
+   但视口 <900px 时三者之和已超过可用宽度 → flex 把每一栏压到极窄
+   （实测 640px 下中间栏只剩约 50px，描述与字段全被挤成竖排单字；
+    400px 下更是整屏崩坏）。`.wf-main` 虽写了 `flex:1 1 auto; min-width:0` 能被压，
+   但「能压」不等于「还能用」——所以窄屏不再横排。
+
+   策略：纵向堆叠，每栏给足高度、各自内部滚动（不让整页滚，否则顶部工具条会被带走）。
+   ⚠️ 必须连 `.is-lead-ai` 的变体一起覆盖：那几条选择器是 0,2,0 特异性，
+   只写 `.wf-chat`（0,1,0）会被它们压过去，等于白改。 */
+@media (max-width: 900px) {
+  .wf-body {
+    flex-direction: column;
+    overflow-y: auto;
+  }
+  /* 堆叠态下拖拽条无意义（宽度不再由横排分配） */
+  .wf-body .rs-handle { display: none; }
+
+  .wf-side,
+  .is-lead-ai .wf-side {
+    order: 0;
+    flex: none;
+    width: 100%;
+    max-height: 34vh;
+    border-right: none;
+    border-bottom: 1px solid var(--el-border-color-lighter);
+  }
+  .wf-list { max-height: 22vh; }
+
+  .wf-main,
+  .is-lead-ai .wf-main {
+    order: 1;
+    flex: none;
+    width: 100%;
+    min-height: 340px;
+    max-height: none;
+    border-left: none;
+    border-right: none;
+    padding: 12px 14px;
+  }
+
+  .wf-chat,
+  .is-lead-ai .wf-chat {
+    order: 2;
+    flex: none;
+    width: 100%;
+    height: 60vh;
+    min-height: 320px;
+    border-right: none;
+    border-top: 1px solid var(--el-border-color-lighter);
+  }
+
+  /* 表单与控件在窄屏占满宽度，别留 640px 的硬上限 */
+  .wf-form,
+  .wf-override,
+  .wf-monitor,
+  .wf-issues,
+  .wf-warns { max-width: 100%; }
+  .wf-ctl { max-width: none; }
+  /* 行内字段（标签 120px + 控件）在窄屏改为上下排列，否则控件被压到很窄 */
+  .wf-field.is-inline { flex-direction: column; align-items: stretch; }
+  .wf-field.is-inline .wf-label { width: auto; }
+}
+
+@media (max-width: 640px) {
+  /* 顶栏：说明文字先收，保证模式徽标与图标按钮一排放得下 */
+  .wf-top { flex-wrap: wrap; gap: 6px; padding: 6px 10px; }
+  .wf-hint { display: none; }
+  .wf-spacer { min-width: 0; }
+  .wf-badge { font-size: 11px; padding: 2px 6px; }
+  .wf-page { height: auto; min-height: 100%; }
+  .wf-side { max-height: 30vh; }
+  .wf-main { min-height: 300px; }
+  .wf-chat { height: 66vh; }
+  .wf-run-head { flex-wrap: wrap; gap: 8px; }
+  .wf-run-head .wf-btn { margin-left: 0; }
 }
 </style>

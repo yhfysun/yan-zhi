@@ -60,6 +60,10 @@
   font-size: 11px;
   color: var(--dw-ink-3);
 }
+/* 把「执行按钮组」推到右侧的弹性垫片。
+   ★ 用具名类而非内联 style="flex:1"：内联样式优先级高于媒体查询，
+   窄屏换行布局要收起它时会被内联样式顶住、只能靠 !important 硬压。 */
+.dw-root .dc-bar-spacer { flex: 1; }
 
 .dw-root .kbd {
   font-family: var(--dw-f-mono);
@@ -420,4 +424,56 @@
   font-size: 11px;
   color: var(--dw-ink-3);
   font-family: var(--dw-f-mono);
+}
+
+/* ===== 窄屏适配 =====
+   本页两处固定宽度在窄屏必然溢出（实测 400/360px）：
+   ① `.dc-bar` 一行放「数据源选择 240px + 只读护栏 + 上限提示 + 3 个执行按钮」，
+      无 flex-wrap → 护栏与上限提示被压成**竖排单字**（实测 dc-limits 22x153）；
+   ② `.dc-tree` 固定 250px 且 flex-shrink:0 → 把右侧编辑器压到只剩约 100px。
+   处置：顶栏允许换行并让数据源选择占满整行；schema 树在窄屏改为「上方可折叠区」，
+   编辑器拿到全宽。 */
+@media (max-width: 760px) {
+  .dw-root.dc-root { height: auto; min-height: 0; }
+
+  .dw-root .dc-bar {
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 8px 10px;
+    border-radius: var(--dw-r-md) var(--dw-r-md) 0 0;
+  }
+  /* 数据源选择独占一行：240px 固定宽在 360px 视口下已占 2/3 */
+  .dw-root .dc-ds-select { width: 100%; }
+  /* 护栏与上限提示保持单行不换字（nowrap 后自然换到下一行，而不是被挤成竖排） */
+  .dw-root .dc-guard,
+  .dw-root .dc-limits { white-space: nowrap; }
+  /* 原来用于右推按钮的弹性垫片在换行布局里会制造空洞 */
+  .dw-root .dc-bar-spacer { display: none; }
+  .dw-root .dc-bar .el-button { flex: 1 1 auto; }
+  .dw-root .kbd { margin-left: 2px; }
+
+  /* schema 树：改为上方横向可折叠条，不再硬占 250px */
+  .dw-root .dc-body { flex-direction: column; }
+  .dw-root .dc-tree {
+    width: 100%;
+    max-height: 34vh;
+    border-right: none;
+    border-bottom: 1px solid var(--dw-rule);
+    padding: 8px;
+    gap: 6px;
+  }
+  .dw-root .dc-tree-scroll { max-height: 24vh; }
+  .dw-root .dc-editor { height: auto; min-height: 180px; flex: 0 0 auto; }
+  .dw-root .dc-main { min-height: 0; }
+  .dw-root .dc-results { min-height: 240px; }
+  .dw-root .dc-ed-hint { display: none; }
+  .dw-root .dc-gutter { width: 34px; padding: 10px 6px; }
+}
+
+@media (max-width: 480px) {
+  .dw-root .dc-bar { padding: 6px 8px; gap: 6px; }
+  .dw-root .dc-guard { font-size: 10px; padding: 2px 6px; }
+  .dw-root .dc-limits { font-size: 10px; }
+  .dw-root .dc-grid td { max-width: 200px; }
+  .dw-root .dc-res-foot { flex-wrap: wrap; gap: 6px 12px; }
 }

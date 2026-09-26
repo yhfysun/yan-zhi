@@ -418,3 +418,41 @@
   padding: 0 5px;
   flex-shrink: 0;
 }
+
+
+/* ===== 窄屏适配 =====
+   本页是三栏固定宽度布局（左 264 / 中 flex / 右 380），无媒体查询时：
+   左+右固定占用 644px，视口 640px 就必然横向溢出（实测 640/400 均溢出，
+   右栏被推到 683px、表格被推到 607px）。
+   处置：≤1180px 先给中栏兜住最小宽度并把表格收进横向滚动；
+   ≤980px 改为纵向堆叠，三栏各占全宽。 */
+@media (max-width: 1180px) {
+  .dw-root.ont-root { gap: 10px; }
+  .dw-root .ont-left { width: 220px; }
+  .dw-root .ont-right { width: 320px; }
+  /* 选择器表格列多，窄屏只让表格自己横向滚，不要撑破整页 */
+  .dw-root .ont-spec-table { display: block; overflow-x: auto; white-space: nowrap; }
+  .dw-root .ont-mid { min-width: 0; }
+}
+
+@media (max-width: 980px) {
+  .dw-root.ont-root {
+    flex-direction: column;
+    height: auto;
+    min-height: 0;
+  }
+  .dw-root .ont-left,
+  .dw-root .ont-right { width: 100%; }
+  .dw-root .ont-left { max-height: 320px; }
+  .dw-root .ont-mid { min-height: 420px; }
+  .dw-root .ont-right { min-height: 320px; }
+  .dw-root .ont-list { max-height: 220px; }
+}
+
+@media (max-width: 640px) {
+  .dw-root.ont-root { gap: 8px; padding-bottom: 8px; }
+  .dw-root .ont-left-bar,
+  .dw-root .ont-right-head,
+  .dw-root .ont-right-tabs { padding-left: 10px; padding-right: 10px; }
+  .dw-root .ont-actionbar { flex-wrap: wrap; gap: 6px; padding: 8px 10px; }
+}

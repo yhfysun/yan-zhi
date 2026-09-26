@@ -926,16 +926,22 @@ function onTogglePublic() {
 /* ===== 三屏布局 ===== */
 .three-pane {
   display: grid;
-  grid-template-columns: 280px 1fr 380px;
+  /* ★ 中间列必须 minmax(0, 1fr)：单纯 1fr 的下限是 min-content，
+     任一子项含宽内容（长表格 / 代码块 / 未收缩的输入框）就会把网格列撑破视口 ——
+     实测 900px 下整屏被推到 1854px。minmax(0,…) 才允许真正收缩。 */
+  grid-template-columns: 280px minmax(0, 1fr) 380px;
   gap: 14px;
   flex: 1;
   min-height: 0;
+  min-width: 0;
 }
 
 .pane {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  /* 同上：flex/grid 子项默认 min-width:auto，不加这行长内容照样撑破容器 */
+  min-width: 0;
   overflow: hidden;
   border-radius: var(--radius-md);
 }
@@ -1213,9 +1219,10 @@ function onTogglePublic() {
 /* ===== 响应式：小屏幕上下堆叠 ===== */
 @media (max-width: 1023px) {
   .three-pane {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
     grid-template-rows: auto auto auto;
     overflow-y: auto;
+    overflow-x: hidden;
   }
   .pane { max-height: none; overflow: visible; }
   .pane-left { min-height: 360px; }
@@ -1230,5 +1237,13 @@ function onTogglePublic() {
   .task-detail-grid { grid-template-columns: 1fr; }
   .config-row { flex-direction: column; }
   .config-row .el-form-item { min-width: 100%; }
+  /* 堆叠态下三屏总高很大，左栏/右栏不必再留大 min-height（避免空白拖长页面） */
+  .pane-left { min-height: 240px; }
+  .pane-right { min-height: 320px; }
+}
+/* 窄屏：pane 内所有横向容器都不许撑破（表格/代码/参数行是常见元凶） */
+@media (max-width: 1023px) {
+  .pane table, .pane pre, .pane .el-table { max-width: 100%; }
+  .pane .el-table__body-wrapper, .pane .el-scrollbar__wrap { overflow-x: auto; }
 }
 </style>

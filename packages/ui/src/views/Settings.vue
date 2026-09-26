@@ -780,6 +780,21 @@ onMounted(async () => {
   .glass-tabs { padding: 12px; }
   .glass-tabs :deep(.el-tabs__header) { margin-bottom: 12px; }
   .glass-tabs :deep(.el-tabs__nav-wrap::after) { display: none; }
+  /* ★ 窄屏 tab 一共 9 项（通用/皮肤/数据/记忆/商城/局域网/语音包/日志/关于），
+     640px 就溢出、400px 全部溢出。Element 默认 nav-scroll 是 overflow:hidden +
+     只在 hover 时出现箭头 → 触屏上等于够不着后面的 tab。
+     让 nav-scroll 自己横向滚动（必须在 nav-wrap 的 overflow:hidden 内，
+     若把 nav-wrap 改成 visible，nav-scroll 会失去宽度约束、照旧撑破）。 */
+  .glass-tabs :deep(.el-tabs__nav-scroll) {
+    overflow-x: auto; overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+  .glass-tabs :deep(.el-tabs__nav-scroll::-webkit-scrollbar) { display: none; }
+  .glass-tabs :deep(.el-tabs__nav) { flex-wrap: nowrap; }
+  .glass-tabs :deep(.el-tabs__nav-prev),
+  .glass-tabs :deep(.el-tabs__nav-next) { display: none; }
+  .glass-tabs :deep(.el-tabs__item) { white-space: nowrap; }
   .el-form { max-width: 100% !important; }
   .el-form-item { margin-bottom: 14px; }
   .data-section { flex-wrap: wrap; gap: 8px; }

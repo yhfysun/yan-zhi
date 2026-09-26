@@ -27,7 +27,7 @@
       </span>
       <span class="dc-limits">上限 {{ maxRows }} 行 · 超时 {{ timeoutSec }}s · DDL 一律拒绝</span>
 
-      <span style="flex: 1" />
+      <span class="dc-bar-spacer" />
       <el-button size="small" @click="formatSql">格式化</el-button>
       <el-button size="small" :loading="running" @click="run('current')">
         运行选中 <kbd class="kbd">⌃↵</kbd>
