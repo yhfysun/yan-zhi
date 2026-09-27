@@ -1,7 +1,37 @@
 const { ipcRenderer, contextBridge, webUtils } = require('electron');
 
+/**
+ * 本实例的后端 API 端口 + 基址。
+ *
+ * ★★★ 必须由主进程下发（additionalArguments），**不在渲染层硬编码 3001**。
+ *   原因：开发实例监听 3002、安装版监听 3001，两个实例可同时运行；
+ *   若前端写死 3001，开发实例界面会去请求**安装版的后端**（数据串台、看着像"软件自己在变"）。
+ *
+ * 取值顺序：主进程下发的 `--yz-api-port=<n>` → 环境变量 → 3001（兜底）。
+ * process.argv 在 preload（有 node 能力）里可读；渲染层拿不到 env，只能走 contextBridge。
+ */
+function resolveApiPort() {
+  try {
+    const hit = (process.argv || []).find((a) => a.startsWith('--yz-api-port='));
+    if (hit) {
+      const n = Number(hit.split('=')[1]);
+      if (Number.isInteger(n) && n > 0 && n < 65536) return n;
+    }
+  } catch { /* ignore */ }
+  const envPort = Number(process.env.YANZHI_API_PORT);
+  if (Number.isInteger(envPort) && envPort > 0 && envPort < 65536) return envPort;
+  return 3001;
+}
+const API_PORT = resolveApiPort();
+
 // 通过 contextBridge 安全地暴露 API 到渲染进程
 contextBridge.exposeInMainWorld('electronAPI', {
+  // 本实例后端端口 / 基址（含 /api 前缀）—— 所有前端请求地址都从这里取，禁止再写 3001
+  apiPort: API_PORT,
+  apiBase: 'http://127.0.0.1:' + API_PORT + '/api',
+  apiOrigin: 'http://127.0.0.1:' + API_PORT,
+  // 是否开发实例（界面可据此区分标题，避免与安装版窗口混淆）
+  isDevInstance: (process.argv || []).includes('--yz-dev-instance'),
   // 窗口控制
   minimize: () => ipcRenderer.send('window-minimize'),
   maximize: () => ipcRenderer.send('window-maximize'),

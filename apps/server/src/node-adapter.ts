@@ -10,6 +10,7 @@ import type {
   PlatformAdapter,
   ShellAdapter,
 } from '@yan-zhi/core';
+import { decodeTextBytes } from '@yan-zhi/shared';
 import { pickToken, recordFailure, recordSuccess } from './services/token-pool.js';
 import { serverState } from './state.js';
 
@@ -50,8 +51,11 @@ const dbAdapter: DatabaseAdapter = {
 };
 
 const fsAdapter: FsAdapter = {
+  // ★ 不能写死 'utf8'（2026-09-27 乱码根因）：GBK/ANSI 中文 txt 用 UTF-8 解会满屏 U+FFFD。
+  //   先读字节再走 shared 的自动识别（BOM → 严格 UTF-8 → GB18030 兜底）。
   async readFile(filePath: string) {
-    return readFile(filePath, 'utf8');
+    const buf = await readFile(filePath);
+    return decodeTextBytes(new Uint8Array(buf)).text;
   },
   async readFileBase64(filePath: string) {
     return readFile(filePath).then((buf) => buf.toString('base64'));

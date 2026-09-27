@@ -1,5 +1,6 @@
 // 移动平台适配器（Capacitor）
 import type { PlatformAdapter, DatabaseAdapter, FsAdapter, KeyringAdapter } from '@yan-zhi/core';
+import { decodeTextBytes, base64ToBytes, localApiBase } from '@yan-zhi/shared';
 import { CapacitorSQLite, SQLiteConnection, SQLiteDBConnection } from '@capacitor-community/sqlite';
 import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
 import { Preferences } from '@capacitor/preferences';
@@ -9,18 +10,19 @@ import { toFsArg } from './path-utils';
 import { getLicenseCodeSync } from '@yan-zhi/ui/api/license-code';
 
 /**
- * LLM 代理基址：远程模式代理到远程节点的 /api/llm，内嵌模式代理到本机 127.0.0.1:3001。
+ * LLM 代理基址：远程模式代理到远程节点的 /api/llm，内嵌模式代理到本机内嵌后端。
  * 与 packages/ui/src/api/client.ts 的 API_BASE 同口径（mobile_api_base 优先，回退内嵌）。
  * 不设的话 LlmClient 会从 WebView 直连上游 —— 除了把 API Key 暴露在端上直连请求里，
  * Anthropic 直连还要求浏览器专用头，Token 池/熔断也全部绕过。改地址靠 reload 重算，
  * 模块加载时取一次即可。
+ * ★ 内嵌端口走 shared 的 localApiBase()（移动端单实例，回落 3001），不写死常量。
  */
 function resolveLlmProxyBase(): string {
   try {
     const remote = localStorage.getItem('mobile_api_base') || '';
     if (remote) return remote.replace(/\/+$/, '') + '/api/llm';
   } catch { /* ignore */ }
-  return 'http://127.0.0.1:3001/api/llm';
+  return `${localApiBase()}/llm`;
 }
 
 /** 移动端 SQLite 数据库（Capacitor SQLite 插件） */
@@ -86,8 +88,10 @@ class MobileFs implements FsAdapter {
   }
 
   async readFile(path: string): Promise<string> {
-    const result = await Filesystem.readFile({ ...this.arg(path), encoding: Encoding.UTF8 });
-    return result.data as string;
+    // ★ 不能用 Encoding.UTF8（GBK/ANSI 中文 txt 会解成乱码）。
+    //   读原始字节（base64）后走 shared 的自动识别。
+    const b64 = await this.readFileBase64(path);
+    return decodeTextBytes(base64ToBytes(b64)).text;
   }
   async readFileBase64(path: string): Promise<string> {
     const result = await Filesystem.readFile(this.arg(path));

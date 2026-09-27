@@ -1,5 +1,8 @@
 // 工具函数
 
+// 文本编码识别（UTF-8 / GBK / UTF-16 自动判定）——三端共用的单一出口
+export * from './text-encoding';
+
 /** 生成唯一 ID */
 export function uid(prefix = ''): string {
   return prefix + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
@@ -50,6 +53,16 @@ export {
 
 // ===== 服务端资源地址解析（API_BASE 已含 /api，拼接必须按「站点根」）=====
 export { serverOrigin, resolveServerUrl } from './server-url';
+
+// ===== 本机内嵌后端地址（实例端口唯一判据：生产 3001 / 开发 3002）=====
+// ★ 前端**不得再硬编码 3001** —— 端口随实例而异，写死会让开发实例界面请求到安装版后端。
+export {
+  DEFAULT_API_PORT,
+  DEV_API_PORT,
+  resolveLocalApiPort,
+  localApiBase,
+  localApiOrigin,
+} from './local-server';
 
 // ===== 产物目录规范（前端落盘与后端落盘共用同一套规则）=====
 // 这里导出的是「规范本身」：目录名常量 + 纯路径函数。

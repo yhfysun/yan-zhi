@@ -5,8 +5,21 @@ const fsp = fs.promises;
 const { spawn, execFile } = require('child_process');
 const crypto = require('crypto');
 const http = require('http');
+// 实例配置单一真相源：端口 / userData / 共享目录一律从这里取，禁止在本文件再硬编码。
+// 目的见 instance.cjs 顶部注释（dev 与安装版的运行期隔离）。
+const inst = require('./instance.cjs');
 
 let mainWindow = null;
+
+/** 是否开发实例（由 dev 编排器注入 YANZHI_DEV_INSTANCE=1） */
+const IS_DEV_INSTANCE = inst.isDevInstance(process.env);
+/**
+ * 本实例后端监听端口。
+ * ★ 开发实例默认 3002、生产 3001 —— 两个实例可同时运行，互不顶替。
+ * 渲染层通过 preload 暴露的 electronAPI.apiPort 取同一个值。
+ */
+const API_PORT = inst.resolveApiPort(process.env);
+const API_ORIGIN = 'http://127.0.0.1:' + API_PORT;
 
 // ============================================================
 // userData 目录固定与历史数据迁移（productName 言智 → yan-zhi 配套）
@@ -14,13 +27,20 @@ let mainWindow = null;
 // （%APPDATA%\<productName>）下，productName 改名后默认目录随之变化。
 // 这里显式固定为 %APPDATA%\yan-zhi，首次启动时把历史目录整体搬入，
 // 避免升级后数据库、本地模型"全丢"。必须在 ready 前执行。
+//
+// ★★★ 实例隔离（2026-09-27）：开发实例用 `yan-zhi-dev`，与安装版的 `yan-zhi` 分开，
+//   否则两个实例共用 localStorage / 密钥 / 数据库 —— 用户会看到"装好的软件
+//   设置被我改代码改掉了"。但 **models / bin 是有意共用的**（1.1GB 模型不重复下载）。
+//   logs 独立（各自排障不混淆）。
 // ============================================================
 (function migrateUserDataDir() {
-  const userDataRoot = path.join(app.getPath('appData'), 'yan-zhi');
+  const appData = app.getPath('appData');
+  const dirs = inst.resolveUserDataDirs(appData, IS_DEV_INSTANCE);
+  const userDataRoot = dirs.userData;
   const legacyCandidates = [
-    path.join(app.getPath('appData'), '言智'),                 // 0.1.x（productName=言智）
-    path.join(app.getPath('appData'), '@yan-zhi', 'desktop'), // 更早（包名 fallback）
-    path.join(app.getPath('appData'), '@yan-zhidesktop'),     // 更早变体
+    path.join(appData, '言智'),                 // 0.1.x（productName=言智）
+    path.join(appData, '@yan-zhi', 'desktop'), // 更早（包名 fallback）
+    path.join(appData, '@yan-zhidesktop'),     // 更早变体
   ];
   if (!fs.existsSync(userDataRoot)) {
     const legacy = legacyCandidates.find((p) => fs.existsSync(p));
@@ -28,10 +48,53 @@ let mainWindow = null;
       // 同盘 rename 瞬时完成；失败（跨盘/占用）退化为递归复制
       try { fs.renameSync(legacy, userDataRoot); }
       catch { try { fs.cpSync(legacy, userDataRoot, { recursive: true }); } catch {} }
+    } else if (dirs.seedFrom && fs.existsSync(dirs.seedFrom)) {
+      // 开发实例首次启动：从安装版目录复制一份"用户状态"作起点。
+      // 目的：开发者不必重新授权、重配界面设置才能调试（否则会以为"功能坏了"）。
+      // ★ 只带小体积状态项，**不带** models/bin（走共享目录）与各类缓存。
+      // ★ 仅目标不存在时执行一次；此后 dev 的改动不会回写生产，互不污染。
+      try {
+        fs.mkdirSync(userDataRoot, { recursive: true });
+        const SEED_ITEMS = [
+          'keyring.json',       // 授权码 / API Key（DPAPI 加密，同一台机器可解）
+          'Preferences',        // Electron 偏好
+          'Local Storage',      // 界面设置（主题、语言等）
+          'IndexedDB',          // 前端结构化存储
+          'data.db', 'data.db-wal', 'data.db-shm', // 老版本遗留（现数据在 server-data，兼容带上）
+        ];
+        let copied = 0;
+        for (const name of SEED_ITEMS) {
+          const dest = path.join(userDataRoot, name);
+          if (fs.existsSync(dest)) continue;
+          const src = path.join(dirs.seedFrom, name);
+          if (!fs.existsSync(src)) continue;
+          try {
+            fs.cpSync(src, dest, { recursive: true });
+            copied++;
+          } catch { /* 单项失败不阻断其余 */ }
+        }
+        console.log(`[实例] 开发实例首次启动：已从生产目录引导 ${copied} 项用户状态作起点`);
+      } catch (e) {
+        console.warn('[实例] 从生产目录引导失败（不影响启动）:', e && e.message);
+      }
     }
   }
   app.setPath('userData', userDataRoot);
+  console.log(`[实例] ${IS_DEV_INSTANCE ? '开发' : '生产'}实例 | userData=${userDataRoot} | 端口=${API_PORT}`);
 })();
+
+/**
+ * 大文件缓存目录（models / bin）：**两个实例共用生产目录**。
+ * 见 instance.cjs 的 sharedDataName 注释：隔离的是状态，不是 GB 级缓存。
+ * 仅当共享目录与自身 userData 不同（即开发实例）时才有意义；否则直接用 userData。
+ */
+function sharedDataDir(sub) {
+  const dirs = inst.resolveUserDataDirs(app.getPath('appData'), IS_DEV_INSTANCE);
+  const base = dirs.shared === dirs.userData ? app.getPath('userData') : dirs.shared;
+  const p = sub ? path.join(base, sub) : base;
+  try { fs.mkdirSync(p, { recursive: true }); } catch { /* ignore */ }
+  return p;
+}
 
 let serverProcess = null;
 let tray = null;
@@ -290,9 +353,8 @@ const guardEnv = readGuardEnv();
 
 function startServer() {
   const serverDir = path.join(__dirname, '..', 'server');
-  // 模型目录统一放在 Electron userData/models，商城下载/引擎加载都从这里找
-  const modelsDir = path.join(app.getPath('userData'), 'models');
-  fs.mkdirSync(modelsDir, { recursive: true });
+  // 模型目录统一放**共享** models（两实例复用同一份 gguf，不重复下载 1.1GB，见 instance.cjs）
+  const modelsDir = sharedDataDir('models');
   // 开发模式：把源码目录已有的模型文件同步到 userData/models（一次性，不覆盖）
   if (!app.isPackaged) {
     const srcModelsDir = path.join(serverDir, 'models');
@@ -314,7 +376,7 @@ function startServer() {
       serverProcess = spawn(process.execPath, [tsxPath, 'watch', 'src/index.ts'], {
         cwd: serverDir,
         stdio: 'inherit',
-        env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: 'http://127.0.0.1:' + CDP_PORT, WEB_DIST: path.join(__dirname, '..', '..', 'apps', 'web', 'dist'), ...editionEnv, ...guardEnv },
+        env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', PORT: String(API_PORT), YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: 'http://127.0.0.1:' + CDP_PORT, WEB_DIST: path.join(__dirname, '..', '..', 'apps', 'web', 'dist'), ...editionEnv, ...guardEnv },
       });
     } else {
       // 回退：npx tsx（可能 ABI 不兼容，但至少能启动）
@@ -323,7 +385,7 @@ function startServer() {
         cwd: serverDir,
         stdio: 'inherit',
         shell: true,
-        env: { ...process.env, YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: 'http://127.0.0.1:' + CDP_PORT, WEB_DIST: path.join(__dirname, '..', '..', 'apps', 'web', 'dist'), ...editionEnv, ...guardEnv },
+        env: { ...process.env, PORT: String(API_PORT), YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: 'http://127.0.0.1:' + CDP_PORT, WEB_DIST: path.join(__dirname, '..', '..', 'apps', 'web', 'dist'), ...editionEnv, ...guardEnv },
       });
     }
     serverProcess.on('error', (err) => console.error('后端启动失败:', err));
@@ -339,7 +401,7 @@ function startServer() {
     logStream.write(`\n===== [${stamp()}] 后端启动 =====\n`);
     serverProcess = spawn(process.execPath, [serverPath], {
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: 'http://127.0.0.1:' + CDP_PORT, WEB_DIST: path.join(process.resourcesPath, 'server', 'web-dist'), ...(dataDir ? { DATA_DIR: dataDir } : {}), ...editionEnv, ...guardEnv },
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', PORT: String(API_PORT), YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: 'http://127.0.0.1:' + CDP_PORT, WEB_DIST: path.join(process.resourcesPath, 'server', 'web-dist'), ...(dataDir ? { DATA_DIR: dataDir } : {}), ...editionEnv, ...guardEnv },
     });
     serverProcess.stdout.on('data', (d) => logStream.write(d));
     serverProcess.stderr.on('data', (d) => logStream.write(d));
@@ -387,6 +449,11 @@ function createWindow() {
       // 最小化/隐藏窗口时暂停页面合成与导航事件 —— 会让"AI 上网查资料+用户最小化去干别的"时
       // guest 导航卡在 started 而 didn't-fire did-navigate，UI 还停在首页。关闭全局后台节流。
       backgroundThrottling: false,
+      // ★ 把**主进程算好的** API 端口显式下发给渲染层（preload 读 process.argv）。
+      //   为什么不用 process.env：直启 `electron .` 时环境里没有 YANZHI_API_PORT，
+      //   主进程会算出实例默认（dev=3002），而 preload 读 env 只能回落 3001 → 两边不一致。
+      //   用 additionalArguments 保证「主进程算什么、渲染层就用什么」。
+      additionalArguments: ['--yz-api-port=' + API_PORT, ...(IS_DEV_INSTANCE ? ['--yz-dev-instance'] : [])],
     },
   });
 
@@ -3815,7 +3882,10 @@ if (process.platform === 'win32') {
   app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
 }
 
-// 单实例锁：确保同一时间只有一个 yan-zhi 实例运行，避免安装新版本后旧进程残留导致数据冲突
+// 单实例锁：确保**同一实例**同一时间只有一个进程，避免安装新版本后旧进程残留导致数据冲突。
+//
+// ★ 锁是按 userData 路径取的 —— 而 userData 已按实例隔离（yan-zhi / yan-zhi-dev），
+//   所以「安装版」与「开发版」**互不抢锁，可同时运行**；只有同一实例重复双击才会被挡。
 const gotTheLock = app.requestSingleInstanceLock();
 if (!gotTheLock) {
   console.log('[single-instance] 已有实例在运行，退出当前实例');
@@ -3835,7 +3905,9 @@ if (!gotTheLock) {
 app.whenReady().then(() => {
   Menu.setApplicationMenu(null);  // 移除默认菜单栏
   if (process.platform === 'win32') {
-    app.setAppUserModelId('com.yanzhi.desktop');
+    // AppUserModelId 是 Windows 任务栏分组的依据：两实例若同 ID 会被并成一组图标、
+    // 点哪个都分不清 → 开发实例用独立 ID。
+    app.setAppUserModelId(IS_DEV_INSTANCE ? 'com.yanzhi.desktop.dev' : 'com.yanzhi.desktop');
   }
 
   // ============================================================
@@ -3874,6 +3946,8 @@ app.whenReady().then(() => {
   // ============================================================
   const forceDev = process.argv.includes('--dev');
   const isDev = forceDev && !app.isPackaged;
+  // ★ connect-src 必须放行**本实例实际端口**（dev=3002 / 生产=3001），
+  //   写死 3001 会让开发实例的所有 fetch 被 CSP 拦掉（表现为"界面正常但全功能 403/失败"）。
   const csp = isDev
     ? "default-src 'self'; " +
       "script-src 'self'; " +
@@ -3881,14 +3955,14 @@ app.whenReady().then(() => {
       "img-src 'self' data: blob: https: http:; " +
       "media-src 'self' blob: data: https: http:; " +
       "font-src 'self' data:; " +
-      "connect-src 'self' ws://localhost:1420 wss://localhost:1420 http://localhost:3001 https: http:;"
+      `connect-src 'self' ws://localhost:1420 wss://localhost:1420 ${API_ORIGIN} http://localhost:${API_PORT} https: http:;`
     : "default-src 'self'; " +
       "script-src 'self'; " +
       "style-src 'self' 'unsafe-inline'; " +
       "img-src 'self' data: blob: https: http:; " +
       "media-src 'self' blob: data: https: http:; " +
       "font-src 'self' data:; " +
-      "connect-src 'self' http://localhost:3001 https: http:;";
+      `connect-src 'self' ${API_ORIGIN} http://localhost:${API_PORT} https: http:;`;
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
     callback({
       responseHeaders: {
@@ -3911,7 +3985,7 @@ app.whenReady().then(() => {
   // 插件未启用时后端返回 404，静默忽略；请求失败也不影响本进程。
   try {
     const ok = globalShortcut.register('Control+Alt+Escape', () => {
-      const req = http.request('http://127.0.0.1:3001/api/plugin/computer-use/panic', { method: 'POST', timeout: 3000 }, (res) => {
+      const req = http.request(API_ORIGIN + '/api/plugin/computer-use/panic', { method: 'POST', timeout: 3000 }, (res) => {
         res.resume();
       });
       req.on('error', () => {});
@@ -3936,7 +4010,7 @@ app.whenReady().then(() => {
       createWindow();
       return;
     }
-    const req = http.get('http://127.0.0.1:3001/api/health', (res) => {
+    const req = http.get(API_ORIGIN + '/api/health', (res) => {
       res.resume();
       if (res.statusCode === 200) {
         console.log('[后端] 健康检查通过，创建窗口');
@@ -3955,7 +4029,8 @@ app.whenReady().then(() => {
     const iconPath = getAppIconPath();
     if (!fs.existsSync(iconPath)) return;
     tray = new Tray(iconPath);
-    tray.setToolTip('言智');
+    // 托盘提示带实例标识 —— 两个实例可同时运行，不能让用户分不清哪个是哪个
+    tray.setToolTip(IS_DEV_INSTANCE ? `言智（开发实例 · 端口 ${API_PORT}）` : '言智');
     const updateTrayMenu = () => {
       const menu = Menu.buildFromTemplate([
         {

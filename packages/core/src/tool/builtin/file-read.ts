@@ -1,6 +1,7 @@
 import type { BuiltInTool } from '../types';
 import type { McpCallResult } from '../../mcp/client';
 import { getPlatformAdapter } from '../../platform/types';
+import { decodeTextBytesAs, base64ToBytes } from '@yan-zhi/shared';
 
 const EXCEL_EXTENSIONS = ['xlsx', 'xls', 'csv'];
 const WORD_EXTENSIONS = ['docx'];
@@ -10,15 +11,6 @@ const LEGACY_OFFICE_EXTENSIONS = ['doc', 'ppt'];
 const MAX_ROWS = 10000;
 const OUTPUT_CAP = 64 * 1024;
 
-function base64ToBytes(b64: string): Uint8Array {
-  const bin = typeof atob === 'function' ? atob(b64) : Buffer.from(b64, 'base64').toString('binary');
-  const len = bin.length;
-  const bytes = new Uint8Array(len);
-  for (let i = 0; i < len; i++) bytes[i] = bin.charCodeAt(i);
-  return bytes;
-}
-
-/** 解码 XML 实体（pptx/docx 内的文本节点） */
 function decodeXmlEntities(s: string): string {
   return s
     .replace(/&lt;/g, '<').replace(/&gt;/g, '>')
@@ -85,7 +77,7 @@ export function htmlToMarkdown(html: string): string {
 
 export class FileReadTool implements BuiltInTool {
   name = 'file_read';
-  description = '读取文件内容。文本文件返回完整内容（支持 offset/limit 按行分段）；Excel（.xlsx/.xls/.csv）返回表格数据，支持按工作表/区间读取，输出 CSV 或 JSON；Word（.docx）与 PowerPoint（.pptx）输出结构化 Markdown（标题/表格/列表/分页）；PDF 输出分页文本（--- Page N ---）。旧格式 .doc/.ppt 不支持。大文件读取前可先用 file_grep 定位。';
+  description = '读取文件内容。文本文件返回完整内容（支持 offset/limit 按行分段），**自动识别编码**（UTF-8 / GBK / UTF-16，GBK/ANSI 中文文件也能正确读出）；Excel（.xlsx/.xls/.csv）返回表格数据，支持按工作表/区间读取，输出 CSV 或 JSON；Word（.docx）与 PowerPoint（.pptx）输出结构化 Markdown（标题/表格/列表/分页）；PDF 输出分页文本（--- Page N ---）。旧格式 .doc/.ppt 不支持。大文件读取前可先用 file_grep 定位。';
 
   inputSchema = {
     type: 'object',
@@ -96,8 +88,8 @@ export class FileReadTool implements BuiltInTool {
       },
       encoding: {
         type: 'string',
-        enum: ['utf-8', 'base64'],
-        description: 'Encoding to use when reading text files. Defaults to utf-8.',
+        enum: ['auto', 'utf-8', 'gbk', 'gb18030', 'gb2312', 'utf-16le', 'utf-16be', 'base64'],
+        description: 'Text encoding. Defaults to "auto" (auto-detect: BOM → strict UTF-8 → GB18030 fallback, so GBK/ANSI Chinese files read correctly). Use "base64" to get raw bytes. Specify explicitly only when auto-detection is wrong (e.g. Big5 Traditional Chinese).',
       },
       offset: {
         type: 'number',
@@ -158,7 +150,31 @@ export class FileReadTool implements BuiltInTool {
     }
 
     try {
-      const content = await fs.readFile(path);
+      // ★ encoding 参数此前**声明了却没人用**（静默失效）：README 说可指定编码，
+      //   实际永远走 fs.readFile。这里补齐：
+      //   - base64 → 返回原始字节的 base64（供调用方自行处理）
+      //   - 显式编码 → 按指定编码解码（Big5 这类无法自动区分的场景靠它）
+      //   - auto/未传 → fs.readFile（各端已实现自动识别编码）
+      const enc = String(args.encoding || 'auto').trim().toLowerCase();
+      if (enc === 'base64') {
+        const b64 = await fs.readFileBase64(path);
+        return { content: [{ type: 'text', text: `[base64 of ${path}]\n${b64}` }] };
+      }
+      let content: string;
+      if (enc && enc !== 'auto' && enc !== 'utf-8') {
+        const b64 = await fs.readFileBase64(path);
+        const asEnc = decodeTextBytesAs(base64ToBytes(b64), enc);
+        // 不认识的编码名 → 明确报错，不静默按 UTF-8 读（否则又是"看着成功实则是乱码"）
+        if (asEnc === null) {
+          return {
+            content: [{ type: 'text', text: `Error: 不支持的编码 "${args.encoding}"（可选 auto/utf-8/gbk/gb18030/gb2312/utf-16le/utf-16be/base64）` }],
+            isError: true,
+          };
+        }
+        content = asEnc;
+      } else {
+        content = await fs.readFile(path);
+      }
       return { content: [{ type: 'text', text: this.readTextLines(content, args) }] };
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);

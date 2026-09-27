@@ -42,11 +42,13 @@ export default defineConfig({
       usePolling: true,
       interval: 500,
     },
-    // 代理后端 API（与 apps/web 对齐：/api -> http://localhost:3001）
-    // 否则桌面端 /api/auth/login 等请求会落到 vite dev server 上返回 404
+    // 代理后端 API（/api → 本机内嵌后端）
+    // ★ 端口随实例：dev 实例 3002 / 生产 3001。写死 3001 会让开发实例的**相对路径**请求
+    //   （未走 apiFetch 的那些，如 SSE 直连）落到正式版后端上。
+    //   优先读 dev 编排器下发的 YANZHI_API_PORT。
     proxy: {
       '/api': {
-        target: 'http://localhost:3001',
+        target: `http://localhost:${process.env.YANZHI_API_PORT || 3001}`,
         changeOrigin: true,
       },
     },

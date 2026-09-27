@@ -16,7 +16,7 @@
  * 做了什么:
  *   1. 依赖指纹比对：lockfile / workspace package.json 变化才 pnpm install
  *   2. 缓存指纹比对：依赖或 vite 配置变化才删 node_modules/.vite，其余情况直接复用（启动快）
- *   3. 端口治理：1420 / 3001 / 5173 被本项目的 node/electron 残留进程占用时清理
+ *   3. 端口治理：1420 / 3002 / 5173 被本项目 **dev 残留进程**占用时清理
  *   4. 就绪探测：Vite 返回 200 后才拉起 Electron，杜绝白屏
  *   5. 退出清理：Ctrl+C 或关闭时连带杀掉子进程树
  */
@@ -202,8 +202,46 @@ function processName(pid) {
   return capture('ps', ['-p', pid, '-o', 'comm=']).trim();
 }
 
-// dev 与生产实例共用 3001/1420，正在运行的「言智」正式版同样需要让位
-const SAFE_TO_KILL = /^(node|electron|tsx|vite|esbuild|yan-zhi|言智)(\.exe)?$/i;
+/**
+ * 可安全结束的进程名 —— **仅限本项目 dev 自己拉起的开发工具链**。
+ *
+ * ★★★ 为什么 `yan-zhi` / `言智` 被移除（2026-09-27 用户报障）：
+ *   旧版把「正在运行的安装版」也列入可杀名单（注释原话：
+ *   「dev 与生产实例共用 3001/1420，正在运行的『言智』正式版同样需要让位」），
+ *   于是启动开发版会**强杀用户正在使用的安装版后端**，再用自己的后端占住同一端口。
+ *   → 安装版窗口前端是旧的，但所有 /api 请求打到开发版后端，
+ *     用户看到的现象就是「我都装好了，你改代码它还在变」。
+ *   **把用户正在用的正式版当"残留进程"清掉，是设计错误，不是顺手。**
+ *
+ * 现在：两个实例各占一个端口（生产 3001 / 开发 3002）→ 互不干扰，可同时运行。
+ * 端口被**正式版**占用时不再杀，只提示（见 guardProductionPort）。
+ */
+const SAFE_TO_KILL = /^(node|electron|tsx|vite|esbuild)(\.exe)?$/i;
+
+/** 正式版进程名 —— 命中即说明用户在用安装版，绝不能杀 */
+const PRODUCTION_PROCESS = /^(yan-zhi|言智)(\.exe)?$/i;
+
+/** 本实例（开发）使用的后端端口 —— 与生产错开，见 apps/desktop/instance.cjs */
+const DEV_API_PORT = 3002;
+
+/**
+ * 目标端口被**安装版**占用时的处置：**不杀，明确提示**。
+ *
+ * 为什么不能杀：那是用户正在用的软件（可能正跑着任务）。杀它 = 用户的软件莫名退出。
+ * 为什么必须提示：如果我们继续往这个端口上塞后端，两个实例的服务会互相顶替 ——
+ * 正是本次要修的 bug。所以宁可让用户知道"端口被正式版占着"，也不要悄悄抢。
+ *
+ * @returns true 表示端口可用（无占用 或 已成功释放 dev 残留）；false 表示被正式版占着
+ */
+async function guardProductionPort(port, label) {
+  const pids = pidsOnPort(port);
+  if (!pids.length) return true;
+  const prodPids = pids.filter((pid) => PRODUCTION_PROCESS.test(processName(pid)));
+  if (!prodPids.length) return true;
+  warn(`端口 ${port}（${label}）被**已安装的言智正式版**占用（pid=${prodPids.join(',')}）。`);
+  warn(`  → 开发实例改用 ${DEV_API_PORT}，不会影响正式版；若你要开发实例也用 ${port}，请先退出正式版。`);
+  return false;
+}
 
 async function freePort(port, label) {
   const pids = pidsOnPort(port);
@@ -499,7 +537,10 @@ async function main() {
   log(`目标: ${app.label}  分支工作区: ${ROOT}`);
 
   if (appName === 'server') {
-    await freePort(3001, 'backend');
+    // 独立跑 server（不带 Electron）：同样用开发端口，且以 YANZHI_DEV_INSTANCE=1
+    // 让 server 侧拿到与「开发实例」一致的实例语义（env 供 shared/local-server 读取）。
+    await guardProductionPort(DEV_API_PORT, 'backend');
+    await freePort(DEV_API_PORT, 'backend');
     // 浏览器工具执行面：CDP 端口（9222）有活的调试浏览器时优先注入 cdp env（与桌面 main.cjs
     // 同源，避免 server 另起一套 Chromium 造成双浏览器分裂）；不可达则保持 launch 模式
     // （server 侧已强制 headless，不会再弹独立浏览器窗口）。
@@ -520,28 +561,49 @@ async function main() {
         electronBin,
         [tsxCli, 'watch', 'src/index.ts'],
         path.join(ROOT, 'apps/server'),
-        { ELECTRON_RUN_AS_NODE: '1', NODE_OPTIONS: '', ...browserEnv }
+        {
+          ELECTRON_RUN_AS_NODE: '1',
+          NODE_OPTIONS: '',
+          PORT: String(DEV_API_PORT),
+          YANZHI_DEV_INSTANCE: '1',
+          YANZHI_API_PORT: String(DEV_API_PORT),
+          ...browserEnv,
+        }
       );
       return;
     }
     if (!electronBin) warn('未找到 Electron 二进制，回退 PATH node 启动 server（native 模块 ABI 不匹配时会 ERR_DLOPEN_FAILED）');
     const pnpm = resolvePnpm();
     if (!pnpm) throw new Error('未找到 pnpm');
-    start('server', pnpm.cmd, [...pnpm.args, '--filter', '@yan-zhi/server', 'dev'], ROOT, browserEnv);
+    start('server', pnpm.cmd, [...pnpm.args, '--filter', '@yan-zhi/server', 'dev'], ROOT, {
+      PORT: String(DEV_API_PORT),
+      YANZHI_DEV_INSTANCE: '1',
+      YANZHI_API_PORT: String(DEV_API_PORT),
+      ...browserEnv,
+    });
     return;
   }
 
   await syncDeps();
   await manageCache();
 
-  // 3001 必须留给 Electron 主进程内置后端（ABI 兼容），先释放外部残留
-  if (appName === 'desktop') await freePort(3001, 'backend');
+  // 开发实例端口（默认 3002）必须留给 Electron 主进程内置后端。
+  // ★ 先查是否被**正式版**占用：若被占，只提示不杀（那是用户在用的软件）；
+  //   再清理 dev 自己可能残留的 node/electron（不带 yan-zhi.exe —— 见 SAFE_TO_KILL 注释）。
+  if (appName === 'desktop') {
+    await guardProductionPort(DEV_API_PORT, 'backend');
+    await freePort(DEV_API_PORT, 'backend');
+  }
   await freePort(app.vitePort, `${appName} vite`);
 
   const viteBin = resolveViteBin();
   if (!viteBin) throw new Error(`未找到 vite: ${app.dir}/node_modules/vite`);
   log(`启动 Vite (${app.dir}) ...`);
-  start('vite', resolveNode(), [viteBin, '--host', '127.0.0.1'], path.join(ROOT, app.dir));
+  // vite 的 /api 代理目标端口随实例（dev=3002）→ 把端口传进 vite 进程，
+  // 否则 vite.config.ts 只能读不到 YANZHI_API_PORT 而回落 3001（打到正式版后端）。
+  start('vite', resolveNode(), [viteBin, '--host', '127.0.0.1'], path.join(ROOT, app.dir), {
+    YANZHI_API_PORT: String(DEV_API_PORT),
+  });
 
   log(`等待 Vite 就绪 (http://127.0.0.1:${app.vitePort}) ...`);
   await waitForPort(app.vitePort);
@@ -561,22 +623,31 @@ async function main() {
   for (const k of Object.keys(process.env)) {
     if (/^ELECTRON_/i.test(k)) electronEnv[k] = undefined; // 置 undefined 即从子环境删除
   }
+  // ★ 实例隔离三件套（主进程据此选 userData 与端口，见 apps/desktop/instance.cjs）：
+  //   YANZHI_DEV_INSTANCE → userData 用 yan-zhi-dev（不碰安装版的 yan-zhi）
+  //   YANZHI_API_PORT     → 后端监听 3002（不占用正式版的 3001）
+  //   两者缺一都会退回"共用"，等于没隔离。
+  electronEnv.YANZHI_DEV_INSTANCE = '1';
+  electronEnv.YANZHI_API_PORT = String(DEV_API_PORT);
   log('  env 净化: 已剥离 ELECTRON_* 变量，NODE_OPTIONS 置空');
+  log(`  实例隔离: YANZHI_DEV_INSTANCE=1, YANZHI_API_PORT=${DEV_API_PORT}（与安装版 3001 / yan-zhi 分开）`);
 
   // 清理残留 Electron 主进程（旧窗口不占端口，freePort 杀不到；不清理会叠窗口导致看到旧界面）
+  // ★ 只清 dev 自己拉起的（命令行含仓库根 / apps/desktop / --dev）；
+  //   安装版进程命令行是 C:\APP\...\yan-zhi.exe，不含这些特征 → 不会被误杀。
   await killLingeringElectron();
 
   let gpuRetry = false;
   const launchElectron = (extraArgs) => {
     log(
-      `启动 Electron${extraArgs.length ? ` (${extraArgs.join(' ')})` : ''}（内置后端会自动拉起 3001）...`
+      `启动 Electron${extraArgs.length ? ` (${extraArgs.join(' ')})` : ''}（内置后端会自动拉起 ${DEV_API_PORT}）...`
     );
     start('electron', electronBin, ['.', '--dev', ...extraArgs], path.join(ROOT, 'apps/desktop'), electronEnv, (code) => {
       // GPU 进程不可用导致的 fatal（0x80000003 软断点），自动切软件渲染重试一次
       if (!gpuRetry && (code === 2147483651 || code === 3221225477)) {
         gpuRetry = true;
         warn('GPU 进程不可用（受限环境 / 无显卡 / 远程桌面常见），自动改用软件渲染重试...');
-        freePort(3001, 'backend').then(() =>
+        freePort(DEV_API_PORT, 'backend').then(() =>
           setTimeout(
             () =>
               launchElectron([
@@ -595,8 +666,8 @@ async function main() {
   };
   launchElectron(OPT.disableGpu ? ['--disable-gpu', '--disable-gpu-sandbox', '--no-sandbox'] : []);
 
-  log('后端就绪探测中 (http://127.0.0.1:3001) ...');
-  await waitForPort(3001, 60000).catch(() => warn('3001 未在 60s 内就绪，请检查后端日志'));
+  log(`后端就绪探测中 (http://127.0.0.1:${DEV_API_PORT}) ...`);
+  await waitForPort(DEV_API_PORT, 60000).catch(() => warn(`${DEV_API_PORT} 未在 60s 内就绪，请检查后端日志`));
   log('全部就绪。Ctrl+C 结束全部进程。');
 }
 

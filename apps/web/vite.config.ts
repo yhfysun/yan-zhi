@@ -29,9 +29,11 @@ export default defineConfig({
   },
   server: {
     port: 5173,
+    // /api 代理目标端口随实例（dev 编排器注入 YANZHI_API_PORT，默认 3001）。
+    // ★ 与 desktop 的 vite.config.ts 同口径 —— 写死会让 dev 端的 web 界面打到正式版后端。
     proxy: {
       '/api': {
-        target: 'http://localhost:3001',
+        target: `http://localhost:${process.env.YANZHI_API_PORT || 3001}`,
         changeOrigin: true,
       },
     },

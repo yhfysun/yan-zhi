@@ -1,5 +1,6 @@
 import type { BuiltInTool } from '../types';
 import type { McpCallResult } from '../../mcp/client';
+import { localApiBase } from '@yan-zhi/shared';
 
 export interface SearchResult {
   title: string;
@@ -220,9 +221,10 @@ export class ServerSearchBackend implements SearchBackend {
     const finalQuery = applyTimeRangeFallback(query, timeRange);
     // Electron 桌面端用 loadFile 加载本地文件，页面 origin 为 file://，相对路径 /api 会解析成
     // file:///api 导致 "Failed to fetch"。此处与 packages/ui/src/api/client.ts 的 API_BASE 保持一致：
-    // 检测到 Electron 环境时改用后端绝对地址 http://127.0.0.1:3001/api。
+    // 检测到 Electron 环境时改用本机内嵌后端绝对地址。
+    // ★ 端口随实例而异（生产 3001 / 开发 3002）→ 一律走 shared 的单一出口，不写死。
     const isElectron = typeof window !== 'undefined' && !!(window as any).electronAPI?.isElectron;
-    const apiBase = isElectron ? 'http://127.0.0.1:3001/api' : '/api';
+    const apiBase = isElectron ? localApiBase() : '/api';
     let url = `${apiBase}/search?q=${encodeURIComponent(finalQuery)}&maxResults=${maxResults}`;
     if (timeRange) url += `&timeRange=${encodeURIComponent(timeRange)}`;
     const res = await fetch(url, { headers });

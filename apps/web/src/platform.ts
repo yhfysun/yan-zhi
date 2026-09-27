@@ -1,5 +1,6 @@
 // Web 平台适配器 - 使用 Dexie (IndexedDB) 模拟 SQLite，keyring 持久化到 Dexie
 import type { PlatformAdapter, DatabaseAdapter, FsAdapter, KeyringAdapter, DirEntryInfo } from '@yan-zhi/core';
+import { decodeTextBytes } from '@yan-zhi/shared';
 import Dexie from 'dexie';
 // 授权码读取：走 UI 的 license-code 模块（keyring 加载 + 同步内存缓存），
 // 与 apiFetch 的 x-license 头共用同一来源，避免两条路径口径漂移。
@@ -228,7 +229,10 @@ class WebFs implements FsAdapter {
     const { dir, name } = await this.resolveFile(path);
     const fh = await dir.getFileHandle(name);
     const file = await fh.getFile();
-    return file.text();
+    // ★ 不能直接 file.text()（写死 UTF-8）——GBK/ANSI 中文 txt 会解成乱码。
+    //   取字节后走 shared 的自动识别。
+    const buf = await file.arrayBuffer();
+    return decodeTextBytes(new Uint8Array(buf)).text;
   }
 
   async readFileBase64(path: string): Promise<string> {

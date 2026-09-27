@@ -8,6 +8,7 @@ import type {
   McpProcessAdapter,
   ShellAdapter,
 } from '@yan-zhi/core';
+import { decodeTextBytes, base64ToBytes, localApiBase } from '@yan-zhi/shared';
 // 授权码读取：走 UI 的 license-code 模块（keyring 加载 + 同步内存缓存），
 // 与 apiFetch 的 x-license 头共用同一来源，避免两条路径口径漂移。
 import { getLicenseCodeSync } from '@yan-zhi/ui/api/license-code';
@@ -45,8 +46,11 @@ class DesktopDatabase implements DatabaseAdapter {
 
 /** 桌面端文件系统（通过 Electron IPC 调用主进程 Node.js fs） */
 class DesktopFs implements FsAdapter {
+  // ★ 不能直接用 IPC 的 fs:readFile（它写死 'utf-8'）——GBK/ANSI 中文 txt 会解成乱码。
+  //   改为取原始字节 + 复用 shared 的自动识别。readFileBase64 是现成通道，无需改主进程。
   async readFile(path: string): Promise<string> {
-    return api.fs.readFile(path);
+    const b64 = await api.fs.readFileBase64(path);
+    return decodeTextBytes(base64ToBytes(b64)).text;
   }
   async readFileBase64(path: string): Promise<string> {
     return api.fs.readFileBase64(path);
@@ -123,8 +127,8 @@ export const desktopAdapter: PlatformAdapter = {
   mcp: new DesktopMcpProcess(),
   shell: new DesktopShell(),
   // LLM 走后端代理（/api/llm/*）：API Key 不暴露给前端，后端从库读配置转发。
-  // Electron file:// 下用绝对地址（与 packages/ui api/client.ts 的 API_BASE 一致）。
-  llmProxyBase: 'http://127.0.0.1:3001/api/llm',
+  // Electron file:// 下用绝对地址；★ 端口随实例（生产 3001 / 开发 3002），故走 shared 推导而不写死。
+  llmProxyBase: `${localApiBase()}/llm`,
   // 授权码读取器：走代理的 LLM 请求必须带 x-license，否则开启门禁的部署一律 403。
   // 复用 UI 的 license-code 模块（含 keyring 加载 + 内存缓存），与 apiFetch 的口径完全一致 ——
   // 这正是之前出问题的根源：两条路径各建一套头，代理这条路漏了授权码。
