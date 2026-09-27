@@ -14,6 +14,10 @@ files:
   - snip-overlay.html
   - snip-overlay.js
   - keyring-crypto.cjs
+  # ★★ 实例配置单一真相源（端口 / userData / 共享目录）：main.cjs 第 10 行 require('./instance.cjs')。
+  #   漏登记 = 打包版启动即崩（Error: Cannot find module './instance.cjs'）——
+  #   与 keyring-crypto.cjs 同一类坑：新增 .cjs 模块必须同步登记进本 files: 段。
+  - instance.cjs
   # 版本档配置（scripts/set-edition.cjs 生成）；漏登记 → 打包版读不到档位，落到兜底档
   - edition.json
 extraResources:
