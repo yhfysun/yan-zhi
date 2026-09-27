@@ -80,7 +80,22 @@
       <!-- 中部：可拖拽留白（flex:1） -->
       <div class="title-spacer"></div>
 
-      <!-- 登录状态：头像（绿点=已登录）/ 登录按钮 -->
+      <!--
+        身份区：头像下拉 / 未登录时的登录入口。
+
+        ★★★ 桌面端必须有头像入口（2026-09-27 第二次修正，之前修反了）：
+          第一版我把桌面端的登录按钮直接删掉（`v-else-if="!isElectron"`），
+          结果桌面端**什么身份入口都没有了** —— 因为：
+            · `authStore.isLoggedIn` 在桌面端恒 false（guest 不算登录态）；
+            · 桌面端 `SideNav` 也不渲染（`v-if="isMobile"`，非窄屏非 Capacitor），
+              而 SideNav 里那套头像原本是桌面端能看到的最近入口。
+          两头都进不去 → 用户看到的只有那个"点了被弹回"的死按钮，删掉后连按钮都没了。
+
+          正解：桌面端渲染**中性头像**（不叫"登录"、不引导登录）——本机替代 guest 论：
+            · 有心跳保存的真实用户 → 显示其首字母；
+            · 否则显示"本"（本机），不暴露 guest 这个内部身份；
+            · 下拉里给「设置 / 记忆管理」，**不提供退出登录**（没有登录态可退）。
+          Web/移动端仍走「未登录 → 登录入口」的老逻辑（将来接用户体系要用）。 -->
       <el-dropdown v-if="authStore.isLoggedIn" trigger="click" popper-class="sidenav-user-popper" @visible-change="(v: boolean) => (avatarMenuOpen = v)" @command="onAvatarCommand">
         <span class="title-avatar" :title="authStore.user?.username">
           {{ authStore.user?.username?.slice(0, 1) || 'U' }}<i class="login-dot" />
@@ -101,6 +116,28 @@
           </el-dropdown-menu>
         </template>
       </el-dropdown>
+      <!-- 桌面端：本机身份头像（中性，不引导登录） -->
+      <el-dropdown v-else-if="isElectron" trigger="click" popper-class="sidenav-user-popper" @visible-change="(v: boolean) => (avatarMenuOpen = v)" @command="onAvatarCommand">
+        <span class="title-avatar is-local" :title="localIdentityTitle">
+          {{ localIdentityInitial }}
+        </span>
+        <template #dropdown>
+          <el-dropdown-menu>
+            <div class="user-dropdown-header">
+              <span class="user-dropdown-name">{{ localIdentityTitle }}</span>
+            </div>
+            <el-dropdown-item command="/settings">
+              <el-icon><Setting /></el-icon>
+              <span>设置</span>
+            </el-dropdown-item>
+            <el-dropdown-item command="/memory">
+              <el-icon><Collection /></el-icon>
+              <span>记忆管理</span>
+            </el-dropdown-item>
+          </el-dropdown-menu>
+        </template>
+      </el-dropdown>
+      <!-- Web/移动端：未登录 → 登录入口 -->
       <button v-else class="title-login-btn" type="button" @click="$router.push('/login')">登录</button>
 
       <!-- 主题切换 -->
@@ -138,6 +175,7 @@ import {
   More, Cpu, Tools, Files, User, Link, Platform, MagicStick, Memo, Box, DataLine, Operation, Share, Refresh, Key,
 } from '@element-plus/icons-vue';
 import { useSettingsStore, useAuthStore, usePluginStore } from '@yan-zhi/ui';
+import { isElectron } from '../api/client';
 import { resolvePluginIcon } from '@yan-zhi/ui/plugin-icons';
 import HoverMenu from './HoverMenu.vue';
 import type { HoverMenuItem } from './HoverMenu.vue';
@@ -150,6 +188,17 @@ const settingsStore = useSettingsStore();
 const authStore = useAuthStore();
 const route = useRoute();
 const router = useRouter();
+
+/**
+ * 桌面端「本机身份」展示名与首字母。
+ *
+ * ★ 为什么不显示 guest：guest 是**内部数据归属身份**（后端 seed 全归它），
+ *   不是用户身份 —— 把 "guest" 摆在头像上会让用户以为"我被登录成了一个陌生账号"。
+ *   桌面端是本机应用，用「本机」表述更贴事实。
+ * ★ 真实用户（有心跳保存的登录）走上面的 isLoggedIn 分支，不会落到这里。
+ */
+const localIdentityTitle = computed(() => '本机');
+const localIdentityInitial = computed(() => '本');
 
 // 横排主导航：核心 3 页
 const navMenus = [
@@ -549,6 +598,17 @@ onUnmounted(() => {
   border-radius: 50%;
   background: #22c55e;
   border: 1.5px solid var(--glass-bg);
+}
+
+/* 桌面端「本机」身份头像：中性灰底（不用主题色实底 —— 那是"可点的登录入口"的语义），
+   只有 hover 才提亮，表明它是个可点开的菜单而不是状态指示。 */
+.title-avatar.is-local {
+  background: var(--glass-bg-hover, rgba(15, 23, 42, 0.06));
+  color: var(--color-text-secondary);
+}
+.title-avatar.is-local:hover {
+  background: var(--glass-bg-active, rgba(15, 23, 42, 0.1));
+  color: var(--color-text-primary, #0f172a);
 }
 
 .title-login-btn {

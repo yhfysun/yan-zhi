@@ -87,6 +87,8 @@ export interface WorkflowRunEvent {
   nodeType?: string;
   msg?: string;
   result?: Record<string, unknown>;
+  /** human_confirm 节点挂起时携带的待确认内容（run:paused 事件） */
+  pendingConfirm?: Record<string, unknown>;
 }
 
 function unwrap<T>(r: unknown): T | null {
@@ -178,6 +180,35 @@ async function cancelRun(runId: string): Promise<void> {
   await api.post(`/workflow/runs/${runId}/cancel`, {});
 }
 
+/**
+ * 提交人工确认结果（唤醒 human_confirm 节点继续跑）。
+ *
+ * ★ 不抛错、返回结构化结果：409（确认已失效——超时或服务重启过）是**必须展示给用户**
+ *   的正常分支，不是异常。静默吞掉会让用户以为提交成功了，实际流水线再也不会继续。
+ */
+async function confirmRun(
+  runId: string,
+  callId: string,
+  payload: { rejected?: boolean; text?: string; answers?: Array<{ question?: string; answer?: string; supplement?: string }> },
+): Promise<{ ok: boolean; error?: string }> {
+  const r = await api.post<any>(`/workflow/runs/${runId}/confirm`, { callId, ...payload });
+  if (r && typeof r === 'object' && 'error' in r) {
+    return { ok: false, error: String((r as { error: string }).error) };
+  }
+  return { ok: true };
+}
+
+/** 查询该运行当前的待确认状态（刷新/重连后恢复确认 UI 用） */
+async function fetchPendingConfirm(runId: string): Promise<Record<string, unknown> | null> {
+  try {
+    const r = await api.get<any>(`/workflow/runs/${runId}`);
+    const data = unwrap<any>(r);
+    return (data?.pendingConfirm as Record<string, unknown>) || null;
+  } catch {
+    return null;
+  }
+}
+
 /** 调试：跑到指定节点后暂停，返回到断点为止的节点输出快照 */
 async function debugRunTo(
   agentId: string,
@@ -247,6 +278,8 @@ function defineWorkflowStore() {
     startRun,
     preflight,
     cancelRun,
+    confirmRun,
+    fetchPendingConfirm,
     fetchRun,
     subscribeRun,
     debugRunTo,

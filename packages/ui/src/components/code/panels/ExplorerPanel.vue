@@ -67,7 +67,7 @@
           />
         </div>
 
-        <div ref="treeRef" class="exp-tree" @contextmenu.prevent="onBgMenu($event)">
+        <div ref="treeRef" class="exp-tree" @contextmenu.prevent="onBgMenu($event)" v-on="bindLongPress((ev) => onBgMenu(ev))">
           <div
             v-for="row in rows"
             v-show="rowMatch(row)"
@@ -78,6 +78,7 @@
             :title="row.relPath"
             @click="onRowClick(row)"
             @contextmenu.prevent.stop="onRowMenu($event, row)"
+            v-on="bindLongPress((ev) => onRowMenu(ev, row))"
           >
             <el-icon
               v-if="row.isDir"
@@ -181,6 +182,8 @@ import { useChatStore } from '../../../stores/chat';
 import { api } from '../../../api/client';
 import { fileMeta } from '../fileMeta';
 import { openProjectSwitcher } from '../../../composables/useProjectSwitcher';
+// 移动端：文件树没有右键，长按行 = 右键，长按空白 = 空白区菜单
+import { bindLongPress } from '../../../composables/useLongPress';
 
 const emit = defineEmits<{ 'pick-dir': []; 'scope-search': [{ rel: string; label: string }] }>();
 const code = useCodeStore();

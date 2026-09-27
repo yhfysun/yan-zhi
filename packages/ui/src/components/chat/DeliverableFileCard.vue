@@ -7,6 +7,7 @@
       :class="{ 'has-thumb': hasThumb(f) }"
       @click="preview(f)"
       @contextmenu.prevent="openMenu($event, f)"
+      v-on="bindLongPress((ev) => openMenu(ev, f))"
     >
       <!-- 视频交付物：静止显示首帧；hover 走 body 级浮层放大并静音自动播 5 秒；双击进灯箱播放 -->
       <video
@@ -61,6 +62,8 @@ import {
   closeMediaHover,
   type MediaTarget,
 } from '../../composables/useMediaPreview';
+// 移动端：交付物卡片没有右键，长按即弹出「另存为 / 打开目录 / 复制」菜单
+import { bindLongPress } from '../../composables/useLongPress';
 
 const props = defineProps<{ files: ConversationFile[] }>();
 

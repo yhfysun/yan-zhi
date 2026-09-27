@@ -118,7 +118,10 @@
           <div v-if="activeSheetObj?.truncated" class="fp-hint fp-table-hint">超过 500 行，仅显示前 500 行</div>
         </div>
       </template>
-      <!-- Word（.docx/.doc）：不做内嵌预览，走二进制「暂不支持 + 本机应用打开」 -->
+      <!-- Word（.docx）：mammoth 转 HTML 内嵌渲染（标题/表格/列表/内嵌图片）；.doc 旧格式仍走降级 -->
+      <div v-else-if="kind === 'word'" class="fp-docx">
+        <div class="fp-docx-page" v-html="docxHtml"></div>
+      </div>
       <!-- CSV 表格化（首行为表头，>1000 行截断） -->
       <div v-else-if="kind === 'csv'" class="fp-table-wrap">
         <table class="fp-table">
@@ -174,11 +177,21 @@ import MarkdownIt from 'markdown-it';
 import hljs from 'highlight.js';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { Document, Download, EditPen, FolderOpened } from '@element-plus/icons-vue';
-import { extractPdfPages } from '@yan-zhi/core';
+import { extractPdfPages, extractDocxHtml } from '@yan-zhi/core';
 import { renderPdfToImages } from '../utils/pdf-render';
 import { parseExcelStyled, type ExcelStyledSheet } from '../utils/excel-styled';
 
-const props = defineProps<{ file: { name: string; path: string } }>();
+const props = defineProps<{
+  file: {
+    name: string;
+    path: string;
+    /** 会话 id（产物类文件的跨根/登记路径兜底用） */
+    conversationId?: string;
+    /** 目录级资源文件：空间 id + 资源目录名（Web 端唯一可用的读取通道） */
+    spaceId?: string;
+    resourceDir?: string;
+  };
+}>();
 const emit = defineEmits<{ (e: 'close'): void }>();
 
 const loading = ref(true);
@@ -187,7 +200,9 @@ const content = ref('');
 const truncated = ref(false);
 const imageSrc = ref('');
 const videoSrc = ref('');
-const kind = ref<'image' | 'video' | 'pdf' | 'excel' | 'text' | 'csv' | 'binary'>('text');
+const kind = ref<'image' | 'video' | 'pdf' | 'excel' | 'text' | 'csv' | 'word' | 'binary'>('text');
+// Word（.docx）mammoth 渲染结果（净化后的 HTML）
+const docxHtml = ref('');
 const byteSize = ref(0);
 const unsupportedNote = ref('');
 /** 文件修改时间（stat 可用时显示） */
@@ -358,7 +373,8 @@ async function saveAs() {
       return;
     }
     const { getPlatformAdapter } = await import('@yan-zhi/core');
-    const b64 = await getPlatformAdapter().fs.readFileBase64(props.file.path);
+    const pa = getPlatformAdapter();
+    const b64 = await readFileWithFallback(pa);
     const bin = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
     const url = URL.createObjectURL(new Blob([bin]));
     const a = document.createElement('a');
@@ -517,6 +533,7 @@ const kindBadge = computed(() => {
     case 'pdf': return 'PDF';
     case 'excel': return 'Excel';
     case 'csv': return 'CSV';
+    case 'word': return 'Word';
     case 'binary': return '二进制';
     default: return isMd.value ? 'Markdown' : (ext.value.toUpperCase() || '文本');
   }
@@ -643,6 +660,28 @@ const VIDEO_INLINE_MAX = 80 * 1024 * 1024;
 const EXCEL_EXTS = ['xlsx', 'xls'];
 const PDF_EXTS = ['pdf'];
 const WORD_EXTS = ['docx', 'doc'];
+/** docx 内嵌渲染的体积上限（与视频同一量级考虑：整段字节 + base64 + DOM 都在渲染进程） */
+const DOCX_INLINE_MAX = 50 * 1024 * 1024;
+
+/**
+ * docx HTML 的轻量净化：mammoth 的输出本身是结构化标签（文本已被转义），
+ * 但文档里可携带的字段（如超链接 href）不可全信 —— 剥掉脚本类标签与内联事件，
+ * 保证 v-html 渲染不吃进可执行内容。
+ */
+function sanitizeDocxHtml(html: string): string {
+  const div = document.createElement('div');
+  div.innerHTML = html;
+  for (const el of Array.from(div.querySelectorAll('script,iframe,object,embed,link,style,form'))) el.remove();
+  for (const el of Array.from(div.querySelectorAll('*'))) {
+    for (const attr of Array.from(el.attributes)) {
+      const n = attr.name.toLowerCase();
+      if (n.startsWith('on') || (n === 'href' && /^\s*javascript:/i.test(attr.value))) {
+        el.removeAttribute(attr.name);
+      }
+    }
+  }
+  return div.innerHTML;
+}
 const TEXT_EXTS = new Set([
   'md', 'markdown', 'txt', 'log', 'json', 'py', 'js', 'ts', 'jsx', 'tsx', 'vue', 'html', 'htm', 'css', 'scss', 'less',
   'xml', 'yaml', 'yml', 'ini', 'cfg', 'conf', 'env', 'sh', 'bat', 'ps1', 'sql', 'java', 'kt', 'go', 'rs', 'c', 'h',
@@ -705,6 +744,9 @@ async function readFileWithFallback(
   try {
     return await adapter.fs.readFileBase64(first);
   } catch (err) {
+    // 目录级资源文件：优先走服务端直读（桌面/Web 一致；Web 端 fs 根本读不到服务端路径）
+    const viaApi = await readViaResourceApi();
+    if (viaApi !== null) return viaApi;
     // 只在"文件不存在"这类可恢复错误上兜底；其它错误（权限等）直接抛，避免掩盖问题
     const relocated = await resolveServerSidePath();
     if (!relocated || relocated === first) throw err;
@@ -722,9 +764,55 @@ async function readTextWithFallback(
   try {
     return await adapter.fs.readFile(first);
   } catch (err) {
+    // 目录级资源文件：优先走服务端直读（base64 解成 UTF-8 文本，形状与 fs.readFile 一致）
+    const viaApi = await readViaResourceApi();
+    if (viaApi !== null) {
+      try {
+        const bin = atob(viaApi);
+        const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        return new TextDecoder('utf-8').decode(bytes);
+      } catch { /* 解码失败 → 继续原有兜底 */ }
+    }
     const relocated = await resolveServerSidePath();
     if (!relocated || relocated === first) throw err;
     return await adapter.fs.readFile(relocated);
+  }
+}
+
+/**
+ * 目录级资源文件的直读兜底：向服务端要原始字节（base64）。
+ *
+ * ★ 为什么必须有（2026-09-27 修的真实缺陷）：
+ *   「项目资源」段（00-source 等）列出的文件在**服务端空间目录**下，且没登记
+ *   conversation_file。桌面端 fs 适配器能直读本地盘，**Web 端不能** ——
+ *   它走 File System Access API，只认用户授权过的根句柄，拿到服务端绝对路径
+ *   必然解析失败；而下面 resolveServerSidePath 的兜底又依赖 conversationId。
+ *   结果：Web 端点开资源文件一律"找不到文件"。
+ *   这里按「空间 + 资源目录 + 文件名」向服务端直读，两端一致可用。
+ *   返回 null 表示不适用/服务端也没有（调用方继续走原有兜底或如实报错）。
+ */
+async function readViaResourceApi(): Promise<string | null> {
+  const { spaceId, resourceDir, name } = props.file;
+  if (!spaceId || !resourceDir || !name) return null;
+  try {
+    const { API_BASE, buildRequestHeaders } = await import('../api/client');
+    const url = `${API_BASE}/spaces/${encodeURIComponent(spaceId)}/resources/${encodeURIComponent(resourceDir)}/raw?name=${encodeURIComponent(name)}`;
+    // 用 fetch 取字节再转 base64（与 fs 适配器的 readFileBase64 同形状，可直接喂给各分支解析）
+    const resp = await fetch(url, { headers: buildRequestHeaders() });
+    if (!resp.ok) return null;
+    const buf = await resp.arrayBuffer();
+    if (!buf.byteLength) return '';
+    const bytes = new Uint8Array(buf);
+    let bin = '';
+    // 分块避免超长字符串拼接爆栈（大文件）
+    const CHUNK = 0x8000;
+    for (let i = 0; i < bytes.length; i += CHUNK) {
+      bin += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+    }
+    return btoa(bin);
+  } catch {
+    return null;
   }
 }
 
@@ -761,6 +849,7 @@ async function loadFile() {
   pdfNote.value = '';
   excelSheets.value = [];
   activeSheet.value = 0;
+  docxHtml.value = '';
   byteSize.value = 0;
   unsupportedNote.value = '';
   fileMtime.value = '';
@@ -810,7 +899,7 @@ async function loadFile() {
       // pdf.js 不可用（极老环境）时降级为 unpdf 纯文本提取。
       let b64 = '';
       try {
-        b64 = await adapter.fs.readFileBase64(props.file.path);
+        b64 = await readFileWithFallback(adapter);
       } catch {
         kind.value = 'binary';
         unsupportedNote.value = '暂不支持预览';
@@ -834,7 +923,7 @@ async function loadFile() {
 
     if (EXCEL_EXTS.includes(e)) {
       try {
-        let b64 = await adapter.fs.readFileBase64(props.file.path);
+        let b64 = await readFileWithFallback(adapter);
         byteSize.value = Math.floor(b64.length * 3 / 4);
         excelWidths.value = {};
         excelDirty.value = {};
@@ -867,14 +956,37 @@ async function loadFile() {
     }
 
     if (WORD_EXTS.includes(e)) {
-      // Word 文档不做内嵌预览（浮动文本框模板渲染质量差），交由本机应用打开
-      kind.value = 'binary';
-      unsupportedNote.value = 'Word 文档暂不支持内嵌预览，请用本机应用打开';
+      // Word 文档：
+      //  · .docx → mammoth 转 HTML 内嵌渲染（标题/表格/列表/内嵌图片走 data URI，无需外部资源）
+      //  · .doc（BIFF 旧格式 mammoth 不认）→ 保持「本机应用打开」降级
+      //  · 超过 50MB 不读进内存（整段字节 + base64 转换会拖垮渲染进程），降级打开
+      if (e !== 'docx') {
+        kind.value = 'binary';
+        unsupportedNote.value = '旧版 .doc 不支持内嵌预览，建议用 Word 另存为 .docx 后预览';
+        return;
+      }
+      const size = byteSize.value || (await adapter.fs.stat?.(props.file.path))?.size || 0;
+      if (size > DOCX_INLINE_MAX) {
+        kind.value = 'binary';
+        unsupportedNote.value = `Word 文档 ${(size / 1024 / 1024).toFixed(0)}MB 超过 ${DOCX_INLINE_MAX / 1024 / 1024}MB，未内嵌预览，可用本机应用打开`;
+        return;
+      }
+      const b64 = await readFileWithFallback(adapter); // 读取失败向上抛 → 外层给出路径失效的准确提示
+      byteSize.value = Math.floor(b64.length * 3 / 4);
+      try {
+        const html = await extractDocxHtml(b64);
+        if (!html) throw new Error('文档无可提取内容（可能是空文档或加密文档）');
+        docxHtml.value = sanitizeDocxHtml(html);
+        kind.value = 'word';
+      } catch {
+        kind.value = 'binary';
+        unsupportedNote.value = 'Word 文档解析失败（可能是加密或损坏文件），请用本机应用打开';
+      }
       return;
     }
 
     if (e === 'csv') {
-      const raw = await adapter.fs.readFile(props.file.path);
+      const raw = await readTextWithFallback(adapter);
       content.value = raw.length >= TEXT_LIMIT ? raw.slice(0, TEXT_LIMIT) : raw;
       truncated.value = raw.length >= TEXT_LIMIT;
       kind.value = 'csv';
@@ -883,7 +995,7 @@ async function loadFile() {
 
     // 文本类：扩展名白名单内直接读；白名单外也尝试读，但检测到二进制特征（空字节/大量替换符）转暂不支持
     if (TEXT_EXTS.has(e) || !e) {
-      const raw = await adapter.fs.readFile(props.file.path);
+      const raw = await readTextWithFallback(adapter);
       if (raw.length >= TEXT_LIMIT) {
         content.value = raw.slice(0, TEXT_LIMIT);
         truncated.value = true;
@@ -1061,6 +1173,31 @@ watch(() => props.file?.path, () => { if (props.file?.path) loadFile(); }, { imm
 .fp-xlsx td[contenteditable="plaintext-only"] { outline: 2px solid var(--el-color-primary, #7c3aed); outline-offset: -2px; cursor: text; background: var(--el-bg-color); }
 .fp-cell-edited { box-shadow: inset 0 0 0 1px var(--el-color-warning, #e6a23c); }
 .fp-dirty-hint { flex-shrink: 0; font-size: 12px; color: var(--el-color-warning, #e6a23c); }
+/* Word（.docx）mammoth 渲染：A4 纸感的居中页面 + 文档排版 */
+.fp-docx { flex: 1; overflow: auto; padding: 16px; background: var(--el-fill-color-light, #f5f7fa); }
+.fp-docx-page {
+  max-width: 820px; margin: 0 auto; padding: 40px 48px;
+  background: var(--el-bg-color, #fff); color: var(--el-text-color-primary);
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.08); border-radius: 4px;
+  font-size: 14px; line-height: 1.8;
+}
+.fp-docx-page :deep(h1) { font-size: 1.7em; margin: 0.6em 0 0.4em; line-height: 1.4; }
+.fp-docx-page :deep(h2) { font-size: 1.45em; margin: 0.6em 0 0.4em; line-height: 1.4; }
+.fp-docx-page :deep(h3) { font-size: 1.25em; margin: 0.6em 0 0.4em; }
+.fp-docx-page :deep(h4), .fp-docx-page :deep(h5), .fp-docx-page :deep(h6) { font-size: 1.1em; margin: 0.6em 0 0.4em; }
+.fp-docx-page :deep(p) { margin: 0.5em 0; }
+.fp-docx-page :deep(ul), .fp-docx-page :deep(ol) { margin: 0.5em 0; padding-left: 1.6em; }
+.fp-docx-page :deep(table) { border-collapse: collapse; margin: 0.8em 0; width: 100%; }
+.fp-docx-page :deep(td), .fp-docx-page :deep(th) {
+  border: 1px solid var(--el-border-color, #dcdfe6); padding: 5px 10px; text-align: left;
+}
+.fp-docx-page :deep(th) { background: var(--el-fill-color-light); font-weight: 600; }
+.fp-docx-page :deep(img) { max-width: 100%; height: auto; border-radius: 2px; }
+.fp-docx-page :deep(a) { color: var(--el-color-primary, #7c3aed); }
+.fp-docx-page :deep(blockquote) {
+  margin: 0.6em 0; padding: 4px 12px; border-left: 3px solid var(--el-border-color);
+  color: var(--el-text-color-secondary);
+}
 /* PDF 备注（仅渲染前 N 页等） */
 .fp-pdf-note { padding: 8px 12px; font-size: 12px; color: var(--el-text-color-secondary); text-align: center; }
 .fp-binary { text-align: center; padding: 40px; color: var(--el-text-color-secondary); display: flex; flex-direction: column; align-items: center; gap: 8px; }

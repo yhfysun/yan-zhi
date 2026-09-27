@@ -14,6 +14,8 @@ function rowToSpace(r: any): Space {
     name: r.name,
     dirPath: r.dir_path ?? r.dirPath,
     description: r.description,
+    taskType: r.task_type ?? r.taskType ?? undefined,
+    taskConfigJson: r.task_config_json ?? r.taskConfigJson ?? undefined,
     sortOrder: r.sort_order ?? r.sortOrder ?? 0,
     createdAt: r.created_at ?? r.createdAt,
     updatedAt: r.updated_at ?? r.updatedAt,
@@ -96,13 +98,15 @@ export const useSpaceStore = defineStore('space', () => {
     return createSpace({ name, dirPath });
   }
 
-  async function updateSpace(id: string, patch: { name?: string; dirPath?: string; description?: string; sortOrder?: number }) {
+  async function updateSpace(id: string, patch: { name?: string; dirPath?: string; description?: string; sortOrder?: number; taskType?: string | null; taskConfigJson?: string | null }) {
     if (isServerMode()) {
       const body: any = {};
       if (patch.name !== undefined) body.name = patch.name;
       if (patch.dirPath !== undefined) body.dirPath = patch.dirPath;
       if (patch.description !== undefined) body.description = patch.description;
       if (patch.sortOrder !== undefined) body.sortOrder = patch.sortOrder;
+      if (patch.taskType !== undefined) body.taskType = patch.taskType;
+      if (patch.taskConfigJson !== undefined) body.taskConfigJson = patch.taskConfigJson;
       if (Object.keys(body).length === 0) return;
       await api.patch(`/spaces/${id}`, body);
     } else {
@@ -119,6 +123,22 @@ export const useSpaceStore = defineStore('space', () => {
       await adapter.db.exec(`UPDATE space SET ${sets.join(', ')} WHERE id = ?`, params);
     }
     await loadSpaces();
+  }
+
+  // ── 资源目录（「目录即任务」的目录级资源；跨会话共享）──
+
+  /** 资源目录概览：各段（00-source 等）的项数与文件名 */
+  async function loadSpaceResources(spaceId: string): Promise<Array<{ dir: string; label: string; count: number; names: string[] }>> {
+    const r = await api.get<any[]>(`/spaces/${spaceId}/resources`);
+    if ('error' in r) return [];
+    return (r.data as any[]) || [];
+  }
+
+  /** 列举某段资源目录下的文件（一层） */
+  async function listResourceDir(spaceId: string, dir: string): Promise<Array<{ name: string; path: string; size: number; mtime: number; isDir: boolean }>> {
+    const r = await api.get<any[]>(`/spaces/${spaceId}/resources/${encodeURIComponent(dir)}`);
+    if ('error' in r) return [];
+    return (r.data as any[]) || [];
   }
 
   /** 删除空间：仅删 space 记录，其下会话 space_id 置空归"未归类" */
@@ -165,5 +185,6 @@ export const useSpaceStore = defineStore('space', () => {
     spaces, loading, currentSpaceId, currentSpace,
     loadSpaces, createSpace, findOrCreateByDirPath, updateSpace, deleteSpace, selectSpace,
     readSpaceMemory, writeSpaceMemory,
+    loadSpaceResources, listResourceDir,
   };
 });

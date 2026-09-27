@@ -104,6 +104,14 @@
 /* 空间弹窗：目录输入 + 浏览按钮一行排布 */
 .space-dir-row { display: flex; gap: 8px; width: 100%; }
 .space-dir-row .el-input { flex: 1; }
+/* 任务类型下拉：选项两行（名称 + 一句话说明）；选中后展示该类型的执行引导 */
+.tt-opt-label { font-size: 13px; }
+.tt-opt-summary { margin-left: 8px; font-size: 11px; color: var(--color-text-secondary, #94a3b8); }
+.tt-guide {
+  margin-top: 6px; padding: 8px 10px; border-radius: 6px; font-size: 11.5px; line-height: 1.6;
+  background: var(--glass-bg-hover, rgba(15, 23, 42, 0.03));
+  color: var(--color-text-secondary, #64748b);
+}
 /* 空间记忆弹窗：说明 + 落盘路径提示 */
 .space-memory-hint {
   margin: 0 0 10px; font-size: 12px; line-height: 1.6;
@@ -124,6 +132,21 @@
   user-select: none; transition: background 0.15s;
 }
 .tree-node-head:hover { background: var(--glass-bg-hover); }
+/* 已选中的空间：明确的高亮（它决定新任务归属，用户必须能一眼看出选的是哪个） */
+.tree-node-head.tree-node-active {
+  background: color-mix(in srgb, var(--color-primary) 12%, transparent);
+  box-shadow: inset 2px 0 0 var(--color-primary);
+}
+.tree-node-head.tree-node-active .tree-node-label { font-weight: 600; color: var(--color-primary); }
+/* 空间的任务类型徽标（列表上直接可见，省得进弹窗才知道这个目录是干什么的） */
+.tree-task-badge {
+  flex-shrink: 0; padding: 1px 6px; border-radius: 8px; font-size: 10px; line-height: 1.5;
+  background: var(--glass-bg-hover); color: var(--color-text-secondary);
+  border: 1px solid var(--glass-border, rgba(15, 23, 42, 0.08));
+}
+/* 徽标可点击（改任务模式）：给鼠标手型 + hover 高亮，让"它能点"这件事看得出来 */
+.tree-task-badge-click { cursor: pointer; transition: background 0.15s ease, color 0.15s ease; }
+.tree-task-badge-click:hover { background: var(--color-primary); color: #fff; }
 /* 「+」添加图标默认隐藏，hover 节点头时才显示——减少视觉噪音（任务/空间列表都适用） */
 .tree-node-head .tree-add-icon { opacity: 0; }
 .tree-node-head:hover .tree-add-icon { opacity: 1; }
@@ -499,6 +522,23 @@
   opacity: 0; transition: opacity 0.18s;
 }
 .msg:hover .msg-actions, .msg-actions:hover { opacity: 1; }
+/* ★★ 触屏：操作排默认**不占位也不显示**，长按该条消息才出现（用户 2026-09-26 拍板）。
+   ⚠️ 为什么必须两份都写（媒体查询 + .platform-mobile）：
+   媒体查询按**视口宽度**判定，Capacitor 横屏视口常 800px+ 不命中 →
+   只写媒体查询会出现「移动栏在、按钮却是桌面 hover 行为」（本项目反复踩过的坑）。
+   ⚠️ 为什么用 display:none 而不是 opacity:0：
+   移动端行宽紧张，opacity:0 的元素仍然占位（会把气泡挤窄）；长按是"临时露出"，
+   就该真正不占位。桌面端两条都不命中 → 行为逐字不变。 */
+@media (max-width: 767px) {
+  .msg-actions { display: none; }
+  .msg.is-actions-open .msg-actions,
+  .msg-actions.is-open { display: flex; }
+  .msg.is-actions-open .msg-actions { opacity: 1; }
+}
+.platform-mobile .msg-actions { display: none; }
+.platform-mobile .msg.is-actions-open .msg-actions,
+.platform-mobile .msg-actions.is-open { display: flex; }
+.platform-mobile .msg.is-actions-open .msg-actions { opacity: 1; }
 .msg-user .msg-actions { justify-content: flex-end; }
 .msg-actions .el-button { color: var(--color-text-secondary); }
 .msg-actions .el-button:hover { color: var(--color-primary); }
@@ -825,6 +865,28 @@
 .input-textarea.is-expanded .el-textarea__inner {
   /* 3 行：行高 ×3 + 内边距。不做 max-height 限制，让 autosize 继续长 */
   height: calc(1.6em * 3 + 20px) !important;
+}
+
+/* ★★ 移动端输入框「未激活」态：整条输入区只留那一行输入框
+   （用户 2026-09-26 拍板：「未激活状态就是一个一行的输入框，其它按钮啥的都没有」）。
+   ⚠️ 为什么用 CSS 隐藏而不是 v-if 卸载：
+   · `+` 菜单 / 模型下拉 / 权限浮层都是 el-popover，内容 **Teleport 到 body**，
+     父容器 display:none 对弹层无效（本项目已踩过「点一次弹两个窗」）；
+     但收起态它们根本不可能被点开（引用按钮已隐藏），所以这里只需隐藏 DOM、无需卸载，
+     且一旦展开就立刻回到「v-if 门控」那套既有互斥逻辑，不会引入新的双开路径。
+   · 用 CSS 还能保住 textarea 的焦点与光标 —— v-if 卸载会在聚焦瞬间重建组件，
+     移动端点一下输入框会先卸载再挂载，键盘弹出后光标丢失。
+   ★ 桌面端不挂 .is-mobile-collapsed（类由 isMobileShell 门控）→ 零影响。 */
+.input-area.is-mobile-collapsed .input-agent-bar,
+.input-area.is-mobile-collapsed .input-toolbar,
+.input-area.is-mobile-collapsed .queue-panel,
+.input-area.is-mobile-collapsed .file-chips,
+.input-area.is-mobile-collapsed .long-input-hint {
+  display: none !important;
+}
+/* 收起态没有工具条托底，把 textarea 的内边距给足 —— 视觉上就是「一个输入框」 */
+.input-area.is-mobile-collapsed .input-textarea .el-textarea__inner {
+  padding: 10px 14px;
 }
 .input-agent-bar {
   display: flex; align-items: center; gap: 4px;
@@ -1206,6 +1268,28 @@
 }
 .ctx-menu .has-submenu:hover .ctx-submenu { display: block; }
 
+/* ★★ 子菜单项的样式（2026-09-27 修的真实缺陷）：
+   上面那批 `padding/圆角/hover/图标间距` 的选择器是 `.ctx-menu > *`（**直接子元素**），
+   而子菜单项是 `.ctx-menu > li > ul.ctx-submenu > li` —— 隔了一层，**一条都没匹配上**。
+   症状就是「子菜单是裸的 li + 裸锚点样式」：行高塌陷、无圆角、无 hover、图标无间距，
+   和主菜单完全不是一套观感。这里把同一套规则补齐到子菜单项上。 */
+.ctx-menu .ctx-submenu > li {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px; cursor: pointer; font-size: 13px; border-radius: 6px; transition: background 0.15s;
+  position: relative; width: 100%; margin: 0;
+  background: transparent; border: none; color: inherit; text-align: left; outline: none;
+}
+.ctx-menu .ctx-submenu > li:hover { background: var(--glass-bg-hover); }
+.ctx-menu .ctx-submenu > li.danger { color: var(--el-color-danger); }
+.ctx-menu .ctx-submenu > li.danger:hover { background: rgba(239,68,68,0.08); }
+/* 子菜单里的"暂无空间"提示：不可点、不参与 hover */
+.ctx-menu .ctx-submenu > li.disabled-hint {
+  color: var(--color-text-secondary); cursor: default; font-size: 12px;
+}
+.ctx-menu .ctx-submenu > li.disabled-hint:hover { background: transparent; }
+/* 子菜单图标：与主菜单同宽同色，避免"主菜单图标 15px、子菜单图标跑到字号大小" */
+.ctx-menu .ctx-submenu > li > .el-icon { font-size: 14px; flex-shrink: 0; }
+
 /* 空间选择器 */
 .space-selector { flex-shrink: 0; padding: 6px 8px 0 8px; }
 .space-tabs {
@@ -1269,6 +1353,18 @@
   padding: 8px 12px; font-size: 11px; color: var(--color-text-secondary);
   text-align: center;
 }
+/* 文件管理面板两段式：「本任务」（会话级）与「项目资源」（目录级）的分段标题 */
+.file-section-label {
+  display: flex; align-items: center; gap: 6px;
+  padding: 8px 10px 4px; font-size: 11px; font-weight: 600;
+  color: var(--color-text-secondary); letter-spacing: 0.03em;
+}
+.file-section-label-res {
+  margin-top: 6px; border-top: 1px solid var(--glass-border, rgba(15, 23, 42, 0.08));
+  padding-top: 10px;
+}
+.file-section-hint { font-weight: 400; color: var(--color-text-secondary); opacity: 0.8; }
+.file-res-no-space { padding: 10px 12px; }
 
 .file-chips {
   display: flex; flex-wrap: wrap; gap: 6px;

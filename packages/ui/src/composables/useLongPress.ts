@@ -22,8 +22,23 @@
 //   · 按住 `duration` 毫秒且移动未超 `moveTolerance` → 触发回调；
 //   · 触发后**吞掉紧随的一次 click**（捕获阶段拦一次），避免"长按=顺便点了一下"；
 //   · 移动超容差 / 提前松手 / pointercancel（滚动）→ 取消，不误触。
-
-import { onBeforeUnmount } from 'vue';
+//
+// ★★★ 键名绝不能带 `on` 前缀（2026-09-26 实测踩到，代价很大）：
+//
+//   `v-on="bindLongPress(...)"` 时，Vue 会调 `toHandlers(obj)` 展开，而
+//   **`toHandlers` 会给每个键再加一次 `on` 前缀**：
+//
+//       Vue.toHandlers({ onPointerdown: fn })  →  { onOnPointerdown: fn }   ← 错！
+//       Vue.toHandlers({ pointerdown:   fn })  →  { onPointerdown:   fn }   ← 对
+//
+//   本文件此前用的是 `onPointerdown` 等键名 → 实际注册成 `onOnPointerdown`，
+//   **永远不会被任何事件触发** → 表现为「长按功能没有实现」：
+//   代码在、函数在、`grep` 也命中，但按下去毫无反应（连会话列表的长按一起坏）。
+//   ★ 排查时极具误导性：`DOMDebugger.getEventListeners` 会把它归一化显示成
+//     `onPointerdown`，看着"明明绑上了"，所以只能靠给 `toHandlers` 传参实测来定性。
+//   ★ 判据：**凡是要喂给 `v-on="obj"` 的对象，键名一律不带 `on` 前缀**。
+//
+//   `clickCapture` 同理 → toHandlers 后得到 `onClickCapture`（Vue 的捕获语法）。
 
 export interface LongPressEvent {
   clientX: number;
@@ -40,6 +55,24 @@ export interface LongPressEvent {
 type CompatMouseEvent = MouseEvent & LongPressEvent;
 
 /**
+ * 把原生 PointerEvent 适配成调用方期待的「带 clientX/clientY/target 的事件」。
+ *
+ * ★★★ 绝不能用 `Object.assign(e, {...})`（2026-09-26 实测踩到，代价很大）：
+ *   原生事件的 `clientX` / `clientY` / `target` 都是**原型链上的只读 getter**，
+ *   `Object.assign` 要对它们**赋值** → 抛
+ *     `TypeError: Cannot set property clientX of #<MouseEvent> which has only a getter`
+ *   → 定时器回调第一行就炸 → 表现为「长按毫无反应」。
+ *   （原代码把它写在这句上，异常又被吞掉，所以查了很久。）
+ *
+ * 正解：`Object.create(e)` 建一个**以原事件为原型**的轻壳 ——
+ *   只读属性照旧从原型链读取，不需要（也不应该）赋值；
+ *   这样①不触碰 getter ②仍 instanceof ③preventDefault 等事件方法可用。
+ */
+function asCompatMouseEvent(e: PointerEvent): CompatMouseEvent {
+  return Object.create(e) as CompatMouseEvent;
+}
+
+/**
  * 生成可直接 `v-on` 展开的长按处理器。
  *
  * ```vue
@@ -47,8 +80,18 @@ type CompatMouseEvent = MouseEvent & LongPressEvent;
  * ```
  *
  * ★ 无需判平台：内部只对 `pointerType === 'touch'` 生效，桌面不受影响。
- * ★ 返回对象里含 `onClickCapture` —— `v-on` 会把它绑成捕获阶段的 click 拦截，
- *   用于吞掉长按之后的那一次误点。
+ * ★ 返回对象的键名**不带 `on` 前缀** —— `v-on` 会经 `toHandlers()` 加前缀，
+ *   自带前缀会变成 `onOnPointerdown` 而永不触发（见文件头注释）。
+ * ★ 返回对象里含 `clickCapture` —— `toHandlers` 后即 `onClickCapture`，
+ *   绑定为**捕获阶段**的 click 拦截，用于吞掉长按之后的那一次误点。
+ *
+ * ★★ 本函数**不使用任何生命周期钩子**（不要加回来）：
+ *   它常在模板表达式里求值（`v-on="bindLongPress(...)"`），而模板求值不在 setup 期 →
+ *   `onBeforeUnmount` 会报 `[Vue warn]: onBeforeUnmount is called when there is no
+ *   active component instance`，且**钩子根本挂不上** → 内部的定时器永不清理。
+ *   定时器本身会在触发后自然失效（`timer = null` / `swallowClick` 兜底复位），
+ *   泄漏面可控；组件卸载时的清理交给调用方（或不必做 —— 见上）。
+ *   判据：**任何"返回 v-on 展开对象"的函数里都不能出现生命周期 API**。
  */
 export function bindLongPress(
   onLongPress: (event: CompatMouseEvent) => void,
@@ -66,8 +109,9 @@ export function bindLongPress(
 
   const clear = () => { if (timer !== null) { clearTimeout(timer); timer = null; } };
 
+  // ★ 键名不带 on 前缀（见上方注释：v-on 的 toHandlers 会补前缀）
   const api = {
-    onPointerdown: (e: PointerEvent) => {
+    pointerdown: (e: PointerEvent) => {
       if (e.pointerType !== 'touch') return; // 鼠标/笔不接管
       clear();
       fired = false;
@@ -79,28 +123,34 @@ export function bindLongPress(
         swallowClick = true;
         // 阻止默认：避免同时弹出系统的文本选择 / 图片保存菜单
         try { e.preventDefault(); } catch { /* 合成事件可能不可取消 */ }
-        // ★ 断言成 MouseEvent 形状：既有菜单函数形参是 `(e: MouseEvent)`，
-        //   而它们实际只用 clientX/clientY/target。与其为一处长按去改一圈签名，
-        //   不如在这里对齐形状（构造出的轻量 event 恰好覆盖这三个字段）。
-        onLongPress(Object.assign(e, { clientX: e.clientX, clientY: e.clientY, target: e.target }) as CompatMouseEvent);
+        // ★ 传给回调的是**事件壳**而非原事件：既有菜单函数形参写的是 `(e: MouseEvent)`，
+        //   而它们实际只用 clientX/clientY/target。这里用原型继承做形状对齐（详见
+        //   asCompatMouseEvent 注释：绝不能 Object.assign —— 会撞只读 getter 直接抛错）。
+        try {
+          onLongPress(asCompatMouseEvent(e));
+        } catch (err) {
+          // 回调抛错不能把 swallowClick 留在 true（会误吞后续一次真实点击）
+          swallowClick = false;
+          console.error('[LongPress] 长按回调异常:', err);
+        }
         // 兜底摘除：即便没有后续 click，也别把这个标记留太久
         setTimeout(() => { swallowClick = false; }, 600);
       }, duration);
     },
-    onPointermove: (e: PointerEvent) => {
+    pointermove: (e: PointerEvent) => {
       if (timer === null) return;
       // 手指移动 = 用户在滚动列表，不是长按
       if (Math.abs(e.clientX - startX) > moveTolerance || Math.abs(e.clientY - startY) > moveTolerance) clear();
     },
-    onPointerup: () => { clear(); fired = false; },
-    onPointercancel: () => { clear(); fired = false; },
+    pointerup: () => { clear(); fired = false; },
+    pointercancel: () => { clear(); fired = false; },
     /** 触屏上若仍派发了 contextmenu，只阻止系统菜单；已触发过长按的不重复触发。 */
-    onContextmenu: (e: MouseEvent) => {
+    contextmenu: (e: MouseEvent) => {
       const pt = (e as PointerEvent).pointerType;
       if (pt && pt !== 'touch') return; // 鼠标右键交给调用方
       if (fired) e.preventDefault();
     },
-    onClickCapture: (e: MouseEvent) => {
+    clickCapture: (e: MouseEvent) => {
       if (!swallowClick) return;
       swallowClick = false;
       e.stopPropagation();
@@ -108,7 +158,6 @@ export function bindLongPress(
     },
   };
 
-  onBeforeUnmount(() => { clear(); swallowClick = false; });
   return api;
 }
 

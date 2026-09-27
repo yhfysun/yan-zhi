@@ -1,6 +1,7 @@
 <template>
   <div
     class="input-area"
+    :class="{ 'is-mobile-collapsed': isMobileShell && !mobileExpanded }"
     @dragenter.prevent="onDragEnter"
     @dragover.prevent="onDragOver"
     @dragleave="onDragLeave"
@@ -656,12 +657,14 @@ const inputTooLong = computed(() => input.value.length > LONG_INPUT_THRESHOLD);
 // 选择持久化到 conversation.permission_mode；readonly 模式下后端会构建期裁剪写工具 + 运行时硬拦截
 type PermissionMode = 'readonly' | 'default' | 'full';
 const PERMISSION_OPTIONS: Array<{ value: PermissionMode; label: string; desc: string }> = [
-  { value: 'default', label: '默认权限', desc: '正常执行所有工具' },
-  { value: 'readonly', label: '只读', desc: '禁止写入/执行/委派，仅检索浏览' },
-  { value: 'full', label: '全部放行', desc: '不做限制（等同默认）' },
+  // ★ 默认档是 readonly（2026-09-27 用户拍板：「权限默认应该都是只读，现在默认所有都行很危险」）。
+  //   'default' 与 'full' 行为一致（均放行），保留两档只是为了兼容存量数据与习惯叫法。
+  { value: 'readonly', label: '只读（默认）', desc: '禁止写入/执行/委派与外部工具，仅检索浏览；需要写入时再放开' },
+  { value: 'default', label: '标准权限', desc: '放行全部工具（含写文件/执行命令），适合可信任务' },
+  { value: 'full', label: '全部放行', desc: '不做限制（等同标准权限）' },
 ];
 const permissionLabel = computed(() =>
-  PERMISSION_OPTIONS.find((p) => p.value === store.permissionMode)?.label || '默认权限',
+  PERMISSION_OPTIONS.find((p) => p.value === store.permissionMode)?.label || '只读（默认）',
 );
 function onPermissionChange(mode: PermissionMode) {
   void store.setPermissionMode(mode);

@@ -75,6 +75,8 @@ pnpm-debug.log*
 *.db-shm
 *.db-wal
 *.sqlite
+# db 的临时导出（sql.js 驱动在 flush 时会写 data.db.tmp；*.db 通配对 `.db.tmp` 不生效）
+*.db.tmp
 
 # Corepack
 .corepack-cache/

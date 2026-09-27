@@ -259,6 +259,40 @@
               </el-alert>
             </template>
 
+            <!-- 人工确认节点：流水线中途暂停等用户确认 -->
+            <template v-else-if="selectedNode.type === 'human_confirm'">
+              <el-form-item label="形态">
+                <el-radio-group v-model="cfg.kind">
+                  <el-radio value="ask">单问（ask）</el-radio>
+                  <el-radio value="confirm">多页向导（confirm）</el-radio>
+                </el-radio-group>
+              </el-form-item>
+              <el-form-item label="问题（单问形态）">
+                <el-input v-model="cfg.question" type="textarea" :rows="2" placeholder="例：分镜脚本已生成，可以开始制作吗？" />
+              </el-form-item>
+              <el-form-item v-if="cfg.kind === 'confirm'" label="多页问题（每行一页）">
+                <el-input
+                  v-model="cfg.pagesText"
+                  type="textarea"
+                  :rows="3"
+                  placeholder="每行一个问题"
+                />
+              </el-form-item>
+              <el-form-item label="被打回时">
+                <el-radio-group v-model="cfg.onReject">
+                  <el-radio value="retry">标记打回（下游决定重做）</el-radio>
+                  <el-radio value="abort">中止整条流水线</el-radio>
+                </el-radio-group>
+              </el-form-item>
+              <el-form-item label="待确认产物（可空）">
+                <el-input v-model="cfg.artifact" placeholder="例：分镜.md（会提示用户去看）" />
+              </el-form-item>
+              <el-alert type="info" :closable="false" show-icon>
+                流水线会在此真的停下来等用户回答（刷新页面也不丢），确认后才继续 ——
+                这就是「不确认走不到下一步」的机械保证。
+              </el-alert>
+            </template>
+
             <el-form-item>
               <el-button type="danger" plain :icon="Delete" size="small" @click="removeSelected">删除节点</el-button>
             </el-form-item>
@@ -335,7 +369,7 @@ import { useRoute, useRouter } from 'vue-router';
 import { VueFlow, useVueFlow, type Node, type Edge, type NodeChange, type EdgeChange } from '@vue-flow/core';
 import '@vue-flow/core/dist/style.css';
 import '@vue-flow/core/dist/theme-default.css';
-import { ArrowLeft, Document, CaretRight, Delete, ChatDotRound, Tools, Upload, Download, Lightning, Switch, Refresh, Avatar, Reading, Memo, Grid, Setting } from '@element-plus/icons-vue';
+import { ArrowLeft, Document, CaretRight, Delete, ChatDotRound, Tools, Upload, Download, Lightning, Switch, Refresh, Avatar, Reading, Memo, Grid, Setting, QuestionFilled } from '@element-plus/icons-vue';
 import { ElMessage } from 'element-plus';
 import { useAgentStore } from '../stores/agent';
 import { usePlatformStore } from '../stores/platform';
@@ -401,6 +435,8 @@ const nodePalette = [
   { type: 'sub_agent' as NodeType, name: '子智能体', desc: '调用其他智能体', icon: markRaw(Avatar), color: '#EC4899' },
   { type: 'memory_read' as NodeType, name: '记忆读取', desc: '查询记忆库', icon: markRaw(Reading), color: '#14B8A6' },
   { type: 'memory_write' as NodeType, name: '记忆写入', desc: '持久化到记忆库', icon: markRaw(Memo), color: '#A855F7' },
+  // 人工确认：流水线中途停下等用户确认（不确认物理上走不到下一个节点）
+  { type: 'human_confirm' as NodeType, name: '人工确认', desc: '暂停等用户确认', icon: markRaw(QuestionFilled), color: '#D97706' },
   { type: 'output' as NodeType, name: '输出', desc: '收集最终结果', icon: markRaw(Download), color: '#EF4444' },
 ];
 
@@ -442,6 +478,7 @@ const nodeTypes = {
   sub_agent: makeNodeComponent('sub_agent', '#EC4899', Avatar),
   memory_read: makeNodeComponent('memory_read', '#14B8A6', Reading),
   memory_write: makeNodeComponent('memory_write', '#A855F7', Memo),
+  human_confirm: makeNodeComponent('human_confirm', '#D97706', QuestionFilled),
 };
 
 const { zoomIn, zoomOut, fitView } = useVueFlow();
@@ -482,6 +519,10 @@ function syncCfgFromNode() {
   if (n.type === 'memory_write' && Array.isArray(cfg.tags)) {
     cfg.tagsText = cfg.tags.join(',');
   }
+  // 人工确认：每页问题 ↔ 多行文本（与其它节点的 "文本 ↔ 结构化" 转换同构）
+  if (n.type === 'human_confirm' && Array.isArray(cfg.pages)) {
+    cfg.pagesText = cfg.pages.map((p: any) => (typeof p === 'string' ? p : String(p?.question || ''))).filter(Boolean).join('\n');
+  }
 }
 
 const selectedNode = computed(() => vfNodes.value.find((n) => n.id === selectedNodeId.value));
@@ -511,6 +552,14 @@ watch(
         newCfg.inputsMapping = JSON.parse(newCfg.inputsMappingText || '{}');
       } catch {}
       delete newCfg.inputsMappingText;
+    }
+    if (n.type === 'human_confirm' && newCfg.pagesText !== undefined) {
+      newCfg.pages = String(newCfg.pagesText)
+        .split('\n')
+        .map((x: string) => x.trim())
+        .filter(Boolean)
+        .map((q: string) => ({ question: q, allowText: true, allowSupplement: true }));
+      delete newCfg.pagesText;
     }
     if (n.type === 'memory_write' && newCfg.tagsText !== undefined) {
       newCfg.tags = String(newCfg.tagsText)
@@ -556,6 +605,8 @@ function labelFor(type: NodeType, c: Record<string, any>): string {
       return `topK=${c.topK || 3}${c.query ? ` q="${String(c.query).slice(0, 12)}"` : ''}`;
     case 'memory_write':
       return `${c.contentKey || 'content'} → ${Array.isArray(c.tags) ? c.tags.join(',') : (c.tags || '')}`;
+    case 'human_confirm':
+      return (c.question || (Array.isArray(c.pages) && c.pages[0]?.question) || '等待确认').slice(0, 24);
     default:
       return type;
   }

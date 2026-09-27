@@ -358,6 +358,26 @@ export const useMcpStore = defineStore('mcp', () => {
     }
   }
 
+  /**
+   * 依赖预检（P3b）：探测 command 是否存在 + 给出安装计划（体积 → 静默/确认）。
+   *
+   * ★ 为什么要在「测试连接」之前单独跑：测试连接失败时，用户看到的是
+   *   「连接失败」（spawn ENOENT 之类的底层错误），无从判断是**命令没装**
+   *   还是配置写错。预检把原因说清（含是否是 npx/uvx 这类自动拉包型启动器），
+   *   并顺带告知「装它要不要先问用户」（体积策略）。
+   * ★ 只在服务端模式可用：浏览器端没有 child_process，直接返回 null 让 UI 跳过。
+   */
+  async function precheckServer(command: string, args?: string[]): Promise<{
+    probe: { command: string; available: boolean; autoPull: boolean; hint: string; resolvedPath: string | null };
+    plan: { decision: 'silent' | 'confirm' | 'manual'; estimatedBytes: number | null; reason: string; action: string } | null;
+  } | null> {
+    if (!on()) return null;
+    if (!String(command || '').trim()) return null;
+    const r = await api.post<any>('/mcp-servers/precheck', { command, args: args || [] });
+    if ('data' in r) return r.data;
+    return null;
+  }
+
   async function callTool(serverId: string, toolName: string, args: unknown): Promise<{ ok: true; result: unknown } | { ok: false; msg: string }> {
     const start = Date.now();
     if (on()) {
@@ -505,7 +525,7 @@ export const useMcpStore = defineStore('mcp', () => {
     servers, tools, resources, prompts, connecting, credentials, accessKeys,
     loadServers, addServer, updateServer, deleteServer,
     connect, disconnect, updateToolMeta, setToolEnabled, callTool, readResource, getPrompt,
-    testServerConfig, cancelTest, getLogs, isDesktop, isStdioSupported,
+    testServerConfig, precheckServer, cancelTest, getLogs, isDesktop, isStdioSupported,
     loadCredentials, createCredential, generateCredentialToken, revealCredential, deleteCredential,
     loadAccessKeys, createAccessKey, revokeAccessKey,
   };

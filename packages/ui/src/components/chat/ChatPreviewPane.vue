@@ -38,7 +38,7 @@
       v-show="tab.id === store.activeTabId"
       class="right-panel-body"
     >
-      <FilePreview :file="{ name: tab.name, path: tab.path || '' }" />
+      <FilePreview :file="{ name: tab.name, path: tab.path || '', conversationId: (tab as any).conversationId, spaceId: tab.spaceId, resourceDir: tab.resourceDir }" />
     </div>
 
     <div v-if="gitTab" v-show="gitTab.id === store.activeTabId" class="right-panel-body">

@@ -86,7 +86,7 @@
             />
           </div>
 
-          <div ref="treeRef" class="fs-tree" @contextmenu.prevent="onBgMenu($event)">
+          <div ref="treeRef" class="fs-tree" @contextmenu.prevent="onBgMenu($event)" v-on="bindLongPress((ev) => onBgMenu(ev))">
             <div
               v-for="row in explorerRows"
               v-show="rowMatch(row)"
@@ -97,6 +97,7 @@
               :title="row.relPath"
               @click="onRowClick(row)"
               @contextmenu.prevent.stop="onRowMenu($event, row)"
+              v-on="bindLongPress((ev) => onRowMenu(ev, row))"
             >
               <el-icon v-if="row.isDir" class="fs-caret" :class="{ expanded: expandedDirs.has(row.relPath) }" @click.stop="toggleDir(row.relPath)">
                 <CaretRight />
@@ -171,6 +172,8 @@ import { useSpaceStore } from '../../stores/space';
 import { useSettingsStore } from '../../stores/settings';
 import ChatGitPanel from './ChatGitPanel.vue';
 import FileSearchPanel from '../code/panels/FileSearchPanel.vue';
+// 移动端：文件树没有右键，长按行 = 右键（新建/复制路径/删除…），长按空白 = 空白区菜单
+import { bindLongPress } from '../../composables/useLongPress';
 
 const { store, currentConv } = useChat();
 const spaceStore = useSpaceStore();

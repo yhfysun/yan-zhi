@@ -91,6 +91,13 @@ function rowToConv(r: any): Conversation {
     systemPrompt: r.system_prompt,
     pinned: !!r.pinned,
     permissionMode: (r.permission_mode === 'readonly' || r.permission_mode === 'full') ? r.permission_mode : 'default',
+    taskPlan: (() => {
+      if (!r.task_plan_json) return null;
+      try {
+        const parsed = JSON.parse(r.task_plan_json);
+        return parsed && Array.isArray(parsed.steps) ? parsed : null;
+      } catch { return null; }
+    })(),
     // 归属模式。空值按 office 兜底（与后端迁移口径一致），
     // 否则老数据会在所有模式下都"隐身"——列表按 mode 过滤，NULL 匹配不上任何模式。
     mode: (['office', 'dev', 'ops', 'sec', 'wf'].includes(r.mode) ? r.mode : 'office') as Conversation['mode'],
@@ -163,6 +170,11 @@ export interface PreviewTab {
   url?: string;        // browser：打开时的初始 URL
   repoPath?: string;   // git：仓库路径
   contract?: DataTabContract; // data：待浏览的查询契约
+  /** file：目录级资源文件（在空间目录下、未登记 conversation_file）。
+   *  带上 spaceId + resourceDir 后，预览可退化到「服务端按空间读」——
+   *  Web 端 fs 适配器读不到服务端绝对路径，这是唯一可用的通道。 */
+  spaceId?: string;
+  resourceDir?: string;
   createdAt: number;
 }
 
@@ -204,6 +216,7 @@ import {
   removePlans,
   applyTaskPlan,
   applyTaskStep,
+  DRAFT_PLAN_KEY,
   type PlanMap,
   type PlanStep as PlanStepT,
 } from './plan-buckets';
@@ -262,10 +275,13 @@ export const useChatStore = defineStore('chat', () => {
   const thinkingMode = ref(false);   // 深度思考：提示词要求充分推理后再作答
   const planMode = ref(false);       // 计划模式：先用 task_plan 登记计划再执行
   const answerOnly = ref(false);     // 仅回答：后端清空工具列表，禁一切工具调用
-  // 会话级工具权限：readonly=只读（写类工具被后端硬拦截）/ default=默认 / full=全部放行。
+  // 会话级工具权限：readonly=只读（写类工具被后端硬拦截）/ default=标准 / full=全部放行。
   // 持久化在 conversation.permission_mode；新会话草稿态先存本地，创建会话时随 POST 落库。
+  // ★★ 默认档是 readonly（2026-09-27 用户拍板：默认全放行太危险）——
+  //     新任务一律先只读，需要写入/执行时由用户在权限胶囊（移动端在「+」菜单）手动放开；
+  //     模型撞到拦截会收到明确原因并提示用户放开（见后端 permissionModePrompt）。
   type PermissionMode = 'readonly' | 'default' | 'full';
-  const permissionMode = ref<PermissionMode>('default');
+  const permissionMode = ref<PermissionMode>('readonly');
   /** 切换权限并持久化：已有会话立即 PATCH；草稿态只记本地（创建会话时随 POST 落库） */
   async function setPermissionMode(mode: PermissionMode) {
     permissionMode.value = mode;
@@ -502,13 +518,30 @@ export const useChatStore = defineStore('chat', () => {
   function skipPendingConfirmation() {
     submitPendingConfirmation('', '[用户跳过该问题]');
   }
-  /** 用户关闭向导：以取消结果结束本次 confirm_user 调用 */
+  /** 用户关闭向导：以取消结果结束本次 confirm_user 调用。
+   *  ★ 必须带上**已作答的部分**（2026-09-27 修的真实缺陷）：
+   *    用户答到第 3 页才关掉向导时，前两页的确认结果同样是"用户拍板过的决定"，
+   *    后端要把它们落进任务决策记录（硬性要求）——此前只回 `cancelled:true` +
+   *    一个后端不认的 answers 数组，等于这几页白答了：同目录下次任务还会重复问。
+   */
   function cancelPendingConfirmation() {
     const wizard = pendingConfirmation.value;
     if (!wizard) return;
     const resolve = wizard.resolve;
     pendingConfirmation.value = null;
-    resolve({ cancelled: true, title: wizard.title, answers: wizard.answers });
+    const answered = (wizard.answers || []).filter((a) => (a.answer || '').trim() || (a.supplement || '').trim());
+    const summary = answered
+      .map((a) => `Q: ${a.question}\nA: ${a.answer || '(未作答)'}${a.supplement ? `\n补充: ${a.supplement}` : ''}`)
+      .join('\n\n');
+    resolve({
+      cancelled: true,
+      title: wizard.title,
+      answers: wizard.answers,
+      // 把已答内容以文本形式回传：后端 extractPendingQuestion 取不到时靠它兜底记录
+      summary: summary
+        ? `${summary}\n\n[用户在向导中途关闭；以上是关闭前已确认的内容]`
+        : '',
+    });
   }
   /** 用户提交模型平台配置弹窗：将保存结果回写为 configure_model_platform 工具结果 */
   function submitPlatformConfig(result: { cancelled: boolean; platformId?: string; modelId?: string; message?: string }) {
@@ -525,6 +558,20 @@ export const useChatStore = defineStore('chat', () => {
   /** 清空当前任务计划（用户关闭进度卡片时调用）。只清当前查看的会话，别会话的计划不受影响 */
   function clearPlan(convId?: string | null) {
     plansByConv.value = removePlan(plansByConv.value, planKeyOf(convId));
+    void persistPlan(planKeyOf(convId), null);
+  }
+
+  /** 计划落盘：写入 conversation.task_plan_json（刷新/换设备后 TaskPlanCard 可恢复）。
+   *  task_plan/task_step 在一轮任务里高频更新 → 800ms 防抖合并 PATCH。 */
+  let planSaveTimer: ReturnType<typeof setTimeout> | null = null;
+  function persistPlan(convId: string, plan: unknown) {
+    // 草稿键（会话未建立）没有行可写；等会话创建后由下次 task_plan/task_step 落到真实键
+    if (!convId || convId === DRAFT_PLAN_KEY || !isServerMode()) return;
+    if (planSaveTimer) clearTimeout(planSaveTimer);
+    planSaveTimer = setTimeout(() => {
+      planSaveTimer = null;
+      void api.patch(`/conversations/${convId}`, { taskPlan: plan });
+    }, 800);
   }
   let abortControllers = new Map<string, AbortController>();
   const taskIds = new Map<string, string>(); // convId → backend taskId（用于 abort）
@@ -589,6 +636,10 @@ async function loadConversations() {
       const conv = conversations.value.find((c) => c.id === convId);
       mountedMcpServers.value = conv?.mcpServerIds || [];
       mcpDisabledTools.value = conv?._mcpDisabledTools ? { ...conv._mcpDisabledTools } : {};
+      // 任务计划恢复：DB 里有落盘的计划且内存还没有时（刷新/换设备），还原进度卡片
+      if (conv?.taskPlan && !plansByConv.value[convId]) {
+        plansByConv.value = { ...plansByConv.value, [convId]: conv.taskPlan };
+      }
       mcpToolAliases.value = conv?._mcpToolAliases ? JSON.parse(JSON.stringify(conv._mcpToolAliases)) : {};
       // 回填会话级权限模式（下拉显示与后端拦截以 conversation.permission_mode 为准）
       permissionMode.value = conv?.permissionMode || 'default';
@@ -1305,12 +1356,14 @@ async function loadConversations() {
       if (fullName === 'task_plan') {
         const r = applyTaskPlan(plansByConv.value, planKeyOf(ctx?.convId), args as Record<string, unknown>);
         plansByConv.value = r.map;
+        if (r.outcome.ok) void persistPlan(planKeyOf(ctx?.convId), r.map[planKeyOf(ctx?.convId)]);
         return r.outcome;
       }
       // E12: task_step —— 更新某一步状态，刷新进度卡片（同样只动本会话的计划）
       if (fullName === 'task_step') {
         const r = applyTaskStep(plansByConv.value, planKeyOf(ctx?.convId), args as Record<string, unknown>);
         plansByConv.value = r.map;
+        if (r.outcome.ok) void persistPlan(planKeyOf(ctx?.convId), r.map[planKeyOf(ctx?.convId)]);
         return r.outcome;
       }
       const res = await registry.execute(fullName, args as Record<string, unknown>);

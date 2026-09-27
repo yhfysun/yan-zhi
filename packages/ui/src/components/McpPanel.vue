@@ -663,6 +663,26 @@ async function testForm() {
   previewTools.value = [];
   try {
     const { args, env, headers } = parseForm();
+    // ★ 依赖预检（P3b）：先探 command 是否存在，再试连接。
+    //   理由：测试连接失败时抛的是「连接失败」，用户分不清是命令没装还是配置写错；
+    //   预检把原因说清（并识别 npx/uvx 这类自动拉包型启动器 —— 那类"包不在本机"不是错误）。
+    if (form.value.transport === 'stdio') {
+      try {
+        const pre = await store.precheckServer(form.value.command, args);
+        if (pre && !pre.probe.available) {
+          const planNote = pre.plan && pre.plan.decision === 'confirm'
+            ? `安装需先确认（${pre.plan.reason}）`
+            : '';
+          setStatus(`依赖检查未通过：${pre.probe.hint}${planNote ? ` ${planNote}` : ''}`, 'err');
+          ElMessage.error('命令不可用，请先安装或改用存在的可执行文件');
+          return;
+        }
+        if (pre && pre.probe.autoPull) {
+          // 自动拉包型启动器：首次连接会拉包，提示一下避免用户以为卡住
+          setStatus(`${pre.probe.hint} 首次连接可能需要下载包，请稍候…`, 'ok');
+        }
+      } catch { /* 预检失败不阻塞测试（老后端没有该接口时静默跳过） */ }
+    }
     const r = await store.testServerConfig({
       transport: form.value.transport, command: form.value.command,
       args, env, url: form.value.url, headers,

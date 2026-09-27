@@ -76,13 +76,22 @@
         <div v-for="sp in spaceStore.spaces" :key="sp.id" class="tree-node tree-space">
           <div
             class="tree-node-head"
-            @click="toggleSpaceCollapse(sp.id)"
+            :class="{ 'tree-node-active': spaceStore.currentSpaceId === sp.id }"
+            @click="onSpaceHeadClick(sp.id)"
             @contextmenu.prevent="openSpaceMenu($event, sp)"
             v-on="bindLongPress((ev) => openSpaceMenu(ev, sp))"
           >
             <el-icon class="tree-caret" :class="{ expanded: !spaceCollapsed[sp.id] }"><CaretRight /></el-icon>
             <el-icon class="tree-node-icon"><FolderOpened /></el-icon>
             <span class="tree-node-label" :title="sp.dirPath || sp.name">{{ sp.name }}</span>
+            <!-- 任务模式徽标：点它直接打开编辑弹窗改模式（改模式是高频动作，只藏在右键菜单里不好找）。
+                 @click.stop 防止冒泡到行上（行点击是"选中空间"，语义不同）。 -->
+            <span
+              v-if="sp.taskType"
+              class="tree-task-badge tree-task-badge-click"
+              :title="`任务模式：${taskTypeLabel(sp.taskType)}（点击更改）`"
+              @click.stop="openSpaceEdit(sp)"
+            >{{ taskTypeLabel(sp.taskType) }}</span>
             <el-checkbox
               v-if="batchMode"
               class="tree-select-all"
@@ -161,6 +170,10 @@
     <li @click="startRename(ctxMenu.conv!)">
       <el-icon><EditPen /></el-icon>重命名
     </li>
+    <!-- 在系统文件管理器里打开该任务的产物目录（仅桌面端有效，其它端给出提示） -->
+    <li @click="openConvDir(ctxMenu.conv); closeCtxMenu()">
+      <el-icon><FolderOpened /></el-icon>打开目录
+    </li>
     <li class="has-submenu">
       <el-icon><FolderOpened /></el-icon>移动到空间
       <el-icon class="submenu-arrow"><ArrowRight /></el-icon>
@@ -196,6 +209,21 @@
       <el-form-item label="描述">
         <el-input v-model="spaceEditForm.description" type="textarea" :rows="2" placeholder="空间描述（可选）" />
       </el-form-item>
+      <!-- 任务类型：「目录即任务」——选定后自动生成资源目录骨架，模型按流程分步引导 -->
+      <el-form-item label="任务类型">
+        <el-select v-model="spaceEditForm.taskType" placeholder="通用（不限定流程）" clearable style="width: 100%">
+          <el-option
+            v-for="t in taskTypes"
+            :key="t.id"
+            :label="t.label"
+            :value="t.id"
+          >
+            <span class="tt-opt-label">{{ t.label }}</span>
+            <span class="tt-opt-summary">{{ t.summary }}</span>
+          </el-option>
+        </el-select>
+        <div v-if="spaceEditForm.taskType" class="tt-guide">{{ pickedTaskType.guide }}</div>
+      </el-form-item>
     </el-form>
     <template #footer>
       <el-button @click="showSpaceEdit = false">取消</el-button>
@@ -227,7 +255,11 @@
   <Teleport to="body">
 <ul v-if="spaceMenuTarget" class="ctx-menu" :style="{ top: spaceMenuTarget.y + 'px', left: spaceMenuTarget.x + 'px' }" @click.stop>
     <li @click="openSpaceEdit(spaceMenuTarget.space); closeSpaceMenu()">
-      <el-icon><EditPen /></el-icon>编辑空间
+      <el-icon><EditPen /></el-icon>{{ spaceMenuTarget.space.taskType ? '更改任务模式' : '设置任务模式' }}
+    </li>
+    <!-- 在系统文件管理器里打开这个空间的绑定目录（仅桌面端有效，其它端给提示） -->
+    <li @click="openPathInSystem(spaceMenuTarget.space.dirPath, true); closeSpaceMenu()">
+      <el-icon><FolderOpened /></el-icon>打开目录
     </li>
     <li @click="openSpaceMemory(spaceMenuTarget.space); closeSpaceMenu()">
       <el-icon><Memo /></el-icon>空间记忆
@@ -265,6 +297,7 @@ import {
   Plus, ChatDotRound, Star, EditPen, Delete, FolderOpened, ArrowRight, Close, Search, CaretRight, Timer, Memo, Tools,
 } from '@element-plus/icons-vue';
 import { ElMessage } from 'element-plus';
+import { getTaskType } from '@yan-zhi/shared';
 import { useChat } from '../../composables/chat/useChat';
 import { bindLongPress } from '../../composables/useLongPress';
 import { useMobileShell } from '../../composables/useMobileShell';
@@ -279,11 +312,32 @@ const {
   rootConversations, conversationsBySpace, spaceCollapsed, toggleSpaceCollapse, rootCollapsed, toggleRootCollapse,
   spaceStore, openSpaceMenu, openSpaceEdit, showSpaceEdit, spaceEditForm,
   saveSpaceEdit, deleteSpaceConfirm, spaceMenuTarget, closeSpaceMenu, moveConvToSpace, ctxMenu,
+  openConvDir, openPathInSystem,
+  taskTypes, pickedTaskType, selectSpaceAndSyncDir,
   togglePin, deleteConv, closeCtxMenu,
   treeMenu, openTreeMenu, treeMenuNewTask, treeMenuNewSpace, closeTreeMenu,
   enterBatchSelect, exitBatchMode, toggleBatchMode, toggleSelectAllInSpace, toggleSelectAllInRoot,
   spaceSelectState, rootSelectState,
 } = useChat();
+
+/**
+ * 点空间节点：
+ *  · 已选中 → 纯折叠/展开（用户在看空间内部的任务列表）；
+ *  · 未选中 → 选中它并同步工作目录（表达「接下来的任务归这个空间」——
+ *    这是任务类型/SOP 生效的前提，2026-09-27 补）。
+ */
+function onSpaceHeadClick(id: string) {
+  if (spaceStore.currentSpaceId === id) {
+    toggleSpaceCollapse(id);
+    return;
+  }
+  void selectSpaceAndSyncDir(id);
+}
+
+/** 空间的任务类型标签（列表上直接可见，省得进编辑弹窗才知道） */
+function taskTypeLabel(id?: string) {
+  return getTaskType(id).label;
+}
 
 /**
  * 是否触屏形态（窄视口 或 Capacitor）。

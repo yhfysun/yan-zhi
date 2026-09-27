@@ -2,7 +2,12 @@
   <div class="messages" ref="messagesRef">
     <TaskPlanCard v-if="store.planSteps.length" class="chat-plan-card" />
     <div v-for="(round, ri) in messageRounds" :key="ri" :class="['round-group']" :data-round="ri">
-      <div v-if="round.user" class="msg msg-user">
+      <div
+        v-if="round.user"
+        class="msg msg-user"
+        :class="{ 'is-actions-open': actionsShown(round.user.id) }"
+        v-on="msgLongPressHandlers(round.user.id)"
+      >
         <div class="msg-avatar avatar-user"><el-icon><User /></el-icon></div>
         <div class="msg-body">
           <div class="msg-meta">
@@ -23,7 +28,7 @@
               <span class="collapsed-hint">点击展开</span>
             </div>
           </div>
-          <div class="msg-actions">
+          <div class="msg-actions" :class="{ 'is-open': actionsShown(round.user.id) }">
             <el-tooltip content="复制" placement="top"><el-button text size="small" circle @click="copyMsg(round.user)"><el-icon><CopyDocument /></el-icon></el-button></el-tooltip>
             <el-tooltip content="引用" placement="top"><el-button text size="small" circle @click="quoteMsg(round.user)"><el-icon><Link /></el-icon></el-button></el-tooltip>
             <el-tooltip content="编辑" placement="top"><el-button text size="small" circle @click="editMsg(round.user)"><el-icon><EditPen /></el-icon></el-button></el-tooltip>
@@ -34,7 +39,7 @@
         </div>
       </div>
 
-      <div v-if="round.finalAssistant || round.steps.length > 0" class="msg msg-assistant">
+      <div v-if="round.finalAssistant || round.steps.length > 0" class="msg msg-assistant" :class="{ 'is-actions-open': actionsShown(round.finalAssistant?.id || '') }" v-on="msgLongPressHandlers(round.finalAssistant?.id || '')">
         <div class="msg-avatar avatar-assistant" :class="{ streaming: isLastRoundStreaming(round, ri) }"><el-icon><ChatDotRound /></el-icon></div>
         <div class="msg-body">
           <div class="agent-response-card" :class="{ 'msg-collapsed': collapsedMessages[round.finalAssistant?.id || ''] }" @click="collapsedMessages[round.finalAssistant?.id || ''] ? toggleMsgCollapse(round.finalAssistant?.id || '') : null">
@@ -265,7 +270,7 @@
           </div>
 
 
-          <div class="msg-actions msg-actions-assistant">
+          <div class="msg-actions msg-actions-assistant" :class="{ 'is-open': actionsShown(round.finalAssistant?.id || '') }">
             <el-tooltip content="复制 Markdown" placement="top"><el-button text size="small" circle @click="copyAssistantMd(round)"><el-icon><CopyDocument /></el-icon></el-button></el-tooltip>
             <el-tooltip content="下载为 .md 文件" placement="top"><el-button text size="small" circle @click="downloadAssistantMd(round)"><el-icon><Download /></el-icon></el-button></el-tooltip>
             <el-tooltip content="导出 Word" placement="top"><el-button text size="small" circle @click="exportAssistantDocx(round)"><el-icon><Document /></el-icon></el-button></el-tooltip>
@@ -450,10 +455,12 @@ import {
   CircleClose, CopyDocument, EditPen, Files, Delete, View, Fold, Refresh, TakeawayBox, Link, Download,
   Grid, Document, Connection, ChatLineSquare,
 } from '@element-plus/icons-vue';
-import { ref, watch, nextTick, computed } from 'vue';
+import { ref, watch, nextTick, computed, onMounted, onBeforeUnmount } from 'vue';
 import { ElMessage } from 'element-plus';
 import { useRouter } from 'vue-router';
 import { useChat } from '../../composables/chat/useChat';
+import { useMobileShell } from '../../composables/useMobileShell';
+import { bindLongPress } from '../../composables/useLongPress';
 import type { MessageRound } from '../../composables/chat/useChat';
 import { useCodeStore } from '../../stores/code';
 import { activeMode } from '../../stores/mode';
@@ -493,6 +500,91 @@ const {
 } = useChat();
 const isCodeMode = useCodeStore().codeModeActive;
 const askSupplementOpen = ref(false);
+/** 触屏壳（视口窄 或 Capacitor）：长按操作排只在这一壳生效（与衔接文案同一口径） */
+const isTouchShell = useMobileShell();
+
+// ===== 移动端：长按消息露出那条操作排 =====
+//
+// ★★★ 为什么需要（2026-09-26 用户反馈「移动端长按功能没有实现，问题和模型响应下面那排按钮
+//   应该是长按后出现」）：
+//   `.msg-actions`（复制/引用/编辑/删除/查看提示词…）此前只有 `:hover` 一个显隐来源
+//   （chat.css `.msg:hover .msg-actions { opacity: 1 }`）——**hover 是鼠标专属**。
+//   移动端媒体查询里只把它改成常显 `opacity: .6`，于是手机上永远挂着一排按钮：
+//   既不是"长按出现"，也占掉了本来就紧张的行宽。桌面端行为不动（仍走 hover）。
+//
+// 交互约定（用户 2026-09-26 拍板）：长按某条消息 → 只显示**那一条**的操作排；
+//   点别处 / 再长按同一条 → 收起。桌面端不受影响（bindLongPress 只认 pointerType === 'touch'）。
+const openActionsMsgId = ref<string>('');
+
+/**
+ * 长按某条消息：切换该条操作排的显隐（再长按同一条＝收起）
+ *
+ * ★ 记录触发时刻：长按（pointerdown 按住 500ms）触发后，浏览器/触屏**仍会补派发一次
+ *   click**（部分机型如此），而 `document` 捕获阶段的关闭监听比 `.msg` 上的吞 click
+ *   **先执行** → 操作排刚出现就被立刻收掉。用时间窗挡住紧随的那一次。
+ */
+let actionsOpenedAt = 0;
+function onMsgLongPress(msgId: string) {
+  const next = openActionsMsgId.value === msgId ? '' : msgId;
+  openActionsMsgId.value = next;
+  actionsOpenedAt = Date.now();
+}
+
+/** 关闭监听要忽略的两种情况：① 刚因长按打开（挡紧随的 click）；② 点击落在该条消息上 */
+const CLOSE_GRACE_MS = 800;
+function shouldIgnoreClose(e: Event, el: HTMLElement | null): boolean {
+  if (!openActionsMsgId.value) return true;
+  if (Date.now() - actionsOpenedAt < CLOSE_GRACE_MS) return true;   // ①
+  if (el?.closest?.('.msg-actions')) return true;                    // 点的是操作排本身
+  if (el?.closest?.('.msg.is-actions-open')) return true;            // ② 点的是已展开的那条
+  return false;
+}
+
+/**
+ * 消息 id → 长按处理器。**必须记忆化**：
+ * 模板里 `v-on="msgLongPressHandlers(id)"` 每次重渲染都会求值，
+ * 而流式期间消息列表每来一个 chunk 就重渲染一次 —— 不复用就会反复新建处理器
+ * （每个都往组件实例上挂一个 onBeforeUnmount 钩子）→ 钩子无界增长。
+ * 消息条数是有限的，按 id 复用即可，条目随会话切换由 cleanup 统一释放。
+ */
+const longPressCache = new Map<string, Record<string, unknown>>();
+function msgLongPressHandlers(msgId: string) {
+  if (!msgId) return {};
+  const hit = longPressCache.get(msgId);
+  if (hit) return hit;
+  const handlers = bindLongPress(() => onMsgLongPress(msgId));
+  longPressCache.set(msgId, handlers);
+  return handlers;
+}
+
+/** 该条消息的操作排是否展示：触屏壳走长按态，桌面壳恒为 false（交给 CSS 的 hover） */
+function actionsShown(msgId: string): boolean {
+  return isTouchShell.value && !!msgId && openActionsMsgId.value === msgId;
+}
+
+// 点别处收起：捕获阶段监听，避免被消息内容的点击处理吞掉
+function onDocClickCloseActions(e: MouseEvent) {
+  const el = e.target as HTMLElement | null;
+  if (shouldIgnoreClose(e, el)) return;
+  openActionsMsgId.value = '';
+}
+
+/** 触屏：手指按在别处也收起 —— 触屏上 click 会有 ~300ms 延迟，长按后立刻取消更跟手 */
+function onDocTouchCloseActions(e: TouchEvent) {
+  const el = e.target as HTMLElement | null;
+  if (shouldIgnoreClose(e, el)) return;
+  openActionsMsgId.value = '';
+}
+
+onMounted(() => {
+  document.addEventListener('click', onDocClickCloseActions, true);
+  document.addEventListener('touchstart', onDocTouchCloseActions, true);
+});
+onBeforeUnmount(() => {
+  document.removeEventListener('click', onDocClickCloseActions, true);
+  document.removeEventListener('touchstart', onDocTouchCloseActions, true);
+  longPressCache.clear();
+});
 
 // ===== 工作流模式空态 =====
 // 与开发模式同一思路：不给它套办公模式的场景轮播欢迎卡（白底大卡塞窄栏很丑）

@@ -600,6 +600,8 @@ export const useAgentStore = defineStore('agent', () => {
       case 'sub_agent': return { subAgentId: '', inputsMapping: {} };
       case 'memory_read': return { agentId: '', query: '', topK: 3 };
       case 'memory_write': return { agentId: '', contentKey: 'content', tags: [] };
+      // 人工确认节点：默认 ask 形态 + 打回重做（最宽松，不会因为误点拒绝就丢掉整条流水线）
+      case 'human_confirm': return { kind: 'ask', question: '', pages: [], onReject: 'retry' };
       default: return {};
     }
   }

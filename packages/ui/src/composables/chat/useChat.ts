@@ -27,7 +27,7 @@ import { useRouter } from 'vue-router';
 import { api } from '../../api/client';
 import { waitForBackend } from '../../api/backend-ready';
 import type { Agent, Message, Conversation, Platform, Model } from '@yan-zhi/shared';
-import { estimateTokens, CHAT_MODEL_TYPES, buildArtifactRelDir, joinArtifactPath } from '@yan-zhi/shared';
+import { estimateTokens, CHAT_MODEL_TYPES, buildArtifactRelDir, joinArtifactPath, TASK_TYPES, getTaskType } from '@yan-zhi/shared';
 import { sceneByKey, type SceneKey } from '../../config/scenes';
 import {
   selectMedia,
@@ -510,6 +510,10 @@ function createChat() {
   const collapsedSubAgentResults = reactive<Record<string, boolean>>({});
   /** 主智能体「任务结果」卡片的折叠状态（无值 = 默认展开） */
   const collapsedMainResults = reactive<Record<string, boolean>>({});
+  /** 移动端「内容过长自动折叠」的记账集：记录哪几条是**自动**折的，
+   *  以便下次重算时只还原自己折过的（用户手动折叠的不动）。
+   *  ★ 声明位置必须早于 resetTaskScopedState —— 那会在切任务时 clear 它。 */
+  const collapsedByAuto = new Set<string>();
 
   const activeNavRound = ref<number | null>(null);
 
@@ -731,12 +735,23 @@ function createChat() {
     else store.openTab({ kind: 'file', name, path: t.path });
   }
 
-  /** 在系统文件管理器中定位/打开（桌面端）。目录直接在文件管理器里打开，文件则选中它 */
-  async function revealInSystem(path: string, asDir = false) {
+  /** 在系统文件管理器中定位/打开（桌面端）。目录直接在文件管理器里打开，文件则选中它。
+ *
+ *  ★ 空路径与"非桌面端"都要给出**可读提示**，不静默失败 —— 之前 catch 里只有一句
+ *    「仅桌面端支持…」，空路径（如空间没绑定目录）也会走到这里，提示就答非所问了。 */
+  async function openPathInSystem(path: string, asDir = false) {
     const p = String(path || '').trim();
-    if (!p) return;
+    if (!p) {
+      ElMessage.info(asDir ? '该空间未绑定本地目录' : '该文件没有本机路径');
+      return;
+    }
     const electron = (window as unknown as { electronAPI?: any }).electronAPI;
     try {
+      // 桌面端优先：目录用 openPath 直接打开，文件用 showItemInFolder 在父目录中选中
+      if (asDir && typeof electron?.shell?.openPath === 'function') {
+        await electron.shell.openPath(p);
+        return;
+      }
       if (electron?.shell?.showItemInFolder) {
         await electron.shell.showItemInFolder(p);
         return;
@@ -1303,8 +1318,30 @@ function createChat() {
 
   // ========== 空间（文件夹）管理 ==========
   const showSpaceEdit = ref(false);
-  const spaceEditForm = ref({ id: '', name: '', dirPath: '', description: '' });
+  // taskType：目录绑定的任务类型（「目录即任务」）。空串 = 通用
+  const spaceEditForm = ref({ id: '', name: '', dirPath: '', description: '', taskType: '' });
   const spaceMenuTarget = ref<{ x: number; y: number; space: any } | null>(null);
+
+  /** 任务类型下拉的选项（来自 shared 注册表，前后端同一份） */
+  const taskTypes = TASK_TYPES;
+  /** 当前编辑表单选中的类型说明（弹窗里给用户看清这个类型会做什么） */
+  const pickedTaskType = computed(() => getTaskType(spaceEditForm.value.taskType));
+
+  /** 点空间节点 = 选中它（决定新任务归属）+ 同步工作目录（资源面板/工具执行面与之一致）。
+   *  ★ 必须同时做：只 selectSpace 不改 workspaceDir，会出现「面板显示 A 空间的项目资源、
+   *    工具却往 B 目录写」的错位（两者都读同一个空间，但 root 来自 dir_path/workspaceDir）。
+   *  折叠态由用户的展开/收起操作单独控制（点击时顺带展开，避免"选中了却看不见里面"）。 */
+  async function selectSpaceAndSyncDir(id: string) {
+    spaceStore.selectSpace(id);
+    const sp = spaceStore.spaces.find((s) => s.id === id);
+    if (sp?.dirPath) await settingsStore.update({ workspaceDir: sp.dirPath });
+    // 选中时顺带展开：否则「选中了却看不到里面的任务」
+    if (spaceCollapsed.value[id]) spaceCollapsed.value = { ...spaceCollapsed.value, [id]: false };
+    // ★ 任务类型 → 专属智能体：选中一个已绑定任务模式的空间时，也把智能体对齐。
+    //   否则「设了类型 → 过一会再点进来」会回到默认助手，专属纪律就丢了。
+    //   注意只在该空间有 taskType 时切（通用类型 applyTaskTypeAgent 内部直接返回）。
+    if (sp?.taskType) applyTaskTypeAgent(sp.taskType);
+  }
 
   function selectSpace(id: string | null) {
     spaceStore.selectSpace(id);
@@ -1335,13 +1372,14 @@ function createChat() {
       name: space.name,
       dirPath: space.dirPath || '',
       description: space.description || '',
+      taskType: space.taskType || '',
     };
     showSpaceEdit.value = true;
   }
 
   /** 新建空间：复用空间编辑对话框，id 为空表示创建模式 */
   function openSpaceCreate() {
-    spaceEditForm.value = { id: '', name: '', dirPath: '', description: '' };
+    spaceEditForm.value = { id: '', name: '', dirPath: '', description: '', taskType: '' };
     showSpaceEdit.value = true;
   }
 
@@ -1355,17 +1393,78 @@ function createChat() {
     if (!spaceEditForm.value.id) {
       try {
         const id = await spaceStore.createSpace(payload);
+        // 创建后若选了任务类型，走 updateSpace（后端会建资源目录骨架 + 写 task.json）
+        if (spaceEditForm.value.taskType) {
+          await spaceStore.updateSpace(id, { taskType: spaceEditForm.value.taskType });
+          const t = getTaskType(spaceEditForm.value.taskType);
+          // 任务类型 → 专属智能体（A 方案）：选了类型就把人格+技能+工具面对齐
+          applyTaskTypeAgent(spaceEditForm.value.taskType);
+          ElMessage.success(`空间「${payload.name}」已创建（${t.label}：已生成 00-source 等资源目录）`);
+        } else {
+          ElMessage.success(`空间「${payload.name}」已创建`);
+        }
         spaceStore.selectSpace(id);
-        ElMessage.success(`空间「${payload.name}」已创建`);
       } catch (e: any) {
         ElMessage.error(e?.message || '创建空间失败');
         return;
       }
     } else {
       await spaceStore.updateSpace(spaceEditForm.value.id, payload);
-      ElMessage.success('空间已更新');
+      // 任务类型单独走一次（仅在变化时请求，后端幂等建目录）
+      const cur = spaceStore.spaces.find((s) => s.id === spaceEditForm.value.id);
+      if ((cur?.taskType || '') !== spaceEditForm.value.taskType) {
+        try {
+          await spaceStore.updateSpace(spaceEditForm.value.id, { taskType: spaceEditForm.value.taskType || null });
+          const t = getTaskType(spaceEditForm.value.taskType);
+          if (spaceEditForm.value.taskType) {
+            // 任务类型 → 专属智能体（A 方案）
+            applyTaskTypeAgent(spaceEditForm.value.taskType);
+            ElMessage.success(`已设为「${t.label}」，资源目录（00-source / 01-reference / 02-work / 03-output）已就绪`);
+          } else {
+            ElMessage.success('已设为「通用」，不再注入任务流程');
+          }
+        } catch (e: any) {
+          ElMessage.error(e?.message || '设置任务类型失败');
+          return;
+        }
+      } else {
+        ElMessage.success('空间已更新');
+      }
     }
     showSpaceEdit.value = false;
+  }
+
+  /**
+   * 在系统文件管理器里打开**这个任务的产物目录**（会话右键菜单「打开目录」）。
+   *
+   * ★★ 为什么需要（2026-09-27 用户要求）：
+   *   任务跑完的产物落在 `.yan-zhi/tasks/<convId>/<deliverable|intermediate|upload>/`，
+   *   用户想去文件夹里拿文件时，此前只能先打开某个文件的预览再点「打开目录」——
+   *   任务本身没有入口。这里补上「直接开这个任务的工作目录」。
+   *
+   * ★ 目录解析优先问服务端（`/artifact-dir?ensure=1`）：产物根是**服务端算出来**的，
+   *   前端自己拼 `workspaceDir` 会与服务端不一致（历史踩过：产物根漂移导致读不到文件）。
+   *   取不到（Web/移动端无 shell、或接口失败）时给出可读提示，不静默失败。
+   */
+  async function openConvDir(conv: any) {
+    if (!conv?.id) return;
+    const electron = (window as unknown as { electronAPI?: any }).electronAPI;
+    if (!electron?.shell?.showItemInFolder && !electron?.shell?.openPath) {
+      ElMessage.info('仅桌面端支持在文件管理器中打开目录');
+      return;
+    }
+    try {
+      // 列产物目录并顺带建出来：任务还没产出文件时目录可能不存在，
+      // 「打开目录」应当能打开一个空目录，而不是报错（用户想看的是"东西放哪"）。
+      const r = await api.get<{ dir?: string }>(`/conversations/${conv.id}/artifact-dir?category=deliverable&ensure=1`);
+      const dir = 'data' in r ? r.data?.dir : '';
+      if (!dir) { ElMessage.warning('未能解析该任务的产物目录'); return; }
+      // 优先"直接在文件管理器打开这个目录"；没有 openPath 时退化为"在父目录中选中它"
+      if (typeof electron.shell.openPath === 'function') await electron.shell.openPath(dir);
+      else await electron.shell.showItemInFolder(dir);
+    } catch (e: any) {
+      ElMessage.error('打开目录失败：' + (e?.message || e));
+    }
   }
 
   async function deleteSpaceConfirm(space: any) {
@@ -1396,6 +1495,27 @@ function createChat() {
   }
 
   /** 发送消息时确保工作目录对应的空间存在：按 dirPath 匹配已有空间；没有则以文件夹名创建并选中。返回空间 ID（无有效工作目录/失败时返回 undefined） */
+  /**
+   * 决定「新任务归属哪个空间」。
+   *
+   * ★★★ 顺序不能反（2026-09-27 修的真实 bug）：
+   *   原实现直接 `let spaceId = await ensureWorkspaceSpace()`，而它**只按 workspaceDir 的
+   *   目录路径匹配空间**、匹配不到还会**自动新建并 selectSpace** —— 完全不看用户当前选中的空间。
+   *   后果：用户在侧栏选了空间 A（想让任务按 A 的任务类型跑），只要设置里的工作目录指向 B，
+   *   任务就落到 B（甚至被建出一个新空间）→ A 绑定的 task_type / SOP **永远不会生效**，
+   *   表现为「任务类型选了跟没选一样」。
+   *
+   * 正确顺序：
+   *   ① 用户显式选中的空间（currentSpaceId）—— 用户的意图优先级最高；
+   *   ② 其次才按工作目录推断（保持既有「选目录即建空间」的便利行为）；
+   *   ③ 都没有 → undefined（不归类，由后端存 null）。
+   */
+  async function resolveSpaceForNewConv(): Promise<string | undefined> {
+    const picked = spaceStore.currentSpaceId;
+    if (picked && spaceStore.spaces.some((s) => s.id === picked)) return picked;
+    return await ensureWorkspaceSpace();
+  }
+
   async function ensureWorkspaceSpace(): Promise<string | undefined> {
     const wd = (settingsStore.settings.workspaceDir || '').trim();
     // 未设置、占位默认值、或 URL（可能被误设为浏览器导航 URL）时，不自动建空间
@@ -1711,8 +1831,31 @@ async function healStalePlatform() {
     if (model && agentStore.selectedAgent) {
       agentStore.updateAgent(agentStore.selectedId, { modelId: model.modelId, platformId: model.platformId });
       selectedModelId.value = model.id;
-
     }
+  }
+
+  /**
+   * 任务类型 → 专属智能体（用户拍板 A 方案：类型 → 智能体 → skill 挂在智能体上）。
+   *
+   * ★ 为什么在切类型时切智能体：通用助手的提示词压不住各类型的专属纪律
+   *   （改写最怕跑飞不逐章、脚本文案最怕写成散文、配音最怕音色没定就批量）。
+   *   选定类型即把「人格 + 技能 + 工具面」一次性对齐。
+   *
+   * ★ 能力不足时**如实提示**，不静默跳过：agentId 指向的智能体在当前库里找不到
+   *   （老库未 seed、或该 id 被删）时，用户会看到"切了类型但智能体没变"且毫无提示 ——
+   *   这正是最该报出来的一类静默失效。
+   */
+  function applyTaskTypeAgent(taskType: string | null | undefined): boolean {
+    const spec = getTaskType(taskType);
+    const target = spec.agentId;
+    if (!target) return false; // 通用类型：不改智能体（用用户当前选的）
+    if (agentStore.selectedId === target) return true; // 已经就是它
+    if (!agentStore.agents.some((a) => a.id === target)) {
+      ElMessage.warning(`任务模式「${spec.label}」的专属智能体未安装（${target}），已沿用当前智能体`);
+      return false;
+    }
+    onAgentSwitch(target);
+    return true;
   }
 
   function parseConfigCard(content: string | undefined): ParsedConfigCard | null {
@@ -1770,19 +1913,74 @@ async function healStalePlatform() {
     scrollToBottom();
   }
 
-  async function startNewChat(spaceId?: string | null) {
-    store.currentConvId = '';
-    isDraftMode.value = true;
-    mountedSkillIds.value = [];
-    input.value = '';
-    quotedUrls.value = [];
-    // 退出浏览器实况态：新会话不继承上一会话的放大/锁定（browserSteps 是全局单例，跨会话残留）
+  /**
+   * 任务域状态归零 —— 「新建任务」与「切换会话」共用的清理面。
+   *
+   * ★★★ 为什么必须集中成一份（2026-09-26 用户报「新建任务后文件管理里还是上个任务的文件」）：
+   *   新建任务此前只把 store.currentConvId 置空，但**文件管理弹窗的数据源是 fileStore**，
+   *   它不随 currentConvId 自动刷新（只有 selectConv 会调 loadConversationFiles）——
+   *   于是旧会话的文件一直挂在面板上。顺这条线排查发现「会话域状态没归零」还有十余处
+   *   （附件 chip / 右侧预览 tab / 快照弹窗 / MCP 挂载 / 权限模式 / 批量态 …），
+   *   全部收敛到这里，避免下次再漏一个。
+   *
+   * ★ 刻意**不**归零的：跨会话共享且与会话无关的东西 ——
+   *   selectedModelId（模型是全局偏好）、mountedSkillIds（草稿态要继承挂载）、
+   *   场景 / 工作目录 / 侧栏折叠态 / 预览面板宽度。
+   */
+  function resetTaskScopedState() {
+    // —— 文件域（本次报障的根因）——
+    fileStore.clear();                       // 会话文件列表 + fileStore.currentConvId
+    fileSearch.value = '';
+    // —— 右侧预览域：预览 tab / 面板开合 / 浏览器地址都归属「某一个任务」——
+    store.closeAllPreviewTabs();
+    store.rightPanelOpen = false;
+    store.showFilePopup = false;
+    store.currentBrowserUrl = '';
+    // —— 会话级挂载与权限：切会话时由 store.loadMessages 回填；新建任务须显式归零 ——
+    store.mountedMcpServers = [];
+    store.mcpDisabledTools = {};
+    store.mcpToolAliases = {};
+    // 权限模式：新任务一律回到安全默认「只读」（2026-09-27 用户拍板，默认放行太危险）
+    store.permissionMode = 'readonly';
+    // —— 弹层 / 搜索 / 导航等瞬时 UI ——
+    snapshotDialog.value = false;
+    snapshotActiveTab.value = '';
+    currentSnapshots.value = [];
+    search.value = '';
+    activeNavRound.value = null;
+    drawerOpen.value = false;
+    contextSidebarOpen.value = false;
+    batchMode.value = false;
+    selectedConvIds.value = new Set();
+    renamingId.value = '';
+    closeCtxMenu();
+    // —— 浏览器实况态：browserSteps 是全局单例，跨会话必须残留清零（否则新任务继承放大/锁定）——
     store.browserSteps.length = 0;
     store.browserExpanded = false;
     store.browserLockInput = false;
     store.browserUserDismissed = false;
     store.pausedConvIds.clear();
     store.clearAgentCursor();
+    // —— 按「消息 id」分桶的展开态：旧 id 在新会话里永远不会命中，
+    //    留着只会无界增长（长会话切换多轮后内存里堆一堆死键）——
+    for (const bag of [
+      expandedReasoning, expandedTools, expandedToolGroups, collapsedToolGroups, collapsedMessages,
+      expandedAgentProcess, expandedStepTools, collapsedSubAgentResults, collapsedMainResults,
+    ]) for (const k of Object.keys(bag)) delete bag[k];
+    collapsedByAuto.clear(); // 自动折叠记账（否则会把旧会话的 id 当成"我折的"）
+  }
+
+  async function startNewChat(spaceId?: string | null) {
+    store.currentConvId = '';
+    isDraftMode.value = true;
+    mountedSkillIds.value = [];
+    // 任务域状态全部归零（文件列表 / 预览 tab / MCP 挂载 / 权限 / 批量态 …）
+    resetTaskScopedState();
+    // 草稿态额外清理：输入内容与「待发送的引用」属于本次草稿，换任务必须清空
+    input.value = '';
+    uploadedFiles.value = [];
+    selectedFilePaths.value = new Set();
+    quotedUrls.value = [];
     if (isCodeModeActive()) {
       setScene('code');
       if (spaceId === undefined) spaceId = useCodeStore().projectSpaceId;
@@ -1802,6 +2000,16 @@ async function healStalePlatform() {
     }
   }
 
+  /** 草稿态归零：输入内容 + 待发送的附件/引用 + 文件引用勾选。
+   *  ★ 新建任务与切换会话都要清 —— 这些是「准备发给某一个任务」的临时内容，
+   *    跟着会话走；不清就会把上一条任务的输入/附件带到下一条（串台）。 */
+  function resetDraftState() {
+    input.value = '';
+    uploadedFiles.value = [];
+    selectedFilePaths.value = new Set();
+    quotedUrls.value = [];
+  }
+
   async function selectConv(id: string) {
     await store.loadMessages(id);
     isDraftMode.value = false;
@@ -1809,6 +2017,16 @@ async function healStalePlatform() {
     store.browserExpanded = false;
     store.browserLockInput = false;
     store.clearAgentCursor();
+    // 草稿域归零（附件 chip / @ 引用勾选 / 输入内容不跨任务残留）
+    resetDraftState();
+    // 瞬时 UI 也随会话切换收回：搜索词、轮次高亮、会话列表的批量/重命名/抽屉态
+    search.value = '';
+    activeNavRound.value = null;
+    drawerOpen.value = false;
+    batchMode.value = false;
+    selectedConvIds.value = new Set();
+    renamingId.value = '';
+    closeCtxMenu();
     const conv = store.conversations.find((c) => c.id === id);
     applyConvAgent(conv);
     if (conv?.modelId && conv?.platformId) {
@@ -1906,7 +2124,7 @@ async function healStalePlatform() {
       quotedUrls.value = [];
 
       // 每次发送都确保工作目录对应空间存在（幂等：已存在则复用，失败则下次仍可重试）
-      let spaceId = await ensureWorkspaceSpace();
+      let spaceId = await resolveSpaceForNewConv();
       // 代码模式：优先使用当前项目绑定的 spaceId，确保会话归入正确项目
       if (isCodeModeActive()) {
         const codeSid = useCodeStore().projectSpaceId;
@@ -2011,7 +2229,7 @@ async function healStalePlatform() {
     try {
       const agent = agentStore.selectedAgent;
       // 每次发送都确保工作目录对应空间存在（幂等：已存在则复用，失败则下次仍可重试）
-      let spaceId = await ensureWorkspaceSpace();
+      let spaceId = await resolveSpaceForNewConv();
       // 代码模式：优先使用当前项目绑定的 spaceId，确保会话归入正确项目
       if (isCodeModeActive()) {
         const codeSid = useCodeStore().projectSpaceId;
@@ -2556,8 +2774,6 @@ async function healStalePlatform() {
     return extraOpen || store.isToolCallRunning(toolCallId) || !!expandedTools[key];
   }
 
-  const collapsedByAuto = new Set<string>();
-
   function collapseEarlyOnMobile() {
     const isMobile = window.innerWidth <= 767;
     if (!isMobile) return;
@@ -3044,11 +3260,12 @@ async function healStalePlatform() {
     tryParseSnapshot, formatSnapshot, snapshotDialog, snapshotActiveTab, snapshotLoading, currentSnapshots, openSnapshotDialog,
     isDraftMode, renamingId, renamingTitle, renameInputRef, ctxMenu,
     md, renderMarkdown, handleContentClick, handleContentDblClick, handleContentContextMenu,
-    openPath, revealInSystem,
+    openPath, openPathInSystem,
     currentConv, filteredConversations, messageRounds, isToolErrorContent,
     chatModels, modelGroups, mountableServers, tokenCount, contextLimit, tokenPercent, tokenBarColor, canSend,
     openEditAgent, openCreateAgent, onAgentSaved, onAgentDeleted,
-    showSpaceEdit, spaceEditForm, spaceMenuTarget, selectSpace, createSpaceQuick, createSpaceFromDir, showSpaceDirPicker, openSpaceEdit, openSpaceCreate, saveSpaceEdit, deleteSpaceConfirm, openSpaceMenu, closeSpaceMenu, moveConvToSpace,
+    showSpaceEdit, spaceEditForm, spaceMenuTarget, selectSpace, selectSpaceAndSyncDir, createSpaceQuick, createSpaceFromDir, showSpaceDirPicker, openSpaceEdit, openSpaceCreate, saveSpaceEdit, deleteSpaceConfirm, openSpaceMenu, closeSpaceMenu, moveConvToSpace,
+    taskTypes, pickedTaskType, applyTaskTypeAgent,
     treeMenu, openTreeMenu, treeMenuNewTask, treeMenuNewSpace, closeTreeMenu,
     enterBatchSelect, exitBatchMode, toggleBatchMode, toggleSelectAllInSpace, toggleSelectAllInRoot,
     spaceSelectState, rootSelectState,
@@ -3059,6 +3276,7 @@ async function healStalePlatform() {
     startNewChat, selectConv, triggerFileUpload, addFiles, handleFileChange, removeFile, formatSize, send, stopChat, regenerateMsg, shouldShowMessage, collectToolCalls,
     filteredFiles, loadWorkspaceFiles, previewFile, toggleFileSelect, triggerFilePanelUpload, handleFilePanelUpload, deleteFileItem,
     resolveArtifactDirFor,
+    openConvDir,
     scrollToRound, handleScroll, updateActiveNavRound, formatTime, showScrollBottom, showScrollTop, scrollToBottom,
     toggleReasoning, toggleTool, toggleToolGroup, toggleMsgCollapse, collapseEarlyOnMobile, toggleAgentProcess, toggleStepTools, isLastRoundStreaming, getStreamingStep,
     isToolItemOpen,

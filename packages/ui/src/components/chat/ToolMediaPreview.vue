@@ -13,6 +13,7 @@
       @contextmenu="menu"
       @mouseenter="enter"
       @mouseleave="leave"
+      v-on="bindLongPress((ev) => menu(ev))"
     />
     <!-- 视频卡片：静止显示首帧（#t=0.1 媒体片段 + preload=metadata 即渲染帧）；
          hover 唤起浮层放大并静音自动播 5 秒（浮层内播放，本体不动）；单击进灯箱全屏播放；
@@ -30,6 +31,7 @@
       @contextmenu="menu"
       @mouseenter="enter"
       @mouseleave="leave"
+      v-on="bindLongPress((ev) => menu(ev))"
     ></video>
   </div>
 </template>
@@ -53,6 +55,8 @@ import {
   closeMediaHover,
   type MediaTarget,
 } from '../../composables/useMediaPreview';
+// 移动端：图片/视频没有右键，长按即弹出「另存为 / 打开目录 / 复制」菜单
+import { bindLongPress } from '../../composables/useLongPress';
 
 const props = defineProps<{ media: MediaTarget }>();
 
