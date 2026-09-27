@@ -8,6 +8,28 @@ export function registerConversationTools(m: Map<ApiModuleName, ToolDefinition[]
     { name: 'api_conversation_create', description: '创建新会话', inputSchema: { type: 'object', properties: { title: { type: 'string' }, agentId: { type: 'string' }, modelId: { type: 'string' } }, required: ['title'] } },
     { name: 'api_conversation_update', description: '更新会话', inputSchema: { type: 'object', properties: { id: { type: 'string' }, title: { type: 'string' }, pinned: { type: 'boolean' } }, required: ['id'] } },
     { name: 'api_conversation_delete', description: '删除会话及其消息', inputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] } },
+    {
+      name: 'api_conversation_setup',
+      description:
+        '设置**当前会话**的智能体 / 技能 / 工作模式。用户说"你现在按翻译助手来""这个会话挂上口播技能""切到工作流模式"时用它。' +
+        '默认作用于当前会话（conversationId 可省略）。三项都可单独或同时设置：' +
+        'agentId 换会话智能体（可先 list_sub_agents / api_agent_list 查可选值）；' +
+        'skillIds 覆盖会话级技能挂载（与智能体自带技能取并集，可先 api_skill_list 查可选值）；' +
+        'mode 切工作模式（office 办公 / dev 开发 / ops 运维 / sec 安全 / wf 工作流）。' +
+        '★ 工作流型智能体（a_wf_* 流水线）**不能**作为会话智能体 —— 它没有对话人格与工具；' +
+        '要跑流水线请用 wf_<id> 工具或 call_agent 委派。传错会被明确拒绝并说明正确用法。' +
+        '设置下一轮对话生效。',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          conversationId: { type: 'string', description: '会话 id；省略则用当前会话' },
+          agentId: { type: 'string', description: '要切换到的智能体 id' },
+          skillIds: { type: 'array', items: { type: 'string' }, description: '会话级技能 id 列表（覆盖，非追加）' },
+          mode: { type: 'string', enum: ['office', 'dev', 'ops', 'sec', 'wf'], description: '工作模式' },
+        },
+        required: [],
+      },
+    },
     { name: 'api_conversation_file_list', description: '列出会话的文件记录（upload/intermediate/deliverable 三类）', inputSchema: { type: 'object', properties: { conversationId: { type: 'string' } }, required: ['conversationId'] } },
     {
       name: 'api_conversation_file_add',

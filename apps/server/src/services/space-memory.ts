@@ -140,3 +140,101 @@ export function formatSpaceMemoryContext(name: string, content: string): string 
 export function estimateSpaceMemoryTokens(content: string): number {
   return estimateTokens(content || '');
 }
+
+// ── 任务决策记录（task-memory）────────────────────────────────────────────
+// 用户在 ask_user / confirm_user 里确认过的内容必须落盘（硬性验收项）：
+// 同一目录新开会话时注入摘要，模型先对照已确认设定再继续 —— 不再重复询问
+// 人物形象、响应格式、风格等已经拍板过的东西。
+// 文件位置（与空间记忆同规则）：
+//   - 空间绑定目录 → <dir_path>/.yan-zhi/task-memory/decisions.md
+//   - 未绑定目录   → <workspaceDir>/spaces/<spaceId>/.yan-zhi/task-memory/decisions.md
+
+const TASK_MEMORY_DIR = '.yan-zhi/task-memory';
+const DECISIONS_FILE = 'decisions.md';
+/** 决策注入的字符上限（正文长任务确认多，但提示词预算有限；完整文件可用 api_space_memory_read 读） */
+const DECISIONS_INJECT_MAX_CHARS = 3000;
+
+function getTaskDecisionsPath(space: Pick<SpaceRow, 'id' | 'dir_path'>): string {
+  if (space.dir_path) return path.join(space.dir_path, TASK_MEMORY_DIR, DECISIONS_FILE);
+  return path.join(serverState.workspaceDir || process.cwd(), 'spaces', space.id, TASK_MEMORY_DIR, DECISIONS_FILE);
+}
+
+/** 压平多行文本（决策记录一行一条） */
+function flattenForDecision(s: string): string {
+  return String(s || '').trim().replace(/\s*\n+\s*/g, ' ').slice(0, 500);
+}
+
+/**
+ * 记录一条用户确认结果（服务端在 ask_user / confirm_user 结果回传时调用）。
+ * 会话未挂空间（无 dir_path 且 spaceId 为空）时静默跳过 —— 长任务引导挂空间才有意义。
+ */
+export async function appendTaskDecision(
+  userId: string,
+  conversationId: string,
+  question: string,
+  answer: string,
+): Promise<{ ok: boolean; path?: string }> {
+  try {
+    const conv = db.prepare('SELECT space_id FROM conversation WHERE id = ?').get(conversationId) as
+      | { space_id: string | null }
+      | undefined;
+    if (!conv?.space_id) return { ok: false };
+    const space = userId
+      ? getSpaceRow(userId, conv.space_id)
+      : getSpaceRow(null, conv.space_id);
+    if (!space) return { ok: false };
+    const q = flattenForDecision(question);
+    const a = flattenForDecision(answer);
+    if (!q || !a) return { ok: false };
+    const filePath = getTaskDecisionsPath(space);
+    await ensureParentDir(filePath);
+    const date = new Date().toISOString().slice(0, 10);
+    let existing = '';
+    try { existing = await readFile(filePath, 'utf-8'); } catch { /* 新文件 */ }
+    if (!existing.trim()) {
+      const header = `# ${space.name} · 任务决策记录\n\n> 用户已确认过的设定。同目录新任务先对照本文件，已确认过的事项不要重复询问。\n`;
+      await writeFile(filePath, `${header}\n- [${date}] 问：${q} → 答：${a}\n`, 'utf-8');
+    } else {
+      const base = existing.endsWith('\n') ? existing : `${existing}\n`;
+      await writeFile(filePath, base, 'utf-8');
+      await appendFile(filePath, `- [${date}] 问：${q} → 答：${a}\n`, 'utf-8');
+    }
+    return { ok: true, path: filePath };
+  } catch {
+    // 决策落盘失败不阻塞用户回答主链路（回答已经送达模型）
+    return { ok: false };
+  }
+}
+
+/** 会话任务决策摘要（同步读，注入系统提示词用）。文件不存在返回 null */
+export function loadTaskMemoryForConversation(conversationId: string | null | undefined): string | null {
+  if (!conversationId) return null;
+  const conv = db.prepare('SELECT space_id FROM conversation WHERE id = ?').get(conversationId) as
+    | { space_id: string | null }
+    | undefined;
+  if (!conv?.space_id) return null;
+  const space = getSpaceRow(null, conv.space_id);
+  if (!space) return null;
+  try {
+    const content = readFileSync(getTaskDecisionsPath(space), 'utf-8');
+    if (!content.trim()) return null;
+    return content.slice(0, DECISIONS_INJECT_MAX_CHARS);
+  } catch {
+    return null;
+  }
+}
+
+/** 决策记录 → 系统提示词片段 */
+export function formatTaskMemoryContext(content: string): string {
+  const trimmed = content.trim();
+  if (!trimmed) return '';
+  const clipped = trimmed.length > DECISIONS_INJECT_MAX_CHARS
+    ? `${trimmed.slice(0, DECISIONS_INJECT_MAX_CHARS)}\n…（决策记录过长已截断）`
+    : trimmed;
+  return [
+    '## 任务决策记录（用户已确认过的内容）',
+    '> 以下是本目录历史上用户在「向你提问/确认」环节拍板过的决定。继续任务或开新任务时先对照这里，已确认过的事项直接沿用，不要重复询问；除非用户主动要求更改。',
+    '',
+    clipped,
+  ].join('\n');
+}

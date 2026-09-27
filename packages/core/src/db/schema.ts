@@ -45,7 +45,8 @@ CREATE TABLE IF NOT EXISTS conversation (
   skill_ids_json TEXT,
   system_prompt TEXT,
   pinned INTEGER NOT NULL DEFAULT 0,
-  permission_mode TEXT NOT NULL DEFAULT 'default',
+  permission_mode TEXT NOT NULL DEFAULT 'readonly',
+  task_plan_json TEXT,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
@@ -59,6 +60,8 @@ CREATE TABLE IF NOT EXISTS space (
   name TEXT NOT NULL,
   dir_path TEXT,
   description TEXT,
+  task_type TEXT,
+  task_config_json TEXT,
   sort_order INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
@@ -460,7 +463,13 @@ export async function initSchema(execFn: (sql: string) => Promise<void>): Promis
   // 迁移：conversation 新增 agent_id 列（会话记住绑定的智能体，旧库可能缺失）
   try { await execFn(`ALTER TABLE conversation ADD COLUMN agent_id TEXT;`); } catch { /* 列已存在 */ }
   // 迁移：conversation 新增 permission_mode 列（会话级工具权限：readonly/default/full）
-  try { await execFn(`ALTER TABLE conversation ADD COLUMN permission_mode TEXT NOT NULL DEFAULT 'default';`); } catch { /* 列已存在 */ }
+  // ★ 默认 readonly（2026-09-27 用户拍板：默认全放行太危险；此迁移仅对新库生效）
+  try { await execFn(`ALTER TABLE conversation ADD COLUMN permission_mode TEXT NOT NULL DEFAULT 'readonly';`); } catch { /* 列已存在 */ }
+  // 迁移：conversation 新增 task_plan_json 列（task_plan/task_step 的落盘，刷新/换设备后计划卡片可恢复）
+  try { await execFn(`ALTER TABLE conversation ADD COLUMN task_plan_json TEXT;`); } catch { /* 列已存在 */ }
+  // 迁移：space 新增 task_type / task_config_json 列（「目录即任务」：目录绑定任务类型 + 类型覆盖配置）
+  try { await execFn(`ALTER TABLE space ADD COLUMN task_type TEXT;`); } catch { /* 列已存在 */ }
+  try { await execFn(`ALTER TABLE space ADD COLUMN task_config_json TEXT;`); } catch { /* 列已存在 */ }
   // 迁移完成后创建引用 space_id 的索引（旧库迁移场景：旧 conversation 表无 space_id 列）
   try { await execFn(`CREATE INDEX IF NOT EXISTS idx_conversation_space ON conversation(space_id);`); } catch { /* 索引已存在 */ }
   // 迁移：message 表新增子智能体关联字段（子智能体中间过程持久化）

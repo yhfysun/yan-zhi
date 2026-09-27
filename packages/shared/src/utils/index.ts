@@ -67,3 +67,17 @@ export {
   buildArtifactRelDirCandidates,
   joinArtifactPath,
 } from './artifact-paths';
+
+// ===== 任务类型注册表（「目录即任务」的类型定义 + 资源目录骨架 + SOP）=====
+// 前后端共用同一份：后端取 SOP 注入提示词，前端取 label/guide 做下拉与引导文案。
+export {
+  RESOURCE_DIRS,
+  RESOURCE_DIR_NAMES,
+  DEFAULT_CONFIRM_BATCH_SIZE,
+  TASK_TYPES,
+  TASK_TYPE_IDS,
+  getTaskType,
+  formatTaskTypeContext,
+  type ResourceDirSpec,
+  type TaskTypeSpec,
+} from './task-types';

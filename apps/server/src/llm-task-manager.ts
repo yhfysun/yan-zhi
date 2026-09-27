@@ -4,6 +4,7 @@
 // UI 交互工具（ask_user/confirm_user 等）和 MCP/自定义工具委托前端，刷新时暂停等待重连。
 // 注：web_search 已移除，联网查询统一委派 pageAgent（真实浏览器搜索引擎）。
 import type { Platform, Model, Message, DeltaToolCall } from '@yan-zhi/shared';
+import { formatTaskTypeContext, DEFAULT_CONFIRM_BATCH_SIZE } from '@yan-zhi/shared';
 import { LlmClient, getToolRegistry, getApiToolRegistry, ContextWindow } from '@yan-zhi/core';
 import { db } from './db.js';
 import { normalizePermissionMode, checkToolPermission, filterToolsByPermission, permissionModePrompt, checkWorkflowPermission, type PermissionMode } from './tool-permission.js';
@@ -14,7 +15,8 @@ import {
   retrieveRelevantMemories, formatMemoryContext, bumpMemoryUsage,
   writeMemoryItems, flushMemoriesBeforeCompression, parseExtractedItems, type MemoryWriteItem,
 } from './services/memory-service.js';
-import { loadSpaceMemoryForConversation, formatSpaceMemoryContext } from './services/space-memory.js';
+import { loadSpaceMemoryForConversation, formatSpaceMemoryContext, appendTaskDecision, loadTaskMemoryForConversation, formatTaskMemoryContext } from './services/space-memory.js';
+import { summarizeResourceDirsSync } from './services/space-resources.js';
 import { serverState } from './state.js';
 import { resolveArtifactDirFor } from './services/artifact-dir.js';
 import { modelSupportsTools } from './services/model-caps.js';
@@ -53,7 +55,13 @@ interface PendingToolCall {
   callId?: string;
   requestedAt?: number;
   timer?: ReturnType<typeof setTimeout>;
+  /** 工具入参（ask_user/confirm_user 记录决策、/tasks/active 回显 pending 详情用） */
+  args?: unknown;
 }
+
+/** 交互类工具：暂停等用户回答，没有"超时"语义 —— 用户隔天回来回答也应该有效。
+ *  免 2 分钟创建超时、免 15 秒断连宽限（宽限 reject 会把挂着的问题杀掉）。 */
+const INTERACTIVE_TOOLS = new Set(['ask_user', 'confirm_user']);
 
 interface LlmTask {
   id: string;
@@ -293,11 +301,12 @@ export function createTask(params: {
 
   const taskId = 'task_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
   // 会话级权限模式：以 conversation 表持久化值为准（前端下拉选择后随会话保存）
-  let permissionMode: PermissionMode = 'default';
+  // ★ 查不到/异常时兜底 readonly（fail-safe）：宁可误收窄也不静默放行写操作
+  let permissionMode: PermissionMode = 'readonly';
   try {
     const row = db.prepare('SELECT permission_mode FROM conversation WHERE id = ?').get(params.conversationId) as any;
     permissionMode = normalizePermissionMode(row?.permission_mode);
-  } catch { /* 列未迁移等异常时按默认模式放行 */ }
+  } catch { /* 列未迁移等异常时按只读收窄 */ }
   const task: LlmTask = {
     id: taskId,
     conversationId: params.conversationId,
@@ -364,8 +373,10 @@ export function subscribe(taskId: string, since: number, onEvent: (event: SSEEve
     task.subscribers.delete(onEvent);
     // 最后一个订阅者断开：给 pendingToolCalls 设 15 秒宽限期，超时则 reject（避免等 2 分钟）。
     // ⚠️ paused 态跳过：任务挂起是用户主动行为，宽限 reject 会把恢复后的工具链误杀。
+    // ⚠️ 交互类工具（ask_user/confirm_user）同样跳过：问题挂着等用户回答，断连不该杀。
     if (task.subscribers.size === 0 && task.status === 'running' && !task.paused) {
       for (const [id, pending] of task.pendingToolCalls) {
+        if (INTERACTIVE_TOOLS.has(pending.toolName || '')) continue;
         if (pending.timer) continue; // 已有 timer 不重复设
         pending.timer = setTimeout(() => {
           const p = task.pendingToolCalls.get(id);
@@ -393,9 +404,20 @@ export function abortTask(taskId: string) {
   task.paused = false;
   for (const [, pending] of task.pendingToolCalls) {
     if (pending.timer) clearTimeout(pending.timer);
+    // ★ 交互类工具在终止时也要落决策记录：用户在等回答的向导里可能已经答过几页
+    //   （前端 cancelPendingConfirmation 会把已作答部分放进 summary 随结果回传）。
+    //   但 abort 是"任务被终止"，前端此后不会再 POST tool-result ——
+    //   所以这里只能记下"这个确认点曾被问到、任务在此终止"，避免事后完全无痕。
+    if (INTERACTIVE_TOOLS.has(pending.toolName || '')) {
+      const question = extractPendingQuestion(pending.args);
+      if (question) {
+        void appendTaskDecision(task.userId, task.conversationId, question, '[任务被用户终止，该项未完成确认]');
+      }
+    }
     pending.reject(new DOMException('Aborted', 'AbortError'));
   }
   task.pendingToolCalls.clear();
+  syncPendingToolsJson(task);
 }
 
 /** 工具边界暂停：边界处（主循环迭代/子智能体循环/前端委托入口）挂起，正在执行的动作跑完为止。
@@ -662,7 +684,87 @@ export function resolveToolResult(taskId: string, callId: string, result: string
   if (!pending) return;
   task.pendingToolCalls.delete(callId);
   if (pending.timer) clearTimeout(pending.timer);
+  syncPendingToolsJson(task);
   pending.resolve(result);
+  // ★ 交互类工具的回答必须落「任务决策记录」（硬性要求：用户确认过的内容写入空间记忆，
+  //   同目录新会话不再重复询问）。fire-and-forget：落盘失败不影响回答主链路。
+  if (INTERACTIVE_TOOLS.has(pending.toolName || '')) {
+    const question = extractPendingQuestion(pending.args);
+    // 记录"答了什么"：优先用结果里的 summary（前端在向导中途关闭时会把**已作答的部分**
+    // 以文本回传 —— 那几页同样是用户拍板过的决定，不能因为没走完就丢掉）；
+    // 否则退回原始 result（ask_user 的回答本身就是纯文本）。
+    const answer = extractAnswerText(result);
+    if (question && answer) {
+      void appendTaskDecision(task.userId, task.conversationId, question, answer);
+    }
+  }
+}
+
+/** 从工具结果里取出「用户答了什么」的可读文本。
+ *  confirm_user 的结果可能是 {cancelled, title, answers, summary} 形状；
+ *  中途关闭向导时 summary 只含已作答的部分（前端刻意保留）。 */
+export function extractAnswerText(result: unknown): string {
+  if (result == null) return '';
+  if (typeof result === 'string') {
+    const raw = result.trim();
+    if (!raw) return '';
+    // 前端把结果统一字符串化（JSON.stringify）后才 POST，这里还原成对象再取可读文本
+    if (raw.startsWith('{') || raw.startsWith('[')) {
+      try {
+        const parsed = JSON.parse(raw);
+        const fromObj = extractAnswerText(parsed);
+        if (fromObj) return fromObj;
+      } catch { /* 非 JSON，按纯文本处理 */ }
+    }
+    return raw;
+  }
+  if (typeof result === 'object') {
+    const r = result as Record<string, unknown>;
+    const summary = typeof r.summary === 'string' ? r.summary.trim() : '';
+    if (summary) return summary;
+    // 没有 summary：从 answers 数组自己拼（兜底，防前端漏传字段）
+    if (Array.isArray(r.answers)) {
+      return (r.answers as Record<string, unknown>[])
+        .map((a) => {
+          const q = String(a?.question || '').trim();
+          const ans = String(a?.answer || '').trim();
+          if (!q && !ans) return '';
+          return `Q: ${q}\nA: ${ans || '(未作答)'}`;
+        })
+        .filter(Boolean)
+        .join('\n\n');
+    }
+    return '';
+  }
+  return '';
+}
+
+/** 从交互工具的入参提取"问了什么"（ask_user 取 question；confirm_user 取标题+各页问题）。导出供测试 */
+export function extractPendingQuestion(args: unknown): string {
+  if (!args || typeof args !== 'object') return '';
+  const a = args as Record<string, unknown>;
+  if (typeof a.question === 'string' && a.question.trim()) return a.question;
+  if (Array.isArray(a.pages)) {
+    const qs = (a.pages as Record<string, unknown>[])
+      .map((p) => String(p?.question || '').trim())
+      .filter(Boolean);
+    const title = typeof a.title === 'string' ? a.title.trim() : '';
+    return [title, ...qs].filter(Boolean).join(' / ');
+  }
+  return '';
+}
+
+/** 把当前 pending 工具调用写进 llm_task.pending_tool_json（服务重启后仍能查到"卡在等谁"） */
+function syncPendingToolsJson(task: LlmTask): void {
+  try {
+    const arr = [...task.pendingToolCalls.values()].map((p) => ({
+      callId: p.callId,
+      toolName: p.toolName,
+      requestedAt: p.requestedAt,
+    }));
+    db.prepare('UPDATE llm_task SET pending_tool_json = ? WHERE id = ?')
+      .run(JSON.stringify(arr), task.id);
+  } catch { /* 列未迁移等异常不阻塞工具链 */ }
 }
 
 /** 获取用户的活动任务 */
@@ -678,6 +780,8 @@ export function getActiveTasks(userId: string, conversationId?: string): any[] {
       status: task.status,
       eventCount: task.events.length,
       createdAt: task.createdAt,
+      // 等待中的前端工具（供前端 reconnectActiveTask 判断会话是否卡在等用户输入）
+      pendingTools: [...task.pendingToolCalls.values()].map((p) => ({ callId: p.callId, toolName: p.toolName })),
     });
   }
   return result;
@@ -861,7 +965,7 @@ async function runReActLoop(task: LlmTask, params: {
       modePrompt.push('- 仅回答模式：本次任务禁止调用任何工具（包括搜索、文件、代码执行与子智能体），直接依据已有知识与上下文用文字回答；若信息不足，明确说明缺什么，而不是尝试调用工具。');
     }
     // 会话级只读权限：模式指令告知模型按只读方式规划（工具列表已在下方同步裁剪，双保险）
-    const permPrompt = permissionModePrompt(task.permissionMode || 'default');
+    const permPrompt = permissionModePrompt(task.permissionMode || 'readonly');
     if (permPrompt) modePrompt.push(permPrompt);
     let systemPromptBuilt = params.systemPrompt !== undefined
       ? params.systemPrompt
@@ -891,6 +995,41 @@ async function runReActLoop(task: LlmTask, params: {
         systemPromptBuilt += '\n\n' + formatSpaceMemoryContext(spaceMem.spaceName, spaceMem.content);
       }
     } catch { /* 空间记忆注入失败不影响任务 */ }
+    // 任务决策记录注入：用户历史上在 ask_user/confirm_user 确认过的内容（硬性验收项：
+    // 同目录新开会话模型不再重复询问已确认的人物/格式/风格等）
+    try {
+      const taskMem = loadTaskMemoryForConversation(convId);
+      if (taskMem) {
+        systemPromptBuilt += '\n\n' + formatTaskMemoryContext(taskMem);
+      }
+    } catch { /* 决策记录注入失败不影响任务 */ }
+    // 任务类型 SOP 注入（「目录即任务」）：目录绑定了类型时，把类型执行手册 + 资源目录现状
+    // 注入提示词，让模型按 SOP 分步引导用户，并知道 00-source 里已有哪些素材。
+    try {
+      const convRow = db.prepare('SELECT space_id FROM conversation WHERE id = ?').get(convId) as { space_id?: string | null } | undefined;
+      const spaceId = convRow?.space_id;
+      if (spaceId) {
+        const tRow = db.prepare('SELECT task_type, task_config_json FROM space WHERE id = ?').get(spaceId) as
+          | { task_type?: string | null; task_config_json?: string | null }
+          | undefined;
+        const taskType = tRow?.task_type;
+        if (taskType) {
+          let batchSize = DEFAULT_CONFIRM_BATCH_SIZE;
+          try {
+            const cfg = tRow?.task_config_json ? JSON.parse(tRow.task_config_json) : null;
+            if (cfg && Number.isFinite(Number(cfg.confirmBatchSize))) batchSize = Number(cfg.confirmBatchSize);
+          } catch { /* 配置损坏按默认 */ }
+          const ctx = formatTaskTypeContext(taskType, batchSize);
+          if (ctx) {
+            systemPromptBuilt += '\n\n' + ctx;
+            // 资源目录现状：让模型知道用户已放了什么（有素材就直接开工，没有就引导上传）
+            const dirs = summarizeResourceDirsSync(spaceId);
+            const lines = dirs.map((d) => `- ${d.dir}（${d.label}）：${d.count} 项${d.names.length ? `，如 ${d.names.join('、')}` : ''}`);
+            systemPromptBuilt += '\n\n### 目录资源现状\n' + lines.join('\n');
+          }
+        }
+      }
+    } catch { /* 任务类型注入失败不影响任务 */ }
     // 浏览器记忆不做自动注入：按需召回模式，智能体需要时调用 api_browser_memory_read 工具拉取
     if (modePrompt.length) {
       systemPromptBuilt += '\n\n## 模式指令（用户在输入框开启，优先级高于默认行为）\n' + modePrompt.join('\n');
@@ -904,7 +1043,7 @@ async function runReActLoop(task: LlmTask, params: {
     if (modeFlags.answerOnly) toolsBuilt = [];
     // 只读权限：构建期就把写类工具从列表里摘掉，模型根本看不到（运行时 executeTool 还有拦截兜底）。
     // 注意：显式传入 params.tools 的场景（定时任务等）同样按会话权限裁剪，权限不因调用来源放松。
-    toolsBuilt = filterToolsByPermission(task.permissionMode || 'default', toolsBuilt);
+    toolsBuilt = filterToolsByPermission(task.permissionMode || 'readonly', toolsBuilt);
     const tools = supportsTools ? toolsBuilt : [];
     // 记录会话级 MCP 挂载 serverId：无人值守（前端不在线）时后端直连 MCP 兜底
     task.mountedMcpServerIds = getMergedMcpServerIds(params.agentId ?? null, userId, convId);
@@ -1329,7 +1468,7 @@ async function executeTool(
   // 会话级权限拦截（readonly）：写类/不可控工具在此硬拒绝。
   // 放在函数最顶端 —— 被拒时提前 return，file_write/file_edit 的 file_change 快照钩子
   // （registry.execute 前后那段）自然不会执行，不会残留无意义的 pending 记录。
-  const perm = checkToolPermission(task.permissionMode || 'default', toolName);
+  const perm = checkToolPermission(task.permissionMode || 'readonly', toolName);
   if (!perm.allowed) {
     console.warn(`[llm-task] 权限拦截: conv=${task.conversationId} mode=${task.permissionMode} tool=${toolName}`);
     return perm.reason || `工具 ${toolName} 已被会话权限拒绝执行`;
@@ -1401,7 +1540,7 @@ async function executeTool(
 
     // 只读会话下按**实际节点内容**判定（含 tool 写工具 / sub_agent / code 里的 fs、child_process）。
     // 不能只靠 checkToolPermission 的前缀拦截：会把纯取数的流水线一并误伤。
-    const wfPerm = checkWorkflowPermission(task.permissionMode || 'default', (() => {
+    const wfPerm = checkWorkflowPermission(task.permissionMode || 'readonly', (() => {
       try { return JSON.parse(row.workflow_json || '{}'); } catch { return null; }
     })(), toolName);
     if (!wfPerm.allowed) {
@@ -1627,15 +1766,20 @@ async function executeToolViaFrontend(task: LlmTask, toolName: string, args: any
   }
   return new Promise<string>((resolve, reject) => {
     const callId = 'tc_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
-    const timer = setTimeout(() => {
-      const pending = task.pendingToolCalls.get(callId);
-      if (pending) {
-        task.pendingToolCalls.delete(callId);
-        console.warn(`[llm-task] 前端工具执行超时(2min): ${toolName} callId=${callId} conv=${task.conversationId}（前端刷新/断连时常见，任务将以此错误继续）`);
-        pending.reject(new Error(`工具 ${toolName} 执行超时`));
-      }
-    }, 2 * 60 * 1000);
-    task.pendingToolCalls.set(callId, { resolve, reject, toolName, callId, requestedAt: Date.now(), timer });
+    const interactive = INTERACTIVE_TOOLS.has(toolName);
+    // 交互类工具不设 2 分钟超时（用户可能在"思考要不要确认"，隔天回来也要能继续答）
+    const timer = interactive
+      ? undefined
+      : setTimeout(() => {
+          const pending = task.pendingToolCalls.get(callId);
+          if (pending) {
+            task.pendingToolCalls.delete(callId);
+            console.warn(`[llm-task] 前端工具执行超时(2min): ${toolName} callId=${callId} conv=${task.conversationId}（前端刷新/断连时常见，任务将以此错误继续）`);
+            pending.reject(new Error(`工具 ${toolName} 执行超时`));
+          }
+        }, 2 * 60 * 1000);
+    task.pendingToolCalls.set(callId, { resolve, reject, toolName, callId, requestedAt: Date.now(), timer, args });
+    syncPendingToolsJson(task);
     // 通知前端执行工具。
     // conversationId 必须随事件下发：多会话并行时前端要据此把工具路由到「发起它的那个会话」
     // 的执行面（浏览器 tab / 工作目录等），否则会打到用户当前正在看的会话上，造成跨会话串数据。
@@ -2480,6 +2624,36 @@ export function buildSystemPromptForBackend(agentId: string | null, userId: stri
         }
       }
       if (skillLines.length > 0) parts.push('---\n## 可用 Skills\n' + skillLines.join('\n'));
+      // ★★ 当前会话身份：模型得知道自己"现在是谁、挂了什么、在哪个模式"。
+      //   不注入的后果（2026-09-27 用户要求「智能体可以自己设置当前会话的智能体和 skill 和工作流程」）：
+      //     · 用户问"你现在是什么智能体" → 模型只能照系统提示词猜，答不出会话里实际挂的 agent；
+      //     · 模型用 api_conversation_setup 换了智能体后，**自己不知道已经换了**，
+      //       下一轮仍按旧身份说话（换了等于没换）。
+      //   放在 Skills 之后：先给"我是谁"，再给"我有哪些技能与流程"。
+      const sessionIdentity: string[] = [];
+      const sidForIdentity = opts?.conversationId || '';
+      if (agentId) {
+        // 该作用域此前只查了 system_prompt/type，名字要另取（用于"你现在是谁"）
+        const idRow = db.prepare('SELECT name FROM agent WHERE id = ? AND (user_id = ? OR is_public = 1)').get(agentId, userId) as any;
+        if (idRow?.name) sessionIdentity.push(`- 当前智能体：**${idRow.name}**（${agentId}）`);
+      }
+      if (convMounts.skillIds.length > 0) {
+        const convSkillNames = convMounts.skillIds
+          .map((id) => (db.prepare('SELECT name FROM skill WHERE id = ?').get(id) as any)?.name || id)
+          .filter(Boolean);
+        sessionIdentity.push(`- 本会话额外挂载的技能：${convSkillNames.join('、')}`);
+      }
+      if (sidForIdentity) {
+        const convMode = (db.prepare('SELECT mode FROM conversation WHERE id = ?').get(sidForIdentity) as any)?.mode;
+        if (convMode) sessionIdentity.push(`- 工作模式：${convMode === 'wf' ? '工作流模式' : convMode}`);
+      }
+      if (sessionIdentity.length > 0) {
+        parts.push(
+          '---\n## 当前会话身份（回答"你是谁/你挂了什么"时按这里说，不要凭系统提示词猜）\n' +
+          sessionIdentity.join('\n') +
+          '\n\n用户要求你换身份 / 改技能 / 切模式时，用 api_conversation_setup 直接落地（默认作用于当前会话），改完如实告知已生效。',
+        );
+      }
       if (flowParts.length > 0) {
         parts.push('---\n## 当前任务流程指引（按 Skill 流程执行：该 ask_user 时 ask_user，该委派 pageAgent 时委派 pageAgent 并在 input 中传入流程要求）\n' + flowParts.join('\n\n'));
       }

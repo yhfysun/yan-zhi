@@ -8,8 +8,13 @@
 /** 会话级工具权限模式 */
 export type PermissionMode = 'readonly' | 'default' | 'full';
 
+/**
+ * 归一化权限模式。
+ * ★ 非法值回落 **readonly**（fail-safe，2026-09-27 起默认档即只读）：
+ *   垃圾值/未知的权限宁可误收窄（用户看得见、可手动放开），绝不静默放行。
+ */
 export function normalizePermissionMode(v: unknown): PermissionMode {
-  return v === 'readonly' || v === 'full' ? v : 'default';
+  return v === 'readonly' || v === 'full' ? v : v === 'default' ? 'default' : 'readonly';
 }
 
 /** 明确有副作用的工具（readonly 模式拒绝执行） */
@@ -38,6 +43,13 @@ const WRITE_TOOLS = new Set([
   'api_im_connector_delete', 'api_im_connector_test',
   // —— 配置变更 ——
   'configure_model_platform',
+  // —— 空间任务模式：会改空间配置 + 建磁盘目录（写副作用）——
+  // ★ 必须列进写清单：它既改库（space.task_type）又**在用户磁盘上建目录**，
+  //   只读会话里放行等于绕过了"不许写"的约束。
+  'api_space_set_task_type',
+  // —— 会话自配置：改当前会话的智能体/技能/模式（会改变后续所有轮次的执行身份）——
+  // ★ 与配置变更同类：改完之后整个会话的行为都会变，只读会话里不应放行。
+  'api_conversation_setup',
 ]);
 
 /**

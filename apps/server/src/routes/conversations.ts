@@ -81,10 +81,19 @@ router.patch('/:id', (req: Request, res: Response) => {
     sets.push('space_id = ?');
     vals.push(req.body.spaceId || null);
   }
-  // permissionMode：会话级工具权限（readonly/default/full），非法值归一化为 default
+  // permissionMode：会话级工具权限（readonly/default/full），非法值 fail-safe 归一化为 readonly
   if (req.body.permissionMode !== undefined) {
     sets.push('permission_mode = ?');
     vals.push(normalizePermissionMode(req.body.permissionMode));
+  }
+  // taskPlan：任务计划落盘（task_plan/task_step 卡片刷新/换设备后恢复）。null = 清除
+  if (req.body.taskPlan !== undefined) {
+    if (req.body.taskPlan === null) {
+      sets.push('task_plan_json = ?'); vals.push(null);
+    } else if (req.body.taskPlan && typeof req.body.taskPlan === 'object' && Array.isArray(req.body.taskPlan.steps)) {
+      sets.push('task_plan_json = ?');
+      vals.push(JSON.stringify(req.body.taskPlan));
+    }
   }
   if (req.body.mcpServerIds !== undefined || req.body.mcpDisabledTools !== undefined) {
     const serverIds = req.body.mcpServerIds ?? (() => {

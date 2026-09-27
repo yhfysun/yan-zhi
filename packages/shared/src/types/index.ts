@@ -94,6 +94,8 @@ export interface Conversation {
   pinned: boolean;
   /** 会话级工具权限：readonly=只读（写类工具被后端拦截）/ default=默认 / full=全部放行 */
   permissionMode?: 'readonly' | 'default' | 'full';
+  /** 任务计划落盘（task_plan/task_step 写入，刷新/换设备后恢复进度卡片）。null/缺省 = 无计划 */
+  taskPlan?: { title: string; steps: Array<{ id: string; title: string; description?: string; status: 'pending' | 'running' | 'done' | 'failed'; note?: string }> } | null;
   /**
    * 归属模式：会话按模式隔离，列表只显示当前模式的。
    *
@@ -112,6 +114,11 @@ export interface Space {
   /** 绑定的本地目录路径（桌面端可选） */
   dirPath?: string;
   description?: string;
+  /** 「目录即任务」：该目录绑定的任务类型 id（general/short_drama/... 见 shared/utils/task-types）。
+   *  空/未设置 = 通用（不生成资源目录骨架、不注入 SOP）。 */
+  taskType?: string;
+  /** 类型在该目录下的覆盖配置（confirmBatchSize 等）。JSON 字符串。 */
+  taskConfigJson?: string;
   sortOrder: number;
   createdAt: number;
   updatedAt: number;
@@ -324,6 +331,7 @@ export type NodeType =
   | 'sub_agent'
   | 'memory_read'
   | 'memory_write'
+  | 'human_confirm'
   | 'input'
   | 'output'
   | 'code';
