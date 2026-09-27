@@ -152,7 +152,8 @@ export function registerMediaTools(m: Map<ApiModuleName, ToolDefinition[]>) {
       description:
         '下载安装 ffmpeg（媒体合成的依赖：配音混入视频、拼接、烧字幕都需要它）。' +
         '按当前平台从官方静态构建源下载到应用数据目录，一次安装长期可用。' +
-        '当 media_compose 报「尚未安装 ffmpeg」时调用本工具；调用前应先用 confirm_user 告知用户即将下载（约 100MB+），征得同意再装。' +
+        '当 media_compose 报「尚未安装 ffmpeg」时调用本工具。' +
+        '★ 安装体积策略：不超过 50MB 的依赖会被静默安装；ffmpeg 约 100MB，超过阈值，**调用前应先用 confirm_user 告知用户**（含体积与用途），征得同意再装。' +
         '已安装时直接返回可用状态（幂等）。',
       inputSchema: { type: 'object', properties: {}, required: [] },
     },

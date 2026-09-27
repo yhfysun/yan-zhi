@@ -17,6 +17,8 @@ import {
   debugRunTo,
   debugRunNode,
   debugRunFrom,
+  resolveHumanConfirm,
+  getPendingConfirm,
 } from '../workflow-runner.js';
 import type { WorkflowRunBundle } from '../workflow-runner.js';
 import { buildWorkflowInputFieldDefs, collectOverridableNodes } from '../services/workflow-delegate.js';
@@ -125,11 +127,12 @@ function preflightFor(agentId: string, userId: string, inputs: Record<string, un
  */
 function workflowPermissionReason(conversationId: string | undefined, workflowJson: string | null, toolName: string): string | null {
   if (!conversationId) return null; // 无会话归属（纯 API 调用）：不在会话权限语义内
-  let mode: PermissionMode = 'default';
+  // ★ 取不到会话/异常时兜底 readonly（fail-safe）：工作流可能内嵌写工具，宁可误拦也不静默放行
+  let mode: PermissionMode = 'readonly';
   try {
     const conv = db.prepare('SELECT permission_mode FROM conversation WHERE id = ?').get(conversationId) as any;
     if (conv?.permission_mode) mode = normalizePermissionMode(conv.permission_mode);
-  } catch { /* 取不到就按 default（放行），与既有会话行为一致 */ }
+  } catch { /* 取不到就按只读收窄 */ }
   if (mode !== 'readonly') return null;
   const wf = (() => { try { return JSON.parse(workflowJson || '{}'); } catch { return null; } })();
   const verdict = checkWorkflowPermission(mode, wf, toolName);
@@ -229,6 +232,8 @@ router.get('/runs/:id', (req: Request, res: Response) => {
       data: {
         id: run.id, agentId: run.agentId, status: run.status,
         result: run.result, logs: run.logs, seq: run.seq, error: run.error, createdAt: run.createdAt,
+        // 待人工确认（human_confirm 节点挂起时非空）：前端据此弹确认 UI / 刷新后恢复
+        pendingConfirm: getPendingConfirm(runId),
       },
     });
     return;
@@ -242,8 +247,32 @@ router.get('/runs/:id', (req: Request, res: Response) => {
       result: (() => { try { return row.result_json ? JSON.parse(row.result_json) : null; } catch { return null; } })(),
       logs: (() => { try { return JSON.parse(row.logs_json || '[]'); } catch { return []; } })(),
       seq: null, error: row.error, createdAt: row.created_at, restored: true,
+      // ★ 跨刷新/重启存活：待确认状态在库里，重连后照常能拿到
+      pendingConfirm: getPendingConfirm(runId),
     },
   });
+});
+
+// POST /runs/:id/confirm —— 提交人工确认结果（唤醒 human_confirm 节点继续跑）
+router.post('/runs/:id/confirm', (req: Request, res: Response) => {
+  const userId = req.user!.userId;
+  const runId = req.params.id;
+  const row = db.prepare('SELECT id FROM workflow_run WHERE id = ? AND user_id = ?').get(runId, userId);
+  if (!row) { res.status(404).json({ error: '运行不存在' }); return; }
+
+  const { callId, rejected, text, answers } = req.body || {};
+  if (!callId) { res.status(400).json({ error: '缺少 callId' }); return; }
+  const ok = resolveHumanConfirm(runId, String(callId), {
+    rejected: !!rejected,
+    text: text != null ? String(text) : '',
+    answers: Array.isArray(answers) ? answers : [],
+  });
+  // 没有等待者 = 已超时或服务重启过（内存 waiter 不在）→ 如实告知，不假装成功
+  if (!ok) {
+    res.status(409).json({ error: '该确认已失效（可能已超时或服务已重启），请重新发起运行' });
+    return;
+  }
+  res.json({ ok: true });
 });
 
 // POST /runs/:id/cancel —— 取消运行（状态置 aborted，不强行 kill 当前这一跳）

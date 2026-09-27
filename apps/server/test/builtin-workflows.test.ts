@@ -6,8 +6,13 @@
  * 这里不依赖数据库，直接从定义函数取值做结构断言。
  */
 import { describe, it, expect } from 'vitest';
-import { WF_MAIN_ID, WF_SUB_ID, WF_DRAMA_ID, WF_DEF_VERSION, seedBuiltinWorkflowAgents } from '../src/builtin-workflow-agents';
+import {
+  WF_MAIN_ID, WF_SUB_ID, WF_DRAMA_ID, WF_NOVEL_ID, WF_TRANSLATE_ID, WF_AUDIOBOOK_ID,
+  WF_DEF_VERSION, seedBuiltinWorkflowAgents,
+} from '../src/builtin-workflow-agents';
 import type { Workflow } from '@yan-zhi/shared';
+
+const ALL_IDS = [WF_MAIN_ID, WF_SUB_ID, WF_DRAMA_ID, WF_NOVEL_ID, WF_TRANSLATE_ID, WF_AUDIOBOOK_ID];
 
 // seed 需要一个极小的假 db；这里只关心定义本身的图结构，故用内存桩捕获写入的定义
 function captureDefs(): Record<string, Workflow> {
@@ -31,8 +36,8 @@ function captureDefs(): Record<string, Workflow> {
 const defs = captureDefs();
 
 describe('内置工作流 · seed 与版本', () => {
-  it('三个内置工作流都被 seed（含新增的短剧流水线）', () => {
-    expect(Object.keys(defs).sort()).toEqual([WF_DRAMA_ID, WF_MAIN_ID, WF_SUB_ID].sort());
+  it('全部内置工作流都被 seed（含 P2 新增的三类 SOP 流水线）', () => {
+    expect(Object.keys(defs).sort()).toEqual([...ALL_IDS].sort());
   });
 
   it('定义版本号是正整数（升级时会据此覆盖库中旧副本）', () => {
@@ -45,6 +50,9 @@ describe.each([
   ['调研报告生成助手', WF_MAIN_ID],
   ['短剧流水线', WF_DRAMA_ID],
   ['调研要点提炼子助手', WF_SUB_ID],
+  ['小说改写流水线', WF_NOVEL_ID],
+  ['翻译流水线', WF_TRANSLATE_ID],
+  ['有声小说流水线', WF_AUDIOBOOK_ID],
 ])('%s (%s) · DAG 结构完整性', (_name, id) => {
   const wf = defs[id];
 

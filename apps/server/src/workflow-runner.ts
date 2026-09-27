@@ -58,6 +58,8 @@ export interface WorkflowRunEvent {
   nodeType?: string;
   msg?: string;
   result?: Record<string, unknown>;
+  /** human_confirm 节点挂起时携带的待确认内容（前端据此弹确认 UI） */
+  pendingConfirm?: Record<string, unknown>;
 }
 
 interface WorkflowRunState {
@@ -564,6 +566,177 @@ class ServerSubAgentNodeHandler implements NodeHandler {
   }
 }
 
+// ── 人工确认节点：在流水线中途暂停，等用户明确确认后再继续 ──
+//
+// ★ 为什么必须有（P2 核心补缺）：
+//   用户要的是「一步步完成，每步让用户确认」。靠提示词约束不可靠 ——
+//   模型可能一路跑完、跳过确认。这个节点把「等用户确认」变成图上的**结构事实**：
+//   不确认就物理上走不到下一个节点。
+//
+// ★ 与 P0 的 pending 机制打通（跨刷新/重启存活）：
+//   早期设想是往 llm_task 的 pendingToolCalls 里塞一个"虚拟工具调用"，实践上很差：
+//   工作流是一次性 DAG 执行，没有 llm_task，也没有前端 dispatchToolCall 那套。
+//   改为把待确认内容**落 workflow_run 表**（pending_confirm_json 列）+ 挂内存 waiter：
+//     · 内存 waiter 负责本次进程内的"立刻恢复"（正常路径，零延迟）；
+//     · 落库负责**跨刷新/重启存活** —— 前端刷新后仍能查到"这个运行卡在等哪个节点"，
+//       并在用户回答后恢复（服务重启则标记 interrupted，如实告知，不假装还活着）。
+class ServerHumanConfirmNodeHandler implements NodeHandler {
+  type = 'human_confirm';
+
+  constructor(private run: WorkflowRunState | null) {}
+
+  async execute(config: Record<string, unknown>, ctx: RunContext): Promise<NodeResult> {
+    const run = this.run;
+    // 无人值守（定时任务 / 无 run 上下文）：不能静默跳过确认（那样流水线会带着未确认的
+    // 设定一路跑到底，正是这个节点要防的事），也不能永久挂住。如实返回"未确认"并放行，
+    // 由下游节点自行判断 —— 同时在日志里留痕，便于排查。
+    if (!run) {
+      return {
+        output: {
+          confirmed: false,
+          skipped: true,
+          reason: '无人值守运行，人工确认节点被跳过（未获用户确认）',
+        },
+      };
+    }
+
+    const nodeId = (config[NODE_ID_KEY] as string) || this.type;
+    const kind = (config.kind as string) === 'confirm' ? 'confirm' : 'ask';
+    const question = String(config.question || '').trim();
+    const pages = Array.isArray(config.pages) ? config.pages : [];
+    const artifact = String(config.artifact || '').trim();
+    const onReject = (config.onReject as string) === 'abort' ? 'abort' : 'retry';
+
+    if (!question && pages.length === 0) {
+      throw new Error('human_confirm 节点缺少 question（或 pages）');
+    }
+
+    const callId = 'hc_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+    const payload = {
+      runId: run.id,
+      nodeId,
+      callId,
+      kind,
+      question,
+      pages,
+      artifact,
+      onReject,
+      requestedAt: Date.now(),
+    };
+
+    // ① 落库：跨刷新/重启后仍能查到"卡在等谁"
+    persistPendingConfirm(run.id, payload);
+    // ② 广播：前端据此弹确认 UI（与 llm_task 的 tool:execute 同构）
+    emitRunEvent(run, { type: 'run:paused', msg: `等待用户确认：${question || nodeId}`, pendingConfirm: payload });
+
+    // ③ 挂起等用户回答（可被取消/超时释放）
+    const answer = await waitForHumanConfirm(run, callId, payload);
+
+    // ④ 清除待确认标记
+    persistPendingConfirm(run.id, null);
+
+    if (!answer) {
+      // 任务被取消：让引擎按取消处理（抛 AbortError 与其它节点一致）
+      throw new DOMException('Aborted', 'AbortError');
+    }
+
+    if (answer.rejected) {
+      if (onReject === 'abort') {
+        throw new Error(`用户拒绝了「${question || nodeId}」并选择中止流水线`);
+      }
+      // retry：返回 rejected 标记，由下游/循环结构决定重做
+      return { output: { confirmed: false, rejected: true, answer: answer.text || '', onReject } };
+    }
+
+    return {
+      output: {
+        confirmed: true,
+        answer: answer.text || '',
+        // 多页向导：逐页答案一并带回，供下游引用
+        answers: answer.answers || [],
+        kind,
+        nodeId,
+      },
+    };
+  }
+}
+
+// ── human_confirm 的等待与恢复 ──
+
+/** 待确认的等待者（进程内）。key = callId */
+const humanConfirmWaiters = new Map<string, (a: HumanConfirmAnswer | null) => void>();
+
+export interface HumanConfirmAnswer {
+  /** 用户是否点了"拒绝/打回" */
+  rejected?: boolean;
+  /** 回答文本（ask 形态） */
+  text?: string;
+  /** 多页向导的逐页答案 */
+  answers?: Array<{ question?: string; answer?: string; supplement?: string }>;
+}
+
+/** 把待确认状态写进 workflow_run.pending_confirm_json（null = 清除）。跨刷新/重启靠它 */
+function persistPendingConfirm(runId: string, payload: Record<string, unknown> | null): void {
+  try {
+    db.prepare('UPDATE workflow_run SET pending_confirm_json = ?, updated_at = ? WHERE id = ?')
+      .run(payload ? JSON.stringify(payload) : null, Date.now(), runId);
+  } catch { /* 列未迁移等异常不阻塞流水线 */ }
+}
+
+/** 挂起等用户回答。支持取消（abort 信号）与超时释放 */
+function waitForHumanConfirm(
+  run: WorkflowRunState,
+  callId: string,
+  payload: Record<string, unknown>,
+): Promise<HumanConfirmAnswer | null> {
+  return new Promise<HumanConfirmAnswer | null>((resolve) => {
+    let done = false;
+    const finish = (a: HumanConfirmAnswer | null) => {
+      if (done) return;
+      done = true;
+      humanConfirmWaiters.delete(callId);
+      run.abort.signal.removeEventListener('abort', onAbort);
+      if (timer) clearTimeout(timer);
+      resolve(a);
+    };
+    const onAbort = () => finish(null);
+    // 与交互类工具一致：不设"短超时"（用户可能在思考或离开），但给一个很宽的上限
+    // （7 天）兜底，避免服务端永久驻留一个死等待者。
+    const timer = setTimeout(() => {
+      console.warn(`[workflow] human_confirm 等待超时(7d): run=${run.id} node=${payload.nodeId}`);
+      finish(null);
+    }, 7 * 24 * 60 * 60 * 1000);
+    run.abort.signal.addEventListener('abort', onAbort);
+    humanConfirmWaiters.set(callId, finish);
+  });
+}
+
+/**
+ * 用户提交确认结果：唤醒等待者。
+ * 返回 false 表示没有对应的等待者（可能已超时/服务已重启）。
+ */
+export function resolveHumanConfirm(runId: string, callId: string, answer: HumanConfirmAnswer): boolean {
+  const finish = humanConfirmWaiters.get(callId);
+  if (!finish) return false;
+  finish(answer);
+  persistPendingConfirm(runId, null);
+  return true;
+}
+
+/** 该运行当前是否有待确认（供 /runs/:id 与刷新恢复用） */
+export function getPendingConfirm(runId: string): Record<string, unknown> | null {
+  try {
+    const row = db.prepare('SELECT pending_confirm_json FROM workflow_run WHERE id = ?').get(runId) as
+      | { pending_confirm_json?: string | null }
+      | undefined;
+    if (!row?.pending_confirm_json) return null;
+    const parsed = JSON.parse(row.pending_confirm_json);
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
 // ── 记忆节点：server db 直写（按 user_id 隔离，多用户不串库） ──
 
 class ServerMemoryReadNodeHandler implements NodeHandler {
@@ -634,6 +807,13 @@ function createServerEngine(
   eng.register(wrap(new ServerSubAgentNodeHandler(bundle, userId, logs)));
   eng.register(wrap(new ServerMemoryReadNodeHandler(userId)));
   eng.register(wrap(new ServerMemoryWriteNodeHandler(userId)));
+  // 人工确认节点：把「等用户确认」变成图上的结构事实（不确认物理上走不到下一个节点）。
+  // ★ 必须走 wrap（与其它节点一致）：否则它**不进 logs、不发 node:start/node:ok**，
+  //   运行台里就看不到这个节点 —— 用户只看到"运行中/已暂停"，不知道卡在图上哪个位置
+  //   （2026-09-27 实测踩到：诊断时 logs 里只有 __start__/__end__，确认节点完全隐身）。
+  //   它在挂起前/恢复后额外发 run:paused（带 pendingConfirm），两者语义互补、不冲突：
+  //   node:start 表示"这个节点开始执行"，run:paused 表示"它在等用户"。
+  eng.register(wrap(new ServerHumanConfirmNodeHandler(run)));
   return eng;
 }
 

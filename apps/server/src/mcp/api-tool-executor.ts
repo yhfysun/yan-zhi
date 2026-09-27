@@ -9,6 +9,7 @@ import { DEFAULT_CONTEXT_WINDOW } from '../constants.js';
 import { AGENS_API_URL, inferCapabilitiesFromModelId } from '../agens-platform/service.js';
 import { serverState } from '../state.js';
 import { resolveFfmpeg, installFfmpeg } from './ffmpeg-runtime.js';
+import { decideInstallPolicy, formatBytes } from '../services/runtime-installer.js';
 import { buildSrt, type SrtCue } from './srt.js';
 import {
   upsertPeer,
@@ -20,6 +21,8 @@ import {
 import { gitService } from '../services/git.js';
 import { bumpMemoryCache } from '../services/memory-service.js';
 import { readSpaceMemory, appendSpaceMemory } from '../services/space-memory.js';
+import { setSpaceTaskType } from '../services/space-resources.js';
+import { TASK_TYPE_IDS, getTaskType } from '@yan-zhi/shared';
 import { readBrowserMemoryOverview } from '../services/browser-memory.js';
 import { ensureArtifactDirFor } from '../services/artifact-dir.js';
 import { downloadMediaBinary } from '../services/media-fetch.js';
@@ -225,6 +228,7 @@ function rowToFile(r: any) {
 export const SUPPORTED_API_TOOLS = new Set([
   'api_agent_list', 'api_agent_get', 'api_agent_create', 'api_agent_update', 'api_agent_delete', 'api_agent_mount',
   'api_conversation_list', 'api_conversation_get', 'api_conversation_create', 'api_conversation_update', 'api_conversation_delete',
+  'api_conversation_setup',
   'api_conversation_file_list', 'api_conversation_file_add', 'api_conversation_file_update', 'api_conversation_file_delete',
   'api_message_list', 'api_message_send', 'api_message_delete',
   'api_platform_list', 'api_platform_create', 'api_platform_update', 'api_platform_delete',
@@ -259,7 +263,7 @@ export const SUPPORTED_API_TOOLS = new Set([
   // 插件
   'api_plugin_list', 'api_plugin_get', 'api_plugin_enable', 'api_plugin_disable', 'api_plugin_set_config', 'api_plugin_uninstall',
   // 空间
-  'api_space_list', 'api_space_create', 'api_space_update', 'api_space_delete',
+  'api_space_list', 'api_space_create', 'api_space_update', 'api_space_delete', 'api_space_set_task_type',
   // 数据查询（P4.1/P4.2：数据源 / 本体上下文链 / 只读取数 / 翻页）
   'api_datasource_list', 'api_ontology_search', 'api_ontology_list', 'api_data_query', 'api_data_paginate',
   'api_ontology_overview', 'api_ontology_brief', 'api_ontology_detail', 'api_ontology_values',
@@ -950,26 +954,35 @@ function requireLocalFile(v: unknown, label: string): { ok: true; file: string }
 
 /** 合成层依赖 ffmpeg：缺失时给出「一键下载」引导（工具名+目录+下载源），而不是让用户自己猜。 */
 function ffmpegMissingHint(st: { error: string; installDir: string; downloadUrl: string }): string {
+  // 体积策略（P3b，用户拍板）：ffmpeg 约 100MB > 50MB 静默阈值 → 必须先问用户。
+  // 提示里把**实测体积与阈值**一起给出，让「为什么这次要问我」是可解释的（而不是无来由的弹窗）。
+  const policy = decideInstallPolicy(FFMPEG_ESTIMATED_BYTES);
   return [
     st.error,
     '',
-    '处理方式：调用 media_install_ffmpeg 由我自动下载安装' + (st.downloadUrl ? `（源：${st.downloadUrl}）` : '（当前平台无自动源）'),
+    `处理方式：调用 media_install_ffmpeg 由我自动下载安装（${policy.reason}）` + (st.downloadUrl ? `（源：${st.downloadUrl}）` : '（当前平台无自动源）'),
     `或手动放入目录：${st.installDir}`,
-    '建议先向用户确认再下载（文件较大，约 100MB+）。',
-  ].join('\n');
+    policy.decision === 'confirm' ? '请先向用户确认再下载。' : '',
+  ].filter(Boolean).join('\n');
 }
+
+/** ffmpeg 静态构建包的实测体积（win32 essentials ≈ 100MB），用于体积策略判定 */
+const FFMPEG_ESTIMATED_BYTES = 100 * 1024 * 1024;
 
 async function mediaInstallFfmpeg(): Promise<MpcToolExecutionResult> {
   const before = await resolveFfmpeg();
   if (before.ok) {
     return ok(JSON.stringify({ ok: true, alreadyInstalled: true, source: before.source, dir: path.dirname(before.ffmpeg) }));
   }
+  // 体积策略回执：让模型/用户看得到「这次为何要确认、阈值是多少、可怎么改」
+  const policy = decideInstallPolicy(FFMPEG_ESTIMATED_BYTES);
   const r = await installFfmpeg((msg) => console.log(`[ffmpeg] ${msg}`));
   if (!r.ok) return fail(`${r.message}${r.dir ? `\n可手动放入目录：${r.dir}` : ''}`);
   const after = await resolveFfmpeg();
   return ok(JSON.stringify({
     ok: true, installed: true, source: after.source,
     dir: r.dir, ffmpeg: after.ffmpeg, ffprobe: after.ffprobe,
+    policy: { decision: policy.decision, estimatedBytes: policy.bytes, estimatedSize: policy.bytes ? formatBytes(policy.bytes) : null },
     note: '安装完成，媒体合成（media_compose）现在可用。',
   }));
 }
@@ -1405,6 +1418,111 @@ export async function executeApiTool(
         db.prepare('DELETE FROM message WHERE conversation_id = ? AND user_id = ?').run(id, uid);
         db.prepare('DELETE FROM conversation WHERE id = ? AND user_id = ?').run(id, uid);
         return ok({ deleted: true });
+      }
+
+      /**
+       * api_conversation_setup —— 让模型设置**当前会话**的智能体 / 技能 / 工作模式。
+       *
+       * ★★ 为什么需要（2026-09-27 用户要求「智能体可以自己设置当前会话的智能体和 skill 和工作流程」）：
+       *   用户在对话里说"你现在按翻译助手来""这个会话挂上口播技能""切到工作流模式"时，
+       *   此前只能让用户自己去 UI 里点。让模型能直接落这个决定，它才能当场按新身份继续干活。
+       *
+       * ★ 「工作流程」= 把会话切到**工作流型智能体**（`type='workflow'`，如短剧流水线 / 小说改写流水线）
+       *   或切到工作流模式（mode='wf'）。两种都在这里做：agentId 传工作流型智能体即可。
+       * ★ 缺省操作**当前会话**（模型基本不需要知道会话 id，且知道也不该乱设别人的）。
+       *
+       * ★★ 三条必须校验的（否则是静默失效）：
+       *   ① 智能体必须存在且属于本用户（或公开）—— 否则设了个悬空 id，
+       *      后端查不到 agent 行 → **工具挂载/子智能体/技能全线静默降级为空**（项目里踩过）；
+       *   ② 技能 id 必须真实存在 —— 悬空 skill 不会报错，只是不注入；
+       *   ③ mode 必须是合法值 —— 非法值会让会话在哪个模式列表里都看不到。
+       *   三条都**明确报错并给可选值**，不静默吞。
+       */
+      case 'api_conversation_setup': {
+        const uid = requireUser(userId);
+        const cid = str(args, 'conversationId') || conversationId || '';
+        if (!cid) return fail('当前没有会话可设置（请在对话中调用，或显式传 conversationId）');
+        const conv = db.prepare('SELECT id FROM conversation WHERE id = ? AND user_id = ?').get(cid, uid);
+        if (!conv) return fail('会话不存在或不属于当前用户');
+
+        const applied: Record<string, unknown> = {};
+        const denied: string[] = [];
+
+        // ── 智能体（含"切工作流"：工作流型智能体就是 type='workflow'）──
+        if (args.agentId !== undefined) {
+          const aid = str(args, 'agentId');
+          const row = db
+            .prepare("SELECT id, name, type, agent_kind FROM agent WHERE id = ? AND (user_id = ? OR is_public = 1)")
+            .get(aid, uid) as { id: string; name: string; type: string; agent_kind: string } | undefined;
+          if (!row) {
+            return fail(`智能体「${aid}」不存在或不可用。可用 list_sub_agents / api_agent_list 查看可选智能体`);
+          }
+          // ★ 工作流型智能体不能作为会话智能体：它在 ReAct 循环里没有 system_prompt 与工具，
+          //   会被当成"你是一个智能助手 + 零工具"跑出一段无关空谈（且不报错）。
+          //   这是既有约束（llm-task-manager 里有专门拦截），这里提前拦掉并给出正确用法。
+          if (row.type === 'workflow') {
+            denied.push(
+              `「${row.name}」是工作流型智能体，不能直接作为会话智能体（它没有对话人格与工具）。` +
+              `正确用法：用 wf_${row.id} 工具运行它，或让当前会话通过 call_agent 委派。`,
+            );
+          } else {
+            db.prepare('UPDATE conversation SET agent_id = ? WHERE id = ?').run(aid, cid);
+            applied.agentId = aid;
+            applied.agentName = row.name;
+          }
+        }
+
+        // ── 技能（会话级挂载；与 agent 挂载取并集）──
+        if (args.skillIds !== undefined) {
+          const raw = Array.isArray(args.skillIds) ? args.skillIds.map(String) : [];
+          const valid: string[] = [];
+          const unknown: string[] = [];
+          for (const sk of raw) {
+            const hit = db.prepare('SELECT id FROM skill WHERE id = ? AND enabled = 1').get(sk);
+            if (hit) valid.push(sk); else unknown.push(sk);
+          }
+          if (unknown.length) {
+            return fail(
+              `技能不存在或已禁用：${unknown.join('、')}。可用 api_skill_list 查看可选技能。` +
+              (valid.length ? `（可用的部分未写入，请修正后重试）` : ''),
+            );
+          }
+          db.prepare('UPDATE conversation SET skill_ids_json = ? WHERE id = ?').run(JSON.stringify(valid), cid);
+          applied.skillIds = valid;
+        }
+
+        // ── 工作模式（office / dev / ops / sec / wf）──
+        if (args.mode !== undefined) {
+          const MODES = ['office', 'dev', 'ops', 'sec', 'wf'];
+          const m = str(args, 'mode');
+          if (!MODES.includes(m)) {
+            return fail(`未知的工作模式「${m}」。可选值：${MODES.join('、')}（wf = 工作流模式）`);
+          }
+          db.prepare('UPDATE conversation SET mode = ? WHERE id = ?').run(m, cid);
+          applied.mode = m;
+        }
+
+        if (!Object.keys(applied).length && !denied.length) {
+          return fail('没有要设置的项：请至少传 agentId / skillIds / mode 之一');
+        }
+        db.prepare('UPDATE conversation SET updated_at = ? WHERE id = ?').run(Date.now(), cid);
+
+        // ★★ 一项都没落地 → 必须返回**失败**，不能只把原因塞在 rejected 里配 isError:false。
+        //   实测（2026-09-27）：只传一个工作流型智能体时返回 `applied:{} + rejected:[…] + isError:false`，
+        //   模型很可能当成"设置成功"继续往下跑 —— 换身份失败却以为换成功了，
+        //   比直接报错更难发现（与项目里"静默失效"同一类问题）。
+        if (!Object.keys(applied).length && denied.length) {
+          return fail(denied.join('\n'));
+        }
+
+        return ok({
+          conversationId: cid,
+          applied,
+          ...(denied.length ? { rejected: denied } : {}),
+          note: denied.length
+            ? '部分设置被拒绝（见 rejected），其余已生效。'
+            : '已生效；下一轮对话起按新的智能体/技能/模式执行（技能与智能体挂载取并集）。',
+        });
       }
       case 'api_conversation_file_list': {
         const uid = requireUser(userId);
@@ -2181,6 +2299,47 @@ export async function executeApiTool(
         db.prepare('UPDATE conversation SET space_id = NULL WHERE space_id = ? AND user_id = ?').run(sid, uid);
         db.prepare('DELETE FROM space WHERE id = ?').run(sid);
         return ok({ deleted: true });
+      }
+
+      /**
+       * api_space_set_task_type —— 给空间设置/更改**任务模式**（模型可直接调用）。
+       *
+       * ★★ 为什么需要（2026-09-27 用户要求「大模型自己都能改目录的任务模式」）：
+       *   任务模式此前只能在 UI 的「空间编辑」里手动选，模型无法参与。
+       *   但"这个目录该按什么流程做"往往是用户在对话里说出来的
+       *   （"这个目录以后都按配音来"）—— 让模型能直接落这个决定，
+       *   它才能同时建出 00-source 等资源目录并立刻按新流程引导。
+       *
+       * ★ 走 setSpaceTaskType（**不裸改列**）：它会同步建资源目录骨架 + 写 task.json。
+       *   裸改 task_type 列会导致"类型设了但目录不存在"，正是这次要避免的坑。
+       * ★ spaceId 缺省时取当前会话归属的空间（模型通常不需要知道空间 id）。
+       * ★ 未知类型**明确报错并回可选值**，不静默回落成"通用"——静默回落会让用户
+       *   以为设成功了，实际什么也没变。
+       */
+      case 'api_space_set_task_type': {
+        const uid = requireUser(userId);
+        const sid = str(args, 'spaceId') || resolveTaskSpaceId(conversationId);
+        if (!sid) return fail('未指定 spaceId，且当前会话未归属任何空间（请先在侧栏选一个空间）');
+        const raw = args.taskType === null || args.taskType === '' ? null : str(args, 'taskType');
+        if (raw && !TASK_TYPE_IDS.includes(raw)) {
+          return fail(`未知的任务类型「${raw}」。可选值：${TASK_TYPE_IDS.filter((t) => t !== 'general').join('、')}（传 null 或空串表示改回通用）`);
+        }
+        try {
+          const r = await setSpaceTaskType(uid, sid, raw);
+          return ok({
+            spaceId: r.spaceId,
+            taskType: r.taskType,
+            label: getTaskType(r.taskType).label,
+            root: r.root,
+            createdDirs: r.createdDirs,
+            changed: r.changed,
+            note: r.taskType === 'general'
+              ? '已改回「通用」：不再注入任务流程（资源目录保留，不删任何文件）'
+              : `已设为「${getTaskType(r.taskType).label}」：资源目录已就绪，后续本目录的任务按该模式的规则推进`,
+          });
+        } catch (e: unknown) {
+          return fail(e instanceof Error ? e.message : String(e));
+        }
       }
 
       // ===== 数据查询（P4.1/P4.2/P4.3）：数据源 / 本体上下文链 / 只读取数 / 翻页 =====

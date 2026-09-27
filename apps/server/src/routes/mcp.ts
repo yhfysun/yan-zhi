@@ -6,6 +6,7 @@ import {
   ensureConnected, disconnectServer, isConnected, getToolsFromDb, testServerConfig, callMcpTool,
   listMcpResources, readMcpResource, listMcpPrompts, getMcpPrompt,
 } from '../mcp/client-manager.js';
+import { precheckMcpCommand, planInstall } from '../services/runtime-installer.js';
 
 const router = Router();
 router.use(authMiddleware);
@@ -49,6 +50,25 @@ router.get('/:id/status', (req: Request, res: Response) => {
 router.post('/test', async (req: Request, res: Response) => {
   const result = await testServerConfig(req.body || {});
   res.json({ data: result });
+});
+
+// POST /api/mcp-servers/precheck  依赖预检（P3b）：探测 command 是否存在 + 给出安装计划
+//
+// ★ 为什么单独一个接口而不是塞进 POST /：新建/编辑是**同步保存**，预检要 spawn 子进程
+//   （where/which），塞进保存链路会让「保存配置」在 spawn 慢时卡住。拆开之后：
+//   前端在用户点保存前先调它拿到提示，保存本身仍是纯落库、零延迟。
+// ★ 判定「自动拉包型启动器」（npx/uvx…）为可用：这类命令本身就是按需拉包的通道，
+//   「包不在本机」不是错误 —— 报错会让用户以为配置坏了。
+router.post('/precheck', async (req: Request, res: Response) => {
+  const body = (req.body || {}) as { command?: string; args?: unknown[] };
+  const command = String(body.command || '').trim();
+  if (!command) { res.status(400).json({ error: '缺少 command' }); return; }
+  const probe = await precheckMcpCommand(command);
+  // 从 args 里猜包名（npx -y <pkg> / uvx <pkg>），用于「这个包多大、要不要问用户」
+  const args = Array.isArray(body.args) ? body.args.map((a) => String(a)) : [];
+  const pkg = args.find((a) => !a.startsWith('-') && /^(@?[a-z0-9][\w./@-]*)$/i.test(a)) || '';
+  const plan = pkg ? planInstall(pkg, { kind: 'npm-package', action: `npx -y ${pkg}` }) : null;
+  res.json({ data: { probe, plan } });
 });
 
 // POST /api/mcp-servers/:id/call  手动调用一次工具（MCP 管理页用）
