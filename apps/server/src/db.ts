@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 // 办公岗位专属内置智能体定义（纯数据，不 import db，便于单测直接断言）
 import { builtinOfficeAgentDefs } from './builtin-office-agents.js';
+import { builtinTaskModeAgentDefs } from './builtin-task-mode-agents.js';
 import { createRequire } from 'node:module';
 import { openSqlite, type YzSqliteDb } from './services/sqlite-driver.js';
 
@@ -425,7 +426,19 @@ try { db.exec('CREATE INDEX IF NOT EXISTS idx_conversation_space ON conversation
 // 该列由 routes/conversations.ts 的 INSERT 与 llm-task-manager 的 SELECT 使用，
 // 之前只在新库 CREATE TABLE 中存在、旧库无增量迁移 → 打包版旧库新建会话必报
 // "table conversation has no column named permission_mode"（500）。
-try { db.exec("ALTER TABLE conversation ADD COLUMN permission_mode TEXT DEFAULT 'default'"); } catch {}
+// ★ 默认值 readonly（2026-09-27 用户拍板：默认全放行太危险）。
+//   注意：此 ALTER 只对**新库**生效（旧库列已存在 → catch 跳过，存量行的值不动，
+//   忠实保留用户当时的选择；INSERT 时前端总会显式传 permissionMode，列默认值仅兜底）。
+try { db.exec("ALTER TABLE conversation ADD COLUMN permission_mode TEXT DEFAULT 'readonly'"); } catch {}
+
+// 迁移 conversation 表（添加 task_plan_json 列：task_plan/task_step 计划落盘）。
+// 计划此前只在内存（前端 plansByConv），刷新即丢 —— 长任务跨会话无法延续。
+try { db.exec("ALTER TABLE conversation ADD COLUMN task_plan_json TEXT"); } catch {}
+
+// 迁移 space 表（添加 task_type / task_config_json：「目录即任务」的目录级类型绑定与覆盖配置）。
+// task_type 为 NULL = 通用类型（不生成资源目录骨架、不注入 SOP）。
+try { db.exec("ALTER TABLE space ADD COLUMN task_type TEXT"); } catch {}
+try { db.exec("ALTER TABLE space ADD COLUMN task_config_json TEXT"); } catch {}
 
 // 迁移 conversation 表（添加 mode 列：会话按模式隔离）。
 //
@@ -707,6 +720,11 @@ const DEFAULT_AGENT_BUILTIN_TOOLS = [
   'list_models',
   // 用户交互
   'ask_user', 'confirm_user',
+  // 空间与任务模式：让模型能"把这个目录按 XX 模式做"（会同步建资源目录骨架）
+  'api_space_list', 'api_space_set_task_type',
+  // 会话自配置：模型可设当前会话的智能体 / 技能 / 工作模式
+  // ★ 用户要求「智能体可以自己设置当前会话的智能体和 skill 和工作流程」
+  'api_conversation_setup',
   // 任务规划
   'task_plan', 'task_step',
   // 模型配置
@@ -1746,6 +1764,9 @@ export const seedAgents: Array<Record<string, unknown>> = [
   },
   // 办公岗位专属内置智能体（翻译助手 / 个人生意助手）—— 定义见 ./builtin-office-agents.ts
   ...builtinOfficeAgentDefs,
+  // 任务模式专属内置智能体（小说改写 / 脚本文案 / 有声小说 / 配音）—— 定义见 ./builtin-task-mode-agents.ts
+  // 与任务类型注册表（shared/utils/task-types.ts 的 agentId）成对维护：改 id 必须两边同步
+  ...builtinTaskModeAgentDefs,
   {
     // 代码探索助手：代码编写助手的专属只读探索子智能体（对标 CodeBuddy codebase-explorer）
     id: 'a_builtin_code_explorer',
@@ -2558,6 +2579,176 @@ body: `# 视频镜头提示词工程\n\n让视频大模型一次生成对的分�
 
 详见 .claude/skills/business-ops/SKILL.md`,
     },
+    {
+      id: 'skill_novel_rewrite', name: '小说改写', category: '写作',
+      description: '小说改写方法论。先锁定改写目标（风格/人称/篇幅/受众）再动笔，产出逐章大纲并确认，逐批改写（每批确认），最后做人名/时间线/设定/伏笔一致性检查。',
+      triggers: ['小说改写', '改写小说', '润色小说', '重写小说', '改文风', '改编小说', '第一人称改写', '扩写', '缩写'],
+      body: `# 小说改写
+
+把原著改成**另一个版本**，不是概括，也不是续写。核心是「先对齐目标，再逐章动笔，最后查一致」。
+
+## 硬约束（先记住）
+- **不概括、不跳章**：每一章都要输出完整正文，宁可长也不能只给要点。
+- **不擅自增删情节**：只做用户确认过的改动（人称、篇幅、风格、受众）。要删支线必须在大纲阶段就写清并获确认。
+- **人名、称谓、时间线、设定、伏笔**全程一致；换称呼（如「李总」→「李恒」）必须全篇统一。
+- 改写受版权保护的作品前，提醒用户确认有改编授权。
+
+## 流程
+1. **导入原文**：读 00-source 的原文（无素材就先请用户上传或直接粘贴，**不要凭空编造章节**）。
+   切出章节清单：章号、标题、字数、首句摘要。原文很长时按章读，不要一次塞爆上下文。
+2. **确认改写目标**（必须用 confirm_user 多页向导，一次问全）：
+   - 风格：保持原作 / 更紧凑爽利 / 更文学化 / 自定义
+   - 人称与视角：保持原样 / 改第一人称 / 改第三人称限制视角
+   - 篇幅：与原作相当 / 压缩到一半 / 扩写细节
+   - 目标读者：成人 / 青少年 / 特定圈层
+   - 每批改写几章（默认 3，可调）
+   把已确认的目标写进 02-work，并在对话里复述一遍让用户确认无误。
+3. **产出改写大纲**（写 02-work）：逐章列「保留什么 / 改什么 / 为什么」，再单独列全局改动
+   （人称转换、时间线重排、删并章）。**大纲必须用 confirm_user 确认后才开始改写正文**——
+   方向错了要拦住，别等几十章都改完才发现。
+4. **逐批改写**：每批按确认的章数改写（默认 3 章），逐章输出完整正文并保留章节标题。
+   每批写完后用 confirm_user 让用户确认，通过后再进下一批；打回则停下，问清要改什么再重做本批。
+   大批量时逐批落盘到 02-work（不要攒到最后一次性输出，中途失败会丢全部进度）。
+5. **一致性检查**：全文过一遍人名/称谓、时间线、设定、伏笔是否一致，列出冲突项（指出章节）与建议改法。
+6. **成稿导出**：合并全稿（大纲 + 各章正文 + 一致性报告）落到 03-output，报告文件路径与字数统计。
+
+## 分段改写的要点
+- 每批的 prompt 里都要带上「已确认的改写目标」与「改写大纲」，否则模型每批各改各的。
+- 跨批次的指代要留接续信息：上一批结尾发生了什么、下一批开头的场景在哪。
+- 对话尽量保留原作的语气特征（口头禅、方言、腔调），这是「改写」与「重写」的分界。
+
+## 汇报口径
+对话里只给：进度（第几批/共几批）、本批字数、文件路径、需要用户注意的冲突项。
+不要把整章正文贴进对话。
+
+详见 .claude/skills/novel-rewrite/SKILL.md`,
+    },
+    {
+      id: 'skill_script_copy', name: '脚本文案', category: '写作',
+      description: '短视频脚本/口播稿/广告文案/分镜脚本的写作方法论。先确认用途调性与平台硬约束，产出结构方案（钩子-展开-转折-行动号召）再写正文，正文按画面/台词/音效分层。',
+      triggers: ['脚本文案', '写脚本', '短视频脚本', '口播稿', '口播文案', '广告文案', '宣传文案', '分镜脚本', '带货文案', '直播话术'],
+      body: `# 脚本文案
+
+写的是**能拍、能念、能落地**的东西，不是文学创作。判断标准：照着它能不能直接开拍或直接念出来。
+
+## 硬约束
+- **先定约束再动笔**：平台与时长是第一约束（抖音 15-60s、视频号 30-90s、B 站 3-10min、口播稿按语速换算）。
+  时长没定就写，写完必然要重写。
+- **正文必须分层**：每一段都标清【画面】【台词/旁白】【音效/BGM】。混写成一段散文，
+  拍的人不知道哪句是念的、哪句是做的。
+- **口语化**：台词要能直接念出来。写完自己读一遍，拗口的句子重写。
+- **不说空话**：禁止「打造极致体验」「赋能美好生活」这类无法执行的表达。
+
+## 流程
+1. **读素材**：读 00-source（产品资料 / 选题 / 已有脚本 / 竞品），提炼卖点、信息点与受众线索。
+   素材不足就先一次问清：主题、产品、受众、想让人做什么。
+2. **确认用途与调性**（必须用 confirm_user 多页向导）：
+   - 文案类型：短视频脚本 / 口播稿 / 广告文案 / 宣传稿 / 分镜脚本
+   - 平台与时长（硬约束）、是否要配画面
+   - 调性与禁忌词、目标受众
+   - 每批产出几段（默认 3，可调）
+3. **产出结构方案**（写 02-work）：逐段/逐镜列出结构，每段标注**目的**与**时长**。
+   标准骨架：钩子（前 3 秒留人）→ 展开（讲清一件事）→ 转折（制造反差或冲突）→ 行动号召。
+   **结构方案必须用 confirm_user 确认后再写正文**。
+4. **逐批产出正文**（写 02-work）：每批按确认的段数产出，每段三行式：
+   【画面】做什么动作/什么景别/什么场景
+   【台词/旁白】可直接念的口语
+   【音效/BGM】可选
+   每批完成后用 confirm_user 确认，通过再继续。
+5. **成稿导出**：合并落到 03-output。若下游要做配音，**另外导出一份去掉画面与音效的纯文本台词稿**
+   （可直接喂给 TTS），并在交付说明里点出这份文件。
+
+## 质量自查（交付前）
+- 前 3 秒有没有钩子？没有就重写开头。
+- 每段是不是只有一个信息点？塞两个就得拆。
+- 台词念出来会不会超时？按每秒 4-5 字估算，超了就删字。
+- 有没有「假大空」的词？有就换成具体动作或具体数字。
+
+详见 .claude/skills/script-copy/SKILL.md`,
+    },
+    {
+      id: 'skill_audiobook_production', name: '有声小说制作', category: '影音',
+      description: '有声小说/有声书制作。文本按朗读语义单元分段并标注语气，确认音色与语速后逐段合成配音与字幕，校准时间轴，最后合成成片（缺 ffmpeg 时引导安装）。',
+      triggers: ['有声小说', '有声书', '配音加字幕', '小说配视频', '有声化', '文本转语音视频', '带视频的有声书'],
+      body: `# 有声小说制作
+
+把文本变成「有人声、有字幕、可选配视频」的成品。核心是**分段要合朗读节奏、音色要锁定、时间轴要对齐**。
+
+## 硬约束
+- **分段按朗读语义单元切**（一句或一组短句，25-60 字），不要按字数平均切 —— 平均切会把一句话劈成两段，听起来断气。
+- **同角色锁定同音色**：调 api_tts_speak 必须传 character（角色名/旁白），传了才会锁定。
+- **空文本段落跳过而不是报错**：没有台词的段落返回 null 跳过，不要让整条流程中断。
+- **不直接依赖 ffmpeg**：先交付「逐段配音 + SRT 字幕」这份可用的东西，合成成片作为后续可选步骤。
+  缺 ffmpeg 时用 confirm_user 告知体积（约 100MB）并征得同意，再调 media_install_ffmpeg。
+
+## 流程
+1. **导入素材**：读 00-source 的文本与视频素材。
+   - 文本：切成朗读分段，每段标 序号 / 文本 / 预估秒数（按每秒 4 字估）/ 语气（旁白·对白·独白）。
+   - 视频：记录绝对路径与时长（后续合成要用）。没有视频也能做，只是产出音频+字幕。
+2. **确认配音与字幕参数**（必须用 confirm_user 多页向导）：
+   - 音色与角色分配（如「旁白=女声、主角=男声」）
+   - 语速（-10 ~ 10，0 为原速）
+   - 字幕样式与语言（如「中文，每行不超过 18 字」）
+   - 是否保留视频原声
+3. **分段配音 + 字幕**（逐段，写 02-work）：
+   - 配音：api_tts_speak { text, character, rate }，逐段调用。
+   - 字幕：api_srt_generate { cues }，cues 由分段映射为 \{ text, duration \}，按分段顺序排列。
+   - **先出 1-2 段的样音**给用户听，确认音色后再批量 —— 音色错了批量做完就白费。
+4. **时间轴校准**（必须用 confirm_user 确认）：核对音频总时长与视频是否匹配、字幕与语音是否对齐。
+   对不上先调（改语速或重新分段），**不要跳过直接合成**。
+5. **合成导出**（写 03-output）：
+   - media_compose op=dub 把配音混入视频（保留原声用 keepAudio: true）
+   - media_compose op=subtitle 把 SRT 烧进画面
+   - 无视频时：多段音频用 media_compose op=concat 拼接，或直接交付分段音频 + SRT
+
+## 音色不足怎么办
+先调 api_tts_voices 看本机可用音色。返回 capacityNote 提示音色不足时**如实转告用户**
+（多角色会声音重复），并给建议：装系统语音包，或配置支持 /v1/audio/speech 的模型层 TTS。
+不要硬凑 —— 用户听出来角色声音一样会比提前知道更恼火。
+
+## 汇报口径
+给：段落数 / 总时长 / 各角色音色分配 / 产物文件路径（每段音频 + SRT + 成片）。
+说明哪些是试听样音、哪些是正式产出。
+
+详见 .claude/skills/audiobook-production/SKILL.md`,
+    },
+    {
+      id: 'skill_dubbing_production', name: '配音制作', category: '影音',
+      description: '纯配音制作（不含视频）。读稿按语气切分配音段，确认音色与语速后先出样音再批量，逐段合成，可按需分轨导出或拼接为整条音轨。',
+      triggers: ['配音', '角色配音', '给文本配音', '生成语音', '念稿', '旁白录制', '多角色配音', '文字转语音'],
+      body: `# 配音制作
+
+只做「把文本变成声音」这件事，不含视频合成。核心是**音色先确认、再批量**，以及**分轨要清楚**。
+
+## 硬约束
+- **必须先出样音**：音色是主观的，批量做完才发现不对就全废。先合成 1-2 段给用户听，确认后再批量。
+- **同角色锁定同音色**：api_tts_speak 必须传 character —— 这是「同一个角色听起来是同一个人」的唯一手段。
+- **空文本返回 null 跳过**，不要让空串把整条流程打断。
+- **语速范围 -10 ~ 10**，超出会被上游拒。用户要求「快点读」时先问清是否真要极限语速。
+
+## 流程
+1. **读稿分段**（读 00-source 的文本/脚本）：
+   按语气把文本切成配音段，每段标 序号 / 文本 / 角色 / 情绪 / 预估秒数。
+   对白与旁白**分开标注**，因为音色分配是按角色的。
+2. **确认音色与参数**（必须用 confirm_user 多页向导）：
+   - 音色与角色分配（同角色一个音色；先调 api_tts_voices 看本机有哪些）
+   - 语速、情绪强度
+   - 是否分轨导出（对白 / 旁白各一个文件）还是一个合并音轨
+3. **先出样音**：挑最有代表性的一段（通常是主角台词）合成，让用户听。
+   用 confirm_user 确认音色是否合适，不合适就换音色重出这一段 —— 此时只损失一段。
+4. **逐段批量配音**（写 02-work）：api_tts_speak { text, character, rate }，逐段调用。
+   段落多时按批产出，每批让用户确认（默认每批 3 段）。
+5. **合成/导出**（写 03-output）：
+   - 分轨：每段音频独立交付，文件名体现 序号-角色-内容摘要
+   - 合并：用 media_compose op=concat 把多段拼成一条音轨（缺 ffmpeg 先征得同意再装）
+   - 交付说明里写清：音色分配表、总时长、文件清单
+
+## 音色不足时
+api_tts_voices 返回 capacityNote 说明音色数不够时，**如实告诉用户**并给建议
+（装系统语音包 / 配模型层 TTS），不要用同一个音色顶多个角色后不吭声。
+
+详见 .claude/skills/dubbing-production/SKILL.md`,
+    },
   ];
 
 // 批量 upsert 内置 skill：仅插入缺项 + 标记 source='builtin'，不覆盖用户改动的 body。
@@ -2781,6 +2972,11 @@ try { db.exec('CREATE INDEX IF NOT EXISTS idx_workflow_run_user ON workflow_run(
 // 工作流反写投递上下文：call_agent 委派的运行在此记录「跑完后往哪个会话反写」。
 // 非空 = 待投递；成功反写后置回 NULL（重启后按此补投，写回失败会保留以便重试）。
 try { db.exec("ALTER TABLE workflow_run ADD COLUMN delivery_json TEXT"); } catch {}
+
+// 人工确认节点（human_confirm）的待确认状态：非空 = 该运行正卡在等用户确认。
+// ★ 必须落库：用户可能刷新页面/关掉应用过一会儿再回答，内存 waiter 一刷新就没了；
+//   落库后前端重连仍能查到"卡在哪个节点的什么问题上"（见 workflow-runner 的 getPendingConfirm）。
+try { db.exec('ALTER TABLE workflow_run ADD COLUMN pending_confirm_json TEXT'); } catch {}
 
 // ===== 多数据源（P1 数据源底座）=====
 // 密码用 utils/crypto.ts 的 AES-256-GCM 加密（password_enc），接口永不回显明文。
