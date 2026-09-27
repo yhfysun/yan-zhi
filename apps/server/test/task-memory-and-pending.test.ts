@@ -176,8 +176,17 @@ describe('⑨ 资源文件读取：Web 端必须能打开', () => {
     expect(FILE_PREVIEW, '★ 缺 readViaResourceApi 兜底').toMatch(/async function readViaResourceApi/);
     expect(FILE_PREVIEW, '★ 兜底未按空间+目录+文件名请求').toMatch(/resources\/\$\{encodeURIComponent\(resourceDir\)\}\/raw/);
     // ★ 关键：必须接进两个读取函数，否则各类型分支（PDF/Excel/CSV/文本）仍读不到
-    const b64Fn = FILE_PREVIEW.slice(FILE_PREVIEW.indexOf('async function readFileWithFallback'), FILE_PREVIEW.indexOf('async function readTextWithFallback'));
-    const txtFn = FILE_PREVIEW.slice(FILE_PREVIEW.indexOf('async function readTextWithFallback'), FILE_PREVIEW.indexOf('async function resolveServerSidePath'));
+    // ⚠️ 锚点会过期：文本读取函数已从 readTextWithFallback 更名 readTextDecoded，
+    //    旧锚点让 slice 变成空串 → `.toMatch` 拿到空输入**报假红**（报的却像真缺陷）。
+    //    故这里先断言锚点命中，再断言内容 —— 锚点失效要报"锚点失效"，不要伪装成功能缺陷。
+    const b64Start = FILE_PREVIEW.indexOf('async function readFileWithFallback');
+    const txtStart = FILE_PREVIEW.indexOf('async function readTextDecoded');
+    const txtEnd = FILE_PREVIEW.indexOf('async function resolveServerSidePath');
+    expect(b64Start, '★ 锚点失效：FilePreview 里找不到 readFileWithFallback').toBeGreaterThan(-1);
+    expect(txtStart, '★ 锚点失效：找不到文本读取函数（已更名？）').toBeGreaterThan(-1);
+    expect(txtEnd, '★ 锚点失效：找不到 resolveServerSidePath').toBeGreaterThan(-1);
+    const b64Fn = FILE_PREVIEW.slice(b64Start, txtStart);
+    const txtFn = FILE_PREVIEW.slice(txtStart, txtEnd);
     expect(b64Fn, '★★ 二进制读取未接资源兜底（图片/PDF/docx 会失败）').toMatch(/readViaResourceApi\(\)/);
     expect(txtFn, '★★ 文本读取未接资源兜底（txt/md/csv 会失败）').toMatch(/readViaResourceApi\(\)/);
   });

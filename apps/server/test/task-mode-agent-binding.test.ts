@@ -190,3 +190,60 @@ describe('③ 前端接线：选类型要切智能体，且不静默失败', () 
     expect(fn, '★ 选空间时未对齐智能体').toMatch(/applyTaskTypeAgent\(sp\.taskType\)/);
   });
 });
+
+/**
+ * ★★★ 「新增任务」路径必须也吃任务模式（2026-09-27 用户报的真实 bug）。
+ *
+ * 用户原话：「有 bug 我在有声小说目录模式下面新增任务，还会挂载代码的 skill？」
+ *
+ * 三条独立缺陷叠在一起，**每一条单独都能造成这个现象**，所以三条都要钉住：
+ *   ① `startNewChat` 从不调 `applyTaskTypeAgent`（只有点空间"头部"才调）
+ *      → 在空间里点「+ 新增任务」时智能体不切，仍是上一个任务用的那个（如代码编写助手）；
+ *   ② `applyTaskTypeAgent` 只调 `onAgentSwitch`，而它**不碰 mountedSkillIds**
+ *      → + 菜单 / 上下文栏显示的还是上一个任务残留的挂载（代码 skill 就是这么冒出来的）；
+ *   ③ `sceneMode` 是 localStorage 全局单键（不带模式前缀）→ 开发模式激活过「代码开发」
+ *      场景后切到有声小说目录，发消息时 `sysPrompt = [agent.systemPrompt, currentScene.prompt]`
+ *      会把**代码开发场景提示词**注进有声小说任务。
+ */
+describe('④ 新增任务路径：目标目录的 taskType 必须接管「智能体 + 技能挂载 + 场景」', () => {
+  it('★★ startNewChat 必须按目标空间的 taskType 对齐（新增任务的主要入口）', () => {
+    const fn = useChatFn('async function startNewChat');
+    expect(fn, '★★ startNewChat 未调 applyTaskTypeAgent（在有声小说目录点「+ 新增任务」不切智能体）')
+      .toMatch(/applyTaskTypeAgent\(/);
+    // 无参调用（侧栏/工作台「+」）要回落当前选中空间，否则这条路径永远拿不到任务模式
+    expect(fn, '★★ 未回落 currentSpaceId（无参 startNewChat 拿不到目录的 taskType）')
+      .toMatch(/spaceStore\.currentSpaceId/);
+    expect(fn, '★ 未读取目标空间的 taskType').toMatch(/taskType/);
+  });
+
+  it('★★ 任务模式接管时不能顶掉 dev/wf 模式自己的智能体契约', () => {
+    const fn = useChatFn('async function startNewChat');
+    // dev 固定代码编写助手、wf 固定工作流助手（App.vue 切模式时设的）；
+    // 任务模式若无条件接管，会把模式本身的人格顶掉。
+    expect(fn, '★★ 未限定模式（dev/wf 的智能体会被任务模式顶掉）').toMatch(/activeMode\.value === 'office'/);
+  });
+
+  it('★★ applyTaskTypeAgent 必须同时对齐技能挂载（只换智能体不够）', () => {
+    const fn = useChatFn('function applyTaskTypeAgent');
+    expect(fn, '★★ 切任务模式后未重算 mountedSkillIds（+ 菜单里还是上个任务的代码 skill）')
+      .toMatch(/syncMountsToAgent\(/);
+    // 已有会话的挂载归该会话所有，不能顺手改
+    expect(fn, '★★ 未限定草稿态（会把用户当前会话的挂载顶掉）').toMatch(/store\.currentConvId/);
+  });
+
+  it('★★ syncMountsToAgent 取的是目标智能体自带 skill，且 skillStore 未就绪时不清空', () => {
+    const fn = useChatFn('function syncMountsToAgent');
+    expect(fn, '★ 未从 agent.skillIds 取挂载').toMatch(/agent\?\.skillIds|agent\.skillIds/);
+    expect(fn, '★★ skillStore 未加载时把挂载清成 []（表现为"切了类型技能全没了"）')
+      .toMatch(/!skillStore\.skills\.length/);
+  });
+
+  it('★★ 任务模式接管要清掉残留的场景标记（代码开发场景提示词会被注进有声小说任务）', () => {
+    const fn = useChatFn('function applyTaskTypeAgent');
+    expect(fn, '★★ 未清场景标记（sceneMode 是全局单键，跨模式残留）').toMatch(/resetSceneForTaskMode\(/);
+    const reset = useChatFn('function resetSceneForTaskMode');
+    // 只清标记 —— 不能顺手把智能体改回默认助手（那会把刚切好的任务模式智能体顶掉）
+    expect(reset, '★★ resetSceneForTaskMode 里改了智能体（会把刚切的任务模式智能体顶掉）')
+      .not.toMatch(/onAgentSwitch\(/);
+  });
+});

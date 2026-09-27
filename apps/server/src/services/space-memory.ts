@@ -58,6 +58,42 @@ export async function readSpaceMemory(
   return { spaceId: space.id, spaceName: space.name, path: filePath, content, exists };
 }
 
+/** 空间记忆文件的标准头部（新建时写入；与 appendSpaceMemory 保持同一格式） */
+function spaceMemoryHeader(spaceName: string): string {
+  return `# ${spaceName} · 空间记忆\n\n> 跨会话、所有智能体共享的长期记忆。每行一条，格式：- [日期] 内容`;
+}
+
+/** 日期（YYYY-MM-DD），既有空间记忆的条目格式 */
+function today(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+/** 带时刻的戳（YYYY-MM-DD HH:mm）—— 任务进展多次追加，只有日期分不清先后 */
+function nowStamp(): string {
+  const d = new Date();
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+/**
+ * 往「一行一条」的记忆文件追加一行；文件不存在/为空时先写标准头部。
+ *
+ * 抽出来的原因：空间 MEMORY.md 与 .yan-zhi/task-memory/*.md 必须**同一套格式**，
+ * 各自实现一份必然漂移（头部不同、换行处理不同）。
+ */
+async function appendLineWithHeader(filePath: string, header: string, line: string): Promise<void> {
+  await ensureParentDir(filePath);
+  let existing = '';
+  try { existing = await readFile(filePath, 'utf-8'); } catch { /* 新文件 */ }
+  if (!existing.trim()) {
+    await writeFile(filePath, `${header}\n\n- ${line}\n`, 'utf-8');
+    return;
+  }
+  const base = existing.endsWith('\n') ? existing : `${existing}\n`;
+  await writeFile(filePath, base, 'utf-8');
+  await appendFile(filePath, `- ${line}\n`, 'utf-8');
+}
+
 /** 整体写入空间记忆文件（覆盖） */
 export async function writeSpaceMemory(
   userId: string,
@@ -84,19 +120,7 @@ export async function appendSpaceMemory(
   const line = String(entry || '').trim().replace(/\s*\n+\s*/g, ' '); // 追加语义=一行一条，压平换行
   if (!line) throw new Error('content 为必填项');
   const filePath = getSpaceMemoryPath(space);
-  await ensureParentDir(filePath);
-  let existing = '';
-  try { existing = await readFile(filePath, 'utf-8'); } catch { /* 新文件 */ }
-  if (!existing.trim()) {
-    const header = `# ${space.name} · 空间记忆\n\n> 跨会话、所有智能体共享的长期记忆。每行一条，格式：- [日期] 内容\n`;
-    const date = new Date().toISOString().slice(0, 10);
-    await writeFile(filePath, `${header}\n- [${date}] ${line}\n`, 'utf-8');
-  } else {
-    const date = new Date().toISOString().slice(0, 10);
-    const base = existing.endsWith('\n') ? existing : `${existing}\n`;
-    await writeFile(filePath, base, 'utf-8');
-    await appendFile(filePath, `- [${date}] ${line}\n`, 'utf-8');
-  }
+  await appendLineWithHeader(filePath, spaceMemoryHeader(space.name), `[${today()}] ${line}`);
   return { spaceId: space.id, path: filePath, appended: true };
 }
 
@@ -131,6 +155,9 @@ export function formatSpaceMemoryContext(name: string, content: string): string 
   return [
     '## 空间记忆（本空间跨会话长期记忆，所有智能体共享）',
     `> 空间「${name}」的记忆文件，跨会话有效。与当前任务相关的条目应遵守；需要沉淀新的长期事实时可调用 api_space_memory_append 追加。`,
+    '> ★ 条目里的「任务…【已完成/达最大步数中断/被用户终止/失败中断】」是系统自动记录的任务收尾进展' +
+    '（做到哪、还剩什么）—— **继续本空间的长任务前先看这些条目**，别从头再来；' +
+    '更细的逐批流水可用 api_space_memory_read 读（会一并返回进展明细）。',
     '',
     clipped,
   ].join('\n');
@@ -187,18 +214,11 @@ export async function appendTaskDecision(
     const a = flattenForDecision(answer);
     if (!q || !a) return { ok: false };
     const filePath = getTaskDecisionsPath(space);
-    await ensureParentDir(filePath);
-    const date = new Date().toISOString().slice(0, 10);
-    let existing = '';
-    try { existing = await readFile(filePath, 'utf-8'); } catch { /* 新文件 */ }
-    if (!existing.trim()) {
-      const header = `# ${space.name} · 任务决策记录\n\n> 用户已确认过的设定。同目录新任务先对照本文件，已确认过的事项不要重复询问。\n`;
-      await writeFile(filePath, `${header}\n- [${date}] 问：${q} → 答：${a}\n`, 'utf-8');
-    } else {
-      const base = existing.endsWith('\n') ? existing : `${existing}\n`;
-      await writeFile(filePath, base, 'utf-8');
-      await appendFile(filePath, `- [${date}] 问：${q} → 答：${a}\n`, 'utf-8');
-    }
+    await appendLineWithHeader(
+      filePath,
+      `# ${space.name} · 任务决策记录\n\n> 用户已确认过的设定。同目录新任务先对照本文件，已确认过的事项不要重复询问。`,
+      `[${today()}] 问：${q} → 答：${a}`,
+    );
     return { ok: true, path: filePath };
   } catch {
     // 决策落盘失败不阻塞用户回答主链路（回答已经送达模型）
@@ -237,4 +257,123 @@ export function formatTaskMemoryContext(content: string): string {
     '',
     clipped,
   ].join('\n');
+}
+
+// ── 任务进展（progress）──────────────────────────────────────────────────
+// ★★★ 为什么必须补这块（2026-09-27，用户报「长任务没完整需要总结记忆进入空间记忆」）：
+//   此前长任务收尾只有两条通路，**都不进空间记忆**：
+//     ① 正常完成 → extractMemoryFromConversation 只写 memory 表（user/agent 维度），
+//        空间 MEMORY.md 一个字节都不写；
+//     ② 达最大步数 / 被终止 / 失败 → 只往**对话**里塞一条总结消息
+//        （被终止时连消息都没有）→ 同目录新开会话读到的仍是"空记忆"。
+//   而 docs/目录任务模式-方案.md 设计里的 progress.md（做到第几段/第几镜）**从未实现**。
+//   后果：用户换会话继续同一个长任务时，模型不知道上一批做到哪、还剩多少没做。
+//
+// 落盘位置：
+//   · 空间 MEMORY.md（**注入**，所有会话/智能体共享）
+//   · <dir>/.yan-zhi/task-memory/progress.md（**明细**，按需读，不自动注入 —— 防爆窗）
+// 两条都写而不是只写一条：只写 MEMORY.md 会让主记忆被逐批流水账撑爆（注入上限 6000 字），
+// 只写 progress.md 则同目录新会话根本看不到（它不参与注入）。
+
+const PROGRESS_FILE = 'progress.md';
+/** 进度明细文件的读取上限（按需读，不在注入路径上） */
+const PROGRESS_READ_MAX_CHARS = 8000;
+
+/** 任务终结形态 —— 决定写入的措辞（模型据此判断"能不能接着做"） */
+export type TaskProgressOutcome = 'completed' | 'max_steps' | 'aborted' | 'failed';
+
+const OUTCOME_LABEL: Record<TaskProgressOutcome, string> = {
+  completed: '已完成',
+  max_steps: '达最大步数中断',
+  aborted: '被用户终止',
+  failed: '失败中断',
+};
+
+function getTaskProgressPath(space: Pick<SpaceRow, 'id' | 'dir_path'>): string {
+  if (space.dir_path) return path.join(space.dir_path, TASK_MEMORY_DIR, PROGRESS_FILE);
+  return path.join(serverState.workspaceDir || process.cwd(), 'spaces', space.id, TASK_MEMORY_DIR, PROGRESS_FILE);
+}
+
+/** 会话 → 所属空间 id（服务端上下文免归属校验）；未挂空间返回 '' */
+export function resolveConversationSpaceId(conversationId: string | null | undefined): string {
+  if (!conversationId) return '';
+  try {
+    const conv = db.prepare('SELECT space_id FROM conversation WHERE id = ?').get(conversationId) as
+      | { space_id: string | null }
+      | undefined;
+    return conv?.space_id || '';
+  } catch {
+    return '';
+  }
+}
+
+/** 摘要压成一行（记忆文件一行一条，换行会把一条切成多条） */
+function flattenForProgress(s: string, max: number): string {
+  return String(s || '').replace(/\s*\n+\s*/g, ' ').trim().slice(0, max);
+}
+
+/**
+ * 记录一次任务收尾（进展摘要 → 空间记忆 + 进度明细）。
+ *
+ * ★ 由服务端在任务出口**自动调用**，不依赖模型主动调 `api_space_memory_append` ——
+ *   实测那条路是断的：两个空间记忆工具虽然注册了 schema 也实现了 executor case，
+ *   却**没挂给任何智能体**（`builtin_tool_ids` 里没有）→ 模型根本看不到这两个工具，
+ *   提示词里那句"可调用 api_space_memory_append 追加"是**空指令**。
+ *   靠提示词约束"自己记得总结"永远不可靠，机械保证必须落在代码里。
+ *
+ * 设计取舍：
+ *   · fail-safe：任何异常都静默返回 ok:false（收尾路径不能因为写记忆失败而报错给用户）；
+ *   · 未挂空间的会话静默跳过（**绝不能**因此创建目录 —— 用户明确「没有任务类型默认目录不需要建立」）；
+ *   · 只压一行、截断长度：MEMORY.md 是**注入**文件，写长了会把提示词预算吃掉。
+ */
+export async function appendTaskProgress(
+  conversationId: string | null | undefined,
+  outcome: TaskProgressOutcome,
+  summary: string,
+  extra?: { steps?: number; agentName?: string },
+): Promise<{ ok: boolean; path?: string }> {
+  try {
+    const spaceId = resolveConversationSpaceId(conversationId);
+    if (!spaceId) return { ok: false };
+    const space = getSpaceRow(null, spaceId);
+    if (!space) return { ok: false };
+    const line = flattenForProgress(summary, 400);
+    if (!line) return { ok: false };
+
+    const stamp = nowStamp();
+    const bits = [`【${OUTCOME_LABEL[outcome] ?? outcome}】`];
+    if (extra?.steps) bits.push(`(${extra.steps} 步)`);
+    if (extra?.agentName) bits.push(`${extra.agentName}：`);
+    const entry = `${stamp} 任务${bits.join('')}${line}`;
+
+    // ① 明细：按需读、不参与注入
+    await appendLineWithHeader(
+      getTaskProgressPath(space),
+      `# ${space.name} · 任务进展\n\n> 每个长任务收尾时自动追加一条（做到哪、还剩什么）。按需读取，不自动注入。`,
+      entry,
+    );
+    // ② 空间记忆：真正被注入系统提示词的那份（同一条，保持两处一致）
+    await appendLineWithHeader(getSpaceMemoryPath(space), spaceMemoryHeader(space.name), entry);
+
+    return { ok: true, path: getTaskProgressPath(space) };
+  } catch {
+    return { ok: false };
+  }
+}
+
+/** 任务进展明细（同步读，供按需读取工具用）。文件不存在返回 null */
+export function readTaskProgressForConversation(
+  conversationId: string | null | undefined,
+): { spaceId: string; spaceName: string; path: string; content: string; exists: boolean } | null {
+  const spaceId = resolveConversationSpaceId(conversationId);
+  if (!spaceId) return null;
+  const space = getSpaceRow(null, spaceId);
+  if (!space) return null;
+  const filePath = getTaskProgressPath(space);
+  try {
+    const content = readFileSync(filePath, 'utf-8').slice(0, PROGRESS_READ_MAX_CHARS);
+    return { spaceId: space.id, spaceName: space.name, path: filePath, content, exists: !!content.trim() };
+  } catch {
+    return { spaceId: space.id, spaceName: space.name, path: filePath, content: '', exists: false };
+  }
 }
