@@ -79,14 +79,23 @@
           </el-dropdown-menu>
         </template>
       </el-dropdown>
-      <!-- ★ `v-else-if="!isElectron"` → 改成对所有端都显示"登录"入口：
-           桌面端此前因为 isElectron 而**什么都不显示**，于是 guest 分支（旧判定下成立）
-           是唯一可见的底部身份区 —— 用户看到的就是"已经登录成 guest"。
-           现在 guest 不再算登录态，桌面端也应有明确的"未登录"提示与登录入口。 -->
-      <el-tooltip v-else :content="authStore.isGuest ? '未登录（本地模式）' : '登录'" placement="right" :disabled="!collapsed">
-        <div class="nav-avatar-wrap is-login-entry" @click="isElectron ? undefined : $router.push('/login')">
+      <!-- ★★★ 本机单机端（桌面 Electron ∪ 移动 Capacitor）→ 中性「本机」身份，**不给登录入口**
+           （2026-09-27 修：此前是 `isElectron ? undefined : push('/login')` —— 移动端
+           `isElectron` 为 false → 渲染成一个**点了进 /login 却登不进任何账号**的入口）。
+           判据与 WebTopBar 完全一致：本地端身份自带（内嵌后端恒定 guest），无登录概念。
+           ★ 桌面端形态见 WebTopBar 的 `.title-avatar.is-local`（桌面顶栏承担身份区，
+           本侧栏分支只在 Web 窄窗/W 端 dock 场景出现）。 -->
+      <el-tooltip v-else-if="isLocalClient" content="本机" placement="right" :disabled="!collapsed">
+        <div class="nav-avatar-wrap is-local">
+          <span class="nav-avatar is-local">本</span>
+          <span class="nav-label nav-username">本机</span>
+        </div>
+      </el-tooltip>
+      <!-- Web 端才有真登录需求：未登录 → 登录入口 -->
+      <el-tooltip v-else :content="'登录'" placement="right" :disabled="!collapsed">
+        <div class="nav-avatar-wrap is-login-entry" @click="$router.push('/login')">
           <span class="nav-avatar"><el-icon :size="20"><Avatar /></el-icon></span>
-          <span class="nav-label nav-username">{{ isElectron ? '未登录' : '登录' }}</span>
+          <span class="nav-label nav-username">登录</span>
         </div>
       </el-tooltip>
       <!-- 折叠 / 展开切换按钮 -->
@@ -171,8 +180,14 @@
           </el-dropdown-menu>
         </template>
       </el-dropdown>
-      <el-tooltip v-else :content="authStore.isGuest ? '未登录（本地模式）' : '登录'" placement="right">
-        <span class="nav-item" :class="{ 'is-guest': authStore.isGuest }" @click="isElectron ? undefined : $router.push('/login')">
+      <!-- 本机单机端（桌面/移动）→ 中性「本机」；Web 端 → 登录入口（同上方分支口径） -->
+      <el-tooltip v-else-if="isLocalClient" content="本机" placement="right">
+        <span class="nav-item">
+          <el-icon :size="20"><Avatar /></el-icon>
+        </span>
+      </el-tooltip>
+      <el-tooltip v-else content="登录" placement="right">
+        <span class="nav-item" @click="$router.push('/login')">
           <el-icon :size="20"><Avatar /></el-icon>
         </span>
       </el-tooltip>
@@ -228,7 +243,7 @@ import { useSidebarState } from '../composables/useSidebarState';
 import { usePluginStore } from '../stores/plugin';
 import { visibleModeDefs, isModeLicensed } from '../stores/mode';
 import { resolvePluginIcon } from '../plugin-icons';
-import { isElectron, isCapacitor } from '../api/client';
+import { isElectron, isCapacitor, isLocalClient } from '../api/client';
 
 const route = useRoute();
 const router = useRouter();
@@ -424,6 +439,12 @@ function toggleTheme() {
 .nav-avatar-wrap.is-login-entry .nav-avatar {
   background: var(--color-primary);
   color: #fff;
+}
+/* 本机身份（本地单机端）：中性灰底 + 次级文字色 —— 不用主题色实底，
+   那套配色是"可点的登录入口"语义。与 WebTopBar 的 .title-avatar.is-local 一致。 */
+.nav-avatar-wrap.is-local .nav-avatar.is-local {
+  background: var(--glass-bg-hover, rgba(15, 23, 42, 0.06));
+  color: var(--color-text-secondary);
 }
 
 /* ===== 桌面端可折叠带标签侧栏（覆盖 .side-nav 默认值） ===== */

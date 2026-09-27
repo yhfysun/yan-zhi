@@ -59,6 +59,30 @@
                 </el-dropdown-menu>
               </template>
             </el-dropdown>
+            <!-- ★★★ 本机单机端（Capacitor 移动端）→ 中性「本机」头像，**不给登录入口**
+                 （2026-09-27 用户：「移动端不应该也是默认登录？」）。
+                 判据：移动端与桌面端一样跑内嵌后端、身份恒为 guest（本地自带，非用户登录），
+                 所以两端该用同一个形态。Web 端才真有登录需求，保留「未登录 → 登录入口」。
+                 此前这里是无条件 `v-else` → 移动端必然渲染出「登录」死入口
+                 （点了进 /login，而本地端登不进任何账号）。 -->
+            <el-dropdown v-else-if="isLocalClient" trigger="click">
+              <span class="mobile-user-avatar is-local" title="本机">{{ localIdentityInitial }}</span>
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <div class="user-dropdown-header">
+                    <span class="user-dropdown-name">本机</span>
+                  </div>
+                  <el-dropdown-item @click="$router.push('/settings')">
+                    <el-icon><Setting /></el-icon>
+                    <span>设置</span>
+                  </el-dropdown-item>
+                  <el-dropdown-item @click="$router.push('/memory')">
+                    <el-icon><Collection /></el-icon>
+                    <span>记忆管理</span>
+                  </el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
             <button v-else class="mobile-user-avatar" type="button" aria-label="登录" @click="$router.push('/login')">
               <!-- 用 Avatar 而非线框 User：User 已在 TabBar「智能体」上（移动端常驻同屏），
                    同图标同时可见会被当成"重复"（2026-09-21 实测 3 处人形图标）。 -->
@@ -83,7 +107,7 @@
 <script setup lang="ts">
 import { computed, onMounted, shallowRef, watch } from 'vue';
 import { useRoute } from 'vue-router';
-import { Avatar, SwitchButton, Moon, Sunny } from '@element-plus/icons-vue';
+import { Avatar, SwitchButton, Moon, Sunny, Setting, Collection } from '@element-plus/icons-vue';
 import { useAuthStore } from './stores/auth';
 import { useSettingsStore } from './stores/settings';
 import { usePluginStore } from './stores/plugin';
@@ -144,6 +168,18 @@ const mobileShellAsRoot = isMobilePlatform;
 
 // Electron 桌面端检测：由主进程通过 preload 注入 window.electronAPI.isElectron
 const isElectron = typeof window !== 'undefined' && !!(window as any).electronAPI?.isElectron;
+
+/**
+ * 本机单机端（桌面 Electron ∪ 移动 Capacitor）—— 决定移动顶栏的身份区形态。
+ *
+ * ★ 与 `isElectron` 分开：类名 `is-electron` 只该给桌面端（有真实窗口控件语义），
+ *   而「身份区要不要给登录入口」是**另一件事**，判据是"身份是否本机自带"——
+ *   移动端同样跑内嵌后端、恒定 guest 身份，所以也用中性本机头像（见 api/client.ts）。
+ */
+const isLocalClient = typeof window !== 'undefined'
+  && (!!(window as any).electronAPI?.isElectron || !!(window as any).Capacitor?.isNativePlatform);
+/** 本机身份首字母（与 WebTopBar 桌面端同一表述，不暴露 guest 这个内部身份） */
+const localIdentityInitial = computed(() => '本');
 
 /**
  * 独立子窗口路由（meta.bare）：不套应用外壳。
@@ -448,6 +484,18 @@ body {
   color: var(--color-primary);
   cursor: pointer;
   user-select: none;
+}
+
+/* 本机身份头像：中性灰底（不用主题色 —— 主题色实底是"可点的登录入口"语义）。
+   仅 hover 提亮，表明它是个可点开的菜单而不是状态指示。与 WebTopBar 的
+   `.title-avatar.is-local` 同一形态（两端都是本机单机端，形态必须一致）。 */
+.mobile-user-avatar.is-local {
+  background: var(--glass-bg-hover, rgba(15, 23, 42, 0.06));
+  color: var(--color-text-secondary);
+}
+.mobile-user-avatar.is-local:active {
+  background: var(--glass-bg-active, rgba(15, 23, 42, 0.1));
+  color: var(--color-text-primary, #0f172a);
 }
 
 .slide-fade-enter-active { transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1); }

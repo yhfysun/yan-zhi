@@ -62,6 +62,10 @@
           </el-dropdown-menu>
         </template>
       </el-dropdown>
+      <!-- ★★★ 本机单机端（Capacitor）→ 中性「本机」头像，不给登录入口（2026-09-27）。
+           移动端跑内嵌后端、身份恒为 guest（本地自带，非用户登录），与桌面端同一形态；
+           此前是无条件 `v-else-if="isMobile"` → 移动端稳定渲染出「登录」死入口。 -->
+      <span v-else-if="isMobile && isLocalClient" class="mobile-user-avatar is-local" title="本机">{{ localIdentityInitial }}</span>
       <router-link v-else-if="isMobile" to="/login" class="mobile-user-avatar" style="text-decoration:none;font-size:14px">
         <el-icon :size="18"><Avatar /></el-icon>
       </router-link>
@@ -75,6 +79,7 @@ import { Expand, FolderOpened, Fold, DataLine, Monitor, Operation, DocumentAdd, 
 import { useChat } from '../../composables/chat/useChat';
 import { usePlatform } from '../../composables/usePlatform';
 import { useSettingsStore } from '../../stores/settings';
+import { isLocalClient } from '../../api/client';
 import ChatFilePanel from './ChatFilePanel.vue';
 
 const {
@@ -87,6 +92,9 @@ const settingsStore = useSettingsStore();
 // E12: 移动端不支持内置浏览器——隐藏「浏览器预览」下拉入口
 const { supportsBrowser } = usePlatform();
 const hasWorkspaceDir = computed(() => !!settingsStore.settings.workspaceDir);
+
+/** 本机身份首字母（本机单机端的中性头像，不暴露 guest 这个内部身份） */
+const localIdentityInitial = computed(() => '本');
 
 // 「代码模式」圆形按钮已删（决策 1）：进入开发模式统一走顶栏模式下拉。
 

@@ -4,6 +4,7 @@
       <ul class="media-ctx-menu" :style="{ left: media.menuX + 'px', top: media.menuY + 'px' }" @click.stop>
         <li v-if="media.menuTarget?.kind === 'image'" class="media-ctx-item" @click="run(openMediaViewer)">放大查看</li>
         <li v-else-if="media.menuTarget?.kind === 'video'" class="media-ctx-item" @click="run(openMediaViewer)">播放</li>
+        <!-- 音频没有灯箱（见 MediaViewer 注释）：不提供「播放」项，直接在消息卡片内的播放器上操作 -->
         <li v-if="media.menuTarget?.kind !== 'file'" class="media-ctx-sep"></li>
         <li class="media-ctx-item" @click="run(saveMediaAs)">另存为…</li>
         <li v-if="media.menuTarget?.path" class="media-ctx-item" @click="run(revealMedia)">打开所在目录</li>

@@ -1,7 +1,7 @@
 // Auth Store：用户登录/注册/状态
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
-import { api, setToken, isElectron } from '../api/client';
+import { api, setToken, isLocalClient } from '../api/client';
 import { waitForBackend } from '../api/backend-ready';
 
 export interface UserInfo {
@@ -59,13 +59,19 @@ export const useAuthStore = defineStore('auth', () => {
 
     const token = localStorage.getItem('auth_token');
     if (!token) {
-      // 桌面端本地模式：取 guest token，使平台等数据走后端 API（data.db），
+      // 本机单机端（桌面 / 移动）本地模式：取 guest token，使平台等数据走后端 API（data.db），
       // 与聊天代理 /api/llm/* 同库；避免前端 IPC 库（yan-zhi.db）与后端库不同步导致 404。
       //
       // ★ 这**不是"登录"** —— guest 是内部数据归属身份（见 isGuestIdentity 注释）。
       //   前端已用 `isLoggedIn`/`isGuest` 把"身份"与"登录态"拆开，
       //   UI 不会再把它渲染成「已登录的 guest 账号」。
-      if (isElectron) {
+      //
+      // ★★★ 判定必须是 `isLocalClient`（Desktop ∪ Capacitor）而不是 `isElectron`（2026-09-27 修）：
+      //   移动端同样跑内嵌后端、同样恒定 guest 身份，原写法只覆盖桌面端 →
+      //   移动端 `user` 恒为 null → App.vue 移动顶栏 / ChatTopbar 的「未登录 → 登录」
+      //   v-else 分支**稳定渲染**，用户看到的就是「移动端要我登录」（而 Web 端才是真有
+      //   登录需求的那一端）。判据：本地自带身份 ≠ 用户登录态。
+      if (isLocalClient) {
         const guest = await api.post<{ token: string; user: UserInfo }>('/auth/guest');
         if ('data' in guest) {
           setToken(guest.data.token);

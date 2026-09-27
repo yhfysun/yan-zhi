@@ -14,7 +14,7 @@ import { resolveServerUrl } from '@yan-zhi/shared';
 import { api as apiClient, API_BASE } from '../api/client';
 import { buildDocx, measureImage } from '../utils/docx';
 
-/** 一个可预览媒体（图片 / 视频 / 普通文件）的来源描述 */
+/** 一个可预览媒体（图片 / 视频 / 音频 / 普通文件）的来源描述 */
 export interface MediaTarget {
   /** 显示用地址：/api/... 相对地址、http(s) 或 data: */
   src: string;
@@ -22,8 +22,12 @@ export interface MediaTarget {
   path?: string;
   /** 文件名（用于另存为默认名与菜单标题） */
   name?: string;
-  /** 媒体类型：file 表示无内联预览的普通文件（菜单只给另存为/复制/打开目录） */
-  kind: 'image' | 'video' | 'file';
+  /**
+   * 媒体类型：file 表示无内联预览的普通文件（菜单只给另存为/复制/打开目录）。
+   * audio 是 2026-09-27 新增 —— 此前配音产物（TTS wav/mp3）既没有消息卡片、
+   * 文件预览也只能「用本机应用打开」，应用内完全听不到。
+   */
+  kind: 'image' | 'video' | 'audio' | 'file';
   /** 可选说明（图片的画图描述等） */
   description?: string;
 }
@@ -63,13 +67,14 @@ function isDesktop(): boolean {
 }
 
 function fileNameOf(t: MediaTarget): string {
+  const fallback = t.kind === 'video' ? 'video.mp4' : t.kind === 'audio' ? 'audio.mp3' : 'image.png';
   if (t.name) return t.name;
   try {
     const u = new URL(t.src, window.location.origin);
     const base = u.pathname.split('/').pop() || '';
-    return decodeURIComponent(base) || (t.kind === 'video' ? 'video.mp4' : 'image.png');
+    return decodeURIComponent(base) || fallback;
   } catch {
-    return t.kind === 'video' ? 'video.mp4' : 'image.png';
+    return fallback;
   }
 }
 
@@ -84,14 +89,14 @@ export function absoluteMediaSrc(src: string): string {
 }
 
 /**
- * 从工具结果文本解析媒体产物（生图 / 生视频）。
+ * 从工具结果文本解析媒体产物（生图 / 生视频 / 配音）。
  *
  * 只认带 type 字段的新契约；旧数据按历史字段兜底识别，且必须命中对应字段，
  * 避免把图片结果误判成视频。带 cache：模板里会多次调用，避免重复 JSON.parse。
  */
 const toolMediaCache = new Map<string, MediaTarget | null>();
 
-export function mediaOfTool(resultText: string | null, kind: 'image' | 'video'): MediaTarget | null {
+export function mediaOfTool(resultText: string | null, kind: 'image' | 'video' | 'audio'): MediaTarget | null {
   if (!resultText) return null;
   const key = `${kind}|${resultText.length}|${resultText.slice(0, 80)}`;
   const hit = toolMediaCache.get(key);
@@ -102,7 +107,7 @@ export function mediaOfTool(resultText: string | null, kind: 'image' | 'video'):
   return parsed;
 }
 
-function parseToolMedia(resultText: string, kind: 'image' | 'video'): MediaTarget | null {
+function parseToolMedia(resultText: string, kind: 'image' | 'video' | 'audio'): MediaTarget | null {
   let j: Record<string, unknown>;
   try {
     j = JSON.parse(resultText) as Record<string, unknown>;
@@ -113,6 +118,25 @@ function parseToolMedia(resultText: string, kind: 'image' | 'video'): MediaTarge
   const declared = s(j.type);
   const file = s(j.file);
   const description = s(j.description) || s(j.revisedPrompt);
+
+  if (kind === 'audio') {
+    // 配音产物契约：{ type:'audio', url, file, engine, voice, bytes }
+    const url = s(j.url) || s(j.audioUrl);
+    if (!url) return null;
+    // type 字段存在时必须自洽：视频/图片结果不能被当成音频
+    if (declared && declared !== 'audio') return null;
+    // 无 type 的旧数据必须命中音频扩展名或音频专用字段，避免误吞其它产物
+    if (!declared && !s(j.audioUrl) && !/\.(mp3|wav|m4a|aac|flac|ogg|opus|wma)(?=$|[?#])/i.test(url)) return null;
+    const voice = s(j.voice);
+    const engine = s(j.engine);
+    return {
+      src: absoluteMediaSrc(url),
+      kind: 'audio',
+      name: (file ? file.split(/[\\/]/).pop() : '') || '音频',
+      path: file || undefined,
+      description: description || [voice && `音色 ${voice}`, engine && `${engine} 引擎`].filter(Boolean).join(' · ') || undefined,
+    };
+  }
 
   if (kind === 'video') {
     const url = s(j.url) || s(j.videoUrl);
@@ -174,6 +198,7 @@ export function openMediaMenu(e: MouseEvent, t: MediaTarget) {
   state.menuTarget = t;
   state.selected = t;
   const MENU_W = 190;
+  // 音频菜单项与视频一致（播放 + 另存为 + 打开目录 + 复制路径）
   const MENU_H = t.kind === 'image' ? 170 : 130;
   const maxX = window.innerWidth - MENU_W - 8;
   const maxY = window.innerHeight - MENU_H - 8;
@@ -366,7 +391,7 @@ export async function revealMedia(t?: MediaTarget) {
   }
 }
 
-/** 另存为：桌面端走系统保存框；视频等大文件用源文件路径复制，图片用内存字节写 */
+/** 另存为：桌面端走系统保存框；视频/音频等大文件用源文件路径复制，图片用内存字节写 */
 export async function saveMediaAs(t?: MediaTarget) {
   const target = t || state.menuTarget || state.selected;
   if (!target) return;
@@ -598,7 +623,8 @@ export async function exportMarkdownDocx(markdown: string, title?: string) {
   await saveDocxBytes(docxBytes, name);
 }
 
-/** 悬浮层固定宽高比：视频通常 16:9，浮层按 16:9 预留高度（object-fit:contain 不会变形） */
+/** 悬浮层固定宽高比：视频通常 16:9，浮层按 16:9 预留高度（object-fit:contain 不会变形）。
+ *  音频没有视觉内容，走的是 AudioPlayer 卡片（不参与 hover 浮层）。 */
 const HOVER_FLOAT_AR = 16 / 9;
 
 export function useMediaPreview() {

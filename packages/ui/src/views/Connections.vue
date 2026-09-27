@@ -234,7 +234,7 @@ import { Plus, Promotion, Edit, Delete, Upload, EditPen, ArrowLeft, ArrowRight, 
 import { ElMessage, ElMessageBox } from 'element-plus';
 import QRCode from 'qrcode';
 import jsQR from 'jsqr';
-import { api } from '../api/client';
+import { api, LOCAL_API_BASE } from '../api/client';
 
 const connectors = ref<any[]>([]);
 const loading = ref(false);
@@ -269,7 +269,8 @@ const callbackBase = computed(() => {
   if (typeof window !== 'undefined' && window.location && window.location.origin && !window.location.origin.startsWith('file')) {
     return window.location.origin;
   }
-  return 'http://127.0.0.1:3001';
+  // file:// (Electron) 下没有可用 origin → 用本实例后端基址（端口随实例，不写死 3001）
+  return LOCAL_API_BASE.replace(/\/api$/, '');
 });
 
 onMounted(load);

@@ -33,6 +33,19 @@
       @mouseleave="leave"
       v-on="bindLongPress((ev) => menu(ev))"
     ></video>
+  <!-- 音频卡片：内联播放器（播放/暂停、进度拖拽、倍速、另存为）。
+         音频没有"看一眼"的需求，所以不接 hover 浮层与灯箱 —— 交互成本高、收益低；
+         取用（另存为/打开目录/复制路径）仍走右键菜单与播放器上的另存为按钮。 -->
+    <AudioPlayer
+      v-else-if="media.kind === 'audio'"
+      class="tool-item-audio"
+      :src="media.src"
+      :name="media.name"
+      compact
+      @save="saveMediaAs(media)"
+      @contextmenu="menu"
+      v-on="bindLongPress((ev) => menu(ev))"
+    />
   </div>
 </template>
 
@@ -53,10 +66,12 @@ import {
   selectMedia,
   openMediaHover,
   closeMediaHover,
+  saveMediaAs,
   type MediaTarget,
 } from '../../composables/useMediaPreview';
-// 移动端：图片/视频没有右键，长按即弹出「另存为 / 打开目录 / 复制」菜单
+// 移动端：图片/视频/音频没有右键，长按即弹出「另存为 / 打开目录 / 复制」菜单
 import { bindLongPress } from '../../composables/useLongPress';
+import AudioPlayer from '../media/AudioPlayer.vue';
 
 const props = defineProps<{ media: MediaTarget }>();
 
@@ -111,5 +126,9 @@ function menu(e: MouseEvent) {
   object-fit: contain;
   background: rgba(0, 0, 0, 0.35);
   user-select: none;
+}
+/* 音频卡片：播放器本体（宽度撑满可用区但不超过 320px，多角色配音列表不撑破气泡） */
+.tool-item-audio {
+  width: min(320px, 100%);
 }
 </style>

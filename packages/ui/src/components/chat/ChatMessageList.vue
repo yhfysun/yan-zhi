@@ -610,6 +610,11 @@ function devAgentLabel(id: string): string {
  * 点模板卡：切到该模板绑定的子智能体 + 挂载它的 skill 组合。
  * - 智能体不存在（未启用/未内置）时不改选中，仅提示
  * - skill 只保留真实存在的 id（避免挂到不存在的 skill 造成空挂载）
+ *
+ * ★ 只在**草稿态**改挂载（2026-09-27 补判据）：`mountedSkillIds` 在已有会话里是
+ *   该会话 `skill_ids_json` 的镜像（切会话由 selectConv 回填）。模板轮播只出现在
+ *   开发模式的空态（无会话），但函数本身没做判据 —— 一旦在别处被调用就会把
+ *   用户当前会话的挂载顶掉（与 setScene / clearScene / applyTaskTypeAgent 同一口径）。
  */
 function pickDevTpl(key: string) {
   const picked = DEV_TPLS.find((t) => t.key === key);
@@ -620,6 +625,7 @@ function pickDevTpl(key: string) {
   if (picked.agentId && agentStore.agents.some((a) => a.id === picked.agentId)) {
     if (agentStore.selectedId !== picked.agentId) onAgentSwitch(picked.agentId);
   }
+  if (store.currentConvId) return; // 已有会话：挂载归该会话所有，模板不改
   const valid = picked.skillIds.filter((id) => skillStore.skills.some((s) => s.id === id));
   if (valid.length) mountedSkillIds.value = valid;
 }
@@ -727,13 +733,14 @@ function resolveScreenshotUrl(resultText: string | null): string | null {
 }
 
 /**
- * 单条工具结果里的媒体产物（生图 / 生视频）：解析走 useMediaPreview.mediaOfTool（带缓存）。
+ * 单条工具结果里的媒体产物（生图 / 生视频 / 配音）：解析走 useMediaPreview.mediaOfTool（带缓存）。
  * 展示位置在工具调用的折叠区里（参数/结果下方）—— 展开这条工具就能看到图，
  * 与「交付目录卡片」（读 conversation_file 登记项）是两件独立的事。
  */
+
 function toolMedia(result: unknown): MediaTarget | null {
   const text = typeof result === 'string' ? result : result == null ? '' : JSON.stringify(result);
-  return mediaOfTool(text, 'image') || mediaOfTool(text, 'video');
+  return mediaOfTool(text, 'image') || mediaOfTool(text, 'video') || mediaOfTool(text, 'audio');
 }
 
 /**

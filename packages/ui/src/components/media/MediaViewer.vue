@@ -48,7 +48,9 @@
           :alt="media.viewer.name || '图片'"
           draggable="false"
         />
-        <video v-else class="media-viewer-video" :src="media.viewer.src" controls autoplay />
+        <!-- 视频全屏播放；音频不进灯箱（消息卡片内已有播放器 + 文件预览有完整播放器，
+             再套一层全屏遮罩只是把播放器放大，交互成本高于收益） -->
+        <video v-else-if="media.viewer.kind === 'video'" class="media-viewer-video" :src="media.viewer.src" controls autoplay />
       </div>
       <div v-if="media.viewer.description" class="media-viewer-desc">{{ media.viewer.description }}</div>
     </div>

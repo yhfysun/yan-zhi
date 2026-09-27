@@ -106,7 +106,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { Refresh, Document, Edit, Setting } from '@element-plus/icons-vue';
 import { ElMessage } from 'element-plus';
-import { api } from '../api/client';
+import { api, LOCAL_API_BASE } from '../api/client';
 
 const peers = ref<any[]>([]);
 const activePeer = ref<any | null>(null);
@@ -134,7 +134,8 @@ function callbackBase(): string {
   if (typeof window !== 'undefined' && window.location && window.location.origin && !window.location.origin.startsWith('file')) {
     return window.location.origin;
   }
-  return 'http://127.0.0.1:3001';
+  // file:// (Electron) 下没有可用 origin → 用本实例后端基址（端口随实例，不写死 3001）
+  return LOCAL_API_BASE.replace(/\/api$/, '');
 }
 
 function genNodeId(): string {

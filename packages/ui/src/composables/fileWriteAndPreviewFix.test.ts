@@ -165,8 +165,10 @@ describe('② 生成的图片/文件预览必须能找回（产物根漂移）',
     expect(imgBlock, '★ 图片分支仍裸读登记路径').toMatch(/readFileWithFallback\(/);
     expect(imgBlock, '★ 图片分支不应再直接 readFileBase64(props.file.path)')
       .not.toMatch(/adapter\.fs\.readFileBase64\(props\.file\.path\)/);
-    // 文本分支同样
-    expect(code, '文本分支未走兜底').toMatch(/readTextWithFallback/);
+    // 文本分支同样走「同一读取原语 + 解码」的封装（2026-09-27 起同时负责编码识别，
+    // 故由 readTextWithFallback 更名为 readTextDecoded）
+    expect(code, '文本分支未走兜底').toMatch(/async function readTextDecoded/);
+    expect(code, '文本分支未复用同一读取原语').toMatch(/readTextDecoded[\s\S]{0,600}readFileWithFallback\(/);
     // 必须真的去问服务端
     expect(code, '★ 没有向服务端询问真实路径').toMatch(/conversations\/\$\{[^}]*\}/);
   });

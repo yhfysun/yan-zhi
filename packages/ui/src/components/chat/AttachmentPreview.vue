@@ -61,6 +61,7 @@ const PREVIEW_CACHE = new Map<string, PreviewPayload>();
 import { ref, computed, onMounted } from 'vue';
 import { Document } from '@element-plus/icons-vue';
 import { extractExcelSheets, extractDocxHtml } from '@yan-zhi/core';
+import { decodeTextBytes, base64ToBytes } from '@yan-zhi/shared';
 import { openMediaViewer } from '../../composables/useMediaPreview';
 
 /**
@@ -136,14 +137,12 @@ function zoomImage() {
   openMediaViewer({ src: props.file.dataUrl, kind: 'image', name: props.file.name });
 }
 
-/** base64 → UTF-8 文本（只解前 ~120KB，够显示开头即可，避免大文件卡界面） */
+/** base64 → 文本（只解前 ~120KB，够显示开头即可，避免大文件卡界面）
+ *  ★ 自动识别编码（GBK/ANSI 中文附件同样能正确预览），见 shared/text-encoding */
 function b64ToTextHead(b64: string): string {
   const cut = b64.length - (b64.length % 4);
   const head = b64.slice(0, Math.min(cut, 120000));
-  const bin = atob(head);
-  const bytes = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i += 1) bytes[i] = bin.charCodeAt(i);
-  return new TextDecoder('utf-8').decode(bytes);
+  return decodeTextBytes(base64ToBytes(head)).text;
 }
 
 /** mammoth 输出的是 HTML，这里只要纯文本片段（避免把远程/内嵌资源带进预览） */

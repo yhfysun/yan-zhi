@@ -564,6 +564,25 @@ function createChat() {
       mountedSkillIds.value = defAgent?.skillIds ? [...defAgent.skillIds] : [];
     }
   }
+  /**
+   * 只清场景标记，**不改智能体、不动挂载** —— 任务模式接管时用。
+   *
+   * ★★★ 为什么不直接调 clearScene()（2026-09-27 修「有声小说目录挂代码 skill」时定下）：
+   *   `sceneMode` 是 localStorage 全局单键（不带模式前缀），在开发模式激活过「代码开发」
+   *   场景后切到有声小说目录，`currentScene` 仍是代码开发 → 发消息时
+   *   `sysPrompt = [agent.systemPrompt, currentScene.prompt]` 会把**代码开发的场景提示词**
+   *   注入有声小说任务。
+   *   但 clearScene 的语义是「不选场景 = 回到默认办公助手」，它内部会
+   *   `onAgentSwitch(默认助手)` 并把挂载还原成默认助手的 skill —— 任务模式刚把智能体
+   *   切到「有声小说助手」，紧接着就被它顶回默认助手，**等于白切**。
+   *   所以这里只清标记 + 重算计数，智能体与挂载交给 applyTaskTypeAgent 统一收口。
+   */
+  function resetSceneForTaskMode() {
+    if (!sceneMode.value) return;
+    sceneMode.value = '';
+    sceneSkillCount.value = 0;
+    persistScene();
+  }
 
   // 对话左侧栏第三个 tab「文件」（资源管理器/搜索/Git）：选中带目录的空间时展示内容
   const drawerOpen = ref(false);
@@ -1844,18 +1863,55 @@ async function healStalePlatform() {
    * ★ 能力不足时**如实提示**，不静默跳过：agentId 指向的智能体在当前库里找不到
    *   （老库未 seed、或该 id 被删）时，用户会看到"切了类型但智能体没变"且毫无提示 ——
    *   这正是最该报出来的一类静默失效。
+   *
+   * ★★★ 必须同时对齐**技能挂载**与**场景标记**（2026-09-27 修真实 bug）。
+   *   本函数原版只调 onAgentSwitch，而它只改「选中智能体 + 模型」，**不碰 mountedSkillIds**。
+   *   于是：在有声小说目录里新建任务 → 智能体切成了「有声小说助手」，但 + 菜单 /
+   *   上下文栏里显示的仍是**上一个任务残留的挂载**（用代码开发时就是那 6 个代码 skill）
+   *   —— 用户看到的现象正是「有声小说目录下新增任务，还挂着代码的 skill」。
+   *
+   *   同理要清场景：`sceneMode` 是 localStorage 全局单键，在开发模式激活过「代码开发」
+   *   场景后切过来，发消息时会把代码场景提示词一起注进有声小说任务（见 resetSceneForTaskMode）。
    */
   function applyTaskTypeAgent(taskType: string | null | undefined): boolean {
     const spec = getTaskType(taskType);
     const target = spec.agentId;
     if (!target) return false; // 通用类型：不改智能体（用用户当前选的）
-    if (agentStore.selectedId === target) return true; // 已经就是它
+    // 任务模式接管 → 先摘掉上一个模式的场景标记（只清标记，改智能体的事交给下面统一做）
+    resetSceneForTaskMode();
+    // ★ 挂载只在**草稿态**重算：已有会话的挂载是用户在该会话里勾过的，
+    //   切空间不该顺手改它（与 setScene/clearScene 同一判据）。
+    if (agentStore.selectedId === target) {
+      if (!store.currentConvId) syncMountsToAgent(target);
+      return true;
+    }
     if (!agentStore.agents.some((a) => a.id === target)) {
       ElMessage.warning(`任务模式「${spec.label}」的专属智能体未安装（${target}），已沿用当前智能体`);
       return false;
     }
     onAgentSwitch(target);
+    if (!store.currentConvId) syncMountsToAgent(target);
     return true;
+  }
+
+  /**
+   * 把草稿态的技能挂载对齐到指定智能体自带的 skill_ids。
+   *
+   * ★ 为什么要有这个函数：`onAgentSwitch` 只改「选中智能体 + 模型」，**不动 mountedSkillIds**
+   *   （`mountedSkillIds` 的权威来源是会话行 `skill_ids_json`，切会话时由 selectConv 回填）。
+   *   草稿态没有会话行可回填，只能显式对齐，否则沿用上一个任务的残留挂载。
+   * ★ 只保留真实存在的 skill id（`skillStore` 未加载完时不要清空成空数组）。
+   */
+  function syncMountsToAgent(agentId: string) {
+    const agent = agentStore.agents.find((a) => a.id === agentId);
+    const ids = agent?.skillIds || [];
+    // skillStore 还没拉到数据时不做过滤：此时"过滤"会把全部 id 判为不存在 →
+    // 挂载被清空成 []（表现为"切了类型技能全没了"），比多挂几个不存在的 id 糟得多。
+    if (!skillStore.skills.length) {
+      mountedSkillIds.value = [...ids];
+      return;
+    }
+    mountedSkillIds.value = ids.filter((id) => skillStore.skills.some((s) => s.id === id));
   }
 
   function parseConfigCard(content: string | undefined): ParsedConfigCard | null {
@@ -1988,6 +2044,26 @@ async function healStalePlatform() {
       // 工作流模式的新会话要带上工作流场景人格（参数补全 / 节点排障视角），
       // 否则场景定义了却从不激活 —— 与开发模式挂 code 场景同一套机制。
       setScene('wf');
+    }
+    // ★★★ 目标目录绑了任务模式 → 新任务必须按该模式对齐「智能体 + 技能挂载 + 场景」。
+    //
+    // 修的是用户报的真实 bug：「有声小说目录下新增任务，还挂着代码的 skill」。
+    // 三条独立缺陷叠在一起（详见 applyTaskTypeAgent / resetSceneForTaskMode 的注释）：
+    //   ① 本函数此前**从不调 applyTaskTypeAgent**（只有点空间"头部"的
+    //      selectSpaceAndSyncDir 才调）→ 在空间里点「+」新建任务时智能体不切换；
+    //   ② 即便切了智能体，mountedSkillIds 也不会跟着变 → + 菜单里还是上个任务的挂载；
+    //   ③ 场景标记跨模式残留 → 代码开发的场景提示词会被注进有声小说任务。
+    //
+    // ★ 无参调用（侧栏/工作台「+ 新建任务」）时回落到**当前选中的空间** ——
+    //   这正是用户点「新增任务」的路径，不回落就等于这条路径永远拿不到任务模式。
+    // ★ 只在办公模式生效：dev/wf 模式各有自己的智能体契约（App.vue 切模式时把 dev 固定到
+    //   代码编写助手、wf 固定到工作流助手），任务模式在那里接管会顶掉模式本身的人格。
+    if (activeMode.value === 'office') {
+      const targetSpaceId = spaceId === undefined ? spaceStore.currentSpaceId : spaceId;
+      const targetSpace = targetSpaceId
+        ? spaceStore.spaces.find((s) => s.id === targetSpaceId)
+        : undefined;
+      if (targetSpace?.taskType) applyTaskTypeAgent(targetSpace.taskType);
     }
     if (spaceId !== undefined) {
       spaceStore.selectSpace(spaceId);
@@ -3265,7 +3341,7 @@ async function healStalePlatform() {
     chatModels, modelGroups, mountableServers, tokenCount, contextLimit, tokenPercent, tokenBarColor, canSend,
     openEditAgent, openCreateAgent, onAgentSaved, onAgentDeleted,
     showSpaceEdit, spaceEditForm, spaceMenuTarget, selectSpace, selectSpaceAndSyncDir, createSpaceQuick, createSpaceFromDir, showSpaceDirPicker, openSpaceEdit, openSpaceCreate, saveSpaceEdit, deleteSpaceConfirm, openSpaceMenu, closeSpaceMenu, moveConvToSpace,
-    taskTypes, pickedTaskType, applyTaskTypeAgent,
+    taskTypes, pickedTaskType, applyTaskTypeAgent, syncMountsToAgent,
     treeMenu, openTreeMenu, treeMenuNewTask, treeMenuNewSpace, closeTreeMenu,
     enterBatchSelect, exitBatchMode, toggleBatchMode, toggleSelectAllInSpace, toggleSelectAllInRoot,
     spaceSelectState, rootSelectState,

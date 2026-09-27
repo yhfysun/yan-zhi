@@ -47,6 +47,12 @@ const WRITE_TOOLS = new Set([
   // ★ 必须列进写清单：它既改库（space.task_type）又**在用户磁盘上建目录**，
   //   只读会话里放行等于绕过了"不许写"的约束。
   'api_space_set_task_type',
+  // —— 空间记忆追加：在用户磁盘上写 MEMORY.md / progress.md（写副作用）——
+  // ★ 与 api_space_memory_read 成对出现，一个读一个写，**不能只登记读的那个**：
+  //   read 在 READONLY_SAFE_TOOLS 白名单里（正确），append 若不登记就是"写着只读实则可写"。
+  //   实测（2026-09-27）：append 此前既没进写清单、也没进只读白名单 →
+  //   落在兜底分支被放行 → 只读会话能往用户磁盘写文件。
+  'api_space_memory_append',
   // —— 会话自配置：改当前会话的智能体/技能/模式（会改变后续所有轮次的执行身份）——
   // ★ 与配置变更同类：改完之后整个会话的行为都会变，只读会话里不应放行。
   'api_conversation_setup',

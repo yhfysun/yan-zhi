@@ -4,6 +4,12 @@
     <div v-if="!loading && !error" class="fp-meta">
       <span class="fp-meta-name" :title="file.path">{{ file.name }}</span>
       <span class="fp-meta-badge">{{ kindBadge }}</span>
+      <!-- 非 UTF-8 文本：如实告知识别到的编码（GBK 等），否则用户改完保存会以为编码莫名变了 -->
+      <span
+        v-if="detectedEncoding && detectedEncoding !== 'utf-8'"
+        class="fp-meta-enc"
+        title="已按该编码正确解码；保存时会写为 UTF-8"
+      >{{ encodingLabel(detectedEncoding) }}</span>
       <span class="fp-meta-size">{{ humanSize }}<template v-if="truncated"> · 文件过大，已截断</template></span>
       <el-button size="small" text bg title="在文件管理器中显示此文件" @click="openContainingFolder">
         <el-icon><FolderOpened /></el-icon>&nbsp;目录
@@ -56,6 +62,15 @@
       <!-- 视频：原生播放器内嵌播放（超大文件在下方走 binary 降级） -->
       <div v-else-if="kind === 'video'" class="fp-video-wrap">
         <video :src="videoSrc" class="fp-video" controls preload="metadata"></video>
+      </div>
+      <!-- 音频：统一播放器（播放/暂停、进度拖拽、倍速、另存为）。此前音频没有分支，
+           直接落到 binary →「暂不支持预览 + 用本机应用打开」，应用内听不到配音产物。 -->
+      <div v-else-if="kind === 'audio'" class="fp-audio-wrap">
+        <AudioPlayer
+          :src="audioSrc"
+          :name="file.name"
+          @save="saveAs"
+        />
       </div>
       <!-- PDF：高保真栅格图（pdf.js 客户端渲染）优先；无图时降级为分页文本 -->
       <div v-else-if="kind === 'pdf'" class="fp-pdf-pages">
@@ -178,8 +193,10 @@ import hljs from 'highlight.js';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { Document, Download, EditPen, FolderOpened } from '@element-plus/icons-vue';
 import { extractPdfPages, extractDocxHtml } from '@yan-zhi/core';
+import { decodeTextBytes, base64ToBytes, looksBinaryBytes, encodingLabel, type TextEncoding } from '@yan-zhi/shared';
 import { renderPdfToImages } from '../utils/pdf-render';
 import { parseExcelStyled, type ExcelStyledSheet } from '../utils/excel-styled';
+import AudioPlayer from './media/AudioPlayer.vue';
 
 const props = defineProps<{
   file: {
@@ -200,13 +217,20 @@ const content = ref('');
 const truncated = ref(false);
 const imageSrc = ref('');
 const videoSrc = ref('');
-const kind = ref<'image' | 'video' | 'pdf' | 'excel' | 'text' | 'csv' | 'word' | 'binary'>('text');
+const audioSrc = ref('');
+const kind = ref<'image' | 'video' | 'audio' | 'pdf' | 'excel' | 'text' | 'csv' | 'word' | 'binary'>('text');
 // Word（.docx）mammoth 渲染结果（净化后的 HTML）
 const docxHtml = ref('');
 const byteSize = ref(0);
 const unsupportedNote = ref('');
 /** 文件修改时间（stat 可用时显示） */
 const fileMtime = ref('');
+/**
+ * 文本文件识别到的编码（非 UTF-8 时在元信息条提示）。
+ * ★ 只对**非 UTF-8** 提示：UTF-8 是绝大多数情况，天天挂着徽标是噪音；
+ *   而 GBK/UTF-16 是"用户会觉得奇怪"的情况 —— 提示了才知道保存会转成 UTF-8。
+ */
+const detectedEncoding = ref<TextEncoding | ''>('');
 // PDF 分页文本（pdf.js 不可用时的降级）
 const pdfPages = ref<string[]>([]);
 // PDF 高保真栅格图（pdf.js 客户端渲染，真实版式/图片）
@@ -524,12 +548,18 @@ function onGlobalKeydown(e: KeyboardEvent) {
   saveEdit();
 }
 onMounted(() => document.addEventListener('keydown', onGlobalKeydown, true));
-onBeforeUnmount(() => document.removeEventListener('keydown', onGlobalKeydown, true));
+onBeforeUnmount(() => {
+  document.removeEventListener('keydown', onGlobalKeydown, true);
+  // 卸载时回收音视频 Blob URL（tab 关闭 / 组件销毁后不该继续占着整段媒体字节）
+  revokeVideoSrc();
+  revokeAudioSrc();
+});
 
 const kindBadge = computed(() => {
   switch (kind.value) {
     case 'image': return '图片';
     case 'video': return '视频';
+    case 'audio': return '音频';
     case 'pdf': return 'PDF';
     case 'excel': return 'Excel';
     case 'csv': return 'CSV';
@@ -655,8 +685,19 @@ function parseCsv(s: string): string[][] {
 
 const IMG_EXTS = ['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'ico', 'bmp'];
 const VIDEO_EXTS = ['mp4', 'webm', 'mov', 'm4v', 'ogv', 'mkv'];
+/**
+ * 音频扩展名（配音 / 音频产物）。★ 此前这里没有音频分支 ——
+ * 配音产物（TTS 的 wav/mp3）会落到最底部的「二进制」分支，
+ * 预览面板只给「用本机应用打开 / 另存为」，用户在应用内既看不到波形也听不到声音。
+ */
+const AUDIO_EXTS = ['mp3', 'wav', 'm4a', 'aac', 'flac', 'ogg', 'opus', 'wma'];
 /** 视频内嵌播放的体积上限：超过则降级为「本机应用打开 / 另存为」，避免整段字节读进内存 */
 const VIDEO_INLINE_MAX = 80 * 1024 * 1024;
+/**
+ * 音频内嵌播放的体积上限。音频码率远低于视频（配音产物通常几十 KB ~ 几 MB），
+ * 但整段字节 + base64 转换仍在渲染进程里做，故同样设上限兜底。
+ */
+const AUDIO_INLINE_MAX = 50 * 1024 * 1024;
 const EXCEL_EXTS = ['xlsx', 'xls'];
 const PDF_EXTS = ['pdf'];
 const WORD_EXTS = ['docx', 'doc'];
@@ -719,6 +760,33 @@ function revokeVideoSrc() {
   }
 }
 
+/**
+ * 音频扩展名 → Blob 的 MIME 类型。
+ * ★ 必须显式给 MIME：`new Blob([bin])` 不带 type 时是空字符串，部分 Chromium 版本
+ *   会因 MIME 不含 `audio/` 而拒绝解码（表现为播放器一直转圈或直接 error）。
+ */
+function audioMime(ext: string): string {
+  switch (ext) {
+    case 'mp3': return 'audio/mpeg';
+    case 'wav': return 'audio/wav';
+    case 'm4a': return 'audio/mp4';
+    case 'aac': return 'audio/aac';
+    case 'flac': return 'audio/flac';
+    case 'ogg': return 'audio/ogg';
+    case 'opus': return 'audio/ogg';
+    case 'wma': return 'audio/x-ms-wma';
+    default: return 'audio/' + ext;
+  }
+}
+
+/** 释放音频 Blob URL（与视频同理，不回收则音频字节常驻内存） */
+function revokeAudioSrc() {
+  if (audioSrc.value) {
+    URL.revokeObjectURL(audioSrc.value);
+    audioSrc.value = '';
+  }
+}
+
 const TEXT_LIMIT = 2000000; // 2MB：超限截断并在元信息条提示
 
 /**
@@ -755,29 +823,24 @@ async function readFileWithFallback(
 }
 
 /**
- * 文本读取版兜底（与 readFileWithFallback 同口径，只是用 readFile 读 UTF-8）。
+ * 文本读取（含编码识别）——与 readFileWithFallback 同一读取原语，只是多走一步解码。
+ *
+ * ★ 编码（2026-09-27 用户反馈「txt 打开乱码？？」）：
+ *   旧实现走 adapter.fs.readFile（写死 UTF-8）→ GBK/ANSI 中文 txt 满屏 U+FFFD。
+ *   现在统一「取原始字节 → shared.decodeTextBytes 自动识别」：
+ *   BOM(UTF-8/UTF-16) → 严格 UTF-8 能过即 UTF-8 → 兜底 GB18030（GBK/GB2312 超集）。
+ *   与图片/PDF 分支用同一个 readFileWithFallback，产物根漂移的兜底也一并继承。
+ *
+ * 返回识别到的编码，供元信息条如实展示（用户改完保存会把文件写成 UTF-8，
+ * 不告知的话用户会觉得「明明只改了字，怎么编码变了」）。
  */
-async function readTextWithFallback(
-  adapter: { fs: { readFile: (p: string) => Promise<string> } },
+async function readTextDecoded(
+  adapter: { fs: { readFileBase64: (p: string) => Promise<string> } },
 ): Promise<string> {
-  const first = props.file.path;
-  try {
-    return await adapter.fs.readFile(first);
-  } catch (err) {
-    // 目录级资源文件：优先走服务端直读（base64 解成 UTF-8 文本，形状与 fs.readFile 一致）
-    const viaApi = await readViaResourceApi();
-    if (viaApi !== null) {
-      try {
-        const bin = atob(viaApi);
-        const bytes = new Uint8Array(bin.length);
-        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-        return new TextDecoder('utf-8').decode(bytes);
-      } catch { /* 解码失败 → 继续原有兜底 */ }
-    }
-    const relocated = await resolveServerSidePath();
-    if (!relocated || relocated === first) throw err;
-    return await adapter.fs.readFile(relocated);
-  }
+  const b64 = await readFileWithFallback(adapter);
+  const decoded = decodeTextBytes(base64ToBytes(b64));
+  detectedEncoding.value = decoded.encoding;
+  return decoded.text;
 }
 
 /**
@@ -843,6 +906,9 @@ async function loadFile() {
   editContent.value = '';
   mdMode.value = 'read';
   imageSrc.value = '';
+  // 换文件时回收上一份音视频 Blob URL：不回收则每次切换都把整段媒体字节留在内存里
+  revokeVideoSrc();
+  revokeAudioSrc();
   pdfPages.value = [];
   pdfImages.value = [];
   pdfTotal.value = 0;
@@ -853,6 +919,7 @@ async function loadFile() {
   byteSize.value = 0;
   unsupportedNote.value = '';
   fileMtime.value = '';
+  detectedEncoding.value = '';
   try {
     const { getPlatformAdapter } = await import('@yan-zhi/core');
     const adapter = getPlatformAdapter();
@@ -891,6 +958,23 @@ async function loadFile() {
       revokeVideoSrc();
       videoSrc.value = URL.createObjectURL(new Blob([bin], { type: videoMime(e) }));
       kind.value = 'video';
+      return;
+    }
+
+    if (AUDIO_EXTS.includes(e)) {
+      // 音频：读字节 → Blob URL → 统一播放器（AudioPlayer）。超限与视频同一出口降级。
+      const size = byteSize.value || (await adapter.fs.stat?.(props.file.path))?.size || 0;
+      if (size > AUDIO_INLINE_MAX) {
+        kind.value = 'binary';
+        unsupportedNote.value = `音频 ${(size / 1024 / 1024).toFixed(0)}MB 超过 ${AUDIO_INLINE_MAX / 1024 / 1024}MB，未内嵌播放，可用本机应用打开或另存为`;
+        return;
+      }
+      const b64 = await readFileWithFallback(adapter);
+      byteSize.value = Math.floor(b64.length * 3 / 4);
+      const bin = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+      revokeAudioSrc();
+      audioSrc.value = URL.createObjectURL(new Blob([bin], { type: audioMime(e) }));
+      kind.value = 'audio';
       return;
     }
 
@@ -986,16 +1070,16 @@ async function loadFile() {
     }
 
     if (e === 'csv') {
-      const raw = await readTextWithFallback(adapter);
+      const raw = await readTextDecoded(adapter);
       content.value = raw.length >= TEXT_LIMIT ? raw.slice(0, TEXT_LIMIT) : raw;
       truncated.value = raw.length >= TEXT_LIMIT;
       kind.value = 'csv';
       return;
     }
 
-    // 文本类：扩展名白名单内直接读；白名单外也尝试读，但检测到二进制特征（空字节/大量替换符）转暂不支持
+    // 文本类：扩展名白名单内直接读；白名单外也尝试读，但检测到二进制特征则转暂不支持
     if (TEXT_EXTS.has(e) || !e) {
-      const raw = await readTextWithFallback(adapter);
+      const raw = await readTextDecoded(adapter);
       if (raw.length >= TEXT_LIMIT) {
         content.value = raw.slice(0, TEXT_LIMIT);
         truncated.value = true;
@@ -1006,12 +1090,17 @@ async function loadFile() {
       return;
     }
 
-    const raw = await readTextWithFallback(adapter);
-    const isBinary = raw.includes('\u0000') || countReplacement(raw) > Math.min(raw.length, 2000) * 0.1;
-    if (isBinary) {
+    // ★ 白名单外的文件：二进制判定必须看**原始字节**（见 looksBinaryBytes 说明）——
+    //   自动编码识别引入 GB18030 兜底后，"解出多少 U+FFFD" 已无法区分二进制。
+    const b64 = await readFileWithFallback(adapter);
+    const bytes = base64ToBytes(b64);
+    if (looksBinaryBytes(bytes)) {
       kind.value = 'binary';
       unsupportedNote.value = e === 'doc' ? '旧版 .doc 不支持预览，建议另存为 .docx' : '暂不支持预览';
     } else {
+      const decoded = decodeTextBytes(bytes);
+      detectedEncoding.value = decoded.encoding;
+      const raw = decoded.text;
       content.value = raw.length >= TEXT_LIMIT ? raw.slice(0, TEXT_LIMIT) : raw;
       truncated.value = raw.length >= TEXT_LIMIT;
       kind.value = 'text';
@@ -1030,14 +1119,6 @@ async function loadFile() {
     snapshots.value = [content.value];
     snapIdx.value = 0;
   }
-}
-
-/** 统计替换符数量（UTF-8 解码二进制时产生 U+FFFD），取前 2000 字符为样本 */
-function countReplacement(s: string): number {
-  let n = 0;
-  const sample = s.slice(0, 2000);
-  for (let i = 0; i < sample.length; i++) if (sample[i] === '\uFFFD') n++;
-  return n;
 }
 
 /** v-html 内容的事件委托：代码块复制按钮 */
@@ -1071,12 +1152,26 @@ watch(() => props.file?.path, () => { if (props.file?.path) loadFile(); }, { imm
   color: var(--el-color-primary, #7c3aed); font-size: 11px;
 }
 .fp-meta-size { flex-shrink: 0; margin-left: auto; }
+/* 非 UTF-8 文本的编码提示（GBK 等）：中性灰底，不做成警告色 —— 能正确解码不是错误 */
+.fp-meta-enc {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  line-height: 16px;
+  background: var(--el-fill-color-light, #f1f5f9);
+  color: var(--el-text-color-secondary, #64748b);
+  border: 1px solid var(--el-border-color-lighter, rgba(15, 23, 42, 0.1));
+}
 .fp-loading, .fp-error { padding: 40px; text-align: center; color: var(--el-text-color-secondary); }
 .fp-image-wrap { text-align: center; padding: 12px; }
 .fp-image { max-width: 100%; max-height: 70vh; border-radius: 4px; }
 /* 视频：原生播放器居中，深色底避免黑边突兀 */
 .fp-video-wrap { display: flex; justify-content: center; align-items: center; padding: 12px; flex: 1; min-height: 0; }
 .fp-video { max-width: 100%; max-height: 72vh; border-radius: 4px; background: #000; outline: none; }
+/* 音频：播放器居中、限制最大宽度（超宽窗口下不该被拉成一条长条） */
+.fp-audio-wrap { display: flex; justify-content: center; align-items: center; padding: 12px; flex: 1; min-height: 0; }
+.fp-audio-wrap > * { width: min(560px, 100%); }
 /* PDF 分页文本 */
 .fp-pdf-pages { flex: 1; overflow: auto; padding: 12px; }
 .fp-pdf-page { border: 1px solid var(--el-border-color-lighter); border-radius: 6px; margin-bottom: 12px; overflow: hidden; }

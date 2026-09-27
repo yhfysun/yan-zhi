@@ -111,6 +111,8 @@ const {
 const spaceStore = useSpaceStore();
 
 const IMAGE_EXT_RE = /\.(png|jpe?g|webp|gif|bmp|svg|avif)$/i;
+/** 音频产物（配音 / TTS）—— 用于右键菜单走媒体语义而不是普通文件 */
+const AUDIO_EXT_RE = /\.(mp3|wav|m4a|aac|flac|ogg|opus|wma)$/i;
 
 /** 资源目录四段（与后端 shared 同一份定义，避免各写一套） */
 const resourceDirs = RESOURCE_DIRS;
@@ -182,23 +184,25 @@ function previewResource(f: { name: string; path: string; isDir: boolean }, dir:
  */
 function openFileMenu(e: MouseEvent, f: ConversationFile) {
   const isImage = (f.mimeType || '').startsWith('image/') || IMAGE_EXT_RE.test(f.name || '');
+  const isAudio = (f.mimeType || '').startsWith('audio/') || AUDIO_EXT_RE.test(f.name || '');
   openMediaMenu(e, {
     src: '',
     path: f.path,
     name: f.name,
-    kind: isImage ? 'image' : 'file',
+    kind: isImage ? 'image' : isAudio ? 'audio' : 'file',
   });
 }
 
-/** 资源项菜单：与文件项同构（图片给放大/复制，其余给文件操作） */
+/** 资源项菜单：与文件项同构（图片给放大/复制，音频走音频语义，其余给文件操作） */
 function openResourceMenu(e: MouseEvent, f: { name: string; path: string; isDir: boolean }) {
   if (f.isDir) return;
   const isImage = IMAGE_EXT_RE.test(f.name || '');
+  const isAudio = AUDIO_EXT_RE.test(f.name || '');
   openMediaMenu(e, {
     src: '',
     path: f.path,
     name: f.name,
-    kind: isImage ? 'image' : 'file',
+    kind: isImage ? 'image' : isAudio ? 'audio' : 'file',
   });
 }
 </script>
