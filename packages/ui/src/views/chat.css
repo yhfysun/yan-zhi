@@ -858,10 +858,19 @@
 .input-textarea.is-expanded .el-textarea__inner {
   min-height: 0 !important;
 }
+/* ★ 收起态：恰好 1 行，且压到「比一行文本略多一点」的紧凑高度
+   （2026-09-27 用户反馈「单行也有点太高了在小一点」）。
+   旧值 = 1.6em 行高 + 上下 10px 内边距 ×2 = 约 44px，实测观感偏高；
+   现在行高收到 1.35、内边距收到 6px → 约 30px，与微信/系统输入条接近。
+   ⚠️ 行高与内边距必须**同步**改（高度公式里两者都参与），只改一边会算错。 */
 .input-textarea.is-collapsed .el-textarea__inner {
-  height: calc(1.6em + 20px) !important;   /* 1 行行高(1.6em) + 上下内边距(10px×2) */
+  height: calc(1.35em + 12px) !important;  /* 1 行行高(1.35em) + 上下内边距(6px×2) */
+  padding-top: 6px !important;
+  padding-bottom: 6px !important;
+  line-height: 1.35 !important;
   overflow-y: hidden;
 }
+/* 展开态：行高跟随收起态口径（否则点开时文字会"跳"一下） */
 .input-textarea.is-expanded .el-textarea__inner {
   /* 3 行：行高 ×3 + 内边距。不做 max-height 限制，让 autosize 继续长 */
   height: calc(1.6em * 3 + 20px) !important;
@@ -886,8 +895,11 @@
 }
 /* 收起态没有工具条托底，把 textarea 的内边距给足 —— 视觉上就是「一个输入框」 */
 .input-area.is-mobile-collapsed .input-textarea .el-textarea__inner {
-  padding: 10px 14px;
+  padding: 6px 14px;
 }
+/* 收起态外壳同步收紧：整条输入区高度 = textarea(约 32px) + 外壳内边距 + 边框 ≈ 38px。
+   只压 textarea 不压外壳的话，6px 外壳内边距会重新把高度顶回去（改一处漏一处）。 */
+.input-area.is-mobile-collapsed .input-box { padding: 3px; }
 .input-agent-bar {
   display: flex; align-items: center; gap: 4px;
   padding: 6px 10px 0;
@@ -1094,6 +1106,12 @@
 .pop-model-platform { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pop-model-count { flex-shrink: 0; font-size: 10.5px; font-weight: 500; opacity: 0.75; }
 .pop-model-empty { padding: 14px 12px; text-align: center; font-size: 12px; color: var(--color-text-secondary); }
+/* ★ 模型下拉启用「打开即定位到当前选中项」后，默认的缩放过渡会把 transition 期内的
+   offsetTop/scrollTop 一起"动画"过去 → 表现为打开瞬间滚到偏上、随后慢慢滑到位的抖动感。
+   改为**纯透明度**过渡：不做任何位移/缩放，定位在首帧就落定。
+   （与 plus-sub-fade 同为 0.12s，切换手感一致） */
+.pop-select-fade-enter-active, .pop-select-fade-leave-active { transition: opacity 0.12s ease; }
+.pop-select-fade-enter-from, .pop-select-fade-leave-to { opacity: 0; }
 /* 上下文窗口面板浮层（Teleport 到 body，坐标由调用方计算；动画复用 plus-sub-fade） */
 .ctx-panel-pop { position: fixed; z-index: 10000; }
 

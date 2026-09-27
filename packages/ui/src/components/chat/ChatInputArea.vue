@@ -1,5 +1,6 @@
 <template>
   <div
+    ref="inputAreaEl"
     class="input-area"
     :class="{ 'is-mobile-collapsed': isMobileShell && !mobileExpanded }"
     @dragenter.prevent="onDragEnter"
@@ -99,25 +100,64 @@
            `value || placeholder`，本输入框 placeholder 较长（"输入消息，Enter 发送…"）
            → **placeholder 把 1 行顶成 2 行**，minRows 形同虚设（实测 taHeight 恒 40px）。
            走 CSS 才能真正压到一行，且桌面端完全不受影响（类名只在移动端挂）。 -->
-      <el-input
-        ref="inputRef"
-        v-model="input"
-        type="textarea"
-        :autosize="inputAutosize"
-        class="input-textarea"
-        :class="{
-          'is-collapsed': isMobileShell && !mobileExpanded,
-          'is-expanded': isMobileShell && mobileExpanded,
-        }"
-        :placeholder="inputPlaceholder"
-        @keydown.enter.exact="onEnter"
-        @keydown.up="onKeyUp"
-        @keydown.down="onKeyDown"
-        @keydown.esc="onEsc"
-        @paste="onPaste"
-        @focus="onInputFocus"
-        @blur="onInputBlur"
-      />
+      <!-- ★ 移动端长按输入框弹自定义菜单（复制 / 粘贴 / 发送 / 新建任务）。
+           ⚠️ 为什么不直接把 v-on 挂在 el-input 上：组件上的 v-on 走的是**自定义事件**，
+              `toHandlers` 展开出来的原生事件名对组件无效 → 永远不会触发。
+              所以包一层原生 div 承接 pointer 事件（Pointer 从 textarea 正常冒泡上来）。
+           ★ 桌面端零影响：bindLongPress 内部只认 `pointerType === 'touch'`，
+             鼠标按下直接 return（详见 useLongPress 文件头）。 -->
+      <div
+        class="input-textarea-wrap"
+        v-on="bindLongPress(onInputLongPress)"
+        @contextmenu="onInputContextMenu"
+      >
+        <el-input
+          ref="inputRef"
+          v-model="input"
+          type="textarea"
+          :autosize="inputAutosize"
+          class="input-textarea"
+          :class="{
+            'is-collapsed': isMobileShell && !mobileExpanded,
+            'is-expanded': isMobileShell && mobileExpanded,
+          }"
+          :placeholder="inputPlaceholder"
+          @keydown.enter.exact="onEnter"
+          @keydown.up="onKeyUp"
+          @keydown.down="onKeyDown"
+          @keydown.esc="onEsc"
+          @paste="onPaste"
+          @focus="onInputFocus"
+          @blur="onInputBlur"
+        />
+      </div>
+
+      <!-- 输入框长按菜单（移动端）。Teleport 到 body：输入区在收起态会被压成一行的
+           overflow 裁切范围内，留在原地会被裁掉半个面板。 -->
+      <Teleport to="body">
+        <div
+          v-if="inputMenu.visible"
+          class="ilm-layer"
+          @click="onInputMenuLayerClick"
+          @contextmenu.prevent="closeInputMenu"
+        >
+          <ul class="ilm-menu" :style="{ left: inputMenu.x + 'px', top: inputMenu.y + 'px' }" @click.stop>
+            <li class="ilm-item" :class="{ 'is-disabled': !hasInputText }" @click="ilmCopy">
+              <el-icon :size="14"><CopyDocument /></el-icon><span>复制</span>
+            </li>
+            <li class="ilm-item" @click="ilmPaste">
+              <el-icon :size="14"><DocumentCopy /></el-icon><span>粘贴</span>
+            </li>
+            <li class="ilm-sep"></li>
+            <li class="ilm-item" :class="{ 'is-disabled': !canSubmit }" @click="ilmSend">
+              <el-icon :size="14"><Promotion /></el-icon><span>发送</span>
+            </li>
+            <li class="ilm-item" @click="ilmNewTask">
+              <el-icon :size="14"><FolderAdd /></el-icon><span>新建任务</span>
+            </li>
+          </ul>
+        </div>
+      </Teleport>
 
       <!-- 命令 / 文件引用浮层 -->
       <transition name="cmd-fade">
@@ -390,7 +430,7 @@
                故移动端用**独立的** `mobileModelPopOpen`。
                ★ 真机 isMobilePlatform=true 时桌面那个 popover 是 v-if 不渲染，不会出现双开；
                  但"窄窗 Web / 桌面预览"下两者都在 DOM 里，共用 visible 必然双开（实测复现）。 -->
-          <el-popover v-model:visible="mobileModelPopOpen" placement="top" trigger="click" :width="260" :show-arrow="false">
+          <el-popover v-model:visible="mobileModelPopOpen" placement="top" trigger="click" :width="260" :show-arrow="false" popper-class="model-select-popper-mobile">
             <template #reference>
               <el-button size="small" circle class="mobile-model-btn" :title="`切换模型：${currentModelName}`">
                 <!-- 用 Aim 而非 Cpu：Cpu 是 TabBar「模型」项的图标（移动端常驻同屏），
@@ -403,7 +443,7 @@
               <el-input v-model="modelSearch" size="small" placeholder="搜索模型" clearable class="pop-model-search">
                 <template #prefix><el-icon><Search /></el-icon></template>
               </el-input>
-              <div class="pop-model-scroll">
+              <div class="pop-model-scroll" ref="mobileModelScrollEl">
                 <template v-for="g in filteredModelGroups" :key="g.platformId">
                   <div class="pop-select-label pop-model-group" @click="togglePlatformGroup(g.platformId)">
                     <el-icon :size="12" class="pop-model-caret">
@@ -465,7 +505,16 @@
                **Teleport 到 body** 的，父容器隐藏对弹层无效 —— 于是窄屏点移动端模型钮时，
                这个（被隐藏但仍存在于 DOM 的）popover 也会一起弹出来 → 「点一次两个弹窗」。
                加 v-if 后与 .toolbar-mobile-selects 严格互斥（同一时刻只有一个模型入口存在）。 -->
-          <el-popover v-if="!isMobileShell" v-model:visible="modelPopOpen" placement="top-end" :width="260" trigger="click" :show-arrow="false">
+          <el-popover
+            v-if="!isMobileShell"
+            v-model:visible="modelPopOpen"
+            placement="top-end"
+            :width="260"
+            trigger="click"
+            :show-arrow="false"
+            transition="pop-select-fade"
+            popper-class="model-select-popper"
+          >
             <template #reference>
               <!-- 注意：tooltip 不能套在 button 外层——会吃掉事件导致 popover 点不开。
                    改为让 popover 直接持有 button，tooltip 走 title 属性。 -->
@@ -486,7 +535,7 @@
               >
                 <template #prefix><el-icon><Search /></el-icon></template>
               </el-input>
-              <div class="pop-model-scroll">
+              <div class="pop-model-scroll" ref="modelScrollEl">
                 <template v-for="g in filteredModelGroups" :key="g.platformId">
                   <div class="pop-select-label pop-model-group" @click="togglePlatformGroup(g.platformId)">
                     <el-icon :size="12" class="pop-model-caret">
@@ -620,15 +669,17 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue';
+import { ref, reactive, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue';
 import type { Component } from 'vue';
 import { ElMessage } from 'element-plus';
 import {
   FolderOpened, ArrowDown, ArrowRight, Connection, Files, UploadFilled, User, EditPen, Cpu, Setting, Plus, Camera,
   Promotion, Close, Lock, Check, Picture, Document, Tickets, Box, VideoCamera, Headset, Memo, ChatDotRound,
-  Operation, Search, Link, Delete, Clock, Tools, Coin, DocumentAdd, Aim, FolderAdd,
+  Operation, Search, Link, Delete, Clock, Tools, Coin, DocumentAdd, Aim, FolderAdd, CopyDocument, DocumentCopy,
 } from '@element-plus/icons-vue';
 import { useChat } from '../../composables/chat/useChat';
+// ★ 移动端长按（触屏专属，内部只认 pointerType==='touch'，桌面端零影响）
+import { bindLongPress } from '../../composables/useLongPress';
 import AttachmentPreview from './AttachmentPreview.vue';
 import ModelContextPanel from './ModelContextPanel.vue';
 import { useCodeStore } from '../../stores/code';
@@ -715,6 +766,38 @@ const inputPlaceholder = computed(() => {
     : '输入消息，Enter 发送，Shift+Enter 换行；输入 / 打开命令，@ 引用文件';
 });
 
+/** 输入区根节点：失焦收起的判定要用它做「焦点是否还在输入区内」的范围检查
+ *  （声明必须在 onInputBlur 之前 —— 虽然 setTimeout 异步执行不会 TDZ，但可读性上更稳）。 */
+const inputAreaEl = ref<HTMLElement | null>(null);
+
+/**
+ * 移动端「收起」的唯一判定入口。
+ * ★★★ 为什么不能直接在 blur 里收起（2026-09-27 用户报「点击按钮输入框也会收缩成一样」）：
+ *   `+` / 模型 / 新建任务 / 发送 这些按钮都**在 `.input-area` 内部**。点它们必然先让
+ *   textarea 失焦 → 若 blur 里直接 `mobileExpanded = false`，整条输入区（连按钮自己）
+ *   瞬间被 `.is-mobile-collapsed` 压成一行：用户看到「点按钮输入框收缩成一样」，
+ *   且按钮按下即消失、动作丢失（popover 因 Teleport 到 body 仍会弹，更显错乱）。
+ *   ⇒ 判据必须是「**用户点到了输入区之外**」，而不是「textarea 失焦了」。
+ *
+ * ★★ 实现要点：**不能用「blur 之后再挂一个 pointerdown 监听」**——
+ *   事件顺序是 `pointerdown → blur`（焦点转移是 pointerdown 的默认动作），
+ *   在 blur 里才注册监听，那一次 pointerdown 早就过去了 → 永远等不到（退化成只靠定时器）。
+ *   正解：**常驻**一个 document 捕获阶段的 pointerdown 监听，实时记住"这一点落在哪"
+ *   （捕获阶段早于默认动作 → blur 触发时该标记已就绪），blur 里只读这个标记。
+ */
+/** 最近一次 pointerdown 是否落在输入区内部（工具条按钮 / textarea 自身都算）。 */
+let lastPointerdownInArea = false;
+function onDocPointerdownTrack(e: PointerEvent) {
+  const t = e.target as Node | null;
+  lastPointerdownInArea = !!(t && inputAreaEl.value?.contains(t));
+}
+
+function maybeCollapseMobileInput() {
+  if (!isMobileShell.value) return;
+  if (String(input.value || '').trim()) return; // 有内容 → 保持展开（继续接着写）
+  mobileExpanded.value = false;
+}
+
 function onInputFocus(e: FocusEvent) {
   inputFocused.value = true;
   if (isMobileShell.value) mobileExpanded.value = true;
@@ -723,9 +806,120 @@ function onInputFocus(e: FocusEvent) {
 }
 function onInputBlur(e: FocusEvent) {
   inputFocused.value = false;
-  // 失焦且有内容 → 保持展开（下次点击继续接着写，不用再点一次）
-  if (isMobileShell.value && !String(input.value || '').trim()) mobileExpanded.value = false;
+  if (!isMobileShell.value) return;
+  // 下一拍判定：默认动作（焦点转移）此刻已完成，activeElement 是可靠读数
+  window.setTimeout(() => {
+    const inArea = lastPointerdownInArea
+      // 兜底：非聚焦按钮（部分机型触屏点 <button> 不夺焦）→ 位置判定不成立时看焦点
+      || !!(document.activeElement && inputAreaEl.value?.contains(document.activeElement));
+    lastPointerdownInArea = false; // 消费掉，避免影响下一次程序化 blur
+    if (inArea) return;
+    maybeCollapseMobileInput();
+  }, 0);
   void e;
+}
+
+// ===== 移动端：输入框长按菜单（复制 / 粘贴 / 发送 / 新建任务）=====
+// ★★★ 为什么需要（2026-09-27 用户反馈「输入框里面长按没有复制粘贴发送新建任务」）：
+//   输入框此前只绑了 `@paste`（拦截文件粘贴），**没有任何长按处理** →
+//   触屏长按 textarea 走的是 WebView 系统菜单：Android WebView 上要么不弹，
+//   要么弹出的「复制/粘贴」按钮与短文案叠加后大半被裁掉（textarea 收起态只有一行高）。
+//   与其和系统菜单抢，不如给一个**稳定的自定义菜单**，且顺带把「发送 / 新建任务」
+//   这两个高频动作也放进来（此前它们只在工具条上，收起态还看不见）。
+const inputMenu = reactive({ visible: false, x: 0, y: 0 });
+const hasInputText = computed(() => !!String(input.value || ''));
+const canSubmit = computed(() =>
+  (!!input.value.trim() || uploadedFiles.value.length > 0 || quotedUrls.value.length > 0) && !!selectedModelId.value,
+);
+
+function openInputMenu(x: number, y: number) {
+  // 贴边收口：菜单宽约 132、高约 180（4 项 + 分隔线）
+  const W = 138, H = 186;
+  inputMenu.x = Math.max(8, Math.min(x, window.innerWidth - W - 8));
+  inputMenu.y = Math.max(8, Math.min(y, window.innerHeight - H - 8));
+  inputMenu.visible = true;
+  // ★ 记录打开时刻：长按是"松手前弹出"，松手后浏览器仍会补派发一次 click，
+  //   它会落在刚渲染出来的遮罩上 → 菜单"刚弹出就被自己关掉"。
+  //   用时间窗吞掉这一次 click（同 ChatMessageList 的 actionsOpenedAt 手法）。
+  inputMenuOpenedAt = Date.now();
+}
+let inputMenuOpenedAt = 0;
+function closeInputMenu() { inputMenu.visible = false; }
+/** 遮罩点击：长按后紧随的那一次 click 视为"同一手势"，不关闭 */
+function onInputMenuLayerClick() {
+  if (Date.now() - inputMenuOpenedAt < 400) return;
+  closeInputMenu();
+}
+
+/** 长按输入框：弹出操作菜单（面板定位在手指位置，与右键菜单同形） */
+function onInputLongPress(ev: { clientX: number; clientY: number }) {
+  openInputMenu(ev.clientX, ev.clientY);
+}
+/** 触屏上若仍派发了 contextmenu，只拦系统菜单（已触发长按的不重复弹） */
+function onInputContextMenu(e: MouseEvent) {
+  if (!isMobileShell.value) return; // 桌面端保留浏览器原生右键菜单
+  e.preventDefault();
+}
+
+/** 复制：优先用 textarea 自身选区（长按菜单点「复制」时用户多半已选中一段）；
+ *  无选区时复制全文。用 execCommand 兜底 —— 部分 WebView 的 clipboard API 受权限限制。 */
+async function ilmCopy() {
+  if (!hasInputText.value) return;
+  const el = inputRef.value?.textarea as HTMLTextAreaElement | undefined;
+  const start = el?.selectionStart ?? 0;
+  const end = el?.selectionEnd ?? 0;
+  const text = start !== end ? input.value.slice(start, end) : input.value;
+  closeInputMenu();
+  try {
+    await navigator.clipboard.writeText(text);
+    ElMessage.success('已复制');
+  } catch {
+    try {
+      const tmp = document.createElement('textarea');
+      tmp.value = text;
+      tmp.style.cssText = 'position:fixed;opacity:0;';
+      document.body.appendChild(tmp);
+      tmp.select();
+      document.execCommand('copy');
+      document.body.removeChild(tmp);
+      ElMessage.success('已复制');
+    } catch { ElMessage.error('复制失败'); }
+  }
+}
+
+/** 粘贴：插到光标处。clipboard.readText 在 https（androidScheme=https）下可用；
+ *  失败时给出可读提示，不静默什么都不做。 */
+async function ilmPaste() {
+  closeInputMenu();
+  let text = '';
+  try {
+    text = await navigator.clipboard.readText();
+  } catch {
+    ElMessage.warning('系统未授权读取剪贴板，请用键盘/输入法的粘贴');
+    return;
+  }
+  if (!text) { ElMessage.info('剪贴板为空'); return; }
+  const el = inputRef.value?.textarea as HTMLTextAreaElement | undefined;
+  const start = el?.selectionStart ?? input.value.length;
+  const end = el?.selectionEnd ?? input.value.length;
+  input.value = input.value.slice(0, start) + text + input.value.slice(end);
+  await nextTick();
+  el?.focus();
+  const caret = start + text.length;
+  el?.setSelectionRange(caret, caret);
+}
+
+/** 发送：与工具条发送按钮同一条路径（send 内部自己判断入队还是直发） */
+function ilmSend() {
+  closeInputMenu();
+  if (!canSubmit.value) return;
+  send();
+}
+
+/** 新建任务：与工具条 FolderAdd 按钮同一个入口 */
+function ilmNewTask() {
+  closeInputMenu();
+  startNewChat();
 }
 
 // ===== 截图按钮微信式设计：tooltip 带快捷键 + 下拉「隐藏窗口」开关 =====
@@ -870,7 +1064,41 @@ const filteredModelGroups = computed(() => {
 function pickModel(modelId: string) {
   onModelChange(modelId);
   modelPopOpen.value = false;
+  // ★ 移动端那个 popover 也必须关：它是独立开关（见 mobileModelPopOpen 注释），
+  //   只关桌面那个 → 触屏上点完模型下拉一直挂在那挡住输入框（与原缺陷同类）。
+  mobileModelPopOpen.value = false;
   closeCtxPanelNow();
+}
+
+// ===== 打开模型下拉时定位到「当前选中的模型」=====
+// ★★ 用户诉求（2026-09-27）：「模型选择下拉点击不会跳转到选中的那个模型的位置」。
+//   此前打开下拉一律从列表顶部开始 —— 平台多、模型几百个时，当前选中项常在视口外，
+//   用户得自己滚着找。这里在打开后把 active 项滚进视野并居中。
+//
+// ★★ 两个必须写对的地方（漏任一个都表现为"没反应"）：
+//   ① 必须等 popover 真正挂载并布局完：`v-model:visible` 置真时内容还没渲染，
+//      立刻查 DOM 必然 null → 必须 `await nextTick()`（滚动容器在 el-popover 的默认插槽里，
+//      随 popover 一起渲染，nextTick 之后即可查到）。
+//   ② 必须滚**内层滚动容器**（`.pop-model-scroll`）本身：平台分组标题是 `position: sticky`，
+//      它是滚动容器的子节点，锚在容器内 —— 所以「scrollIntoView 作用在容器上、选择器取容器内项」
+//      两条约束能同时满足。若直接对 active 项调 scrollIntoView，会连带滚动它所有的可滚动祖先
+//      （含消息区），把用户正在看的对话也滚走。
+//
+// ★ 命中不到时不报错（选中项可能被折叠在某个平台分组里）—— 表现为"停在顶部"，
+//   这是可接受的降级，不要因此去强行展开分组（会打乱用户的折叠意图）。
+const modelScrollEl = ref<HTMLElement | null>(null);
+const mobileModelScrollEl = ref<HTMLElement | null>(null);
+
+function scrollActiveModelIntoView(mobile = false) {
+  const box = mobile ? mobileModelScrollEl.value : modelScrollEl.value;
+  if (!box) return;
+  const active = box.querySelector<HTMLElement>('.pop-select-model.active');
+  if (!active) return;
+  // 直接算 scrollTop，不调用 scrollIntoView：
+  //   · 只影响这一个容器，不会连带滚动页面/消息区；
+  //   · 居中而非贴边，上下都能看到相邻项，用户能立刻判断"上下文在哪"。
+  const target = active.offsetTop - (box.clientHeight - active.offsetHeight) / 2;
+  box.scrollTop = Math.max(0, target);
 }
 const ctxPanelModelId = ref('');
 const ctxPanelTop = ref(0);
@@ -924,7 +1152,15 @@ async function onCtxWindowChange(tokens: number) {
 // 下拉收起时一并收掉上下文窗口浮层、清掉搜索词（下次打开是干净列表）
 // ★ 两个开关都要收尾（移动端与桌面端各自的弹层），漏一个会留下"幽灵弹层"没被清理
 watch([modelPopOpen, mobileModelPopOpen], ([desktopOpen, mobileOpen]) => {
-  if (!desktopOpen && !mobileOpen) { closeCtxPanelNow(); modelSearch.value = ''; }
+  if (!desktopOpen && !mobileOpen) { closeCtxPanelNow(); modelSearch.value = ''; return; }
+  // 打开 → 定位到当前选中的模型。
+  // ★ 必须 nextTick + 两帧 rAF：popover 内容是 Teleport 到 body 的、打开瞬间才挂载，
+  //   nextTick 后 DOM 在，但布局（含 sticky 分组标题占位）要等一帧才稳定 ——
+  //   直接在 nextTick 里读 offsetTop 会拿到尚未布局的值（表现为滚到错的位置或不动）。
+  void nextTick().then(() => requestAnimationFrame(() => requestAnimationFrame(() => {
+    if (desktopOpen) scrollActiveModelIntoView(false);
+    if (mobileOpen) scrollActiveModelIntoView(true);
+  })));
 });
 
 // 浮层 Teleport 到 body，落在模型下拉的 popper 之外 —— el-popover 的「外部点击」判定
@@ -1191,6 +1427,9 @@ function onWindowDragEnd() {
 onMounted(() => {
   window.addEventListener('dragend', onWindowDragEnd);
   window.addEventListener('drop', onWindowDragEnd);
+  // ★ 常驻记录「最近一次 pointerdown 落在哪」——供失焦收起判定使用。
+  //   必须常驻 + 捕获阶段：事件顺序是 pointerdown → blur，在 blur 里才注册监听会永远错过。
+  document.addEventListener('pointerdown', onDocPointerdownTrack, true);
   // 全局截图热键：ipcRenderer.on 是按进程累加的监听器，组件重复挂载会导致一次热键
   // 触发 N 次；这里用 window 上的标记保证整个渲染进程只绑一次。
   if (canScreenshot) {
@@ -1221,6 +1460,8 @@ async function syncScreenshotHotkey() {
 onBeforeUnmount(() => {
   window.removeEventListener('dragend', onWindowDragEnd);
   window.removeEventListener('drop', onWindowDragEnd);
+  document.removeEventListener('pointerdown', onDocPointerdownTrack, true);
+  closeInputMenu();
 });
 </script>
 
@@ -1391,5 +1632,51 @@ onBeforeUnmount(() => {
 }
 .atp-popper.el-popper.is-light {
   background-image: none !important;
+}
+
+/* ===== 移动端输入框长按菜单（Teleport 到 body，必须写在非 scoped 块）=====
+   与 MediaContextMenu 保持同一视觉语言：定宽、圆角、细边框、投影、条目 6px 圆角。
+   ★ 触控友好：条目高度 40px（>= 44 的推荐值略低但配合内边距实测够用，
+     再高会把 4 项菜单推到 200px+，在收起态的小键盘上方容易顶出视口）。 */
+.ilm-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 4100; /* 与 media-ctx-layer 同层：都高于 EP 弹层（2000-3000） */
+}
+.ilm-menu {
+  position: fixed;
+  min-width: 138px;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  border-radius: 10px;
+  border: 1px solid var(--glass-border, rgba(0, 0, 0, 0.08));
+  background: var(--color-bg-elevated, #fff);
+  box-shadow: 0 8px 26px rgba(15, 23, 42, 0.18);
+}
+.ilm-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+  padding: 0 10px;
+  border-radius: 6px;
+  font-size: 13.5px;
+  color: var(--color-text, #1f2328);
+  cursor: pointer;
+  user-select: none;
+}
+.ilm-item:active { background: var(--glass-bg-hover, rgba(0, 0, 0, 0.05)); }
+.ilm-item .el-icon { color: var(--color-text-secondary, #8a8f98); flex-shrink: 0; }
+/* 不可用项：置灰且不响应（如空输入框的「复制」/「发送」）——但不能隐藏，
+   否则菜单高度随内容跳变，长按位置会错位。 */
+.ilm-item.is-disabled {
+  opacity: 0.4;
+  pointer-events: none;
+}
+.ilm-sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--color-border, rgba(0, 0, 0, 0.08));
 }
 </style>
