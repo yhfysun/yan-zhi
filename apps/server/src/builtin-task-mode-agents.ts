@@ -24,6 +24,17 @@ const COMMON_TALK_TOOLS = ['task_plan', 'task_step', 'ask_user', 'confirm_user']
 /** 四个智能体共用的读资料与交付工具 */
 const COMMON_FILE_TOOLS = ['file_list', 'file_read', 'file_write', 'file_grep'];
 /**
+ * 任务模式共用的**素材获取与规格统一**工具。
+ *
+ * ★ 为什么要进任务模式智能体（2026-09-27 用户诉求「让大模型去下载公开的解压视频」）：
+ *   此前这些智能体只有 `call_agent`（委派 pageAgent 查资料），**没有任何"把素材取回本机"的手段**，
+ *   于是缺素材时一律回"请上传"。而任务模式的素材约定就在本目录的 00-source ——
+ *   下载工具带 `category:"source"` 正好落在那儿，模型就地取材形成闭环。
+ * ★ `media_normalize` 是"多个视频拼成长视频"的**必做前置步**（concat 走 -c copy 直拼，
+ *   参数不一致直接报错），挂在同一批智能体上，避免模型下载完发现拼不上又回头找人。
+ */
+const COMMON_MEDIA_FETCH_TOOLS = ['api_media_fetch', 'api_media_normalize'];
+/**
  * 四个智能体共用：空间与任务模式 + 会话自配置。
  * ★ `api_space_set_task_type` 让模型能直接改这个目录的任务模式（会同步建资源目录骨架），
  *   用户说"这个目录以后都按配音来"时不必再让用户自己去 UI 里点。
@@ -32,6 +43,17 @@ const COMMON_FILE_TOOLS = ['file_list', 'file_read', 'file_write', 'file_grep'];
  *   （用户说"你现在按 XX 来""挂上 XX 技能"时直接落，不必让用户去 UI 点）。
  */
 const COMMON_SPACE_TOOLS = ['api_space_list', 'api_space_set_task_type', 'api_conversation_setup'];
+/**
+ * 四个智能体共用：空间记忆读写（MEMORY.md，跨会话、所有智能体共享）。
+ *
+ * ★ 为什么必须挂：任务模式的 SOP 明确要求「用户确认过的内容记入本目录任务记忆、
+ *   同目录新开会话先复述再继续」，而模型要**主动**查/写这份记忆就必须有工具。
+ *   此前这两个工具只注册了 schema 与 executor 却没挂给任何智能体 → 模型看不到 → 静默失效，
+ *   长任务跨会话断线无法靠模型自愈（2026-09-27 用户报「长任务没完整需要总结记忆进入空间记忆」）。
+ *   ⚠️ `api_space_memory_append` 已列进 `tool-permission.ts` 的 WRITE_TOOLS（它写磁盘），
+ *   只读会话里会被拦 —— 这是对的，声明与实现一致。
+ */
+const COMMON_MEMORY_TOOLS = ['api_space_memory_read', 'api_space_memory_append'];
 
 // ===== 小说改写助手 =====
 export const NOVEL_AGENT_ID = 'a_builtin_novel_agent';
@@ -42,6 +64,7 @@ export const NOVEL_AGENT_BUILTIN_TOOLS = [
   // 委派 pageAgent 查背景资料/年代细节；list_models 用于超长稿件换更强模型
   'call_agent', 'list_sub_agents', 'list_models',
   ...COMMON_SPACE_TOOLS,
+  ...COMMON_MEMORY_TOOLS,
   ...COMMON_TALK_TOOLS,
 ];
 export const NOVEL_AGENT_SKILL_IDS = ['skill_novel_rewrite', 'skill_markdown_doc'];
@@ -59,7 +82,7 @@ export const NOVEL_AGENT_SYSTEM_PROMPT = `你是「小说改写助手」（novel
 - **逐章输出完整正文**：不概括、不跳章、不用「（此处省略）」占位。
 - **不擅自增删情节**：只做用户确认过的改动。要删支线必须在大纲阶段写清并获确认。
 - **人名、称谓、时间线、设定、伏笔全程一致**：换称呼必须全篇统一，不能这章「李总」下章「李恒」。
-- 改写受版权保护的作品前，提醒用户确认有改编授权。
+- 改写他人作品的授权问题由用户自己判断：**不要因为版权顾虑拒绝改写、也不要反复追问授权**；仅在成套搬运院线影片/付费剧集这类明显商业内容时轻点一句，且不得因此中断流程。
 - 大纲未经确认不得开始改写正文 —— 方向错了要拦住，别等几十章都改完才发现。
 
 ## 流程
@@ -90,9 +113,12 @@ export const SCRIPT_AGENT_BUILTIN_TOOLS = [
   'python_exec',
   // 看图：用户给的产品图/竞品截图/后台数据截图（只有路径，必须调它才看得见）
   'image_analyze',
+  // 网络素材获取 + 竖屏规格统一：找参考空镜/竞品视频素材自己下载，拼长视频前先统一规格
+  ...COMMON_MEDIA_FETCH_TOOLS,
   // 看网页原文：竞品页面、平台规则；多步操作委派 pageAgent
   'call_agent', 'list_sub_agents', 'list_models',
   ...COMMON_SPACE_TOOLS,
+  ...COMMON_MEMORY_TOOLS,
   ...COMMON_TALK_TOOLS,
 ];
 export const SCRIPT_AGENT_SKILL_IDS = ['skill_script_copy', 'skill_markdown_doc'];
@@ -143,9 +169,12 @@ export const AUDIOBOOK_AGENT_BUILTIN_TOOLS = [
   'python_exec',
   // 媒体链路：逐段配音 / 字幕 / 合成成片（ffmpeg 按需下载）
   'api_tts_speak', 'api_tts_voices', 'api_srt_generate', 'media_compose', 'media_install_ffmpeg',
+  // 网络素材获取 + 竖屏规格统一：缺视频素材时自己去找并下载，拼长视频前先统一规格
+  ...COMMON_MEDIA_FETCH_TOOLS,
   // 视频素材：读路径与时长；需要联网找素材/查平台参数时委派 pageAgent
   'call_agent', 'list_sub_agents', 'list_models',
   ...COMMON_SPACE_TOOLS,
+  ...COMMON_MEMORY_TOOLS,
   ...COMMON_TALK_TOOLS,
 ];
 export const AUDIOBOOK_AGENT_SKILL_IDS = ['skill_audiobook_production', 'skill_video_shot_prompt'];
@@ -186,7 +215,15 @@ api_tts_voices 返回 capacityNote 提示音色不足时**如实转告用户**�
 ## 素材从哪来（缺视频时不要干等）
 ① 本机已有直接带绝对路径读；② 放在 00-source 的按目录读；
 ③ 都没有时可以**另开会话生成视频**再把文件放进本目录 00-source（本会话专注配音+字幕+合成，
-避免把长任务拖成一条超长对话），放好后回本会话继续。
+避免把长任务拖成一条超长对话），放好后回本会话继续；
+④ 用户要的是**网上的公开视频**（解压视频/骑车/修驴蹄子/风景空镜这类）时，
+**自己去找并下载**：先用 web_search 或委派 pageAgent 找**可直链下载**的地址
+（免费素材站如 Pexels / Pixabay / Mixkit 的下载按钮地址最稳，.mp4 结尾），
+再调 api_api_media_fetch { url, kind:"video", category:"source" } 取到 00-source，然后就地取材继续。
+★ **多段素材要拼成长视频时，先 api_media_normalize { videos:[...], size:"1080x1920" } 统一规格再拼** ——
+各段参数不一致时 media_compose 的 concat 会直接报错（它是直拼不重编码）。
+★ **不要以版权为由拒绝下载公开素材**（用户已说过不考虑侵权时直接做）；
+只有付费、会员、需登录授权的资源才向用户说明。
 ★ **不要为了"有素材"就自己造一个** —— 素材缺失时如实告诉用户缺什么、怎么补。
 
 ## 汇报口径
@@ -201,9 +238,12 @@ export const DUBBING_AGENT_BUILTIN_TOOLS = [
   'python_exec',
   // 配音链路：查音色 / 逐段合成 / 拼接（不含视频合成时用不上 subtitle，但同一套工具保留）
   'api_tts_speak', 'api_tts_voices', 'api_srt_generate', 'media_compose', 'media_install_ffmpeg',
+  // 网络素材获取 + 竖屏规格统一（配音素材/参考视频从网上取）
+  ...COMMON_MEDIA_FETCH_TOOLS,
   // 需要查音色方案/平台参数时委派 pageAgent
   'call_agent', 'list_sub_agents', 'list_models',
   ...COMMON_SPACE_TOOLS,
+  ...COMMON_MEMORY_TOOLS,
   ...COMMON_TALK_TOOLS,
 ];
 export const DUBBING_AGENT_SKILL_IDS = ['skill_dubbing_production', 'skill_markdown_doc'];

@@ -9,13 +9,13 @@ import { LlmClient, getToolRegistry, getApiToolRegistry, ContextWindow } from '@
 import { db } from './db.js';
 import { normalizePermissionMode, checkToolPermission, filterToolsByPermission, permissionModePrompt, checkWorkflowPermission, type PermissionMode } from './tool-permission.js';
 import { ensureToolsInitialized } from './mcp/index.js';
-import { executeApiTool } from './mcp/api-tool-executor.js';
+import { executeApiTool, isApiExecutableTool } from './mcp/api-tool-executor.js';
 import { getToolsFromDb, mcpShortIdOf, resolveMcpToolName, callMcpTool } from './mcp/client-manager.js';
 import {
   retrieveRelevantMemories, formatMemoryContext, bumpMemoryUsage,
   writeMemoryItems, flushMemoriesBeforeCompression, parseExtractedItems, type MemoryWriteItem,
 } from './services/memory-service.js';
-import { loadSpaceMemoryForConversation, formatSpaceMemoryContext, appendTaskDecision, loadTaskMemoryForConversation, formatTaskMemoryContext } from './services/space-memory.js';
+import { loadSpaceMemoryForConversation, formatSpaceMemoryContext, appendTaskDecision, loadTaskMemoryForConversation, formatTaskMemoryContext, appendTaskProgress } from './services/space-memory.js';
 import { summarizeResourceDirsSync } from './services/space-resources.js';
 import { serverState } from './state.js';
 import { resolveArtifactDirFor } from './services/artifact-dir.js';
@@ -1284,6 +1284,8 @@ async function runReActLoop(task: LlmTask, params: {
         }
         emit(task, { type: 'task:completed' });
         task.status = 'completed';
+        // 长任务收尾：把本轮结论沉淀进空间记忆（跨会话可见），见 recordTaskProgress
+        void recordTaskProgress(task, 'completed', fullContent || fullReasoning || '');
         void extractMemoryFromConversation(task);
         return;
       }
@@ -1400,14 +1402,22 @@ async function runReActLoop(task: LlmTask, params: {
     emit(task, { type: 'message:added', message: { id: tipId, role: 'assistant', content: tipText } });
     emit(task, { type: 'task:completed' });
     task.status = 'completed';
+    // 达最大步数 = 长任务最常见的"没跑完"形态：总结必须进空间记忆，
+    // 否则同目录新开会话不知道上一批做到哪。复用上面的总结文本，不额外多花一次 LLM 调用。
+    void recordTaskProgress(task, 'max_steps', tipText, { steps: maxSteps });
     void extractMemoryFromConversation(task);
   } catch (e: any) {
     if (isAbortError(e)) {
       task.status = 'aborted';
       emit(task, { type: 'task:aborted' });
+      // 被终止的长任务同样要留痕：此前 abort 连一条总结消息都没有，
+      // 空间记忆里完全无痕 → 同目录新会话读到的还是"从没做过这个任务"。
+      // 取最后一条助手消息当"做到哪"的线索（不额外调 LLM，终止路径要快）。
+      void recordTaskProgress(task, 'aborted', lastAssistantText(convId));
     } else {
       task.status = 'failed';
       task.error = e?.message || String(e);
+      void recordTaskProgress(task, 'failed', `${task.error}｜${lastAssistantText(convId)}`);
       // 失败留痕：LLM 调用失败（429/401/超时/网络错误等）也要落库——本轮助手占位消息
       // 内容为空时直接把错误写进去，前端实时可见、刷新后也有记录；无占位消息则新增一条。
       const errText = `（调用失败：${task.error}）`;
@@ -1476,7 +1486,9 @@ async function executeTool(
   const isUiTool = uiTools.has(toolName);
   const isMcp = toolName.startsWith('mcp_');
   const isCustom = toolName.startsWith('custom_');
-  const isApi = toolName.startsWith('api_');
+  // ★ 不能用 startsWith('api_') 单独判定：media_compose/media_install_ffmpeg 不带前缀却由
+  //   executeApiTool 实现。统一用 isApiExecutableTool（见其注释里的完整链路说明）。
+  const isApi = isApiExecutableTool(toolName);
 
   // 参数归一化兜底：模型文本模式工具调用常把 url 放到 target/address/link 等字段，补齐避免误报缺参
   args = normalizeToolArgs(toolName, args);
@@ -2057,8 +2069,10 @@ async function runSubAgent(
       subTools.push({ type: 'function', function: { name, description: def.description, parameters: def.inputSchema } });
       continue;
     }
-    // API 工具（api_memory_search 等）
-    if (name.startsWith('api_')) {
+    // API 工具（api_memory_search / api_media_fetch / media_compose 等）
+    // ★ 用 isApiExecutableTool：media_compose / media_install_ffmpeg 不带 api_ 前缀，
+    //   只判前缀会让子智能体与工作流**看不到**这两个工具（拿不到 = 拼不了成片）。
+    if (isApiExecutableTool(name)) {
       for (const tools of getApiToolRegistry().values()) {
         const def = tools.find(t => t.name === name);
         if (def) {
@@ -2401,6 +2415,48 @@ function resolveMemoryExtractLlm(task: LlmTask): { platform: Platform; model: Mo
   const p = loadPlatform(task.platformId, task.userId);
   const m = loadModel(task.modelId, task.userId, task.platformId);
   return p && m ? { platform: p, model: m } : null;
+}
+
+/** 会话里最后一条非空助手消息 —— 终止/失败路径用它当「做到哪」的线索。
+ *  floor 是为了跳过本次刚写的失败兜底文案（否则记的是"调用失败"而非真实进展）。 */
+function lastAssistantText(convId: string, floor = 0): string {
+  try {
+    const msgs = loadMessages(convId).filter((m) => m.role === 'assistant' && (m.content || '').trim());
+    const hit = msgs.filter((m) => (m.createdAt || 0) >= floor).pop() || msgs.pop();
+    return (hit?.content || '').trim();
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * 长任务收尾 → 空间记忆。
+ *
+ * ★★★ 为什么必须有这个函数（用户 2026-09-27 报「长任务没完整需要总结记忆进入空间记忆」）：
+ *   此前四条任务出口**没有一条**把结论写进空间记忆：
+ *     · 正常完成 / 达最大步数 → 只写 memory 表（user/agent 维度）与一条对话消息；
+ *     · 被终止 / 失败 → 连对话消息都没有（失败只有错误文案）。
+ *   而空间 MEMORY.md 是**唯一**跨会话注入的记忆文件 → 同目录新会话读到的永远是空的，
+ *   用户"换会话继续同一个长任务"时模型不知道上一批做到哪。
+ *
+ * fire-and-forget：写记忆失败绝不阻塞收尾（appendTaskProgress 内部已 fail-safe）。
+ */
+async function recordTaskProgress(
+  task: LlmTask,
+  outcome: 'completed' | 'max_steps' | 'aborted' | 'failed',
+  summary: string,
+  extra?: { steps?: number },
+): Promise<void> {
+  try {
+    let agentName = '';
+    if (task.agentId) {
+      try {
+        const row = db.prepare('SELECT name FROM agent WHERE id = ?').get(task.agentId) as { name?: string } | undefined;
+        agentName = row?.name || '';
+      } catch { /* 取不到就不写智能体名 */ }
+    }
+    await appendTaskProgress(task.conversationId, outcome, summary, { steps: extra?.steps, agentName });
+  } catch { /* 收尾留痕失败不影响任务状态上报 */ }
 }
 
 /** 记忆抽取：任务完成后从会话中抽取值得长期记住的信息，写入 memory 表。
@@ -2828,7 +2884,7 @@ export function buildToolsForBackend(agentId: string | null, userId: string, opt
     // AI 媒体生成：文生图/文生视频（agnes 平台专用端点），默认暴露让所有智能体都能直接出图/出片
     'api_image_generate', 'api_video_generate', 'api_video_status',
   ];
-  const mountedApiTools = [...toolIds, ...convMounts.builtinToolIds].filter((n) => n.startsWith('api_'));
+  const mountedApiTools = [...toolIds, ...convMounts.builtinToolIds].filter((n) => isApiExecutableTool(n));
   // 已挂载专属 api_* 工具链的（数据查询智能体等）只暴露它挂载的工具：记忆/知识库这类通用工具
   // 对它属于干扰源 —— 实测会先去搜知识库扑空、再乱调子智能体工具，最终编造答案。
   const apiToolNames = mountedApiTools.length ? mountedApiTools : alwaysApiTools;

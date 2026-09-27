@@ -93,9 +93,11 @@ router.post('/builtin/execute', async (req: Request, res: Response) => {
   const args = (rawArgs && typeof rawArgs === 'object' && !Array.isArray(rawArgs)) ? rawArgs as Record<string, unknown> : {};
   try {
     let result: unknown;
-    if (name.startsWith('api_')) {
+    // ★ 判定用 isApiExecutableTool 而不是 startsWith('api_')：media_compose / media_install_ffmpeg
+    //   不带 api_ 前缀却由 executeApiTool 实现，只判前缀会让「试运行」直接报工具不存在。
+    const { executeApiTool, isApiExecutableTool } = await import('../mcp/api-tool-executor.js');
+    if (isApiExecutableTool(name)) {
       // 数据查询类 API 工具（api_ontology_* / api_data_* 等）走后端 api 执行通道
-      const { executeApiTool } = await import('../mcp/api-tool-executor.js');
       result = await executeApiTool(name, args, userId);
     } else {
       const registry = getToolRegistry();

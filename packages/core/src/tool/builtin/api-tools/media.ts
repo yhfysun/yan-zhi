@@ -23,6 +23,10 @@ import type { ApiModuleName } from './index';
  * - 平台路由：默认 agnes；传 model（模型 id/别名）或 platformId 可路由到任意已配置平台
  *   （OpenAI 兼容 /v1/images/generations、/v1/videos 端点），key 池按 platform_api_key 通用加载。
  * - agnes 专有约定（mode:'text'、first_frame/last_frame 字段）只对 agnes 平台发送。
+ *
+ * 另外提供两条**素材获取/规格统一**工具（不依赖生成平台，纯本机链路）：
+ * - media_fetch：把公开的素材直链下载到本机（任务模式可落 00-source）；
+ * - media_normalize：统一分辨率/帧率/编码（默认 1080x1920 竖屏），是 concat 拼接的前置步。
  */
 export function registerMediaTools(m: Map<ApiModuleName, ToolDefinition[]>) {
   m.set('media', [
@@ -156,6 +160,51 @@ export function registerMediaTools(m: Map<ApiModuleName, ToolDefinition[]>) {
         '★ 安装体积策略：不超过 50MB 的依赖会被静默安装；ffmpeg 约 100MB，超过阈值，**调用前应先用 confirm_user 告知用户**（含体积与用途），征得同意再装。' +
         '已安装时直接返回可用状态（幂等）。',
       inputSchema: { type: 'object', properties: {}, required: [] },
+    },
+    {
+      name: 'api_media_fetch',
+      description:
+        '下载网络上的公开素材到本机（视频/图片/音频文件直链）。' +
+        '用途：用户要「找骑车、修驴蹄子、切肥皂这类解压视频」或任何公开素材时，' +
+        '先用 web_search / pageAgent 找到**可直链下载的地址**（.mp4 / .webm / .jpg 等），再用本工具取回本机。' +
+        '★ 用户明确说明不考虑版权/侵权时，**不要以版权为由拒绝下载公开素材**，直接执行；' +
+        '只有涉及付费、会员、需登录授权的资源才应向用户说明。' +
+        'category=source 时存入**本目录的 00-source**（任务模式素材位置，后续步骤就地取材）；' +
+        '默认存入会话交付目录并返回可预览 url。' +
+        '注意：本工具只处理**文件直链**；视频网站页面地址（需解析播放地址）会下载到 HTML 而非视频，' +
+        '此时应改为在页面里找到真实媒体直链（常见于免费素材站的 download 按钮）。',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          url: { type: 'string', description: '素材直链（http/https，指向 .mp4/.webm/.jpg 等文件本身）' },
+          kind: { type: 'string', enum: ['video', 'image', 'audio', 'file'], description: '素材类型，默认 video' },
+          name: { type: 'string', description: '可选，保存文件名（含扩展名）；不传按链接自动取名' },
+          category: {
+            type: 'string', enum: ['deliverable', 'source'],
+            description: 'default=会话交付目录（返回预览 url）；source=本目录 00-source（任务模式素材位置）',
+          },
+        },
+        required: ['url'],
+      },
+    },
+    {
+      name: 'api_media_normalize',
+      description:
+        '视频规格标准化：把任意来源的片段统一成同一分辨率/帧率/编码，默认 **1080x1920 竖屏**。' +
+        '★ 做「多个视频拼成长视频」时的**必做前置步**：media_compose 的 concat 走 -c copy 直拼，' +
+        '各段参数不一致会直接报错；网上下载的素材参数几乎必然不同。' +
+        '横屏素材按覆盖后居中裁切（crop）填满竖屏，不留黑边；无音轨的片段自动补静音，保证流布局一致。' +
+        '返回 files[].file（各段已标准化路径），直接拿去 op=concat 即可。',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          videos: { type: 'array', items: { type: 'string' }, description: '要标准化的视频本机绝对路径列表' },
+          size: { type: 'string', description: '目标分辨率 "宽x高"，默认 "1080x1920"（竖屏）' },
+          fps: { type: 'number', description: '目标帧率，默认 30' },
+          prefix: { type: 'string', description: '可选，输出文件名前缀；不传自动命名' },
+        },
+        required: ['videos'],
+      },
     },
     {
       name: 'media_compose',

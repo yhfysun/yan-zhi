@@ -20,8 +20,8 @@ import {
 } from '../services/peers.js';
 import { gitService } from '../services/git.js';
 import { bumpMemoryCache } from '../services/memory-service.js';
-import { readSpaceMemory, appendSpaceMemory } from '../services/space-memory.js';
-import { setSpaceTaskType } from '../services/space-resources.js';
+import { readSpaceMemory, appendSpaceMemory, readTaskProgressForConversation } from '../services/space-memory.js';
+import { setSpaceTaskType, resolveSpaceResourceRoot } from '../services/space-resources.js';
 import { TASK_TYPE_IDS, getTaskType } from '@yan-zhi/shared';
 import { readBrowserMemoryOverview } from '../services/browser-memory.js';
 import { ensureArtifactDirFor } from '../services/artifact-dir.js';
@@ -224,6 +224,24 @@ function rowToFile(r: any) {
   };
 }
 
+/**
+ * 该工具是否由 executeApiTool 执行。
+ *
+ * ★★★ 为什么不能只判 `startsWith('api_')`（2026-09-27 挖出的真实缺陷）：
+ *   `media_compose` / `media_install_ffmpeg` 由本文件的 executeApiTool 实现、也列在
+ *   SUPPORTED_API_TOOLS 里，**但名字不带 `api_` 前缀**。而全链路四处分发都写成
+ *   `name.startsWith('api_')`（llm-task-manager 的执行与暴露、routes/tools、
+ *   mcp/index），且它们又不在 core registry 里 —— 于是：
+ *     · 模型侧**看不到**它们（buildToolsForBackend 的 `filter(startsWith('api_'))` 把它们滤掉）
+ *     → 表现为「让模型拼长视频，它压根没这个工具可调」；
+ *     · 即使硬调，也落到 core registry 分支 → 返回「内置工具不存在」。
+ *   这正是用户诉求「视频拼成长视频」跑不通的**底层原因之一**，而不是模型不会用。
+ *   统一走这个判定函数，四处调用点不再各写各的前缀判断（避免再次漏改）。
+ */
+export function isApiExecutableTool(name: string): boolean {
+  return String(name || '').startsWith('api_') || SUPPORTED_API_TOOLS.has(name);
+}
+
 /** 服务端实际实现了执行逻辑的 api_* 工具清单，未列出的名称应被配置层过滤。 */
 export const SUPPORTED_API_TOOLS = new Set([
   'api_agent_list', 'api_agent_get', 'api_agent_create', 'api_agent_update', 'api_agent_delete', 'api_agent_mount',
@@ -273,6 +291,8 @@ export const SUPPORTED_API_TOOLS = new Set([
   'api_tts_speak', 'api_tts_voices',
   // 合成层：字幕生成 + ffmpeg 音视频合成（含按需下载 ffmpeg）
   'api_srt_generate', 'media_compose', 'media_install_ffmpeg',
+  // 网络素材获取：公开视频/图片直链下载（标准化见 media_compose 的 normalize 操作）
+  'api_media_fetch', 'api_media_normalize',
 ]);
 
 /** 本体挂载范围：任务显式下发优先；否则读 server agent 表；均无 = undefined 不限 */
@@ -929,6 +949,89 @@ async function mediaSpeak(
   return fail(errors.join('；'));
 }
 
+// ===== 网络素材获取（media_fetch）：把公开直链素材下载到本机 =====
+//
+// ★ 为什么必须单独做一条通路（用户明确诉求：「让大模型去下载公开的解压类视频」）：
+//   在此之前模型**根本没有可用的下载路径**，所以表现为"不去下载"：
+//   · `browser_download` 只挂在 pageAgent 上，且需要浏览器先导航到页面触发下载；
+//   · `http_request` 的实现是 `await res.text()` —— 二进制会被按文本解码毁掉，存不下来。
+//   本工具复用生图/生视频同一套 media-fetch（直连优先 → 本机代理隧道兜底），
+//   把链接取成**本机文件**，返回 {type,file,url} 与其它媒体工具一致。
+//
+// ★ 落点必须让任务模式"认得出"，否则下载完素材还是"缺素材"：
+//   category=deliverable（默认）→ 会话交付目录（带预览 URL，可点开看）；
+//   category=source → 空间资源目录的 **00-source**（任务模式的素材约定位置，无 URL，
+//   但方案里的「目录资源现状」能扫到，后续步骤就地取材）。
+
+/** 下载体积上限（2GB）：防误填超大链接把磁盘打满；命中即明确报错，不静默截断 */
+const MEDIA_FETCH_MAX_BYTES = 2 * 1024 * 1024 * 1024;
+
+/**
+ * 清洗下载文件名 —— 落盘名必须过静态路由的 `isSafeMediaName`：
+ * 禁路径分隔符 / `..` / 控制字符 / 前后空白。带 `..` 的名字会被 404 拒掉，
+ * 表现为「下载成功但预览裂开」，所以这里一次性洗干净（而不是让下游容错）。
+ */
+function safeDownloadName(raw: string, fallbackExt: string): string {
+  const base = path.basename(String(raw || '').trim()).replace(/[\\/]/g, '_');
+  let cleaned = base
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u001f\u007f]/g, '')
+    .replace(/\.{2,}/g, '.')
+    .trim();
+  if (!cleaned || /^\.+$/.test(cleaned)) cleaned = '';
+  if (!cleaned) return `fetched-${Date.now()}${fallbackExt}`;
+  if (!/\.[a-z0-9]{2,5}$/i.test(cleaned)) cleaned += fallbackExt;
+  return cleaned.slice(0, 150);
+}
+
+/** URL → 扩展名（路径带扩展就用它，否则按类型兜底） */
+function extForFetch(url: string, fallbackExt: string): string {
+  try {
+    const p = new URL(url).pathname;
+    const m = /\.(mp4|webm|mov|m4v|mkv|avi|flv|png|jpe?g|webp|gif|bmp)$/i.exec(p);
+    if (m) return `.${m[1].toLowerCase().replace('jpeg', 'jpg')}`;
+  } catch { /* 非法 URL 交给下载层报错 */ }
+  return fallbackExt;
+}
+
+/** 跑一次 ffprobe，成功返回 stdout（用于探测流信息）。 */
+function runFfprobe(bin: string, args: string[], timeoutMs: number): Promise<{ ok: boolean; out: string }> {
+  return new Promise((resolve) => {
+    execFile(bin, args, { timeout: timeoutMs, windowsHide: true, maxBuffer: 4 * 1024 * 1024 }, (err, stdout) => {
+      resolve({ ok: !err, out: String(stdout || '') });
+    });
+  });
+}
+
+/**
+ * 探测视频**是否带音轨**，以及**视频时长**。
+ *
+ * ★ 为什么必须探测（而不是用 `-map 0:a:0?` 的可选映射糊过去）：
+ *   可选映射在缺音轨时只是"不映射"，**输出就没有音轨** —— 而后续 concat 要求各段
+ *   流布局一致，一段无音轨照样拼不上。所以需要明确知道"有没有"，再决定补不补静音。
+ *   反过来同时 `-map 0:a:0?` 和 `-map <静音源>` 会产出**两条音轨**，同样是错的。
+ * ★★★ 为什么还要探测**时长**（实测踩到，最隐蔽的一坑）：
+ *   `anullsrc` 是**无限长**的音频源。若只靠 `-shortest` 收尾，在 ffmpeg 9.0 上对
+ *   `-f lavfi` 输入**不生效** —— 命令不报错、不退出，产物一路膨胀（实测 13MB 仍在写）。
+ *   正解是给静音源显式 `-t <视频时长>`，再让 `-shortest` 只做兜底。
+ *   所以这里一次探测把「有无音轨 + 时长」都拿回来，避免多跑一次 ffprobe。
+ */
+async function probeMedia(ffprobe: string, file: string): Promise<{ hasAudio: boolean; durationSec: number }> {
+  const r = await runFfprobe(ffprobe, [
+    '-v', 'error', '-show_entries', 'format=duration', '-show_entries', 'stream=index,codec_type',
+    '-of', 'json', file,
+  ], 30000);
+  if (!r.ok) return { hasAudio: false, durationSec: 0 };
+  try {
+    const j = JSON.parse(r.out) as { streams?: Array<{ codec_type?: string }>; format?: { duration?: string } };
+    const hasAudio = (j.streams || []).some((s) => s.codec_type === 'audio');
+    const durationSec = Number(j.format?.duration);
+    return { hasAudio, durationSec: Number.isFinite(durationSec) && durationSec > 0 ? durationSec : 0 };
+  } catch {
+    return { hasAudio: false, durationSec: 0 };
+  }
+}
+
 // ===== 合成层（api_srt_generate / media_compose）：字幕与音视频混流 =====
 // 设计取舍：不做剪辑台。分镜表每镜自带时长 → 时间轴是已知量，字幕纯计算生成（零 ASR），
 // 合成只需 concat / 混音 / 烧字幕三种确定性操作。ffmpeg 经 ffmpeg-runtime 定位（随包 > PATH）。
@@ -987,6 +1090,174 @@ async function mediaInstallFfmpeg(): Promise<MpcToolExecutionResult> {
   }));
 }
 
+/** 会话 → 所属空间的资源根目录（下载素材要落进空间的 00-source，而不是会话交付目录） */
+function resolveConversationSpaceRoot(conversationId?: string): string | null {
+  if (!conversationId) return null;
+  try {
+    const row = db
+      .prepare('SELECT s.id, s.dir_path FROM conversation c JOIN space s ON s.id = c.space_id WHERE c.id = ?')
+      .get(conversationId) as { id: string; dir_path: string | null } | undefined;
+    if (!row) return null;
+    return resolveSpaceResourceRoot({ id: row.id, dir_path: row.dir_path });
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 下载公开素材直链到本机（网络素材获取）。
+ *
+ * 走 services/media-fetch 的统一入口：直连优先，直连不通自动改走本机代理隧道 ——
+ * 与生图/生视频产物落盘同一条通路，网络环境的差异在这一层被吸收。
+ */
+async function mediaFetch(
+  args: Record<string, unknown>,
+  conversationId?: string,
+): Promise<MpcToolExecutionResult> {
+  const url = str(args, 'url').trim();
+  if (!url) return fail('url 为必填项');
+  if (!/^https?:\/\//i.test(url)) return fail(`url 必须是 http/https 直链：${url.slice(0, 120)}`);
+
+  const kind = str(args, 'kind').trim().toLowerCase() || 'video';
+  if (!['video', 'image', 'audio', 'file'].includes(kind)) return fail('kind 必须是 video / image / audio / file 之一');
+  const category = str(args, 'category').trim() === 'source' ? 'source' : 'deliverable';
+  const fallbackExt = kind === 'image' ? '.png' : kind === 'audio' ? '.mp3' : kind === 'file' ? '.bin' : '.mp4';
+
+  let buf: Buffer;
+  try {
+    buf = await downloadBinary(url);
+  } catch (e: unknown) {
+    return fail(`下载失败：${e instanceof Error ? e.message : String(e)}`);
+  }
+  if (!buf || buf.length === 0) return fail('下载得到空内容（链接可能是页面而不是文件直链）');
+  if (buf.length > MEDIA_FETCH_MAX_BYTES) {
+    return fail(`文件过大（${formatBytes(buf.length)}），超过上限 ${formatBytes(MEDIA_FETCH_MAX_BYTES)}`);
+  }
+
+  const nameHint = str(args, 'name').trim();
+  const fileName = safeDownloadName(nameHint || `${kind}-${Date.now()}`, extForFetch(url, fallbackExt));
+
+  try {
+    if (category === 'source') {
+      // 任务模式（脚本/短剧/有声小说等）按「00-source = 原始素材」组织；
+      // 落到这里才能被「目录资源现状」扫到，后续步骤直接取材（而不是又提示缺素材）。
+      const root = resolveConversationSpaceRoot(conversationId);
+      if (!root) return fail('当前会话没有绑定空间，无法定位 00-source（可改用 category=deliverable）');
+      const dir = path.join(root, '00-source');
+      await mkdir(dir, { recursive: true });
+      const file = path.join(dir, fileName);
+      await writeFile(file, buf);
+      return ok(JSON.stringify({
+        ok: true, type: kind, category: 'source',
+        file, name: fileName, bytes: buf.length, sourceUrl: url,
+        note: `已存入本目录的 00-source（任务模式素材位置）。后续步骤直接用这个绝对路径读它。`,
+      }));
+    }
+
+    const target = mediaTarget({ conversationId, kind: kind === 'image' ? 'images' : kind === 'audio' ? 'audios' : kind === 'file' ? 'files' : 'videos' });
+    await mkdir(target.dir, { recursive: true });
+    const file = path.join(target.dir, fileName);
+    await writeFile(file, buf);
+    return ok(JSON.stringify({
+      ok: true, type: kind, category: 'deliverable',
+      url: `${target.urlBase}/${path.basename(file)}`,
+      file, name: fileName, bytes: buf.length, sourceUrl: url,
+    }));
+  } catch (e: unknown) {
+    return fail(`素材落盘失败：${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
+/**
+ * 竖屏标准化：把任意来源的视频统一成同一规格，让后续拼接一定成功。
+ *
+ * ★ 为什么必须做（用户诉求「视频最后都是竖屏、分辨率一样、拼成长视频」）：
+ *   media_compose 的 concat 走 `-c copy` 直拼，**要求各段编码参数完全一致**，
+ *   不一致直接报错。网上下载的素材分辨率/帧率/编码各不相同 → 不做标准化就永远拼不上。
+ * ★ 两个动作一次做完（分开做必然有一批片段漏做其中一步）：
+ *   ① 画面 scale 到覆盖目标后**居中裁切**（`force_original_aspect_ratio=increase` + `crop`），
+ *      横屏素材也不留黑边；② 音轨统一成 48k 立体声 AAC，**原本没有音轨的补静音** ——
+ *      有片段缺音轨时 concat 同样会失败，这是最容易被漏掉的一环。
+ */
+async function mediaNormalize(
+  args: Record<string, unknown>,
+  conversationId?: string,
+): Promise<MpcToolExecutionResult> {
+  const ff = await resolveFfmpeg();
+  if (!ff.ok) return fail(ffmpegMissingHint(ff));
+
+  const raw = Array.isArray(args.videos) ? args.videos.map((v) => String(v)) : [];
+  if (!raw.length) return fail('videos 必填且为非空数组（要标准化的视频绝对路径）');
+  const files: string[] = [];
+  for (let i = 0; i < raw.length; i++) {
+    const c = requireLocalFile(raw[i], `videos[${i}]`);
+    if (!c.ok) return fail(c.error);
+    files.push(c.file);
+  }
+
+  const size = str(args, 'size').trim() || '1080x1920';
+  if (!/^\d{2,5}x\d{2,5}$/.test(size)) return fail(`size 形如 1080x1920（宽x高）：${size}`);
+  const fps = Math.min(Math.max(Number(args.fps) || 30, 1), 120);
+  const [w, h] = size.split('x').map((n) => Number(n));
+
+  const target = mediaTarget({ conversationId, kind: 'videos' });
+  await mkdir(target.dir, { recursive: true });
+
+  // 画面：按其**较短边**放大到覆盖目标框，再居中裁切 → 横竖屏都能填满且不变形
+  const vf = `scale=${w}:${h}:force_original_aspect_ratio=increase,crop=${w}:${h},setsar=1,fps=${fps}`;
+  const outBase = safeDownloadName(str(args, 'prefix').trim() || `norm-${Date.now()}`, '').replace(/\.[a-z0-9]+$/i, '');
+
+  const outs: Array<{ file: string; url: string; bytes: number; source: string; hadAudio: boolean }> = [];
+  const failures: string[] = [];
+  for (let i = 0; i < files.length; i++) {
+    const src = files[i];
+    const out = path.join(target.dir, `${outBase}-${String(i + 1).padStart(3, '0')}.mp4`);
+    // 有音轨 → 只用原音轨；无音轨 → 只用静音源。二选一（同时映射会产出两条音轨）。
+    const hadAudio = await probeMedia(ff.ffprobe, src);
+    // ★★ 一旦出现任何 `-map`，ffmpeg 的**默认流选择就被禁用** —— 所以视频流必须显式映射，
+    //    否则「有音轨」分支会产出**只有音频、没有画面**的文件（命令成功、不报错，实测踩到）。
+    // 无音轨 → 用 anullsrc 补静音，**必须显式 -t <时长>**：anullsrc 是无限源，
+    // 只靠 -shortest 在 ffmpeg 9.0 上不生效（不报错、不退出、产物一直膨胀）。
+    const audioArgs = hadAudio.hasAudio
+      ? ['-map', '0:v:0', '-map', '0:a:0']
+      : [
+          '-f', 'lavfi',
+          ...(hadAudio.durationSec > 0 ? ['-t', String(hadAudio.durationSec)] : []),
+          '-i', 'anullsrc=channel_layout=stereo:sample_rate=48000',
+          '-map', '0:v:0', '-map', '1:a:0',
+        ];
+    const r = await runFfmpeg(ff.ffmpeg, [
+      '-y', '-i', src,
+      // 画面标准化，音频统一 48k 立体声 AAC；缺音轨补等长静音（-shortest 兜底对齐）
+      ...audioArgs,
+      '-vf', vf,
+      '-c:v', 'libx264', '-preset', 'medium', '-crf', '20', '-pix_fmt', 'yuv420p',
+      '-c:a', 'aac', '-ar', '48000', '-ac', '2',
+      '-shortest', '-movflags', '+faststart',
+      out,
+    ], 900000);
+    if (!r.ok) { failures.push(`${path.basename(src)}：${r.stderr.slice(-300)}`); continue; }
+    try {
+      const st = await stat(out);
+      outs.push({ file: out, url: `${target.urlBase}/${path.basename(out)}`, bytes: st.size, source: src, hadAudio: hadAudio.hasAudio });
+    } catch (e: unknown) {
+      failures.push(`${path.basename(src)}：产物读取失败 ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  if (!outs.length) return fail(`标准化全部失败：\n${failures.join('\n')}`);
+  return ok(JSON.stringify({
+    ok: failures.length === 0,
+    type: 'video',
+    normalized: outs.length,
+    failed: failures.length,
+    size, fps,
+    files: outs.map((o) => ({ file: o.file, url: o.url, bytes: o.bytes, source: o.source, hadAudio: o.hadAudio })),
+    ...(failures.length ? { failures } : {}),
+    note: '各段已是同一规格，可直接用 media_compose op=concat 拼接（-c copy 直拼不会报参数不一致）。',
+  }));
+}
+
 async function mediaSrtGenerate(
   args: Record<string, unknown>,
   conversationId?: string,
@@ -1024,7 +1295,10 @@ async function mediaCompose(
   conversationId?: string,
 ): Promise<MpcToolExecutionResult> {
   const op = str(args, 'op').trim();
-  if (!['dub', 'concat', 'subtitle'].includes(op)) return fail('op 必须是 dub / concat / subtitle 之一');
+  if (!['dub', 'concat', 'subtitle', 'normalize'].includes(op)) return fail('op 必须是 dub / concat / subtitle / normalize 之一');
+
+  // normalize 与其余三个操作共用 ffmpeg，但语义是「统一规格」而非「组装」，直接转交
+  if (op === 'normalize') return mediaNormalize(args, conversationId);
 
   const ff = await resolveFfmpeg();
   if (!ff.ok) return fail(ffmpegMissingHint(ff));
@@ -1056,7 +1330,14 @@ async function mediaCompose(
       await writeFile(listFile, body, 'utf8');
       // -c copy 直拼（要求各段参数一致；不一致会明确报错，不静默转码降质）
       r = await runFfmpeg(ff.ffmpeg, ['-y', '-f', 'concat', '-safe', '0', '-i', listFile, '-c', 'copy', outFile], 600000);
-      if (!r.ok) return fail(`拼接失败（各段编码参数可能不一致，需用同参数生成；-c copy 不做重编码）：${r.stderr}`);
+      if (!r.ok) {
+        return fail(
+          `拼接失败（各段编码参数不一致）。**正解不是反复重试，而是先统一规格**：\n` +
+          `先调 api_media_normalize { videos: [...各段绝对路径], size: "1080x1920", fps: 30 } 把每段标准化，\n` +
+          `再用 media_compose op=concat 拼它返回的 files[].file（此时 -c copy 直拼一定能过）。\n` +
+          `原始报错：${r.stderr}`,
+        );
+      }
     } else if (op === 'dub') {
       const v = requireLocalFile(args.video, 'video');
       if (!v.ok) return fail(v.error);
@@ -1872,7 +2153,18 @@ export async function executeApiTool(
         const uid = requireUser(userId);
         const spaceId = str(args, 'spaceId') || resolveTaskSpaceId(conversationId);
         if (!spaceId) return fail('未指定 spaceId，且当前会话未归属任何空间');
-        return ok(await readSpaceMemory(uid, spaceId));
+        const mem = await readSpaceMemory(uid, spaceId);
+        // 顺带带上「任务进展明细」（.yan-zhi/task-memory/progress.md）：
+        // MEMORY.md 里只有被压成一行的进展条目，逐批的完整流水在明细文件里。
+        // 不自动注入（防爆窗），只在模型主动读空间记忆时一并给出 —— 否则那些明细
+        // 写下来就再也没人看得到（写了没人读 = 白写）。
+        const progress = conversationId ? readTaskProgressForConversation(conversationId) : null;
+        return ok({
+          ...mem,
+          ...(progress && progress.content.trim() && progress.path !== mem.path
+            ? { progressPath: progress.path, progressContent: progress.content }
+            : {}),
+        });
       }
       case 'api_space_memory_append': {
         const uid = requireUser(userId);
@@ -2514,6 +2806,11 @@ export async function executeApiTool(
         return await mediaCompose(args, conversationId);
       case 'media_install_ffmpeg':
         return await mediaInstallFfmpeg();
+      // 网络素材获取：公开直链下载 + 竖屏标准化（先下载 → 标准化 → 再拼接）
+      case 'api_media_fetch':
+        return await mediaFetch(args, conversationId);
+      case 'api_media_normalize':
+        return await mediaNormalize(args, conversationId);
 
       default:
         return fail(`未实现的 API 工具: ${name}`);

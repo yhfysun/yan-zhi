@@ -249,7 +249,7 @@ export const TASK_TYPES: TaskTypeSpec[] = [
         confirmAbout: '时间轴与音色是否可以定稿',
         output: 'none',
       },
-      { title: '合成导出', detail: '调 media_compose（dub 混音 / subtitle 烧字幕）合成成片到 03-output；缺 ffmpeg 时先用 confirm_user 告知体积并征得同意再 media_install_ffmpeg', output: '03-output' },
+      { title: '合成导出', detail: '调 media_compose（dub 混音 / subtitle 烧字幕）合成成片到 03-output；**多段视频要先 api_media_normalize 统一成 1080x1920 再 concat（否则直拼会报参数不一致）**；缺 ffmpeg 时先用 confirm_user 告知体积并征得同意再 media_install_ffmpeg', output: '03-output' },
     ],
   },
   {
@@ -371,7 +371,8 @@ export const TASK_TYPES: TaskTypeSpec[] = [
         confirmAbout: '分镜的输出格式',
         output: 'none',
       },
-      { title: '生成素材', detail: '按已确认的人物与分镜生成图像、配音等素材（**批量前先出 1 镜样片**确认风格）', output: '02-work' },
+      { title: '生成素材', detail: '按已确认的人物与分镜生成图像、配音等素材（**批量前先出 1 镜样片**确认风格）；需要真实空镜/参考视频时可用 api_media_fetch 从公开素材站下载到 00-source', output: '02-work' },
+      { title: '合成成片', detail: '**多镜拼接前先 api_media_normalize 统一成 1080x1920 竖屏**（各镜参数一致才能 concat 直拼），再 media_compose 合成；缺 ffmpeg 先征得用户同意', output: '03-output' },
       { title: '字幕与交付', detail: '生成字幕文件与交付清单，落到 03-output', output: '03-output' },
     ],
   },
@@ -465,12 +466,13 @@ export function formatTaskTypeContext(id?: string | null, confirmBatchSize = DEF
 const MATERIAL_NEEDS: Record<string, Array<'source' | 'reference' | 'video'>> = {
   novel_rewrite: ['source'],
   translate: ['source', 'reference'],
-  script_copy: ['source', 'reference'],
+  // 脚本/短剧都常要真实空镜或参考视频 → 需要"视频素材从哪来"这条规则
+  script_copy: ['source', 'reference', 'video'],
   audiobook: ['source', 'video'],
   dubbing: ['source'],
   comic: ['source'],
   ppt_deck: ['source'],
-  short_drama: ['source'],
+  short_drama: ['source', 'video'],
   longform: ['reference'],
 };
 
@@ -482,6 +484,14 @@ const MATERIAL_NEEDS: Record<string, Array<'source' | 'reference' | 'video'>> = 
  *   用户拿到的东西看起来正常、实则无中生有 —— 比报错难发现得多。
  * ★ 视频素材给全三条来源（本机已有 / 在 00-source / **另开会话生成后放进 00-source**），
  *   否则模型只会干等用户上传，把本来能动的事说成做不到。
+ * ★★ 「去网上找并下载」这条来自用户明确诉求（2026-09-27）：
+ *   模型缺素材时一律回"请上传"，哪怕用户要的就是**公开视频**（解压视频/骑车/修驴蹄子这类）。
+ *   根因是素材规则只列了「本机 / 00-source / 另开会话生成」，**没有一条指向网络** ——
+ *   模型手上也没有可用的下载工具（http_request 只取文本、存不下二进制）。
+ *   所以这里必须① 明写"先试着自己去找并下载"、② 点明用 `media_fetch` 与 `category:"source"`。
+ * ★★ 「不要在授权上卡住用户」同样是用户明确要求（原话「让他不用考虑侵权」）：
+ *   用户已自行判断过风险，模型再加一道版权确认 = 把可完成的事挡在门外。
+ *   （仍保留"付费/会员/需登录授权"需说明 —— 那不是版权判断，是客观上拿不到。）
  */
 function materialRules(needs: Array<'source' | 'reference' | 'video'>): string[] {
   const out: string[] = ['### 素材获取规则（缺素材时按这个来，别停在那干等）'];
@@ -504,6 +514,18 @@ function materialRules(needs: Array<'source' | 'reference' | 'video'>): string[]
       '避免把长任务拖成一条超长对话），放好后回本会话继续。',
     );
   }
+  out.push(
+    '- ★★ **素材缺失时先试着"去网上找"（别停在"请上传"）**：用户要的是「网上的公开视频/图片/音频」类素材' +
+    '（解压视频、骑车、修驴蹄子、切肥皂、风景空镜、参考截图等）时，**自己去找并下载**：' +
+    '先用 web_search / 委派 pageAgent 找到**可直链下载**的地址（.mp4/.webm/.jpg 等文件本身，' +
+    '免费素材站如 Pexels / Pixabay / Mixkit 的下载按钮地址最稳），再调 `api_media_fetch { url, kind, category:"source" }` ' +
+    '把它取到本目录的 00-source，然后就地取材继续做。',
+  );
+  out.push(
+    '- ★★ **不要在素材"要不要授权"上卡住用户**：用户明确说了不考虑版权/侵权时，' +
+    '**不要以版权为由拒绝下载公开素材**，直接执行（本机素材用于用户自己的加工，风险由用户判断）。' +
+    '只有付费内容、会员专享、需登录授权的资源才应向用户说明并让其决定。',
+  );
   out.push(
     '- ★★ **不要为了"有素材"就自己造一个**：素材缺失时如实告诉用户缺什么、怎么补。' +
     '凭空编一份原文/脚本/视频，产出会看起来正常但其实没有任何可用内容 —— 比直接报错更难发现。',

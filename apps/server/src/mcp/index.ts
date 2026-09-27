@@ -5,7 +5,7 @@ import {
   registerManagementTools,
 } from '@yan-zhi/core';
 import { resolveJwtUser } from '../auth.js';
-import { executeApiTool, SUPPORTED_API_TOOLS } from './api-tool-executor.js';
+import { executeApiTool, isApiExecutableTool, SUPPORTED_API_TOOLS } from './api-tool-executor.js';
 import { db } from '../db.js';
 
 const router = Router();
@@ -47,7 +47,9 @@ function listAllTools() {
   const apiTools: Array<Record<string, unknown>> = [];
   for (const tools of getApiToolRegistry().values()) {
     for (const tool of tools) {
-      if (!SUPPORTED_API_TOOLS.has(tool.name)) continue;
+      // 白名单判定：api_ 前缀工具与 media_compose 这类无前缀但由 executeApiTool 实现的
+      // 工具都在 SUPPORTED_API_TOOLS 里（漏了 → MCP 客户端列不到 → 模型看不到）
+      if (!isApiExecutableTool(tool.name)) continue;
       apiTools.push({
         name: tool.name,
         description: tool.description,
@@ -111,7 +113,7 @@ router.post('/', async (req: Request, res: Response) => {
     }
 
     try {
-      const result = name.startsWith('api_')
+      const result = isApiExecutableTool(name)
         ? await executeApiTool(name, args, userId)
         : await getToolRegistry().execute(name, args);
       res.json(jsonResult(request.id, result));
