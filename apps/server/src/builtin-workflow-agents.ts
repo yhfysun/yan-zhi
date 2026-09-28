@@ -1173,7 +1173,7 @@ function audiobookWorkflow() {
           "for (const s of segs) lines.push('| ' + s.index + ' | ' + (s.tone || '旁白') + ' | ' + String(s.text || '').length + ' | ' + (s.seconds || 0) + ' |');\n" +
           "lines.push('', '已产出：每段 1 段配音 + 1 份 SRT 字幕。');\n" +
           "lines.push(video ? ('视频素材：' + video) : '视频素材：未提供（如需成片，请把视频放进 00-source 后重跑）。');\n" +
-          "lines.push('合成成片：再调 media_compose（op: dub / subtitle / concat）；缺 ffmpeg 时先调 media_install_ffmpeg。');\n" +
+          "lines.push('合成成片：再调 media_compose（op: dub / subtitle / concat）；subtitle 务必传 title（项目名称，做顶部标题），subtitleFontSize 不要显式传（默认已合适，传 34 会变成超大字幕）；缺 ffmpeg 时先调 media_install_ffmpeg。');\n" +
           "return lines.join('\\n');",
       },
       position: { x: 2460, y: 240 },

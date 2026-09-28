@@ -164,28 +164,39 @@ export function registerMediaTools(m: Map<ApiModuleName, ToolDefinition[]>) {
     {
       name: 'api_media_fetch',
       description:
-        '下载网络上的公开素材到本机（视频/图片/音频文件直链）。' +
+        '下载网络上的公开素材到本机。支持两类地址：' +
+        '① **文件直链**（.mp4/.webm/.jpg 等）—— 直接取回；' +
+        '② **视频网站页面链接**（YouTube / B站 / 抖音 / 西瓜等）—— 工具自动识别网页并解析下载，' +
+        '国内站默认可用，YouTube 需设置环境变量 YZ_YTDLP_YOUTUBE=1 并配置代理。' +
         '用途：用户要「找骑车、修驴蹄子、切肥皂这类解压视频」或任何公开素材时，' +
-        '先用 web_search / pageAgent 找到**可直链下载的地址**（.mp4 / .webm / .jpg 等），再用本工具取回本机。' +
+        '直接把链接（直链或页面链接都行）交给本工具即可，不必自己先找直链。' +
         '★ 用户明确说明不考虑版权/侵权时，**不要以版权为由拒绝下载公开素材**，直接执行；' +
-        '只有涉及付费、会员、需登录授权的资源才应向用户说明。' +
-        'category=source 时存入**本目录的 00-source**（任务模式素材位置，后续步骤就地取材）；' +
-        '默认存入会话交付目录并返回可预览 url。' +
-        '注意：本工具只处理**文件直链**；视频网站页面地址（需解析播放地址）会下载到 HTML 而非视频，' +
-        '此时应改为在页面里找到真实媒体直链（常见于免费素材站的 download 按钮）。',
+        '只有付费、会员、需登录授权的资源才应向用户说明。' +
+        'category=source 时存入**本目录的 00-source**（任务模式素材位置）；默认存入会话交付目录并返回可预览 url。' +
+        '长视频体积大时可传 maxBytes（默认 2GB）放宽上限。',
       inputSchema: {
         type: 'object',
         properties: {
-          url: { type: 'string', description: '素材直链（http/https，指向 .mp4/.webm/.jpg 等文件本身）' },
+          url: { type: 'string', description: '素材直链或视频网站页面链接（http/https；页面链接如 YouTube/B站/抖音会自动解析下载）' },
           kind: { type: 'string', enum: ['video', 'image', 'audio', 'file'], description: '素材类型，默认 video' },
           name: { type: 'string', description: '可选，保存文件名（含扩展名）；不传按链接自动取名' },
           category: {
             type: 'string', enum: ['deliverable', 'source'],
             description: 'default=会话交付目录（返回预览 url）；source=本目录 00-source（任务模式素材位置）',
           },
+          maxBytes: { type: 'number', description: '可选，体积上限（字节），默认 2GB；长视频合集可传更大值（如 8*1024*1024*1024）。仅限制，不保证来源支持该体积' },
         },
         required: ['url'],
       },
+    },
+    {
+      name: 'media_install_ytdlp',
+      description:
+        '下载安装 yt-dlp（视频网站解析下载的依赖：把 YouTube/B站/抖音等页面链接解析成真实视频并下载）。' +
+        '当 media_fetch 遇到视频网站页面链接但本机未装 yt-dlp 时调用本工具。' +
+        '约 15MB，自动从 GitHub release 下载到应用数据目录，一次安装长期可用。' +
+        '已安装时直接返回可用状态（幂等）。',
+      inputSchema: { type: 'object', properties: {}, required: [] },
     },
     {
       name: 'api_media_normalize',
@@ -209,9 +220,10 @@ export function registerMediaTools(m: Map<ApiModuleName, ToolDefinition[]>) {
     {
       name: 'media_compose',
       description:
-        '音视频合成（基于 ffmpeg）：① dub 把配音音频混进视频（默认替换原音轨，keepAudio=true 时与人声混合）；② concat 按顺序拼接多段视频；③ subtitle 把 SRT 字幕烧录进画面。' +
+        '音视频合成（基于 ffmpeg）：① dub 把配音音频混进视频（默认替换原音轨，keepAudio=true 时与人声混合）；② concat 按顺序拼接多段视频；③ subtitle 把 SRT 字幕烧录进画面（可顺带在顶部叠加标题、并控制字幕字号）。' +
         '输入一律为本机文件绝对路径（前序工具返回的 file 字段）。返回 {type:"video", file, url}。' +
-        'concat 要求各段编码参数一致（copy 直拼），不一致会报错——先用同参数生成。未找到 ffmpeg 时会给出明确的放置/配置指引。',
+        'concat 要求各段编码参数一致（copy 直拼），不一致会报错——先用同参数生成。未找到 ffmpeg 时会给出明确的放置/配置指引。' +
+        '★ subtitle 推荐参数：title 传「项目名称」做顶部常驻标题（整数中文也支持），subtitleFontSize 传 32~38（竖屏 1080 宽下默认 34，避免默认字号过大压住画面）。',
       inputSchema: {
         type: 'object',
         properties: {
@@ -221,7 +233,95 @@ export function registerMediaTools(m: Map<ApiModuleName, ToolDefinition[]>) {
           keepAudio: { type: 'boolean', description: 'dub 可选，true=配音与原音轨混合（amix），false/缺省=替换原音轨' },
           videos: { type: 'array', items: { type: 'string' }, description: 'concat：按顺序的视频路径列表（≥2）' },
           srt: { type: 'string', description: 'subtitle：SRT 字幕文件本机绝对路径（api_srt_generate 的产出）' },
+          title: { type: 'string', description: 'subtitle 可选：在画面顶部叠加的标题文字（建议填项目名称），整片常驻；不传则不叠加。中文会自动使用系统中文字体渲染' },
+          subtitleFontSize: { type: 'number', description: 'subtitle 可选：字幕字号（像素，以 1920 高成片为基准），默认 120（1080 宽下约 9 字/行）；要更小传 100，更大传 140' },
+          titleFontSize: { type: 'number', description: 'subtitle 可选：标题字号（像素，基准同上），默认 140；不传用默认' },
+          subtitleColor: { type: 'string', description: 'subtitle 可选：字幕颜色，十六进制如 "#FFD700"（默认白色）' },
+          subtitleOutlineColor: { type: 'string', description: 'subtitle 可选：字幕描边颜色，默认黑色（浅色画面上加深描边更清晰）' },
+          subtitleOutline: { type: 'number', description: 'subtitle 可选：描边宽度（像素，基准同上），默认 12；0 即无描边' },
+          subtitlePosition: { type: 'string', enum: ['bottom', 'center', 'top'], description: 'subtitle 可选：字幕位置，默认 bottom 底部' },
+          subtitleMarginV: { type: 'number', description: 'subtitle 可选：字幕垂直边距（像素，基准同上）；不传按位置给默认（底部 200，顶部 260）' },
+          safeArea: { type: 'boolean', description: 'subtitle 可选：true=竖屏短视频安全区，字幕上抬到画面上方约 78% 处，避开底部进度条/账号信息遮挡（抖音/快手/视频号必开）' },
+          titleColor: { type: 'string', description: 'subtitle 可选：标题颜色，十六进制如 "#FFFFFF"，默认白色' },
+          titleFade: { type: 'number', description: 'subtitle 可选：标题淡入秒数，默认 0（立即显示）' },
           output: { type: 'string', description: '可选，输出文件名（如 final.mp4）；不传自动命名' },
+        },
+        required: ['op'],
+      },
+    },
+    {
+      name: 'media_edit',
+      description:
+        '视频剪辑与特效加工（基于 ffmpeg）：对素材做**加工**，与 media_compose 的「组装」互补。' +
+        'op 一览（按需点名，一次只做一个）：' +
+        '**trim** 裁剪取片段 { video, start, end|duration }；' +
+        '**speed** 变速/慢动作 { video, factor }（>1 加快，<1 放慢；音轨自动同步变速）；' +
+        '**snapshot** 抽帧成图 { video, time }；' +
+        '**transform** 翻转/旋转/裁切 { video, ops:["hflip"|"vflip"|"rotate90"|"rotate180"|"rotate270"] , cropW, cropH, cropX, cropY }；' +
+        '**fade** 画面与声音淡入淡出 { video, fadeIn, fadeOut }；' +
+        '**color** 调色 { video, preset:"warm|cool|bw|vintage|vivid|film|fade" 或 brightness/contrast/saturation/gamma/hue }；' +
+        '**transition** 两段间转场 { video, video2, type, duration }（要求两段规格一致，先用 api_media_normalize）；' +
+        '**overlay** 画中画/贴图/水印 { video, overlay, position, opacity, overlayWidth|overlayScale, margin }；' +
+        '**kenburns** 静态图片做推拉运镜成视频 { image, duration, size, direction }；' +
+        '**bgsound** 加背景音乐并压低原声 { video, audio, volume, duck, fadeOut }；' +
+        '**volume** 音量调整 { media, db|factor }；' +
+        '**loudnorm** 响度归一 { media, target }（多段拼接后音量忽大忽小，用它拉平）。' +
+        '输入一律为本机绝对路径（前序工具返回的 file 字段）；返回 {type, url, file}。未找到 ffmpeg 时会给出安装指引。',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          op: {
+            type: 'string',
+            enum: [
+              'trim', 'speed', 'snapshot', 'transform', 'fade',
+              'color', 'transition', 'overlay', 'kenburns',
+              'bgsound', 'volume', 'loudnorm',
+            ],
+            description: '加工操作（一次一个）',
+          },
+          video: { type: 'string', description: '主视频本机绝对路径（trim/speed/snapshot/transform/fade/color/transition/overlay/bgsound）' },
+          video2: { type: 'string', description: 'transition：第二段视频本机绝对路径' },
+          media: { type: 'string', description: 'volume/loudnorm：音频或视频本机绝对路径' },
+          image: { type: 'string', description: 'kenburns：静态图片本机绝对路径（png/jpg/webp/bmp）' },
+          overlay: { type: 'string', description: 'overlay：叠加的图片/视频本机绝对路径（水印、贴图、画中画）' },
+          audio: { type: 'string', description: 'bgsound：背景音乐本机绝对路径' },
+          start: { type: 'string', description: 'trim：起始时间，支持秒数或 "MM:SS"/"HH:MM:SS"，默认 0' },
+          end: { type: 'string', description: 'trim：结束时间（同格式）；与 duration 二选一，都不给则到片尾' },
+          duration: { type: 'number', description: 'trim/transition/kenburns：时长（秒）。trim 里与 end 二选一；transition 默认 0.8；kenburns 默认 6' },
+          time: { type: 'string', description: 'snapshot：抽帧时间点（秒数或 "MM:SS"）' },
+          factor: { type: 'number', description: 'speed：速度倍数 0.25~4（>1 加快、<1 放慢）；volume：音量倍数' },
+          db: { type: 'number', description: 'volume：分贝增益（如 -6 降低、3 提升）' },
+          ops: {
+            type: 'array', items: { type: 'string' },
+            description: 'transform：变换列表，可组合 ["hflip","rotate90"]；可选 hflip/vflip/mirror/rotate90/rotate180/rotate270',
+          },
+          cropW: { type: 'number', description: 'transform：画面裁切宽度（与 cropH 一起用）' },
+          cropH: { type: 'number', description: 'transform：画面裁切高度' },
+          cropX: { type: 'number', description: 'transform：裁切起点 X，默认 0' },
+          cropY: { type: 'number', description: 'transform：裁切起点 Y，默认 0' },
+          fadeIn: { type: 'number', description: 'fade 默认 1：画面与声音淡入秒数；bgsound 默认 0.5：BGM 淡入' },
+          fadeOut: { type: 'number', description: 'fade 默认 1：淡出秒数；bgsound 默认 1.5：BGM 片尾淡出' },
+          preset: { type: 'string', enum: ['warm', 'cool', 'bw', 'vintage', 'vivid', 'film', 'fade'], description: 'color：调色预设' },
+          brightness: { type: 'number', description: 'color：亮度，-1~1（0 不变）' },
+          contrast: { type: 'number', description: 'color：对比度，0~3（1 不变）' },
+          saturation: { type: 'number', description: 'color：饱和度，0~3（1 不变，0 即黑白）' },
+          gamma: { type: 'number', description: 'color：伽马，0.1~3（1 不变）' },
+          hue: { type: 'number', description: 'color：色相偏移角度，-180~180' },
+          type: { type: 'string', description: 'transition：转场类型（fade/dissolve/wipeleft/slideleft/circleopen/pixelize/zoomin 等），默认 fade' },
+          position: { type: 'string', enum: ['tl', 'tr', 'bl', 'br', 'center', 'top', 'bottom'], description: 'overlay：叠加位置，默认 br（右下角）' },
+          opacity: { type: 'number', description: 'overlay：叠加不透明度 0.05~1，默认 1（水印常用 0.5~0.7）' },
+          overlayWidth: { type: 'number', description: 'overlay：叠加层宽度（像素，高度按比例）；不传图片按 overlayScale 缩放' },
+          overlayScale: { type: 'number', description: 'overlay：叠加层相对基准视频宽度比例，默认 0.18（图片时生效）' },
+          margin: { type: 'number', description: 'overlay：距边缘像素，默认 24' },
+          direction: { type: 'string', enum: ['in', 'out'], description: 'kenburns：in 向内推近（默认）/ out 向外拉远' },
+          size: { type: 'string', description: 'kenburns：输出分辨率，默认 "1080x1920"（竖屏）' },
+          fps: { type: 'number', description: 'kenburns：输出帧率，默认 30' },
+          duck: { type: 'boolean', description: 'bgsound：true=说话时自动压低 BGM（侧链压缩），默认 false' },
+          volume: { type: 'number', description: 'bgsound：BGM 音量比例 0~1，默认 0.25' },
+          target: { type: 'number', description: 'loudnorm：目标响度 LUFS，默认 -16（短视频常用）' },
+          truePeak: { type: 'number', description: 'loudnorm：真峰值上限 dBTP，默认 -1.5' },
+          lra: { type: 'number', description: 'loudnorm：响度范围，默认 11' },
+          output: { type: 'string', description: '可选，输出文件名（如 clip1.mp4）；不传自动命名' },
         },
         required: ['op'],
       },

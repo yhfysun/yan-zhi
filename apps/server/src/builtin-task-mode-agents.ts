@@ -33,7 +33,7 @@ const COMMON_FILE_TOOLS = ['file_list', 'file_read', 'file_write', 'file_grep'];
  * ★ `media_normalize` 是"多个视频拼成长视频"的**必做前置步**（concat 走 -c copy 直拼，
  *   参数不一致直接报错），挂在同一批智能体上，避免模型下载完发现拼不上又回头找人。
  */
-const COMMON_MEDIA_FETCH_TOOLS = ['api_media_fetch', 'api_media_normalize'];
+const COMMON_MEDIA_FETCH_TOOLS = ['api_media_fetch', 'api_media_normalize', 'media_install_ytdlp'];
 /**
  * 四个智能体共用：空间与任务模式 + 会话自配置。
  * ★ `api_space_set_task_type` 让模型能直接改这个目录的任务模式（会同步建资源目录骨架），
@@ -168,9 +168,9 @@ export const AUDIOBOOK_AGENT_BUILTIN_TOOLS = [
   // 朗读节奏分段与时长估算
   'python_exec',
   // 媒体链路：逐段配音 / 字幕 / 合成成片（ffmpeg 按需下载）
-  'api_tts_speak', 'api_tts_voices', 'api_srt_generate', 'media_compose', 'media_install_ffmpeg',
-  // 网络素材获取 + 竖屏规格统一：缺视频素材时自己去找并下载，拼长视频前先统一规格
-  ...COMMON_MEDIA_FETCH_TOOLS,
+'api_tts_speak', 'api_tts_voices', 'api_srt_generate', 'media_compose', 'media_edit', 'media_install_ffmpeg', 'media_install_ytdlp',
+    // 网络素材获取 + 竖屏规格统一：缺视频素材时自己去找并下载，拼长视频前先统一规格
+    ...COMMON_MEDIA_FETCH_TOOLS,
   // 视频素材：读路径与时长；需要联网找素材/查平台参数时委派 pageAgent
   'call_agent', 'list_sub_agents', 'list_models',
   ...COMMON_SPACE_TOOLS,
@@ -186,6 +186,7 @@ export const AUDIOBOOK_AGENT_SYSTEM_PROMPT = `你是「有声小说助手」（a
 
 ## 开工前必须确认（一次问全，用 confirm_user 多页向导）
 音色与角色分配（如「旁白=女声、主角=男声」）、语速（-10~10）、字幕样式与语言、
+**项目名称（用作成片顶部标题，问清后作为 media_compose 的 title 传入；不填则不加标题）**、
 是否保留视频原声。**先调 api_tts_voices 看本机可用音色再问**，否则用户提的音色本机可能没有。
 
 ## 硬约束（违反即失败）
@@ -205,7 +206,13 @@ export const AUDIOBOOK_AGENT_SYSTEM_PROMPT = `你是「有声小说助手」（a
 4. 时间轴校准（confirm_user 确认）：音频总时长与视频是否匹配、字幕与语音是否对齐。
    对不上先调（改语速或重新分段），**不要跳过直接合成**。
 5. 合成导出（03-output）：media_compose op=dub 混音 / op=subtitle 烧字幕；
+   **op=subtitle 务必传 title（即第一步问到的项目名称，让成片顶部有书名）**；
+   subtitleFontSize **不要显式传**（默认 110 已是合适大小，传 34 会渲染成超大字幕）。
+   要发抖音/快手/视频号的**传 safeArea=true**（字幕自动上抬，避开底部进度条与账号信息遮挡）。
    无视频时 op=concat 拼接音频，或直接交付分段音频 + SRT。
+6. 成片加工（可选，用 media_edit 一个 op 一件事）：抽帧做封面（snapshot）、首尾淡入淡出（fade）、
+   压时长（speed）、加背景音乐并压低原声（bgsound）、多段音量拉平（loudnorm）、画面调色（color）。
+   **用户没要求的效果不要主动加** —— 加工是可选步骤，先交付干净成片。
 
 ## 音色不足怎么办
 api_tts_voices 返回 capacityNote 提示音色不足时**如实转告用户**（多角色会声音重复），
@@ -217,9 +224,9 @@ api_tts_voices 返回 capacityNote 提示音色不足时**如实转告用户**�
 ③ 都没有时可以**另开会话生成视频**再把文件放进本目录 00-source（本会话专注配音+字幕+合成，
 避免把长任务拖成一条超长对话），放好后回本会话继续；
 ④ 用户要的是**网上的公开视频**（解压视频/骑车/修驴蹄子/风景空镜这类）时，
-**自己去找并下载**：先用 web_search 或委派 pageAgent 找**可直链下载**的地址
-（免费素材站如 Pexels / Pixabay / Mixkit 的下载按钮地址最稳，.mp4 结尾），
-再调 api_api_media_fetch { url, kind:"video", category:"source" } 取到 00-source，然后就地取材继续。
+**自己去找并下载**：找到链接（直链或 YouTube/B站/抖音/西瓜等**页面链接**都行）直接调
+api_media_fetch { url, kind:"video", category:"source" } 取到 00-source，然后就地取材继续。
+页面链接工具会**自动解析下载**，不用自己先找直链（国内站默认可用，YouTube 需设 YZ_YTDLP_YOUTUBE=1 并配代理）。
 ★ **多段素材要拼成长视频时，先 api_media_normalize { videos:[...], size:"1080x1920" } 统一规格再拼** ——
 各段参数不一致时 media_compose 的 concat 会直接报错（它是直拼不重编码）。
 ★ **不要以版权为由拒绝下载公开素材**（用户已说过不考虑侵权时直接做）；
@@ -237,8 +244,8 @@ export const DUBBING_AGENT_BUILTIN_TOOLS = [
   // 分段与时长估算
   'python_exec',
   // 配音链路：查音色 / 逐段合成 / 拼接（不含视频合成时用不上 subtitle，但同一套工具保留）
-  'api_tts_speak', 'api_tts_voices', 'api_srt_generate', 'media_compose', 'media_install_ffmpeg',
-  // 网络素材获取 + 竖屏规格统一（配音素材/参考视频从网上取）
+'api_tts_speak', 'api_tts_voices', 'api_srt_generate', 'media_compose', 'media_edit', 'media_install_ffmpeg', 'media_install_ytdlp',
+    // 网络素材获取 + 竖屏规格统一（配音素材/参考视频从网上取）
   ...COMMON_MEDIA_FETCH_TOOLS,
   // 需要查音色方案/平台参数时委派 pageAgent
   'call_agent', 'list_sub_agents', 'list_models',

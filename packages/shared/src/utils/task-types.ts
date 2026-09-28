@@ -249,7 +249,8 @@ export const TASK_TYPES: TaskTypeSpec[] = [
         confirmAbout: '时间轴与音色是否可以定稿',
         output: 'none',
       },
-      { title: '合成导出', detail: '调 media_compose（dub 混音 / subtitle 烧字幕）合成成片到 03-output；**多段视频要先 api_media_normalize 统一成 1080x1920 再 concat（否则直拼会报参数不一致）**；缺 ffmpeg 时先用 confirm_user 告知体积并征得同意再 media_install_ffmpeg', output: '03-output' },
+      { title: '合成导出', detail: '调 media_compose（dub 混音 / subtitle 烧字幕）合成成片到 03-output；subtitle 传 title，subtitleFontSize 不要显式传（默认已合适），发竖屏平台传 safeArea=true；**多段视频要先 api_media_normalize 统一成 1080x1920 再 concat（否则直拼会报参数不一致）**；缺 ffmpeg 时先用 confirm_user 告知体积并征得同意再 media_install_ffmpeg', output: '03-output' },
+      { title: '可选加工', detail: '按用户要求用 media_edit 逐个加效果（抽帧封面 snapshot / 裁剪 trim / 变速 speed / 淡入淡出 fade / 调色 color / BGM bgsound / 响度拉平 loudnorm）；**用户没提的效果不要主动加**', output: '03-output' },
     ],
   },
   {
@@ -517,9 +518,9 @@ function materialRules(needs: Array<'source' | 'reference' | 'video'>): string[]
   out.push(
     '- ★★ **素材缺失时先试着"去网上找"（别停在"请上传"）**：用户要的是「网上的公开视频/图片/音频」类素材' +
     '（解压视频、骑车、修驴蹄子、切肥皂、风景空镜、参考截图等）时，**自己去找并下载**：' +
-    '先用 web_search / 委派 pageAgent 找到**可直链下载**的地址（.mp4/.webm/.jpg 等文件本身，' +
-    '免费素材站如 Pexels / Pixabay / Mixkit 的下载按钮地址最稳），再调 `api_media_fetch { url, kind, category:"source" }` ' +
-    '把它取到本目录的 00-source，然后就地取材继续做。',
+    '找到链接后直接调 `api_media_fetch { url, kind, category:"source" }` —— **直链或视频网站页面链接都行**' +
+    '（YouTube / B站 / 抖音 / 西瓜等页面链接工具会自动解析下载，不用自己先找直链；国内站默认可用，' +
+    'YouTube 需设环境变量 YZ_YTDLP_YOUTUBE=1 并配置代理）。下载到本目录的 00-source，然后就地取材继续做。',
   );
   out.push(
     '- ★★ **不要在素材"要不要授权"上卡住用户**：用户明确说了不考虑版权/侵权时，' +

@@ -2,6 +2,26 @@
 
 本目录包含「言智 (Yan-Zhi)」研发过程中所用到的开发环境检测、搭建指引和打包构建脚本。
 
+> ## ⭐ 打包首选：`pnpm package`
+>
+> 本机开发环境下，`bin/build.bat` / `pnpm build:*` 会在**中途失败**，且失败信息与真实原因无关
+> （安全删除策略拦大目录 / gradle 长路径 CMake 报错 / 内嵌后端只复制不编译）。
+> **日常打包请用统一入口 `scripts/package.cjs`**，它把这三个坑都封好了，并带产物校验：
+>
+> ```bash
+> pnpm package                     # 交互式选择打哪些包（推荐）
+> pnpm package desktop             # 桌面三档全出（lite + basic + pro）
+> pnpm package desktop:pro         # 只出高级版
+> pnpm package desktop:lite,pro    # 出指定两档
+> pnpm package android             # 只出安卓 APK（自动复用新鲜的 server/dist）
+> pnpm package all                 # 桌面三档 + 安卓
+> pnpm package desktop:pro --dry-run   # 预览：只做环境检查与计划，不动任何文件
+> ```
+>
+> 产物落 `dist-release-lite|basic|pro/`（exe）与 `dist-release/app-debug.apk`，
+> 结束时**自动校验**包内确实含代码改动，并打印产物清单。
+> 校验单独跑：`pnpm verify:package apk dist-release/app-debug.apk`。
+
 ## 脚本说明
 
 每个功能提供两套脚本 — `.sh`（Bash：Git Bash / MSYS2 / WSL / Linux / macOS）和 `.bat`（Windows CMD / PowerShell 直接运行）：

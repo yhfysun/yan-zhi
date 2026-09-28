@@ -21,6 +21,11 @@
     "build:mobile:android:embedded": "pnpm --filter @yan-zhi/mobile build:android:embedded",
     "build:mobile-server": "pnpm --filter @yan-zhi/mobile build:mobile-server",
     "build:mobile:ios": "pnpm --filter @yan-zhi/mobile build:ios",
+    "package": "node scripts/package.cjs",
+    "package:desktop": "node scripts/package.cjs desktop",
+    "package:android": "node scripts/package.cjs android",
+    "package:all": "node scripts/package.cjs all",
+    "verify:package": "node scripts/verify-package-artifacts.cjs",
     "typecheck": "pnpm -r typecheck",
     "lint": "pnpm -r lint"
   },

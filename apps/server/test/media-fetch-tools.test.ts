@@ -242,3 +242,156 @@ describe('④ 落盘位置：下载到 00-source 而不是散落各处', () => {
     expect(EXECUTOR_CODE).toMatch(/async function mediaFetch\([\s\S]{0,1500}await downloadBinary\(url\)/);
   });
 });
+
+describe('⑥ 视频网站解析下载（yt-dlp，2026-09-28 用户诉求下半场）', () => {
+  it('media_install_ytdlp 在 SUPPORTED_API_TOOLS 白名单', () => {
+    const start = EXECUTOR_CODE.indexOf('export const SUPPORTED_API_TOOLS');
+    const body = EXECUTOR_CODE.slice(start, EXECUTOR_CODE.indexOf(']);', start));
+    expect(body).toContain("'media_install_ytdlp'");
+  });
+  it('switch 分发有 case media_install_ytdlp', () => {
+    expect(EXECUTOR_CODE).toMatch(/case 'media_install_ytdlp':/);
+  });
+  it('★ 默认助手挂载了 media_install_ytdlp（模型能调到的前提）', () => {
+    const start = DB.indexOf('const DEFAULT_AGENT_BUILTIN_TOOLS');
+    expect(start, '找不到 DEFAULT_AGENT_BUILTIN_TOOLS').toBeGreaterThan(-1);
+    const body = DB.slice(start, DB.indexOf('];', start));
+    expect(body).toContain("'media_install_ytdlp'");
+  });
+  it('★ 任务模式智能体共用常量挂了 media_install_ytdlp', () => {
+    expect(TASK_MODE_AGENTS).toMatch(/const COMMON_MEDIA_FETCH_TOOLS = \['api_media_fetch', 'api_media_normalize', 'media_install_ytdlp'\];/);
+  });
+  it('★ api_media_fetch 描述支持「页面链接自动解析」+ 有 maxBytes 参数', () => {
+    expect(MEDIA_TOOL_DEFS).toMatch(/视频网站页面链接/);
+    expect(MEDIA_TOOL_DEFS).toMatch(/自动识别网页并解析下载/);
+    expect(MEDIA_TOOL_DEFS).toMatch(/maxBytes/);
+  });
+  it('★ 提示词放行「直接给页面链接 + YouTube 开关」', () => {
+    expect(TASK_TYPES).toMatch(/页面链接/);
+    expect(TASK_TYPES).toMatch(/YZ_YTDLP_YOUTUBE=1/);
+  });
+  it('★ mediaFetch 实现「先直链 → 命中网页自动转 yt-dlp」', () => {
+    expect(EXECUTOR_CODE).toMatch(/function looksLikeHtml\(/);
+    expect(EXECUTOR_CODE).toMatch(/ytdlpFetch\(url, prefix/);
+    expect(EXECUTOR_CODE).toMatch(/isYoutubeHost\(host\) && !youtubeEnabled\(\)/);
+  });
+  it('ytdlp-runtime 实现了定位/安装/解析与 YouTube 开关', () => {
+    const rt = read('src/mcp/ytdlp-runtime.ts');
+    expect(rt).toMatch(/export function isYoutubeHost\(/);
+    expect(rt).toMatch(/export async function installYtdlp\(/);
+    expect(rt).toMatch(/export async function ytdlpFetch\(/);
+    expect(rt).toMatch(/export function youtubeEnabled\(/);
+  });
+});
+
+/**
+ * ⑦ 剪辑与特效（media_edit，2026-09-28 用户诉求「有没有视频剪辑工具」）。
+ *
+ * 同样的静默失效三件套，外加本项目踩过两次的那条：
+ *   ① 注册了但没挂到智能体 / 没进白名单 → 模型看不到（不报错）；
+ *   ② 没登记进 WRITE_TOOLS → **只读会话里静默可写**（已犯两次，此处硬性守门）；
+ *   ③ 没登记进 llm-task-manager 的 MEDIA_TOOLS → 产物落盘了但文件管理里看不到（不报错）；
+ *   ④ 没写进提示词 → 模型不知道有这个能力，只会干基础合成。
+ */
+describe('⑦ 剪辑与特效：media_edit 实现 + 注册 + 挂载 + 权限登记', () => {
+  const EXEC = EXECUTOR_CODE;
+  const PERM = stripComments(read('src/tool-permission.ts'));
+  const TASK_MGR = stripComments(read('src/llm-task-manager.ts'));
+
+  it('实现了 mediaEdit，且覆盖全部 12 个 op', () => {
+    expect(EXEC).toMatch(/async function mediaEdit\(/);
+    const ops = [
+      'trim', 'speed', 'snapshot', 'transform', 'fade',
+      'color', 'transition', 'overlay', 'kenburns',
+      'bgsound', 'volume', 'loudnorm',
+    ];
+    for (const o of ops) {
+      expect(EXEC, `缺 op 分支：${o}`).toMatch(new RegExp(`op === '${o}'`));
+    }
+  });
+
+  it('media_edit 在 SUPPORTED_API_TOOLS 白名单里', () => {
+    const start = EXEC.indexOf('export const SUPPORTED_API_TOOLS');
+    expect(start, '找不到 SUPPORTED_API_TOOLS 定义').toBeGreaterThan(-1);
+    const body = EXEC.slice(start, EXEC.indexOf(']);', start));
+    expect(body).toContain("'media_edit'");
+  });
+
+  it('media_edit 在 switch 分发里（漏 case → 返回「未实现的 API 工具」）', () => {
+    expect(EXEC).toMatch(/case 'media_edit':/);
+    expect(EXEC).toMatch(/return await mediaEdit\(args, conversationId\)/);
+  });
+
+  it('★ media_edit 对只读会话**放行**（用户 2026-09-29 决策：「那就放行啊」）', () => {
+    const start = PERM.indexOf('const WRITE_TOOLS = new Set([');
+    expect(start, '找不到 WRITE_TOOLS').toBeGreaterThan(-1);
+    const body = PERM.slice(start, PERM.indexOf(']);', start));
+    // 与同族一致：媒体生成/加工类工具不拦只读会话（产物是新建素材，不是改用户文件）
+    expect(body).not.toContain("'media_edit'");
+    // 防回归：同一族都必须保持放行，避免后人只挑一个加回去造成口径不一致
+    for (const t of [
+      'media_compose', 'api_media_normalize', 'api_media_fetch', 'api_srt_generate',
+      'api_tts_speak', 'api_image_generate', 'api_video_generate',
+      'media_install_ffmpeg', 'media_install_ytdlp',
+    ]) {
+      expect(body, `媒体类工具不应被拦只读会话：${t}`).not.toContain(`'${t}'`);
+    }
+  });
+
+  it('媒体放行是**有意决策**而非漏登记：注释里写明理由（防止后人"顺手加回去"）', () => {
+    expect(PERM).toMatch(/明确放行/);
+    expect(PERM).toMatch(/那就放行啊/);
+    // 仍是写副作用的工具必须保留拦截（校验改动没把清单删空）
+    expect(PERM).toMatch(/const WRITE_TOOLS = new Set\(\[[\s\S]*?'file_write'/);
+  });
+
+  it('★ media_edit 已登记进 MEDIA_TOOLS（漏登记 = 产物不进文件管理，只在对话里）', () => {
+    expect(TASK_MGR).toMatch(/const MEDIA_TOOLS = new Set\(\[[^\]]*'media_edit'/);
+  });
+
+  it('已挂到有声小说/配音智能体的工具数组 + 默认助手工具数组', () => {
+    // 智能体侧：两处 media_install_ffmpeg 同一行都要带 media_edit
+    expect(TASK_MODE_AGENTS).toMatch(/'media_compose', 'media_edit', 'media_install_ffmpeg'/);
+    // 默认助手（db.ts）两处工具数组
+    const start = DB.indexOf('const DEFAULT_AGENT_BUILTIN_TOOLS');
+    const body = DB.slice(start, DB.indexOf('];', start));
+    expect(body).toContain("'media_edit'");
+  });
+
+  it('工具定义注册了 media_edit，且描述了关键 op 与前置条件', () => {
+    expect(MEDIA_TOOL_DEFS).toMatch(/name: 'media_edit'/);
+    expect(MEDIA_TOOL_DEFS).toMatch(/视频剪辑与特效加工/);
+    // transition 必须提示「两段规格一致」（否则用户配完就报错）
+    expect(MEDIA_TOOL_DEFS).toMatch(/要求两段规格一致/);
+  });
+
+  it('提示词/流程已告知新能力（否则模型不知道能剪辑）', () => {
+    expect(TASK_TYPES).toMatch(/media_edit/);
+    expect(DB).toMatch(/media_edit/);
+  });
+
+  it('字幕样式增强：颜色/描边/位置/安全区 + libass 单位换算', () => {
+    expect(MEDIA_TOOL_DEFS).toMatch(/subtitleColor/);
+    expect(MEDIA_TOOL_DEFS).toMatch(/subtitlePosition/);
+    expect(MEDIA_TOOL_DEFS).toMatch(/safeArea/);
+    // ★★ 核心：libass 的 FontSize/MarginV 是「画面高度比例值」（ffmpeg 生成的 ASS 头恒定
+    //   PlayResX/Y = 384/288），必须显式换算成像素语义，否则「传 34」会渲染成 170px。
+    //   这条断言防的是「有人觉得换算多余又删掉」。
+    expect(EXEC).toMatch(/const FS_PER_PX = 384 \/ 1920/);
+    expect(EXEC).toMatch(/const MV_PER_PX = 288 \/ 1920/);
+    expect(EXEC).toMatch(/num\(args, 'subtitleFontSize', 120\)/);
+    // drawtext（标题）是绝对像素，与 libass 相反，必须按高度缩放
+    expect(EXEC).toMatch(/const pxH = \(px: number\)/);
+    // 颜色换算必须走 libass 的 BGR 反序，不能直接拼 RGB
+    expect(EXEC).toMatch(/function toAssColor\(/);
+    // 提示词不能再教模型传 34（那是 libass 单位，会渲染成超大字幕）
+    expect(DB).not.toMatch(/subtitleFontSize=34/);
+    expect(TASK_TYPES).not.toMatch(/subtitleFontSize=34/);
+  });
+
+  it('易踩坑点已按实测写法处理（atempo 串联 / xfade 超时长 / 侧链 asplit）', () => {
+    expect(EXEC).toMatch(/function atempoChain\(/);      // 单 atempo 只吃 0.5~2
+    expect(EXEC).toMatch(/offset 必须小于首段时长/);      // 否则 xfade 直接失败
+    expect(EXEC).toMatch(/asplit=2/);                    // 同路音频复用必须分流
+  });
+});
