@@ -18,6 +18,8 @@ export function registerConversationTools(m: Map<ApiModuleName, ToolDefinition[]
         'mode 切工作模式（office 办公 / dev 开发 / ops 运维 / sec 安全 / wf 工作流）。' +
         '★ 工作流型智能体（a_wf_* 流水线）**不能**作为会话智能体 —— 它没有对话人格与工具；' +
         '要跑流水线请用 wf_<id> 工具或 call_agent 委派。传错会被明确拒绝并说明正确用法。' +
+        '★ 自己临时造了自定义工具（api_custom_tool_create）后，用 customToolIds 挂到当前会话即可调用 —— ' +
+        '无需改智能体本体（不污染全局），下轮生效。' +
         '设置下一轮对话生效。',
       inputSchema: {
         type: 'object',
@@ -25,6 +27,7 @@ export function registerConversationTools(m: Map<ApiModuleName, ToolDefinition[]
           conversationId: { type: 'string', description: '会话 id；省略则用当前会话' },
           agentId: { type: 'string', description: '要切换到的智能体 id' },
           skillIds: { type: 'array', items: { type: 'string' }, description: '会话级技能 id 列表（覆盖，非追加）' },
+          customToolIds: { type: 'array', items: { type: 'string' }, description: '会话级自定义工具 id 列表（覆盖，非追加）。用于把 api_custom_tool_create 造出来的工具只挂到当前会话，不改智能体全局挂载' },
           mode: { type: 'string', enum: ['office', 'dev', 'ops', 'sec', 'wf'], description: '工作模式' },
         },
         required: [],

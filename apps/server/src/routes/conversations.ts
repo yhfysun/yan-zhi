@@ -108,6 +108,16 @@ router.patch('/:id', (req: Request, res: Response) => {
     sets.push('mcp_servers_json = ?'); vals.push(JSON.stringify(serversJson));
   }
   if (req.body.skillIds !== undefined) { sets.push('skill_ids_json = ?'); vals.push(JSON.stringify(req.body.skillIds)); }
+  // 会话级自定义工具挂载。
+  // ★ 为什么必须在这里支持（2026-09-29 自检发现）：`api_conversation_setup` 能写
+  //   `custom_tool_ids_json`，但**前端 PATCH 会话时没有对应字段** → 前端那套
+  //   `getMergedMounts().customToolIds` 合并逻辑算出来的结果**存不进去**，属于半套实现。
+  //   补上后"模型造工具→挂到当前会话"与"用户在 UI 改挂载"走同一条落库路径。
+  if (req.body.customToolIds !== undefined) {
+    const ids: unknown = req.body.customToolIds;
+    sets.push('custom_tool_ids_json = ?');
+    vals.push(JSON.stringify(Array.isArray(ids) ? ids.map(String) : []));
+  }
   if (req.body.builtinToolIds !== undefined) {
     // 工作流工具（wf_*）挂载上限校验。
     // 为什么要有上限：每个 wf_* 工具都带完整参数 schema，挂太多会占满上下文、

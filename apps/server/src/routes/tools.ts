@@ -125,9 +125,11 @@ router.post('/:id/execute', async (req: Request, res: Response) => {
   if (!t.enabled) { res.status(400).json({ error: '工具未启用' }); return; }
   const args = (req.body && req.body.args) || {};
   try {
-    const { runUserCode } = await import('@yan-zhi/core');
-    const result = await runUserCode(t.code, t.entry, args, { timeout: t.timeout || 30000, runtime: t.runtime });
-    res.json({ data: result });
+    // ★ 走 services/tool-deps 的统一入口（含依赖按需安装）。
+    //   此前这里直连 runUserCode → UI 上「试跑」声明了依赖的工具会失败（2026-09-29 自检发现）。
+    const { runCustomTool } = await import('../services/tool-deps.js');
+    const text = await runCustomTool(t, args);
+    res.json({ data: { content: [{ type: 'text', text }], isError: /未执行：依赖装不上|执行失败/.test(text) } });
   } catch (e: any) {
     res.status(500).json({ error: e?.message || '工具执行失败' });
   }

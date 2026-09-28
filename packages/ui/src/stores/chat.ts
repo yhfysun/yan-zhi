@@ -88,6 +88,8 @@ function rowToConv(r: any): Conversation {
     _mcpToolAliases: convMcpAliases,
     skillIds: r.skill_ids_json ? JSON.parse(r.skill_ids_json) : [],
     builtinToolIds: r.builtin_tool_ids_json ? JSON.parse(r.builtin_tool_ids_json) : [],
+    // 会话级自定义工具挂载（2026-09-29 补：此前只有 agent 级，会话级链路是半套）
+    customToolIds: r.custom_tool_ids_json ? JSON.parse(r.custom_tool_ids_json) : [],
     systemPrompt: r.system_prompt,
     pinned: !!r.pinned,
     permissionMode: (r.permission_mode === 'readonly' || r.permission_mode === 'full') ? r.permission_mode : 'default',
@@ -982,7 +984,9 @@ async function loadConversations() {
 
     return {
       builtinToolIds: [...new Set([...agentBuiltin, ...(conv?.builtinToolIds || [])])],
-      customToolIds: [...new Set([...agentCustom])],
+      // 会话级自定义工具也要并进来（否则 api_conversation_setup 挂上的工具，
+      // 前端在解析 custom_ 暴露名时找不到 → 调用被判为"未挂载"）
+      customToolIds: [...new Set([...agentCustom, ...(conv?.customToolIds || [])])],
       mcpToolMounts: mergedMcp,
       skillIds: [...new Set([...agentSkills, ...convSkills])],
       subAgentIds: [...new Set([...agentSubs])],
@@ -1466,8 +1470,14 @@ async function loadConversations() {
     const agentStore = useAgentStore();
     const agent = agentStore.selectedAgent;
     const steps = agent?.config?.maxReActSteps;
-    if (typeof steps === 'number' && steps >= 100) return steps;
-    return 100; // 默认 100，低于 100 的旧配置值也兜底到 100
+    // ★ 下限 1、上限 500（用户 2026-09-28：「改了最大步数不立刻生效」顺带暴露的硬抬问题）。
+    //   此前写的是 `if (steps >= 100) return steps; return 100;` —— 把一切 <100 的配置**静默抬到 100**，
+    //   用户想把步数调小（快速迭代/省钱）根本做不到，且界面不提示，属于静默失效。
+    //   现在：显式配置直接采纳（只做合法性夹取），未配置才回落到默认 100。
+    if (typeof steps === 'number' && Number.isFinite(steps) && steps > 0) {
+      return Math.min(Math.floor(steps), 500);
+    }
+    return 100; // 默认 100
   }
 
   /** 订阅后端任务 SSE 事件流，更新前端消息状态。callLlm 和重连均使用此函数。 */

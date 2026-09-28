@@ -90,6 +90,8 @@ export interface Conversation {
   _mcpToolAliases?: Record<string, Record<string, string>>;
   skillIds: string[];
   builtinToolIds?: string[]; // 会话级内置工具（合并到智能体级）
+  /** 会话级自定义工具 id（合并到智能体级）。由 api_conversation_setup 或会话 PATCH 写入 */
+  customToolIds?: string[];
   systemPrompt?: string;
   pinned: boolean;
   /** 会话级工具权限：readonly=只读（写类工具被后端拦截）/ default=默认 / full=全部放行 */

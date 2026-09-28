@@ -10,11 +10,11 @@ function ensureInit() {
 
 export class GetApiToolsTool implements BuiltInTool {
   name = 'get_api_tools';
-  description = '按模块查询项目 REST API 接口工具列表。传入模块名返回对应接口的 name/description/inputSchema，LLM 获取后可按需调用。传 "list" 或不传返回所有可用模块名。';
+  description = '按模块查询项目 REST API 接口工具列表。传入模块名返回对应接口的 name/description/inputSchema，LLM 获取后可按需调用。传 "list" 或不传返回所有可用模块名。★ 这是"发现工具"的总入口：当你要做一件事却发现手头没有对应工具时（例如"造一个自定义工具""装一个技能""改智能体挂载"），先用它查有哪些接口可用，再按返回的 schema 调用。';
   inputSchema = {
     type: 'object',
     properties: {
-      module: { type: 'string', description: '模块名: agent, conversation, message, platform, mcp, skill, tool, marketplace, workspace, memory, file, peer, im, knowledge。传 "list" 列出所有' },
+      module: { type: 'string', description: `模块名。可用模块：${API_MODULES.join(', ')}。传 "list" 或省略则列出全部模块及各自的接口数量` },
     },
     required: [],
   };

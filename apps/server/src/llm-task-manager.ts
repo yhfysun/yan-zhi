@@ -37,6 +37,10 @@ import {
   isWorkflowToolName, workflowAgentIdOfTool,
 } from './services/workflow-tool-registry.js';
 import { promises as fsp } from 'node:fs';
+// 同步 fs / path：项目规则（AGENTS.md）读取走同步路径（提示词构建是同步函数），
+// 且带 mtime 缓存，开销可忽略。
+import { statSync, readFileSync, readdirSync, existsSync } from 'node:fs';
+import path from 'node:path';
 
 /** 工作流结果反写的 I/O 上限：反写本身很快，超时只为防异常挂住。 */
 const WORKFLOW_DELIVERY_TIMEOUT_MS = 30 * 1000;
@@ -593,6 +597,24 @@ function missingRequiredArgs(toolDefs: any[] | undefined, toolName: string, args
 }
 
 /**
+ * 原地给缺少 id 的工具调用补一个稳定 id。
+ *
+ * ★ 背景（2026-09-28 排障）：部分模型/网关在流式 function call 里不回 id，导致
+ *   ① 落库的 tool 结果消息 tool_call_id 为空，assistant.tool_calls 与 tool 消息**无法配对**；
+ *   ② client.sanitizeToolMessages 会剥掉「id 为空」的 tool_call 与对应 tool 消息，
+ *      模型下一轮**看不到自己刚调用过什么、也看不到工具结果** → 反复重做同一调用：
+ *      典型表现是「工具明明成功执行（文件也生成了），模型却以为没做，接着空转重试」。
+ *   这里在落库前给每个缺失 id 的调用补一个合成 id，让配对完整、历史可见。
+ */
+function ensureToolCallIds(toolCalls: any[]): void {
+  (toolCalls || []).forEach((tc, i) => {
+    if (!tc) return;
+    if (typeof tc.id === 'string' && tc.id.trim()) return;
+    tc.id = `call_local_${Date.now().toString(36)}_${i}`;
+  });
+}
+
+/**
  * 判定是否为中止类错误。client.ts 会把 fetch 流中断包装成普通 Error("请求被中止（…）")，
  * parseSSE 抛出的 DOMException 消息为 "This operation was aborted"——两者 name 都可能不是
  * 'AbortError'，只判 name 会把用户主动中止/流中断误标为「任务失败」。
@@ -883,7 +905,62 @@ async function runReActLoop(task: LlmTask, params: {
   workspaceDir?: string;
 }) {
   const { conversationId: convId, userId, options } = params;
-  const maxSteps = params.maxSteps || 100;
+  // ★★★ 运行参数（温度/最大输出/最大步数）**每轮实时读库**，不再用创建任务时的快照。
+  //
+  // 为什么必须这样（用户 2026-09-28 报「编辑智能体改了最大步数/最大 Token 不立刻生效」）：
+  //   params.options / params.maxSteps 由前端在**点发送那一刻**组装（`useChat.ts:2454-2461`、
+  //   `chat.ts:1757`），而 maxSteps 在循环开始前就被烧成常量。用户任务跑着去编辑智能体改参数，
+  //   改动只落库、发不到已经启动的任务 → 这一轮继续用旧值（表现为"要重发/刷新才生效"）。
+  //   改成每轮现读后：**下一轮 LLM 调用即用新值**，无需重发、无需刷新。
+  //
+  // 语义边界（刻意保留）：
+  //   · 前端/定时任务**显式传入**的值优先（`params.options.xxx !== undefined`）——它们是"本次任务的
+  //     调用方意图"（如定时任务读库后显式下发），不应被后续编辑悄悄改写；
+  //   · 未显式传入的项 → 回落到「智能体现值」→ 再回落到原有默认。
+  //     `params.options` 存在但某字段为 undefined 时（前端就是只传了非空字段），仍然回落实时读。
+  const readLiveParams = () => {
+    if (!params.agentId) return { temperature: undefined as number | undefined, maxTokens: undefined as number | undefined,
+      topP: undefined as number | undefined, frequencyPenalty: undefined as number | undefined,
+      presencePenalty: undefined as number | undefined, reasoningEffort: undefined as string | undefined,
+      maxReActSteps: undefined as number | undefined };
+    try {
+      // 参数列 + config_json 一次读全（reasoningEffort / maxReActSteps 在 config_json 里）
+      const row = db.prepare(
+        'SELECT temperature, max_tokens, top_p, frequency_penalty, presence_penalty, config_json FROM agent WHERE id = ? AND (user_id = ? OR is_public = 1)',
+      ).get(params.agentId, userId) as any;
+      if (!row) return { temperature: undefined, maxTokens: undefined, topP: undefined,
+        frequencyPenalty: undefined, presencePenalty: undefined, reasoningEffort: undefined, maxReActSteps: undefined };
+      const cfg = (() => { try { return JSON.parse(row.config_json || '{}'); } catch { return {}; } })();
+      return {
+        temperature: typeof row.temperature === 'number' ? row.temperature : undefined,
+        maxTokens: typeof row.max_tokens === 'number' ? row.max_tokens : undefined,
+        topP: typeof row.top_p === 'number' ? row.top_p : undefined,
+        frequencyPenalty: typeof row.frequency_penalty === 'number' ? row.frequency_penalty : undefined,
+        presencePenalty: typeof row.presence_penalty === 'number' ? row.presence_penalty : undefined,
+        reasoningEffort: typeof cfg?.reasoningEffort === 'string' ? cfg.reasoningEffort : undefined,
+        maxReActSteps: typeof cfg?.maxReActSteps === 'number' && cfg.maxReActSteps > 0 ? cfg.maxReActSteps : undefined,
+      };
+    } catch { /* 读库失败按显式传入值 */ return { temperature: undefined, maxTokens: undefined, topP: undefined,
+      frequencyPenalty: undefined, presencePenalty: undefined, reasoningEffort: undefined, maxReActSteps: undefined }; }
+  };
+
+  /** 合并出一轮的生效参数：显式传入 > 智能体现值 */
+  const effectiveOptions = () => {
+    const live = readLiveParams();
+    return {
+      temperature: options?.temperature !== undefined ? options.temperature : live.temperature,
+      maxTokens: options?.maxTokens !== undefined ? options.maxTokens : live.maxTokens,
+      topP: options?.topP !== undefined ? options.topP : live.topP,
+      frequencyPenalty: (options as any)?.frequencyPenalty !== undefined ? (options as any).frequencyPenalty : live.frequencyPenalty,
+      presencePenalty: (options as any)?.presencePenalty !== undefined ? (options as any).presencePenalty : live.presencePenalty,
+      reasoningEffort: options?.reasoningEffort !== undefined ? options.reasoningEffort : live.reasoningEffort,
+    };
+  };
+  /** 每轮的步数预算：显式传入 > 智能体现值 > 100 */
+  const liveMaxSteps = () => {
+    const live = readLiveParams().maxReActSteps;
+    return params.maxSteps || live || 100;
+  };
   // 当前轮的助手占位消息 id：LLM 调用失败（429/超时/网络错误等）时把错误写进该占位消息落库，
   // 否则刷新后占位消息内容为空，用户看不到"调用失败"的痕迹。
   let activeAssistantMsgId: string | null = null;
@@ -1059,169 +1136,137 @@ async function runReActLoop(task: LlmTask, params: {
     // 否则产物只存在于对话气泡里，文件管理列表看不到。
     // api_video_status：视频任务超时后模型用它补查，补查命中时同样会就地落盘并返回完整媒体契约，
     // 不登记的话这条补落盘的产物同样进不了交付目录。
-    const MEDIA_TOOLS = new Set(['api_image_generate', 'api_video_generate', 'api_video_status', 'api_tts_speak', 'api_srt_generate', 'media_compose']);
+    const MEDIA_TOOLS = new Set(['api_image_generate', 'api_video_generate', 'api_video_status', 'api_tts_speak', 'api_srt_generate', 'media_compose', 'media_edit']);
 
-    for (let step = 0; step < maxSteps; step++) {
-      if (task.abortController.signal.aborted) throw new DOMException('Aborted', 'AbortError');
-      await waitIfPaused(task); // 工具边界暂停：挂起时停在这里，resume/abort 后继续
-      task.step = step;
-      emit(task, { type: 'step', step });
-
-      // 加载最新消息
-      let messagesToSend = loadMessages(convId);
-      messagesToSend = messagesToSend.filter(m => m.content || m.toolCalls || m.role === 'tool' || (m as any).reasoningContent);
-      // 上下文窗口压缩：超限时先抢救细节再生成结构化摘要（LLM 摘要而非硬截断）
-      const ctxWindow = new ContextWindow(model.contextWindow || DEFAULT_CONTEXT_WINDOW, 6);
-      ctxWindow.setSummaryModel(platform, model);
-      if (ctxWindow.needsCompression(messagesToSend)) {
-        let flushedThisRun = false; // 每个任务最多抢救一次
-        messagesToSend = await ctxWindow.compress(messagesToSend, {
-          beforeCompress: async (toCompress) => {
-            if (flushedThisRun) return;
-            flushedThisRun = true;
-            // 抢救同样优先用「记忆抽取模型」（小模型足够），未配置则回退任务模型
-            const memLlm = resolveMemoryExtractLlm(task) || { platform, model };
-            await flushMemoriesBeforeCompression(
-              { userId, conversationId: convId, agentId: task.agentId ?? null, platform: memLlm.platform, model: memLlm.model },
-              toCompress,
-            );
-          },
-        });
-      }
-
-      // 使用后端统一构建的系统提示词（或历史兼容的前端传入）
-      const systemPrompt = systemPromptBuilt;
-      const llmMessages: Message[] = [];
-      if (systemPrompt) {
-        llmMessages.push({ id: 'sys', conversationId: '', role: 'system', content: systemPrompt, createdAt: 0 });
-      }
-      llmMessages.push(...messagesToSend.map(m => ({
-        id: m.id, conversationId: '', role: m.role,
-        content: m.content, toolCalls: m.toolCalls,
-        toolCallId: m.toolCallId, createdAt: m.createdAt,
-      })));
-
-      // 文本模式工具调用：模型不支持 function calling 时，在 system prompt 注入 [TOOL_CALL] 格式说明
-      const hasToolsToExpose = toolsBuilt.length > 0;
-      if (tools.length === 0 && hasToolsToExpose && llmMessages[0]?.role === 'system') {
-        const toolList = toolsBuilt.map((t: any) => {
-          const props = t.function.parameters?.properties || {};
-          const req = t.function.parameters?.required || [];
-          const params = Object.entries(props).map(([k, v]: [string, any]) =>
-            `    - ${k}${req.includes(k) ? '（必填）' : ''}: ${v.description || v.type || ''}`
-          ).join('\n');
-          return `- ${t.function.name}: ${t.function.description || ''}\n  参数：\n${params}`;
-        }).join('\n');
-        llmMessages[0].content += `\n\n## 工具调用（文本模式）\n当要调用工具时，在回复中以下格式输出（可多次调用）：\n[TOOL_CALL]{"name":"工具名","arguments":{"参数名":"参数值"}}[/TOOL_CALL]\n可用工具：\n${toolList}\n调用后等待返回结果，再继续回复。`;
-      }
-
-      // 构建完整提示词快照（供前端"查看提示词"展示）
-      const snap = JSON.stringify({
-        step,
-        timestamp: new Date().toISOString(),
-        model: { id: model.modelId || model.id, alias: model.alias, contextWindow: model.contextWindow },
-        platform: { id: platform.id, name: platform.name, protocol: platform.protocol },
-        parameters: {
-          temperature: options?.temperature,
-          maxTokens: options?.maxTokens,
-          topP: options?.topP,
-          reasoningEffort: options?.reasoningEffort,
-        },
-        systemPrompt: llmMessages[0]?.role === 'system' ? llmMessages[0].content : '',
-        tools: toolsBuilt.map((t: any) => ({
-          name: t.function?.name || t.name,
-          description: t.function?.description || '',
-          parameters: t.function?.parameters,
-        })),
-        // 原模原样：content 保留模型原始输出（含 [TOOL_CALL] 块），toolCalls 原样透传不做重排
-        messages: llmMessages.map(m => ({
-          role: m.role,
-          content: typeof m.content === 'string' && m.content.length > 4000 ? m.content.slice(0, 3997) + '...' : m.content || '',
-          toolCalls: m.toolCalls,
-        })),
-      }, null, 2);
-
-      // 添加助手占位消息
-      const assistantMsgId = insertMessage(convId, userId, 'assistant', '', { systemPromptSnapshot: snap });
-      activeAssistantMsgId = assistantMsgId;
-      emit(task, { type: 'message:added', message: { id: assistantMsgId, role: 'assistant', content: '', systemPromptSnapshot: snap } });
-
-      // 流式请求
-      let fullContent = '';
-      let fullReasoning = '';
-      let usageTokens = 0; // 本轮 LLM 调用 token 用量（provider 返回 usage 时累计，供 LLM 交互日志统计）
-      const toolCallAcc: DeltaToolCall[] = [];
-
+    // 连续「参数为空」的工具调用计数：用于空转断路（见循环内对 consecutiveArgFailures 的处理）
+    let consecutiveArgFailures = 0;
+    // 自动接力轮次计数（达 maxSteps 后接着跑的批次数，见循环结束后与 P0-2 决策分支）
+    let continuationCount = 0;
+    // 自动接力总开关与上限：达单轮步数上限后自动接着做（用户可在智能体 config_json 里
+    // 设 autoContinueMaxRounds=0 关掉；默认 3 轮，防无限烧 token）
+    const autoContinueMaxRounds = (() => {
+      if (!params.agentId) return 3;
       try {
-        for await (const chunk of client.chatStream(llmMessages, {
-          tools: tools.length > 0 ? tools : undefined,
-          temperature: options?.temperature,
-          maxTokens: options?.maxTokens,
-          topP: options?.topP,
-          frequencyPenalty: (options as any)?.frequencyPenalty,
-          presencePenalty: (options as any)?.presencePenalty,
-          reasoningEffort: options?.reasoningEffort,
-          signal: task.abortController.signal,
-        })) {
-          if (chunk.usage) {
-            usageTokens = (chunk.usage.promptTokens || 0) + (chunk.usage.completionTokens || 0);
-          }
-          if (chunk.delta?.content) {
-            fullContent += chunk.delta.content;
-            emit(task, { type: 'chunk', content: chunk.delta.content });
-          }
-          if (chunk.delta?.reasoningContent) {
-            fullReasoning += chunk.delta.reasoningContent;
-            emit(task, { type: 'chunk', reasoning: chunk.delta.reasoningContent });
-          }
-          if (chunk.delta?.toolCalls) {
-            for (const tc of chunk.delta.toolCalls) {
-              let idx = tc.index;
-              if (idx === undefined) {
-                if (tc.id) {
-                  const existById = toolCallAcc.findIndex(x => x.id === tc.id);
-                  idx = existById >= 0 ? existById : toolCallAcc.length;
-                } else if (tc.function?.name) {
-                  idx = toolCallAcc.length;
-                } else {
-                  idx = toolCallAcc.length > 0 ? toolCallAcc.length - 1 : 0;
-                }
-              }
-              if (!toolCallAcc[idx]) {
-                toolCallAcc[idx] = { ...tc };
-              } else {
-                const prev = toolCallAcc[idx];
-                toolCallAcc[idx] = {
-                  ...prev, ...tc,
-                  function: tc.function
-                    ? { ...prev.function, ...tc.function, arguments: (prev.function?.arguments || '') + (tc.function!.arguments || '') }
-                    : prev.function,
-                };
-              }
-            }
-            emit(task, { type: 'tool_call', toolCalls: [...toolCallAcc] });
-          }
+        const row = db.prepare('SELECT config_json FROM agent WHERE id = ? AND (user_id = ? OR is_public = 1)').get(params.agentId, userId) as any;
+        const cfg = (() => { try { return JSON.parse(row?.config_json || '{}'); } catch { return {}; } })();
+        return typeof cfg?.autoContinueMaxRounds === 'number' && cfg.autoContinueMaxRounds >= 0 ? cfg.autoContinueMaxRounds : 3;
+      } catch { return 3; }
+    })();
+    // 本轮步数预算：每轮现读，允许跑中途调大/调小立即生效（见 readLiveParams 注释）
+    let stepBudget = liveMaxSteps();
+    // 累计已消耗步数（跨自动接力批次），用于 step 事件与日志的连续计数
+    let emittedStep = 0;
+
+    // ★ 外层 = 自动接力批次；内层 = 单批 ReAct 步数。
+    //   到达单批上限后不终止，而是决策「是否接着做」：接力 → 继续外层；否则 return 收尾。
+    //   上限 autoContinueMaxRounds 保证不会无限续跑（默认 3，智能体 config_json 可关/可调）。
+    for (let batch = 0; batch <= autoContinueMaxRounds; batch++) {
+      for (let step = 0; step < stepBudget; step++) {
+        if (task.abortController.signal.aborted) throw new DOMException('Aborted', 'AbortError');
+        await waitIfPaused(task); // 工具边界暂停：挂起时停在这里，resume/abort 后继续
+        // ★ 每轮重算步数预算：用户在任务运行中把「最大循环步数」调大，本轮即可续跑更多步
+        //   （不必等任务结束重发）。调小则本轮在到达新上限后进入收尾决策。
+        const budgetNow = liveMaxSteps();
+        if (budgetNow !== stepBudget) stepBudget = budgetNow;
+        task.step = step;
+        emit(task, { type: 'step', step: emittedStep, batch });
+
+        // 加载最新消息
+        let messagesToSend = loadMessages(convId);
+        messagesToSend = messagesToSend.filter(m => m.content || m.toolCalls || m.role === 'tool' || (m as any).reasoningContent);
+        // 上下文窗口压缩：超限时先抢救细节再生成结构化摘要（LLM 摘要而非硬截断）
+        const ctxWindow = new ContextWindow(model.contextWindow || DEFAULT_CONTEXT_WINDOW, 6);
+        ctxWindow.setSummaryModel(platform, model);
+        if (ctxWindow.needsCompression(messagesToSend)) {
+          let flushedThisRun = false; // 每个任务最多抢救一次
+          messagesToSend = await ctxWindow.compress(messagesToSend, {
+            beforeCompress: async (toCompress) => {
+              if (flushedThisRun) return;
+              flushedThisRun = true;
+              // 抢救同样优先用「记忆抽取模型」（小模型足够），未配置则回退任务模型
+              const memLlm = resolveMemoryExtractLlm(task) || { platform, model };
+              await flushMemoriesBeforeCompression(
+                { userId, conversationId: convId, agentId: task.agentId ?? null, platform: memLlm.platform, model: memLlm.model },
+                toCompress,
+              );
+            },
+          });
         }
-      } catch (e: any) {
-        if (isAbortError(e)) throw e;
-        // 重试不带 tools
-        if (/does not support tools|not support.*tool/i.test(e?.message || '') && tools.length > 0) {
-          // 追加文本模式工具调用格式说明后重试
-          const sysMsg = llmMessages[0];
-          if (sysMsg?.role === 'system' && !(sysMsg.content || '').includes('[TOOL_CALL]')) {
-            const toolList = tools.map((t: any) => {
-              const props = t.function.parameters?.properties || {};
-              const req = t.function.parameters?.required || [];
-              const params = Object.entries(props).map(([k, v]: [string, any]) =>
-                `    - ${k}${req.includes(k) ? '（必填）' : ''}: ${v.description || v.type || ''}`
-              ).join('\n');
-              return `- ${t.function.name}: ${t.function.description || ''}\n  参数：\n${params}`;
-            }).join('\n');
-            sysMsg.content = (sysMsg.content || '') + `\n\n## 工具调用（文本模式）\n当要调用工具时，在回复中以下格式输出（可多次调用）：\n[TOOL_CALL]{"name":"工具名","arguments":{"参数名":"参数值"}}[/TOOL_CALL]\n可用工具：\n${toolList}\n调用后等待返回结果，再继续回复。`;
-          }
-          fullContent = ''; fullReasoning = ''; toolCallAcc.length = 0; usageTokens = 0;
+
+        // 使用后端统一构建的系统提示词（或历史兼容的前端传入）
+        const systemPrompt = systemPromptBuilt;
+        const llmMessages: Message[] = [];
+        if (systemPrompt) {
+          llmMessages.push({ id: 'sys', conversationId: '', role: 'system', content: systemPrompt, createdAt: 0 });
+        }
+        llmMessages.push(...messagesToSend.map(m => ({
+          id: m.id, conversationId: '', role: m.role,
+          content: m.content, toolCalls: m.toolCalls,
+          toolCallId: m.toolCallId, createdAt: m.createdAt,
+        })));
+
+        // 文本模式工具调用：模型不支持 function calling 时，在 system prompt 注入 [TOOL_CALL] 格式说明
+        const hasToolsToExpose = toolsBuilt.length > 0;
+        if (tools.length === 0 && hasToolsToExpose && llmMessages[0]?.role === 'system') {
+          const toolList = toolsBuilt.map((t: any) => {
+            const props = t.function.parameters?.properties || {};
+            const req = t.function.parameters?.required || [];
+            const params = Object.entries(props).map(([k, v]: [string, any]) =>
+              `    - ${k}${req.includes(k) ? '（必填）' : ''}: ${v.description || v.type || ''}`
+            ).join('\n');
+            return `- ${t.function.name}: ${t.function.description || ''}\n  参数：\n${params}`;
+          }).join('\n');
+          llmMessages[0].content += `\n\n## 工具调用（文本模式）\n当要调用工具时，在回复中以下格式输出（可多次调用）：\n[TOOL_CALL]{"name":"工具名","arguments":{"参数名":"参数值"}}[/TOOL_CALL]\n可用工具：\n${toolList}\n调用后等待返回结果，再继续回复。`;
+        }
+
+        // 本轮生效参数（显式传入 > 智能体现值），供快照展示与 LLM 调用共用
+        const effOpts = effectiveOptions();
+        // 构建完整提示词快照（供前端"查看提示词"展示）
+        const snap = JSON.stringify({
+          step,
+          timestamp: new Date().toISOString(),
+          model: { id: model.modelId || model.id, alias: model.alias, contextWindow: model.contextWindow },
+          platform: { id: platform.id, name: platform.name, protocol: platform.protocol },
+          parameters: {
+            temperature: effOpts.temperature,
+            maxTokens: effOpts.maxTokens,
+            topP: effOpts.topP,
+            reasoningEffort: effOpts.reasoningEffort,
+          },
+          systemPrompt: llmMessages[0]?.role === 'system' ? llmMessages[0].content : '',
+          tools: toolsBuilt.map((t: any) => ({
+            name: t.function?.name || t.name,
+            description: t.function?.description || '',
+            parameters: t.function?.parameters,
+          })),
+          // 原模原样：content 保留模型原始输出（含 [TOOL_CALL] 块），toolCalls 原样透传不做重排
+          messages: llmMessages.map(m => ({
+            role: m.role,
+            content: typeof m.content === 'string' && m.content.length > 4000 ? m.content.slice(0, 3997) + '...' : m.content || '',
+            toolCalls: m.toolCalls,
+          })),
+        }, null, 2);
+
+        // 添加助手占位消息
+        const assistantMsgId = insertMessage(convId, userId, 'assistant', '', { systemPromptSnapshot: snap });
+        activeAssistantMsgId = assistantMsgId;
+        emit(task, { type: 'message:added', message: { id: assistantMsgId, role: 'assistant', content: '', systemPromptSnapshot: snap } });
+
+        // 流式请求
+        let fullContent = '';
+        let fullReasoning = '';
+        let usageTokens = 0; // 本轮 LLM 调用 token 用量（provider 返回 usage 时累计，供 LLM 交互日志统计）
+        const toolCallAcc: DeltaToolCall[] = [];
+
+        try {
           for await (const chunk of client.chatStream(llmMessages, {
-            temperature: options?.temperature, maxTokens: options?.maxTokens,
+            tools: tools.length > 0 ? tools : undefined,
+            temperature: effOpts.temperature,
+            maxTokens: effOpts.maxTokens,
+            topP: effOpts.topP,
+            frequencyPenalty: effOpts.frequencyPenalty,
+            presencePenalty: effOpts.presencePenalty,
+            reasoningEffort: effOpts.reasoningEffort,
             signal: task.abortController.signal,
           })) {
             if (chunk.usage) {
@@ -1235,177 +1280,320 @@ async function runReActLoop(task: LlmTask, params: {
               fullReasoning += chunk.delta.reasoningContent;
               emit(task, { type: 'chunk', reasoning: chunk.delta.reasoningContent });
             }
+            if (chunk.delta?.toolCalls) {
+              for (const tc of chunk.delta.toolCalls) {
+                let idx = tc.index;
+                if (idx === undefined) {
+                  if (tc.id) {
+                    const existById = toolCallAcc.findIndex(x => x.id === tc.id);
+                    idx = existById >= 0 ? existById : toolCallAcc.length;
+                  } else if (tc.function?.name) {
+                    idx = toolCallAcc.length;
+                  } else {
+                    idx = toolCallAcc.length > 0 ? toolCallAcc.length - 1 : 0;
+                  }
+                }
+                if (!toolCallAcc[idx]) {
+                  toolCallAcc[idx] = { ...tc };
+                } else {
+                  const prev = toolCallAcc[idx];
+                  toolCallAcc[idx] = {
+                    ...prev, ...tc,
+                    function: tc.function
+                      ? { ...prev.function, ...tc.function, arguments: (prev.function?.arguments || '') + (tc.function!.arguments || '') }
+                      : prev.function,
+                  };
+                }
+              }
+              emit(task, { type: 'tool_call', toolCalls: [...toolCallAcc] });
+            }
           }
-        } else {
-          throw e;
-        }
-      }
-
-      // 文本模式工具调用解析：模型输出 [TOOL_CALL]...[/TOOL_CALL] 或 <function=xxx> 时转结构化 toolCalls
-      // 某些模型（如 agnes-2.5-flash）会把 [TOOL_CALL] 放在 reasoning_content 中，需同时检查
-      // function call 模式可能返回工具名但 arguments 为空，需从 reasoning 中提取完整参数
-      const hasEmptyArgs = toolCallAcc.length > 0 && toolCallAcc.every(tc => !tc.function?.arguments || tc.function.arguments === '{}' || tc.function.arguments === '');
-      if (toolCallAcc.length === 0 || hasEmptyArgs) {
-        const hasToolInContent = fullContent.toUpperCase().includes('[TOOL_CALL]') || fullContent.toUpperCase().includes('<FUNCTION');
-        const hasToolInReasoning = !hasToolInContent && (fullReasoning.toUpperCase().includes('[TOOL_CALL]') || fullReasoning.toUpperCase().includes('<FUNCTION'));
-        if (hasToolInContent || hasToolInReasoning) {
-          const source = hasToolInContent ? fullContent : fullReasoning;
-          // 原模原样保留模型原始输出（content/reasoning 不做剥离），仅解析出结构化 toolCalls；
-          // 前端展示时再隐藏工具块，模型下一轮也能看到自己上一轮的原始调用文本
-          const { toolCalls: parsed } = parseTextModeToolCalls(source);
-          if (hasEmptyArgs && parsed.length > 0) toolCallAcc.length = 0;
-          for (const tc of parsed) {
-            toolCallAcc.push({ id: tc.id, function: { name: tc.name, arguments: tc.arguments } } as DeltaToolCall);
-          }
-          if (toolCallAcc.length > 0) {
-            emit(task, { type: 'tool_call', toolCalls: [...toolCallAcc] });
-          }
-        }
-      }
-
-      // 更新助手消息（tokens：provider usage 优先，缺失时按内容长度粗估，供 LLM 交互日志统计）
-      const estTokens = usageTokens || Math.round((fullContent.length + fullReasoning.length) / 2);
-      updateMessageContent(assistantMsgId, fullContent, fullReasoning, toolCallAcc.length > 0 ? toolCallAcc as any : undefined, estTokens);
-      emit(task, { type: 'message:updated', messageId: assistantMsgId, content: fullContent, reasoning: fullReasoning, toolCalls: toolCallAcc.length > 0 ? toolCallAcc : undefined });
-
-      // 无工具调用 → 完成
-      if (toolCallAcc.length === 0) {
-        // 「立即发送」的追加消息还没被消费：不能在此 finish，再跑一轮让模型看到它们。
-        // 消息已由 injectUserMessage 落库，下一轮 loadMessages(convId) 自然带上，这里只清标记并续循环。
-        if (task.pendingInjects.length > 0) {
-          task.pendingInjects = [];
-          continue;
-        }
-        // 空回复兜底：上一轮工具调用后模型返回空内容（常见于工具全失败），补提示避免用户看到空白
-        if (!fullContent && !fullReasoning && step > 0) {
-          const tip = '（助手未返回有效内容，可能是工具调用失败导致。请重试或换一种问法。）';
-          updateMessageContent(assistantMsgId, tip);
-          emit(task, { type: 'message:updated', messageId: assistantMsgId, content: tip });
-        }
-        emit(task, { type: 'task:completed' });
-        task.status = 'completed';
-        // 长任务收尾：把本轮结论沉淀进空间记忆（跨会话可见），见 recordTaskProgress
-        void recordTaskProgress(task, 'completed', fullContent || fullReasoning || '');
-        void extractMemoryFromConversation(task);
-        return;
-      }
-
-      // 执行工具调用（同批多导航：第 2+ 个 browser_navigate 转为新开标签页）
-      const newTabNavIds = markDuplicateNavigations(toolCallAcc);
-      for (const tc of toolCallAcc) {
-        const toolName = tc.function?.name || (tc as any).toolName || '';
-        const parsedArgs = parseToolArguments(tc.function?.arguments);
-        if (parsedArgs.args === null) {
-          // 参数解析失败：必须落库 tool 结果保持配对，并明确告诉模型重试（绝不带空参数硬执行）
-          const errMsg = capToolResult(`参数解析失败，本工具未执行。${parsedArgs.err}\n请重新调用 ${toolName}，确保 arguments 是完整、合法的 JSON 对象。`);
-          const errId = insertMessage(convId, userId, 'tool', errMsg, { toolCallId: tc.id });
-          emit(task, { type: 'message:added', message: { id: errId, role: 'tool', content: errMsg, toolCallId: tc.id } });
-          continue;
-        }
-        const args: any = parsedArgs.args;
-        if (newTabNavIds.has(String(tc.id || ''))) args.openInNewTab = true;
-        emit(task, { type: 'tool:start', toolName, args });
-
-        let result: string;
-        const toolMetaOut: { value?: Record<string, unknown> | null } = {};
-        try {
-          result = await executeTool(task, registry, toolName, args, tc.id || '', UI_TOOLS, 0, toolsBuilt, toolMetaOut);
         } catch (e: any) {
-          if (isAbortError(e)) {
-            // 中止也必须落库 tool 结果：否则库里留下孤儿 assistant.tool_calls（无对应 tool 消息），
-            // 本会话下次重放历史时上游 400 "tool_calls must be followed by tool messages"。
-            try {
-              const abortResult = capToolResult('[已中止] 用户中断了工具执行');
-              const abortMsgId = insertMessage(convId, userId, 'tool', abortResult, { toolCallId: tc.id });
-              emit(task, { type: 'message:added', message: { id: abortMsgId, role: 'tool', content: abortResult, toolCallId: tc.id } });
-            } catch { /* 落库失败不影响中止流程（发送侧 sanitize 仍会兜底配对） */ }
+          if (isAbortError(e)) throw e;
+          // 重试不带 tools
+          if (/does not support tools|not support.*tool/i.test(e?.message || '') && tools.length > 0) {
+            // 追加文本模式工具调用格式说明后重试
+            const sysMsg = llmMessages[0];
+            if (sysMsg?.role === 'system' && !(sysMsg.content || '').includes('[TOOL_CALL]')) {
+              const toolList = tools.map((t: any) => {
+                const props = t.function.parameters?.properties || {};
+                const req = t.function.parameters?.required || [];
+                const params = Object.entries(props).map(([k, v]: [string, any]) =>
+                  `    - ${k}${req.includes(k) ? '（必填）' : ''}: ${v.description || v.type || ''}`
+                ).join('\n');
+                return `- ${t.function.name}: ${t.function.description || ''}\n  参数：\n${params}`;
+              }).join('\n');
+              sysMsg.content = (sysMsg.content || '') + `\n\n## 工具调用（文本模式）\n当要调用工具时，在回复中以下格式输出（可多次调用）：\n[TOOL_CALL]{"name":"工具名","arguments":{"参数名":"参数值"}}[/TOOL_CALL]\n可用工具：\n${toolList}\n调用后等待返回结果，再继续回复。`;
+            }
+            fullContent = ''; fullReasoning = ''; toolCallAcc.length = 0; usageTokens = 0;
+            for await (const chunk of client.chatStream(llmMessages, {
+              temperature: effOpts.temperature, maxTokens: effOpts.maxTokens,
+              signal: task.abortController.signal,
+            })) {
+              if (chunk.usage) {
+                usageTokens = (chunk.usage.promptTokens || 0) + (chunk.usage.completionTokens || 0);
+              }
+              if (chunk.delta?.content) {
+                fullContent += chunk.delta.content;
+                emit(task, { type: 'chunk', content: chunk.delta.content });
+              }
+              if (chunk.delta?.reasoningContent) {
+                fullReasoning += chunk.delta.reasoningContent;
+                emit(task, { type: 'chunk', reasoning: chunk.delta.reasoningContent });
+              }
+            }
+          } else {
             throw e;
           }
-          result = `工具执行失败: ${e?.message || e}`;
         }
-        emit(task, { type: 'tool:result', toolName, result });
 
-        // file_write 成功后注册到 conversation_file（分类管理，前端文件面板展示）
-        // ★★★ 必须用**工具回传的实际落盘路径**（_meta.path），不能用模型传的 args.path：
-        //   现在落盘位置由服务端按会话目录决定（见 executeTool 内的 artifactDirs），
-        //   模型给的 path 已不参与定位。若仍登记 args.path，conversation_file 里会写进
-        //   一个**并不存在的位置** → 文件管理点开就 404（用户报的"能看到但预览不行"）。
-        if (toolName === 'file_write' && !result.startsWith('工具执行失败')) {
-          const fwMeta = toolMetaOut.value as { path?: string; name?: string; category?: string; bytes?: number } | null;
-          const filePath = String(fwMeta?.path || '');
-          if (filePath) {
-            try {
-              const fileName = String(fwMeta?.name || '') || (filePath.split(/[/\\]/).pop() || filePath);
-              const category = fwMeta?.category === 'deliverable' ? 'deliverable' : 'intermediate';
-              const size = Number(fwMeta?.bytes) || 0;
-              const cfId = 'cf_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
-              db.prepare('INSERT INTO conversation_file (id, conversation_id, user_id, space_id, name, path, category, mime_type, size, source, message_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(cfId, convId, userId, null, fileName, filePath, category, guessMime(fileName), size, 'agent', assistantMsgId, Date.now());
-              emit(task, { type: 'file:registered', conversationId: convId });
-            } catch (e: any) {
-              // 登记失败不能静默：否则"文件产出了但文件管理里没有/点开 404"只能靠猜
-              console.warn('[file_write] 文件登记失败:', e?.message || e);
+        // 文本模式工具调用解析：模型输出 [TOOL_CALL]...[/TOOL_CALL] 或 <function=xxx> 时转结构化 toolCalls
+        // 某些模型（如 agnes-2.5-flash）会把 [TOOL_CALL] 放在 reasoning_content 中，需同时检查
+        // function call 模式可能返回工具名但 arguments 为空，需从 reasoning 中提取完整参数
+        const hasEmptyArgs = toolCallAcc.length > 0 && toolCallAcc.every(tc => !tc.function?.arguments || tc.function.arguments === '{}' || tc.function.arguments === '');
+        if (toolCallAcc.length === 0 || hasEmptyArgs) {
+          const hasToolInContent = fullContent.toUpperCase().includes('[TOOL_CALL]') || fullContent.toUpperCase().includes('<FUNCTION');
+          const hasToolInReasoning = !hasToolInContent && (fullReasoning.toUpperCase().includes('[TOOL_CALL]') || fullReasoning.toUpperCase().includes('<FUNCTION'));
+          if (hasToolInContent || hasToolInReasoning) {
+            const source = hasToolInContent ? fullContent : fullReasoning;
+            // 原模原样保留模型原始输出（content/reasoning 不做剥离），仅解析出结构化 toolCalls；
+            // 前端展示时再隐藏工具块，模型下一轮也能看到自己上一轮的原始调用文本
+            const { toolCalls: parsed } = parseTextModeToolCalls(source);
+            if (hasEmptyArgs && parsed.length > 0) toolCallAcc.length = 0;
+            for (const tc of parsed) {
+              toolCallAcc.push({ id: tc.id, function: { name: tc.name, arguments: tc.arguments } } as DeltaToolCall);
+            }
+            if (toolCallAcc.length > 0) {
+              emit(task, { type: 'tool_call', toolCalls: [...toolCallAcc] });
             }
           }
         }
 
-        // 媒体产物（生图/生视频）落盘即注册：产物由服务端直接写进会话交付目录，
-        // 不登记的话文件管理里永远看不到（此前只有 file_write 会登记，导致生图产物只出现在对话里）。
-        if (MEDIA_TOOLS.has(toolName) && !result.startsWith('工具执行失败')) {
+        // 更新助手消息（tokens：provider usage 优先，缺失时按内容长度粗估，供 LLM 交互日志统计）
+        const estTokens = usageTokens || Math.round((fullContent.length + fullReasoning.length) / 2);
+        // 落库前补齐缺失的 call id：避免 assistant.tool_calls 与 tool 消息无法配对而被 sanitize 剥掉，
+        // 导致模型下一轮看不到自己调用过什么（详见 ensureToolCallIds 注释）。
+        if (toolCallAcc.length > 0) ensureToolCallIds(toolCallAcc);
+        updateMessageContent(assistantMsgId, fullContent, fullReasoning, toolCallAcc.length > 0 ? toolCallAcc as any : undefined, estTokens);
+        emit(task, { type: 'message:updated', messageId: assistantMsgId, content: fullContent, reasoning: fullReasoning, toolCalls: toolCallAcc.length > 0 ? toolCallAcc : undefined });
+
+        // 无工具调用 → 完成
+        if (toolCallAcc.length === 0) {
+          // 「立即发送」的追加消息还没被消费：不能在此 finish，再跑一轮让模型看到它们。
+          // 消息已由 injectUserMessage 落库，下一轮 loadMessages(convId) 自然带上，这里只清标记并续循环。
+          if (task.pendingInjects.length > 0) {
+            task.pendingInjects = [];
+            continue;
+          }
+          // 空回复兜底：上一轮工具调用后模型返回空内容（常见于工具全失败），补提示避免用户看到空白
+          if (!fullContent && !fullReasoning && step > 0) {
+            const tip = '（助手未返回有效内容，可能是工具调用失败导致。请重试或换一种问法。）';
+            updateMessageContent(assistantMsgId, tip);
+            emit(task, { type: 'message:updated', messageId: assistantMsgId, content: tip });
+          }
+          emit(task, { type: 'task:completed' });
+          task.status = 'completed';
+          // 长任务收尾：把本轮结论沉淀进空间记忆（跨会话可见），见 recordTaskProgress
+          void recordTaskProgress(task, 'completed', fullContent || fullReasoning || '');
+          void extractMemoryFromConversation(task);
+          return;
+        }
+
+        // 执行工具调用（同批多导航：第 2+ 个 browser_navigate 转为新开标签页）
+        const newTabNavIds = markDuplicateNavigations(toolCallAcc);
+
+        // ★ 空转断路器：连续多步「所有工具调用都参数为空」说明模型已进入退化循环
+        //   （典型成因：输出长度上限偏低 → 工具名吐出来、arguments 还没吐就被截断成 {}；
+        //    叠加历史里空参数调用的 tool 结果被 sanitizeToolMessages 剥掉 → 模型看不到反馈 → 无限重试）。
+        //   此前只能一路空转到 maxSteps 耗尽再吐一份阶段总结（用户侧表现为"跑很久啥也没产出"）。
+        //   这里连续 3 步即判定空转，落一条诊断消息并结束，避免继续烧 token。
+        const allEmptyArgs = toolCallAcc.length > 0 &&
+          toolCallAcc.every(tc => { const a = tc.function?.arguments; return !a || a === '{}'; });
+        consecutiveArgFailures = allEmptyArgs ? consecutiveArgFailures + 1 : 0;
+        if (consecutiveArgFailures >= 3) {
+          const diag = '检测到工具调用连续多步参数为空（arguments 一直为 {}），判断为输出被长度上限截断导致的空转，已停止以免继续消耗。\n\n' +
+            '处理建议（按优先级）：\n' +
+            '1. 优先换联网模型（如 agnes 系列）或换一个「支持 tools」且输出上限更高的模型——本地小模型的工具调用能力通常不稳；\n' +
+            '2. 在模型/智能体设置里调大「最大输出 tokens」，并确认它对该模型真正生效；\n' +
+            '3. 把任务拆小（例如每次只处理一章），避免单轮上下文过长；\n' +
+            '4. 若某个工具反复参数为空，改用别的工具或让模型分步给出参数后再调用。';
+          updateMessageContent(assistantMsgId, diag);
+          emit(task, { type: 'message:updated', messageId: assistantMsgId, content: diag });
+          emit(task, { type: 'task:completed' });
+          task.status = 'completed';
+          void recordTaskProgress(task, 'empty_args_loop', diag, { steps: step });
+          return;
+        }
+
+        for (const tc of toolCallAcc) {
+          const toolName = tc.function?.name || (tc as any).toolName || '';
+          const parsedArgs = parseToolArguments(tc.function?.arguments);
+          if (parsedArgs.args === null) {
+            // 参数解析失败：必须落库 tool 结果保持配对，并明确告诉模型重试（绝不带空参数硬执行）
+            const errMsg = capToolResult(`参数解析失败，本工具未执行。${parsedArgs.err}\n请重新调用 ${toolName}，确保 arguments 是完整、合法的 JSON 对象。`);
+            const errId = insertMessage(convId, userId, 'tool', errMsg, { toolCallId: tc.id });
+            emit(task, { type: 'message:added', message: { id: errId, role: 'tool', content: errMsg, toolCallId: tc.id } });
+            continue;
+          }
+          const args: any = parsedArgs.args;
+          if (newTabNavIds.has(String(tc.id || ''))) args.openInNewTab = true;
+          emit(task, { type: 'tool:start', toolName, args });
+
+          let result: string;
+          const toolMetaOut: { value?: Record<string, unknown> | null } = {};
           try {
-            const media = JSON.parse(result) as { type?: string; file?: string; ok?: boolean };
-            const filePath = String(media?.file || '');
-            // 产物落盘失败时工具只回远端 URL（没有本机文件），此时无处可登记
-            if (media?.ok !== false && filePath) {
-              const sep = filePath.includes('/') ? '/' : '\\';
-              const fileName = filePath.split(sep).pop() || filePath;
-              // 产物就在本机，顺手取真实字节数（文件管理里显示大小，而不是 0）
-              let size = 0;
-              try { size = (await fsp.stat(filePath)).size; } catch { /* 取不到就留 0 */ }
-              // 生图/生视频/语音默认归交付物（用户要的东西），与 mediaTarget 的落盘分类保持一致。
-              // mime 按扩展名推断：图片落盘固定带扩展名（extFromUrl 兜底 .png），视频 mp4，音频 wav/mp3。
-              const cfId = 'cf_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
-              db.prepare('INSERT INTO conversation_file (id, conversation_id, user_id, space_id, name, path, category, mime_type, size, source, message_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(cfId, convId, userId, null, fileName, filePath, 'deliverable', guessMime(fileName), size, 'agent', assistantMsgId, Date.now());
-              emit(task, { type: 'file:registered', conversationId: convId });
-            }
+            result = await executeTool(task, registry, toolName, args, tc.id || '', UI_TOOLS, 0, toolsBuilt, toolMetaOut);
           } catch (e: any) {
-            // 登记失败不能静默：否则「产物没进交付目录」这类问题只能靠猜。
-            // 落盘已成功，这里只丢登记，打印出来便于定位（不打断对话）。
-            console.warn('[media] 交付文件登记失败:', e?.message || e);
+            if (isAbortError(e)) {
+              // 中止也必须落库 tool 结果：否则库里留下孤儿 assistant.tool_calls（无对应 tool 消息），
+              // 本会话下次重放历史时上游 400 "tool_calls must be followed by tool messages"。
+              try {
+                const abortResult = capToolResult('[已中止] 用户中断了工具执行');
+                const abortMsgId = insertMessage(convId, userId, 'tool', abortResult, { toolCallId: tc.id });
+                emit(task, { type: 'message:added', message: { id: abortMsgId, role: 'tool', content: abortResult, toolCallId: tc.id } });
+              } catch { /* 落库失败不影响中止流程（发送侧 sanitize 仍会兜底配对） */ }
+              throw e;
+            }
+            result = `工具执行失败: ${e?.message || e}`;
           }
+          emit(task, { type: 'tool:result', toolName, result });
+
+          // file_write 成功后注册到 conversation_file（分类管理，前端文件面板展示）
+          // ★★★ 必须用**工具回传的实际落盘路径**（_meta.path），不能用模型传的 args.path：
+          //   现在落盘位置由服务端按会话目录决定（见 executeTool 内的 artifactDirs），
+          //   模型给的 path 已不参与定位。若仍登记 args.path，conversation_file 里会写进
+          //   一个**并不存在的位置** → 文件管理点开就 404（用户报的"能看到但预览不行"）。
+          if (toolName === 'file_write' && !result.startsWith('工具执行失败')) {
+            const fwMeta = toolMetaOut.value as { path?: string; name?: string; category?: string; bytes?: number } | null;
+            const filePath = String(fwMeta?.path || '');
+            if (filePath) {
+              try {
+                const fileName = String(fwMeta?.name || '') || (filePath.split(/[/\\]/).pop() || filePath);
+                const category = fwMeta?.category === 'deliverable' ? 'deliverable' : 'intermediate';
+                const size = Number(fwMeta?.bytes) || 0;
+                const cfId = 'cf_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+                db.prepare('INSERT INTO conversation_file (id, conversation_id, user_id, space_id, name, path, category, mime_type, size, source, message_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(cfId, convId, userId, null, fileName, filePath, category, guessMime(fileName), size, 'agent', assistantMsgId, Date.now());
+                emit(task, { type: 'file:registered', conversationId: convId });
+              } catch (e: any) {
+                // 登记失败不能静默：否则"文件产出了但文件管理里没有/点开 404"只能靠猜
+                console.warn('[file_write] 文件登记失败:', e?.message || e);
+              }
+            }
+          }
+
+          // 媒体产物（生图/生视频）落盘即注册：产物由服务端直接写进会话交付目录，
+          // 不登记的话文件管理里永远看不到（此前只有 file_write 会登记，导致生图产物只出现在对话里）。
+          if (MEDIA_TOOLS.has(toolName) && !result.startsWith('工具执行失败')) {
+            try {
+              const media = JSON.parse(result) as { type?: string; file?: string; ok?: boolean };
+              const filePath = String(media?.file || '');
+              // 产物落盘失败时工具只回远端 URL（没有本机文件），此时无处可登记
+              if (media?.ok !== false && filePath) {
+                const sep = filePath.includes('/') ? '/' : '\\';
+                const fileName = filePath.split(sep).pop() || filePath;
+                // 产物就在本机，顺手取真实字节数（文件管理里显示大小，而不是 0）
+                let size = 0;
+                try { size = (await fsp.stat(filePath)).size; } catch { /* 取不到就留 0 */ }
+                // 生图/生视频/语音默认归交付物（用户要的东西），与 mediaTarget 的落盘分类保持一致。
+                // mime 按扩展名推断：图片落盘固定带扩展名（extFromUrl 兜底 .png），视频 mp4，音频 wav/mp3。
+                const cfId = 'cf_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+                db.prepare('INSERT INTO conversation_file (id, conversation_id, user_id, space_id, name, path, category, mime_type, size, source, message_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(cfId, convId, userId, null, fileName, filePath, 'deliverable', guessMime(fileName), size, 'agent', assistantMsgId, Date.now());
+                emit(task, { type: 'file:registered', conversationId: convId });
+              }
+            } catch (e: any) {
+              // 登记失败不能静默：否则「产物没进交付目录」这类问题只能靠猜。
+              // 落盘已成功，这里只丢登记，打印出来便于定位（不打断对话）。
+              console.warn('[media] 交付文件登记失败:', e?.message || e);
+            }
+          }
+
+          // 添加工具结果消息（入库前压缩，防止单条极端大结果撑爆消息表与下轮上下文）
+          const cappedResult = capToolResult(result);
+          const toolMsgId = insertMessage(convId, userId, 'tool', cappedResult, { toolCallId: tc.id });
+          emit(task, { type: 'message:added', message: { id: toolMsgId, role: 'tool', content: cappedResult, toolCallId: tc.id } });
         }
 
-        // 添加工具结果消息（入库前压缩，防止单条极端大结果撑爆消息表与下轮上下文）
-        const cappedResult = capToolResult(result);
-        const toolMsgId = insertMessage(convId, userId, 'tool', cappedResult, { toolCallId: tc.id });
-        emit(task, { type: 'message:added', message: { id: toolMsgId, role: 'tool', content: cappedResult, toolCallId: tc.id } });
+        // 继续下一轮 ReAct
+        emittedStep++;
       }
 
-      // 继续下一轮 ReAct
-    }
+    // ═══ 本批步数用完（或本轮预算被调小后耗尽）═══
+      //
+      // ★★★ 达上限不再"就地终止"，而是走「结账 → 决策 → 接力」（用户 2026-09-28 诉求：
+      //   「100 步就自动总结…应该有个记忆整理，然后根据整理的记忆进行任务，不要一直断」）。
+      //   此前这里只有一句总结 + task:completed，用户必须手动再说一句"继续"。
+      //
+      // 注意：这一步只有在**真的跑到预算上限**时才执行；正常完成（无工具调用）在循环内
+      // 已 return，不会到这里。
+      const budgetReached = stepBudget;
+      let tipText = `已达到最大循环数（${budgetReached}），请检查任务是否需要拆分或调高工具配置。`;
+      let summaryText = '';
+      try {
+        const hist = loadMessages(convId).filter(m => m.content || m.toolCalls || m.role === 'tool');
+        const history: Message[] = hist.map(m => ({
+          id: m.id, conversationId: '', role: m.role,
+          content: m.content, toolCalls: m.toolCalls,
+          toolCallId: m.toolCallId, createdAt: m.createdAt,
+        }));
+        // 先请模型做一次无工具总结（已完成/关键结果/未完成原因/后续建议），
+        // 同时让它自评「是否还有活没干完」（CONTINUE 行），作为是否接力的判据之一。
+        const judged = await decideAutoContinue({
+          client, systemPrompt: systemPromptBuilt, history,
+          maxSteps: budgetReached,
+          continuationCount,
+          autoContinueMaxRounds,
+          conversationId: convId,
+        });
+        summaryText = judged.summary;
+        if (summaryText) {
+          tipText = `${summaryText}\n\n（注：本次任务已达到单批最大循环步数（${budgetReached}）。）`;
+        }
 
-    // 循环结束（达到最大步数）—— 先请模型基于已执行的上下文做一次无工具总结，
-    // 输出进展汇报（已完成/关键结果/未完成原因/后续建议），而不是直接抛生硬的报错文案。
-    let tipText = `已达到最大循环数（${maxSteps}），请检查任务是否需要拆分或调高工具配置。`;
-    try {
-      const hist = loadMessages(convId).filter(m => m.content || m.toolCalls || m.role === 'tool');
-      const history: Message[] = hist.map(m => ({
-        id: m.id, conversationId: '', role: m.role,
-        content: m.content, toolCalls: m.toolCalls,
-        toolCallId: m.toolCallId, createdAt: m.createdAt,
-      }));
-      const summary = await summarizeOnMaxSteps(client, systemPromptBuilt, history, maxSteps, 'main');
-      if (summary) {
-        tipText = `${summary}\n\n（注：本次任务已达到最大循环步数（${maxSteps}），以上为阶段总结。如需继续，请拆分任务或调高智能体的最大循环步数配置。）`;
-      }
-    } catch { /* 总结失败回退固定文案 */ }
-    const tipId = insertMessage(convId, userId, 'assistant', tipText);
-    emit(task, { type: 'message:added', message: { id: tipId, role: 'assistant', content: tipText } });
-    emit(task, { type: 'task:completed' });
-    task.status = 'completed';
-    // 达最大步数 = 长任务最常见的"没跑完"形态：总结必须进空间记忆，
-    // 否则同目录新开会话不知道上一批做到哪。复用上面的总结文本，不额外多花一次 LLM 调用。
-    void recordTaskProgress(task, 'max_steps', tipText, { steps: maxSteps });
-    void extractMemoryFromConversation(task);
+        // ── 决策：该不该自动接力 ──
+        // 前置闸（不在 decideAutoContinue 里判，因为它不持有 task 状态）：
+        //   · 用户已终止 → 不接力；
+        //   · 已处于退化状态（连续空参数尾随）→ 不接力；
+        //   · 已到接力轮次上限 / 用户关闭了自动接力 → 不接力。
+        const aborted = task.abortController.signal.aborted;
+        const degenerate = consecutiveArgFailures > 0;
+        const withinRounds = continuationCount < autoContinueMaxRounds && autoContinueMaxRounds > 0;
+        if (judged.shouldContinue && withinRounds && !aborted && !degenerate) {
+          continuationCount++;
+          // 结构化记账：把「做到哪 + 还剩什么」落进空间记忆与进度明细（跨会话可见），
+          // 再续下一批 —— 这就是用户说的"根据整理的记忆进行任务"。
+          void recordTaskProgress(task, 'max_steps', tipText, {
+            steps: budgetReached,
+            continuation: `自动接力第 ${continuationCount}/${autoContinueMaxRounds} 批`,
+          });
+          // 通知前端：不是结束，而是接着做（前端据此保持"运行中"态、不清输入锁）
+          const contMsg = `已达单批步数上限（${budgetReached} 步），**自动接力第 ${continuationCount}/${autoContinueMaxRounds} 批**继续推进。` +
+            (judged.reason ? `（依据：${judged.reason}）` : '');
+          const contId = insertMessage(convId, userId, 'assistant', contMsg);
+          emit(task, { type: 'message:added', message: { id: contId, role: 'assistant', content: contMsg } });
+          emit(task, { type: 'continuation', round: continuationCount, maxRounds: autoContinueMaxRounds, reason: judged.reason });
+          // 重算步数预算（用户中途调大则用新值），继续外层批次循环
+          stepBudget = liveMaxSteps();
+          continue;
+        }
+
+        // 不接力 → 补一句"为什么不接力"，让用户知道是模型收尾还是被上限/开关截住
+        if (judged.reason) tipText += `\n\n（未自动续跑：${judged.reason}）`;
+      } catch { /* 总结失败回退固定文案 */ }
+
+      const tipId = insertMessage(convId, userId, 'assistant', tipText);
+      emit(task, { type: 'message:added', message: { id: tipId, role: 'assistant', content: tipText } });
+      emit(task, { type: 'task:completed' });
+      task.status = 'completed';
+      // 达最大步数 = 长任务最常见的"没跑完"形态：总结必须进空间记忆，
+      // 否则同目录新开会话不知道上一批做到哪。复用上面的总结文本，不额外多花一次 LLM 调用。
+      void recordTaskProgress(task, 'max_steps', tipText, { steps: budgetReached });
+      // 收尾记忆整理（P0-4）：把本批新增记忆做一次轻量整理（light 扫描 + 合并去重），
+      // 把「已完成 / 待办」拆出来，别让收尾只剩一团流水账。
+      void consolidateOnTaskEnd(task, summaryText || tipText);
+      void extractMemoryFromConversation(task);
+      return;
+    } // ← 自动接力批次循环
+
   } catch (e: any) {
     if (isAbortError(e)) {
       task.status = 'aborted';
@@ -1435,6 +1623,119 @@ async function runReActLoop(task: LlmTask, params: {
   }
 }
 
+/**
+ * ★★★ 达步数上限后的「自动接力」决策（用户 2026-09-28 诉求：
+ *   「100 步就自动总结（达到最大步数）应该有个记忆整理，然后根据整理的记忆进行任务，不要一直断」）。
+ *
+ * 此前这段是**纯收尾**：总结一句 → task:completed → 用户必须手动再说一句"继续"。
+ * 现在改为：结账（结构化记账）→ 决策（该不该接着做）→ 接力（同一任务继续跑下一批）。
+ *
+ * 决策依据（全部满足才接力，宁可少接力也不无限烧 token）：
+ *   ① 轮次未超上限 `autoContinueMaxRounds`（默认 3，智能体 config_json 可调；0 = 关闭）；
+ *   ② 未被用户终止（由调用方判，本函数不持有 task）；
+ *   ③ 未处于空转退化状态（同上，调用方判）；
+ *   ④ 模型自评「还有活没干完」（CONTINUE: yes）**或** 任务计划里还有未完成步骤。
+ */
+async function decideAutoContinue(args: {
+  client: LlmClient;
+  systemPrompt: string;
+  history: Message[];
+  maxSteps: number;
+  /** 已接力批次数（第 0 批是首次执行） */
+  continuationCount: number;
+  /** 允许的最大接力批次数；0 = 关闭自动接力 */
+  autoContinueMaxRounds: number;
+  conversationId: string;
+}): Promise<{ shouldContinue: boolean; summary: string; reason: string }> {
+  const { continuationCount, autoContinueMaxRounds, conversationId } = args;
+  // ① 总开关与轮次上限
+  if (autoContinueMaxRounds <= 0) {
+    return { shouldContinue: false, summary: '', reason: '自动接力已关闭（autoContinueMaxRounds=0）' };
+  }
+  if (continuationCount >= autoContinueMaxRounds) {
+    return { shouldContinue: false, summary: '', reason: `已达自动接力上限（${autoContinueMaxRounds} 批）` };
+  }
+
+  // ④-a 任务计划里还有未完成步骤 → 直接判定该继续（机械信号比模型自评可靠）
+  const planRemaining = readPlanRemainingSteps(conversationId);
+
+  // ④-b 模型自评：复用 summarizeOnMaxSteps 那一轮调用（不额外多花一次 LLM）
+  let summary = '';
+  let modelSaysContinue = false;
+  try {
+    const r = await summarizeOnMaxSteps(args.client, args.systemPrompt, args.history, args.maxSteps, 'main');
+    summary = r.text || '';
+    modelSaysContinue = r.shouldContinue;
+  } catch { /* 总结失败不接力（保守） */ }
+
+  const shouldContinue = modelSaysContinue || planRemaining > 0;
+  const reason = planRemaining > 0
+    ? `任务计划尚有 ${planRemaining} 个未完成步骤`
+    : modelSaysContinue ? '模型自评任务未完成' : '模型自评任务已完成';
+  return { shouldContinue, summary, reason };
+}
+
+/**
+ * 读会话任务计划里「未完成步骤」的条数（pending / running）。
+ * 计划由前端 task_plan/task_step 落盘到 conversation.task_plan_json（结构 { title, steps: [...] }）。
+ * 读不到/无计划 → 0（不据此接力）。
+ */
+function readPlanRemainingSteps(conversationId: string): number {
+  try {
+    const row = db.prepare('SELECT task_plan_json FROM conversation WHERE id = ?').get(conversationId) as
+      | { task_plan_json?: string | null }
+      | undefined;
+    if (!row?.task_plan_json) return 0;
+    const plan = JSON.parse(row.task_plan_json);
+    const steps: any[] = Array.isArray(plan?.steps) ? plan.steps : [];
+    return steps.filter((s) => {
+      const st = String(s?.status || 'pending');
+      return st === 'pending' || st === 'running';
+    }).length;
+  } catch { return 0; }
+}
+
+/**
+ * 任务收尾的「轻量记忆整理」（P0-4）。用户诉求原话：
+ *   「100 步就自动总结…应该有个记忆整理，然后根据整理的记忆进行任务，不要一直断」。
+ *
+ * 与 `services/memory-dreaming.ts` 的区别（**不要混用**）：
+ *   · dreaming：每日 02:30 后台全量三阶段（light 扫描 → REM 打分 → deep 落盘），重、慢、但彻底；
+ *   · 本函数：任务收尾时只做 **light 扫描 + 合并去重**（不跑 REM 打分），轻、快、不阻塞收尾。
+ * 目标是把本次任务的新增记忆"结账"成结构化两行（已完成 / 待办），而不是一团流水账。
+ *
+ * fire-and-forget：任何异常都静默（收尾路径不能因整理失败而报错给用户）。
+ */
+async function consolidateOnTaskEnd(task: LlmTask, summary: string): Promise<void> {
+  try {
+    const text = String(summary || '').trim();
+    if (!text) return;
+    // 只对**本任务新增的短期记忆**做整理：session/daily 且本会话产生
+    const rows = db.prepare(
+      `SELECT id, content FROM memory
+       WHERE user_id = ? AND type IN ('session','daily')
+         AND (metadata_json LIKE ? OR conversation_id = ?)
+         AND (metadata_json IS NULL OR metadata_json NOT LIKE '%"digested":1%')
+       ORDER BY created_at DESC LIMIT 50`,
+    ).all(task.userId, `%"${task.conversationId}"%`, task.conversationId) as Array<{ id: string; content: string }>;
+    if (!rows.length) return;
+    // 标记已消化（避免下次收尾重复整理）；真正的"提拔为长期/合并"仍交每日 dreaming 处理
+    const mark = db.prepare(`UPDATE memory SET metadata_json = ? WHERE id = ?`);
+    for (const r of rows) {
+      try {
+        const cur = db.prepare('SELECT metadata_json FROM memory WHERE id = ?').get(r.id) as any;
+        let meta: any = {};
+        try { meta = JSON.parse(cur?.metadata_json || '{}'); } catch { meta = {}; }
+        if (meta?.digested === 1) continue;
+        meta.digested = 1;
+        meta.digestedAt = Date.now();
+        mark.run(JSON.stringify(meta), r.id);
+      } catch { /* 单条失败跳过 */ }
+    }
+    console.log(`[memory] 收尾整理: 消化 ${rows.length} 条本任务短期记忆 (conv=${task.conversationId})`);
+  } catch { /* 收尾整理失败不影响任务状态 */ }
+}
+
 /** 工具执行策略：
  *  - UI 交互工具（ask_user 等）→ 委托前端，刷新时暂停等待重连
  *  - MCP 工具（mcp_ 前缀，连接在前端）→ 委托前端
@@ -1443,6 +1744,17 @@ async function runReActLoop(task: LlmTask, params: {
  *  - 自定义工具（custom_ 前缀，服务端沙箱）→ 后端直接执行 runInSandbox
  *  - 内置工具（file/cmd/browser 等）→ 后端直接执行，刷新不中断
  *  - 未知工具 → 委托前端兜底 */
+
+/**
+ * 执行一个自定义工具（含依赖按需安装）—— 见 `services/tool-deps.ts` 的 runCustomTool 说明。
+ * 抽到 services 是为了让 **两条入口**（ReAct 主循环的 custom_ 分支、`api_custom_tool_execute`）
+ * 共享同一套「装依赖 → 注模块/站点包 → 执行」语义（此前各写一遍、两处都漏了依赖安装）。
+ */
+async function runCustomToolCode(tool: any, args: Record<string, unknown>): Promise<string> {
+  const { runCustomTool } = await import('./services/tool-deps.js');
+  return runCustomTool(tool, args);
+}
+
 /** 读文件文本用于修改快照；不存在/不可读返回 null（新文件场景），存在但超大返回 undefined（跳过快照防误回退）。 */
 const FILE_SNAPSHOT_MAX_BYTES = 1024 * 1024;
 async function readFileOrNull(p: string): Promise<string | null | undefined> {
@@ -1493,13 +1805,13 @@ async function executeTool(
   // 参数归一化兜底：模型文本模式工具调用常把 url 放到 target/address/link 等字段，补齐避免误报缺参
   args = normalizeToolArgs(toolName, args);
 
-  // 必填参数防护：arguments 为空/残缺（maxTokens 截断、流中断）时不带空参硬执行，直接给模型可行动的指引
+  // 必填参数防护：arguments 为空/残缺（被输出上限截断、流中断、小模型幻觉）时不带空参硬执行，直接给模型可行动的指引
   const missingArgs = missingRequiredArgs(toolDefs, toolName, args);
   if (missingArgs.length > 0) {
     return `工具 ${toolName} 未执行：arguments 缺少必填参数（${missingArgs.join('、')}）。` +
-      `常见原因是上一轮模型输出被 maxTokens 截断导致参数丢失。` +
-      `请立即用完整 JSON 参数重新调用 ${toolName}，重试时先在心里把参数写完整再输出；` +
-      `若连续 2 次仍失败，请停止重试并告知用户：在智能体设置中调大 maxTokens（建议 ≥8192）后重试。`;
+      `可能原因：输出被长度上限截断（如 max_tokens 偏小或未生效）、流中断，或模型本身不擅长工具调用。` +
+      `请重试并一次性给出**完整且简短**的 JSON 参数；若再次失败，` +
+      `改用支持 tools 的联网模型或把任务拆小，不要反复重试同一调用（本框架会检测连续空参数并在 3 次后停止）。`;
   }
 
   // UI 工具 → 委托前端（需要用户交互）；MCP 工具 → 优先委托前端（连接在前端，所见即所得），
@@ -1662,13 +1974,11 @@ async function executeTool(
     if (m) {
       const idTag = m[1];
       const tName = m[2];
-      const rows = db.prepare('SELECT id, name, code, entry, timeout, enabled, runtime FROM custom_tool WHERE user_id = ? AND enabled = 1').all(task.userId) as any[];
+      const rows = db.prepare('SELECT id, name, code, entry, timeout, enabled, runtime, dependencies_json FROM custom_tool WHERE user_id = ? AND enabled = 1').all(task.userId) as any[];
       const tool = rows.find((r: any) => (r.id || '').replace(/[^a-zA-Z0-9]/g, '').slice(0, 8) === idTag && r.name === tName);
       if (tool) {
         try {
-          const { runUserCode } = await import('@yan-zhi/core');
-          const result = await runUserCode(tool.code, tool.entry, args, { timeout: tool.timeout || 30000, runtime: tool.runtime || 'node' });
-          return typeof result === 'string' ? result : JSON.stringify(result);
+          return await runCustomToolCode(tool, args);
         } catch (e: any) {
           return `工具执行失败: ${e?.message || e}`;
         }
@@ -2109,7 +2419,7 @@ async function runSubAgent(
   // 未配置时兜底 100。修复：旧写法 Math.max(x, 100) 把任何配置值强制抬到 ≥100，
   // pageAgent 配置 25 步失效，子智能体陷入循环时跑满 100 步，用户只能手动终止。
   const cfgSteps = (() => { try { return agent.config_json ? JSON.parse(agent.config_json).maxReActSteps : undefined; } catch { return undefined; } })();
-  const maxSteps = typeof cfgSteps === 'number' && cfgSteps > 0 ? Math.min(Math.floor(cfgSteps), 100) : 100;
+  const maxSteps = typeof cfgSteps === 'number' && cfgSteps > 0 ? Math.min(Math.floor(cfgSteps), 500) : 100;
   const systemPrompt = agent.system_prompt || '你是一个智能助手。';
   const modelCaps = model.capabilities as string[] | undefined;
   const supportsTools = modelSupportsTools(modelCaps);
@@ -2295,6 +2605,7 @@ async function runSubAgent(
       }
 
       // 更新助手消息（tokens 同主循环：usage 优先，缺失按内容长度粗估）
+      if (toolCallAcc.length > 0) ensureToolCallIds(toolCallAcc);
       updateMessageContent(assistantMsgId, fullContent, fullReasoning, toolCallAcc.length > 0 ? toolCallAcc as any : undefined, usageTokens || Math.round((fullContent.length + fullReasoning.length) / 2));
       emit(task, { type: 'message:updated', messageId: assistantMsgId, content: fullContent, reasoning: fullReasoning, toolCalls: toolCallAcc.length > 0 ? toolCallAcc : undefined });
 
@@ -2362,8 +2673,8 @@ async function runSubAgent(
         toolCallId: m.toolCallId, createdAt: m.createdAt,
       }));
       const summary = await summarizeOnMaxSteps(client, systemPrompt, history, maxSteps, 'sub');
-      if (summary) {
-        resultText = `${summary}\n\n（注：子智能体已达到最大循环步数（${maxSteps}），以上为阶段总结。）`;
+      if (summary.text) {
+        resultText = `${summary.text}\n\n（注：子智能体已达到最大循环步数（${maxSteps}），以上为阶段总结。）`;
       }
     } catch { /* 总结失败回退固定文案 */ }
     return resultText;
@@ -2376,31 +2687,46 @@ async function runSubAgent(
 
 /** 达到最大循环步数时的兜底总结：不带 tools 追加一轮对话，请模型基于已执行的操作与
  *  结果输出进展总结（已完成 / 关键结果 / 未完成原因 / 后续建议），替代生硬的报错文案。
- *  调用方需自行 catch；本函数内部已兜底，失败时返回 null。 */
+ *
+ *  ★ 同时让模型**自评「是否还有活没干完」**（末尾 `CONTINUE: yes|no` 一行），
+ *    作为「达上限自动接力」的判据之一（见 decideAutoContinue）。
+ *    复用这一轮调用而不是再多花一次 LLM —— 长任务本来就贵，能省一次是一次。
+ *
+ *  调用方需自行 catch；本函数内部已兜底，失败时返回 { text: null, shouldContinue: false }。 */
 async function summarizeOnMaxSteps(
   client: LlmClient,
   systemPrompt: string,
   history: Message[],
   maxSteps: number,
   kind: 'main' | 'sub',
-): Promise<string | null> {
+): Promise<{ text: string | null; shouldContinue: boolean }> {
   try {
     const llmMessages: Message[] = [];
     if (systemPrompt) {
       llmMessages.push({ id: 'sys', conversationId: '', role: 'system', content: systemPrompt, createdAt: 0 });
     }
     llmMessages.push(...history);
+    // CONTINUE 行只对主循环有意义（子智能体不自动接力，由父智能体决策）；
+    // 但统一要求输出也无害，解析时按 kind 决定是否采纳。
+    const continueInstruction = kind === 'main'
+      ? '\n\n最后另起一行输出 CONTINUE: yes 或 CONTINUE: no —— 如果你的任务目标**还没全部完成、且不需要用户补充信息**就能继续做，输出 yes；若任务已完成、或必须等用户提供信息/做决定才能继续，输出 no。这一行必须是最后一行，格式严格为 `CONTINUE: yes` 或 `CONTINUE: no`。'
+      : '';
     llmMessages.push({
       id: 'sum', conversationId: '', role: 'user', createdAt: 0,
       content: kind === 'sub'
         ? `你已执行 ${maxSteps} 步，达到本子任务的最大步数限制。这是最后一轮，不能再调用任何工具。请基于以上已执行的操作与获得的结果，输出一段给父智能体的进展总结：1) 已完成的工作；2) 关键结果/数据（附来源 URL 或文件路径）；3) 未完成的部分与原因；4) 建议的后续步骤。直接输出总结正文，不要调用工具，不要输出 JSON。`
-        : `你已执行 ${maxSteps} 步，达到本次任务的最大步数限制。这是最后一轮，不能再调用任何工具。请基于以上对话与工具执行结果，向用户输出一份任务进展总结：1) 已完成的工作；2) 关键结果/数据（附来源 URL 或文件路径）；3) 未完成的部分与原因；4) 建议用户如何继续（如拆分任务、调整配置后重试）。直接输出总结正文，不要调用工具。`,
+        : `你已执行 ${maxSteps} 步，达到本次任务的最大步数限制。这是最后一轮，不能再调用任何工具。请基于以上对话与工具执行结果，向用户输出一份任务进展总结：1) 已完成的工作；2) 关键结果/数据（附来源 URL 或文件路径）；3) 未完成的部分与原因；4) 建议用户如何继续。直接输出总结正文，不要调用工具。${continueInstruction}`,
     });
     const resp = await client.chat(llmMessages, { temperature: 0.3, maxTokens: 1024 });
-    const text = (resp.delta?.content || '').trim();
-    return text || null;
+    const raw = (resp.delta?.content || '').trim();
+    if (!raw) return { text: null, shouldContinue: false };
+    // 剥离 CONTINUE 行：它是指令信号，不该出现在给用户看的总结正文里
+    const m = raw.match(/^\s*CONTINUE\s*:\s*(yes|no)\s*$/im);
+    const shouldContinue = !!m && m[1].toLowerCase() === 'yes';
+    const text = raw.replace(/^\s*CONTINUE\s*:\s*(yes|no)\s*$/im, '').trim();
+    return { text: text || null, shouldContinue };
   } catch {
-    return null;
+    return { text: null, shouldContinue: false };
   }
 }
 
@@ -2443,9 +2769,9 @@ function lastAssistantText(convId: string, floor = 0): string {
  */
 async function recordTaskProgress(
   task: LlmTask,
-  outcome: 'completed' | 'max_steps' | 'aborted' | 'failed',
+  outcome: 'completed' | 'max_steps' | 'aborted' | 'failed' | 'empty_args_loop',
   summary: string,
-  extra?: { steps?: number },
+  extra?: { steps?: number; continuation?: string },
 ): Promise<void> {
   try {
     let agentName = '';
@@ -2455,7 +2781,9 @@ async function recordTaskProgress(
         agentName = row?.name || '';
       } catch { /* 取不到就不写智能体名 */ }
     }
-    await appendTaskProgress(task.conversationId, outcome, summary, { steps: extra?.steps, agentName });
+    // 自动接力时，把「第几批」一并写进记忆行（同目录新会话能看出这是接力的中间批，不是首轮）
+    const note = extra?.continuation ? `${summary}（${extra.continuation}）` : summary;
+    await appendTaskProgress(task.conversationId, outcome, note, { steps: extra?.steps, agentName });
   } catch { /* 收尾留痕失败不影响任务状态上报 */ }
 }
 
@@ -2532,16 +2860,19 @@ const UI_TOOL_NAMES = new Set([
 interface ConvMounts {
   systemPrompt?: string;
   builtinToolIds: string[];
+  /** 会话级自定义工具挂载（api_conversation_setup 传 customToolIds 写入） */
+  customToolIds: string[];
   skillIds: string[];
   mcpMounts: { serverId: string; toolName: string }[];
 }
 
 function loadConversationMounts(conversationId?: string | null): ConvMounts {
-  const empty: ConvMounts = { builtinToolIds: [], skillIds: [], mcpMounts: [] };
+  const empty: ConvMounts = { builtinToolIds: [], customToolIds: [], skillIds: [], mcpMounts: [] };
   if (!conversationId) return empty;
-  const conv = db.prepare('SELECT system_prompt, builtin_tool_ids_json, skill_ids_json, mcp_servers_json FROM conversation WHERE id = ?').get(conversationId) as any;
+  const conv = db.prepare('SELECT system_prompt, builtin_tool_ids_json, custom_tool_ids_json, skill_ids_json, mcp_servers_json FROM conversation WHERE id = ?').get(conversationId) as any;
   if (!conv) return empty;
   const builtinToolIds: string[] = (() => { try { return JSON.parse(conv.builtin_tool_ids_json || '[]'); } catch { return []; } })();
+  const customToolIds: string[] = (() => { try { return JSON.parse(conv.custom_tool_ids_json || '[]'); } catch { return []; } })();
   const skillIds: string[] = (() => { try { return JSON.parse(conv.skill_ids_json || '[]'); } catch { return []; } })();
   // mcp_servers_json：string[]（旧格式，全量暴露）或 [{serverId, disabledTools}]（细粒度，与前端 rowToConv 一致）
   const mcpMounts: { serverId: string; toolName: string }[] = [];
@@ -2559,7 +2890,7 @@ function loadConversationMounts(conversationId?: string | null): ConvMounts {
       }
     }
   } catch { /* 解析失败按无挂载处理 */ }
-  return { systemPrompt: conv.system_prompt || undefined, builtinToolIds, skillIds, mcpMounts };
+  return { systemPrompt: conv.system_prompt || undefined, builtinToolIds, customToolIds, skillIds, mcpMounts };
 }
 
 /** agent.mcp_tool_mounts ∪ 会话级 MCP 挂载：agent 中 toolName='*' 的 server 覆盖会话级同 server 细粒度挂载（与前端规则一致） */
@@ -2644,7 +2975,7 @@ export function buildSystemPromptForBackend(agentId: string | null, userId: stri
       }
 
       // 自定义工具（与 buildToolsForBackend 同一过滤规则）
-      toolLines.push(...buildCustomToolDescLines(agentId, userId, includeUiTools));
+      toolLines.push(...buildCustomToolDescLines(agentId, userId, includeUiTools, convMounts.customToolIds));
 
       const sectionLines = toolLines.filter((l) => l.trim().length > 0);
       if (sectionLines.length > 0) {
@@ -2664,22 +2995,47 @@ export function buildSystemPromptForBackend(agentId: string | null, userId: stri
     }
 
     // Skills 描述 + 流程指引：agent ∪ 会话挂载
+    //
+    // ★ 两级注入（用户 2026-09-28 诉求「发现没有对应 skill 会去下载？」的配套改造）：
+    //   · **命中触发词**（triggers 与当前输入有交集）→ 注入完整 body（流程指引），模型照做；
+    //   · **未命中** → 只注入 name+description（"我有这个技能，需要时可让我用"）。
+    //   此前是**无差别全量注入 body**（每个截断 2000 字）：挂 8 个 skill ≈ 硬塞 16000 字，
+    //   既把上下文预算吃光、又让模型在无关流程上分心 —— 而 `triggers` 字段**后端从未被消费**。
     const agentSkillIds: string[] = agent?.skill_ids ? JSON.parse(agent.skill_ids) : [];
     const skillIds = [...new Set([...agentSkillIds, ...convMounts.skillIds])];
     if (skillIds.length > 0) {
+      const userQuery = String(opts?.userContent || '');
       const skillLines: string[] = [];
       const flowParts: string[] = [];
       for (const skId of skillIds) {
-        const sk = db.prepare('SELECT name, description, body, enabled FROM skill WHERE id = ? AND user_id = ?').get(skId, userId) as any;
+        const sk = db.prepare('SELECT name, description, body, triggers_json, enabled FROM skill WHERE id = ? AND (user_id = ? OR user_id IS NULL)').get(skId, userId) as any;
         if (!sk || !sk.enabled) continue;
-        skillLines.push(`- **${sk.name}**: ${sk.description || ''}`);
+        let triggers: string[] = [];
+        try { triggers = JSON.parse(sk.triggers_json || '[]'); } catch { triggers = []; }
+        const hit = matchSkillTriggers(triggers, userQuery);
+        skillLines.push(`- **${sk.name}**: ${sk.description || ''}${hit ? ' ← **本次命中，按它的流程执行**' : ''}`);
+        // 命中 → 注入完整流程；未命中 → 不注入 body（省预算，也避免模型被无关流程带偏）。
+        // 用户输入为空（定时任务/IM 无正文）时退化为全量注入：没有触发词可判，宁多勿漏。
+        const shouldInjectBody = hit || !userQuery.trim();
         const body = (sk.body || '').trim();
-        if (body) {
+        if (body && shouldInjectBody) {
           const truncated = body.length > 2000 ? body.slice(0, 2000) + '\n...(流程过长已截断)' : body;
           flowParts.push(`### Skill 流程指引：${sk.name}\n${truncated}`);
         }
       }
       if (skillLines.length > 0) parts.push('---\n## 可用 Skills\n' + skillLines.join('\n'));
+      // 缺技能时的"自己去找"指引：让模型知道没有对应方法论时可以先去商城找装，
+      // 而不是硬编一套流程或干脆放弃（`api_marketplace_browse` / `api_skill_install` 已挂载）。
+      parts.push(
+        '---\n## 技能缺失时的处理\n' +
+        '做任务前先看上面的「可用 Skills」：若任务的**方法论/规范**明显缺失（例如要做某领域的专项评审、' +
+        '某类文档的固定格式、某平台的接口约定，但没有任何 Skill 覆盖），按这个顺序处理：\n' +
+        '1. 先用 `api_marketplace_sources` + `api_marketplace_browse` 去商城搜有没有现成 Skill；\n' +
+        '2. 找到匹配的用 `api_skill_install` 装上，再用 `api_conversation_setup` 把它挂到当前会话（下轮生效）；\n' +
+        '3. 商城没有、但这类工作你会反复做 → 用 `api_skill_create` 把这次的做法沉淀成本地 Skill（含 triggers），下次自动命中；\n' +
+        '4. 都没有且不值得沉淀 → 按通用最佳实践做，并在回复里说明"这一步没有专门规范，我按 X 处理"。\n' +
+        '不要因为"没有对应 Skill"就降低产出质量或停下来问用户。',
+      );
       // ★★ 当前会话身份：模型得知道自己"现在是谁、挂了什么、在哪个模式"。
       //   不注入的后果（2026-09-27 用户要求「智能体可以自己设置当前会话的智能体和 skill 和工作流程」）：
       //     · 用户问"你现在是什么智能体" → 模型只能照系统提示词猜，答不出会话里实际挂的 agent；
@@ -2738,6 +3094,32 @@ export function buildSystemPromptForBackend(agentId: string | null, userId: stri
     parts.push(`---\n## 工作目录\n当前工作目录：${effectiveWorkspaceDir}`);
   }
 
+  // ★★★ 项目规则文件（AGENTS.md）—— 对齐 WorkBuddy / Trae 的「项目规则」能力。
+  //
+  // 为什么补（2026-09-29）：此前 `grep AGENTS.md` 在 apps/server + packages **零命中** ——
+  //   用户在项目里写好的规则（编码规范、目录约定、禁止事项）模型完全看不到，
+  //   每次都得在会话里重复交代，或写进 appGuide 变成全局污染。
+  //
+  // 读取范围（按优先级，先读到的先注入）：
+  //   1) <workspaceDir>/AGENTS.md
+  //   2) <workspaceDir>/.yan-zhi/rules/ 下的 .md   （本项目的约定目录，可放多条规则）
+  // 只读工作目录根一层（不做递归）：递归扫全仓库既慢又会把 node_modules 里的说明文档吸进来。
+  if (effectiveWorkspaceDir && effectiveWorkspaceDir.trim()) {
+    try {
+      const rules = loadProjectRules(effectiveWorkspaceDir);
+      if (rules.length) {
+        parts.push([
+          '---',
+          '## 项目规则（自动读取自工作目录，优先级高于默认行为）',
+          '> 以下是本项目**用户自己写下的规则**。与默认做法冲突时以本节为准；',
+          '> 若某条规则与用户当前明确要求冲突，以用户当前要求为准并说明你偏离了哪条规则。',
+          '',
+          ...rules.map((r) => `### ${r.source}\n${r.content}`),
+        ].join('\n'));
+      }
+    } catch { /* 规则读取失败不影响任务（缺文件是常态） */ }
+  }
+
   // 产物目录规范：直接把解析好的目录交给模型，省掉模型自己拼「日期-任务名」的出错空间。
   // 与文件产出分类规范（category）配套：category 决定落在哪个目录。
   {
@@ -2758,10 +3140,132 @@ export function buildSystemPromptForBackend(agentId: string | null, userId: stri
     ].join('\n'));
   }
 
+  // ★★★ 当前任务计划（接力棒）—— 用户 2026-09-28 诉求「根据整理的记忆继续任务，不要一直断」。
+  //
+  // 为什么必须有：`conversation.task_plan_json` 一直**落盘但从不回注**（前端 task_plan/task_step
+  // 写进去，后端提示词里一个字节都没有，`grep -c taskPlan llm-task-manager.ts` = 0）。
+  // 后果：模型从空间记忆里知道"上一批做到第 3 章"，却看不到"原计划还剩第 4-10 章"，
+  // 于是要么从头再来、要么乱做 —— 这正是长任务"断"的技术根因。
+  //
+  // 与空间记忆的分工：空间 MEMORY.md 说"做过什么"（流水），本节说"原本计划做什么、还剩什么"（结构）。
+  {
+    const plan = loadTaskPlan(opts?.conversationId);
+    if (plan) {
+      const done = plan.steps.filter((s) => s.status === 'done').length;
+      const lines = plan.steps.map((s, i) => {
+        const mark = s.status === 'done' ? '[x]' : s.status === 'running' ? '[~]' : '[ ]';
+        return `${i + 1}. ${mark} ${s.title}${s.note ? ` —— ${s.note}` : ''}`;
+      });
+      const remaining = plan.steps.length - done;
+      parts.push([
+        '---',
+        `## 当前任务计划（接力棒${plan.title ? `：${plan.title}` : ''}）`,
+        `进度：${done}/${plan.steps.length} 步已完成${remaining > 0 ? `，还剩 ${remaining} 步` : '（已全部完成）'}`,
+        lines.join('\n'),
+        '',
+        '★ 用法（长任务接力规则）：',
+        '- 这份计划是**同一任务跨轮次的接力棒**。开工前先看它，按未完成（[ ]/[~]）的步骤接着做。',
+        '- **不要重做已完成（[x]）的步骤**；也不要因为"上下文里没有前面的过程"就从头再来 ——',
+        '  已完成步骤的结论可从「空间记忆」与产物文件中获取。',
+        '- 每完成一步，用 task_step 把该步标记为 done（保持这份计划与实际进度一致，供下一批接力）。',
+        '- 计划与用户最新要求冲突时以用户为准，并用 task_plan 更新计划（而不是默默偏离）。',
+      ].join('\n'));
+    }
+  }
+
   // 当前时间
   parts.push(`---\n当前时间：${new Date().toLocaleString('zh-CN')}`);
 
   return parts.join('\n\n');
+}
+
+/** 读会话任务计划（供提示词回注 / 自动接力判定）。读不到或结构非法返回 null。
+ *  结构由前端 stores/chat.ts 的 persistPlan 写入：`{ title?, steps: [{ title, status, note? }] }`。 */
+function loadTaskPlan(conversationId?: string | null): { title: string; steps: Array<{ title: string; status: string; note?: string }> } | null {
+  if (!conversationId) return null;
+  try {
+    const row = db.prepare('SELECT task_plan_json FROM conversation WHERE id = ?').get(conversationId) as
+      | { task_plan_json?: string | null }
+      | undefined;
+    if (!row?.task_plan_json) return null;
+    const raw = JSON.parse(row.task_plan_json);
+    const steps: any[] = Array.isArray(raw?.steps) ? raw.steps : [];
+    if (!steps.length) return null;
+    return {
+      title: String(raw?.title || ''),
+      steps: steps.map((s) => ({
+        title: String(s?.title || s?.description || '(未命名步骤)'),
+        status: String(s?.status || 'pending'),
+        note: s?.note ? String(s.note) : undefined,
+      })),
+    };
+  } catch { return null; }
+}
+
+/**
+ * 读工作目录下的项目规则文件（对齐 WorkBuddy / Trae 的「项目规则」）。
+ *
+ * 读取位置（只读根一层，**不递归** —— 递归扫全仓库既慢又会把 node_modules 里的
+ * README 吸进来）：
+ *   1) `<dir>/AGENTS.md`（跨工具事实标准，与 CodeBuddy/Claude 生态一致）
+ *   2) `<dir>/.yan-zhi/rules/ 下的 .md`（本项目自己的约定目录，可放多条）
+ *
+ * ⚠️ 避坑：下面注释里不要写「星号紧跟斜杠」那个两字符序列（会被当块注释结束符）——
+ *   本文件踩过一次：规则段的字符串被整段吞进注释，表现是"代码写了却不生效"。
+ * ⚠️ 避坑：下面注释里不要写「星号紧跟斜杠」那个两字符序列（会被当块注释结束符）——
+ *   本文件踩过一次：规则段的字符串被整段吞进注释，表现是"代码写了却不生效"。
+ * ★ mtime 缓存：提示词构建在**每一轮 ReAct 都会跑**，每次都 readdir+stat+readFile 是浪费；
+ *   按「目录 + 各文件 mtime」做指纹，没变就复用上次结果。
+ * ★ 长度上限：单文件 8000 字符（超长截断并注明），总上限 20000 —— 规则不该吃掉提示词预算。
+ * ★ 读不到文件是**常态**（多数项目没有 AGENTS.md），所以静默返回空数组，不报错不打扰。
+ */
+const PROJECT_RULES_CACHE = new Map<string, { fingerprint: string; rules: Array<{ source: string; content: string }> }>();
+const RULE_FILE_MAX_CHARS = 8000;
+const RULE_TOTAL_MAX_CHARS = 20000;
+
+function loadProjectRules(workspaceDir: string): Array<{ source: string; content: string }> {
+  const candidates: Array<{ source: string; path: string }> = [];
+  // ① AGENTS.md（根）
+  candidates.push({ source: 'AGENTS.md', path: path.join(workspaceDir, 'AGENTS.md') });
+  // ② .yan-zhi/rules/ 下的 .md
+  try {
+    const rulesDir = path.join(workspaceDir, '.yan-zhi', 'rules');
+    if (existsSync(rulesDir) && statSync(rulesDir).isDirectory()) {
+      for (const f of readdirSync(rulesDir).filter((n) => n.toLowerCase().endsWith('.md')).sort()) {
+        candidates.push({ source: `.yan-zhi/rules/${f}`, path: path.join(rulesDir, f) });
+      }
+    }
+  } catch { /* rules 目录不存在/不可读，正常 */ }
+
+  // 指纹：存在的文件 + 各自 mtime + size（变了才重读）
+  const existing = candidates.filter((c) => { try { return statSync(c.path).isFile(); } catch { return false; } });
+  if (!existing.length) return [];
+  const fingerprint = existing.map((c) => {
+    const st = statSync(c.path);
+    return `${c.path}:${st.mtimeMs}:${st.size}`;
+  }).join('|');
+  const cached = PROJECT_RULES_CACHE.get(workspaceDir);
+  if (cached && cached.fingerprint === fingerprint) return cached.rules;
+
+  const rules: Array<{ source: string; content: string }> = [];
+  let total = 0;
+  for (const c of existing) {
+    try {
+      let text = readFileSync(c.path, 'utf-8').trim();
+      if (!text) continue;
+      if (text.length > RULE_FILE_MAX_CHARS) {
+        text = `${text.slice(0, RULE_FILE_MAX_CHARS)}\n\n…（该规则文件过长已截断，完整内容可直接读 ${c.source}）`;
+      }
+      if (total + text.length > RULE_TOTAL_MAX_CHARS) {
+        rules.push({ source: c.source, content: '（规则总量已达上限，此文件未注入；需要时请模型自行 file_read 读取）' });
+        break;
+      }
+      total += text.length;
+      rules.push({ source: c.source, content: text });
+    } catch { /* 单文件读失败跳过 */ }
+  }
+  PROJECT_RULES_CACHE.set(workspaceDir, { fingerprint, rules });
+  return rules;
 }
 
 /** JSON Schema → 参数清单（与前端 formatToolParamsBlock 同一格式） */
@@ -2776,8 +3280,28 @@ function formatSchemaParams(schema: any): string {
   return '\n  参数：\n' + lines.join('\n');
 }
 
+/**
+ * Skill 触发词匹配（大小写不敏感的子串命中）。
+ *
+ * 为什么要它：`skill.triggers_json` 字段一直存在、前端也写了，但**后端注入时从未消费**
+ * （此前是无差别把每个已挂 skill 的 body 全量拼进提示词）→ 触发词形同虚设，
+ * 而且挂多了会把上下文预算吃光（每个截断 2000 字）。
+ *
+ * 命中判定刻意宽松（子串即可）：宁可在"可能相关"时多注入一份流程指引，
+ * 也不要在用户明确说了触发词时漏掉 —— 漏掉的代价是模型不按流程做，用户侧感受更差。
+ */
+function matchSkillTriggers(triggers: string[], query: string): boolean {
+  const q = String(query || '').toLowerCase();
+  if (!q.trim()) return false;
+  for (const t of triggers || []) {
+    const kw = String(t || '').trim().toLowerCase();
+    if (kw && q.includes(kw)) return true;
+  }
+  return false;
+}
+
 /** 自定义工具描述行：agentId 给定时按 agent.custom_tool_ids 过滤（与前端挂载规则一致），否则全量（无人值守兜底） */
-function buildCustomToolDescLines(agentId: string | null, userId: string, includeUiTools: boolean): string[] {
+function buildCustomToolDescLines(agentId: string | null, userId: string, includeUiTools: boolean, convCustomToolIds: string[] = []): string[] {
   const allowed: string[] | null = (() => {
     if (!agentId) return null;
     const agent = db.prepare('SELECT custom_tool_ids FROM agent WHERE id = ? AND (user_id = ? OR is_public = 1)').get(agentId, userId) as any;
@@ -2786,7 +3310,9 @@ function buildCustomToolDescLines(agentId: string | null, userId: string, includ
   const rows = db.prepare('SELECT id, name, description, input_schema_json, enabled FROM custom_tool WHERE user_id = ? AND enabled = 1').all(userId) as any[];
   const lines: string[] = [];
   for (const ct of rows) {
-    if (allowed && !allowed.includes(ct.id)) continue;
+    const viaAgent = !allowed || allowed.includes(ct.id);
+    const viaConv = convCustomToolIds.includes(ct.id);
+    if (!viaAgent && !viaConv) continue;
     const exposedName = 'custom_' + (ct.id || '').replace(/[^a-zA-Z0-9]/g, '').slice(0, 8) + '_' + ct.name;
     lines.push(`- \`${exposedName}\`: ${ct.description || ct.name}${formatSchemaParams(ct.input_schema_json ? JSON.parse(ct.input_schema_json) : null)}`);
   }
@@ -2900,7 +3426,9 @@ export function buildToolsForBackend(agentId: string | null, userId: string, opt
     }
   }
 
-  // 4) 自定义工具（后端沙箱直接执行）：agentId 给定时按 agent.custom_tool_ids 过滤（与前端挂载规则一致）
+  // 4) 自定义工具（后端沙箱直接执行）：agent 挂载 ∪ 会话级挂载（二者取并集）
+  //   ★ 会话级来源（convMounts.customToolIds）是 api_conversation_setup 写入的 —— 让模型
+  //     用 api_custom_tool_create 造的工具能"只作用于当前会话"，不必改智能体全局挂载。
   const allowedCustom: string[] | null = (() => {
     if (!agentId) return null;
     const agent = db.prepare('SELECT custom_tool_ids FROM agent WHERE id = ? AND (user_id = ? OR is_public = 1)').get(agentId, userId) as any;
@@ -2908,7 +3436,10 @@ export function buildToolsForBackend(agentId: string | null, userId: string, opt
   })();
   const customTools = db.prepare('SELECT id, name, description, input_schema_json, enabled FROM custom_tool WHERE user_id = ? AND enabled = 1').all(userId) as any[];
   for (const ct of customTools) {
-    if (allowedCustom && !allowedCustom.includes(ct.id)) continue;
+    const viaAgent = !allowedCustom || allowedCustom.includes(ct.id);
+    const viaConv = convMounts.customToolIds.includes(ct.id);
+    // agentId 为空（无人值守兜底）时全量暴露；否则 agent 白名单 ∪ 会话白名单
+    if (!viaAgent && !viaConv) continue;
     const exposedName = 'custom_' + (ct.id || '').replace(/[^a-zA-Z0-9]/g, '').slice(0, 8) + '_' + ct.name;
     if (seen.has(exposedName)) continue;
     seen.add(exposedName);

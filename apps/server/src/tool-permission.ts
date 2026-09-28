@@ -56,6 +56,38 @@ const WRITE_TOOLS = new Set([
   // —— 会话自配置：改当前会话的智能体/技能/模式（会改变后续所有轮次的执行身份）——
   // ★ 与配置变更同类：改完之后整个会话的行为都会变，只读会话里不应放行。
   'api_conversation_setup',
+  // —— 自举能力：模型"自己造/装/挂"工具与技能（2026-09-28 随自举工具集挂载一并登记）——
+  // ★★ 这批必须全部登记：它们**写库**（custom_tool / skill / agent 三张表）甚至**改智能体挂载**
+  //    （改变后续所有轮次的工具面），副作用比一次性写文件更大。漏登记 = 只读会话静默可写
+  //    （本项目已犯两次：api_space_set_task_type、api_space_memory_append）。
+  // ★ 成对登记：create 与 update、install 与 create 都要在，不能只登记"看起来更危险"的那个 ——
+  //    半开状态（能装不能改）既难理解又同样是越权。
+  'api_custom_tool_create', 'api_custom_tool_update', 'api_custom_tool_delete', 'api_custom_tool_toggle',
+  'api_skill_create', 'api_skill_update', 'api_skill_delete', 'api_skill_toggle', 'api_skill_install',
+  'api_tool_install',
+  'api_agent_create', 'api_agent_update', 'api_agent_delete', 'api_agent_mount',
+  'api_marketplace_add_source', 'api_marketplace_delete_source', 'api_marketplace_install',
+  // —— 媒体生成/加工类：**明确放行**（用户 2026-09-29 决策：「那就放行啊」）——
+  //
+  // ★ 现状：这一类**全部不在**本清单里，只读会话里一律可执行：
+  //   api_image_generate / api_video_generate / api_tts_speak / api_srt_generate /
+  //   media_compose / media_edit / api_media_normalize / api_media_fetch /
+  //   media_install_ffmpeg / media_install_ytdlp
+  //
+  // ★★ 为什么放行是**有意为之**，不是漏登记（后人别"顺手加回去"）：
+  //   这些工具不是「改用户文件」，而是「按用户要求生产新素材」——
+  //   它们把产物写进**会话交付目录**（mediaTarget → 会话 artifact 目录），
+  //   本质与 `file_read` 同类：用户要的就是这份产出，不存在"偷偷改了用户的东西"。
+  //   媒体生产本身就该在用户当前会话里正常工作，不该被只读模式挡掉。
+  //
+  // ★ 由此产生的**边界**（与 file_write 的区别仍然保留）：
+  //   - 只读会话里**不能**用 file_write / file_edit 去改用户已有文件；媒体产物是新建，不是覆盖；
+  //   - `media_edit` 的输入是本机绝对路径 —— 理论上指向用户已有文件也只**读**它、
+  //     产物落新路径，不写回原文件，故与"改文件"不同性质。
+  //
+  // ★ 与之相对，**工作流**（`wf_*`）侧仍由 `READONLY_SAFE_TOOLS` 白名单兜底；
+  //   由于媒体工具不在那个白名单里，**工作流**里的媒体节点在只读会话下仍会被拒 ——
+  //   这是既有的另一套口径，本次未改动。
 ]);
 
 /**

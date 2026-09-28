@@ -77,8 +77,10 @@ export class ToolRegistry {
         description: t.description || '',
         inputSchema: t.inputSchema,
         execute: async (args: Record<string, unknown>) => {
-          const { runUserCode } = await import('./sandbox');
-          return runUserCode(t.code, t.entry, args, { timeout: t.timeout, runtime: t.runtime || 'node' });
+          // ★ 走 runCustomToolRow（含依赖按需安装，依赖准备器由 server 注入；
+          //   未注入时退化为无依赖安装 = 改造前行为）。
+          const { runCustomToolRow } = await import('./sandbox');
+          return runCustomToolRow(t, args);
         },
       });
     }

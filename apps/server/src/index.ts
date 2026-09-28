@@ -4,7 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import cors from 'cors';
-import { setPlatformAdapter, getPluginManager, getToolRegistry } from '@yan-zhi/core';
+import { setPlatformAdapter, getPluginManager, getToolRegistry, setCustomToolDepPreparer } from '@yan-zhi/core';
 import { ensureToolsInitialized } from './mcp/index.js';
 import authRoutes from './auth.js';
 import licenseRoutes from './license.js';
@@ -76,6 +76,27 @@ import { nodeAdapter } from './node-adapter.js';
 import { db } from './db.js';
 
 setPlatformAdapter(nodeAdapter);
+
+// 注入「自定义工具依赖准备器」—— core 里的自定义工具执行入口（ToolRegistry.loadCustomTools、
+// workflow/nodes.ts 的 custom 分支）拿不到 server 的装包能力（core 是纯逻辑包，不能 import
+// child_process），通过这个钩子注入。
+// ★ 不注入的后果：那几处入口执行声明了 dependencies 的工具会**装不上依赖而失败**，
+//   而且 core 侧看不出原因（它以为自己只是"没依赖"）。2026-09-29 自检发现并补上。
+setCustomToolDepPreparer({
+  prepare: async (tool) => {
+    let deps: unknown = [];
+    try { deps = JSON.parse(tool.dependencies_json || '[]'); } catch { deps = []; }
+    if (!Array.isArray(deps) || deps.length === 0) return undefined;
+    const { depsReady, installToolDependencies, toolRuntimeDir } = await import('./services/tool-deps.js');
+    const runtime = tool.runtime || 'node';
+    if (!depsReady(runtime, deps)) {
+      await installToolDependencies(runtime, deps);
+    }
+    if (runtime === 'python') return { pythonPath: `${toolRuntimeDir()}/pysite` };
+    const { loadNodeModulesForSandbox } = await import('./services/tool-deps.js');
+    return { modules: await loadNodeModulesForSandbox(deps as string[]) };
+  },
+});
 
 // 启动时立即初始化工具注册中心（管理类工具就位），避免首次获取 registry 时重复初始化。
 ensureToolsInitialized();

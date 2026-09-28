@@ -87,6 +87,10 @@ pnpm-debug.log*
 tmp/
 .workbuddy/
 
+# 自定义工具的依赖运行时目录（隔离装包；应落在 DATA_DIR，这里兜底防误建到仓库根）
+tool-runtime/
+apps/server/tool-runtime/
+
 # 环境/临时文件（不应入库）
 _rustup-init.exe
 rustup-init.exe

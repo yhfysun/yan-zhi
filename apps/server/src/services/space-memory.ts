@@ -280,13 +280,16 @@ const PROGRESS_FILE = 'progress.md';
 const PROGRESS_READ_MAX_CHARS = 8000;
 
 /** 任务终结形态 —— 决定写入的措辞（模型据此判断"能不能接着做"） */
-export type TaskProgressOutcome = 'completed' | 'max_steps' | 'aborted' | 'failed';
+export type TaskProgressOutcome = 'completed' | 'max_steps' | 'aborted' | 'failed' | 'empty_args_loop';
 
 const OUTCOME_LABEL: Record<TaskProgressOutcome, string> = {
   completed: '已完成',
   max_steps: '达最大步数中断',
   aborted: '被用户终止',
   failed: '失败中断',
+  // 空转断路器停下（连续多步工具参数为空）——也是一种"没跑完"，必须留痕否则同目录新会话
+  // 完全不知道上一批是因为退化停下的（会以为任务从未开始）。
+  empty_args_loop: '空转中断',
 };
 
 function getTaskProgressPath(space: Pick<SpaceRow, 'id' | 'dir_path'>): string {

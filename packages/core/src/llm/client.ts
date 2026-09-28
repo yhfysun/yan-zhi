@@ -197,14 +197,18 @@ export class LlmClient {
       return;
     }
     const apiMessages = this.sanitizeToolMessages(messages.map(m => this.toApiMessage(m)), !!options?.tools?.length);
+    // ★ OpenAI 兼容端点只认 snake_case（max_tokens / top_p / frequency_penalty / presence_penalty）。
+    //   此前误发驼峰 maxTokens / topP，上游会**静默忽略** → 用户在智能体里设的 maxTokens 根本没生效，
+    //   长输出被服务端默认上限截断（表现为：工具调用只吐出工具名、arguments 被切空成 {}）。
+    //   undefined 不会被 JSON.stringify 序列化，这里保持只用显式提供的参数。
     const body: any = {
       model: this.model.modelId,
       messages: apiMessages,
       temperature: options?.temperature,
-      maxTokens: options?.maxTokens,
-      topP: options?.topP,
-      frequencyPenalty: options?.frequencyPenalty,
-      presencePenalty: options?.presencePenalty,
+      max_tokens: options?.maxTokens,
+      top_p: options?.topP,
+      frequency_penalty: options?.frequencyPenalty,
+      presence_penalty: options?.presencePenalty,
       stream: true,
     };
     if (options?.tools?.length) body.tools = options.tools;
@@ -299,10 +303,10 @@ export class LlmClient {
       messages: this.sanitizeToolMessages(messages.map(m => this.toApiMessage(m)), !!options?.tools?.length),
       tools: options?.tools,
       temperature: options?.temperature,
-      maxTokens: options?.maxTokens,
-      topP: options?.topP,
-      frequencyPenalty: options?.frequencyPenalty,
-      presencePenalty: options?.presencePenalty,
+      max_tokens: options?.maxTokens,
+      top_p: options?.topP,
+      frequency_penalty: options?.frequencyPenalty,
+      presence_penalty: options?.presencePenalty,
       stream: false,
     };
     if (options?.responseFormat) body.response_format = options.responseFormat;

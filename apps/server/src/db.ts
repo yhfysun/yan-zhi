@@ -142,6 +142,15 @@ try {
   }
 } catch {}
 
+// 会话级自定义工具挂载（合并到智能体级）—— 让模型用 api_custom_tool_create 造出的工具
+// 可以只作用于当前会话（api_conversation_setup 传 customToolIds），不改智能体全局挂载。
+try {
+  const convCols2 = db.prepare(`SELECT name FROM pragma_table_info('conversation')`).all() as Array<{ name: string }>;
+  if (!convCols2.some((c) => c.name === 'custom_tool_ids_json')) {
+    db.exec(`ALTER TABLE conversation ADD COLUMN custom_tool_ids_json TEXT DEFAULT '[]'`);
+  }
+} catch {}
+
 db.exec(`
   CREATE TABLE IF NOT EXISTS message (
     id TEXT PRIMARY KEY,
@@ -737,7 +746,7 @@ const DEFAULT_AGENT_BUILTIN_TOOLS = [
   // 多模态 / 商品对比
   'image_analyze', 'compare_products',
   // AI 媒体生成（文生图/文生视频，agnes 平台）+ 文字转语音（模型层 + 系统语音兜底）+ 合成
-  'api_image_generate', 'api_video_generate', 'api_video_status', 'api_tts_speak', 'api_tts_voices', 'api_srt_generate', 'media_compose', 'media_install_ffmpeg',
+  'api_image_generate', 'api_video_generate', 'api_video_status', 'api_tts_speak', 'api_tts_voices', 'api_srt_generate', 'media_compose', 'media_edit', 'media_install_ffmpeg', 'media_install_ytdlp',
   // 网络素材获取 + 竖屏规格统一（用户诉求：让模型自己下载公开素材、拼成长视频）
   'api_media_fetch', 'api_media_normalize',
   // 浏览器核心工具（阶段三：默认助手可直接调用，复杂多步任务仍可委派 pageAgent）
@@ -755,7 +764,35 @@ const DEFAULT_AGENT_BUILTIN_TOOLS = [
   'plugin_computer-use__computer_type',
   'plugin_computer-use__computer_press_key',
   'plugin_computer-use__computer_open_app',
+  // ── 自举能力：让模型能"发现 / 造 / 装 / 挂"工具与技能 ──
+  //
+  // ★★★ 为什么必须挂（用户 2026-09-28 问「大模型发现没有对应工具，会不会自己用 Python/Node
+  //   写个自定义工具再挂上去调用？发现没有对应 skill 会去下载？」）：
+  //   这些工具**实现全都在**（`api-tool-executor.ts` / `management.ts`），但**一个都没挂**给
+  //   任何智能体 → 模型根本看不到 → 全部空转。实测：162 个 API 工具里只有 26 个出现在挂载清单，
+  //   自举类 **0 个**。根因是 `buildToolsForBackend` 的 `alwaysApiTools` 兜底**只在
+  //   mountedApiTools 为空时才触发**，而默认助手挂了别的 api_* 工具 → 兜底永不生效。
+  //
+  // ★ `get_api_tools` 是这套机制的**总入口**：模型按模块名发现 API 工具（返回 name/description/
+  //   inputSchema），不需要把 136 个工具全塞进上下文。它此前也没挂 → 整套"按需发现"架构空转。
+  'get_api_tools',
+  // 看有哪些内置工具 / 自定义工具可挂
+  'api_builtin_tool_list',
+  'api_custom_tool_list', 'api_custom_tool_get',
+  // 造工具（Node 沙箱 / Python 子进程）并立即调用
+  'api_custom_tool_create', 'api_custom_tool_update', 'api_custom_tool_execute',
+  // 技能：查 / 造 / 改 / 从商城装
+  'api_skill_list', 'api_skill_get',
+  'api_skill_create', 'api_skill_update',
+  // 商城：逛源 / 浏览 / 装工具 / 装技能
+  'api_marketplace_sources', 'api_marketplace_browse',
+  'api_tool_install', 'api_skill_install',
+  // 把造出来的东西挂到智能体（customToolIds / builtinToolIds / skillIds）
+  'api_agent_mount',
 ];
+// ⚠️ 上面这批**写类**工具已同步登记进 `apps/server/src/tool-permission.ts` 的 WRITE_TOOLS
+//    （api_custom_tool_create/update、api_skill_create/update/install、api_tool_install、
+//     api_agent_mount、api_marketplace_* 等），否则只读会话会**静默可写**（本项目已犯两次）。
 // 默认助理内置的 skill：文档处理类（Word/Excel/PDF/图片/格式转换）+ 桌面应用自动化
 // （computer-use 通用 SOP + 系统管理护栏，与前端 agent.ts 的 DEFAULT_AGENT_SKILL_IDS 对齐）。
 // 后端 buildSystemPromptForBackend 按 agent.skill_ids 注入 skill 描述与流程指引。
@@ -1340,7 +1377,7 @@ const STORYBOARD_AGENT_BUILTIN_TOOLS = [
   // 参考图识别（用户给的设定图/风格图只有路径，必须调它才能看到画面）
   'image_analyze',
   // 媒体产物：分镜出图 / 出片 / 台词配音 / 字幕 / 音视频合成（agnes 媒体模型 + 系统语音 + ffmpeg 兜底）
-  'api_image_generate', 'api_video_generate', 'api_video_status', 'api_tts_speak', 'api_tts_voices', 'api_srt_generate', 'media_compose', 'media_install_ffmpeg',
+  'api_image_generate', 'api_video_generate', 'api_video_status', 'api_tts_speak', 'api_tts_voices', 'api_srt_generate', 'media_compose', 'media_edit', 'media_install_ffmpeg', 'media_install_ytdlp',
   // 网络素材获取 + 竖屏规格统一：找参考视频/空镜素材自己下载；多镜拼长视频前先统一规格
   'api_media_fetch', 'api_media_normalize',
   // 联网查风格参考与平台参数（委派 pageAgent）；list_models 用于生产段挑选可用的图/视频模型
@@ -1443,8 +1480,10 @@ const STORYBOARD_AGENT_SYSTEM_PROMPT = `你是「AI 短剧导演」（storyboard
 4. **字幕**：api_srt_generate { cues } —— cues 直接由分镜表映射：{ text: 台词, duration: 该镜时长 }，按镜序排列。
 5. **合成**：media_compose
    - { op: 'dub', video, audio } 配音混入（默认替换原音轨；要保留环境音用 keepAudio: true）
-   - { op: 'subtitle', video, srt } 烧字幕
+   - { op: 'subtitle', video, srt } 烧字幕；**务必传 title（项目名称）**，subtitleFontSize 不要显式传（默认 110 已合适）；
+     发竖屏平台传 safeArea: true（字幕避开底部进度条遮挡）
    - { op: 'concat', videos: [...] } 多镜拼接（要求各段编码参数一致）
+   - **可选加工**（media_edit）：抽帧封面 snapshot / 片段裁剪 trim / 变速 speed / 转场 transition（两段需先 api_media_normalize 统一规格）/ 调色 color / 叠加水印贴图 overlay / 图片推拉运镜 kenburns / BGM bgsound
    - **缺 ffmpeg 时**：media_compose 会返回引导文案 → 用 confirm_user 告诉用户要下载约 100MB，同意后调 media_install_ffmpeg
 6. **汇报**：成片路径 + 每镜产物清单；说明哪些镜是试片、哪些是正式产出。
 
@@ -2698,6 +2737,7 @@ body: `# 视频镜头提示词工程\n\n让视频大模型一次生成对的分�
    - 音色与角色分配（如「旁白=女声、主角=男声」）
    - 语速（-10 ~ 10，0 为原速）
    - 字幕样式与语言（如「中文，每行不超过 18 字」）
+   - **项目名称（用作成片顶部标题，烧字幕时作为 media_compose 的 title 传入；不填则不加标题）**
    - 是否保留视频原声
 3. **分段配音 + 字幕**（逐段，写 02-work）：
    - 配音：api_tts_speak { text, character, rate }，逐段调用。
@@ -2707,8 +2747,11 @@ body: `# 视频镜头提示词工程\n\n让视频大模型一次生成对的分�
    对不上先调（改语速或重新分段），**不要跳过直接合成**。
 5. **合成导出**（写 03-output）：
    - media_compose op=dub 把配音混入视频（保留原声用 keepAudio: true）
-   - media_compose op=subtitle 把 SRT 烧进画面
+   - media_compose op=subtitle 把 SRT 烧进画面，**务必传 title（项目名称）**；subtitleFontSize 不要显式传（默认 110 已合适，传 34 会渲染成超大字幕）；
+     发抖音/快手/视频号时传 safeArea: true（字幕上抬，避开底部进度条与账号信息遮挡），也可用 subtitleColor / subtitlePosition 自定义样式
    - 无视频时：多段音频用 media_compose op=concat 拼接，或直接交付分段音频 + SRT
+   - **可选加工**（用 media_edit，一个 op 一件事）：抽帧封面 snapshot / 首尾淡入淡出 fade / 压时长 speed /
+     加 BGM 并压低原声 bgsound / 音量拉平 loudnorm / 调色 color。**用户没要求的效果不要主动加**。
 
 ## 音色不足怎么办
 先调 api_tts_voices 看本机可用音色。返回 capacityNote 提示音色不足时**如实转告用户**

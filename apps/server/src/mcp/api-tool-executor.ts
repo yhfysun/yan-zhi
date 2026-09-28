@@ -1,5 +1,5 @@
 import { v4 as uuid } from 'uuid';
-import { readdir, stat, mkdir, writeFile } from 'node:fs/promises';
+import { readdir, stat, mkdir, writeFile, rm } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { tmpdir } from 'node:os';
@@ -9,6 +9,7 @@ import { DEFAULT_CONTEXT_WINDOW } from '../constants.js';
 import { AGENS_API_URL, inferCapabilitiesFromModelId } from '../agens-platform/service.js';
 import { serverState } from '../state.js';
 import { resolveFfmpeg, installFfmpeg } from './ffmpeg-runtime.js';
+import { resolveYtdlp, installYtdlp, ytdlpFetch, isYoutubeHost, youtubeEnabled } from './ytdlp-runtime.js';
 import { decideInstallPolicy, formatBytes } from '../services/runtime-installer.js';
 import { buildSrt, type SrtCue } from './srt.js';
 import {
@@ -176,6 +177,33 @@ function obj(args: Record<string, unknown>, key: string): Record<string, unknown
     : {};
 }
 
+/** 解析系统中文字体文件路径（标题叠加 drawtext 需要，否则中文标题会变成方框）。
+ *  找不到返回 null，此时调用方退化为按字体名 'Microsoft YaHei' 让 ffmpeg/fontconfig 自己解析。 */
+function resolveCjkFont(): string | null {
+  const platform = process.platform;
+  const candidates: string[] =
+    platform === 'win32'
+      ? [
+          'C:\\Windows\\Fonts\\msyh.ttc',
+          'C:\\Windows\\Fonts\\msyhbd.ttc',
+          'C:\\Windows\\Fonts\\simhei.ttf',
+          'C:\\Windows\\Fonts\\simsun.ttc',
+        ]
+      : platform === 'darwin'
+        ? [
+            '/System/Library/Fonts/PingFang.ttc',
+            '/System/Library/Fonts/STHeiti Light.ttc',
+            '/Library/Fonts/Arial Unicode.ttf',
+          ]
+        : [
+            '/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc',
+            '/usr/share/fonts/truetype/wqy/wqy-microhei.ttc',
+            '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',
+          ];
+  for (const c of candidates) if (existsSync(c)) return c;
+  return null;
+}
+
 function memBytesToVec(b: Uint8Array | Buffer | null): number[] | null {
   if (!b) return null;
   try { return Array.from(new Float32Array(b.buffer, b.byteOffset, b.byteLength / 4)); } catch { return null; }
@@ -290,7 +318,9 @@ export const SUPPORTED_API_TOOLS = new Set([
   // 文字转语音（模型层 + 系统语音兜底）+ 音色枚举
   'api_tts_speak', 'api_tts_voices',
   // 合成层：字幕生成 + ffmpeg 音视频合成（含按需下载 ffmpeg）
-  'api_srt_generate', 'media_compose', 'media_install_ffmpeg',
+  'api_srt_generate', 'media_compose', 'media_install_ffmpeg', 'media_install_ytdlp',
+  // 剪辑与特效层：裁剪/变速/抽帧/变换/淡入淡出/调色/转场/画中画/图片运镜/BGM/音量/响度（统一走 media_edit 的 op）
+  'media_edit',
   // 网络素材获取：公开视频/图片直链下载（标准化见 media_compose 的 normalize 操作）
   'api_media_fetch', 'api_media_normalize',
 ]);
@@ -1016,19 +1046,30 @@ function runFfprobe(bin: string, args: string[], timeoutMs: number): Promise<{ o
  *   正解是给静音源显式 `-t <视频时长>`，再让 `-shortest` 只做兜底。
  *   所以这里一次探测把「有无音轨 + 时长」都拿回来，避免多跑一次 ffprobe。
  */
-async function probeMedia(ffprobe: string, file: string): Promise<{ hasAudio: boolean; durationSec: number }> {
+async function probeMedia(ffprobe: string, file: string): Promise<{ hasAudio: boolean; durationSec: number; width: number; height: number }> {
   const r = await runFfprobe(ffprobe, [
-    '-v', 'error', '-show_entries', 'format=duration', '-show_entries', 'stream=index,codec_type',
+    '-v', 'error', '-show_entries', 'format=duration', '-show_entries', 'stream=index,codec_type,width,height',
     '-of', 'json', file,
   ], 30000);
-  if (!r.ok) return { hasAudio: false, durationSec: 0 };
+  if (!r.ok) return { hasAudio: false, durationSec: 0, width: 0, height: 0 };
   try {
-    const j = JSON.parse(r.out) as { streams?: Array<{ codec_type?: string }>; format?: { duration?: string } };
-    const hasAudio = (j.streams || []).some((s) => s.codec_type === 'audio');
+    const j = JSON.parse(r.out) as {
+      streams?: Array<{ codec_type?: string; width?: number; height?: number }>;
+      format?: { duration?: string };
+    };
+    const streams = j.streams || [];
+    const hasAudio = streams.some((s) => s.codec_type === 'audio');
+    const v = streams.find((s) => s.codec_type === 'video');
     const durationSec = Number(j.format?.duration);
-    return { hasAudio, durationSec: Number.isFinite(durationSec) && durationSec > 0 ? durationSec : 0 };
+    return {
+      hasAudio,
+      durationSec: Number.isFinite(durationSec) && durationSec > 0 ? durationSec : 0,
+      // 分辨率用于字幕边距/标题位置按比例换算（固定像素在不同画幅上表现完全不同）
+      width: Number(v?.width) || 0,
+      height: Number(v?.height) || 0,
+    };
   } catch {
-    return { hasAudio: false, durationSec: 0 };
+    return { hasAudio: false, durationSec: 0, width: 0, height: 0 };
   }
 }
 
@@ -1090,6 +1131,22 @@ async function mediaInstallFfmpeg(): Promise<MpcToolExecutionResult> {
   }));
 }
 
+/** yt-dlp 安装引导（视频网站解析下载）。yt-dlp.exe 自包含、约 15MB，低于静默阈值。 */
+async function mediaInstallYtdlp(): Promise<MpcToolExecutionResult> {
+  const before = await resolveYtdlp();
+  if (before.ok) {
+    return ok(JSON.stringify({ ok: true, alreadyInstalled: true, source: before.source, dir: path.dirname(before.bin) }));
+  }
+  const r = await installYtdlp((msg) => console.log(`[ytdlp] ${msg}`));
+  if (!r.ok) return fail(`${r.message}${r.dir ? `\n可手动放入目录：${r.dir}` : ''}`);
+  const after = await resolveYtdlp();
+  return ok(JSON.stringify({
+    ok: true, installed: true, source: after.source,
+    dir: r.dir, bin: after.bin,
+    note: '安装完成，视频网站解析下载（media_fetch 直接给页面链接）现在可用。',
+  }));
+}
+
 /** 会话 → 所属空间的资源根目录（下载素材要落进空间的 00-source，而不是会话交付目录） */
 function resolveConversationSpaceRoot(conversationId?: string): string | null {
   if (!conversationId) return null;
@@ -1110,62 +1167,99 @@ function resolveConversationSpaceRoot(conversationId?: string): string | null {
  * 走 services/media-fetch 的统一入口：直连优先，直连不通自动改走本机代理隧道 ——
  * 与生图/生视频产物落盘同一条通路，网络环境的差异在这一层被吸收。
  */
+
+/** 粗略判断字节流是否像 HTML 页面（用于区分"直链文件"与"视频网站页面"） */
+function looksLikeHtml(buf: Buffer): boolean {
+  const head = buf.subarray(0, 512).toString('latin1').toLowerCase();
+  const t = head.trimStart();
+  return t.startsWith('<!doctype') || t.startsWith('<html') || head.includes('<head') || head.includes('<meta') || head.includes('<script');
+}
+
 async function mediaFetch(
   args: Record<string, unknown>,
   conversationId?: string,
 ): Promise<MpcToolExecutionResult> {
   const url = str(args, 'url').trim();
   if (!url) return fail('url 为必填项');
-  if (!/^https?:\/\//i.test(url)) return fail(`url 必须是 http/https 直链：${url.slice(0, 120)}`);
+  if (!/^https?:\/\//i.test(url)) return fail(`url 必须是 http/https 直链或视频网站页面链接：${url.slice(0, 120)}`);
 
   const kind = str(args, 'kind').trim().toLowerCase() || 'video';
   if (!['video', 'image', 'audio', 'file'].includes(kind)) return fail('kind 必须是 video / image / audio / file 之一');
   const category = str(args, 'category').trim() === 'source' ? 'source' : 'deliverable';
   const fallbackExt = kind === 'image' ? '.png' : kind === 'audio' ? '.mp3' : kind === 'file' ? '.bin' : '.mp4';
-
-  let buf: Buffer;
-  try {
-    buf = await downloadBinary(url);
-  } catch (e: unknown) {
-    return fail(`下载失败：${e instanceof Error ? e.message : String(e)}`);
-  }
-  if (!buf || buf.length === 0) return fail('下载得到空内容（链接可能是页面而不是文件直链）');
-  if (buf.length > MEDIA_FETCH_MAX_BYTES) {
-    return fail(`文件过大（${formatBytes(buf.length)}），超过上限 ${formatBytes(MEDIA_FETCH_MAX_BYTES)}`);
-  }
+  const rawMax = num(args, 'maxBytes', 0);
+  const maxBytes = rawMax > 0 ? rawMax : MEDIA_FETCH_MAX_BYTES;
 
   const nameHint = str(args, 'name').trim();
-  const fileName = safeDownloadName(nameHint || `${kind}-${Date.now()}`, extForFetch(url, fallbackExt));
+  const prefixBase = safeDownloadName(nameHint || `${kind}-${Date.now()}`, fallbackExt); // 不含扩展名
 
+  // 两种 category 都先定好落盘目录
+  let dir: string;
+  let urlBase = '';
+  if (category === 'source') {
+    const root = resolveConversationSpaceRoot(conversationId);
+    if (!root) return fail('当前会话没有绑定空间，无法定位 00-source（可改用 category=deliverable）');
+    dir = path.join(root, '00-source');
+  } else {
+    const target = mediaTarget({
+      conversationId,
+      kind: kind === 'image' ? 'images' : kind === 'audio' ? 'audios' : kind === 'file' ? 'files' : 'videos',
+    });
+    dir = target.dir;
+    urlBase = target.urlBase;
+  }
+  await mkdir(dir, { recursive: true });
+  const prefix = path.join(dir, prefixBase);
+
+  // ① 先尝试直链下载（公开素材站 .mp4/.jpg 直链最稳）
+  let buf: Buffer | null = null;
   try {
-    if (category === 'source') {
-      // 任务模式（脚本/短剧/有声小说等）按「00-source = 原始素材」组织；
-      // 落到这里才能被「目录资源现状」扫到，后续步骤直接取材（而不是又提示缺素材）。
-      const root = resolveConversationSpaceRoot(conversationId);
-      if (!root) return fail('当前会话没有绑定空间，无法定位 00-source（可改用 category=deliverable）');
-      const dir = path.join(root, '00-source');
-      await mkdir(dir, { recursive: true });
-      const file = path.join(dir, fileName);
-      await writeFile(file, buf);
-      return ok(JSON.stringify({
-        ok: true, type: kind, category: 'source',
-        file, name: fileName, bytes: buf.length, sourceUrl: url,
-        note: `已存入本目录的 00-source（任务模式素材位置）。后续步骤直接用这个绝对路径读它。`,
-      }));
-    }
+    buf = await downloadBinary(url);
+  } catch {
+    /* 直连失败 → 落到 yt-dlp 解析分支 */
+  }
 
-    const target = mediaTarget({ conversationId, kind: kind === 'image' ? 'images' : kind === 'audio' ? 'audios' : kind === 'file' ? 'files' : 'videos' });
-    await mkdir(target.dir, { recursive: true });
-    const file = path.join(target.dir, fileName);
+  if (buf && buf.length > 0 && !looksLikeHtml(buf)) {
+    if (buf.length > maxBytes) {
+      return fail(`文件过大（${formatBytes(buf.length)}），超过上限 ${formatBytes(maxBytes)}（可传更大的 maxBytes）`);
+    }
+    const fileName = `${prefixBase}${extForFetch(url, fallbackExt)}`;
+    const file = path.join(dir, fileName);
     await writeFile(file, buf);
     return ok(JSON.stringify({
-      ok: true, type: kind, category: 'deliverable',
-      url: `${target.urlBase}/${path.basename(file)}`,
+      ok: true, type: kind, category,
       file, name: fileName, bytes: buf.length, sourceUrl: url,
+      ...(category === 'source'
+        ? { note: '已存入本目录的 00-source（任务模式素材位置）。后续步骤直接用这个绝对路径读它。' }
+        : { url: `${urlBase}/${path.basename(file)}` }),
     }));
-  } catch (e: unknown) {
-    return fail(`素材落盘失败：${e instanceof Error ? e.message : String(e)}`);
   }
+
+  // ② 直链失败或拿到的是网页 → 走 yt-dlp 解析下载（视频网站页面链接）
+  let host = '';
+  try { host = new URL(url).hostname; } catch { /* 非法 url 交给 yt-dlp 去报 */ }
+  if (isYoutubeHost(host) && !youtubeEnabled()) {
+    return fail(
+      '当前仅支持国内视频站（B站 / 抖音 / 西瓜等）的页面链接解析下载。\n' +
+      'YouTube 受反爬限制默认关闭：设置环境变量 YZ_YTDLP_YOUTUBE=1 并配置可用代理（YZ_YTDLP_PROXY 或 HTTPS_PROXY）后启用。',
+    );
+  }
+  const yt = await ytdlpFetch(url, prefix, { timeoutMs: 600000 });
+  if (!yt.ok || !yt.file) return fail(`视频解析下载失败：${yt.error || '未知错误'}`);
+
+  // 下载后体积检查（yt-dlp 不进 Node 内存，但太大仍要拦）
+  const st = await stat(yt.file);
+  if (st.size > maxBytes) {
+    await rm(yt.file, { force: true });
+    return fail(`文件过大（${formatBytes(st.size)}），超过上限 ${formatBytes(maxBytes)}（可传更大的 maxBytes）`);
+  }
+  return ok(JSON.stringify({
+    ok: true, type: kind, category,
+    file: yt.file, name: path.basename(yt.file), bytes: st.size, sourceUrl: url,
+    ...(category === 'source'
+      ? { note: '已存入本目录的 00-source（由视频网站解析得到）。后续步骤直接用这个绝对路径读它。' }
+      : { url: `${urlBase}/${path.basename(yt.file)}` }),
+  }));
 }
 
 /**
@@ -1358,8 +1452,69 @@ async function mediaCompose(
       const s = requireLocalFile(args.srt, 'srt');
       if (!s.ok) return fail(s.error);
       // subtitles 滤镜的路径要转义（Windows 盘符冒号与反斜杠在 filtergraph 里是特殊字符）
-      const esc = s.file.replace(/\\/g, '/').replace(/:/g, '\\:');
-      r = await runFfmpeg(ff.ffmpeg, ['-y', '-i', v.file, '-vf', `subtitles='${esc}'`, '-c:a', 'copy', outFile], 600000);
+      const esc = escFilterPath(s.file);
+      // 字幕样式全可配：字号 / 颜色 / 描边色与宽度 / 位置 / 边距。
+      //
+      // ★★★ libass 的字号/边距换算（实测反推，务必按这个来，凭直觉设像素会大出几倍）：
+      //   ffmpeg 的 subtitles 滤镜生成的 ASS 头**恒定**为 `PlayResX: 384 / PlayResY: 288`
+      //   （与输出分辨率无关，实测 854×480 与 1080×1920 都是这组值，original_size 也改不了它）。
+      //   因此实际渲染：
+      //       渲染字号 px = FontSize × frameH / 384
+      //       渲染边距 px = MarginV  × frameH / 288
+      //   反过来看：**FontSize 与 MarginV 是「以画面高度为分母的比例值」** ——
+      //   同一数值在任何画幅上视觉占比一致（实测 FontSize=34 在 720p/1080×1920/1280×720
+      //   上都恰好占画面高 8.75%），所以**不需要按分辨率缩放**。
+      //   曾经的坑：把 34 当"34 像素"以为很小 → 实际渲染 170px（占竖屏 8.85% 高，
+      //   约 6 字/行），用户反馈"字幕有点大"就是这个原因；而上一版又画蛇添足按宽度再缩一次。
+      //   对外仍按**像素（以 1920 高的成片为基准）**暴露，换算系数如下 —— 这样
+      //   「我要 110px 的字」在任何画幅上都得到相同的视觉占比。
+      const FS_PER_PX = 384 / 1920; // 0.2
+      const MV_PER_PX = 288 / 1920; // 0.15
+      // 默认 120px ≈ libass FontSize 24 ≈ 画面高 6.25% ≈ 1080 宽下 9 字/行。
+      // ★ 为什么不是 34：上一版把 34 当作像素设进去，实际渲染成 170px 字高（6.4 字/行），
+      //   用户反馈"字幕有点大" —— 那是把 libass 单位误当像素导致的。这里改回真正的像素语义。
+      const fs = Math.max(6, Math.round(num(args, 'subtitleFontSize', 120) * FS_PER_PX));
+      const ol = Math.max(0, Math.round(num(args, 'subtitleOutline', 12) * FS_PER_PX));
+      // ★ safeArea=true 时底部边距抬到 420px：竖屏短视频（抖音/快手/视频号）的进度条、
+      //   账号信息、操作按钮都在底部约 20% 画面高内，字幕压在那儿会被完全遮住。
+      //   420px ≈ 画面高 22%，正好避开。默认 200px ≈ 10.4%（与旧版 MarginV=30 视觉一致）。
+      const safe = args.safeArea === true;
+      const prim = toAssColor(str(args, 'subtitleColor'), '&HFFFFFF&');
+      const olc = toAssColor(str(args, 'subtitleOutlineColor'), '&H000000&');
+      const POS: Record<string, { align: number; mvPx: number }> = {
+        bottom: { align: 2, mvPx: safe ? 420 : 200 },
+        center: { align: 5, mvPx: 0 },
+        top: { align: 8, mvPx: safe ? 420 : 267 },
+      };
+      const posKey = str(args, 'subtitlePosition').trim().toLowerCase() || 'bottom';
+      const pk = POS[posKey];
+      if (!pk) return fail(`subtitlePosition 只能是 ${Object.keys(POS).join(' / ')}：${posKey}`);
+      const mvPx = args.subtitleMarginV != null ? num(args, 'subtitleMarginV', pk.mvPx) : pk.mvPx;
+      const mv = Math.max(0, Math.round(mvPx * MV_PER_PX));
+      const style = `FontSize=${fs},PrimaryColour=${prim},OutlineColour=${olc},Outline=${ol},Shadow=1,Alignment=${pk.align},MarginV=${mv}`;
+      let vf = `subtitles='${esc}':force_style='${style}'`;
+      // 标题（项目名）叠加在顶部、整片常驻；未给 title 时不叠加。
+      // ★ 与字幕相反：drawtext 的 fontsize 与 y **是绝对像素**（真实视频坐标系），
+      //   不换算的话同一标题在 480 高的小片上会比 1920 高的大片小 4 倍 → 这里必须按高度缩放。
+      const title = str(args, 'title').trim();
+      if (title) {
+        const cjk = resolveCjkFont();
+        const fontOpt = cjk
+          ? `fontfile='${escFilterPath(cjk)}'`
+          : `font='Microsoft YaHei'`;
+        const tEsc = escDrawtext(title);
+        const vInfo = await probeMedia(ff.ffprobe, v.file);
+        const refH = vInfo.height > 0 ? vInfo.height : 1920;
+        const pxH = (px: number) => Math.max(1, Math.round((refH * px) / 1920));
+        const tSize = pxH(num(args, 'titleFontSize', 140));
+        // drawtext 的 fontcolor 用 0xRRGGBB（与 libass 的 &HAABBGGRR& 不同，别混用）
+        const rawTc = str(args, 'titleColor').trim().replace(/^#/, '');
+        const tColor = /^[0-9a-fA-F]{6}$/.test(rawTc) ? `0x${rawTc.toUpperCase()}` : 'white';
+        const tFade = Math.max(0, num(args, 'titleFade', 0));
+        const tAlpha = tFade > 0 ? `:alpha='if(lt(t,${tFade}),t/${tFade},1)'` : '';
+        vf += `,drawtext=${fontOpt}:text='${tEsc}':fontcolor=${tColor}:fontsize=${tSize}:box=1:boxcolor=black@0.45:boxborderw=${pxH(30)}:x=(w-text_w)/2:y=${pxH(120)}${tAlpha}`;
+      }
+      r = await runFfmpeg(ff.ffmpeg, ['-y', '-i', v.file, '-vf', vf, '-c:a', 'copy', outFile], 600000);
       if (!r.ok) return fail(`字幕烧录失败：${r.stderr}`);
     }
 
@@ -1370,6 +1525,444 @@ async function mediaCompose(
     }));
   } catch (e: unknown) {
     return fail(`合成失败：${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
+// ===== 剪辑与特效层（media_edit）：在 media_compose 的「组装」之上补「加工」=====
+// 设计取舍：**不做时间线编辑器**。每个 op 都是「一次确定性的 ffmpeg 加工」，
+// 与分镜/时间轴解耦 —— 模型知道要什么效果，就直接点名 op + 参数，不需要盯预览拖动。
+// op 一览：trim 裁剪 / speed 变速 / snapshot 抽帧 / transform 翻转旋转裁切 / fade 淡入淡出
+//          color 调色 / transition 转场 / overlay 画中画水印 / kenburns 图片运镜
+//          bgsound 背景音乐 / volume 音量 / loudnorm 响度归一
+
+/** 时间参数解析：支持秒数、"MM:SS"、"HH:MM:SS"（分镜表里这些写法都常见）。 */
+function parseTime(v: unknown, fallback: number): number {
+  if (typeof v === 'number' && Number.isFinite(v)) return v;
+  const s = String(v ?? '').trim();
+  if (!s) return fallback;
+  if (/^\d+(\.\d+)?$/.test(s)) return Number(s);
+  const parts = s.split(':').map((x) => Number(x));
+  if (parts.some((n) => !Number.isFinite(n))) return fallback;
+  let sec = 0;
+  for (const p of parts) sec = sec * 60 + p;
+  return sec;
+}
+
+/** #RRGGBB / #AARRGGBB → libass 的 &HAABBGGRR&（**字节序是反的**，照抄 RGB 顺序就是颜色对不上）。 */
+function toAssColor(v: string, fallback: string): string {
+  const s = String(v || '').trim().replace(/^#/, '');
+  if (/^[0-9a-fA-F]{6}$/.test(s)) {
+    const r = s.slice(0, 2), g = s.slice(2, 4), b = s.slice(4, 6);
+    return `&H00${b}${g}${r}&`.toUpperCase();
+  }
+  if (/^[0-9a-fA-F]{8}$/.test(s)) {
+    // 输入按 #AARRGGBB 理解（与前端 CSS 习惯一致）
+    const a = s.slice(0, 2), r = s.slice(2, 4), g = s.slice(4, 6), b = s.slice(6, 8);
+    return `&H${a}${b}${g}${r}&`.toUpperCase();
+  }
+  return fallback;
+}
+
+/** filtergraph 里的路径转义：Windows 盘符冒号与反斜杠都是特殊字符。 */
+function escFilterPath(p: string): string {
+  return p.replace(/\\/g, '/').replace(/:/g, '\\:');
+}
+
+/** drawtext 的 text 转义：反斜杠、单引号、冒号、百分号漏一个整条 filter 就解析失败。 */
+function escDrawtext(t: string): string {
+  return t.replace(/\\/g, '\\\\').replace(/'/g, "'\\''").replace(/:/g, '\\:').replace(/%/g, '\\%');
+}
+
+/**
+ * 变速用的 atempo 链：**单个 atempo 只接受 0.5~2.0**，超出必须串联。
+ * 漏掉串联会在 factor>2 时报 "atempo tempo must be between 0.5 and 100"（或直接静默错速）。
+ */
+function atempoChain(factor: number): string {
+  let f = Math.max(0.25, Math.min(4, factor));
+  const parts: string[] = [];
+  while (f > 2.0) { parts.push('atempo=2.0'); f /= 2.0; }
+  while (f < 0.5) { parts.push('atempo=0.5'); f /= 0.5; }
+  parts.push(`atempo=${f.toFixed(4)}`);
+  return parts.join(',');
+}
+
+const MEDIA_EDIT_OPS = [
+  'trim', 'speed', 'snapshot', 'transform', 'fade',
+  'color', 'transition', 'overlay', 'kenburns',
+  'bgsound', 'volume', 'loudnorm',
+] as const;
+
+const XFADE_TYPES = [
+  'fade', 'fadeblack', 'fadewhite', 'dissolve',
+  'wipeleft', 'wiperight', 'wipeup', 'wipedown',
+  'slideleft', 'slideright', 'slideup', 'slidedown',
+  'circleopen', 'circleclose', 'radial', 'smoothleft', 'smoothright',
+  'pixelize', 'zoomin',
+];
+
+const COLOR_PRESETS: Record<string, string> = {
+  warm: 'colorbalance=rs=.15:gs=.05:bs=-.10,eq=saturation=1.06',
+  cool: 'colorbalance=rs=-.08:bs=.15,eq=saturation=1.02',
+  bw: 'hue=s=0',
+  vintage: 'curves=vintage,eq=saturation=.85:contrast=1.05',
+  vivid: 'eq=saturation=1.35:contrast=1.08',
+  film: 'eq=contrast=1.10:saturation=.90:gamma=.96,noise=alls=6:allf=t',
+  fade: 'eq=brightness=.05:saturation=.75:contrast=.92',
+};
+
+async function mediaEdit(
+  args: Record<string, unknown>,
+  conversationId?: string,
+): Promise<MpcToolExecutionResult> {
+  const op = str(args, 'op').trim().toLowerCase();
+  if (!(MEDIA_EDIT_OPS as readonly string[]).includes(op)) {
+    return fail(`op 必须是 ${MEDIA_EDIT_OPS.join(' / ')} 之一`);
+  }
+  const ff = await resolveFfmpeg();
+  if (!ff.ok) return fail(ffmpegMissingHint(ff));
+
+  const nameArg = str(args, 'output').trim();
+  const nameOk = nameArg && /^[A-Za-z0-9._-]+$/.test(nameArg);
+  /** 产物落盘（按 op 决定 kind 与扩展名 —— 抽帧是图片、音量处理可能只出音频）。 */
+  const mkOut = async (kind: 'videos' | 'audios' | 'images', ext: string) => {
+    const tg = mediaTarget({ conversationId, kind });
+    await mkdir(tg.dir, { recursive: true });
+    const base = nameOk ? nameArg.replace(/\.[a-z0-9]+$/i, '') : `${op}-${Date.now()}`;
+    return { tg, file: path.join(tg.dir, `${base}${ext}`) };
+  };
+  const VIDEO_EXT = /\.(mp4|webm|mov|m4v|mkv|avi|flv)$/i;
+
+  let out!: { tg: { dir: string; urlBase: string }; file: string };
+  let note = '';
+  let r: { ok: boolean; stderr: string };
+
+  try {
+    if (op === 'trim') {
+      const v = requireLocalFile(args.video, 'video');
+      if (!v.ok) return fail(v.error);
+      const total = (await probeMedia(ff.ffprobe, v.file)).durationSec;
+      const start = Math.max(0, parseTime(args.start, 0));
+      const end = args.end == null ? 0 : parseTime(args.end, 0);
+      const dur = args.duration == null ? 0 : num(args, 'duration', 0);
+      let segEnd = end > 0 ? end : (dur > 0 ? start + dur : total);
+      if (total > 0) segEnd = Math.min(segEnd, total);
+      if (!(segEnd > start)) {
+        return fail(`裁剪区间无效：start=${start}s → end=${segEnd}s（需要 end > start；不传 end 时用 duration 或片尾）`);
+      }
+      out = await mkOut('videos', '.mp4');
+      r = await runFfmpeg(ff.ffmpeg, [
+        '-y', '-ss', String(start), '-i', v.file, '-t', (segEnd - start).toFixed(3),
+        '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2',
+        '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p',
+        '-c:a', 'aac', '-b:a', '192k', '-avoid_negative_ts', 'make_zero',
+        '-movflags', '+faststart', out.file,
+      ], 600000);
+      if (!r.ok) return fail(`裁剪失败：${r.stderr}`);
+      note = `已裁 ${start}s → ${segEnd}s（片段时长 ${(segEnd - start).toFixed(2)}s）`;
+    } else if (op === 'speed') {
+      const v = requireLocalFile(args.video, 'video');
+      if (!v.ok) return fail(v.error);
+      const factor = Math.min(Math.max(num(args, 'factor', 1), 0.25), 4);
+      if (Math.abs(factor - 1) < 0.001) return fail('factor 不能为 1（等于没变速）；加快 >1，放慢 <1');
+      const info = await probeMedia(ff.ffprobe, v.file);
+      out = await mkOut('videos', '.mp4');
+      const vf = `setpts=PTS/${factor.toFixed(6)},scale=trunc(iw/2)*2:trunc(ih/2)*2`;
+      if (info.hasAudio) {
+        r = await runFfmpeg(ff.ffmpeg, [
+          '-y', '-i', v.file,
+          '-filter_complex', `[0:v]${vf}[v];[0:a]${atempoChain(factor)}[a]`,
+          '-map', '[v]', '-map', '[a]',
+          '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p',
+          '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', out.file,
+        ], 600000);
+      } else {
+        const outDur = info.durationSec > 0 ? (info.durationSec / factor).toFixed(3) : '';
+        r = await runFfmpeg(ff.ffmpeg, [
+          '-y', '-i', v.file,
+          '-f', 'lavfi', ...(outDur ? ['-t', outDur] : []), '-i', 'anullsrc=channel_layout=stereo:sample_rate=48000',
+          '-vf', vf, '-map', '0:v:0', '-map', '1:a:0',
+          '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p',
+          '-c:a', 'aac', '-b:a', '192k', '-shortest', '-movflags', '+faststart', out.file,
+        ], 600000);
+      }
+      if (!r.ok) return fail(`变速失败：${r.stderr}`);
+      note = `速度 ×${factor}（${factor > 1 ? '加快' : '放慢'}）`;
+    } else if (op === 'snapshot') {
+      const v = requireLocalFile(args.video, 'video');
+      if (!v.ok) return fail(v.error);
+      const t = Math.max(0, parseTime(args.time, 0));
+      out = await mkOut('images', '.jpg');
+      r = await runFfmpeg(ff.ffmpeg, [
+        '-y', '-ss', String(t), '-i', v.file, '-frames:v', '1', '-q:v', '2', out.file,
+      ], 120000);
+      if (!r.ok) return fail(`抽帧失败（时间点 ${t}s 可能超出片长）：${r.stderr}`);
+      note = `已抽取 ${t}s 处画面为图片`;
+    } else if (op === 'transform') {
+      const v = requireLocalFile(args.video, 'video');
+      if (!v.ok) return fail(v.error);
+      const info = await probeMedia(ff.ffprobe, v.file);
+      const MAP: Record<string, string> = {
+        hflip: 'hflip', vflip: 'vflip', mirror: 'hflip',
+        rotate90: 'transpose=1', rotate270: 'transpose=2', rotate180: 'transpose=1,transpose=1',
+      };
+      const parts: string[] = [];
+      const rawOps = Array.isArray(args.ops) ? args.ops.map((x) => String(x).trim().toLowerCase()) : [];
+      if (rawOps.length) {
+        for (const o of rawOps) {
+          const f = MAP[o];
+          if (!f) return fail(`未知 transform 操作 ${o}；可选：${Object.keys(MAP).join(' / ')}`);
+          parts.push(f);
+        }
+      }
+      if (args.cropW != null && args.cropH != null) {
+        const cw = Math.round(num(args, 'cropW', 0));
+        const ch = Math.round(num(args, 'cropH', 0));
+        if (cw > 0 && ch > 0) {
+          const cx = Math.round(num(args, 'cropX', 0));
+          const cy = Math.round(num(args, 'cropY', 0));
+          parts.push(`crop=${cw}:${ch}:${cx}:${cy}`);
+        }
+      }
+      if (!parts.length) return fail('ops 必填且非空（如 ["hflip"] / ["rotate90"]），或传 cropW+cropH 做画面裁切');
+      out = await mkOut('videos', '.mp4');
+      const vf = `${parts.join(',')},scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p`;
+      const cmd = ['-y', '-i', v.file, '-vf', vf, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20'];
+      if (info.hasAudio) cmd.push('-c:a', 'copy'); else cmd.push('-an');
+      cmd.push('-movflags', '+faststart', out.file);
+      r = await runFfmpeg(ff.ffmpeg, cmd, 600000);
+      if (!r.ok) return fail(`画面变换失败：${r.stderr}`);
+    } else if (op === 'fade') {
+      const v = requireLocalFile(args.video, 'video');
+      if (!v.ok) return fail(v.error);
+      const info = await probeMedia(ff.ffprobe, v.file);
+      const total = info.durationSec;
+      const din = Math.max(0, num(args, 'fadeIn', 1));
+      const dout = Math.max(0, num(args, 'fadeOut', 1));
+      const vparts: string[] = [];
+      if (din > 0) vparts.push(`fade=t=in:st=0:d=${din}`);
+      if (dout > 0 && total > 0) vparts.push(`fade=t=out:st=${Math.max(0, total - dout).toFixed(3)}:d=${dout}`);
+      if (!vparts.length) return fail('fadeIn / fadeOut 至少给一个 > 0 的值（片尾淡出需能探到时长）');
+      out = await mkOut('videos', '.mp4');
+      const vf = `${vparts.join(',')},scale=trunc(iw/2)*2:trunc(ih/2)*2`;
+      const cmd = ['-y', '-i', v.file, '-vf', vf];
+      if (info.hasAudio) {
+        const aparts: string[] = [];
+        if (din > 0) aparts.push(`afade=t=in:st=0:d=${din}`);
+        if (dout > 0 && total > 0) aparts.push(`afade=t=out:st=${Math.max(0, total - dout).toFixed(3)}:d=${dout}`);
+        cmd.push('-af', aparts.join(','), '-c:a', 'aac', '-b:a', '192k');
+      } else cmd.push('-an');
+      cmd.push('-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', out.file);
+      r = await runFfmpeg(ff.ffmpeg, cmd, 600000);
+      if (!r.ok) return fail(`淡入淡出失败：${r.stderr}`);
+      note = `画面淡入 ${din}s / 淡出 ${dout}s${info.hasAudio ? '（声音同步淡入淡出）' : ''}`;
+    } else if (op === 'color') {
+      const v = requireLocalFile(args.video, 'video');
+      if (!v.ok) return fail(v.error);
+      const info = await probeMedia(ff.ffprobe, v.file);
+      const preset = str(args, 'preset').trim().toLowerCase();
+      let core: string;
+      if (preset) {
+        if (!COLOR_PRESETS[preset]) {
+          return fail(`未知调色预设 ${preset}；可选：${Object.keys(COLOR_PRESETS).join(' / ')}（也可不用 preset，直接传 brightness/contrast/saturation/gamma/hue）`);
+        }
+        core = COLOR_PRESETS[preset];
+      } else {
+        const parts: string[] = [];
+        const eqArgs: string[] = [];
+        if (args.brightness != null) eqArgs.push(`brightness=${num(args, 'brightness', 0)}`);
+        if (args.contrast != null) eqArgs.push(`contrast=${num(args, 'contrast', 1)}`);
+        if (args.saturation != null) eqArgs.push(`saturation=${num(args, 'saturation', 1)}`);
+        if (args.gamma != null) eqArgs.push(`gamma=${num(args, 'gamma', 1)}`);
+        if (eqArgs.length) parts.push(`eq=${eqArgs.join(':')}`);
+        if (args.hue != null) parts.push(`hue=h=${num(args, 'hue', 0)}`);
+        if (!parts.length) return fail('至少给一个：preset 或 brightness / contrast / saturation / gamma / hue');
+        core = parts.join(',');
+      }
+      out = await mkOut('videos', '.mp4');
+      const vf = `${core},scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p`;
+      const cmd = ['-y', '-i', v.file, '-vf', vf, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20'];
+      if (info.hasAudio) cmd.push('-c:a', 'copy'); else cmd.push('-an');
+      cmd.push('-movflags', '+faststart', out.file);
+      r = await runFfmpeg(ff.ffmpeg, cmd, 900000);
+      if (!r.ok) return fail(`调色失败：${r.stderr}`);
+      note = preset ? `调色预设：${preset}` : '自定义调色';
+    } else if (op === 'transition') {
+      const a = requireLocalFile(args.video, 'video');
+      if (!a.ok) return fail(a.error);
+      const b = requireLocalFile(args.video2, 'video2');
+      if (!b.ok) return fail(b.error);
+      const d = Math.min(Math.max(num(args, 'duration', 0.8), 0.1), 5);
+      const kind = str(args, 'type').trim().toLowerCase() || 'fade';
+      if (!XFADE_TYPES.includes(kind)) return fail(`未知转场类型 ${kind}；可选：${XFADE_TYPES.join(' / ')}`);
+      const ia = await probeMedia(ff.ffprobe, a.file);
+      const ib = await probeMedia(ff.ffprobe, b.file);
+      if (ia.durationSec <= d) {
+        return fail(`首段时长 ${ia.durationSec}s 不足以做 ${d}s 转场（xfade 的 offset 必须小于首段时长）`);
+      }
+      const offset = (ia.durationSec - d).toFixed(3);
+      const bothAudio = ia.hasAudio && ib.hasAudio;
+      const fc = bothAudio
+        ? `[0:v][1:v]xfade=transition=${kind}:duration=${d}:offset=${offset}[v];[0:a][1:a]acrossfade=d=${d}[a]`
+        : `[0:v][1:v]xfade=transition=${kind}:duration=${d}:offset=${offset}[v]`;
+      out = await mkOut('videos', '.mp4');
+      const cmd = ['-y', '-i', a.file, '-i', b.file, '-filter_complex', fc, '-map', '[v]'];
+      if (bothAudio) cmd.push('-map', '[a]', '-c:a', 'aac', '-b:a', '192k');
+      cmd.push('-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', out.file);
+      r = await runFfmpeg(ff.ffmpeg, cmd, 900000);
+      if (!r.ok) {
+        return fail(
+          `转场失败（xfade 要求两段**规格完全一致**：分辨率 / 帧率 / 像素格式）：\n${r.stderr}\n` +
+          `正解：先调 api_media_normalize { videos: [两段路径], size: "1080x1920" } 统一规格再转场。`,
+        );
+      }
+      note = bothAudio ? `转场：${kind}（含音频交叉淡入）` : `转场：${kind}（两段未都有音轨 → 仅画面转场）`;
+    } else if (op === 'overlay') {
+      const base = requireLocalFile(args.video, 'video');
+      if (!base.ok) return fail(base.error);
+      const ov = requireLocalFile(args.overlay, 'overlay');
+      if (!ov.ok) return fail(ov.error);
+      const isImg = /\.(png|jpe?g|webp|gif|bmp)$/i.test(ov.file);
+      const bi = await probeMedia(ff.ffprobe, base.file);
+      const ow = num(args, 'overlayWidth', 0);
+      const chain: string[] = [];
+      if (ow > 0) chain.push(`scale=${Math.round(ow)}:-2`);
+      else if (isImg) chain.push(`scale=iw*${Math.min(Math.max(num(args, 'overlayScale', 0.18), 0.02), 1).toFixed(4)}:-2`);
+      const opa = Math.min(Math.max(num(args, 'opacity', 1), 0.05), 1);
+      if (opa < 1) chain.push(`format=rgba,colorchannelmixer=aa=${opa.toFixed(3)}`);
+      if (!chain.length) chain.push('null');
+      const pos = str(args, 'position').trim().toLowerCase() || 'br';
+      const m = Math.max(0, Math.round(num(args, 'margin', 24)));
+      const XY: Record<string, [string, string]> = {
+        tl: [String(m), String(m)],
+        tr: [`W-w-${m}`, String(m)],
+        bl: [String(m), `H-h-${m}`],
+        br: [`W-w-${m}`, `H-h-${m}`],
+        center: ['(W-w)/2', '(H-h)/2'],
+        top: ['(W-w)/2', String(m)],
+        bottom: ['(W-w)/2', `H-h-${m}`],
+      };
+      const [x, y] = XY[pos] || XY.br;
+      out = await mkOut('videos', '.mp4');
+      const fc = `[1:v]${chain.join(',')}[ov];[0:v][ov]overlay=${x}:${y}[v]`;
+      const cmd = ['-y', '-i', base.file, ...(isImg ? ['-loop', '1'] : []), '-i', ov.file, '-filter_complex', fc, '-map', '[v]'];
+      if (bi.hasAudio) cmd.push('-map', '0:a:0', '-c:a', 'copy'); else cmd.push('-an');
+      cmd.push('-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p');
+      // 落位时长：能探到基准时长就用 -t 锁死（图片叠加不锁会无限写盘；视频叠加不锁会被 overlay 拉长）
+      if (bi.durationSec > 0) cmd.push('-t', bi.durationSec.toFixed(3));
+      else cmd.push('-shortest');
+      cmd.push('-movflags', '+faststart', out.file);
+      r = await runFfmpeg(ff.ffmpeg, cmd, 900000);
+      if (!r.ok) return fail(`画中画/贴图失败：${r.stderr}`);
+      note = `叠加位置 ${pos}${opa < 1 ? `，不透明度 ${opa}` : ''}`;
+    } else if (op === 'kenburns') {
+      const img = requireLocalFile(args.image, 'image');
+      if (!img.ok) return fail(img.error);
+      if (!/\.(png|jpe?g|webp|bmp)$/i.test(img.file)) {
+        return fail('kenburns 只处理静态图片（png/jpg/webp/bmp）——视频运镜请用 transform，或先 op=snapshot 抽帧');
+      }
+      const dur = Math.min(Math.max(num(args, 'duration', 6), 1), 120);
+      const size = str(args, 'size').trim() || '1080x1920';
+      if (!/^\d{2,5}x\d{2,5}$/.test(size)) return fail(`size 形如 1080x1920（宽x高）：${size}`);
+      const fps = Math.round(Math.min(Math.max(num(args, 'fps', 30), 1), 60));
+      const [ow, oh] = size.split('x').map((n) => Number(n));
+      const dir = str(args, 'direction').trim().toLowerCase() || 'in';
+      const frames = Math.max(2, Math.round(dur * fps));
+      const step = (0.25 / frames).toFixed(6);
+      const zExpr = dir === 'out'
+        ? `if(eq(on,1),1.25,max(zoom-${step},1.0))`
+        : `min(zoom+${step},1.25)`;
+      // 先放大 4 倍再 zoompan：直接对原图做 zoom 会因亚像素抖动（jitter）明显
+      const vf = `scale=${ow * 4}:-2,zoompan=z='${zExpr}':d=${frames}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=${ow}x${oh}:fps=${fps},format=yuv420p`;
+      out = await mkOut('videos', '.mp4');
+      r = await runFfmpeg(ff.ffmpeg, [
+        '-y', '-loop', '1', '-i', img.file, '-t', String(dur),
+        '-f', 'lavfi', '-t', String(dur), '-i', 'anullsrc=channel_layout=stereo:sample_rate=48000',
+        '-vf', vf, '-map', '0:v:0', '-map', '1:a:0',
+        '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20',
+        '-c:a', 'aac', '-b:a', '192k', '-shortest', '-movflags', '+faststart', out.file,
+      ], 900000);
+      if (!r.ok) return fail(`图片运镜失败：${r.stderr}`);
+      note = `图片 → ${dur}s ${size} 视频（${dir === 'out' ? '向外拉远' : '向内推近'}），已补静音轨`;
+    } else if (op === 'bgsound') {
+      const v = requireLocalFile(args.video, 'video');
+      if (!v.ok) return fail(v.error);
+      const bgm = requireLocalFile(args.audio, 'audio');
+      if (!bgm.ok) return fail(bgm.error);
+      const vi = await probeMedia(ff.ffprobe, v.file);
+      if (!vi.hasAudio) {
+        return fail('视频没有原音轨，无法做「BGM + 原声」混音；请先 op=normalize 补静音轨，或直接用 media_compose op=dub 铺一条音乐');
+      }
+      const vol = Math.min(Math.max(num(args, 'volume', 0.25), 0), 1);
+      const duck = args.duck === true;
+      const din = Math.max(0, num(args, 'fadeIn', 0.5));
+      const dout = Math.max(0, num(args, 'fadeOut', 1.5));
+      const total = vi.durationSec;
+      const bgChain = [`volume=${vol.toFixed(3)}`];
+      if (din > 0) bgChain.push(`afade=t=in:st=0:d=${din}`);
+      if (dout > 0 && total > 0) bgChain.push(`afade=t=out:st=${Math.max(0, total - dout).toFixed(3)}:d=${dout}`);
+      // ★ 两条分支的图结构**不一样**，不能共用 asplit：
+      //   - duck：原声要同时喂给 amix 与 sidechaincompress → 才需要 asplit 分流；
+      //   - 非 duck：原声只喂 amix 一次 → **不要 asplit**。加了而不用，ffmpeg 会报
+      //     「Filter 'asplit' has output 0 (v2) unconnected」直接失败（实测踩到）。
+      const fc = duck
+        ? `[0:a]asplit=2[v1][v2];[1:a]${bgChain.join(',')}[bg];[bg][v2]sidechaincompress=threshold=0.03:ratio=8:attack=20:release=400[bgd];[v1][bgd]amix=inputs=2:duration=first:dropout_transition=2[a]`
+        : `[1:a]${bgChain.join(',')}[bg];[0:a][bg]amix=inputs=2:duration=first:dropout_transition=2[a]`;
+      out = await mkOut('videos', '.mp4');
+      r = await runFfmpeg(ff.ffmpeg, [
+        '-y', '-i', v.file, '-i', bgm.file,
+        '-filter_complex', fc, '-map', '0:v:0', '-map', '[a]',
+        '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k', '-shortest', '-movflags', '+faststart', out.file,
+      ], 900000);
+      if (!r.ok) return fail(`背景音乐混音失败：${r.stderr}`);
+      note = `BGM 音量 ${vol}${duck ? '，已开启「说话时自动压低」' : ''}${dout > 0 ? `，片尾 ${dout}s 淡出` : ''}`;
+    } else if (op === 'volume') {
+      const m = requireLocalFile(args.media, 'media');
+      if (!m.ok) return fail(m.error);
+      const hasDb = args.db != null;
+      const hasFactor = args.factor != null;
+      if (!hasDb && !hasFactor) return fail('给 db（分贝增益，如 -6 或 3）或 factor（倍数，如 1.5）之一');
+      const spec = hasDb ? `${num(args, 'db', 0)}dB` : String(num(args, 'factor', 1));
+      const isVideo = VIDEO_EXT.test(m.file);
+      out = isVideo ? await mkOut('videos', '.mp4') : await mkOut('audios', '.m4a');
+      const cmd = ['-y', '-i', m.file, '-af', `volume=${spec}`];
+      if (isVideo) cmd.push('-c:v', 'copy');
+      cmd.push('-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', out.file);
+      r = await runFfmpeg(ff.ffmpeg, cmd, 900000);
+      if (!r.ok) return fail(`音量调整失败：${r.stderr}`);
+      note = `音量 ${spec}`;
+    } else if (op === 'loudnorm') {
+      // loudnorm：EBU R128 响度归一（多段素材拼长片后音量忽大忽小，靠它拉平）
+      const m = requireLocalFile(args.media, 'media');
+      if (!m.ok) return fail(m.error);
+      const i = num(args, 'target', -16);
+      const tp = num(args, 'truePeak', -1.5);
+      const lra = num(args, 'lra', 11);
+      const isVideo = VIDEO_EXT.test(m.file);
+      out = isVideo ? await mkOut('videos', '.mp4') : await mkOut('audios', '.m4a');
+      const cmd = ['-y', '-i', m.file, '-af', `loudnorm=I=${i}:TP=${tp}:LRA=${lra}`];
+      if (isVideo) cmd.push('-c:v', 'copy');
+      cmd.push('-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', out.file);
+      r = await runFfmpeg(ff.ffmpeg, cmd, 900000);
+      if (!r.ok) return fail(`响度归一失败：${r.stderr}`);
+      note = `响度已归一到 I=${i} LUFS / TP=${tp} dBTP`;
+    } else {
+      // 兜底：正常不可达（op 已在函数入口按 MEDIA_EDIT_OPS 校验过）——留着是为了
+      // 将来加 op 时漏写分支能立刻暴露，而不是静默走到某个 op 的逻辑里。
+      return fail(`未实现的 media_edit op：${op}`);
+    }
+
+    const st = await stat(out.file);
+    const isImage = /\.(jpe?g|png|webp)$/i.test(out.file);
+    return ok(JSON.stringify({
+      ok: true,
+      type: isImage ? 'image' : 'video',
+      engine: 'ffmpeg', op, source: ff.source,
+      url: `${out.tg.urlBase}/${path.basename(out.file)}`,
+      file: out.file, bytes: st.size,
+      ...(note ? { note } : {}),
+    }));
+  } catch (e: unknown) {
+    return fail(`剪辑失败：${e instanceof Error ? e.message : String(e)}`);
   }
 }
 
@@ -1772,6 +2365,28 @@ export async function executeApiTool(
           applied.skillIds = valid;
         }
 
+        // ── 自定义工具（会话级挂载；与 agent 挂载取并集）──
+        // ★ 为什么需要（2026-09-28）：模型用 api_custom_tool_create 造了个工具后，
+        //   此前只能靠 api_agent_mount 改**智能体本体**（影响该智能体所有会话），粒度不对。
+        //   这里提供会话级挂载，让"临时造的工具只作用于当前会话"。
+        if (args.customToolIds !== undefined) {
+          const raw = Array.isArray(args.customToolIds) ? args.customToolIds.map(String) : [];
+          const valid: string[] = [];
+          const unknown: string[] = [];
+          for (const ct of raw) {
+            const hit = db.prepare('SELECT id FROM custom_tool WHERE id = ? AND user_id = ? AND enabled = 1').get(ct, uid);
+            if (hit) valid.push(ct); else unknown.push(ct);
+          }
+          if (unknown.length) {
+            return fail(
+              `自定义工具不存在、已禁用或不属于当前用户：${unknown.join('、')}。可用 api_custom_tool_list 查看。` +
+              (valid.length ? `（可用的部分未写入，请修正后重试）` : ''),
+            );
+          }
+          db.prepare('UPDATE conversation SET custom_tool_ids_json = ? WHERE id = ?').run(JSON.stringify(valid), cid);
+          applied.customToolIds = valid;
+        }
+
         // ── 工作模式（office / dev / ops / sec / wf）──
         if (args.mode !== undefined) {
           const MODES = ['office', 'dev', 'ops', 'sec', 'wf'];
@@ -2034,11 +2649,39 @@ export async function executeApiTool(
         const uid = requireUser(userId);
         const id = uuid();
         const ts = Date.now();
+        // ★★ runtime 必须可由模型指定（2026-09-29 修）。
+        //
+        // 此前这里**硬编码 'node'** → 模型只能造 Node 工具，**造不出 Python 工具**，
+        // 而 `runUserCode` 与 `custom_tool.runtime` 列**本来就支持 python**（python 走真子进程，
+        // 有完整标准库与第三方包）。用户诉求「发现没工具就用 Python 搞一个挂上去」因此落不了地。
+        // 现在：runtime 缺省 'node'，显式传 'python' 则按 python 建（执行侧 runUserCode 已分流）。
+        const runtime = (() => {
+          const r = str(args, 'runtime').trim().toLowerCase();
+          return r === 'python' ? 'python' : 'node';
+        })();
+        // 依赖声明：node → npm 包名数组；python → pip 包名数组。
+        // 只存声明，不在此处安装（安装走 api_custom_tool_run 的按需安装，见 installToolDependencies）。
+        const deps = Array.isArray(args.dependencies) ? args.dependencies.map(String).filter(Boolean) : [];
         db.prepare(
           `INSERT INTO custom_tool (id, user_id, name, description, input_schema_json, output_schema_json, runtime, entry, code, dependencies_json, timeout, env_json, enabled, source, is_public, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, 'node', ?, ?, '[]', ?, '{}', 1, 'local', 0, ?, ?)`,
-        ).run(id, uid, str(args, 'name'), str(args, 'description') || null, JSON.stringify(obj(args, 'inputSchema') || {}), null, str(args, 'entry'), str(args, 'code'), num(args, 'timeout', 30000), ts, ts);
-        return ok(db.prepare('SELECT * FROM custom_tool WHERE id = ?').get(id));
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', 1, 'local', 0, ?, ?)`,
+        ).run(
+          id, uid, str(args, 'name'), str(args, 'description') || null,
+          JSON.stringify(obj(args, 'inputSchema') || {}), null,
+          runtime, str(args, 'entry'), str(args, 'code'),
+          JSON.stringify(deps), num(args, 'timeout', 30000), ts, ts,
+        );
+        const created = db.prepare('SELECT * FROM custom_tool WHERE id = ?').get(id) as any;
+        // 回显时把「怎么调用它」一并给出：模型造完常常忘了要先挂载（会话级/智能体级）才能调用。
+        return ok({
+          ...created,
+          _howToCall: [
+            `已创建（runtime=${runtime}${deps.length ? `，声明依赖 ${deps.join(', ')}` : ''}）。要能调用还需两步：`,
+            `1) 挂载：api_conversation_setup({ customToolIds: ["${id}"] }) 挂到当前会话（推荐，不污染智能体）；或 api_agent_mount 挂到智能体。`,
+            `2) 下一轮对话即可用；也可用 api_custom_tool_execute({ id: "${id}", args: {...} }) 立即试跑。`,
+            deps.length ? `依赖会在首次执行时按需安装（见执行结果回显）。` : '',
+          ].filter(Boolean).join('\n'),
+        });
       }
       case 'api_custom_tool_update': {
         const uid = requireUser(userId);
@@ -2047,6 +2690,19 @@ export async function executeApiTool(
         const vals: any[] = [];
         if (args.code !== undefined) { sets.push('code = ?'); vals.push(args.code); }
         if (args.description !== undefined) { sets.push('description = ?'); vals.push(args.description); }
+        // 允许改 runtime / dependencies：造完发现"该用 python""漏声明了依赖"是常态，
+        // 不许改就只能删了重建（工具 id 会变，已挂载的引用全失效）。
+        if (args.runtime !== undefined) {
+          const r = str(args, 'runtime').trim().toLowerCase();
+          sets.push('runtime = ?'); vals.push(r === 'python' ? 'python' : 'node');
+        }
+        if (args.dependencies !== undefined) {
+          const deps = Array.isArray(args.dependencies) ? args.dependencies.map(String).filter(Boolean) : [];
+          sets.push('dependencies_json = ?'); vals.push(JSON.stringify(deps));
+          // 依赖清单变了 → 清模块缓存，避免继续用旧版本加载的模块
+          const { clearNodeModuleCache } = await import('../services/tool-deps.js');
+          clearNodeModuleCache();
+        }
         sets.push('updated_at = ?');
         vals.push(Date.now(), id, uid);
         db.prepare(`UPDATE custom_tool SET ${sets.join(', ')} WHERE id = ? AND user_id = ?`).run(...vals);
@@ -2743,8 +3399,10 @@ export async function executeApiTool(
         const t = db.prepare('SELECT * FROM custom_tool WHERE id = ? AND user_id = ?').get(str(args, 'id'), uid) as any;
         if (!t) return fail('工具不存在');
         if (!t.enabled) return fail('工具未启用');
-        const { runUserCode } = await import('@yan-zhi/core');
-        return ok(await runUserCode(t.code, t.entry, obj(args, 'args'), { timeout: t.timeout || 30000, runtime: t.runtime || 'node' }));
+        // ★ 走 services/tool-deps 的统一入口：与 ReAct 主循环的 custom_ 分支共享
+        //   「装依赖 → 注模块/站点包 → 执行」语义（此前两处各写一遍、都漏了依赖安装）。
+        const { runCustomTool } = await import('../services/tool-deps.js');
+        return ok(await runCustomTool(t, obj(args, 'args')));
       }
       case 'api_tool_ocr': {
         requireUser(userId);
@@ -2804,8 +3462,12 @@ export async function executeApiTool(
         return await mediaSrtGenerate(args, conversationId);
       case 'media_compose':
         return await mediaCompose(args, conversationId);
+      case 'media_edit':
+        return await mediaEdit(args, conversationId);
       case 'media_install_ffmpeg':
         return await mediaInstallFfmpeg();
+      case 'media_install_ytdlp':
+        return await mediaInstallYtdlp();
       // 网络素材获取：公开直链下载 + 竖屏标准化（先下载 → 标准化 → 再拼接）
       case 'api_media_fetch':
         return await mediaFetch(args, conversationId);

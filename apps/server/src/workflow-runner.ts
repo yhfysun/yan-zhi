@@ -490,8 +490,11 @@ class ServerToolNodeHandler implements NodeHandler {
         .prepare('SELECT * FROM custom_tool WHERE name = ? AND enabled = 1 AND (user_id = ? OR is_public = 1)')
         .get(toolName, userId) as any;
       if (!row) throw new Error(`自定义工具不存在或已禁用: ${toolName}`);
-      const result = await runUserCode(row.code, row.entry, (args as Record<string, unknown>) || {}, { timeout: row.timeout || 30000, runtime: row.runtime || 'node' });
-      return { output: result };
+      // ★ 走 services/tool-deps 的统一入口（含依赖按需安装）。
+      //   此前直连 runUserCode → 工作流里的自定义工具节点声明了依赖就必跑失败（2026-09-29 自检发现）。
+      const { runCustomTool } = await import('./services/tool-deps.js');
+      const text = await runCustomTool(row, (args as Record<string, unknown>) || {});
+      return { output: text };
     }
 
     // api_* 工具（媒体生成/合成/取数等）：走 server 的 executeApiTool。

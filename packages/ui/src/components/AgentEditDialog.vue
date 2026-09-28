@@ -79,7 +79,8 @@
               </div>
               <div class="param-item">
                 <div class="param-head"><span class="param-label">最大循环步数</span><span class="param-val">{{ form.maxReActSteps }}</span></div>
-                <el-input-number v-model="form.maxReActSteps" :min="100" :max="500" :step="1" size="small" controls-position="right" style="width: 100%" />
+                <el-input-number v-model="form.maxReActSteps" :min="1" :max="500" :step="1" size="small" controls-position="right" style="width: 100%" />
+                <div class="kind-hint">单批最大步数（1–500）。达上限后会自动接力下一批（默认最多 3 批），并先做一次进展总结与记忆整理；运行中改这里，下一轮即生效，不必重发。</div>
               </div>
             </div>
           </div>

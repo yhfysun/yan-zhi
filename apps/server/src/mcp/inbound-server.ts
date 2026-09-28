@@ -79,8 +79,12 @@ async function callTool(userId: string, name: string, args: unknown): Promise<{ 
     return { content: [{ type: 'text', text: `Tool not found: ${name}` }], isError: true };
   }
   try {
-    const r = await runUserCode(c.code, c.entry, (args as Record<string, unknown>) || {}, { timeout: c.timeout || 30000, runtime: c.runtime || 'node' });
-    return { content: r.content, isError: !!r.isError };
+    // ★ 走 services/tool-deps 的统一入口（含依赖按需安装）—— 与 ReAct 主循环 /
+    //   api_custom_tool_execute / workflow-runner 共享同一语义。
+    //   此前这里直连 runUserCode，声明了 dependencies 的工具必跑失败（2026-09-29 自检发现）。
+    const { runCustomTool } = await import('../services/tool-deps.js');
+    const text = await runCustomTool(c, (args as Record<string, unknown>) || {});
+    return { content: [{ type: 'text', text }], isError: /未执行：依赖装不上|执行失败/.test(text) };
   } catch (e: any) {
     return { content: [{ type: 'text', text: e?.message || String(e) }], isError: true };
   }

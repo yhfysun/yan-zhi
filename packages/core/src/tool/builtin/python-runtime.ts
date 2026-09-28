@@ -85,11 +85,12 @@ export async function findPython(): Promise<string> {
 }
 
 /** 执行一段内嵌 Python 代码（用户自定义工具用）。
- *  约定：代码从环境变量 YZ_PY_ARGS（base64 JSON）读取入参，结果打印到 stdout。 */
+ *  约定：代码从环境变量 YZ_PY_ARGS（base64 JSON）读取入参，结果打印到 stdout。
+ *  opts.pythonPath：额外 PYTHONPATH 目录（自定义工具按需安装的隔离站点包）—— 见 server 的 tool-deps.ts。 */
 export async function runPythonCode(
   code: string,
   args: Record<string, unknown> = {},
-  opts: { timeout?: number } = {},
+  opts: { timeout?: number; pythonPath?: string } = {},
 ): Promise<McpCallResult> {
   const shell = getPlatformAdapter().shell;
   if (!shell) {
@@ -104,7 +105,14 @@ export async function runPythonCode(
   const tmp = path.join(os.tmpdir(), `yz_py_${Date.now()}_${Math.random().toString(36).slice(2)}.py`);
   try {
     fs.writeFileSync(tmp, code, 'utf-8');
-    const env = { ...process.env, YZ_PY_ARGS: Buffer.from(JSON.stringify(args)).toString('base64') };
+    const env: Record<string, string> = {};
+    for (const [k, v] of Object.entries(process.env)) if (typeof v === 'string') env[k] = v;
+    env.YZ_PY_ARGS = Buffer.from(JSON.stringify(args)).toString('base64');
+    // 隔离站点包注入（自定义工具的 dependencies）：追加而非覆盖用户既有 PYTHONPATH
+    if (opts.pythonPath) {
+      const sep = process.platform === 'win32' ? ';' : ':';
+      env.PYTHONPATH = env.PYTHONPATH ? `${opts.pythonPath}${sep}${env.PYTHONPATH}` : opts.pythonPath;
+    }
     const r = await shell.exec(py, [tmp], { timeout: Math.min(opts.timeout || 30000, 300000), env });
     const lines: string[] = [];
     if (r.stdout) lines.push(capToolOutput(r.stdout));
