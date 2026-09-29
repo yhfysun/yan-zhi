@@ -452,7 +452,9 @@ function verifyAll(targets) {
   let allOk = true;
 
   for (const e of targets.desktop) {
-    const asar = path.join(ROOT, `dist-release-${e}`, 'win-unpacked', 'resources', 'app.asar');
+    // ★ 必须走 OUTPUT_DIRS（与"写到哪"同源），不能硬编码 dist-release- ——
+    //   否则用 YZ_SEPARATE_PREFIX 换目录时，产物明明已生成却报"缺 asar"。
+    const asar = path.join(ROOT, OUTPUT_DIRS[e], 'win-unpacked', 'resources', 'app.asar');
     if (!fs.existsSync(asar)) { fail(`缺 asar: ${asar}`); allOk = false; continue; }
     try {
       run(process.execPath, [verifier, 'asar', asar]);
@@ -478,7 +480,8 @@ function listArtifacts(targets) {
   step('产物清单');
   const list = [];
   for (const e of targets.desktop) {
-    const dir = path.join(ROOT, `dist-release-${e}`);
+    // ★ 同样走 OUTPUT_DIRS（见产物校验处注释）
+    const dir = path.join(ROOT, OUTPUT_DIRS[e]);
     if (!fs.existsSync(dir)) continue;
     for (const f of fs.readdirSync(dir)) {
       if (f.endsWith('.exe') && !f.includes('uninstall')) list.push([`桌面 ${e}（${EDITION_LABEL[e]}）`, path.join(dir, f)]);
