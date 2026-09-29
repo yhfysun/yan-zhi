@@ -375,6 +375,16 @@ CREATE INDEX IF NOT EXISTS idx_space_user ON space(user_id);
   CREATE INDEX IF NOT EXISTS idx_file_change_status ON file_change(status);
 `);
 
+// 迁移 file_change 表（添加 step 列：该文件变更发生在**第几步**）。
+//
+// ★ 为什么需要（2026-09-29，方案 P2-5）：此前 file_change 只有 task_id，
+//   只能"按任务撤全部"，无法"回滚到第 N 步"——而长任务跑偏时用户要的正是**中途某个点**：
+//   「前 30 步没问题，从 31 步开始改坏了，退回去重来」。
+//   有了 step 就能按 message 序号精确定位（配合 task_plan 的步骤编号）。
+// ★ 存量行 step 为 NULL（= 未知），回滚时按"不早于该步"的宽松口径处理，不误伤。
+try { db.exec('ALTER TABLE file_change ADD COLUMN step INTEGER'); } catch { /* 已存在 */ }
+try { db.exec('CREATE INDEX IF NOT EXISTS idx_file_change_task_step ON file_change(task_id, step)'); } catch { /* ignore */ }
+
 // 迁移 mcp_tool 表（添加 alias, remark 列）
 for (const col of ['alias', 'remark']) {
   try { db.exec(`ALTER TABLE mcp_tool ADD COLUMN ${col} TEXT`); } catch {}

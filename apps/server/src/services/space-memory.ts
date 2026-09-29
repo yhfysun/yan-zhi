@@ -139,19 +139,20 @@ export function loadSpaceMemoryForConversation(
     // 同步读（任务组装提示词是同步路径）；文件不存在或读失败都视为无空间记忆
     const content = readFileSync(getSpaceMemoryPath(space), 'utf-8');
     if (!content.trim()) return null;
-    return { spaceId: space.id, spaceName: space.name, content: content.slice(0, INJECT_MAX_CHARS) };
+    // ★ 这里**不再头部截断**（此前 `content.slice(0, INJECT_MAX_CHARS)` 会切掉最新的任务进展行，
+    //   因为 MEMORY.md 是追加写、新内容在末尾）。截断统一交给 formatSpaceMemoryContext
+    //   的按行优先级选取（P2-2）—— 两处各截一次必然漂移，且这处会先截错。
+    return { spaceId: space.id, spaceName: space.name, content };
   } catch {
     return null;
   }
 }
 
-/** 空间记忆 → 系统提示词片段（截断到安全长度，超限提示"内容过长"） */
+/** 空间记忆 → 系统提示词片段（按行优先级选取，不做无脑头部截断） */
 export function formatSpaceMemoryContext(name: string, content: string): string {
   const trimmed = content.trim();
   if (!trimmed) return '';
-  const clipped = trimmed.length > INJECT_MAX_CHARS
-    ? `${trimmed.slice(0, INJECT_MAX_CHARS)}\n…（空间记忆过长已截断，完整内容可用 api_space_memory_read 查看）`
-    : trimmed;
+  const { text: clipped, dropped } = selectMemoryLines(trimmed, INJECT_MAX_CHARS);
   return [
     '## 空间记忆（本空间跨会话长期记忆，所有智能体共享）',
     `> 空间「${name}」的记忆文件，跨会话有效。与当前任务相关的条目应遵守；需要沉淀新的长期事实时可调用 api_space_memory_append 追加。`,
@@ -159,8 +160,70 @@ export function formatSpaceMemoryContext(name: string, content: string): string 
     '（做到哪、还剩什么）—— **继续本空间的长任务前先看这些条目**，别从头再来；' +
     '更细的逐批流水可用 api_space_memory_read 读（会一并返回进展明细）。',
     '',
-    clipped,
+    dropped > 0
+      ? `${clipped}\n\n…（另有 ${dropped} 条较早的记忆因预算不足未注入；需要时用 api_space_memory_read 查看完整内容）`
+      : clipped,
   ].join('\n');
+}
+
+/**
+ * 记忆文件按**行优先级**选取（P2-2，2026-09-29）。
+ *
+ * ★★★ 为什么必须这样（此前是 `content.slice(0, MAX)` 的头部截断，有个真 bug）：
+ *   MEMORY.md 是**追加写**的文件 —— 最新内容在**末尾**。
+ *   头部截断 = 保留最旧的、丢掉**最新的** → 恰好把"上一批长任务做到哪"（最该被看到的）
+ *   切掉，只留下早期流水账。而截断不报错，用户只会觉得"模型不知道我做到哪了"。
+ *
+ * 优先级（高 → 低）：
+ *   1. **任务进展行**（含 `任务【…】`）—— 跨会话接力最依赖它（做到哪、还剩什么）；
+ *   2. **决策记录/规则类**（`问：… → 答：`、非 `[日期]` 开头的正文）—— 用户拍板过的设定；
+ *   3. 其余普通条目 —— 按**从新到旧**（末尾优先）；
+ *   4. 文件头部注释（`#`/`>` 开头）—— 恒定占用最小、先输出，不必参与竞争。
+ *
+ * @returns text 选中的内容（保持原始相对顺序，便于人读）；dropped 被丢弃的行数
+ */
+function selectMemoryLines(content: string, maxChars: number): { text: string; dropped: number } {
+  if (content.length <= maxChars) return { text: content, dropped: 0 };
+
+  const lines = content.split('\n');
+  const headers: string[] = [];
+  const progress: string[] = [];   // 优先级 1
+  const decisions: string[] = [];  // 优先级 2
+  const normal: string[] = [];     // 优先级 3
+
+  for (const line of lines) {
+    const t = line.trim();
+    if (!t) continue;
+    if (t.startsWith('#') || t.startsWith('>')) { headers.push(t); continue; }
+    if (/任务【/.test(t)) { progress.push(t); continue; }
+    if (/问：.*→.*答：/.test(t)) { decisions.push(t); continue; }
+    normal.push(t);
+  }
+
+  // 头注先占位（标题 + 说明行，量很小但语义必要）
+  const picked: string[] = [...headers];
+  let used = headers.join('\n').length;
+  const take = (arr: string[], newestFirst: boolean): void => {
+    const seq = newestFirst ? [...arr].reverse() : arr;
+    for (const l of seq) {
+      if (used + l.length + 1 > maxChars) continue;
+      picked.push(l);
+      used += l.length + 1;
+    }
+  };
+  // ★ 三类**全部从新到旧**取。
+  //   为什么决策行也不能保留原序（我第一版写错、被自检抓到）：
+  //     决策文件是**追加写**的，若按原序取，超限时预算会被**最早的**几十条吃光，
+  //     导致**最近拍板的设定被丢**（例如"成片要加标题"这种刚确认的）。
+  //     与 MEMORY.md 的头部截断是同一类错误，只是换了层皮。
+  //   反序取则保证"最近的设定一定进提示词"—— 这与用户直觉一致（刚说的最算数）。
+  take(progress, true);
+  take(decisions, true);
+  take(normal, true);
+
+  const total = progress.length + decisions.length + normal.length;
+  const dropped = Math.max(0, total - (picked.length - headers.length));
+  return { text: picked.join('\n'), dropped };
 }
 
 /** 注入用 token 预算参考（供上层决定是否跳过） */
@@ -238,7 +301,9 @@ export function loadTaskMemoryForConversation(conversationId: string | null | un
   try {
     const content = readFileSync(getTaskDecisionsPath(space), 'utf-8');
     if (!content.trim()) return null;
-    return content.slice(0, DECISIONS_INJECT_MAX_CHARS);
+    // ★ 同 loadSpaceMemoryForConversation：不在此处头部截断（决策记录也是追加写，
+    //   头部截断会丢掉**最近拍板**的设定）。截断由 formatTaskMemoryContext 负责。
+    return content;
   } catch {
     return null;
   }
@@ -248,14 +313,14 @@ export function loadTaskMemoryForConversation(conversationId: string | null | un
 export function formatTaskMemoryContext(content: string): string {
   const trimmed = content.trim();
   if (!trimmed) return '';
-  const clipped = trimmed.length > DECISIONS_INJECT_MAX_CHARS
-    ? `${trimmed.slice(0, DECISIONS_INJECT_MAX_CHARS)}\n…（决策记录过长已截断）`
-    : trimmed;
+  // ★ 决策记录同样是**追加写**（新拍板在末尾）→ 超限时**保尾部**，别丢最近的决定。
+  //   用同一个按行选取（决策行全归"高优先级"，普通行从新到旧）复用 P2-2 的口径。
+  const { text: clipped, dropped } = selectMemoryLines(trimmed, DECISIONS_INJECT_MAX_CHARS);
   return [
     '## 任务决策记录（用户已确认过的内容）',
     '> 以下是本目录历史上用户在「向你提问/确认」环节拍板过的决定。继续任务或开新任务时先对照这里，已确认过的事项直接沿用，不要重复询问；除非用户主动要求更改。',
     '',
-    clipped,
+    dropped > 0 ? `${clipped}\n\n…（另有 ${dropped} 条较早的决策未注入）` : clipped,
   ].join('\n');
 }
 

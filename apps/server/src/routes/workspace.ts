@@ -473,4 +473,91 @@ router.post('/changes/:id/dismiss', (req, res) => {
   res.json({ item });
 });
 
+// ============================================================
+// 任务级检查点与回滚（P2-5，2026-09-29）
+//
+// ★★★ 为什么需要（方案 P2-5）：此前只有**单文件** revert，长任务跑偏时用户要的却是
+//   「**退回某个时间点**，重来一遍」——例如「前 30 步没问题，从第 31 步开始改坏了」。
+//   单文件回退做不到这件事（要手工把几十个文件一个个点回退）。
+//
+// 实现口径（刻意保守，宁可少回退也不误伤）：
+//   · 只回退 `status='pending'` 且 `step >= 目标步` 的记录 —— 用户已经显式 apply/dismiss
+//     过的变更**不动**（那是他确认过的结果）；
+//   · **按路径取"最早的那条 before_content"**：同一文件被改了 5 次，要回到第 30 步，
+//     必须用第 31 步那次改动**之前**的内容（= 该文件在 step>=31 区间里最早的 before），
+//     用最后一次的 before 会把中间的改动留下（错了但不报错，最难发现）；
+//   · 新建文件（最早 before 为 null）→ 删除；
+//   · 回退后把这些记录标 'reverted'，并在返回里报告每个文件的处置，便于用户核对。
+// ============================================================
+
+// POST /api/workspace/tasks/:taskId/rollback  { step: number }
+// 把该任务**第 step 步及以后**产生的文件变更整体撤销（恢复到 step 之前的状态）。
+router.post('/tasks/:taskId/rollback', (req, res) => {
+  const taskId = String(req.params.taskId || '');
+  const step = Number(req.body?.step);
+  if (!taskId) return res.status(400).json({ error: '缺少 taskId' });
+  if (!Number.isFinite(step) || step < 0) return res.status(400).json({ error: 'step 需为非负整数' });
+
+  const rows = db.prepare(
+    "SELECT id, path, before_content, step FROM file_change WHERE task_id = ? AND status = 'pending' AND step IS NOT NULL AND step >= ? ORDER BY step ASC, created_at ASC",
+  ).all(taskId, step) as Array<{ id: string; path: string; before_content: string | null; step: number }>;
+
+  if (!rows.length) {
+    return res.json({ ok: true, reverted: [], note: `该任务在第 ${step} 步及以后没有待处理的文件变更` });
+  }
+
+  // 按路径聚合：取**最早**那条的 before_content（= 回到该区间之前的状态）
+  const earliest = new Map<string, { before: string | null; id: string }>();
+  const ids: string[] = [];
+  for (const r of rows) {
+    ids.push(r.id);
+    if (!earliest.has(r.path)) earliest.set(r.path, { before: r.before_content, id: r.id });
+  }
+
+  const reverted: Array<{ path: string; action: 'restored' | 'deleted' | 'failed'; error?: string }> = [];
+  for (const [p, info] of earliest) {
+    try {
+      if (info.before == null) {
+        // 新建的文件 → 删除（回到"不存在"）
+        if (fs.existsSync(p)) fs.unlinkSync(p);
+        reverted.push({ path: p, action: 'deleted' });
+      } else {
+        fs.mkdirSync(path.dirname(p), { recursive: true });
+        fs.writeFileSync(p, info.before, 'utf-8');
+        reverted.push({ path: p, action: 'restored' });
+      }
+    } catch (e) {
+      reverted.push({ path: p, action: 'failed', error: (e as Error).message });
+    }
+  }
+
+  // 标记这批记录已回退（失败的也标 —— 它们已经不该再出现在待处理列表里，
+  // 否则用户会看到"刚回退过的文件还在提示"，且重复点会覆盖掉刚恢复的内容）
+  try {
+    const stmt = db.prepare("UPDATE file_change SET status = 'reverted' WHERE id = ?");
+    for (const id of ids) stmt.run(id);
+  } catch { /* 标记失败不影响已完成的回退 */ }
+
+  res.json({
+    ok: true,
+    step,
+    fileCount: reverted.length,
+    changeCount: ids.length,
+    reverted,
+    // 明确报告失败项，不静默（回退是危险操作，用户必须知道哪些没成）
+    failed: reverted.filter((r) => r.action === 'failed'),
+  });
+});
+
+// GET /api/workspace/tasks/:taskId/checkpoints —— 该任务有哪些"可回退的步"
+// （只列有文件变更的步，供前端做"回滚到第 N 步"的选择器）
+router.get('/tasks/:taskId/checkpoints', (req, res) => {
+  const taskId = String(req.params.taskId || '');
+  if (!taskId) return res.status(400).json({ error: '缺少 taskId' });
+  const rows = db.prepare(
+    "SELECT step, COUNT(*) AS changes, COUNT(DISTINCT path) AS files FROM file_change WHERE task_id = ? AND status = 'pending' AND step IS NOT NULL GROUP BY step ORDER BY step ASC",
+  ).all(taskId) as Array<{ step: number; changes: number; files: number }>;
+  res.json({ items: rows, total: rows.reduce((s, r) => s + r.changes, 0) });
+});
+
 export default router;

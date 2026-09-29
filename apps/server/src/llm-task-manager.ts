@@ -18,6 +18,10 @@ import {
 import { loadSpaceMemoryForConversation, formatSpaceMemoryContext, appendTaskDecision, loadTaskMemoryForConversation, formatTaskMemoryContext, appendTaskProgress } from './services/space-memory.js';
 import { summarizeResourceDirsSync } from './services/space-resources.js';
 import { serverState } from './state.js';
+// 产物登记钩子（P2-3）：把 file_write / 媒体登记的副作用从主循环里搬出去
+import { runAfterToolHooks } from './services/tool-hooks.js';
+import { registerArtifactHooks } from './services/artifact-hooks.js';
+import { guessMime } from './utils/mime.js';
 import { resolveArtifactDirFor } from './services/artifact-dir.js';
 import { modelSupportsTools } from './services/model-caps.js';
 // 模型标识解析：统一走 services/model-resolve（主键优先 + 存量裸名回退），
@@ -1136,7 +1140,8 @@ async function runReActLoop(task: LlmTask, params: {
     // 否则产物只存在于对话气泡里，文件管理列表看不到。
     // api_video_status：视频任务超时后模型用它补查，补查命中时同样会就地落盘并返回完整媒体契约，
     // 不登记的话这条补落盘的产物同样进不了交付目录。
-    const MEDIA_TOOLS = new Set(['api_image_generate', 'api_video_generate', 'api_video_status', 'api_tts_speak', 'api_srt_generate', 'media_compose', 'media_edit']);
+    // 媒体生成工具集合已迁移到 services/artifact-hooks.ts（MEDIA_TOOLS）——
+    // 登记副作用改由钩子实现（P2-3），主循环不再自己判断哪些工具会产文件。
 
     // 连续「参数为空」的工具调用计数：用于空转断路（见循环内对 consecutiveArgFailures 的处理）
     let consecutiveArgFailures = 0;
@@ -1425,6 +1430,47 @@ async function runReActLoop(task: LlmTask, params: {
           return;
         }
 
+        // ★★★ P2-4：同批多个 call_agent **并发**执行（2026-09-29）。
+        //
+        // 为什么：长任务里"3 个子任务分别调研"是典型场景，串行执行会让每个子智能体
+        // 各跑几十步 → 主任务的 100 步预算很快被烧光（用户看到的正是"跑了很久没产出"）。
+        //
+        // ★ 为什么**只**并发 call_agent，别的工具一律不并发：
+        //   · UI 工具（ask_user/confirm_user）→ 会同时弹出两个对话框，用户没法答；
+        //   · 浏览器工具 → 单活动页状态机，同批多导航会互相覆盖（见 markDuplicateNavigations
+        //     专门为此做的守卫）；
+        //   · 文件类工具（file_write → file_read）→ 有先后依赖，并发会读到旧内容；
+        //   · 子智能体之间**无共享状态**（各自按 parentToolCallId 隔离消息），天生可并发。
+        //
+        // ★ 深度仍限 1 层（`depth >= 1` 拒绝），这里只放宽"同批并发"，不放宽嵌套。
+        // ★ 结果按**原顺序**取用（下面主循环按 tc 顺序读 concurrentResults）——
+        //   OpenAI 协议要求 tool 消息与 assistant.tool_calls **一一对应且同序**，
+        //   乱序落库会让下次重放历史时上游 400。
+        const concurrentResults = new Map<string, string>();
+        const agentCalls = toolCallAcc.filter((tc) => {
+          const n = tc.function?.name || (tc as any).toolName || '';
+          return n === 'call_agent' && parseToolArguments(tc.function?.arguments).args !== null;
+        });
+        // ★ 上限 4：并发太多会让上游限流（429）且本地 SQLite 写入竞争变明显；
+        //   超过上限的仍走下面的串行路径，不会丢调用。
+        const MAX_CONCURRENT_AGENTS = 4;
+        if (agentCalls.length >= 2) {
+          const batchToRun = agentCalls.slice(0, MAX_CONCURRENT_AGENTS);
+          emit(task, { type: 'tool:concurrent', toolName: 'call_agent', count: batchToRun.length });
+          await Promise.all(batchToRun.map(async (tc) => {
+            const cArgs = parseToolArguments(tc.function?.arguments).args as any;
+            emit(task, { type: 'tool:start', toolName: 'call_agent', args: cArgs });
+            try {
+              const r = await executeTool(task, registry, 'call_agent', cArgs, tc.id || '', UI_TOOLS, 0, toolsBuilt, {});
+              concurrentResults.set(String(tc.id || ''), r);
+            } catch (e: any) {
+              // 中止要整体上抛（与串行路径一致）；其余错误记为结果，让主循环按序落库
+              if (isAbortError(e)) throw e;
+              concurrentResults.set(String(tc.id || ''), `工具执行失败: ${e?.message || e}`);
+            }
+          }));
+        }
+
         for (const tc of toolCallAcc) {
           const toolName = tc.function?.name || (tc as any).toolName || '';
           const parsedArgs = parseToolArguments(tc.function?.arguments);
@@ -1437,75 +1483,48 @@ async function runReActLoop(task: LlmTask, params: {
           }
           const args: any = parsedArgs.args;
           if (newTabNavIds.has(String(tc.id || ''))) args.openInNewTab = true;
-          emit(task, { type: 'tool:start', toolName, args });
 
           let result: string;
           const toolMetaOut: { value?: Record<string, unknown> | null } = {};
-          try {
-            result = await executeTool(task, registry, toolName, args, tc.id || '', UI_TOOLS, 0, toolsBuilt, toolMetaOut);
-          } catch (e: any) {
-            if (isAbortError(e)) {
-              // 中止也必须落库 tool 结果：否则库里留下孤儿 assistant.tool_calls（无对应 tool 消息），
-              // 本会话下次重放历史时上游 400 "tool_calls must be followed by tool messages"。
-              try {
-                const abortResult = capToolResult('[已中止] 用户中断了工具执行');
-                const abortMsgId = insertMessage(convId, userId, 'tool', abortResult, { toolCallId: tc.id });
-                emit(task, { type: 'message:added', message: { id: abortMsgId, role: 'tool', content: abortResult, toolCallId: tc.id } });
-              } catch { /* 落库失败不影响中止流程（发送侧 sanitize 仍会兜底配对） */ }
-              throw e;
-            }
-            result = `工具执行失败: ${e?.message || e}`;
-          }
-          emit(task, { type: 'tool:result', toolName, result });
-
-          // file_write 成功后注册到 conversation_file（分类管理，前端文件面板展示）
-          // ★★★ 必须用**工具回传的实际落盘路径**（_meta.path），不能用模型传的 args.path：
-          //   现在落盘位置由服务端按会话目录决定（见 executeTool 内的 artifactDirs），
-          //   模型给的 path 已不参与定位。若仍登记 args.path，conversation_file 里会写进
-          //   一个**并不存在的位置** → 文件管理点开就 404（用户报的"能看到但预览不行"）。
-          if (toolName === 'file_write' && !result.startsWith('工具执行失败')) {
-            const fwMeta = toolMetaOut.value as { path?: string; name?: string; category?: string; bytes?: number } | null;
-            const filePath = String(fwMeta?.path || '');
-            if (filePath) {
-              try {
-                const fileName = String(fwMeta?.name || '') || (filePath.split(/[/\\]/).pop() || filePath);
-                const category = fwMeta?.category === 'deliverable' ? 'deliverable' : 'intermediate';
-                const size = Number(fwMeta?.bytes) || 0;
-                const cfId = 'cf_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
-                db.prepare('INSERT INTO conversation_file (id, conversation_id, user_id, space_id, name, path, category, mime_type, size, source, message_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(cfId, convId, userId, null, fileName, filePath, category, guessMime(fileName), size, 'agent', assistantMsgId, Date.now());
-                emit(task, { type: 'file:registered', conversationId: convId });
-              } catch (e: any) {
-                // 登记失败不能静默：否则"文件产出了但文件管理里没有/点开 404"只能靠猜
-                console.warn('[file_write] 文件登记失败:', e?.message || e);
-              }
-            }
-          }
-
-          // 媒体产物（生图/生视频）落盘即注册：产物由服务端直接写进会话交付目录，
-          // 不登记的话文件管理里永远看不到（此前只有 file_write 会登记，导致生图产物只出现在对话里）。
-          if (MEDIA_TOOLS.has(toolName) && !result.startsWith('工具执行失败')) {
+          // 已并发跑过的（call_agent）直接取结果，不重复执行
+          const pre = concurrentResults.get(String(tc.id || ''));
+          if (pre !== undefined) {
+            result = pre;
+            emit(task, { type: 'tool:result', toolName, result });
+          } else {
+            emit(task, { type: 'tool:start', toolName, args });
             try {
-              const media = JSON.parse(result) as { type?: string; file?: string; ok?: boolean };
-              const filePath = String(media?.file || '');
-              // 产物落盘失败时工具只回远端 URL（没有本机文件），此时无处可登记
-              if (media?.ok !== false && filePath) {
-                const sep = filePath.includes('/') ? '/' : '\\';
-                const fileName = filePath.split(sep).pop() || filePath;
-                // 产物就在本机，顺手取真实字节数（文件管理里显示大小，而不是 0）
-                let size = 0;
-                try { size = (await fsp.stat(filePath)).size; } catch { /* 取不到就留 0 */ }
-                // 生图/生视频/语音默认归交付物（用户要的东西），与 mediaTarget 的落盘分类保持一致。
-                // mime 按扩展名推断：图片落盘固定带扩展名（extFromUrl 兜底 .png），视频 mp4，音频 wav/mp3。
-                const cfId = 'cf_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
-                db.prepare('INSERT INTO conversation_file (id, conversation_id, user_id, space_id, name, path, category, mime_type, size, source, message_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(cfId, convId, userId, null, fileName, filePath, 'deliverable', guessMime(fileName), size, 'agent', assistantMsgId, Date.now());
-                emit(task, { type: 'file:registered', conversationId: convId });
-              }
+              result = await executeTool(task, registry, toolName, args, tc.id || '', UI_TOOLS, 0, toolsBuilt, toolMetaOut);
             } catch (e: any) {
-              // 登记失败不能静默：否则「产物没进交付目录」这类问题只能靠猜。
-              // 落盘已成功，这里只丢登记，打印出来便于定位（不打断对话）。
-              console.warn('[media] 交付文件登记失败:', e?.message || e);
+              if (isAbortError(e)) {
+                // 中止也必须落库 tool 结果：否则库里留下孤儿 assistant.tool_calls（无对应 tool 消息），
+                // 本会话下次重放历史时上游 400 "tool_calls must be followed by tool messages"。
+                try {
+                  const abortResult = capToolResult('[已中止] 用户中断了工具执行');
+                  const abortMsgId = insertMessage(convId, userId, 'tool', abortResult, { toolCallId: tc.id });
+                  emit(task, { type: 'message:added', message: { id: abortMsgId, role: 'tool', content: abortResult, toolCallId: tc.id } });
+                } catch { /* 落库失败不影响中止流程（发送侧 sanitize 仍会兜底配对） */ }
+                throw e;
+              }
+              result = `工具执行失败: ${e?.message || e}`;
             }
+            emit(task, { type: 'tool:result', toolName, result });
           }
+
+          // ★★★ 工具执行完的"副作用"走钩子（P2-3），不再硬编码在主循环里。
+          //
+          // 此前这里有两段 if（file_write 登记 / 媒体产物登记），每加一个"产出文件"的工具
+          // 就要回来再加一段 —— 而且**必然漏**（本项目多次踩到"某入口忘了登记 → 文件管理看不到"）。
+          // 现在具体副作用由 services/artifact-hooks.ts 注册，主循环只负责跑钩子。
+          //
+          // 钩子是 fail-open 的：某个钩子出错只 warn，不影响工具结果（工具已经执行完了）。
+          await runAfterToolHooks(toolName, args, result, {
+            taskId: task.id,
+            conversationId: convId,
+            userId,
+            assistantMsgId,
+            meta: toolMetaOut.value as Record<string, unknown> | null,
+          });
 
           // 添加工具结果消息（入库前压缩，防止单条极端大结果撑爆消息表与下轮上下文）
           const cappedResult = capToolResult(result);
@@ -2057,16 +2076,16 @@ async function executeTool(
       const after = await readFileOrNull(meta.path);
       if (meta.beforeContent !== after) {
         try {
-          db.prepare('INSERT INTO file_change (id, user_id, conversation_id, task_id, path, before_content, after_content, tool, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-            .run('fc_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8), task.userId, task.conversationId, task.id, meta.path, meta.beforeContent ?? null, after, toolName, 'pending', Date.now());
+          db.prepare('INSERT INTO file_change (id, user_id, conversation_id, task_id, path, before_content, after_content, tool, status, step, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+            .run('fc_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8), task.userId, task.conversationId, task.id, meta.path, meta.beforeContent ?? null, after, toolName, 'pending', task.step, Date.now());
         } catch { /* 快照失败不影响工具结果 */ }
       }
     } else if (snapPath && before !== undefined && !text.startsWith('Error') && !text.startsWith('工具执行失败')) {
       const after = await readFileOrNull(snapPath);
       if (before !== after) {
         try {
-          db.prepare('INSERT INTO file_change (id, user_id, conversation_id, task_id, path, before_content, after_content, tool, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-            .run('fc_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8), task.userId, task.conversationId, task.id, snapPath, before, after, toolName, 'pending', Date.now());
+          db.prepare('INSERT INTO file_change (id, user_id, conversation_id, task_id, path, before_content, after_content, tool, status, step, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+            .run('fc_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8), task.userId, task.conversationId, task.id, snapPath, before, after, toolName, 'pending', task.step, Date.now());
         } catch { /* 快照失败不影响工具结果 */ }
       }
     }
@@ -2257,16 +2276,6 @@ async function deliverWorkflowFile(ctx: WorkflowDeliveryCtx, item: { name: strin
   }
 }
 
-function guessMime(name: string): string {
-  const ext = (name.split('.').pop() || '').toLowerCase();
-  const map: Record<string, string> = {
-    png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif',
-    mp4: 'video/mp4', webm: 'video/webm', mp3: 'audio/mpeg', wav: 'audio/wav', m4a: 'audio/mp4',
-    pdf: 'application/pdf', json: 'application/json', csv: 'text/csv',
-    md: 'text/markdown', txt: 'text/plain', html: 'text/html', srt: 'application/x-subrip',
-  };
-  return map[ext] || 'application/octet-stream';
-}
 
 /** 往会话里写一条消息：先落库（保证刷新可见），再推给在线订阅方。 */
 function pushConversationMessage(ctx: WorkflowDeliveryCtx, content: string, role: string): string {
@@ -3483,3 +3492,21 @@ export function loadAgentModelParams(agentId: string | null, userId: string): {
     maxReActSteps: config?.maxReActSteps || 100,
   };
 }
+
+// ────────────────────────────────────────────────────────────
+// 产物登记钩子的注册（P2-3）
+//
+// ★ 为什么用「taskId 反查 task」的桥而不是直接传 task 给钩子：
+//   钩子接口刻意不依赖 LlmTask 类型（那是本模块的内部结构），只收一个扁平的 ToolHookContext。
+//   这里做一次映射，让钩子保持可独立测试（services/artifact-hooks.ts 能脱离本模块跑）。
+//
+// ★ 为什么放在模块末尾而不是顶部：`emit` / `tasks` 都在本文件前面定义，
+//   顶层调用时若顺序颠倒会拿到 undefined（本项目踩过同类 TDZ 问题）。
+registerArtifactHooks((ctx, event) => {
+  try {
+    const t = tasks.get(ctx.taskId);
+    // 任务已结束（内存里没了）时不广播 —— 事件已无接收方，且 conversation_file 行已落库，
+    // 前端下次拉列表就能看到，不会丢数据。
+    if (t) emit(t, event as SSEEvent);
+  } catch { /* 广播失败不影响登记（行已入库） */ }
+});
