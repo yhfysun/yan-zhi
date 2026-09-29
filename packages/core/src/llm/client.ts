@@ -45,19 +45,40 @@ export class LlmClient {
     private model: Model,
   ) {}
 
-  /** 将内部 Message 转成 OpenAI API 约定的 snake_case 格式 */
+  /**
+   * 将内部 Message 转成 OpenAI API 约定的 snake_case 格式。
+   *
+   * ★★★ 取字段必须**两种形态都认**（2026-09-29 排障，high）：
+   *   落库/回放的 tool_calls 是 OpenAI 流式 `DeltaToolCall` 形态 —— 名字与参数在
+   *   `tc.function.name` / `tc.function.arguments`；而内部 `ToolCall` 形态在顶层
+   *   `tc.toolName` / `tc.arguments`。两者**不同构**。
+   *
+   *   此前 `name` 两种都认、`arguments` 只读顶层 → 每次回放都把参数洗成 `{}`
+   *   （实测生产库 220 个 tool_call 样本：顶层 arguments 0 个、function.arguments 220 个，
+   *   **命中率 100%**）→ 模型看到"自己上一轮参数为空" → 模仿空参 → 自我强化退化循环
+   *   （表现为「工具调用经常不传参数」，实测 python_exec 空参率 77.9%，且随会话内
+   *   调用序号从 26.5% 单调升到 75.4%）。
+   *
+   *   ★ 教训：同一个 map 里「有的字段有兜底、有的没有」是高危信号 ——
+   *     必须逐个字段核对两种形态的取法，不能只核对一个字段就以为整块对了。
+   */
   private toApiMessage(m: Message): Record<string, unknown> {
     const out: Record<string, unknown> = { role: m.role };
     if (m.content !== undefined) out.content = m.content;
     if (m.toolCalls?.length) {
-      out.tool_calls = m.toolCalls.map(tc => ({
-        id: tc.id,
-        type: 'function',
-        function: {
-          name: (tc as any).toolName || (tc as any).function?.name,
-          arguments: typeof tc.arguments === 'string' ? tc.arguments : JSON.stringify(tc.arguments || {}),
-        },
-      }));
+      out.tool_calls = m.toolCalls.map(tc => {
+        const anyTc = tc as any;
+        // 参数：优先取嵌套（落库的 DeltaToolCall），再退回顶层（内部 ToolCall）
+        const rawArgs = anyTc.function?.arguments ?? anyTc.arguments;
+        return {
+          id: tc.id,
+          type: 'function',
+          function: {
+            name: anyTc.function?.name || anyTc.toolName,
+            arguments: typeof rawArgs === 'string' ? rawArgs : JSON.stringify(rawArgs || {}),
+          },
+        };
+      });
     }
     if (m.toolCallId) out.tool_call_id = m.toolCallId;
     return out;

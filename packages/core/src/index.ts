@@ -2,6 +2,7 @@
 export * from './platform/types';
 export * from './llm/client';
 export * from './llm/stream';
+export * from './llm/tool-args-advice';
 export * from './mcp/client';
 export * from './workflow/engine';
 export * from './workflow/nodes';

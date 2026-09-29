@@ -101,11 +101,16 @@ export function toAnthropicMessages(messages: Message[]): AnthropicRequest {
       const content: Array<Record<string, unknown>> = [];
       content.push(...toAnthropicBlocks(m.content));
       for (const tc of m.toolCalls || []) {
+        // ★ 与 client.ts 的 toApiMessage 同理：tool_calls 有「落库 DeltaToolCall（嵌套
+        //   tc.function.*）」与「内部 ToolCall（顶层 tc.toolName/tc.arguments）」两种形态，
+        //   必须都认，否则回放历史时同样把参数丢成空对象（2026-09-29 排障）。
+        const anyTc = tc as any;
+        const rawArgs = anyTc.function?.arguments ?? anyTc.arguments;
         content.push({
           type: 'tool_use',
           id: tc.id,
-          name: tc.toolName,
-          input: parseInput(tc.arguments),
+          name: anyTc.function?.name || anyTc.toolName,
+          input: parseInput(rawArgs),
         });
       }
       out.push({ role: 'assistant', content });
