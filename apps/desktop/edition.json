@@ -1,6 +1,6 @@
 {
-  "edition": "basic",
-  "defaultEdition": "basic",
-  "label": "基础版",
-  "artifactSuffix": "-basic"
+  "edition": "lite",
+  "defaultEdition": "lite",
+  "label": "阉割版",
+  "artifactSuffix": "-lite"
 }

@@ -93,11 +93,63 @@ if (isMacBuild && process.platform !== 'darwin') {
   process.exit(1);
 }
 
-const args = ['exec', 'electron-builder', '--config', config, ...extraArgs, '--publish', 'never'];
-const child = spawn('pnpm', args, {
+// electron-builder 的启动方式（★★ 2026-09-29 加固）：
+//
+// 原来直接 `spawn('pnpm', ['exec','electron-builder', ...])`，依赖 pnpm 生成的
+// `node_modules/.bin/electron-builder` 链接。但**本机 pnpm 的 .bin 链接可能未生成**
+// （实测 `apps/*/node_modules/.bin/` 全为空、root 只有 6 项 —— 与 tsc 同一类装包不完整），
+// 于是报 `'electron-builder' 不是内部或外部命令` —— 看起来像"没装依赖"，
+// 实际**包是完整的**（`.pnpm/electron-builder@x/node_modules/electron-builder/cli.js` 在）。
+//
+// → 改为：**优先 .bin**（正常环境走这条），**缺失时直接 node 调 cli.js**。
+//   这条兜底比原来更稳：不依赖 shell PATH、也不依赖 pnpm 的 bin 链接。
+const fs = require('fs');
+
+/** 解析 electron-builder 的启动方式：{ cmd, argv } —— 找不到任何入口时返回 null */
+function resolveElectronBuilder(desktopDir) {
+  // ① 首选 pnpm exec（正常环境；保留原行为）
+  const binLink = path.join(desktopDir, 'node_modules', '.bin', 'electron-builder');
+  if (fs.existsSync(binLink)) {
+    return { cmd: 'pnpm', argv: ['exec', 'electron-builder'], via: 'pnpm exec' };
+  }
+  // ② 兜底：直接把 cli.js 交给 node 跑。
+  //    在 `.pnpm/` 里按名字找 —— 注意目录名带 peer 后缀（electron-builder@25.1.8_...），
+  //    所以用前缀匹配而不是精确名。
+  const pnpmDir = path.resolve(desktopDir, '..', '..', 'node_modules', '.pnpm');
+  let cli = null;
+  try {
+    const hit = fs.readdirSync(pnpmDir).find((n) => n.startsWith('electron-builder@'));
+    if (hit) {
+      const p = path.join(pnpmDir, hit, 'node_modules', 'electron-builder', 'cli.js');
+      if (fs.existsSync(p)) cli = p;
+    }
+  } catch { /* 目录不可读：交给下面报错 */ }
+  if (cli) {
+    return { cmd: process.execPath, argv: [cli], via: '直接 cli.js（.bin 链接缺失兜底）' };
+  }
+  return null;
+}
+
+const desktopDir = path.resolve(__dirname, '..');
+const eb = resolveElectronBuilder(desktopDir);
+if (!eb) {
+  console.error('');
+  console.error('========================================================');
+  console.error('  ✗ 找不到 electron-builder（.bin 链接与 .pnpm 包内 cli.js 都不存在）');
+  console.error('--------------------------------------------------------');
+  console.error('  处置：在仓库根执行 pnpm install（确保 electron-builder 装上）');
+  console.error('========================================================');
+  console.error('');
+  process.exit(1);
+}
+console.log(`[electron-build] 启动方式: ${eb.via}`);
+
+const args = [...eb.argv, '--config', config, ...extraArgs, '--publish', 'never'];
+const child = spawn(eb.cmd, args, {
   stdio: 'inherit',
   env,
-  shell: true,
+  // pnpm 需要 shell（它是 .cmd）；直调 node + cli.js 则不需要，且更稳。
+  shell: eb.cmd === 'pnpm',
 });
 
 child.on('exit', (code) => process.exit(code ?? 1));
