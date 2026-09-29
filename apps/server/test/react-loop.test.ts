@@ -169,6 +169,9 @@ const hoisted = vi.hoisted(() => {
   // ── mock ContextWindow：不压缩 ──
   class MockContextWindow {
     constructor(private w: number, private r: number) {}
+    /** ★ 2026-09-29 补：主链路改用 `ContextWindow.forContextWindow(...)`，
+     *  白名单式 mock 不同步就会报 `forContextWindow is not a function`（任务直接 failed）。 */
+    static forContextWindow(_ctxWin: number, keepRecent = 6) { return new MockContextWindow(8000, keepRecent); }
     needsCompression(_m: any[]) { return false; }
     compress(m: any[]) { return m; }
     setSummaryModel(_p: any, _m: any) {}
@@ -184,9 +187,19 @@ vi.mock('@yan-zhi/core', () => ({
   getToolRegistry: () => hoisted.mockRegistry,
   getApiToolRegistry: () => new Map(),
   ContextWindow: hoisted.MockContextWindow,
+  // ★ 手工白名单 mock 的维护成本：生产代码新增被主链路引用的导出后必须同步补。
+  adviceForTruncatedArgs: () => ({ truncated: false, message: '' }),
+  resolveContextWindow: (n: any) => (typeof n === 'number' && n > 0 ? n : 32768),
 }));
 vi.mock('../src/mcp/index.js', () => ({ ensureToolsInitialized: () => {} }));
-vi.mock('../src/mcp/api-tool-executor.js', () => ({ executeApiTool: vi.fn(), SUPPORTED_API_TOOLS: [] }));
+vi.mock('../src/mcp/api-tool-executor.js', () => ({
+  executeApiTool: vi.fn(),
+  SUPPORTED_API_TOOLS: [],
+  // ★ 2026-09-29 补：主链路 `executeTool` 用 `isApiExecutableTool(name)` 判定"是否 API 工具"
+  //   （不能用 startsWith('api_')，因为 media_compose 等不带前缀）。白名单式 mock 不同步
+  //   会报 `No "isApiExecutableTool" export is defined on the mock`。
+  isApiExecutableTool: (name: string) => typeof name === 'string' && name.startsWith('api_'),
+}));
 vi.mock('../src/services/ollama-embed.js', () => ({ embedText: vi.fn().mockResolvedValue([]) }));
 
 // ── import 被测模块（在 mock 之后）──

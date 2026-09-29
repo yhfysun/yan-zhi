@@ -286,28 +286,43 @@ describe('⑩ 沉淀建议链路（原本是死代码）', () => {
 });
 
 // ────────────────────────────────────────────────────────────
+/**
+ * 取 `WRITE_TOOLS` **集合本身的正文**（到下一个顶层常量为止）。
+ *
+ * ★★★ 必须"截到下一个常量"，不能用固定长度 14000（2026-09-29 修）：
+ *   此前 `slice(WRITE_TOOLS_idx, +14000)`，而 `READONLY_SAFE_TOOLS` 白名单定义
+ *   恰好落在 14000 字符之内 → 窗口**跨进了只读白名单** → 里面正常出现的读类工具
+ *   （`api_memory_search` 等）被当成"误登记为写" → **假红**（且看起来像真越权缺陷）。
+ *   固定长度窗口是这类"边界漂移"假红的通用成因；正确做法是**按结构定界**。
+ */
+function writeToolsBody(raw: string): string {
+  const start = raw.indexOf('const WRITE_TOOLS');
+  expect(start, '★ 找不到 WRITE_TOOLS 定义').toBeGreaterThan(-1);
+  const next = raw.indexOf('const READONLY_SAFE_TOOLS', start);
+  return raw.slice(start, next > start ? next : undefined);
+}
+
 describe('⑪ WRITE_TOOLS 闸门清单不得漏登记（本项目已犯 3 次）', () => {
   it('★★★ api_memory_create/delete 必须登记（它们在 alwaysApiTools，无条件暴露给所有智能体）', () => {
     // 这是最严重的一处：不只是"某个智能体漏挂"，而是 `buildToolsForBackend` 的
     // alwaysApiTools —— 任何智能体在任何只读会话里都能往记忆库 INSERT / DELETE。
-    const raw = read('apps/server/src/tool-permission.ts');
-    const seg = raw.slice(raw.indexOf('const WRITE_TOOLS'), raw.indexOf('const WRITE_TOOLS') + 14000);
+    const seg = writeToolsBody(read('apps/server/src/tool-permission.ts'));
     expect(seg, '★ 只读会话可写记忆库').toContain("'api_memory_create'");
     expect(seg, '★ 只读会话可删记忆库').toContain("'api_memory_delete'");
   });
 
   it('★★★ 名字不像写类但实现是写的，必须按实现登记', () => {
-    const raw = read('apps/server/src/tool-permission.ts');
-    const seg = raw.slice(raw.indexOf('const WRITE_TOOLS'), raw.indexOf('const WRITE_TOOLS') + 14000);
+    const seg = writeToolsBody(read('apps/server/src/tool-permission.ts'));
     // 三个"名字骗人"的：send（实为 INSERT）/ reset（实为重置指南）/ delete 模型文件
     expect(seg, '★ api_message_send 漏登记（实现有 INSERT INTO message）').toContain("'api_message_send'");
     expect(seg, '★ api_kb_builtin_guide_reset 漏登记').toContain("'api_kb_builtin_guide_reset'");
     expect(seg, '★ api_ollama_delete 漏登记（会删本地模型文件）').toContain("'api_ollama_delete'");
+    // ★ 2026-09-29 新增：execute 类也按实现判（跑代码 = 写副作用）
+    expect(seg, '★ api_custom_tool_execute 漏登记（执行自定义工具代码 = 写副作用）').toContain("'api_custom_tool_execute'");
   });
 
   it('★★ 配置类增删改必须成对登记（半开状态同样是越权）', () => {
-    const raw = read('apps/server/src/tool-permission.ts');
-    const seg = raw.slice(raw.indexOf('const WRITE_TOOLS'), raw.indexOf('const WRITE_TOOLS') + 14000);
+    const seg = writeToolsBody(read('apps/server/src/tool-permission.ts'));
     for (const prefix of ['api_platform', 'api_model', 'api_space', 'api_scheduled_task', 'api_mcp_server']) {
       expect(seg, `★ ${prefix}_create 漏登记`).toContain(`'${prefix}_create'`);
       expect(seg, `★ ${prefix}_delete 漏登记`).toContain(`'${prefix}_delete'`);
@@ -315,8 +330,7 @@ describe('⑪ WRITE_TOOLS 闸门清单不得漏登记（本项目已犯 3 次）
   });
 
   it('★★ 读类不得被误登记（只读会话必须能查）', () => {
-    const raw = read('apps/server/src/tool-permission.ts');
-    const seg = raw.slice(raw.indexOf('const WRITE_TOOLS'), raw.indexOf('const WRITE_TOOLS') + 14000);
+    const seg = writeToolsBody(read('apps/server/src/tool-permission.ts'));
     for (const n of ['api_memory_search', 'api_memory_list', 'api_ollama_list', 'api_space_list', 'api_plugin_get']) {
       expect(seg, `★ 读类 ${n} 被误登记为写 → 只读会话查不了`).not.toContain(`'${n}'`);
     }

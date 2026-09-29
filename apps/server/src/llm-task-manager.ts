@@ -5,7 +5,7 @@
 // 注：web_search 已移除，联网查询统一委派 pageAgent（真实浏览器搜索引擎）。
 import type { Platform, Model, Message, DeltaToolCall } from '@yan-zhi/shared';
 import { formatTaskTypeContext, DEFAULT_CONFIRM_BATCH_SIZE } from '@yan-zhi/shared';
-import { LlmClient, getToolRegistry, getApiToolRegistry, ContextWindow } from '@yan-zhi/core';
+import { LlmClient, getToolRegistry, getApiToolRegistry, ContextWindow, adviceForTruncatedArgs } from '@yan-zhi/core';
 import { db } from './db.js';
 import { normalizePermissionMode, checkToolPermission, filterToolsByPermission, permissionModePrompt, checkWorkflowPermission, type PermissionMode } from './tool-permission.js';
 import { ensureToolsInitialized } from './mcp/index.js';
@@ -27,7 +27,7 @@ import { modelSupportsTools } from './services/model-caps.js';
 // 模型标识解析：统一走 services/model-resolve（主键优先 + 存量裸名回退），
 // 不在此另写查询 —— 同一件事两处实现必然漂移。
 import { findModelRow, rowToModel } from './services/model-resolve.js';
-import { DEFAULT_CONTEXT_WINDOW } from './constants.js';
+import { DEFAULT_CONTEXT_WINDOW, resolveContextWindow } from './constants.js';
 import {
   startWorkflowRun, subscribeWorkflowRun, getWorkflowRun, resolveBundleFromDb,
   markWorkflowDelivered, loadPendingWorkflowDeliveries, type WorkflowDeliveryCtx,
@@ -95,6 +95,15 @@ interface LlmTask {
   step: number;
   origin?: string;
   offlinePolicy?: string;
+  /**
+   * 最近一轮 LLM 调用的 finish_reason。
+   *
+   * ★ 2026-09-29：主循环此前**从不读** finish_reason，导致「模型没生成参数（干净的 {}）」
+   *   与「生成到一半被输出上限切断（半截 JSON）」被混为一谈，统一给出「怀疑 max_tokens /
+   *   模型能力」的错误归因，且对截断场景建议"重试"（必然再次截断）。
+   *   这里存下来是为了让工具执行层（`executeTool` 的空参拦截）能按真实原因分派文案。
+   */
+  lastFinishReason?: string;
   agentId?: string | null;
   includeUiTools?: boolean;
   /** 会话级 MCP 挂载的 serverId 集合（无人值守时后端直连 MCP 兜底用） */
@@ -606,8 +615,11 @@ function parseToolArguments(raw: string | undefined | null): { args: any; err?: 
  * 背景：模型输出的 tool_call arguments 为空/残缺（输出被 maxTokens 截断、流中断、小模型幻觉）时，
  * 历史上会带着 {} 硬执行，报 "keys 不能为空 / 参数 x 必须是数字 / path 为必填项" 这类对模型无指导性的错误，
  * 模型盲目重试同样截断 → 死循环。在 executeTool 统一出口先拦一道，给出可行动的重试指引。
+ *
+ * ★ 导出（2026-09-29）是为了让测试类**直接调用真实实现**，而不是在测试里复刻一份 ——
+ *   复刻版本改坏了测试也不会红，等于没测（与 tool-args-fidelity.test.ts 同一手法）。
  */
-function missingRequiredArgs(toolDefs: any[] | undefined, toolName: string, args: any): string[] {
+export function missingRequiredArgs(toolDefs: any[] | undefined, toolName: string, args: any): string[] {
   try {
     if (!Array.isArray(toolDefs) || !toolName) return [];
     const def = toolDefs.find((t: any) => t?.function?.name === toolName || t?.name === toolName);
@@ -657,30 +669,61 @@ function isAbortError(e: any): boolean {
   return /请求被中止|operation was aborted|was aborted/i.test(msg);
 }
 
-/** 从 content 中解析所有 [TOOL_CALL] 块和 <function=xxx> XML 块（大小写不敏感），返回工具调用数组 + 清理后的 content */
-function parseTextModeToolCalls(fullContent: string): { toolCalls: { id: string; name: string; arguments: string }[]; cleanedContent: string } {
+/**
+ * 从 content 中解析所有 [TOOL_CALL] 块和 <function=xxx> XML 块（大小写不敏感），
+ * 返回工具调用数组 + 清理后的 content + 被跳过的「只有名字没参数」的工具名。
+ *
+ * ★★★ 空参防护（2026-09-29，与 `client.ts:toApiMessage` 的主因修复配套）：
+ *   模型**只输出工具名、没写出参数体**时（典型形态：`<function=python_exec></function>`，
+ *   或被输出上限截断的 `[TOOL_CALL]{"name":"python_exec"}[/TOOL_CALL]`），
+ *   此前会静默产出 `arguments: "{}"` —— 与「模型真的传了空对象」**不可区分**：
+ *     ① 落库进 assistant.tool_calls → 下一轮回放时模型看到"自己上一轮参数为空"→ 模仿空参；
+ *     ② 计入空转断路计数，但给不出"其实是没写参数"的准确诊断。
+ *   现在：**仅当该工具确实声明了必填参数**时，记入 `skipped` 而**不产出调用**
+ *   （由调用方提示模型补齐参数、不落空参历史）；
+ *   无必填参数的工具（`list_sub_agents` 等）与"拿不到工具定义"的情况**保持原样产出** ——
+ *   否则会把合法的无参调用误杀（这个副作用比假空参更严重）。
+ */
+export function parseTextModeToolCalls(
+  fullContent: string,
+  toolDefs?: any[],
+): {
+  toolCalls: { id: string; name: string; arguments: string }[];
+  cleanedContent: string;
+  /** 只写了工具名、没有参数体，**且该工具有必填参数** → 工具名列表（供调用方提示补齐） */
+  skipped: string[];
+} {
   const toolCalls: { id: string; name: string; arguments: string }[] = [];
+  const skipped: string[] = [];
+  /** 该工具是否声明了必填参数。拿不到定义时返回 false → 保守产出，绝不误杀无参工具。 */
+  const needsArgs = (name: string) => missingRequiredArgs(toolDefs, name, {}).length > 0;
+  /** 判断解析出的参数是否为"空"（无 / 空对象，等价于没给参数） */
+  const isEmptyArgs = (v: any) =>
+    !v || (typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length === 0);
+
   // 大小写不敏感匹配 [TOOL_CALL]...[/TOOL_CALL]，容忍模型输出 [/toOL_CALL] 等变体
   const re = /\[TOOL_CALL\]\s*(\{[\s\S]*?\})\s*\[\/TOOL_CALL\]/gi;
   let m: RegExpExecArray | null;
   while ((m = re.exec(fullContent)) !== null) {
     const parsed = parseLenientToolCall(m[1]);
-    if (parsed) {
-      toolCalls.push({
-        id: `text_tc_${Date.now()}_${toolCalls.length}`,
-        name: parsed.name,
-        arguments: JSON.stringify(parsed.arguments || {}),
-      });
-    }
+    if (!parsed) continue;
+    if (isEmptyArgs(parsed.arguments) && needsArgs(parsed.name)) { skipped.push(parsed.name); continue; }
+    toolCalls.push({
+      id: `text_tc_${Date.now()}_${toolCalls.length}`,
+      name: parsed.name,
+      arguments: JSON.stringify(parsed.arguments || {}),
+    });
   }
   // 兼容 <function=tool_name>{"arguments":...}</function> XML 格式（某些模型用这种格式）
   const xmlRe = /<function\s*=\s*(\w+)\s*>\s*(\{[\s\S]*?\})?\s*<\/function>/gi;
   while ((m = xmlRe.exec(fullContent)) !== null) {
     const toolName = m[1];
     let args: any = {};
-    if (m[2]) {
+    if (m[2] && m[2].trim()) {
       try { args = JSON.parse(m[2]); } catch { args = parseLenientToolCall(m[2])?.arguments || {}; }
     }
+    // ★ 参数体缺失（`<function=x></function>`）或解析为空对象 → 若该工具需必填参数，不产出调用
+    if (isEmptyArgs(args) && needsArgs(toolName)) { skipped.push(toolName); continue; }
     toolCalls.push({
       id: `text_tc_${Date.now()}_${toolCalls.length}`,
       name: toolName,
@@ -694,7 +737,7 @@ function parseTextModeToolCalls(fullContent: string): { toolCalls: { id: string;
     .replace(/<function\s*=\s*\w+\s*>[\s\S]*?<\/function>/gi, '')
     .replace(/<function\s*=\s*\w+\s*>[\s\S]*$/gi, '')
     .trim();
-  return { toolCalls, cleanedContent };
+  return { toolCalls, cleanedContent, skipped };
 }
 
 /** 工具参数归一化兜底：模型文本模式工具调用常把必填参数放错字段或漏字段名，按工具语义补齐。 */
@@ -1173,6 +1216,10 @@ async function runReActLoop(task: LlmTask, params: {
 
     // 连续「参数为空」的工具调用计数：用于空转断路（见循环内对 consecutiveArgFailures 的处理）
     let consecutiveArgFailures = 0;
+    // 「只写了工具名、没写参数体」且该工具声明了必填参数 → 文本模式解析时记到这里，
+    // 在本轮末尾给模型一条**准确**提示（"你只给了工具名，缺参数"，而不是误导成"输出被截断"）。
+    // 见 parseTextModeToolCalls 的空参防护注释。
+    let skippedArgTools: string[] = [];
     // 自动接力轮次计数（达 maxSteps 后接着跑的批次数，见循环结束后与 P0-2 决策分支）
     let continuationCount = 0;
     // 自动接力总开关与上限：达单轮步数上限后自动接着做（用户可在智能体 config_json 里
@@ -1208,7 +1255,13 @@ async function runReActLoop(task: LlmTask, params: {
         let messagesToSend = loadMessages(convId);
         messagesToSend = messagesToSend.filter(m => m.content || m.toolCalls || m.role === 'tool' || (m as any).reasoningContent);
         // 上下文窗口压缩：超限时先抢救细节再生成结构化摘要（LLM 摘要而非硬截断）
-        const ctxWindow = new ContextWindow(model.contextWindow || DEFAULT_CONTEXT_WINDOW, 6);
+        // ★ 用 forContextWindow：把「模型上下文窗口」换算成触发阈值。
+        //   此前直接传 model.contextWindow（100 万级）当阈值，而判据是保守低估的估算，
+        //   量纲不一致 → 压缩几乎永不触发（2026-09-29 排障）。
+        // ★★ 再修（同日第二轮）：窗口缺失或**恰好等于建库默认 1M**（= 用户没填）时，
+        //   退回 SAFE_CONTEXT_WINDOW(32K) 估算，否则阈值 = 52 万 → 等于关掉压缩。
+        //   见 constants.ts:resolveContextWindow 的判据与取舍说明。
+        const ctxWindow = ContextWindow.forContextWindow(resolveContextWindow(model.contextWindow), 6);
         ctxWindow.setSummaryModel(platform, model);
         if (ctxWindow.needsCompression(messagesToSend)) {
           let flushedThisRun = false; // 每个任务最多抢救一次
@@ -1290,6 +1343,19 @@ async function runReActLoop(task: LlmTask, params: {
         let fullReasoning = '';
         let usageTokens = 0; // 本轮 LLM 调用 token 用量（provider 返回 usage 时累计，供 LLM 交互日志统计）
         const toolCallAcc: DeltaToolCall[] = [];
+        /**
+         * 本轮的 finish_reason（末次非空值）。
+         *
+         * ★★★ 2026-09-29 排障新增：此前**完全没读**它（`grep -c finishReason` = 0），
+         *   于是代码分不清两种截然不同的失败：
+         *     · 模型压根没生成参数 → arguments 是**干净的 `{}`**；
+         *     · 生成到一半被**输出上限切断** → finish_reason='length'，arguments 是**半截 JSON**。
+         *   两者被一视同仁地丢进 missingRequiredArgs，并统一给出「怀疑 max_tokens / 模型能力」
+         *   的归因 —— 而实测这两者常都不是真因（真因见 toApiMessage 的历史参数清洗）。
+         *   更要命的是：**截断时提示"重试同样的调用"是无效建议** —— 同样长度必然再截断一次。
+         *   所以必须把 finish_reason 带下去，让截断走独立分支。
+         */
+        let streamFinish: string | undefined;
 
         try {
           for await (const chunk of client.chatStream(llmMessages, {
@@ -1302,6 +1368,7 @@ async function runReActLoop(task: LlmTask, params: {
             reasoningEffort: effOpts.reasoningEffort,
             signal: task.abortController.signal,
           })) {
+            if (chunk.finishReason) streamFinish = chunk.finishReason;
             if (chunk.usage) {
               usageTokens = (chunk.usage.promptTokens || 0) + (chunk.usage.completionTokens || 0);
             }
@@ -1380,22 +1447,71 @@ async function runReActLoop(task: LlmTask, params: {
           }
         }
 
+        // 把本轮 finish_reason 落到任务上，供工具执行层的空参拦截按真实原因分派文案
+        // （见 LlmTask.lastFinishReason 注释：截断与"没生成"必须区别对待）
+        task.lastFinishReason = streamFinish;
+
         // 文本模式工具调用解析：模型输出 [TOOL_CALL]...[/TOOL_CALL] 或 <function=xxx> 时转结构化 toolCalls
         // 某些模型（如 agnes-2.5-flash）会把 [TOOL_CALL] 放在 reasoning_content 中，需同时检查
         // function call 模式可能返回工具名但 arguments 为空，需从 reasoning 中提取完整参数
-        const hasEmptyArgs = toolCallAcc.length > 0 && toolCallAcc.every(tc => !tc.function?.arguments || tc.function.arguments === '{}' || tc.function.arguments === '');
+        //
+        // ★★★ 判据从"**全部**空"改为"**有任一空**"（2026-09-29 修正）：
+        //   此前只要一批里有一个调用带参数，`every(...)` 即为假 → 整批跳过文本补救 →
+        //   那个空参调用就带着 `{}` 进入执行被拦（用户侧表现为"偶尔又空参"）。
+        //   现在只要存在空参就走补救流程（补救是**逐个**进行，不会误伤有参数的调用）。
+        const isEmptyArg = (tc: any) => { const a = tc.function?.arguments; return !a || a === '{}' || a === ''; };
+        const hasEmptyArgs = toolCallAcc.length > 0 && toolCallAcc.some(isEmptyArg);
         if (toolCallAcc.length === 0 || hasEmptyArgs) {
           const hasToolInContent = fullContent.toUpperCase().includes('[TOOL_CALL]') || fullContent.toUpperCase().includes('<FUNCTION');
-          const hasToolInReasoning = !hasToolInContent && (fullReasoning.toUpperCase().includes('[TOOL_CALL]') || fullReasoning.toUpperCase().includes('<FUNCTION'));
+          // ★ reasoning 兜底（2026-09-29 修正）：此前 content 里有工具块时**完全不看 reasoning**，
+          //   而 content 与 reasoning 各有一部分工具输出（或参数只吐在 reasoning 里）的模型会漏解析。
+          //   现在：content 解析结果**为空**或**存在空参**时，再从 reasoning 补一次。
+          const hasToolInReasoning = fullReasoning.toUpperCase().includes('[TOOL_CALL]') || fullReasoning.toUpperCase().includes('<FUNCTION');
           if (hasToolInContent || hasToolInReasoning) {
-            const source = hasToolInContent ? fullContent : fullReasoning;
+            const sources: string[] = [];
+            if (hasToolInContent) sources.push(fullContent);
+            if (hasToolInReasoning && (sources.length === 0 || fullReasoning !== fullContent)) sources.push(fullReasoning);
             // 原模原样保留模型原始输出（content/reasoning 不做剥离），仅解析出结构化 toolCalls；
             // 前端展示时再隐藏工具块，模型下一轮也能看到自己上一轮的原始调用文本
-            const { toolCalls: parsed } = parseTextModeToolCalls(source);
-            if (hasEmptyArgs && parsed.length > 0) toolCallAcc.length = 0;
-            for (const tc of parsed) {
-              toolCallAcc.push({ id: tc.id, function: { name: tc.name, arguments: tc.arguments } } as DeltaToolCall);
+            // 多个来源合并：按工具名去重（同名以**先出现**者为准，避免重复 push）
+            const parsed: { id: string; name: string; arguments: string }[] = [];
+            const skipped: string[] = [];
+            const seenNames = new Set<string>();
+            for (const src of sources) {
+              const r = parseTextModeToolCalls(src, toolsBuilt);
+              for (const tc of r.toolCalls) {
+                if (seenNames.has(tc.name)) continue;
+                seenNames.add(tc.name);
+                parsed.push(tc);
+              }
+              for (const s of r.skipped) skipped.push(s);
             }
+            // ★★★ 逐个补救（2026-09-29 修正）：此前是「**全部** tc 都空才清空重解析」，
+            //   一批里"1 个有参数 + 1 个空参"时**空的不会被补救** → 带着 `{}` 进执行 → 被拦。
+            //   现在：逐个判定 —— 空的那个（且文本模式能补出参数）**原地**替换掉（保留原 id）；
+            //   有参数的**原样保留**（不要整批清空，否则把原生解析出来的正确参数也丢了）。
+            //   仅当该空参调用在文本里补不到参数时，才把文本解析结果追加为**新**调用。
+            if (hasEmptyArgs) {
+              const recovered = new Map(parsed.map((p) => [p.name, p]));
+              for (const tc of toolCallAcc) {
+                if (!isEmptyArg(tc)) continue; // 非空的不动
+                const nm = tc.function?.name || '';
+                if (nm && recovered.has(nm)) {
+                  tc.function!.arguments = recovered.get(nm)!.arguments; // 原地补参（id 不变 → 配对仍完整）
+                  recovered.delete(nm);
+                }
+              }
+              // 剩下没被补救的解析结果（说明是文本里**另一次**调用）才追加
+              for (const p of recovered.values()) {
+                toolCallAcc.push({ id: p.id, function: { name: p.name, arguments: p.arguments } } as DeltaToolCall);
+              }
+            } else {
+              // 原生完全没有工具调用（或没有空参）→ 文本模式解析结果直接追加
+              for (const tc of parsed) {
+                toolCallAcc.push({ id: tc.id, function: { name: tc.name, arguments: tc.arguments } } as DeltaToolCall);
+              }
+            }
+            if (skipped.length > 0) skippedArgTools = [...new Set([...skippedArgTools, ...skipped])];
             if (toolCallAcc.length > 0) {
               emit(task, { type: 'tool_call', toolCalls: [...toolCallAcc] });
             }
@@ -1412,6 +1528,21 @@ async function runReActLoop(task: LlmTask, params: {
 
         // 无工具调用 → 完成
         if (toolCallAcc.length === 0) {
+          // ★ 优先处理「只写了工具名、没写参数体」（2026-09-29）：这不是"任务做完了"，
+          //   而是模型把工具名吐出来了却忘了/没来得及给参数。此前这种情形**要么**产出假空参调用
+          //   （被 missingRequiredArgs 拦下）、**要么**（本次修复后不再产出调用）被当成"无工具调用"
+          //   → 直接完成任务，用户看到"啥也没干就结束了"。两者都不对。
+          //   正解：给模型一条明确提示，让它**只补参数重发**，而不是从头重来。
+          if (skippedArgTools.length > 0 && step < stepBudget - 1) {
+            const tip = `你只给出了工具名（${skippedArgTools.join('、')}）但没有写出参数，因此这些调用**未被执行**。` +
+              `请重新输出完整调用，**必须带上参数体**，例如：\n` +
+              `[TOOL_CALL]{"name":"${skippedArgTools[0]}","arguments":{"参数名":"参数值"}}[/TOOL_CALL]\n` +
+              `只补这一次参数即可，不要解释、不要重头再来。`;
+            insertMessage(convId, userId, 'user', tip);
+            emit(task, { type: 'message:added', message: { id: '', role: 'user', content: tip } } as any);
+            skippedArgTools = [];
+            continue; // 下一轮模型能看到提示
+          }
           // 「立即发送」的追加消息还没被消费：不能在此 finish，再跑一轮让模型看到它们。
           // 消息已由 injectUserMessage 落库，下一轮 loadMessages(convId) 自然带上，这里只清标记并续循环。
           if (task.pendingInjects.length > 0) {
@@ -1435,21 +1566,29 @@ async function runReActLoop(task: LlmTask, params: {
         // 执行工具调用（同批多导航：第 2+ 个 browser_navigate 转为新开标签页）
         const newTabNavIds = markDuplicateNavigations(toolCallAcc);
 
-        // ★ 空转断路器：连续多步「所有工具调用都参数为空」说明模型已进入退化循环
-        //   （典型成因：输出长度上限偏低 → 工具名吐出来、arguments 还没吐就被截断成 {}；
-        //    叠加历史里空参数调用的 tool 结果被 sanitizeToolMessages 剥掉 → 模型看不到反馈 → 无限重试）。
-        //   此前只能一路空转到 maxSteps 耗尽再吐一份阶段总结（用户侧表现为"跑很久啥也没产出"）。
-        //   这里连续 3 步即判定空转，落一条诊断消息并结束，避免继续烧 token。
+        // ★ 空转断路器：连续多步「所有工具调用都参数为空」说明模型已进入退化循环。
+        //   ★ 此前注释把成因写成"输出长度上限偏低"，2026-09-29 实测证伪（见下方 diag 文案的说明）；
+        //   真根因是历史回放丢参 → 模型模仿。断路本身仍有价值（防继续烧 token），只是归因要准。
+        //   召回：主循环每轮 `loadMessages` 会带上本会话全部历史，空参样本一旦落库就会持续被回放，
+        //   所以**旧会话**即使代码已修也可能因历史污染继续空转 —— 文案里明确引导换新会话。
+        // ★ 空转断路器：连续多步「所有工具调用都参数为空」说明模型已进入退化循环。
+        //   ★★★ 文案已于 2026-09-29 修正 —— 此前断言"输出被长度上限截断"并让用户换模型/调 max_tokens，
+        //   但实测证伪：`file_read` 的必填参数 `path` 只需几十字符同样出现空参，
+        //   且空参轮 completion_tokens 很小、reasoning_len = 0，不存在上限压力；
+        //   直连上游 A/B（历史带空参样本）会让同一模型对同一工具开始吐空参。
+        //   真根因（已修）是**历史回放把参数洗成 `{}`** → 模型模仿 → 自我强化退化。
         const allEmptyArgs = toolCallAcc.length > 0 &&
           toolCallAcc.every(tc => { const a = tc.function?.arguments; return !a || a === '{}'; });
         consecutiveArgFailures = allEmptyArgs ? consecutiveArgFailures + 1 : 0;
         if (consecutiveArgFailures >= 3) {
-          const diag = '检测到工具调用连续多步参数为空（arguments 一直为 {}），判断为输出被长度上限截断导致的空转，已停止以免继续消耗。\n\n' +
-            '处理建议（按优先级）：\n' +
-            '1. 优先换联网模型（如 agnes 系列）或换一个「支持 tools」且输出上限更高的模型——本地小模型的工具调用能力通常不稳；\n' +
-            '2. 在模型/智能体设置里调大「最大输出 tokens」，并确认它对该模型真正生效；\n' +
-            '3. 把任务拆小（例如每次只处理一章），避免单轮上下文过长；\n' +
-            '4. 若某个工具反复参数为空，改用别的工具或让模型分步给出参数后再调用。';
+          const diag = '检测到工具调用连续多步参数为空（arguments 一直为 {}），已停止以免继续消耗。\n\n' +
+            '原因（按实际发生概率排序）：\n' +
+            '1. **本会话历史里已存在"参数为空"的工具调用记录**，模型正在模仿它 —— 这是最常见的原因。' +
+            '本框架已修复历史回放丢参的问题，但**旧会话**里已落库的空参记录仍会被回放；' +
+            '处理：在当前会话里明确指出正确参数重试一次，或**新开一个会话**继续该任务（推荐）。\n' +
+            '2. **参数被模型写在了 reasoning/正文里而未被识别**：换一个原生支持 tools 的模型通常即可解决。\n' +
+            '3. 输出确实被长度上限截断（较少见）：把参数写简短，或在模型设置里调大「最大输出 tokens」。\n' +
+            '4. 任务过长导致上下文被压缩：把任务拆小，或让我先整理一份任务计划再分批执行。';
           updateMessageContent(assistantMsgId, diag);
           emit(task, { type: 'message:updated', messageId: assistantMsgId, content: diag });
           emit(task, { type: 'task:completed' });
@@ -1843,13 +1982,22 @@ async function executeTool(
   // 参数归一化兜底：模型文本模式工具调用常把 url 放到 target/address/link 等字段，补齐避免误报缺参
   args = normalizeToolArgs(toolName, args);
 
-  // 必填参数防护：arguments 为空/残缺（被输出上限截断、流中断、小模型幻觉）时不带空参硬执行，直接给模型可行动的指引
+  // 必填参数防护：arguments 为空/残缺时不带空参硬执行，直接给模型可行动的指引。
+  // ★★★ 文案已于 2026-09-29 修正：此前写"可能原因：输出被长度上限截断 / 模型不擅长工具调用"，
+  //   实测**两者都不是主因**（`file_read` 的 path 仅几十字符也空参；干净上下文下同一模型
+  //   对同一工具能稳定吐出 ~2000 字符的完整参数）。真主因是**历史回放把参数洗成 `{}`**
+  //   → 模型模仿 → 自我强化退化（已修 `client.ts:toApiMessage`）。
+  //   按错的归因引导，会把用户推去换模型/调 max_tokens，永远修不好。
   const missingArgs = missingRequiredArgs(toolDefs, toolName, args);
   if (missingArgs.length > 0) {
-    return `工具 ${toolName} 未执行：arguments 缺少必填参数（${missingArgs.join('、')}）。` +
-      `可能原因：输出被长度上限截断（如 max_tokens 偏小或未生效）、流中断，或模型本身不擅长工具调用。` +
-      `请重试并一次性给出**完整且简短**的 JSON 参数；若再次失败，` +
-      `改用支持 tools 的联网模型或把任务拆小，不要反复重试同一调用（本框架会检测连续空参数并在 3 次后停止）。`;
+    // ★ 带上 finish_reason 做截断分派（2026-09-29）：截断时**不能**建议"重试同样长度"，
+    //   必须改成"落盘 + 短参数引用"两步走（详见 tool-args-advice.ts）。
+    return adviceForTruncatedArgs({
+      toolName,
+      finishReason: task.lastFinishReason,
+      missingArgs,
+      rawArguments: (args && typeof args === 'object') ? JSON.stringify(args) : args,
+    }).message;
   }
 
   // UI 工具 → 委托前端（需要用户交互）；MCP 工具 → 优先委托前端（连接在前端，所见即所得），
@@ -2680,15 +2828,38 @@ async function runSubAgent(
   });
   emit(task, { type: 'message:added', message: { id: userMsgId, role: 'user', content: input, parentToolCallId, subAgentId: resolvedId, subAgentName, subAgentDepth: depth + 1 } });
 
+  // ★★★ P1-1 子智能体自动接力（2026-09-29）：
+  //   此前子智能体达 maxSteps 只做一次总结就返回 —— 对**委派型**智能体是致命的：
+  //   开发模式「代码编写助手」把重活全派给 7 个子智能体，子智能体 30~40 步被截断 →
+  //   父智能体拿到半成品 → 用户看到"跑完了但没做完"。
+  //   ★ 主循环虽有自动接力，但 `call_agent` 是**阻塞**的，父级接力救不了子级
+  //     （父级只在子级**返回之后**才走它的接力决策）—— 必须子级自己分批跑完。
+  //   轮次取**小值**（默认 1，即最多再跑 1 批）：子智能体既不该半途而废，也不该无限占父预算。
+  const subAutoRounds = (() => {
+    try {
+      const cfg = agent.config_json ? JSON.parse(agent.config_json) : {};
+      return typeof cfg?.autoContinueMaxRounds === 'number' && cfg.autoContinueMaxRounds >= 0
+        ? cfg.autoContinueMaxRounds
+        : 1;
+    } catch { return 1; }
+  })();
+  // 单批步数预算（接力时重置为 maxSteps）
+  let subStepBudget = maxSteps;
+  // 「只写了工具名、没写参数体」的工具（见 parseTextModeToolCalls 空参防护）
+  let skippedArgToolsSub: string[] = [];
+
   try {
-    for (let step = 0; step < maxSteps; step++) {
+    // ★ 外层 = 子智能体接力批次；内层 = 单批 ReAct 步数（与主循环同构）
+    for (let subBatch = 0; subBatch <= subAutoRounds; subBatch++) {
+    for (let step = 0; step < subStepBudget; step++) {
       if (task.abortController.signal.aborted) throw new DOMException('Aborted', 'AbortError');
       await waitIfPaused(task); // 子智能体循环同样尊重任务级暂停（pageAgent 常由 call_agent 委派）
 
       // 加载子智能体自己的消息（按 parent_tool_call_id 过滤，避免上下文污染）
       let messagesToSend = loadSubAgentMessages(task.conversationId, parentToolCallId);
       messagesToSend = messagesToSend.filter(m => m.content || m.toolCalls || m.role === 'tool' || (m as any).reasoningContent);
-      const ctxWindow = new ContextWindow(model.contextWindow || DEFAULT_CONTEXT_WINDOW, 6);
+      // ★ 用 forContextWindow 换算触发阈值（理由见主循环处注释；含 32K 保守兜底）
+      const ctxWindow = ContextWindow.forContextWindow(resolveContextWindow(model.contextWindow), 6);
       ctxWindow.setSummaryModel(platform, model);
       if (ctxWindow.needsCompression(messagesToSend)) {
         messagesToSend = await ctxWindow.compress(messagesToSend);
@@ -2832,19 +3003,55 @@ async function runSubAgent(
 
       // 文本模式工具调用解析（同时检查 reasoning_content，某些模型把 [TOOL_CALL] 放在推理中）
       // function call 模式可能返回工具名但 arguments 为空，需从 reasoning 中提取完整参数
-      const hasEmptyArgs = toolCallAcc.length > 0 && toolCallAcc.every(tc => !tc.function?.arguments || tc.function.arguments === '{}' || tc.function.arguments === '');
+      // ★ 判据与补救逻辑**与主循环完全对齐**（2026-09-29）：
+      //   此前这里是「全部空才处理 + 清空重解析」，主循环修了它没修 → 子智能体仍会带空参进执行。
+      //   子智能体是开发模式的主要执行单元，**这条路径不修等于没修**。
+      const isEmptyArgSub = (tc: any) => { const a = tc.function?.arguments; return !a || a === '{}' || a === ''; };
+      const hasEmptyArgs = toolCallAcc.length > 0 && toolCallAcc.some(isEmptyArgSub);
       if (toolCallAcc.length === 0 || hasEmptyArgs) {
         const hasToolInContent = fullContent.toUpperCase().includes('[TOOL_CALL]') || fullContent.toUpperCase().includes('<FUNCTION');
-        const hasToolInReasoning = !hasToolInContent && (fullReasoning.toUpperCase().includes('[TOOL_CALL]') || fullReasoning.toUpperCase().includes('<FUNCTION'));
+        const hasToolInReasoning = fullReasoning.toUpperCase().includes('[TOOL_CALL]') || fullReasoning.toUpperCase().includes('<FUNCTION');
         if (hasToolInContent || hasToolInReasoning) {
-          const source = hasToolInContent ? fullContent : fullReasoning;
-          const { toolCalls: parsed, cleanedContent } = parseTextModeToolCalls(source);
-          if (hasToolInContent) fullContent = cleanedContent;
-          else fullReasoning = cleanedContent;
-          if (hasEmptyArgs && parsed.length > 0) toolCallAcc.length = 0;
-          for (const tc of parsed) {
-            toolCallAcc.push({ id: tc.id, function: { name: tc.name, arguments: tc.arguments } } as DeltaToolCall);
+          const sources: string[] = [];
+          if (hasToolInContent) sources.push(fullContent);
+          if (hasToolInReasoning && fullReasoning !== fullContent) sources.push(fullReasoning);
+          const parsed: { id: string; name: string; arguments: string }[] = [];
+          const skipped: string[] = [];
+          const seenNames = new Set<string>();
+          let cleanedOf: string | null = null;
+          for (const src of sources) {
+            const r = parseTextModeToolCalls(src, subTools);
+            if (!cleanedOf && r.cleanedContent !== src) cleanedOf = r.cleanedContent;
+            for (const tc of r.toolCalls) {
+              if (seenNames.has(tc.name)) continue;
+              seenNames.add(tc.name);
+              parsed.push(tc);
+            }
+            for (const s of r.skipped) skipped.push(s);
           }
+          // 与原实现一致：把标记从正文里剥掉（避免前端 chip 永驻）
+          if (hasToolInContent && cleanedOf !== null) fullContent = cleanedOf;
+          else if (hasToolInReasoning && cleanedOf !== null) fullReasoning = cleanedOf;
+          if (hasEmptyArgs) {
+            // 逐个别补救（原地补参、保留原 id → 配对完整），未补到的才追加为新调用
+            const recovered = new Map(parsed.map((p) => [p.name, p]));
+            for (const tc of toolCallAcc) {
+              if (!isEmptyArgSub(tc)) continue;
+              const nm = tc.function?.name || '';
+              if (nm && recovered.has(nm)) {
+                tc.function!.arguments = recovered.get(nm)!.arguments;
+                recovered.delete(nm);
+              }
+            }
+            for (const p of recovered.values()) {
+              toolCallAcc.push({ id: p.id, function: { name: p.name, arguments: p.arguments } } as DeltaToolCall);
+            }
+          } else {
+            for (const tc of parsed) {
+              toolCallAcc.push({ id: tc.id, function: { name: tc.name, arguments: tc.arguments } } as DeltaToolCall);
+            }
+          }
+          if (skipped.length > 0) skippedArgToolsSub = [...new Set([...skippedArgToolsSub, ...skipped])];
           if (toolCallAcc.length > 0) {
             emit(task, { type: 'tool_call', toolCalls: [...toolCallAcc], subAgentId: resolvedId });
           }
@@ -2858,6 +3065,20 @@ async function runSubAgent(
 
       // 无工具调用 → 子智能体完成
       if (toolCallAcc.length === 0) {
+        // ★ 「只写了工具名、没写参数体」优先于"完成"（与主循环同口径）：这不是做完了，
+        //   是模型忘了给参数。给一条明确提示让它**只补参数重发**，而不是当成任务结束。
+        if (skippedArgToolsSub.length > 0 && step < subStepBudget - 1) {
+          const tip = `你只给出了工具名（${skippedArgToolsSub.join('、')}）但没有写出参数，因此这些调用**未被执行**。` +
+            `请重新输出完整调用，**必须带上参数体**，例如：\n` +
+            `[TOOL_CALL]{"name":"${skippedArgToolsSub[0]}","arguments":{"参数名":"参数值"}}[/TOOL_CALL]\n` +
+            `只补这一次参数即可，不要解释、不要重头再来。`;
+          const tipId = insertMessage(task.conversationId, task.userId, 'user', tip, {
+            parentToolCallId, subAgentId: resolvedId, subAgentName, subAgentDepth: depth + 1,
+          });
+          emit(task, { type: 'message:added', message: { id: tipId, role: 'user', content: tip, parentToolCallId, subAgentId: resolvedId, subAgentName, subAgentDepth: depth + 1 } });
+          skippedArgToolsSub = [];
+          continue;
+        }
         emit(task, { type: 'sub_agent:end', agentId: resolvedId, agentName: subAgentName, parentToolCallId });
         return fullContent || '(无输出)';
       }
@@ -2927,7 +3148,40 @@ async function runSubAgent(
         });
         emit(task, { type: 'message:added', message: { id: toolMsgId, role: 'tool', content: cappedResult, toolCallId: tc.id, parentToolCallId, subAgentId: resolvedId, subAgentName, subAgentDepth: depth + 1 } });
       }
+    }  // ← 子智能体单批步数循环
+
+    // ★★★ 达单批上限 → 决策是否接力下一批（对齐主循环；见函数头 P1-1 注释）。
+    //   子智能体的接力**不向用户抛总结消息**（用户看的是父智能体的产出），
+    //   只在内部续一批；轮次上限 subAutoRounds 保证不会无限跑。
+    if (subBatch < subAutoRounds && !task.abortController.signal.aborted) {
+      let shouldContinue = false;
+      try {
+        const hist = loadSubAgentMessages(task.conversationId, parentToolCallId).filter(m => m.content || m.toolCalls || m.role === 'tool');
+        const history: Message[] = hist.map(m => ({
+          id: m.id, conversationId: '', role: m.role,
+          content: m.content, toolCalls: m.toolCalls,
+          toolCallId: m.toolCallId, createdAt: m.createdAt,
+        }));
+        // kind='main' → 带 CONTINUE 自评指令（子智能体接力同样需要模型自评"还有活没干完"）
+        const r = await summarizeOnMaxSteps(client, systemPrompt, history, subStepBudget, 'main');
+        shouldContinue = r.shouldContinue;
+        if (r.text) {
+          // 总结落库在**子智能体自己的上下文**里（带 parentToolCallId），
+          // 既让接力轮看得到"上一批做到哪"，也不污染父智能体的消息流。
+          const sumId = insertMessage(task.conversationId, task.userId, 'assistant', r.text, {
+            parentToolCallId, subAgentId: resolvedId, subAgentName, subAgentDepth: depth + 1,
+          });
+          emit(task, { type: 'message:added', message: { id: sumId, role: 'assistant', content: r.text, parentToolCallId, subAgentId: resolvedId, subAgentName, subAgentDepth: depth + 1 } });
+        }
+      } catch { /* 总结失败 → 不接力（保守） */ }
+      if (shouldContinue) {
+        emit(task, { type: 'sub_agent:continuation', agentId: resolvedId, agentName: subAgentName, parentToolCallId, round: subBatch + 1, maxRounds: subAutoRounds });
+        subStepBudget = maxSteps; // 重置单批预算，继续外层批次
+        continue;
+      }
     }
+    break; // 不接力 → 退出批次循环，走下面的收尾
+    }  // ← 子智能体批次循环
 
     emit(task, { type: 'sub_agent:end', agentId: resolvedId, agentName: subAgentName, parentToolCallId });
     // 达到最大步数：先请模型总结进展再返回给父智能体（父智能体可基于总结决策下一步），
@@ -2974,8 +3228,8 @@ async function summarizeOnMaxSteps(
       llmMessages.push({ id: 'sys', conversationId: '', role: 'system', content: systemPrompt, createdAt: 0 });
     }
     llmMessages.push(...history);
-    // CONTINUE 行只对主循环有意义（子智能体不自动接力，由父智能体决策）；
-    // 但统一要求输出也无害，解析时按 kind 决定是否采纳。
+    // CONTINUE 行：主循环与**子智能体接力**都需要（子智能体接力由 runSubAgent 调用，传 kind='main'
+    // 以拿到 CONTINUE 自评；真正返回给父智能体的收尾总结仍传 kind='sub'，只要正文）。
     const continueInstruction = kind === 'main'
       ? '\n\n最后另起一行输出 CONTINUE: yes 或 CONTINUE: no —— 如果你的任务目标**还没全部完成、且不需要用户补充信息**就能继续做，输出 yes；若任务已完成、或必须等用户提供信息/做决定才能继续，输出 no。这一行必须是最后一行，格式严格为 `CONTINUE: yes` 或 `CONTINUE: no`。'
       : '';
@@ -3422,6 +3676,28 @@ export function buildSystemPromptForBackend(agentId: string | null, userId: stri
         ].join('\n'));
       }
     } catch { /* 规则读取失败不影响任务（缺文件是常态） */ }
+  }
+
+  // ★★★ 开发模式（/code，绑定代码编写助手）专属：工程记忆的读写约定。
+  //
+  // 为什么单独加（2026-09-29，对齐 CodeBuddy 的"项目长期记忆"）：
+  //   开发场景真正需要被记住的不是"流水账"，而是**工程事实**——
+  //   项目结构、构建/测试/启动命令、包管理器、代码风格约定、已知的坑。
+  //   这些每轮重新探索一遍会白白烧掉大量步数（长任务里尤其致命）。
+  //   把「往哪写、什么时候读、写什么」讲清楚，工程记忆才会真正积累起来。
+  if (agentId === 'a_builtin_code_agent') {
+    parts.push([
+      '---',
+      '## 工程记忆（本模式专属）',
+      '你有一个随空间/工作目录共享的长期记忆（`api_space_memory_read` / `api_space_memory_append`）。',
+      '**开工前先读它**：若里面有本项目的工程记忆，直接采用，不要重新探索；与当前代码冲突时以代码为准并更新记忆。',
+      '**收尾时写它**（只写"下次还用得上"的，一条一行，简洁）：',
+      '- 项目结构：语言/框架/构建工具/包管理器（一句话）',
+      '- 关键命令：构建、测试、启动、lint（写实际可用的完整命令）',
+      '- 约定：目录分层、命名、错误处理与横切能力的接入位置（认证/日志/异常在哪）',
+      '- 已知坑：踩过的坑与规避方式（**这条最有价值，务必写**）',
+      '不要写：本次改了哪些文件的流水账（那属于任务计划与交付报告，不属于工程记忆）。',
+    ].join('\n'));
   }
 
   // 产物目录规范：直接把解析好的目录交给模型，省掉模型自己拼「日期-任务名」的出错空间。

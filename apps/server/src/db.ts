@@ -1191,6 +1191,30 @@ const CODE_AGENT_BUILTIN_TOOLS = [
   'call_agent', 'list_sub_agents', 'spawn_subagent', 'list_models',
   // 任务拆解与用户交互
   'task_plan', 'task_step', 'ask_user', 'confirm_user',
+  // ── API 能力（2026-09-29 补）─────────────────────────────────────────────
+  //
+  // ★★★ 为什么必须补：本清单此前**没有任何 `api_*`**，而 `buildToolsForBackend` 的
+  //   `alwaysApiTools` 兜底**只在 `mountedApiTools` 为空时才触发** —— 本智能体挂了 20+ 内置工具
+  //   → `mountedApiTools` 非空 → 兜底永不生效 → 开发模式**看不到任何 API 工具**。
+  //   后果（实测）：默认助手挂上了整套自举工具集（见 DEFAULT_AGENT_BUILTIN_TOOLS），
+  //   但**开发模式一个都拿不到** —— 「发现缺能力 → 自造工具 / 自装 skill」这条闭环对开发模式是空的；
+  //   空间记忆读写也没有 → 长任务的结论无法沉淀、接力时读不到。
+  //
+  // ★ `get_api_tools` 是「按需发现」的总入口：模型按模块名查到 API 工具的
+  //   name/description/inputSchema 再按需调用，不必把上百个工具全塞进上下文。
+  'get_api_tools',
+  // 空间记忆：开发模式的工程记忆（结构/约定/坑）与任务进展靠它沉淀与回读
+  'api_space_memory_read', 'api_space_memory_append',
+  // 自造工具（Node 沙箱 / Python 子进程）并立即调用 —— 对标 CodeBuddy「缺能力就自己写一个」
+  'api_custom_tool_list', 'api_custom_tool_get',
+  'api_custom_tool_create', 'api_custom_tool_update', 'api_custom_tool_execute',
+  // 技能：查 / 造 / 改 / 从商城装（缺方法论时先找再装，而不是硬做）
+  'api_skill_list', 'api_skill_get',
+  'api_skill_create', 'api_skill_update',
+  'api_marketplace_sources', 'api_marketplace_browse',
+  'api_tool_install', 'api_skill_install',
+  // 把造出来 / 装好的东西挂到智能体
+  'api_agent_mount',
 ];
 /** 架构师 skill：需求架构 / 横切统一 / 接口契约 / 评审 / Git / 文档 */
 const CODE_AGENT_SKILL_IDS = [
@@ -1780,7 +1804,9 @@ export const seedAgents: Array<Record<string, unknown>> = [
     system_prompt: CODE_AGENT_SYSTEM_PROMPT,
     // 内置定义由代码收敛：工具挂载/提示词以代码为准，强制同步旧库残留
     force_sync: true,
-    config_json: JSON.stringify({ maxReActSteps: 40 }),
+    // 架构师职责 = 委派 + 验收 + 集成，步数要够一次完整开发；配合子智能体自动接力（见 runSubAgent）。
+    // 原 40 步对"勘查 → 设计 → 派 3~4 个子智能体 → 验收 → 打回重派"明显偏紧。
+    config_json: JSON.stringify({ maxReActSteps: 80, autoContinueMaxRounds: 2 }),
   },
   {
     // 短剧导演助手：小说/创意方向 → 设定集 + 分集大纲 + 分镜表 + 视频提示词 + 可选成片生产

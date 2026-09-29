@@ -130,6 +130,18 @@ const hoisted = vi.hoisted(() => {
 
   class MockContextWindow {
     constructor(private w: number, private r: number) {}
+    /**
+     * ★★★ 2026-09-29 修：mock 必须提供 `forContextWindow` 静态方法。
+     *
+     * 背景：主链路改用 `ContextWindow.forContextWindow(...)`（把模型上下文窗口换算成触发阈值）
+     * 后，这个**白名单式 mock** 只提供了 `new ContextWindow()` 的实例方法 →
+     * `forContextWindow is not a function` → 任务一启动就 failed。
+     *
+     * ★ 教训（值得写进测试基建约定）：`vi.mock('@yan-zhi/core', () => ({...}))` 这种
+     *   **手工白名单**极其脆弱 —— 生产代码每加一个导出，所有踩到它的测试就会**静默失同步**
+     *   （表现为"任务 failed"，看不出是 mock 缺字段）。看到这类失败先查 mock 清单，别查业务逻辑。
+     */
+    static forContextWindow(_ctxWin: number, keepRecent = 6) { return new MockContextWindow(8000, keepRecent); }
     needsCompression(_m: any[]) { return false; }
     compress(m: any[]) { return m; }
     setSummaryModel(_p: any, _m: any) {}
@@ -149,6 +161,10 @@ vi.mock('@yan-zhi/core', () => ({
   getToolRegistry: () => ({ has: () => false, get: () => undefined, names: () => [], execute: async () => { throw new Error('no tool'); } }),
   getApiToolRegistry: () => new Map(),
   ContextWindow: hoisted.MockContextWindow,
+  // ★ 手工白名单 mock 的代价：生产代码每加一个被主链路用到的导出，这里就得同步补一个，
+  //   否则测试报"任务 failed"（看不出是 mock 缺字段）。2026-09-29 补 adviceForTruncatedArgs。
+  adviceForTruncatedArgs: () => ({ truncated: false, message: '' }),
+  resolveContextWindow: (n: any) => (typeof n === 'number' && n > 0 ? n : 32768),
 }));
 vi.mock('../src/mcp/index.js', () => ({ ensureToolsInitialized: () => {} }));
 vi.mock('../src/mcp/api-tool-executor.js', () => ({ executeApiTool: vi.fn(), SUPPORTED_API_TOOLS: [] }));

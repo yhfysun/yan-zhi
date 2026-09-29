@@ -77,7 +77,11 @@ export interface MemoryInjectionConfig {
 
 const DEFAULT_INJECTION_CONFIG: MemoryInjectionConfig = {
   enabled: true,
-  tokenBudget: 600,
+  // ★ 2026-09-29：600 → 1200。600 token 对**开发/长任务**场景明显偏小 ——
+  //   工程事实（结构/命令/约定/坑）与任务决策很容易超过 600 token，
+  //   超限即按优先级丢弃最新内容（见 formatSpaceMemoryContext 的按行优先级选取），
+  //   表现为"刚交代过的约定下一轮就忘了"。1200 仍远小于常见模型窗口，代价可接受。
+  tokenBudget: 1200,
   topK: 12,
   weights: { rel: 0.55, rec: 0.30, type: 0.15 },
   taus: { session: 3, daily: 5, agent: 30, profile: 30 },

@@ -55,6 +55,20 @@ function anchor(code: string, needle: string, label: string): number {
   return i;
 }
 
+/**
+ * 取「从锚点开始的一段源码窗口」（供 within-file 断言）。
+ *
+ * ★★★ 必须写成 `slice(i, i + len)`（2026-09-29 修）：
+ *   此前本文件多处调用了一个**从未定义**的 `win()`，导致 5 条断言直接报
+ *   `win is not defined` —— 测试**从来没真正跑通过**（静态断言"写了但没跑"等于没写）。
+ *   顺带把另一个本项目踩过多次的坑固化在这里：`slice(i, len)` 的第二个参数是 **end 下标**，
+ *   锚点在 10 万字符处时 `end=len` 远小于 `start` → 返回**空串** → 断言全假红且像真缺陷。
+ */
+function win(code: string, needle: string, len: number, label: string): string {
+  const i = anchor(code, needle, label);
+  return code.slice(i, i + len);
+}
+
 // ────────────────────────────────────────────────────────────
 describe('① 任务计划必须回注提示词（长任务"接力棒"）', () => {
   it('★★ buildSystemPromptForBackend 必须注入「当前任务计划（接力棒）」', () => {

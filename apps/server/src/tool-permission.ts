@@ -118,6 +118,14 @@ const WRITE_TOOLS = new Set([
   // ★ 成对登记：create 与 update、install 与 create 都要在，不能只登记"看起来更危险"的那个 ——
   //    半开状态（能装不能改）既难理解又同样是越权。
   'api_custom_tool_create', 'api_custom_tool_update', 'api_custom_tool_delete', 'api_custom_tool_toggle',
+  // ★★★ api_custom_tool_execute（2026-09-29 补登记，**第 4 次同类事故**）：
+  //   它执行的是**用户/模型自定义工具**的代码（Node 沙箱或 Python 子进程）——
+  //   沙箱虽屏蔽 require/process，但 python 分支可读写工作目录内的文件（file_write 同性质），
+  //   且自定义工具本身可声明依赖、产出文件 → **副作用无法静态判定**，必须按写类处理。
+  //   ★ 为什么又漏了：它名字里是 execute（不是 create/update/delete），
+  //     且"执行一个工具"听起来像正常动作 —— 与 api_message_send / api_ollama_delete 同一类陷阱。
+  //   ⇒ 判据（第三次重申）：**按实现判读写，不按名字判**；execute 就是"跑代码"，等于写。
+  'api_custom_tool_execute',
   'api_skill_create', 'api_skill_update', 'api_skill_delete', 'api_skill_toggle', 'api_skill_install',
   'api_tool_install',
   'api_agent_create', 'api_agent_update', 'api_agent_delete', 'api_agent_mount',

@@ -18,12 +18,50 @@ export function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-/** 简单 token 估算（中文按 1.5 字/token，英文按 0.25 词/token） */
+/**
+ * 简单 token 估算（用于上下文压缩阈值判定、记忆注入预算、前端用量展示）。
+ *
+ * ★★★ 2026-09-29 修正 —— 此前对「无空格文本」几乎不计数，是本项目一个**系统性低估 bug**：
+ *
+ *   旧实现：`Math.ceil(cjk * 1.5 + words * 0.25)`，其中 words = 非中文部分按 `\s+` 切分。
+ *   问题：代码 / JSON / 日志 / base64 / 长路径**几乎没有空格**，整段被当成"1 个词"，
+ *   只算 0.25 token —— 实测 `'x'.repeat(20000)` → **1 token**（真实约 5000 token，低估 **5000 倍**）。
+ *
+ *   后果链（这正是"上下文压缩几乎永不触发"的真正主因，比阈值口径错误更根本）：
+ *     压缩判据 = `tokenCount(messages) > maxTokens`，而 tokenCount 用的是本函数 →
+ *     长任务里绝大部分内容是中文对话 + 英文代码/工具输出 → 估算值远低于真实值 →
+ *     **阈值永远达不到** → 上下文无限膨胀 → 上游 400 或模型被长上下文拖垮。
+ *
+ *   新实现按**字符类别**分别计价（cjk / 其他非 ASCII / ASCII）：
+ *     · 中文等 CJK：1 字 ≈ 1.5 token（保留原口径）
+ *     · 其他非 ASCII（日文/韩文/符号/emoji）：1 字 ≈ 1 token
+ *     · ASCII 字母数字：**4 字符 ≈ 1 token**（对代码/JSON/日志/base64 都成立）
+ *     · ASCII 空白与标点：8 字符 ≈ 1 token（更廉价）
+ *   这是**保守估计**（宁可高估 → 早点压缩；压缩早了只是浪费一点摘要，压缩晚了直接 400）。
+ *
+ *   ★ 为什么不再按"词数"算：词数模型只对**自然语言散文**成立，而本产品里真正吃 token 的
+ *     恰恰是代码与工具输出。**换了统计口径后必须同步复核调用方阈值**（已查：压缩阈值按
+ *     `contextWindow × 0.5` 换算，估算变准后触发点更接近真实窗口的 50%，语义正确）。
+ */
 export function estimateTokens(text: string): number {
   if (!text) return 0;
-  const cjk = (text.match(/[\u4e00-\u9fff]/g) || []).length;
-  const words = text.replace(/[\u4e00-\u9fff]/g, '').split(/\s+/).filter(Boolean).length;
-  return Math.ceil(cjk * 1.5 + words * 0.25);
+  let cjk = 0;      // CJK 汉字
+  let nonAscii = 0; // 其他非 ASCII（假名/谚文/符号/emoji）
+  let asciiWord = 0; // ASCII 字母数字
+  let asciiSpace = 0; // ASCII 空白与标点
+  for (const ch of text) {
+    const code = ch.codePointAt(0)!;
+    if (code > 0xffff) { nonAscii++; continue; } // emoji 等代理对
+    if (code >= 0x4e00 && code <= 0x9fff) cjk++;
+    else if (code > 0x7f) nonAscii++;
+    else if (
+      (code >= 48 && code <= 57) ||   // 0-9
+      (code >= 65 && code <= 90) ||   // A-Z
+      (code >= 97 && code <= 122)     // a-z
+    ) asciiWord++;
+    else asciiSpace++;
+  }
+  return Math.ceil(cjk * 1.5 + nonAscii * 1 + asciiWord / 4 + asciiSpace / 8);
 }
 
 /** 安全 JSON 解析 */
