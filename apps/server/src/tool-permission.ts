@@ -47,6 +47,61 @@ const WRITE_TOOLS = new Set([
   // ★ 必须列进写清单：它既改库（space.task_type）又**在用户磁盘上建目录**，
   //   只读会话里放行等于绕过了"不许写"的约束。
   'api_space_set_task_type',
+  // —— 记忆库写入 ——
+  // ★★ 2026-09-29 自检（tools/audit-safety-gates.cjs）发现：这两个是**写库**操作
+  //    （`INSERT INTO memory` / `DELETE FROM memory`），名字也明确是 create/delete，
+  //    却**没进本清单** → 只读会话里可执行 → 又一次"写着只读实则可写"。
+  //    更值得注意的是：它们出现在 `buildToolsForBackend` 的 **alwaysApiTools**（无条件暴露给
+  //    *所有* 智能体），所以影响面比"某个智能体漏登记"更大 —— 任何智能体在任何只读会话里都能写到。
+  //    ★ 这是本项目**第三次**同类事故（前两次：api_space_set_task_type、api_space_memory_append）。
+  //      三者共同点：名字看着"只是个查询/普通操作"，实际写库；且**没人去数挂载清单**。
+  // ★ 与之成对的读类（api_memory_search / api_memory_list）**不进**本清单（只读应放行），
+  //   它们已在 checkToolPermission 的兜底分支正确放行 —— 成对工具要逐个判，别"一对全登记"。
+  'api_memory_create', 'api_memory_delete',
+
+  // —— ★★ 配置类增删改（2026-09-29 自检补登记，共 20 个）——
+  //
+  // 【为什么这批以前没登记也不会"被用到"】它们**都不在智能体的挂载清单里**，
+  //   平时不会出现在模型的工具面上。但这**不等于安全**，两条路径仍能触达：
+  //     ① `get_api_tools` 是"按需发现"入口 —— 模型可以主动查询模块清单、
+  //        拿到 name/description/inputSchema 后**直接调用**（执行时不校验"有没有挂载"）；
+  //     ② 运行时拦截（executeTool:1831 的 checkToolPermission）**只认本清单** ——
+  //        没登记的写工具在只读会话里会被兜底放行。
+  //   → 所以"没挂载"只是"平时看不见"，不是权限边界。**权限边界必须是本清单。**
+  //
+  // 【逐条确认过实现，都是真写】核对手法：抽 `api-tool-executor.ts` 里对应 case 体，
+  //   看有没有 `INSERT INTO` / `UPDATE ... SET` / `DELETE FROM` / 写盘 / 卸载动作。
+  //   ★ 其中两个名字不含 create/update/delete 但同样是写，**最容易漏**：
+  //     · `api_kb_builtin_guide_reset` → `resetBuiltinAppGuide()` 重置知识库内置指南
+  //     · `api_ollama_delete`         → `deleteOllamaModel()` 删除本地模型文件
+  //   ⇒ 判据：**别按名字判读写，按实现判**。
+  //
+  // 【成对口径】只登记写的一半：读类（*_list / *_get / *_search）**不进**本清单
+  //   （只读会话应放行）；但 create 与 update 必须成对（半开状态既难理解也同样是越权）。
+  // 会话
+  'api_conversation_create', 'api_conversation_update', 'api_conversation_delete',
+  'api_conversation_file_delete',
+  'api_message_delete',
+  // ★ api_message_send：往会话里**插入消息**（INSERT INTO message + UPDATE conversation.updated_at）。
+  //   它属于"以用户身份发言"的写操作，只读会话里不该放行。
+  //   ★ 最容易漏的一类：名字是 send（不是 create/update），而且"发消息"看起来像正常动作 ——
+  //     判据仍是**按实现判**（有 INSERT 就是写），不是按名字判。
+  'api_message_send',
+  // 知识库
+  'api_kb_builtin_guide_reset',
+  // MCP 服务
+  'api_mcp_server_create', 'api_mcp_server_update', 'api_mcp_server_delete', 'api_mcp_tool_toggle',
+  // 平台 / 模型
+  'api_platform_create', 'api_platform_update', 'api_platform_delete',
+  'api_model_create', 'api_model_update', 'api_model_delete',
+  // 本地模型（Ollama）：delete 会移除本地模型文件
+  'api_ollama_delete',
+  // 插件：set_config 改配置、uninstall 卸载
+  'api_plugin_set_config', 'api_plugin_uninstall',
+  // 定时任务
+  'api_scheduled_task_create', 'api_scheduled_task_update', 'api_scheduled_task_delete',
+  // 空间
+  'api_space_create', 'api_space_update', 'api_space_delete',
   // —— 空间记忆追加：在用户磁盘上写 MEMORY.md / progress.md（写副作用）——
   // ★ 与 api_space_memory_read 成对出现，一个读一个写，**不能只登记读的那个**：
   //   read 在 READONLY_SAFE_TOOLS 白名单里（正确），append 若不登记就是"写着只读实则可写"。
