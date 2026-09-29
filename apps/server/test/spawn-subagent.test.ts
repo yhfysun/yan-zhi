@@ -284,3 +284,62 @@ describe('⑩ 沉淀建议链路（原本是死代码）', () => {
     expect(body, '★ 未截断（长指令前缀差异会掩盖同类）').toMatch(/slice\(0, 24\)/);
   });
 });
+
+// ────────────────────────────────────────────────────────────
+describe('⑪ WRITE_TOOLS 闸门清单不得漏登记（本项目已犯 3 次）', () => {
+  it('★★★ api_memory_create/delete 必须登记（它们在 alwaysApiTools，无条件暴露给所有智能体）', () => {
+    // 这是最严重的一处：不只是"某个智能体漏挂"，而是 `buildToolsForBackend` 的
+    // alwaysApiTools —— 任何智能体在任何只读会话里都能往记忆库 INSERT / DELETE。
+    const raw = read('apps/server/src/tool-permission.ts');
+    const seg = raw.slice(raw.indexOf('const WRITE_TOOLS'), raw.indexOf('const WRITE_TOOLS') + 14000);
+    expect(seg, '★ 只读会话可写记忆库').toContain("'api_memory_create'");
+    expect(seg, '★ 只读会话可删记忆库').toContain("'api_memory_delete'");
+  });
+
+  it('★★★ 名字不像写类但实现是写的，必须按实现登记', () => {
+    const raw = read('apps/server/src/tool-permission.ts');
+    const seg = raw.slice(raw.indexOf('const WRITE_TOOLS'), raw.indexOf('const WRITE_TOOLS') + 14000);
+    // 三个"名字骗人"的：send（实为 INSERT）/ reset（实为重置指南）/ delete 模型文件
+    expect(seg, '★ api_message_send 漏登记（实现有 INSERT INTO message）').toContain("'api_message_send'");
+    expect(seg, '★ api_kb_builtin_guide_reset 漏登记').toContain("'api_kb_builtin_guide_reset'");
+    expect(seg, '★ api_ollama_delete 漏登记（会删本地模型文件）').toContain("'api_ollama_delete'");
+  });
+
+  it('★★ 配置类增删改必须成对登记（半开状态同样是越权）', () => {
+    const raw = read('apps/server/src/tool-permission.ts');
+    const seg = raw.slice(raw.indexOf('const WRITE_TOOLS'), raw.indexOf('const WRITE_TOOLS') + 14000);
+    for (const prefix of ['api_platform', 'api_model', 'api_space', 'api_scheduled_task', 'api_mcp_server']) {
+      expect(seg, `★ ${prefix}_create 漏登记`).toContain(`'${prefix}_create'`);
+      expect(seg, `★ ${prefix}_delete 漏登记`).toContain(`'${prefix}_delete'`);
+    }
+  });
+
+  it('★★ 读类不得被误登记（只读会话必须能查）', () => {
+    const raw = read('apps/server/src/tool-permission.ts');
+    const seg = raw.slice(raw.indexOf('const WRITE_TOOLS'), raw.indexOf('const WRITE_TOOLS') + 14000);
+    for (const n of ['api_memory_search', 'api_memory_list', 'api_ollama_list', 'api_space_list', 'api_plugin_get']) {
+      expect(seg, `★ 读类 ${n} 被误登记为写 → 只读会话查不了`).not.toContain(`'${n}'`);
+    }
+  });
+
+  it('★ 必须留下"未挂载≠安全"的判据说明（防后人又按"有没有挂载"判断）', () => {
+    const raw = read('apps/server/src/tool-permission.ts');
+    expect(raw, '★ 未说明为何未挂载也要登记').toMatch(/没挂载|未挂载/);
+  });
+});
+
+describe('⑫ 安全闸自检工具必须存在（可复用）', () => {
+  it('★★ 必须有 audit-safety-gates 与 verify-tool-permission', () => {
+    const audit = read('tools/audit-safety-gates.cjs');
+    expect(audit, '★ 缺 fail-open 检查').toMatch(/fail-open/);
+    const verify = read('tools/verify-tool-permission.cjs');
+    expect(verify, '★ 缺"必须被拒"清单').toMatch(/MUST_REJECT/);
+    expect(verify, '★ 缺"必须放行"清单（漏了会误伤只读会话）').toMatch(/MUST_ALLOW/);
+  });
+
+  it('★★ 自检工具的"实现是否写"必须按 case 边界切（固定长度会跨 case 产生假阳性）', () => {
+    const audit = read('tools/audit-safety-gates.cjs');
+    expect(audit, '★ 未按 case 边界切分（实测 10 个候选里 9 个是这么来的假阳性）')
+      .toMatch(/nextCase|case '/);
+  });
+});

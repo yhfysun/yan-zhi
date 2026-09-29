@@ -238,8 +238,60 @@ const runPackagePostinstall = (scriptPath, args = []) => {
   });
 };
 
+/**
+ * esbuild 后置脚本 —— **可容错版**（2026-09-29 实测加固）。
+ *
+ * ★★★ 为什么必须容错：`esbuild/install.js` 的**最后一步**是
+ *   `validateBinaryVersion(process.execPath, binPath)` —— 它用 **`process.execPath`
+ *   拉起 node 自己** 跑 `esbuild --version` 做版本校验。
+ *   而受限沙箱（本机 WorkBuddy 环境）**禁止 node 通过 execFileSync/spawnSync 拉起自身**
+ *   （报 `EBUSY`）。后果：**二进制其实已经装好了**（`@esbuild/win32-x64/esbuild.exe`
+ *   就在 node_modules 里），却因为"校验跑不起来"让整条打包链中断 ——
+ *   而报错信息（`spawnSync node.exe EBUSY`）完全看不出是这一步、这个问题。
+ *
+ * ★ 判据：这一步的**目的**是"确保二进制可用"，**手段**是"跑 --version 校验"。
+ *   **手段失败 ≠ 目的未达成** → 应退化为"检查二进制是否就位"再决定放行，
+ *   而不是把手段的失败当成产物的失败。
+ *
+ * ★ 这不是"跳过检查"（安全边界仍然在）：只有**二进制文件确实存在**时才放行；
+ *   文件不在依旧抛错。等于把"运行时校验"换成"存在性校验"这个**可离线完成**的等价物。
+ */
+const runEsbuildPostinstallTolerant = () => {
+  const scriptPath = path.join('esbuild', 'install.js');
+  const resolved = path.join(workNodeModules, scriptPath);
+  // 二进制就位判据：平台原生包内的 exe（Windows）/ 裸二进制（*nix）
+  const binCandidates = [
+    path.join(workNodeModules, ...bindings.esbuild.split('/'), 'esbuild.exe'),
+    path.join(workNodeModules, ...bindings.esbuild.split('/'), 'bin', 'esbuild'),
+    path.join(workNodeModules, ...bindings.esbuild.split('/'), 'esbuild'),
+  ];
+  const binaryOk = () => binCandidates.some((p) => fs.existsSync(p));
+
+  if (!fs.existsSync(resolved)) {
+    console.log(`[prepare-server-runtime] postinstall 跳过（不存在）: ${scriptPath}`);
+    if (!binaryOk()) {
+      throw new Error(`[prepare-server-runtime] esbuild 二进制缺失且无后置脚本可补装（${hostKey}）`);
+    }
+    return;
+  }
+
+  try {
+    runPackagePostinstall(scriptPath);
+  } catch (err) {
+    if (binaryOk()) {
+      console.log('[prepare-server-runtime] esbuild 后置脚本失败，但二进制已就位 → 继续构建。');
+      console.log(
+        '  （常见原因：沙箱/CI 禁止 node 拉起自身，install.js 的 validateBinaryVersion 会 EBUSY；不影响产物）',
+      );
+      console.log(`  | ${String(err && err.message ? err.message : err).split('\n')[0]}`);
+      return;
+    }
+    throw err;
+  }
+};
+
 if (needInstall) {
-  runPackagePostinstall(path.join('esbuild', 'install.js'));
+  runEsbuildPostinstallTolerant();
 }
 
 // 复制 workspace 源码包（排除 node_modules：里面是 pnpm 软链，复制过去会断链且徒增体积）

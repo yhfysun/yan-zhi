@@ -27,11 +27,24 @@ const EDITION_CONFIG = {
 
 const EDITION_LABEL = { lite: '阉割版', basic: '基础版', pro: '高级版' };
 
-/** --separate 模式下各档的独立输出目录名。 */
+/**
+ * --separate 模式下各档的独立输出目录名。
+ *
+ * ★★ `YZ_SEPARATE_PREFIX` 可覆盖前缀（默认 `dist-release-`）——
+ *   用途：上一轮产物的 `resources/app.asar` 被句柄持有（杀软实时防护 / 残留进程）时，
+ *   electron-builder 会因**清不掉旧 appOutDir** 而中断（实测 `EBUSY`），
+ *   而 `YZ_ALL_OUT_DIR` 只作用于**非 separate** 模式，帮不上忙。
+ *   此时用 `YZ_SEPARATE_PREFIX=dist-release-x-` 让三档写到全新目录即可绕开，无需等锁释放。
+ *
+ *   ★ 为什么不是"删掉旧的再建"：旧 asar 连 `rename`/`unlink` 都失败（`EBUSY`），
+ *     但**能被覆盖写入** —— 所以"换目录"是唯一稳的绕法（官方脚本的报错提示也指向这条）。
+ *   ★ 默认值保持不变，向后兼容；`package.cjs` 也会透传该变量。
+ */
+const SEPARATE_PREFIX = process.env.YZ_SEPARATE_PREFIX || 'dist-release-';
 const SEPARATE_OUT = {
-  lite: 'dist-release-lite',
-  basic: 'dist-release-basic',
-  pro: 'dist-release-pro',
+  lite: `${SEPARATE_PREFIX}lite`,
+  basic: `${SEPARATE_PREFIX}basic`,
+  pro: `${SEPARATE_PREFIX}pro`,
 };
 
 /**

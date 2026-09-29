@@ -52,10 +52,15 @@ const EDITION_LABEL = { lite: '阉割版', basic: '基础版', pro: '高级版' 
  *   （见 moveOutDirsIn：按档位把输出目录内的全部条目移走，只保留已产出的 exe，
  *     因为那是交付物、不该动）。
  */
+// ★ `YZ_SEPARATE_PREFIX` 与 pack-helpers.cjs 的 SEPARATE_OUT 保持一致：
+//   旧产物被句柄持有（杀软扫描 / 残留进程）导致 EBUSY 时，用它换全新输出目录绕开。
+//   ★ 两个文件必须**同源**：这里算"要移走什么"，那边算"写到哪" —— 不一致会导致
+//     "移走了 A 却写到 B"（旧产物没清、新产物在别处），排障时极难看出。
+const SEPARATE_PREFIX = process.env.YZ_SEPARATE_PREFIX || 'dist-release-';
 const OUTPUT_DIRS = {
-  lite: 'dist-release-lite',
-  basic: 'dist-release-basic',
-  pro: 'dist-release-pro',
+  lite: `${SEPARATE_PREFIX}lite`,
+  basic: `${SEPARATE_PREFIX}basic`,
+  pro: `${SEPARATE_PREFIX}pro`,
 };
 
 const MOVABLE = [
