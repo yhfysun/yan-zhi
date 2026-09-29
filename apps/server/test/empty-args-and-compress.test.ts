@@ -55,6 +55,37 @@ describe('解析层空参防护：不产出"假空参"调用', () => {
     expect(r.skipped).toHaveLength(0);
   });
 
+  /**
+   * ★★★ 本组最重要的一条：**两种"空"的正确处置是相反的**（2026-09-29 第二次修正）。
+   *   我第一版把 `{}` 也跳过 —— 结果破坏了既有的**自纠链路**：
+   *   模型显式写 `{}` 时本该产出调用 → 由后端 missingRequiredArgs 回一条
+   *   "缺 query 参数，请重调 X" → 模型据此修正 → 任务继续（react-loop 场景2 守的就是它）。
+   *   跳过它会让模型**拿不到任何反馈**。
+   *   ⇒ 判据是「参数**键**是否存在」，不是「值是否为空对象」。
+   */
+  it('★★★ 显式写了空参数体（arguments:{}）→ 必须**照常产出**（交给后端回自纠提示）', () => {
+    const r = parseTextModeToolCalls('[TOOL_CALL]{"name":"python_exec","arguments":{}}[/TOOL_CALL]', defs);
+    expect(r.toolCalls, '★ 显式 {} 被跳过 → 模型拿不到"缺哪个参数"的反馈，无法自纠').toHaveLength(1);
+    expect(r.toolCalls[0].name).toBe('python_exec');
+    expect(r.skipped).toHaveLength(0);
+  });
+
+  it('★★★ XML 显式空对象（<function=x>{}</function>）同样必须产出', () => {
+    const r = parseTextModeToolCalls('<function=python_exec>{}</function>', defs);
+    expect(r.toolCalls).toHaveLength(1);
+    expect(r.skipped).toHaveLength(0);
+  });
+
+  it('★★ 同一工具多次调用（参数不同）必须全部保留 —— 不能按工具名去重', () => {
+    // 实测形态：一次输出两个 web_search（不同 query）。按名字去重会吃掉第二个。
+    const src = '[TOOL_CALL]{"name":"python_exec","arguments":{"code":"print(1)"}}[/TOOL_CALL]'
+      + '[TOOL_CALL]{"name":"python_exec","arguments":{"code":"print(2)"}}[/TOOL_CALL]';
+    const r = parseTextModeToolCalls(src, defs);
+    expect(r.toolCalls, '★ 同名不同参的调用被去重吃掉了').toHaveLength(2);
+    expect(JSON.parse(r.toolCalls[0].arguments).code).toBe('print(1)');
+    expect(JSON.parse(r.toolCalls[1].arguments).code).toBe('print(2)');
+  });
+
   it('反例对照：修复前的写法会把 `<function=x></function>` 变成 "{}"', () => {
     // 固定旧行为，证明这条缺陷真实存在（否则本组测试是自说自话）
     const oldXml = /<function\s*=\s*(\w+)\s*>\s*(\{[\s\S]*?\})?\s*<\/function>/gi;

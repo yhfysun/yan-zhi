@@ -56,6 +56,17 @@ import path from 'node:path';
 /** 工作流结果反写的 I/O 上限：反写本身很快，超时只为防异常挂住。 */
 const WORKFLOW_DELIVERY_TIMEOUT_MS = 30 * 1000;
 
+/**
+ * 单轮 ReAct 最大步数的**默认值**（智能体未配置 maxReActSteps 时生效）。
+ *
+ * ★ 2026-09-29：100 → 500（用户诉求「默认 500 步吧，50 步不太够啊」）。
+ *   实测长任务（《驭兽斋》有声小说多章流水线）跑满 100 步后仍有大量未完成步骤 ——
+ *   默认值偏小 → 频繁触顶 → 即使有自动接力也来回停顿，用户体感就是"老断"。
+ *   ★ 与 `clampMaxSteps` 的**上限**同为 500：默认即上限，语义是"没有理由时给足预算"。
+ *   注意别把"默认"和"下限"混淆 —— 用户显式配更小的值（如 30）必须尊重（快速迭代/省钱）。
+ */
+const DEFAULT_MAX_REACT_STEPS = 500;
+
 export type TaskStatus = 'running' | 'completed' | 'failed' | 'aborted' | 'paused';
 
 export interface SSEEvent {
@@ -674,14 +685,25 @@ function isAbortError(e: any): boolean {
  * 返回工具调用数组 + 清理后的 content + 被跳过的「只有名字没参数」的工具名。
  *
  * ★★★ 空参防护（2026-09-29，与 `client.ts:toApiMessage` 的主因修复配套）：
- *   模型**只输出工具名、没写出参数体**时（典型形态：`<function=python_exec></function>`，
- *   或被输出上限截断的 `[TOOL_CALL]{"name":"python_exec"}[/TOOL_CALL]`），
- *   此前会静默产出 `arguments: "{}"` —— 与「模型真的传了空对象」**不可区分**：
- *     ① 落库进 assistant.tool_calls → 下一轮回放时模型看到"自己上一轮参数为空"→ 模仿空参；
- *     ② 计入空转断路计数，但给不出"其实是没写参数"的准确诊断。
- *   现在：**仅当该工具确实声明了必填参数**时，记入 `skipped` 而**不产出调用**
- *   （由调用方提示模型补齐参数、不落空参历史）；
- *   无必填参数的工具（`list_sub_agents` 等）与"拿不到工具定义"的情况**保持原样产出** ——
+ *   ★★★ 必须区分两种"空"，它们的正确处置**相反**（2026-09-29 第二次修正，我第一版搞混了）：
+ *
+ *   (A) **模型显式写了空参数体** —— `[TOOL_CALL]{"name":"web_search","arguments":{}}[/TOOL_CALL]`。
+ *       → **照常产出调用**。理由：这是一次"意图明确但参数没给全"的调用，
+ *         放行后由 `missingRequiredArgs` 拦下并回一条**可自纠**的提示
+ *         （"缺 query 参数，请重调 web_search"）→ 模型据此修正 → 任务继续。
+ *         这是**既有且正确**的行为（react-loop 场景2/4 守护的正是它），
+ *         跳掉它反而会让模型拿不到任何反馈 → 只能干等或重说一遍。
+ *
+ *   (B) **模型根本没写出参数体** —— `<function=python_exec></function>`，
+ *       或被输出上限截断的 `[TOOL_CALL]{"name":"python_exec"}[/TOOL_CALL]`（连 `arguments` 键都没有）。
+ *       → 若该工具**声明了必填参数**，记入 `skipped` 而**不产出调用**。
+ *         理由：这不是"调用缺参"，而是**输出没生成完**。产出空参调用会被落库、
+ *         下一轮回放时被模型模仿成"原来可以不带参数"→ 自我强化退化。
+ *         交给调用方提示"请补上参数体重发"，比落一条空参历史干净。
+ *
+ *   ⇒ 判据是**参数键是否存在**（`arguments` 字段有没有），**不是值是否为空对象**。
+ *
+ *   无必填参数的工具（`list_sub_agents` 等）与"拿不到工具定义"的情况**一律照常产出** ——
  *   否则会把合法的无参调用误杀（这个副作用比假空参更严重）。
  */
 export function parseTextModeToolCalls(
@@ -690,24 +712,24 @@ export function parseTextModeToolCalls(
 ): {
   toolCalls: { id: string; name: string; arguments: string }[];
   cleanedContent: string;
-  /** 只写了工具名、没有参数体，**且该工具有必填参数** → 工具名列表（供调用方提示补齐） */
+  /** 只写了工具名、**连参数体都没写**（非"写了空对象"），且该工具有必填参数 → 工具名列表 */
   skipped: string[];
 } {
   const toolCalls: { id: string; name: string; arguments: string }[] = [];
   const skipped: string[] = [];
   /** 该工具是否声明了必填参数。拿不到定义时返回 false → 保守产出，绝不误杀无参工具。 */
   const needsArgs = (name: string) => missingRequiredArgs(toolDefs, name, {}).length > 0;
-  /** 判断解析出的参数是否为"空"（无 / 空对象，等价于没给参数） */
-  const isEmptyArgs = (v: any) =>
-    !v || (typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length === 0);
 
   // 大小写不敏感匹配 [TOOL_CALL]...[/TOOL_CALL]，容忍模型输出 [/toOL_CALL] 等变体
   const re = /\[TOOL_CALL\]\s*(\{[\s\S]*?\})\s*\[\/TOOL_CALL\]/gi;
   let m: RegExpExecArray | null;
   while ((m = re.exec(fullContent)) !== null) {
-    const parsed = parseLenientToolCall(m[1]);
+    const rawJson = m[1];
+    const parsed = parseLenientToolCall(rawJson);
     if (!parsed) continue;
-    if (isEmptyArgs(parsed.arguments) && needsArgs(parsed.name)) { skipped.push(parsed.name); continue; }
+    // ★ (B) 判据：原文里**根本没有 arguments 键**（不是"值为 {}"）→ 视为输出未生成完
+    const hasArgsKey = /"arguments"\s*:/.test(rawJson);
+    if (!hasArgsKey && needsArgs(parsed.name)) { skipped.push(parsed.name); continue; }
     toolCalls.push({
       id: `text_tc_${Date.now()}_${toolCalls.length}`,
       name: parsed.name,
@@ -718,12 +740,15 @@ export function parseTextModeToolCalls(
   const xmlRe = /<function\s*=\s*(\w+)\s*>\s*(\{[\s\S]*?\})?\s*<\/function>/gi;
   while ((m = xmlRe.exec(fullContent)) !== null) {
     const toolName = m[1];
+    // ★ (B) 判据：**参数体整体缺失**（`<function=x></function>`）→ 输出未生成完。
+    //   注意 `{}` 这种"显式空对象"仍算"写了参数体"，按 (A) 产出（让后端给自纠提示）。
+    if (!m[2] || !m[2].trim()) {
+      if (needsArgs(toolName)) { skipped.push(toolName); continue; }
+    }
     let args: any = {};
     if (m[2] && m[2].trim()) {
       try { args = JSON.parse(m[2]); } catch { args = parseLenientToolCall(m[2])?.arguments || {}; }
     }
-    // ★ 参数体缺失（`<function=x></function>`）或解析为空对象 → 若该工具需必填参数，不产出调用
-    if (isEmptyArgs(args) && needsArgs(toolName)) { skipped.push(toolName); continue; }
     toolCalls.push({
       id: `text_tc_${Date.now()}_${toolCalls.length}`,
       name: toolName,
@@ -1031,10 +1056,14 @@ async function runReActLoop(task: LlmTask, params: {
       reasoningEffort: options?.reasoningEffort !== undefined ? options.reasoningEffort : live.reasoningEffort,
     };
   };
-  /** 每轮的步数预算：显式传入 > 智能体现值 > 100 */
+  /** 每轮的步数预算：显式传入 > 智能体现值 > 500 */
   const liveMaxSteps = () => {
     const live = readLiveParams().maxReActSteps;
-    return params.maxSteps || live || 100;
+    // ★ 默认 100 → 500（2026-09-29 用户诉求：「默认 500 步吧，50 步不太够啊」）。
+    //   实测长任务（有声小说多章流水线）跑满 100 步仍有大量未完成步骤 →
+    //   默认值偏小会让任务**频繁触顶**，即使有自动接力也来回停顿。
+    //   上限仍是 500（见 clampMaxSteps），这里只是把"未配置时"的默认抬到上限。
+    return params.maxSteps || live || DEFAULT_MAX_REACT_STEPS;
   };
   // 当前轮的助手占位消息 id：LLM 调用失败（429/超时/网络错误等）时把错误写进该占位消息落库，
   // 否则刷新后占位消息内容为空，用户看不到"调用失败"的痕迹。
@@ -1216,6 +1245,23 @@ async function runReActLoop(task: LlmTask, params: {
 
     // 连续「参数为空」的工具调用计数：用于空转断路（见循环内对 consecutiveArgFailures 的处理）
     let consecutiveArgFailures = 0;
+    /**
+     * 「判定为空转退化」的连续空参步数阈值。
+     *
+     * ★★★ 必须由**同一个常量**同时供两处使用（2026-09-29 修，high）：
+     *   · 断路器（循环内）：达到本阈值 → 停机并给诊断；
+     *   · 接力闸门（循环外）：达到本阈值 → 拒绝接力。
+     *
+     *   此前两处**各写各的**：断路器判 `>= 3`，接力闸门判 `> 0` ——
+     *   后果是**末尾只要有一次空参就否决接力**，即使任务跑了 100 步、
+     *   即使计划里还剩 7 个未完成步骤。用户看到的是自相矛盾的一句
+     *   「（未自动续跑：任务计划尚有 7 个未完成步骤）」：reason 说"该继续"、闸门说"不许"。
+     *   实测（生产库 aaa84c6c 会话）：22:03 起跑满 100 步 → 末尾一次空参 → 接力被拒 → 任务终止。
+     *
+     *   ★ 判据：**同一个语义在两处判定，就必须共享同一个常量**。
+     *     各写一遍字面量必然漂移，而且这种漂移**不报错**，只表现为"功能时好时坏"。
+     */
+    const EMPTY_ARGS_DEGENERATE_THRESHOLD = 3;
     // 「只写了工具名、没写参数体」且该工具声明了必填参数 → 文本模式解析时记到这里，
     // 在本轮末尾给模型一条**准确**提示（"你只给了工具名，缺参数"，而不是误导成"输出被截断"）。
     // 见 parseTextModeToolCalls 的空参防护注释。
@@ -1473,15 +1519,21 @@ async function runReActLoop(task: LlmTask, params: {
             if (hasToolInReasoning && (sources.length === 0 || fullReasoning !== fullContent)) sources.push(fullReasoning);
             // 原模原样保留模型原始输出（content/reasoning 不做剥离），仅解析出结构化 toolCalls；
             // 前端展示时再隐藏工具块，模型下一轮也能看到自己上一轮的原始调用文本
-            // 多个来源合并：按工具名去重（同名以**先出现**者为准，避免重复 push）
+            //
+            // ★★★ 去重键必须是「工具名 + 参数」而**不是**只按工具名（2026-09-29 修，我引入的回归）：
+            //   同一批里**同一工具被合法调用多次（参数不同）**是常见形态 ——
+            //   实测场景：一次输出两个 web_search（"2026年手机推荐" + "旗舰对比评测"）。
+            //   只按名字去重会把第二个**直接吃掉** → 用户少搜一半、模型也困惑。
+            //   只有"名字与参数完全相同"才是同一次调用的重复解析（多来源合并时的真实重复）。
             const parsed: { id: string; name: string; arguments: string }[] = [];
             const skipped: string[] = [];
-            const seenNames = new Set<string>();
+            const seenKeys = new Set<string>();
             for (const src of sources) {
               const r = parseTextModeToolCalls(src, toolsBuilt);
               for (const tc of r.toolCalls) {
-                if (seenNames.has(tc.name)) continue;
-                seenNames.add(tc.name);
+                const key = `${tc.name}\u0000${tc.arguments}`;
+                if (seenKeys.has(key)) continue;
+                seenKeys.add(key);
                 parsed.push(tc);
               }
               for (const s of r.skipped) skipped.push(s);
@@ -1492,18 +1544,26 @@ async function runReActLoop(task: LlmTask, params: {
             //   有参数的**原样保留**（不要整批清空，否则把原生解析出来的正确参数也丢了）。
             //   仅当该空参调用在文本里补不到参数时，才把文本解析结果追加为**新**调用。
             if (hasEmptyArgs) {
-              const recovered = new Map(parsed.map((p) => [p.name, p]));
+              // ★ 补救用的候选必须**按名字取用后即删**（与下面 recovered.values() 追加互斥），
+              //   否则同一份文本结果会被既"原地补参"又"追加为新调用" → 调用数翻倍。
+              const recovered = new Map<string, { id: string; name: string; arguments: string }[]>();
+              for (const p of parsed) {
+                if (!recovered.has(p.name)) recovered.set(p.name, []);
+                recovered.get(p.name)!.push(p);
+              }
               for (const tc of toolCallAcc) {
                 if (!isEmptyArg(tc)) continue; // 非空的不动
                 const nm = tc.function?.name || '';
-                if (nm && recovered.has(nm)) {
-                  tc.function!.arguments = recovered.get(nm)!.arguments; // 原地补参（id 不变 → 配对仍完整）
-                  recovered.delete(nm);
+                const pool = nm ? recovered.get(nm) : undefined;
+                if (pool && pool.length) {
+                  tc.function!.arguments = pool.shift()!.arguments; // 原地补参（id 不变 → 配对仍完整）
                 }
               }
               // 剩下没被补救的解析结果（说明是文本里**另一次**调用）才追加
-              for (const p of recovered.values()) {
-                toolCallAcc.push({ id: p.id, function: { name: p.name, arguments: p.arguments } } as DeltaToolCall);
+              for (const pool of recovered.values()) {
+                for (const p of pool) {
+                  toolCallAcc.push({ id: p.id, function: { name: p.name, arguments: p.arguments } } as DeltaToolCall);
+                }
               }
             } else {
               // 原生完全没有工具调用（或没有空参）→ 文本模式解析结果直接追加
@@ -1580,7 +1640,7 @@ async function runReActLoop(task: LlmTask, params: {
         const allEmptyArgs = toolCallAcc.length > 0 &&
           toolCallAcc.every(tc => { const a = tc.function?.arguments; return !a || a === '{}'; });
         consecutiveArgFailures = allEmptyArgs ? consecutiveArgFailures + 1 : 0;
-        if (consecutiveArgFailures >= 3) {
+        if (consecutiveArgFailures >= EMPTY_ARGS_DEGENERATE_THRESHOLD) {
           const diag = '检测到工具调用连续多步参数为空（arguments 一直为 {}），已停止以免继续消耗。\n\n' +
             '原因（按实际发生概率排序）：\n' +
             '1. **本会话历史里已存在"参数为空"的工具调用记录**，模型正在模仿它 —— 这是最常见的原因。' +
@@ -1736,14 +1796,20 @@ async function runReActLoop(task: LlmTask, params: {
         }
 
         // ── 决策：该不该自动接力 ──
-        // 前置闸（不在 decideAutoContinue 里判，因为它不持有 task 状态）：
+        // 四个前置闸（不在 decideAutoContinue 里判，因为它不持有 task 状态）：
         //   · 用户已终止 → 不接力；
-        //   · 已处于退化状态（连续空参数尾随）→ 不接力；
+        //   · 已**深度**空转退化（连续空参达阈值）→ 不接力；
         //   · 已到接力轮次上限 / 用户关闭了自动接力 → 不接力。
         const aborted = task.abortController.signal.aborted;
-        const degenerate = consecutiveArgFailures > 0;
-        const withinRounds = continuationCount < autoContinueMaxRounds && autoContinueMaxRounds > 0;
-        if (judged.shouldContinue && withinRounds && !aborted && !degenerate) {
+        // ★★★ 判据必须与断路器**一致**（2026-09-29 修，high）：此前这里是 `> 0`，
+        //   而断路器是 `>= 3` —— 于是"末尾偶发一次空参"就会否决整个接力。
+        //   实测后果：跑满 100 步、计划还剩 7 步的任务被直接终止，
+        //   且给出一句自相矛盾的「未自动续跑：任务计划尚有 7 个未完成步骤」。
+        //   现在统一用 EMPTY_ARGS_DEGENERATE_THRESHOLD：**只有真正持续空转才拒绝接力**，
+        //   偶发空参不再阻断（那正是最需要接力纠偏的场景）。
+        const expectedContinue = judged.shouldContinue;
+        const degenerate = consecutiveArgFailures >= EMPTY_ARGS_DEGENERATE_THRESHOLD;
+        if (expectedContinue && !aborted && !degenerate) {
           continuationCount++;
           // 结构化记账：把「做到哪 + 还剩什么」落进空间记忆与进度明细（跨会话可见），
           // 再续下一批 —— 这就是用户说的"根据整理的记忆进行任务"。
@@ -1762,8 +1828,13 @@ async function runReActLoop(task: LlmTask, params: {
           continue;
         }
 
-        // 不接力 → 补一句"为什么不接力"，让用户知道是模型收尾还是被上限/开关截住
-        if (judged.reason) tipText += `\n\n（未自动续跑：${judged.reason}）`;
+        // 不接力 → 说明是**哪一道闸**挡住的（按真实原因分支，不能只回放 judged.reason ——
+        // 那会出上面那种"reason 说该继续、结论却不续"的自相矛盾文案）。
+        tipText += `\n\n（未自动续跑：${!expectedContinue
+          ? (judged.reason || '模型判定任务已完成')
+          : aborted ? '用户已中止'
+          : degenerate ? `连续 ${consecutiveArgFailures} 步工具参数为空，判定为空转退化，为免继续消耗已停止`
+          : (judged.blockedBy || '自动接力未开启')}）`;
       } catch { /* 总结失败回退固定文案 */ }
 
       const tipId = insertMessage(convId, userId, 'assistant', tipText);
@@ -1832,15 +1903,16 @@ async function decideAutoContinue(args: {
   /** 允许的最大接力批次数；0 = 关闭自动接力 */
   autoContinueMaxRounds: number;
   conversationId: string;
-}): Promise<{ shouldContinue: boolean; summary: string; reason: string }> {
+}): Promise<{ shouldContinue: boolean; summary: string; reason: string; /** 该继续但被闸门挡住的真实原因（无则空） */ blockedBy?: string }> {
   const { continuationCount, autoContinueMaxRounds, conversationId } = args;
-  // ① 总开关与轮次上限
-  if (autoContinueMaxRounds <= 0) {
-    return { shouldContinue: false, summary: '', reason: '自动接力已关闭（autoContinueMaxRounds=0）' };
-  }
-  if (continuationCount >= autoContinueMaxRounds) {
-    return { shouldContinue: false, summary: '', reason: `已达自动接力上限（${autoContinueMaxRounds} 批）` };
-  }
+  // ★★★ 轮次上限 / 总开关不再**提前 return**（2026-09-29 修）：
+  //   提前 return 会让后面的 `summarizeOnMaxSteps` 整段跳过 →
+  //   用户拿到的是**一行干巴巴的固定文案**，而模型本该给出的"进展总结
+  //   （已完成/关键结果/未完成原因/后续建议）"**全部丢失** —— 这正是长任务收尾
+  //   看起来"什么都没产出"的原因之一。
+  //   改为：照常生成总结（这是用户最需要的产出），只是把"不接力"登记到 blockedBy。
+  const disabled = autoContinueMaxRounds <= 0;
+  const roundsExhausted = !disabled && continuationCount >= autoContinueMaxRounds;
 
   // ④-a 任务计划里还有未完成步骤 → 直接判定该继续（机械信号比模型自评可靠）
   const planRemaining = readPlanRemainingSteps(conversationId);
@@ -1854,11 +1926,17 @@ async function decideAutoContinue(args: {
     modelSaysContinue = r.shouldContinue;
   } catch { /* 总结失败不接力（保守） */ }
 
-  const shouldContinue = modelSaysContinue || planRemaining > 0;
+  // 模型/计划认为该继续 → 但可能被闸门挡住，blockedBy 说明是哪个闸
+  const wanted = modelSaysContinue || planRemaining > 0;
+  const shouldContinue = wanted && !disabled && !roundsExhausted;
   const reason = planRemaining > 0
     ? `任务计划尚有 ${planRemaining} 个未完成步骤`
     : modelSaysContinue ? '模型自评任务未完成' : '模型自评任务已完成';
-  return { shouldContinue, summary, reason };
+  const blockedBy = !wanted ? undefined
+    : disabled ? '自动接力已关闭（autoContinueMaxRounds=0）'
+    : roundsExhausted ? `已达自动接力上限（${autoContinueMaxRounds} 批）`
+    : undefined;
+  return { shouldContinue, summary, reason, blockedBy };
 }
 
 /**
@@ -3017,14 +3095,16 @@ async function runSubAgent(
           if (hasToolInReasoning && fullReasoning !== fullContent) sources.push(fullReasoning);
           const parsed: { id: string; name: string; arguments: string }[] = [];
           const skipped: string[] = [];
-          const seenNames = new Set<string>();
+          // ★ 去重键 = 名字 + 参数（只按名字会吃掉"同一工具多次调用"，见主循环处说明）
+          const seenKeys = new Set<string>();
           let cleanedOf: string | null = null;
           for (const src of sources) {
             const r = parseTextModeToolCalls(src, subTools);
             if (!cleanedOf && r.cleanedContent !== src) cleanedOf = r.cleanedContent;
             for (const tc of r.toolCalls) {
-              if (seenNames.has(tc.name)) continue;
-              seenNames.add(tc.name);
+              const key = `${tc.name}\u0000${tc.arguments}`;
+              if (seenKeys.has(key)) continue;
+              seenKeys.add(key);
               parsed.push(tc);
             }
             for (const s of r.skipped) skipped.push(s);
@@ -3033,18 +3113,23 @@ async function runSubAgent(
           if (hasToolInContent && cleanedOf !== null) fullContent = cleanedOf;
           else if (hasToolInReasoning && cleanedOf !== null) fullReasoning = cleanedOf;
           if (hasEmptyArgs) {
-            // 逐个别补救（原地补参、保留原 id → 配对完整），未补到的才追加为新调用
-            const recovered = new Map(parsed.map((p) => [p.name, p]));
+            // 逐个补救（原地补参、保留原 id → 配对完整），未补到的才追加为新调用。
+            // ★ 候选按名字分池、取用即移除，避免同一结果既补参又追加（调用数翻倍）。
+            const recovered = new Map<string, { id: string; name: string; arguments: string }[]>();
+            for (const p of parsed) {
+              if (!recovered.has(p.name)) recovered.set(p.name, []);
+              recovered.get(p.name)!.push(p);
+            }
             for (const tc of toolCallAcc) {
               if (!isEmptyArgSub(tc)) continue;
               const nm = tc.function?.name || '';
-              if (nm && recovered.has(nm)) {
-                tc.function!.arguments = recovered.get(nm)!.arguments;
-                recovered.delete(nm);
-              }
+              const pool = nm ? recovered.get(nm) : undefined;
+              if (pool && pool.length) tc.function!.arguments = pool.shift()!.arguments;
             }
-            for (const p of recovered.values()) {
-              toolCallAcc.push({ id: p.id, function: { name: p.name, arguments: p.arguments } } as DeltaToolCall);
+            for (const pool of recovered.values()) {
+              for (const p of pool) {
+                toolCallAcc.push({ id: p.id, function: { name: p.name, arguments: p.arguments } } as DeltaToolCall);
+              }
             }
           } else {
             for (const tc of parsed) {
@@ -4060,7 +4145,7 @@ export function loadAgentModelParams(agentId: string | null, userId: string): {
     maxTokens: agent.max_tokens,
     topP: agent.top_p,
     reasoningEffort: config?.reasoningEffort,
-    maxReActSteps: config?.maxReActSteps || 100,
+    maxReActSteps: config?.maxReActSteps || DEFAULT_MAX_REACT_STEPS,
   };
 }
 

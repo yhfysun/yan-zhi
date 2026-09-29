@@ -177,6 +177,19 @@ describe('④ 步数上下限必须放开', () => {
     expect(LTM, '★ 子智能体步数仍被封顶 100（配置改大无效）').not.toMatch(/Math\.min\(Math\.floor\(cfgSteps\),\s*100\)/);
     expect(LTM, '★ 未放开到更高上限').toMatch(/Math\.min\(Math\.floor\(cfgSteps\),\s*500\)/);
   });
+
+  it('★★★ 默认步数必须是 500（用户 2026-09-29：「默认 500 步吧，50 步不太够啊」）', () => {
+    // 后端：共享常量 + 两处使用（liveMaxSteps 与 getAgentLiveParams）
+    expect(LTM, '★ 未定义默认步数常量').toMatch(/DEFAULT_MAX_REACT_STEPS\s*=\s*500/);
+    expect(LTM, '★ liveMaxSteps 未使用默认常量').toMatch(/params\.maxSteps \|\| live \|\| DEFAULT_MAX_REACT_STEPS/);
+    expect(LTM, '★ 智能体参数回显仍写死 100（界面与实际执行不一致）')
+      .not.toMatch(/maxReActSteps: config\?\.maxReActSteps \|\| 100/);
+    // 前端：回落值必须与后端同值
+    const i = anchor(CHAT_STORE, 'function getMaxReActSteps', 'getMaxReActSteps');
+    const body = CHAT_STORE.slice(i, i + 900);
+    expect(body, '★ 前端默认仍是 100（与后端 500 不一致）').toMatch(/return 500;/);
+    expect(body, '★ 前端仍回落 100').not.toMatch(/return 100;/);
+  });
 });
 
 // ────────────────────────────────────────────────────────────
@@ -299,9 +312,54 @@ describe('⑧ 达上限总结必须同时产出"是否继续"判据', () => {
 
   it('★★ 计划里还有未完成步骤时也必须接力（机械信号比模型自评可靠）', () => {
     anchor(LTM, 'function readPlanRemainingSteps', 'readPlanRemainingSteps');
-    const i = anchor(LTM, 'const shouldContinue = modelSaysContinue', '接力判定合并');
-    const body = LTM.slice(i, i + 200);
+    // ★ 2026-09-29：判定式从 `const shouldContinue = modelSaysContinue || planRemaining > 0`
+    //   改为 `wanted = ...` + `shouldContinue = wanted && !disabled && !roundsExhausted`
+    //   （轮次闸并入判定，避免提前 return 丢掉总结正文）。锚点随之更新。
+    const i = anchor(LTM, 'const wanted = modelSaysContinue', '接力判定合并');
+    const body = LTM.slice(i, i + 260);
     expect(body, '★ 只看模型自评、忽略计划剩余步骤').toMatch(/planRemaining > 0/);
+  });
+});
+
+// ────────────────────────────────────────────────────────────
+describe('⑪ 接力闸门与空转断路器判据必须一致（2026-09-29 生产事故）', () => {
+  /**
+   * ★★★ 守的 bug：判据在两处**各写各的** —— 断路器 `>= 3`、接力闸门 `> 0`。
+   *   实测后果（生产库会话 aaa84c6c）：任务跑满 100 步、计划里还剩 7 个未完成步骤，
+   *   末尾偶发一次空参 → 接力被一刀否决 → 任务终止，用户看到自相矛盾的一句
+   *   「（未自动续跑：任务计划尚有 7 个未完成步骤）」。
+   */
+  it('★★★ 阈值必须由同一个常量提供，两处不得各写数字字面量', () => {
+    expect(LTM, '★ 未定义共享阈值常量').toMatch(/EMPTY_ARGS_DEGENERATE_THRESHOLD\s*=\s*3/);
+    // 两处引用（断路器 + 接力闸门）
+    const refs = LTM.match(/EMPTY_ARGS_DEGENERATE_THRESHOLD/g) || [];
+    expect(refs.length, '★ 共享阈值常量未被两处同时引用（判据又漂移了）').toBeGreaterThanOrEqual(3);
+  });
+
+  it('★★★ 接力闸门不得再用 `consecutiveArgFailures > 0`（偶发一次空参不否决接力）', () => {
+    expect(LTM, '★ 接力闸门仍是 >0 → 末尾偶发一次空参就会否决整个接力')
+      .not.toMatch(/consecutiveArgFailures\s*>\s*0/);
+  });
+
+  it('★★ 断路器与接力闸门必须用同一比较方式（>= 阈值）', () => {
+    const uses = LTM.match(/consecutiveArgFailures\s*>=\s*EMPTY_ARGS_DEGENERATE_THRESHOLD/g) || [];
+    expect(uses.length, '★ 未两处统一为 >= 阈值').toBeGreaterThanOrEqual(2);
+  });
+
+  it('★★ 轮次上限/开关不得提前 return（否则总结正文整段丢失）', () => {
+    const i = anchor(LTM, 'async function decideAutoContinue', 'decideAutoContinue');
+    const body = LTM.slice(i, i + 1800);
+    // 提前 return 会把后面的 summarizeOnMaxSteps 整段跳过 → 用户只拿到一行固定文案
+    expect(body, '★ 仍在提前 return（长任务收尾会丢掉模型给出的进展总结）')
+      .not.toMatch(/if \(autoContinueMaxRounds <= 0\) \{\s*return \{ shouldContinue: false, summary: ''/);
+    expect(body, '★ 未记录"该继续但被闸门挡住"的真实原因').toMatch(/blockedBy/);
+  });
+
+  it('★ 不接力时必须按真实闸门分支说明原因（不能只回放 judged.reason）', () => {
+    const i = anchor(LTM, '未自动续跑：', '不接力文案');
+    const body = LTM.slice(Math.max(0, i - 700), i + 400);
+    expect(body, '★ 未区分"空转退化"这一原因').toMatch(/空转退化/);
+    expect(body, '★ 未区分"用户已中止"').toMatch(/用户已中止/);
   });
 });
 
