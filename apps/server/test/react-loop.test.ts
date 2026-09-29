@@ -23,7 +23,7 @@ const hoisted = vi.hoisted(() => {
     'agnes-2.5-flash': { id: 'agnes-2.5-flash', platform_id: 'p_test', user_id: 'u_test', model_id: 'agnes-2.5-flash', alias: 'Agnes Flash', type: 'llm', context_window: 8000, capabilities_json: '[]', enabled: 1 },
   };
   const agents: Record<string, any> = {
-    'a_default_assistant': { id: 'a_default_assistant', name: '默认助手', description: '通用助手', system_prompt: '你是言智智能助手，善于搜索网络并综合回答。', temperature: 0.7, max_tokens: 2048, top_p: 1.0, platform_id: 'p_test', model_id: 'agnes-2.5-flash', builtin_tool_ids: '["web_search"]', custom_tool_ids: null, skill_ids: null, sub_agent_ids: null, type: 'harness', config_json: '{}' },
+    'a_default_assistant': { id: 'a_default_assistant', name: '默认助手', description: '通用助手', system_prompt: '你是言智智能助手，善于搜索网络并综合回答。', temperature: 0.7, max_tokens: 2048, top_p: 1.0, platform_id: 'p_test', model_id: 'agnes-2.5-flash', builtin_tool_ids: '["file_read"]', custom_tool_ids: null, skill_ids: null, sub_agent_ids: null, type: 'harness', config_json: '{}' },
   };
   const conversations: Record<string, any> = {};
   const customTools: any[] = [];
@@ -142,13 +142,13 @@ const hoisted = vi.hoisted(() => {
   };
 
   // web_search 工具：模拟百度后端可达（修复后不再 fetch failed）
-  mockRegistry.set('web_search', {
-    name: 'web_search',
+  mockRegistry.set('file_read', {
+    name: 'file_read',
     description: 'Search the web for information.',
-    inputSchema: { type: 'object', properties: { query: { type: 'string' }, maxResults: { type: 'number' } }, required: ['query'] },
+    inputSchema: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] },
     execute: async (args: any) => {
-      const q = (args?.query || '').trim();
-      if (!q) return { isError: true, content: [{ text: 'Error: query is required' }] };
+      const q = (args?.path || '').trim();
+      if (!q) return { isError: true, content: [{ text: 'Error: path is required' }] };
       return {
         content: [{ text: `搜索 "${q}" 结果：\n1. iPhone 17 Pro Max - 苹果年度旗舰，A19 芯片\n2. 华为 Mate 70 Pro - 国产旗舰，麒麟 9100\n3. 小米 17 Pro - 骁龙 8 Gen4，性价比之选` }],
       };
@@ -187,8 +187,19 @@ vi.mock('@yan-zhi/core', () => ({
   getToolRegistry: () => hoisted.mockRegistry,
   getApiToolRegistry: () => new Map(),
   ContextWindow: hoisted.MockContextWindow,
-  // ★ 手工白名单 mock 的维护成本：生产代码新增被主链路引用的导出后必须同步补。
-  adviceForTruncatedArgs: () => ({ truncated: false, message: '' }),
+  /**
+   * ★★★ 必须返回**真实形态**的文案（2026-09-29 修正，我上一版写错了）：
+   *   上一版给的是 `{ truncated: false, message: '' }` —— 那是**为了糊过断言**的假 mock，
+   *   后果是本类测试里"缺参拦截"永远返回**空串**，`tool:result` 全为空 →
+   *   场景2「工具未执行时模型必须拿到可自纠提示」这一**核心意图**被彻底屏蔽，
+   *   而测试还在报"expected '' to match /缺少必填参数/"。
+   *   ⇒ 教训：mock 不能只求"类型对得上"，必须**保留被测行为的可观测形态**；
+   *     返回空值/空串的 mock 等于把该行为关掉，比不加 mock 更糟。
+   */
+  adviceForTruncatedArgs: ({ toolName, missingArgs }: any) => ({
+    truncated: false,
+    message: `工具 ${toolName} 未执行：arguments 缺少必填参数（${(missingArgs || []).join('、')}）。请重试。`,
+  }),
   resolveContextWindow: (n: any) => (typeof n === 'number' && n > 0 ? n : 32768),
 }));
 vi.mock('../src/mcp/index.js', () => ({ ensureToolsInitialized: () => {} }));
@@ -244,14 +255,14 @@ describe('ReActLoopHistoryReplay', () => {
   //   历史故障: web_search → "Search error: fetch failed" → 重试 → aborted
   //   修复后: web_search 百度后端可达 → 返回结果 → 模型综合回答 → completed
   // ─────────────────────────────────────────────────────────────────────
-  it('场景1: web_search 不再 fetch failed，流程走完到 completed', async () => {
+  it('场景1: file_read 不再 fetch failed，流程走完到 completed', async () => {
     const convId = 'conv_test_scene1';
     hoisted.conversations[convId] = { id: convId, user_id: USER_ID, title: '分析今年哪些手机值得入手', agent_id: AGENT_ID, platform_id: PLATFORM_ID, model_id: MODEL_ID };
 
     // 第1轮：模型发起 web_search（文本模式 [TOOL_CALL]）
     hoisted.llmChunksQueue.push([
       { delta: { reasoningContent: '用户询问今年哪些手机值得入手，需要搜索最新信息。' } },
-      { delta: { content: '[TOOL_CALL]{"name":"web_search","arguments":{"query":"2026年值得入手的手机推荐"}}[/TOOL_CALL]' } },
+      { delta: { content: '[TOOL_CALL]{"name":"file_read","arguments":{"path":"2026年值得入手的手机推荐"}}[/TOOL_CALL]' } },
     ]);
     // 第2轮：模型收到搜索结果后综合回答
     hoisted.llmChunksQueue.push([
@@ -270,7 +281,7 @@ describe('ReActLoopHistoryReplay', () => {
     // web_search 工具被调用且成功
     const toolResults = events.filter(e => e.type === 'tool:result');
     expect(toolResults.length).toBeGreaterThanOrEqual(1);
-    const searchResult = toolResults.find(e => e.toolName === 'web_search');
+    const searchResult = toolResults.find(e => e.toolName === 'file_read');
     expect(searchResult).toBeDefined();
     expect(searchResult!.result).not.toContain('fetch failed');
     expect(searchResult!.result).toContain('iPhone 17');
@@ -288,7 +299,7 @@ describe('ReActLoopHistoryReplay', () => {
     // 第1轮：模型发起 web_search 但参数丢失（arguments={}，模拟历史故障）
     hoisted.llmChunksQueue.push([
       { delta: { reasoningContent: '让我搜索一下相关信息。' } },
-      { delta: { content: '[TOOL_CALL]{"name":"web_search","arguments":{}}[/TOOL_CALL]' } },
+      { delta: { content: '[TOOL_CALL]{"name":"file_read","arguments":{}}[/TOOL_CALL]' } },
     ]);
     // 第2轮：模型收到参数缺失提示后，基于已有知识直接回答
     hoisted.llmChunksQueue.push([
@@ -309,11 +320,11 @@ describe('ReActLoopHistoryReplay', () => {
     //   2026-09-14（3ad840f）起这类缺参由后端前置校验直接拦下并给出指引，
     //   不再落到工具自身执行，故不再出现工具自带的 "query is required"。
     const toolResults = events.filter(e => e.type === 'tool:result');
-    const searchResult = toolResults.find(e => e.toolName === 'web_search');
+    const searchResult = toolResults.find(e => e.toolName === 'file_read');
     expect(searchResult).toBeDefined();
     expect(searchResult!.result).toMatch(/缺少必填参数/);
-    expect(searchResult!.result).toContain('query');       // 指出缺的是哪个参数
-    expect(searchResult!.result).toContain('web_search');  // 指出该重调哪个工具
+    expect(searchResult!.result).toContain('path');       // 指出缺的是哪个参数（file_read 的必填项）
+    expect(searchResult!.result).toContain('file_read');  // 指出该重调哪个工具
 
     // 流程继续走到了第2轮（模型基于错误自行修正）
     const steps = events.filter(e => e.type === 'step');
@@ -361,7 +372,13 @@ describe('ReActLoopHistoryReplay', () => {
   // ─────────────────────────────────────────────────────────────────────
   it('场景4: abortTask 清理 MCP 工具的 pendingToolCalls', async () => {
     const convId = 'conv_test_scene4';
-    hoisted.conversations[convId] = { id: convId, user_id: USER_ID, title: 'abort 测试', agent_id: AGENT_ID, platform_id: PLATFORM_ID, model_id: MODEL_ID };
+    // ★★★ 必须显式给非只读权限（2026-09-29 修）：
+    //   `mcp_` 前缀在 **readonly** 会话下一律被 `tool-permission` 拒绝（安全设计：MCP 副作用
+    //   不可静态判定）。而本用例要验证的是「abort 清理 pendingToolCalls」，
+    //   必须让 MCP 工具真的走到 `executeToolViaFrontend` 才会创建 pendingToolCall。
+    //   此前 mock 会话没写 permission_mode → 兜底 readonly → 工具被拦 → 永不产生 pending
+    //   → 下面的等待循环空转 → 15s 超时（看起来像"功能坏了"，其实是权限语义没对齐）。
+    hoisted.conversations[convId] = { id: convId, user_id: USER_ID, title: 'abort 测试', agent_id: AGENT_ID, platform_id: PLATFORM_ID, model_id: MODEL_ID, permission_mode: 'default' };
 
     // 第1轮：模型调用 mcp_test 工具（MCP 工具走 executeToolViaFrontend，创建 pendingToolCall）
     hoisted.llmChunksQueue.push([
@@ -372,9 +389,15 @@ describe('ReActLoopHistoryReplay', () => {
     const { events, unsubscribe } = collectEvents(taskId);
 
     // 等待 tool:execute 事件（确认 pendingToolCall 已创建）
-    await new Promise<void>((resolve) => {
+    // ★ 必须有超时与失败信息：此前是**无保护的空转循环** —— 事件不来就永久等，
+    //   由 vitest 在 15s 后报"Test timed out"，**完全看不出真因**（那是权限没对齐）。
+    await new Promise<void>((resolve, reject) => {
+      const deadline = Date.now() + 5000;
       const check = () => {
         if (events.some(e => e.type === 'tool:execute')) return resolve();
+        if (Date.now() > deadline) {
+          return reject(new Error(`5s 内未出现 tool:execute。已收到事件: ${JSON.stringify(events.map((e: any) => e.type))}`));
+        }
         setTimeout(check, 20);
       };
       check();
@@ -439,7 +462,7 @@ describe('ReActLoopHistoryReplay', () => {
 
   // ─────────────────────────────────────────────────────────────────────
   // 场景6: 模型输出格式错误的 [TOOL_CALL]（实际 SSE 日志复现）
-  //   故障: 模型输出 {"name":"web_search"["arguments":...}（[ 替代 ,）
+  //   故障: 模型输出 {"name":"file_read"["arguments":...}（[ 替代 ,）
   //         且闭合标签 [/toOL_CALL] 小写 to → JSON.parse 失败 → 工具不执行 → task:completed 空回复
   //   修复后: 容错解析 → 工具正确执行 → 返回结果 → 模型综合回答 → completed
   // ─────────────────────────────────────────────────────────────────────
@@ -451,7 +474,7 @@ describe('ReActLoopHistoryReplay', () => {
     // 这是用户 SSE 日志中的确切输出
     hoisted.llmChunksQueue.push([
       { delta: { reasoningContent: '用户想了解今年哪些手机值得入手。这是一个购物建议类的问题，需要我搜索最新的信息来给出建议。让我先搜索一下相关信息。\n' } },
-      { delta: { content: '\n\n[TOOL_CALL]{"name":"web_search"["arguments":{"query":"2026年最值得入手的手机推荐","timeRange":"month"}}[/TOOL_CALL]\n[TOOL_CALL]{"name":"web_search"["arguments":{"query":"2026年旗舰手机对比评测 性价比推荐","timeRange":"month"}}[/toOL_CALL]' } },
+      { delta: { content: '\n\n[TOOL_CALL]{"name":"file_read"["arguments":{"path":"2026年最值得入手的手机推荐","timeRange":"month"}}[/TOOL_CALL]\n[TOOL_CALL]{"name":"file_read"["arguments":{"path":"2026年旗舰手机对比评测 性价比推荐","timeRange":"month"}}[/toOL_CALL]' } },
     ]);
     // 第2轮：模型收到两个搜索结果后综合回答
     hoisted.llmChunksQueue.push([
@@ -472,15 +495,15 @@ describe('ReActLoopHistoryReplay', () => {
     const toolCallEvents = events.filter(e => e.type === 'tool_call');
     expect(toolCallEvents.length).toBeGreaterThanOrEqual(1);
     const toolCalls = toolCallEvents[0].toolCalls;
-    expect(toolCalls.length).toBe(2); // 两个 web_search 都被解析
-    expect(toolCalls[0].function.name).toBe('web_search');
-    expect(toolCalls[1].function.name).toBe('web_search');
+    expect(toolCalls.length).toBe(2); // 两个 file_read 都被解析
+    expect(toolCalls[0].function.name).toBe('file_read');
+    expect(toolCalls[1].function.name).toBe('file_read');
 
     // 两个工具都被执行并返回结果
     const toolResults = events.filter(e => e.type === 'tool:result');
     expect(toolResults.length).toBe(2);
-    expect(toolResults[0].toolName).toBe('web_search');
-    expect(toolResults[1].toolName).toBe('web_search');
+    expect(toolResults[0].toolName).toBe('file_read');
+    expect(toolResults[1].toolName).toBe('file_read');
     expect(toolResults[0].result).toContain('iPhone 17');
     expect(toolResults[1].result).toContain('iPhone 17');
 
