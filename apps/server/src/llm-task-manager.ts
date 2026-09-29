@@ -2881,8 +2881,11 @@ async function runSubAgent(
         emit(task, { type: 'tool:start', toolName, args: toolArgs, subAgentId: resolvedId });
 
         let result: string;
+        // ★ 与主循环对齐：收集工具回传的 _meta（file_write 的落盘路径在这里），
+        //   供下面的产物登记钩子使用。此前子智能体侧没接，导致 file_write 产物在子智能体里也不登记。
+        const subToolMetaOut: { value?: Record<string, unknown> | null } = {};
         try {
-          result = await executeTool(task, registry, toolName, toolArgs, tc.id || '', uiTools, depth + 1, subTools);
+          result = await executeTool(task, registry, toolName, toolArgs, tc.id || '', uiTools, depth + 1, subTools, subToolMetaOut);
         } catch (e: any) {
           if (isAbortError(e)) {
             // 中止也必须落库 tool 结果（子智能体消息带归属字段）：否则库里留下孤儿
@@ -2899,6 +2902,24 @@ async function runSubAgent(
           result = `工具执行失败: ${e?.message || e}`;
         }
         emit(task, { type: 'tool:result', toolName, result, subAgentId: resolvedId });
+
+        // ★★★ 子智能体循环同样要跑产物登记钩子（2026-09-29 修「产物里有图没视频」）。
+        //
+        // 此前只有**主循环**调了 runAfterToolHooks，子智能体这条路径直接落库消息 ——
+        // 后果：**子智能体产出的文件从不登记**，用户在文件管理里看不到
+        // （典型场景：主智能体委派子智能体做视频，视频确实落盘了，但列表里只有图片）。
+        // ★ 这正是 P2-3 想把副作用抽成钩子的初衷（"加新工具不用改主循环"），
+        //   但当时只接了主循环这一个入口 —— **入口漂移**又出现了一次。
+        //   判据：凡是"工具执行完要做的事"，**每个执行工具的地方**都要跑到。
+        await runAfterToolHooks(toolName, toolArgs, result, {
+          taskId: task.id,
+          conversationId: task.conversationId,
+          userId: task.userId,
+          // 子智能体的产物归属到它自己那条助手消息上（tool 消息 id 此时还没生成，
+          // 用当前轮 assistantMsgId 更合理：登记记录里的 message_id 指向"产出它的那轮"）
+          assistantMsgId,
+          meta: (subToolMetaOut.value || null) as Record<string, unknown> | null,
+        });
 
         const cappedResult = capToolResult(result);
         const toolMsgId = insertMessage(task.conversationId, task.userId, 'tool', cappedResult, {

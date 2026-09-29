@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import path from 'node:path';
+import { existsSync, statSync } from 'node:fs';
 import { v4 as uuid } from 'uuid';
 import { authMiddleware } from '../auth.js';
 import { db } from '../db.js';
@@ -123,6 +124,74 @@ router.get('/:id/file-path', (req: Request, res: Response) => {
   const registered = resolveRegisteredFilePath(cid, name);
   if (registered) { res.json({ data: { path: registered, via: 'registered' } }); return; }
   res.status(404).json({ error: '文件已不在任何已知产物目录中' });
+});
+
+// GET /api/conversations/:id/file-stream?name=xxx —— **流式**读取产物文件（支持 HTTP Range）。
+//
+// ★★★ 为什么需要它（2026-09-29 修「MP4 打开黑屏」）：
+//   前端原先用「读 base64 → Blob URL」播放视频/音频。但 Chromium 对 `blob:` URL 的媒体
+//   **不实现 Range 请求** —— 播放器无法按需拉取分片、无法定位关键帧，只能整段缓冲；
+//   大码率高分辨率视频（1080×1920、几 Mbps）缓冲/解码跟不上就直接**黑屏**
+//   （文件本身完全正常：ffprobe 显示 h264/High/yuv420p，任何本地播放器都能播）。
+//   换成 HTTP URL 后，Express 的 `res.sendFile()`（底层 send 包）**原生支持 Range**：
+//   返回 206 + `Content-Range` + `Accept-Ranges: bytes`，`<video>` 于是能边下边播、任意 seek。
+//
+// 与 `/:id/file-path` 的区别：那个只返回**路径字符串**（调用方还要自己读字节），
+// 这个直接**把字节流出去**。定位逻辑完全复用同一条链（跨根探测 → 登记路径兜底），
+// 避免"两处各写一遍必然漂移"。
+//
+// ★ 用 `sendFile` 而不是手写 createReadStream：send 已经处理好了 Range/206/ETag/
+//   条件请求/路径安全（`..` 穿越）等细节 —— 手写这些必然出错。
+router.get('/:id/file-stream', (req: Request, res: Response) => {
+  const userId = req.user!.userId;
+  const cid = req.params.id;
+  const conv = db.prepare('SELECT id FROM conversation WHERE id = ? AND user_id = ?').get(cid, userId);
+  if (!conv) { res.status(404).json({ error: '会话不存在' }); return; }
+  const name = String(req.query.name || '').trim();
+  if (!name) { res.status(400).json({ error: 'name 为必填项' }); return; }
+
+  // ① 跨根探测：把可能用过的产物根都按规范相对目录试一遍（与 file-path 同源逻辑）
+  let hit: string | null = null;
+  for (const category of ['deliverable', 'intermediate', 'upload'] as const) {
+    const info = resolveArtifactDirFor({ conversationId: cid, category });
+    const primaryRel = buildArtifactRelDir({ conversationId: cid, title: info.title, category });
+    const candidates = buildArtifactRelDirCandidates({
+      conversationId: cid,
+      title: info.title,
+      category,
+      hasLegacyDir: info.relDir !== primaryRel,
+    });
+    const found = findArtifactFileAcrossRoots(candidates, name);
+    if (found) { hit = found; break; }
+  }
+  // ② 登记路径兜底
+  if (!hit) hit = resolveRegisteredFilePath(cid, name);
+  if (!hit) { res.status(404).json({ error: '文件已不在任何已知产物目录中' }); return; }
+  if (!existsSync(hit)) { res.status(404).json({ error: '文件不存在于磁盘' }); return; }
+
+  // ★ 视频/音频要允许浏览器缓存分片；Cache-Control 给 private 而非 no-store
+  res.setHeader('Cache-Control', 'private, max-age=60');
+  // ★★ sendFile 默认不带 Accept-Ranges？—— 实际上 send 在处理 Range 时会自动加，
+  //    但**无 Range 的首次请求**也需要这个头来告诉播放器"支持分段"，否则播放器
+  //    可能仍按整体缓冲处理（不同 Chromium 版本行为不一）。显式声明最稳。
+  res.setHeader('Accept-Ranges', 'bytes');
+  res.sendFile(hit, (err) => {
+    if (!err) return;
+    // ★ 客户端中断（播放器 seek/停止时常见）不是错误，别刷日志、也别回错误码
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'ECONNABORTED' || code === 'ERR_STREAM_PREMATURE_CLOSE' || res.headersSent) return;
+    // ★★ 越界 Range（如 bytes=99999999999-）时 send 会抛 RangeNotSatisfiableError。
+    //    这是**客户端请求有误**，按 RFC 7233 应回 **416**（并带 Content-Range: bytes */总长），
+    //    回 500 会让播放器以为"服务器故障"从而放弃重试；416 则让它能自行纠正范围。
+    //    （实测 verify-range-stream.cjs 第 ⑤ 项就是抓这个：原实现回 500。）
+    if (code === 'ERR_HTTP_RANGE_NOT_SATISFIABLE' || (err as any).status === 416) {
+      let total = 0;
+      try { total = existsSync(hit) ? statSync(hit).size : 0; } catch { /* 取不到就 0 */ }
+      res.status(416).setHeader('Content-Range', `bytes */${total}`).end();
+      return;
+    }
+    if (!res.headersSent) res.status(500).json({ error: err.message });
+  });
 });
 
 // POST /api/conversations/:id/files —— 注册一个文件记录（不处理上传字节流，仅记录元数据）

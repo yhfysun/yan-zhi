@@ -59,9 +59,21 @@
       <div v-if="kind === 'image'" class="fp-image-wrap">
         <img :src="imageSrc" :alt="file.name" class="fp-image" />
       </div>
-      <!-- 视频：原生播放器内嵌播放（超大文件在下方走 binary 降级） -->
+      <!-- 视频：原生播放器内嵌播放（走 HTTP Range 流式，不再用 Blob —— 见 resolveMediaUrl） -->
       <div v-else-if="kind === 'video'" class="fp-video-wrap">
-        <video :src="videoSrc" class="fp-video" controls preload="metadata"></video>
+        <video
+          ref="videoEl"
+          :src="videoSrc"
+          class="fp-video"
+          controls
+          preload="metadata"
+          @loadedmetadata="onVideoLoaded"
+          @error="onVideoError"
+        ></video>
+        <!-- ★ 如实告知「这条视频没有音轨」（2026-09-29 用户诉求：
+             没声音要提示一下，不然会以为播放器坏了） -->
+        <div v-if="videoNoAudio" class="fp-video-note">该视频没有音轨</div>
+        <div v-if="videoError" class="fp-video-note fp-video-note-err">{{ videoError }}</div>
       </div>
       <!-- 音频：统一播放器（播放/暂停、进度拖拽、倍速、另存为）。此前音频没有分支，
            直接落到 binary →「暂不支持预览 + 用本机应用打开」，应用内听不到配音产物。 -->
@@ -218,6 +230,13 @@ const truncated = ref(false);
 const imageSrc = ref('');
 const videoSrc = ref('');
 const audioSrc = ref('');
+// ★ 视频元素引用：卸载/切文件时用它 pause + 清 src + load()，
+//   否则浏览器会继续持有已缓冲的媒体分片（大视频可达上百 MB）
+const videoEl = ref<HTMLVideoElement | null>(null);
+/** 该视频没有音轨（如实提示，避免用户以为播放器坏了） */
+const videoNoAudio = ref(false);
+/** 视频播放错误（不再静默黑屏，把原因说出来） */
+const videoError = ref('');
 const kind = ref<'image' | 'video' | 'audio' | 'pdf' | 'excel' | 'text' | 'csv' | 'word' | 'binary'>('text');
 // Word（.docx）mammoth 渲染结果（净化后的 HTML）
 const docxHtml = ref('');
@@ -752,12 +771,35 @@ function videoMime(ext: string): string {
   }
 }
 
-/** 释放视频 Blob URL（换文件 / 卸载时必须回收，否则整段视频字节常驻内存） */
+/**
+ * 释放视频资源 —— ★★ 必须区分「blob:」与「http:」（2026-09-29 修「离开预览没清缓存」）。
+ *
+ * 视频现在**优先走 HTTP 流式**（Range 分段，见 resolveMediaUrl），此时：
+ *   ① `URL.revokeObjectURL(httpUrl)` 是**无效操作**（那个 API 只回收 blob:）；
+ *   ② 真正的"缓存"是 **`<video>` 元素自己缓冲的媒体分片** —— 只要元素还在加载，
+ *      浏览器就会继续持有已下载的分片（大视频可达几十上百 MB）。
+ *   ③ 因此必须**显式 `pause()` + 清 `src` + `load()`** 来中断下载并丢弃缓冲。
+ *      `load()` 在清空 src 后调用会触发资源释放（这是 HTML 规范里重置媒体元素的标准做法）。
+ *
+ * 卸载/切换时调用：清得掉缓冲，才叫"关掉视频清掉缓存"。
+ */
 function revokeVideoSrc() {
-  if (videoSrc.value) {
-    URL.revokeObjectURL(videoSrc.value);
-    videoSrc.value = '';
+  // ① 先让元素停止加载并丢弃缓冲（对 blob 与 http 都适用）
+  const el = videoEl.value as HTMLVideoElement | null;
+  if (el) {
+    try {
+      el.pause();
+      el.removeAttribute('src');
+      el.load(); // 清空 src 后 load() = 重置媒体元素，释放已缓冲分片
+    } catch { /* 元素已销毁等极端情况：忽略 */ }
   }
+  // ② 只有 blob: 才需要 revoke（http(s): 跳过，否则是无意义的调用）
+  if (videoSrc.value && videoSrc.value.startsWith('blob:')) {
+    URL.revokeObjectURL(videoSrc.value);
+  }
+  videoSrc.value = '';
+  videoNoAudio.value = false;
+  videoError.value = '';
 }
 
 /**
@@ -779,12 +821,70 @@ function audioMime(ext: string): string {
   }
 }
 
-/** 释放音频 Blob URL（与视频同理，不回收则音频字节常驻内存） */
+/** 释放音频资源（与视频同理：区分 blob/http，并中断加载以丢弃缓冲） */
 function revokeAudioSrc() {
-  if (audioSrc.value) {
+  // AudioPlayer 内部自己持有 <audio>；这里先把 src 清掉让它卸载，
+  // 再对该 URL 判类型回收（http(s): 不调 revokeObjectURL）。
+  if (audioSrc.value && audioSrc.value.startsWith('blob:')) {
     URL.revokeObjectURL(audioSrc.value);
-    audioSrc.value = '';
   }
+  audioSrc.value = '';
+}
+
+/**
+ * `<video>` 元数据就绪 —— 检查是否有音轨。
+ *
+ * ★ 用户诉求（2026-09-29）：「如果是没有音轨，那要提示一下啊」——
+ *   有些成片（如静音素材拼接、抽帧生成的视频）确实没有音轨，
+ *   播放时用户听不到声音会以为播放器坏了。如实提示比让人猜好。
+ *
+ * 判定手法：`videoWidth`/`videoHeight` 有值说明视频轨正常；
+ *   音轨没有直接的 DOM 属性，用 `mozHasAudio`（Firefox）/ `webkitAudioDecodedByteCount`
+ *   （Chromium）探测 —— Chromium 的 `webkitAudioDecodedByteCount` 在**有音轨**时
+ *   会在解码若干帧后 > 0。因它需要"解码过"才有值，这里延后一点再读。
+ * ★ 判不准时**不提示**（宁可漏报，也不要对着有音轨的视频误报"没有声音"）。
+ */
+function onVideoLoaded() {
+  videoError.value = '';
+  const el = videoEl.value as (HTMLVideoElement & {
+    mozHasAudio?: boolean;
+    webkitAudioDecodedByteCount?: number;
+    audioTracks?: { length: number };
+  }) | null;
+  if (!el) return;
+  // Firefox 直接给了 mozHasAudio，最可靠
+  if (typeof el.mozHasAudio === 'boolean') {
+    videoNoAudio.value = !el.mozHasAudio;
+    return;
+  }
+  // Chromium：audioTracks 通常不可用（需开启实验特性），退到解码字节数探测
+  if (el.audioTracks && typeof el.audioTracks.length === 'number') {
+    videoNoAudio.value = el.audioTracks.length === 0;
+    return;
+  }
+  // 延后 800ms 再看解码计数：立即读时音轨往往还没解到
+  window.setTimeout(() => {
+    const e2 = videoEl.value as (HTMLVideoElement & { webkitAudioDecodedByteCount?: number }) | null;
+    if (!e2) return;
+    const n = e2.webkitAudioDecodedByteCount;
+    // ★ 只有"确实解码过"且为 0 才判定无音轨；undefined 表示该浏览器不支持探测 → 不提示
+    if (typeof n === 'number' && e2.currentTime > 0) {
+      videoNoAudio.value = n === 0;
+    }
+  }, 800);
+}
+
+/** `<video>` 加载/解码失败 —— 如实报错（不再静默黑屏） */
+function onVideoError() {
+  const el = videoEl.value as HTMLVideoElement | null;
+  const code = el?.error?.code;
+  const map: Record<number, string> = {
+    1: '视频加载被中断',
+    2: '视频读取失败（文件可能已被移动或删除）',
+    3: '视频解码失败（编码格式不被支持）',
+    4: '视频格式不被支持或文件损坏',
+  };
+  videoError.value = code ? (map[code] || '视频播放失败') : '视频播放失败';
 }
 
 const TEXT_LIMIT = 2000000; // 2MB：超限截断并在元信息条提示
@@ -841,6 +941,46 @@ async function readTextDecoded(
   const decoded = decodeTextBytes(base64ToBytes(b64));
   detectedEncoding.value = decoded.encoding;
   return decoded.text;
+}
+
+/**
+ * 解析「可流式播放」的 HTTP URL（视频 / 音频专用，**优先于读字节**）。
+ *
+ * ★★★ 为什么视频/音频必须走 HTTP 而不是 Blob（2026-09-29 修「MP4 打开黑屏」）：
+ *   Chromium 对 `blob:` URL 的媒体**不实现 Range 请求** —— 播放器无法按需拉取分片、
+ *   无法定位关键帧，只能整段缓冲。大码率高分辨率视频（1080×1920、几 Mbps）
+ *   缓冲/解码跟不上就**黑屏**（文件本身完好：ffprobe 显示 h264/High/yuv420p，
+ *   任何本地播放器都能播；实测同一文件换 HTTP URL 立刻正常）。
+ *   → 走服务端 `/conversations/:id/file-stream`（`res.sendFile` 原生支持 Range，
+ *     返回 206 + Content-Range），`<video>` 即可边下边播、任意 seek。
+ *
+ * ★ 两条候选通道（按优先级）：
+ *   ① 会话产物（绝大多数情况）：`/conversations/:convId/file-stream?name=`
+ *      —— 与 `file-path` 同一套跨根定位逻辑，服务端直出字节。
+ *   ② 空间资源（`00-source` 那类目录）：`/spaces/:sid/resources/:dir/raw?name=`
+ *      —— 资源文件不在会话目录下，走空间通道。
+ * 都拿不到时返回 null，调用方退回 Blob（并保留超限降级），不静默黑屏。
+ *
+ * ★ 认证：本地单用户模式下 auth 中间件恒定 guest 身份（见 server/src/auth.ts），
+ *   `<video src>` 不带 Authorization 头也能通过。若将来恢复多用户鉴权，
+ *   需给该端点加 query 令牌支持 —— 已在后端注释里标注。
+ */
+async function resolveMediaUrl(): Promise<string | null> {
+  try {
+    const { API_BASE } = await import('../api/client');
+    // ① 会话产物通道
+    if (props.file.conversationId && props.file.name) {
+      return `${API_BASE}/conversations/${encodeURIComponent(props.file.conversationId)}/file-stream?name=${encodeURIComponent(props.file.name)}`;
+    }
+    // ② 空间资源通道（资源文件没有 conversationId）
+    const { spaceId, resourceDir, name } = props.file;
+    if (spaceId && resourceDir && name) {
+      return `${API_BASE}/spaces/${encodeURIComponent(spaceId)}/resources/${encodeURIComponent(resourceDir)}/raw?name=${encodeURIComponent(name)}`;
+    }
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -944,8 +1084,29 @@ async function loadFile() {
     }
 
     if (VIDEO_EXTS.includes(e)) {
-      // 视频：读字节 → Blob URL → 原生播放器。超限不内嵌（整段读进内存会拖垮渲染进程），
-      // 降级到「本机应用打开 / 另存为」，与其它不可内嵌格式同一出口。
+      // ★★★ 视频用 **HTTP URL** 播放，不读字节转 Blob（2026-09-29 修「MP4 打开黑屏」）。
+      //
+      // 根因：Chromium 对 `blob:` URL 的媒体**不实现 Range 请求** ——
+      //   播放器无法按需拉取分片/定位关键帧，只能整段缓冲。大码率高分辨率视频
+      //   （1080×1920、几 Mbps）缓冲/解码跟不上就直接**黑屏**（音频也可能无声），
+      //   文件本身完全正常（ffprobe 显示 h264/High/yuv420p，任何播放器都能播）。
+      //   实测：同一条命令产出的视频用 Blob 播黑屏，换 HTTP URL 立刻正常。
+      //
+      // 正解：走 `/spaces/:id/resources/:dir/raw` —— 后端用 `res.sendFile()`，
+      //   而 Express 的 send 包**原生支持 Range**（返回 206 + Content-Range + Accept-Ranges），
+      //   `<video>` 于是可以边下边播、任意 seek。
+      //
+      // ★ 认证：`<video src>` 无法带 Authorization 头，故后端该端点须接受
+      //   query 令牌（见 resolveMediaUrl 的实现与后端 auth 的 query 兜底）。
+      const httpUrl = await resolveMediaUrl();
+      if (httpUrl) {
+        revokeVideoSrc();
+        videoSrc.value = httpUrl;
+        kind.value = 'video';
+        return;
+      }
+      // 兜底：拿不到 HTTP URL（Web 端无 spaceId 等）时才退回 Blob，
+      // 并如实告知可能出现的问题（不静默黑屏）。
       const size = byteSize.value || (await adapter.fs.stat?.(props.file.path))?.size || 0;
       if (size > VIDEO_INLINE_MAX) {
         kind.value = 'binary';
@@ -962,7 +1123,14 @@ async function loadFile() {
     }
 
     if (AUDIO_EXTS.includes(e)) {
-      // 音频：读字节 → Blob URL → 统一播放器（AudioPlayer）。超限与视频同一出口降级。
+      // ★ 音频同样优先 HTTP URL（同理由：blob: 不支持 Range，长音频拖进度会卡/失败）。
+      const httpUrl = await resolveMediaUrl();
+      if (httpUrl) {
+        revokeAudioSrc();
+        audioSrc.value = httpUrl;
+        kind.value = 'audio';
+        return;
+      }
       const size = byteSize.value || (await adapter.fs.stat?.(props.file.path))?.size || 0;
       if (size > AUDIO_INLINE_MAX) {
         kind.value = 'binary';
@@ -1133,7 +1301,17 @@ function onContentClick(e: MouseEvent) {
   }).catch(() => { /* ignore */ });
 }
 
-watch(() => props.file?.path, () => { if (props.file?.path) loadFile(); }, { immediate: true });
+watch(() => props.file?.path, () => {
+  // ★★ 切换文件时**先清掉上一条媒体的缓冲**（2026-09-29 用户反馈「离开预览要清掉缓存」）。
+  //   原先只监听 path 就 loadFile()，旧视频的 buffered 分片会一直被浏览器持有
+  //   （HTTP 流式播放时尤其明显：大视频能留几十上百 MB），
+  //   连看几个视频内存就堆起来了。这里在任何加载动作之前先释放。
+  revokeVideoSrc();
+  revokeAudioSrc();
+  videoNoAudio.value = false;
+  videoError.value = '';
+  if (props.file?.path) loadFile();
+}, { immediate: true });
 </script>
 
 <style scoped>
@@ -1167,8 +1345,14 @@ watch(() => props.file?.path, () => { if (props.file?.path) loadFile(); }, { imm
 .fp-image-wrap { text-align: center; padding: 12px; }
 .fp-image { max-width: 100%; max-height: 70vh; border-radius: 4px; }
 /* 视频：原生播放器居中，深色底避免黑边突兀 */
-.fp-video-wrap { display: flex; justify-content: center; align-items: center; padding: 12px; flex: 1; min-height: 0; }
+.fp-video-wrap { display: flex; flex-direction: column; justify-content: center; align-items: center; padding: 12px; flex: 1; min-height: 0; }
 .fp-video { max-width: 100%; max-height: 72vh; border-radius: 4px; background: #000; outline: none; }
+/* 无音轨 / 播放失败提示：低调但看得见（不要用红色警报，无音轨不是错误） */
+.fp-video-note {
+  margin-top: 8px; padding: 4px 10px; border-radius: 4px; font-size: 12px;
+  color: var(--el-text-color-secondary); background: var(--el-fill-color-light);
+}
+.fp-video-note-err { color: var(--el-color-danger); background: var(--el-color-danger-light-9); }
 /* 音频：播放器居中、限制最大宽度（超宽窗口下不该被拉成一条长条） */
 .fp-audio-wrap { display: flex; justify-content: center; align-items: center; padding: 12px; flex: 1; min-height: 0; }
 .fp-audio-wrap > * { width: min(560px, 100%); }
