@@ -220,3 +220,67 @@ describe('⑦ schema 与模型引导质量', () => {
     expect(body, '★ 未说明工具边界').toMatch(/只能是\*\*你已挂载工具的子集\*\*|已挂载工具的子集/);
   });
 });
+// ────────────────────────────────────────────────────────────
+describe('⑧ ★★★ 自检修复：安全闸必须 fail-closed', () => {
+  it('★★★ 不得有"兜底放行"（拿不到父级清单就填通用工具 = 绕过提权边界）', () => {
+    // 第一版写过 `if (ids.size === 0) for (const n of SPEC_REUSABLE_BUILTIN_TOOLS) ids.add(n)`，
+    // 理由冠冕堂皇（"避免 DB 抖动导致链路不可用"），但那是 **fail-open**：
+    // 会话未绑定智能体时 ids 为空 → 兜底生效 → 子智能体凭空拿到 file_write / cmd_exec。
+    // 安全闸的正确方向是 fail-closed —— 拿不到能力集就什么都不转授。
+    expect(LTM, '★ 兜底常量又出现了（会绕过"不得提权"）').not.toMatch(/SPEC_REUSABLE_BUILTIN_TOOLS/);
+    const body = win(LTM, 'function collectParentToolIds', 2200, 'collectParentToolIds');
+    expect(body, '★ 又在 ids 为空时填入工具').not.toMatch(/if \(ids\.size === 0\) for \(const n of/);
+  });
+
+  it('★★ 必须写明 fail-closed 的理由（防后人"好心"加回兜底）', () => {
+    const raw = read('apps/server/src/llm-task-manager.ts');
+    const body = raw.slice(raw.indexOf('function collectParentToolIds'), raw.indexOf('function collectParentToolIds') + 2600);
+    expect(body, '★ 未说明 fail-closed 取舍').toMatch(/fail-closed/);
+    expect(body, '★ 未说明"父级无能力时纯推理是正确行为"').toMatch(/纯推理/);
+  });
+
+  it('★★ 父级无挂载 → 子智能体不得凭空获得写/执行类工具', () => {
+    // 空集时若兜底，file_write / cmd_exec 就会漏出去 —— 这是最危险的形态
+    const body = win(LTM, 'function collectParentToolIds', 2200, 'collectParentToolIds');
+    expect(body, '★ 兜底清单含写类工具（一旦兜底生效即提权）').not.toMatch(/file_write.*cmd_exec.*python_exec/s);
+  });
+});
+
+describe('⑨ 子智能体不得看到派生类工具', () => {
+  it('★★ spawn_subagent 必须排除在子智能体工具之外', () => {
+    // 上一轮把 spawn_subagent 挂进了内置智能体清单，而那些智能体也可能被 call_agent
+    // 当成子智能体调用 → 不排除的话工具会**暴露给子智能体**，运行时虽有 depth 闸兜底，
+    // 但"先暴露再拒绝"会白烧 token 并诱导模型反复尝试。
+    const body = win(LTM, "if (name === 'call_agent'", 700, '排除逻辑');
+    expect(body, '★ spawn_subagent 未排除 → 会暴露给子智能体').toMatch(/name === 'spawn_subagent'/);
+  });
+
+  it('★ 排除理由要写明（防后人误删）', () => {
+    const raw = read('apps/server/src/llm-task-manager.ts');
+    const i = raw.indexOf('// 子智能体不能再派生');
+    expect(raw.slice(i, i + 700), '★ 未说明为何要排除').toMatch(/白烧 token/);
+  });
+});
+
+describe('⑩ 沉淀建议链路（原本是死代码）', () => {
+  it('★★ specFingerprint 必须实现且被真实使用', () => {
+    expect(SPEC, '★ 未实现指纹').toMatch(/export function specFingerprint/);
+    expect(LTM, '★ LTM 未导入/使用（死代码）').toMatch(/specFingerprint\(normalized\.instruction\)/);
+  });
+
+  it('★★ 指纹计数必须挂在 task 上（任务级，不跨任务串味）', () => {
+    expect(LTM, '★ 未声明 specFingerprints').toMatch(/specFingerprints\?: Map<string, number>/);
+  });
+
+  it('★★ 必须只建议不自动建（自动建会堆垃圾角色）', () => {
+    const body = win(LTM, 'async function runSpawnedSubAgent', 7000, 'runSpawnedSubAgent');
+    expect(body, '★ 自动建了持久角色').not.toMatch(/INSERT INTO agent/);
+    expect(body, '★ 未把建议交给模型转告用户').toMatch(/建议固化成正式子智能体/);
+  });
+
+  it('★★ 指纹必须保守（去数字/标点，只认规范化后前缀一致的真正重复）', () => {
+    const body = win(SPEC, 'export function specFingerprint', 900, 'specFingerprint');
+    expect(body, '★ 未去数字（同类不同批次无法归并）').toMatch(/replace\(\/\[0-9\]\/g/);
+    expect(body, '★ 未截断（长指令前缀差异会掩盖同类）').toMatch(/slice\(0, 24\)/);
+  });
+});

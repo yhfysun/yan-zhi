@@ -44,6 +44,7 @@ import { promises as fsp } from 'node:fs';
 // 运行时生成子智能体（AOrchestra 对齐）：四元组归一化 / 工具三重裁剪 / 预算闸 / 提示词渲染
 import {
   normalizeSubAgentSpec, resolveSpecTools, renderSpecSystemPrompt, checkSpawnBudget,
+  specFingerprint, shouldSuggestPersist,
   DEFAULT_MAX_SPAWN_PER_TASK, DEFAULT_SPEC_MAX_STEPS,
   type SubAgentSpec, type ResolvedSubAgentSpec,
 } from './services/subagent-spec.js';
@@ -119,6 +120,9 @@ interface LlmTask {
   spawnBudget?: number;
   /** 本任务内已现场生成的子智能体次数（与 spawnBudget 配对做闸门） */
   spawnCount?: number;
+  /** 本任务内「子任务指纹 → 出现次数」：同类子任务反复现场生成时提示固化（见 shouldSuggestPersist）。
+   *  任务级而非全局，是刻意的 —— 跨任务的重复统计靠空间记忆（见 recordSpawnedSubAgent）。 */
+  specFingerprints?: Map<string, number>;
 }
 
 const tasks = new Map<string, LlmTask>();
@@ -361,6 +365,7 @@ export function createTask(params: {
       return DEFAULT_MAX_SPAWN_PER_TASK;
     })(),
     spawnCount: 0,
+    specFingerprints: new Map<string, number>(),
   };
   tasks.set(taskId, task);
   emit(task, { type: 'task:created', taskId, conversationId: params.conversationId });
@@ -1778,29 +1783,6 @@ async function consolidateOnTaskEnd(task: LlmTask, summary: string): Promise<voi
   } catch { /* 收尾整理失败不影响任务状态 */ }
 }
 
-/** 运行时可被「运行时生成子智能体」（spawn_subagent）复用的父级工具全集。
- *  目的：让父级已挂载的工具能在子智能体里被 `browser_*` 这类通配展开。
- *  不在此清单里的（MCP 挂载、其他 API 工具）仍按原有方式处理。 */
-const SPEC_REUSABLE_BUILTIN_TOOLS: string[] = [
-  // 通用执行
-  'file_read', 'file_write', 'file_edit', 'file_grep', 'file_list', 'file_to_markdown',
-  'code_search', 'code_outline', 'code_refs', 'code_graph',
-  'http_request', 'cmd_exec', 'python_exec', 'js_exec', 'doyz',
-  // 浏览器 / 自动化（常作为子智能体的核心能力）
-  'browser_navigate', 'browser_click', 'browser_type', 'browser_scroll', 'browser_snapshot',
-  'browser_screenshot', 'browser_extract', 'browser_wait', 'browser_evaluate',
-  'browser_go_back', 'browser_go_forward', 'browser_new_tab', 'browser_switch_tab',
-  'browser_close_tab', 'browser_list_tabs',
-  // 记忆 / 数据
-  'api_memory_search', 'api_memory_list', 'api_memory_create',
-  'api_kb_search', 'api_kb_list', 'api_kb_get',
-  'api_space_memory_read', 'api_space_memory_append',
-  // 媒体 / 办公
-  'api_media_fetch', 'api_image_generate', 'api_video_generate', 'api_tts_speak',
-  'api_docx_generate', 'api_xlsx_generate', 'api_pptx_generate',
-  'list_models',
-];
-
 /**
  * 执行一个自定义工具（含依赖按需安装）—— 见 `services/tool-deps.ts` 的 runCustomTool 说明。
  * 抽到 services 是为了让 **两条入口**（ReAct 主循环的 custom_ 分支、`api_custom_tool_execute`）
@@ -2415,10 +2397,16 @@ async function runSpawnedSubAgent(
 
   // 预算与留痕（用户要能在对话里看到"它开了个子智能体"以及为什么）
   task.spawnCount = used + 1;
+  // 同类子任务反复现场生成 → 提示固化成正式子智能体（只建议，不自动建）
+  const fp = specFingerprint(normalized.instruction);
+  const fpCount = (task.specFingerprints?.get(fp) || 0) + 1;
+  task.specFingerprints?.set(fp, fpCount);
+  const suggestPersist = shouldSuggestPersist(fpCount - 1);
   emit(task, {
     type: 'sub_agent:spawn', specId: synthId, name: synthName,
     purpose: normalized.purpose || '', toolIds: pinned,
     dropped: dropped.map((d) => d.name), count: task.spawnCount, budget,
+    suggestPersist,
   });
   void recordSpawnedSubAgent(task, synthId, resolved);
 
@@ -2451,7 +2439,13 @@ async function runSpawnedSubAgent(
   const budgetNote = task.spawnCount >= budget
     ? `\n（本任务现场生成子智能体已达上限 ${budget} 次，后续请自行完成或改用 call_agent）`
     : '';
-  return `${result}${tail}${budgetNote}`;
+  // 同类子任务反复现场生成 → 提示模型（并让它转告用户）值得固化
+  const persistNote = suggestPersist
+    ? `\n\n（提示：这次已是第 ${fpCount} 次生成「${normalized.purpose || normalized.instruction.slice(0, 20)}」这类子智能体。`
+      + '如果这类活会经常做，建议固化成正式子智能体（用 api_agent_create 建，配好系统提示词与工具，'
+      + '之后用 call_agent 直接点名调用）——可以在结论里向用户提一句。）'
+    : '';
+  return `${result}${tail}${budgetNote}${persistNote}`;
 }
 
 /**
@@ -2477,13 +2471,18 @@ function collectParentToolIds(task: LlmTask, uiTools: Set<string>): string[] {
     // 会话级权限：只读会话里，写类工具**不进全集**（否则子智能体就绕开了权限分级）
     const mode = task.permissionMode || 'default';
     for (const n of [...ids]) if (!checkToolPermission(mode, n).allowed) ids.delete(n);
-  } catch { /* 取不到就退到下面的兜底清单 */ }
+  } catch { /* 见下：取不到就 fail-closed */ }
 
-  // 兜底/补充：若父级挂载清单异常（拿不到），仍允许复用一小撮通用工具，
-  // 避免"生成子智能体"这条链路因一次 DB 抖动而完全不可用（幂等、无副作用）。
-  if (ids.size === 0) for (const n of SPEC_REUSABLE_BUILTIN_TOOLS) ids.add(n);
-
-  // UI 交互工具永不转授：子智能体无人对话，让它 ask_user 会直接挂住
+  // ★★★ 这里**不能有兜底放行**（我第一版加过，自检时判定为安全缺陷已删除）。
+  //
+  //   第一版写的是「ids 为空时填入一份通用工具清单（file_write/cmd_exec/...）」，
+  //   理由是"避免 DB 抖动导致链路不可用"。但那是 **fail-open**：
+  //     · 会话未绑定智能体（agentId 为空）+ 无会话级挂载 → ids 为空 → 兜底生效
+  //       → 子智能体凭空拿到 file_write / cmd_exec / python_exec
+  //       → **完全绕过"不得提权"这条边界**（父级没有的能力，子级反而有了）。
+  //   安全闸的正确方向是 **fail-closed**：拿不到父级能力集，就什么都不转授。
+  //   代价是"链路不可用"，但可用性不该以安全边界为代价 —— 何况父级本来没能力时，
+  //   子智能体纯推理（不给工具）也是正确行为，不是故障。
   for (const n of INTERACTIVE_TOOLS) ids.delete(n);
   for (const n of UI_TOOL_NAMES) if (!task.includeUiTools) ids.delete(n);
   return [...ids];
@@ -2615,8 +2614,11 @@ async function runSubAgent(
   const seen = new Set<string>();
   for (const name of builtinIds) {
     if (seen.has(name)) continue;
-    // 子智能体不能再调用子智能体，排除 call_agent/list_sub_agents
-    if (name === 'call_agent' || name === 'list_sub_agents') continue;
+    // 子智能体不能再派生（深度仅 1 层）：排除委派类工具。
+    // ★ spawn_subagent 必须一起排除 —— 它已挂在内置智能体的清单里（office/task-mode/db），
+    //   而那些智能体也可能被 call_agent 当成子智能体调用：不排除的话工具会**暴露给子智能体**。
+    //   运行时虽有 `depth >= 1` 兜底拒绝，但"先暴露再拒绝"会白烧 token、还会诱导模型反复尝试。
+    if (name === 'call_agent' || name === 'list_sub_agents' || name === 'spawn_subagent') continue;
     seen.add(name);
     // 内置工具
     if (registry.has(name)) {

@@ -121,6 +121,34 @@ group('⑦ 模型引导质量', () => {
   ck('★ 说明工具边界', /已挂载工具的子集/.test(g));
 });
 
+
+group('⑧ ★★★ 自检修复：安全闸必须 fail-closed', () => {
+  ck('★★★ 无兜底放行（拿不到父级清单不得填通用工具）', !LTM.includes('SPEC_REUSABLE_BUILTIN_TOOLS'));
+  const cb = win(LTM, 'function collectParentToolIds', 2200, 'collectParentToolIds');
+  ck('★★★ 无 ids.size===0 兜底分支', !/if \(ids\.size === 0\) for \(const n of/.test(cb));
+  const RAW_LTM = read('apps/server/src/llm-task-manager.ts');
+  const rawCb = RAW_LTM.slice(RAW_LTM.indexOf('function collectParentToolIds'), RAW_LTM.indexOf('function collectParentToolIds') + 2600);
+  ck('★★ 写明 fail-closed 理由（防后人加回）', /fail-closed/.test(rawCb));
+  ck('★★ 说明父级无能力时纯推理是正确行为', /纯推理/.test(rawCb));
+});
+
+group('⑨ 子智能体不得看到派生类工具', () => {
+  const ex = win(LTM, "if (name === 'call_agent'", 700, '排除逻辑');
+  ck('★★ spawn_subagent 已排除', ex.includes("name === 'spawn_subagent'"));
+  ck('★★ call_agent / list_sub_agents 仍排除', ex.includes("name === 'call_agent'") && ex.includes("name === 'list_sub_agents'"));
+  const RAW_LTM2 = read('apps/server/src/llm-task-manager.ts');
+  const i2 = RAW_LTM2.indexOf('// 子智能体不能再派生');
+  ck('★ 排除理由写明', i2 > -1 && RAW_LTM2.slice(i2, i2 + 700).includes('白烧 token'));
+});
+
+group('⑩ 沉淀建议链路（原为死代码）', () => {
+  ck('★★ specFingerprint 已实现', SPEC.includes('export function specFingerprint'));
+  ck('★★ 已被真实使用（非死代码）', LTM.includes('specFingerprint(normalized.instruction)'));
+  ck('★★ 指纹计数在 task 上', LTM.includes('specFingerprints?: Map<string, number>'));
+  ck('★★ 只建议不自动建', !win(LTM, 'async function runSpawnedSubAgent', 7000, 'run').includes('INSERT INTO agent'));
+  ck('★★ 建议交给模型转告用户', LTM.includes('建议固化成正式子智能体'));
+});
+
 console.log(out.join('\n'));
 console.log('');
 console.log(`结果: ${pass} 通过 / ${fail} 失败`);
