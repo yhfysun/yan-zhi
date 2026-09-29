@@ -41,6 +41,12 @@ import {
   isWorkflowToolName, workflowAgentIdOfTool,
 } from './services/workflow-tool-registry.js';
 import { promises as fsp } from 'node:fs';
+// 运行时生成子智能体（AOrchestra 对齐）：四元组归一化 / 工具三重裁剪 / 预算闸 / 提示词渲染
+import {
+  normalizeSubAgentSpec, resolveSpecTools, renderSpecSystemPrompt, checkSpawnBudget,
+  DEFAULT_MAX_SPAWN_PER_TASK, DEFAULT_SPEC_MAX_STEPS,
+  type SubAgentSpec, type ResolvedSubAgentSpec,
+} from './services/subagent-spec.js';
 // 同步 fs / path：项目规则（AGENTS.md）读取走同步路径（提示词构建是同步函数），
 // 且带 mtime 缓存，开销可忽略。
 import { statSync, readFileSync, readdirSync, existsSync } from 'node:fs';
@@ -108,6 +114,11 @@ interface LlmTask {
    *  非空即表示还有未消费的用户输入：本轮模型即便不再调工具，也不能直接 finish，
    *  必须再跑一轮把这些消息带进上下文。 */
   pendingInjects: string[];
+  /** 运行时生成子智能体的预算闸（AOrchestra 对齐，见 services/subagent-spec.ts）。
+   *  上限来自 agent.config_json.maxSpawnPerTask，缺省 DEFAULT_MAX_SPAWN_PER_TASK。 */
+  spawnBudget?: number;
+  /** 本任务内已现场生成的子智能体次数（与 spawnBudget 配对做闸门） */
+  spawnCount?: number;
 }
 
 const tasks = new Map<string, LlmTask>();
@@ -338,6 +349,18 @@ export function createTask(params: {
     ontologyIds: params.ontologyIds,
     permissionMode,
     pendingInjects: [],
+    // 运行时生成子智能体的预算闸：智能体可配 maxSpawnPerTask（0 = 关闭该能力）
+    spawnBudget: (() => {
+      try {
+        if (!params.agentId) return DEFAULT_MAX_SPAWN_PER_TASK;
+        const row = db.prepare('SELECT config_json FROM agent WHERE id = ? AND (user_id = ? OR is_public = 1)').get(params.agentId, params.userId) as any;
+        const cfg = row?.config_json ? JSON.parse(row.config_json) : {};
+        const v = Number(cfg?.maxSpawnPerTask);
+        if (Number.isFinite(v) && v >= 0) return Math.floor(v);
+      } catch { /* 读不到用默认 */ }
+      return DEFAULT_MAX_SPAWN_PER_TASK;
+    })(),
+    spawnCount: 0,
   };
   tasks.set(taskId, task);
   emit(task, { type: 'task:created', taskId, conversationId: params.conversationId });
@@ -1755,14 +1778,28 @@ async function consolidateOnTaskEnd(task: LlmTask, summary: string): Promise<voi
   } catch { /* 收尾整理失败不影响任务状态 */ }
 }
 
-/** 工具执行策略：
- *  - UI 交互工具（ask_user 等）→ 委托前端，刷新时暂停等待重连
- *  - MCP 工具（mcp_ 前缀，连接在前端）→ 委托前端
- *  - API 工具（api_ 前缀，操作 DB）→ 后端直接执行 executeApiTool
- *  - call_agent → 后端直接执行子 ReAct 循环
- *  - 自定义工具（custom_ 前缀，服务端沙箱）→ 后端直接执行 runInSandbox
- *  - 内置工具（file/cmd/browser 等）→ 后端直接执行，刷新不中断
- *  - 未知工具 → 委托前端兜底 */
+/** 运行时可被「运行时生成子智能体」（spawn_subagent）复用的父级工具全集。
+ *  目的：让父级已挂载的工具能在子智能体里被 `browser_*` 这类通配展开。
+ *  不在此清单里的（MCP 挂载、其他 API 工具）仍按原有方式处理。 */
+const SPEC_REUSABLE_BUILTIN_TOOLS: string[] = [
+  // 通用执行
+  'file_read', 'file_write', 'file_edit', 'file_grep', 'file_list', 'file_to_markdown',
+  'code_search', 'code_outline', 'code_refs', 'code_graph',
+  'http_request', 'cmd_exec', 'python_exec', 'js_exec', 'doyz',
+  // 浏览器 / 自动化（常作为子智能体的核心能力）
+  'browser_navigate', 'browser_click', 'browser_type', 'browser_scroll', 'browser_snapshot',
+  'browser_screenshot', 'browser_extract', 'browser_wait', 'browser_evaluate',
+  'browser_go_back', 'browser_go_forward', 'browser_new_tab', 'browser_switch_tab',
+  'browser_close_tab', 'browser_list_tabs',
+  // 记忆 / 数据
+  'api_memory_search', 'api_memory_list', 'api_memory_create',
+  'api_kb_search', 'api_kb_list', 'api_kb_get',
+  'api_space_memory_read', 'api_space_memory_append',
+  // 媒体 / 办公
+  'api_media_fetch', 'api_image_generate', 'api_video_generate', 'api_tts_speak',
+  'api_docx_generate', 'api_xlsx_generate', 'api_pptx_generate',
+  'list_models',
+];
 
 /**
  * 执行一个自定义工具（含依赖按需安装）—— 见 `services/tool-deps.ts` 的 runCustomTool 说明。
@@ -1866,6 +1903,13 @@ async function executeTool(
   if (toolName === 'call_agent') {
     if (depth >= 1) return '子智能体不能再调用子智能体（深度仅允许 1 层）';
     return runSubAgent(task, args, toolCallId, depth, uiTools);
+  }
+
+  // spawn_subagent → **运行时现场生成**专项子智能体（对齐 AOrchestra 的四元组 Φ=(I,C,T,M)）
+  // 与 call_agent 的区别：call_agent 调**已存在**的角色，spawn_subagent 现场给一个临时执行者填配置。
+  if (toolName === 'spawn_subagent') {
+    if (depth >= 1) return '子智能体不能再生成子智能体（深度仅允许 1 层，防递归自增殖）';
+    return runSpawnedSubAgent(task, args, toolCallId, depth, uiTools);
   }
 
   // wf_<agentId> → 工作流工具（工作流模式：AI 模式下的主要调用通道）
@@ -2300,6 +2344,168 @@ function notifyConversation(ctx: WorkflowDeliveryCtx, event: SSEEvent): void {
   emitConversation(ctx.conversationId, event);
 }
 
+/**
+ * ★★★ `spawn_subagent` 的后端实现：**运行时现场生成**专项子智能体。
+ *
+ * 对齐 AOrchestra (ICML 2026) 的核心抽象 Φ = (Instruction, Context, Tools, Model)：
+ * 主智能体发现"手头没有合适的执行者"时，**现场填四元组**造一个临时子智能体，
+ * 让它带着**刚好够用**的指令/上下文/工具/模型去执行，返回结论后即完成使命。
+ *
+ * ═══ 与 call_agent 的分工 ═══
+ *  · `call_agent(agentId)` —— 调用**已存在**的静态角色（预设的 pageAgent 等）
+ *  · `spawn_subagent(spec)` —— 现场**定制**一个，库里不留痕，用完即弃
+ *
+ * ═══ 三道安全闸（缺一即等于把权限体系开了口子）═══
+ * ① **不得提权**：T 必须是父智能体当前可用工具的子集（`resolveSpecTools` 里过 parentToolIds）
+ * ② **黑名单**：不给派生/定义类工具（防递归自增殖 + 防自我提权），见 SPEC_TOOL_BLACKLIST
+ * ③ **预算闸**：单任务内最多 DEFAULT_MAX_SPAWN_PER_TASK 次（防"打不过就再叫一个"）
+ *
+ * 执行上**复用** runSubAgent 的同一条 ReAct 循环（合成虚拟 agent 行注入），
+ * 不另起执行器 —— 否则消息归属、深度限制、上下文隔离这些语义必然漂移。
+ */
+async function runSpawnedSubAgent(
+  task: LlmTask,
+  args: any,
+  parentToolCallId: string,
+  depth: number,
+  uiTools: Set<string>,
+): Promise<string> {
+  // ── ③ 预算闸 ──
+  const budget = typeof task.spawnBudget === 'number' ? task.spawnBudget : DEFAULT_MAX_SPAWN_PER_TASK;
+  const used = task.spawnCount || 0;
+  const gate = checkSpawnBudget(used, budget);
+  if (!gate.allowed) return gate.reason;
+
+  // ── 四元组归一化（I 必填且要够具体，否则子智能体两眼一抹黑）──
+  const normalized = normalizeSubAgentSpec((args || {}) as Partial<SubAgentSpec>);
+  if ('error' in normalized) return `${normalized.error}\n\n示例：{"instruction":"抓取 A/B/C 三个页面的报价并整理成三列表格","context":"目标 URL：...；我们关心字段：单价/起订量/交期","tools":["browser_*","file_read"],"deliverable":"markdown 三列表格，含页面出处"}`;
+
+  // ── ① 工具裁剪：父级可用工具为全集，模型只能"少要" ──
+  const parentToolIds = collectParentToolIds(task, uiTools);
+  const permissionMode = task.permissionMode || 'default';
+  const { pinned, dropped } = resolveSpecTools({
+    requested: normalized.tools || [],
+    excluded: normalized.toolExclude,
+    parentToolIds,
+    isAllowed: (n) => checkToolPermission(permissionMode, n),
+  });
+
+  if (pinned.length === 0 && (normalized.tools || []).length > 0) {
+    // 要了工具但一个都没批下来 —— 大概率是提权尝试或名字写错，明确回显而不是静默变纯推理
+    const why = dropped.map((d) => `  · ${d.name}：${d.reason}`).join('\n');
+    return `你请求的工具全部不可用，子智能体未创建。原因：\n${why}\n请改为父智能体已挂载的工具，或不要 tools（纯推理/整理），或用 call_agent 调用已有子智能体。`;
+  }
+
+  // ── M：模型解析（子任务可选轻量模型省钱；缺省沿用父任务）──
+  const platformId = normalized.platformId || task.platformId;
+  const modelId = normalized.modelId || task.modelId;
+
+  // ── 组装四元组 → 虚拟 agent 配置 ──
+  const resolved: ResolvedSubAgentSpec = {
+    spec: normalized,
+    pinnedToolIds: pinned,
+    dropped,
+    platformId,
+    modelId,
+    maxSteps: normalized.maxSteps || DEFAULT_SPEC_MAX_STEPS,
+  };
+  const systemPrompt = renderSpecSystemPrompt(resolved);
+  const synthId = `spawn_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+  const synthName = normalized.purpose?.slice(0, 20) || '临时子智能体';
+
+  // 预算与留痕（用户要能在对话里看到"它开了个子智能体"以及为什么）
+  task.spawnCount = used + 1;
+  emit(task, {
+    type: 'sub_agent:spawn', specId: synthId, name: synthName,
+    purpose: normalized.purpose || '', toolIds: pinned,
+    dropped: dropped.map((d) => d.name), count: task.spawnCount, budget,
+  });
+  void recordSpawnedSubAgent(task, synthId, resolved);
+
+  const input = [
+    normalized.instruction,
+    normalized.context ? `\n\n【上下文】\n${normalized.context}` : '',
+    normalized.deliverable ? `\n\n【期望产出】\n${normalized.deliverable}` : '',
+  ].join('');
+
+  const result = await runSubAgent(
+    task,
+    { agentId: synthId, input, platformId, modelId },
+    parentToolCallId,
+    depth,
+    uiTools,
+    {
+      agentId: synthId,
+      agentName: synthName,
+      systemPrompt,
+      toolIds: pinned,
+      platformId,
+      modelId,
+      maxSteps: resolved.maxSteps,
+    },
+  );
+
+  const tail = dropped.length
+    ? `\n\n（注：以下工具按安全策略未开放 —— ${dropped.map((d) => `${d.name}：${d.reason}`).join('；')}）`
+    : '';
+  const budgetNote = task.spawnCount >= budget
+    ? `\n（本任务现场生成子智能体已达上限 ${budget} 次，后续请自行完成或改用 call_agent）`
+    : '';
+  return `${result}${tail}${budgetNote}`;
+}
+
+/**
+ * 收集"父智能体当前可用的工具全集" —— 这是"不得提权"的判定基准。
+ *
+ * ★ 口径与 `buildToolsForBackend` 保持一致（那才是模型真正看到的工具面）：
+ *   只收**父级实际已挂载**的内置/API 工具，外加一小撮"按需发现"的 API 工具
+ *   （模型本来就是通过 get_api_tools 动态拿到它们的，理应能转授给子智能体）。
+ *   MCP 挂载不在其中 —— 那些工具的副作用不可判定，不该被随手转授。
+ */
+function collectParentToolIds(task: LlmTask, uiTools: Set<string>): string[] {
+  const ids = new Set<string>();
+  try {
+    const convMounts = loadConversationMounts(task.conversationId);
+    let agentIds: string[] = [];
+    if (task.agentId) {
+      const row = db.prepare('SELECT builtin_tool_ids FROM agent WHERE id = ? AND (user_id = ? OR is_public = 1)').get(task.agentId, task.userId) as any;
+      try { agentIds = JSON.parse(row?.builtin_tool_ids || '[]'); } catch { agentIds = []; }
+    }
+    for (const n of [...agentIds, ...convMounts.builtinToolIds]) ids.add(n);
+    // UI 工具（无人值守时本就不该给）
+    if (!task.includeUiTools) for (const n of UI_TOOL_NAMES) ids.delete(n);
+    // 会话级权限：只读会话里，写类工具**不进全集**（否则子智能体就绕开了权限分级）
+    const mode = task.permissionMode || 'default';
+    for (const n of [...ids]) if (!checkToolPermission(mode, n).allowed) ids.delete(n);
+  } catch { /* 取不到就退到下面的兜底清单 */ }
+
+  // 兜底/补充：若父级挂载清单异常（拿不到），仍允许复用一小撮通用工具，
+  // 避免"生成子智能体"这条链路因一次 DB 抖动而完全不可用（幂等、无副作用）。
+  if (ids.size === 0) for (const n of SPEC_REUSABLE_BUILTIN_TOOLS) ids.add(n);
+
+  // UI 交互工具永不转授：子智能体无人对话，让它 ask_user 会直接挂住
+  for (const n of INTERACTIVE_TOOLS) ids.delete(n);
+  for (const n of UI_TOOL_NAMES) if (!task.includeUiTools) ids.delete(n);
+  return [...ids];
+}
+
+/**
+ * 留痕：把本次现场生成的子智能体记进空间记忆（**轻量、异步、失败不影响任务**）。
+ *
+ * 为什么值得记：用户事后看到"它自己开了个子智能体"想知道**为什么开、开了什么能力**；
+ * 反复出现的同一类 spec 也提示"该把它固化成正式子智能体了"（见 shouldSuggestPersist）。
+ */
+async function recordSpawnedSubAgent(task: LlmTask, specId: string, resolved: ResolvedSubAgentSpec): Promise<void> {
+  try {
+    const desc = resolved.spec.purpose || resolved.spec.instruction.slice(0, 40);
+    const tools = resolved.pinnedToolIds.length ? resolved.pinnedToolIds.join('、') : '（无工具，纯推理）';
+    const line = `- [${new Date().toLocaleString('zh-CN')}] 现场生成子智能体「${desc}」（${specId}）：开放工具 ${tools}；模型 ${resolved.modelId || resolved.platformId || '继承父级'}`;
+    const { resolveConversationSpaceId, appendSpaceMemory } = await import('./services/space-memory.js');
+    const spaceId = resolveConversationSpaceId(task.conversationId);
+    if (spaceId) await appendSpaceMemory(task.userId, spaceId, line);
+  } catch { /* 留痕失败不影响子智能体执行 */ }
+}
+
 /** call_agent 后端执行：查 DB agent 配置，按智能体类型分派。
  *  - workflow 型 → 跑一次 DAG，把 output 节点产物作为工具结果返回；
  *  - 其余（harness 型）→ 递归跑子 ReAct 循环，子智能体消息写入同一会话，
@@ -2311,6 +2517,17 @@ async function runSubAgent(
   parentToolCallId: string,
   depth: number,
   uiTools: Set<string>,
+  /** 运行时生成的临时子智能体：由 spawn_subagent 现场装配（见 services/subagent-spec.ts）。
+   *  给出时**跳过 DB agent 查询**，直接用注入的提示词/工具/模型执行。 */
+  specOverride?: {
+    agentId: string;
+    agentName: string;
+    systemPrompt: string;
+    toolIds: string[];
+    platformId?: string;
+    modelId?: string;
+    maxSteps?: number;
+  },
 ): Promise<string> {
   const agentId = args.agentId || (args as any).agent_id || (args as any).id;
   // input 允许是对象（多入参工作流的推荐用法）；harness 分支一律按文本处理
@@ -2328,8 +2545,27 @@ async function runSubAgent(
   };
   const resolvedId = SUBAGENT_ALIASES[agentId] || agentId;
 
+  // ★★★ 运行时生成的临时子智能体：它在 agent 表里**没有行**。
+  //   做法是**合成一份「虚拟 agent 配置」**，后续走**完全同一条** ReAct 循环
+  //   （消息归属、上下文隔离、工具执行、深度限制、最大步数收尾全部复用）。
+  //   为什么不合另起一套执行器：本项目已因"同一件事多个入口各写一遍"漂移过 5 次
+  //   （见 memory 里 P1-4 的入口漂移事故），能复用就绝不复刻。
+  const specRow = specOverride
+    ? {
+        id: specOverride.agentId,
+        name: specOverride.agentName,
+        system_prompt: specOverride.systemPrompt,
+        builtin_tool_ids: JSON.stringify(specOverride.toolIds),
+        platform_id: specOverride.platformId || null,
+        model_id: specOverride.modelId || null,
+        type: 'harness',
+        config_json: specOverride.maxSteps ? JSON.stringify({ maxReActSteps: specOverride.maxSteps }) : null,
+      }
+    : null;
+
   // 查 DB agent 配置
-  const agent = db.prepare('SELECT * FROM agent WHERE id = ? AND (user_id = ? OR is_public = 1)').get(resolvedId, task.userId) as any;
+  const agent = specRow
+    || (db.prepare('SELECT * FROM agent WHERE id = ? AND (user_id = ? OR is_public = 1)').get(resolvedId, task.userId) as any);
   if (!agent) return `子智能体不存在: ${agentId}（可调用 list_sub_agents 工具查询可用子智能体及其 ID）`;
 
   // 按智能体类型分派：工作流型跑 DAG，其余走 ReAct。
@@ -3001,6 +3237,42 @@ export function buildSystemPromptForBackend(agentId: string | null, userId: stri
         if (sub) subLines.push(`- **${sub.name}** (id: \`${sid}\`): ${sub.description || ''}`);
       }
       if (subLines.length > 0) parts.push('---\n## 可调用子智能体\n' + subLines.join('\n'));
+    }
+
+    // 运行时生成子智能体（对齐 AOrchestra Φ=(I,C,T,M)）的使用引导。
+    //
+    // ★ 为什么必须显式写进提示词：这个能力**天然反直觉** —— 模型的默认反应是"我自己硬做"，
+    //   而不是"先造一个专项执行者"。不点明适用场景，工具挂着也不会被用（本项目已有先例：
+    //   自举工具集挂上之前，模型遇到缺工具只会空转）。
+    // ★ 也要写清"什么时候**不要**用"：否则会滥用（每件小事都开一个子智能体，烧 token 且更慢）。
+    const hasSpawnTool = (() => { try { const r = db.prepare('SELECT builtin_tool_ids FROM agent WHERE id = ? AND (user_id = ? OR is_public = 1)').get(agentId, userId) as any; const ids: string[] = r?.builtin_tool_ids ? JSON.parse(r.builtin_tool_ids) : []; return ids.includes('spawn_subagent') || convMounts.builtinToolIds.includes('spawn_subagent'); } catch { return false; } })();
+    if (hasSpawnTool) {
+      parts.push(
+        [
+          '---',
+          '## 缺少合适执行者时：现场生成子智能体（spawn_subagent）',
+          '你不必只用「已有」的子智能体。当发现手头没有对口的执行能力时，可以**现场定制**一个专项子智能体去干这件事。',
+          '',
+          '**适合用的场景**（满足其一即值得考虑）：',
+          '- 子任务需要的能力组合与现有角色都不对口（如"按错误类型聚类这批日志"、"逐个核验这 12 条链接是否失效"）；',
+          '- 子任务上下文高度独立（只需要少量输入、产出一段结论）—— 交给子智能体可避免把大量中间过程塞进你的上下文；',
+          '- 子任务可批量并行（同类活分给多个子智能体，比你自己串行做快得多）；',
+          '- 子任务简单且重复（用轻量模型跑，省成本）。',
+          '',
+          '**不要用的场景**（滥用会变慢变贵）：',
+          '- 你一两步就能做完的事；',
+          '- 已经有现成子智能体能干的活 —— 那用 `call_agent`（更省，且它有预设的专业提示词）；',
+          '- 需要边做边和用户确认的活（子智能体看不到用户，`ask_user` 也不会转给它）。',
+          '',
+          '**你现场要填四个要素**：',
+          '- `instruction`：做什么 + 什么算完成（**必须自包含**，它看不到你们的对话历史）；',
+          '- `context`：**只给相关背景**（关键数据/路径/URL/约束）。别粘贴整段历史 —— 无关信息会分散它的注意力；',
+          '- `tools`：**只开需要的工具**（支持 `browser_*` 这类通配）。★ 只能是**你已挂载工具的子集**，多要会被拒绝并告诉你原因；',
+          '- `platformId`/`modelId`：可选。简单活用轻量模型更划算（可先 `list_models` 查）。',
+          '',
+          `'它返回一段结构化结论（做了什么 / 关键结果 / 未完成部分），你据此继续。',`,
+        ].join('\n'),
+      );
     }
 
     // Skills 描述 + 流程指引：agent ∪ 会话挂载

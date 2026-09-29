@@ -733,8 +733,8 @@ const DEFAULT_AGENT_BUILTIN_TOOLS = [
   // （真实浏览器 browser_get_page_content 已覆盖抓正文能力）
   // 网络安全
   'http_request', 'dns_lookup', 'port_scan', 'tcp_send', 'udp_send',
-  // 子智能体
-  'call_agent', 'list_sub_agents',
+  // 子智能体（委派 / 列表 / 运行时现场生成）
+  'call_agent', 'list_sub_agents', 'spawn_subagent',
   // 模型查询（列出可用平台/模型/能力/描述，供选型与 call_agent 指定模型）
   'list_models',
   // 用户交互
@@ -1188,7 +1188,7 @@ const CODE_AGENT_BUILTIN_TOOLS = [
   // 验收：编译 / 测试 / 脚本
   'cmd_exec', 'js_exec', 'python_exec',
   // 委派：4 个专属子智能体 + pageAgent 查官方文档
-  'call_agent', 'list_sub_agents', 'list_models',
+  'call_agent', 'list_sub_agents', 'spawn_subagent', 'list_models',
   // 任务拆解与用户交互
   'task_plan', 'task_step', 'ask_user', 'confirm_user',
 ];
@@ -1391,7 +1391,7 @@ const STORYBOARD_AGENT_BUILTIN_TOOLS = [
   // 网络素材获取 + 竖屏规格统一：找参考视频/空镜素材自己下载；多镜拼长视频前先统一规格
   'api_media_fetch', 'api_media_normalize',
   // 联网查风格参考与平台参数（委派 pageAgent）；list_models 用于生产段挑选可用的图/视频模型
-  'call_agent', 'list_sub_agents', 'list_models',
+  'call_agent', 'list_sub_agents', 'spawn_subagent', 'list_models',
   // 需求澄清与任务拆解
   'task_plan', 'task_step', 'ask_user', 'confirm_user',
 ];
@@ -1528,7 +1528,7 @@ const DESIGN_AGENT_BUILTIN_TOOLS = [
   // 浏览器核心三件（打开参考站看一眼；多步操作委派 pageAgent）
   'browser_navigate', 'browser_get_page_content',
   // 子智能体（pageAgent 联网找灵感/操作文生图平台）与模型选型（挑图片生成模型）
-  'call_agent', 'list_sub_agents', 'list_models',
+  'call_agent', 'list_sub_agents', 'spawn_subagent', 'list_models',
   // 用户交互与任务规划
   'task_plan', 'task_step', 'ask_user', 'confirm_user',
 ];

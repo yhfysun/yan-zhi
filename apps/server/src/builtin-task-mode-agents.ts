@@ -62,7 +62,7 @@ export const NOVEL_AGENT_BUILTIN_TOOLS = [
   // 长稿统计与合并导出（字数、章节切分、拼稿）
   'python_exec',
   // 委派 pageAgent 查背景资料/年代细节；list_models 用于超长稿件换更强模型
-  'call_agent', 'list_sub_agents', 'list_models',
+  'call_agent', 'list_sub_agents', 'spawn_subagent', 'list_models',
   ...COMMON_SPACE_TOOLS,
   ...COMMON_MEMORY_TOOLS,
   ...COMMON_TALK_TOOLS,
@@ -116,7 +116,7 @@ export const SCRIPT_AGENT_BUILTIN_TOOLS = [
   // 网络素材获取 + 竖屏规格统一：找参考空镜/竞品视频素材自己下载，拼长视频前先统一规格
   ...COMMON_MEDIA_FETCH_TOOLS,
   // 看网页原文：竞品页面、平台规则；多步操作委派 pageAgent
-  'call_agent', 'list_sub_agents', 'list_models',
+  'call_agent', 'list_sub_agents', 'spawn_subagent', 'list_models',
   ...COMMON_SPACE_TOOLS,
   ...COMMON_MEMORY_TOOLS,
   ...COMMON_TALK_TOOLS,
@@ -172,7 +172,7 @@ export const AUDIOBOOK_AGENT_BUILTIN_TOOLS = [
     // 网络素材获取 + 竖屏规格统一：缺视频素材时自己去找并下载，拼长视频前先统一规格
     ...COMMON_MEDIA_FETCH_TOOLS,
   // 视频素材：读路径与时长；需要联网找素材/查平台参数时委派 pageAgent
-  'call_agent', 'list_sub_agents', 'list_models',
+  'call_agent', 'list_sub_agents', 'spawn_subagent', 'list_models',
   ...COMMON_SPACE_TOOLS,
   ...COMMON_MEMORY_TOOLS,
   ...COMMON_TALK_TOOLS,
@@ -248,7 +248,7 @@ export const DUBBING_AGENT_BUILTIN_TOOLS = [
     // 网络素材获取 + 竖屏规格统一（配音素材/参考视频从网上取）
   ...COMMON_MEDIA_FETCH_TOOLS,
   // 需要查音色方案/平台参数时委派 pageAgent
-  'call_agent', 'list_sub_agents', 'list_models',
+  'call_agent', 'list_sub_agents', 'spawn_subagent', 'list_models',
   ...COMMON_SPACE_TOOLS,
   ...COMMON_MEMORY_TOOLS,
   ...COMMON_TALK_TOOLS,

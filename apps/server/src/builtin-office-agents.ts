@@ -33,7 +33,7 @@ export const TRANSLATE_AGENT_BUILTIN_TOOLS = [
   // 批量处理 / 术语表统计 / 编码与格式转换 / 生成对照表
   'python_exec',
   // 委派 pageAgent 查术语与官方译名；list_models 用于长文或小语种选型
-  'call_agent', 'list_sub_agents', 'list_models',
+  'call_agent', 'list_sub_agents', 'spawn_subagent', 'list_models',
   // 交互与规划
   'task_plan', 'task_step', 'ask_user', 'confirm_user',
 ];
@@ -88,7 +88,7 @@ export const BUSINESS_AGENT_BUILTIN_TOOLS = [
   // 看网页原文：平台规则、政策文件、竞品页面（多步操作委派 pageAgent）
   'browser_navigate', 'browser_get_page_content',
   // 委派 pageAgent 查政策/平台规则/行情；list_models 用于长文或复杂测算选型
-  'call_agent', 'list_sub_agents', 'list_models',
+  'call_agent', 'list_sub_agents', 'spawn_subagent', 'list_models',
   // 交互与规划
   'task_plan', 'task_step', 'ask_user', 'confirm_user',
 ];

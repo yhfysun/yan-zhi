@@ -99,8 +99,12 @@ const WRITE_TOOLS = new Set([
  */
 const UNCONTROLLABLE_PREFIXES = ['custom_', 'mcp_', 'wf_'];
 
-/** 委派给子智能体：子体可能调用任意写工具，readonly 下必须拒绝（深度>=1 亦由调用侧限制） */
-const DELEGATION_TOOLS = new Set(['call_agent']);
+/** 委派给子智能体：子体可能调用任意写工具，readonly 下必须拒绝（深度>=1 亦由调用侧限制）
+ *  ★ spawn_subagent（运行时现场生成子智能体）与 call_agent 同性质：
+ *    它虽然自己不在子体里开放写工具，但**继承了父级可用的全部非写工具**，
+ *    且是"模型自选能力组合"的入口 —— 只读会话里必须一并拒绝，
+ *    否则就成了绕过权限分级的后门（父级只读，却生成一个能写文件的子智能体）。 */
+const DELEGATION_TOOLS = new Set(['call_agent', 'spawn_subagent']);
 
 /** 纯交互/规划类工具：不产生外部副作用，任何模式都放行 */
 const INTERACTION_TOOLS = new Set([

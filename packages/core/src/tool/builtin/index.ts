@@ -23,6 +23,7 @@ export { SecurityTool } from './security';
 export { BrowserToolClasses, BROWSER_TOOL_NAMES } from './browser';
 export { CallAgentTool } from './call-agent';
 export { ListSubAgentsTool } from './list-sub-agents';
+export { SpawnSubAgentTool } from './spawn-sub-agent';
 export { ListModelsTool } from './list-models';
 export { AskUserTool } from './ask-user';
 export { ConfirmUserTool } from './confirm-user';
@@ -67,6 +68,7 @@ import { SecurityTool } from './security';
 import { BrowserToolClasses } from './browser';
 import { CallAgentTool } from './call-agent';
 import { ListSubAgentsTool } from './list-sub-agents';
+import { SpawnSubAgentTool } from './spawn-sub-agent';
 import { ListModelsTool } from './list-models';
 import { AskUserTool } from './ask-user';
 import { ConfirmUserTool } from './confirm-user';
@@ -114,6 +116,9 @@ export function registerBuiltInTools(registry: ToolRegistry): void {
   registry.register(new CallAgentTool());
   // 子智能体列表查询工具（E7b）—— 让 LLM 动态发现可用子智能体及其 ID
   registry.register(new ListSubAgentsTool());
+  // ★ 运行时**现场生成**子智能体（对齐 AOrchestra）：主智能体按需填四元组，库里不留角色。
+  //   与 call_agent（调已存在的）互补：一个"点名调用"，一个"现场定制"。
+  registry.register(new SpawnSubAgentTool());
   // 可用模型查询工具 —— 让 LLM 动态发现平台/模型/能力，为 call_agent 指定模型与多模态选型提供依据
   registry.register(new ListModelsTool());
   // 交互式工具（E12）：反问弹窗 + 任务规划进度（实际执行由 UI 层 dispatchToolCall 拦截）
