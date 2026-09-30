@@ -1,4 +1,7 @@
 export { FileReadTool } from './file-read';
+// ★ 工具路径的统一解析出口（2026-09-30）：前端 image_analyze 通道也要用它，
+//   所以必须从包根透出（此前 fs-walk 并未导出，前端引不到）。
+export { resolveToolPath, isAbsolutePath, joinPath, DEFAULT_SKIP_DIRS } from './fs-walk';
 export { FileToMarkdownTool } from './file-to-markdown';
 export { FileWriteTool } from './file-write';
 export { FileEditTool } from './file-edit';

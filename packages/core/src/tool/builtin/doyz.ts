@@ -5,10 +5,11 @@
 // 产物分类约定（对齐 file_write）：
 //   - export / xlsx 的产出文件是最终交付物 → category='deliverable'，经 _meta 落「已交付」段。
 //   - init / from-md / add-chart 产出的是可继续编辑的 doyz 源文件 → category='intermediate'，落「中间文件」段。
-import type { BuiltInTool } from '../types';
+import type { BuiltInTool, ToolContext } from '../types';
 import type { McpCallResult } from '../../mcp/client';
 import { getPythonScript, runPythonScript } from './python-runtime';
 import { capToolOutput } from './output-cap';
+import { resolveToolPath } from './fs-walk';
 import * as path from 'path';
 
 const KINDS = ['document', 'presentation', 'spreadsheet'];
@@ -59,11 +60,20 @@ export class DoyzTool implements BuiltInTool {
     required: ['action'],
   };
 
-  async execute(args: Record<string, unknown>): Promise<McpCallResult> {
+  async execute(args: Record<string, unknown>, ctx?: ToolContext): Promise<McpCallResult> {
     const action = args.action as string;
     const script = getPythonScript('doyz/doyz.py');
     if (!script) {
       return { content: [{ type: 'text', text: 'Error: 未找到 doyz.py 脚本（resources/python-tools 或 packages/core 开发目录）。' }], isError: true };
+    }
+
+    // ★★★ 输入路径统一基于**工作目录**解析（2026-09-30）：
+    //   本工具把 args.file / args.csv / args.json / args.md / args.out 直接交给 python 脚本，
+    //   相对路径会落到**进程 cwd** → 与 file_read/file_list 同一个缺陷（用户报的那类）。
+    //   只解析**输入**路径；`out` 是输出目标，由下方 defaultOut/argv 自行决定（避免改变落盘语义）。
+    const rp = (v: unknown) => (typeof v === 'string' && v.trim() ? resolveToolPath(v.trim(), ctx?.workspaceDir) : v);
+    for (const k of ['file', 'csv', 'json', 'md'] as const) {
+      if (args[k] !== undefined) (args as Record<string, unknown>)[k] = rp(args[k]);
     }
 
     const argv: string[] = [action];

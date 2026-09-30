@@ -2,7 +2,7 @@
 import { defineStore } from 'pinia';
 import { ref, computed, nextTick } from 'vue';
 import type { Conversation, Message, Platform, Model, DeltaToolCall, InlineDataView } from '@yan-zhi/shared';
-import { getPlatformAdapter, LlmClient, ContextWindow, getToolRegistry } from '@yan-zhi/core';
+import { getPlatformAdapter, LlmClient, ContextWindow, getToolRegistry, resolveToolPath } from '@yan-zhi/core';
 import { uid } from '@yan-zhi/shared';
 import { useMcpStore } from './mcp';
 import { useAgentStore } from './agent';
@@ -1384,9 +1384,17 @@ async function loadConversations() {
 
   /** image_analyze 实际执行：优先 vision 模型，降级服务端 OCR */
   async function runImageAnalyze(args: { path?: string; prompt?: string; platformId?: string; modelId?: string }): Promise<{ ok: boolean; result?: unknown; msg?: string }> {
-    const imgPath = args.path;
-    if (!imgPath) return { ok: false, msg: 'path 为必填项' };
+    // ★★ 必填校验看**原始入参**，再解析路径（2026-09-30）
+    const rawPath = typeof args.path === 'string' ? args.path.trim() : '';
+    if (!rawPath) return { ok: false, msg: 'path 为必填项' };
     const prompt = args.prompt || '请详细描述这张图片的内容，包括其中的文字、物体、场景等信息。';
+
+    // ★★★ 相对路径必须基于**工作目录**解析（2026-09-30 修）：
+    //   此前直接把模型给的路径交给 fs → 落到进程 cwd → 相对路径一律"图片不存在"。
+    //   与 core 侧工具同因（见 packages/core/src/tool/builtin/fs-walk.ts 的 resolveToolPath），
+    //   前端这条通道是它在前端的对应实现 —— 两面都要改，否则"换个工具又不行"。
+    const workspaceDir = useSettingsStore().settings.workspaceDir || '';
+    const imgPath = resolveToolPath(rawPath, workspaceDir);
 
     const { fs } = getPlatformAdapter();
     const exists = await fs.exists(imgPath).catch(() => false);

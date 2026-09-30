@@ -1,7 +1,12 @@
 // image_analyze 内置工具 —— 图片识别/分析
 // 实际执行由 chat.ts 的 dispatchToolCall 拦截：优先用多模态 vision 模型，
 // 无 vision 模型时降级走服务端 Tesseract OCR。此类仅注册 schema 让大模型知道工具存在。
-import type { BuiltInTool, ToolContext } from '../types';
+//
+// ★ 路径说明（2026-09-30）：本类是**占位实现**，不读文件，所以**不需要**
+//   `resolveToolPath` —— 真正解析 `args.path` 的是前端 dispatchToolCall
+//   （`packages/ui/src/composables/chat/useChat.ts`）。
+//   此处**刻意不加** ToolContext / resolveToolPath，避免留无用导入（曾误加后清理）。
+import type { BuiltInTool } from '../types';
 import type { McpCallResult } from '../../mcp/client';
 
 export class ImageAnalyzeTool implements BuiltInTool {
