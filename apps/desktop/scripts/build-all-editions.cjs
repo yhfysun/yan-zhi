@@ -103,18 +103,48 @@ function clearOutputDir(outDir) {
   throw new Error(`清理失败: ${first.dir}`);
 }
 
-/** 前置体检：这些目录缺失不会让构建失败，但会让成品缺能力（只警告，不阻断）。 */
+/**
+ * 前置体检 + **内置 Python 运行时自动生成**。
+ *
+ * ★★ 2026-09-30 用户拍板「自动生成」：此前 `resources/python` / `python-tools` 缺失时
+ *   只打警告、构建照常成功 → 成品静默少能力（`python_*` 工具回退系统 python，
+ *   用户机器没装就直接不可用）。现在改为**缺失即自动生成**，不再静默降级：
+ *     · `python-tools`（随包脚本，轻量）缺失 → 必生成；
+ *     · `python`（解释器，~400MB）缺失 → 默认生成；
+ *       网络不可达等无法生成时**明确报错**（而不是继续打出一个能力残缺的包）；
+ *       确需跳过（如离线环境已有系统 Python）用 `YZ_SKIP_PYTHON_RUNTIME=1` 显式声明。
+ *   ★ 生成失败**不静默**：这正对应 issues/打包前置资源缺失静默降级-20260919.md 的核心诉求。
+ */
 function preflight() {
+  const pyDir = path.join(desktopDir, 'resources', 'python');
+  const toolsDir = path.join(desktopDir, 'resources', 'python-tools');
+  const hasPython = fs.existsSync(pyDir);
+  const hasTools = fs.existsSync(toolsDir);
+
+  if (!hasPython || !hasTools) {
+    const skip = process.env.YZ_SKIP_PYTHON_RUNTIME === '1';
+    if (skip) {
+      console.warn('');
+      console.warn('==================================================================');
+      console.warn('  ⚠ 已按 YZ_SKIP_PYTHON_RUNTIME=1 **显式跳过**内置 Python 运行时');
+      console.warn('    → 本次成品不含内置 Python，python 类工具将回退系统 python');
+      console.warn('    （这是显式声明，非静默降级）');
+      console.warn('==================================================================');
+    } else {
+      console.log('');
+      console.log('==================================================================');
+      console.log('  内置 Python 运行时缺失 → **自动生成**（首次约需下载 40MB + 装依赖）');
+      console.log(`    · ${hasPython ? '✓ 解释器已存在' : '✗ 解释器缺失'}`);
+      console.log(`    · ${hasTools ? '✓ 随包脚本已存在' : '✗ 随包脚本缺失'}`);
+      console.log('  如需跳过（离线/自带系统 Python）: YZ_SKIP_PYTHON_RUNTIME=1 重新运行');
+      console.log('==================================================================');
+      // ★ 生成失败必须中断：否则会打出"看着成功、实则缺能力"的包（本 issue 的原始病灶）
+      run(process.execPath, [path.join(repoRoot, 'scripts', 'build-python-runtime.mjs')]);
+      console.log('  ✓ 内置 Python 运行时已生成');
+    }
+  }
+
   const warn = [];
-  if (!fs.existsSync(path.join(desktopDir, 'resources', 'python'))) {
-    warn.push(
-      'apps/desktop/resources/python 不存在 → 成品不内置 Python 运行时，python 类工具会回退系统 python。\n' +
-        '       如需内置，先跑: node scripts/build-python-runtime.mjs',
-    );
-  }
-  if (!fs.existsSync(path.join(desktopDir, 'resources', 'python-tools'))) {
-    warn.push('apps/desktop/resources/python-tools 不存在 → 随包 Python 脚本（doyz/security/pdf_preview）缺失。');
-  }
   if (!fs.existsSync(path.join(repoRoot, 'assets', 'icons', 'icon.ico'))) {
     warn.push('assets/icons/icon.ico 不存在 → 安装包图标将退化为 Electron 默认图标。');
   }

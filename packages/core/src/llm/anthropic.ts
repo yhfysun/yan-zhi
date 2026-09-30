@@ -88,7 +88,9 @@ export function toAnthropicMessages(messages: Message[]): AnthropicRequest {
     if (m.role === 'tool') {
       pendingToolResults.push({
         type: 'tool_result',
-        tool_use_id: m.toolCallId,
+        // ★ 两种形态都认：内部 Message 用 `toolCallId`；经 client.ts:toApiMessage（发送前清洗链）
+        //   转过的形态用 `tool_call_id`。只认一种会导致配对丢失（2026-09-30 收口时踩到）。
+        tool_use_id: m.toolCallId ?? (m as any).tool_call_id,
         content: m.content || '',
       });
       continue;
@@ -100,7 +102,10 @@ export function toAnthropicMessages(messages: Message[]): AnthropicRequest {
     } else if (m.role === 'assistant') {
       const content: Array<Record<string, unknown>> = [];
       content.push(...toAnthropicBlocks(m.content));
-      for (const tc of m.toolCalls || []) {
+      // ★ 两种形态都认：内部 `toolCalls`（工具在顶层 toolName/arguments）
+      //   与经 toApiMessage 转过的 `tool_calls`（OpenAI 约定，工具在 function.name/arguments）。
+      const calls = m.toolCalls ?? (m as any).tool_calls ?? [];
+      for (const tc of calls) {
         // ★ 与 client.ts 的 toApiMessage 同理：tool_calls 有「落库 DeltaToolCall（嵌套
         //   tc.function.*）」与「内部 ToolCall（顶层 tc.toolName/tc.arguments）」两种形态，
         //   必须都认，否则回放历史时同样把参数丢成空对象（2026-09-29 排障）。

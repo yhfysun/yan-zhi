@@ -9,9 +9,10 @@
 // packages/core/src/tool/builtin/python-runtime.ts 的 getBundledPythonPath() /
 // getPythonToolsDir() 解析。dev 模式（无 resources/python）自动回退系统 python。
 //
-// 受限网络：可用环境变量覆盖下载源与 pip 源
-//   YZ_PYTHON_STANDALONE_MIRROR  e.g. https://mirrors.example.com/pystandalone
-//   YZ_PIP_INDEX_URL             e.g. https://pypi.rsproxy.cn/simple
+// 受限网络：默认**国内镜像优先**（npmmirror 的 python-build-standalone 二进制目录），
+// GitHub Release 作兜底。可用环境变量覆盖为单一源：
+//   YZ_PYTHON_STANDALONE_MIRROR   e.g. https://mirrors.example.com/pystandalone
+//   YZ_PIP_INDEX_URL              e.g. https://pypi.rsproxy.cn/simple
 //
 // 用法：
 //   node scripts/build-python-runtime.mjs                 # 当前平台
@@ -33,7 +34,19 @@ const SRC_SCRIPTS = path.join(ROOT, 'packages', 'core', 'src', 'tool', 'builtin'
 
 // python-build-standalone 版本与三元组
 const PBS_VERSION = '20240726';
-const PBS_BASE = (process.env.YZ_PYTHON_STANDALONE_MIRROR || `https://github.com/indygreg/python-build-standalone/releases/download/${PBS_VERSION}`).replace(/\/$/, '');
+// ★★ 下载源**按顺序尝试**（2026-09-30 用户要求「自动生成」时踩到）：
+//   GitHub 直连在国内受限网络（含本机沙箱）会 `UND_ERR_CONNECT_TIMEOUT`，
+//   而 **npmmirror 的 python-build-standalone 二进制镜像可达**（实测 40.9MB 秒开）。
+//   → 默认国内镜像优先，GitHub 作兜底；可用 YZ_PYTHON_STANDALONE_MIRROR 覆盖为**单一源**。
+const PBS_VERSION_ENC = PBS_VERSION;
+const PBS_MIRRORS = process.env.YZ_PYTHON_STANDALONE_MIRROR
+  ? [process.env.YZ_PYTHON_STANDALONE_MIRROR.replace(/\/$/, '')]
+  : [
+      // ① 国内镜像：npmmirror 的 python-build-standalone 二进制目录（文件名里的 + 需编码为 %2B）
+      `https://registry.npmmirror.com/-/binary/python-build-standalone/${PBS_VERSION_ENC}`,
+      // ② 官方 GitHub Release（受限网络下可能不可达）
+      `https://github.com/indygreg/python-build-standalone/releases/download/${PBS_VERSION_ENC}`,
+    ];
 const PY_VER = '3.11.9';
 
 // 平台/架构 → 资源文件名
@@ -66,19 +79,57 @@ function run(cmd, args, opts = {}) {
   if (r.status !== 0) throw new Error(`${cmd} 失败（exit ${r.status ?? r.error?.message}）`);
 }
 
-async function download(url, dest) {
-  console.log('下载:', url);
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`下载失败 ${res.status}: ${url}`);
-  const buf = Buffer.from(await res.arrayBuffer());
-  writeFileSync(dest, buf);
-  console.log('已下载', (buf.length / 1024 / 1024).toFixed(1), 'MB');
+async function downloadOnce(url, dest, timeoutMs = 120000) {
+  console.log('尝试下载:', url);
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { signal: ac.signal });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    // ★ 必须**流式**落盘：本机沙箱下 arrayBuffer() 对 40MB+ 大文件会 CONNECT_TIMEOUT / 中断，
+    //   而逐块读 + 写流稳定（实测 npmmirror 源秒开）。
+    const { createWriteStream } = await import('node:fs');
+    const ws = createWriteStream(dest);
+    let n = 0;
+    for await (const chunk of res.body) {
+      n += chunk.length;
+      if (!ws.write(chunk)) await new Promise((r) => ws.once('drain', r));
+    }
+    await new Promise((r, j) => ws.end(() => r()) || ws.on('error', j));
+    console.log('已下载', (n / 1024 / 1024).toFixed(1), 'MB');
+    return n;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** 按镜像顺序依次尝试；全部失败才抛错（错误里列出每个源的失败原因，便于判断是网络还是配置） */
+async function download(urls, dest) {
+  const tried = [];
+  for (const u of urls) {
+    try {
+      const n = await downloadOnce(u, dest);
+      if (n > 0) return u;
+      tried.push(`${u} → 0 字节`);
+    } catch (e) {
+      const reason = e?.cause?.code || e?.name === 'AbortError' ? '超时' : e?.message;
+      console.log('  失败:', reason);
+      tried.push(`${u} → ${reason}`);
+    }
+  }
+  throw new Error(`所有下载源均失败：\n  ${tried.join('\n  ')}`);
 }
 
 // 用系统 tar 解压（Windows 10+ 自带 tar.exe；mac/linux 原生）。支持 .tar.gz。
+//
+// ★★ 必须「切工作目录 + 只用归档**基名**」—— 不能传 `-C C:\...` 或绝对归档路径：
+//   git-bash 里的 tar 是 **GNU tar**，会把带冒号的 Windows 路径（`C:\x.tar.gz`）当成
+//   `host:path` 形式的远程归档，报 `Cannot connect to C: resolve failed`。
+//   切 cwd 后只用相对基名，两种 tar 实现（GNU / bsdtar）都稳。
 function extractWithTar(archive, dest) {
   mkdirSync(dest, { recursive: true });
-  run(process.platform === 'win32' ? 'tar.exe' : 'tar', ['-xzf', archive, '-C', dest]);
+  const base = path.basename(archive);
+  run(process.platform === 'win32' ? 'tar.exe' : 'tar', ['-xzf', base], { cwd: dest });
 }
 
 // 定位解压后内层 python/ 目录并扁平到 PY_DIR（保证 PY_DIR/python.exe 或 PY_DIR/bin/python3 存在）
@@ -142,7 +193,9 @@ async function main() {
   const noDeps = arg('no-deps') === 'true';
   const force = arg('force') === 'true';
   const asset = pickAsset(platform, arch);
-  const url = `${PBS_BASE}/${asset}`;
+  // ★ 文件名里的 `+` 必须编码为 %2B：否则部分静态服务器（含 npmmirror）会把它当空格 → 404
+  const assetEnc = asset.replace(/\+/g, '%2B');
+  const urls = PBS_MIRRORS.map((b) => `${b}/${assetEnc}`);
 
   console.log(`目标: ${platform}/${arch}  →  ${asset}`);
   mkdirSync(RESOURCES, { recursive: true });
@@ -178,7 +231,8 @@ async function main() {
   mkdirSync(tmp, { recursive: true });
   const archive = path.join(tmp, asset);
 
-  await download(url, archive);
+  const usedUrl = await download(urls, archive);
+  console.log('下载源:', usedUrl);
   extractWithTar(archive, tmp);
   flattenPython(tmp);
 
@@ -189,8 +243,19 @@ async function main() {
     pipInstall(pythonExe, DEPS);
   }
   copyScripts();
+  // ★ 写依赖指纹：**完整路径也要写**（此前只在"已存在"的快速路径写）——
+  //   否则下次快速路径读到 null 会误判"依赖清单变化"，白白重跑一遍 pip install。
+  writeFileSync(DEPS_MARKER, JSON.stringify({ deps: JSON.stringify(DEPS), at: new Date().toISOString() }, null, 2));
 
-  rmSync(tmp, { recursive: true, force: true });
+  // ★★ 清理临时目录**必须非致命**：某些宿主（含本机沙箱）对批量删除有安全网，
+  //   会在这一步抛 SAFE_DELETE_BULK_CONFIRM_REQUIRED / EBUSY。此时**产物已完整生成**，
+  //   若让异常冒泡 → 整个生成返回非零 → 接进打包链后会**误判构建失败而中断**。
+  try {
+    rmSync(tmp, { recursive: true, force: true });
+  } catch (e) {
+    console.warn(`临时目录清理失败（不影响产物，可手动删除）: ${tmp}`);
+    console.warn(`  ${String(e.message).split('\n')[0]}`);
+  }
   console.log('完成。资源目录:');
   console.log('  python       →', PY_DIR);
   console.log('  python-tools →', TOOLS_DIR);

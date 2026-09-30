@@ -210,6 +210,18 @@ function preflight(targets) {
     info(c.dim('检测到已有 win-unpacked，将整体移走（避免删除被拦）'));
   }
 
+  // 内置 Python 运行时（2026-09-30 起：缺失会在桌面构建里**自动生成**，不再静默降级）
+  const pyDir = path.join(ROOT, 'apps', 'desktop', 'resources', 'python');
+  if (targets.desktop.length) {
+    if (fs.existsSync(pyDir)) {
+      info(c.dim('内置 Python 运行时已就绪（resources/python）'));
+    } else if (process.env.YZ_SKIP_PYTHON_RUNTIME === '1') {
+      warn('已显式跳过内置 Python 运行时（YZ_SKIP_PYTHON_RUNTIME=1）→ 成品将回退系统 python');
+    } else {
+      info('内置 Python 运行时缺失 → 构建时会**自动生成**（首次约 40MB 下载 + 装依赖）');
+    }
+  }
+
   if (targets.android) {
     // Android SDK
     const sdkCandidates = [

@@ -129,16 +129,56 @@ export class LlmClient {
         .filter((m) => m.role === 'tool' && m.tool_call_id)
         .map((m) => m.tool_call_id as string),
     );
+
+    // ★★★ 剥离「未执行的空参调用 + 它的错误回执」整组（2026-09-30 收口，剩余污染源）。
+    //
+    // ★ 决定性实验证据（用编译产物跑真实生产库会话）：
+    //   老会话 deed2862 库内 69.3% 空参 → 走完整 sanitizeToolMessages 后**仍是 69.3%** ——
+    //   即：id 自愈已生效（不再抹历史），但**存量坏历史被原样回放**。
+    //   生产库里这些坏样本的形态是**成组**的：
+    //     assistant: content="" + tool_calls=[{name:"python_exec", arguments:"{}"}]   ← 模型吐的空参
+    //     tool:      tool_call_id=<同 id>  content="工具 python_exec 未执行：arguments 缺少必填参数（code）…"
+    //   （回执是我们的拦截提示，不是真实工具结果）→ 每轮都完整地演示"可以不带参数"，模型照抄。
+    //
+    // ★ 判据（三条同时成立才剥离，保守、不误伤）：
+    //   ① 该调用**参数为空**（`{}` / 空串）——有参数的真实调用一律不动；
+    //   ② 它有配对的 tool 回执，且回执文本是**我们的"未执行"拦截文案**（`未执行：arguments 缺少必填参数`）
+    //      —— 真实工具回执不含这句，故不会误删「模型给了参数但工具报错」的正常历史；
+    //   ③ 剥离后若 assistant 内容为空则整条去掉；**保留**了内容则只去掉 tool_calls 那段。
+    //   ★ 为什么要剥而不是"留着让模型少犯错"：空参回执对模型**没有任何有效信息**
+    //     （缺哪个参数、该怎么改，当前轮已通过拦截提示给过模型；历史里留着只会被模仿）。
+    //   ★ 与「无撤销」的取舍：这是**发送前**的只读清洗，不写库 —— 库里历史保持原貌可查。
+    const UNEXECUTED_MARK = '未执行：arguments 缺少必填参数';
+    /** tool_call_id → 是否是"未执行"拦截回执 */
+    const unexecutedIds = new Set<string>();
+    for (const m of healed) {
+      if (m.role !== 'tool' || !m.tool_call_id) continue;
+      if (typeof m.content === 'string' && m.content.includes(UNEXECUTED_MARK)) {
+        unexecutedIds.add(m.tool_call_id as string);
+      }
+    }
+
     const out: any[] = [];
     for (const m of healed) {
       if (m.role === 'assistant' && Array.isArray(m.tool_calls) && m.tool_calls.length) {
-        const kept = m.tool_calls.filter((tc: any) => tc?.id && toolCallIds.has(tc.id));
+        // 先剥掉「未执行」的坏调用；剩下的再做配对过滤
+        const live = m.tool_calls.filter(
+          (tc: any) => !(tc?.id && unexecutedIds.has(tc.id)),
+        );
+        if (live.length === 0) {
+          // 该 assistant 原本**只因**坏调用而存在 → 连同其错误回执一起剥离
+          if (!(m.content && String(m.content).trim())) continue;
+          out.push(stripToolMeta(m)); // 有正文则保留正文（去掉 tool_calls 元数据）
+          continue;
+        }
+        const kept = live.filter((tc: any) => tc?.id && toolCallIds.has(tc.id));
         if (kept.length === 0) {
           out.push(stripToolMeta(m));
         } else {
           out.push({ ...m, tool_calls: kept });
         }
       } else if (m.role === 'tool') {
+        if (unexecutedIds.has(m.tool_call_id)) continue; // 坏回执一并剥离
         if (toolCallIds.has(m.tool_call_id)) out.push(m);
       } else {
         out.push(m);
@@ -334,7 +374,16 @@ export class LlmClient {
     messages: Message[],
     options?: { tools?: unknown[]; temperature?: number; maxTokens?: number; topP?: number; frequencyPenalty?: number; presencePenalty?: number; reasoningEffort?: string; signal?: AbortSignal },
   ): AsyncIterable<ChatChunk> {
-    const { system, messages: aMessages } = toAnthropicMessages(messages);
+    // ★★ 必须走与 OpenAI 路径**同一道**发送前清洗（2026-09-30 收口时发现漏了这里）：
+    //   否则「存量空参坏历史剥离」「空 tool_call_id 自愈」在 Anthropic 协议下全部失效 ——
+    //   典型的**入口漂移**：同一语义有多个入口，只修一个必然漏。
+    //   ★ 先 toApiMessage 转成 OpenAI 约定形态（清洗逻辑按 `tool_calls[].function.arguments` 取参），
+    //     再由 toAnthropicMessages 转 Anthropic block —— 两步解耦，清洗只有一份实现。
+    const cleaned = this.sanitizeToolMessages(
+      messages.map((m) => this.toApiMessage(m)),
+      !!options?.tools?.length,
+    ) as unknown as Message[];
+    const { system, messages: aMessages } = toAnthropicMessages(cleaned);
     const body: any = {
       model: this.model.modelId,
       max_tokens: options?.maxTokens ?? 4096,
@@ -410,7 +459,12 @@ export class LlmClient {
     messages: Message[],
     options?: { tools?: unknown[]; temperature?: number; maxTokens?: number; topP?: number; frequencyPenalty?: number; presencePenalty?: number; signal?: AbortSignal },
   ): Promise<ChatChunk> {
-    const { system, messages: aMessages } = toAnthropicMessages(messages);
+    // ★ 与 anthropicStream 同理：走同一道发送前清洗（见该处注释）
+    const cleaned = this.sanitizeToolMessages(
+      messages.map((m) => this.toApiMessage(m)),
+      !!options?.tools?.length,
+    ) as unknown as Message[];
+    const { system, messages: aMessages } = toAnthropicMessages(cleaned);
     const body: any = {
       model: this.model.modelId,
       max_tokens: options?.maxTokens ?? 4096,

@@ -202,6 +202,48 @@ describe('parseAnthropicSSE', () => {
   });
 });
 
+describe('toAnthropicMessages —— 跨形态兼容（经发送前清洗链后的 snake_case 形态）', () => {
+  // ★★★ 守的坑（2026-09-30 收口时踩到）：
+  //   client.ts 的 anthropicStream/anthropicChat 会把 messages 先经 `toApiMessage` 转成
+  //   **OpenAI 约定形态**（`tool_calls` / `tool_call_id`）再做发送前清洗，
+  //   而 toAnthropicMessages 原本只认内部 camelCase（`toolCalls` / `toolCallId`）→
+  //   若不兼容 snake_case，tool_use 与 tool_result 会**全部丢失**（静默、不报错）。
+  it('snake_case 形态（tool_calls / tool_call_id）也能正确转成 tool_use / tool_result', () => {
+    const r = toAnthropicMessages([
+      msg({
+        role: 'assistant',
+        content: '',
+        // 经 toApiMessage 后的形态
+        ...({ tool_calls: [{ id: 'tc1', type: 'function', function: { name: 'file_read', arguments: '{"path":"a.txt"}' } }] } as any),
+      }),
+      msg({ role: 'tool', content: '文件内容', ...({ tool_call_id: 'tc1' } as any) }),
+    ]);
+    const uses = (r.messages[0].content as any[]).filter((b) => b.type === 'tool_use');
+    expect(uses, '★ snake_case 的 tool_calls 被丢了').toHaveLength(1);
+    expect(uses[0].id).toBe('tc1');
+    expect(uses[0].name).toBe('file_read');
+    expect(uses[0].input).toEqual({ path: 'a.txt' });
+    const results = (r.messages[1].content as any[]).filter((b) => b.type === 'tool_result');
+    expect(results, '★ snake_case 的 tool_call_id 被丢了').toHaveLength(1);
+    expect(results[0].tool_use_id).toBe('tc1');
+  });
+
+  it('内部 camelCase 形态（toolCalls / toolCallId）仍照常工作（未被破坏）', () => {
+    const r = toAnthropicMessages([
+      msg({
+        role: 'assistant',
+        content: '',
+        toolCalls: [{ id: 'tc2', type: 'function', toolName: 'file_list', arguments: '{"path":"."}' }] as any,
+      }),
+      msg({ role: 'tool', content: 'a.txt', toolCallId: 'tc2' }),
+    ]);
+    const uses = (r.messages[0].content as any[]).filter((b) => b.type === 'tool_use');
+    expect(uses).toHaveLength(1);
+    expect(uses[0].name).toBe('file_list');
+    expect((r.messages[1].content as any[])[0].tool_use_id).toBe('tc2');
+  });
+});
+
 describe('anthropicResponseToChunk', () => {
   it('非流式响应：text 聚合 + tool_use 映射 + usage', () => {
     const chunk = anthropicResponseToChunk({
