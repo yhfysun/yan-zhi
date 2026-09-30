@@ -105,13 +105,32 @@ export class LlmClient {
         })
         .filter((m) => m.content || m.role !== 'assistant');
     }
+
+    // ★★★ 先做一轮**自愈**（2026-09-30，用户实报空参真因）：
+    //
+    // 上游（实测百炼 deepseek-v4.1-flash / agnes 系列都有）流式返回的 tool_call **id 可能为空串**。
+    // 落库后 assistant.tool_calls[].id = '' 、对应 tool 消息 tool_call_id = null →
+    // **配对不上** → 下面"配对不上就丢弃"的逻辑会把整组「调用 + 结果」**静默抹掉** →
+    // 模型看到的历史变成：
+    //     user: 开始任务
+    //     assistant: 我来读取文件      ← 说了要调用，但调用记录没了
+    //     assistant: 继续              ← 工具结果也没了
+    // → **模型学到"说了要调工具却什么都不带"**，于是继续吐 `arguments:"{}"` → 自我强化退化。
+    //
+    // 实测统计（生产库两个会话）：**无 id 的调用空参率 90%（312/345）**，
+    // 有 id 的只有 30%（126/420）—— 因果链明确。
+    //
+    // 修法：**在发送前按相邻顺序补齐**（而不是丢弃）。这比"落库时补 id"更稳：
+    // 历史消息可能是旧版本落库的、或经压缩/迁移变形的，发送前自愈是最后一道、也是唯一可靠的一道。
+    const healed = this.healToolCallIds(messages);
+
     const toolCallIds = new Set(
-      messages
+      healed
         .filter((m) => m.role === 'tool' && m.tool_call_id)
         .map((m) => m.tool_call_id as string),
     );
     const out: any[] = [];
-    for (const m of messages) {
+    for (const m of healed) {
       if (m.role === 'assistant' && Array.isArray(m.tool_calls) && m.tool_calls.length) {
         const kept = m.tool_calls.filter((tc: any) => tc?.id && toolCallIds.has(tc.id));
         if (kept.length === 0) {
@@ -128,6 +147,46 @@ export class LlmClient {
     return out.filter(
       (m) => m.role !== 'assistant' || (m.content && String(m.content).trim()) || (Array.isArray(m.tool_calls) && m.tool_calls.length),
     );
+  }
+
+  /**
+   * 发送前自愈：给缺 id 的 tool_calls 与缺 tool_call_id 的 tool 消息**按相邻顺序**补上合成 id。
+   *
+   * 规则（保守，只动"确实缺"的，绝不改写已有 id）：
+   *   1. assistant 的 tool_calls 里 id 为空/缺失 → 生成 `call_heal_<n>`；
+   *   2. 紧随其后的 tool 消息若 tool_call_id 为空 → 按**顺序**依次匹配到上一条 assistant 的 tool_calls。
+   *
+   * ★ 为什么必须做（而不是只在落库时补）：见 sanitizeToolMessages 顶部注释 ——
+   *   配对不上会被"丢弃"策略抹掉整组历史，那是空参退化的直接成因。
+   * ★ 顺序匹配是正确的：OpenAI 协议要求 tool 消息与 tool_calls **同序**，
+   *   生产库里 "批大小=N, 紧随tool=N" 的形态占绝大多数（实测 526/543 批为 1:1）。
+   */
+  private healToolCallIds(messages: any[]): any[] {
+    const out = messages.map((m) => ({ ...m }));
+    let seq = 0;
+    for (let i = 0; i < out.length; i++) {
+      const m = out[i];
+      if (m.role !== 'assistant' || !Array.isArray(m.tool_calls) || m.tool_calls.length === 0) continue;
+      // ① 补 assistant.tool_calls 的 id
+      const missingIdx: number[] = [];
+      m.tool_calls = m.tool_calls.map((tc: any, k: number) => {
+        if (tc && typeof tc.id === 'string' && tc.id.trim()) return tc;
+        missingIdx.push(k);
+        return { ...tc, id: `call_heal_${Date.now().toString(36)}_${seq++}` };
+      });
+      if (missingIdx.length === 0) continue;
+      // ② 紧随其后的 tool 消息：缺 id 的按顺序对上刚补的 id
+      let cursor = 0;
+      for (let j = i + 1; j < out.length && out[j].role === 'tool'; j++) {
+        const t = out[j];
+        if (t.tool_call_id && String(t.tool_call_id).trim()) { cursor++; continue; }
+        // 找到该位置对应的 tool_call（已补过 id 的）
+        const target = m.tool_calls[Math.min(cursor, m.tool_calls.length - 1)];
+        if (target?.id) t.tool_call_id = target.id;
+        cursor++;
+      }
+    }
+    return out;
   }
 
   private get baseUrl() { return this.platform.apiUrl.replace(/\/$/, ''); }
