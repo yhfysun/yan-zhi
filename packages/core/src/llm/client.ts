@@ -440,7 +440,19 @@ export class LlmClient {
     };
     if (options?.responseFormat) body.response_format = options.responseFormat;
     const res = await this.upstreamFetch('v1/chat/completions', body, { signal: options?.signal });
-    if (!res.ok) throw new Error(`LLM 请求失败: ${res.status} ${res.statusText}`);
+    if (!res.ok) {
+      // ★ 非流式路径此前只抛 `${status} ${statusText}`，从**不读取响应体** →
+      //   上游返回 400 时用户只能看到光秃秃的「400 Bad Request」，真实原因（如
+      //   response_format 不支持 / 消息格式错误）被丢弃，排障全靠猜。
+      //   现与 chatStream 对齐：读 body + 带上真实请求 URL，让原因可见。
+      const text = await res.text().catch(() => '');
+      const urlDesc = this.proxyBase ? `${this.proxyBase}/chat/completions` : `${this.baseUrl}/v1/chat/completions`;
+      let hint = '';
+      if (res.status === 401) hint = '（API Key 无效或未配置）';
+      else if (res.status === 404) hint = `（URL 不对，请检查平台 API URL。当前请求: ${urlDesc}）`;
+      else if (res.status === 429) hint = '（请求频率超限）';
+      throw new Error(`LLM 请求失败: ${res.status} ${res.statusText}${hint}${text ? ` ${text.slice(0, 500)}` : ''}`);
+    }
     const data = await res.json();
     return {
       delta: {
@@ -477,7 +489,15 @@ export class LlmClient {
     if (options?.temperature != null) body.temperature = options.temperature;
     if (options?.topP != null) body.top_p = options.topP;
     const res = await this.upstreamFetch('v1/messages', body, { signal: options?.signal, anthropic: true });
-    if (!res.ok) throw new Error(`LLM 请求失败: ${res.status} ${res.statusText}`);
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      const urlDesc = this.proxyBase ? `${this.proxyBase}/messages` : `${this.baseUrl}/v1/messages`;
+      let hint = '';
+      if (res.status === 401) hint = '（API Key 无效或未配置）';
+      else if (res.status === 404) hint = `（URL 不对，请检查平台 API URL。当前请求: ${urlDesc}）`;
+      else if (res.status === 429) hint = '（请求频率超限）';
+      throw new Error(`LLM 请求失败: ${res.status} ${res.statusText}${hint}${text ? ` ${text.slice(0, 500)}` : ''}`);
+    }
     const data = await res.json();
     return anthropicResponseToChunk(data);
   }

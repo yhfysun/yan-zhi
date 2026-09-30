@@ -510,7 +510,7 @@ export async function flushMemoriesBeforeCompression(params: FlushParams, toComp
     ).all(params.userId, `%"date":"${date}"%`)[0] as any;
 
     const client = new LlmClient(params.platform, params.model);
-    const resp = await client.chat([
+    const reqMessages = [
       {
         id: 'sys', conversationId: '', role: 'system', createdAt: 0,
         content: '你是记忆归档助手。以下对话片段即将被压缩丢失。请提取其中「尚未记录在现有记忆里」且后续步骤可能需要的信息（关键数据、文件路径、ID、命令、决定、用户纠正/偏好），输出 JSON 数组，每项形如 {"type":"daily|session","content":"一句话事实，标识符原样保留"}。相对日期（如"昨天"）转为绝对日期。没有值得抢救的返回 []。只输出 JSON，不要解释。',
@@ -520,7 +520,21 @@ export async function flushMemoriesBeforeCompression(params: FlushParams, toComp
         content: (existingDaily ? `## 当天已记录（不要重复）\n${existingDaily.content}\n\n` : '')
           + `## 即将压缩的对话\n${transcript}`,
       },
-    ], { temperature: 0.2, maxTokens: 800, responseFormat: { type: 'json_object' } as any });
+    ];
+    // 优先用 json_object 模式；部分模型/网关（如 agnes 某些路径）会返回
+    // 空 body 的 400 拒绝 response_format —— 此时去掉该参数重试一次，
+    // parseExtractedItems 本就能从纯文本里抠出 JSON，不影响结果。
+    let resp;
+    try {
+      resp = await client.chat(reqMessages, { temperature: 0.2, maxTokens: 800, responseFormat: { type: 'json_object' } as any });
+    } catch (e: any) {
+      if (/LLM 请求失败: 400/.test(e?.message || '')) {
+        console.warn('[memory] 压缩前抢救: response_format=json_object 被拒(400)，去掉后重试');
+        resp = await client.chat(reqMessages, { temperature: 0.2, maxTokens: 800 });
+      } else {
+        throw e;
+      }
+    }
 
     const text = resp.delta?.content || '';
     const items = parseExtractedItems(text);
