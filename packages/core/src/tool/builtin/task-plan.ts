@@ -7,8 +7,10 @@ import type { McpCallResult } from '../../mcp/client';
 export class TaskPlanTool implements BuiltInTool {
   name = 'task_plan';
   description =
-    '在多步骤任务开始时创建（或替换）当前可见的任务规划，以有序步骤列表展示给用户，' +
-    '便于其跟踪进度。每个步骤初始为 pending（待执行），后续需要通过 task_step 推进状态。';
+    '为多步骤任务创建（或替换）任务计划，以有序步骤列表展示给用户跟踪进度。' +
+    '计划会持久化到工作目录（.yan-zhi/task-memory/plan.md）：换会话、重启后仍可见，' +
+    '新会话能基于它接续未完成的步骤，因此长任务、会分批执行的任务应主动使用。' +
+    '每个步骤初始为 pending（待执行），后续需要通过 task_step 推进状态。';
   inputSchema = {
     type: 'object',
     properties: {
@@ -43,7 +45,8 @@ export class TaskStepTool implements BuiltInTool {
   name = 'task_step';
   description =
     'Update the status of a step in the current task plan so the user sees live progress. ' +
-    'Mark a step running before working on it and done (or failed) after finishing.';
+    'Mark a step running before working on it and done (or failed) after finishing. ' +
+    '状态更新会同步持久化到工作目录计划文件，保证换会话/自动接力时进度不丢。';
   inputSchema = {
     type: 'object',
     properties: {

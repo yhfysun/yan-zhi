@@ -3,6 +3,7 @@ import { v4 as uuid } from 'uuid';
 import { authMiddleware } from '../auth.js';
 import { db } from '../db.js';
 import { normalizePermissionMode } from '../tool-permission.js';
+import { writeTaskPlanFile, seedTaskPlanFromFile } from '../services/task-plan-file.js';
 import { WF_TOOL_PREFIX, MAX_WF_TOOLS_PER_CONVERSATION } from '../services/workflow-tool-registry.js';
 
 const router = Router();
@@ -22,6 +23,20 @@ router.use(authMiddleware);
 // 因此显式把 NULL 视为 office。
 const VALID_MODES = new Set(['office', 'dev', 'ops', 'sec', 'wf']);
 
+/**
+ * 跨会话播种：会话行没有计划时从工作目录 plan.md 回填（新会话接续上一会话的长任务）。
+ * 会话行已有计划时 seedTaskPlanFromFile 不做任何事（本会话实时进度优先）。
+ * 两个 GET 分支（带 mode / 全量）必须同样播种 —— 漏一个就是"切模式后计划消失"的入口漂移。
+ */
+function seedPlanRows(rows: unknown[]): void {
+  for (const row of rows as any[]) {
+    if (row && !row.task_plan_json) {
+      const seeded = seedTaskPlanFromFile(row.id);
+      if (seeded) row.task_plan_json = JSON.stringify(seeded);
+    }
+  }
+}
+
 router.get('/', (req: Request, res: Response) => {
   const userId = req.user!.userId;
   const mode = typeof req.query.mode === 'string' ? req.query.mode : '';
@@ -32,12 +47,14 @@ router.get('/', (req: Request, res: Response) => {
        WHERE user_id = ? AND COALESCE(NULLIF(mode, ''), 'office') = ?
        ORDER BY pinned DESC, updated_at DESC`,
     ).all(userId, mode);
+    seedPlanRows(rows);
     res.json({ data: rows });
     return;
   }
   const rows = db.prepare(
     'SELECT * FROM conversation WHERE user_id = ? ORDER BY pinned DESC, updated_at DESC',
   ).all(userId);
+  seedPlanRows(rows);
   res.json({ data: rows });
 });
 
@@ -87,12 +104,23 @@ router.patch('/:id', (req: Request, res: Response) => {
     vals.push(normalizePermissionMode(req.body.permissionMode));
   }
   // taskPlan：任务计划落盘（task_plan/task_step 卡片刷新/换设备后恢复）。null = 清除
+  // ★ 镜像写工作目录 plan.md（跨会话接力，2026-09-30）：task_plan_json 挂在会话行上，
+  //   新会话读不到 —— 计划必须同时落在目录维度（与 decisions.md/progress.md 同族）。
+  //   异步 fire-and-forget：文件写入失败不影响 PATCH 本身（fail-safe）。
   if (req.body.taskPlan !== undefined) {
+    let planForFile: any = null;
     if (req.body.taskPlan === null) {
       sets.push('task_plan_json = ?'); vals.push(null);
+      planForFile = null;
     } else if (req.body.taskPlan && typeof req.body.taskPlan === 'object' && Array.isArray(req.body.taskPlan.steps)) {
-      sets.push('task_plan_json = ?');
-      vals.push(JSON.stringify(req.body.taskPlan));
+      const json = JSON.stringify(req.body.taskPlan);
+      sets.push('task_plan_json = ?'); vals.push(json);
+      planForFile = req.body.taskPlan;
+    }
+    if (planForFile !== undefined) {
+      const planSnapshot = planForFile;
+      const cidForFile = cid;
+      void writeTaskPlanFile(cidForFile, planSnapshot).catch(() => { /* 已在 writeTaskPlanFile 内 fail-safe */ });
     }
   }
   if (req.body.mcpServerIds !== undefined || req.body.mcpDisabledTools !== undefined) {

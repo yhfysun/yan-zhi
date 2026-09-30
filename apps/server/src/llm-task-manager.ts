@@ -16,6 +16,7 @@ import {
   writeMemoryItems, flushMemoriesBeforeCompression, parseExtractedItems, type MemoryWriteItem,
 } from './services/memory-service.js';
 import { loadSpaceMemoryForConversation, formatSpaceMemoryContext, appendTaskDecision, loadTaskMemoryForConversation, formatTaskMemoryContext, appendTaskProgress } from './services/space-memory.js';
+import { backendTaskPlan, backendTaskStep, loadTaskPlanFromFile } from './services/task-plan-file.js';
 import { summarizeResourceDirsSync } from './services/space-resources.js';
 import { serverState } from './state.js';
 // 产物登记钩子（P2-3）：把 file_write / 媒体登记的副作用从主循环里搬出去
@@ -1960,14 +1961,12 @@ async function decideAutoContinue(args: {
  * 读不到/无计划 → 0（不据此接力）。
  */
 function readPlanRemainingSteps(conversationId: string): number {
+  // 统一走 loadTaskPlan（含工作目录 plan.md 文件回退）—— 别再手写一遍 JSON 解析，
+  // 两处各写一遍必然漂移（库/文件回退加在一处时另一处就漏了）。
   try {
-    const row = db.prepare('SELECT task_plan_json FROM conversation WHERE id = ?').get(conversationId) as
-      | { task_plan_json?: string | null }
-      | undefined;
-    if (!row?.task_plan_json) return 0;
-    const plan = JSON.parse(row.task_plan_json);
-    const steps: any[] = Array.isArray(plan?.steps) ? plan.steps : [];
-    return steps.filter((s) => {
+    const plan = loadTaskPlan(conversationId);
+    if (!plan) return 0;
+    return plan.steps.filter((s) => {
       const st = String(s?.status || 'pending');
       return st === 'pending' || st === 'running';
     }).length;
@@ -2096,6 +2095,20 @@ async function executeTool(
   // UI 工具 → 委托前端（需要用户交互）；MCP 工具 → 优先委托前端（连接在前端，所见即所得），
   // 无人值守（定时任务/IM，无 SSE 订阅者）时后端直连 MCP 兜底，避免工具永远拿不到结果
   if (isUiTool || isMcp) {
+    // ★ task_plan / task_step 无人值守兜底（2026-09-30）：这两个工具此前纯委托前端，
+    //   前端不在线（定时任务/后端直跑/刷新间隙）时走 unattendedToolResult 空转 ——
+    //   计划落不下来，自动接力的机械信号（readPlanRemainingSteps）随之失效。
+    //   后端直接写 conversation.task_plan_json + 镜像工作目录 plan.md；前端在线时仍走前端
+    //   （UI 卡片实时渲染 + persistPlan PATCH → 路由层镜像写文件），两条路共享同一落盘格式。
+    if (!isMcp && (toolName === 'task_plan' || toolName === 'task_step') && task.subscribers.size === 0) {
+      try {
+        return toolName === 'task_plan'
+          ? await backendTaskPlan(task.conversationId, args || {})
+          : await backendTaskStep(task.conversationId, args || {});
+      } catch (e: any) {
+        return `${toolName} 执行失败: ${e?.message || e}`;
+      }
+    }
     if (task.subscribers.size > 0) {
       return executeToolViaFrontend(task, toolName, args, toolCallId, depth);
     }
@@ -3863,26 +3876,41 @@ export function buildSystemPromptForBackend(agentId: string | null, userId: stri
 }
 
 /** 读会话任务计划（供提示词回注 / 自动接力判定）。读不到或结构非法返回 null。
- *  结构由前端 stores/chat.ts 的 persistPlan 写入：`{ title?, steps: [{ title, status, note? }] }`。 */
+ *  结构由前端 stores/chat.ts 的 persistPlan 写入：`{ title?, steps: [{ title, status, note? }] }`。
+ *  ★ 跨会话回退（2026-09-30）：会话行没有计划时读工作目录 plan.md（新会话接续上一会话的长任务）。
+ *    顺序：会话计划优先（本会话实时进度最新）→ 文件计划（跨会话共享，task_step 每步镜像）。 */
 function loadTaskPlan(conversationId?: string | null): { title: string; steps: Array<{ title: string; status: string; note?: string }> } | null {
   if (!conversationId) return null;
   try {
     const row = db.prepare('SELECT task_plan_json FROM conversation WHERE id = ?').get(conversationId) as
       | { task_plan_json?: string | null }
       | undefined;
-    if (!row?.task_plan_json) return null;
-    const raw = JSON.parse(row.task_plan_json);
-    const steps: any[] = Array.isArray(raw?.steps) ? raw.steps : [];
-    if (!steps.length) return null;
-    return {
-      title: String(raw?.title || ''),
-      steps: steps.map((s) => ({
-        title: String(s?.title || s?.description || '(未命名步骤)'),
-        status: String(s?.status || 'pending'),
-        note: s?.note ? String(s.note) : undefined,
-      })),
-    };
-  } catch { return null; }
+    if (row?.task_plan_json) {
+      const raw = JSON.parse(row.task_plan_json);
+      const steps: any[] = Array.isArray(raw?.steps) ? raw.steps : [];
+      if (steps.length) {
+        return {
+          title: String(raw?.title || ''),
+          steps: steps.map((s) => ({
+            title: String(s?.title || s?.description || '(未命名步骤)'),
+            status: String(s?.status || 'pending'),
+            note: s?.note ? String(s.note) : undefined,
+          })),
+        };
+      }
+    }
+  } catch { /* 库读取失败继续走文件回退 */ }
+  // 文件回退：工作目录 .yan-zhi/task-memory/plan.md（task_plan/task_step 每次更新都镜像写入）
+  const fromFile = loadTaskPlanFromFile(conversationId);
+  if (!fromFile?.steps?.length) return null;
+  return {
+    title: String(fromFile.title || ''),
+    steps: fromFile.steps.map((s) => ({
+      title: String(s?.title || '(未命名步骤)'),
+      status: String(s?.status || 'pending'),
+      note: s?.note ? String(s.note) : undefined,
+    })),
+  };
 }
 
 /**
