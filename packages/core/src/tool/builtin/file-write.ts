@@ -1,6 +1,7 @@
 import type { BuiltInTool, ToolContext } from '../types';
 import type { McpCallResult } from '../../mcp/client';
 import { getPlatformAdapter } from '../../platform/types';
+import { resolveToolPath } from './fs-walk';
 
 /**
  * 写文件工具。
@@ -83,8 +84,11 @@ export class FileWriteTool implements BuiltInTool {
 
     // ── 落盘目录：调用方已算好，这里只取用 ──────────────────────────────
     const ctxDir = ctx?.artifactDirs?.[category] || '';
-    const dir = ctxDir || dirNameOf(rawPath);   // 无 ctx 时退回旧行为（不为空即按原 path 的目录写）
-    const path = dir ? joinPath(dir, fileName) : (rawPath || fileName);
+    // ★ 无 ctx 时退回"按 path 的目录写" —— 但**相对路径必须先基于工作目录解析**
+    //   （2026-09-30）：否则会落到进程 cwd，与所有读类工具犯同一个错。
+    const resolvedRawPath = rawPath ? resolveToolPath(rawPath, ctx?.workspaceDir) : '';
+    const dir = ctxDir || dirNameOf(resolvedRawPath);
+    const path = dir ? joinPath(dir, fileName) : (resolvedRawPath || fileName);
 
     try {
       if (dir) {

@@ -1,8 +1,8 @@
 // file_list 内置工具 — 目录列表 / 递归树（补 file_read/file_write 缺失的"列目录"能力）
-import type { BuiltInTool } from '../types';
+import type { BuiltInTool, ToolContext } from '../types';
 import type { McpCallResult } from '../../mcp/client';
 import { getPlatformAdapter } from '../../platform/types';
-import { DEFAULT_SKIP_DIRS, joinPath } from './fs-walk';
+import { DEFAULT_SKIP_DIRS, joinPath, resolveToolPath } from './fs-walk';
 
 export class FileListTool implements BuiltInTool {
   name = 'file_list';
@@ -11,7 +11,7 @@ export class FileListTool implements BuiltInTool {
   inputSchema = {
     type: 'object',
     properties: {
-      path: { type: 'string', description: 'Directory path (absolute, or relative to workspace). Use "." for the workspace root.' },
+      path: { type: 'string', description: 'Directory path. Absolute is used as-is; a relative path is resolved against the workspace directory (the current working directory of the session). Use "." for the workspace root.' },
       depth: { type: 'number', description: 'Recursion depth. 1 = only direct children (default), 2-8 = recursive tree.' },
       include: { type: 'string', description: 'Optional filename filter, comma-separated glob patterns, e.g. "*.ts,*.vue".' },
       maxEntries: { type: 'number', description: 'Max entries to return (default 500, max 5000).' },
@@ -19,9 +19,11 @@ export class FileListTool implements BuiltInTool {
     required: ['path'],
   };
 
-  async execute(args: Record<string, unknown>): Promise<McpCallResult> {
+  async execute(args: Record<string, unknown>, ctx?: ToolContext): Promise<McpCallResult> {
     const { fs } = getPlatformAdapter();
-    const root = (args.path as string) || '.';
+    // ★ 统一路径解析：相对路径基于**工作目录**（此前直接交给 fs → 解析到进程 cwd → 报
+    //   "directory not found"）。见 fs-walk.ts 的 resolveToolPath 注释。
+    const root = resolveToolPath(args.path, ctx?.workspaceDir);
     const depth = Math.min(Math.max(Number(args.depth) || 1, 1), 8);
     const maxEntries = Math.min(Math.max(Number(args.maxEntries) || 500, 1), 5000);
     const globFilter = typeof args.include === 'string' && args.include.trim()

@@ -1,11 +1,12 @@
 // file_to_markdown：办公文档 → Markdown 文件（docx/xlsx/xls/pptx/pdf）。
 // 工作流：LLM 先调用本工具得到 .md 路径，再用 file_read / file_grep 分段读取。
 // 转换基于 core 内置的 mammoth/xlsx/jszip/unpdf，纯 JS、无 Python 依赖，离线可用。
-import type { BuiltInTool } from '../types';
+import type { BuiltInTool, ToolContext } from '../types';
 import type { McpCallResult } from '../../mcp/client';
 import { getPlatformAdapter } from '../../platform/types';
 import { extractDocxHtml, extractPdfPages, extractExcelSheets } from '../../preview';
 import { htmlToMarkdown } from './file-read';
+import { resolveToolPath } from './fs-walk';
 
 const DOCX_EXTS = ['docx'];
 const EXCEL_EXTS = ['xlsx', 'xls'];
@@ -113,12 +114,15 @@ export class FileToMarkdownTool implements BuiltInTool {
     required: ['path'],
   };
 
-  async execute(args: Record<string, unknown>): Promise<McpCallResult> {
+  async execute(args: Record<string, unknown>, ctx?: ToolContext): Promise<McpCallResult> {
     const { fs } = getPlatformAdapter();
-    const path = args.path as string;
-    if (!path) {
+    // ★★ 必填校验看**原始入参**（先校验再解析，理由见 file-read.ts 同处注释）
+    const rawPath = typeof args.path === 'string' ? args.path.trim() : '';
+    if (!rawPath) {
       return { content: [{ type: 'text', text: 'Error: path is required' }], isError: true };
     }
+    // ★ 相对路径基于**工作目录**解析（见 fs-walk.ts:resolveToolPath）
+    const path = resolveToolPath(rawPath, ctx?.workspaceDir);
     const ext = path.split('.').pop()?.toLowerCase() || '';
     const exists = await fs.exists(path);
     if (!exists) {

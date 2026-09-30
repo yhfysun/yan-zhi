@@ -481,7 +481,13 @@ class ServerToolNodeHandler implements NodeHandler {
     if (toolSource === 'builtin') {
       const registry = getToolRegistry();
       if (!registry.has(toolName)) throw new Error(`内置工具不存在: ${toolName}`);
-      const result = await registry.execute(toolName, (args as Record<string, unknown>) || {});
+      // ★ 必须传 ToolContext.workspaceDir（2026-09-30）：否则工具里的**相对路径**
+      //   会解析到进程 cwd，而不是用户的工作目录（与 ReAct 主链路同因，
+      //   本项目已因"入口各写一遍"漂移多次 —— 凡是执行内置工具的地方都要传 ctx）。
+      const { serverState } = await import('./state.js');
+      const result = await registry.execute(toolName, (args as Record<string, unknown>) || {}, {
+        workspaceDir: serverState.workspaceDir || undefined,
+      });
       return { output: result };
     }
 

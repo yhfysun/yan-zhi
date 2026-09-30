@@ -1,9 +1,10 @@
 // file_edit 内置工具 — 文件局部精准编辑（old_string → new_string 替换，避免整文件重写）
 // 语义对齐主流编码助手的 replace_in_file：old_string 必须在文件中唯一命中（或 replace_all），
 // 未命中/多命中时返回引导性错误，让模型补充上下文或改用 file_grep 定位。
-import type { BuiltInTool } from '../types';
+import type { BuiltInTool, ToolContext } from '../types';
 import type { McpCallResult } from '../../mcp/client';
 import { getPlatformAdapter } from '../../platform/types';
+import { resolveToolPath } from './fs-walk';
 
 export class FileEditTool implements BuiltInTool {
   name = 'file_edit';
@@ -32,16 +33,19 @@ export class FileEditTool implements BuiltInTool {
     required: ['path', 'old_string', 'new_string'],
   };
 
-  async execute(args: Record<string, unknown>): Promise<McpCallResult> {
+  async execute(args: Record<string, unknown>, ctx?: ToolContext): Promise<McpCallResult> {
     const { fs } = getPlatformAdapter();
-    const path = args.path as string;
+    // ★★ 必填校验看**原始入参**（先校验再解析，理由见 file-read.ts 同处注释）
+    const rawPath = typeof args.path === 'string' ? args.path.trim() : '';
+    if (!rawPath) {
+      return { content: [{ type: 'text', text: 'Error: path is required' }], isError: true };
+    }
+    // ★ 相对路径基于**工作目录**解析（见 fs-walk.ts:resolveToolPath）
+    const path = resolveToolPath(rawPath, ctx?.workspaceDir);
     const oldString = args.old_string as string | undefined;
     const newString = args.new_string as string | undefined;
     const replaceAll = Boolean(args.replace_all);
 
-    if (!path) {
-      return { content: [{ type: 'text', text: 'Error: path is required' }], isError: true };
-    }
     if (oldString === undefined || oldString === null || oldString === '') {
       return {
         content: [{ type: 'text', text: 'Error: old_string is required and must be non-empty. To create a new file, use file_write instead.' }],

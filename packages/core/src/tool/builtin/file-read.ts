@@ -1,7 +1,8 @@
-import type { BuiltInTool } from '../types';
+import type { BuiltInTool, ToolContext } from '../types';
 import type { McpCallResult } from '../../mcp/client';
 import { getPlatformAdapter } from '../../platform/types';
 import { decodeTextBytesAs, base64ToBytes } from '@yan-zhi/shared';
+import { resolveToolPath } from './fs-walk';
 
 const EXCEL_EXTENSIONS = ['xlsx', 'xls', 'csv'];
 const WORD_EXTENSIONS = ['docx'];
@@ -116,13 +117,17 @@ export class FileReadTool implements BuiltInTool {
     required: ['path'],
   };
 
-  async execute(args: Record<string, unknown>): Promise<McpCallResult> {
+  async execute(args: Record<string, unknown>, ctx?: ToolContext): Promise<McpCallResult> {
     const { fs } = getPlatformAdapter();
-    const path = args.path as string;
-
-    if (!path) {
+    // ★★★ 必填校验必须看**原始入参**（2026-09-30）：`resolveToolPath('')` 会返回工作目录根，
+    //   若先解析再判空 → "没给 path" 被变成 "读工作目录" → `required:['path']` 静默失效。
+    //   （这正是本项目反复踩的"校验对象被上游改写"同类问题：**先校验原值，再解析**。）
+    const rawPath = typeof args.path === 'string' ? args.path.trim() : '';
+    if (!rawPath) {
       return { content: [{ type: 'text', text: 'Error: path is required' }], isError: true };
     }
+    // ★ 相对路径基于**工作目录**解析（此前直接交给 fs → 落到进程 cwd → 报文件不存在）
+    const path = resolveToolPath(rawPath, ctx?.workspaceDir);
 
     const exists = await fs.exists(path);
     if (!exists) {

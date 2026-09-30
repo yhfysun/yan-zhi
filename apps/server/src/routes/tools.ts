@@ -107,7 +107,13 @@ router.post('/builtin/execute', async (req: Request, res: Response) => {
         timer = setTimeout(() => reject(new Error(`执行超时（${BUILTIN_EXEC_TIMEOUT_MS / 1000}s 上限）`)), BUILTIN_EXEC_TIMEOUT_MS);
         timer?.unref?.();
       });
-      result = await Promise.race([registry.execute(name, args), timeout]);
+      // ★ 必须传 ToolContext.workspaceDir（2026-09-30）：否则工具里的**相对路径**解析到进程 cwd，
+//   而不是用户的工作目录（实测 `02-work` 一律 directory not found）。
+      const { serverState } = await import('../state.js');
+      result = await Promise.race([
+        registry.execute(name, args, { workspaceDir: serverState.workspaceDir || undefined }),
+        timeout,
+      ]);
       clearTimeout(timer);
     }
     res.json({ data: result });

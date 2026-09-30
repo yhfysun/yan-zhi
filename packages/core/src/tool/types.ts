@@ -44,6 +44,22 @@ export interface ToolContext {
     deliverable?: string;
     upload?: string;
   };
+  /**
+   * ★★★ 当前**工作目录**的绝对路径（2026-09-30 新增，用户报「不是工作目录是当前目录？」）。
+   *
+   * 为什么必须补：此前读类工具（file_read / file_list / code_search / file_grep …）
+   * 与 code_* 系列各自 `const root = args.path || '.'` 后**直接交给 fs** ——
+   * 而 fs 适配器用的是**进程 cwd**（后端启动目录），不是用户的工作目录。
+   * 实测后果（生产库 09-30 08:27~08:28）：`02-work` / `.yan-zhi/tasks/<convId>`
+   * 等相对路径一律 `directory not found`，模型只能改用长绝对路径绕过 →
+   * 用户侧表现为"工具时好时坏"。
+   *
+   * ★ 与 `artifactDirs` 同一设计取向：**调用方算好、直接传**，工具侧零业务知识。
+   *   core 不知道 serverState / 会话表 / 空间目录的约定，也不该知道。
+   * ★ 工具侧统一用 `resolveToolPath(args.path, ctx?.workspaceDir)` 解析，
+   *   不要各自拼路径（否则基准再次漂移）。
+   */
+  workspaceDir?: string;
 }
 
 /** 内置工具 = 定义 + 执行逻辑 */

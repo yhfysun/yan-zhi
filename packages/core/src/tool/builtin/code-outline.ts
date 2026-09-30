@@ -1,7 +1,8 @@
 // code_outline 内置工具 — JS/TS/Vue 源码结构大纲（imports/classes/functions/interfaces，带行号）
-import type { BuiltInTool } from '../types';
+import type { BuiltInTool, ToolContext } from '../types';
 import type { McpCallResult } from '../../mcp/client';
 import { getPlatformAdapter } from '../../platform/types';
+import { resolveToolPath } from './fs-walk';
 
 const MAX_SIG_LEN = 120;
 const CONTROL_KEYWORDS = new Set([
@@ -27,10 +28,13 @@ export class CodeOutlineTool implements BuiltInTool {
     required: ['path'],
   };
 
-  async execute(args: Record<string, unknown>): Promise<McpCallResult> {
+  async execute(args: Record<string, unknown>, ctx?: ToolContext): Promise<McpCallResult> {
     const { fs } = getPlatformAdapter();
-    const filePath = args.path as string;
-    if (!filePath) return { content: [{ type: 'text', text: 'Error: path is required' }], isError: true };
+    // ★★ 必填校验看**原始入参**（先校验再解析，理由见 file-read.ts 同处注释）
+    const rawPath = typeof args.path === 'string' ? args.path.trim() : '';
+    if (!rawPath) return { content: [{ type: 'text', text: 'Error: path is required' }], isError: true };
+    // ★ 相对路径基于**工作目录**解析（见 fs-walk.ts:resolveToolPath）
+    const filePath = resolveToolPath(rawPath, ctx?.workspaceDir);
 
     const exists = await fs.exists(filePath).catch(() => false);
     if (!exists) {

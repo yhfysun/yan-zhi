@@ -1,8 +1,8 @@
 // code_search 内置工具 — 工作区源码文本/正则搜索（grep 类，纯 FsAdapter 实现，三端可用）
-import type { BuiltInTool } from '../types';
+import type { BuiltInTool, ToolContext } from '../types';
 import type { McpCallResult } from '../../mcp/client';
 import { getPlatformAdapter } from '../../platform/types';
-import { walkFiles } from './fs-walk';
+import { walkFiles, resolveToolPath } from './fs-walk';
 
 const DEFAULT_MAX_FILE_BYTES = 1024 * 1024; // 单文件超过 1MB 跳过
 const MAX_LINE_DISPLAY = 240;
@@ -29,12 +29,13 @@ export class CodeSearchTool implements BuiltInTool {
     required: ['query'],
   };
 
-  async execute(args: Record<string, unknown>): Promise<McpCallResult> {
+  async execute(args: Record<string, unknown>, ctx?: ToolContext): Promise<McpCallResult> {
     const { fs } = getPlatformAdapter();
     const query = args.query as string;
     if (!query) return { content: [{ type: 'text', text: 'Error: query is required' }], isError: true };
 
-    const root = (args.path as string) || '.';
+    // ★ 相对路径基于**工作目录**解析（此前 `|| '.'` 交给 fs → 落到进程 cwd → 报目录不存在）
+    const root = resolveToolPath(args.path, ctx?.workspaceDir);
     const maxResults = Math.min(Math.max(Number(args.maxResults) || 60, 1), 500);
     const maxDepth = Math.min(Math.max(Number(args.maxDepth) || 12, 1), 30);
     const globFilter = typeof args.include === 'string' && args.include.trim()

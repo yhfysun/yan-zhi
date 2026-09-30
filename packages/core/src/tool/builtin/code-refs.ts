@@ -6,10 +6,11 @@
 //    在别的文件里通过别名 B 使用的 A 也计入引用（标注 via 别名）
 // 非完整 LSP 语义树：语义级精确导航由 IDE 完成；这里解决智能体在无 IDE 场景的符号导航，
 // 与 code_search（文本检索）、code_outline（单文件结构）、code_graph（依赖图）构成代码理解工具族。
-import type { BuiltInTool } from '../types';
+import type { BuiltInTool, ToolContext } from '../types';
 import type { McpCallResult } from '../../mcp/client';
 import { getPlatformAdapter } from '../../platform/types';
 import { walkCodeFiles, extractDeclarations, extractImportAliases, type SymbolDecl } from './code-symbols';
+import { resolveToolPath } from './fs-walk';
 
 const MAX_DEFINITIONS = 20;
 const MAX_REFERENCES = 60;
@@ -31,14 +32,15 @@ export class CodeRefsTool implements BuiltInTool {
     required: ['symbol'],
   };
 
-  async execute(args: Record<string, unknown>): Promise<McpCallResult> {
+  async execute(args: Record<string, unknown>, ctx?: ToolContext): Promise<McpCallResult> {
     const { fs } = getPlatformAdapter();
     const symbol = String(args.symbol || '').trim();
     if (!symbol || !/^[\w$]+$/.test(symbol)) {
       return { content: [{ type: 'text', text: 'Error: symbol 必须是合法标识符（字母/数字/_/$）' }], isError: true };
     }
 
-    const root = (args.path as string) || '.';
+    // ★ 相对路径基于**工作目录**解析（见 fs-walk.ts:resolveToolPath）
+    const root = resolveToolPath(args.path, ctx?.workspaceDir);
     const maxDepth = Math.min(Math.max(Number(args.maxDepth) || 12, 1), 30);
     const globFilter = typeof args.include === 'string' && args.include.trim()
       ? args.include.split(',').map((s) => s.trim()).filter(Boolean)

@@ -5,10 +5,11 @@
 // 实现：全仓声明索引（code-symbols.extractDeclarations，多语言形态）+ 逐文件词法扫描建边；
 //       import 别名（import { A as B } / 默认导入）先归一化到原名再建边；调用者是"最近外层声明"（方法级粒度）。
 // 启发式图，非编译级精确（无类型解析/动态调用不可见）；足够回答"改动 X 会影响哪些模块"这类导航问题。
-import type { BuiltInTool } from '../types';
+import type { BuiltInTool, ToolContext } from '../types';
 import type { McpCallResult } from '../../mcp/client';
 import { getPlatformAdapter } from '../../platform/types';
 import { walkCodeFiles, extractDeclarations, extractImportAliases, type SymbolDecl } from './code-symbols';
+import { resolveToolPath } from './fs-walk';
 
 const MAX_FILE_BYTES = 512 * 1024;
 const MAX_LIST = 25;
@@ -48,13 +49,14 @@ export class CodeGraphTool implements BuiltInTool {
     },
   };
 
-  async execute(args: Record<string, unknown>): Promise<McpCallResult> {
+  async execute(args: Record<string, unknown>, ctx?: ToolContext): Promise<McpCallResult> {
     const { fs } = getPlatformAdapter();
     const focus = String(args.symbol || '').trim();
     if (focus && !/^[\w$]+$/.test(focus)) {
       return { content: [{ type: 'text', text: 'Error: symbol 必须是合法标识符' }], isError: true };
     }
-    const root = (args.path as string) || '.';
+    // ★ 相对路径基于**工作目录**解析（见 fs-walk.ts:resolveToolPath）
+    const root = resolveToolPath(args.path, ctx?.workspaceDir);
     const maxDepth = Math.min(Math.max(Number(args.maxDepth) || 12, 1), 30);
     const globFilter = typeof args.include === 'string' && args.include.trim()
       ? args.include.split(',').map((s) => s.trim()).filter(Boolean)

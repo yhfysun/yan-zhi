@@ -143,6 +143,18 @@ interface LlmTask {
   /** 本任务内「子任务指纹 → 出现次数」：同类子任务反复现场生成时提示固化（见 shouldSuggestPersist）。
    *  任务级而非全局，是刻意的 —— 跨任务的重复统计靠空间记忆（见 recordSpawnedSubAgent）。 */
   specFingerprints?: Map<string, number>;
+  /**
+   * ★★★ 本任务的工作目录（绝对路径，2026-09-30 加）。
+   *
+   * 为什么必须挂在 task 上：工具执行时要把"工作目录"传给 `ToolContext.workspaceDir`，
+   * 否则 file_read / file_list / code_search 等所有读类工具的**相对路径会解析到进程 cwd**
+   * （用户报：「不是工作目录是当前目录？」—— 实测 `02-work` 一律 directory not found）。
+   *
+   * ★ 取值口径与提示词注入**必须一致**（`buildSystemPromptForBackend` 的 effectiveWorkspaceDir）：
+   *   `params.workspaceDir`（前端下发）> `serverState.workspaceDir`（全局）。
+   *   两处不同源会出现"提示词里说工作目录是 A，工具却在 B 里找文件"这种最难查的不一致。
+   */
+  workspaceDir?: string;
 }
 
 const tasks = new Map<string, LlmTask>();
@@ -372,6 +384,9 @@ export function createTask(params: {
     memoryExtractModelId: params.memoryExtractModelId || undefined,
     ontologyIds: params.ontologyIds,
     permissionMode,
+    // ★ 工作目录：与提示词注入同源（前端下发 > 全局），供工具解析相对路径用。
+    //   见 LlmTask.workspaceDir 注释 —— 两处不同源会产生"提示词说 A、工具在 B 找"的不一致。
+    workspaceDir: params.workspaceDir?.trim() || serverState.workspaceDir || undefined,
     pendingInjects: [],
     // 运行时生成子智能体的预算闸：智能体可配 maxSpawnPerTask（0 = 关闭该能力）
     spawnBudget: (() => {
@@ -2311,7 +2326,10 @@ async function executeTool(
         return undefined;
       }
     })();
-    const toolCtx = { conversationId: task.conversationId, userId: task.userId, artifactDirs };
+    // ★ workspaceDir 必须传：工具用它把**相对路径**解析到工作目录（否则落到进程 cwd，
+//   实测 `02-work` / `.yan-zhi/tasks/<convId>` 一律 directory not found）。
+//   子智能体走同一个 executeTool → 自动同样受益。
+    const toolCtx = { conversationId: task.conversationId, userId: task.userId, artifactDirs, workspaceDir: task.workspaceDir };
 
     // 文件修改快照：file_edit 落盘前记下原内容，供前端 Diff 对比 / 应用 / 回退。
     // ★ file_write 不走这里 —— 它的落盘路径由工具按会话目录决定，调用方执行前无法预知，

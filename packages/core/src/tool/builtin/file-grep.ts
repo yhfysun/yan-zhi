@@ -1,9 +1,9 @@
 // file_grep 内置工具 — 文件/目录级关键字与正则搜索（补 file_read 全量盲读的缺口）
 // 复用 fs-walk 的目录遍历（自动跳过 node_modules/.git/dist 等噪声目录），三端可用。
-import type { BuiltInTool } from '../types';
+import type { BuiltInTool, ToolContext } from '../types';
 import type { McpCallResult } from '../../mcp/client';
 import { getPlatformAdapter } from '../../platform/types';
-import { walkFiles } from './fs-walk';
+import { walkFiles, resolveToolPath } from './fs-walk';
 
 const MAX_FILE_SIZE = 2 * 1024 * 1024; // 单文件超过 2MB 跳过（防二进制/超大日志拖垮搜索）
 const OUTPUT_CAP = 64 * 1024;
@@ -49,9 +49,10 @@ export class FileGrepTool implements BuiltInTool {
     required: ['path', 'pattern'],
   };
 
-  async execute(args: Record<string, unknown>): Promise<McpCallResult> {
+  async execute(args: Record<string, unknown>, ctx?: ToolContext): Promise<McpCallResult> {
     const { fs } = getPlatformAdapter();
-    const target = (args.path as string) || '.';
+    // ★ 相对路径基于工作目录（见 fs-walk.ts:resolveToolPath）
+    const target = resolveToolPath(args.path, ctx?.workspaceDir);
     const pattern = args.pattern as string;
     if (!pattern) {
       return { content: [{ type: 'text', text: 'Error: pattern is required' }], isError: true };
