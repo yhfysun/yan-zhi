@@ -510,7 +510,9 @@ export async function flushMemoriesBeforeCompression(params: FlushParams, toComp
     ).all(params.userId, `%"date":"${date}"%`)[0] as any;
 
     const client = new LlmClient(params.platform, params.model);
-    const reqMessages = [
+    // ★ 必须显式标注 Message[]：内联数组字面量里的 role 会被推断为 string，
+    //   而 chat() 形参要的是 Role 字面量联合 → 提成变量后类型不兼容（TS2345）。
+    const reqMessages: Message[] = [
       {
         id: 'sys', conversationId: '', role: 'system', createdAt: 0,
         content: '你是记忆归档助手。以下对话片段即将被压缩丢失。请提取其中「尚未记录在现有记忆里」且后续步骤可能需要的信息（关键数据、文件路径、ID、命令、决定、用户纠正/偏好），输出 JSON 数组，每项形如 {"type":"daily|session","content":"一句话事实，标识符原样保留"}。相对日期（如"昨天"）转为绝对日期。没有值得抢救的返回 []。只输出 JSON，不要解释。',
