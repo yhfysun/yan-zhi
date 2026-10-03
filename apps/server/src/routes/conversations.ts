@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { v4 as uuid } from 'uuid';
 import { authMiddleware } from '../auth.js';
-import { db } from '../db.js';
+import { db, MESSAGE_LIST_COLS } from '../db.js';
 import { normalizePermissionMode } from '../tool-permission.js';
 import { writeTaskPlanFile, seedTaskPlanFromFile } from '../services/task-plan-file.js';
 import { WF_TOOL_PREFIX, MAX_WF_TOOLS_PER_CONVERSATION } from '../services/workflow-tool-registry.js';
@@ -198,7 +198,8 @@ router.delete('/:id', (req: Request, res: Response) => {
 // GET /api/conversations/:id/messages
 // 历史会话还原接口：不携带 system_prompt_snapshot（快照可能很大，且只有查看提示词时才需要）。
 // 需要快照时走独立按需接口 GET /api/messages/:mid/snapshot。
-const MESSAGE_LIST_COLS = 'id, conversation_id, user_id, role, content, tool_calls_json, tool_call_id, reasoning_content, tokens, parent_tool_call_id, sub_agent_id, sub_agent_name, sub_agent_depth, created_at';
+// ★ 列清单统一取自 db.ts:MESSAGE_LIST_COLS —— 与 llm-task-manager 的 ReAct 热路径**共用同一常量**，
+//   避免"同一语义两处各写一份"的漂移（本项目既有教训）。
 router.get('/:id/messages', (req: Request, res: Response) => {
   const userId = req.user!.userId;
   const cid = req.params.id;

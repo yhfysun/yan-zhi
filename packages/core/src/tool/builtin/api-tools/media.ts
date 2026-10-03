@@ -223,7 +223,7 @@ export function registerMediaTools(m: Map<ApiModuleName, ToolDefinition[]>) {
         '音视频合成（基于 ffmpeg）：① dub 把配音音频混进视频（默认替换原音轨，keepAudio=true 时与人声混合）；② concat 按顺序拼接多段视频；③ subtitle 把 SRT 字幕烧录进画面（可顺带在顶部叠加标题、并控制字幕字号）。' +
         '输入一律为本机文件绝对路径（前序工具返回的 file 字段）。返回 {type:"video", file, url}。' +
         'concat 要求各段编码参数一致（copy 直拼），不一致会报错——先用同参数生成。未找到 ffmpeg 时会给出明确的放置/配置指引。' +
-        '★ subtitle 推荐参数：title 传「项目名称」做顶部常驻标题（整数中文也支持），subtitleFontSize 传 32~38（竖屏 1080 宽下默认 34，避免默认字号过大压住画面）。',
+        '★ subtitle 推荐参数：title 传「项目名称」做顶部常驻标题（长标题默认 auto 自适应缩字，绝不溢出；要滚动传 titleFit="scroll"）；subtitleFontSize 不要显式传（默认 88px≈12 字/行，已合适；显式传小值如 34 反而会把 libass 单位当像素放大成巨字）。',
       inputSchema: {
         type: 'object',
         properties: {
@@ -234,8 +234,10 @@ export function registerMediaTools(m: Map<ApiModuleName, ToolDefinition[]>) {
           videos: { type: 'array', items: { type: 'string' }, description: 'concat：按顺序的视频路径列表（≥2）' },
           srt: { type: 'string', description: 'subtitle：SRT 字幕文件本机绝对路径（api_srt_generate 的产出）' },
           title: { type: 'string', description: 'subtitle 可选：在画面顶部叠加的标题文字（建议填项目名称），整片常驻；不传则不叠加。中文会自动使用系统中文字体渲染' },
-          subtitleFontSize: { type: 'number', description: 'subtitle 可选：字幕字号（像素，以 1920 高成片为基准），默认 120（1080 宽下约 9 字/行）；要更小传 100，更大传 140' },
-          titleFontSize: { type: 'number', description: 'subtitle 可选：标题字号（像素，基准同上），默认 140；不传用默认' },
+          subtitleFontSize: { type: 'number', description: 'subtitle 可选：字幕字号（像素，以 1920 高成片为基准），默认 88（1080 宽下约 12 字/行，长句自动换行）；一般不要传' },
+          titleFontSize: { type: 'number', description: 'subtitle 可选：标题字号（像素，基准同上），默认 140；超宽标题在 titleFit=auto 下会自动缩小，无需手调' },
+          titleFit: { type: 'string', enum: ['auto', 'scroll', 'fixed'], description: 'subtitle 可选：标题超宽处置。auto（默认）=估宽超画面 92% 自动缩字号完整显示；scroll=从右向左跑马灯滚动（任何长度都完整可读）；fixed=居中不缩放（仅短标题）' },
+          titleScrollSpeed: { type: 'number', description: 'subtitle 可选：titleFit=scroll 时的滚动速度（像素/秒，1920 高基准），默认 120' },
           subtitleColor: { type: 'string', description: 'subtitle 可选：字幕颜色，十六进制如 "#FFD700"（默认白色）' },
           subtitleOutlineColor: { type: 'string', description: 'subtitle 可选：字幕描边颜色，默认黑色（浅色画面上加深描边更清晰）' },
           subtitleOutline: { type: 'number', description: 'subtitle 可选：描边宽度（像素，基准同上），默认 12；0 即无描边' },

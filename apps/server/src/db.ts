@@ -21,6 +21,116 @@ const DB_PATH = path.join(dataDir, 'data.db');
 // import { db } 拿到的必是已就绪连接。
 const opened = await openSqlite(DB_PATH);
 export const db: YzSqliteDb = opened.db;
+
+/**
+ * message 表「列表/上下文」安全列白名单 —— **不含 `system_prompt_snapshot`**。
+ *
+ * ★★★ 为什么必须存在（2026-10-01 实测，high）：
+ *   `system_prompt_snapshot` 单条可达 **200KB**（实测生产库 1186 条共 237MB，
+ *   占库体积 75%），而**任何走 rowToMsg 的读取路径都根本不用它**。
+ *   此前 `llm-task-manager` 的热路径用 `SELECT *`，于是 ReAct 循环**每个 step**
+ *   都把整会话快照读进内存再原样丢弃 ——
+ *   实测会话 deed2862：每步白读 **183MB**（快照占其中 99.8%），按 500 步算约 90GB 无效 IO。
+ *   这正是「上下文越长、发消息等待越久」的**头号成因**（远大于压缩）。
+ *
+ * ★ 两个入口必须共用本常量：`routes/conversations.ts`（历史还原）与
+ *   `llm-task-manager.ts`（ReAct 热路径）。同一语义两处各写一份列清单必然漂移 ——
+ *   本项目已多次吃过这个亏（见 MEMORY.md「同一个语义在两处判定」）。
+ *
+ * 需要快照时走按需接口 `GET /api/messages/:mid/snapshot`（routes/messages.ts）。
+ */
+export const MESSAGE_LIST_COLS =
+  'id, conversation_id, user_id, role, content, tool_calls_json, tool_call_id, reasoning_content, tokens, parent_tool_call_id, sub_agent_id, sub_agent_name, sub_agent_depth, created_at';
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 会话压缩摘要的读写（唯一出口）
+//
+// ★ 为什么收口成函数而不是各处手写 SQL：本项目已多次因「同一语义两处各写一份」
+//   而漂移（MESSAGE_LIST_COLS、空转判据、允许根）。压缩摘要的读写同样必须唯一。
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** 一条持久化的压缩摘要行 */
+export interface MessageSummaryRow {
+  id: string;
+  conversationId: string;
+  messageIds: string[];
+  summary: string;
+  tokens: number;
+  createdAt: number;
+}
+
+function rowToSummary(row: any): MessageSummaryRow {
+  let ids: string[] = [];
+  try {
+    const parsed = JSON.parse(row.message_ids_json || '[]');
+    if (Array.isArray(parsed)) ids = parsed.filter((x) => typeof x === 'string');
+  } catch {}
+  return {
+    id: row.id,
+    conversationId: row.conversation_id,
+    messageIds: ids,
+    summary: row.summary || '',
+    tokens: row.tokens || 0,
+    createdAt: row.created_at || 0,
+  };
+}
+
+/** 取某会话**最新**一条压缩摘要（没有则 null）。压缩读取路径的唯一入口。 */
+export function getLatestMessageSummary(conversationId: string): MessageSummaryRow | null {
+  const row = db
+    .prepare('SELECT * FROM message_summary WHERE conversation_id = ? ORDER BY created_at DESC LIMIT 1')
+    .get(conversationId) as any;
+  return row ? rowToSummary(row) : null;
+}
+
+/**
+ * 追加一条压缩摘要（**追加不覆盖**，保留历史以便回滚/审计）。
+ * ★ 为什么要传 userId：与 message 表同构，便于按用户隔离与后续清理。
+ */
+export function insertMessageSummary(params: {
+  conversationId: string;
+  userId: string;
+  messageIds: string[];
+  summary: string;
+  tokens?: number;
+}): string {
+  const id = 'sum_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  db.prepare(
+    'INSERT INTO message_summary (id, conversation_id, user_id, message_ids_json, summary, tokens, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+  ).run(
+    id,
+    params.conversationId,
+    params.userId,
+    JSON.stringify(params.messageIds || []),
+    params.summary || '',
+    params.tokens || 0,
+    Date.now(),
+  );
+  return id;
+}
+
+/**
+ * 删除某会话**指定 id 之后**（含该条）的所有摘要。
+ *
+ * ★ 用途（回滚语义，对齐 Roo Code 的非破坏性截断）：用户回退到某个压缩点之前时，
+ *   把该点之后的摘要行清掉即可 —— `message` 表一字未动，原文始终完整保留。
+ */
+export function deleteMessageSummariesAfter(conversationId: string, summaryId: string): number {
+  const row = db
+    .prepare('SELECT created_at FROM message_summary WHERE id = ? AND conversation_id = ?')
+    .get(summaryId, conversationId) as any;
+  if (!row) return 0;
+  const since = row.created_at;
+  const info = db
+    .prepare('DELETE FROM message_summary WHERE conversation_id = ? AND created_at >= ?')
+    .run(conversationId, since) as any;
+  return info?.changes ?? 0;
+}
+
+/** 清空某会话全部摘要（会话删除时调用；也用于"用户主动清空上下文但保留原文"）。 */
+export function clearMessageSummaries(conversationId: string): void {
+  db.prepare('DELETE FROM message_summary WHERE conversation_id = ?').run(conversationId);
+}
 /** 当前生效的 SQLite 驱动（better-sqlite3 原生 / sql.js WASM 回退） */
 export const DB_DRIVER: 'better-sqlite3' | 'sql.js' = opened.driver;
 console.log('[db] SQLite 驱动:', DB_DRIVER, '→', DB_PATH);
@@ -166,6 +276,35 @@ db.exec(`
     created_at INTEGER NOT NULL
   );
 
+  -- ═══════════════════════════════════════════════════════════════════════════
+  -- 会话压缩摘要（2026-10-02）
+  --
+  -- ★★★ 为什么必须有这张表（本方案的核心缺口）：
+  --   此前压缩结果**只赋回局部变量** messagesToSend，不落库 →
+  --   下一步 loadMessages 又是**全量** → 又超阈值 → 又压缩。
+  --   虽然 SummaryCache 挡住了「重发 LLM 摘要请求」，但历史**从未真正变短**：
+  --   每步仍在重算、每步 O(n)。等价于"压缩了但没生效"。
+  --   ⇒ 一旦摘要落库，下一步读到的就是「摘要 + 增量」，压缩成为**持久化事实**。
+  --   这是 OpenHands 把 Condensation 写回事件日志、Claude Code 发
+  --   compact_boundary 的同构做法。
+  --
+  -- ★ 追加不覆盖：保留历史摘要可支持回滚/审计（对齐 Roo Code 的非破坏性截断）——
+  --   回滚 = 丢弃该摘要之后的消息 + 删除该摘要行，message 表一字未动。
+  --
+  -- ★ message_ids_json = 被本条摘要**覆盖**的消息 id 列表（顺序敏感）：
+  --   既作「前缀指纹」（消息被编辑/删除即判失效，退回全量摘要），
+  --   也作明细（供审计与"摘要覆盖了哪些原文"的可追溯性）。
+  -- ═══════════════════════════════════════════════════════════════════════════
+  CREATE TABLE IF NOT EXISTS message_summary (
+    id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL REFERENCES conversation(id),
+    user_id TEXT NOT NULL REFERENCES user(id),
+    message_ids_json TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    tokens INTEGER DEFAULT 0,
+    created_at INTEGER NOT NULL
+  );
+
   -- 智能体（商城发布用：远程节点通过 /marketplace/agents/publish 把本地 agent 快照 upsert 到此表）
   CREATE TABLE IF NOT EXISTS agent (
     id TEXT PRIMARY KEY,
@@ -280,6 +419,7 @@ db.exec(`
 -- 该索引已移至迁移代码块之后创建。
 CREATE INDEX IF NOT EXISTS idx_space_user ON space(user_id);
   CREATE INDEX IF NOT EXISTS idx_message_conv ON message(conversation_id);
+  CREATE INDEX IF NOT EXISTS idx_message_summary_conv ON message_summary(conversation_id, created_at);
   CREATE INDEX IF NOT EXISTS idx_platform_user ON platform(user_id);
   CREATE INDEX IF NOT EXISTS idx_model_platform ON model(platform_id);
   CREATE INDEX IF NOT EXISTS idx_mcp_user ON mcp_server(user_id);
@@ -373,6 +513,28 @@ CREATE INDEX IF NOT EXISTS idx_space_user ON space(user_id);
   );
   CREATE INDEX IF NOT EXISTS idx_file_change_path ON file_change(path);
   CREATE INDEX IF NOT EXISTS idx_file_change_status ON file_change(status);
+
+  -- 越界访问审计（2026-10-01）：模型试图访问工作目录外位置的**全部尝试**（允许/拒绝都记）。
+  --
+  -- ★ 为什么必须有：此前越界访问**完全没有留痕** —— 用户既看不到模型读过什么，也查不到
+  --   "什么时候被授权过"。安全事件三要素（谁/何时/访问什么）一个都答不上来。
+  -- ★ 为什么"允许也要记"：授权是用户点过头的，但**事后审计**要能回答
+  --   "这个会话到底被授权访问过哪些目录"——只记拒绝等于丢了过程。
+  CREATE TABLE IF NOT EXISTS path_access_audit (
+    id TEXT PRIMARY KEY,
+    user_id TEXT,
+    conversation_id TEXT,
+    task_id TEXT,
+    tool_name TEXT NOT NULL,
+    action TEXT NOT NULL,              -- read / write
+    target_path TEXT,                  -- 解析后的绝对路径（命令类为空）
+    raw_path TEXT,                     -- 模型原始给的（弹窗里给用户看的）
+    decision TEXT NOT NULL,            -- logged(UI试跑放行) / allowed(用户同意) / denied(用户拒绝) / unattended(无人值守拒绝) / workflow-denied(工作流拒绝)
+    reason TEXT,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_path_audit_conv ON path_access_audit(conversation_id);
+  CREATE INDEX IF NOT EXISTS idx_path_audit_decision ON path_access_audit(decision);
 `);
 
 // 迁移 file_change 表（添加 step 列：该文件变更发生在**第几步**）。

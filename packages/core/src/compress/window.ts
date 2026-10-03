@@ -32,6 +32,99 @@ export const COMPRESS_TRIGGER_RATIO = 0.5;
  */
 export const COMPRESS_TOOL_CAP_CHARS = 8 * 1024;
 
+/**
+ * 摘要缓存：跨 step 复用「已摘要过的前缀」，避免**每一步都重发一次全量摘要 LLM 请求**。
+ *
+ * ★★★ 为什么必须存在（2026-10-01 排障，high）：
+ *   ReAct 主循环每一步都执行
+ *     `messagesToSend = loadMessages(convId)`  →  每步都是**全量**历史
+ *     `if (needsCompression(...)) compress(...)`  →  每步都超阈值
+ *   而 `compress` 对「保留窗口之外的整段前文」每次都重新调一次 LLM 生成摘要
+ *   —— 上下文越长，**每一个 step 都白白多付一次摘要调用**（既慢又烧 token）。
+ *   实测生产库长会话（1156 条消息）每步都触发一次。
+ *
+ * 判据：把上次被摘要的**消息 id 序列（指纹）**与摘要文本一起存下来。下一次若
+ *   ① 指纹仍是被压缩段的前缀（说明历史只往后追加、没被编辑/删改），且
+ *   ② 新增部分规模可控（新增 token 未超过上次摘要的一倍），
+ * 就复用旧摘要，只对**新增的那一段**做增量摘要，再把两段摘要拼起来。
+ * 否则退回全量摘要（保证正确性优先）。
+ *
+ * 指纹按 id 序列比对：历史只追加时前缀必然完全一致；一旦消息被删除/编辑
+ * （id 序列变化）即判为不命中 —— 宁可多花一次调用，也不给模型错误的摘要。
+ */
+export interface SummaryCache {
+  /** 上次被摘要的**全部**消息 id（顺序敏感，作为前缀指纹） */
+  ids: string[];
+  /** 上次生成的摘要文本 */
+  summary: string;
+}
+
+/**
+ * 只取「属于本次会话主线」的消息：**剔除子智能体消息**。
+ *
+ * ★★★ 为什么必须有（2026-10-02）：`loadMessages` 只按 `conversation_id` 过滤，
+ *   而子智能体消息与主会话**共用同一个 conversation_id**（靠 `parent_tool_call_id` 区分）
+ *   → 子智能体的每一步都会混进主智能体的上下文。而子智能体存在的全部意义就是
+ *   **上下文隔离**（Claude Code 文档明说：subagent 只把最终结果回传给父级）。
+ *   混进来之后：① 主上下文被无关中间过程灌满；② token 计数虚高、压缩提前触发；
+ *   ③ 模型看到两套并行的工具调用序列，容易串味。
+ *
+ * ★ 两种形态都认：本仓库既有 `parentToolCallId`（内存形态）也有 `parent_tool_call_id`
+ *   （DB 行形态）。同一个 map 里「有的字段有兜底、有的没有」是本项目的经典坑，
+ *   这里对两个键同时判，不给静默失效留口子。
+ */
+export function visibleMessages(messages: Message[]): Message[] {
+  return messages.filter((m) => {
+    const any = m as any;
+    const pid = any.parentToolCallId ?? any.parent_tool_call_id;
+    return !pid;
+  });
+}
+
+/**
+ * 预算兜底：压缩后若仍超 `budget`，按「代价从大到小」继续降。
+ *
+ * 顺序（与主流一致，见 LibreChat 的 contextPruning 两级）：
+ *   ① 先把**最长的 tool 输出**硬清成占位符（结构保留、内容丢弃）；
+ *   ② 仍超 → 从**最老的**非 system 消息开始丢（成组丢，保持 tool 配对）。
+ *
+ * ★ 为什么放在 core：这是纯逻辑，不依赖存储层；且必须与 `compress` 用**同一个**
+ *   `tokenCount`，否则「一边算一边降」两边口径不一致，会降不准。
+ */
+export function enforceBudget(messages: Message[], budget: number, opts?: { placeholder?: string }): Message[] {
+  const placeholder = opts?.placeholder ?? '[历史工具结果已清理以释放上下文]';
+  if (budget <= 0) return messages;
+
+  // ① 长工具输出 → 占位符（从最长开始，直到降到预算内）
+  let out = messages.slice();
+  const toolIdx = out
+    .map((m, i) => ({ m, i }))
+    .filter(({ m }) => m.role === 'tool' && (m.content || '').length > 512)
+    .sort((a, b) => (b.m.content || '').length - (a.m.content || '').length);
+  for (const { i } of toolIdx) {
+    if (sumTokens(out) <= budget) return out;
+    out = out.map((m, j) => (j === i ? { ...m, content: placeholder } : m));
+  }
+  if (sumTokens(out) <= budget) return out;
+
+  // ② 从最老的开始丢（保 system；成组丢：丢 assistant(tool_calls) 时连带其 tool 应答）
+  let head = 0;
+  while (head < out.length && out[head].role === 'system') head++;
+  let drop = head;
+  while (drop < out.length && sumTokens(out.slice(0, head).concat(out.slice(drop))) > budget) {
+    drop++;
+    // 若切点落在 tool 上，说明它配对的 assistant 已被丢 → 一并跳过孤児 tool
+    while (drop < out.length && out[drop].role === 'tool') drop++;
+  }
+  return out.slice(0, head).concat(out.slice(drop));
+}
+
+/** 与 ContextWindow.tokenCount 同口径的独立求和（供 enforceBudget 使用，避免实例化） */
+function sumTokens(messages: Message[]): number {
+  const w = new ContextWindow(0);
+  return w.tokenCount(messages);
+}
+
 /** 把超长文本裁成 头部 75% + 尾部 25%（错误信息/结论常在末尾），未超限原样返回。 */
 export function capLongText(text: string, max: number = COMPRESS_TOOL_CAP_CHARS): string {
   if (!text || text.length <= max) return text;
@@ -46,10 +139,31 @@ export class ContextWindow {
   private summaryClient: LlmClient | null = null;
 
   constructor(
+    /**
+     * **触发阈值**（不是"预算"—— 预算换算已完成后才传进来）。
+     *
+     * ★★★ 两种入口传进来的东西**语义不同**，务必分清（2026-10-02 修**过度压缩**）：
+     *   · `forContextWindow(cw)` → 传 `标称窗口 × COMPRESS_TRIGGER_RATIO`：
+     *     因为 `tokenCount` 估算偏低，乘 0.5 是**估算误差余量**（"怕算不准就早点压"）。
+     *   · `forBudget(usable)`    → 传 `usable` **原值**：usable 已是
+     *     「标称 × 25%（有效比例）− 输出预留」的结论，**不能再乘一次系数** ——
+     *     否则 1M 模型会被压到 124K（只用到标称 12%），白白扔掉一半有效窗口。
+     *   ★ 判据：**同一个系数不能同时承担"估算补偿"和"预算折算"两种语义**；
+     *     一旦叠加就是本仓库反复出现的"串联两个保守兜底 → 过度保守"。
+     */
     private maxTokens: number = 8000,
     private keepRecent: number = 6,
     private summaryPlatform?: Platform,
     private summaryModel?: Model,
+    /**
+     * 头部保留条数（默认 0 = 保持历史行为「只留尾部」）。
+     *
+     * ★★★ 为什么要有（2026-10-02，对齐 OpenHands `keep_first=4` / Claude Code 的
+     *   「plan 与规则重注入」）：只留尾部会把**首轮用户消息**（真正的任务目标）
+     *   一起吃进摘要 —— 而摘要必然有损。长任务里"我要做什么"比"刚才做了什么"更不该丢。
+     *   ⇒ 保留「首轮目标 + 最近若干轮」，中间段才摘要。
+     */
+    private keepFirst: number = 0,
   ) {}
 
   /**
@@ -62,9 +176,30 @@ export class ContextWindow {
    *   是**运行环境**的知识（依赖模型/平台配置），core 是纯逻辑包不该替宿主猜。
    *   这里只做"非法值不得把阈值算成 0/NaN"的防御。
    */
-  static forContextWindow(contextWindow: number, keepRecent = 6): ContextWindow {
+  static forContextWindow(contextWindow: number, keepRecent = 6, keepFirst = 0): ContextWindow {
     const cw = Number.isFinite(contextWindow) && contextWindow > 0 ? contextWindow : 8000;
-    return new ContextWindow(Math.max(1, Math.floor(cw * COMPRESS_TRIGGER_RATIO)), keepRecent);
+    return new ContextWindow(Math.max(1, Math.floor(cw * COMPRESS_TRIGGER_RATIO)), keepRecent, undefined, undefined, keepFirst);
+  }
+
+  /**
+   * 按「可用预算（已扣掉输出预留）」创建。
+   *
+   * ★ 与 `forContextWindow` 的分工：
+   *   · `forContextWindow(cw)` = 按模型**标称窗口** × 0.5 → 触发阈值（**估算误差余量**）；
+   *   · `forBudget(usable)`  = 按**已扣输出预留的可用预算** → 触发阈值（**分层预算**）。
+   *   两者不可混用：前者是"我怕算不准"，后者是"我得给输出留地方"。
+   *   ★ 对齐 Roo Code 的 `allowedTokens = cw×(1-10%) - reservedTokens(maxTokens)`。
+   *
+   * ★★★ 2026-10-02 关键修正：**预算不可再乘 COMPRESS_TRIGGER_RATIO**。
+   *   预算值（标称 × 25% − 输出预留）本身已经是"该用多少"的结论，再乘 0.5 变双重折扣：
+   *   1M 模型 → 有效 248K → 阈值被压到 **124K**（只用到标称 12%）→ **过度压缩、白扔一半有效窗口**。
+   *   ⇒ 这里显式传 `triggerRatio = 1.0`，让 `maxTokens` 就是阈值本身。
+   *   （`forContextWindow` 保留 0.5 不变 —— 那条路径输入是标称窗口，确实需要保守余量。）
+   */
+  static forBudget(usableTokens: number, keepRecent = 6, keepFirst = 0): ContextWindow {
+    const u = Number.isFinite(usableTokens) && usableTokens > 0 ? usableTokens : 8000;
+    // ★ 直接传 u（不乘系数）：u 已是"该用多少"的结论，再乘一次就是双重折扣（见构造器注释）。
+    return new ContextWindow(Math.max(1, Math.floor(u)), keepRecent, undefined, undefined, keepFirst);
   }
 
   /** 设置摘要用的 LLM 客户端 */
@@ -117,6 +252,27 @@ export class ContextWindow {
       beforeCompress?: (toCompress: Message[]) => Promise<void>;
       /** 分级压缩中「裁剪老工具输出」这一档的最大字符数（默认 8KB） */
       toolCapChars?: number;
+      /**
+       * 摘要缓存（跨 step 复用）。命中时只对**新增部分**做增量摘要，
+       * 避免每步重发全量摘要请求。未提供则每次全量摘要（历史行为）。
+       * 见 SummaryCache 注释。
+       */
+      summaryCache?: SummaryCache;
+      /** 摘要调用超时（ms）。超时则跳过摘要、退回「裁剪后的原样」，绝不阻塞主循环。默认 20000。 */
+      summaryTimeoutMs?: number;
+      /**
+       * 压缩完成回调（供调用侧**把摘要落库**）。
+       *
+       * ★★★ 为什么必须有（2026-10-02，本方案的核心）：此前压缩结果只赋回**局部变量**
+       *   `messagesToSend`，不落库 → 下一步 `loadMessages` 又是全量 → 又超阈值 → 又压缩。
+       *   虽然 `summaryCache` 挡住了「重发 LLM 请求」，但**每步仍在重算、且历史从未真正变短**。
+       *   ⇒ 落库后，下一步读到的就是"摘要 + 增量"，压缩本身成为**持久化事实**
+       *     （对齐 OpenHands 把 `Condensation` 写回事件日志 / Claude Code 的 compact_boundary）。
+       *
+       * ★ 回调只做"告知"，由调用侧决定写哪张表 —— core 保持纯逻辑、不依赖存储层
+       *   （与 `beforeCompress` 同一取向）。
+       */
+      onCompressed?: (info: { coveredIds: string[]; summary: string; tokens: number }) => void | Promise<void>;
     },
   ): Promise<Message[]> {
     if (this.tokenCount(messages) <= this.maxTokens) {
@@ -135,24 +291,79 @@ export class ContextWindow {
     });
     if (this.tokenCount(trimmed) <= this.maxTokens) return trimmed; // 裁剪即够 → 保住全部消息
 
+    // ★★ 头部保留段（keepFirst>0 时启用）：首轮任务目标绝不能被摘要吃掉。
+    //   见构造器 keepFirst 注释。keepFirst=0 时下面整段是 no-op，行为与历史完全一致。
+    let headKeep: Message[] = [];
+    let tail = trimmed;
+    if (this.keepFirst > 0) {
+      // 头部边界不能切在 tool 上（否则尾部开头的那条 tool 失去配对 → 孤儿 tool）
+      let hEnd = Math.min(this.keepFirst, Math.max(0, trimmed.length - this.keepRecent - 1));
+      while (hEnd > 0 && trimmed[hEnd - 1].role === 'tool') hEnd--;
+      // 头部末条若是 assistant(tool_calls)，它的应答在中间段 → 该组整体不保留（回退一条）
+      if (hEnd > 0 && (trimmed[hEnd - 1].toolCalls as any)?.length) hEnd--;
+      if (hEnd > 0) {
+        headKeep = trimmed.slice(0, hEnd);
+        tail = trimmed.slice(hEnd);
+      }
+    }
+
     // 切窗边界对齐：保留窗口绝不能从 tool 消息中间开始（否则产生孤儿 tool，
     // 严格上游 400，兜底清洗只能丢弃 → tool 返回值丢失）。把边界回退到该组
     // tool 应答所属的 assistant（带 tool_calls）处，整对保留，返回值一条不丢。
-    let cut = trimmed.length - this.keepRecent;
-    while (cut > 0 && trimmed[cut].role === 'tool') cut--;
+    let cut = tail.length - this.keepRecent;
+    while (cut > 0 && tail[cut].role === 'tool') cut--;
     if (cut <= 0) return trimmed; // 无法在保住配对的前提下压缩，保持（已裁剪的）原样发送
 
-    const toCompress = trimmed.slice(0, cut);
-    const toKeep = trimmed.slice(cut);
+    const toCompress = tail.slice(0, cut);
+    const toKeep = tail.slice(cut);
 
     // 压缩前钩子：把即将被摘要吞掉的细节先落盘（失败不阻塞压缩）
     if (opts?.beforeCompress) {
       try { await opts.beforeCompress(toCompress); } catch {}
     }
 
-    const summary = await this.summarize(toCompress);
+    // ★★ 增量摘要：命中缓存前缀时，只摘要「新增的那一段」，把新摘要接在旧摘要后面。
+    //   见 SummaryCache 注释 —— 这是"每步重发一次全量摘要"的解药。
+    let summary: string;
+    const cache = opts?.summaryCache;
+    const ids = toCompress.map((m) => m.id);
+    const hit = cache && cache.summary && this.isPrefix(cache.ids, ids) ? cache.ids.length : -1;
+    if (hit >= 0) {
+      if (hit === ids.length) {
+        // 前缀完全一致（历史未被追加） → 直接复用，零 LLM 调用
+        summary = cache!.summary;
+      } else {
+        const fresh = toCompress.slice(hit);
+        // 新增部分过大（超过已摘要段规模的一半）时，增量收益低且拼接摘要易失真 → 退回全量
+        const freshTokens = this.tokenCount(fresh);
+        const oldTokens = this.tokenCount(toCompress.slice(0, hit));
+        if (freshTokens > Math.max(oldTokens * 0.5, 512)) {
+          summary = await this.summarizeWithTimeout(toCompress, opts?.summaryTimeoutMs);
+        } else {
+          const delta = await this.summarizeWithTimeout(fresh, opts?.summaryTimeoutMs);
+          summary = delta ? `${cache!.summary}\n\n## 后续进展（增量）\n${delta}` : cache!.summary;
+        }
+      }
+    } else {
+      summary = await this.summarizeWithTimeout(toCompress, opts?.summaryTimeoutMs);
+    }
+
+    // 写回缓存供下一个 step 复用（调用方持有同一对象即生效）
+    if (cache) {
+      cache.ids = ids;
+      cache.summary = summary;
+    }
+
+    // ★ 通知调用侧「本次压缩覆盖了哪些消息」→ 由调用侧落库（core 不碰存储）。
+    //   失败不阻塞主循环：落库失败只是"这次压缩没持久化"，功能仍正确（下一步会重算）。
+    if (opts?.onCompressed) {
+      try {
+        await opts.onCompressed({ coveredIds: ids, summary, tokens: this.tokenCount(toCompress) });
+      } catch {}
+    }
 
     return [
+      ...headKeep,
       {
         id: 'summary',
         conversationId: toKeep[0]?.conversationId || '',
@@ -162,6 +373,42 @@ export class ContextWindow {
       },
       ...toKeep,
     ];
+  }
+
+  /** 判断 `prev` 是否为 `cur` 的**前缀**（严格按顺序逐项比对 id）。 */
+  private isPrefix(prev: string[], cur: string[]): boolean {
+    if (!Array.isArray(prev) || prev.length > cur.length) return false;
+    for (let i = 0; i < prev.length; i++) {
+      if (prev[i] !== cur[i]) return false;
+    }
+    return true;
+  }
+
+  /** 带超时的摘要：超时/异常一律降级为「裁剪后的简版」，绝不阻塞主循环。 */
+  private async summarizeWithTimeout(messages: Message[], timeoutMs = 20000): Promise<string> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const timeout = new Promise<string>((resolve) => {
+        timer = setTimeout(() => resolve(''), timeoutMs);
+      });
+      const result = await Promise.race([this.summarize(messages).catch(() => ''), timeout]);
+      return result || this.fallbackSummary(messages);
+    } catch {
+      return this.fallbackSummary(messages);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  /** 摘要不可用时的降级文本（截断版，不调 LLM） */
+  private fallbackSummary(messages: Message[]): string {
+    const render = (m: Message) => {
+      const tools = this.toolCallsToText(m);
+      const parts = [m.content || ''];
+      if (tools) parts.push(`[调用工具] ${tools}`);
+      return `${m.role}: ${parts.filter(Boolean).join(' ')}`;
+    };
+    return messages.map(render).join('\n').slice(0, 500) + '...';
   }
 
   /** 生成摘要 */
@@ -179,9 +426,8 @@ export class ContextWindow {
     };
 
     if (!this.summaryClient || !this.summaryModel) {
-      // 无摘要模型时，简单截断
-      const content = messages.map(render).join('\n').slice(0, 500);
-      return content + '...';
+      // 无摘要模型时退回同一份降级实现（避免截断逻辑两处各写一份而漂移）
+      return this.fallbackSummary(messages);
     }
 
     const summaryMessages: Message[] = [

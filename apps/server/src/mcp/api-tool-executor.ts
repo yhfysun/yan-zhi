@@ -1423,7 +1423,9 @@ async function mediaCompose(
       const body = files.map((f) => `file '${f.replace(/\\/g, '/').replace(/'/g, "'\\''")}'`).join('\n');
       await writeFile(listFile, body, 'utf8');
       // -c copy 直拼（要求各段参数一致；不一致会明确报错，不静默转码降质）
-      r = await runFfmpeg(ff.ffmpeg, ['-y', '-f', 'concat', '-safe', '0', '-i', listFile, '-c', 'copy', outFile], 600000);
+      // ★ -movflags +faststart 必加（2026-10-02）：没有它 moov 在文件末尾，
+      //   应用内 web 播放器要下完整文件才能开播 → 表现为"读取中→黑屏"（405MB 实测踩坑）。
+      r = await runFfmpeg(ff.ffmpeg, ['-y', '-f', 'concat', '-safe', '0', '-i', listFile, '-c', 'copy', '-movflags', '+faststart', outFile], 600000);
       if (!r.ok) {
         return fail(
           `拼接失败（各段编码参数不一致）。**正解不是反复重试，而是先统一规格**：\n` +
@@ -1443,7 +1445,7 @@ async function mediaCompose(
       r = await runFfmpeg(ff.ffmpeg, [
         '-y', '-i', v.file, '-i', a.file,
         ...filter,
-        '-c:v', 'copy', '-c:a', 'aac', '-shortest', outFile,
+        '-c:v', 'copy', '-c:a', 'aac', '-shortest', '-movflags', '+faststart', outFile,
       ], 600000);
       if (!r.ok) return fail(`配音合成失败：${r.stderr}`);
     } else {
@@ -1470,10 +1472,10 @@ async function mediaCompose(
       //   「我要 110px 的字」在任何画幅上都得到相同的视觉占比。
       const FS_PER_PX = 384 / 1920; // 0.2
       const MV_PER_PX = 288 / 1920; // 0.15
-      // 默认 120px ≈ libass FontSize 24 ≈ 画面高 6.25% ≈ 1080 宽下 9 字/行。
-      // ★ 为什么不是 34：上一版把 34 当作像素设进去，实际渲染成 170px 字高（6.4 字/行），
-      //   用户反馈"字幕有点大" —— 那是把 libass 单位误当像素导致的。这里改回真正的像素语义。
-      const fs = Math.max(6, Math.round(num(args, 'subtitleFontSize', 120) * FS_PER_PX));
+      // 默认 88px ≈ libass FontSize 17.6 ≈ 画面高 4.6% ≈ 1080 宽下约 12 字/行。
+      // ★ 2026-10-02 用户反馈 120 仍偏大（"字幕很大，一句话完整顶出来"）→ 降到 88；
+      //   长句由 libass 智能换行（WrapStyle=0），不再一行顶满全句。
+      const fs = Math.max(6, Math.round(num(args, 'subtitleFontSize', 88) * FS_PER_PX));
       const ol = Math.max(0, Math.round(num(args, 'subtitleOutline', 12) * FS_PER_PX));
       // ★ safeArea=true 时底部边距抬到 420px：竖屏短视频（抖音/快手/视频号）的进度条、
       //   账号信息、操作按钮都在底部约 20% 画面高内，字幕压在那儿会被完全遮住。
@@ -1505,16 +1507,43 @@ async function mediaCompose(
         const tEsc = escDrawtext(title);
         const vInfo = await probeMedia(ff.ffprobe, v.file);
         const refH = vInfo.height > 0 ? vInfo.height : 1920;
+        const refW = vInfo.width > 0 ? vInfo.width : 1080;
         const pxH = (px: number) => Math.max(1, Math.round((refH * px) / 1920));
-        const tSize = pxH(num(args, 'titleFontSize', 140));
+        let tSize = pxH(num(args, 'titleFontSize', 140));
+        // ★★★ 标题超宽处置（2026-10-02 用户反馈"标题超出画面看不全"）：
+        //   drawtext 无法自动缩字，长标题（如书名+章节名）在 140px 下必然横向溢出。
+        //   titleFit 三档：
+        //     · auto（默认）：先**估宽**（CJK 字宽≈字号、ASCII≈0.55×字号），超过画面宽 92%
+        //       就按比例缩字号（下限 60px 基准），保证完整显示；
+        //     · scroll：跑马灯从右向左匀速滚动（宽标题完整可读，任何长度都不裁）；
+        //     · fixed：历史行为，居中不缩放（溢出会裁边，仅短标题用）。
+        const fitMode = (str(args, 'titleFit').trim().toLowerCase() || 'auto');
+        const estTitleW = (px: number) => {
+          let units = 0;
+          for (const ch of title) units += ch.codePointAt(0)! > 0x2e80 ? 1 : 0.55;
+          return Math.ceil(units * px);
+        };
+        const spd = pxH(Math.max(20, num(args, 'titleScrollSpeed', 120)));
+        let tX = `x=(w-text_w)/2`;
+        if (fitMode === 'scroll') {
+          // 从右往左循环滚动：x = w - mod(t*speed, w+text_w)（引号内逗号无需再转义，同 tAlpha）
+          tX = `x='w-mod(t*${spd},w+text_w)'`;
+        } else if (fitMode === 'auto') {
+          const maxW = Math.floor(refW * 0.92);
+          const est = estTitleW(tSize);
+          if (est > maxW) {
+            tSize = Math.max(pxH(60), Math.floor(tSize * maxW / est));
+          }
+        }
         // drawtext 的 fontcolor 用 0xRRGGBB（与 libass 的 &HAABBGGRR& 不同，别混用）
         const rawTc = str(args, 'titleColor').trim().replace(/^#/, '');
         const tColor = /^[0-9a-fA-F]{6}$/.test(rawTc) ? `0x${rawTc.toUpperCase()}` : 'white';
         const tFade = Math.max(0, num(args, 'titleFade', 0));
         const tAlpha = tFade > 0 ? `:alpha='if(lt(t,${tFade}),t/${tFade},1)'` : '';
-        vf += `,drawtext=${fontOpt}:text='${tEsc}':fontcolor=${tColor}:fontsize=${tSize}:box=1:boxcolor=black@0.45:boxborderw=${pxH(30)}:x=(w-text_w)/2:y=${pxH(120)}${tAlpha}`;
+        vf += `,drawtext=${fontOpt}:text='${tEsc}':fontcolor=${tColor}:fontsize=${tSize}:box=1:boxcolor=black@0.45:boxborderw=${pxH(30)}:${tX}:y=${pxH(120)}${tAlpha}`;
       }
-      r = await runFfmpeg(ff.ffmpeg, ['-y', '-i', v.file, '-vf', vf, '-c:a', 'copy', outFile], 600000);
+      // ★ faststart 同 dub/concat（moov 前置，应用内预览才能秒开）
+      r = await runFfmpeg(ff.ffmpeg, ['-y', '-i', v.file, '-vf', vf, '-c:a', 'copy', '-movflags', '+faststart', outFile], 600000);
       if (!r.ok) return fail(`字幕烧录失败：${r.stderr}`);
     }
 
@@ -2752,9 +2781,35 @@ export async function executeApiTool(
       }
 
       // Workspace
-      case 'api_workspace_list_dir':
+      //
+      // ★★ 工作目录边界守卫（2026-10-01）：这两个工具此前接受**任意绝对路径** ——
+      //   `listWorkspaceDir` 内部 `path.resolve(dirPath || workspaceDir || cwd)`，
+      //   给了绝对路径就原样用（api-tool-executor.ts:3529）→ 只读会话也能枚举整个磁盘。
+      //
+      // ★ 为什么守卫放在这里（而主链路的 executeTool 里也有一次）：
+      //   本函数是 `api_*` 工具的**唯一执行点**，有 4 个调用方
+      //   （ReAct 主链路 / 工作流 / mcp registry / UI 试跑）。放在这里才不会漏。
+      //   与主链路那次**共用同一份判据与同一份白名单**（services/path-guard 的模块级状态）
+      //   → 主链路弹窗授权后，这里能读到白名单放行；工作流直调（无白名单）则 fail-safe 拒绝。
+      //   —— 不是"两处各自判定"，而是"同一判据在不同入口的不同处置"（方案 §2.1 的设计）。
+      case 'api_workspace_list_dir': {
+        const { checkPathAccess, allowedRootsFor, getAuthorizedDirs } = await import('../services/path-guard.js');
+        const { serverState } = await import('../state.js');
+        const wsDir = serverState.workspaceDir || null;
+        const verdict = checkPathAccess({
+          toolName: 'api_workspace_list_dir',
+          args,
+          workspaceDir: wsDir,
+          allowedRoots: allowedRootsFor(wsDir, conversationId || null),
+          authorizedDirs: conversationId ? getAuthorizedDirs(conversationId) : [],
+        });
+        if (verdict.kind === 'need-auth') {
+          return fail(`路径在工作目录外（${verdict.items.map((i) => i.rawPath).join(', ')}），已拒绝。请改用工作目录内的路径。`);
+        }
         return ok(await listWorkspaceDir(str(args, 'path')));
+      }
       case 'api_workspace_search_files':
+        // 只接受 pattern、不接受路径 → 天然限制在工作目录内，无需守卫
         return ok(await searchWorkspaceFiles(str(args, 'pattern')));
 
       // Memory

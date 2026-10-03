@@ -18,6 +18,17 @@ import { resolve } from 'node:path';
 // 不碰真库（与 task-memory-and-pending.test.ts 同款手法）
 vi.mock('../src/db.js', () => ({
   db: { prepare: () => ({ get: () => undefined, all: () => [], run: () => {} }) },
+  // 2026-10-02：补齐 db.js 导出（手写白名单 mock 必须与生产代码同步，否则报
+  //   `No "X" export is defined on the "../src/db.js" mock`，表象却是「任务 failed」）。
+  MESSAGE_LIST_COLS:
+  'id, conversation_id, user_id, role, content, tool_calls_json, tool_call_id, reasoning_content, tokens, parent_tool_call_id, sub_agent_id, sub_agent_name, sub_agent_depth, created_at',
+  deleteMessageSummariesAfter: () => 0,
+  clearMessageSummaries: () => {},
+  // 2026-10-02：services/context-view.ts（上下文组装唯一出口）新增依赖。
+  // ★ 手写白名单 mock 必须同步补，否则 ESM 直接报 "does not provide an export"，
+  //   表现为"任务 failed"，看不出真因（本文件此前已记录过同类教训）。
+  getLatestMessageSummary: () => null,
+  insertMessageSummary: () => "sum_test",
   hasSqliteVec: false,
 }));
 vi.mock('../src/state.js', () => ({ serverState: { workspaceDir: undefined } }));

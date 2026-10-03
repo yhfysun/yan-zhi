@@ -967,15 +967,31 @@ async function readTextDecoded(
  */
 async function resolveMediaUrl(): Promise<string | null> {
   try {
-    const { API_BASE } = await import('../api/client');
+    const { API_BASE, getLicenseCode } = await import('../api/client');
+    // ★ `<video>/<audio>` 的 src 带不了 x-license 请求头 —— 授权门禁（YZ_LICENSE_GUARD=1）
+    //   开启时媒体端点会 403，播放器表现为「格式不支持或损坏」。把授权码放进 query，
+    //   服务端 extractLicenseCode 兜底解析（2026-10-02）。
+    const licenseQs = () => {
+      const code = getLicenseCode();
+      return code ? `&license=${encodeURIComponent(code)}` : '';
+    };
     // ① 会话产物通道
     if (props.file.conversationId && props.file.name) {
-      return `${API_BASE}/conversations/${encodeURIComponent(props.file.conversationId)}/file-stream?name=${encodeURIComponent(props.file.name)}`;
+      return `${API_BASE}/conversations/${encodeURIComponent(props.file.conversationId)}/file-stream?name=${encodeURIComponent(props.file.name)}${licenseQs()}`;
     }
-    // ② 空间资源通道（资源文件没有 conversationId）
+    // ② ★ 本地/工作区通用通道（2026-10-02 修「本地视频预览黑屏」）：
+    //    只要有**绝对本机路径**就走它 —— 覆盖工作区文件树任意嵌套目录、未登记的本地媒体等
+    //    ①③ 两条通道覆盖不到的场景。服务端按 path-guard 允许根校验（工作目录/空间/产物根），
+    //    越界 403，命中则 sendFile（原生 Range）→ 不再退回 Blob（blob 媒体无 Range → 黑屏）。
+    //    ★ 只认绝对路径：Web 端 File System Access 句柄可能是虚拟相对路径，那种留给 ③/兜底。
+    const localPath = String(props.file.path || '').trim();
+    if (localPath && (/^[A-Za-z]:[\\/]/.test(localPath) || localPath.startsWith('/') || localPath.startsWith('\\'))) {
+      return `${API_BASE}/workspace/file-stream?path=${encodeURIComponent(localPath)}${licenseQs()}`;
+    }
+    // ③ 空间资源通道（资源文件没有 conversationId）
     const { spaceId, resourceDir, name } = props.file;
     if (spaceId && resourceDir && name) {
-      return `${API_BASE}/spaces/${encodeURIComponent(spaceId)}/resources/${encodeURIComponent(resourceDir)}/raw?name=${encodeURIComponent(name)}`;
+      return `${API_BASE}/spaces/${encodeURIComponent(spaceId)}/resources/${encodeURIComponent(resourceDir)}/raw?name=${encodeURIComponent(name)}${licenseQs()}`;
     }
     return null;
   } catch {

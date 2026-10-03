@@ -29,6 +29,14 @@ const box = vi.hoisted(() => {
 
 vi.mock('../src/db.js', () => ({
   db: {
+  // 2026-10-02：补齐 db.js 导出（手写白名单 mock 必须与生产代码同步，否则报
+  //   `No "X" export is defined on the "../src/db.js" mock`，表象却是「任务 failed」）。
+  MESSAGE_LIST_COLS:
+  'id, conversation_id, user_id, role, content, tool_calls_json, tool_call_id, reasoning_content, tokens, parent_tool_call_id, sub_agent_id, sub_agent_name, sub_agent_depth, created_at',
+  getLatestMessageSummary: () => null,
+  insertMessageSummary: () => 'sum_test',
+  deleteMessageSummariesAfter: () => 0,
+  clearMessageSummaries: () => {},
     prepare: (sql: string) => ({
       get: (id?: string) => {
         if (/pending_confirm_json/.test(sql)) {

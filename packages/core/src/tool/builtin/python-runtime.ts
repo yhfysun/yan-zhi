@@ -67,6 +67,29 @@ export function getPythonScript(rel: string): string | null {
   return fs.existsSync(p) ? p : null;
 }
 
+/**
+ * 强制 Python 以 **UTF-8** 写 stdout/stderr（就地修改并返回 env）。
+ *
+ * ★★★ 为什么必须（2026-10-01 用户实报「安装包任务里工具输出乱码」）：
+ *   Windows 上 Python 在**没有** `PYTHONIOENCODING` 时，`sys.stdout.encoding` 取的是
+ *   OEM 代码页 → **`gbk`**（实测内置解释器：带变量时 `utf-8`、剔除后 `gbk`）。
+ *   于是 `print("中文…")` 输出的是 GBK 字节；而下游按 UTF-8 解 → 乱码。
+ *   dev 模式之所以正常，是因为终端/父进程往往已注入 `PYTHONIOENCODING=utf-8`
+ *   （本机 WorkBuddy 环境即注入），**安装版双击启动没有** → 只有安装包复现。
+ *   ⇒ 这里显式补上，让 Python 链路**从源头**就是 UTF-8。
+ *
+ * ⚠️ 这只覆盖 Python。`cmd.exe` 内置命令 / 外部 exe / 第三方 CLI **不吃这套**，
+ *   它们的 GBK 输出必须靠采集端按字节解码（见 server `node-adapter.ts` 的 decodeChildOutput）。
+ *   两条一起才完整 —— 只做本函数会漏掉用户看得见的 cmd/dir/type 那部分。
+ *
+ * ★ 调用方显式传入的 PYTHONIOENCODING 优先（不覆盖用户的显式选择）。
+ */
+export function withUtf8Output(env: Record<string, string>): Record<string, string> {
+  env.PYTHONIOENCODING = env.PYTHONIOENCODING || 'utf-8';
+  env.PYTHONUTF8 = env.PYTHONUTF8 || '1';
+  return env;
+}
+
 /** 定位 Python 解释器：打包优先，系统回退 */
 export async function findPython(): Promise<string> {
   const bundled = getBundledPythonPath();
@@ -108,6 +131,8 @@ export async function runPythonCode(
     const env: Record<string, string> = {};
     for (const [k, v] of Object.entries(process.env)) if (typeof v === 'string') env[k] = v;
     env.YZ_PY_ARGS = Buffer.from(JSON.stringify(args)).toString('base64');
+    // ★ 强制 Python 输出 UTF-8（Windows 默认 gbk → 下游按 utf-8 解会乱码，见 withUtf8Output）
+    withUtf8Output(env);
     // 隔离站点包注入（自定义工具的 dependencies）：追加而非覆盖用户既有 PYTHONPATH
     if (opts.pythonPath) {
       const sep = process.platform === 'win32' ? ';' : ':';
@@ -142,6 +167,8 @@ export async function runPythonScript(
     if (typeof v === 'string') env[k] = v;
   }
   if (opts.env) Object.assign(env, opts.env);
+  // ★ 强制 Python 输出 UTF-8（见 withUtf8Output；opts.env 若显式指定则不覆盖）
+  withUtf8Output(env);
   return shell.exec(py, [scriptPath, ...scriptArgs], {
     timeout: Math.min(opts.timeout || 60000, 600000),
     cwd: opts.cwd,

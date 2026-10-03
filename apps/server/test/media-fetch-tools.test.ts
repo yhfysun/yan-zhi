@@ -379,7 +379,9 @@ describe('⑦ 剪辑与特效：media_edit 实现 + 注册 + 挂载 + 权限登�
     //   这条断言防的是「有人觉得换算多余又删掉」。
     expect(EXEC).toMatch(/const FS_PER_PX = 384 \/ 1920/);
     expect(EXEC).toMatch(/const MV_PER_PX = 288 \/ 1920/);
-    expect(EXEC).toMatch(/num\(args, 'subtitleFontSize', 120\)/);
+    // 默认像素值：2026-10-02 用户反馈「120 仍偏大，一句话顶满」→ 降到 88（≈12 字/行）。
+    // ★ 断言的是「默认值走像素语义」这件事本身，具体数字随用户反馈微调 —— 别把它当恒定值。
+    expect(EXEC).toMatch(/num\(args, 'subtitleFontSize', 88\)/);
     // drawtext（标题）是绝对像素，与 libass 相反，必须按高度缩放
     expect(EXEC).toMatch(/const pxH = \(px: number\)/);
     // 颜色换算必须走 libass 的 BGR 反序，不能直接拼 RGB

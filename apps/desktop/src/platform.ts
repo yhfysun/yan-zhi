@@ -115,7 +115,20 @@ class DesktopShell implements ShellAdapter {
     args: string[],
     options?: { cwd?: string; timeout?: number; env?: Record<string, string> },
   ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-    return api.shell.exec(command, args, options);
+    const r: any = await api.shell.exec(command, args, options);
+    // ★ 主进程回传的是**原始字节**（base64），不是已解码的字符串（见 main.cjs 的 shell:exec 注释）：
+    //   Windows 子进程按 OEM 代码页（GBK/CP936）输出（`cmd /c echo 中文`、`dir`、
+    //   无 PYTHONIOENCODING 的 Python），在 IPC 边界按 UTF-8 解会**永久丢失信息**。
+    //   这里对齐 fs.readFile 的做法：取字节 → shared 自动识别（BOM → 严格 UTF-8 → GB18030）。
+    const decodeB64 = (b64?: string): string =>
+      typeof b64 === 'string' ? decodeTextBytes(base64ToBytes(b64)).text : '';
+    // 兼容旧版主进程（仍回传已解码的 stdout/stderr 字符串）——但那种情况编码已不可挽回，
+    // 仅作兜底，正常应走 stdoutB64/stderrB64。
+    return {
+      stdout: typeof r?.stdoutB64 === 'string' ? decodeB64(r.stdoutB64) : (r?.stdout ?? ''),
+      stderr: typeof r?.stderrB64 === 'string' ? decodeB64(r.stderrB64) : (r?.stderr ?? ''),
+      exitCode: r?.exitCode ?? 0,
+    };
   }
 }
 

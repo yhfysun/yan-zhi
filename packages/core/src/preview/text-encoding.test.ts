@@ -229,3 +229,84 @@ describe('③ 三端适配器必须真的接上识别器（防"写好了没人�
     expect(code, '应从 shared 引入').toMatch(/from '@yan-zhi\/shared'/);
   });
 });
+
+describe('④ 子进程输出采集必须按字节解码（2026-10-01 「工具输出乱码」复发）', () => {
+  // 背景（用户实报）：「安装包运行的任务怎么还有工具输出显示乱码的？」
+  // 与 ③ 段（文件读写路径）是**两条完全不同的链路**：上一轮只修了文件读写，
+  // 子进程 stdout/stderr 采集仍是 `chunk.toString()`（无参 = UTF-8）。
+  //
+  // Windows 下子进程按 OEM 代码页（GBK/CP936）输出：
+  //   · `cmd /c echo 中文` → GBK 字节；· 无 PYTHONIOENCODING 的 Python → sys.stdout.encoding='gbk'。
+  // dev 模式常正常（父进程注入了 PYTHONIOENCODING=utf-8），安装版双击启动没有 → 只有安装包复现。
+
+  it('★★ 真实采集样本：cmd 输出的 GBK 字节能被识别（锚定实测数据，非人造）', () => {
+    // 实测 `cmd.exe /c echo 中文测试 完成` 的 15 字节（含 \r\n）——直接来自探针抓取
+    const cmdBytes = u8(0xd6, 0xd0, 0xce, 0xc4, 0xb2, 0xe2, 0xca, 0xd4, 0x20, 0xcd, 0xea, 0xb3, 0xc9, 0x0d, 0x0a);
+    const r = decodeTextBytes(cmdBytes);
+    expect(r.text).toBe('中文测试 完成\r\n');
+    expect(r.encoding).toBe('gb18030');
+    // 反向：按 UTF-8 解必是满屏替换符（这就是用户看到的乱码）
+    expect(new TextDecoder('utf-8').decode(cmdBytes)).toContain('\uFFFD');
+  });
+
+  it('★★ server 主出口：node-adapter 不再逐块 chunk.toString()，改为累积字节后统一解码', () => {
+    const code = strip(readRepo('apps/server/src/node-adapter.ts'));
+    // 正向：存在字节级解码出口
+    expect(code, '缺少 decodeChildOutput').toMatch(/function decodeChildOutput/);
+    expect(code, '采集出口未接识别器').toMatch(/decodeTextBytes\(/);
+    // 反向：★ 这是本次乱码的核心 —— 不得再出现无参 chunk.toString()
+    expect(code, '★ 仍在逐块 chunk.toString()（默认 utf-8，GBK 会乱码）').not.toMatch(/chunk\.toString\(\)/);
+    // 反向：不得再按 utf-8 解子进程输出
+    expect(code, '★ 仍在 toString(\'utf-8\') 解子进程输出').not.toMatch(/toString\(['"]utf-?8['"]\)/);
+    // 输出/错误两路都要解（别只修 stdout）
+    expect(code, 'stderr 未走识别器').toMatch(/decodeChildOutput\(Buffer\.concat\(errChunks\)\)/);
+  });
+
+  it('★★ server 主出口：按字节累积（多字节字符跨 chunk 不会被解坏）', () => {
+    const code = strip(readRepo('apps/server/src/node-adapter.ts'));
+    expect(code, '未按字节累积 stdout').toMatch(/outChunks\.push\(chunk\)/);
+    expect(code, '未按字节累积 stderr').toMatch(/errChunks\.push\(chunk\)/);
+  });
+
+  it('★★ 桌面端 IPC：主进程回传原始字节（不再在 IPC 边界按 utf-8 解码）', () => {
+    const code = strip(readRepo('apps/desktop/main.cjs'));
+    expect(code, 'shell:exec 未回传 stdoutB64').toMatch(/stdoutB64/);
+    expect(code, 'shell:exec 未回传 stderrB64').toMatch(/stderrB64/);
+    // 反向：★ 把断言**限定在 shell:exec 处理块内**——main.cjs 另有 MCP stdio 协议
+    //   的 `chunk.toString('utf-8')`（JSON-RPC 是 ASCII，本就该保持），
+    //   全文件级断言会误伤它（本测试初版就踩了这个坑）。
+    const i = code.indexOf("ipcMain.handle('shell:exec'");
+    expect(i, '未找到 shell:exec 处理器').toBeGreaterThan(0);
+    const j = code.indexOf("ipcMain.handle('shell:openPath'", i);
+    expect(j, '未找到 shell:exec 的结束边界').toBeGreaterThan(i);
+    const handler = code.slice(i, j);
+    expect(handler, '★ shell:exec 仍按 utf-8 解子进程输出').not.toMatch(/toString\(['"]utf-?8['"]\)/);
+  });
+
+  it('★★ 桌面端渲染层：接上 shared 识别器解码字节', () => {
+    const code = strip(readRepo('apps/desktop/src/platform.ts'));
+    const i = code.indexOf('class DesktopShell');
+    expect(i, '未找到 DesktopShell').toBeGreaterThan(0);
+    const body = code.slice(i, i + 1400);
+    expect(body, 'DesktopShell.exec 未解码字节').toMatch(/decodeTextBytes\(base64ToBytes\(/);
+    expect(body, '未消费主进程的 stdoutB64').toMatch(/stdoutB64/);
+  });
+
+  it('★★ Python 侧从源头强制 UTF-8 输出（Windows 默认 gbk）', () => {
+    const code = strip(readRepo('packages/core/src/tool/builtin/python-runtime.ts'));
+    expect(code, '缺少 withUtf8Output').toMatch(/function withUtf8Output/);
+    // runPythonCode 与 runPythonScript 两条路径都要设（漏一条就漏一类工具）
+    const calls = code.match(/withUtf8Output\(env\)/g) ?? [];
+    expect(calls.length, 'withUtf8Output 未在两条 Python 执行路径都调用').toBeGreaterThanOrEqual(2);
+    expect(code, '未设置 PYTHONIOENCODING').toMatch(/PYTHONIOENCODING/);
+    expect(code, '未设置 PYTHONUTF8').toMatch(/PYTHONUTF8/);
+  });
+
+  it('★ 不能只做文件读写那一半（两条链路都要有识别器）', () => {
+    // 这条是**防回归的方向性断言**：上一轮修了 fs，却漏了 shell.exec，
+    // 结果用户一个月后又在安装版看到乱码。两条链路的解码出口都必须存在。
+    const fsSide = strip(readRepo('apps/server/src/node-adapter.ts'));
+    expect(fsSide, 'fs 侧识别器丢了').toMatch(/readFile\(filePath\)[\s\S]{0,120}decodeTextBytes/);
+    expect(fsSide, 'shell 侧识别器丢了').toMatch(/decodeChildOutput/);
+  });
+});

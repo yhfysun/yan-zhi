@@ -327,6 +327,7 @@ function dramaWorkflow() {
           "lines.push('', '角色（各自已分配独立音色）：' + roles.join('、'));\n" +
           "lines.push('已产出：每镜 1 张图 + 1 段配音（无台词镜头跳过配音），另附字幕 SRT。');\n" +
           "lines.push('如需成片，再调 media_compose：dub 配音 + subtitle 字幕 + concat 拼接（缺 ffmpeg 时先调 media_install_ffmpeg）。');\n" +
+          "lines.push('★ 防黑屏规约：素材切片前先对源片跑 blackdetect（ffmpeg -skip_frame nokey -i 源片 -vf blackdetect=d=1.5:pix_th=0.10 -an -f null -），切分点必须避开黑场区间；成品切片自检不得含 >1.5s 黑段，切到黑场就平移切点重切，不要用黑底补时长。');\n" +
           "return lines.join('\\n');",
       },
       position: { x: 920, y: 240 },
@@ -1173,7 +1174,8 @@ function audiobookWorkflow() {
           "for (const s of segs) lines.push('| ' + s.index + ' | ' + (s.tone || '旁白') + ' | ' + String(s.text || '').length + ' | ' + (s.seconds || 0) + ' |');\n" +
           "lines.push('', '已产出：每段 1 段配音 + 1 份 SRT 字幕。');\n" +
           "lines.push(video ? ('视频素材：' + video) : '视频素材：未提供（如需成片，请把视频放进 00-source 后重跑）。');\n" +
-          "lines.push('合成成片：再调 media_compose（op: dub / subtitle / concat）；subtitle 务必传 title（项目名称，做顶部标题），subtitleFontSize 不要显式传（默认已合适，传 34 会变成超大字幕）；缺 ffmpeg 时先调 media_install_ffmpeg。');\n" +
+          "lines.push('合成成片：再调 media_compose（op: dub / subtitle / concat）；subtitle 务必传 title（项目名称，长标题默认自适应缩字不溢出，要滚动传 titleFit=\"scroll\"），subtitleFontSize 不要显式传（默认 88 已合适，传 34 这类小值会变成超大字幕）；缺 ffmpeg 时先调 media_install_ffmpeg。');\n" +
+          "lines.push('★ 防黑屏规约：素材切片前先对源片跑 blackdetect（ffmpeg -skip_frame nokey -i 源片 -vf blackdetect=d=1.5:pix_th=0.10 -an -f null -），切分点必须避开黑场区间；每个成品场景切片要自检（同一命令），**开头/结尾/中间任何 >1.5s 的黑段都不允许交付**——切到黑场就平移切点重切，不要用黑底补时长。');\n" +
           "return lines.join('\\n');",
       },
       position: { x: 2460, y: 240 },

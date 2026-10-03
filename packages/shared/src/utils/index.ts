@@ -3,6 +3,9 @@
 // 文本编码识别（UTF-8 / GBK / UTF-16 自动判定）——三端共用的单一出口
 export * from './text-encoding';
 
+// 有效上下文策略（标称窗口 ≠ 可用窗口）—— 服务端压缩预算与前端用量展示的**同一口径**
+export * from './context-policy';
+
 /** 生成唯一 ID */
 export function uid(prefix = ''): string {
   return prefix + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);

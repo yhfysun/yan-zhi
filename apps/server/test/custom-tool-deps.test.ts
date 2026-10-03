@@ -36,6 +36,10 @@ const LTM = strip(read('apps/server/src/llm-task-manager.ts'));
 const SANDBOX = strip(read('packages/core/src/tool/sandbox.ts'));
 const PY_RUNTIME = strip(read('packages/core/src/tool/builtin/python-runtime.ts'));
 const TOOL_API = strip(read('packages/core/src/tool/builtin/api-tools/tool.ts'));
+// ★ ⑨ 会话级 customToolIds 全链路用的前端 store。
+//   ⚠️ 先前这里**漏定义** → 引用 `CHAT` 时抛 ReferenceError → 该文件的整条断言在
+//   `vitest run` 下直接失败（不是"实现有问题"，是测试自己跑不起来）。2026-10-01 补上。
+const CHAT = strip(read('packages/ui/src/stores/chat.ts'));
 
 /** 锚点必须存在（锚点失效会让后续窗口偏移，报出"像是真缺陷"的假红） */
 function at(code: string, needle: string, label: string): number {

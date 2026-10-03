@@ -115,6 +115,30 @@ const keyringAdapter: KeyringAdapter = {
   async delete() {},
 };
 
+/**
+ * 子进程输出按**字节**解码（唯一出口）。
+ *
+ * ★★★ 为什么必须这样（2026-10-01 用户实报「安装包任务里工具输出乱码」的真因）：
+ *   Windows 下子进程的输出编码**不是 UTF-8**，而是 **OEM 代码页（GBK/CP936）**：
+ *     · `cmd.exe /c echo 中文` / `dir` / `type` → GBK 字节（实测 15B `d6d0cec4…`）；
+ *     · Python 在无 `PYTHONIOENCODING` 时 `sys.stdout.encoding = gbk` → 中文 print 是 GBK 字节。
+ *   而这里原先写的是 `chunk.toString()`（无参 = 按 **UTF-8** 解）→ 每个汉字落到非法序列 →
+ *   满屏 U+FFFD（用户看到的乱码）。dev 模式常常"没毛病"是因为终端/父进程注入了
+ *   `PYTHONIOENCODING=utf-8`（WorkBuddy 环境即如此），安装版双击启动则没有 —— 这就是
+ *   「安装包有问题、dev 正常」的典型成因。
+ *   ⇒ 累积完整字节后统一走 shared 的自动识别（BOM → 严格 UTF-8 → GB18030 兜底），GBK 字节
+ *     在严格 UTF-8 解码处抛错 → 落到 GB18030 分支 → 正确还原。
+ *
+ * ★ 顺带修掉的老隐患：原实现**逐块** `toString()`，多字节字符跨 chunk 边界会被解坏
+ *   （累积后统一解则不会）。
+ *
+ * ⚠️ 多字节编码的**分块边界**：仍要求"累积完整再解"。不要退回逐块解码。
+ */
+function decodeChildOutput(buf: Buffer): string {
+  if (!buf.length) return '';
+  return decodeTextBytes(new Uint8Array(buf)).text;
+}
+
 function execCommand(
   command: string,
   args: string[],
@@ -128,51 +152,54 @@ function execCommand(
       windowsHide: true,
     });
 
-    let stdout = '';
-    let stderr = '';
-    let settled = false;
-
     // 采集硬上限：防止超长输出占满内存（工具层还有 64KB 字符级二次截断）
     const MAX_CAPTURE_BYTES = 512 * 1024;
+    // ★ 按字节累积（不做逐块 toString()，见 decodeChildOutput 说明）
+    const outChunks: Buffer[] = [];
+    const errChunks: Buffer[] = [];
     let outBytes = 0;
     let errBytes = 0;
+    let outTruncated = false;
+    let errTruncated = false;
+    let settled = false;
+
+    const finish = (exitCode: number, stderrOverride?: string): void => {
+      settled = true;
+      clearTimeout(timer);
+      resolve({
+        stdout: decodeChildOutput(Buffer.concat(outChunks)) +
+          (outTruncated ? '\n[stdout truncated at 512KB capture limit]' : ''),
+        stderr: stderrOverride ??
+          (decodeChildOutput(Buffer.concat(errChunks)) +
+            (errTruncated ? '\n[stderr truncated at 512KB capture limit]' : '')),
+        exitCode,
+      });
+    };
 
     const timeout = options?.timeout || 30000;
     const timer = setTimeout(() => {
-      if (!settled) {
-        settled = true;
-        child.kill();
-        resolve({ stdout, stderr, exitCode: 124 });
-      }
+      if (settled) return;
+      try { child.kill(); } catch { /* 已退出 */ }
+      finish(124);
     }, timeout);
 
-    child.stdout.on('data', (chunk) => {
+    child.stdout.on('data', (chunk: Buffer) => {
       if (outBytes >= MAX_CAPTURE_BYTES) return;
-      const s = chunk.toString();
-      stdout += s;
-      outBytes += Buffer.byteLength(s);
-      if (outBytes >= MAX_CAPTURE_BYTES) stdout += '\n[stdout truncated at 512KB capture limit]';
+      outChunks.push(chunk);
+      outBytes += chunk.length;
+      if (outBytes >= MAX_CAPTURE_BYTES) outTruncated = true;
     });
-    child.stderr.on('data', (chunk) => {
+    child.stderr.on('data', (chunk: Buffer) => {
       if (errBytes >= MAX_CAPTURE_BYTES) return;
-      const s = chunk.toString();
-      stderr += s;
-      errBytes += Buffer.byteLength(s);
-      if (errBytes >= MAX_CAPTURE_BYTES) stderr += '\n[stderr truncated at 512KB capture limit]';
+      errChunks.push(chunk);
+      errBytes += chunk.length;
+      if (errBytes >= MAX_CAPTURE_BYTES) errTruncated = true;
     });
     child.on('error', (error) => {
-      if (!settled) {
-        settled = true;
-        clearTimeout(timer);
-        resolve({ stdout, stderr: error.message, exitCode: 1 });
-      }
+      if (!settled) finish(1, error.message);
     });
     child.on('close', (code) => {
-      if (!settled) {
-        settled = true;
-        clearTimeout(timer);
-        resolve({ stdout, stderr, exitCode: code ?? 0 });
-      }
+      if (!settled) finish(code ?? 0);
     });
   });
 }

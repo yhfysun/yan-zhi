@@ -12,7 +12,13 @@ import { verifyLicenseCode, type VerifyResult } from './license.js';
  * 改一行 localStorage 即可绕过；本中间件才是真正挡 API 的那一层。
  */
 
-/** 取授权码：优先 x-license，兼容 Authorization: License <code>（Bearer 留给 JWT，不复用）。 */
+/** 取授权码：优先 x-license，兼容 Authorization: License <code>（Bearer 留给 JWT，不复用）。
+ *  ★ 兜底 `?license=` query（2026-10-02 修「本地视频预览报格式不支持/损坏」）：
+ *    `<video>/<audio>` 的 src **带不了自定义请求头** —— 授权门禁开启时，
+ *    file-stream / workspace/file-stream / resources raw 这些媒体端点必然 403，
+ *    表现为播放器报「格式不支持或损坏」（实际是 403 JSON）。前端在媒体 URL 上
+ *    附加 `?license=<code>`，这里兜底解析。授权码出现在 URL 里仅限本机媒体流，
+ *    与 /generated 等豁免路径同一风险量级。 */
 export function extractLicenseCode(req: Request): string | null {
   const direct = req.headers['x-license'];
   if (typeof direct === 'string' && direct.trim()) return direct.trim();
@@ -21,6 +27,8 @@ export function extractLicenseCode(req: Request): string | null {
     const m = /^License\s+(.+)$/i.exec(auth.trim());
     if (m) return m[1].trim();
   }
+  const q = (req.query as Record<string, unknown> | undefined)?.license;
+  if (typeof q === 'string' && q.trim()) return q.trim();
   return null;
 }
 

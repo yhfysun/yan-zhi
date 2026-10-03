@@ -39,7 +39,20 @@
         </div>
       </div>
 
-      <div v-if="round.finalAssistant || round.steps.length > 0" class="msg msg-assistant" :class="{ 'is-actions-open': actionsShown(round.finalAssistant?.id || '') }" v-on="msgLongPressHandlers(round.finalAssistant?.id || '')">
+      <!-- 上下文压缩标记（2026-10-02）：压缩是**有损**的（前文被摘要替换），不该完全隐形 -->
+      <div
+        v-for="(cm, ci) in (round.compactMarkers || [])"
+        :key="'compact-' + ri + '-' + ci"
+        class="compact-marker"
+      >
+        <span class="compact-marker-line"></span>
+        <span class="compact-marker-text">
+          已压缩历史上下文 · {{ cm.coveredCount }} 条 → 摘要（当前 {{ cm.keptCount }} 条）
+        </span>
+        <span class="compact-marker-line"></span>
+      </div>
+
+      <div v-if="round.finalAssistant || round.steps.length > 0 || isLastRoundStreaming(round, ri)" class="msg msg-assistant" :class="{ 'is-actions-open': actionsShown(round.finalAssistant?.id || '') }" v-on="msgLongPressHandlers(round.finalAssistant?.id || '')">
         <div class="msg-avatar avatar-assistant" :class="{ streaming: isLastRoundStreaming(round, ri) }"><el-icon><ChatDotRound /></el-icon></div>
         <div class="msg-body">
           <div class="agent-response-card" :class="{ 'msg-collapsed': collapsedMessages[round.finalAssistant?.id || ''] }" @click="collapsedMessages[round.finalAssistant?.id || ''] ? toggleMsgCollapse(round.finalAssistant?.id || '') : null">
@@ -364,6 +377,37 @@
     </div>
   </div>
 
+  <!-- 越界访问授权卡（服务端 path-guard 判定越界后下发；用户点头才放行） -->
+  <div v-if="store.pendingPathAuth" class="inline-ask-card inline-auth-card">
+    <div class="inline-ask-icon inline-auth-icon"><el-icon><Lock /></el-icon></div>
+    <div class="inline-ask-body">
+      <div class="inline-ask-question">
+        {{ authIsCommand ? '该命令需要你授权执行' : '需要你授权访问工作目录外的位置' }}
+      </div>
+      <div class="inline-ask-desc">
+        工具 <code>{{ store.pendingPathAuth.toolName }}</code>
+        <template v-if="store.pendingPathAuth.workspaceDir">
+          · 当前工作目录 <code>{{ store.pendingPathAuth.workspaceDir }}</code>
+        </template>
+      </div>
+      <div class="inline-auth-list">
+        <div v-for="(it, i) in store.pendingPathAuth.items" :key="i" class="inline-auth-item">
+          <span class="inline-auth-tag" :class="`is-${it.action}`">
+            {{ it.action === 'write' ? '写入' : '读取' }}
+          </span>
+          <span class="inline-auth-path" :title="it.absPath || it.rawPath">{{ it.rawPath }}</span>
+        </div>
+      </div>
+      <div class="inline-ask-actions">
+        <el-button size="small" @click="store.submitPendingPathAuth('deny')">拒绝</el-button>
+        <el-button size="small" @click="store.submitPendingPathAuth('once')">仅此次允许</el-button>
+        <el-button size="small" type="primary" @click="store.submitPendingPathAuth('dir')">
+          {{ authIsCommand ? '允许命令（本会话）' : '允许该目录（本会话）' }}
+        </el-button>
+      </div>
+    </div>
+  </div>
+
   <!-- confirm_user 内联表单（多页确认向导，独立渲染） -->
   <div v-if="store.pendingConfirmation && confirmCurrentPage" class="inline-ask-card">
     <div class="inline-ask-icon"><el-icon><ChatDotRound /></el-icon></div>
@@ -453,7 +497,7 @@
 import {
   User, ChatDotRound, CaretRight, CaretBottom, ArrowDown, ArrowRight, ArrowUp, Loading, CircleCheck,
   CircleClose, CopyDocument, EditPen, Files, Delete, View, Fold, Refresh, TakeawayBox, Link, Download,
-  Grid, Document, Connection, ChatLineSquare,
+  Grid, Document, Connection, ChatLineSquare, Lock,
 } from '@element-plus/icons-vue';
 import { ref, watch, nextTick, computed, onMounted, onBeforeUnmount } from 'vue';
 import { ElMessage } from 'element-plus';
@@ -500,6 +544,8 @@ const {
 } = useChat();
 const isCodeMode = useCodeStore().codeModeActive;
 const askSupplementOpen = ref(false);
+/** 越界授权卡：命令类工具（cmd_exec/python_exec）的文案与按钮不同（展示整条命令而非路径） */
+const authIsCommand = computed(() => !!store.pendingPathAuth?.isCommand);
 /** 触屏壳（视口窄 或 Capacitor）：长按操作排只在这一壳生效（与衔接文案同一口径） */
 const isTouchShell = useMobileShell();
 
@@ -930,6 +976,29 @@ watch(activeNavRound, () => {
 </script>
 
 <style scoped>
+/* ── 压缩标记（2026-10-02）───────────────────────────────────────────────────
+   极细分隔线 + 一行小字。压缩是**有损**的，用户需要知道"前面被摘要了"，
+   否则只会觉得"模型怎么忘了"。刻意做得克制：低对比、小字号、无图标。 */
+.compact-marker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0 6px;
+  padding: 0 8px;
+  user-select: none;
+}
+.compact-marker-line {
+  flex: 1;
+  height: 1px;
+  background: var(--color-border, rgba(127, 127, 127, 0.22));
+}
+.compact-marker-text {
+  font-size: 11px;
+  color: var(--color-text-secondary, #909399);
+  opacity: 0.85;
+  white-space: nowrap;
+}
+
 /* ===== 开发模式空态：版式对齐办公模式 .chat-welcome（max-width / padding / 居中问候语）===== */
 /* ===== 开发模式空态：版式对齐办公模式（尺寸不缩，整块在可视区上下居中）=====
    .messages 是 flex:1 的滚动容器，用 min-height + flex 居中即可稳定生效 */
@@ -1058,6 +1127,31 @@ watch(activeNavRound, () => {
 .inline-ask-toggle { align-self: flex-start; padding: 2px 8px; border: none; background: transparent; color: var(--color-text-secondary, #888); font-size: 12px; cursor: pointer; border-radius: 6px; transition: all .15s; }
 .inline-ask-toggle:hover { color: var(--color-primary); background: color-mix(in srgb, var(--color-primary) 8%, transparent); }
 .inline-ask-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+
+/* ===== 越界访问授权卡（复用 inline-ask-card 骨架，仅加"警示"语义的强调色）===== */
+.inline-auth-icon { color: var(--color-warning, #b45309); }
+.inline-auth-list {
+  display: flex; flex-direction: column; gap: 4px;
+  max-height: 160px; overflow: auto;
+  padding: 8px 10px; border-radius: 8px;
+  background: color-mix(in srgb, var(--color-warning, #b45309) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-warning, #b45309) 24%, transparent);
+}
+.inline-auth-item { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.inline-auth-tag {
+  flex-shrink: 0; font-size: 11px; padding: 0 6px; border-radius: 6px; line-height: 18px;
+  background: color-mix(in srgb, var(--color-text-secondary, #888) 16%, transparent);
+  color: var(--color-text-secondary, #6b6b66);
+}
+.inline-auth-tag.is-write {
+  background: color-mix(in srgb, var(--color-danger, #dc2626) 16%, transparent);
+  color: var(--color-danger, #dc2626);
+}
+.inline-auth-path {
+  flex: 1; min-width: 0; font-family: var(--font-mono, monospace); font-size: 12px;
+  color: var(--el-text-color-primary, #1a1a1a);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left;
+}
 
 /* 流式跑马灯：实时正文容器 */
 .streaming-content {

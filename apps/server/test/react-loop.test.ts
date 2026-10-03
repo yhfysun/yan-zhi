@@ -172,6 +172,12 @@ const hoisted = vi.hoisted(() => {
     /** ★ 2026-09-29 补：主链路改用 `ContextWindow.forContextWindow(...)`，
      *  白名单式 mock 不同步就会报 `forContextWindow is not a function`（任务直接 failed）。 */
     static forContextWindow(_ctxWin: number, keepRecent = 6) { return new MockContextWindow(8000, keepRecent); }
+    /** 2026-10-02 补：context-view 改用 forBudget（可用预算 = 窗口 − 输出预留）。
+     *  ★ 与 forContextWindow 同理 —— 白名单 mock 必须同步，否则 `forBudget is not a function`
+     *    会让任务一启动就 failed，完全看不出是 mock 缺字段。 */
+    static forBudget(_usable: number, keepRecent = 6, keepFirst = 0) { return new MockContextWindow(8000, keepRecent); }
+    /** 2026-10-02 补：context-view 用它算压缩后 token（白名单 mock 必须同步）。 */
+    tokenCount(_m: any[]) { return 0; }
     needsCompression(_m: any[]) { return false; }
     compress(m: any[]) { return m; }
     setSummaryModel(_p: any, _m: any) {}
@@ -181,7 +187,21 @@ const hoisted = vi.hoisted(() => {
 });
 
 // ── mock 依赖模块 ──────────────────────────────────────────────────────────
-vi.mock('../src/db.js', () => ({ db: hoisted.db, hasSqliteVec: false }));
+vi.mock('../src/db.js', () => ({
+  db: hoisted.db,
+  // 2026-10-02：补齐 db.js 导出（手写白名单 mock 必须与生产代码同步，否则报
+  //   `No "X" export is defined on the "../src/db.js" mock`，表象却是「任务 failed」）。
+  MESSAGE_LIST_COLS:
+  'id, conversation_id, user_id, role, content, tool_calls_json, tool_call_id, reasoning_content, tokens, parent_tool_call_id, sub_agent_id, sub_agent_name, sub_agent_depth, created_at',
+  deleteMessageSummariesAfter: () => 0,
+  clearMessageSummaries: () => {},
+  // 2026-10-02：services/context-view.ts（上下文组装唯一出口）新增依赖。
+  // ★ 手写白名单 mock 必须同步补，否则 ESM 直接报 "does not provide an export"，
+  //   表现为"任务 failed"，看不出真因（本文件此前已记录过同类教训）。
+  getLatestMessageSummary: () => null,
+  insertMessageSummary: () => "sum_test",
+  hasSqliteVec: false,
+}));
 vi.mock('@yan-zhi/core', () => ({
   LlmClient: hoisted.MockLlmClient,
   getToolRegistry: () => hoisted.mockRegistry,
@@ -196,6 +216,15 @@ vi.mock('@yan-zhi/core', () => ({
    *   ⇒ 教训：mock 不能只求"类型对得上"，必须**保留被测行为的可观测形态**；
    *     返回空值/空串的 mock 等于把该行为关掉，比不加 mock 更糟。
    */
+  // 2026-10-02 补：core 白名单 mock 必须与生产代码同步（具体见本文件 forContextWindow 处注释）。
+  // ★ resolveToolPath / visibleMessages 属既有导出，此前未用到故未列；context-view 收敛后
+  //   主链路踩到了它们 —— 缺了就是 `工具执行失败: No "resolveToolPath" export`，看不出真因。
+  resolveToolPath: (input: unknown, workspaceDir?: string | null) => {
+    const raw = typeof input === 'string' ? input.trim() : '';
+    const ws = typeof workspaceDir === 'string' ? workspaceDir.trim() : '';
+    return raw || ws || '.';
+  },
+  visibleMessages: (ms: any[]) => (ms || []).filter((m) => !(m && (m.parentToolCallId ?? m.parent_tool_call_id))),
   adviceForTruncatedArgs: ({ toolName, missingArgs }: any) => ({
     truncated: false,
     message: `工具 ${toolName} 未执行：arguments 缺少必填参数（${(missingArgs || []).join('、')}）。请重试。`,

@@ -142,6 +142,12 @@ const hoisted = vi.hoisted(() => {
      *   （表现为"任务 failed"，看不出是 mock 缺字段）。看到这类失败先查 mock 清单，别查业务逻辑。
      */
     static forContextWindow(_ctxWin: number, keepRecent = 6) { return new MockContextWindow(8000, keepRecent); }
+    /** 2026-10-02 补：context-view 改用 forBudget（可用预算 = 窗口 − 输出预留）。
+     *  ★ 与 forContextWindow 同理 —— 白名单 mock 必须同步，否则 `forBudget is not a function`
+     *    会让任务一启动就 failed，完全看不出是 mock 缺字段。 */
+    static forBudget(_usable: number, keepRecent = 6, keepFirst = 0) { return new MockContextWindow(8000, keepRecent); }
+    /** 2026-10-02 补：context-view 用它算压缩后 token（白名单 mock 必须同步）。 */
+    tokenCount(_m: any[]) { return 0; }
     needsCompression(_m: any[]) { return false; }
     compress(m: any[]) { return m; }
     setSummaryModel(_p: any, _m: any) {}
@@ -155,7 +161,21 @@ const hoisted = vi.hoisted(() => {
   return { db, MockLlmClient, MockContextWindow, llmChunksQueue, capturedSystemPrompts, conversations, messages, memories, platforms, models, appConfig, get embedMode() { return embedMode; }, set embedMode(v) { embedMode = v; }, vecToBytes };
 });
 
-vi.mock('../src/db.js', () => ({ db: hoisted.db, hasSqliteVec: false }));
+vi.mock('../src/db.js', () => ({
+  db: hoisted.db,
+  // 2026-10-02：补齐 db.js 导出（手写白名单 mock 必须与生产代码同步，否则报
+  //   `No "X" export is defined on the "../src/db.js" mock`，表象却是「任务 failed」）。
+  MESSAGE_LIST_COLS:
+  'id, conversation_id, user_id, role, content, tool_calls_json, tool_call_id, reasoning_content, tokens, parent_tool_call_id, sub_agent_id, sub_agent_name, sub_agent_depth, created_at',
+  deleteMessageSummariesAfter: () => 0,
+  clearMessageSummaries: () => {},
+  // 2026-10-02：services/context-view.ts（上下文组装唯一出口）新增依赖。
+  // ★ 手写白名单 mock 必须同步补，否则 ESM 直接报 "does not provide an export"，
+  //   表现为"任务 failed"，看不出真因（本文件此前已记录过同类教训）。
+  getLatestMessageSummary: () => null,
+  insertMessageSummary: () => "sum_test",
+  hasSqliteVec: false,
+}));
 vi.mock('@yan-zhi/core', () => ({
   LlmClient: hoisted.MockLlmClient,
   getToolRegistry: () => ({ has: () => false, get: () => undefined, names: () => [], execute: async () => { throw new Error('no tool'); } }),
@@ -163,6 +183,15 @@ vi.mock('@yan-zhi/core', () => ({
   ContextWindow: hoisted.MockContextWindow,
   // ★ 手工白名单 mock 的代价：生产代码每加一个被主链路用到的导出，这里就得同步补一个，
   //   否则测试报"任务 failed"（看不出是 mock 缺字段）。2026-09-29 补 adviceForTruncatedArgs。
+  // 2026-10-02 补：core 白名单 mock 必须与生产代码同步（具体见本文件 forContextWindow 处注释）。
+  // ★ resolveToolPath / visibleMessages 属既有导出，此前未用到故未列；context-view 收敛后
+  //   主链路踩到了它们 —— 缺了就是 `工具执行失败: No "resolveToolPath" export`，看不出真因。
+  resolveToolPath: (input: unknown, workspaceDir?: string | null) => {
+    const raw = typeof input === 'string' ? input.trim() : '';
+    const ws = typeof workspaceDir === 'string' ? workspaceDir.trim() : '';
+    return raw || ws || '.';
+  },
+  visibleMessages: (ms: any[]) => (ms || []).filter((m) => !(m && (m.parentToolCallId ?? m.parent_tool_call_id))),
   adviceForTruncatedArgs: () => ({ truncated: false, message: '' }),
   resolveContextWindow: (n: any) => (typeof n === 'number' && n > 0 ? n : 32768),
 }));

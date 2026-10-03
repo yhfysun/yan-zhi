@@ -141,6 +141,31 @@ export interface PendingQuestion {
   resolve: (answer: string, supplement?: string) => void;
 }
 
+/**
+ * 越界访问授权卡（2026-10-01）。
+ * 由服务端 path-guard 判定越界后，经 `_path_authorize` 工具走 tool:execute 通道下发。
+ * 形状刻意贴近 PendingQuestion（同样的"弹卡 → await → 回传"语义），但**不复用**它：
+ * 授权卡的返回值是**决策枚举**（once/dir/deny），而问答卡是自由文本，混在一起会让
+ * 后端 parsePathAuthResult 的语义边界变模糊（本项目既有教训：同一语义要显式区分）。
+ */
+export interface PendingPathAuthItem {
+  action: 'read' | 'write';
+  /** 模型原始给的路径（弹窗里要让用户看到"它想访问什么"） */
+  rawPath: string;
+  /** 解析后的绝对路径（可能为空：命令类工具） */
+  absPath: string;
+}
+
+export interface PendingPathAuth {
+  toolName: string;
+  /** 命令类工具（cmd_exec/python_exec）：路径抽不到，展示的是整条命令 */
+  isCommand: boolean;
+  workspaceDir: string;
+  items: PendingPathAuthItem[];
+  /** 决议回传：once=仅此次 / dir=允许该目录且本会话记住 / deny=拒绝 */
+  resolve: (decision: 'once' | 'dir' | 'deny') => void;
+}
+
 export interface ConfirmationPage {
   question: string;
   description?: string;
@@ -466,6 +491,8 @@ export const useChatStore = defineStore('chat', () => {
   const pendingQuestion = ref<PendingQuestion | null>(null);
   // E12b: 多页用户确认向导 —— confirm_user 工具逐页收集选择/文字/补充说明
   const pendingConfirmation = ref<PendingConfirmation | null>(null);
+  // 越界访问授权卡 —— 服务端 path-guard 判定越界后下发，用户点同意才放行（2026-10-01）
+  const pendingPathAuth = ref<PendingPathAuth | null>(null);
   // E12c: 模型平台配置弹窗 —— configure_model_platform 工具触发，等待用户填写并保存平台/模型
   const pendingPlatformConfig = ref<PendingPlatformConfig | null>(null);
   // E12: 任务规划进度 —— task_plan / task_step 工具写入，UI 渲染 todo 卡片。
@@ -481,6 +508,14 @@ export const useChatStore = defineStore('chat', () => {
   const planTitle = computed(() => readPlan(plansByConv.value, planKeyOf())?.title || '');
   /** 当前查看会话的计划步骤（其他会话的计划不会出现在这里） */
   const planSteps = computed<PlanStepT[]>(() => readPlan(plansByConv.value, planKeyOf())?.steps || []);
+
+  /** 用户提交越界访问授权卡的决议（once=仅此次 / dir=允许该目录且本会话记住 / deny=拒绝） */
+  function submitPendingPathAuth(decision: 'once' | 'dir' | 'deny') {
+    const card = pendingPathAuth.value;
+    if (!card) return;
+    pendingPathAuth.value = null;
+    card.resolve(decision);
+  }
 
   /** 用户提交反问弹窗的回答（或在未提供选项时填入文本）；答案作为该工具调用的 result 回写并继续循环 */
   function submitPendingQuestion(answer: string, supplement?: string) {
@@ -1115,6 +1150,42 @@ async function loadConversations() {
     const mcpStore = useMcpStore();
     const registry = getToolRegistry();
 
+    // 0) 越界访问授权卡（2026-10-01）—— 服务端 path-guard 判定越界后下发，等用户点头才放行。
+    //    ★ 放在最前：它不是真工具（registry 里没有），也不该被 MCP/自定义前缀逻辑碰到。
+    //    ★ 返回 JSON `{decision}`：服务端 parsePathAuthResult 优先按 JSON 解析（文本兜底兼容老形态）。
+    if (fullName === '_path_authorize') {
+      const raw = (args || {}) as Record<string, unknown>;
+      const items = Array.isArray(raw.items)
+        ? (raw.items as Record<string, unknown>[]).map((it) => ({
+            action: (String(it.action) === 'write' ? 'write' : 'read') as 'read' | 'write',
+            rawPath: String(it.rawPath || ''),
+            absPath: String(it.absPath || ''),
+          }))
+        : [];
+      if (items.length === 0) return { ok: true, result: JSON.stringify({ decision: 'deny' }) };
+      const authSignal = abortControllers.get(currentConvId.value || '')?.signal;
+      return await new Promise<{ ok: boolean; result?: unknown; msg?: string }>((resolve) => {
+        if (authSignal?.aborted) { resolve({ ok: false, msg: '用户已终止' }); return; }
+        const onAuthAbort = () => {
+          authSignal?.removeEventListener('abort', onAuthAbort);
+          pendingPathAuth.value = null;
+          resolve({ ok: false, msg: '用户已终止' });
+        };
+        authSignal?.addEventListener('abort', onAuthAbort);
+        pendingPathAuth.value = {
+          toolName: String(raw.toolName || ''),
+          isCommand: !!raw.isCommand,
+          workspaceDir: String(raw.workspaceDir || ''),
+          items,
+          resolve: (decision) => {
+            authSignal?.removeEventListener('abort', onAuthAbort);
+            pendingPathAuth.value = null;
+            resolve({ ok: true, result: JSON.stringify({ decision }) });
+          },
+        };
+      });
+    }
+
     // 1) MCP 工具
     if (fullName.startsWith(MCP_PREFIX) && fullName.includes('__')) {
       const parsed = parseMcpToolName(fullName);
@@ -1707,6 +1778,30 @@ async function loadConversations() {
           case 'task:error': flushNow(convId); emitTaskFinished(convId); throw new Error(event.error || '任务执行失败');
           case 'task:paused': pausedConvIds.value.add(convId); browserLockInput.value = false; break;
           case 'task:resumed': pausedConvIds.value.delete(convId); break;
+          case 'context:compacted': {
+            // ★ 压缩事件（2026-10-02，对齐 Claude Code 的 compact_boundary）。
+            //   后端把「本轮把多少条压成了摘要」推过来 → 前端在消息流里落一条分隔标记。
+            //   ★ 为什么要给用户看：压缩是**有损**的（前文被摘要替换），而此前它完全隐形 ——
+            //   用户只会觉得"模型怎么忘了前面说的"，却看不到任何解释。
+            //   标记落在 `assistantMsgId` 之后（= 本次压缩实际生效的位置）。
+            const marker = {
+              id: `compact_${taskId}_${Date.now()}`,
+              conversationId: convId,
+              role: 'system',
+              content: '',
+              createdAt: Date.now(),
+              compactMarker: {
+                coveredCount: Number(event.coveredCount) || 0,
+                keptCount: Number(event.keptCount) || 0,
+                tokens: Number(event.tokens) || 0,
+                afterMessageId: assistantMsgId || undefined,
+                subAgentId: event.subAgentId,
+              },
+            } as any;
+            const arr = messagesByConv.value[convId] || [];
+            arr.push(marker);
+            break;
+          }
         }
       }
     }
@@ -1792,6 +1887,9 @@ async function loadConversations() {
         maxSteps,
         // 显式下发工作目录：后端优先使用此值注入 system prompt，避免多会话/多项目并发时全局单例互相覆盖
         workspaceDir: appSettings.workspaceDir || undefined,
+        // 工作目录边界守卫档位（2026-10-01）：后端据此决定越界时弹窗 / 直接拒绝 / 不检查。
+        // 与 workspaceDir 同一条下发通道（同一份设置来源，避免"两处不同源"漂移）。
+        pathGuard: appSettings.pathGuard || 'ask',
         modeFlags: {
           thinking: thinkingMode.value,
           plan: planMode.value,
@@ -1933,6 +2031,7 @@ async function loadConversations() {
     previewTabs, activeTabId, activeTab,
     openTab, activatePreviewTab, closePreviewTab, closeAllPreviewTabs, closePreviewTabsLeft, closePreviewTabsRight,
     pendingQuestion, pendingConfirmation, pendingPlatformConfig, submitPendingQuestion,
+    pendingPathAuth, submitPendingPathAuth,
     submitPendingConfirmation, skipPendingConfirmation, cancelPendingConfirmation,
     submitPlatformConfig, cancelPlatformConfig,
     planSteps, planTitle, clearPlan,

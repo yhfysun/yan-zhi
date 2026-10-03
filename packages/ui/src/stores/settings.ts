@@ -316,6 +316,14 @@ export interface AppSettings {
   keepRecent: number;
   enableCompression: boolean;
   workspaceDir: string;
+  /**
+   * 工作目录边界守卫档位（2026-10-01）。
+   *   ask    = 默认：越界访问弹窗让用户授权，授权后本会话不再问
+   *   strict = 越界直接拒绝，不给授权入口（安全优先）
+   *   off    = 不做边界检查（"这是我自己电脑，别烦我"）
+   * ★ 默认必须是 ask —— off 会让模型可静默读写磁盘任意位置，只应由用户明确选择。
+   */
+  pathGuard: 'ask' | 'strict' | 'off';
   /** 工作目录最近使用记录（目录选择器 chip 快捷入口，新选择的目录提到最前，最多 5 个） */
   recentWorkspaceDirs: string[];
   appGuide: string;
@@ -489,6 +497,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   enableCompression: true,
   workspaceDir: '',
   recentWorkspaceDirs: [],
+  pathGuard: 'ask',
   appGuide: DEFAULT_APP_GUIDE,
   memoryExtractPlatformId: '',
   memoryExtractModelId: '',

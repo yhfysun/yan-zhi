@@ -13,6 +13,7 @@ import conversationRoutes from './routes/conversations.js';
 import messageRoutes from './routes/messages.js';
 import spaceRoutes from './routes/spaces.js';
 import fileRoutes from './routes/files.js';
+import workspaceFileRoutes from './routes/workspace-files.js';
 import { resolveArtifactDirFor, findArtifactFileInDirs, findArtifactFileAcrossRoots, resolveRegisteredFilePath, backfillRelativeArtifactPaths } from './services/artifact-dir.js';
 import { downloadMediaBinary } from './services/media-fetch.js';
 import { buildArtifactRelDir, buildArtifactRelDirCandidates } from '@yan-zhi/shared';
@@ -122,6 +123,7 @@ if (isLicenseGuardEnabled()) {
 }
 app.use('/api/conversations', conversationRoutes);
 app.use('/api/conversations', fileRoutes);
+app.use('/api/workspace', workspaceFileRoutes);
 app.use('/api/messages', messageRoutes);
 app.use('/api/spaces', spaceRoutes);
 app.use('/api/platforms', platformRoutes);

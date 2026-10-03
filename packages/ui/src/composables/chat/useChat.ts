@@ -27,7 +27,7 @@ import { useRouter } from 'vue-router';
 import { api } from '../../api/client';
 import { waitForBackend } from '../../api/backend-ready';
 import type { Agent, Message, Conversation, Platform, Model } from '@yan-zhi/shared';
-import { estimateTokens, CHAT_MODEL_TYPES, buildArtifactRelDir, joinArtifactPath, TASK_TYPES, getTaskType } from '@yan-zhi/shared';
+import { estimateTokens, CHAT_MODEL_TYPES, buildArtifactRelDir, joinArtifactPath, TASK_TYPES, getTaskType, effectiveContextLimit, contextUsagePercent } from '@yan-zhi/shared';
 import { sceneByKey, type SceneKey } from '../../config/scenes';
 import {
   selectMedia,
@@ -65,6 +65,12 @@ export interface MessageRound {
   agentStats?: { stepCount: number; reasoningCount: number; toolCallCount: number };
   /** 子智能体最终结果（已从 call_agent 工具结果提上来，直接在主内容区展示） */
   subAgentResults?: Array<{ subAgentName: string; finalContent: string }>;
+  /**
+   * 本轮的压缩标记（2026-10-02）。
+   * ★ 后端推 `context:compacted` 时落一条 system 消息（带 compactMarker），这里把它
+   *   提到轮次上供 UI 渲染「此处已压缩」分隔线 —— 压缩是**有损**的，不该完全隐形。
+   */
+  compactMarkers?: Array<{ coveredCount: number; keptCount: number; tokens: number }>;
 }
 
 interface ParsedConfigCard {
@@ -1122,6 +1128,14 @@ function createChat() {
     const stepByToolCallId = new Map<string, AgentStep>();
 
     for (const msg of msgs) {
+      // 压缩标记（role='system' + compactMarker）：附到当前轮，不参与正文分轮逻辑
+      if ((msg as any).compactMarker) {
+        if (currentRound) {
+          if (!currentRound.compactMarkers) currentRound.compactMarkers = [];
+          currentRound.compactMarkers.push((msg as any).compactMarker);
+        }
+        continue;
+      }
       if (msg.role === 'system') continue;
       // 子智能体消息：归入父 step 的 subAgentRounds
       if (msg.parentToolCallId) {
@@ -1294,14 +1308,25 @@ function createChat() {
   const tokenCount = computed(() =>
     store.currentMessages.reduce((s, m) => s + estimateTokens(m.content || '') + estimateTokens(m.reasoningContent || ''), 0),
   );
-  const contextLimit = computed(() => {
+  /** 标称上下文窗口（模型配置值）—— 只用来说明"模型 API 上限"，不用来算用量 */
+  const declaredContextWindow = computed(() => {
     const m = platformStore.models.find((x) => x.id === selectedModelId.value);
     return m?.contextWindow || DEFAULT_CONTEXT_WINDOW;
   });
-  const tokenPercent = computed(() => Math.min(100, Math.round((tokenCount.value / contextLimit.value) * 100)));
+  /**
+   * ★★★ 有效可用窗口（2026-10-02）—— 用量口径**必须按它算，不能按标称窗口算**。
+   *
+   * 为什么：标称 1M 的模型在 256K 之后就明显退化（Chroma Context Rot / RULER / 社区甜点区，
+   * 详见 `@yan-zhi/shared/utils/context-policy.ts`）。若按标称窗口显示百分比，用户会看到
+   * "才用了 30%，还很空" —— 而实际上已经越过了有效边界。这属于**误导性展示**。
+   * ★ 与服务端 `usableContextBudget` 共用同一个常量（`EFFECTIVE_CONTEXT_RATIO`），
+   *   否则"前端说没事、后端在压缩"会自相矛盾。
+   */
+  const contextLimit = computed(() => effectiveContextLimit(declaredContextWindow.value));
+  const tokenPercent = computed(() => contextUsagePercent(tokenCount.value, declaredContextWindow.value));
   const tokenBarColor = computed(() => {
-    if (tokenPercent.value >= 90) return '#ef4444';
-    if (tokenPercent.value >= 70) return '#f59e0b';
+    if (tokenPercent.value >= 100) return '#ef4444';
+    if (tokenPercent.value >= 80) return '#f59e0b';
     return '#3B82F6';
   });
   // 仅当「当前会话」在流式时才锁定发送；其它会话并行运行时，当前空会话仍可输入/发送
@@ -3339,6 +3364,9 @@ async function healStalePlatform() {
     openPath, openPathInSystem,
     currentConv, filteredConversations, messageRounds, isToolErrorContent,
     chatModels, modelGroups, mountableServers, tokenCount, contextLimit, tokenPercent, tokenBarColor, canSend,
+    // 标称窗口（模型 API 上限）：UI 需要同时展示"实际可用 / 标称"两个数，
+    // 否则用户看到"才用 30%"会以为很空 —— 而 30% 可能已越过有效边界。
+    declaredContextWindow,
     openEditAgent, openCreateAgent, onAgentSaved, onAgentDeleted,
     showSpaceEdit, spaceEditForm, spaceMenuTarget, selectSpace, selectSpaceAndSyncDir, createSpaceQuick, createSpaceFromDir, showSpaceDirPicker, openSpaceEdit, openSpaceCreate, saveSpaceEdit, deleteSpaceConfirm, openSpaceMenu, closeSpaceMenu, moveConvToSpace,
     taskTypes, pickedTaskType, applyTaskTypeAgent, syncMountsToAgent,

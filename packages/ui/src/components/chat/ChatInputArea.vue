@@ -473,6 +473,31 @@
         </div>
 
         <div class="toolbar-right">
+          <!-- 上下文用量环（2026-10-02）：
+               ★ 口径是**有效可用窗口**，不是模型标称窗口 —— 标称 1M 的模型在 ~256K 之后
+                 recall 明显退化（Chroma Context Rot / RULER / 社区甜点区）。若按标称算百分比，
+                 用户会看到"才 30% 还很空"的误导信息。
+               ★ 所以 tooltip 同时给出两个数：实际可用 vs 标称，让用户一眼看出差距。 -->
+          <el-tooltip placement="top" :show-arrow="false">
+            <template #content>
+              <div class="ctx-usage-tip">
+                <div class="ctx-usage-tip-title">上下文用量</div>
+                <div>已用约 {{ formatTokens(tokenCount) }} / {{ formatTokens(contextLimit) }}（{{ tokenPercent }}%）</div>
+                <div class="ctx-usage-tip-hint">模型标称窗口 {{ formatTokens(declaredContextWindow) }}，但有效区约 {{ formatTokens(contextLimit) }}</div>
+                <div class="ctx-usage-tip-hint">超出有效区后准确率会下降，较早历史将被自动摘要压缩</div>
+              </div>
+            </template>
+            <div class="ctx-usage-ring" :class="{ 'is-warn': tokenPercent >= 80, 'is-danger': tokenPercent >= 100 }">
+              <svg viewBox="0 0 36 36" class="ctx-usage-svg" aria-hidden="true">
+                <circle class="ctx-usage-track" cx="18" cy="18" r="15" />
+                <circle
+                  class="ctx-usage-bar"
+                  cx="18" cy="18" r="15"
+                  :style="{ stroke: tokenBarColor, strokeDasharray: `${(tokenPercent / 100) * 94.2} 94.2` }"
+                />
+              </svg>
+            </div>
+          </el-tooltip>
           <!-- 会话级工具权限：选择值持久化到 conversation.permission_mode，后端按此裁剪/拦截写类工具 -->
           <el-popover placement="top-end" :width="250" trigger="click" :show-arrow="false">
             <template #reference>
@@ -699,7 +724,18 @@ const {
   formatSize, removeFile, fileInputRef, handleFileChange, addFiles,
   workspaceFiles, selectedFilePaths, toggleFileSelect,
   quotedUrls, removeQuotedUrl, LONG_INPUT_THRESHOLD,
+  // 上下文用量（2026-10-02）：这几项此前已由 useChat 算好却无人消费 → 这里接上 UI。
+  // ★ contextLimit 是**有效可用窗口**（有效比例折算），declaredContextWindow 才是模型标称值 ——
+  //   两者都展示，否则用户按标称算会误以为"还有很大空间"。
+  tokenCount, contextLimit, tokenPercent, tokenBarColor, declaredContextWindow,
 } = useChat();
+
+/** token 数格式化：>=1000 用 k，避免"1048576"这种长数字撑爆 tooltip */
+function formatTokens(n: number): string {
+  if (!Number.isFinite(n) || n <= 0) return '0';
+  if (n >= 1000) return `${(n / 1000).toFixed(n >= 100000 ? 0 : 1)}k`;
+  return String(n);
+}
 
 const isCodeMode = useCodeStore().codeModeActive;
 const inputTooLong = computed(() => input.value.length > LONG_INPUT_THRESHOLD);
@@ -1466,6 +1502,39 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
+/* ── 上下文用量环（2026-10-02）───────────────────────────────────────────────
+   只占 18px 见方，不挤占工具条；hover 才给文字明细（符合"极简、不要多余文案"）。
+   颜色由内联 stroke 给出（tokenBarColor：蓝 → 琥珀 → 红），类名只管呼吸感。 */
+.ctx-usage-ring {
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: default;
+  opacity: 0.55;
+  transition: opacity 0.15s ease;
+  flex: 0 0 auto;
+}
+.ctx-usage-ring:hover { opacity: 1; }
+.ctx-usage-ring.is-warn { opacity: 0.85; }
+.ctx-usage-ring.is-danger { opacity: 1; }
+.ctx-usage-svg { width: 18px; height: 18px; transform: rotate(-90deg); }
+.ctx-usage-track {
+  fill: none;
+  stroke: var(--color-border, rgba(127, 127, 127, 0.28));
+  stroke-width: 3.5;
+}
+.ctx-usage-bar {
+  fill: none;
+  stroke-width: 3.5;
+  stroke-linecap: round;
+  transition: stroke-dasharray 0.3s ease, stroke 0.3s ease;
+}
+.ctx-usage-tip { line-height: 1.6; font-size: 12px; }
+.ctx-usage-tip-title { font-weight: 600; margin-bottom: 2px; }
+.ctx-usage-tip-hint { opacity: 0.75; }
+
 /* 拖入文件悬停：input 容器边框/背景轻微变化（沿用主题朱砂色） */
 .input-box.is-dragover {
   border-color: var(--color-primary, #c2410c) !important;

@@ -3021,15 +3021,27 @@ ipcMain.handle('dialog:saveFile', async (_e, opts) => {
 // ============================================================
 // IPC：Shell（child_process）
 // ============================================================
+/**
+ * ★★★ 子进程输出**不做 UTF-8 解码**（2026-10-01 用户实报「安装包任务里工具输出乱码」）：
+ *   Windows 下子进程按 OEM 代码页（GBK/CP936）输出（`cmd /c echo 中文`、`dir`，
+ *   以及无 `PYTHONIOENCODING` 的 Python），原先这里写死 `toString('utf-8')` → 满屏 U+FFFD。
+ *   渲染层拿不到原始字节就无法识别编码，所以这里**原样传 base64**，
+ *   由渲染层（apps/desktop/src/platform.ts）走 shared 的 decodeTextBytes 自动识别
+ *   （BOM → 严格 UTF-8 → GB18030 兜底）。
+ *   ★ 顺带修掉老隐患：execFile 的 stdout/stderr 是**整段 Buffer**（非流式），
+ *     不存在多字节字符跨 chunk 被解坏的问题。
+ */
 ipcMain.handle('shell:exec', (e, command, args, options) => {
   return new Promise((resolve) => {
     const opts = {};
     if (options?.cwd) opts.cwd = options.cwd;
     if (options?.env) opts.env = { ...process.env, ...options.env };
+    const toB64 = (v) => (Buffer.isBuffer(v) ? v.toString('base64')
+      : Buffer.from(String(v || ''), 'utf-8').toString('base64'));
     const child = execFile(command, args ?? [], opts, (err, stdout, stderr) => {
       resolve({
-        stdout: stdout ? stdout.toString('utf-8') : '',
-        stderr: stderr ? stderr.toString('utf-8') : '',
+        stdoutB64: toB64(stdout),
+        stderrB64: toB64(stderr),
         exitCode: err ? (err.code ?? 1) : 0,
       });
     });

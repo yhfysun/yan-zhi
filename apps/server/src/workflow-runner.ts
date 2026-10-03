@@ -485,6 +485,28 @@ class ServerToolNodeHandler implements NodeHandler {
       //   会解析到进程 cwd，而不是用户的工作目录（与 ReAct 主链路同因，
       //   本项目已因"入口各写一遍"漂移多次 —— 凡是执行内置工具的地方都要传 ctx）。
       const { serverState } = await import('./state.js');
+      // ★ 工作目录边界守卫（2026-10-01）：工作流是**后台/无人值守**执行（用户点了之后
+      //   很难马上意识到它写了文件），所以越界**fail-safe 直接拒绝**，且**不弹窗不挂起**
+      //   —— 挂起 = 流水线永久卡住（与 unattendedToolResult 既有口径一致）。
+      //   ★ 与另两个入口共用同一份判定（services/path-guard）。
+      const { checkPathAccess, allowedRootsFor } = await import('./services/path-guard.js');
+      // ★ 带 conversationId：工作流也可能产出文件，产物目录同样是合法落点。
+      //   注意取法：本分支（builtin）在 `conversationId` 局部变量声明**之前**，
+      //   必须走 ctx.inputs.__conversationId（与下方 api_* 分支同一来源）。
+      const wfConvId = (ctx.inputs?.__conversationId as string) || null;
+      const verdict = checkPathAccess({
+        toolName,
+        args: (args as Record<string, unknown>) || {},
+        workspaceDir: serverState.workspaceDir || null,
+        allowedRoots: allowedRootsFor(serverState.workspaceDir || null, wfConvId),
+      });
+      if (verdict.kind === 'need-auth') {
+        const what = verdict.items.map((i) => i.rawPath || i.toolName).join(', ');
+        throw new Error(
+          `[工作流·路径守卫] 节点工具 ${toolName} 试图访问工作目录外的位置（${what}），`
+          + `工作流为后台执行、无人可确认授权，已拒绝。请改用工作目录内的路径。`,
+        );
+      }
       const result = await registry.execute(toolName, (args as Record<string, unknown>) || {}, {
         workspaceDir: serverState.workspaceDir || undefined,
       });

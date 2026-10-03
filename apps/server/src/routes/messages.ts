@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { authMiddleware } from '../auth.js';
 import { db } from '../db.js';
+import { hydrateSnapshot } from '../services/context-snapshot.js';
 
 const router = Router();
 router.use(authMiddleware);
@@ -11,7 +12,9 @@ router.get('/:mid/snapshot', (req: Request, res: Response) => {
   const userId = req.user!.userId;
   const row = db.prepare('SELECT id, system_prompt_snapshot FROM message WHERE id = ? AND user_id = ?').get(req.params.mid, userId) as any;
   if (!row) { res.status(404).json({ error: '消息不存在' }); return; }
-  res.json({ data: { id: row.id, systemPromptSnapshot: row.system_prompt_snapshot || null } });
+  // ★ 回填：库里只存「messages 的 id 引用」，这里换回正文，返回结构与旧格式**完全一致**
+  //   → 前端 formatSnapshot 零改动。见 services/context-snapshot.ts。
+  res.json({ data: { id: row.id, systemPromptSnapshot: hydrateSnapshot(row.system_prompt_snapshot) } });
 });
 
 // PATCH /api/messages/:mid

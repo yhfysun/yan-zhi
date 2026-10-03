@@ -110,6 +110,20 @@ router.post('/builtin/execute', async (req: Request, res: Response) => {
       // ★ 必须传 ToolContext.workspaceDir（2026-09-30）：否则工具里的**相对路径**解析到进程 cwd，
 //   而不是用户的工作目录（实测 `02-work` 一律 directory not found）。
       const { serverState } = await import('../state.js');
+      // ★ 工作目录边界守卫（2026-10-01）：本入口是「UI 试跑」——**用户自己点按钮触发**，
+      //   已经是一次显式授权（他就是要跑这个工具），所以越界**直接放行**，只记审计不弹窗。
+      //   ★ 与另两个入口（ReAct 主链路弹窗 / 工作流 fail-safe 拒绝）共用同一份判定。
+      const { checkPathAccess, allowedRootsFor } = await import('../services/path-guard.js');
+      const verdict = checkPathAccess({
+        toolName: name,
+        args: (args as Record<string, unknown>) || {},
+        workspaceDir: serverState.workspaceDir || null,
+        // ★ 无会话上下文（UI 试跑不绑会话）→ 拿全局工作目录当唯一边界
+        allowedRoots: allowedRootsFor(serverState.workspaceDir || null, null),
+      });
+      if (verdict.kind === 'need-auth') {
+        console.warn(`[path-guard] UI试跑放行(用户主动触发) tool=${name} items=${verdict.items.map((i) => i.rawPath).join(' | ')}`);
+      }
       result = await Promise.race([
         registry.execute(name, args, { workspaceDir: serverState.workspaceDir || undefined }),
         timeout,

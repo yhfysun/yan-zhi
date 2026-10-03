@@ -5,8 +5,8 @@
 // 注：web_search 已移除，联网查询统一委派 pageAgent（真实浏览器搜索引擎）。
 import type { Platform, Model, Message, DeltaToolCall } from '@yan-zhi/shared';
 import { formatTaskTypeContext, DEFAULT_CONFIRM_BATCH_SIZE } from '@yan-zhi/shared';
-import { LlmClient, getToolRegistry, getApiToolRegistry, ContextWindow, adviceForTruncatedArgs } from '@yan-zhi/core';
-import { db } from './db.js';
+import { LlmClient, getToolRegistry, getApiToolRegistry, ContextWindow, adviceForTruncatedArgs, type SummaryCache } from '@yan-zhi/core';
+import { db, MESSAGE_LIST_COLS } from './db.js';
 import { normalizePermissionMode, checkToolPermission, filterToolsByPermission, permissionModePrompt, checkWorkflowPermission, type PermissionMode } from './tool-permission.js';
 import { ensureToolsInitialized } from './mcp/index.js';
 import { executeApiTool, isApiExecutableTool } from './mcp/api-tool-executor.js';
@@ -18,12 +18,27 @@ import {
 import { loadSpaceMemoryForConversation, formatSpaceMemoryContext, appendTaskDecision, loadTaskMemoryForConversation, formatTaskMemoryContext, appendTaskProgress } from './services/space-memory.js';
 import { backendTaskPlan, backendTaskStep, loadTaskPlanFromFile } from './services/task-plan-file.js';
 import { summarizeResourceDirsSync } from './services/space-resources.js';
+// 提示词快照：构建（只存 id 引用）与按需回填的唯一定义处 —— 修单会话 O(n²) 的快照膨胀
+import { toSnapshotMessages, pruneOldSnapshots, SNAPSHOT_KEEP_PER_CONV } from './services/context-snapshot.js';
+// 上下文组装的**唯一出口**（主循环与子智能体循环共用）—— 压缩落库 + 子智能体隔离 + 预算分配
+import { buildContextView, mainlineMessages } from './services/context-view.js';
 import { serverState } from './state.js';
 // 产物登记钩子（P2-3）：把 file_write / 媒体登记的副作用从主循环里搬出去
 import { runAfterToolHooks } from './services/tool-hooks.js';
 import { registerArtifactHooks } from './services/artifact-hooks.js';
 import { guessMime } from './utils/mime.js';
 import { resolveArtifactDirFor } from './services/artifact-dir.js';
+// 工作目录边界守卫：判定在 path-guard（纯逻辑），这里只做"拿到 need-auth 后弹窗授权"
+import {
+  checkPathAccess,
+  allowedRootsFor,
+  COMMAND_TOOLS,
+  getAuthorizedDirs,
+  authorizeDir,
+  isCommandAuthorized,
+  authorizeCommand,
+  type PathAccessItem,
+} from './services/path-guard.js';
 import { modelSupportsTools } from './services/model-caps.js';
 // 模型标识解析：统一走 services/model-resolve（主键优先 + 存量裸名回退），
 // 不在此另写查询 —— 同一件事两处实现必然漂移。
@@ -127,6 +142,8 @@ interface LlmTask {
   ontologyIds?: string[];
   /** 会话级工具权限：readonly=只读（写类工具构建期裁剪+运行时拦截）/ default=正常 / full=全部放行 */
   permissionMode?: 'readonly' | 'default' | 'full';
+  /** 工作目录边界守卫档位（2026-10-01）：ask（默认）/ strict / off */
+  pathGuard?: 'ask' | 'strict' | 'off';
   /** 暂停旗标（工具边界暂停语义）：置位后主循环/子智能体循环/前端委托入口在边界处挂起，
    *  正在执行的单个动作不打断（原子操作，中途掐断会留半状态页面）。resume 后从边界继续。 */
   paused?: boolean;
@@ -144,6 +161,19 @@ interface LlmTask {
   /** 本任务内「子任务指纹 → 出现次数」：同类子任务反复现场生成时提示固化（见 shouldSuggestPersist）。
    *  任务级而非全局，是刻意的 —— 跨任务的重复统计靠空间记忆（见 recordSpawnedSubAgent）。 */
   specFingerprints?: Map<string, number>;
+  /**
+   * ★★★ 上下文压缩的摘要缓存（2026-10-01 加）。
+   *
+   * 为什么必须挂在 task 上：ReAct 主循环**每一步**都重新 loadMessages + 判超限 + compress，
+   * 而 compress 对"保留窗口之外的整段前文"每次都要调一次 LLM 生成摘要 ——
+   * 于是上下文越长，**每个 step 都白付一次摘要调用**（实测长会话每步都触发）。
+   * 把「上次摘要覆盖的消息 id 前缀 + 摘要文本」缓存在任务上，下一步即可命中前缀、
+   * 只对新增部分做增量摘要（甚至零调用），把 O(步数) 次摘要降到 O(1)。
+   * 见 core `SummaryCache` 注释。
+   */
+  summaryCache?: SummaryCache;
+  /** 子智能体各自的摘要缓存（key = parentToolCallId）—— 与主循环隔离，见子循环处注释。 */
+  subSummaryCaches?: Map<string, SummaryCache>;
   /**
    * ★★★ 本任务的工作目录（绝对路径，2026-09-30 加）。
    *
@@ -276,13 +306,17 @@ function listAvailableModels(userId: string, args: Record<string, unknown>): str
 }
 
 function loadMessages(convId: string): Message[] {
-  const rows = db.prepare('SELECT * FROM message WHERE conversation_id = ? ORDER BY created_at ASC').all(convId) as any[];
+  // ★★★ 必须用白名单列（不含 system_prompt_snapshot）—— 见 db.ts:MESSAGE_LIST_COLS 注释。
+  //   SELECT * 会把单条可达 200KB 的快照读进来，而 rowToMsg 立刻丢弃它：
+  //   实测会话 deed2862 每步白读 183MB（快照占 99.8%），是「上下文越长越慢」的头号成因。
+  const rows = db.prepare(`SELECT ${MESSAGE_LIST_COLS} FROM message WHERE conversation_id = ? ORDER BY created_at ASC`).all(convId) as any[];
   return rows.map(rowToMsg);
 }
 
 /** 加载子智能体消息：按 parent_tool_call_id 过滤，只取该子智能体自己的消息 */
 function loadSubAgentMessages(convId: string, parentToolCallId: string): Message[] {
-  const rows = db.prepare('SELECT * FROM message WHERE conversation_id = ? AND parent_tool_call_id = ? ORDER BY created_at ASC').all(convId, parentToolCallId) as any[];
+  // 同上：白名单列，避免每步把快照读进来又丢弃
+  const rows = db.prepare(`SELECT ${MESSAGE_LIST_COLS} FROM message WHERE conversation_id = ? AND parent_tool_call_id = ? ORDER BY created_at ASC`).all(convId, parentToolCallId) as any[];
   return rows.map(rowToMsg);
 }
 
@@ -347,6 +381,11 @@ export function createTask(params: {
   ontologyIds?: string[];
   /** 前端显式下发的工作目录：优先于全局 serverState.workspaceDir 注入 system prompt */
   workspaceDir?: string;
+  /**
+   * 工作目录边界守卫档位（2026-10-01）。前端随任务下发（与 workspaceDir 同一份设置来源）。
+   * ask（默认）/ strict / off；未下发或非法值一律按 **ask**（fail-safe：宁可多问一次，不静默放行）。
+   */
+  pathGuard?: 'ask' | 'strict' | 'off';
 }): string {
   // 幂等保护：同 conversationId 已有 running 任务则复用（避免重连重试创建多任务）
   for (const [id, existing] of tasks) {
@@ -388,6 +427,8 @@ export function createTask(params: {
     // ★ 工作目录：与提示词注入同源（前端下发 > 全局），供工具解析相对路径用。
     //   见 LlmTask.workspaceDir 注释 —— 两处不同源会产生"提示词说 A、工具在 B 找"的不一致。
     workspaceDir: params.workspaceDir?.trim() || serverState.workspaceDir || undefined,
+    // ★ 越界守卫档位：非法/未下发 → ask（fail-safe，与 normalizePermissionMode 同取向）
+    pathGuard: (params.pathGuard === 'strict' || params.pathGuard === 'off') ? params.pathGuard : 'ask',
     pendingInjects: [],
     // 运行时生成子智能体的预算闸：智能体可配 maxSpawnPerTask（0 = 关闭该能力）
     spawnBudget: (() => {
@@ -536,6 +577,153 @@ async function waitIfPaused(task: LlmTask): Promise<void> {
 function unattendedToolResult(toolName: string): string {
   return `[无人值守] 工具 ${toolName} 需要前端交互（用户输入/确认/浏览器界面），但当前没有任何前端在线，无法执行。`
     + `请基于已有信息自行决策并继续完成任务；如果确实必须用户参与，请在最终回复中明确说明需要用户补充什么。`;
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// 工作目录边界守卫（2026-10-01）—— 允许根集合 / 弹窗授权 / 结果解析
+// 判定逻辑在 services/path-guard.ts（纯判定，无 IO）；这里只做「拿到 need-auth 后怎么办」。
+// ══════════════════════════════════════════════════════════════════════════
+
+/** 授权弹窗在工具面上的保留名（前端 dispatchToolCall 按它出授权卡） */
+const PATH_AUTH_TOOL = '_path_authorize';
+/** 交互类工具集合之外单独管理：授权弹窗**必须无超时**（用户可能在忙别的，隔天回来也要能答） */
+const PATH_AUTH_TIMEOUT_MS = 0;
+
+/**
+ * 越界访问审计（决策：越界**允许/拒绝都记**）。
+ * fire-and-forget：审计失败绝不能影响主链路（与 appendTaskDecision 同取向）。
+ */
+function auditPathAccess(opts: {
+  userId?: string;
+  conversationId?: string;
+  taskId?: string;
+  toolName: string;
+  decision: string;
+  reason?: string;
+  items: PathAccessItem[];
+}): void {
+  try {
+    const stmt = db.prepare(
+      `INSERT INTO path_access_audit
+       (id, user_id, conversation_id, task_id, tool_name, action, target_path, raw_path, decision, reason, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    const ts = Date.now();
+    // 一次调用可能有多条越界项（doyz 的 file+out）→ 逐条落，便于按路径查询
+    for (let i = 0; i < opts.items.length; i++) {
+      const it = opts.items[i];
+      stmt.run(
+        'pa_' + ts.toString(36) + Math.random().toString(36).slice(2, 8) + i,
+        opts.userId || null,
+        opts.conversationId || null,
+        opts.taskId || null,
+        opts.toolName,
+        it.action,
+        it.absPath || null,
+        it.rawPath || null,
+        opts.decision,
+        opts.reason || null,
+        ts,
+      );
+    }
+  } catch (e: any) {
+    console.warn('[path-guard] 审计写入失败（不影响主链路）:', e?.message || e);
+  }
+}
+
+/**
+ * 请求用户授权越界访问（复用 ask_user 那套「委托前端 → 弹窗 → POST 回传」通道）。
+ *
+ * 返回值：
+ *   { ok: true }            → 用户已允许（白名单已写入）
+ *   { ok: false, message }  → 未获授权，message 是给**模型**的指引（措辞要让模型**换路径**，
+ *                             而不是重试 —— 否则形成"反复弹窗"的骚扰循环）
+ */
+async function requestPathAuthorization(
+  task: LlmTask,
+  toolName: string,
+  items: PathAccessItem[],
+  isCommand: boolean,
+): Promise<{ ok: boolean; reason: string; message: string }> {
+  // 无人值守（定时任务/后台工作流）：fail-safe **直接拒绝**，且**不挂起**。
+  // 与 unattendedToolResult 既有口径一致 —— 定时任务没人守着，挂起 = 任务永久卡住。
+  if (task.subscribers.size === 0) {
+    auditPathAccess({
+      userId: task.userId, conversationId: task.conversationId, taskId: task.id,
+      toolName, decision: 'unattended', reason: '无前端在线，无法取得授权', items,
+    });
+    return {
+      ok: false,
+      reason: 'unattended',
+      message: `[无人值守] 工具 ${toolName} 试图访问工作目录外的位置，无人可确认授权，已拒绝。`
+        + `请改用工作目录内的路径；若确实需要访问外部位置，请在最终回复中说明需要用户授权哪个目录。`,
+    };
+  }
+
+  const payload = {
+    toolName,
+    isCommand,
+    workspaceDir: task.workspaceDir || '',
+    items: items.map((it) => ({
+      action: it.action,
+      rawPath: it.rawPath,
+      absPath: it.absPath,
+    })),
+  };
+
+  let raw: string;
+  try {
+    raw = await executeToolViaFrontend(task, PATH_AUTH_TOOL, payload, '', 0, PATH_AUTH_TIMEOUT_MS);
+  } catch (e: any) {
+    return {
+      ok: false,
+      reason: 'frontend-error',
+      message: `授权确认失败（前端不可达）：${e?.message || e}。本次未执行，请稍后重试或改用工作目录内的路径。`,
+    };
+  }
+
+  const decision = parsePathAuthResult(raw);
+  if (decision === 'deny' || decision === 'cancel') {
+    const what = isCommand ? `命令 ${toolName}` : `${items.map((i) => i.rawPath).join(', ')}`;
+    auditPathAccess({
+      userId: task.userId, conversationId: task.conversationId, taskId: task.id,
+      toolName, decision: 'denied', reason: decision, items,
+    });
+    return {
+      ok: false,
+      reason: decision,
+      message: `用户未授权访问：${what}。请改用工作目录内的路径，或先向用户说明为什么要访问该位置并征求同意。`,
+    };
+  }
+  // 允许：落白名单（会话级，父目录粒度）
+  if (isCommand) {
+    authorizeCommand(task.conversationId);
+  } else {
+    for (const it of items) {
+      if (it.absPath) authorizeDir(task.conversationId, it.absPath);
+    }
+  }
+  auditPathAccess({
+    userId: task.userId, conversationId: task.conversationId, taskId: task.id,
+    toolName, decision: 'allowed', reason: decision, items,
+  });
+  console.warn(`[path-guard] 已授权 conv=${task.conversationId} tool=${toolName} scope=${decision} n=${items.length}`);
+  return { ok: true, reason: decision, message: '' };
+}
+
+/** 解析前端授权卡的返回值。JSON 优先（`{decision}`），纯文本兜底（老前端/异常形态）。 */
+function parsePathAuthResult(raw: string): 'once' | 'dir' | 'deny' | 'cancel' {
+  const s = (raw || '').trim();
+  if (!s) return 'deny';
+  try {
+    const obj = JSON.parse(s) as { decision?: string };
+    const d = String(obj.decision || '');
+    if (d === 'once' || d === 'dir' || d === 'deny' || d === 'cancel') return d;
+  } catch { /* 非 JSON，走文本兜底 */ }
+  if (/^allow(_once)?$/.test(s) || s === '允许' || s === '仅此次允许') return 'once';
+  if (/^allow_dir$/.test(s) || s === '允许该目录') return 'dir';
+  if (s === '取消' || /cancel/i.test(s)) return 'cancel';
+  return 'deny';
 }
 
 /**
@@ -1313,31 +1501,44 @@ async function runReActLoop(task: LlmTask, params: {
         task.step = step;
         emit(task, { type: 'step', step: emittedStep, batch });
 
-        // 加载最新消息
-        let messagesToSend = loadMessages(convId);
-        messagesToSend = messagesToSend.filter(m => m.content || m.toolCalls || m.role === 'tool' || (m as any).reasoningContent);
-        // 上下文窗口压缩：超限时先抢救细节再生成结构化摘要（LLM 摘要而非硬截断）
-        // ★ 用 forContextWindow：把「模型上下文窗口」换算成触发阈值。
-        //   此前直接传 model.contextWindow（100 万级）当阈值，而判据是保守低估的估算，
-        //   量纲不一致 → 压缩几乎永不触发（2026-09-29 排障）。
-        // ★★ 再修（同日第二轮）：窗口缺失或**恰好等于建库默认 1M**（= 用户没填）时，
-        //   退回 SAFE_CONTEXT_WINDOW(32K) 估算，否则阈值 = 52 万 → 等于关掉压缩。
-        //   见 constants.ts:resolveContextWindow 的判据与取舍说明。
-        const ctxWindow = ContextWindow.forContextWindow(resolveContextWindow(model.contextWindow), 6);
-        ctxWindow.setSummaryModel(platform, model);
-        if (ctxWindow.needsCompression(messagesToSend)) {
-          let flushedThisRun = false; // 每个任务最多抢救一次
-          messagesToSend = await ctxWindow.compress(messagesToSend, {
-            beforeCompress: async (toCompress) => {
-              if (flushedThisRun) return;
-              flushedThisRun = true;
-              // 抢救同样优先用「记忆抽取模型」（小模型足够），未配置则回退任务模型
-              const memLlm = resolveMemoryExtractLlm(task) || { platform, model };
-              await flushMemoriesBeforeCompression(
-                { userId, conversationId: convId, agentId: task.agentId ?? null, platform: memLlm.platform, model: memLlm.model },
-                toCompress,
-              );
-            },
+        // ── 上下文组装：走**唯一出口** buildContextView（2026-10-02）──────────────
+        //  此前这里是「loadMessages 全量 + 判超限 + compress」，与子智能体循环各写一遍。
+        //  现在收敛为一处，且带来两个实质变化：
+        //   ① **剔除子智能体消息**（此前混杂进主上下文，破坏隔离语义）；
+        //   ② **压缩结果落库**（message_summary）→ 下一步读到的是"摘要 + 增量"，
+        //      而不是每步把全量重新压一遍（旧实现只改局部变量，等于没压）。
+        let flushedThisRun = false; // 每个任务最多抢救一次
+        const sumLlm = resolveMemoryExtractLlm(task) || { platform, model };
+        const ctxView = await buildContextView({
+          conversationId: convId,
+          userId,
+          rawMessages: mainlineMessages(loadMessages(convId))
+            .filter(m => m.content || m.toolCalls || m.role === 'tool' || (m as any).reasoningContent),
+          model,
+          maxTokens: effectiveOptions().maxTokens,
+          keepRecent: 6,
+          keepFirst: 2,
+          summaryCache: task.summaryCache ||= { ids: [], summary: '' },
+          setSummaryModel: (cw) => cw.setSummaryModel(sumLlm.platform, sumLlm.model),
+          beforeCompress: async (toCompress) => {
+            if (flushedThisRun) return;
+            flushedThisRun = true;
+            const memLlm = resolveMemoryExtractLlm(task) || { platform, model };
+            await flushMemoriesBeforeCompression(
+              { userId, conversationId: convId, agentId: task.agentId ?? null, platform: memLlm.platform, model: memLlm.model },
+              toCompress,
+            );
+          },
+        });
+        const messagesToSend = ctxView.messages;
+        // 压缩事件上报（对齐 Claude Code 的 compact_boundary）：前端据此显示「此处已压缩」，
+        // 否则用户完全看不出"上下文发生了什么"。
+        if (ctxView.compacted) {
+          emit(task, {
+            type: 'context:compacted',
+            coveredCount: ctxView.coveredIds.length,
+            keptCount: messagesToSend.length,
+            tokens: ctxView.tokens,
           });
         }
 
@@ -1387,18 +1588,30 @@ async function runReActLoop(task: LlmTask, params: {
             description: t.function?.description || '',
             parameters: t.function?.parameters,
           })),
-          // 原模原样：content 保留模型原始输出（含 [TOOL_CALL] 块），toolCalls 原样透传不做重排
-          messages: llmMessages.map(m => ({
-            role: m.role,
-            content: typeof m.content === 'string' && m.content.length > 4000 ? m.content.slice(0, 3997) + '...' : m.content || '',
-            toolCalls: m.toolCalls,
-          })),
+          // ★★★ messages 只存 **id 引用**，不存正文（2026-10-02）。
+          //   此前存正文 → 每步一份全量历史 → 单会话 O(n²)（实测 1156 条消息 → 174.9MB）。
+          //   实测最大快照 546KB 中 messages 占 **73.5%**（1154 条）→ 改引用后降到约 2%。
+          //   读取时由服务端 `hydrateSnapshot` 回填成旧结构 → **前端零改动**。
+          //   见 services/context-snapshot.ts。
+          messages: toSnapshotMessages(llmMessages),
         }, null, 2);
 
         // 添加助手占位消息
         const assistantMsgId = insertMessage(convId, userId, 'assistant', '', { systemPromptSnapshot: snap });
+        // ★ 每会话只保留最近 N 条快照（删最旧的派生物，不删 message 行）。
+        //   快照是纯调试产物（模型与业务逻辑都不读），保留策略把单会话上限从 ~175MB 收到 ~17MB。
+        //   ★ 必须 try/catch：清理失败不该让整个生成失败（本项目既有约定）。
+        if (step > 0 && step % 20 === 0) {
+          try { pruneOldSnapshots(convId, SNAPSHOT_KEEP_PER_CONV); } catch {}
+        }
         activeAssistantMsgId = assistantMsgId;
-        emit(task, { type: 'message:added', message: { id: assistantMsgId, role: 'assistant', content: '', systemPromptSnapshot: snap } });
+        // ★★★ SSE 事件**不带** systemPromptSnapshot（2026-10-01）：
+        //   快照单条可达 86KB（含 systemPrompt+tools，实测占快照 59.5%），而它只在用户点
+        //   「查看提示词」时才需要 —— 前端 openSnapshotDialog 走 fetchSnapshotFor：
+        //   内存没有（历史消息必有此情况）就按需拉 GET /api/messages/:mid/snapshot。
+        //   此前每个 step 都把这个大对象经 SSE 推一次，纯属为极低频操作付高频代价。
+        //   ★ 注意前端 message:added 分支只取 role/id/content，不读该字段，去掉无副作用。
+        emit(task, { type: 'message:added', message: { id: assistantMsgId, role: 'assistant', content: '' } });
 
         // 流式请求
         let fullContent = '';
@@ -2092,6 +2305,48 @@ async function executeTool(
     }).message;
   }
 
+  // ══════════════════════════════════════════════════════════════════════════
+  // ★★★ 工作目录边界守卫（2026-10-01，用户报「访问其他目录需要用户授权」→ 决策「弹窗授权」）
+  //
+  // 位置刻意放在「缺参检查之后、工具分发之前」：
+  //   · 放缺参之前 → 缺 path 的调用也会弹窗（噪音，且那本该由 missingRequiredArgs 引导）；
+  //   · 放分发之后 → 四类分支（UI/MCP / API / 内置 / 委派）各要接一遍，必漏（本项目既有教训）。
+  //
+  // 判定只有一份（services/path-guard），三种执行入口各自决定拿到 need-auth 后的动作；
+  // 这里（ReAct 主链路）有前端在线 → 弹窗授权。
+  // ══════════════════════════════════════════════════════════════════════════
+  // 档位（设置项 pathGuard，默认 ask）：off 明示不检查；strict 越界直接拒（不给授权入口）。
+  if (task.pathGuard !== 'off') {
+    const pathVerdict = checkPathAccess({
+      toolName,
+      args,
+      workspaceDir: task.workspaceDir,
+      allowedRoots: allowedRootsFor(task.workspaceDir, task.conversationId),
+      authorizedDirs: getAuthorizedDirs(task.conversationId),
+    });
+    if (pathVerdict.kind === 'need-auth') {
+      // 命令类工具：按**会话**记「首次授权」（用户决策：首次授权 + 全量审计）
+      const isCommand = COMMAND_TOOLS.has(toolName);
+      if (task.pathGuard === 'strict') {
+        auditPathAccess({
+          userId: task.userId, conversationId: task.conversationId, taskId: task.id,
+          toolName, decision: 'strict-denied', reason: 'strict 档位下越界直接拒绝', items: pathVerdict.items,
+        });
+        return `越界访问已被「严格模式」拒绝：${pathVerdict.items.map((i) => i.rawPath || i.toolName).join(', ')}。`
+          + `请在设置里把「工作目录守卫」改为「询问」或直接使用工作目录内的路径。`;
+      }
+      if (isCommand && isCommandAuthorized(task.conversationId)) {
+        console.warn(`[path-guard] 放行(命令已授权) conv=${task.conversationId} tool=${toolName}`);
+      } else {
+        const granted = await requestPathAuthorization(task, toolName, pathVerdict.items, isCommand);
+        if (!granted.ok) {
+          console.warn(`[path-guard] 拒绝 conv=${task.conversationId} tool=${toolName} 原因=${granted.reason}`);
+          return granted.message;
+        }
+      }
+    }
+  }
+
   // UI 工具 → 委托前端（需要用户交互）；MCP 工具 → 优先委托前端（连接在前端，所见即所得），
   // 无人值守（定时任务/IM，无 SSE 订阅者）时后端直连 MCP 兜底，避免工具永远拿不到结果
   if (isUiTool || isMcp) {
@@ -2380,8 +2635,9 @@ async function executeTool(
 }
 
 /** 通过 SSE 委托前端执行工具，等待前端 POST 结果回来。
- *  事件有缓冲：前端刷新断开时事件不丢失，重连后重放并执行。 */
-async function executeToolViaFrontend(task: LlmTask, toolName: string, args: any, toolCallId: string, depth: number = 0): Promise<string> {
+ *  事件有缓冲：前端刷新断开时事件不丢失，重连后重放并执行。
+ *  @param timeoutMsOverride 覆盖默认超时；传 0 表示**不设超时**（授权弹窗等"可能隔很久才答"的场景） */
+async function executeToolViaFrontend(task: LlmTask, toolName: string, args: any, toolCallId: string, depth: number = 0, timeoutMsOverride?: number): Promise<string> {
   // 工具发起前的暂停边界：暂停中不发新工具（正在跑的前一个动作已在各自的 await 里自然跑完）
   await waitIfPaused(task);
   // 无人值守（无前端 SSE 订阅者）：UI/MCP 工具无法委托前端，直接返回提示让模型自行决策
@@ -2392,7 +2648,9 @@ async function executeToolViaFrontend(task: LlmTask, toolName: string, args: any
     const callId = 'tc_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
     const interactive = INTERACTIVE_TOOLS.has(toolName);
     // 交互类工具不设 2 分钟超时（用户可能在"思考要不要确认"，隔天回来也要能继续答）
-    const timer = interactive
+    // ★ timeoutMsOverride === 0 → 显式要求不设超时（授权弹窗同性质）。
+    const noTimeout = timeoutMsOverride === 0;
+    const timer = (interactive || noTimeout)
       ? undefined
       : setTimeout(() => {
           const pending = task.pendingToolCalls.get(callId);
@@ -2401,7 +2659,7 @@ async function executeToolViaFrontend(task: LlmTask, toolName: string, args: any
             console.warn(`[llm-task] 前端工具执行超时(2min): ${toolName} callId=${callId} conv=${task.conversationId}（前端刷新/断连时常见，任务将以此错误继续）`);
             pending.reject(new Error(`工具 ${toolName} 执行超时`));
           }
-        }, 2 * 60 * 1000);
+        }, timeoutMsOverride && timeoutMsOverride > 0 ? timeoutMsOverride : 2 * 60 * 1000);
     task.pendingToolCalls.set(callId, { resolve, reject, toolName, callId, requestedAt: Date.now(), timer, args });
     syncPendingToolsJson(task);
     // 通知前端执行工具。
@@ -2964,15 +3222,28 @@ async function runSubAgent(
       if (task.abortController.signal.aborted) throw new DOMException('Aborted', 'AbortError');
       await waitIfPaused(task); // 子智能体循环同样尊重任务级暂停（pageAgent 常由 call_agent 委派）
 
-      // 加载子智能体自己的消息（按 parent_tool_call_id 过滤，避免上下文污染）
-      let messagesToSend = loadSubAgentMessages(task.conversationId, parentToolCallId);
-      messagesToSend = messagesToSend.filter(m => m.content || m.toolCalls || m.role === 'tool' || (m as any).reasoningContent);
-      // ★ 用 forContextWindow 换算触发阈值（理由见主循环处注释；含 32K 保守兜底）
-      const ctxWindow = ContextWindow.forContextWindow(resolveContextWindow(model.contextWindow), 6);
-      ctxWindow.setSummaryModel(platform, model);
-      if (ctxWindow.needsCompression(messagesToSend)) {
-        messagesToSend = await ctxWindow.compress(messagesToSend);
-      }
+      // ── 上下文组装：与主循环**同一个出口** buildContextView（2026-10-02）────────
+      //  此前这里是第二份「loadSubAgentMessages + 判超限 + compress」实现 —— 与主循环
+      //  各写一遍必然漂移（本项目经典坑）。收敛后行为差异只在入参：
+      //   · rawMessages 只含该子智能体的消息（已按 parent_tool_call_id 过滤）；
+      //   · persist:false —— 子智能体的摘要**不写 message_summary 表**，
+      //     否则主循环读该会话的"最新摘要"会读到子智能体的，直接把主上下文带偏。
+      const subCache = (task.subSummaryCaches ||= new Map()).get(parentToolCallId)
+        || (() => { const c = { ids: [] as string[], summary: '' }; (task.subSummaryCaches!).set(parentToolCallId, c); return c; })();
+      const subView = await buildContextView({
+        conversationId: task.conversationId,
+        userId: task.userId,
+        rawMessages: loadSubAgentMessages(task.conversationId, parentToolCallId)
+          .filter(m => m.content || m.toolCalls || m.role === 'tool' || (m as any).reasoningContent),
+        model,
+        maxTokens: agent.max_tokens,
+        keepRecent: 6,
+        keepFirst: 2,
+        summaryCache: subCache,
+        setSummaryModel: (cw) => cw.setSummaryModel(platform, model),
+        persist: false,
+      });
+      const messagesToSend = subView.messages;
 
       const llmMessages: Message[] = [];
       llmMessages.push({ id: 'sys', conversationId: '', role: 'system', content: systemPrompt, createdAt: 0 });
@@ -3011,19 +3282,16 @@ async function runSubAgent(
         },
         systemPrompt,
         tools: subTools.map((t: any) => ({ name: t.function.name, description: t.function.description })),
-        // 原模原样：同主循环快照
-        messages: llmMessages.map(m => ({
-          role: m.role,
-          content: typeof m.content === 'string' && m.content.length > 4000 ? m.content.slice(0, 3997) + '...' : m.content || '',
-          toolCalls: m.toolCalls,
-        })),
+        // messages 只存 id 引用（同主循环，见 services/context-snapshot.ts 的 O(n²) 说明）
+        messages: toSnapshotMessages(llmMessages),
       }, null, 2);
 
       // 助手占位消息
       const assistantMsgId = insertMessage(task.conversationId, task.userId, 'assistant', '', {
         systemPromptSnapshot: snap, parentToolCallId, subAgentId: resolvedId, subAgentName, subAgentDepth: depth + 1,
       });
-      emit(task, { type: 'message:added', message: { id: assistantMsgId, role: 'assistant', content: '', systemPromptSnapshot: snap, parentToolCallId, subAgentId: resolvedId, subAgentName, subAgentDepth: depth + 1 } });
+      // SSE 不推快照（同主循环：按需拉取即可，见该处注释）
+      emit(task, { type: 'message:added', message: { id: assistantMsgId, role: 'assistant', content: '', parentToolCallId, subAgentId: resolvedId, subAgentName, subAgentDepth: depth + 1 } });
 
       // 流式请求
       let fullContent = '';

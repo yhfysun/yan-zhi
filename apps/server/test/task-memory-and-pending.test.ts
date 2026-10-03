@@ -17,6 +17,17 @@ import { resolve } from 'node:path';
 // ★ 不能让导入链碰到真实 dev 库（data.db 被运行中的后端锁定 → flush EPERM，且测试不该写用户数据）
 vi.mock('../src/db.js', () => ({
   db: { prepare: () => ({ get: () => undefined, all: () => [], run: () => {} }) },
+  // 2026-10-02：补齐 db.js 导出（手写白名单 mock 必须与生产代码同步，否则报
+  //   `No "X" export is defined on the "../src/db.js" mock`，表象却是「任务 failed」）。
+  MESSAGE_LIST_COLS:
+  'id, conversation_id, user_id, role, content, tool_calls_json, tool_call_id, reasoning_content, tokens, parent_tool_call_id, sub_agent_id, sub_agent_name, sub_agent_depth, created_at',
+  deleteMessageSummariesAfter: () => 0,
+  clearMessageSummaries: () => {},
+  // 2026-10-02：services/context-view.ts（上下文组装唯一出口）新增依赖。
+  // ★ 手写白名单 mock 必须同步补，否则 ESM 直接报 "does not provide an export"，
+  //   表现为"任务 failed"，看不出真因（本文件此前已记录过同类教训）。
+  getLatestMessageSummary: () => null,
+  insertMessageSummary: () => "sum_test",
   hasSqliteVec: false,
 }));
 vi.mock('../src/mcp/index.js', () => ({ ensureToolsInitialized: () => {} }));
@@ -67,7 +78,14 @@ describe('pending 交互持久化与存活语义', () => {
     const fn = LTM.slice(LTM.indexOf('async function executeToolViaFrontend'), LTM.indexOf('async function runWorkflowSubAgent'));
     expect(fn, '★ 未区分交互类工具的创建超时').toMatch(/INTERACTIVE_TOOLS\.has\(toolName\)/);
     // 交互类：timer = undefined；非交互才有 2min timer
-    expect(fn, '★ 交互类工具仍会设置超时 timer').toMatch(/interactive\s*\?\s*undefined\s*:\s*setTimeout/);
+    // ★ 2026-10-02 同步锚点：越界弹窗授权轮次引入 `noTimeout`（timeoutMsOverride===0）后，
+    //   timer 条件由 `interactive` 变成 `(interactive || noTimeout)` —— **语义未变**
+    //   （交互类工具仍不设超时），故断言改为校验「interactive 参与条件判定、且该分支为 undefined」，
+    //   而不是死抠旧的表达式写法（那种断言会因无关重构假红）。
+    expect(fn, '★ 交互类工具仍会设置超时 timer')
+      .toMatch(/const noTimeout[\s\S]{0,40}?timeoutMsOverride === 0/);
+    expect(fn, '★ 交互类工具仍会设置超时 timer')
+      .toMatch(/const timer[\s\S]{0,60}?interactive[\s\S]{0,60}?\?\s*undefined\s*:\s*setTimeout/);
   });
 
   it('★ 15 秒断连宽限必须跳过交互类工具', () => {
