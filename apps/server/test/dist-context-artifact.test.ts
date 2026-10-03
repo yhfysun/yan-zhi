@@ -30,7 +30,7 @@ const distDb = await import(new URL('db.js', 'file:///' + DIST.replace(/\\/g, '/
 const distCv = await import(new URL('services/context-view.js', 'file:///' + DIST.replace(/\\/g, '/') + '/').href);
 
 const { db, getLatestMessageSummary } = distDb as any;
-const { buildContextView, mainlineMessages, usableContextBudget } = distCv as any;
+const { buildContextView, mainlineMessages, effectiveWindowOf } = distCv as any;
 
 const UID = 'u_dist';
 const CID = 'c_dist';
@@ -80,9 +80,9 @@ describe.skipIf(!hasDist)('编译产物（dist）· 压缩落库闭环', () => {
     expect(String(r2.messages[0].content)).toContain('前文摘要');
   });
 
-  it('dist 版本的预算口径正确（输出预留 + 32K 保守兜底）', () => {
-    expect(usableContextBudget(32768, 8192)).toBe(32768 - 8192);
-    expect(usableContextBudget(undefined, 8192)).toBe(32768 - 8192);
+  it('dist 版本的有效窗口口径正确（+ 32K 保守兜底）', () => {
+    expect(effectiveWindowOf(131072)).toBe(32768);
+    expect(effectiveWindowOf(undefined)).toBe(32768);
   });
 });
 

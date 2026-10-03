@@ -32,7 +32,7 @@ vi.hoisted(() => {
   (globalThis as any).__YZ_CTX_TMP__ = dir;
 });
 
-const { buildContextView, mainlineMessages, usableContextBudget } = await import('../src/services/context-view.js');
+const { buildContextView, mainlineMessages, effectiveWindowOf, resolveOutputReserve } = await import('../src/services/context-view.js');
 const { getLatestMessageSummary, insertMessageSummary, db } = await import('../src/db.js');
 
 tmpDir = (globalThis as any).__YZ_CTX_TMP__;
@@ -211,38 +211,40 @@ describe('② 压缩落库：历史真正变短，而不是每步重算', () => 
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-describe('③ 预算分配：有效窗口 − 输出预留（对齐 Roo Code 的 allowedTokens + Chroma 的有效上下文）', () => {
-  it('两层折扣都要生效：先按有效比例折算窗口，再扣输出预留', () => {
-    // 128K 声明窗口（被信任）→ 有效 32K → 扣 8K 输出预留 = 24K 可用
-    expect(usableContextBudget(131072, 8192)).toBe(32768 - 8192);
-    // ★ 关键：绝不能是「标称 − 预留」（那是"能塞就能用好"的被证伪假设）
-    expect(usableContextBudget(131072, 8192)).toBeLessThan(131072 - 8192);
+describe('③ 预算分配：有效窗口折算（对齐 Chroma 的有效上下文 / Roo Code 的 allowedTokens）', () => {
+  it('声明窗口（被信任）→ 按有效比例折算（绝不是"标称 = 可用"）', () => {
+    expect(effectiveWindowOf(131072)).toBe(32768); // 128K × 25%
+    // ★ 关键：绝不能等于标称窗口（那是"能塞就能用好"的被证伪假设）
+    expect(effectiveWindowOf(131072)).toBeLessThan(131072);
   });
 
   it('★★ 两层折扣**不叠加**：未声明窗口已被判不可信 → 不再乘比例（防双重保守）', () => {
     // resolveContextWindow(1M) 会因"等于建库默认值"判不可信 → 退回 32K。
     // 此时若再乘 25% 就只剩 8K → 触发得离谱地早；正确做法是直接用 32K 有效值。
-    expect(usableContextBudget(1048576, 8192)).toBe(32768 - 8192);
+    expect(effectiveWindowOf(1048576)).toBe(32768);
     // ★ 与"把 1M 当可信"对照：那才是按 256K 算（判为不可信意味着我们已按小窗口保守估算）
-    expect(usableContextBudget(1048576, 8192)).toBeLessThan(262144 - 8192);
+    expect(effectiveWindowOf(1048576)).toBeLessThan(262144);
   });
 
   it('可信的大窗口（显式声明 2M）→ 按 500K 有效区算', () => {
-    expect(usableContextBudget(2 * 1048576, 8192)).toBe(524288 - 8192);
-  });
-
-  it('输出预留夹在 4K~16K', () => {
-    // 预留过小 → 抬到下限 4096（用 128K：有效 32K，便于观察预留的影响）
-    expect(usableContextBudget(131072, 100)).toBe(32768 - 4096);
-    // 预留过大 → 压到上限 16384
-    expect(usableContextBudget(131072, 999999)).toBe(32768 - 16384);
+    expect(effectiveWindowOf(2 * 1048576)).toBe(524288);
   });
 
   it('未声明/非法窗口 → 走 32K 保守兜底，恒定为正', () => {
     for (const bad of [undefined, 0, -1, NaN] as any[]) {
-      expect(usableContextBudget(bad, 8192)).toBe(32768 - 8192);
+      expect(effectiveWindowOf(bad)).toBe(32768);
     }
-    expect(usableContextBudget(1, 999999)).toBeGreaterThan(0);
+    expect(effectiveWindowOf(1)).toBeGreaterThan(0);
+  });
+
+  it('输出预留夹在 4K~16K（buildContextView 的 hardCap 靠它）', () => {
+    // 预留过小 → 抬到下限 4096
+    expect(resolveOutputReserve(100)).toBe(4096);
+    // 未传 / 非法 → 默认 8192
+    expect(resolveOutputReserve()).toBe(8192);
+    expect(resolveOutputReserve(NaN as any)).toBe(8192);
+    // 预留过大 → 压到上限 16384
+    expect(resolveOutputReserve(999999)).toBe(16384);
   });
 });
 

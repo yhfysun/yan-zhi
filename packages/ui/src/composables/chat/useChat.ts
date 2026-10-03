@@ -1319,7 +1319,7 @@ function createChat() {
    * 为什么：标称 1M 的模型在 256K 之后就明显退化（Chroma Context Rot / RULER / 社区甜点区，
    * 详见 `@yan-zhi/shared/utils/context-policy.ts`）。若按标称窗口显示百分比，用户会看到
    * "才用了 30%，还很空" —— 而实际上已经越过了有效边界。这属于**误导性展示**。
-   * ★ 与服务端 `usableContextBudget` 共用同一个常量（`EFFECTIVE_CONTEXT_RATIO`），
+   * ★ 与服务端 `effectiveWindowOf`（context-view.ts）共用同一个常量（`EFFECTIVE_CONTEXT_RATIO`），
    *   否则"前端说没事、后端在压缩"会自相矛盾。
    */
   const contextLimit = computed(() => effectiveContextLimit(declaredContextWindow.value));

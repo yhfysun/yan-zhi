@@ -46,10 +46,11 @@ export function mainlineMessages(messages: Message[]): Message[] {
 }
 
 /**
- * 计算「可用预算」：**有效可用窗口** − 输出预留。
+ * 「有效窗口」—— 标称窗口里**能真正用好**的那部分（不带输出预留）。
  *
- * ★★★ 2026-10-02 升级 —— 从「按标称窗口算」改为「按**有效窗口**算」。
+ * ★★★ 这是**唯一一处**把「有效比例折扣」作用到窗口上的地方（`buildContextView` 调它）。
  *
+ * ★★★ 为什么「标称 ≠ 可用」（本模块的存在理由）：
  *   用户原话：「很多大模型号称支持 1M，但上下文过多后效果就不好了，最优的上下文就是 258K」。
  *   这个判断有实证支撑（详见 `@yan-zhi/shared/utils/context-policy.ts` 的出处）：
  *   · Chroma Context Rot（18 个前沿模型全部退化，单靠长度掉 7.9%，中段位置掉 30+ 点）
@@ -57,35 +58,22 @@ export function mainlineMessages(messages: Message[]): Message[] {
  *   · RULER：需要多步推理时有效窗口只有标称的 50–65%；
  *   · 社区甜点区：GPT-4.1 / Llama 4 long 均 ≈ **256K**，LongCodeBench 显示多数模型
  *     **256K 之后编程能力已崩** —— 与用户说的 258K 完全吻合。
- *
- *   此前本函数按 `resolveContextWindow(cw)`（标称值，1M 模型 = 1M）算，等于假设
+ *   此前按 `resolveContextWindow(cw)`（标称值，1M 模型 = 1M）算，等于假设
  *   "能塞 1M 就能用好 1M" —— 恰恰是被上述研究证伪的那个假设。
  *   现在：`标称 × 25%`（带 16K 下限）→ 1M 模型落在 ~256K，正对甜点区。
  *
  * ★ 与 `resolveContextWindow` 的分工（三层，别混）：
- *   ① `resolveContextWindow` = "窗口到底多大"（含未声明时 32K 保守兜底）；
- *   ② `effectiveContextLimit` = "其中多少能真正用好"（有效性折扣）；
- *   ③ 本函数 = 算**输出预留**（`reserveOutputTokens`），供组装侧从预算里扣除。
- */
-export function usableContextBudget(contextWindow: unknown, maxTokens?: number): number {
-  const declared = resolveContextWindow(contextWindow);
-  // ⚠️ 两层折扣**绝不能叠加**（2026-10-02 实测踩到）：
-  //   `resolveContextWindow(1M)` 会把"等于建库默认值"的 1M 判为**不可信** → 退回 32K；
-  //   若再乘 25% 就变成 8K → 可用区只剩 4K → **压缩触发得离谱地早**（双重保守）。
-  //   ⇒ 只有在"声明值被信任"时才叠加有效性折扣；已退回 SAFE 兜底时，说明我们本就按小窗口算了，
-  //     该值**本身就是**有效值。
-  //   ★ 这与 `resolveContextWindow` 用的是同一套 sentinel 语义（它内部也按 `=== 默认值` 判不可信），
-  //     不是新引入的隐式约定。
-  const effective = effectiveWindowOf(contextWindow);
-  const reserve = resolveOutputReserve(maxTokens);
-  return Math.max(4096, effective - reserve);
-}
-
-/**
- * 「有效窗口」—— 标称窗口里**能真正用好**的那部分（不带输出预留）。
+ *   ① `resolveContextWindow`  = "窗口到底多大"（含未声明时 32K 保守兜底）；
+ *   ② `effectiveContextLimit` = "其中多少能真正用好"（有效性折扣，定义在 shared）；
+ *   ③ 本函数                  = 把 ① 喂给 ② 并**处理 sentinel 语义**（见下）。
  *
- * ★ 这是唯一一处把「有效比例折扣」作用到窗口上的地方；`usableContextBudget` 与
- *   `buildContextView` 都调它，避免"同一件事两处各写一份"。
+ * ⚠️ 两层折扣**绝不能叠加**（2026-10-02 实测踩到）：
+ *   `resolveContextWindow(1M)` 会把"等于建库默认值"的 1M 判为**不可信** → 退回 32K；
+ *   若再乘 25% 就变成 8K → 可用区只剩 4K → **压缩触发得离谱地早**（双重保守）。
+ *   ⇒ 只有在"声明值被信任"时才叠加有效性折扣；已退回 SAFE 兜底时，说明我们本就按小窗口算了，
+ *     该值**本身就是**有效值。
+ *   ★ 这与 `resolveContextWindow` 用的是同一套 sentinel 语义（它内部也按 `=== 默认值` 判不可信），
+ *     不是新引入的隐式约定。
  */
 export function effectiveWindowOf(contextWindow: unknown): number {
   const declared = resolveContextWindow(contextWindow);

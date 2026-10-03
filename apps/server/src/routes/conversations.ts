@@ -1,10 +1,11 @@
 import { Router, Request, Response } from 'express';
 import { v4 as uuid } from 'uuid';
 import { authMiddleware } from '../auth.js';
-import { db, MESSAGE_LIST_COLS } from '../db.js';
+import { db, MESSAGE_LIST_COLS, clearMessageSummaries } from '../db.js';
 import { normalizePermissionMode } from '../tool-permission.js';
 import { writeTaskPlanFile, seedTaskPlanFromFile } from '../services/task-plan-file.js';
 import { WF_TOOL_PREFIX, MAX_WF_TOOLS_PER_CONVERSATION } from '../services/workflow-tool-registry.js';
+import { clearAuthorization } from '../services/path-guard.js';
 
 const router = Router();
 router.use(authMiddleware);
@@ -191,6 +192,12 @@ router.delete('/:id', (req: Request, res: Response) => {
   const existing = db.prepare('SELECT * FROM conversation WHERE id = ? AND user_id = ?').get(cid, userId);
   if (!existing) { res.status(404).json({ error: '会话不存在' }); return; }
   db.prepare('DELETE FROM message WHERE conversation_id = ?').run(cid);
+  // ★ 压缩摘要随会话一起清（2026-10-03）：message_summary 是 message 的派生物，
+  //   会话删了却留下摘要行 = 孤儿数据（且会用同一个 conversation_id 在下条同 id 会话里被读到）。
+  //   ★ 同理清内存里的越界授权白名单（path-guard 的会话级状态），否则删会话后残留一小块内存。
+  //   两处都是「新增了带 conversation_id 的状态，却没在删除路径上一起收」——同一类漏接线。
+  clearMessageSummaries(cid);
+  clearAuthorization(cid);
   db.prepare('DELETE FROM conversation WHERE id = ?').run(cid);
   res.json({ ok: true });
 });
