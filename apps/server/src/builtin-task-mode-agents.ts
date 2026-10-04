@@ -290,6 +290,42 @@ api_tts_voices 返回 capacityNote 说明音色数不够时，**如实告诉用�
 - 需要参考播客/有声书里的语气处理时可委派 pageAgent 查资料，但不要写死"某主播就是对的"。
 - 输出用中文，给结论与文件路径，不要把整段台词贴进对话。`;
 
+// ===== 小说推文助手 =====
+export const NOVEL_TUIWEN_AGENT_ID = 'a_builtin_novel_tuiwen_agent';
+export const NOVEL_TUIWEN_AGENT_BUILTIN_TOOLS = [
+  ...COMMON_FILE_TOOLS,
+  // 一键出片（改编→TTS→ffmpeg 合成随包管线）
+  'novel_tuiwen',
+  'python_exec',
+  // 背景视频：链接下载（yt-dlp）+ 规格统一
+  ...COMMON_MEDIA_FETCH_TOOLS,
+  // 选书/取文：授权平台页面的浏览与抓取委派 pageAgent
+  'call_agent', 'list_sub_agents', 'spawn_subagent', 'list_models',
+  ...COMMON_SPACE_TOOLS,
+  ...COMMON_MEMORY_TOOLS,
+  ...COMMON_TALK_TOOLS,
+];
+export const NOVEL_TUIWEN_AGENT_SKILL_IDS = ['skill_novel_tuiwen'];
+
+export const NOVEL_TUIWEN_AGENT_SYSTEM_PROMPT = `你是「小说推文助手」（novelTuiwenAgent），负责小说推文的**全自动产线**：授权平台选书 → 过滤打分 → 取授权正文 → 出片。用户只需首次在授权平台登录，之后每轮可以零输入。
+
+## 第一原则
+**书源必须来自推文授权平台（巨日禄/番茄推文等已授权渠道），正文取不到就问用户要，禁止爬盗版小说站。** 这是唯一的合规红线，没有例外。
+
+## 流程
+1. **选书（自动）**：委派 pageAgent 打开授权平台榜单/书架页（登录态由浏览器持久化；未登录时 ask_user 请用户在浏览器面板登录一次），抓书目清单（书名/题材/简介/热度）。
+2. **过滤打分（自动）**：按 题材热度 / 开头钩子强度 / 同书竞争度（同书视频少优先）打分排序，取 Top1-3，**告知用户选了什么、为什么**，然后直接继续，不等确认。
+3. **取授权正文（自动）**：从授权平台取该书推广章节正文，file_write 落盘 novel/<书名>/ch01.txt。平台不提供全文时用 ask_user 向用户要正文——**不得**自己去盗版站爬。
+4. **背景视频（自动）**：用户给过链接 → api_media_fetch { url, kind:"video", category:"source" } 下载（yt-dlp 缺失先 media_install_ytdlp）；本地文件直接用路径；都没有 → 省略 bg_video 用占位画面，不要干等。
+5. **出片**：novel_tuiwen { chapter: "novel/<书名>/ch01.txt", title: "<书名>", bg_video: "..." }。voice 默认 zh-CN-YunxiNeural；用户要女声用 zh-CN-XiaoyiNeural。
+6. **回报**：选了什么书、为什么、成片路径（03-output）。多章则逐章出片。
+
+## 硬约束（违反即失败）
+- 只发布已授权书目；成片 4:3 画面（novel_tuiwen 已固定，不要改规格）。
+- 出片报缺 edge-tts 时，指引执行 pip install edge-tts -i https://pypi.org/simple 后重试。
+- 批量产片先 task_plan/task_step 登记进度；用户要求每日自动跑时，建 scheduled_task（cron + prompt 引用本 skill）。
+- 平台页面结构变化导致抓取失败时，如实报告并请用户确认页面，不要静默编造书目。输出用中文。`;
+
 /**
  * 四个任务模式专属智能体的 seed 条目（由 db.ts 展开进 seedAgents）。
  *
@@ -367,5 +403,22 @@ export const builtinTaskModeAgentDefs: Array<Record<string, unknown>> = [
     agent_kind: 'main',
     category: '任务模式',
     config_json: JSON.stringify({ maxReActSteps: 40 }),
+  },
+  {
+    id: NOVEL_TUIWEN_AGENT_ID,
+    name: '小说推文助手',
+    description:
+      '任务模式「小说推文」专属：全自动产线——授权平台选书 → 题材/钩子/竞争度过滤打分 → 取已授权正文落盘 → api_media_fetch 下载背景视频 → novel_tuiwen 一键合成 4:3 有声推文成片（标题+字幕+配音）',
+    type: 'harness',
+    is_builtin: 1,
+    builtin_tool_ids: JSON.stringify(NOVEL_TUIWEN_AGENT_BUILTIN_TOOLS),
+    skill_ids: JSON.stringify(NOVEL_TUIWEN_AGENT_SKILL_IDS),
+    // pageAgent：授权平台榜单/书架浏览与取文
+    sub_agent_ids: JSON.stringify([PAGE_AGENT_ID]),
+    system_prompt: NOVEL_TUIWEN_AGENT_SYSTEM_PROMPT,
+    force_sync: true,
+    agent_kind: 'main',
+    category: '任务模式',
+    config_json: JSON.stringify({ maxReActSteps: 50 }),
   },
 ];

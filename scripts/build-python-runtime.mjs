@@ -185,6 +185,8 @@ const DEPS = [
   'dnspython==2.6.1',
   'PyMuPDF==1.24.10',
   'xlrd==2.0.1',
+  // novel_tuiwen（有声小说推文视频）TTS 依赖
+  'edge-tts==7.0.0',
 ];
 
 async function main() {

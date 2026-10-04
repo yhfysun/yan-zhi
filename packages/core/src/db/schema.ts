@@ -824,6 +824,16 @@ export const BUILTIN_SKILLS_SEED = [
     bodyMd: `# OpenSpec 实施变更（apply）\n\n按变更的 tasks 开始/继续实施。\n\n## 流程\n读取变更 tasks → 逐项实现 → 标记完成\n\n详见 .claude/skills/openspec-apply-change/SKILL.md`,
   },
   {
+    id: 'skill_novel_tuiwen',
+    name: '小说推文视频',
+    description: '有声小说推文视频生成：小说章节文本 → 自动改编口播脚本 → Edge-TTS 配音 → 与背景视频（修驴蹄/骑单车等解压素材）合成 4:3 成片（顶部标题+逐句字幕）。用 novel_tuiwen 工具一键出片，可配合定时任务每日产片。',
+    source: 'builtin',
+    triggers: ['小说推文', '有声小说', '推文视频', '小说视频', '小说成片', '推文出片'],
+    category: '自动化',
+    author: 'yan-zhi',
+    bodyMd: `# 小说推文视频（有声小说成片）\n\n全自动产线：授权平台选书 → 过滤打分 → 取授权正文 → 出片。用户只需首次登录授权平台（登录态持久化），之后每轮可零输入。\n\n## 流程\n1. 选书（自动）：在推文**授权平台**（巨日禄/番茄推文等，仅限已授权渠道，禁止爬未授权小说站）用浏览器工具打开榜单/书架页，抓书目清单（书名/题材/简介）。\n2. 过滤（自动）：按 题材热度 / 开头钩子强度 / 同书竞争度（同书视频少优先）打分排序，取 Top1-3；向用户报告选了什么，无需确认直接继续。\n3. 取文（自动）：从授权平台取该书的推广章节正文（pageAgent/browser_get_page_content；平台提供全文导出则用之）。⚠️ 平台不提供全文时如实告知并 ask_user 要正文，**不得**去盗版站爬。\n4. 正文落盘：file_write 写成 <工作目录>/novel/<书名>/ch01.txt。\n5. 背景视频（自动）：用户给过链接 → api_media_fetch { url, kind: "video", category: "source" } 下载（yt-dlp 缺失先 media_install_ytdlp）；本地文件直接用；都没有 → 省略用占位画面。\n6. 出片：novel_tuiwen { chapter: "novel/<书名>/ch01.txt", title: "<书名>", bg_video: "..." }\n7. 回报：选了什么书、为什么、成片路径（deliverable）。\n\n## 要点\n- 成片规格对齐推文赛道：4:3 画面，别 16:9、别关联中视频、别发小红书（封号）。\n- **只发布已授权书目**：选书/取文仅限授权平台渠道，未授权搬运侵权。\n- 批量：多章逐章出片；配 scheduled_task（cron 每日）+ 授权平台登录态 → 每天自动出 N 条。\n- 首次使用若报缺 edge-tts，按提示执行 pip install edge-tts -i https://pypi.org/simple 后重试。\n\n详见 .claude/skills/novel-tuiwen/SKILL.md`,
+  },
+  {
     id: 'skill_desktop_app_automation',
     name: '桌面应用自动化',
     description: '用 computer-use 插件操作本机桌面应用（微信/QQ/邮件/文件管理等任意有窗口的软件）与系统管理（安装/卸载应用、强制删除残留、注册表清理）：通用 SOP = 找窗口→激活→核对操作对象→截图定位→按钮优先提交→截图核验；含各应用发送快捷键差异（微信 Ctrl+Enter/发送按钮，Enter 需开启回车发送）、纠错时效（微信 2 分钟撤回）与资金操作红线（红包/转账只提醒不代操作）。',

@@ -155,6 +155,33 @@ export const TASK_TYPES: TaskTypeSpec[] = [
     ],
   },
   {
+    id: 'novel_tuiwen',
+    label: '小说推文',
+    summary: '授权选书 → 过滤打分 → 取正文 → 配音出片（全自动）',
+    guide: '我会自动在推文授权平台选书、按热度/钩子/竞争度过滤打分、取已授权章节正文、下载背景视频，然后一键合成 4:3 推文成片；你只需首次在授权平台登录一次。',
+    agentId: 'a_builtin_novel_tuiwen_agent',
+    skillIds: ['skill_novel_tuiwen'],
+    steps: [
+      {
+        title: '选书',
+        detail: '在推文授权平台（巨日禄/番茄推文等，仅限已授权渠道，禁止爬未授权小说站）用浏览器打开榜单/书架页，抓书目清单（书名/题材/简介）',
+        output: 'none',
+      },
+      { title: '过滤打分', detail: '按题材热度 / 开头钩子强度 / 同书竞争度（同书视频少优先）打分排序，取 Top1-3 并告知用户选了什么、为什么', output: 'none' },
+      {
+        title: '取授权正文',
+        detail: '从授权平台取该书的推广章节正文并落盘 novel/<书名>/ch01.txt；平台不提供全文时用 ask_user 向用户要正文，禁止去盗版站爬',
+        output: 'none',
+      },
+      {
+        title: '准备背景视频',
+        detail: '用户给过链接 → api_media_fetch { url, kind:"video", category:"source" } 下载（yt-dlp 缺失先 media_install_ytdlp）；本地文件直接用；都没有 → 省略背景用占位画面',
+        output: 'none',
+      },
+      { title: '合成出片', detail: 'novel_tuiwen { chapter, title, bg_video } 生成 4:3 (1080x1440) 成片（顶部标题+逐句字幕+配音），最终交付进 03-output 并回报路径', output: '03-output' },
+    ],
+  },
+  {
     id: 'translate',
     label: '翻译',
     summary: '原文 → 语种术语 → 分批翻译 → 校验',
@@ -466,6 +493,7 @@ export function formatTaskTypeContext(id?: string | null, confirmBatchSize = DEF
 /** 各类型需要哪类素材（决定要不要注入「素材获取规则」） */
 const MATERIAL_NEEDS: Record<string, Array<'source' | 'reference' | 'video'>> = {
   novel_rewrite: ['source'],
+  novel_tuiwen: ['source', 'video'],
   translate: ['source', 'reference'],
   // 脚本/短剧都常要真实空镜或参考视频 → 需要"视频素材从哪来"这条规则
   script_copy: ['source', 'reference', 'video'],
