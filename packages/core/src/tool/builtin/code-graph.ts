@@ -9,6 +9,7 @@ import type { BuiltInTool, ToolContext } from '../types';
 import type { McpCallResult } from '../../mcp/client';
 import { getPlatformAdapter } from '../../platform/types';
 import { walkCodeFiles, extractDeclarations, extractImportAliases, type SymbolDecl } from './code-symbols';
+import { tryParseAst } from './code-ast';
 import { resolveToolPath } from './fs-walk';
 
 const MAX_FILE_BYTES = 512 * 1024;
@@ -36,8 +37,8 @@ function topEntries(map: Map<string, number>, n: number): Array<[string, number]
 }
 
 export class CodeGraphTool implements BuiltInTool {
-  name = 'code_graph';
-  description = '构建仓库级符号依赖图（代码图）：给定 symbol 返回「定义 + 上游 callers（谁在用它）+ 下游 callees（它在用谁）」，不给 symbol 则返回引用最多的 hub 符号概览。调用粒度为方法级，import 别名已归一化。用于评估改动影响面、理清模块调用链（"改这个函数会牵连哪些地方"）。启发式图：动态调用/反射/跨语言调用不可见，精确语义导航仍以 IDE 为准。';
+    name = 'code_graph';
+    description = '构建仓库级符号依赖图（代码图）：给定 symbol 返回「定义 + 上游 callers（谁在用它）+ 下游 callees（它在用谁）」，不给 symbol 则返回引用最多的 hub 符号概览。调用粒度为方法级，import 别名已归一化。用于评估改动影响面、理清模块调用链（"改这个函数会牵连哪些地方"）。JS/TS 文件走 TypeScript AST 精确调用边；其余语言/浏览器端为词法启发式。动态调用/反射/跨语言调用不可见，精确语义导航仍以 IDE 为准。';
 
   inputSchema = {
     type: 'object',
@@ -70,16 +71,28 @@ export class CodeGraphTool implements BuiltInTool {
     const files = await walkCodeFiles(fs, root, { maxDepth, maxFiles: 1500, globFilter });
 
     // ① 声明索引：name → 全部声明；file → 该文件声明（按行序，供"最近外层声明"定位）
+    // ★ TS 编译器可用时逐文件走 AST 精确解析（含调用边缓存），否则回退逐行启发式
     const symbolDecls = new Map<string, SymbolDecl[]>();
     const fileDecls = new Map<string, SymbolDecl[]>();
+    const astByFile = new Map<string, NonNullable<Awaited<ReturnType<typeof tryParseAst>>>>();
     for (const file of files) {
       let content: string;
       try { content = await fs.readFile(file); } catch { continue; }
       if (content.length > MAX_FILE_BYTES || content.indexOf('\u0000') !== -1) continue;
-      const decls = extractDeclarations(file, content).filter((d) =>
-        // 普通局部 const/let/var 不进全局图（局部状态不是可导航符号）；导出的 const 进
-        !(d.kind === 'const' && !d.exported) && !isNoiseSymbol(d.name),
-      );
+      const ext = (file.split('.').pop() || '').toLowerCase();
+      const ast = await tryParseAst(content, file, ext);
+      let decls: SymbolDecl[];
+      if (ast) {
+        astByFile.set(file, ast);
+        decls = ast.decls
+          .map((d) => ({ name: d.name, file, line: d.line, kind: d.kind, text: d.signature, exported: d.exported }))
+          .filter((d) => !(d.kind === 'const' && !d.exported) && !isNoiseSymbol(d.name));
+      } else {
+        decls = extractDeclarations(file, content).filter((d) =>
+          // 普通局部 const/let/var 不进全局图（局部状态不是可导航符号）；导出的 const 进
+          !(d.kind === 'const' && !d.exported) && !isNoiseSymbol(d.name),
+        );
+      }
       if (decls.length === 0) continue;
       fileDecls.set(file, decls);
       for (const d of decls) {
@@ -92,6 +105,7 @@ export class CodeGraphTool implements BuiltInTool {
 
     // ② 建边：caller(最近外层声明) → callee(仓库内符号)，值 = 引用次数
     //    别名先归一化：本文件未声明 B 且 B 是 import 别名 → 边指向原符号 A
+    //    ★ AST 可用时用真正的调用表达式（谁包含这个 CallExpression），caller 不再靠行序猜
     const outEdges: EdgeMap = new Map();
     const inEdges: EdgeMap = new Map();
     const bump = (m: EdgeMap, a: string, b: string) => {
@@ -99,8 +113,37 @@ export class CodeGraphTool implements BuiltInTool {
       if (inner) inner.set(b, (inner.get(b) || 0) + 1);
       else m.set(a, new Map([[b, 1]]));
     };
+    const normalizeCallee = (name: string, localNames: Set<string>, aliases: Map<string, string>): string | null => {
+      if (known.has(name)) return name;
+      if (!localNames.has(name) && aliases.has(name) && known.has(aliases.get(name)!)) return aliases.get(name)!;
+      return null;
+    };
     const TOKEN_RE = /[A-Za-z_$][\w$]{1,64}/g;
     for (const [file, decls] of fileDecls) {
+      const base = file.split('/').pop() || file;
+      const ast = astByFile.get(file);
+      if (ast) {
+        const localNames = new Set(decls.map((d) => d.name));
+        const aliases = new Map<string, string>();
+        for (const im of ast.imports) {
+          for (const a of im.aliasMap) aliases.set(a.local, a.origin);
+          if (im.defaultName) {
+            const b = (im.spec.split('/').pop() || '').replace(/\.(ts|tsx|js|jsx|mjs|cjs|vue)$/, '');
+            if (b && b !== 'index') aliases.set(im.defaultName, b);
+          }
+        }
+        for (const call of ast.calls) {
+          const callee = normalizeCallee(call.callee.replace(/^new /, ''), localNames, aliases);
+          if (!callee) continue;
+          const callerKey = call.caller === '<module>' || call.caller === '<anonymous>'
+            ? `(module)@${base}`
+            : `${call.caller}@${base}`;
+          bump(outEdges, callerKey, callee);
+          bump(inEdges, callee, callerKey);
+        }
+        continue;
+      }
+      // 启发式回退：逐行词法扫描（见下）
       let content: string;
       try { content = await fs.readFile(file); } catch { continue; }
       const localNames = new Set(decls.map((d) => d.name));
@@ -115,8 +158,8 @@ export class CodeGraphTool implements BuiltInTool {
         if (/^\s*(?:\/\/|\/\*|\*|#|<!--)/.test(lines[i])) continue;
         const isImportLine = /^\s*(?:import|export)\b/.test(lines[i]);
         const callerKey = enclosing
-          ? `${enclosing.name}@${file.split('/').pop()}`
-          : `(module)@${file.split('/').pop()}`;
+          ? `${enclosing.name}@${base}`
+          : `(module)@${base}`;
         let m: RegExpExecArray | null;
         TOKEN_RE.lastIndex = 0;
         while ((m = TOKEN_RE.exec(lines[i])) !== null) {

@@ -1,8 +1,11 @@
 // code_outline 内置工具 — JS/TS/Vue 源码结构大纲（imports/classes/functions/interfaces，带行号）
+// 2026-10-03 升级（代码树解析）：TypeScript Compiler API 可用时走 **AST 精确解析**
+// （多行签名/修饰符/箭头函数/对象方法都能识别），不可用（浏览器端）回退原逐行启发式。
 import type { BuiltInTool, ToolContext } from '../types';
 import type { McpCallResult } from '../../mcp/client';
 import { getPlatformAdapter } from '../../platform/types';
 import { resolveToolPath } from './fs-walk';
+import { tryParseAst } from './code-ast';
 
 const MAX_SIG_LEN = 120;
 const CONTROL_KEYWORDS = new Set([
@@ -16,9 +19,62 @@ function push(items: OutlineItem[], item: OutlineItem): void {
   items.push(item);
 }
 
+/** 把单行化签名截到大纲宽度 */
+function trimSig(sig: string): string {
+  return sig.length > MAX_SIG_LEN ? `${sig.slice(0, MAX_SIG_LEN)}...` : sig;
+}
+
+/** AST 大纲输出（与启发式同版式，供上层无感切换） */
+function formatAstOutline(
+  filePath: string,
+  totalLines: number,
+  ast: { decls: Array<{ name: string; line: number; kind: string; signature: string; exported: boolean; parent?: string }>; imports: Array<{ line: number; spec: string; defaultName?: string; namespaceName?: string; names: string[] }> },
+): string {
+  const imports: OutlineItem[] = ast.imports.map((im) => ({
+    line: im.line,
+    sig: `import ${(im.defaultName ? im.defaultName : im.namespaceName ? `* as ${im.namespaceName}` : '')}${im.names.length ? `${im.defaultName || im.namespaceName ? ', ' : ''}{ ${im.names.join(', ')} }` : ''}${im.defaultName || im.namespaceName || im.names.length ? ' from ' : ''}'${im.spec}'`,
+  }));
+  const classes: OutlineItem[] = [];
+  const functions: OutlineItem[] = [];
+  const types: OutlineItem[] = [];
+  const consts: OutlineItem[] = [];
+  for (const d of ast.decls) {
+    const item: OutlineItem = { line: d.line, sig: trimSig(d.signature) };
+    if (d.kind === 'class') classes.push(item);
+    else if (d.kind === 'interface' || d.kind === 'type' || d.kind === 'enum') types.push(item);
+    else if (d.kind === 'function' || d.kind === 'function*') functions.push(item);
+    else if (d.kind === 'method' || d.kind === 'get' || d.kind === 'set') {
+      const host = classes.find((c) => c.sig.startsWith(`${d.parent || ''}`)) // 按父名找宿主
+        || classes.find((c) => d.parent && c.sig.includes(d.parent));
+      if (host && d.parent) (host.children ||= []).push({ line: d.line, sig: trimSig(d.signature) });
+      else functions.push(item);
+    } else if (d.kind === 'const' && d.exported) consts.push(item);
+  }
+
+  const parts: string[] = [`${filePath} (${totalLines} lines, AST 解析)`];
+  const section = (title: string, items: OutlineItem[], render: (item: OutlineItem, indent: string) => string) => {
+    if (items.length === 0) return;
+    parts.push(`${title} (${items.length}):`);
+    for (const item of items) parts.push(render(item, '  '));
+  };
+
+  section('Imports', imports, (it, ind) => `${ind}L${it.line}: ${it.sig}`);
+  section('Classes', classes, (it, ind) => {
+    const head = `${ind}L${it.line}: ${it.sig}`;
+    const methods = (it.children || []).map((c) => `    L${c.line}: ${c.sig}`);
+    return methods.length > 0 ? `${head}\n${methods.join('\n')}` : head;
+  });
+  section('Functions', functions, (it, ind) => `${ind}L${it.line}: ${it.sig}`);
+  section('Types', types, (it, ind) => `${ind}L${it.line}: ${it.sig}`);
+  section('Exported consts', consts, (it, ind) => `${ind}L${it.line}: ${it.sig}`);
+
+  if (parts.length === 1) parts.push('(未识别出结构 — 可能不是 JS/TS 源码，或全部为顶层语句)');
+  return parts.join('\n');
+}
+
 export class CodeOutlineTool implements BuiltInTool {
   name = 'code_outline';
-  description = '展示 JS/TS/Vue/MJS 源文件的结构大纲：imports、class（及其方法）、function、箭头函数、interface/type/enum 等，每条标注行号。比整文件读取便宜很多，先用此工具理解结构，再用 file_read 看具体行范围。';
+  description = '展示 JS/TS/Vue/MJS 源文件的结构大纲：imports、class（及其方法）、function（含箭头函数）、interface/type/enum、导出常量，每条标注行号。服务端走 TypeScript AST 精确解析（多行签名/装饰器方法均可识别）。比整文件读取便宜很多，先用此工具理解结构，再用 file_read 看具体行范围。';
 
   inputSchema = {
     type: 'object',
@@ -48,6 +104,15 @@ export class CodeOutlineTool implements BuiltInTool {
     }
 
     const ext = (filePath.split('.').pop() || '').toLowerCase();
+    const totalLines = source.split('\n').length;
+
+    // ── 快路径：TypeScript 编译器可用 → AST 精确大纲 ──
+    const ast = await tryParseAst(source, filePath, ext);
+    if (ast) {
+      return { content: [{ type: 'text', text: formatAstOutline(filePath, totalLines, ast) }] };
+    }
+
+    // ── 回退：逐行启发式（浏览器端 / 编译器不可用时） ──
     let offset = 0;
     let body = source;
 
@@ -55,7 +120,7 @@ export class CodeOutlineTool implements BuiltInTool {
     if (ext === 'vue') {
       const m = source.match(/<script[^>]*>([\s\S]*?)<\/script>/);
       if (!m) {
-        return { content: [{ type: 'text', text: `(该 .vue 文件无 <script> 块，仅模板) ${filePath} (${source.split('\n').length} lines)` }] };
+        return { content: [{ type: 'text', text: `(该 .vue 文件无 <script> 块，仅模板) ${filePath} (${totalLines} lines)` }] };
       }
       offset = source.slice(0, m.index!).split('\n').length; // script 内容首行的行号 - 1
       body = m[1];
@@ -74,7 +139,7 @@ export class CodeOutlineTool implements BuiltInTool {
       if (!line) continue;
       if (line.startsWith('//') || line.startsWith('*') || line.startsWith('/*')) continue;
       const lineNo = i + 1 + offset;
-      const sig = line.length > MAX_SIG_LEN ? `${line.slice(0, MAX_SIG_LEN)}...` : line;
+      const sig = trimSig(line);
 
       // import
       const im = line.match(/^import\s[^;]*?from\s*['"]([^'"]+)['"]/) || line.match(/^import\s*['"]([^'"]+)['"]/);
@@ -117,7 +182,7 @@ export class CodeOutlineTool implements BuiltInTool {
       if (en) { push(types, { line: lineNo, sig }); continue; }
     }
 
-    const parts: string[] = [`${filePath} (${source.split('\n').length} lines)`];
+    const parts: string[] = [`${filePath} (${totalLines} lines)`];
     const section = (title: string, items: OutlineItem[], render: (item: OutlineItem, indent: string) => string) => {
       if (items.length === 0) return;
       parts.push(`${title} (${items.length}):`);

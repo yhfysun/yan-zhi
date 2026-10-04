@@ -10,12 +10,37 @@ import type { BuiltInTool, ToolContext } from '../types';
 import type { McpCallResult } from '../../mcp/client';
 import { getPlatformAdapter } from '../../platform/types';
 import { walkCodeFiles, extractDeclarations, extractImportAliases, type SymbolDecl } from './code-symbols';
+import { tryParseAst } from './code-ast';
 import { resolveToolPath } from './fs-walk';
 
 const MAX_DEFINITIONS = 20;
 const MAX_REFERENCES = 60;
 
 interface Hit { path: string; line: number; text: string; via?: string }
+
+/** 单文件的声明 + 别名提取：TS 编译器可用走 AST 精确解析，否则回退启发式（三端行为一致） */
+async function extractDeclsAndAliases(
+  filePath: string,
+  content: string,
+): Promise<{ decls: SymbolDecl[]; aliases: Map<string, string> }> {
+  const ext = (filePath.split('.').pop() || '').toLowerCase();
+  const ast = await tryParseAst(content, filePath, ext);
+  if (ast) {
+    const decls: SymbolDecl[] = ast.decls.map((d) => ({
+      name: d.name, file: filePath, line: d.line, kind: d.kind, text: d.signature, exported: d.exported,
+    }));
+    const aliases = new Map<string, string>();
+    for (const im of ast.imports) {
+      for (const a of im.aliasMap) aliases.set(a.local, a.origin);
+      if (im.defaultName) {
+        const base = (im.spec.split('/').pop() || '').replace(/\.(ts|tsx|js|jsx|mjs|cjs|vue)$/, '');
+        if (base && base !== 'index') aliases.set(im.defaultName, base);
+      }
+    }
+    return { decls, aliases };
+  }
+  return { decls: extractDeclarations(filePath, content), aliases: extractImportAliases(content) };
+}
 
 export class CodeRefsTool implements BuiltInTool {
   name = 'code_refs';
@@ -63,14 +88,17 @@ export class CodeRefsTool implements BuiltInTool {
       try { content = await fs.readFile(filePath); } catch { continue; }
       if (content.length > 1024 * 1024 || content.indexOf('\u0000') !== -1) continue;
 
-      // 1) 定义候选（共享声明规则，含 kind 标注）
-      const decls: SymbolDecl[] = extractDeclarations(filePath, content)
-        .filter((d) => d.name === symbol);
-      for (const d of decls) {
+      // 1) 定义候选（TS 编译器可用走 AST，否则启发式；含 kind 标注）
+      const { decls, aliases: fileAliases } = await extractDeclsAndAliases(filePath, content);
+      const matched = decls.filter((d) => d.name === symbol);
+      for (const d of matched) {
         if (definitions.length < MAX_DEFINITIONS) definitions.push({ path: d.file, line: d.line, text: d.text, kind: d.kind });
         else { truncated = true; break; }
       }
-      const declLines = new Set(decls.map((d) => d.line - 1));
+      // ★ 排除规则收紧（2026-10-03 集成自测）：只排除**本符号自己**的声明行。
+      //   此前排除"任何声明所在行"—— `const out = calc(1, 2)` 里 out 的声明会把
+      //   calc 的真实引用行一并吞掉（AST 启发式都会记 const 声明，误杀面很大）。
+      const declLines = new Set(decls.filter((d) => d.name === symbol).map((d) => d.line - 1));
 
       // 2) 本名引用（排除定义行）
       const lines = content.split('\n');
@@ -84,7 +112,7 @@ export class CodeRefsTool implements BuiltInTool {
       if (references.length >= MAX_REFERENCES) { truncated = true; break; }
 
       // 3) 别名感知：本文件 import { A as B } 把 B 绑到 symbol A → 统计 B 的使用
-      const aliases = extractImportAliases(content);
+      const aliases = fileAliases;
       const aliasNames = [...aliases.entries()].filter(([, origin]) => origin === symbol).map(([local]) => local);
       for (const alias of aliasNames) {
         const aliasPattern = new RegExp(`(?<![\\w$.])${alias.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\w$])`, 'g');

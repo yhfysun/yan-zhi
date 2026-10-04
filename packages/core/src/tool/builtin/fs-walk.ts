@@ -110,12 +110,21 @@ export async function walkFiles(fs: FsAdapter, root: string, opts: WalkOptions =
     if (fs.listDirEntries) {
       try { return await fs.listDirEntries(dir); } catch { return []; }
     }
-    // 无 listDirEntries 的适配器：readDir + 尾部斜杠探测目录
+    // 无 listDirEntries 的适配器：readDir + 目录探测
+    // ★ 目录探测不能用 `fs.exists(p + '/')`（Windows 上对**文件**加尾斜杠 access 也成功，
+    //   2026-10-03 集成自测实测：calc.ts 被判成目录 → 递归进文件 → readDir 失败 → 全树返回空）。
+    //   用 stat（适配器可选实现）优先；都没有就用「readDir 探测」——对文件会抛错、对目录成功，
+    //   这个语义在两端都成立。
     const names = await fs.readDir(dir).catch(() => [] as string[]);
     const out: DirEntryInfo[] = [];
     for (const name of names) {
       const p = joinPath(dir, name);
-      const isDir = await fs.exists(`${p}/`).catch(() => false);
+      let isDir = false;
+      if (fs.stat) {
+        try { isDir = (await fs.stat(p)).isDir; } catch { isDir = false; }
+      } else {
+        isDir = await fs.readDir(p).then(() => true).catch(() => false);
+      }
       out.push({ name, path: p, isDir });
     }
     return out;

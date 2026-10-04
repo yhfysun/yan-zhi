@@ -11,6 +11,8 @@ export { CodeSearchTool } from './code-search';
 export { CodeOutlineTool } from './code-outline';
 export { CodeRefsTool } from './code-refs';
 export { CodeGraphTool } from './code-graph';
+export { CodeDiagnosticsTool, runCodeDiagnostics, invalidateDiagnosticsCache, type DiagnosticsRun } from './code-diagnostics';
+export { loadTsCompiler, tryParseAst, parseWithTs, type AstFileSummary } from './code-ast';
 export { JsExecTool } from './js-exec';
 export { setJsExecDataBridge, type JsDataBridge } from './js-exec';
 export { PortScanTool } from './port-scan';
@@ -57,6 +59,7 @@ import { CodeSearchTool } from './code-search';
 import { CodeOutlineTool } from './code-outline';
 import { CodeRefsTool } from './code-refs';
 import { CodeGraphTool } from './code-graph';
+import { CodeDiagnosticsTool } from './code-diagnostics';
 import { JsExecTool } from './js-exec';
 import { PortScanTool } from './port-scan';
 import { LanScanTool } from './net-scan';
@@ -98,6 +101,9 @@ export function registerBuiltInTools(registry: ToolRegistry): void {
   registry.register(new CodeRefsTool());
   // 仓库级符号依赖图（代码图：callers/callees/影响面评估）
   registry.register(new CodeGraphTool());
+  // 静态诊断（tsc 类型检查 / eslint / node --check）—— 编码反馈闭环的"验"半边：
+  // 配合 llm-task-manager 的编辑后自动诊断钩子，改完代码当场发现类型/语法错误。
+  registry.register(new CodeDiagnosticsTool());
   registry.register(new JsExecTool());
   // 网络安全工具族（port_scan/lan_scan/tcp_send/udp_send/dns_lookup/security）已停止注册（2026-09-14 工具瘦身：
   // 渗透调试向、日常任务用不到，security 还依赖 python 运行时；源码保留，需要时恢复下一行即可）。

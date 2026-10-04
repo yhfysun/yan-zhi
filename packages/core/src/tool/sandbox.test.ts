@@ -49,14 +49,25 @@ describe('runInSandbox 自定义工具沙箱', () => {
     expect(r.content[0].text).toContain('notExists');
   });
 
-  it('沙箱内无 require/process —— 无法逃逸读环境', async () => {
+  it('沙箱内 require 是受限白名单（调用即拒）、无 process/globalThis —— 无法逃逸读环境', async () => {
+    // 2026-10-03 更新：依赖注入功能引入后，沙箱**有意**暴露一个受限 require
+    //（白名单外的名字一律抛错，见 sandbox.ts 注释）。旧断言"typeof require === 'undefined'"
+    // 已过时 —— 真正要守住的是：① process/globalThis 不可见；② require 拿不到任何宿主能力。
     const code = `function probe(input) {
-      try { return String(typeof require) + '/' + String(typeof process); }
-      catch (e) { return 'blocked: ' + e.message; }
+      const parts = [];
+      parts.push('require:' + typeof require);
+      parts.push('process:' + typeof process);
+      parts.push('globalThis:' + typeof globalThis);
+      try { require('node:child' + '_process'); parts.push('require-escape:yes'); }
+      catch (e) { parts.push('require-escape:blocked'); }
+      return parts.join('|');
     }`;
     const r = await runInSandbox(code, 'probe', {}, { timeout: 2000 });
     expect(r.isError).toBeFalsy();
-    expect(r.content[0].text).toMatch(/undefined.*undefined|blocked/);
+    const text = String(r.content[0].text);
+    expect(text).toContain('process:undefined');
+    expect(text).toContain('globalThis:undefined');
+    expect(text).toContain('require-escape:blocked'); // 受限 require 拒绝 node: 内置模块
   });
 
   it('字符串结果原样返回（不包 JSON 引号）', async () => {
