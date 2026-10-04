@@ -874,8 +874,47 @@ function onVideoLoaded() {
   }, 800);
 }
 
-/** `<video>` 加载/解码失败 —— 如实报错（不再静默黑屏） */
-function onVideoError() {
+/** `<video>` 加载/解码失败 —— 如实报错（不再静默黑屏）。
+ *
+ * ★ 2026-10-04 修「安装版 MP4 预览看不了，右键播放却正常」：
+ *   预览走 HTTP 流式（workspace/file-stream），该端点不在授权豁免清单、且受 path-guard
+ *   允许根约束 —— 文件在空间/工作目录之外（或 query 里没带授权码）时返回 403，
+ *   `<video>` 只会报笼统的「格式不支持或损坏」，刷新无效；而右键播放走字节直读
+ *   （桌面端 fs 适配器不受允许根限制），所以正常。
+ *   ⇒ 处置：先 fetch 探测真实状态码给出可读原因；随后对 ≤VIDEO_INLINE_MAX 的文件
+ *     回退 Blob 直读（blob 无 Range，大文件会黑屏，故只对小文件降级）。
+ */
+async function onVideoError() {
+  const src = videoSrc.value;
+  if (src && /^https?:/i.test(src)) {
+    // ① 探测 HTTP 状态：<video> 的 error.code 区分不出 403/404，必须自己问一次
+    try {
+      const resp = await fetch(src, { headers: { Range: 'bytes=0-1' } });
+      if (resp.status === 403) {
+        videoError.value = '服务端拒绝读取该文件（403）：文件可能在工作目录/空间范围之外，或授权未通过';
+      } else if (resp.status === 404) {
+        videoError.value = '文件不存在（404）：可能已被移动或删除';
+      }
+    } catch { /* 探测失败就走下面的通用错误映射 */ }
+    // ② 降级：桌面端按路径直读字节转 Blob（≤80MB），绕开服务端允许根与授权链路
+    try {
+      const { getPlatformAdapter } = await import('@yan-zhi/core');
+      const adapter = getPlatformAdapter();
+      const size = byteSize.value || (await adapter.fs.stat?.(props.file.path))?.size || 0;
+      if (size > 0 && size <= VIDEO_INLINE_MAX) {
+        const b64 = await readFileWithFallback(adapter);
+        const bin = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+        videoSrc.value = URL.createObjectURL(new Blob([bin], { type: videoMime(ext.value) }));
+        videoError.value = ''; // Blob 已接手播放；若 Blob 也失败会再次触发 onVideoError 走通用映射
+        return;
+      }
+      // 超限：保留 ① 的状态码提示，说明为什么不能回退
+      if (!videoError.value) {
+        videoError.value = `视频 ${(size / 1024 / 1024).toFixed(0)}MB 流式读取失败且超过内嵌播放上限`;
+      }
+      return;
+    } catch { /* 直读失败（Web 端等），落到通用错误映射 */ }
+  }
   const el = videoEl.value as HTMLVideoElement | null;
   const code = el?.error?.code;
   const map: Record<number, string> = {
