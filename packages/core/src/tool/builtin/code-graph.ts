@@ -11,6 +11,7 @@ import { getPlatformAdapter } from '../../platform/types';
 import { walkCodeFiles, extractDeclarations, extractImportAliases, type SymbolDecl } from './code-symbols';
 import { tryParseAst } from './code-ast';
 import { resolveToolPath } from './fs-walk';
+import { toolError } from '../result';
 
 const MAX_FILE_BYTES = 512 * 1024;
 const MAX_LIST = 25;
@@ -54,7 +55,7 @@ export class CodeGraphTool implements BuiltInTool {
     const { fs } = getPlatformAdapter();
     const focus = String(args.symbol || '').trim();
     if (focus && !/^[\w$]+$/.test(focus)) {
-      return { content: [{ type: 'text', text: 'Error: symbol 必须是合法标识符' }], isError: true };
+      return toolError('Error: symbol 必须是合法标识符');
     }
     // ★ 相对路径基于**工作目录**解析（见 fs-walk.ts:resolveToolPath）
     const root = resolveToolPath(args.path, ctx?.workspaceDir);
@@ -65,7 +66,7 @@ export class CodeGraphTool implements BuiltInTool {
 
     const rootExists = await fs.exists(root).catch(() => false);
     if (!rootExists) {
-      return { content: [{ type: 'text', text: `Error: directory not found: ${root}` }], isError: true };
+      return toolError(`Error: directory not found: ${root}`);
     }
 
     const files = await walkCodeFiles(fs, root, { maxDepth, maxFiles: 1500, globFilter });

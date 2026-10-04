@@ -3,6 +3,7 @@ import type { McpCallResult } from '../../mcp/client';
 import { getPlatformAdapter } from '../../platform/types';
 import { decodeTextBytesAs, base64ToBytes } from '@yan-zhi/shared';
 import { resolveToolPath } from './fs-walk';
+import { toolError } from '../result';
 
 const EXCEL_EXTENSIONS = ['xlsx', 'xls', 'csv'];
 const WORD_EXTENSIONS = ['docx'];
@@ -124,14 +125,14 @@ export class FileReadTool implements BuiltInTool {
     //   （这正是本项目反复踩的"校验对象被上游改写"同类问题：**先校验原值，再解析**。）
     const rawPath = typeof args.path === 'string' ? args.path.trim() : '';
     if (!rawPath) {
-      return { content: [{ type: 'text', text: 'Error: path is required' }], isError: true };
+      return toolError('Error: path is required');
     }
     // ★ 相对路径基于**工作目录**解析（此前直接交给 fs → 落到进程 cwd → 报文件不存在）
     const path = resolveToolPath(rawPath, ctx?.workspaceDir);
 
     const exists = await fs.exists(path);
     if (!exists) {
-      return { content: [{ type: 'text', text: `Error: file not found: ${path}` }], isError: true };
+      return toolError(`Error: file not found: ${path}`);
     }
 
     const ext = path.split('.').pop()?.toLowerCase() || '';
@@ -148,10 +149,7 @@ export class FileReadTool implements BuiltInTool {
       return this.readPdf(path, fs);
     }
     if (LEGACY_OFFICE_EXTENSIONS.includes(ext)) {
-      return {
-        content: [{ type: 'text', text: `Error: 不支持老格式 .${ext}，请另存为 .${ext}x（Office 新格式）后再读取。` }],
-        isError: true,
-      };
+      return toolError(`Error: 不支持老格式 .${ext}，请另存为 .${ext}x（Office 新格式）后再读取。`);
     }
 
     try {
@@ -171,10 +169,7 @@ export class FileReadTool implements BuiltInTool {
         const asEnc = decodeTextBytesAs(base64ToBytes(b64), enc);
         // 不认识的编码名 → 明确报错，不静默按 UTF-8 读（否则又是"看着成功实则是乱码"）
         if (asEnc === null) {
-          return {
-            content: [{ type: 'text', text: `Error: 不支持的编码 "${args.encoding}"（可选 auto/utf-8/gbk/gb18030/gb2312/utf-16le/utf-16be/base64）` }],
-            isError: true,
-          };
+          return toolError(`Error: 不支持的编码 "${args.encoding}"（可选 auto/utf-8/gbk/gb18030/gb2312/utf-16le/utf-16be/base64）`);
         }
         content = asEnc;
       } else {
@@ -183,7 +178,7 @@ export class FileReadTool implements BuiltInTool {
       return { content: [{ type: 'text', text: this.readTextLines(content, args) }] };
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
-      return { content: [{ type: 'text', text: `Error reading file: ${msg}` }], isError: true };
+      return toolError(`Error reading file: ${msg}`);
     }
   }
 
@@ -233,10 +228,7 @@ export class FileReadTool implements BuiltInTool {
           if (!isNaN(idx) && idx >= 0 && idx < workbook.SheetNames.length) {
             sheetNames = [workbook.SheetNames[idx]];
           } else {
-            return {
-              content: [{ type: 'text', text: `Error: sheet "${sheetParam}" not found. Available: ${workbook.SheetNames.join(', ')}` }],
-              isError: true,
-            };
+            return toolError(`Error: sheet "${sheetParam}" not found. Available: ${workbook.SheetNames.join(', ')}`);
           }
         }
       } else {
@@ -248,10 +240,7 @@ export class FileReadTool implements BuiltInTool {
         try {
           sheetOpts.range = XLSX.utils.decode_range(rangeParam);
         } catch {
-          return {
-            content: [{ type: 'text', text: `Error: invalid range "${rangeParam}". Use format like "A1:D100".` }],
-            isError: true,
-          };
+          return toolError(`Error: invalid range "${rangeParam}". Use format like "A1:D100".`);
         }
       }
 
@@ -297,7 +286,7 @@ export class FileReadTool implements BuiltInTool {
       return { content: [{ type: 'text', text: capOutput(parts.join('\n\n')) }] };
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
-      return { content: [{ type: 'text', text: `Error reading Excel file: ${msg}` }], isError: true };
+      return toolError(`Error reading Excel file: ${msg}`);
     }
   }
 
@@ -320,7 +309,7 @@ export class FileReadTool implements BuiltInTool {
       return { content: [{ type: 'text', text: capOutput((md || '(文档为空)') + note) }] };
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
-      return { content: [{ type: 'text', text: `Error reading Word file: ${msg}` }], isError: true };
+      return toolError(`Error reading Word file: ${msg}`);
     }
   }
 
@@ -371,7 +360,7 @@ export class FileReadTool implements BuiltInTool {
       return { content: [{ type: 'text', text: capOutput(parts.join('\n\n')) }] };
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
-      return { content: [{ type: 'text', text: `Error reading PowerPoint file: ${msg}` }], isError: true };
+      return toolError(`Error reading PowerPoint file: ${msg}`);
     }
   }
 
@@ -391,7 +380,7 @@ export class FileReadTool implements BuiltInTool {
       return { content: [{ type: 'text', text: capOutput(parts.join('\n\n')) }] };
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
-      return { content: [{ type: 'text', text: `Error reading PDF file: ${msg}` }], isError: true };
+      return toolError(`Error reading PDF file: ${msg}`);
     }
   }
 }

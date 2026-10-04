@@ -2,6 +2,7 @@ import type { BuiltInTool, ToolContext } from '../types';
 import type { McpCallResult } from '../../mcp/client';
 import { getPlatformAdapter } from '../../platform/types';
 import { resolveToolPath } from './fs-walk';
+import { toolError } from '../result';
 
 /**
  * 写文件工具。
@@ -71,7 +72,7 @@ export class FileWriteTool implements BuiltInTool {
       (args.category as string) === 'deliverable' ? 'deliverable' : 'intermediate';
 
     if (content === undefined || content === null) {
-      return { content: [{ type: 'text', text: 'Error: content is required' }], isError: true };
+      return toolError('Error: content is required');
     }
 
     const rawPath = typeof args.path === 'string' ? args.path.trim() : '';
@@ -116,7 +117,7 @@ export class FileWriteTool implements BuiltInTool {
       } as McpCallResult;
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
-      return { content: [{ type: 'text', text: `Error writing file: ${msg}` }], isError: true };
+      return toolError(`Error writing file: ${msg}`);
     }
   }
 }

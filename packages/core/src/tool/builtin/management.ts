@@ -2,6 +2,7 @@
 import type { BuiltInTool } from '../types';
 import type { ToolRegistry } from '../registry';
 import { GetApiToolsTool } from './get-api-tools';
+import { toolError, toolOk } from '../result';
 
 class ListPlatformsTool implements BuiltInTool {
   name = 'list_platforms'; description = '列出所有已配置的模型平台';
@@ -10,9 +11,9 @@ class ListPlatformsTool implements BuiltInTool {
   async execute() {
     try {
       const rows = this.getDb().prepare('SELECT id, name, protocol, api_url, status FROM platform ORDER BY created_at DESC').all();
-      return { content: [{ type: 'text', text: JSON.stringify(rows) }], isError: false };
+      return toolOk(JSON.stringify(rows));
     } catch (e: unknown) {
-      return { content: [{ type: 'text', text: `获取失败: ${e instanceof Error ? e.message : e}` }], isError: true };
+      return toolError(`获取失败: ${e instanceof Error ? e.message : e}`);
     }
   }
 }
@@ -21,7 +22,7 @@ class ListToolsTool implements BuiltInTool {
   name = 'list_tools'; description = '列出所有可用工具';
   inputSchema = { type: 'object', properties: {}, required: [] };
   async execute() {
-    return { content: [{ type: 'text', text: '内置工具有: file_read, file_write 等，完整列表请通过 /api/tools/builtin 查询' }], isError: false };
+    return toolOk('内置工具有: file_read, file_write 等，完整列表请通过 /api/tools/builtin 查询');
   }
 }
 
@@ -31,8 +32,8 @@ class EnableTool implements BuiltInTool {
   constructor(private getDb: () => any) {}
   async execute(args: Record<string, unknown>) {
     const r = this.getDb().prepare('UPDATE custom_tool SET enabled = 1 WHERE name = ?').run(args.name);
-    if (r.changes === 0) return { content: [{ type: 'text', text: `工具 "${args.name}" 未找到` }], isError: true };
-    return { content: [{ type: 'text', text: `工具 "${args.name}" 已启用` }], isError: false };
+    if (r.changes === 0) return toolError(`工具 "${args.name}" 未找到`);
+    return toolOk(`工具 "${args.name}" 已启用`);
   }
 }
 
@@ -42,8 +43,8 @@ class DisableTool implements BuiltInTool {
   constructor(private getDb: () => any) {}
   async execute(args: Record<string, unknown>) {
     const r = this.getDb().prepare('UPDATE custom_tool SET enabled = 0 WHERE name = ?').run(args.name);
-    if (r.changes === 0) return { content: [{ type: 'text', text: `工具 "${args.name}" 未找到` }], isError: true };
-    return { content: [{ type: 'text', text: `工具 "${args.name}" 已禁用` }], isError: false };
+    if (r.changes === 0) return toolError(`工具 "${args.name}" 未找到`);
+    return toolOk(`工具 "${args.name}" 已禁用`);
   }
 }
 
@@ -53,7 +54,7 @@ class ListSkillsTool implements BuiltInTool {
   constructor(private getDb: () => any) {}
   async execute() {
     const rows = this.getDb().prepare('SELECT id, name, description, category, enabled FROM skill ORDER BY created_at DESC').all();
-    return { content: [{ type: 'text', text: JSON.stringify(rows) }], isError: false };
+    return toolOk(JSON.stringify(rows));
   }
 }
 
@@ -64,8 +65,8 @@ class ListAgentsTool implements BuiltInTool {
   async execute() {
     try {
       const rows = this.getDb().prepare('SELECT id, name, description FROM agent ORDER BY created_at DESC').all();
-      return { content: [{ type: 'text', text: JSON.stringify(rows) }], isError: false };
-    } catch { return { content: [{ type: 'text', text: '[]' }], isError: false }; }
+      return toolOk(JSON.stringify(rows));
+    } catch { return toolOk('[]'); }
   }
 }
 
@@ -77,17 +78,17 @@ class SearchMarketplaceTool implements BuiltInTool {
     const db = this.getDb(); const q = `%${args.query}%`;
     if (args.type === 'skill') {
       const rows = db.prepare('SELECT id, name, description, category FROM skill WHERE is_public = 1 AND (name LIKE ? OR description LIKE ?) LIMIT 10').all(q, q);
-      return { content: [{ type: 'text', text: JSON.stringify(rows) }], isError: false };
+      return toolOk(JSON.stringify(rows));
     } else if (args.type === 'agent') {
       try {
         const rows = db.prepare('SELECT id, name, description FROM agent WHERE is_public = 1 AND (name LIKE ? OR description LIKE ?) LIMIT 10').all(q, q);
-        return { content: [{ type: 'text', text: JSON.stringify(rows) }], isError: false };
-      } catch { return { content: [{ type: 'text', text: '[]' }], isError: false }; }
+        return toolOk(JSON.stringify(rows));
+      } catch { return toolOk('[]'); }
     } else if (args.type === 'tool') {
       const rows = db.prepare('SELECT id, name, description, runtime FROM custom_tool WHERE is_public = 1 AND (name LIKE ? OR description LIKE ?) LIMIT 10').all(q, q);
-      return { content: [{ type: 'text', text: JSON.stringify(rows) }], isError: false };
+      return toolOk(JSON.stringify(rows));
     }
-    return { content: [{ type: 'text', text: '不支持的商城类型' }], isError: true };
+    return toolError('不支持的商城类型');
   }
 }
 

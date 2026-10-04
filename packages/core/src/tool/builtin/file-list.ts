@@ -3,6 +3,7 @@ import type { BuiltInTool, ToolContext } from '../types';
 import type { McpCallResult } from '../../mcp/client';
 import { getPlatformAdapter } from '../../platform/types';
 import { DEFAULT_SKIP_DIRS, joinPath, resolveToolPath } from './fs-walk';
+import { toolError } from '../result';
 
 export class FileListTool implements BuiltInTool {
   name = 'file_list';
@@ -32,7 +33,7 @@ export class FileListTool implements BuiltInTool {
 
     const exists = await fs.exists(root).catch(() => false);
     if (!exists) {
-      return { content: [{ type: 'text', text: `Error: directory not found: ${root}` }], isError: true };
+      return toolError(`Error: directory not found: ${root}`);
     }
 
     const lines: string[] = [];
@@ -76,7 +77,7 @@ export class FileListTool implements BuiltInTool {
       await listDir(root, '', 1);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
-      return { content: [{ type: 'text', text: `Error listing directory: ${msg}` }], isError: true };
+      return toolError(`Error listing directory: ${msg}`);
     }
 
     if (lines.length === 0) {

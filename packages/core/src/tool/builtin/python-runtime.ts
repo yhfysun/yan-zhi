@@ -7,6 +7,7 @@ import * as os from 'os';
 import type { McpCallResult } from '../../mcp/client';
 import { getPlatformAdapter } from '../../platform/types';
 import { capToolOutput } from './output-cap';
+import { toolError } from '../result';
 
 /** file:// URL → 本地路径（手工转换，避免 import 'url' 被 Vite 浏览器外部化后炸掉渲染进程 bundle） */
 function fileUrlToLocalPath(u: string): string {
@@ -117,13 +118,13 @@ export async function runPythonCode(
 ): Promise<McpCallResult> {
   const shell = getPlatformAdapter().shell;
   if (!shell) {
-    return { content: [{ type: 'text', text: 'Error: python 执行需要桌面端或服务端环境（shell）。Web 浏览器端不支持。' }], isError: true };
+    return toolError('Error: python 执行需要桌面端或服务端环境（shell）。Web 浏览器端不支持。');
   }
   let py: string;
   try {
     py = await findPython();
   } catch (e) {
-    return { content: [{ type: 'text', text: `Error: ${(e as Error).message}` }], isError: true };
+    return toolError(`Error: ${(e as Error).message}`);
   }
   const tmp = path.join(os.tmpdir(), `yz_py_${Date.now()}_${Math.random().toString(36).slice(2)}.py`);
   try {
@@ -146,7 +147,7 @@ export async function runPythonCode(
     return { content: [{ type: 'text', text: lines.join('\n') }], isError: r.exitCode !== 0 };
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
-    return { content: [{ type: 'text', text: `Python 执行失败: ${msg}` }], isError: true };
+    return toolError(`Python 执行失败: ${msg}`);
   } finally {
     try { fs.unlinkSync(tmp); } catch { /* ignore */ }
   }

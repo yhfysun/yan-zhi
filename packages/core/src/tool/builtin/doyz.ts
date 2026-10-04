@@ -11,6 +11,7 @@ import { getPythonScript, runPythonScript } from './python-runtime';
 import { capToolOutput } from './output-cap';
 import { resolveToolPath } from './fs-walk';
 import * as path from 'path';
+import { toolError } from '../result';
 
 const KINDS = ['document', 'presentation', 'spreadsheet'];
 const CHART_TYPES = [
@@ -64,7 +65,7 @@ export class DoyzTool implements BuiltInTool {
     const action = args.action as string;
     const script = getPythonScript('doyz/doyz.py');
     if (!script) {
-      return { content: [{ type: 'text', text: 'Error: 未找到 doyz.py 脚本（resources/python-tools 或 packages/core 开发目录）。' }], isError: true };
+      return toolError('Error: 未找到 doyz.py 脚本（resources/python-tools 或 packages/core 开发目录）。');
     }
 
     // ★★★ 输入路径统一基于**工作目录**解析（2026-09-30）：
@@ -153,7 +154,7 @@ export class DoyzTool implements BuiltInTool {
           throw new Error(`未知 action: ${action}（可选 export/xlsx/init/from-md/validate/add-chart）`);
       }
     } catch (e) {
-      return { content: [{ type: 'text', text: `Error: ${(e as Error).message}` }], isError: true };
+      return toolError(`Error: ${(e as Error).message}`);
     }
 
     try {
@@ -162,7 +163,7 @@ export class DoyzTool implements BuiltInTool {
         .filter(Boolean)
         .join('\n') || '(无输出)';
       if (r.exitCode !== 0) {
-        return { content: [{ type: 'text', text: `doyz ${action} 失败（exit ${r.exitCode}）：\n${out}` }], isError: true };
+        return toolError(`doyz ${action} 失败（exit ${r.exitCode}）：\n${out}`);
       }
       const meta: Record<string, unknown> = {};
       if (outPath) meta.path = outPath;
@@ -170,7 +171,7 @@ export class DoyzTool implements BuiltInTool {
       return { content: [{ type: 'text', text: out }], _meta: Object.keys(meta).length ? meta : undefined };
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
-      return { content: [{ type: 'text', text: `doyz 执行异常: ${msg}` }], isError: true };
+      return toolError(`doyz 执行异常: ${msg}`);
     }
   }
 }

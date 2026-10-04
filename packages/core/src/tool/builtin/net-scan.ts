@@ -2,6 +2,7 @@
 import type { BuiltInTool } from '../types';
 import type { McpCallResult } from '../../mcp/client';
 import { parsePorts } from './port-scan';
+import { toolError } from '../result';
 
 const DEFAULT_PROBE_PORTS = '135,445,80,22,443,3389';
 const MAX_HOSTS = 65536;
@@ -149,7 +150,7 @@ export class LanScanTool implements BuiltInTool {
       // 默认扫描本机 IP 所在的 /24 局域网
       const lan = await detectLocalLan();
       if (!lan) {
-        return { content: [{ type: 'text', text: 'Error: 未能自动检测到本机局域网 IPv4（可能只有回环接口），请显式传入 target，如 "192.168.1.0/24"' }], isError: true };
+        return toolError('Error: 未能自动检测到本机局域网 IPv4（可能只有回环接口），请显式传入 target，如 "192.168.1.0/24"');
       }
       target = lan;
       autoDetected = true;
@@ -161,20 +162,20 @@ export class LanScanTool implements BuiltInTool {
       net = await import('node:net');
       dns = await import('node:dns');
     } catch {
-      return { content: [{ type: 'text', text: 'Error: lan_scan 需要服务端或桌面端环境（Node net/dns）。浏览器端不支持。' }], isError: true };
+      return toolError('Error: lan_scan 需要服务端或桌面端环境（Node net/dns）。浏览器端不支持。');
     }
 
     const targets = expandTargets(target);
     if (targets.length === 0) {
-      return { content: [{ type: 'text', text: `Error: 无有效目标规格（支持 CIDR "192.168.1.0/24"、范围 "192.168.1.1-254"、通配符 "192.168.1.*"、单 IP），且不超过 ${MAX_HOSTS} 个地址` }], isError: true };
+      return toolError(`Error: 无有效目标规格（支持 CIDR "192.168.1.0/24"、范围 "192.168.1.1-254"、通配符 "192.168.1.*"、单 IP），且不超过 ${MAX_HOSTS} 个地址`);
     }
     const probePorts = parsePorts((args.probePorts as string) || DEFAULT_PROBE_PORTS);
     if (probePorts.length === 0) {
-      return { content: [{ type: 'text', text: 'Error: 无有效探测端口规格，示例: "135,445,80"' }], isError: true };
+      return toolError('Error: 无有效探测端口规格，示例: "135,445,80"');
     }
     const scanPorts = args.ports ? parsePorts(args.ports as string) : null;
     if (args.ports && (!scanPorts || scanPorts.length === 0)) {
-      return { content: [{ type: 'text', text: 'Error: 无有效端口扫描规格，示例: "common" / "80,443" / "1-1024"' }], isError: true };
+      return toolError('Error: 无有效端口扫描规格，示例: "common" / "80,443" / "1-1024"');
     }
     const timeout = Math.min(Math.max(Number(args.timeout) || 1000, 100), 5000);
     const concurrency = Math.min(Math.max(Number(args.concurrency) || 256, 1), 1000);

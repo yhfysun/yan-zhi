@@ -6,6 +6,7 @@ import type { McpCallResult } from '../../mcp/client';
 import { getPlatformAdapter } from '../../platform/types';
 import { resolveToolPath } from './fs-walk';
 import { tryParseAst } from './code-ast';
+import { toolError } from '../result';
 
 const MAX_SIG_LEN = 120;
 const CONTROL_KEYWORDS = new Set([
@@ -88,19 +89,19 @@ export class CodeOutlineTool implements BuiltInTool {
     const { fs } = getPlatformAdapter();
     // ★★ 必填校验看**原始入参**（先校验再解析，理由见 file-read.ts 同处注释）
     const rawPath = typeof args.path === 'string' ? args.path.trim() : '';
-    if (!rawPath) return { content: [{ type: 'text', text: 'Error: path is required' }], isError: true };
+    if (!rawPath) return toolError('Error: path is required');
     // ★ 相对路径基于**工作目录**解析（见 fs-walk.ts:resolveToolPath）
     const filePath = resolveToolPath(rawPath, ctx?.workspaceDir);
 
     const exists = await fs.exists(filePath).catch(() => false);
     if (!exists) {
-      return { content: [{ type: 'text', text: `Error: file not found: ${filePath}` }], isError: true };
+      return toolError(`Error: file not found: ${filePath}`);
     }
 
     let source: string;
     try { source = await fs.readFile(filePath); } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
-      return { content: [{ type: 'text', text: `Error reading file: ${msg}` }], isError: true };
+      return toolError(`Error reading file: ${msg}`);
     }
 
     const ext = (filePath.split('.').pop() || '').toLowerCase();

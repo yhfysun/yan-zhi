@@ -1,6 +1,7 @@
 // dns_lookup 内置工具 — DNS 解析（A/AAAA/CNAME/MX/TXT/NS/PTR 反查）
 import type { BuiltInTool } from '../types';
 import type { McpCallResult } from '../../mcp/client';
+import { toolError } from '../result';
 
 const TYPES = ['A', 'AAAA', 'CNAME', 'MX', 'TXT', 'NS', 'PTR', 'SRV', 'SOA'] as const;
 type DnsType = (typeof TYPES)[number];
@@ -21,13 +22,13 @@ export class DnsLookupTool implements BuiltInTool {
 
   async execute(args: Record<string, unknown>): Promise<McpCallResult> {
     const host = (args.host as string)?.trim();
-    if (!host) return { content: [{ type: 'text', text: 'Error: host is required' }], isError: true };
+    if (!host) return toolError('Error: host is required');
     const type = ((args.type as DnsType) || 'A').toUpperCase() as DnsType;
     const timeout = Math.min(Math.max(Number(args.timeout) || 5000, 500), 30000);
 
     let dns: typeof import('node:dns/promises');
     try { dns = await import('node:dns/promises'); } catch {
-      return { content: [{ type: 'text', text: 'Error: dns_lookup 需要服务端或桌面端环境（Node dns）。浏览器端不支持。' }], isError: true };
+      return toolError('Error: dns_lookup 需要服务端或桌面端环境（Node dns）。浏览器端不支持。');
     }
 
     const run = async (): Promise<string[]> => {

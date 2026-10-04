@@ -4,6 +4,7 @@
 // 用于 pageAgent 抓取淘宝/京东/拼多多后的汇总对比。
 import type { BuiltInTool } from '../types';
 import type { McpCallResult } from '../../mcp/client';
+import { toolError } from '../result';
 
 /** 商品输入（来自各平台抓取结果，字段尽量宽松以适配不同抓取格式） */
 interface ProductInput {
@@ -356,10 +357,7 @@ export class CompareProductsTool implements BuiltInTool {
 
     // 参数校验
     if (!query || typeof query !== 'string' || query.trim() === '') {
-      return {
-        content: [{ type: 'text', text: '错误：query（搜索关键词）为必填项，请提供用于同款匹配的核心词。' }],
-        isError: true,
-      };
+      return toolError('错误：query（搜索关键词）为必填项，请提供用于同款匹配的核心词。');
     }
     if (!Array.isArray(products) || products.length === 0) {
       return {

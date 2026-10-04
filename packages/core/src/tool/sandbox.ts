@@ -1,6 +1,7 @@
 // 用户代码执行器（JS 沙箱 + Python 桥）
 import type { McpCallResult } from '../mcp/client';
 import { runPythonCode } from './builtin/python-runtime';
+import { toolError, toolOk } from './result';
 
 /** 自定义工具执行选项 */
 export interface RunUserCodeOptions {
@@ -145,7 +146,7 @@ export async function runInSandbox(
       displayErrors: true,
     });
     if (typeof wrappedFn !== 'function') {
-      return { content: [{ type: 'text', text: `"${fnName}" 不是一个函数` }], isError: true };
+      return toolError(`"${fnName}" 不是一个函数`);
     }
     // 关键：函数调用必须经 runInContext 执行，timeout 才罩得住函数体。
     // 直接 wrappedFn(args) 会绕过 vm timeout —— 工具里写 while(true) 会永久挂死调用方。
@@ -154,10 +155,10 @@ export async function runInSandbox(
     const result = await Promise.resolve(
       vm.runInContext('__yz_fn__(__yz_args__)', context, { timeout: options.timeout, displayErrors: true }),
     );
-    return { content: [{ type: 'text', text: typeof result === 'string' ? result : JSON.stringify(result) }], isError: false };
+    return toolOk(typeof result === 'string' ? result : JSON.stringify(result));
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     const isTimeout = msg.includes('timed out') || msg.includes('Script execution timed out');
-    return { content: [{ type: 'text', text: isTimeout ? '工具执行超时' : `沙箱执行错误: ${msg}` }], isError: true };
+    return toolError(isTimeout ? '工具执行超时' : `沙箱执行错误: ${msg}`);
   }
 }

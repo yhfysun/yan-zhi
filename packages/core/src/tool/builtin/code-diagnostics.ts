@@ -14,6 +14,7 @@ import type { BuiltInTool, ToolContext } from '../types';
 import type { McpCallResult } from '../../mcp/client';
 import { resolveToolPath } from './fs-walk';
 import { capToolOutput } from './output-cap';
+import { toolError } from '../result';
 
 // ───────────────────────── node 内置模块动态加载（同 cmd-exec 手法） ─────────────────────────
 
@@ -432,7 +433,7 @@ export class CodeDiagnosticsTool implements BuiltInTool {
       force: Boolean(args.force),
     });
     if (r.ran.length === 0) {
-      return { content: [{ type: 'text', text: `无法执行诊断：${r.notes.join('；') || '没有可用的检查项'}` }], isError: true };
+      return toolError(`无法执行诊断：${r.notes.join('；') || '没有可用的检查项'}`);
     }
     return { content: [{ type: 'text', text: r.text }] };
   }

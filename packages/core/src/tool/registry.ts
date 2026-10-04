@@ -1,6 +1,7 @@
 // 内置工具注册中心
 import type { BuiltInTool, ToolDefinition, ToolContext } from './types';
 import type { McpCallResult } from '../mcp/client';
+import { toolError } from './result';
 
 export class ToolRegistry {
   private tools = new Map<string, BuiltInTool>();
@@ -40,10 +41,7 @@ export class ToolRegistry {
   async execute(name: string, args: Record<string, unknown>, ctx?: ToolContext): Promise<McpCallResult> {
     const tool = this.tools.get(name);
     if (!tool) {
-      return {
-        content: [{ type: 'text', text: `Tool not found: ${name}` }],
-        isError: true,
-      };
+      return toolError(`Tool not found: ${name}`);
     }
     // ★ ctx 由执行器注入（会话上下文 + 产物路径解析），模型看不到也传不了。
     //   老工具签名是 execute(args)，多传一个参数对它们是安全的（JS 忽略多余实参）。

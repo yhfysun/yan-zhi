@@ -1,6 +1,7 @@
 import type { BuiltInTool } from '../types';
 import type { McpCallResult } from '../../mcp/client';
 import { localApiBase } from '@yan-zhi/shared';
+import { toolError } from '../result';
 
 export interface SearchResult {
   title: string;
@@ -298,10 +299,7 @@ export class WebSearchTool implements BuiltInTool {
 
   async execute(args: Record<string, unknown>): Promise<McpCallResult> {
     if (!this.backend) {
-      return {
-        content: [{ type: 'text', text: 'Error: no search backend configured. Call webSearchTool.setBackend() first.' }],
-        isError: true,
-      };
+      return toolError('Error: no search backend configured. Call webSearchTool.setBackend() first.');
     }
 
     const query = args.query as string;
@@ -312,7 +310,7 @@ export class WebSearchTool implements BuiltInTool {
     const wantSummary = args.summarize === true;
 
     if (!query) {
-      return { content: [{ type: 'text', text: 'Error: query is required' }], isError: true };
+      return toolError('Error: query is required');
     }
 
     try {
@@ -356,7 +354,7 @@ export class WebSearchTool implements BuiltInTool {
       return { content: [{ type: 'text', text }] };
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
-      return { content: [{ type: 'text', text: `Search error: ${msg}` }], isError: true };
+      return toolError(`Search error: ${msg}`);
     }
   }
 }

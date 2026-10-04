@@ -7,6 +7,7 @@ import { getPlatformAdapter } from '../../platform/types';
 import { extractDocxHtml, extractPdfPages, extractExcelSheets } from '../../preview';
 import { htmlToMarkdown } from './file-read';
 import { resolveToolPath } from './fs-walk';
+import { toolError } from '../result';
 
 const DOCX_EXTS = ['docx'];
 const EXCEL_EXTS = ['xlsx', 'xls'];
@@ -119,20 +120,20 @@ export class FileToMarkdownTool implements BuiltInTool {
     // ★★ 必填校验看**原始入参**（先校验再解析，理由见 file-read.ts 同处注释）
     const rawPath = typeof args.path === 'string' ? args.path.trim() : '';
     if (!rawPath) {
-      return { content: [{ type: 'text', text: 'Error: path is required' }], isError: true };
+      return toolError('Error: path is required');
     }
     // ★ 相对路径基于**工作目录**解析（见 fs-walk.ts:resolveToolPath）
     const path = resolveToolPath(rawPath, ctx?.workspaceDir);
     const ext = path.split('.').pop()?.toLowerCase() || '';
     const exists = await fs.exists(path);
     if (!exists) {
-      return { content: [{ type: 'text', text: `Error: file not found: ${path}` }], isError: true };
+      return toolError(`Error: file not found: ${path}`);
     }
     if (LEGACY_EXTS.includes(ext)) {
-      return { content: [{ type: 'text', text: `Error: 不支持旧格式 .${ext}，请另存为 .${ext === 'rtf' ? 'docx' : ext + 'x'} 后再转换。` }], isError: true };
+      return toolError(`Error: 不支持旧格式 .${ext}，请另存为 .${ext === 'rtf' ? 'docx' : ext + 'x'} 后再转换。`);
     }
     if (!DOCX_EXTS.includes(ext) && !EXCEL_EXTS.includes(ext) && !PPTX_EXTS.includes(ext) && !PDF_EXTS.includes(ext)) {
-      return { content: [{ type: 'text', text: `Error: 不支持的格式 .${ext}。支持 docx/xlsx/xls/pptx/pdf；纯文本类文件直接用 file_read 读取即可。` }], isError: true };
+      return toolError(`Error: 不支持的格式 .${ext}。支持 docx/xlsx/xls/pptx/pdf；纯文本类文件直接用 file_read 读取即可。`);
     }
 
     try {
@@ -148,7 +149,7 @@ export class FileToMarkdownTool implements BuiltInTool {
         md = await pdfToMarkdown(b64);
       }
       if (!md || !md.trim()) {
-        return { content: [{ type: 'text', text: 'Error: 文档内容为空或无法提取（可能是扫描件）。' }], isError: true };
+        return toolError('Error: 文档内容为空或无法提取（可能是扫描件）。');
       }
 
       const dot = path.lastIndexOf('.');
@@ -159,7 +160,7 @@ export class FileToMarkdownTool implements BuiltInTool {
       };
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
-      return { content: [{ type: 'text', text: `Error converting document: ${msg}` }], isError: true };
+      return toolError(`Error converting document: ${msg}`);
     }
   }
 }

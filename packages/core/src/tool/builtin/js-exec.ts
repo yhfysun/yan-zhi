@@ -2,6 +2,7 @@
 // 支持宿主注入 dataQuery 桥接函数：脚本内可调用 dataQuery({sql, datasourceId?, limit?}) 只读查数。
 import type { BuiltInTool } from '../types';
 import type { McpCallResult } from '../../mcp/client';
+import { toolError } from '../result';
 
 const MAX_LOG_ENTRIES = 100;
 const MAX_LOG_LINE = 500;
@@ -35,7 +36,7 @@ export class JsExecTool implements BuiltInTool {
 
   async execute(args: Record<string, unknown>): Promise<McpCallResult> {
     const code = args.code as string;
-    if (!code) return { content: [{ type: 'text', text: 'Error: code is required' }], isError: true };
+    if (!code) return toolError('Error: code is required');
     const timeout = Math.min(Math.max(Number(args.timeout) || 10000, 100), 60000);
 
     // node:vm 仅服务端/桌面端运行时可用；浏览器端动态 import 失败时给出明确提示
@@ -43,10 +44,7 @@ export class JsExecTool implements BuiltInTool {
     try {
       vm = await import('node:vm');
     } catch {
-      return {
-        content: [{ type: 'text', text: 'Error: js_exec 需要服务端或桌面端环境（Node VM）。浏览器端不支持。' }],
-        isError: true,
-      };
+      return toolError('Error: js_exec 需要服务端或桌面端环境（Node VM）。浏览器端不支持。');
     }
 
     const logs: string[] = [];
@@ -80,7 +78,7 @@ export class JsExecTool implements BuiltInTool {
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       const out = logs.length > 0 ? `${logs.join('\n')}\n` : '';
-      return { content: [{ type: 'text', text: `${out}执行错误: ${msg}` }], isError: true };
+      return toolError(`${out}执行错误: ${msg}`);
     }
 
     const parts: string[] = [];

@@ -2,6 +2,7 @@
 // 包含：navigate / click / type / press_key / scroll / hover / get_text / get_dom / wait / screenshot
 import type { BuiltInTool } from '../../types';
 import type { McpCallResult } from '../../../mcp/client';
+import { toolError } from '../../result';
 
 /** 获取 auth token（浏览器/web/桌面端均可访问 localStorage） */
 function getAuthToken(): string | null {
@@ -80,7 +81,7 @@ function ok(text: string): McpCallResult {
   return { content: [{ type: 'text', text }] };
 }
 function err(msg: string): McpCallResult {
-  return { content: [{ type: 'text', text: msg }], isError: true };
+  return toolError(msg);
 }
 
 /** 从工具参数中健壮提取 URL —— 模型常把 URL 放在非 url 字段（target/address/link/href/page 等），

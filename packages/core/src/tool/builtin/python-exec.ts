@@ -4,6 +4,7 @@
 import type { BuiltInTool } from '../types';
 import type { McpCallResult } from '../../mcp/client';
 import { findPython, runPythonCode } from './python-runtime';
+import { toolError } from '../result';
 
 export class PythonExecTool implements BuiltInTool {
   name = 'python_exec';
@@ -21,13 +22,13 @@ export class PythonExecTool implements BuiltInTool {
   async execute(args: Record<string, unknown>): Promise<McpCallResult> {
     const code = args.code as string;
     const timeout = Math.min((args.timeout as number) || 30000, 300000);
-    if (!code) return { content: [{ type: 'text', text: 'Error: code is required' }], isError: true };
+    if (!code) return toolError('Error: code is required');
 
     // 探测解释器（打包优先 / 系统回退），给出友好提示
     try {
       await findPython();
     } catch (e) {
-      return { content: [{ type: 'text', text: `Error: ${(e as Error).message}` }], isError: true };
+      return toolError(`Error: ${(e as Error).message}`);
     }
 
     return runPythonCode(code, args || {}, { timeout });

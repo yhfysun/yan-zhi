@@ -1,6 +1,7 @@
 // port_scan 内置工具 — TCP 连接扫描（仅限授权目标：自有网络/获授权渗透测试）
 import type { BuiltInTool } from '../types';
 import type { McpCallResult } from '../../mcp/client';
+import { toolError } from '../result';
 
 const COMMON_PORTS: Record<number, string> = {
   21: 'ftp', 22: 'ssh', 23: 'telnet', 25: 'smtp', 53: 'dns', 80: 'http',
@@ -51,17 +52,17 @@ export class PortScanTool implements BuiltInTool {
 
   async execute(args: Record<string, unknown>): Promise<McpCallResult> {
     const host = args.host as string;
-    if (!host) return { content: [{ type: 'text', text: 'Error: host is required' }], isError: true };
+    if (!host) return toolError('Error: host is required');
     const ports = parsePorts(args.ports as string);
     if (ports.length === 0) {
-      return { content: [{ type: 'text', text: 'Error: 无有效端口规格，示例: "common" / "80" / "80,443" / "1-1024"' }], isError: true };
+      return toolError('Error: 无有效端口规格，示例: "common" / "80" / "80,443" / "1-1024"');
     }
     const timeout = Math.min(Math.max(Number(args.timeout) || 1500, 100), 10000);
     const concurrency = Math.min(Math.max(Number(args.concurrency) || 200, 1), 500);
 
     let net: typeof import('node:net');
     try { net = await import('node:net'); } catch {
-      return { content: [{ type: 'text', text: 'Error: port_scan 需要服务端或桌面端环境（Node net）。浏览器端不支持。' }], isError: true };
+      return toolError('Error: port_scan 需要服务端或桌面端环境（Node net）。浏览器端不支持。');
     }
 
     const start = Date.now();
@@ -105,7 +106,7 @@ export class PortScanTool implements BuiltInTool {
     const duration = Date.now() - start;
 
     if (scanned === 0) {
-      return { content: [{ type: 'text', text: `Error: 无法连接目标 ${host}（主机不可达或全部超时）` }], isError: true };
+      return toolError(`Error: 无法连接目标 ${host}（主机不可达或全部超时）`);
     }
 
     const lines = [

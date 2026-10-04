@@ -2,6 +2,7 @@
 import type { BuiltInTool } from '../types';
 import type { McpCallResult } from '../../mcp/client';
 import { encodePayload, previewBuffer, type PayloadEncoding } from './raw-payload';
+import { toolError } from '../result';
 
 export class TcpSendTool implements BuiltInTool {
   name = 'tcp_send';
@@ -24,7 +25,7 @@ export class TcpSendTool implements BuiltInTool {
     const host = args.host as string;
     const port = Number(args.port);
     if (!host || !Number.isInteger(port) || port < 1 || port > 65535) {
-      return { content: [{ type: 'text', text: 'Error: host 和 port(1-65535) 必填' }], isError: true };
+      return toolError('Error: host 和 port(1-65535) 必填');
     }
     const payload = String(args.payload ?? '');
     const encoding = (args.encoding as PayloadEncoding) || 'text';
@@ -33,7 +34,7 @@ export class TcpSendTool implements BuiltInTool {
 
     let net: typeof import('node:net');
     try { net = await import('node:net'); } catch {
-      return { content: [{ type: 'text', text: 'Error: tcp_send 需要服务端或桌面端环境（Node net）。浏览器端不支持。' }], isError: true };
+      return toolError('Error: tcp_send 需要服务端或桌面端环境（Node net）。浏览器端不支持。');
     }
 
     const start = Date.now();
@@ -63,7 +64,7 @@ export class TcpSendTool implements BuiltInTool {
         if (payload.length === 0) return; // 仅连接：等 banner
         try { socket.write(encodePayload(payload, encoding)); } catch (e: unknown) {
           const msg = e instanceof Error ? e.message : String(e);
-          finish({ content: [{ type: 'text', text: `发送失败: ${msg}` }], isError: true });
+          finish(toolError(`发送失败: ${msg}`));
         }
       });
       socket.on('data', (chunk: Buffer) => {
@@ -86,12 +87,12 @@ export class TcpSendTool implements BuiltInTool {
         if (buf.length > 0) {
           finish({ content: [{ type: 'text', text: `响应(${err.code || 'error'}前 ${buf.length}B):\n${previewBuffer(buf)}` }] });
         } else {
-          finish({ content: [{ type: 'text', text: `连接失败: ${err.message} (${err.code || 'unknown'})` }], isError: true });
+          finish(toolError(`连接失败: ${err.message} (${err.code || 'unknown'})`));
         }
       });
       try { socket.connect(port, host); } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : String(e);
-        finish({ content: [{ type: 'text', text: `连接失败: ${msg}` }], isError: true });
+        finish(toolError(`连接失败: ${msg}`));
       }
     });
   }

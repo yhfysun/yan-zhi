@@ -3,6 +3,7 @@ import type { BuiltInTool, ToolContext } from '../types';
 import type { McpCallResult } from '../../mcp/client';
 import { getPlatformAdapter } from '../../platform/types';
 import { walkFiles, resolveToolPath } from './fs-walk';
+import { toolError } from '../result';
 
 const DEFAULT_MAX_FILE_BYTES = 1024 * 1024; // 单文件超过 1MB 跳过
 const MAX_LINE_DISPLAY = 240;
@@ -32,7 +33,7 @@ export class CodeSearchTool implements BuiltInTool {
   async execute(args: Record<string, unknown>, ctx?: ToolContext): Promise<McpCallResult> {
     const { fs } = getPlatformAdapter();
     const query = args.query as string;
-    if (!query) return { content: [{ type: 'text', text: 'Error: query is required' }], isError: true };
+    if (!query) return toolError('Error: query is required');
 
     // ★ 相对路径基于**工作目录**解析（此前 `|| '.'` 交给 fs → 落到进程 cwd → 报目录不存在）
     const root = resolveToolPath(args.path, ctx?.workspaceDir);
@@ -50,12 +51,12 @@ export class CodeSearchTool implements BuiltInTool {
       );
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
-      return { content: [{ type: 'text', text: `Error: 无效的正则表达式: ${msg}` }], isError: true };
+      return toolError(`Error: 无效的正则表达式: ${msg}`);
     }
 
     const rootExists = await fs.exists(root).catch(() => false);
     if (!rootExists) {
-      return { content: [{ type: 'text', text: `Error: directory not found: ${root}` }], isError: true };
+      return toolError(`Error: directory not found: ${root}`);
     }
 
     const files = await walkFiles(fs, root, { maxDepth, maxFiles: 5000, globFilter });

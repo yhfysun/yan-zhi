@@ -4,6 +4,7 @@ import type { BuiltInTool, ToolContext } from '../types';
 import type { McpCallResult } from '../../mcp/client';
 import { getPlatformAdapter } from '../../platform/types';
 import { walkFiles, resolveToolPath } from './fs-walk';
+import { toolError } from '../result';
 
 const MAX_FILE_SIZE = 2 * 1024 * 1024; // 单文件超过 2MB 跳过（防二进制/超大日志拖垮搜索）
 const OUTPUT_CAP = 64 * 1024;
@@ -55,7 +56,7 @@ export class FileGrepTool implements BuiltInTool {
     const target = resolveToolPath(args.path, ctx?.workspaceDir);
     const pattern = args.pattern as string;
     if (!pattern) {
-      return { content: [{ type: 'text', text: 'Error: pattern is required' }], isError: true };
+      return toolError('Error: pattern is required');
     }
     const ignoreCase = Boolean(args.ignoreCase);
     const contextLines = Math.min(Math.max(Math.floor(Number(args.contextLines) || 0), 0), 10);
@@ -66,12 +67,12 @@ export class FileGrepTool implements BuiltInTool {
       regex = new RegExp(pattern, ignoreCase ? 'gi' : 'g');
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
-      return { content: [{ type: 'text', text: `Error: invalid regex "${pattern}": ${msg}` }], isError: true };
+      return toolError(`Error: invalid regex "${pattern}": ${msg}`);
     }
 
     const exists = await fs.exists(target).catch(() => false);
     if (!exists) {
-      return { content: [{ type: 'text', text: `Error: path not found: ${target}` }], isError: true };
+      return toolError(`Error: path not found: ${target}`);
     }
     // 目录探测：尾部斜杠存在性（与 file_list/code_search 同款手法）
     const isDir = await fs.exists(`${target.replace(/[\\/]+$/, '')}/`).catch(() => false);

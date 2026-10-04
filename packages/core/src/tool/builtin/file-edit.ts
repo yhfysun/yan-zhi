@@ -11,6 +11,7 @@ import type { BuiltInTool, ToolContext } from '../types';
 import type { McpCallResult } from '../../mcp/client';
 import { getPlatformAdapter } from '../../platform/types';
 import { resolveToolPath } from './fs-walk';
+import { toolError } from '../result';
 
 interface EditSpec {
   old: string;
@@ -152,23 +153,20 @@ export class FileEditTool implements BuiltInTool {
     // ★★ 必填校验看**原始入参**（先校验再解析，理由见 file-read.ts 同处注释）
     const rawPath = typeof args.path === 'string' ? args.path.trim() : '';
     if (!rawPath) {
-      return { content: [{ type: 'text', text: 'Error: path is required' }], isError: true };
+      return toolError('Error: path is required');
     }
     // ★ 相对路径基于**工作目录**解析（见 fs-walk.ts:resolveToolPath）
     const path = resolveToolPath(rawPath, ctx?.workspaceDir);
 
     const parsed = parseEditSpecs(args);
     if (parsed.error || parsed.specs.length === 0) {
-      return { content: [{ type: 'text', text: `Error: ${parsed.error || 'no edits provided'}` }], isError: true };
+      return toolError(`Error: ${parsed.error || 'no edits provided'}`);
     }
     const specs = parsed.specs;
 
     const exists = await fs.exists(path);
     if (!exists) {
-      return {
-        content: [{ type: 'text', text: `Error: file not found: ${path}. To create a new file, use file_write.` }],
-        isError: true,
-      };
+      return toolError(`Error: file not found: ${path}. To create a new file, use file_write.`);
     }
 
     let content: string;
@@ -176,7 +174,7 @@ export class FileEditTool implements BuiltInTool {
       content = await fs.readFile(path);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
-      return { content: [{ type: 'text', text: `Error reading file: ${msg}` }], isError: true };
+      return toolError(`Error reading file: ${msg}`);
     }
 
     // 统一换行比较/替换（都在 LF 规范空间进行），写回时还原原换行风格
@@ -193,13 +191,7 @@ export class FileEditTool implements BuiltInTool {
       if (!r.ok) {
         const preview = fileNorm.slice(0, 300);
         const done = i > 0 ? `（前 ${i} 个 hunk 已在内存中匹配成功，但**未落盘** —— 本调用原子生效）` : '';
-        return {
-          content: [{
-            type: 'text',
-            text: `Error: edit ${i + 1}/${specs.length} failed: ${r.error}. ${done}\nRe-read the file (or use file_grep to locate the region) and copy old_string verbatim.\nFile head preview:\n${preview}`,
-          }],
-          isError: true,
-        };
+        return toolError(`Error: edit ${i + 1}/${specs.length} failed: ${r.error}. ${done}\nRe-read the file (or use file_grep to locate the region) and copy old_string verbatim.\nFile head preview:\n${preview}`);
       }
       work = r.text;
       totalReplaced += r.count;
@@ -212,7 +204,7 @@ export class FileEditTool implements BuiltInTool {
       await fs.writeFile(path, next);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
-      return { content: [{ type: 'text', text: `Error writing file: ${msg}` }], isError: true };
+      return toolError(`Error writing file: ${msg}`);
     }
 
     const fuzzyUsed = strategies.includes('fuzzy');

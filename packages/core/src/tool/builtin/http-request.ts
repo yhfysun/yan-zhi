@@ -1,6 +1,7 @@
 // http_request 内置工具 — 通用 HTTP 客户端（API 测试 / 端点探测 / 授权安全评估）
 import type { BuiltInTool } from '../types';
 import type { McpCallResult } from '../../mcp/client';
+import { toolError, toolOk } from '../result';
 
 export class HttpRequestTool implements BuiltInTool {
   name = 'http_request';
@@ -22,9 +23,9 @@ export class HttpRequestTool implements BuiltInTool {
 
   async execute(args: Record<string, unknown>): Promise<McpCallResult> {
     const url = args.url as string;
-    if (!url) return { content: [{ type: 'text', text: 'Error: url is required' }], isError: true };
+    if (!url) return toolError('Error: url is required');
     if (!/^https?:\/\//i.test(url)) {
-      return { content: [{ type: 'text', text: 'Error: url 必须以 http:// 或 https:// 开头（其他协议请用 tcp_send/udp_send）' }], isError: true };
+      return toolError('Error: url 必须以 http:// 或 https:// 开头（其他协议请用 tcp_send/udp_send）');
     }
     const method = String(args.method || 'GET').toUpperCase();
     const timeout = Math.min(Math.max(Number(args.timeout) || 30000, 500), 120000);
@@ -64,11 +65,11 @@ export class HttpRequestTool implements BuiltInTool {
         'Body:',
         bodyOut || '(空)',
       ];
-      return { content: [{ type: 'text', text: parts.join('\n') }], isError: false };
+      return toolOk(parts.join('\n'));
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       const hint = msg.includes('abort') || msg.includes('timeout') ? `（超时 ${timeout}ms）` : '';
-      return { content: [{ type: 'text', text: `请求失败${hint}: ${msg}` }], isError: true };
+      return toolError(`请求失败${hint}: ${msg}`);
     } finally {
       clearTimeout(timer);
     }

@@ -3,6 +3,7 @@ import type { BuiltInTool } from '../types';
 import type { McpCallResult } from '../../mcp/client';
 import { getPlatformAdapter } from '../../platform/types';
 import { capToolOutput } from './output-cap';
+import { toolError } from '../result';
 
 /** Windows shell 内置命令白名单（where 对这些返回非 0，需放行不预检） */
 const WIN_BUILTIN_COMMANDS = new Set([
@@ -130,10 +131,7 @@ export class CmdExecTool implements BuiltInTool {
   async execute(args: Record<string, unknown>): Promise<McpCallResult> {
     const shell = getPlatformAdapter().shell;
     if (!shell) {
-      return {
-        content: [{ type: 'text', text: 'Error: cmd_exec is only available on desktop. Browser/web builds do not support shell commands.' }],
-        isError: true,
-      };
+      return toolError('Error: cmd_exec is only available on desktop. Browser/web builds do not support shell commands.');
     }
 
     const command = args.command as string;
@@ -142,7 +140,7 @@ export class CmdExecTool implements BuiltInTool {
     const timeout = Math.min((args.timeout as number) || 30000, 300000);
 
     if (!command) {
-      return { content: [{ type: 'text', text: 'Error: command is required' }], isError: true };
+      return toolError('Error: command is required');
     }
 
     // 环境预检：提取命令主名，检查是否可用，避免子进程抛 ENOENT
@@ -151,10 +149,7 @@ export class CmdExecTool implements BuiltInTool {
       const { exists, degrade } = await checkCommandExists(main);
       if (!degrade && !exists) {
         const hint = getCommandHint(main);
-        return {
-          content: [{ type: 'text', text: `命令 ${main} 在当前环境不可用。${hint}` }],
-          isError: true,
-        };
+        return toolError(`命令 ${main} 在当前环境不可用。${hint}`);
       }
       // degrade=true → 预检不可靠，跳过预检直接执行（降级，不因预检误判阻断）
     }
@@ -170,7 +165,7 @@ export class CmdExecTool implements BuiltInTool {
       return { content: [{ type: 'text', text: lines.join('\n') }], isError: result.exitCode !== 0 };
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
-      return { content: [{ type: 'text', text: `Command execution error: ${msg}` }], isError: true };
+      return toolError(`Command execution error: ${msg}`);
     }
   }
 }

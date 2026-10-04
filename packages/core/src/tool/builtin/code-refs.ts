@@ -12,6 +12,7 @@ import { getPlatformAdapter } from '../../platform/types';
 import { walkCodeFiles, extractDeclarations, extractImportAliases, type SymbolDecl } from './code-symbols';
 import { tryParseAst } from './code-ast';
 import { resolveToolPath } from './fs-walk';
+import { toolError } from '../result';
 
 const MAX_DEFINITIONS = 20;
 const MAX_REFERENCES = 60;
@@ -61,7 +62,7 @@ export class CodeRefsTool implements BuiltInTool {
     const { fs } = getPlatformAdapter();
     const symbol = String(args.symbol || '').trim();
     if (!symbol || !/^[\w$]+$/.test(symbol)) {
-      return { content: [{ type: 'text', text: 'Error: symbol 必须是合法标识符（字母/数字/_/$）' }], isError: true };
+      return toolError('Error: symbol 必须是合法标识符（字母/数字/_/$）');
     }
 
     // ★ 相对路径基于**工作目录**解析（见 fs-walk.ts:resolveToolPath）
@@ -73,7 +74,7 @@ export class CodeRefsTool implements BuiltInTool {
 
     const rootExists = await fs.exists(root).catch(() => false);
     if (!rootExists) {
-      return { content: [{ type: 'text', text: `Error: directory not found: ${root}` }], isError: true };
+      return toolError(`Error: directory not found: ${root}`);
     }
 
     const files = await walkCodeFiles(fs, root, { maxDepth, maxFiles: 5000, globFilter });

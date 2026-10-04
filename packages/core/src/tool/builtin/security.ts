@@ -7,6 +7,7 @@ import type { BuiltInTool } from '../types';
 import type { McpCallResult } from '../../mcp/client';
 import { getPythonScript, runPythonScript } from './python-runtime';
 import { capToolOutput } from './output-cap';
+import { toolError } from '../result';
 
 export class SecurityTool implements BuiltInTool {
   name = 'security';
@@ -37,7 +38,7 @@ export class SecurityTool implements BuiltInTool {
     const action = args.action as string;
     const script = getPythonScript('security/security.py');
     if (!script) {
-      return { content: [{ type: 'text', text: 'Error: 未找到 security.py 脚本（resources/python-tools 或 packages/core 开发目录）。' }], isError: true };
+      return toolError('Error: 未找到 security.py 脚本（resources/python-tools 或 packages/core 开发目录）。');
     }
 
     const argv: string[] = [action];
@@ -84,7 +85,7 @@ export class SecurityTool implements BuiltInTool {
           throw new Error(`未知 action: ${action}`);
       }
     } catch (e) {
-      return { content: [{ type: 'text', text: `Error: ${(e as Error).message}` }], isError: true };
+      return toolError(`Error: ${(e as Error).message}`);
     }
 
     try {
@@ -93,12 +94,12 @@ export class SecurityTool implements BuiltInTool {
         .filter(Boolean)
         .join('\n') || '(无输出)';
       if (r.exitCode !== 0) {
-        return { content: [{ type: 'text', text: `security ${action} 失败（exit ${r.exitCode}）：\n${out}` }], isError: true };
+        return toolError(`security ${action} 失败（exit ${r.exitCode}）：\n${out}`);
       }
       return { content: [{ type: 'text', text: out }] };
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
-      return { content: [{ type: 'text', text: `security 执行异常: ${msg}` }], isError: true };
+      return toolError(`security 执行异常: ${msg}`);
     }
   }
 }

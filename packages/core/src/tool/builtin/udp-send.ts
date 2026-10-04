@@ -2,6 +2,7 @@
 import type { BuiltInTool } from '../types';
 import type { McpCallResult } from '../../mcp/client';
 import { encodePayload, previewBuffer, type PayloadEncoding } from './raw-payload';
+import { toolError } from '../result';
 
 export class UdpSendTool implements BuiltInTool {
   name = 'udp_send';
@@ -23,7 +24,7 @@ export class UdpSendTool implements BuiltInTool {
     const host = args.host as string;
     const port = Number(args.port);
     if (!host || !Number.isInteger(port) || port < 1 || port > 65535) {
-      return { content: [{ type: 'text', text: 'Error: host 和 port(1-65535) 必填' }], isError: true };
+      return toolError('Error: host 和 port(1-65535) 必填');
     }
     const payload = String(args.payload ?? '');
     const encoding = (args.encoding as PayloadEncoding) || 'text';
@@ -31,7 +32,7 @@ export class UdpSendTool implements BuiltInTool {
 
     let dgram: typeof import('node:dgram');
     try { dgram = await import('node:dgram'); } catch {
-      return { content: [{ type: 'text', text: 'Error: udp_send 需要服务端或桌面端环境（Node dgram）。浏览器端不支持。' }], isError: true };
+      return toolError('Error: udp_send 需要服务端或桌面端环境（Node dgram）。浏览器端不支持。');
     }
 
     const start = Date.now();
@@ -55,12 +56,12 @@ export class UdpSendTool implements BuiltInTool {
         });
       });
       socket.once('error', (err: Error) => {
-        finish({ content: [{ type: 'text', text: `UDP 错误: ${err.message}` }], isError: true });
+        finish(toolError(`UDP 错误: ${err.message}`));
       });
 
       const buf = encodePayload(payload, encoding);
       socket.send(buf, port, host, (err) => {
-        if (err) finish({ content: [{ type: 'text', text: `发送失败: ${err.message}` }], isError: true });
+        if (err) finish(toolError(`发送失败: ${err.message}`));
       });
     });
   }

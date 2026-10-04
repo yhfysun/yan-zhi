@@ -1,5 +1,6 @@
 // get_api_tools 内置工具 — 按模块渐进式暴露 API 接口
 import type { BuiltInTool } from '../types';
+import { toolError, toolOk } from '../result';
 import { initApiToolRegistry, getApiToolRegistry, API_MODULES } from './api-tools';
 
 let _initDone = false;
@@ -29,23 +30,14 @@ export class GetApiToolsTool implements BuiltInTool {
         const tools = registry.get(m as any) || [];
         return { module: m, toolCount: tools.length, sample: tools[0]?.name || null };
       });
-      return {
-        content: [{ type: 'text', text: JSON.stringify({ modules, hint: `调用 get_api_tools({ module: "<模块名>" }) 获取具体接口定义。可用: ${API_MODULES.join(', ')}` }) }],
-        isError: false,
-      };
+      return toolOk(JSON.stringify({ modules, hint: `调用 get_api_tools({ module: "<模块名>" }) 获取具体接口定义。可用: ${API_MODULES.join(', ')}` }));
     }
 
     const tools = registry.get(module as any);
     if (!tools) {
-      return {
-        content: [{ type: 'text', text: JSON.stringify({ error: `未知模块 "${module}"`, available: API_MODULES }) }],
-        isError: true,
-      };
+      return toolError(JSON.stringify({ error: `未知模块 "${module}"`, available: API_MODULES }));
     }
 
-    return {
-      content: [{ type: 'text', text: JSON.stringify({ module, tools }) }],
-      isError: false,
-    };
+    return toolOk(JSON.stringify({ module, tools }));
   }
 }
