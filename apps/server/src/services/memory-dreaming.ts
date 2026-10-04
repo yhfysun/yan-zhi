@@ -6,7 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { db } from '../db.js';
 import { embedText } from './ollama-embed.js';
 import { vecToBytes, bumpMemoryCache, parseExtractedItems } from './memory-service.js';
-import { buildAnthropicBody } from './anthropic-body.js';
+import { chatViaRow } from './llm-call.js';
 
 const TICK_MS = 5 * 60_000;
 const MAX_CANDIDATES = 200;
@@ -57,7 +57,7 @@ export function setDreamingConfig(patch: Partial<Pick<DreamingConfig, 'enabled' 
 function findDefaultModel(userId: string): any | null {
   return (
     db.prepare(
-      `SELECT m.id, m.model_id, p.api_url, p.api_key_enc, p.protocol, p.headers_json
+      `SELECT m.id, m.model_id, p.id AS pid, p.api_url, p.api_key_enc, p.protocol, p.headers_json
        FROM model m JOIN platform p ON p.id = m.platform_id
        WHERE m.user_id = ? AND m.enabled = 1 AND m.type = 'llm' AND m.visible = 1 AND p.llm_enabled = 1
        ORDER BY CASE
@@ -70,36 +70,19 @@ function findDefaultModel(userId: string): any | null {
   );
 }
 
+/**
+ * 非流式 LLM 调用（P2 收敛）：走统一出口 chatViaRow（LlmClient）——
+ * 协议头/错误 hint/发送前清洗与主链路同源。此前这里手写了一份平行实现，
+ * 吃不到 client.ts 后来修的清洗与 hint 逻辑。
+ */
 async function callModel(model: any, messages: Array<{ role: string; content: string }>): Promise<string> {
-  const baseUrl = String(model.api_url || '').replace(/\/$/, '');
-  if (!baseUrl) throw new Error('平台未配置 API URL');
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-  let url: string;
-  let body: any;
-  if (model.protocol === 'anthropic') {
-    url = `${baseUrl}/v1/messages`;
-    headers['x-api-key'] = model.api_key_enc || '';
-    headers['anthropic-version'] = '2023-06-01';
-    body = buildAnthropicBody(messages, model.model_id, 2048);
-  } else {
-    url = `${baseUrl}/v1/chat/completions`;
-    if (model.api_key_enc) headers['Authorization'] = `Bearer ${model.api_key_enc}`;
-    body = { model: model.model_id, messages, stream: false };
-  }
-  try {
-    const extra = model.headers_json ? JSON.parse(model.headers_json) : {};
-    Object.assign(headers, extra || {});
-  } catch { /* ignore */ }
-  const res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) });
-  if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    throw new Error(`LLM 请求失败: HTTP ${res.status} ${text.slice(0, 200)}`);
-  }
-  const data: any = await res.json();
-  if (model.protocol === 'anthropic') {
-    return (data.content || []).filter((b: any) => b.type === 'text').map((b: any) => b.text || '').join('\n');
-  }
-  return data.choices?.[0]?.message?.content || '';
+  // Anthropic 协议保留原 2048 max_tokens 口径；OpenAI 分支原实现不带 max_tokens（undefined 不序列化）
+  const { content } = await chatViaRow(
+    model,
+    messages,
+    { maxTokens: model.protocol === 'anthropic' ? 2048 : undefined },
+  );
+  return content;
 }
 
 // ── light 扫描：无 LLM 圈候选 ──

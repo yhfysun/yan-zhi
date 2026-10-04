@@ -4,7 +4,6 @@
 import { v4 as uuid } from 'uuid';
 import { db } from '../db.js';
 import { createTask, buildSystemPromptForBackend, buildToolsForBackend, loadAgentModelParams } from '../llm-task-manager.js';
-import { buildAnthropicBody } from './anthropic-body.js';
 import { startWorkflowRun, resolveBundleFromDb, type WorkflowRunBundle } from '../workflow-runner.js';
 import { buildWorkflowInputFieldDefs } from './workflow-delegate.js';
 
@@ -193,7 +192,7 @@ export function computeNextRun(
 
 /** 选默认模型：优先用户自建的默认模型，其次内置默认模型，最后任意启用的 LLM。
  *  只认「可见」的模型与平台 —— 被用户隐藏的模型不该被自动选中。
- *  注意 findTaskModel 里任务显式绑定的模型不走这里，用户在任务里选过的照常可用。 */
+ *  （chat 分支当前只用默认模型；任务显式绑定模型的能力随已删除的 callModel 死代码一并移除） */
 function findDefaultModel(userId: string): any | null {
   return (
     db
@@ -213,73 +212,9 @@ function findDefaultModel(userId: string): any | null {
   );
 }
 
-/** 取任务绑定的模型：优先 task.platform_id + task.model_id 指定的模型，找不到则回退默认模型 */
-function findTaskModel(userId: string, platformId?: string | null, modelId?: string | null): any | null {
-  if (platformId && modelId) {
-    const m = db
-      .prepare(
-        `SELECT m.id, m.platform_id, m.model_id, p.api_url, p.api_key_enc, p.protocol, p.headers_json, p.pause_min_ms, p.pause_max_ms
-         FROM model m JOIN platform p ON p.id = m.platform_id
-         WHERE m.id = ? AND m.platform_id = ? AND m.user_id = ? AND m.enabled = 1 AND m.type = 'llm'`,
-      )
-      .get(modelId, platformId, userId);
-    if (m) return m;
-  }
-  return findDefaultModel(userId);
-}
-
-/** 用平台存储的 apiUrl/apiKey 直接调用模型（非流式） */
-async function callModel(
-  model: any,
-  messages: Array<{ role: string; content: string }>,
-): Promise<{ content: string; tokens: number }> {
-  const baseUrl = String(model.api_url || '').replace(/\/$/, '');
-  if (!baseUrl) throw new Error('平台未配置 API URL');
-
-  let apiKey = model.api_key_enc || '';
-  try {
-    const { pickToken, pauseIfNeeded } = await import('./token-pool.js');
-    await pauseIfNeeded(model);
-    const token = pickToken(model.platform_id);
-    if (token) apiKey = token.apiKey;
-  } catch {}
-
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-  let url: string;
-  let body: any;
-  if (model.protocol === 'anthropic') {
-    url = `${baseUrl}/v1/messages`;
-    headers['x-api-key'] = apiKey;
-    headers['anthropic-version'] = '2023-06-01';
-    body = buildAnthropicBody(messages, model.model_id, 2048);
-  } else {
-    url = `${baseUrl}/v1/chat/completions`;
-    if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
-    body = { model: model.model_id, messages, stream: false };
-  }
-  try {
-    const extra = model.headers_json ? JSON.parse(model.headers_json) : {};
-    Object.assign(headers, extra || {});
-  } catch { /* headers_json 非法时忽略 */ }
-
-  const res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) });
-  if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    throw new Error(`LLM 请求失败: HTTP ${res.status} ${text.slice(0, 200)}`);
-  }
-  const data: any = await res.json();
-  if (model.protocol === 'anthropic') {
-    const content = (data.content || [])
-      .filter((b: any) => b.type === 'text')
-      .map((b: any) => b.text || '')
-      .join('\n');
-    const tokens = (data.usage?.input_tokens || 0) + (data.usage?.output_tokens || 0);
-    return { content, tokens };
-  }
-  const content = data.choices?.[0]?.message?.content || '';
-  const tokens = (data.usage?.prompt_tokens || 0) + (data.usage?.completion_tokens || 0);
-  return { content, tokens };
-}
+// ★ callModel 已删除（P2 收敛，2026-10-04）：本文件里它**只有定义没有任何调用**
+//   （死代码，chat 分支实际走工作流/模型由节点声明的链路）。
+//   现存唯一的"DB 行 → 非流式调用"实现在 services/llm-call.ts（chatViaRow，走 LlmClient）。
 
 export interface ScheduledTaskRunResult {
   ok: boolean;

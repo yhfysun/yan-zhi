@@ -9,6 +9,7 @@ import {
   MAX_RETRY,
   shouldRetryStatus,
 } from '../services/token-pool.js';
+import { buildProtocolHeaders } from '@yan-zhi/core';
 
 const router = Router();
 router.use(authMiddleware);
@@ -31,13 +32,8 @@ function baseUrl(p: any): string {
 }
 
 function upstreamHeaders(p: any, apiKey: string, anthropic: boolean): Record<string, string> {
-  const h: Record<string, string> = { 'Content-Type': 'application/json' };
-  if (anthropic) {
-    h['x-api-key'] = apiKey;
-    h['anthropic-version'] = '2023-06-01';
-  } else {
-    h['Authorization'] = `Bearer ${apiKey}`;
-  }
+  // 鉴权头唯一实现（core buildProtocolHeaders，与 LlmClient 同源——P2 收敛）
+  const h = buildProtocolHeaders(anthropic ? 'anthropic' : 'openai', apiKey);
   try {
     const extra = JSON.parse(p.headers_json || '{}');
     Object.assign(h, extra);
@@ -229,10 +225,8 @@ router.get('/models', async (req: Request, res: ExpressResponse) => {
 router.post('/preview-models', async (req: Request, res: ExpressResponse) => {
   const { apiUrl, apiKey, headers, anthropic } = (req.body as any) || {};
   if (!apiUrl) { res.status(400).json({ error: 'apiUrl 必填' }); return; }
-  const h: Record<string, string> = { 'Content-Type': 'application/json' };
-  if (anthropic) { h['x-api-key'] = apiKey || ''; h['anthropic-version'] = '2023-06-01'; }
-  else { h['Authorization'] = `Bearer ${apiKey || ''}`; }
-  Object.assign(h, headers || {});
+  // 鉴权头走唯一实现（P2 收敛；此前又手写了一份 anthropic-version）
+  const h = { ...buildProtocolHeaders(anthropic ? 'anthropic' : 'openai', apiKey || ''), ...(headers || {}) };
   try {
     const upstream = await fetch(`${String(apiUrl).replace(/\/$/, '')}/v1/models`, { headers: h });
     const text = await upstream.text().catch(() => '');

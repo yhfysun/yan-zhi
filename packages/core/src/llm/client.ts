@@ -14,6 +14,42 @@ import {
 /** 能力测试种类：chat=基础问答、vision=视觉识图、function_call=工具调用、embedding=向量、image=图片生成、video=视频生成 */
 export type CapabilityTestKind = 'chat' | 'vision' | 'function_call' | 'embedding' | 'image' | 'video';
 
+/**
+ * 协议鉴权头的**唯一实现**（横切收敛 P2，2026-10-04）。
+ * 此前 client.buildHeaders / buildAnthropicHeaders / llm-proxy.upstreamHeaders /
+ * memory-dreaming.callModel / scheduled-tasks.callModel 各写一份
+ * （`anthropic-version: '2023-06-01'` 裸写 4 处），改协议头必漏。
+ * anthropic → x-api-key + anthropic-version；其余 → Bearer（key 为空则不带鉴权头）。
+ */
+export function buildProtocolHeaders(protocol: string, apiKey: string): Record<string, string> {
+  const h: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (protocol === 'anthropic') {
+    h['x-api-key'] = apiKey || '';
+    h['anthropic-version'] = '2023-06-01';
+  } else if (apiKey) {
+    h['Authorization'] = `Bearer ${apiKey}`;
+  }
+  return h;
+}
+
+/**
+ * 上游非 2xx 响应 → 可行动的错误信息（client 内 4 份复制的 hint 块收口）。
+ * maxChars：流式路径截断 200，非流式 500。
+ */
+export function upstreamErrorMessage(
+  status: number,
+  statusText: string,
+  urlDesc: string,
+  text: string,
+  maxChars = 500,
+): string {
+  let hint = '';
+  if (status === 401) hint = '（API Key 无效或未配置）';
+  else if (status === 404) hint = `（URL 不对，请检查平台 API URL。当前请求: ${urlDesc}）`;
+  else if (status === 429) hint = '（请求频率超限）';
+  return `LLM 请求失败: ${status} ${statusText}${hint}${text ? ` ${text.slice(0, maxChars)}` : ''}`;
+}
+
 export interface CapabilityTestResult {
   kind: CapabilityTestKind;
   label: string;
@@ -242,23 +278,14 @@ export class LlmClient {
   private async buildHeaders(): Promise<HeadersInit> {
     const adapter = getPlatformAdapter();
     const apiKey = await adapter.keyring.get(`platform:${this.platform.id}:apikey`);
-    return {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey || ''}`,
-      ...this.platform.headers,
-    };
+    return { ...buildProtocolHeaders('openai', apiKey || ''), ...this.platform.headers };
   }
 
   /** Anthropic 鉴权头：x-api-key + anthropic-version（不使用 Bearer） */
   private async buildAnthropicHeaders(): Promise<HeadersInit> {
     const adapter = getPlatformAdapter();
     const apiKey = await adapter.keyring.get(`platform:${this.platform.id}:apikey`);
-    return {
-      'Content-Type': 'application/json',
-      'x-api-key': apiKey || '',
-      'anthropic-version': '2023-06-01',
-      ...this.platform.headers,
-    };
+    return { ...buildProtocolHeaders('anthropic', apiKey || ''), ...this.platform.headers };
   }
 
   /** 走后端代理时的鉴权头：本地 JWT token + 授权码。
@@ -361,11 +388,7 @@ export class LlmClient {
           return;
         }
       }
-      let hint = '';
-      if (res.status === 401) hint = '（API Key 无效或未配置）';
-      else if (res.status === 404) hint = `（URL 不对，请检查平台 API URL。当前请求: ${urlDesc}）`;
-      else if (res.status === 429) hint = '（请求频率超限）';
-      throw new Error(`LLM 请求失败: ${res.status} ${res.statusText}${hint}${text ? ` ${text.slice(0, 200)}` : ''}`);
+      throw new Error(upstreamErrorMessage(res.status, res.statusText, urlDesc, text, 200));
     }
     yield* parseSSE(res.body);
   }
@@ -409,11 +432,7 @@ export class LlmClient {
     }
     if (!res.ok || !res.body) {
       const text = await res.text().catch(() => '');
-      let hint = '';
-      if (res.status === 401) hint = '（API Key 无效或未配置）';
-      else if (res.status === 404) hint = `（URL 不对，请检查平台 API URL。当前请求: ${urlDesc}）`;
-      else if (res.status === 429) hint = '（请求频率超限）';
-      throw new Error(`LLM 请求失败: ${res.status} ${res.statusText}${hint}${text ? ` ${text.slice(0, 200)}` : ''}`);
+      throw new Error(upstreamErrorMessage(res.status, res.statusText, urlDesc, text, 200));
     }
     yield* parseAnthropicSSE(res.body);
   }
@@ -447,11 +466,7 @@ export class LlmClient {
       //   现与 chatStream 对齐：读 body + 带上真实请求 URL，让原因可见。
       const text = await res.text().catch(() => '');
       const urlDesc = this.proxyBase ? `${this.proxyBase}/chat/completions` : `${this.baseUrl}/v1/chat/completions`;
-      let hint = '';
-      if (res.status === 401) hint = '（API Key 无效或未配置）';
-      else if (res.status === 404) hint = `（URL 不对，请检查平台 API URL。当前请求: ${urlDesc}）`;
-      else if (res.status === 429) hint = '（请求频率超限）';
-      throw new Error(`LLM 请求失败: ${res.status} ${res.statusText}${hint}${text ? ` ${text.slice(0, 500)}` : ''}`);
+      throw new Error(upstreamErrorMessage(res.status, res.statusText, urlDesc, text));
     }
     const data = await res.json();
     return {
@@ -492,11 +507,7 @@ export class LlmClient {
     if (!res.ok) {
       const text = await res.text().catch(() => '');
       const urlDesc = this.proxyBase ? `${this.proxyBase}/messages` : `${this.baseUrl}/v1/messages`;
-      let hint = '';
-      if (res.status === 401) hint = '（API Key 无效或未配置）';
-      else if (res.status === 404) hint = `（URL 不对，请检查平台 API URL。当前请求: ${urlDesc}）`;
-      else if (res.status === 429) hint = '（请求频率超限）';
-      throw new Error(`LLM 请求失败: ${res.status} ${res.statusText}${hint}${text ? ` ${text.slice(0, 500)}` : ''}`);
+      throw new Error(upstreamErrorMessage(res.status, res.statusText, urlDesc, text));
     }
     const data = await res.json();
     return anthropicResponseToChunk(data);
