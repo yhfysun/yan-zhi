@@ -10,6 +10,7 @@ import { getPluginManager } from '@yan-zhi/core';
 import type { McpCallResult, PluginManifest, PluginModule } from '@yan-zhi/core';
 import type { ShellAdapter } from '@yan-zhi/core';
 import { db } from '../db.js';
+import { pushPluginAudit } from '../services/plugin-audit.js';
 import { serverState } from '../state.js';
 import {
   OS_SETTINGS,
@@ -495,9 +496,7 @@ export const computerUseModule: PluginModule = {
         const result = await fn();
         recordOp();
         try {
-          const list = (await ctx.storage.get<Array<unknown>>('audit')) || [];
-          list.push({ t: Date.now(), op, detail: auditDetail });
-          await ctx.storage.set('audit', list.slice(-100));
+          await pushPluginAudit(ctx.storage, { t: Date.now(), op, detail: auditDetail });
         } catch {
           /* 审计失败不阻断操作 */
         }
@@ -1248,9 +1247,7 @@ $filtered | Sort-Object @{Expression='exeExists';Descending=$true}, name | Selec
       try {
         const result = await fn();
         try {
-          const list = (await ctx.storage.get<Array<unknown>>('audit')) || [];
-          list.push({ t: Date.now(), op, detail: auditDetail, readOnly: true });
-          await ctx.storage.set('audit', list.slice(-100));
+          await pushPluginAudit(ctx.storage, { t: Date.now(), op, detail: auditDetail, readOnly: true });
         } catch {
           /* 审计失败不阻断操作 */
         }

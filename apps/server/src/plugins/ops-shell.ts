@@ -13,6 +13,7 @@ import mysql from 'mysql2/promise';
 import pg from 'pg';
 import type { ClientChannel, ConnectConfig, SFTPWrapper } from 'ssh2';
 import { encrypt, decrypt } from '../utils/crypto.js';
+import { pushPluginAudit } from '../services/plugin-audit.js';
 import { guard, capOutput, isProductionTag } from './ops-shell-guard.js';
 
 export const OPS_SHELL_ID = 'ops-shell';
@@ -540,10 +541,8 @@ interface AuditEntry {
   ok: boolean;
 }
 async function audit(action: string, opts: { connection?: string; detail?: string; ok: boolean }): Promise<void> {
-  if (!pluginStorage) return;
-  const list = (await pluginStorage.get<AuditEntry[]>('audit')) || [];
-  list.push({ at: Date.now(), action, ...opts });
-  await pluginStorage.set('audit', list.slice(-500));
+  // 裁剪 cap 沿用 500（本插件事件密度高）；load/push/slice/save 收口在 pushPluginAudit
+  await pushPluginAudit(pluginStorage, { at: Date.now(), action, ...opts }, 500);
 }
 
 // ---------- SSH 命令执行 ----------

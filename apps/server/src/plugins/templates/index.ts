@@ -2,6 +2,7 @@
 // 内置插件以内存模块注册，运行时无法反序列化源码，故在此维护与源码同步的模板副本。
 // 注意：修改对应插件源码时须同步更新此处的模板字符串。
 import type { PluginManifest } from '@yan-zhi/core';
+import { pushPluginAudit } from '../../services/plugin-audit.js';
 
 export interface PluginTemplate {
   manifest: PluginManifest;
@@ -529,9 +530,7 @@ export const computerUseModule: PluginModule = {
         const result = await fn();
         recordOp();
         try {
-          const list = (await ctx.storage.get<Array<unknown>>('audit')) || [];
-          list.push({ t: Date.now(), op, detail: auditDetail });
-          await ctx.storage.set('audit', list.slice(-100));
+          await pushPluginAudit(ctx.storage, { t: Date.now(), op, detail: auditDetail });
         } catch {
           /* 审计失败不阻断操作 */
         }

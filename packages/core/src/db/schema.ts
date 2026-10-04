@@ -88,19 +88,9 @@ CREATE TABLE IF NOT EXISTS message (
 CREATE INDEX IF NOT EXISTS idx_message_conv ON message(conversation_id, created_at);
 -- idx_message_parent_tc 引用 message.parent_tool_call_id，旧库无此列；
 -- 该索引已移至 initSchema 迁移块之后创建（ALTER TABLE message ADD COLUMN parent_tool_call_id 之后）。
-
--- 工具调用记录
-CREATE TABLE IF NOT EXISTS tool_call (
-  id TEXT PRIMARY KEY,
-  message_id TEXT NOT NULL REFERENCES message(id) ON DELETE CASCADE,
-  mcp_server_id TEXT,
-  tool_name TEXT NOT NULL,
-  arguments_json TEXT,
-  result_json TEXT,
-  duration_ms INTEGER,
-  created_at INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_toolcall_msg ON tool_call(message_id);
+-- ★ tool_call 表已删除（P4，2026-10-04）：建表后全仓库零写入零读取（死表）；
+--   工具调用审计实际由 message.tool_calls_json + path_access_audit + file_change 承载。
+--   老库里的遗留表不迁移不清理（无引用，无害）。
 
 -- MCP 服务
 CREATE TABLE IF NOT EXISTS mcp_server (
@@ -198,18 +188,9 @@ CREATE TABLE IF NOT EXISTS skill (
   created_at INTEGER NOT NULL
 );
 
--- 模型调用日志
-CREATE TABLE IF NOT EXISTS model_call (
-  id TEXT PRIMARY KEY,
-  platform_id TEXT NOT NULL,
-  model_id TEXT NOT NULL,
-  endpoint TEXT NOT NULL,
-  tokens_in INTEGER,
-  tokens_out INTEGER,
-  duration_ms INTEGER,
-  created_at INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_modelcall_created ON model_call(created_at DESC);
+-- ★ model_call 表已删除（P4，2026-10-04）：建表后全仓库零写入零读取（死表）；
+--   模型调用记录实际以 message 表 + llm-logs 只读路由（联表查询）为准。
+--   老库里的遗留表不迁移不清理（无引用，无害）。
 
 -- 自定义工具
 CREATE TABLE IF NOT EXISTS custom_tool (

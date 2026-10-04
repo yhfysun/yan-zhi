@@ -15,6 +15,7 @@ import {
   type ScopeEntry, type SecConfig,
 } from './sec-lab-guard.js';
 import { renderOutput, sortFindings, type Finding, type ToolOutput } from './sec-lab-types.js';
+import { pushPluginAudit } from '../services/plugin-audit.js';
 import { runRecon } from './sec-lab-tools/recon.js';
 import { runPortScan } from './sec-lab-tools/portscan.js';
 import { runWebProbe } from './sec-lab-tools/webprobe.js';
@@ -112,10 +113,8 @@ async function loadConfig(): Promise<SecConfig> {
 }
 
 async function pushAudit(e: AuditEntry): Promise<void> {
-  if (!store) return;
-  const list = await loadAudit();
-  list.push(e);
-  await store.set(K_AUDIT, list.slice(-AUDIT_MAX));
+  // 裁剪 cap 沿用 AUDIT_MAX=500；load/push/slice/save 收口在 pushPluginAudit（P4）
+  await pushPluginAudit(store, e, AUDIT_MAX);
 }
 
 async function pushFindings(target: string, tool: string, findings: Finding[]): Promise<void> {
