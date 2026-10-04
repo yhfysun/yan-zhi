@@ -1,6 +1,7 @@
 // LLM 任务 SSE 路由 —— 前端通过此路由创建任务、订阅事件流、终止任务
 import { Router, Request, Response } from 'express';
 import { authMiddleware } from '../auth.js';
+import { sseStream } from '../services/sse.js';
 import {
   createTask, subscribe, abortTask, pauseTask, resumeTask, getActiveTasks, getTask, getTaskRow, resolveToolResult, injectUserMessage,
 } from '../llm-task-manager.js';
@@ -38,21 +39,12 @@ router.get('/tasks/:id/stream', (req: Request, res: Response) => {
     return;
   }
 
-  res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache');
-  res.setHeader('Connection', 'keep-alive');
-
   // 先发送连接成功事件（seq = 当前游标，前端以此初始化 since），再重放 seq > since 的事件 + 订阅后续事件。
   // 注意：connected 不进 task.events 数组，前端也不要为它累加游标，否则会漏事件。
-  res.write(`data: ${JSON.stringify({ type: 'connected', seq: task.seq, eventCount: task.events.length })}\n\n`);
-
-  const unsubscribe = subscribe(taskId, since, (event) => {
-    res.write(`data: ${JSON.stringify(event)}\n\n`);
-  });
-
-  // 客户端断开时取消订阅
-  req.on('close', () => {
-    unsubscribe();
+  // header/connected/订阅/退订收口在 services/sse.ts（P5）
+  sseStream(req, res, {
+    connected: { seq: task.seq, eventCount: task.events.length },
+    subscribe: (onEvent) => subscribe(taskId, since, onEvent),
   });
 });
 

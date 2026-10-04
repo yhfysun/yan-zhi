@@ -28,6 +28,7 @@ import { syncWorkflowTools } from '../services/workflow-tool-registry.js';
 import { getToolRegistry } from '@yan-zhi/core';
 import { SUPPORTED_API_TOOLS } from '../mcp/api-tool-executor.js';
 import { checkWorkflowPermission, normalizePermissionMode, type PermissionMode } from '../tool-permission.js';
+import { sseStream } from '../services/sse.js';
 
 const router = Router();
 router.use(authMiddleware);
@@ -373,18 +374,11 @@ router.get('/runs/:id/stream', (req: Request, res: Response) => {
   }
   if (run.userId !== userId) { res.status(404).json({ error: '运行不存在' }); return; }
 
-  res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache');
-  res.setHeader('Connection', 'keep-alive');
-
-  // 与 llm 任务一致：connected 不进 events 数组、不推进前端游标
-  res.write(`data: ${JSON.stringify({ type: 'connected', seq: run.seq, status: run.status })}\n\n`);
-
-  const unsubscribe = subscribeWorkflowRun(runId, since, (event) => {
-    res.write(`data: ${JSON.stringify(event)}\n\n`);
+  // 与 llm 任务一致：connected 不进 events 数组、不推进前端游标；结构收口在 services/sse.ts（P5）
+  sseStream(req, res, {
+    connected: { seq: run.seq, status: run.status },
+    subscribe: (onEvent) => subscribeWorkflowRun(runId, since, onEvent),
   });
-
-  req.on('close', () => { unsubscribe(); });
 });
 
 export default router;
