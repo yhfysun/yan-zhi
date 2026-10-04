@@ -223,8 +223,8 @@
               :class="{ active: i === atIndex }"
               @click="pickAtFile(f)"
             >
-              <el-icon class="cmd-menu-icon" :style="{ color: fileTypeMeta(f.name).color }">
-                <component :is="fileTypeMeta(f.name).icon" />
+              <el-icon class="cmd-menu-icon" :style="{ color: refIconMeta(f).color }">
+                <component :is="refIconMeta(f).icon" />
               </el-icon>
               <span class="cmd-menu-label">{{ f.name }}</span>
             </div>
@@ -663,8 +663,8 @@
 
     <div v-if="selectedWorkFiles.length > 0" class="file-chips ref-chips">
       <div v-for="f in selectedWorkFiles" :key="f.path" class="file-chip ref-chip">
-        <el-icon class="file-chip-icon" :style="{ color: fileTypeMeta(f.name).color }">
-          <component :is="fileTypeMeta(f.name).icon" />
+        <el-icon class="file-chip-icon" :style="{ color: refIconMeta(f).color }">
+          <component :is="refIconMeta(f).icon" />
         </el-icon>
         <span class="file-chip-name">{{ f.name }}</span>
         <el-button size="small" link class="file-chip-remove" @click="toggleFileSelect(f.path)">
@@ -1310,17 +1310,51 @@ const atMenuOpen = ref(false);
 const atQuery = ref('');
 const atIndex = ref(0);
 
+/** 工作区目录集合（从文件索引的路径推导：目录不进索引，但父目录可以枚举出来） */
+const workspaceFolders = computed(() => {
+  const map = new Map<string, { name: string; path: string }>();
+  for (const f of workspaceFiles.value) {
+    const parts = (f.path || '').split(/[\\/]/);
+    for (let i = 1; i < parts.length; i++) {
+      const dir = parts.slice(0, i).join('/');
+      if (!dir || map.has(dir)) continue;
+      map.set(dir, { name: parts[i - 1], path: dir });
+    }
+  }
+  return [...map.values()];
+});
+
+/** @ 浮层候选：目录在前（@folder 引用），文件在后 */
 const atFileList = computed(() => {
   const q = atQuery.value.toLowerCase();
-  const list = q ? workspaceFiles.value.filter((f) => f.name.toLowerCase().includes(q)) : workspaceFiles.value;
-  return list.slice(0, 20);
+  const folders = workspaceFolders.value
+    .filter((d) => !q || d.name.toLowerCase().includes(q) || d.path.toLowerCase().includes(q))
+    .slice(0, 6)
+    .map((d) => ({ name: `${d.name}/`, path: d.path, size: 0, isDir: true, isFolder: true }));
+  const files = (q ? workspaceFiles.value.filter((f) => f.name.toLowerCase().includes(q)) : workspaceFiles.value)
+    .slice(0, q ? 14 : 20)
+    .map((f) => ({ ...f, isFolder: false }));
+  return [...folders, ...files].slice(0, 20);
 });
 
 const selectedWorkFiles = computed(() => {
+  const folderPaths = new Set(workspaceFolders.value.map((d) => d.path));
   return [...selectedFilePaths.value]
-    .map((p) => workspaceFiles.value.find((w) => w.path === p))
-    .filter((f): f is { name: string; path: string; size: number; isDir: boolean } => !!f);
+    .map((p) => {
+      const f = workspaceFiles.value.find((w) => w.path === p);
+      if (f) return { name: f.name, path: f.path, size: f.size, isDir: false, isFolder: false };
+      // 目录引用：不在文件索引里，按路径归属识别
+      if (folderPaths.has(p)) return { name: `${(p.split(/[\\/]/).pop() || p)}/`, path: p, size: 0, isDir: true, isFolder: true };
+      return null;
+    })
+    .filter((f): f is { name: string; path: string; size: number; isDir: boolean; isFolder: boolean } => !!f);
 });
+
+/** 引用图标：目录用 FolderOpened，文件按扩展名着色 */
+function refIconMeta(f: { name: string; isFolder?: boolean }) {
+  if (f.isFolder) return { icon: FolderOpened as Component, color: '#0ea5e9' };
+  return fileTypeMeta(f.name);
+}
 
 function pickAtFile(f: { name: string; path: string }) {
   toggleFileSelect(f.path);

@@ -2431,7 +2431,21 @@ async function healStalePlatform() {
         const fileRefs: Array<Record<string, unknown>> = [];
         for (const filePath of selectedFilePaths.value) {
           const f = workspaceFiles.value.find(wf => wf.path === filePath);
-          if (!f) continue;
+          // 目录引用（@folder，2026-10-03 P1）：目录不在文件索引里 —— 若路径不是任何已索引
+          // 文件、但有已索引文件位于其下，即判定为目录。不读内容，注入目录引用说明。
+          if (!f) {
+            const under = workspaceFiles.value.filter(wf => wf.path.startsWith(filePath + '/') || wf.path.startsWith(filePath + '\\'));
+            if (under.length > 0) {
+              fileRefs.push({
+                fileName: (filePath.split(/[\\/]/).pop() || filePath) + '/',
+                path: filePath,
+                type: 'folder',
+                size: 0,
+                preview: `(目录引用：该目录下约 ${under.length} 个已索引文件。请用 file_list / code_search / code_outline / code_semantic_search 自行探索，不要假设目录内容)`,
+              });
+            }
+            continue;
+          }
           try {
             const { getPlatformAdapter } = await import('@yan-zhi/core');
             const adapter = getPlatformAdapter();

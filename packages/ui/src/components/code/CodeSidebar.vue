@@ -28,6 +28,13 @@
           <el-icon :size="17"><Aim /></el-icon>
         </button>
       </el-tooltip>
+
+      <!-- 模型修改审查（多文件汇总 review，2026-10-03 P0） -->
+      <el-tooltip content="模型修改审查" placement="right" :show-after="300">
+        <button class="csb-act" :class="{ on: leadTab === 'file' && view === 'review' }" @click="openFileView('review')">
+          <el-icon :size="17"><View /></el-icon>
+        </button>
+      </el-tooltip>
       <el-tooltip content="控制台" placement="right" :show-after="300">
         <button class="csb-act" :class="{ on: code.consoleOpen }" @click="code.toggleConsole()">
           <el-icon :size="17"><Monitor /></el-icon>
@@ -66,6 +73,9 @@
           <ChatGitPanel ref="gitPanelRef" :repo="code.projectDir" @viewDiff="onViewDiff" />
         </div>
         <RunDebugPanel v-show="leadTab === 'file' && view === 'run'" />
+
+        <!-- 模型修改审查面板 -->
+        <AiChangesReviewPanel v-show="leadTab === 'file' && view === 'review'" />
 
         <!-- 插件列表面板 -->
         <div v-show="leadTab === 'file' && view === 'plugins'" class="csb-plugin-list">
@@ -125,7 +135,7 @@
 <script setup lang="ts">
 import { computed, ref, nextTick, onMounted, watch } from 'vue';
 import { ElMessage } from 'element-plus';
-import { Files, Search, Share, Aim, Setting, Monitor, Box, ChatDotRound } from '@element-plus/icons-vue';
+import { Files, Search, Share, Aim, Setting, Monitor, Box, ChatDotRound, View } from '@element-plus/icons-vue';
 import { useCodeStore, type SidebarView } from '../../stores/code';
 import { usePluginStore } from '../../stores/plugin';
 import { useGitStore } from '../../stores/git';
@@ -133,6 +143,7 @@ import { openSettingsDrawer } from '../../composables/useSettingsDrawer';
 import ExplorerPanel from './panels/ExplorerPanel.vue';
 import FileSearchPanel from './panels/FileSearchPanel.vue';
 import RunDebugPanel from './panels/RunDebugPanel.vue';
+import AiChangesReviewPanel from './panels/AiChangesReviewPanel.vue';
 import ChatGitPanel from '../chat/ChatGitPanel.vue';
 import GitDiffViewer from '../chat/GitDiffViewer.vue';
 import CicdConsole from '../../views/plugin/CicdConsole.vue';

@@ -160,6 +160,8 @@ export interface PendingPathAuth {
   toolName: string;
   /** 命令类工具（cmd_exec/python_exec）：路径抽不到，展示的是整条命令 */
   isCommand: boolean;
+  /** 危险命令命中原因（非空 = 破坏性命令单独授权：无"记住本会话"选项） */
+  dangerWhy?: string;
   workspaceDir: string;
   items: PendingPathAuthItem[];
   /** 决议回传：once=仅此次 / dir=允许该目录且本会话记住 / deny=拒绝 */
@@ -1175,6 +1177,7 @@ async function loadConversations() {
         pendingPathAuth.value = {
           toolName: String(raw.toolName || ''),
           isCommand: !!raw.isCommand,
+          dangerWhy: String(raw.dangerWhy || '') || undefined,
           workspaceDir: String(raw.workspaceDir || ''),
           items,
           resolve: (decision) => {

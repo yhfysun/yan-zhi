@@ -91,16 +91,19 @@ describe('① file_write 的路径必须由代码决定，不能靠模型传', (
   });
 
   it('★★ conversation_file 必须登记**工具回传的实际路径**，不能用模型传的 args.path', () => {
-    const code = strip(TASK_MGR);
-    const i = code.indexOf("toolName === 'file_write' && !result.startsWith");
-    expect(i, '未找到 file_write 登记分支').toBeGreaterThan(0);
+    // ★ 2026-10-03 修复：file_write 登记分支已随「产物登记钩子」重构迁移到
+    //   services/artifact-hooks.ts（registerAfterToolHook('artifact:file_write')），
+    //   扫描目标从 llm-task-manager.ts 同步更新。钉住的语义不变：
+    //   路径必须来自工具 _meta（实际落盘位置），绝不能用模型传的 args.path。
+    const code = strip(readRepo('apps/server/src/services/artifact-hooks.ts'));
+    const i = code.indexOf("registerAfterToolHook('artifact:file_write'");
+    expect(i, '未找到 file_write 登记钩子').toBeGreaterThan(0);
     const block = code.slice(i, i + 900);
-    // ★ 必须来自工具 _meta（实际落盘路径）—— 断言收紧到"filePath 的取值来源"
-    expect(block, '★ 登记路径未取自工具回传').toMatch(/const filePath = String\((toolMetaOut|fwMeta[^)]*path|_meta[^)]*path)/);
+    // ★ 必须来自工具 _meta（实际落盘路径）
+    expect(block, '★ 登记路径未取自工具回传 _meta').toMatch(/const filePath = String\(m\?\.path/);
     // ★ 反向：不得从 args.path 取登记路径（那会登记一个不存在的位置 → 点开 404）
-    //  用宽松匹配覆盖 `String(args.path)` / `String(args.path || '')` 等写法
-    //  （变异测试证明：只匹配 `String\(args\.path\)` 时，写成 `String(args.path || '')` 会漏判）
-    expect(block, '★ 仍在用模型传的 args.path 登记').not.toMatch(/args\.path/);
+    //  钩子签名的入参已改名 _args（下划线 = 模型入参不参与登记），这里按名字钉住
+    expect(block, '★ 仍在用模型传的 args 登记').not.toMatch(/filePath = String\(_?args[.)]/);
   });
 
   it('★ _meta 必须能传出来（否则调用点拿不到实际路径）', () => {

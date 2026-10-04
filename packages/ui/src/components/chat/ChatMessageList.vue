@@ -134,6 +134,12 @@
                           <div v-if="detectPath(getStepToolResult(step, tc.id))" class="tool-item-section">
                             <el-button size="small" @click="openPath(detectPath(getStepToolResult(step, tc.id))!)">浏览文件</el-button>
                           </div>
+                          <!-- 文件改动内联 diff 卡：聊天流内直接 review（接受/回退），不用切工作台 -->
+                          <ChatFileChangeCard
+                            v-if="fileChangePathOf(resolveToolDisplay(tc).tool, getStepToolResult(step, tc.id))"
+                            :path="fileChangePathOf(resolveToolDisplay(tc).tool, getStepToolResult(step, tc.id))!"
+                            :conversation-id="store.currentConvId || ''"
+                          />
                           <SubAgentRoundView
                             v-if="resolveToolDisplay(tc).tool === 'call_agent' && step.subAgentRounds?.find(r => r.toolCallId === tc.id)"
                             :round="step.subAgentRounds!.find(r => r.toolCallId === tc.id)!"
@@ -189,6 +195,11 @@
                           <div v-if="detectPath(getToolResult(tc.id))" class="tool-item-section">
                             <el-button size="small" @click="openPath(detectPath(getToolResult(tc.id))!)">浏览文件</el-button>
                           </div>
+                          <ChatFileChangeCard
+                            v-if="fileChangePathOf(resolveToolDisplay(tc).tool, getToolResult(tc.id))"
+                            :path="fileChangePathOf(resolveToolDisplay(tc).tool, getToolResult(tc.id))!"
+                            :conversation-id="store.currentConvId || ''"
+                          />
                         </div>
                       </div>
                     </div>
@@ -381,8 +392,10 @@
   <div v-if="store.pendingPathAuth" class="inline-ask-card inline-auth-card">
     <div class="inline-ask-icon inline-auth-icon"><el-icon><Lock /></el-icon></div>
     <div class="inline-ask-body">
-      <div class="inline-ask-question">
-        {{ authIsCommand ? '该命令需要你授权执行' : '需要你授权访问工作目录外的位置' }}
+      <div class="inline-ask-question" :style="store.pendingPathAuth.dangerWhy ? 'color:#e5484d' : ''">
+        {{ store.pendingPathAuth.dangerWhy
+          ? `危险命令：${store.pendingPathAuth.dangerWhy}`
+          : authIsCommand ? '该命令需要你授权执行' : '需要你授权访问工作目录外的位置' }}
       </div>
       <div class="inline-ask-desc">
         工具 <code>{{ store.pendingPathAuth.toolName }}</code>
@@ -400,8 +413,15 @@
       </div>
       <div class="inline-ask-actions">
         <el-button size="small" @click="store.submitPendingPathAuth('deny')">拒绝</el-button>
-        <el-button size="small" @click="store.submitPendingPathAuth('once')">仅此次允许</el-button>
-        <el-button size="small" type="primary" @click="store.submitPendingPathAuth('dir')">
+        <el-button size="small" type="primary" @click="store.submitPendingPathAuth('once')">
+          {{ store.pendingPathAuth.dangerWhy ? '我已确认，仅此次执行' : '仅此次允许' }}
+        </el-button>
+        <!-- 危险命令不给"记住本会话"：不可逆动作每次单独点头 -->
+        <el-button
+          v-if="!store.pendingPathAuth.dangerWhy"
+          size="small"
+          @click="store.submitPendingPathAuth('dir')"
+        >
           {{ authIsCommand ? '允许命令（本会话）' : '允许该目录（本会话）' }}
         </el-button>
       </div>
@@ -520,6 +540,7 @@ import MediaViewer from '../media/MediaViewer.vue';
 import MediaContextMenu from '../media/MediaContextMenu.vue';
 import MediaHoverFloat from '../media/MediaHoverFloat.vue';
 import ToolMediaPreview from './ToolMediaPreview.vue';
+import ChatFileChangeCard from './ChatFileChangeCard.vue';
 import { exportMarkdownDocx, absoluteMediaSrc, mediaOfTool, type MediaTarget } from '../../composables/useMediaPreview';
 
 const {
@@ -720,6 +741,17 @@ function detectPath(text: unknown): string | null {
   const s = typeof text === 'string' ? text : JSON.stringify(text);
   const m = s.match(/(?:[A-Za-z]:[\\/][^\s"'<>|]+)|(?:\/(?:home|Users|root|tmp|opt|var|src|projects|code|workspace)[^\s"'<>|]*)/);
   return m ? m[0].replace(/["',]+$/, '') : null;
+}
+
+/** 文件改动类工具：结果里带路径的，在卡片下内联 diff 卡（聊天流内 review，2026-10-03 P0） */
+const FILE_MUTATING_TOOLS = new Set(['file_write', 'file_edit']);
+function fileChangePathOf(tool: string, result: unknown): string | null {
+  if (!FILE_MUTATING_TOOLS.has(tool)) return null;
+  const p = detectPath(result);
+  if (!p) return null;
+  // 结果文本形如 "Successfully edited <path>: ..." / "Successfully wrote ..."；
+  // detectPath 的正则把 "..." 收进路径尾巴 —— 去掉工具结果常见的冒号后缀
+  return p.replace(/:+$/, '');
 }
 
 function renderAssistantMarkdown(content?: string) {

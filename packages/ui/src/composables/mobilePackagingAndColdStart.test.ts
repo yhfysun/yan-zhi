@@ -264,11 +264,14 @@ describe('⑤ 不得把内部 guest 身份显示成"已登录账号"', () => {
     expect(AUTH, 'isGuest 未从 store 导出').toMatch(/return\s*\{[^}]*isGuest[^}]*\}/);
   });
 
-  it('★ 侧栏底部身份区必须用 isLoggedIn 分流，且有明确的"未登录"分支', () => {
+  it('★ 侧栏底部身份区必须用 isLoggedIn 分流，且有明确的"登录"入口分支', () => {
+    // ★ 2026-10-03 更新：未登录分支的文案从「未登录」演进为「登录」入口
+    //   （is-login-entry，点击进 /login）。钉住的结构语义不变：
+    //   isLoggedIn 分流 + v-else 兜底分支 + 引导去 /login。
     const SIDE = stripComments(read('components/SideNav.vue'));
     expect(SIDE).toMatch(/v-if="authStore\.isLoggedIn"/);
-    expect(SIDE, '缺少未登录分支').toMatch(/v-else/);
-    expect(SIDE, '未登录分支应提示"未登录"').toMatch(/未登录/);
+    expect(SIDE, '缺少兜底分支').toMatch(/v-else/);
+    expect(SIDE, '未登录分支应是登录入口（进 /login）').toMatch(/is-login-entry[\s\S]{0,200}\$router\.push\('\/login'\)/);
     expect(SIDE, '不得用 !!authStore.user 当登录判据').not.toMatch(/v-if="!!authStore\.user/);
   });
 

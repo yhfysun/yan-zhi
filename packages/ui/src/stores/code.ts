@@ -5,7 +5,7 @@ import { ref, computed, watch } from 'vue';
 import { api } from '../api/client';
 import { useSettingsStore } from './settings';
 
-export type SidebarView = 'explorer' | 'search' | 'git' | 'run' | 'plugins';
+export type SidebarView = 'explorer' | 'search' | 'git' | 'run' | 'plugins' | 'review';
 
 export interface OpenFile {
   path: string;

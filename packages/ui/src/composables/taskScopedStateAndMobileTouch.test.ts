@@ -498,7 +498,9 @@ describe('⑥ 工具权限安全默认：新任务必须默认只读（2026-09-2
     expect(LTM, '★ 任务创建时权限兜底不是 readonly').toMatch(/let permissionMode: PermissionMode = 'readonly'/);
     expect(LTM, '★ 仍存在 `|| \'default\'` 的权限兜底（查不到时放行）')
       .not.toMatch(/task\.permissionMode\s*\|\|\s*'default'/);
-    expect((LTM.match(/task\.permissionMode\s*\|\|\s*'readonly'/g) || []).length, '★ 兜底点数量不对（应 4 处）').toBe(4);
+    // ★ 2026-10-03：新增 2 处兜底点（spawn_sub_agent 工具面裁剪 + 子智能体工具全集裁剪，
+    //   均由本守门测试的“不得 || 'default'”反向断言逼出），总数 4 → 6。
+    expect((LTM.match(/task\.permissionMode\s*\|\|\s*'readonly'/g) || []).length, '★ 兜底点数量不对（应 6 处）').toBe(6);
   });
 
   it('★ 建库默认值必须是 readonly（新装用户从第一刻起就安全）', () => {
