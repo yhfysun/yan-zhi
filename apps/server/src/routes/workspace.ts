@@ -4,6 +4,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { serverState } from '../state.js';
 import { db } from '../db.js';
+import { isWithinRoot } from '../services/path-guard.js';
 
 const router = Router();
 
@@ -58,7 +59,7 @@ router.get('/tree', (req, res) => {
       target = root;
       if (sub) {
         target = path.resolve(root, sub);
-        if (target !== root && !target.startsWith(root + path.sep)) {
+        if (!isWithinRoot(target, root)) {
           return res.status(400).json({ error: 'sub 超出根目录范围' });
         }
       }
@@ -333,7 +334,7 @@ router.get('/search', (req, res) => {
   let baseRel = '';
   if (sub) {
     const resolved = path.resolve(root, sub);
-    if (resolved !== root && !resolved.startsWith(root + path.sep)) {
+    if (!isWithinRoot(resolved, root)) {
       return res.status(400).json({ error: '搜索范围超出项目根目录' });
     }
     try {
@@ -444,7 +445,7 @@ router.get('/changes', (req, res) => {
   } catch { rows = []; }
   const under = rows.filter((r) => {
     const p = String(r.path || '').replace(/[\\/]+$/, '');
-    return p === dir || p.startsWith(dir + '/') || p.startsWith(dir + '\\');
+    return isWithinRoot(p, dir);
   });
   const byPath = new Map<string, { id: string; path: string; tool: string; createdAt: number; count: number }>();
   for (const r of under) {
@@ -579,7 +580,7 @@ router.post('/changes/rollback-all', (req, res) => {
   } catch { rows = []; }
   const under = rows.filter((r) => {
     const p = String(r.path || '').replace(/[\\/]+$/, '');
-    return p === dir || p.startsWith(dir + '/') || p.startsWith(dir + '\\');
+    return isWithinRoot(p, dir);
   });
   // 每个路径取最新一条做回退基准；markChange 会把同路径全部 pending 收口
   const byPath = new Map<string, any>();

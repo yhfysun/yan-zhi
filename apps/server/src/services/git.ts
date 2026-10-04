@@ -2,6 +2,7 @@ import simpleGit, { type SimpleGit } from 'simple-git';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { getPlatformAdapter } from '@yan-zhi/core';
+import { isWithinRoot } from './path-guard.js';
 
 /** 面板缓存：仓库内的隐藏目录（应用独有，随仓库走，不进版本库） */
 const CACHE_DIR = '.yan-zhi';
@@ -63,7 +64,7 @@ export class GitService {
     if (workspaceDir) {
       const ws = path.resolve(workspaceDir);
       const r = path.resolve(repo);
-      if (r !== ws && !r.startsWith(ws + path.sep)) {
+      if (!isWithinRoot(r, ws)) {
         throw new Error(`路径不在工作目录内: ${repo}`);
       }
     }
@@ -437,7 +438,7 @@ export class GitService {
     this.assertWithinWorkspace(repo, ws);
     const full = path.resolve(repo, filePath);
     const repoRoot = path.resolve(repo);
-    if (full !== repoRoot && !full.startsWith(repoRoot + path.sep)) {
+    if (!isWithinRoot(full, repoRoot)) {
       throw new Error('非法路径');
     }
     return fs.readFile(full, 'utf-8');
@@ -519,7 +520,7 @@ export class GitService {
     this.assertWithinWorkspace(repo, ws);
     const full = path.resolve(repo, filePath);
     const repoRoot = path.resolve(repo);
-    if (full !== repoRoot && !full.startsWith(repoRoot + path.sep)) {
+    if (!isWithinRoot(full, repoRoot)) {
       throw new Error('非法路径');
     }
     await fs.writeFile(full, content, 'utf-8');

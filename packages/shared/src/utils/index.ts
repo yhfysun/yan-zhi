@@ -85,6 +85,9 @@ export function debounce<T extends (...args: any[]) => void>(fn: T, ms: number):
   }) as T;
 }
 
+// ===== Promise 超时兜底（唯一实现；此前 7+ 份手写）=====
+export { withTimeout, withTimeoutOrUndefined } from './timeout';
+
 // ===== SQL 文本工具（server sql-guard 与前端控制台共用） =====
 export {
   splitSqlStatements,

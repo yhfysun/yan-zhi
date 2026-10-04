@@ -12,6 +12,7 @@
 //   - embedding 不可用（未配向量模型且无 Ollama）→ 明确报错给模型，不静默空结果。
 //   - 已知边界：v1 不做 AST 切块/符号级 chunk（80 行窗口）；不做增量监听（reindex 手动刷新）。
 
+import { normalizeForCompare } from './path-guard.js';
 import path from 'node:path';
 import fsp from 'node:fs/promises';
 import { db } from '../db.js';
@@ -59,9 +60,7 @@ function cosine(a: number[], b: number[]): number {
 
 /** 规整 workspace key（盘符大小写/斜杠方向统一，Windows 路径同一目录只建一份索引） */
 function normWorkspace(p: string): string {
-  let n = path.resolve(p).replace(/[\\/]+$/, '');
-  if (process.platform === 'win32') n = n.toLowerCase();
-  return n;
+  return normalizeForCompare(p);
 }
 
 async function walkCodeFiles(root: string, maxFiles: number): Promise<string[]> {

@@ -330,9 +330,10 @@ describe('⑪ 接力闸门与空转断路器判据必须一致（2026-09-29 生�
    *   「（未自动续跑：任务计划尚有 7 个未完成步骤）」。
    */
   it('★★★ 阈值必须由同一个常量提供，两处不得各写数字字面量', () => {
-    expect(LTM, '★ 未定义共享阈值常量').toMatch(/EMPTY_ARGS_DEGENERATE_THRESHOLD\s*=\s*3/);
+    // P6 提升为模块级导出 EMPTY_ARGS_THRESHOLD（别名 EMPTY_ARGS_DEGENERATE_THRESHOLD 仍指向它）
+    expect(LTM, '★ 未定义共享阈值常量').toMatch(/EMPTY_ARGS_THRESHOLD\s*=\s*3/);
     // 两处引用（断路器 + 接力闸门）
-    const refs = LTM.match(/EMPTY_ARGS_DEGENERATE_THRESHOLD/g) || [];
+    const refs = LTM.match(/EMPTY_ARGS(_DEGENERATE)?_THRESHOLD/g) || [];
     expect(refs.length, '★ 共享阈值常量未被两处同时引用（判据又漂移了）').toBeGreaterThanOrEqual(3);
   });
 
@@ -342,7 +343,7 @@ describe('⑪ 接力闸门与空转断路器判据必须一致（2026-09-29 生�
   });
 
   it('★★ 断路器与接力闸门必须用同一比较方式（>= 阈值）', () => {
-    const uses = LTM.match(/consecutiveArgFailures\s*>=\s*EMPTY_ARGS_DEGENERATE_THRESHOLD/g) || [];
+    const uses = LTM.match(/consecutiveArgFailures\s*>=\s*EMPTY_ARGS(_DEGENERATE)?_THRESHOLD/g) || [];
     expect(uses.length, '★ 未两处统一为 >= 阈值').toBeGreaterThanOrEqual(2);
   });
 

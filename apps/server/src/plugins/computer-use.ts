@@ -11,6 +11,7 @@ import type { McpCallResult, PluginManifest, PluginModule } from '@yan-zhi/core'
 import type { ShellAdapter } from '@yan-zhi/core';
 import { db } from '../db.js';
 import { pushPluginAudit } from '../services/plugin-audit.js';
+import { isWithinRoot } from '../services/path-guard.js';
 import { serverState } from '../state.js';
 import {
   OS_SETTINGS,
@@ -472,7 +473,7 @@ export const computerUseModule: PluginModule = {
         }
         const dir = screenshotsDir();
         const file = path.join(dir, name);
-        if (!file.startsWith(dir) || !fs.existsSync(file)) {
+        if (!isWithinRoot(file, dir) || !fs.existsSync(file)) {
           (res as unknown as { status: (n: number) => { json: (d: unknown) => void } }).status(404).json({ error: '截图不存在或已清理' });
           return;
         }
@@ -538,7 +539,7 @@ export const computerUseModule: PluginModule = {
             const wsRoot = serverState.workspaceDir?.trim() ? path.resolve(serverState.workspaceDir.trim()) : '';
             if (saveAs && wsRoot) {
               const target = path.resolve(wsRoot, saveAs);
-              if (target !== wsRoot && target.startsWith(wsRoot + path.sep)) {
+              if (isWithinRoot(target, wsRoot)) {
                 await (await import('node:fs/promises')).mkdir(path.dirname(target), { recursive: true });
                 await (await import('node:fs/promises')).copyFile(file, target);
                 keptTo = target;

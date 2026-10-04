@@ -93,6 +93,17 @@ const WORKFLOW_DELIVERY_TIMEOUT_MS = 30 * 1000;
  */
 const DEFAULT_MAX_REACT_STEPS = 500;
 
+/**
+ * 空转断路器阈值（P6 提升为模块级导出，2026-10-04）：连续 N 次空参调用判定为退化。
+ * ★ 曾因「断路器 >=3 vs 接力闸门 >0」各写字面量漂移出真实事故 —— 现在两处判定共用本常量，
+ *   子智能体等新循环入口也必须接这里，禁止再写字面量。
+ */
+export const EMPTY_ARGS_THRESHOLD = 3;
+/** 兼容旧名（runTask 内多处引用）—— 新代码一律用 EMPTY_ARGS_THRESHOLD */
+const EMPTY_ARGS_DEGENERATE_THRESHOLD = EMPTY_ARGS_THRESHOLD;
+/** 前端委托工具（executeToolViaFrontend）的超时上限：2 分钟（此前裸写魔数，日志文案也硬编码 "2min"） */
+export const FRONTEND_TOOL_TIMEOUT_MS = 2 * 60 * 1000;
+
 export type TaskStatus = 'running' | 'completed' | 'failed' | 'aborted' | 'paused';
 
 export interface SSEEvent {
@@ -1596,7 +1607,6 @@ async function runReActLoop(task: LlmTask, params: {
      *   ★ 判据：**同一个语义在两处判定，就必须共享同一个常量**。
      *     各写一遍字面量必然漂移，而且这种漂移**不报错**，只表现为"功能时好时坏"。
      */
-    const EMPTY_ARGS_DEGENERATE_THRESHOLD = 3;
     // 「只写了工具名、没写参数体」且该工具声明了必填参数 → 文本模式解析时记到这里，
     // 在本轮末尾给模型一条**准确**提示（"你只给了工具名，缺参数"，而不是误导成"输出被截断"）。
     // 见 parseTextModeToolCalls 的空参防护注释。
@@ -2963,7 +2973,7 @@ async function executeToolViaFrontend(task: LlmTask, toolName: string, args: any
             console.warn(`[llm-task] 前端工具执行超时(2min): ${toolName} callId=${callId} conv=${task.conversationId}（前端刷新/断连时常见，任务将以此错误继续）`);
             pending.reject(new Error(`工具 ${toolName} 执行超时`));
           }
-        }, timeoutMsOverride && timeoutMsOverride > 0 ? timeoutMsOverride : 2 * 60 * 1000);
+        }, timeoutMsOverride && timeoutMsOverride > 0 ? timeoutMsOverride : FRONTEND_TOOL_TIMEOUT_MS);
     task.pendingToolCalls.set(callId, { resolve, reject, toolName, callId, requestedAt: Date.now(), timer, args });
     syncPendingToolsJson(task);
     // 通知前端执行工具。

@@ -8,6 +8,7 @@ import crypto from 'node:crypto';
 import { db } from '../db.js';
 import { encrypt, decrypt } from '../utils/crypto.js';
 import { recordBrowserMemoryEvent, readBrowserMemory } from '../services/browser-memory.js';
+import { withTimeout as sharedWithTimeout } from '@yan-zhi/shared';
 
 const router = Router();
 router.use(optionalAuth); // 浏览器功能不需要登录，有 token 就解析（可选）
@@ -53,14 +54,9 @@ const CDP_ENDPOINT = process.env.CDP_ENDPOINT || 'http://127.0.0.1:9222';
 const BROWSER_HEADLESS = true;
 const OP_TIMEOUT_MS = 15000; // 所有 page 操作统一超时（解决僵尸实例导致的永久挂起）
 
-/** 操作超时兜底：任何 page 操作超过 OP_TIMEOUT_MS 则 reject */
+/** 操作超时兜底：任何 page 操作超过 OP_TIMEOUT_MS 则 reject（实现收口 shared.withTimeout，P6） */
 function withTimeout<T>(p: Promise<T>, msg = '浏览器操作超时'): Promise<T> {
-  return Promise.race([
-    p,
-    new Promise<T>((_, reject) =>
-      setTimeout(() => reject(new Error(`${msg}（${OP_TIMEOUT_MS}ms），实例可能已假死，将自动重建`)), OP_TIMEOUT_MS),
-    ),
-  ]);
+  return sharedWithTimeout(p, OP_TIMEOUT_MS, `${msg}，实例可能已假死，将自动重建`);
 }
 
 /** 浏览器健康探针：真正执行一次 version() 请求，比 isConnected() 更可靠 */
