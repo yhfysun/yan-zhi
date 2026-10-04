@@ -394,8 +394,12 @@ describe('⑩ 项目规则文件（AGENTS.md）必须自动读取', () => {
 
   it('★★ 必须有 mtime 缓存（提示词每轮都构建，不缓存等于每轮都读盘）', () => {
     const body = win(LTM, 'function loadProjectRules', 2000, 'loadProjectRules');
-    expect(body, '★ 无缓存 → 每轮 ReAct 都 readdir+stat+readFile').toMatch(/CACHE\.get|PROJECT_RULES_CACHE/);
-    expect(body, '★ 指纹未含 mtime（文件改了不会重新读）').toMatch(/mtimeMs/);
+    expect(body, '★ 无缓存 → 每轮 ReAct 都 readdir+stat+readFile').toMatch(/FINGERPRINT_CACHE|PROJECT_RULES_CACHE/);
+    // 指纹实现已收敛到 services/fs-fingerprint.ts（P0，与 project-skills 共用单点）：
+    // mtime 断言改到唯一实现处；loadProjectRules 只断言它走了统一指纹入口。
+    expect(body, '★ 未走统一指纹缓存（fs-fingerprint）').toMatch(/dirEntryFingerprint/);
+    const FP = strip(read('apps/server/src/services/fs-fingerprint.ts'));
+    expect(FP, '★ fs-fingerprint 指纹未含 mtime（文件改了不会重新读）').toMatch(/mtimeMs/);
   });
 
   it('★★ 必须有长度上限（规则不能吃掉提示词预算）', () => {

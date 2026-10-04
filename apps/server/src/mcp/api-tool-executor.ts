@@ -156,6 +156,31 @@ function fail(message: string): MpcToolExecutionResult {
   return { content: [{ type: 'text', text: message }], isError: true };
 }
 
+/**
+ * api_* 工具的路径守卫统一出口（横切收敛 P0，2026-10-04）。
+ * 判定只有一份（services/path-guard），本函数只把"组参 + 拒绝文案"收成一处 ——
+ * 此前 workspace_list_dir / code_semantic_search / code_definition 三个 case
+ * 各手写一遍同构守卫块，且 workspaceDir 基准已漂移（前者只看全局，后两者带会话）。
+ * 返回 null = 放行；返回字符串 = 拒绝文案（调用方 fail(msg)）。
+ */
+async function guardApiToolPaths(
+  toolName: string,
+  args: Record<string, unknown>,
+  workspaceDir: string | null | undefined,
+  conversationId?: string | null,
+): Promise<string | null> {
+  const { checkPathAccess, allowedRootsFor, getAuthorizedDirs } = await import('../services/path-guard.js');
+  const verdict = checkPathAccess({
+    toolName,
+    args,
+    workspaceDir: workspaceDir || serverState.workspaceDir || null,
+    allowedRoots: allowedRootsFor(workspaceDir || serverState.workspaceDir || null, conversationId || null),
+    authorizedDirs: conversationId ? getAuthorizedDirs(conversationId) : [],
+  });
+  if (verdict.kind !== 'need-auth') return null;
+  return `路径在工作目录外（${verdict.items.map((i) => i.rawPath).join(', ')}），已拒绝。请改用工作目录内的路径。`;
+}
+
 function str(args: Record<string, unknown>, key: string): string {
   const value = args[key];
   return value == null ? '' : String(value);
@@ -2796,19 +2821,10 @@ export async function executeApiTool(
       //   → 主链路弹窗授权后，这里能读到白名单放行；工作流直调（无白名单）则 fail-safe 拒绝。
       //   —— 不是"两处各自判定"，而是"同一判据在不同入口的不同处置"（方案 §2.1 的设计）。
       case 'api_workspace_list_dir': {
-        const { checkPathAccess, allowedRootsFor, getAuthorizedDirs } = await import('../services/path-guard.js');
-        const { serverState } = await import('../state.js');
-        const wsDir = serverState.workspaceDir || null;
-        const verdict = checkPathAccess({
-          toolName: 'api_workspace_list_dir',
-          args,
-          workspaceDir: wsDir,
-          allowedRoots: allowedRootsFor(wsDir, conversationId || null),
-          authorizedDirs: conversationId ? getAuthorizedDirs(conversationId) : [],
-        });
-        if (verdict.kind === 'need-auth') {
-          return fail(`路径在工作目录外（${verdict.items.map((i) => i.rawPath).join(', ')}），已拒绝。请改用工作目录内的路径。`);
-        }
+        // ★ workspaceDir 基准统一为「会话工作目录 || 全局」（与另两个守卫 case 同一口径）：
+        //   会话绑定了自己的工作目录时，允许根就该按它算 —— 此前这里只看全局，是漂移点。
+        const deny = await guardApiToolPaths('api_workspace_list_dir', args, workspaceDir, conversationId);
+        if (deny) return fail(deny);
         return ok(await listWorkspaceDir(str(args, 'path')));
       }
       case 'api_workspace_search_files':
@@ -2820,17 +2836,8 @@ export async function executeApiTool(
         const { searchWorkspaceCode } = await import('../services/code-index.js');
         const root = str(args, 'path') || workspaceDir || serverState.workspaceDir || '';
         if (!root) return fail('未指定工作区（path），且当前会话没有工作目录。请先在会话里绑定工作目录。');
-        const { checkPathAccess, allowedRootsFor, getAuthorizedDirs } = await import('../services/path-guard.js');
-        const verdict = checkPathAccess({
-          toolName: 'api_code_semantic_search',
-          args,
-          workspaceDir: workspaceDir || serverState.workspaceDir || null,
-          allowedRoots: allowedRootsFor(workspaceDir || serverState.workspaceDir || null, conversationId || null),
-          authorizedDirs: conversationId ? getAuthorizedDirs(conversationId) : [],
-        });
-        if (verdict.kind === 'need-auth') {
-          return fail(`路径在工作目录外（${verdict.items.map((i) => i.rawPath).join(', ')}），已拒绝。请改用工作目录内的路径。`);
-        }
+        const deny = await guardApiToolPaths('api_code_semantic_search', args, workspaceDir, conversationId);
+        if (deny) return fail(deny);
         const sr = await searchWorkspaceCode(
           root,
           str(args, 'query'),
@@ -2852,17 +2859,8 @@ export async function executeApiTool(
         const root = workspaceDir || serverState.workspaceDir || '';
         const rawFile = str(args, 'file');
         if (!rawFile) return fail('缺少 file 参数（要定位符号所在的文件）');
-        const { checkPathAccess, allowedRootsFor, getAuthorizedDirs } = await import('../services/path-guard.js');
-        const verdict = checkPathAccess({
-          toolName: 'api_code_definition',
-          args,
-          workspaceDir: workspaceDir || serverState.workspaceDir || null,
-          allowedRoots: allowedRootsFor(workspaceDir || serverState.workspaceDir || null, conversationId || null),
-          authorizedDirs: conversationId ? getAuthorizedDirs(conversationId) : [],
-        });
-        if (verdict.kind === 'need-auth') {
-          return fail(`路径在工作目录外（${verdict.items.map((i) => i.rawPath).join(', ')}），已拒绝。请改用工作目录内的路径。`);
-        }
+        const deny = await guardApiToolPaths('api_code_definition', args, workspaceDir, conversationId);
+        if (deny) return fail(deny);
         const absFile = path.isAbsolute(rawFile) ? rawFile : path.resolve(root || process.cwd(), rawFile);
         if (!existsSync(absFile)) return fail(`文件不存在：${absFile}`);
         // 项目根：优先最近含 tsconfig.json / package.json 的祖先目录（tsserver 靠它加载项目）

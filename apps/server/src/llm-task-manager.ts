@@ -27,6 +27,7 @@ import { serverState } from './state.js';
 import { runAfterToolHooks } from './services/tool-hooks.js';
 import { registerArtifactHooks } from './services/artifact-hooks.js';
 import { loadProjectSkills, truncateSkillBody } from './services/project-skills.js';
+import { dirEntryFingerprint, makeFingerprintCache } from './services/fs-fingerprint.js';
 import {
   canStartBackgroundSubAgent, makeBackgroundId, buildBackgroundReceipt, buildConcurrencyFullMessage,
   buildFinishNote, buildDeliveryText,
@@ -4563,7 +4564,8 @@ function loadTaskPlan(conversationId?: string | null): { title: string; steps: A
  * ★ 长度上限：单文件 8000 字符（超长截断并注明），总上限 20000 —— 规则不该吃掉提示词预算。
  * ★ 读不到文件是**常态**（多数项目没有 AGENTS.md），所以静默返回空数组，不报错不打扰。
  */
-const PROJECT_RULES_CACHE = new Map<string, { fingerprint: string; rules: Array<{ source: string; content: string }> }>();
+// ★ 指纹缓存：唯一实现在 services/fs-fingerprint.ts（project-skills 共用同一套）。
+const PROJECT_RULES_CACHE = makeFingerprintCache<Array<{ source: string; content: string }>>();
 const RULE_FILE_MAX_CHARS = 8000;
 const RULE_TOTAL_MAX_CHARS = 20000;
 
@@ -4584,32 +4586,27 @@ function loadProjectRules(workspaceDir: string): Array<{ source: string; content
   // 指纹：存在的文件 + 各自 mtime + size（变了才重读）
   const existing = candidates.filter((c) => { try { return statSync(c.path).isFile(); } catch { return false; } });
   if (!existing.length) return [];
-  const fingerprint = existing.map((c) => {
-    const st = statSync(c.path);
-    return `${c.path}:${st.mtimeMs}:${st.size}`;
-  }).join('|');
-  const cached = PROJECT_RULES_CACHE.get(workspaceDir);
-  if (cached && cached.fingerprint === fingerprint) return cached.rules;
-
-  const rules: Array<{ source: string; content: string }> = [];
-  let total = 0;
-  for (const c of existing) {
-    try {
-      let text = readFileSync(c.path, 'utf-8').trim();
-      if (!text) continue;
-      if (text.length > RULE_FILE_MAX_CHARS) {
-        text = `${text.slice(0, RULE_FILE_MAX_CHARS)}\n\n…（该规则文件过长已截断，完整内容可直接读 ${c.source}）`;
-      }
-      if (total + text.length > RULE_TOTAL_MAX_CHARS) {
-        rules.push({ source: c.source, content: '（规则总量已达上限，此文件未注入；需要时请模型自行 file_read 读取）' });
-        break;
-      }
-      total += text.length;
-      rules.push({ source: c.source, content: text });
-    } catch { /* 单文件读失败跳过 */ }
-  }
-  PROJECT_RULES_CACHE.set(workspaceDir, { fingerprint, rules });
-  return rules;
+  const fingerprint = dirEntryFingerprint(existing.map((c) => ({ key: c.path, path: c.path })));
+  return PROJECT_RULES_CACHE.get(workspaceDir, fingerprint, () => {
+    const rules: Array<{ source: string; content: string }> = [];
+    let total = 0;
+    for (const c of existing) {
+      try {
+        let text = readFileSync(c.path, 'utf-8').trim();
+        if (!text) continue;
+        if (text.length > RULE_FILE_MAX_CHARS) {
+          text = `${text.slice(0, RULE_FILE_MAX_CHARS)}\n\n…（该规则文件过长已截断，完整内容可直接读 ${c.source}）`;
+        }
+        if (total + text.length > RULE_TOTAL_MAX_CHARS) {
+          rules.push({ source: c.source, content: '（规则总量已达上限，此文件未注入；需要时请模型自行 file_read 读取）' });
+          break;
+        }
+        total += text.length;
+        rules.push({ source: c.source, content: text });
+      } catch { /* 单文件读失败跳过 */ }
+    }
+    return rules;
+  });
 }
 
 /** JSON Schema → 参数清单（与前端 formatToolParamsBlock 同一格式） */

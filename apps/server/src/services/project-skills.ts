@@ -13,6 +13,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { parseSkillMd } from '@yan-zhi/core';
+import { dirEntryFingerprint, makeFingerprintCache } from './fs-fingerprint.js';
 
 export interface ProjectSkill {
   name: string;
@@ -24,7 +25,9 @@ export interface ProjectSkill {
   source: string;
 }
 
-const CACHE = new Map<string, { fingerprint: string; skills: ProjectSkill[] }>();
+// 缓存 = mtime+size 指纹（唯一实现在 fs-fingerprint.ts；loadProjectRules 同款共用）：
+// 提示词每一轮 ReAct 都要构建，不能每次重读盘。
+const CACHE = makeFingerprintCache<ProjectSkill[]>();
 /** 与 DB skill 的 body 注入截断同口径（buildSystemPromptForBackend 技能段） */
 export const PROJECT_SKILL_BODY_MAX_CHARS = 2000;
 export const PROJECT_SKILLS_MAX_COUNT = 20;
@@ -55,40 +58,31 @@ export function loadProjectSkills(workspaceDir: string): ProjectSkill[] {
     return [];
   }
   if (!files.length) return [];
-  const fingerprint = files.map((f) => {
-    try {
-      const st = statSync(path.join(skillsDir, f));
-      return `${f}:${st.mtimeMs}:${st.size}`;
-    } catch {
-      return `${f}:missing`;
-    }
-  }).join('|');
-  const cached = CACHE.get(workspaceDir);
-  if (cached && cached.fingerprint === fingerprint) return cached.skills;
-
-  const skills: ProjectSkill[] = [];
-  for (const f of files) {
-    const filePath = path.join(skillsDir, f);
-    try {
-      const parsed = parseSkillMd(readFileSync(filePath, 'utf-8'));
-      const name = String(parsed.frontmatter.name || '').trim() || f.replace(/\.md$/i, '');
-      const body = truncateSkillBody(parsed.body || '');
-      if (!name && !body) continue;
-      skills.push({
-        name,
-        description: String(parsed.frontmatter.description || '').trim(),
-        triggers: Array.isArray(parsed.frontmatter.triggers) ? parsed.frontmatter.triggers.map(String) : [],
-        body,
-        source: `.yan-zhi/skills/${f}`,
-      });
-      if (skills.length >= PROJECT_SKILLS_MAX_COUNT) {
-        console.warn(`[project-skills] ${workspaceDir} 技能文件超过 ${PROJECT_SKILLS_MAX_COUNT} 个，其余未注入`);
-        break;
+  const fingerprint = dirEntryFingerprint(files.map((f) => ({ key: f, path: path.join(skillsDir, f) })));
+  return CACHE.get(workspaceDir, fingerprint, () => {
+    const skills: ProjectSkill[] = [];
+    for (const f of files) {
+      const filePath = path.join(skillsDir, f);
+      try {
+        const parsed = parseSkillMd(readFileSync(filePath, 'utf-8'));
+        const name = String(parsed.frontmatter.name || '').trim() || f.replace(/\.md$/i, '');
+        const body = truncateSkillBody(parsed.body || '');
+        if (!name && !body) continue;
+        skills.push({
+          name,
+          description: String(parsed.frontmatter.description || '').trim(),
+          triggers: Array.isArray(parsed.frontmatter.triggers) ? parsed.frontmatter.triggers.map(String) : [],
+          body,
+          source: `.yan-zhi/skills/${f}`,
+        });
+        if (skills.length >= PROJECT_SKILLS_MAX_COUNT) {
+          console.warn(`[project-skills] ${workspaceDir} 技能文件超过 ${PROJECT_SKILLS_MAX_COUNT} 个，其余未注入`);
+          break;
+        }
+      } catch (e: any) {
+        console.warn(`[project-skills] 解析失败（已跳过）${filePath}:`, e?.message || e);
       }
-    } catch (e: any) {
-      console.warn(`[project-skills] 解析失败（已跳过）${filePath}:`, e?.message || e);
     }
-  }
-  CACHE.set(workspaceDir, { fingerprint, skills });
-  return skills;
+    return skills;
+  });
 }
