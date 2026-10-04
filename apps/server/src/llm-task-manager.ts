@@ -374,6 +374,116 @@ function updateMessageContent(msgId: string, content: string, reasoning?: string
   ).run(content, reasoning || null, toolCalls ? JSON.stringify(toolCalls) : null, tokens ?? null, msgId);
 }
 
+// ══════════════════════════════════════════════════════════════════════════
+// 工具调用统一执行出口（P1 收敛，2026-10-04）
+//
+// ★ 为什么必须单点：主循环与子智能体循环各写一份 ~60 行的
+//   「emit start → executeTool → 中止分支 → 错误串 → 钩子 → cap → 落库 → emit」，
+//   已两次发生入口漂移（子智能体侧漏跑 runAfterToolHooks / 漏接权限），代码注释自认。
+//   判据：凡是"工具执行完要做的事"，**每个执行工具的地方**都要跑到 —— 单点化后加新
+//   副作用只改这里。
+// ★ 中止必须落库 tool 结果（'[已中止]'）：否则库里留下孤儿 assistant.tool_calls
+//   （无对应 tool 消息），本会话下次重放历史时上游 400 配对校验失败。
+// ══════════════════════════════════════════════════════════════════════════
+
+/** 子智能体归属字段（主循环不传 = 无归属） */
+interface SubAgentOwnership {
+  parentToolCallId: string;
+  subAgentId: string;
+  subAgentName: string;
+  subAgentDepth: number;
+}
+
+/** 落库一条 tool 消息并向会话流推送 message:added（归属字段两处口径在这里对齐） */
+function insertToolMessageAndEmit(
+  task: LlmTask,
+  convId: string,
+  userId: string,
+  toolCallId: string,
+  content: string,
+  ownership?: SubAgentOwnership,
+): string {
+  const extra = ownership
+    ? {
+        toolCallId,
+        parentToolCallId: ownership.parentToolCallId,
+        subAgentId: ownership.subAgentId,
+        subAgentName: ownership.subAgentName,
+        subAgentDepth: ownership.subAgentDepth,
+      }
+    : { toolCallId };
+  const msgId = insertMessage(convId, userId, 'tool', content, extra);
+  emit(task, {
+    type: 'message:added',
+    message: { id: msgId, role: 'tool', content, toolCallId, ...(ownership || {}) },
+  });
+  return msgId;
+}
+
+/**
+ * 工具调用统一出口：执行（或取并发预执行结果）→ 事件 → 钩子 → 压缩落库 → 事件。
+ * 主循环与子智能体循环共用；差异只通过 ownership 表达。
+ * 中止异常在落库兜底消息后**原样上抛**，由调用方决定整体中止语义。
+ */
+async function runToolCallAndPersist(opts: {
+  task: LlmTask;
+  registry: ReturnType<typeof getToolRegistry>;
+  convId: string;
+  userId: string;
+  /** 产物登记归属的助手消息 id（当前轮） */
+  assistantMsgId: string;
+  toolName: string;
+  args: any;
+  tcId: string;
+  depth: number;
+  toolDefs: any[];
+  uiTools: Set<string>;
+  /** 主循环并发 call_agent 已执行完的结果：跳过执行与 tool:start，仅走事件/钩子/落库 */
+  precomputed?: string;
+  ownership?: SubAgentOwnership;
+}): Promise<string> {
+  const { task, registry, convId, userId, assistantMsgId, toolName, args, tcId, depth, toolDefs, uiTools, precomputed, ownership } = opts;
+  const subEvt = ownership ? { subAgentId: ownership.subAgentId } : {};
+  // ★ 与主循环对齐：收集工具回传的 _meta（file_write 的落盘路径在这里），
+  //   供产物登记钩子使用。用出参而非改返回类型（见 executeTool 参数注释）。
+  const metaOut: { value?: Record<string, unknown> | null } = {};
+
+  let result: string;
+  if (precomputed !== undefined) {
+    result = precomputed;
+    emit(task, { type: 'tool:result', toolName, result, ...subEvt });
+  } else {
+    emit(task, { type: 'tool:start', toolName, args, ...subEvt });
+    try {
+      result = await executeTool(task, registry, toolName, args, tcId, uiTools, depth, toolDefs, metaOut);
+    } catch (e: any) {
+      if (isAbortError(e)) {
+        try {
+          insertToolMessageAndEmit(task, convId, userId, tcId, capToolResult('[已中止] 用户中断了工具执行'), ownership);
+        } catch { /* 落库失败不影响中止流程（发送侧 sanitize 仍会兜底配对） */ }
+        throw e;
+      }
+      result = `工具执行失败: ${e?.message || e}`;
+    }
+    emit(task, { type: 'tool:result', toolName, result, ...subEvt });
+  }
+
+  // ★★★ 工具执行完的"副作用"走钩子（P2-3）：产物登记等由 services/artifact-hooks.ts
+  //   注册，这里只负责跑。钩子 fail-open：某个钩子出错只 warn，不影响工具结果。
+  await runAfterToolHooks(toolName, args, result, {
+    taskId: task.id,
+    conversationId: convId,
+    userId,
+    assistantMsgId,
+    meta: (metaOut.value || null) as Record<string, unknown> | null,
+  });
+
+  // 入库前压缩，防止单条极端大结果撑爆消息表与下轮上下文
+  const cappedResult = capToolResult(result);
+  insertToolMessageAndEmit(task, convId, userId, tcId, cappedResult, ownership);
+  return cappedResult;
+}
+
 /** 创建任务并启动 ReAct 循环 */
 export function createTask(params: {
   conversationId: string;
@@ -1969,59 +2079,19 @@ async function runReActLoop(task: LlmTask, params: {
           if (parsedArgs.args === null) {
             // 参数解析失败：必须落库 tool 结果保持配对，并明确告诉模型重试（绝不带空参数硬执行）
             const errMsg = capToolResult(`参数解析失败，本工具未执行。${parsedArgs.err}\n请重新调用 ${toolName}，确保 arguments 是完整、合法的 JSON 对象。`);
-            const errId = insertMessage(convId, userId, 'tool', errMsg, { toolCallId: tc.id });
-            emit(task, { type: 'message:added', message: { id: errId, role: 'tool', content: errMsg, toolCallId: tc.id } });
+            insertToolMessageAndEmit(task, convId, userId, tc.id || '', errMsg);
             continue;
           }
           const args: any = parsedArgs.args;
           if (newTabNavIds.has(String(tc.id || ''))) args.openInNewTab = true;
 
-          let result: string;
-          const toolMetaOut: { value?: Record<string, unknown> | null } = {};
-          // 已并发跑过的（call_agent）直接取结果，不重复执行
+          // 已并发跑过的（call_agent）直接取结果，不重复执行（统一出口里跳过执行、保留钩子/落库）
           const pre = concurrentResults.get(String(tc.id || ''));
-          if (pre !== undefined) {
-            result = pre;
-            emit(task, { type: 'tool:result', toolName, result });
-          } else {
-            emit(task, { type: 'tool:start', toolName, args });
-            try {
-              result = await executeTool(task, registry, toolName, args, tc.id || '', UI_TOOLS, 0, toolsBuilt, toolMetaOut);
-            } catch (e: any) {
-              if (isAbortError(e)) {
-                // 中止也必须落库 tool 结果：否则库里留下孤儿 assistant.tool_calls（无对应 tool 消息），
-                // 本会话下次重放历史时上游 400 "tool_calls must be followed by tool messages"。
-                try {
-                  const abortResult = capToolResult('[已中止] 用户中断了工具执行');
-                  const abortMsgId = insertMessage(convId, userId, 'tool', abortResult, { toolCallId: tc.id });
-                  emit(task, { type: 'message:added', message: { id: abortMsgId, role: 'tool', content: abortResult, toolCallId: tc.id } });
-                } catch { /* 落库失败不影响中止流程（发送侧 sanitize 仍会兜底配对） */ }
-                throw e;
-              }
-              result = `工具执行失败: ${e?.message || e}`;
-            }
-            emit(task, { type: 'tool:result', toolName, result });
-          }
-
-          // ★★★ 工具执行完的"副作用"走钩子（P2-3），不再硬编码在主循环里。
-          //
-          // 此前这里有两段 if（file_write 登记 / 媒体产物登记），每加一个"产出文件"的工具
-          // 就要回来再加一段 —— 而且**必然漏**（本项目多次踩到"某入口忘了登记 → 文件管理看不到"）。
-          // 现在具体副作用由 services/artifact-hooks.ts 注册，主循环只负责跑钩子。
-          //
-          // 钩子是 fail-open 的：某个钩子出错只 warn，不影响工具结果（工具已经执行完了）。
-          await runAfterToolHooks(toolName, args, result, {
-            taskId: task.id,
-            conversationId: convId,
-            userId,
-            assistantMsgId,
-            meta: toolMetaOut.value as Record<string, unknown> | null,
+          await runToolCallAndPersist({
+            task, registry, convId, userId, assistantMsgId,
+            toolName, args, tcId: tc.id || '', depth: 0, toolDefs: toolsBuilt, uiTools: UI_TOOLS,
+            precomputed: pre,
           });
-
-          // 添加工具结果消息（入库前压缩，防止单条极端大结果撑爆消息表与下轮上下文）
-          const cappedResult = capToolResult(result);
-          const toolMsgId = insertMessage(convId, userId, 'tool', cappedResult, { toolCallId: tc.id });
-          emit(task, { type: 'message:added', message: { id: toolMsgId, role: 'tool', content: cappedResult, toolCallId: tc.id } });
         }
 
         // 继续下一轮 ReAct
@@ -3489,6 +3559,13 @@ async function runSubAgent(
   }
 
   const subAgentName = agent.name || resolvedId;
+  // 子智能体归属字段（P1 收敛）：工具消息/事件统一从这里取，替代各处手写四连字段
+  const subOwnership: SubAgentOwnership = {
+    parentToolCallId,
+    subAgentId: resolvedId,
+    subAgentName,
+    subAgentDepth: depth + 1,
+  };
   const client = new LlmClient(platform, model);
   // 子智能体步数上限：尊重 agent 配置的 maxReActSteps（如 pageAgent 的 50），
   // 未配置时兜底 100。修复：旧写法 Math.max(x, 100) 把任何配置值强制抬到 ≥100，
@@ -3788,62 +3865,19 @@ async function runSubAgent(
         if (parsedArgs.args === null) {
           // 参数解析失败：同样落库 tool 结果（带子智能体归属字段）保持配对，并提示模型重试
           const errMsg = capToolResult(`参数解析失败，本工具未执行。${parsedArgs.err}\n请重新调用 ${toolName}，确保 arguments 是完整、合法的 JSON 对象。`);
-          const errId = insertMessage(task.conversationId, task.userId, 'tool', errMsg, {
-            toolCallId: tc.id, parentToolCallId, subAgentId: resolvedId, subAgentName, subAgentDepth: depth + 1,
-          });
-          emit(task, { type: 'message:added', message: { id: errId, role: 'tool', content: errMsg, toolCallId: tc.id, parentToolCallId, subAgentId: resolvedId, subAgentName, subAgentDepth: depth + 1 } });
+          insertToolMessageAndEmit(task, task.conversationId, task.userId, tc.id || '', errMsg, subOwnership);
           continue;
         }
         const toolArgs: any = parsedArgs.args;
         if (newTabNavIds.has(String(tc.id || ''))) toolArgs.openInNewTab = true;
-        emit(task, { type: 'tool:start', toolName, args: toolArgs, subAgentId: resolvedId });
-
-        let result: string;
-        // ★ 与主循环对齐：收集工具回传的 _meta（file_write 的落盘路径在这里），
-        //   供下面的产物登记钩子使用。此前子智能体侧没接，导致 file_write 产物在子智能体里也不登记。
-        const subToolMetaOut: { value?: Record<string, unknown> | null } = {};
-        try {
-          result = await executeTool(task, registry, toolName, toolArgs, tc.id || '', uiTools, depth + 1, subTools, subToolMetaOut);
-        } catch (e: any) {
-          if (isAbortError(e)) {
-            // 中止也必须落库 tool 结果（子智能体消息带归属字段）：否则库里留下孤儿
-            // assistant.tool_calls，本会话下次重放历史时上游 400 配对校验失败。
-            try {
-              const abortResult = capToolResult('[已中止] 用户中断了工具执行');
-              const abortMsgId = insertMessage(task.conversationId, task.userId, 'tool', abortResult, {
-                toolCallId: tc.id, parentToolCallId, subAgentId: resolvedId, subAgentName, subAgentDepth: depth + 1,
-              });
-              emit(task, { type: 'message:added', message: { id: abortMsgId, role: 'tool', content: abortResult, toolCallId: tc.id, parentToolCallId, subAgentId: resolvedId, subAgentName, subAgentDepth: depth + 1 } });
-            } catch { /* 落库失败不影响中止流程（发送侧 sanitize 仍会兜底配对） */ }
-            throw e;
-          }
-          result = `工具执行失败: ${e?.message || e}`;
-        }
-        emit(task, { type: 'tool:result', toolName, result, subAgentId: resolvedId });
-
-        // ★★★ 子智能体循环同样要跑产物登记钩子（2026-09-29 修「产物里有图没视频」）。
-        //
-        // 此前只有**主循环**调了 runAfterToolHooks，子智能体这条路径直接落库消息 ——
-        // 后果：**子智能体产出的文件从不登记**，用户在文件管理里看不到
-        // （典型场景：主智能体委派子智能体做视频，视频确实落盘了，但列表里只有图片）。
-        // ★ 这正是 P2-3 想把副作用抽成钩子的初衷（"加新工具不用改主循环"），
-        //   但当时只接了主循环这一个入口 —— **入口漂移**又出现了一次。
-        //   判据：凡是"工具执行完要做的事"，**每个执行工具的地方**都要跑到。
-        await runAfterToolHooks(toolName, toolArgs, result, {
-          taskId: task.id,
-          conversationId: task.conversationId,
-          userId: task.userId,
-          // 子智能体的产物归属到它自己那条助手消息上（tool 消息 id 此时还没生成，
-          // 用当前轮 assistantMsgId 更合理：登记记录里的 message_id 指向"产出它的那轮"）
-          assistantMsgId,
-          meta: (subToolMetaOut.value || null) as Record<string, unknown> | null,
+        // 统一出口（P1）：执行/中止/钩子/落库与主循环同源 —— 此前这里各写一份已两次漂移
+        //（漏跑 runAfterToolHooks 导致子智能体产物不登记等）。
+        await runToolCallAndPersist({
+          task, registry,
+          convId: task.conversationId, userId: task.userId, assistantMsgId,
+          toolName, args: toolArgs, tcId: tc.id || '', depth: depth + 1, toolDefs: subTools, uiTools,
+          ownership: subOwnership,
         });
-
-        const cappedResult = capToolResult(result);
-        const toolMsgId = insertMessage(task.conversationId, task.userId, 'tool', cappedResult, {
-          toolCallId: tc.id, parentToolCallId, subAgentId: resolvedId, subAgentName, subAgentDepth: depth + 1,
-        });
-        emit(task, { type: 'message:added', message: { id: toolMsgId, role: 'tool', content: cappedResult, toolCallId: tc.id, parentToolCallId, subAgentId: resolvedId, subAgentName, subAgentDepth: depth + 1 } });
       }
     }  // ← 子智能体单批步数循环
 
