@@ -164,7 +164,9 @@ function formatTime(t: number | string | undefined): string {
 /** 单击卡片即预览（打开右侧预览窗 tab） */
 function preview(f: ConversationFile) {
   const store = useChatStore();
-  store.openTab({ kind: 'file', name: f.name, path: f.path });
+  // ★ 必须带上 conversationId：FilePreview 的会话产物通道（file-stream，跨根探测+登记兜底）
+  //   以它为前提 —— 漏传会退化到 workspace/file-stream，少一层兜底（2026-10-04）。
+  store.openTab({ kind: 'file', name: f.name, path: f.path, conversationId: f.conversationId });
   store.showFilePopup = false;
 }
 

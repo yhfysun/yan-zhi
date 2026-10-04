@@ -197,6 +197,10 @@ export interface PreviewTab {
   kind: PreviewTabKind;
   name: string;        // tab 标题（browser 实际标题渲染时优先取 currentBrowserUrl 的 hostname）
   path?: string;       // file：文件绝对路径（幂等 key）
+  /** file：所属会话 id。★ 必须随交付/登记文件一起传 —— FilePreview 的会话产物通道
+   *  （conversations/:id/file-stream：跨根探测 + 登记路径兜底）以它为前提，
+   *  漏传会退化到 workspace/file-stream，少一层兜底（2026-10-04 修「预览 MP4 报格式不支持」）。 */
+  conversationId?: string;
   url?: string;        // browser：打开时的初始 URL
   repoPath?: string;   // git：仓库路径
   contract?: DataTabContract; // data：待浏览的查询契约

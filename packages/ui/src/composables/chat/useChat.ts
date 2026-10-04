@@ -1588,7 +1588,8 @@ function createChat() {
   ];
 
   function previewInPopup(f: any) {
-    store.openTab({ kind: 'file', name: f.name, path: f.path });
+    // ★ 会话登记文件带上 conversationId：FilePreview 走会话产物通道（跨根探测+登记兜底）需要它
+    store.openTab({ kind: 'file', name: f.name, path: f.path, conversationId: f.conversationId });
   }
 
   async function showConvFileMenu(e: MouseEvent, f: any) {
