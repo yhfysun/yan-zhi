@@ -16,7 +16,7 @@
  *      改动不会进包而且**完全不报错**。桌面构建里已含真编译，故安卓复用桌面步骤产物。
  *
  * 用法：
- *   node scripts/package.cjs                     # 交互式选择
+ *   node scripts/package.cjs                     # 交互式：空格多选要打的包（↑↓ 移动 / a 全选）
  *   node scripts/package.cjs desktop             # 桌面三档全出
  *   node scripts/package.cjs desktop:pro         # 只出高级版
  *   node scripts/package.cjs desktop:lite,pro    # 出两档
@@ -262,6 +262,16 @@ function preflight(targets) {
 }
 
 // ─────────────────────── 交互式选择 ───────────────────────
+/**
+ * 空格多选（checkbox 式）：↑/↓ 移动，空格勾/去，a 全选/全不选，回车确认。
+ *
+ * ★ 为什么不用「输序号单选」：桌面三档 × 安卓共 2^4 种组合，单选菜单要么枚举不全
+ *   （旧版只有 6 个固定选项），要么列全了没人看。多选是最直接的表达。
+ *
+ * 键位实现注意：rawMode 下逐键监听（readline emitKeypressEvents + keypress），
+ * ' '（空格）会作为独立 name:'space' 事件到达，不能靠 rl.question 读整行。
+ * 退出前必须 setRawMode(false)，否则终端回显被吃掉。
+ */
 async function askTargets() {
   // ★ 非交互环境（CI / 管道 / 被 spawn）不能阻塞等输入 —— 否则脚本永久挂起。
   //   判据：stdin 不是 TTY，或显式给了 --yes。此时按默认（全部）走。
@@ -272,29 +282,72 @@ async function askTargets() {
     return { desktop: [...ALL_EDITIONS], android: true };
   }
 
-  const options = [
-    { key: '1', label: '桌面三档全出（lite + basic + pro）', value: { desktop: [...ALL_EDITIONS], android: false } },
-    { key: '2', label: '桌面 · 只出高级版（pro）', value: { desktop: ['pro'], android: false } },
-    { key: '3', label: '桌面 · 只出基础版（basic）', value: { desktop: ['basic'], android: false } },
-    { key: '4', label: '桌面 · 只出阉割版（lite）', value: { desktop: ['lite'], android: false } },
-    { key: '5', label: '安卓 APK', value: { desktop: [], android: true } },
-    { key: '6', label: '全部（桌面三档 + 安卓 APK）', value: { desktop: [...ALL_EDITIONS], android: true } },
+  // 候选项：桌面三档 + 安卓（desktop:full 与 basic 等价，不单列）
+  const items = [
+    ...ALL_EDITIONS.map((e) => ({ id: `desktop:${e}`, label: `桌面 · ${e}（${EDITION_LABEL[e]}）`, checked: false })),
+    { id: 'android', label: '安卓 APK', checked: false },
   ];
-  console.log('');
-  console.log(c.bold('  请选择要打的包：'));
-  for (const o of options) console.log(`    ${c.cyan(o.key)}) ${o.label}`);
-  console.log('');
+  let cursor = 0;
+  const render = () => {
+    // 光标回退到列表首行重绘（比整屏 clear 干净，历史里只留最终态）
+    process.stdout.write(`\x1b[${items.length + 1}A\x1b[J`);
+    console.log(c.bold('  请选择要打的包（空格勾选，回车开始打包，a 全选/反全选）：'));
+    for (let i = 0; i < items.length; i++) {
+      const it = items[i];
+      const pointer = i === cursor ? c.cyan('❯') : ' ';
+      const box = it.checked ? c.green('[x]') : '[ ]';
+      console.log(`  ${pointer} ${box} ${it.label}`);
+    }
+  };
+  // 先打印一遍占位（render 会回退 N+1 行覆盖重绘）
+  console.log('\n'.repeat(items.length + 1));
 
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  const answer = await new Promise((res) => rl.question('  输入序号（默认 6）: ', res));
-  rl.close();
-  const hit = options.find((o) => o.key === answer.trim());
-  if (!hit) {
-    if (answer.trim() === '') return options[5].value;
-    fail(`无效选择: ${answer.trim()}`);
-    process.exit(1);
-  }
-  return hit.value;
+  readline.emitKeypressEvents(process.stdin);
+  process.stdin.setRawMode(true);
+  process.stdin.resume();
+
+  const result = await new Promise((resolve) => {
+    const onKey = (str, key) => {
+      if (key.name === 'up' || (key.ctrl && key.name === 'p')) {
+        cursor = (cursor - 1 + items.length) % items.length;
+      } else if (key.name === 'down' || (key.ctrl && key.name === 'n')) {
+        cursor = (cursor + 1) % items.length;
+      } else if (key.name === 'space') {
+        items[cursor].checked = !items[cursor].checked;
+      } else if (str === 'a' || str === 'A') {
+        const allOn = items.every((it) => it.checked);
+        for (const it of items) it.checked = !allOn;
+      } else if (key.name === 'return' || key.name === 'enter') {
+        if (!items.some((it) => it.checked)) {
+          // 一个没选：按回车 = 全选（与旧版"默认全部"对齐），不退出
+          for (const it of items) it.checked = true;
+        } else {
+          process.stdin.removeListener('keypress', onKey);
+          return resolve(items.filter((it) => it.checked).map((it) => it.id));
+        }
+      } else if (key.name === 'escape' || (key.ctrl && key.name === 'c')) {
+        // Esc / Ctrl+C：不打任何包，干净退出
+        process.stdin.removeListener('keypress', onKey);
+        process.stdin.setRawMode(false);
+        process.stdin.pause();
+        console.log('');
+        process.exit(0);
+      } else {
+        return; // 其它按键不动界面
+      }
+      render();
+    };
+    process.stdin.on('keypress', onKey);
+    render();
+  });
+
+  process.stdin.setRawMode(false);
+  process.stdin.pause();
+
+  const desktop = result.filter((id) => id.startsWith('desktop:')).map((id) => id.split(':')[1]);
+  // 保持 lite → basic → pro 的构建顺序（勾选顺序不影响实际构建顺序）
+  desktop.sort((x, y) => ALL_EDITIONS.indexOf(x) - ALL_EDITIONS.indexOf(y));
+  return { desktop, android: result.includes('android') };
 }
 
 // ─────────────────────── 目标解析 ───────────────────────

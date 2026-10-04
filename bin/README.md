@@ -9,13 +9,22 @@
 > **日常打包请用统一入口 `scripts/package.cjs`**，它把这三个坑都封好了，并带产物校验：
 >
 > ```bash
-> pnpm package                     # 交互式选择打哪些包（推荐）
+> pnpm package                     # 交互式多选：空格勾选 / ↑↓ 移动 / a 全选 / 回车开始（推荐）
 > pnpm package desktop             # 桌面三档全出（lite + basic + pro）
 > pnpm package desktop:pro         # 只出高级版
 > pnpm package desktop:lite,pro    # 出指定两档
 > pnpm package android             # 只出安卓 APK（自动复用新鲜的 server/dist）
 > pnpm package all                 # 桌面三档 + 安卓
 > pnpm package desktop:pro --dry-run   # 预览：只做环境检查与计划，不动任何文件
+> ```
+>
+> 也可用 `bin/` 下的入口脚本（与 build.bat 同风格，转发到上述同一实现）：
+>
+> ```cmd
+> bin\package.bat              REM 交互多选（同 pnpm package）
+> bin\package.bat pro          REM 只打桌面高级版
+> bin\package.bat android      REM 只打安卓 APK
+> bin\package.sh lite          REM Git Bash 下同理
 > ```
 >
 > 产物落统一树 `dist-release/desktop/<档>/<版本>/`（exe）与 `dist-release/android/<版本>/app-debug.apk`，
@@ -31,6 +40,7 @@
 | 环境检测 | `check-env.sh` | `check-env.bat` |
 | 搭建指引 | `setup-env.sh` | `setup-env.bat` |
 | 打包构建 | `build.sh` | `build.bat` |
+| 打包（含校验，推荐） | `package.sh` | `package.bat` |
 
 ### Windows 用户
 
