@@ -5,6 +5,7 @@
 ## [Unreleased]
 
 ### Added
+- **项目级技能目录（P2-8）**：工作目录 `.yan-zhi/skills/*.md` 自动发现并注入系统提示 —— frontmatter（name/description/triggers）+ 正文 SOP，与 DB 技能同一套触发词命中规则（命中注入完整流程、未命中只给名称），同名时**项目技能覆盖挂载技能**；mtime+size 指纹缓存（每轮 ReAct 构建提示词不重读盘）、不写 skill 表（目录即真相源）、单文件解析失败只 warn 跳过；独立 `services/project-skills.ts` + 6 例功能测试
 - **用户工具钩子 P2a（P2-7）**：设置页新增「工具钩子」——用户声明式规则 `{ 工具(可 * 通配) + 匹配内容(大小写不敏感子串) + 动作 }`，动作二选一：**弹窗确认**（每次调用先弹窗点头，授权不记忆、无人值守 fail-safe 拒绝，复用 path-guard 弹窗通道）或**直接拒绝**（拒绝原因回喂模型并明示"不要绕过"）。执行点在缺参检查后、危险命令护栏前（deny 短路省一次弹窗）；deny 与 confirm 并存时 deny 优先。新增 `user_hook` 表 + `routes/user-hooks.ts` CRUD + `services/user-hooks.ts` 匹配（进程内缓存、db 异常 fail-open 不污染缓存）
 - **编码反馈闭环（P0）**：新增 `code_diagnostics` 内置工具（tsc --noEmit 类型检查 / ESLint / node --check 语法检查，自动探测项目配置，结果缓存 90s）；`file_write`/`file_edit` 成功改写代码文件后自动跑诊断并把问题回喂到工具结果，模型当场自修（`YZ_AUTO_DIAGNOSE=0` 可关闭）
 - **代码树解析（AST）**：新增 `code-ast.ts`，用 TypeScript Compiler API 做精确符号/导入/调用边提取（多行签名、箭头函数、类方法宿主、vue SFC 行号对齐）；`code_outline` / `code_refs` / `code_graph` 在编译器可用时自动走 AST，浏览器端回退原启发式

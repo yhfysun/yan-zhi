@@ -26,6 +26,7 @@ import { serverState } from './state.js';
 // 产物登记钩子（P2-3）：把 file_write / 媒体登记的副作用从主循环里搬出去
 import { runAfterToolHooks } from './services/tool-hooks.js';
 import { registerArtifactHooks } from './services/artifact-hooks.js';
+import { loadProjectSkills } from './services/project-skills.js';
 import { matchUserHooks } from './services/user-hooks.js';
 import { guessMime } from './utils/mime.js';
 import { resolveArtifactDirFor } from './services/artifact-dir.js';
@@ -4042,6 +4043,8 @@ export function buildSystemPromptForBackend(agentId: string | null, userId: stri
   const parts: string[] = [];
   const convMounts = loadConversationMounts(opts?.conversationId);
   const includeUiTools = !!opts?.includeUiTools;
+  // 工作目录（会话指定 > 全局兜底）——项目技能目录与 AGENTS.md/rules 段共用同一取值口径
+  const effectiveWorkspaceDir = (opts?.workspaceDir && opts.workspaceDir.trim()) || serverState.workspaceDir;
 
   // 应用指引（用户在前端配置的全局上下文/行为约束）：无条件注入，保证三条入口行为一致
   if (appGuide && appGuide.trim()) {
@@ -4153,13 +4156,19 @@ export function buildSystemPromptForBackend(agentId: string | null, userId: stri
     //   既把上下文预算吃光、又让模型在无关流程上分心 —— 而 `triggers` 字段**后端从未被消费**。
     const agentSkillIds: string[] = agent?.skill_ids ? JSON.parse(agent.skill_ids) : [];
     const skillIds = [...new Set([...agentSkillIds, ...convMounts.skillIds])];
-    if (skillIds.length > 0) {
+    // 项目技能目录（.yan-zhi/skills/*.md，P2-8）：优先级**高于**同名挂载技能 ——
+    // 项目自带的 SOP 是团队为这个仓库定制的，比通用/商城技能更贴近当前工作区。
+    const projectSkills = effectiveWorkspaceDir ? loadProjectSkills(effectiveWorkspaceDir) : [];
+    const projectSkillNames = new Set(projectSkills.map((s) => s.name.toLowerCase()));
+    if (skillIds.length > 0 || projectSkills.length > 0) {
       const userQuery = String(opts?.userContent || '');
       const skillLines: string[] = [];
       const flowParts: string[] = [];
       for (const skId of skillIds) {
         const sk = db.prepare('SELECT name, description, body, triggers_json, enabled FROM skill WHERE id = ? AND (user_id = ? OR user_id IS NULL)').get(skId, userId) as any;
         if (!sk || !sk.enabled) continue;
+        // 项目技能目录里有同名技能 → 跳过 DB 版（项目 SOP 覆盖通用技能）
+        if (projectSkillNames.has(String(sk.name || '').toLowerCase())) continue;
         let triggers: string[] = [];
         try { triggers = JSON.parse(sk.triggers_json || '[]'); } catch { triggers = []; }
         const hit = matchSkillTriggers(triggers, userQuery);
@@ -4173,6 +4182,15 @@ export function buildSystemPromptForBackend(agentId: string | null, userId: stri
           flowParts.push(`### Skill 流程指引：${sk.name}\n${truncated}`);
         }
       }
+      // 项目技能（.yan-zhi/skills/*.md）：与 DB skill 同一份注入格式与触发词口径，
+      // 仅多一个来源标注（让模型知道可以从工作目录直接读到完整文件）。
+      for (const ps of projectSkills) {
+        const hit = matchSkillTriggers(ps.triggers, userQuery);
+        skillLines.push(`- **${ps.name}**（项目技能，来自 ${ps.source}）: ${ps.description || ''}${hit ? ' ← **本次命中，按它的流程执行**' : ''}`);
+        if (ps.body && (hit || !userQuery.trim())) {
+          flowParts.push(`### Skill 流程指引：${ps.name}\n${ps.body}`);
+        }
+      }
       if (skillLines.length > 0) parts.push('---\n## 可用 Skills\n' + skillLines.join('\n'));
       // 缺技能时的"自己去找"指引：让模型知道没有对应方法论时可以先去商城找装，
       // 而不是硬编一套流程或干脆放弃（`api_marketplace_browse` / `api_skill_install` 已挂载）。
@@ -4183,6 +4201,7 @@ export function buildSystemPromptForBackend(agentId: string | null, userId: stri
         '1. 先用 `api_marketplace_sources` + `api_marketplace_browse` 去商城搜有没有现成 Skill；\n' +
         '2. 找到匹配的用 `api_skill_install` 装上，再用 `api_conversation_setup` 把它挂到当前会话（下轮生效）；\n' +
         '3. 商城没有、但这类工作你会反复做 → 用 `api_skill_create` 把这次的做法沉淀成本地 Skill（含 triggers），下次自动命中；\n' +
+        '3.5. 团队级规范（整个项目都会用到的评审/部署/接口约定）→ 建议让用户放进工作目录 `.yan-zhi/skills/*.md`（自动发现，所有会话生效，优先级高于商城技能）；\n' +
         '4. 都没有且不值得沉淀 → 按通用最佳实践做，并在回复里说明"这一步没有专门规范，我按 X 处理"。\n' +
         '不要因为"没有对应 Skill"就降低产出质量或停下来问用户。',
       );
@@ -4239,7 +4258,6 @@ export function buildSystemPromptForBackend(agentId: string | null, userId: stri
   if (basePrompt) parts.unshift(basePrompt);
 
   // 工作目录：优先使用请求显式下发的 workspaceDir，回退到全局 serverState.workspaceDir
-  const effectiveWorkspaceDir = (opts?.workspaceDir && opts.workspaceDir.trim()) || serverState.workspaceDir;
   if (effectiveWorkspaceDir && effectiveWorkspaceDir.trim()) {
     parts.push(`---\n## 工作目录\n当前工作目录：${effectiveWorkspaceDir}`);
   }
