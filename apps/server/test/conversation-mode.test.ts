@@ -9,13 +9,17 @@
 // 少兜一层，历史 NULL 行就永远查不到（用户会觉得"我的会话没了"），
 // 而这种错不会报错、只会表现为列表少数据。
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import Database from 'better-sqlite3';
+// ★ 2026-10-03 修复：不再直接 import better-sqlite3 —— postinstall 已把它重编为
+//   Electron ABI（fix-sqlite-electron.cjs），vitest 跑在系统 Node 上加载即
+//   NODE_MODULE_VERSION 不匹配。改走 sqlite-driver 的统一入口（原生不可用自动
+//   回退 sql.js WASM，接口面同构），本地/CI/移动端三种环境都能跑。
+import { openSqlite, type YzSqliteDb } from '../src/services/sqlite-driver.js';
 
 /** 与 routes/conversations.ts 里 GET / 的过滤 SQL 逐字一致的片段 */
 const MODE_FILTER = `COALESCE(NULLIF(mode, ''), 'office') = ?`;
 
-function mkDb() {
-  const db = new Database(':memory:');
+async function mkDb() {
+  const { db } = await openSqlite(':memory:');
   db.exec(`
     CREATE TABLE conversation (
       id TEXT PRIMARY KEY,
@@ -38,7 +42,7 @@ function mkDb() {
 }
 
 /** 复刻接口的查询（两个 where 条件 + 排序） */
-function listOf(db: Database.Database, userId: string, mode: string) {
+function listOf(db: YzSqliteDb, userId: string, mode: string) {
   return db
     .prepare(
       `SELECT id FROM conversation WHERE user_id = ? AND ${MODE_FILTER} ORDER BY updated_at DESC`,
@@ -47,8 +51,8 @@ function listOf(db: Database.Database, userId: string, mode: string) {
 }
 
 describe('会话按模式隔离 · 过滤 SQL 口径', () => {
-  let db: Database.Database;
-  beforeEach(() => { db = mkDb(); });
+  let db: YzSqliteDb;
+  beforeEach(async () => { db = await mkDb(); });
   afterEach(() => db.close());
 
   it('只回当前模式的会话', () => {
@@ -92,8 +96,8 @@ describe('会话按模式隔离 · 过滤 SQL 口径', () => {
 });
 
 describe('会话按模式隔离 · 建表与迁移约束', () => {
-  let db: Database.Database;
-  beforeEach(() => { db = mkDb(); });
+  let db: YzSqliteDb;
+  beforeEach(async () => { db = await mkDb(); });
   afterEach(() => db.close());
 
   it('新行不传 mode 时落 NULL，由读取侧兜成 office（而不是写死默认值依赖 DB）', () => {

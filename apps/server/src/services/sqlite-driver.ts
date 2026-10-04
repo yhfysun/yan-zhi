@@ -103,8 +103,10 @@ class SqlJsDatabase implements YzSqliteDb {
       for (const sig of ['SIGINT', 'SIGTERM'] as const) {
         process.on(sig, () => { try { flushAllInstances(); } catch { /* ignore */ } });
       }
-      // 周期兜底：Android 杀后台进程不一定给 SIGTERM，把丢失窗口压到 ≤5s
-      const t = setInterval(() => { try { flushAllInstances(); } catch { /* ignore */ } }, 5000);
+      // 周期兜底：Android 杀后台进程不一定给 SIGTERM，把丢失窗口压到间隔内（默认 5s）。
+      // ★ 移动端可经 YZ_SQLITE_FLUSH_INTERVAL_MS 收紧（收尾方案 #3：Android 建议 2000）。
+      const interval = Math.max(500, Number(process.env.YZ_SQLITE_FLUSH_INTERVAL_MS) || 5000);
+      const t = setInterval(() => { try { flushAllInstances(); } catch { /* ignore */ } }, interval);
       t.unref?.();
     }
     instances.add(this);
@@ -113,10 +115,11 @@ class SqlJsDatabase implements YzSqliteDb {
   private markDirty(): void {
     this.dirty = true;
     if (this.flushTimer) return;
+    const debounce = Math.max(50, Number(process.env.YZ_SQLITE_FLUSH_DEBOUNCE_MS) || 250);
     this.flushTimer = setTimeout(() => {
       this.flushTimer = null;
       this.flushIfDirty();
-    }, 250);
+    }, debounce);
     this.flushTimer.unref?.();
   }
 
@@ -124,6 +127,9 @@ class SqlJsDatabase implements YzSqliteDb {
   flushIfDirty(): void {
     if (!this.dirty) return;
     this.dirty = false;
+    // ★ ':memory:'（测试用内存库）无落盘语义 —— 不处理会去写名为 ":memory:.tmp" 的文件直接 ENOENT
+    //   （2026-10-03 conversation-mode 测试迁移到统一驱动入口时暴露）。
+    if (this.dbPath === ':memory:') return;
     const buf = Buffer.from(this.sqlDb.export());
     const tmp = this.dbPath + '.tmp';
     fs.mkdirSync(path.dirname(this.dbPath), { recursive: true });

@@ -349,6 +349,16 @@ function readGuardEnv() {
   return { YZ_LICENSE_GUARD: '1' };
 }
 
+/** 预置试用码文件（构建时现签，pre-sign-license.cjs 产出 → extraResources/license/）。
+ *  server 的 license.ts 优先读它；文件不存在（dev / 显式跳过）时 server 回退源码常量。 */
+function readLicenseCodesEnv() {
+  if (!app.isPackaged) return {};
+  const f = path.join(process.resourcesPath, 'license', 'default-codes.json');
+  if (!fs.existsSync(f)) return {};
+  console.log('[license] 预置码来源: 构建时现签');
+  return { YZ_LICENSE_CODES_FILE: f };
+}
+
 const guardEnv = readGuardEnv();
 
 function startServer() {
@@ -376,7 +386,7 @@ function startServer() {
       serverProcess = spawn(process.execPath, [tsxPath, 'watch', 'src/index.ts'], {
         cwd: serverDir,
         stdio: 'inherit',
-        env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', PORT: String(API_PORT), YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: 'http://127.0.0.1:' + CDP_PORT, WEB_DIST: path.join(__dirname, '..', '..', 'apps', 'web', 'dist'), ...editionEnv, ...guardEnv },
+        env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', PORT: String(API_PORT), YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: 'http://127.0.0.1:' + CDP_PORT, WEB_DIST: path.join(__dirname, '..', '..', 'apps', 'web', 'dist'), ...editionEnv, ...guardEnv, ...readLicenseCodesEnv() },
       });
     } else {
       // 回退：npx tsx（可能 ABI 不兼容，但至少能启动）
@@ -385,7 +395,7 @@ function startServer() {
         cwd: serverDir,
         stdio: 'inherit',
         shell: true,
-        env: { ...process.env, PORT: String(API_PORT), YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: 'http://127.0.0.1:' + CDP_PORT, WEB_DIST: path.join(__dirname, '..', '..', 'apps', 'web', 'dist'), ...editionEnv, ...guardEnv },
+        env: { ...process.env, PORT: String(API_PORT), YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: 'http://127.0.0.1:' + CDP_PORT, WEB_DIST: path.join(__dirname, '..', '..', 'apps', 'web', 'dist'), ...editionEnv, ...guardEnv, ...readLicenseCodesEnv() },
       });
     }
     serverProcess.on('error', (err) => console.error('后端启动失败:', err));
@@ -401,7 +411,7 @@ function startServer() {
     logStream.write(`\n===== [${stamp()}] 后端启动 =====\n`);
     serverProcess = spawn(process.execPath, [serverPath], {
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', PORT: String(API_PORT), YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: 'http://127.0.0.1:' + CDP_PORT, WEB_DIST: path.join(process.resourcesPath, 'server', 'web-dist'), ...(dataDir ? { DATA_DIR: dataDir } : {}), ...editionEnv, ...guardEnv },
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', PORT: String(API_PORT), YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: 'http://127.0.0.1:' + CDP_PORT, WEB_DIST: path.join(process.resourcesPath, 'server', 'web-dist'), ...(dataDir ? { DATA_DIR: dataDir } : {}), ...editionEnv, ...guardEnv, ...readLicenseCodesEnv() },
     });
     serverProcess.stdout.on('data', (d) => logStream.write(d));
     serverProcess.stderr.on('data', (d) => logStream.write(d));

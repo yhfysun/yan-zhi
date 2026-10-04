@@ -74,7 +74,7 @@ describe('① 下载工具：已实现 + 已注册 + 已挂载', () => {
   });
 
   it('★ 任务模式三个智能体都通过共用常量挂上了（脚本/有声小说/配音）', () => {
-    expect(TASK_MODE_AGENTS).toMatch(/const COMMON_MEDIA_FETCH_TOOLS = \['api_media_fetch', 'api_media_normalize'\];/);
+    expect(TASK_MODE_AGENTS).toMatch(/const COMMON_MEDIA_FETCH_TOOLS = \['api_media_fetch', 'api_media_normalize', 'media_install_ytdlp'\];/);
     // 引用方：SCRIPT / AUDIOBOOK / DUBBING 三个（短剧导演在 db.ts 内联定义，单独断言）
     const refs = TASK_MODE_AGENTS.match(/\.\.\.COMMON_MEDIA_FETCH_TOOLS,/g) || [];
     expect(refs.length, `应有 3 处引用，实际 ${refs.length}`).toBeGreaterThanOrEqual(3);
@@ -295,7 +295,9 @@ describe('⑥ 视频网站解析下载（yt-dlp，2026-09-28 用户诉求下半�
  */
 describe('⑦ 剪辑与特效：media_edit 实现 + 注册 + 挂载 + 权限登记', () => {
   const EXEC = EXECUTOR_CODE;
-  const PERM = stripComments(read('src/tool-permission.ts'));
+  // ★ 原文读取（不 stripComments）：本用例钉的就是**注释里的决策记录**（「明确放行」「那就放行啊」），
+  //   去注释后这些字串不存在 —— 2026-10-03 修复（此前该断言从未真正生效过）。
+  const PERM = read('src/tool-permission.ts');
   const TASK_MGR = stripComments(read('src/llm-task-manager.ts'));
 
   it('实现了 mediaEdit，且覆盖全部 12 个 op', () => {
@@ -346,7 +348,9 @@ describe('⑦ 剪辑与特效：media_edit 实现 + 注册 + 挂载 + 权限登�
   });
 
   it('★ media_edit 已登记进 MEDIA_TOOLS（漏登记 = 产物不进文件管理，只在对话里）', () => {
-    expect(TASK_MGR).toMatch(/const MEDIA_TOOLS = new Set\(\[[^\]]*'media_edit'/);
+    // ★ 2026-10-03 修复：MEDIA_TOOLS 已随产物登记钩子重构迁移到 services/artifact-hooks.ts
+    //   （llm-task-manager.ts:1452 注释可证），扫描目标同步更新。
+    expect(stripComments(read('src/services/artifact-hooks.ts'))).toMatch(/const MEDIA_TOOLS = new Set\([[\s\S]*?'media_edit'/);
   });
 
   it('已挂到有声小说/配音智能体的工具数组 + 默认助手工具数组', () => {

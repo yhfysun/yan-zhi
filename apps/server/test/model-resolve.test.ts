@@ -13,12 +13,13 @@
 //   4) 带 platformId 时同名模型跨平台不串用（★ 这是最隐蔽的错法）
 //   5) normalizeModelId 把 API 名规范成主键（写库口径）
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
-import Database from 'better-sqlite3';
+// 2026-10-03 修复：better-sqlite3 已重编为 Electron ABI，测试走统一驱动入口（自动回退 sql.js）
+import { openSqlite, type YzSqliteDb } from '../src/services/sqlite-driver.js';
 import { findModelRow, normalizeModelId, rowToModel } from '../src/services/model-resolve.js';
 
 /** 建一个最小 model 表：字段与真实库一致（只保留解析用到的列） */
-function mkDb() {
-  const db = new Database(':memory:');
+async function mkDb() {
+  const { db } = await openSqlite(':memory:');
   db.exec(`
     CREATE TABLE model (
       id TEXT PRIMARY KEY,
@@ -45,10 +46,10 @@ function mkDb() {
 }
 
 describe('findModelRow · 模型标识解析', () => {
-  let db: Database.Database;
+  let db: YzSqliteDb;
 
-  beforeEach(() => {
-    db = mkDb();
+  beforeEach(async () => {
+    db = await mkDb();
     // 回退命中会打 warn，这里静音以免污染测试输出（用例本身断言行为，不依赖日志）
     vi.spyOn(console, 'warn').mockImplementation(() => {});
   });
@@ -107,10 +108,10 @@ describe('findModelRow · 模型标识解析', () => {
 });
 
 describe('normalizeModelId · 写库口径', () => {
-  let db: Database.Database;
+  let db: YzSqliteDb;
 
-  beforeEach(() => {
-    db = mkDb();
+  beforeEach(async () => {
+    db = await mkDb();
   });
   afterEach(() => db.close());
 

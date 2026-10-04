@@ -330,8 +330,15 @@ describe('预置授权码 · 按档各一份', () => {
     // 实测踩过 —— 重签时顺手写了 --days 365，把 90 天试用变成了一年，
     // 而所有既有测试都是绿灯（它们只验「码有效」，不验「有效期多长」）。
     // 这个用例把口径本身钉住：900 天/365 天这类手滑会立刻变红。
-    const EXPECT_MIN_DAYS = 85;   // 留足余量：签发当天算 90，测试跑在几天后仍应通过
-    const EXPECT_MAX_DAYS = 95;
+    // ★ 2026-10-03 修复时间依赖缺陷：原断言"从**今天**算剩余 85~95 天"随真实时间流逝必然变红
+    //   （实测 09-19 签的码到 10-03 只剩 76 天）。改为**时间不变量**：expireAt − 签发日 ≈ 90 天。
+    //   签发日与预置码常量一起维护（src/license.ts 的 DEFAULT_LICENSE_BY_EDITION）：
+    //   每次重签预置码时必须同步更新 LICENSE_SIGNED_AT，否则本测试会指出口径对不上。
+    // ★ signedAt（gen-license 2026-10-03 起携带）优先：构建时现签的码用自身签发时刻，
+    //   断言与运行日期彻底无关；存量码（无 signedAt）回退下面的历史签发日常量。
+    const LICENSE_SIGNED_AT_FALLBACK = Date.parse('2026-09-19T15:59:59.000Z'); // 90 天前 = expire 2026-12-18T15:59:59Z
+    const EXPECT_MIN_DAYS = 89;
+    const EXPECT_MAX_DAYS = 91;
     const prev = process.env.YZ_DEFAULT_LICENSE;
     try {
       for (const e of EDITIONS) {
@@ -343,8 +350,10 @@ describe('预置授权码 · 按档各一份', () => {
           Buffer.from(payloadB64.replace(/-/g, '+').replace(/_/g, '/') + pad, 'base64').toString('utf8'),
         );
         expect(payload.expireAt, `${e} 码 expireAt 应为具体时间（试用码不该永不过期）`).toBeTruthy();
-        const days = (new Date(payload.expireAt).getTime() - Date.now()) / 86400000;
-        expect(days, `${e} 码剩余 ${Math.round(days)} 天，超出 90 天口径（${EXPECT_MIN_DAYS}~${EXPECT_MAX_DAYS}）`)
+        const signedAt = payload.signedAt ? Date.parse(payload.signedAt) : LICENSE_SIGNED_AT_FALLBACK;
+        expect(signedAt, `${e} 码签发时刻不可解析`).not.toBeNaN();
+        const days = (new Date(payload.expireAt).getTime() - signedAt) / 86400000;
+        expect(days, `${e} 码有效期 ${Math.round(days)} 天，超出 90 天口径（${EXPECT_MIN_DAYS}~${EXPECT_MAX_DAYS}）—— 重签时同步更新 LICENSE_SIGNED_AT`)
           .toBeGreaterThanOrEqual(EXPECT_MIN_DAYS);
         expect(days).toBeLessThanOrEqual(EXPECT_MAX_DAYS);
       }

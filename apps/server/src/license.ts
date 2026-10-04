@@ -4,6 +4,10 @@ import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+
+// 本模块所在目录（ESM 无 __dirname；构建时现签的预置码文件按它定位开发期候选路径）
+const licenseModuleDir = path.dirname(fileURLToPath(import.meta.url));
 
 const LICENSE_PUBLIC_KEY = `-----BEGIN PUBLIC KEY-----
 MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAudaPf8W9lEYSASD8ZeAd
@@ -90,6 +94,41 @@ const DEFAULT_LICENSE_BY_EDITION: Record<Edition, string> = {
  *    若这里直接取构建档，高级包开箱就成了全量档，与产品口径不符。
  *
  *  优先级：YZ_DEFAULT_LICENSE（整码覆盖，人工兜底）> YZ_DEFAULT_EDITION（档位）> basic。 */
+
+// ─────────────── 构建时现签的预置码（2026-10-03，docs/预置授权码-构建时现签-方案.md）───────────────
+// 打包链路（apps/desktop/scripts/pre-sign-license.cjs）现场签发三档写入
+// resources/license/default-codes.json；启动时优先读它（expireAt ≈ 打包日 + 90 天），
+// 读不到（dev 环境/存量包/显式跳过）回退上面的源码常量 —— 存量包行为不变。
+{
+  const candidates: string[] = [];
+  if (process.env.YZ_LICENSE_CODES_FILE) candidates.push(process.env.YZ_LICENSE_CODES_FILE);
+  // electron-builder extraResources：包内 <resources>/license/default-codes.json
+  const rp = (process as unknown as { resourcesPath?: string }).resourcesPath;
+  if (rp) candidates.push(path.join(rp, 'license', 'default-codes.json'));
+  // 开发兜底：desktop 仓库内直接读（prepare 后的文件）
+  candidates.push(path.resolve(licenseModuleDir, '../../../desktop/resources/license/default-codes.json'));
+  for (const f of candidates) {
+    try {
+      if (!f || !fs.existsSync(f)) continue;
+      const j = JSON.parse(fs.readFileSync(f, 'utf8')) as { signedAt?: string; codes?: Record<string, string> };
+      if (j.codes && typeof j.codes === 'object') {
+        for (const e of Object.keys(DEFAULT_LICENSE_BY_EDITION) as Edition[]) {
+          if (typeof j.codes[e] === 'string' && j.codes[e]) DEFAULT_LICENSE_BY_EDITION[e] = j.codes[e];
+        }
+        console.log('[license] 预置码来源: 构建时现签 (signedAt=' + (j.signedAt || '未知') + ', ' + f + ')');
+      }
+      break;
+    } catch { /* 任一候选损坏 → 尝试下一个/回退常量 */ }
+  }
+  // 到期告警（兜底：有人手工重签/旧流程打包时能看见）
+  try {
+    const exp = JSON.parse(Buffer.from(getDefaultLicenseCode().split('.')[0].replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8')).expireAt;
+    if (exp) {
+      const remainDays = (new Date(exp).getTime() - Date.now()) / 86400000;
+      if (remainDays < 14) console.warn(`[license] ⚠ 预置试用码仅剩 ${Math.round(remainDays)} 天到期（${exp}）—— 请重新构建现签或发新码`);
+    }
+  } catch { /* 非法码由验签路径报错 */ }
+}
 export function getDefaultLicenseCode(): string {
   const envCode = process.env.YZ_DEFAULT_LICENSE;
   if (envCode && envCode.trim()) return envCode.trim();
@@ -110,6 +149,9 @@ export interface LicensePayload {
   machineId?: string | null;
   /** 能力档位。缺失 → FALLBACK_EDITION（pro），保证存量码不掉权限。 */
   edition?: string | null;
+  /** 签发时刻 ISO（2026-10-03 起 gen-license 一律携带；存量码无此字段照常验签）。
+   *  预置码"构建时现签"链路用它做时间不变量断言（expireAt − signedAt ≈ 授权天数）。 */
+  signedAt?: string | null;
 }
 
 /** 本机标识：machineId 为主（跨网卡变化稳定），mac 保留用于展示与老码校验。 */

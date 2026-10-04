@@ -1,6 +1,7 @@
 # 移动端 SQLite 替换方案：从 better-sqlite3 切到 @capacitor-community/sqlite
 
-> 状态：**driver 抽象已完成，待接通全链路**
+> 状态：**2026-10-03 路线更新（拍板：收尾走新路线）** —— 主路线改为**已合并的 `services/sqlite-driver.ts` sql.js（WASM）回退**：better-sqlite3 加载失败自动切换，移动端**零调用方改动**（旧方案的 55 调用方异步化因触碰桌面/web 代码路径被叫停，永久搁置）。本提案原方案（driver 抽象/capacitor-driver）转存于 `apps/server/wip-mobile-sqlite/`，仅当 sql.js 性能不达标时局部启用。收尾清单见 `docs/移动端SQLite-收尾方案-路线更新.md`。
+> 历史状态：driver 抽象已完成，待接通全链路
 > 创建：2026-09-14
 > 影响范围：apps/server/**（55 个调用方）+ apps/mobile 启动流程
 
