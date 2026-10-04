@@ -76,6 +76,8 @@ const TOOL_PATH_ARGS: Record<string, PathArgSpec[]> = {
   api_workspace_list_dir: [{ field: 'path', action: 'read' }],
   // 语义代码检索：path 指定工作区根（读）
   api_code_semantic_search: [{ field: 'path', action: 'read' }],
+  // 精确跳转定义（tsserver）：file 为目标源文件（读）
+  api_code_definition: [{ field: 'file', action: 'read' }],
   // ── OCR：传 path 读本地图片（读）；传 image(base64) 时不碰磁盘，抽不到自然不判 ──
   api_tool_ocr: [{ field: 'path', action: 'read' }],
   // ── 媒体加工（ffmpeg）：**输入一律本机绝对路径**（前序工具回传的 file 字段）──

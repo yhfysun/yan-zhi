@@ -23,6 +23,32 @@ interface Pending {
 const RPC_TIMEOUT = 60000;
 const CONNECT_TIMEOUT = 30000;
 
+function findNodeInPath(): string | null {
+  const names = process.platform === 'win32' ? ['node.exe'] : ['node'];
+  const dirs = (process.env.PATH || '').split(process.platform === 'win32' ? ';' : ':').filter(Boolean);
+  for (const dir of dirs) {
+    for (const name of names) {
+      try {
+        const p = `${dir.replace(/[\\/]+$/, '')}${process.platform === 'win32' ? '\\' : '/'}${name}`;
+        if (existsSync(p)) return p;
+      } catch {}
+    }
+  }
+  return null;
+}
+
+/**
+ * 解析 node 运行时命令（多个子进程消费方共用的**唯一实现**：MCP stdio 客户端、
+ * tsserver 管理（P2-5）、后续任何 js 子进程）。
+ * bare "node" 优先从 PATH 找绝对路径；找不到（打包版用户机没装 node）
+ * 则回退当前进程可执行文件（Electron 下配 ELECTRON_RUN_AS_NODE=1 即等价 node）。
+ */
+export function resolveNodeRuntime(): { command: string; extraEnv: Record<string, string> } {
+  const found = findNodeInPath();
+  if (found) return { command: found, extraEnv: {} };
+  return { command: process.execPath, extraEnv: { ELECTRON_RUN_AS_NODE: '1' } };
+}
+
 export class StdioMcpClient {
   private child: ChildProcess | null = null;
   private nextId = 1;
@@ -46,25 +72,10 @@ export class StdioMcpClient {
     const isBare = !raw.includes('\\') && !raw.includes('/');
     const base = isBare ? raw.replace(/\.exe$/i, '').toLowerCase() : '';
     if (isBare && base === 'node') {
-      const found = this.findNodeInPath();
-      if (found) return { command: found, useShell: false, extraEnv: {} };
-      return { command: process.execPath, useShell: false, extraEnv: { ELECTRON_RUN_AS_NODE: '1' } };
+      const rt = resolveNodeRuntime();
+      return { command: rt.command, useShell: false, extraEnv: rt.extraEnv };
     }
     return { command: raw, useShell: process.platform === 'win32', extraEnv: {} };
-  }
-
-  private findNodeInPath(): string | null {
-    const names = process.platform === 'win32' ? ['node.exe'] : ['node'];
-    const dirs = (process.env.PATH || '').split(process.platform === 'win32' ? ';' : ':').filter(Boolean);
-    for (const dir of dirs) {
-      for (const name of names) {
-        try {
-          const p = `${dir.replace(/[\\/]+$/, '')}${process.platform === 'win32' ? '\\' : '/'}${name}`;
-          if (existsSync(p)) return p;
-        } catch {}
-      }
-    }
-    return null;
   }
 
   async connect(): Promise<void> {

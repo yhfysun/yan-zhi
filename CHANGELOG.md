@@ -5,6 +5,7 @@
 ## [Unreleased]
 
 ### Added
+- **精确跳转定义（P2-5）**：新增 `api_code_definition` 工具 + `services/lsp-manager.ts` —— 走项目 tsserver 语言服务做真实「跳转定义」，补 AST 启发式在 re-export 场景停在转发行的短板（经 index.ts 转出的符号直指实现行）；每工作目录单实例、闲置 10 分钟回收、意外退出自动重启一次、连续 2 次失败熔断（坏项目不反复 spawn，之后引导改用 code_refs）、20s 请求超时；项目本地 typescript 优先、服务端依赖兜底、node 运行时解析复用 `resolveNodeRuntime()`（不再有第三份）；只读、默认暴露；含真实 re-export 集成测试（tsserver 不可用 skip 不假红）与熔断回归
 - **后台并行子智能体（P2-6）**：`call_agent` 新增 `async: true` —— 立即返回启动回执，子 ReAct 后台独立执行，完成后结果自动发回本会话（任务仍在跑 → 注入通道唤醒下一轮；已收尾 → 落库普通消息，与工作流结果反写同口径）。并发上限 3（超出直接引导等待或改同步，不排队）；主循环**不等待**后台任务（防"空轮等待"烧 token），收尾时有在跑任务会落一条明示消息；工作任务型子智能体不套后台壳（防双重投递）；中止级联、重启不恢复（方案拍板）。闸门/文案在 `services/background-subagents.ts`（行为测试）+ 12 例接线守卫
 - ★ 修复前端子智能体并发流合并：`subAgentMsgIds` 改为 `parentToolCallId::subAgentId` 复合键 —— 同一 agent 的两个后台任务此前会把两路 token 流合流进同一条消息（服务端 chunk/tool_call 事件补发 parentToolCallId）
 - **项目级技能目录（P2-8）**：工作目录 `.yan-zhi/skills/*.md` 自动发现并注入系统提示 —— frontmatter（name/description/triggers）+ 正文 SOP，与 DB 技能同一套触发词命中规则（命中注入完整流程、未命中只给名称），同名时**项目技能覆盖挂载技能**；mtime+size 指纹缓存（每轮 ReAct 构建提示词不重读盘）、不写 skill 表（目录即真相源）、单文件解析失败只 warn 跳过；独立 `services/project-skills.ts` + 6 例功能测试

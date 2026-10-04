@@ -4720,6 +4720,8 @@ export function buildToolsForBackend(agentId: string | null, userId: string, opt
     // 语义代码检索（P1，2026-10-03）：只读、有工作目录才有意义，默认暴露给所有智能体
     //（mountedApiTools 非空时本组被整组替换 —— 挂载了专属 api 工具链的智能体按需自行加挂）
     'api_code_semantic_search',
+    // 精确跳转定义（P2-5，tsserver）：只读、re-export 场景补 AST 的短板，默认暴露
+    'api_code_definition',
     // AI 媒体生成：文生图/文生视频（agnes 平台专用端点），默认暴露让所有智能体都能直接出图/出片
     'api_image_generate', 'api_video_generate', 'api_video_status',
   ];

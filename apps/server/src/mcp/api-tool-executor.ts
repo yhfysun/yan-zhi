@@ -1,6 +1,6 @@
 import { v4 as uuid } from 'uuid';
 import { readdir, stat, mkdir, writeFile, rm } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -287,7 +287,7 @@ export const SUPPORTED_API_TOOLS = new Set([
   'api_custom_tool_execute', 'api_tool_ocr', 'api_tool_install',
   'api_marketplace_sources', 'api_marketplace_add_source', 'api_marketplace_delete_source', 'api_marketplace_browse', 'api_marketplace_install',
   'api_workspace_list_dir', 'api_workspace_search_files',
-  'api_code_semantic_search',
+  'api_code_semantic_search', 'api_code_definition',
   'api_memory_search', 'api_memory_list', 'api_memory_create', 'api_memory_delete',
   'api_space_memory_read', 'api_space_memory_append',
   'api_browser_memory_read',
@@ -2843,6 +2843,50 @@ export async function executeApiTool(
         );
         const notes = sr.reason ? `\n说明: ${sr.reason}` : '';
         return ok(`语义检索「${str(args, 'query')}」：${sr.hits.length} 条命中（索引 ${sr.totalChunks} chunks）。${notes}\n\n${lines.join('\n\n') || '（无命中 —— 换个描述或用 file_grep 精确检索）'}`);
+      }
+
+      case 'api_code_definition': {
+        // 精确跳转定义（P2-5，tsserver）：AST 版 code_refs 在 re-export 场景停在转发行，
+        // 本工具走语言服务直接命中实现行。只读。
+        const { tsserverDefinition, resolveTsserverPosition } = await import('../services/lsp-manager.js');
+        const root = workspaceDir || serverState.workspaceDir || '';
+        const rawFile = str(args, 'file');
+        if (!rawFile) return fail('缺少 file 参数（要定位符号所在的文件）');
+        const { checkPathAccess, allowedRootsFor, getAuthorizedDirs } = await import('../services/path-guard.js');
+        const verdict = checkPathAccess({
+          toolName: 'api_code_definition',
+          args,
+          workspaceDir: workspaceDir || serverState.workspaceDir || null,
+          allowedRoots: allowedRootsFor(workspaceDir || serverState.workspaceDir || null, conversationId || null),
+          authorizedDirs: conversationId ? getAuthorizedDirs(conversationId) : [],
+        });
+        if (verdict.kind === 'need-auth') {
+          return fail(`路径在工作目录外（${verdict.items.map((i) => i.rawPath).join(', ')}），已拒绝。请改用工作目录内的路径。`);
+        }
+        const absFile = path.isAbsolute(rawFile) ? rawFile : path.resolve(root || process.cwd(), rawFile);
+        if (!existsSync(absFile)) return fail(`文件不存在：${absFile}`);
+        // 项目根：优先最近含 tsconfig.json / package.json 的祖先目录（tsserver 靠它加载项目）
+        let projRoot = root || path.dirname(absFile);
+        try {
+          let dir = path.dirname(absFile);
+          while (dir && dir !== path.dirname(dir)) {
+            if (existsSync(path.join(dir, 'tsconfig.json'))) { projRoot = dir; break; }
+            if (existsSync(path.join(dir, 'package.json'))) projRoot = dir;
+            dir = path.dirname(dir);
+          }
+        } catch { /* 探测失败用会话工作目录兜底 */ }
+        const content = readFileSync(absFile, 'utf-8');
+        const line = num(args, 'line', 0);
+        const pos = resolveTsserverPosition(content, line, args.column != null ? num(args, 'column', 0) : null, str(args, 'symbol') || null);
+        if ('error' in pos) return fail(pos.error);
+        const r = await tsserverDefinition(projRoot, absFile, line, pos.offset);
+        if (!r.ok) return fail(r.error);
+        if (!r.defs.length) {
+          return ok(`未找到定义（${absFile}:${line} offset ${pos.offset}）。可能该位置是关键字/字面量，或符号来自未加载的类型声明；也可用 code_refs 做启发式兜底。`);
+        }
+        const rel = (f: string) => { try { return root && f.startsWith(root) ? path.relative(root, f) : f; } catch { return f; } };
+        const list = r.defs.map((d, i) => `${i + 1}. ${rel(d.file)}:${d.line}:${d.column}  ${d.preview}`).join('\n');
+        return ok(`定义位置（tsserver 精确跳转，来自 ${rel(absFile)}:${line}）：\n${list}`);
       }
 
       // Memory
