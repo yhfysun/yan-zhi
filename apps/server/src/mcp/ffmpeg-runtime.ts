@@ -6,10 +6,10 @@
 //
 // 解析顺序：YZ_FFMPEG_PATH（显式）> 数据目录/ffmpeg（下载安装位）> 随包目录（兼容）> PATH。
 import { existsSync, promises as fsp } from 'node:fs';
-import { execFile } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { runCmd, lookupOnPath } from '../services/exec-cmd.js';
 
 export const FFMPEG_BIN = process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg';
 export const FFPROBE_BIN = process.platform === 'win32' ? 'ffprobe.exe' : 'ffprobe';
@@ -97,22 +97,10 @@ function firstExisting(dirs: string[]): { ffmpeg: string; ffprobe: string } | nu
 }
 
 function run(cmd: string, args: string[], timeoutMs: number): Promise<{ ok: boolean; out: string }> {
-  return new Promise((resolve) => {
-    execFile(cmd, args, { timeout: timeoutMs, windowsHide: true, maxBuffer: 32 * 1024 * 1024 }, (err, stdout, stderr) => {
-      resolve({ ok: !err, out: String(err ? stderr || err.message : stdout) });
-    });
-  });
-}
-
-function lookupOnPath(file: string): Promise<string | null> {
-  return new Promise((resolve) => {
-    const cmd = process.platform === 'win32' ? 'where' : 'which';
-    execFile(cmd, [file], { timeout: 5000, windowsHide: true }, (err, stdout) => {
-      if (err) return resolve(null);
-      const first = String(stdout || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean)[0];
-      resolve(first && existsSync(first) ? first : null);
-    });
-  });
+  return runCmd(cmd, args, { timeoutMs, maxBuffer: 32 * 1024 * 1024 }).then((r) => ({
+    ok: r.ok,
+    out: r.ok ? r.stdout : r.stderr || r.error,
+  }));
 }
 
 let cached: FfmpegStatus | null = null;

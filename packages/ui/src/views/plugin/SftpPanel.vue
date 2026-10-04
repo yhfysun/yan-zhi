@@ -225,6 +225,7 @@
 <script setup lang="ts">
 import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue';
 import { clampMenuPos } from '../../utils/menuPosition';
+import { consumeSseStream } from '../../utils/sse';
 import {
   ArrowUp, Connection, Document, Download, EditPen,
   Folder, FolderAdd, FolderOpened, HomeFilled, Link, Refresh, Upload,
@@ -844,33 +845,22 @@ async function subscribeProgress(jobId: string): Promise<boolean> {
         const resp = await fetch(`${API_BASE}/plugin/ops-shell/sftp/progress/${jobId}/stream`, {
           headers: { Authorization: `Bearer ${token}` },
         });
-        const reader = resp.body?.getReader();
-        if (!reader) { resolve(true); return; }
-        const decoder = new TextDecoder();
-        let buffer = '';
-        for (;;) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          const parts = buffer.split('\n\n');
-          buffer = parts.pop() || '';
-          for (const p of parts) {
-            const line = p.split('\n').find((l) => l.startsWith('data:'));
-            if (!line) continue;
-            let data: any;
-            try { data = JSON.parse(line.slice(5)); } catch { continue; }
-            if (data.transferred < 0) {
-              transfer.value = { ...transfer.value, active: false, status: 'exception' };
-              ElMessage.error('传输失败');
-              resolve(false); return;
-            }
-            // 完成标记：后端完成后置 transferred=0,total=1
-            if (data.transferred === 0 && data.total === 1) { resolve(true); return; }
-            const total = data.total > 0 ? data.total : 1;
-            const pct = Math.min(100, Math.round((data.transferred / total) * 100));
-            transfer.value = { ...transfer.value, active: true, percent: pct };
+        if (!resp.body) { resolve(true); return; }
+        // SSE 解码统一走 utils/sse（P5 收口）
+        await consumeSseStream(resp.body, (payload) => {
+          let data: any;
+          try { data = JSON.parse(payload); } catch { return; }
+          if (data.transferred < 0) {
+            transfer.value = { ...transfer.value, active: false, status: 'exception' };
+            ElMessage.error('传输失败');
+            resolve(false); return false;
           }
-        }
+          // 完成标记：后端完成后置 transferred=0,total=1
+          if (data.transferred === 0 && data.total === 1) { resolve(true); return false; }
+          const total = data.total > 0 ? data.total : 1;
+          const pct = Math.min(100, Math.round((data.transferred / total) * 100));
+          transfer.value = { ...transfer.value, active: true, percent: pct };
+        });
         resolve(true);
       } catch {
         resolve(true);

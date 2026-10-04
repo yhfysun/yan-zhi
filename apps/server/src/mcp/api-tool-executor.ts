@@ -1,7 +1,7 @@
 import { v4 as uuid } from 'uuid';
 import { readdir, stat, mkdir, writeFile, rm } from 'node:fs/promises';
 import { existsSync, readFileSync } from 'node:fs';
-import { execFile } from 'node:child_process';
+import { runCmd } from '../services/exec-cmd.js';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { db } from '../db.js';
@@ -139,6 +139,11 @@ import {
 } from '../services/data-query.js';
 import type { QueryIntent } from '../services/ontology-compiler.js';
 import { setJsExecDataBridge } from '@yan-zhi/core';
+import { createLogger } from '../services/logger.js';
+
+// ★ 文件内另有 tesseract.js 选项属性 { logger: () => {} }（第三方 API 名，不可改名）；
+//   对象属性名不与导入的 logger 绑定冲突，可安全共存（P4b 遗留手工迁移）。
+const logger = createLogger('api-tool');
 
 export interface MpcToolExecutionResult {
   content: Array<{ type: string; text: string }>;
@@ -611,7 +616,7 @@ async function handleImageResult(
   } catch (e: unknown) {
     // 落盘失败不影响对话（远端 url 仍可预览），但必须留痕：
     // 产物没进交付目录 / 消息末尾没有交付卡片，根因往往就是这里。
-    console.warn(`[media] 生图产物落盘失败（来源：${remoteUrl ? '远端地址' : 'b64'}）：${e instanceof Error ? e.message : String(e)}`);
+    logger.warn(`[media] 生图产物落盘失败（来源：${remoteUrl ? '远端地址' : 'b64'}）：${e instanceof Error ? e.message : String(e)}`);
   }
   if (!remoteUrl && !localUrl) return fail(`生图响应里没有图片地址：${JSON.stringify(j).slice(0, 300)}`);
   return ok(JSON.stringify({
@@ -1052,11 +1057,7 @@ function extForFetch(url: string, fallbackExt: string): string {
 
 /** 跑一次 ffprobe，成功返回 stdout（用于探测流信息）。 */
 function runFfprobe(bin: string, args: string[], timeoutMs: number): Promise<{ ok: boolean; out: string }> {
-  return new Promise((resolve) => {
-    execFile(bin, args, { timeout: timeoutMs, windowsHide: true, maxBuffer: 4 * 1024 * 1024 }, (err, stdout) => {
-      resolve({ ok: !err, out: String(stdout || '') });
-    });
-  });
+  return runCmd(bin, args, { timeoutMs, maxBuffer: 4 * 1024 * 1024 }).then((r) => ({ ok: r.ok, out: r.stdout }));
 }
 
 /**
@@ -1105,12 +1106,10 @@ async function probeMedia(ffprobe: string, file: string): Promise<{ hasAudio: bo
 
 /** 跑一次 ffmpeg，失败时把 stderr 尾部带出来（定位编码/参数问题只能靠它）。 */
 function runFfmpeg(bin: string, args: string[], timeoutMs: number): Promise<{ ok: boolean; stderr: string }> {
-  return new Promise((resolve) => {
-    execFile(bin, args, { timeout: timeoutMs, windowsHide: true, maxBuffer: 16 * 1024 * 1024 }, (err, _stdout, stderr) => {
-      if (err) resolve({ ok: false, stderr: String(stderr || err.message).slice(-1200) });
-      else resolve({ ok: true, stderr: '' });
-    });
-  });
+  return runCmd(bin, args, { timeoutMs, maxBuffer: 16 * 1024 * 1024 }).then((r) => ({
+    ok: r.ok,
+    stderr: r.ok ? '' : (r.stderr || r.error).slice(-1200),
+  }));
 }
 
 /** 输入文件校验：一律要求本机已存在的绝对路径（相对路径在不同 cwd 下会静默错文件）。 */
@@ -1146,7 +1145,7 @@ async function mediaInstallFfmpeg(): Promise<MpcToolExecutionResult> {
   }
   // 体积策略回执：让模型/用户看得到「这次为何要确认、阈值是多少、可怎么改」
   const policy = decideInstallPolicy(FFMPEG_ESTIMATED_BYTES);
-  const r = await installFfmpeg((msg) => console.log(`[ffmpeg] ${msg}`));
+  const r = await installFfmpeg((msg) => logger.info(`[ffmpeg] ${msg}`));
   if (!r.ok) return fail(`${r.message}${r.dir ? `\n可手动放入目录：${r.dir}` : ''}`);
   const after = await resolveFfmpeg();
   return ok(JSON.stringify({
@@ -1163,7 +1162,7 @@ async function mediaInstallYtdlp(): Promise<MpcToolExecutionResult> {
   if (before.ok) {
     return ok(JSON.stringify({ ok: true, alreadyInstalled: true, source: before.source, dir: path.dirname(before.bin) }));
   }
-  const r = await installYtdlp((msg) => console.log(`[ytdlp] ${msg}`));
+  const r = await installYtdlp((msg) => logger.info(`[ytdlp] ${msg}`));
   if (!r.ok) return fail(`${r.message}${r.dir ? `\n可手动放入目录：${r.dir}` : ''}`);
   const after = await resolveYtdlp();
   return ok(JSON.stringify({
@@ -2170,7 +2169,7 @@ async function mediaGenerateVideo(
       localUrl = `${target.urlBase}/${path.basename(file)}`;
     }
   } catch (e: unknown) {
-    console.warn(`[media] 生视频产物落盘失败（来源：${remoteUrl ? '远端地址' : '上游直出'}）：${e instanceof Error ? e.message : String(e)}`);
+    logger.warn(`[media] 生视频产物落盘失败（来源：${remoteUrl ? '远端地址' : '上游直出'}）：${e instanceof Error ? e.message : String(e)}`);
   }
 
   return ok(JSON.stringify({

@@ -10,10 +10,10 @@
 //   - YZ_YTDLP_YOUTUBE=1 才允许解析 YouTube（反爬/cookie 不稳定，默认关闭，避免无谓失败）。
 //   - YZ_YTDLP_PROXY 可显式指定代理（如 http://127.0.0.1:7890）；不传则读 HTTPS_PROXY/https_proxy。
 import { existsSync, promises as fsp } from 'node:fs';
-import { execFile } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { runCmd, lookupOnPath } from '../services/exec-cmd.js';
 
 export const YTDLP_BIN =
   process.platform === 'win32' ? 'yt-dlp.exe'
@@ -99,17 +99,6 @@ export function resetYtdlpCache(): void {
   cached = null;
 }
 
-function lookupOnPath(file: string): Promise<string | null> {
-  return new Promise((resolve) => {
-    const cmd = process.platform === 'win32' ? 'where' : 'which';
-    execFile(cmd, [file], { timeout: 5000, windowsHide: true }, (err, stdout) => {
-      if (err) return resolve(null);
-      const first = String(stdout || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean)[0];
-      resolve(first && existsSync(first) ? first : null);
-    });
-  });
-}
-
 export interface InstallResult {
   ok: boolean;
   message: string;
@@ -174,22 +163,19 @@ export async function ytdlpFetch(
   if (proxy) args.push('--proxy', proxy);
   args.push(url);
 
-  return new Promise<YtdlpFetchResult>((resolve) => {
-    execFile(st.bin, args, { timeout: opts.timeoutMs ?? 600000, windowsHide: true, maxBuffer: 16 * 1024 * 1024 }, (err, _stdout, stderr) => {
-      if (err) {
-        resolve({ ok: false, error: String(stderr || err.message).slice(-1500) });
-        return;
-      }
-      const dir = path.dirname(outPrefix);
-      const baseName = path.basename(outPrefix);
-      void fsp
-        .readdir(dir)
-        .then((entries) => {
-          const hit = entries.find((e) => e.startsWith(`${baseName}.`) && !e.endsWith('.part'));
-          if (hit) resolve({ ok: true, file: path.join(dir, hit) });
-          else resolve({ ok: false, error: 'yt-dlp 执行成功但未产出文件（可能该链接无法解析或受地区限制）' });
-        })
-        .catch((e: unknown) => resolve({ ok: false, error: e instanceof Error ? e.message : String(e) }));
-    });
-  });
+  const r = await runCmd(st.bin, args, { timeoutMs: opts.timeoutMs ?? 600000, maxBuffer: 16 * 1024 * 1024 });
+  if (!r.ok) {
+    return { ok: false, error: (r.stderr || r.error).slice(-1500) };
+  }
+  const dir = path.dirname(outPrefix);
+  const baseName = path.basename(outPrefix);
+  try {
+    const entries = await fsp.readdir(dir);
+    const hit = entries.find((e) => e.startsWith(`${baseName}.`) && !e.endsWith('.part'));
+    return hit
+      ? { ok: true, file: path.join(dir, hit) }
+      : { ok: false, error: 'yt-dlp 执行成功但未产出文件（可能该链接无法解析或受地区限制）' };
+  } catch (e: unknown) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
 }

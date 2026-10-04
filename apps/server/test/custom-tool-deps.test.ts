@@ -31,6 +31,7 @@ const read = (p: string) => readFileSync(resolve(REPO, p), 'utf8');
 const strip = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 
 const DEPS = strip(read('apps/server/src/services/tool-deps.ts'));
+const EXEC_CMD = strip(read('apps/server/src/services/exec-cmd.ts'));
 const EXECUTOR = strip(read('apps/server/src/mcp/api-tool-executor.ts'));
 const LTM = strip(read('apps/server/src/llm-task-manager.ts'));
 const SANDBOX = strip(read('packages/core/src/tool/sandbox.ts'));
@@ -141,7 +142,11 @@ describe('③ 包名白名单（防注入：这些字符串会拼进 npm/pip 命
 
   it('★★ 命令必须用数组传参（不拼 shell 字符串 → 无注入面）', () => {
     const body = win(DEPS, 'function run(', 900, 'run 实现');
-    expect(body, '★ 未用 execFile（拼 shell 字符串会有命令注入面）').toMatch(/execFile\(/);
+    // exec-cmd 收口（2026-10-04）：execFile 唯一实现下沉到 services/exec-cmd.ts，
+    // 数组传参（无注入面）的保证随之单点化 —— 这里断言走的是统一出口 runCmd。
+    expect(body, '★ 未走统一出口 runCmd（应 import services/exec-cmd）').toMatch(/runCmd\(/);
+    expect(EXEC_CMD, '★ exec-cmd 底层未用 execFile（拼 shell 字符串会有命令注入面）').toMatch(/execFile\(/);
+    expect(EXEC_CMD, '★ exec-cmd 未强制数组 args（注入面回潮）').toMatch(/args: string\[\]/);
   });
 
   it('★★ Windows 必须显式挑 .cmd（where 首个结果是不可执行的 sh 脚本 → 静默失败）', () => {

@@ -17,8 +17,8 @@
 //   「下载压缩包 → 解压 → 放到数据目录」这一种形态（与 ffmpeg 同构，幂等、可删）。
 
 import path from 'node:path';
-import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { runCmd, lookupOnPath } from './exec-cmd.js';
 
 /** 静默下载的体积上限（字节）。默认 50MB，可用 YZ_INSTALL_SILENT_MAX_MB 覆盖。 */
 export const DEFAULT_SILENT_MAX_BYTES = 50 * 1024 * 1024;
@@ -85,19 +85,11 @@ export function formatBytes(n: number): string {
 
 /** 在 PATH 上查命令是否存在（where / which）。返回绝对路径或 null。 */
 export function probeCommand(file: string): Promise<string | null> {
-  return new Promise((resolve) => {
-    if (!file || /[\\/]/.test(file)) {
-      // 带分隔符 = 显式路径：直接判存在性，查 PATH 反而查不到
-      resolve(existsSync(file) ? path.resolve(file) : null);
-      return;
-    }
-    const cmd = process.platform === 'win32' ? 'where' : 'which';
-    execFile(cmd, [file], { timeout: 5000, windowsHide: true }, (err, stdout) => {
-      if (err) return resolve(null);
-      const first = String(stdout || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean)[0];
-      resolve(first && existsSync(first) ? first : null);
-    });
-  });
+  if (!file || /[\\/]/.test(file)) {
+    // 带分隔符 = 显式路径：直接判存在性，查 PATH 反而查不到
+    return Promise.resolve(existsSync(file) ? path.resolve(file) : null);
+  }
+  return lookupOnPath(file);
 }
 
 /** 自动拉包的启动器（它们本身就负责按需下载包，不需要我们预装包本体） */
@@ -342,11 +334,10 @@ export async function installFromArchive(
 }
 
 function runProcess(cmd: string, args: string[], timeoutMs: number): Promise<{ ok: boolean; out: string }> {
-  return new Promise((resolve) => {
-    execFile(cmd, args, { timeout: timeoutMs, windowsHide: true, maxBuffer: 32 * 1024 * 1024 }, (err, stdout, stderr) => {
-      resolve({ ok: !err, out: String(err ? stderr || err.message : stdout) });
-    });
-  });
+  return runCmd(cmd, args, { timeoutMs, maxBuffer: 32 * 1024 * 1024 }).then((r) => ({
+    ok: r.ok,
+    out: r.ok ? r.stdout : r.stderr || r.error,
+  }));
 }
 
 /** 递归查找文件（各平台压缩包内目录结构不一，不做路径假设）；深度上限防异常归档打转 */

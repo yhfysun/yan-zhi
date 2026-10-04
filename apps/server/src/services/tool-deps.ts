@@ -19,8 +19,8 @@
 
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { execFile } from 'node:child_process';
 import { existsSync, mkdirSync } from 'node:fs';
+import { runCmd } from './exec-cmd.js';
 import { createLogger } from './logger.js';
 const logger = createLogger('tool-deps');
 
@@ -129,19 +129,19 @@ export function partitionDependencies(deps: unknown): { safe: string[]; rejected
  *    既避开了 EINVAL，又保持参数是数组（不拼 shell 字符串 → 无注入面）。
  */
 function run(cmd: string, args: string[], cwd: string): Promise<{ code: number; out: string; err: string }> {
-  return new Promise((resolve) => {
-    const isWinCmd = process.platform === 'win32' && /\.(cmd|bat)$/i.test(cmd);
-    const file = isWinCmd ? (process.env.ComSpec || 'cmd.exe') : cmd;
-    const argv = isWinCmd ? ['/d', '/s', '/c', cmd, ...args] : args;
-    execFile(file, argv, { cwd, timeout: INSTALL_TIMEOUT_MS, windowsHide: true, maxBuffer: 8 * 1024 * 1024, windowsVerbatimArguments: isWinCmd },
-      (err, stdout, stderr) => {
-        resolve({
-          code: err ? (typeof (err as any).code === 'number' ? (err as any).code : 1) : 0,
-          out: String(stdout || ''),
-          err: String(stderr || ''),
-        });
-      });
-  });
+  const isWinCmd = process.platform === 'win32' && /\.(cmd|bat)$/i.test(cmd);
+  const file = isWinCmd ? (process.env.ComSpec || 'cmd.exe') : cmd;
+  const argv = isWinCmd ? ['/d', '/s', '/c', cmd, ...args] : args;
+  return runCmd(file, argv, {
+    cwd,
+    timeoutMs: INSTALL_TIMEOUT_MS,
+    maxBuffer: 8 * 1024 * 1024,
+    windowsVerbatimArguments: isWinCmd,
+  }).then((r) => ({
+    code: r.code ?? 1,
+    out: r.stdout,
+    err: r.stderr,
+  }));
 }
 
 /**

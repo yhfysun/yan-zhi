@@ -11,6 +11,7 @@ import { useSettingsStore } from './settings';
 import { useFileStore } from './file';
 import { useBrowserStore } from './browser';
 import { api, API_BASE, buildRequestHeaders } from '../api/client';
+import { consumeSseStream } from '../utils/sse';
 import { useAuthStore } from './auth';
 // 会话按模式隔离：loadConversations / createConversation 都要知道"当前在哪个模式"
 import { activeMode } from './mode';
@@ -1581,9 +1582,6 @@ async function loadConversations() {
     });
     if (!sseRes.ok || !sseRes.body) throw new Error('SSE 连接失败');
 
-    const reader = sseRes.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
     let assistantMsgId = '';
     // subAgentId → assistantMsgId。★ 键是**复合键**：同一 agent 可以有两个后台并行任务
     // （P2-6 async call_agent），只按 subAgentId 存会让两路 token 流合流进同一条消息。
@@ -1622,17 +1620,12 @@ async function loadConversations() {
       chunkBuffer.clear();
     }
 
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) { flushNow(convId); break; }
-      buffer += decoder.decode(value, { stream: true });
-      const events = buffer.split('\n\n');
-      buffer = events.pop() || '';
-      for (const raw of events) {
-        const line = raw.trim();
-        if (!line.startsWith('data: ')) continue;
+    // SSE 解码统一走 utils/sse（P5 收口）：分帧/注释帧/裁剪规则全前端单点。
+    // 帧处理是 async（事件分支内有 await，如工具执行），sse 层逐帧串行等待，与原循环语义一致。
+    await consumeSseStream(sseRes.body, async (payload) => {
+      {
         let event: any;
-        try { event = JSON.parse(line.slice(6)); } catch { continue; }
+        try { event = JSON.parse(payload); } catch { return; }
 
         // 追踪事件数（重连时作为 since 参数，避免重放旧事件）
         taskEventCounts.set(taskId, (taskEventCounts.get(taskId) || 0) + 1);
@@ -1810,7 +1803,9 @@ async function loadConversations() {
           }
         }
       }
-    }
+      });
+      // 流正常结束 = 任务完成：把节流缓冲里未刷出的尾巴立刻落进消息列表
+      flushNow(convId);
   }
 
   /** 检查会话是否有未完成的后端任务，如有则重新订阅 SSE 恢复流式输出。 */

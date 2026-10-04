@@ -10,10 +10,10 @@
 // 编码陷阱（本机踩过两次）：PowerShell 脚本里混入非 ASCII（中文音色名）会因编码错乱炸掉；
 // 另注意 PS 5.1 不能 await WinRT 异步，须用 AsTask 反射桥接。
 // 因此：脚本本体强制 ASCII，中文经 UTF-8 文件传入，泛型标记 IAsyncOperation`1 用 [char]96 拼出（反引号在脚本里会被吃）。
-import { execFile } from 'node:child_process';
 import { promises as fsp } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { runCmd } from '../services/exec-cmd.js';
 import { createLogger } from '../services/logger.js';
 const logger = createLogger('tts-sapi');
 
@@ -99,13 +99,9 @@ export function buildSapiScript(): string {
   ].join('\r\n');
 }
 
-function run(cmd: string, args: string[], timeoutMs: number): Promise<void> {
-  return new Promise((resolve, reject) => {
-    execFile(cmd, args, { timeout: timeoutMs, windowsHide: true, maxBuffer: 4 * 1024 * 1024 }, (err, _stdout, stderr) => {
-      if (err) reject(new Error(`${err.message}${stderr ? ` | ${String(stderr).slice(0, 200)}` : ''}`));
-      else resolve();
-    });
-  });
+async function run(cmd: string, args: string[], timeoutMs: number): Promise<void> {
+  const r = await runCmd(cmd, args, { timeoutMs, maxBuffer: 4 * 1024 * 1024 });
+  if (!r.ok) throw new Error(`${r.error}${r.stderr ? ` | ${r.stderr.slice(0, 200)}` : ''}`);
 }
 
 /**
@@ -272,9 +268,9 @@ export async function listSystemVoices(): Promise<Array<{ name: string; culture:
   }
   if (platform === 'darwin') {
     // say -v '?' 输出形如：Ting-Ting            zh_CN    # 您好，我叫Ting-Ting
-    const list = await new Promise<string>((resolve, reject) => {
-      execFile('/usr/bin/say', ['-v', '?'], { timeout: 30000 }, (err, stdout) => (err ? reject(err) : resolve(String(stdout))));
-    });
+    const say = await runCmd('/usr/bin/say', ['-v', '?'], { timeoutMs: 30000 });
+    if (!say.ok) throw new Error(say.error);
+    const list = say.stdout;
     return list
       .split('\n')
       .map((l) => /^(.+?)\s{2,}(\S+)\s*/.exec(l))

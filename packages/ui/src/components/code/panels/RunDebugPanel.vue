@@ -156,6 +156,7 @@ import {
   Plus, EditPen, Delete, CaretRight, Aim, SwitchButton, Right, Bottom, Top, Close, Monitor,
 } from '@element-plus/icons-vue';
 import { api, API_BASE, buildRequestHeaders } from '../../../api/client';
+import { consumeSseStream, parseSseJson } from '../../../utils/sse';
 import { useCodeStore, type RunConfigItem } from '../../../stores/code';
 
 const code = useCodeStore();
@@ -241,24 +242,12 @@ async function openStream(url: string, onMsg: (data: any) => void) {
       headers: buildRequestHeaders({ Authorization: `Bearer ${token}` }),
       signal: abort!.signal,
     });
-    const reader = resp.body?.getReader();
-    if (!reader) return;
-    const td = new TextDecoder();
-    let buf = '';
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += td.decode(value, { stream: true });
-      const parts = buf.split('\n\n');
-      buf = parts.pop() || '';
-      for (const part of parts) {
-        const line = part.split('\n').find((l) => l.startsWith('data:'));
-        if (!line) continue;
-        const payload = line.slice(5).trim();
-        if (!payload || payload === ':connected') continue;
-        try { onMsg(JSON.parse(payload)); } catch { /* 非 JSON 帧忽略 */ }
-      }
-    }
+    if (!resp.body) return;
+    // SSE 解码统一走 utils/sse（P5 收口）
+    await consumeSseStream(resp.body, (payload) => {
+      const data = parseSseJson(payload);
+      if (data) onMsg(data);
+    });
   } catch { /* 主动中止 / 网络中断 */ }
 }
 

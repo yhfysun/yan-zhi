@@ -350,13 +350,8 @@ function safeHost(u: string): string {
 }
 
 function run(cmd: string, args: string[], timeoutMs: number): Promise<{ ok: boolean; out: string }> {
-  return new Promise((resolve) => {
-    import('node:child_process').then(({ execFile }) => {
-      execFile(cmd, args, { timeout: timeoutMs, windowsHide: true, maxBuffer: 16 * 1024 * 1024 }, (err, _o, stderr) => {
-        resolve({ ok: !err, out: String(err ? stderr || err.message : '') });
-      });
-    });
-  });
+  return import('./exec-cmd.js').then(({ runCmd }) => runCmd(cmd, args, { timeoutMs, maxBuffer: 16 * 1024 * 1024 }))
+    .then((r) => ({ ok: r.ok, out: r.ok ? '' : r.stderr || r.error }));
 }
 
 /** 删除已安装的语音包（释放磁盘）。 */

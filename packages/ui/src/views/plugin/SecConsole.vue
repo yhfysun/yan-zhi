@@ -680,6 +680,7 @@ import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from 'vue';
 import { ChatDotRound, Close, QuestionFilled, User } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { api, API_BASE } from '../../api/client';
+import { consumeSseStream } from '../../utils/sse';
 import { useSettingsStore } from '../../stores/settings';
 import { usePlatformStore } from '../../stores/platform';
 import TaskListSection from '../../components/workbench/TaskListSection.vue';
@@ -807,20 +808,11 @@ async function subscribeSecTask(taskId: string, ac: AbortController): Promise<vo
     signal: ac.signal,
   });
   if (!resp.ok || !resp.body) throw new Error('SSE 连接失败');
-  const reader = resp.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const events = buffer.split('\n\n');
-    buffer = events.pop() || '';
-    for (const rawEvent of events) {
-      const line = rawEvent.trim();
-      if (!line.startsWith('data: ')) continue;
+  // SSE 解码统一走 utils/sse（P5 收口）；与运维控制台同协议，状态完全本地
+  await consumeSseStream(resp.body, (payload) => {
+    {
       let event: any;
-      try { event = JSON.parse(line.slice(6)); } catch { continue; }
+      try { event = JSON.parse(payload); } catch { return; }
       if (event.type === 'message:added') {
         const msg = event.message;
         if (!secMessages.value.some((m) => m.id === msg.id)) {
@@ -846,10 +838,11 @@ async function subscribeSecTask(taskId: string, ac: AbortController): Promise<vo
           secMessages.value.push({ id: `err-${Date.now()}`, role: 'assistant', content: `⚠️ ${event.error}`, createdAt: Date.now() });
         }
         scrollSecBottom();
-        return;
+        // 任务已终态：告诉 sse 层停止读取（对齐原实现读循环直接 return 的语义）
+        return false;
       }
     }
-  }
+  });
   for (const m of secMessages.value) m.streaming = false;
 }
 

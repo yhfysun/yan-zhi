@@ -2,6 +2,7 @@
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
 import { api, buildRequestHeaders } from '../api/client';
+import { consumeSseStream } from '../utils/sse';
 import type {
   CicdPipeline,
   CicdRun,
@@ -94,11 +95,8 @@ export const useCicdStore = defineStore('cicd', () => {
       const base = (import.meta as { env: { VITE_API_BASE?: string } }).env?.VITE_API_BASE || '/api';
       const url = `${base}/plugin/cicd-pipeline/pipelines/${pipelineId}/run`;
       const token = localStorage.getItem('token') || '';
-      const controller = new EventSource(url, { withCredentials: true });
 
       // EventSource 不支持 POST body，改用 fetch + ReadableStream
-      controller.close();
-
       fetch(url, {
         method: 'POST',
         headers: buildRequestHeaders({
@@ -107,48 +105,39 @@ export const useCicdStore = defineStore('cicd', () => {
         }),
         body: JSON.stringify({ targetId }),
       }).then(async (resp) => {
-        const reader = resp.body?.getReader();
-        if (!reader) { resolve('无法获取流'); return; }
-        const decoder = new TextDecoder();
-        let buffer = '';
-
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split('\n');
-          buffer = lines.pop() || '';
-          for (const line of lines) {
-            if (!line.startsWith('data: ')) continue;
-            try {
-              const event = JSON.parse(line.slice(6)) as ProgressEvent | { type: 'complete'; run: CicdRun };
-              if (event.type === 'complete') {
-                currentRun.value = (event as { run: CicdRun }).run;
-                resolve((event as { run: CicdRun }).run);
-              } else {
-                const evt = event as ProgressEvent;
-                if (evt.type === 'step-start' && evt.stepId) {
-                  runStepStatus.value[evt.stepId] = 'running';
-                } else if (evt.type === 'step-finish' && evt.stepId) {
-                  runStepStatus.value[evt.stepId] = evt.status || 'success';
-                } else if (evt.type === 'step-log' && evt.stepId) {
-                  const existing = runLogs.value.find((l) => l.stepId === evt.stepId);
-                  if (existing) {
-                    existing.log += (evt.log || '') + '\n';
-                  } else {
-                    runLogs.value.push({
-                      stepId: evt.stepId,
-                      stepName: evt.stepName || '',
-                      log: (evt.log || '') + '\n',
-                      status: 'running',
-                    });
-                  }
+        if (!resp.body) { resolve('无法获取流'); return; }
+        // SSE 解码统一走 utils/sse（P5 收口）
+        await consumeSseStream(resp.body, (payload) => {
+          {
+            let event: unknown;
+            try { event = JSON.parse(payload); } catch { return; }
+            const ev = event as ProgressEvent | { type: 'complete'; run: CicdRun };
+            if (ev.type === 'complete') {
+              currentRun.value = (ev as { run: CicdRun }).run;
+              resolve((ev as { run: CicdRun }).run);
+            } else {
+              const evt = ev as ProgressEvent;
+              if (evt.type === 'step-start' && evt.stepId) {
+                runStepStatus.value[evt.stepId] = 'running';
+              } else if (evt.type === 'step-finish' && evt.stepId) {
+                runStepStatus.value[evt.stepId] = evt.status || 'success';
+              } else if (evt.type === 'step-log' && evt.stepId) {
+                const existing = runLogs.value.find((l) => l.stepId === evt.stepId);
+                if (existing) {
+                  existing.log += (evt.log || '') + '\n';
+                } else {
+                  runLogs.value.push({
+                    stepId: evt.stepId,
+                    stepName: evt.stepName || '',
+                    log: (evt.log || '') + '\n',
+                    status: 'running',
+                  });
                 }
-                onProgress?.(evt);
               }
-            } catch {}
+              onProgress?.(evt);
+            }
           }
-        }
+        });
         if (!currentRun.value) resolve('执行未完成');
       }).catch((e) => resolve((e as Error).message));
     });

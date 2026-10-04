@@ -79,6 +79,7 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import { api, API_BASE, buildRequestHeaders } from '../../api/client';
+import { consumeSseStream } from '../../utils/sse';
 
 type ShellKind = 'powershell' | 'cmd' | 'bash';
 const isWin = navigator.platform.toLowerCase().includes('win');
@@ -218,24 +219,12 @@ async function openSession(s: ConsoleSession) {
         headers: buildRequestHeaders({ Authorization: `Bearer ${token}` }),
         signal: s.streamController!.signal,
       });
-      const reader = resp.body?.getReader();
-      if (!reader) return;
-      const tb = new TextDecoder();
-      let buffer = '';
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += tb.decode(value, { stream: true });
-        const parts = buffer.split('\n\n');
-        buffer = parts.pop() || '';
-        for (const part of parts) {
-          const line = part.split('\n').find((l) => l.startsWith('data:'));
-          if (!line) continue;
-          const payload = line.slice(5);
-          if (payload === ':connected') continue;
-          try { s.term?.write(decoder.decode(b64ToBytes(payload), { stream: true })); } catch { /* 非 base64 帧忽略 */ }
-        }
-      }
+      if (!resp.body) return;
+      const decoder = makeOutputDecoder();
+      // SSE 解码统一走 utils/sse（P5 收口）；payload 为 base64 帧，注释帧已由 sse 层跳过
+      await consumeSseStream(resp.body, (payload) => {
+        try { s.term?.write(decoder.decode(b64ToBytes(payload), { stream: true })); } catch { /* 非 base64 帧忽略 */ }
+      });
       // SSE 正常结束 = shell 进程退出（保留终端回显，状态灯熄灭）
       if (s.term) {
         s.term.write('\r\n\x1b[90m── 会话已结束 ──\x1b[0m\r\n');

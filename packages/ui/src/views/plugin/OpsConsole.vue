@@ -503,6 +503,7 @@ import {
   opsCollapsedGroups,
 } from './opsSession';
 import { clampMenuPos } from '../../utils/menuPosition';
+import { consumeSseStream } from '../../utils/sse';
 import { ref, computed, nextTick, onMounted, onUnmounted, watch } from 'vue';
 import {
   Folder, FolderOpened, Fold, Expand,
@@ -881,27 +882,14 @@ async function openTerminal(w: OpsWin) {
           headers: { Authorization: `Bearer ${token}` },
           signal: ac.signal,
         });
-        const reader = resp.body?.getReader();
-        if (!reader) return;
-        const decoder = new TextDecoder();
-        let buffer = '';
-        for (;;) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          const parts = buffer.split('\n\n');
-          buffer = parts.pop() || '';
-          for (const part of parts) {
-            const line = part.split('\n').find((l) => l.startsWith('data:'));
-            if (!line) continue;
-            const payload = line.slice(5);
-            if (payload === ':connected') continue;
-            let text = '';
-            try { text = b64ToUtf8(payload); } catch { continue; }
-            terms.get(w.id)?.term.write(text);
-            accumulateOutput(w, text);
-          }
-        }
+        if (!resp.body) return;
+        // SSE 解码统一走 utils/sse（P5 收口）；payload 为 base64 帧
+        await consumeSseStream(resp.body, (payload) => {
+          let text = '';
+          try { text = b64ToUtf8(payload); } catch { return; }
+          terms.get(w.id)?.term.write(text);
+          accumulateOutput(w, text);
+        });
       } catch { /* 会话关闭/网络中断，静默 */ }
     })();
     if (w.id === activeWinId.value) term.focus();
@@ -1146,21 +1134,11 @@ async function subscribeWinTask(w: OpsWin, taskId: string, ac: AbortController):
     signal: ac.signal,
   });
   if (!resp.ok || !resp.body) throw new Error('SSE 连接失败');
-  const reader = resp.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const events = buffer.split('\n\n');
-    buffer = events.pop() || '';
-    for (const raw of events) {
-      const line = raw.trim();
-      if (!line.startsWith('data: ')) continue;
+  // SSE 解码统一走 utils/sse（P5 收口）；与 chat store 的 subscribeTaskSse 同协议
+  await consumeSseStream(resp.body, (payload) => {
+    {
       let event: any;
-      try { event = JSON.parse(line.slice(6)); } catch { continue; }
+      try { event = JSON.parse(payload); } catch { return; }
       if (event.type === 'message:added') {
         const msg = event.message;
         if (!w.chatMessages.some((m) => m.id === msg.id)) {
@@ -1189,10 +1167,11 @@ async function subscribeWinTask(w: OpsWin, taskId: string, ac: AbortController):
           w.chatMessages.push({ id: `err-${Date.now()}`, role: 'assistant', content: `⚠️ ${event.error}`, createdAt: Date.now() });
         }
         scrollChatBottom(w);
-        return;
+        // 任务已终态：告诉 sse 层停止读取（对齐原实现读循环直接 return 的语义）
+        return false;
       }
     }
-  }
+  });
   for (const m of w.chatMessages) m.streaming = false;
 }
 

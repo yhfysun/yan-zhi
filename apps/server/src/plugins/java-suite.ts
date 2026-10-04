@@ -5,6 +5,7 @@ import type { BuiltInTool, McpCallResult, PluginManifest, PluginModule } from '@
 import { execFile } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, resolve, basename, dirname, extname, relative } from 'node:path';
+import { runCmd } from '../services/exec-cmd.js';
 
 export const JAVA_SUITE_ID = 'java-suite';
 
@@ -84,42 +85,16 @@ function runCommand(
   workDir: string,
   timeoutMs = 120000,
 ): Promise<{ stdout: string; stderr: string; code: number | null }> {
-  return new Promise((resolveP) => {
-    execFile(command, [], {
-      cwd: workDir,
-      maxBuffer: 20 * 1024 * 1024,
-      shell: true,
-      timeout: timeoutMs,
-    }, (err, stdout, stderr) => {
-      resolveP({
-        stdout: stdout || '',
-        stderr: stderr || '',
-        code: err ? (err as { code?: number }).code ?? 1 : 0,
-      });
-    });
-  });
-}
-
-function runCommandWithArgs(
-  cmd: string,
-  args: string[],
-  workDir: string,
-  timeoutMs = 120000,
-): Promise<{ stdout: string; stderr: string; code: number | null }> {
-  return new Promise((resolveP) => {
-    execFile(cmd, args, {
-      cwd: workDir,
-      maxBuffer: 20 * 1024 * 1024,
-      shell: true,
-      timeout: timeoutMs,
-    }, (err, stdout, stderr) => {
-      resolveP({
-        stdout: stdout || '',
-        stderr: stderr || '',
-        code: err ? (err as { code?: number }).code ?? 1 : 0,
-      });
-    });
-  });
+  return runCmd(command, [], {
+    cwd: workDir,
+    maxBuffer: 20 * 1024 * 1024,
+    shell: true,
+    timeoutMs,
+  }).then((r) => ({
+    stdout: r.stdout,
+    stderr: r.stderr,
+    code: r.code ?? (r.ok ? 0 : 1),
+  }));
 }
 
 function readFileSafe(path: string): string {

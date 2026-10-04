@@ -26,7 +26,7 @@ import type {
   RunStatus,
   BuildType,
 } from '@yan-zhi/shared';
-import { execFile } from 'node:child_process';
+import { runCmd } from '../services/exec-cmd.js';
 import { existsSync, statSync, readdirSync, readFileSync } from 'node:fs';
 import { join, resolve, basename, dirname, relative } from 'node:path';
 import {
@@ -361,40 +361,30 @@ function interpolate(template: string, vars: Record<string, string>): string {
 // ============================================================
 // 本地命令执行
 // ============================================================
-function runLocal(
+async function runLocal(
   command: string,
   workDir: string,
   env: Record<string, string> | undefined,
   timeoutMs: number,
   onLog: (line: string) => void,
 ): Promise<{ stdout: string; stderr: string; code: number | null }> {
-  return new Promise((resolvePromise) => {
-    const parts = command.split(/\s+/);
-    const cmd = parts[0];
-    const args = parts.slice(1);
-    let stdout = '';
-    let stderr = '';
-    let code: number | null = null;
-    const timer = setTimeout(() => {
-      try { proc.kill('SIGTERM'); } catch {}
-      resolvePromise({ stdout, stderr: stderr + '\n[超时]', code: -1 });
-    }, timeoutMs);
-
-    const proc = execFile(cmd, args, {
-      cwd: workDir,
-      env: { ...process.env, ...env },
-      maxBuffer: 10 * 1024 * 1024,
-      shell: true,
-    }, (err, out, errOut) => {
-      clearTimeout(timer);
-      stdout = out || '';
-      stderr = errOut || '';
-      code = err ? (err as { code?: number }).code ?? 1 : 0;
-      if (stdout) onLog(stdout);
-      if (stderr) onLog(stderr);
-      resolvePromise({ stdout, stderr, code });
-    });
+  const parts = command.split(/\s+/);
+  const cmd = parts[0];
+  const args = parts.slice(1);
+  const r = await runCmd(cmd, args, {
+    cwd: workDir,
+    env: { ...process.env, ...env },
+    maxBuffer: 10 * 1024 * 1024,
+    shell: true,
+    timeoutMs,
   });
+  // 超时：与原实现一致（code:-1 + stderr 尾部标注「[超时]」，且不回调 onLog）
+  if (r.timedOut) {
+    return { stdout: r.stdout, stderr: r.stderr + '\n[超时]', code: -1 };
+  }
+  if (r.stdout) onLog(r.stdout);
+  if (r.stderr) onLog(r.stderr);
+  return { stdout: r.stdout, stderr: r.stderr, code: r.code ?? (r.ok ? 0 : 1) };
 }
 
 // ============================================================

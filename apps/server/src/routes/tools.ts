@@ -3,6 +3,11 @@ import { v4 as uuid } from 'uuid';
 import { authMiddleware } from '../auth.js';
 import { db } from '../db.js';
 import { getToolRegistry, getApiToolRegistry } from '@yan-zhi/core';
+import { createLogger } from '../services/logger.js';
+
+// ★ 文件内另有 tesseract.js 选项属性 { logger: () => {} }（第三方 API 名，不可改名）；
+//   对象属性名不与导入的 logger 绑定冲突，可安全共存（P4b 遗留手工迁移）。
+const logger = createLogger('tools');
 
 const router = Router();
 router.use(authMiddleware);
@@ -122,7 +127,7 @@ router.post('/builtin/execute', async (req: Request, res: Response) => {
         allowedRoots: allowedRootsFor(serverState.workspaceDir || null, null),
       });
       if (verdict.kind === 'need-auth') {
-        console.warn(`[path-guard] UI试跑放行(用户主动触发) tool=${name} items=${verdict.items.map((i) => i.rawPath).join(' | ')}`);
+        logger.warn(`[path-guard] UI试跑放行(用户主动触发) tool=${name} items=${verdict.items.map((i) => i.rawPath).join(' | ')}`);
       }
       result = await Promise.race([
         registry.execute(name, args, { workspaceDir: serverState.workspaceDir || undefined }),
