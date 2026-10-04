@@ -60,6 +60,7 @@ export function registerDataTools(m: Map<ApiModuleName, ToolDefinition[]>) {
         properties: {
           ontology: { type: 'string', description: '本体 id 或 code（来自 api_ontology_search，推荐）' },
           intent: { type: 'object', description: INTENT_DESC },
+          contract: { type: 'boolean', description: '契约模式（推荐）：filters 只能按名引用本体声明的过滤器（自由 SQL 条件被拒），返回契约菜单与业务名列映射。智能体取数默认带 contract=true' },
           sql: { type: 'string', description: '兜底只读 SQL（单条 SELECT）；给了 ontology 时忽略' },
           datasourceId: { type: 'string', description: '数据源 id，缺省用内置项目库' },
           limit: { type: 'number', description: '最大返回行数，默认 100，上限 1000' },

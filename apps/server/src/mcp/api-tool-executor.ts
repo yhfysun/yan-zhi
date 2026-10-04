@@ -287,6 +287,7 @@ export const SUPPORTED_API_TOOLS = new Set([
   'api_custom_tool_execute', 'api_tool_ocr', 'api_tool_install',
   'api_marketplace_sources', 'api_marketplace_add_source', 'api_marketplace_delete_source', 'api_marketplace_browse', 'api_marketplace_install',
   'api_workspace_list_dir', 'api_workspace_search_files',
+  'api_code_semantic_search',
   'api_memory_search', 'api_memory_list', 'api_memory_create', 'api_memory_delete',
   'api_space_memory_read', 'api_space_memory_append',
   'api_browser_memory_read',
@@ -2229,6 +2230,8 @@ export async function executeApiTool(
   explicitOntologyIds?: string[],
   /** 当前会话 ID：空间记忆类工具用它解析默认空间（会话归属哪个空间就读写哪个空间） */
   conversationId?: string,
+  /** 当前会话工作目录：代码语义检索等工具用它解析相对路径（调用方算好直接传，core 同一取向） */
+  workspaceDir?: string | null,
 ): Promise<MpcToolExecutionResult> {
   try {
     switch (name) {
@@ -2811,6 +2814,36 @@ export async function executeApiTool(
       case 'api_workspace_search_files':
         // 只接受 pattern、不接受路径 → 天然限制在工作目录内，无需守卫
         return ok(await searchWorkspaceFiles(str(args, 'pattern')));
+
+      case 'api_code_semantic_search': {
+        // 语义代码检索（P1，2026-10-03）：embedding 管道接到代码库上
+        const { searchWorkspaceCode } = await import('../services/code-index.js');
+        const root = str(args, 'path') || workspaceDir || serverState.workspaceDir || '';
+        if (!root) return fail('未指定工作区（path），且当前会话没有工作目录。请先在会话里绑定工作目录。');
+        const { checkPathAccess, allowedRootsFor, getAuthorizedDirs } = await import('../services/path-guard.js');
+        const verdict = checkPathAccess({
+          toolName: 'api_code_semantic_search',
+          args,
+          workspaceDir: workspaceDir || serverState.workspaceDir || null,
+          allowedRoots: allowedRootsFor(workspaceDir || serverState.workspaceDir || null, conversationId || null),
+          authorizedDirs: conversationId ? getAuthorizedDirs(conversationId) : [],
+        });
+        if (verdict.kind === 'need-auth') {
+          return fail(`路径在工作目录外（${verdict.items.map((i) => i.rawPath).join(', ')}），已拒绝。请改用工作目录内的路径。`);
+        }
+        const sr = await searchWorkspaceCode(
+          root,
+          str(args, 'query'),
+          num(args, 'top_k', 8),
+          Boolean(args.reindex),
+        );
+        if (!sr.ok) return fail(sr.reason || '语义检索不可用');
+        const lines = sr.hits.map((h, i) =>
+          `${i + 1}. [score ${h.score}] ${h.path}:${h.startLine}-${h.endLine}\n${h.snippet.split('\n').map((l) => '   ' + l).join('\n')}`,
+        );
+        const notes = sr.reason ? `\n说明: ${sr.reason}` : '';
+        return ok(`语义检索「${str(args, 'query')}」：${sr.hits.length} 条命中（索引 ${sr.totalChunks} chunks）。${notes}\n\n${lines.join('\n\n') || '（无命中 —— 换个描述或用 file_grep 精确检索）'}`);
+      }
 
       // Memory
       case 'api_memory_search': {

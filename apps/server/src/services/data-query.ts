@@ -6,6 +6,7 @@ import { db } from '../db.js';
 import { getConnector, type DataSourceRow } from './connector.js';
 import { ensureProjectDataSource, listDataSources } from './datasource.js';
 import { ensureBuiltinOntologiesSync, listOntologies, queryOntologyByRef, type OntologyInfo } from './ontology.js';
+import { runOntologyContract } from './ontology-contract.js';
 import type { QueryIntent } from './ontology-compiler.js';
 import { buildOntologyDigest, recallConfigFromEnv, scoreKeywords } from './ontology-recall.js';
 import { paginate, quoteIdent, type DialectType } from './dialect.js';
@@ -241,6 +242,13 @@ export interface DataQueryInput {
   limit?: number;
   /** 智能体挂载的本体 id 集合；空/未设置 = 不限 */
   allowed?: string[];
+  /**
+   * ★ 契约模式（2026-10-03 拍板：本体 × QueryContract 融合，docs/数据查询-本体语义层与QueryContract融合-方案.md）：
+   *   true = 走 ontology-contract 严格通道——filters **只准按名引用**本体声明的过滤器，
+   *   自由 SQL 条件被拒（对模型关掉编译器的"裸条件放行"注入面）；返回契约菜单 + 业务名列映射。
+   *   智能体默认应使用契约模式；sql 兜底不受影响。
+   */
+  contract?: boolean;
 }
 
 /**
@@ -251,6 +259,15 @@ export interface DataQueryInput {
 export async function queryDataForAgent(userId: string, input: DataQueryInput) {
   const limit = Math.min(Math.max(Math.floor(input.limit ?? 100), 1), MAX_QUERY_ROWS);
   if (input.ontology) {
+    // ★ 契约模式（2026-10-03 融合方案）：严格过滤器白名单 + 契约菜单 + 业务名列映射
+    if (input.contract) {
+      return runOntologyContract(userId, {
+        ontology: input.ontology,
+        intent: input.intent,
+        allowed: input.allowed,
+        limit,
+      });
+    }
     const all = filterAllowed(await listOntologiesOf(userId), input.allowed);
     const target = all.find((o) => o.id === input.ontology || o.code === input.ontology);
     if (!target) throw new Error(await ontologyNotFoundMsg(userId, input.ontology, input.allowed));
