@@ -20,20 +20,25 @@
  * 为什么串行而不是并行：三档都写同一个 `edition.json` 与同一个输出目录，
  * 并行会互相覆盖。加锁不如串行简单可靠。
  *
- * ★ 三档同目录为什么可行：安装包名带档位后缀（-lite / -basic / -pro），彼此不冲突；
- *   真正会被复用的只有 electron-builder 的 appOutDir（`win-unpacked/`），
+ * ★ 三档各自独立目录（dist-release/desktop/<档>/<版本>/）：安装包名带档位后缀
+ *   （-lite / -basic / -pro），目录与目录之间互不复用任何文件；
+ *   同档重跑时会被复用/需清空的只有 electron-builder 的 appOutDir（`win-unpacked/`），
  *   所以每档构建前显式清掉它。
  *
  * ★ 清理失败怎么办（残留进程 / 杀软扫描持有 app.asar → EBUSY）：**明确报错并给出处置步骤**，
  *   不静默改用时间戳目录 —— 静默换目录会把产物散到多个目录，正是本脚本要避免的结果。
- *   实在清理不掉时，用 --separate 让每档写独立目录（互不干扰，且不需要清理 appOutDir）。
+ *   每档天生写独立目录（dist-release/desktop/<档>/<版本>/），档与档互不干扰；
+ *   同档重跑被旧产物锁住时，用 YZ_ALL_OUT_DIR 换产物根目录绕开。
  *
  * 用法：
- *   node scripts/build-all-editions.cjs              # 三档全出 → dist-release/
+ *   node scripts/build-all-editions.cjs              # 三档全出
  *   node scripts/build-all-editions.cjs pro          # 只出指定档（最常用）
  *   node scripts/build-all-editions.cjs lite pro     # 只出指定多档
- *   node scripts/build-all-editions.cjs --separate   # 每档独立目录 dist-release-<档>
- *   YZ_ALL_OUT_DIR=out-x node scripts/build-all-editions.cjs   # 自定义统一输出目录
+ *   YZ_ALL_OUT_DIR=out-x node scripts/build-all-editions.cjs   # 换产物根目录（绕 EBUSY 锁）
+ *
+ * 产物目录（统一树，路径定义在 lib/pack-helpers.cjs，单一真相源）：
+ *   dist-release/desktop/<档>/<版本>/    ← 每档独立目录，安装包与 win-unpacked/ 并列
+ *   （版本取自 apps/desktop/package.json）
  */
 const { execFileSync } = require('child_process');
 const fs = require('fs');
@@ -43,10 +48,12 @@ const {
   ALL_EDITIONS,
   EDITION_CONFIG,
   EDITION_LABEL,
+  DEFAULT_RELEASE_ROOT,
   checkOutputDirReady,
   clearAppOutDirs,
   parseEditionsArgv,
   outDirForEdition,
+  resolvePkgVersion,
 } = require('./lib/pack-helpers.cjs');
 
 const { editions, separate, invalid } = parseEditionsArgv(process.argv.slice(2));
@@ -56,14 +63,24 @@ if (invalid.length) {
   process.exit(1);
 }
 
+// ★ --separate 曾表示「每档写独立目录」；现在每档天生独立目录，该旗标只是向后兼容的 no-op。
+if (separate) {
+  console.log('[build-all] --separate 已是默认行为（每档写 dist-release/desktop/<档>/<版本>/），忽略。');
+}
+
 const desktopDir = path.join(__dirname, '..');
 const repoRoot = path.resolve(desktopDir, '..', '..');
 
 const CONFIG = EDITION_CONFIG;
 const LABEL = EDITION_LABEL;
 
-/** 统一输出目录名（默认 dist-release/），可用 YZ_ALL_OUT_DIR 覆盖。 */
-const SINGLE_OUT = process.env.YZ_ALL_OUT_DIR || 'dist-release';
+/**
+ * 产物根目录（默认 dist-release/），可用 YZ_ALL_OUT_DIR 覆盖 ——
+ * 用途：旧产物被句柄持有（EBUSY）清不掉时，换个根目录绕开，无需等锁释放。
+ */
+const OUT_ROOT = process.env.YZ_ALL_OUT_DIR || DEFAULT_RELEASE_ROOT;
+/** 桌面版本号（apps/desktop/package.json），目录路径的 <版本> 段。 */
+const DESKTOP_VERSION = resolvePkgVersion({ pkgPath: path.join(desktopDir, 'package.json') });
 
 const rel = (p) => path.relative(repoRoot, p) || p;
 
@@ -96,8 +113,7 @@ function clearOutputDir(outDir) {
   console.error('    · 另有构建进程在跑（同一输出目录不能并发构建）');
   console.error('  处置（任选其一）：');
   console.error('    1) 彻底退出言智与其它构建终端后重跑本脚本');
-  console.error('    2) 换统一输出目录：YZ_ALL_OUT_DIR=dist-release-new node scripts/build-all-editions.cjs');
-  console.error('    3) 每档独立目录：node scripts/build-all-editions.cjs --separate');
+  console.error(`    2) 换产物根目录：YZ_ALL_OUT_DIR=${OUT_ROOT}-new node scripts/build-all-editions.cjs`);
   console.error('========================================================');
   console.error('');
   throw new Error(`清理失败: ${first.dir}`);
@@ -161,7 +177,7 @@ function preflight() {
 // ① 开工前先探输出目录：被占用的 appOutDir 能提前几十秒发现，
 //    不必等到 electron-builder 删文件时才炸（那时错误信息看不出是锁）。
 const outDirFor = (edition) =>
-  outDirForEdition(edition, { separate, singleOut: SINGLE_OUT, repoRoot });
+  outDirForEdition(edition, { repoRoot, version: DESKTOP_VERSION, outRoot: OUT_ROOT });
 
 console.log('=== [1/3] 检查输出目录可写性 ===');
 for (const edition of editions) {
@@ -179,8 +195,7 @@ for (const edition of editions) {
     console.error('    · 另有构建进程在跑（同一输出目录不能并发构建）');
     console.error('  处置（任选其一）：');
     console.error('    1) 彻底退出言智与其它构建终端后重跑本脚本');
-    console.error('    2) 换统一输出目录：YZ_ALL_OUT_DIR=dist-release-new node scripts/build-all-editions.cjs');
-    console.error('    3) 每档独立目录：node scripts/build-all-editions.cjs --separate');
+    console.error(`    2) 换产物根目录：YZ_ALL_OUT_DIR=${OUT_ROOT}-new node scripts/build-all-editions.cjs`);
     console.error('========================================================');
     console.error('');
     process.exit(1);
@@ -201,11 +216,7 @@ run(process.execPath, ['./scripts/clean-broken-symlinks.cjs']);
 
 // ② 逐档打包：每档先重写 edition.json、清掉复用的 appOutDir，再交给 electron-builder
 console.log(`\n=== [3/3] 逐档打包：${editions.join(' → ')} ===`);
-console.log(
-  `输出目录：${
-    separate ? '各档独立（dist-release-<档>/）' : rel(path.resolve(repoRoot, SINGLE_OUT)) + '/（三档同目录）'
-  }`,
-);
+console.log(`输出目录：${rel(path.resolve(repoRoot, OUT_ROOT, 'desktop'))}/<档>/${DESKTOP_VERSION}/（每档独立）`);
 
 for (const edition of editions) {
   console.log(`\n──────── ${edition}（${LABEL[edition]}）────────`);

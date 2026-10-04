@@ -18,9 +18,9 @@
 > pnpm package desktop:pro --dry-run   # 预览：只做环境检查与计划，不动任何文件
 > ```
 >
-> 产物落 `dist-release-lite|basic|pro/`（exe）与 `dist-release/app-debug.apk`，
+> 产物落统一树 `dist-release/desktop/<档>/<版本>/`（exe）与 `dist-release/android/<版本>/app-debug.apk`，
 > 结束时**自动校验**包内确实含代码改动，并打印产物清单。
-> 校验单独跑：`pnpm verify:package apk dist-release/app-debug.apk`。
+> 校验单独跑：`pnpm verify:package apk dist-release/android/<版本>/app-debug.apk`。
 
 ## 脚本说明
 
@@ -110,7 +110,7 @@ bin\setup-env.bat --mobile         REM 仅移动端
 打包前自动检查关键依赖，失败时给出明确错误信息，然后调用 `pnpm build:*`。
 
 **桌面端版本档**：`lite`（阉割版，仅办公）/ `basic`（基础版）/ `pro`（高级版）。
-`desktop` 与 `desktop:all` 等价，**一次打出三档包，产物统一落在 `dist-release/`**，
+`desktop` 与 `desktop:all` 等价，**一次打出三档包，产物统一落在 `dist-release/desktop/<档>/<版本>/`**，
 靠文件名后缀区分（`-lite` / `-basic` / `-pro`）。
 
 > 三档会各跑一次 electron-builder（约 3 分钟/档），不是「编一次复用三个壳」——
@@ -148,27 +148,24 @@ bin\build.bat server              REM 服务端
 bin\build.bat all                 REM 全量打包 (server -> web -> desktop:all)
 ```
 
-**输出目录散落怎么办**：默认所有桌面端产物都在 `dist-release/`。
-若该目录里的 `win-unpacked` 被残留进程 / 杀软扫描占用导致无法清理，
+**输出目录被占用怎么办**：默认所有桌面端产物都在统一树 `dist-release/desktop/<档>/<版本>/`（每档独立目录）。
+若同档目录里的 `win-unpacked` 被残留进程 / 杀软扫描占用导致无法清理，
 脚本会**明确报错并给出处置步骤**（不会自动改到别的目录）。
-此时可换目录或改成逐档独立目录：
+此时可换产物根目录绕开：
 
 ```bash
-# 换统一输出目录
-YZ_ALL_OUT_DIR=dist-release-new pnpm build:desktop:all
-
-# 每档独立目录（dist-release-lite/ basic/ pro/）
-node apps/desktop/scripts/build-all-editions.cjs --separate
+# 换产物根目录（三档都写到 out-new/desktop/<档>/<版本>/）
+YZ_ALL_OUT_DIR=out-new pnpm build:desktop:all
 ```
 
 ## 项目各端构建产物位置
 
 | 端                  | 产物路径 |
 |---------------------|---------|
-| 桌面端 (Electron)    | `dist-release/`（安装包名带档位后缀 `-lite` / `-basic` / `-pro`，另含免安装版 `win-unpacked/`） |
+| 桌面端 (Electron)    | `dist-release/desktop/<档>/<版本>/`（安装包名带档位后缀 `-lite` / `-basic` / `-pro`，另含免安装版 `win-unpacked/`） |
 | Web 端              | `apps/web/dist/` |
 | 服务端              | `apps/server/dist/` |
-| Android            | `apps/mobile/android/app/build/outputs/apk/` |
+| Android            | `dist-release/android/<版本>/app-debug.apk`（gradle 原始输出在 `apps/mobile/android/app/build/outputs/apk/`） |
 | iOS                | Xcode Archive（通过 Xcode 打开 `apps/mobile/ios/App` 导出） |
 
 ## 各端打包前提

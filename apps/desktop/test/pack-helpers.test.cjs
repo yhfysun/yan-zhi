@@ -17,13 +17,16 @@ const path = require('path');
 const {
   ALL_EDITIONS,
   EDITION_CONFIG,
-  SEPARATE_OUT,
+  DEFAULT_RELEASE_ROOT,
   APP_OUT_DIRS,
   resolveArtifactSuffix,
+  resolvePkgVersion,
+  editionDirName,
   checkOutputDirReady,
   clearAppOutDirs,
   parseEditionsArgv,
   outDirForEdition,
+  androidOutDir,
 } = require('../scripts/lib/pack-helpers.cjs');
 
 /** 假 fs：可指定存在的路径集合，并让指定路径的 rmSync 抛错（模拟 EBUSY 被占用）。 */
@@ -69,9 +72,8 @@ describe('档位配置表', () => {
     assert.strictEqual(EDITION_CONFIG.basic, EDITION_CONFIG.pro);
   });
 
-  test('separate 模式下每档输出目录互不相同', () => {
-    const dirs = ALL_EDITIONS.map((e) => SEPARATE_OUT[e]);
-    assert.strictEqual(new Set(dirs).size, dirs.length);
+  test('统一产物根目录为 dist-release（所有打包脚本共用此约定）', () => {
+    assert.strictEqual(DEFAULT_RELEASE_ROOT, 'dist-release');
   });
 });
 
@@ -115,6 +117,55 @@ describe('resolveArtifactSuffix - 产物后缀解析', () => {
 
   test('★ 兜底值不为空串（electron-builder 展开 ${env.X} 遇空/缺失会抛错）', () => {
     assert.notStrictEqual(resolveArtifactSuffix({ editionJsonPath: 'nope', fs: fakeFs() }), '');
+  });
+});
+
+describe('resolvePkgVersion - 版本号解析（产物目录的 <版本> 段）', () => {
+  test('读 package.json 的 version', () => {
+    const got = resolvePkgVersion({
+      pkgPath: 'p',
+      fs: fakeFs({ existing: ['p'], failOn: { readContent: '{"version":"9.9.9"}' } }),
+    });
+    assert.strictEqual(got, '9.9.9');
+  });
+
+  test('★ 文件缺失兜底 0.0.0（不中断构建，路径仍可预测）', () => {
+    assert.strictEqual(resolvePkgVersion({ pkgPath: 'nope', fs: fakeFs() }), '0.0.0');
+  });
+
+  test('★ JSON 损坏兜底 0.0.0', () => {
+    const got = resolvePkgVersion({
+      pkgPath: 'p',
+      fs: fakeFs({ existing: ['p'], failOn: { readContent: '{ 不是合法 json' } }),
+    });
+    assert.strictEqual(got, '0.0.0');
+  });
+
+  test('★ version 为空串兜底 0.0.0（空串会把目录打坏成 .../desktop/basic/）', () => {
+    const got = resolvePkgVersion({
+      pkgPath: 'p',
+      fs: fakeFs({ existing: ['p'], failOn: { readContent: '{"version":""}' } }),
+    });
+    assert.strictEqual(got, '0.0.0');
+  });
+});
+
+describe('editionDirName - 档位目录名（electron-build.cjs 默认输出用）', () => {
+  test("'-pro' → 'pro'", () => {
+    assert.strictEqual(editionDirName('-pro'), 'pro');
+  });
+
+  test('空后缀兜底 basic（与 resolveArtifactSuffix 的兜底同源）', () => {
+    assert.strictEqual(editionDirName(''), 'basic');
+    assert.strictEqual(editionDirName(undefined), 'basic');
+  });
+
+  test('自定义后缀保留（如 -v3-pro → v3-pro）', () => {
+    assert.strictEqual(editionDirName('-v3-pro'), 'v3-pro');
+  });
+
+  test('★ Windows 非法路径字符替换为 -（自定义后缀不能打坏目录名）', () => {
+    assert.strictEqual(editionDirName('-a:b*c'), 'a-b-c');
   });
 });
 
@@ -191,35 +242,29 @@ describe('parseEditionsArgv - 命令行解析', () => {
   });
 });
 
-describe('outDirForEdition - 输出目录', () => {
+describe('outDirForEdition - 输出目录（统一树）', () => {
   const repoRoot = path.resolve('/repo');
+  const version = '0.1.0';
 
-  test('★ 默认三档同目录（同目录优先：产物集中，便于交付）', () => {
-    const dirs = ALL_EDITIONS.map((e) =>
-      outDirForEdition(e, { separate: false, singleOut: 'dist-release', repoRoot }),
-    );
-    assert.strictEqual(new Set(dirs).size, 1, '三档应落在同一目录');
-    assert.strictEqual(dirs[0], path.resolve(repoRoot, 'dist-release'));
+  test('★ 三档各写独立目录 dist-release/desktop/<档>/<版本>/', () => {
+    const dirs = ALL_EDITIONS.map((e) => outDirForEdition(e, { repoRoot, version }));
+    assert.strictEqual(new Set(dirs).size, 3, '三档应互不相同');
+    assert.strictEqual(dirs[0], path.resolve(repoRoot, 'dist-release', 'desktop', 'lite', version));
   });
 
-  test('separate 模式下三档各自独立目录', () => {
-    const dirs = ALL_EDITIONS.map((e) =>
-      outDirForEdition(e, { separate: true, singleOut: 'dist-release', repoRoot }),
-    );
-    assert.strictEqual(new Set(dirs).size, 3, 'separate 下三档应互不相同');
-    for (const e of ALL_EDITIONS) {
-      assert.ok(dirs.some((d) => d.endsWith(SEPARATE_OUT[e])));
-    }
+  test('版本缺失时兜底 0.0.0（路径仍可预测）', () => {
+    const d = outDirForEdition('basic', { repoRoot });
+    assert.strictEqual(d, path.resolve(repoRoot, 'dist-release', 'desktop', 'basic', '0.0.0'));
   });
 
-  test('separate 模式忽略 singleOut（按档命名）', () => {
-    const d = outDirForEdition('lite', { separate: true, singleOut: 'whatever', repoRoot });
-    assert.ok(d.endsWith(SEPARATE_OUT.lite));
+  test('outRoot 可覆盖（YZ_ALL_OUT_DIR 换根绕 EBUSY 锁）', () => {
+    const d = outDirForEdition('pro', { repoRoot, version, outRoot: 'out-x' });
+    assert.strictEqual(d, path.resolve(repoRoot, 'out-x', 'desktop', 'pro', version));
   });
 
-  test('单档模式也不加档位后缀（安装包名已带后缀，目录无需重复）', () => {
-    const d = outDirForEdition('lite', { separate: false, singleOut: 'dist-release', repoRoot });
-    assert.strictEqual(path.basename(d), 'dist-release');
+  test('androidOutDir 落到 dist-release/android/<版本>/', () => {
+    const d = androidOutDir({ repoRoot, version: '0.1.1' });
+    assert.strictEqual(d, path.resolve(repoRoot, 'dist-release', 'android', '0.1.1'));
   });
 });
 

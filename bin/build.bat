@@ -5,7 +5,7 @@ setlocal enabledelayedexpansion
 :: Usage: bin\build.bat <target>
 ::   target: desktop | desktop:all | desktop:full | desktop:basic | desktop:lite | desktop:pro
 ::           mobile:android | mobile:ios | web | server | all
-::   desktop 与 desktop:all 等价（三档一次打出，产物统一落在 dist-release\）
+::   desktop 与 desktop:all 等价（三档一次打出，产物统一落在 dist-release\desktop\^<档^>\^<版本^>\）
 
 set TARGET=%1
 set INTERACTIVE=0
@@ -52,7 +52,7 @@ echo ====== Skip model download (use Ollama) ======
 echo.
 exit /b 0
 
-:: 三档一次打出（lite + basic + pro），产物统一落在 dist-release\
+:: 三档一次打出（lite + basic + pro），产物统一落在 dist-release\desktop\^<档^>\^<版本^>\
 :BuildDesktopAll
 echo.
 echo ====== Build Desktop (Electron, all three editions) ======
@@ -63,7 +63,7 @@ call pnpm --filter @yan-zhi/desktop electron:build:all
 if %ERRORLEVEL% NEQ 0 exit /b 1
 echo.
 echo Build complete
-echo   Output: dist-release\ (yan-zhi-Setup-*-lite.exe / -basic.exe / -pro.exe)
+echo   Output: dist-release\desktop\^<edition^>\^<version^>\ (yan-zhi-Setup-*-lite.exe / -basic.exe / -pro.exe)
 exit /b 0
 
 :BuildDesktopBasic
@@ -76,7 +76,7 @@ call pnpm --filter @yan-zhi/desktop electron:build:basic
 if %ERRORLEVEL% NEQ 0 exit /b 1
 echo.
 echo Build complete
-echo   Output: dist-release\ (yan-zhi-Setup-*-basic.exe)
+echo   Output: dist-release\desktop\basic\^<version^>\ (yan-zhi-Setup-*-basic.exe)
 exit /b 0
 
 :BuildDesktopLite
@@ -89,7 +89,7 @@ call pnpm --filter @yan-zhi/desktop electron:build:lite
 if %ERRORLEVEL% NEQ 0 exit /b 1
 echo.
 echo Build complete
-echo   Output: dist-release\ (yan-zhi-Setup-*-lite.exe)
+echo   Output: dist-release\desktop\lite\^<version^>\ (yan-zhi-Setup-*-lite.exe)
 exit /b 0
 
 :BuildDesktopPro
@@ -102,7 +102,7 @@ call pnpm --filter @yan-zhi/desktop electron:build:pro
 if %ERRORLEVEL% NEQ 0 exit /b 1
 echo.
 echo Build complete
-echo   Output: dist-release\ (yan-zhi-Setup-*-pro.exe)
+echo   Output: dist-release\desktop\pro\^<version^>\ (yan-zhi-Setup-*-pro.exe)
 exit /b 0
 
 :BuildMobileAndroid

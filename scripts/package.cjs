@@ -22,7 +22,11 @@
  *   node scripts/package.cjs desktop:lite,pro    # 出两档
  *   node scripts/package.cjs android             # 安卓 APK
  *   node scripts/package.cjs all                 # 桌面三档 + 安卓
- *   node scripts/package.cjs --editions=lite,pro # 等价 desktop:lite,pro
+ *   node scripts/package.cjs --editions=lite,pro # 等价 desktop:lite,pro（--edition= 同义）
+ *
+ * 产物目录（统一树，路径定义在 apps/desktop/scripts/lib/pack-helpers.cjs，单一真相源）：
+ *   dist-release/desktop/<档>/<版本>/   ← 安装包 + win-unpacked/
+ *   dist-release/android/<版本>/app-debug.apk
  *
  * 选项：
  *   --dry-run     只做环境检查与计划打印，**不移动目录、不构建**（预览用）
@@ -52,16 +56,27 @@ const EDITION_LABEL = { lite: '阉割版', basic: '基础版', pro: '高级版' 
  *   （见 moveOutDirsIn：按档位把输出目录内的全部条目移走，只保留已产出的 exe，
  *     因为那是交付物、不该动）。
  */
-// ★ `YZ_SEPARATE_PREFIX` 与 pack-helpers.cjs 的 SEPARATE_OUT 保持一致：
-//   旧产物被句柄持有（杀软扫描 / 残留进程）导致 EBUSY 时，用它换全新输出目录绕开。
-//   ★ 两个文件必须**同源**：这里算"要移走什么"，那边算"写到哪" —— 不一致会导致
-//     "移走了 A 却写到 B"（旧产物没清、新产物在别处），排障时极难看出。
-const SEPARATE_PREFIX = process.env.YZ_SEPARATE_PREFIX || 'dist-release-';
-const OUTPUT_DIRS = {
-  lite: `${SEPARATE_PREFIX}lite`,
-  basic: `${SEPARATE_PREFIX}basic`,
-  pro: `${SEPARATE_PREFIX}pro`,
-};
+// ★ 产物路径与 apps/desktop/scripts/lib/pack-helpers.cjs 保持**同源**（直接 require 它，
+//   不再本地复制一份映射）：这里算"要移走什么/校验什么"，那边算"写到哪" —— 不一致会导致
+//   "移走了 A 却写到 B"（旧产物没清、新产物在别处），排障时极难看出。
+//   YZ_ALL_OUT_DIR 可换产物根目录（旧产物被句柄持有 EBUSY 时绕锁用），会原样透传给下游脚本。
+const {
+  DEFAULT_RELEASE_ROOT,
+  androidOutDir,
+  outDirForEdition,
+  resolvePkgVersion,
+} = require(path.join(__dirname, '..', 'apps', 'desktop', 'scripts', 'lib', 'pack-helpers.cjs'));
+const RELEASE_ROOT = process.env.YZ_ALL_OUT_DIR || DEFAULT_RELEASE_ROOT;
+const DESKTOP_VERSION = resolvePkgVersion({ pkgPath: path.join(ROOT, 'apps', 'desktop', 'package.json') });
+const MOBILE_VERSION = resolvePkgVersion({ pkgPath: path.join(ROOT, 'apps', 'mobile', 'package.json') });
+const OUTPUT_DIRS = Object.fromEntries(ALL_EDITIONS.map((e) => [
+  e,
+  path.relative(ROOT, outDirForEdition(e, { repoRoot: ROOT, version: DESKTOP_VERSION, outRoot: RELEASE_ROOT })),
+]));
+const ANDROID_APK = path.join(
+  path.relative(ROOT, androidOutDir({ repoRoot: ROOT, version: MOBILE_VERSION, outRoot: RELEASE_ROOT })),
+  'app-debug.apk',
+);
 
 const MOVABLE = [
   'apps/server/dist',
@@ -205,7 +220,7 @@ function preflight(targets) {
   if (!fs.existsSync(path.join(ROOT, 'node_modules'))) problems.push('node_modules 缺失，请先 pnpm install');
 
   // 输出目录被占用（安装版在 C:\APP\yan-zhi，不冲突；只提示真正会锁的）
-  const lockHint = path.join(ROOT, 'dist-release-pro/win-unpacked');
+  const lockHint = path.join(ROOT, OUTPUT_DIRS.pro, 'win-unpacked');
   if (fs.existsSync(lockHint)) {
     info(c.dim('检测到已有 win-unpacked，将整体移走（避免删除被拦）'));
   }
@@ -287,10 +302,10 @@ function parseTargets(raw) {
   const t = (raw || []).filter((a) => !a.startsWith('--'));
   const result = { desktop: [], android: false };
 
-  // --editions=lite,pro 等价于 desktop:lite,pro（注释里承诺过，必须实现）
-  const edFlag = raw.find((a) => a.startsWith('--editions='));
+  // --editions=lite,pro（或 --edition=，同义）等价于 desktop:lite,pro（注释里承诺过，必须实现）
+  const edFlag = raw.find((a) => a.startsWith('--editions=') || a.startsWith('--edition='));
   if (edFlag) {
-    const list = edFlag.slice('--editions='.length).split(',').map((s) => s.trim()).filter(Boolean);
+    const list = edFlag.slice(edFlag.indexOf('=') + 1).split(',').map((s) => s.trim()).filter(Boolean);
     if (!list.length) { fail('--editions= 后必须跟档位，如 --editions=lite,pro'); process.exit(1); }
     const bad = list.filter((e) => !ALL_EDITIONS.includes(e));
     if (bad.length) { fail(`未知档位: ${bad.join(', ')}（可选 ${ALL_EDITIONS.join('/')}）`); process.exit(1); }
@@ -393,11 +408,11 @@ function computeMovable(targets, willCompile) {
 function buildDesktop(editions) {
   step(`桌面打包：${editions.map((e) => `${e}(${EDITION_LABEL[e]})`).join(' / ')}`);
   info(`将依次：真编译 server → vite build → 逐档 electron-builder（约 3.5 分钟）`);
-  // build-all-editions.cjs 内部含真编译 + 逐档重写 edition.json + 清 appOutDir + 三档独立目录
+  // build-all-editions.cjs 内部含真编译 + 逐档重写 edition.json + 清 appOutDir；
+  // 每档独立输出到 dist-release/desktop/<档>/<版本>/（无需 --separate，那已是默认行为）。
   run(process.execPath, [
     path.join('apps', 'desktop', 'scripts', 'build-all-editions.cjs'),
     ...editions,
-    '--separate',
   ]);
   ok('桌面构建完成');
 }
@@ -452,7 +467,7 @@ function buildAndroid() {
   runPowerShell(gradleScript, 'gradle');
 
   // ⑥ 拷 APK
-  info('⑥ 拷贝 APK 到 dist-release');
+  info(`⑥ 拷贝 APK 到 ${path.relative(ROOT, path.dirname(path.join(ROOT, ANDROID_APK)))}`);
   run(process.execPath, ['scripts/copy-apk.cjs'], { cwd: mobile });
   ok('安卓构建完成');
 }
@@ -464,8 +479,8 @@ function verifyAll(targets) {
   let allOk = true;
 
   for (const e of targets.desktop) {
-    // ★ 必须走 OUTPUT_DIRS（与"写到哪"同源），不能硬编码 dist-release- ——
-    //   否则用 YZ_SEPARATE_PREFIX 换目录时，产物明明已生成却报"缺 asar"。
+    // ★ 必须走 OUTPUT_DIRS（与"写到哪"同源，定义见文件头部），不能硬编码 ——
+    //   否则用 YZ_ALL_OUT_DIR 换产物根时，产物明明已生成却报"缺 asar"。
     const asar = path.join(ROOT, OUTPUT_DIRS[e], 'win-unpacked', 'resources', 'app.asar');
     if (!fs.existsSync(asar)) { fail(`缺 asar: ${asar}`); allOk = false; continue; }
     try {
@@ -475,7 +490,7 @@ function verifyAll(targets) {
   }
 
   if (targets.android) {
-    const apk = path.join(ROOT, 'dist-release', 'app-debug.apk');
+    const apk = path.join(ROOT, ANDROID_APK);
     if (!fs.existsSync(apk)) { fail(`缺 APK: ${apk}`); allOk = false; }
     else {
       try {
@@ -500,7 +515,7 @@ function listArtifacts(targets) {
     }
   }
   if (targets.android) {
-    const apk = path.join(ROOT, 'dist-release', 'app-debug.apk');
+    const apk = path.join(ROOT, ANDROID_APK);
     if (fs.existsSync(apk)) list.push(['安卓 APK', apk]);
   }
   for (const [label, p] of list) {

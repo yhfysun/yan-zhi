@@ -28,24 +28,43 @@ const EDITION_CONFIG = {
 const EDITION_LABEL = { lite: '阉割版', basic: '基础版', pro: '高级版' };
 
 /**
- * --separate 模式下各档的独立输出目录名。
+ * 统一产物根目录（仓库根下的相对路径）。
  *
- * ★★ `YZ_SEPARATE_PREFIX` 可覆盖前缀（默认 `dist-release-`）——
- *   用途：上一轮产物的 `resources/app.asar` 被句柄持有（杀软实时防护 / 残留进程）时，
- *   electron-builder 会因**清不掉旧 appOutDir** 而中断（实测 `EBUSY`），
- *   而 `YZ_ALL_OUT_DIR` 只作用于**非 separate** 模式，帮不上忙。
- *   此时用 `YZ_SEPARATE_PREFIX=dist-release-x-` 让三档写到全新目录即可绕开，无需等锁释放。
- *
- *   ★ 为什么不是"删掉旧的再建"：旧 asar 连 `rename`/`unlink` 都失败（`EBUSY`），
- *     但**能被覆盖写入** —— 所以"换目录"是唯一稳的绕法（官方脚本的报错提示也指向这条）。
- *   ★ 默认值保持不变，向后兼容；`package.cjs` 也会透传该变量。
+ * ★ 目录结构（2026-10-04 定稿，所有打包脚本共用，**单一真相源**）：
+ *     dist-release/desktop/<档>/<版本>/   ← 桌面安装包 + win-unpacked/
+ *     dist-release/android/<版本>/        ← app-debug.apk
+ *   每档天生独立目录，旧的 `dist-release-<档>/` 平级散落模式与
+ *   `YZ_SEPARATE_PREFIX` 前缀换目录绕锁的做法一并废除；
+ *   被占用（EBUSY）时的绕法改为换根：`YZ_ALL_OUT_DIR`（build-all-editions.cjs /
+ *   package.cjs 透传）或直接 `YZ_OUTPUT_DIR`（electron-build.cjs）。
  */
-const SEPARATE_PREFIX = process.env.YZ_SEPARATE_PREFIX || 'dist-release-';
-const SEPARATE_OUT = {
-  lite: `${SEPARATE_PREFIX}lite`,
-  basic: `${SEPARATE_PREFIX}basic`,
-  pro: `${SEPARATE_PREFIX}pro`,
-};
+const DEFAULT_RELEASE_ROOT = 'dist-release';
+
+/**
+ * 读取某端 package.json 的 version（桌面 / 安卓目录路径的 `<版本>` 段）。
+ * 读取失败或无 version 时兜底 '0.0.0' —— 不中断构建：electron-builder 自己
+ * 也读同一份 package.json，真缺版本号时它会先报错，这里兜底只为让路径可预测。
+ */
+function resolvePkgVersion({ pkgPath, fs = fsDefault } = {}) {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+    if (pkg && typeof pkg.version === 'string' && pkg.version) return pkg.version;
+  } catch {
+    /* package.json 缺失 / 损坏 → 走兜底 */
+  }
+  return '0.0.0';
+}
+
+/**
+ * 从产物后缀（如 '-pro'）推出档位目录名（'pro'）。
+ * 空后缀兜底 'basic'（与 resolveArtifactSuffix 的兜底同源）；
+ * 自定义后缀（如 '-v3-pro'）保留为 'v3-pro'，Windows 非法路径字符替换为 '-'。
+ */
+function editionDirName(artifactSuffix) {
+  const name = String(artifactSuffix || '').replace(/^-+/, '').trim();
+  if (!name) return 'basic';
+  return name.replace(/[\\/:*?"<>|\s]+/g, '-');
+}
 
 /**
  * electron-builder 会复用（并需要清空重建）的 appOutDir，按平台列举。
@@ -142,22 +161,28 @@ function parseEditionsArgv(argv) {
   return { editions, separate, invalid };
 }
 
-/** 某档的输出目录（绝对路径）。separate=true 时各档独立，否则三档同目录。 */
-function outDirForEdition(edition, { separate, singleOut, repoRoot }) {
-  return separate
-    ? path.resolve(repoRoot, SEPARATE_OUT[edition])
-    : path.resolve(repoRoot, singleOut);
+/** 桌面某档的输出目录（绝对路径）：dist-release/desktop/<档>/<版本>/。 */
+function outDirForEdition(edition, { repoRoot, version, outRoot = DEFAULT_RELEASE_ROOT }) {
+  return path.resolve(repoRoot, outRoot, 'desktop', edition, version || '0.0.0');
+}
+
+/** 安卓 APK 的输出目录（绝对路径）：dist-release/android/<版本>/。 */
+function androidOutDir({ repoRoot, version, outRoot = DEFAULT_RELEASE_ROOT }) {
+  return path.resolve(repoRoot, outRoot, 'android', version || '0.0.0');
 }
 
 module.exports = {
   ALL_EDITIONS,
   EDITION_CONFIG,
   EDITION_LABEL,
-  SEPARATE_OUT,
+  DEFAULT_RELEASE_ROOT,
   APP_OUT_DIRS,
   resolveArtifactSuffix,
+  resolvePkgVersion,
+  editionDirName,
   checkOutputDirReady,
   clearAppOutDirs,
   parseEditionsArgv,
   outDirForEdition,
+  androidOutDir,
 };

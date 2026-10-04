@@ -40,13 +40,14 @@ jobs:
 
       - name: 列出构建产物（诊断用）
         run: |
-          echo "=== dist-release ==="; ls -la dist-release 2>/dev/null || echo "(空)"
+          echo "=== dist-release 树 ==="; find dist-release -type f 2>/dev/null || echo "(空)"
 
       - name: 上传 macOS DMG
         uses: actions/upload-artifact@v7
         with:
           name: macOS-DMG
-          path: dist-release/*.dmg
+          # 统一产物树：dist-release/desktop/<档>/<版本>/（见 apps/desktop/scripts/lib/pack-helpers.cjs）
+          path: dist-release/desktop/*/*/*.dmg
           if-no-files-found: error
 
   build-windows:
@@ -78,12 +79,13 @@ jobs:
       - name: 列出构建产物（诊断用）
         shell: pwsh
         run: |
-          Write-Output "=== dist-release ==="
-          Get-ChildItem -Path dist-release -ErrorAction SilentlyContinue | Select-Object Name,Length | Format-Table -AutoSize
+          Write-Output "=== dist-release 树 ==="
+          Get-ChildItem -Path dist-release -Recurse -File -ErrorAction SilentlyContinue | Select-Object FullName,Length | Format-Table -AutoSize
 
       - name: 上传 NSIS 安装包
         uses: actions/upload-artifact@v7
         with:
           name: Windows-Installer
-          path: dist-release/*.exe
+          # 统一产物树：dist-release/desktop/<档>/<版本>/（见 apps/desktop/scripts/lib/pack-helpers.cjs）
+          path: dist-release/desktop/*/*/*.exe
           if-no-files-found: error

@@ -17,7 +17,7 @@ apps/mobile/
 │   └── dist/            server + core + shared 的 tsc 编译产物
 ├── scripts/
 │   ├── build-mobile-server.cjs   搬运 server 编译产物 → nodejs/dist + dist/nodejs
-│   └── copy-apk.cjs              把 APK 拷到仓库根 dist-release/
+│   └── copy-apk.cjs              把 APK 拷到仓库根 dist-release/android/<版本>/
 ├── android/             Android 原生工程（含 gradle wrapper）
 ├── capacitor.config.ts  Capacitor 配置（含 Capawesome NodeJS 插件）
 └── dist/                vite build 产物（cap sync 源 → assets/public/）
@@ -69,7 +69,7 @@ npx cap build android
 node ./scripts/copy-apk.cjs
 ```
 
-产物：`dist-release/app-debug.apk`（debug）或签名后的 release APK。
+产物：`dist-release/android/<版本>/app-debug.apk`（debug）或签名后的 release APK（版本取自 apps/mobile/package.json）。
 
 ## 内嵌后端如何工作
 

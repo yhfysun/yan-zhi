@@ -16,7 +16,7 @@ if (!env.ELECTRON_BUILDER_BINARIES_MIRROR && !isCI) {
   env.ELECTRON_BUILDER_BINARIES_MIRROR = DEFAULT_BINARIES_MIRROR;
 }
 
-const { resolveArtifactSuffix, clearAppOutDirs } = require('./lib/pack-helpers.cjs');
+const { resolveArtifactSuffix, resolvePkgVersion, editionDirName, clearAppOutDirs } = require('./lib/pack-helpers.cjs');
 
 env.YZ_ARTIFACT_SUFFIX = resolveArtifactSuffix({
   fromEnv: process.env.YZ_ARTIFACT_SUFFIX,
@@ -58,12 +58,18 @@ function clearStaleAppOutDir(outputDir) {
 }
 
 if (!env.YZ_OUTPUT_DIR) {
-  env.YZ_OUTPUT_DIR = path.resolve(__dirname, '..', '..', '..', 'dist-release');
+  // 默认落到统一产物树（与 build-all-editions.cjs / package.cjs 同源，见 lib/pack-helpers.cjs）：
+  //   dist-release/desktop/<档>/<版本>/，档取自产物后缀，版本取自 apps/desktop/package.json。
+  const desktopVersion = resolvePkgVersion({ pkgPath: path.join(__dirname, '..', 'package.json') });
+  env.YZ_OUTPUT_DIR = path.resolve(
+    __dirname, '..', '..', '..',
+    'dist-release', 'desktop', editionDirName(env.YZ_ARTIFACT_SUFFIX), desktopVersion,
+  );
 }
 
 // 旧产物先清干净：清不掉就明确报错退出，**不静默改输出到 dist-release-<时间戳>**。
 // 静默换目录 = 产物散落多处、用户找不到包（旧版行为）。
-// 需要换目录请显式指定 YZ_OUTPUT_DIR，或用 build-all-editions.cjs --separate。
+// 需要换目录请显式指定 YZ_OUTPUT_DIR，或用 build-all-editions.cjs 的 YZ_ALL_OUT_DIR 换产物根。
 clearStaleAppOutDir(env.YZ_OUTPUT_DIR);
 console.log(`[electron-build] 输出目录: ${env.YZ_OUTPUT_DIR}`);
 

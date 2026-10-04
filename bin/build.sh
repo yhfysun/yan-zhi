@@ -4,7 +4,7 @@
 # 用法: bash bin/build.sh <target>
 #   target: desktop | desktop:all | desktop:full | desktop:basic | desktop:lite | desktop:pro
 #           mobile:android | mobile:ios | web | server | all
-#   desktop 与 desktop:all 等价（三档一次打出，产物统一落在 dist-release/）
+#   desktop 与 desktop:all 等价（三档一次打出，产物统一落在 dist-release/desktop/<档>/<版本>/）
 # ============================================================
 set -euo pipefail
 
@@ -29,7 +29,7 @@ prepare_desktop_resources() {
   echo ""
 }
 
-# 三档一次打出（lite + basic + pro），产物统一落在 dist-release/
+# 三档一次打出（lite + basic + pro），产物统一落在 dist-release/desktop/<档>/<版本>/
 build_desktop_all() {
   echo ""
   echo -e "${BOLD}${CYAN}══════ 打包桌面端 Electron (三档：lite + basic + pro) ══════${NC}"
@@ -38,7 +38,7 @@ build_desktop_all() {
   pnpm --filter @yan-zhi/desktop electron:build:all
   echo ""
   echo -e "${GREEN}打包完成${NC}"
-  echo "  产物目录: dist-release/"
+  echo "  产物目录: dist-release/desktop/<档>/<版本>/"
   echo "    言智-Setup-*-lite.exe / -basic.exe / -pro.exe"
 }
 
@@ -50,7 +50,7 @@ build_desktop_basic() {
   pnpm --filter @yan-zhi/desktop electron:build:basic
   echo ""
   echo -e "${GREEN}打包完成${NC}"
-  echo "  产物目录: dist-release/"
+  echo "  产物目录: dist-release/desktop/basic/<版本>/"
 }
 
 build_desktop_lite() {
@@ -61,7 +61,7 @@ build_desktop_lite() {
   pnpm --filter @yan-zhi/desktop electron:build:lite
   echo ""
   echo -e "${GREEN}打包完成${NC}"
-  echo "  产物目录: dist-release/"
+  echo "  产物目录: dist-release/desktop/lite/<版本>/"
 }
 
 build_desktop_pro() {
@@ -72,7 +72,7 @@ build_desktop_pro() {
   pnpm --filter @yan-zhi/desktop electron:build:pro
   echo ""
   echo -e "${GREEN}打包完成${NC}"
-  echo "  产物目录: dist-release/"
+  echo "  产物目录: dist-release/desktop/pro/<版本>/"
 }
 
 build_mobile_android() {
