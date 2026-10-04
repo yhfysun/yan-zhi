@@ -24,6 +24,16 @@
  */
 import { db } from '../db.js';
 
+/**
+ * 合成消息 id 清单 —— **从 core 再导出**，不再本地各写一份。
+ *
+ * ★★★ 2026-10-03 收敛：本文件与 core `compress/window.ts` 曾各写一份（内容恰好相同），
+ *   属"同一语义两处各写一份"的经典漂移源（本项目已多次吃亏）。
+ *   ⇒ 强制从 core 取，新增合成 id 只改 core 一处，写侧（快照）与读侧（前缀比对）自动同步。
+ */
+export { SYNTHETIC_MESSAGE_IDS, isSyntheticMessageId } from '@yan-zhi/core';
+import { SYNTHETIC_MESSAGE_IDS as _SYNTHETIC_IDS } from '@yan-zhi/core';
+
 /** 快照格式版本：1 = 旧（messages 存正文）；2 = 新（messages 只存 id 引用） */
 export const SNAPSHOT_VERSION = 2;
 
@@ -38,9 +48,9 @@ export const SNAPSHOT_KEEP_PER_CONV = 200;
 
 /**
  * 合成消息 id —— 这些消息**不落库**，必须内联进快照，否则回填时找不到正文。
- * 收敛成一张表（本项目反复吃过"两处各写一份"的亏）。
+ * ★ 定义已收敛到 core（顶部再导出），此处仅保留本地别名指向同一份，避免再写第二份。
  */
-export const SYNTHETIC_MESSAGE_IDS = new Set(['sys', 'summary', '__summary__']);
+const SYNTHETIC_MESSAGE_IDS = _SYNTHETIC_IDS;
 
 /** 快照里的一条消息引用：要么是 DB 里的 id，要么是内联的合成消息 */
 type SnapshotMsgRef =

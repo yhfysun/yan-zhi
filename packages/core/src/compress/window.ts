@@ -60,6 +60,74 @@ export interface SummaryCache {
 }
 
 /**
+ * 合成消息 id 的唯一清单 —— 这些消息**不在 `message` 表里**，是压缩/组装时现造的。
+ *
+ * ★★★ 之所以收进 core（2026-10-03）：`coveredIds` 的**读侧前缀比对**要求
+ *   「覆盖的 id 必须是当前消息列表的严格前缀」。一旦某个合成 id 混进 `coveredIds`，
+ *   前缀比对会因这个"凭空多出的 id"整段失效 → 摘要被误判报废 → 每步重算。
+ *   （旧实现两处各写一份：`context-snapshot.ts` 只列了 `__summary__`，漏了 `'summary'` ——
+ *    而 core 压缩产出的合成 id 恰恰是 `'summary'`，正是漏的那个。）
+ *
+ *   `sys` 是系统提示词消息的固定 id（每轮现造，不落库）；`summary` / `__summary__`
+ *   分别是 core 压缩产物与 server 组装时使用的摘要占位 id，两者并存以向后兼容。
+ */
+export const SYNTHETIC_MESSAGE_IDS: ReadonlySet<string> = new Set(['sys', 'summary', '__summary__']);
+
+/** 该 id 是否为**不落库**的合成消息（`coveredIds` 必须把它们排除在外）。 */
+export function isSyntheticMessageId(id: string): boolean {
+  return SYNTHETIC_MESSAGE_IDS.has(id);
+}
+
+/**
+ * 判断 `prev` 是否为 `cur` 的**严格前缀**（顺序敏感的逐项比对，i 从 0 起）。
+ *
+ * ★★★ 这是读/写两侧共用的**唯一**前缀判据（2026-10-03 收敛）：
+ *   此前 core 的 `isPrefix`（overlap 用）与 server 的 `every((id,i)=>ids[i]===id)`
+ *   是同义实现的两份复制 —— 一旦某处改成"从第 1 条起比"就静默错位。
+ *   ⇒ 只留一个定义，任何前缀语义都调它。
+ */
+export function isIdPrefix(prev: string[], cur: string[]): boolean {
+  if (!Array.isArray(prev) || !Array.isArray(cur) || prev.length > cur.length) return false;
+  for (let i = 0; i < prev.length; i++) {
+    if (prev[i] !== cur[i]) return false;
+  }
+  return true;
+}
+
+/**
+ * **写侧坐标**：一次压缩「被摘要代表、可从历史中省掉」的消息 id 序列。
+ *
+ * ★★★ 覆盖段恒为**从会话首条起的一段连续前缀**（2026-10-03 定案）：
+ *   压缩把历史分成「被摘要段（含头部，consumed）/ 最近保留窗口」两段。`consumed` 必须
+ *   从会话首条起连续 —— 因为读侧要按"前缀"判定摘要是否仍适用，并据此
+ *   `rawMessages.slice(consumed.length)` 取增量；一旦覆盖段不从 0 起（旧实现把
+ *   keepFirst 头部排除在外、每轮原文重发，覆盖段从 idx=2 起），读侧切片会**错位**：
+ *   既把已覆盖的消息当增量重复发送，又让前缀比对第 0 条即失败 → 摘要每轮判废、
+ *   每步全量重压（实测单会话 111 条摘要、每步 25s+）。
+ *
+ * ★ 头部（首轮任务目标）**也并入覆盖段**（随被摘要段一起进摘要）：覆盖段才连续；
+ *   目标内容由摘要指令的 `## 任务目标` 强制原样保留来保证不丢。
+ * ★ 只收真实消息 id（`isSyntheticMessageId` 过滤）：合成消息不落库，进前缀会整段失效。
+ * ★ 顺序原样保留：读侧依赖"连续前缀"，一旦重排即判废重算。
+ */
+export function coveredIdsForCompression(consumed: Message[]): string[] {
+  return consumed.map((m) => String(m.id || '')).filter((id) => id && !isSyntheticMessageId(id));
+}
+
+/**
+ * **读侧判据**：`coveredIds` 是否是当前消息 id 列表的**严格前缀**（i 从 0 起）。
+ *
+ * ★ 与 `coveredIdsForCompression` 成对 —— 写侧从**会话首条**起连续产出覆盖段，
+ *   读侧从**会话首条**起逐项校验，两端共用本函数即**物理上**不可能再错位。
+ *   命中后 `rawMessages.slice(covered.length)` 即"摘要之后的新消息"。
+ * ★ 空覆盖视为无效（没有摘要就谈不上覆盖）；覆盖比列表还长也无效（历史被删短了）。
+ */
+export function isCoveredPrefix(coveredIds: string[], allIds: string[]): boolean {
+  if (!Array.isArray(coveredIds) || coveredIds.length === 0) return false;
+  return isIdPrefix(coveredIds, allIds);
+}
+
+/**
  * 只取「属于本次会话主线」的消息：**剔除子智能体消息**。
  *
  * ★★★ 为什么必须有（2026-10-02）：`loadMessages` 只按 `conversation_id` 过滤，
@@ -156,12 +224,15 @@ export class ContextWindow {
     private summaryPlatform?: Platform,
     private summaryModel?: Model,
     /**
-     * 头部保留条数（默认 0 = 保持历史行为「只留尾部」）。
+     * 头部保护条数（**2026-10-03 起为兼容保留，不再影响切分**）。
      *
-     * ★★★ 为什么要有（2026-10-02，对齐 OpenHands `keep_first=4` / Claude Code 的
-     *   「plan 与规则重注入」）：只留尾部会把**首轮用户消息**（真正的任务目标）
-     *   一起吃进摘要 —— 而摘要必然有损。长任务里"我要做什么"比"刚才做了什么"更不该丢。
-     *   ⇒ 保留「首轮目标 + 最近若干轮」，中间段才摘要。
+     * ★★★ 语义变更：旧实现用它把「首轮任务目标」以**原文每轮重发**、不进摘要。
+     *   但摘要指令**本就强制保留** `## 任务目标`（用户最初的原始问题）+ `## 已完成` / `## 待办`，
+     *   即"原始问题 / 处理了什么 / 还没处理什么"；再单独重发头部 = 多余的第二套机制，
+     *   且它让覆盖段从 idx=keepFirst 起 → 与读侧「从 0 起前缀」坐标冲突
+     *   → 摘要每轮判废、每步全量重压。
+     *   ⇒ 头部现**并入被摘要段**，覆盖段恒从首条起连续；首轮目标由摘要承载。
+     *   ★ 参数保留仅为兼容既有调用（主循环/子智能体仍传 2），当前**无行为影响**。
      */
     private keepFirst: number = 0,
   ) {}
@@ -291,31 +362,28 @@ export class ContextWindow {
     });
     if (this.tokenCount(trimmed) <= this.maxTokens) return trimmed; // 裁剪即够 → 保住全部消息
 
-    // ★★ 头部保留段（keepFirst>0 时启用）：首轮任务目标绝不能被摘要吃掉。
-    //   见构造器 keepFirst 注释。keepFirst=0 时下面整段是 no-op，行为与历史完全一致。
-    let headKeep: Message[] = [];
-    let tail = trimmed;
-    if (this.keepFirst > 0) {
-      // 头部边界不能切在 tool 上（否则尾部开头的那条 tool 失去配对 → 孤儿 tool）
-      let hEnd = Math.min(this.keepFirst, Math.max(0, trimmed.length - this.keepRecent - 1));
-      while (hEnd > 0 && trimmed[hEnd - 1].role === 'tool') hEnd--;
-      // 头部末条若是 assistant(tool_calls)，它的应答在中间段 → 该组整体不保留（回退一条）
-      if (hEnd > 0 && (trimmed[hEnd - 1].toolCalls as any)?.length) hEnd--;
-      if (hEnd > 0) {
-        headKeep = trimmed.slice(0, hEnd);
-        tail = trimmed.slice(hEnd);
-      }
-    }
+    // ★★★ 覆盖段恒为「从会话首条起的连续前缀」（2026-10-03 定案，A 方案）。
+    //
+    //   切分只有一处：保留最近 `keepRecent` 条，其余（**含头部**）全部并入被摘要段。
+    //
+    //   为什么不再单独保留"头部原文重发"（旧 keepFirst 实现的 B 方案）：
+    //     摘要有损，但摘要指令**本就强制保留** `## 任务目标`（= 用户最初的原始问题）
+    //     与 `## 已完成 / ## 待办` —— 即"原始问题 / 处理了什么 / 还没处理什么"。
+    //     既然如此，再"每轮原文重发头部"就是**多余的第二套机制**，且它把覆盖段推到
+    //     idx=keepFirst，使覆盖段不再是「从 0 起的前缀」→ 与读侧前缀比对/切片坐标冲突
+    //     → 摘要每轮判废、每步全量重压（实测单会话 111 条摘要、每步 25s+）。
+    //   ⇒ 头部**并入被摘要段**，覆盖段自然从首条起连续；首轮目标由摘要承载（摘要指令保证）。
+    //     ★ 后果：`keepFirst` 不再影响切分（保留参数仅为兼容既有调用，语义已并入摘要）。
+    //
+    //   切窗边界对齐：保留窗口绝不能从 tool 消息中间开始（否则产生孤儿 tool，
+    //   严格上游 400，兜底清洗只能丢弃 → tool 返回值丢失）。回退到该组 tool 应答
+    //   所属的 assistant（带 tool_calls）处，整对保留，返回值一条不丢。
+    let cut = trimmed.length - this.keepRecent;
+    while (cut > 0 && trimmed[cut].role === 'tool') cut--;
+    if (cut <= 0) return trimmed; // 无法在保住配对的前提下压缩，保持原样发送
 
-    // 切窗边界对齐：保留窗口绝不能从 tool 消息中间开始（否则产生孤儿 tool，
-    // 严格上游 400，兜底清洗只能丢弃 → tool 返回值丢失）。把边界回退到该组
-    // tool 应答所属的 assistant（带 tool_calls）处，整对保留，返回值一条不丢。
-    let cut = tail.length - this.keepRecent;
-    while (cut > 0 && tail[cut].role === 'tool') cut--;
-    if (cut <= 0) return trimmed; // 无法在保住配对的前提下压缩，保持（已裁剪的）原样发送
-
-    const toCompress = tail.slice(0, cut);
-    const toKeep = tail.slice(cut);
+    const toCompress = trimmed.slice(0, cut); // 被摘要段：从首条起连续前缀
+    const toKeep = trimmed.slice(cut);        // 保留窗口：最近 keepRecent 条
 
     // 压缩前钩子：把即将被摘要吞掉的细节先落盘（失败不阻塞压缩）
     if (opts?.beforeCompress) {
@@ -355,15 +423,18 @@ export class ContextWindow {
     }
 
     // ★ 通知调用侧「本次压缩覆盖了哪些消息」→ 由调用侧落库（core 不碰存储）。
+    //   ★★★ 覆盖段 = 被摘要段 = **从会话首条起的连续前缀** —— 读侧据此
+    //     `rawMessages.slice(covered.length)` 取增量，并以前缀比对判摘要是否仍适用。
+    //     写读两端共用 coveredIdsForCompression / isCoveredPrefix，坐标唯一（2026-10-03 修根因）。
     //   失败不阻塞主循环：落库失败只是"这次压缩没持久化"，功能仍正确（下一步会重算）。
     if (opts?.onCompressed) {
+      const coveredIds = coveredIdsForCompression(toCompress);
       try {
-        await opts.onCompressed({ coveredIds: ids, summary, tokens: this.tokenCount(toCompress) });
+        await opts.onCompressed({ coveredIds, summary, tokens: this.tokenCount(toCompress) });
       } catch {}
     }
 
     return [
-      ...headKeep,
       {
         id: 'summary',
         conversationId: toKeep[0]?.conversationId || '',
@@ -377,11 +448,8 @@ export class ContextWindow {
 
   /** 判断 `prev` 是否为 `cur` 的**前缀**（严格按顺序逐项比对 id）。 */
   private isPrefix(prev: string[], cur: string[]): boolean {
-    if (!Array.isArray(prev) || prev.length > cur.length) return false;
-    for (let i = 0; i < prev.length; i++) {
-      if (prev[i] !== cur[i]) return false;
-    }
-    return true;
+    // 委托到模块级 isIdPrefix：前缀语义**只有一处定义**（2026-10-03 收敛，杜绝两套坐标）
+    return isIdPrefix(prev, cur);
   }
 
   /** 带超时的摘要：超时/异常一律降级为「裁剪后的简版」，绝不阻塞主循环。 */

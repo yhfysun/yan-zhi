@@ -250,7 +250,12 @@ describe('③ 预算分配：有效窗口折算（对齐 Chroma 的有效上下�
 
 // ═══════════════════════════════════════════════════════════════════════════
 describe('④ 保留窗口「头 + 尾」：首轮任务目标不被摘要吃掉', () => {
-  it('keepFirst>0 时，最早的用户消息必须原样保留在结果里', async () => {
+  it('keepFirst>0 时头部并入摘要（方案 A）：覆盖段恒为从首条起的连续前缀', async () => {
+    // ★ 2026-10-03 按方案 A 定案更新断言（window.ts 压缩注释）：
+    //   旧 keepFirst「头部原文重发」已移除 —— 它把覆盖段推到 idx=keepFirst，
+    //   破坏「从 0 起的前缀」不变量 → 摘要每轮判废、每步全量重压（实测单会话 111 条摘要）。
+    //   ⇒ 头部（m0/m1）必须**不在**保留窗口里，但必须**被摘要段覆盖**（首轮目标由摘要承载，
+    //   摘要指令强制保留「## 任务目标」）。
     seedMessages(40, 400);
     const raw = loadRaw();
     const r = await buildContextView({
@@ -258,10 +263,15 @@ describe('④ 保留窗口「头 + 尾」：首轮任务目标不被摘要吃掉
       model: mkModel(800), maxTokens: 100, keepRecent: 6, keepFirst: 2,
       summaryCache: { ids: [], summary: '' },
     });
-    // m0/m1 属于头部保留段 → 必须原样在结果中（而不是只存在于摘要里）
     const ids = r.messages.map((m) => m.id);
-    expect(ids).toContain('m0');
-    expect(ids).toContain('m1');
+    expect(ids).not.toContain('m0'); // 头部不再原样保留（旧语义已移除）
+    expect(ids).not.toContain('m1');
+    // 覆盖段必须是从 m0 起的连续前缀（含 m0/m1）—— 首轮目标信息不丢，只是换摘要承载
+    expect(r.coveredIds[0]).toBe('m0');
+    expect(r.coveredIds).toContain('m1');
+    // 前缀不变量：coveredIds 的每一项与 raw 消息序列的头部逐一对应
+    const rawIds = raw.map((m) => m.id);
+    r.coveredIds.forEach((id, i) => expect(id).toBe(rawIds[i]));
   });
 
   it('keepFirst=0 → 保持历史行为（只留尾部），不误伤既有语义', async () => {

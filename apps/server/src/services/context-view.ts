@@ -22,7 +22,7 @@
  */
 import type { Message, Model } from '@yan-zhi/shared';
 import { effectiveContextLimit, MAX_SESSION_MESSAGES } from '@yan-zhi/shared';
-import { ContextWindow, enforceBudget, type SummaryCache } from '@yan-zhi/core';
+import { ContextWindow, enforceBudget, isCoveredPrefix, isSyntheticMessageId, type SummaryCache } from '@yan-zhi/core';
 import { getLatestMessageSummary, insertMessageSummary } from '../db.js';
 // constants.ts 是**零依赖模块**（它自己的注释就写明"必须能被任意模块安全引入"），
 // 因此这里直接静态引用，不需要延迟注入 —— 窗口解析口径必须只有一处。
@@ -173,15 +173,15 @@ export async function buildContextView(opts: BuildContextViewOpts): Promise<Cont
   if (persist) {
     const last = getLatestMessageSummary(conversationId);
     if (last && last.summary) {
-      // 失效判定：摘要覆盖的消息必须仍**逐项顺序存在**（前缀比对）。
+      // 失效判定：摘要覆盖的消息必须仍**逐项顺序存在**（严格前缀比对，i 从 0 起）。
       // ★ 绝不能只看长度 —— 消息被编辑/删除后长度可能不变，但那已是另一段历史，
       //   复用旧摘要会把错误的"前情"喂给模型（与 summaryCache.isPrefix 同一判据）。
-      const ids = rawMessages.map((m) => m.id);
-      const stillValid =
-        last.messageIds.length > 0 &&
-        last.messageIds.length <= ids.length &&
-        last.messageIds.every((id, i) => ids[i] === id);
-      if (stillValid) {
+      // ★★★ 判据统一取自 core 的 `isCoveredPrefix`（2026-10-03 修根因）：
+      //   写侧 `coveredIdsForCompression` 从**会话首条**起连续产出覆盖段，
+      //   读侧这里从**会话首条**起逐项校验 —— 两端共用同一函数，不可能再错位。
+      //   旧实现读侧手写 `every((id,i)=>ids[i]===id)`，与写侧（曾跳过 keepFirst 头部）
+      //   是两套坐标 → 第 0 条即 mismatch → 摘要每轮判废、每步重算全量（实测 25s+/步）。
+      if (isCoveredPrefix(last.messageIds, rawMessages.map((m) => m.id))) {
         covered = last.messageIds;
         prefixSummary = last.summary;
       }
@@ -211,9 +211,13 @@ export async function buildContextView(opts: BuildContextViewOpts): Promise<Cont
       onCompressed: persist
         ? async ({ coveredIds: ids, summary, tokens }) => {
             // messageIds 必须是**相对原始 message 表**的连续前缀 = 旧覆盖段 + 新覆盖段。
-            // 合成摘要那条（SYNTHETIC_SUMMARY_ID）不属于 message 表，必须剔除，
+            // 合成消息（`summary` / `__summary__` / `sys`，全部由 core 的
+            // `isSyntheticMessageId` 判定）不落库，必须剔除，
             // 否则下一步前缀比对会因这个凭空多出的 id 而整段失效。
-            mergedCovered = [...covered, ...ids.filter((x) => x !== SYNTHETIC_SUMMARY_ID)];
+            // ★★★ 用 core 的统一判据而非手写白名单（2026-10-03）：
+            //   旧写法只过滤 `'__summary__'`，而 core 压缩产出的合成 id 是 `'summary'`
+            //   —— 恰好是漏掉的那个，等于过滤形同虚设。
+            mergedCovered = [...covered, ...ids.filter((x) => !isSyntheticMessageId(x))];
             insertMessageSummary({ conversationId, userId, messageIds: mergedCovered, summary, tokens });
           }
         : undefined,
