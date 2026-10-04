@@ -31,6 +31,8 @@
 - file_edit 修改快照存原始相对路径：before 快照按进程 cwd 读取错位、`/workspace/changes` 按目录前缀过滤永远匹配不上（编辑器提示条不出现）——快照路径现按工作目录解析为绝对路径
 
 ### Changed
+- **hunk 级选择性接受（P2-2）**：diff 每个 hunk「✓ 接受此块」——选中的块套用、未选中的回退 before（`services/hunk-apply.ts` LCS 三方合并；盘上被手改时 409 走整文件审查）；聊天 diff 卡片与审查视图均可按块接受
+- **@ 符号级引用（P2-1）**：`@` 浮层支持代码符号（服务端 `GET /workspace/symbols` 用 AST 解析 + 双缓存），选中内联注入「[符号 name · 路径:行号]」
 - **数据查询契约模式（本体 × QueryContract 融合 P1，2026-10-03 拍板）**：新增 `services/ontology-contract.ts` 契约装配器——`api_data_query` 支持 `contract: true`：filters 只能按名引用本体声明的过滤器（自由 SQL 条件被拒，对模型关掉编译器的"裸条件放行"注入面），返回契约菜单（dimensions/measures/filters/selections 名单）+ 业务名列映射（看板不暴露物理字段名）；草稿态本体不可见；数据查询助手 SOP 更新为契约模式优先
 - **code_diagnostics 支持 Vue 项目**：项目装了 vue-tsc 时自动改用（覆盖 .vue 的类型错误，输出格式与 tsc 一致，解析/缓存零改动；超时下限抬到 180s）
 - **语义索引读时惰性增量**：检索时抽查文件新鲜度（5 分钟节流），过期则后台增量重建——当次查询照常返回并注明"索引更新中"，无需手动 reindex
