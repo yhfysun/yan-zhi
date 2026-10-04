@@ -112,4 +112,34 @@ describe('applyHunkSelection', () => {
     expect(h[0].newEnd).toBeGreaterThanOrEqual(4);
     expect(applyHunkSelection(b, a3, h)).toBe(a3);
   });
+
+  it('行尾保真：CRLF 文件部分接受后仍是 CRLF，未被选中的行逐字节保持 before', () => {
+    const b = 'l1\r\nl2\r\nl3\r\nl4';
+    const a = 'l1\r\nl2改\r\nl3\r\nl4'; // 第 2 行改
+    const h = computeHunks(b, a);
+    expect(h.length).toBe(1);
+    // 选 → 结果与 after 逐字节一致（CRLF 原样）
+    expect(applyHunkSelection(b, a, h)).toBe(a);
+  });
+
+  it('行尾保真：末尾换行不丢失 —— after 以 \\n 结尾时部分接受结果同样以 \\n 结尾', () => {
+    const b = 'a\nb\nc\n';
+    const a = 'a\nb改\nc\n';
+    const h = computeHunks(b, a);
+    const merged = applyHunkSelection(b, a, h)!;
+    expect(merged.endsWith('\n')).toBe(true);
+    expect(merged).toBe(a);
+  });
+
+  it('行尾保真：CRLF + 末尾换行，只接受第一个 hunk —— 未选中的部分保持 before 的 CRLF', () => {
+    const b = 'a\r\nb\r\nc\r\nd\r\ne\r\nf\r\ng\r\nh\r\ni\r\nj\r\n';
+    const a = 'a\r\nB\r\nc\r\nd\r\ne\r\nf\r\ng\r\nh\r\ni\r\nJ\r\n'; // 第 2、10 行改，间隔 7 行 > 2×上下文 → 两个 hunk
+    const h = computeHunks(b, a);
+    expect(h.length).toBe(2);
+    const merged = applyHunkSelection(b, a, [h[0]])!;
+    expect(merged).toContain('B');
+    expect(merged).toContain('j');
+    expect(merged.endsWith('\r\n')).toBe(true);
+    expect(merged.includes('J')).toBe(false);
+  });
 });

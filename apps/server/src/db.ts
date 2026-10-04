@@ -3166,6 +3166,25 @@ db.exec(`
   );
 `);
 
+// ===== 用户工具钩子（P2-7 P2a：设置页可编程的 before 规则，deny/confirm）=====
+// trigger 目前只有 'before'（P2b 再加 after/script）；tool 为 '*' 或空 = 匹配所有工具；
+// pattern 为大小写不敏感的**子串**（不是正则 —— 声明式规则可预测性优先，P2b 再议正则）。
+db.exec(`
+  CREATE TABLE IF NOT EXISTS user_hook (
+    id         TEXT PRIMARY KEY,
+    user_id    TEXT NOT NULL,
+    name       TEXT NOT NULL,
+    trigger    TEXT NOT NULL DEFAULT 'before',
+    tool       TEXT NOT NULL DEFAULT '*',
+    pattern    TEXT,
+    action     TEXT NOT NULL,
+    enabled    INTEGER NOT NULL DEFAULT 1,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+`);
+try { db.exec('CREATE INDEX IF NOT EXISTS idx_user_hook_user ON user_hook(user_id, enabled)'); } catch {}
+
 // ===== 浏览器记住密码（站点凭证，AES-256-GCM 加密存储）=====
 db.exec(`
   CREATE TABLE IF NOT EXISTS saved_password (

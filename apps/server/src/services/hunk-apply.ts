@@ -9,6 +9,9 @@
 // 算法：before/after 逐行 LCS 对齐 → 编辑脚本切 hunk（带上下文）→
 //   选中的 hunk 取 after 行，未选中的保留 before 行；上下文行两侧同文，取 after 即可。
 // 行数护栏：超限（默认 5000×5000）拒绝 —— 三方合并宁可拒绝也不卡死。
+// 行尾保真：快照存的是原始内容（Windows 下是 CRLF），输出必须沿用 after 的行尾风格与
+//   末尾换行 —— 否则部分接受会静默把整个文件行尾改写成 LF / 丢掉末尾换行，
+//   未被选中的"保持 before"也就无从谈起（2026-10-04 修复）。
 
 const MAX_LCS_LINES = 5000;
 
@@ -38,6 +41,14 @@ function splitLines(s: string): string[] {
   return lines;
 }
 
+/** 探测换行风格与末尾换行：主基准是 after（盘上当前内容 = after，全选重建必须逐字节等于 after） */
+function detectEnding(after: string, before: string): { eol: string; trailingNewline: boolean } {
+  const src = after || before;
+  const crlf = (src.match(/\r\n/g) || []).length;
+  const lf = (src.match(/\n/g) || []).length - crlf;
+  return { eol: crlf >= lf ? '\r\n' : '\n', trailingNewline: src.endsWith('\n') };
+}
+
 /** LCS 编辑脚本（O(n×m)，护栏内） */
 function lineOps(a: string[], b: string[]): LineOp[] {
   const n = a.length, m = b.length;
@@ -60,8 +71,15 @@ function lineOps(a: string[], b: string[]): LineOp[] {
   return ops;
 }
 
-/** 编辑脚本 → hunk（含上下文行；changes = 实际变更行数） */
-export function computeHunks(before: string, after: string, context = 3): HunkRange[] {
+interface OpAnalysis {
+  ops: LineOp[];
+  hunks: HunkRange[];
+  /** op 下标 → 所属 hunk 下标（-1 = 上下文外的等同行） */
+  opHunk: number[];
+}
+
+/** 编辑脚本 → hunk 分组（唯一实现：computeHunks 与 applyHunkSelection 共用，避免分组口径漂移） */
+function analyze(before: string, after: string, context = 3): OpAnalysis {
   const a = splitLines(before);
   const b = splitLines(after);
   if (a.length > MAX_LCS_LINES || b.length > MAX_LCS_LINES) {
@@ -69,8 +87,9 @@ export function computeHunks(before: string, after: string, context = 3): HunkRa
   }
   const ops = lineOps(a, b);
   const changed = ops.map((o, k) => (o.type !== 'eq' ? k : -1)).filter((k) => k >= 0);
-  if (changed.length === 0) return [];
+  if (changed.length === 0) return { ops, hunks: [], opHunk: ops.map(() => -1) };
 
+  const opHunk: number[] = ops.map(() => -1);
   const hunks: HunkRange[] = [];
   let groupStart = Math.max(0, changed[0] - context);
   let prev = -1;
@@ -86,6 +105,7 @@ export function computeHunks(before: string, after: string, context = 3): HunkRa
       /** 变更操作数（del+ins，对齐 git diffstat 的 +/- 合计口径） */
       changes: seg.filter((o) => o.type !== 'eq').length,
     });
+    for (let k = groupStart; k < endOpIdx; k++) opHunk[k] = hunks.length - 1;
   };
   for (const k of changed) {
     if (prev !== -1 && k - prev > context * 2) {
@@ -95,62 +115,45 @@ export function computeHunks(before: string, after: string, context = 3): HunkRa
     prev = k;
   }
   flush(Math.min(ops.length, prev + context + 1));
-  return hunks;
+  return { ops, hunks, opHunk };
+}
+
+export function computeHunks(before: string, after: string, context = 3): HunkRange[] {
+  return analyze(before, after, context).hunks;
 }
 
 /**
  * 按选择合并：selected = 用户接受的 hunk 集合（**新文件行号区间**，与 computeHunks 输出同坐标）。
  * 未被任何选中 hunk 覆盖的变更回退为 before；上下文/等同行从 after 取（同文）。
  * 返回 null = 选择与实际 hunk 完全不匹配（调用方报错，防止静默无操作）。
+ * 输出行尾风格/末尾换行沿用 after（全选时结果逐字节等于 after）。
  */
 export function applyHunkSelection(before: string, after: string, selected: HunkRange[]): string | null {
   const a = splitLines(before);
   const b = splitLines(after);
-  const all = computeHunks(before, after);
-  if (all.length === 0) return null;
-  // 请求区间与实际 hunk 的匹配：有交集即命中
-  const hit = (h: HunkRange) => selected.some((s) => s.newStart <= h.newEnd && s.newEnd >= h.newStart);
-  const selectedHunks = all.filter(hit);
-  if (selectedHunks.length === 0) return null;
+  const { ops, hunks, opHunk } = analyze(before, after);
+  if (hunks.length === 0) return null;
+  // 请求区间与实际 hunk 的匹配：有交集即命中（整 hunk 生效，不支持半个 hunk）
+  const hunkSelected = hunks.map(
+    (h) => selected.some((s) => s.newStart <= h.newEnd && s.newEnd >= h.newStart),
+  );
+  if (!hunkSelected.some(Boolean)) return null;
 
   const out: string[] = [];
   let ai = 0, bi = 0; // 0-based 游标
-  const ops = lineOps(a, b);
-  // 重算每个 op 是否落在选中的 hunk 内（用与 computeHunks 相同的分组逻辑判定）
-  const inSelected = new Array(ops.length).fill(false);
-  {
-    const changed = ops.map((o, k) => (o.type !== 'eq' ? k : -1)).filter((k) => k >= 0);
-    if (changed.length) {
-      let groupStart = Math.max(0, changed[0] - 3);
-      let prev = -1;
-      const mark = (endOpIdx: number) => {
-        const seg = ops.slice(groupStart, endOpIdx);
-        const newIdxs = seg.filter((o) => o.newIdx !== undefined).map((o) => o.newIdx!);
-        if (!newIdxs.length) return;
-        const range = { newStart: newIdxs[0] + 1, newEnd: newIdxs[newIdxs.length - 1] + 1 };
-        if (selectedHunks.some((h) => h.newStart === range.newStart && h.newEnd === range.newEnd)) {
-          for (let k = groupStart; k < endOpIdx; k++) inSelected[k] = true;
-        }
-      };
-      for (const k of changed) {
-        if (prev !== -1 && k - prev > 6) { mark(Math.min(ops.length, prev + 4)); groupStart = Math.max(0, k - 3); }
-        prev = k;
-      }
-      mark(Math.min(ops.length, prev + 4));
-    }
-  }
-
   for (let k = 0; k < ops.length; k++) {
     const op = ops[k];
+    const on = opHunk[k] >= 0 && hunkSelected[opHunk[k]];
     if (op.type === 'eq') { out.push(b[bi++]); ai++; continue; }
     if (op.type === 'ins') {
-      if (inSelected[k]) out.push(b[bi]);
+      if (on) out.push(b[bi]);
       bi++;
       continue;
     }
     // del：未选中 → 保留 before 行；选中 → 丢弃
-    if (!inSelected[k]) out.push(a[ai]);
+    if (!on) out.push(a[ai]);
     ai++;
   }
-  return out.join('\n');
+  const { eol, trailingNewline } = detectEnding(after, before);
+  return out.join(eol) + (trailingNewline ? eol : '');
 }

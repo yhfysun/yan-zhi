@@ -5,6 +5,7 @@
 ## [Unreleased]
 
 ### Added
+- **用户工具钩子 P2a（P2-7）**：设置页新增「工具钩子」——用户声明式规则 `{ 工具(可 * 通配) + 匹配内容(大小写不敏感子串) + 动作 }`，动作二选一：**弹窗确认**（每次调用先弹窗点头，授权不记忆、无人值守 fail-safe 拒绝，复用 path-guard 弹窗通道）或**直接拒绝**（拒绝原因回喂模型并明示"不要绕过"）。执行点在缺参检查后、危险命令护栏前（deny 短路省一次弹窗）；deny 与 confirm 并存时 deny 优先。新增 `user_hook` 表 + `routes/user-hooks.ts` CRUD + `services/user-hooks.ts` 匹配（进程内缓存、db 异常 fail-open 不污染缓存）
 - **编码反馈闭环（P0）**：新增 `code_diagnostics` 内置工具（tsc --noEmit 类型检查 / ESLint / node --check 语法检查，自动探测项目配置，结果缓存 90s）；`file_write`/`file_edit` 成功改写代码文件后自动跑诊断并把问题回喂到工具结果，模型当场自修（`YZ_AUTO_DIAGNOSE=0` 可关闭）
 - **代码树解析（AST）**：新增 `code-ast.ts`，用 TypeScript Compiler API 做精确符号/导入/调用边提取（多行签名、箭头函数、类方法宿主、vue SFC 行号对齐）；`code_outline` / `code_refs` / `code_graph` 在编译器可用时自动走 AST，浏览器端回退原启发式
 - **file_edit 多 hunk 编辑**：支持 `edits` 数组一次原子改多处（任一未命中则不落盘）；精确未命中时回退行尾空白容忍的模糊匹配
@@ -20,6 +21,7 @@
 - 新增 `CHANGELOG.md`
 
 ### Fixed
+- ★ hunk 级选择性接受（P2-2）丢失行尾风格与末尾换行：快照存原始内容（Windows 下是 CRLF）而合并输出固定 `\n` join → **CRLF 文件部分接受后整个文件行尾变 LF、末尾换行丢失**（未被选中的"保持 before"无从谈起）——输出改为沿用 after 的行尾风格与末尾换行（全选重建逐字节等于 after）；顺带消除 `applyHunkSelection` 复制的 hunk 分组逻辑（写死 context=3，改 context 必然静默失配）→ 与 `computeHunks` 共享 `analyze()`，9+3 例回归
 - ★ llm-task-manager 两处权限档兜底 fail-open（`task.permissionMode || 'default'`：查不到档位就按可写放行）改为 fail-safe readonly —— 守门测试反向断言逼出，2026-09-27 拍板口径的漏网实现
 - sqlite-driver 的 sql.js 回退对 `:memory:` 库落盘 ENOENT（写 `:memory:.tmp` 文件）—— 测试迁移到统一驱动入口时暴露
 - 修复 6 个存量红测试（26→0）：conversation-mode / model-resolve 迁移到 openSqlite 统一驱动入口（better-sqlite3 已重编为 Electron ABI，系统 Node 无法加载）；license-edition 预置码时长断言改为时间不变量（expireAt − 签发日）；media-fetch-tools / fileWriteAndPreviewFix / mobilePackagingAndColdStart 的源码扫描断言同步重构后现状（MEDIA_TOOLS→artifact-hooks、登记分支→registerAfterToolHook、SideNav 登录入口文案）；sandbox 测试按“受限 require”设计更新语义；context-view-layering keepFirst 按方案 A（头部并入摘要、覆盖段恒为前缀）更新

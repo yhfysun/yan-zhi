@@ -26,6 +26,7 @@ import { serverState } from './state.js';
 // 产物登记钩子（P2-3）：把 file_write / 媒体登记的副作用从主循环里搬出去
 import { runAfterToolHooks } from './services/tool-hooks.js';
 import { registerArtifactHooks } from './services/artifact-hooks.js';
+import { matchUserHooks } from './services/user-hooks.js';
 import { guessMime } from './utils/mime.js';
 import { resolveArtifactDirFor } from './services/artifact-dir.js';
 // 工作目录边界守卫：判定在 path-guard（纯逻辑），这里只做"拿到 need-auth 后弹窗授权"
@@ -2416,6 +2417,46 @@ async function executeTool(
       missingArgs,
       rawArguments: (args && typeof args === 'object') ? JSON.stringify(args) : args,
     }).message;
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // ★ 用户钩子（P2-7 P2a）：设置页里用户声明的 before 规则（deny=直接拒绝 / confirm=每次弹窗确认）
+  //
+  // 位置：缺参检查之后（空参调用不该触发规则）、内置危险命令护栏之前（用户显式规则
+  // 优先级更高，deny 短路还省一次弹窗）。confirm 复用 path-guard 的弹窗通道
+  // （requestPathAuthorization），无人值守 fail-safe 拒绝、授权**不记忆** ——
+  // 与危险命令护栏同口径：用户规则要的就是"每次都问我"，记忆了规则就失效了。
+  // 匹配逻辑只有一份（services/user-hooks.ts），与「判定/执行分离」的既有风格一致。
+  // ══════════════════════════════════════════════════════════════════════════
+  const hookVerdict = matchUserHooks(task.userId, toolName, args);
+  const hookItem: PathAccessItem = {
+    toolName, action: 'write', absPath: '', rawPath: summarizeCommandArgs(args) || JSON.stringify(args ?? {}).slice(0, 200),
+  };
+  if (hookVerdict.denyRules.length > 0) {
+    const why = hookVerdict.denyRules.map((r) => `「${r.name}」`).join('、');
+    auditPathAccess({
+      userId: task.userId, conversationId: task.conversationId, taskId: task.id,
+      toolName, decision: 'user-hook-denied', reason: `命中用户规则 ${why}`, items: [hookItem],
+    });
+    console.warn(`[user-hook] deny conv=${task.conversationId} tool=${toolName} 规则=${hookVerdict.denyRules.map((r) => r.name).join(',')}`);
+    return `用户规则 ${why} 拒绝了工具 \`${toolName}\` 的本次调用。这是用户在设置中明确配置的拦截规则，请不要尝试绕过或重试；如认为该规则阻碍了任务，请向用户说明原因，由用户自行调整规则。`;
+  }
+  if (hookVerdict.confirmRules.length > 0) {
+    const why = hookVerdict.confirmRules.map((r) => `「${r.name}」`).join('、');
+    auditPathAccess({
+      userId: task.userId, conversationId: task.conversationId, taskId: task.id,
+      toolName, decision: 'user-hook-confirm', reason: `命中用户规则 ${why}`, items: [hookItem],
+    });
+    const granted = await requestPathAuthorization(task, toolName, [hookItem], COMMAND_TOOLS.has(toolName), `用户规则 ${why} 要求确认`);
+    if (!granted.ok) {
+      auditPathAccess({
+        userId: task.userId, conversationId: task.conversationId, taskId: task.id,
+        toolName, decision: 'user-hook-denied', reason: `用户规则 ${why} 未获确认`, items: [hookItem],
+      });
+      console.warn(`[user-hook] confirm 拒绝 conv=${task.conversationId} tool=${toolName} 规则=${hookVerdict.confirmRules.map((r) => r.name).join(',')}`);
+      return granted.message;
+    }
+    console.warn(`[user-hook] confirm 通过 conv=${task.conversationId} tool=${toolName} 规则=${hookVerdict.confirmRules.map((r) => r.name).join(',')}`);
   }
 
   // ══════════════════════════════════════════════════════════════════════════

@@ -44,6 +44,7 @@ import previewRoutes from './routes/preview.js';
 import workspaceRoutes from './routes/workspace.js';
 import memoryRoutes from './routes/memory.js';
 import scheduledTaskRoutes from './routes/scheduled-tasks.js';
+import userHookRoutes from './routes/user-hooks.js';
 import ollamaMarketRoutes from './routes/ollama-market.js';
 import ttsPackRoutes from './routes/tts-packs.js';
 import pluginRoutes, { pluginAssetsRouter, PLUGINS_DIR } from './routes/plugins.js';
@@ -165,6 +166,8 @@ app.use('/api/mcp', mcpBridgeRoutes);
 app.use('/api/workspace', workspaceRoutes);
 app.use('/api/memory', memoryRoutes);
 app.use('/api/scheduled-tasks', scheduledTaskRoutes);
+// 用户工具钩子（P2-7 P2a）：设置页声明 deny/confirm 规则，executeTool 前置执行
+app.use('/api/user-hooks', userHookRoutes);
 app.use('/api/ollama-market', ollamaMarketRoutes);
 app.use('/api/tts-packs', ttsPackRoutes);
 app.use('/api/plugins', pluginRoutes);

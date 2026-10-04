@@ -189,6 +189,9 @@
           <el-button type="danger" @click="clearCache" :icon="Delete">清空缓存</el-button>
         </div>
       </el-tab-pane>
+      <el-tab-pane label="工具钩子" name="userhooks">
+        <UserHooksPanel />
+      </el-tab-pane>
       <el-tab-pane v-if="!embedded" label="记忆管理" name="memory">
         <MemoryManage />
       </el-tab-pane>
@@ -296,6 +299,7 @@ import { api, API_BASE, isCapacitor, getMobileApiBase, setMobileApiBase } from '
 import MemoryManage from '../components/memory/MemoryManage.vue';
 import LlmLogs from './LlmLogs.vue';
 import VoicePackPanel from '../components/VoicePackPanel.vue';
+import UserHooksPanel from '../components/settings/UserHooksPanel.vue';
 
 const settingsStore = useSettingsStore();
 const platformStore = usePlatformStore();
