@@ -9,6 +9,8 @@ import { db } from '../db.js';
 import { encrypt, decrypt } from '../utils/crypto.js';
 import { recordBrowserMemoryEvent, readBrowserMemory } from '../services/browser-memory.js';
 import { withTimeout as sharedWithTimeout } from '@yan-zhi/shared';
+import { createLogger } from '../services/logger.js';
+const logger = createLogger('browser');
 
 const router = Router();
 router.use(optionalAuth); // 浏览器功能不需要登录，有 token 就解析（可选）
@@ -1368,7 +1370,7 @@ router.post('/action', async (req: Request, res: Response) => {
   } catch (e: any) {
     const msg = e?.message || '浏览器动作失败';
     if (/超时|假死|Target closed|Execution context|Protocol error|browserContext|page.closed|Connection closed/i.test(msg)) {
-      console.warn('[browser] 检测到浏览器异常，自动重置实例:', msg);
+      logger.warn('[browser] 检测到浏览器异常，自动重置实例:', msg);
       await resetBrowser().catch(() => {});
     }
     res.status(500).json({ error: msg, recoverable: true });

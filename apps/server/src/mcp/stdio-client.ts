@@ -8,6 +8,8 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import type { McpServer, McpTool } from '@yan-zhi/shared';
 import { serverState } from '../state.js';
+import { createLogger } from '../services/logger.js';
+const logger = createLogger('stdio-client');
 
 export interface McpCallResult {
   content: Array<{ type: string; text?: string }>;
@@ -96,7 +98,7 @@ export class StdioMcpClient {
     child.stdout?.on('data', (chunk: Buffer) => this.onStdout(chunk));
     child.stderr?.on('data', (chunk: Buffer) => {
       const text = chunk.toString('utf-8').trim();
-      if (text) console.error(`[mcp:stdio:${this.server.id}] ${text}`);
+      if (text) logger.error(`[mcp:stdio:${this.server.id}] ${text}`);
     });
     child.on('error', (err) => this.failAll(new Error(`MCP 进程启动失败: ${err.message}`)));
     child.on('exit', (code, signal) => {

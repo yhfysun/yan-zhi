@@ -5,6 +5,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { createLogger } from './services/logger.js';
+const logger = createLogger('license');
 
 // 本模块所在目录（ESM 无 __dirname；构建时现签的预置码文件按它定位开发期候选路径）
 const licenseModuleDir = path.dirname(fileURLToPath(import.meta.url));
@@ -115,7 +117,7 @@ const DEFAULT_LICENSE_BY_EDITION: Record<Edition, string> = {
         for (const e of Object.keys(DEFAULT_LICENSE_BY_EDITION) as Edition[]) {
           if (typeof j.codes[e] === 'string' && j.codes[e]) DEFAULT_LICENSE_BY_EDITION[e] = j.codes[e];
         }
-        console.log('[license] 预置码来源: 构建时现签 (signedAt=' + (j.signedAt || '未知') + ', ' + f + ')');
+        logger.info('[license] 预置码来源: 构建时现签 (signedAt=' + (j.signedAt || '未知') + ', ' + f + ')');
       }
       break;
     } catch { /* 任一候选损坏 → 尝试下一个/回退常量 */ }
@@ -125,7 +127,7 @@ const DEFAULT_LICENSE_BY_EDITION: Record<Edition, string> = {
     const exp = JSON.parse(Buffer.from(getDefaultLicenseCode().split('.')[0].replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8')).expireAt;
     if (exp) {
       const remainDays = (new Date(exp).getTime() - Date.now()) / 86400000;
-      if (remainDays < 14) console.warn(`[license] ⚠ 预置试用码仅剩 ${Math.round(remainDays)} 天到期（${exp}）—— 请重新构建现签或发新码`);
+      if (remainDays < 14) logger.warn(`[license] ⚠ 预置试用码仅剩 ${Math.round(remainDays)} 天到期（${exp}）—— 请重新构建现签或发新码`);
     }
   } catch { /* 非法码由验签路径报错 */ }
 }

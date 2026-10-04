@@ -17,6 +17,8 @@ import type { BuiltInTool } from '@yan-zhi/core';
 import { getToolRegistry } from '@yan-zhi/core';
 import { db } from '../db.js';
 import { buildWorkflowInputFieldDefs } from './workflow-delegate.js';
+import { createLogger } from './logger.js';
+const logger = createLogger('workflow-tool-registry');
 
 /** 工具名前缀（会话挂载、后端分发、权限放行三处共用） */
 export const WF_TOOL_PREFIX = 'wf_';
@@ -105,11 +107,11 @@ export function syncWorkflowTools(): SyncResult {
         registry.register(buildTool(r));
         registered.push(name);
       } catch (e: any) {
-        console.error(`[workflow-tools] 注册 ${name} 失败:`, e?.message || e);
+        logger.error(`[workflow-tools] 注册 ${name} 失败:`, e?.message || e);
       }
     }
   } catch (e: any) {
-    console.error('[workflow-tools] 同步失败:', e?.message || e);
+    logger.error('[workflow-tools] 同步失败:', e?.message || e);
   }
   return { registered, removed };
 }

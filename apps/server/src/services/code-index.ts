@@ -17,6 +17,8 @@ import path from 'node:path';
 import fsp from 'node:fs/promises';
 import { db } from '../db.js';
 import { embedText } from './ollama-embed.js';
+import { createLogger } from './logger.js';
+const logger = createLogger('code-index');
 
 /** 参与索引的代码扩展名（与 core code-symbols.CODE_EXTS 的 TS 家族 + 常见后端语言一致） */
 const CODE_EXTS = new Set(['ts', 'tsx', 'js', 'jsx', 'mjs', 'cjs', 'vue', 'py', 'go', 'java', 'cs', 'php', 'rb']);
@@ -251,13 +253,13 @@ export async function searchWorkspaceCode(workspaceDir: string, query: string, t
       .then((stale) => {
         if (!stale) return;
         refreshing.add(ws);
-        console.log(`[code-index] 索引已过期，后台增量重建: ${ws}`);
+        logger.info(`[code-index] 索引已过期，后台增量重建: ${ws}`);
         return buildCodeIndex(workspaceDir, false)
           .then((r) => {
             out.reason = [out.reason, '索引更新中，本次结果基于重建前索引'].filter(Boolean).join('；');
-            console.log(`[code-index] 后台重建完成: +${r.indexedFiles} files, +${r.embeddedChunks} chunks`);
+            logger.info(`[code-index] 后台重建完成: +${r.indexedFiles} files, +${r.embeddedChunks} chunks`);
           })
-          .catch((e) => console.warn('[code-index] 后台重建失败:', e?.message || e))
+          .catch((e) => logger.warn('[code-index] 后台重建失败:', e?.message || e))
           .finally(() => refreshing.delete(ws));
       })
       .catch(() => { /* 抽查失败不影响本次检索 */ });

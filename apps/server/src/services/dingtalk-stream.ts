@@ -1,6 +1,8 @@
 import WebSocket from 'ws';
 import { db } from '../db.js';
 import { handleDingtalkInbound } from './im.js';
+import { createLogger } from './logger.js';
+const logger = createLogger('dingtalk-stream');
 
 /**
  * 钉钉 Stream 模式客户端（零 SDK，直接对接开放协议）。
@@ -76,7 +78,7 @@ class DingtalkStreamClient {
       this.ws = ws;
       ws.on('open', () => {
         this.retries = 0;
-        console.log(`[im-dingtalk] Stream 已连接 (connector=${this.connectorId})`);
+        logger.info(`[im-dingtalk] Stream 已连接 (connector=${this.connectorId})`);
       });
       ws.on('message', (buf: unknown) => this.onFrame(String(buf)));
       ws.on('close', () => this.scheduleReconnect());
@@ -84,7 +86,7 @@ class DingtalkStreamClient {
         /* error 后必然触发 close，由 close 统一重连 */
       });
     } catch (e) {
-      console.warn(`[im-dingtalk] 建连失败 (connector=${this.connectorId}):`, e instanceof Error ? e.message : e);
+      logger.warn(`[im-dingtalk] 建连失败 (connector=${this.connectorId}):`, e instanceof Error ? e.message : e);
       this.scheduleReconnect();
     }
   }

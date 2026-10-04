@@ -25,6 +25,8 @@ import type { DialectType } from './dialect.js';
 import { buildOntologyDigest, recallConfigFromEnv } from './ontology-recall.js';
 import { ensureAppGroup, APP_GROUP_NAME } from './ontology-group.js';
 import { BUILTIN_TABLE_DOCS, COMMON_FIELD_DOCS } from './ontology-docs.js';
+import { createLogger } from './logger.js';
+const logger = createLogger('ontology');
 
 // ===== 类型 =====
 
@@ -670,7 +672,7 @@ async function generateBuiltinOntologies(userId: string, opts?: { force?: boolea
   const existing = new Set(existingRows.map((r) => r.code));
   const conn = getConnector(project);
   const schema = await conn.schemaInfo();
-  console.log(`[ensureBuiltin] ds=${project.name} tables=${schema.length}`);
+  logger.info(`[ensureBuiltin] ds=${project.name} tables=${schema.length}`);
   const newBuiltInIds: string[] = []; // 本次新生成/首次归包的内置本体 id（自动追加进数据智能体挂载）
   for (const t of schema) {
     if (existing.has(t.name)) continue; // 已存在（含结构漂移刷新）由 generateTableOntology 的幂等逻辑兜底，避免列表期频繁写
@@ -679,7 +681,7 @@ async function generateBuiltinOntologies(userId: string, opts?: { force?: boolea
       const created = await generateTableOntology(userId, project, t as TableSchemaLite, { builtin: true, silentConflict: true });
       newBuiltInIds.push(created.id);
     } catch (e) {
-      console.error(`[ensureBuiltin] per-table fail: ds=${project.name} table=${t.name}`, e);
+      logger.error(`[ensureBuiltin] per-table fail: ds=${project.name} table=${t.name}`, e);
     }
   }
 
@@ -692,7 +694,7 @@ async function generateBuiltinOntologies(userId: string, opts?: { force?: boolea
     const now = Date.now();
     const upd = db.prepare("UPDATE ontology SET status='published', published_at=?, updated_at=? WHERE id=?");
     for (const r of draftBuiltin) upd.run(now, now, r.id);
-    console.log(`[ensureBuiltin] 补齐发布 ${draftBuiltin.length} 个内置本体`);
+    logger.info(`[ensureBuiltin] 补齐发布 ${draftBuiltin.length} 个内置本体`);
   }
 
   // 存量迁移：内置本体默认归入「应用本体包」（只处理 group_id 为空的；用户手动移过包的不动）
@@ -704,7 +706,7 @@ async function generateBuiltinOntologies(userId: string, opts?: { force?: boolea
     const upd = db.prepare('UPDATE ontology SET group_id = ? WHERE id = ?');
     for (const r of ungroupedBuiltin) upd.run(appGroupId, r.id);
     newBuiltInIds.push(...ungroupedBuiltin.map((r) => r.id));
-    console.log(`[ensureBuiltin] ${ungroupedBuiltin.length} 个内置本体已归入「${APP_GROUP_NAME}」`);
+    logger.info(`[ensureBuiltin] ${ungroupedBuiltin.length} 个内置本体已归入「${APP_GROUP_NAME}」`);
   }
 
   // 数据查询分析助理默认挂载：首次（挂载为空）挂上「应用本体包」全部本体；
@@ -744,7 +746,7 @@ async function generateBuiltinOntologies(userId: string, opts?: { force?: boolea
       } catch { /* JSON 解析失败忽略 */ }
     }
   }
-  if (docsChanged.length) console.log(`[ensureBuiltin] 已刷新 ${docsChanged.length} 个内置本体的业务描述: ${docsChanged.slice(0, 5).join(', ')}${docsChanged.length > 5 ? '…' : ''}`);
+  if (docsChanged.length) logger.info(`[ensureBuiltin] 已刷新 ${docsChanged.length} 个内置本体的业务描述: ${docsChanged.slice(0, 5).join(', ')}${docsChanged.length > 5 ? '…' : ''}`);
 
   // 旧库补齐：早期生成的内置本体只有 *_sum 度量，没有行计数，
   // 「有多少条/多少个」这种最常见问法没有可用度量 → 模型只能拿 SUM 凑数或退化写裸 SQL。
@@ -766,7 +768,7 @@ async function generateBuiltinOntologies(userId: string, opts?: { force?: boolea
       updCount.run(JSON.stringify(ms), now, r.id);
       n++;
     }
-    if (n) console.log(`[ensureBuiltin] 补齐行计数度量（row_count）${n} 个内置本体`);
+    if (n) logger.info(`[ensureBuiltin] 补齐行计数度量（row_count）${n} 个内置本体`);
   }
   return true;
 }
@@ -803,13 +805,13 @@ function syncDataAgentMounts(userId: string, newIds: string[]): void {
     ids = [...ids, ...add];
   }
   db.prepare('UPDATE agent SET ontology_ids = ? WHERE id = ?').run(JSON.stringify(ids), DATA_AGENT_ID);
-  console.log(`[ensureBuiltin] 数据查询分析助理已挂载 ${ids.length} 个本体`);
+  logger.info(`[ensureBuiltin] 数据查询分析助理已挂载 ${ids.length} 个本体`);
 }
 
 /** 列表接口用：不阻塞当前请求，生成完成后下次列表可见；项目库不可用时静默，下次列表重试 */
 export function ensureBuiltinOntologies(userId: string): void {
   void generateBuiltinOntologies(userId).catch((e) => {
-    console.error(`[ensureBuiltin] async body failed: user=${userId}`, e);
+    logger.error(`[ensureBuiltin] async body failed: user=${userId}`, e);
   });
 }
 

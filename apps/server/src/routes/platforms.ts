@@ -14,6 +14,8 @@ import {
 } from '../services/token-pool.js';
 import { DEFAULT_CONTEXT_WINDOW } from '../constants.js';
 import { inferCapabilitiesFromModelId } from '../agens-platform/service.js';
+import { createLogger } from '../services/logger.js';
+const logger = createLogger('platforms');
 
 
 const router = Router();
@@ -414,7 +416,7 @@ export function migrateLegacyLocalPlatformRows(): void {
         }
       } catch { /* 配置损坏不阻塞迁移主流程 */ }
     })();
-    console.log(`[migrate] 本地模型平台已迁移为确定性 ID: ${oldId} -> ${LOCAL_MODEL_PLATFORM_ID}`);
+    logger.info(`[migrate] 本地模型平台已迁移为确定性 ID: ${oldId} -> ${LOCAL_MODEL_PLATFORM_ID}`);
   }
 }
 

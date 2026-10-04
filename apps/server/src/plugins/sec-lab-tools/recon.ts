@@ -1,6 +1,7 @@
 // A 轨工具：recon —— 目标被动画像（DNS / TLS / HTTP 指纹与安全头 / 子域发现）。
 // 零依赖：全部用 Node 标准库（dns / tls / https），不需要用户安装任何东西。
 // 风险级 passive：只做观测，不发送任何探测载荷。
+import { withTimeout } from '@yan-zhi/shared';
 import dns from 'node:dns';
 import tls from 'node:tls';
 import https from 'node:https';
@@ -30,15 +31,6 @@ const SECURITY_HEADERS: Array<{ name: string; severity: Finding['severity']; adv
   { name: 'referrer-policy', severity: 'info', advice: '设置 Referrer-Policy 控制来源信息泄露' },
 ];
 
-function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`${label} 超时（${ms}ms）`)), ms);
-    p.then(
-      (v) => { clearTimeout(timer); resolve(v); },
-      (e) => { clearTimeout(timer); reject(e as Error); },
-    );
-  });
-}
 
 // ---------- DNS ----------
 

@@ -6,6 +6,8 @@ import { builtinOfficeAgentDefs } from './builtin-office-agents.js';
 import { builtinTaskModeAgentDefs } from './builtin-task-mode-agents.js';
 import { createRequire } from 'node:module';
 import { openSqlite, type YzSqliteDb } from './services/sqlite-driver.js';
+import { createLogger } from './services/logger.js';
+const logger = createLogger('db');
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // dataDir 单一真相源：以 db.ts 所在目录为基准，其他模块一律 import 复用，禁止自行重算
@@ -133,7 +135,7 @@ export function clearMessageSummaries(conversationId: string): void {
 }
 /** 当前生效的 SQLite 驱动（better-sqlite3 原生 / sql.js WASM 回退） */
 export const DB_DRIVER: 'better-sqlite3' | 'sql.js' = opened.driver;
-console.log('[db] SQLite 驱动:', DB_DRIVER, '→', DB_PATH);
+logger.info('[db] SQLite 驱动:', DB_DRIVER, '→', DB_PATH);
 
 // ===== 内置种子覆盖策略（由打包/运行参数控制）=====
 // YZ_BUILTIN_OVERWRITE 取值：
@@ -165,13 +167,13 @@ if (DB_DRIVER === 'better-sqlite3') {
     const vecPath = sqliteVec.getLoadablePath();
     db.loadExtension!(vecPath);
     sqliteVecLoaded = true;
-    console.log('[db] sqlite-vec 扩展已加载:', vecPath);
+    logger.info('[db] sqlite-vec 扩展已加载:', vecPath);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
-    console.warn('[db] sqlite-vec 扩展加载失败，向量检索功能将降级为关键词检索:', msg);
+    logger.warn('[db] sqlite-vec 扩展加载失败，向量检索功能将降级为关键词检索:', msg);
   }
 } else {
-  console.warn('[db] sql.js（WASM）驱动不支持加载 sqlite-vec，向量检索功能降级为关键词检索');
+  logger.warn('[db] sql.js（WASM）驱动不支持加载 sqlite-vec，向量检索功能降级为关键词检索');
 }
 export const hasSqliteVec = sqliteVecLoaded;
 
@@ -2331,7 +2333,7 @@ for (const t of seedCustomTools) {
        VALUES (?,?,?,?,?,NULL,'node',?,?,?,?,NULL,1,'local',0,0,?,?)`,
     ).run(id, 'guest', t.name, t.description, JSON.stringify(t.inputSchema), t.entry, t.code, JSON.stringify([]), 5000, now, now);
   } catch (e: unknown) {
-    console.error('[db] seedCustomTools 插入失败:', t.name, e instanceof Error ? e.message : e);
+    logger.error('[db] seedCustomTools 插入失败:', t.name, e instanceof Error ? e.message : e);
   }
 }
 
@@ -3376,7 +3378,7 @@ try {
       const allFields = [...dims, ...times, ...meas].map((x) => x.name);
       if (allFields.length) upd.run(JSON.stringify([{ name: '全部字段', fields: allFields }]), r.id);
     }
-    console.log(`[db] 回填选择列 ${blank.length} 条本体`);
+    logger.info(`[db] 回填选择列 ${blank.length} 条本体`);
   }
 } catch {}
 

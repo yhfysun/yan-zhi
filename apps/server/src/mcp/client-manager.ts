@@ -11,6 +11,8 @@ import { McpClient } from '@yan-zhi/core';
 import { db } from '../db.js';
 import { decrypt } from '../utils/crypto.js';
 import { StdioMcpClient, type McpCallResult } from './stdio-client.js';
+import { createLogger } from '../services/logger.js';
+const logger = createLogger('client-manager');
 
 export type { McpCallResult };
 
@@ -107,7 +109,7 @@ export async function ensureConnected(serverId: string, userId?: string): Promis
     connections.set(serverId, conn);
     syncToolsToDb(serverId, tools);
     try { db.prepare('UPDATE mcp_server SET status = ? WHERE id = ?').run(1, serverId); } catch {}
-    console.log(`[mcp] 已连接 ${server.name}(${serverId}) transport=${server.transport} tools=${tools.length}`);
+    logger.info(`[mcp] 已连接 ${server.name}(${serverId}) transport=${server.transport} tools=${tools.length}`);
     return conn;
   })();
 
@@ -151,7 +153,7 @@ function syncToolsToDb(serverId: string, tools: McpTool[]): void {
       );
     }
   } catch (e) {
-    console.error('[mcp] 同步工具清单失败', serverId, e instanceof Error ? e.message : e);
+    logger.error('[mcp] 同步工具清单失败', serverId, e instanceof Error ? e.message : e);
   }
 }
 

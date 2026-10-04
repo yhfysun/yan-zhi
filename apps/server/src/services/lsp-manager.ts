@@ -26,6 +26,8 @@ import { existsSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { resolveNodeRuntime } from '../mcp/stdio-client.js';
+import { createLogger } from './logger.js';
+const logger = createLogger('lsp-manager');
 
 const IDLE_REAP_MS = 10 * 60_000;
 const REQ_TIMEOUT_MS = 20_000;
@@ -152,17 +154,17 @@ function spawnServer(root: string, failures: number): ServerEntry | null {
     if (failures >= MAX_FAILURES) {
       // 熔断：留一个 broken 标记占位，避免同一坏项目反复 spawn；闲置回收后自然允许重试
       servers.set(root, { ...entry, proc: null as any, broken: true, failures });
-      console.warn(`[lsp] tsserver 连续失败 ${failures} 次，熔断（root=${root}）`);
+      logger.warn(`[lsp] tsserver 连续失败 ${failures} 次，熔断（root=${root}）`);
       return;
     }
     // 意外退出：自动重启一次，失败计数带入下一次
     const next = spawnServer(root, failures);
     if (next) {
       servers.set(root, next);
-      console.warn(`[lsp] tsserver 退出，已自动重启（root=${root}，失败计数 ${failures}/${MAX_FAILURES}）`);
+      logger.warn(`[lsp] tsserver 退出，已自动重启（root=${root}，失败计数 ${failures}/${MAX_FAILURES}）`);
     } else {
       servers.set(root, { ...entry, proc: null as any, broken: true, failures });
-      console.warn(`[lsp] tsserver 退出且无法重启，熔断（root=${root}）`);
+      logger.warn(`[lsp] tsserver 退出且无法重启，熔断（root=${root}）`);
     }
   };
   proc.on('exit', onExit);

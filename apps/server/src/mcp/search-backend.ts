@@ -8,6 +8,8 @@
 // 且依赖宿主机 chromium 安装。需要 Bing/Baidu 结果请用 Bing API（YANZHI_BING_API_KEY）。
 import { FetchSearchBackend, DuckDuckGoSearchBackend, BingApiSearchBackend, type SearchBackend, type SearchResult, type SearchSummarizer } from '@yan-zhi/core';
 import { DEFAULT_CONTEXT_WINDOW } from '../constants.js';
+import { createLogger } from '../services/logger.js';
+const logger = createLogger('search-backend');
 
 // Re-export 给 server 测试用（避免测试里 import @yan-zhi/core 后 instanceof 比对失败）
 export { FetchSearchBackend, DuckDuckGoSearchBackend, BingApiSearchBackend };
@@ -117,7 +119,7 @@ export async function resolveSearchBackendWithFallback(): Promise<SearchBackend>
 
   // bing/baidu/sogou/auto/multi 引擎已废弃（PlaywrightSearchBackend 已删），静默回退到 API 链
   if (engine && engine !== 'duckduckgo' && engine !== 'bingapi') {
-    console.warn(`[search] YANZHI_SEARCH_ENGINE=${engine} 已废弃（PlaywrightSearchBackend 已删，web_search 不再开浏览器），回退到 API 降级链`);
+    logger.warn(`[search] YANZHI_SEARCH_ENGINE=${engine} 已废弃（PlaywrightSearchBackend 已删，web_search 不再开浏览器），回退到 API 降级链`);
   }
 
   return new FallbackSearchBackend(chain);

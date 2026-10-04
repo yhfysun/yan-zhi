@@ -19,6 +19,8 @@
 // （builtin-workflow-agents.ts）。任何一处单独改都会让「预检放行 → 运行报错」重现。
 import type { YzSqliteDb } from './sqlite-driver.js';
 import type { Model } from '@yan-zhi/shared';
+import { createLogger } from './logger.js';
+const logger = createLogger('model-resolve');
 
 /** 池化查询：status 与行结构保持与 workflow-runner 既有实现一致 */
 export interface ModelRowLike {
@@ -64,7 +66,7 @@ export function findModelRow(
         .get(modelId, userId) as ModelRowLike | undefined);
   if (byName) {
     // 命中回退说明库里还有未迁移的裸名；不改数据（只读路径），只提示
-    console.warn(
+    logger.warn(
       `[model-resolve] 模型标识回退命中（存量裸名，建议规范为主键）：${modelId} → ${byName.id}`,
     );
   }

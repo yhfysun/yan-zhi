@@ -76,6 +76,8 @@ import { startMemoryDreamingScheduler } from './services/memory-dreaming.js';
 import { syncDingtalkStreamClients } from './services/dingtalk-stream.js';
 import { nodeAdapter } from './node-adapter.js';
 import { db } from './db.js';
+import { createLogger } from './services/logger.js';
+const logger = createLogger('index');
 
 setPlatformAdapter(nodeAdapter);
 
@@ -120,7 +122,7 @@ app.use('/api/license', licenseRoutes);
 // 挡住绕过前端路由守卫直接请求 API 的路径。豁免清单见 license-guard.ts 的 EXEMPT_PREFIXES。
 app.use('/api', requireLicense);
 if (isLicenseGuardEnabled()) {
-  console.log('[license] 授权门禁已启用（YZ_LICENSE_GUARD=1）：业务 API 需携带 x-license 头');
+  logger.info('[license] 授权门禁已启用（YZ_LICENSE_GUARD=1）：业务 API 需携带 x-license 头');
 }
 app.use('/api/conversations', conversationRoutes);
 app.use('/api/conversations', fileRoutes);
@@ -395,11 +397,11 @@ if (webDist) {
   app.get(/^\/(?!api\/).*/, (_req, res, next) => {
     res.sendFile(path.join(webDist, 'index.html'), (err) => { if (err) next(); });
   });
-  console.log(`[web] 前端静态资源已托管: ${webDist}（局域网访问 http://<本机IP>:${PORT_NUM}）`);
+  logger.info(`[web] 前端静态资源已托管: ${webDist}（局域网访问 http://<本机IP>:${PORT_NUM}）`);
 }
 
 app.listen(PORT_NUM, HOST, () => {
-  console.log(`后端已启动: http://${HOST === '0.0.0.0' ? '<局域网可达>' : HOST}:${PORT_NUM}`);
+  logger.info(`后端已启动: http://${HOST === '0.0.0.0' ? '<局域网可达>' : HOST}:${PORT_NUM}`);
 });
 
 // 启动时回收上次进程遗留的运行/任务：llm_task 与 workflow_run 的 running 状态不会自己结束，
@@ -407,38 +409,38 @@ app.listen(PORT_NUM, HOST, () => {
 try {
   const orphanTasks = markOrphanTasksInterrupted();
   const orphanRuns = markOrphanWorkflowRunsInterrupted();
-  if (orphanTasks || orphanRuns) console.log(`[cleanup] 已回收遗留任务 ${orphanTasks} 条、遗留工作流运行 ${orphanRuns} 条`);
+  if (orphanTasks || orphanRuns) logger.info(`[cleanup] 已回收遗留任务 ${orphanTasks} 条、遗留工作流运行 ${orphanRuns} 条`);
   resumeWorkflowDeliveries();
-} catch (e) { console.warn('[cleanup] 遗留运行回收/补投失败:', e); }
+} catch (e) { logger.warn('[cleanup] 遗留运行回收/补投失败:', e); }
 
 // 启动时清理已移除的内置模型平台残留记录（local-model-*）
 try {
   db.prepare("DELETE FROM model WHERE id LIKE 'local-model-%'").run();
   db.prepare("DELETE FROM platform WHERE id LIKE 'local-model-%'").run();
-  console.log('[cleanup] 已清理内置模型平台残留记录');
-} catch (e) { console.warn('[cleanup] 清理内置模型平台残留失败:', e); }
+  logger.info('[cleanup] 已清理内置模型平台残留记录');
+} catch (e) { logger.warn('[cleanup] 清理内置模型平台残留失败:', e); }
 
 // 启动时把历史随机 ID 的内置「本地模型」平台迁移为确定性 ID（ollama-local），跨机器一致
 try {
   migrateLegacyLocalPlatformRows();
-} catch (e) { console.warn('[migrate] 本地模型平台迁移失败:', e); }
+} catch (e) { logger.warn('[migrate] 本地模型平台迁移失败:', e); }
 
 // 启动时为所有用户惰性初始化 agens 线上平台及其模型
 // （首次 seed；已存在则只补齐接口新增模型 + 纠正历史 id/别名拼写 + 按名称补齐媒体能力，不覆盖用户改过的字段）
 try {
   const r = syncAgensPlatformForAllUsers();
-  if (r.renamed.length) console.log(`[agens] 已纠正历史平台 id 拼写: ${r.renamed.join(', ')}`);
-  if (r.seeded.length) console.log(`[agens] 已为用户初始化平台: ${r.seeded.join(', ')}`);
-  if (r.addedModels.length) console.log(`[agens] 已补齐新模型: ${[...new Set(r.addedModels)].join(', ')}`);
-  if (r.capsFilled.length) console.log(`[agens] 已按模型名补齐能力: ${[...new Set(r.capsFilled)].join(', ')}`);
-  if (r.migrated.length) console.log(`[agens] 默认模型已切到 agnes-3.0-flash: ${r.migrated.join(', ')}`);
-} catch (e) { console.warn('[agens] 初始化平台失败:', e); }
+  if (r.renamed.length) logger.info(`[agens] 已纠正历史平台 id 拼写: ${r.renamed.join(', ')}`);
+  if (r.seeded.length) logger.info(`[agens] 已为用户初始化平台: ${r.seeded.join(', ')}`);
+  if (r.addedModels.length) logger.info(`[agens] 已补齐新模型: ${[...new Set(r.addedModels)].join(', ')}`);
+  if (r.capsFilled.length) logger.info(`[agens] 已按模型名补齐能力: ${[...new Set(r.capsFilled)].join(', ')}`);
+  if (r.migrated.length) logger.info(`[agens] 默认模型已切到 agnes-3.0-flash: ${r.migrated.join(', ')}`);
+} catch (e) { logger.warn('[agens] 初始化平台失败:', e); }
 
 // 一次性把小于 1M 的模型上下文窗口提到 1M（本机平台如 Ollama 跳过，已 ≥1M 的保留不动）
 try {
   const n = bumpModelContextWindowToDefault();
-  if (n) console.log(`[model] 上下文窗口默认提到 1M，共更新 ${n} 个模型`);
-} catch (e) { console.warn('[model] 上下文窗口默认值迁移失败:', e); }
+  if (n) logger.info(`[model] 上下文窗口默认提到 1M，共更新 ${n} 个模型`);
+} catch (e) { logger.warn('[model] 上下文窗口默认值迁移失败:', e); }
 
 // 一次性把智能体 max_tokens 旧默认 2048 提到 65536：
 // 2048 会让推理型模型输出中途截断 → tool_call 参数残缺 → 反复重试死循环（2026-09-14 实锤根因）。
@@ -451,27 +453,27 @@ try {
     db.prepare(
       'INSERT INTO app_config (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at',
     ).run(key, String(n), Date.now());
-    if (n) console.log(`[agent] max_tokens 默认提到 65536，共更新 ${n} 个智能体`);
+    if (n) logger.info(`[agent] max_tokens 默认提到 65536，共更新 ${n} 个智能体`);
   }
-} catch (e) { console.warn('[agent] max_tokens 迁移失败:', e); }
+} catch (e) { logger.warn('[agent] max_tokens 迁移失败:', e); }
 
 // 内置「调研报告生成助手」智能体：幂等 seed（首次创建 / 版本升级覆盖修正）+ LLM 节点模型自动回填
 try {
   const s = seedBuiltinWorkflowAgents(db);
-  if (s.seeded.length) console.log(`[builtin-wf] 已内置工作流智能体: ${s.seeded.join(', ')}`);
-  if (s.restored.length) console.log(`[builtin-wf] 定义版本升级，已还原内置工作流: ${s.restored.join(', ')}`);
+  if (s.seeded.length) logger.info(`[builtin-wf] 已内置工作流智能体: ${s.seeded.join(', ')}`);
+  if (s.restored.length) logger.info(`[builtin-wf] 定义版本升级，已还原内置工作流: ${s.restored.join(', ')}`);
   const f = ensureBuiltinWorkflowModel(db);
-  if (f.filled) console.log('[builtin-wf] 内置工作流 LLM 节点已自动回填模型');
-} catch (e) { console.warn('[builtin-wf] 初始化失败:', e); }
+  if (f.filled) logger.info('[builtin-wf] 内置工作流 LLM 节点已自动回填模型');
+} catch (e) { logger.warn('[builtin-wf] 初始化失败:', e); }
 
 // 把每个工作流注册成 wf_<agentId> 工具（工作流模式 AI 形态的调用通道）。
 // 必须在内置工作流 seed 之后跑：先有 agent 行才有工具可注册。
 // 全量注册不占模型上下文 —— 真正发给模型的只有会话 builtin_tool_ids 里挂载的那几个。
 try {
   const t = syncWorkflowTools();
-  if (t.registered.length) console.log(`[workflow-tools] 已注册工作流工具 ${t.registered.length} 个: ${t.registered.join(', ')}`);
-  if (t.removed.length) console.log(`[workflow-tools] 已注销失效工作流工具 ${t.removed.length} 个`);
-} catch (e) { console.warn('[workflow-tools] 注册失败:', e); }
+  if (t.registered.length) logger.info(`[workflow-tools] 已注册工作流工具 ${t.registered.length} 个: ${t.registered.join(', ')}`);
+  if (t.removed.length) logger.info(`[workflow-tools] 已注销失效工作流工具 ${t.removed.length} 个`);
+} catch (e) { logger.warn('[workflow-tools] 注册失败:', e); }
 
 // 历史遗留诊断智能体清理：删掉手工创建的 diag_min_loop（含其 workflow_run），
 // 并把挂在它上面的会话重绑到真正的智能体 —— 必须先重绑再删，否则会话的
@@ -480,19 +482,19 @@ try {
 try {
   const c = cleanupLegacyDiagAgents(db);
   if (c.deletedAgents || c.reboundConversations || c.deletedRuns) {
-    console.log(
+    logger.info(
       `[cleanup] 已清理遗留诊断智能体：agent ${c.deletedAgents} 行、workflow_run ${c.deletedRuns} 条、重绑会话 ${c.reboundConversations} 个`,
     );
   }
-} catch (e) { console.warn('[cleanup] 遗留诊断智能体清理失败:', e); }
+} catch (e) { logger.warn('[cleanup] 遗留诊断智能体清理失败:', e); }
 
 // 数据面预热（P4.1）：内置项目库数据源 + 全表自动本体。
 // 异步生成不阻塞启动；生成完即 published，智能体启动后可直接取数（首次调用也会同步兜底等待）。
 try {
   ensureProjectDataSource('guest');
   ensureBuiltinOntologies('guest');
-  console.log('[data] 内置项目库数据源与自动本体预热已触发');
-} catch (e) { console.warn('[data] 数据面预热失败:', e); }
+  logger.info('[data] 内置项目库数据源与自动本体预热已触发');
+} catch (e) { logger.warn('[data] 数据面预热失败:', e); }
 
 // 产物路径一次性回填（2026-09-23）：把 conversation_file 里的**相对路径**补成绝对路径。
 // ★ 为什么需要：历史数据里有相对路径登记（实测 1 条），它随进程 cwd 漂移，
@@ -502,9 +504,9 @@ try {
 try {
   const bf = backfillRelativeArtifactPaths();
   if (bf.fixed || bf.unresolved) {
-    console.log(`[artifact] 产物路径回填：扫描 ${bf.scanned} 条，修正 ${bf.fixed} 条，仍无法定位 ${bf.unresolved} 条`);
+    logger.info(`[artifact] 产物路径回填：扫描 ${bf.scanned} 条，修正 ${bf.fixed} 条，仍无法定位 ${bf.unresolved} 条`);
   }
-} catch (e) { console.warn('[artifact] 产物路径回填失败:', e); }
+} catch (e) { logger.warn('[artifact] 产物路径回填失败:', e); }
 
 // 启动对话定时任务调度器（内部有 guard，只会启动一次）
 startScheduledTaskScheduler();
@@ -516,7 +518,7 @@ startMemoryDreamingScheduler();
 try {
   syncDingtalkStreamClients();
 } catch (e) {
-  console.warn('[im] 钉钉 Stream 客户端启动失败:', e);
+  logger.warn('[im] 钉钉 Stream 客户端启动失败:', e);
 }
 
 // 插件系统初始化：恢复已启用插件、同步工具到 ToolRegistry、挂载插件后端路由
@@ -561,7 +563,7 @@ try {
             .run(MARKER_KEY, JSON.stringify(Date.now()));
         }
       } catch (e) {
-        console.warn('[plugin] 内置插件默认开启迁移失败:', e);
+        logger.warn('[plugin] 内置插件默认开启迁移失败:', e);
       }
     }
     // 已安装插件重启恢复：loadFromDb 只恢复了状态，入口模块未绑定（enabled 状态下工具/路由未注册），扫描目录补绑
@@ -611,8 +613,8 @@ try {
     for (const { pluginId } of mgr.registry.backendRoutes) {
       mountPluginRoutes(pluginId);
     }
-    console.log('[plugin] 插件系统已初始化');
+    logger.info('[plugin] 插件系统已初始化');
   } catch (e) {
-    console.error('[plugin] 插件系统初始化失败', e);
+    logger.error('[plugin] 插件系统初始化失败', e);
   }
 })();

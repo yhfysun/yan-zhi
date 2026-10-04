@@ -7,6 +7,8 @@ import { LlmClient } from '@yan-zhi/core';
 import { randomUUID } from 'node:crypto';
 import { db } from '../db.js';
 import { embedText } from './ollama-embed.js';
+import { createLogger } from './logger.js';
+const logger = createLogger('memory-service');
 
 // ── 向量工具 ──
 
@@ -531,7 +533,7 @@ export async function flushMemoriesBeforeCompression(params: FlushParams, toComp
       resp = await client.chat(reqMessages, { temperature: 0.2, maxTokens: 800, responseFormat: { type: 'json_object' } as any });
     } catch (e: any) {
       if (/LLM 请求失败: 400/.test(e?.message || '')) {
-        console.warn('[memory] 压缩前抢救: response_format=json_object 被拒(400)，去掉后重试');
+        logger.warn('[memory] 压缩前抢救: response_format=json_object 被拒(400)，去掉后重试');
         resp = await client.chat(reqMessages, { temperature: 0.2, maxTokens: 800 });
       } else {
         throw e;
@@ -541,7 +543,7 @@ export async function flushMemoriesBeforeCompression(params: FlushParams, toComp
     const text = resp.delta?.content || '';
     const items = parseExtractedItems(text);
     if (!items.length && text.trim()) {
-      console.log('[memory] 压缩前抢救: 模型输出无法解析为条目, 前120字:', text.slice(0, 120));
+      logger.info('[memory] 压缩前抢救: 模型输出无法解析为条目, 前120字:', text.slice(0, 120));
     }
 
     const writeItems: MemoryWriteItem[] = items
@@ -553,9 +555,9 @@ export async function flushMemoriesBeforeCompression(params: FlushParams, toComp
       }));
     if (writeItems.length) {
       const r = await writeMemoryItems(params.userId, params.agentId ?? null, writeItems, 'flush');
-      console.log(`[memory] 压缩前抢救: +${r.created} 新增 / ${r.merged} 合并到当日`);
+      logger.info(`[memory] 压缩前抢救: +${r.created} 新增 / ${r.merged} 合并到当日`);
     }
   } catch (e: any) {
-    console.error('[memory] 压缩前抢救失败:', e?.message || e);
+    logger.error('[memory] 压缩前抢救失败:', e?.message || e);
   }
 }

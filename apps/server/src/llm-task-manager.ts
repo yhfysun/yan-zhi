@@ -78,6 +78,8 @@ import {
 // 且带 mtime 缓存，开销可忽略。
 import { statSync, readFileSync, readdirSync, existsSync } from 'node:fs';
 import path from 'node:path';
+import { createLogger } from './services/logger.js';
+const logger = createLogger('llm-task-manager');
 
 /** 工作流结果反写的 I/O 上限：反写本身很快，超时只为防异常挂住。 */
 const WORKFLOW_DELIVERY_TIMEOUT_MS = 30 * 1000;
@@ -766,7 +768,7 @@ function auditPathAccess(opts: {
       );
     }
   } catch (e: any) {
-    console.warn('[path-guard] 审计写入失败（不影响主链路）:', e?.message || e);
+    logger.warn('[path-guard] 审计写入失败（不影响主链路）:', e?.message || e);
   }
 }
 
@@ -849,7 +851,7 @@ async function requestPathAuthorization(
     userId: task.userId, conversationId: task.conversationId, taskId: task.id,
     toolName, decision: 'allowed', reason: decision, items,
   });
-  console.warn(`[path-guard] 已授权 conv=${task.conversationId} tool=${toolName} scope=${decision} n=${items.length}`);
+  logger.warn(`[path-guard] 已授权 conv=${task.conversationId} tool=${toolName} scope=${decision} n=${items.length}`);
   return { ok: true, reason: decision, message: '' };
 }
 
@@ -2340,7 +2342,7 @@ async function consolidateOnTaskEnd(task: LlmTask, summary: string): Promise<voi
         mark.run(JSON.stringify(meta), r.id);
       } catch { /* 单条失败跳过 */ }
     }
-    console.log(`[memory] 收尾整理: 消化 ${rows.length} 条本任务短期记忆 (conv=${task.conversationId})`);
+    logger.info(`[memory] 收尾整理: 消化 ${rows.length} 条本任务短期记忆 (conv=${task.conversationId})`);
   } catch { /* 收尾整理失败不影响任务状态 */ }
 }
 
@@ -2492,7 +2494,7 @@ async function executeTool(
   // （registry.execute 前后那段）自然不会执行，不会残留无意义的 pending 记录。
   const perm = checkToolPermission(task.permissionMode || 'readonly', toolName);
   if (!perm.allowed) {
-    console.warn(`[llm-task] 权限拦截: conv=${task.conversationId} mode=${task.permissionMode} tool=${toolName}`);
+    logger.warn(`[llm-task] 权限拦截: conv=${task.conversationId} mode=${task.permissionMode} tool=${toolName}`);
     return perm.reason || `工具 ${toolName} 已被会话权限拒绝执行`;
   }
   const isUiTool = uiTools.has(toolName);
@@ -2542,7 +2544,7 @@ async function executeTool(
       userId: task.userId, conversationId: task.conversationId, taskId: task.id,
       toolName, decision: 'user-hook-denied', reason: `命中用户规则 ${why}`, items: [hookItem],
     });
-    console.warn(`[user-hook] deny conv=${task.conversationId} tool=${toolName} 规则=${hookVerdict.denyRules.map((r) => r.name).join(',')}`);
+    logger.warn(`[user-hook] deny conv=${task.conversationId} tool=${toolName} 规则=${hookVerdict.denyRules.map((r) => r.name).join(',')}`);
     return `用户规则 ${why} 拒绝了工具 \`${toolName}\` 的本次调用。这是用户在设置中明确配置的拦截规则，请不要尝试绕过或重试；如认为该规则阻碍了任务，请向用户说明原因，由用户自行调整规则。`;
   }
   if (hookVerdict.confirmRules.length > 0) {
@@ -2557,10 +2559,10 @@ async function executeTool(
         userId: task.userId, conversationId: task.conversationId, taskId: task.id,
         toolName, decision: 'user-hook-denied', reason: `用户规则 ${why} 未获确认`, items: [hookItem],
       });
-      console.warn(`[user-hook] confirm 拒绝 conv=${task.conversationId} tool=${toolName} 规则=${hookVerdict.confirmRules.map((r) => r.name).join(',')}`);
+      logger.warn(`[user-hook] confirm 拒绝 conv=${task.conversationId} tool=${toolName} 规则=${hookVerdict.confirmRules.map((r) => r.name).join(',')}`);
       return granted.message;
     }
-    console.warn(`[user-hook] confirm 通过 conv=${task.conversationId} tool=${toolName} 规则=${hookVerdict.confirmRules.map((r) => r.name).join(',')}`);
+    logger.warn(`[user-hook] confirm 通过 conv=${task.conversationId} tool=${toolName} 规则=${hookVerdict.confirmRules.map((r) => r.name).join(',')}`);
   }
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -2591,7 +2593,7 @@ async function executeTool(
     });
     const granted = await requestPathAuthorization(task, toolName, dangerItems, true, dangerHit.why);
     if (!granted.ok) {
-      console.warn(`[danger-guard] 拒绝 conv=${task.conversationId} tool=${toolName} 原因=${granted.reason} 危险=${dangerHit.why}`);
+      logger.warn(`[danger-guard] 拒绝 conv=${task.conversationId} tool=${toolName} 原因=${granted.reason} 危险=${dangerHit.why}`);
       auditPathAccess({
         userId: task.userId, conversationId: task.conversationId, taskId: task.id,
         toolName, decision: 'danger-denied', reason: granted.reason, items: dangerItems,
@@ -2599,7 +2601,7 @@ async function executeTool(
       return granted.message;
     }
     dangerGranted = true; // 本次调用放行，但**不写** commandAuthorizedConvs
-    console.warn(`[danger-guard] 危险命令已单独授权 conv=${task.conversationId} tool=${toolName} 危险=${dangerHit.why}`);
+    logger.warn(`[danger-guard] 危险命令已单独授权 conv=${task.conversationId} tool=${toolName} 危险=${dangerHit.why}`);
   }
 
   if (task.pathGuard !== 'off') {
@@ -2623,13 +2625,13 @@ async function executeTool(
       }
       if (isCommand && dangerGranted) {
         // 危险命令已在上面单独授权过本次调用，路径授权不再重复弹（弹两次 = 骚扰）
-        console.warn(`[path-guard] 放行(危险命令已单独授权) conv=${task.conversationId} tool=${toolName}`);
+        logger.warn(`[path-guard] 放行(危险命令已单独授权) conv=${task.conversationId} tool=${toolName}`);
       } else if (isCommand && isCommandAuthorized(task.conversationId)) {
-        console.warn(`[path-guard] 放行(命令已授权) conv=${task.conversationId} tool=${toolName}`);
+        logger.warn(`[path-guard] 放行(命令已授权) conv=${task.conversationId} tool=${toolName}`);
       } else {
         const granted = await requestPathAuthorization(task, toolName, pathVerdict.items, isCommand);
         if (!granted.ok) {
-          console.warn(`[path-guard] 拒绝 conv=${task.conversationId} tool=${toolName} 原因=${granted.reason}`);
+          logger.warn(`[path-guard] 拒绝 conv=${task.conversationId} tool=${toolName} 原因=${granted.reason}`);
           return granted.message;
         }
       }
@@ -2715,7 +2717,7 @@ async function executeTool(
       try { return JSON.parse(row.workflow_json || '{}'); } catch { return null; }
     })(), toolName);
     if (!wfPerm.allowed) {
-      console.warn(`[llm-task] 工作流权限拦截: conv=${task.conversationId} mode=${task.permissionMode} wf=${wfAgentId}`);
+      logger.warn(`[llm-task] 工作流权限拦截: conv=${task.conversationId} mode=${task.permissionMode} wf=${wfAgentId}`);
       return wfPerm.reason || `工作流 ${wfAgentId} 已被会话权限拒绝执行`;
     }
 
@@ -2883,7 +2885,7 @@ async function executeTool(
         };
       } catch (e: any) {
         // 目录解析失败不能静默：否则又退回"按模型给的 path 写"，问题原样复现。
-        console.warn('[llm-task] 产物目录解析失败，file_write 将退回旧行为:', e?.message || e);
+        logger.warn('[llm-task] 产物目录解析失败，file_write 将退回旧行为:', e?.message || e);
         return undefined;
       }
     })();
@@ -2970,7 +2972,7 @@ async function executeToolViaFrontend(task: LlmTask, toolName: string, args: any
           const pending = task.pendingToolCalls.get(callId);
           if (pending) {
             task.pendingToolCalls.delete(callId);
-            console.warn(`[llm-task] 前端工具执行超时(2min): ${toolName} callId=${callId} conv=${task.conversationId}（前端刷新/断连时常见，任务将以此错误继续）`);
+            logger.warn(`[llm-task] 前端工具执行超时(2min): ${toolName} callId=${callId} conv=${task.conversationId}（前端刷新/断连时常见，任务将以此错误继续）`);
             pending.reject(new Error(`工具 ${toolName} 执行超时`));
           }
         }, timeoutMsOverride && timeoutMsOverride > 0 ? timeoutMsOverride : FRONTEND_TOOL_TIMEOUT_MS);
@@ -3055,7 +3057,7 @@ async function deliverWorkflowResult(runId: string, ctx: WorkflowDeliveryCtx, fa
     // 成功才清除待投递标记；失败保留，重启后由 resumeWorkflowDeliveries 重试
     markWorkflowDelivered(runId);
   } catch (e: any) {
-    console.warn('[workflow] 结果反写失败（保留待重启补投）:', e?.message || e);
+    logger.warn('[workflow] 结果反写失败（保留待重启补投）:', e?.message || e);
   }
 }
 
@@ -3098,9 +3100,9 @@ export function resumeWorkflowDeliveries(): number {
       void deliverWorkflowResult(r.id, ctx, failedMsg);
       scheduled++;
     }
-    if (scheduled > 0) console.log(`[workflow] 已调度 ${scheduled} 条遗留工作流结果的补投`);
+    if (scheduled > 0) logger.info(`[workflow] 已调度 ${scheduled} 条遗留工作流结果的补投`);
   } catch (e: any) {
-    console.warn('[workflow] 补投调度失败:', e?.message || e);
+    logger.warn('[workflow] 补投调度失败:', e?.message || e);
   }
   return scheduled;
 }
@@ -3127,7 +3129,7 @@ async function deliverWorkflowFile(ctx: WorkflowDeliveryCtx, item: { name: strin
     notifyConversation(ctx, { type: 'file:registered', conversationId: ctx.conversationId });
   } catch (e: any) {
     // 落盘已成功，这里只丢登记：不能静默，打印出来便于定位
-    console.warn('[workflow] 交付文件登记失败:', e?.message || e);
+    logger.warn('[workflow] 交付文件登记失败:', e?.message || e);
   }
 }
 
@@ -3386,7 +3388,7 @@ async function startBackgroundSubAgent(
   const bgId = makeBackgroundId();
   const agentName = agentRow?.name || agentId;
   task.backgroundSubAgents.set(bgId, { bgId, agentId, agentName, toolCallId, startedAt: Date.now() });
-  console.warn(`[bg-subagent] 启动 conv=${task.conversationId} bg=${bgId} agent=${agentId}（在跑 ${task.backgroundSubAgents.size} 个）`);
+  logger.warn(`[bg-subagent] 启动 conv=${task.conversationId} bg=${bgId} agent=${agentId}（在跑 ${task.backgroundSubAgents.size} 个）`);
 
   void (async () => {
     let result: string;
@@ -3398,7 +3400,7 @@ async function startBackgroundSubAgent(
         : `后台子智能体执行异常：${e?.message || e}`;
     } finally {
       task.backgroundSubAgents.delete(bgId);
-      console.warn(`[bg-subagent] 结束 conv=${task.conversationId} bg=${bgId} agent=${agentId}`);
+      logger.warn(`[bg-subagent] 结束 conv=${task.conversationId} bg=${bgId} agent=${agentId}`);
     }
     await deliverSubAgentResult(task, agentName, result);
   })();
@@ -3415,7 +3417,7 @@ async function deliverSubAgentResult(task: LlmTask, agentName: string, result: s
     const msgId = insertMessage(task.conversationId, task.userId, 'assistant', text);
     emit(task, { type: 'message:added', message: { id: msgId, role: 'assistant', content: text } });
   } catch (e: any) {
-    console.warn('[bg-subagent] 结果投递失败:', e?.message || e);
+    logger.warn('[bg-subagent] 结果投递失败:', e?.message || e);
   }
 }
 
@@ -4078,9 +4080,9 @@ async function extractMemoryFromConversation(task: LlmTask): Promise<void> {
     // 此前只认数组导致抽取结果恒为 0 条且无任何日志）
     const items = parseExtractedItems(text);
     if (items.length) {
-      console.log(`[memory] 抽取: 模型返回 ${items.length} 条候选`);
+      logger.info(`[memory] 抽取: 模型返回 ${items.length} 条候选`);
     } else if (text.trim()) {
-      console.log('[memory] 抽取: 模型输出无法解析为条目, 前120字:', text.slice(0, 120));
+      logger.info('[memory] 抽取: 模型输出无法解析为条目, 前120字:', text.slice(0, 120));
     }
 
     // 统一走 memory-service 写入：语义去重（余弦>0.92 更新原行）、冲突标记（superseded_by）、
@@ -4095,10 +4097,10 @@ async function extractMemoryFromConversation(task: LlmTask): Promise<void> {
       }));
     if (writeItems.length) {
       const r = await writeMemoryItems(task.userId, task.agentId ?? null, writeItems, 'extract');
-      console.log(`[memory] 抽取写入: +${r.created} 新增 / ${r.updated} 去重更新 / ${r.merged} 合并 / ${r.superseded} 冲突取代`);
+      logger.info(`[memory] 抽取写入: +${r.created} 新增 / ${r.updated} 去重更新 / ${r.merged} 合并 / ${r.superseded} 冲突取代`);
     }
   } catch (e: any) {
-    console.error('[memory] 抽取失败:', e?.message || e);
+    logger.error('[memory] 抽取失败:', e?.message || e);
   }
 }
 

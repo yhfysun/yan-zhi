@@ -13,6 +13,8 @@
 import https from 'node:https';
 import net from 'node:net';
 import tls from 'node:tls';
+import { createLogger } from './logger.js';
+const logger = createLogger('media-fetch');
 
 export interface ProxyEndpoint {
   host: string;
@@ -249,7 +251,7 @@ export async function downloadMediaBinary(url: string, timeoutMs = 180000): Prom
     } catch (e: unknown) {
       // 直连不通（该网络被挡）：记下并进入冷却期（TTL 内不再重试直连，避免白等超时）
       if (host) markDirectBlocked(s);
-      console.warn(
+      logger.warn(
         `[media] 直连 ${host || s} 失败（${e instanceof Error ? e.message : String(e)}），尝试本机代理`,
       );
     }
@@ -270,7 +272,7 @@ export async function downloadMediaBinary(url: string, timeoutMs = 180000): Prom
       return buf;
     } catch (e: unknown) {
       lastErr = e;
-      console.warn(`[media] 经代理 ${proxy.host}:${proxy.port} 下载失败：${e instanceof Error ? e.message : String(e)}`);
+      logger.warn(`[media] 经代理 ${proxy.host}:${proxy.port} 下载失败：${e instanceof Error ? e.message : String(e)}`);
     }
   }
   throw new Error(`媒体下载失败（${host || s}）：${lastErr instanceof Error ? lastErr.message : String(lastErr)}`);

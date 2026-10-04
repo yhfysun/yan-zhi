@@ -19,6 +19,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
+import { createLogger } from './logger.js';
+const logger = createLogger('sqlite-driver');
 
 /** better-sqlite3 同款语句句柄（全仓只用 run/get/all，参数全为 ? 位置式） */
 export interface YzStatement {
@@ -62,7 +64,7 @@ export async function openSqlite(
       // 典型两种：包没装进内嵌包（ERR_MODULE_NOT_FOUND）/ ABI 不匹配
       //（NODE_MODULE_VERSION 不一致）。都属「原生驱动不可用」，回退 WASM。
       const msg = err instanceof Error ? err.message : String(err);
-      console.warn('[sqlite-driver] better-sqlite3 不可用，回退 sql.js（WASM）:', msg.split('\n')[0]);
+      logger.warn('[sqlite-driver] better-sqlite3 不可用，回退 sql.js（WASM）:', msg.split('\n')[0]);
     }
   }
   return { db: await openSqlJs(dbPath), driver: 'sql.js' };

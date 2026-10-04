@@ -1,3 +1,5 @@
+import { createLogger } from './logger.js';
+const logger = createLogger('tool-hooks');
 // 工具调用前后置钩子（P2-3，对标 WorkBuddy / CodeBuddy 的 hook 机制）。
 //
 // ★★★ 为什么需要（2026-09-29，方案 P2-3）：
@@ -83,7 +85,7 @@ export async function runBeforeToolHooks(
         return { block: r.block };
       }
     } catch (e: any) {
-      console.warn(`[tool-hook] before 钩子「${h.name}」异常（已忽略）:`, e?.message || e);
+      logger.warn(`[tool-hook] before 钩子「${h.name}」异常（已忽略）:`, e?.message || e);
     }
   }
   return {};
@@ -105,7 +107,7 @@ export async function runAfterToolHooks(
     try {
       await h.fn(toolName, args, result, ctx);
     } catch (e: any) {
-      console.warn(`[tool-hook] after 钩子「${h.name}」异常（已忽略）:`, e?.message || e);
+      logger.warn(`[tool-hook] after 钩子「${h.name}」异常（已忽略）:`, e?.message || e);
     }
   }
 }

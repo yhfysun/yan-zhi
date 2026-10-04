@@ -14,6 +14,8 @@ import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { parseSkillMd } from '@yan-zhi/core';
 import { dirEntryFingerprint, makeFingerprintCache } from './fs-fingerprint.js';
+import { createLogger } from './logger.js';
+const logger = createLogger('project-skills');
 
 export interface ProjectSkill {
   name: string;
@@ -76,11 +78,11 @@ export function loadProjectSkills(workspaceDir: string): ProjectSkill[] {
           source: `.yan-zhi/skills/${f}`,
         });
         if (skills.length >= PROJECT_SKILLS_MAX_COUNT) {
-          console.warn(`[project-skills] ${workspaceDir} 技能文件超过 ${PROJECT_SKILLS_MAX_COUNT} 个，其余未注入`);
+          logger.warn(`[project-skills] ${workspaceDir} 技能文件超过 ${PROJECT_SKILLS_MAX_COUNT} 个，其余未注入`);
           break;
         }
       } catch (e: any) {
-        console.warn(`[project-skills] 解析失败（已跳过）${filePath}:`, e?.message || e);
+        logger.warn(`[project-skills] 解析失败（已跳过）${filePath}:`, e?.message || e);
       }
     }
     return skills;

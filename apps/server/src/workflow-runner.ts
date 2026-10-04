@@ -15,6 +15,8 @@ import { findModelRow, rowToModel } from './services/model-resolve.js';
 import { DEFAULT_CONTEXT_WINDOW } from './constants.js';
 import { callMcpTool, loadServer, getToolsFromDb, mcpShortIdOf } from './mcp/client-manager.js';
 import { executeApiTool } from './mcp/api-tool-executor.js';
+import { createLogger } from './services/logger.js';
+const logger = createLogger('workflow-runner');
 
 export interface WorkflowAgentDef {
   id: string;
@@ -295,7 +297,7 @@ class CodeNodeHandler implements NodeHandler {
       return { output: out };
     } catch (e: any) {
       // 不再静默吞错：至少落到 server 日志，便于排查「代码节点输出 null」类问题
-      console.error(`[wf-code] 节点 ${nodeId} 执行失败: ${e?.message || e}`);
+      logger.error(`[wf-code] 节点 ${nodeId} 执行失败: ${e?.message || e}`);
       return { output: null };
     }
   }
@@ -734,7 +736,7 @@ function waitForHumanConfirm(
     // 与交互类工具一致：不设"短超时"（用户可能在思考或离开），但给一个很宽的上限
     // （7 天）兜底，避免服务端永久驻留一个死等待者。
     const timer = setTimeout(() => {
-      console.warn(`[workflow] human_confirm 等待超时(7d): run=${run.id} node=${payload.nodeId}`);
+      logger.warn(`[workflow] human_confirm 等待超时(7d): run=${run.id} node=${payload.nodeId}`);
       finish(null);
     }, 7 * 24 * 60 * 60 * 1000);
     run.abort.signal.addEventListener('abort', onAbort);
@@ -1111,13 +1113,13 @@ export function persistRunArtifacts(
           'INSERT OR IGNORE INTO conversation_file (id, conversation_id, user_id, name, path, size, category, source, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
         ).run(fileId, runId, userId, item.name, filePath, size, 'deliverable', 'workflow', Date.now());
       } catch (e: any) {
-        console.warn(`[workflow] 产物登记失败 ${item.name}:`, e?.message || e);
+        logger.warn(`[workflow] 产物登记失败 ${item.name}:`, e?.message || e);
       }
       saved++;
     }
-    if (saved) console.log(`[workflow] 运行 ${runId}（${agentName}）已落盘 ${saved} 个产物到 ${dir}`);
+    if (saved) logger.info(`[workflow] 运行 ${runId}（${agentName}）已落盘 ${saved} 个产物到 ${dir}`);
   } catch (e: any) {
-    console.warn(`[workflow] 运行产物落盘失败 ${runId}:`, e?.message || e);
+    logger.warn(`[workflow] 运行产物落盘失败 ${runId}:`, e?.message || e);
   }
   return saved;
 }
@@ -1207,7 +1209,7 @@ export function startWorkflowRun(
             try {
               persistRunArtifacts(runId, result, userId, bundle.agent.name || bundle.agent.id);
             } catch (e: any) {
-              console.warn('[workflow] 产物落盘异常:', e?.message || e);
+              logger.warn('[workflow] 产物落盘异常:', e?.message || e);
             }
           }
         }

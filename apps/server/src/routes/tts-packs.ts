@@ -4,6 +4,8 @@ import { Router, Request, Response } from 'express';
 import { authMiddleware } from '../auth.js';
 import { listTtsPacks, installTtsPack, removeTtsPack, getDownloadState, previewTtsPack } from '../services/tts-packs.js';
 import { resolveSherpaLib, installSherpaEngine } from '../mcp/sherpa-tts.js';
+import { createLogger } from '../services/logger.js';
+const logger = createLogger('tts-packs');
 
 const router = Router();
 router.use(authMiddleware);
@@ -11,7 +13,7 @@ router.use(authMiddleware);
 // POST /api/tts-packs/engine/install —— 安装推理引擎（原生二进制按平台下载）
 // 注意：必须注册在 /:id 之前，否则 "engine" 会被当成语音包 id 匹配走
 router.post('/engine/install', async (_req: Request, res: Response) => {
-  const r = await installSherpaEngine((msg) => console.log(`[sherpa] ${msg}`));
+  const r = await installSherpaEngine((msg) => logger.info(`[sherpa] ${msg}`));
   if (!r.ok) { res.status(400).json({ error: r.message }); return; }
   res.json({ ok: true, message: r.message, dir: r.dir });
 });
@@ -35,7 +37,7 @@ router.get('/:id/progress', (req: Request, res: Response) => {
 
 // POST /api/tts-packs/:id/install —— 下载并安装
 router.post('/:id/install', async (req: Request, res: Response) => {
-  const r = await installTtsPack(req.params.id, (msg) => console.log(`[tts-pack] ${req.params.id}: ${msg}`));
+  const r = await installTtsPack(req.params.id, (msg) => logger.info(`[tts-pack] ${req.params.id}: ${msg}`));
   if (!r.ok) { res.status(400).json({ error: r.message }); return; }
   res.json({ ok: true, message: r.message, dir: r.dir });
 });
@@ -52,7 +54,7 @@ router.post('/:id/preview', async (req: Request, res: Response) => {
     res.json({ ok: true, url: r.url, file: r.file, speakerId: r.speakerId, bytes: r.bytes });
   } catch (e: any) {
     // 不吞堆栈：试听失败要能定位到具体步骤（此前只看到一句 napi 报错，无从下手）
-    console.error('[tts-pack] 试听失败:', e?.stack || e?.message || e);
+    logger.error('[tts-pack] 试听失败:', e?.stack || e?.message || e);
     res.status(400).json({ error: e?.message || '试听失败', stack: String(e?.stack || '').split('\n').slice(0, 6).join(' | ') });
   }
 });

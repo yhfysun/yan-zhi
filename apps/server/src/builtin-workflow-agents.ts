@@ -7,6 +7,8 @@
 //        → output(调研报告)
 import type { YzSqliteDb } from './services/sqlite-driver.js';
 import { normalizeModelId } from './services/model-resolve.js';
+import { createLogger } from './services/logger.js';
+const logger = createLogger('builtin-workflow-agents');
 
 export const WF_MAIN_ID = 'a_wf_smoke_all_nodes';
 export const WF_SUB_ID = 'a_wf_smoke_editor';
@@ -1284,7 +1286,7 @@ export function seedBuiltinWorkflowAgents(db: YzSqliteDb): { seeded: string[]; r
         restored.push(d.id);
       }
     } catch (e) {
-      console.warn(`[builtin-wf] seed ${d.id} 失败:`, e);
+      logger.warn(`[builtin-wf] seed ${d.id} 失败:`, e);
     }
   }
   return { seeded, restored };
@@ -1350,7 +1352,7 @@ export function ensureBuiltinWorkflowModel(db: YzSqliteDb): { filled: boolean } 
       db.prepare('UPDATE agent SET workflow_json = ?, updated_at = ? WHERE id = ?').run(JSON.stringify(wf), Date.now(), agentId);
       anyFilled = true;
     } catch (e) {
-      console.warn(`[builtin-wf] 回填 ${agentId} 的 LLM 模型失败:`, e);
+      logger.warn(`[builtin-wf] 回填 ${agentId} 的 LLM 模型失败:`, e);
     }
   }
   return { filled: anyFilled };
@@ -1420,7 +1422,7 @@ export function cleanupLegacyDiagAgents(db: YzSqliteDb): { deletedAgents: number
     // 3) 最后删智能体本体
     result.deletedAgents = db.prepare('DELETE FROM agent WHERE id = ? AND is_builtin = 0').run(LEGACY_DIAG_AGENT_ID).changes;
   } catch (e) {
-    console.warn('[builtin-wf] 清理遗留诊断智能体失败:', e);
+    logger.warn('[builtin-wf] 清理遗留诊断智能体失败:', e);
   }
   return result;
 }

@@ -7,6 +7,8 @@ import { db } from '../db.js';
 import { embedText } from './ollama-embed.js';
 import { vecToBytes, bumpMemoryCache, parseExtractedItems } from './memory-service.js';
 import { chatViaRow } from './llm-call.js';
+import { createLogger } from './logger.js';
+const logger = createLogger('memory-dreaming');
 
 const TICK_MS = 5 * 60_000;
 const MAX_CANDIDATES = 200;
@@ -139,7 +141,7 @@ async function remReview(model: any, rows: CandidateRow[]): Promise<any[]> {
   // 兼容数组 / {items:[...]} / 单对象（部分模型 json 模式下返回单个对象而非数组）
   const items = parseExtractedItems(text);
   if (!items.length && text.trim()) {
-    console.log('[memory-dreaming] REM 输出无法解析, 前120字:', text.slice(0, 120));
+    logger.info('[memory-dreaming] REM 输出无法解析, 前120字:', text.slice(0, 120));
   }
   return items;
 }
@@ -342,10 +344,10 @@ async function tick() {
       try {
         const r = await runDreamingForUser(u.user_id, 'scheduled');
         if (!r.skipped && r.scanned) {
-          console.log(`[memory-dreaming] 用户 ${u.user_id} 整理完成: 扫描${r.scanned} 提升${r.promoted} 合并${r.merged} 淘汰${r.discarded} 保留${r.kept}`);
+          logger.info(`[memory-dreaming] 用户 ${u.user_id} 整理完成: 扫描${r.scanned} 提升${r.promoted} 合并${r.merged} 淘汰${r.discarded} 保留${r.kept}`);
         }
       } catch (e) {
-        console.error(`[memory-dreaming] 用户 ${u.user_id} 整理失败:`, e instanceof Error ? e.message : e);
+        logger.error(`[memory-dreaming] 用户 ${u.user_id} 整理失败:`, e instanceof Error ? e.message : e);
       }
     }
   } finally {
@@ -357,7 +359,7 @@ function startTimer() {
   if (timer) return;
   timer = setInterval(() => { tick().catch(() => {}); }, TICK_MS);
   startupTimer = setTimeout(() => { tick().catch(() => {}); }, 30_000);
-  console.log('[memory-dreaming] 记忆整理调度器已启动（每 5 分钟轮询）');
+  logger.info('[memory-dreaming] 记忆整理调度器已启动（每 5 分钟轮询）');
 }
 
 function stopTimer() {

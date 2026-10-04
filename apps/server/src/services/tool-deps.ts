@@ -21,6 +21,8 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { execFile } from 'node:child_process';
 import { existsSync, mkdirSync } from 'node:fs';
+import { createLogger } from './logger.js';
+const logger = createLogger('tool-deps');
 
 /** 单次安装的时长上限（ms）。装大包（pandas 之类）可能慢，给足但必须有上限。 */
 const INSTALL_TIMEOUT_MS = 180_000;
@@ -281,7 +283,7 @@ export async function loadNodeModulesForSandbox(deps: string[]): Promise<Record<
       out[d] = value;
     } catch (e: any) {
       // 加载失败必须留痕（否则沙箱内 require 报"未注入"，看不出是装失败还是加载失败）
-      console.warn(`[tool-deps] 模块 ${d} 加载失败:`, e?.message || e);
+      logger.warn(`[tool-deps] 模块 ${d} 加载失败:`, e?.message || e);
     }
   }
   return out;

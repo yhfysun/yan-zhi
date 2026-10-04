@@ -6,6 +6,8 @@ import { db } from '../db.js';
 import { createTask, buildSystemPromptForBackend, buildToolsForBackend, loadAgentModelParams } from '../llm-task-manager.js';
 import { startWorkflowRun, resolveBundleFromDb, type WorkflowRunBundle } from '../workflow-runner.js';
 import { buildWorkflowInputFieldDefs } from './workflow-delegate.js';
+import { createLogger } from './logger.js';
+const logger = createLogger('scheduled-tasks');
 
 const MINUTE_MS = 60_000;
 
@@ -374,7 +376,7 @@ export async function runScheduledTask(task: any): Promise<ScheduledTaskRunResul
     return finishTask(task, convId, now, true);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    console.error(`[scheduled-task] 任务「${task.name}」创建失败: ${msg}`);
+    logger.error(`[scheduled-task] 任务「${task.name}」创建失败: ${msg}`);
     db.prepare(INSERT_MESSAGE).run(uuid(), convId, userId, 'assistant', `[定时任务执行失败] ${msg}`, 0, Date.now());
     return finishTask(task, convId, now, false, msg);
   }
@@ -415,9 +417,9 @@ async function tick() {
     for (const task of due) {
       try {
         const r = await runScheduledTask(task);
-        if (r.ok) console.log(`[scheduled-task] 任务「${task.name}」已执行`);
+        if (r.ok) logger.info(`[scheduled-task] 任务「${task.name}」已执行`);
       } catch (e) {
-        console.error(`[scheduled-task] 任务「${task.name}」执行异常: ${e instanceof Error ? e.message : String(e)}`);
+        logger.error(`[scheduled-task] 任务「${task.name}」执行异常: ${e instanceof Error ? e.message : String(e)}`);
       }
     }
   } finally {
@@ -439,13 +441,13 @@ function startSchedulerTimer() {
   schedulerTimer = setInterval(() => { tick().catch(() => {}); }, MINUTE_MS);
   // 启动 15s 后先跑一轮，补上停机期间到期的任务
   startupTimer = setTimeout(() => { tick().catch(() => {}); }, 15_000);
-  console.log('[scheduled-task] 定时任务调度器已启动（每 60s 轮询）');
+  logger.info('[scheduled-task] 定时任务调度器已启动（每 60s 轮询）');
 }
 
 function stopSchedulerTimer() {
   if (schedulerTimer) { clearInterval(schedulerTimer); schedulerTimer = null; }
   if (startupTimer) { clearTimeout(startupTimer); startupTimer = null; }
-  console.log('[scheduled-task] 无启用任务，调度器已停止');
+  logger.info('[scheduled-task] 无启用任务，调度器已停止');
 }
 
 /** 按需启停：仅当存在启用中的任务时才运行轮询，全部停用/删除时停止，避免空轮询 */

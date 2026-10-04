@@ -18,6 +18,8 @@ import {
 } from '@yan-zhi/shared';
 import * as dbModule from '../db.js';
 import { serverState } from '../state.js';
+import { createLogger } from './logger.js';
+const logger = createLogger('artifact-dir');
 
 const { db } = dbModule;
 
@@ -320,7 +322,7 @@ export function backfillRelativeArtifactPaths(): { scanned: number; fixed: numbe
       }
     }
   } catch (e: unknown) {
-    console.warn('[artifact-dir] 相对路径回填失败:', e instanceof Error ? e.message : e);
+    logger.warn('[artifact-dir] 相对路径回填失败:', e instanceof Error ? e.message : e);
   }
   return { scanned, fixed, unresolved };
 }

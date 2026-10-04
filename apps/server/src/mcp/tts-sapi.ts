@@ -14,6 +14,8 @@ import { execFile } from 'node:child_process';
 import { promises as fsp } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { createLogger } from '../services/logger.js';
+const logger = createLogger('tts-sapi');
 
 /** WinRT 合成脚本（Windows 10/11 现代语音，含 OneCore 多音色）。必须纯 ASCII。 */
 export function buildWinRtScript(): string {
@@ -232,7 +234,7 @@ export async function listSystemVoices(): Promise<Array<{ name: string; culture:
         try { await fsp.unlink(outFile); } catch { /* 清理失败无碍 */ }
       }
     } catch (e) {
-      console.warn('[tts] WinRT 枚举失败，回落 SAPI:', e instanceof Error ? e.message : String(e));
+      logger.warn('[tts] WinRT 枚举失败，回落 SAPI:', e instanceof Error ? e.message : String(e));
     }
     // 2) SAPI 兜底（老系统 / WinRT 不可用时）
     try {
@@ -312,7 +314,7 @@ export async function systemSpeak(
       throw new Error('WinRT 产出为空');
     } catch (e) {
       // 不静默：带上原因再回落 SAPI（老系统/OneCore 缺失时就靠这条路）
-      console.warn(`[tts] WinRT 合成失败，回落 SAPI：${e instanceof Error ? e.message : String(e)}`);
+      logger.warn(`[tts] WinRT 合成失败，回落 SAPI：${e instanceof Error ? e.message : String(e)}`);
     }
 
     // 2) SAPI 兜底

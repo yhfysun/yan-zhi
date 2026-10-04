@@ -15,6 +15,8 @@ import type { ClientChannel, ConnectConfig, SFTPWrapper } from 'ssh2';
 import { encrypt, decrypt } from '../utils/crypto.js';
 import { pushPluginAudit } from '../services/plugin-audit.js';
 import { guard, capOutput, isProductionTag } from './ops-shell-guard.js';
+import { createLogger } from '../services/logger.js';
+const logger = createLogger('ops-shell');
 
 export const OPS_SHELL_ID = 'ops-shell';
 
@@ -1925,7 +1927,7 @@ const opsShellModule: PluginModule = {
             job.last = { transferred: 0, total: 1 }; // 完成标记
           } catch (e) {
             job.last = { transferred: -1, total: 1 }; // -1 表示失败
-            console.warn('[ops-sftp] 上传失败', e);
+            logger.warn('[ops-sftp] 上传失败', e);
           } finally {
             try { got.sftp.end(); } catch { /* ignore */ }
             setTimeout(() => sftpJobs.delete(jobId), 3000);
@@ -1966,7 +1968,7 @@ const opsShellModule: PluginModule = {
             job.last = { transferred: 0, total: 1 };
           } catch (e) {
             job.last = { transferred: -1, total: 1 };
-            console.warn('[ops-sftp] 下载失败', e);
+            logger.warn('[ops-sftp] 下载失败', e);
           } finally {
             try { got.sftp.end(); } catch { /* ignore */ }
             setTimeout(() => sftpJobs.delete(jobId), 3000);
