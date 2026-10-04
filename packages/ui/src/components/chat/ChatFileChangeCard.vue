@@ -32,7 +32,15 @@
       </el-icon>
     </div>
     <div v-show="open && change" class="cfc-body">
-      <DiffBody v-if="diffText" :diff-text="diffText" :file-name="fileName" plain />
+      <DiffBody
+        v-if="diffText && !isNewFile"
+        :diff-text="diffText"
+        :file-name="fileName"
+        plain
+        apply-hunks
+        @apply-hunks="applyHunks"
+      />
+      <DiffBody v-else-if="diffText" :diff-text="diffText" :file-name="fileName" plain />
       <div v-else class="cfc-empty">（内容无差异）</div>
       <div v-if="change" class="cfc-actions">
         <el-button size="small" type="primary" :loading="acting === 'apply'" :disabled="!!acting" @click="act('apply')">接受修改</el-button>
@@ -91,6 +99,28 @@ onMounted(async () => {
   state.value = 'idle';
   open.value = true;
 });
+
+/** hunk 级选择性接受（P2-2）：选中的块套用 after，未选中的回退 before */
+async function applyHunks(ranges: Array<{ newStart: number; newEnd: number }>) {
+  if (!change.value) return;
+  acting.value = 'apply';
+  try {
+    const r = await api.post<{ item: unknown; applied: number }>(
+      `/workspace/changes/${change.value.id}/apply-hunks`,
+      { hunks: ranges },
+    );
+    if ('error' in r) {
+      ElMessage.error(r.error);
+      return;
+    }
+    ElMessage.success(`已接受 ${r.data.applied} 个修改块（其余回退到修改前）`);
+    change.value = null;
+    state.value = 'gone';
+    emit('acted', 'apply');
+  } finally {
+    acting.value = '';
+  }
+}
 
 async function act(kind: 'apply' | 'revert') {
   if (!change.value) return;

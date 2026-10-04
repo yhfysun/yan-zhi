@@ -70,7 +70,10 @@
       <div v-if="viewMode === 'split'" ref="colsRef" class="dv-cols" :style="{ '--dl': leftW + 'px' }">
         <div class="dv-col" data-side="left">
           <div v-for="(hk, hi) in hunks" :key="'l' + hi" class="dv-hunk" :data-hi="hi">
-            <div class="dv-hunk-head">{{ hk.header }}</div>
+            <div class="dv-hunk-head">
+              <span>{{ hk.header }}</span>
+              <button v-if="applyHunks" class="dv-hunk-apply" type="button" title="只接受这个块的修改" @click.stop="onApplyHunk(hk)">✓ 接受此块</button>
+            </div>
             <div v-for="(r, i) in hk.rows" :key="'ll' + i" class="dv-line" :class="r.leftType">
               <span class="dv-num">{{ r.leftNum ?? '' }}</span>
               <span class="dv-code">{{ r.leftContent }}</span>
@@ -82,7 +85,10 @@
 
         <div class="dv-col" data-side="right">
           <div v-for="(hk, hi) in hunks" :key="'r' + hi" class="dv-hunk" :data-hi="hi">
-            <div class="dv-hunk-head">{{ hk.header }}</div>
+            <div class="dv-hunk-head">
+              <span>{{ hk.header }}</span>
+              <button v-if="applyHunks" class="dv-hunk-apply" type="button" title="只接受这个块的修改" @click.stop="onApplyHunk(hk)">✓ 接受此块</button>
+            </div>
             <div v-for="(r, i) in hk.rows" :key="'rr' + i" class="dv-line" :class="r.rightType">
               <span class="dv-num">{{ r.rightNum ?? '' }}</span>
               <span class="dv-code">{{ r.rightContent }}</span>
@@ -94,7 +100,10 @@
       <!-- 统一视图：单栏，不显示宽度分隔条 -->
       <div v-else class="dv-uni">
         <div v-for="(hk, hi) in hunks" :key="'u' + hi" class="dv-hunk" :data-hi="hi">
-          <div class="dv-hunk-head">{{ hk.header }}</div>
+          <div class="dv-hunk-head">
+            <span>{{ hk.header }}</span>
+            <button v-if="applyHunks" class="dv-hunk-apply" type="button" title="只接受这个块的修改" @click.stop="onApplyHunk(hk)">✓ 接受此块</button>
+          </div>
           <template v-for="(r, i) in hk.rows" :key="'uu' + i">
             <div v-if="r.leftType === 'removed'" class="dv-line removed">
               <span class="dv-num">{{ r.leftNum ?? '' }}</span>
@@ -150,9 +159,27 @@ const props = withDefaults(defineProps<{
    * 否则会出现工具栏套工具栏的嵌套观感；放大/切视图等操作由外层容器提供。
    */
   plain?: boolean;
-}>(), { fileName: '', fullscreen: false, plain: false });
+  /**
+   * hunk 级选择性接受开关（P2-2）：开启后每个 hunk 头部出现「接受此块」按钮，
+   * 点击 emit('apply-hunks', [{ newStart, newEnd }])（新文件 1-based 行号区间）。
+   * 仅在语义成立的外层（模型修改审查）开启；git diff 场景无"应用"语义，不开。
+   */
+  applyHunks?: boolean;
+}>(), { fileName: '', fullscreen: false, plain: false, applyHunks: false });
 
-const emit = defineEmits<{ (e: 'toggle-fullscreen'): void }>();
+const emit = defineEmits<{
+  (e: 'toggle-fullscreen'): void;
+  (e: 'apply-hunks', ranges: Array<{ newStart: number; newEnd: number }>): void;
+}>();
+
+/** 单个 hunk 的新文件行号区间（1-based，含上下文）——按行的 rightNum 求最小/最大 */
+function hunkRange(hk: DiffHunk): { newStart: number; newEnd: number } {
+  const nums = hk.rows.map((r) => r.rightNum).filter((n): n is number => n != null);
+  return { newStart: Math.min(...nums), newEnd: Math.max(...nums) };
+}
+function onApplyHunk(hk: DiffHunk): void {
+  emit('apply-hunks', [hunkRange(hk)]);
+}
 
 /** 桌面端是否支持真·独立窗口（按钮图标与行为据此切换） */
 const childWindowSupported = supportsChildWindow;
@@ -452,7 +479,21 @@ onBeforeUnmount(() => {
 .dv-hunk { width: max-content; min-width: 100%; }
 .dv-uni .dv-hunk { width: 100%; }
 
+.dv-hunk-apply {
+  margin-left: auto;
+  border: none;
+  background: color-mix(in srgb, #22a06b 18%, transparent);
+  color: #22a06b;
+  font-size: 11px;
+  padding: 1px 8px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.dv-hunk-apply:hover { background: color-mix(in srgb, #22a06b 32%, transparent); }
 .dv-hunk-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   padding: 3px 10px;
   background: var(--el-fill-color, rgba(15, 23, 42, 0.06));
   color: var(--el-text-color-secondary, #64748b);

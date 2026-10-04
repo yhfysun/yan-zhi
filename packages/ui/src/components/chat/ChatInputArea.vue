@@ -226,7 +226,7 @@
               <el-icon class="cmd-menu-icon" :style="{ color: refIconMeta(f).color }">
                 <component :is="refIconMeta(f).icon" />
               </el-icon>
-              <span class="cmd-menu-label">{{ f.name }}</span>
+              <span class="cmd-menu-label">{{ f.name }}<span v-if="(f as any).isSymbol" style="color:var(--el-text-color-secondary,#94a3b8);font-size:11px;margin-left:2px">:{{ (f as any).line }}</span></span>
             </div>
             <div v-if="atFileList.length === 0" class="cmd-menu-empty">无匹配文件，可先在文件管理中上传</div>
           </template>
@@ -697,6 +697,7 @@
 import { ref, reactive, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue';
 import type { Component } from 'vue';
 import { ElMessage } from 'element-plus';
+import { api } from '../../api/client';
 import {
   FolderOpened, ArrowDown, ArrowRight, Connection, Files, UploadFilled, User, EditPen, Cpu, Setting, Plus, Camera,
   Promotion, Close, Lock, Check, Picture, Document, Tickets, Box, VideoCamera, Headset, Memo, ChatDotRound,
@@ -1324,7 +1325,7 @@ const workspaceFolders = computed(() => {
   return [...map.values()];
 });
 
-/** @ 浮层候选：目录在前（@folder 引用），文件在后 */
+/** @ 浮层候选：目录在前（@folder 引用），文件在后，符号殿后（@symbol 引用，P2-1） */
 const atFileList = computed(() => {
   const q = atQuery.value.toLowerCase();
   const folders = workspaceFolders.value
@@ -1334,8 +1335,57 @@ const atFileList = computed(() => {
   const files = (q ? workspaceFiles.value.filter((f) => f.name.toLowerCase().includes(q)) : workspaceFiles.value)
     .slice(0, q ? 14 : 20)
     .map((f) => ({ ...f, isFolder: false }));
-  return [...folders, ...files].slice(0, 20);
+  const symbols = atSymbols.value
+    .filter((d) => !q || d.name.toLowerCase().includes(q))
+    .slice(0, 6)
+    .map((d) => ({ name: d.name, path: d.path, size: 0, isDir: false, isFolder: false, isSymbol: true as const, line: d.line, kind: d.kind, signature: d.signature }));
+  return [...folders, ...files, ...symbols].slice(0, 22);
 });
+
+// ===== @ 符号候选（P2-1）：对匹配到的代码文件懒取符号表，双缓存（前端 Map + 服务端 mtime）=====
+interface AtSymbol { name: string; line: number; kind: string; signature: string; path: string }
+const atSymbols = ref<AtSymbol[]>([]);
+const symbolCacheByPath = new Map<string, Array<{ name: string; line: number; kind: string; signature: string }>>();
+const SYMBOL_CODE_EXTS = new Set(['ts', 'tsx', 'js', 'jsx', 'mjs', 'cjs', 'vue']);
+let symbolFetchSeq = 0;
+
+watch([atMenuOpen, atQuery], async ([open, q]) => {
+  if (!open) return;
+  const query = q.trim().toLowerCase();
+  if (query.length < 2) { atSymbols.value = []; return; }
+  // 匹配到的代码文件里取前 3 个，拉符号表（缓存命中零请求）
+  const codeFiles = workspaceFiles.value
+    .filter((f) => !f.isDir && SYMBOL_CODE_EXTS.has((f.name.split('.').pop() || '').toLowerCase()))
+    .filter((f) => f.name.toLowerCase().includes(query) || query.length >= 3)
+    .slice(0, 3);
+  const seq = ++symbolFetchSeq;
+  const results: AtSymbol[] = [];
+  await Promise.all(codeFiles.map(async (f) => {
+    let decls = symbolCacheByPath.get(f.path);
+    if (!decls) {
+      try {
+        const r = await api.get<{ decls: Array<{ name: string; line: number; kind: string; signature: string }> }>(
+          `/workspace/symbols?path=${encodeURIComponent(f.path)}`,
+        );
+        if (!('error' in r)) {
+          decls = r.data.decls || [];
+          symbolCacheByPath.set(f.path, decls);
+        }
+      } catch { return; }
+    }
+    for (const d of decls || []) {
+      if (d.name.toLowerCase().includes(query)) results.push({ ...d, path: f.path } as AtSymbol);
+    }
+  }));
+  if (seq === symbolFetchSeq) atSymbols.value = results;
+});
+
+/** 选中符号：以内联 token 注入输入框（模型可读「name · 路径:行号」直达位置） */
+function pickAtSymbol(d: AtSymbol) {
+  const rel = d.path.replace(/^[A-Za-z]:[\\/]/, '');
+  input.value = input.value.replace(/@([^\s@]*)$/, '').trimEnd() + ` [符号 ${d.name} · ${rel}:${d.line}] `;
+  atMenuOpen.value = false;
+}
 
 const selectedWorkFiles = computed(() => {
   const folderPaths = new Set(workspaceFolders.value.map((d) => d.path));
@@ -1350,13 +1400,22 @@ const selectedWorkFiles = computed(() => {
     .filter((f): f is { name: string; path: string; size: number; isDir: boolean; isFolder: boolean } => !!f);
 });
 
-/** 引用图标：目录用 FolderOpened，文件按扩展名着色 */
-function refIconMeta(f: { name: string; isFolder?: boolean }) {
+/** 引用图标：目录 FolderOpened / 符号按 kind 着色 / 文件按扩展名 */
+function refIconMeta(f: { name: string; isFolder?: boolean; isSymbol?: boolean; kind?: string }) {
   if (f.isFolder) return { icon: FolderOpened as Component, color: '#0ea5e9' };
+  if (f.isSymbol) {
+    const color = f.kind === 'function' ? '#22a06b' : (f.kind === 'class' || f.kind === 'interface') ? '#8b5cf6' : '#f59e0b';
+    return { icon: Operation as Component, color };
+  }
   return fileTypeMeta(f.name);
 }
 
-function pickAtFile(f: { name: string; path: string }) {
+function pickAtFile(f: { name: string; path: string; isSymbol?: boolean; line?: number; kind?: string; signature?: string }) {
+  // 符号候选（P2-1）：内联注入，不进文件 chip
+  if (f.isSymbol) {
+    pickAtSymbol(f as AtSymbol);
+    return;
+  }
   toggleFileSelect(f.path);
   input.value = input.value.replace(/@([^\s@]*)$/, '').trimEnd();
   atMenuOpen.value = false;
