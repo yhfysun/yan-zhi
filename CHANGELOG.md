@@ -5,6 +5,8 @@
 ## [Unreleased]
 
 ### Added
+- **后台并行子智能体（P2-6）**：`call_agent` 新增 `async: true` —— 立即返回启动回执，子 ReAct 后台独立执行，完成后结果自动发回本会话（任务仍在跑 → 注入通道唤醒下一轮；已收尾 → 落库普通消息，与工作流结果反写同口径）。并发上限 3（超出直接引导等待或改同步，不排队）；主循环**不等待**后台任务（防"空轮等待"烧 token），收尾时有在跑任务会落一条明示消息；工作任务型子智能体不套后台壳（防双重投递）；中止级联、重启不恢复（方案拍板）。闸门/文案在 `services/background-subagents.ts`（行为测试）+ 12 例接线守卫
+- ★ 修复前端子智能体并发流合并：`subAgentMsgIds` 改为 `parentToolCallId::subAgentId` 复合键 —— 同一 agent 的两个后台任务此前会把两路 token 流合流进同一条消息（服务端 chunk/tool_call 事件补发 parentToolCallId）
 - **项目级技能目录（P2-8）**：工作目录 `.yan-zhi/skills/*.md` 自动发现并注入系统提示 —— frontmatter（name/description/triggers）+ 正文 SOP，与 DB 技能同一套触发词命中规则（命中注入完整流程、未命中只给名称），同名时**项目技能覆盖挂载技能**；mtime+size 指纹缓存（每轮 ReAct 构建提示词不重读盘）、不写 skill 表（目录即真相源）、单文件解析失败只 warn 跳过；独立 `services/project-skills.ts` + 6 例功能测试
 - **用户工具钩子 P2a（P2-7）**：设置页新增「工具钩子」——用户声明式规则 `{ 工具(可 * 通配) + 匹配内容(大小写不敏感子串) + 动作 }`，动作二选一：**弹窗确认**（每次调用先弹窗点头，授权不记忆、无人值守 fail-safe 拒绝，复用 path-guard 弹窗通道）或**直接拒绝**（拒绝原因回喂模型并明示"不要绕过"）。执行点在缺参检查后、危险命令护栏前（deny 短路省一次弹窗）；deny 与 confirm 并存时 deny 优先。新增 `user_hook` 表 + `routes/user-hooks.ts` CRUD + `services/user-hooks.ts` 匹配（进程内缓存、db 异常 fail-open 不污染缓存）
 - **编码反馈闭环（P0）**：新增 `code_diagnostics` 内置工具（tsc --noEmit 类型检查 / ESLint / node --check 语法检查，自动探测项目配置，结果缓存 90s）；`file_write`/`file_edit` 成功改写代码文件后自动跑诊断并把问题回喂到工具结果，模型当场自修（`YZ_AUTO_DIAGNOSE=0` 可关闭）
@@ -34,6 +36,7 @@
 - file_edit 修改快照存原始相对路径：before 快照按进程 cwd 读取错位、`/workspace/changes` 按目录前缀过滤永远匹配不上（编辑器提示条不出现）——快照路径现按工作目录解析为绝对路径
 
 ### Changed
+- 技能正文截断收敛单点 `truncateSkillBody`（DB 技能内联 2000 与项目技能常量双份、半角/全角文案刚写就漂移 —— 统一为唯一实现，带守卫测试防再分叉）
 - **hunk 级选择性接受（P2-2）**：diff 每个 hunk「✓ 接受此块」——选中的块套用、未选中的回退 before（`services/hunk-apply.ts` LCS 三方合并；盘上被手改时 409 走整文件审查）；聊天 diff 卡片与审查视图均可按块接受
 - **@ 符号级引用（P2-1）**：`@` 浮层支持代码符号（服务端 `GET /workspace/symbols` 用 AST 解析 + 双缓存），选中内联注入「[符号 name · 路径:行号]」
 - **数据查询契约模式（本体 × QueryContract 融合 P1，2026-10-03 拍板）**：新增 `services/ontology-contract.ts` 契约装配器——`api_data_query` 支持 `contract: true`：filters 只能按名引用本体声明的过滤器（自由 SQL 条件被拒，对模型关掉编译器的"裸条件放行"注入面），返回契约菜单（dimensions/measures/filters/selections 名单）+ 业务名列映射（看板不暴露物理字段名）；草稿态本体不可见；数据查询助手 SOP 更新为契约模式优先

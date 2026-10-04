@@ -1,4 +1,4 @@
-// 项目级技能目录 `.yan-zhi/skills/*.md`（P2-8，2026-10-04）
+// 项目级技能目录 `.yan-zhi/skills` 下的 .md（P2-8，2026-10-04）
 //
 // 对齐 CLAUDE.md / CodeBuddy 生态的「项目自带方法论」：团队把项目专属 SOP
 // （评审规范/部署流程/接口约定）放进工作目录，进入该目录的会话自动发现并按
@@ -28,6 +28,13 @@ const CACHE = new Map<string, { fingerprint: string; skills: ProjectSkill[] }>()
 /** 与 DB skill 的 body 注入截断同口径（buildSystemPromptForBackend 技能段） */
 export const PROJECT_SKILL_BODY_MAX_CHARS = 2000;
 export const PROJECT_SKILLS_MAX_COUNT = 20;
+
+/** 技能正文截断的唯一实现（DB 技能与项目技能共用）——口径与文案不允许两处各写一份：
+ *  此前半角 `...(...)` 与全角 `…（…）` 刚写就漂移过，改口径时只改一处必然漏另一处。 */
+export function truncateSkillBody(body: string, max = PROJECT_SKILL_BODY_MAX_CHARS): string {
+  const text = (body || '').trim();
+  return text.length > max ? `${text.slice(0, max)}\n…（流程过长已截断）` : text;
+}
 
 /** 清空缓存（测试用；正常运行靠指纹自然失效） */
 export function clearProjectSkillsCache(): void {
@@ -65,11 +72,8 @@ export function loadProjectSkills(workspaceDir: string): ProjectSkill[] {
     try {
       const parsed = parseSkillMd(readFileSync(filePath, 'utf-8'));
       const name = String(parsed.frontmatter.name || '').trim() || f.replace(/\.md$/i, '');
-      let body = (parsed.body || '').trim();
+      const body = truncateSkillBody(parsed.body || '');
       if (!name && !body) continue;
-      if (body.length > PROJECT_SKILL_BODY_MAX_CHARS) {
-        body = `${body.slice(0, PROJECT_SKILL_BODY_MAX_CHARS)}\n…（流程过长已截断）`;
-      }
       skills.push({
         name,
         description: String(parsed.frontmatter.description || '').trim(),

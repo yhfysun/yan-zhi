@@ -1585,7 +1585,10 @@ async function loadConversations() {
     const decoder = new TextDecoder();
     let buffer = '';
     let assistantMsgId = '';
-    const subAgentMsgIds = new Map<string, string>(); // subAgentId → assistantMsgId
+    // subAgentId → assistantMsgId。★ 键是**复合键**：同一 agent 可以有两个后台并行任务
+    // （P2-6 async call_agent），只按 subAgentId 存会让两路 token 流合流进同一条消息。
+    const subAgentMsgIds = new Map<string, string>();
+    const subAgentKey = (subAgentId: string, parentToolCallId?: string | null) => `${parentToolCallId || ''}::${subAgentId}`;
     const executedToolCallIds = new Set<string>(); // tool:execute 去重（重放时跳过已执行）
 
     // 流式 chunk 节流：缓冲增量，每 ~50ms 批量提交到 Vue 响应式状态，避免高频重渲染闪烁
@@ -1655,7 +1658,7 @@ async function loadConversations() {
               } as any);
             }
             if (msg.role === 'assistant') {
-              if (msg.subAgentId) subAgentMsgIds.set(msg.subAgentId, msg.id);
+              if (msg.subAgentId) subAgentMsgIds.set(subAgentKey(msg.subAgentId, msg.parentToolCallId), msg.id);
               else assistantMsgId = msg.id;
             }
             break;
@@ -1663,7 +1666,7 @@ async function loadConversations() {
           case 'chunk': {
             if (event.content || event.reasoning) {
               const arr = messagesByConv.value[convId] || [];
-              const targetId = event.subAgentId ? subAgentMsgIds.get(event.subAgentId) : assistantMsgId;
+              const targetId = event.subAgentId ? subAgentMsgIds.get(subAgentKey(event.subAgentId, event.parentToolCallId)) : assistantMsgId;
               const idx = targetId ? arr.findIndex(m => m.id === targetId) : arr.length - 1;
               if (idx >= 0 && arr[idx].role === 'assistant') {
                 const msgId = arr[idx].id;
@@ -1679,7 +1682,7 @@ async function loadConversations() {
           }
           case 'tool_call': {
             flushNow(convId);
-            const targetId = event.subAgentId ? subAgentMsgIds.get(event.subAgentId) : assistantMsgId;
+            const targetId = event.subAgentId ? subAgentMsgIds.get(subAgentKey(event.subAgentId, event.parentToolCallId)) : assistantMsgId;
             if (targetId) {
               const arr = messagesByConv.value[convId] || [];
               const idx = arr.findIndex(m => m.id === targetId);
@@ -1720,7 +1723,7 @@ async function loadConversations() {
           }
           case 'sub_agent:end': {
             if (event.parentToolCallId) runningToolCallIds.value.delete(event.parentToolCallId);
-            if (event.agentId) subAgentMsgIds.delete(event.agentId);
+            if (event.agentId) subAgentMsgIds.delete(subAgentKey(event.agentId, event.parentToolCallId));
             break;
           }
           case 'tool:execute': {

@@ -186,13 +186,13 @@ describe('⑥ 工具链三段（注册 → 挂载 → 模型可见）', () => {
   });
 
   it('★★ 必须复用同一条子智能体循环（不另起执行器 —— 本项目已因入口漂移出过 5 次事故）', () => {
-    const body = win(LTM, 'async function runSpawnedSubAgent', 6000, 'runSpawnedSubAgent');
+    const body = win(LTM, 'async function runSpawnedSubAgent', 12000, 'runSpawnedSubAgent');
     expect(body, '★ 未复用 runSubAgent（另写一套会与消息归属/深度限制漂移）').toMatch(/await runSubAgent\(/);
     expect(LTM, '★ runSubAgent 未接受 specOverride').toMatch(/specOverride\?: \{/);
   });
 
   it('★★ 临时子智能体不得写进 agent 表（它是"用完即弃"，不该污染用户角色列表）', () => {
-    const body = win(LTM, 'async function runSpawnedSubAgent', 6000, 'runSpawnedSubAgent');
+    const body = win(LTM, 'async function runSpawnedSubAgent', 12000, 'runSpawnedSubAgent');
     expect(body, '★ 用 INSERT INTO agent 建了持久角色（会堆垃圾角色）').not.toMatch(/INSERT INTO agent/);
     expect(body, '★ 未用合成配置（specRow/虚拟行）').toMatch(/specRow|specOverride/);
   });
@@ -273,7 +273,7 @@ describe('⑩ 沉淀建议链路（原本是死代码）', () => {
   });
 
   it('★★ 必须只建议不自动建（自动建会堆垃圾角色）', () => {
-    const body = win(LTM, 'async function runSpawnedSubAgent', 7000, 'runSpawnedSubAgent');
+    const body = win(LTM, 'async function runSpawnedSubAgent', 12000, 'runSpawnedSubAgent');
     expect(body, '★ 自动建了持久角色').not.toMatch(/INSERT INTO agent/);
     expect(body, '★ 未把建议交给模型转告用户').toMatch(/建议固化成正式子智能体/);
   });

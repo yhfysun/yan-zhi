@@ -26,7 +26,12 @@ import { serverState } from './state.js';
 // 产物登记钩子（P2-3）：把 file_write / 媒体登记的副作用从主循环里搬出去
 import { runAfterToolHooks } from './services/tool-hooks.js';
 import { registerArtifactHooks } from './services/artifact-hooks.js';
-import { loadProjectSkills } from './services/project-skills.js';
+import { loadProjectSkills, truncateSkillBody } from './services/project-skills.js';
+import {
+  canStartBackgroundSubAgent, makeBackgroundId, buildBackgroundReceipt, buildConcurrencyFullMessage,
+  buildFinishNote, buildDeliveryText,
+  type BackgroundSubAgentInfo,
+} from './services/background-subagents.js';
 import { matchUserHooks } from './services/user-hooks.js';
 import { guessMime } from './utils/mime.js';
 import { resolveArtifactDirFor } from './services/artifact-dir.js';
@@ -162,6 +167,13 @@ interface LlmTask {
   spawnBudget?: number;
   /** 本任务内已现场生成的子智能体次数（与 spawnBudget 配对做闸门） */
   spawnCount?: number;
+  /**
+   * ★ 后台并行子智能体（P2-6，2026-10-04）：`call_agent` 带 `async: true` 启动的
+   * 未完成后台任务（bgId → 元信息）。用途：① 并发闸（≥3 拒绝新任务）；
+   * ② 主循环收尾时提示"仍有 N 个在跑"。完成回投走 `deliverSubAgentResult`，
+   * 不等待 —— 主循环照常 finish（防"空轮等待"烧 token）。
+   */
+  backgroundSubAgents: Map<string, BackgroundSubAgentInfo>;
   /** 本任务内「子任务指纹 → 出现次数」：同类子任务反复现场生成时提示固化（见 shouldSuggestPersist）。
    *  任务级而非全局，是刻意的 —— 跨任务的重复统计靠空间记忆（见 recordSpawnedSubAgent）。 */
   specFingerprints?: Map<string, number>;
@@ -447,6 +459,7 @@ export function createTask(params: {
     })(),
     spawnCount: 0,
     specFingerprints: new Map<string, number>(),
+    backgroundSubAgents: new Map<string, BackgroundSubAgentInfo>(),
   };
   tasks.set(taskId, task);
   emit(task, { type: 'task:created', taskId, conversationId: params.conversationId });
@@ -1858,6 +1871,15 @@ async function runReActLoop(task: LlmTask, params: {
             emit(task, { type: 'message:added', message: { id: '', role: 'user', content: verifyTip } } as any);
             continue; // 下一轮模型能看到提醒并补跑验证
           }
+          // 后台子智能体仍在跑（P2-6）：主循环**照常收尾**（不等待 —— 等待会造成空转烧 token），
+          // 但给用户一条明示消息，避免"任务结束了但活还没干完"的错觉。
+          if (task.backgroundSubAgents.size > 0) {
+            const note = buildFinishNote(task.backgroundSubAgents);
+            try {
+              const noteId = insertMessage(convId, userId, 'assistant', note);
+              emit(task, { type: 'message:added', message: { id: noteId, role: 'assistant', content: note } });
+            } catch { /* 提示落库失败不影响收尾 */ }
+          }
           emit(task, { type: 'task:completed' });
           task.status = 'completed';
           // 长任务收尾：把本轮结论沉淀进空间记忆（跨会话可见），见 recordTaskProgress
@@ -2579,6 +2601,10 @@ async function executeTool(
   // call_agent → 后端直接执行子 ReAct 循环（仅主智能体可调用，子智能体深度=1 不可再嵌套）
   if (toolName === 'call_agent') {
     if (depth >= 1) return '子智能体不能再调用子智能体（深度仅允许 1 层）';
+    // async: true → 后台并行（P2-6）：立即返回回执，完成后结果注入本会话
+    if ((args as any).async === true || (args as any).async === 'true') {
+      return startBackgroundSubAgent(task, args, toolCallId, depth, uiTools);
+    }
     return runSubAgent(task, args, toolCallId, depth, uiTools);
   }
 
@@ -3234,6 +3260,84 @@ async function recordSpawnedSubAgent(task: LlmTask, specId: string, resolved: Re
  *  - 其余（harness 型）→ 递归跑子 ReAct 循环，子智能体消息写入同一会话，
  *    带 parent_tool_call_id/sub_agent_id 归属字段。
  *  两条路共用前奏（参数校验 / 别名解析 / 查 agent 行），调用方 dispatchToolCall 无需感知差异。 */
+// ══════════════════════════════════════════════════════════════════════════
+// 后台并行子智能体（P2-6，2026-10-04）—— `call_agent` 带 `async: true` 时走这里：
+// 立即返回回执，子 ReAct 在后台跑完由 deliverSubAgentResult 投递回会话。
+//
+// ★ 完成语义刻意对齐工作流子智能体（runWorkflowSubAgent 的 fire-and-forget + 反写）：
+//   不发明第三种语义。区别只在"结果怎么回来"——
+//   · 主循环**仍在跑** → injectUserMessage 注入通道（落库 + pendingInjects，模型下一轮看到）；
+//   · 主循环**已收尾** → 普通消息落库（用户回会话可见，与 writeBackWorkflow 同口径）。
+// ★ 主循环**不等待**后台任务（finish 检查处不阻塞）：等待会造成"模型不调工具 → 检测到
+//   后台任务 → 续跑 → 又不调工具"的空转烧 token 循环。结果靠注入消息唤醒下一轮。
+// ★ 权限/护栏无旁路：后台子任务与同步调用走**同一个 executeTool**，readonly 裁剪、
+//   path-guard 弹窗（无人值守 fail-safe）、危险命令护栏、用户钩子全部生效；
+//   用户关掉页面后后台子任务的写操作自然落入无人值守拒绝。
+// ★ 重启不恢复（方案拍板）：状态在内存，服务重启即丢 —— 落库全状态成本远超收益，
+//   用户看到子智能体消息流中断即"丢失"信号；远期可落 llm_task 子任务行（表已有 origin）。
+// ══════════════════════════════════════════════════════════════════════════
+
+async function startBackgroundSubAgent(
+  task: LlmTask,
+  args: Record<string, unknown>,
+  toolCallId: string,
+  depth: number,
+  uiTools: Set<string>,
+): Promise<string> {
+  const agentId = String((args as any).agentId || (args as any).agent_id || (args as any).id || '').trim();
+  const rawInput = (args as any).input || (args as any).sub_task || (args as any).task || (args as any).query;
+  const input = typeof rawInput === 'string' ? rawInput : rawInput ? JSON.stringify(rawInput) : '';
+  // 前置校验与 runSubAgent 同文案：回执必须诚实 —— 缺参不启动，否则"已启动"是骗人的
+  if (!agentId) return 'agentId 为必填项。请先调用 list_sub_agents 工具查看可用子智能体及其 ID，然后在 call_agent 的 arguments 中传入 agentId（如 "a_builtin_page_agent"）和 input（任务描述）参数。';
+  if (!input) return 'input 为必填项。请在 call_agent 的 arguments 中传入 input 参数（描述要让子智能体执行的任务）。';
+
+  // 工作流型子智能体**本来就是** fire-and-forget（跑完反写对话）——直接走原路径。
+  // 若在这里再包一层，会出现双重投递（runWorkflowSubAgent 的反写 + 本函数的投递）。
+  const agentRow = db.prepare('SELECT id, name, type, workflow_json FROM agent WHERE id = ? AND (user_id = ? OR is_public = 1)').get(agentId, task.userId) as any;
+  if (agentRow && isWorkflowAgent(agentRow)) {
+    return runSubAgent(task, args, toolCallId, depth, uiTools);
+  }
+
+  if (!canStartBackgroundSubAgent(task.backgroundSubAgents)) {
+    return buildConcurrencyFullMessage(task.backgroundSubAgents);
+  }
+
+  const bgId = makeBackgroundId();
+  const agentName = agentRow?.name || agentId;
+  task.backgroundSubAgents.set(bgId, { bgId, agentId, agentName, toolCallId, startedAt: Date.now() });
+  console.warn(`[bg-subagent] 启动 conv=${task.conversationId} bg=${bgId} agent=${agentId}（在跑 ${task.backgroundSubAgents.size} 个）`);
+
+  void (async () => {
+    let result: string;
+    try {
+      result = await runSubAgent(task, args, toolCallId, depth, uiTools);
+    } catch (e: any) {
+      result = isAbortError(e)
+        ? '[已中止] 后台子智能体随任务中止。'
+        : `后台子智能体执行异常：${e?.message || e}`;
+    } finally {
+      task.backgroundSubAgents.delete(bgId);
+      console.warn(`[bg-subagent] 结束 conv=${task.conversationId} bg=${bgId} agent=${agentId}`);
+    }
+    await deliverSubAgentResult(task, agentName, result);
+  })();
+
+  return buildBackgroundReceipt(agentName, bgId);
+}
+
+/** 后台子智能体结果投递：任务在跑 → 注入（唤醒下一轮）；已收尾 → 落库普通消息 */
+async function deliverSubAgentResult(task: LlmTask, agentName: string, result: string): Promise<void> {
+  if (task.abortController.signal.aborted) return; // 整体中止：不投递，避免噪音
+  const text = buildDeliveryText(agentName, capToolResult(result));
+  try {
+    if (injectUserMessage(task.conversationId, text, task.userId) === 'injected') return;
+    const msgId = insertMessage(task.conversationId, task.userId, 'assistant', text);
+    emit(task, { type: 'message:added', message: { id: msgId, role: 'assistant', content: text } });
+  } catch (e: any) {
+    console.warn('[bg-subagent] 结果投递失败:', e?.message || e);
+  }
+}
+
 async function runSubAgent(
   task: LlmTask,
   args: { agentId?: string; input?: unknown; platformId?: string; modelId?: string },
@@ -3523,11 +3627,11 @@ async function runSubAgent(
           }
           if (chunk.delta?.content) {
             fullContent += chunk.delta.content;
-            emit(task, { type: 'chunk', content: chunk.delta.content, subAgentId: resolvedId });
+            emit(task, { type: 'chunk', content: chunk.delta.content, subAgentId: resolvedId, parentToolCallId });
           }
           if (chunk.delta?.reasoningContent) {
             fullReasoning += chunk.delta.reasoningContent;
-            emit(task, { type: 'chunk', reasoning: chunk.delta.reasoningContent, subAgentId: resolvedId });
+            emit(task, { type: 'chunk', reasoning: chunk.delta.reasoningContent, subAgentId: resolvedId, parentToolCallId });
           }
           if (chunk.delta?.toolCalls) {
             for (const tc of chunk.delta.toolCalls) {
@@ -3554,7 +3658,7 @@ async function runSubAgent(
                 };
               }
             }
-            emit(task, { type: 'tool_call', toolCalls: [...toolCallAcc], subAgentId: resolvedId });
+            emit(task, { type: 'tool_call', toolCalls: [...toolCallAcc], subAgentId: resolvedId, parentToolCallId });
           }
         }
       } catch (e: any) {
@@ -3579,8 +3683,8 @@ async function runSubAgent(
             signal: task.abortController.signal,
           })) {
             if (chunk.usage) { usageTokens = (chunk.usage.promptTokens || 0) + (chunk.usage.completionTokens || 0); }
-            if (chunk.delta?.content) { fullContent += chunk.delta.content; emit(task, { type: 'chunk', content: chunk.delta.content, subAgentId: resolvedId }); }
-            if (chunk.delta?.reasoningContent) { fullReasoning += chunk.delta.reasoningContent; emit(task, { type: 'chunk', reasoning: chunk.delta.reasoningContent, subAgentId: resolvedId }); }
+            if (chunk.delta?.content) { fullContent += chunk.delta.content; emit(task, { type: 'chunk', content: chunk.delta.content, subAgentId: resolvedId, parentToolCallId }); }
+            if (chunk.delta?.reasoningContent) { fullReasoning += chunk.delta.reasoningContent; emit(task, { type: 'chunk', reasoning: chunk.delta.reasoningContent, subAgentId: resolvedId, parentToolCallId }); }
           }
         } else {
           throw e;
@@ -3646,7 +3750,7 @@ async function runSubAgent(
           }
           if (skipped.length > 0) skippedArgToolsSub = [...new Set([...skippedArgToolsSub, ...skipped])];
           if (toolCallAcc.length > 0) {
-            emit(task, { type: 'tool_call', toolCalls: [...toolCallAcc], subAgentId: resolvedId });
+            emit(task, { type: 'tool_call', toolCalls: [...toolCallAcc], subAgentId: resolvedId, parentToolCallId });
           }
         }
       }
@@ -4156,7 +4260,7 @@ export function buildSystemPromptForBackend(agentId: string | null, userId: stri
     //   既把上下文预算吃光、又让模型在无关流程上分心 —— 而 `triggers` 字段**后端从未被消费**。
     const agentSkillIds: string[] = agent?.skill_ids ? JSON.parse(agent.skill_ids) : [];
     const skillIds = [...new Set([...agentSkillIds, ...convMounts.skillIds])];
-    // 项目技能目录（.yan-zhi/skills/*.md，P2-8）：优先级**高于**同名挂载技能 ——
+    // 项目技能目录（.yan-zhi/skills 下的 .md，P2-8）：优先级**高于**同名挂载技能 ——
     // 项目自带的 SOP 是团队为这个仓库定制的，比通用/商城技能更贴近当前工作区。
     const projectSkills = effectiveWorkspaceDir ? loadProjectSkills(effectiveWorkspaceDir) : [];
     const projectSkillNames = new Set(projectSkills.map((s) => s.name.toLowerCase()));
@@ -4176,13 +4280,14 @@ export function buildSystemPromptForBackend(agentId: string | null, userId: stri
         // 命中 → 注入完整流程；未命中 → 不注入 body（省预算，也避免模型被无关流程带偏）。
         // 用户输入为空（定时任务/IM 无正文）时退化为全量注入：没有触发词可判，宁多勿漏。
         const shouldInjectBody = hit || !userQuery.trim();
-        const body = (sk.body || '').trim();
+        // ★ 截断走 truncateSkillBody 单点（口径/文案与项目技能共用）——此前内联 2000
+        //   与项目技能各自的常量/文案已出现半角-全角漂移，不再各写一份。
+        const body = truncateSkillBody(sk.body || '');
         if (body && shouldInjectBody) {
-          const truncated = body.length > 2000 ? body.slice(0, 2000) + '\n...(流程过长已截断)' : body;
-          flowParts.push(`### Skill 流程指引：${sk.name}\n${truncated}`);
+          flowParts.push(`### Skill 流程指引：${sk.name}\n${body}`);
         }
       }
-      // 项目技能（.yan-zhi/skills/*.md）：与 DB skill 同一份注入格式与触发词口径，
+      // 项目技能（.yan-zhi/skills 下的 .md）：与 DB skill 同一份注入格式与触发词口径，
       // 仅多一个来源标注（让模型知道可以从工作目录直接读到完整文件）。
       for (const ps of projectSkills) {
         const hit = matchSkillTriggers(ps.triggers, userQuery);
@@ -4201,7 +4306,7 @@ export function buildSystemPromptForBackend(agentId: string | null, userId: stri
         '1. 先用 `api_marketplace_sources` + `api_marketplace_browse` 去商城搜有没有现成 Skill；\n' +
         '2. 找到匹配的用 `api_skill_install` 装上，再用 `api_conversation_setup` 把它挂到当前会话（下轮生效）；\n' +
         '3. 商城没有、但这类工作你会反复做 → 用 `api_skill_create` 把这次的做法沉淀成本地 Skill（含 triggers），下次自动命中；\n' +
-        '3.5. 团队级规范（整个项目都会用到的评审/部署/接口约定）→ 建议让用户放进工作目录 `.yan-zhi/skills/*.md`（自动发现，所有会话生效，优先级高于商城技能）；\n' +
+        '3.5. 团队级规范（整个项目都会用到的评审/部署/接口约定）→ 建议让用户放进工作目录 `.yan-zhi/skills`（放 .md 文件，自动发现，所有会话生效，优先级高于商城技能）；\n' +
         '4. 都没有且不值得沉淀 → 按通用最佳实践做，并在回复里说明"这一步没有专门规范，我按 X 处理"。\n' +
         '不要因为"没有对应 Skill"就降低产出质量或停下来问用户。',
       );

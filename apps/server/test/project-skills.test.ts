@@ -1,4 +1,4 @@
-// 项目技能目录（P2-8）：`.yan-zhi/skills/*.md` 的发现/解析/缓存/容错。
+// 项目技能目录（P2-8）：`.yan-zhi/skills` 下 .md 的发现/解析/缓存/容错。
 // 守住的语义：
 //   1) 无目录 = 常态，静默空数组不报错；
 //   2) frontmatter（name/description/triggers）解析 + 无 frontmatter 时文件名兜底；
@@ -9,7 +9,11 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { loadProjectSkills, clearProjectSkillsCache, PROJECT_SKILL_BODY_MAX_CHARS, PROJECT_SKILLS_MAX_COUNT } from '../src/services/project-skills.js';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { loadProjectSkills, clearProjectSkillsCache, truncateSkillBody, PROJECT_SKILL_BODY_MAX_CHARS, PROJECT_SKILLS_MAX_COUNT } from '../src/services/project-skills.js';
+
+const REPO = resolve(__dirname, '..', '..', '..');
 
 let dir: string;
 
@@ -91,5 +95,26 @@ describe('loadProjectSkills', () => {
     const skills = loadProjectSkills(dir);
     expect(skills.every((s) => !s.name.includes('readme'))).toBe(true);
     expect(skills.length).toBe(PROJECT_SKILLS_MAX_COUNT);
+  });
+});
+
+describe('truncateSkillBody（DB 技能与项目技能共用的单点）', () => {
+  it('短正文只 trim；超长按上限截断且带标注', () => {
+    expect(truncateSkillBody('  hello  ')).toBe('hello');
+    const out = truncateSkillBody('x'.repeat(PROJECT_SKILL_BODY_MAX_CHARS + 10));
+    expect(out.startsWith('x'.repeat(100))).toBe(true);
+    expect(out).toContain('流程过长已截断');
+    expect(out.length).toBeLessThan(PROJECT_SKILL_BODY_MAX_CHARS + 30);
+  });
+
+  it('可自定义上限（调用方口径不同的余地）', () => {
+    expect(truncateSkillBody('abcdef', 3)).toBe('abc\n…（流程过长已截断）');
+  });
+
+  it('提示词装配两处都走单点：DB 技能分支不再内联 2000/旧文案（防口径再漂移）', () => {
+    const ltm = readFileSync(resolve(REPO, 'apps/server/src/llm-task-manager.ts'), 'utf8');
+    expect(ltm, '★ DB 技能分支未用 truncateSkillBody').toContain('truncateSkillBody(sk.body');
+    expect(ltm, '★ 半角旧文案仍在（与项目技能全角文案漂移）').not.toContain('...(流程过长已截断)');
+    expect(ltm, '★ 内联 2000 截断仍在（与常量双份）').not.toMatch(/body\.length > 2000/);
   });
 });
