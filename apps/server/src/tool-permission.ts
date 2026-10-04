@@ -243,6 +243,8 @@ export function permissionModePrompt(mode: PermissionMode): string {
 const READONLY_SAFE_TOOLS = new Set([
   // 文件/代码：只读
   'file_read', 'file_list', 'file_grep', 'code_search', 'code_outline',
+  // 静态诊断：只跑编译器/linter 读项目，不写任何文件
+  'code_diagnostics',
   // 模型与多媒体理解（不产生文件）
   'list_models', 'image_analyze',
   // 纯交互/展示（无副作用）：任务进度、向用户提问
@@ -261,6 +263,8 @@ const READONLY_SAFE_TOOLS = new Set([
   'api_custom_tool_list', 'api_custom_tool_get',
   'api_builtin_tool_list',
   'api_workspace_list_dir', 'api_workspace_search_files',
+  // 语义代码检索：只读（embedding 相似度，不写任何东西）
+  'api_code_semantic_search',
   'api_memory_search', 'api_memory_list',
   'api_file_list',
   'api_git_status', 'api_git_log', 'api_git_diff', 'api_git_branch_list',

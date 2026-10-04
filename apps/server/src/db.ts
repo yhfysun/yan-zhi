@@ -887,7 +887,7 @@ const DEFAULT_AGENT_BUILTIN_TOOLS = [
   // 文件读写
   'file_read', 'file_write', 'file_list',
   // 代码工具
-  'code_search', 'code_outline', 'js_exec', 'python_exec',
+  'code_search', 'code_outline', 'code_diagnostics', 'js_exec', 'python_exec',
   // 命令执行
   'cmd_exec',
   // 联网搜索
@@ -1234,7 +1234,7 @@ const JAVA_AGENT_BUILTIN_TOOLS = [
   'plugin_java-suite__mybatis_analyze_mappers',
   // 文件操作
   'file_read', 'file_write', 'file_edit', 'file_grep', 'file_list',
-  'code_search', 'code_outline',
+  'code_search', 'code_outline', 'code_diagnostics',
   // 命令执行
   'cmd_exec', 'python_exec',
   // 任务规划与用户交互
@@ -1463,6 +1463,7 @@ const CODE_EXPLORER_SYSTEM_PROMPT = `你是「代码探索助手」（codeExplor
 const BACKEND_DEV_BUILTIN_TOOLS = [
   'file_read', 'file_write', 'file_edit', 'file_grep', 'file_list',
   'code_search', 'code_outline', 'code_refs', 'code_graph',
+  'code_diagnostics',
   'js_exec', 'python_exec', 'cmd_exec',
   'task_plan', 'task_step', 'ask_user',
 ];
@@ -1533,6 +1534,7 @@ const UI_DESIGNER_SYSTEM_PROMPT = `你是「设计助手」（uiDesigner），�
 const FRONTEND_DEV_BUILTIN_TOOLS = [
   'file_read', 'file_write', 'file_edit', 'file_grep', 'file_list',
   'code_search', 'code_outline', 'code_refs', 'code_graph',
+  'code_diagnostics',
   'js_exec', 'python_exec', 'cmd_exec',
   'task_plan', 'task_step', 'ask_user',
 ];
@@ -1760,10 +1762,13 @@ const DATA_AGENT_SYSTEM_PROMPT = `你是「数据查询分析助手」。你通�
 1. 【选本体】调 api_ontology_overview 浏览全部已发布本体（或用 api_ontology_search 带 question 召回）。
    返回里有本体 = 有可用本体：从返回的 code 里挑与用户问题最相关的一个，在【下一步】里说明理由，然后直接进入第 2 步。不要因为"描述不完全匹配"就断定没有可用本体。
 2. 【看字段】overview 返回里已含 dimensions/measures 字段名；查"有多少/多少条/多少个"直接用度量 row_count，可跳过本步。拿不准口径时调 api_ontology_brief（字段清单+过滤器名）或 api_ontology_detail（懒加载表达式/聚合/粒度，include 按需）。
-3. 【取数】api_data_query { ontology: "<code>", intent: {...} }：
+3. 【取数】api_data_query { ontology: "<code>", intent: {...}, **contract: true }：
+   - ★ 2026-10-03 拍板（本体 × QueryContract 融合）：智能体取数**一律带 contract=true**（契约模式）——
+     filters **只能按名引用**本体声明的过滤器，自由 SQL 条件会被拒绝（这是安全边界，不是限制）；
+     返回里带 contract 菜单（dimensions/measures/filters/selections 的 name + 业务名说明）。
    - measures：度量名 + 聚合（sum / count / count_distinct / avg / min / max），计数用 { name: "row_count" }
    - dimensions：分组/展示的维度名；timeDimension：时间维度名 + 粒度（year/quarter/month/week/day/hour/minute）
-   - selections：本体选择列名（一组命名字段展开并入 SELECT）；filters：过滤器名或带比较符的裸 SQL 条件
+   - selections：本体选择列名（一组命名字段展开并入 SELECT）
    - 过滤器的值拿不准 → 先 api_ontology_values 采样真实取值，禁止猜值
    - orderBy / limit：默认 100 行，上限 1000；行数不够用 api_data_paginate 翻页，禁止一次拉全表
 4. 【回答】用 markdown 表格呈现关键列，说明口径：本体 code、过滤器、时间范围、行数。需要统计/建模用 python_exec（仅限已拿到 rows 后）；交付文件用 file_write。

@@ -203,6 +203,14 @@ vi.mock('../src/db.js', () => ({
   hasSqliteVec: false,
 }));
 vi.mock('@yan-zhi/core', () => ({
+  //   runCodeDiagnostics / invalidateDiagnosticsCache：编辑后自动诊断钩子（生产代码顶层 import）；
+  //   SYNTHETIC_MESSAGE_IDS / isSyntheticMessageId：context-snapshot 从 core 取（白名单缺了
+  //   连模块都加载不起来 —— 本文件「手工白名单 mock 的代价」教训的又一次兑现）。
+  runCodeDiagnostics: async () => ({ ran: [], projectRoot: null, problems: [], notes: [], durationMs: 0, text: '' }),
+  invalidateDiagnosticsCache: () => {},
+  SYNTHETIC_MESSAGE_IDS: new Set(['sys', 'summary', '__summary__']),
+  isSyntheticMessageId: (id: string) => ['sys', 'summary', '__summary__'].includes(id),
+  adviceForTruncatedArgs: () => ({ truncated: false, message: '' }),
   LlmClient: hoisted.MockLlmClient,
   getToolRegistry: () => hoisted.mockRegistry,
   getApiToolRegistry: () => new Map(),

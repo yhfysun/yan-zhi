@@ -33,8 +33,8 @@ const KNOWN_SKILL_IDS = new Set([
 const KNOWN_TOOL_NAMES = new Set([
   // 核心内置工具
   'file_read', 'file_write', 'file_edit', 'file_grep', 'file_list', 'file_to_markdown',
-  'code_search', 'code_outline', 'cmd_exec', 'js_exec', 'python_exec',
-  'call_agent', 'list_sub_agents', 'list_models',
+  'code_search', 'code_outline', 'code_diagnostics', 'cmd_exec', 'js_exec', 'python_exec',
+  'call_agent', 'spawn_subagent', 'list_sub_agents', 'list_models',
   'ask_user', 'confirm_user', 'task_plan', 'task_step',
   'image_analyze',
   // 浏览器

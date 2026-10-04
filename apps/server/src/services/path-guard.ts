@@ -62,6 +62,8 @@ const TOOL_PATH_ARGS: Record<string, PathArgSpec[]> = {
   code_outline: [{ field: 'path', action: 'read' }],
   code_refs: [{ field: 'path', action: 'read' }],
   code_graph: [{ field: 'path', action: 'read' }],
+  // ── 静态诊断（读项目跑 tsc/eslint，无写副作用）──
+  code_diagnostics: [{ field: 'path', action: 'read' }],
   // ── 文档交付（输出，写）──
   doyz: [
     { field: 'file', action: 'read' },
@@ -72,6 +74,8 @@ const TOOL_PATH_ARGS: Record<string, PathArgSpec[]> = {
   ],
   // ── API 工具：目录列举 / 文件搜索（读）──
   api_workspace_list_dir: [{ field: 'path', action: 'read' }],
+  // 语义代码检索：path 指定工作区根（读）
+  api_code_semantic_search: [{ field: 'path', action: 'read' }],
   // ── OCR：传 path 读本地图片（读）；传 image(base64) 时不碰磁盘，抽不到自然不判 ──
   api_tool_ocr: [{ field: 'path', action: 'read' }],
   // ── 媒体加工（ffmpeg）：**输入一律本机绝对路径**（前序工具回传的 file 字段）──
@@ -106,6 +110,56 @@ const TOOL_PATH_ARGS: Record<string, PathArgSpec[]> = {
  *   —— 这样既拦住静默越界，又不骚扰 `npm install` / 跑测试这类高频正当用途。
  */
 export const COMMAND_TOOLS = new Set(['cmd_exec', 'python_exec']);
+
+// ───────────────────────── 危险命令护栏（2026-10-03，P1）─────────────────────────
+//
+// ★ 与「首次授权」的关系：COMMAND_TOOLS 的常规命令是**会话首次授权后放行**（防骚扰高频
+//   正当用途）。但破坏性命令（递归删除/格式化/强推/关机…）一旦放行就是不可逆动作，
+//   "首次授权终身放行"的粒度对它太粗 —— 本会话批准过 `npm test` ≠ 批准 `rm -rf`。
+//
+// ★ 口径：命中下面任一模式的命令**每次调用都单独弹窗**（带危险原因），且**永不**写入
+//   会话授权集合 —— 单独点头，不复用、不记忆。无人值守（无订阅者）天然被
+//   requestPathAuthorization 的 fail-safe 拒绝。
+// ★ 本模块仍保持"纯判定"：这里只返回命中，弹窗/拒绝由执行入口决定。
+
+/** 破坏性命令模式（按匹配顺序报首个命中原因）。覆盖 cmd / PowerShell / bash / git / python。 */
+const DANGEROUS_COMMAND_PATTERNS: Array<{ re: RegExp; why: string }> = [
+  { re: /\brm\s+(?:-{1,2}[\w-]+\s+)*-{1,2}\w*r\w*(?:\s|$)/i, why: '递归删除（rm -r）' },
+  { re: /\bdel\s+(?:\/[sq]\s+)+/i, why: '批量删除（del /s /q）' },
+  { re: /\b(?:rd|rmdir)\s+\/s/i, why: '递归删除目录（rd /s）' },
+  { re: /\bRemove-Item\b[^&|;>]*-Recurse/i, why: 'PowerShell 递归删除（Remove-Item -Recurse）' },
+  { re: /\brm\s+-\w*f\w*r\w*\s+\/(?:\s|$)/, why: '删除文件系统根（rm -rf /）' },
+  { re: /\bformat\b\s|\bmkfs(?:\.\w+)?\b|\bdd\s+if=/i, why: '格式化/磁盘级写入' },
+  { re: /\bshutdown\b|\breboot\b|\bpoweroff\b|\bhalt\b/i, why: '关机/重启' },
+  { re: /\bgit\s+push\b[^&|;]*(?:--force(?!-with-lease)|\s-f\b)/, why: '强制推送（覆盖远端历史）' },
+  { re: /\bgit\s+reset\s+--hard\b/, why: '丢弃全部未提交改动（git reset --hard）' },
+  { re: /\bgit\s+clean\b[^\n|;&]*-f/, why: '删除未跟踪文件（git clean -f）' },
+  { re: /\bchmod\s+-R\b|\bchown\s+-R\b/i, why: '递归修改文件权限/属主' },
+  { re: /\btaskkill\s+\/f\b/i, why: '强制结束进程（taskkill /f）' },
+  { re: /\breg(?:edit|\.exe)?\s+(?:add|delete|import)\b/i, why: '写/删 Windows 注册表' },
+  { re: /\b(?:npm|pnpm|yarn)\s+(?:publish|unpublish)\b/, why: '发布/撤包（影响公共仓库）' },
+  { re: /shutil\.rmtree|os\.system\s*\(\s*['"]rm\s|subprocess\.(?:call|run|Popen)\s*\(\s*['"][^'"]*\brm\s+-\w*r/i, why: 'Python 内递归删除/系统删除' },
+  { re: /\bDROP\s+(?:TABLE|DATABASE)\b/i, why: '删库（DROP TABLE/DATABASE）' },
+];
+
+export interface DangerousCommandHit {
+  /** 命中原因（弹窗展示） */
+  why: string;
+  /** 命中的模式文本（审计用） */
+  matched: string;
+}
+
+/**
+ * 判定一条命令/代码是否命中破坏性模式。
+ * @param text 整条命令文本（cmd_exec 为 command+args 拼接；python_exec 为代码字符串）
+ */
+export function checkDangerousCommand(text: string): DangerousCommandHit | null {
+  if (!text) return null;
+  for (const p of DANGEROUS_COMMAND_PATTERNS) {
+    if (p.re.test(text)) return { why: p.why, matched: p.re.source };
+  }
+  return null;
+}
 
 /** 一次越界访问项 */
 export interface PathAccessItem {
@@ -269,8 +323,8 @@ export function checkPathAccess(input: PathGuardInput): PathGuardVerdict {
   return { kind: 'need-auth', items: outside };
 }
 
-/** 把命令类工具的入参压成一行给用户过目（截断防超长） */
-function summarizeCommandArgs(args: Record<string, unknown> | null | undefined): string {
+/** 把命令类工具的入参压成一行给用户过目（截断防超长）；危险命令判定也用它做扫描文本 */
+export function summarizeCommandArgs(args: Record<string, unknown> | null | undefined): string {
   if (!args) return '';
   const cmd = typeof args.command === 'string' ? args.command : '';
   const cmdArgs = Array.isArray(args.args) ? (args.args as unknown[]).map(String) : [];

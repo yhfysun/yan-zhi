@@ -5,7 +5,7 @@
 // 注：web_search 已移除，联网查询统一委派 pageAgent（真实浏览器搜索引擎）。
 import type { Platform, Model, Message, DeltaToolCall } from '@yan-zhi/shared';
 import { formatTaskTypeContext, DEFAULT_CONFIRM_BATCH_SIZE } from '@yan-zhi/shared';
-import { LlmClient, getToolRegistry, getApiToolRegistry, ContextWindow, adviceForTruncatedArgs, type SummaryCache } from '@yan-zhi/core';
+import { LlmClient, getToolRegistry, getApiToolRegistry, ContextWindow, adviceForTruncatedArgs, runCodeDiagnostics, invalidateDiagnosticsCache, resolveToolPath, type SummaryCache } from '@yan-zhi/core';
 import { db, MESSAGE_LIST_COLS } from './db.js';
 import { normalizePermissionMode, checkToolPermission, filterToolsByPermission, permissionModePrompt, checkWorkflowPermission, type PermissionMode } from './tool-permission.js';
 import { ensureToolsInitialized } from './mcp/index.js';
@@ -31,6 +31,8 @@ import { resolveArtifactDirFor } from './services/artifact-dir.js';
 // 工作目录边界守卫：判定在 path-guard（纯逻辑），这里只做"拿到 need-auth 后弹窗授权"
 import {
   checkPathAccess,
+  checkDangerousCommand,
+  summarizeCommandArgs,
   allowedRootsFor,
   COMMAND_TOOLS,
   getAuthorizedDirs,
@@ -644,6 +646,8 @@ async function requestPathAuthorization(
   toolName: string,
   items: PathAccessItem[],
   isCommand: boolean,
+  /** 危险命令命中原因（危险命令单独授权时展示，普通路径授权为空） */
+  dangerWhy?: string,
 ): Promise<{ ok: boolean; reason: string; message: string }> {
   // 无人值守（定时任务/后台工作流）：fail-safe **直接拒绝**，且**不挂起**。
   // 与 unattendedToolResult 既有口径一致 —— 定时任务没人守着，挂起 = 任务永久卡住。
@@ -655,14 +659,15 @@ async function requestPathAuthorization(
     return {
       ok: false,
       reason: 'unattended',
-      message: `[无人值守] 工具 ${toolName} 试图访问工作目录外的位置，无人可确认授权，已拒绝。`
-        + `请改用工作目录内的路径；若确实需要访问外部位置，请在最终回复中说明需要用户授权哪个目录。`,
+      message: (dangerWhy ? `[无人值守] 危险命令（${dangerWhy}）需要人工确认，` : `[无人值守] 工具 ${toolName} 试图访问工作目录外的位置，`)
+        + `无人可确认授权，已拒绝。请改用更安全的替代方案；若确实需要执行，请在最终回复中说明需要用户授权哪条命令/目录。`,
     };
   }
 
   const payload = {
     toolName,
     isCommand,
+    dangerWhy: dangerWhy || '',
     workspaceDir: task.workspaceDir || '',
     items: items.map((it) => ({
       action: it.action,
@@ -1844,6 +1849,13 @@ async function runReActLoop(task: LlmTask, params: {
             updateMessageContent(assistantMsgId, tip);
             emit(task, { type: 'message:updated', messageId: assistantMsgId, content: tip });
           }
+          // ★ 自动验证循环（P1）：改过代码但从未验证 → 收尾前注入一次验证提醒（每任务最多 2 次）
+          const verifyTip = takeVerifyNudge(task);
+          if (verifyTip) {
+            insertMessage(convId, userId, 'user', verifyTip);
+            emit(task, { type: 'message:added', message: { id: '', role: 'user', content: verifyTip } } as any);
+            continue; // 下一轮模型能看到提醒并补跑验证
+          }
           emit(task, { type: 'task:completed' });
           task.status = 'completed';
           // 长任务收尾：把本轮结论沉淀进空间记忆（跨会话可见），见 recordTaskProgress
@@ -2250,6 +2262,107 @@ async function readFileOrNull(p: string): Promise<string | null | undefined> {
   }
 }
 
+// ══════════════════════════════════════════════════════════════════════════
+// ★★★ 编辑后自动诊断（2026-10-03，P0 反馈闭环，对齐 Cursor/Cline 的"改完自动 lint"）
+//
+// 痛点实测：模型用 file_write/file_edit 改完代码后经常不跑类型检查就宣布完成，
+// 类型/语法错误直接交付给用户。本钩子在代码文件被成功改写后自动跑一轮静态诊断
+// （code_diagnostics 的 tsc / node --check 通道），把问题回喂到工具结果尾部，
+// 模型在下一轮 ReAct 里当场看到并自修 —— 不依赖模型"自觉跑 tsc"。
+//
+// 控制噪声与延迟的三道闸：
+//   · 只对代码扩展名生效（md/图片/产物文档不触发）；
+//   · 每会话 45s 节流（连续多次编辑只跑一次，模型可显式调 code_diagnostics 补查）；
+//   · 只突出**刚改的文件**的问题，项目级其他问题给汇总数（避免历史错误每轮刷屏）。
+// YZ_AUTO_DIAGNOSE=0 可整体关闭。
+// ══════════════════════════════════════════════════════════════════════════
+const AUTO_DIAGNOSE_INTERVAL_MS = 45_000;
+const AUTO_DIAGNOSE_EXTS = new Set(['ts', 'tsx', 'js', 'jsx', 'mjs', 'cjs', 'vue']);
+const autoDiagnoseLastAt = new Map<string, number>();
+
+// ══════════════════════════════════════════════════════════════════════════
+// ★★★ 自动验证循环（2026-10-03，P1，对齐 Claude Code hooks / Cline auto-test）
+//
+// 痛点：模型改完代码直接宣布完成，构建/测试/类型检查全没跑 —— "改完即报喜"。
+// 机制：任务里只要**碰过代码文件**（file_write/file_edit 的代码扩展名）且**从未验证过**
+//   （没跑过成功的构建/测试命令、也没跑过零问题的 code_diagnostics），
+//   在模型宣称完成时注入一条「完成前验证」提醒，逼它补跑验证 —— 最多提醒 2 次
+//   （防死循环烧 token），第 3 次宣称完成就放行并在提醒历史里留痕。
+// ══════════════════════════════════════════════════════════════════════════
+const VERIFY_NUDGE_MAX = 2;
+/** 算"验证"的命令特征：构建/测试/类型检查/lint（cmd_exec 成功退出 + 命中即算） */
+const VERIFY_CMD_RE = /(tsc|vue-tsc|eslint|pylint|ruff|mypy|pytest|unittest|npm(\.cmd)?\s+(run\s+)?(build|test)|pnpm(\s+run)?\s+(build|test)|yarn\s+(build|test)|mvn\b|gradle\b|go\s+(build|test|vet)|cargo\s+(build|test)|dotnet\s+build|\bmake\s)/i;
+interface VerifyState { touched: boolean; verified: boolean; nudges: number }
+const verifyStateByTask = new Map<string, VerifyState>();
+
+function verifyStateOf(task: LlmTask): VerifyState {
+  let s = verifyStateByTask.get(task.id);
+  if (!s) { s = { touched: false, verified: false, nudges: 0 }; verifyStateByTask.set(task.id, s); }
+  return s;
+}
+function markCodeTouched(task: LlmTask): void {
+  verifyStateOf(task).touched = true;
+}
+function markTaskVerified(task: LlmTask): void {
+  verifyStateOf(task).verified = true;
+}
+
+/** 完成前应注入验证提醒则返回提醒文本，否则 null（并自增提醒计数） */
+function takeVerifyNudge(task: LlmTask): string | null {
+  if (!task.workspaceDir) return null;
+  const s = verifyStateOf(task);
+  if (!s.touched || s.verified || s.nudges >= VERIFY_NUDGE_MAX) return null;
+  s.nudges++;
+  return [
+    '【完成前验证】本次任务修改过代码文件，但还没跑过任何构建/测试/类型检查。',
+    '请先验证再收尾：调用 code_diagnostics 工具（推荐），或用 cmd_exec 跑一次项目的构建/测试命令。',
+    '发现问题就修复后复查；确认无问题（或本次改动无需验证）后，直接给出最终回复即可。',
+  ].join('\n');
+}
+
+async function maybeAutoDiagnose(task: LlmTask, filePath: string, toolText: string): Promise<string | null> {
+  try {
+    if (process.env.YZ_AUTO_DIAGNOSE === '0') return null;
+    if (!task.workspaceDir) return null; // 没有工作目录（纯聊天会话）不跑
+    if (!filePath || toolText.startsWith('Error') || toolText.startsWith('工具执行失败')) return null;
+    const ext = (filePath.split('.').pop() || '').toLowerCase();
+    if (!AUTO_DIAGNOSE_EXTS.has(ext)) return null;
+    const convKey = task.conversationId || task.id;
+    const now = Date.now();
+    const last = autoDiagnoseLastAt.get(convKey) || 0;
+    if (now - last < AUTO_DIAGNOSE_INTERVAL_MS) return null;
+    autoDiagnoseLastAt.set(convKey, now);
+    // 刚改过文件，项目级 tsc 缓存必失效
+    invalidateDiagnosticsCache();
+    const res = await runCodeDiagnostics({
+      workspaceDir: task.workspaceDir,
+      targetPath: filePath,
+      checks: ['tsc', 'syntax'],
+      timeoutMs: 90_000,
+      maxProblems: 10,
+    });
+    if (!res.ran.length || !res.problems.length) return null;
+    const base = filePath.replace(/\\/g, '/').toLowerCase();
+    const mine = res.problems.filter((p) => p.file.replace(/\\/g, '/').toLowerCase() === base);
+    const others = res.problems.length - mine.length;
+    if (mine.length === 0 && others === 0) return null;
+    const parts: string[] = [];
+    if (mine.length > 0) {
+      parts.push(`[自动诊断] 刚修改的文件有 ${mine.length} 个问题（检查: ${res.ran.join('+')}）：`);
+      for (const p of mine.slice(0, 10)) {
+        parts.push(`  ${p.file}:${p.line}${p.col ? ':' + p.col : ''}  ${p.severity}${p.code ? ' ' + p.code : ''}: ${p.message}`);
+      }
+      if (others > 0) parts.push(`（另：项目内其他文件还有 ${others}+ 处问题，可用 code_diagnostics 查看）`);
+      parts.push('请先用 file_edit 修复以上问题再继续，修复后可调 code_diagnostics 复查。');
+    } else {
+      parts.push(`[自动诊断] 当前文件无问题；项目内其他文件还有 ${others}+ 处问题（检查: ${res.ran.join('+')}，可用 code_diagnostics 查看）。`);
+    }
+    return parts.join('\n');
+  } catch {
+    return null; // 诊断失败绝不影响工具调用本身
+  }
+}
+
 async function executeTool(
   task: LlmTask,
   registry: ReturnType<typeof getToolRegistry>,
@@ -2316,6 +2429,34 @@ async function executeTool(
   // 这里（ReAct 主链路）有前端在线 → 弹窗授权。
   // ══════════════════════════════════════════════════════════════════════════
   // 档位（设置项 pathGuard，默认 ask）：off 明示不检查；strict 越界直接拒（不给授权入口）。
+
+  // ── 危险命令护栏（2026-10-03，P1）：与路径守卫独立，pathGuard=off 也拦 ──
+  // 破坏性命令（递归删除/格式化/强推/关机…）**每次调用单独弹窗**，不复用"首次授权"，
+  // 且授权通过也不记入会话授权集合 —— 单独点头，永不记忆。
+  const isCommandTool = COMMAND_TOOLS.has(toolName);
+  const dangerHit = isCommandTool ? checkDangerousCommand(summarizeCommandArgs(args)) : null;
+  let dangerGranted = false;
+  if (dangerHit) {
+    const dangerItems: PathAccessItem[] = [{
+      toolName, action: 'write', absPath: '', rawPath: summarizeCommandArgs(args),
+    }];
+    auditPathAccess({
+      userId: task.userId, conversationId: task.conversationId, taskId: task.id,
+      toolName, decision: 'danger-confirm', reason: dangerHit.why, items: dangerItems,
+    });
+    const granted = await requestPathAuthorization(task, toolName, dangerItems, true, dangerHit.why);
+    if (!granted.ok) {
+      console.warn(`[danger-guard] 拒绝 conv=${task.conversationId} tool=${toolName} 原因=${granted.reason} 危险=${dangerHit.why}`);
+      auditPathAccess({
+        userId: task.userId, conversationId: task.conversationId, taskId: task.id,
+        toolName, decision: 'danger-denied', reason: granted.reason, items: dangerItems,
+      });
+      return granted.message;
+    }
+    dangerGranted = true; // 本次调用放行，但**不写** commandAuthorizedConvs
+    console.warn(`[danger-guard] 危险命令已单独授权 conv=${task.conversationId} tool=${toolName} 危险=${dangerHit.why}`);
+  }
+
   if (task.pathGuard !== 'off') {
     const pathVerdict = checkPathAccess({
       toolName,
@@ -2335,7 +2476,10 @@ async function executeTool(
         return `越界访问已被「严格模式」拒绝：${pathVerdict.items.map((i) => i.rawPath || i.toolName).join(', ')}。`
           + `请在设置里把「工作目录守卫」改为「询问」或直接使用工作目录内的路径。`;
       }
-      if (isCommand && isCommandAuthorized(task.conversationId)) {
+      if (isCommand && dangerGranted) {
+        // 危险命令已在上面单独授权过本次调用，路径授权不再重复弹（弹两次 = 骚扰）
+        console.warn(`[path-guard] 放行(危险命令已单独授权) conv=${task.conversationId} tool=${toolName}`);
+      } else if (isCommand && isCommandAuthorized(task.conversationId)) {
         console.warn(`[path-guard] 放行(命令已授权) conv=${task.conversationId} tool=${toolName}`);
       } else {
         const granted = await requestPathAuthorization(task, toolName, pathVerdict.items, isCommand);
@@ -2383,7 +2527,7 @@ async function executeTool(
   // API 工具（api_memory_search/api_kb_search/api_data_* 等）→ 后端直接执行；agentId 用于本体挂载范围过滤
   if (isApi) {
     try {
-      const result = await executeApiTool(toolName, args, task.userId, task.agentId ?? undefined, task.ontologyIds, task.conversationId);
+      const result = await executeApiTool(toolName, args, task.userId, task.agentId ?? undefined, task.ontologyIds, task.conversationId, task.workspaceDir);
       return result.content?.map((c: any) => c.text || '').join('') || JSON.stringify(result);
     } catch (e: any) {
       return `API 工具执行失败: ${e?.message || e}`;
@@ -2602,10 +2746,15 @@ async function executeTool(
     // 文件修改快照：file_edit 落盘前记下原内容，供前端 Diff 对比 / 应用 / 回退。
     // ★ file_write 不走这里 —— 它的落盘路径由工具按会话目录决定，调用方执行前无法预知，
     //   故由工具自身在落盘前读原内容并经 _meta.beforeContent 回传（见 file-write.ts）。
-    const snapPath = (toolName === 'file_edit') ? String(args?.path || '') : '';
+    // ★ snapPath 必须先解析成**绝对路径**（相对路径以工作目录为基准）：此前直接存模型给的
+    //   原始路径 —— readFileOrNull 相对进程 cwd 读（before 快照错位），且 file_change.path
+    //   是相对路径导致 /workspace/changes 按目录前缀过滤永远匹配不上（编辑器提示条不出现）。
+    const snapPath = (toolName === 'file_edit')
+      ? resolveToolPath(String(args?.path || ''), task.workspaceDir)
+      : '';
     const before = snapPath ? await readFileOrNull(snapPath) : null;
     const r = await registry.execute(toolName, args, toolCtx);
-    const text = typeof r === 'string' ? r : (r.content?.map((c: any) => c.text || '').join('') || JSON.stringify(r));
+    let text = typeof r === 'string' ? r : (r.content?.map((c: any) => c.text || '').join('') || JSON.stringify(r));
     const meta = (r as any)?._meta as { path?: string; beforeContent?: string | null } | undefined;
     // 把 _meta 交给调用方（供登记 conversation_file / 写 Diff 快照）
     if (metaOut) metaOut.value = (meta as Record<string, unknown> | undefined) || null;
@@ -2626,6 +2775,22 @@ async function executeTool(
             .run('fc_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8), task.userId, task.conversationId, task.id, snapPath, before, after, toolName, 'pending', task.step, Date.now());
         } catch { /* 快照失败不影响工具结果 */ }
       }
+    }
+    // ★ 编辑后自动诊断（P0 反馈闭环）：代码文件被成功改写 → 静态诊断结果附加到工具结果尾部，
+    //   模型当场看到类型/语法错误并自修（详见 maybeAutoDiagnose 注释）。
+    const autoDiag = await maybeAutoDiagnose(task, meta?.path || snapPath, text);
+    if (autoDiag) text = `${text}\n\n${autoDiag}`;
+    // ★ 自动验证循环的记账：碰过代码文件 / 跑过有效验证（详见 takeVerifyNudge 注释）
+    if ((toolName === 'file_write' || toolName === 'file_edit') && !text.startsWith('Error') && !text.startsWith('工具执行失败')) {
+      const touchedPath = meta?.path || snapPath;
+      const touchedExt = (touchedPath.split('.').pop() || '').toLowerCase();
+      if (AUTO_DIAGNOSE_EXTS.has(touchedExt)) markCodeTouched(task);
+    }
+    if (toolName === 'code_diagnostics' && text.includes('✅ 未发现问题')) {
+      markTaskVerified(task);
+    } else if (toolName === 'cmd_exec' && !text.startsWith('Error') && !text.startsWith('工具执行失败')) {
+      const cmdText = [args?.command, ...(Array.isArray(args?.args) ? args.args : [])].filter(Boolean).join(' ');
+      if (VERIFY_CMD_RE.test(cmdText) && /Exit code:\s*0\b/.test(text)) markTaskVerified(task);
     }
     return text;
   }
@@ -2879,7 +3044,8 @@ async function runSpawnedSubAgent(
 
   // ── ① 工具裁剪：父级可用工具为全集，模型只能"少要" ──
   const parentToolIds = collectParentToolIds(task, uiTools);
-  const permissionMode = task.permissionMode || 'default';
+  // ★ fail-safe（2026-09-27 拍板）：档位缺失必须落 readonly，落 default = 查不到就放行写权限
+  const permissionMode = task.permissionMode || 'readonly';
   const { pinned, dropped } = resolveSpecTools({
     requested: normalized.tools || [],
     excluded: normalized.toolExclude,
@@ -2984,7 +3150,8 @@ function collectParentToolIds(task: LlmTask, uiTools: Set<string>): string[] {
     // UI 工具（无人值守时本就不该给）
     if (!task.includeUiTools) for (const n of UI_TOOL_NAMES) ids.delete(n);
     // 会话级权限：只读会话里，写类工具**不进全集**（否则子智能体就绕开了权限分级）
-    const mode = task.permissionMode || 'default';
+    // ★ fail-safe：同上，缺失档位按 readonly 裁剪（写类工具不进子智能体全集）
+    const mode = task.permissionMode || 'readonly';
     for (const n of [...ids]) if (!checkToolPermission(mode, n).allowed) ids.delete(n);
   } catch { /* 见下：取不到就 fail-closed */ }
 
@@ -4386,6 +4553,9 @@ export function buildToolsForBackend(agentId: string | null, userId: string, opt
   const alwaysApiTools = [
     'api_memory_search', 'api_memory_list', 'api_memory_create', 'api_memory_delete',
     'api_kb_search', 'api_kb_list',
+    // 语义代码检索（P1，2026-10-03）：只读、有工作目录才有意义，默认暴露给所有智能体
+    //（mountedApiTools 非空时本组被整组替换 —— 挂载了专属 api 工具链的智能体按需自行加挂）
+    'api_code_semantic_search',
     // AI 媒体生成：文生图/文生视频（agnes 平台专用端点），默认暴露让所有智能体都能直接出图/出片
     'api_image_generate', 'api_video_generate', 'api_video_status',
   ];

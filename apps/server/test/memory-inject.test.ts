@@ -192,6 +192,14 @@ vi.mock('@yan-zhi/core', () => ({
     return raw || ws || '.';
   },
   visibleMessages: (ms: any[]) => (ms || []).filter((m) => !(m && (m.parentToolCallId ?? m.parent_tool_call_id))),
+    // ★ 2026-10-03 P0/P1 新增导出（白名单 mock 必须与生产同步，否则任务加载即 failed）：
+  //   runCodeDiagnostics / invalidateDiagnosticsCache：编辑后自动诊断钩子（生产代码顶层 import）；
+  //   SYNTHETIC_MESSAGE_IDS / isSyntheticMessageId：context-snapshot 从 core 取（白名单缺了
+  //   连模块都加载不起来 —— 本文件「手工白名单 mock 的代价」教训的又一次兑现）。
+  runCodeDiagnostics: async () => ({ ran: [], projectRoot: null, problems: [], notes: [], durationMs: 0, text: '' }),
+  invalidateDiagnosticsCache: () => {},
+  SYNTHETIC_MESSAGE_IDS: new Set(['sys', 'summary', '__summary__']),
+  isSyntheticMessageId: (id: string) => ['sys', 'summary', '__summary__'].includes(id),
   adviceForTruncatedArgs: () => ({ truncated: false, message: '' }),
   resolveContextWindow: (n: any) => (typeof n === 'number' && n > 0 ? n : 32768),
 }));

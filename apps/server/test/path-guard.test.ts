@@ -378,3 +378,55 @@ describe('会话级授权状态', () => {
     expect(isCommandAuthorized('c1')).toBe(false);
   });
 });
+// ─────────────── 危险命令护栏（2026-10-03 P1）───────────────
+// 守住的语义：破坏性命令必须命中（每次单独授权的依据）；
+// 高频正当命令绝不误伤（否则弹窗骚扰会让用户麻痹）。
+import { checkDangerousCommand } from '../src/services/path-guard.js';
+
+describe('checkDangerousCommand 危险命令判定', () => {
+  const risky: Array<[string, string]> = [
+    ['rm -rf /', '递归删除'],
+    ['rm -rf build', '递归删除'],
+    ['rd /s /q build', '递归删除目录'],
+    ['del /s /q *.log', '批量删除'],
+    ['Remove-Item -Recurse -Force dist', 'PowerShell 递归删除'],
+    ['format C:', '格式化'],
+    ['dd if=/dev/zero of=/dev/sda', '磁盘级写入'],
+    ['shutdown /s', '关机'],
+    ['git push --force origin main', '强制推送'],
+    ['git push -f', '强制推送'],
+    ['git reset --hard HEAD~3', '丢弃全部未提交改动'],
+    ['git clean -fd', '删除未跟踪文件'],
+    ['chmod -R 777 /', '递归修改文件权限'],
+    ['taskkill /f /im node.exe', '强制结束进程'],
+    ['reg add HKLM\\Software\\x /v y', '写注册表'],
+    ['npm publish', '发布'],
+    ["shutil.rmtree('build')", 'Python 内递归删除'],
+    ['DROP TABLE users', '删库'],
+  ];
+
+  it.each(risky)('危险命令命中：%s（%s）', (cmd) => {
+    const hit = checkDangerousCommand(cmd);
+    expect(hit, cmd).not.toBeNull();
+    expect(hit!.why.length).toBeGreaterThan(0);
+  });
+
+  it.each([
+    'npm test',
+    'npm run build',
+    'pnpm vitest run test/path-guard.test.ts',
+    'git status',
+    'git push origin main',
+    'git push --force-with-lease origin main',
+    // 已知误报类（设计取舍）：破坏性模式出现在引号内容里（如提交信息提到 rm -rf）会触发
+    // 确认弹窗 —— 判定只多弹一次确认不拦截，误报成本低、漏报风险高，宁可误报。不放本组。
+    'tsc --noEmit',
+    'node scripts/build-python-runtime.mjs',
+    'python test.py',
+    'dir',
+    'echo hello',
+    '',
+  ])('正当命令不误伤：%s', (cmd) => {
+    expect(checkDangerousCommand(cmd)).toBeNull();
+  });
+});

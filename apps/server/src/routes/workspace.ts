@@ -428,6 +428,33 @@ router.get('/changes/content', (req, res) => {
   res.json({ path: row.path, tool: row.tool, createdAt: row.created_at, before: row.before_content ?? null, after: row.after_content ?? null });
 });
 
+// GET /api/workspace/changes/latest?conversationId=&path= —— 会话内某路径的最新 pending 快照
+// ★ 用途：聊天流内嵌 diff 卡片（ChatFileChangeCard）。卡片手里只有「工具结果文本里的路径」，
+//   不知道 file_change 的 id —— 由后端按会话+路径反查（斜杠方向归一化后比对），把 before/after
+//   一并带回，卡片一次请求就能渲染 diff 与「应用/回退」按钮，不用先查列表再查内容。
+router.get('/changes/latest', (req, res) => {
+  const conversationId = String(req.query.conversationId || '');
+  const rawPath = String(req.query.path || '').trim();
+  if (!conversationId || !rawPath) return res.status(400).json({ error: '缺少 conversationId 或 path 参数' });
+  const norm = (s: string) => s.split('\\').join('/').replace(/\/+$/, '');
+  const target = norm(rawPath);
+  let rows: any[] = [];
+  try {
+    rows = db.prepare("SELECT id, path, tool, before_content, after_content, created_at FROM file_change WHERE conversation_id = ? AND status = 'pending' ORDER BY created_at DESC LIMIT 500").all(conversationId) as any[];
+  } catch { rows = []; }
+  const hit = rows.find((r) => norm(String(r.path || '')) === target);
+  if (!hit) return res.status(404).json({ error: '未找到该文件的待处理修改' });
+  res.json({
+    id: hit.id,
+    path: hit.path,
+    tool: hit.tool,
+    createdAt: hit.created_at,
+    before: hit.before_content ?? null,
+    after: hit.after_content ?? null,
+    count: rows.filter((r) => norm(String(r.path || '')) === target).length,
+  });
+});
+
 /** 同路径的所有 pending 记录统一置为某状态（回退/应用是文件级操作，历史链一并收口） */
 function markChange(id: string, status: string): any {
   const row = db.prepare('SELECT id, path FROM file_change WHERE id = ?').get(id) as any;
@@ -464,6 +491,45 @@ router.post('/changes/:id/revert', (req, res) => {
     return res.status(500).json({ error: (e as Error).message });
   }
   res.json({ item: markChange(row.id, 'reverted'), deleted: row.before_content == null });
+});
+
+// POST /api/workspace/changes/rollback-all?dir= —— 一键回退目录下**全部**待审模型修改
+// ★ 项目级检查点的"整体回滚"半边（2026-10-03 P1）：任务跑完想整体退回，逐个文件点回退
+//   不现实。按 dir 前缀圈定范围（与 GET /changes 同口径），逐路径回退到 before_content
+//   （新建文件则删除），同路径历史链由 markChange 一并收口为 reverted。
+router.post('/changes/rollback-all', (req, res) => {
+  const dir = typeof req.query.dir === 'string' ? req.query.dir.trim().replace(/[\\/]+$/, '') : '';
+  if (!dir) return res.status(400).json({ error: '缺少 dir 参数' });
+  let rows: any[] = [];
+  try {
+    rows = db.prepare("SELECT id, path, before_content, created_at FROM file_change WHERE status = 'pending' ORDER BY created_at DESC LIMIT 2000").all() as any[];
+  } catch { rows = []; }
+  const under = rows.filter((r) => {
+    const p = String(r.path || '').replace(/[\\/]+$/, '');
+    return p === dir || p.startsWith(dir + '/') || p.startsWith(dir + '\\');
+  });
+  // 每个路径取最新一条做回退基准；markChange 会把同路径全部 pending 收口
+  const byPath = new Map<string, any>();
+  for (const r of under) { if (!byPath.has(r.path)) byPath.set(r.path, r); }
+  let reverted = 0, deleted = 0, failed = 0;
+  const errors: string[] = [];
+  for (const [p, row] of byPath) {
+    try {
+      if (row.before_content == null) {
+        if (fs.existsSync(p)) fs.unlinkSync(p);
+        deleted++;
+      } else {
+        fs.mkdirSync(path.dirname(p), { recursive: true });
+        fs.writeFileSync(p, row.before_content, 'utf-8');
+        reverted++;
+      }
+      markChange(row.id, 'reverted');
+    } catch (e) {
+      failed++;
+      errors.push(`${p}: ${(e as Error).message}`);
+    }
+  }
+  res.json({ reverted, deleted, failed, total: byPath.size, errors: errors.slice(0, 10) });
 });
 
 // POST /api/workspace/changes/:id/dismiss —— 忽略：不再提示，不改磁盘
