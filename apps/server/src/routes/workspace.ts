@@ -165,6 +165,42 @@ function isTextFile(filePath: string, buf: Buffer): boolean {
   return !looksBinary(buf);
 }
 
+// GET /api/workspace/symbols?path=xxx —— 单文件符号表（@ 符号引用，P2-1）
+// 用 core 的 AST 解析（TypeScript Compiler API 可用即精确；不可用返回空表，前端自然不显示）。
+// 结果按 (path, mtime, size) 内存缓存 —— 输入法级联触发 @ 浮层时的重复请求零开销。
+const symbolCache = new Map<string, { mtimeMs: number; size: number; decls: Array<{ name: string; line: number; kind: string; signature: string }> }>();
+router.get('/symbols', (req, res) => {
+  const abs = toAbs(req.query.path);
+  if (!abs) return res.status(400).json({ error: '缺少 path 参数' });
+  try {
+    const st = fs.statSync(abs);
+    if (st.isDirectory()) return res.status(400).json({ error: '目标是目录' });
+    if (st.size > 1024 * 1024) return res.json({ path: abs, decls: [] }); // 超大文件不做符号解析
+    const cached = symbolCache.get(abs);
+    if (cached && cached.mtimeMs === st.mtimeMs && cached.size === st.size) {
+      return res.json({ path: abs, decls: cached.decls });
+    }
+    const buf = fs.readFileSync(abs);
+    if (!isTextFile(abs, buf)) return res.json({ path: abs, decls: [] });
+    void (async () => {
+      try {
+        const { tryParseAst } = await import('@yan-zhi/core');
+        const ext = path.extname(abs).slice(1).toLowerCase();
+        const ast = await tryParseAst(buf.toString('utf8'), abs, ext);
+        const decls = (ast?.decls || [])
+          .filter((d) => d.kind !== 'const' || d.exported) // 局部常量不进符号菜单（噪音）
+          .slice(0, 200)
+          .map((d) => ({ name: d.name, line: d.line, kind: d.kind, signature: d.signature }));
+        symbolCache.set(abs, { mtimeMs: st.mtimeMs, size: st.size, decls });
+      } catch { /* 解析失败 → 空表，前端自然不显示 */ }
+    })();
+    // 首次请求先回空表（异步解析完成后第二次查询命中缓存）—— @ 浮层的节流拉取天然容忍
+    return res.json({ path: abs, decls: cached?.decls || [] });
+  } catch (err) {
+    return res.status(404).json({ error: `读取失败：${err instanceof Error ? err.message : String(err)}` });
+  }
+});
+
 // GET /api/workspace/file?path=xxx —— 读取文本文件内容
 router.get('/file', (req, res) => {
   const abs = toAbs(req.query.path);
@@ -475,6 +511,43 @@ router.post('/changes/:id/apply', (req, res) => {
     return res.status(500).json({ error: (e as Error).message });
   }
   res.json({ item: markChange(row.id, 'applied') });
+});
+
+// POST /api/workspace/changes/:id/apply-hunks —— hunk 级选择性接受（P2-2）
+// body: { hunks: [{ newStart, newEnd }] }（新文件 1-based 行号区间，来自 DiffBody 的 hunk 坐标）
+// 语义：选中的 hunk 套用 after，未选中的部分回退 before。
+// ★ 前提：盘上当前内容必须等于 after_content（用户手改过 → 409，走整文件审查，不猜）；
+//   新建文件（before 为空）不支持部分接受（400）。
+router.post('/changes/:id/apply-hunks', (req, res) => {
+  const row = db.prepare('SELECT id, path, before_content, after_content FROM file_change WHERE id = ?').get(req.params.id) as any;
+  if (!row) return res.status(404).json({ error: '记录不存在' });
+  if (row.before_content == null) return res.status(400).json({ error: '新建文件不支持 hunk 级接受，请使用整文件接受/回退' });
+  const hunks = Array.isArray((req.body as any)?.hunks) ? (req.body as any).hunks : [];
+  const ranges = hunks
+    .map((h: any) => ({ newStart: Math.floor(Number(h?.newStart)), newEnd: Math.floor(Number(h?.newEnd)) }))
+    .filter((h: any) => Number.isFinite(h.newStart) && Number.isFinite(h.newEnd) && h.newStart >= 1 && h.newEnd >= h.newStart);
+  if (!ranges.length) return res.status(400).json({ error: '缺少有效的 hunks 区间' });
+  const afterOnDisk = (() => { try { return fs.readFileSync(row.path, 'utf-8'); } catch { return null; } })();
+  if (afterOnDisk === null) return res.status(409).json({ error: '文件已不存在于磁盘，请重新发起修改' });
+  const norm = (s2: string) => s2.split('\r\n').join('\n');
+  if (norm(afterOnDisk) !== norm(String(row.after_content ?? ''))) {
+    return res.status(409).json({ error: '文件在快照之后又被修改过（盘上内容 ≠ 快照 after），请使用整文件审查' });
+  }
+  const { applyHunkSelection } = require('../services/hunk-apply.js') as typeof import('../services/hunk-apply.js');
+  let merged: string | null;
+  try {
+    merged = applyHunkSelection(String(row.before_content), String(row.after_content), ranges);
+  } catch (e) {
+    return res.status(400).json({ error: (e as Error).message });
+  }
+  if (merged == null) return res.status(400).json({ error: '选择与快照差异不匹配（可能 diff 已过期），请刷新后重试' });
+  try {
+    fs.writeFileSync(row.path, merged, 'utf-8');
+  } catch (e) {
+    return res.status(500).json({ error: (e as Error).message });
+  }
+  // 部分接受后，旧的 pending 链路收口为 applied（新状态 = 盘上内容是"部分套用"的最终态）
+  res.json({ item: markChange(row.id, 'applied'), applied: ranges.length });
 });
 
 // POST /api/workspace/changes/:id/revert —— 恢复快照 before_content；新建文件（before 为空）则删除
