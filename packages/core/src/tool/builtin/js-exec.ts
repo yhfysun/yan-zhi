@@ -1,5 +1,6 @@
 // js_exec 内置工具 — 沙箱执行 JS 代码（node:vm，捕获 console 输出与返回值，支持 async/await）
 // 支持宿主注入 dataQuery 桥接函数：脚本内可调用 dataQuery({sql, datasourceId?, limit?}) 只读查数。
+import { withTimeout } from '@yan-zhi/shared';
 import type { BuiltInTool } from '../types';
 import type { McpCallResult } from '../../mcp/client';
 import { toolError } from '../result';
@@ -71,10 +72,7 @@ export class JsExecTool implements BuiltInTool {
     let result: unknown;
     try {
       const script = new vm.Script(wrapped, { filename: 'js_exec.js' });
-      result = await Promise.race([
-        Promise.resolve(script.runInContext(context, { timeout, displayErrors: true })),
-        new Promise((_, reject) => setTimeout(() => reject(new Error(`执行超时 (${timeout}ms)`)), timeout)),
-      ]);
+      result = await withTimeout(Promise.resolve(script.runInContext(context, { timeout, displayErrors: true })), timeout, '执行');
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       const out = logs.length > 0 ? `${logs.join('\n')}\n` : '';

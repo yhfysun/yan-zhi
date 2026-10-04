@@ -1,4 +1,5 @@
 // dns_lookup 内置工具 — DNS 解析（A/AAAA/CNAME/MX/TXT/NS/PTR 反查）
+import { withTimeout } from '@yan-zhi/shared';
 import type { BuiltInTool } from '../types';
 import type { McpCallResult } from '../../mcp/client';
 import { toolError } from '../result';
@@ -49,10 +50,7 @@ export class DnsLookupTool implements BuiltInTool {
     };
 
     try {
-      const result = await Promise.race([
-        run(),
-        new Promise<string[]>((_, reject) => setTimeout(() => reject(new Error(`解析超时 (${timeout}ms)`)), timeout)),
-      ]);
+      const result = await withTimeout(run(), timeout, '解析');
       const lines = type === 'PTR'
         ? `PTR records for ${host}:\n${result.length > 0 ? result.join('\n') : '(无记录)'}`
         : `${type} records for ${host} (${result.length}):\n${result.join('\n')}`;

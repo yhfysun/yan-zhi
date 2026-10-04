@@ -1,4 +1,5 @@
 // lan_scan 内置工具 — 网段主机发现 + 可选端口扫描（仅限授权目标：自有网络/获授权渗透测试）
+import { withTimeoutOrUndefined } from '@yan-zhi/shared';
 import type { BuiltInTool } from '../types';
 import type { McpCallResult } from '../../mcp/client';
 import { parsePorts } from './port-scan';
@@ -109,9 +110,6 @@ interface AliveHost {
   ports?: number[];
 }
 
-function withTimeout<T>(p: Promise<T>, ms: number): Promise<T | undefined> {
-  return Promise.race([p, new Promise<undefined>((r) => setTimeout(() => r(undefined), ms))]);
-}
 
 /** 自动检测本机所在局域网：取第一个非内部 IPv4 地址，返回其 /24 网段规格 */
 async function detectLocalLan(): Promise<string | null> {
@@ -231,7 +229,7 @@ export class LanScanTool implements BuiltInTool {
     const names = new Map<string, string>();
     await Promise.all(alive.map(async (a) => {
       try {
-        const recs = await withTimeout(dns.promises.reverse(a.ip), 3000);
+        const recs = await withTimeoutOrUndefined(dns.promises.reverse(a.ip), 3000);
         if (recs && recs.length > 0) names.set(a.ip, recs[0]);
       } catch { /* 无 PTR 记录或解析失败 */ }
     }));
