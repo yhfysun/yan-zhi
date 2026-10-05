@@ -167,39 +167,24 @@
             </el-tab-pane>
 
             <el-tab-pane label="分片列表" name="chunks">
-              <div class="chunk-tab-toolbar">
-                <el-button size="small" :icon="Share" :loading="chunkLoading" @click="loadChunks(selected.id)">
-                  {{ chunksLoaded ? '刷新分片' : '查看分片' }}
-                </el-button>
-              </div>
               <div v-if="chunkLoading" class="panel-state"><el-skeleton :rows="4" animated /></div>
               <el-empty v-else-if="chunksLoaded && chunks.length === 0" description="添加文档后会自动切分，分片将显示于此" :image-size="50" />
               <div v-else-if="chunksLoaded" class="chunk-tree">
                 <div v-for="group in chunkGroups" :key="group.docId" class="chunk-group">
                   <div class="chunk-group-name" @click="toggleChunkGroup(group.docId)">
-                    <el-icon><Folder /></el-icon>
-                    <span>{{ group.docName || '(文档)' }}</span>
+                    <el-icon class="chunk-caret" :class="{ open: expandedChunkGroups.includes(group.docId) }"><ArrowRight /></el-icon>
+                    <span class="chunk-group-title">{{ group.docName || '(文档)' }}</span>
                     <span class="chunk-count">{{ group.items.length }} 片</span>
-                    <el-icon class="chunk-caret">
-                      <ArrowDown v-if="expandedChunkGroups.includes(group.docId)" />
-                      <ArrowRight v-else />
-                    </el-icon>
                   </div>
                   <div v-if="expandedChunkGroups.includes(group.docId)" class="chunk-items">
-                    <div v-for="c in group.items" :key="c.id" class="chunk-node">
-                      <div class="chunk-node-head" @click="toggleChunk(c.id)">
-                        <span class="chunk-node-index">片 {{ c.chunkIndex }}</span>
-                        <el-icon class="chunk-caret">
-                          <ArrowDown v-if="expandedChunks.includes(c.id)" />
-                          <ArrowRight v-else />
-                        </el-icon>
-                      </div>
-                      <div v-if="expandedChunks.includes(c.id)" class="chunk-node-content">{{ c.content }}</div>
+                    <div v-for="c in group.items" :key="c.id" class="chunk-node" :class="{ open: expandedChunks.includes(c.id) }" @click="toggleChunk(c.id)">
+                      <span class="chunk-node-index">#{{ c.chunkIndex }}</span>
+                      <p class="chunk-node-preview">{{ c.content }}</p>
                     </div>
                   </div>
                 </div>
               </div>
-              <el-empty v-else description="点击「查看分片」加载分片列表" :image-size="50" />
+              <div v-else class="panel-state"><el-skeleton :rows="4" animated /></div>
             </el-tab-pane>
           </el-tabs>
 
@@ -220,7 +205,15 @@
       </section>
     </div>
 
-    <el-dialog v-model="showBaseDialog" :title="editingBase ? '编辑知识库' : '新建知识库'" width="480px" :close-on-click-modal="false">
+    <FormDialog
+      v-model="showBaseDialog"
+      :is-edit="!!editingBase"
+      title-create="新建知识库"
+      title-edit="编辑知识库"
+      width="480px"
+      :loading="saving"
+      @submit="saveBase"
+    >
       <el-form label-width="80px">
         <el-form-item label="名称"><el-input v-model="baseForm.name" placeholder="如：产品资料库" /></el-form-item>
         <el-form-item label="描述"><el-input v-model="baseForm.description" type="textarea" :rows="3" placeholder="可选" /></el-form-item>
@@ -240,13 +233,16 @@
           </template>
         </el-form-item>
       </el-form>
-      <template #footer>
-        <el-button @click="showBaseDialog = false">取消</el-button>
-        <el-button type="primary" :loading="saving" @click="saveBase">保存</el-button>
-      </template>
-    </el-dialog>
+    </FormDialog>
 
-    <el-dialog v-model="showDocDialog" title="添加文档" width="560px" :close-on-click-modal="false">
+    <FormDialog
+      v-model="showDocDialog"
+      title="添加文档"
+      width="560px"
+      confirm-text="添加"
+      :loading="savingDoc"
+      @submit="saveDoc"
+    >
       <el-form label-width="80px">
         <el-form-item label="名称"><el-input v-model="docForm.name" placeholder="文档名称" /></el-form-item>
         <el-form-item label="上传文件">
@@ -262,22 +258,19 @@
         </el-form-item>
         <el-form-item label="来源路径"><el-input v-model="docForm.sourcePath" placeholder="可选，本地文件绝对路径" /></el-form-item>
       </el-form>
-      <template #footer>
-        <el-button @click="showDocDialog = false">取消</el-button>
-        <el-button type="primary" :loading="savingDoc" @click="saveDoc">添加</el-button>
-      </template>
-    </el-dialog>
+    </FormDialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref, computed } from 'vue';
-import { Plus, Refresh, Edit, Delete, Search, Folder, Share, ArrowDown, ArrowRight, Histogram, Document } from '@element-plus/icons-vue';
+import { onMounted, ref, computed, watch } from 'vue';
+import { Plus, Refresh, Edit, Delete, Search, Folder, Share, ArrowRight, Histogram, Document } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { api } from '../api/client';
 import { useAuthStore, useSettingsStore } from '../stores';
 import { DEFAULT_APP_GUIDE, APP_GUIDE_DOCS } from '../stores/settings';
 import KbGraph from '../components/KbGraph.vue';
+import FormDialog from '../components/FormDialog.vue';
 import {
   localListBases, localCreateBase, localUpdateBase, localDeleteBase,
   localListDocs, localAddDoc, localDeleteDoc, localSearch,
@@ -470,7 +463,14 @@ async function loadChunks(baseId: string) {
   if ('error' in res) { ElMessage.error(res.error); return; }
   chunks.value = (res as any).data || [];
   chunksLoaded.value = true;
+  // 分片组默认全部展开（列表直接可读；用户手动收起过的组不强行展开）
+  const ids = [...new Set(chunks.value.map((c: any) => c.docId || 'none'))];
+  expandedChunkGroups.value = [...new Set([...expandedChunkGroups.value, ...ids])];
 }
+// 切到分片列表 tab 自动加载，无需手动点「查看分片」
+watch(activeTab, (t) => {
+  if (t === 'chunks' && !chunksLoaded.value && !chunkLoading.value && selected.value?.id) loadChunks(selected.value.id);
+});
 function toggleChunkGroup(docId: string) {
   const i = expandedChunkGroups.value.indexOf(docId);
   if (i >= 0) expandedChunkGroups.value.splice(i, 1);
@@ -628,7 +628,7 @@ async function removeBase() {
   if (!selected.value) return;
   if (isBuiltin.value) return; // 内置库不允许删除
   try {
-    await ElMessageBox.confirm('删除知识库会同时删除文档和切片，确认？', '提示', { type: 'warning' });
+    await ElMessageBox.confirm('删除知识库会同时删除文档和切片，确认？', '提示', { type: 'warning', confirmButtonClass: 'yz-confirm-danger' });
   } catch {
     return;
   }
@@ -695,7 +695,7 @@ async function saveDoc() {
 
 async function removeDoc(docId: string) {
   try {
-    await ElMessageBox.confirm('确认删除该文档？', '提示', { type: 'warning' });
+    await ElMessageBox.confirm('确认删除该文档？', '提示', { type: 'warning', confirmButtonClass: 'yz-confirm-danger' });
   } catch {
     return;
   }
@@ -752,7 +752,7 @@ async function ensureBuiltinGuide() {
 
 async function resetBuiltinGuide() {
   try {
-    await ElMessageBox.confirm('恢复为默认应用使用说明？你当前的修改会丢失。', '提示', { type: 'warning' });
+    await ElMessageBox.confirm('恢复为默认应用使用说明？你当前的修改会丢失。', '提示', { type: 'warning', confirmButtonClass: 'yz-confirm-danger' });
   } catch {
     return;
   }
@@ -1001,35 +1001,41 @@ async function resetBuiltinGuide() {
   }
 }
 
-/* ===== 分片节点（文档→分片 关系） ===== */
+/* ===== 分片列表（按文档分组，分片直接可读） ===== */
 .chunk-section { margin-top: 4px; }
-.chunk-tree { margin-top: 8px; display: flex; flex-direction: column; gap: 8px; max-height: 60vh; overflow-y: auto; padding-right: 4px; }
+.chunk-tree { margin-top: 8px; display: flex; flex-direction: column; gap: 10px; max-height: 60vh; overflow-y: auto; padding-right: 4px; }
 .chunk-group {
-  border: 1px solid var(--glass-border); border-radius: 12px; overflow: hidden;
+  flex: none; /* flex 列 + max-height 容器下禁止压缩，内容超高走容器滚动而不是把分组裁掉 */
+  border: 1px solid var(--glass-border); border-radius: var(--radius-md, 10px); overflow: hidden;
   background: var(--glass-bg, rgba(255,255,255,0.6));
 }
 .chunk-group-name {
-  display: flex; align-items: center; gap: 8px; padding: 9px 12px; cursor: pointer;
-  font-weight: 600; font-size: 13px; color: var(--color-text, #334);
+  display: flex; align-items: center; gap: 8px; padding: 8px 12px; cursor: pointer;
+  font-size: var(--font-size-base, 13px); color: var(--color-text, #334);
 }
 .chunk-group-name:hover { background: var(--glass-bg-hover); }
-.chunk-count { font-size: 11px; color: var(--color-text-secondary); font-weight: 400; }
-.chunk-caret { font-size: 12px; color: var(--color-text-secondary); margin-left: auto; }
+.chunk-caret { font-size: 12px; color: var(--color-text-secondary); transition: transform 0.15s ease; }
+.chunk-caret.open { transform: rotate(90deg); }
+.chunk-group-title { flex: 1; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chunk-count { flex: none; font-size: var(--font-size-xs, 11px); color: var(--color-text-secondary); }
 .chunk-items { border-top: 1px solid var(--glass-border); }
-.chunk-node { border-bottom: 1px solid var(--glass-border); }
-.chunk-node:last-child { border-bottom: none; }
-.chunk-node-head {
-  display: flex; align-items: center; gap: 8px; padding: 6px 12px; cursor: pointer;
-  font-size: 12px; color: var(--color-text-secondary);
+.chunk-node {
+  display: flex; align-items: flex-start; gap: 10px; padding: 8px 12px; cursor: pointer;
 }
-.chunk-node-head:hover { background: var(--glass-bg-hover); color: var(--color-primary); }
-.chunk-node-index { font-weight: 600; }
-.chunk-node-content {
-  padding: 8px 12px 10px; font-size: 12.5px; line-height: 1.6;
-  color: var(--color-text); background: rgba(0,0,0,0.02);
+.chunk-node:hover { background: var(--glass-bg-hover); }
+.chunk-node + .chunk-node { border-top: 1px solid var(--glass-border); }
+.chunk-node-index {
+  flex: none; min-width: 24px; padding-top: 2px;
+  font-size: var(--font-size-xs, 11px); color: var(--color-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+.chunk-node-preview {
+  margin: 0; flex: 1;
+  font-size: var(--font-size-sm, 12.5px); line-height: 1.6; color: var(--color-text);
   word-break: break-word; white-space: pre-wrap;
-  max-height: 40vh; overflow-y: auto;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
 }
+.chunk-node.open .chunk-node-preview { display: block; -webkit-line-clamp: unset; }
 
 /* ===== Tab 切换主体 ===== */
 .kb-tabs {
@@ -1041,13 +1047,6 @@ async function resetBuiltinGuide() {
 .kb-tabs :deep(.el-tabs__nav-wrap::after) {
   height: 1px;
 }
-.chunk-tab-toolbar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 10px;
-}
-
 /* ===== 文档浏览器（Windows 资源管理器风格：左目录 + 右预览） ===== */
 .doc-explorer {
   display: grid;
