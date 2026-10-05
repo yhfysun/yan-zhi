@@ -477,7 +477,7 @@ async function menuDelete() {
     await ElMessageBox.confirm(
       `确定删除「${m.row.name}」？${m.row.isDir ? '（含目录内全部内容，不可恢复）' : '（不可恢复）'}`,
       '删除确认',
-      { confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning' },
+      { confirmButtonText: '删除', confirmButtonClass: 'yz-confirm-danger', cancelButtonText: '取消', type: 'warning' },
     );
   } catch { return; }
   const r = await api.post<{ ok: boolean }>('/workspace/delete', { path: m.abs });

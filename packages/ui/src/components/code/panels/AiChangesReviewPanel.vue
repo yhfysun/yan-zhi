@@ -89,7 +89,7 @@ async function onRollbackAll() {
     await ElMessageBox.confirm(
       `将把 ${code.projectDir} 下全部 ${changes.value.length} 个文件的模型修改退回到修改前（新建文件将被删除）。此操作不可撤销，确认继续？`,
       '全部回退',
-      { confirmButtonText: '全部回退', cancelButtonText: '取消', type: 'warning' },
+      { confirmButtonText: '全部回退', confirmButtonClass: 'yz-confirm-danger', cancelButtonText: '取消', type: 'warning' },
     );
   } catch { return; }
   rollbackAll.value = true;

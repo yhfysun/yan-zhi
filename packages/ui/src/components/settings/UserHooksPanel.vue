@@ -36,7 +36,14 @@
       </el-table-column>
     </el-table>
 
-    <el-dialog v-model="dialogVisible" :title="editingId ? '编辑规则' : '新增规则'" width="500px" append-to-body>
+    <FormDialog
+      v-model="dialogVisible"
+      :title="editingId ? '编辑规则' : '新增规则'"
+      width="500px"
+      append-to-body
+      :loading="saving"
+      @submit="save"
+    >
       <el-form label-width="100px">
         <el-form-item label="规则名称">
           <el-input v-model="form.name" placeholder="如：git push 需确认" maxlength="50" />
@@ -57,11 +64,7 @@
           </el-radio-group>
         </el-form-item>
       </el-form>
-      <template #footer>
-        <el-button @click="dialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="saving" @click="save">保存</el-button>
-      </template>
-    </el-dialog>
+    </FormDialog>
   </div>
 </template>
 
@@ -69,6 +72,7 @@
 import { reactive, ref, onMounted } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { api } from '../../api/client';
+import FormDialog from '../FormDialog.vue';
 
 interface UserHook {
   id: string;
@@ -167,7 +171,7 @@ async function toggleEnabled(row: UserHook, enabled: boolean) {
 
 async function remove(row: UserHook) {
   try {
-    await ElMessageBox.confirm(`删除规则「${row.name}」？`, '删除规则', { type: 'warning' });
+    await ElMessageBox.confirm(`删除规则「${row.name}」？`, '删除规则', { type: 'warning', confirmButtonClass: 'yz-confirm-danger' });
   } catch {
     return;
   }

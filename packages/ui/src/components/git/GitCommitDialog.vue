@@ -666,7 +666,7 @@ async function menuRevert(): Promise<void> {
   if (!f) return;
   try {
     await ElMessageBox.confirm(`确认放弃 ${f.path} 的改动？此操作不可撤销。`, '还原文件', {
-      confirmButtonText: '还原', cancelButtonText: '取消', type: 'warning',
+      confirmButtonText: '还原', confirmButtonClass: 'yz-confirm-danger', cancelButtonText: '取消', type: 'warning',
     });
   } catch { return; }
   const res = await gitStore.restore(currentRepo.value, [f.path]);

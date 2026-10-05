@@ -76,3 +76,42 @@ a:focus-visible {
   background: color-mix(in srgb, var(--color-primary) 10%, transparent);
   color: var(--color-primary);
 }
+
+/* ============================================================
+   管理页统一工具条 —— 左搜索 / 右「分类筛选 → 主按钮 → 图标按钮组」
+   商城 / 工具 / MCP / 插件等所有列表页共用同一形态，不再各页各一套。
+   ============================================================ */
+
+/* 图标按钮：必须是 32×32 正圆。这里踩过两个坑：
+   1) flex 容器默认 flex-shrink:1，会把按钮从 32px 压成 17px 宽的窄条
+      （高度不变 → 渲染成竖向椭圆）；
+   2) 皮肤层 `[data-skin="on"] .el-button` 的圆角规则与 el-button 自带
+      is-circle 50% 同为 0,2,0 且后加载，会覆盖掉圆形。
+   所以：显式 flex 基准 + 补 .el-button 提高优先级双管齐下。 */
+.el-button.yz-icon-btn {
+  flex: 0 0 32px;
+  width: 32px;
+  min-width: 32px;
+  height: 32px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--glass-border);
+  background: var(--glass-bg);
+  color: var(--color-text-secondary);
+}
+.el-button.yz-icon-btn:hover {
+  color: var(--color-primary);
+  border-color: var(--color-primary);
+}
+
+/* 分类筛选下拉：全站统一占位宽度，避免各页忽宽忽窄 */
+.yz-cat-select {
+  flex: 0 0 auto;
+  width: 160px;
+}
+
+/* ===== 圆角落地规则：把 EP 里"跟按钮共用 base"的部件下沉到正确档位 ===== */
+/* 标签 / 徽章 → 微件档（EP 默认与按钮同用 --el-border-radius-base，会变成 8） */
+.el-tag {
+  border-radius: var(--radius-xs);
+}

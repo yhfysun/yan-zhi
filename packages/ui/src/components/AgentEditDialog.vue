@@ -462,7 +462,7 @@ watch(() => [props.modelValue, props.agent], () => {
 async function handleReset() {
   if (!props.agent?.id) return;
   try {
-    await ElMessageBox.confirm('将恢复该智能体的内置默认值（提示词/工具挂载/子智能体/配置），你的修改会被覆盖。确定？', '恢复默认', { type: 'warning' });
+    await ElMessageBox.confirm('将恢复该智能体的内置默认值（提示词/工具挂载/子智能体/配置），你的修改会被覆盖。确定？', '恢复默认', { type: 'warning', confirmButtonClass: 'yz-confirm-danger' });
   } catch { return; }
   try {
     const ok = await agentStore.resetAgent(props.agent.id);
@@ -524,7 +524,7 @@ async function handleSave() {
 }
 async function handleDelete() {
   if (!props.agent?.id) return; if (props.agent.isDefault) { ElMessage.warning('默认智能体不可删除'); return; }
-  try { await ElMessageBox.confirm(`删除智能体「${props.agent.name}」？`, '提示', { type: 'warning' }); await agentStore.deleteAgent(props.agent.id); visible.value = false; emit('deleted', props.agent.id); ElMessage.success('已删除'); } catch {}
+  try { await ElMessageBox.confirm(`删除智能体「${props.agent.name}」？`, '提示', { type: 'warning', confirmButtonClass: 'yz-confirm-danger' }); await agentStore.deleteAgent(props.agent.id); visible.value = false; emit('deleted', props.agent.id); ElMessage.success('已删除'); } catch {}
 }
 </script>
 
@@ -545,10 +545,10 @@ async function handleDelete() {
 .tab-inner::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: 999px; }
 
 .publish-row { display: flex; align-items: center; gap: 10px; }
-.publish-hint { font-size: 11px; color: var(--color-text-secondary); }
+.publish-hint { font-size: var(--font-size-xs); color: var(--color-text-secondary); }
 
 .prompt-wrap { width: 100%; display: flex; flex-direction: column; }
-.kind-hint { margin-top: 4px; font-size: 12px; line-height: 1.5; color: var(--el-text-color-secondary); }
+.kind-hint { margin-top: 4px; font-size: var(--font-size-xs); line-height: 1.5; color: var(--el-text-color-secondary); }
 .prompt-copy { align-self: flex-start; margin-top: 2px; }
 
 .type-selector { display: flex; gap: 8px; }
@@ -578,7 +578,7 @@ async function handleDelete() {
 .param-item :deep(.el-slider) { --el-slider-main-bg-color: var(--color-primary); --el-slider-runway-bg-color: rgba(15,23,42,0.08); --el-slider-height: 4px; --el-slider-button-size: 12px; }
 
 /* 本体挂载双栏 */
-.ont-mount-hint { font-size: 11px; color: var(--color-text-secondary); margin-bottom: 8px; }
+.ont-mount-hint { font-size: var(--font-size-xs); color: var(--color-text-secondary); margin-bottom: 8px; }
 .ont-mount { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; flex: 1; min-height: 220px; }
 .ont-col {
   display: flex; flex-direction: column; min-height: 0; overflow-y: auto;

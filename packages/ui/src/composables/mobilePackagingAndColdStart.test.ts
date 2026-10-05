@@ -165,13 +165,14 @@ describe('③ 长按必须真的接上（不只是有函数）', () => {
     expect(SIDEBAR, '空间节点未接长按').toMatch(/bindLongPress\(\(ev\)\s*=>\s*openSpaceMenu/);
   });
 
-  it('★ 提示文案必须按触屏/鼠标分流（否则用户按提示操作却按不出来）', () => {
+  it('★ 触屏/鼠标分流：长按与右键菜单入口共存（2026-10-04 批量提示文案已按用户要求移除，不再断言界面文案）', () => {
     const code = stripComments(SIDEBAR);
-    expect(code, '文案未区分触屏').toContain('isTouchShell');
-    expect(code).toMatch(/长按会话进入批量/);
-    expect(code).toMatch(/右键会话进入批量/);
-    // isTouchShell 必须真的从 useMobileShell 来
+    // isTouchShell 仍用于动作面板（ActionSheet）与定位菜单的分流
+    expect(code, '缺少触屏判定').toContain('isTouchShell');
     expect(code).toMatch(/const\s+isTouchShell\s*=\s*useMobileShell\(\)/);
+    // 长按与右键两个入口都必须在
+    expect(code, '会话列表未接长按').toContain('bindLongPress');
+    expect(code, '桌面右键入口丢失').toContain('contextmenu');
   });
 });
 

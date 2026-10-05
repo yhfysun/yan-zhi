@@ -727,7 +727,7 @@ async function saveCurrent(): Promise<void> {
 async function doAbort(): Promise<void> {
   try {
     await ElMessageBox.confirm('中止合并会丢弃本次合并的所有改动，恢复到合并前的状态。', '中止合并', {
-      confirmButtonText: '中止合并', cancelButtonText: '继续解决', type: 'warning',
+      confirmButtonText: '中止合并', confirmButtonClass: 'yz-confirm-danger', cancelButtonText: '继续解决', type: 'warning',
     });
   } catch { return; }
   try {

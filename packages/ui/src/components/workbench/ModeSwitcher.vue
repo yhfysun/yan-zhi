@@ -17,9 +17,9 @@
     <el-popover
       v-model:visible="open"
       :disabled="suppressHover"
-      trigger="hover"
-      :show-after="120"
-      :hide-after="120"
+      :trigger="isTouchLike ? 'click' : 'hover'"
+      :show-after="isTouchLike ? 0 : 120"
+      :hide-after="isTouchLike ? 0 : 120"
       placement="bottom-start"
       :show-arrow="false"
       :width="'auto'"
@@ -96,8 +96,19 @@ const triggerTitle = computed(() =>
   onModeRoute.value ? `${shortLabel(currentDef.value)}（当前模式）` : `点击进入${shortLabel(currentDef.value)}`,
 );
 
-/** 点击按钮：单击 = 跳当前模式的页面（不管现在在哪个路由） */
+/** 触屏判定（无 hover 能力）：与 WebTopBar 同一口径 —— 纯触屏菜单走 click/tap，桌面保留 hover。
+ *  matchMedia('(hover: none)') 而非 'ontouchstart'：触屏笔记本不误判，桌面 hover 不退化。 */
+const isTouchLike = (() => {
+  try { return window.matchMedia('(hover: none)').matches; } catch { return false; }
+})();
+
+/**
+ * 点击按钮：桌面 = 跳当前模式的页面（不管现在在哪个路由）。
+ * ★ 触屏（Task 4.1）：tap 只开合菜单（开合交给 el-popover 的 click trigger，
+ *   这里 return 避免双重处理），导航交给菜单项 onPick；否则 tap 会「既跳页又弹菜单」。
+ */
 function onTriggerClick() {
+  if (isTouchLike) return;
   // 用户拍板 2026-09-16：在 /home（办公模式）点「办公」→ 跳 /chat；在 /code 点「开发」→ 已在则视为刷新定位。
   suppress();
   router.push(modeRoute(activeMode.value));

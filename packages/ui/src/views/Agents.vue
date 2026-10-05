@@ -176,8 +176,8 @@
       </div>
     </template>
 
-    <!-- 远程商城源添加弹窗 -->
-    <el-dialog v-model="showAgentSourceForm" title="添加远程智能体商城" width="480px" :close-on-click-modal="false">
+    <!-- 远程商城源添加弹窗：统一 FormDialog（取消/保存底栏由组件默认渲染） -->
+    <FormDialog v-model="showAgentSourceForm" title="添加远程智能体商城" width="480px" @submit="addAgentSource">
       <el-form label-width="80px">
         <el-form-item label="名称"><el-input v-model="agentSourceForm.name" placeholder="如: 官方智能体源" /></el-form-item>
         <el-form-item label="URL"><el-input v-model="agentSourceForm.baseUrl" placeholder="http://192.168.1.100:3001" /></el-form-item>
@@ -192,11 +192,7 @@
           <el-input v-model="agentSourceForm.authValue" :placeholder="agentSourceForm.authType === 'bearer' ? 'Token' : 'API Key'" />
         </el-form-item>
       </el-form>
-      <template #footer>
-        <el-button @click="showAgentSourceForm = false">取消</el-button>
-        <el-button type="primary" @click="addAgentSource">保存</el-button>
-      </template>
-    </el-dialog>
+    </FormDialog>
 
     <AgentEditDialog v-model="showEdit" :agent="editing" @saved="onSaved" @deleted="onDeleted" />
   </div>
@@ -213,6 +209,7 @@ import { api } from '../api/client';
 import { waitForBackend } from '../api/backend-ready';
 import type { Agent } from '@yan-zhi/shared';
 import AgentEditDialog from '../components/AgentEditDialog.vue';
+import FormDialog from '../components/FormDialog.vue';
 import MarketplaceShell from '../components/marketplace/MarketplaceShell.vue';
 import MarketplaceCard from '../components/marketplace/MarketplaceCard.vue';
 import MarketplaceEmpty from '../components/marketplace/MarketplaceEmpty.vue';
@@ -312,7 +309,7 @@ async function testAgentSource(id: string) {
   ElMessage[payload.ok ? 'success' : 'error'](payload.ok ? '连接成功' : (payload.error || '连接失败'));
 }
 async function delAgentSource(id: string) {
-  try { await ElMessageBox.confirm('删除该远程源？', '提示', { type: 'warning' }); await api.delete(`/agent-marketplace/${id}`); await loadAgentRemoteSources(); ElMessage.success('已删除'); } catch {}
+  try { await ElMessageBox.confirm('删除该远程源？', '提示', { type: 'warning', confirmButtonClass: 'yz-confirm-danger' }); await api.delete(`/agent-marketplace/${id}`); await loadAgentRemoteSources(); ElMessage.success('已删除'); } catch {}
 }
 async function browseAgentSource(s: any) {
   selectedRemoteSource.value = s;
@@ -387,6 +384,7 @@ function onDeleted(_id: string) {
 async function remove(agent: Agent) {
   await ElMessageBox.confirm(`确定删除智能体「${agent.name}」？此操作不可恢复。`, '确认删除', {
     type: 'warning',
+    confirmButtonClass: 'yz-confirm-danger',
   });
   await store.deleteAgent(agent.id);
   ElMessage.success('已删除');

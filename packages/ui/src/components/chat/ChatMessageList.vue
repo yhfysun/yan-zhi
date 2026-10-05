@@ -1,14 +1,27 @@
 <template>
   <div class="messages" ref="messagesRef">
+    <!-- 历史消息加载态（spec「统一空态与加载态」）：拉取既有会话历史期间在列表顶部渲染骨架，
+         加载完成后随响应式自动替换为真实消息；新会话（无历史可载）不渲染。 -->
+    <div v-if="historyLoading && !store.currentMessages.length" class="history-skeleton">
+      <SkeletonList :rows="2" :row-height="44" />
+    </div>
     <TaskPlanCard v-if="store.planSteps.length" class="chat-plan-card" />
-    <div v-for="(round, ri) in messageRounds" :key="ri" :class="['round-group']" :data-round="ri">
+    <!-- 8.1 日期分隔线：相邻轮次日期变化时渲染居中分隔；任一侧无时间戳则跳过该对 -->
+    <template v-for="(round, ri) in messageRounds" :key="ri">
+      <div v-if="dateDividerFor(ri)" class="msg-date-divider">
+        <span class="msg-date-divider-line"></span>
+        <span class="msg-date-divider-text">{{ dateDividerFor(ri) }}</span>
+        <span class="msg-date-divider-line"></span>
+      </div>
+      <div class="round-group" :data-round="ri">
       <div
         v-if="round.user"
         class="msg msg-user"
         :class="{ 'is-actions-open': actionsShown(round.user.id) }"
         v-on="msgLongPressHandlers(round.user.id)"
       >
-        <div class="msg-avatar avatar-user"><el-icon><User /></el-icon></div>
+        <!-- 8.1 双头像身份：用户头像 = 角色名首字符（accent 底，样式见 chat.css .avatar-user） -->
+        <div class="msg-avatar avatar-user">你</div>
         <div class="msg-body">
           <div class="msg-meta">
             <span class="msg-role-name">你</span>
@@ -53,7 +66,8 @@
       </div>
 
       <div v-if="round.finalAssistant || round.steps.length > 0 || isLastRoundStreaming(round, ri)" class="msg msg-assistant" :class="{ 'is-actions-open': actionsShown(round.finalAssistant?.id || '') }" v-on="msgLongPressHandlers(round.finalAssistant?.id || '')">
-        <div class="msg-avatar avatar-assistant" :class="{ streaming: isLastRoundStreaming(round, ri) }"><el-icon><ChatDotRound /></el-icon></div>
+        <!-- 8.1 双头像身份：AI 头像 = 当前智能体名首字符（无则 🤖），桌面端显示（窄栏由 CSS 收起） -->
+        <div class="msg-avatar avatar-assistant" :class="{ streaming: isLastRoundStreaming(round, ri) }">{{ assistantAvatarChar }}</div>
         <div class="msg-body">
           <div class="agent-response-card" :class="{ 'msg-collapsed': collapsedMessages[round.finalAssistant?.id || ''] }" @click="collapsedMessages[round.finalAssistant?.id || ''] ? toggleMsgCollapse(round.finalAssistant?.id || '') : null">
             <div v-show="collapsedMessages[round.finalAssistant?.id || '']" class="msg-collapsed-placeholder">
@@ -107,6 +121,7 @@
                             </el-icon>
                             <span class="tool-item-server">{{ resolveToolDisplay(tc).server }}</span>
                             <code class="tool-item-fn">{{ resolveToolDisplay(tc).tool }}</code>
+                            <span v-if="toolTargetHint(tc)" class="tool-item-target" :title="toolTargetHint(tc)">{{ toolTargetHint(tc) }}</span>
                           </div>
                           <el-icon :size="12" class="tool-item-chevron">
                             <ArrowDown v-if="isToolItemOpen(tc.id, 'agent-step-' + ri + '-' + si + '-' + idx)" />
@@ -175,6 +190,7 @@
                             </el-icon>
                             <span class="tool-item-server">{{ resolveToolDisplay(tc).server }}</span>
                             <code class="tool-item-fn">{{ resolveToolDisplay(tc).tool }}</code>
+                            <span v-if="toolTargetHint(tc)" class="tool-item-target" :title="toolTargetHint(tc)">{{ toolTargetHint(tc) }}</span>
                           </div>
                           <el-icon :size="12" class="tool-item-chevron">
                             <ArrowDown v-if="expandedTools['round-' + ri + '-' + idx]" />
@@ -306,12 +322,13 @@
           </div>
         </div>
       </div>
-    </div>
+      </div>
+    </template>
 
     <!-- 工作流模式专属空态：办公模式的场景轮播欢迎卡是「白底大卡 + 三张场景卡」，
          塞进工作流模式 352px 的对话窄栏会又白又挤（深色主题下尤其刺眼）。
          这里给一份窄栏友好的极简引导，与「开发模式专属空态」同一思路。 -->
-    <div v-if="isWorkflowMode && store.currentMessages.length === 0 && !store.streaming && selectedModelId" class="wf-welcome">
+    <div v-if="isWorkflowMode && store.currentMessages.length === 0 && !store.streaming && !historyLoading" class="wf-welcome">
       <div class="wf-welcome-avatar"><el-icon :size="22"><Connection /></el-icon></div>
       <div class="wf-welcome-title">工作流助手</div>
       <div class="wf-welcome-sub">左侧选一个工作流直接运行；<br>或在这里说需求，我帮你调已挂载的工作流。</div>
@@ -324,8 +341,8 @@
       <div class="wf-welcome-foot">提示：点上方「可用工作流」勾选几个，我就能用 wf_&lt;id&gt; 工具调用它们</div>
     </div>
 
-    <ChatWelcome v-if="!isCodeMode && !isWorkflowMode && store.currentMessages.length === 0 && !store.streaming && selectedModelId" />
-    <div v-if="isCodeMode && store.currentMessages.length === 0 && !store.streaming && selectedModelId" class="code-welcome">
+    <ChatWelcome v-if="!isCodeMode && !isWorkflowMode && store.currentMessages.length === 0 && !store.streaming && !historyLoading" />
+    <div v-if="isCodeMode && store.currentMessages.length === 0 && !store.streaming && !historyLoading" class="code-welcome">
       <div class="code-welcome-greeting">
         <div class="code-welcome-avatar"><el-icon :size="24"><Monitor /></el-icon></div>
         <h2 class="code-welcome-title">代码任务</h2>
@@ -341,28 +358,15 @@
       />
     </div>
 
-    <div v-if="store.currentMessages.length === 0 && !store.streaming && !selectedModelId" class="welcome-card">
-      <div class="welcome-icon"><el-icon :size="56"><ChatDotRound /></el-icon></div>
-      <h2>欢迎使用日常办公助手</h2>
-      <p v-if="platformStore.platforms.length === 0">请先配置模型平台，点击下方按钮开始</p>
-      <p v-else>请在下方面板选择模型，然后开始任务</p>
-      <div class="welcome-actions" v-if="platformStore.platforms.length > 0">
-        <el-button @click="input = '帮我写一段 Python 代码'; $nextTick(() => { const ta = document.querySelector('.input-textarea textarea') as HTMLTextAreaElement; if (ta) ta.focus(); })">帮我写一段 Python 代码</el-button>
-        <el-button @click="input = '解释什么是机器学习'; $nextTick(() => { const ta = document.querySelector('.input-textarea textarea') as HTMLTextAreaElement; if (ta) ta.focus(); })">解释什么是机器学习</el-button>
-        <el-button @click="input = '帮我分析这个项目的结构'; $nextTick(() => { const ta = document.querySelector('.input-textarea textarea') as HTMLTextAreaElement; if (ta) ta.focus(); })">帮我分析这个项目的结构</el-button>
-      </div>
-      <el-button type="primary" size="large" round @click="openPlatformConfig" style="margin-top:8px">
-        <!-- 用 TakeawayBox 而非 Setting：Setting 是 TabBar「我的」的图标（移动端常驻同屏），
-             2026-09-21 实测齿轮图标 3 处重复。
-             ★ 曾想用 Brick —— 它在 `dist/types/components/brick.vue.d.ts` 里有定义，
-             但 **`dist/index.js` 的运行时导出里没有**（d.ts 与 index 不同步）→
-             页面抛 `does not provide an export named 'Brick'` → **路由启动失败、整页白屏**。
-             故此处必须选一个"确实在运行时 index 里"的名字（由
-             `composables/mobileIconUniqueness.test.ts` 附带校验）。
-             ★ `.el-button > .el-icon + 裸文本节点` 之间没有间距来源（Element 只给 span 加
-             margin）→ 会渲染成「图标紧贴文字」。这里加显式间距类修正。 -->
-        <el-icon class="btn-icon-gap"><TakeawayBox /></el-icon> 配置模型
-      </el-button>
+    <!-- 未配置/未选择模型：不再用老欢迎卡占位（原型里场景轮播与模型选择无关、始终可见），
+         只给一条顶部紧凑提示 + 配置入口，场景卡与示例照常可用。 -->
+    <div
+      v-if="store.currentMessages.length === 0 && !store.streaming && !selectedModelId && !historyLoading"
+      class="no-model-hint"
+    >
+      <el-icon :size="14"><WarningFilled /></el-icon>
+      <span class="no-model-hint-text">{{ platformStore.platforms.length === 0 ? '尚未配置模型平台' : '尚未选择模型，发送前请先选择' }}</span>
+      <button type="button" class="no-model-hint-btn" @click="openPlatformConfig">配置模型</button>
     </div>
   </div>
 
@@ -515,9 +519,9 @@
 
 <script setup lang="ts">
 import {
-  User, ChatDotRound, CaretRight, CaretBottom, ArrowDown, ArrowRight, ArrowUp, Loading, CircleCheck,
-  CircleClose, CopyDocument, EditPen, Files, Delete, View, Fold, Refresh, TakeawayBox, Link, Download,
-  Grid, Document, Connection, ChatLineSquare, Lock,
+  ChatDotRound, CaretRight, CaretBottom, ArrowDown, ArrowRight, ArrowUp, Loading, CircleCheck,
+  CircleClose, CopyDocument, EditPen, Files, Delete, View, Fold, Refresh, Link, Download,
+  Grid, Document, Connection, ChatLineSquare, Lock, WarningFilled,
 } from '@element-plus/icons-vue';
 import { ref, watch, nextTick, computed, onMounted, onBeforeUnmount } from 'vue';
 import { ElMessage } from 'element-plus';
@@ -526,6 +530,7 @@ import { useChat } from '../../composables/chat/useChat';
 import { useMobileShell } from '../../composables/useMobileShell';
 import { bindLongPress } from '../../composables/useLongPress';
 import type { MessageRound } from '../../composables/chat/useChat';
+import SkeletonList from '../common/SkeletonList.vue';
 import { useCodeStore } from '../../stores/code';
 import { activeMode } from '../../stores/mode';
 import TaskPlanCard from '../TaskPlanCard.vue';
@@ -551,14 +556,14 @@ const {
   getEditReason, onConfigSaved, expandedReasoning, toggleReasoning, expandedAgentProcess,
   toggleAgentProcess, expandedStepTools, toggleStepTools, getStepToolGroupClass, isStepToolsRunning,
   isStepToolsError, toggleTool, getStepToolStatusClass, getStepToolResult, isStepToolError, resolveToolDisplay,
-  resolveToolArgs, expandedTools, toggleToolGroup, getToolGroupStatusClass, isToolGroupRunning,
+  resolveToolArgs, toolTargetHint, expandedTools, toggleToolGroup, getToolGroupStatusClass, isToolGroupRunning,
   isToolGroupError, expandedToolGroups, getToolStatusClass, getToolResult, isToolError, distillAssistantMsg, regenerateMsg,
   isToolItemOpen, collapsedSubAgentResults, toggleSubAgentResult, collapsedMainResults, toggleMainResult,
   copySubAgentResultMd, downloadSubAgentResultMd, copyAssistantMd, downloadAssistantMd,
   selectedModelId, input, openPlatformConfig, agentStore, skillStore, mountedSkillIds, onAgentSwitch,
   openPath,
   userRoundIndices, activeNavRound, scrollToRound,
-  showScrollBottom, showScrollTop, scrollToBottom,
+  showScrollBottom, showScrollTop, scrollToBottom, historyLoading,
   askMultiSelect, askChecked, askSingle, askShowText, askText, askSupplement, onAskSubmit, onAskSkip,
   confirmCurrentPage, confirmMultiSelect, confirmChecked, confirmSingle, confirmShowText,
   confirmText, confirmSupplement, onConfirmSkip, onConfirmNext,
@@ -569,6 +574,49 @@ const askSupplementOpen = ref(false);
 const authIsCommand = computed(() => !!store.pendingPathAuth?.isCommand);
 /** 触屏壳（视口窄 或 Capacitor）：长按操作排只在这一壳生效（与衔接文案同一口径） */
 const isTouchShell = useMobileShell();
+
+// ===== 8.1 消息流重设计：日期分隔线 + 双头像身份 =====
+// 纯渲染层推导（不碰 useChat 数据逻辑）：分轮以 user 消息为锚，取 user.createdAt 比较日期。
+// 「无时间戳就跳过该消息对」：任一轮缺时间戳（合成的 finalAssistant 是 createdAt:0）→ 不渲染分隔。
+
+/** 相邻两轮是否同一天 */
+function sameDay(a: number, b: number): boolean {
+  const da = new Date(a);
+  const db = new Date(b);
+  return da.getFullYear() === db.getFullYear() && da.getMonth() === db.getMonth() && da.getDate() === db.getDate();
+}
+
+/** 时间戳 → 分隔线文案：今天 / 昨天 / （跨年含年份）M月D日 */
+function formatDayLabel(ts: number): string {
+  const d = new Date(ts);
+  const now = new Date();
+  const startToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  if (ts >= startToday) return '今天';
+  if (ts >= startToday - 86400000) return '昨天';
+  const y = d.getFullYear() !== now.getFullYear() ? d.getFullYear() + '年' : '';
+  return `${y}${d.getMonth() + 1}月${d.getDate()}日`;
+}
+
+/**
+ * 第 ri 轮前是否渲染日期分隔线，返回文案（空串 = 不渲染）。
+ * 首轮有锚时间戳 → 直接渲染（会话起点也标日期）；其后仅在与上一轮（有时间戳）跨天时渲染。
+ */
+function dateDividerFor(ri: number): string {
+  const rounds = messageRounds.value;
+  const ts = rounds[ri]?.user?.createdAt || 0;
+  if (!ts) return '';
+  if (ri > 0) {
+    const prevTs = rounds[ri - 1]?.user?.createdAt || 0;
+    if (!prevTs || sameDay(prevTs, ts)) return '';
+  }
+  return formatDayLabel(ts);
+}
+
+/** AI 头像字符：当前智能体名首字符（按码点切，兼容 emoji 名），无名字回落 🤖 */
+const assistantAvatarChar = computed(() => {
+  const name = (agentStore.selectedAgent?.name || '').trim();
+  return Array.from(name)[0] || '🤖';
+});
 
 // ===== 移动端：长按消息露出那条操作排 =====
 //
@@ -1008,6 +1056,16 @@ watch(activeNavRound, () => {
 </script>
 
 <style scoped>
+/* ── 历史消息加载骨架（spec「统一空态与加载态」）──────────────────────────
+   与消息气泡同宽（720px 列宽、左右留白），紧凑两行；宽度阶梯由 SkeletonList 自身提供 */
+.history-skeleton {
+  max-width: 720px;
+  width: 100%;
+  margin: 6px auto 2px;
+  padding: 0 20px;
+  box-sizing: border-box;
+}
+
 /* ── 压缩标记（2026-10-02）───────────────────────────────────────────────────
    极细分隔线 + 一行小字。压缩是**有损**的，用户需要知道"前面被摘要了"，
    否则只会觉得"模型怎么忘了"。刻意做得克制：低对比、小字号、无图标。 */
@@ -1293,4 +1351,47 @@ watch(activeNavRound, () => {
 .btn-icon-gap {
   margin-right: 6px;
 }
+
+/* ── 未配置/未选择模型的顶部紧凑提示（不占位、不盖住场景轮播）────────────── */
+.no-model-hint {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 30;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: calc(100% - 32px);
+  padding: 5px 6px 5px 11px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--color-warning, #d97706) 30%, transparent);
+  background: color-mix(in srgb, var(--color-bg-elevated, #fff) 88%, transparent);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  box-shadow: var(--shadow-1, 0 2px 8px rgba(15, 23, 42, 0.08));
+  color: var(--color-text-secondary, #5a6272);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.no-model-hint .el-icon {
+  color: var(--color-warning, #d97706);
+  flex-shrink: 0;
+}
+.no-model-hint-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.no-model-hint-btn {
+  flex-shrink: 0;
+  border: none;
+  padding: 3px 12px;
+  border-radius: 999px;
+  background: var(--color-primary, #4f46e5);
+  color: #fff;
+  font-size: 12px;
+  cursor: pointer;
+  transition: opacity 0.15s ease;
+}
+.no-model-hint-btn:hover { opacity: 0.88; }
 </style>

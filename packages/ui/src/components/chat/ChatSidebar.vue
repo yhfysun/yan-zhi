@@ -14,10 +14,16 @@
 
     <div v-if="sideTab === 'chat'" class="conv-list">
       <div class="conv-header">
-        <el-input v-model="search" placeholder="搜索任务" size="small" clearable :prefix-icon="Search" />
-        <div class="conv-header-row">
-          <span v-if="!batchMode" class="batch-hint">{{ isTouchShell ? '长按会话进入批量，可整目录/整任务勾选' : '右键会话进入批量，可整目录/整任务勾选' }}</span>
-          <el-button v-else size="small" type="warning" style="flex:1" @click="exitBatchMode">退出批量</el-button>
+        <!-- 搜索框 + 新建任务图标同一行：空态由大 CTA 承担新建，这里图标仅服务有任务时的快速新建
+             （2026-10-04：原独立一行描边按钮与空态大按钮重复，用户红框要求收敛） -->
+        <div class="conv-search-row">
+          <el-input v-model="search" placeholder="搜索任务" size="small" clearable :prefix-icon="Search" />
+          <button v-if="!batchMode" class="conv-new-icon" type="button" title="新建任务" @click="startNewChat()">
+            <el-icon :size="14"><Plus /></el-icon>
+          </button>
+        </div>
+        <div v-if="batchMode" class="conv-header-row">
+          <el-button size="small" type="warning" style="flex:1" @click="exitBatchMode">退出批量</el-button>
         </div>
       </div>
 
@@ -45,10 +51,10 @@
               :key="conv.id"
               class="conv-item"
               :class="{ active: conv.id === store.currentConvId, pinned: conv.pinned, selecting: batchMode }"
-              @click="batchMode ? toggleConvSelect(conv.id) : (drawerOpen = false, selectConv(conv.id))"
+              @click="batchMode ? toggleConvSelect(conv.id) : rows.activate(conv)"
               @contextmenu.prevent="openConvMenu($event, conv)"
               v-on="bindLongPress((ev) => openConvMenu(ev, conv))"
-              @dblclick="!batchMode && startRename(conv)"
+              @dblclick="!batchMode && rows.startRename(conv)"
             >
               <el-checkbox v-if="batchMode" :model-value="selectedConvIds.has(conv.id)" @click.stop @change="toggleConvSelect(conv.id)" />
               <el-icon class="pin-icon" v-if="conv.pinned"><Star /></el-icon>
@@ -59,16 +65,44 @@
                 v-model="renamingTitle"
                 size="small"
                 @click.stop
-                @blur="commitRename"
-                @keydown.enter.prevent="commitRename"
-                @keydown.esc.prevent="renamingId = ''"
+                @blur="rows.commitRename"
+                @keydown.enter.prevent="rows.commitRename"
+                @keydown.esc.prevent="rows.cancelRename"
                 ref="renameInputRef"
               />
+              <!-- 7.4 运行状态徽标：该任务正在跑时行内呼吸圆点 -->
+              <span v-if="store.isConvStreaming(conv.id)" class="conv-run-badge" title="运行中"></span>
               <el-tooltip v-if="conv.scheduledTaskId" content="定时任务发起" placement="top">
                 <el-icon class="scheduled-badge"><Timer /></el-icon>
               </el-tooltip>
+              <!-- 行尾 hover 操作组：置顶/重命名/移动空间/删除（移动与右键菜单同一 moveTo 流程） -->
+              <span v-if="!batchMode && renamingId !== conv.id" class="task-row-actions" @click.stop @dblclick.stop>
+                <span
+                  class="task-row-act"
+                  :class="{ 'is-on': conv.pinned }"
+                  role="button"
+                  :title="conv.pinned ? '取消置顶' : '置顶'"
+                  @click="rows.togglePinned(conv)"
+                ><el-icon :size="12"><Top /></el-icon></span>
+                <span class="task-row-act" role="button" title="重命名" @click="rows.startRename(conv)">
+                  <el-icon :size="12"><EditPen /></el-icon>
+                </span>
+                <span class="task-row-act" role="button" title="移动到空间" @click="rows.openMoveMenu(conv, $event)">
+                  <el-icon :size="12"><FolderOpened /></el-icon>
+                </span>
+                <span class="task-row-act is-danger" role="button" title="删除" @click="rows.remove(conv)">
+                  <el-icon :size="12"><Delete /></el-icon>
+                </span>
+              </span>
             </div>
-            <div v-if="!rootCollapsed && rootConversations.length === 0" class="tree-empty">{{ search ? '无匹配' : '暂无任务' }}</div>
+            <!-- 空态（Task 3.2）：统一 EmptyState 组件；搜索无结果时不给 CTA -->
+            <EmptyState
+              v-if="!rootCollapsed && rootConversations.length === 0"
+              icon="📝"
+              :title="search ? '无匹配' : '暂无任务'"
+              :action-text="!search && !batchMode ? '新建任务' : undefined"
+              @action="startNewChat(null)"
+            />
           </div>
         </div>
 
@@ -109,10 +143,10 @@
               :key="conv.id"
               class="conv-item"
               :class="{ active: conv.id === store.currentConvId, pinned: conv.pinned, selecting: batchMode }"
-              @click="batchMode ? toggleConvSelect(conv.id) : (drawerOpen = false, selectConv(conv.id))"
+              @click="batchMode ? toggleConvSelect(conv.id) : rows.activate(conv)"
               @contextmenu.prevent="openConvMenu($event, conv)"
               v-on="bindLongPress((ev) => openConvMenu(ev, conv))"
-              @dblclick="!batchMode && startRename(conv)"
+              @dblclick="!batchMode && rows.startRename(conv)"
             >
               <el-checkbox v-if="batchMode" :model-value="selectedConvIds.has(conv.id)" @click.stop @change="toggleConvSelect(conv.id)" />
               <el-icon class="pin-icon" v-if="conv.pinned"><Star /></el-icon>
@@ -123,16 +157,43 @@
                 v-model="renamingTitle"
                 size="small"
                 @click.stop
-                @blur="commitRename"
-                @keydown.enter.prevent="commitRename"
-                @keydown.esc.prevent="renamingId = ''"
+                @blur="rows.commitRename"
+                @keydown.enter.prevent="rows.commitRename"
+                @keydown.esc.prevent="rows.cancelRename"
                 ref="renameInputRef"
               />
+              <!-- 7.4 运行状态徽标：与根列表同款 -->
+              <span v-if="store.isConvStreaming(conv.id)" class="conv-run-badge" title="运行中"></span>
               <el-tooltip v-if="conv.scheduledTaskId" content="定时任务发起" placement="top">
                 <el-icon class="scheduled-badge"><Timer /></el-icon>
               </el-tooltip>
+              <!-- 行尾 hover 操作组：与根列表同款，共用 useTaskRowActions -->
+              <span v-if="!batchMode && renamingId !== conv.id" class="task-row-actions" @click.stop @dblclick.stop>
+                <span
+                  class="task-row-act"
+                  :class="{ 'is-on': conv.pinned }"
+                  role="button"
+                  :title="conv.pinned ? '取消置顶' : '置顶'"
+                  @click="rows.togglePinned(conv)"
+                ><el-icon :size="12"><Top /></el-icon></span>
+                <span class="task-row-act" role="button" title="重命名" @click="rows.startRename(conv)">
+                  <el-icon :size="12"><EditPen /></el-icon>
+                </span>
+                <span class="task-row-act" role="button" title="移动到空间" @click="rows.openMoveMenu(conv, $event)">
+                  <el-icon :size="12"><FolderOpened /></el-icon>
+                </span>
+                <span class="task-row-act is-danger" role="button" title="删除" @click="rows.remove(conv)">
+                  <el-icon :size="12"><Delete /></el-icon>
+                </span>
+              </span>
             </div>
-            <div v-if="!spaceCollapsed[sp.id] && (!conversationsBySpace[sp.id] || conversationsBySpace[sp.id].length === 0)" class="tree-empty">{{ search ? '无匹配' : '暂无任务' }}</div>
+            <EmptyState
+              v-if="!spaceCollapsed[sp.id] && (!conversationsBySpace[sp.id] || conversationsBySpace[sp.id].length === 0)"
+              icon="📝"
+              :title="search ? '无匹配' : '暂无任务'"
+              :action-text="!search && !batchMode ? '新建任务' : undefined"
+              @action="startNewChat(sp.id)"
+            />
           </div>
         </div>
 
@@ -156,7 +217,8 @@
   </aside>
 
   <Teleport to="body">
-<ul v-if="ctxMenu.visible" class="ctx-menu" :style="{ top: ctxMenu.y + 'px', left: ctxMenu.x + 'px' }">
+<!-- 移动外壳（触屏）下任务行菜单改由底部动作面板承载（Task 11.3），定位菜单只在非移动壳渲染 -->
+<ul v-if="ctxMenu.visible && !isTouchShell" class="ctx-menu" :style="{ top: ctxMenu.y + 'px', left: ctxMenu.x + 'px' }">
     <li @click="(batchMode && selectedConvIds.has(ctxMenu.conv!.id) ? toggleConvSelect(ctxMenu.conv!.id) : enterBatchSelect(ctxMenu.conv!.id)); closeCtxMenu()">
       <el-icon><Tools /></el-icon>{{ batchMode && selectedConvIds.has(ctxMenu.conv!.id) ? '移出批量选择' : '批量选择' }}
     </li>
@@ -164,10 +226,10 @@
       <el-icon><Close /></el-icon>退出批量模式
     </li>
     <li class="ctx-sep" />
-    <li @click="togglePin(ctxMenu.conv)">
+    <li @click="rows.togglePinned(ctxMenu.conv)">
       <el-icon><Star /></el-icon>{{ ctxMenu.conv?.pinned ? '取消置顶' : '置顶' }}
     </li>
-    <li @click="startRename(ctxMenu.conv!)">
+    <li @click="rows.startRename(ctxMenu.conv!)">
       <el-icon><EditPen /></el-icon>重命名
     </li>
     <!-- 在系统文件管理器里打开该任务的产物目录（仅桌面端有效，其它端给出提示） -->
@@ -179,21 +241,52 @@
       <el-icon class="submenu-arrow"><ArrowRight /></el-icon>
       <ul class="ctx-submenu">
         <li v-if="spaceStore.spaces.length === 0" class="disabled-hint">暂无空间，请先创建</li>
-        <li @click="moveConvToSpace(ctxMenu.conv!.id, null)">
+        <li @click="rows.moveTo(ctxMenu.conv!, null)">
           <el-icon><Close /></el-icon>未归类
         </li>
-        <li v-for="sp in spaceStore.spaces" :key="sp.id" @click="moveConvToSpace(ctxMenu.conv!.id, sp.id)">
+        <li v-for="sp in spaceStore.spaces" :key="sp.id" @click="rows.moveTo(ctxMenu.conv!, sp.id)">
           <el-icon><FolderOpened /></el-icon>{{ sp.name }}
         </li>
       </ul>
     </li>
-    <li class="danger" @click="deleteConv(ctxMenu.conv)">
+    <li class="danger" @click="rows.remove(ctxMenu.conv)">
       <el-icon><Delete /></el-icon>删除
     </li>
   </ul>
 </Teleport>
 
-  <el-dialog v-model="showSpaceEdit" :title="spaceEditForm.id ? '编辑空间' : '新建空间'" width="460px" :close-on-click-modal="false" class="compact-dialog">
+  <!-- 行内「移动」按钮的空间选择浮层：与右键菜单「移动到空间」子菜单同列表、同一 moveTo 流程 -->
+  <Teleport to="body">
+    <ul v-if="rows.moveMenu.visible" class="ctx-menu" :style="{ top: rows.moveMenu.y + 'px', left: rows.moveMenu.x + 'px' }">
+      <li v-if="spaceStore.spaces.length === 0" class="disabled-hint">暂无空间，请先创建</li>
+      <li @click="rows.pickMoveTarget(null)">
+        <el-icon><Close /></el-icon>未归类
+      </li>
+      <li v-for="sp in spaceStore.spaces" :key="sp.id" @click="rows.pickMoveTarget(sp.id)">
+        <el-icon><FolderOpened /></el-icon>{{ sp.name }}
+      </li>
+    </ul>
+  </Teleport>
+
+  <!-- 移动端：任务行（会话）底部动作面板（Task 11.3）—— openConvMenu 是右键/长按的共用入口，
+       ctxMenu.visible 在移动外壳下即弹 ActionSheet；动作与桌面右键菜单一致（移动到空间平铺）。 -->
+  <ActionSheet
+    :visible="isTouchShell && ctxMenu.visible"
+    :title="ctxMenu.conv?.title || '任务操作'"
+    :actions="convSheetActions"
+    @close="closeCtxMenu()"
+    @select="onConvSheetSelect"
+  />
+
+  <!-- 新建/编辑空间：统一 FormDialog（取消/保存底栏由组件默认渲染） -->
+  <FormDialog
+    v-model="showSpaceEdit"
+    :title="spaceEditForm.id ? '编辑空间' : '新建空间'"
+    width="460px"
+    dialog-class="compact-dialog"
+    :confirm-text="spaceEditForm.id ? '保存' : '创建'"
+    @submit="saveSpaceEdit"
+  >
     <el-form label-position="top" @submit.prevent>
       <el-form-item label="名称">
         <el-input v-model="spaceEditForm.name" placeholder="空间名称" maxlength="50" />
@@ -225,11 +318,7 @@
         <div v-if="spaceEditForm.taskType" class="tt-guide">{{ pickedTaskType.guide }}</div>
       </el-form-item>
     </el-form>
-    <template #footer>
-      <el-button @click="showSpaceEdit = false">取消</el-button>
-      <el-button type="primary" @click="saveSpaceEdit">{{ spaceEditForm.id ? '保存' : '创建' }}</el-button>
-    </template>
-  </el-dialog>
+  </FormDialog>
 
   <!-- 空间目录选择器（桌面端可用原生目录选择，Web 端为内置浏览器） -->
   <WorkspaceDirDialog v-model="dirPickerVisible" :current-path="spaceEditForm.dirPath" @selected="onSpaceDirSelected" />
@@ -292,33 +381,82 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onBeforeUnmount } from 'vue';
+import { computed, ref, onMounted, onBeforeUnmount } from 'vue';
 import {
-  Plus, ChatDotRound, Star, EditPen, Delete, FolderOpened, ArrowRight, Close, Search, CaretRight, Timer, Memo, Tools,
+  Plus, ChatDotRound, Star, EditPen, Delete, FolderOpened, ArrowRight, Close, Search, CaretRight, Timer, Memo, Tools, Top,
 } from '@element-plus/icons-vue';
 import { ElMessage } from 'element-plus';
 import { getTaskType } from '@yan-zhi/shared';
 import { useChat } from '../../composables/chat/useChat';
+import { useTaskRowActions } from '../../composables/useTaskRowActions';
 import { bindLongPress } from '../../composables/useLongPress';
 import { useMobileShell } from '../../composables/useMobileShell';
 import ScheduledTaskDialog from './ScheduledTaskDialog.vue';
 import ChatFileTab from './ChatFileTab.vue';
 import WorkspaceDirDialog from '../WorkspaceDirDialog.vue';
+import FormDialog from '../FormDialog.vue';
+import EmptyState from '../common/EmptyState.vue';
+import ActionSheet from '../common/ActionSheet.vue';
+import type { ActionSheetAction } from '../common/ActionSheet.vue';
 
 const {
   sideTab, search, store, batchMode, toggleConvSelect,
-  selectConv, drawerOpen, openConvMenu, startRename, selectedConvIds, renamingId, renamingTitle,
-  commitRename, renameInputRef, filteredConversations, startNewChat, batchSelectAll, batchDeleteConvs,
+  openConvMenu, selectedConvIds, renamingId, renamingTitle, renameInputRef,
+  filteredConversations, startNewChat, batchSelectAll, batchDeleteConvs,
   rootConversations, conversationsBySpace, spaceCollapsed, toggleSpaceCollapse, rootCollapsed, toggleRootCollapse,
   spaceStore, openSpaceMenu, openSpaceEdit, showSpaceEdit, spaceEditForm,
-  saveSpaceEdit, deleteSpaceConfirm, spaceMenuTarget, closeSpaceMenu, moveConvToSpace, ctxMenu,
+  saveSpaceEdit, deleteSpaceConfirm, spaceMenuTarget, closeSpaceMenu, ctxMenu,
   openConvDir, openPathInSystem,
   taskTypes, pickedTaskType, selectSpaceAndSyncDir,
-  togglePin, deleteConv, closeCtxMenu,
+  closeCtxMenu,
   treeMenu, openTreeMenu, treeMenuNewTask, treeMenuNewSpace, closeTreeMenu,
   enterBatchSelect, exitBatchMode, toggleBatchMode, toggleSelectAllInSpace, toggleSelectAllInRoot,
   spaceSelectState, rootSelectState,
 } = useChat();
+
+// 任务行共享操作（置顶/重命名/删除/移动空间/激活）：与 TaskListSection 共用同一 composable。
+// 重命名聚焦走 useChat 内置的 renameInputRef（模板里 rename 输入框绑了该 ref），无需额外适配。
+const rows = useTaskRowActions();
+
+// ===== 移动端：任务行（会话）底部动作面板（Task 11.3）=====
+// 动作与桌面右键菜单同项；「移动到空间」子菜单平铺为带参 key（move:<spaceId>）
+const convSheetActions = computed<ActionSheetAction[]>(() => {
+  const c = ctxMenu.conv;
+  if (!c) return [];
+  const list: ActionSheetAction[] = [
+    { key: 'batch', label: batchMode.value && selectedConvIds.value.has(c.id) ? '移出批量选择' : '批量选择' },
+  ];
+  if (batchMode.value) list.push({ key: 'exit-batch', label: '退出批量模式' });
+  list.push(
+    { key: 'pin', label: c.pinned ? '取消置顶' : '置顶' },
+    { key: 'rename', label: '重命名' },
+    { key: 'open-dir', label: '打开目录' },
+  );
+  if (spaceStore.spaces.length === 0) {
+    list.push({ key: 'no-space', label: '暂无空间，请先创建', disabled: true });
+  } else {
+    list.push({ key: 'move:null', label: '移动到：未归类' });
+    for (const sp of spaceStore.spaces) list.push({ key: `move:${sp.id}`, label: `移动到：${sp.name}` });
+  }
+  list.push({ key: 'delete', label: '删除', danger: true });
+  return list;
+});
+
+function onConvSheetSelect(a: ActionSheetAction) {
+  const c = ctxMenu.conv;
+  closeCtxMenu();
+  if (!c) return;
+  if (a.key === 'batch') {
+    if (batchMode.value && selectedConvIds.value.has(c.id)) toggleConvSelect(c.id);
+    else enterBatchSelect(c.id);
+  } else if (a.key === 'exit-batch') exitBatchMode();
+  else if (a.key === 'pin') rows.togglePinned(c);
+  else if (a.key === 'rename') rows.startRename(c);
+  else if (a.key === 'open-dir') openConvDir(c);
+  else if (a.key === 'move:null') rows.moveTo(c, null);
+  else if (a.key.startsWith('move:')) rows.moveTo(c, a.key.slice(5));
+  else if (a.key === 'delete') rows.remove(c);
+}
 
 /**
  * 点空间节点：
@@ -401,6 +539,8 @@ async function saveSpaceMemory() {
 function onDocMouseDown(e: MouseEvent) {
   if ((e.target as HTMLElement)?.closest('.ctx-menu')) return;
   closeCtxMenu();
+  // 行内「移动」浮层：点浮层外任何位置（含任务行）都收起
+  rows.closeMoveMenu();
 }
 
 onMounted(() => document.addEventListener('mousedown', onDocMouseDown, true));

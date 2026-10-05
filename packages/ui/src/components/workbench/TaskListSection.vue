@@ -4,10 +4,12 @@
   - 嵌入各模式左栏「任务段」：与该模式资源段并列，分隔线区隔
   - 两段各自可折叠由父级（模式左栏容器）负责，本组件自身可滚动
   - ★ 交互口径与办公侧栏（ChatSidebar）完全一致：
-      空白处右键 → 批量管理 / 新建任务 / 新建目录（空间）
-      任务行右键 → 批量选择 / 置顶 / 重命名 / 移动到空间 / 删除
+      空白处右键/长按 → 批量管理 / 新建任务 / 新建目录（空间）
+      任务行右键/长按 → 批量选择 / 置顶 / 重命名 / 移动到空间 / 删除
+      任务行行尾 hover 操作组 → 置顶 / 重命名 / 移动空间 / 删除（触屏无 hover，长按兜底）
+      显式「新建任务」按钮 → 列表头部 + 空列表 CTA
       批量模式 → 行首勾选、目录节点整组勾选、底部批量条
-      （复用 useChat 的同一份状态与动作，不另起一套实现）
+      （复用 useChat 的同一份状态与动作 + useTaskRowActions 共享操作，不另起一套实现）
 -->
 <template>
   <!-- 整个任务段拦截 contextmenu 并阻止冒泡：
@@ -16,7 +18,7 @@
        - 根节点上的 .stop 是关键：运维页左栏父级 .ops-connections 也挂了 contextmenu，
          不拦住会出现「任务段右键同时弹出资源菜单」的两菜单叠加。
        注意 openTreeMenu 内部会过滤 .tls-item / .tls-group-head（它们有自己的菜单）。 -->
-  <div class="tls" @contextmenu.prevent.stop="openTreeMenu($event)">
+  <div class="tls" @contextmenu.prevent.stop="openTreeMenu($event)" v-on="bindLongPress((ev) => openTreeMenu(ev))">
     <div class="tls-head">
       <span class="tls-title">任务 ({{ convs.length }})</span>
       <button
@@ -26,8 +28,10 @@
         title="退出批量"
         @click="exitBatchMode"
       >退出批量</button>
-      <button v-else class="tls-new" type="button" title="新建任务" @click="onNew">
-        <el-icon :size="12"><EditPen /></el-icon>
+      <!-- 显式「新建任务」入口（Task 2.4）：替换原 20×20px 小图标 -->
+      <button v-else class="new-task-btn" type="button" @click="onNew">
+        <el-icon :size="12"><Plus /></el-icon>
+        <span>新建任务</span>
       </button>
     </div>
 
@@ -67,6 +71,7 @@
             :title="c.title || '新任务'"
             @click="onRowClick(c)"
             @contextmenu.prevent.stop="onRowCtx($event, c)"
+            v-on="bindLongPress((ev) => onRowCtx(ev, c))"
           >
             <el-checkbox
               v-if="batchMode"
@@ -77,6 +82,8 @@
             />
             <el-icon v-if="c.pinned" class="tls-pin"><Star /></el-icon>
             <span class="tls-dot" v-else-if="!batchMode"></span>
+            <!-- 7.4 运行状态徽标：与 ChatSidebar 同款呼吸圆点 -->
+            <span v-if="!batchMode && chatStore.isConvStreaming(c.id)" class="conv-run-badge" title="运行中"></span>
             <span v-if="renamingId !== c.id" class="tls-label">{{ c.title || '新任务' }}</span>
             <el-input
               v-else
@@ -84,16 +91,44 @@
               size="small"
               class="tls-rename"
               @click.stop
-              @blur="commitRename"
-              @keydown.enter.prevent="commitRename"
-              @keydown.esc.prevent="renamingId = ''"
+              @blur="rows.commitRename"
+              @keydown.enter.prevent="rows.commitRename"
+              @keydown.esc.prevent="rows.cancelRename"
             />
+            <!-- 行尾 hover 操作组：置顶/重命名/移动空间/删除；「移动」与右键菜单同一 moveTo 流程。
+                 行是 <button>，故内层用 span[role=button]，避免交互元素嵌套。 -->
+            <span v-if="!batchMode && renamingId !== c.id" class="task-row-actions" @click.stop @dblclick.stop>
+              <span
+                class="task-row-act"
+                :class="{ 'is-on': c.pinned }"
+                role="button"
+                :title="c.pinned ? '取消置顶' : '置顶'"
+                @click="rows.togglePinned(c)"
+              ><el-icon :size="12"><Top /></el-icon></span>
+              <span class="task-row-act" role="button" title="重命名" @click="rows.startRename(c)">
+                <el-icon :size="12"><EditPen /></el-icon>
+              </span>
+              <span class="task-row-act" role="button" title="移动到空间" @click="rows.openMoveMenu(c, $event)">
+                <el-icon :size="12"><FolderOpened /></el-icon>
+              </span>
+              <span class="task-row-act is-danger" role="button" title="删除" @click="rows.remove(c)">
+                <el-icon :size="12"><Delete /></el-icon>
+              </span>
+            </span>
           </button>
           <div v-if="!grp.convs.length" class="tls-empty">暂无任务</div>
         </div>
       </div>
 
-      <div v-if="!convs.length" class="tls-empty tls-empty-root">暂无任务，发送消息自动创建</div>
+      <!-- 空列表 + 主 CTA（Task 3.2）：统一 EmptyState 组件 -->
+      <EmptyState
+        v-if="!convs.length"
+        icon="📝"
+        title="暂无任务"
+        description="还没有任务，点下方按钮开始"
+        action-text="新建任务"
+        @action="onNew"
+      />
     </div>
 
     <!-- 批量操作条：与办公侧栏 .batch-bar 同口径 -->
@@ -154,13 +189,39 @@
       </ul>
     </Teleport>
 
-    <!-- 新建/编辑空间对话框：本组件在四个模式下都可能挂载，故自持一份（与办公侧栏同表单） -->
-    <el-dialog
+    <!-- 行内「移动」按钮的空间选择浮层：与右键菜单「移动到空间」子菜单同列表、同一 moveTo 流程 -->
+    <Teleport to="body">
+      <ul v-if="rows.moveMenu.visible" class="ctx-menu" :style="{ top: rows.moveMenu.y + 'px', left: rows.moveMenu.x + 'px' }">
+        <li v-if="spaceStore.spaces.length === 0" class="disabled-hint">暂无空间，请先创建</li>
+        <li @click="rows.pickMoveTarget(null)">
+          <el-icon><Close /></el-icon>未归类
+        </li>
+        <li v-for="sp in spaceStore.spaces" :key="sp.id" @click="rows.pickMoveTarget(sp.id)">
+          <el-icon><FolderOpened /></el-icon>{{ sp.name }}
+        </li>
+      </ul>
+    </Teleport>
+
+    <!-- 移动端：任务行底部动作面板（Task 11.3）——长按任务行触发（bindLongPress 同一入口
+         onRowCtx 按 useMobileShell 分流），替代右键样式的定位菜单；「移动到空间」子菜单
+         在面板里平铺为「移动到：××」项。桌面端不渲染（rowSheet 恒关）。 -->
+    <ActionSheet
+      :visible="rowSheet.visible"
+      :title="rowSheet.conv?.title || '任务操作'"
+      :actions="rowSheetActions"
+      @close="closeRowSheet"
+      @select="onRowSheetSelect"
+    />
+
+    <!-- 新建/编辑空间对话框：统一 FormDialog（本组件在四个模式下都可能挂载，故自持一份，
+         与办公侧栏同表单；取消/保存底栏由 FormDialog 默认渲染） -->
+    <FormDialog
       v-model="showSpaceEdit"
       :title="spaceEditForm.id ? '编辑空间' : '新建目录'"
       width="460px"
-      :close-on-click-modal="false"
-      class="compact-dialog"
+      dialog-class="compact-dialog"
+      :confirm-text="spaceEditForm.id ? '保存' : '创建'"
+      @submit="saveSpaceEdit"
     >
       <el-form label-position="top" @submit.prevent>
         <el-form-item label="名称">
@@ -178,26 +239,28 @@
           <el-input v-model="spaceEditForm.description" type="textarea" :rows="2" placeholder="目录描述（可选）" />
         </el-form-item>
       </el-form>
-      <template #footer>
-        <el-button @click="showSpaceEdit = false">取消</el-button>
-        <el-button type="primary" @click="saveSpaceEdit">{{ spaceEditForm.id ? '保存' : '创建' }}</el-button>
-      </template>
-    </el-dialog>
+    </FormDialog>
 
     <WorkspaceDirDialog v-model="dirPickerVisible" :current-path="spaceEditForm.dirPath" @selected="onSpaceDirSelected" />
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, ref, nextTick, onMounted, onBeforeUnmount } from 'vue';
+import { computed, ref, onMounted, onBeforeUnmount } from 'vue';
 import {
-  EditPen, Top, Star, CaretRight, ChatDotRound, FolderOpened, Tools, Close, Delete, ArrowRight,
+  EditPen, Top, Star, CaretRight, ChatDotRound, FolderOpened, Tools, Close, Delete, ArrowRight, Plus,
 } from '@element-plus/icons-vue';
-import { ElMessage } from 'element-plus';
 import { useChatStore } from '../../stores/chat';
 import { useChat } from '../../composables/chat/useChat';
 import { useCodeStore } from '../../stores/code';
+import { useTaskRowActions } from '../../composables/useTaskRowActions';
+import { bindLongPress } from '../../composables/useLongPress';
+import { useMobileShell } from '../../composables/useMobileShell';
 import WorkspaceDirDialog from '../WorkspaceDirDialog.vue';
+import FormDialog from '../FormDialog.vue';
+import EmptyState from '../common/EmptyState.vue';
+import ActionSheet from '../common/ActionSheet.vue';
+import type { ActionSheetAction } from '../common/ActionSheet.vue';
 import { clampMenuPos } from '../../utils/menuPosition';
 
 const props = withDefaults(defineProps<{
@@ -208,13 +271,19 @@ const props = withDefaults(defineProps<{
 const chatStore = useChatStore();
 const codeStore = useCodeStore();
 const chat = useChat();
+/** 移动外壳判定（视口窄 或 Capacitor）：任务行长按菜单据此改弹底部动作面板（Task 11.3） */
+const isMobileShell = useMobileShell();
 const {
-  batchMode, selectedConvIds, renamingId, renamingTitle, commitRename,
+  batchMode, selectedConvIds, renamingId, renamingTitle,
   openTreeMenu, treeMenu, treeMenuNewTask, treeMenuNewSpace, closeTreeMenu,
   enterBatchSelect, exitBatchMode, toggleBatchMode, toggleConvSelect, batchDeleteConvs,
-  moveConvToSpace, togglePin, deleteConv, spaceStore,
-  showSpaceEdit, spaceEditForm, saveSpaceEdit, startRename,
+  spaceStore,
+  showSpaceEdit, spaceEditForm, saveSpaceEdit,
 } = chat;
+
+// 任务行共享操作（置顶/重命名/删除/移动空间/激活）：与办公侧栏（ChatSidebar）共用同一 composable。
+// DOM 差异走适配：本组件的 rename 输入框没绑 useChat 的 renameInputRef，用选择器聚焦。
+const rows = useTaskRowActions({ focusRenameInput: focusRename });
 
 const effSpaceId = computed(() => (props.spaceId === undefined ? codeStore.projectSpaceId : props.spaceId));
 
@@ -284,12 +353,9 @@ function batchSelectAllHere() {
   selectedConvIds.value = new Set(convs.value.map((c) => c.id));
 }
 
-function onPick(id: string) {
-  if (id !== chatStore.currentConvId) void chat.selectConv(id);
-}
 function onRowClick(c: any) {
   if (batchMode.value) toggleConvSelect(c.id);
-  else onPick(c.id);
+  else rows.activate(c);
 }
 function onNew() {
   void chat.startNewChat(effSpaceId.value || null);
@@ -304,12 +370,58 @@ function onTreeNewTask() {
 const rowMenu = ref<{ visible: boolean; x: number; y: number; conv: any }>({
   visible: false, x: 0, y: 0, conv: null,
 });
+// ===== 移动端：任务行底部动作面板（Task 11.3）=====
+const rowSheet = ref<{ visible: boolean; conv: any }>({ visible: false, conv: null });
 function onRowCtx(e: MouseEvent, c: any) {
   e.preventDefault();
   e.stopPropagation();
+  // 移动外壳（触屏）：改弹 ActionSheet（spec「移动端弹窗规范」），不再用定位菜单
+  if (isMobileShell.value) {
+    rowSheet.value = { visible: true, conv: c };
+    return;
+  }
   const p = clampMenuPos(e);
   rowMenu.value = { visible: true, x: p.x, y: p.y, conv: c };
 }
+function closeRowSheet() { rowSheet.value = { ...rowSheet.value, visible: false }; }
+
+/** 面板动作：与桌面右键菜单同项；「移动到空间」子菜单平铺为带参 key（move:<spaceId>） */
+const rowSheetActions = computed<ActionSheetAction[]>(() => {
+  const c = rowSheet.value.conv;
+  if (!c) return [];
+  const list: ActionSheetAction[] = [
+    { key: 'batch', label: batchMode.value && selectedConvIds.value.has(c.id) ? '移出批量选择' : '批量选择' },
+  ];
+  if (batchMode.value) list.push({ key: 'exit-batch', label: '退出批量模式' });
+  list.push(
+    { key: 'pin', label: c.pinned ? '取消置顶' : '置顶' },
+    { key: 'rename', label: '重命名' },
+  );
+  if (spaceStore.spaces.length === 0) {
+    list.push({ key: 'no-space', label: '暂无空间，请先创建', disabled: true });
+  } else {
+    list.push({ key: 'move:null', label: '移动到：未归类' });
+    for (const sp of spaceStore.spaces) list.push({ key: `move:${sp.id}`, label: `移动到：${sp.name}` });
+  }
+  list.push({ key: 'delete', label: '删除', danger: true });
+  return list;
+});
+
+function onRowSheetSelect(a: ActionSheetAction) {
+  const c = rowSheet.value.conv;
+  closeRowSheet();
+  if (!c) return;
+  if (a.key === 'batch') {
+    if (batchMode.value && selectedConvIds.value.has(c.id)) toggleConvSelect(c.id);
+    else enterBatchSelect(c.id);
+  } else if (a.key === 'exit-batch') exitBatchMode();
+  else if (a.key === 'pin') rows.togglePinned(c);
+  else if (a.key === 'rename') rows.startRename(c);
+  else if (a.key === 'move:null') rows.moveTo(c, null);
+  else if (a.key.startsWith('move:')) rows.moveTo(c, a.key.slice(5));
+  else if (a.key === 'delete') rows.remove(c);
+}
+
 function closeRowMenu() { rowMenu.value = { ...rowMenu.value, visible: false }; }
 function onRowMenuBatch() {
   const c = rowMenu.value.conv;
@@ -319,23 +431,24 @@ function onRowMenuBatch() {
   }
   closeRowMenu();
 }
-function onRowMenuPin() { void togglePin(rowMenu.value.conv); closeRowMenu(); }
+// 行内操作统一走 useTaskRowActions（与办公侧栏同口径），本组件只负责关自己的浮层
+function onRowMenuPin() { rows.togglePinned(rowMenu.value.conv); closeRowMenu(); }
 function onRowMenuRename() {
   const c = rowMenu.value.conv;
   closeRowMenu();
-  if (c) { startRename(c); void nextTick(() => focusRename(c.id)); }
+  if (c) rows.startRename(c);
 }
 function onRowMenuMove(spaceId: string | null) {
   const c = rowMenu.value.conv;
   closeRowMenu();
-  if (c) void moveConvToSpace(c.id, spaceId);
+  rows.moveTo(c, spaceId);
 }
-function onRowMenuDelete() { void deleteConv(rowMenu.value.conv); closeRowMenu(); }
+function onRowMenuDelete() { rows.remove(rowMenu.value.conv); closeRowMenu(); }
 
-function focusRename(id: string) {
+/** 本组件的 rename 输入框靠选择器定位（useChat 的 renameInputRef 只被办公侧栏绑定） */
+function focusRename() {
   const el = document.querySelector(`.tls-item .tls-rename input`) as HTMLInputElement | null;
   if (el) { el.focus(); el.select(); }
-  void id;
 }
 
 // ===== 新建/编辑空间（本组件自持，避免依赖办公侧栏的对话框实例） =====
@@ -352,9 +465,14 @@ function onSpaceDirSelected(path: string) {
 function onDocMouseDown(e: MouseEvent) {
   // target 可能是 document / window（无 closest），必须先做元素判定；
   // 这里静默 return 会让菜单永不关闭，故用可选链 + instanceof 双保险。
+  // .as-sheet：底部动作面板（Teleport 到 body）——mousedown 先关面板会让 click 落空。
   const t = e.target;
-  if (t instanceof Element && (t.closest('.ctx-menu') || t.closest('.tls'))) return;
+  if (t instanceof Element && t.closest('.ctx-menu')) return;
+  // 行内「移动」浮层：点浮层外任何位置都收起（含 .tls 内部的其它行）
+  rows.closeMoveMenu();
+  if (t instanceof Element && (t.closest('.tls') || t.closest('.as-sheet'))) return;
   closeRowMenu();
+  closeRowSheet();
   closeTreeMenu();
 }
 onMounted(() => document.addEventListener('mousedown', onDocMouseDown, true));
@@ -389,33 +507,24 @@ onBeforeUnmount(() => {
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.04em;
-  color: var(--el-text-color-secondary, #94a3b8);
+  color: var(--el-text-color-secondary, var(--color-text-secondary));
 }
 
-.tls-new,
+/* 「新建任务」按钮的基础样式在 styles/task-row.css（与办公侧栏共用，Task 2.4） */
 .tls-exit {
   display: flex;
   align-items: center;
   justify-content: center;
+  height: 20px; padding: 0 8px;
   border: none;
   border-radius: 6px;
   background: transparent;
-  color: var(--el-text-color-secondary, #94a3b8);
+  font-size: 11px; font-family: inherit;
+  color: var(--el-color-warning, var(--color-warning));
   cursor: pointer;
   transition: background 0.15s ease, color 0.15s ease;
 }
-.tls-new { width: 20px; height: 20px; }
-.tls-exit {
-  height: 20px; padding: 0 8px;
-  font-size: 11px; font-family: inherit;
-  color: var(--el-color-warning, #e6a23c);
-}
-
-.tls-new:hover {
-  background: color-mix(in srgb, var(--color-primary, #4f46e5) 10%, transparent);
-  color: var(--color-primary, #4f46e5);
-}
-.tls-exit:hover { background: color-mix(in srgb, var(--el-color-warning, #e6a23c) 12%, transparent); }
+.tls-exit:hover { background: color-mix(in srgb, var(--el-color-warning, var(--color-warning)) 12%, transparent); }
 
 .tls-body {
   flex: 1;
@@ -435,21 +544,21 @@ onBeforeUnmount(() => {
   cursor: pointer;
   transition: background 0.13s ease;
 }
-.tls-group-head:hover { background: var(--glass-bg-hover, rgba(15, 23, 42, 0.05)); }
+.tls-group-head:hover { background: var(--glass-bg-hover, var(--color-surface-hover)); }
 .tls-caret {
   font-size: 11px;
-  color: var(--el-text-color-secondary, #94a3b8);
+  color: var(--el-text-color-secondary, var(--color-text-secondary));
   transition: transform 0.16s ease;
   flex-shrink: 0;
 }
 .tls-caret.expanded { transform: rotate(90deg); }
-.tls-group-icon { font-size: 12px; color: var(--el-text-color-secondary, #94a3b8); flex-shrink: 0; }
+.tls-group-icon { font-size: 12px; color: var(--el-text-color-secondary, var(--color-text-secondary)); flex-shrink: 0; }
 .tls-group-label {
   flex: 1;
   min-width: 0;
   font-size: 11.5px;
   font-weight: 600;
-  color: var(--el-text-color-regular, #475569);
+  color: var(--el-text-color-regular, var(--color-text-secondary));
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -457,7 +566,7 @@ onBeforeUnmount(() => {
 .tls-count {
   flex-shrink: 0;
   font-size: 10.5px;
-  color: var(--el-text-color-placeholder, #cbd5e1);
+  color: var(--el-text-color-placeholder, var(--color-text-tertiary));
 }
 .tls-select-all { flex-shrink: 0; height: auto; margin-right: 2px; }
 
@@ -475,25 +584,25 @@ onBeforeUnmount(() => {
   border-radius: 7px;
   background: transparent;
   text-align: left;
-  font-size: 12px;
+  font-size: var(--font-size-base);
   font-family: inherit;
-  color: var(--el-text-color-regular, #475569);
+  color: var(--el-text-color-regular, var(--color-text-secondary));
   cursor: pointer;
   transition: background 0.13s ease, color 0.13s ease;
 }
 
 .tls-item:hover {
-  background: var(--glass-bg-hover, rgba(15, 23, 42, 0.05));
-  color: var(--el-text-color-primary, #1e293b);
+  background: var(--glass-bg-hover, var(--color-surface-hover));
+  color: var(--el-text-color-primary, var(--color-text));
 }
 
 .tls-item.active {
-  background: color-mix(in srgb, var(--color-primary, #4f46e5) 10%, transparent);
-  color: var(--color-primary, #4f46e5);
+  background: color-mix(in srgb, var(--color-primary) 10%, transparent);
+  color: var(--color-primary);
   font-weight: 500;
 }
 
-.tls-item.pinned { background: color-mix(in srgb, var(--el-color-warning, #e6a23c) 8%, transparent); }
+.tls-item.pinned { background: color-mix(in srgb, var(--el-color-warning, var(--color-warning)) 8%, transparent); }
 .tls-item.selecting { cursor: default; }
 .tls-check { flex-shrink: 0; height: auto; }
 
@@ -502,11 +611,11 @@ onBeforeUnmount(() => {
   height: 5px;
   flex-shrink: 0;
   border-radius: 50%;
-  background: var(--el-text-color-placeholder, #cbd5e1);
+  background: var(--el-text-color-placeholder, var(--color-text-tertiary));
 }
 
 .tls-item.active .tls-dot {
-  background: var(--color-primary, #4f46e5);
+  background: var(--color-primary);
 }
 
 .tls-label {
@@ -523,15 +632,14 @@ onBeforeUnmount(() => {
   flex-shrink: 0;
   display: flex;
   font-size: 11px;
-  color: var(--el-color-warning, #e6a23c);
+  color: var(--el-color-warning, var(--color-warning));
 }
 
 .tls-empty {
   padding: 8px 8px;
   font-size: 11px;
-  color: var(--el-text-color-secondary, #94a3b8);
+  color: var(--el-text-color-secondary, var(--color-text-secondary));
 }
-.tls-empty-root { padding: 10px 8px; }
 
 /* ===== 批量条 ===== */
 .tls-batch-bar {
@@ -539,9 +647,9 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 6px;
   padding: 6px 8px;
-  border-top: 1px solid var(--glass-border, rgba(15, 23, 42, 0.08));
+  border-top: 1px solid var(--glass-border, var(--color-border));
   font-size: 11px;
-  color: var(--el-text-color-secondary, #94a3b8);
+  color: var(--el-text-color-secondary, var(--color-text-secondary));
 }
 .tls-batch-bar > span { flex: 1; }
 

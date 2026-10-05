@@ -266,7 +266,7 @@ async function remove(item: MarketItem) {
     await ElMessageBox.confirm(
       `删除 ${item.displayName}？模型将从 Ollama 移除。`,
       '删除确认',
-      { type: 'warning' },
+      { type: 'warning', confirmButtonClass: 'yz-confirm-danger' },
     );
   } catch { return; }
   const r = await api.delete(`/ollama-market/${item.key}`);

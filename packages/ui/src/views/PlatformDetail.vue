@@ -116,8 +116,15 @@
       <el-empty v-if="models.length === 0 && !fetching" description="暂无模型，点击拉取远程模型或手动添加" />
     </div>
 
-    <!-- 手动添加对话框 -->
-    <el-dialog v-model="showAdd" :title="editingModelId ? '编辑模型' : '添加模型'" width="520px" :close-on-click-modal="false" @closed="resetModelForm">
+    <!-- 手动添加对话框：统一 FormDialog（取消/保存底栏由组件默认渲染） -->
+    <FormDialog
+      v-model="showAdd"
+      :title="editingModelId ? '编辑模型' : '添加模型'"
+      width="520px"
+      :confirm-text="editingModelId ? '保存修改' : '添加'"
+      @submit="addOrEditModel"
+      @closed="resetModelForm"
+    >
       <el-form label-width="100px">
         <el-form-item label="模型 ID"><el-input v-model="form.modelId" placeholder="如：gpt-4o-mini" /></el-form-item>
         <el-form-item label="别名"><el-input v-model="form.alias" placeholder="（可选）" /></el-form-item>
@@ -171,17 +178,20 @@
           <span class="form-tip">元/千token</span>
         </el-form-item>
         <el-form-item label="输出价格">
-          <el-input-number v-model="form.pricingOutput" :min="0" :step="0.001" :precision="4" />
+          <el-input v-model="form.pricingOutput" :min="0" :step="0.001" :precision="4" />
           <span class="form-tip">元/千token</span>
         </el-form-item>
       </el-form>
-      <template #footer>
-        <el-button @click="closeModelDialog">取消</el-button>
-        <el-button type="primary" @click="addOrEditModel">{{ editingModelId ? '保存修改' : '添加' }}</el-button>
-      </template>
-    </el-dialog>
+    </FormDialog>
 
-    <el-dialog v-model="showBatchContext" title="批量设置上下文窗口" width="420px" :close-on-click-modal="false">
+    <FormDialog
+      v-model="showBatchContext"
+      title="批量设置上下文窗口"
+      width="420px"
+      :confirm-text="`应用 (${selectedModelIds.size} 个)`"
+      :loading="batchSaving"
+      @submit="applyBatchContext"
+    >
       <el-form label-width="100px">
         <el-form-item label="上下文窗口">
           <div class="ctx-editor">
@@ -200,11 +210,7 @@
           </div>
         </el-form-item>
       </el-form>
-      <template #footer>
-        <el-button @click="showBatchContext = false">取消</el-button>
-        <el-button type="primary" :loading="batchSaving" @click="applyBatchContext">应用 ({{ selectedModelIds.size }} 个)</el-button>
-      </template>
-    </el-dialog>
+    </FormDialog>
 
     <!-- 测试结果 -->
     <el-dialog v-model="testResultDialog" :title="testResult.title || '模型测试结果'" width="520px">
@@ -252,6 +258,7 @@ import { useRoute, useRouter } from 'vue-router';
 import { Plus, ArrowLeft, Expand, ArrowDown } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { usePlatformStore } from '../stores';
+import FormDialog from '../components/FormDialog.vue';
 
 const props = defineProps<{
   /** 弹窗内嵌时直接传入平台 ID；不传则回退到路由参数（/models/:platformId） */
@@ -324,11 +331,6 @@ function capabilityLabel(cap: string) {
 function openAddModel() {
   resetModelForm();
   showAdd.value = true;
-}
-
-function closeModelDialog() {
-  showAdd.value = false;
-  resetModelForm();
 }
 
 function formatWindow(n: number): string {
@@ -461,7 +463,7 @@ async function applyBatchContext() {
 async function batchDeleteModels() {
   if (selectedModelIds.value.size === 0) return;
   try {
-    await ElMessageBox.confirm(`删除 ${selectedModelIds.value.size} 个模型？`, '提示', { type: 'warning' });
+    await ElMessageBox.confirm(`删除 ${selectedModelIds.value.size} 个模型？`, '提示', { type: 'warning', confirmButtonClass: 'yz-confirm-danger' });
     for (const id of selectedModelIds.value) {
       await store.deleteModel(id);
     }
@@ -473,7 +475,7 @@ async function batchDeleteModels() {
 async function del(row: any) {
 
   try {
-    await ElMessageBox.confirm(`删除模型 ${row.modelId}？`, '提示', { type: 'warning' });
+    await ElMessageBox.confirm(`删除模型 ${row.modelId}？`, '提示', { type: 'warning', confirmButtonClass: 'yz-confirm-danger' });
     await store.deleteModel(row.id);
     ElMessage.success('已删除');
   } catch {}

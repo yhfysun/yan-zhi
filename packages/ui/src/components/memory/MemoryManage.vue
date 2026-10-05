@@ -508,6 +508,7 @@ async function removeRow(row: MemoryRow) {
   try {
     await ElMessageBox.confirm('确认删除该条记忆？删除后不可恢复。', '删除记忆', {
       type: 'warning',
+      confirmButtonClass: 'yz-confirm-danger',
       confirmButtonText: '删除',
       cancelButtonText: '取消',
     });

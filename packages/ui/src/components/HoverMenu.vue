@@ -300,20 +300,3 @@ defineExpose({ closeSubNow });
   transform: translateX(-4px);
 }
 </style>
-
-<style>
-/* ============================================================
-   HoverMenu 浮层皮肤（非 scoped：popper 由 el-popover Teleport 到 body）
-   ★ 统一入口：顶栏两个 hover 菜单（「更多」= more-menu-popper、
-   「模式」= mode-switcher-popper）都加 yz-menu-popper 类，外观在这一处定义，
-   组件不再各自写一套（历史问题：两边各写一套 → 图标/圆角/底色漂移，
-   用户一眼看出「不是统一的」）。
-   ============================================================ */
-.yz-menu-popper {
-  border-radius: 12px !important;
-  border: 1px solid var(--glass-border) !important;
-  box-shadow: var(--shadow-lg) !important;
-  padding: 4px !important;
-  background: var(--el-bg-color-overlay, var(--glass-bg));
-}
-</style>

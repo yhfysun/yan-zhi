@@ -1,0 +1,88 @@
+/* ============================================================
+   任务行共享交互样式 —— ChatSidebar（办公侧栏）与 TaskListSection（四模式工作台任务段）共用。
+   由 App.vue 全局引入：chat.css 只随办公视图加载，工作台模式拿不到，故行内操作的
+   共用样式收口在此（upgrade-ui-task-mobile Task 2.2 / 2.4）。
+   仅引用 token，禁止硬编码色值。
+   ============================================================ */
+
+/* ===== 行尾 hover 操作按钮组（置顶 / 重命名 / 移动空间 / 删除） ===== */
+.task-row-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity var(--motion-fast) var(--ease-out);
+}
+/* 触屏没有 hover：整组不渲染（隐形按钮会拦截点按），操作由长按菜单兜底 */
+@media (hover: none) {
+  .task-row-actions { display: none; }
+}
+.conv-item:hover .task-row-actions,
+.tls-item:hover .task-row-actions { opacity: 1; }
+
+.task-row-act {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--radius-sm);
+  color: var(--el-text-color-secondary, var(--color-text-secondary));
+  cursor: pointer;
+  transition: background var(--motion-fast) var(--ease-out), color var(--motion-fast) var(--ease-out);
+}
+.task-row-act:hover {
+  background: color-mix(in srgb, var(--color-primary) 14%, transparent);
+  color: var(--color-primary);
+}
+/* 已置顶任务的置顶按钮保持金色，与行首置顶星标呼应 */
+.task-row-act.is-on { color: var(--el-color-warning, var(--color-warning)); }
+.task-row-act.is-danger:hover {
+  background: color-mix(in srgb, var(--el-color-danger, var(--color-danger)) 12%, transparent);
+  color: var(--el-color-danger, var(--color-danger));
+}
+
+/* ===== 7.4 任务行运行状态徽标：会话在跑时行内呼吸圆点（ChatSidebar / TaskListSection 共用） ===== */
+.conv-run-badge {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--color-primary);
+  animation: conv-run-pulse 1.6s ease-out infinite;
+}
+@keyframes conv-run-pulse {
+  0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-primary) 45%, transparent); }
+  70% { box-shadow: 0 0 0 5px transparent; }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+
+/* ===== 显式「新建任务」按钮（列表头部；宽度/占位由各列表自行安排） ===== */
+.new-task-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  height: 24px;
+  padding: 0 10px;
+  border: 1px solid var(--glass-border, var(--color-border));
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--el-text-color-regular, var(--color-text));
+  font-family: inherit;
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+  transition:
+    background var(--motion-fast) var(--ease-out),
+    color var(--motion-fast) var(--ease-out),
+    border-color var(--motion-fast) var(--ease-out),
+    box-shadow var(--motion-fast) var(--ease-out);
+}
+.new-task-btn:hover {
+  color: var(--color-primary);
+  border-color: color-mix(in srgb, var(--color-primary) 45%, transparent);
+  background: color-mix(in srgb, var(--color-primary) 10%, transparent);
+  box-shadow: var(--shadow-1);
+}
+

@@ -936,6 +936,23 @@ onMounted(async () => {
 .cp-task-action { color: var(--color-primary, #c2410c); font-weight: 600; }
 .cp-proj-dropdown { width: 280px; }
 
+/* ===== 中窄屏降级（任务 10.1，768–1200px 过渡区间）=====
+   AI 形态右编辑器默认 520px 固定宽：1100px 视口下（侧栏 260 + 编辑器 520）
+   中间任务对话只剩 ~340px，900px 时更只剩 ~120px。策略与办公模式一致——
+   优先保主对话区，右编辑器按比例收窄（用户仍可点「收起编辑器」完全关闭）。 */
+@media (max-width: 1200px) {
+  .cp-ai-editor-pane.open {
+    flex-basis: min(var(--code-ai-editor-w, 520px), 42vw);
+    width: min(var(--code-ai-editor-w, 520px), 42vw);
+  }
+}
+@media (max-width: 960px) {
+  .cp-ai-editor-pane.open {
+    flex-basis: min(var(--code-ai-editor-w, 520px), 46vw);
+    width: min(var(--code-ai-editor-w, 520px), 46vw);
+  }
+}
+
 @media (max-width: 1100px) {
   .cp-chat { display: none; }
   .cp-env { display: none; }

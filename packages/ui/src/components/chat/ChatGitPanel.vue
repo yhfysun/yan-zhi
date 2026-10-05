@@ -1053,7 +1053,7 @@ async function restoreAll() {
   const paths = unstagedFiles.value.map((f) => f.path);
   if (!paths.length) return;
   try {
-    await ElMessageBox.confirm(`放弃 ${paths.length} 个文件的未暂存更改？此操作不可撤销。`, '放弃更改', { type: 'warning', confirmButtonText: '放弃', cancelButtonText: '取消' });
+    await ElMessageBox.confirm(`放弃 ${paths.length} 个文件的未暂存更改？此操作不可撤销。`, '放弃更改', { type: 'warning', confirmButtonClass: 'yz-confirm-danger', confirmButtonText: '放弃', cancelButtonText: '取消' });
   } catch { return; }
   for (const p of paths) await gitStore.restore(activeRepo.value, [p]);
   ElMessage.success(`已放弃 ${paths.length} 个文件更改`);
@@ -1078,7 +1078,7 @@ async function batchUnstage() {
 async function batchRestore() {
   const paths = [...selected.value];
   try {
-    await ElMessageBox.confirm(`放弃 ${paths.length} 个文件的更改？此操作不可撤销。`, '放弃更改', { type: 'warning', confirmButtonText: '放弃', cancelButtonText: '取消' });
+    await ElMessageBox.confirm(`放弃 ${paths.length} 个文件的更改？此操作不可撤销。`, '放弃更改', { type: 'warning', confirmButtonClass: 'yz-confirm-danger', confirmButtonText: '放弃', cancelButtonText: '取消' });
   } catch { return; }
   for (const p of paths) await gitStore.restore(activeRepo.value, [p]);
   ElMessage.success(`已放弃 ${paths.length} 个文件更改`);
@@ -1087,7 +1087,7 @@ async function batchRestore() {
 }
 async function doRestoreFile(filePath: string) {
   try {
-    await ElMessageBox.confirm(`放弃 ${filePath} 的未提交更改？此操作不可逆。`, '放弃更改', { type: 'warning', confirmButtonText: '放弃', cancelButtonText: '取消' });
+    await ElMessageBox.confirm(`放弃 ${filePath} 的未提交更改？此操作不可逆。`, '放弃更改', { type: 'warning', confirmButtonClass: 'yz-confirm-danger', confirmButtonText: '放弃', cancelButtonText: '取消' });
   } catch { return; }
   const res = await gitStore.restore(activeRepo.value, [filePath]);
   if ('error' in res) ElMessage.error(res.error); else ElMessage.success('已恢复');
@@ -1135,7 +1135,7 @@ async function doRenameBranch(oldName: string) {
 }
 async function doDeleteBranch(name: string) {
   try {
-    await ElMessageBox.confirm(`删除分支 ${name}？`, '删除', { confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning' });
+    await ElMessageBox.confirm(`删除分支 ${name}？`, '删除', { confirmButtonText: '删除', confirmButtonClass: 'yz-confirm-danger', cancelButtonText: '取消', type: 'warning' });
   } catch { return; }
   const res = await gitStore.deleteBranch(activeRepo.value, name);
   if ('error' in res) ElMessage.error(res.error); else ElMessage.success('已删除');
@@ -1201,7 +1201,7 @@ async function doMergeBranch(branch: string) {
 }
 async function doAbortMerge() {
   try {
-    await ElMessageBox.confirm('中止当前合并？', '中止合并', { confirmButtonText: '中止', cancelButtonText: '取消', type: 'warning' });
+    await ElMessageBox.confirm('中止当前合并？', '中止合并', { confirmButtonText: '中止', confirmButtonClass: 'yz-confirm-danger', cancelButtonText: '取消', type: 'warning' });
   } catch { return; }
   const res = await gitStore.abortMerge(activeRepo.value);
   if ('error' in res) ElMessage.error(res.error); else ElMessage.success('已中止');
@@ -1223,7 +1223,7 @@ async function doRebase(branch: string) {
   if ('error' in res) {
     ElMessage.error(res.error);
     try {
-      await ElMessageBox.confirm('变基失败，是否中止？', '变基冲突', { confirmButtonText: '中止', cancelButtonText: '手动处理' });
+      await ElMessageBox.confirm('变基失败，是否中止？', '变基冲突', { confirmButtonText: '中止', confirmButtonClass: 'yz-confirm-danger', cancelButtonText: '手动处理' });
       await gitStore.rebaseAbort(activeRepo.value);
       ElMessage.success('已中止');
       await refreshAll();
@@ -1245,7 +1245,7 @@ async function doReset(mode: 'soft' | 'mixed' | 'hard', target: string) {
   try {
     await ElMessageBox.confirm(
       `重置到 ${shortHash(target)}（${mode}）？${mode === 'hard' ? ' ⚠️ 会丢失未提交更改！' : ''}`,
-      '重置', { confirmButtonText: '重置', cancelButtonText: '取消', type: mode === 'hard' ? 'warning' : 'info' },
+      '重置', { confirmButtonText: '重置', confirmButtonClass: mode === 'hard' ? 'yz-confirm-danger' : '', cancelButtonText: '取消', type: mode === 'hard' ? 'warning' : 'info' },
     );
   } catch { return; }
   const res = await gitStore.reset(activeRepo.value, mode, target);
@@ -1282,7 +1282,7 @@ async function doTagCreate(ref?: string) {
 }
 async function doTagDelete(name: string) {
   try {
-    await ElMessageBox.confirm(`删除标签 ${name}？`, '删除', { confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning' });
+    await ElMessageBox.confirm(`删除标签 ${name}？`, '删除', { confirmButtonText: '删除', confirmButtonClass: 'yz-confirm-danger', cancelButtonText: '取消', type: 'warning' });
   } catch { return; }
   const res = await gitStore.tagDelete(activeRepo.value, name);
   if ('error' in res) ElMessage.error(res.error); else ElMessage.success('已删除');
@@ -1310,7 +1310,7 @@ async function doStashApply(index: number) {
 }
 async function doStashDrop(index: number) {
   try {
-    await ElMessageBox.confirm(`删除储藏 [${index}]？`, '删除', { confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning' });
+    await ElMessageBox.confirm(`删除储藏 [${index}]？`, '删除', { confirmButtonText: '删除', confirmButtonClass: 'yz-confirm-danger', cancelButtonText: '取消', type: 'warning' });
   } catch { return; }
   const res = await gitStore.stashDrop(activeRepo.value, index);
   if ('error' in res) ElMessage.error(res.error); else ElMessage.success('已删除');

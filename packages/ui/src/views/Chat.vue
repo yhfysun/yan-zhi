@@ -3,6 +3,17 @@
        :style="{ '--chat-sidebar-w': (convCollapsed ? 0 : sidebarW) + 'px', '--chat-context-w': contextMoved ? contextW + 'px' : '', '--chat-right-w': rightMoved ? rightW + 'px' : '' }">
     <div v-if="drawerOpen" class="drawer-overlay" @click="drawerOpen = false"></div>
 
+    <!-- 窄屏（≤1199px 或移动外壳）下，上下文栏/预览栏为右侧覆盖抽屉：
+         统一遮罩 = 点击遮罩关闭抽屉（此前无遮罩，抽屉又盖住了顶栏切换按钮，导致「关不了」）。
+         >1199px 的桌面宽屏面板是常驻分栏，不需要遮罩（CSS 控制 display）。 -->
+    <div
+      v-if="contextSidebarOpen || store.rightPanelOpen"
+      class="drawer-scrim"
+      role="button"
+      aria-label="点击关闭面板"
+      @click="closeAllDrawers"
+    ></div>
+
     <ChatSidebar />
 
     <div v-if="!convCollapsed" class="rs-handle rs-handle-left" @mousedown="sidebarR.startDrag($event, 'left')"></div>
@@ -52,6 +63,12 @@ const { width: sidebarW } = sidebarR;
 const { width: contextW, moved: contextMoved } = contextR;
 const { width: rightW, moved: rightMoved } = rightR;
 
+/** 点击遮罩：收起所有覆盖式抽屉（上下文栏 + 右侧预览栏） */
+function closeAllDrawers() {
+  if (contextSidebarOpen.value) contextSidebarOpen.value = false;
+  if (store.rightPanelOpen) store.rightPanelOpen = false;
+}
+
 // 弹窗避开右侧预览面板：面板展开时标记 body 并写入面板宽度，.el-overlay 据此收窄右边界
 watch(
   () => [store.rightPanelOpen, rightW.value, rightMoved.value],
@@ -67,14 +84,6 @@ watch(
     }
   },
   { flush: 'post', immediate: true },
-);
-// 右栏预览展开时自动折叠左侧会话列表：大模型打开预览浏览器/文件时给预览腾空间。
-// 只折叠不自动还原，用户可点左侧展开按钮手动恢复。
-watch(
-  () => store.rightPanelOpen,
-  (open) => {
-    if (open) convCollapsed.value = true;
-  },
 );
 // 离开对话页：隐藏原生 BrowserView，避免预览面板已随页面卸载而 BrowserView 仍残留在窗口上
 onBeforeUnmount(() => {

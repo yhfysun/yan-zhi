@@ -193,7 +193,9 @@ const routes: RouteRecordRaw[] = [
     path: '/settings',
     name: 'settings',
     component: () => import('../views/Settings.vue'),
-    meta: { title: '设置' },
+    // mobilePageShell（Task 11.2）：移动端用页面自带四段式骨架（MobilePageShell），
+    // 共享壳据此隐藏 mobile-topbar；仅移动外壳消费，桌面端无感。
+    meta: { title: '设置', mobilePageShell: true },
   },
 ];
 

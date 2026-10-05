@@ -222,7 +222,8 @@ const PTR_EVENTS = [
   ['pointercancel', onPointerUp],
 ] as Array<[string, (e: PointerEvent) => void]>;
 
-function bindPointer(target: Element, add: boolean) {
+function bindPointer(target: Element | null, add: boolean) {
+  if (!target) return; // 防御：解绑时元素可能已被卸载（正常路径由闭包引用保证非空）
   for (const [type, fn] of PTR_EVENTS) {
     if (add) target.addEventListener(type, fn as EventListener);
     else target.removeEventListener(type, fn as EventListener);
@@ -256,8 +257,14 @@ watch([mode, stripRef], () => {
 watch([mode, stageWrapRef], () => {
   if (detachStage) { detachStage(); detachStage = null; }
   if (mode.value === 'stage' && stageWrapRef.value) {
-    bindPointer(stageWrapRef.value, true);
-    detachStage = () => bindPointer(stageWrapRef.value as Element, false);
+    // ★ 解绑闭包必须捕获绑定时的元素 el，不能读 stageWrapRef.value：
+    //   形态切换（stage→strip）时该元素已被 v-if 卸载、ref 变 null，
+    //   watch 先执行旧 detach → 对 null 调 removeEventListener 直接抛错
+    //   （2026-10-04 用户报的 Uncaught TypeError）。
+    //   脱离文档的 DOM 元素仍可正常 removeEventListener。
+    const el = stageWrapRef.value;
+    bindPointer(el, true);
+    detachStage = () => bindPointer(el, false);
   }
 }, { flush: 'post', immediate: true });
 
@@ -517,6 +524,8 @@ defineExpose({
   border-radius: 12px;
   border: 1px solid var(--glass-border, rgba(15, 23, 42, 0.1));
   background: var(--el-bg-color, #fff);
+  /* 8.3 欢迎卡卡片化对齐 elevation token（选中态的强调阴影优先级更高，不冲突） */
+  box-shadow: var(--shadow-1);
   cursor: pointer;
   text-align: left;
   overflow: hidden;

@@ -322,7 +322,7 @@ onBeforeUnmount(() => {
   }
 
   .settings-drawer-nav-item {
-    height: 38px;
+    height: 44px; /* 移动端触控目标 ≥44px（Task 10.4） */
     padding: 0 10px;
     gap: 8px;
     font-size: 12px;

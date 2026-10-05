@@ -39,21 +39,26 @@
 </Teleport>
     </div>
 
-    <!-- Chrome 风格工具栏 -->
+    <!-- 一体化工具栏：导航组 | 外部/引用 | 地址栏(pill) | 缩放 | 收藏/历史/密码 | 交给 AI | 全屏 | 更多 -->
     <div class="browser-toolbar">
-      <!-- 主页按钮：回到起始页 -->
-      <button class="nav-btn" @click="goHome" title="主页">
-        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 3 2 12h3v8h6v-6h2v6h6v-8h3L12 3z"/></svg>
-      </button>
-      <button class="nav-btn" @click="goBack" :disabled="!canBack" title="后退">
-        <svg viewBox="0 0 24 24" width="18" height="18"><path d="M15.5 19l-7-7 7-7" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
-      </button>
-      <button class="nav-btn" @click="goForward" :disabled="!canForward" title="前进">
-        <svg viewBox="0 0 24 24" width="18" height="18"><path d="M8.5 5l7 7-7 7" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
-      </button>
-      <button class="nav-btn" @click="refresh" title="刷新">
-        <svg viewBox="0 0 24 24" width="18" height="18"><path d="M17.65 6.35A7.95 7.95 0 0012 4a8 8 0 108 8h-2a6 6 0 11-6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z" fill="currentColor"/></svg>
-      </button>
+      <!-- 导航组：主页/后退/前进/刷新 -->
+      <div class="nav-group">
+        <button class="nav-btn" @click="goHome" title="主页">
+          <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 3 2 12h3v8h6v-6h2v6h6v-8h3L12 3z"/></svg>
+        </button>
+        <button class="nav-btn" @click="goBack" :disabled="!canBack" title="后退">
+          <svg viewBox="0 0 24 24" width="18" height="18"><path d="M15.5 19l-7-7 7-7" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <button class="nav-btn" @click="goForward" :disabled="!canForward" title="前进">
+          <svg viewBox="0 0 24 24" width="18" height="18"><path d="M8.5 5l7 7-7 7" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <button class="nav-btn" @click="refresh" title="刷新">
+          <svg viewBox="0 0 24 24" width="18" height="18"><path d="M17.65 6.35A7.95 7.95 0 0012 4a8 8 0 108 8h-2a6 6 0 11-6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z" fill="currentColor"/></svg>
+        </button>
+      </div>
+
+      <span class="toolbar-sep"></span>
+
       <button class="nav-btn" @click="openExternal" :disabled="!urlInput" title="用系统浏览器打开">
         <svg viewBox="0 0 24 24" width="18" height="18"><path d="M14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7zM19 19H5V5h7V3H5a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7h-2v7z" fill="currentColor"/></svg>
       </button>
@@ -81,6 +86,12 @@
         </button>
       </div>
 
+      <span class="toolbar-sep"></span>
+
+      <!-- 历史入口（与「更多」菜单里等价入口共用 openHistory） -->
+      <button class="nav-btn" @click="openHistory" title="浏览历史">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M3 12a9 9 0 109-9 9.75 9.75 0 00-6.74 2.74L3 8"/><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M3 3v5h5M12 7v5l4 2"/></svg>
+      </button>
 
       <!-- 收藏按钮 -->
       <button class="nav-btn" :class="{ active: isBookmarked }" @click="toggleBookmark" :title="isBookmarked ? '取消收藏' : '收藏此页'">
@@ -92,18 +103,10 @@
         <svg viewBox="0 0 24 24" width="18" height="18"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M7 11V7a5 5 0 0110 0v4M5 11h14a2 2 0 012 2v7a2 2 0 01-2 2H5a2 2 0 01-2-2v-7a2 2 0 012-2z"/></svg>
       </button>
 
-      <!-- Agent 实况控制组：暂停/恢复/停止（仅浏览器任务运行中显示，按会话感知） -->
-      <template v-if="liveControlVisible">
-        <button v-if="isConvStreamingNow && !pausedNow" class="nav-btn live-btn live-pause" @click="onPauseTask" title="暂停（当前动作完成后挂起）">
-          <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>
-        </button>
-        <button v-else-if="pausedNow" class="nav-btn live-btn live-resume" @click="onResumeTask" title="恢复执行">
-          <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>
-        </button>
-        <button class="nav-btn live-btn live-stop" @click="onStopTask" title="停止任务">
-          <svg viewBox="0 0 24 24" width="16" height="16"><rect x="6" y="6" width="12" height="12" rx="1.5" fill="currentColor"/></svg>
-        </button>
-      </template>
+      <!-- 🤖 交给 AI：把当前页 URL 引用到关联会话输入框，用户补一句指令即可让 Agent 接管 -->
+      <button class="handoff-btn" @click="handPageToAgent" :disabled="!currentUrl" title="把当前页交给 AI（引用到任务输入框）">
+        <span class="handoff-ico">🤖</span><span class="handoff-label">交给 AI</span>
+      </button>
 
       <!-- 全屏实况开关：原地放大（DOM 不动，避免 webview 重载） -->
       <button class="nav-btn" :class="{ active: browserExpanded }" @click="toggleExpanded" :title="browserExpanded ? '收起全屏 (Esc)' : '全屏实况'">
@@ -126,6 +129,39 @@
           </el-dropdown-menu>
         </template>
       </el-dropdown>
+    </div>
+
+    <!-- Agent 接管形态：顶部常驻步骤进度条（preview 空间、浏览器任务运行中显示）。
+        有 task_plan → 第 x/y 步 + 进度条；无计划 → 只显示「执行中」，不硬造数据。
+        暂停/恢复 + 「↩ 收回控制权」（映射既有 chatStore.stop）。 -->
+    <div v-if="liveControlVisible" class="agent-takeover-bar" :class="{ paused: pausedNow }">
+      <span class="takeover-dot" :class="pausedNow ? 'dot-paused' : 'dot-live'"></span>
+      <span class="takeover-label">
+        <template v-if="pausedNow">已暂停 · 你已接管页面</template>
+        <template v-else-if="planTotal > 0">Agent 接管中 · 第 {{ currentStepNo }}/{{ planTotal }} 步</template>
+        <template v-else>Agent 接管中 · 执行中</template>
+      </span>
+      <el-progress
+        v-if="planTotal > 0"
+        class="takeover-progress"
+        :percentage="planPercent"
+        :stroke-width="6"
+        :show-text="false"
+        :status="planFailed ? 'exception' : undefined"
+      />
+      <span class="takeover-spacer"></span>
+      <button v-if="isConvStreamingNow && !pausedNow" class="takeover-btn" @click="onPauseTask" title="暂停（当前动作完成后挂起）">
+        <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>
+        <span class="takeover-btn-text">暂停</span>
+      </button>
+      <button v-else-if="pausedNow" class="takeover-btn resume" @click="onResumeTask" title="恢复执行">
+        <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>
+        <span class="takeover-btn-text">恢复</span>
+      </button>
+      <button class="takeover-btn takeover-back" @click="onStopTask" title="停止任务并收回页面控制权">
+        <svg viewBox="0 0 24 24" width="14" height="14"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M9 14L4 9l5-5"/><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M4 9h10a6 6 0 016 6v1"/></svg>
+        <span class="takeover-btn-text">收回控制权</span>
+      </button>
     </div>
 
     <!-- 收藏夹栏 -->
@@ -255,11 +291,33 @@
         <span v-if="cursorPos.label" class="cursor-label">{{ cursorPos.label }}</span>
       </div>
 
+      <!-- Agent 步骤清单：实况锁定时叠加视口右上，与当前会话的 task_plan 同步
+           （✅ done / 🔄 running / ○ pending / ❌ failed）。只读展示 pointer-events:none。
+           无 task_plan 数据时不渲染（顶部进度条退化为「执行中」），不硬造步骤。 -->
+      <div v-if="inputLocked && planTotal > 0" class="agent-step-panel">
+        <div class="agent-step-panel-head">
+          <el-icon><List /></el-icon>
+          <span class="agent-step-panel-title">{{ chatStore.planTitle || '任务计划' }}</span>
+          <span class="agent-step-count">{{ planDone }}/{{ planTotal }}</span>
+        </div>
+        <ul class="agent-step-items">
+          <li v-for="(s, i) in planStepsNow" :key="s.id" class="agent-step-item" :class="'status-' + s.status">
+            <span class="agent-step-icon">
+              <el-icon v-if="s.status === 'done'"><CircleCheck /></el-icon>
+              <el-icon v-else-if="s.status === 'failed'"><CircleClose /></el-icon>
+              <el-icon v-else-if="s.status === 'running'" class="is-loading"><Loading /></el-icon>
+              <span v-else class="agent-step-dot" />
+            </span>
+            <span class="agent-step-title" :title="s.title">{{ i + 1 }}. {{ s.title }}</span>
+          </li>
+        </ul>
+      </div>
+
     </div>
 
 
     <!-- 收藏夹弹窗 -->
-    <el-dialog v-model="showBookmarks" title="收藏夹" width="480px" append-to-body>
+    <el-dialog v-model="showBookmarks" title="收藏夹" width="480px" class="el-dialog--sm" append-to-body>
       <div v-if="bookmarks.length === 0" style="text-align:center;padding:30px;color:var(--el-text-color-secondary)">暂无收藏</div>
       <div v-for="(bm, i) in bookmarks" :key="bm.url" class="bookmark-row">
         <span class="bm-title" @click="visitBookmark(bm.url)">{{ bm.title || bm.url }}</span>
@@ -268,7 +326,7 @@
     </el-dialog>
 
     <!-- 浏览历史弹窗 -->
-    <el-dialog v-model="showHistory" title="浏览历史" width="520px" append-to-body>
+    <el-dialog v-model="showHistory" title="浏览历史" width="520px" class="el-dialog--sm" append-to-body>
       <div v-if="recentList.length === 0" style="text-align:center;padding:30px;color:var(--el-text-color-secondary)">暂无浏览记录</div>
       <div v-for="r in recentList" :key="r.time + r.url" class="history-row" @click="openFromHistory(r.url)">
         <div class="site-avatar sm" :style="{ background: avatarColor(r.host) }">{{ siteInitial(r.title || r.host) }}</div>
@@ -280,19 +338,17 @@
     </el-dialog>
 
     <!-- 浏览器设置弹窗 -->
-    <el-dialog v-model="showSettings" title="浏览器设置" width="480px" append-to-body>
-      <div class="setting-row">
-        <span class="setting-label">默认搜索引擎</span>
+    <el-dialog v-model="showSettings" title="浏览器设置" width="480px" class="el-dialog--sm" append-to-body>
+      <SettingRow class="browser-setting" label="默认搜索引擎">
         <el-select v-model="searchEngine" size="small" style="width:160px" @change="onEngineChange">
           <el-option label="百度" value="baidu" />
           <el-option label="必应" value="bing" />
           <el-option label="Google" value="google" />
         </el-select>
-      </div>
-      <div class="setting-row">
-        <span class="setting-label">外部站点默认走代理</span>
+      </SettingRow>
+      <SettingRow class="browser-setting" label="外部站点默认走代理">
         <el-switch v-model="defaultProxy" @change="onDefaultProxyChange" />
-      </div>
+      </SettingRow>
       <el-divider>常用网站管理</el-divider>
       <div v-for="(p, i) in pinned" :key="p.url" class="pin-row">
         <span class="pin-name">{{ p.name }}</span>
@@ -328,7 +384,7 @@
     </el-dialog>
 
     <!-- 保存/编辑密码弹窗 -->
-    <el-dialog v-model="showPasswordEditor" :title="editingPassword ? '编辑密码' : '保存密码'" width="420px" append-to-body :close-on-click-modal="false">
+    <el-dialog v-model="showPasswordEditor" :title="editingPassword ? '编辑密码' : '保存密码'" width="420px" class="el-dialog--sm" append-to-body :close-on-click-modal="false">
       <el-form label-width="72px" size="small">
         <el-form-item label="站点名">
           <el-input v-model="pwdForm.name" placeholder="可选，如 某AI视频站" />
@@ -359,7 +415,7 @@
 import { ref, computed, onMounted, onUnmounted, watch, nextTick, type Ref } from 'vue';
 import { storeToRefs } from 'pinia';
 import { ElMessage } from 'element-plus';
-import { ZoomIn, ZoomOut } from '@element-plus/icons-vue';
+import { ZoomIn, ZoomOut, CircleCheck, CircleClose, Loading, List } from '@element-plus/icons-vue';
 import { usePlatformStore } from '../stores/platform';
 import { useChatStore } from '../stores/chat';
 import { useBrowserStore, claimPopup, type BrowserTab } from '../stores/browser';
@@ -370,6 +426,7 @@ import { useRoute } from 'vue-router';
 import { settingsDrawerOpen } from '../composables/useSettingsDrawer';
 import { titleBarOverlayOpen } from '../composables/useTitleBarOverlay';
 import { useChat } from '../composables/chat/useChat';
+import SettingRow from './common/SettingRow.vue';
 
 // ── 平台检测 ──
 const { isDesktop, supportsBrowser } = usePlatform();
@@ -416,6 +473,20 @@ const inputLocked = computed(() =>
   && (chatStore.streaming || chatStore.runningConvIds.size > 0),
 );
 const liveControlVisible = computed(() => isPreviewScope && chatStore.browserSteps.length > 0);
+// Agent 接管形态的步骤进度/清单：取当前会话已登记的 task_plan（无计划 → 只显示「执行中」，不硬造步骤）
+const planStepsNow = computed(() => (isPreviewScope ? chatStore.planSteps : []));
+const planTotal = computed(() => planStepsNow.value.length);
+const planDone = computed(() => planStepsNow.value.filter(s => s.status === 'done').length);
+const planFailed = computed(() => planStepsNow.value.some(s => s.status === 'failed'));
+const planPercent = computed(() => (planTotal.value ? Math.round((planDone.value / planTotal.value) * 100) : 0));
+/** 当前进行到第几步：优先取 running 中的步骤，否则落到已完成数 +1（全部完成时钳到总数） */
+const currentStepNo = computed(() => {
+  const steps = planStepsNow.value;
+  if (!steps.length) return 0;
+  const runIdx = steps.findIndex(s => s.status === 'running');
+  if (runIdx >= 0) return runIdx + 1;
+  return Math.min(planDone.value + 1, steps.length);
+});
 // Agent 虚拟鼠标：只认当前激活 tab 的坐标（多 tab 隔离），预览空间 + 浏览器实况期才显示
 const agentCursorVisible = computed(() => isPreviewScope && chatStore.browserSteps.length > 0);
 const cursorPos = computed(() => {
@@ -447,6 +518,16 @@ function onShellKeydown(e: KeyboardEvent) {
 function onStopTask() { chatStore.stop(); }
 function onPauseTask() { void chatStore.pauseTask(); }
 function onResumeTask() { void chatStore.resumeTask(); }
+
+// ── 人工浏览形态：「🤖 交给 AI」移交按钮 ──
+// 按现有能力落地：复用 addQuotedUrl 把当前页 URL 引用到关联会话输入框（preview 空间即当前会话），
+// 由用户在对话里补一句指令发送即可启动 Agent 驱动 —— 不硬造自动移交/自动下发链路。
+function handPageToAgent() {
+  const u = currentUrl.value;
+  if (!u) { ElMessage.warning('请先打开一个网页，再交给 AI'); return; }
+  addQuotedUrl(u);
+  ElMessage.info('已引用到任务：在对话里补充指令并发送，AI 将接管浏览该页面');
+}
 // 动态 defineStore 的返回类型与静态 Store 不严格匹配（storeToRefs 要 StoreGeneric）；
 // 运行时 storeToRefs 实际能正确取出 ref，这里用 `as any` 跳过编译期类型检查。
 const {
@@ -1749,6 +1830,12 @@ function openFromHistory(url: string) {
   showHistory.value = false;
 }
 
+// 浏览历史入口：工具栏时钟按钮与「更多」菜单共用
+function openHistory() {
+  fetchData();
+  showHistory.value = true;
+}
+
 // ── 密码管理（记住密码）──
 interface SavedPassword {
   id: string; host: string; url?: string; name?: string; username: string;
@@ -1854,7 +1941,7 @@ async function deletePassword(p: SavedPassword) {
 }
 
 function onMenuCommand(cmd: string) {
-  if (cmd === 'history') { fetchData(); showHistory.value = true; }
+  if (cmd === 'history') openHistory();
   else if (cmd === 'passwords') openPasswordManager();
   else if (cmd === 'settings') showSettings.value = true;
   else if (cmd === 'bookmarks') showBookmarks.value = true;
@@ -2141,14 +2228,108 @@ onUnmounted(() => {
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
 }
 
-/* ── 实况控制按钮（暂停/恢复/停止）── */
-.live-btn { position: relative; }
-.live-pause { color: var(--el-color-warning, #b45309); }
-.live-pause:hover:not(:disabled) { background: color-mix(in srgb, var(--el-color-warning, #b45309) 14%, transparent) !important; }
-.live-resume { color: var(--el-color-success, #15803d); }
-.live-resume:hover:not(:disabled) { background: color-mix(in srgb, var(--el-color-success, #15803d) 14%, transparent) !important; }
-.live-stop { color: var(--el-color-danger, #dc2626); }
-.live-stop:hover:not(:disabled) { background: color-mix(in srgb, var(--el-color-danger, #dc2626) 14%, transparent) !important; }
+/* ── 工具栏一体化分组：导航组 + 分隔线 ── */
+.nav-group { display: flex; align-items: center; gap: 2px; flex-shrink: 0; }
+.toolbar-sep {
+  width: 1px; height: 20px; flex-shrink: 0;
+  background: var(--el-border-color-lighter);
+  margin: 0 6px;
+}
+
+/* ── 「🤖 交给 AI」移交按钮：主色淡底 pill，工具栏右端显眼位 ── */
+.handoff-btn {
+  display: inline-flex; align-items: center; gap: 5px;
+  height: 30px; padding: 0 12px; margin-left: 2px;
+  border: 1px solid color-mix(in srgb, var(--el-color-primary) 35%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--el-color-primary) 10%, transparent);
+  color: var(--el-color-primary);
+  font-size: var(--font-size-sm, 12px);
+  cursor: pointer; flex-shrink: 0;
+  transition: background 0.15s, box-shadow 0.15s, opacity 0.15s;
+}
+.handoff-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--el-color-primary) 18%, transparent);
+  box-shadow: var(--shadow-sm);
+}
+.handoff-btn:disabled { opacity: 0.4; cursor: default; }
+.handoff-ico { font-size: 13px; line-height: 1; }
+.handoff-label { white-space: nowrap; }
+
+/* ── Agent 接管进度条（shield 锁定期间顶部常驻）── */
+.agent-takeover-bar {
+  display: flex; align-items: center; gap: 10px;
+  padding: 6px 12px;
+  background: color-mix(in srgb, var(--el-color-primary) 7%, var(--el-bg-color));
+  border-bottom: 1px solid var(--el-border-color-lighter);
+  flex-shrink: 0;
+}
+.agent-takeover-bar.paused { background: color-mix(in srgb, var(--el-color-warning) 10%, var(--el-bg-color)); }
+.takeover-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.dot-live { background: var(--el-color-primary); animation: takeover-pulse 1.6s ease-in-out infinite; }
+.dot-paused { background: var(--el-color-warning); }
+@keyframes takeover-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+.takeover-label {
+  font-size: var(--font-size-sm, 12px);
+  color: var(--el-text-color-primary);
+  white-space: nowrap; flex-shrink: 0;
+}
+.takeover-progress { flex: 1; min-width: 60px; max-width: 260px; }
+.takeover-spacer { flex: 1; }
+.takeover-btn {
+  display: inline-flex; align-items: center; gap: 4px;
+  height: 26px; padding: 0 10px;
+  border: 1px solid var(--el-border-color); border-radius: 999px;
+  background: var(--el-bg-color);
+  color: var(--el-text-color-regular);
+  font-size: var(--font-size-xs, 11px);
+  cursor: pointer; flex-shrink: 0;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+.takeover-btn:hover { color: var(--el-color-primary); border-color: var(--el-color-primary); }
+.takeover-btn.resume:hover { color: var(--el-color-success); border-color: var(--el-color-success); }
+.takeover-btn.takeover-back:hover { color: var(--el-color-danger); border-color: var(--el-color-danger); }
+.takeover-btn-text { white-space: nowrap; }
+
+/* ── Agent 步骤清单（锁定期间叠加视口右上，只读）── */
+.agent-step-panel {
+  position: absolute; top: 12px; right: 16px; z-index: 26;
+  width: 264px; max-height: 60%; overflow-y: auto;
+  background: color-mix(in srgb, var(--el-bg-color) 88%, transparent);
+  backdrop-filter: blur(8px);
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: var(--radius-md, 10px);
+  box-shadow: var(--shadow-2);
+  padding: 8px 10px;
+  pointer-events: none;   /* 纯展示：不挡网页视觉下的任何交互（shield 才是输入闸门） */
+}
+.agent-step-panel-head {
+  display: flex; align-items: center; gap: 6px;
+  font-size: var(--font-size-sm, 12px); font-weight: 600;
+  color: var(--el-text-color-primary);
+  padding-bottom: 6px;
+  border-bottom: 1px dashed var(--el-border-color-lighter);
+}
+.agent-step-panel-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-step-count { margin-left: auto; color: var(--el-text-color-secondary); font-weight: 400; flex-shrink: 0; }
+.agent-step-items { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.agent-step-item {
+  display: flex; align-items: center; gap: 6px;
+  font-size: var(--font-size-xs, 11px); line-height: 1.5;
+  color: var(--el-text-color-regular);
+}
+.agent-step-icon { width: 14px; height: 14px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.agent-step-icon .el-icon { font-size: 13px; }
+.agent-step-item.status-done .el-icon { color: var(--el-color-success); }
+.agent-step-item.status-failed .el-icon { color: var(--el-color-danger); }
+.agent-step-item.status-running .el-icon { color: var(--el-color-primary); }
+.agent-step-item.status-done .agent-step-title,
+.agent-step-item.status-pending .agent-step-title { color: var(--el-text-color-secondary); }
+.agent-step-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  border: 1.5px solid var(--el-border-color); box-sizing: border-box;
+}
+.agent-step-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* 多标签页栏（Chrome 风格） */
 .browser-tabbar {
@@ -2226,10 +2407,11 @@ onUnmounted(() => {
   flex: 1; display: flex; align-items: center; gap: 6px;
   height: 36px; padding: 0 12px;
   background: var(--el-fill-color-light, #fff);
-  border: 1px solid transparent; border-radius: 18px;
-  transition: all 0.15s; box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+  border: 1px solid var(--el-border-color);
+  border-radius: 999px;                 /* pill 形地址栏（spec 9.1） */
+  transition: all 0.15s;
 }
-[data-theme="dark"] .url-bar { background: var(--el-fill-color); box-shadow: none; }
+[data-theme="dark"] .url-bar { background: var(--el-fill-color); }
 .url-bar.focused { border-color: var(--el-color-primary); box-shadow: 0 1px 6px color-mix(in srgb, var(--el-color-primary) 15%, transparent); }
 .url-lock { color: var(--el-text-color-secondary, #80868b); flex-shrink: 0; }
 .url-input { flex: 1; border: none; outline: none; background: transparent; font-size: 14px; color: var(--el-text-color-primary, #202124); font-family: inherit; }
@@ -2293,8 +2475,8 @@ onUnmounted(() => {
    ≈ 14 个控件、总固定宽约 560px，且**没有任何一项可收缩**（都写了 flex-shrink:0）。
    实测 640px 起地址栏被挤没、缩放组被推出右缘（zoom-group@537）；400px 更严重
    （url-bar@417 / zoom-group@537）。
-   处置：≤900px 收起次要控件（缩放组、密码管理——两者「更多」菜单里都有等价入口），
-   保证「导航按钮 + 地址栏」这条主链路完整；≤560px 再收起「用系统浏览器打开」
+   处置：≤900px 收起次要控件（缩放组、密码管理、浏览历史——「更多」菜单里都有等价入口），
+   保证「导航按钮 + 地址栏」这条主链路完整，「交给 AI」缩为图标 pill；≤560px 再收起「用系统浏览器打开」
    （内部打开已可用，外部打开非必需）。地址栏本身加 min-width 兜底，绝不被压成 0。 */
 @media (max-width: 900px) {
   .browser-toolbar { padding: 6px 8px; gap: 2px; }
@@ -2303,6 +2485,12 @@ onUnmounted(() => {
   /* 缩放组与密码管理：收进「更多」菜单（那边已有等价入口） */
   .zoom-group,
   .browser-toolbar > .nav-btn[title="密码管理"] { display: none; }
+  /* 历史入口同理收进「更多」；「交给 AI」缩为图标 pill */
+  .browser-toolbar > .nav-btn[title="浏览历史"] { display: none; }
+  .handoff-btn { padding: 0 9px; }
+  .handoff-label { display: none; }
+  .agent-takeover-bar { padding: 5px 8px; gap: 8px; }
+  .takeover-progress { max-width: 140px; }
 }
 
 @media (max-width: 560px) {
@@ -2313,6 +2501,11 @@ onUnmounted(() => {
   .url-input { font-size: 13px; }
   /* 「用系统浏览器打开」在窄屏收起：面板内已能正常浏览 */
   .browser-toolbar > .nav-btn[title="用系统浏览器打开"] { display: none; }
+  /* 接管条：窄屏只留状态文字 + 控制按钮（步骤清单仍在视口内叠加） */
+  .takeover-progress { display: none; }
+  .takeover-btn-text { display: none; }
+  .takeover-btn { width: 26px; padding: 0; justify-content: center; }
+  .agent-step-panel { width: 200px; right: 8px; top: 8px; }
   /* 起始页搜索框：窄屏去掉「搜索」按钮的横向占位，回车即可提交 */
   .home-page { padding: 24px 12px 20px; }
   .home-logo { font-size: 26px; letter-spacing: 2px; }
@@ -2418,8 +2611,9 @@ onUnmounted(() => {
 .bm-title { font-size: 13px; color: var(--el-color-primary); cursor: pointer; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bm-title:hover { text-decoration: underline; }
 
-.setting-row { display: flex; justify-content: space-between; align-items: center; padding: 10px 0; }
-.setting-label { font-size: 14px; color: var(--el-text-color-primary); }
+/* 设置行：复用 common/SettingRow，此处覆盖为「左标签 + 右控件顶到行两端」的紧凑形态 */
+.browser-setting { justify-content: space-between; align-items: center; padding: 10px 0; margin-bottom: 0; }
+.browser-setting :deep(.setting-row-label) { width: auto; padding-right: 0; text-align: left; color: var(--el-text-color-primary); }
 .pin-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; }
 .pin-name { width: 90px; font-size: 13px; color: var(--el-text-color-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pin-url { flex: 1; font-size: 12px; color: var(--el-text-color-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

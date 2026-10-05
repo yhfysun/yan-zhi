@@ -46,7 +46,17 @@
       <el-empty v-if="store.platforms.length === 0" description="还没有平台，点击右下角新增" />
     </div>
 
-    <el-dialog v-model="showAdd" :title="editingId ? '编辑平台' : '新增平台'" width="640px" top="6vh" class="platform-edit-dialog" :close-on-click-modal="false" @closed="resetForm">
+    <FormDialog
+      v-model="showAdd"
+      :title="editingId ? '编辑平台' : '新增平台'"
+      width="640px"
+      top="6vh"
+      dialog-class="platform-edit-dialog"
+      :confirm-text="editingId ? '保存修改' : '保存'"
+      :loading="saving"
+      @submit="save"
+      @closed="resetForm"
+    >
       <el-form label-width="90px">
         <el-form-item label="名称"><el-input v-model="form.name" placeholder="如：OpenAI / DeepSeek" /></el-form-item>
         <el-form-item label="协议">
@@ -103,11 +113,10 @@
         <el-empty v-if="store.apiKeys.length === 0" description="暂无 Token" :image-size="40" />
       </div>
 
-      <div class="dialog-actions-bar" v-if="!editingId">
+      <StatusActionBar v-if="!editingId" :status="formStatus" :status-type="formStatusType">
         <el-button :loading="testingForm" :icon="Connection" @click="testForm">测试连接</el-button>
         <el-button :loading="fetching" :icon="Download" @click="fetchModels">拉取模型列表</el-button>
-        <span v-if="formStatus" :class="['form-status', formStatusType]">{{ formStatus }}</span>
-      </div>
+      </StatusActionBar>
 
       <div v-if="!editingId && fetchedModels.length > 0" class="fetched-models">
         <div class="fetched-header">
@@ -122,11 +131,8 @@
         </el-checkbox-group>
       </div>
 
-      <template #footer>
-        <el-button @click="closeAdd">取消</el-button>
-        <el-button type="primary" :loading="saving" @click="save">{{ editingId ? '保存修改' : '保存' }}</el-button>
-      </template>
-    </el-dialog>
+      <!-- footer 用 FormDialog 默认底栏（取消/保存），保存中文案随编辑态切换 -->
+    </FormDialog>
 
     <!-- 管理模型：弹窗内嵌平台详情，不再路由跳转（在设置抽屉中打开也不会切走主页面） -->
     <el-dialog
@@ -158,6 +164,8 @@ import { waitForBackend } from '../api/backend-ready';
 import { DEFAULT_CONTEXT_WINDOW } from '../utils/context-window';
 import PlatformDetail from './PlatformDetail.vue';
 import LocalModelMarket from '../components/LocalModelMarket.vue';
+import FormDialog from '../components/FormDialog.vue';
+import StatusActionBar from '../components/common/StatusActionBar.vue';
 
 const store = usePlatformStore();
 const showAdd = ref(false);
@@ -208,11 +216,6 @@ function openAdd() {
   resetForm();
   formKeys.value = [{ apiKey: '', label: '' }];
   showAdd.value = true;
-}
-
-function closeAdd() {
-  showAdd.value = false;
-  resetForm();
 }
 
 async function testForm() {
@@ -383,7 +386,7 @@ async function toggleKey(k: PlatformApiKey) {
 
 async function delKey(k: PlatformApiKey) {
   try {
-    await ElMessageBox.confirm('确认删除此 Token？', '提示', { type: 'warning' });
+    await ElMessageBox.confirm('确认删除此 Token？', '提示', { type: 'warning', confirmButtonClass: 'yz-confirm-danger' });
     await store.deleteApiKey(k.id, k.platformId);
     ElMessage.success('已删除');
   } catch {}
@@ -409,7 +412,7 @@ async function del(id: string) {
   const p = store.platforms.find((x) => x.id === id);
 
   try {
-    await ElMessageBox.confirm('删除平台会同时删除其下所有模型，确认？', '提示', { type: 'warning' });
+    await ElMessageBox.confirm('删除平台会同时删除其下所有模型，确认？', '提示', { type: 'warning', confirmButtonClass: 'yz-confirm-danger' });
     await store.deletePlatform(id);
     ElMessage.success('已删除');
   } catch {}
@@ -466,33 +469,7 @@ async function del(id: string) {
   border-radius: var(--radius-md);
 }
 
-/* Dialog action buttons bar */
-.dialog-actions-bar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 0 12px;
-  border-top: 1px dashed var(--color-border-light);
-  margin-top: 8px;
-}
-@media (max-width: 767px) {
-  .dialog-actions-bar {
-    flex-direction: row;
-    gap: 6px;
-    padding: 6px 0 10px;
-  }
-  .dialog-actions-bar .el-button {
-    flex: 1;
-    justify-content: center;
-    white-space: nowrap;
-    font-size: 13px;
-    padding: 8px 6px;
-  }
-}
-
-.form-status { font-size: 12px; margin-left: auto; }
-.form-status.ok { color: var(--el-color-success); }
-.form-status.err { color: var(--el-color-danger); }
+/* Dialog action buttons bar / form-status 已抽到 common/StatusActionBar.vue */
 
 .fetched-models {
   margin-top: 8px;

@@ -97,6 +97,25 @@
 
 .conv-list { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
 .conv-header { padding: 6px 8px; flex-shrink: 0; }
+/* 搜索框 + 新建图标同一行（2026-10-04：替代原独立一行的描边「新建任务」按钮） */
+.conv-search-row { display: flex; align-items: center; gap: 6px; }
+.conv-search-row .el-input { flex: 1; min-width: 0; }
+.conv-new-icon {
+  flex-shrink: 0;
+  width: 26px; height: 26px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--el-text-color-regular, var(--color-text));
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+}
+.conv-new-icon:hover {
+  color: var(--color-primary);
+  border-color: color-mix(in srgb, var(--color-primary) 45%, transparent);
+  background: color-mix(in srgb, var(--color-primary) 10%, transparent);
+}
 .conv-header-row { display: flex; gap: 6px; margin-top: 6px; align-items: center; }
 .batch-hint { font-size: 12px; color: var(--color-text-secondary); opacity: 0.75; line-height: 1.4; }
 .conv-items { flex: 1; overflow-y: auto; padding: 4px; }
@@ -247,6 +266,19 @@
 /* 定位跳转时，给 round-group 留出顶栏高度的偏移，避免被 sticky topbar 遮住 */
 .round-group { scroll-margin-top: 72px; }
 
+/* ===== 8.1 日期分隔线：相邻消息日期变化时渲染（ChatMessageList dateDividerFor）=====
+   无时间戳的轮次不渲染；文案：今天 / 昨天 / M月D日（跨年含年份） */
+.msg-date-divider {
+  display: flex; align-items: center; gap: 12px;
+  margin: 0 0 16px; user-select: none;
+}
+.msg-date-divider-line { flex: 1; height: 1px; background: var(--glass-border); }
+.msg-date-divider-text {
+  font-size: var(--font-size-sm, 12px);
+  color: var(--color-text-tertiary, var(--color-text-secondary));
+  white-space: nowrap;
+}
+
 /* 滚动到顶/底浮动按钮 */
 .scroll-fab {
   position: absolute; right: 20px; z-index: 10;
@@ -299,18 +331,22 @@
 .msg-avatar {
   width: 30px; height: 30px; border-radius: 9px;
   display: flex; align-items: center; justify-content: center;
-  flex-shrink: 0; font-size: 15px; color: white; box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+  flex-shrink: 0; font-size: 15px; color: white; box-shadow: var(--shadow-sm);
 }
-.avatar-user { background: linear-gradient(135deg, var(--color-primary), var(--color-primary-dark)); }
-.avatar-assistant { background: linear-gradient(135deg, var(--color-accent), var(--color-primary-dark)); }
+/* 8.1 双头像身份：用户 = accent 渐变（首字符白字）；AI = 主色 token 底色块 */
+.avatar-user { background: linear-gradient(135deg, var(--color-accent), var(--color-primary-dark)); }
+.avatar-assistant {
+  background: color-mix(in srgb, var(--color-primary) 12%, transparent);
+  color: var(--color-primary);
+  border: 1px solid color-mix(in srgb, var(--color-primary) 22%, transparent);
+}
 .avatar-system { background: linear-gradient(135deg, #64748b, #475569); }
 .avatar-tool { background: linear-gradient(135deg, #06b6d4, #0891b2); }
 .avatar-assistant.streaming {
   animation: avatarPulse 2s ease-in-out infinite;
 }
-/* 对齐 WorkBuddy：AI 回复隐藏头像，纯文本流铺满窄栏 */
-.msg-assistant .msg-avatar { display: none; }
-.msg-assistant .msg-body { max-width: 100%; }
+/* 8.1 桌面端恢复 AI/用户双头像（spec「消息流重设计」推翻此前 WorkBuddy 单头像决策）；
+   窄屏/触屏壳仍收起 AI 头像保持窄栏紧凑 —— 见 767px 媒体块与 .platform-mobile 分支 */
 @keyframes avatarPulse {
   0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-primary) 40%, transparent); }
   50% { box-shadow: 0 0 0 6px color-mix(in srgb, var(--color-primary) 0%, transparent); }
@@ -407,7 +443,10 @@
 }
 
 .msg-content {
-  padding: 12px 16px; border-radius: 16px; line-height: 1.65;
+  padding: 12px 16px; border-radius: 16px;
+  /* 8.1 正文 13px/1.7（type scale token；用户/AI 气泡统一口径） */
+  font-size: var(--font-size-base, 13px);
+  line-height: 1.7;
   word-wrap: break-word; overflow-wrap: break-word;
   position: relative; transition: box-shadow 0.2s;
   /* 限高 + 内部滚动：超高内容在消息框内滚动（最大约页面 1/3），不再撑破会话列表 */
@@ -447,7 +486,14 @@
   box-sizing: border-box;
   overflow-wrap: break-word;
   word-break: break-word;
-  /* 对齐 WorkBuddy：AI 回复去卡片化，纯文本流铺满窄栏（无背景/边框/阴影/内边距） */
+  /* 8.1 AI 消息卡片化：surface 底（皮肤/暗色自动跟随 --color-surface）+ 边框 + 一级阴影，
+     圆角 12px、左下角 4px 指向 AI 头像（spec「消息流重设计」） */
+  background: var(--color-surface, #fff);
+  border: 1px solid var(--el-border-color);
+  border-radius: 12px;
+  border-bottom-left-radius: 4px;
+  box-shadow: var(--shadow-1);
+  padding: 12px 16px;
 }
 /* AI 回复折叠态：仅保留摘要行，禁横向溢出 */
 .agent-response-card.msg-collapsed {
@@ -464,8 +510,9 @@
   box-shadow: 0 1px 6px color-mix(in srgb, var(--color-primary) 10%, transparent);
 }
 .agent-response-body {
-  line-height: 1.65;
-  /* 超长回复限高内滚，避免撑破列表；内部 pre/表格再单独横向滚动 */
+  /* 8.1 正文排版：13px 基准 + 1.7 行高（超长回复限高内滚由内部 .msg-content 承担） */
+  font-size: var(--font-size-base, 13px);
+  line-height: 1.7;
   min-width: 0;
 }
 .agent-response-body > .msg-content {
@@ -505,9 +552,11 @@
 .agent-process-steps::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb, rgba(0,0,0,0.12)); border-radius: 3px; }
 
 .agent-step {
-  margin-bottom: 8px; padding: 8px 12px;
-  background: rgba(15,23,42,0.02); border: 1px solid rgba(15,23,42,0.06);
-  border-radius: 8px;
+  margin-bottom: 8px; padding: 6px 10px;
+  /* 扁平化：步骤只保留极淡分隔，不再套灰底盒子（与工具组/工具项重复嵌套显脏） */
+  background: transparent; border: none;
+  border-left: 2px solid color-mix(in srgb, var(--color-primary) 18%, transparent);
+  border-radius: 0;
 }
 .agent-step:last-child { margin-bottom: 0; }
 .agent-step-partial {
@@ -539,6 +588,9 @@
 .platform-mobile .msg.is-actions-open .msg-actions,
 .platform-mobile .msg-actions.is-open { display: flex; }
 .platform-mobile .msg.is-actions-open .msg-actions { opacity: 1; }
+/* 8.1 双头像：Capacitor 壳（横屏视口 800px+ 不命中 767px 媒体查询）同样收起 AI 头像 */
+.platform-mobile .msg-assistant .msg-avatar { display: none; }
+.platform-mobile .msg-assistant .msg-body { max-width: 100%; }
 .msg-user .msg-actions { justify-content: flex-end; }
 .msg-actions .el-button { color: var(--color-text-secondary); }
 .msg-actions .el-button:hover { color: var(--color-primary); }
@@ -550,13 +602,18 @@
 }
 .msg-user .msg-content pre { background: rgba(0,0,0,0.25); }
 .msg-content .code-block-wrapper { position: relative; padding-top: 32px; margin: 10px 0; }
+/* 语言标签 / 复制按钮铺在深色代码底上：文字色从代码文字 token（--skin-text）派生，随皮肤/暗色自适应 */
 .msg-content .code-lang {
-  position: absolute; top: 6px; left: 12px; font-size: 11px; color: #94a3b8;
+  position: absolute; top: 6px; left: 12px; font-size: 11px;
+  color: color-mix(in srgb, var(--skin-text, #e2e8f0) 62%, transparent);
   font-family: "JetBrains Mono", monospace; text-transform: uppercase; letter-spacing: 0.5px;
 }
 .msg-content .code-copy-btn {
-  position: absolute; top: 4px; right: 4px; background: rgba(255,255,255,0.08);
-  border: 1px solid rgba(255,255,255,0.1); color: #94a3b8; padding: 3px 10px;
+  position: absolute; top: 4px; right: 4px;
+  background: color-mix(in srgb, var(--skin-text, #e2e8f0) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--skin-text, #e2e8f0) 12%, transparent);
+  color: color-mix(in srgb, var(--skin-text, #e2e8f0) 62%, transparent);
+  padding: 3px 10px;
   border-radius: 4px; font-size: 11px; cursor: pointer; transition: all 0.15s; backdrop-filter: blur(4px);
 }
 .msg-content .code-copy-btn:hover { background: color-mix(in srgb, var(--color-primary) 30%, transparent); color: white; }
@@ -614,7 +671,9 @@
 }
 .msg-content table { border-collapse: collapse; margin: 8px 0; width: 100%; display: block; overflow-x: auto; }
 .msg-content th, .msg-content td { border: 1px solid var(--glass-border); padding: 6px 12px; text-align: left; word-break: break-word; }
-.msg-content th { background: rgba(0,0,0,0.03); font-weight: 600; }
+/* 8.2 表格排版：表头底色 token 化 + 偶数行斑马纹（spec「代码块/表格/引用 Markdown 排版」场景） */
+.msg-content th { background: color-mix(in srgb, var(--color-text) 5%, transparent); font-weight: 600; }
+.msg-content tbody tr:nth-child(even) { background: color-mix(in srgb, var(--color-text) 3%, transparent); }
 .msg-content blockquote { border-left: 2px solid var(--color-border-strong); padding-left: 12px; margin: 8px 0; color: var(--color-text-secondary); }
 .msg-content a { color: var(--color-primary); text-decoration: none; }
 .msg-content a:hover { text-decoration: underline; }
@@ -1254,11 +1313,13 @@
 .mount-tool-alias:focus { border-color: var(--color-primary); }
 .mount-tool-alias::placeholder { color: rgba(15,23,42,0.25); }
 
+/* 自绘右键/长按菜单：对齐统一浮层菜单 token（Task 11.5 —— 圆角 12px + --shadow-2 + 36px 行高；
+   危险项/hover 色本就引用 token，与 menu.css 的 .yz-menu-popper 规范同一套视觉语言） */
 .ctx-menu {
   position: fixed; z-index: 9999;
   background: var(--glass-bg); backdrop-filter: var(--glass-filter);
-  border: 1px solid var(--glass-border); border-radius: 10px;
-  padding: 4px; min-width: 140px; box-shadow: 0 8px 32px rgba(0,0,0,0.16);
+  border: 1px solid var(--glass-border); border-radius: var(--radius-menu, 12px);
+  padding: 4px; min-width: 140px; box-shadow: var(--shadow-2, 0 8px 32px rgba(0,0,0,0.16));
   list-style: none; margin: 0;
 }
 .ctx-menu > * {
@@ -1267,6 +1328,8 @@
   position: relative; width: 100%; margin: 0;
   background: transparent; border: none; color: inherit; text-align: left; outline: none;
 }
+/* 统一行高 36px（分隔线除外）—— 与 menu.css 统一浮层菜单规范一致 */
+.ctx-menu > li:not(.ctx-sep) { min-height: var(--menu-item-h, 36px); }
 .ctx-menu > *:hover { background: var(--glass-bg-hover); }
 .ctx-menu > .danger, .ctx-menu > .is-danger { color: var(--el-color-danger); }
 .ctx-menu > .danger:hover, .ctx-menu > .is-danger:hover { background: rgba(239,68,68,0.08); }
@@ -1280,8 +1343,8 @@
 .ctx-menu .has-submenu .ctx-submenu {
   display: none; position: absolute; left: 100%; top: -4px;
   background: var(--glass-bg); backdrop-filter: var(--glass-filter);
-  border: 1px solid var(--glass-border); border-radius: 10px;
-  padding: 4px; min-width: 160px; box-shadow: 0 8px 32px rgba(0,0,0,0.16);
+  border: 1px solid var(--glass-border); border-radius: var(--radius-menu, 12px);
+  padding: 4px; min-width: 160px; box-shadow: var(--shadow-2, 0 8px 32px rgba(0,0,0,0.16));
   list-style: none; margin: 0; max-height: 280px; overflow-y: auto;
 }
 .ctx-menu .has-submenu:hover .ctx-submenu { display: block; }
@@ -1296,6 +1359,7 @@
   padding: 8px 12px; cursor: pointer; font-size: 13px; border-radius: 6px; transition: background 0.15s;
   position: relative; width: 100%; margin: 0;
   background: transparent; border: none; color: inherit; text-align: left; outline: none;
+  min-height: var(--menu-item-h, 36px);
 }
 .ctx-menu .ctx-submenu > li:hover { background: var(--glass-bg-hover); }
 .ctx-menu .ctx-submenu > li.danger { color: var(--el-color-danger); }
@@ -1822,6 +1886,46 @@
   .welcome-actions { max-width: 100%; }
   .msg { margin-bottom: 10px; gap: 8px; }
   .msg-actions { opacity: 0.6; }
+  /* 8.1 双头像：窄屏收起 AI 头像（保持窄栏紧凑，用户头像保留） */
+  .msg-assistant .msg-avatar { display: none; }
+  .msg-assistant .msg-body { max-width: 100%; }
+}
+
+/* ===== 上下文栏 / 预览栏覆盖抽屉的统一遮罩 =====
+   默认隐藏；仅 ≤1199px（抽屉断点）或移动外壳（.platform-mobile，横屏也覆盖）显示。
+   >1199px 桌面宽屏面板为常驻分栏，不允许遮罩。点击遮罩由 Chat.vue closeAllDrawers 收起抽屉。 */
+.drawer-scrim {
+  display: none;
+  position: fixed; inset: 0; z-index: 200;
+  background: rgba(15, 23, 42, 0.28);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+  animation: scrimFade 0.2s ease;
+}
+@keyframes scrimFade { from { opacity: 0; } to { opacity: 1; } }
+@media (max-width: 1199px) {
+  .drawer-scrim { display: block; }
+}
+.platform-mobile .drawer-scrim { display: block; }
+
+/* ===== 过渡断点（768–1199px，Task 5.1）：预览栏改为右侧覆盖式抽屉 =====
+   与 .context-sidebar（ChatContextSidebar.vue 内同区间规则）配套：打开时覆盖在
+   消息列之上，不挤压对话区；>1200px 恢复常驻分栏。背景沿用桌面「壁纸透出」
+   的用户定稿（透明），仅改布局定位，不动颜色。 */
+@media (min-width: 768px) and (max-width: 1199px) {
+  .right-panel {
+    position: fixed; top: 0; bottom: 0; right: 0; left: auto;
+    flex: none; min-width: 0; width: min(420px, 44vw); height: 100vh; z-index: 220;
+    border-radius: 16px 0 0 16px;
+    transform: translateX(100%);
+    transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+    box-shadow: -18px 0 36px rgba(15, 23, 42, 0.18);
+  }
+  .right-panel.open { transform: translateX(0); }
+  /* 抽屉态不再需要「防挤压」的 520px 下限 */
+  .right-panel.previewing { min-width: 0; }
+  /* 右缘拖拽把手在覆盖抽屉下失去意义（宽度不再参与 flex 分栏） */
+  .rs-handle-right { display: none; }
 }
 
 /* ===== Capacitor 端：与上方 767px 媒体查询**同规则的并集分支** =====
@@ -2003,7 +2107,7 @@
 .sub-agent-result-actions .el-button, .main-agent-result-actions .el-button { color: var(--color-text-secondary); }
 .sub-agent-result-actions .el-button:hover, .main-agent-result-actions .el-button:hover { color: var(--color-primary); }
 .sub-agent-result-chevron, .main-agent-result-chevron { flex-shrink: 0; color: var(--color-text-secondary); }
-.sub-agent-result-content { padding: 8px 12px 10px; font-size: 13px; line-height: 1.6; }
+.sub-agent-result-content { padding: 8px 12px 10px; font-size: var(--font-size-base, 13px); line-height: 1.7; }
 .main-agent-result-content { padding: 8px 12px 10px; }
 
 /* 右侧预览面板展开时，弹窗遮罩与居中容器都限制在左侧主区域（排除预览宽度），

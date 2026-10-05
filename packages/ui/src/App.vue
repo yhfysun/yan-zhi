@@ -37,7 +37,12 @@
              原先还放着「首页/浏览器/消息/更多」横排导航 —— 那是把桌面顶栏照搬过来，
              竖屏下既挤又和 TabBar 语义重复。
              （对话页的搜索在会话列表抽屉里，不在此重复造一个入口。） -->
-        <header v-if="mobileShellAsRoot && route.name !== 'chat'" class="mobile-topbar">
+        <header v-if="mobileShellAsRoot && route.name !== 'chat' && !isShellPage" class="mobile-topbar">
+          <!-- 汉堡按钮 → 左滑抽屉（Task 11.1）：低频入口（空间切换/定时任务/技能工具/设置）。
+               对话页不渲染本顶栏（ChatTopbar 自带会话抽屉入口），故抽屉只在其余页可达。 -->
+          <button class="mobile-icon-btn" type="button" aria-label="打开菜单" @click="navDrawerOpen = true">
+            <el-icon :size="18"><Menu /></el-icon>
+          </button>
           <span class="mobile-topbar-title">{{ pageTitle }}</span>
           <div class="mobile-topbar-actions">
             <el-tooltip :content="settingsStore.settings.darkMode ? '切换浅色模式' : '切换深色模式'" placement="bottom">
@@ -90,7 +95,7 @@
             </button>
           </div>
         </header>
-        <main class="main-content" :class="{ 'is-chat': route.name === 'chat' }">
+        <main class="main-content" :class="{ 'is-chat': route.name === 'chat', 'no-shell-topbar': isShellPage }">
           <router-view v-slot="{ Component }">
             <transition name="slide-fade" mode="out-in"><component :is="Component" /></transition>
           </router-view>
@@ -101,18 +106,26 @@
 
     <!-- 独立子窗口：无应用抽屉（设置浮层属于主窗口的导航体验） -->
     <SettingsDrawer v-if="!isBareRoute" />
+
+    <!-- 移动端汉堡抽屉（Task 11.1）：仅由 mobile-topbar 的汉堡按钮打开，桌面端永不展开 -->
+    <MobileNavDrawer v-model="navDrawerOpen" />
+
+    <!-- 桌面端设置弹窗（Task 10.3）：WebTopBar 头像菜单 /「更多」入口打开 -->
+    <SettingsDialog v-if="!isBareRoute" />
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, shallowRef, watch } from 'vue';
+import { computed, onMounted, ref, shallowRef, watch } from 'vue';
 import { useRoute } from 'vue-router';
-import { Avatar, SwitchButton, Moon, Sunny, Setting, Collection } from '@element-plus/icons-vue';
+import { Avatar, SwitchButton, Moon, Sunny, Setting, Collection, Menu } from '@element-plus/icons-vue';
 import { useAuthStore } from './stores/auth';
 import { useSettingsStore } from './stores/settings';
 import { usePluginStore } from './stores/plugin';
 import SideNav from './components/SideNav.vue';
 import SettingsDrawer from './components/SettingsDrawer.vue';
+import SettingsDialog from './components/SettingsDialog.vue';
+import MobileNavDrawer from './components/MobileNavDrawer.vue';
 import { syncPluginRoutes } from './router';
 import { resolvePluginComponent } from './plugin-component-registry';
 import { useLicenseStore } from './stores/license';
@@ -187,6 +200,12 @@ const localIdentityInitial = computed(() => '本');
  * 若再套一层 SideNav / 顶栏就会出现「窗口里还有一整套应用导航」的错位。
  */
 const isBareRoute = computed(() => route.meta?.bare === true);
+
+/** Task 11.1：移动端汉堡抽屉开合（仅 Capacitor 自绘顶栏的汉堡按钮会触发） */
+const navDrawerOpen = ref(false);
+/** Task 11.2：meta.mobilePageShell 路由（如 /settings 示范页）用页面自带四段式骨架——
+ *  壳顶栏隐藏、.main-content 顶部不再让位 44px（见 .no-shell-topbar）。桌面端不受影响。 */
+const isShellPage = computed(() => route.meta?.mobilePageShell === true);
 
 /** 当前插件布局组件（懒加载函数）；null 表示用内置默认布局 */
 const pluginLayoutLoader = shallowRef<(() => Promise<unknown>) | null>(null);
@@ -350,6 +369,7 @@ authStore.loadUser();
 @import './styles/overlay.css';
 @import './styles/menu.css';
 @import './styles/surface.css';
+@import './styles/task-row.css';
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html, body, #app { height: 100%; }
@@ -628,8 +648,10 @@ body {
   .page-title { font-size: 18px; }
   .card-grid, .card-grid-sm { grid-template-columns: 1fr; gap: 12px; }
 
-  /* Dialogs: compact (keep Element Plus centering: el-overlay-dialog is fixed+flex,
-     el-dialog must stay absolute so the parent's justify/align-center works) */
+  /* Dialogs: narrow-viewport bottom sheet (spec「移动端弹窗规范」——窄屏不用桌面居中大对话框；
+     48/56 为弹窗避让自绘顶栏/TabBar 的字面值，勿改成内容区留白)。
+     保持 Element 的 el-overlay-dialog fixed+flex：el-dialog 用 absolute + 静态位定位，
+     align-items: flex-end 把对话框压到底部（贴底圆角顶），ElMessageBox（确认框）不受影响 */
   .el-overlay { z-index: 9999 !important; overflow-y: auto !important; padding: 0 !important; }
 }
 
@@ -658,6 +680,11 @@ body {
   padding-top: env(safe-area-inset-top, 0px) !important;
   padding-bottom: calc(var(--mobile-tabbar-h, 56px) + env(safe-area-inset-bottom, 0px)) !important;
 }
+/* 四段式骨架页（meta.mobilePageShell，如 /settings 示范页）：壳顶栏不渲染，
+   顶部让位改由页面自己的 .mps-header 承担（其自带 safe-area 内边距） */
+.platform-mobile .main-content.no-shell-topbar {
+  padding-top: env(safe-area-inset-top, 0px) !important;
+}
 .platform-mobile .main-content.full {
   padding-top: 0 !important;
   padding-bottom: 0 !important;
@@ -671,10 +698,13 @@ body {
 .platform-mobile .page-title { display: none; }
 
 @media (max-width: 767px) {
-  .el-overlay-dialog { display: flex !important; justify-content: center !important; align-items: center !important; padding-top: calc(48px + env(safe-area-inset-top, 0px)) !important; padding-bottom: calc(56px + env(safe-area-inset-bottom, 0px)) !important; }
+  .el-overlay-dialog { display: flex !important; justify-content: center !important; align-items: flex-end !important; padding-top: calc(48px + env(safe-area-inset-top, 0px)) !important; padding-bottom: calc(56px + env(safe-area-inset-bottom, 0px)) !important; }
   .el-dialog {
     z-index: 9999 !important;
     position: absolute !important;
+    width: 92vw !important;
+    /* 贴底弹层：圆角只在顶部（与 ActionSheet 同一形态语言） */
+    border-radius: var(--radius-lg) var(--radius-lg) 0 0 !important;
     max-width: calc(100vw - var(--yz-right-w, 0px) - 24px) !important;
     margin: 0 !important;
     max-height: calc(100dvh - 48px - env(safe-area-inset-top, 0px) - 56px - env(safe-area-inset-bottom, 0px) - 8px);
@@ -805,9 +835,8 @@ body {
   background: var(--color-bg);
 }
 
-.local-model-download-dialog .el-dialog__body { padding: 18px 20px; }
 .local-model-download-body { display: flex; flex-direction: column; gap: 10px; }
-.local-model-download-title { font-size: 16px; font-weight: 650; color: var(--color-text); }
-.local-model-download-desc { font-size: 13px; line-height: 1.55; color: var(--color-text-secondary); }
-.local-model-download-message { min-height: 20px; font-size: 12px; color: var(--color-text-secondary); word-break: break-all; }
+.local-model-download-title { font-size: var(--font-size-lg); font-weight: 600; color: var(--color-text); }
+.local-model-download-desc { font-size: var(--font-size-base); line-height: 1.55; color: var(--color-text-secondary); }
+.local-model-download-message { min-height: 20px; font-size: var(--font-size-sm); color: var(--color-text-secondary); word-break: break-all; }
 </style>

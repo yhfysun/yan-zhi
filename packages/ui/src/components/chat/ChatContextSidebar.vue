@@ -232,6 +232,33 @@ const mountedTools = computed(() =>
   }
 }
 
+/* ★ 过渡断点（768–1199px）：上下文栏同样改为右侧覆盖式抽屉（不挤压消息列），
+   与 chat.css 中 .right-panel 的同区间抽屉化配套；>1200px 恢复常驻分栏。
+   Capacitor 横屏（视口 800px+ 且 .platform-mobile 在）由下方专属分支接管，
+   两处规则方向一致，仅宽度取 platform-mobile 的固定 320px。 */
+@media (min-width: 768px) and (max-width: 1199px) {
+  .context-sidebar {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 250;
+    width: min(320px, 44vw);
+    min-width: 0;
+    flex-basis: auto;
+    transform: translateX(100%);
+    transition: transform 0.26s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.2s ease;
+    box-shadow: -18px 0 36px rgba(15, 23, 42, 0.18);
+  }
+
+  .context-sidebar.open {
+    flex-basis: auto;
+    min-width: min(320px, 44vw);
+    width: min(320px, 44vw);
+    transform: translateX(0);
+  }
+}
+
 /* ★★ 移动外壳专属样式**必须再写一份 `.platform-mobile`**。
    `@media (max-width:767px)` 按视口宽判定，而 Capacitor **横屏视口常 800px+**
    → 媒体查询不命中，但移动外壳（TabBar 由 v-if 渲染、与宽度无关）明明在。

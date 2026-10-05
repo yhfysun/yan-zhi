@@ -37,12 +37,13 @@
 
     <!-- 内容面板 -->
     <div class="fs-panel">
-      <!-- 未绑定目录：提示 -->
-      <div v-if="!activeDir" class="fs-empty">
-        <el-icon :size="22"><Folder /></el-icon>
-        <p>当前任务未绑定带目录的空间</p>
-        <p class="fs-empty-sub">给空间设置「目录」后，这里可浏览空间内的文件、搜索和查看 Git</p>
-      </div>
+      <!-- 未绑定目录：空态（Task 3.2）：统一 EmptyState 组件 -->
+      <EmptyState
+        v-if="!activeDir"
+        icon="📁"
+        title="当前任务未绑定带目录的空间"
+        description="给空间设置「目录」后，这里可浏览空间内的文件、搜索和查看 Git"
+      />
 
       <template v-else>
         <div class="fs-panel-head">
@@ -109,7 +110,8 @@
               </el-icon>
               <span class="fs-name" :title="row.relPath">{{ row.name }}</span>
             </div>
-            <div v-if="treeLoading" class="fs-hint">加载中…</div>
+            <!-- 首次加载（Task 3.2）：列表为空且加载中 → SkeletonList；刷新时保留旧行不打断 -->
+            <SkeletonList v-if="treeLoading && !explorerRows.length" :rows="4" :row-height="26" />
             <div v-else-if="treeError" class="fs-hint fs-hint-err">{{ treeError }}</div>
             <div v-else-if="rootLoaded && explorerRows.length === 0" class="fs-hint">目录为空</div>
           </div>
@@ -172,6 +174,8 @@ import { useSpaceStore } from '../../stores/space';
 import { useSettingsStore } from '../../stores/settings';
 import ChatGitPanel from './ChatGitPanel.vue';
 import FileSearchPanel from '../code/panels/FileSearchPanel.vue';
+import EmptyState from '../common/EmptyState.vue';
+import SkeletonList from '../common/SkeletonList.vue';
 // 移动端：文件树没有右键，长按行 = 右键（新建/复制路径/删除…），长按空白 = 空白区菜单
 import { bindLongPress } from '../../composables/useLongPress';
 
@@ -510,7 +514,7 @@ async function menuDelete() {
   try {
     await ElMessageBox.confirm(
       `确定删除「${m.row.name}」？${m.row.isDir ? '（含目录内全部内容，不可恢复）' : '（不可恢复）'}`,
-      '删除确认', { confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning' },
+      '删除确认', { confirmButtonText: '删除', confirmButtonClass: 'yz-confirm-danger', cancelButtonText: '取消', type: 'warning' },
     );
   } catch { return; }
   const r = await api.post<{ ok: boolean }>('/workspace/delete', { path: joinAbs(m.row.relPath) });
@@ -617,20 +621,11 @@ function fileMeta(name: string) {
   flex-direction: column;
 }
 
-.fs-empty {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
+/* 未绑定目录的 EmptyState 占满面板并垂直居中（选择器命中子组件根节点 .es-wrap，原 .fs-empty 布局） */
+.fs-panel > .es-wrap {
+  flex: 1 1 auto;
   justify-content: center;
-  gap: 6px;
-  padding: 20px;
-  color: var(--el-text-color-secondary, #94a3b8);
-  text-align: center;
-  font-size: 12px;
 }
-.fs-empty p { margin: 0; }
-.fs-empty-sub { font-size: 11px; opacity: 0.8; line-height: 1.5; }
 
 .fs-panel-head {
   display: flex;

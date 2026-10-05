@@ -4,3 +4,5 @@ export { default as router } from './router';
 export * from './stores';
 export { openSettingsDrawer, closeSettingsDrawer, settingsDrawerOpen, settingsDrawerSection } from './composables/useSettingsDrawer';
 export type { SettingsDrawerSection } from './composables/useSettingsDrawer';
+export { openSettingsDialog, closeSettingsDialog, settingsDialogOpen, settingsDialogCategory } from './composables/useSettingsDialog';
+export type { SettingsDialogCategory } from './composables/useSettingsDialog';

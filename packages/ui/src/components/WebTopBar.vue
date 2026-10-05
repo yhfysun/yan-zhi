@@ -50,13 +50,15 @@
              ★ 2026-09-17：trigger=click → hover（与左侧「办公」模式下拉同一交互口径，用户拍板
              「不用点击才显示」）。show/hide-after 120ms 与 ModeSwitcher 一致：
              鼠标只是划过顶栏去点右侧「刷新」时不会闪出大菜单；穿过按钮→浮层的间隙也不会误关
-             （el-popover 的 enterable 默认 true，进入浮层即保持展开）。 -->
+             （el-popover 的 enterable 默认 true，进入浮层即保持展开）。
+             ★ 触屏（无 hover 能力，Task 4.1）：trigger 退化为 click —— tap 一次展开、再 tap 收起、
+             点外自动关；show/hide-after 归零避免 tap 后的延迟感。桌面鼠标行为不变。 -->
         <el-popover
           v-model:visible="moreOpen"
           :disabled="moreSuppressed"
-          trigger="hover"
-          :show-after="120"
-          :hide-after="120"
+          :trigger="isTouchLike ? 'click' : 'hover'"
+          :show-after="isTouchLike ? 0 : 120"
+          :hide-after="isTouchLike ? 0 : 120"
           placement="bottom-start"
           :show-arrow="false"
           :width="'auto'"
@@ -80,6 +82,15 @@
       <!-- 中部：可拖拽留白（flex:1） -->
       <div class="title-spacer"></div>
 
+      <!-- 右侧：全局搜索（⌘K/Ctrl+K 或点按钮，基础版检索任务/空间）。
+           「新任务」不放顶栏——ChatTopbar / 输入框工具条 / 侧栏三处已有入口，
+           再摆一个会和头像挤在一起（2026-10-04 用户红框反馈）。 -->
+      <div class="title-quick">
+        <button class="title-nav-item title-nav-item--icon" type="button" title="全局搜索（Ctrl/⌘ K）" @click="onGlobalSearch">
+          <el-icon :size="15"><Search /></el-icon>
+        </button>
+      </div>
+
       <!--
         身份区：头像下拉 / 未登录时的登录入口。
 
@@ -96,7 +107,7 @@
             · 否则显示"本"（本机），不暴露 guest 这个内部身份；
             · 下拉里给「设置 / 记忆管理」，**不提供退出登录**（没有登录态可退）。
           Web/移动端仍走「未登录 → 登录入口」的老逻辑（将来接用户体系要用）。 -->
-      <el-dropdown v-if="authStore.isLoggedIn" trigger="click" popper-class="sidenav-user-popper" @visible-change="(v: boolean) => (avatarMenuOpen = v)" @command="onAvatarCommand">
+      <el-dropdown v-if="authStore.isLoggedIn" trigger="click" popper-class="sidenav-user-popper yz-menu-popper" @visible-change="(v: boolean) => (avatarMenuOpen = v)" @command="onAvatarCommand">
         <span class="title-avatar" :title="authStore.user?.username">
           {{ authStore.user?.username?.slice(0, 1) || 'U' }}<i class="login-dot" />
         </span>
@@ -117,7 +128,7 @@
         </template>
       </el-dropdown>
       <!-- 桌面端：本机身份头像（中性，不引导登录） -->
-      <el-dropdown v-else-if="isElectron" trigger="click" popper-class="sidenav-user-popper" @visible-change="(v: boolean) => (avatarMenuOpen = v)" @command="onAvatarCommand">
+      <el-dropdown v-else-if="isElectron" trigger="click" popper-class="sidenav-user-popper yz-menu-popper" @visible-change="(v: boolean) => (avatarMenuOpen = v)" @command="onAvatarCommand">
         <span class="title-avatar is-local" :title="localIdentityTitle">
           {{ localIdentityInitial }}
         </span>
@@ -148,8 +159,9 @@
         </el-icon>
       </button>
 
-      <!-- 右侧：窗口控制按钮（web 端 electronAPI 不可用，自动 noop） -->
-      <div class="window-controls">
+      <!-- 右侧：窗口控制按钮（★ 仅桌面渲染：web 端 electronAPI 不存在，按钮只会是死控件；
+           Task 4 之后这里就是 Electron 唯一的窗口控制区，独立标题栏行已不存在） -->
+      <div v-if="isElectron" class="window-controls">
         <button class="win-btn" title="最小化" @click="onMinimize">
           <el-icon :size="16"><Minus /></el-icon>
         </button>
@@ -164,6 +176,9 @@
         </button>
       </div>
     </div>
+
+    <!-- ⌘K 全局搜索面板：Teleport 到 body，⌘K/Ctrl+K 与 🔍 按钮共用（基础版：任务/空间） -->
+    <CommandPalette v-model:visible="paletteVisible" />
   </div>
 </template>
 
@@ -173,6 +188,7 @@ import { useRoute, useRouter } from 'vue-router';
 import {
   Minus, FullScreen, CopyDocument, Close, Moon, Sunny, HomeFilled, ChatDotRound, Monitor, Promotion, Setting, Collection,
   More, Cpu, Tools, Files, User, Link, Platform, MagicStick, Memo, Box, DataLine, Operation, Share, Refresh, Key,
+  Search,
 } from '@element-plus/icons-vue';
 import { useSettingsStore, useAuthStore, usePluginStore } from '@yan-zhi/ui';
 import { isElectron } from '../api/client';
@@ -180,7 +196,9 @@ import { resolvePluginIcon } from '@yan-zhi/ui/plugin-icons';
 import HoverMenu from './HoverMenu.vue';
 import type { HoverMenuItem } from './HoverMenu.vue';
 import { titleBarOverlayOpen } from '../composables/useTitleBarOverlay';
+import { openSettingsDialog } from '../composables/useSettingsDialog';
 import ModeSwitcher from './workbench/ModeSwitcher.vue';
+import CommandPalette from './common/CommandPalette.vue';
 
 // Electron 渲染进程通过 contextBridge 注入的 API（web 端为 undefined，全部走可选链）
 const api = (window as any).electronAPI;
@@ -218,6 +236,16 @@ const NARROW_QUERY = '(max-width: 860px)';
 const isNarrow = ref(false);
 let narrowMq: MediaQueryList | null = null;
 const onNarrowChange = (e: MediaQueryListEvent | MediaQueryList) => { isNarrow.value = e.matches; };
+
+/**
+ * 触屏判定（无 hover 能力）：「更多」等 hover 菜单在触屏上退化为 click/tap 触发（Task 4.1）。
+ * 用 matchMedia('(hover: none)') 而非 'ontouchstart' in window —— 触屏笔记本两者皆真，
+ * 只有前者能表达「没有鼠标 hover」这一交互事实，桌面/触屏本不退化。
+ * setup 时求值一次即可：设备输入能力不会在会话中途改变。
+ */
+const isTouchLike = (() => {
+  try { return window.matchMedia('(hover: none)').matches; } catch { return false; }
+})();
 
 function isActive(p: string) {
   return route.path === p || route.path.startsWith(p + '/');
@@ -372,6 +400,11 @@ function suppressMore() {
 
 function onMoreSelect(item: HoverMenuItem) {
   suppressMore();
+  // 桌面端设置入口改开侧导航弹窗（Task 10.3）；Web 端保留 /settings 页内形式
+  if (item.key === 'settings' && isElectron) {
+    openSettingsDialog();
+    return;
+  }
   if (item.path) router.push(item.path);
 }
 
@@ -388,7 +421,27 @@ function onReload() {
 // 头像下拉：el-dropdown-item 的 command 会冒泡到 el-dropdown 的 command 事件，
 // 此前未挂监听导致「设置 / 记忆管理」点击无反应
 function onAvatarCommand(cmd: string) {
+  // 桌面端设置入口改开侧导航弹窗（Task 10.3）；Web 端保留 /settings 页内形式
+  if (cmd === '/settings' && isElectron) {
+    openSettingsDialog();
+    return;
+  }
   if (cmd) router.push(cmd);
+}
+
+// ===== 7.4 快捷入口 =====
+// 全局搜索（⌘K 命令面板基础版）：按钮与 ⌘K/Ctrl+K 快捷键都打开 CommandPalette（任务/空间检索）。
+const paletteVisible = ref(false);
+function onGlobalSearch() {
+  paletteVisible.value = true;
+}
+
+/** ⌘K / Ctrl+K：桌面与 Web 都监听（浏览器里 Ctrl+K 默认聚焦地址栏，需 preventDefault） */
+function onCmdKKeydown(e: KeyboardEvent) {
+  if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && (e.key === 'k' || e.key === 'K')) {
+    e.preventDefault();
+    paletteVisible.value = true;
+  }
 }
 
 // 是否处于最大化状态
@@ -423,6 +476,9 @@ onMounted(async () => {
     await settingsStore.load();
   } catch {}
 
+  // ⌘K / Ctrl+K 全局搜索快捷键：桌面 / Web 通用
+  window.addEventListener('keydown', onCmdKKeydown);
+
   // 窄屏判定：与顶栏 v-for 门控同一个断点，必须真监听（窗口拖窄要即时收起）
   try {
     narrowMq = window.matchMedia(NARROW_QUERY);
@@ -447,6 +503,7 @@ function toggleTheme() {
 }
 
 onUnmounted(() => {
+  window.removeEventListener('keydown', onCmdKKeydown);
   if (resizeHandler) {
     window.removeEventListener('resize', resizeHandler);
     resizeHandler = null;
@@ -513,8 +570,8 @@ onUnmounted(() => {
 .title-nav {
   display: flex;
   align-items: center;
-  gap: 2px;
-  margin-left: 10px;
+  gap: 4px;
+  margin-left: 12px;
   /* 顶栏可横向收缩，浮层与窗口控件优先（窄屏时导航项由 JS 门控减到 1 项） */
   min-width: 0;
   flex-shrink: 0;
@@ -526,18 +583,19 @@ onUnmounted(() => {
   .title-nav { margin-left: 4px; }
   .title-nav-item { padding: 0 8px; gap: 4px; }
   .title-spacer { min-width: 4px; }
+  .title-quick { margin-right: 2px; }
 }
 
 .title-nav-item {
   display: flex;
   align-items: center;
-  gap: 5px;
-  height: 26px;
-  padding: 0 11px;
+  gap: 6px;
+  height: 28px;
+  padding: 0 12px;
   border: none;
-  border-radius: 7px;
+  border-radius: 8px;
   background: transparent;
-  font-size: 12.5px;
+  font-size: 13px;
   color: var(--color-text-secondary);
   cursor: pointer;
   pointer-events: auto;
@@ -567,6 +625,16 @@ onUnmounted(() => {
 /* 纯图标导航项（刷新）：收窄左右内边距，与带文字的项视觉对齐 */
 .title-nav-item--icon {
   padding: 0 8px;
+}
+
+/* 右侧快捷组：搜索图标，位于身份区左侧 */
+.title-quick {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-right: 8px;
+  flex-shrink: 0;
+  pointer-events: auto;
 }
 
 /* 登录头像（绿点=已登录）/ 登录按钮 */

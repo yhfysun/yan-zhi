@@ -46,7 +46,7 @@
           <span class="my-nickname">
             <span class="nickname-label">昵称</span>
             <span class="nickname-value">{{ myNickname || '未设置' }}</span>
-            <el-button size="small" text type="primary" :icon="Edit" @click="openNickname" />
+            <el-button size="small" text type="primary" :icon="Edit" @click="showNickname = true" />
           </span>
         </div>
         <div v-if="loading" class="panel-state">
@@ -168,25 +168,17 @@
       </section>
     </div>
 
-    <el-dialog v-model="showNickname" title="设置昵称" width="360px" :close-on-click-modal="false">
-      <el-input v-model="nicknameInput" placeholder="输入你的昵称" maxlength="20" show-word-limit />
-      <template #footer>
-        <el-button @click="showNickname = false">取消</el-button>
-        <el-button type="primary" :loading="savingNickname" @click="saveNickname">保存</el-button>
-      </template>
-    </el-dialog>
-
-    <el-dialog v-model="showRegister" title="节点设置" width="480px" :close-on-click-modal="false">
-      <el-form label-width="100px">
-        <el-form-item label="节点 ID"><el-input v-model="registerForm.nodeId" disabled /></el-form-item>
-        <el-form-item label="回调地址"><el-input v-model="registerForm.baseUrl" placeholder="http://host:port" /></el-form-item>
-        <el-form-item label="能力"><el-input v-model="registerForm.capabilities" placeholder="逗号分隔，如 chat,files" /></el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="showRegister = false">取消</el-button>
-        <el-button type="primary" :loading="savingRegister" @click="saveRegister">保存</el-button>
-      </template>
-    </el-dialog>
+    <!-- 昵称 / 节点设置弹窗：公共组件（原两段 el-dialog 已收敛到 common/NodeSettingsDialog） -->
+    <NodeSettingsDialog
+      v-model:nickname-visible="showNickname"
+      v-model:register-visible="showRegister"
+      :nickname="myNickname"
+      :node="registerForm"
+      :saving-nickname="savingNickname"
+      :saving-register="savingRegister"
+      @save-nickname="saveNickname"
+      @save-register="saveRegister"
+    />
   </div>
 </template>
 
@@ -196,6 +188,7 @@ import { useRouter } from 'vue-router';
 import { Refresh, Document, Edit, Setting, ArrowDown, Connection, Promotion } from '@element-plus/icons-vue';
 import { ElMessage } from 'element-plus';
 import { api, LOCAL_API_BASE } from '../api/client';
+import NodeSettingsDialog from '../components/common/NodeSettingsDialog.vue';
 
 const router = useRouter();
 
@@ -249,7 +242,6 @@ const messageList = ref<HTMLElement | null>(null);
 const myNickname = ref('');
 
 const showNickname = ref(false);
-const nicknameInput = ref('');
 const savingNickname = ref(false);
 const showRegister = ref(false);
 const savingRegister = ref(false);
@@ -347,21 +339,12 @@ async function loadPeers() {
   if (me) myNickname.value = me.name;
 }
 
-function openNickname() {
-  nicknameInput.value = myNickname.value;
-  showNickname.value = true;
-}
-
-async function saveNickname() {
-  if (!nicknameInput.value.trim()) {
-    ElMessage.warning('昵称不能为空');
-    return;
-  }
+async function saveNickname(name: string) {
   savingNickname.value = true;
   const baseUrl = registerForm.value.baseUrl || callbackBase();
   const res = await api.post<any>('/peers/register', {
     nodeId: ownNodeId.value,
-    name: nicknameInput.value.trim(),
+    name,
     baseUrl,
     capabilities: ['chat'],
   });
@@ -370,27 +353,27 @@ async function saveNickname() {
     ElMessage.error(res.error);
     return;
   }
-  myNickname.value = nicknameInput.value.trim();
-  lsSet('peer_name', myNickname.value);
+  myNickname.value = name;
+  lsSet('peer_name', name);
   ElMessage.success('昵称已更新');
   showNickname.value = false;
   await loadPeers();
 }
 
-async function saveRegister() {
+async function saveRegister(values: { baseUrl: string; capabilities: string }) {
   savingRegister.value = true;
   const res = await api.post<any>('/peers/register', {
     nodeId: ownNodeId.value,
     name: myNickname.value || '匿名',
-    baseUrl: registerForm.value.baseUrl,
-    capabilities: registerForm.value.capabilities.split(',').map((s) => s.trim()).filter(Boolean),
+    baseUrl: values.baseUrl,
+    capabilities: values.capabilities.split(',').map((s) => s.trim()).filter(Boolean),
   });
   savingRegister.value = false;
   if ('error' in res) {
     ElMessage.error(res.error);
     return;
   }
-  lsSet('peer_base_url', registerForm.value.baseUrl);
+  lsSet('peer_base_url', values.baseUrl);
   ElMessage.success('已保存');
   showRegister.value = false;
   await loadPeers();

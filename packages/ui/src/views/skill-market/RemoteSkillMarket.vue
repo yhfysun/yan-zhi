@@ -5,13 +5,14 @@
         <el-button text @click="$router.push('/skills')"><el-icon><ArrowLeft /></el-icon> 商城首页</el-button>
         <h2 class="rm-title">{{ sourceName }}</h2>
       </div>
-      <div class="rm-header-right">
-        <el-select v-model="category" placeholder="全部分类" clearable style="width: 140px" @change="loadItems">
-          <el-option label="全部分类" value="" />
-          <el-option v-for="c in categories" :key="c" :label="c" :value="c" />
-        </el-select>
-        <el-input v-model="search" placeholder="搜索 Skill" style="width: 200px" clearable />
-      </div>
+      <SearchToolbar v-model:query="search" placeholder="搜索 Skill...">
+        <template #actions>
+          <el-select v-model="category" class="yz-cat-select" placeholder="全部分类" clearable @change="loadItems">
+            <el-option label="全部分类" value="" />
+            <el-option v-for="c in categories" :key="c" :label="c" :value="c" />
+          </el-select>
+        </template>
+      </SearchToolbar>
     </header>
 
     <div v-if="loading" style="text-align:center;padding:60px 0">
@@ -50,6 +51,7 @@ import { Files, ArrowLeft, Loading, Download } from '@element-plus/icons-vue';
 import { ElMessage } from 'element-plus';
 import { useSkillStore } from '../../stores';
 import { api } from '../../api/client';
+import SearchToolbar from '../../components/common/SearchToolbar.vue';
 
 const props = defineProps<{ sourceId: string }>();
 const store = useSkillStore();
@@ -119,7 +121,6 @@ async function installRemote(skillId: string) {
 
 .rm-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 12px; }
 .rm-header-left { display: flex; align-items: center; gap: 12px; }
-.rm-header-right { display: flex; align-items: center; gap: 8px; }
 .rm-title { font-size: 20px; font-weight: 600; margin: 0; }
 
 .loading-icon { animation: spin 1s linear infinite; }
@@ -154,8 +155,6 @@ async function installRemote(skillId: string) {
 @media (max-width: 767px) {
   .remote-market { padding: 0 !important; width: 100%; }
   .rm-header { flex-direction: column; align-items: stretch; gap: 10px; padding: 14px; }
-  .rm-header-right { width: 100%; }
-  .rm-header-right .el-input { width: 100% !important; }
   .rm-title { font-size: 18px; }
   .skill-grid { grid-template-columns: minmax(0, 1fr) !important; gap: 10px; width: 100%; padding: 0 14px 14px; box-sizing: border-box; }
   .skill-card { width: 100%; max-width: 100%; box-sizing: border-box; }

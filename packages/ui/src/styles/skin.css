@@ -166,11 +166,10 @@ html[data-skin="on"] .home-page {
      皮肤可经 surface.patternFit 覆盖为 contain / repeat / repeat-x。 */
   --skin-pattern-size: cover;
   --skin-pattern-repeat: no-repeat;
-  --skin-radius: 12px;
-  --skin-btn-radius: 6px;
-  --skin-input-radius: 6px;
-  --skin-card-radius: 12px;
-  --skin-tag-radius: 6px;
+  /* 皮肤圆角：唯一旋钮 —— 覆盖层基准（tokens.css 的 --radius-* 四档由它派生）。
+     原先的 --skin-btn/-input/-card/-tag-radius 逐项开关已废止：
+     那正是「按钮 8 / 卡片 10 / 弹窗 14」各走各的漂移来源。 */
+  --skin-radius: 14px;
 
   --glass-bg: color-mix(in srgb, var(--skin-glass-tint, #f5f1ea) calc(var(--skin-glass-alpha) * 100%), transparent);
   --glass-bg-hover: var(--skin-surface-hover, color-mix(in srgb, var(--skin-glass-tint, #f5f1ea) calc(var(--skin-glass-alpha-hover) * 100%), transparent));
@@ -355,8 +354,7 @@ html[data-skin="on"] .home-page {
    （--skin-input-pattern 变量仍由皮肤系统下发，供需要时消费；本处不再使用。） */
 [data-skin="on"] .input-box,
 [data-skin="on"] .f-keyword-wrap,
-[data-skin="on"] .lm-search-wrap,
-[data-skin="on"] .tab-search-wrap,
+[data-skin="on"] .st-search,
 [data-skin="on"] .url-bar {
   background-color: transparent !important;
   background-image: none !important;
@@ -365,8 +363,7 @@ html[data-skin="on"] .home-page {
   border: 1px solid var(--skin-input-border, var(--glass-border, var(--color-border))) !important;
 }
 [data-theme="light"][data-skin="on"] .f-keyword-wrap,
-[data-theme="light"][data-skin="on"] .lm-search-wrap,
-[data-theme="light"][data-skin="on"] .tab-search-wrap,
+[data-theme="light"][data-skin="on"] .st-search,
 [data-theme="light"][data-skin="on"] .url-bar {
   border-color: var(--color-border) !important;
 }
@@ -544,7 +541,9 @@ html[data-skin="on"] .home-page {
    现在改为铺「卡片变体图」（--skin-card-1..4-pattern，按 nth-of-type 循环），
    底色 transparent 让图成为卡片表面；未配 cardPatterns 的皮肤回落玻璃底（行为不变）。
    注：用 nth-of-type（而非 nth-child）—— 这些卡片常与标题/空态节点混排，
-   nth-of-type 只数同标签元素，分布更均匀。 */
+   nth-of-type 只数同标签元素，分布更均匀。
+   【2026-10-05 统一圆角】变体只保留**图片**差异；原先 4n+2/4n+3/4n 各自乘 1.4/0.6
+   或套标签圆角 → 相邻卡片四种圆角，与「全站圆角统一」冲突，已全部收敛到 --radius-card。 */
 [data-skin="on"] .el-card {
   --el-card-bg-color: transparent;
   background-color: transparent;
@@ -552,69 +551,67 @@ html[data-skin="on"] .home-page {
   background-repeat: no-repeat;
   background-position: center;
   border-color: color-mix(in srgb, var(--color-primary) 18%, var(--glass-border));
-  border-radius: var(--skin-card-radius, 12px);
+  border-radius: var(--radius-card);
 }
 [data-skin="on"] .el-card:nth-of-type(4n + 1) {
   background-image: var(--skin-card-1-pattern, var(--glass-bg)) !important;
 }
 [data-skin="on"] .el-card:nth-of-type(4n + 2) {
   background-image: var(--skin-card-2-pattern, var(--glass-bg)) !important;
-  border-radius: calc(var(--skin-card-radius, 12px) * 1.4);
+  border-radius: var(--radius-card);
 }
 [data-skin="on"] .el-card:nth-of-type(4n + 3) {
   background-image: var(--skin-card-3-pattern, var(--glass-bg)) !important;
   border-color: color-mix(in srgb, var(--color-primary) 38%, transparent);
-  border-radius: calc(var(--skin-card-radius, 12px) * 0.6);
+  border-radius: var(--radius-card);
 }
 [data-skin="on"] .el-card:nth-of-type(4n) {
   background-image: var(--skin-card-4-pattern, var(--glass-bg)) !important;
-  border-radius: var(--skin-tag-radius, 6px);
 }
 [data-skin="on"] .glass-card {
   backdrop-filter: var(--glass-filter);
   -webkit-backdrop-filter: var(--glass-filter);
 }
 
-/* ===== 工具页卡片（ToolMarket.vue）=====
+/* ===== 工具/商城页玻璃卡片（GlassCard：.gc）=====
    【2026-09-13 用户反馈"工具卡片这么怪异？"】
    两张卡此前**不在任何皮肤规则里** → 只有纯 --glass-bg 玻璃底，在 cyber 壁纸上
    是一块扁平的暗色方板，既不像其他卡片那样有纹理，也没有语义描边。
    这里把它们并入卡片变体图循环（同 .el-card / .conv-item 一套 --skin-card-1..4-pattern）。
-   用 nth-of-type —— .card-grid 下全是同标签 div，均衡分布；未配 cardPatterns 的皮肤
-   回落 --glass-bg，行为与改造前一致。
-   ⚠️ 别用 nth-child：.card-grid 内子元素是同标签 div，nth-of-type 才是整数计数。 */
-[data-skin="on"] .tool-card,
+   用 nth-of-type —— .cg 网格下全是同标签 GlassCard（div.gc），均衡分布；未配 cardPatterns
+   的皮肤回落 --glass-bg，行为与改造前一致。
+   ⚠️ 别用 nth-child：网格内子元素是同标签，nth-of-type 才是整数计数。 */
+[data-skin="on"] .gc,
 [data-skin="on"] .market-card {
   background-color: transparent;
   background-size: cover;
   background-repeat: no-repeat;
   background-position: center;
   border-color: color-mix(in srgb, var(--color-primary) 20%, var(--glass-border));
-  border-radius: var(--skin-card-radius, 12px);
+  border-radius: var(--radius-card);
 }
-[data-skin="on"] .tool-card:nth-of-type(4n + 1),
+[data-skin="on"] .gc:nth-of-type(4n + 1),
 [data-skin="on"] .market-card:nth-of-type(4n + 1) {
   background-image: var(--skin-card-1-pattern, var(--glass-bg)) !important;
 }
-[data-skin="on"] .tool-card:nth-of-type(4n + 2),
+[data-skin="on"] .gc:nth-of-type(4n + 2),
 [data-skin="on"] .market-card:nth-of-type(4n + 2) {
   background-image: var(--skin-card-2-pattern, var(--glass-bg)) !important;
-  border-radius: calc(var(--skin-card-radius, 12px) * 1.4);
+  border-radius: var(--radius-card);
 }
-[data-skin="on"] .tool-card:nth-of-type(4n + 3),
+[data-skin="on"] .gc:nth-of-type(4n + 3),
 [data-skin="on"] .market-card:nth-of-type(4n + 3) {
   background-image: var(--skin-card-3-pattern, var(--glass-bg)) !important;
   border-color: color-mix(in srgb, var(--color-primary) 38%, transparent);
-  border-radius: calc(var(--skin-card-radius, 12px) * 0.6);
+  border-radius: var(--radius-card);
 }
-[data-skin="on"] .tool-card:nth-of-type(4n),
+[data-skin="on"] .gc:nth-of-type(4n),
 [data-skin="on"] .market-card:nth-of-type(4n) {
   background-image: var(--skin-card-4-pattern, var(--glass-bg)) !important;
-  border-radius: var(--skin-tag-radius, 8px);
 }
 /* 卡片铺图后可读性：卡内文本直接压在明暗不均的取景图上会局部看不清，
    给卡片内所有直接子块抬 z-index 让它们位于图之上（衬底靠下方 .stat/.schema 单独处理）。 */
-[data-skin="on"] .tool-card > *,
+[data-skin="on"] .gc > *,
 [data-skin="on"] .market-card > * {
   position: relative;
   z-index: 1;
@@ -636,13 +633,15 @@ html[data-skin="on"] .el-dialog.tm-solid-dialog .el-dialog__body {
 html[data-skin="on"] .el-dialog.tm-solid-dialog .el-dialog__footer {
   background-color: color-mix(in srgb, var(--skin-glass-tint, #0A101C) 84%, transparent) !important;
 }
-/* 弹窗内文本域 / 代码块：再叠一层，保证等宽与正文都稳定可读 */
-html[data-skin="on"] .el-dialog.tm-solid-dialog .schema-pre {
+/* 弹窗内文本域 / 代码块（试运行 .schema-pre 与 SchemaViewer .sv-pre）：再叠一层，保证等宽与正文都稳定可读 */
+html[data-skin="on"] .el-dialog.tm-solid-dialog .schema-pre,
+html[data-skin="on"] .el-dialog.tm-solid-dialog .sv-pre {
   background: color-mix(in srgb, var(--skin-glass-tint, #0A101C) 92%, transparent);
   color: var(--skin-text, var(--color-text));
   border: 1px solid color-mix(in srgb, var(--color-primary) 20%, transparent);
 }
 html[data-skin="on"] .el-dialog.tm-solid-dialog .schema-label,
+html[data-skin="on"] .el-dialog.tm-solid-dialog .sv-label,
 html[data-skin="on"] .el-dialog.tm-solid-dialog .runner-entry {
   color: var(--skin-text, var(--color-text));
   opacity: 1;
@@ -659,7 +658,7 @@ html[data-skin="on"] .el-dialog.tm-solid-dialog .el-textarea__inner {
   color: var(--skin-text, var(--color-text)) !important;
   border: 1px solid color-mix(in srgb, var(--color-primary) 22%, transparent);
 }
-[data-skin="on"] .tool-card:hover,
+[data-skin="on"] .gc:hover,
 [data-skin="on"] .market-card:hover {
   border-color: color-mix(in srgb, var(--color-primary) 55%, transparent);
 }
@@ -714,7 +713,7 @@ html[data-skin="on"] .el-dialog.tm-solid-dialog .el-textarea__inner {
 [data-skin="on"] .msg-check-item {
   background-color: transparent;
   background-image: none;
-  border-radius: var(--skin-tag-radius, 6px);
+  border-radius: var(--radius-sm);
 }
 [data-skin="on"] .log-item:hover,
 [data-skin="on"] .msg-check-item:hover {
@@ -723,8 +722,7 @@ html[data-skin="on"] .el-dialog.tm-solid-dialog .el-textarea__inner {
 
 /* 输入框/搜索框容器补磨砂质感 */
 [data-skin="on"] .f-keyword-wrap,
-[data-skin="on"] .lm-search-wrap,
-[data-skin="on"] .tab-search-wrap {
+[data-skin="on"] .st-search {
   backdrop-filter: var(--glass-filter);
   -webkit-backdrop-filter: var(--glass-filter);
   background-color: var(--el-fill-color-blank);
@@ -877,8 +875,10 @@ html[data-skin="on"] .el-dialog.tm-solid-dialog .el-textarea__inner {
 }
 
 /* ===== 皮肤表面定制（surface 配置下发）：弹层边框色 / 圆角 / 按钮 / 应用描边 =====
-   --skin-glass-border/--skin-radius/--skin-btn-radius/--skin-btn-text 由 applyPalette/applySkin 按
-   主题 surface 块写入（深浅色分别解析），未配置时回落本主题默认值 */
+   --skin-glass-border/--skin-radius/--skin-btn-text 由 applyPalette/applySkin 按
+   主题 surface 块写入（深浅色分别解析），未配置时回落本主题默认值。
+   ⚠️ 圆角只有 --skin-radius 一个旋钮（覆盖层基准），各档由 tokens.css 的
+      --radius-xs/sm/card/lg 派生；不要再引入逐项圆角开关。 */
 
 /* 弹层边框色随皮肤（置于原 token 规则之后，同特异性下后写生效） */
 [data-skin="on"] .el-dialog,
@@ -891,17 +891,24 @@ html[data-skin="on"] .el-dialog.tm-solid-dialog .el-textarea__inner {
 [data-skin="on"] .el-dialog,
 [data-skin="on"] .el-popper.is-light,
 [data-skin="on"] .app-menu-list {
-  border-radius: var(--skin-radius, 12px);
+  border-radius: var(--radius-lg);
 }
 /* 预览窗口（文件预览 / 内置浏览器）：边框 + 圆角随皮肤 */
 [data-skin="on"] .file-preview,
 [data-skin="on"] .browser-shell {
   border: 1px solid var(--skin-glass-border, transparent);
-  border-radius: var(--skin-radius, 12px);
+  border-radius: var(--radius-lg);
 }
 /* 按钮：圆角随皮肤；实心主按钮文字色随皮肤（plain/text/link 字色走主色逻辑，不错杀） */
 [data-skin="on"] .el-button {
-  border-radius: var(--skin-btn-radius, 6px);
+  border-radius: var(--radius-sm);
+}
+/* 圆形按钮（el-button circle）：必须仍然是正圆。
+   上面这条 (0,2,0) 与 EP 自带的 `.el-button.is-circle{border-radius:50%}` (0,2,0) 同权重，
+   且本文件后加载 → 会把所有 circle 按钮压成 8px 圆角方块（卡片编辑/删除钮、聊天消息操作钮）。
+   这里补回 50%，让「圆的归圆、方的走阶梯」。 */
+[data-skin="on"] .el-button.is-circle {
+  border-radius: 50%;
 }
 [data-skin="on"] .el-button--primary:not(.is-plain):not(.is-text):not(.is-link) {
   --el-button-text-color: var(--skin-btn-text, #ffffff);
@@ -949,16 +956,16 @@ html[data-skin="on"] .el-dialog.tm-solid-dialog .el-textarea__inner {
 [data-skin="on"] .el-input__wrapper,
 [data-skin="on"] .el-textarea__inner,
 [data-skin="on"] .el-select__wrapper {
-  border-radius: var(--skin-input-radius, 6px);
+  border-radius: var(--radius-sm);
 }
 /* 卡片圆角随皮肤 */
 [data-skin="on"] .el-card,
 [data-skin="on"] .glass-card {
-  border-radius: var(--skin-card-radius, 12px);
+  border-radius: var(--radius-card);
 }
-/* 标签圆角随皮肤 */
+/* 标签圆角随皮肤（微件档） */
 [data-skin="on"] .el-tag {
-  border-radius: var(--skin-tag-radius, 6px);
+  border-radius: var(--radius-xs);
 }
 /* 自定义滚动条 thumb 色（覆盖默认主色低 alpha）
    ⚠️ 深色必须另给一份：上方 [data-theme="dark"][data-skin="on"]（特指度 0,2,0）里
@@ -1468,22 +1475,21 @@ html[data-skin="on"] .loading-overlay {
   background-size: cover;
   background-repeat: no-repeat;
   background-position: center;
-  border-radius: var(--skin-card-radius, 12px);
+  border-radius: var(--radius-card);
 }
 [data-skin="on"] .glass-card:nth-of-type(4n + 1) {
   background-image: var(--skin-card-1-pattern, var(--skin-task-list-pattern, var(--glass-bg))) !important;
 }
 [data-skin="on"] .glass-card:nth-of-type(4n + 2) {
   background-image: var(--skin-card-2-pattern, var(--skin-task-list-pattern, var(--glass-bg))) !important;
-  border-radius: calc(var(--skin-card-radius, 12px) * 1.4);
+  border-radius: var(--radius-card);
 }
 [data-skin="on"] .glass-card:nth-of-type(4n + 3) {
   background-image: var(--skin-card-3-pattern, var(--skin-task-list-pattern, var(--glass-bg))) !important;
-  border-radius: calc(var(--skin-card-radius, 12px) * 0.6);
+  border-radius: var(--radius-card);
 }
 [data-skin="on"] .glass-card:nth-of-type(4n) {
   background-image: var(--skin-card-4-pattern, var(--skin-task-list-pattern, var(--glass-bg))) !important;
-  border-radius: var(--skin-tag-radius, 6px);
 }
 
 /* ===== 列表「卡片」条目（会话/空间/任务行）=====
@@ -1509,7 +1515,7 @@ html[data-skin="on"] .loading-overlay {
   background-color: transparent !important;
   background-image: none !important;
   border: 1px solid transparent;
-  border-radius: var(--skin-tag-radius, 8px);
+  border-radius: var(--radius-sm);
   transition: background-color 0.15s ease, border-color 0.15s ease;
 }
 /* 状态态：hover / active / pinned 保留原有语义色（叠在容器底图之上） */
@@ -1569,7 +1575,7 @@ html[data-skin="on"] .loading-overlay {
     color-mix(in srgb, var(--skin-surface, var(--color-bg, #f8fafc)) 90%, transparent));
   background-color: var(--skin-card-tint);
   border-color: color-mix(in srgb, var(--color-primary) 22%, transparent);
-  border-radius: var(--skin-card-radius, 10px);
+  border-radius: var(--radius-card);
 }
 /* 按消息级索引取图（data-card-variant 由 ChatMessageList.vue 输出，值域 0~3）
    【2026-09-14】变体规则改为只声明 --skin-card-img 自定义属性，由卡片外壳的
@@ -1579,16 +1585,15 @@ html[data-skin="on"] .loading-overlay {
 }
 [data-skin="on"] [data-card-variant="1"] {
   --skin-card-img: var(--skin-card-2-pattern, none);
-  border-radius: calc(var(--skin-card-radius, 10px) * 1.4);
+  border-radius: var(--radius-card);
 }
 [data-skin="on"] [data-card-variant="2"] {
   --skin-card-img: var(--skin-card-3-pattern, none);
   border-color: color-mix(in srgb, var(--color-primary) 42%, transparent);
-  border-radius: calc(var(--skin-card-radius, 10px) * 0.6);
+  border-radius: var(--radius-card);
 }
 [data-skin="on"] [data-card-variant="3"] {
   --skin-card-img: var(--skin-card-4-pattern, none);
-  border-radius: var(--skin-tag-radius, 8px);
 }
 /* 顶部装饰图带：固定高度 + cover。
    · 缩放只随卡宽（卡宽在对话流中稳定）→ 不会随流式输出"慢慢放大"，也不会超出
@@ -1663,7 +1668,7 @@ html[data-skin="on"] .loading-overlay {
   background-repeat: no-repeat;
   background-position: center;
   border-color: color-mix(in srgb, var(--color-primary) 22%, transparent);
-  border-radius: var(--skin-card-radius, 12px);
+  border-radius: var(--radius-card);
 }
 [data-skin="on"] .agent-response-card.msg-collapsed:nth-of-type(4n + 1),
 [data-skin="on"] .agent-process-header:nth-of-type(4n + 1) {
@@ -1727,8 +1732,7 @@ html[data-skin="on"] .loading-overlay {
    避免被其它层的 box-shadow: none 冲掉。 */
 [data-skin="on"] .input-box,
 [data-skin="on"] .f-keyword-wrap,
-[data-skin="on"] .lm-search-wrap,
-[data-skin="on"] .tab-search-wrap,
+[data-skin="on"] .st-search,
 [data-skin="on"] .url-bar {
   background-color: transparent !important;
   background-image: none !important;
@@ -1737,8 +1741,7 @@ html[data-skin="on"] .loading-overlay {
   border: 1px solid var(--skin-input-border, var(--glass-border, var(--color-border))) !important;
 }
 [data-theme="light"][data-skin="on"] .f-keyword-wrap,
-[data-theme="light"][data-skin="on"] .lm-search-wrap,
-[data-theme="light"][data-skin="on"] .tab-search-wrap,
+[data-theme="light"][data-skin="on"] .st-search,
 [data-theme="light"][data-skin="on"] .url-bar {
   border-color: var(--color-border) !important;
 }

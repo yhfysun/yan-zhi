@@ -52,55 +52,42 @@
 
       <!-- ===== Java ===== -->
       <template v-if="activeTab === 'java'">
-        <div class="env-field">
-          <label class="env-label">JAVA_HOME（JDK 根目录）</label>
+        <SettingRow label="JAVA_HOME（JDK 根目录）" tip="目录下的 bin/java 会被加入 PATH；运行 Java 主类、编译 classpath 都用它。">
           <div class="env-input-row">
             <el-input v-model="form.javaHome" size="default" placeholder="如 C:\Program Files\Java\jdk-17" />
             <button class="env-pick" @click="pick('javaHome', true)">浏览</button>
           </div>
-          <p class="env-tip">目录下的 bin/java 会被加入 PATH；运行 Java 主类、编译 classpath 都用它。</p>
-        </div>
-        <div class="env-field">
-          <label class="env-label">JAVA_OPTS</label>
+        </SettingRow>
+        <SettingRow label="JAVA_OPTS" tip="运行 Java 主类时附加的 JVM 参数。">
           <el-input v-model="form.javaOpts" size="default" placeholder="如 -Xmx512m -Dfile.encoding=UTF-8" />
-          <p class="env-tip">运行 Java 主类时附加的 JVM 参数。</p>
-        </div>
+        </SettingRow>
       </template>
 
       <!-- ===== Maven ===== -->
       <template v-else-if="activeTab === 'maven'">
-        <div class="env-field">
-          <label class="env-label">Maven 根目录（M2_HOME）</label>
+        <SettingRow label="Maven 根目录（M2_HOME）" tip="目录下的 bin/mvn 会被加入 PATH；Maven 运行配置直接调用它。">
           <div class="env-input-row">
             <el-input v-model="form.mavenHome" size="default" placeholder="如 D:\apache-maven-3.9.6" />
             <button class="env-pick" @click="pick('mavenHome', true)">浏览</button>
           </div>
-          <p class="env-tip">目录下的 bin/mvn 会被加入 PATH；Maven 运行配置直接调用它。</p>
-        </div>
-        <div class="env-field">
-          <label class="env-label">MAVEN_OPTS</label>
+        </SettingRow>
+        <SettingRow label="MAVEN_OPTS" tip="每次执行 Maven goal 时附加的参数。">
           <el-input v-model="form.mavenOpts" size="default" placeholder="如 -DskipTests -o" />
-          <p class="env-tip">每次执行 Maven goal 时附加的参数。</p>
-        </div>
+        </SettingRow>
       </template>
 
       <!-- ===== Python ===== -->
       <template v-else-if="activeTab === 'python'">
-        <div class="env-field">
-          <label class="env-label">Python 解释器</label>
+        <SettingRow label="Python 解释器" tip="运行 / 调试 Python 脚本使用的解释器。">
           <div class="env-input-row">
             <el-input v-model="form.pythonPath" size="default" placeholder="如 C:\Python311\python.exe（留空用 PATH 里的 python）" />
             <button class="env-pick" @click="pick('pythonPath', false)">浏览</button>
           </div>
-          <p class="env-tip">运行 / 调试 Python 脚本使用的解释器。</p>
-        </div>
-        <div class="env-field">
-          <label class="env-label">pip 镜像源</label>
+        </SettingRow>
+        <SettingRow label="pip 镜像源" tip="安装 debugpy 等依赖时使用；受限网络建议填国内镜像。">
           <el-input v-model="form.pipIndexUrl" size="default" placeholder="如 https://pypi.tuna.tsinghua.edu.cn/simple" />
-          <p class="env-tip">安装 debugpy 等依赖时使用；受限网络建议填国内镜像。</p>
-        </div>
-        <div class="env-field">
-          <label class="env-label">断点调试依赖</label>
+        </SettingRow>
+        <SettingRow label="断点调试依赖" tip="Python 断点基于 DAP，需要 debugpy（装在 Python 环境里，不占应用体积）。">
           <div class="env-inline">
             <button class="env-btn sm" :disabled="!!installing" @click="installDebugpy">
               <el-icon v-if="installing === 'debugpy'" :size="12" class="spin"><Loading /></el-icon>
@@ -108,49 +95,41 @@
             </button>
             <span class="env-inline-note">{{ debugpyNote }}</span>
           </div>
-          <p class="env-tip">Python 断点基于 DAP，需要 debugpy（装在 Python 环境里，不占应用体积）。</p>
-        </div>
+        </SettingRow>
       </template>
 
       <!-- ===== Node ===== -->
       <template v-else-if="activeTab === 'node'">
-        <div class="env-field">
-          <label class="env-label">Node 可执行文件</label>
+        <SettingRow label="Node 可执行文件" tip="Node 断点用内置 inspector（--inspect-brk），不需要额外依赖。">
           <div class="env-input-row">
             <el-input v-model="form.nodePath" size="default" placeholder="留空用 PATH 里的 node" />
             <button class="env-pick" @click="pick('nodePath', false)">浏览</button>
           </div>
-          <p class="env-tip">Node 断点用内置 inspector（--inspect-brk），不需要额外依赖。</p>
-        </div>
+        </SettingRow>
       </template>
 
       <!-- ===== Git ===== -->
       <template v-else-if="activeTab === 'git'">
-        <div class="env-field">
-          <label class="env-label">Git 可执行文件</label>
+        <SettingRow label="Git 可执行文件" tip="代码模式左栏「源代码管理」与 git 相关工具使用。">
           <div class="env-input-row">
             <el-input v-model="form.gitPath" size="default" placeholder="留空用 PATH 里的 git" />
             <button class="env-pick" @click="pick('gitPath', false)">浏览</button>
           </div>
-          <p class="env-tip">代码模式左栏「源代码管理」与 git 相关工具使用。</p>
-        </div>
+        </SettingRow>
       </template>
 
       <!-- ===== 通用 ===== -->
       <template v-else>
-        <div class="env-field">
-          <label class="env-label">终端默认 Shell</label>
+        <SettingRow label="终端默认 Shell" tip="代码模式底部控制台新建会话时使用的 shell。">
           <el-select v-model="form.defaultShell" size="default" class="env-select">
             <el-option label="PowerShell" value="powershell" />
             <el-option label="CMD" value="cmd" />
             <el-option label="Bash" value="bash" />
           </el-select>
-          <p class="env-tip">代码模式底部控制台新建会话时使用的 shell。</p>
-        </div>
-        <div class="env-field">
-          <label class="env-label">附加环境变量（每行一条 KEY=VALUE，注入所有终端与运行进程）</label>
+        </SettingRow>
+        <SettingRow label="附加环境变量（每行一条 KEY=VALUE，注入所有终端与运行进程）">
           <el-input v-model="extraEnvText" type="textarea" :rows="4" placeholder="GRADLE_USER_HOME=C:\.gradle&#10;NODE_ENV=development" />
-        </div>
+        </SettingRow>
       </template>
     </div>
 
@@ -167,6 +146,7 @@ import { ref, reactive, computed, onMounted } from 'vue';
 import { ElMessage } from 'element-plus';
 import { Loading, MagicStick, Select, RefreshLeft, Download } from '@element-plus/icons-vue';
 import { api } from '../api/client';
+import SettingRow from '../components/common/SettingRow.vue';
 import type { DevEnvConfig } from '../types/dev-env';
 
 interface ToolStatus { id: string; label: string; path: string; version: string; ok: boolean; error: string }
@@ -363,9 +343,26 @@ onMounted(async () => {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 
-/* ===== 表单 ===== */
-.env-field { display: flex; flex-direction: column; gap: 5px; }
-.env-label { font-size: 12px; font-weight: 600; color: var(--color-text, #1a1a1a); }
+/* ===== 表单 =====
+   env 页保持「标签在上、控件居中、说明在下」的纵向形态：对公共 SettingRow 做局部覆盖
+   （提权到 .env .env-body 确保覆盖组件内默认的横向 el-form-item 形态） */
+.env-body :deep(.setting-row) {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 5px;
+  margin-bottom: 0;
+}
+.env-body :deep(.setting-row-label) {
+  width: auto;
+  padding-right: 0;
+  text-align: left;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--color-text, #1a1a1a);
+}
+.env-body :deep(.setting-row-content) { min-height: 0; }
+.env-body :deep(.setting-row-tip) { font-size: 11px; color: var(--color-text-tertiary, #9c9b94); }
 .env-input-row { display: flex; gap: 6px; }
 .env-pick {
   height: 32px; padding: 0 12px; flex-shrink: 0; cursor: pointer;
@@ -374,7 +371,6 @@ onMounted(async () => {
   font-size: 12px; font-family: inherit;
 }
 .env-pick:hover { border-color: var(--color-primary, #c2410c); color: var(--color-primary, #c2410c); }
-.env-tip { margin: 0; font-size: 11px; color: var(--color-text-tertiary, #9c9b94); }
 .env-inline { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .env-inline-note { font-size: 11px; color: var(--color-text-tertiary, #9c9b94); }
 .env-select { width: 100%; }

@@ -1,14 +1,54 @@
 <template>
-  <div class="page">
-    <h2 class="page-title">设置</h2>
-    <el-tabs v-model="tab" class="glass-tabs">
-      <el-tab-pane label="通用" name="general">
-        <el-form label-width="160px" style="max-width: 600px">
-          <el-form-item label="深色模式">
+  <!-- 四段式页面骨架示范接入（Task 11.2）：桌面端 / 抽屉·弹窗内嵌（embedded/pane）时
+       show-header=false，组件退化为纯内容壳，布局与旧 .page 一致；
+       仅 /settings 路由页在移动外壳下渲染骨架头（返回 + 标题 + 主题切换）。 -->
+  <MobilePageShell :title="shellTitle" back :show-header="pageShell" :back-handler="mobileBackHandler">
+    <template #actions>
+      <button v-if="pageShell" class="mobile-icon-btn" type="button" aria-label="切换主题" @click="toggleThemeQuick">
+        <el-icon :size="17"><component :is="settingsStore.settings.darkMode ? Sunny : Moon" /></el-icon>
+      </button>
+    </template>
+    <!-- 移动外壳首层：分组入口列表（四段式「首层分组 → 二级子页」，Task 10.5）。
+         桌面 / Web / 弹窗内嵌（pageShell=false）走 v-else 分支，行为与旧版完全一致。 -->
+    <template v-if="pageShell && !mobileGroup">
+      <h2 class="page-title">设置</h2>
+      <div class="settings-group-list">
+        <button
+          v-for="g in mobileGroups"
+          :key="g.key"
+          type="button"
+          class="settings-group-row"
+          @click="enterMobileGroup(g)"
+        >
+          <span class="settings-group-icon"><el-icon :size="17"><component :is="g.icon" /></el-icon></span>
+          <span class="settings-group-main">
+            <span class="settings-group-name">{{ g.label }}</span>
+            <span class="settings-group-desc">{{ g.desc }}</span>
+          </span>
+          <el-icon class="settings-group-arrow" :size="14"><ArrowRight /></el-icon>
+        </button>
+      </div>
+    </template>
+    <template v-else>
+      <h2 v-if="!(pageShell && mobileGroup)" class="page-title">设置</h2>
+      <!-- 二级子页内的页内子分段（仅多 tab 分组显示）：pane 直取机制与 SettingsDialog 同一通道 -->
+      <div v-if="pageShell && mobileGroup && mobileGroup.tabs.length > 1" class="mobile-sub-tabs">
+        <button
+          v-for="t in mobileGroup.tabs"
+          :key="t.name"
+          type="button"
+          class="mobile-sub-tab"
+          :class="{ active: tab === t.name }"
+          @click="tab = t.name"
+        >{{ t.label }}</button>
+      </div>
+      <el-tabs v-model="tab" class="glass-tabs" :class="{ 'is-pane': isPaneMode || (pageShell && !!mobileGroup) }">
+      <el-tab-pane label="通用" name="general" lazy>
+        <div class="settings-form">
+          <SettingRow label="深色模式" tip="切换深色/浅色主题" tip-after>
             <el-switch v-model="darkMode" @change="toggleDarkMode" />
-            <span class="form-tip" style="margin-left: 12px">切换深色/浅色主题</span>
-          </el-form-item>
-          <el-form-item label="主题色">
+          </SettingRow>
+          <SettingRow label="主题色">
             <div class="theme-grid">
               <div
                 v-for="t in themes"
@@ -21,8 +61,8 @@
                 <span>{{ t.label }}</span>
               </div>
             </div>
-          </el-form-item>
-          <el-form-item label="布局">
+          </SettingRow>
+          <SettingRow label="布局" tip="插件可贡献自定义布局" tip-after>
             <el-select
               :model-value="settingsStore.settings.layout"
               placeholder="选择布局"
@@ -37,19 +77,22 @@
                 :value="l.id"
               />
             </el-select>
-            <span class="form-tip" style="margin-left: 12px">插件可贡献自定义布局</span>
-          </el-form-item>
-          <el-form-item label="默认平台">
+          </SettingRow>
+          <SettingRow label="默认平台">
             <el-select v-model="defaultPlatformId" placeholder="选择默认平台" style="width: 280px" clearable @change="onPlatformChange">
               <el-option v-for="p in platformStore.platforms" :key="p.id" :label="p.name" :value="p.id" />
             </el-select>
-          </el-form-item>
-          <el-form-item label="默认模型">
+          </SettingRow>
+          <SettingRow label="默认模型">
             <el-select v-model="defaultModelId" placeholder="选择默认模型" style="width: 280px" clearable :disabled="!defaultPlatformId">
               <el-option v-for="m in availableDefaultModels" :key="m.id" :label="m.alias || m.modelId" :value="m.id" />
             </el-select>
-          </el-form-item>
-          <el-form-item label="记忆抽取模型">
+          </SettingRow>
+          <SettingRow
+            label="记忆抽取模型"
+            tip="留空则自动跟随全局默认模型（如 agnes 3.0 Flash，支持视觉），不可用时才回退本地小模型"
+            tip-after
+          >
             <div style="display:flex;gap:8px;align-items:center">
               <el-select v-model="memoryExtractPlatformId" placeholder="抽取模型平台" style="width:140px" clearable @change="onMemoryExtractPlatformChange">
                 <el-option v-for="p in platformStore.platforms" :key="p.id" :label="p.name" :value="p.id" />
@@ -57,20 +100,17 @@
               <el-select v-model="memoryExtractModelId" placeholder="抽取模型" style="width:140px" clearable :disabled="!memoryExtractPlatformId">
                 <el-option v-for="m in availableMemoryExtractModels" :key="m.id" :label="m.alias || m.modelId" :value="m.id" />
               </el-select>
-              <span class="form-tip">留空则自动跟随全局默认模型（如 agnes 3.0 Flash，支持视觉），不可用时才回退本地小模型</span>
             </div>
-          </el-form-item>
-          <el-form-item label="启用上下文压缩">
+          </SettingRow>
+          <SettingRow label="启用上下文压缩" tip="超长任务时自动摘要压缩" tip-after>
             <el-switch v-model="enableCompression" />
-            <span class="form-tip" style="margin-left: 12px">超长任务时自动摘要压缩</span>
-          </el-form-item>
-          <el-form-item label="上下文保留条数">
+          </SettingRow>
+          <SettingRow label="上下文保留条数" tip="触发压缩时保留的最近消息条数" tip-after>
             <el-input-number v-model="keepRecent" :min="2" :max="50" />
-            <span class="form-tip" style="margin-left: 12px">触发压缩时保留的最近消息条数</span>
-          </el-form-item>
+          </SettingRow>
           <!-- 压缩触发阈值已移除：是否压缩由所选模型的上下文窗口配置自动决定 -->
           <!-- 桌面端专属：截图全局快捷键（web / 移动端无本地截图能力，自动隐藏） -->
-          <el-form-item v-if="canScreenshot" label="截图快捷键">
+          <SettingRow v-if="canScreenshot" label="截图快捷键">
             <el-input
               :model-value="shotAccelDisplay"
               readonly
@@ -78,17 +118,22 @@
               style="width: 210px"
               @keydown.capture.prevent="onShotAccelKeyDown"
             />
-            <div style="display: inline-flex; gap: 8px; margin-left: 8px">
+            <div style="display: inline-flex; gap: 8px">
               <el-button size="small" @click="resetShotAccel">恢复默认</el-button>
               <el-button size="small" :disabled="!shotAccel" @click="clearShotAccel">禁用</el-button>
             </div>
-          </el-form-item>
+          </SettingRow>
           <!-- 桌面端专属：截图时是否隐藏本应用窗口（想截自己界面时关掉） -->
-          <el-form-item v-if="canScreenshot" label="截图隐藏本应用">
+          <SettingRow v-if="canScreenshot" label="截图隐藏本应用">
             <el-switch v-model="screenshotHideApp" />
-          </el-form-item>
+          </SettingRow>
           <!-- 移动端专属：远程后端地址（连自建节点；不配则走 APK 内嵌本地后端） -->
-          <el-form-item v-if="isCapacitor" label="后端服务地址">
+          <SettingRow
+            v-if="isCapacitor"
+            label="后端服务地址"
+            :tip="`当前生效：${API_BASE}。保存后自动重载一次；重载前已建立的流式连接需重开会话。`"
+            tip-after
+          >
             <el-input
               v-model="mobileApiBaseInput"
               placeholder="https://your-node.example.com（留空用内嵌本地后端）"
@@ -98,11 +143,10 @@
               <el-button size="small" type="primary" @click="saveMobileApiBase">保存并重载</el-button>
               <el-button size="small" :disabled="!getMobileApiBase()" @click="clearMobileApiBase">恢复内嵌后端</el-button>
             </div>
-            <span class="form-tip" style="margin-left: 12px">当前生效：{{ API_BASE }}。保存后自动重载一次；重载前已建立的流式连接需重开会话。</span>
-          </el-form-item>
-        </el-form>
+          </SettingRow>
+        </div>
       </el-tab-pane>
-      <el-tab-pane label="皮肤" name="skin">
+      <el-tab-pane label="皮肤" name="skin" lazy>
         <div class="skin-page">
           <div class="skin-page-tip">主题色与皮肤独立选择 —— 主题色决定按钮/链接/强调色，皮肤决定壁纸/玻璃/边框风格。可只选主题色（纯调色板），也可主题色 + 皮肤任意组合。</div>
 
@@ -181,7 +225,7 @@
           </div>
         </div>
       </el-tab-pane>
-      <el-tab-pane label="数据" name="data">
+      <el-tab-pane label="数据" name="data" lazy>
         <div class="data-section">
           <el-button @click="exportData" :icon="Download">导出全部数据</el-button>
           <el-button @click="triggerImport" :icon="Upload">导入备份数据</el-button>
@@ -189,41 +233,41 @@
           <el-button type="danger" @click="clearCache" :icon="Delete">清空缓存</el-button>
         </div>
       </el-tab-pane>
-      <el-tab-pane label="工具钩子" name="userhooks">
+      <el-tab-pane label="工具钩子" name="userhooks" lazy>
         <UserHooksPanel />
       </el-tab-pane>
-      <el-tab-pane v-if="!embedded" label="记忆管理" name="memory">
+      <!-- pane 模式（SettingsDialog 左导航直取分区）下，embedded 不再隐藏这三页：
+           弹窗分类「记忆管理 / 商城服务端 / 局域网」要靠它们渲染（Task 10.3） -->
+      <el-tab-pane v-if="!embedded || isPaneMode" label="记忆管理" name="memory" lazy>
         <MemoryManage />
       </el-tab-pane>
-      <el-tab-pane v-if="!embedded" label="商城服务端" name="marketplace">
-        <el-form label-width="160px" style="max-width: 600px">
-          <el-form-item label="启用商城服务端">
+      <el-tab-pane v-if="!embedded || isPaneMode" label="商城服务端" name="marketplace" lazy>
+        <div class="settings-form">
+          <SettingRow label="启用商城服务端" tip="开启后其他言智节点可连接本节点获取工具/Skill/智能体" tip-after>
             <el-switch v-model="mpEnabled" @change="onMpToggle" />
-            <span class="form-tip" style="margin-left: 12px">开启后其他言智节点可连接本节点获取工具/Skill/智能体</span>
-          </el-form-item>
-          <el-form-item label="连接地址">
+          </SettingRow>
+          <SettingRow label="连接地址">
             <div class="connect-url-box">
               <code>{{ connectUrl }}</code>
               <el-button size="small" text @click="copyUrl">复制</el-button>
             </div>
-          </el-form-item>
-          <el-form-item label="认证方式">
+          </SettingRow>
+          <SettingRow label="认证方式">
             <el-select v-model="mpAuthType" style="width: 200px" @change="onMpAuthChange">
               <el-option label="无认证" value="none" />
               <el-option label="Bearer Token" value="bearer" />
               <el-option label="API Key" value="api-key" />
             </el-select>
-          </el-form-item>
-          <el-form-item v-if="mpAuthType !== 'none'" label="凭证">
+          </SettingRow>
+          <SettingRow v-if="mpAuthType !== 'none'" label="凭证">
             <el-input v-model="mpAuthValue" :placeholder="mpAuthType === 'bearer' ? '输入 Token' : '输入 API Key'" style="width: 280px" @blur="onMpAuthChange" />
-          </el-form-item>
-          <el-form-item label="端口">
+          </SettingRow>
+          <SettingRow label="端口" tip="默认 3001" tip-after>
             <el-input-number v-model="mpPort" :min="1024" :max="65535" style="width: 180px" @change="onMpPortChange" />
-            <span class="form-tip" style="margin-left: 8px">默认 3001</span>
-          </el-form-item>
-        </el-form>
+          </SettingRow>
+        </div>
       </el-tab-pane>
-      <el-tab-pane v-if="!embedded" label="局域网访问" name="lan">
+      <el-tab-pane v-if="!embedded || isPaneMode" label="局域网访问" name="lan" lazy>
         <div class="lan-section">
           <p class="lan-tip">局域网内其他设备（手机 / 电脑）可用浏览器访问本节点的 Web 界面，数据与本机共享同一后端。</p>
           <div v-if="lanIps.length === 0 && !lanLoading" class="lan-empty">未检测到局域网 IP（可能未连接网络）</div>
@@ -263,15 +307,15 @@
           </div>
         </div>
       </el-tab-pane>
-      <el-tab-pane label="语音包" name="voicepack">
+      <el-tab-pane label="语音包" name="voicepack" lazy>
         <VoicePackPanel />
       </el-tab-pane>
-      <el-tab-pane label="日志" name="logs">
+      <el-tab-pane label="日志" name="logs" lazy>
         <div class="logs-tab-embed">
           <LlmLogs />
         </div>
       </el-tab-pane>
-      <el-tab-pane label="关于" name="about">
+      <el-tab-pane label="关于" name="about" lazy>
         <div class="about-section">
           <h3>言智 (Yan-Zhi)</h3>
           <p>版本：v0.1.0 (MVP)</p>
@@ -281,19 +325,40 @@
           <p class="about-tip">开源协议：Apache-2.0</p>
         </div>
       </el-tab-pane>
-    </el-tabs>
-  </div>
+      </el-tabs>
+    </template>
+  </MobilePageShell>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue';
-const props = withDefaults(defineProps<{ embedded?: boolean }>(), { embedded: false });
+import { ref, computed, onMounted, watch, type Component } from 'vue';
+const props = withDefaults(defineProps<{ embedded?: boolean; pane?: string }>(), { embedded: false, pane: '' });
 const embedded = computed(() => props.embedded);
-import { Download, Delete, Upload } from '@element-plus/icons-vue';
+/**
+ * pane 模式（Task 10.3）：SettingsDialog 左侧分类导航直取单个分区时传入，
+ * 本组件隐藏自身 el-tabs 头、只渲染对应 pane（el-tab-pane lazy 保证未访问分区不挂载）。
+ * /settings 路由页与 SettingsDrawer 的 embedded 用法不受影响（pane 为空）。
+ */
+const isPaneMode = computed(() => !!props.pane);
+import { Download, Delete, Upload, Sunny, Moon, ArrowRight, Setting, Brush, DataLine, MagicStick, Link, InfoFilled } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { useSettingsStore, usePlatformStore } from '../stores';
 import { usePluginStore } from '../stores/plugin';
 import { useToolsStore } from '../stores/tools';
+import MobilePageShell from '../components/common/MobilePageShell.vue';
+import SettingRow from '../components/common/SettingRow.vue';
+import { useMobileShell } from '../composables/useMobileShell';
+
+/** 四段式骨架头仅在「移动外壳 + /settings 独立路由页」渲染：
+ *  抽屉内嵌（embedded）与设置弹窗 pane 用法保持原布局，桌面端完全不变 */
+const isMobileShellSettings = useMobileShell();
+const pageShell = computed(() => isMobileShellSettings.value && !props.embedded && !props.pane);
+/** 骨架头上的主题快捷切换（顶栏被骨架页替代后的补位入口），并同步本地开关 ref 防 UI 漂移 */
+function toggleThemeQuick() {
+  const next = !settingsStore.settings.darkMode;
+  darkMode.value = next;
+  settingsStore.update({ darkMode: next });
+}
 import type { ThemeName } from '../stores/settings';
 import { api, API_BASE, isCapacitor, getMobileApiBase, setMobileApiBase } from '../api/client';
 import MemoryManage from '../components/memory/MemoryManage.vue';
@@ -306,6 +371,42 @@ const platformStore = usePlatformStore();
 const pluginStore = usePluginStore();
 const toolsStore = useToolsStore();
 const tab = ref('general');
+
+// pane 模式：外部（SettingsDialog 左导航）切换分类 → 同步内部 el-tabs（isPaneMode 声明在上方）
+watch(
+  () => props.pane,
+  (p) => { if (p) tab.value = p; },
+);
+
+// ===== 移动端四段式层级导航（spec「设置页双端布局」）：首层分组入口 → 二级全屏子页 =====
+// 仅移动外壳 + /settings 独立路由页（pageShell）生效；桌面 / Web / 抽屉·弹窗内嵌不走该分支。
+// 分组把现有 10 个 tab 聚合为 6 个入口行；二级子页复用 pane 直取机制（v-model=tab + lazy pane），
+// 多 tab 分组在子页顶部给一排页内子分段。返回键经 MobilePageShell.backHandler 先退回首层而非离开路由。
+interface SettingsGroupTab { name: string; label: string }
+interface SettingsGroup { key: string; label: string; desc: string; icon: Component; tabs: SettingsGroupTab[] }
+const mobileGroups: SettingsGroup[] = [
+  { key: 'general', label: '通用设置', desc: '深色模式 · 布局 · 默认模型 · 上下文压缩', icon: Setting, tabs: [{ name: 'general', label: '通用' }] },
+  { key: 'skin', label: '外观皮肤', desc: '主题色 · 内置系列皮肤 · 插件皮肤包', icon: Brush, tabs: [{ name: 'skin', label: '皮肤' }] },
+  { key: 'data', label: '数据与日志', desc: '导出 / 导入备份 · 清空缓存 · LLM 日志', icon: DataLine, tabs: [{ name: 'data', label: '数据' }, { name: 'logs', label: '日志' }] },
+  { key: 'hooks', label: '工具与钩子', desc: '自定义工具钩子 · 记忆管理', icon: MagicStick, tabs: [{ name: 'userhooks', label: '钩子' }, { name: 'memory', label: '记忆' }] },
+  { key: 'service', label: '服务与连接', desc: '商城服务端 · 局域网访问 · 语音包', icon: Link, tabs: [{ name: 'marketplace', label: '商城' }, { name: 'lan', label: '局域网' }, { name: 'voicepack', label: '语音包' }] },
+  { key: 'about', label: '关于', desc: '版本 · 开源信息', icon: InfoFilled, tabs: [{ name: 'about', label: '关于' }] },
+];
+const mobileGroup = ref<SettingsGroup | null>(null);
+/** 页面头标题：二级子页显示分组名，首层与桌面显示「设置」 */
+const shellTitle = computed(() => (pageShell.value && mobileGroup.value ? mobileGroup.value.label : '设置'));
+/** 二级子页的返回：先退回首层分组（页内层级），不离开 /settings；首层不传 → MobilePageShell 默认路由回退 */
+const mobileBackHandler = computed(() => (pageShell.value && mobileGroup.value ? exitMobileGroup : undefined));
+function enterMobileGroup(g: SettingsGroup) {
+  mobileGroup.value = g;
+  tab.value = g.tabs[0].name;
+}
+function exitMobileGroup() {
+  mobileGroup.value = null;
+  tab.value = 'general';
+}
+// 移动外壳 → 桌面/宽视口（窗口拉宽等）时清掉页内层级态，避免桌面 el-tabs 头被 is-pane 吞掉
+watch(pageShell, (v) => { if (!v) { mobileGroup.value = null; tab.value = 'general'; } });
 
 const fileInput = ref<HTMLInputElement | null>(null);
 
@@ -611,7 +712,7 @@ async function importData(e: Event) {
     await ElMessageBox.confirm(
       `将导入 ${Object.keys(backup.data).length} 张表的数据（备份于 ${backup.exportedAt || '未知时间'}），现有数据将被覆盖，确认？`,
       '导入确认',
-      { type: 'warning' },
+      { type: 'warning', confirmButtonClass: 'yz-confirm-danger' },
     );
     // 表名/列名白名单校验：只允许合法 SQL 标识符，防注入
     const identRe = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
@@ -643,7 +744,7 @@ async function importData(e: Event) {
 
 async function clearCache() {
   try {
-    await ElMessageBox.confirm('清空缓存会删除所有任务和消息（保留平台/模型/MCP/Skill 配置），确认？', '危险操作', { type: 'warning' });
+    await ElMessageBox.confirm('清空缓存会删除所有任务和消息（保留平台/模型/MCP/Skill 配置），确认？', '危险操作', { type: 'warning', confirmButtonClass: 'yz-confirm-danger' });
     await api.delete('/conversations/clear');
     ElMessage.success('已清空');
   } catch {}
@@ -778,29 +879,109 @@ onMounted(async () => {
 /* .page / .page-title come from App.vue global */
 .page-title { margin-bottom: 24px; }
 .glass-tabs { background: var(--glass-bg); backdrop-filter: var(--glass-filter); border-radius: var(--radius-md); padding: 16px; }
+/* pane 模式（SettingsDialog 内嵌，Task 10.3）：tab 头由弹窗左侧分类导航承担，隐藏自身 tab 条 */
+.glass-tabs.is-pane :deep(.el-tabs__header) { display: none; }
+
+/* ===== 移动端首层分组入口列表 + 二级子页（spec「设置页双端布局」） =====
+   仅移动外壳分支渲染这些类；行高 ≥44px 触控标准，样式全部走 token。 */
+.settings-group-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.settings-group-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 56px;
+  padding: 10px 14px;
+  border: 1px solid var(--glass-border);
+  border-radius: 12px;
+  background: var(--glass-bg);
+  backdrop-filter: var(--glass-filter);
+  color: var(--color-text);
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.15s, border-color 0.15s;
+}
+.settings-group-row:active { background: var(--glass-bg-hover); }
+.settings-group-icon {
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  color: var(--color-primary);
+  background: color-mix(in srgb, var(--color-primary) 12%, transparent);
+}
+.settings-group-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.settings-group-name { font-size: 14px; font-weight: 600; }
+.settings-group-desc {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.settings-group-arrow { flex-shrink: 0; color: var(--color-text-secondary); }
+
+/* 二级子页内多 tab 分组的页内子分段 */
+.mobile-sub-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.mobile-sub-tab {
+  min-height: 36px;
+  padding: 0 16px;
+  border: 1px solid var(--glass-border);
+  border-radius: 18px;
+  background: var(--glass-bg);
+  color: var(--color-text-secondary);
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.mobile-sub-tab.active {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+  background: color-mix(in srgb, var(--color-primary) 10%, transparent);
+}
 
 @media (max-width: 767px) {
   .page-title { font-size: 18px; margin-bottom: 16px; }
   .glass-tabs { padding: 12px; }
   .glass-tabs :deep(.el-tabs__header) { margin-bottom: 12px; }
-  .glass-tabs :deep(.el-tabs__nav-wrap::after) { display: none; }
-  /* ★ 窄屏 tab 一共 9 项（通用/皮肤/数据/记忆/商城/局域网/语音包/日志/关于），
-     640px 就溢出、400px 全部溢出。Element 默认 nav-scroll 是 overflow:hidden +
-     只在 hover 时出现箭头 → 触屏上等于够不着后面的 tab。
-     让 nav-scroll 自己横向滚动（必须在 nav-wrap 的 overflow:hidden 内，
-     若把 nav-wrap 改成 visible，nav-scroll 会失去宽度约束、照旧撑破）。 */
-  .glass-tabs :deep(.el-tabs__nav-scroll) {
-    overflow-x: auto; overflow-y: hidden;
-    -webkit-overflow-scrolling: touch;
-    scrollbar-width: none;
+  /* ★ Task 10.4：窄屏 tab 由「横向滚动」改「多行平铺列表」——
+     10 个 tab 横排必溢出，藏进横向滚动在触屏上等于不可发现（无箭头提示）。
+     直接换行平铺：全部分区入口一眼可见，行高提到 44px 触控标准。
+     滚动箭头/位移与激活下划线在换行布局下语义失效，一并停用。 */
+  .glass-tabs :deep(.el-tabs__nav-wrap)::after { display: none; }
+  .glass-tabs :deep(.el-tabs__nav-scroll) { overflow: visible; }
+  .glass-tabs :deep(.el-tabs__nav) {
+    flex-wrap: wrap;
+    transform: none !important;
   }
-  .glass-tabs :deep(.el-tabs__nav-scroll::-webkit-scrollbar) { display: none; }
-  .glass-tabs :deep(.el-tabs__nav) { flex-wrap: nowrap; }
   .glass-tabs :deep(.el-tabs__nav-prev),
   .glass-tabs :deep(.el-tabs__nav-next) { display: none; }
-  .glass-tabs :deep(.el-tabs__item) { white-space: nowrap; }
-  .el-form { max-width: 100% !important; }
-  .el-form-item { margin-bottom: 14px; }
+  .glass-tabs :deep(.el-tabs__active-bar) { display: none; }
+  .glass-tabs :deep(.el-tabs__item) {
+    height: 44px; line-height: 44px;
+    padding: 0 14px;
+    white-space: nowrap;
+  }
+  .settings-form { max-width: 100% !important; }
+  .settings-form :deep(.setting-row) { margin-bottom: 14px; }
   .data-section { flex-wrap: wrap; gap: 8px; }
   .data-section .el-button:nth-child(1),
   .data-section .el-button:nth-child(2) { flex: 1 1 calc(50% - 4px); min-width: 0; white-space: nowrap; }
@@ -861,9 +1042,8 @@ onMounted(async () => {
   color: var(--color-text-secondary); font-size: 14px; font-weight: 600;
 }
 
-.form-tip { font-size: 12px; color: var(--color-text-secondary); }
-
 .data-section { display: flex; gap: 12px; }
+.settings-form { max-width: 600px; }
 .lan-section { max-width: 600px; }
 .lan-tip { color: var(--color-text-secondary); font-size: 13px; margin-bottom: 16px; }
 .lan-empty { color: var(--color-text-secondary); font-size: 13px; padding: 16px 0; }

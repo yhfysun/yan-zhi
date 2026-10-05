@@ -4,7 +4,8 @@
     :title="titleText"
     :width="width"
     :top="top"
-    :class="dialogClass"
+    :class="resolvedDialogClass"
+    :append-to-body="appendToBody"
     :close-on-click-modal="false"
     destroy-on-close
     :before-close="handleBeforeClose"
@@ -12,7 +13,13 @@
   >
     <!-- bodyClass：把设计令牌作用域带进 teleport 出去的弹窗（如 dw-root），
          否则 .dw-root .ds-* 这类选择器在弹窗内全部失效 -->
-    <div :class="bodyClass"><slot /></div>
+    <div :class="bodyClass">
+      <!-- 错误提示条：error prop 直接渲染；也可用 #error 插槽自定义 -->
+      <slot name="error">
+        <div v-if="error" class="fd-error" role="alert">{{ error }}</div>
+      </slot>
+      <slot />
+    </div>
 
     <template #footer>
       <div class="fd-footer" :class="bodyClass">
@@ -41,6 +48,10 @@ const props = withDefaults(
     titleEdit?: string;
     width?: string;
     top?: string;
+    /** 弹窗插入 body（嵌套弹窗/在 overflow 容器内时需要） */
+    appendToBody?: boolean;
+    /** 错误提示条文案：非空时在表单顶部渲染红色警示条 */
+    error?: string;
     confirmText?: string;
     cancelText?: string;
     /** 保存中：禁用取消 + 主按钮转圈 */
@@ -57,6 +68,8 @@ const props = withDefaults(
     titleEdit: '编辑',
     width: '640px',
     top: '10vh',
+    appendToBody: false,
+    error: '',
     confirmText: '保存',
     cancelText: '取消',
     loading: false,
@@ -78,6 +91,14 @@ const visible = computed({
 });
 
 const titleText = computed(() => props.title || (props.isEdit ? props.titleEdit : props.titleCreate));
+
+/** 窄弹窗（≤520px）：自动加 el-dialog--sm，让 overlay.css 的紧凑留白/小标题生效（仅识别 px 宽度） */
+const NARROW_MAX = 520;
+const resolvedDialogClass = computed(() => {
+  const m = /^(\d+)px$/.exec(props.width?.trim() || '');
+  const narrow = !!m && Number(m[1]) <= NARROW_MAX;
+  return [narrow ? 'el-dialog--sm' : '', props.dialogClass].filter(Boolean).join(' ');
+});
 
 const GUARD_TEXT = '有未保存的修改，关闭后将会丢失。';
 
@@ -117,5 +138,16 @@ function handleBeforeClose(done: () => void) {
 }
 .fd-spacer {
   flex: 1;
+}
+.fd-error {
+  margin-bottom: 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--el-color-danger-light-5, rgba(239, 68, 68, 0.35));
+  border-radius: 8px;
+  background: var(--el-color-danger-light-9, rgba(239, 68, 68, 0.08));
+  color: var(--el-color-danger);
+  font-size: 13px;
+  line-height: 1.5;
+  word-break: break-word;
 }
 </style>

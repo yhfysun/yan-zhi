@@ -358,7 +358,7 @@ async function removeDs(ds: DataSourceInfo) {
     await ElMessageBox.confirm(
       `删除数据源「${ds.name}」？已挂载它的本体与智能体将失去数据来源。`,
       '删除数据源',
-      { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' },
+      { type: 'warning', confirmButtonClass: 'yz-confirm-danger', confirmButtonText: '删除', cancelButtonText: '取消' },
     );
   } catch {
     return;

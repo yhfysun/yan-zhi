@@ -9,104 +9,98 @@
       <!-- ===== Tab 1：内置工具 ===== -->
       <el-tab-pane label="内置工具" name="builtin">
         <div class="tab-toolbar">
-          <div class="tab-search-wrap">
-            <el-icon class="tab-search-icon"><Search /></el-icon>
-            <input v-model="searchBuiltin" placeholder="搜索名称或描述…" class="tab-search-input" />
-            <el-icon v-if="searchBuiltin" class="tab-search-clear" @click="searchBuiltin = ''"><Close /></el-icon>
-          </div>
-          <div class="tab-toolbar-right">
-            <el-select v-model="builtinCatFilter" size="default" class="cat-select" placeholder="全部分类">
-              <el-option label="全部分类" value="all" />
-              <el-option
-                v-for="g in toolsStore.builtinToolGroups"
-                :key="g.key"
-                :label="`${g.label}（${g.tools.length}）`"
-                :value="g.key"
-              />
-            </el-select>
-            <div class="tab-toolbar-meta">
-              <el-tag size="small" type="info" effect="plain">共 {{ builtinFilteredAll.length }} 个</el-tag>
-            </div>
-          </div>
+          <SearchToolbar v-model:query="searchBuiltin" placeholder="搜索名称或描述…" :count="builtinFilteredAll.length">
+            <template #actions>
+              <el-select v-model="builtinCatFilter" size="default" class="yz-cat-select" placeholder="全部分类">
+                <el-option label="全部分类" value="all" />
+                <el-option
+                  v-for="g in toolsStore.builtinToolGroups"
+                  :key="g.key"
+                  :label="`${g.label}（${g.tools.length}）`"
+                  :value="g.key"
+                />
+              </el-select>
+            </template>
+          </SearchToolbar>
         </div>
 
         <el-empty v-if="toolsStore.builtinTools.length === 0" description="暂无内置工具" :image-size="60" />
         <el-empty v-else-if="builtinGroupsFiltered.length === 0" :description="emptyDesc(searchBuiltin, '内置工具')" :image-size="60" />
-        <div v-for="g in builtinGroupsFiltered" :key="g.key" class="builtin-cat">
-          <span
-            class="cat-tag"
-            :class="{ collapsed: builtinCollapsed[g.key] }"
-            @click="toggleBuiltinCat(g.key)"
-          ><el-icon class="cat-tag-arrow"><ArrowRight v-if="builtinCollapsed[g.key]" /><ArrowDown v-else /></el-icon>{{ g.label }}<em>{{ g.tools.length }}</em></span>
-          <div v-show="!builtinCollapsed[g.key]" class="card-grid">
-            <div
+        <CollapsibleCategory
+          v-for="g in builtinGroupsFiltered"
+          :key="g.key"
+          :label="g.label"
+          :count="g.tools.length"
+          :collapsed="!!builtinCollapsed[g.key]"
+          @update:collapsed="toggleBuiltinCat(g.key)"
+        >
+          <CardGrid>
+            <GlassCard
               v-for="t in g.tools"
               :key="t.name"
-              class="tool-card"
-              :title="'查看 ' + t.name + ' 的参数详情'"
+              :title="t.name"
+              :tooltip="'查看 ' + t.name + ' 的参数详情'"
+              :description="t.description"
               @click="openSchemaDetail({ kind: '内置工具', name: t.name, description: t.description, inputSchema: t.inputSchema, outputSchema: t.outputSchema })"
             >
-              <div class="tool-card-header">
-                <span class="tool-card-name">{{ t.name }}</span>
+              <template #badge>
                 <el-tag size="small" type="info" effect="plain">内置</el-tag>
-              </div>
-              <p class="tool-card-desc" :title="t.description">{{ t.description }}</p>
-              <div class="tool-card-foot">
+              </template>
+              <template #foot>
                 <span class="stat hint">点击查看入参/出参</span>
-                <div class="card-actions" @click.stop>
-                  <el-button size="small" link type="primary" @click="openBuiltinRunner(t)">测试</el-button>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
+              </template>
+              <template #actions>
+                <el-button size="small" link type="primary" @click="openBuiltinRunner(t)">测试</el-button>
+              </template>
+            </GlassCard>
+          </CardGrid>
+        </CollapsibleCategory>
       </el-tab-pane>
 
       <!-- ===== Tab 2：自定义工具 ===== -->
       <el-tab-pane label="自定义工具" name="custom">
         <div class="tab-toolbar">
-          <div class="tab-search-wrap">
-            <el-icon class="tab-search-icon"><Search /></el-icon>
-            <input v-model="searchCustom" placeholder="搜索名称或描述…" class="tab-search-input" />
-            <el-icon v-if="searchCustom" class="tab-search-clear" @click="searchCustom = ''"><Close /></el-icon>
-          </div>
-          <div class="tab-toolbar-right">
-            <el-select v-model="customCatFilter" size="default" class="cat-select" placeholder="全部分类">
-              <el-option label="全部分类" value="all" />
-              <el-option v-for="c in customCatOptions" :key="c.key" :label="c.label" :value="c.key" />
-            </el-select>
-            <el-button type="primary" :icon="Plus" @click="openEditor(null)" class="fab-add">新增工具</el-button>
-          </div>
+          <SearchToolbar v-model:query="searchCustom" placeholder="搜索名称或描述…">
+            <template #actions>
+              <el-select v-model="customCatFilter" size="default" class="yz-cat-select" placeholder="全部分类">
+                <el-option label="全部分类" value="all" />
+                <el-option v-for="c in customCatOptions" :key="c.key" :label="c.label" :value="c.key" />
+              </el-select>
+              <el-button type="primary" :icon="Plus" @click="openEditor(null)" class="fab-add">新增工具</el-button>
+            </template>
+          </SearchToolbar>
         </div>
 
         <el-empty v-if="toolsStore.customTools.length === 0" description="暂无自定义工具，点击「新增工具」创建" :image-size="60" />
         <el-empty v-else-if="customGroupsFiltered.length === 0" :description="emptyDesc(searchCustom, '工具')" :image-size="60" />
-        <div v-for="g in customGroupsFiltered" :key="g.category" class="builtin-cat">
-          <span
-            class="cat-tag"
-            :class="{ collapsed: customCollapsed[g.category] }"
-            @click="toggleCustomCat(g.category)"
-          ><el-icon class="cat-tag-arrow"><ArrowRight v-if="customCollapsed[g.category]" /><ArrowDown v-else /></el-icon>{{ g.category }}<em>{{ g.tools.length }}</em></span>
-          <div v-show="!customCollapsed[g.category]" class="card-grid">
-          <div
-            v-for="t in g.tools"
-            :key="t.id"
-            class="tool-card"
-            :class="{ disabled: !t.enabled }"
-            :title="'查看 ' + t.name + ' 的参数详情'"
-            @click="openSchemaDetail({ kind: t.source === 'remote' ? '远程工具' : '自定义工具', name: t.name, description: t.description || '无描述', inputSchema: t.inputSchema, outputSchema: t.outputSchema, meta: `${t.runtime} · ${t.timeout}ms` })"
-          >
-            <div class="tool-card-header">
-              <span class="tool-card-name">{{ t.name }}</span>
-              <el-tag size="small" :type="t.source === 'remote' ? 'primary' : 'success'" effect="plain">
-                {{ t.source === 'remote' ? '远程' : '本地' }}
-              </el-tag>
-              <el-tag v-if="t.isPublic" size="small" type="primary" effect="plain">已公开</el-tag>
-            </div>
-            <p class="tool-card-desc" :title="t.description || '无描述'">{{ t.description || '无描述' }}</p>
-            <div class="tool-card-foot">
-              <span class="stat">{{ t.runtime }} · {{ t.timeout }}ms</span>
-              <div class="card-actions" @click.stop>
+        <CollapsibleCategory
+          v-for="g in customGroupsFiltered"
+          :key="g.category"
+          :label="g.category"
+          :count="g.tools.length"
+          :collapsed="!!customCollapsed[g.category]"
+          @update:collapsed="toggleCustomCat(g.category)"
+        >
+          <CardGrid>
+            <GlassCard
+              v-for="t in g.tools"
+              :key="t.id"
+              :title="t.name"
+              :tooltip="'查看 ' + t.name + ' 的参数详情'"
+              :description="t.description || '无描述'"
+              :disabled="!t.enabled"
+              @click="openSchemaDetail({ kind: t.source === 'remote' ? '远程工具' : '自定义工具', name: t.name, description: t.description || '无描述', inputSchema: t.inputSchema, outputSchema: t.outputSchema, meta: `${t.runtime} · ${t.timeout}ms` })"
+            >
+              <template #badge>
+                <el-tag size="small" :type="t.source === 'remote' ? 'primary' : 'success'" effect="plain">
+                  {{ t.source === 'remote' ? '远程' : '本地' }}
+                </el-tag>
+                <el-tag v-if="t.isPublic" size="small" type="primary" effect="plain">已公开</el-tag>
+              </template>
+              <template #foot>
+                <span class="stat">{{ t.runtime }} · {{ t.timeout }}ms</span>
+              </template>
+              <template #actions>
                 <el-tooltip v-if="authStore.isLoggedIn" :content="t.isPublic ? '点击下架' : '发布到商城'" placement="top">
                   <el-switch
                     :model-value="!!t.isPublic"
@@ -122,11 +116,10 @@
                 <el-button size="small" link type="primary" :disabled="!t.enabled" @click="openRunner(t)">试运行</el-button>
                 <el-button size="small" link @click="openEditor(t)">编辑</el-button>
                 <el-button size="small" link type="danger" @click="delCustomTool(t.id)">删除</el-button>
-              </div>
-            </div>
-          </div>
-          </div>
-        </div>
+              </template>
+            </GlassCard>
+          </CardGrid>
+        </CollapsibleCategory>
       </el-tab-pane>
 
       <!-- ===== Tab 3：MCP 服务 ===== -->
@@ -139,17 +132,16 @@
         <!-- 顶层：远程源列表 -->
         <div v-if="activeSourceId === null">
           <div class="tab-toolbar">
-            <div class="tab-search-wrap">
-              <el-icon class="tab-search-icon"><Search /></el-icon>
-              <input v-model="searchRemoteSource" placeholder="搜索远程源名称或 URL…" class="tab-search-input" />
-              <el-icon v-if="searchRemoteSource" class="tab-search-clear" @click="searchRemoteSource = ''"><Close /></el-icon>
-            </div>
-            <el-button type="primary" :icon="Plus" @click="showSourceForm = true" class="fab-add">新增远程商城</el-button>
+            <SearchToolbar v-model:query="searchRemoteSource" placeholder="搜索远程源名称或 URL…">
+              <template #actions>
+                <el-button type="primary" :icon="Plus" @click="showSourceForm = true" class="fab-add">新增远程商城</el-button>
+              </template>
+            </SearchToolbar>
           </div>
 
           <el-empty v-if="toolsStore.remoteSources.length === 0" description="暂无远程商城，点击右上角按钮添加其他节点" :image-size="80" />
           <el-empty v-else-if="filteredRemoteSources.length === 0" :description="emptyDesc(searchRemoteSource, '远程源')" :image-size="80" />
-          <div v-else class="market-grid">
+          <CardGrid v-else :min-card-width="260" :gap="14">
             <div
               v-for="s in filteredRemoteSources"
               :key="s.id"
@@ -165,7 +157,7 @@
                 <div class="market-card-desc" :title="s.base_url">{{ s.base_url }}</div>
               </div>
             </div>
-          </div>
+          </CardGrid>
         </div>
 
         <!-- 钻入：远程源详情 -->
@@ -185,40 +177,32 @@
           </div>
 
           <div class="tab-toolbar tab-toolbar-inline">
-            <div class="tab-search-wrap">
-              <el-icon class="tab-search-icon"><Search /></el-icon>
-              <input v-model="searchRemoteTool" placeholder="在该远程源里搜索工具…" class="tab-search-input" />
-              <el-icon v-if="searchRemoteTool" class="tab-search-clear" @click="searchRemoteTool = ''"><Close /></el-icon>
-            </div>
-            <div class="tab-toolbar-meta">
-              <el-tag size="small" type="info" effect="plain">共 {{ filteredRemoteTools.length }} 个工具</el-tag>
-            </div>
+            <SearchToolbar v-model:query="searchRemoteTool" placeholder="在该远程源里搜索工具…" :count="filteredRemoteTools.length" />
           </div>
 
           <el-empty v-if="!remoteToolsLoaded" description="正在加载远程工具..." :image-size="60" />
           <el-empty v-else-if="!remoteTools.length" description="该远程源暂无公开的自定义工具" :image-size="60" />
           <el-empty v-else-if="filteredRemoteTools.length === 0" :description="emptyDesc(searchRemoteTool, '工具')" :image-size="60" />
-          <div v-else class="card-grid">
-            <div
+          <CardGrid v-else>
+            <GlassCard
               v-for="item in filteredRemoteTools"
               :key="item.id"
-              class="tool-card"
-              :title="'查看 ' + item.name + ' 的参数详情'"
+              :title="item.name"
+              :tooltip="'查看 ' + item.name + ' 的参数详情'"
+              :description="item.description || '无描述'"
               @click="openSchemaDetail({ kind: '远程工具', name: item.name, description: item.description || '无描述', inputSchema: item.inputSchema, outputSchema: item.outputSchema })"
             >
-              <div class="tool-card-header">
-                <span class="tool-card-name">{{ item.name }}</span>
+              <template #badge>
                 <el-tag size="small" type="primary" effect="plain">远程</el-tag>
-              </div>
-              <p class="tool-card-desc" :title="item.description || '无描述'">{{ item.description || '无描述' }}</p>
-              <div class="tool-card-foot">
+              </template>
+              <template #foot>
                 <span class="stat hint">点击查看入参/出参</span>
-                <div class="card-actions" @click.stop>
-                  <el-button size="small" type="primary" @click="installTool(item)">安装到本地</el-button>
-                </div>
-              </div>
-            </div>
-          </div>
+              </template>
+              <template #actions>
+                <el-button size="small" type="primary" @click="installTool(item)">安装到本地</el-button>
+              </template>
+            </GlassCard>
+          </CardGrid>
         </div>
       </el-tab-pane>
     </el-tabs>
@@ -356,16 +340,12 @@
           <span v-if="schemaDetail.isPublic" class="stat">已公开</span>
         </div>
         <p class="schema-detail-desc">{{ schemaDetail.description }}</p>
-        <div class="schema-detail-tabs">
-          <div class="schema-section">
-            <span class="schema-label">入参</span>
-            <pre class="schema-pre">{{ fmtSchema(schemaDetail.inputSchema) }}</pre>
-          </div>
-          <div class="schema-section">
-            <span class="schema-label">出参</span>
-            <pre class="schema-pre">{{ fmtSchema(schemaDetail.outputSchema) }}</pre>
-          </div>
-        </div>
+        <SchemaViewer
+          :sections="[
+            { label: '入参', text: fmtSchema(schemaDetail.inputSchema) },
+            { label: '出参', text: fmtSchema(schemaDetail.outputSchema) },
+          ]"
+        />
       </div>
       <template #footer>
         <el-button @click="showSchemaDetail = false">关闭</el-button>
@@ -379,12 +359,16 @@ import { ref, reactive, computed, onMounted } from 'vue';
 import { useRoute } from 'vue-router';
 import {
   Plus, ArrowLeft, Cloudy,
-  Search, Close, ArrowRight, ArrowDown,
 } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { useAuthStore } from '../stores';
 import { useToolsStore, type CustomToolItem, type BuiltinToolItem } from '../stores/tools';
 import McpPanel from '../components/McpPanel.vue';
+import SearchToolbar from '../components/common/SearchToolbar.vue';
+import GlassCard from '../components/common/GlassCard.vue';
+import CardGrid from '../components/common/CardGrid.vue';
+import CollapsibleCategory from '../components/common/CollapsibleCategory.vue';
+import SchemaViewer from '../components/common/SchemaViewer.vue';
 
 // ---- Tab 切换（支持 /mcp 重定向带来的 ?tab=mcp&focus=<id> 深链） ----
 const toolsStore = useToolsStore();
@@ -603,7 +587,7 @@ async function saveCustomTool() {
 
 async function delCustomTool(id: string) {
   try {
-    await ElMessageBox.confirm('删除该自定义工具？', '提示', { type: 'warning' });
+    await ElMessageBox.confirm('删除该自定义工具？', '提示', { type: 'warning', confirmButtonClass: 'yz-confirm-danger' });
     await toolsStore.deleteTool(id);
     ElMessage.success('已删除');
   } catch {}
@@ -737,7 +721,7 @@ async function testSource(id: string) {
 
 async function delSource(id: string) {
   try {
-    await ElMessageBox.confirm('删除该远程源？', '提示', { type: 'warning' });
+    await ElMessageBox.confirm('删除该远程源？', '提示', { type: 'warning', confirmButtonClass: 'yz-confirm-danger' });
     await toolsStore.deleteRemoteSource(id);
     activeSourceId.value = null;
     ElMessage.success('已删除');
@@ -762,38 +746,13 @@ async function installTool(item: any) {
   margin-bottom: 20px;
 }
 
-/* ---- tab 顶部工具栏（左搜索 / 右操作） ---- */
+/* ---- tab 顶部工具栏（左搜索 / 右操作：搜索框与 actions 均由 SearchToolbar 提供） ---- */
 .tab-toolbar {
   display: flex; align-items: center; justify-content: space-between;
   gap: 12px; margin-bottom: 16px;
 }
 .tab-toolbar-inline { margin-bottom: 14px; }
-.tab-toolbar-right { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
-.tab-toolbar-meta { color: var(--color-text-secondary); font-size: 12px; }
-.cat-select { width: 160px; }
-.tab-search-wrap {
-  position: relative; flex: 1; max-width: 480px;
-  display: flex; align-items: center;
-}
-.tab-search-icon {
-  position: absolute; left: 12px; top: 50%; transform: translateY(-50%);
-  color: var(--color-text-secondary); font-size: 14px; pointer-events: none;
-}
-.tab-search-input {
-  width: 100%; height: 36px; padding: 0 36px 0 34px;
-  border: 1px solid var(--glass-border); border-radius: 18px;
-  background: var(--glass-bg); backdrop-filter: var(--glass-filter);
-  -webkit-backdrop-filter: var(--glass-filter);
-  color: var(--color-text); font-size: 13px; outline: none;
-  transition: border-color 0.15s;
-}
-.tab-search-input:focus { border-color: var(--color-primary); }
-.tab-search-input::placeholder { color: var(--color-text-secondary); }
-.tab-search-clear {
-  position: absolute; right: 12px; top: 50%; transform: translateY(-50%);
-  color: var(--color-text-secondary); font-size: 14px; cursor: pointer;
-}
-.tab-search-clear:hover { color: var(--color-text); }
+/* 分类筛选下拉宽度由 .yz-cat-select 统一给定（styles/surface.css） */
 
 /* ---- 分区 ---- */
 .section { margin-bottom: 32px; }
@@ -804,70 +763,7 @@ async function installTool(item: any) {
   color: var(--color-text-secondary);
 }
 
-/* 分类标签：短小inline按钮，透明背景，旁边空白露背景，点击折叠/展开 */
-.builtin-cat { margin-bottom: 14px; }
-.cat-tag {
-  display: inline-flex; align-items: center; gap: 4px;
-  padding: 4px 12px; margin-bottom: 8px;
-  font-size: 13px; font-weight: 600; color: var(--color-text);
-  cursor: pointer; user-select: none;
-  background: transparent; border: 1px solid var(--color-border-light);
-  background-image: var(--skin-cat-tag-pattern, none); background-size: var(--skin-pattern-size, auto); background-repeat: var(--skin-pattern-repeat, repeat); background-position: center;
-  border-radius: 16px; transition: all 0.15s;
-}
-.cat-tag:hover { border-color: var(--color-primary); color: var(--color-primary); }
-.cat-tag.collapsed { opacity: 0.5; }
-.cat-tag-arrow { font-size: 12px; flex-shrink: 0; }
-.cat-tag em { font-style: normal; font-size: 11px; font-weight: 700; color: var(--color-text-secondary); }
-
-/* ---- 工具卡片（统一高度 + 描述截断）---- */
-.card-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-  gap: 12px;
-  /* 关键：默认 align-items:normal(=stretch) 会把同一行所有卡片撑到与最高的那张齐平，
-     于是展开「入参/出参」的那张一旦变高，同行未展开的卡片就被拉出一大片空白体，
-     观感非常怪异。改为 start —— 每张卡片保持自身内容高度，行内高低错落是正常的。 */
-  align-items: start;
-}
-.tool-card {
-  background: var(--glass-bg);
-  backdrop-filter: var(--glass-filter);
-  -webkit-backdrop-filter: var(--glass-filter);
-  border: 1px solid var(--glass-border);
-  border-radius: var(--radius-md);
-  padding: 16px;
-  transition: all 0.2s;
-  display: flex; flex-direction: column; gap: 8px;
-  /* 不再 height:100%（那是给 stretch 行准备的）；有图皮肤下 self-start 兜底 */
-  align-self: start;
-  /* ★ 网格子项默认 min-width:auto → 卡片内的长 tool id / 长描述会把列撑破
-     （实测 400px 下卡片右缘到 424px）。显式 min-width:0 才允许真收缩。 */
-  min-width: 0;
-}
-.tool-card:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 8px 25px rgba(0,0,0,0.06);
-  border-color: var(--glass-border-strong);
-}
-.tool-card.disabled { opacity: 0.5; }
-.tool-card-header { display: flex; align-items: center; gap: 6px; min-width: 0; }
-.tool-card-name { font-family: monospace; font-size: 13px; font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tool-card-desc {
-  font-size: 12px; color: var(--color-text-secondary); line-height: 1.5; margin: 0;
-  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
-  overflow: hidden; word-break: break-word;
-  max-height: 3em;
-}
-.tool-card-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: auto; }
-
 /* ---- 商城源卡片（远程源列表）---- */
-.market-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-  gap: 14px;
-  align-items: start;
-}
 .market-card {
   display: flex; align-items: center; gap: 12px;
   padding: 14px; border: 1px solid var(--glass-border);
@@ -908,10 +804,8 @@ async function installTool(item: any) {
 .sub-meta.url { font-family: monospace; }
 .sub-header-actions { display: flex; gap: 8px; }
 
-/* 入参/出参：点击卡片 → 弹窗展示（卡内不再有 schema 块） */
-.tool-card { cursor: pointer; }
-.stat.hint { opacity: 0.65; transition: opacity 0.15s; }
-.tool-card:hover .stat.hint { opacity: 1; color: var(--color-primary); }
+/* 入参/出参：点击卡片 → 弹窗展示（卡内不再有 schema 块）。
+   卡片底部的弱化提示（.hint）由 GlassCard 内置 hover 点亮。 */
 
 .schema-detail-head {
   display: flex; align-items: center; gap: 10px; margin-bottom: 8px;
@@ -920,27 +814,24 @@ async function installTool(item: any) {
   margin: 0 0 14px; font-size: 13px; line-height: 1.6;
   color: var(--color-text-secondary); word-break: break-word;
 }
-.schema-detail-tabs { display: flex; flex-direction: column; gap: 14px; }
-.schema-section { display: flex; flex-direction: column; gap: 6px; min-height: 0; }
+/* 弹窗内入参/出参由 SchemaViewer 渲染；以下仅保留试运行块还在用的 schema 文本样式 */
 .schema-label {
   font-size: 11px; font-weight: 600; color: var(--color-text);
   text-transform: uppercase; letter-spacing: 0.5px; opacity: 0.85;
 }
-/* 弹窗里的 schema 独立滚动，不挤压卡片布局 */
+/* 试运行结果/错误独立滚动 */
 .schema-pre {
   margin: 0; padding: 10px 12px; border-radius: 6px;
   background: rgba(0, 0, 0, 0.04); color: var(--color-text);
   font-family: "JetBrains Mono", "Cascadia Code", monospace; font-size: 12px;
   line-height: 1.55; max-height: 32vh; overflow: auto; white-space: pre-wrap; word-break: break-word;
 }
-/* 暗色主题下的默认底衬（schema 现已移到弹窗内）。
+/* 暗色主题下的默认底衬。
    ⚠️ 必须 :not([data-skin="on"])：` :root[data-theme="dark"] .schema-pre` 特指度 (0,2,0)
    会盖掉 skin.css 的 [data-skin="on"] .schema-pre (0,1,0)，且组件样式后加载 →
    皮肤下 pre 会回落到仅 6% 白的近乎透明底，压在壁纸弹窗图上 = 文字不可读。 */
 :root[data-theme="dark"]:not([data-skin="on"]) .schema-pre { background: rgba(255, 255, 255, 0.06); }
-:root[data-theme="dark"] .builtin-cat-count { background: rgba(255,255,255,0.08); }
 
-.card-actions { display: flex; gap: 4px; align-items: center; }
 .stat { font-size: 12px; color: var(--color-text-secondary); }
 
 .code-input textarea { font-family: "JetBrains Mono", "Cascadia Code", monospace; font-size: 13px; }
@@ -956,13 +847,10 @@ async function installTool(item: any) {
   .page-top { margin-bottom: 14px; }
   .page-title { font-size: 18px; }
   .tab-toolbar { flex-wrap: wrap; }
-  .tab-search-wrap { max-width: 100%; flex: 1 1 100%; }
   .sub-header { flex-wrap: wrap; gap: 10px; padding-bottom: 12px; }
   .sub-header-info { width: 100%; }
   .sub-header-actions { width: 100%; justify-content: flex-end; }
   .sub-title { font-size: 16px; }
-  .card-grid { grid-template-columns: 1fr; gap: 12px; }
-  .market-grid { grid-template-columns: 1fr; gap: 12px; }
   /* tab 条 5 项在窄屏溢出：Element 默认只在 hover 出箭头，触屏够不着 → nav-scroll 自己横向滚动。
      注意不要动 nav-wrap 的 overflow（它是 nav-scroll 的宽度约束来源，改成 visible 会照旧撑破）。 */
   .tl-tabs :deep(.el-tabs__nav-scroll) {
@@ -973,9 +861,8 @@ async function installTool(item: any) {
   .tl-tabs :deep(.el-tabs__nav-prev),
   .tl-tabs :deep(.el-tabs__nav-next) { display: none; }
   .tl-tabs :deep(.el-tabs__item) { white-space: nowrap; }
-  .tool-card { padding: 13px; }
-  /* 参数详情弹窗：窄屏占满宽度，schema 高度收紧 */
-  .schema-pre { max-height: 26vh; font-size: 11px; }
+  /* 参数详情弹窗：窄屏占满宽度，schema 高度收紧（弹窗内为 SchemaViewer） */
+  .schema-detail :deep(.sv-pre) { max-height: 26vh; font-size: 11px; }
 }
 /* 弹窗挂在 body 下（append-to-body），scoped 命中不到 → 用 :global 提宽度 */
 :global(.tm-solid-dialog .el-dialog__body) { padding-top: 8px; }

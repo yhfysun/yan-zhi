@@ -60,6 +60,17 @@
         </div>
       </div>
 
+      <!-- 7.3 任务运行中：输入区上方常驻一行运行指示 + 停止按钮。
+           步骤数来自 task_plan/task_step 登记的任务计划（有就显示 步骤 x/y，没有就转圈+文案）。
+           ★ 打断入口收敛：此处是唯一的「停止」，工具条发送键不再兼任停止（见下方发送按钮注释）。 -->
+      <div v-if="store.streaming" class="run-indicator">
+        <el-icon class="run-spinner is-loading"><Loading /></el-icon>
+        <span class="run-text">任务运行中<template v-if="planTotal"> · 步骤 {{ planDoneCount }}/{{ planTotal }}</template></span>
+        <button type="button" class="run-stop-btn" title="停止任务" @click="stopChat">
+          <span class="run-stop-square" aria-hidden="true"></span>停止
+        </button>
+      </div>
+
       <!-- 追加消息队列：任务运行中发送的消息堆叠在输入框上方。
            限高 + 可滚动，逐条可「立即发送 / 编辑 / 删除」；任务收尾后未发出的会自动补发。 -->
       <div v-if="queuedList.length > 0" class="queue-panel">
@@ -235,6 +246,16 @@
 
       <div class="input-toolbar">
         <div class="toolbar-left">
+          <!-- 6.1/6.2 上下文用量胶囊：常驻工具条左下（spec 场景「点击输入区左下角胶囊」）。
+               数据取自 useChat 的 tokenCount/tokenPercent（前端估算 + 有效窗口口径），
+               分段明细与压缩提示见 ContextUsagePill 组件内注释。 -->
+          <ContextUsagePill
+            :used-tokens="tokenCount"
+            :limit-tokens="contextLimit"
+            :declared-window="declaredContextWindow"
+            :percent="tokenPercent"
+            :compact-count="compactCount"
+          />
           <el-popover v-model:visible="plusOpen" placement="top-start" :width="264" trigger="click" :show-arrow="false" popper-class="plus-menu-popper">
             <template #reference>
               <el-button size="small" circle class="ctx-btn plus-btn" :class="{ 'is-active': plusOpen }">
@@ -384,6 +405,8 @@
               </Teleport>
             </div>
           </el-popover>
+          <!-- 7.1（2026-10-04 回退）：附件 / 技能 / MCP 不平铺，统一收在「+」菜单里，
+               避免工具条一排图标又挤又乱。需要直达时点「+」即可。 -->
           <!-- 截图按钮（对齐微信设计）：主体点击即框选；右侧小箭头下拉 =
                「截图时隐藏本应用窗口」勾选项 + 快捷键设置入口。tooltip 带快捷键。 -->
           <div v-if="canScreenshot" class="shot-btn-group">
@@ -473,31 +496,8 @@
         </div>
 
         <div class="toolbar-right">
-          <!-- 上下文用量环（2026-10-02）：
-               ★ 口径是**有效可用窗口**，不是模型标称窗口 —— 标称 1M 的模型在 ~256K 之后
-                 recall 明显退化（Chroma Context Rot / RULER / 社区甜点区）。若按标称算百分比，
-                 用户会看到"才 30% 还很空"的误导信息。
-               ★ 所以 tooltip 同时给出两个数：实际可用 vs 标称，让用户一眼看出差距。 -->
-          <el-tooltip placement="top" :show-arrow="false">
-            <template #content>
-              <div class="ctx-usage-tip">
-                <div class="ctx-usage-tip-title">上下文用量</div>
-                <div>已用约 {{ formatTokens(tokenCount) }} / {{ formatTokens(contextLimit) }}（{{ tokenPercent }}%）</div>
-                <div class="ctx-usage-tip-hint">模型标称窗口 {{ formatTokens(declaredContextWindow) }}，但有效区约 {{ formatTokens(contextLimit) }}</div>
-                <div class="ctx-usage-tip-hint">超出有效区后准确率会下降，较早历史将被自动摘要压缩</div>
-              </div>
-            </template>
-            <div class="ctx-usage-ring" :class="{ 'is-warn': tokenPercent >= 80, 'is-danger': tokenPercent >= 100 }">
-              <svg viewBox="0 0 36 36" class="ctx-usage-svg" aria-hidden="true">
-                <circle class="ctx-usage-track" cx="18" cy="18" r="15" />
-                <circle
-                  class="ctx-usage-bar"
-                  cx="18" cy="18" r="15"
-                  :style="{ stroke: tokenBarColor, strokeDasharray: `${(tokenPercent / 100) * 94.2} 94.2` }"
-                />
-              </svg>
-            </div>
-          </el-tooltip>
+          <!-- 上下文用量指示已收敛为工具条左下角的 ContextUsagePill 胶囊（Task 6）：
+               原 2026-10-02 的 18px 用量环（hover tooltip）删除，同一信息不摆两个入口。 -->
           <!-- 会话级工具权限：选择值持久化到 conversation.permission_mode，后端按此裁剪/拦截写类工具 -->
           <el-popover placement="top-end" :width="250" trigger="click" :show-arrow="false">
             <template #reference>
@@ -614,6 +614,13 @@
           <!-- 「新建任务」入口：用户 2026-08-21 明确要求移动端工具条保留它
                （此前一轮按「只留顶栏 + 侧栏」删掉了，本轮按新口径加回移动端）。
                ★ 只在移动端分支渲染：桌面端仍由顶栏 + 侧栏树承担，避免一排三个入口。 -->
+          <!-- 「新建任务」入口：移动端走下方 mobile-new-task-btn；桌面端在工具条同样给一个图标入口
+               （2026-10-04 用户要求输入框里要有新建任务图标）。 -->
+          <el-tooltip v-if="!isMobileShell" content="新建任务" placement="top">
+            <el-button size="small" circle class="ctx-btn" @click="startNewChat()">
+              <el-icon><FolderAdd /></el-icon>
+            </el-button>
+          </el-tooltip>
           <el-tooltip v-if="isMobileShell" content="新建任务" placement="top">
             <el-button size="small" circle class="mobile-new-task-btn" @click="startNewChat()">
               <!-- 用 FolderAdd 而非 EditPen/DocumentAdd：EditPen 是顶栏「新建任务」的图标，
@@ -622,10 +629,11 @@
               <el-icon><FolderAdd /></el-icon>
             </el-button>
           </el-tooltip>
-          <el-tooltip :content="store.streaming ? '停止任务' : '发送 (Enter)'" placement="top">
+          <!-- 7.3 打断入口收敛：停止键移到输入区上方「任务运行中」一行（见 .run-indicator），
+               此处恒为发送键 —— 运行中点击发送即入追加队列（原有行为），不再在两处各摆一个停止。 -->
+          <el-tooltip :content="store.streaming ? '发送（任务运行中将加入队列）' : '发送 (Enter)'" placement="top">
             <span>
-              <el-button v-if="!store.streaming" type="primary" :icon="Promotion" :disabled="(!input.trim() && uploadedFiles.length === 0 && quotedUrls.length === 0) || !selectedModelId" @click="send" circle class="send-btn" />
-              <el-button v-else type="danger" :icon="Close" @click="stopChat" circle class="send-btn stop-btn" />
+              <el-button type="primary" :icon="Promotion" :disabled="(!input.trim() && uploadedFiles.length === 0 && quotedUrls.length === 0) || !selectedModelId" @click="send" circle class="send-btn" />
             </span>
           </el-tooltip>
         </div>
@@ -701,13 +709,14 @@ import { api } from '../../api/client';
 import {
   FolderOpened, ArrowDown, ArrowRight, Connection, Files, UploadFilled, User, EditPen, Cpu, Setting, Plus, Camera,
   Promotion, Close, Lock, Check, Picture, Document, Tickets, Box, VideoCamera, Headset, Memo, ChatDotRound,
-  Operation, Search, Link, Delete, Clock, Tools, Coin, DocumentAdd, Aim, FolderAdd, CopyDocument, DocumentCopy,
+  Operation, Search, Link, Delete, Clock, Tools, Coin, DocumentAdd, Aim, FolderAdd, CopyDocument, DocumentCopy, Loading,
 } from '@element-plus/icons-vue';
 import { useChat } from '../../composables/chat/useChat';
 // ★ 移动端长按（触屏专属，内部只认 pointerType==='touch'，桌面端零影响）
 import { bindLongPress } from '../../composables/useLongPress';
 import AttachmentPreview from './AttachmentPreview.vue';
 import ModelContextPanel from './ModelContextPanel.vue';
+import ContextUsagePill from './ContextUsagePill.vue';
 import { useCodeStore } from '../../stores/code';
 import { useSettingsStore, usePlatformStore } from '../../stores';
 import { formatContextWindow } from '../../utils/context-window';
@@ -728,18 +737,21 @@ const {
   // 上下文用量（2026-10-02）：这几项此前已由 useChat 算好却无人消费 → 这里接上 UI。
   // ★ contextLimit 是**有效可用窗口**（有效比例折算），declaredContextWindow 才是模型标称值 ——
   //   两者都展示，否则用户按标称算会误以为"还有很大空间"。
-  tokenCount, contextLimit, tokenPercent, tokenBarColor, declaredContextWindow,
+  // ★ Task 6 起由工具条左下的 ContextUsagePill 胶囊承载（原右侧用量环已删）。
+  tokenCount, contextLimit, tokenPercent, declaredContextWindow, messageRounds,
 } = useChat();
 
-/** token 数格式化：>=1000 用 k，避免"1048576"这种长数字撑爆 tooltip */
-function formatTokens(n: number): string {
-  if (!Number.isFinite(n) || n <= 0) return '0';
-  if (n >= 1000) return `${(n / 1000).toFixed(n >= 100000 ? 0 : 1)}k`;
-  return String(n);
-}
+/** 当前会话已发生的自动压缩次数（消息流里的 compact_boundary 标记数），供胶囊明细展示 */
+const compactCount = computed(() =>
+  messageRounds.value.reduce((n, r) => n + (r.compactMarkers?.length || 0), 0),
+);
 
 const isCodeMode = useCodeStore().codeModeActive;
 const inputTooLong = computed(() => input.value.length > LONG_INPUT_THRESHOLD);
+
+// ===== 7.3 运行指示的步骤进度：任务计划（task_plan/task_step）登记了步骤才显示「步骤 x/y」=====
+const planTotal = computed(() => store.planSteps.length);
+const planDoneCount = computed(() => store.planSteps.filter((s) => s.status === 'done').length);
 
 // ===== 会话级工具权限（只读/默认/全部放行）=====
 // 选择持久化到 conversation.permission_mode；readonly 模式下后端会构建期裁剪写工具 + 运行时硬拦截
@@ -1595,39 +1607,6 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
-/* ── 上下文用量环（2026-10-02）───────────────────────────────────────────────
-   只占 18px 见方，不挤占工具条；hover 才给文字明细（符合"极简、不要多余文案"）。
-   颜色由内联 stroke 给出（tokenBarColor：蓝 → 琥珀 → 红），类名只管呼吸感。 */
-.ctx-usage-ring {
-  width: 18px;
-  height: 18px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  cursor: default;
-  opacity: 0.55;
-  transition: opacity 0.15s ease;
-  flex: 0 0 auto;
-}
-.ctx-usage-ring:hover { opacity: 1; }
-.ctx-usage-ring.is-warn { opacity: 0.85; }
-.ctx-usage-ring.is-danger { opacity: 1; }
-.ctx-usage-svg { width: 18px; height: 18px; transform: rotate(-90deg); }
-.ctx-usage-track {
-  fill: none;
-  stroke: var(--color-border, rgba(127, 127, 127, 0.28));
-  stroke-width: 3.5;
-}
-.ctx-usage-bar {
-  fill: none;
-  stroke-width: 3.5;
-  stroke-linecap: round;
-  transition: stroke-dasharray 0.3s ease, stroke 0.3s ease;
-}
-.ctx-usage-tip { line-height: 1.6; font-size: 12px; }
-.ctx-usage-tip-title { font-weight: 600; margin-bottom: 2px; }
-.ctx-usage-tip-hint { opacity: 0.75; }
-
 /* 拖入文件悬停：input 容器边框/背景轻微变化（沿用主题朱砂色） */
 .input-box.is-dragover {
   border-color: var(--color-primary, #c2410c) !important;
@@ -1640,6 +1619,47 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
 }
+
+/* ===== 7.3 任务运行中：输入区上方常驻运行指示行（含唯一停止入口）===== */
+.run-indicator {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 8px 0 0;
+  padding: 5px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--el-border-color-lighter);
+  background: color-mix(in srgb, var(--color-primary) 6%, transparent);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+  flex: 0 0 auto;
+}
+.run-spinner { color: var(--color-primary); font-size: 14px; flex: 0 0 auto; }
+.run-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.run-stop-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 9px;
+  border: none;
+  border-radius: 999px;
+  background: var(--el-color-danger);
+  color: #fff;
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  cursor: pointer;
+  flex: 0 0 auto;
+  transition: filter 0.15s ease;
+}
+.run-stop-btn:hover { filter: brightness(0.92); }
+.run-stop-square { width: 7px; height: 7px; border-radius: 1px; background: currentColor; }
 
 /* ===== 追加消息队列（任务运行中，堆叠在输入框上方）===== */
 .queue-panel {

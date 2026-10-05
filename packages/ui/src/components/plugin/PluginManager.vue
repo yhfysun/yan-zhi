@@ -1,31 +1,32 @@
 <template>
   <div class="plugin-manager">
+    <!-- 统一工具条：左搜索 / 右「分类筛选 → 操作按钮」（与商城、工具、MCP 各页一致） -->
     <div class="pm-toolbar">
-      <div class="pm-cats">
-        <button
-          :class="['pm-cat-chip', { active: activeCat === '' }]"
-          @click="activeCat = ''"
-        >
-          全部<span class="pm-cat-count">{{ pluginStore.plugins.length }}</span>
-        </button>
-        <button
-          v-for="(n, cat) in catCounts"
-          :key="cat"
-          :class="['pm-cat-chip', { active: activeCat === cat }]"
-          @click="activeCat = activeCat === cat ? '' : String(cat)"
-        >
-          {{ cat }}<span class="pm-cat-count">{{ n }}</span>
-        </button>
-      </div>
+      <el-input
+        v-model="keyword"
+        placeholder="搜索插件"
+        clearable
+        class="pm-search"
+      >
+        <template #prefix><el-icon><Search /></el-icon></template>
+      </el-input>
       <div class="pm-header-actions">
-        <el-input
-          v-model="keyword"
-          placeholder="搜索插件"
-          clearable
-          class="pm-search"
-        >
-          <template #prefix><el-icon><Search /></el-icon></template>
-        </el-input>
+        <el-select v-model="activeCat" class="pm-cat-select yz-cat-select" popper-class="pm-cat-popper" placeholder="全部分类">
+          <template #prefix><el-icon :size="14"><Collection /></el-icon></template>
+          <el-option :value="''" label="全部">
+            <span class="pm-cat-opt-label">全部</span>
+            <span class="pm-cat-opt-count">{{ pluginStore.plugins.length }}</span>
+          </el-option>
+          <el-option
+            v-for="g in allGroups"
+            :key="g.key"
+            :value="g.key"
+            :label="g.label"
+          >
+            <span class="pm-cat-opt-label">{{ g.label }}</span>
+            <span class="pm-cat-opt-count">{{ g.items.length }}</span>
+          </el-option>
+        </el-select>
         <el-button @click="onOpenTemplate">
           <el-icon style="margin-right: 5px"><Document /></el-icon>开发模板
         </el-button>
@@ -43,65 +44,77 @@
         <el-button v-if="!keyword && !activeCat" type="primary" @click="onInstall">安装插件 (.yzp)</el-button>
       </el-empty>
     </div>
-    <div v-else class="pm-list">
-      <div v-for="p in filtered" :key="p.manifest.id" class="pm-card" :class="{ 'is-error': p.state === 'error' }">
-        <div class="pm-card-head">
-          <div class="pm-icon"><el-icon :size="20"><Box /></el-icon></div>
-          <div class="pm-title">
-            <span class="pm-name" :title="p.manifest.id">{{ p.manifest.name }}</span>
-            <span class="pm-ver">v{{ p.manifest.version }}</span>
+    <div v-else class="pm-groups">
+      <section v-for="g in groupedFiltered" :key="g.key" class="pm-group">
+        <div class="pm-group-head">
+          <span class="pm-group-title">{{ g.label }}</span>
+          <span class="pm-group-count">{{ g.items.length }}</span>
+        </div>
+        <div class="pm-list">
+          <div v-for="p in g.items" :key="p.manifest.id" class="pm-card" :class="{ 'is-error': p.state === 'error' }">
+            <div class="pm-card-head">
+              <!-- 皮肤/调色板插件：用该皮肤自身的渐变做色块图标（27 套皮肤各有独有色，
+                   不再清一色 Box 盒子图标）；功能插件按插件类型选图标 -->
+              <div v-if="swatchOf(p)" class="pm-icon pm-swatch" :style="{ background: swatchOf(p) }"></div>
+              <div v-else class="pm-icon"><el-icon :size="20"><component :is="cardIconOf(p)" /></el-icon></div>
+              <div class="pm-title">
+                <span class="pm-name" :title="p.manifest.id">{{ p.manifest.name }}</span>
+                <span class="pm-ver">v{{ p.manifest.version }}</span>
+              </div>
+              <el-switch
+                :model-value="p.state === 'enabled'"
+                size="small"
+                @change="toggle(p)"
+              />
+            </div>
+            <!-- 描述固定 3 行高度（不足留空），保证同行卡片同高；完整文案在「详情」里 -->
+            <div class="pm-desc" :title="p.manifest.description || ''">{{ p.manifest.description || '无描述' }}</div>
+            <div class="pm-perms">
+              <el-dropdown trigger="click" @command="(cmd: string | number | object) => onPickCategory(p, cmd)">
+                <span class="pm-cat-tag" title="点击修改分类">
+                  <el-icon :size="12"><Collection /></el-icon>{{ categoryOf(p) }}
+                </span>
+                <template #dropdown>
+                  <el-dropdown-menu>
+                    <el-dropdown-item
+                      v-for="c in allCategories"
+                      :key="c"
+                      :command="c"
+                      :disabled="c === categoryOf(p)"
+                    >{{ c }}</el-dropdown-item>
+                    <el-dropdown-item divided command="__custom">自定义…</el-dropdown-item>
+                  </el-dropdown-menu>
+                </template>
+              </el-dropdown>
+              <span
+                v-for="perm in p.manifest.permissions || []"
+                :key="perm"
+                class="pm-perm-tag"
+                :title="PERM_LABELS[perm] || perm"
+              >{{ PERM_LABELS[perm] || perm }}</span>
+              <span class="pm-source-tag" :class="p.source === 'builtin' ? 'is-builtin' : 'is-installed'">
+                {{ p.source === 'builtin' ? '内置' : '已安装' }}
+              </span>
+              <span v-if="p.state === 'error'" class="pm-source-tag is-danger">错误</span>
+            </div>
+            <div v-if="p.error" class="pm-error">{{ p.error }}</div>
+            <div class="pm-actions">
+              <el-button size="small" text bg @click="openConfig(p)">配置</el-button>
+              <el-button size="small" text bg @click="openDetail(p)">详情</el-button>
+              <el-button size="small" text bg @click="onExport(p)">导出</el-button>
+              <el-button v-if="p.manifest.id === 'computer-use' && p.state === 'enabled'" size="small" text bg @click="onAudit(p)">记录</el-button>
+              <el-button
+                v-if="p.source !== 'builtin'"
+                size="small"
+                text
+                bg
+                type="danger"
+                @click="onUninstall(p)"
+              >卸载</el-button>
+            </div>
           </div>
-          <el-switch
-            :model-value="p.state === 'enabled'"
-            size="small"
-            @change="toggle(p)"
-          />
         </div>
-        <div class="pm-desc">{{ p.manifest.description || '无描述' }}</div>
-        <div class="pm-perms">
-          <el-dropdown trigger="click" @command="(cmd: string | number | object) => onPickCategory(p, cmd)">
-            <span class="pm-cat-tag" title="点击修改分类">
-              <el-icon :size="12"><Collection /></el-icon>{{ categoryOf(p) }}
-            </span>
-            <template #dropdown>
-              <el-dropdown-menu>
-                <el-dropdown-item
-                  v-for="c in allCategories"
-                  :key="c"
-                  :command="c"
-                  :disabled="c === categoryOf(p)"
-                >{{ c }}</el-dropdown-item>
-                <el-dropdown-item divided command="__custom">自定义…</el-dropdown-item>
-              </el-dropdown-menu>
-            </template>
-          </el-dropdown>
-          <span
-            v-for="perm in p.manifest.permissions || []"
-            :key="perm"
-            class="pm-perm-tag"
-            :title="PERM_LABELS[perm] || perm"
-          >{{ PERM_LABELS[perm] || perm }}</span>
-          <span class="pm-source-tag" :class="p.source === 'builtin' ? 'is-builtin' : 'is-installed'">
-            {{ p.source === 'builtin' ? '内置' : '已安装' }}
-          </span>
-          <span v-if="p.state === 'error'" class="pm-source-tag is-danger">错误</span>
-        </div>
-        <div v-if="p.error" class="pm-error">{{ p.error }}</div>
-        <div class="pm-actions">
-          <el-button size="small" text bg @click="openConfig(p)">配置</el-button>
-          <el-button size="small" text bg @click="openDetail(p)">详情</el-button>
-          <el-button size="small" text bg @click="onExport(p)">导出</el-button>
-          <el-button v-if="p.manifest.id === 'computer-use' && p.state === 'enabled'" size="small" text bg @click="onAudit(p)">记录</el-button>
-          <el-button
-            v-if="p.source !== 'builtin'"
-            size="small"
-            text
-            bg
-            type="danger"
-            @click="onUninstall(p)"
-          >卸载</el-button>
-        </div>
-      </div>
+      </section>
     </div>
 
     <el-dialog v-model="configOpen" title="插件配置" width="520" :close-on-click-modal="false">
@@ -219,7 +232,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { Search, Document, Upload, Box, Collection, UploadFilled } from '@element-plus/icons-vue';
+import { Search, Document, Upload, Box, Collection, UploadFilled, Share, Mouse } from '@element-plus/icons-vue';
 import { usePluginStore, type PluginInfo } from '../../stores/plugin';
 import { api } from '../../api/client';
 import type { PluginManifest } from '@yan-zhi/core';
@@ -274,19 +287,28 @@ function derivedCategory(p: PluginInfo): string {
 function categoryOf(p: PluginInfo): string {
   return catOverrides.value[p.manifest.id] || derivedCategory(p);
 }
+
+/**
+ * 皮肤/调色板插件的图标色块：取该插件贡献主题的渐变色（每套皮肤独有）。
+ * 无主题贡献的功能插件返回空串，走 cardIconOf 的图标分支。
+ */
+function swatchOf(p: PluginInfo): string {
+  const t = p.manifest.contributes?.themes?.[0];
+  if (!t) return '';
+  return t.gradient || `linear-gradient(135deg, ${t.primaryLight}, ${t.primary})`;
+}
+
+/** 功能插件卡片图标：按插件 id 区分语义，未命中回退 Box */
+function cardIconOf(p: PluginInfo) {
+  if (p.manifest.id === 'git-file-manager') return Share; // 分叉节点形似 git
+  if (p.manifest.id === 'computer-use') return Mouse;
+  return Box;
+}
 const allCategories = computed<string[]>(() => {
   const set = new Set<string>(CATEGORY_PRESETS);
   for (const p of pluginStore.plugins) set.add(categoryOf(p));
   for (const v of Object.values(catOverrides.value)) if (v) set.add(v);
   return Array.from(set);
-});
-const catCounts = computed<Record<string, number>>(() => {
-  const m: Record<string, number> = {};
-  for (const p of pluginStore.plugins) {
-    const c = categoryOf(p);
-    m[c] = (m[c] || 0) + 1;
-  }
-  return m;
 });
 const activeCat = ref('');
 
@@ -318,6 +340,37 @@ const filtered = computed(() => {
       (!activeCat.value || categoryOf(p) === activeCat.value),
   );
 });
+
+/**
+ * 按分类分组：提取为通用函数，供下拉选项（全量）与内容区（筛选后）共用。
+ * 排序：功能 → 操作 → 皮肤 → 安全 → 其余自定义分类（按名称）。
+ */
+const GROUP_ORDER = ['功能', '操作', '皮肤', '安全'];
+function groupPlugins(list: PluginInfo[]) {
+  const map = new Map<string, PluginInfo[]>();
+  for (const p of list) {
+    const c = categoryOf(p);
+    const arr = map.get(c);
+    if (arr) arr.push(p);
+    else map.set(c, [p]);
+  }
+  const keys = Array.from(map.keys());
+  keys.sort((a, b) => {
+    const ia = GROUP_ORDER.indexOf(a);
+    const ib = GROUP_ORDER.indexOf(b);
+    if (ia >= 0 && ib >= 0) return ia - ib;
+    if (ia >= 0) return -1;
+    if (ib >= 0) return 1;
+    return a.localeCompare(b, 'zh-CN');
+  });
+  return keys.map((key) => ({ key, label: key, items: map.get(key) as PluginInfo[] }));
+}
+
+/** 下拉选项用：全量插件分组（不受当前筛选影响，否则选中分类后选项缺失） */
+const allGroups = computed(() => groupPlugins(pluginStore.plugins));
+
+/** 内容区用：筛选后的分组 */
+const groupedFiltered = computed(() => groupPlugins(filtered.value));
 
 async function toggle(p: PluginInfo) {
   if (p.state !== 'enabled' && (p.manifest.permissions || []).includes('desktop-input')) {
@@ -408,7 +461,7 @@ function openDetail(p: PluginInfo) {
 
 async function onUninstall(p: PluginInfo) {
   try {
-    await ElMessageBox.confirm(`确定卸载 ${p.manifest.name}？`, '确认');
+    await ElMessageBox.confirm(`确定卸载 ${p.manifest.name}？`, '确认', { confirmButtonClass: 'yz-confirm-danger' });
     const err = await pluginStore.uninstall(p.manifest.id);
     if (err) ElMessage.error(err);
     else ElMessage.success('已卸载');
@@ -501,42 +554,9 @@ onMounted(() => pluginStore.refresh());
   flex-wrap: wrap;
   margin-bottom: 16px;
 }
-.pm-cats {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-.pm-cat-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  line-height: 1;
-  padding: 7px 14px;
-  border-radius: 999px;
-  cursor: pointer;
-  font-family: inherit;
-  color: var(--color-text-secondary);
-  background: var(--glass-bg);
-  border: 1px solid var(--glass-border);
-  user-select: none;
-  transition: color var(--motion-fast) var(--ease-out),
-    border-color var(--motion-fast) var(--ease-out),
-    background var(--motion-fast) var(--ease-out);
-}
-.pm-cat-chip:hover {
-  color: var(--color-primary);
-  border-color: color-mix(in srgb, var(--color-primary) 45%, transparent);
-}
-.pm-cat-chip.active {
-  color: var(--color-primary);
-  border-color: var(--color-primary);
-  background: var(--color-primary-light);
-}
-.pm-cat-count {
-  font-size: 11px;
-  opacity: 0.7;
+/* 分类筛选下拉：宽度由 .yz-cat-select 统一给定（160px），分类增多也不占版面 */
+.pm-cat-select {
+  flex-shrink: 0;
 }
 .pm-header-actions {
   display: flex;
@@ -545,7 +565,8 @@ onMounted(() => pluginStore.refresh());
   flex-wrap: wrap;
 }
 .pm-search {
-  width: 200px;
+  flex: 1 1 220px;
+  max-width: 420px;
 }
 .pm-empty {
   padding: 48px 0;
@@ -553,11 +574,43 @@ onMounted(() => pluginStore.refresh());
   justify-content: center;
   color: var(--color-text-secondary);
 }
+.pm-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+.pm-group-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.pm-group-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--color-text);
+}
+/* 与下拉选项里的数量胶囊同一形态（显式高度 + line-height:1，避免被父级行高撑成椭圆） */
+.pm-group-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 18px;
+  padding: 0 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-secondary);
+  background: var(--color-surface-hover);
+}
 .pm-list {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
   gap: 14px;
-  align-items: start;
+  /* 关键：stretch（默认值）让同行卡片同高 */
+  align-items: stretch;
 }
 .pm-card {
   background: var(--glass-bg);
@@ -567,6 +620,7 @@ onMounted(() => pluginStore.refresh());
   display: flex;
   flex-direction: column;
   gap: 10px;
+  height: 100%; /* 关键：跟随 grid 单元拉伸，同行同高 */
   transition: transform var(--motion-base) var(--ease-out),
     box-shadow var(--motion-base) var(--ease-out),
     border-color var(--motion-base) var(--ease-out);
@@ -620,6 +674,17 @@ onMounted(() => pluginStore.refresh());
   font-size: 13px;
   line-height: 1.5;
   min-height: 20px;
+  /* 固定 3 行高度：描述不足 3 行也占位（卡片同高关键）；超出 3 行截断 */
+  height: calc(13px * 1.5 * 3);
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+/* 皮肤渐变色块：铺满图标容器，不再叠主题色浅底 */
+.pm-swatch {
+  background: none;
+  border: 1px solid rgba(15, 23, 42, 0.08);
 }
 .pm-perms {
   display: flex;
@@ -671,7 +736,7 @@ onMounted(() => pluginStore.refresh());
   line-height: 1.5;
 }
 .pm-actions {
-  margin-top: 2px;
+  margin-top: auto; /* 贴底：卡片拉伸时所有按钮行底部对齐 */
   padding-top: 10px;
   border-top: 1px solid var(--glass-border);
   display: flex;
@@ -797,5 +862,34 @@ onMounted(() => pluginStore.refresh());
 .install-no-perm {
   font-size: 13px;
   color: var(--color-text-secondary);
+}
+</style>
+
+<!-- 非 scoped：el-select 选项 teleport 到 body，需全局样式控制 popper 内布局 -->
+<style>
+.pm-cat-popper .el-select-dropdown__item {
+  display: flex;
+  align-items: center;
+}
+/* 分类名左、数量右（浅灰小胶囊，与卡片上的标签语言一致）
+   ★★ 必须显式给 height + line-height:1：Element 的 .el-select-dropdown__item
+   带 `line-height: 34px`，若不覆盖，<span> 会继承成 34px 高的盒子，
+   而宽度只有 30px 左右 —— border-radius:999px 于是渲染成**竖向椭圆**（2026-10-04 用户报「很丑」）。
+   tabular-nums 让数字等宽，多位数字不会左右跳。 */
+.pm-cat-popper .pm-cat-opt-count {
+  flex-shrink: 0;
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 18px;
+  padding: 0 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-secondary);
+  background: var(--color-surface-hover, rgba(15, 23, 42, 0.05));
 }
 </style>

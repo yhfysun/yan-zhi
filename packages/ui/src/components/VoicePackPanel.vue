@@ -227,7 +227,7 @@ async function remove(it: PackItem) {
     await ElMessageBox.confirm(
       `卸载后将删除已下载的模型文件（释放 ${it.onDiskMb ?? it.sizeMb} MB），需要时可重新下载。确定卸载？`,
       '卸载语音包',
-      { type: 'warning', confirmButtonText: '卸载', cancelButtonText: '取消' },
+      { type: 'warning', confirmButtonClass: 'yz-confirm-danger', confirmButtonText: '卸载', cancelButtonText: '取消' },
     );
   } catch {
     return; // 用户取消

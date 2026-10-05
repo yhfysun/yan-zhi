@@ -385,7 +385,7 @@ async function toggleEnabled(c: any) {
 
 async function removeConnector(c: any) {
   try {
-    await ElMessageBox.confirm(`确认删除连接器「${c.name}」？`, '提示', { type: 'warning' });
+    await ElMessageBox.confirm(`确认删除连接器「${c.name}」？`, '提示', { type: 'warning', confirmButtonClass: 'yz-confirm-danger' });
   } catch {
     return;
   }

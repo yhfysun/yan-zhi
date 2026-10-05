@@ -31,6 +31,7 @@
                   <el-icon :size="12" class="tool-item-status"><CircleCheck /></el-icon>
                   <span class="tool-item-server">{{ resolveToolDisplay(tc).server }}</span>
                   <code class="tool-item-fn">{{ resolveToolDisplay(tc).tool }}</code>
+                  <span v-if="toolTargetHint(tc)" class="tool-item-target" :title="toolTargetHint(tc)">{{ toolTargetHint(tc) }}</span>
                 </div>
                 <el-icon :size="12" class="tool-item-chevron"><ArrowDown v-if="toolOpen[idPrefix + '-' + si + '-' + idx]" /><ArrowRight v-else /></el-icon>
               </div>
@@ -67,7 +68,7 @@ import type { SubAgentRound, AgentStep } from '../../composables/chat/useChat';
 
 const props = defineProps<{ round: SubAgentRound; idPrefix: string }>();
 
-const { renderMarkdown, resolveToolDisplay, resolveToolArgs } = useChat();
+const { renderMarkdown, resolveToolDisplay, resolveToolArgs, toolTargetHint } = useChat();
 const chatStore = useChatStore();
 
 const isRunning = computed(() => chatStore.isToolCallRunning(props.round.toolCallId));

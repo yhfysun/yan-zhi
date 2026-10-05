@@ -111,7 +111,16 @@
             </div>
           </div>
         </div>
-        <el-empty v-if="taskStore.tasks.length === 0 && !taskStore.loading" description="暂无定时任务，右击新建" :image-size="60" />
+        <!-- 加载 / 空态（Task 3.2）：首次加载用 SkeletonList，空列表统一 EmptyState（CTA 走既有 openCreate） -->
+        <SkeletonList v-if="taskStore.tasks.length === 0 && taskStore.loading" :rows="4" :row-height="56" />
+        <EmptyState
+          v-else-if="taskStore.tasks.length === 0"
+          icon="⏰"
+          title="暂无定时任务"
+          description="右击空白处可新建定时任务与分组"
+          action-text="新建定时任务"
+          @action="openCreate()"
+        />
       </div>
     </template>
 
@@ -305,6 +314,8 @@ import {
 import { useScheduledTaskStore, type ScheduledTask, type ScheduleConfig } from '../../stores/scheduledTask';
 import { useWorkflowStore } from '../../stores/workflow';
 import { useChat } from '../../composables/chat/useChat';
+import EmptyState from '../common/EmptyState.vue';
+import SkeletonList from '../common/SkeletonList.vue';
 
 const taskStore = useScheduledTaskStore();
 const { store, currentConv, agentStore, spaceStore, modelGroups } = useChat();
@@ -321,19 +332,9 @@ const renamingGroupName = ref('');
 const renameInputRef = ref<HTMLInputElement | null>(null);
 const collapsedGroups = ref<Record<string, boolean>>({});
 
-// 工作流任务用：可选工作流清单 + 选中工作流的入参字段
+// 工作流任务用：可选工作流清单（wfFields / watch 必须在下方 form 声明之后——
+// watch getter 创建即执行一次收集依赖，提前引用未初始化的 form 会 TDZ 崩溃）
 const wfStore = useWorkflowStore();
-const wfFields = computed(() => {
-  const w = wfStore.agents.value.find((a) => a.id === form.workflowAgentId);
-  return w?.fields || [];
-});
-// 数组/对象入参在提交前统一解析成真值（后端按类型预检，传字符串会被拦）
-watch(
-  () => [form.taskType, form.workflowAgentId] as const,
-  () => {
-    if (form.taskType === 'workflow' && wfStore.agents.value.length === 0) void wfStore.loadAgents();
-  },
-);
 
 const WEEK_LABELS = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
 
@@ -368,6 +369,19 @@ const form = reactive({
   spaceId: '' as string,
   groupId: '' as string,
 });
+
+// 选中工作流的入参字段（须在 form 声明之后）
+const wfFields = computed(() => {
+  const w = wfStore.agents.value.find((a) => a.id === form.workflowAgentId);
+  return w?.fields || [];
+});
+// 数组/对象入参在提交前统一解析成真值（后端按类型预检，传字符串会被拦）
+watch(
+  () => [form.taskType, form.workflowAgentId] as const,
+  () => {
+    if (form.taskType === 'workflow' && wfStore.agents.value.length === 0) void wfStore.loadAgents();
+  },
+);
 
 onMounted(() => {
   if (taskStore.tasks.length === 0) taskStore.loadTasks();
@@ -508,7 +522,7 @@ async function deleteGroupConfirm(id: string, name: string) {
     await ElMessageBox.confirm(
       `确定删除分组「${name}」吗？组内任务将移至未分组。`,
       '删除分组',
-      { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' },
+      { type: 'warning', confirmButtonClass: 'yz-confirm-danger', confirmButtonText: '删除', cancelButtonText: '取消' },
     );
     await taskStore.deleteGroup(id);
     ElMessage.success('分组已删除');
@@ -816,7 +830,7 @@ async function onDelete(task: ScheduledTask) {
     await ElMessageBox.confirm(
       `确定删除定时任务「${task.name}」吗？已产生的会话不受影响。`,
       '删除任务',
-      { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' },
+      { type: 'warning', confirmButtonClass: 'yz-confirm-danger', confirmButtonText: '删除', cancelButtonText: '取消' },
     );
     await taskStore.deleteTask(task.id);
     ElMessage.success('任务已删除');
@@ -827,7 +841,7 @@ async function onDelete(task: ScheduledTask) {
 <style scoped>
 /* 任务类型/入参的说明文字（比 el-form-item 默认提示更紧凑） */
 .st-hint {
-  font-size: 11px;
+  font-size: var(--font-size-xs);
   color: var(--el-text-color-secondary);
   line-height: 1.6;
   margin-top: 4px;
@@ -998,7 +1012,7 @@ async function onDelete(task: ScheduledTask) {
 
 .st-form-hint {
   color: var(--el-text-color-secondary, #64748b);
-  font-size: 11px;
+  font-size: var(--font-size-xs);
   margin: 6px 0 10px;
   line-height: 1.5;
 }
@@ -1008,7 +1022,7 @@ async function onDelete(task: ScheduledTask) {
   justify-content: flex-end;
   gap: 8px;
   padding-top: 6px;
-  border-top: 1px solid var(--glass-border, rgba(15, 23, 42, 0.06));
+  border-top: 1px solid var(--el-border-color-lighter, var(--glass-border, rgba(15, 23, 42, 0.06)));
 }
 
 @media (max-width: 767px) {

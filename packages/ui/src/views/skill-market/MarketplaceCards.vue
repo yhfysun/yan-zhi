@@ -34,8 +34,8 @@
       </div>
     </MarketplaceShell>
 
-    <!-- 添加远程商城弹窗 -->
-    <el-dialog v-model="showAdd" title="添加远程 Skill 商城" width="460px" :close-on-click-modal="false">
+    <!-- 添加远程商城弹窗：统一 FormDialog（取消/保存底栏由组件默认渲染） -->
+    <FormDialog v-model="showAdd" title="添加远程 Skill 商城" width="460px" @submit="addSource">
       <el-form label-width="80px">
         <el-form-item label="名称"><el-input v-model="form.name" placeholder="如: 官方Skill源" /></el-form-item>
         <el-form-item label="URL"><el-input v-model="form.baseUrl" placeholder="http://192.168.1.100:3001" /></el-form-item>
@@ -50,11 +50,7 @@
           <el-input v-model="form.authValue" :placeholder="form.authType === 'bearer' ? 'Token' : 'API Key'" />
         </el-form-item>
       </el-form>
-      <template #footer>
-        <el-button @click="showAdd = false">取消</el-button>
-        <el-button type="primary" @click="addSource">保存</el-button>
-      </template>
-    </el-dialog>
+    </FormDialog>
   </div>
 </template>
 
@@ -64,6 +60,7 @@ import { Files, ArrowRight, Monitor, Link, Delete, Plus } from '@element-plus/ic
 import { ElMessage, ElMessageBox } from 'element-plus';
 import MarketplaceShell from '../../components/marketplace/MarketplaceShell.vue';
 import MarketplaceCard from '../../components/marketplace/MarketplaceCard.vue';
+import FormDialog from '../../components/FormDialog.vue';
 import { useSkillStore } from '../../stores';
 import { api } from '../../api/client';
 
@@ -96,7 +93,7 @@ async function testSource(id: string) {
 }
 
 async function delSource(id: string) {
-  try { await ElMessageBox.confirm('删除该远程源？', '提示', { type: 'warning' }); await api.delete(`/skill-marketplace/${id}`); await loadRemoteSources(); ElMessage.success('已删除'); } catch {}
+  try { await ElMessageBox.confirm('删除该远程源？', '提示', { type: 'warning', confirmButtonClass: 'yz-confirm-danger' }); await api.delete(`/skill-marketplace/${id}`); await loadRemoteSources(); ElMessage.success('已删除'); } catch {}
 }
 
 onMounted(() => { store.loadSkills(); loadRemoteSources(); });

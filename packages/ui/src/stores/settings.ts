@@ -17,7 +17,9 @@ type SkinSurface = {
   glassAlphaDark?: number;
   border?: string;
   borderDark?: string;
+  /** 全站唯一圆角旋钮（覆盖层档基准，默认 14；其余三档由 tokens.css 派生） */
   radius?: number;
+  /** @deprecated 逐项圆角已废止，配置无效；请用 radius */
   buttonRadius?: number;
   buttonText?: string;
   glassBlur?: number;
@@ -30,8 +32,11 @@ type SkinSurface = {
   titlebarPattern?: string;
   shadow?: string;
   buttonGradient?: string;
+  /** @deprecated 逐项圆角已废止，配置无效；请用 radius */
   inputRadius?: number;
+  /** @deprecated 逐项圆角已废止，配置无效；请用 radius */
   cardRadius?: number;
+  /** @deprecated 逐项圆角已废止，配置无效；请用 radius */
   tagRadius?: number;
   scrollbarThumb?: string;
   /**
@@ -166,8 +171,7 @@ const SKIN_ELEMENT_VARS = [
   '--skin-glass-alpha', '--skin-glass-alpha-hover',
   '--skin-glass-alpha-panel', '--skin-glass-alpha-panel-sm',
   '--skin-glass-blur', '--skin-glass-border', '--skin-btn-text',
-  '--skin-radius', '--skin-btn-radius', '--skin-input-radius',
-  '--skin-card-radius', '--skin-tag-radius',
+  '--skin-radius',
   '--skin-scrollbar-thumb', '--skin-scrollbar-thumb-pattern',
   '--skin-scrollbar-thumb-color', '--skin-scrollbar-thumb-size',
   '--skin-scrollbar-thumb-repeat', '--skin-scrollbar-thumb-pos',
@@ -553,7 +557,9 @@ interface ThemePalette {
     glassAlphaDark?: number;
     border?: string;
     borderDark?: string;
+    /** 全站唯一圆角旋钮（覆盖层档基准，默认 14；其余三档由 tokens.css 派生） */
     radius?: number;
+    /** @deprecated 逐项圆角已废止，配置无效；请用 radius */
     buttonRadius?: number;
     buttonText?: string;
     glassBlur?: number;
@@ -1137,9 +1143,12 @@ export const useSettingsStore = defineStore('settings', () => {
         : '';
       if (defText) root.setProperty('--skin-btn-text-default', defText);
     }
-    // 圆角：仅皮肤显式配置时下发（未配置 → 走 skin.css 默认值 12/6/6/12/6）
-    if (sf.radius !== undefined) root.setProperty('--skin-radius', `${sf.radius}px`);
-    if (sf.buttonRadius !== undefined) root.setProperty('--skin-btn-radius', `${sf.buttonRadius}px`);
+    // 圆角：**唯一旋钮** = 覆盖层基准（默认 14px），其余三档由 tokens.css 按比例派生。
+    // 皮肤只表达「整体圆角风格」；逐项开关（--skin-btn/-input/-card/-tag-radius）已废止
+    // —— 它们正是「按钮 8 / 卡片 10 / 弹窗 14」各走各的漂移来源。
+    // 取值优先 radius，其次 cardRadius，最后 buttonRadius（老皮肤字段兼容）。
+    const skinRadius = sf.radius ?? sf.cardRadius ?? sf.buttonRadius;
+    if (skinRadius !== undefined) root.setProperty('--skin-radius', `${skinRadius}px`);
     const autoBtnText = contrastRatio(currentBtnPrimary, '#ffffff') >= 4.5 ? '#ffffff' : (dark ? '#F2F0EA' : '#141414');
     const btnText = sf.buttonText ?? sf.onPrimary;
     if (btnText) root.setProperty('--skin-btn-text', btnText);
@@ -1241,16 +1250,7 @@ export const useSettingsStore = defineStore('settings', () => {
       else root.removeProperty(name);
     };
     setPattern('--skin-titlebar-pattern', themedPattern(sf.titlebarPattern));
-    // 圆角：仅皮肤显式配置时下发（尊重皮肤作者意图；未配置 → skin.css 默认值）
-    if (sf.inputRadius !== undefined || sf.buttonRadius !== undefined) {
-      root.setProperty('--skin-input-radius', `${sf.inputRadius ?? sf.buttonRadius ?? 6}px`);
-    }
-    if (sf.cardRadius !== undefined || sf.radius !== undefined) {
-      root.setProperty('--skin-card-radius', `${sf.cardRadius ?? sf.radius ?? 12}px`);
-    }
-    if (sf.tagRadius !== undefined || sf.buttonRadius !== undefined) {
-      root.setProperty('--skin-tag-radius', `${sf.tagRadius ?? sf.buttonRadius ?? 6}px`);
-    }
+    // 圆角统一由上面的单一 --skin-radius 旋钮驱动，此处不再下发逐项圆角
     /**
      * 滚动条形态开关（2026-09-18 用户要求：「非图片皮肤滚动条不用图片，
      * 就对应的配色加上下圆形就好了」）。

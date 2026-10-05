@@ -253,7 +253,7 @@ dev/skin_regenerated/<skinId>.source.png
 | `glass` / `glassDark` | 颜色 | 玻璃基色 |
 | `glassAlpha` / `glassAlphaDark` | 0~1 | 玻璃透明度（暗色推荐 0.55） |
 | `glassBlur` | 像素 | 玻璃模糊半径（推荐 8） |
-| `radius` / `buttonRadius` | 像素 | 圆角 |
+| `radius` | 像素 | **全站唯一圆角旋钮**（覆盖层档基准，默认 14）—— 其余三档由它按比例派生：微件 6 / 控件 8 / 容器 12 / 覆盖层 14。`buttonRadius` / `inputRadius` / `cardRadius` / `tagRadius` 已废止，配了也不生效 |
 | `text` / `textSecondary` / `textTertiary` | 颜色 | 文字三档（暗色下分别对应浅色文字三档） |
 
 ### 8.2 值约定

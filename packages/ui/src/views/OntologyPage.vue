@@ -761,7 +761,7 @@ async function renameGroupPrompt(g: { id: string; name: string }) {
 
 async function removeGroup(g: { id: string; name: string }) {
   try {
-    await ElMessageBox.confirm(`删除包「${g.name}」？其子包将上提一级，包内本体移入「未分类」。`, '提示', { type: 'warning' });
+    await ElMessageBox.confirm(`删除包「${g.name}」？其子包将上提一级，包内本体移入「未分类」。`, '提示', { type: 'warning', confirmButtonClass: 'yz-confirm-danger' });
     const res = await api.delete(`/ontology-groups/${g.id}`);
     if ('error' in res) return ElMessage.error(res.error);
     if (groupFilter.value === g.id) groupFilter.value = '';
@@ -985,7 +985,7 @@ function onHeadCmd(cmd: string) {
 async function remove() {
   if (!form.id || form.builtin) return;
   await ElMessageBox.confirm(`删除本体「${form.code}」？引用它的智能体将失去该语义。`, '删除本体', {
-    type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消',
+    type: 'warning', confirmButtonClass: 'yz-confirm-danger', confirmButtonText: '删除', cancelButtonText: '取消',
   }).catch(() => null);
   const res = await api.delete(`/ontologies/${form.id}`);
   if ('error' in res) return ElMessage.error(res.error);

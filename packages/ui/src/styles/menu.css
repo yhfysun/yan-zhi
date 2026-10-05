@@ -108,3 +108,71 @@
     line-height: 28px;
   }
 }
+
+/* ============================================================
+   统一浮层菜单类（spec「统一浮层菜单样式」/ Task 11.5）
+   任意 el-popper（el-dropdown / el-popover）加 popper-class="yz-menu-popper"
+   即获得统一视觉：圆角 12px + --shadow-2 + 36px 行高 + 分组标题 +
+   hover 浅灰 + 危险项红色。
+   ★ 原 HoverMenu.vue 内的同名基座已迁入本文件统一维护（彼处不再定义）；
+     本段必须置于文件末尾——与上方 .el-dropdown__popper / overlay.css 的
+     .el-popper.is-light 同特异性，靠源码顺序取胜。
+   自绘菜单（ul.ctx-menu 等）在 chat.css 里对齐同一套 token。
+   ============================================================ */
+.el-popper.yz-menu-popper {
+  border-radius: var(--radius-menu);
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--shadow-2);
+  padding: 4px;
+  background: var(--el-bg-color-overlay, var(--glass-bg));
+  /* ★ 不能 overflow:hidden：HoverMenu「更多」的二级面板是向右飞出的绝对定位子层
+     （.hm-sub left:calc(100%+8px)），hidden 会把它裁掉（2026-10-04 回归）。
+     圆角由 padding + 背景承担，子面板自身带边框/圆角/阴影。 */
+  overflow: visible;
+}
+/* 36px 行高（图标 + 文字 + 右侧状态 tag）—— el-dropdown 系条目 */
+.yz-menu-popper .el-dropdown-menu__item {
+  height: var(--menu-item-h);
+  line-height: var(--menu-item-h);
+}
+/* hover 浅灰底 */
+.yz-menu-popper .el-dropdown-menu__item:not(.is-disabled):hover,
+.yz-menu-popper .el-dropdown-menu__item:not(.is-disabled):focus {
+  background: var(--color-surface-hover);
+  color: var(--color-text);
+}
+/* 分组标题（小号灰字）：自绘菜单用 .pop-group-title，dropdown 分组用 is-group-label */
+.yz-menu-popper .pop-group-title {
+  display: flex;
+  align-items: center;
+  height: 24px;
+  margin: 6px 2px 0;
+  padding: 0 10px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  color: var(--color-text-tertiary);
+  cursor: default;
+  user-select: none;
+}
+.yz-menu-popper .el-dropdown-menu__item.is-group-label {
+  height: 24px;
+  line-height: 24px;
+}
+/* 危险项警示色 */
+.yz-menu-popper .el-dropdown-menu__item.is-danger,
+.yz-menu-popper .pop-danger {
+  color: var(--color-danger);
+}
+.yz-menu-popper .el-dropdown-menu__item.is-danger:hover,
+.yz-menu-popper .pop-danger:hover {
+  background: color-mix(in srgb, var(--color-danger) 8%, transparent);
+  color: var(--color-danger);
+}
+/* 窄屏触控：统一类的行高让位于 44px 触控档（与上方移动端全局规则同口径） */
+@media (max-width: 767px) {
+  .yz-menu-popper .el-dropdown-menu__item {
+    height: var(--menu-item-h-mobile);
+    line-height: var(--menu-item-h-mobile);
+  }
+}

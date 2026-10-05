@@ -28,6 +28,19 @@
   --font-body: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", Roboto, sans-serif;
   --font-mono: "JetBrains Mono", "SF Mono", ui-monospace, "Cascadia Code", Consolas, monospace;
 
+  /* ===== Type scale：全局字号/行高阶梯（正文基准 13px，消息/列表行 ≥13px） =====
+     字号与主题/皮肤无关，只此一套；组件统一引用 var(--font-size-*)，不再散落 px。 */
+  --font-size-xs: 11px;     /* 角标 / 计数 / 辅助说明 */
+  --line-height-xs: 1.45;
+  --font-size-sm: 12px;     /* 次级说明 / 徽标 */
+  --line-height-sm: 1.5;
+  --font-size-base: 13px;  /* 正文基准：消息 / 列表行 */
+  --line-height-base: 1.6;
+  --font-size-md: 14px;     /* 控件 / 小标题 */
+  --line-height-md: 1.6;
+  --font-size-lg: 16px;     /* 区块标题 */
+  --line-height-lg: 1.5;
+
   /* 主题色（applyPalette/applySkin 运行时覆盖，这里为默认「瓷·冰」白瓷系冷蓝灰）
      ⚠️ 默认皮肤已改为 builtin:porcelain + 亮色模式（DEFAULT_SETTINGS），
         这里必须跟着改，否则首帧会先闪一下朱砂红再跳到瓷冰。 */
@@ -48,6 +61,54 @@
   --el-color-primary-light-9: #EDF2F4;
   --el-color-primary-dark-2: #4E6B80;
 
+  /* ===== Element Plus 语义色对齐（亮色兜底）：success/warning/danger/text/border 接到本文件色板 =====
+     亮/暗梯度按 EP 公式（mix(color, white/black, N%)）用 color-mix 就地派生，
+     皮肤开启时文字/边框族由 skin.css 接管，此处保证无皮肤时 EP 控件与纸面色板一致。
+     暗色对应值见下方 [data-theme="dark"] 段。 */
+  --el-color-success: var(--color-success);
+  --el-color-warning: var(--color-warning);
+  --el-color-danger: var(--color-danger);
+  --el-color-error: var(--color-danger);
+  --el-color-success-light-3: color-mix(in srgb, var(--color-success) 70%, #fff);
+  --el-color-success-light-5: color-mix(in srgb, var(--color-success) 50%, #fff);
+  --el-color-success-light-7: color-mix(in srgb, var(--color-success) 30%, #fff);
+  --el-color-success-light-8: color-mix(in srgb, var(--color-success) 20%, #fff);
+  --el-color-success-light-9: color-mix(in srgb, var(--color-success) 10%, #fff);
+  --el-color-success-dark-2: color-mix(in srgb, var(--color-success) 80%, #000);
+  --el-color-warning-light-3: color-mix(in srgb, var(--color-warning) 70%, #fff);
+  --el-color-warning-light-5: color-mix(in srgb, var(--color-warning) 50%, #fff);
+  --el-color-warning-light-7: color-mix(in srgb, var(--color-warning) 30%, #fff);
+  --el-color-warning-light-8: color-mix(in srgb, var(--color-warning) 20%, #fff);
+  --el-color-warning-light-9: color-mix(in srgb, var(--color-warning) 10%, #fff);
+  --el-color-warning-dark-2: color-mix(in srgb, var(--color-warning) 80%, #000);
+  --el-color-danger-light-3: color-mix(in srgb, var(--color-danger) 70%, #fff);
+  --el-color-danger-light-5: color-mix(in srgb, var(--color-danger) 50%, #fff);
+  --el-color-danger-light-7: color-mix(in srgb, var(--color-danger) 30%, #fff);
+  --el-color-danger-light-8: color-mix(in srgb, var(--color-danger) 20%, #fff);
+  --el-color-danger-light-9: color-mix(in srgb, var(--color-danger) 10%, #fff);
+  --el-color-danger-dark-2: color-mix(in srgb, var(--color-danger) 80%, #000);
+  --el-color-error-light-3: var(--el-color-danger-light-3);
+  --el-color-error-light-5: var(--el-color-danger-light-5);
+  --el-color-error-light-7: var(--el-color-danger-light-7);
+  --el-color-error-light-8: var(--el-color-danger-light-8);
+  --el-color-error-light-9: var(--el-color-danger-light-9);
+  --el-color-error-dark-2: var(--el-color-danger-dark-2);
+
+  /* 文字色族：EP 控件文字对齐纸墨阶梯（regular 同 primary 一档，保证输入类控件正文清晰） */
+  --el-text-color-primary: var(--color-text);
+  --el-text-color-regular: var(--color-text);
+  --el-text-color-secondary: var(--color-text-secondary);
+  --el-text-color-placeholder: var(--color-text-tertiary);
+  --el-text-color-disabled: var(--color-text-tertiary);
+
+  /* 边框色族：EP 控件边框对齐暖灰纸边（standard/dark 档用 border-strong 压住） */
+  --el-border-color: var(--color-border-strong);
+  --el-border-color-light: var(--color-border);
+  --el-border-color-lighter: var(--color-border);
+  --el-border-color-extra-light: var(--color-border);
+  --el-border-color-dark: var(--color-border-strong);
+  --el-border-color-darker: var(--color-border-strong);
+
   --gradient-primary: linear-gradient(135deg, #7C9AAD, #B7D3E0);
 
   /* 阴影：极轻、带偏移与模糊（避免零偏移光晕式"浮起感"） */
@@ -55,11 +116,31 @@
   --shadow-md: 0 2px 8px rgba(26, 26, 26, 0.06);
   --shadow-lg: 0 8px 24px rgba(26, 26, 26, 0.10);
 
-  /* 圆角体系：浮层 lg(14) → 内部控件 md(10) → 微控件 sm(6)，外大内小 */
-  --radius-sm: 6px;
-  --radius-md: 10px;
-  --radius-lg: 14px;
-  --radius-xl: 18px;
+  /* ===== Elevation 三级阴影：卡片 hover 轻浮起 → 浮层/抽屉 → 模态/弹窗（亮暗两套） ===== */
+  --shadow-1: 0 1px 3px rgba(26, 26, 26, 0.06), 0 1px 2px rgba(26, 26, 26, 0.04);
+  --shadow-2: 0 4px 16px rgba(26, 26, 26, 0.10), 0 2px 6px rgba(26, 26, 26, 0.06);
+  --shadow-3: 0 16px 48px rgba(26, 26, 26, 0.16), 0 4px 12px rgba(26, 26, 26, 0.08);
+
+  /* ===== 圆角体系：全站唯一真相源，4 档「外大内小」 =====
+     微件 xs(6) → 控件 sm(8) → 容器 card(12) → 覆盖层 lg(14)
+
+     皮肤只保留**一个整体系数** --skin-radius（= 覆盖层基准，默认 14px），
+     其余三档由它按固定比例派生。皮肤无法再逐项覆盖按钮/输入/卡片/标签圆角，
+     从根上消除「按钮 8 / 卡片 10 / 弹窗 14 / 搜索框 17」各走各的漂移。 */
+  /* 比例用 3/7、4/7、6/7 而非小数：14px 基准下精确得到 6 / 8 / 12（不产生 7.99999px 这种亚像素） */
+  --radius-lg: var(--skin-radius, 14px);                        /* 覆盖层 14：弹窗 / 抽屉 / 预览窗 / 浮层菜单容器 */
+  --radius-card: calc(var(--skin-radius, 14px) * 6 / 7);        /* 容器 12：卡片 / 面板 */
+  --radius-menu: var(--radius-card);                            /* 兼容别名：浮层菜单 */
+  --radius-md: var(--radius-card);                              /* 兼容别名：历史卡片/面板引用 → 容器档 */
+  --radius-sm: calc(var(--skin-radius, 14px) * 4 / 7);          /* 控件 8：按钮 / 输入框 / 下拉 / 图标按钮 */
+  --radius-xs: calc(var(--skin-radius, 14px) * 3 / 7);          /* 微件 6：标签 / 徽章 / 小 chip */
+  --radius-xl: var(--radius-lg);                                /* 兼容别名：收敛到覆盖层档（历史 18px 已废止） */
+
+  /* Element Plus 自带圆角旋钮接入同一套阶梯（EP 只有一个 base，其余由其派生） */
+  --el-border-radius-base: var(--radius-sm);    /* 按钮 / 输入框 / 下拉 → 控件档 */
+  --el-border-radius-small: var(--radius-xs);   /* 小控件 → 微件档 */
+  --el-border-radius-round: 999px;
+  --el-card-border-radius: var(--radius-card);  /* 卡片容器 → 容器档 */
 
   --scrollbar-size: 8px;
   --scrollbar-thumb: rgba(26, 26, 26, 0.16);
@@ -90,11 +171,12 @@
   --z-overlay: 3000;     /* 弹窗 / 抽屉 / 遮罩 */
   --z-message: 4000;     /* 全局消息 / 通知 */
 
-  /* ===== 浮层皮肤：实色纸面 + 阴影（声明 elevation 一次：浮层用阴影不用边框） ===== */
+  /* ===== 浮层皮肤：实色纸面 + 阴影（声明 elevation 一次：浮层用阴影不用边框） =====
+     弹窗统一走覆盖层档圆角(--radius-lg) + --shadow-3（模态档阴影），自绘弹层（SettingsDialog/ActionSheet）同引用 */
   --overlay-radius: var(--radius-lg);
-  --overlay-shadow: 0 12px 40px rgba(26, 26, 26, 0.14), 0 2px 8px rgba(26, 26, 26, 0.08);
+  --overlay-shadow: var(--shadow-3);
   --menu-pad: 6px;
-  --menu-item-h: 34px;
+  --menu-item-h: 36px;   /* 统一浮层菜单行高（spec 11.5：图标+文字+右侧状态） */
   --menu-item-h-mobile: 44px;
 
   /* ===== 次级控件基面：默认按钮/图标按钮/输入型小控件统一引用（皮肤层会覆盖为玻璃） ===== */
@@ -140,6 +222,10 @@
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
   --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.5);
   --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.6);
+  /* Elevation 三级（暗色：黑影加重一档，层级关系与亮色一致） */
+  --shadow-1: 0 1px 3px rgba(0, 0, 0, 0.45), 0 1px 2px rgba(0, 0, 0, 0.35);
+  --shadow-2: 0 4px 16px rgba(0, 0, 0, 0.50), 0 2px 6px rgba(0, 0, 0, 0.40);
+  --shadow-3: 0 16px 48px rgba(0, 0, 0, 0.60), 0 4px 12px rgba(0, 0, 0, 0.45);
   --scrollbar-thumb: rgba(255, 255, 255, 0.18);
   --scrollbar-thumb-hover: rgba(255, 255, 255, 0.32);
   --scrollbar-thumb-active: rgba(255, 255, 255, 0.46);
@@ -153,10 +239,14 @@
   --el-border-color: #3A3A37;
   --el-border-color-light: #33332F;
   --el-border-color-lighter: #2A2A28;
+  --el-border-color-extra-light: #33332F;
+  --el-border-color-dark: #3A3A37;
+  --el-border-color-darker: #3A3A37;
   --el-text-color-primary: #ECEAE4;
   --el-text-color-regular: #D6D4CE;
   --el-text-color-secondary: #9A9A92;
   --el-text-color-placeholder: #6F6F68;
+  --el-text-color-disabled: var(--color-text-tertiary);
   --el-mask-color: rgba(0, 0, 0, 0.5);
   --el-color-primary: #DE5F4F;
   --el-color-primary-light-3: #CE5344;
@@ -173,7 +263,7 @@
   --el-color-danger-light-9: rgba(194, 91, 78, 0.16);
   --el-fill-color-dark: #33332F;
 
-  --overlay-shadow: 0 12px 40px rgba(0, 0, 0, 0.55), 0 2px 8px rgba(0, 0, 0, 0.40);
+  --overlay-shadow: var(--shadow-3);
 
   --btn-bg: rgba(255, 255, 255, 0.06);
   --btn-bg-hover: rgba(255, 255, 255, 0.10);

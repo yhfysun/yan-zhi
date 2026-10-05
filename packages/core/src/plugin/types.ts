@@ -71,9 +71,17 @@ export interface ThemePalette {
     border?: string;
     /** 深色模式表面边框色 */
     borderDark?: string;
-    /** 全局表面圆角 px（弹窗/卡片/预览窗/菜单），默认 12 */
+    /**
+     * 全局圆角基准 px —— **全站唯一的圆角旋钮**。
+     * 视为「覆盖层档」基准（默认 14），其余三档由它按固定比例派生：
+     * 微件 6 / 控件 8 / 容器 12 / 覆盖层 14。皮肤只能整体放大或收紧圆角，
+     * 不能单独改某一类控件的圆角（那会导致按钮/卡片/弹窗各走各的）。
+     */
     radius?: number;
-    /** 按钮圆角 px（el-button），默认 6 */
+    /**
+     * @deprecated 逐项圆角已废止，配置无效（仅登记，不再下发变量）。
+     * 圆角请统一用 `radius`。
+     */
     buttonRadius?: number;
     /** 实心主按钮文字色（缺省按主色对比度自动：浅主色→墨字，深主色→白字） */
     buttonText?: string;
@@ -95,11 +103,11 @@ export interface ThemePalette {
     shadow?: string;
     /** 实心主按钮渐变背景（CSS background-image），缺省=纯色 primary */
     buttonGradient?: string;
-    /** 输入框圆角 px（el-input/el-select/el-textarea），缺省=buttonRadius */
+    /** @deprecated 逐项圆角已废止（输入框恒为控件档）；请用 `radius` */
     inputRadius?: number;
-    /** 卡片圆角 px（el-card/glass-card），缺省=radius */
+    /** @deprecated 逐项圆角已废止（卡片恒为容器档）；请用 `radius` */
     cardRadius?: number;
-    /** 标签/徽标圆角 px（el-tag），缺省=buttonRadius */
+    /** @deprecated 逐项圆角已废止（标签恒为微件档）；请用 `radius` */
     tagRadius?: number;
     /** 自定义滚动条 thumb 色（覆盖默认主色低 alpha），缺省=主色 20% */
     scrollbarThumb?: string;

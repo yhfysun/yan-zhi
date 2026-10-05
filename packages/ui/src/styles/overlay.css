@@ -9,7 +9,12 @@
   background-color: var(--el-mask-color);
 }
 
-/* ===== Dialog ===== */
+/* ===== Dialog =====
+   布局节奏统一（弹窗规范）：
+   · 圆角/阴影走 --overlay-radius(12px)/--overlay-shadow(--shadow-3)，见 tokens.css；
+   · header 16px 20px（窄弹窗 14px 16px）、body 20px（窄弹窗 16px）、footer 12px 20px 16px；
+   · 标题 16px/600（窄弹窗降为 14px），分割线统一 var(--el-border-color-lighter)；
+   · footer flex 右对齐，按钮间距统一 8px（gap，不用 margin 叠加）。 */
 .el-dialog {
   border-radius: var(--overlay-radius);
   box-shadow: var(--overlay-shadow);
@@ -32,19 +37,19 @@
 }
 .el-dialog__header {
   flex-shrink: 0;
-  padding: 16px 20px 12px;
+  padding: 16px 20px;
   margin-right: 0;
-  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 55%, transparent);
+  border-bottom: 1px solid var(--el-border-color-lighter);
 }
 .el-dialog__title {
-  font-size: 16px;
-  font-weight: 650;
+  font-size: var(--font-size-lg);
+  font-weight: 600;
   color: var(--color-text);
   letter-spacing: 0.01em;
 }
 .el-dialog__headerbtn {
-  top: 14px;
-  right: 14px;
+  top: 16px;
+  right: 16px;
 }
 .el-dialog__headerbtn .el-dialog__close {
   color: var(--color-text-tertiary);
@@ -60,12 +65,16 @@
   display: flex;
   flex-direction: column;
   scrollbar-gutter: stable;
-  padding: 16px 20px;
+  padding: 20px;
   color: var(--color-text);
 }
 /* body 纵向 flex：普通子元素不收缩，主滚动区由下方规则拉满 */
 .el-dialog__body > * {
   flex-shrink: 0;
+}
+/* 表单项节奏：弹窗内 el-form-item 间距统一 16px（手机端由 App.vue 覆写为 14px） */
+.el-dialog .el-form-item {
+  margin-bottom: 16px;
 }
 /* ===== 内容型弹窗：主滚动区填满剩余高度（弹窗固定 80vh，内部不再限高） ===== */
 .el-dialog__body > .skill-mount-body,
@@ -93,20 +102,45 @@
 }
 .el-dialog__footer {
   flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
   padding: 12px 20px 16px;
 }
-/* 底部操作区：主次按钮间距 8px、右对齐 */
+/* 间距统一由上面的 gap 提供，抵消 EP 默认 .el-button + .el-button 的 margin-left */
 .el-dialog__footer .el-button + .el-button {
-  margin-left: 8px;
+  margin-left: 0;
+}
+/* footer 里唯一的整行包装层（FormDialog .fd-footer / OpsConnectionDialog .ops-dialog-footer
+   这类自带 space-between 的 div）撑满 footer，内部左右分栏才不塌缩 */
+.el-dialog__footer > div:only-child {
+  flex: 1 1 auto;
 }
 
 /* ===== 紧凑表单弹窗：高度随内容自适应（默认规则强制 80vh，小表单会大量留白） ===== */
-.compact-dialog .el-dialog {
+.compact-dialog.el-dialog {
   height: auto;
   max-height: min(80vh, calc(100dvh - 32px));
 }
-.compact-dialog .el-dialog__body {
-  padding-top: 20px;
+
+/* ===== 窄弹窗（≤520px）：留白整体降一档，标题字号随之分级 =====
+   由调用方加 el-dialog--sm 类（FormDialog 按 width 自动推导，手写 el-dialog 需显式加） */
+.el-dialog--sm .el-dialog__header {
+  padding: 14px 16px;
+}
+.el-dialog--sm .el-dialog__title {
+  font-size: var(--font-size-md);
+}
+.el-dialog--sm .el-dialog__headerbtn {
+  top: 12px;
+  right: 12px;
+}
+.el-dialog--sm .el-dialog__body {
+  padding: 16px;
+}
+.el-dialog--sm .el-dialog__footer {
+  padding: 12px 16px 14px;
 }
 
 /* ===== MessageBox ===== */
@@ -117,8 +151,8 @@
   background: var(--el-bg-color);
 }
 .el-message-box__title {
-  font-size: 15px;
-  font-weight: 650;
+  font-size: var(--font-size-md);
+  font-weight: 600;
   color: var(--color-text);
 }
 .el-message-box__message {
@@ -128,6 +162,17 @@
 .el-message-box__btns .el-button + .el-button {
   margin-left: 8px;
 }
+/* ===== 危险确认框主按钮：danger 色底白字 =====
+   删除类 ElMessageBox.confirm 调用处传 confirmButtonClass: 'yz-confirm-danger'
+   （升级 spec checklist ④：危险操作居中确认框主按钮警示色）。只用 token，不写死色值。 */
+.el-message-box__btns .el-button.yz-confirm-danger {
+  --el-button-bg-color: var(--el-color-danger, var(--color-danger));
+  --el-button-border-color: var(--el-color-danger, var(--color-danger));
+  --el-button-hover-bg-color: var(--el-color-danger-light-3, var(--color-danger));
+  --el-button-hover-border-color: var(--el-color-danger-light-3, var(--color-danger));
+  --el-button-active-bg-color: var(--el-color-danger-dark-2, var(--color-danger));
+  --el-button-active-border-color: var(--el-color-danger-dark-2, var(--color-danger));
+}
 
 /* ===== Drawer：纯位移入场，无缩放；统一头尾结构 ===== */
 .el-drawer {
@@ -135,13 +180,13 @@
   box-shadow: var(--overlay-shadow);
 }
 .el-drawer__header {
-  padding: 16px 20px 12px;
+  padding: 16px 20px;
   margin-bottom: 0;
   color: var(--color-text);
-  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 55%, transparent);
+  border-bottom: 1px solid var(--el-border-color-lighter);
 }
 .el-drawer__body {
-  padding: 16px 20px;
+  padding: 20px;
 }
 
 /* ===== Popper 基座（dropdown / select / tooltip 宿主）：实色 + 软阴影 + 统一圆角 ===== */

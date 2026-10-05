@@ -661,7 +661,7 @@ async function askConflict(names: string[], side: '远程' | '本地'): Promise<
   return ElMessageBox.confirm(
     `${side}已有同名项：${label}。选择「覆盖」将替换原文件；选择「重命名」保留双方（自动加 -1 后缀）。`,
     '同名冲突',
-    { confirmButtonText: '覆盖', cancelButtonText: '重命名', type: 'warning', distinguishCancelAndClose: false },
+    { confirmButtonText: '覆盖', confirmButtonClass: 'yz-confirm-danger', cancelButtonText: '重命名', type: 'warning', distinguishCancelAndClose: false },
   ).then(() => 'overwrite' as const).catch(() => 'rename' as const);
 }
 /** 生成不冲突的名字：name.ext → name-1.ext */
@@ -904,7 +904,7 @@ async function deleteSelected() {
   const isProd = isProdTag(props.conn.tag || '');
   const label = names.length === 1 ? `「${names[0]}」` : `${names.length} 项`;
   const ok = await ElMessageBox.confirm(
-    `${isProd ? '生产连接：' : ''}确认删除 ${label}？（仅支持文件与空目录）`, '确认删除', { type: 'warning' },
+    `${isProd ? '生产连接：' : ''}确认删除 ${label}？（仅支持文件与空目录）`, '确认删除', { type: 'warning', confirmButtonClass: 'yz-confirm-danger' },
   ).then(() => true).catch(() => false);
   if (!ok) return;
   for (const name of names) {

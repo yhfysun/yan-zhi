@@ -609,8 +609,8 @@
     <!-- 主导方悬浮胶囊（任务 8.4：命令模式 ↔ AI 模式，右下角，不占布局行） -->
     <LeadToggle :model-value="lead" mode="sec" @update:model-value="onLeadChange" />
 
-    <!-- ============ 登记授权目标 ============ -->
-    <el-dialog v-model="showAdd" title="登记授权目标" width="520px">
+    <!-- ============ 登记授权目标：统一 FormDialog（取消/登记底栏由组件默认渲染） ============ -->
+    <FormDialog v-model="showAdd" title="登记授权目标" width="520px" confirm-text="登记" @submit="addScope">
       <el-form label-width="92px" size="small">
         <el-form-item label="类型">
           <el-select v-model="form.type">
@@ -650,11 +650,7 @@
           <el-input v-model="form.ownershipEvidence" placeholder="备案号 / 证书主体 / 域名注册信息（公网必填）" />
         </el-form-item>
       </el-form>
-      <template #footer>
-        <el-button size="small" @click="showAdd = false">取消</el-button>
-        <el-button size="small" type="primary" @click="addScope">登记</el-button>
-      </template>
-    </el-dialog>
+    </FormDialog>
 
     <!-- ============ 演练二次确认 ============ -->
     <el-dialog v-model="simConfirm" title="演练二次确认" width="520px" :close-on-click-modal="false">
@@ -685,6 +681,7 @@ import { useSettingsStore } from '../../stores/settings';
 import { usePlatformStore } from '../../stores/platform';
 import TaskListSection from '../../components/workbench/TaskListSection.vue';
 import LeadToggle from '../../components/workbench/LeadToggle.vue';
+import FormDialog from '../../components/FormDialog.vue';
 import { activeMode, leadOf, setLead, type LeadMode } from '../../stores/mode';
 import { useChat } from '../../composables/chat/useChat';
 import MarkdownIt from 'markdown-it';

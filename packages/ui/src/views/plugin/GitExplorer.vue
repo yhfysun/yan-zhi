@@ -495,7 +495,7 @@ function unstageAll() { void doUnstage(stagedFiles.value.map((f) => f.path)); }
 
 async function doRestore(path: string) {
   try {
-    await ElMessageBox.confirm(`放弃 ${path} 的未暂存更改？此操作不可恢复。`, '放弃更改', { type: 'warning', confirmButtonText: '放弃', cancelButtonText: '取消' });
+    await ElMessageBox.confirm(`放弃 ${path} 的未暂存更改？此操作不可恢复。`, '放弃更改', { type: 'warning', confirmButtonClass: 'yz-confirm-danger', confirmButtonText: '放弃', cancelButtonText: '取消' });
   } catch { return; }
   busy.value = true;
   try {
@@ -524,7 +524,7 @@ async function doCommit() {
 
 async function doAbortMerge() {
   try {
-    await ElMessageBox.confirm('中止当前合并，恢复到合并前状态？', '中止合并', { type: 'warning', confirmButtonText: '中止', cancelButtonText: '取消' });
+    await ElMessageBox.confirm('中止当前合并，恢复到合并前状态？', '中止合并', { type: 'warning', confirmButtonClass: 'yz-confirm-danger', confirmButtonText: '中止', cancelButtonText: '取消' });
   } catch { return; }
   busy.value = true;
   try {

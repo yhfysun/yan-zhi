@@ -192,7 +192,7 @@ async function renameNode(node: StdNode) {
 
 async function removeNode(node: StdNode) {
   try {
-    await ElMessageBox.confirm(`删除「${node.kind === 'group' ? node.name : node.key}」？其子节点将上提一级。`, '提示', { type: 'warning' });
+    await ElMessageBox.confirm(`删除「${node.kind === 'group' ? node.name : node.key}」？其子节点将上提一级。`, '提示', { type: 'warning', confirmButtonClass: 'yz-confirm-danger' });
     const res = await api.delete(`/std-attributes/${node.id}`);
     if ('error' in res) return ElMessage.error(res.error);
     await load();

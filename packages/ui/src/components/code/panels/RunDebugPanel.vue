@@ -219,7 +219,7 @@ async function delConfig() {
   if (!current.value) return;
   try {
     await ElMessageBox.confirm(`删除配置「${current.value.name}」？`, '删除', {
-      confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning',
+      confirmButtonText: '删除', confirmButtonClass: 'yz-confirm-danger', cancelButtonText: '取消', type: 'warning',
     });
   } catch { return; }
   code.removeRunConfig(current.value.id);

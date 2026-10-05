@@ -5,32 +5,32 @@
     <!-- 服务管理 -->
     <template v-if="activeTab === 'servers'">
     <!-- 面板工具栏：搜索 + 新增（原独立页 page-top 的精简版，供 tab 内嵌使用） -->
-    <div class="mcp-panel-toolbar">
-      <div class="mcp-search-wrap">
-        <el-icon class="mcp-search-icon"><Search /></el-icon>
-        <input v-model="searchQuery" placeholder="搜索服务..." class="mcp-search-input" />
-        <el-icon v-if="searchQuery" class="mcp-search-clear" @click="searchQuery = ''"><Close /></el-icon>
-      </div>
-      <el-button type="primary" @click="openAdd" :icon="Plus" class="fab-add">新增服务</el-button>
-    </div>
+    <SearchToolbar v-model:query="searchQuery" placeholder="搜索服务...">
+      <template #actions>
+        <el-button type="primary" @click="openAdd" :icon="Plus" class="fab-add">新增服务</el-button>
+      </template>
+    </SearchToolbar>
 
     <el-empty v-if="filteredServers.length === 0" :description="searchQuery ? '没有匹配的 MCP 服务' : '暂无 MCP 服务，点击右上角按钮添加'" :image-size="120" />
 
-    <div v-else class="card-grid">
-      <div v-for="s in filteredServers" :key="s.id" class="mcp-card" :class="{ connected: s.status === 'connected' }">
-        <div class="card-top">
+    <CardGrid v-else :min-card-width="360" :gap="16">
+      <GlassCard
+        v-for="s in filteredServers"
+        :key="s.id"
+        :class="{ connected: s.status === 'connected' }"
+        :title="s.name"
+      >
+        <template #icon>
           <div class="card-icon" :class="s.status">
             <el-icon :size="20"><Connection /></el-icon>
           </div>
-          <div class="card-head">
-            <span class="card-name">{{ s.name }}<span class="status-dot" :class="s.status" :title="s.status === 'connected' ? '已连接' : '未连接'"></span></span>
-            <div class="card-badges">
-              <el-tag :type="s.transport === 'stdio' ? '' : s.transport === 'sse' ? 'success' : 'warning'" size="small" effect="light">
-                {{ s.transport.toUpperCase() }}
-              </el-tag>
-              <el-tag v-if="s.authCredentialId" type="info" size="small" effect="plain"><el-icon><Lock /></el-icon> 已鉴权</el-tag>
-            </div>
-          </div>
+        </template>
+        <div class="card-badges">
+          <span class="status-dot" :class="s.status" :title="s.status === 'connected' ? '已连接' : '未连接'"></span>
+          <el-tag :type="s.transport === 'stdio' ? '' : s.transport === 'sse' ? 'success' : 'warning'" size="small" effect="light">
+            {{ s.transport.toUpperCase() }}
+          </el-tag>
+          <el-tag v-if="s.authCredentialId" type="info" size="small" effect="plain"><el-icon><Lock /></el-icon> 已鉴权</el-tag>
         </div>
 
         <div class="card-body">
@@ -41,7 +41,7 @@
           </div>
         </div>
 
-        <div class="card-foot">
+        <template #foot>
           <div class="card-stats">
             <span class="stat">
               <el-icon :size="14"><Switch /></el-icon>
@@ -52,26 +52,26 @@
               {{ (store.resources[s.id] || []).length }} 资源
             </span>
           </div>
-          <div class="card-actions">
-            <el-button size="small" :type="s.status === 'connected' ? '' : 'primary'" :loading="store.connecting === s.id" @click="connect(s.id)" round>
-              {{ s.status === 'connected' ? '重连' : '连接' }}
-            </el-button>
-            <el-button size="small" :disabled="s.status !== 'connected'" @click="showTools(s.id)" round>工具</el-button>
-            <el-dropdown trigger="click" @command="(cmd: string) => handleCmd(cmd, s.id)">
-              <el-button size="small" round><el-icon><More /></el-icon></el-button>
-              <template #dropdown>
-                <el-dropdown-menu>
-                  <el-dropdown-item command="resources" :disabled="s.status !== 'connected'"><el-icon><Document /></el-icon> 查看资源</el-dropdown-item>
-                  <el-dropdown-item command="prompts" :disabled="s.status !== 'connected'"><el-icon><Tickets /></el-icon> 查看提示词</el-dropdown-item>
-                  <el-dropdown-item command="logs"><el-icon><List /></el-icon> 查看日志</el-dropdown-item>
-                  <el-dropdown-item command="delete" divided><el-icon><DeleteIcon /></el-icon> 删除服务</el-dropdown-item>
-                </el-dropdown-menu>
-              </template>
-            </el-dropdown>
-          </div>
-        </div>
-      </div>
-    </div>
+        </template>
+        <template #actions>
+          <el-button size="small" :type="s.status === 'connected' ? '' : 'primary'" :loading="store.connecting === s.id" @click="connect(s.id)" round>
+            {{ s.status === 'connected' ? '重连' : '连接' }}
+          </el-button>
+          <el-button size="small" :disabled="s.status !== 'connected'" @click="showTools(s.id)" round>工具</el-button>
+          <el-dropdown trigger="click" @command="(cmd: string) => handleCmd(cmd, s.id)">
+            <el-button size="small" round><el-icon><More /></el-icon></el-button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item command="resources" :disabled="s.status !== 'connected'"><el-icon><Document /></el-icon> 查看资源</el-dropdown-item>
+                <el-dropdown-item command="prompts" :disabled="s.status !== 'connected'"><el-icon><Tickets /></el-icon> 查看提示词</el-dropdown-item>
+                <el-dropdown-item command="logs"><el-icon><List /></el-icon> 查看日志</el-dropdown-item>
+                <el-dropdown-item command="delete" divided><el-icon><DeleteIcon /></el-icon> 删除服务</el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
+        </template>
+      </GlassCard>
+    </CardGrid>
     </template>
 
     <!-- 凭证/令牌保险库 -->
@@ -83,21 +83,18 @@
 
       <el-empty v-if="store.credentials.length === 0" description="暂无凭证，点击右上角生成第一个" :image-size="120" />
       <div v-else class="cred-list">
-        <div v-for="c in store.credentials" :key="c.id" class="cred-item">
-          <div class="cred-main">
-            <div class="cred-name">{{ c.name }}</div>
-            <div class="cred-meta">
-              <el-tag size="small" effect="light">{{ c.scheme === 'bearer' ? 'Bearer' : 'Raw' }}</el-tag>
-              <el-tag size="small" effect="plain" type="info">{{ c.target === 'header' ? '请求头' : '环境变量' }}</el-tag>
-              <span v-if="c.scheme === 'raw' && c.key" class="cred-key">{{ c.key }}</span>
-              <span class="cred-time">创建于 {{ new Date(c.createdAt).toLocaleDateString() }}</span>
-            </div>
+        <ToggleListRow v-for="c in store.credentials" :key="c.id" :title="c.name">
+          <div class="cred-meta">
+            <el-tag size="small" effect="light">{{ c.scheme === 'bearer' ? 'Bearer' : 'Raw' }}</el-tag>
+            <el-tag size="small" effect="plain" type="info">{{ c.target === 'header' ? '请求头' : '环境变量' }}</el-tag>
+            <span v-if="c.scheme === 'raw' && c.key" class="cred-key">{{ c.key }}</span>
+            <span class="cred-time">创建于 {{ new Date(c.createdAt).toLocaleDateString() }}</span>
           </div>
-          <div class="cred-actions">
+          <template #actions>
             <el-button size="small" @click="revealCred(c)" round>查看</el-button>
             <el-button size="small" type="danger" plain @click="delCred(c)" round>删除</el-button>
-          </div>
-        </div>
+          </template>
+        </ToggleListRow>
       </div>
     </template>
 
@@ -122,20 +119,17 @@
 
       <el-empty v-if="store.accessKeys.length === 0" description="尚未签发访问凭证" :image-size="120" />
       <div v-else class="cred-list">
-        <div v-for="k in store.accessKeys" :key="k.id" class="cred-item">
-          <div class="cred-main">
-            <div class="cred-name">{{ k.name }}</div>
-            <div class="cred-meta">
-              <el-tag size="small" effect="plain" type="info" class="mono">{{ k.keyPrefix }}…</el-tag>
-              <span class="cred-time">签发于 {{ new Date(k.createdAt).toLocaleDateString() }}</span>
-              <span v-if="k.lastUsedAt" class="cred-time">上次使用 {{ new Date(k.lastUsedAt).toLocaleString() }}</span>
-              <span v-if="k.expiresAt" class="cred-time">过期 {{ new Date(k.expiresAt).toLocaleDateString() }}</span>
-            </div>
+        <ToggleListRow v-for="k in store.accessKeys" :key="k.id" :title="k.name">
+          <div class="cred-meta">
+            <el-tag size="small" effect="plain" type="info" class="mono">{{ k.keyPrefix }}…</el-tag>
+            <span class="cred-time">签发于 {{ new Date(k.createdAt).toLocaleDateString() }}</span>
+            <span v-if="k.lastUsedAt" class="cred-time">上次使用 {{ new Date(k.lastUsedAt).toLocaleString() }}</span>
+            <span v-if="k.expiresAt" class="cred-time">过期 {{ new Date(k.expiresAt).toLocaleDateString() }}</span>
           </div>
-          <div class="cred-actions">
+          <template #actions>
             <el-button size="small" type="danger" plain @click="revokeKey(k)" round>撤销</el-button>
-          </div>
-        </div>
+          </template>
+        </ToggleListRow>
       </div>
     </template>
 
@@ -203,7 +197,7 @@
     </el-dialog>
 
     <!-- 新增/编辑凭证 -->
-    <el-dialog v-model="credDialog" :title="credForm.id ? '编辑凭证' : '新增凭证'" width="520px" :close-on-click-modal="false" @close="credDialog = false">
+    <el-dialog v-model="credDialog" :title="credForm.id ? '编辑凭证' : '新增凭证'" width="520px" class="el-dialog--sm" :close-on-click-modal="false" @close="credDialog = false">
       <el-form label-width="90px">
         <el-form-item label="名称">
           <el-input v-model="credForm.name" placeholder="如：GitHub PAT" />
@@ -232,7 +226,7 @@
     </el-dialog>
 
     <!-- 查看明文 -->
-    <el-dialog v-model="revealDialog" :title="`查看凭证明文：${revealName}`" width="520px">
+    <el-dialog v-model="revealDialog" :title="`查看凭证明文：${revealName}`" width="520px" class="el-dialog--sm">
       <el-alert type="warning" :closable="false" show-icon title="请妥善保存" description="明文仅在本次查看时返回，关闭后不可再获取，请立即复制。" style="margin-bottom:12px" />
       <el-input :model-value="revealText" type="textarea" :rows="3" readonly />
       <template #footer>
@@ -242,7 +236,7 @@
     </el-dialog>
 
     <!-- 签发入站访问凭证 -->
-    <el-dialog v-model="keyDialog" title="签发访问凭证" width="520px" :close-on-click-modal="false" @close="closeKeyDialog">
+    <el-dialog v-model="keyDialog" title="签发访问凭证" width="520px" class="el-dialog--sm" :close-on-click-modal="false" @close="closeKeyDialog">
       <template v-if="!createdKey">
         <el-form label-width="90px">
           <el-form-item label="名称">
@@ -276,15 +270,14 @@
         <div v-if="currentTools.length === 0" class="tools-empty">
           <el-empty description="暂无工具" :image-size="80" />
         </div>
-        <div v-for="t in currentTools" :key="t.name" class="tool-card-item" :class="{ disabled: !isToolEnabled(t) }">
-          <div class="tool-card-left">
-            <div class="tool-card-header">
-              <el-icon :size="16" class="tool-icon"><Switch /></el-icon>
-              <span class="tool-card-name" :title="t.name">{{ displayToolLabel(t) }}</span>
-              <div class="tool-card-actions-inline">
-                <el-button size="small" link type="primary" @click="showSchema(t)">Schema</el-button>
-              </div>
-            </div>
+        <div v-for="t in currentTools" :key="t.name">
+          <ToggleListRow
+            :title="displayToolLabel(t)"
+            :enabled="toolEnabledMap[t.name]"
+            :switch-disabled="toolEnabledMap[t.name] !== false && currentTools.filter(x => toolEnabledMap[x.name] !== false).length <= 1"
+            :row-disabled="!isToolEnabled(t)"
+            @change="(v: boolean) => onToolToggle(t, v)"
+          >
             <div class="tool-meta-row">
               <input
                 class="tool-meta-input alias-input"
@@ -305,19 +298,19 @@
               {{ t.description }}
             </div>
             <div v-else class="tool-card-desc empty-desc">暂无描述</div>
-            <div v-if="expandedSchema[t.name]" class="tool-schema-block">
-              <div class="schema-section"><span class="schema-label">入参</span><pre class="schema-pre">{{ fmtSchema(t.inputSchema) }}</pre></div>
-              <div class="schema-section"><span class="schema-label">出参</span><pre class="schema-pre">{{ fmtSchema(t.outputSchema) }}</pre></div>
-            </div>
-          </div>
-          <div class="tool-card-right">
-            <el-switch
-              v-model="toolEnabledMap[t.name]"
-              :disabled="toolEnabledMap[t.name] !== false && currentTools.filter(x => toolEnabledMap[x.name] !== false).length <= 1"
-              size="small"
-              @change="(v: boolean) => onToolToggle(t, v)"
+            <SchemaViewer
+              v-if="expandedSchema[t.name]"
+              class="tool-schema-block"
+              max-height="220px"
+              :sections="[
+                { label: '入参', text: fmtSchema(t.inputSchema) },
+                { label: '出参', text: fmtSchema(t.outputSchema) },
+              ]"
             />
-          </div>
+            <template #actions>
+              <el-button size="small" link type="primary" @click="showSchema(t)">Schema</el-button>
+            </template>
+          </ToggleListRow>
         </div>
       </div>
     </el-dialog>
@@ -380,10 +373,15 @@
 
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue';
-import { Plus, Connection, More, Link, Document, Switch, Tickets, List, Delete as DeleteIcon, Search, Close, Lock } from '@element-plus/icons-vue';
+import { Plus, Connection, More, Link, Document, Switch, Tickets, List, Delete as DeleteIcon, Lock } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { useMcpStore } from '../stores';
 import type { McpTransport, McpTool } from '@yan-zhi/shared';
+import SearchToolbar from './common/SearchToolbar.vue';
+import GlassCard from './common/GlassCard.vue';
+import CardGrid from './common/CardGrid.vue';
+import SchemaViewer from './common/SchemaViewer.vue';
+import ToggleListRow from './common/ToggleListRow.vue';
 
 const props = defineProps<{
   /** 深链聚焦：/mcp/:id 迁移后由 /tools?focus=<id> 传入，挂载后自动打开该服务的工具面板 */
@@ -796,7 +794,7 @@ function fmtSchema(schema: unknown): string {
 
 async function del(id: string) {
   try {
-    await ElMessageBox.confirm('删除该 MCP 服务？关联工具也会一并删除', '提示', { type: 'warning' });
+    await ElMessageBox.confirm('删除该 MCP 服务？关联工具也会一并删除', '提示', { type: 'warning', confirmButtonClass: 'yz-confirm-danger' });
     await store.deleteServer(id);
     ElMessage.success('已删除');
   } catch {}
@@ -810,6 +808,7 @@ async function del(id: string) {
   gap: 16px;
 }
 
+/* 搜索框由 SearchToolbar 提供；本工具栏类仅供凭证/对外访问 tab 的提示行使用 */
 .mcp-panel-toolbar {
   display: flex;
   align-items: center;
@@ -817,43 +816,9 @@ async function del(id: string) {
   gap: 8px;
 }
 
-.mcp-search-wrap {
-  display: flex; align-items: center; gap: 4px;
-  padding: 5px 12px; border-radius: 10px;
-  border: 1px solid var(--glass-border); background: var(--glass-bg);
-  width: 200px; transition: border-color 0.2s;
-}
-.mcp-search-wrap:focus-within { border-color: var(--color-primary); }
-.mcp-search-icon { font-size: 14px; color: var(--color-text-secondary); flex-shrink: 0; }
-.mcp-search-input {
-  border: none; outline: none; background: transparent;
-  font-size: 13px; width: 100%; min-width: 0; color: var(--color-text);
-}
-.mcp-search-input::placeholder { color: var(--color-text-secondary); opacity: 0.5; }
-.mcp-search-clear { font-size: 13px; color: var(--color-text-secondary); cursor: pointer; flex-shrink: 0; }
+/* 连接中的服务卡片：GlassCard 之外仅保留状态描边 */
+.connected { border-color: rgba(34, 197, 94, 0.25); }
 
-.card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 16px; }
-
-.mcp-card {
-  background: var(--glass-bg);
-  backdrop-filter: var(--glass-filter);
-  -webkit-backdrop-filter: var(--glass-filter);
-  border: 1px solid var(--glass-border);
-  border-radius: var(--radius-md);
-  padding: 20px;
-  transition: all 0.2s ease;
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-.mcp-card:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 8px 25px rgba(0, 0, 0, 0.06);
-  border-color: var(--glass-border-strong);
-}
-.mcp-card.connected { border-color: rgba(34, 197, 94, 0.25); }
-
-.card-top { display: flex; align-items: center; gap: 14px; }
 .card-icon {
   width: 44px; height: 44px; border-radius: 12px;
   display: flex; align-items: center; justify-content: center;
@@ -862,9 +827,7 @@ async function del(id: string) {
 }
 .card-icon.connected { background: rgba(34, 197, 94, 0.12); color: #22c55e; }
 
-.card-head { flex: 1; min-width: 0; }
-.card-name { font-size: 15px; font-weight: 600; display: flex; align-items: center; gap: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.card-badges { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+.card-badges { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 
 .status-dot {
   display: inline-block; width: 8px; height: 8px; border-radius: 50%;
@@ -885,18 +848,16 @@ async function del(id: string) {
 }
 .addr-cmd, .addr-url { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-.card-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .card-stats { display: flex; gap: 14px; }
 .stat { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--color-text-secondary); }
-.card-actions { display: flex; gap: 6px; }
 
-.form-tip { font-size: 12px; color: var(--color-text-secondary); margin-top: 4px; line-height: 1.5; }
+.form-tip { font-size: var(--font-size-xs); color: var(--color-text-secondary); margin-top: 4px; line-height: 1.5; }
 .form-tip-warn { color: #f59e0b; }
 
 .dialog-actions-bar {
   display: flex; align-items: center; gap: 8px;
   padding: 8px 0 12px;
-  border-top: 1px solid var(--glass-border);
+  border-top: 1px solid var(--el-border-color-lighter);
   margin-top: 8px;
 }
 .form-status { font-size: 12px; margin-left: auto; }
@@ -927,20 +888,7 @@ async function del(id: string) {
 .tools-dialog-body::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: 999px; }
 .tools-empty { padding: 40px 0; }
 
-.tool-card-item {
-  display: flex; align-items: flex-start; gap: 12px;
-  padding: 14px 16px; border-radius: 10px;
-  background: rgba(15, 23, 42, 0.02); border: 1px solid var(--glass-border);
-  transition: all 0.18s;
-}
-.tool-card-item:hover { background: rgba(59, 130, 246, 0.04); border-color: rgba(59, 130, 246, 0.15); }
-.tool-card-item.disabled { opacity: 0.45; }
-
-.tool-card-left { flex: 1; min-width: 0; }
-.tool-card-header {
-  display: flex; align-items: center; gap: 8px; margin-bottom: 4px;
-}
-
+/* 工具行（含启用开关/Schema/别名备注）由 ToggleListRow 渲染 */
 .tool-meta-row {
   display: flex; gap: 8px; padding: 0 0 0 24px; margin-bottom: 4px;
 }
@@ -952,14 +900,6 @@ async function del(id: string) {
 }
 .tool-meta-input:focus { border-color: var(--color-primary); }
 .tool-meta-input::placeholder { color: rgba(15,23,42,0.3); font-style: italic; }
-.tool-icon { color: #8B5CF6; flex-shrink: 0; }
-.tool-card-name {
-  font-family: "JetBrains Mono", "Cascadia Code", monospace;
-  font-size: 13px; font-weight: 600; flex: 1; min-width: 0;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.tool-card-actions-inline { flex-shrink: 0; }
-.tool-card-actions-inline .el-button { font-size: 11px; padding: 0 2px; }
 
 .tool-card-desc {
   font-size: 12px; color: var(--color-text-secondary); line-height: 1.5;
@@ -973,28 +913,18 @@ async function del(id: string) {
 .tool-card-desc.empty-desc { font-style: italic; opacity: 0.5; cursor: default; }
 .tool-card-desc.empty-desc:hover { background: none; }
 
-.tool-card-right { padding-top: 2px; flex-shrink: 0; }
-
-/* 入参/出参行内展开块 */
+/* 入参/出参行内展开块：SchemaViewer 根（.sv）叠加定位与衬底 */
 .tool-schema-block {
   margin: 6px 0 0 24px; padding: 8px 10px; border-radius: 8px;
   background: rgba(15, 23, 42, 0.06); border: 1px solid var(--glass-border);
-  display: flex; flex-direction: column; gap: 8px;
-}
-.schema-section { display: flex; flex-direction: column; gap: 4px; }
-.schema-label {
-  font-size: 11px; font-weight: 600; color: var(--color-text);
-  text-transform: uppercase; letter-spacing: 0.5px; opacity: 0.85;
-}
-.schema-pre {
-  margin: 0; padding: 8px; border-radius: 6px;
-  background: rgba(0, 0, 0, 0.04); color: var(--color-text);
-  font-family: "JetBrains Mono", "Cascadia Code", monospace; font-size: 11px;
-  line-height: 1.5; max-height: 220px; overflow: auto; white-space: pre-wrap; word-break: break-word;
 }
 :root[data-theme="dark"] .tool-schema-block { background: rgba(255, 255, 255, 0.04); }
-:root[data-theme="dark"] .schema-pre { background: rgba(0, 0, 0, 0.35); }
 
+.cred-list { display: flex; flex-direction: column; gap: 10px; }
+.cred-meta {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin-top: 4px;
+}
 .cred-time { font-size: 12px; color: var(--color-text-secondary); }
 .mono { font-family: "JetBrains Mono", "Cascadia Code", monospace; }
 
@@ -1010,8 +940,5 @@ async function del(id: string) {
 
 @media (max-width: 767px) {
   .mcp-panel-toolbar { flex-wrap: wrap; }
-  .mcp-search-wrap { width: 100%; }
-  .card-grid { grid-template-columns: 1fr; gap: 12px; }
-  .mcp-card { padding: 14px; }
 }
 </style>

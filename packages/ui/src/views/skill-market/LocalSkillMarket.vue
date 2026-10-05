@@ -5,57 +5,61 @@
         <el-button text @click="$router.push('/skills')"><el-icon><ArrowLeft /></el-icon> 商城首页</el-button>
         <h2 class="lm-title">本地商城</h2>
       </div>
-      <div class="lm-header-right">
-        <el-select v-model="catFilter" size="default" class="cat-select" placeholder="全部分类">
-          <el-option label="全部分类" value="all" />
-          <el-option v-for="c in categoryOptions" :key="c.key" :label="c.label" :value="c.key" />
-        </el-select>
-        <div class="lm-search-wrap">
-          <el-icon class="lm-search-icon"><Search /></el-icon>
-          <input v-model="search" placeholder="搜索..." class="lm-search-input" />
-          <el-icon v-if="search" class="lm-search-clear" @click="search = ''"><Close /></el-icon>
-        </div>
-        <el-button type="primary" :icon="Plus" @click="openNew" class="fab-add">新增 Skill</el-button>
-        <el-tooltip content="Markdown 导入">
-          <el-button circle @click="importMd" class="lm-icon-btn"><el-icon :size="16"><UploadFilled /></el-icon></el-button>
-        </el-tooltip>
-        <el-tooltip content="文件夹导入">
-          <el-button circle @click="importFolder" class="lm-icon-btn"><el-icon :size="16"><FolderOpened /></el-icon></el-button>
-        </el-tooltip>
-        <el-tooltip content="压缩包导入">
-          <el-button circle @click="importZip" class="lm-icon-btn"><el-icon :size="16"><Box /></el-icon></el-button>
-        </el-tooltip>
-      </div>
+      <SearchToolbar v-model:query="search" placeholder="搜索...">
+        <template #actions>
+          <el-select v-model="catFilter" size="default" class="yz-cat-select" placeholder="全部分类">
+            <el-option label="全部分类" value="all" />
+            <el-option v-for="c in categoryOptions" :key="c.key" :label="c.label" :value="c.key" />
+          </el-select>
+          <el-button type="primary" :icon="Plus" @click="openNew" class="fab-add">新增 Skill</el-button>
+          <el-tooltip content="Markdown 导入">
+            <el-button @click="importMd" class="yz-icon-btn"><el-icon :size="16"><UploadFilled /></el-icon></el-button>
+          </el-tooltip>
+          <el-tooltip content="文件夹导入">
+            <el-button @click="importFolder" class="yz-icon-btn"><el-icon :size="16"><FolderOpened /></el-icon></el-button>
+          </el-tooltip>
+          <el-tooltip content="压缩包导入">
+            <el-button @click="importZip" class="yz-icon-btn"><el-icon :size="16"><Box /></el-icon></el-button>
+          </el-tooltip>
+        </template>
+      </SearchToolbar>
     </header>
 
     <div class="skill-groups">
-      <div v-for="group in groupedSkills" :key="group.category" class="builtin-cat">
-        <span
-          class="cat-tag"
-          :class="{ collapsed: collapsedCats[group.category] }"
-          @click="toggleCat(group.category)"
-        ><el-icon class="cat-tag-arrow"><ArrowRight v-if="collapsedCats[group.category]" /><ArrowDown v-else /></el-icon>{{ group.category }}<em>{{ group.skills.length }}</em></span>
-        <div v-show="!collapsedCats[group.category]" class="skill-grid">
-          <div v-for="s in group.skills" :key="s.id" class="skill-card" @click="previewSkill(s)">
-            <div class="card-top">
+      <CollapsibleCategory
+        v-for="group in groupedSkills"
+        :key="group.category"
+        :label="group.category"
+        :count="group.skills.length"
+        :collapsed="!!collapsedCats[group.category]"
+        @update:collapsed="toggleCat(group.category)"
+      >
+        <CardGrid :min-card-width="220">
+          <GlassCard
+            v-for="s in group.skills"
+            :key="s.id"
+            :title="s.name"
+            :description="s.description"
+            @click="previewSkill(s)"
+          >
+            <template #icon>
               <div class="card-icon" :class="{ off: !s.enabled }"><el-icon :size="24"><Files /></el-icon></div>
-              <div class="card-name" :title="s.name">{{ s.name }}</div>
+            </template>
+            <template #badge>
               <el-tag v-if="s.isPublic" type="primary" size="small" effect="dark">已公开</el-tag>
               <el-tag :type="s.source === 'local' ? 'warning' : 'success'" size="small" effect="plain">{{ s.source === 'local' ? '自建' : '内置' }}</el-tag>
-            </div>
-            <div class="card-desc" :title="s.description">{{ s.description }}</div>
-            <div class="card-bar" @click.stop>
+            </template>
+            <template #actions>
               <el-tooltip v-if="authStore.isLoggedIn" :content="s.isPublic ? '点击下架' : '发布到商城'" placement="top">
                 <el-switch :model-value="!!s.isPublic" size="small" @change="(v: boolean) => togglePublish(s.id, v)" />
               </el-tooltip>
               <el-switch :model-value="s.enabled" size="small" @change="(v: boolean) => toggle(s.id, v)" />
-              <span class="card-gap" />
               <el-tooltip v-if="s.source === 'local'" content="编辑" placement="top"><el-button size="small" circle @click="openEdit(s)"><el-icon :size="14"><Edit /></el-icon></el-button></el-tooltip>
               <el-tooltip :content="s.source === 'local' ? '删除' : '卸载'" placement="top"><el-button size="small" circle type="danger" @click="removeSkill(s.id)"><el-icon :size="14"><Delete /></el-icon></el-button></el-tooltip>
-            </div>
-          </div>
-        </div>
-      </div>
+            </template>
+          </GlassCard>
+        </CardGrid>
+      </CollapsibleCategory>
       <el-empty v-if="filteredSkills.length === 0" description="还没有 Skill" />
     </div>
 
@@ -105,11 +109,15 @@
 
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted } from 'vue';
-import { Plus, Files, ArrowLeft, ArrowRight, ArrowDown, Edit, Delete, FolderOpened, UploadFilled, Box, Search, Close } from '@element-plus/icons-vue';
+import { Plus, Files, ArrowLeft, Edit, Delete, FolderOpened, UploadFilled, Box } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { useSkillStore, useAuthStore } from '../../stores';
 import { getPlatformAdapter } from '@yan-zhi/core';
 import type { Skill } from '../../stores/skill';
+import SearchToolbar from '../../components/common/SearchToolbar.vue';
+import GlassCard from '../../components/common/GlassCard.vue';
+import CardGrid from '../../components/common/CardGrid.vue';
+import CollapsibleCategory from '../../components/common/CollapsibleCategory.vue';
 
 const store = useSkillStore();
 const authStore = useAuthStore();
@@ -242,7 +250,7 @@ async function togglePublish(id: string, isPublic: boolean) {
 
 async function removeSkill(id: string) {
   try {
-    await ElMessageBox.confirm('确认删除该 Skill？', '提示', { type: 'warning' });
+    await ElMessageBox.confirm('确认删除该 Skill？', '提示', { type: 'warning', confirmButtonClass: 'yz-confirm-danger' });
     await store.uninstall(id);
     ElMessage.success('已删除');
   } catch {}
@@ -398,30 +406,9 @@ function parseSkillMd(md: string): { frontmatter: any; bodyMd: string; body: str
 
 .lm-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 12px; }
 .lm-header-left { display: flex; align-items: center; gap: 12px; }
-.lm-header-right { display: flex; align-items: center; gap: 6px; flex-shrink: 0; flex-wrap: wrap; }
 .lm-title { font-size: 20px; font-weight: 600; margin: 0; }
-
-.lm-search-wrap {
-  display: flex; align-items: center; gap: 4px;
-  padding: 4px 10px; border-radius: 8px;
-  border: 1px solid var(--glass-border); background: var(--glass-bg);
-  width: 150px; transition: border-color 0.2s;
-}
-.lm-search-wrap:focus-within { border-color: var(--color-primary); }
-.lm-search-icon { font-size: 14px; color: var(--color-text-secondary); flex-shrink: 0; }
-.lm-search-input {
-  border: none; outline: none; background: transparent;
-  font-size: 13px; width: 100%; min-width: 0; color: var(--color-text);
-}
-.lm-search-input::placeholder { color: var(--color-text-secondary); opacity: 0.5; }
-.lm-search-clear { font-size: 13px; color: var(--color-text-secondary); cursor: pointer; flex-shrink: 0; }
-
-.lm-icon-btn {
-  width: 32px; height: 32px; padding: 0;
-  border: 1px solid var(--glass-border);
-  background: var(--glass-bg); color: var(--color-text-secondary);
-}
-.lm-icon-btn:hover { color: var(--color-primary); border-color: var(--color-primary); }
+/* 搜索框 / 分类筛选 / 导入图标按钮的尺寸规范统一在 styles/surface.css：
+   .yz-cat-select（筛选下拉）+ .yz-icon-btn（32×32 正圆图标按钮），各管理页共用 */
 
 .skill-groups { display: flex; flex-direction: column; gap: 16px; }
 .skill-group { }
@@ -441,47 +428,9 @@ function parseSkillMd(md: string): { frontmatter: any; bodyMd: string; body: str
   background: rgba(124,58,237,0.08); padding: 2px 8px; border-radius: 10px;
 }
 
-/* 分类标签：短小inline按钮，透明背景，旁边空白露背景，点击折叠/展开 */
-.builtin-cat { margin-bottom: 14px; }
-.cat-tag {
-  display: inline-flex; align-items: center; gap: 4px;
-  padding: 4px 12px; margin-bottom: 8px;
-  font-size: 13px; font-weight: 600; color: var(--color-text);
-  cursor: pointer; user-select: none;
-  background: transparent; border: 1px solid var(--color-border-light);
-  background-image: var(--skin-cat-tag-pattern, none); background-size: var(--skin-pattern-size, auto); background-repeat: var(--skin-pattern-repeat, repeat); background-position: center;
-  border-radius: 16px; transition: all 0.15s;
-}
-.cat-tag:hover { border-color: var(--color-primary); color: var(--color-primary); }
-.cat-tag.collapsed { opacity: 0.5; }
-.cat-tag-arrow { font-size: 12px; flex-shrink: 0; }
-.cat-tag em { font-style: normal; font-size: 11px; font-weight: 700; color: var(--color-text-secondary); }
-
-.skill-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(220px, 100%), 1fr)); gap: 12px; }
-.skill-card {
-  background: var(--glass-bg); backdrop-filter: var(--glass-filter);
-  border: 1px solid var(--glass-border); border-radius: var(--radius-md);
-  padding: 16px; cursor: pointer;
-  transition: all 0.2s;
-  min-width: 0;
-  max-width: 100%;
-}
-.skill-card:hover { transform: translateY(-2px); box-shadow: 0 4px 16px rgba(0,0,0,0.06); border-color: rgba(124,58,237,0.2); }
-
-.card-top { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+/* 分类标签 / 卡片网格 / 玻璃卡片：由 CollapsibleCategory / CardGrid / GlassCard 承载 */
 .card-icon { color: var(--color-primary); flex-shrink: 0; }
 .card-icon.off { opacity: 0.35; }
-.card-name {
-  font-weight: 600; font-size: 14px; flex: 1; min-width: 0;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.card-desc {
-  font-size: 12px; color: var(--color-text-secondary); margin-bottom: 10px;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; line-height: 1.4;
-}
-
-.card-bar { display: flex; align-items: center; justify-content: flex-end; gap: 6px; }
-.card-gap { flex: 1; }
 
 .editor-layout { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 .editor-preview { display: flex; flex-direction: column; }
@@ -502,11 +451,9 @@ function parseSkillMd(md: string): { frontmatter: any; bodyMd: string; body: str
   .local-market { padding: 0 !important; width: 100%; }
   .lm-header { flex-direction: column; align-items: stretch; gap: 10px; padding: 14px; }
   .lm-header-left { flex-wrap: wrap; }
-  .lm-header-right { flex-wrap: wrap; gap: 6px; }
-  .lm-search-wrap { width: 100%; }
   .lm-title { font-size: 18px; }
-  .skill-grid { grid-template-columns: minmax(0, 1fr) !important; gap: 10px; width: 100%; padding: 0 14px 14px; box-sizing: border-box; }
-  .skill-card { width: 100%; max-width: 100%; box-sizing: border-box; }
+  /* 卡片网格在 CardGrid 内部：窄屏收成单列并补页面留白 */
+  .skill-groups :deep(.cg) { grid-template-columns: minmax(0, 1fr); gap: 10px; width: 100%; padding: 0 14px 14px; box-sizing: border-box; }
   .editor-layout { grid-template-columns: 1fr; gap: 12px; }
   .preview-md { min-height: 180px; max-height: 280px; }
 }

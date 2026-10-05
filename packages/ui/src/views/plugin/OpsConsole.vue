@@ -1511,7 +1511,7 @@ async function onGroupCmd(cmd: string, groupId: string) {
     ].filter(Boolean).join('，');
     const ok = await ElMessageBox.confirm(
       `删除目录「${g.name}」？${tail ? `${tail}；` : ''}资源与子目录本身不会删除。`,
-      '确认', { type: 'warning' },
+      '确认', { type: 'warning', confirmButtonClass: 'yz-confirm-danger' },
     ).then(() => true).catch(() => false);
     if (!ok) return;
     const res = await api.delete(`/plugin/ops-shell/groups/${g.id}`);
@@ -1629,7 +1629,7 @@ function onDocKeydown(ev: KeyboardEvent) {
 }
 
 async function removeConnection(c: OpsConn) {
-  const ok = await ElMessageBox.confirm(`删除连接「${c.name}」？`, '确认', { type: 'warning' })
+  const ok = await ElMessageBox.confirm(`删除连接「${c.name}」？`, '确认', { type: 'warning', confirmButtonClass: 'yz-confirm-danger' })
     .then(() => true).catch(() => false);
   if (!ok) return;
   const res = await api.delete(`/plugin/ops-shell/connections/${c.id}`);

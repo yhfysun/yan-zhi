@@ -107,7 +107,8 @@ describe('★ 图标唯一性：常驻可见的 TabBar 图标不得与对话页�
 
   it('ChatMessageList「配置模型」空态 CTA 不得用 Setting（TabBar「我的」）', () => {
     const used = new Set([...inlineIconsOf(CHAT_MESSAGE_LIST), ...importedIconsOf(CHAT_MESSAGE_LIST)]);
-    expect(used).toContain('TakeawayBox');
+    // 2026-10-04：老欢迎卡（TakeawayBox）删除，未配置模型提示改为 WarningFilled 紧凑胶囊
+    expect(used).toContain('WarningFilled');
     expect(used, '空态 CTA 不得再用 Setting（与 TabBar「我的」撞脸）').not.toContain('Setting');
     // 「蒸馏为 Skill」→ Files（MagicStick 曾与 TabBar /agents 的图标撞脸）
     expect(used).toContain('Files');

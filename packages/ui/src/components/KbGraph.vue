@@ -70,8 +70,8 @@
       </div>
     </div>
 
-    <!-- 提取模型选择：默认跟随全局默认模型，可临时改 -->
-    <el-dialog v-model="extractDialogVisible" title="提取实体图谱" width="460px" :close-on-click-modal="false">
+    <!-- 提取模型选择：默认跟随全局默认模型，可临时改（统一 FormDialog 底栏） -->
+    <FormDialog v-model="extractDialogVisible" title="提取实体图谱" width="460px" confirm-text="开始提取" :loading="extractingNow" @submit="extractGraph">
       <el-form label-width="90px">
         <el-form-item label="抽取平台">
           <el-select v-model="dPlatformId" placeholder="留空 = 全局默认模型" style="width: 100%" clearable @visible-change="(v: boolean) => v && loadPlatformsOnce()" @change="dModelId = ''">
@@ -88,11 +88,7 @@
         默认使用全局默认模型（如 agnes 3.0 Flash）；云端不可用时自动回退本地 Ollama。
         上传文档触发的自动提取始终用全局默认模型。
       </div>
-      <template #footer>
-        <el-button @click="extractDialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="extractingNow" @click="extractGraph">开始提取</el-button>
-      </template>
-    </el-dialog>
+    </FormDialog>
   </div>
 </template>
 
@@ -104,6 +100,7 @@ import '@vue-flow/core/dist/theme-default.css';
 import { Refresh, Search, ZoomIn, ZoomOut, MagicStick, FullScreen, Aim } from '@element-plus/icons-vue';
 import { ElMessage } from 'element-plus';
 import { api } from '../api/client';
+import FormDialog from './FormDialog.vue';
 import { usePlatformStore } from '../stores';
 import { useSettingsStore } from '../stores/settings';
 
