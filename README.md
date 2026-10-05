@@ -30,7 +30,7 @@ yan-zhi/
 │   ├── mobile/       # Capacitor 移动端（SQLite 插件 + 应用沙箱）
 │   ├── server/       # Express API 服务（独立后端 + 商城服务端 + Playwright 浏览器）
 │   └── web/          # 纯 Web PWA（Dexie / IndexedDB）
-│   │   ├── electron-builder.{lite,full,mac}.yml  # 三套打包配置，产物统一输出到 dist-release/
+│   │   ├── electron-builder.{lite,full,mac}.yml  # 三套打包配置，产物统一输出到 dist-release/desktop/<档>/<版本>/
 │   │   └── scripts/  # prepare-server-runtime / build-python-runtime / electron-build 等构建脚本
 │   ├── mobile/       # Capacitor 移动端（SQLite 插件 + 应用沙箱）
 │   ├── server/       # Express API 服务（独立后端 + 商城服务端 + Playwright 浏览器）
@@ -44,7 +44,7 @@ yan-zhi/
 ├── scripts/          # 根级脚本（build-python-runtime.mjs / electron-build 等构建脚本）
 ├── assets/           # 应用图标（icon.png / icon.ico / icon.icns）
 ├── .github/workflows/ # GitHub Actions（build-desktop.yml 桌面打包 / ci.yml 类型检查与测试）
-├── dist-release/     # 打包产物输出目录（.gitignore，lite/full/mac/.apk 平铺靠 artifactName 区分）
+├── dist-release/     # 打包产物统一树：desktop/<档>/<版本>/ 与 android/<版本>/（.gitignore）
 
 ## 功能状态
 
@@ -217,29 +217,29 @@ pnpm dev:mobile
 
 ```bash
 # 桌面端（生成 .exe 安装包，需 MSVC Build Tools + electron-builder）
-# 所有桌面端产物统一输出到根目录 dist-release/，靠 artifactName 区分版本档
+# 所有桌面端产物统一输出到根目录 dist-release/desktop/<档>/<版本>/，靠目录与 artifactName 区分版本档
 #
 # ★ 版本档（能力分级）：lite / basic / pro，决定这个包能开哪些模式。
 #   打包脚本内部会先跑 set-edition.cjs 写 apps/desktop/edition.json，
 #   再注入 YZ_ARTIFACT_SUFFIX 决定产物名后缀 —— 三档共用同一份 yml。
 pnpm --filter @yan-zhi/desktop electron:build:basic   # 基础版（默认）
-#   产物：dist-release/yan-zhi-Setup-<version>-<arch>-basic.exe
+#   产物：dist-release/desktop/basic/<version>/yan-zhi-Setup-<version>-<arch>-basic.exe
 pnpm --filter @yan-zhi/desktop electron:build:lite    # 阉割版
-#   产物：dist-release/yan-zhi-Setup-<version>-<arch>-lite.exe
+#   产物：dist-release/desktop/lite/<version>/yan-zhi-Setup-<version>-<arch>-lite.exe
 pnpm --filter @yan-zhi/desktop electron:build:pro     # 高级版（全量）
-#   产物：dist-release/yan-zhi-Setup-<version>-<arch>-pro.exe
+#   产物：dist-release/desktop/pro/<version>/yan-zhi-Setup-<version>-<arch>-pro.exe
 pnpm build:desktop                                    # 等价 electron:build:basic
 
 # macOS 版（electron-builder.mac.yml，需在 macOS 上构建）
 pnpm --filter @yan-zhi/desktop electron:build:mac
-#   产物：dist-release/yan-zhi-<version>-<arch>-mac-basic.dmg / .zip
+#   产物：dist-release/desktop/basic/<version>/yan-zhi-<version>-<arch>-mac-basic.dmg / .zip
 
 # 构建步骤（桌面端共用）：先 server build → vite build → prepare-server-runtime（打平后端依赖）
 #                       → set-edition（写版本档）→ electron-builder
 
-# 移动端 Android（APK 构建后自动拷贝到 dist-release/）
+# 移动端 Android（APK 构建后自动拷贝到 dist-release/android/<版本>/）
 pnpm build:mobile:android
-#   产物：dist-release/*.apk（由 scripts/copy-apk.cjs 从 Gradle 输出目录拷入）
+#   产物：dist-release/android/<version>/app-debug.apk（由 scripts/copy-apk.cjs 从 Gradle 输出目录拷入）
 
 # 移动端 iOS（需 macOS + Xcode）
 pnpm build:mobile:ios
