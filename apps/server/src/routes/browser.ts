@@ -154,7 +154,7 @@ function isUnsafeCdpPage(page: any): boolean {
   return false;
 }
 
-/** CDP 模式选页：只挑"真实网页" target；没有就返回 null（调用方报错，禁止 newPage —— Electron 上 newPage 会弹新窗口） */
+/** CDP 模式选页：只挑"真实网页" target；没有就返回 null（调用方处理，禁止 newPage —— Electron 上 newPage 会弹新窗口） */
 function pickCdpPage(browser: any): any | null {
   for (const ctx of browser.contexts()) {
     for (const p of ctx.pages()) {
@@ -162,6 +162,49 @@ function pickCdpPage(browser: any): any | null {
     }
   }
   return null;
+}
+
+/**
+ * CDP 模式下没有可用网页 target 时，驱动**应用壳页**自动打开预览面板（2026-10-05）。
+ * 全自动链路要求 agent 能自己把面板开起来，而不是报错等用户手动开。
+ * 做法（实测有效）：壳页切到 #/browser 路由 → 地址栏 input.url-input 用原生 setter
+ * 写入目标 URL → 派发 Enter（keydown+keyup，Vue 需 keyup）。壳页 = dev localhost:1420
+ * 或打包 file://index.html。
+ * @returns 是否成功驱动壳页（不代表 webview 一定出现，调用方需轮询 pickCdpPage）
+ */
+async function ensureWebviewViaShell(browser: any, url?: string): Promise<boolean> {
+  let shell: any = null;
+  for (const ctx of browser.contexts()) {
+    for (const p of ctx.pages()) {
+      let u = '';
+      try { u = p.url() || ''; } catch { continue; }
+      if (u.includes('localhost:1420') || u.includes('127.0.0.1:1420') || /index\.html/i.test(u)) { shell = p; break; }
+    }
+    if (shell) break;
+  }
+  if (!shell) return false;
+  const target = url || 'https://kol.fanqieopen.com/';
+  try {
+    await shell.evaluate(() => {
+      if (location.hash.indexOf('#/browser') !== 0) location.hash = '#/browser';
+      return true;
+    });
+    await shell.waitForTimeout(800);
+    await shell.evaluate((t: string) => {
+      const el = Array.from(document.querySelectorAll('input.url-input')).find((e: any) => e.offsetParent !== null) as HTMLInputElement | undefined;
+      if (!el) return false;
+      const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+      set.call(el, t);
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      const ko = { bubbles: true, cancelable: true, key: 'Enter', code: 'Enter', keyCode: 13, which: 13 };
+      el.dispatchEvent(new KeyboardEvent('keydown', ko));
+      el.dispatchEvent(new KeyboardEvent('keyup', ko));
+      return true;
+    }, target);
+  } catch {
+    return false;
+  }
+  return true;
 }
 
 /** 创建一个新的 context + page（多标签页基础单元），可选导航到 url */
@@ -173,7 +216,18 @@ async function createTabPage(url?: string): Promise<any> {
     // CDP 模式：只复用"真实网页" target（绝不选中应用壳窗口、绝不 newPage 弹新窗口，见 pickCdpPage）
     page = pickCdpPage(browser);
     if (!page) {
-      throw new Error('CDP 模式下未找到可用的网页 target（桌面端浏览器操作应通过预览面板执行，而非服务端路由）');
+      // 全自动（2026-10-05）：没有可用 target 时驱动应用壳页自动打开预览面板，
+      // 而不是报错等用户手动开（旧报错会把全自动任务卡死在浏览器连接层）
+      const opened = await ensureWebviewViaShell(browser, url);
+      if (opened) {
+        for (let i = 0; i < 30 && !page; i++) {
+          await new Promise((r) => setTimeout(r, 500));
+          page = pickCdpPage(browser);
+        }
+      }
+    }
+    if (!page) {
+      throw new Error('CDP 模式下未找到可用的网页 target，且自动打开预览面板失败。请手动在应用预览面板打开任意网页后重试。');
     }
     context = page.context();
   } else {
