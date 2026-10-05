@@ -208,22 +208,26 @@ export class BrowserClickTool implements BuiltInTool {
 // ========== 输入文本 ==========
 export class BrowserTypeTool implements BuiltInTool {
   name = 'browser_type';
-  description = 'Type text into an element. 定位方式：index（元素编号，来自 browser_get_page_content / browser_get_page_info）、selector（CSS 选择器），或省略两者直接输入到当前焦点元素。输入框目标不明确时先用 browser_get_page_content 找到 textarea/input 的 index。Uses real keyboard input (per-character).';
+  description = 'Type text into an element. 定位方式：index（元素编号，来自 browser_get_page_content / browser_get_page_info）、selector（CSS 选择器），或省略两者直接输入到当前焦点元素。输入框目标不明确时先用 browser_get_page_content 找到 textarea/input 的 index。要提交表单/搜索时传 pressEnter:true（等价于输入后按 Enter，不要用 text:"" 来表示回车）。Uses real keyboard input (per-character).';
   inputSchema = {
     type: 'object',
     properties: {
-      text: { type: 'string', description: 'The text to type.' },
+      text: { type: 'string', description: 'The text to type. 省略且 pressEnter:true 时只按回车不输入文本。' },
       index: { type: 'number', description: 'Element index from the numbered interactive-element list returned by browser_get_page_content / browser_get_page_info / browser_get_dom. 比 selector 更稳（不受动态 class、iframe 影响）。省略时输入到当前焦点元素。' },
       selector: { type: 'string', description: 'CSS selector to focus before typing (optional). Supports :contains("text") pseudo-selector. If multiple elements match, an ambiguous candidate list with indexes is returned.' },
+      pressEnter: { type: 'boolean', description: '输入完成后按一次 Enter（提交搜索/表单）。text 与 pressEnter 至少给一个。' },
     },
-    required: ['text'],
+    required: [],
   };
   async execute(args: Record<string, unknown>): Promise<McpCallResult> {
     try {
-      const text = args.text as string;
-      if (!text) return err('text is required');
+      const text = args.text as string | undefined;
+      const pressEnter = args.pressEnter === true;
+      if (!text && !pressEnter) {
+        return err('text is required（或传 pressEnter:true 仅回车提交）。要按回车请传 pressEnter:true，不要传 text:""');
+      }
       // 注意：无 index/selector 时合法——输入到当前聚焦元素（先 click 聚焦再 type）
-      const data = await callBrowserApi('/action', 'POST', { action: 'type', index: args.index, selector: args.selector, text }) as any;
+      const data = await callBrowserApi('/action', 'POST', { action: 'type', index: args.index, selector: args.selector, text: text || '', pressEnter }) as any;
       if (data?.error === '无聚焦元素') {
         // 无聚焦目标时给出引导，而非裸报错
         const hint = await emptyTargetHint();

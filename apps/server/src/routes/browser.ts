@@ -587,13 +587,37 @@ router.post('/action', async (req: Request, res: Response) => {
             if (!el || !el.isConnected) return { error: `${locator} 已失效（页面已变化），请重新调用 get_page_info 获取最新 ref/index 列表` };
             el.scrollIntoView({ block: 'center' });
             el.focus();
+            // ★ 受控组件兼容：React/Vue 覆盖了实例 value setter，直接 el.value= 不触发 onChange；
+            // 必须用原型上的原生 setter 写入再派发 input 事件。
+            const isCE = el.isContentEditable === true;
+            const set = (!isCE && (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement))
+              ? Object.getOwnPropertyDescriptor(el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype, 'value')?.set ?? null
+              : null;
+            const put = (v: string) => {
+              if (set) (set as (val: string) => void).call(el, v);
+              else if (isCE) el.textContent = v;
+              else el.value = v;
+            };
+            put('');
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            let acc = '';
             for (const ch of p.text) {
-              el.value += ch;
+              acc += ch;
+              put(acc);
               el.dispatchEvent(new Event('input', { bubbles: true }));
             }
             el.dispatchEvent(new Event('change', { bubbles: true }));
-            return { success: true, index: p.idx, typed: p.text.length };
+            const got = (!isCE && el.value != null) ? String(el.value) : (el.textContent || '');
+            const applied = got === p.text;
+            const out: Record<string, unknown> = { success: applied, index: p.idx, typed: p.text.length, applied, value: got.slice(0, 120) };
+            if (!applied) out.hint = '输入框未接受文本（可能为受控组件且拦截了程序化输入，或输入被页面重置）。建议截图核验实际值；若被重置，改用真实键盘逐键输入或让用户手输。';
+            return out;
           }, { ref: typeRef, idx: args.index != null ? Number(args.index) : null, text: String(text || '') });
+          if (args.pressEnter && !(r as any)?.error) {
+            // 按 index 定位时页面焦点已在目标输入框，真实键盘 Enter 即提交
+            await page.keyboard.press('Enter').catch(() => {});
+            (r as any).entered = true;
+          }
           result = r;
           break;
         }
@@ -617,7 +641,9 @@ router.post('/action', async (req: Request, res: Response) => {
           await page.locator(selector).click().catch(() => {});
         }
         await page.keyboard.type(text || '', { delay: 30 });
-        result = { typed: text?.length || 0 };
+        const out: Record<string, unknown> = { typed: text?.length || 0 };
+        if (args.pressEnter) { await page.keyboard.press('Enter'); out.entered = true; }
+        result = out;
         break;
       }
       case 'press': {

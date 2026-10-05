@@ -136,6 +136,53 @@ describe('pageAgent 浏览器工具参数解析', () => {
     expect(fetchBody.text).toBe('主控芯片不良率');
   });
 
+  it('browser_type: pressEnter:true 时透传 pressEnter（回车提交受控表单的正规入口）', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ data: { typed: 0, entered: true } }),
+    });
+
+    const tool = new BrowserTypeTool();
+    const result = await tool.execute({ index: 3, text: '规则怪谈', pressEnter: true });
+
+    expect(result.isError).toBeUndefined();
+    const fetchBody = JSON.parse(mockFetch.mock.calls[0][1].body);
+    expect(fetchBody.action).toBe('type');
+    expect(fetchBody.text).toBe('规则怪谈');
+    expect(fetchBody.pressEnter).toBe(true);
+  });
+
+  it('browser_type: 只按回车（无 text）也合法，text 以空串透传', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ data: { entered: true } }),
+    });
+
+    const tool = new BrowserTypeTool();
+    const result = await tool.execute({ index: 6, pressEnter: true });
+
+    expect(result.isError).toBeUndefined();
+    const fetchBody = JSON.parse(mockFetch.mock.calls[0][1].body);
+    expect(fetchBody.text).toBe('');
+    expect(fetchBody.pressEnter).toBe(true);
+  });
+
+  it('browser_type: 既无 text 又无 pressEnter 时返回可自纠的错误（引导用 pressEnter 表示回车）', async () => {
+    const tool = new BrowserTypeTool();
+    const result = await tool.execute({ index: 6 });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('pressEnter');
+  });
+
+  it('browser_type: text 为空串且无 pressEnter 同样被拦下（历史上空串死循环的堵点）', async () => {
+    const tool = new BrowserTypeTool();
+    const result = await tool.execute({ index: 6, text: '' });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('pressEnter');
+  });
+
   it('browser_get_page_info: 正确解析返回的元素列表', async () => {
     mockFetch.mockResolvedValue({
       ok: true,
