@@ -149,36 +149,12 @@ export function loadTaskPlanFromFile(conversationId: string | null | undefined):
   }
 }
 
-/**
- * 跨会话播种：会话行没有计划时，把工作目录 plan.md 回填进该会话（写库）。
- *
- * ★ 为什么必须有：loadTaskPlan 的文件回退只解决"模型看得到计划"，但前端 task_step
- *   写的是**当前会话**的 conversation.task_plan_json —— 新会话里它还是空的，
- *   task_step 会报「当前会话还没有任务计划」→ 模型只能 task_plan 重建（进度归零）。
- *   播种后新会话拥有一份真实结构的计划副本，task_step 正常推进、每步镜像回文件。
- *
- * 调用时机：GET /conversations（列表）与 GET /conversations/:id —— 前端恢复计划卡片
- * 与 task_step 依赖这两处的行数据。会话行已有计划（本会话实时进度）时**绝不覆盖**。
- * 同步实现（readFileSync + better-sqlite3），可在同步路由里直接用。
- */
-export function seedTaskPlanFromFile(conversationId: string): TaskPlan | null {
-  try {
-    const row = db.prepare('SELECT task_plan_json FROM conversation WHERE id = ?').get(conversationId) as
-      | { task_plan_json?: string | null }
-      | undefined;
-    if (!row) return null;
-    if (row.task_plan_json) return null; // 本会话已有计划（优先级高于文件），不覆盖
-    const plan = loadTaskPlanFromFile(conversationId);
-    if (!plan?.steps?.length) return null;
-    db.prepare('UPDATE conversation SET task_plan_json = ? WHERE id = ?').run(JSON.stringify(plan), conversationId);
-    return plan;
-  } catch {
-    return null;
-  }
-}
-
 // ── 无人值守兜底：后端直接执行 task_plan / task_step（写库 + 写文件） ──
 // 与前端 plan-buckets.ts 的 applyTaskPlan/applyTaskStep 语义对齐（边界显式报错不静默）。
+//
+// ★ 跨会话播种（seedTaskPlanFromFile）已于 2026-10-05 删除（用户拍板「任务规划是
+//   单会话的」）：UI 不再向新会话还原旧计划；新会话靠 loadTaskPlan 的**文件回退**
+//   让模型「找到之前的任务记录」，由模型 task_plan 重新规划，而非复用旧计划对象。
 
 function savePlanJson(conversationId: string, plan: TaskPlan): boolean {
   try {

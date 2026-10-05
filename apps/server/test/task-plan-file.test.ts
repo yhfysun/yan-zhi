@@ -7,11 +7,14 @@
  *   2. 文件写入：绑目录空间落 <dir_path>/.yan-zhi/task-memory/plan.md；
  *      未挂空间回退全局 workspaceDir；未配置 workspaceDir 返回 null 不写；
  *      plan=null 删除文件
- *   3. 跨会话播种（seedTaskPlanFromFile）：会话行已有计划**绝不覆盖**；
- *      无计划时从文件回填库；文件缺失返回 null
- *   4. 链路静态断言（读源码剥注释）：llm-task-manager 的无人值守兜底分支与
- *      loadTaskPlan 文件回退存在；conversations.ts 的 PATCH 镜像写 + 两个 GET 分支都播种
+ *   3. 链路静态断言（读源码剥注释）：llm-task-manager 的无人值守兜底分支与
+ *      loadTaskPlan 文件回退存在；conversations.ts 的 PATCH 镜像写存在
  *      —— 防入口漂移（同一件事有多个入口，只修看得见的必漏）。
+ *
+ * 2026-10-05 用户拍板「任务规划是单会话的」：跨会话播种（seedTaskPlanFromFile /
+ * seedPlanRows）已整体删除 —— UI 不向新会话还原旧计划；新会话靠 loadTaskPlan
+ * 文件回退让模型「找到之前的任务记录」自行 task_plan 重新规划。
+ * 静态断言反向钉死：conversations.ts 与 task-plan-file.ts 不得再出现播种入口。
  *
  * db 与 serverState 用内存 mock（同 artifact-dir.test.ts 套路），磁盘用临时目录真建真探。
  */
@@ -80,7 +83,6 @@ import {
   parseTaskPlanMarkdown,
   writeTaskPlanFile,
   loadTaskPlanFromFile,
-  seedTaskPlanFromFile,
 } from '../src/services/task-plan-file';
 
 let tmp: string;
@@ -176,27 +178,6 @@ describe('writeTaskPlanFile / loadTaskPlanFromFile', () => {
   });
 });
 
-describe('seedTaskPlanFromFile 跨会话播种', () => {
-  it('会话行无计划 + 文件有计划 → 回填库并返回', async () => {
-    await writeTaskPlanFile('conv_seeded', SAMPLE as any);
-    const seeded = seedTaskPlanFromFile('conv_seeded');
-    expect(seeded).not.toBeNull();
-    expect(seeded!.steps).toHaveLength(4);
-    // 库里真的写进去了（mock db 的 run 更新内存映射）
-    expect(hoisted.conversations.conv_seeded.task_plan_json).toContain('生成配音');
-  });
-  it('会话行已有计划 → 绝不覆盖（本会话实时进度优先）', async () => {
-    await writeTaskPlanFile('conv_hasplan', { title: '文件里的计划', steps: [{ title: '文件步骤', status: 'pending' }] } as any);
-    const seeded = seedTaskPlanFromFile('conv_hasplan');
-    expect(seeded).toBeNull();
-    expect(hoisted.conversations.conv_hasplan.task_plan_json).toContain('会话自己的计划');
-  });
-  it('文件不存在 → 返回 null，不写库', () => {
-    expect(seedTaskPlanFromFile('conv_seeded')).toBeNull();
-    expect(hoisted.conversations.conv_seeded.task_plan_json).toBeNull();
-  });
-});
-
 // ── 链路静态断言：读源码剥注释，防入口漂移 ──
 const strip = (src: string) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 const LTM = strip(readFileSync('src/llm-task-manager.ts', 'utf-8'));
@@ -220,8 +201,12 @@ describe('链路接线（静态断言，防入口漂移）', () => {
   it('conversations.ts：PATCH taskPlan 镜像写文件', () => {
     expect(CONV).toContain('writeTaskPlanFile(cidForFile, planSnapshot)');
   });
-  it('conversations.ts：两个 GET 列表分支都必须播种（mode 过滤分支 + 全量分支）', () => {
-    expect(CONV).toContain('function seedPlanRows');
-    expect(CONV.match(/seedPlanRows\(rows\)/g)?.length).toBe(2);
+  it('conversations.ts / task-plan-file.ts：跨会话播种已删除，且不得复活（2026-10-05 反向守卫）', () => {
+    expect(CONV).not.toContain('seedPlanRows');
+    expect(CONV).not.toContain('seedTaskPlanFromFile');
+    const TPF = strip(readFileSync('src/services/task-plan-file.ts', 'utf-8'));
+    expect(TPF).not.toContain('seedTaskPlanFromFile');
+    // 文件回退仍在（模型「找到之前的任务记录」的通道），不许被一起误删
+    expect(LTM).toContain('loadTaskPlanFromFile');
   });
 });

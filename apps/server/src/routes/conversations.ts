@@ -3,7 +3,7 @@ import { v4 as uuid } from 'uuid';
 import { authMiddleware } from '../auth.js';
 import { db, MESSAGE_LIST_COLS, clearMessageSummaries } from '../db.js';
 import { normalizePermissionMode } from '../tool-permission.js';
-import { writeTaskPlanFile, seedTaskPlanFromFile } from '../services/task-plan-file.js';
+import { writeTaskPlanFile } from '../services/task-plan-file.js';
 import { WF_TOOL_PREFIX, MAX_WF_TOOLS_PER_CONVERSATION } from '../services/workflow-tool-registry.js';
 import { clearAuthorization } from '../services/path-guard.js';
 
@@ -16,27 +16,18 @@ router.use(authMiddleware);
 // 不传 → 回全部（管理类/统计类调用仍需要全量，不能强制过滤）。
 //
 // ★ 为什么过滤放在后端而不是前端：前端过滤只是"看不见"，会话仍会被其它
-// 按 conversations 循环的逻辑（批量删除、导出、计数）扫到，容易出现
-// "删了别的模式的会话"这类越界操作。DB 层收口才是真隔离。
+//   按 conversations 循环的逻辑（批量删除、导出、计数）扫到，容易出现
+//   "删了别的模式的会话"这类越界操作。DB 层收口才是真隔离。
 //
 // 存量会话在迁移时统一归 'office'（db.ts 的 ALTER + UPDATE），
 // 所以这里不需要再兜 NULL —— 若真出现 NULL，用 mode IS ? 会漏，
 // 因此显式把 NULL 视为 office。
+//
+// ★ 任务规划是单会话的（用户拍板 2026-10-05）：这里**不再**从工作目录 plan.md
+//   向无计划会话播种旧规划（原 seedPlanRows 已删）。跨会话"找到之前的任务记录"
+//   由模型侧完成 —— llm-task-manager 的 loadTaskPlan 文件回退仍会把 plan.md 回注
+//   进提示词，模型据此自行 task_plan **重新规划**，而不是复用旧计划对象。
 const VALID_MODES = new Set(['office', 'dev', 'ops', 'sec', 'wf']);
-
-/**
- * 跨会话播种：会话行没有计划时从工作目录 plan.md 回填（新会话接续上一会话的长任务）。
- * 会话行已有计划时 seedTaskPlanFromFile 不做任何事（本会话实时进度优先）。
- * 两个 GET 分支（带 mode / 全量）必须同样播种 —— 漏一个就是"切模式后计划消失"的入口漂移。
- */
-function seedPlanRows(rows: unknown[]): void {
-  for (const row of rows as any[]) {
-    if (row && !row.task_plan_json) {
-      const seeded = seedTaskPlanFromFile(row.id);
-      if (seeded) row.task_plan_json = JSON.stringify(seeded);
-    }
-  }
-}
 
 router.get('/', (req: Request, res: Response) => {
   const userId = req.user!.userId;
@@ -48,14 +39,12 @@ router.get('/', (req: Request, res: Response) => {
        WHERE user_id = ? AND COALESCE(NULLIF(mode, ''), 'office') = ?
        ORDER BY pinned DESC, updated_at DESC`,
     ).all(userId, mode);
-    seedPlanRows(rows);
     res.json({ data: rows });
     return;
   }
   const rows = db.prepare(
     'SELECT * FROM conversation WHERE user_id = ? ORDER BY pinned DESC, updated_at DESC',
   ).all(userId);
-  seedPlanRows(rows);
   res.json({ data: rows });
 });
 
