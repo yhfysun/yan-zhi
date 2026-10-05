@@ -1776,8 +1776,15 @@ async function loadConversations() {
             try { await useFileStore().loadConversationFiles(event.conversationId || convId); } catch {}
             break;
           }
-          case 'task:completed': flushNow(convId); emitTaskFinished(convId); return;
-          case 'task:aborted': flushNow(convId); emitTaskFinished(convId); return;
+          // ★★ 必须 return false（不是裸 return）——consumeSseStream 的契约是「回调返回 false
+          //   才停止读取」（见 utils/sse.ts）。服务端 sseStream **从不 res.end()**，只在客户端
+          //   断开时才退订，所以这是客户端唯一的收尾时机。
+          //   历史缺陷（2026-10-04）：此处原是裸 `return`（= undefined）→ 流不停 → reader.read()
+          //   永久挂起 → subscribeTaskSse 不返回 → callLlm 的 finally 不执行 →
+          //   runningConvIds 里的会话 id 永不删除 → store.streaming 恒 true，
+          //   表现为「回答已完整输出（含生成的图片）却一直显示『任务运行中』+ 停止按钮」。
+          case 'task:completed': flushNow(convId); emitTaskFinished(convId); return false;
+          case 'task:aborted': flushNow(convId); emitTaskFinished(convId); return false;
           case 'task:error': flushNow(convId); emitTaskFinished(convId); throw new Error(event.error || '任务执行失败');
           case 'task:paused': pausedConvIds.value.add(convId); browserLockInput.value = false; break;
           case 'task:resumed': pausedConvIds.value.delete(convId); break;

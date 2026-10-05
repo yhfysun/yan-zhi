@@ -1324,11 +1324,8 @@ function createChat() {
    */
   const contextLimit = computed(() => effectiveContextLimit(declaredContextWindow.value));
   const tokenPercent = computed(() => contextUsagePercent(tokenCount.value, declaredContextWindow.value));
-  const tokenBarColor = computed(() => {
-    if (tokenPercent.value >= 100) return '#ef4444';
-    if (tokenPercent.value >= 80) return '#f59e0b';
-    return '#3B82F6';
-  });
+  // 注：原 tokenBarColor（80/100 阈值硬编码 hex）已随右侧用量环一并删除 ——
+  // Task 6 的 ContextUsagePill 用 token 化配色按 70/90 阈值自行分档。
   // 仅当「当前会话」在流式时才锁定发送；其它会话并行运行时，当前空会话仍可输入/发送
   const canSend = computed(() => (!!input.value.trim() || uploadedFiles.value.length > 0) && !!selectedModelId.value && !store.isConvStreaming(store.currentConvId));
 
@@ -1516,7 +1513,7 @@ function createChat() {
       await ElMessageBox.confirm(
         `确定删除空间"${space.name}"吗？其下会话将归入"未归类"，目录文件不受影响。`,
         '删除空间',
-        { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' },
+        { type: 'warning', confirmButtonClass: 'yz-confirm-danger', confirmButtonText: '删除', cancelButtonText: '取消' },
       );
       await spaceStore.deleteSpace(space.id);
       ElMessage.success('空间已删除');
@@ -1596,6 +1593,7 @@ function createChat() {
     try {
       const action = await ElMessageBox.confirm('', '文件操作', {
         confirmButtonText: '删除',
+        confirmButtonClass: 'yz-confirm-danger',
         cancelButtonText: '取消',
         distinguishCancelAndClose: true,
         message: `文件：${f.name}\n选择操作：`,
@@ -1771,7 +1769,7 @@ async function healStalePlatform() {
     if (store.currentConvId) {
       const exists = store.conversations.some((c) => c.id === store.currentConvId);
       if (exists) {
-        await store.loadMessages(store.currentConvId);
+        await loadHistory(store.currentConvId);
         const conv = store.conversations.find((c) => c.id === store.currentConvId);
         applyConvAgent(conv);
         if (conv?.modelId && conv?.platformId) {
@@ -1831,9 +1829,14 @@ async function healStalePlatform() {
   });
 
   watch(() => store.streaming, (isStreaming) => {
+    // ★ 新任务开始：清空所有历史轮的展开标记（修复「发送前结束的都会展开」）。
+    //   时序关键：streaming 在 callLlm 开头（POST 之前）就变 true，此刻新用户消息尚未
+    //   经 SSE 回流，messageRounds 里只有历史轮 —— 旧代码展开 round-(length-1) 恰好
+    //   误标了历史轮，任务结束后当前轮靠 streaming 失效折叠，历史轮却永远展开。
+    //   当前轮执行中的展开由模板里的 isLastRoundStreaming(round, ri) 实时负责，
+    //   不需要也不能在这里写 expandedAgentProcess。
     if (isStreaming) {
-      const lastIdx = messageRounds.value.length - 1;
-      if (lastIdx >= 0) expandedAgentProcess['round-' + lastIdx] = true;
+      for (const k of Object.keys(expandedAgentProcess)) expandedAgentProcess[k] = false;
     }
   });
 
@@ -2112,8 +2115,22 @@ async function healStalePlatform() {
     quotedUrls.value = [];
   }
 
+  /** 历史消息加载态：拉取既有会话历史期间为 true，消息区据此在顶部渲染骨架屏。
+   *  ★ 新建会话路径（send 里 createConversation 后的 loadMessages）不置位 —— 空会话没有
+   *    "历史"可加载，骨架一闪而过反而压掉欢迎卡。 */
+  const historyLoading = ref(false);
+  /** 历史加载统一入口：finally 兜底，骨架不会因加载异常而卡住 */
+  async function loadHistory(convId: string) {
+    historyLoading.value = true;
+    try {
+      await store.loadMessages(convId);
+    } finally {
+      historyLoading.value = false;
+    }
+  }
+
   async function selectConv(id: string) {
-    await store.loadMessages(id);
+    await loadHistory(id);
     isDraftMode.value = false;
     // 切会话即退出浏览器实况态：锁定/放大只属于发起浏览器任务的那个会话
     store.browserExpanded = false;
@@ -2576,10 +2593,26 @@ async function healStalePlatform() {
    *  每轮只取队首一条起新一轮任务，不做合并——多条时等这条任务结束，
    *  收尾回调再次触发本函数取下一条，链式串行排空队列。 */
   // 按会话的在途守卫：同会话已有一次 flush 在发送时，其余触发直接跳过，
-  // 消息留在队列里等在途那条任务收尾回调取下一条（emitTaskFinished 双发时防止第二条撞互斥被静默丢弃）
-  const flushingConvs = new Set<string>();
+  // 消息留在队列里等在途那条任务收尾回调取下一条（emitTaskFinished 双发时防止第二条撞互斥被静默丢弃）。
+  // ★ 记时间戳而非布尔：闸门只应在「本会话确有一次追加发送在途」时占着。若本会话已不在
+  //   运行、闸门却仍占着（上次在途发送异常收场，如 SSE 卡死令 sendMessage 永不返回），
+  //   闸门就成了死锁，会让该会话的追加队列**永久失效**——必须自愈。
+  //   宽限期用于避开「闸门已加、callLlm 尚未把 convId 记入 runningConvIds」的启动微任务
+  //   窗口，避免误清一个正在启动的合法发送。
+  const GATE_GRACE_MS = 3000;
+  const flushingConvs = new Map<string, number>();
   async function flushQueuedAfterTask(convId: string) {
-    if (flushingConvs.has(convId)) return;
+    const heldAt = flushingConvs.get(convId);
+    if (heldAt !== undefined) {
+      // 死锁自愈：本会话没在跑任务、闸门却已占超宽限期 → 判定为上次异常收场，释放
+      if (store.isConvStreaming(convId) || Date.now() - heldAt <= GATE_GRACE_MS) return;
+      flushingConvs.delete(convId);
+    }
+    // ★★ 本会话仍在跑任务时**绝不能取消息**：callLlm 有「同会话互斥」守卫，会直接
+    //    `return` 什么都不做；而消息此刻已被 takeFirstQueuedMessage 取出队列 →
+    //    **用户消息被静默吞掉**（2026-10-04 用户反馈「点『立即发送』没反应、消息不见了」的真因）。
+    //   正解是保持消息留在队列里（用户看得见），等本次任务收尾回调再来取。
+    if (store.isConvStreaming(convId)) return;
     // 先确认有可用对话模型再取消息，避免取出来发不出去导致消息丢失
     const pm = resolveConvPlatformModel(convId);
     if (!pm) {
@@ -2595,7 +2628,7 @@ async function healStalePlatform() {
       if (t) { text = t; break; }
     }
     const agent = agentStore.selectedAgent;
-    flushingConvs.add(convId);
+    flushingConvs.set(convId, Date.now());
     try {
       await store.sendMessage(text, pm.platform, pm.model, undefined, {
         temperature: agent?.temperature,
@@ -2621,6 +2654,11 @@ async function healStalePlatform() {
     if (injected) { ElMessage.success('已追加，模型下一轮将带上'); return; }
     // 任务已结束（或注入失败）→ 退回普通发送，起新一轮
     await flushQueuedAfterTask(convId);
+    // 仍未发出去（会话仍在运行 / 闸门占着）→ 必须明确告知。
+    // 否则点击「立即发送」会毫无反馈，用户以为按钮坏了（2026-10-04 用户反馈）。
+    if (store.queuedOf(convId).some((q) => q.id === id)) {
+      ElMessage.info('当前任务仍在运行，本条将在它结束后自动发送');
+    }
   }
 
   /** 「编辑」：消息回到输入框，队列里移除该条 */
@@ -2828,7 +2866,7 @@ async function healStalePlatform() {
 
   async function deleteFileItem(f: { path: string; name: string }) {
     try {
-      await ElMessageBox.confirm('确认删除「' + f.name + '」？', '提示', { type: 'warning' });
+      await ElMessageBox.confirm('确认删除「' + f.name + '」？', '提示', { type: 'warning', confirmButtonClass: 'yz-confirm-danger' });
       const { getPlatformAdapter } = await import('@yan-zhi/core');
       const adapter = getPlatformAdapter();
       await adapter.fs.remove(f.path);
@@ -2998,6 +3036,32 @@ async function healStalePlatform() {
       try { return JSON.stringify(JSON.parse(args), null, 2); } catch { return args; }
     }
     return safeJson(args);
+  }
+
+  /**
+   * 7.2 工具调用折叠摘要行的「对象」提示：从参数里挑最关键的一个值展示
+   * （文件路径 / 命令 / URL / 查询词…），让摘要行呈现「工具名 · 对象」而不是裸工具名。
+   * 纯只读展示，不参与任何业务逻辑；挑不出对象就返回空串（行内不渲染该段）。
+   */
+  function toolTargetHint(tc: any): string {
+    let args: any = tc?.function?.arguments ?? tc?.arguments;
+    if (typeof args === 'string') {
+      try { args = JSON.parse(args); } catch { return ''; }
+    }
+    if (!args || typeof args !== 'object') return '';
+    const keys = [
+      'path', 'file_path', 'filePath', 'dir', 'directory', 'cwd', 'workspace_dir',
+      'command', 'cmd', 'url', 'query', 'q', 'pattern', 'keyword',
+      'name', 'title', 'skill', 'workflow', 'agent', 'id',
+    ];
+    for (const k of keys) {
+      const v = (args as any)[k];
+      if (typeof v === 'string' && v.trim()) {
+        const s = v.trim().replace(/\s+/g, ' ');
+        return s.length > 40 ? s.slice(0, 40) + '…' : s;
+      }
+    }
+    return '';
   }
 
   function safeJson(v: unknown): string {
@@ -3225,7 +3289,7 @@ async function healStalePlatform() {
     if (!conv) return;
     closeCtxMenu();
     try {
-      await ElMessageBox.confirm(`删除会话"${conv.title}"？`, '提示', { type: 'warning' });
+      await ElMessageBox.confirm(`删除会话"${conv.title}"？`, '提示', { type: 'warning', confirmButtonClass: 'yz-confirm-danger' });
       await store.deleteConversation(conv.id);
       ElMessage.success('已删除');
     } catch {}
@@ -3242,7 +3306,7 @@ async function healStalePlatform() {
   async function batchDeleteConvs() {
     if (selectedConvIds.value.size === 0) return;
     try {
-      await ElMessageBox.confirm(`删除 ${selectedConvIds.value.size} 个会话？`, '提示', { type: 'warning' });
+      await ElMessageBox.confirm(`删除 ${selectedConvIds.value.size} 个会话？`, '提示', { type: 'warning', confirmButtonClass: 'yz-confirm-danger' });
       await store.deleteConversations([...selectedConvIds.value]);
       selectedConvIds.value = new Set();
       batchMode.value = false;
@@ -3378,7 +3442,7 @@ async function healStalePlatform() {
     md, renderMarkdown, handleContentClick, handleContentDblClick, handleContentContextMenu,
     openPath, openPathInSystem,
     currentConv, filteredConversations, messageRounds, isToolErrorContent,
-    chatModels, modelGroups, mountableServers, tokenCount, contextLimit, tokenPercent, tokenBarColor, canSend,
+    chatModels, modelGroups, mountableServers, tokenCount, contextLimit, tokenPercent, canSend,
     // 标称窗口（模型 API 上限）：UI 需要同时展示"实际可用 / 标称"两个数，
     // 否则用户看到"才用 30%"会以为很空 —— 而 30% 可能已越过有效边界。
     declaredContextWindow,
@@ -3397,10 +3461,11 @@ async function healStalePlatform() {
     resolveArtifactDirFor,
     openConvDir,
     scrollToRound, handleScroll, updateActiveNavRound, formatTime, showScrollBottom, showScrollTop, scrollToBottom,
+    historyLoading,
     toggleReasoning, toggleTool, toggleToolGroup, toggleMsgCollapse, collapseEarlyOnMobile, toggleAgentProcess, toggleStepTools, isLastRoundStreaming, getStreamingStep,
     isToolItemOpen,
     getStepToolResult, isStepToolError, isStepToolsRunning, isStepToolsError, getStepToolGroupClass, getStepToolStatusClass,
-    isToolGroupRunning, isToolGroupError, getToolGroupStatusClass, resolveToolDisplay, resolveToolArgs, safeJson, isToolError, getToolStatusClass, getToolResult,
+    isToolGroupRunning, isToolGroupError, getToolGroupStatusClass, resolveToolDisplay, resolveToolArgs, toolTargetHint, safeJson, isToolError, getToolStatusClass, getToolResult,
     copyMsg, editMsg, quoteMsg, delMsg, openConvMenu, closeCtxMenu, togglePin, startRename, commitRename, deleteConv, toggleConvSelect, batchSelectAll, batchDeleteConvs,
     collapsedSubAgentResults, toggleSubAgentResult, collapsedMainResults, toggleMainResult,
     copySubAgentRoundMd, downloadSubAgentRoundMd, copySubAgentResultMd, downloadSubAgentResultMd,
