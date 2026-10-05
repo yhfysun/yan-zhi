@@ -1881,7 +1881,10 @@ export const seedAgents: Array<Record<string, unknown>> = [
     system_prompt: PAGE_AGENT_SYSTEM_PROMPT,
     // 内置 pageAgent 定义由代码收敛，强制覆盖旧库残留（旧版 36 工具全量挂载导致死循环）
     force_sync: true,
-    config_json: JSON.stringify({ maxReActSteps: 50 }),
+    // 200（2026-10-05）：小说推文链路里 pageAgent 要做登录/抓书目/逐章抓正文/回填，
+    // 50 步实测不够（正常干活的场景被上限腰斩）；非推文的轻量查询用不到这么多步，
+    // 靠提示词里的「最多 N 次工具调用」软预算控制，不靠步数硬顶。
+    config_json: JSON.stringify({ maxReActSteps: 200 }),
   },
   {
     id: 'a_builtin_data_agent',

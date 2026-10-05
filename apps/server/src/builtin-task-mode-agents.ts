@@ -433,6 +433,8 @@ export const builtinTaskModeAgentDefs: Array<Record<string, unknown>> = [
     force_sync: true,
     agent_kind: 'main',
     category: '任务模式',
-    config_json: JSON.stringify({ maxReActSteps: 50 }),
+    // 200（2026-10-05）：全流程（选书/抓正文/申词/出片/发布/回填）链路长，
+    // 50 步实测跑到抓正文就被腰斩；委派 pageAgent 的 200 步与其对齐。
+    config_json: JSON.stringify({ maxReActSteps: 200 }),
   },
 ];
