@@ -551,7 +551,7 @@ export const BUILTIN_SKILLS_SEED = [
     triggers: ['写Word文档', '生成报告', '制作合同', '编辑docx', '提取Word内容', 'Word文档'],
     category: '文档处理',
     author: 'yan-zhi',
-    bodyMd: `# Word 文档处理\n\n用 python-docx 创建、编辑、解析 Word 文档，通过 shell 执行 Python 脚本生成 .docx。\n\n## 依赖\n\`\`\`bash\npip install python-docx\n\`\`\`\n\n## 流程\n1. 理解需求：文档类型（报告/合同/信函）、结构、内容\n2. 编写 python-docx 脚本（标题 + 段落 + 表格 + 图片）\n3. shell 执行生成 .docx\n4. 回报文件路径\n\n## 要点\n- 不要用 \\n 换行，用多个 add_paragraph\n- 表格用 style='Table Grid' 才有边框\n- 图片需指定 width\n\n详见 .claude/skills/docx-processing/SKILL.md`,
+    bodyMd: `# Word 文档处理\n\n用 python-docx 创建、编辑、解析 Word 文档，通过 shell 执行 Python 脚本生成 .docx。\n\n## 依赖\n\`\`\`bash\npip install python-docx\n\`\`\`\n\n## 流程\n1. 理解需求：文档类型（报告/合同/信函）、结构、内容\n2. 编写 python-docx 脚本（标题 + 段落 + 表格 + 图片）\n3. shell 执行生成 .docx\n4. 回报文件路径\n\n## 页面 DOM 速查（番茄达人中心，全站 arco-design；类名带 hash 后缀会漂，优先「文本+结构」匹配）\n- 左侧菜单：分组头 div.arco-menu-inline-header（内容库 / 申词记录），子项 div.arco-menu-item.arco-menu-item-indented（红果短剧/番茄小说/番茄畅听/红果漫剧），顶部渲染同构 a.menu-item-*\n- 内容库列表：书目卡片带「别名推广」按钮；顶部筛选（爆款榜/阅读榜/潜力榜 + 男频/女频）；搜索框 input.arco-input，placeholder「请输入作者名/书名/BookID」（受控组件，用原生 setter 输入后派发 input 事件）\n- 书详情：左侧目录为章节文本节点（「第N章 …」），点章节右侧加载完整正文；合成 click 无反应时改 browser_click 的 x/y 坐标点击（get_page_info 有坐标）；正文末尾「下一章」逐章循环\n- 别名管理（申词记录→番茄小说）：搜索框 input.arco-input；操作按钮 button.arco-btn（批量创建别名 / 批量回填发文 / 批量导出）；行内操作「回填发文 / 查看 / 删除」在 div.arco-space 容器里\n- 回填抽屉：.arco-drawer（遮罩 .arco-drawer-mask），自动带出书名/别名/任务类型/发文类型；「抖音发文 → 添加发文」填抖音号+视频链接，提交后开始计算收益。⚠️ 合成事件对 mask/Esc 无效，关抽屉必须点「取消提交」按钮\n- 状态判定：别名状态=生效中 且 书籍状态=可用 才可发文\n\n## 要点\n- 不要用 \\n 换行，用多个 add_paragraph\n- 表格用 style='Table Grid' 才有边框\n- 图片需指定 width\n\n详见 .claude/skills/docx-processing/SKILL.md`,
   },
   {
     id: 'skill_xlsx_data_processing',
