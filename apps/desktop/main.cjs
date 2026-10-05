@@ -421,11 +421,18 @@ function startServer() {
   }
 }
 
-/** 获取应用图标路径（开发/打包两套目录） */
+/** 获取应用图标路径（开发/打包两套目录）。
+ *  ★ dev 用 icon-dev.bmp.ico 而非 icon.ico/icon.png（2026-10-05 Win32 实测）：
+ *  仓库 icon.ico 是 PNG 压缩 ico、icon.png 是大尺寸 PNG —— 两者经 Electron 转 HICON
+ *  后得到 24x24 / 1024x1024 的**坏图标**（WM_GETICON 实测渲染全黑），任务栏因此回退
+ *  electron 默认图标。BMP 压缩多尺寸 ico（16-256）是 LoadImage 原生格式，必不翻车。
+ *  打包版走 resourcesPath/icon.ico（electron-builder 有自己的 ico 处理链）不受影响。 */
 function getAppIconPath() {
   if (app.isPackaged) {
     return path.join(process.resourcesPath, 'icon.ico');
   }
+  const bmpIco = path.join(__dirname, '..', '..', 'assets', 'icons', 'icon-dev.bmp.ico');
+  if (fs.existsSync(bmpIco)) return bmpIco;
   return path.join(__dirname, '..', '..', 'assets', 'icons', 'icon.ico');
 }
 
@@ -469,6 +476,16 @@ function createWindow() {
 
   // 页面首屏渲染完成后再显示窗口，配合 show:false 彻底消除黑屏
   mainWindow.once('ready-to-show', () => {
+    // dev 下窗口 icon 再补一道运行时设置：构造参数 icon 在部分 Windows/驱动组合下
+    // 不落到任务栏按钮（frame:false + 自定义 AUMID 时），setIcon 走 WM_SETICON 强制生效
+    if (!app.isPackaged) {
+      try {
+        const iconPath = getAppIconPath();
+        const iconOk = fs.existsSync(iconPath);
+        console.log('[dev-icon]', iconPath, 'exists=' + iconOk);
+        if (iconOk) mainWindow.setIcon(iconPath);
+      } catch (e) { console.warn('[dev-icon] setIcon 失败:', e && e.message); }
+    }
     mainWindow?.show();
   });
 
@@ -1982,9 +1999,24 @@ async function injectYzAssistant(wc) {
       var el=document.elementFromPoint(x,y);if(el){var o={bubbles:true,cancelable:true,clientX:x,clientY:y,view:window};
         el.dispatchEvent(new MouseEvent('mousemove',o));el.dispatchEvent(new MouseEvent('mousedown',o));
         el.dispatchEvent(new MouseEvent('mouseup',o));el.dispatchEvent(new MouseEvent('click',o));}return el?el.tagName+'.'+(el.className||''):null;}
-    function typeIn(el,text){el.focus();el.value='';el.dispatchEvent(new Event('input',{bubbles:true}));
-      for(var i=0;i<text.length;i++){el.value+=text[i];el.dispatchEvent(new Event('input',{bubbles:true}));}
-      el.dispatchEvent(new Event('change',{bubbles:true}));}
+    // ★ 受控组件兼容：React/Vue 会用原型属性覆盖 value setter，直接 el.value= 赋值不触发其 onChange。
+    // 必须用原型上的原生 value setter（native setter）写入再派发 input 事件，框架才能感知到变化。
+    function nativeValueSetter(el){
+      var proto=(el instanceof HTMLTextAreaElement)?HTMLTextAreaElement.prototype:HTMLInputElement.prototype;
+      var d=Object.getOwnPropertyDescriptor(proto,'value');return d&&d.set?d.set:null;
+    }
+    function typeIn(el,text){
+      el.focus();
+      var isCE=el.isContentEditable===true;
+      var set=(!isCE&&(el instanceof HTMLInputElement||el instanceof HTMLTextAreaElement))?nativeValueSetter(el):null;
+      var put=function(v){if(set){set.call(el,v);}else if(isCE){el.textContent=v;}else{el.value=v;}};
+      put('');el.dispatchEvent(new Event('input',{bubbles:true}));
+      for(var i=0;i<text.length;i++){put(text.slice(0,i+1));el.dispatchEvent(new Event('input',{bubbles:true}));}
+      el.dispatchEvent(new Event('change',{bubbles:true}));
+      // 回读核验：受控组件若仍未接受（value 与期望不符），给调用方一个可判断的信号
+      var got=(!isCE&&el.value!=null)?String(el.value):(el.textContent||'');
+      return{applied:got===(text||''),value:got.slice(0,120)};
+    }
     // 为元素生成尽量稳定的唯一 CSS 选择器
     function genSel(el){
       function esc(s){return String(s).replace(/"/g,'\\\\"');}
@@ -2177,7 +2209,15 @@ ipcMain.handle('browserView:action', async (_e, tabId, action, args) => {
           function typeEl(el){
             el.scrollIntoView({behavior:'smooth',block:'center'});
             var rect=el.getBoundingClientRect();A.showCursor(rect.x+rect.width/2,rect.y+rect.height/2,'输入');
-            A.typeIn(el,a.text);return{success:true,typed:(a.text||'').length};
+            var r=A.typeIn(el,a.text);
+            var out={success:r.applied,typed:(a.text||'').length,applied:r.applied,value:r.value};
+            if(!r.applied)out.hint='输入框未接受文本（可能为受控组件且拦截了程序化输入，或输入被页面重置）。建议截图核验实际值；若被重置，改用 browser_press_key 逐键或让用户手输。';
+            if(a.pressEnter){
+              var ko={bubbles:true,cancelable:true,key:'Enter',code:'Enter',keyCode:13,which:13};
+              el.dispatchEvent(new KeyboardEvent('keydown',ko));el.dispatchEvent(new KeyboardEvent('keypress',ko));el.dispatchEvent(new KeyboardEvent('keyup',ko));
+              out.entered=true;
+            }
+            return out;
           }
           if(a.index!=null){
             var el=window.__yzElements&&window.__yzElements[a.index];
@@ -2200,7 +2240,7 @@ ipcMain.handle('browserView:action', async (_e, tabId, action, args) => {
             return typeEl(els[0]);
           }
           var el=document.activeElement;if(!el)return{error:'无聚焦元素'};
-          A.typeIn(el,a.text);return{success:true,typed:(a.text||'').length};
+          var r=A.typeIn(el,a.text);return{success:r.applied,typed:(a.text||'').length,applied:r.applied,value:r.value};
         })()`);
       }
       case 'press': {
@@ -3927,9 +3967,15 @@ if (!gotTheLock) {
 app.whenReady().then(() => {
   Menu.setApplicationMenu(null);  // 移除默认菜单栏
   if (process.platform === 'win32') {
-    // AppUserModelId 是 Windows 任务栏分组的依据：两实例若同 ID 会被并成一组图标、
-    // 点哪个都分不清 → 开发实例用独立 ID。
-    app.setAppUserModelId(IS_DEV_INSTANCE ? 'com.yanzhi.desktop.dev' : 'com.yanzhi.desktop');
+    // ★ Windows 任务栏图标（2026-10-05 定案）：任务栏按钮图标 = **窗口 icon**（WM_SETICON）。
+    //   千万不要给 dev 设自定义 AUMID —— 自定义 AUMID 没有开始菜单快捷方式时，Explorer
+    //   会放弃窗口 icon 改用 exe 默认图标（electron 黑底原子标），这正是"dev 任务栏默认
+    //   图标"的根因；注册表 IconPath/换哈希 AUMID 都救不回来，已实测证伪。
+    //   分组语义：dev 跑在 electron.exe、安装版是 yan-zhi.exe，exe 路径不同本就不会并组；
+    //   仅同 exe 双 dev 实例才会并组（罕见，可接受）。安装版保持 setAppUserModelId。
+    if (!IS_DEV_INSTANCE) {
+      app.setAppUserModelId('com.yanzhi.desktop');
+    }
   }
 
   // ============================================================
