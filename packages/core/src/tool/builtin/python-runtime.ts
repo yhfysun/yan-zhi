@@ -171,7 +171,10 @@ export async function runPythonScript(
   // ★ 强制 Python 输出 UTF-8（见 withUtf8Output；opts.env 若显式指定则不覆盖）
   withUtf8Output(env);
   return shell.exec(py, [scriptPath, ...scriptArgs], {
-    timeout: Math.min(opts.timeout || 60000, 600000),
+    // ★ 上限 30 分钟（2026-10-05）：novel_tuiwen 长章节实测 TTS+合成 12min+（51 段配音、
+    //   19.5min 成片），10 分钟硬顶会在 ffmpeg 收尾时 kill 掉 → mp4 缺 moov 直接损坏。
+    //   媒体管线类脚本天然长跑；30min 仍是护栏，防失控脚本挂死任务。
+    timeout: Math.min(opts.timeout || 60000, 1800000),
     cwd: opts.cwd,
     env,
   });

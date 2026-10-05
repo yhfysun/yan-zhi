@@ -62,8 +62,9 @@ export class NovelTuiwenTool implements BuiltInTool {
     argv.push('--outdir', outDirRaw);
 
     try {
-      // 出片耗时随章节长度增长：90 秒视频实测 ~30s，上限给满 10 分钟
-      const r = await runPythonScript(script, argv, { timeout: 600000, cwd: ws });
+      // 出片耗时随章节长度增长：第一章实测（6083 字 → 51 段 TTS → 19.5min 成片）TTS+合成 ≈ 12min；
+      // 传 30min（runPythonScript 上限同步已提到 30min），ffmpeg 收尾被 kill 会产出缺 moov 的损坏 mp4
+      const r = await runPythonScript(script, argv, { timeout: 1800000, cwd: ws });
       const out = [r.stdout ? capToolOutput(r.stdout) : '', r.stderr ? '[stderr]\n' + capToolOutput(r.stderr) : '']
         .filter(Boolean)
         .join('\n') || '(无输出)';
