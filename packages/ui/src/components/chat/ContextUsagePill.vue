@@ -7,10 +7,11 @@
        阈值配色（Task 6 拍板）：≤70% 主色、70–90% 警示、>90% 危险。 -->
   <el-popover
     placement="top-start"
-    :width="268"
+    :width="300"
     trigger="click"
     :show-arrow="false"
     popper-class="ctx-pill-popper"
+    @show="loadBreakdown"
   >
     <template #reference>
       <button
@@ -40,21 +41,35 @@
         <span class="ctx-detail-pct">{{ percent }}%</span>
       </div>
 
-      <!-- 分段占用：只有「历史消息」能从消息数组本地累加（同为估算值）；
-           系统提示/工具定义/挂载文件的分段服务端未上报 → 如实标「暂无分段数据」，不编造。 -->
+      <!-- 分段进度条（2026-10-06）：分类占比同 WorkBuddy —— 服务端 /context-breakdown
+           按同一 estimateTokens 口径估算系统提示/工具定义/技能级 MCP/对话内容；失败回退旧行 -->
+      <div class="ctx-bar" v-if="segments.length">
+        <div
+          v-for="seg in segments" :key="seg.name"
+          class="ctx-bar-seg" :style="{ width: seg.pct + '%', background: seg.color }"
+        />
+      </div>
+
+      <!-- 分段占用：服务端 /context-breakdown 分类估算；弹层打开时拉取（30s 缓存） -->
       <div class="ctx-detail-seg-title">分段占用</div>
-      <div class="ctx-detail-row">
-        <span class="ctx-detail-row-name">历史消息（含推理）</span>
-        <span class="ctx-detail-row-val">~{{ formatTokens(usedTokens) }}<i class="ctx-detail-row-tag">估算</i></span>
-      </div>
-      <div class="ctx-detail-row is-empty">
-        <span class="ctx-detail-row-name">系统提示 + 工具定义</span>
-        <span class="ctx-detail-row-val">暂无分段数据</span>
-      </div>
-      <div class="ctx-detail-row is-empty">
-        <span class="ctx-detail-row-name">挂载文件</span>
-        <span class="ctx-detail-row-val">暂无分段数据</span>
-      </div>
+      <template v-if="segments.length">
+        <div class="ctx-detail-row" v-for="seg in segments" :key="seg.name">
+          <span class="ctx-dot" :style="{ background: seg.color }" />
+          <span class="ctx-detail-row-name">{{ seg.name }}</span>
+          <span class="ctx-detail-row-val">~{{ formatTokens(seg.tokens) }}<i class="ctx-detail-row-tag">估算</i></span>
+          <span class="ctx-detail-row-pct">{{ seg.pct }}%</span>
+        </div>
+      </template>
+      <template v-else>
+        <div class="ctx-detail-row is-empty">
+          <span class="ctx-detail-row-name">系统提示 + 工具定义</span>
+          <span class="ctx-detail-row-val">{{ breakdownLoading ? '计算中…' : '暂无分段数据' }}</span>
+        </div>
+        <div class="ctx-detail-row is-empty">
+          <span class="ctx-detail-row-name">挂载文件</span>
+          <span class="ctx-detail-row-val">{{ breakdownLoading ? '计算中…' : '暂无分段数据' }}</span>
+        </div>
+      </template>
 
       <!-- 压缩状态：只保留一行短提示；2026-10-04 删掉底部「模型标称窗口…有效可用…」
            整段说明（用户反馈文案不该放这里），口径移到分母 title -->
@@ -67,8 +82,9 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, ref } from 'vue';
 import { Coin } from '@element-plus/icons-vue';
+import { api } from '../../api/client';
 
 const props = withDefaults(defineProps<{
   /** 已用 token（前端按消息内容估算，非 API 精确值） */
@@ -81,7 +97,54 @@ const props = withDefaults(defineProps<{
   percent: number;
   /** 当前会话已发生的自动压缩次数（context:compacted 标记数） */
   compactCount?: number;
-}>(), { compactCount: 0 });
+  /** 会话 id：弹层打开时拉取服务端分段估算 */
+  conversationId?: string;
+  /** 智能体 id：分段估算按该 agent 的提示词/工具面计算 */
+  agentId?: string;
+}>(), { compactCount: 0, conversationId: '', agentId: '' });
+
+// ── 分段估算（2026-10-06，WorkBuddy 同款分类）──
+interface Breakdown { system: number; tools: number; mcp: number; messages: number }
+const breakdown = ref<Breakdown | null>(null);
+const breakdownLoading = ref(false);
+let lastFetchAt = 0;
+
+async function loadBreakdown() {
+  if (!props.conversationId) return;
+  // 30s 缓存：浮层反复开关不打接口；token 数本身是估算，够新鲜
+  if (breakdown.value && Date.now() - lastFetchAt < 30000) return;
+  breakdownLoading.value = true;
+  try {
+    const r = await api.get<any>(`/conversations/${props.conversationId}/context-breakdown?agentId=${encodeURIComponent(props.agentId || '')}`);
+    if ('data' in r && r.data) {
+      breakdown.value = r.data;
+      lastFetchAt = Date.now();
+    }
+  } catch { /* 拉取失败回退「暂无分段数据」占位 */ }
+  finally { breakdownLoading.value = false; }
+}
+
+/** 分类定义与占比：总账以 props.usedTokens（前端估算）为准，
+ *  「其他」= 总账 − 四类之和（兜住估算口径差，负值归 0） */
+const segments = computed(() => {
+  if (!breakdown.value || props.usedTokens <= 0) return [];
+  const b = breakdown.value;
+  const defs = [
+    { name: '系统级提示', tokens: b.system, color: '#3b82f6' },
+    { name: '工具定义与描述', tokens: b.tools, color: '#22c55e' },
+    { name: '对话内容', tokens: b.messages, color: '#f59e0b' },
+    { name: '技能级 MCP', tokens: b.mcp, color: '#a855f7' },
+  ];
+  const sum = defs.reduce((a, d) => a + d.tokens, 0);
+  const other = Math.max(0, props.usedTokens - sum);
+  const all = [
+    ...defs,
+    { name: '其他', tokens: other, color: '#94a3b8' },
+  ].filter((d) => d.tokens > 0);
+  return all
+    .map((d) => ({ ...d, pct: Math.max(1, Math.round((d.tokens / props.usedTokens) * 100)) }))
+    .sort((a, b2) => b2.tokens - a.tokens);
+});
 
 /** 用量档位：≤70% 主色 / 70–90% 警示 / >90% 危险 */
 const level = computed(() => (props.percent > 90 ? 'danger' : props.percent >= 70 ? 'warn' : 'ok'));
@@ -201,6 +264,28 @@ function formatTokens(n: number): string {
   color: var(--color-text-secondary, #8a8f98);
 }
 .ctx-detail-row.is-empty .ctx-detail-row-name { color: var(--color-text-secondary, #8a8f98); }
+/* 分段进度条（WorkBuddy 同款）：总条下的一条细分段条 */
+.ctx-bar {
+  display: flex;
+  height: 6px;
+  border-radius: 999px;
+  overflow: hidden;
+  margin: 8px 0 2px;
+  background: var(--color-border, rgba(0, 0, 0, 0.06));
+}
+.ctx-bar-seg { height: 100%; min-width: 2px; }
+/* 分类行彩点 */
+.ctx-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  flex: 0 0 auto;
+}
+/* 行尾分类百分比 */
+.ctx-detail-row-pct {
+  margin-left: 8px;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text, #1f2328);
+  font-weight: 600;
+}
 .ctx-detail-row-tag {
   font-style: normal;
   margin-left: 4px;

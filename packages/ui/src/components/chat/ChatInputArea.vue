@@ -62,13 +62,34 @@
 
       <!-- 7.3 任务运行中：输入区上方常驻一行运行指示 + 停止按钮。
            步骤数来自 task_plan/task_step 登记的任务计划（有就显示 步骤 x/y，没有就转圈+文案）。
+           ★ 有计划时点击该行可展开/收缩「主任务步骤详情」（与浏览器预览里的 pageAgent 步骤悬浮卡是两回事）。
            ★ 打断入口收敛：此处是唯一的「停止」，工具条发送键不再兼任停止（见下方发送按钮注释）。 -->
-      <div v-if="store.streaming" class="run-indicator">
+      <div
+        v-if="store.streaming"
+        class="run-indicator"
+        :class="{ expandable: planTotal > 0 }"
+        @click="planTotal > 0 && (runDetailOpen = !runDetailOpen)"
+      >
         <el-icon class="run-spinner is-loading"><Loading /></el-icon>
         <span class="run-text">任务运行中<template v-if="planTotal"> · 步骤 {{ planDoneCount }}/{{ planTotal }}</template></span>
-        <button type="button" class="run-stop-btn" title="停止任务" @click="stopChat">
+        <el-icon v-if="planTotal > 0" class="run-caret" :class="{ open: runDetailOpen }"><CaretRight /></el-icon>
+        <button type="button" class="run-stop-btn" title="停止任务" @click.stop="stopChat">
           <span class="run-stop-square" aria-hidden="true"></span>停止
         </button>
+      </div>
+      <!-- 主任务步骤详情：整份任务计划（task_plan/task_step），点击运行指示行展开/收缩 -->
+      <div v-if="store.streaming && runDetailOpen && planTotal > 0" class="run-steps">
+        <div v-for="(s, i) in store.planSteps" :key="s.id" class="run-step" :class="s.status">
+          <span class="run-step-idx">{{ i + 1 }}</span>
+          <el-icon v-if="s.status === 'done'" class="run-step-mark done"><Check /></el-icon>
+          <el-icon v-else-if="s.status === 'running'" class="run-step-mark running is-loading"><Loading /></el-icon>
+          <el-icon v-else-if="s.status === 'failed'" class="run-step-mark failed"><Close /></el-icon>
+          <span v-else class="run-step-mark pending"></span>
+          <div class="run-step-body">
+            <div class="run-step-title">{{ s.title }}</div>
+            <div v-if="s.note || s.description" class="run-step-note">{{ s.note || s.description }}</div>
+          </div>
+        </div>
       </div>
 
       <!-- 追加消息队列：任务运行中发送的消息堆叠在输入框上方。
@@ -255,6 +276,8 @@
             :declared-window="declaredContextWindow"
             :percent="tokenPercent"
             :compact-count="compactCount"
+            :conversation-id="store.currentConvId || ''"
+            :agent-id="agentStore.selectedId || ''"
           />
           <el-popover v-model:visible="plusOpen" placement="top-start" :width="264" trigger="click" :show-arrow="false" popper-class="plus-menu-popper">
             <template #reference>
@@ -709,7 +732,7 @@ import { api } from '../../api/client';
 import {
   FolderOpened, ArrowDown, ArrowRight, Connection, Files, UploadFilled, User, EditPen, Cpu, Setting, Plus, Camera,
   Promotion, Close, Lock, Check, Picture, Document, Tickets, Box, VideoCamera, Headset, Memo, ChatDotRound,
-  Operation, Search, Link, Delete, Clock, Tools, Coin, DocumentAdd, Aim, FolderAdd, CopyDocument, DocumentCopy, Loading,
+  Operation, Search, Link, Delete, Clock, Tools, Coin, DocumentAdd, Aim, FolderAdd, CopyDocument, DocumentCopy, Loading, CaretRight,
 } from '@element-plus/icons-vue';
 import { useChat } from '../../composables/chat/useChat';
 // ★ 移动端长按（触屏专属，内部只认 pointerType==='touch'，桌面端零影响）
@@ -752,6 +775,13 @@ const inputTooLong = computed(() => input.value.length > LONG_INPUT_THRESHOLD);
 // ===== 7.3 运行指示的步骤进度：任务计划（task_plan/task_step）登记了步骤才显示「步骤 x/y」=====
 const planTotal = computed(() => store.planSteps.length);
 const planDoneCount = computed(() => store.planSteps.filter((s) => s.status === 'done').length);
+
+/** 主任务步骤详情展开态：有计划的任务开跑 → 自动展开；任务结束 → 收起复位；点击行可手动切换 */
+const runDetailOpen = ref(false);
+watch(() => [store.streaming, planTotal.value] as const, ([streaming, total]) => {
+  if (streaming && total > 0) runDetailOpen.value = true;
+  if (!streaming) runDetailOpen.value = false;
+});
 
 // ===== 会话级工具权限（只读/默认/全部放行）=====
 // 选择持久化到 conversation.permission_mode；readonly 模式下后端会构建期裁剪写工具 + 运行时硬拦截
@@ -1633,6 +1663,60 @@ onBeforeUnmount(() => {
   font-size: var(--font-size-sm);
   color: var(--color-text-secondary);
   flex: 0 0 auto;
+}
+/* 有计划时整行可点（展开/收缩步骤详情） */
+.run-indicator.expandable { cursor: pointer; user-select: none; }
+.run-caret {
+  flex: 0 0 auto;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  transition: transform 0.15s ease;
+}
+.run-caret.open { transform: rotate(90deg); }
+/* 主任务步骤详情列表 */
+.run-steps {
+  margin: 4px 0 0;
+  padding: 4px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--el-border-color-lighter);
+  background: var(--el-bg-color);
+  max-height: 180px;
+  overflow-y: auto;
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.run-step { display: flex; align-items: flex-start; gap: 8px; padding: 3px 0; }
+.run-step-idx {
+  flex: 0 0 auto;
+  min-width: 16px;
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  line-height: 18px;
+  text-align: right;
+}
+.run-step-mark { flex: 0 0 auto; font-size: 13px; line-height: 18px; width: 14px; text-align: center; }
+.run-step-mark.done { color: var(--el-color-success); }
+.run-step-mark.running { color: var(--color-primary); }
+.run-step-mark.failed { color: var(--el-color-danger); }
+.run-step-mark.pending {
+  width: 8px; height: 8px; margin: 5px 3px 0;
+  border-radius: 50%;
+  border: 1.5px solid var(--color-text-secondary);
+  opacity: 0.5;
+}
+.run-step-body { flex: 1 1 auto; min-width: 0; }
+.run-step-title { font-size: var(--font-size-sm); color: var(--color-text-primary); line-height: 18px; }
+.run-step.running .run-step-title { color: var(--color-primary); font-weight: 600; }
+.run-step.done .run-step-title { color: var(--color-text-secondary); }
+.run-step-note {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-secondary);
+  line-height: 16px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .run-spinner { color: var(--color-primary); font-size: 14px; flex: 0 0 auto; }
 .run-text {

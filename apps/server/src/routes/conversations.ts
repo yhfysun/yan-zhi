@@ -6,6 +6,8 @@ import { normalizePermissionMode } from '../tool-permission.js';
 import { writeTaskPlanFile } from '../services/task-plan-file.js';
 import { WF_TOOL_PREFIX, MAX_WF_TOOLS_PER_CONVERSATION } from '../services/workflow-tool-registry.js';
 import { clearAuthorization } from '../services/path-guard.js';
+import { buildSystemPromptForBackend, buildToolsForBackend } from '../llm-task-manager.js';
+import { estimateTokens } from '@yan-zhi/shared';
 
 const router = Router();
 router.use(authMiddleware);
@@ -196,6 +198,40 @@ router.delete('/:id', (req: Request, res: Response) => {
 // 需要快照时走独立按需接口 GET /api/messages/:mid/snapshot。
 // ★ 列清单统一取自 db.ts:MESSAGE_LIST_COLS —— 与 llm-task-manager 的 ReAct 热路径**共用同一常量**，
 //   避免"同一语义两处各写一份"的漂移（本项目既有教训）。
+// GET /api/conversations/:id/context-breakdown?agentId=
+// 上下文分段估算（2026-10-06，对齐 WorkBuddy 同款分类）：系统级提示 / 工具定义与描述 /
+// 技能级 MCP / 对话内容。全部为 estimateTokens 估算值（与前端 tokenCount 同口径，非 API 精确值）。
+// skill 子目录文件不计入（按需 file_read，不占常驻上下文）。
+router.get('/:id/context-breakdown', (req: Request, res: Response) => {
+  const userId = req.user!.userId;
+  const cid = req.params.id;
+  const conv = db.prepare('SELECT agent_id FROM conversation WHERE id = ? AND user_id = ?').get(cid, userId) as any;
+  if (!conv) { res.status(404).json({ error: '会话不存在' }); return; }
+  const agentId = (typeof req.query.agentId === 'string' && req.query.agentId) || conv.agent_id || null;
+  try {
+    // 系统级提示：agent 提示词 + skills 流程指引 + 子智能体清单 + 应用指引等（不含工具 schema）
+    const systemPrompt = buildSystemPromptForBackend(agentId, userId, undefined, { conversationId: cid });
+    const system = estimateTokens(systemPrompt);
+    // 工具定义与描述：模型真正看到的工具面（含 schema）；MCP 工具单独拆「技能级 MCP」
+    const tools = buildToolsForBackend(agentId, userId, { conversationId: cid }) as any[];
+    let toolsTokens = 0;
+    let mcpTokens = 0;
+    for (const t of tools || []) {
+      const est = estimateTokens(JSON.stringify(t));
+      const name = String(t?.function?.name || t?.name || '');
+      if (name.startsWith('mcp_')) mcpTokens += est;
+      else toolsTokens += est;
+    }
+    // 对话内容：历史消息正文 + 推理
+    const rows = db.prepare('SELECT content, reasoning_content FROM message WHERE conversation_id = ?').all(cid) as any[];
+    let messages = 0;
+    for (const r of rows) messages += estimateTokens(r?.content || '') + estimateTokens(r?.reasoning_content || '');
+    res.json({ data: { system, tools: toolsTokens, mcp: mcpTokens, messages } });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || '上下文分段计算失败' });
+  }
+});
+
 router.get('/:id/messages', (req: Request, res: Response) => {
   const userId = req.user!.userId;
   const cid = req.params.id;
