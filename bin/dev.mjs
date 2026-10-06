@@ -324,6 +324,26 @@ function isPortOpen(port, timeoutMs = 800) {
 }
 
 // ---------------------------------------------------------------- 工具链解析
+/** 读取 Electron 实例的 DevToolsActivePort，返回实际 CDP 端点（未就绪返回 null）。
+ *  ★ 与桌面 main.cjs 同源：CDP 端口默认自动分配（remote-debugging-port=0），实际端口
+ *  写在 userData/DevToolsActivePort 首行 —— 固定 9222 会被残留进程抢占导致抓取全灭。 */
+function readDevToolsActivePortEndpoint() {
+  const home = process.env.USERPROFILE || process.env.HOME || '';
+  const candidates =
+    process.platform === 'darwin'
+      ? [path.join(home, 'Library', 'Application Support', 'yan-zhi-dev'), path.join(home, 'Library', 'Application Support', 'yan-zhi')]
+      : process.platform === 'win32'
+        ? [path.join(process.env.APPDATA || path.join(home, 'AppData', 'Roaming'), 'yan-zhi-dev'), path.join(process.env.APPDATA || path.join(home, 'AppData', 'Roaming'), 'yan-zhi')]
+        : [path.join(home, '.config', 'yan-zhi-dev'), path.join(home, '.config', 'yan-zhi')];
+  for (const dir of candidates) {
+    try {
+      const port = parseInt(fs.readFileSync(path.join(dir, 'DevToolsActivePort'), 'utf8').split(/\r?\n/)[0], 10);
+      if (port > 0 && port < 65536) return `http://127.0.0.1:${port}`;
+    } catch { /* 未就绪/不存在 */ }
+  }
+  return null;
+}
+
 function resolveNode() {
   return process.execPath;
 }
@@ -541,13 +561,22 @@ async function main() {
     // 让 server 侧拿到与「开发实例」一致的实例语义（env 供 shared/local-server 读取）。
     await guardProductionPort(DEV_API_PORT, 'backend');
     await freePort(DEV_API_PORT, 'backend');
-    // 浏览器工具执行面：CDP 端口（9222）有活的调试浏览器时优先注入 cdp env（与桌面 main.cjs
-    // 同源，避免 server 另起一套 Chromium 造成双浏览器分裂）；不可达则保持 launch 模式
+    // 浏览器工具执行面：CDP 端口优先读 Electron 实例的 DevToolsActivePort（与桌面
+    // main.cjs 同源，自动端口也认得）；不可达再退回探测 9222；都没有则保持 launch 模式
     // （server 侧已强制 headless，不会再弹独立浏览器窗口）。
-    const browserEnv = (await isPortOpen(9222))
-      ? { BROWSER_MODE: 'cdp', CDP_ENDPOINT: 'http://127.0.0.1:9222' }
-      : {};
-    if (Object.keys(browserEnv).length) log('检测到 CDP 调试浏览器 (9222)，server 浏览器工具走 cdp 模式');
+    const cdpFromPortFile = readDevToolsActivePortEndpoint();
+    // 文件可能是已退出实例的残留 → 读到端口后再做活体探测
+    let cdpEndpoint = null;
+    if (cdpFromPortFile) {
+      const port = parseInt(cdpFromPortFile.split(':').pop(), 10);
+      if (await isPortOpen(port)) cdpEndpoint = cdpFromPortFile;
+    }
+    const browserEnv = cdpEndpoint
+      ? { BROWSER_MODE: 'cdp', CDP_ENDPOINT: cdpEndpoint }
+      : (await isPortOpen(9222))
+        ? { BROWSER_MODE: 'cdp', CDP_ENDPOINT: 'http://127.0.0.1:9222' }
+        : {};
+    if (browserEnv.CDP_ENDPOINT) log(`CDP 调试浏览器: ${browserEnv.CDP_ENDPOINT}，server 浏览器工具走 cdp 模式`);
     // server 依赖 better-sqlite3 等 native 模块，其预编译 ABI 跟 Electron 内嵌 node 对齐。
     // 用 PATH 上的 node 启动会因 NODE_MODULE_VERSION 不匹配直接 ERR_DLOPEN_FAILED（且
     // 报错容易被终端其它输出冲掉，表现为"莫名退出"）。所以这里与打包版 main.cjs 同源：

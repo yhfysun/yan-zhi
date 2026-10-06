@@ -84,6 +84,23 @@ async function resetBrowser() {
   nextTabId = 0;
 }
 
+/** CDP 连接瞬时故障重试：ECONNREFUSED（启动竞态/浏览器重启瞬间）退避重试 2 次 */
+async function connectCdpWithRetry(chromium: any, endpoint: string): Promise<any> {
+  let lastErr: any;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      return await chromium.connectOverCDP(endpoint);
+    } catch (e: any) {
+      lastErr = e;
+      if (attempt < 2) await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
+    }
+  }
+  const detail = lastErr?.message || String(lastErr);
+  throw new Error(
+    `CDP 连接失败（已重试 3 次）: ${endpoint} —— 预览面板浏览器未就绪或调试端口被占用，可在预览面板重开浏览器后重试。原始错误: ${detail}`,
+  );
+}
+
 /** 获取或启动浏览器实例（支持 launch / cdp 两种模式，headless 可配置） */
 async function getBrowser() {
   const { chromium } = await loadChromium();
@@ -95,8 +112,10 @@ async function getBrowser() {
   // 实例假死：先清理再重建
   if (browserInstance) await resetBrowser();
   if (BROWSER_MODE === 'cdp') {
-    // CDP 模式：连接用户真实打开的 Chrome（需启动时加 --remote-debugging-port=9222）
-    browserInstance = await withTimeout(chromium.connectOverCDP(CDP_ENDPOINT), 'CDP 连接失败');
+    // CDP 模式：连接 Electron 自身 BrowserView（端点由桌面 main.cjs 经 env 注入）。
+    // 瞬时故障重试（2026-10-06）：应用启动竞态 / 预览面板浏览器重启瞬间会 ECONNREFUSED，
+    // 长任务不该被一次抖动杀死 → 退避重试 2 次（1.5s/3s）。
+    browserInstance = await withTimeout(connectCdpWithRetry(chromium, CDP_ENDPOINT), 'CDP 连接失败');
   } else {
     // launch 模式：强制 headless（不允许环境变量切有头，避免弹独立浏览器窗口）
     browserInstance = await withTimeout(chromium.launch({ headless: BROWSER_HEADLESS }), '浏览器启动失败');

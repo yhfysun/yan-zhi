@@ -363,6 +363,8 @@ const guardEnv = readGuardEnv();
 
 function startServer() {
   const serverDir = path.join(__dirname, '..', 'server');
+  // CDP 端点此刻必须已定稿（Chromium 已随 ready 就绪），server env 一次性带下去
+  const cdpEndpoint = resolveCdpEndpoint();
   // 模型目录统一放**共享** models（两实例复用同一份 gguf，不重复下载 1.1GB，见 instance.cjs）
   const modelsDir = sharedDataDir('models');
   // 开发模式：把源码目录已有的模型文件同步到 userData/models（一次性，不覆盖）
@@ -386,7 +388,7 @@ function startServer() {
       serverProcess = spawn(process.execPath, [tsxPath, 'watch', 'src/index.ts'], {
         cwd: serverDir,
         stdio: 'inherit',
-        env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', PORT: String(API_PORT), YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: 'http://127.0.0.1:' + CDP_PORT, WEB_DIST: path.join(__dirname, '..', '..', 'apps', 'web', 'dist'), ...editionEnv, ...guardEnv, ...readLicenseCodesEnv() },
+        env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', PORT: String(API_PORT), YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: cdpEndpoint, WEB_DIST: path.join(__dirname, '..', '..', 'apps', 'web', 'dist'), ...editionEnv, ...guardEnv, ...readLicenseCodesEnv() },
       });
     } else {
       // 回退：npx tsx（可能 ABI 不兼容，但至少能启动）
@@ -395,7 +397,7 @@ function startServer() {
         cwd: serverDir,
         stdio: 'inherit',
         shell: true,
-        env: { ...process.env, PORT: String(API_PORT), YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: 'http://127.0.0.1:' + CDP_PORT, WEB_DIST: path.join(__dirname, '..', '..', 'apps', 'web', 'dist'), ...editionEnv, ...guardEnv, ...readLicenseCodesEnv() },
+        env: { ...process.env, PORT: String(API_PORT), YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: cdpEndpoint, WEB_DIST: path.join(__dirname, '..', '..', 'apps', 'web', 'dist'), ...editionEnv, ...guardEnv, ...readLicenseCodesEnv() },
       });
     }
     serverProcess.on('error', (err) => console.error('后端启动失败:', err));
@@ -411,7 +413,7 @@ function startServer() {
     logStream.write(`\n===== [${stamp()}] 后端启动 =====\n`);
     serverProcess = spawn(process.execPath, [serverPath], {
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', PORT: String(API_PORT), YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: 'http://127.0.0.1:' + CDP_PORT, WEB_DIST: path.join(process.resourcesPath, 'server', 'web-dist'), ...(dataDir ? { DATA_DIR: dataDir } : {}), ...editionEnv, ...guardEnv, ...readLicenseCodesEnv() },
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', PORT: String(API_PORT), YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: cdpEndpoint, WEB_DIST: path.join(process.resourcesPath, 'server', 'web-dist'), ...(dataDir ? { DATA_DIR: dataDir } : {}), ...editionEnv, ...guardEnv, ...readLicenseCodesEnv() },
     });
     serverProcess.stdout.on('data', (d) => logStream.write(d));
     serverProcess.stderr.on('data', (d) => logStream.write(d));
@@ -3932,10 +3934,42 @@ ipcMain.handle('shortcut:setScreenshot', (_e, accel) => setScreenshotHotkey(acce
 
 // CDP 统一架构：开启远程调试端口，后端 Playwright 通过 CDP 连接到 Electron BrowserView，
 // 所有 browser_ 工具操作同一个浏览器实例，预览面板就是这个 BrowserView（与豆包 CNGC Browser Use 架构一致）。
-// 端口可通过环境变量 YANZHI_CDP_PORT 覆盖，默认 9222。
-const CDP_PORT = process.env.YANZHI_CDP_PORT || '9222';
+// 端口可通过环境变量 YANZHI_CDP_PORT 显式指定；默认用 0 让 Chromium 自动挑空闲端口，
+// 实际端口写入 userData/DevToolsActivePort 文件（resolveCdpEndpoint 读它）。
+// ★ 背景（2026-10-06 小说推文 ch05 排障）：固定 9222 被其它/残留进程占用时，Chromium
+//   绑定失败**静默继续**，服务端 connectOverCDP 表现为 ECONNREFUSED/502 且重连全败 ——
+//   自动选端口从根上消除抢占。
+const CDP_PORT_EXPLICIT = process.env.YANZHI_CDP_PORT || '';
+let CDP_PORT = CDP_PORT_EXPLICIT || '0';
+let CDP_ENDPOINT = CDP_PORT_EXPLICIT ? 'http://127.0.0.1:' + CDP_PORT_EXPLICIT : '';
 app.commandLine.appendSwitch('remote-debugging-port', CDP_PORT);
-console.log(`[cdp] 远程调试端口已开启: http://127.0.0.1:${CDP_PORT}`);
+console.log(`[cdp] 远程调试端口: ${CDP_PORT_EXPLICIT ? '固定 ' + CDP_PORT_EXPLICIT : '自动分配(DevToolsActivePort)'}`);
+
+/** 同步休眠（仅启动期短等待用） */
+function sleepSync(ms) {
+  try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } catch { /* 忽略 */ }
+}
+
+/** 解析实际 CDP 端点：显式指定直接用；自动模式下读 userData/DevToolsActivePort 首行。
+ *  Chromium 就绪后立即写该文件，ready 触发时通常已存在；给最多 ~4s 兜底重试。 */
+function resolveCdpEndpoint() {
+  if (CDP_ENDPOINT) return CDP_ENDPOINT;
+  const file = path.join(app.getPath('userData'), 'DevToolsActivePort');
+  for (let i = 0; i < 20; i++) {
+    try {
+      const firstLine = parseInt(fs.readFileSync(file, 'utf8').split(/\r?\n/)[0], 10);
+      if (firstLine > 0 && firstLine < 65536) {
+        CDP_PORT = String(firstLine);
+        CDP_ENDPOINT = 'http://127.0.0.1:' + CDP_PORT;
+        console.log(`[cdp] 实际调试端口(DevToolsActivePort): ${CDP_ENDPOINT}`);
+        return CDP_ENDPOINT;
+      }
+    } catch { /* 文件未就绪，稍候重试 */ }
+    sleepSync(200);
+  }
+  console.warn('[cdp] 未能读取 DevToolsActivePort，浏览器工具可能不可用（CDP 未就绪）');
+  return CDP_ENDPOINT || 'http://127.0.0.1:9222';
+}
 
 // Windows 下禁用原生窗口遮挡计算：窗口最小化/隐藏后，Chromium 会把 BrowserView 的
 // webContents 标记为「被完全遮挡」而停止产出新帧；恢复显示后合成器偶发不重新绘制，
