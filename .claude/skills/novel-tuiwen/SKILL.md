@@ -25,7 +25,7 @@ description: 小说推文全自动产线：授权平台选书→过滤打分→�
 1. 选书：上表授权平台按序尝试，浏览器工具抓书目；抓不到就换下一家，不死磕
 2. 过滤：题材热度/开头钩子/竞争度打分，取 Top1-3
 3. 正文：从达人中心书详情逐章抓全文落盘 file_write → novel/<书名>/chNN.txt（其他平台不给全文时 ask_user）
-4. 背景：链接走 api_media_fetch（yt-dlp 缺失先 media_install_ytdlp）；本地文件直接传
+4. 背景：**优先本地已有素材**（如 00-source/ 下文件直接传 bg_video）。外链实测（2026-10-06）：mixkit 资产直链服务端必 403（签名 URL，换 UA/Referer/代理都没用，别再试）；pixabay 页面链接 404（需真实文件直链且易过期）；pexels 可下但慢（超时自动转代理）。链接走 api_media_fetch（yt-dlp 缺失先 media_install_ytdlp）；没有素材就占位画面
 5. 出片 novel_tuiwen { chapter, title, bg_video, voice? }
 6. 发布（抖音，需确认）：creator.douyin.com/creator-micro/content/upload 网页上传，标题带别名关键词+话题；**confirm_user 确认后才点发布**
 7. 回填发文：抽屉内「抖音发文→添加发文」填抖音号+视频链接提交——不回填不结算，7 天内不回填别名失效

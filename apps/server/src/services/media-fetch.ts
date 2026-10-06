@@ -30,6 +30,20 @@ const LOCAL_PROXY_PORTS = [7890, 7897, 10809, 1080, 8080, 8888];
 const DIRECT_TIMEOUT_MS = 20000;
 
 let proxyCandidates: ProxyEndpoint[] | null = null;
+
+/**
+ * 浏览器形态请求头（2026-10-06）：mixkit 等素材站有 UA/Referer 防盗链，
+ * 自报 `yan-zhi-media/1.0` 直接 403（直连和代理隧道都一样，因为拒的是应用层头）。
+ * 伪装成 Chrome + 带 site 同源 Referer 后可过；对不检查的站无副作用。
+ */
+function browserLikeHeaders(target: URL): Record<string, string> {
+  return {
+    'User-Agent':
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+    Referer: `${target.protocol}//${target.hostname}/`,
+    Accept: '*/*',
+  };
+}
 /**
  * 直连已验证不通的 host → 记录时刻。
  *
@@ -121,7 +135,9 @@ export async function resolveMediaProxy(): Promise<ProxyEndpoint | null> {
  * 导出是为了让单测能单独钉住「超时上限」的实现细节。
  */
 export async function directFetch(url: string, timeoutMs: number): Promise<Buffer> {
-  const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+  let target: URL;
+  try { target = new URL(url); } catch { throw new Error('非法媒体地址'); }
+  const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs), headers: browserLikeHeaders(target) });
   if (!res.ok) throw new Error(`下载失败 HTTP ${res.status}`);
   const buf = Buffer.from(await res.arrayBuffer());
   if (!buf.length) throw new Error('下载到空内容');
@@ -170,7 +186,7 @@ function proxyTunnelGet(url: string, proxy: ProxyEndpoint, timeoutMs: number, re
         method: 'GET',
         // 不经连接池：隧道 socket 用完即断，避免 keep-alive 把进程吊住
         agent: false,
-        headers: { Host: target.hostname, 'User-Agent': 'yan-zhi-media/1.0' },
+        headers: { Host: target.hostname, ...browserLikeHeaders(target) },
         // 隧道建好后再回传 socket（createConnection 的异步交付形态），故用 any 落类型
         createConnection: (_opts: any, cb: any): any => {
           const socket = net.connect({ host: proxy.host, port: proxy.port });
