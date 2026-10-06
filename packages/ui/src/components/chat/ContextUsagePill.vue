@@ -37,7 +37,8 @@
       <div class="ctx-detail-total">
         <span class="ctx-detail-num">~{{ formatTokens(usedTokens) }}</span>
         <span class="ctx-detail-sep">/</span>
-        <span class="ctx-detail-denom" :title="denomTitle">{{ formatTokens(limitTokens) }} tokens</span>
+        <span class="ctx-detail-denom" :title="denomTitle">{{ formatTokens(limitTokens) }}</span>
+        <span class="ctx-detail-denom" :title="denomTitle">（标称 {{ formatTokens(declaredWindow) }}）</span>
         <span class="ctx-detail-pct">{{ percent }}%</span>
       </div>
 
@@ -104,7 +105,7 @@ const props = withDefaults(defineProps<{
 }>(), { compactCount: 0, conversationId: '', agentId: '' });
 
 // ── 分段估算（2026-10-06，WorkBuddy 同款分类）──
-interface Breakdown { system: number; tools: number; mcp: number; messages: number }
+interface Breakdown { system: number; tools: number; mcp: number; skill: number; messages: number }
 const breakdown = ref<Breakdown | null>(null);
 const breakdownLoading = ref(false);
 let lastFetchAt = 0;
@@ -129,10 +130,14 @@ async function loadBreakdown() {
 const segments = computed(() => {
   if (!breakdown.value || props.usedTokens <= 0) return [];
   const b = breakdown.value;
+  // 对话内容 = 前端总账 − 其余各类（前端/服务端两套估算的口径差归到这里，
+  // 保证各行合计 = 总账、占比不超 100% —— 服务器独立估算消息会出 101% 这种怪行）
+  const messages = Math.max(0, props.usedTokens - b.system - b.tools - b.mcp - b.skill);
   const defs = [
     { name: '系统级提示', tokens: b.system, color: '#3b82f6' },
     { name: '工具定义与描述', tokens: b.tools, color: '#22c55e' },
-    { name: '对话内容', tokens: b.messages, color: '#f59e0b' },
+    { name: '对话内容', tokens: messages, color: '#f59e0b' },
+    { name: 'Skill', tokens: b.skill, color: '#06b6d4' },
     { name: '技能级 MCP', tokens: b.mcp, color: '#a855f7' },
   ];
   const sum = defs.reduce((a, d) => a + d.tokens, 0);

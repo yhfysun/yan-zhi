@@ -222,11 +222,26 @@ router.get('/:id/context-breakdown', (req: Request, res: Response) => {
       if (name.startsWith('mcp_')) mcpTokens += est;
       else toolsTokens += est;
     }
+    // Skill 流程指引（挂载 skill 的截断 body）：系统提示的组成部分，单独拆「Skill」类
+    let skillTokens = 0;
+    try {
+      const ids = new Set<string>();
+      const agentRow = agentId ? (db.prepare('SELECT skill_ids FROM agent WHERE id = ?').get(agentId) as any) : null;
+      const convRow = db.prepare('SELECT skill_ids_json FROM conversation WHERE id = ?').get(cid) as any;
+      try { for (const x of JSON.parse(convRow?.skill_ids_json || '[]')) ids.add(String(x)); } catch { /* 无挂载 */ }
+      try { for (const x of JSON.parse(agentRow?.skill_ids || '[]')) ids.add(String(x)); } catch { /* 无挂载 */ }
+      for (const sid of ids) {
+        const sk = db.prepare('SELECT body, enabled FROM skill WHERE id = ? AND (user_id = ? OR user_id IS NULL)').get(sid, userId) as any;
+        if (!sk?.enabled) continue;
+        // 与注入口径一致：truncateSkillBody 截断 2000 字 + 参考资料指针
+        skillTokens += estimateTokens((sk.body || '').slice(0, 2400));
+      }
+    } catch { /* 估算失败不计入 */ }
     // 对话内容：历史消息正文 + 推理
     const rows = db.prepare('SELECT content, reasoning_content FROM message WHERE conversation_id = ?').all(cid) as any[];
     let messages = 0;
     for (const r of rows) messages += estimateTokens(r?.content || '') + estimateTokens(r?.reasoning_content || '');
-    res.json({ data: { system, tools: toolsTokens, mcp: mcpTokens, messages } });
+    res.json({ data: { system, tools: toolsTokens, mcp: mcpTokens, skill: skillTokens, messages } });
   } catch (e: any) {
     res.status(500).json({ error: e?.message || '上下文分段计算失败' });
   }
