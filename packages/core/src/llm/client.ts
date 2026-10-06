@@ -335,6 +335,28 @@ export class LlmClient {
     });
   }
 
+  /** 瞬时网络错误重试的 upstreamFetch（2026-10-06）：仅重试「连接建立」阶段的网络层
+   *  抛错（fetch failed / ECONNRESET / socket hang up 等），HTTP 非 2xx 状态原样返回
+   *  交由调用方按状态码处理；中止信号直接抛出。
+   *  ★ 长任务（小说推文等无人值守）跑几十分钟，任何一次模型调用的瞬时断连都会
+   *  杀死整个任务 —— 必须自动吸收抖动（与 capabilityTest 的重试判定同一正则口径）。 */
+  private async upstreamFetchRetry(url: string, body: unknown, opts?: { signal?: AbortSignal; anthropic?: boolean }, retries = 2): Promise<Response> {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await this.upstreamFetch(url, body, opts);
+      } catch (e: any) {
+        const sig = opts?.signal;
+        if (sig?.aborted || e?.name === 'AbortError') throw e;
+        const msg = e?.message || '';
+        if (attempt < retries && /fetch failed|network|ETIMEDOUT|ECONNRESET|socket hang up|terminated/i.test(msg)) {
+          await new Promise((r) => setTimeout(r, (attempt + 1) * 1500));
+          continue;
+        }
+        throw e;
+      }
+    }
+  }
+
   async *chatStream(
     messages: Message[],
     options?: { tools?: unknown[]; temperature?: number; maxTokens?: number; topP?: number; frequencyPenalty?: number; presencePenalty?: number; reasoningEffort?: string; responseFormat?: { type: 'json_object' | 'json_schema'; json_schema?: unknown }; signal?: AbortSignal },
@@ -366,7 +388,7 @@ export class LlmClient {
     const urlDesc = this.proxyBase ? `${this.proxyBase}/chat/completions` : `${this.baseUrl}/v1/chat/completions`;
     let res: Response;
     try {
-      res = await this.upstreamFetch('v1/chat/completions', body, { signal: options?.signal });
+      res = await this.upstreamFetchRetry('v1/chat/completions', body, { signal: options?.signal });
     } catch (e: any) {
       const sig = options?.signal;
       if (sig?.aborted || e?.name === 'AbortError') {
@@ -458,7 +480,7 @@ export class LlmClient {
       stream: false,
     };
     if (options?.responseFormat) body.response_format = options.responseFormat;
-    const res = await this.upstreamFetch('v1/chat/completions', body, { signal: options?.signal });
+    const res = await this.upstreamFetchRetry('v1/chat/completions', body, { signal: options?.signal });
     if (!res.ok) {
       // ★ 非流式路径此前只抛 `${status} ${statusText}`，从**不读取响应体** →
       //   上游返回 400 时用户只能看到光秃秃的「400 Bad Request」，真实原因（如
@@ -503,7 +525,7 @@ export class LlmClient {
     if (tools.length) body.tools = tools;
     if (options?.temperature != null) body.temperature = options.temperature;
     if (options?.topP != null) body.top_p = options.topP;
-    const res = await this.upstreamFetch('v1/messages', body, { signal: options?.signal, anthropic: true });
+    const res = await this.upstreamFetchRetry('v1/messages', body, { signal: options?.signal, anthropic: true });
     if (!res.ok) {
       const text = await res.text().catch(() => '');
       const urlDesc = this.proxyBase ? `${this.proxyBase}/messages` : `${this.baseUrl}/v1/messages`;
@@ -795,7 +817,7 @@ export class LlmClient {
         }],
         stream: false,
       };
-      const res = await this.upstreamFetch('v1/messages', body, { signal: options?.signal, anthropic: true });
+      const res = await this.upstreamFetchRetry('v1/messages', body, { signal: options?.signal, anthropic: true });
       if (!res.ok) {
         const text = await res.text().catch(() => '');
         throw new Error(`vision 请求失败: ${res.status} ${res.statusText} ${text.slice(0, 200)}`);
@@ -817,7 +839,7 @@ export class LlmClient {
       temperature: options?.temperature,
       stream: false,
     };
-    const res = await this.upstreamFetch('v1/chat/completions', body, { signal: options?.signal });
+    const res = await this.upstreamFetchRetry('v1/chat/completions', body, { signal: options?.signal });
     if (!res.ok) {
       const text = await res.text().catch(() => '');
       throw new Error(`vision 请求失败: ${res.status} ${res.statusText} ${text.slice(0, 200)}`);
