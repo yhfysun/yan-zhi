@@ -4207,7 +4207,7 @@ export function buildSystemPromptForBackend(agentId: string | null, userId: stri
   // 系统提示词：会话级优先，其次 agent 级（与前端 conv.systemPrompt || agent.systemPrompt 一致）
   let basePrompt = '';
   if (agentId) {
-    const agent = db.prepare('SELECT system_prompt, type FROM agent WHERE id = ? AND (user_id = ? OR is_public = 1)').get(agentId, userId) as any;
+    const agent = db.prepare('SELECT system_prompt, type, skill_ids FROM agent WHERE id = ? AND (user_id = ? OR is_public = 1)').get(agentId, userId) as any;
     basePrompt = convMounts.systemPrompt || agent?.system_prompt || '';
     const isHarness = !agent?.type || agent.type === 'harness';
 
@@ -4337,6 +4337,7 @@ export function buildSystemPromptForBackend(agentId: string | null, userId: stri
           //   DB files_json 是真相源，这里同步到 <工作目录>/.yan-zhi/skills/<名>/，
           //   模型按 SKILL.md 里的引用用 file_read 按需读取（幂等：内容一致跳过写）。
           const refFiles = parseSkillFiles(sk.files_json);
+          logger.info(`[skill-files] 注入 ${sk.name}: files=${refFiles.length} ws=${effectiveWorkspaceDir}`);
           if (effectiveWorkspaceDir) syncSkillsToWorkspace(effectiveWorkspaceDir, [{ name: sk.name, body: sk.body || '', filesJson: sk.files_json }]);
           const refNote = refFiles.length
             ? `\n> 📁 参考资料（按需 file_read，别一次全读）：<工作目录>/.yan-zhi/skills/${skillDirName(sk.name)}/ 下的 ${refFiles.map((f) => f.path).join('、')}`

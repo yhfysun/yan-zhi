@@ -415,6 +415,8 @@ export async function initSchema(execFn: (sql: string) => Promise<void>): Promis
   for (const col of ['remote_source_id', 'is_public']) {
     try { await execFn(`ALTER TABLE skill ADD COLUMN ${col} TEXT;`); } catch { /* 列已存在 */ }
   }
+  // 迁移：skill 子目录文件（2026-10-06，files_json = [{path, content}]）
+  try { await execFn(`ALTER TABLE skill ADD COLUMN files_json TEXT;`); } catch { /* 列已存在 */ }
   try { await execFn(`ALTER TABLE skill ADD COLUMN is_public INTEGER NOT NULL DEFAULT 0;`); } catch {
     try { await execFn(`ALTER TABLE skill ADD COLUMN is_public INTEGER NOT NULL DEFAULT 0;`); } catch { /* 已存在 */ }
   }
