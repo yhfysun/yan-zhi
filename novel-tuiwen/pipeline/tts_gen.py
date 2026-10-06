@@ -46,6 +46,25 @@ async def synth(text: str, out_path: str, voice: str):
     await tts.save(out_path)
 
 
+def synth_with_retry(text: str, out_path: str, voice: str, retries: int = 3):
+    """逐段重试：edge-tts 到微软的连接偶发 NoAudioReceived/超时（实测一段成功后
+    下一段可能连断数次），整段管线失败重来代价太高（前面 20+ 段全部白合成）。
+    单段 3 次重试 + 递增间隔，基本能把抖动吸收掉。"""
+    import time as _time
+    last_err = None
+    for attempt in range(1, retries + 1):
+        try:
+            asyncio.run(synth(text, out_path, voice))
+            if os.path.exists(out_path) and os.path.getsize(out_path) > 0:
+                return
+            raise RuntimeError("输出文件为空")
+        except Exception as e:
+            last_err = e
+            print(f"[tts] seg 失败(第{attempt}次): {type(e).__name__}: {str(e)[:80]}", file=sys.stderr)
+            _time.sleep(attempt * 2)
+    raise RuntimeError(f"edge-tts 连续 {retries} 次失败: {last_err}")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--script", required=True)
@@ -61,7 +80,9 @@ def main():
         if not text.strip():
             continue
         p = os.path.join(a.outdir, f"seg_{i:03d}.mp3")
-        asyncio.run(synth(text, p, a.voice))
+        # 已存在的分段跳过（重跑时不必重新合成，网络抖动恢复后续跑即可）
+        if not (os.path.exists(p) and os.path.getsize(p) > 0):
+            synth_with_retry(text, p, a.voice)
         d = audio_duration(p)
         print(f"[tts] seg_{i:03d} {d:.2f}s  {text[:18]}...")
         paths.append((i, p, d))
