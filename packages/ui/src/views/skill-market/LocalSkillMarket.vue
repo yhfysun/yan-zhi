@@ -204,7 +204,9 @@ function expandAllDirs(nodes: TreeNode[], set: Set<string>) {
 const previewRows = computed<PreviewRow[]>(() => {
   const rows: PreviewRow[] = [];
   const walk = (nodes: TreeNode[], depth: number) => {
-    const sorted = [...nodes].sort((a, b) => (a.isDir === b.isDir ? a.name.localeCompare(b.name) : a.isDir ? -1 : 1));
+    // SKILL.md 恒置顶，其余目录在前、按名排序
+    const rank = (n: TreeNode) => (!n.isDir && n.name === 'SKILL.md' ? 0 : n.isDir ? 1 : 2);
+    const sorted = [...nodes].sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));
     for (const n of sorted) {
       rows.push({ key: n.key, name: n.name, isDir: n.isDir, depth });
       if (n.isDir && expandedDirs.value.has(n.key)) walk(n.children, depth + 1);
