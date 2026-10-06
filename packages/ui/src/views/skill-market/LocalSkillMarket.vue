@@ -54,6 +54,7 @@
                 <el-switch :model-value="!!s.isPublic" size="small" @change="(v: boolean) => togglePublish(s.id, v)" />
               </el-tooltip>
               <el-switch :model-value="s.enabled" size="small" @change="(v: boolean) => toggle(s.id, v)" />
+              <el-tooltip content="导出（.zip，含子目录）" placement="top"><el-button size="small" circle @click="exportSkill(s)"><el-icon :size="14"><Download /></el-icon></el-button></el-tooltip>
               <el-tooltip v-if="s.source === 'local'" content="编辑" placement="top"><el-button size="small" circle @click="openEdit(s)"><el-icon :size="14"><Edit /></el-icon></el-button></el-tooltip>
               <el-tooltip :content="s.source === 'local' ? '删除' : '卸载'" placement="top"><el-button size="small" circle type="danger" @click="removeSkill(s.id)"><el-icon :size="14"><Delete /></el-icon></el-button></el-tooltip>
             </template>
@@ -74,8 +75,24 @@
               <el-input v-model="triggersText" placeholder="逗号分隔，如：excel,xlsx,数据分析" />
             </el-form-item>
             <el-form-item label="内容">
-              <el-input v-model="editor.bodyMd" type="textarea" :rows="14" placeholder="Skill Markdown 内容" />
+              <el-input v-model="editor.bodyMd" type="textarea" :rows="14" placeholder="Skill Markdown 内容（SKILL.md 本体）" />
             </el-form-item>
+            <el-form-item label="子目录">
+              <div class="subfiles">
+                <div v-for="(f, i) in editorFiles" :key="i" class="subfile-row">
+                  <el-input v-model="f.path" size="small" placeholder="相对路径，如 references/api-notes.md" class="subfile-path" @focus="editingFile = i" />
+                  <el-button size="small" @click="editingFile = i">编辑内容</el-button>
+                  <el-button size="small" type="danger" text @click="editorFiles.splice(i, 1); if (editingFile === i) editingFile = null"><el-icon><Delete /></el-icon></el-button>
+                </div>
+                <el-button size="small" @click="editorFiles.push({ path: '', content: '' })">+ 添加子文件</el-button>
+              </div>
+            </el-form-item>
+          </el-form>
+          <el-form v-if="editingFile !== null" label-width="80px" class="subfile-editor">
+            <el-form-item :label="editorFiles[editingFile]?.path || '路径'">
+              <el-input v-model="editorFiles[editingFile].content" type="textarea" :rows="10" placeholder="子文件内容" />
+            </el-form-item>
+            <el-button size="small" @click="editingFile = null">收起</el-button>
           </el-form>
         </div>
         <div class="editor-preview">
@@ -89,9 +106,22 @@
       </template>
     </el-dialog>
 
-    <!-- 预览弹窗 -->
-    <el-dialog v-model="showPreview" title="Skill 内容" width="640px">
-      <pre class="preview-content">{{ previewContent }}</pre>
+    <!-- 预览弹窗：层级文件树 + 内容预览（2026-10-06 子目录化） -->
+    <el-dialog v-model="showPreview" :title="previewTitle" width="760px">
+      <div class="preview-layout" v-if="previewFiles.length">
+        <div class="preview-tree">
+          <div
+            v-for="f in previewFiles" :key="f.path"
+            class="preview-tree-item" :class="{ active: previewActive === f.path }"
+            @click="previewActive = f.path"
+          >
+            <el-icon :size="13"><Document /></el-icon>
+            <span>{{ f.path }}</span>
+          </div>
+        </div>
+        <pre class="preview-content preview-content-pane">{{ previewFiles.find(f => f.path === previewActive)?.content }}</pre>
+      </div>
+      <pre v-else class="preview-content">{{ previewContent }}</pre>
     </el-dialog>
 
     <!-- 导入弹窗 -->
@@ -109,7 +139,7 @@
 
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted } from 'vue';
-import { Plus, Files, ArrowLeft, Edit, Delete, FolderOpened, UploadFilled, Box } from '@element-plus/icons-vue';
+import { Plus, Files, ArrowLeft, Edit, Delete, FolderOpened, UploadFilled, Box, Document, Download } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { useSkillStore, useAuthStore } from '../../stores';
 import { getPlatformAdapter } from '@yan-zhi/core';
@@ -131,6 +161,13 @@ const previewContent = ref('');
 const editor = ref({ name: '', description: '', bodyMd: '' });
 const triggersText = ref('');
 const importText = ref('');
+// 子目录文件（2026-10-06）：预览文件树 + 编辑器子文件管理
+interface SkillFile { path: string; content: string }
+const previewFiles = ref<SkillFile[]>([]);
+const previewActive = ref('SKILL.md');
+const previewTitle = ref('Skill 内容');
+const editorFiles = ref<SkillFile[]>([]);
+const editingFile = ref<number | null>(null);
 
 onMounted(() => store.loadSkills());
 
@@ -189,6 +226,8 @@ const previewMd = computed(() => {
 function openNew() {
   editing.value = null;
   editor.value = { name: '', description: '', bodyMd: '' };
+  editorFiles.value = [];
+  editingFile.value = null;
   triggersText.value = '';
   showEditor.value = true;
 }
@@ -200,6 +239,8 @@ function openEdit(s: Skill) {
     description: (s.frontmatter as any).description || s.description || '',
     bodyMd: s.bodyMd,
   };
+  editorFiles.value = (s.files || []).map(f => ({ ...f }));
+  editingFile.value = null;
   triggersText.value = (s.frontmatter?.triggers || []).join(', ');
   showEditor.value = true;
 }
@@ -207,31 +248,55 @@ function openEdit(s: Skill) {
 async function saveSkill() {
   if (!editor.value.name) { ElMessage.warning('名称必填'); return; }
   const triggers = triggersText.value.split(',').map(s => s.trim()).filter(Boolean);
+  // 过滤无效子文件（无路径/无内容）
+  const files = editorFiles.value.filter(f => f.path.trim() && f.content.trim())
+    .map(f => ({ path: f.path.trim().replace(/\\/g, '/'), content: f.content }));
   if (editing.value) {
     await store.updateSkill(editing.value.id, {
       description: editor.value.description,
       bodyMd: editor.value.bodyMd,
       triggers,
+      files,
     });
     ElMessage.success('已保存');
   } else {
-    await store.createCustom(editor.value.name, editor.value.description, editor.value.bodyMd, triggers);
+    await store.createCustom(editor.value.name, editor.value.description, editor.value.bodyMd, triggers, files);
     ElMessage.success('已创建');
   }
   showEditor.value = false;
 }
 
 function previewSkill(s: Skill) {
-  previewContent.value = store.exportToMd(s);
+  previewTitle.value = s.name;
+  const files: SkillFile[] = [{ path: 'SKILL.md', content: store.exportToMd(s) }];
+  for (const f of (s.files || [])) files.push({ ...f });
+  previewFiles.value = files;
+  previewActive.value = 'SKILL.md';
+  previewContent.value = files[0].content;
   showPreview.value = true;
 }
 
-function exportSkill(s: Skill) {
-  const md = store.exportToMd(s);
-  const blob = new Blob([md], { type: 'text/markdown' });
+async function exportSkill(s: Skill) {
+  const files = (s.files || []).filter(f => f.path && f.content);
+  if (files.length === 0) {
+    // 无子目录 → 单文件 .md
+    const md = store.exportToMd(s);
+    const blob = new Blob([md], { type: 'text/markdown' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `${s.name}.md`; a.click();
+    URL.revokeObjectURL(url);
+    return;
+  }
+  // 有子目录 → .zip（SKILL.md + 层级文件）
+  const JSZip = (await import('jszip')).default;
+  const zip = new JSZip();
+  zip.file('SKILL.md', store.exportToMd(s));
+  for (const f of files) zip.file(f.path, f.content);
+  const blob = await zip.generateAsync({ type: 'blob' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
-  a.href = url; a.download = `${s.name}.md`; a.click();
+  a.href = url; a.download = `${s.name}.zip`; a.click();
   URL.revokeObjectURL(url);
 }
 
@@ -295,6 +360,75 @@ async function importSkillTexts(items: { path: string; text: string }[]): Promis
   return imported;
 }
 
+/** 从「条目集」里按目录分组出 skill：每个含 SKILL.md 的目录 = 一个 skill（其余文件为子目录文件）；
+ *  根级散装 .md 每个 = 一个独立 skill。返回可导入的 skill 列表（含子文件）。 */
+function groupEntriesToSkills(
+  entries: { path: string; text: string }[],
+): Array<{ name: string; description: string; bodyMd: string; triggers: string[]; files: SkillFile[] }> {
+  const norm = (p: string) => p.replace(/\\/g, '/').replace(/^\.\//, '');
+  const out: Array<{ name: string; description: string; bodyMd: string; triggers: string[]; files: SkillFile[] }> = [];
+  const used = new Set<unknown>();
+  // 1) 找所有 SKILL.md
+  const skillMdEntries = entries.filter(e => norm(e.path).toLowerCase().endsWith('skill.md'));
+  for (const sm of skillMdEntries) {
+    const root = norm(sm.path).slice(0, -'SKILL.md'.length).replace(/\/$/, '');
+    const parsed = parseSkillMd(sm.text);
+    if (!parsed.frontmatter.name) continue;
+    const files: SkillFile[] = [];
+    for (const e of entries) {
+      const np = norm(e.path);
+      if (e === sm || used.has(e)) continue;
+      if (root === '' ? np.includes('/') : np.startsWith(root + '/')) {
+        const rel = root === '' ? np : np.slice(root.length + 1);
+        if (rel && !rel.toLowerCase().endsWith('skill.md')) {
+          files.push({ path: rel, content: e.text });
+          used.add(e);
+        }
+      }
+    }
+    used.add(sm);
+    out.push({
+      name: parsed.frontmatter.name,
+      description: parsed.frontmatter.description || '',
+      bodyMd: parsed.bodyMd || parsed.body,
+      triggers: parsed.frontmatter.triggers || [],
+      files,
+    });
+  }
+  // 2) 根级散装 .md（未被分组消费的）
+  for (const e of entries) {
+    if (used.has(e)) continue;
+    const np = norm(e.path);
+    if (!np.toLowerCase().endsWith('.md')) continue;
+    const parsed = parseSkillMd(e.text);
+    if (!parsed.frontmatter.name) continue;
+    out.push({
+      name: parsed.frontmatter.name,
+      description: parsed.frontmatter.description || '',
+      bodyMd: parsed.bodyMd || parsed.body,
+      triggers: parsed.frontmatter.triggers || [],
+      files: [],
+    });
+    used.add(e);
+  }
+  return out;
+}
+
+/** 批量导入结构化 skill（含子文件），返回导入数量 */
+async function importGrouped(
+  groups: Array<{ name: string; description: string; bodyMd: string; triggers: string[]; files: SkillFile[] }>,
+): Promise<number> {
+  let imported = 0;
+  const nameSet = new Set(store.skills.map(s => s.name));
+  for (const g of groups) {
+    if (nameSet.has(g.name)) continue;
+    await store.createCustom(g.name, g.description, g.bodyMd, g.triggers, g.files);
+    nameSet.add(g.name);
+    imported++;
+  }
+  return imported;
+}
+
 async function importFolder() {
   try {
     const adapter = getPlatformAdapter();
@@ -325,6 +459,14 @@ async function importFolder() {
     await scan(path);
     if (items.length === 0) {
       ElMessage.warning('所选文件夹中没有 .md 文件');
+      return;
+    }
+    // 含 SKILL.md 的目录结构 → 按 skill 分组导入（子目录文件随 files 落库）
+    const hasSkillMd = items.some(it => it.path.replace(/\\/g, '/').toLowerCase().endsWith('skill.md'));
+    if (hasSkillMd) {
+      const imported = await importGrouped(groupEntriesToSkills(items));
+      if (imported > 0) ElMessage.success(`已从文件夹导入 ${imported} 个 Skill（含子目录文件）`);
+      else ElMessage.info('没有可导入的新 Skill（可能是名称重复）');
       return;
     }
     const imported = await importSkillTexts(items);
@@ -363,6 +505,14 @@ async function onZipFile(e: Event) {
     }
     if (items.length === 0) {
       ElMessage.warning('压缩包中没有 .md 文件');
+      return;
+    }
+    // 含 SKILL.md 的压缩包结构 → 按 skill 分组导入（子目录文件随 files 落库）
+    const hasSkillMd = items.some(it => it.path.replace(/\\/g, '/').toLowerCase().endsWith('skill.md'));
+    if (hasSkillMd) {
+      const imported = await importGrouped(groupEntriesToSkills(items));
+      if (imported > 0) ElMessage.success(`已从压缩包导入 ${imported} 个 Skill（含子目录文件）`);
+      else ElMessage.info('没有可导入的新 Skill（可能是名称重复）');
       return;
     }
     const imported = await importSkillTexts(items);
@@ -445,6 +595,20 @@ function parseSkillMd(md: string): { frontmatter: any; bodyMd: string; body: str
   font-family: "JetBrains Mono", monospace; font-size: 13px; max-height: 500px;
   overflow: auto; white-space: pre-wrap;
 }
+/* 预览文件树 + 编辑器子文件（2026-10-06 子目录化） */
+.preview-layout { display: grid; grid-template-columns: 220px 1fr; gap: 12px; }
+.preview-tree { border: 1px solid var(--glass-border); border-radius: 6px; padding: 6px; max-height: 500px; overflow: auto; }
+.preview-tree-item {
+  display: flex; align-items: center; gap: 6px; padding: 6px 8px; border-radius: 4px;
+  cursor: pointer; font-size: 13px; color: var(--color-text); word-break: break-all;
+}
+.preview-tree-item:hover { background: rgba(124,58,237,0.08); }
+.preview-tree-item.active { background: rgba(124,58,237,0.15); font-weight: 600; }
+.preview-content-pane { min-height: 460px; }
+.subfiles { display: flex; flex-direction: column; gap: 6px; width: 100%; }
+.subfile-row { display: flex; gap: 6px; align-items: center; }
+.subfile-path { flex: 1; }
+.subfile-editor { margin-top: 8px; }
 
 /* ===== Mobile ===== */
 @media (max-width: 767px) {

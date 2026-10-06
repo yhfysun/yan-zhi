@@ -13,6 +13,8 @@ export interface Skill {
   source: 'market' | 'local';
   frontmatter: SkillFrontmatter;
   bodyMd: string;
+  /** 子目录文件（2026-10-06）：[{path, content}]，path 相对 skill 根（SKILL.md 即 bodyMd 本体） */
+  files?: Array<{ path: string; content: string }>;
   enabled: boolean;
   isPublic?: boolean;
   category?: string;
@@ -150,8 +152,11 @@ export const useSkillStore = defineStore('skill', () => {
     throw new Error('安装失败');
   }
 
-  async function createCustom(name: string, description: string, bodyMd: string, triggers: string[] = []): Promise<string> {
-    const r = await api.post<any>('/skills', { name, description, triggers, body: bodyMd, category: '自定义' });
+  async function createCustom(
+    name: string, description: string, bodyMd: string, triggers: string[] = [],
+    files?: Array<{ path: string; content: string }>,
+  ): Promise<string> {
+    const r = await api.post<any>('/skills', { name, description, triggers, body: bodyMd, category: '自定义', files });
     if ('data' in r) {
       skills.value.unshift(rowToSkill(r.data));
       return (r.data as any).id;
@@ -159,11 +164,12 @@ export const useSkillStore = defineStore('skill', () => {
     throw new Error('创建失败');
   }
 
-  async function updateSkill(id: string, patch: { description?: string; bodyMd?: string; triggers?: string[] }) {
+  async function updateSkill(id: string, patch: { description?: string; bodyMd?: string; triggers?: string[]; files?: Array<{ path: string; content: string }> | null }) {
     const body: any = {};
     if (patch.description !== undefined) body.description = patch.description;
     if (patch.bodyMd !== undefined) body.body = patch.bodyMd;
     if (patch.triggers !== undefined) body.triggers = patch.triggers;
+    if (patch.files !== undefined) body.files = patch.files;
     if (Object.keys(body).length === 0) return;
     await api.patch(`/skills/${id}`, body);
     await loadSkills();
@@ -215,6 +221,7 @@ function rowToSkill(r: any): Skill {
       isPublic: !!r.is_public,
       frontmatter: r.frontmatter_json ? JSON.parse(r.frontmatter_json) : { name: r.name },
       bodyMd: r.body_md,
+      files: r.files_json ? JSON.parse(r.files_json) : undefined,
     };
   }
   return {
@@ -227,6 +234,7 @@ function rowToSkill(r: any): Skill {
       triggers: r.triggers_json ? JSON.parse(r.triggers_json) : [],
     },
     bodyMd: r.body || '',
+    files: r.files_json ? JSON.parse(r.files_json) : undefined,
     enabled: !!r.enabled,
     category: r.category,
     author: r.author,

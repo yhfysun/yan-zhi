@@ -184,6 +184,7 @@ CREATE TABLE IF NOT EXISTS skill (
   path TEXT,
   frontmatter_json TEXT,
   body_md TEXT,
+  files_json TEXT,
   enabled INTEGER NOT NULL DEFAULT 1,
   created_at INTEGER NOT NULL
 );
@@ -551,7 +552,7 @@ export const BUILTIN_SKILLS_SEED = [
     triggers: ['写Word文档', '生成报告', '制作合同', '编辑docx', '提取Word内容', 'Word文档'],
     category: '文档处理',
     author: 'yan-zhi',
-    bodyMd: `# Word 文档处理\n\n用 python-docx 创建、编辑、解析 Word 文档，通过 shell 执行 Python 脚本生成 .docx。\n\n## 依赖\n\`\`\`bash\npip install python-docx\n\`\`\`\n\n## 流程\n1. 理解需求：文档类型（报告/合同/信函）、结构、内容\n2. 编写 python-docx 脚本（标题 + 段落 + 表格 + 图片）\n3. shell 执行生成 .docx\n4. 回报文件路径\n\n## 页面 DOM 速查（番茄达人中心，全站 arco-design；类名带 hash 后缀会漂，优先「文本+结构」匹配）\n- 左侧菜单：分组头 div.arco-menu-inline-header（内容库 / 申词记录），子项 div.arco-menu-item.arco-menu-item-indented（红果短剧/番茄小说/番茄畅听/红果漫剧），顶部渲染同构 a.menu-item-*\n- 内容库列表：书目卡片带「别名推广」按钮；顶部筛选（爆款榜/阅读榜/潜力榜 + 男频/女频）；搜索框 input.arco-input，placeholder「请输入作者名/书名/BookID」（受控组件，用原生 setter 输入后派发 input 事件）\n- 书详情：左侧目录为章节文本节点（「第N章 …」），点章节右侧加载完整正文；合成 click 无反应时改 browser_click 的 x/y 坐标点击（get_page_info 有坐标）；正文末尾「下一章」逐章循环\n- 别名管理（申词记录→番茄小说）：搜索框 input.arco-input；操作按钮 button.arco-btn（批量创建别名 / 批量回填发文 / 批量导出）；行内操作「回填发文 / 查看 / 删除」在 div.arco-space 容器里\n- 回填抽屉：.arco-drawer（遮罩 .arco-drawer-mask），自动带出书名/别名/任务类型/发文类型；「抖音发文 → 添加发文」填抖音号+视频链接，提交后开始计算收益。⚠️ 合成事件对 mask/Esc 无效，关抽屉必须点「取消提交」按钮\n- 状态判定：别名状态=生效中 且 书籍状态=可用 才可发文\n\n## 要点\n- 不要用 \\n 换行，用多个 add_paragraph\n- 表格用 style='Table Grid' 才有边框\n- 图片需指定 width\n\n详见 .claude/skills/docx-processing/SKILL.md`,
+    bodyMd: `# Word 文档处理\n\n用 python-docx 创建、编辑、解析 Word 文档，通过 shell 执行 Python 脚本生成 .docx。\n\n## 依赖\n\`\`\`bash\npip install python-docx\n\`\`\`\n\n## 流程\n1. 理解需求：文档类型（报告/合同/信函）、结构、内容\n2. 编写 python-docx 脚本（标题 + 段落 + 表格 + 图片）\n3. shell 执行生成 .docx\n4. 回报文件路径\n\n\n## 要点\n- 不要用 \\n 换行，用多个 add_paragraph\n- 表格用 style='Table Grid' 才有边框\n- 图片需指定 width\n\n详见 .claude/skills/docx-processing/SKILL.md`,
   },
   {
     id: 'skill_xlsx_data_processing',
@@ -831,7 +832,8 @@ export const BUILTIN_SKILLS_SEED = [
     triggers: ['小说推文', '有声小说', '推文视频', '小说视频', '小说成片', '推文出片'],
     category: '自动化',
     author: 'yan-zhi',
-    bodyMd: `# 小说推文视频（有声小说成片）\n\n全自动产线：授权平台选书 → 取正文 → 申词(建别名) → 出片 → 回填发文。用户只需首次登录授权平台（登录态持久化），之后每轮可零输入。\n\n## 授权平台（多渠道，按序尝试，单家卡住换下一家）\n1. **番茄达人中心**（字节官方，一级授权）https://kol.fanqieopen.com — **首选**，书/正文/别名/回填全在 Web 端闭环（2026-10 实测走通）。\n2. **七猫** https://zuozhe.qimao.com — 偏情感/家庭/年代文，竞争小。\n3. **书旗小说**（阿里）https://www.shuqi.com\n4. **纵横小说** https://www.zongheng.com — 男频/玄幻向。\n5. **巨日禄** https://www.jurilu.com — 2026-10 实测站点不可达，跳过，仅作候选。\n- 聚合渠道（右豹/小果繁星/即客/U客直谈）只有微信小程序，浏览器工具进不去。\n\n## 番茄达人中心完整流程（2026-10 实测）\n1. **选书**：内容库→番茄小说（/page/content?tab_type=2）→ 爆款榜/阅读榜/潜力榜 + 男频/女频筛选；卡片带「别名推广」按钮；搜索框 placeholder「请输入作者名/书名/BookID」（受控组件，用原生 setter 输入）。\n2. **取正文（✅ 全文可拿）**：点书目进书详情（/page/content/book-detail?tab_type=2&top_tab_genre=-1&book_id=<id>&genre=0 ⚠️ URL 必须带全参数（tab_type/top_tab_genre/genre 一个都不能少）：缺参数时正文区永远卡「加载中...」（4 轮复验实证），补全参数重新导航即恢复。）→ 左侧目录全量章节 → 点章节右侧加载**完整正文**（无字体混淆，逐章点开抓取拼接成 txt）。作品简介/BookID 也在此页。抓正文实操（2026-10-05 实测）：目录里点章节标题若无反应，改用 browser_click 的 x/y 坐标点击（get_page_info 里有坐标）；正文用 browser_get_visible_text 取整页文本，从「第N章」标题切到「下一章」为止；点「下一章」逐章循环抓完整章。\n3. **申词（建别名）**：书详情「别名推广」或 申词记录→别名管理→「批量创建别名」，给书建 3-5 字好记关键词（如 狐王痴狂）→ 等「别名状态=生效中」「书籍状态=可用」（秒级）。**发文必须挂已生效的别名**，观看者搜别名才算你的拉新。\n4. **出片**：novel_tuiwen 出 4:3 成片（字幕口播里引导搜索该别名关键词）。\n5. **回填发文**：别名管理行内「回填发文」打开抽屉（自动带出书名/别名/任务类型/发文类型，抖音 UI 用 arco Drawer），「抖音发文→添加发文」填抖音号+视频链接后提交——**不回填不结算**；⚠️ 官方规则：**新别名 7 天内不回填会失效**，出片发布完必须当天回填。\n\n## 通用流程\n1. 选书（自动）：上表平台抓书目（书名/题材/简介/热度）。仅限授权渠道；番茄官网 fanqienovel.com 正文有字体混淆，正文一律从达人中心书详情拿。\n2. 过滤（自动）：题材热度/开头钩子/竞争度打分取 Top1-3，报告后直接继续。\n3. 正文落盘：file_write 写 <工作目录>/novel/<书名>/chNN.txt。\n4. 背景：链接走 api_media_fetch（yt-dlp 缺失先 media_install_ytdlp）；本地直接传；没有就占位画面。\n5. **出片**：novel_tuiwen { chapter, title, bg_video }，voice 默认 zh-CN-YunxiNeural。\n6. **发布（抖音，外部动作需确认）**：creator.douyin.com/creator-micro/content/upload 网页上传（Web 端可达；首次需用户在浏览器面板登录抖音创作者）；上传成片 → 标题带别名关键词 + 相关话题 → **confirm_user 确认后才点发布**（对外发布禁止静默执行）。\n7. **回填发文**：回达人中心别名管理行内「回填发文」填视频链接——不回填不结算。\n8. **回报**：选书理由 + 成片路径 + 发布/回填状态。\n\n## 要点\n- 4:3 画面；别关联中视频；别发小红书（封号）。\n- **只发布已授权书目**；发文必须挂生效中别名；回填发文是结算前提。\n- ⚠️ 七猫/书旗/纵横**无 Web 推广门户**（推广子域 000，授权走小程序/聚合渠道）→ 实际产线以番茄达人中心为主，其余仅作书源参考。\n- 批量：多章逐章出片；scheduled_task（cron 每日）+ 登录态 → 每天自动出 N 条。\n- 缺 edge-tts 时执行 pip install edge-tts -i https://pypi.org/simple 后重试。\n\n详见 .claude/skills/novel-tuiwen/SKILL.md`,
+    bodyMd: `# 小说推文视频（有声小说成片）\n\n全自动产线：授权平台选书 → 取正文 → 申词(建别名) → 出片 → 回填发文。用户只需首次登录授权平台（登录态持久化），之后每轮可零输入。\n\n## 番茄达人中心完整流程（2026-10 实测）\n1. **选书**：内容库→番茄小说（/page/content?tab_type=2）→ 爆款榜/阅读榜/潜力榜 + 男频/女频筛选；卡片带「别名推广」按钮；搜索框 placeholder「请输入作者名/书名/BookID」（受控组件，用原生 setter 输入）。\n2. **取正文（✅ 全文可拿）**：点书目进书详情（/page/content/book-detail?tab_type=2&top_tab_genre=-1&book_id=<id>&genre=0 ⚠️ URL 必须带全参数（tab_type/top_tab_genre/genre 一个都不能少）：缺参数时正文区永远卡「加载中...」（4 轮复验实证），补全参数重新导航即恢复。）→ 左侧目录全量章节 → 点章节右侧加载**完整正文**（无字体混淆，逐章点开抓取拼接成 txt）。作品简介/BookID 也在此页。抓正文实操（2026-10-05 实测）：目录里点章节标题若无反应，改用 browser_click 的 x/y 坐标点击（get_page_info 里有坐标）；正文用 browser_get_visible_text 取整页文本，从「第N章」标题切到「下一章」为止；点「下一章」逐章循环抓完整章。\n3. **申词（建别名）**：书详情「别名推广」或 申词记录→别名管理→「批量创建别名」，给书建 3-5 字好记关键词（如 狐王痴狂）→ 等「别名状态=生效中」「书籍状态=可用」（秒级）。**发文必须挂已生效的别名**，观看者搜别名才算你的拉新。\n4. **出片**：novel_tuiwen 出 4:3 成片（字幕口播里引导搜索该别名关键词）。\n5. **回填发文**：别名管理行内「回填发文」打开抽屉（自动带出书名/别名/任务类型/发文类型，抖音 UI 用 arco Drawer），「抖音发文→添加发文」填抖音号+视频链接后提交——**不回填不结算**；⚠️ 官方规则：**新别名 7 天内不回填会失效**，出片发布完必须当天回填。\n\n## 通用流程\n1. 选书（自动）：上表平台抓书目（书名/题材/简介/热度）。仅限授权渠道；番茄官网 fanqienovel.com 正文有字体混淆，正文一律从达人中心书详情拿。\n2. 过滤（自动）：题材热度/开头钩子/竞争度打分取 Top1-3，报告后直接继续。\n3. 正文落盘：file_write 写 <工作目录>/novel/<书名>/chNN.txt。\n4. 背景：链接走 api_media_fetch（yt-dlp 缺失先 media_install_ytdlp）；本地直接传；没有就占位画面。\n5. **出片**：novel_tuiwen { chapter, title, bg_video }，voice 默认 zh-CN-YunxiNeural。\n6. **发布（抖音，外部动作需确认）**：creator.douyin.com/creator-micro/content/upload 网页上传（Web 端可达；首次需用户在浏览器面板登录抖音创作者）；上传成片 → 标题带别名关键词 + 相关话题 → **confirm_user 确认后才点发布**（对外发布禁止静默执行）。\n7. **回填发文**：回达人中心别名管理行内「回填发文」填视频链接——不回填不结算。\n8. **回报**：选书理由 + 成片路径 + 发布/回填状态。\n\n> 📁 本 skill 带层级参考资料（已落盘到工作目录 「.yan-zhi/skills/小说推文视频/」），按需 file_read，别一次全读：\n> - 「references/platforms.md」 —— 授权平台明细与现状\n> - 「references/fanqie-dom.md」 —— 番茄达人中心页面 DOM 速查（arco-design 选择器/结构）\n\n## 要点\n- 4:3 画面；别关联中视频；别发小红书（封号）。\n- **只发布已授权书目**；发文必须挂生效中别名；回填发文是结算前提。\n- ⚠️ 七猫/书旗/纵横**无 Web 推广门户**（推广子域 000，授权走小程序/聚合渠道）→ 实际产线以番茄达人中心为主，其余仅作书源参考。\n- 批量：多章逐章出片；scheduled_task（cron 每日）+ 登录态 → 每天自动出 N 条。\n- 缺 edge-tts 时执行 pip install edge-tts -i https://pypi.org/simple 后重试。\n\n详见 .claude/skills/novel-tuiwen/SKILL.md`,
+    files: [{"path": "references/fanqie-dom.md", "content": "# 番茄达人中心 页面 DOM 速查\n\n> 来源：2026-10-05/06 CDP 实测。全站 arco-design，类名带 hash 后缀会漂——优先「文本+结构」匹配，不要猜动态 hash class。\n\n## 页面 DOM 速查（番茄达人中心，全站 arco-design；类名带 hash 后缀会漂，优先「文本+结构」匹配）\n- 左侧菜单：分组头 div.arco-menu-inline-header（内容库 / 申词记录），子项 div.arco-menu-item.arco-menu-item-indented（红果短剧/番茄小说/番茄畅听/红果漫剧），顶部渲染同构 a.menu-item-*\n- 内容库列表：书目卡片带「别名推广」按钮；顶部筛选（爆款榜/阅读榜/潜力榜 + 男频/女频）；搜索框 input.arco-input，placeholder「请输入作者名/书名/BookID」（受控组件，用原生 setter 输入后派发 input 事件）\n- 书详情：左侧目录为章节文本节点（「第N章 …」），点章节右侧加载完整正文；合成 click 无反应时改 browser_click 的 x/y 坐标点击（get_page_info 有坐标）；正文末尾「下一章」逐章循环\n- 别名管理（申词记录→番茄小说）：搜索框 input.arco-input；操作按钮 button.arco-btn（批量创建别名 / 批量回填发文 / 批量导出）；行内操作「回填发文 / 查看 / 删除」在 div.arco-space 容器里\n- 回填抽屉：.arco-drawer（遮罩 .arco-drawer-mask），自动带出书名/别名/任务类型/发文类型；「抖音发文 → 添加发文」填抖音号+视频链接，提交后开始计算收益。⚠️ 合成事件对 mask/Esc 无效，关抽屉必须点「取消提交」按钮\n- 状态判定：别名状态=生效中 且 书籍状态=可用 才可发文\n"}, {"path": "references/platforms.md", "content": "# 授权平台明细\n\n> 按序尝试，单家卡住换下一家。2026-10-05/06 实测。\n\n1. **番茄达人中心**（字节官方，一级授权）https://kol.fanqieopen.com — **首选**，书/正文/别名/回填全在 Web 端闭环（2026-10 实测走通）。\n2. **七猫** https://zuozhe.qimao.com — 偏情感/家庭/年代文，竞争小。\n3. **书旗小说**（阿里）https://www.shuqi.com\n4. **纵横小说** https://www.zongheng.com — 男频/玄幻向。\n5. **巨日禄** https://www.jurilu.com — 2026-10 实测站点不可达，跳过，仅作候选。\n- 聚合渠道（右豹/小果繁星/即客/U客直谈）只有微信小程序，浏览器工具进不去。\n"}],
   },
   {
     id: 'skill_desktop_app_automation',
@@ -861,17 +863,20 @@ export async function seedBuiltinSkills(
       category: s.category,
       author: s.author,
     });
+      const files = (s as { files?: Array<{ path: string; content: string }> }).files;
+      const filesJson = files && files.length ? JSON.stringify(files) : null;
     try {
       await execFn(
-        `INSERT INTO skill (id, name, description, source, frontmatter_json, body_md, enabled, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, 1, ?)
+        `INSERT INTO skill (id, name, description, source, frontmatter_json, body_md, files_json, enabled, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)
          ON CONFLICT(id) DO UPDATE SET
            name = excluded.name,
            description = excluded.description,
            source = excluded.source,
            frontmatter_json = excluded.frontmatter_json,
-           body_md = excluded.body_md`,
-        [s.id, s.name, s.description, s.source, frontmatter, s.bodyMd, Date.now()],
+           body_md = excluded.body_md,
+           files_json = excluded.files_json`,
+        [s.id, s.name, s.description, s.source, frontmatter, s.bodyMd, filesJson, Date.now()],
       );
     } catch (e) {
       console.warn(`[seed] 内置 skill ${s.id} 写入失败:`, e);

@@ -27,6 +27,7 @@ import { serverState } from './state.js';
 import { runAfterToolHooks } from './services/tool-hooks.js';
 import { registerArtifactHooks } from './services/artifact-hooks.js';
 import { loadProjectSkills, truncateSkillBody } from './services/project-skills.js';
+import { parseSkillFiles, skillDirName, syncSkillsToWorkspace } from './services/skill-files.js';
 import { dirEntryFingerprint, makeFingerprintCache } from './services/fs-fingerprint.js';
 import {
   canStartBackgroundSubAgent, makeBackgroundId, buildBackgroundReceipt, buildConcurrencyFullMessage,
@@ -3581,10 +3582,11 @@ async function runSubAgent(
   };
   const client = new LlmClient(platform, model);
   // 子智能体步数上限：尊重 agent 配置的 maxReActSteps（如 pageAgent 的 50），
-  // 未配置时兜底 100。修复：旧写法 Math.max(x, 100) 把任何配置值强制抬到 ≥100，
-  // pageAgent 配置 25 步失效，子智能体陷入循环时跑满 100 步，用户只能手动终止。
+  // 未配置时兜底 500（2026-10-05 用户拍板：长任务靠上下文压缩承载，不靠截断；
+  // 旧兜底 100 频繁触发「已达到最大循环数」）。修复：旧写法 Math.max(x, 100) 把任何配置值强制抬到 ≥100，
+  // pageAgent 配置 25 步失效，子智能体陷入循环时跑满 100 步，用户只能手动终止 —— 配置值仍原样尊重，不强制抬高。
   const cfgSteps = (() => { try { return agent.config_json ? JSON.parse(agent.config_json).maxReActSteps : undefined; } catch { return undefined; } })();
-  const maxSteps = typeof cfgSteps === 'number' && cfgSteps > 0 ? Math.min(Math.floor(cfgSteps), 500) : 100;
+  const maxSteps = typeof cfgSteps === 'number' && cfgSteps > 0 ? Math.min(Math.floor(cfgSteps), 500) : 500;
   const systemPrompt = agent.system_prompt || '你是一个智能助手。';
   const modelCaps = model.capabilities as string[] | undefined;
   const supportsTools = modelSupportsTools(modelCaps);
@@ -4316,7 +4318,7 @@ export function buildSystemPromptForBackend(agentId: string | null, userId: stri
       const skillLines: string[] = [];
       const flowParts: string[] = [];
       for (const skId of skillIds) {
-        const sk = db.prepare('SELECT name, description, body, triggers_json, enabled FROM skill WHERE id = ? AND (user_id = ? OR user_id IS NULL)').get(skId, userId) as any;
+        const sk = db.prepare('SELECT name, description, body, triggers_json, enabled, files_json FROM skill WHERE id = ? AND (user_id = ? OR user_id IS NULL)').get(skId, userId) as any;
         if (!sk || !sk.enabled) continue;
         // 项目技能目录里有同名技能 → 跳过 DB 版（项目 SOP 覆盖通用技能）
         if (projectSkillNames.has(String(sk.name || '').toLowerCase())) continue;
@@ -4331,7 +4333,15 @@ export function buildSystemPromptForBackend(agentId: string | null, userId: stri
         //   与项目技能各自的常量/文案已出现半角-全角漂移，不再各写一份。
         const body = truncateSkillBody(sk.body || '');
         if (body && shouldInjectBody) {
-          flowParts.push(`### Skill 流程指引：${sk.name}\n${body}`);
+          // ★ 子目录文件落盘（2026-10-06）：skill 支持层级目录（references/ 等），
+          //   DB files_json 是真相源，这里同步到 <工作目录>/.yan-zhi/skills/<名>/，
+          //   模型按 SKILL.md 里的引用用 file_read 按需读取（幂等：内容一致跳过写）。
+          const refFiles = parseSkillFiles(sk.files_json);
+          if (effectiveWorkspaceDir) syncSkillsToWorkspace(effectiveWorkspaceDir, [{ name: sk.name, body: sk.body || '', filesJson: sk.files_json }]);
+          const refNote = refFiles.length
+            ? `\n> 📁 参考资料（按需 file_read，别一次全读）：<工作目录>/.yan-zhi/skills/${skillDirName(sk.name)}/ 下的 ${refFiles.map((f) => f.path).join('、')}`
+            : '';
+          flowParts.push(`### Skill 流程指引：${sk.name}\n${body}${refNote}`);
         }
       }
       // 项目技能（.yan-zhi/skills 下的 .md）：与 DB skill 同一份注入格式与触发词口径，
