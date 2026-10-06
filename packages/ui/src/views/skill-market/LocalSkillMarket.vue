@@ -111,12 +111,18 @@
       <div class="preview-layout" v-if="previewFiles.length">
         <div class="preview-tree">
           <div
-            v-for="f in previewFiles" :key="f.path"
-            class="preview-tree-item" :class="{ active: previewActive === f.path }"
-            @click="previewActive = f.path"
+            v-for="row in previewRows" :key="row.key"
+            class="preview-tree-item"
+            :class="{ active: !row.isDir && previewActive === row.key, dir: row.isDir }"
+            :style="{ paddingLeft: 6 + row.depth * 14 + 'px' }"
+            @click="row.isDir ? toggleDir(row.key) : (previewActive = row.key)"
           >
-            <el-icon :size="13"><Document /></el-icon>
-            <span>{{ f.path }}</span>
+            <template v-if="row.isDir">
+              <el-icon :size="12" class="preview-caret"><CaretBottom v-if="expandedDirs.has(row.key)" /><CaretRight v-else /></el-icon>
+              <el-icon :size="13"><Folder /></el-icon>
+            </template>
+            <el-icon v-else :size="13"><Document /></el-icon>
+            <span>{{ row.name }}</span>
           </div>
         </div>
         <pre class="preview-content preview-content-pane">{{ previewFiles.find(f => f.path === previewActive)?.content }}</pre>
@@ -139,7 +145,7 @@
 
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted } from 'vue';
-import { Plus, Files, ArrowLeft, Edit, Delete, FolderOpened, UploadFilled, Box, Document, Download } from '@element-plus/icons-vue';
+import { Plus, Files, ArrowLeft, Edit, Delete, FolderOpened, Folder, UploadFilled, Box, Document, Download, CaretRight, CaretBottom } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { useSkillStore, useAuthStore } from '../../stores';
 import { getPlatformAdapter } from '@yan-zhi/core';
@@ -166,6 +172,53 @@ interface SkillFile { path: string; content: string }
 const previewFiles = ref<SkillFile[]>([]);
 const previewActive = ref('SKILL.md');
 const previewTitle = ref('Skill 内容');
+
+// ===== 折叠式文件树（2026-10-06）：路径平铺 → 目录节点可折叠，像文件管理器一样 =====
+interface TreeNode { key: string; name: string; isDir: boolean; children: TreeNode[] }
+interface PreviewRow { key: string; name: string; isDir: boolean; depth: number }
+
+const previewTree = computed<TreeNode[]>(() => {
+  const root: TreeNode[] = [];
+  for (const f of previewFiles.value) {
+    const segs = f.path.split('/');
+    let level = root;
+    let key = '';
+    segs.forEach((seg, i) => {
+      key = key ? `${key}/${seg}` : seg;
+      const isDir = i < segs.length - 1;
+      let node = level.find((n) => n.name === seg && n.isDir === isDir);
+      if (!node) { node = { key, name: seg, isDir, children: [] }; level.push(node); }
+      level = node.children;
+    });
+  }
+  return root;
+});
+
+const expandedDirs = ref<Set<string>>(new Set());
+
+function expandAllDirs(nodes: TreeNode[], set: Set<string>) {
+  nodes.forEach((n) => { if (n.isDir) { set.add(n.key); expandAllDirs(n.children, set); } });
+}
+
+/** 渲染行：目录在前、按名排序；目录折叠时跳过子树 */
+const previewRows = computed<PreviewRow[]>(() => {
+  const rows: PreviewRow[] = [];
+  const walk = (nodes: TreeNode[], depth: number) => {
+    const sorted = [...nodes].sort((a, b) => (a.isDir === b.isDir ? a.name.localeCompare(b.name) : a.isDir ? -1 : 1));
+    for (const n of sorted) {
+      rows.push({ key: n.key, name: n.name, isDir: n.isDir, depth });
+      if (n.isDir && expandedDirs.value.has(n.key)) walk(n.children, depth + 1);
+    }
+  };
+  walk(previewTree.value, 0);
+  return rows;
+});
+
+function toggleDir(key: string) {
+  const s = new Set(expandedDirs.value);
+  if (s.has(key)) s.delete(key); else s.add(key);
+  expandedDirs.value = s;
+}
 const editorFiles = ref<SkillFile[]>([]);
 const editingFile = ref<number | null>(null);
 
@@ -271,6 +324,10 @@ function previewSkill(s: Skill) {
   const files: SkillFile[] = [{ path: 'SKILL.md', content: store.exportToMd(s) }];
   for (const f of (s.files || [])) files.push({ ...f });
   previewFiles.value = files;
+  // 打开时默认全展开（文件数少，折叠状态由用户手动收起）
+  const allOpen = new Set<string>();
+  expandAllDirs(previewTree.value, allOpen);
+  expandedDirs.value = allOpen;
   previewActive.value = 'SKILL.md';
   previewContent.value = files[0].content;
   showPreview.value = true;
@@ -601,9 +658,12 @@ function parseSkillMd(md: string): { frontmatter: any; bodyMd: string; body: str
 .preview-tree-item {
   display: flex; align-items: center; gap: 6px; padding: 6px 8px; border-radius: 4px;
   cursor: pointer; font-size: 13px; color: var(--color-text); word-break: break-all;
+  white-space: nowrap;
 }
 .preview-tree-item:hover { background: rgba(124,58,237,0.08); }
 .preview-tree-item.active { background: rgba(124,58,237,0.15); font-weight: 600; }
+.preview-tree-item.dir { font-weight: 500; }
+.preview-caret { color: var(--color-text-secondary, #999); flex: none; }
 .preview-content-pane { min-height: 460px; }
 .subfiles { display: flex; flex-direction: column; gap: 6px; width: 100%; }
 .subfile-row { display: flex; gap: 6px; align-items: center; }
