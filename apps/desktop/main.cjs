@@ -3976,6 +3976,17 @@ app.whenReady().then(() => {
     if (!IS_DEV_INSTANCE) {
       app.setAppUserModelId('com.yanzhi.desktop');
     }
+    // ★ dev 下所有新开窗口（DevTools/悬浮窗等）都自动设置图标（2026-10-06）：
+    //   DevTools 窗口没有 icon，与主窗口同组时会把任务栏组图标拖成 exe 默认
+    //   （实测：关 DevTools 图标即恢复）。统一在窗口创建时补 icon，一劳永逸。
+    if (IS_DEV_INSTANCE) {
+      app.on('browser-window-created', (_e, win) => {
+        try {
+          const p = getAppIconPath();
+          if (fs.existsSync(p)) win.setIcon(p);
+        } catch { /* 观感问题不阻塞 */ }
+      });
+    }
   }
 
   // ============================================================
