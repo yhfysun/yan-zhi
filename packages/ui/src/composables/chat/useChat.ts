@@ -593,6 +593,15 @@ function createChat() {
   // 对话左侧栏第三个 tab「文件」（资源管理器/搜索/Git）：选中带目录的空间时展示内容
   const drawerOpen = ref(false);
   const convCollapsed = ref(false);
+  // 预览窗打开 → 自动收起任务列表：宽屏（>1199px，与 CSS 断点一致）预览是常驻分栏，
+  // 任务列表会被挤得过窄，打开预览时收起列表给预览让位。
+  // 窄屏/移动端预览是覆盖抽屉（带遮罩），不占任务列表空间 → 不动。
+  // 只收起不强制展开：关闭预览时尊重用户此前手动选择的状态。
+  watch(() => store.rightPanelOpen, (open) => {
+    if (open && typeof window !== 'undefined' && window.innerWidth > 1199) {
+      convCollapsed.value = true;
+    }
+  });
   const sideTab = ref<'chat' | 'task' | 'file'>('chat');
   const contextSidebarOpen = ref(false);
   const batchMode = ref(false);
@@ -2025,8 +2034,11 @@ async function healStalePlatform() {
     store.mountedMcpServers = [];
     store.mcpDisabledTools = {};
     store.mcpToolAliases = {};
-    // 权限模式：新任务一律回到安全默认「只读」（2026-09-27 用户拍板，默认放行太危险）
-    store.permissionMode = 'readonly';
+    // 权限模式：新任务默认安全「只读」（2026-09-27 拍板）；例外——写密集型任务模式
+    // （小说推文：落盘正文/装依赖/跑管线，只读第一步就被拦）默认「标准权限」
+    // （2026-10-06 用户要求；仍非完全权限，写工作目录外的操作照走确认/拦截）
+    const WRITE_HEAVY_AGENT_IDS = ['a_builtin_novel_tuiwen_agent'];
+    store.permissionMode = WRITE_HEAVY_AGENT_IDS.includes(agentStore.selectedId) ? 'default' : 'readonly';
     // —— 弹层 / 搜索 / 导航等瞬时 UI ——
     snapshotDialog.value = false;
     snapshotActiveTab.value = '';

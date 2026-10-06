@@ -4187,6 +4187,23 @@ export function getMergedMcpServerIds(agentId: string | null, userId: string, co
 /** 从 DB 加载 agent + 会话挂载，构建系统提示词（单一事实来源：前端交互/定时任务/IM 共用同一套规则）。
  *  提示词始终注入「## 可用工具」（带完整入参定义）；原生 function calling 模型同时拿到 tools schema，
  *  文本模式模型由 runReActLoop 追加 [TOOL_CALL] 调用格式说明。 */
+/** 运行中任务权限实时更新（2026-10-06）：会话权限下拉变更后，同会话的 running 任务
+ *  立即按新模式执行运行时拦截（executeTool 的 checkToolPermission 读 task.permissionMode）。
+ *  此前模式在任务创建时捕获、变更只写库 → 长任务期间改权限「不是实时的」。
+ *  局限说明：任务启动时 filterToolsByPermission 已构建的工具清单不回补（只读收窄过
+ *  的工具不恢复），但运行时拦截以新模式实时放行/拒绝 —— 安全边界仍生效。
+ *  @returns 更新的任务数 */
+export function setRunningTaskPermissionMode(conversationId: string, mode: PermissionMode): number {
+  let n = 0;
+  for (const [, t] of tasks) {
+    if (t.conversationId === conversationId && t.status === 'running') {
+      t.permissionMode = mode;
+      n++;
+    }
+  }
+  return n;
+}
+
 export function buildSystemPromptForBackend(agentId: string | null, userId: string, appGuide?: string, opts?: {
   conversationId?: string | null;
   includeUiTools?: boolean;

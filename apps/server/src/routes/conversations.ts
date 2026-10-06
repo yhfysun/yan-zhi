@@ -6,7 +6,7 @@ import { normalizePermissionMode } from '../tool-permission.js';
 import { writeTaskPlanFile } from '../services/task-plan-file.js';
 import { WF_TOOL_PREFIX, MAX_WF_TOOLS_PER_CONVERSATION } from '../services/workflow-tool-registry.js';
 import { clearAuthorization } from '../services/path-guard.js';
-import { buildSystemPromptForBackend, buildToolsForBackend } from '../llm-task-manager.js';
+import { buildSystemPromptForBackend, buildToolsForBackend, setRunningTaskPermissionMode } from '../llm-task-manager.js';
 import { estimateTokens } from '@yan-zhi/shared';
 
 const router = Router();
@@ -92,8 +92,11 @@ router.patch('/:id', (req: Request, res: Response) => {
   }
   // permissionMode：会话级工具权限（readonly/default/full），非法值 fail-safe 归一化为 readonly
   if (req.body.permissionMode !== undefined) {
+    const nextMode = normalizePermissionMode(req.body.permissionMode);
     sets.push('permission_mode = ?');
-    vals.push(normalizePermissionMode(req.body.permissionMode));
+    vals.push(nextMode);
+    // ★ 实时生效（2026-10-06）：同会话 running 任务立即按新模式运行时拦截
+    setRunningTaskPermissionMode(cid, nextMode);
   }
   // taskPlan：任务计划落盘（task_plan/task_step 卡片刷新/换设备后恢复）。null = 清除
   // ★ 镜像写工作目录 plan.md（跨会话接力，2026-09-30）：task_plan_json 挂在会话行上，
