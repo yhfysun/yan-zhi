@@ -8,6 +8,7 @@ import { embedText } from './ollama-embed.js';
 import { vecToBytes, bumpMemoryCache, parseExtractedItems } from './memory-service.js';
 import { chatViaRow } from './llm-call.js';
 import { createLogger } from './logger.js';
+import { hasActiveUserTasks } from '../llm-task-manager.js';
 const logger = createLogger('memory-dreaming');
 
 const TICK_MS = 5 * 60_000;
@@ -357,7 +358,15 @@ async function tick() {
 
 function startTimer() {
   if (timer) return;
-  timer = setInterval(() => { tick().catch(() => {}); }, TICK_MS);
+  timer = setInterval(() => {
+    // 避让用户任务（2026-10-07）：记忆整理与主任务共用上游配额，长任务运行期间
+    // 每 5 分钟一次整理调用会叠加限流（429 Too Many Requests）。有任务在跑就跳过本轮。
+    if (hasActiveUserTasks()) {
+      logger.info('[memory-dreaming] 有任务运行中，本轮整理跳过（避让上游配额）');
+      return;
+    }
+    tick().catch(() => {});
+  }, TICK_MS);
   startupTimer = setTimeout(() => { tick().catch(() => {}); }, 30_000);
   logger.info('[memory-dreaming] 记忆整理调度器已启动（每 5 分钟轮询）');
 }

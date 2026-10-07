@@ -554,6 +554,20 @@ async function runToolCallAndPersist(opts: {
 }
 
 /** 创建任务并启动 ReAct 循环 */
+/**
+ * 是否有用户任务正在执行（running 或 waiting_tool）。
+ *
+ * ★ 用途（2026-10-07 用户报「模型请求频率过高」）：后台 LLM 调用方（记忆整理/记忆抽取等）
+ *   与主任务**共用同一个上游配额**，长任务运行期间并发打过去会叠加限流（429）。
+ *   后台任务应主动避让，而不是和用户任务抢配额。
+ */
+export function hasActiveUserTasks(): boolean {
+  for (const t of tasks.values()) {
+    if (t.status === 'running' || (t.status as string) === 'waiting_tool') return true;
+  }
+  return false;
+}
+
 export function createTask(params: {
   conversationId: string;
   userId: string;
@@ -2154,9 +2168,14 @@ async function runReActLoop(task: LlmTask, params: {
           if (parseToolArguments(tc.function?.arguments).args === null) return false;
           return n === 'call_agent' || READONLY_PARALLEL_TOOLS.has(n);
         });
-        // ★ 上限 4：并发太多会让上游限流（429）且本地 SQLite 写入竞争变明显；
+        // ★ 并发上限（2026-10-07 调整）：默认 2（原 4）。实测并发 4 时上游 429
+        //   （Too Many Requests / system overloaded）明显高发 —— 并发数直接把请求压到上游配额上。
+        //   可用环境变量 YANZHI_MAX_CONCURRENT_AGENTS 覆盖（1~8，钳位）。
         //   超过上限的仍走下面的串行路径，不会丢调用。
-        const MAX_CONCURRENT_AGENTS = 4;
+        const MAX_CONCURRENT_AGENTS = (() => {
+          const v = Number(process.env.YANZHI_MAX_CONCURRENT_AGENTS);
+          return Number.isFinite(v) && v >= 1 ? Math.min(8, Math.floor(v)) : 2;
+        })();
         if (parallelizableCalls.length >= 2) {
           const batchToRun = parallelizableCalls.slice(0, MAX_CONCURRENT_AGENTS);
           emit(task, { type: 'tool:concurrent', toolName: 'parallel', count: batchToRun.length });
@@ -4311,6 +4330,14 @@ async function extractMemoryFromConversation(task: LlmTask): Promise<void> {
 
     const llm = resolveMemoryExtractLlm(task);
     if (!llm) return;
+
+    // 避让上游配额（2026-10-07）：任务刚结束时同会话常有接力任务已在跑；此时再打一次
+    // 抽取调用会与主任务叠加限流（429 Too Many Requests）。有其它任务在跑就跳过本轮抽取
+    // （对话原文仍在，下轮或手动整理时补抽，不丢数据）。
+    if (hasActiveUserTasks()) {
+      logger.info('[memory] 抽取跳过：有任务运行中（避让上游配额）');
+      return;
+    }
 
     const client = new LlmClient(llm.platform, llm.model);
     const resp = await client.chat([
