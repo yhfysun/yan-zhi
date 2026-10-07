@@ -666,6 +666,11 @@ export function createTask(params: {
     backgroundSubAgents: new Map<string, BackgroundSubAgentInfo>(),
   };
   tasks.set(taskId, task);
+  // ★★★ 运行中任务必须落库（2026-10-07 修）：此前 llm_task 只有 UPDATE/UPSERT 收尾写入，
+  //   createTask 从不 INSERT → 进程被重启（dev 退出、覆盖率 --force-exit 等）时，
+  //   「启动回收孤儿任务」（markOrphanTasksInterrupted）查 llm_task 恒为空 → 任务静默消失、
+  //   界面零提示（用户实测：任务跑到一半，UI 没跑完就没了）。落库后重启路径才能把它标 interrupted。
+  persistTaskRow(task);
   emit(task, { type: 'task:created', taskId, conversationId: params.conversationId });
   void runReActLoop(task, params);
   return taskId;
@@ -1312,6 +1317,27 @@ export function extractPendingQuestion(args: unknown): string {
   return '';
 }
 
+/** 运行中任务落库（INSERT OR REPLACE）：重启回收与被中断提示都依赖这一行存在。 */
+function persistTaskRow(task: LlmTask): void {
+  try {
+    db.prepare(
+      `INSERT OR REPLACE INTO llm_task (id, user_id, conversation_id, origin, status, step, error, pending_tool_json, params_json, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      task.id, task.userId, task.conversationId, task.origin || 'chat', task.status, task.step || 0,
+      task.error || null, null, null, task.createdAt, Date.now(),
+    );
+  } catch (e) { logger.warn('[task] 任务落库失败（不阻塞执行）:', e); }
+}
+
+/** 状态变更同步落库（完成/失败/中断都调它，保证 DB 行与内存一致）。 */
+function persistTaskStatus(task: LlmTask): void {
+  try {
+    db.prepare('UPDATE llm_task SET status = ?, step = ?, error = ?, updated_at = ? WHERE id = ?')
+      .run(task.status, task.step || 0, task.error || null, Date.now(), task.id);
+  } catch { /* 落库失败不阻塞 */ }
+}
+
 /** 把当前 pending 工具调用写进 llm_task.pending_tool_json（服务重启后仍能查到"卡在等谁"） */
 function syncPendingToolsJson(task: LlmTask): void {
   try {
@@ -1400,10 +1426,16 @@ export function cleanupTasks(maxAgeMs: number = 30 * 60 * 1000) {
 export function markOrphanTasksInterrupted(): number {
   let n = 0;
   try {
-    const rows = db.prepare("SELECT id, conversation_id FROM llm_task WHERE status IN ('running','waiting_tool')").all() as Array<{ id: string; conversation_id: string }>;
+    const rows = db.prepare("SELECT id, conversation_id, user_id FROM llm_task WHERE status IN ('running','waiting_tool')").all() as Array<{ id: string; conversation_id: string; user_id?: string }>;
     for (const r of rows) {
       try {
-        db.prepare("UPDATE llm_task SET status = 'interrupted', error = '服务重启，任务被中断' WHERE id = ?").run(r.id);
+        db.prepare("UPDATE llm_task SET status = 'interrupted', error = '服务重启，任务被中断', updated_at = ? WHERE id = ?").run(Date.now(), r.id);
+        // ★ 可见提示（2026-10-07）：重启把任务打断时，此前**界面零痕迹**（用户只看到任务凭空消失）。
+        //   这里往原会话补一条说明，用户知道发生了什么、能直接重发。
+        try {
+          const uid = r.user_id || (db.prepare('SELECT user_id FROM conversation WHERE id = ?').get(r.conversation_id) as any)?.user_id || 'guest';
+          insertMessage(r.conversation_id, uid, 'assistant', '⚠️ 应用重启，正在运行的任务已中断。需要继续的话把要求再发一次即可（已完成的工作产物仍在）。');
+        } catch { /* 补提示失败不影响回收 */ }
         n++;
       } catch {}
     }
@@ -4301,6 +4333,18 @@ async function recordTaskProgress(
   summary: string,
   extra?: { steps?: number; continuation?: string },
 ): Promise<void> {
+  persistTaskStatus(task);
+  // 非正常结束（被中断/失败）时补一条可见提示：此前这类收尾在对话里没有留痕，
+  // 用户只看到"任务没了"，不知道发生了什么、要不要重发（2026-10-07）。
+  if (outcome === 'aborted' || outcome === 'failed') {
+    try {
+      const note = outcome === 'aborted'
+        ? `⚠️ 任务已中断（${task.error || '服务重启或手动终止'}）。需要继续的话把要求再发一次即可。`
+        : `⚠️ 任务失败：${task.error || '未知错误'}`;
+      const msgId = insertMessage(task.conversationId, task.userId, 'assistant', note);
+      emit(task, { type: 'message:added', message: { id: msgId, role: 'assistant', content: note } });
+    } catch { /* 补提示失败不影响收尾 */ }
+  }
   try {
     let agentName = '';
     if (task.agentId) {
