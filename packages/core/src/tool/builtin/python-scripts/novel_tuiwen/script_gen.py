@@ -56,8 +56,12 @@ def merge_to_segments(sents, max_chars=MAX_SEG_CHARS):
 
 def rule_based_script(text: str, title: str = "小说推文") -> dict:
     sents = split_sentences(text)
-    segs = merge_to_segments(sents)
-    hook = segs[0][:40] if segs else HOOK_TEMPLATES[0]
+    # ★ 钩子取正文第一句，正文从第二句起切段（2026-10-07 修复：此前 hook=segs[0][:40]
+    #   与 segments[0] 同源，tts_gen 把 hook+segments 拼起来配音 → 开头 40 字念两遍）
+    hook = sents[0] if sents else HOOK_TEMPLATES[0]
+    if len(hook) > 40:
+        hook = hook[:40]
+    segs = merge_to_segments(sents[1:])
     ending = "欲知后事如何，点击链接接着看。"
     segments = []
     for i, s in enumerate(segs):
@@ -71,7 +75,7 @@ def llm_script(text: str, endpoint: str, api_key: str, model: str) -> dict:
     import urllib.request
     prompt = (
         "你是小说推文编导。把下面的小说片段改编成口播脚本,输出严格 JSON:\n"
-        '{"title":"短标题","hook":"前3秒钩子(15字内)",'
+        '{"title":"短标题","hook":"前3秒钩子(15字内,必须是独立创作的新文案,禁止与任何 segment 文本重复)",'
         '"segments":[{"text":"口播文案(<=120字)","scene":"AI绘图画面描述(中文,含氛围/色调/构图)"}],'
         '"ending":"悬念结尾引导点击"}\n'
         "总时长控制在60-180秒,每15-20秒一个悬念点。\n\n小说片段:\n" + text[:3000]
