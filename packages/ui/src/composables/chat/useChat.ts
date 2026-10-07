@@ -2034,11 +2034,18 @@ async function healStalePlatform() {
     store.mountedMcpServers = [];
     store.mcpDisabledTools = {};
     store.mcpToolAliases = {};
-    // 权限模式：新任务默认安全「只读」（2026-09-27 拍板）；例外——写密集型任务模式
-    // （小说推文：落盘正文/装依赖/跑管线，只读第一步就被拦）默认「标准权限」
-    // （2026-10-06 用户要求；仍非完全权限，写工作目录外的操作照走确认/拦截）
-    const WRITE_HEAVY_AGENT_IDS = ['a_builtin_novel_tuiwen_agent'];
-    store.permissionMode = WRITE_HEAVY_AGENT_IDS.includes(agentStore.selectedId) ? 'default' : 'readonly';
+    // 权限模式：新任务默认安全「只读」（2026-09-27 拍板）。
+    // 例外——**全自动任务模式**（小说推文：选书/取文/出片/上传/发布/回填全链路）
+    // 默认「完全权限 all」（2026-10-07 用户要求：直接全权限不询问，避免反复弹窗打断自动化）。
+    // all = 全部工具放行 + 路径守卫不弹窗（前端同时下发 pathGuard=off）。
+    // 其它智能体维持只读（安全默认不变）。
+    const AUTOPILOT_AGENT_IDS = ['a_builtin_novel_tuiwen_agent'];
+    const isAutopilot = AUTOPILOT_AGENT_IDS.includes(agentStore.selectedId);
+    store.permissionMode = isAutopilot ? 'all' : 'readonly';
+    // 全自动智能体同时关闭路径守卫（否则越界仍会弹授权窗，与"不询问"矛盾）
+    if (isAutopilot) {
+      try { settingsStore.settings.pathGuard = 'off'; } catch { /* store 未就绪则跳过 */ }
+    }
     // —— 弹层 / 搜索 / 导航等瞬时 UI ——
     snapshotDialog.value = false;
     snapshotActiveTab.value = '';
