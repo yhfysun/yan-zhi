@@ -1920,6 +1920,15 @@ async function loadConversations() {
       const taskId = taskRes.data.taskId;
       taskIds.set(convId, taskId);
 
+      // ★ 复用运行中任务（2026-10-07）：后端把新消息注入老任务（落库 + message:added 回显），
+      // 这里给出可见反馈 —— 此前是静默吞掉，用户以为「发消息没反应」。
+      if (taskRes.data.reused) {
+        try {
+          const { ElMessage } = await import('element-plus');
+          ElMessage.info(taskRes.data.injected ? '已并入运行中的任务，将在下一轮执行时生效' : '已接入当前运行中的任务');
+        } catch { /* 提示失败不影响订阅 */ }
+      }
+
       await subscribeTaskSse(convId, taskId, abortController.signal, onChunk);
     } catch (e: any) {
       if (e?.name === 'AbortError') return;

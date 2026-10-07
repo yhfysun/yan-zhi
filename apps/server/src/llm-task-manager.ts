@@ -597,6 +597,14 @@ export function createTask(params: {
  *  为此把 msgId 记进 task.pendingInjects —— 本轮即便模型不再调工具也不 finish，多跑一轮把消息带上。
  *  与「排队等任务结束」的区别就在这里：排队消息不落库、不打断本轮，等任务结束后由前端起新任务。
  *  @returns 'injected' 已注入运行中任务 | 'no-task' 该会话无运行中任务（前端应走正常发送） */
+/** 该会话是否有运行中任务（有则返回 taskId）—— 供路由层在创建前做「注入复用」判定 */
+export function findRunningTaskId(conversationId: string, userId?: string): string | null {
+  for (const t of tasks.values()) {
+    if (t.conversationId === conversationId && t.status === 'running' && (!userId || t.userId === userId)) return t.id;
+  }
+  return null;
+}
+
 export function injectUserMessage(conversationId: string, content: string, userId: string): 'injected' | 'no-task' {
   const text = String(content || '');
   if (!text.trim()) return 'no-task';

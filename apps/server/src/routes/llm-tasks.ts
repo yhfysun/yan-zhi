@@ -3,7 +3,7 @@ import { Router, Request, Response } from 'express';
 import { authMiddleware } from '../auth.js';
 import { sseStream } from '../services/sse.js';
 import {
-  createTask, subscribe, abortTask, pauseTask, resumeTask, getActiveTasks, getTask, getTaskRow, resolveToolResult, injectUserMessage,
+  createTask, subscribe, abortTask, pauseTask, resumeTask, getActiveTasks, getTask, getTaskRow, resolveToolResult, injectUserMessage, findRunningTaskId,
 } from '../llm-task-manager.js';
 
 const router = Router();
@@ -22,7 +22,16 @@ router.post('/tasks', (req: Request, res: Response) => {
   // memoryExtractPlatformId/ModelId：前端设置页下发的记忆抽取模型（任务完成后抽取/压缩前抢救用）
   // includeUiTools: true —— 此路由只服务前端在线的交互式任务，UI 工具（ask_user 等）纳入工具列表并委托前端执行
   // ontologyIds：前端随任务下发的智能体本体挂载（智能体编辑存本地库，server 库不持有，须显式传递）
-  const taskId = createTask({ conversationId, userId, platformId, modelId, userContent, agentId: agentId ?? null, appGuide, systemPrompt, tools, options, modeFlags, maxSteps, memoryExtractPlatformId, memoryExtractModelId, ontologyIds: Array.isArray(ontologyIds) ? ontologyIds.map(String) : undefined, includeUiTools: true, workspaceDir: typeof workspaceDir === 'string' ? workspaceDir : undefined,
+    // ★ 复用保护（2026-10-07）：同会话已有运行中任务时，新消息走「注入」而不是静默吞掉——
+  // 追问/换要求立即落库并推送 message:added（前端可见），任务在下一轮 LLM 调用时读到（pendingInjects）。
+  // 此前行为：createTask 幂等返回旧 taskId，前端重新订阅旧流 → 用户新要求人间蒸发，看起来像「不回」。
+  const runningId = findRunningTaskId(conversationId, userId);
+  if (runningId) {
+    const injected = userContent ? injectUserMessage(conversationId, String(userContent), userId) : 'no-task';
+    res.json({ data: { taskId: runningId, reused: true, injected: injected === 'injected' } });
+    return;
+  }
+const taskId = createTask({ conversationId, userId, platformId, modelId, userContent, agentId: agentId ?? null, appGuide, systemPrompt, tools, options, modeFlags, maxSteps, memoryExtractPlatformId, memoryExtractModelId, ontologyIds: Array.isArray(ontologyIds) ? ontologyIds.map(String) : undefined, includeUiTools: true, workspaceDir: typeof workspaceDir === 'string' ? workspaceDir : undefined,
     // 越界守卫档位（2026-10-01）：与 workspaceDir 同一条下发通道（同一份设置来源）
     pathGuard: (pathGuard === 'strict' || pathGuard === 'off' || pathGuard === 'ask') ? pathGuard : undefined,
   });
