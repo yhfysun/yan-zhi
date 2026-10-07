@@ -80,6 +80,11 @@ onMounted(async () => {
   if (licenseStore.info && !licenseStore.verified) {
     hint.value = licenseStore.info.reason || '原授权码已失效，请重新输入';
   }
+  // ★ 自愈（2026-10-07）：hash 停在 #/license 时守卫直接放行本页，若此前授权其实已生效
+  // （启动期瞬时失败落坑后，reload 永远卡在这），verified=true 就主动送回对话页。
+  if (licenseStore.verified) {
+    router.replace('/chat');
+  }
 });
 
 async function submit() {
