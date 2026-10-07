@@ -2228,7 +2228,12 @@ ipcMain.handle('browserView:action', async (_e, tabId, action, args) => {
               result = { error: '页面上未找到 input[type=file]，且未捕获到文件选择器：请确认「上传」按钮已点击、文件选择框确实弹出。' };
             } else {
               const target = await pickVisibleInput(nodeIds);
-              await send('DOM.setFileInputFiles', { files: [fp], nodeIds: [target] });
+              // ★★ 参数名必须是单数 nodeId（CDP 协议：DOM.setFileInputFiles 接受 nodeId | backendNodeId | objectId）。
+              //    曾误写成复数 nodeIds → CDP 静默忽略 → 三个标识符全缺 →
+              //    抛 "Either nodeId, backendNodeId or objectId must be specified"，
+              //    表现为「所有上传方式都报同一个错」（抖音上传 19 次尝试全灭的根因）。
+              //    DOM.querySelectorAll 的**返回值**才叫 nodeIds（复数），别把请求参数也写成复数。
+              await send('DOM.setFileInputFiles', { files: [fp], nodeId: target });
               result = { uploaded: true, via: 'cdp', filePath: fp, inputCount: nodeIds.length };
             }
           }

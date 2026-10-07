@@ -52,6 +52,14 @@ describe('browser_upload filechooser 实现（桌面端 main.cjs）', () => {
   it('选择 input[type=file] 时应挑可见节点，而不是盲取 nodeIds[0]', () => {
     expect(main).toContain('pickVisibleInput');
   });
+
+  it('★★ DOM.setFileInputFiles 必须用单数 nodeId（写成复数 nodeIds 会被 CDP 静默忽略 → 报 Either nodeId...）', () => {
+    // 抖音上传 19 次尝试全灭的真凶：请求参数写成了 nodeIds（复数）。
+    // CDP 只认 nodeId / backendNodeId / objectId 三者之一，未知键被忽略 → 三者全缺 → 抛错。
+    expect(main).not.toMatch(/setFileInputFiles',\s*\{\s*files:\s*\[[^\]]*\],\s*nodeIds:/);
+    // 至少有一处用单数 nodeId 调用
+    expect(main).toMatch(/setFileInputFiles',\s*\{\s*files:\s*\[[^\]]*\],\s*nodeId:/);
+  });
 });
 
 describe('browser_upload 工具 schema（core）', () => {
