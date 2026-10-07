@@ -189,3 +189,6 @@ apps/server/generated-files/
 
 # novel-tuiwen 产物
 novel-tuiwen/output/
+
+# yt-dlp 二进制不入库（2026-10-07 拍板）
+apps/server/ytdlp/

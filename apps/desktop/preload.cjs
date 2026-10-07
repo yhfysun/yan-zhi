@@ -84,11 +84,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
     delete: (key) => ipcRenderer.invoke('keyring:delete', key),
   },
 
-  // 原生对话框
+  // 原生对话框（选择目录 / 多选文件 / 保存）
   dialog: {
     showOpenDir: (options) => ipcRenderer.invoke('dialog:showOpenDir', options),
     // 多选文件（options 可选；返回绝对路径数组，取消返回 []）
     showOpenFiles: () => ipcRenderer.invoke('dialog:showOpenFiles'),
+    // 系统保存框（媒体右键「另存为」）
+    saveFile: (opts) => ipcRenderer.invoke('dialog:saveFile', opts),
   },
 
   // 文件路径解析：拖拽 / <input type=file> 得到的 File 转绝对路径（Electron 32+ 移除 File.path）
@@ -106,11 +108,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
     writeText: (text) => ipcRenderer.invoke('clipboard:writeText', text),
     // 写入图片（dataURL）——媒体预览右键「复制」用
     writeImage: (dataUrl) => ipcRenderer.invoke('clipboard:writeImage', dataUrl),
-  },
-
-  // 系统保存框（媒体右键「另存为」）
-  dialog: {
-    saveFile: (opts) => ipcRenderer.invoke('dialog:saveFile', opts),
   },
 
   // 屏幕截图（框选）：invoke 挂起直到用户在框选窗确认（返回 { ok, dataUrl, width, height }）

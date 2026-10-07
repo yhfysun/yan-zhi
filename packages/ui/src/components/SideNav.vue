@@ -275,6 +275,7 @@ const builtinNavItems: NavItem[] = [
   { path: '/code', label: '代码', tabLabel: '代码', icon: Code, kind: 'route', group: '工作台', hideOnMobile: true, mode: 'dev' },
   { path: '/browser', label: '浏览器', tabLabel: '浏览器', icon: Monitor, kind: 'route', group: '工作台', hideOnMobile: true },
   { path: '/chat-hub', label: '消息', tabLabel: '消息', icon: Promotion, kind: 'route', group: '工作台' },
+  { path: '/models', label: '模型平台', tabLabel: '模型', icon: Cpu, kind: 'route', group: '工作台' },
   { path: '', label: '设置', tabLabel: '设置', icon: Setting, kind: 'settings', group: '系统' },
 ];
 

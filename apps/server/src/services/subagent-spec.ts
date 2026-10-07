@@ -87,7 +87,8 @@ export const SPEC_TOOL_BLACKLIST: ReadonlySet<string> = new Set([
 
 export const DEFAULT_SPEC_MAX_STEPS = 60;
 export const MIN_SPEC_MAX_STEPS = 5;
-export const MAX_SPEC_MAX_STEPS = 200;
+/** 2026-10-05 与子智能体兜底上限同步放大到 500（长任务靠上下文压缩承载，不靠截断） */
+export const MAX_SPEC_MAX_STEPS = 500;
 /** 单个任务内现场生成子智能体的上限（预算闸；0 = 关闭该能力） */
 export const DEFAULT_MAX_SPAWN_PER_TASK = 12;
 
