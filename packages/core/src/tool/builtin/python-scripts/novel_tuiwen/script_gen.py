@@ -54,7 +54,7 @@ def merge_to_segments(sents, max_chars=MAX_SEG_CHARS):
     return [s for s in segs if len(s) >= MIN_SEG_CHARS] or segs
 
 
-def rule_based_script(text: str, title: str = "小说推文") -> dict:
+def rule_based_script(text: str, title: str = "小说推文", ending: str = "") -> dict:
     sents = split_sentences(text)
     # ★ 钩子取正文第一句，正文从第二句起切段（2026-10-07 修复：此前 hook=segs[0][:40]
     #   与 segments[0] 同源，tts_gen 把 hook+segments 拼起来配音 → 开头 40 字念两遍）
@@ -62,7 +62,7 @@ def rule_based_script(text: str, title: str = "小说推文") -> dict:
     if len(hook) > 40:
         hook = hook[:40]
     segs = merge_to_segments(sents[1:])
-    ending = "欲知后事如何，点击链接接着看。"
+    ending = ending or "欲知后事如何，点击链接接着看。"
     segments = []
     for i, s in enumerate(segs):
         scene = SCENE_TEMPLATES[i % len(SCENE_TEMPLATES)].format(subject="主角")
@@ -102,12 +102,13 @@ def main():
     ap.add_argument("--endpoint", default=os.environ.get("OPENAI_BASE_URL", ""))
     ap.add_argument("--api-key", default=os.environ.get("OPENAI_API_KEY", ""))
     ap.add_argument("--model", default=os.environ.get("OPENAI_MODEL", "gpt-4o-mini"))
+    ap.add_argument("--ending", default="", help="结尾引导文案（发抖音传：搜索别名XX看后续）")
     a = ap.parse_args()
     text = open(a.input, encoding="utf-8").read()
     if a.use_llm and a.endpoint and a.api_key:
         script = llm_script(text, a.endpoint, a.api_key, a.model)
     else:
-        script = rule_based_script(text, a.title)
+        script = rule_based_script(text, a.title, a.ending)
         print("[script_gen] rule-based mode (未配置 LLM)", file=sys.stderr)
     with open(a.output, "w", encoding="utf-8") as f:
         json.dump(script, f, ensure_ascii=False, indent=2)

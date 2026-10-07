@@ -29,6 +29,7 @@ description: 小说推文全自动产线：授权平台选书→过滤打分→�
 5. 出片 novel_tuiwen { chapter, title, bg_video, voice? }
 6. 发布（抖音，需确认）：creator.douyin.com/creator-micro/content/upload 网页上传，标题带别名关键词+话题；**confirm_user 确认后才点发布**
 - 上传视频用 browser_upload（filechooser 模式：clickSelector 点上传按钮自动投递本地文件）
+- 🚫 书名红线：出片 title 传别名（书名会烧进标题条）、ending 传「搜索别名XX看后续」、发布文案禁书名——别名才白挂
 7. 回填发文：抽屉内「抖音发文→添加发文」填抖音号+视频链接提交——不回填不结算，7 天内不回填别名失效
 8. 回报选书理由 + 成片路径 + 发布/回填状态
 

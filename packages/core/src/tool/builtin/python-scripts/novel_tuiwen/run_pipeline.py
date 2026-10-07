@@ -36,6 +36,7 @@ def main():
     ap.add_argument("--bgm", default="")
     ap.add_argument("--bg-video", default="", help="背景视频(修驴蹄/骑单车等), 逗号分隔多段")
     ap.add_argument("--aspect", default="4:3", help="画幅: 4:3(默认) / 9:16(抖音竖屏) / 16:9(横屏)")
+    ap.add_argument("--ending", default="", help="结尾引导文案（发抖音传：搜索别名XX看后续）")
     ap.add_argument("--use-llm", action="store_true")
     a = ap.parse_args()
 
@@ -50,6 +51,7 @@ def main():
     # 1) 改编
     run([PY, os.path.join(HERE, "script_gen.py"),
          "--input", a.input, "--output", script_json, "--title", a.title]
+        + (["--ending", a.ending] if a.ending else [])
         + (["--use-llm"] if a.use_llm else []))
     # 2) TTS
     run([PY, os.path.join(HERE, "tts_gen.py"),
