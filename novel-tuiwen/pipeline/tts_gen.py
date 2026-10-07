@@ -13,6 +13,75 @@ import sys
 
 DEFAULT_VOICE = "zh-CN-YunxiNeural"  # 年轻男声, 推文常用; 备选 zh-CN-XiaoyiNeural
 
+import re
+
+# ============ 朗读规范化（2026-10-07）============
+# Edge-TTS 按字面读符号串会灾难：23：59：57 读成"二三五九五七"式怪音、
+# 进度 1|4 只会念"杠"、HP/buff 这类游戏术语直接念字母。字幕显示原文，
+# 只在【送 TTS 前】规范化，两边互不干扰。
+
+# 游戏术语 → 中文读法（小写匹配，按词边界替换）
+GAME_TERMS = {
+    "hp": "生命值",
+    "mp": "魔法值",
+    "exp": "经验值",
+    "lv": "等级",
+    "cd": "冷却",
+    "buff": "增益状态",
+    "debuff": "负面状态",
+    "boss": "首领",
+    "kpi": "指标",
+    "aka": "又被称为",
+}
+
+_CN_NUM = "零一二三四五六七八九"
+
+
+def _cn_num(n: int) -> str:
+    """1-99 的口语数字（23 → 二十三）；0 → 零"""
+    if n == 0:
+        return "零"
+    if n < 10:
+        return _CN_NUM[n]
+    tens, ones = divmod(n, 10)
+    out = ("十" if tens == 1 else _CN_NUM[tens] + "十")
+    return out + (_CN_NUM[ones] if ones else "")
+
+
+def _time_to_cn(m: "re.Match") -> str:
+    """HH:MM[:SS] → X点X分[X秒]（口语，0 读零）"""
+    parts = m.group(0).replace("：", ":").split(":")
+    try:
+        vals = [int(p) for p in parts]
+    except ValueError:
+        return m.group(0)
+    if len(vals) == 3:
+        h, mi, s = vals
+        return f"{_cn_num(h)}点{_cn_num(mi)}分{_cn_num(s)}秒"
+    if len(vals) == 2:
+        h, mi = vals
+        return f"{_cn_num(h)}点{_cn_num(mi)}分"
+    return m.group(0)
+
+
+def _frac_to_cn(m: "re.Match") -> str:
+    """a/b | a\\b | a｜b（进度型分数，a<=b）→ b分之a；1/4 → 四分之一"""
+    a, b = int(m.group(1)), int(m.group(2))
+    if 0 < a <= b <= 99:
+        return f"{_cn_num(b)}分之{_cn_num(a)}"
+    return m.group(0)
+
+
+def normalize_for_tts(text: str) -> str:
+    # 1) 时间（先于分数，避免 23:59 被当分数）
+    text = re.sub(r"\d{1,2}[：:]\d{1,2}(?:[：:]\d{1,2})?", _time_to_cn, text)
+    # 2) 进度/分数（半角斜杠、反斜杠、全半角竖线；容忍 markdown 转义如 1\|4 的双分隔符）
+    text = re.sub(r"(\d{1,3})\s*[\/\\|｜]{1,2}\s*(\d{1,3})", _frac_to_cn, text)
+    # 3) 游戏术语（词边界，大小写不敏感）
+    for k, v in GAME_TERMS.items():
+        text = re.sub(rf"(?<![A-Za-z]){k}(?![A-Za-z])", v, text, flags=re.IGNORECASE)
+    return text
+
 
 def find_ffprobe():
     for p in (os.environ.get("FFPROBE"), r"C:\APP\EVCapture\ffprobe.exe"):
@@ -82,7 +151,7 @@ def main():
         p = os.path.join(a.outdir, f"seg_{i:03d}.mp3")
         # 已存在的分段跳过（重跑时不必重新合成，网络抖动恢复后续跑即可）
         if not (os.path.exists(p) and os.path.getsize(p) > 0):
-            synth_with_retry(text, p, a.voice)
+            synth_with_retry(normalize_for_tts(text), p, a.voice)
         d = audio_duration(p)
         print(f"[tts] seg_{i:03d} {d:.2f}s  {text[:18]}...")
         paths.append((i, p, d))

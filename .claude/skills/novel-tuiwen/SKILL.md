@@ -47,7 +47,8 @@ description: 小说推文全自动产线：授权平台选书→过滤打分→�
 ## 应用内用法
 novel_tuiwen { chapter: "novel/书名/ch01.txt", title: "书名", bg_video: "bg1.mp4,bg2.mp4" }
 产物：4:3 (1080x1440) mp4，deliverable，落 <工作目录>/output/
-- 口播结构：钩子(正文第一句) + 正文段(第二句起) + 结尾引导；2026-10-07 修复「第一段重复」（旧版 hook 复用 segs[0][:40] 且 segments[0] 原样保留 → 开头 40 字念两遍；旧产物有此问题属预期，重跑即愈）。
+- 口播结构：钩子(正文第一句) + 正文段(第二句起) + 结尾引导
+- TTS 朗读规范化：时间→「X点X分秒」、进度 a/b（含 1\|4 转义）→中文分数、HP/MP/buff/BOSS 等术语→中文；只改送 TTS 文本，字幕显示原文。术语表在 tts_gen.py GAME_TERMS。；2026-10-07 修复「第一段重复」（旧版 hook 复用 segs[0][:40] 且 segments[0] 原样保留 → 开头 40 字念两遍；旧产物有此问题属预期，重跑即愈）。
 
 ## 依赖
 - ffmpeg 兜底 C://APP//EVCapture//ffmpeg.exe（FFMPEG/FFPROBE 环境变量可覆盖）
