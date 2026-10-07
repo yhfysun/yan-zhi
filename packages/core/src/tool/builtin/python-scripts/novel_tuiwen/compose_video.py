@@ -44,6 +44,41 @@ def wrap_text(s: str, width: int = 20):
     return "\n".join(s[i:i + width] for i in range(0, len(s), width))
 
 
+def wrap_title(s: str, max_chars: int, max_lines: int = 2):
+    """把顶部引导语切成 ≤max_lines 行、每行 ≤max_chars 字（2026-10-07）。
+
+    动机：此前顶部标题是**单行** drawtext，像「搜「狐王痴狂」看全文｜打开番茄小说」这类
+    引导语（16+ 字）在 1080 宽画面上会超宽/贴边，观感差且易被裁。
+    规则：
+      1. 显式换行优先（banner 里写 \\n 或真实换行 → 按行拆）；
+      2. 否则若超长，在**自然分隔处**断行（｜ | ， , 、 空格），取最接近中点的那一处；
+      3. 找不到分隔符就按 max_chars 硬切；每行再硬截断到 max_chars。
+    返回行列表（至少一个元素，可能是空串）。"""
+    import re
+    s = (s or "").strip().replace("\\n", "\n")
+    if not s:
+        return [""]
+    explicit = [seg.strip() for seg in s.split("\n") if seg.strip()]
+    if len(explicit) > 1:
+        lines = explicit[:max_lines]
+    else:
+        line = explicit[0]
+        if len(line) <= max_chars:
+            lines = [line]
+        else:
+            mid = len(line) // 2
+            best = -1
+            for m in re.finditer(r"[｜|，,、\s]", line):
+                if m.start() <= max_chars and (best < 0 or abs(m.start() - mid) < abs(best - mid)):
+                    best = m.start()
+            cut = best if best > 0 else max_chars
+            l1 = line[:cut].strip()
+            l2 = line[cut:].strip().lstrip("｜|，,、 ")
+            lines = [l1, l2]
+    lines = [ln[:max_chars] for ln in lines if ln]
+    return lines[:max_lines] or [""]
+
+
 def esc_drawtext(s: str) -> str:
     for ch in ("\\", ":", "'", "%", ",", "[", "]"):
         s = s.replace(ch, {"\\": "\\\\", ":": "\\:", "'": "\\'",
@@ -163,11 +198,30 @@ def main():
     total = max(t, probe_duration(ffmpeg, audio_out))
 
     # ---- 3) 视频轨 + 字幕 + 标题 ----
+    # ★ 顶部引导语支持多行 + 淡入（2026-10-07）：
+    #   单行 drawtext 遇到长引导语（如「搜「别名」看全文｜打开番茄小说」）在 1080 宽画面上会超宽/贴边。
+    #   改为**按行链式 drawtext**（每行一个 filter，各自 y 下移）——不用 `text_align`，
+    #   因为项目自带的 ffmpeg 是 2019 版（实测 `text_align` 报 Option not found；`line_spacing`/`alpha` 均支持）。
+    #   链式多行在任意 ffmpeg 版本都稳，故不依赖 text_align。
+    #   alpha 表达式做 0.6s 淡入。
     top_text = a.banner or script.get("banner") or script.get("title", "小说推文")
-    title = esc_drawtext(top_text)
-    title_vf = (
-        f"drawtext=fontfile='C\\:/Windows/Fonts/msyh.ttc':text='{title}':"
-        f"fontcolor=white:fontsize={a.title_size}:x=(w-text_w)/2:y=90:"
+    max_chars = max(6, int(W * 0.90 / a.title_size))
+    title_lines = wrap_title(top_text, max_chars)
+    _line_step = a.title_size + 12
+    _parts = []
+    for _i, _ln in enumerate(title_lines):
+        if not _ln:
+            continue
+        _t = esc_drawtext(_ln)
+        _parts.append(
+            f"drawtext=fontfile='C\\:/Windows/Fonts/msyh.ttc':text='{_t}':"
+            f"fontcolor=white:fontsize={a.title_size}:x=(w-text_w)/2:y={80 + _i * _line_step}:"
+            f"borderw=3:bordercolor=black@0.7:"
+            f"alpha='if(lt(t,0.6),t/0.6,1)'"
+        )
+    title_vf = ",".join(_parts) if _parts else (
+        f"drawtext=fontfile='C\\:/Windows/Fonts/msyh.ttc':text='{esc_drawtext(top_text)}':"
+        f"fontcolor=white:fontsize={a.title_size}:x=(w-text_w)/2:y=80:"
         f"borderw=3:bordercolor=black@0.7"
     )
     srt_abs = os.path.abspath(srt).replace("\\", "/").replace(":", "\\:")
