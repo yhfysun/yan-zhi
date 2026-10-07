@@ -37,11 +37,26 @@ function extractUrlFromArgs(args: unknown): string {
 // （ensureActiveTab），可能猜中面板旧 tab 或别的空间 tab —— 导航进了那个 tab，页面加载了
 // 但预览 UI 不跟随（onNavigated 里 tid !== activeTabId 被忽略，永远显示首页），后续
 // get_page_content 读的也不是用户看到的页面。
+/**
+ * agent 自己导航打开的 tab（会话级锚定，2026-10-07）。
+ *
+ * ★ 为什么需要：此前 agent 的每个动作都取「面板当前活动 tab」，而该值会被**用户手动切换**
+ *   或 agent 中途导航别的页面改写 → 后续动作落到错误的页（实测：agent 操作跑到了
+ *   用户停留的番茄达人中心，而目标是抖音）。锚定后 agent 全程锁定它自己开的那个 tab。
+ * 只在 tab 仍存在时生效；tab 被关则自动失效回退。
+ */
+const agentAnchoredTabs = new Map<string, string>(); // convId → tabId
+
 async function resolvePreviewTabId(convId?: string): Promise<string> {
   const electron = (window as any).electronAPI;
   // 多会话隔离：convId 决定 scope；未传则退化为通用 preview（兼容旧调用点）。
   const scope = convId ? `preview:${convId}` : 'preview';
   const bs: any = useBrowserStore(scope);
+  const exists = (id: string) => !!id && bs.tabs.some((t: any) => t.id === id);
+  // ① agent 锚定 tab 优先（跨调用保持，不受用户切换影响）
+  const anchored = convId ? agentAnchoredTabs.get(convId) : undefined;
+  if (anchored && exists(anchored)) return anchored;
+  if (anchored) agentAnchoredTabs.delete(convId as string); // 已被关闭
   const current = () =>
     bs.activeTabId && bs.tabs.some((t: any) => t.id === bs.activeTabId) ? bs.activeTabId : '';
   const tid = current();
@@ -1271,6 +1286,8 @@ async function loadConversations() {
           // 用预览面板当前显示的 tab 导航（面板未就绪时轮询等待其自建，见 resolvePreviewTabId）。
           // 多会话隔离：按当前任务所属 convId 取 scope，避免与其它会话的浏览器面板互相串台。
           const navTabId = await resolvePreviewTabId(ctx?.convId);
+          // 锚定：agent 打开的这个 tab 就是它本次任务的操作目标（后续动作不再受用户切换影响）
+          if (ctx?.convId && navTabId) agentAnchoredTabs.set(ctx.convId, navTabId);
           skipNextRecordVisit.value = true;
           try {
             const result = await Promise.race([
