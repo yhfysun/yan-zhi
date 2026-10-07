@@ -80,6 +80,18 @@ def normalize_for_tts(text: str) -> str:
     # 3) 游戏术语（词边界，大小写不敏感）
     for k, v in GAME_TERMS.items():
         text = re.sub(rf"(?<![A-Za-z]){k}(?![A-Za-z])", v, text, flags=re.IGNORECASE)
+    # 4) 数字范围（两侧 1-2 位数字才转「到」；前面紧跟数字或 '-' 的排除，避免误伤 2024-05-28 日期）
+    text = re.sub(r"(?<![\d-])(\d{1,2})\s*[-~～—]\s*(\d{1,2})(?!\d)", r"\1到\2", text)
+    # 5) 带圈数字 ①-⑩ → 「第一，」式口播
+    for i, c in enumerate("①②③④⑤⑥⑦⑧⑨⑩", 1):
+        text = text.replace(c, f"第{_cn_num(i)}，")
+    # 6) 常见符号 → 口播读法（edge-tts 对这些符号不读或读错）
+    text = text.replace("→", "到").replace("⇒", "也就是").replace("→", "到")
+    text = text.replace("&", "和").replace("＋", "加").replace("=", "等于")
+    text = text.replace("≥", "大于等于").replace("≤", "小于等于").replace("≠", "不等于")
+    text = text.replace("≈", "大约").replace("±", "正负").replace("％", "%")
+    # 7) 装饰性符号直接删（★☆◆◇●○▲△■□◆·•等，读出来是噪音或不读造成断句怪）
+    text = re.sub(r"[★☆◆◇●○▲△■□·•‧⋅※→➤▶◀]", "", text)
     return text
 
 
