@@ -246,7 +246,7 @@
           :key="t.id"
           :ref="bindWebviewRef(t.id)"
           class="page-webview"
-          :class="{ 'wv-active': t.id === activeTabId }"
+          :class="{ 'wv-active': t.id === activeTabId, 'wv-locked': inputLocked }"
           :src="t.srcUrl || 'about:blank'"
           partition="persist:browser-view"
           allowpopups="true"
@@ -468,9 +468,16 @@ const browserExpanded = computed({
   get: () => isPreviewScope && chatStore.browserExpanded,
   set: (v: boolean) => { if (isPreviewScope) chatStore.browserExpanded = v; },
 });
+// ★ Agent 实况锁定（2026-10-07 加固）：此前的判定强依赖 `chatStore.browserLockInput` 这个
+//   由「browserSteps 0→N」watch 置位的标志，且该标志会被「任务结束/切会话/reset」多处清零 ——
+//   一旦标志没被置位（或先于步骤到来就被清掉），锁就整个失效，用户便能在 agent 操作期间点页面。
+//   改为「**正在跑任务 且 面板有浏览器步骤**」直接从运行态推导，不再依赖那个脆弱标志；
+//   并保留「用户主动暂停 → 交还控制权」的语义（pausedNow 时才解锁）。
+const taskRunningNow = computed(() => !!chatStore.streaming || chatStore.runningConvIds.size > 0);
 const inputLocked = computed(() =>
-  isPreviewScope && chatStore.browserLockInput && !chatStore.browserPaused
-  && (chatStore.streaming || chatStore.runningConvIds.size > 0),
+  isPreviewScope && !chatStore.browserPaused
+  && taskRunningNow.value
+  && (chatStore.browserLockInput || chatStore.browserSteps.length > 0),
 );
 const liveControlVisible = computed(() => isPreviewScope && chatStore.browserSteps.length > 0);
 // Agent 接管形态的步骤进度/清单：取当前会话已登记的 task_plan（无计划 → 只显示「执行中」，不硬造步骤）
@@ -2582,6 +2589,9 @@ onUnmounted(() => {
   opacity: 0; pointer-events: none; z-index: 0;
 }
 .page-webview.wv-active { opacity: 1; pointer-events: auto; z-index: 1; }
+/* 双保险：agent 接管锁定期间，连 webview 本体也不接收指针事件（正常情况下 shield 已在更上层拦截；
+   这条是防 shield 因层叠/合成异常未生效时，用户仍无法点中网页）。 */
+.page-webview.wv-locked { pointer-events: none !important; }
 [data-theme="dark"] .page-webview { background: var(--el-bg-color); }
 
 .loading-overlay {
