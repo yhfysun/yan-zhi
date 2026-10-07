@@ -111,6 +111,7 @@ def main():
     ap.add_argument("--title-size", type=int, default=64)
     ap.add_argument("--bgm", default="")
     ap.add_argument("--aspect", default="4:3", choices=list(ASPECT_SIZES.keys()), help="画幅: 4:3(默认) / 9:16(抖音竖屏) / 16:9(横屏)")
+    ap.add_argument("--banner", default="", help="顶部常驻引导语（发抖音传：搜「别名」看全文）。优先于 script.banner 与 script.title；书名红线：画面顶部禁原书名")
     ap.add_argument("--keep-temp", action="store_true")
     a = ap.parse_args()
     global W, H
@@ -162,7 +163,8 @@ def main():
     total = max(t, probe_duration(ffmpeg, audio_out))
 
     # ---- 3) 视频轨 + 字幕 + 标题 ----
-    title = esc_drawtext(script.get("title", "小说推文"))
+    top_text = a.banner or script.get("banner") or script.get("title", "小说推文")
+    title = esc_drawtext(top_text)
     title_vf = (
         f"drawtext=fontfile='C\\:/Windows/Fonts/msyh.ttc':text='{title}':"
         f"fontcolor=white:fontsize={a.title_size}:x=(w-text_w)/2:y=90:"

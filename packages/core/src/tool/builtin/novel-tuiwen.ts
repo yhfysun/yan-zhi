@@ -23,6 +23,7 @@ export class NovelTuiwenTool implements BuiltInTool {
       bg_video: { type: 'string', description: '背景视频路径，多个用逗号分隔（按顺序轮播，循环铺满全片）。省略则用深色文字占位画面。' },
       aspect: { type: 'string', enum: ['4:3', '9:16', '16:9'], description: '画幅：9:16=抖音竖屏 1080x1920（抖音发布用这个）；4:3=1080x1440（默认）；16:9=横屏 1920x1080。' },
       ending: { type: 'string', description: '结尾引导口播。发抖音必传：搜索别名XX看后续（XX=生效中的别名关键词）。禁止出现原书名。' },
+      banner: { type: 'string', description: '视频顶部常驻引导语（发抖音必传：搜「别名」看全文）。书名红线：画面顶部禁原书名，传别名。' },
       voice: { type: 'string', description: 'TTS 音色（Edge-TTS），默认 zh-CN-YunxiNeural（年轻男声）；女声可用 zh-CN-XiaoyiNeural。' },
       out: { type: 'string', description: '输出目录，默认 <工作目录>/output/。' },
       use_llm: { type: 'boolean', description: '用 LLM 做钩子化改编（需环境变量 OPENAI_BASE_URL/OPENAI_API_KEY）。默认规则切分。' },
@@ -64,6 +65,7 @@ export class NovelTuiwenTool implements BuiltInTool {
     if (args.use_llm) argv.push('--use-llm');
     if (args.aspect && ['4:3', '9:16', '16:9'].includes(String(args.aspect))) argv.push('--aspect', String(args.aspect));
     if (typeof args.ending === 'string' && args.ending.trim()) argv.push('--ending', args.ending.trim());
+    if (typeof args.banner === 'string' && args.banner.trim()) argv.push('--banner', args.banner.trim());
     // 中间产物与成片都收敛到 outDir
     argv.push('--outdir', outDirRaw);
 
