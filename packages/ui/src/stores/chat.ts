@@ -1324,6 +1324,8 @@ async function loadConversations() {
           'browser_extract_list': 'extract_list',
           // P1-5 代码模式（2026-10-07）：页面上下文执行受限 JS
           'browser_run_script': 'run_script',
+          // 文件上传（2026-10-07）：桌面端走 CDP DOM.setFileInputFiles 注入本地文件
+          'browser_upload': 'upload',
         };
         const action = actionMap[fullName];
         if (action) {
@@ -1362,6 +1364,10 @@ async function loadConversations() {
                   return s;
                 }).join('\n');
                 text = `URL: ${result.url}\nTitle: ${result.title}\n\n【页面可见文本】\n${result.text || '(空)'}\n\n【可交互元素】(${result.interactiveCount} 个，编号可直接用于 browser_click/browser_type 的 index 参数)\n${elems}`;
+              } else if (action === 'upload') {
+                text = result.uploaded
+                  ? `已注入本地文件（${result.via || 'cdp'}）: ${result.filePath}${result.inputCount > 1 ? `（页面有 ${result.inputCount} 个 file input，用第一个）` : ''}`
+                  : (result.error || '文件注入失败');
               } else if (action === 'run_script') {
                 // P1-5：脚本执行结果 JSON 序列化回给模型（截断 8K）
                 let rt = '';

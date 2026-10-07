@@ -2124,6 +2124,63 @@ ipcMain.handle('browserView:action', async (_e, tabId, action, args) => {
 
     const doAction = async () => {
     switch (action) {
+      case 'upload': {
+        // 桌面端文件上传（2026-10-07）：用 CDP 的 DOM.setFileInputFiles 注入本地文件。
+        // ★ 为什么必须走 CDP 而不是 executeJavaScript：
+        //   JS 无法伪造带本地路径的 File 对象（安全沙箱），只有 CDP 协议能真正设置 input.files。
+        //   Electron webContents.debugger 就是内置 CDP 客户端，对 <webview> guest 同样有效。
+        // 两种模式：
+        //   ① clickSelector/clickIndex：先点「上传」按钮（触发 filechooser），再等 DOM 出现
+        //      input[type=file] 后注入 —— 适用 React Dropzone 这类隐藏 input 的站点；
+        //   ② selector/index：直接定位 input[type=file] 注入。
+        const fp = String(args.filePath || '');
+        if (!fp) return { error: 'filePath 为必填项' };
+        try {
+          const fsMod = require('fs');
+          if (!fsMod.existsSync(fp)) return { error: `文件不存在: ${fp}` };
+          // webview 引擎下 wc 来自 waitForGuest；BrowserView 引擎下来自 entry.view
+          if (!wc) return { error: '浏览器未就绪（无 webContents）' };
+          const dbg = wc.debugger;
+          let attachedHere = false;
+          if (!dbg.isAttached()) { dbg.attach('1.3'); attachedHere = true; }
+          const send = (method, params) => dbg.sendCommand(method, params);
+          await send('DOM.enable');
+          await send('Runtime.enable');
+
+          // ① 需要先点按钮（触发隐藏 input 出现）
+          if (args.clickSelector || args.clickIndex !== undefined) {
+            const clickArgs = { selector: args.clickSelector, index: args.clickIndex, x: args.clickX, y: args.clickY };
+            // 复用本文件的 click 实现（走 __yzAssistant，与用户看到的一致）
+            const clickRes = await wc.executeJavaScript(`(function(){
+              var a=${JSON.stringify(clickArgs)};
+              var A=window.__yzAssistant;
+              if(!A) return {error:'助手未注入'};
+              var el=null;
+              if(a.index!=null){el=A.resolve(a.index);}
+              if(!el && a.selector){el=document.querySelector(a.selector);}
+              if(!el) return {error:'未找到上传按钮'};
+              el.click();
+              return {clicked:true};
+            })()`);
+            if (clickRes && clickRes.error) return { error: clickRes.error };
+            // 等动态 input 出现（React 挂载需要时间）
+            await new Promise((r) => setTimeout(r, 800));
+          }
+
+          // ② 找 input[type=file] 并注入
+          const { root } = await send('DOM.getDocument', { depth: -1, pierce: true });
+          const { nodeIds } = await send('DOM.querySelectorAll', { nodeId: root.nodeId, selector: 'input[type=file]' });
+          if (!nodeIds || !nodeIds.length) {
+            if (attachedHere) dbg.detach();
+            return { error: '页面上未找到 input[type=file]（请先点「上传视频」按钮，或确认页面结构）' };
+          }
+          await send('DOM.setFileInputFiles', { files: [fp], nodeIds: [nodeIds[0]] });
+          if (attachedHere) dbg.detach();
+          return { uploaded: true, via: 'cdp', filePath: fp, inputCount: nodeIds.length };
+        } catch (e) {
+          return { error: `文件注入失败: ${e && e.message || e}` };
+        }
+      }
       case 'navigate': {
         // URL 清洗：剥离模型以 markdown 反引号/引号包裹传来的格式字符
         let cleanUrl = String(args.url || '').trim().replace(/^[`"'\s]+|[`"'\s]+$/g, '');
