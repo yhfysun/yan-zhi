@@ -392,8 +392,9 @@ export class LlmClient {
    *  杀死整个任务 —— 必须自动吸收抖动（与 capabilityTest 的重试判定同一正则口径）。 */
   private async upstreamFetchRetry(url: string, body: unknown, opts?: { signal?: AbortSignal; anthropic?: boolean }, retries = 2): Promise<Response> {
     for (let attempt = 0; ; attempt++) {
+      let res: Response | null = null;
       try {
-        return await this.upstreamFetch(url, body, opts);
+        res = await this.upstreamFetch(url, body, opts);
       } catch (e: any) {
         const sig = opts?.signal;
         if (sig?.aborted || e?.name === 'AbortError') throw e;
@@ -404,6 +405,18 @@ export class LlmClient {
         }
         throw e;
       }
+      // ★ 可重试的 HTTP 状态（2026-10-07）：429（频率/过载）与 5xx（上游网关抖动）此前**原样返回**
+      //   → 直接把长任务打死，用户看到「调用失败：429 Too Many Requests / The system is currently overloaded」。
+      //   实测（10-07 12:58~13:08）上游过载高发，长任务被一次 429 杀掉代价过高。
+      //   只在**未开始消费响应体**时重试（此处必然成立：SSE 尚未 yield），尊重 Retry-After。
+      if ((res.status === 429 || res.status >= 500) && attempt < retries) {
+        const ra = Number(res.headers.get('retry-after'));
+        const waitMs = Number.isFinite(ra) && ra > 0 ? Math.min(ra * 1000, 15000) : (attempt + 1) * 2000;
+        try { await res.text(); } catch { /* 丢弃响应体，释放连接 */ }
+        await new Promise((r) => setTimeout(r, waitMs));
+        continue;
+      }
+      return res;
     }
   }
 
@@ -502,7 +515,7 @@ export class LlmClient {
     const urlDesc = this.proxyBase ? `${this.proxyBase}/messages` : `${this.baseUrl}/v1/messages`;
     let res: Response;
     try {
-      res = await this.upstreamFetch('v1/messages', body, { signal: options?.signal, anthropic: true });
+      res = await this.upstreamFetchRetry('v1/messages', body, { signal: options?.signal, anthropic: true });
     } catch (e: any) {
       const sig = options?.signal;
       if (sig?.aborted || e?.name === 'AbortError') {
@@ -661,7 +674,7 @@ export class LlmClient {
         maxTokens: 5,
         stream: false,
       };
-      const res = await this.upstreamFetch('v1/chat/completions', body);
+      const res = await this.upstreamFetchRetry('v1/chat/completions', body);
       const durationMs = Date.now() - start;
       if (!res.ok) {
         const text = await res.text().catch(() => '');
