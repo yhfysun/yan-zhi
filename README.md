@@ -399,3 +399,11 @@ node scripts/gen-license.mjs --forever --edition pro                      # 永�
 | 文件 | 字段 | 说明 |
 |------|------|------|
 | `package.json` | `name` / `description` | 项目根 npm 包信息 |
+
+## 许可证
+
+本项目**不是开源软件**，采用自定义 **YAN-ZHI 商业授权协议**（见根目录 `LICENSE`）。
+
+- **任何使用（含个人学习、研究、评测、非商业用途）均须事先取得版权人 yhfysun 的书面商业授权并支付许可费用**，未授权不得使用、复制、修改、分发或用于任何目的。
+- 商业授权通过授权码（License Key）/ 授权文件授予，与内置的 lite / basic / pro 版本档激活体系配合使用，详见上文「授权体系」一节。
+- 需要商业授权请联系：yhfysun（仓库 https://github.com/yhfysun/yan-zhi ）。
