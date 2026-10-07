@@ -71,11 +71,26 @@
         @click="planTotal > 0 && (runDetailOpen = !runDetailOpen)"
       >
         <el-icon class="run-spinner is-loading"><Loading /></el-icon>
-        <span class="run-text">任务运行中<template v-if="planTotal"> · 步骤 {{ planDoneCount }}/{{ planTotal }}</template></span>
+        <span class="run-text">
+          任务运行中
+          <template v-if="planTotal"> · 步骤 {{ planDoneCount }}/{{ planTotal }}</template>
+          · 已用时 <span class="run-elapsed">{{ formatDur(runElapsedSec) }}</span>
+        </span>
         <el-icon v-if="planTotal > 0" class="run-caret" :class="{ open: runDetailOpen }"><CaretRight /></el-icon>
         <button type="button" class="run-stop-btn" title="停止任务" @click.stop="stopChat">
           <span class="run-stop-square" aria-hidden="true"></span>停止
         </button>
+      </div>
+      <!-- 运行进度条：登记了任务计划按 步骤x/y 填充；没计划走不定态流动条（表示"在跑，但无步骤可量"） -->
+      <div v-if="store.streaming" class="run-progress" :class="{ indeterminate: planTotal === 0 }" aria-hidden="true">
+        <div class="run-progress-fill" :style="planTotal > 0 ? { width: planPercent + '%' } : undefined"></div>
+      </div>
+      <!-- 结束状态回执：任务收尾后短暂停留 10s（完成/停止/失败 + 总耗时），新任务开跑即清 -->
+      <div v-else-if="runResult" class="run-result" :class="runResult.status">
+        <el-icon v-if="runResult.status === 'completed'" class="run-result-icon"><Check /></el-icon>
+        <el-icon v-else-if="runResult.status === 'error'" class="run-result-icon"><Close /></el-icon>
+        <span v-else class="run-result-icon run-result-square" aria-hidden="true"></span>
+        <span class="run-text">{{ runResultLabel }} · 用时 {{ formatDur(runResult.seconds) }}</span>
       </div>
       <!-- 主任务步骤详情：整份任务计划（task_plan/task_step），点击运行指示行展开/收缩 -->
       <div v-if="store.streaming && runDetailOpen && planTotal > 0" class="run-steps">
@@ -776,6 +791,63 @@ const inputTooLong = computed(() => input.value.length > LONG_INPUT_THRESHOLD);
 const planTotal = computed(() => store.planSteps.length);
 const planDoneCount = computed(() => store.planSteps.filter((s) => s.status === 'done').length);
 
+// ===== 7.3 运行指示增强（2026-10-07）：进度条填充 + 总耗时走秒 + 结束状态回执 =====
+// 数据源是 store.runStatsByConv（SSE 终态 / callLlm finally 落定），UI 只负责展示与走秒。
+const runStat = computed(() => store.runStatsByConv?.[store.currentConvId]);
+const planPercent = computed(() => (planTotal.value > 0 ? Math.round((planDoneCount.value / planTotal.value) * 100) : 0));
+
+/** 秒数 → mm:ss（超 1 小时进位成 h:mm:ss） */
+function formatDur(totalSec: number) {
+  const s = Math.max(0, Math.floor(totalSec));
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  if (m >= 60) {
+    const h = Math.floor(m / 60);
+    return `${h}:${String(m % 60).padStart(2, '0')}:${String(r).padStart(2, '0')}`;
+  }
+  return `${String(m).padStart(2, '0')}:${String(r).padStart(2, '0')}`;
+}
+
+const runElapsedSec = ref(0);
+const runResult = ref<null | { status: 'completed' | 'aborted' | 'error'; seconds: number }>(null);
+const runResultLabel = computed(() =>
+  runResult.value?.status === 'completed' ? '任务已完成' : runResult.value?.status === 'error' ? '任务失败' : '已停止',
+);
+let runTimer: ReturnType<typeof setInterval> | null = null;
+let runResultHideTimer: ReturnType<typeof setTimeout> | null = null;
+
+function stopRunTimer() {
+  if (runTimer) { clearInterval(runTimer); runTimer = null; }
+}
+
+watch(
+  () => [store.streaming, store.currentConvId, runStat.value?.status, runStat.value?.startedAt] as const,
+  () => {
+    const rec = runStat.value;
+    if (store.streaming && rec?.status === 'running') {
+      // 运行中：清掉上一轮回执，按任务真实 startedAt 走秒（重连恢复的任务也能对上起点）
+      runResult.value = null;
+      if (runResultHideTimer) { clearTimeout(runResultHideTimer); runResultHideTimer = null; }
+      stopRunTimer();
+      const startedAt = rec.startedAt || Date.now();
+      const tick = () => { runElapsedSec.value = Math.max(0, Math.floor((Date.now() - startedAt) / 1000)); };
+      tick();
+      runTimer = setInterval(tick, 1000);
+    } else if (!store.streaming && rec && rec.status !== 'running' && rec.endedAt && Date.now() - rec.endedAt < 3000) {
+      // 刚结束（3s 内捕捉到终态）：停表、展示回执，10s 后自动收走
+      stopRunTimer();
+      runElapsedSec.value = rec.endedAt && rec.startedAt ? Math.max(0, Math.floor((rec.endedAt - rec.startedAt) / 1000)) : runElapsedSec.value;
+      runResult.value = { status: rec.status, seconds: runElapsedSec.value };
+      runResultHideTimer = setTimeout(() => { runResult.value = null; runResultHideTimer = null; }, 10000);
+    } else if (!store.streaming) {
+      // 空闲且无新鲜终态（切会话/回执已收走）：只保证计时器停了
+      stopRunTimer();
+    }
+  },
+  { immediate: true },
+);
+onBeforeUnmount(() => { stopRunTimer(); if (runResultHideTimer) { clearTimeout(runResultHideTimer); runResultHideTimer = null; } });
+
 /** 主任务步骤详情展开态：有计划的任务开跑 → 自动展开；任务结束 → 收起复位；点击行可手动切换 */
 const runDetailOpen = ref(false);
 watch(() => [store.streaming, planTotal.value] as const, ([streaming, total]) => {
@@ -783,15 +855,17 @@ watch(() => [store.streaming, planTotal.value] as const, ([streaming, total]) =>
   if (!streaming) runDetailOpen.value = false;
 });
 
-// ===== 会话级工具权限（只读/默认/全部放行）=====
-// 选择持久化到 conversation.permission_mode；readonly 模式下后端会构建期裁剪写工具 + 运行时硬拦截
-type PermissionMode = 'readonly' | 'default' | 'full';
+// ===== 会话级工具权限（只读/标准/All 不确认）=====
+// 选择持久化到 conversation.permission_mode；readonly 模式下后端会构建期裁剪写工具 + 运行时硬拦截。
+// 原 'full'（全部放行）与 all 语义重复，2026-10-07 并入 all —— 存量 full 会话读出来即迁移为 all。
+type PermissionMode = 'readonly' | 'default' | 'all';
 const PERMISSION_OPTIONS: Array<{ value: PermissionMode; label: string; desc: string }> = [
   // ★ 默认档是 readonly（2026-09-27 用户拍板：「权限默认应该都是只读，现在默认所有都行很危险」）。
-  //   'default' 与 'full' 行为一致（均放行），保留两档只是为了兼容存量数据与习惯叫法。
   { value: 'readonly', label: '只读（默认）', desc: '禁止写入/执行/委派与外部工具，仅检索浏览；需要写入时再放开' },
   { value: 'default', label: '标准权限', desc: '放行全部工具（含写文件/执行命令），适合可信任务' },
-  { value: 'full', label: '全部放行', desc: '不做限制（等同标准权限）' },
+  // all 档：全放行 + 路径守卫关闭 —— 跨目录访问/脚本执行不再逐次弹授权窗。
+  // 危险命令护栏（rm -rf / 格式化 / 强推…）是独立 P1 护栏，all 档下仍会单独确认。
+  { value: 'all', label: 'All（不确认）', desc: '全放行且不再弹授权确认：访问工作目录之外的路径、执行脚本/命令都直接执行' },
 ];
 const permissionLabel = computed(() =>
   PERMISSION_OPTIONS.find((p) => p.value === store.permissionMode)?.label || '只读（默认）',
@@ -1744,6 +1818,49 @@ onBeforeUnmount(() => {
 }
 .run-stop-btn:hover { filter: brightness(0.92); }
 .run-stop-square { width: 7px; height: 7px; border-radius: 1px; background: currentColor; }
+.run-elapsed { font-variant-numeric: tabular-nums; color: var(--color-text); }
+
+/* 运行进度条：紧贴运行指示行下方，3px 细条（对齐设计稿「气泡 hover 操作 + 状态」卡）。
+   有任务计划 → 按 步骤x/y 填充；无计划 → indeterminate 流动条（在跑但无步骤可量）。 */
+.run-progress {
+  position: relative;
+  height: 3px;
+  margin: 6px 0 0;
+  border-radius: 2px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--color-primary) 14%, transparent);
+}
+.run-progress-fill {
+  height: 100%;
+  border-radius: 2px;
+  background: var(--color-primary);
+  transition: width 0.45s ease;
+}
+.run-progress.indeterminate .run-progress-fill {
+  width: 36%;
+  animation: run-indet 1.4s ease-in-out infinite;
+}
+@keyframes run-indet {
+  0% { margin-left: -36%; }
+  100% { margin-left: 100%; }
+}
+
+/* 结束状态回执：任务收尾后停留 10s 的结果行（完成=主色 / 停止=次级灰 / 失败=红） */
+.run-result {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 8px 0 0;
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  background: var(--glass-bg, rgba(0, 0, 0, 0.03));
+}
+.run-result.completed { color: var(--color-primary); }
+.run-result.error { color: var(--color-danger, #e5484d); }
+.run-result-icon { font-size: 13px; flex: 0 0 auto; display: inline-flex; }
+.run-result-square { width: 8px; height: 8px; border-radius: 2px; background: currentColor; }
 
 /* ===== 追加消息队列（任务运行中，堆叠在输入框上方）===== */
 .queue-panel {

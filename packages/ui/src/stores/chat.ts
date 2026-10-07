@@ -93,7 +93,8 @@ function rowToConv(r: any): Conversation {
     customToolIds: r.custom_tool_ids_json ? JSON.parse(r.custom_tool_ids_json) : [],
     systemPrompt: r.system_prompt,
     pinned: !!r.pinned,
-    permissionMode: (r.permission_mode === 'readonly' || r.permission_mode === 'full') ? r.permission_mode : 'default',
+    // 'full' 已并入 'all'（语义重复；存量 full 会话读到即迁移）
+    permissionMode: (r.permission_mode === 'readonly' || r.permission_mode === 'full' || r.permission_mode === 'all') ? (r.permission_mode === 'full' ? 'all' : r.permission_mode) : 'default',
     taskPlan: (() => {
       if (!r.task_plan_json) return null;
       try {
@@ -269,6 +270,17 @@ export const useChatStore = defineStore('chat', () => {
   function isConvStreaming(convId: string) {
     return runningConvIds.value.has(convId);
   }
+  // 会话级最近一次任务运行记录（2026-10-07）：驱动输入区上方运行指示的进度条 / 已用时 / 结束状态。
+  //   status=running 期间由 UI 自行走秒；结束态（completed/aborted/error）由 SSE 终态事件或
+  //   callLlm 的 catch/finally 落定（markRunEnd 幂等：先到者为准，finally 只兜底补 endedAt）。
+  const runStatsByConv = ref<Record<string, { status: 'running' | 'completed' | 'aborted' | 'error'; startedAt: number; endedAt?: number }>>({});
+  /** 落定运行结束态：已结束（endedAt 已有）则不动，避免 finally 覆盖 SSE 终态 */
+  function markRunEnd(convId: string, status: 'completed' | 'aborted' | 'error' = 'completed') {
+    const rec = runStatsByConv.value[convId];
+    if (!rec || rec.endedAt) return;
+    rec.status = status;
+    rec.endedAt = Date.now();
+  }
   // 正在执行的 call_agent 工具调用 id 集合：用于跨层强制展开对应工具项，
   // 让 SubAgentRoundView 实时露出子智能体每一步；执行结束移除即自动折叠回简洁态。
   const runningToolCallIds = ref<Set<string>>(new Set());
@@ -314,7 +326,7 @@ export const useChatStore = defineStore('chat', () => {
   // ★★ 默认档是 readonly（2026-09-27 用户拍板：默认全放行太危险）——
   //     新任务一律先只读，需要写入/执行时由用户在权限胶囊（移动端在「+」菜单）手动放开；
   //     模型撞到拦截会收到明确原因并提示用户放开（见后端 permissionModePrompt）。
-  type PermissionMode = 'readonly' | 'default' | 'full';
+  type PermissionMode = 'readonly' | 'default' | 'all';
   const permissionMode = ref<PermissionMode>('readonly');
   /** 切换权限并持久化：已有会话立即 PATCH；草稿态只记本地（创建会话时随 POST 落库） */
   async function setPermissionMode(mode: PermissionMode) {
@@ -599,10 +611,19 @@ export const useChatStore = defineStore('chat', () => {
   function cancelPlatformConfig() {
     submitPlatformConfig({ cancelled: true, message: '用户关闭了模型平台配置弹窗' });
   }
-  /** 清空当前任务计划（用户关闭进度卡片时调用）。只清当前查看的会话，别会话的计划不受影响 */
+  /** 清空当前任务计划（用户关闭进度卡片 / 新任务开跑时调用）。只清指定会话，别会话的计划不受影响。
+   *  ★ 落盘写的是「防抖到期时的最新状态」而非 null：新任务开跑清旧计划后，若 800ms 窗口内
+   *    新任务已登记新计划，落盘的是新计划，不会把它误抹成 null。 */
   function clearPlan(convId?: string | null) {
-    plansByConv.value = removePlan(plansByConv.value, planKeyOf(convId));
-    void persistPlan(planKeyOf(convId), null);
+    const key = planKeyOf(convId);
+    plansByConv.value = removePlan(plansByConv.value, key);
+    if (!key || key === DRAFT_PLAN_KEY || !isServerMode()) return;
+    if (planSaveTimer) clearTimeout(planSaveTimer);
+    planSaveTimer = setTimeout(() => {
+      planSaveTimer = null;
+      const plan = readPlan(plansByConv.value, key) || null;
+      void api.patch(`/conversations/${key}`, { taskPlan: plan });
+    }, 800);
   }
 
   /** 计划落盘：写入 conversation.task_plan_json（刷新/换设备后 TaskPlanCard 可恢复）。
@@ -685,8 +706,9 @@ async function loadConversations() {
         plansByConv.value = { ...plansByConv.value, [convId]: conv.taskPlan };
       }
       mcpToolAliases.value = conv?._mcpToolAliases ? JSON.parse(JSON.stringify(conv._mcpToolAliases)) : {};
-      // 回填会话级权限模式（下拉显示与后端拦截以 conversation.permission_mode 为准）
-      permissionMode.value = conv?.permissionMode || 'default';
+      // 回填会话级权限模式（下拉显示与后端拦截以 conversation.permission_mode 为准）；full 并入 all
+      permissionMode.value = conv?.permissionMode === 'all' || conv?.permissionMode === 'full' ? 'all'
+        : conv?.permissionMode === 'readonly' ? 'readonly' : 'default';
       void reconnectActiveTask(convId);
       return;
     }
@@ -701,7 +723,9 @@ async function loadConversations() {
     mountedMcpServers.value = conv?.mcpServerIds || [];
     mcpDisabledTools.value = conv?._mcpDisabledTools ? { ...conv._mcpDisabledTools } : {};
     mcpToolAliases.value = conv?._mcpToolAliases ? JSON.parse(JSON.stringify(conv._mcpToolAliases)) : {};
-    permissionMode.value = conv?.permissionMode || 'default';
+    // full 并入 all（语义重复，存量 full 会话读到即迁移）
+    permissionMode.value = conv?.permissionMode === 'all' || conv?.permissionMode === 'full' ? 'all'
+      : conv?.permissionMode === 'readonly' ? 'readonly' : 'default';
   }
 
   async function createConversation(title: string, opts?: { platformId?: string; modelId?: string; skillIds?: string[]; spaceId?: string; agentId?: string }): Promise<string> {
@@ -1783,9 +1807,9 @@ async function loadConversations() {
           //   永久挂起 → subscribeTaskSse 不返回 → callLlm 的 finally 不执行 →
           //   runningConvIds 里的会话 id 永不删除 → store.streaming 恒 true，
           //   表现为「回答已完整输出（含生成的图片）却一直显示『任务运行中』+ 停止按钮」。
-          case 'task:completed': flushNow(convId); emitTaskFinished(convId); return false;
-          case 'task:aborted': flushNow(convId); emitTaskFinished(convId); return false;
-          case 'task:error': flushNow(convId); emitTaskFinished(convId); throw new Error(event.error || '任务执行失败');
+          case 'task:completed': flushNow(convId); markRunEnd(convId, 'completed'); emitTaskFinished(convId); return false;
+          case 'task:aborted': flushNow(convId); markRunEnd(convId, 'aborted'); emitTaskFinished(convId); return false;
+          case 'task:error': flushNow(convId); markRunEnd(convId, 'error'); emitTaskFinished(convId); throw new Error(event.error || '任务执行失败');
           case 'task:paused': pausedConvIds.value.add(convId); browserLockInput.value = false; break;
           case 'task:resumed': pausedConvIds.value.delete(convId); break;
           case 'context:compacted': {
@@ -1830,6 +1854,8 @@ async function loadConversations() {
       const taskId = task.id;
       taskIds.set(convId, taskId);
       runningConvIds.value.add(convId);
+      // 重连恢复：真实起点未知，用后端任务的 createdAt 兜底（缺省退化为当前时间）
+      runStatsByConv.value[convId] = { status: 'running', startedAt: Number(task.createdAt) || Date.now() };
       const abortController = new AbortController();
       abortControllers.set(convId, abortController);
       void (async () => {
@@ -1837,9 +1863,11 @@ async function loadConversations() {
           const since = taskEventCounts.get(taskId) || 0;
           await subscribeTaskSse(convId, taskId, abortController.signal, undefined, since);
         } catch (e: any) {
+          markRunEnd(convId, e?.name === 'AbortError' ? 'aborted' : 'error');
           if (e?.name === 'AbortError') return;
           console.error('[Chat] 重连 SSE 失败:', e);
         } finally {
+          markRunEnd(convId);
           abortControllers.delete(convId);
           taskIds.delete(convId);
           runningConvIds.value.delete(convId);
@@ -1872,6 +1900,11 @@ async function loadConversations() {
     if (runningConvIds.value.has(convId)) return;
 
     runningConvIds.value.add(convId);
+    runStatsByConv.value[convId] = { status: 'running', startedAt: Date.now() };
+    // ★ 清掉上一轮任务留下的旧计划：计划按会话持久保留（plansByConv / task_plan_json），
+    //   不清的话新任务运行指示会显示旧计划的「步骤 3/3 全完成」，看起来像已完成的任务卡在运行中。
+    //   新任务若做规划，task_plan/task_step 会重新登记。复用运行中任务（下方 has 提前 return）不受影响。
+    clearPlan(convId);
     const abortController = new AbortController();
     abortControllers.set(convId, abortController);
 
@@ -1901,7 +1934,8 @@ async function loadConversations() {
         workspaceDir: appSettings.workspaceDir || undefined,
         // 工作目录边界守卫档位（2026-10-01）：后端据此决定越界时弹窗 / 直接拒绝 / 不检查。
         // 与 workspaceDir 同一条下发通道（同一份设置来源，避免"两处不同源"漂移）。
-        pathGuard: appSettings.pathGuard || 'ask',
+        // ★ all 档（2026-10-07）：跨目录访问 / 脚本执行不再逐次弹窗 → 直接下发 off 跳过路径守卫。
+        pathGuard: permissionMode.value === 'all' ? 'off' : (appSettings.pathGuard || 'ask'),
         modeFlags: {
           thinking: thinkingMode.value,
           plan: planMode.value,
@@ -1931,10 +1965,12 @@ async function loadConversations() {
 
       await subscribeTaskSse(convId, taskId, abortController.signal, onChunk);
     } catch (e: any) {
+      markRunEnd(convId, e?.name === 'AbortError' ? 'aborted' : 'error');
       if (e?.name === 'AbortError') return;
       console.error('[Chat] 发送失败:', e);
       throw e;
     } finally {
+      markRunEnd(convId); // 幂等兜底：SSE 终态已落的先到者为准
       abortControllers.delete(convId);
       taskIds.delete(convId);
       runningConvIds.value.delete(convId);
@@ -2039,7 +2075,7 @@ async function loadConversations() {
 
   return {
     conversations, currentMessages, streaming, currentConvId, mountedMcpServers, mcpDisabledTools, mcpToolAliases,
-    runningConvIds, isConvStreaming,
+    runningConvIds, isConvStreaming, runStatsByConv,
     browserExpanded, browserUserDismissed, browserLockInput, browserPaused, pausedConvIds,
     agentCursor, onAgentCursor, clearAgentCursor,
     pauseTask, resumeTask,

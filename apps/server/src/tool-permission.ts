@@ -5,8 +5,8 @@
 //  2) 不可控来源（custom_ 自定义代码 / mcp_ 外部服务 / call_agent 委派）一律视为写，
 //     因为无法静态判断其副作用。
 
-/** 会话级工具权限模式 */
-export type PermissionMode = 'readonly' | 'default' | 'full';
+/** 会话级工具权限模式。all = 全放行且路径守卫/命令授权不再弹窗（由前端随任务下发 pathGuard=off） */
+export type PermissionMode = 'readonly' | 'default' | 'full' | 'all';
 
 /**
  * 归一化权限模式。
@@ -14,7 +14,8 @@ export type PermissionMode = 'readonly' | 'default' | 'full';
  *   垃圾值/未知的权限宁可误收窄（用户看得见、可手动放开），绝不静默放行。
  */
 export function normalizePermissionMode(v: unknown): PermissionMode {
-  return v === 'readonly' || v === 'full' ? v : v === 'default' ? 'default' : 'readonly';
+  // 'full' 已并入 'all'（2026-10-07：两者语义重复，all = 全放行 + 路径守卫不弹窗）；存量 full 会话读到即迁移
+  return v === 'readonly' || v === 'full' || v === 'all' ? (v === 'full' ? 'all' : v) : v === 'default' ? 'default' : 'readonly';
 }
 
 /** 明确有副作用的工具（readonly 模式拒绝执行） */

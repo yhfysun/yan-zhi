@@ -95,7 +95,7 @@ export interface Conversation {
   systemPrompt?: string;
   pinned: boolean;
   /** 会话级工具权限：readonly=只读（写类工具被后端拦截）/ default=默认 / full=全部放行 */
-  permissionMode?: 'readonly' | 'default' | 'full';
+  permissionMode?: 'readonly' | 'default' | 'full' | 'all';
   /** 任务计划落盘（task_plan/task_step 写入，刷新/换设备后恢复进度卡片）。null/缺省 = 无计划 */
   taskPlan?: { title: string; steps: Array<{ id: string; title: string; description?: string; status: 'pending' | 'running' | 'done' | 'failed'; note?: string }> } | null;
   /**

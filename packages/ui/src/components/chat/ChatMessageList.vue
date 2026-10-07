@@ -5,7 +5,8 @@
     <div v-if="historyLoading && !store.currentMessages.length" class="history-skeleton">
       <SkeletonList :rows="2" :row-height="44" />
     </div>
-    <TaskPlanCard v-if="store.planSteps.length" class="chat-plan-card" />
+    <!-- 任务规划卡（TaskPlanCard）已移除（2026-10-07）：此前只要有计划就常驻消息流顶部，任务结束后也不消失。
+         规划展示统一收敛到输入区上方的运行指示行（可展开步骤详情 + 进度条 + 结束回执），不再两处重复。 -->
     <!-- 8.1 日期分隔线：相邻轮次日期变化时渲染居中分隔；任一侧无时间戳则跳过该对 -->
     <template v-for="(round, ri) in messageRounds" :key="ri">
       <div v-if="dateDividerFor(ri)" class="msg-date-divider">
@@ -533,7 +534,6 @@ import type { MessageRound } from '../../composables/chat/useChat';
 import SkeletonList from '../common/SkeletonList.vue';
 import { useCodeStore } from '../../stores/code';
 import { activeMode } from '../../stores/mode';
-import TaskPlanCard from '../TaskPlanCard.vue';
 import PlatformConfigCard from '../PlatformConfigCard.vue';
 import SubAgentRoundView from './SubAgentRoundView.vue';
 import DeliverableFileCard from './DeliverableFileCard.vue';

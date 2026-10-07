@@ -165,7 +165,7 @@ interface LlmTask {
   /** 智能体挂载的本体 id 集合（前端随任务下发；空/未设置 = 取数不限本体范围） */
   ontologyIds?: string[];
   /** 会话级工具权限：readonly=只读（写类工具构建期裁剪+运行时拦截）/ default=正常 / full=全部放行 */
-  permissionMode?: 'readonly' | 'default' | 'full';
+  permissionMode?: 'readonly' | 'default' | 'full' | 'all';
   /** 工作目录边界守卫档位（2026-10-01）：ask（默认）/ strict / off */
   pathGuard?: 'ask' | 'strict' | 'off';
   /** 暂停旗标（工具边界暂停语义）：置位后主循环/子智能体循环/前端委托入口在边界处挂起，
