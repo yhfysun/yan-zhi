@@ -829,7 +829,7 @@ export const BUILTIN_SKILLS_SEED = [
   {
     id: 'skill_novel_tuiwen',
     name: '小说推文视频',
-    description: '有声小说推文视频生成：小说章节文本 → 自动改编口播脚本 → Edge-TTS 配音 → 与背景视频（修驴蹄/骑单车等解压素材）合成 4:3 成片（顶部标题+逐句字幕）。用 novel_tuiwen 工具一键出片，可配合定时任务每日产片。',
+    description: '有声小说推文视频生成：小说章节文本 → 自动改编口播脚本 → Edge-TTS 配音 → 与背景视频（风景/海洋/动物世界/延时自然等舒缓素材）合成 4:3 成片（顶部标题+逐句字幕）。用 novel_tuiwen 工具一键出片，可配合定时任务每日产片。',
     source: 'builtin',
     triggers: ['小说推文', '有声小说', '推文视频', '小说视频', '小说成片', '推文出片'],
     category: '自动化',

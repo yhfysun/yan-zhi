@@ -1,6 +1,6 @@
 // novel_tuiwen 内置工具 —— 有声小说推文视频生成。
 // 底层调用随包分发的 python-scripts/novel_tuiwen/run_pipeline.py（改编 → Edge-TTS 配音 → ffmpeg 合成）。
-// 产物：4:3 (1080x1440) mp4，含顶部标题 + libass 字幕 + 配音，可选背景视频（修驴蹄/骑单车等解压视频铺底）。
+// 产物：4:3 (1080x1440) mp4，含顶部标题 + libass 字幕 + 配音，可选背景视频（风景/海洋/动物世界等舒缓素材铺底）。
 // 产物分类约定（对齐 doyz/file_write）：成片 = deliverable，中间产物留在 workdir（intermediate 语义）。
 import type { BuiltInTool, ToolContext } from '../types';
 import type { McpCallResult } from '../../mcp/client';
@@ -13,14 +13,14 @@ import { toolError } from '../result';
 export class NovelTuiwenTool implements BuiltInTool {
   name = 'novel_tuiwen';
   description =
-    '有声小说推文视频生成：把小说章节文本自动改编成口播脚本，Edge-TTS 配音，与背景视频（如修驴蹄/骑单车等解压素材）合成为 4:3 (1080x1440) mp4，含顶部标题与逐句字幕。chapter 必填（工作目录内的 .txt），bg_video 可选（逗号分隔多个背景视频，自动循环铺满）。产出最终视频（deliverable）。';
+    '有声小说推文视频生成：把小说章节文本自动改编成口播脚本，Edge-TTS 配音，与背景视频（**风景 / 海洋 / 动物世界 / 延时自然**等舒缓、无人声、可循环的素材）合成为 4:3 (1080x1440) mp4，含顶部标题与逐句字幕。chapter 必填（工作目录内的 .txt），bg_video 可选（逗号分隔多个背景视频，自动循环铺满）。产出最终视频（deliverable）。';
 
   inputSchema = {
     type: 'object',
     properties: {
       chapter: { type: 'string', description: '小说章节文本文件路径（.txt，相对工作目录或绝对路径）。必填。' },
       title: { type: 'string', description: '视频标题（顶部展示 + 文件名），默认取「小说推文」。' },
-      bg_video: { type: 'string', description: '背景视频路径，多个用逗号分隔（按顺序轮播，循环铺满全片）。省略则用深色文字占位画面。' },
+      bg_video: { type: 'string', description: '背景视频路径，多个用逗号分隔（按顺序轮播，循环铺满全片）。**题材建议：风景 / 海洋 / 动物世界 / 延时自然等舒缓、无人声、可循环的素材**（与口播不抢注意力，也更符合平台调性）；尽量选与故事氛围匹配的（悬疑配暗色/夜景、治愈配明亮自然）。省略则用深色文字占位画面。' },
       aspect: { type: 'string', enum: ['4:3', '9:16', '16:9'], description: '画幅：9:16=抖音竖屏 1080x1920（抖音发布用这个）；4:3=1080x1440（默认）；16:9=横屏 1920x1080。' },
       ending: { type: 'string', description: '结尾引导口播。发抖音必传：搜索别名XX看后续（XX=生效中的别名关键词）。禁止出现原书名。' },
       banner: { type: 'string', description: '视频顶部常驻引导语（发抖音必传：搜「别名」看全文）。书名红线：画面顶部禁原书名，传别名。' },
