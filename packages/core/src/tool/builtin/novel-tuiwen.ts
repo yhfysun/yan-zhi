@@ -21,6 +21,7 @@ export class NovelTuiwenTool implements BuiltInTool {
       chapter: { type: 'string', description: '小说章节文本文件路径（.txt，相对工作目录或绝对路径）。必填。' },
       title: { type: 'string', description: '视频标题（顶部展示 + 文件名），默认取「小说推文」。' },
       bg_video: { type: 'string', description: '背景视频路径，多个用逗号分隔（按顺序轮播，循环铺满全片）。省略则用深色文字占位画面。' },
+      aspect: { type: 'string', enum: ['4:3', '9:16', '16:9'], description: '画幅：9:16=抖音竖屏 1080x1920（抖音发布用这个）；4:3=1080x1440（默认）；16:9=横屏 1920x1080。' },
       voice: { type: 'string', description: 'TTS 音色（Edge-TTS），默认 zh-CN-YunxiNeural（年轻男声）；女声可用 zh-CN-XiaoyiNeural。' },
       out: { type: 'string', description: '输出目录，默认 <工作目录>/output/。' },
       use_llm: { type: 'boolean', description: '用 LLM 做钩子化改编（需环境变量 OPENAI_BASE_URL/OPENAI_API_KEY）。默认规则切分。' },
@@ -60,6 +61,7 @@ export class NovelTuiwenTool implements BuiltInTool {
     if (args.voice) argv.push('--voice', String(args.voice));
     if (bgVideo) argv.push('--bg-video', bgVideo);
     if (args.use_llm) argv.push('--use-llm');
+    if (args.aspect && ['4:3', '9:16', '16:9'].includes(String(args.aspect))) argv.push('--aspect', String(args.aspect));
     // 中间产物与成片都收敛到 outDir
     argv.push('--outdir', outDirRaw);
 

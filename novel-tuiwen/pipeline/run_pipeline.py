@@ -35,6 +35,7 @@ def main():
     ap.add_argument("--voice", default="zh-CN-YunxiNeural")
     ap.add_argument("--bgm", default="")
     ap.add_argument("--bg-video", default="", help="背景视频(修驴蹄/骑单车等), 逗号分隔多段")
+    ap.add_argument("--aspect", default="4:3", help="画幅: 4:3(默认) / 9:16(抖音竖屏) / 16:9(横屏)")
     ap.add_argument("--use-llm", action="store_true")
     a = ap.parse_args()
 
@@ -57,7 +58,8 @@ def main():
     run([PY, os.path.join(HERE, "compose_video.py"),
          "--script", script_json, "--outdir", out_dir]
         + (["--bg-video", a.bg_video] if a.bg_video else [])
-        + (["--bgm", a.bgm] if a.bgm else []))
+        + (["--bgm", a.bgm] if a.bgm else [])
+        + ["--aspect", a.aspect])
 
 
 if __name__ == "__main__":

@@ -15,7 +15,9 @@ import os
 import subprocess
 import sys
 
-W, H = 1080, 1440
+# 画幅由 --aspect 决定（2026-10-07）：4:3=1080x1440(默认) / 9:16=1080x1920(抖音竖屏) / 16:9=1920x1080(横屏)
+ASPECT_SIZES = {"4:3": (1080, 1440), "9:16": (1080, 1920), "16:9": (1920, 1080)}
+W, H = ASPECT_SIZES["4:3"]
 FPS = 25
 FONTS_DIR = r"C:\Windows\Fonts"
 
@@ -108,8 +110,11 @@ def main():
     ap.add_argument("--bg-video", default="", help="逗号分隔背景视频, 按顺序循环使用")
     ap.add_argument("--title-size", type=int, default=64)
     ap.add_argument("--bgm", default="")
+    ap.add_argument("--aspect", default="4:3", choices=list(ASPECT_SIZES.keys()), help="画幅: 4:3(默认) / 9:16(抖音竖屏) / 16:9(横屏)")
     ap.add_argument("--keep-temp", action="store_true")
     a = ap.parse_args()
+    global W, H
+    W, H = ASPECT_SIZES.get(a.aspect, ASPECT_SIZES["4:3"])
     ffmpeg = find_ffmpeg()
     os.makedirs(a.outdir, exist_ok=True)
     tmp = os.path.join(a.outdir, "tmp")
