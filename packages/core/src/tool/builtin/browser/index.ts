@@ -518,6 +518,19 @@ export class BrowserGetVisibleTextTool implements BuiltInTool {
   }
 }
 
+/**
+ * ★ P1-6（2026-10-07）：页面状态签名（Skyvern validator 思路，导出供测试）。
+ * url + title + 编号元素清单（index:tag 序列）的 djb2 轻量哈希 + 元素数。
+ * pageAgent 每步对比两次读取的 pageState：相同 = 操作未生效（index 清单也没变），
+ * 把"页面变没变"的判据**硬编码进回执**，不再依赖提示词软约束。
+ */
+export function computePageStateSignature(data: { url?: string; title?: string; interactive?: any[]; interactiveCount?: number }): string {
+  const sigSrc = `${data.url || ''}|${data.title || ''}|${(data.interactive || []).map((e: any) => `${e.index}:${e.tag}`).join(',')}`;
+  let sig = 5381;
+  for (let i = 0; i < sigSrc.length; i++) { sig = ((sig << 5) + sig + sigSrc.charCodeAt(i)) >>> 0; }
+  return `sig${sig.toString(16)}#${data.interactiveCount ?? (data.interactive || []).length}`;
+}
+
 // ========== 获取页面内容（pageAgent 四件套之"读页"，聚合一次给齐） ==========
 export class BrowserGetPageContentTool implements BuiltInTool {
   name = 'browser_get_page_content';
@@ -536,12 +549,16 @@ export class BrowserGetPageContentTool implements BuiltInTool {
       const maxInteractive = Math.min(Number(args.maxInteractive) || 50, 300);
       const data = await callBrowserApi('/action', 'POST', { action: 'get_page_content', tabId: args.tabId, maxTextLength, maxInteractive }) as any;
       if (data.error) return err(data.error);
+      // ★ P1-6（2026-10-07）：页面状态签名——判据硬编码进回执（实现见 computePageStateSignature）
+      const pageState = computePageStateSignature(data);
       const elems = (data.interactive || []).map((e: any) => {
         let s = `[${e.index}] ${e.tag}`;
         if (e.type) s += `[type=${e.type}]`;
         if (e.selector) s += ` <${e.selector}>`;
         if (e.name) s += ` [name:${e.name}]`;
         if (e.role) s += ` [role:${e.role}]`;
+        // P1-7：计算后 ARIA 角色（隐式语义，如 <div onclick> → button）；与 tag 不同才展示
+        if (e.axRole && e.axRole !== e.tag && e.axRole !== e.role) s += ` [ax:${e.axRole}]`;
         if (e.ariaLabel) s += ` [aria:${e.ariaLabel}]`;
         if (e.text) s += ` "${e.text.slice(0, 40)}"`;
         if (e.placeholder) s += ` [ph:${e.placeholder}]`;
@@ -554,7 +571,7 @@ export class BrowserGetPageContentTool implements BuiltInTool {
         return s;
       }).join('\n');
       return ok(
-        `URL: ${data.url}\nTitle: ${data.title}\n\n【页面可见文本】\n${data.text || '(空)'}\n\n【可交互元素】(${data.interactiveCount} 个，编号可直接用于 browser_click/browser_type 的 index 参数；也可直接用 <selector> 作为 selector 参数)\n${elems}`
+        `URL: ${data.url}\nTitle: ${data.title}\nPageState: ${pageState}（页面状态签名；与上次读取相同 = 操作未生效，需换定位方式重新观察）\n\n【页面可见文本】\n${data.text || '(空)'}\n\n【可交互元素】(${data.interactiveCount} 个，编号可直接用于 browser_click/browser_type 的 index 参数；也可直接用 <selector> 作为 selector 参数)\n${elems}`
       );
     } catch (e: any) { return err(e?.message || '获取页面内容失败'); }
   }
@@ -919,6 +936,33 @@ export class BrowserDragTool implements BuiltInTool {
   }
 }
 
+// ========== P1-5 代码模式（2026-10-07） ==========
+export class BrowserRunScriptTool implements BuiltInTool {
+  name = 'browser_run_script';
+  description = 'Execute a JavaScript snippet in the current page context and return its JSON-serializable result. 代码模式：把多步固定操作收敛为一段脚本一次执行（如"滚动到底触发懒加载→收集全部列表项→返回 JSON"），替代多轮 click/scroll/get_page_content，大幅省步数与 token。脚本在页面主世界运行，可用 document / window / fetch；返回值必须可 JSON 序列化（例如 return JSON.stringify([...]) 或一个对象）。超时 30s，脚本长度上限 64000 字符。适用：重复性流程、批量提取、条件循环；需要看页面再决策时仍用 browser_get_page_content。可传 tabId 在指定标签页执行。';
+  inputSchema = {
+    type: 'object',
+    properties: {
+      script: { type: 'string', description: 'JavaScript 源码（表达式或 IIFE）。异步逻辑请包在 (async () => { ... })() 里并返回结果。' },
+      tabId: { type: 'number', description: '可选：目标标签页 id，缺省为当前活动标签页。' },
+    },
+    required: ['script'],
+  };
+  async execute(args: Record<string, unknown>): Promise<McpCallResult> {
+    try {
+      const script = String(args.script || '');
+      if (!script.trim()) return err('script is required');
+      if (script.length > 64000) return err('script too long (max 64000 chars)');
+      const data = await callBrowserApi('/action', 'POST', { action: 'run_script', script, tabId: args.tabId }) as any;
+      if (data?.error) return err(data.error);
+      let resultText = '';
+      try { resultText = JSON.stringify(data.result); } catch { resultText = String(data.result); }
+      if (resultText.length > 8000) resultText = resultText.slice(0, 8000) + `…(截断，原长 ${resultText.length})`;
+      return ok(`Executed in page. URL: ${data.url || ''}\nTitle: ${data.title || ''}\nResult: ${resultText || '(undefined)'}`);
+    } catch (e: any) { return err(e?.message || '脚本执行失败'); }
+  }
+}
+
 /** 所有浏览器工具类列表 */
 export const BrowserToolClasses = [
   BrowserNavigateTool,
@@ -965,6 +1009,8 @@ export const BrowserToolClasses = [
   BrowserIsVisibleTool,
   // C13 拖拽
   BrowserDragTool,
+  // P1-5 代码模式（2026-10-07）
+  BrowserRunScriptTool,
 ];
 
 /** 所有浏览器工具的暴露名（裸名） */
@@ -991,4 +1037,6 @@ export const BROWSER_TOOL_NAMES = [
   'browser_scroll_into_view', 'browser_is_visible',
   // C13 拖拽
   'browser_drag',
+  // P1-5 代码模式（2026-10-07）
+  'browser_run_script',
 ];

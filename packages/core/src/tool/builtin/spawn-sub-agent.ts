@@ -43,6 +43,11 @@ export class SpawnSubAgentTool implements BuiltInTool {
       modelId: { type: 'string', description: '可选。执行模型 id（需属于 platformId）。简单任务建议用轻量模型以省成本。' },
       maxSteps: { type: 'number', description: '可选。该子智能体的步数上限（5-200，默认 60）。' },
       deliverable: { type: 'string', description: '可选。期望产出的形状描述（如"一张三列对比表""一份带出处的清单"），写清楚它才好交付。' },
+      role: {
+        type: 'string',
+        enum: ['researcher', 'verifier', 'writer', 'reviewer', 'coder', 'analyst'],
+        description: '可选。角色预设（crew 模式）：researcher=调研员（带来源取证）/ verifier=核验员（逐条挑错）/ writer=撰稿人（成稿交付）/ reviewer=评审员（分级意见）/ coder=实现者（可运行+自验证）/ analyst=分析师（可复算的洞察）。指定后自动叠加该角色的方法论与交付标准，你的 instruction 只需写具体任务。',
+      },
       purpose: { type: 'string', description: '可选。一句话说明你为什么开这个子智能体（会展示给用户，便于事后理解）。' },
     },
     required: ['instruction'],

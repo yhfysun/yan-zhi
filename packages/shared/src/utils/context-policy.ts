@@ -71,6 +71,59 @@ export const EFFECTIVE_CONTEXT_FLOOR = 16384;
 export const MAX_SESSION_MESSAGES = 400;
 
 /**
+ * 单任务预算（2026-10-07，P1-9）—— 步数/条数之外的**第三、四道**闸门。
+ *
+ * ★ 为什么需要：步数上限只管"模型转了多少圈"，不管每圈烧多少 token、跑了多久。
+ *   2026 生产共识（Datadog：60% LLM 故障是限流错误，多因失控循环）：
+ *   每个长任务都需要 ① 步数上限 ② token 总预算 ③ 墙钟预算 ④ 无进度检测，四件套缺一不可。
+ *   本项目已有 ①（EMPTY_ARGS / stepBudget）与 ④（noChangeStreak / 空转断路器），这里补 ② ③。
+ *
+ * 触达预算**不硬杀任务**：与步数上限走同一条「结账 → 自评 → 接力确认」路径
+ * （见 runReActLoop 的 budgetReached 块）。
+ */
+/** 任务累计 token 总预算（输入+输出合计）。默认 100 万 ≈ 8 个 128K 轮的量级。 */
+export const TASK_TOKEN_BUDGET = 1_000_000;
+/** 任务墙钟时间预算（毫秒）。默认 15 分钟（用户可配，长任务可调大）。 */
+export const TASK_WALL_CLOCK_BUDGET_MS = 15 * 60 * 1000;
+
+/** 从智能体 config_json 解析任务预算覆盖（非法值一律回落默认，绝不抛错）。 */
+export function resolveTaskBudgets(cfg?: unknown): { tokenBudget: number; wallClockMs: number } {
+  const o = (cfg && typeof cfg === 'object' ? cfg : {}) as Record<string, unknown>;
+  const t = Number(o.totalTokenBudget);
+  const w = Number(o.wallClockMinutes);
+  return {
+    tokenBudget: Number.isFinite(t) && t > 0 ? Math.floor(t) : TASK_TOKEN_BUDGET,
+    wallClockMs: Number.isFinite(w) && w > 0 ? Math.floor(w) * 60 * 1000 : TASK_WALL_CLOCK_BUDGET_MS,
+  };
+}
+
+/**
+ * 任务预算判定（P1-9，**唯一定义处**；导出供测试与 server 主循环共用）。
+ * @param budgets 预算（resolveTaskBudgets 产出）；undefined = 不设限 → null
+ * @param totalTokens 任务累计 token（输入+输出）
+ * @param startedAt 任务起始时间戳（ms）
+ * @param now 当前时间（默认 Date.now()；测试注入用）
+ * @returns 未触达 null；触达 {kind, used, limit}（token 优先于墙钟判定）
+ */
+export function checkTaskBudgetHit(
+  budgets: { tokenBudget: number; wallClockMs: number } | undefined,
+  totalTokens: number,
+  startedAt: number,
+  now: number = Date.now(),
+): { kind: 'tokens' | 'wallclock'; used: number; limit: number } | null {
+  if (!budgets) return null;
+  const used = Number(totalTokens) || 0;
+  if (used >= budgets.tokenBudget) return { kind: 'tokens', used, limit: budgets.tokenBudget };
+  // ★ startedAt 必须用 Number.isFinite 判（不能用 || 兜底）：startedAt=0（epoch）是合法值，
+  //   `Number(startedAt) || now` 会把它吞成 now → elapsed 恒 0 → 墙钟闸静默失效。
+  const start = Number(startedAt);
+  if (!Number.isFinite(start)) return null;
+  const elapsed = now - start;
+  if (elapsed >= budgets.wallClockMs) return { kind: 'wallclock', used: elapsed, limit: budgets.wallClockMs };
+  return null;
+}
+
+/**
  * 计算**有效可用预算**（token）：`标称窗口 × 比例`，带小窗口下限。
  *
  * ★ 调用方必须传入**已解析过的**窗口（服务端走 `resolveContextWindow`，含 32K 保守兜底）——

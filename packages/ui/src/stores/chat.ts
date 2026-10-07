@@ -1322,6 +1322,8 @@ async function loadConversations() {
           'browser_check': 'check',
           'browser_uncheck': 'uncheck',
           'browser_extract_list': 'extract_list',
+          // P1-5 代码模式（2026-10-07）：页面上下文执行受限 JS
+          'browser_run_script': 'run_script',
         };
         const action = actionMap[fullName];
         if (action) {
@@ -1350,12 +1352,22 @@ async function loadConversations() {
                 // 聚合读页：正文 + 编号元素直接给模型（不截断，否则模型拿不到搜索结果页内容）
                 const elems = (result.interactive || []).map((e: any) => {
                   let s = `[${e.index}] ${e.tag}`;
+                  if (e.type) s += `[type=${e.type}]`;
+                  // P1-7：计算后 ARIA 角色（隐式语义），与 tag 不同才展示
+                  if (e.axRole && e.axRole !== e.tag) s += ` [ax:${e.axRole}]`;
+                  if (e.ariaLabel) s += ` [aria:${e.ariaLabel}]`;
                   if (e.text) s += ` "${String(e.text).slice(0, 40)}"`;
                   if (e.placeholder) s += ` [ph:${e.placeholder}]`;
                   if (e.href) s += ` →${String(e.href).slice(0, 80)}`;
                   return s;
                 }).join('\n');
                 text = `URL: ${result.url}\nTitle: ${result.title}\n\n【页面可见文本】\n${result.text || '(空)'}\n\n【可交互元素】(${result.interactiveCount} 个，编号可直接用于 browser_click/browser_type 的 index 参数)\n${elems}`;
+              } else if (action === 'run_script') {
+                // P1-5：脚本执行结果 JSON 序列化回给模型（截断 8K）
+                let rt = '';
+                try { rt = JSON.stringify((result as any).result); } catch { rt = String((result as any).result); }
+                if (rt.length > 8000) rt = rt.slice(0, 8000) + `…(截断，原长 ${rt.length})`;
+                text = `Executed in page. URL: ${(result as any).url || ''}\nResult: ${rt || '(undefined)'}`;
               } else {
                 text = result.success ? `${action} 执行成功` : JSON.stringify(result).slice(0, 500);
               }

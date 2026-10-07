@@ -259,7 +259,10 @@ async function createTabPage(url?: string): Promise<any> {
   }
   // 注入 __name polyfill：esbuild keepNames 会给 ensureYzReg 内部嵌套函数注入 __name helper，
   // page.evaluate 序列化函数体到浏览器执行时 __name 未定义会报 ReferenceError。此处全局兜底。
+  // ★ addInitScript 只在「下一次导航」生效 —— 首个 page 创建时已是 about:blank、不再导航，
+  //   polyfill 永远不会跑（dev 实测 get_page_content 仍报 __name is not defined）→ 补一次立即注入。
   await page.addInitScript({ content: 'window.__name = window.__name || ((t) => t);' });
+  await page.evaluate('window.__name = window.__name || ((t) => t);').catch(() => { /* 页面瞬断不影响 */ });
   attachPageListeners(page);
   if (url) {
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
@@ -1145,6 +1148,33 @@ router.post('/action', async (req: Request, res: Response) => {
             const el = els[k] as any;
             const idx = R.register(el);
             const o: any = { index: idx, ref: Refs ? Refs.register(el) : '', tag: el.tagName.toLowerCase(), selector: R.genSel(el), text: (el.textContent || '').trim().slice(0, 60) };
+            // P1-7 a11y 语义（2026-10-07）：优先 computedRole（浏览器计算的 ARIA 角色，Chromium 132+）；
+            // 引擎不支持时按「标签 + type」推断隐式角色（ARIA in HTML 的常用子集）。
+            // 'generic'/null 无信息量跳过。两路都拿不到就不出 axRole 字段。
+            try { const cr = (el as any).computedRole; if (cr && cr !== 'generic') o.axRole = cr; } catch { /* 引擎不支持 */ }
+            if (!o.axRole) {
+              try {
+                const t = el.tagName; const ty = String(el.type || '').toLowerCase();
+                let role: string | null = null;
+                if (t === 'A' && el.hasAttribute('href')) role = 'link';
+                else if (t === 'BUTTON' || (t === 'INPUT' && /^(button|submit|reset|image)$/.test(ty))) role = 'button';
+                else if (t === 'INPUT') {
+                  if (ty === 'checkbox') role = 'checkbox';
+                  else if (ty === 'radio') role = 'radio';
+                  else if (ty === 'range') role = 'slider';
+                  else if (ty === 'number') role = 'spinbutton';
+                  else role = 'textbox';
+                }
+                else if (t === 'TEXTAREA') role = 'textbox';
+                else if (t === 'SELECT') role = 'combobox';
+                else if (t === 'OPTION') role = 'option';
+                else if (t === 'SUMMARY') role = 'button';
+                else if (t === 'PROGRESS') role = 'progressbar';
+                else if (t === 'METER') role = 'meter';
+                else if (el.isContentEditable) role = 'textbox';
+                if (role) o.axRole = role;
+              } catch { /* 防御 */ }
+            }
             if (el.ownerDocument !== document) { o.iframe = true; }
             else { const rect = el.getBoundingClientRect(); o.x = Math.round(rect.x); o.y = Math.round(rect.y); o.w = Math.round(rect.width); o.h = Math.round(rect.height); }
             if (el.id) o.id = el.id;
@@ -1442,6 +1472,22 @@ router.post('/action', async (req: Request, res: Response) => {
         await page.mouse.move(to.x!, to.y!, { steps: 10 });
         await page.mouse.up();
         result = { dragged: true, from, to };
+        break;
+      }
+      // ========== P1-5 代码模式（2026-10-07）：页面上下文执行受限 JS（Astra/Stagehand 式） ==========
+      case 'run_script': {
+        const script = String(args.script || '');
+        if (!script.trim()) { result = { error: 'script is required' }; break; }
+        if (script.length > 64000) { result = { error: 'script too long (max 64000 chars)' }; break; }
+        try {
+          const evalRes = await Promise.race([
+            page.evaluate(script) as Promise<any>,
+            new Promise((_, rej) => setTimeout(() => rej(new Error('script 执行超时（30s）')), 30000)),
+          ]);
+          result = { url: page.url(), title: await page.title().catch(() => ''), result: evalRes === undefined ? null : evalRes };
+        } catch (e: any) {
+          result = { error: e?.message || String(e) };
+        }
         break;
       }
       default:

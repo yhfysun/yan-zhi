@@ -48,6 +48,8 @@ export interface SubAgentSpec {
   deliverable?: string;
   /** 用途说明（落库供用户回看：这次为什么开这个子智能体） */
   purpose?: string;
+  /** P2-3 角色预设（researcher/verifier/writer/reviewer/coder/analyst；缺省 = 无模板，行为与从前一致） */
+  role?: string;
 }
 
 /** 归一化 + 安全裁剪后的结果 */
@@ -91,6 +93,50 @@ export const MIN_SPEC_MAX_STEPS = 5;
 export const MAX_SPEC_MAX_STEPS = 500;
 /** 单个任务内现场生成子智能体的上限（预算闸；0 = 关闭该能力） */
 export const DEFAULT_MAX_SPAWN_PER_TASK = 12;
+
+/**
+ * ★ 角色化预设（P2-3，2026-10-07，借 CrewAI 的 role 分工）。
+ *
+ * 为什么：模型现场填四元组时，I/C/T 三项全靠即兴 —— 同类子任务（调研/核验/写作/评审）
+ * 每次编出来的提示词质量参差。给一组**成熟角色模板**：模型只传 role + 具体任务，
+ * 模板负责补上该角色的方法论、纪律与交付标准，spawn 出来的执行质量稳定得多。
+ *
+ * 设计约束（刻意轻）：
+ *   · 模板只做 **instruction 前缀 + 交付默认值**，不改安全边界（工具白名单/黑名单/预算闸照旧）；
+ *   · 不强制：role 缺省/不认识的值 = 行为与从前完全一致（纯增量）。
+ */
+export const CREW_ROLE_PRESETS: Readonly<Record<string, { label: string; prompt: string; deliverable: string }>> = {
+  researcher: {
+    label: '调研员',
+    prompt: '你是**调研员**：以信息完备为先。先列出信息缺口，逐项检索取证；每条关键结论都要带来源（URL/文件路径）；查不到的如实标注「未找到」，严禁编造。',
+    deliverable: '带来源的调研结论：关键发现 + 出处 + 未能确认的部分。',
+  },
+  verifier: {
+    label: '核验员',
+    prompt: '你是**核验员**：以挑错为职。对给定结论逐条核对证据（重算数值、复核引用、验证文件/命令是否真实可用），输出「通过/不通过 + 依据」，不允许笼统说"没问题"。',
+    deliverable: '逐条核验清单：每条标注 通过/不通过/无法核验 + 具体依据。',
+  },
+  writer: {
+    label: '撰稿人',
+    prompt: '你是**撰稿人**：以交付质量为先。动笔前先确认受众、体裁与篇幅；成稿结构完整（开头给出结论/摘要）；不加凑数废话，不堆砌形容词。',
+    deliverable: '可直接使用的成稿（markdown），开头附三行以内摘要。',
+  },
+  reviewer: {
+    label: '评审员',
+    prompt: '你是**评审员**：以建设性意见为先。按「严重问题 → 改进建议 → 亮点」三段输出；每条意见指向具体位置（文件/段落/行），并给出改法；不做人身评价。',
+    deliverable: '分级的评审意见清单（每条含位置 + 问题 + 建议改法）。',
+  },
+  coder: {
+    label: '实现者',
+    prompt: '你是**实现者**：以可运行为准。改前先读相关代码确认现状；最小改动直奔目标；完成后必须自验证（跑构建/测试/命令）并附验证证据；不做任务外的"顺手优化"。',
+    deliverable: '改动摘要（改了哪些文件、为什么）+ 验证证据（命令与输出摘要）。',
+  },
+  analyst: {
+    label: '分析师',
+    prompt: '你是**分析师**：以洞察为准。先确认数据口径再动手；数值结论必须可复算（附计算路径）；区分「数据显示的事实」与「你的推断」。',
+    deliverable: '分析结论：数据事实（可复算）+ 推断（标明为主观判断）+ 建议。',
+  },
+};
 
 /** 工具清单的硬上限（防止模型一口气列 100 个工具把提示词撑爆） */
 const MAX_PINNED_TOOLS = 40;
@@ -204,16 +250,14 @@ export function normalizeSubAgentSpec(raw: Partial<SubAgentSpec>): SubAgentSpec 
   const maxSteps = Math.min(MAX_SPEC_MAX_STEPS, Math.max(MIN_SPEC_MAX_STEPS, num(raw?.maxSteps, DEFAULT_SPEC_MAX_STEPS)));
   const strArr = (v: unknown): string[] =>
     Array.isArray(v) ? v.map((x) => String(x || '').trim()).filter(Boolean) : [];
+  const role = String((raw as any)?.role || '').trim();
+  const preset = CREW_ROLE_PRESETS[role] || null;
   return {
-    instruction,
-    context: raw?.context ? String(raw.context) : undefined,
-    tools: strArr(raw?.tools),
-    toolExclude: strArr(raw?.toolExclude),
-    platformId: raw?.platformId ? String(raw.platformId) : undefined,
-    modelId: raw?.modelId ? String(raw.modelId) : undefined,
-    maxSteps,
-    deliverable: raw?.deliverable ? String(raw.deliverable) : undefined,
+    // 角色预设：instruction 前缀注入模板方法论；deliverable 未填时用模板默认（纯增量，不覆盖显式值）
+    instruction: preset ? `${preset.prompt}\n\n## 本次具体任务\n${instruction}` : instruction,
+    deliverable: raw?.deliverable ? String(raw.deliverable) : preset?.deliverable,
     purpose: raw?.purpose ? String(raw.purpose) : undefined,
+    role: preset ? role : undefined,
   };
 }
 
@@ -335,6 +379,11 @@ export function buildSpawnSubAgentSchema() {
         modelId: { type: 'string', description: '可选。执行模型 id（需属于 platformId）。简单任务建议用轻量模型以省成本。' },
         maxSteps: { type: 'number', description: `可选。该子智能体的步数上限（${MIN_SPEC_MAX_STEPS}-${MAX_SPEC_MAX_STEPS}，默认 ${DEFAULT_SPEC_MAX_STEPS}）。` },
         deliverable: { type: 'string', description: '可选。期望产出的形状描述（如"一张三列对比表""一份带出处的清单"），写清楚它才好交付。' },
+        role: {
+          type: 'string',
+          enum: Object.keys(CREW_ROLE_PRESETS),
+          description: '可选。角色预设（crew 模式）：researcher=调研员 / verifier=核验员 / writer=撰稿人 / reviewer=评审员 / coder=实现者 / analyst=分析师。指定后自动叠加该角色的方法论与交付标准，instruction 只需写具体任务。',
+        },
         purpose: { type: 'string', description: '可选。一句话说明你为什么开这个子智能体（会展示给用户，便于事后理解）。' },
       },
       required: ['instruction'],

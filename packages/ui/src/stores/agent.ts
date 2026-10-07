@@ -146,6 +146,10 @@ const PAGE_AGENT_BUILTIN_TOOLS = [
   'browser_navigate', 'browser_type', 'browser_click', 'browser_get_page_content',
   // 滚动：查看视口外内容 / 触发懒加载（v4 回补，四件套收口时误删导致 agent 无法滚动）
   'browser_scroll',
+  // P1-5 代码模式（2026-10-07）：固定重复流程收敛为脚本一次执行（与 server db.ts 收口清单对齐）
+  'browser_run_script',
+  // P2-2 纯视觉兜底路线（2026-10-07）：截图 + 视觉识别（DOM 失效时的 MolmoWeb 式兜底）
+  'browser_screenshot', 'image_analyze',
   // 登录闭环必备：向用户提问/请求确认（扫码、验证码等人工干预场景）
   'ask_user',
 ];

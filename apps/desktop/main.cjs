@@ -2425,6 +2425,28 @@ ipcMain.handle('browserView:action', async (_e, tabId, action, args) => {
           for(var k=0;k<els.length&&out.length<maxInteractive;k++){var el=els[k];
             var idx=A.register(el);
             var o={index:idx,tag:el.tagName.toLowerCase(),text:(el.textContent||'').trim().slice(0,60)};
+            // P1-7 a11y 语义（2026-10-07）：优先 computedRole（Chromium 132+），引擎不支持时
+            // 按「标签 + type」推断隐式角色；'generic'/null 无信息量跳过，两路都拿不到就不出字段。
+            try{var cr=el.computedRole;if(cr&&cr!=='generic')o.axRole=cr;}catch(e){}
+            if(!o.axRole){
+              try{
+                var tn=el.tagName,it=(el.type||'').toLowerCase(),role=null;
+                if(tn==='A'&&el.hasAttribute('href'))role='link';
+                else if(tn==='BUTTON'||(tn==='INPUT'&&/^(button|submit|reset|image)$/.test(it)))role='button';
+                else if(tn==='INPUT'){if(it==='checkbox')role='checkbox';else if(it==='radio')role='radio';else if(it==='range')role='slider';else if(it==='number')role='spinbutton';else role='textbox';}
+                else if(tn==='TEXTAREA')role='textbox';
+                else if(tn==='SELECT')role='combobox';
+                else if(tn==='OPTION')role='option';
+                else if(tn==='SUMMARY')role='button';
+                else if(tn==='PROGRESS')role='progressbar';
+                else if(tn==='METER')role='meter';
+                else if(el.isContentEditable)role='textbox';
+                if(role)o.axRole=role;
+              }catch(e){}
+            }
+            if(el.type)o.type=el.type;
+            try{var al=el.getAttribute('aria-label');if(al)o.ariaLabel=al;}catch(e){}
+            try{var rl=el.getAttribute('role');if(rl)o.role=rl;}catch(e){}
             if(el.placeholder)o.placeholder=el.placeholder;
             if(el.href)o.href=el.href.slice(0,200);
             out.push(o);
@@ -2819,6 +2841,19 @@ ipcMain.handle('browserView:action', async (_e, tabId, action, args) => {
         }
         await wc.sendInputEvent({ type: 'mouseButtonUp', button: 'left', x: from.to.x, y: from.to.y });
         return { dragged: true, from: from.from, to: from.to };
+      }
+      case 'run_script': {
+        // P1-5 代码模式（2026-10-07）：在页面上下文执行受限 JS（Astra/Stagehand 式"写脚本替自己操作"）。
+        // 脚本在页面主世界执行、返回值 JSON 可序列化；总闸 18s 在外层兜底（与其它 action 一致）。
+        const script = String(args.script || '');
+        if (!script.trim()) return { error: 'script is required' };
+        if (script.length > 64000) return { error: 'script too long (max 64000 chars)' };
+        try {
+          const r = await wc.executeJavaScript(script, false);
+          return { url: (typeof wc.getURL === 'function' ? wc.getURL() : '') || '', result: r === undefined ? null : r };
+        } catch (e) {
+          return { error: (e && e.message) || String(e) };
+        }
       }
       default:
         return { error: '未知操作: ' + action };

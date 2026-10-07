@@ -59,6 +59,11 @@ export class ToolRegistry {
         name: t.name,
         description: t.description,
         parameters: t.inputSchema,
+        // ★ P0-1（2026-10-07）：strict 模式**声明式**透传 —— 工具显式声明 strict=true 才带上。
+        //   为什么不默认开：OpenAI strict 要求 additionalProperties:false 且所有字段进 required，
+        //   现有内置 schema 多不满足（默认开会让合规端点直接 400）。
+        //   端点不支持 strict 时由 chatStream 的 400 重试剥离 tools 兜底。
+        ...(((t as any).strict === true) ? { strict: true } : {}),
       },
     }));
   }

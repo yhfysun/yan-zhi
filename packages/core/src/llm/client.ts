@@ -11,6 +11,29 @@ import {
   anthropicResponseToChunk,
 } from './anthropic';
 
+/**
+ * 工具调用强制策略（2026-10-07，P0-1）。
+ * - 'auto'：模型自主决定（默认，与不传一致）；
+ * - 'required'：必须调用至少一个工具（OpenAI: tool_choice="required"；Anthropic: {type:'any'}）；
+ * - 'none'：禁止工具调用；
+ * - 指定工具：强制调用某个工具（结构化输出 coercion 的标准做法）。
+ * 端点不支持时由上层降级（重试 400 时剥离 tool_choice 重发）。
+ */
+export type ToolChoiceOption = 'auto' | 'required' | 'none' | { type: 'function'; name: string };
+
+/** ToolChoiceOption → Anthropic tool_choice 值 */
+export function toAnthropicToolChoice(tc: ToolChoiceOption): unknown {
+  if (tc === 'auto') return { type: 'auto' };
+  if (tc === 'required') return { type: 'any' };
+  if (tc === 'none') return { type: 'none' };
+  return { type: 'tool', name: tc.name };
+}
+
+/** ToolChoiceOption → OpenAI tool_choice 值（原样，协议同形） */
+export function toOpenAIToolChoice(tc: ToolChoiceOption): unknown {
+  return tc;
+}
+
 /** 能力测试种类：chat=基础问答、vision=视觉识图、function_call=工具调用、embedding=向量、image=图片生成、video=视频生成 */
 export type CapabilityTestKind = 'chat' | 'vision' | 'function_call' | 'embedding' | 'image' | 'video';
 
@@ -74,6 +97,33 @@ export const CAPABILITY_TEST_LABELS: Record<CapabilityTestKind, string> = {
 /** 视觉能力测试用图：16×16 纯红 PNG（79B 内嵌，不依赖外部资源） */
 const VISION_TEST_PNG_B64 =
   'iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAFklEQVR4nGO4o6ZGEmIY1TCqYfhqAAATqigQ9JeO5gAAAABJRU5ErkJggg==';
+
+/**
+ * ★ P0-2（2026-10-07）：Anthropic prompt caching —— 稳定前缀打 cache_control 断点。
+ *
+ * 为什么必须做：ReAct 主循环每步重发 system prompt + 全量工具定义，而这两段在任务期间
+ * 逐字节稳定 —— 正是前缀缓存的理想命中区（Anthropic 缓存 token 按 10% 计价，长任务
+ * 200 步循环是成本/延迟的主杠杆）。OpenAI 端 ≥1024 token 自动缓存，无需代码；
+ * Anthropic 需显式 cache_control。
+ *
+ * 阈值：system 短于 4096 字符时断点的收益覆盖不了成本，直接发字符串（两种形态都合法）。
+ * 工具定义始终随 system 稳定 → 在最后一个 tool 上打断点（cache 是前缀累积的，
+ * 断点位置 = "到此为止都缓存"，放最后一段稳定内容上即可）。
+ */
+const ANTHROPIC_CACHE_MIN_CHARS = 4096;
+
+/** ★ 导出供测试：system 段的缓存断点包装（短 system 直接发字符串） */
+export function anthropicSystemField(system: string): unknown {
+  return system.length >= ANTHROPIC_CACHE_MIN_CHARS
+    ? [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }]
+    : system;
+}
+
+/** ★ 导出供测试：在最后一个 tool 上打 cache 断点（前缀累积语义） */
+export function markAnthropicToolsCached(tools: unknown[]): void {
+  const last = tools[tools.length - 1] as Record<string, unknown> | undefined;
+  if (last && typeof last === 'object') last.cache_control = { type: 'ephemeral' };
+}
 
 export class LlmClient {
   constructor(
@@ -359,7 +409,7 @@ export class LlmClient {
 
   async *chatStream(
     messages: Message[],
-    options?: { tools?: unknown[]; temperature?: number; maxTokens?: number; topP?: number; frequencyPenalty?: number; presencePenalty?: number; reasoningEffort?: string; responseFormat?: { type: 'json_object' | 'json_schema'; json_schema?: unknown }; signal?: AbortSignal },
+    options?: { tools?: unknown[]; temperature?: number; maxTokens?: number; topP?: number; frequencyPenalty?: number; presencePenalty?: number; reasoningEffort?: string; responseFormat?: { type: 'json_object' | 'json_schema'; json_schema?: unknown }; toolChoice?: ToolChoiceOption; signal?: AbortSignal },
   ): AsyncIterable<ChatChunk> {
     if (this.isAnthropic) {
       yield* this.anthropicStream(messages, options);
@@ -382,6 +432,8 @@ export class LlmClient {
     };
     if (options?.tools?.length) body.tools = options.tools;
     if (options?.responseFormat) body.response_format = options.responseFormat;
+    // P0-1：tool_choice 强制策略（仅在有 tools 时才有意义）
+    if (options?.tools?.length && options?.toolChoice) body.tool_choice = toOpenAIToolChoice(options.toolChoice);
     if (options?.reasoningEffort) {
       body.reasoning_effort = options.reasoningEffort;
     }
@@ -401,8 +453,10 @@ export class LlmClient {
       const text = await res.text().catch(() => '');
       // 工具相关 400 兜底：模型不支持 tools / 历史含孤儿 tool_calls（未配对）。
       // 去掉 tools 并把 tool 角色降级为 user 后重试，避免把 400 直接抛给用户。
-      if (res.status === 400 && /does not support tools|tool_calls must be followed|insufficient tool messages following tool_calls/i.test(text) && body.tools) {
+      if (res.status === 400 && /does not support tools|tool_calls must be followed|insufficient tool messages following tool_calls|tool_choice/i.test(text) && body.tools) {
         delete body.tools;
+        // P0-1：tool_choice 不被端点支持（或依赖 tools）时一并剥离重试
+        delete body.tool_choice;
         body.messages = this.sanitizeToolMessages(body.messages as any[], false);
         const retryRes = await this.upstreamFetch('v1/chat/completions', body, { signal: options?.signal });
         if (retryRes.ok && retryRes.body) {
@@ -417,7 +471,7 @@ export class LlmClient {
 
   private async *anthropicStream(
     messages: Message[],
-    options?: { tools?: unknown[]; temperature?: number; maxTokens?: number; topP?: number; frequencyPenalty?: number; presencePenalty?: number; reasoningEffort?: string; signal?: AbortSignal },
+    options?: { tools?: unknown[]; temperature?: number; maxTokens?: number; topP?: number; frequencyPenalty?: number; presencePenalty?: number; reasoningEffort?: string; toolChoice?: ToolChoiceOption; signal?: AbortSignal },
   ): AsyncIterable<ChatChunk> {
     // ★★ 必须走与 OpenAI 路径**同一道**发送前清洗（2026-09-30 收口时发现漏了这里）：
     //   否则「存量空参坏历史剥离」「空 tool_call_id 自愈」在 Anthropic 协议下全部失效 ——
@@ -435,9 +489,14 @@ export class LlmClient {
       messages: aMessages,
       stream: true,
     };
-    if (system) body.system = system;
+    if (system) body.system = anthropicSystemField(system);
     const tools = toAnthropicTools(options?.tools as any[]);
-    if (tools.length) body.tools = tools;
+    if (tools.length) {
+      body.tools = tools;
+      markAnthropicToolsCached(tools);
+    }
+    // P0-1：Anthropic tool_choice（required→any；指定工具→{type:'tool',name}）
+    if (tools.length && options?.toolChoice) body.tool_choice = toAnthropicToolChoice(options.toolChoice);
     if (options?.temperature != null) body.temperature = options.temperature;
     if (options?.topP != null) body.top_p = options.topP;
     const urlDesc = this.proxyBase ? `${this.proxyBase}/messages` : `${this.baseUrl}/v1/messages`;
@@ -461,7 +520,7 @@ export class LlmClient {
 
   async chat(
     messages: Message[],
-    options?: { tools?: unknown[]; temperature?: number; maxTokens?: number; topP?: number; frequencyPenalty?: number; presencePenalty?: number; responseFormat?: { type: 'json_object' | 'json_schema'; json_schema?: unknown }; signal?: AbortSignal },
+    options?: { tools?: unknown[]; temperature?: number; maxTokens?: number; topP?: number; frequencyPenalty?: number; presencePenalty?: number; responseFormat?: { type: 'json_object' | 'json_schema'; json_schema?: unknown }; toolChoice?: ToolChoiceOption; signal?: AbortSignal },
   ): Promise<ChatChunk> {
     if (this.isAnthropic) {
       return this.anthropicChat(messages, options);
@@ -480,6 +539,7 @@ export class LlmClient {
       stream: false,
     };
     if (options?.responseFormat) body.response_format = options.responseFormat;
+    if (options?.tools?.length && options?.toolChoice) body.tool_choice = toOpenAIToolChoice(options.toolChoice);
     const res = await this.upstreamFetchRetry('v1/chat/completions', body, { signal: options?.signal });
     if (!res.ok) {
       // ★ 非流式路径此前只抛 `${status} ${statusText}`，从**不读取响应体** →
@@ -506,7 +566,7 @@ export class LlmClient {
 
   private async anthropicChat(
     messages: Message[],
-    options?: { tools?: unknown[]; temperature?: number; maxTokens?: number; topP?: number; frequencyPenalty?: number; presencePenalty?: number; signal?: AbortSignal },
+    options?: { tools?: unknown[]; temperature?: number; maxTokens?: number; topP?: number; frequencyPenalty?: number; presencePenalty?: number; toolChoice?: ToolChoiceOption; signal?: AbortSignal },
   ): Promise<ChatChunk> {
     // ★ 与 anthropicStream 同理：走同一道发送前清洗（见该处注释）
     const cleaned = this.sanitizeToolMessages(
@@ -520,9 +580,13 @@ export class LlmClient {
       messages: aMessages,
       stream: false,
     };
-    if (system) body.system = system;
+    if (system) body.system = anthropicSystemField(system);
     const tools = toAnthropicTools(options?.tools as any[]);
-    if (tools.length) body.tools = tools;
+    if (tools.length) {
+      body.tools = tools;
+      markAnthropicToolsCached(tools);
+    }
+    if (tools.length && options?.toolChoice) body.tool_choice = toAnthropicToolChoice(options.toolChoice);
     if (options?.temperature != null) body.temperature = options.temperature;
     if (options?.topP != null) body.top_p = options.topP;
     const res = await this.upstreamFetchRetry('v1/messages', body, { signal: options?.signal, anthropic: true });

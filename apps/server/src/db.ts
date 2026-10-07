@@ -982,7 +982,7 @@ const DEFAULT_AGENT_SKILL_IDS = [
   'skill_desktop_app_automation',
 ];
 // pageAgent 工具收口（与前端 packages/ui/src/stores/agent.ts 的 PAGE_AGENT_BUILTIN_TOOLS 对齐，
-// 含 v4 回补的 browser_scroll，共六个：四件套 + scroll + ask_user）。
+// 含 v4 回补的 browser_scroll、v5 新增的 browser_run_script：四件套 + scroll + ask_user + run_script）。
 // 修复：旧版 36 个 browser_* 全量挂载 + 桌面端 get_dom 只回 "DOM 节点数"，
 // 导致子智能体拿不到链接内容，无限重试 browser_get_dom / browser_extract_list 直到用户手动终止。
 const PAGE_AGENT_BUILTIN_TOOLS = [
@@ -990,6 +990,11 @@ const PAGE_AGENT_BUILTIN_TOOLS = [
   'browser_navigate', 'browser_type', 'browser_click', 'browser_get_page_content',
   // 滚动：查看视口外内容 / 触发懒加载（v4 回补，四件套收口时误删导致 agent 无法滚动）
   'browser_scroll',
+  // P1-5 代码模式（2026-10-07）：固定重复流程（翻页收集/批量提取/触发懒加载）收敛为脚本一次执行
+  'browser_run_script',
+  // P2-2 纯视觉兜底路线（2026-10-07）：DOM 路径失效时的 MolmoWeb 式「截图→识别→坐标动作」循环
+  // （image_analyze 虽在 UI_TOOL_NAMES，但在线任务的 includeUiTools=true 时不过滤，pageAgent 在线委派可用）
+  'browser_screenshot', 'image_analyze',
   // 登录闭环必备：向用户提问/请求确认（扫码、验证码等人工干预场景）
   'ask_user',
 ];
@@ -1037,12 +1042,15 @@ const DEFAULT_AGENT_SYSTEM_PROMPT = `你是一个 ReAct（推理-行动）智能
 ` + WEB_QUERY_PROMPT_BLOCK + '\n\n' + DATA_QUERY_PROMPT_BLOCK;
 const PAGE_AGENT_SYSTEM_PROMPT = `你是一个浏览器自动化助手（pageAgent）。你通过调用浏览器工具操作一个真实的、可见的浏览器窗口（预览面板），用户能实时看到你的每一步操作。
 
-工具（仅以下六个，其他浏览器工具不可用）：
+工具（仅以下九个，其他浏览器工具不可用）：
 - browser_navigate: 导航到指定 URL
 - browser_type: 在输入框输入文本（支持回车提交搜索/表单）
 - browser_click: 点击元素（优先元素编号 index，其次 CSS 选择器或坐标）
 - browser_scroll: 滚动页面。传 y（正数向下/负数向上，像素，如 y=600）滚动一屏查看视口外内容；传 selector 则把目标元素滚到视野中央。用于查看长列表更多内容、触发懒加载，或让视口外的按钮/元素进入视野后再点击
-- browser_get_page_content: 一次获取当前页面完整状态：title + url + 可见正文 + 带 index 编号的可交互元素列表（已穿透 iframe/Shadow DOM）
+- browser_get_page_content: 一次获取当前页面完整状态：title + url + 可见正文 + 带 index 编号的可交互元素列表（已穿透 iframe/Shadow DOM）。返回含 PageState 页面状态签名：两次读取签名相同 = 操作未生效
+- browser_run_script: 代码模式——在页面里执行一段 JS 并返回结果。固定重复流程（翻页收集列表、批量提取、触发懒加载、循环签到检查）写成一段 (async () => { ... })() 脚本一次执行，替代多轮 click/scroll/read，大幅省步数；脚本内可用 document/fetch，返回值必须可 JSON 序列化（超时 30s）
+- browser_screenshot: 截图当前页面（annotate=true 时叠加元素编号框），返回文件路径
+- image_analyze: 视觉识别——把截图路径 + 描述传给视觉模型，返回画面内容/元素位置
 - ask_user: 向用户提问/请求确认（用于扫码登录等需要人工干预的场景）
 
 工作流程：
@@ -1060,8 +1068,17 @@ const PAGE_AGENT_SYSTEM_PROMPT = `你是一个浏览器自动化助手（pageAge
 2. 用列表中的 index 直接调用 browser_click / browser_type（传 index 参数）操作目标元素。不要猜动态 hash class 选择器（如 input-xrB84C），不要凭截图猜坐标。
 3. 若 selector 匹配到多个元素，工具会返回 ambiguous 和候选列表（带编号），从中选一个 index 重试。
 4. 页面变化后 index 会失效，工具会自动尝试用内部 selector 重定位一次（返回 autoRelocated）；仍未命中才需重新 browser_get_page_content 刷新编号列表。
-5. 视觉兜底：DOM 拿不到弹窗/portal 结构、或 index 反复失效时，用 browser_screenshot(annotate=true) 截图叠加元素编号框，结合编号定位；截图里看不清再用 browser_visual_locate + image_analyze 识别目标坐标。
+5. 视觉兜底（走下方【纯视觉兜底路线】）：DOM 拿不到弹窗/portal 结构、或 index 反复失效时，改用截图 + image_analyze 识别目标坐标。
 6. 每次 click/type 的返回包含 pageChanged / urlChanged / noChangeStreak：noChangeStreak ≥ 3 时会收到 warning，必须停止重复同类操作，改换定位方式（重新 get_page_content 分析）或 ask_user 请求人工介入。
+
+【纯视觉兜底路线（MolmoWeb 式，DOM 路径失效时才启用）】
+触发条件（满足其一）：① 同一元素用 index/selector 连续 miss 2 次；② noChangeStreak ≥ 3 收到 warning；③ browser_get_page_content 的元素清单里根本找不到目标（canvas 画布、图片型按钮、被反爬混淆的 DOM）。
+执行循环（每步三件套）：
+1. browser_screenshot（annotate=false，拿干净画面）
+2. image_analyze(截图路径, prompt="描述页面上「<目标>」的可见文字/形状/颜色，并给出它的坐标（x,y，像素）")
+3. browser_click 或 browser_type 用 x+y 坐标定位（坐标是最后手段，按识别结果换算）
+然后**重新截图复验**：画面确实变化 → 继续下一步；没变化 → 换识别目标或 ask_user。
+纪律：视觉路线每步成本高（截图+识图），仅作为 DOM 路径的**兜底**，能用 index 定位就回到 DOM 路线；连续 2 次视觉操作无画面变化 → 停止，返回已有结果并说明原因。
 
 【登录与人工干预】
 - 检测到需要登录/扫码/验证码等人工干预场景时，用 ask_user 让用户在浏览器面板中完成，等用户确认后用 browser_get_page_content 复核状态，再继续任务；不要把"需要登录"当结论直接返回给父智能体。
@@ -1070,6 +1087,7 @@ const PAGE_AGENT_SYSTEM_PROMPT = `你是一个浏览器自动化助手（pageAge
 【防循环硬约束】
 - 同一工具 + 相同参数连续调用 2 次结果不变 → 立即停止重试，换其他工具或向父智能体返回已有结果。
 - 读页工具连续 3 次无法拿到目标信息 → 停止盲试，直接返回已获取的部分结果并说明缺失原因。
+- PageState 签名判据（硬性）：browser_get_page_content 返回的 PageState 与上一次相同（页面没变）→ 本次操作未生效，**必须换定位方式**（重新分析元素/换 index/换选择器），禁止用同样参数再试。
 - 任务要求提取搜索结果/链接列表时，只用 browser_get_page_content 的输出提取（配合 browser_scroll 翻看视口外内容），不要反复换参数重试。
 - 读页工具分工（按"你需要什么"选，不要为同一页重复调用多个）：
   · browser_get_page_content —— 内容 + 操作目标：标题/正文 + 带编号的可交互元素（含 index、selector、type、name）。找"点哪里、往哪输入"用它，操作后重新观察结果也用它。
