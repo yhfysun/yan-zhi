@@ -914,6 +914,9 @@ const DEFAULT_AGENT_BUILTIN_TOOLS = [
   //   模型看不到工具，但系统提示词里空间记忆段还写着"可调用 api_space_memory_append 追加"
   //   → 空指令、静默失效。长任务结论因此永远沉淀不进空间记忆（2026-09-27 修）。
   'api_space_memory_read', 'api_space_memory_append',
+  // 短信验证码中继：用户手机上的移动端收到短信后转发到本节点，模型可直接取用
+  // （否则遇到需要验证码的登录/校验流程只能停下来问用户，而验证码正好在用户手机上）
+  'api_verification_code_latest', 'api_verification_code_list',
   // 会话自配置：模型可设当前会话的智能体 / 技能 / 工作模式
   // ★ 用户要求「智能体可以自己设置当前会话的智能体和 skill 和工作流程」
   'api_conversation_setup',
@@ -3261,6 +3264,31 @@ db.exec(`
     updated_at INTEGER NOT NULL
   );
 `);
+
+// ===== 短信验证码中继（移动端同网回传 → 桌面端消费）=====
+// 移动端（Android）收到短信后提取验证码，连同完整短文本体 POST 到本节点后端；
+// 桌面端 UI 轮询最新一条，Agent 侧走 api_verification_code_latest 工具取用。
+// ★ 设计取舍：
+//   1) 落库而非纯内存 —— 用户在手机收到短信、几秒后才回到桌面操作，内存态重启即丢；
+//      且需要「最近 N 条」回看（可能连收多条、或走到别的验证码）。
+//   2) TTL 由读取侧按 expires_at 过滤（默认 5 分钟），不靠后台定时清理 ——
+//      没进程也会自然过期，清理只是顺手为之。
+//   3) 全文本体也存（body）：有些验证码短信格式特殊，正则提不出码时至少能人工看。
+//      但不进任何日志（敏感信息）。
+db.exec(`
+  CREATE TABLE IF NOT EXISTS verification_code (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    code TEXT NOT NULL,
+    body TEXT,
+    sender TEXT,
+    source TEXT,
+    device_name TEXT,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL
+  );
+`);
+try { db.exec('CREATE INDEX IF NOT EXISTS idx_verification_code_user ON verification_code(user_id, created_at DESC)'); } catch {}
 
 // ===== 插件系统（plugin / plugin_storage）=====
 // 这两张表是插件系统的持久化真相源：plugin 存 manifest/启停状态，plugin_storage 存插件私有 KV

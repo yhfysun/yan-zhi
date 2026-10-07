@@ -307,6 +307,82 @@
           </div>
         </div>
       </el-tab-pane>
+      <el-tab-pane v-if="!embedded || isPaneMode" label="短信验证码" name="verification" lazy>
+        <div class="sms-section">
+          <p class="lan-tip">
+            手机上的言智移动端收到短信后，会自动把验证码转发到本节点（需与本机同网络、在移动端开启「短信验证码转发」）。
+            桌面端与智能体都可直接取用。
+          </p>
+
+          <div class="sms-card" :class="{ empty: !vcode.latest }">
+            <template v-if="vcode.latest">
+              <div class="sms-code">{{ vcode.latest.code }}</div>
+              <div class="sms-meta">
+                <span>{{ vcode.latest.sender || '未知号码' }}</span>
+                <span>·</span>
+                <span>{{ formatClock(vcode.latest.createdAt) }}</span>
+                <span>·</span>
+                <span>{{ Math.ceil(vcode.latest.remainingMs / 1000) }}s 后过期</span>
+              </div>
+              <div class="sms-actions">
+                <el-button size="small" type="primary" @click="copyCode(vcode.latest!.code)">复制验证码</el-button>
+                <el-button size="small" @click="vcode.refresh()">刷新</el-button>
+              </div>
+            </template>
+            <template v-else>
+              <div class="sms-code muted">暂无验证码</div>
+              <div class="sms-meta">等待手机端转发…（未收到短信 / 已过期 / 移动端未开启转发）</div>
+            </template>
+          </div>
+
+          <div v-if="vcode.list.length > 1" class="sms-history">
+            <div class="sms-history-title">最近（未过期）</div>
+            <div v-for="it in vcode.list.slice(1)" :key="it.id" class="sms-history-item">
+              <code>{{ it.code }}</code>
+              <span class="sms-history-meta">{{ it.sender || '—' }} · {{ Math.ceil(it.remainingMs / 1000) }}s</span>
+              <el-button size="small" text @click="copyCode(it.code)">复制</el-button>
+            </div>
+          </div>
+
+          <div class="sms-pair">
+            <div class="sms-pair-title">移动端配对</div>
+            <p class="lan-tip" style="margin: 0 0 8px">
+              在手机端「设置 → 短信验证码转发」里填入下面的<b>上报地址</b>与<b>配对令牌</b>，保存后即可自动转发。
+            </p>
+            <SettingRow label="上报地址">
+              <div class="connect-url-box">
+                <code>{{ smsUpstreamUrl }}</code>
+                <el-button size="small" text @click="copyText(smsUpstreamUrl, '已复制上报地址')">复制</el-button>
+              </div>
+            </SettingRow>
+            <SettingRow label="配对令牌">
+              <div class="connect-url-box">
+                <code>{{ vcode.pairToken || '—' }}</code>
+                <el-button size="small" text @click="copyText(vcode.pairToken, '已复制配对令牌')">复制</el-button>
+              </div>
+            </SettingRow>
+            <div class="sms-pair-actions">
+              <el-button size="small" @click="onResetPairToken">重新生成令牌</el-button>
+              <el-button size="small" @click="onClearCodes">清空验证码</el-button>
+            </div>
+            <p class="lan-tip" style="margin: 8px 0 0">
+              重新生成后，旧令牌立即失效，需在移动端重新填写。验证码仅保存在本机、约 5 分钟自动过期，不写入任何日志。
+            </p>
+          </div>
+
+          <!-- 移动端（Android）：开启「接收短信并转发到本节点」 -->
+          <div v-if="smsSupported" class="sms-pair">
+            <div class="sms-pair-title">短信转发（本机 · Android）</div>
+            <SettingRow label="开启转发" tip="开启后本机会接收短信并自动把验证码上报到上面的地址" tip-after>
+              <el-switch v-model="smsForwardOn" :loading="smsForwardBusy" @change="onSmsForwardToggle" />
+            </SettingRow>
+            <p class="lan-tip" style="margin: 8px 0 0">
+              需授予「短信」权限。部分手机（小米/华为等）需在系统设置里允许本应用自启动与后台运行，
+              否则锁屏后可能收不到短信广播。
+            </p>
+          </div>
+        </div>
+      </el-tab-pane>
       <el-tab-pane label="语音包" name="voicepack" lazy>
         <VoicePackPanel />
       </el-tab-pane>
@@ -331,7 +407,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, watch, type Component } from 'vue';
+import { ref, computed, onMounted, onBeforeUnmount, watch, type Component } from 'vue';
 const props = withDefaults(defineProps<{ embedded?: boolean; pane?: string }>(), { embedded: false, pane: '' });
 const embedded = computed(() => props.embedded);
 /**
@@ -345,6 +421,7 @@ import { ElMessage, ElMessageBox } from 'element-plus';
 import { useSettingsStore, usePlatformStore } from '../stores';
 import { usePluginStore } from '../stores/plugin';
 import { useToolsStore } from '../stores/tools';
+import { useVerificationStore } from '../stores/verification';
 import MobilePageShell from '../components/common/MobilePageShell.vue';
 import SettingRow from '../components/common/SettingRow.vue';
 import { useMobileShell } from '../composables/useMobileShell';
@@ -370,6 +447,7 @@ const settingsStore = useSettingsStore();
 const platformStore = usePlatformStore();
 const pluginStore = usePluginStore();
 const toolsStore = useToolsStore();
+const vcode = useVerificationStore();
 const tab = ref('general');
 
 // pane 模式：外部（SettingsDialog 左导航）切换分类 → 同步内部 el-tabs（isPaneMode 声明在上方）
@@ -389,7 +467,7 @@ const mobileGroups: SettingsGroup[] = [
   { key: 'skin', label: '外观皮肤', desc: '主题色 · 内置系列皮肤 · 插件皮肤包', icon: Brush, tabs: [{ name: 'skin', label: '皮肤' }] },
   { key: 'data', label: '数据与日志', desc: '导出 / 导入备份 · 清空缓存 · LLM 日志', icon: DataLine, tabs: [{ name: 'data', label: '数据' }, { name: 'logs', label: '日志' }] },
   { key: 'hooks', label: '工具与钩子', desc: '自定义工具钩子 · 记忆管理', icon: MagicStick, tabs: [{ name: 'userhooks', label: '钩子' }, { name: 'memory', label: '记忆' }] },
-  { key: 'service', label: '服务与连接', desc: '商城服务端 · 局域网访问 · 语音包', icon: Link, tabs: [{ name: 'marketplace', label: '商城' }, { name: 'lan', label: '局域网' }, { name: 'voicepack', label: '语音包' }] },
+  { key: 'service', label: '服务与连接', desc: '商城服务端 · 局域网访问 · 语音包', icon: Link, tabs: [{ name: 'marketplace', label: '商城' }, { name: 'lan', label: '局域网' }, { name: 'verification', label: '验证码' }, { name: 'voicepack', label: '语音包' }] },
   { key: 'about', label: '关于', desc: '版本 · 开源信息', icon: InfoFilled, tabs: [{ name: 'about', label: '关于' }] },
 ];
 const mobileGroup = ref<SettingsGroup | null>(null);
@@ -757,7 +835,8 @@ const mpAuthValue = ref('');
 const mpPort = ref(3001);
 
 const connectUrl = computed(() => {
-  const host = window.location.hostname || 'localhost';
+  // 优先用本机局域网 IP（其他节点跨设备连接必须用局域网地址，localhost 仅本机可达）
+  const host = lanIps.value[0]?.address || window.location.hostname || 'localhost';
   return `http://${host}:${mpPort.value}/api/marketplace`;
 });
 
@@ -779,6 +858,83 @@ async function onMpPortChange() {
 }
 function copyUrl() {
   navigator.clipboard.writeText(connectUrl.value).then(() => ElMessage.success('已复制连接地址'));
+}
+
+// ===== 短信验证码中继 =====
+/** 上报地址：与 connectUrl 同思路优先局域网 IP（移动端跨设备必须用局域网地址）。 */
+const smsUpstreamUrl = computed(() => {
+  const host = lanIps.value[0]?.address || window.location.hostname || 'localhost';
+  return `http://${host}:${lanPort.value}/api/verification-codes`;
+});
+
+function copyText(text: string, okMsg = '已复制') {
+  if (!text) return;
+  navigator.clipboard.writeText(text).then(() => ElMessage.success(okMsg)).catch(() => ElMessage.warning('复制失败，请手动选择'));
+}
+function copyCode(code: string) {
+  copyText(code, `已复制验证码 ${code}`);
+}
+function formatClock(ts: number) {
+  const d = new Date(ts);
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+async function onResetPairToken() {
+  try {
+    await ElMessageBox.confirm('重新生成后旧令牌立即失效，移动端需要重新填写。确定继续？', '重新生成配对令牌', { type: 'warning' });
+  } catch { return; }
+  const t = await vcode.resetPairToken();
+  if (t) ElMessage.success('已生成新令牌');
+}
+async function onClearCodes() {
+  try {
+    await ElMessageBox.confirm('将清空本机全部未过期验证码记录。确定继续？', '清空验证码', { type: 'warning' });
+  } catch { return; }
+  const n = await vcode.clear();
+  ElMessage.success(`已清空（${n} 条）`);
+}
+
+// ===== 移动端：短信转发开关（能力经 PlatformAdapter.smsForward 注入，ui 不直接依赖 @capacitor）=====
+const smsSupported = ref(false);
+const smsForwardOn = ref(false);
+const smsForwardBusy = ref(false);
+/** 惰性取适配器：core 动态导入（与本文件既有 getPlatformAdapter 用法一致，避免静态依赖） */
+async function smsAdapter() {
+  const mod = await import('@yan-zhi/core');
+  return mod.getPlatformAdapter().smsForward;
+}
+onMounted(async () => {
+  const a = await smsAdapter();
+  if (a) {
+    smsSupported.value = !!a.isSupported?.();
+    smsForwardOn.value = a.getConfig().enabled;
+  }
+});
+async function onSmsForwardToggle(v: boolean) {
+  const a = await smsAdapter();
+  if (!a) return;
+  smsForwardBusy.value = true;
+  try {
+    if (!v) {
+      a.setConfig({ enabled: false });
+      await a.stop();
+      ElMessage.success('已关闭短信转发');
+      return;
+    }
+    // 开启前确保上报地址已填（否则拿不到后端地址，转发无意义）
+    a.setConfig({ upstream: smsUpstreamUrl.value, token: vcode.pairToken });
+    const r = await a.start();
+    if (!r.ok) {
+      smsForwardOn.value = false;
+      a.setConfig({ enabled: false });
+      ElMessage.error(r.reason || '开启失败');
+      return;
+    }
+    a.setConfig({ enabled: true });
+    ElMessage.success('已开启短信转发');
+  } finally {
+    smsForwardBusy.value = false;
+  }
 }
 
 // 局域网访问
@@ -865,6 +1021,14 @@ function copyNodeUrl(n: { ip: string; port: number }) {
 onMounted(() => {
   void loadLanIps();
 });
+
+// 短信验证码面板：仅在「本职区可见」时轮询（切走/卸载立刻停，避免无谓请求堆积）。
+// tab 值随 external pane 同步（见上方 watch），故这里直接看 tab。
+watch(tab, (t) => {
+  if (t === 'verification') vcode.startPolling();
+  else vcode.stopPolling();
+}, { immediate: true });
+onBeforeUnmount(() => vcode.stopPolling());
 
 onMounted(async () => {
   await toolsStore.loadMarketplaceConfig();
@@ -1060,6 +1224,23 @@ onMounted(async () => {
 .about-link:hover { text-decoration: underline; }
 .connect-url-box { display: flex; align-items: center; gap: 8px; background: rgba(15,23,42,0.04); border-radius: 6px; padding: 6px 10px; }
 .connect-url-box code { font-family: monospace; font-size: 13px; color: var(--color-primary); }
+
+/* ===== 短信验证码 ===== */
+.sms-section { max-width: 600px; }
+.sms-card { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 22px 16px; margin-bottom: 16px; background: var(--glass-bg); border: 1px solid var(--glass-border); border-radius: 12px; }
+.sms-card.empty { border-style: dashed; }
+.sms-code { font-family: "JetBrains Mono", monospace; font-size: 34px; font-weight: 700; letter-spacing: 6px; color: var(--color-primary); }
+.sms-code.muted { font-size: 18px; font-weight: 500; letter-spacing: 1px; color: var(--color-text-secondary); }
+.sms-meta { font-size: 12px; color: var(--color-text-secondary); display: flex; gap: 6px; flex-wrap: wrap; justify-content: center; }
+.sms-actions { display: flex; gap: 8px; margin-top: 4px; }
+.sms-history { margin-bottom: 16px; }
+.sms-history-title { font-size: 13px; color: var(--color-text-secondary); margin-bottom: 8px; }
+.sms-history-item { display: flex; align-items: center; gap: 12px; padding: 8px 12px; background: var(--glass-bg); border: 1px solid var(--glass-border); border-radius: 8px; margin-bottom: 8px; }
+.sms-history-item code { font-family: monospace; font-size: 15px; color: var(--color-text); letter-spacing: 2px; }
+.sms-history-meta { flex: 1; font-size: 12px; color: var(--color-text-secondary); }
+.sms-pair { padding-top: 4px; border-top: 1px solid var(--glass-border); }
+.sms-pair-title { font-size: 14px; font-weight: 600; margin: 12px 0 8px; }
+.sms-pair-actions { display: flex; gap: 8px; margin-top: 8px; }
 
 /* 日志页嵌入设置 tab 时：去掉独立滚动，让整页自然滚动 */
 .logs-tab-embed { padding: 4px 0; }

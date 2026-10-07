@@ -5109,6 +5109,8 @@ export function buildToolsForBackend(agentId: string | null, userId: string, opt
     'api_code_definition',
     // AI 媒体生成：文生图/文生视频（agnes 平台专用端点），默认暴露让所有智能体都能直接出图/出片
     'api_image_generate', 'api_video_generate', 'api_video_status',
+    // 短信验证码中继：手机上收到验证码后自动转发到本节点，默认暴露让所有智能体都能直接取用
+    'api_verification_code_latest', 'api_verification_code_list',
   ];
   const mountedApiTools = [...toolIds, ...convMounts.builtinToolIds].filter((n) => isApiExecutableTool(n));
   // 已挂载专属 api_* 工具链的（数据查询智能体等）只暴露它挂载的工具：记忆/知识库这类通用工具

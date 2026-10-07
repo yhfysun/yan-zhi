@@ -11,6 +11,7 @@ import { App as CapApp } from '@capacitor/app';
 import { Capacitor } from '@capacitor/core';
 import { ElMessage } from 'element-plus';
 import { mobileAdapter } from './platform';
+import { resumeSmsForwardIfEnabled } from './sms-forward';
 
 setPlatformAdapter(mobileAdapter);
 
@@ -81,4 +82,9 @@ initSchema((sql) => mobileAdapter.db.exec(sql))
     } catch (err) {
       console.error('[mobile] 返回键注册失败（不影响使用）：', err);
     }
+    // 短信验证码转发：若用户在设置里开过，App 启动时自动恢复监听
+    // （失败不影响使用，只影响自动转发能力）
+    void resumeSmsForwardIfEnabled().catch((err) => {
+      console.error('[mobile] 短信转发恢复失败（不影响使用）：', err);
+    });
   });

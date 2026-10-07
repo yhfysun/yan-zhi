@@ -8,6 +8,14 @@ import { Preferences } from '@capacitor/preferences';
 import { toFsArg } from './path-utils';
 // 授权码读取：与 apiFetch 的 x-license 头共用同一来源，避免两条路径口径漂移。
 import { getLicenseCodeSync } from '@yan-zhi/ui/api/license-code';
+// 短信验证码转发（Android 原生插件 + 上报）：把能力注入 core，供 UI 渲染开关
+import {
+  isSmsForwardSupported,
+  getSmsForwardConfig,
+  setSmsForwardConfig,
+  startSmsForward,
+  stopSmsForward,
+} from './sms-forward';
 
 /**
  * LLM 代理基址：远程模式代理到远程节点的 /api/llm，内嵌模式代理到本机内嵌后端。
@@ -149,4 +157,12 @@ export const mobileAdapter: PlatformAdapter = {
   // 授权码读取器：内嵌后端同样会开授权门禁，走代理的 LLM 请求需带 x-license。
   // 与 apiFetch 共用同一来源（UI 的 license-code 内存缓存）。
   getLicenseCode: () => getLicenseCodeSync(),
+  // 短信验证码转发：仅 Android 支持；UI 据此渲染「设置 → 短信验证码」里的转发开关
+  smsForward: {
+    isSupported: () => isSmsForwardSupported(),
+    getConfig: () => getSmsForwardConfig(),
+    setConfig: (cfg) => setSmsForwardConfig(cfg),
+    start: () => startSmsForward(),
+    stop: () => stopSmsForward(),
+  },
 };

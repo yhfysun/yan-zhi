@@ -93,6 +93,29 @@ export interface PlatformAdapter {
    * 统一留给后端，避免前后端两套口径。
    */
   getLicenseCode?: () => string | null;
+  /**
+   * 短信验证码转发适配（仅 Android 移动端注入）。
+   *
+   * 为什么由外部注入而不是 core 自己实现：短信内容只能由原生 BroadcastReceiver 拿到
+   * （WebView 无权限），属**平台相关能力**。packages/core 是平台无关层，
+   * 与 getLicenseCode / llmProxyBase 同一套路：差异由边缘层注入，core 只管用。
+   * UI（packages/ui）据此渲染「短信验证码转发」开关，而不必依赖 @capacitor/*（ui 未依赖该包）。
+   */
+  smsForward?: SmsForwardAdapter;
+}
+
+/** 短信转发适配器（Android 端实现，见 apps/mobile/src/sms-forward.ts） */
+export interface SmsForwardAdapter {
+  /** 当前平台是否支持（Android 原生壳才支持） */
+  isSupported(): boolean;
+  /** 读取配置 */
+  getConfig(): { enabled: boolean; upstream: string; token: string };
+  /** 写入配置 */
+  setConfig(cfg: { enabled?: boolean; upstream?: string; token?: string }): void;
+  /** 申请权限并开始监听，返回是否成功 */
+  start(): Promise<{ ok: boolean; reason?: string }>;
+  /** 停止监听 */
+  stop(): Promise<void>;
 }
 
 /** 当前平台适配器（由各端入口注入） */

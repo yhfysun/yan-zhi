@@ -55,7 +55,7 @@
 import { computed, defineAsyncComponent, onBeforeUnmount, onMounted } from 'vue';
 import {
   Setting, MagicStick, Cpu, Files, Suitcase, FolderOpened, SetUp,
-  Shop, Monitor, Memo, Microphone, Document, InfoFilled, Close,
+  Shop, Monitor, Message, Memo, Microphone, Document, InfoFilled, Close,
 } from '@element-plus/icons-vue';
 // Settings.vue 走异步组件：保持与 /settings 路由、SettingsDrawer 相同的懒加载分包，
 // 不因弹窗常驻 App 壳而把它拉进首包。
@@ -82,6 +82,7 @@ const categories: SettingsCategory[] = [
   { key: 'userhooks', label: '钩子', icon: SetUp, pane: 'userhooks' },
   { key: 'marketplace', label: '商城服务端', icon: Shop, pane: 'marketplace' },
   { key: 'lan', label: '局域网', icon: Monitor, pane: 'lan' },
+  { key: 'verification', label: '短信验证码', icon: Message, pane: 'verification' },
   { key: 'memory', label: '记忆管理', icon: Memo, pane: 'memory' },
   { key: 'voicepack', label: '语音包', icon: Microphone, pane: 'voicepack' },
   { key: 'logs', label: '日志', icon: Document, pane: 'logs' },

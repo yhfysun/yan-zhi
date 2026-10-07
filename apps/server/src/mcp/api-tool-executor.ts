@@ -25,6 +25,7 @@ import { readSpaceMemory, appendSpaceMemory, readTaskProgressForConversation } f
 import { setSpaceTaskType, resolveSpaceResourceRoot } from '../services/space-resources.js';
 import { TASK_TYPE_IDS, getTaskType } from '@yan-zhi/shared';
 import { readBrowserMemoryOverview } from '../services/browser-memory.js';
+import { listVerificationCodes } from '../services/verification-codes.js';
 import { ensureArtifactDirFor } from '../services/artifact-dir.js';
 import { downloadMediaBinary } from '../services/media-fetch.js';
 import { systemSpeak, listSystemVoices, pickVoiceForRole, describeVoiceCapacity, inferRoleGender } from './tts-sapi.js';
@@ -321,6 +322,8 @@ export const SUPPORTED_API_TOOLS = new Set([
   'api_memory_search', 'api_memory_list', 'api_memory_create', 'api_memory_delete',
   'api_space_memory_read', 'api_space_memory_append',
   'api_browser_memory_read',
+  // 短信验证码中继（移动端同网回传）：读取侧，只读
+  'api_verification_code_latest', 'api_verification_code_list',
   'api_file_list', 'api_file_set_category',
   'api_peer_register', 'api_peer_list', 'api_peer_ping', 'api_chat_send', 'api_chat_poll',
   'api_im_connector_list', 'api_im_connector_create', 'api_im_connector_update', 'api_im_connector_delete', 'api_im_send',
@@ -2964,6 +2967,40 @@ export async function executeApiTool(
         return ok(overview.content || overview.analysis
           ? overview
           : { days, content: '', analysis: null, note: `近 ${days} 天没有浏览器使用记录` });
+      }
+
+      // 短信验证码中继（移动端同网回传）。只读；无记录时返回 null + 提示，
+      // 便于模型向用户明确"没收到/已过期/未开启转发"而不是编一个验证码。
+      case 'api_verification_code_latest': {
+        requireUser(userId);
+        const list = listVerificationCodes('guest', Math.min(Math.max(num(args, 'limit', 1), 1), 10));
+        if (!list.length) {
+          return ok({
+            code: null,
+            note: '当前没有可用的短信验证码（可能未收到、已过期，或移动端未开启验证码转发）。请确认手机上的言智移动端已开启转发且与本机同网络。',
+          });
+        }
+        const first = list[0];
+        return ok({
+          code: first.code,
+          receivedAt: first.createdAt,
+          expiresAt: first.expiresAt,
+          remainingSeconds: Math.round(first.remainingMs / 1000),
+          sender: first.sender || undefined,
+        });
+      }
+      case 'api_verification_code_list': {
+        requireUser(userId);
+        const rows = listVerificationCodes('guest', Math.min(Math.max(num(args, 'limit', 10), 1), 50));
+        return ok({
+          count: rows.length,
+          items: rows.map((r) => ({
+            code: r.code,
+            receivedAt: r.createdAt,
+            remainingSeconds: Math.round(r.remainingMs / 1000),
+            sender: r.sender || undefined,
+          })),
+        });
       }
 
       // Conversation files

@@ -20,6 +20,7 @@ import { registerSkillTools } from './skill';
 import { registerSpaceTools } from './space';
 import { registerGitTools } from './git';
 import { registerToolTools } from './tool';
+import { registerVerificationTools } from './verification';
 import { registerWorkspaceTools } from './workspace';
 
 export type ApiModuleName =
@@ -43,6 +44,7 @@ export type ApiModuleName =
   | 'git'
   | 'plugin'
   | 'space'
+  | 'verification'
   | 'data';
 
 export const API_MODULES: ApiModuleName[] = [
@@ -66,6 +68,7 @@ export const API_MODULES: ApiModuleName[] = [
   'git',
   'plugin',
   'space',
+  'verification',
   'data',
 ];
 
@@ -105,6 +108,7 @@ export function initApiToolRegistry(): void {
   registerGitTools(registry);
   registerPluginTools(registry);
   registerSpaceTools(registry);
+  registerVerificationTools(registry);
   registerDataTools(registry);
   _instance = registry;
 }

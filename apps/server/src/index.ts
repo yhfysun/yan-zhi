@@ -37,6 +37,7 @@ import marketplaceRoutes from './routes/marketplace.js';
 import browserRoutes from './routes/browser.js';
 import peersRoutes from './routes/peers.js';
 import lanRoutes from './routes/lan.js';
+import verificationCodeRoutes from './routes/verification-codes.js';
 import imRoutes from './routes/im.js';
 import kbRoutes from './routes/kb.js';
 import mcpBridgeRoutes from './mcp/index.js';
@@ -152,6 +153,8 @@ app.use('/api/marketplace', marketplaceRoutes);
 app.use('/api/peers', peersRoutes);
 // 局域网节点发现：扫本机私网 /24 上的其他言智节点（移动端「设为后端」/ 商城源地址来源）
 app.use('/api/lan', lanRoutes);
+// 短信验证码中继：移动端同网收到短信后上报本节点，桌面端 UI/Agent 取用
+app.use('/api/verification-codes', verificationCodeRoutes);
 app.use('/api/im', imRoutes);
 app.use('/api/datasources', datasourceRoutes);
 app.use('/api/sql-console', sqlConsoleRoutes);
