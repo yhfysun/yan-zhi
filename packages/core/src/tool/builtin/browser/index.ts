@@ -948,11 +948,11 @@ export class BrowserDragTool implements BuiltInTool {
 // ========== P1-5 代码模式（2026-10-07） ==========
 export class BrowserRunScriptTool implements BuiltInTool {
   name = 'browser_run_script';
-  description = 'Execute a JavaScript snippet in the current page context and return its JSON-serializable result. 代码模式：把多步固定操作收敛为一段脚本一次执行（如"滚动到底触发懒加载→收集全部列表项→返回 JSON"），替代多轮 click/scroll/get_page_content，大幅省步数与 token。脚本在页面主世界运行，可用 document / window / fetch；返回值必须可 JSON 序列化（例如 return JSON.stringify([...]) 或一个对象）。超时 30s，脚本长度上限 64000 字符。适用：重复性流程、批量提取、条件循环；需要看页面再决策时仍用 browser_get_page_content。可传 tabId 在指定标签页执行。';
+  description = 'Execute a JavaScript snippet in the current page context and return its JSON-serializable result. 代码模式：把多步固定操作收敛为一段脚本一次执行（如"滚动到底触发懒加载→收集全部列表项→返回 JSON"），替代多轮 click/scroll/get_page_content，大幅省步数与 token。脚本在页面主世界运行，可用 document / window / fetch；返回值必须可 JSON 序列化，用 return 返回（例：return JSON.stringify([...]) 或 return {...}）。★ 直接写 `const x=...; return x;` 即可（工具会自动包一层函数）；也可自己写成 (() => {...})() 或 (async () => {...})()。超时 30s，脚本长度上限 64000 字符。适用：重复性流程、批量提取、条件循环；需要看页面再决策时仍用 browser_get_page_content。可传 tabId 在指定标签页执行。';
   inputSchema = {
     type: 'object',
     properties: {
-      script: { type: 'string', description: 'JavaScript 源码（表达式或 IIFE）。异步逻辑请包在 (async () => { ... })() 里并返回结果。' },
+      script: { type: 'string', description: 'JavaScript 源码。可直接写语句加 return（会自动作成函数），或写 IIFE / 表达式。异步逻辑用 (async () => { ... })().' },
       tabId: { type: 'number', description: '可选：目标标签页 id，缺省为当前活动标签页。' },
     },
     required: ['script'],
@@ -963,7 +963,7 @@ export class BrowserRunScriptTool implements BuiltInTool {
       if (!script.trim()) return err('script is required');
       if (script.length > 64000) return err('script too long (max 64000 chars)');
       const data = await callBrowserApi('/action', 'POST', { action: 'run_script', script, tabId: args.tabId }) as any;
-      if (data?.error) return err(data.error);
+      if (data?.error) return err(`${data.error}${data.hint ? `\n提示：${data.hint}` : ''}`);
       let resultText = '';
       try { resultText = JSON.stringify(data.result); } catch { resultText = String(data.result); }
       if (resultText.length > 8000) resultText = resultText.slice(0, 8000) + `…(截断，原长 ${resultText.length})`;

@@ -74,3 +74,28 @@ describe('browser_upload 工具 schema（core）', () => {
     expect(coreTool).toMatch(/clickY:\s*args\.clickY/);
   });
 });
+
+const serverBrowser = fs.readFileSync(
+  path.join(REPO_ROOT, 'apps/server/src/routes/browser.ts'),
+  'utf8',
+);
+
+describe('browser_run_script 顶层 return 容错（两处执行面都要有）', () => {
+  // 2026-10-07：模型常写 `const x=...; return x;`（裸 return），直接 executeJavaScript/evaluate
+  // 会抛 SyntaxError，模型只看到 "Script failed to execute" 无法自纠（当天连犯 3 次）。
+  it('桌面端 main.cjs 自动包裹裸 return 脚本', () => {
+    expect(main).toContain('_autoWrapped');
+    expect(main).toMatch(/\(\(\) => \{ \$\{script\}/);
+    expect(main).toContain('_stripCode');
+  });
+
+  it('server routes/browser.ts 同步做同样的包裹（避免一处改一处漏）', () => {
+    expect(serverBrowser).toContain('_autoWrapped');
+    expect(serverBrowser).toContain('_stripCode');
+  });
+
+  it('run_script 工具描述里点明「可直接写 return」（模型据此不再纠结包 IIFE）', () => {
+    expect(coreTool).toMatch(/return x/);
+    expect(coreTool).toMatch(/自动.*包|会自动/);
+  });
+});

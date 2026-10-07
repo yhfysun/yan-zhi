@@ -1507,17 +1507,34 @@ router.post('/action', async (req: Request, res: Response) => {
       }
       // ========== P1-5 代码模式（2026-10-07）：页面上下文执行受限 JS（Astra/Stagehand 式） ==========
       case 'run_script': {
-        const script = String(args.script || '');
+        let script = String(args.script || '');
         if (!script.trim()) { result = { error: 'script is required' }; break; }
         if (script.length > 64000) { result = { error: 'script too long (max 64000 chars)' }; break; }
+        // ★ 顶层 return 容错（2026-10-07，与桌面端 main.cjs 同步）：模型常写裸 return 的脚本，
+        //   直接 evaluate 会抛 SyntaxError，模型只看到 "Script failed to execute" 无法自纠。
+        //   检测到顶层 return 且未包成函数/IIFE 就自动包一层。
+        const _stripCode = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
+        const _bare = _stripCode(script);
+        const _alreadyWrapped = /^\s*(\(|async\s*\(|function\b|async\s+function\b)/.test(_bare)
+          || /^\s*(const|let|var)\s+\w+\s*=\s*(async\s*)?(\(|function\b)/.test(_bare);
+        let _autoWrapped = false;
+        if (!_alreadyWrapped && /\breturn\b/.test(_bare)) {
+          script = `() => { ${script}\n}`;
+          _autoWrapped = true;
+        }
         try {
           const evalRes = await Promise.race([
             page.evaluate(script) as Promise<any>,
             new Promise((_, rej) => setTimeout(() => rej(new Error('script 执行超时（30s）')), 30000)),
           ]);
-          result = { url: page.url(), title: await page.title().catch(() => ''), result: evalRes === undefined ? null : evalRes };
+          result = { url: page.url(), title: await page.title().catch(() => ''), result: evalRes === undefined ? null : evalRes, ...(_autoWrapped ? { autoWrapped: true } : {}) };
         } catch (e: any) {
-          result = { error: e?.message || String(e) };
+          result = {
+            error: e?.message || String(e),
+            hint: _autoWrapped
+              ? '脚本已自动包裹为函数执行。若仍失败请检查语法；要返回数据直接 return 即可（已在包裹函数内）。'
+              : '执行失败。若脚本含顶层 return，请包成 (() => { ... })() 或改写为表达式。',
+          };
         }
         break;
       }

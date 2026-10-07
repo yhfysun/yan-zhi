@@ -2942,14 +2942,32 @@ ipcMain.handle('browserView:action', async (_e, tabId, action, args) => {
       case 'run_script': {
         // P1-5 代码模式（2026-10-07）：在页面上下文执行受限 JS（Astra/Stagehand 式"写脚本替自己操作"）。
         // 脚本在页面主世界执行、返回值 JSON 可序列化；总闸 18s 在外层兜底（与其它 action 一致）。
-        const script = String(args.script || '');
+        let script = String(args.script || '');
         if (!script.trim()) return { error: 'script is required' };
         if (script.length > 64000) return { error: 'script too long (max 64000 chars)' };
+        // ★ 顶层 return 容错（2026-10-07）：模型常把脚本写成 `const x=...; return ...`（裸 return），
+        //   直接丢给 executeJavaScript 会抛 SyntaxError → 模型只看到 "Script failed to execute"，
+        //   无法自纠（当天连犯 3 次）。这里若检测到脚本含顶层 return 且未包成函数/IIFE，就自动包一层。
+        const _stripCode = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
+        const _bare = _stripCode(script);
+        const _wrapped = /^\s*(\(|async\s*\(|function\b|async\s+function\b|\(function|\(\(\))/.test(_bare)
+          || /^\s*(const|let|var)\s+\w+\s*=\s*(async\s*)?(\(|function\b)/.test(_bare);
+        let _autoWrapped = false;
+        if (!_wrapped && /\breturn\b/.test(_bare)) {
+          script = `(() => { ${script}\n})()`;
+          _autoWrapped = true;
+        }
         try {
           const r = await wc.executeJavaScript(script, false);
-          return { url: (typeof wc.getURL === 'function' ? wc.getURL() : '') || '', result: r === undefined ? null : r };
+          return { url: (typeof wc.getURL === 'function' ? wc.getURL() : '') || '', result: r === undefined ? null : r, ...(_autoWrapped ? { autoWrapped: true } : {}) };
         } catch (e) {
-          return { error: (e && e.message) || String(e) };
+          return {
+            error: (e && e.message) || String(e),
+            // 语法/执行失败时给模型可自纠的提示（否则它只会反复改参数重试）
+            hint: _autoWrapped
+              ? '脚本已自动包裹为函数执行。若仍失败，请检查语法；要返回数据请直接 return，会在包裹函数内生效。'
+              : '执行失败。若脚本含顶层 return，请包成 (() => { ... })() 或改写为表达式；查询类脚本建议 return JSON 可序列化值。',
+          };
         }
       }
       default:
