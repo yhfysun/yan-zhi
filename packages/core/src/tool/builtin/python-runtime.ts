@@ -69,6 +69,57 @@ export function getPythonScript(rel: string): string | null {
 }
 
 /**
+ * 把内置 python 工具脚本**同步成工作目录副本**并返回副本路径（2026-10-07）。
+ *
+ * ★ 为什么要副本（用户拍板）：此前任务里改管线（如 novel_tuiwen TTS 重试）只能改包内源码
+ *   —— dev 直接污染 packages/core，打包版 resources 只读改不动。副本模式：
+ *   - 首次运行：整目录拷到 <工作目录>/.yan-zhi/tools/<工具名>/，从副本跑；
+ *   - 版本戳（.builtin-version = 内置目录内容哈希）：内置脚本随产品升级变化 → 自动覆盖副本；
+ *     哈希一致则不动副本 —— 任务/用户对副本的修改得以保留；
+ *   - 无工作目录（ToolContext 缺失）时退回内置原地跑（旧行为兜底）。
+ */
+export function resolveWorkspacePythonScript(rel: string, workspaceDir?: string): string | null {
+  const src = getPythonScript(rel);
+  if (!src) return null;
+  if (!workspaceDir || !workspaceDir.trim()) return src;
+  try {
+    const base = getPythonToolsDir();
+    if (!base) return src;
+    const srcDir = path.dirname(path.join(base, rel));
+    const dstDir = path.join(workspaceDir, '.yan-zhi', 'tools', path.relative(base, srcDir));
+    // 内容哈希做版本戳：目录下所有文件的相对路径 + 内容
+    const hashOf = (dir: string): string => {
+      const crypto = require('crypto') as typeof import('crypto');
+      const h = crypto.createHash('sha256');
+      const walk = (d: string, pre: string) => {
+        for (const e of fs.readdirSync(d, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+          const fp = path.join(d, e.name);
+          if (e.isDirectory()) walk(fp, `${pre}${e.name}/`);
+          else { h.update(`${pre}${e.name}\0`); h.update(fs.readFileSync(fp)); }
+        }
+      };
+      walk(dir, '');
+      return h.digest('hex').slice(0, 16);
+    };
+    const version = hashOf(srcDir);
+    const versionFile = path.join(dstDir, '.builtin-version');
+    const needSync = !fs.existsSync(versionFile) || fs.readFileSync(versionFile, 'utf8').trim() !== version;
+    if (needSync) {
+      fs.mkdirSync(dstDir, { recursive: true });
+      fs.cpSync(srcDir, dstDir, { recursive: true, force: true });
+      fs.writeFileSync(versionFile, version, 'utf8');
+      console.log(`[python-runtime] 工具脚本已同步到工作目录副本: ${dstDir} (version=${version})`);
+    }
+    // dstDir 已镜像 rel 的目录层级 → 副本内脚本路径 = rel 相对 srcDir 的部分（即 basename）
+    const p = path.join(dstDir, path.relative(srcDir, src));
+    return fs.existsSync(p) ? p : src;
+  } catch (e) {
+    console.warn('[python-runtime] 工作目录副本同步失败，回退内置脚本:', e);
+    return src;
+  }
+}
+
+/**
  * 强制 Python 以 **UTF-8** 写 stdout/stderr（就地修改并返回 env）。
  *
  * ★★★ 为什么必须（2026-10-01 用户实报「安装包任务里工具输出乱码」）：

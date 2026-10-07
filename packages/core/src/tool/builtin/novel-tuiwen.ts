@@ -4,7 +4,7 @@
 // 产物分类约定（对齐 doyz/file_write）：成片 = deliverable，中间产物留在 workdir（intermediate 语义）。
 import type { BuiltInTool, ToolContext } from '../types';
 import type { McpCallResult } from '../../mcp/client';
-import { getPythonScript, runPythonScript } from './python-runtime';
+import { resolveWorkspacePythonScript, runPythonScript } from './python-runtime';
 import { capToolOutput } from './output-cap';
 import { resolveToolPath, isAbsolutePath, joinPath } from './fs-walk';
 import * as path from 'path';
@@ -29,13 +29,15 @@ export class NovelTuiwenTool implements BuiltInTool {
   };
 
   async execute(args: Record<string, unknown>, ctx?: ToolContext): Promise<McpCallResult> {
-    const script = getPythonScript('novel_tuiwen/run_pipeline.py');
+    // ★ 输入路径统一基于工作目录解析（对齐 doyz 2026-09-30 修正）
+    const ws = ctx?.workspaceDir;
+    // 副本模式（2026-10-07）：脚本同步到 <工作目录>/.yan-zhi/tools/novel_tuiwen/ 后从副本跑，
+    // 任务内对管线的修改落在副本上，不再污染包内源码
+    const script = resolveWorkspacePythonScript('novel_tuiwen/run_pipeline.py', ws);
     if (!script) {
       return toolError('Error: 未找到 novel_tuiwen 管线脚本（resources/python-tools 或 packages/core 开发目录）。');
     }
 
-    // ★ 输入路径统一基于工作目录解析（对齐 doyz 2026-09-30 修正）
-    const ws = ctx?.workspaceDir;
     const rp = (v: unknown) =>
       typeof v === 'string' && v.trim() ? resolveToolPath(v.trim(), ws) : v;
     const chapter = rp(args.chapter) as string;
