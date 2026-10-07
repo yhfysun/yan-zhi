@@ -2125,58 +2125,115 @@ ipcMain.handle('browserView:action', async (_e, tabId, action, args) => {
     const doAction = async () => {
     switch (action) {
       case 'upload': {
-        // 桌面端文件上传（2026-10-07）：用 CDP 的 DOM.setFileInputFiles 注入本地文件。
+        // 桌面端文件上传（2026-10-07，v2 真 filechooser 拦截）：用 CDP 的 DOM.setFileInputFiles 注入本地文件。
         // ★ 为什么必须走 CDP 而不是 executeJavaScript：
         //   JS 无法伪造带本地路径的 File 对象（安全沙箱），只有 CDP 协议能真正设置 input.files。
         //   Electron webContents.debugger 就是内置 CDP 客户端，对 <webview> guest 同样有效。
         // 两种模式：
-        //   ① clickSelector/clickIndex：先点「上传」按钮（触发 filechooser），再等 DOM 出现
-        //      input[type=file] 后注入 —— 适用 React Dropzone 这类隐藏 input 的站点；
-        //   ② selector/index：直接定位 input[type=file] 注入。
+        //   ① clickSelector/clickIndex/clickX+clickY：【filechooser 模式】先点「上传」按钮，CDP 层用
+        //      Page.setInterceptFileChooserDialog(true) 拦截 Page.fileChooserOpened 事件，拿到
+        //      backendNodeId 后直接投递文件（抖音创作者平台等：点按钮直接弹原生文件框、
+        //      DOM 里根本不出现 input[type=file]）。
+        //      ★ 这是对旧实现的根因修复：旧实现只 click 后死等 800ms 再
+        //        querySelectorAll('input[type=file]')，原生对话框弹出时页面上没有这种节点 → 必然失败。
+        //   ② selector/index：直接定位 input[type=file] 注入（保留为回落路径）。
         const fp = String(args.filePath || '');
         if (!fp) return { error: 'filePath 为必填项' };
         try {
-          const fsMod = require('fs');
-          if (!fsMod.existsSync(fp)) return { error: `文件不存在: ${fp}` };
+          if (!fs.existsSync(fp)) return { error: `文件不存在: ${fp}` };
           // webview 引擎下 wc 来自 waitForGuest；BrowserView 引擎下来自 entry.view
           if (!wc) return { error: '浏览器未就绪（无 webContents）' };
           const dbg = wc.debugger;
           let attachedHere = false;
           if (!dbg.isAttached()) { dbg.attach('1.3'); attachedHere = true; }
           const send = (method, params) => dbg.sendCommand(method, params);
+          const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+          // 从候选 nodeId 中挑第一个「可见且未禁用」的 file input（页面上常有头像/封面等多个上传口，
+          // 旧实现盲取 nodeIds[0] 会选错节点 → 静默上传到错误位置）
+          const pickVisibleInput = async (nodeIds) => {
+            for (const nid of nodeIds) {
+              try {
+                const { object } = await send('DOM.resolveNode', { nodeId: nid });
+                if (!object || !object.objectId) continue;
+                const { result } = await send('Runtime.callFunctionOn', {
+                  objectId: object.objectId,
+                  functionDeclaration: 'function(){var r=this.getBoundingClientRect();var s=getComputedStyle(this);return !!(this.isConnected&&!this.disabled&&r.width>0&&r.height>0&&s.visibility!=="hidden"&&s.display!=="none");}',
+                  returnByValue: true,
+                });
+                if (result && result.value) return nid;
+              } catch { /* 单个节点解析失败不影响整体 */ }
+            }
+            return nodeIds[0];
+          };
+          await send('Page.enable');
           await send('DOM.enable');
           await send('Runtime.enable');
 
-          // ① 需要先点按钮（触发隐藏 input 出现）
-          if (args.clickSelector || args.clickIndex !== undefined) {
-            const clickArgs = { selector: args.clickSelector, index: args.clickIndex, x: args.clickX, y: args.clickY };
-            // 复用本文件的 click 实现（走 __yzAssistant，与用户看到的一致）
-            const clickRes = await wc.executeJavaScript(`(function(){
-              var a=${JSON.stringify(clickArgs)};
-              var A=window.__yzAssistant;
-              if(!A) return {error:'助手未注入'};
-              var el=null;
-              if(a.index!=null){el=A.resolve(a.index);}
-              if(!el && a.selector){el=document.querySelector(a.selector);}
-              if(!el) return {error:'未找到上传按钮'};
-              el.click();
-              return {clicked:true};
-            })()`);
-            if (clickRes && clickRes.error) return { error: clickRes.error };
-            // 等动态 input 出现（React 挂载需要时间）
-            await new Promise((r) => setTimeout(r, 800));
+          const useChooser = args.clickSelector != null || args.clickIndex !== undefined
+            || (args.clickX !== undefined && args.clickY !== undefined);
+          let result = null;
+
+          // ① filechooser 模式：拦截原生文件对话框
+          if (useChooser) {
+            let chooserBackendId = null;
+            let chooserErr = null;
+            const onMessage = (_e, method, params) => {
+              if (method === 'Page.fileChooserOpened') {
+                if (params && params.backendNodeId != null) chooserBackendId = params.backendNodeId;
+                else chooserErr = 'fileChooserOpened 未返回 backendNodeId，无法投递文件';
+              }
+            };
+            let interceptOn = false;
+            try { await send('Page.setInterceptFileChooserDialog', { enabled: true }); interceptOn = true; }
+            catch { /* 协议不支持时保持关闭，走下面的 DOM 回落 */ }
+            dbg.on('message', onMessage);
+            try {
+              const clickArgs = { selector: args.clickSelector, index: args.clickIndex, x: args.clickX, y: args.clickY };
+              // 复用页面内助手（与用户看到的点击一致）；__yzAssistant.resolve 只接受 selector，
+              // index 用注册表 __yzElements，x/y 用真实鼠标
+              const clickRes = await wc.executeJavaScript(`(function(){
+                var a=${JSON.stringify(clickArgs)};
+                var A=window.__yzAssistant;
+                if(!A) return {error:'助手未注入'};
+                var el=null;
+                if(a.index!=null){el=(window.__yzElements&&window.__yzElements[a.index])||null;
+                  if((!el||!el.isConnected)&&window.__yzSelMap&&window.__yzSelMap[a.index]){el=document.querySelector(window.__yzSelMap[a.index]);}}
+                if(!el && a.selector){el=A.resolve(a.selector);}
+                if(el){el.scrollIntoView({block:'center'});el.click();return{clicked:true};}
+                if(a.x!=null&&a.y!=null){var t=A.clickAt(a.x,a.y);return{clicked:true,via:'real-mouse',tag:t};}
+                return {error:'未找到上传按钮（index 已失效？请重新 get_page_info）'};
+              })()`).catch((e) => ({ error: String((e && e.message) || e) }));
+              if (clickRes && clickRes.error) chooserErr = clickRes.error;
+              // 等 fileChooserOpened（最多 6s，远小于外层 18s 总闸）
+              const t0 = Date.now();
+              while (!chooserBackendId && !chooserErr && Date.now() - t0 < 6000) await wait(150);
+            } finally {
+              dbg.removeListener('message', onMessage);
+              // ★ 必须关掉拦截：无论成功/失败都要还原，否则页面后续的 filechooser 会被一直劫持
+              // （用户自己点上传也不会弹框，表现为"页面坏了"）
+              if (interceptOn) { try { await send('Page.setInterceptFileChooserDialog', { enabled: false }); } catch { /* ignore */ } }
+            }
+            if (chooserBackendId != null) {
+              await send('DOM.setFileInputFiles', { files: [fp], backendNodeId: chooserBackendId });
+              result = { uploaded: true, via: 'filechooser', filePath: fp };
+            }
           }
 
-          // ② 找 input[type=file] 并注入
-          const { root } = await send('DOM.getDocument', { depth: -1, pierce: true });
-          const { nodeIds } = await send('DOM.querySelectorAll', { nodeId: root.nodeId, selector: 'input[type=file]' });
-          if (!nodeIds || !nodeIds.length) {
-            if (attachedHere) dbg.detach();
-            return { error: '页面上未找到 input[type=file]（请先点「上传视频」按钮，或确认页面结构）' };
+          // ② 回落：DOM 定位 input[type=file]（也覆盖 filechooser 拦截未命中的场景）
+          if (!result) {
+            if (useChooser) await wait(800); // 等 React 侧动态挂载 input
+            const { root } = await send('DOM.getDocument', { depth: -1, pierce: true });
+            const { nodeIds } = await send('DOM.querySelectorAll', { nodeId: root.nodeId, selector: 'input[type=file]' });
+            if (!nodeIds || !nodeIds.length) {
+              result = { error: '页面上未找到 input[type=file]，且未捕获到文件选择器：请确认「上传」按钮已点击、文件选择框确实弹出。' };
+            } else {
+              const target = await pickVisibleInput(nodeIds);
+              await send('DOM.setFileInputFiles', { files: [fp], nodeIds: [target] });
+              result = { uploaded: true, via: 'cdp', filePath: fp, inputCount: nodeIds.length };
+            }
           }
-          await send('DOM.setFileInputFiles', { files: [fp], nodeIds: [nodeIds[0]] });
-          if (attachedHere) dbg.detach();
-          return { uploaded: true, via: 'cdp', filePath: fp, inputCount: nodeIds.length };
+          if (attachedHere) { try { dbg.detach(); } catch { /* ignore */ } }
+          return result;
         } catch (e) {
           return { error: `文件注入失败: ${e && e.message || e}` };
         }
@@ -2794,32 +2851,10 @@ ipcMain.handle('browserView:action', async (_e, tabId, action, args) => {
         return { path: savePath };
       }
       // ========== C11 文件上传/下载 ==========
-      case 'upload': {
-        const fp = String(args.filePath || '');
-        if (!fp) return { error: 'filePath 为必填项' };
-        try {
-          const buf = await fsp.readFile(fp);
-          const base64 = buf.toString('base64');
-          const filename = path.basename(fp);
-          return await wc.executeJavaScript(`(function(){
-            var a=${JSON.stringify(args)};
-            var base64=${JSON.stringify(base64)};
-            var filename=${JSON.stringify(filename)};
-            var b=atob(base64);var arr=new Uint8Array(b.length);for(var i=0;i<b.length;i++)arr[i]=b.charCodeAt(i);
-            var file=new File([arr],filename);var dt=new DataTransfer();dt.items.add(file);
-            var input=null;
-            if(a.index!=null&&window.__yzElements){input=window.__yzElements[a.index];}
-            else if(a.selector){input=window.__yzAssistant.resolve(a.selector);}
-            else{input=document.querySelector('input[type=file]');}
-            if(!input)return{error:'未找到 input[type=file] 元素'};
-            try{input.files=dt.files;}catch(e){return{error:'无法设置文件（浏览器安全限制）: '+e.message};}
-            input.dispatchEvent(new Event('change',{bubbles:true}));
-            return{uploaded:true,filename:filename};
-          })()`);
-        } catch (e) {
-          return { error: '读取文件失败: ' + (e?.message || e) };
-        }
-      }
+      // 注意：本 switch 中 'upload' 已在前面（C11 区块之前的真 filechooser 实现）统一处理并 return，
+      // 这里不再重复定义 case —— 旧实现用 DataTransfer 造假 File 对象，受浏览器安全限制
+      // 无法真正写入本地文件路径（input.files 只读），一律失败，属于已废弃路径。
+      // 需要改上传实现时，只改前面那处 case 'upload'（唯一实现处），不要在此处另开分支。
       case 'download': {
         const savePath = args.savePath ? String(args.savePath) : null;
         const sess = wc.session;

@@ -1,0 +1,68 @@
+import { describe, expect, it } from 'vitest';
+import fs from 'node:fs';
+import path from 'node:path';
+
+/**
+ * browser_upload「真 filechooser 拦截」防回归测试。
+ *
+ * 背景（真实故障）：桌面端上传本地文件到抖音创作者平台时失败，报「文件注入的 CDP 节点解析」类错误。
+ * 根因：apps/desktop/main.cjs 的 case 'upload' 所谓「filechooser 模式」是**假**的——
+ * 只 click 上传按钮 → 死等 800ms → 再 DOM.querySelectorAll('input[type=file]') 找节点。
+ * 但抖音这类站点点按钮后弹出的是**原生系统文件框**，页面上根本不出现 input[type=file] 节点，
+ * 且从未调用 Page.setInterceptFileChooserDialog，于是必然失败。
+ *
+ * 修法：在 CDP 层 Page.setInterceptFileChooserDialog(true) + 监听 Page.fileChooserOpened，
+ * 拿 backendNodeId 后 DOM.setFileInputFiles 投递文件。
+ * 这些断言钉住该实现不被退回「只 querySelectorAll 找 input」的旧写法。
+ */
+
+const REPO_ROOT = path.resolve(__dirname, '../../..');
+const mainPath = path.join(REPO_ROOT, 'apps/desktop/main.cjs');
+const coreBrowserToolPath = path.join(REPO_ROOT, 'packages/core/src/tool/builtin/browser/index.ts');
+
+const main = fs.readFileSync(mainPath, 'utf8');
+const coreTool = fs.readFileSync(coreBrowserToolPath, 'utf8');
+
+describe('browser_upload filechooser 实现（桌面端 main.cjs）', () => {
+  it('使用 CDP 拦截文件选择器（而不是只 querySelectorAll 找 input）', () => {
+    expect(main).toContain('Page.setInterceptFileChooserDialog');
+    expect(main).toContain('Page.fileChooserOpened');
+    expect(main).toContain('backendNodeId');
+    expect(main).toContain('DOM.setFileInputFiles');
+  });
+
+  it('拦截开关必须成对出现：开启后无论如何都要关闭（否则会一直劫持页面后续 filechooser）', () => {
+    const all = main.match(/Page\.setInterceptFileChooserDialog/g) || [];
+    // 至少一处 enabled:true（开启）+ 一处 enabled:false（还原）
+    expect(all.length).toBeGreaterThanOrEqual(2);
+    expect(main).toMatch(/setInterceptFileChooserDialog',\s*\{\s*enabled:\s*true\s*\}/);
+    expect(main).toMatch(/setInterceptFileChooserDialog',\s*\{\s*enabled:\s*false\s*\}/);
+  });
+
+  it('upload 只有唯一实现（不许再留第二条分叉的 case upload 死代码）', () => {
+    const cases = main.match(/case 'upload':\s*\{/g) || [];
+    expect(cases.length).toBe(1);
+  });
+
+  it('不再保留「DataTransfer 造假 File」的废弃实现（受浏览器安全限制必失败，且会误导排查）', () => {
+    // 允许注释里出现关键词，但不允许真的有 dt.items.add(file) 这种实现语句
+    expect(main).not.toContain('dt.items.add(file)');
+  });
+
+  it('选择 input[type=file] 时应挑可见节点，而不是盲取 nodeIds[0]', () => {
+    expect(main).toContain('pickVisibleInput');
+  });
+});
+
+describe('browser_upload 工具 schema（core）', () => {
+  it('暴露 clickSelector/clickIndex/clickX/clickY 四个 filechooser 模式入参', () => {
+    for (const k of ['clickSelector', 'clickIndex', 'clickX', 'clickY']) {
+      expect(coreTool).toContain(`${k}:`);
+    }
+  });
+
+  it('把 clickX/clickY 透传给服务端 action（否则坐标兜底模式失效）', () => {
+    expect(coreTool).toMatch(/clickX:\s*args\.clickX/);
+    expect(coreTool).toMatch(/clickY:\s*args\.clickY/);
+  });
+});
