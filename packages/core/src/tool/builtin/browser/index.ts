@@ -828,6 +828,8 @@ export class BrowserUploadTool implements BuiltInTool {
       index: { type: 'number', description: 'Element index of the file input (from browser_get_page_info numbered list).' },
       selector: { type: 'string', description: 'CSS selector of the <input type="file"> element.' },
       filePath: { type: 'string', description: 'Absolute path to the file to upload.' },
+      clickSelector: { type: 'string', description: '【filechooser 模式】点这个按钮/元素触发系统文件选择器（支持 :contains("文本")），本地文件会自动投递进去——适合「上传」按钮不暴露裸 input 的站点（抖音创作者平台等）。给了 clickSelector/clickIndex 就不需要 index/selector。' },
+      clickIndex: { type: 'number', description: '【filechooser 模式】上传按钮的元素编号（来自 browser_get_page_content）。' },
     },
     required: ['filePath'],
   };
@@ -835,10 +837,10 @@ export class BrowserUploadTool implements BuiltInTool {
     try {
       const filePath = args.filePath as string;
       if (!filePath) return err('filePath 为必填项');
-      if (args.index === undefined && !args.selector) return err('需要 index 或 selector 来定位 input[type=file]');
-      const data = await callBrowserApi('/action', 'POST', { action: 'upload', index: args.index, selector: args.selector, filePath }) as any;
+      if (args.index === undefined && !args.selector && args.clickSelector === undefined && args.clickIndex === undefined) return err('需要 index/selector 定位 input[type=file]，或 clickSelector/clickIndex 走 filechooser 模式');
+      const data = await callBrowserApi('/action', 'POST', { action: 'upload', index: args.index, selector: args.selector, filePath, clickSelector: args.clickSelector, clickIndex: args.clickIndex }) as any;
       if (data?.error) return err(data.error);
-      return ok(`已上传文件: ${filePath}`);
+      return ok(`已上传文件: ${filePath}${data?.via === 'filechooser' ? '（filechooser 模式）' : ''}`);
     } catch (e: any) { return err(e?.message || '文件上传失败'); }
   }
 }

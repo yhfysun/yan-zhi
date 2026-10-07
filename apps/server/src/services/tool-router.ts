@@ -38,7 +38,7 @@ export const TOOL_ROUTE_CORE = new Set<string>([
   'cmd_exec', 'python_exec',
   // 浏览器四件套 + 代码模式 + 截图（pageAgent 主链路）
   'browser_navigate', 'browser_click', 'browser_type', 'browser_get_page_content',
-  'browser_run_script', 'browser_screenshot',
+  'browser_run_script', 'browser_screenshot', 'browser_upload',
   // 视觉识别（纯视觉兜底路线的执行件）
   'image_analyze',
   // 记忆底座（收尾沉淀用）

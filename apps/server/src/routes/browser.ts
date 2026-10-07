@@ -1343,6 +1343,37 @@ router.post('/action', async (req: Request, res: Response) => {
       case 'upload': {
         const fp = String(args.filePath || '');
         if (!fp) { result = { error: 'filePath 为必填项' }; break; }
+        // filechooser 模式（2026-10-07）：点「上传」按钮 → 拦截文件选择器 → 投递本地文件。
+        // 适用按钮不暴露裸 input[type=file] 的站点（抖音创作者平台等，点按钮才动态创建 input）。
+        if (args.clickSelector || args.clickIndex !== undefined || args.clickX !== undefined) {
+          try {
+            const chooserPromise = page.waitForEvent('filechooser', { timeout: 15000 });
+            let clickSel: string | null = null;
+            if (args.clickSelector) {
+              clickSel = String(args.clickSelector).replace(/:contains\(\s*["']([\s\S]*?)["']\s*\)/g, ':has-text("$1")');
+            } else if (args.clickIndex !== undefined && args.clickIndex !== null) {
+              await page.evaluate(ensureYzReg);
+              clickSel = await page.evaluate((idx: number) => {
+                const R = (window as any).__yzReg;
+                const el = R.get(idx);
+                if (!el || !el.isConnected) return null;
+                el.setAttribute('data-yz-click-once', '1');
+                return '[data-yz-click-once="1"]';
+              }, Number(args.clickIndex));
+              if (!clickSel) { result = { error: `clickIndex ${args.clickIndex} 已失效` }; break; }
+            }
+            const clickPromise = clickSel
+              ? page.locator(clickSel).click({ timeout: 10000 })
+              : page.mouse.click(Number(args.clickX), Number(args.clickY));
+            const chooser = await chooserPromise;
+            await clickPromise.catch(() => {});
+            await chooser.setFiles([fp]);
+            result = { uploaded: true, via: 'filechooser', filePath: fp };
+          } catch (e: any) {
+            result = { error: `filechooser 模式失败: ${e?.message || e}` };
+          }
+          break;
+        }
         let locator: any = null;
         if (args.index !== undefined && args.index !== null) {
           await page.evaluate(ensureYzReg);
