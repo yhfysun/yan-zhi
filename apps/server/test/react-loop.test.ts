@@ -232,6 +232,11 @@ vi.mock('@yan-zhi/core', () => ({
     const ws = typeof workspaceDir === 'string' ? workspaceDir.trim() : '';
     return raw || ws || '.';
   },
+  // ★ 2026-10-08 补：path-guard 的 collectPathArgs 新增用 isAbsolutePath 区分
+  //   「无工作目录 + 相对路径」（不当越界）与「绝对路径」（真越界）。
+  //   老规矩：手写白名单 mock 不同步 → `No "isAbsolutePath" export is defined on the mock`，
+  //   而表象是「工具执行失败」，完全看不出是 mock 缺字段。
+  isAbsolutePath: (p: string) => /^([a-zA-Z]:[\\/]|[\\/]{2}|\/)/.test(String(p || '')),
   visibleMessages: (ms: any[]) => (ms || []).filter((m) => !(m && (m.parentToolCallId ?? m.parent_tool_call_id))),
   adviceForTruncatedArgs: ({ toolName, missingArgs }: any) => ({
     truncated: false,

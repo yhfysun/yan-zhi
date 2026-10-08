@@ -129,10 +129,20 @@ describe('① 新建任务 / 切会话：任务域状态必须整体归零', () 
       ['MCP 挂载列表', /mountedMcpServers\s*=\s*\[\]/],
       ['MCP 禁用工具', /mcpDisabledTools\s*=\s*\{\}/],
       ['MCP 工具别名', /mcpToolAliases\s*=\s*\{\}/],
-      ['权限模式（安全默认只读）', /permissionMode\s*=\s*'readonly'/],
+      // ★ 权限归零必须是「安全默认 readonly」（2026-10-08 更新口径）：
+      //   实现自 2026-10-07 起是 `isAutopilot ? 'all' : 'readonly'`
+      //   （小说推文全自动助手例外，用户拍板不弹窗）。断言改钉**安全意图**：
+      //   ① 必须显式赋值（不能继承上个任务）；
+      //   ② 默认落点必须是 readonly（'all' 只能出现在显式白名单分支里）。
+      //   ★ 不钉字面 `= 'readonly'`：那会把"有例外"误判成"不安全"，
+      //     而真正的风险是"默认放行"——见下方 not.toMatch。
+      ['权限模式（安全默认只读）', /permissionMode\s*=\s*[^;]+'readonly'/],
     ] as const) {
       expect(body, `★ ${name} 未归零（会继承上个任务的挂载/权限）`).toMatch(re);
     }
+    // 反向：权限归零不得默认全放行（'all' 只能由白名单判定产生）
+    expect(body, '★ 权限归零默认放行了（新任务不会继承只读安全默认）')
+      .not.toMatch(/permissionMode\s*=\s*'all'\s*;/);
   });
 
   it('★ 预览面板与浏览器地址必须归零（否则新任务右侧还挂着上个任务的文件/网站）', () => {
@@ -481,7 +491,16 @@ describe('⑥ 工具权限安全默认：新任务必须默认只读（2026-09-2
 
   it('★ 新建任务归零时权限必须回只读', () => {
     const body = bodyOf(stripComments(USE_CHAT), 'function resetTaskScopedState');
-    expect(body, '★ 新任务权限归零不是 readonly').toMatch(/permissionMode\s*=\s*'readonly'/);
+    // ★ 同口径（2026-10-08）：默认落点必须是 readonly。
+    //   实现是 `isAutopilot ? 'all' : 'readonly'` —— 'readonly' 必须在，且
+    //   不得写成 `permissionMode = 'all'` 这种无条件放行。
+    expect(body, '★ 新任务权限归零不是 readonly（默认落点丢了）')
+      .toMatch(/permissionMode\s*=\s*[^;]+'readonly'/);
+    expect(body, '★ 新任务权限归零无条件放行了')
+      .not.toMatch(/permissionMode\s*=\s*'all'\s*;/);
+    // 例外必须由**显式白名单**决定，不能是"谁都能拿到 all"
+    expect(body, '★ 权限例外未走白名单判定（应依据 isAutopilot/智能体 id）')
+      .toMatch(/isAutopilot|AUTOPILOT_AGENT_IDS/);
   });
 
   it('★★★ 后端 normalizePermissionMode 对未知值必须 fail-safe 收窄到 readonly', () => {
