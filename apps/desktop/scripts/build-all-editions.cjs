@@ -86,10 +86,14 @@ const rel = (p) => path.relative(repoRoot, p) || p;
 
 function run(cmd, args, extraEnv) {
   console.log(`\n$ ${cmd} ${args.join(' ')}`);
-  execFileSync(cmd, args, {
+  const useShell = process.platform === 'win32';
+  // shell:true 时 node 只是空格拼接命令行，不做引号转义
+  // → execPath 含空格（C:\Program Files\nodejs）会被 cmd 截断成 'C:\Program'
+  const q = (s) => (useShell && /\s/.test(s) ? `"${s}"` : s);
+  execFileSync(q(cmd), args.map(q), {
     cwd: desktopDir,
     stdio: 'inherit',
-    shell: process.platform === 'win32',
+    shell: useShell,
     env: { ...process.env, ...(extraEnv || {}) },
   });
 }

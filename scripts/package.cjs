@@ -151,10 +151,14 @@ function moveAway(relPaths) {
 /** shell 执行（继承 stdio，失败抛错；Windows 需要 shell 才能跑 .cmd/.bat） */
 function run(cmd, args, opts = {}) {
   console.log(c.bold(`\n$ ${cmd} ${args.join(' ')}`));
-  return execFileSync(cmd, args, {
+  const useShell = process.platform === 'win32';
+  // shell:true 时 node 只是空格拼接命令行，不做引号转义
+  // → execPath 含空格（C:\Program Files\nodejs）会被 cmd 截断成 'C:\Program'
+  const q = (s) => (useShell && /\s/.test(s) ? `"${s}"` : s);
+  return execFileSync(q(cmd), args.map(q), {
     cwd: opts.cwd || ROOT,
     stdio: 'inherit',
-    shell: process.platform === 'win32',
+    shell: useShell,
     env: { ...process.env, ...(opts.env || {}) },
   });
 }

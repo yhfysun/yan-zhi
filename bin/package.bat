@@ -66,4 +66,12 @@ node "%ROOT%\scripts\package.cjs" all %1 %2 %3 %4
 goto :End
 
 :End
-exit /b %ERRORLEVEL%
+set EXITCODE=%ERRORLEVEL%
+:: Double-click launch detection: cmdcmdline contains this bat path when started by Explorer.
+:: In that case pause so error/exit messages are visible instead of the window flashing shut.
+echo %cmdcmdline% | findstr /i /c:"%~f0" >nul && (
+  if not "%EXITCODE%"=="0" echo [ERROR] exit code %EXITCODE%
+  echo.
+  pause
+)
+exit /b %EXITCODE%
