@@ -2479,14 +2479,20 @@ try {
       NOVEL_TUIWEN_DESC,
       JSON.stringify(NOVEL_TUIWEN_TRIGGERS),
       NOVEL_TUIWEN_BODY,
-      '自动化', NOVEL_TUIWEN_FILES, 'yan-zhi', 1, 0, 'builtin', Date.now(),
+      '自动化',
+      // ★★ 必须 JSON.stringify（2026-10-07 修复）：files_json 是 TEXT 列，直接传数组时
+      //   sql.js 驱动把它写成 blob（实测落库后 typeof='blob'、值 \x00\x00\x00\x00）→
+      //   前端 rowToSkill 的 JSON.parse 收到非字符串**抛异常** → 整个 loadSkills 中断
+      //   （表现：技能列表为空 + 每次进应用报 Uncaught (in promise)，但没有任何提示）。
+      //   旁边的 triggers_json 一直是对的，只有这一个漏了 —— 同一结构两种写法必有一处错。
+      JSON.stringify(NOVEL_TUIWEN_FILES), 'yan-zhi', 1, 0, 'builtin', Date.now(),
     );
   } else {
     // 内置 skill 属产品定义：出片流程随版本收口，覆盖旧版残留。
     // 受 BUILTIN_OVERWRITE_MODE 控制：mode='never' 时只标记内置来源，不覆盖用户改动。
     if (overwriteEnabled) {
       db.prepare("UPDATE skill SET body = ?, description = ?, triggers_json = ?, files_json = ?, source = 'builtin' WHERE id = ?").run(
-        NOVEL_TUIWEN_BODY, NOVEL_TUIWEN_DESC, JSON.stringify(NOVEL_TUIWEN_TRIGGERS), NOVEL_TUIWEN_FILES, skillId,
+        NOVEL_TUIWEN_BODY, NOVEL_TUIWEN_DESC, JSON.stringify(NOVEL_TUIWEN_TRIGGERS), JSON.stringify(NOVEL_TUIWEN_FILES), skillId,
       );
     } else {
       db.prepare("UPDATE skill SET source = 'builtin' WHERE id = ?").run(skillId);

@@ -131,6 +131,11 @@ export const useSkillStore = defineStore('skill', () => {
       if ('data' in r) {
         skills.value = (r.data as any[]).map(rowToSkill);
       }
+    } catch (e) {
+      // ★ 原实现只有 try/finally：任何一行映射抛错都会**逃逸成未捕获拒绝**
+      //   （CDP 里看到的就是那条 Uncaught (in promise)），且列表停在旧值/空值上无从察觉。
+      //   这里把失败降级为"可见的错误"，不再向上抛。
+      console.warn('[skill] 加载技能列表失败:', e instanceof Error ? e.message : e);
     } finally {
       loading.value = false;
     }
@@ -213,15 +218,39 @@ export const useSkillStore = defineStore('skill', () => {
   };
 });
 
+/**
+ * JSON 字段的安全解析。
+ *
+ * ★★★ 为什么必须防御（2026-10-07 真实缺陷）：后端曾把 `files_json` 当数组直接写库
+ *   （漏 `JSON.stringify`），驱动落成 blob → 这里 `JSON.parse` 抛 SyntaxError
+ *   → **整条 `.map(rowToSkill)` 中断** → `loadSkills()` 整体失败。
+ *   表象是「技能列表空的 + 每次进应用一个 Uncaught (in promise)」，**没有任何用户可见提示**，
+ *   极难归因（真正的原因在远端一条内置 skill 的书写错误）。
+ *   → 一条脏数据只该让**那一条**降级，不能让整个列表消失。
+ */
+function safeJson<T>(v: unknown, fallback: T): T {
+  if (v == null || v === '') return fallback;
+  if (typeof v !== 'string') {
+    // 非字符串（blob / object / number）一律降级：调用方拿到 fallback 仍能渲染
+    return fallback;
+  }
+  try {
+    const parsed = JSON.parse(v);
+    return (parsed ?? fallback) as T;
+  } catch {
+    return fallback;
+  }
+}
+
 function rowToSkill(r: any): Skill {
   if (r.body_md !== undefined) {
     return {
       id: r.id, name: r.name, description: r.description,
       source: r.source, enabled: !!r.enabled,
       isPublic: !!r.is_public,
-      frontmatter: r.frontmatter_json ? JSON.parse(r.frontmatter_json) : { name: r.name },
+      frontmatter: safeJson(r.frontmatter_json, { name: r.name }),
       bodyMd: r.body_md,
-      files: r.files_json ? JSON.parse(r.files_json) : undefined,
+      files: safeJson<Array<{ path: string; content: string }> | undefined>(r.files_json, undefined),
     };
   }
   return {
@@ -231,10 +260,10 @@ function rowToSkill(r: any): Skill {
     isPublic: !!r.is_public,
     frontmatter: {
       name: r.name, description: r.description,
-      triggers: r.triggers_json ? JSON.parse(r.triggers_json) : [],
+      triggers: safeJson<string[]>(r.triggers_json, []),
     },
     bodyMd: r.body || '',
-    files: r.files_json ? JSON.parse(r.files_json) : undefined,
+    files: safeJson<Array<{ path: string; content: string }> | undefined>(r.files_json, undefined),
     enabled: !!r.enabled,
     category: r.category,
     author: r.author,
