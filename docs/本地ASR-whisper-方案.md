@@ -160,11 +160,51 @@ YZ_WHISPER_PATH（显式）
 | 长音频耗时 | `maxSeconds` 可截断；超时按已产出的部分落盘（不整段丢） |
 | whisper.cpp 版本 API 变动 | 锁 `whisper-cli` 的命令行形态（`-m/--output-srt`），不依赖内部函数名 |
 
-## 九、待确认
+## 九、实施状态（2026-10-08 已落地）
 
-1. 本方案的工具命名（`media_asr_transcribe` / `whisper_install`）是否合适？
-2. 默认模型 `small` 是否接受（首次需下 466MB）？
-3. 是否本轮一并做**剪辑 UI 的「语音转字幕」按钮**（现在只有对话/工具栏入口）？
+**已实现**（commit `bfc2e10`）：
+- `apps/server/src/mcp/whisper-runtime.ts` —— 二进制/模型定位 + 按需下载 + 手动放置
+- `media_asr_transcribe`（音视频 → SRT；返回结构与 `api_srt_generate` 一致）
+- `whisper_install`（装二进制/模型，与 `media_install_ffmpeg` 同形）
+- 已挂载到剪辑师 `CLIP_AGENT_BUILTIN_TOOLS`；三段式核验通过
+- 单测 `test/whisper-runtime.test.ts` 15/15 + 变异验证
+
+### ★★★ 实施中实测发现的三个事实（都改变了原设计）
+
+**① 正式 release 零二进制资产 → 必须查 nightly tag**
+`releases/latest` → `v1.9.5` 的 `assets: []`；二进制**只在 nightly**（`b5454` 等）。
+且 nightly tag **滚动** → 实现改为运行时查 API 取最新，并在单测里钉住
+「不选 v 开头」「跳过空资产 release」两条规则。
+
+**② 模型源优先级要按"实测可达性"排，不是按"官方与否"**
+本机（国内网络未开代理）实测：
+
+| 源 | 连通性 | 实测速度 |
+|---|---|---|
+| **ModelScope（国内站）** | **HTTP 200 直连可用** | 148MB **14 秒** |
+| huggingface.co | 000 不可达 | — |
+| hf-mirror.com | 000 不可达 | — |
+
+→ **ModelScope 提为首选**，HF 系作后备。
+★ 判据：**下不到等于功能不存在**，源排序必须看实测。
+
+**③ 报错里的目录必须是"实际生效的那个"（真跑暴露的缺陷）**
+二进制被自动发现到 `%APPDATA%/yan-zhi-dev/server-data/whisper`，
+而 `installDir()` 算的是兜底路径 `apps/server/whisper` → 报错让用户**放到错地方**。
+已改为"命中哪个目录就写哪个"（`build(bin, source, hitDir)`）。
+
+### 端到端实测（真跑）
+TTS 造已知音频「测试一二三四五。这是本地语音识别验证。今天天气很好。」
+→ ffmpeg 抽 16k 单声道 → whisper 转写 → 有效 SRT：
+```
+00:00:00,000 --> 00:00:05,980
+测试1235,这是本地语音时别验证,今天天气很好。
+```
+（base 模型误差属正常水平 → 印证默认用 `small` 的必要性）
+
+### 待确认（未做）
+1. 是否做**剪辑 UI 的「语音转字幕」按钮**（现在只有对话/工具栏入口）
+2. 是否把默认模型从 `small` 下调（首次 466MB 的下载门槛）
 
 ---
 
