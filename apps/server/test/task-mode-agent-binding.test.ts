@@ -53,10 +53,12 @@ function agentBlock(id: string): string {
   return TASK_MODE_AGENTS.slice(start, next > 0 ? next : undefined);
 }
 
-/** 内置 skill id（db.ts 的 builtinSkillDefaults；含字面量与 _SKILL_ID 常量两种写法） */
+/** 内置 skill id（db.ts 的 builtinSkillDefaults）。
+ *  2026-10-08 补第三种写法：`const skillId = 'skill_xxx'`（脚本式局部常量，全小写 skillId，
+ *  既不匹配 `id:` 也不匹配 `_SKILL_ID =` → 曾导致 novel_tuiwen 被误报「技能不存在」）。 */
 function builtinSkillIds(): Set<string> {
   const ids = new Set<string>();
-  for (const m of DB.matchAll(/(?:id:\s*|_SKILL_ID\s*=\s*)'(skill_[a-z0-9_]+)'/g)) ids.add(m[1]);
+  for (const m of DB.matchAll(/(?:id:\s*|_SKILL_ID\s*=\s*|skillId\s*=\s*)'(skill_[a-z0-9_]+)'/g)) ids.add(m[1]);
   return ids;
 }
 

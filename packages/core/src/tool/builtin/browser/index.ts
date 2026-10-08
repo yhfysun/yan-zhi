@@ -208,14 +208,19 @@ export class BrowserClickTool implements BuiltInTool {
 // ========== 输入文本 ==========
 export class BrowserTypeTool implements BuiltInTool {
   name = 'browser_type';
-  description = 'Type text into an element. 定位方式：index（元素编号，来自 browser_get_page_content / browser_get_page_info）、selector（CSS 选择器），或省略两者直接输入到当前焦点元素。输入框目标不明确时先用 browser_get_page_content 找到 textarea/input 的 index。要提交表单/搜索时传 pressEnter:true（等价于输入后按 Enter，不要用 text:"" 来表示回车）。Uses real keyboard input (per-character).';
+  description = 'Type text into an element. 定位方式：index（元素编号，来自 browser_get_page_content / browser_get_page_info）、selector（CSS 选择器），或省略两者直接输入到当前焦点元素。输入框目标不明确时先用 browser_get_page_content 找到 textarea/input 的 index。要提交表单/搜索时传 pressEnter:true（等价于输入后按 Enter，不要用 text:"" 来表示回车）。\n'
+    + '★ 走**真实键盘输入**（桌面端经 CDP `Input.insertText`，会派发 beforeinput/input 等编辑事件）：'
+    + '对受控组件（React/Vue）、富文本编辑器（ProseMirror/Slate/Draft.js）、中文输入法场景都有效 —— '
+    + '评论框、发帖框、搜索框这类"看着填了、提交却是空的"问题由它解决。\n'
+    + '★ 参数 text 是**替换**语义（先清空再输入），不是追加。返回里的 applied 字段表示回读核验是否一致；'
+    + '若 applied:false，请用 browser_get_page_content 核验输入框当前值，不要盲目重复调用。';
   inputSchema = {
     type: 'object',
     properties: {
-      text: { type: 'string', description: 'The text to type. 省略且 pressEnter:true 时只按回车不输入文本。' },
+      text: { type: 'string', description: 'The text to type. 替换语义（先清空再输入）。省略且 pressEnter:true 时只按回车不输入文本。' },
       index: { type: 'number', description: 'Element index from the numbered interactive-element list returned by browser_get_page_content / browser_get_page_info / browser_get_dom. 比 selector 更稳（不受动态 class、iframe 影响）。省略时输入到当前焦点元素。' },
       selector: { type: 'string', description: 'CSS selector to focus before typing (optional). Supports :contains("text") pseudo-selector. If multiple elements match, an ambiguous candidate list with indexes is returned.' },
-      pressEnter: { type: 'boolean', description: '输入完成后按一次 Enter（提交搜索/表单）。text 与 pressEnter 至少给一个。' },
+      pressEnter: { type: 'boolean', description: '输入完成后按一次 Enter（提交搜索/表单）。text 与 pressEnter 至少给一个。真实的 Enter 按键事件，不是 JS 合成的。' },
     },
     required: [],
   };
@@ -703,14 +708,45 @@ export class BrowserSwitchTabTool implements BuiltInTool {
 }
 export class BrowserCloseTabTool implements BuiltInTool {
   name = 'browser_close_tab';
-  description = 'Close a browser tab. 关闭标签页（不传 tabId 则关闭当前活动标签页）。';
+  description = 'Close browser tab(s). 关闭标签页。\n'
+    + '★ 任务收尾时**应主动调用**本工具收拾页面：任务已完成、且某标签页不再需要给用户看时关掉它，'
+    + '别把 agent 打开的一堆中间页留在面板里。若该页是**交付给用户看的成果**（最终报告页/用户要接着操作的页），保留并说明原因。\n'
+    + '用法：tabIds 传数组一次关多个（推荐，收尾时先用 browser_get_tabs 看有哪些）；tabId 传单个；都不传则关当前活动标签页。';
   inputSchema = {
     type: 'object',
-    properties: { tabId: { type: 'number', description: 'The tab id to close (optional, defaults to the active tab).' } },
+    properties: {
+      tabId: { type: 'number', description: '单个标签页 id（来自 browser_get_tabs）。' },
+      tabIds: { type: 'array', items: { type: 'number' }, description: '要关闭的标签页 id 数组 —— 收尾时批量关闭用这个，避免逐个调用。' },
+    },
   };
   async execute(args: Record<string, unknown>): Promise<McpCallResult> {
     try {
+      // 批量优先：收尾时通常要一次关掉多个中间页
+      const ids = Array.isArray(args.tabIds)
+        ? (args.tabIds as unknown[]).map((x) => Number(x)).filter((n) => Number.isFinite(n))
+        : [];
+      if (ids.length) {
+        const closed: number[] = [];
+        const failed: number[] = [];
+        for (const tabId of ids) {
+          try {
+            const d = await callBrowserApi('/action', 'POST', { action: 'close_tab', tabId }) as any;
+            if (d?.error) failed.push(tabId); else closed.push(tabId);
+          } catch { failed.push(tabId); }
+        }
+        // 关完后回报剩余页，模型可据此决定是否继续收尾
+        let remaining = '';
+        try {
+          const t = await callBrowserApi('/action', 'POST', { action: 'get_tabs' }) as any;
+          const list = Array.isArray(t?.tabs) ? t.tabs : [];
+          remaining = `\n剩余标签页 ${list.length} 个：${list.map((x: any) => `tabId=${x.tabId}(${x.title || x.url || '空白'})`).join('、') || '（无）'}`;
+        } catch { /* 查询失败不影响关闭结果 */ }
+        return ok(`已关闭 ${closed.length} 个标签页${closed.length ? `（${closed.join(', ')}）` : ''}`
+          + (failed.length ? `；${failed.length} 个关闭失败（${failed.join(', ')}）` : '')
+          + remaining);
+      }
       const data = await callBrowserApi('/action', 'POST', { action: 'close_tab', tabId: args.tabId }) as any;
+      if (data?.error) return err(data.error);
       return ok(`已关闭标签页 tabId=${data.closedTabId}。剩余标签页数=${data.remaining}`);
     } catch (e: any) { return err(e?.message || '关闭标签页失败'); }
   }

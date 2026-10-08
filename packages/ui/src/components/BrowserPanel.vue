@@ -468,18 +468,31 @@ const browserExpanded = computed({
   get: () => isPreviewScope && chatStore.browserExpanded,
   set: (v: boolean) => { if (isPreviewScope) chatStore.browserExpanded = v; },
 });
-// ★ Agent 实况锁定（2026-10-07 加固）：此前的判定强依赖 `chatStore.browserLockInput` 这个
-//   由「browserSteps 0→N」watch 置位的标志，且该标志会被「任务结束/切会话/reset」多处清零 ——
-//   一旦标志没被置位（或先于步骤到来就被清掉），锁就整个失效，用户便能在 agent 操作期间点页面。
-//   改为「**正在跑任务 且 面板有浏览器步骤**」直接从运行态推导，不再依赖那个脆弱标志；
-//   并保留「用户主动暂停 → 交还控制权」的语义（pausedNow 时才解锁）。
+// ★★★ Agent 实况锁定（2026-10-08 二次加固 —— 上一次加固**没修干净**）：
+//   上一版（2026-10-07）把判据从"脆弱标志"改成"运行态推导"，但**兜底分支仍是同一个脆弱标志**
+//   （`chatStore.browserLockInput`），而它由「browserSteps 0→N」watch 置位、又被
+//   「任务结束/切会话/reset」多处清零 —— 只兜住了一半。
+//
+//   更根本的问题：判据里的 `browserSteps.length > 0` 是**事件日志**，SSE 断流时最先归零。
+//   实测（用户实报）三者同时失效：「pageAgent 在执行吗？啥进度没有？而且用户还能操作页面？」
+//   —— 因为 inputLocked / liveControlVisible / agentCursorVisible **共用同一个空数组**。
+//
+//   ⇒ 控制信号改从 `chatStore.browserTaskActive` 取：它是**会话级单调记账**，由 tool:start /
+//     tool:result / tool:execute 三条独立路径登记，不受断流清空影响；只有任务收尾才整表清。
+//     `browserSteps` 退回它本来的职责 —— 只管"步骤清单/进度条"的展示。
+//   ★ 保留 `browserLockInput` 作为**附加**放行条件（不是必要条件）：它现在还承担
+//     "用户手动点了暂停"之外的额外抑制语义，去掉会让旧行为回退。
 const taskRunningNow = computed(() => !!chatStore.streaming || chatStore.runningConvIds.size > 0);
 const inputLocked = computed(() =>
   isPreviewScope && !chatStore.browserPaused
   && taskRunningNow.value
-  && (chatStore.browserLockInput || chatStore.browserSteps.length > 0),
+  && chatStore.browserTaskActive,
 );
-const liveControlVisible = computed(() => isPreviewScope && chatStore.browserSteps.length > 0);
+// 实况条 / 虚拟鼠标：与锁定同源（断流后仍显示"接管中"，而不是整条消失）。
+// ★ 有 browserSteps 时照常展示步骤进度；没有（断流/重放中）也保留"执行中"形态。
+const liveControlVisible = computed(() =>
+  isPreviewScope && (chatStore.browserTaskActive || chatStore.browserSteps.length > 0),
+);
 // Agent 接管形态的步骤进度/清单：取当前会话已登记的 task_plan（无计划 → 只显示「执行中」，不硬造步骤）
 const planStepsNow = computed(() => (isPreviewScope ? chatStore.planSteps : []));
 const planTotal = computed(() => planStepsNow.value.length);
@@ -494,8 +507,12 @@ const currentStepNo = computed(() => {
   if (runIdx >= 0) return runIdx + 1;
   return Math.min(planDone.value + 1, steps.length);
 });
-// Agent 虚拟鼠标：只认当前激活 tab 的坐标（多 tab 隔离），预览空间 + 浏览器实况期才显示
-const agentCursorVisible = computed(() => isPreviewScope && chatStore.browserSteps.length > 0);
+// Agent 虚拟鼠标：只认当前激活 tab 的坐标（多 tab 隔离），预览空间 + 浏览器实况期才显示。
+// ★ 判据与 liveControlVisible 同源（browserTaskActive）—— 断流后 steps 为空时，
+//   后续工具动作仍会通过主进程广播坐标，若这里依赖 steps 就会"看不见光标"。
+const agentCursorVisible = computed(() =>
+  isPreviewScope && (chatStore.browserTaskActive || chatStore.browserSteps.length > 0),
+);
 const cursorPos = computed(() => {
   const c = chatStore.agentCursor;
   if (!c) return null;

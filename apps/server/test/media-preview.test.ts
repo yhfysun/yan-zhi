@@ -107,16 +107,26 @@ describe('② 后端必须提供支持 Range 的流式端点', () => {
 });
 
 describe('③ 产物只登记了图片没视频：子智能体循环漏跑钩子', () => {
-  it('★★★ runAfterToolHooks 必须在**两个**循环里都调用（主循环 + 子智能体循环）', () => {
-    const calls = [...LTM.matchAll(/runAfterToolHooks\(/g)].length;
-    expect(calls, `★ 只有 ${calls} 个调用点 —— 少一个就意味着那条路径的产物永不登记`)
-      .toBeGreaterThanOrEqual(2);
+  it('★★★ 工具执行必须有统一出口，且钩子在其中被调用（单点化：主/子循环共用）', () => {
+    // ★ 2026-10-08 同步架构变更：P1 收敛（2026-10-04）已把「主循环 / 子智能体循环」
+    //   各自 ~60 行的工具执行序列合流成**单一出口** runToolCallAndPersist——
+    //   正是为了根治本条测试原本要防的「入口漂移」（子智能体侧漏跑钩子）。
+    //   所以现在断言的是「单点出口存在 + 钩子在其中」，而不是「必须有 2 处调用」。
+    expect(LTM, '★ 统一工具出口丢失（子智能体产物将再次不登记）')
+      .toMatch(/async function runToolCallAndPersist\(/);
+    const body = win(LTM, 'async function runToolCallAndPersist(', 3000, '统一工具出口');
+    expect(body, '★ 统一出口里没跑 afterToolHooks → 产物永不登记')
+      .toMatch(/runAfterToolHooks\(/);
+    // 子智能体路径必须也走这个出口（子智能体循环里不能再自写一份执行序列）
+    expect(LTM, '★ 子智能体未复用统一出口').toMatch(/runToolCallAndPersist\(\{/);
   });
 
-  it('★★★ 子智能体侧必须收集 _meta（否则 file_write 路径拿不到）', () => {
-    expect(LTM, '★ 子智能体未接 executeTool 的 _meta 出参').toMatch(/subToolMetaOut/);
-    const body = win(LTM, 'const subToolMetaOut', 500, '子智能体 _meta');
-    expect(body, '★ 未把出参传给 executeTool').toMatch(/subToolMetaOut\)/);
+  it('★★★ 统一出口必须收集工具回传 _meta（否则 file_write 路径拿不到）', () => {
+    // 重构后变量统一叫 metaOut（原按两处循环分别命名 subToolMetaOut）
+    const body = win(LTM, 'async function runToolCallAndPersist(', 3000, '统一工具出口');
+    expect(body, '★ 未接 executeTool 的 _meta 出参').toMatch(/metaOut/);
+    expect(body, '★ 未把出参传给 executeTool').toMatch(/executeTool\([^)]*metaOut\)/);
+    expect(body, '★ _meta 未传给钩子').toMatch(/meta:\s*\(?metaOut\.value/);
   });
 
   it('★★ 登记必须用 _meta.path，不能用模型传的 args.path', () => {
@@ -156,7 +166,9 @@ describe('④ 无音轨要提示 + 播放错误要如实报出', () => {
 
   it('★★ 视频错误必须映射成可读原因（不再静默黑屏）', () => {
     expect(FP, '★ 缺 onVideoError').toMatch(/function onVideoError/);
-    const body = win(FP, 'function onVideoError', 900, 'onVideoError');
+    // ★ 2026-10-08 同步：onVideoError 已扩展（HTTP 状态探测 403/404 + 桌面端直读降级 + 错误码映射），
+    //   函数体远超原 900 字符窗口 → 窗口放大到 2600 才能覆盖到末尾的 map 映射表。
+    const body = win(FP, 'function onVideoError', 2600, 'onVideoError');
     expect(body, '★ 未区分错误码').toMatch(/解码失败|格式不被支持/);
     expect(FP, '★ 模板未绑定 @error').toMatch(/@error="onVideoError"/);
   });

@@ -506,7 +506,7 @@ function createWindow() {
   const selfOrigin = isDevServe ? 'http://localhost:1420' : null;
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     console.log('[nav] window-open:', url);
-    if (/^https?:\/\//i.test(url) && !(selfOrigin && url.startsWith(selfOrigin))) {
+    if (isSafeExternalUrl(url) && !(selfOrigin && url.startsWith(selfOrigin))) {
       shell.openExternal(url);
     }
     return { action: 'deny' };
@@ -514,7 +514,7 @@ function createWindow() {
   mainWindow.webContents.on('will-navigate', (event, url) => {
     const current = mainWindow.webContents.getURL();
     console.log('[nav] will-navigate:', url, '| from:', current);
-    if (!/^https?:\/\//i.test(url) || url === current) return;
+    if (!isSafeExternalUrl(url) || url === current) return;
     // dev 同源 = 应用自身，放行留在应用内（阻止被误判为外链）
     if (selfOrigin && url.startsWith(selfOrigin)) return;
     event.preventDefault();
@@ -1211,7 +1211,7 @@ ipcMain.handle('child-window:open', (event, opts = {}) => {
   // 关窗即清理登记，避免 key 被已销毁窗口占住
   win.on('closed', () => { childWindows.delete(key); });
   win.webContents.setWindowOpenHandler(({ url: u }) => {
-    if (/^https?:\/\//i.test(u)) shell.openExternal(u);
+    if (isSafeExternalUrl(u)) shell.openExternal(u);
     return { action: 'deny' };
   });
 
@@ -1293,6 +1293,15 @@ function setupGuestPopupRedirect(wc, scope) {
     }
     return { action: 'deny' };
   });
+  // ★ 自定义协议闸门（2026-10-08）：guest 页面内点击 bitbrowser:// / tel: / mailto: 等未知协议时，
+  // Electron 会尝试交给系统 Shell 处理 → 本机无处理器 → Windows 弹「没有可打开此链接的应用」。
+  // 这是任务跑起来后反复弹窗的真正入口（主窗口的 will-navigate 管不到 guest）。
+  // 处理：非 http/https 一律 preventDefault 静默丢弃；http/https 放行（让预览面板自己导航）。
+  wc.on('will-navigate', (event, url) => {
+    if (isAllowedGuestNavigation(url)) return;   // http(s)/about/blob/data：放行
+    console.log('[nav] guest 拦截非 http(s) 协议:', url);
+    event.preventDefault();
+  });
 }
 
 // 拦截网页通过 window 创建的真正二级窗口（session/guest handler 未覆盖的边缘路径），
@@ -1327,12 +1336,19 @@ ipcMain.handle('browser:wv:unregister', (_e, tabId) => {
 // 创建新标签页，返回 tabId。
 // scope：tab 归属空间（'preview'=对话页预览面板（agent 执行面）| 'page'=/browser 独立浏览器页）。
 // 渲染层两边 tab 列表隔离，主进程只负责记录归属，供 ensureActiveTab(scope)/R5 顶替按空间匹配。
+//
+// ★★★ agentOpened：tab 的**归属标记**（2026-10-08）。安全边界 ——
+//   agent 只能关闭**它自己打开的**标签页，用户手动开的 tab 一律不可被 agent 关闭。
+//   必须做在主进程（这里是唯一知道"谁发起的创建"的地方）：
+//     · `browserView:createTab`（本 handler，渲染层调用）→ 来自 UI（用户点击/面板自建）
+//     · `browserView:action` 的 `new_tab`（agent 工具链）→ **agentOpened: true**
+//   只靠提示词约束不可靠（模型可能传错 tabId、或被页面内容诱导），权限必须在执行侧强制。
 let tabSeq = 0;
 ipcMain.handle('browserView:createTab', (_e, scope) => {
   const newTabId = 'tab-' + (++tabSeq);
   if (isWebviewEngine()) {
     // webview 模式：只分配 tabId 与空间归属，guest 由渲染层 <webview> 元素创建后注册
-    webviewTabs.set(newTabId, { scope: scope || 'preview', lastActiveAt: Date.now(), wcId: null });
+    webviewTabs.set(newTabId, { scope: scope || 'preview', lastActiveAt: Date.now(), wcId: null, agentOpened: false });
     if (!activeTabId) activeTabId = newTabId;
     return newTabId;
   }
@@ -1342,7 +1358,7 @@ ipcMain.handle('browserView:createTab', (_e, scope) => {
   const tabId = 'tab-' + (++tabSeq);
   ensureBrowserView(tabId);
   const entry = browserViews.get(tabId);
-  if (entry) entry.scope = scope || 'preview';
+  if (entry) { entry.scope = scope || 'preview'; entry.agentOpened = false; }
   return tabId;
 });
 
@@ -1754,28 +1770,58 @@ ipcMain.handle('browser:call', async (event, action, args) => {
       }
 
       case 'type': {
+        // ⚠️ 已废弃通道（`browser:call`）的实现 —— 前端自 2026-10-08 起统一走
+        //   `browserView:action`（那里的 `case 'type'` 才是**唯一在用的**实现，
+        //   且已升级为 CDP 真键盘 + JS 兜底补齐事件序列）。
+        //   本分支保留仅为兼容 preload 仍暴露的 `browser.call()`，行为不再单独演进。
         const { index, selector, text } = args;
         if (!text) return { ok: false, error: 'text is required' };
-        let targetEl = null;
-        if (index != null) {
-          targetEl = await wc.executeJavaScript(`document.querySelector('[data-yz-index="${index}"]') ? true : false`);
-        }
-        if (targetEl || selector) {
-          const sel = index != null ? `[data-yz-index="${index}"]` : selector;
-          await wc.executeJavaScript(`
-            (function() {
-              const el = document.querySelector(${JSON.stringify(sel)});
-              if (!el) return;
-              el.focus();
-              el.value = '';
-            })();
-          `).catch(() => {});
-        }
-        // 用 insertText 输入（比 type 更可靠）
-        for (const ch of String(text)) {
-          wc.sendInputEvent({ type: 'char', keyCode: ch });
-        }
-        return { ok: true };
+        const sel = index != null ? `[data-yz-index="${index}"]` : (selector || '');
+        const idxNum = index != null ? Number(index) : -1;
+        const pressEnter = args.pressEnter === true;
+        const res = await wc.executeJavaScript(`(function(){
+          var sel=${JSON.stringify(sel)};
+          var text=${JSON.stringify(String(text))};
+          var idx=${idxNum};
+          var el=null;
+          if(!sel){
+            el=document.activeElement;
+          }else{
+            el=document.querySelector(sel);
+            // index 失效时尝试注册表回填（与 click/upload 分支同一套 __yzElements / __yzSelMap）
+            if(!el && idx>=0 && window.__yzElements && window.__yzElements[idx]) el=window.__yzElements[idx];
+            if(!el && idx>=0 && window.__yzSelMap && window.__yzSelMap[idx]) el=document.querySelector(window.__yzSelMap[idx]);
+          }
+          if(!el) return { applied:false, error: sel ? ('元素未找到: '+sel+'（如为编号元素，请重新调用 browser_get_page_info 获取最新编号）') : '无聚焦元素' };
+          el.scrollIntoView({block:'center'});
+          if(window.__yzAssistant){ try{var r=el.getBoundingClientRect();window.__yzAssistant.showCursor(r.x+r.width/2,r.y+r.height/2,'输入');}catch(e){} }
+          el.focus();
+          var isCE=el.isContentEditable===true;
+          var proto=(el instanceof HTMLTextAreaElement)?HTMLTextAreaElement.prototype:HTMLInputElement.prototype;
+          var d=Object.getOwnPropertyDescriptor(proto,'value');
+          var set=(!isCE&&d&&d.set)?d.set:null;
+          var put=function(v){ if(set){set.call(el,v);} else if(isCE){el.textContent=v;} else {el.value=v;} };
+          put('');
+          el.dispatchEvent(new Event('input',{bubbles:true}));
+          for(var i=0;i<text.length;i++){
+            put(text.slice(0,i+1));
+            el.dispatchEvent(new Event('input',{bubbles:true}));
+          }
+          el.dispatchEvent(new Event('change',{bubbles:true}));
+          var got=(!isCE&&el.value!=null)?String(el.value):(el.textContent||'');
+          var out={ applied:got===text, typed:text.length, value:got.slice(0,120) };
+          if(!out.applied){ out.hint='输入框未接受文本（受控组件拦截了程序化输入或页面重置了值）。建议截图核验实际值。'; }
+          if(${pressEnter}){
+            var ko={bubbles:true,cancelable:true,key:'Enter',code:'Enter',keyCode:13,which:13};
+            el.dispatchEvent(new KeyboardEvent('keydown',ko));
+            el.dispatchEvent(new KeyboardEvent('keypress',ko));
+            el.dispatchEvent(new KeyboardEvent('keyup',ko));
+            out.entered=true;
+          }
+          return out;
+        })()`).catch((e) => ({ applied: false, error: String((e && e.message) || e) }));
+        if (res && res.error) return { ok: false, error: res.error };
+        return { ok: true, ...(res || {}) };
       }
 
       case 'press_key': {
@@ -2007,17 +2053,85 @@ async function injectYzAssistant(wc) {
       var proto=(el instanceof HTMLTextAreaElement)?HTMLTextAreaElement.prototype:HTMLInputElement.prototype;
       var d=Object.getOwnPropertyDescriptor(proto,'value');return d&&d.set?d.set:null;
     }
+    /**
+     * ★★★ 输入文本（JS 兜底实现）—— 2026-10-08 大幅补强。
+     *
+     * 主路径是 CDP 真键盘（见 cdpTypeText），本函数只在 CDP 不可用时兜底
+     * （Web 端 Playwright 路径 / CDP 被占用）。但它仍要尽量接近人的输入，
+     * 因为很多页面就是靠这些事件驱动 UI 的。
+     *
+     * 补齐的事件序列（对照真人打字）：
+     *   focusin → compositionstart → [逐字: compositionupdate → input] → compositionend
+     *         → keydown/composition 路径后的 input → change → blur 前保持焦点
+     *   ★ 为什么必须发 composition 事件：中文输入法组词走的就是这条链路，
+     *     评论框/搜索框普遍监听 compositionend 收值 —— 缺了它"看着有字、提交是空的"。
+     *   ★ 为什么 contenteditable 改走 execCommand insertText：富文本编辑器
+     *     （ProseMirror/Slate/Draft.js）只认编辑管线（beforeinput/input），
+     *     直接给 textContent 赋值它们的内部 model 不同步 → 提交时取不到内容。
+     *     execCommand insertText 会触发完整编辑事件链，兼容性远好于直改 DOM。
+     *     （execCommand 虽被标记 deprecated，但**没有替代品**能触发富文本编辑管线，
+     *      各大自动化工具（Playwright/Puppeteer 的 fill）至今都在用它。）
+     */
     function typeIn(el,text){
-      el.focus();
+      var t=String(text==null?'':text);
       var isCE=el.isContentEditable===true;
-      var set=(!isCE&&(el instanceof HTMLInputElement||el instanceof HTMLTextAreaElement))?nativeValueSetter(el):null;
-      var put=function(v){if(set){set.call(el,v);}else if(isCE){el.textContent=v;}else{el.value=v;}};
-      put('');el.dispatchEvent(new Event('input',{bubbles:true}));
-      for(var i=0;i<text.length;i++){put(text.slice(0,i+1));el.dispatchEvent(new Event('input',{bubbles:true}));}
-      el.dispatchEvent(new Event('change',{bubbles:true}));
+      var isForm=!isCE&&(el instanceof HTMLInputElement||el instanceof HTMLTextAreaElement);
+      var set=isForm?nativeValueSetter(el):null;
+
+      // ① 聚焦事件（真人点击输入框：focus 之前会有 focusin；部分组件靠 focusin 初始化）
+      el.focus();
+      try{el.dispatchEvent(new FocusEvent('focusin',{bubbles:true}));}catch(e){}
+
+      function fireInput(inputType,data){
+        // input 事件带 inputType/data（富文本与部分组件按它分支处理）
+        var ok=false;
+        try{el.dispatchEvent(new InputEvent('input',{bubbles:true,cancelable:false,inputType:inputType||'insertText',data:data==null?null:String(data)}));ok=true;}catch(e){}
+        if(!ok){try{el.dispatchEvent(new Event('input',{bubbles:true}));}catch(e){}}
+      }
+
+      // ② 清空现有内容（真人会先全选再覆盖）
+      if(isForm){
+        if(set){set.call(el,'');}else{el.value='';}
+      }else if(isCE){
+        try{
+          var r=document.createRange();r.selectNodeContents(el);
+          var s=window.getSelection();s.removeAllRanges();s.addRange(r);
+          if(!document.execCommand('delete',false)){el.textContent='';}
+        }catch(e){el.textContent='';}
+      }
+      fireInput('deleteContentBackward','');
+
+      // ③ 输入内容
+      if(isCE){
+        // 富文本：走编辑管线（唯一能让编辑器 model 同步的方式）
+        var inserted=false;
+        try{inserted=document.execCommand('insertText',false,t);}catch(e){}
+        if(!inserted){el.textContent=t;}
+        fireInput('insertText',t);
+      }else{
+        // 表单控件：走 IME 组合序列（中文场景的必经链路）+ 逐字 input
+        try{el.dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true,data:''}));}catch(e){}
+        if(set){set.call(el,t);}else{el.value=t;}
+        try{el.dispatchEvent(new CompositionEvent('compositionupdate',{bubbles:true,data:t}));}catch(e){}
+        fireInput('insertText',t);
+        try{el.dispatchEvent(new CompositionEvent('compositionend',{bubbles:true,data:t}));}catch(e){}
+        // 组合结束后再补一次 input：部分组件只在 compositionend 之后才读值
+        fireInput('insertText',t);
+      }
+
+      // ④ 真实按键事件：让监听 keydown/keyup 的逻辑（Enter 提交、快捷键、字数统计）能响应
+      //   ★ 只发事件不阻止默认行为 —— 与真人敲键一致（这里是"已输入完"的补充信号）
+      if(t){
+        var kd={bubbles:true,cancelable:true,key:t.slice(-1),code:'',keyCode:0,which:0};
+        try{el.dispatchEvent(new KeyboardEvent('keydown',kd));el.dispatchEvent(new KeyboardEvent('keyup',kd));}catch(e){}
+      }
+
+      // ⑤ change + 失焦确认（真人输入完通常会点别处/提交，change 是表单校验的触发点）
+      try{el.dispatchEvent(new Event('change',{bubbles:true}));}catch(e){}
+
       // 回读核验：受控组件若仍未接受（value 与期望不符），给调用方一个可判断的信号
-      var got=(!isCE&&el.value!=null)?String(el.value):(el.textContent||'');
-      return{applied:got===(text||''),value:got.slice(0,120)};
+      var got=isCE?(el.textContent||''):(el.value!=null?String(el.value):'');
+      return{applied:got===t,value:got.slice(0,120)};
     }
     // 为元素生成尽量稳定的唯一 CSS 选择器
     function genSel(el){
@@ -2073,6 +2187,115 @@ async function injectYzAssistant(wc) {
 const CHANGE_ACTIONS = new Set(['click', 'type', 'press', 'select_option', 'check', 'uncheck', 'submit_form', 'search', 'next_page', 'prev_page']);
 let noChangeStreak = 0;
 const STATE_SNAPSHOT_JS = `(function(){try{var d=document.body;return{url:location.href,t:(d?d.innerText:'').slice(0,2000),n:document.querySelectorAll('a,button,input,select,textarea').length};}catch(e){return null;}})()`;
+
+/**
+ * ★★★ 真键盘输入（CDP 通道）—— 2026-10-08 用户诉求「能否完全模拟人的操作」。
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * 为什么必须走 CDP，而不是 JS 里 setter/赋值：
+ *
+ * `typeIn`（JS 实现）本质是**程序化改值**，缺的是"人打字"产生的整套事件与编辑语义：
+ *   · **无 `keydown`/`keypress`/`keyup`** → 页面上靠 keydown 做的提交拦截、快捷键、
+ *     字数统计、Enter 发送，一个都不响应；
+ *   · **无 `compositionstart/update/end`** → 中文输入法（IME）组词路径完全不触发。
+ *     中文评论框几乎都监听 composition 事件收值 → "看着有字、提交是空的"；
+ *   · contenteditable 走 `textContent = 值` → **富文本编辑器（ProseMirror / Slate / Draft.js）
+ *     的内部 model 不同步** —— 它们只认 `beforeinput`/`input` 的编辑操作，不认 DOM 直改。
+ *     这是评论框（知乎/抖音/头条等）填不进去的直接原因；
+ *   · 无 `inputType`（`insertText` / `insertFromPaste`）→ 部分组件按 inputType 分支处理，收不到就忽略。
+ *
+ * CDP 的 `Input.insertText` 是 Chromium **官方推荐的文本注入方式**：它走真实的编辑管线，
+ * 会派发 `beforeinput`（inputType=insertText）+ `input`，富文本编辑器与受控组件都能正确接收；
+ * `Input.dispatchKeyEvent` 派发真实按键（含 Enter/Tab/方向键）。
+ * ★ 与已落地的 `upload`（DOM.setFileInputFiles）是同一套模式：Electron 内置 CDP 客户端，
+ *   对 <webview> guest 同样有效，不引入新依赖。
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * @returns 成功返回 {applied, typed, value}；不可用/失败返回 {error} 或 null（调用方回落 JS 实现）
+ */
+async function cdpTypeText(wc, target, text, pressEnter) {
+  if (!wc || typeof wc.debugger === 'undefined') return null;
+  const dbg = wc.debugger;
+  let attachedHere = false;
+  try {
+    if (!dbg.isAttached()) { dbg.attach('1.3'); attachedHere = true; }
+    const send = (method, params) => dbg.sendCommand(method, params);
+
+    // ① 定位并**聚焦**目标：聚焦后键盘事件才会路由到正确的元素。
+    //    用 JS 做（DOM 操作是 JS 的强项），CDP 只负责"打字"。
+    const sel = target?.selector != null ? String(target.selector) : '';
+    const idx = Number.isFinite(Number(target?.index)) ? Number(target.index) : -1;
+    const focusRes = await wc.executeJavaScript(`(function(){
+      var sel=${JSON.stringify(sel)};var idx=${idx};
+      var el=null;
+      if(idx>=0){el=window.__yzElements&&window.__yzElements[idx];}
+      if(!el&&sel){try{el=document.querySelector(sel);}catch(e){}}
+      if(!el&&idx>=0&&window.__yzSelMap&&window.__yzSelMap[idx]){el=document.querySelector(window.__yzSelMap[idx]);}
+      if(!el)return{error:sel?('元素未找到: '+sel):(idx>=0?('index '+idx+' 已失效（页面已变化），请重新调用 browser_get_page_info 获取最新编号'):'无聚焦元素')};
+      if(!el.isConnected)return{error:'元素已从页面移除（index/selector 已过期），请重新获取页面元素列表'};
+      try{el.scrollIntoView({block:'center'});}catch(e){}
+      el.focus();
+      // 富文本/输入框：先清空（选中全部再删），避免与已有内容拼接
+      try{
+        if(el.isContentEditable){
+          var r=document.createRange();r.selectNodeContents(el);
+          var s=window.getSelection();s.removeAllRanges();s.addRange(r);
+          document.execCommand('delete',false);
+        }else if(typeof el.select==='function'){ el.select(); }
+      }catch(e){}
+      try{ if(window.__yzAssistant){var rc=el.getBoundingClientRect();window.__yzAssistant.showCursor(rc.x+rc.width/2,rc.y+rc.height/2,'输入');} }catch(e){}
+      return {ok:true, isCE:el.isContentEditable===true, tag:el.tagName};
+    })()`).catch((e) => ({ error: String((e && e.message) || e) }));
+
+    if (!focusRes || focusRes.error) {
+      // 定位失败不是"CDP 不可用"，而是真错误 —— 交给调用方按原逻辑回报（不回落，避免重复报错）
+      return { locateError: (focusRes && focusRes.error) || '目标元素定位失败' };
+    }
+
+    // ② 真实文本注入：insertText 走编辑管线（派发 beforeinput/input，富文本与受控组件都认）
+    if (text) {
+      await send('Input.insertText', { text: String(text) });
+    }
+
+    // ③ 回车（提交/搜索）：必须用真实按键，不是 JS 造 KeyboardEvent ——
+    //    部分页面对 synthetic 事件做了 isTrusted 检查而忽略。
+    if (pressEnter) {
+      const key = { key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 };
+      await send('Input.dispatchKeyEvent', { type: 'keyDown', ...key, text: '\r', unmodifiedText: '\r' });
+      await send('Input.dispatchKeyEvent', { type: 'char', ...key, text: '\r', unmodifiedText: '\r' });
+      await send('Input.dispatchKeyEvent', { type: 'keyUp', ...key });
+    }
+
+    // ④ 回读核验：让调用方/模型知道"到底有没有写进去"（与 JS 实现同一契约）
+    const verify = await wc.executeJavaScript(`(function(){
+      var sel=${JSON.stringify(sel)};var idx=${idx};
+      var el=null;
+      if(idx>=0){el=window.__yzElements&&window.__yzElements[idx];}
+      if(!el&&sel){try{el=document.querySelector(sel);}catch(e){}}
+      if(!el)el=document.activeElement;
+      if(!el)return '';
+      return el.isContentEditable===true?(el.textContent||''):(el.value!=null?String(el.value):'');
+    })()`).catch(() => '');
+
+    const got = String(verify ?? '');
+    const expected = String(text || '');
+    return {
+      applied: got === expected,
+      typed: expected.length,
+      value: got.slice(0, 120),
+      via: 'cdp-keyboard',
+      ...(got !== expected
+        ? { hint: 'CDP 真键盘已注入，但回读值与期望不一致（页面可能做了格式化/富文本包装，或输入被拦截）。建议用 browser_get_page_content 核验输入框当前值。' }
+        : {}),
+    };
+  } catch (e) {
+    // CDP 不可用（未就绪/被占用/引擎不支持）→ 返回 null 让调用方回落 JS 实现
+    return null;
+  } finally {
+    if (attachedHere) { try { dbg.detach(); } catch { /* ignore */ } }
+  }
+}
+
 
 ipcMain.handle('browserView:action', async (_e, tabId, action, args) => {
   args = args || {};
@@ -2204,9 +2427,11 @@ ipcMain.handle('browserView:action', async (_e, tabId, action, args) => {
                 return {error:'未找到上传按钮（index 已失效？请重新 get_page_info）'};
               })()`).catch((e) => ({ error: String((e && e.message) || e) }));
               if (clickRes && clickRes.error) chooserErr = clickRes.error;
-              // 等 fileChooserOpened（最多 6s，远小于外层 18s 总闸）
+              // 等 fileChooserOpened（最多 10s）。★ 2026-10-08 由 6s 提到 10s：
+              //   视频网站（抖音创作者平台等）上传按钮点击后要等前端 chunk 加载完才挂/弹 filechooser，
+              //   6s 常不够 → 误判"未捕获文件选择器" → 报"上传不顺"。10s 仍在 18s 总闸之内。
               const t0 = Date.now();
-              while (!chooserBackendId && !chooserErr && Date.now() - t0 < 6000) await wait(150);
+              while (!chooserBackendId && !chooserErr && Date.now() - t0 < 10000) await wait(150);
             } finally {
               dbg.removeListener('message', onMessage);
               // ★ 必须关掉拦截：无论成功/失败都要还原，否则页面后续的 filechooser 会被一直劫持
@@ -2324,6 +2549,17 @@ ipcMain.handle('browserView:action', async (_e, tabId, action, args) => {
         })()`);
       }
       case 'type': {
+        // ★★★ 主路径：CDP 真键盘输入（2026-10-08）。见 cdpTypeText 注释 ——
+        //   JS 改值缺 keydown/keyup/composition、富文本内部 model 不同步，
+        //   而评论框/搜索框正是这些场景。
+        //   成功则直接用其结果；不可用（CDP 未就绪）才回落下面的 JS 实现。
+        const cdpRes = await cdpTypeText(wc, { index: args.index, selector: args.selector }, args.text, args.pressEnter === true);
+        if (cdpRes && cdpRes.locateError) {
+          // 定位失败是真错误（元素不存在/编号过期），原样回报 —— 回落 JS 只会重复同一个失败
+          return { error: cdpRes.locateError };
+        }
+        if (cdpRes) return { success: !!cdpRes.applied, ...cdpRes };
+        // ↓ CDP 不可用 → 回落 JS 实现（Web 端 / CDP 被占用等）
         return await wc.executeJavaScript(`(function(){
           var a=${JSON.stringify(args)};
           var A=window.__yzAssistant;
@@ -2331,7 +2567,7 @@ ipcMain.handle('browserView:action', async (_e, tabId, action, args) => {
             el.scrollIntoView({behavior:'smooth',block:'center'});
             var rect=el.getBoundingClientRect();A.showCursor(rect.x+rect.width/2,rect.y+rect.height/2,'输入');
             var r=A.typeIn(el,a.text);
-            var out={success:r.applied,typed:(a.text||'').length,applied:r.applied,value:r.value};
+            var out={success:r.applied,typed:(a.text||'').length,applied:r.applied,value:r.value,via:'js-fallback'};
             if(!r.applied)out.hint='输入框未接受文本（可能为受控组件且拦截了程序化输入，或输入被页面重置）。建议截图核验实际值；若被重置，改用 browser_press_key 逐键或让用户手输。';
             if(a.pressEnter){
               var ko={bubbles:true,cancelable:true,key:'Enter',code:'Enter',keyCode:13,which:13};
@@ -2744,7 +2980,9 @@ ipcMain.handle('browserView:action', async (_e, tabId, action, args) => {
           const scope = 'preview';
           const target = (() => { const u = String(args.url || '').trim(); return u; })();
           const tabId = 'tab-' + (++tabSeq);
-          webviewTabs.set(tabId, { scope, lastActiveAt: Date.now(), wcId: null });
+          // ★ agentOpened: true —— 这条路径是 agent 工具链（browser_new_tab / navigate openInNewTab），
+          //   标记后它才**允许被 agent 关闭**（权限闸门见 close_tab 分支）。用户手开的 tab 永远是 false。
+          webviewTabs.set(tabId, { scope, lastActiveAt: Date.now(), wcId: null, agentOpened: true });
           activeTabId = tabId;
           // 通知渲染层补建 host tab 壳(:src=url 会驱动新建 <webview> 并注册 guest)，并激活
           if (mainWindow && !mainWindow.isDestroyed()) {
@@ -2770,6 +3008,16 @@ ipcMain.handle('browserView:action', async (_e, tabId, action, args) => {
       case 'close_tab': {
         if (isWebviewEngine()) {
           const tid = String(args.tabId ?? activeTabId ?? '');
+          const meta = webviewTabs.get(tid);
+          // ★★★ 权限闸门（2026-10-08，安全边界）：**agent 只能关闭自己打开的标签页**。
+          //   本分支是 `browserView:action`，调用方恒为 agent 工具链（用户关 tab 走
+          //   `browserView:closeTab` IPC，是另一条路径，不受此限）。
+          //   为什么必须在主进程拦：agent 可能传错 tabId，也可能被页面内容诱导去关用户的页
+          //   （如"关掉其他页签以继续"）；只靠提示词约束不构成权限边界。
+          //   ⇒ 非 agentOpened 的 tab 一律拒绝，并把原因回给模型（让它知道该换 tab 或放弃）。
+          if (meta && meta.agentOpened !== true) {
+            return { error: '该标签页不是本次 agent 打开的，无权关闭（用户手动打开的页面只能由用户关闭）。请勿再次尝试关闭它。' };
+          }
           webviewTabs.delete(tid);
           if (activeTabId === tid) {
             activeTabId = null;
@@ -2785,7 +3033,9 @@ ipcMain.handle('browserView:action', async (_e, tabId, action, args) => {
         const tabs2 = [];
         for (const [id, t] of webviewTabs) {
           const wc2 = guestWebContents(id);
-          tabs2.push({ tabId: id, url: wc2 ? wc2.getURL() : '', title: wc2 ? wc2.getTitle() : '', scope: t.scope || 'preview' });
+          // ★ agentOpened 随列表返回（2026-10-08）：让模型**先知道**哪些页能关，
+          //   而不是关失败了才知道 —— 配合 close_tab 的权限闸门，形成"事前可见 + 事后强制"。
+          tabs2.push({ tabId: id, url: wc2 ? wc2.getURL() : '', title: wc2 ? wc2.getTitle() : '', scope: t.scope || 'preview', agentOpened: t.agentOpened === true });
         }
         return { tabs: tabs2, activeTabId };
       }
@@ -2983,10 +3233,15 @@ ipcMain.handle('browserView:action', async (_e, tabId, action, args) => {
         new Promise((r) => setTimeout(() => r(null), 3000)),
       ]);
     }
-    // 总闸：任何 action 最多 18s（渲染层 20s 竞速之前返回明确错误，而非让渲染层猜超时）
+    // 总闸：默认任何 action 最多 18s（渲染层 20s 竞速之前返回明确错误，而非让渲染层猜超时）。
+    //   ★ 2026-10-08 例外：upload / screenshot 放宽到 60s —— 视频文件投递后页面要等待
+    //     前端 chunk 挂载与上传控件就绪（filechooser 等待本身已占 10s），18s 会把"正在上传"
+    //     误判成超时（用户报"视频上传不顺"）。渲染层对这两个 action 同步放宽竞速窗口。
+    const SLOW_ACTIONS = new Set(['upload', 'screenshot']);
+    const actionTimeout = SLOW_ACTIONS.has(action) ? 60000 : 18000;
     const result = await Promise.race([
       doAction(),
-      new Promise((r) => setTimeout(() => r({ error: `浏览器操作 ${action} 超时（18s）：页面可能仍在加载或无响应，请稍后用 browser_get_page_content 重试` }), 18000)),
+      new Promise((r) => setTimeout(() => r({ error: `浏览器操作 ${action} 超时（${actionTimeout / 1000}s）：页面可能仍在加载或无响应，请稍后用 browser_get_page_content 重试` }), actionTimeout)),
     ]);
     if (result && !result.error && !result.ambiguous && beforeState) {
       await new Promise(r => setTimeout(r, 500)); // 等待页面响应
@@ -3266,10 +3521,20 @@ ipcMain.handle('shell:showItemInFolder', (_e, p) => {
   try { shell.showItemInFolder(p); } catch {}
 });
 
+// ★ 外链协议白名单（2026-10-08）：只允许 http/https 交给系统 Shell，其余一律拒绝。
+// 动机：页面里的 bitbrowser:// / tel: / mailto: / ms-* 等自定义协议一旦被 openExternal 甩给
+// Windows Shell，而本机又没有注册对应处理器，系统就会弹「没有可打开此链接的应用」——
+// 表现为任务运行中反复弹窗（小说推文的站点页面里混有第三方协议的推广位）。
+// 宁可静默丢弃，也绝不把未知协议交给 Shell。实现见 url-guard.cjs（纯函数，有单测）。
+const { isSafeExternalUrl, isAllowedGuestNavigation } = require('./url-guard.cjs');
+
 // 用系统默认浏览器打开外链（http/https），不在应用窗口内导航离开
 ipcMain.handle('shell:openExternal', (_e, url) => {
+  if (!isSafeExternalUrl(url)) {
+    console.log('[nav] shell:openExternal 拒绝非 http(s) 协议:', url);
+    return;
+  }
   console.log('[nav] shell:openExternal IPC:', url);
-  if (!url || !/^https?:\/\//i.test(url)) return;
   try { shell.openExternal(url); } catch {}
 });
 

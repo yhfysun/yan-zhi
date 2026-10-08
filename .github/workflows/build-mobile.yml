@@ -1,0 +1,140 @@
+name: 构建移动端
+
+# ★ 只出 Android APK。iOS 需要 macOS + Apple 开发者证书，暂不纳入 CI。
+#
+# ★★ 为什么这个 job 的步骤顺序不能改（每一步都在补一个「干净 checkout 下的坑」）：
+#   1. apps/mobile/android/ 是 Capacitor 生成目录，**被 gitignore**
+#      → 干净 runner 上不存在，必须先 `cap add android` 现生成；
+#   2. 生成出来的工程是脚手架原样（青绿底 + 默认 brain 图标）
+#      → 图标脚本必须**排在 cap add 之后**（否则 res/ 不存在，无从下笔）；
+#   3. 短信插件的 java/manifest/MainActivity 注册只在 apps/mobile/native/android/
+#      （tracked），重建工程后会丢 → 由 apply-native-sms.cjs 重新铺进去；
+#   4. 内嵌后端（apps/mobile/nodejs）要 npm install 一遍才有效果
+#      → 由 build-mobile-server.cjs 负责（含剥 .gz，避 gradle Duplicate resources）。
+#   这几条正是 package.cjs 里 buildAndroid() 的链路，所以这里**直接复用同一脚本**，
+#   而不是在 workflow 里再手写一遍 —— 本地怎么打、CI 就怎么打，避免两套口径漂移。
+
+on:
+  push:
+    branches: [master, dev0.1, dev0.1-mobile]
+    paths:
+      # 只有碰了移动端（或它依赖的后端/共享包）才跑，避免每个桌面提交都烧 20 分钟
+      - 'apps/mobile/**'
+      - 'apps/server/**'
+      - 'packages/core/**'
+      - 'packages/shared/**'
+      - 'scripts/package.cjs'
+      - 'scripts/package-android.cjs'
+      - 'assets/icons/**'
+      - '.github/workflows/build-mobile.yml'
+  workflow_dispatch:
+
+jobs:
+  build-android:
+    runs-on: ubuntu-latest
+    # ★ 输出目录口径与本地一致：dist-release/android/<版本>/app-debug.apk
+    #   （路径定义在 apps/desktop/scripts/lib/pack-helpers.cjs，脚本内部自行解析）
+    #
+    # ★ SDK / JDK 路径**不在这里硬编码**：
+    #   · SDK 由 android-actions/setup-android 设置 ANDROID_SDK_ROOT 并加进 PATH；
+    #   · JDK 由 actions/setup-java 设置 JAVA_HOME。
+    #   （原先写死 /usr/local/lib/android/sdk，runner 布局一变就失效 —— 交给 action 更稳，
+    #     且 scripts/package.cjs 的 androidToolchain() 会自动读这两个环境变量。）
+    env:
+      # 内嵌后端 npm install 走官方源即可（CI 直连网络，不需要国内镜像）
+      YZ_SKIP_MOBILE_NPM: '0'
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: 安装 pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: 'pnpm'
+
+      # ★ JDK 由 setup-java 显式提供并写进 JAVA_HOME，不依赖 runner 预装的默认版本 ——
+      #   Cap 8 模板用 AGP 8.13.0，要求 JDK 17+；预装版本随镜像漂移，显式钉住更稳。
+      - name: 安装 JDK 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      # ★ Android SDK：官方 action 负责下载 cmdline-tools + 接受许可 + 装 platform-tools，
+      #   并把 sdkmanager 放进 PATH（README 实测：它在 $ANDROID_SDK_ROOT 或 $HOME/.android/sdk 查找）。
+      #   这里只装 platform-tools，具体 platform / build-tools / ndk 在下一步按工程版本补。
+      - name: 安装 Android SDK 基础工具
+        uses: android-actions/setup-android@v4
+        with:
+          packages: 'platform-tools'
+
+      - name: 安装依赖
+        run: pnpm install
+
+      # ★★ 生成 Android 原生工程（干净 runner 上不存在，因为 apps/mobile/android/ 被 gitignore）
+      #   webDir=dist 尚未构建，cap add 会警告「web directory does not exist」但不阻断 ——
+      #   它只负责铺脚手架，真正的 web 资源由后面 cap sync 拷进去。
+      #   ★ 模板来自 @capacitor/cli 包内的 assets/android-template.tar.gz（随 npm 包本地分发），
+      #     不联网，所以受限网络下也能生成。
+      - name: 生成 Android 工程
+        working-directory: apps/mobile
+        run: |
+          mkdir -p dist
+          node node_modules/@capacitor/cli/bin/capacitor add android
+
+      # ★★ SDK 组件必须在「生成 Android 工程」**之后**准备 —— 顺序反了就装错版本：
+      #   工程未生成时读不到 variables.gradle，只能按兜底值装（实测会与真实需求差一个版本）。
+      #   Cap 8.5.2 模板实测：compileSdk 36 / targetSdk 36 / minSdk 24，AGP 8.13.0。
+      #   NDK：@capawesome/capacitor-nodejs 有 CMakeLists.txt + externalNativeBuild（真的编译 native），
+      #   且**未钉死 ndkVersion** → 用 AGP 8.13 的默认 NDK（27.x）。
+      - name: 按工程版本补装 SDK 组件
+        run: |
+          set -euo pipefail
+          # ★ 从**已生成**的工程里读真实版本，不在 workflow 里硬编码（会与工程漂移）
+          GRADLE_VARS="apps/mobile/android/variables.gradle"
+          if [ ! -f "$GRADLE_VARS" ]; then
+            echo "::error::未找到 $GRADLE_VARS —— '生成 Android 工程' 步骤没生效"
+            exit 1
+          fi
+          COMPILE_SDK=$(grep -oP 'compileSdkVersion\s*=\s*\K[0-9]+' "$GRADLE_VARS")
+          TARGET_SDK=$(grep -oP 'targetSdkVersion\s*=\s*\K[0-9]+' "$GRADLE_VARS")
+          MIN_SDK=$(grep -oP 'minSdkVersion\s*=\s*\K[0-9]+' "$GRADLE_VARS")
+          echo "从 variables.gradle 读到: compileSdk=$COMPILE_SDK targetSdk=$TARGET_SDK minSdk=$MIN_SDK"
+          echo "COMPILE_SDK=$COMPILE_SDK" >> "$GITHUB_ENV"
+
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+          # build-tools 版本跟 compileSdk 同号（Android 官方发布节奏一致）；
+          # NDK 27.0.12077973 是 AGP 8.13 的默认版本，与插件 CMake 编译对齐。
+          sdkmanager --install \
+            "platforms;android-${COMPILE_SDK}" \
+            "build-tools;${COMPILE_SDK}.0.0" \
+            "ndk;27.0.12077973"
+          echo "== 已安装 =="
+          sdkmanager --list_installed | head -20
+
+      # ★ 打包主链路（一条命令覆盖，与本地完全同一个口径）：
+      #   gen-android-icons → vite build → apply-native-sms → 内嵌后端 → cap sync
+      #   → gradle assembleDebug → 拷 APK
+      #   这几步都在 scripts/package.cjs 的 buildAndroid() 里，**不在 workflow 重复实现** ——
+      #   本地怎么打、CI 就怎么打，从根上避免两套口径漂移。
+      #   ★ 上面单独跑 `cap add android` 是因为 package.cjs 假定工程已存在
+      #     （本地开发机 cap add 过一次就一直在），而干净 runner 上没有。
+      - name: 打包 Android APK
+        run: node scripts/package-android.cjs --yes
+
+      - name: 列出构建产物（诊断用）
+        run: |
+          echo "=== dist-release 树 ==="
+          find dist-release -type f 2>/dev/null || echo "(空)"
+
+      # ★ 路径口径由 pack-helpers.cjs 决定（dist-release/android/<版本>/），
+      #   这里用通配匹配，避免 workflow 再记一份版本号。
+      - name: 上传 APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: Android-APK
+          path: dist-release/android/*/*.apk
+          if-no-files-found: error

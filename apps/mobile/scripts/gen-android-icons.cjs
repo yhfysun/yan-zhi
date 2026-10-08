@@ -58,15 +58,30 @@ const BRAND_BG = '#F5F2EC';
 function resolveSharp() {
   // sharp 在 pnpm 虚拟 store 里，不能直接 require('sharp')。
   const base = path.join(REPO_ROOT, 'node_modules', '.pnpm');
-  const dirs = fs.readdirSync(base).filter((d) => /^sharp@/.test(d));
+  let dirs = [];
+  try {
+    dirs = fs.readdirSync(base).filter((d) => /^sharp@/.test(d));
+  } catch {
+    /* .pnpm 不可读 → 走下面统一报错 */
+  }
   for (const d of dirs) {
     const p = path.join(base, d, 'node_modules', 'sharp');
     if (fs.existsSync(path.join(p, 'package.json'))) {
       // eslint-disable-next-line @typescript-eslint/no-var-requires
-      return require(p);
+      const mod = require(p);
+      // ★ sharp 是「带平台二进制的包」：装不全时 require 能过、**首次调用才抛**
+      //   （`Could not load the "sharp" module using the ... runtime`）。
+      //   在校验阶段把这个问题提前，报错直接指向处置办法。
+      if (typeof mod !== 'function' && typeof mod?.default !== 'function') {
+        throw new Error('[icons] sharp 已装但不可用（缺平台二进制）。处置：重装根依赖 pnpm install sharp');
+      }
+      return mod;
     }
   }
-  throw new Error('未找到 sharp（本项目用 pnpm，sharp 在 node_modules/.pnpm/sharp@*/node_modules/sharp）');
+  throw new Error(
+    '[icons] 未找到 sharp（本项目用 pnpm，sharp 在 node_modules/.pnpm/sharp@*/node_modules/sharp）。\n' +
+      '         处置：在仓库根执行 pnpm install（sharp 是根 package.json 的 dependencies）。',
+  );
 }
 
 /** 圆形遮罩用 SVG（legacy round 图标） */
@@ -81,10 +96,22 @@ function circleMaskSvg(size) {
   const srcIdx = argv.indexOf('--source');
   const source = srcIdx >= 0 ? path.resolve(argv[srcIdx + 1]) : DEFAULT_SOURCE;
 
+  // ★ 目标 res/ 目录在 Android 工程内（apps/mobile/android/…），而该目录被 gitignore，
+  //   干净 checkout 下不存在 —— 此时没东西可画，**跳过而不是失败**，
+  //   免得在 CI / 新克隆环境把整条打包链拦死。缺图标的补法见文件末尾提示。
+  if (!fs.existsSync(RES_DIR)) {
+    console.log('[icons] 未找到 Android res/ 目录，跳过（属正常：工程尚未 cap add）');
+    console.log('[icons]   生成工程: npx cap add android（随后重跑本脚本即可补图标）');
+    return;
+  }
+
   if (!fs.existsSync(source)) {
     console.error('[icons] 源图不存在:', source);
     process.exit(1);
   }
+  // ★ 本地跑（无 android 工程）根本用不到 sharp —— 官方 sharp 是带原生二进制的可选依赖，
+  //   受限网络下 pnpm install 很可能只装了骨架。所以「先判 res/ 存在，再解析 sharp」：
+  //   有工程（真打包）时才要求 sharp，缺了就给出可操作的提示。
   const sharp = resolveSharp();
   const meta = await sharp(source).metadata();
   console.log(`[icons] 源图 ${path.relative(REPO_ROOT, source)} → ${meta.width}x${meta.height} ${meta.channels}ch`);

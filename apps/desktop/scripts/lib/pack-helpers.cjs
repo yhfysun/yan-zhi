@@ -171,6 +171,90 @@ function androidOutDir({ repoRoot, version, outRoot = DEFAULT_RELEASE_ROOT }) {
   return path.resolve(repoRoot, outRoot, 'android', version || '0.0.0');
 }
 
+/**
+ * 安卓工具链（SDK / JDK）候选路径 —— **纯函数，可单测**。
+ *
+ * ★★ 为什么必须抽出来（2026-10-08）：
+ *   preflight 检查与 gradle 执行读的是同一组路径。原先两处各写一份 Windows 硬编码
+ *   （`C:\Android\Sdk` / `C:\APP\Java\jdk-21…`），后果有两个：
+ *     · 换机器要改两处，漏一处 → 「检查通过但 gradle 找不到 SDK」；
+ *     · **CI（ubuntu）上三处硬编码全不成立 → 构建直接被前置检查拦死**。
+ *   抽到这里后，包内只有一份定义，且能用假 fs 把「CI 环境」也测到 ——
+ *   这类平台分支在真机上无法在一台机器里同时验证。
+ *
+ * @param {object} opts
+ * @param {string} opts.platform  process.platform
+ * @param {object} opts.env       process.env（取 ANDROID_HOME / JAVA_HOME / HOME 等）
+ * @param {string} [opts.delimiter] PATH 分隔符（win32 为 ';'，其余 ':'）
+ * @returns {{sdkCandidates: string[], javaCandidates: string[]}}
+ */
+function androidToolchainCandidates({ platform = process.platform, env = {}, delimiter } = {}) {
+  const isWin = platform === 'win32';
+  const d = delimiter || (isWin ? ';' : ':');
+
+  const sdkCandidates = [
+    env.ANDROID_HOME,
+    env.ANDROID_SDK_ROOT,
+    ...(isWin
+      ? ['C:\\Android\\Sdk', env.LOCALAPPDATA ? path.join(env.LOCALAPPDATA, 'Android', 'Sdk') : null]
+      : [
+          env.HOME ? path.join(env.HOME, 'Android', 'Sdk') : null,
+          // ubuntu runner 自带 SDK 的默认落点（android-actions/setup-android 同源）
+          '/usr/local/lib/android/sdk',
+          '/opt/android-sdk',
+        ]),
+  ].filter(Boolean);
+
+  const javaCandidates = [
+    env.JAVA_HOME,
+    ...(isWin ? ['C:\\APP\\Java\\jdk-21.0.12.1+1'] : []),
+  ].filter(Boolean);
+
+  // ★ PATH 反推：gradle 要的是 JAVA_HOME，而 CI 往往只把 javac 放进 PATH。
+  //   注意不能断言 PATH 上有 `javac` —— setup-java 在部分镜像上只放 java/java.exe，
+  //   所以两个名字都认，命中后取其所在目录的上一级（<home>/bin/javac → <home>）。
+  const javacNames = isWin ? ['javac.exe', 'java.exe'] : ['javac', 'java'];
+  const pathDirs = String(env.PATH || '').split(d).filter(Boolean);
+  return { sdkCandidates, javaCandidates, javacNames, pathDirs };
+}
+
+/**
+ * 从候选里挑出**可用**的 SDK / JDK（存在性判据由调用方注入，便于测试）。
+ *
+ * @param {object} opts
+ * @param {string[]} opts.sdkCandidates
+ * @param {string[]} opts.javaCandidates
+ * @param {string[]} opts.javacNames
+ * @param {string[]} opts.pathDirs
+ * @param {(p: string) => boolean} opts.exists  判存在（SDK 判 platform-tools，JDK 判 bin/javac）
+ * @param {(dir: string, name: string) => boolean} opts.existsIn  判 dir/name 是否存在
+ * @param {(p: string) => string} opts.dirname
+ */
+function resolveAndroidToolchain({
+  sdkCandidates = [],
+  javaCandidates = [],
+  javacNames = [],
+  pathDirs = [],
+  exists = () => false,
+  existsIn = () => false,
+  dirname = (p) => path.dirname(p),
+} = {}) {
+  const sdk = sdkCandidates.find((p) => exists(p)) || null;
+
+  let javaHome = javaCandidates.find((p) => exists(p)) || null;
+  let javaSource = javaHome ? 'env' : null;
+  if (!javaHome) {
+    for (const dir of pathDirs) {
+      if (javacNames.some((n) => existsIn(dir, n))) {
+        javaHome = dirname(dir);
+        javaSource = 'PATH';
+        break;
+      }
+    }
+  }
+  return { sdk, javaHome, javaSource };
+}
+
 module.exports = {
   ALL_EDITIONS,
   EDITION_CONFIG,
@@ -185,4 +269,6 @@ module.exports = {
   parseEditionsArgv,
   outDirForEdition,
   androidOutDir,
+  androidToolchainCandidates,
+  resolveAndroidToolchain,
 };

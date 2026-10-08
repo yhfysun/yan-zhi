@@ -1778,7 +1778,9 @@ async function runReActLoop(task: LlmTask, params: {
         //   ① **剔除子智能体消息**（此前混杂进主上下文，破坏隔离语义）；
         //   ② **压缩结果落库**（message_summary）→ 下一步读到的是"摘要 + 增量"，
         //      而不是每步把全量重新压一遍（旧实现只改局部变量，等于没压）。
-        let flushedThisRun = false; // 每个任务最多抢救一次
+        // 抢救节流游标：记录**已抢救过的批次号**（-1 = 尚未抢救）。
+        // ★ 不能是布尔量 —— 那会让长任务第一批量之后就再也不抢救（见 beforeCompress 注释）。
+        let flushedBatch = -1;
         const sumLlm = resolveMemoryExtractLlm(task) || { platform, model };
         const ctxView = await buildContextView({
           conversationId: convId,
@@ -1792,8 +1794,14 @@ async function runReActLoop(task: LlmTask, params: {
           summaryCache: task.summaryCache ||= { ids: [], summary: '' },
           setSummaryModel: (cw) => cw.setSummaryModel(sumLlm.platform, sumLlm.model),
           beforeCompress: async (toCompress) => {
-            if (flushedThisRun) return;
-            flushedThisRun = true;
+            // ★★★ 抢救节流：**每个接力批次一次**，不是每个任务一次（2026-10-08 修）。
+            //   此前 `flushedThisRun` 是 runReActLoop 的**函数级**变量，全程只置一次 →
+            //   一个跑 3 个批次的长任务，只有**第一批**压缩时抢救了记忆，
+            //   第二、三批的压缩**一路白压**：被摘要吞掉的细节既没进记忆、也没进计划。
+            //   批次是"上下文事实上被结算"的自然边界（每批开头都会重算预算），
+            //   按它节流既不会每次压缩都调 LLM，也不会漏掉整批。
+            if (flushedBatch === batch) return;
+            flushedBatch = batch;
             const memLlm = resolveMemoryExtractLlm(task) || { platform, model };
             await flushMemoriesBeforeCompression(
               { userId, conversationId: convId, agentId: task.agentId ?? null, platform: memLlm.platform, model: memLlm.model },
@@ -4819,6 +4827,33 @@ export function buildSystemPromptForBackend(agentId: string | null, userId: stri
       '需与 category 参数保持一致：category="deliverable" 写交付目录，category="intermediate" 写中间目录。',
       '界面已内置「导出 Word」：把回复正文（markdown，含图片）直接转成 .docx，因此不需要自己用 python_exec 生成 Word 文件；',
       '需要交付 Word 时，把内容写成规范的 markdown 正文（图片用 ![](url)）即可。',
+    ].join('\n'));
+  }
+
+  // ★★★ 浏览器页面收拾（2026-10-08 用户诉求「pageAgent 执行完了不会关闭页面？」）
+  //
+  // 问题：任务收尾时**不动任何页面**，agent 开的中间页全留在右侧面板里 ——
+  //   用户既不知道"这些是 agent 留的、可以关"，也分不清哪些还有用。
+  // 取向（用户拍板）：**不写死自动关**，而是把"收拾页面"变成模型收尾时的**明确动作** ——
+  //   它知道任务完成没完成、哪些页是交付物（该留）、哪些是中间过程（该关）。
+  //
+  // ★ 权限边界（安全，必须写清，因为执行侧也已强制）：
+  //   agent **只能关闭自己打开的**标签页。用户手动打开的页面关不掉，主进程会直接拒绝
+  //   （见 main.cjs close_tab 的 agentOpened 闸门）。所以这里必须讲清"别去关用户的页"，
+  //   否则模型会反复尝试、白烧步数。
+  if (opts?.includeUiTools) {
+    parts.push([
+      '---',
+      '## 浏览器页面收拾（收尾必做）',
+      '你在任务中打开过网页时，**收尾前**要主动收拾页面，不要把一堆中间页留在用户的面板里。',
+      '做法：',
+      '1. 先 `browser_get_tabs` 看有哪些标签页（返回里 `agentOpened: true` 的是**你打开的**，可以关）。',
+      '2. 用 `browser_close_tab` 的 `tabIds` 参数**一次关掉**那些"已完成使命的中间页"（搜索结果页、登录页、跳转中转页、你看完就够了的页）。',
+      '3. **保留**该给用户看的页：最终成果页（报告/商品/订单/发布结果等用户会想接着看或操作的页），并在总结里说明"已为你保留 XX 页面"。',
+      '',
+      '★ 权限边界：你**只能关闭自己打开的**标签页（`agentOpened: true`）。用户手动打开的页面关不掉，'
+        + '尝试关闭会被拒绝 —— 不要去关它们，也不要在被拒后反复重试。',
+      '★ 若任务还没跑完（还要继续操作同一个页面），不要提前关闭它。',
     ].join('\n'));
   }
 

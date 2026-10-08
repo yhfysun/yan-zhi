@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [master, dev0.1]
+    branches: [master, dev0.1, dev0.1-mobile]
   pull_request:
-    branches: [master, dev0.1]
+    branches: [master, dev0.1, dev0.1-mobile]
 
 jobs:
   quality:
@@ -18,7 +18,7 @@ jobs:
       - name: 安装 Node.js
         uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version: 24
           cache: 'pnpm'
 
       - name: 安装依赖

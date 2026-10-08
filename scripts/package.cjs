@@ -212,6 +212,47 @@ function distStale() {
 }
 
 // ─────────────────────── 前置检查 ───────────────────────
+/**
+ * 解析安卓工具链（SDK / JDK）—— **跨平台唯一真相源**。
+ *
+ * ★ 为什么必须抽出来：preflight 检查与 gradle 执行**读的是同一组路径**，
+ *   原先两处各写一份 Windows 硬编码（`C:\Android\Sdk` / `C:\APP\Java\jdk-21…`），
+ *   后果有两个：换机器要改两处（漏一处就「检查通过、gradle 找不到 SDK」）；
+ *   **CI（ubuntu）上三处硬编码全不成立 → 构建被前置检查直接拦死**。
+ *
+ * ★ 候选路径表的**纯逻辑**落在 lib/pack-helpers.cjs（可单测，含 CI 平台分支），
+ *   这里只负责把真实 fs / env 注入进去 —— 保证「测什么就是跑什么」。
+ */
+function androidToolchain() {
+  const { androidToolchainCandidates, resolveAndroidToolchain } = require(
+    path.join(__dirname, '..', 'apps', 'desktop', 'scripts', 'lib', 'pack-helpers.cjs'),
+  );
+  const isWin = process.platform === 'win32';
+  const cand = androidToolchainCandidates({
+    platform: process.platform,
+    env: process.env,
+    delimiter: path.delimiter,
+  });
+  const javac = isWin ? 'javac.exe' : 'javac';
+  const { sdk, javaHome, javaSource } = resolveAndroidToolchain({
+    ...cand,
+    exists: (p) => fs.existsSync(path.join(p, 'platform-tools')),
+    existsIn: (dir, name) => fs.existsSync(path.join(dir, name)),
+    dirname: (p) => path.dirname(p),
+  });
+
+  // JDK 的存在性判据与 SDK 不同（SDK 看 platform-tools，JDK 看 bin/javac）——
+  // 单独再验一次，避免把「目录存在但没有 javac」当可用。
+  const javaOk = javaHome && fs.existsSync(path.join(javaHome, 'bin', javac));
+  return {
+    sdk,
+    sdkTried: cand.sdkCandidates,
+    javaHome: javaOk ? javaHome : null,
+    javaSource,
+    javaTried: [...cand.javaCandidates, 'PATH 上的 javac/java 反推'],
+  };
+}
+
 function preflight(targets) {
   step('前置检查');
   const problems = [];
@@ -242,19 +283,14 @@ function preflight(targets) {
   }
 
   if (targets.android) {
-    // Android SDK
-    const sdkCandidates = [
-      process.env.ANDROID_HOME, process.env.ANDROID_SDK_ROOT,
-      'C:\\Android\\Sdk',
-      path.join(process.env.LOCALAPPDATA || '', 'Android', 'Sdk'),
-    ].filter(Boolean);
-    const sdk = sdkCandidates.find((p) => p && fs.existsSync(path.join(p, 'platform-tools')));
-    if (!sdk) problems.push('Android SDK 未找到（缺 platform-tools）');
-    else ok(`Android SDK: ${sdk}`);
-    // JDK 21
-    const jdk = ['C:\\APP\\Java\\jdk-21.0.12.1+1'].find((p) => fs.existsSync(path.join(p, 'bin', 'javac.exe')));
-    if (!jdk) warn('未找到 JDK 21（gradle.properties 指定 C:\\APP\\Java\\jdk-21.0.12.1+1），可能构建失败');
-    else ok(`JDK 21: ${jdk}`);
+    // ★ CI / 类 Unix 环境下这里的三处 Windows 硬编码全都不成立（C:\Android\Sdk、
+    //   C:\APP\Java\jdk-21…），旧逻辑会直接 problems.push 把构建拦死。
+    //   所以环境检查一律走下面的跨平台解析函数 androidToolchain() —— 它是唯一真相源。
+    const tc = androidToolchain();
+    if (tc.sdk) ok(`Android SDK: ${tc.sdk}`);
+    else problems.push(`Android SDK 未找到（缺 platform-tools）：${tc.sdkTried.join(' / ')}`);
+    if (tc.javaHome) ok(`JDK: ${tc.javaHome}`);
+    else problems.push(`JDK 未找到（需 17+）：${tc.javaTried.join(' / ')}`);
   }
 
   if (problems.length) {
@@ -487,13 +523,35 @@ function buildAndroid() {
   info('② 构建移动端前端');
   run(process.execPath, [path.join('node_modules', 'vite', 'bin', 'vite.js'), 'build'], { cwd: mobile });
 
-  // ③ 内嵌后端（★ 只复制 server/dist —— 必须先确认它是新鲜的）
+  // ②.5 原生改动（短信插件）
+  //
+  // ★★ 为什么必须在这里补（2026-10-08 发现的实际缺陷）：
+  //   原生 java 源 + AndroidManifest 权限 + MainActivity 的 registerPlugin 调用，
+  //   唯一真相源在 apps/mobile/native/android/（tracked），而 apps/mobile/android/
+  //   是 Capacitor 生成目录（gitignore）。**重建工程后这些改动就丢了**。
+  //   mobile 包的 `build:android` 脚本里有这一步，但 package.cjs 的链路**漏了** ——
+  //   结果走 `pnpm package:android` 打出的包**不含短信插件**，
+  //   而构建全程无报错（插件缺失只在真机收验证码时才暴露）。
+  //   ★ 位置：必须早于 cap sync（sync 会重铺原生工程文件，晚于它则被覆盖）。
+  info('②.5 应用原生改动（短信插件）');
+  run(process.execPath, ['scripts/apply-native-sms.cjs'], { cwd: mobile });
+
+  // ③ 内嵌后端（★ 先确保 server/dist 是新鲜的）
+  //
+  // ★★ 为什么这里改成「显式编译」而不是沿用 distStale() 拦中断：
+  //   distStale() 用「入口目录 mtime vs 源码 mtime」判断，在**跨机器 / CI 干净 checkout**
+  //   下会假阳性 —— 源码 mtime 取决于 checkout 时间，dist 是构建产物，
+  //   结果纯安卓 CI 十有八九被判为「陈旧」而拦死（报的却是"请先跑桌面构建"）。
+  //   build-mobile-server 只复制不编译这点没变，所以这里**自己补一次编译**，
+  //   把分布式前置条件变成脚本内联步骤。distStale() 仅降级为提示。
   if (distStale()) {
-    fail('apps/server/dist 陈旧或缺失！build-mobile-server 只复制不编译，改动不会进包。');
-    info('  请先跑桌面构建（含真编译），或手动：pnpm --filter @yan-zhi/server build');
-    process.exit(1);
+    warn('apps/server/dist 陈旧或缺失 → 就地编译一次（build-mobile-server 只复制不编译）');
+    info(c.dim('  首次或改动后需要，约 30-60 秒'));
+    run('pnpm', ['--filter', '@yan-zhi/server', 'build']);
+    ok('server/dist 已重新编译');
+  } else {
+    ok('apps/server/dist 已是新鲜产物');
   }
-  ok('apps/server/dist 已是新鲜产物');
   info('③ 打包内嵌 Node 后端');
   run(process.execPath, ['scripts/build-mobile-server.cjs'], { cwd: mobile });
 
@@ -501,27 +559,62 @@ function buildAndroid() {
   info('④ 同步 Capacitor Android 工程');
   run(process.execPath, [path.join('node_modules', '@capacitor', 'cli', 'bin', 'capacitor'), 'sync', 'android'], { cwd: mobile });
 
-  // ⑤ gradle —— ★ 必须 PowerShell + junction 短路径
-  info('⑤ gradle assembleDebug（PowerShell + C:\\yz junction）');
-  const junction = 'C:\\yz';
-  const jDir = 'C:\\yz\\apps\\mobile\\android';
-  const rootEsc = ROOT.replace(/'/g, "''");
-  // ★ 用单引号 here-string 写脚本，避免路径里的 \\ 与 $ 被 PS 解释
-  const gradleScript = [
-    `$ErrorActionPreference = 'Stop'`,
-    `if (-not (Test-Path -LiteralPath '${junction}')) {`,
-    `  New-Item -ItemType Junction -Path '${junction}' -Target '${rootEsc}' | Out-Null`,
-    `}`,
-    `$env:ANDROID_HOME = 'C:\\Android\\Sdk'`,
-    `$env:ANDROID_SDK_ROOT = 'C:\\Android\\Sdk'`,
-    `$env:JAVA_HOME = 'C:\\APP\\Java\\jdk-21.0.12.1+1'`,
-    `Set-Location '${jDir}'`,
-    `Write-Host "PWD=$($PWD.Path)"`,
-    `& .\\gradlew.bat --stop 2>&1 | Out-Null`,
-    `& .\\gradlew.bat assembleDebug --console=plain`,
-    `if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }`,
-  ].join('\n');
-  runPowerShell(gradleScript, 'gradle');
+  // ⑤ gradle assembleDebug
+  const tc = androidToolchain();
+  if (!tc.sdk || !tc.javaHome) {
+    fail('安卓工具链不完整（SDK / JDK），无法执行 gradle');
+    if (!tc.sdk) info(c.dim(`  SDK 候选均无效: ${tc.sdkTried.join(' / ')}`));
+    if (!tc.javaHome) info(c.dim(`  JDK 候选均无效: ${tc.javaTried.join(' / ')}`));
+    process.exit(1);
+  }
+
+  if (process.platform === 'win32') {
+    // ── Windows：走 junction 短路径 ──
+    // ★ 为什么必须换短路径：@capawesome/capacitor-nodejs 的 CMake 与 NDK 中间产物
+    //   会把路径顶到 Windows MAX_PATH(260) 附近，长路径直接编译失败。
+    info(`⑤ gradle assembleDebug（PowerShell + C:\\yz junction）`);
+    const junction = 'C:\\yz';
+    const jDir = 'C:\\yz\\apps\\mobile\\android';
+    const rootEsc = ROOT.replace(/'/g, "''");
+    // ★ 用单引号 here-string 写脚本，避免路径里的 \\ 与 $ 被 PS 解释
+    const gradleScript = [
+      `$ErrorActionPreference = 'Stop'`,
+      `if (-not (Test-Path -LiteralPath '${junction}')) {`,
+      `  New-Item -ItemType Junction -Path '${junction}' -Target '${rootEsc}' | Out-Null`,
+      `}`,
+      `$env:ANDROID_HOME = '${tc.sdk}'`,
+      `$env:ANDROID_SDK_ROOT = '${tc.sdk}'`,
+      `$env:JAVA_HOME = '${tc.javaHome}'`,
+      `Set-Location '${jDir}'`,
+      `Write-Host "PWD=$($PWD.Path)"`,
+      `& .\\gradlew.bat --stop 2>&1 | Out-Null`,
+      `& .\\gradlew.bat assembleDebug --console=plain`,
+      `if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }`,
+    ].join('\n');
+    runPowerShell(gradleScript, 'gradle');
+  } else {
+    // ── Unix（CI 的 ubuntu runner）：直接跑 gradlew，不必 junction ──
+    // ★ chmod +x 不能省：仓库里 gradlew 的可执行位在检出后常丢失 → 报 Permission denied。
+    //   （android/ 是 cap 生成目录，本就不入库，所以这里主要防解压/打包后权限丢失。）
+    info(`⑤ gradle assembleDebug（${tc.sdk} / ${tc.javaHome}）`);
+    const androidDir = path.join(mobile, 'android');
+    const gradlew = path.join(androidDir, 'gradlew');
+    if (!fs.existsSync(gradlew)) {
+      fail(`找不到 gradlew: ${gradlew}（'cap add android' 未成功？）`);
+      process.exit(1);
+    }
+    try {
+      fs.chmodSync(gradlew, 0o755);
+    } catch {
+      /* 权限已正确时忽略 */
+    }
+    // ★ 用**绝对路径**而不是 './gradlew'：execFileSync 不经 shell，相对路径的解析
+    //   依赖 cwd 且易踩坑（尤其 cwd 含符号链接时）。绝对路径无歧义。
+    const gradleEnv = { ANDROID_HOME: tc.sdk, ANDROID_SDK_ROOT: tc.sdk, JAVA_HOME: tc.javaHome };
+    run(gradlew, ['--stop'], { cwd: androidDir, env: gradleEnv });
+    // --no-daemon：CI 容器用完即弃，留 daemon 没收益，还可能让进程不退出挂住 job。
+    run(gradlew, ['assembleDebug', '--console=plain', '--no-daemon'], { cwd: androidDir, env: gradleEnv });
+  }
 
   // ⑥ 拷 APK
   info(`⑥ 拷贝 APK 到 ${path.relative(ROOT, path.dirname(path.join(ROOT, ANDROID_APK)))}`);

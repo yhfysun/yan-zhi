@@ -156,7 +156,8 @@ export function loadTaskPlanFromFile(conversationId: string | null | undefined):
 //   单会话的」）：UI 不再向新会话还原旧计划；新会话靠 loadTaskPlan 的**文件回退**
 //   让模型「找到之前的任务记录」，由模型 task_plan 重新规划，而非复用旧计划对象。
 
-function savePlanJson(conversationId: string, plan: TaskPlan): boolean {
+/** 写会话计划到 DB 行。★ 2026-10-08 导出：压缩前抢救的待办并入路径需要它。 */
+export function savePlanJson(conversationId: string, plan: TaskPlan): boolean {
   try {
     db.prepare('UPDATE conversation SET task_plan_json = ? WHERE id = ?').run(JSON.stringify(plan), conversationId);
     return true;
@@ -165,7 +166,11 @@ function savePlanJson(conversationId: string, plan: TaskPlan): boolean {
   }
 }
 
-function loadPlanJson(conversationId: string): TaskPlan | null {
+/** 读会话计划（DB 行）。★ 2026-10-08 导出：压缩前抢救需要读计划现状，
+ *  以便①喂给 LLM 判增量待办 ②把抢救出的 todo 并入现有步骤（而不是覆盖）。
+ *  ★ 只读 DB 行（不回落文件）—— 抢救是"追加到**本会话**计划"，跨会话的 plan.md
+ *    属于另一条链，混进来会让抢救把步骤追加到别的会话的计划里。 */
+export function loadPlanJson(conversationId: string): TaskPlan | null {
   try {
     const row = db.prepare('SELECT task_plan_json FROM conversation WHERE id = ?').get(conversationId) as
       | { task_plan_json?: string | null }

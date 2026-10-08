@@ -1,0 +1,4 @@
+{
+  "deps": "[\"python-docx==1.1.2\",\"python-pptx==1.0.2\",\"openpyxl==3.1.5\",\"pyyaml==6.0.2\",\"matplotlib==3.9.2\",\"pandas==2.2.2\",\"requests==2.32.3\",\"beautifulsoup4==4.12.3\",\"dnspython==2.6.1\",\"PyMuPDF==1.24.10\",\"xlrd==2.0.1\",\"edge-tts==7.0.0\"]",
+  "at": "2026-10-08T08:26:43.160Z"
+}

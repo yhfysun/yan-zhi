@@ -378,12 +378,49 @@ export class ContextWindow {
     //   切窗边界对齐：保留窗口绝不能从 tool 消息中间开始（否则产生孤儿 tool，
     //   严格上游 400，兜底清洗只能丢弃 → tool 返回值丢失）。回退到该组 tool 应答
     //   所属的 assistant（带 tool_calls）处，整对保留，返回值一条不丢。
+    //
+    // ★★★ 2026-10-08 再补一层：**未被应答的 tool_calls 必须整体拽进保留窗口**。
+    //   场景（长任务实测）：模型连着发起多个工具调用（assistant(tool_calls) 与
+    //   tool(result) 成对出现，一次重连/断流期间可能连着好几对），而 `keepRecent=6`
+    //   只数**消息条数** —— 6 条很容易把一个**正在等结果**的调用挤出保留窗口。
+    //   挤出之后模型看到的上下文里，自己刚发的调用只剩摘要里一句
+    //   "[调用工具] browser_click…"、**没有结果** → 模型判自己搞完了、或换参重发
+    //   （实测表现："pageAgent 在执行吗？啥进度没有？"）。压缩在这里**制造了一种
+    //   模型无法正确推理的残缺状态**，比"丢细节"更严重。
+    //   ⇒ 切点若落在"最后一个 assistant(tool_calls) 之后"，回退到**该 assistant 之前**，
+    //     把「调用 + 结果（含尚未返回的）」整组保住。代价是保留窗口略大，可接受。
     let cut = trimmed.length - this.keepRecent;
     while (cut > 0 && trimmed[cut].role === 'tool') cut--;
+    // 悬空调用保护：把**结果尚未齐全**的工具调用组整体拽进保留窗口。
+    //   判据（纯从消息序列推断，不依赖外部状态）：
+    //     · assistant 带 tool_calls → 其应答 tool 消息**紧随其后**；
+    //     · 数一下紧随的 tool 消息条数 n；若 n < tool_calls.length，说明这组**不完整**
+    //       （结果还没回来，或部分没回来）→ 切点前移到该 assistant 之前，整组退回保留窗。
+    //   ★ 只对"不完整"的组前移 —— 完整的组留在被摘要段里没问题（摘要有损但结构自洽）。
+    //     若无条件前移，保留窗口会被撑到几乎全部历史，压缩形同失效。
+    //   ★ 只扫切点附近有限深度：再往前的组早已整体落在被摘要段内，不构成"残缺状态"。
+    for (let scan = cut - 1; scan >= 0 && scan >= cut - this.keepRecent * 4; scan--) {
+      const m = trimmed[scan] as any;
+      const tcs = m.toolCalls;
+      if (m.role !== 'assistant' || !Array.isArray(tcs) || tcs.length === 0) continue;
+      // 数紧随其后的 tool 消息条数（连续段）
+      let n = 0;
+      while (scan + 1 + n < trimmed.length && trimmed[scan + 1 + n].role === 'tool') n++;
+      if (n >= tcs.length) continue; // 该组结果齐全 → 留在被摘要段，继续往前找
+      cut = scan;                    // 该组残缺 → 切点前移到它之前
+      while (cut > 0 && trimmed[cut].role === 'tool') cut--;
+      break;
+    }
     if (cut <= 0) return trimmed; // 无法在保住配对的前提下压缩，保持原样发送
 
+    // ★ 前移保护的兜底：悬空调用保护可能把 cut 推得很靠前（极端情况：整段历史都是
+    //   未应答的调用）。若此时被摘要段已小到"压了也没用"（不足 2 条），放弃本次压缩
+    //   —— 与 `cut <= 0` 同性质：宁可原样发送（让 enforceBudget 那层硬降兜底），
+    //   也不要产出一个"摘要覆盖 0~1 条"的畸形结果。`toKeep` 全保时模型仍能看到完整链条。
+    if (cut < 2) return trimmed;
+
     const toCompress = trimmed.slice(0, cut); // 被摘要段：从首条起连续前缀
-    const toKeep = trimmed.slice(cut);        // 保留窗口：最近 keepRecent 条
+    const toKeep = trimmed.slice(cut);        // 保留窗口：最近 keepRecent 条（含悬空调用组）
 
     // 压缩前钩子：把即将被摘要吞掉的细节先落盘（失败不阻塞压缩）
     if (opts?.beforeCompress) {

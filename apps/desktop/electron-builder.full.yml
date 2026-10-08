@@ -19,9 +19,28 @@ files:
   #   漏登记 = 打包版启动即崩（Error: Cannot find module './instance.cjs'）——
   #   与 keyring-crypto.cjs 同一类坑：新增 .cjs 模块必须同步登记进本 files: 段。
   - instance.cjs
+  # ★★ 外链协议白名单（2026-10-08）：main.cjs require('./url-guard.cjs')，四处 openExternal /
+  #   guest will-navigate 闸门都靠它。漏登记 = 打包版启动即崩（Cannot find module './url-guard.cjs'），
+  #   且「页面自定义协议（bitbrowser://）弹系统框」的修复会完全失效。
+  - url-guard.cjs
   # 版本档配置（scripts/set-edition.cjs 生成）：main.cjs 运行时读它拿构建档与预置码档。
   # ★ 漏登记 = 打包版读不到档位 → 落到兜底档（basic），且「阉割版只有办公」这条会静默失效。
   - edition.json
+  # ── 体积裁剪（2026-10-08 实测 asar 145.5MB / 14938 条目后定向排除）──
+  # ★ sourcemap：仅调试用，运行时不加载。实测 3844 个文件共 **45MB**，
+  #   占 asar 的 30%+（element-plus / lucide-vue-next / three 三家为主）。
+  - '!**/*.js.map'
+  - '!**/*.mjs.map'
+  - '!**/*.cjs.map'
+  - '!**/*.css.map'
+  # ★ 原生模块的**源码**：better-sqlite3/deps/ 下是 sqlite3 的 amalgamation
+  #   （sqlite3.c 单文件 8.8MB），实测 10 个文件共 **9.5MB**。
+  #   发行包只需编译好的 better_sqlite3.node —— 它在 app.asar.unpacked 里，不走本段。
+  - '!**/node_modules/better-sqlite3/deps/**'
+  # ★ TS 声明与来源映射：运行时不读。实测 138 个 *.d.ts.map（0.1MB）。
+  - '!**/*.d.ts'
+  - '!**/*.d.ts.map'
+  # 合计实测可省 ≈54.5MB（asar 的 37.5%）。
 extraResources:
   - from: ../server/dist
     to: server/dist
@@ -55,6 +74,17 @@ extraResources:
 
   - from: ../../assets/icons/icon.ico
     to: icon.ico
+# ── 体积裁剪：Electron 自带全部语言包，实测 locales/ 占 41MB ──
+# ★ 本项目界面全中文（部分英文术语），只保留简体中文 + 英文即可。
+#   Chromium 缺对应语言包时会回退 en-US，所以即使误设也不会白屏。
+#   ★ 注意：这一项对**安装包体积影响很小**（locales 在 NSIS 里压缩得动），
+#   主要收益是解开后的磁盘占用与分发解压耗时，属可选项；如遇界面语言异常先删这一项排查。
+# ⚠️ 打包临时禁用 —— electron-builder 的 removeUnusedLanguagesIfNeeded 会一次删 ~48 个 .pak，
+#    触发本机沙箱的批量删除守卫（SAFE_DELETE_BULK_CONFIRM_REQUIRED）→ 打包必中断。
+#    常规做法：打包前注释、打包后**必须恢复**（用 diff 与备份核对，见 /tmp/yz-eb-full.yml.bak）。
+# electronLanguages:
+#   - zh-CN
+#   - en-US
 win:
   target: nsis
   icon: ../../assets/icons/icon.ico

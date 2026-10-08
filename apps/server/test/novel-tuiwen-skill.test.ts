@@ -7,7 +7,7 @@
  *   1. 双端 seed 的书详情 URL 必须带全三个参数（缺一即回归）
  *   2. 「加载中」排障锚点存在
  *   3. DOM 速查存在（arco 体系关键选择器 + 回填抽屉「取消提交」要点）
- *   4. 回填时效规则（7 天失效）存在
+ *   4. 回填时效规则（14 天失效）存在
  *   5. pageAgent / 小说推文主智能体步数 200（50 会把正常抓正文打满）
  */
 import { describe, it, expect } from 'vitest';
@@ -52,9 +52,12 @@ describe('novel-tuiwen skill seed 关键锚点（防漂移）', () => {
     }
   });
 
-  it('回填时效规则（新别名 7 天内不回填会失效）存在', () => {
+  it('回填时效规则（新别名 14 天内不回填会失效）存在', () => {
+    // ★ 2026-10-08 同步：官方口径为 **14 天**（此前项目误记为 7 天，已在 SKILL 内更正）。
+    //   断言仍钉住「有明确时效数字」，只把 7 改成 14。
     for (const [name, src] of [['core/schema.ts', CORE_SCHEMA()], ['server/db.ts', SERVER_DB()], ['agents', AGENTS()]] as const) {
-      expect(src, name).toMatch(/7\s*天内不回填/);
+      expect(src, name).toMatch(/14\s*天内不回填/);
+      expect(src, name, '旧口径（7 天）不得再出现').not.toMatch(/7\s*天内不回填/);
     }
   });
 

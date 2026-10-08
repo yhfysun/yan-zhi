@@ -18,8 +18,24 @@ files:
   #   漏登记 = 打包版启动即崩（Error: Cannot find module './instance.cjs'）——
   #   与 keyring-crypto.cjs 同一类坑：新增 .cjs 模块必须同步登记进本 files: 段。
   - instance.cjs
+  # ★★ 外链协议白名单（2026-10-08）：main.cjs require('./url-guard.cjs')，四处 openExternal /
+  #   guest will-navigate 闸门都靠它。漏登记 = 打包版启动即崩（Cannot find module './url-guard.cjs'），
+  #   且「页面自定义协议（bitbrowser://）弹系统框」的修复会完全失效。
+  - url-guard.cjs
   # 版本档配置（scripts/set-edition.cjs 生成）；漏登记 → 打包版读不到档位，落到兜底档
   - edition.json
+  # ── 体积裁剪（三份 yml 必须逐行一致，改一处必须同步另两处，见 packaged-entry-modules 测试）──
+  # ★ sourcemap 仅调试用，运行时不加载：实测 3844 个文件共 45MB（asar 的 30%+）。
+  - '!**/*.js.map'
+  - '!**/*.mjs.map'
+  - '!**/*.cjs.map'
+  - '!**/*.css.map'
+  # ★ 原生模块源码（better-sqlite3/deps/ 下 sqlite3.c 单文件 8.8MB，共 9.5MB）：只需编译产物。
+  - '!**/node_modules/better-sqlite3/deps/**'
+  # ★ TS 声明与来源映射运行时不读（实测 138 个 *.d.ts.map）。
+  - '!**/*.d.ts'
+  - '!**/*.d.ts.map'
+  # 合计实测可省 ≈54.5MB（asar 的 37.5%）。
 extraResources:
   - from: ../server/dist
     to: server/dist
@@ -50,6 +66,11 @@ extraResources:
 
   - from: ../../assets/icons/icon.icns
     to: icon.icns
+# ── 体积裁剪：只留界面用得到的中英语言包（Electron 自带全部语言包，locales 实测 41MB）──
+# 与 full/lite 两份一致；Chromium 缺语言包会回退 en-US，不会白屏。
+electronLanguages:
+  - zh-CN
+  - en-US
 mac:
   target:
     - dmg

@@ -4,6 +4,7 @@
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
+import * as crypto from 'crypto';
 import type { McpCallResult } from '../../mcp/client';
 import { getPlatformAdapter } from '../../platform/types';
 import { capToolOutput } from './output-cap';
@@ -89,7 +90,6 @@ export function resolveWorkspacePythonScript(rel: string, workspaceDir?: string)
     const dstDir = path.join(workspaceDir, '.yan-zhi', 'tools', path.relative(base, srcDir));
     // 内容哈希做版本戳：目录下所有文件的相对路径 + 内容
     const hashOf = (dir: string): string => {
-      const crypto = require('crypto') as typeof import('crypto');
       const h = crypto.createHash('sha256');
       const walk = (d: string, pre: string) => {
         for (const e of fs.readdirSync(d, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {

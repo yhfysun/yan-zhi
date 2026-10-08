@@ -47,6 +47,45 @@ function extractUrlFromArgs(args: unknown): string {
  */
 const agentAnchoredTabs = new Map<string, string>(); // convId → tabId
 
+/**
+ * agent 在本次任务中**打开过的**所有 tab（会话级，2026-10-08）。
+ *
+ * ★ 为什么需要（用户诉求「pageAgent 执行完了不会关闭页面？」）：
+ *   收尾时要知道"还剩几个 agent 开的页没收拾" —— 模型没关干净时给用户一条提示，
+ *   而不是把一堆中间页留在面板里无人知晓。
+ * ★ 与 `agentAnchoredTabs` 的区别：后者是"当前操作目标"（单值、会随锚定切换），
+ *   本集合是"开过的全部"（累积、只增不减直到任务收尾清空）。
+ * ★ 只记 agent 通过工具链打开的 tab，**不记用户手开的** —— 与主进程 close_tab 的
+ *   agentOpened 闸门同一口径（用户手开的页 agent 无权关，也不该算作"待收拾"）。
+ */
+const agentOpenedTabs = new Map<string, Set<string>>(); // convId → tabIds
+
+/** 登记 agent 打开了一个 tab（幂等） */
+function markAgentOpenedTab(convId: string, tabId: string | number | null | undefined): void {
+  if (!convId || tabId === null || tabId === undefined || tabId === '') return;
+  const key = String(tabId);
+  let set = agentOpenedTabs.get(convId);
+  if (!set) { set = new Set(); agentOpenedTabs.set(convId, set); }
+  set.add(key);
+}
+
+/** 取本会话 agent 打开过、且**仍存在**的 tab 列表（收尾提示用） */
+function remainingAgentOpenedTabs(convId: string): string[] {
+  const set = agentOpenedTabs.get(convId);
+  if (!set || set.size === 0) return [];
+  try {
+    const bs: any = useBrowserStore(`preview:${convId}`);
+    const alive = new Set<string>((bs.tabs || []).map((t: any) => String(t.id)));
+    return [...set].filter((id) => alive.has(id));
+  } catch { return [...set]; }
+}
+
+/** 清掉某会话（或全部）的 agent tab 记账 —— 任务收尾/reset 时调用 */
+function clearAgentOpenedTabs(convId?: string): void {
+  if (!convId) { agentOpenedTabs.clear(); return; }
+  agentOpenedTabs.delete(convId);
+}
+
 async function resolvePreviewTabId(convId?: string): Promise<string> {
   const electron = (window as any).electronAPI;
   // 多会话隔离：convId 决定 scope；未传则退化为通用 preview（兼容旧调用点）。
@@ -316,6 +355,44 @@ export const useChatStore = defineStore('chat', () => {
   const browserExpanded = ref(false);
   const browserUserDismissed = ref(false);
   const browserLockInput = ref(false);
+  /**
+   * 会话级「正在跑浏览器任务」记账（2026-10-08）。
+   *
+   * ★★★ 为什么不能拿 `browserSteps.length > 0` 当判据：`browserSteps` 是**事件日志**，
+   *   只在收到 `tool:start` / `tool:result` / `tool:execute` 帧时增长。而它偏偏是
+   *   SSE 断流时**最先归零**的东西 —— 断流 → 前端重连 → 重连拿到 `connected` 就干净了，
+   *   steps 为空 → `BrowserPanel` 的 `inputLocked` / `liveControlVisible` /
+   *   `agentCursorVisible` 三个 computed **同时失效**。实测表现（用户实报）：
+   *   「pageAgent 在执行吗？啥进度没有？而且用户还能操作页面？」—— 三个症状同源。
+   *
+   * ★ 与 `browserSteps` 的分工：steps 管**展示**（步骤清单/进度条），本记账管**控制**
+   *   （锁定/实况态）。控制信号必须来自**任务运行态与工具类型的单调事实**，而不是
+   *   可被断流清空的日志缓冲。
+   * ★ 只增不减（任务收尾时整表清空）：一旦本会话出现过 browser_* 工具调用，就认定
+   *   这个会话本任务期间是"浏览器任务"，中途不再因为 steps 抖动而反复解锁。
+   * ★ 键是 convId：多会话并行时 A 会话的浏览器任务不得锁住 B 会话的面板。
+   */
+  const browserTaskConvs = ref<Set<string>>(new Set());
+  /** 登记「本会话正在跑浏览器任务」（幂等；由工具事件驱动，见 subscribeTaskSse 的 tool 分支） */
+  function markBrowserTaskActive(convId: string) {
+    if (!convId) return;
+    if (browserTaskConvs.value.has(convId)) return;
+    // Set 是浅响应，必须整体换引用才能触发依赖它的 computed
+    browserTaskConvs.value = new Set(browserTaskConvs.value).add(convId);
+  }
+  /** 清空指定会话（或全部）的浏览器任务记账 —— 任务收尾/切会话/reset 时调用 */
+  function clearBrowserTaskActive(convId?: string) {
+    if (!convId) {
+      if (browserTaskConvs.value.size) browserTaskConvs.value = new Set();
+      return;
+    }
+    if (!browserTaskConvs.value.has(convId)) return;
+    const next = new Set(browserTaskConvs.value);
+    next.delete(convId);
+    browserTaskConvs.value = next;
+  }
+  /** 当前会话是否正在跑浏览器任务（BrowserPanel 的锁定/实况判据） */
+  const browserTaskActive = computed(() => !!currentConvId.value && browserTaskConvs.value.has(currentConvId.value));
   // Agent 虚拟鼠标（宿主层渲染）：主进程 browserView:action 动作完成后广播 guest 坐标，
   // BrowserPanel 在 webview 上方画常驻光标（webview 引擎下 guest 内瞬时光标会被 shield
   // 盖住且只闪现 0.5s，等于看不见）。tabId 用于多面板实例归属判断；at 用于重触发 CSS 动画。
@@ -658,6 +735,54 @@ export const useChatStore = defineStore('chat', () => {
   let abortControllers = new Map<string, AbortController>();
   const taskIds = new Map<string, string>(); // convId → backend taskId（用于 abort）
   const taskEventCounts = new Map<string, number>(); // taskId → 已收到事件数（重连时作为 since）
+
+  /**
+   * 跨重连的**流内状态**（2026-10-08）。
+   *
+   * ★★★ 为什么必须外提：此前这些状态全是 `subscribeTaskSse` 的**函数内局部变量** ——
+   *   每次重连都新建一套，于是：
+   *   ① `executedToolCallIds` 重置 → 服务端重放同一 `tool:execute` 会被**再执行一次**
+   *      （同一动作在页面上做两遍；浏览器点击重复提交、文件重复上传）；
+   *   ② `assistantMsgId` 重置 → 重连后 `message:updated` 找不到目标消息，流式正文丢失；
+   *   ③ `subAgentMsgIds` 重置 → 子智能体 token 流合流进错误的（或新建的）消息；
+   *   ④ `chunkBuffer` / `flushTimer` 重置 → 上一段未提交的增量被 `flushNow` 丢在旧闭包里。
+   *   重连是**同一条流的续订**，语义上就是同一个会话的延续 → 状态必须跟着 taskId 走。
+   *
+   * ★ 按 taskId 分桶（而非 convId）：同一会话可以先后跑多个任务，旧任务的残留不得
+   *   污染新任务；且 `since` 游标本就是按 taskId 记的（`taskEventCounts`），口径一致。
+   * ★ 清理时机：任务进入终态（`task:completed` / `aborted` / `error`）与用户主动 stop 时删除，
+   *   避免长期运行积累死键。
+   */
+  interface SseStreamState {
+    assistantMsgId: string;
+    subAgentMsgIds: Map<string, string>;
+    executedToolCallIds: Set<string>;
+    chunkBuffer: Map<string, { content: string; reasoning: string }>;
+    flushTimer: ReturnType<typeof setTimeout> | null;
+  }
+  const sseStreamStates = new Map<string, SseStreamState>();
+  function streamStateOf(taskId: string): SseStreamState {
+    let st = sseStreamStates.get(taskId);
+    if (!st) {
+      st = {
+        assistantMsgId: '',
+        subAgentMsgIds: new Map(),
+        executedToolCallIds: new Set(),
+        chunkBuffer: new Map(),
+        flushTimer: null,
+      };
+      sseStreamStates.set(taskId, st);
+    }
+    return st;
+  }
+  function dropStreamState(taskId: string) {
+    const st = sseStreamStates.get(taskId);
+    if (st?.flushTimer !== null && st?.flushTimer !== undefined) clearTimeout(st.flushTimer);
+    sseStreamStates.delete(taskId);
+  }
+  /** 子智能体消息复合键：同一 agent 可以有两个后台并行任务（P2-6 async call_agent），
+   *  只按 subAgentId 存会让两路 token 流合流进同一条消息。 */
+  const subAgentKeyOf = (subAgentId: string, parentToolCallId?: string | null) => `${parentToolCallId || ''}::${subAgentId}`;
 
   // 单库收敛：数据面恒走后端（与 auth.useServerApi 一致）。后端 authMiddleware 本地模式已屏蔽鉴权，
   // 无 token 也回退 guest 放行，故前端登录态不影响数据归属。本地 adapter.db 分支已废弃。
@@ -1278,6 +1403,8 @@ async function loadConversations() {
             } catch { /* ignore */ }
             if (nt && nt.tabId !== undefined) {
               // 新 host 已由主进程广播 tabCreated、渲染层补壳并用 :src=target 拉取页面
+              // ★ 记账（2026-10-08）：这条分支是 agent 真新建 tab，收尾时据它判断"还剩几个没收拾"
+              markAgentOpenedTab(ctx?.convId || '', nt.tabId);
               const text = `已在新标签页打开。\ntabId=${nt.tabId}\nURL: ${target}\n后续读取该页内容时给 browser_get_page_content / browser_get_page_info 等读取工具传 tabId=${nt.tabId}`;
               browserSteps.value.push({ action: 'browser_navigate(openInNewTab)', result: text, time: Date.now() });
               return { ok: true, result: text };
@@ -1290,6 +1417,10 @@ async function loadConversations() {
           const navTabId = await resolvePreviewTabId(ctx?.convId);
           // 锚定：agent 打开的这个 tab 就是它本次任务的操作目标（后续动作不再受用户切换影响）
           if (ctx?.convId && navTabId) agentAnchoredTabs.set(ctx.convId, navTabId);
+          // ★ 记账（2026-10-08）：navigate 若在预览面板自建的 tab 上就地导航，该 tab 同样是
+          //   "agent 用过、收尾该考虑收拾"的页 → 一并计入。用户手开的 tab 不会走到这里
+          //   （这条路径只在 agent 调 browser_navigate 时执行）。
+          markAgentOpenedTab(ctx?.convId || '', navTabId);
           skipNextRecordVisit.value = true;
           try {
             const result = await Promise.race([
@@ -1350,9 +1481,13 @@ async function loadConversations() {
         if (action) {
           try {
             const actTabId = await resolvePreviewTabId(ctx?.convId);
+            // ★ 2026-10-08：upload/screenshot 放宽竞速窗口到 65s —— 主进程对这两个 action 的总闸
+            //   已提到 60s（视频投递后等页面处理）。若这里仍是 20s，会在主进程返回前先判超时，
+            //   用户看到"上传不顺"。其它 action 维持 20s（主进程 18s 总闸留 2s 余量）。
+            const ipcTimeout = (action === 'upload' || action === 'screenshot') ? 65000 : 20000;
             const result = await Promise.race([
               (window as any).electronAPI.browserView.action(actTabId, action, args),
-              new Promise((_, reject) => setTimeout(() => reject(new Error(`IPC 调用超时（20s）: ${action}`)), 20000)),
+              new Promise((_, reject) => setTimeout(() => reject(new Error(`IPC 调用超时（${ipcTimeout / 1000}s）: ${action}`)), ipcTimeout)),
             ]) as any;
             // browserView:action 返回 { error } 表示失败，否则成功
             const ok = !result?.error;
@@ -1514,6 +1649,7 @@ async function loadConversations() {
       const text = res.content?.[0]?.text ?? '';
       // E11: browser_* 工具执行后推送步骤日志到浏览器面板
       if (fullName.startsWith('browser_')) {
+        if (ctx?.convId) markBrowserTaskActive(ctx.convId);
         browserSteps.value.push({ action: fullName, result: text, time: Date.now() });
       }
       return { ok: !res.isError, result: text, msg: res.isError ? text : undefined };
@@ -1631,7 +1767,13 @@ async function loadConversations() {
     return 500; // 默认 500（= 上限）
   }
 
-  /** 订阅后端任务 SSE 事件流，更新前端消息状态。callLlm 和重连均使用此函数。 */
+  /**
+   * 订阅后端任务 SSE 事件流，更新前端消息状态。callLlm 和重连均使用此函数。
+   *
+   * ★ 跨重连状态（`assistantMsgId` / `subAgentMsgIds` / `executedToolCallIds` / `chunkBuffer`）
+   *   保存在模块级 `sseStreamStates`（按 taskId 分桶），**不随函数返回而丢失** ——
+   *   否则重连会把已执行的 tool:execute 再执行一遍。详见 `SseStreamState` 注释。
+   */
   async function subscribeTaskSse(
     convId: string,
     taskId: string,
@@ -1647,20 +1789,13 @@ async function loadConversations() {
     });
     if (!sseRes.ok || !sseRes.body) throw new Error('SSE 连接失败');
 
-    let assistantMsgId = '';
-    // subAgentId → assistantMsgId。★ 键是**复合键**：同一 agent 可以有两个后台并行任务
-    // （P2-6 async call_agent），只按 subAgentId 存会让两路 token 流合流进同一条消息。
-    const subAgentMsgIds = new Map<string, string>();
-    const subAgentKey = (subAgentId: string, parentToolCallId?: string | null) => `${parentToolCallId || ''}::${subAgentId}`;
-    const executedToolCallIds = new Set<string>(); // tool:execute 去重（重放时跳过已执行）
-
-    // 流式 chunk 节流：缓冲增量，每 ~50ms 批量提交到 Vue 响应式状态，避免高频重渲染闪烁
-    const chunkBuffer = new Map<string, { content: string; reasoning: string }>();
-    let flushTimer: ReturnType<typeof setTimeout> | null = null;
+    // 跨重连状态（外提见 SseStreamState）
+    const st = streamStateOf(taskId);
+    const chunkBuffer = st.chunkBuffer;
     function scheduleFlush(convId: string) {
-      if (flushTimer !== null) return;
-      flushTimer = setTimeout(() => {
-        flushTimer = null;
+      if (st.flushTimer !== null) return;
+      st.flushTimer = setTimeout(() => {
+        st.flushTimer = null;
         const arr = messagesByConv.value[convId];
         if (!arr) return;
         for (const [msgId, buf] of chunkBuffer) {
@@ -1673,7 +1808,7 @@ async function loadConversations() {
       }, 50);
     }
     function flushNow(convId: string) {
-      if (flushTimer !== null) { clearTimeout(flushTimer); flushTimer = null; }
+      if (st.flushTimer !== null) { clearTimeout(st.flushTimer); st.flushTimer = null; }
       const arr = messagesByConv.value[convId];
       if (!arr) { chunkBuffer.clear(); return; }
       for (const [msgId, buf] of chunkBuffer) {
@@ -1687,13 +1822,29 @@ async function loadConversations() {
 
     // SSE 解码统一走 utils/sse（P5 收口）：分帧/注释帧/裁剪规则全前端单点。
     // 帧处理是 async（事件分支内有 await，如工具执行），sse 层逐帧串行等待，与原循环语义一致。
-    await consumeSseStream(sseRes.body, async (payload) => {
+    // ★ try/finally 保证**任何**退出路径（正常结束 / task:error 抛出 / AbortSignal 中止）
+    //   都把节流缓冲里的尾巴落进消息列表 —— 见下方 finally 注释。
+    try {
+    // ★ 回调显式标注 `Promise<void | false>`：函数体内既有 `break`（→ undefined）又有
+    //   `return false`（→ false），不标注会被 TS 推断成 `Promise<boolean>`，
+    //   与 `consumeSseStream` 期望的 `false | void` 不兼容（TS2345）。
+    await consumeSseStream(sseRes.body, async (payload): Promise<void | false> => {
       {
         let event: any;
         try { event = JSON.parse(payload); } catch { return; }
 
-        // 追踪事件数（重连时作为 since 参数，避免重放旧事件）
-        taskEventCounts.set(taskId, (taskEventCounts.get(taskId) || 0) + 1);
+        // ★ 追踪事件数（重连时作为 since 参数，避免重放旧事件）。
+        // ★★★ `connected` 帧**绝不能计入**（2026-10-08 修根因，high）：
+        //   服务端 `subscribe(taskId, since, ...)` 的 `since` 是 **`task.events` 数组的下标**，
+        //   而 `connected` 帧由 `sseStream` 直接写 header 后即发，**不进 task.events**
+        //   （services/sse.ts 与 routes/llm-tasks.ts 的双处注释都明确写了"前端也不要为它累加游标"）。
+        //   此前无条件 +1 → 每次重连的 whenN = 服务端真实下标 **+1** → **恒定漏掉一条事件**。
+        //   漏掉的若正好是 `tool:execute`，则：工具永不执行 → 不 POST /tool-result →
+        //   服务端 2 分钟超时判「前端暂时不可达」；配合 `executedToolCallIds` 重放去重，
+        //   还会出现"重连后把已执行的调用再执行一遍"的重复动作。这是"长任务经常断"的直接来源。
+        if (event.type !== 'connected') {
+          taskEventCounts.set(taskId, (taskEventCounts.get(taskId) || 0) + 1);
+        }
 
         switch (event.type) {
           case 'connected': break;
@@ -1716,15 +1867,15 @@ async function loadConversations() {
               } as any);
             }
             if (msg.role === 'assistant') {
-              if (msg.subAgentId) subAgentMsgIds.set(subAgentKey(msg.subAgentId, msg.parentToolCallId), msg.id);
-              else assistantMsgId = msg.id;
+              if (msg.subAgentId) st.subAgentMsgIds.set(subAgentKeyOf(msg.subAgentId, msg.parentToolCallId), msg.id);
+              else st.assistantMsgId = msg.id;
             }
             break;
           }
           case 'chunk': {
             if (event.content || event.reasoning) {
               const arr = messagesByConv.value[convId] || [];
-              const targetId = event.subAgentId ? subAgentMsgIds.get(subAgentKey(event.subAgentId, event.parentToolCallId)) : assistantMsgId;
+              const targetId = event.subAgentId ? st.subAgentMsgIds.get(subAgentKeyOf(event.subAgentId, event.parentToolCallId)) : st.assistantMsgId;
               const idx = targetId ? arr.findIndex(m => m.id === targetId) : arr.length - 1;
               if (idx >= 0 && arr[idx].role === 'assistant') {
                 const msgId = arr[idx].id;
@@ -1740,7 +1891,7 @@ async function loadConversations() {
           }
           case 'tool_call': {
             flushNow(convId);
-            const targetId = event.subAgentId ? subAgentMsgIds.get(subAgentKey(event.subAgentId, event.parentToolCallId)) : assistantMsgId;
+            const targetId = event.subAgentId ? st.subAgentMsgIds.get(subAgentKeyOf(event.subAgentId, event.parentToolCallId)) : st.assistantMsgId;
             if (targetId) {
               const arr = messagesByConv.value[convId] || [];
               const idx = arr.findIndex(m => m.id === targetId);
@@ -1765,12 +1916,16 @@ async function loadConversations() {
           case 'tool:start': {
             // 仅浏览器类工具推送步骤日志，避免非浏览器工具污染右侧浏览器面板
             if (event.toolName?.startsWith('browser_')) {
+              // ★ 控制信号先于展示信号登记（2026-10-08）：即使下面的步骤数组因断流/重放
+              //   被清空，会话级的"浏览器任务进行中"事实也不会丢 → 输入锁不放。
+              markBrowserTaskActive(convId);
               browserSteps.value.push({ action: event.toolName, result: '执行中...', time: Date.now() });
             }
             break;
           }
           case 'tool:result': {
             if (event.toolName?.startsWith('browser_')) {
+              markBrowserTaskActive(convId);
               browserSteps.value.push({ action: event.toolName, result: event.result, time: Date.now() });
             }
             break;
@@ -1781,56 +1936,69 @@ async function loadConversations() {
           }
           case 'sub_agent:end': {
             if (event.parentToolCallId) runningToolCallIds.value.delete(event.parentToolCallId);
-            if (event.agentId) subAgentMsgIds.delete(subAgentKey(event.agentId, event.parentToolCallId));
+            if (event.agentId) st.subAgentMsgIds.delete(subAgentKeyOf(event.agentId, event.parentToolCallId));
             break;
           }
           case 'tool:execute': {
             const { callId, toolName, args, toolCallId: ptcId, depth: evtDepth } = event;
             // 去重：重放时跳过已执行的 tool:execute（避免重复调工具/弹窗）
-            if (executedToolCallIds.has(callId)) break;
-            executedToolCallIds.add(callId);
+            if (st.executedToolCallIds.has(callId)) break;
+            st.executedToolCallIds.add(callId);
             // 多会话隔离：把当前任务所属 convId 传给工具分发（浏览器工具按 convId 取 scope，
             // 不同会话的 tab/激活/历史互不串台，避免会话 A 调 browser_get_page_content 读到会话 B 的页面）。
             const ctx = ptcId
               ? { parentToolCallId: ptcId, depth: evtDepth ?? 1, convId }
               : { convId };
-            try {
-              const r = await dispatchToolCall(toolName, args, ctx);
-              const resultStr = r.ok
-                ? (typeof r.result === 'string' ? r.result : JSON.stringify(r.result || ''))
-                : (r.msg || '工具执行失败');
-              const t = localStorage.getItem('auth_token') || '';
-              const postResult = async (retry = 0) => {
-                try {
-                  const resp = await fetch(`${API_BASE}/llm/tasks/${taskId}/tool-result`, {
-                    method: 'POST',
-                    headers: buildRequestHeaders({ 'Content-Type': 'application/json', Authorization: `Bearer ${t}` }),
-                    body: JSON.stringify({ callId, result: resultStr }),
-                  });
-                  if (!resp.ok && retry < 2) { await new Promise(r => setTimeout(r, 1000)); return postResult(retry + 1); }
-                } catch (e: any) {
-                  if (retry < 2) { await new Promise(r => setTimeout(r, 1000)); return postResult(retry + 1); }
-                  console.error('[Chat] tool-result POST 失败:', e?.message || e);
-                }
-              };
-              void postResult();
-            } catch (e: any) {
-              const t = localStorage.getItem('auth_token') || '';
-              const postError = async (retry = 0) => {
-                try {
-                  const resp = await fetch(`${API_BASE}/llm/tasks/${taskId}/tool-result`, {
-                    method: 'POST',
-                    headers: buildRequestHeaders({ 'Content-Type': 'application/json', Authorization: `Bearer ${t}` }),
-                    body: JSON.stringify({ callId, result: `工具执行失败: ${e?.message || e}` }),
-                  });
-                  if (!resp.ok && retry < 2) { await new Promise(r => setTimeout(r, 1000)); return postError(retry + 1); }
-                } catch (e2: any) {
-                  if (retry < 2) { await new Promise(r => setTimeout(r, 1000)); return postError(retry + 1); }
-                  console.error('[Chat] tool-error POST 失败:', e2?.message || e2);
-                }
-              };
-              void postError();
+            // ★ 控制信号登记（2026-10-08）：这条路径是前端**真正动手**执行浏览器操作的入口，
+            //   不依赖后端是否额外发了 tool:start（两者独立）→ 任一到达都能点亮输入锁。
+            if (typeof toolName === 'string' && toolName.startsWith('browser_')) {
+              markBrowserTaskActive(convId);
             }
+            // ★★ 即发即忘（2026-10-08）：**绝不能 await dispatchToolCall**。
+            //   工具执行可能耗时数十秒（浏览器导航/截图/上传、用户确认弹窗）。此前在帧循环里 await，
+            //   会让 consumeSseStream 停止 reader.read() → TCP 缓冲打满 → 服务端 SSE 写阻塞 →
+            //   连接被中间层当空闲掐断 → 前端读到 done 且无重连 → 后端后续工具报「前端暂时不可达」。
+            //   改为后台执行后，帧循环持续消费（心跳/stream 帧即时读走），连接不再假死。
+            //   工具结果仍由各自的 postResult/postError 回传服务端，语义不变。
+            void (async () => {
+              try {
+                const r = await dispatchToolCall(toolName, args, ctx);
+                const resultStr = r.ok
+                  ? (typeof r.result === 'string' ? r.result : JSON.stringify(r.result || ''))
+                  : (r.msg || '工具执行失败');
+                const t = localStorage.getItem('auth_token') || '';
+                const postResult = async (retry = 0) => {
+                  try {
+                    const resp = await fetch(`${API_BASE}/llm/tasks/${taskId}/tool-result`, {
+                      method: 'POST',
+                      headers: buildRequestHeaders({ 'Content-Type': 'application/json', Authorization: `Bearer ${t}` }),
+                      body: JSON.stringify({ callId, result: resultStr }),
+                    });
+                    if (!resp.ok && retry < 2) { await new Promise(r => setTimeout(r, 1000)); return postResult(retry + 1); }
+                  } catch (e: any) {
+                    if (retry < 2) { await new Promise(r => setTimeout(r, 1000)); return postResult(retry + 1); }
+                    console.error('[Chat] tool-result POST 失败:', e?.message || e);
+                  }
+                };
+                void postResult();
+              } catch (e: any) {
+                const t = localStorage.getItem('auth_token') || '';
+                const postError = async (retry = 0) => {
+                  try {
+                    const resp = await fetch(`${API_BASE}/llm/tasks/${taskId}/tool-result`, {
+                      method: 'POST',
+                      headers: buildRequestHeaders({ 'Content-Type': 'application/json', Authorization: `Bearer ${t}` }),
+                      body: JSON.stringify({ callId, result: `工具执行失败: ${e?.message || e}` }),
+                    });
+                    if (!resp.ok && retry < 2) { await new Promise(r => setTimeout(r, 1000)); return postError(retry + 1); }
+                  } catch (e2: any) {
+                    if (retry < 2) { await new Promise(r => setTimeout(r, 1000)); return postError(retry + 1); }
+                    console.error('[Chat] tool-error POST 失败:', e2?.message || e2);
+                  }
+                };
+                void postError();
+              }
+            })();
             break;
           }
           case 'file:registered': {
@@ -1844,9 +2012,11 @@ async function loadConversations() {
           //   永久挂起 → subscribeTaskSse 不返回 → callLlm 的 finally 不执行 →
           //   runningConvIds 里的会话 id 永不删除 → store.streaming 恒 true，
           //   表现为「回答已完整输出（含生成的图片）却一直显示『任务运行中』+ 停止按钮」。
-          case 'task:completed': flushNow(convId); markRunEnd(convId, 'completed'); emitTaskFinished(convId); return false;
-          case 'task:aborted': flushNow(convId); markRunEnd(convId, 'aborted'); emitTaskFinished(convId); return false;
-          case 'task:error': flushNow(convId); markRunEnd(convId, 'error'); emitTaskFinished(convId); throw new Error(event.error || '任务执行失败');
+          // ★ 终态必须清掉跨重连状态（否则 sseStreamStates 无界增长；且同 taskId 不会被复用，
+          //   留着只是内存垃圾）。放在 markRunEnd 之前 —— 清状态不影响消息列表内容。
+          case 'task:completed': flushNow(convId); dropStreamState(taskId); taskEventCounts.delete(taskId); markRunEnd(convId, 'completed'); emitTaskFinished(convId); return false;
+          case 'task:aborted': flushNow(convId); dropStreamState(taskId); taskEventCounts.delete(taskId); markRunEnd(convId, 'aborted'); emitTaskFinished(convId); return false;
+          case 'task:error': flushNow(convId); dropStreamState(taskId); taskEventCounts.delete(taskId); markRunEnd(convId, 'error'); emitTaskFinished(convId); throw new Error(event.error || '任务执行失败');
           case 'task:paused': pausedConvIds.value.add(convId); browserLockInput.value = false; break;
           case 'task:resumed': pausedConvIds.value.delete(convId); break;
           case 'context:compacted': {
@@ -1865,7 +2035,7 @@ async function loadConversations() {
                 coveredCount: Number(event.coveredCount) || 0,
                 keptCount: Number(event.keptCount) || 0,
                 tokens: Number(event.tokens) || 0,
-                afterMessageId: assistantMsgId || undefined,
+                afterMessageId: st.assistantMsgId || undefined,
                 subAgentId: event.subAgentId,
               },
             } as any;
@@ -1876,8 +2046,65 @@ async function loadConversations() {
         }
       }
       });
-      // 流正常结束 = 任务完成：把节流缓冲里未刷出的尾巴立刻落进消息列表
+    } finally {
+      // 流结束（正常终态 **或被中间层掐断**）都要把节流缓冲落进消息列表。
+      // ★ 2026-10-08：改到 finally 里无条件执行 —— 此前只在"正常路径"调用，
+      //   而 `task:error` 分支会 throw（`consumeSseStream` 的 await onData 抛出 → 直接
+      //   跳到本函数的调用方），`flushNow` 整段被跳过 → 最后 ~50ms 的流式增量永久丢失。
+      //   放在 finally 还顺带覆盖了"重连前"的每一次断流：断流前未提交的尾巴不会丢。
       flushNow(convId);
+    }
+  }
+
+  /**
+   * SSE 断连自动重连包装（2026-10-08）。
+   *
+   * ★ 为什么必须（用户实报「长任务经常断，一个会话执行不下去」+ 日志「浏览器工具前端暂时不可达」）：
+   *   服务端 sseStream 只在客户端断开时退订、**从不 res.end()**，所以「流正常结束」有两种含义：
+   *   ① 任务真到终态（task:completed/aborted/error）——已由各分支 return false 收尾；
+   *   ② 连接被中间层掐断（代理/长连接超时/服务端重启）——reader 读到 done，consumeSseStream
+   *      正常返回，我们**无从区分**。此前直接返回 → callLlm 的 finally 清掉运行态 →
+   *      UI 显示已结束而后端任务仍在跑 → 后端后续 tool:execute 无人应答 → 卡 2 分钟报
+   *      「前端暂时不可达」。长任务里工具执行的 await 会阻塞帧循环数十秒，连接空闲被掐的概率极高。
+   *   ★ 配套措施（同日）：服务端 `sseStream` 已加 15s 注释帧心跳保活，把"静默期"从数十秒
+   *     压到 ≤15s，从源头降低被掐概率；本函数是它失败后的兜底。
+   *
+   * ★ 做法：subscribeTaskSse 返回后查一次任务是否仍在运行（GET /llm/tasks/active）；
+   *   仍在运行 → 按 taskEventCounts 记录的已消费事件数做 since **续传重订**（服务端会重放该索引之后的
+   *   事件，不丢帧）；指数退避重试，上限 8 次；AbortSignal 触发（用户停止）时立即退出。
+   *   任务已终态或查询失败 → 正常返回，交由调用方 finally 收尾。
+   */
+  async function subscribeTaskSseWithReconnect(
+    convId: string,
+    taskId: string,
+    signal: AbortSignal,
+    onChunk?: (chunk: { content?: string; reasoning?: string }) => void,
+  ): Promise<void> {
+    const MAX_RETRY = 8;
+    for (let attempt = 0; ; attempt++) {
+      await subscribeTaskSse(convId, taskId, signal, onChunk, taskEventCounts.get(taskId) || 0);
+      if (signal.aborted) return;
+      // 流结束 → 判定任务是否仍在运行（终态时 active 查询为空，直接收工）
+      let stillRunning = false;
+      try {
+        const r = await api.get<any[]>(`/llm/tasks/active?conversationId=${convId}`);
+        stillRunning = !('error' in r) && Array.isArray(r.data)
+          && r.data.some((t: any) => t.id === taskId && t.status === 'running');
+      } catch { /* 查询失败按结束了处理，避免无限重连 */ }
+      if (!stillRunning) return;
+      if (attempt >= MAX_RETRY) {
+        console.warn(`[Chat] SSE 重连超过 ${MAX_RETRY} 次仍未完成，放弃（任务仍在后端运行，可切走再切回恢复）`);
+        return;
+      }
+      // 指数退避：0.5s → 1s → 2s → 4s，封顶 5s（瞬断立刻回来，真故障不空转）
+      const delay = Math.min(500 * Math.pow(2, attempt), 5000);
+      await new Promise((resolve) => {
+        const t = setTimeout(resolve, delay);
+        signal.addEventListener('abort', () => { clearTimeout(t); resolve(null); }, { once: true });
+      });
+      if (signal.aborted) return;
+      console.log(`[Chat] SSE 断连，第 ${attempt + 1} 次续传重订 (since=${taskEventCounts.get(taskId) || 0})`);
+    }
   }
 
   /** 检查会话是否有未完成的后端任务，如有则重新订阅 SSE 恢复流式输出。 */
@@ -1897,8 +2124,12 @@ async function loadConversations() {
       abortControllers.set(convId, abortController);
       void (async () => {
         try {
-          const since = taskEventCounts.get(taskId) || 0;
-          await subscribeTaskSse(convId, taskId, abortController.signal, undefined, since);
+          // ★★★ 走带重连的包装（2026-10-08 修，high）：此前这里直接调 `subscribeTaskSse`，
+          //   于是**手动重连（切走再切回）拿到的流一旦再被掐断就永久停了** —— 而且它拿到的
+          //   `connected` 帧会把 `taskEventCounts` 虚高 1，使该任务**之后所有自动重连
+          //   都从错位下标开始**（漏事件 → 工具不执行 → 报「前端暂时不可达」）。
+          //   与 callLlm 走同一条路径，行为才一致。
+          await subscribeTaskSseWithReconnect(convId, taskId, abortController.signal, undefined);
         } catch (e: any) {
           markRunEnd(convId, e?.name === 'AbortError' ? 'aborted' : 'error');
           if (e?.name === 'AbortError') return;
@@ -2000,7 +2231,7 @@ async function loadConversations() {
         } catch { /* 提示失败不影响订阅 */ }
       }
 
-      await subscribeTaskSse(convId, taskId, abortController.signal, onChunk);
+      await subscribeTaskSseWithReconnect(convId, taskId, abortController.signal, onChunk);
     } catch (e: any) {
       markRunEnd(convId, e?.name === 'AbortError' ? 'aborted' : 'error');
       if (e?.name === 'AbortError') return;
@@ -2008,6 +2239,11 @@ async function loadConversations() {
       throw e;
     } finally {
       markRunEnd(convId); // 幂等兜底：SSE 终态已落的先到者为准
+      // 跨重连状态随任务收尾一起清（见 SseStreamState 注释）。
+      // ★ 这里从 taskIds 反查而不是直接用 taskId —— taskId 在 try 块内声明，
+      //   finally 作用域取不到（catch 分支（建任务失败）时本就没有 taskId）。
+      const tid = taskIds.get(convId);
+      if (tid) { dropStreamState(tid); taskEventCounts.delete(tid); }
       abortControllers.delete(convId);
       taskIds.delete(convId);
       runningConvIds.value.delete(convId);
@@ -2114,6 +2350,8 @@ async function loadConversations() {
     conversations, currentMessages, streaming, currentConvId, mountedMcpServers, mcpDisabledTools, mcpToolAliases,
     runningConvIds, isConvStreaming, runStatsByConv,
     browserExpanded, browserUserDismissed, browserLockInput, browserPaused, pausedConvIds,
+    browserTaskActive, markBrowserTaskActive, clearBrowserTaskActive,
+    remainingAgentOpenedTabs, clearAgentOpenedTabs, markAgentOpenedTab,
     agentCursor, onAgentCursor, clearAgentCursor,
     pauseTask, resumeTask,
     queuedByConv, queuedOf, enqueueMessage, removeQueuedMessage, updateQueuedMessage, takeQueuedMessages, takeFirstQueuedMessage, injectQueuedMessage,

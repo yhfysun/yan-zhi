@@ -8,6 +8,9 @@ import { randomUUID } from 'node:crypto';
 import { db } from '../db.js';
 import { embedText } from './ollama-embed.js';
 import { createLogger } from './logger.js';
+// 压缩前抢救的 todo 分流目标：待办必须进 task_plan（提示词「接力棒」会回注），
+// 不能塞 memory 表 —— 见 flushMemoriesBeforeCompression 注释。
+import { loadPlanJson, savePlanJson, writeTaskPlanFile, type TaskPlan } from './task-plan-file.js';
 const logger = createLogger('memory-service');
 
 // ── 向量工具 ──
@@ -495,6 +498,21 @@ export interface FlushParams {
 /**
  * 压缩前抢救：把即将被摘要吞掉的细节（关键数据/路径/ID/决定/用户纠正）写入记忆。
  * 静默执行：不插会话消息、不发聊天事件，失败仅打日志。
+ *
+ * ★★★ 2026-10-08 补强（本函数此前只覆盖"事实"，不覆盖"待办"）：
+ *   原实现的结构化产出只有 `{"type":"daily|session","content":"一句话事实"}`，
+ *   而 `writeMemoryItems` 的 type 白名单是 `['profile','agent','session','daily']` ——
+ *   **没有任何类别承载"接下来该做什么"**。后果：若压缩时 `task_plan` 尚未建立
+ *   （或建得不全），"下一步该干嘛"这个意图**只存在于即将被吞掉的对话里**，会被直接丢掉
+ *   → 接力批次的模型不知道要接着做什么 → 要么从头再来、要么乱做。
+ *
+ * ★ 修法（两条独立的兜底，不互相依赖）：
+ *   ① 抢救指令新增 `"type":"todo"` 类别，并在 prompt 里喂入**当前计划现状**（planText）——
+ *      让 LLM 能判断"哪些待办是计划里还没有的"，只输出**增量待办**（避免与 plan 重复）。
+ *   ② todo 条目**不写 memory 表**（那张表没有它的位置，见 writeMemoryItems 的 type 归一化），
+ *      改为**追加进 task_plan**：新增的步骤进 task_plan_json + 镜像 plan.md，
+ *      从而进入提示词的「接力棒」段落 → 下一步模型必然看得到。
+ *   ★ 两条都做：① 保证 LLM 有产出能力，② 保证产出落到**模型真的会读到**的地方。
  */
 export async function flushMemoriesBeforeCompression(params: FlushParams, toCompress: Message[]): Promise<void> {
   try {
@@ -511,17 +529,37 @@ export async function flushMemoriesBeforeCompression(params: FlushParams, toComp
       `SELECT content FROM memory WHERE user_id = ? AND type = 'daily' AND metadata_json LIKE ? ORDER BY last_used_at DESC LIMIT 1`,
     ).all(params.userId, `%"date":"${date}"%`)[0] as any;
 
+    // ★ 计划现状：喂给 LLM 判"哪些待办是计划里还没有的"，避免把已登记的步骤重复输出成 todo。
+    //   读不到（无计划）则留空 —— 此时抢救出的 todo 会被当作"计划还没立项"的补充步骤。
+    const planText = (() => {
+      try {
+        const plan = loadPlanJson(params.conversationId);
+        if (!plan?.steps?.length) return '';
+        const lines = plan.steps.map((s: any, i: number) => {
+          const mark = s.status === 'done' ? '[x]' : s.status === 'running' ? '[~]' : '[ ]';
+          return `${i + 1}. ${mark} ${s.title}`;
+        });
+        return `## 当前任务计划（已登记，不要重复输出其中的步骤）\n${plan.title || '任务计划'}\n${lines.join('\n')}\n\n`;
+      } catch { return ''; }
+    })();
+
     const client = new LlmClient(params.platform, params.model);
     // ★ 必须显式标注 Message[]：内联数组字面量里的 role 会被推断为 string，
     //   而 chat() 形参要的是 Role 字面量联合 → 提成变量后类型不兼容（TS2345）。
     const reqMessages: Message[] = [
       {
         id: 'sys', conversationId: '', role: 'system', createdAt: 0,
-        content: '你是记忆归档助手。以下对话片段即将被压缩丢失。请提取其中「尚未记录在现有记忆里」且后续步骤可能需要的信息（关键数据、文件路径、ID、命令、决定、用户纠正/偏好），输出 JSON 数组，每项形如 {"type":"daily|session","content":"一句话事实，标识符原样保留"}。相对日期（如"昨天"）转为绝对日期。没有值得抢救的返回 []。只输出 JSON，不要解释。',
+        content: '你是记忆归档助手。以下对话片段即将被压缩丢失。请提取其中「尚未记录在现有记忆里」且后续步骤可能需要的信息，输出 JSON 数组。每项形如 {"type":"daily|session|todo","content":"一句话事实，标识符原样保留"}。\n'
+          + '· type=daily/session：关键数据、文件路径、ID、命令、决定、用户纠正/偏好等**事实**。\n'
+          + '· type=todo：**尚未完成、且后续还要做的事**（下一步动作、待确认事项、待产出的文件）。\n'
+          + '  只输出「当前任务计划」里**还没有的**待办；已在计划里的步骤不要重复输出。\n'
+          + '  若对话已无未完成事项，不要输出 todo。\n'
+          + '相对日期（如"昨天"）转为绝对日期。没有值得抢救的返回 []。只输出 JSON，不要解释。',
       },
       {
         id: 'usr', conversationId: '', role: 'user', createdAt: 0,
         content: (existingDaily ? `## 当天已记录（不要重复）\n${existingDaily.content}\n\n` : '')
+          + planText
           + `## 即将压缩的对话\n${transcript}`,
       },
     ];
@@ -546,7 +584,38 @@ export async function flushMemoriesBeforeCompression(params: FlushParams, toComp
       logger.info('[memory] 压缩前抢救: 模型输出无法解析为条目, 前120字:', text.slice(0, 120));
     }
 
-    const writeItems: MemoryWriteItem[] = items
+    // ★ todo 与事实**分流**（2026-10-08）：
+    //   · todo → 追加进 task_plan（提示词「接力棒」段会读到 → 下一步必然可见）。
+    //     绝不能塞进 memory 表：writeMemoryItems 的 type 白名单是
+    //     ['profile','agent','session','daily']，`todo` 会被**静默降级成 agent**，
+    //     变成一条平铺事实混在记忆里，既不会被当计划执行、又污染记忆检索。
+    //   · daily/session → 走原有 memory 写入（事实类）。
+    const todoItems = items.filter((x) => x?.type === 'todo' && typeof x?.content === 'string' && x.content.trim());
+    const factItems = items.filter((x) => x?.type !== 'todo');
+
+    if (todoItems.length && params.conversationId) {
+      try {
+        const existing = loadPlanJson(params.conversationId);
+        const known = new Set((existing?.steps || []).map((s: any) => String(s.title || '').trim()));
+        const fresh = todoItems
+          .map((x) => String(x.content).trim())
+          .filter((t) => t && !known.has(t));
+        if (fresh.length) {
+          const steps = [
+            ...((existing?.steps || []) as any[]),
+            ...fresh.map((title) => ({ title, status: 'pending' })),
+          ];
+          const plan = { title: existing?.title || '任务计划（压缩前抢救）', steps };
+          savePlanJson(params.conversationId, plan as any);
+          await writeTaskPlanFile(params.conversationId, plan as any);
+          logger.info(`[memory] 压缩前抢救: +${fresh.length} 条待办已并入任务计划`);
+        }
+      } catch (e: any) {
+        logger.warn('[memory] 压缩前抢救: 待办并入计划失败:', e?.message || e);
+      }
+    }
+
+    const writeItems: MemoryWriteItem[] = factItems
       .filter((x) => x?.content && typeof x.content === 'string')
       .map((x) => ({
         type: x.type === 'daily' ? 'daily' : 'session',

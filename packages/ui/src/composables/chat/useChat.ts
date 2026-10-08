@@ -449,14 +449,36 @@ function createChat() {
     }
   });
   // 任务结束（completed/aborted/failed）兜底清理：SSE 步骤日志可能未清空，这里强制退出实况态
-  store.onTaskFinished(() => {
+  store.onTaskFinished((convId) => {
     if (store.browserExpanded || store.browserLockInput) {
       store.browserLockInput = false;
       store.browserExpanded = false;
       store.browserUserDismissed = false;
     }
+    // ★ 浏览器任务记账随任务收尾一起清（2026-10-08）：不清会让"本会话是浏览器任务"永远为真，
+    //   下一个非浏览器任务也会锁住页面。★ 按 convId 精确清 —— 多会话并行时 A 会话收尾
+    //   不得解开 B 会话正在跑的浏览器任务锁。
+    store.clearBrowserTaskActive(convId);
     store.pausedConvIds.clear();
     store.clearAgentCursor();
+    // ★★ agent 开的页面没收干净 → 给用户一条明示（2026-10-08 用户诉求
+    //   「pageAgent 执行完了不会关闭页面？」）。
+    //   ★ 为什么是"提示"而不是"自动关"（用户拍板方案 B 的落点）：
+    //     哪些页还有用（用户要接着看的成果页）只有模型知道 —— 提示词已要求它收尾时自己关，
+    //     这里只在**它没关干净**时兜底告知，不替用户决定关掉可能有用的页面。
+    //   ★ 提示必须放在「读完残留之后、清理记账之前」—— 先取快照再清，否则永远读到空。
+    const leftover = store.remainingAgentOpenedTabs(convId);
+    if (leftover.length > 0) {
+      store.clearAgentOpenedTabs(convId);
+      void import('element-plus').then(({ ElMessage }) => {
+        ElMessage.info({
+          message: `AI 打开了 ${leftover.length} 个页面仍保留在预览面板，可自行关闭`,
+          duration: 5000,
+        });
+      }).catch(() => { /* 提示失败不影响收尾 */ });
+    } else {
+      store.clearAgentOpenedTabs(convId);
+    }
   });
   // 桌面端：右侧面板开合 / tab 切换与原生 BrowserView 图层联动，避免关闭面板后即梦页面仍浮在窗口上
   watch(() => store.rightPanelOpen, (open) => {
@@ -2063,6 +2085,8 @@ async function healStalePlatform() {
     store.browserExpanded = false;
     store.browserLockInput = false;
     store.browserUserDismissed = false;
+    store.clearBrowserTaskActive(); // 浏览器任务记账：新任务从头算（见 stores/chat.ts 注释）
+    store.clearAgentOpenedTabs();   // agent 开过的 tab 记账同理（新任务的"待收拾"从零开始）
     store.pausedConvIds.clear();
     store.clearAgentCursor();
     // —— 按「消息 id」分桶的展开态：旧 id 在新会话里永远不会命中，
@@ -2154,6 +2178,9 @@ async function healStalePlatform() {
     // 切会话即退出浏览器实况态：锁定/放大只属于发起浏览器任务的那个会话
     store.browserExpanded = false;
     store.browserLockInput = false;
+    // ★ 注意：这里**不能**清浏览器任务记账 —— 切回来时若任务仍在跑，锁必须还在
+    //   （清了就会出现"切走再切回，agent 还在操作但页面能被点"）。记账的清理时机是
+    //   **任务收尾**（onTaskFinished）与**新任务开头**（resetTaskScopedState），不是切会话。
     store.clearAgentCursor();
     // 草稿域归零（附件 chip / @ 引用勾选 / 输入内容不跨任务残留）
     resetDraftState();

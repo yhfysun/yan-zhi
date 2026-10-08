@@ -50,8 +50,12 @@ describe('P2-3 工具前后置 Hooks', () => {
 
   it('★★ 必须 fail-open：钩子抛错不能影响工具结果', () => {
     // 工具已经执行完了，副作用是次要的 —— 一个坏钩子不能带走整条链
-    const cnt = (HOOKS.match(/console\.warn\(`\[tool-hook\]/g) || []).length;
+    // 2026-10-08 同步：日志统一走 services/logger（createLogger），不再是裸 console.warn
+    const cnt = (HOOKS.match(/logger\.warn\(`\[tool-hook\]/g) || []).length;
     expect(cnt, '★ 钩子未做逐个 catch（坏钩子会中断后续钩子/工具链）').toBeGreaterThanOrEqual(2);
+    // 前置/后置各有一处 try/catch 兜底
+    expect(HOOKS, '★ runBeforeToolHooks 缺 catch').toMatch(/runBeforeToolHooks[\s\S]{0,900}catch/);
+    expect(HOOKS, '★ runAfterToolHooks 缺 catch').toMatch(/runAfterToolHooks[\s\S]{0,900}catch/);
   });
 
   it('★★ 副作用必须搬到钩子（主循环只负责跑钩子）', () => {
@@ -74,11 +78,17 @@ describe('P2-4 并行子智能体', () => {
     expect(LTM, '★ 未用 Promise.all 并发').toMatch(/Promise\.all\(batchToRun\.map/);
   });
 
-  it('★★ 只并发 call_agent（其它工具并发会出错）', () => {
-    const i = at(LTM, 'const agentCalls = toolCallAcc.filter', 'call_agent 过滤');
-    const body = LTM.slice(i, i + 300);
-    expect(body, "★ 未限定只挑 call_agent（并发 UI 工具会弹多个对话框 / 浏览器会互相覆盖）")
-      .toMatch(/n === 'call_agent'/);
+  it('★★ 并发范围必须是显式白名单：call_agent + 只读工具（浏览器/UI/写类绝不并行）', () => {
+    // ★ 2026-10-08 同步：P0-4（2026-10-07）把并发范围从「只 call_agent」扩到
+    //   「call_agent + 只读白名单」。原锚点 `const agentCalls = toolCallAcc.filter` 已重构。
+    //   防护意图不变：并发集合必须**显式列举**，绝不能变成「全并行」。
+    expect(LTM, '★ 并发筛选逻辑丢失').toMatch(/return n === 'call_agent' \|\| READONLY_PARALLEL_TOOLS\.has\(n\)/);
+    const body = win(LTM, 'const READONLY_PARALLEL_TOOLS = new Set<string>([', 300, '只读并发白名单');
+    expect(body, '★ 白名单存在').toMatch(/file_read/);
+    // 红线：这三类绝不能进并发白名单（浏览器单活动页 / UI 弹框 / 写类有依赖）
+    for (const risky of ['browser_', 'ask_user', 'confirm_user', 'file_write', 'file_edit']) {
+      expect(body, `★ 危险工具混进并发白名单：${risky}`).not.toContain(`'${risky}'`);
+    }
   });
 
   it('★★ 结果必须按原序取用（tool 消息要与 tool_calls 同序，否则重放 400）', () => {

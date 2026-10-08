@@ -77,7 +77,8 @@ describe('② 三条校验：都得"明确报错"，不能静默吞', () => {
 
   it('★★ mode 必须校验白名单（非法值会让会话在哪个模式列表都看不到）', () => {
     const body = caseBody('api_conversation_setup');
-    expect(body, '★★ 未定义合法模式').toMatch(/\['office', 'dev', 'ops', 'sec', 'wf'\]/);
+    // 2026-10-08 同步：白名单已含 clip（剪辑模式，第六模式，见 license.ts EDITION_MODES）
+    expect(body, '★★ 未定义合法模式').toMatch(/\['office', 'dev', 'ops', 'sec', 'wf', 'clip'\]/);
     expect(body, '★★ 非法 mode 未报错').toMatch(/未知的工作模式/);
   });
 
