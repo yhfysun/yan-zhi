@@ -33,7 +33,12 @@ export default defineConfig({
     // ★ 与 desktop 的 vite.config.ts 同口径 —— 写死会让 dev 端的 web 界面打到正式版后端。
     proxy: {
       '/api': {
-        target: `http://localhost:${process.env.YANZHI_API_PORT || 3001}`,
+        // ★★ 必须用 127.0.0.1 而不是 localhost（2026-10-07 实测踩到）：
+        //   Node 18+ 的 DNS 解析顺序会把 localhost 优先解析到 **::1**，而本机
+        //   IPv6 是黑洞（curl -6 直接失败）→ 代理报 `AggregateError [ECONNREFUSED]`
+        //   → 前端所有 /api 请求 500，但**直连 127.0.0.1:3001 完全正常**。
+        //   症状极具误导性："后端明明起了，界面却全加载不出来"。
+        target: `http://127.0.0.1:${process.env.YANZHI_API_PORT || 3001}`,
         changeOrigin: true,
       },
     },

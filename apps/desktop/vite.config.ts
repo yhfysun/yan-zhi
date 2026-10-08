@@ -48,7 +48,11 @@ export default defineConfig({
     //   优先读 dev 编排器下发的 YANZHI_API_PORT。
     proxy: {
       '/api': {
-        target: `http://localhost:${process.env.YANZHI_API_PORT || 3001}`,
+        // ★★ 必须用 127.0.0.1 而不是 localhost（与 apps/web 同口径，2026-10-07）：
+        //   Node 18+ 会把 localhost 优先解析到 ::1，而本机 IPv6 是黑洞 →
+        //   代理 `AggregateError [ECONNREFUSED]` → 界面全部 /api 500，
+        //   但直连 127.0.0.1 正常，症状极易被误判成"后端没起"。
+        target: `http://127.0.0.1:${process.env.YANZHI_API_PORT || 3001}`,
         changeOrigin: true,
       },
     },
