@@ -270,18 +270,37 @@ let mcpChildSeq = 0;
 /** 生产模式：后端数据目录与程序分离。
  *  旧版把 data.db 落在 resources/server/dist/apps/server/（安装目录内），
  *  NSIS 覆盖安装时卸载旧版会清空安装目录导致用户数据丢失。
- *  现统一放 userData/server-data，并把旧位置的数据一次性迁移过来。 */
+ *  现统一放 userData/server-data，并把旧位置的数据一次性迁移过来。
+ *
+ *  ★★★ dev 模式也必须给 DATA_DIR（2026-10-08 修，血泪教训）：
+ *    此前这里是 `if (!app.isPackaged) return null;` —— dev 下返回 null，
+ *    上层 `...(dataDir ? {DATA_DIR: dataDir} : {})` 于是不注入 → 后端 db.ts 退回
+ *    `apps/server/`（**源码目录**）建库。后果：
+ *      ① dev 与安装版各写一份库，数据互不可见；
+ *      ② 实测该库发生过 B 树损坏（conversation/message 两棵树）→ 会话接口全 500。
+ *    dev 下 Electron 的 userData 已被 instance.cjs 设为 `yan-zhi-dev`
+ *    （YANZHI_DEV_INSTANCE=1），所以这里的 server-data 天然落在
+ *    `%APPDATA%/yan-zhi-dev/server-data`，与安装版彻底分开。
+ *  ★ 显式传入的 DATA_DIR（bin/dev.mjs 下发）优先，避免 Electron 与裸 server 两条
+ *    启动路径拿到不同的目录。 */
 function ensureServerDataDir() {
-  if (!app.isPackaged) return null;
+  const explicit = (process.env.DATA_DIR || '').trim();
+  if (explicit) {
+    fs.mkdirSync(explicit, { recursive: true });
+    return explicit;
+  }
   const dataDir = path.join(app.getPath('userData'), 'server-data');
   fs.mkdirSync(dataDir, { recursive: true });
-  const newPath = path.join(dataDir, 'data.db');
-  if (!fs.existsSync(newPath)) {
-    const legacyDir = path.join(process.resourcesPath, 'server', 'dist', 'apps', 'server');
-    for (const f of ['data.db', 'data.db-wal', 'data.db-shm']) {
-      const src = path.join(legacyDir, f);
-      if (fs.existsSync(src)) {
-        try { fs.copyFileSync(src, path.join(dataDir, f)); } catch {}
+  if (app.isPackaged) {
+    // 生产：把旧位置（安装目录内）的数据一次性搬迁过来
+    const newPath = path.join(dataDir, 'data.db');
+    if (!fs.existsSync(newPath)) {
+      const legacyDir = path.join(process.resourcesPath, 'server', 'dist', 'apps', 'server');
+      for (const f of ['data.db', 'data.db-wal', 'data.db-shm']) {
+        const src = path.join(legacyDir, f);
+        if (fs.existsSync(src)) {
+          try { fs.copyFileSync(src, path.join(dataDir, f)); } catch {}
+        }
       }
     }
   }

@@ -63,12 +63,16 @@ pnpm-debug.log*
 # 数据库
 *.db
 *.db.bak-*
+*.db.corrupt-*
 *.db-journal
 *.db-shm
 *.db-wal
 *.sqlite
 # db 的临时导出（sql.js 驱动在 flush 时会写 data.db.tmp；*.db 通配对 `.db.tmp` 不生效）
 *.db.tmp
+
+# 开发模式的后端数据目录（DATA_DIR 兜底落点；正常应指到 %APPDATA%/yan-zhi-dev/server-data）
+apps/server/dev-data/
 
 # Corepack
 .corepack-cache/

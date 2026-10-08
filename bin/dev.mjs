@@ -25,6 +25,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import net from 'node:net';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -33,6 +34,39 @@ const ROOT = path.resolve(__dirname, '..');
 const IS_WIN = process.platform === 'win32';
 // 缓存指纹放在 .workbuddy/dev-cache（已 gitignore，且不受 node_modules 写保护影响）
 const CACHE_DIR = path.join(ROOT, '.workbuddy', 'dev-cache');
+
+/**
+ * 开发实例的数据目录（单一真相源，server 与 Electron 两条启动路径共用）。
+ *
+ * ★★★ 为什么必须有（2026-10-08 真实故障）：
+ *   `db.ts` 的 dataDir = `process.env.DATA_DIR || path.join(__dirname, '..')`。
+ *   安装版由 main.cjs 注入 DATA_DIR，而**开发模式此前谁都没注入** → dev 的库落到
+ *   `apps/server/data.db`（**源码目录里**）。后果：dev 与安装版各写一份库、数据互不可见；
+ *   实测该库还发生过 B 树损坏（conversation/message）→ 会话接口全 500。
+ *
+ * ★ 目录选 `%APPDATA%/yan-zhi-dev/server-data`，与 apps/desktop/instance.cjs 的
+ *   `DEV_USERDATA_NAME = 'yan-zhi-dev'` **同源**（Electron 的 userData 就是它，
+ *   后端数据放其 server-data 子目录）—— 与安装版 `yan-zhi/server-data` 布局对称：
+ *   同机可以同时跑「安装版」与「dev 版」，各用各的库，互不干扰。
+ *   （不选「项目内 apps/server/dev-data」：那会让 Electron 的 keyring/localStorage
+ *     落在 %APPDATA%/yan-zhi-dev，而 DB 落在项目里，两处分裂、备份时容易漏。）
+ */
+const DEV_USERDATA_NAME = 'yan-zhi-dev'; // 与 instance.cjs 的 DEV_USERDATA_NAME 同值（注释同步）
+
+function resolveDevDataDir() {
+  const explicit = (process.env.DATA_DIR || '').trim();
+  if (explicit) return explicit;
+  const home = os.homedir();
+  const appData =
+    process.platform === 'win32'
+      ? process.env.APPDATA || path.join(home, 'AppData', 'Roaming')
+      : process.platform === 'darwin'
+        ? path.join(home, 'Library', 'Application Support')
+        : process.env.XDG_CONFIG_HOME || path.join(home, '.config');
+  return path.join(appData, DEV_USERDATA_NAME, 'server-data');
+}
+
+const DEV_DATA_DIR = resolveDevDataDir();
 
 const APPS = {
   desktop: { dir: 'apps/desktop', vitePort: 1420, label: 'Desktop (Electron)' },
@@ -596,6 +630,7 @@ async function main() {
           PORT: String(DEV_API_PORT),
           YANZHI_DEV_INSTANCE: '1',
           YANZHI_API_PORT: String(DEV_API_PORT),
+          DATA_DIR: DEV_DATA_DIR,
           ...browserEnv,
         }
       );
@@ -608,6 +643,7 @@ async function main() {
       PORT: String(DEV_API_PORT),
       YANZHI_DEV_INSTANCE: '1',
       YANZHI_API_PORT: String(DEV_API_PORT),
+      DATA_DIR: DEV_DATA_DIR,
       ...browserEnv,
     });
     return;
@@ -658,8 +694,13 @@ async function main() {
   //   两者缺一都会退回"共用"，等于没隔离。
   electronEnv.YANZHI_DEV_INSTANCE = '1';
   electronEnv.YANZHI_API_PORT = String(DEV_API_PORT);
+  // ★ 数据目录也下发（main.cjs 会在 app.getPath('userData') 基础上用 server-data 子目录；
+  //   这里显式传一份，保证「dev.mjs server」与「dev.mjs desktop」两条路径拿到同一个值，
+  //   不会因为一个走 Electron、一个走裸 server 就落到两个不同的库上）。
+  electronEnv.DATA_DIR = DEV_DATA_DIR;
   log('  env 净化: 已剥离 ELECTRON_* 变量，NODE_OPTIONS 置空');
   log(`  实例隔离: YANZHI_DEV_INSTANCE=1, YANZHI_API_PORT=${DEV_API_PORT}（与安装版 3001 / yan-zhi 分开）`);
+  log(`  数据目录: DATA_DIR=${DEV_DATA_DIR}`);
 
   // 清理残留 Electron 主进程（旧窗口不占端口，freePort 杀不到；不清理会叠窗口导致看到旧界面）
   // ★ 只清 dev 自己拉起的（命令行含仓库根 / apps/desktop / --dev）；

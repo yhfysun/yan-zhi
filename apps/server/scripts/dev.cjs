@@ -18,14 +18,52 @@
  *   打包版不受影响：那条路径走 apps/desktop/main.cjs（按 app.isPackaged 判定），
  *   本脚本只在 dev 下使用。
  *
+ * ★★★ 必须注入 DATA_DIR（2026-10-08 修，血泪教训）：
+ *   `db.ts` 的 dataDir 是 `process.env.DATA_DIR || path.join(__dirname, '..')`。
+ *   安装版由 main.cjs 注入 DATA_DIR（userData/server-data），而**本脚本此前没注入**
+ *   → dev 的库落到 `apps/server/data.db`（**源码目录里**）。后果：
+ *     ① dev 与安装版各写一份库，数据互相看不见（用户以为"会话丢了"）；
+ *     ② 源码目录里混进一个 80MB 数据库，git status 常年脏、打包可能被扫进去；
+ *     ③ 实测该库发生过 B 树损坏（conversation/message 两棵树）→ 会话接口全 500。
+ *   → 这里对齐 apps/desktop/instance.cjs 的 `DEV_USERDATA_NAME`（'yan-zhi-dev'），
+ *     把 DATA_DIR 指到 `%APPDATA%/yan-zhi-dev/server-data`，与生产彻底分开。
+ *   ★ 为什么目录名要与 instance.cjs 一致而不是自己起一个：实例配置是「端口 / userData /
+ *     共享目录」的单一真相源（instance.cjs 注释里写明"各处一律引用，不再各自硬编码"），
+ *     再硬编码一份必然漂移。
+ *
  * 用法：node scripts/dev.cjs [tsx 额外参数...]
  */
 const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 
 const serverDir = path.join(__dirname, '..');
 const tsxCli = path.join(serverDir, 'node_modules', 'tsx', 'dist', 'cli.mjs');
+
+/**
+ * 解析 dev 实例应使用的 DATA_DIR —— 与 bin/dev.mjs 共用同一判据。
+ *
+ * ★ 优先级：
+ *   1. 显式 DATA_DIR（由 bin/dev.mjs / main.cjs 或用户/CI 下发，最高优先）
+ *   2. `%APPDATA%/yan-zhi-dev/server-data`（本脚本被**单独**调用时的兜底，
+ *      与 bin/dev.mjs 的目录口径一致 —— 两处不一致会让同一个 dev 实例
+ *      因启动方式不同而用两个库）
+ * 判据只有一条：库**不许再落在 apps/server/ 根**（源码目录）。
+ */
+const DEV_USERDATA_NAME = 'yan-zhi-dev'; // 与 apps/desktop/instance.cjs 同值
+function resolveDevDataDir() {
+  const explicit = (process.env.DATA_DIR || '').trim();
+  if (explicit) return explicit;
+  const home = os.homedir();
+  const appData =
+    process.platform === 'win32'
+      ? process.env.APPDATA || path.join(home, 'AppData', 'Roaming')
+      : process.platform === 'darwin'
+        ? path.join(home, 'Library', 'Application Support')
+        : process.env.XDG_CONFIG_HOME || path.join(home, '.config');
+  return path.join(appData, DEV_USERDATA_NAME, 'server-data');
+}
 
 /** 找 Electron 可执行文件（用它作为 Node 运行时，保证原生模块 ABI 一致）。
  *
@@ -61,10 +99,13 @@ const electronBin = findElectron();
 const isElectron = !!electronBin;
 const bin = electronBin || process.execPath;
 const args = [tsxCli, 'watch', 'src/index.ts', ...process.argv.slice(2)];
+const devDataDir = resolveDevDataDir();
+fs.mkdirSync(devDataDir, { recursive: true });
 
 console.log('[dev] 版本档: pro（开发模式全量）');
 console.log(isElectron ? '[dev] 运行时: Electron 内置 Node（原生模块 ABI 一致）'
   : '[dev] 运行时: 系统 Node（未找到 Electron；better-sqlite3 需为系统 Node 重编，否则会 ERR_DLOPEN_FAILED）');
+console.log(`[dev] DATA_DIR: ${devDataDir}`);
 
 const child = spawn(bin, args, {
   cwd: serverDir,
@@ -75,6 +116,8 @@ const child = spawn(bin, args, {
     ...(isElectron ? { ELECTRON_RUN_AS_NODE: '1' } : {}),
     YZ_EDITION: 'pro',
     YZ_DEFAULT_EDITION: 'pro',
+    // ★ 数据目录：不注入的话 db.ts 会退回 apps/server/（源码目录）—— 见文件头注释
+    DATA_DIR: devDataDir,
   },
 });
 child.on('exit', (code) => process.exit(code ?? 0));
