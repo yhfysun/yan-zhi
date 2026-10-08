@@ -258,6 +258,42 @@ describe('checkPathAccess —— 判定', () => {
     expect(v.kind).toBe('need-auth');
   });
 
+  // ══════════════════════════════════════════════════════════════════════════
+  // ★★★ 无工作目录 + 相对路径 —— 2026-10-08 实测缺陷（会话接口 500 同源的连带问题）
+  //
+  // 背景：`resolveToolPath` 在**无工作目录**时会把相对路径**原样返回**
+  //   （fs-walk.ts:67 的"旧行为"分支）。于是这里 `absPath` 就是 `"a.md"` 这种相对串，
+  //   与任何绝对根比较都"不在内" → 判定越界 → need-auth。
+  // 后果（实测）：纯聊天会话（无工作目录）里模型调 file_read 会被要求授权；
+  //   有前端时是无意义的骚扰弹窗，**无前端时永久挂起**
+  //   （`PATH_AUTH_TIMEOUT_MS = 0` = 不超时，`react-loop.test.ts` 因此 8s 超时卡死）。
+  //
+  // 判据：**相对路径不是"越界"，而是"以工作目录为基准"**。
+  //   没有工作目录时它无处可去 —— 这是"缺少配置"（应由调用方按策略拒绝/提示），
+  //   不是"访问了外面的世界"，不该走授权流程。要求用户在弹窗里授权一个
+  //   相对路径（"2026年值得入手的手机推荐"）本身也说不通。
+  // ══════════════════════════════════════════════════════════════════════════
+  it('★★ 无工作目录 + 相对路径 → 不得 need-auth（相对路径不是越界，是缺配置）', () => {
+    const v = checkPathAccess({
+      toolName: 'file_read',
+      args: { path: 'some-relative-name' },
+      workspaceDir: null,
+      allowedRoots: [],
+    });
+    expect(v.kind).not.toBe('need-auth');
+  });
+
+  it('★★ 无工作目录 + 绝对路径 → 仍须 need-auth（真正的越界不能放行）', () => {
+    const abs = process.platform === 'win32' ? 'C:\\Windows\\system.ini' : '/etc/passwd';
+    const v = checkPathAccess({
+      toolName: 'file_read',
+      args: { path: abs },
+      workspaceDir: null,
+      allowedRoots: [],
+    });
+    expect(v.kind).toBe('need-auth');
+  });
+
   it('无允许根 + 未给路径 → allow（没路径可判）', () => {
     const v = checkPathAccess({
       toolName: 'file_write', args: { content: 'x', file_name: 'a.md' }, workspaceDir: WS, allowedRoots: [],
