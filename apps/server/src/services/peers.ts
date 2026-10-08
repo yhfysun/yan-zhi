@@ -1,6 +1,15 @@
 import { v4 as uuid } from 'uuid';
 import { db } from '../db.js';
 
+// 节点在线判定窗口：超过该时长没有心跳（ping/register）即视为离线。
+// 客户端每 15s 上报一次 ping，此处留足余量。
+const PEER_ONLINE_WINDOW_MS = 2 * 60 * 1000;
+
+function expireStalePeers() {
+  const threshold = now() - PEER_ONLINE_WINDOW_MS;
+  db.prepare('UPDATE chat_peer SET status = 0 WHERE status = 1 AND last_seen_at < ?').run(threshold);
+}
+
 export interface PeerRegistration {
   nodeId: string;
   name: string;
@@ -112,6 +121,8 @@ export function upsertPeer(input: PeerRegistration, userId?: string) {
 }
 
 export function listPeers() {
+  // 下线窗口外未心跳的节点置为离线，避免僵尸节点长期显示为「在线」
+  expireStalePeers();
   const rows = db.prepare(
     'SELECT * FROM chat_peer WHERE status = 1 ORDER BY last_seen_at DESC',
   ).all();

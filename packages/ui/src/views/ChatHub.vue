@@ -217,6 +217,8 @@ const lastSince = ref(0);
 const outgoing = ref<{ id: string; to: string; content: string; createdAt: number }[]>([]);
 const imMessageList = ref<HTMLElement | null>(null);
 let pollTimer: ReturnType<typeof setInterval> | null = null;
+let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+const HEARTBEAT_INTERVAL = 15000;
 
 const currentChannelLabel = computed(() => {
   if (channel.value === 'node') return '言智节点';
@@ -275,11 +277,24 @@ onMounted(async () => {
   loadPeers();
   await loadConnectors();
   pollTimer = setInterval(dispatchPoll, 3000);
+  // 心跳：维持本节点在线状态，避免服务端按 last_seen 超时将其判为离线
+  heartbeatTimer = setInterval(sendHeartbeat, HEARTBEAT_INTERVAL);
+  sendHeartbeat();
 });
 
 onBeforeUnmount(() => {
   if (pollTimer) clearInterval(pollTimer);
+  if (heartbeatTimer) clearInterval(heartbeatTimer);
 });
+
+async function sendHeartbeat() {
+  if (!ownNodeId.value) return;
+  try {
+    await api.post(`/peers/${ownNodeId.value}/ping`);
+  } catch {
+    // 网络抖动忽略，下个周期再试
+  }
+}
 
 function dispatchPoll() {
   if (channel.value === 'node') {
