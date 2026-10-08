@@ -10,6 +10,9 @@
 //      后者会把办公模式也关掉，用户直接无法使用任何功能。
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+// 只取不可变的 MODE_DEFS 常量（模块顶层无副作用：localStorage 访问都在函数体内），
+// 与下方 freshModule() 的隔离诉求不冲突。
+import { MODE_DEFS } from './mode';
 
 class LocalStorageStub {
   private map = new Map<string, string>();
@@ -26,9 +29,14 @@ async function freshModule(): Promise<ModeModule> {
   return import('./mode');
 }
 
-// 注意顺序：前端可见顺序**始终跟随 MODE_DEFS**（office, dev, ops, sec, wf），
+// 注意顺序：前端可见顺序**始终跟随 MODE_DEFS**（office, dev, ops, sec, wf, clip），
 // 与后端 allowedModes 的下发顺序（office, wf, dev…）无关 —— 界面顺序不该被接口返回顺序左右。
-const ALL = ['office', 'dev', 'ops', 'sec', 'wf'];
+//
+// ★★ 为什么从 MODE_DEFS 推导而不是硬编码（2026-10-08 实测教训）：
+//   上一版这里是手写的 5 项清单。新增 `clip`（剪辑模式）时只改了 MODE_DEFS，
+//   本文件的三条断言（含 length 比较）**集体变红**，而全量测试没跑就漏了。
+//   硬编码清单与 MODE_DEFS 是同一语义的第二份真相 —— 新增模式必须两处改，必漏一处。
+const ALL = MODE_DEFS.map((d) => d.key);
 
 describe('版本档：模式可见性收敛', () => {
   let m: ModeModule;
