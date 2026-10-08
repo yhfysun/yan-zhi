@@ -3,7 +3,7 @@ import { Router, Request, Response } from 'express';
 import { authMiddleware } from '../auth.js';
 import { sseStream } from '../services/sse.js';
 import {
-  createTask, subscribe, abortTask, pauseTask, resumeTask, getActiveTasks, getTask, getTaskRow, resolveToolResult, injectUserMessage, findRunningTaskId,
+  createTask, subscribe, subscribeConversation, abortTask, pauseTask, resumeTask, getActiveTasks, getTask, getTaskRow, resolveToolResult, injectUserMessage, findRunningTaskId,
 } from '../llm-task-manager.js';
 
 const router = Router();
@@ -54,6 +54,26 @@ router.get('/tasks/:id/stream', (req: Request, res: Response) => {
   sseStream(req, res, {
     connected: { seq: task.seq, eventCount: task.events.length },
     subscribe: (onEvent) => subscribe(taskId, since, onEvent),
+  });
+});
+
+// GET /api/llm/conversations/:id/stream  订阅「会话级」事件流（与任务无关）
+//
+// ★★★ 为什么必须补这条（2026-10-08）：会话级通知总线（subscribeConversation /
+//   emitConversation）在 2026-09-17 就建好了，注释写明"作为后续通知类能力的公共底座"，
+//   但**全仓库只有定义、零调用** —— 没有路由出口，前端无从订阅。后果：
+//     · 长任务（后台子智能体 pageAgent / 工作流）跑完的反写事件**推不出去**；
+//     · 用户必须**手动刷新**才能在对话里看到结果（正是"异步没弄好"的观感来源）。
+//   与任务级 SSE 的关系：任务在跑 → 事件走任务流（前端已订阅）；任务收尾后 → 走本流。
+//   两者共用 services/sse.ts 的统一出口（心跳/退订/帧格式同源，改协议不会漂）。
+//
+// ★ 注册顺序：必须在 `/tasks/:id/stream` 之外单独一条路径，不能挂成 `/tasks/:id/...`
+//   的子路径 —— 会话 id 与任务 id 是两种 id，混在一起会让 404 语义变模糊。
+router.get('/conversations/:id/stream', (req: Request, res: Response) => {
+  const conversationId = req.params.id;
+  sseStream(req, res, {
+    connected: { conversationId },
+    subscribe: (onEvent) => subscribeConversation(conversationId, onEvent),
   });
 });
 
