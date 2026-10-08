@@ -1,11 +1,12 @@
 import { Router, Request, Response } from 'express';
 import path from 'node:path';
-import { existsSync, statSync } from 'node:fs';
+import { existsSync, statSync, writeFileSync } from 'node:fs';
 import { v4 as uuid } from 'uuid';
 import { authMiddleware } from '../auth.js';
 import { db } from '../db.js';
 import { resolveArtifactDirFor, ensureArtifactDirFor, findArtifactFileAcrossRoots, resolveRegisteredFilePath } from '../services/artifact-dir.js';
 import { buildArtifactRelDir, buildArtifactRelDirCandidates, type FileCategory } from '@yan-zhi/shared';
+import { guessMime } from '../utils/mime.js';
 
 const router = Router();
 router.use(authMiddleware);
@@ -207,6 +208,58 @@ router.post('/:id/files', (req: Request, res: Response) => {
   db.prepare(
     'INSERT INTO conversation_file (id, conversation_id, user_id, space_id, name, path, category, mime_type, size, source, message_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
   ).run(id, cid, userId, conv.space_id || null, name, path, parseCategory(category), mimeType || null, size || 0, source || 'agent', messageId || null, now);
+  const row = db.prepare('SELECT * FROM conversation_file WHERE id = ?').get(id);
+  res.json({ data: rowToFile(row) });
+});
+
+// POST /api/conversations/:id/files/upload —— 字节上传（Web/移动端没有原生文件选择器）
+//
+// ★ 为什么需要（2026-10-07）：桌面端能拿绝对路径（引用式素材），Web 端拿不到 ——
+//   浏览器只给 File 对象。没有这条通道，Web 端的「导入素材」就是个死按钮。
+//   与 GET /:id/file-stream 的目录探测同源，保证落盘位置可被静态服务找到。
+//
+// ★ 顺序注意：本路由必须在 `/:id/files/:fileId` 之类的参数路由**之前**注册，
+//   否则 `/files/upload` 会被 `:fileId` 抢先匹配（把 'upload' 当成 fileId）。
+router.post('/:id/files/upload', (req: Request, res: Response) => {
+  const userId = req.user!.userId;
+  const cid = req.params.id;
+  const conv = db.prepare('SELECT id, space_id FROM conversation WHERE id = ? AND user_id = ?').get(cid, userId) as any;
+  if (!conv) { res.status(404).json({ error: '会话不存在' }); return; }
+  const { name, base64, category } = req.body || {};
+  if (!name || typeof base64 !== 'string' || !base64) {
+    res.status(400).json({ error: 'name 与 base64 为必填项' }); return;
+  }
+  // 文件名安全化：只留基名，去掉路径分隔与 .. （防目录穿越）
+  const safeName = String(name).replace(/[\\/]/g, '_').replace(/\.\./g, '_').slice(0, 180);
+  if (!safeName) { res.status(400).json({ error: '文件名非法' }); return; }
+  let buf: Buffer;
+  try { buf = Buffer.from(base64, 'base64'); } catch { res.status(400).json({ error: 'base64 解码失败' }); return; }
+  const MAX = 512 * 1024 * 1024;
+  if (buf.length > MAX) { res.status(413).json({ error: `文件超过 ${MAX / 1024 / 1024}MB 上限` }); return; }
+
+  const cat = parseCategory(category) || 'upload';
+  const dirInfo = ensureArtifactDirFor({ conversationId: cid, category: cat });
+  // 重名时加序号，不覆盖已有素材（覆盖会让时间轴引用静默指向新内容）
+  let finalName = safeName;
+  let target = path.join(dirInfo.dir, finalName);
+  try {
+    if (existsSync(target)) {
+      const dot = safeName.lastIndexOf('.');
+      const stem = dot > 0 ? safeName.slice(0, dot) : safeName;
+      const ext = dot > 0 ? safeName.slice(dot) : '';
+      let n = 1;
+      while (existsSync(target)) { finalName = `${stem}-${n}${ext}`; target = path.join(dirInfo.dir, finalName); n++; }
+    }
+    writeFileSync(target, buf);
+  } catch (e: unknown) {
+    res.status(500).json({ error: `落盘失败：${e instanceof Error ? e.message : String(e)}` }); return;
+  }
+
+  const id = uuid();
+  const now = Date.now();
+  db.prepare(
+    'INSERT INTO conversation_file (id, conversation_id, user_id, space_id, name, path, category, mime_type, size, source, message_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+  ).run(id, cid, userId, conv.space_id || null, finalName, target, cat, guessMime(finalName), buf.length, 'user', null, now);
   const row = db.prepare('SELECT * FROM conversation_file WHERE id = ?').get(id);
   res.json({ data: rowToFile(row) });
 });

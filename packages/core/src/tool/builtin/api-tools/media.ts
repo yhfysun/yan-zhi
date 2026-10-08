@@ -1,5 +1,21 @@
 import type { ToolDefinition } from '../../types';
 import type { ApiModuleName } from './index';
+import { COLOR_EFFECTS, TRANSITIONS, AUDIO_EFFECTS, effectIds, effectCatalogText, TEXT_ANIMATIONS } from '@yan-zhi/shared';
+
+/**
+ * 效果清单从 @yan-zhi/shared 的效果库**自动生成**（单一真相源）。
+ *
+ * ★★★ 为什么必须这样（2026-10-07）：效果库此前散在三处 ——
+ *   实现（api-tool-executor 的 COLOR_PRESETS）、schema enum（本文件手写）、
+ *   字幕动画（subtitle-style）。三份手工清单必然漂移，症状是
+ *   「模型传了某预设但实现不认」或「实现了但模型不知道有」——都不报错。
+ *   商用剪辑软件的效果面板能用，前提就是「一份注册表驱动 UI + 参数校验 + 渲染」。
+ *   → 现在新增一个滤镜**只改 shared/utils/clip-effects.ts 一处**。
+ */
+const COLOR_IDS = effectIds(COLOR_EFFECTS);
+const TRANSITION_IDS = effectIds(TRANSITIONS);
+const AUDIO_FX_IDS = effectIds(AUDIO_EFFECTS);
+const TEXT_ANIM_IDS = effectIds(TEXT_ANIMATIONS);
 
 /**
  * AI 媒体生成工具（文生图 / 图生图 / 文生视频 / 图生视频）—— agnes 平台媒体模型的直接调用通道。
@@ -220,7 +236,7 @@ export function registerMediaTools(m: Map<ApiModuleName, ToolDefinition[]>) {
     {
       name: 'media_compose',
       description:
-        '音视频合成（基于 ffmpeg）：① dub 把配音音频混进视频（默认替换原音轨，keepAudio=true 时与人声混合）；② concat 按顺序拼接多段视频；③ subtitle 把 SRT 字幕烧录进画面（可顺带在顶部叠加标题、并控制字幕字号）。' +
+        '音视频合成（基于 ffmpeg）：① dub 把配音音频混进视频（默认替换原音轨，keepAudio=true 时与人声混合）；② concat 按顺序拼接多段视频；③ subtitle 把 SRT 字幕烧录进画面（可顺带在顶部叠加标题、并控制字幕字号，支持 subtitleAnimation 八种动画预设：淡入/弹跳/缩放/滑动/打字机/卡拉OK/闪烁/逐字飞入）。' +
         '输入一律为本机文件绝对路径（前序工具返回的 file 字段）。返回 {type:"video", file, url}。' +
         'concat 要求各段编码参数一致（copy 直拼），不一致会报错——先用同参数生成。未找到 ffmpeg 时会给出明确的放置/配置指引。' +
         '★ subtitle 推荐参数：title 传「项目名称」做顶部常驻标题（长标题默认 auto 自适应缩字，绝不溢出；要滚动传 titleFit="scroll"）；subtitleFontSize 不要显式传（默认 88px≈12 字/行，已合适；显式传小值如 34 反而会把 libass 单位当像素放大成巨字）。',
@@ -244,9 +260,120 @@ export function registerMediaTools(m: Map<ApiModuleName, ToolDefinition[]>) {
           subtitlePosition: { type: 'string', enum: ['bottom', 'center', 'top'], description: 'subtitle 可选：字幕位置，默认 bottom 底部' },
           subtitleMarginV: { type: 'number', description: 'subtitle 可选：字幕垂直边距（像素，基准同上）；不传按位置给默认（底部 200，顶部 260）' },
           safeArea: { type: 'boolean', description: 'subtitle 可选：true=竖屏短视频安全区，字幕上抬到画面上方约 78% 处，避开底部进度条/账号信息遮挡（抖音/快手/视频号必开）' },
+          subtitleAnimation: { type: 'string', enum: TEXT_ANIM_IDS, description: 'subtitle 可选：字幕动画预设。fade=淡入淡出（通用最稳）；pop=弹跳入场（卡点感）；zoom=缩放入场（强调）；slide=滑动入场；typewriter=打字机逐字出现（旁白感）；karaoke=卡拉OK逐字染色；flicker=描边闪烁（强调关键词）；flychar=逐字飞入（活泼）。不传=无动画。用户要「字幕动效/动画/好看点」时选一个贴合语义的预设' },
+          subtitleSlideDirection: { type: 'string', enum: ['left', 'right', 'up', 'down'], description: 'subtitle 可选：仅 subtitleAnimation=slide 时生效，滑入方向（right=从右侧滑入，默认）' },
           titleColor: { type: 'string', description: 'subtitle 可选：标题颜色，十六进制如 "#FFFFFF"，默认白色' },
           titleFade: { type: 'number', description: 'subtitle 可选：标题淡入秒数，默认 0（立即显示）' },
           output: { type: 'string', description: '可选，输出文件名（如 final.mp4）；不传自动命名' },
+        },
+        required: ['op'],
+      },
+    },
+    {
+      name: 'clip_project',
+      description:
+        '剪辑工程（剪辑模式的唯一入口）：把「多段素材 + 字幕（可带动画）+ BGM」组织成一份可反复编辑的工程，再一次性渲染成片。' +
+        '★ 与 media_edit 的分工：**要成片**（多段拼接、字幕轨道、BGM、导出规格）用本工具；' +
+        '只对**单个素材**做一次加工（抽帧/变速/转场/水印）仍用 media_edit。' +
+        '工程按会话保存（.clipproj.json），UI 时间轴与你可反复编辑同一份，不必每次从头重建。' +
+        'op 一览：' +
+        '**create** 建工程/改元信息 { name, size, fps }；' +
+        '**get** 读工程（默认返回紧凑摘要：各段 index/id/时间轴起止/时长 + 字幕；summaryOnly=true 时只给摘要）；' +
+        '**set_output** 改导出规格 { size:"1080x1920", fps }；' +
+        '**add_clip** 追加素材 { clips:[{ file, label?, trimStart?, trimEnd?, speed?, colorPreset?, fadeIn?, fadeOut?, kenburns?, audioFile?, keepOriginalAudio?, volume? }] }（可一次多段，顺序即播放顺序）；' +
+        '**update_clip** 改某段 { id 或 index, patch:{...同 add_clip 字段} }；**remove_clip** { id|index }；**move_clip** { id|index, to }；**clear_clips**；' +
+        '**add_text** 加字幕 { texts:[{ text, start, end, animation?, slideDirection?, fontSizePx?, color?, position?, safeArea? }] }（start/end 相对**成片**时间轴，可先用 get 看各段起止）；' +
+        '**update_text** { id|index, patch }；**remove_text** { id|index }；**clear_texts**；' +
+        '**set_bgm** { file, volume, duck }（duck=true 说话时自动压低，适合带旁白的成片）/ **clear_bgm**；' +
+        '**add_overlay** 画中画 { file, start, end, pos?, scale? }（start/end 相对成片；pos 可选 topleft/top/topright/left/center/right/bottomleft/bottom/bottomright，scale 相对素材尺寸 0.05~1 默认 0.35）；**update_overlay** { id|index, patch }；**remove_overlay** { id|index }；' +
+        '**render** 渲染成片 { output?, preview? }（preview=true 出快速预览档，确认后再正式渲染）。' +
+        '★ subtitleAnimation 可选：' + effectCatalogText(TEXT_ANIMATIONS) + '（用户要「字幕动效」时选贴合语义的一个）。' +
+        '输入一律为本机绝对路径（前序工具返回的 file 字段）。渲染返回 {type:"video", file, url}。',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          op: {
+            type: 'string',
+            enum: [
+              'create', 'get', 'set_output',
+              'add_clip', 'update_clip', 'remove_clip', 'move_clip', 'clear_clips',
+              'add_text', 'update_text', 'remove_text', 'clear_texts',
+              'set_bgm', 'clear_bgm', 'add_overlay', 'update_overlay', 'remove_overlay', 'render',
+            ],
+            description: '工程操作',
+          },
+          name: { type: 'string', description: 'create：工程名' },
+          size: { type: 'string', description: 'create/set_output：导出规格，形如 "1080x1920"（默认竖屏）/ "1920x1080"（横屏）' },
+          fps: { type: 'number', description: 'create/set_output：帧率，默认 30' },
+          clips: {
+            type: 'array',
+            description: 'add_clip：素材数组，按数组顺序首尾相接',
+            items: {
+              type: 'object',
+              properties: {
+                file: { type: 'string', description: '素材本机绝对路径（视频；图片则配 kenburns 做运镜）' },
+                label: { type: 'string', description: '时间轴显示名（默认取文件名）' },
+                trimStart: { type: 'number', description: '裁剪起点（秒，相对该素材）；不传=从 0 开始' },
+                trimEnd: { type: 'number', description: '裁剪终点（秒）；不传=到素材结尾' },
+                speed: { type: 'number', description: '变速倍数 0.25~4（>1 加快，<1 放慢）；不传=不变' },
+                colorPreset: { type: 'string', enum: COLOR_IDS, description: `调色/滤镜预设（可选：${effectCatalogText(COLOR_EFFECTS, ['none'])}）` },
+                fadeIn: { type: 'number', description: '该段画面淡入秒数' },
+                fadeOut: { type: 'number', description: '该段画面淡出秒数' },
+                kenburns: { type: 'object', description: '图片素材运镜：{ direction:"in"|"out", duration }' },
+                audioFile: { type: 'string', description: '该段配音音频绝对路径（替换原声；keepOriginalAudio=true 则与原声混音）' },
+                keepOriginalAudio: { type: 'boolean', description: 'true=配音与原声混音，false/缺省=配音替换原声' },
+                volume: { type: 'number', description: '该段音量倍数（1=不变）' },
+                crop: { type: 'object', description: '画面裁剪（裁子区域后回填画幅不变形）：{ x, y, w, h } 均为比例 0~1（如裁掉左侧 10% 黑边 { x:0.1, w:0.9 }）' },
+                keyframes: { type: 'array', description: '关键帧动画（点之间线性过渡）：[{ t, scale?, offsetX?, offsetY?, opacity? }]；t 为段内位置 0~1；scale 缩放 1~3；offsetX/Y 位移 -0.5~0.5（需配合 scale>1）；opacity 透明度 0~1（垫黑底）' },
+              },
+              required: ['file'],
+            },
+          },
+          texts: {
+            type: 'array',
+            description: 'add_text：字幕数组；start/end 相对**成片**时间轴（可先用 get 看各段时间轴起止）',
+            items: {
+              type: 'object',
+              properties: {
+                text: { type: 'string', description: '字幕文本' },
+                start: { type: 'number', description: '起始秒（相对成片）' },
+                end: { type: 'number', description: '结束秒（相对成片，必须 > start）' },
+                animation: { type: 'string', enum: TEXT_ANIM_IDS, description: '字幕动画预设（不传=无动画）' },
+                slideDirection: { type: 'string', enum: ['left', 'right', 'up', 'down'], description: 'animation=slide 时的滑入方向（默认 right）' },
+                fontSizePx: { type: 'number', description: '字号（像素，1920 高基准），默认 88' },
+                color: { type: 'string', description: '字幕颜色 #RRGGBB，默认白色' },
+                outlineColor: { type: 'string', description: '描边色 #RRGGBB，默认黑色' },
+                position: { type: 'string', enum: ['bottom', 'center', 'top'], description: '字幕位置，默认 bottom' },
+                safeArea: { type: 'boolean', description: 'true=竖屏安全区（字幕上抬，避开抖音/快手底部进度条）' },
+              },
+              required: ['text', 'start', 'end'],
+            },
+          },
+          id: { type: 'string', description: 'update/remove/move：目标片段或字幕 id（与 index 二选一）' },
+          index: { type: 'number', description: 'update/remove/move：目标序号（从 1 开始，与 id 二选一）' },
+          patch: { type: 'object', description: 'update_clip/update_text：要修改的字段（其余保持不变）' },
+          to: { type: 'number', description: 'move_clip：目标位置（1 基）' },
+          file: { type: 'string', description: 'set_bgm：BGM 音频绝对路径（首次必填，之后可只调音量）；add_overlay：画中画素材绝对路径' },
+          overlays: {
+            type: 'array',
+            description: 'add_overlay：画中画数组（可一次多层，后叠的在上层）',
+            items: {
+              type: 'object',
+              properties: {
+                file: { type: 'string', description: '画中画素材（视频/图片）绝对路径' },
+                start: { type: 'number', description: '起始秒（相对成片）' },
+                end: { type: 'number', description: '结束秒（必须 > start）' },
+                pos: { type: 'string', enum: ['topleft', 'top', 'topright', 'left', 'center', 'right', 'bottomleft', 'bottom', 'bottomright'], description: '锚点方位，默认 bottomright' },
+                scale: { type: 'number', description: '叠加画面宽度比例（0.05~1，默认 0.35）' },
+              },
+              required: ['file', 'start', 'end'],
+            },
+          },
+          volume: { type: 'number', description: 'set_bgm：BGM 音量 0~1，默认 0.25' },
+          duck: { type: 'boolean', description: 'set_bgm：true=说话时自动压低 BGM（侧链压缩），适合带旁白的成片' },
+          summaryOnly: { type: 'boolean', description: 'get：true 只返回紧凑摘要（默认即摘要）' },
+          output: { type: 'string', description: 'render：输出文件名（如 final.mp4）；不传自动命名' },
+          preview: { type: 'boolean', description: 'render：true=快速预览档（低码率，用于快速确认），确认后再正式渲染' },
         },
         required: ['op'],
       },
@@ -261,7 +388,8 @@ export function registerMediaTools(m: Map<ApiModuleName, ToolDefinition[]>) {
         '**snapshot** 抽帧成图 { video, time }；' +
         '**transform** 翻转/旋转/裁切 { video, ops:["hflip"|"vflip"|"rotate90"|"rotate180"|"rotate270"] , cropW, cropH, cropX, cropY }；' +
         '**fade** 画面与声音淡入淡出 { video, fadeIn, fadeOut }；' +
-        '**color** 调色 { video, preset:"warm|cool|bw|vintage|vivid|film|fade" 或 brightness/contrast/saturation/gamma/hue }；' +
+        '**color** 调色/滤镜（28 种预设：人像/电影/复古/风格化）{ video, preset }，也可自定义 brightness/contrast/saturation/gamma/hue；' +
+        '**audio_fx** 音频效果（降噪/变声/混响/电话音等）{ media, preset }；' +
         '**transition** 两段间转场 { video, video2, type, duration }（要求两段规格一致，先用 api_media_normalize）；' +
         '**overlay** 画中画/贴图/水印 { video, overlay, position, opacity, overlayWidth|overlayScale, margin }；' +
         '**kenburns** 静态图片做推拉运镜成视频 { image, duration, size, direction }；' +
@@ -303,13 +431,13 @@ export function registerMediaTools(m: Map<ApiModuleName, ToolDefinition[]>) {
           cropY: { type: 'number', description: 'transform：裁切起点 Y，默认 0' },
           fadeIn: { type: 'number', description: 'fade 默认 1：画面与声音淡入秒数；bgsound 默认 0.5：BGM 淡入' },
           fadeOut: { type: 'number', description: 'fade 默认 1：淡出秒数；bgsound 默认 1.5：BGM 片尾淡出' },
-          preset: { type: 'string', enum: ['warm', 'cool', 'bw', 'vintage', 'vivid', 'film', 'fade'], description: 'color：调色预设' },
+          preset: { type: 'string', enum: COLOR_IDS, description: `color/audio_fx：预设名。color 可选 ${effectCatalogText(COLOR_EFFECTS, ['none'])}；audio_fx 可选 ${effectCatalogText(AUDIO_EFFECTS, ['none'])}` },
           brightness: { type: 'number', description: 'color：亮度，-1~1（0 不变）' },
           contrast: { type: 'number', description: 'color：对比度，0~3（1 不变）' },
           saturation: { type: 'number', description: 'color：饱和度，0~3（1 不变，0 即黑白）' },
           gamma: { type: 'number', description: 'color：伽马，0.1~3（1 不变）' },
           hue: { type: 'number', description: 'color：色相偏移角度，-180~180' },
-          type: { type: 'string', description: 'transition：转场类型（fade/dissolve/wipeleft/slideleft/circleopen/pixelize/zoomin 等），默认 fade' },
+          type: { type: 'string', enum: TRANSITION_IDS, description: `transition：转场类型。可选 ${effectCatalogText(TRANSITIONS)}` },
           position: { type: 'string', enum: ['tl', 'tr', 'bl', 'br', 'center', 'top', 'bottom'], description: 'overlay：叠加位置，默认 br（右下角）' },
           opacity: { type: 'number', description: 'overlay：叠加不透明度 0.05~1，默认 1（水印常用 0.5~0.7）' },
           overlayWidth: { type: 'number', description: 'overlay：叠加层宽度（像素，高度按比例）；不传图片按 overlayScale 缩放' },

@@ -6,6 +6,12 @@ export * from './text-encoding';
 // 有效上下文策略（标称窗口 ≠ 可用窗口）—— 服务端压缩预算与前端用量展示的**同一口径**
 export * from './context-policy';
 
+// 剪辑效果库（滤镜/转场/文字动画/音效）——**三端共用的单一真相源**。
+// ★ 为什么放 shared 而不是 server/services：核心 schema（packages/core）也要用它生成
+//   工具参数的 enum。放 server 下会让 core 依赖 server（层次倒置），
+//   于是 schema 只能手写第二份清单 → 与实现漂移（本项目已有三处各写一份的前车之鉴）。
+export * from './clip-effects';
+
 /** 生成唯一 ID */
 export function uid(prefix = ''): string {
   return prefix + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);

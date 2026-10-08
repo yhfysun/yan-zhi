@@ -330,7 +330,10 @@ authStore.loadUser();
     // 工作流场景提示词，人格与职责对不上（助手不知道该去调工作流）。
     const saved = ctx[m];
     const fallbackAgent =
-      m === 'dev' ? 'a_builtin_code_agent' : m === 'wf' ? 'a_builtin_workflow_assistant' : 'a_default_assistant';
+      m === 'dev' ? 'a_builtin_code_agent'
+        : m === 'wf' ? 'a_builtin_workflow_assistant'
+          : m === 'clip' ? 'a_builtin_clip_agent'  // 剪辑模式：剪辑师（人格/工具面与剪辑任务对齐）
+            : 'a_default_assistant';
     const agentId = saved?.agent || fallbackAgent;
     if (agentId && agentStore.agents.some((a) => a.id === agentId) && agentStore.selectedId !== agentId) {
       chat.onAgentSwitch(agentId);

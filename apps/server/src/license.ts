@@ -30,8 +30,9 @@ export type Edition = 'lite' | 'basic' | 'pro';
  *  不自己维护一份，否则迟早两处漂移（改了一边忘了另一边，表现为「码升了但界面没放开」）。 */
 export const EDITION_MODES: Record<Edition, readonly string[]> = {
   lite: ['office'],
-  basic: ['office', 'wf', 'dev'],
-  pro: ['office', 'wf', 'dev', 'ops', 'sec'],
+  // 剪辑属产出型能力（基础版即可用），与 wf/dev 同档
+  basic: ['office', 'wf', 'dev', 'clip'],
+  pro: ['office', 'wf', 'dev', 'clip', 'ops', 'sec'],
 };
 
 export const EDITIONS: readonly Edition[] = ['lite', 'basic', 'pro'];

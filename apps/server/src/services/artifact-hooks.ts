@@ -15,6 +15,8 @@ import { registerAfterToolHook, type ToolHookContext } from './tool-hooks.js';
 const MEDIA_TOOLS = new Set([
   'api_image_generate', 'api_video_generate', 'api_video_status',
   'api_tts_speak', 'api_srt_generate', 'media_compose', 'media_edit',
+  // 剪辑渲染产物（clip_project op=render）：漏登记的表现是"成片渲染成功但文件管理里看不到"
+  'clip_project',
 ]);
 
 /** 工具结果是否表示"失败"（失败就不登记，避免把错误信息当产物） */

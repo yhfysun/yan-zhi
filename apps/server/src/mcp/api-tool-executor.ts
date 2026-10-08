@@ -1,5 +1,5 @@
 import { v4 as uuid } from 'uuid';
-import { readdir, stat, mkdir, writeFile, rm } from 'node:fs/promises';
+import { readdir, stat, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
 import { existsSync, readFileSync } from 'node:fs';
 import { runCmd } from '../services/exec-cmd.js';
 import { tmpdir } from 'node:os';
@@ -12,6 +12,7 @@ import { resolveFfmpeg, installFfmpeg } from './ffmpeg-runtime.js';
 import { resolveYtdlp, installYtdlp, ytdlpFetch, isYoutubeHost, youtubeEnabled } from './ytdlp-runtime.js';
 import { decideInstallPolicy, formatBytes } from '../services/runtime-installer.js';
 import { buildSrt, type SrtCue } from './srt.js';
+import { parseSrt, buildAss, SUBTITLE_ANIMATION_PRESETS } from './subtitle-style.js';
 import {
   upsertPeer,
   listPeers,
@@ -26,7 +27,11 @@ import { setSpaceTaskType, resolveSpaceResourceRoot } from '../services/space-re
 import { TASK_TYPE_IDS, getTaskType } from '@yan-zhi/shared';
 import { readBrowserMemoryOverview } from '../services/browser-memory.js';
 import { listVerificationCodes } from '../services/verification-codes.js';
-import { ensureArtifactDirFor } from '../services/artifact-dir.js';
+import { ensureArtifactDirFor, resolveArtifactDirFor } from '../services/artifact-dir.js';
+import { applyClipOp, summarizeProject, type ClipProject } from '../services/clip-project.js';
+import { buildRenderPlan, runRenderPlan, probeArgs, parseProbeJson } from '../services/clip-render.js';
+import { readClipProject, writeClipProject } from '../services/clip-store.js';
+import { COLOR_EFFECTS, TRANSITIONS, AUDIO_EFFECTS, effectCatalogText, effectFilter } from '@yan-zhi/shared';
 import { downloadMediaBinary } from '../services/media-fetch.js';
 import { systemSpeak, listSystemVoices, pickVoiceForRole, describeVoiceCapacity, inferRoleGender } from './tts-sapi.js';
 import { listEdgeVoices, edgeSpeak, pickEdgeVoiceForRole, defaultEdgeVoice, type EdgeVoice } from './edge-tts.js';
@@ -355,6 +360,8 @@ export const SUPPORTED_API_TOOLS = new Set([
   'api_srt_generate', 'media_compose', 'media_install_ffmpeg', 'media_install_ytdlp',
   // 剪辑与特效层：裁剪/变速/抽帧/变换/淡入淡出/调色/转场/画中画/图片运镜/BGM/音量/响度（统一走 media_edit 的 op）
   'media_edit',
+  // 剪辑工程：多段 + 字幕(含动画) + BGM 的工程化剪辑与渲染（剪辑模式的唯一出口）
+  'clip_project',
   // 网络素材获取：公开视频/图片直链下载（标准化见 media_compose 的 normalize 操作）
   'api_media_fetch', 'api_media_normalize',
 ]);
@@ -1077,30 +1084,11 @@ function runFfprobe(bin: string, args: string[], timeoutMs: number): Promise<{ o
  *   所以这里一次探测把「有无音轨 + 时长」都拿回来，避免多跑一次 ffprobe。
  */
 async function probeMedia(ffprobe: string, file: string): Promise<{ hasAudio: boolean; durationSec: number; width: number; height: number }> {
-  const r = await runFfprobe(ffprobe, [
-    '-v', 'error', '-show_entries', 'format=duration', '-show_entries', 'stream=index,codec_type,width,height',
-    '-of', 'json', file,
-  ], 30000);
+  // ffprobe 参数与解析都走 clip-render 的单一出口（此前本函数自持一份 JSON 解析 —— 与
+  // 路由层的探测会漂移成两个口径：一个报时长、一个不报，UI 与模型算出的时间轴就对不上）
+  const r = await runFfprobe(ffprobe, probeArgs(file), 30000);
   if (!r.ok) return { hasAudio: false, durationSec: 0, width: 0, height: 0 };
-  try {
-    const j = JSON.parse(r.out) as {
-      streams?: Array<{ codec_type?: string; width?: number; height?: number }>;
-      format?: { duration?: string };
-    };
-    const streams = j.streams || [];
-    const hasAudio = streams.some((s) => s.codec_type === 'audio');
-    const v = streams.find((s) => s.codec_type === 'video');
-    const durationSec = Number(j.format?.duration);
-    return {
-      hasAudio,
-      durationSec: Number.isFinite(durationSec) && durationSec > 0 ? durationSec : 0,
-      // 分辨率用于字幕边距/标题位置按比例换算（固定像素在不同画幅上表现完全不同）
-      width: Number(v?.width) || 0,
-      height: Number(v?.height) || 0,
-    };
-  } catch {
-    return { hasAudio: false, durationSec: 0, width: 0, height: 0 };
-  }
+  return parseProbeJson(r.out);
 }
 
 // ===== 合成层（api_srt_generate / media_compose）：字幕与音视频混流 =====
@@ -1380,6 +1368,146 @@ async function mediaNormalize(
   }));
 }
 
+// ===== 剪辑工程（clip_project）：剪辑模式的工程文件 + 渲染出口 =====
+// 设计：UI（ClipWorkbench 时间轴）与智能体共用同一份 .clipproj.json，
+//       op 层是 services/clip-project.ts 的纯函数，渲染是 services/clip-render.ts 的唯一定义处。
+//       本文件只负责：定位工程文件（磁盘）→ 读写 → 组装渲染输入（探时长/音轨）→ 执行 → 登记交付。
+
+// 工程读写走 services/clip-store.ts 的**唯一出口**（与 routes/clip.ts 共用），
+// 两条入口各自拼路径必然漂移 → 表现为「AI 改的工程 UI 看不到」且两边都不报错。
+async function loadClipProject(conversationId?: string): Promise<ClipProject | null> {
+  return readClipProject(conversationId);
+}
+
+async function saveClipProject(conversationId: string | undefined, project: ClipProject): Promise<string> {
+  return writeClipProject(conversationId, project);
+}
+
+/** 探每段的真实时长与音轨：键同时挂 clip.id 与 file（调用方两种取值都要能用）。 */
+async function probeClipSegments(
+  ffprobe: string,
+  project: ClipProject,
+): Promise<{ durations: Record<string, number>; hasAudio: Record<string, boolean>; images: string[] }> {
+  const durations: Record<string, number> = {};
+  const hasAudio: Record<string, boolean> = {};
+  const images: string[] = [];
+  const IMG = /\.(png|jpe?g|webp|gif|bmp)$/i;
+  for (const seg of project.clips) {
+    if (IMG.test(seg.file)) {
+      images.push(seg.file);
+      durations[seg.id] = 0;
+      durations[seg.file] = 0;
+      hasAudio[seg.id] = false;
+      hasAudio[seg.file] = false;
+      continue;
+    }
+    const info = await probeMedia(ffprobe, seg.file);
+    durations[seg.id] = info.durationSec;
+    durations[seg.file] = info.durationSec;
+    hasAudio[seg.id] = info.hasAudio;
+    hasAudio[seg.file] = info.hasAudio;
+  }
+  return { durations, hasAudio, images };
+}
+
+async function clipProjectTool(
+  args: Record<string, unknown>,
+  conversationId?: string,
+): Promise<MpcToolExecutionResult> {
+  const op = str(args, 'op').trim().toLowerCase();
+  const snapshotOnly = args.summaryOnly === true;
+
+  // 读：随时可读（不依赖 ffmpeg）
+  if (op === 'get') {
+    const cur = await loadClipProject(conversationId);
+    if (!cur) {
+      return ok(JSON.stringify({
+        ok: true, exists: false,
+        note: '当前会话还没有剪辑工程。用 op=create 建工程，再 add_clip 加素材。',
+      }));
+    }
+    if (snapshotOnly) return ok(JSON.stringify({ ok: true, exists: true, project: summarizeProject(cur) }));
+    return ok(JSON.stringify({ ok: true, exists: true, project: cur }));
+  }
+
+  const cur = await loadClipProject(conversationId);
+
+  // 渲染：唯一需要 ffmpeg 的分支（先落盘工程，再渲染，保证失败也不丢编辑）
+  if (op === 'render') {
+    if (!cur) return fail('当前会话还没有剪辑工程（先 op=create + add_clip）');
+    if (!cur.clips.length) return fail('工程里没有片段，无法渲染（先 add_clip）');
+    const ff = await resolveFfmpeg();
+    if (!ff.ok) return fail(ffmpegMissingHint(ff));
+
+    const { durations, hasAudio, images } = await probeClipSegments(ff.ffprobe, cur);
+    const target = mediaTarget({ conversationId, kind: 'videos' });
+    await mkdir(target.dir, { recursive: true });
+    const nameArg = str(args, 'output').trim();
+    const safeName = nameArg && /^[A-Za-z0-9._-]+$/.test(nameArg) ? nameArg : `clip-${Date.now()}.mp4`;
+    const outFile = path.join(target.dir, safeName);
+    const workDir = path.join(tmpdir(), `yz-clip-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+    await mkdir(workDir, { recursive: true });
+
+    // BGM 文件校验：不存在就当没配（ne 明确告知，不静默）
+    let bgmFile: string | undefined;
+    let bgmNote = '';
+    if (cur.bgm) {
+      const c = requireLocalFile(cur.bgm.file, 'bgm.file');
+      if (c.ok) bgmFile = c.file;
+      else bgmNote = `（BGM 文件不可用已跳过：${c.error}）`;
+    }
+
+    const planned = buildRenderPlan({
+      project: cur, durations, hasAudio, workDir, outFile,
+      ...(bgmFile ? { bgmFile } : {}),
+      imageFiles: images,
+      fast: args.preview === true,
+    });
+    if (!planned.ok) return fail(planned.error);
+    const { steps, assets, totalDuration } = planned.plan;
+
+    try {
+      // 落中间文本（concat 清单 / SRT / ASS）—— 纯函数层不写磁盘
+      for (const a of assets) {
+        await mkdir(path.dirname(a.file), { recursive: true });
+        await writeFile(a.file, a.content, 'utf8');
+      }
+      const ran = await runRenderPlan(ff.ffmpeg, steps);
+      if (!ran.ok) {
+        return fail(`渲染失败（${ran.failedLabel}）：\n${ran.stderr}\n提示：素材时长/规格异常时先用 api_media_normalize 统一规格。`);
+      }
+      const st = await stat(outFile);
+      // 落工程（渲染成功与否，编辑都已保存）
+      await saveClipProject(conversationId, cur);
+      return ok(JSON.stringify({
+        ok: true, type: 'video', engine: 'ffmpeg', source: ff.source,
+        url: `${target.urlBase}/${path.basename(outFile)}`, file: outFile, bytes: st.size,
+        duration: totalDuration,
+        clips: cur.clips.length, texts: cur.texts.length,
+        steps: steps.length,
+        note: `成片已生成（${cur.clips.length} 段 / ${cur.texts.length} 条字幕 / ${totalDuration}s）${bgmNote}`,
+      }));
+    } catch (e: unknown) {
+      return fail(`渲染异常：${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      // 临时目录清空失败不该让整个渲染报失败（老规矩：清理必须 try/catch）
+      try { await rm(workDir, { recursive: true, force: true }); } catch { /* 忽略 */ }
+    }
+  }
+
+  // 编辑层：一律走纯函数 applyClipOp
+  const applied = applyClipOp(cur, op, args);
+  if (!applied.ok) return fail(applied.error);
+  const savedFile = await saveClipProject(conversationId, applied.project);
+  return ok(JSON.stringify({
+    ok: true,
+    note: applied.note,
+    projectFile: savedFile,
+    project: summarizeProject(applied.project),
+    all: applied.project,
+  }));
+}
+
 async function mediaSrtGenerate(
   args: Record<string, unknown>,
   conversationId?: string,
@@ -1482,7 +1610,6 @@ async function mediaCompose(
       const s = requireLocalFile(args.srt, 'srt');
       if (!s.ok) return fail(s.error);
       // subtitles 滤镜的路径要转义（Windows 盘符冒号与反斜杠在 filtergraph 里是特殊字符）
-      const esc = escFilterPath(s.file);
       // 字幕样式全可配：字号 / 颜色 / 描边色与宽度 / 位置 / 边距。
       //
       // ★★★ libass 的字号/边距换算（实测反推，务必按这个来，凭直觉设像素会大出几倍）：
@@ -1498,19 +1625,12 @@ async function mediaCompose(
       //   约 6 字/行），用户反馈"字幕有点大"就是这个原因；而上一版又画蛇添足按宽度再缩一次。
       //   对外仍按**像素（以 1920 高的成片为基准）**暴露，换算系数如下 —— 这样
       //   「我要 110px 的字」在任何画幅上都得到相同的视觉占比。
-      const FS_PER_PX = 384 / 1920; // 0.2
-      const MV_PER_PX = 288 / 1920; // 0.15
-      // 默认 88px ≈ libass FontSize 17.6 ≈ 画面高 4.6% ≈ 1080 宽下约 12 字/行。
-      // ★ 2026-10-02 用户反馈 120 仍偏大（"字幕很大，一句话完整顶出来"）→ 降到 88；
-      //   长句由 libass 智能换行（WrapStyle=0），不再一行顶满全句。
-      const fs = Math.max(6, Math.round(num(args, 'subtitleFontSize', 88) * FS_PER_PX));
-      const ol = Math.max(0, Math.round(num(args, 'subtitleOutline', 12) * FS_PER_PX));
+      //   ★ 例外：subtitleAnimation 走自产 ASS（PlayRes=视频真实分辨率），字号/边距是
+      //     真实像素，只做「1920 高基准 → 实际画幅」的等比缩放，不走 384/288 换算。
       // ★ safeArea=true 时底部边距抬到 420px：竖屏短视频（抖音/快手/视频号）的进度条、
       //   账号信息、操作按钮都在底部约 20% 画面高内，字幕压在那儿会被完全遮住。
       //   420px ≈ 画面高 22%，正好避开。默认 200px ≈ 10.4%（与旧版 MarginV=30 视觉一致）。
       const safe = args.safeArea === true;
-      const prim = toAssColor(str(args, 'subtitleColor'), '&HFFFFFF&');
-      const olc = toAssColor(str(args, 'subtitleOutlineColor'), '&H000000&');
       const POS: Record<string, { align: number; mvPx: number }> = {
         bottom: { align: 2, mvPx: safe ? 420 : 200 },
         center: { align: 5, mvPx: 0 },
@@ -1520,9 +1640,50 @@ async function mediaCompose(
       const pk = POS[posKey];
       if (!pk) return fail(`subtitlePosition 只能是 ${Object.keys(POS).join(' / ')}：${posKey}`);
       const mvPx = args.subtitleMarginV != null ? num(args, 'subtitleMarginV', pk.mvPx) : pk.mvPx;
-      const mv = Math.max(0, Math.round(mvPx * MV_PER_PX));
-      const style = `FontSize=${fs},PrimaryColour=${prim},OutlineColour=${olc},Outline=${ol},Shadow=1,Alignment=${pk.align},MarginV=${mv}`;
-      let vf = `subtitles='${esc}':force_style='${style}'`;
+      const prim = toAssColor(str(args, 'subtitleColor'), '&HFFFFFF&');
+      const olc = toAssColor(str(args, 'subtitleOutlineColor'), '&H000000&');
+
+      // ★ 字幕动画：给了 subtitleAnimation 就把 SRT 转成带动画标签的 ASS 再烧录
+      //   （libass 的 \fad/\t/\move/\k 内联标签；SRT+force_style 路线没有动画能力）。
+      const anim = str(args, 'subtitleAnimation').trim().toLowerCase();
+      let vf: string;
+      if (anim && anim !== 'none') {
+        if (!SUBTITLE_ANIMATION_PRESETS.some((p) => p.id === anim)) {
+          return fail(
+            `subtitleAnimation 只能是 ${SUBTITLE_ANIMATION_PRESETS.map((p) => p.id).join(' / ')} 或不填（无动画）：${anim}`,
+          );
+        }
+        const srtText = await readFile(s.file, 'utf8');
+        const vInfo = await probeMedia(ff.ffprobe, v.file);
+        const refH = vInfo.height > 0 ? vInfo.height : 1920;
+        const refW = vInfo.width > 0 ? vInfo.width : 1080;
+        const fsPx = Math.max(6, Math.round(num(args, 'subtitleFontSize', 88) * refH / 1920));
+        const olPx = Math.max(0, Math.round(num(args, 'subtitleOutline', 12) * refH / 1920));
+        const built = buildAss(parseSrt(srtText), {
+          preset: anim, playResX: refW, playResY: refH,
+          fontSizePx: fsPx, primaryColor: prim, outlineColor: olc, outlinePx: olPx,
+          alignment: pk.align, marginVPx: mvPx,
+          direction: str(args, 'subtitleSlideDirection').trim().toLowerCase() as 'left' | 'right' | 'up' | 'down' || undefined,
+        });
+        if (!built.ok) return fail(built.error);
+        // ASS 落在 tmpDir（用完随目录清理），路径要走 filtergraph 转义
+        const assFile = path.join(tmpDir, `subs-${Date.now()}.ass`);
+        await writeFile(assFile, built.ass, 'utf8');
+        vf = `subtitles='${escFilterPath(assFile)}'`;
+      } else {
+        // subtitles 滤镜的路径要转义（Windows 盘符冒号与反斜杠在 filtergraph 里是特殊字符）
+        const esc = escFilterPath(s.file);
+        const FS_PER_PX = 384 / 1920; // 0.2
+        const MV_PER_PX = 288 / 1920; // 0.15
+        // 默认 88px ≈ libass FontSize 17.6 ≈ 画面高 4.6% ≈ 1080 宽下约 12 字/行。
+        // ★ 2026-10-02 用户反馈 120 仍偏大（"字幕很大，一句话完整顶出来"）→ 降到 88；
+        //   长句由 libass 智能换行（WrapStyle=0），不再一行顶满全句。
+        const fs = Math.max(6, Math.round(num(args, 'subtitleFontSize', 88) * FS_PER_PX));
+        const ol = Math.max(0, Math.round(num(args, 'subtitleOutline', 12) * FS_PER_PX));
+        const mv = Math.max(0, Math.round(mvPx * MV_PER_PX));
+        const style = `FontSize=${fs},PrimaryColour=${prim},OutlineColour=${olc},Outline=${ol},Shadow=1,Alignment=${pk.align},MarginV=${mv}`;
+        vf = `subtitles='${esc}':force_style='${style}'`;
+      }
       // 标题（项目名）叠加在顶部、整片常驻；未给 title 时不叠加。
       // ★ 与字幕相反：drawtext 的 fontsize 与 y **是绝对像素**（真实视频坐标系），
       //   不换算的话同一标题在 480 高的小片上会比 1920 高的大片小 4 倍 → 这里必须按高度缩放。
@@ -1647,25 +1808,16 @@ const MEDIA_EDIT_OPS = [
   'trim', 'speed', 'snapshot', 'transform', 'fade',
   'color', 'transition', 'overlay', 'kenburns',
   'bgsound', 'volume', 'loudnorm',
+  // 音频效果（降噪/变声/混响/电话音等，走效果库 AUDIO_EFFECTS）
+  'audio_fx',
 ] as const;
 
-const XFADE_TYPES = [
-  'fade', 'fadeblack', 'fadewhite', 'dissolve',
-  'wipeleft', 'wiperight', 'wipeup', 'wipedown',
-  'slideleft', 'slideright', 'slideup', 'slidedown',
-  'circleopen', 'circleclose', 'radial', 'smoothleft', 'smoothright',
-  'pixelize', 'zoomin',
-];
-
-const COLOR_PRESETS: Record<string, string> = {
-  warm: 'colorbalance=rs=.15:gs=.05:bs=-.10,eq=saturation=1.06',
-  cool: 'colorbalance=rs=-.08:bs=.15,eq=saturation=1.02',
-  bw: 'hue=s=0',
-  vintage: 'curves=vintage,eq=saturation=.85:contrast=1.05',
-  vivid: 'eq=saturation=1.35:contrast=1.08',
-  film: 'eq=contrast=1.10:saturation=.90:gamma=.96,noise=alls=6:allf=t',
-  fade: 'eq=brightness=.05:saturation=.75:contrast=.92',
-};
+// 效果库（滤镜/转场/文字动画/音效）来自 services/clip-effects.ts 的**单一真相源**；
+// 此处不再维护第二份清单（此前 COLOR_PRESETS / XFADE_TYPES 与 schema enum 三处各一份，必然漂移）。
+const COLOR_PRESETS: Record<string, string> = Object.fromEntries(
+  COLOR_EFFECTS.map((e) => [e.id, e.filter]),
+);
+const XFADE_TYPES = TRANSITIONS.map((t) => t.filter);
 
 async function mediaEdit(
   args: Record<string, unknown>,
@@ -1819,8 +1971,9 @@ async function mediaEdit(
       const preset = str(args, 'preset').trim().toLowerCase();
       let core: string;
       if (preset) {
-        if (!COLOR_PRESETS[preset]) {
-          return fail(`未知调色预设 ${preset}；可选：${Object.keys(COLOR_PRESETS).join(' / ')}（也可不用 preset，直接传 brightness/contrast/saturation/gamma/hue）`);
+        if (!(preset in COLOR_PRESETS)) {
+          // 报错里按分类列出全部可选（28 个预设平铺会读不下去）
+          return fail(`未知调色预设 ${preset}。可用：${effectCatalogText(COLOR_EFFECTS, ['none'])}`);
         }
         core = COLOR_PRESETS[preset];
       } else {
@@ -2002,6 +2155,27 @@ async function mediaEdit(
       r = await runFfmpeg(ff.ffmpeg, cmd, 900000);
       if (!r.ok) return fail(`响度归一失败：${r.stderr}`);
       note = `响度已归一到 I=${i} LUFS / TP=${tp} dBTP`;
+    } else if (op === 'audio_fx') {
+      // 音频效果：降噪 / 变声 / 混响 / 电话音 / 收音机 —— 走效果库 AUDIO_EFFECTS
+      const m = requireLocalFile(args.media, 'media');
+      if (!m.ok) return fail(m.error);
+      const fx = str(args, 'preset').trim().toLowerCase();
+      const filter = effectFilter(fx, AUDIO_EFFECTS);
+      if (filter == null) {
+        return fail(`未知音效 preset ${fx || '(空)'}。可用：${effectCatalogText(AUDIO_EFFECTS, ['none'])}`);
+      }
+      if (!filter) return fail('preset=none 等于不处理；请换一个效果或不要调用本工具');
+      const isVideo = VIDEO_EXT.test(m.file);
+      out = isVideo ? await mkOut('videos', '.mp4') : await mkOut('audios', '.m4a');
+      // 混响（aecho）等偶尔会改变末端长度，用 -shortest + 视频 copy 保住视频轨时长
+      const cmd = ['-y', '-i', m.file, '-af', filter];
+      if (isVideo) cmd.push('-c:v', 'copy', '-shortest');
+      cmd.push('-c:a', 'aac', '-b:a', '192k');
+      if (isVideo) cmd.push('-movflags', '+faststart');
+      cmd.push(out.file);
+      r = await runFfmpeg(ff.ffmpeg, cmd, 900000);
+      if (!r.ok) return fail(`音效处理失败（preset=${fx}）：${r.stderr}`);
+      note = `已应用音效：${AUDIO_EFFECTS.find((e) => e.id === fx)?.label || fx}`;
     } else {
       // 兜底：正常不可达（op 已在函数入口按 MEDIA_EDIT_OPS 校验过）——留着是为了
       // 将来加 op 时漏写分支能立刻暴露，而不是静默走到某个 op 的逻辑里。
@@ -2446,12 +2620,14 @@ export async function executeApiTool(
           applied.customToolIds = valid;
         }
 
-        // ── 工作模式（office / dev / ops / sec / wf）──
+        // ── 工作模式（office / dev / ops / sec / wf / clip）──
         if (args.mode !== undefined) {
-          const MODES = ['office', 'dev', 'ops', 'sec', 'wf'];
+          // ★ 与 routes/conversations.ts 的 VALID_MODES 必须同集：漏一个（如 clip）
+          //   会让模型"切模式"被拒，而用户侧表现为「说了切到剪辑模式但没生效」。
+          const MODES = ['office', 'dev', 'ops', 'sec', 'wf', 'clip'];
           const m = str(args, 'mode');
           if (!MODES.includes(m)) {
-            return fail(`未知的工作模式「${m}」。可选值：${MODES.join('、')}（wf = 工作流模式）`);
+            return fail(`未知的工作模式「${m}」。可选值：${MODES.join('、')}（wf = 工作流模式、clip = 剪辑模式）`);
           }
           db.prepare('UPDATE conversation SET mode = ? WHERE id = ?').run(m, cid);
           applied.mode = m;
@@ -3630,6 +3806,8 @@ export async function executeApiTool(
         return await mediaCompose(args, conversationId);
       case 'media_edit':
         return await mediaEdit(args, conversationId);
+      case 'clip_project':
+        return await clipProjectTool(args, conversationId);
       case 'media_install_ffmpeg':
         return await mediaInstallFfmpeg();
       case 'media_install_ytdlp':

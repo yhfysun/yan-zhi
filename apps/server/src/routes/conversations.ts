@@ -29,7 +29,10 @@ router.use(authMiddleware);
 //   向无计划会话播种旧规划（原 seedPlanRows 已删）。跨会话"找到之前的任务记录"
 //   由模型侧完成 —— llm-task-manager 的 loadTaskPlan 文件回退仍会把 plan.md 回注
 //   进提示词，模型据此自行 task_plan **重新规划**，而不是复用旧计划对象。
-const VALID_MODES = new Set(['office', 'dev', 'ops', 'sec', 'wf']);
+// ★ 'clip'（剪辑模式）必须在内：漏掉时 POST 会把 mode='clip' 静默落成 'office'，
+//   于是剪辑任务在剪辑模式列表里**看不到**（按 mode 过滤为空），
+//   却混进办公模式的列表（真实缺陷，靠 CDP 真跑才发现）。
+const VALID_MODES = new Set(['office', 'dev', 'ops', 'sec', 'wf', 'clip']);
 
 router.get('/', (req: Request, res: Response) => {
   const userId = req.user!.userId;

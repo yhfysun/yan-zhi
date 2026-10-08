@@ -10,6 +10,7 @@ import authRoutes from './auth.js';
 import licenseRoutes from './license.js';
 import { requireLicense, isLicenseGuardEnabled } from './license-guard.js';
 import conversationRoutes from './routes/conversations.js';
+import clipRoutes from './routes/clip.js';
 import messageRoutes from './routes/messages.js';
 import spaceRoutes from './routes/spaces.js';
 import fileRoutes from './routes/files.js';
@@ -126,6 +127,7 @@ if (isLicenseGuardEnabled()) {
   logger.info('[license] 授权门禁已启用（YZ_LICENSE_GUARD=1）：业务 API 需携带 x-license 头');
 }
 app.use('/api/conversations', conversationRoutes);
+app.use('/api/clip', clipRoutes);
 app.use('/api/conversations', fileRoutes);
 app.use('/api/workspace', workspaceFileRoutes);
 app.use('/api/messages', messageRoutes);

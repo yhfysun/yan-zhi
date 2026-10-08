@@ -7,7 +7,7 @@
 //   - 「共享的是上下文，不是界面状态」
 import { ref, computed, watch, type ComputedRef, type Ref } from 'vue';
 
-export type AppMode = 'office' | 'dev' | 'ops' | 'sec' | 'wf';
+export type AppMode = 'office' | 'dev' | 'ops' | 'sec' | 'wf' | 'clip';
 /** 主导方：ai = 对话居中；human = 工作区居中（编辑器/终端/控制台），对话靠边 */
 export type LeadMode = 'ai' | 'human';
 /** 对话位置排布：center = 居中主视觉；right = 右栏；inline = 与控制台同区（折叠条/步骤卡） */
@@ -35,6 +35,8 @@ export const MODE_DEFS: ModeDef[] = [
   { key: 'sec', label: '安全模式', icon: 'Lock', desc: '侦察 · 扫描 · 审计', route: '/sec', pluginId: 'sec-lab', desktopOnly: true },
   // 工作流模式：无插件依赖（三端可用），承载「运行模式（人工填参执行）/ AI 模式（工作流助手）」两种形态
   { key: 'wf', label: '工作流模式', icon: 'Connection', desc: '运行 · 调试 · 定时', route: '/workflow' },
+  // 剪辑模式：无插件依赖（三端可用），时间轴工作台 + 对话双驱动，工程由 clip_project 工具落盘
+  { key: 'clip', label: '剪辑模式', icon: 'VideoCamera', desc: '剪辑 · 字幕动画 · 成片', route: '/clip' },
 ];
 
 const MODE_KEY = 'yz:mode';
@@ -86,6 +88,7 @@ const LEAD_DEFAULTS: Record<AppMode, LeadMode | null> = {
   ops: 'human',
   sec: 'human',
   wf: 'human', // 默认运行模式（人工填参执行），调试优先
+  clip: 'human', // 默认时间轴居中（人工剪），要 AI 主导时切到 ai
 };
 
 function readStoredMode(): AppMode {
@@ -171,6 +174,7 @@ export function chatPlacementOf(m: AppMode, lead: LeadMode): ChatPlacement {
   if (m === 'office') return 'center';
   if (m === 'dev') return lead === 'ai' ? 'center' : 'right';
   if (m === 'wf') return lead === 'ai' ? 'center' : 'right'; // 运行模式：运行台居中 + 对话在右
+  if (m === 'clip') return lead === 'ai' ? 'center' : 'right'; // 剪辑模式：时间轴居中 + 对话在右
   return lead === 'ai' ? 'center' : 'inline'; // ops / sec
 }
 

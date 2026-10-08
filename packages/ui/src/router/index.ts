@@ -62,6 +62,13 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '工作流' },
   },
   {
+    // 剪辑模式（第六模式，stores/mode.ts 的 clip）：时间轴工作台 + 对话，两形态由 LeadToggle 切换
+    path: '/clip',
+    name: 'clip',
+    component: () => import('../views/ClipWorkbench.vue'),
+    meta: { title: '剪辑' },
+  },
+  {
     path: '/chat-hub',
     name: 'chat-hub',
     component: () => import('../views/ChatHub.vue'),
@@ -221,6 +228,7 @@ const MODE_ROUTE_KEYS: Record<string, AppMode> = {
   '/chat': 'office',
   '/workflow': 'wf',
   '/code': 'dev',
+  '/clip': 'clip',
   '/ops': 'ops',
   '/sec': 'sec',
 };

@@ -19,7 +19,7 @@ export interface FfmpegStatus {
   ffmpeg: string;
   ffprobe: string;
   /** 命中来源：env(显式配置) / installed(已下载) / bundled(随包) / path(系统 PATH) / none */
-  source: 'env' | 'installed' | 'bundled' | 'path' | 'none';
+  source: 'env' | 'installed' | 'bundled' | 'discovered' | 'path' | 'none';
   error: string;
   /** 当前平台可用的下载源；无源时为空串 */
   downloadUrl: string;
@@ -139,6 +139,45 @@ function installDir(): string {
   return path.join(path.dirname(moduleDir), 'ffmpeg');
 }
 
+/**
+ * 自动发现 ffmpeg：在**常见安装位**里找一遍。
+ *
+ * ★★★ 为什么必须自动发现（2026-10-07 用户报「剪辑功能不可用」的真实根因）：
+ *   `installDir()` 只覆盖「显式 env / DATA_DIR / apps/server」三处，而**开发模式下后端未设
+ *   DATA_DIR** → 去找 `apps/server/ffmpeg`；但 ffmpeg 实际装在用户数据目录
+ *   （`%APPDATA%/yan-zhi/server-data/ffmpeg`，安装版/上一步 media_install_ffmpeg 的落点）。
+ *   两者不一致 → `resolveFfmpeg()` 返回不可用 → **整条剪辑/媒体链路全断**，
+ *   而报错只说"尚未安装 ffmpeg"，用户会以为要重新下载一个已经存在的东西。
+ *   → 这里补一步"已知落点探测"，找得到就直接用（source 标 'discovered' 便于排障）。
+ */
+function discoverKnownInstallDirs(): string[] {
+  const home = process.env.USERPROFILE || process.env.HOME || '';
+  const appData = process.env.APPDATA || '';
+  const localAppData = process.env.LOCALAPPDATA || '';
+  const out: string[] = [];
+  const push = (p?: string) => { const v = (p || '').trim(); if (v) out.push(v.replace(/[\\/]+$/, '')); };
+  if (process.platform === 'win32') {
+    // Electron dev/安装版的 userData 落点（本项目 userData 名为 yan-zhi）
+    push(appData ? `${appData}/yan-zhi/server-data/ffmpeg` : '');
+    push(appData ? `${appData}/yan-zhi/ffmpeg` : '');
+    push(localAppData ? `${localAppData}/yan-zhi/server-data/ffmpeg` : '');
+    // 常见全局安装位
+    push('C:/ffmpeg/bin');
+    push(home ? `${home}/scoop/shims` : '');
+    push('C:/ProgramData/chocolatey/bin');
+  } else if (process.platform === 'darwin') {
+    push('/usr/local/bin');
+    push('/opt/homebrew/bin');
+    push(home ? `${home}/Library/Application Support/yan-zhi/server-data/ffmpeg` : '');
+  } else {
+    push('/usr/local/bin');
+    push('/usr/bin');
+    push(home ? `${home}/.local/bin` : '');
+    push(home ? `${home}/.config/yan-zhi/server-data/ffmpeg` : '');
+  }
+  return out;
+}
+
 /** 解析 ffmpeg / ffprobe。结果缓存；不可用时 error 与 downloadUrl 供上层构造「一键下载」引导。 */
 export async function resolveFfmpeg(): Promise<FfmpegStatus> {
   if (cached) return cached;
@@ -167,6 +206,18 @@ export async function resolveFfmpeg(): Promise<FfmpegStatus> {
   const bundled = firstExisting(buildBundledCandidates(path.dirname(fileURLToPath(import.meta.url))));
   if (bundled) {
     cached = { ok: true, ...bundled, source: 'bundled', error: '', downloadUrl: '', ...base };
+    return cached;
+  }
+
+  // 3.5) 常见安装位自动发现
+  // ★★ 为什么必须要有（2026-10-07 用户报「剪辑功能不可用」的真实根因）：
+  //   installDir() 只覆盖 env / DATA_DIR / apps-server 三处，而**开发模式后端未设 DATA_DIR**
+  //   → 去找 apps/server/ffmpeg；但 ffmpeg 实际装在 `%APPDATA%/yan-zhi/server-data/ffmpeg`
+  //   → resolveFfmpeg() 返回不可用 → **整条剪辑/媒体链路全断**，
+  //   报错却说"尚未安装 ffmpeg"，用户会去重下一个本来就存在的 ffmpeg。
+  const discovered = firstExisting(discoverKnownInstallDirs());
+  if (discovered) {
+    cached = { ok: true, ...discovered, source: 'discovered', error: '', downloadUrl: '', ...base };
     return cached;
   }
 
