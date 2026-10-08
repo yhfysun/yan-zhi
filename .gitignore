@@ -192,3 +192,29 @@ novel-tuiwen/output/
 
 # yt-dlp 二进制不入库（2026-10-07 拍板）
 apps/server/ytdlp/
+
+# ── 2026-10-08 清理：以下为误入库的临时/产物/备份文件，已 git rm --cached ──
+# 产物目录（根级 generated-images/ 与 apps/server/generated-images/ 同一性质；
+# 服务端版本上面已忽略，根级这份是 dev/ 手工产物落点）
+/generated-images/
+# 图标备份（与 assets/icons/ 重复，单份 ~8.4MB）
+/backup-icons-20260908/
+# 皮肤素材（生成源图与原始采样，单张 1.2~1.9MB）
+/dev/
+# 一次性脚本与工具杂项
+/_ls.cjs
+/.arts/
+/workspace/
+# 误落在 apps/desktop/ 根目录的营销稿（与工程无关）
+apps/desktop/*中秋礼品与手机选购指南*.md
+apps/desktop/手机推荐_2024.md
+apps/desktop/月饼礼盒推荐_2024.md
+
+# 运行时数据目录（产物/上传/中间文件）—— 必须入库忽略，否则换机器 clone 后
+# 用户生成的数据会暴露在 git status 里，误 git add -A 会连用户数据一起提交
+# （见 issues/产物目录未入gitignore-20260919.md）
+.yan-zhi/
+
+# Pro 档打包输出（1.4GB，与 dist-release/ 同一性质；2026-10-08 实测
+# 此前只有本机 .git/info/exclude 的残留缓存掩盖，实际未忽略，会被 add 进提交）
+dist-pro/
