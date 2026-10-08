@@ -79,12 +79,9 @@ extraResources:
 #   Chromium 缺对应语言包时会回退 en-US，所以即使误设也不会白屏。
 #   ★ 注意：这一项对**安装包体积影响很小**（locales 在 NSIS 里压缩得动），
 #   主要收益是解开后的磁盘占用与分发解压耗时，属可选项；如遇界面语言异常先删这一项排查。
-# ⚠️ 打包临时禁用 —— electron-builder 的 removeUnusedLanguagesIfNeeded 会一次删 ~48 个 .pak，
-#    触发本机沙箱的批量删除守卫（SAFE_DELETE_BULK_CONFIRM_REQUIRED）→ 打包必中断。
-#    常规做法：打包前注释、打包后**必须恢复**（用 diff 与备份核对，见 /tmp/yz-eb-full.yml.bak）。
-# electronLanguages:
-#   - zh-CN
-#   - en-US
+electronLanguages:
+  - zh-CN
+  - en-US
 win:
   target: nsis
   icon: ../../assets/icons/icon.ico
