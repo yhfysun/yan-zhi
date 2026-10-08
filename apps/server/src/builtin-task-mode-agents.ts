@@ -365,6 +365,9 @@ export const CLIP_AGENT_BUILTIN_TOOLS = [
   'media_edit',
   'media_compose',
   'api_srt_generate',
+  // 本地语音转字幕（whisper.cpp）：素材只有音频时从**语音**识别出 SRT
+  // —— api_srt_generate 只做"按已有文本排版"，这条补的正是它做不到的。
+  'media_asr_transcribe', 'whisper_install',
   // 配音与音色（要旁白/解说时）与 AI 素材生成（缺空镜时）
   'api_tts_speak', 'api_tts_voices',
   'api_image_generate', 'api_video_generate', 'api_video_status',

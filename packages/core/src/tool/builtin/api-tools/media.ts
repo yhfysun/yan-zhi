@@ -168,6 +168,50 @@ export function registerMediaTools(m: Map<ApiModuleName, ToolDefinition[]>) {
       },
     },
     {
+      name: 'media_asr_transcribe',
+      description:
+        '语音转字幕（本地 whisper.cpp，**不上传云端**）：把音频/视频里的语音识别成带时间轴的 SRT。' +
+        '用途：素材只有音频（配音/录屏/别人给的成片）时生成字幕 —— 这是 api_srt_generate 做不到的' +
+        '（那个是「按已有文本排版」，时间轴靠时长推算，**不做语音识别**）。' +
+        '输入视频会自动只取音轨并用 ffmpeg 转 16kHz 单声道。' +
+        '返回 {type:"file", file, url, segmentCount} —— 结构与 api_srt_generate 一致，' +
+        '可直接交给 media_compose 的 subtitle 操作烧进视频。' +
+        '★ 依赖 whisper.cpp 与模型：未安装时先调用 whisper_install（会自动查最新 nightly 版本）。' +
+        '★ 中文场景默认模型 small（识别质量明显好于 base）；求快可传 base，求准可传 medium（更慢）。' +
+        '★ 首次使用需下载模型（small 约 466MB）；若下载失败按报错里的指引操作（开代理或手动放置）。',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          input: { type: 'string', description: '音频或视频文件路径（相对工作目录或绝对路径）。视频会自动只取音轨' },
+          model: { type: 'string', enum: ['base', 'small', 'medium'], description: '识别模型：base(142MB,快) / small(466MB,推荐) / medium(1.5GB,最准但慢)。默认 small' },
+          language: { type: 'string', description: '语言代码，默认 zh（中文）。英文 en，自动检测 auto' },
+          maxSeconds: { type: 'number', description: '可选，只转写前 N 秒（长音频试跑或截断用）' },
+          out: { type: 'string', description: '可选，SRT 输出目录；默认会话交付目录' },
+        },
+        required: ['input'],
+      },
+    },
+    {
+      name: 'whisper_install',
+      description:
+        '安装本地语音识别（whisper.cpp 二进制 + 模型）。' +
+        '二进制按当前平台从官方 **nightly build** 下载（正式 release 没有二进制资产）；' +
+        '模型从 HuggingFace 下载（官方源不可达时自动试镜像）。一次安装长期可用。' +
+        '当 media_asr_transcribe 报「尚未安装 whisper.cpp」或「缺少模型」时调用本工具。' +
+        '★ 体积策略：二进制约 8MB（CPU 版）；模型 base 142MB / small 466MB / medium 1.5GB —— ' +
+        '模型超过 50MB 阈值，**建议先用 confirm_user 告知用户体积**再装。' +
+        '★ 失败不会静默：报错里会给出「启动代理后重试」与「手动下载后放入哪个目录」两条指引。' +
+        '已安装时直接返回可用状态（幂等）。',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          what: { type: 'string', enum: ['cli', 'model', 'all'], description: '装什么：cli=只要可执行文件 / model=只要模型 / all=都要（默认 cli）' },
+          model: { type: 'string', enum: ['base', 'small', 'medium'], description: '配合 what=model/all：下载哪个模型，默认 small' },
+        },
+        required: [],
+      },
+    },
+    {
       name: 'media_install_ffmpeg',
       description:
         '下载安装 ffmpeg（媒体合成的依赖：配音混入视频、拼接、烧字幕都需要它）。' +
