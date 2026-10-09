@@ -1535,7 +1535,9 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
               } else if (action === 'get_visible_text' || action === 'get_text') {
                 text = result.text || '';
               } else if (action === 'screenshot') {
-                text = '截图已捕获';
+                // 2026-10-09：main.cjs 截图时已落盘存档，把路径带回 —— 服务端据此
+                // 复制进会话产物目录并登记 conversation_file（关键节点归档留证）。
+                text = result.file ? `截图已捕获（已存档: ${result.file}）` : '截图已捕获';
               } else if (action === 'get_dom') {
                 // 桌面端不把完整 DOM 回传模型（体积大且无必要）。若只回 "DOM 节点数"，
                 // 模型会因拿不到链接/文本内容而无限换参重试。给出可行动提示引导改用四件套。

@@ -56,7 +56,7 @@ async function callBrowserApi(path: string, method: 'GET' | 'POST' = 'POST', bod
  *
  * 失败一律返回 null：展示是增强能力，不能因为它让"截图"这个动作本身失败。
  */
-async function saveShotToTemp(base64: string): Promise<{ file: string; screenshotUrl: string } | null> {
+async function saveShotToTemp(base64: string): Promise<{ file: string; screenshotUrl: string; size: number } | null> {
   try {
     if (!base64 || typeof window !== 'undefined') return null;
     const fsp = await import('node:fs/promises');
@@ -75,8 +75,9 @@ async function saveShotToTemp(base64: string): Promise<{ file: string; screensho
       }
     } catch { /* 清理失败不影响本次保存 */ }
     const file = nodePath.join(dir, `screenshot-${Date.now()}.png`);
-    await fsp.writeFile(file, Buffer.from(base64, 'base64'));
-    return { file, screenshotUrl: `/api/plugin/computer-use/screenshots/${nodePath.basename(file)}` };
+    const buf = Buffer.from(base64, 'base64');
+    await fsp.writeFile(file, buf);
+    return { file, screenshotUrl: `/api/plugin/computer-use/screenshots/${nodePath.basename(file)}`, size: buf.length };
   } catch {
     return null;
   }
@@ -402,7 +403,12 @@ export class BrowserScreenshotTool implements BuiltInTool {
         ...(saved?.file ? { nextStep: `你看不到画面，需要识别页面内容时调用 image_analyze(path="${saved.file}", prompt="描述页面内容并给出目标元素的位置")` } : {}),
       };
       // 保持返回结果是可被界面解析的 JSON：ChatMessageList 会读 screenshotUrl 把图显示在工具卡片下
-      return ok(JSON.stringify(payload));
+      // ★ _meta（2026-10-09）：落盘成功时回传 path → artifact-hooks 统一登记 conversation_file
+      //   （离线 Playwright 路径此前只落临时区不登记，文件管理/工件清单看不到）
+      const meta = saved?.file
+        ? { path: saved.file, name: saved.file.split(/[/\\]/).pop() || 'screenshot.png', category: 'intermediate', bytes: saved.size }
+        : undefined;
+      return meta ? okWithMeta(JSON.stringify(payload), meta) : ok(JSON.stringify(payload));
     } catch (e: any) { return err(e?.message || '截图失败'); }
   }
 }

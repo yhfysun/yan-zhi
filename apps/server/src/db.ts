@@ -1026,6 +1026,9 @@ const PAGE_AGENT_BUILTIN_TOOLS = [
   'browser_run_script',
   // 文件上传（2026-10-07）：filechooser 模式，pageAgent 可代用户挂本地文件（如视频上传）
   'browser_upload',
+  // 落盘（2026-10-09）：推文产线里 pageAgent 抓到章节正文后要自己写盘（此前只能贴回对话，
+  // 长章节有截断风险）。readonly 会话仍会被 checkToolPermission 运行时拒绝，不影响只读语义。
+  'file_write',
   // P2-2 纯视觉兜底路线（2026-10-07）：DOM 路径失效时的 MolmoWeb 式「截图→识别→坐标动作」循环
   // （image_analyze 虽在 UI_TOOL_NAMES，但在线任务的 includeUiTools=true 时不过滤，pageAgent 在线委派可用）
   'browser_screenshot', 'image_analyze',
@@ -1937,10 +1940,9 @@ export const seedAgents: Array<Record<string, unknown>> = [
     system_prompt: PAGE_AGENT_SYSTEM_PROMPT,
     // 内置 pageAgent 定义由代码收敛，强制覆盖旧库残留（旧版 36 工具全量挂载导致死循环）
     force_sync: true,
-    // 200（2026-10-05）：小说推文链路里 pageAgent 要做登录/抓书目/逐章抓正文/回填，
-    // 50 步实测不够（正常干活的场景被上限腰斩）；非推文的轻量查询用不到这么多步，
-    // 靠提示词里的「最多 N 次工具调用」软预算控制，不靠步数硬顶。
-    config_json: JSON.stringify({ maxReActSteps: 200 }),
+    // 200→500（2026-10-09）：小说推文链路实测 200 步仍会撞顶（登录/抓书目/逐章抓正文/回填
+    // 全在 pageAgent 身上）；未配置的任务走全局默认，轻量查询靠提示词软预算控制，不靠步数硬顶。
+    config_json: JSON.stringify({ maxReActSteps: 500 }),
   },
   {
     id: 'a_builtin_data_agent',

@@ -2667,6 +2667,19 @@ ipcMain.handle('browserView:action', async (_e, tabId, action, args) => {
         })()`);
       }
       case 'screenshot': {
+        // 2026-10-09：截图同步落盘存档（userData/screenshots/screenshot-<ts>.png），
+        // 路径随结果回传；服务端据此复制进会话产物目录并登记 conversation_file（留证归档）。
+        // 存档失败不影响截图本身返回。
+        const saveShotArchive = async (image) => {
+          try {
+            const path = require('node:path');
+            const dir = path.join(app.getPath('userData'), 'screenshots');
+            await require('node:fs').promises.mkdir(dir, { recursive: true });
+            const file = path.join(dir, `screenshot-${Date.now()}.png`);
+            await require('node:fs').promises.writeFile(file, image.toPNG());
+            return file;
+          } catch { return undefined; }
+        };
         if (args.annotate) {
           // 元素标注截图：注入覆盖层画编号框（与 server Playwright 端对齐），截图后移除
           const overlayId = '__yz_annotate_overlay';
@@ -2698,10 +2711,12 @@ ipcMain.handle('browserView:action', async (_e, tabId, action, args) => {
           })()`);
           const image = await wc.capturePage();
           await wc.executeJavaScript(`(function(){var p=document.getElementById(${JSON.stringify(overlayId)});if(p)p.remove();})()`).catch(() => {});
-          return { base64: image.toDataURL().split(',')[1], annotated: true };
+          const archivedFile = await saveShotArchive(image);
+          return { base64: image.toDataURL().split(',')[1], annotated: true, ...(archivedFile ? { file: archivedFile } : {}) };
         }
         const image = await wc.capturePage();
-        return { base64: image.toDataURL().split(',')[1] };
+        const archivedFile = await saveShotArchive(image);
+        return { base64: image.toDataURL().split(',')[1], ...(archivedFile ? { file: archivedFile } : {}) };
       }
       case 'get_page_info': {
         // 穿透 iframe / Shadow DOM 收集可交互元素并编号注册（含 iframe 内弹窗元素）

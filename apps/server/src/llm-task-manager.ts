@@ -95,10 +95,9 @@ const WORKFLOW_DELIVERY_TIMEOUT_MS = 30 * 1000;
  * ★ 2026-09-29：100 → 500（用户诉求「默认 500 步吧，50 步不太够啊」）。
  *   实测长任务（《驭兽斋》有声小说多章流水线）跑满 100 步后仍有大量未完成步骤 ——
  *   默认值偏小 → 频繁触顶 → 即使有自动接力也来回停顿，用户体感就是"老断"。
- *   ★ 与 `clampMaxSteps` 的**上限**同为 500：默认即上限，语义是"没有理由时给足预算"。
- *   注意别把"默认"和"下限"混淆 —— 用户显式配更小的值（如 30）必须尊重（快速迭代/省钱）。
+ * ★ 2026-10-09：500 → 1000（推文产线实测主任务 500 步也会撞顶）。用户显式配更小的值仍须尊重。
  */
-const DEFAULT_MAX_REACT_STEPS = 500;
+const DEFAULT_MAX_REACT_STEPS = 1000;
 
 /**
  * 空转断路器阈值（P6 提升为模块级导出，2026-10-04）：连续 N 次空参调用判定为退化。
@@ -3227,14 +3226,34 @@ async function executeTool(
   // navigate 打预览 BrowserView、click/type 等打服务端 headless Playwright 的双浏览器分裂
   // （Playwright 页面从未被导航 → locator.fill 30s 超时死循环）。
   const isBrowser = toolName.startsWith('browser_');
+  // SSE 瞬断兜底（2026-10-09）：订阅者暂缺时先等一个重连窗口（前端 0.5s→5s 退避重连），
+  // 恢复就继续走前端执行面；仍无人订阅才落回原有离线路径。
+  // 原实现 subscribers=0 立即落到离线 Playwright/报错 —— 产线长任务表现为「一断全停」。
+  if (isBrowser && task.subscribers.size === 0) {
+    await waitForFrontendSubscriber(task, 15000);
+  }
   if (isBrowser && task.subscribers.size > 0) {
+    let delegated: string;
     try {
-      return await executeToolViaFrontend(task, toolName, args, toolCallId, depth);
+      delegated = await executeToolViaFrontend(task, toolName, args, toolCallId, depth);
     } catch (e: any) {
       if (e?.name === 'AbortError' || task.abortController.signal.aborted) throw e;
-      // 前端委托超时/断连（SSE 瞬断、页面关闭）→ 明确报错，不静默切 Playwright
-      return `浏览器工具 ${toolName} 前端暂时不可达（SSE 断连或超时），本次未执行。请稍后重试，或告知用户检查应用窗口是否开启。`;
+      // 前端委托超时/断连（SSE 瞬断、页面关闭）→ 再等一个重连窗口重试一次，仍失败才报错
+      if (!(await waitForFrontendSubscriber(task, 8000))) {
+        return `浏览器工具 ${toolName} 前端暂时不可达（SSE 断连或超时），本次未执行。请稍后重试，或告知用户检查应用窗口是否开启。`;
+      }
+      try {
+        delegated = await executeToolViaFrontend(task, toolName, args, toolCallId, depth);
+      } catch (e2: any) {
+        if (e2?.name === 'AbortError' || task.abortController.signal.aborted) throw e2;
+        return `浏览器工具 ${toolName} 前端暂时不可达（SSE 断连或超时，等待重连后重试仍失败），本次未执行。请稍后重试，或告知用户检查应用窗口是否开启。`;
+      }
     }
+    // 截图归档：main.cjs 已落盘，这里复制进会话产物目录并登记 conversation_file
+    if (toolName === 'browser_screenshot') {
+      return await archiveDelegatedScreenshot(delegated, task, metaOut);
+    }
+    return delegated;
   }
   // 离线浏览器工具 → 检测 Playwright 可用性
   if (isBrowser) {
@@ -3337,6 +3356,50 @@ async function executeTool(
 /** 通过 SSE 委托前端执行工具，等待前端 POST 结果回来。
  *  事件有缓冲：前端刷新断开时事件不丢失，重连后重放并执行。
  *  @param timeoutMsOverride 覆盖默认超时；传 0 表示**不设超时**（授权弹窗等"可能隔很久才答"的场景） */
+/**
+ * 等待前端 SSE 订阅者回归（断连重连窗口）。返回 true=已有订阅者；false=超时或任务已中止。
+ * 前端断流后按 0.5s→5s 指数退避重连（最多 8 次），这里轮询等待即可衔接上。
+ */
+async function waitForFrontendSubscriber(task: LlmTask, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (task.abortController.signal.aborted) return false;
+    if (task.subscribers.size > 0) return true;
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  return task.subscribers.size > 0;
+}
+
+/**
+ * browser_screenshot 归档后处理（2026-10-09）：桌面端 main.cjs 截图时已同步落
+ * userData/screenshots/screenshot-<ts>.png，前端把存档路径带回结果文本。
+ * 这里把文件复制进会话中间产物目录并设置 _meta → artifact-hooks 统一登记
+ * conversation_file（文件管理可见、工件清单可引用）。无存档路径（旧版 main /
+ * 落盘失败）时原样返回，行为不变；归档失败不影响截图本身。
+ */
+async function archiveDelegatedScreenshot(
+  result: string,
+  task: LlmTask,
+  metaOut?: { value?: Record<string, unknown> | null },
+): Promise<string> {
+  try {
+    const src = result.match(/已存档: (.+)/)?.[1]?.trim();
+    if (!src || !task.conversationId) return result;
+    const fsp = await import('node:fs/promises');
+    const nodePath = await import('node:path');
+    const size = (await fsp.stat(src)).size;
+    const dir = resolveArtifactDirFor({ conversationId: task.conversationId, category: 'intermediate' }).dir;
+    await fsp.mkdir(dir, { recursive: true });
+    const dest = nodePath.join(dir, nodePath.basename(src));
+    if (dest !== src) await fsp.copyFile(src, dest);
+    if (metaOut) metaOut.value = { path: dest, name: nodePath.basename(dest), category: 'intermediate', bytes: size };
+    return `截图已捕获并归档: ${dest}\n你看不到画面；需要理解页面内容或定位元素时，调用 image_analyze(path="${dest}", prompt="描述页面内容并给出目标元素的位置")`;
+  } catch (e: any) {
+    logger.warn('[llm-task] 截图归档失败（不影响截图本身）:', e?.message || e);
+    return result;
+  }
+}
+
 async function executeToolViaFrontend(task: LlmTask, toolName: string, args: any, toolCallId: string, depth: number = 0, timeoutMsOverride?: number): Promise<string> {
   // 工具发起前的暂停边界：暂停中不发新工具（正在跑的前一个动作已在各自的 await 里自然跑完）
   await waitIfPaused(task);
@@ -4040,8 +4103,8 @@ async function runSubAgentImpl(
   // runOpts.maxSteps（2026-10-08）：PlanRunner 按计划项指定步数预算（如抓取类限 10），
   // 优先于 agent 配置 —— 编排者对单任务的成本约束应压过角色默认值。
   const maxSteps = typeof runOpts?.maxSteps === 'number' && runOpts.maxSteps > 0
-    ? Math.min(Math.floor(runOpts.maxSteps), 500)
-    : typeof cfgSteps === 'number' && cfgSteps > 0 ? Math.min(Math.floor(cfgSteps), 500) : 500;
+    ? Math.min(Math.floor(runOpts.maxSteps), 1000)
+    : typeof cfgSteps === 'number' && cfgSteps > 0 ? Math.min(Math.floor(cfgSteps), 1000) : 1000;
   const systemPrompt = agent.system_prompt || '你是一个智能助手。';
   const modelCaps = model.capabilities as string[] | undefined;
   const supportsTools = modelSupportsTools(modelCaps);

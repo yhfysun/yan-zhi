@@ -150,6 +150,8 @@ const PAGE_AGENT_BUILTIN_TOOLS = [
   'browser_run_script',
   // P2-2 纯视觉兜底路线（2026-10-07）：截图 + 视觉识别（DOM 失效时的 MolmoWeb 式兜底）
   'browser_screenshot', 'image_analyze',
+  // 与 server db.ts 收口清单对齐（2026-10-07 upload / 2026-10-09 file_write 落盘）
+  'browser_upload', 'file_write',
   // 登录闭环必备：向用户提问/请求确认（扫码、验证码等人工干预场景）
   'ask_user',
 ];
