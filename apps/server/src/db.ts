@@ -1020,6 +1020,16 @@ const DEFAULT_AGENT_SKILL_IDS = [
 const PAGE_AGENT_BUILTIN_TOOLS = [
   // 四件套：访问 URL / 输入内容 / 点击 / 专门获取当前页面内容
   'browser_navigate', 'browser_type', 'browser_click', 'browser_get_page_content',
+  // ★★★ 2026-10-09 修（B2，high）：下面三个**必须挂载** —— 因为提示词正文（见
+  //   PAGE_AGENT_PROMPT 的「读页工具分工」段）**主动推荐**模型使用它们，
+  //   而此前挂载清单里没有 → 模型照提示词调用 → 命中"工具不存在"分支白跑一轮，
+  //   用户看到的是"模型反复调用不存在的工具 / 卡住"。
+  //   ★ 判据：**提示词推荐什么，工具面就必须挂什么**（三处一致性：挂载清单/工具声明/推荐段）。
+  //   （这三者此前漂移过，是最难查的一类"静默失效"；守门测试见
+  //    apps/server/test/page-agent-tool-mount-consistency.test.ts）
+  'browser_get_page_info',   // 元素坐标（按坐标点击/判断可见/配合截图标注）
+  'browser_get_dom',         // 父子层级树（看清元素归属、弹窗/portal 容器）
+  'browser_get_visible_text',// 纯正文（只读内容、抽长文，输出最小）
   // 滚动：查看视口外内容 / 触发懒加载（v4 回补，四件套收口时误删导致 agent 无法滚动）
   'browser_scroll',
   // P1-5 代码模式（2026-10-07）：固定重复流程（翻页收集/批量提取/触发懒加载）收敛为脚本一次执行
@@ -1079,15 +1089,23 @@ const DEFAULT_AGENT_SYSTEM_PROMPT = `你是一个 ReAct（推理-行动）智能
 ` + WEB_QUERY_PROMPT_BLOCK + '\n\n' + DATA_QUERY_PROMPT_BLOCK;
 const PAGE_AGENT_SYSTEM_PROMPT = `你是一个浏览器自动化助手（pageAgent）。你通过调用浏览器工具操作一个真实的、可见的浏览器窗口（预览面板），用户能实时看到你的每一步操作。
 
-工具（仅以下九个，其他浏览器工具不可用）：
+工具（以下为**你实际已挂载**的全部工具，其他浏览器工具不可用。★ 与挂载清单
+PAGE_AGENT_BUILTIN_TOOLS 必须逐项一致——提示词推荐了却没挂 = 模型照提示词调用却撞"工具不存在",
+是最常见的"白跑一轮 / 看起来卡住"来源。★ 注意本段是模板字符串，正文不得出现反引号字符）：
 - browser_navigate: 导航到指定 URL
 - browser_type: 在输入框输入文本（支持回车提交搜索/表单）
 - browser_click: 点击元素（优先元素编号 index，其次 CSS 选择器或坐标）
-- browser_scroll: 滚动页面。传 y（正数向下/负数向上，像素，如 y=600）滚动一屏查看视口外内容；传 selector 则把目标元素滚到视野中央。用于查看长列表更多内容、触发懒加载，或让视口外的按钮/元素进入视野后再点击
 - browser_get_page_content: 一次获取当前页面完整状态：title + url + 可见正文 + 带 index 编号的可交互元素列表（已穿透 iframe/Shadow DOM）。返回含 PageState 页面状态签名：两次读取签名相同 = 操作未生效
+- browser_get_page_info: 元素坐标——与 get_page_content 同样的编号元素，但额外给 x/y/w/h。需要按坐标点击、判断元素是否在视口内/被遮挡/需滚动、或配合 browser_screenshot(annotate=true) 时用它
+- browser_get_dom: 父子层级树——需要看清元素归属、弹窗/portal 挂在哪个容器下时用；只要操作目标时不必调它
+- browser_get_visible_text: 纯正文——只读内容、抽取长文时用，输出最小
+- browser_scroll: 滚动页面。传 y（正数向下/负数向上，像素，如 y=600）滚动一屏查看视口外内容；传 selector 则把目标元素滚到视野中央。用于查看长列表更多内容、触发懒加载，或让视口外的按钮/元素进入视野后再点击
 - browser_run_script: 代码模式——在页面里执行一段 JS 并返回结果。固定重复流程（翻页收集列表、批量提取、触发懒加载、循环签到检查）写成一段 (async () => { ... })() 脚本一次执行，替代多轮 click/scroll/read，大幅省步数；脚本内可用 document/fetch，返回值必须可 JSON 序列化（超时 30s）
+- browser_upload: 上传本地文件——在页面上设置 input[type=file] 的文件（如上传视频/图片到后台）。传选择器（可选）与本地文件路径
 - browser_screenshot: 截图当前页面（annotate=true 时叠加元素编号框），返回文件路径
 - image_analyze: 视觉识别——把截图路径 + 描述传给视觉模型，返回画面内容/元素位置
+- file_write: 写文件到工作目录——抓到正文/结果后直接落盘（长内容别只贴在回复里，有截断风险）。
+  ★ 只读权限会话会在运行时被拒绝（这是预期行为，不是故障）
 - ask_user: 向用户提问/请求确认（用于扫码登录等需要人工干预的场景）
 
 工作流程：

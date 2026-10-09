@@ -32,13 +32,30 @@ router.use(optionalAuth); // 浏览器功能不需要登录，有 token 就解�
  */
 const browserQueue: Array<() => void> = [];
 let browserBusy = false;
-/** 需串行的写操作路径（按 router 注册路径判定） */
+/** 需串行的写操作路径（按 router 注册路径判定）
+ *
+ * ★★★ 2026-10-09 补（A1）：白名单此前**漏了三个真正的写操作**，它们都改页面状态：
+ *   · `GET /render`（`:1726`）→ `page.goto()` + `setViewportSize()` —— **导航就是写**，
+ *     且被预览面板（BrowserPanel）高频调用；与并发 `/action` 抢同一 `pageInstance`
+ *     → 跨会话错页（A 会话的读取拿到 B 刚导航的页面）。
+ *   · `POST /login-saved`（`:2394`）→ `goto()` + `locator().click()`
+ *   · `POST /passwords/:id/fill`（`:2372`）→ `locator().fill()`
+ * ★ 判据（本模块注释自己写过「逐个包必漏」）：**判定依据是"该 handler 是否改页面状态"，
+ *   不是"HTTP 方法是不是 POST"** —— `/render` 用 GET 却在导航，正是按方法判定的漏网之鱼。
+ */
 const BROWSER_SERIAL_PATHS = new Set([
   '/navigate', '/action', '/back', '/forward', '/refresh', '/close', '/focus',
+  // ★ 2026-10-09 补：三个改页面状态的旁路写入口
+  '/render', '/login-saved',
 ]);
+/** 含路径参数的写路由（无法用精确 Set 匹配，用前缀/正则判定） */
+const BROWSER_SERIAL_PATTERN = /^\/passwords\/[^/]+\/fill$/;
+function isBrowserSerialPath(p: string): boolean {
+  return BROWSER_SERIAL_PATHS.has(p) || BROWSER_SERIAL_PATTERN.test(p);
+}
 function withBrowserLock(handler: (req: Request, res: Response) => Promise<unknown> | unknown) {
   return async (req: Request, res: Response) => {
-    if (!BROWSER_SERIAL_PATHS.has(req.path)) return handler(req, res); // 读操作直通
+    if (!isBrowserSerialPath(req.path)) return handler(req, res); // 读操作直通
     // 排队等锁（先到先得，FIFO）
     if (browserBusy) {
       await new Promise<void>((resolve) => browserQueue.push(resolve));
@@ -1723,7 +1740,7 @@ router.get('/downloads', async (_req: Request, res: Response) => {
 // GET /api/browser/render?url=... —— Playwright 预渲染：获取已渲染 DOM，移除 script，重写 URL
 // 流程：用 Playwright 加载页面 → 等待渲染 → 取完整 HTML → 移除 script/noscript/CSP meta →
 //       重写资源 URL 为代理 URL → 注入样式修复 → 返回 HTML（由前端 iframe 显示）
-router.get('/render', async (req: Request, res: Response) => {
+router.get('/render', withBrowserLock(async (req: Request, res: Response) => {
   try {
     const target = String(req.query.url || '');
     if (!/^https?:\/\//i.test(target)) {
@@ -1780,7 +1797,7 @@ router.get('/render', async (req: Request, res: Response) => {
   } catch (e: any) {
     res.status(500).json({ error: e?.message || '渲染失败' });
   }
-});
+}));
 
 // GET /api/browser/proxy —— 同源反向代理（内置浏览器核心）
 // 1) 剥离 X-Frame-Options / CSP(frame-ancestors) 等反嵌入头，使目标站能在 iframe 内真实渲染
@@ -2369,7 +2386,7 @@ router.post('/passwords/:id/reveal', (req: Request, res: Response) => {
 });
 
 // POST /api/browser/passwords/:id/fill —— 用已存凭证自动填充当前页登录表单（不提交）
-router.post('/passwords/:id/fill', async (req: Request, res: Response) => {
+router.post('/passwords/:id/fill', withBrowserLock(async (req: Request, res: Response) => {
   try {
     const row = db.prepare('SELECT username, password_enc, form_meta_json FROM saved_password WHERE id = ? AND user_id = ?').get(req.params.id, pwdUserId(req)) as any;
     if (!row) { res.status(404).json({ error: '凭证不存在' }); return; }
@@ -2387,11 +2404,11 @@ router.post('/passwords/:id/fill', async (req: Request, res: Response) => {
   } catch (e: any) {
     res.status(500).json({ error: e?.message || '填充失败' });
   }
-});
+}));
 
 // POST /api/browser/login-saved —— 用已存凭证登录目标站点
 // body: { host?, url? } —— 按 host 匹配凭证；若提供 url 先导航；自动找登录表单→填→提交→判断
-router.post('/login-saved', async (req: Request, res: Response) => {
+router.post('/login-saved', withBrowserLock(async (req: Request, res: Response) => {
   try {
     const { host, url } = req.body || {};
     const uid = pwdUserId(req);
@@ -2434,6 +2451,6 @@ router.post('/login-saved', async (req: Request, res: Response) => {
   } catch (e: any) {
     res.status(500).json({ error: e?.message || '登录失败' });
   }
-});
+}));
 
 export default router;

@@ -1380,7 +1380,28 @@ function createChat() {
   );
 
   const tokenCount = computed(() =>
-    store.currentMessages.reduce((s, m) => s + estimateTokens(m.content || '') + estimateTokens(m.reasoningContent || ''), 0),
+    store.currentMessages.reduce(
+      (s, m) =>
+        s
+        + estimateTokens(m.content || '')
+        + estimateTokens(m.reasoningContent || '')
+        // ★★★ 必须计入 toolCalls（2026-10-09，D2）：后端 tokenCount（packages/core/src/compress/window.ts）
+        //   明确把 toolCalls 计入，并注明"toolCalls 常占最长部分"。
+        //   前端此前漏了它 → **显示用量系统性偏低**：用户更晚看到"快满了"，
+        //   而且前后端口径不一致会让"前端说还有空间、后端却开始压缩"看起来像 bug。
+        //   ★ 判据：同一个量在两处计算就必须同口径；这里按后端同样取 arguments 的字符串长度估算。
+        + (m.toolCalls || []).reduce((ts, tc) => {
+          const anyTc = tc as unknown as {
+            function?: { arguments?: unknown; name?: string };
+            arguments?: unknown;
+            toolName?: string;
+          };
+          const raw = anyTc.function?.arguments ?? anyTc.arguments;
+          const argText = typeof raw === 'string' ? raw : (raw ? JSON.stringify(raw) : '');
+          return ts + estimateTokens(argText) + estimateTokens(anyTc.function?.name || anyTc.toolName || '');
+        }, 0),
+      0,
+    ),
   );
   /** 标称上下文窗口（模型配置值）—— 只用来说明"模型 API 上限"，不用来算用量 */
   const declaredContextWindow = computed(() => {

@@ -803,6 +803,27 @@ export const useChatStore = defineStore('chat', () => {
     }, 800);
   }
 
+  /**
+   * ★★★ 只清**界面展示**，不落盘（2026-10-09 修，high —— 跨会话接力被这里整条抹掉）。
+   *
+   * 背景（实据）：`send()` 开跑新任务时会调 `clearPlan(convId)`，而 clearPlan 的防抖回调是
+   *   `readPlan(plansByConv, key)` —— 它读的是**自己刚清空的 map**，因此取到的永远是 `null`，
+   *   于是**每次发消息都 PATCH taskPlan:null**。服务端收到 null 会
+   *   ① 把 `conversation.task_plan_json` 置空 ② **unlink 工作目录的 plan.md**。
+   *   后果（与 §计划接力棒跨会话 的"三处落盘点全空"完全吻合）：
+   *   · 跨会话接力彻底不成立 —— 计划刚登记就被下一次发消息删掉；
+   *   · 收尾时 `readPlanRemainingSteps()` = 0 → 机械接力信号丢失，只剩模型自评（倾向"已完成"）。
+   *
+   * ★ 判据：**"清展示"与"清持久化"是两件事，必须分开**。
+   *   TaskPlanCard 的「清除计划」按钮是用户显式动作 → 走 clearPlan（要落盘 null，合理）；
+   *   新任务开跑只是"别让上一轮的卡片残留在进度行上" → 走本函数（只清内存）。
+   *   把两者塞进同一个函数，就会让"顺带清一下显示"演变成"删掉用户的跨会话计划"。
+   */
+  function clearPlanDisplayOnly(convId?: string | null) {
+    const key = planKeyOf(convId);
+    plansByConv.value = removePlan(plansByConv.value, key);
+  }
+
   /** 计划落盘：写入 conversation.task_plan_json（刷新/换设备后 TaskPlanCard 可恢复）。
    *  task_plan/task_step 在一轮任务里高频更新 → 800ms 防抖合并 PATCH。 */
   let planSaveTimer: ReturnType<typeof setTimeout> | null = null;
@@ -2414,10 +2435,13 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
 
     runningConvIds.value.add(convId);
     runStatsByConv.value[convId] = { status: 'running', startedAt: Date.now() };
-    // ★ 清掉上一轮任务留下的旧计划：计划按会话持久保留（plansByConv / task_plan_json），
+    // ★ 清掉上一轮任务在**界面上**残留的旧计划：计划按会话持久保留（plansByConv / task_plan_json），
     //   不清的话新任务运行指示会显示旧计划的「步骤 3/3 全完成」，看起来像已完成的任务卡在运行中。
     //   新任务若做规划，task_plan/task_step 会重新登记。复用运行中任务（下方 has 提前 return）不受影响。
-    clearPlan(convId);
+    // ★★★ 2026-10-09 修：这里必须用 **clearPlanDisplayOnly**（只清内存），不能用 clearPlan ——
+    //   后者会 PATCH taskPlan:null，把工作目录的 plan.md 一并删掉，**跨会话接力当场失效**
+    //   （实测：发一条消息 → task_plan_json 变 NULL、plan.md 消失）。详见 clearPlanDisplayOnly 注释。
+    clearPlanDisplayOnly(convId);
     const abortController = new AbortController();
     abortControllers.set(convId, abortController);
 
@@ -2612,7 +2636,7 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
     pendingPathAuth, submitPendingPathAuth,
     submitPendingConfirmation, skipPendingConfirmation, cancelPendingConfirmation,
     submitPlatformConfig, cancelPlatformConfig,
-    planSteps, planTitle, clearPlan,
+    planSteps, planTitle, clearPlan, clearPlanDisplayOnly,
     activeAgent, activeAgentId,
     loadConversations, loadMessages, createConversation, updateConversation, deleteConversation, deleteConversations,
     addMessage, updateMessage, deleteMessage, sendMessage, regenerate, stop,

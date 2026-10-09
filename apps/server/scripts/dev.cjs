@@ -116,6 +116,12 @@ const child = spawn(bin, args, {
     ...(isElectron ? { ELECTRON_RUN_AS_NODE: '1' } : {}),
     YZ_EDITION: 'pro',
     YZ_DEFAULT_EDITION: 'pro',
+    // ★★★ 热重载标记（2026-10-09）：本启动器用 `tsx watch`，**每改一次源码就重启进程**。
+    //   不标记的话，下次启动的孤儿任务回收会把上一批 running 任务一律标成
+    //   「服务重启，任务被中断」→ 用户体感"任务老跑不起来"（实测 16 次中断里 13 次源于此）。
+    //   注入后回收改为标 `resumable` + 提示"计划与进度已保留，可直接继续"（见 llm-task-manager）。
+    //   ★ 只在本启动器注入：生产路径（dist / main.cjs）不设 → 行为完全不变。
+    YZ_HOT_RELOAD: '1',
     // ★ 数据目录：不注入的话 db.ts 会退回 apps/server/（源码目录）—— 见文件头注释
     DATA_DIR: devDataDir,
   },

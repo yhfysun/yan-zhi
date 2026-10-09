@@ -4,7 +4,7 @@
 // UI 交互工具（ask_user/confirm_user 等）和 MCP/自定义工具委托前端，刷新时暂停等待重连。
 // 注：web_search 已移除，联网查询统一委派 pageAgent（真实浏览器搜索引擎）。
 import type { Platform, Model, Message, DeltaToolCall } from '@yan-zhi/shared';
-import { formatTaskTypeContext, DEFAULT_CONFIRM_BATCH_SIZE, resolveTaskBudgets, checkTaskBudgetHit as sharedCheckTaskBudgetHit } from '@yan-zhi/shared';
+import { formatTaskTypeContext, DEFAULT_CONFIRM_BATCH_SIZE, resolveTaskBudgets, checkTaskBudgetHit as sharedCheckTaskBudgetHit, addWaitCredit } from '@yan-zhi/shared';
 import { LlmClient, getToolRegistry, getApiToolRegistry, ContextWindow, adviceForTruncatedArgs, runCodeDiagnostics, invalidateDiagnosticsCache, resolveToolPath, type SummaryCache } from '@yan-zhi/core';
 import { db, MESSAGE_LIST_COLS } from './db.js';
 import { normalizePermissionMode, checkToolPermission, filterToolsByPermission, permissionModePrompt, checkWorkflowPermission, type PermissionMode } from './tool-permission.js';
@@ -132,6 +132,22 @@ export const EMPTY_ARGS_THRESHOLD = 3;
  *   ⇒ 有活干就一直干，干不动了才停 —— 与用户「不要一直断」的诉求一致。
  */
 export const autoContinueHardCap = 30;
+
+/**
+ * ★★★ 任务**总时长**硬顶（2026-10-09 新增，弹性墙钟的必要兜底）。
+ *
+ * 背景：2026-10-09 起墙钟预算改为「每批一份」（见 TASK_WAIT_CREDIT_CAP_MS 与接力块的基线重置），
+ *   目的是让"单批必然超 15 分钟"的出片类长任务能一趟跑完。但这样一来：
+ *   - 计划已被清空的会话（见 clearPlan 自毁那类的后果）里 `readPlanRemainingSteps()===0`，
+ *     停滞判定会判 `noPlanTracked && expectedContinue` ⇒ **永远算"有进展"** → 停滞闸失效；
+ *   - 只剩 `autoContinueHardCap = 30 批` 兜底，按每批 15 分钟算 = **最坏 7.5 小时**。
+ * ⇒ 必须有独立于"批次数"的**总墙钟**上限。
+ *
+ * ★ 这是"失控兜底"，不是"任务预算"：正常任务不该撞到（撞到说明 3 小时里没干成一件事）。
+ *   与 autoContinueHardCap 是**两个正交维度**（批次 vs 时长），少一个都能被绕过。
+ *   4 小时 = 用户"长任务"的心理上限，也远高于任何单章推文出片（实测 ~20 分钟）。
+ */
+export const TASK_TOTAL_WALL_CLOCK_HARD_CAP_MS = 4 * 60 * 60 * 1000;
 
 /**
  * ★★★ P0（2026-10-09）：流式断流判据 + 自动续写参数。
@@ -358,6 +374,33 @@ interface LlmTask {
    */
   totalTokens?: number;
   budgets?: { tokenBudget: number; wallClockMs: number };
+  /**
+   * ★★★ 墙钟**预算基线**（2026-10-09）：预算判定用 `budgetBaselineAt`，**不是** `createdAt`。
+   *
+   * 为什么必须拆成两个字段（不要合并回 createdAt）：
+   *   · `createdAt` 兼着两个**互斥**语义 —— ① 展示/审计的任务创建时刻；
+   *     ② `cleanupTasks()` 的任务回收看门狗基准（`now - createdAt > 2h` 强杀）。
+   *   · 预算接力需要**每批重置起点**（`budgetBaselineAt = Date.now()`），
+   *     若直接改 createdAt，看门狗基准被一起前移 → 任务**永远收不回** → 内存泄漏。
+   *   ★ 判据：一个字段被两处用**不同语义**读，改之前必须拆字段，不能复用。
+   */
+  budgetBaselineAt?: number;
+  /**
+   * ★★★ 等待抵扣累计（2026-10-09，见 shared/context-policy 的 TASK_WAIT_CREDIT_CAP_MS）：
+   *   工具执行耗时里"等外部子进程/网络"的部分（如 python_exec 出片 5~8 分钟）不计入墙钟。
+   *   由 executeTool 在**唯一工具出口**累加；预算判定时扣除。随任务对象回收，不落库。
+   */
+  waitCreditMs?: number;
+  /**
+   * ★ D1 可观测（2026-10-09）：prompt 缓存命中量。
+   * · `lastCachedTokens` / `lastPromptTokens`：**最近一轮**的命中与总 prompt 量
+   *   （判据：同会话连续两轮，`lastCachedTokens > 0` 说明前缀缓存生效）。
+   * · `cachedTokensTotal`：本任务累计命中量（用于估算省了多少全价 token）。
+   * 只做观测，不参与任何判定 —— 加它是为了"先能看见再优化"。
+   */
+  lastCachedTokens?: number;
+  lastPromptTokens?: number;
+  cachedTokensTotal?: number;
 }
 
 const tasks = new Map<string, LlmTask>();
@@ -771,6 +814,8 @@ export function createTask(params: {
     // ★ P1-9：任务预算（token 总预算 + 墙钟）。agent.config_json.totalTokenBudget /
     //   wallClockMinutes 可覆盖；无智能体或非法值 → 默认（resolveTaskBudgets 内兜底）。
     totalTokens: 0,
+    budgetBaselineAt: Date.now(),
+    waitCreditMs: 0,
     budgets: (() => {
       try {
         if (!params.agentId) return resolveTaskBudgets(undefined);
@@ -1589,20 +1634,49 @@ export function cleanupTasks(maxAgeMs: number = 30 * 60 * 1000) {
   }
 }
 
-/** 启动时回收上次进程遗留的孤儿任务：DB 里 running/waiting_tool → interrupted。
- *  简化版未做运行时持久化，此处仅清理 DB 残留（若有），并清空内存任务表。 */
+/**
+ * ★★★ 启动时回收上次进程遗留的孤儿任务：DB 里 running/waiting_tool → interrupted。
+ *
+ * ★★★ 区分「开发热重载」与「真实重启」（2026-10-09，high）：
+ *   背景（实据）：实测 16 次任务中断里 **13 次是「服务重启，任务被中断」**，且时间**聚集在开发日**
+ *   （10-07 一天 9 次）—— `apps/server/scripts/dev.cjs:101` 用 `tsx watch` 启动，
+ *   **每改一次源码就重启一次进程**，正在跑的任务被整批标 interrupted。用户体感就是
+ *   「任务老是跑不起来 / 后面的任务执行不了」，而归因却是"会话太多"（相关而非因果）。
+ *
+ *   两种重启的**后果完全不同**：
+ *     · 开发热重载：任务计划（DB 的 task_plan_json）、进度明细（工作目录 progress.md）、
+ *       成片等产物**全都在**，用户发一句「继续」就能接上 → 应提示"可继续"而非"重发"。
+ *     · 真实重启/崩溃：用户主动退出或进程被系统杀掉，同样有落盘产物，但语义上更接近"意外"。
+ *
+ *   ⇒ 判据不是"重启了就一律 interrupted"，而是**告诉用户"东西还在、能接着做"**。
+ *   ★ 标记来源：`YZ_HOT_RELOAD=1`（由 `apps/server/scripts/dev.cjs` 注入；生产路径不设）
+ *     —— 与启动器同源，不臆造判据。生产行为**完全不变**（未设该变量时走原分支）。
+ *
+ * @returns 回收条数
+ */
 export function markOrphanTasksInterrupted(): number {
   let n = 0;
+  // ★ 只认显式注入的标记：未设 = 生产/真实重启 → 保持既有行为（零风险）
+  const hotReload = process.env.YZ_HOT_RELOAD === '1';
   try {
     const rows = db.prepare("SELECT id, conversation_id, user_id FROM llm_task WHERE status IN ('running','waiting_tool')").all() as Array<{ id: string; conversation_id: string; user_id?: string }>;
     for (const r of rows) {
       try {
-        db.prepare("UPDATE llm_task SET status = 'interrupted', error = '服务重启，任务被中断', updated_at = ? WHERE id = ?").run(Date.now(), r.id);
+        const errText = hotReload
+          ? '开发热重载（tsx watch）中断，计划与进度已保留，可直接继续'
+          : '服务重启，任务被中断';
+        // ★ 热重载不再叫「interrupted」——它**不是失败**，而是一次可续的暂停。
+        //   用独立状态让前端/查询能区分「可继续」与「已中断」，避免用户以为要重头再来。
+        const nextStatus = hotReload ? 'resumable' : 'interrupted';
+        db.prepare('UPDATE llm_task SET status = ?, error = ?, updated_at = ? WHERE id = ?').run(nextStatus, errText, Date.now(), r.id);
         // ★ 可见提示（2026-10-07）：重启把任务打断时，此前**界面零痕迹**（用户只看到任务凭空消失）。
         //   这里往原会话补一条说明，用户知道发生了什么、能直接重发。
         try {
           const uid = r.user_id || (db.prepare('SELECT user_id FROM conversation WHERE id = ?').get(r.conversation_id) as any)?.user_id || 'guest';
-          insertMessage(r.conversation_id, uid, 'assistant', '⚠️ 应用重启，正在运行的任务已中断。需要继续的话把要求再发一次即可（已完成的工作产物仍在）。');
+          const note = hotReload
+            ? '⚡ 开发热重载（改代码触发）暂停了正在运行的任务。**任务计划与进度均已保留**，直接发一句「继续」即可接着做（不必重发原要求）。'
+            : '⚠️ 应用重启，正在运行的任务已中断。需要继续的话把要求再发一次即可（已完成的工作产物仍在）。';
+          insertMessage(r.conversation_id, uid, 'assistant', note);
         } catch { /* 补提示失败不影响回收 */ }
         n++;
       } catch {}
@@ -1610,6 +1684,16 @@ export function markOrphanTasksInterrupted(): number {
   } catch { /* llm_task 表不存在则跳过 */ }
   // 内存中的任务本次启动不会有孤儿（新进程），清空即可
   return n;
+}
+
+/** ★ 该任务是否处于「可继续」状态（开发热重载暂停；计划/进度/产物都在）。
+ *  供前端与后续「一键继续」入口判断：resumable 与 interrupted 的 UX 不同 —— 前者应给"继续"，
+ *  后者才需要"重发」。 */
+export function isResumableTask(taskId: string): boolean {
+  try {
+    const row = db.prepare('SELECT status FROM llm_task WHERE id = ?').get(taskId) as { status?: string } | undefined;
+    return row?.status === 'resumable';
+  } catch { return false; }
 }
 
 /** 从 DB 查 llm_task 行（任务不在内存时，前端仍能查到"已中断"而不是 404） */
@@ -2109,6 +2193,14 @@ async function runReActLoop(task: LlmTask, params: {
             if (chunk.terminated !== undefined) streamFlag.terminated = chunk.terminated;
             if (chunk.usage) {
               usageTokens = (chunk.usage.promptTokens || 0) + (chunk.usage.completionTokens || 0);
+              // ★ D1 可观测（2026-10-09）：缓存命中的 token 数落日志 —— 先能看见才谈优化。
+              //   判据：**同会话连续两轮，第二轮 cachedTokens 应 > 0**；恒为 0 说明前缀不稳定
+              //   （最常见原因就是 system prompt 里的动态内容，如已被移除的尾部时间戳）。
+              if (chunk.usage.cachedTokens) {
+                task.cachedTokensTotal = (task.cachedTokensTotal || 0) + chunk.usage.cachedTokens;
+              }
+              task.lastPromptTokens = chunk.usage.promptTokens || 0;
+              task.lastCachedTokens = chunk.usage.cachedTokens || 0;
             }
             if (chunk.delta?.content) {
               fullContent += chunk.delta.content;
@@ -2535,12 +2627,15 @@ async function runReActLoop(task: LlmTask, params: {
       //
       // 注意：这一步只有在**真的跑到预算上限**时才执行；正常完成（无工具调用）在循环内
       // 已 return，不会到这里。
+      // ★ P1-9 修正（2026-10-09）：**预算口径优先于步数口径**。
+      //   原实现在预算触达时仍是 `budgetReached = stepBudget`（=最大循环数）走 else 分支，
+      //   于是落库文案永远是「已达到最大循环数（200）」—— 把真因（墙钟 15 分钟）掩盖成"步数不够"，
+      //   用户照着去加步数（错方向）。这里让预算触达时**先说预算**，步数信息并列为补充。
       const budgetReached = stepBudget;
-      // ★ P1-9：触达的是哪个预算（token/墙钟）就按哪个口径写文案，别都写成"最大循环数"
       let tipText = taskBudgetHit?.kind === 'tokens'
         ? `已达到任务 token 总预算（累计 ${taskBudgetHit.used} / 上限 ${taskBudgetHit.limit}），请检查任务是否需要拆分，或在智能体 config_json 调高 totalTokenBudget。`
         : taskBudgetHit?.kind === 'wallclock'
-        ? `已达到任务墙钟时间上限（${Math.round(taskBudgetHit.limit / 60000)} 分钟），请检查任务是否需要拆分，或在智能体 config_json 调高 wallClockMinutes。`
+        ? `已达到任务墙钟时间上限（${Math.round(taskBudgetHit.limit / 60000)} 分钟，已扣除等外部进程的时间），请检查任务是否需要拆分，或在智能体 config_json 调高 wallClockMinutes。`
         : `已达到最大循环数（${budgetReached}），请检查任务是否需要拆分或调高工具配置。`;
       let summaryText = '';
       try {
@@ -2561,7 +2656,14 @@ async function runReActLoop(task: LlmTask, params: {
         });
         summaryText = judged.summary;
         if (summaryText) {
-          tipText = `${summaryText}\n\n（注：本次任务已达到单批最大循环步数（${budgetReached}）。）`;
+          // ★ 2026-10-09 修：原实现**无条件**把 tipText 覆盖成"单批最大循环步数"，
+          //   把预算真因（墙钟/token）冲掉 → 库里只剩「注：本次任务已达到单批最大循环步数（200）」，
+          //   用户拿到的是"步数不够"的错方向。改为按实际触达的闸门措辞。
+          tipText = `${summaryText}\n\n（注：${taskBudgetHit
+            ? (taskBudgetHit.kind === 'tokens'
+              ? `本次任务已达到 token 总预算（${taskBudgetHit.used}/${taskBudgetHit.limit}）`
+              : `本次任务已达到墙钟时间上限（${Math.round(taskBudgetHit.limit / 60000)} 分钟，已扣除等外部进程的时间）`)
+            : `本次任务已达到单批最大循环步数（${budgetReached}）`}。）`;
         }
 
         // ── 决策：该不该自动接力 ──
@@ -2578,13 +2680,51 @@ async function runReActLoop(task: LlmTask, params: {
         //   偶发空参不再阻断（那正是最需要接力纠偏的场景）。
         const expectedContinue = judged.shouldContinue;
         const degenerate = consecutiveArgFailures >= EMPTY_ARGS_DEGENERATE_THRESHOLD;
-        // ★ P1-9：token/墙钟预算已耗尽 → 即使模型说该继续也不接力（接力只会立刻再触达、
-        //   白烧一次总结调用；与 degenerate 同性质的"结构性拒绝"）。
+        // ★★★ P1-9 修正（2026-10-09，high）：预算触达**不再无条件否决接力**。
+        //
+        //   原实现 `!budgetExhausted` 横在接力分支前 → 触达墙钟/token 后**一次都不接力**，
+        //   即使计划里还剩 7 步也照样「未自动续跑：任务墙钟时间已耗尽」。实测（会话 84412558）：
+        //   17.2 分钟触达 15 分钟墙钟 → 自动接力 0 次 → 用户体感"不能一趟跑出来"。
+        //   这与 2026-09-29 修掉的「reason 说该继续、结论却不续」是**同类毛病换了个闸门复发**。
+        //
+        //   ★ 新语义：预算是"该结账了"的信号，不是"该放弃"的信号 —— 只要
+        //     (a) 机械信号说还有活（计划有剩余步骤 / 模型自评未完成）且
+        //     (b) 不是真失控（未中止、未空转退化）
+        //   就**允许有限接力**；失控兜底由 autoContinueHardCap(30) + 停滞判定负责。
+        //
+        //   ★ 但必须防"预算已尽 → 接力立刻再触达 → 无限空转"：
+        //     · token 预算：接力前把**累计值对齐到预算**（否则下一批第一步就再次触发），
+        //       相当于"本任务已用满配额，这批是最后一次"；
+        //     · 墙钟：把**起点前移**为下批开始时刻，即"每批给一份完整墙钟预算"。
         const budgetExhausted = !!taskBudgetHit;
-        if (expectedContinue && !aborted && !degenerate && !budgetExhausted) {
+        if (expectedContinue && !aborted && !degenerate) {
           continuationCount++;
+          // ★★★ 总时长失控闸（2026-10-09）：弹性墙钟（每批一份）之后，批次数不足以兜底 ——
+          //   计划已被清空的会话里停滞闸会失效（noPlanTracked 恒真），只剩 30 批 × 15 分钟 = 最坏 7.5h。
+          //   这里按**任务总墙钟**（含等待，不做抵扣 —— 抵扣是给预算用的"干活时长"口径，
+          //   这里要的是"这台机器被占多久"）硬停。
+          const totalElapsedMs = Date.now() - (task.createdAt || Date.now());
+          if (totalElapsedMs >= TASK_TOTAL_WALL_CLOCK_HARD_CAP_MS) {
+            tipText = `${tipText}\n\n（接力已停止：任务总时长已达 ${Math.round(TASK_TOTAL_WALL_CLOCK_HARD_CAP_MS / 3600000)} 小时上限，为避免占用资源已终止。建议把任务拆成多次执行。）`;
+            const capId = insertMessage(convId, userId, 'assistant', tipText);
+            emit(task, { type: 'message:added', message: { id: capId, role: 'assistant', content: tipText } });
+            emit(task, { type: 'task:completed' });
+            task.status = 'completed';
+            void recordTaskProgress(task, 'max_steps', tipText, { steps: budgetReached });
+            void consolidateOnTaskEnd(task, summaryText || tipText);
+            void extractMemoryFromConversation(task);
+            return;
+          }
           // 停滞判定（见 autoContinueHardCap 说明）：autoContinueMaxRounds 是"连续无进展"上限
           const planRemainingNow = readPlanRemainingSteps(convId);
+          // ★ 无计划时的语义（2026-10-09 复核后**保持不变**，理由如下）：
+          //   原判据 `(noPlanTracked && expectedContinue)` 让"没计划"的会话算作有进展（停滞闸不生效）。
+          //   曾考虑改成"无计划 + 本批无产出 ⇒ 计入停滞"，但那需要引入新的数据源
+          //   （conversation_file 增量）与"本批区间"的新语义 —— 为一个次要改进引入两个新概念不划算，
+          //   且难以验证。当前兜底是**三层**：autoContinueHardCap(30 批) + TASK_TOTAL_WALL_CLOCK_HARD_CAP_MS
+          //   (4h) + cleanupTasks 的 2h 运行看门狗 ⇒ 不会失控。
+          //   ★ 真正的解药在别处：**修好计划落盘**（clearPlan 自毁）后，"无计划"不再长期存在，
+          //     停滞闸对本就最需要它的长任务恢复生效。
           const noPlanTracked = lastPlanRemaining === 0 && planRemainingNow === 0;
           const progressed = planRemainingNow < lastPlanRemaining || (noPlanTracked && expectedContinue);
           if (progressed) stallCount = 0; else stallCount++;
@@ -2610,10 +2750,24 @@ async function runReActLoop(task: LlmTask, params: {
           });
           // 通知前端：不是结束，而是接着做（前端据此保持"运行中"态、不清输入锁）
           const contMsg = `已达单批步数上限（${budgetReached} 步），**自动接力第 ${continuationCount} 批**继续推进（停滞计数 ${stallCount}/${autoContinueMaxRounds}）。` +
+            (budgetExhausted ? `（本批为预算触达后的有限接力：${taskBudgetHit!.kind === 'tokens' ? 'token 已达上限' : '墙钟已达上限'}，接力只做最后一批）` : '') +
             (judged.reason ? `（依据：${judged.reason}）` : '');
           const contId = insertMessage(convId, userId, 'assistant', contMsg);
           emit(task, { type: 'message:added', message: { id: contId, role: 'assistant', content: contMsg } });
           emit(task, { type: 'continuation', round: continuationCount, maxRounds: autoContinueHardCap, reason: judged.reason });
+          // ★★★ 预算基线重置（2026-10-09）：预算触达后仍接力一次，必须让下一批有可用额度，
+          //   否则下一批第一步立刻再次触达 → 无限"接力-触达"空转。
+          //   · token：对齐到上限（这批是本任务最后一次）。
+          //   · 墙钟：起点前移为**此刻**（每批给一份完整墙钟预算）—— 对长任务这是关键：
+          //     出片这类任务单批就要 15 分钟以上，只有"每批一份预算"才能一趟跑完。
+          if (budgetExhausted) {
+            if (taskBudgetHit!.kind === 'tokens') {
+              task.totalTokens = taskBudgetHit!.limit;
+            } else {
+              task.budgetBaselineAt = Date.now();
+              task.waitCreditMs = 0;
+            }
+          }
           // ★ P1-8（2026-10-07）：接力前检查计划是否已与现实脱节 —— 现实变了计划不跟着变，
           //   下一批就会按过期计划做错事（planner-executor 共识：plan 会 stale，必须有 re-planning）。
           //   失败绝不阻塞接力（replan 是增强能力）。
@@ -2733,7 +2887,7 @@ async function runReActLoop(task: LlmTask, params: {
  * （预算策略与常量同源，避免"判定逻辑复刻"）。此处只做 task 对象的取参适配。
  */
 function checkTaskBudgetHit(task: LlmTask): { kind: 'tokens' | 'wallclock'; used: number; limit: number } | null {
-  return sharedCheckTaskBudgetHit(task.budgets, task.totalTokens || 0, task.createdAt || Date.now());
+  return sharedCheckTaskBudgetHit(task.budgets, task.totalTokens || 0, task.budgetBaselineAt || task.createdAt || Date.now(), Date.now(), task.waitCreditMs || 0);
 }
 
 /**
@@ -3554,7 +3708,15 @@ async function executeTool(
       ? resolveToolPath(String(args?.path || ''), task.workspaceDir)
       : '';
     const before = snapPath ? await readFileOrNull(snapPath) : null;
+    // ★★★ 等待抵扣（2026-10-09，见 shared/context-policy 的 TASK_WAIT_CREDIT_CAP_MS）：
+    //   工具执行耗时里的大头是**等外部子进程**（如 python_exec 跑 novel_tuiwen 出片 5~8 分钟）。
+    //   把它计入墙钟 = 惩罚"用外部工具干活"，长任务必然每批超时。此处累计抵扣，预算判定时扣除。
+    //   ★ 放在**唯一工具出口**（registry.execute 两侧），覆盖原生/API/MCP/自定义全部工具，零遗漏。
+    const execStartedAt = Date.now();
     const r = await registry.execute(toolName, args, toolCtx);
+    try {
+      task.waitCreditMs = addWaitCredit(task.waitCreditMs || 0, Date.now() - execStartedAt);
+    } catch { /* 记账失败不影响工具结果 */ }
     let text = typeof r === 'string' ? r : (r.content?.map((c: any) => c.text || '').join('') || JSON.stringify(r));
     const meta = (r as any)?._meta as { path?: string; beforeContent?: string | null } | undefined;
     // 把 _meta 交给调用方（供登记 conversation_file / 写 Diff 快照）
@@ -3630,7 +3792,14 @@ async function archiveDelegatedScreenshot(
   metaOut?: { value?: Record<string, unknown> | null },
 ): Promise<string> {
   try {
-    const src = result.match(/已存档: (.+)/)?.[1]?.trim();
+    // ★★★ 2026-10-09 修（C6）：原正则 `/已存档: (.+)/` 是**贪婪**的，而前端回传的文本是
+    //   `截图已捕获（已存档: <path>）`，结尾是**全角右括号** → `）` 被一起吞进路径
+    //   → `fsp.stat(src)` 报 ENOENT → 被下面的 catch 静默吞掉 → **截图能存临时区，但登记不进
+    //   conversation_file**（文件管理里看不到）。而失败是静默的，只表现为"截图没了"。
+    //   ★ 记忆曾误记"已复用 SCREENSHOT_NAME_RE 修过"—— 实测 `SCREENSHOT_NAME_RE` 只存在于
+    //     `plugins/computer-use.ts`，本函数从未使用它（记忆是线索不是结论，已回源码核实）。
+    //   改为**排除全角/半角右括号与换行**，从根上不受收尾标点影响。
+    const src = result.match(/已存档:\s*([^\n）)]+)/)?.[1]?.trim();
     if (!src || !task.conversationId) return result;
     const fsp = await import('node:fs/promises');
     const nodePath = await import('node:path');
@@ -5608,8 +5777,26 @@ export function buildSystemPromptForBackend(agentId: string | null, userId: stri
     );
   }
 
-  // 当前时间
-  parts.push(`---\n当前时间：${new Date().toLocaleString('zh-CN')}`);
+  // ★★★ 2026-10-09 删（D1，成本修复，重要）：
+  //   此前这里 `parts.push('---\n当前时间：' + new Date().toLocaleString('zh-CN'))`。
+  //   它拼接在 system prompt 的**最尾部**，且**每次构建必变**（精确到秒的本地时间字符串）。
+  //
+  //   ★ 为什么这是成本杀手：Anthropic 前缀缓存（client.ts:120-130 的 cache_control 断点）
+  //     要求被缓存的前缀**逐字节稳定**；OpenAI 的自动缓存同理。而 system prompt 是在
+  //     `buildSystemPromptForBackend` 里每次**新任务**重建的（任务内复用，跨任务不复用）
+  //     → 时间戳一变，**跨任务的前缀缓存 100% 失效**。
+  //     长任务（200 步循环）里每步都要重发 system + 历史，缓存失效意味着**首段全价计费**，
+  //     这是数量级的成本差距（Anthropic 缓存命中价约为原价的 1/10）。
+  //
+  //   ★ 为什么可以安全删除：模型**不需要**知道精确到秒的当前时间——
+  //     · 需要日期的场景（"今天几号"）由用户提问时自带，或走工具查询；
+  //     · system prompt 里没有任何逻辑依赖这个时间戳（全仓 grep 仅此一处拼接）。
+  //
+  //   ⇒ 结论：删掉它，让 system prompt 的**尾部稳定**。这是"稳定前缀/变动尾部"原则的
+  //     最小落地（进一步把记忆/计划等变动段彻底后置是后续优化，见方案文档 D1）。
+  //
+  //   ★ 副作用补救：若确实需要时间感知，应放在**首条 user 消息**（不参与前缀缓存），
+  //     而不是 system prompt 尾部。当前没有这种需求，故不引入。
 
   return parts.join('\n\n');
 }
