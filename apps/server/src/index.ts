@@ -21,6 +21,7 @@ import { buildArtifactRelDir, buildArtifactRelDirCandidates } from '@yan-zhi/sha
 import platformRoutes, { migrateLegacyLocalPlatformRows } from './routes/platforms.js';
 import { seedBuiltinWorkflowAgents, ensureBuiltinWorkflowModel, cleanupLegacyDiagAgents } from './builtin-workflow-agents.js';
 import { markOrphanWorkflowRunsInterrupted } from './workflow-runner.js';
+import { markOrphanPlanItemsInterrupted } from './services/plan-runner.js';
 import { syncWorkflowTools } from './services/workflow-tool-registry.js';
 import { markOrphanTasksInterrupted, resumeWorkflowDeliveries } from './llm-task-manager.js';
 import agentRoutes from './routes/agents.js';
@@ -55,6 +56,9 @@ import datasourceRoutes from './routes/datasources.js';
 import sqlConsoleRoutes from './routes/sql-console.js';
 import localConsoleRoutes from './routes/local-console.js';
 import envRoutes from './routes/env.js';
+// 系统信息（当前数据目录等）——「关于」页展示「跑在哪套数据上」
+// ★ 不受 MOBILE_MODE 限制：移动端同样需要知道数据落在哪
+import systemRoutes from './routes/system.js';
 import debugRoutes from './routes/debug.js';
 import queryContractRoutes from './routes/query-contract.js';
 import ontologyRoutes from './routes/ontologies.js';
@@ -173,6 +177,9 @@ app.use('/api/mcp', mcpBridgeRoutes);
 app.use('/api/workspace', workspaceRoutes);
 app.use('/api/memory', memoryRoutes);
 app.use('/api/scheduled-tasks', scheduledTaskRoutes);
+// 系统信息：当前数据目录 / 实例类型（dev 还是安装版）
+// ★ 双库 issue 的真痛点就是「不可见」——本路由把这个答案交给前端
+app.use('/api/system', systemRoutes);
 // 用户工具钩子（P2-7 P2a）：设置页声明 deny/confirm 规则，executeTool 前置执行
 app.use('/api/user-hooks', userHookRoutes);
 app.use('/api/ollama-market', ollamaMarketRoutes);
@@ -414,7 +421,8 @@ app.listen(PORT_NUM, HOST, () => {
 try {
   const orphanTasks = markOrphanTasksInterrupted();
   const orphanRuns = markOrphanWorkflowRunsInterrupted();
-  if (orphanTasks || orphanRuns) logger.info(`[cleanup] 已回收遗留任务 ${orphanTasks} 条、遗留工作流运行 ${orphanRuns} 条`);
+  const orphanPlans = markOrphanPlanItemsInterrupted();
+  if (orphanTasks || orphanRuns || orphanPlans) logger.info(`[cleanup] 已回收遗留任务 ${orphanTasks} 条、遗留工作流运行 ${orphanRuns} 条、遗留计划项 ${orphanPlans} 条`);
   resumeWorkflowDeliveries();
 } catch (e) { logger.warn('[cleanup] 遗留运行回收/补投失败:', e); }
 
