@@ -46,8 +46,59 @@
             <el-icon class="tree-add-icon" @click.stop="startNewChat(null)"><Plus /></el-icon>
           </div>
           <div v-show="!rootCollapsed" class="tree-children">
+            <!-- ── 置顶分组（2026-10-09）──────────────────────────────
+                 ★ 为什么加：此前置顶只靠 `pinned DESC` 排到最前，混在普通会话里**没有视觉分区**，
+                   用户感知不到"这些是置顶的"（issues/会话置顶入口隐蔽 的缺失项 1；
+                   入口 hover 星标 + 右键菜单其实都已具备，缺的就是这个"看得出被置顶"的分组）。
+                 ★ 无置顶项时**整组不渲染**（不占位、不打扰）—— 契合"极简、不加多余元素"的一贯要求。
+                 ★ 行渲染与下方主列表**刻意保持同款**（项目既有做法：注释里多处写"与根列表同款"）。
+                   两处若需同步改动，注意别只改一处（issue 备注已提示过同类风险）。 -->
+            <div v-if="pinnedRootConversations.length > 0" class="tree-node tree-pinned">
+              <div class="tree-node-head" @click="togglePinnedCollapse">
+                <el-icon class="tree-caret" :class="{ expanded: !pinnedCollapsed }"><CaretRight /></el-icon>
+                <el-icon class="tree-node-icon"><Star /></el-icon>
+                <span class="tree-node-label">置顶</span>
+                <span class="tree-count">{{ pinnedRootConversations.length }}</span>
+              </div>
+              <div v-show="!pinnedCollapsed" class="tree-children">
+                <div
+                  v-for="conv in pinnedRootConversations"
+                  :key="conv.id"
+                  class="conv-item pinned"
+                  :class="{ active: conv.id === store.currentConvId, selecting: batchMode }"
+                  @click="batchMode ? toggleConvSelect(conv.id) : rows.activate(conv)"
+                  @contextmenu.prevent="openConvMenu($event, conv)"
+                  v-on="bindLongPress((ev) => openConvMenu(ev, conv))"
+                  @dblclick="!batchMode && rows.startRename(conv)"
+                >
+                  <el-checkbox v-if="batchMode" :model-value="selectedConvIds.has(conv.id)" @click.stop @change="toggleConvSelect(conv.id)" />
+                  <el-icon class="pin-icon"><Star /></el-icon>
+                  <span v-if="renamingId !== conv.id" class="conv-title">{{ conv.title }}</span>
+                  <el-input
+                    v-else
+                    v-model="renamingTitle"
+                    size="small"
+                    @click.stop
+                    @blur="rows.commitRename"
+                    @keydown.enter.prevent="rows.commitRename"
+                    @keydown.esc.prevent="rows.cancelRename"
+                    ref="renameInputRef"
+                  />
+                  <span v-if="store.isConvStreaming(conv.id)" class="conv-run-badge" title="运行中"></span>
+                  <el-tooltip v-if="conv.scheduledTaskId" content="定时任务发起" placement="top">
+                    <el-icon class="scheduled-badge"><Timer /></el-icon>
+                  </el-tooltip>
+                  <span v-if="!batchMode && renamingId !== conv.id" class="task-row-actions" @click.stop @dblclick.stop>
+                    <span class="task-row-act is-on" role="button" title="取消置顶" @click="rows.togglePinned(conv)"><el-icon :size="12"><Top /></el-icon></span>
+                    <span class="task-row-act" role="button" title="重命名" @click="rows.startRename(conv)"><el-icon :size="12"><EditPen /></el-icon></span>
+                    <span class="task-row-act" role="button" title="移动到空间" @click="rows.openMoveMenu(conv, $event)"><el-icon :size="12"><FolderOpened /></el-icon></span>
+                    <span class="task-row-act is-danger" role="button" title="删除" @click="rows.remove(conv)"><el-icon :size="12"><Delete /></el-icon></span>
+                  </span>
+                </div>
+              </div>
+            </div>
             <div
-              v-for="conv in rootConversations"
+              v-for="conv in unpinnedRootConversations"
               :key="conv.id"
               class="conv-item"
               :class="{ active: conv.id === store.currentConvId, pinned: conv.pinned, selecting: batchMode }"
@@ -404,6 +455,8 @@ const {
   openConvMenu, selectedConvIds, renamingId, renamingTitle, renameInputRef,
   filteredConversations, startNewChat, batchSelectAll, batchDeleteConvs,
   rootConversations, conversationsBySpace, spaceCollapsed, toggleSpaceCollapse, rootCollapsed, toggleRootCollapse,
+  // 置顶分组（2026-10-09）
+  pinnedRootConversations, unpinnedRootConversations, pinnedCollapsed, togglePinnedCollapse,
   spaceStore, openSpaceMenu, openSpaceEdit, showSpaceEdit, spaceEditForm,
   saveSpaceEdit, deleteSpaceConfirm, spaceMenuTarget, closeSpaceMenu, ctxMenu,
   openConvDir, openPathInSystem,

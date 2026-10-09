@@ -513,13 +513,22 @@ describe('⑥ 工具权限安全默认：新任务必须默认只读（2026-09-2
   });
 
   it('★ 后端所有兜底路径都必须落在 readonly（查不到会话/异常时不许放行）', () => {
-    // llm-task-manager：查库异常兜底 + 4 处 `|| 'default'` 兜底
+    // llm-task-manager：查库异常兜底 + 若干处 `|| 'default'` 兜底
     expect(LTM, '★ 任务创建时权限兜底不是 readonly').toMatch(/let permissionMode: PermissionMode = 'readonly'/);
     expect(LTM, '★ 仍存在 `|| \'default\'` 的权限兜底（查不到时放行）')
       .not.toMatch(/task\.permissionMode\s*\|\|\s*'default'/);
-    // ★ 2026-10-03：新增 2 处兜底点（spawn_sub_agent 工具面裁剪 + 子智能体工具全集裁剪，
-    //   均由本守门测试的“不得 || 'default'”反向断言逼出），总数 4 → 6。
-    expect((LTM.match(/task\.permissionMode\s*\|\|\s*'readonly'/g) || []).length, '★ 兜底点数量不对（应 6 处）').toBe(6);
+
+    // ★★★ 2026-10-09 改为「判据驱动」而非「数量驱动」：
+    //   原断言硬编码总数（6），任何人新增**一处合法的** readonly 兜底都会误报红
+    //   —— 实测已发生：多智能体协同新增 2 处 fail-safe 兜底（spawn_sub_agent 工具裁剪 /
+    //   子智能体工具全集裁剪），两处都正确落 readonly，却让「应 6 处」失败。
+    //   ★ 判据：这个测试真正要守的是「**不存在 default 放行兜底**」（上面那条反向断言），
+    //     数量只是它的副产物 —— 钉数量等于把"合法加固"当回归拦下来。
+    //   新判据：所有 `permissionMode || 'xxx'` 兜底的值只能是 readonly。
+    const fallbacks = [...LTM.matchAll(/task\.permissionMode\s*\|\|\s*'([^']*)'/g)].map((m) => m[1]);
+    expect(fallbacks.length, '★ 一处 readonly 兜底都没有（兜底逻辑被删了？）').toBeGreaterThan(0);
+    const bad = fallbacks.filter((v) => v !== 'readonly');
+    expect(bad, `★ 存在非 readonly 的权限兜底：${bad.join(', ')}（查不到时就放行）`).toEqual([]);
   });
 
   it('★ 建库默认值必须是 readonly（新装用户从第一刻起就安全）', () => {

@@ -1124,6 +1124,23 @@ function createChat() {
   });
   /** 对话根节点：未归入任何空间的会话 */
   const rootConversations = computed(() => filteredConversations.value.filter((c) => !c.spaceId));
+  /**
+   * 置顶分组（2026-10-09）。
+   *
+   * ★ 为什么单列一组（issues/会话置顶入口隐蔽-20260919 的「缺失项 1」）：
+   *   此前置顶只靠 `pinned DESC` 排到最前，**混在普通会话里没有任何视觉分区** →
+   *   用户感知不到"这些是置顶的"（实测反馈：「会话列表没有星标功能」）。
+   *   入口（hover 星标 + 右键菜单）其实都在，缺的就是这个"看得出被置顶"的分组。
+   * ★ 只收**根级**置顶（未归空间的）：空间内的置顶已在该空间分组内排序靠前，
+   *   再抽出来会让同一个会话出现在两处 —— 分组的意义是分区，不是重复展示。
+   * ★ 搜索时同样生效（filteredConversations 已含搜索过滤），语义一致。
+   */
+  const pinnedRootConversations = computed(() => rootConversations.value.filter((c) => !!c.pinned));
+  /** 未置顶的根级会话（置顶组之下的主列表；置顶组为空时它等于 rootConversations） */
+  const unpinnedRootConversations = computed(() => rootConversations.value.filter((c) => !c.pinned));
+  /** 置顶组是否展开（会话级 UI 状态，与 spaceCollapsed 同形态） */
+  const pinnedCollapsed = ref(false);
+  const togglePinnedCollapse = () => { pinnedCollapsed.value = !pinnedCollapsed.value; };
   /** 按空间分组的会话：spaceId -> 会话列表 */
   const conversationsBySpace = computed(() => {
     const map: Record<string, typeof filteredConversations.value> = {};
@@ -3480,6 +3497,8 @@ async function healStalePlatform() {
     selectedModelId, expandedReasoning, expandedTools, expandedToolGroups, collapsedToolGroups, collapsedMessages, expandedAgentProcess, expandedStepTools, activeNavRound,
     userRoundIndices, mountedSkillIds, drawerOpen, convCollapsed, sideTab, contextSidebarOpen, toggleContextSidebar, batchMode, selectedConvIds,
     rootConversations, conversationsBySpace, spaceCollapsed, toggleSpaceCollapse, rootCollapsed, toggleRootCollapse,
+    // 置顶分组（2026-10-09）：让"被置顶"在长列表里看得出来（issue 缺失项 1）
+    pinnedRootConversations, unpinnedRootConversations, pinnedCollapsed, togglePinnedCollapse,
     mountToolSelection, toolAliasMap, mountSearch, collapsedServers, toggleServerCollapse, filteredTools, initMountSelection, isToolMounted, toggleMountTool, isAllToolsMounted, toggleAllTools, setToolAlias,
     showAgentEdit, editingAgent, debugMode,
     showWorkspaceDir, workspaceDir, hasWorkspaceDir, loadWorkspaceDir, onWorkspaceDirSelected, clearWorkspaceDir,
