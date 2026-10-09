@@ -482,16 +482,23 @@ const browserExpanded = computed({
 //     `browserSteps` 退回它本来的职责 —— 只管"步骤清单/进度条"的展示。
 //   ★ 保留 `browserLockInput` 作为**附加**放行条件（不是必要条件）：它现在还承担
 //     "用户手动点了暂停"之外的额外抑制语义，去掉会让旧行为回退。
-const taskRunningNow = computed(() => !!chatStore.streaming || chatStore.runningConvIds.size > 0);
+// ★ 2026-10-09 接管实况改用「本会话」运行态（chatStore.streaming = runningConvIds.has(currentConvId)）：
+//   旧判据 taskRunningNow 是全局的（任一会话在跑都为真），A 会话的接管条能借 B 会话的运行态苟活；
+//   且此前 liveControlVisible 完全不带运行态判据 → SSE 终态事件丢失时（断流放弃/服务重启
+//   interrupted）browserTaskActive 永远不清，出现「任务都结束了，接管条还挂着啥也不干」。
+//   现在任务收尾 runningConvIds 删除 → 实况条/虚拟鼠标随任务结束立即消失；
+//   断流期间订阅仍在重试（streaming 仍为真），接管条照常保留，行为不回退。
+const convTaskRunning = computed(() => isPreviewScope && chatStore.streaming);
 const inputLocked = computed(() =>
   isPreviewScope && !chatStore.browserPaused
-  && taskRunningNow.value
+  && convTaskRunning.value
   && chatStore.browserTaskActive,
 );
 // 实况条 / 虚拟鼠标：与锁定同源（断流后仍显示"接管中"，而不是整条消失）。
 // ★ 有 browserSteps 时照常展示步骤进度；没有（断流/重放中）也保留"执行中"形态。
 const liveControlVisible = computed(() =>
-  isPreviewScope && (chatStore.browserTaskActive || chatStore.browserSteps.length > 0),
+  isPreviewScope && convTaskRunning.value
+  && (chatStore.browserTaskActive || chatStore.browserSteps.length > 0),
 );
 // Agent 接管形态的步骤进度/清单：取当前会话已登记的 task_plan（无计划 → 只显示「执行中」，不硬造步骤）
 const planStepsNow = computed(() => (isPreviewScope ? chatStore.planSteps : []));
@@ -511,7 +518,8 @@ const currentStepNo = computed(() => {
 // ★ 判据与 liveControlVisible 同源（browserTaskActive）—— 断流后 steps 为空时，
 //   后续工具动作仍会通过主进程广播坐标，若这里依赖 steps 就会"看不见光标"。
 const agentCursorVisible = computed(() =>
-  isPreviewScope && (chatStore.browserTaskActive || chatStore.browserSteps.length > 0),
+  isPreviewScope && convTaskRunning.value
+  && (chatStore.browserTaskActive || chatStore.browserSteps.length > 0),
 );
 const cursorPos = computed(() => {
   const c = chatStore.agentCursor;

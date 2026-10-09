@@ -4,6 +4,7 @@ import { ref, computed } from 'vue';
 import type { Agent, Workflow, WorkflowNode, WorkflowEdge, NodeType } from '@yan-zhi/shared';
 import { uid } from '@yan-zhi/shared';
 import { api } from '../api/client';
+import { getWithRetry } from './platform';
 import { useAuthStore } from './auth';
 import { isChatSelectableAgent } from '../utils/agentSelectable';
 
@@ -367,11 +368,16 @@ export const useAgentStore = defineStore('agent', () => {
 
   async function loadAgents() {
     // 单库收敛：数据面走后端（data.db 唯一权威）。seed/迁移已收归后端 db.ts，前端仅拉取。
+    // ★ 2026-10-09 改走 getWithRetry：更新安装后首启，后端端口已监听但 seed 未完，
+    //   单发请求拿到空列表且**永久为空**（进智能体管理页才被二次加载救回）。
     if (loadInflight) return loadInflight;
     loadInflight = (async () => {
       try {
-        const r = await api.get<any[]>('/agents');
-        const rows: any[] = Array.isArray(r) ? r : ((r as any)?.data || []);
+        const r = await getWithRetry<any[]>('/agents');
+        // ★ 失败（网络层/5xx）时**保留现有列表**，不清空 —— 瞬态失败把列表洗成 []
+        //   就是「记录忽有忽无」的直接来源。
+        if ('error' in r || !('data' in r)) return;
+        const rows: any[] = Array.isArray(r.data) ? r.data : ((r as any)?.data || []);
         agents.value = rows.map(rowToAgent);
         // 优先沿用上次选中的智能体（含 localStorage 持久化值），否则回退到默认/第一个
         const persisted = readPersistedSelectedId();

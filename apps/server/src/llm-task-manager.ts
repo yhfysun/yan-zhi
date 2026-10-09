@@ -16,6 +16,11 @@ import {
   writeMemoryItems, flushMemoriesBeforeCompression, parseExtractedItems, type MemoryWriteItem,
 } from './services/memory-service.js';
 import { loadSpaceMemoryForConversation, formatSpaceMemoryContext, appendTaskDecision, loadTaskMemoryForConversation, formatTaskMemoryContext, appendTaskProgress } from './services/space-memory.js';
+import {
+  resolveExperienceBase, resolveSkillDraftsDir, appendExperienceEntry, buildExperienceContextForConversation,
+  listExperienceSummaries, type ExperienceKind,
+} from './services/experience.js';
+import { proposeSkillDraft, skillDraftNotifyText } from './services/skill-distill.js';
 import { backendTaskPlan, backendTaskStep, loadTaskPlanFromFile, savePlanJson } from './services/task-plan-file.js';
 import { summarizeResourceDirsSync } from './services/space-resources.js';
 // 提示词快照：构建（只存 id 引用）与按需回填的唯一定义处 —— 修单会话 O(n²) 的快照膨胀
@@ -1725,6 +1730,14 @@ async function runReActLoop(task: LlmTask, params: {
         }
       }
     } catch { /* 任务类型注入失败不影响任务 */ }
+    // 领域经验注入（自进化经验层）：按任务文本匹配 .yan-zhi/experience/ 档案（索引 + 命中正文）。
+    // 历史任务的坑/验证过的步骤在此进入上下文 —— 同主题任务不再从零摸索。失败不阻塞。
+    try {
+      const expCtx = buildExperienceContextForConversation(convId, params.userContent, params.workspaceDir);
+      if (expCtx) {
+        systemPromptBuilt += '\n\n' + expCtx;
+      }
+    } catch { /* 经验注入失败不影响任务 */ }
     // 浏览器记忆不做自动注入：按需召回模式，智能体需要时调用 api_browser_memory_read 工具拉取
     if (modePrompt.length) {
       systemPromptBuilt += '\n\n## 模式指令（用户在输入框开启，优先级高于默认行为）\n' + modePrompt.join('\n');
@@ -4638,6 +4651,8 @@ async function recordTaskProgress(
     const note = extra?.continuation ? `${summary}（${extra.continuation}）` : summary;
     await appendTaskProgress(task.conversationId, outcome, note, { steps: extra?.steps, agentName });
   } catch { /* 收尾留痕失败不影响任务状态上报 */ }
+  // 经验提炼（自进化经验层）：成功挖步骤/事实，失败挖坑与规避。非阻塞，失败不影响收尾。
+  void distillExperienceFromTask(task, outcome);
 }
 
 /** 记忆抽取：任务完成后从会话中抽取值得长期记住的信息，写入 memory 表。
@@ -4696,6 +4711,114 @@ async function extractMemoryFromConversation(task: LlmTask): Promise<void> {
     }
   } catch (e: any) {
     logger.error('[memory] 抽取失败:', e?.message || e);
+  }
+}
+
+/**
+ * 经验提炼（自进化经验层，2026-10-09）：任务收尾时从会话里提炼「可复用的操作经验」，
+ * 追加进 .yan-zhi/experience/<topic>.md（坑/步骤/事实，服务端去重计数）。
+ *
+ * ★ 与 extractMemoryFromConversation 的分工：那边记「用户是谁/发生了什么」（memory 表），
+ *   这里记「下次同类任务怎么做」（坑的规避、验证过的步骤）——失败/中断的任务**尤其要提炼**，
+ *   卡住的坑恰是最值钱的经验（用户明确要求开发任务、bug 排障也要自进化）。
+ *
+ * 调用点：recordTaskProgress（任务 5 个出口的唯一收口）——所有任务类型通用，不只浏览器。
+ * 非阻塞 + 全程 fail-safe：提炼失败绝不影响任务收尾。
+ */
+async function distillExperienceFromTask(
+  task: LlmTask,
+  outcome: 'completed' | 'max_steps' | 'aborted' | 'failed' | 'empty_args_loop',
+): Promise<void> {
+  try {
+    // 素材门槛：至少 8 条有内容的消息（真实任务过程），一问一答的闲聊不值得提炼
+    const msgs = loadMessages(task.conversationId);
+    const recent = msgs.filter((m) => m.content || m.toolCalls?.length).slice(-24);
+    if (recent.length < 8) return;
+
+    // 避让上游配额（同 extractMemoryFromConversation 口径）：有任务在跑就跳过本轮
+    if (hasActiveUserTasks()) {
+      logger.info('[experience] 提炼跳过：有任务运行中（避让上游配额）');
+      return;
+    }
+    const llm = resolveMemoryExtractLlm(task);
+    if (!llm) return;
+
+    // 已有档案给模型当 topic 参考（让它往既有主题归档，而不是每任务开新文件）
+    const { base } = resolveExperienceBase(task.conversationId);
+    const knownTopics = listExperienceSummaries(base).map((s) => s.topic);
+    const topicHint = knownTopics.length ? `已有档案主题（优先归到这里）：${knownTopics.join('、')}` : '尚无档案';
+
+    const transcript = recent.map((m) => {
+      const role = m.role === 'user' ? '用户' : m.role === 'assistant' ? '助手' : m.role;
+      return `【${role}】\n${m.content || (m.toolCalls?.length ? '(调用工具)' : '')}`;
+    }).join('\n\n---\n\n');
+
+    // 出口形态决定提炼侧重：成功挖可复用步骤，失败/中断挖坑与规避
+    const focus = outcome === 'completed'
+      ? '任务成功完成。重点提炼：验证过的可复用操作步骤（step）、过程中确认的环境/配置/路径事实（fact)。'
+      : '任务未顺利完成（失败/中断/超步数）。重点提炼：踩到的坑与规避方法（pit）——是什么导致卡住、下次怎么绕开。';
+
+    const client = new LlmClient(llm.platform, llm.model);
+    const resp = await client.chat([
+      {
+        id: 'sys', conversationId: '', role: 'system', createdAt: 0,
+        content: '你是任务经验提炼助手。从对话记录中提炼「可复用的操作经验」，输出 JSON 对象 {"items":[{"kind":"pit|step|fact","topic":"主题","title":"一句话标题","detail":"详情"}]}。'
+          + '\nkind 定义：pit=踩过的坑（detail 写规避方法）；step=验证过的做法/步骤序列；fact=环境/配置/路径事实。'
+          + `\ntopic 是档案归档主题（即文件名），小写英文或中文短语：浏览器站点用 sites/<域名>；开发类 dev-<主题>（如 dev-打包、dev-依赖）；部署运维 ops-<主题>；办公流程 workflow-<主题>。${topicHint}。`
+          + `\n${focus}`
+          + '\n要求：只提炼有普适复用价值的（下次同类任务能直接用），最多 3 条，没有值得记的返回 {"items":[]}。标题要具体可区分，禁止空泛（如"注意细节"这种不要）。只输出 JSON。',
+      },
+      { id: 'usr', conversationId: '', role: 'user', content: transcript, createdAt: 0 },
+    ], { temperature: 0.2, maxTokens: 800, responseFormat: { type: 'json_object' } });
+
+    const text = resp.delta?.content || '';
+    let items: any[] = [];
+    try {
+      const parsed = JSON.parse(text);
+      items = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.items) ? parsed.items : [];
+    } catch { /* 解析失败当无条目 */ }
+
+    const valid = items
+      .filter((x) => x && typeof x.title === 'string' && x.title.trim())
+      .filter((x) => ['pit', 'step', 'fact'].includes(x.kind))
+      .slice(0, 3);
+    if (!valid.length) return;
+
+    let written = 0;
+    for (const it of valid) {
+      try {
+        const r = await appendExperienceEntry(base, {
+          kind: it.kind as ExperienceKind,
+          topic: String(it.topic || 'misc'),
+          title: String(it.title),
+          detail: typeof it.detail === 'string' ? it.detail : '',
+          source: `任务收尾（${outcome}）`,
+        });
+        written++;
+        logger.info(`[experience] 提炼写入: ${r.topic}${r.deduped ? '（去重计数+1）' : '（新条目）'}`);
+        // P1 自进化升级链：同一验证过的步骤**恰好第 2 次**成功 → 该流程值得固化，自动生成 skill 草稿
+        // （===2 只触发一次，后续计数增长不再重复提炼；草稿不静默生效，会话内轻提示，用户确认后才启用）
+        if (it.kind === 'step' && r.deduped && r.entryCount === 2) {
+          const draft = await proposeSkillDraft({
+            llm,
+            transcript,
+            triggerTopic: r.topic,
+            triggerTitle: String(it.title),
+            draftsRoot: resolveSkillDraftsDir(task.conversationId),
+          });
+          const notify = skillDraftNotifyText(draft);
+          if (notify) {
+            const msgId = insertMessage(task.conversationId, task.userId, 'assistant', notify);
+            emit(task, { type: 'message:added', message: { id: msgId, role: 'assistant', content: notify } });
+          }
+        }
+      } catch (e: any) {
+        logger.warn('[experience] 单条写入失败:', e?.message || e);
+      }
+    }
+    if (written) logger.info(`[experience] 本轮提炼共写入 ${written} 条`);
+  } catch (e: any) {
+    logger.error('[experience] 提炼失败:', e?.message || e);
   }
 }
 
@@ -5504,6 +5627,9 @@ export function buildToolsForBackend(agentId: string | null, userId: string, opt
     'api_image_generate', 'api_video_generate', 'api_video_status',
     // 短信验证码中继：手机上收到验证码后自动转发到本节点，默认暴露让所有智能体都能直接取用
     'api_verification_code_latest', 'api_verification_code_list',
+    // 领域经验档案（自进化经验层，2026-10-09）：读=查历史坑/步骤/事实；写=当场沉淀经验。
+    // 默认暴露给所有智能体 —— 自进化要求"任何任务都能记经验、都能查经验"，不随挂载变化。
+    'api_experience_read', 'api_experience_write',
   ];
   const mountedApiTools = [...toolIds, ...convMounts.builtinToolIds].filter((n) => isApiExecutableTool(n));
   // 已挂载专属 api_* 工具链的（数据查询智能体等）只暴露它挂载的工具：记忆/知识库这类通用工具

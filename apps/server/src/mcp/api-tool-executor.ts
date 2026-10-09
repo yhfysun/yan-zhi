@@ -30,6 +30,10 @@ import { readSpaceMemory, appendSpaceMemory, readTaskProgressForConversation } f
 import { setSpaceTaskType, resolveSpaceResourceRoot } from '../services/space-resources.js';
 import { TASK_TYPE_IDS, getTaskType } from '@yan-zhi/shared';
 import { readBrowserMemoryOverview } from '../services/browser-memory.js';
+import {
+  resolveExperienceBase, listExperienceSummaries, readExperienceFile,
+  appendExperienceEntry, type ExperienceKind,
+} from '../services/experience.js';
 import { listVerificationCodes } from '../services/verification-codes.js';
 import { ensureArtifactDirFor, resolveArtifactDirFor } from '../services/artifact-dir.js';
 import { applyClipOp, summarizeProject, type ClipProject } from '../services/clip-project.js';
@@ -330,6 +334,7 @@ export const SUPPORTED_API_TOOLS = new Set([
   'api_code_semantic_search', 'api_code_definition',
   'api_memory_search', 'api_memory_list', 'api_memory_create', 'api_memory_delete',
   'api_space_memory_read', 'api_space_memory_append',
+  'api_experience_read', 'api_experience_write',
   'api_browser_memory_read',
   // 短信验证码中继（移动端同网回传）：读取侧，只读
   'api_verification_code_latest', 'api_verification_code_list',
@@ -3282,6 +3287,38 @@ export async function executeApiTool(
         return ok(overview.content || overview.analysis
           ? overview
           : { days, content: '', analysis: null, note: `近 ${days} 天没有浏览器使用记录` });
+      }
+
+      // 领域经验档案（自进化经验层，.yan-zhi/experience/）：读=索引或单档案全文；写=追加/去重计数
+      case 'api_experience_read': {
+        requireUser(userId);
+        const { base } = resolveExperienceBase(conversationId, workspaceDir);
+        const topic = str(args, 'topic');
+        if (topic) {
+          const file = readExperienceFile(base, topic);
+          if (!file) {
+            const summaries = listExperienceSummaries(base);
+            return fail(`经验档案 ${topic} 不存在。已有档案：${summaries.map((s) => s.topic).join('、') || '（暂无）'}`);
+          }
+          return ok(file);
+        }
+        const summaries = listExperienceSummaries(base);
+        return ok(summaries.length
+          ? { base, count: summaries.length, files: summaries }
+          : { base, count: 0, note: '暂无经验档案（第一条经验写入后会自动建档）' });
+      }
+      case 'api_experience_write': {
+        requireUser(userId);
+        const { base } = resolveExperienceBase(conversationId, workspaceDir);
+        const kind = (str(args, 'kind') || 'step') as ExperienceKind;
+        const r = await appendExperienceEntry(base, {
+          kind,
+          topic: str(args, 'topic'),
+          title: str(args, 'title'),
+          detail: str(args, 'detail'),
+          source: str(args, 'source') || (conversationId ? `会话 ${conversationId.slice(0, 8)}` : undefined),
+        });
+        return ok(r);
       }
 
       // 短信验证码中继（移动端同网回传）。只读；无记录时返回 null + 提示，

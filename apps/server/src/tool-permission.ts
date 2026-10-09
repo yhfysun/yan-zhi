@@ -109,6 +109,9 @@ const WRITE_TOOLS = new Set([
   //   实测（2026-09-27）：append 此前既没进写清单、也没进只读白名单 →
   //   落在兜底分支被放行 → 只读会话能往用户磁盘写文件。
   'api_space_memory_append',
+  // —— 领域经验档案写入（自进化经验层，2026-10-09）：写磁盘 .yan-zhi/experience/*.md ——
+  // ★ 与 api_experience_read 成对：read 只读放行（在下方 READONLY_SAFE_TOOLS），write 必须拦。
+  'api_experience_write',
   // —— 会话自配置：改当前会话的智能体/技能/模式（会改变后续所有轮次的执行身份）——
   // ★ 与配置变更同类：改完之后整个会话的行为都会变，只读会话里不应放行。
   'api_conversation_setup',
@@ -290,6 +293,8 @@ const READONLY_SAFE_TOOLS = new Set([
   'api_marketplace_sources', 'api_marketplace_browse',
   'api_im_connector_list',
   'api_space_memory_read', 'api_browser_memory_read',
+  // 领域经验档案（自进化经验层）：读取路径纯只读（列目录 + 读 md）
+  'api_experience_read',
 ]);
 
 /**

@@ -201,6 +201,34 @@ describe('输入锁：判据必须来自会话级记账，不能依赖 browserSt
     expect(cursor).toContain('chatStore.browserTaskActive');
   });
 
+  it('接管实况必须带「本会话」运行态判据（任务收尾即隐藏，不许残留）', () => {
+    // ★ 2026-10-09 用户实报「任务都结束了 pageAgent 还挂在接管中·执行中」：
+    //   liveControlVisible / agentCursorVisible 此前不带运行态判据，SSE 终态事件丢失
+    //   （断流放弃 / 服务重启 interrupted）时 browserTaskActive 永远不清。
+    //   修复：叠加 convTaskRunning（= chatStore.streaming，本会话运行态）——
+    //   断流重试期间 streaming 仍为真，接管条不回退；任务收尾立即消失。
+    const live = sliceFrom(panelSrc, 'const liveControlVisible = computed(', 400);
+    expect(live, '实况条必须带 convTaskRunning').toContain('convTaskRunning.value');
+    const cursor = sliceFrom(panelSrc, 'const agentCursorVisible = computed(', 400);
+    expect(cursor, '虚拟鼠标必须带 convTaskRunning').toContain('convTaskRunning.value');
+    // convTaskRunning 必须是「本会话」运行态（streaming），不是全局的 runningConvIds.size
+    const conv = sliceFrom(panelSrc, 'const convTaskRunning = computed(', 300);
+    expect(conv).toContain('chatStore.streaming');
+    expect(conv, '不得用全局运行态（任一会话在跑都为真会串台）').not.toContain('runningConvIds.size');
+  });
+
+  it('reconnectActiveTask 必须有假运行态自愈出口（服务端无活动任务 → 清残留）', () => {
+    // ★ 2026-10-09 同源修复：旧实现 has() 提前 return（UI 认为在跑连服务端都不问）、
+    //   active 为空也只 return —— 残留的 runningConvIds / browserTaskConvs 永远没人清。
+    const fn = sliceFrom(chatSrc, 'async function reconnectActiveTask(', 4000);
+    expect(fn).toContain("runningConvIds.value.delete(convId)");
+    expect(fn).toContain('clearBrowserTaskActive(convId)');
+    expect(fn).toContain('markRunEnd(convId');
+    // 清理必须以「服务端确认无活动任务」为前提（activeTasks.length === 0 分支内）
+    const empty = sliceFrom(fn, 'activeTasks.length === 0', 700);
+    expect(empty, '清残留必须落在 activeTasks 为空分支').toContain('clearBrowserTaskActive(convId)');
+  });
+
   it('任务收尾按 convId 精确清记账（不误伤其他会话正在跑的任务）', () => {
     const fn = sliceFrom(useChatSrc, 'store.onTaskFinished(', 700);
     expect(fn).toContain('store.clearBrowserTaskActive(convId)');

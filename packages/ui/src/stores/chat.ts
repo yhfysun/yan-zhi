@@ -12,6 +12,7 @@ import { useFileStore } from './file';
 import { chainBrowserOp, dropBrowserOpChain, type BrowserOpChains } from './browser-op-queue';
 import { useBrowserStore } from './browser';
 import { api, API_BASE, buildRequestHeaders } from '../api/client';
+import { getWithRetry } from './platform';
 import { consumeSseStream } from '../utils/sse';
 import { useAuthStore } from './auth';
 // 会话按模式隔离：loadConversations / createConversation 都要知道"当前在哪个模式"
@@ -820,6 +821,9 @@ export const useChatStore = defineStore('chat', () => {
     return agentStore.selectedId;
   }
 
+  // 上一次成功加载会话列表时的模式（loadConversations 失败时判断能否保留现有列表，防串模式）
+  let conversationsLoadedMode: string | null = null;
+
   /**
  * 加载会话列表。
  *
@@ -833,10 +837,15 @@ export const useChatStore = defineStore('chat', () => {
 async function loadConversations() {
     const mode = activeMode.value;
     if (isServerMode()) {
-      const r = await api.get<any[]>(`/conversations?mode=${encodeURIComponent(mode)}`);
-      if ('data' in r) {
+      // ★ 2026-10-09 改走 getWithRetry + 失败不清空：更新安装后首启竞态下，
+      //   单发请求失败会把会话列表洗成 [] ——「记录忽有忽无」的直接来源。
+      //   重试窗口（~10.5s）覆盖后端 seed/迁移冷启；仍失败则保留现有列表等下次刷新。
+      const r = await getWithRetry<any[]>(`/conversations?mode=${encodeURIComponent(mode)}`);
+      if ('data' in r && Array.isArray(r.data)) {
         conversations.value = (r.data as any[]).map(rowToConv);
-      } else {
+        conversationsLoadedMode = mode; // 成功才记录：失败时仅同模式列表可保留（防串模式）
+      } else if (conversationsLoadedMode !== mode) {
+        // 失败且现有列表属于别的模式 → 宁可清空也不串模式展示
         conversations.value = [];
       }
       return;
@@ -856,10 +865,12 @@ async function loadConversations() {
   async function loadMessages(convId: string) {
     currentConvId.value = convId;
     if (isServerMode()) {
+      // ★ 2026-10-09 同 loadConversations：失败不清空已加载的历史消息（瞬态失败
+      //   把消息洗成空 = 「会话还在、点开记录没了」的表象）。
       const r = await api.get<any[]>(`/conversations/${convId}/messages`);
       if ('data' in r) {
         messagesByConv.value[convId] = (r.data as any[]).map(rowToMsg);
-      } else {
+      } else if (messagesByConv.value[convId] === undefined) {
         messagesByConv.value[convId] = [];
       }
       const conv = conversations.value.find((c) => c.id === convId);
@@ -2157,40 +2168,61 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
   /** 检查会话是否有未完成的后端任务，如有则重新订阅 SSE 恢复流式输出。 */
   async function reconnectActiveTask(convId: string): Promise<void> {
     if (!isServerMode()) return;
-    if (runningConvIds.value.has(convId)) return;
+    // ★ 2026-10-09 假运行态自愈：SSE 终态事件丢失（断流放弃重连 / 服务重启把任务标
+    //   interrupted）时，runningConvIds / browserTaskConvs 永远没人清 → 前端永远显示
+    //   「任务运行中 / Agent 接管中」。旧实现 has() 提前 return（UI 认为在跑就连服务端
+    //   都不问）、active 为空也只 return 不清理，没有任何自愈出口。
+    //   现在每次切回会话都问一次服务端：确认无活动任务且 UI 仍认为在跑 → 清残留。
+    //   查询本身失败（网络抖动）不动残留态，避免误清真正在跑的任务。
+    const wasUiRunning = runningConvIds.value.has(convId);
+    let activeTasks: any[] = [];
     try {
       const r = await api.get<any[]>(`/llm/tasks/active?conversationId=${convId}`);
-      if ('error' in r || !r.data || r.data.length === 0) return;
-      const task = r.data[0];
-      const taskId = task.id;
-      taskIds.set(convId, taskId);
-      runningConvIds.value.add(convId);
-      // 重连恢复：真实起点未知，用后端任务的 createdAt 兜底（缺省退化为当前时间）
-      runStatsByConv.value[convId] = { status: 'running', startedAt: Number(task.createdAt) || Date.now() };
-      const abortController = new AbortController();
-      abortControllers.set(convId, abortController);
-      void (async () => {
-        try {
-          // ★★★ 走带重连的包装（2026-10-08 修，high）：此前这里直接调 `subscribeTaskSse`，
-          //   于是**手动重连（切走再切回）拿到的流一旦再被掐断就永久停了** —— 而且它拿到的
-          //   `connected` 帧会把 `taskEventCounts` 虚高 1，使该任务**之后所有自动重连
-          //   都从错位下标开始**（漏事件 → 工具不执行 → 报「前端暂时不可达」）。
-          //   与 callLlm 走同一条路径，行为才一致。
-          await subscribeTaskSseWithReconnect(convId, taskId, abortController.signal, undefined);
-        } catch (e: any) {
-          markRunEnd(convId, e?.name === 'AbortError' ? 'aborted' : 'error');
-          if (e?.name === 'AbortError') return;
-          console.error('[Chat] 重连 SSE 失败:', e);
-        } finally {
-          markRunEnd(convId);
-          abortControllers.delete(convId);
-          taskIds.delete(convId);
-          runningConvIds.value.delete(convId);
-        }
-      })();
+      if ('error' in r || !r.data) return;
+      activeTasks = r.data;
     } catch (e) {
       console.error('[Chat] 检查活动任务失败:', e);
+      return;
     }
+    if (activeTasks.length === 0) {
+      if (wasUiRunning) {
+        // 服务端已无此会话的活动任务 → 前端运行态是残留，落结束态并清浏览器任务记账
+        markRunEnd(convId, 'aborted');
+        runningConvIds.value.delete(convId);
+        clearBrowserTaskActive(convId);
+        abortControllers.delete(convId);
+        taskIds.delete(convId);
+      }
+      return;
+    }
+    if (wasUiRunning) return; // 已有订阅在跑，不重复订阅
+    const task = activeTasks[0];
+    const taskId = task.id;
+    taskIds.set(convId, taskId);
+    runningConvIds.value.add(convId);
+    // 重连恢复：真实起点未知，用后端任务的 createdAt 兜底（缺省退化为当前时间）
+    runStatsByConv.value[convId] = { status: 'running', startedAt: Number(task.createdAt) || Date.now() };
+    const abortController = new AbortController();
+    abortControllers.set(convId, abortController);
+    void (async () => {
+      try {
+        // ★★★ 走带重连的包装（2026-10-08 修，high）：此前这里直接调 `subscribeTaskSse`，
+        //   于是**手动重连（切走再切回）拿到的流一旦再被掐断就永久停了** —— 而且它拿到的
+        //   `connected` 帧会把 `taskEventCounts` 虚高 1，使该任务**之后所有自动重连
+        //   都从错位下标开始**（漏事件 → 工具不执行 → 报「前端暂时不可达」）。
+        //   与 callLlm 走同一条路径，行为才一致。
+        await subscribeTaskSseWithReconnect(convId, taskId, abortController.signal, undefined);
+      } catch (e: any) {
+        markRunEnd(convId, e?.name === 'AbortError' ? 'aborted' : 'error');
+        if (e?.name === 'AbortError') return;
+        console.error('[Chat] 重连 SSE 失败:', e);
+      } finally {
+        markRunEnd(convId);
+        abortControllers.delete(convId);
+        taskIds.delete(convId);
+        runningConvIds.value.delete(convId);
+      }
+    })();
   }
 
   async function callLlm(
