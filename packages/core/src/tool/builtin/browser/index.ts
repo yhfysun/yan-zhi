@@ -431,6 +431,22 @@ export class BrowserFillFormTool implements BuiltInTool {
   async execute(args: Record<string, unknown>): Promise<McpCallResult> {
     try {
       const data = await callBrowserApi('/action', 'POST', { action: 'fill_form', fields: args.fields }) as any;
+      // ★★★ B3（2026-10-10）：必须**透传逐字段失败原因**。
+      //   此前只回 `Filled N fields: [...]` —— 而桌面端元素找不到时是**静默跳过**
+      //   （不计数、不报错），于是"只填上 1 个、其余全没找到"在模型看来与
+      //   "全部填好"**完全一样**（都是 `Filled 1 fields`）。这正是本项目
+      //   「静默失效」家族：不报错、只是结果不对。
+      //   ⇒ 有 failed 时**明确列出**（含 selector 与原因），让模型能重试/换选择器。
+      const failed = Array.isArray(data?.failed) ? data.failed : [];
+      if (failed.length) {
+        const lines = failed
+          .map((f: any) => `  - ${f?.selector || '(无选择器)'}: ${f?.reason || '未知原因'}`)
+          .join('\n');
+        return err(
+          `部分字段未填写成功（成功 ${data?.filled ?? 0} 个，失败 ${failed.length} 个）：\n${lines}\n` +
+          `建议：用 browser_get_page_info 重新获取元素编号与 selector 后重试。`,
+        );
+      }
       return ok(`Filled ${data.filled} fields: ${JSON.stringify(data.fields)}`);
     } catch (e: any) { return err(e?.message || '填表单失败'); }
   }

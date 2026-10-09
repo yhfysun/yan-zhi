@@ -1019,24 +1019,33 @@ router.post('/action', withBrowserLock(async (req: Request, res: Response) => {
       case 'fill_form': {
         const fields = Array.isArray(args.fields) ? args.fields : [];
         const filled: string[] = [];
+        // ★ B3（2026-10-10）：逐字段失败原因（与桌面端同结构）。
+        //   此前 `locator` 抛错会让整批 fill_form 直接失败（前面已填的也白填、且无部分结果），
+        //   而 Desktop 侧是静默跳过 —— 两条链路「部分成功」的语义不一致。
+        //   ⇒ 统一为「尽力填 + 明确报告失败项」：单个字段失败不中断其余字段。
+        const failed: Array<{ selector: string; reason: string }> = [];
         const toPw = (s: string) => String(s).replace(/:contains\(\s*["']([\s\S]*?)["']\s*\)/g, ':has-text("$1")');
         for (const f of fields) {
           const sel = toPw(f.selector);
-          if (!sel) continue;
+          if (!sel) { failed.push({ selector: String(f?.selector || ''), reason: '缺少 selector' }); continue; }
           const ftype = String(f.type || 'text').toLowerCase();
-          if (ftype === 'select') {
-            const opt = f.label !== undefined ? { label: String(f.label) } : String(f.value ?? '');
-            await page.locator(sel).selectOption(opt as any);
-          } else if (ftype === 'checkbox' || ftype === 'radio') {
-            if (f.value === false || f.value === 'false') await page.locator(sel).uncheck().catch(() => {});
-            else await page.locator(sel).check().catch(() => {});
-          } else {
-            await page.locator(sel).scrollIntoViewIfNeeded().catch(() => {});
-            await page.locator(sel).fill(String(f.value ?? ''));
+          try {
+            if (ftype === 'select') {
+              const opt = f.label !== undefined ? { label: String(f.label) } : String(f.value ?? '');
+              await page.locator(sel).selectOption(opt as any);
+            } else if (ftype === 'checkbox' || ftype === 'radio') {
+              if (f.value === false || f.value === 'false') await page.locator(sel).uncheck();
+              else await page.locator(sel).check();
+            } else {
+              await page.locator(sel).scrollIntoViewIfNeeded().catch(() => {});
+              await page.locator(sel).fill(String(f.value ?? ''));
+            }
+            filled.push(sel);
+          } catch (e: any) {
+            failed.push({ selector: sel, reason: e?.message ? String(e.message).slice(0, 160) : '填写失败' });
           }
-          filled.push(sel);
         }
-        result = { filled: filled.length, fields: filled };
+        result = { filled: filled.length, fields: filled, failed };
         break;
       }
       case 'submit_form': {

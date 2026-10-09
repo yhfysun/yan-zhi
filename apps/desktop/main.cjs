@@ -2951,17 +2951,88 @@ ipcMain.handle('browserView:action', async (_e, tabId, action, args) => {
         })()`);
       }
       case 'fill_form': {
+        // ★★★ B3/B5（2026-10-10）：本实现此前**违背工具契约**三处（服务端都支持）——
+        //   工具 schema 明确声明 `type is "text"|"select"|"checkbox"|"radio"` 且
+        //   "For select use **label or value**"，而这里有：
+        //   ① **不支持 radio**（只判 select/checkbox → radio 字段走 else 分支当成文本框填！
+        //      对 <input type=radio> 调 typeIn 会设 .value 却不改 checked ⇒ 单选**根本没选中**，
+        //      且返回值里仍把它算作"已填"—— 模型以为填好了）；
+        //   ② **不支持 label**（下拉只能按 value 选 ⇒ 模型给显示文本就选不中）；
+        //   ③ **静默跳过**（`if(!el)continue`）：元素没找到时**不报错**，
+        //      返回值里也不出现该字段 ⇒ 模型无法区分"填了"与"没填到"。
+        //   ⇒ 一并按服务端（browser.ts 同名分支）语义对齐。
         return await wc.executeJavaScript(`(function(){
-          var a=${JSON.stringify(args)};var fields=a.fields||[];var names=[];
-          for(var i=0;i<fields.length;i++){var f=fields[i];var el=window.__yzAssistant.resolve(f.selector);
-            if(!el)continue;el.scrollIntoView({behavior:'smooth',block:'center'});
-            var rect=el.getBoundingClientRect();window.__yzAssistant.showCursor(rect.x+rect.width/2,rect.y+rect.height/2,'填写');
-            if(f.type==='select'){el.value=f.value;el.dispatchEvent(new Event('change',{bubbles:true}));}
-            else if(f.type==='checkbox'){el.checked=!!f.value;el.dispatchEvent(new Event('change',{bubbles:true}));}
-            else{window.__yzAssistant.typeIn(el,String(f.value));}
-            names.push(f.selector);}
+          var a=${JSON.stringify(args)};var fields=a.fields||[];
+          var filled=[],failed=[];
+          function setNativeValue(el,v){
+            // 受控组件必须走 native setter，否则 React 的 value tracker 认不出变化
+            try{
+              var d=Object.getOwnPropertyDescriptor(el.constructor.prototype,'value');
+              if(d&&d.set){d.set.call(el,v);return true;}
+            }catch(e){}
+            try{el.value=v;return true;}catch(e){return false;}
+          }
+          for(var i=0;i<fields.length;i++){
+            var f=fields[i];var sel=f.selector;
+            var el=window.__yzAssistant.resolve(sel);
+            if(!el){
+              // ★ 不再静默跳过：记入 failed（含原因），让调用方与模型都能看见
+              failed.push({selector:sel,reason:'元素未找到'});
+              failed.push({selector:sel,reason:'元素未找到'});
+              continue;
+            }
+            el.scrollIntoView({behavior:'smooth',block:'center'});
+            var rect=el.getBoundingClientRect();
+            window.__yzAssistant.showCursor(rect.x+rect.width/2,rect.y+rect.height/2,'填写');
+            var ftype=String(f.type||'text').toLowerCase();
+            try{
+              if(ftype==='select'){
+                // ★ 支持 label（显示文本）与 value 两种选法（与服务端一致）
+                var target=null;
+                if(f.label!==undefined){
+                  var lbl=String(f.label);
+                  for(var oi=0;oi<el.options.length;oi++){
+                    if(String(el.options[oi].textContent||'').trim()===lbl.trim()){target=el.options[oi];break;}
+                  }
+                }
+                if(!target){
+                  var val=String(f.value==null?'':f.value);
+                  for(var oj=0;oj<el.options.length;oj++){
+                    if(String(el.options[oj].value)===val){target=el.options[oj];break;}
+                  }
+                }
+                if(target){el.value=target.value;}else{failed.push({selector:sel,reason:'选项未找到: '+(f.label!==undefined?f.label:f.value)});window.__yzAssistant.hideCursor();continue;}
+                el.dispatchEvent(new Event('input',{bubbles:true}));
+                el.dispatchEvent(new Event('change',{bubbles:true}));
+              }
+              else if(ftype==='checkbox'){
+                var wantC=!(f.value===false||f.value==='false'||f.value===0||f.value==='0');
+                if(el.checked!==wantC){el.click();} // 用 click 触发完整事件链
+              }
+              else if(ftype==='radio'){
+                // ★ 新增 radio：按 click 触发（改 checked 不触发事件，组件收不到）
+                var wantR=!(f.value===false||f.value==='false'||f.value===0||f.value==='0');
+                if(wantR){
+                  if(!el.checked){el.click();}
+                  if(!el.checked){ // click 未生效（如被遮挡/disabled）→ 兜底直改 + 事件
+                    el.checked=true;setNativeValue(el,String(f.value==null?'on':f.value));
+                    el.dispatchEvent(new Event('input',{bubbles:true}));
+                    el.dispatchEvent(new Event('change',{bubbles:true}));
+                  }
+                } else if(el.checked){el.click();}
+              }
+              else{
+                // 文本类：沿用 typeIn（清空→nativeSetter→IME 序列→input→change→回读核验）
+                var r=window.__yzAssistant.typeIn(el,String(f.value==null?'':f.value));
+                if(r&&r.applied===false){failed.push({selector:sel,reason:'值未生效（受控组件未接受）当前值='+r.value});window.__yzAssistant.hideCursor();continue;}
+              }
+              filled.push(sel);
+            }catch(e){
+              failed.push({selector:sel,reason:'填写异常: '+(e&&e.message?e.message:String(e))});
+            }
+          }
           setTimeout(function(){window.__yzAssistant.hideCursor();},500);
-          return{filled:names.length,fields:names};
+          return{filled:filled.length,fields:filled,failed:failed};
         })()`);
       }
       case 'submit_form': {
