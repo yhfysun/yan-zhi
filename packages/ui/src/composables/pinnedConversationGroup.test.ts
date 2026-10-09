@@ -15,6 +15,12 @@
  *   ② 置顶组用 `pinnedRootConversations`、主列表用 `unpinnedRootConversations`
  *      —— 两者互补，**同一个会话不能出现在两处**（重复展示比不分组更糟）；
  *   ③ 分组内仍有「取消置顶」入口（否则置顶进去就出不来）。
+ *
+ * ★★★ 第二处必须同步（2026-10-09 实测漏改）：
+ *   issue 备注原话「同类实现参考 TaskListSection.vue 也已接好 pinned…若改造需同步两处，
+ *   **避免只有侧边栏生效**」。第一版我只改了 ChatSidebar → 工作台任务列表里置顶仍是
+ *   "混在普通任务里"（用户视角：改了但没生效）。
+ *   ⇒ 本测试同时钉住两处，防再次只改一处。
  */
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -22,6 +28,8 @@ import { resolve } from 'node:path';
 
 const SIDEBAR = readFileSync(resolve(__dirname, '../components/chat/ChatSidebar.vue'), 'utf8');
 const USECHAT = readFileSync(resolve(__dirname, 'chat/useChat.ts'), 'utf8');
+// ★ 第二处（issue 备注明确要求同步）：工作台任务列表。上轮只改了侧边栏，这处漏了。
+const TASKLIST = readFileSync(resolve(__dirname, '../components/workbench/TaskListSection.vue'), 'utf8');
 
 describe('会话置顶分组', () => {
   it('★★ 有「置顶」分组标题，且仅在存在置顶项时渲染（无置顶不占位）', () => {
@@ -67,5 +75,35 @@ describe('会话置顶分组', () => {
     const seg = SIDEBAR.slice(start, start + 3000);
     expect(seg).toMatch(/rows\.togglePinned\(conv\)/);
     expect(seg).toMatch(/取消置顶/);
+  });
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // 第二处：工作台任务列表（issues 备注明确写了「若改造需同步两处，
+  // 避免只有侧边栏生效」—— 第一版确实只改了侧边栏，这处漏了）。
+  // ══════════════════════════════════════════════════════════════════════════
+  it('★★ 任务列表（TaskListSection）也有置顶分组，且只在有置顶项时插入', () => {
+    expect(TASKLIST).toMatch(/__pinned__/);
+    expect(TASKLIST).toMatch(/title: '置顶'/);
+    // 只在有置顶项时插入（无置顶不占位）
+    expect(TASKLIST).toMatch(/if \(pinnedConvs\.length > 0\)/);
+  });
+
+  it('★★ 任务列表：置顶项必须从原组排除（否则同一任务在置顶组与原组各出现一次）', () => {
+    // ★★★ 断言必须查**语义**而不是"函数被调用"（2026-10-09 变异验证抓到本测试的漏洞）：
+    //   第一版只断言 `unpinned(...)` 出现在原组调用处 —— 但变异把 `unpinned` 的**实现**
+    //   改成恒等返回（不过滤），调用处一字未改，测试**照样绿**（8 passed，漏检）。
+    //   ⇒ 必须直接断言 unpinned 的定义体里含 pinned 过滤。
+    const def = TASKLIST.match(/const unpinned = \(list: any\[\]\) =>[^\n]*/);
+    expect(def, '★ 未找到 unpinned 定义').toBeTruthy();
+    expect(def![0], '★ unpinned 的定义里没有过滤掉已置顶项（恒等返回 = 置顶项会重复出现）')
+      .toMatch(/!?c\.pinned/);
+    // 且必须在两处原组（未归类 / 各空间）都被使用
+    expect(TASKLIST).toMatch(/unpinned\(convs\.value\.filter\(\(c\) => !c\.spaceId\)\)/);
+    expect(TASKLIST).toMatch(/unpinned\(convs\.value\.filter\(\(c\) => c\.spaceId === sp\.id\)\)/);
+  });
+
+  it('★ 任务列表：进某空间（有 spaceId 过滤）时不抽置顶组（与「当前目录」语义冲突）', () => {
+    // pinnedConvs 只在无 sid 时收集
+    expect(TASKLIST).toMatch(/const pinnedConvs = sid \? \[\] : convs\.value\.filter/);
   });
 });
