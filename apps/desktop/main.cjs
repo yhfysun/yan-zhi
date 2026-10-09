@@ -2855,7 +2855,17 @@ ipcMain.handle('browserView:action', async (_e, tabId, action, args) => {
           var out=[];
           for(var k=0;k<els.length&&out.length<maxInteractive;k++){var el=els[k];
             var idx=A.register(el);
-            var o={index:idx,tag:el.tagName.toLowerCase(),text:(el.textContent||'').trim().slice(0,60)};
+            // ★★★ 补 selector（B6，2026-10-09）：本聚合动作此前只回 index/tag/text 等，
+            //   **漏了 selector** —— 而它的同族动作 get_page_info（见上方 :2803）
+            //   一直都有 selector:A.genSel(el)；工具描述与提示词也都承诺
+            //   "元素含 selector 可直接作为 selector 参数"。
+            //   后果：同一 prompt 在**桌面端**拿不到 selector（模型只能靠 index，SPA 重渲染后
+            //   index 失效就只好重新读页），而**服务端 Playwright 链路**是有的 →
+            //   同工具两条执行链行为不一致，是最难查的一类 bug。
+            //   ⇒ 用同一 A.genSel（与 get_page_info / chat.ts:2614 同源），零新增逻辑。
+            //   ★ 注意：本段位于 executeJavaScript 的**模板字符串内部**，注释里
+            //     **绝不能出现反引号**（会提前闭合模板串，报 "missing ) after argument list"）。
+            var o={index:idx,tag:el.tagName.toLowerCase(),selector:A.genSel(el),text:(el.textContent||'').trim().slice(0,60)};
             // P1-7 a11y 语义（2026-10-07）：优先 computedRole（Chromium 132+），引擎不支持时
             // 按「标签 + type」推断隐式角色；'generic'/null 无信息量跳过，两路都拿不到就不出字段。
             try{var cr=el.computedRole;if(cr&&cr!=='generic')o.axRole=cr;}catch(e){}
