@@ -548,6 +548,13 @@ function createWindow() {
     webPreferences.nodeIntegrationInWorker = false;
     delete webPreferences.preload;
     delete webPreferences.preloadURL;
+    // ★★★ 原生弹窗（B4，2026-10-09）：webview 引擎的 guest 同样要禁用原生对话框。
+    //   ★ 为什么必须在这里也加：webview 引擎下 guest 由渲染层的 <webview> 承载，
+    //     其 webPreferences **由此钩子最终决定** —— 只改 BrowserView 那处会漏掉整个
+    //     webview 引擎（两引擎并存是本项目的既定设计，见 isWebviewEngine()）。
+    //   ★ 语义：页面 alert/confirm/prompt 被直接忽略（不阻塞 renderer 的 JS 执行），
+    //     与服务端 Playwright"未注册 handler 时自动 dismiss"的行为对齐。
+    webPreferences.disableDialogs = true;
   });
 
   // 渲染进程完整重载（HMR full-reload / F5）时，隐藏并摘除所有 BrowserView。
@@ -691,6 +698,19 @@ function createBrowserViewFor(tabId, entry) {
       nodeIntegration: false,
       contextIsolation: true,
       spellcheck: false,
+      // ★★★ 原生弹窗（B4，2026-10-09）：**禁用页面原生对话框**。
+      //
+      // ★ 缺口（实测）：桌面端此前无任何 dialog 处理 →
+      //   页面弹 `window.alert/confirm/prompt` 时会**同步阻塞该 renderer 的 JS 执行**，
+      //   pageAgent 后续所有 `executeJavaScript` / `capturePage` 一起挂起到 18s 总闸
+      //   （甚至永久）—— 用户体感是"浏览器工具突然全部卡死"。
+      // ★ 为什么服务端没这问题：Playwright **未注册 dialog handler 时会自动 dismiss**，
+      //   同一页面在服务端链路正常 ⇒ 两链路行为不一致（B6/B7 同族）。
+      // ★ 用**官方选项**而不是自己猜 API：`disableDialogs` 是 Electron webPreferences 的
+      //   正式字段（"Whether to disable dialogs completely. Overrides safeDialogs."）
+      //   ⇒ 页面调用 alert/confirm/prompt 会被直接忽略（不再阻塞），
+      //     且 `beforeunload` 的确认也不会拦住导航。与服务端"自动 dismiss"语义对齐。
+      disableDialogs: true,
       // 显式背景色：避免未加载/加载失败时默认黑底
       backgroundColor: '#ffffff',
     },
