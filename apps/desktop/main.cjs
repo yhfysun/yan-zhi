@@ -757,6 +757,17 @@ function createBrowserViewFor(tabId, entry) {
       mainWindow.webContents.send('browserView:navigated', tabId, url);
     }
   });
+
+  // ★ 自定义协议闸门（2026-10-09）：BrowserView 引擎的 guest 此前只挂了
+  //   setWindowOpenHandler（拦 window.open/target=_blank），没拦页面自身的导航 ——
+  //   pageAgent 点击 bitbrowser:// / tel: / mailto: 等未知协议链接时，Electron 把
+  //   导航交给系统 Shell → 本机无处理器 → Windows 反复弹「没有可打开此链接的应用」。
+  //   与 webview 引擎的 setupGuestPopupRedirect（1319 行）同一判定，共用 url-guard.cjs。
+  wc.on('will-navigate', (event, url) => {
+    if (isAllowedGuestNavigation(url)) return;   // http(s)/about/blob/data：放行
+    console.log('[nav] BrowserView guest 拦截非 http(s) 协议:', url);
+    event.preventDefault();
+  });
   // 页面加载完成，通知前端
   wc.on('did-finish-load', () => {
     // 成功渲染后清零崩溃计数：只有"连续"崩溃才停手，偶尔一次崩溃不应永久拉黑页面
@@ -1390,6 +1401,10 @@ function closeTabById(tabId, fromUi) {
     const meta = webviewTabs.get(tabId);
     const closedScope = meta?.scope || 'preview';
     webviewTabs.delete(tabId);
+    // ★ 广播 tab 关闭（2026-10-09）：渲染层据此摘除 tab 壳（webview 引擎下 agent 的
+    //   close_tab / 收尾自动收拾此前只删主进程 meta，渲染层残留幽灵壳）。
+    //   渲染层对不认识的 tabId 幂等忽略，UI 路径重复收到也无害。
+    broadcastTabClosed(tabId);
     if (activeTabId === tabId) {
       activeTabId = null;
       // 非 UI 路径（pageAgent / window.close）：主进程顶替同空间内最近激活的 tab 并广播
@@ -1421,6 +1436,7 @@ function closeTabById(tabId, fromUi) {
     try { entry.view?.webContents?.destroy?.(); } catch { /* ignore */ }
     browserViews.delete(tabId);
   }
+  broadcastTabClosed(tabId);
   if (activeTabId === tabId) {
     activeTabId = null;
     // R5：非 UI 路径关掉当前 tab 时主进程自行顶替同空间内最近激活的剩余 tab 并广播。
@@ -1444,6 +1460,32 @@ function closeTabById(tabId, fromUi) {
 
 ipcMain.handle('browserView:closeTab', (_e, tabId, fromUi) => {
   closeTabById(tabId, !!fromUi);
+});
+
+/** tab 关闭广播：渲染层（BrowserPanel）据此摘除 tab 壳，幂等 */
+function broadcastTabClosed(tabId) {
+  try {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('browserView:tabClosed', tabId);
+    }
+  } catch { /* ignore */ }
+}
+
+// ★ 收尾自动收拾（2026-10-09）：关闭全部 agent 打开的 tab（agentOpened===true）。
+//   背景：pageAgent 任务跑完后页面一直留在预览面板堆积 —— 此前只给用户弹提示，
+//   用户拍板改为任务收尾自动关。安全边界不变：只关 agentOpened 的，用户手开的不碰。
+//   由渲染层在任务收尾回调里调用（此时模型已跑完、结果页该截图的已截图）。
+ipcMain.handle('browserView:closeAgentTabs', () => {
+  const ids = [];
+  if (isWebviewEngine()) {
+    for (const [id, t] of webviewTabs) if (t.agentOpened === true) ids.push(id);
+  } else {
+    for (const [id, e] of browserViews) if (e.agentOpened === true) ids.push(id);
+  }
+  for (const id of ids) {
+    try { closeTabById(id, false); } catch { /* ignore */ }
+  }
+  return { closed: ids.length };
 });
 
 // 关闭某空间下的所有 tab（多会话隔离：BrowserPanel 卸载/切换会话时调用，避免 tab 在主进程长期堆积占满 MAX_TABS）。
@@ -3053,6 +3095,7 @@ ipcMain.handle('browserView:action', async (_e, tabId, action, args) => {
             return { error: '该标签页不是本次 agent 打开的，无权关闭（用户手动打开的页面只能由用户关闭）。请勿再次尝试关闭它。' };
           }
           webviewTabs.delete(tid);
+          broadcastTabClosed(tid);   // 渲染层同步摘壳（2026-10-09）
           if (activeTabId === tid) {
             activeTabId = null;
             const any1 = webviewTabs.keys().next();

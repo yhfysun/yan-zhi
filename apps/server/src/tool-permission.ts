@@ -192,6 +192,8 @@ const INTERACTION_TOOLS = new Set([
   'image_analyze', 'list_models', 'list_sub_agents',
   // 计划状态查询：纯读 task_plan_item 表，无副作用（2026-10-08）
   'get_plan_status',
+  // 子任务执行详情查询：纯读 message 表（2026-10-09），编排者分析子任务失败用
+  'get_sub_task_detail',
 ]);
 
 export interface ToolPermissionVerdict {

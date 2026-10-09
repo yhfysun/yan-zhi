@@ -29,6 +29,7 @@ export { SecurityTool } from './security';
 export { BrowserToolClasses, BROWSER_TOOL_NAMES } from './browser';
 export { CallAgentTool } from './call-agent';
 export { ListSubAgentsTool } from './list-sub-agents';
+export { GetSubTaskDetailTool } from './get-sub-task-detail';
 export { SpawnSubAgentTool } from './spawn-sub-agent';
 export { PlanTasksTool, GetPlanStatusTool, ReassignTaskTool } from './plan-tasks';
 export { ListModelsTool } from './list-models';
@@ -77,6 +78,7 @@ import { SecurityTool } from './security';
 import { BrowserToolClasses } from './browser';
 import { CallAgentTool } from './call-agent';
 import { ListSubAgentsTool } from './list-sub-agents';
+import { GetSubTaskDetailTool } from './get-sub-task-detail';
 import { SpawnSubAgentTool } from './spawn-sub-agent';
 import { PlanTasksTool, GetPlanStatusTool, ReassignTaskTool } from './plan-tasks';
 import { ListModelsTool } from './list-models';
@@ -131,6 +133,8 @@ export function registerBuiltInTools(registry: ToolRegistry): void {
   registry.register(new CallAgentTool());
   // 子智能体列表查询工具（E7b）—— 让 LLM 动态发现可用子智能体及其 ID
   registry.register(new ListSubAgentsTool());
+  // 子任务执行详情查询（2026-10-09）：编排者分析子智能体失败原因用；实际执行由 server executeTool 拦截
+  registry.register(new GetSubTaskDetailTool());
   // ★ 运行时**现场生成**子智能体（对齐 AOrchestra）：主智能体按需填四元组，库里不留角色。
   //   与 call_agent（调已存在的）互补：一个"点名调用"，一个"现场定制"。
   registry.register(new SpawnSubAgentTool());

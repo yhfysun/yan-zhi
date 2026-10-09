@@ -40,8 +40,24 @@ def probe_duration(ffmpeg, path):
         return 5.0
 
 
+def disp_w(ch: str) -> float:
+    """显示宽度：CJK/全角=1，半角（英文/数字/标点）=0.55。"""
+    return 1.0 if ord(ch) > 0x2E80 else 0.55
+
+
 def wrap_text(s: str, width: int = 20):
-    return "\n".join(s[i:i + width] for i in range(0, len(s), width))
+    """按**显示宽度**换行（不再按字符个数），英文/数字混排时不会低估行宽导致字幕超出画面。"""
+    lines, cur, w = [], "", 0.0
+    for ch in s:
+        cw = disp_w(ch)
+        if w + cw > width and cur:
+            lines.append(cur)
+            cur, w = "", 0.0
+        cur += ch
+        w += cw
+    if cur:
+        lines.append(cur)
+    return "\n".join(lines)
 
 
 def wrap_title(s: str, max_chars: int, max_lines: int = 2):
@@ -94,21 +110,21 @@ def fmt_srt_ts(sec: float) -> str:
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
 
-def build_srt(cues, out_path):
-    """长句按 40 字切块(2 行 x 20), 时间按字数比例分摊, 避免单条字幕堆成文字墙。"""
-    CHUNK = 40
+def build_srt(cues, out_path, wrap_chars=20):
+    """长句按 ≤2 行 x wrap_chars 显示宽度切块, 时间按显示宽度比例分摊。
+    wrap_chars 由画幅+字幕字号动态算出（见 main），防止字幕行超出画面宽度。"""
     idx = 0
     with open(out_path, "w", encoding="utf-8-sig") as f:
         for start, end, text in cues:
-            chunks = [text[i:i + CHUNK] for i in range(0, len(text), CHUNK)] or [text]
+            chunks = wrap_text(text, wrap_chars * 2).split("\n") or [text]
             dur = end - start
-            chars = [len(c) for c in chunks]
-            total_chars = sum(chars) or 1
+            weights = [sum(disp_w(c) for c in ch) for ch in chunks]
+            total_w = sum(weights) or 1.0
             t = start
-            for c, n in zip(chunks, chars):
-                d = dur * n / total_chars
+            for c, n in zip(chunks, weights):
+                d = dur * n / total_w
                 idx += 1
-                f.write(f"{idx}\n{fmt_srt_ts(t)} --> {fmt_srt_ts(t + d)}\n{wrap_text(c)}\n\n")
+                f.write(f"{idx}\n{fmt_srt_ts(t)} --> {fmt_srt_ts(t + d)}\n{wrap_text(c, wrap_chars)}\n\n")
                 t += d
 
 
@@ -175,8 +191,13 @@ def main():
         cues.append((t, t + d, text))
         t += d
 
+    # ★ 字幕换行宽度动态算（2026-10-09 修"字幕超出画面"）：libass 对 SRT 默认 PlayResY=288，
+    #   FontSize=14 渲染像素 ≈ 14 * H/288（4:3≈70px/字、9:16≈93px/字、16:9≈52px/字），
+    #   原来写死 20 字/行在 4:3/9:16 下必然超宽。每行字数 = 画面宽度*0.90 / 单字像素。
+    _font_px = 14.0 * H / 288.0
+    wrap_chars = max(8, int(W * 0.90 / _font_px))
     srt = os.path.join(tmp, "subs.srt")
-    build_srt(cues, srt)
+    build_srt(cues, srt, wrap_chars)
 
     # ---- 2) 音频拼接 (+可选 BGM) ----
     audio_out = os.path.join(tmp, "narration.m4a")
@@ -235,32 +256,40 @@ def main():
 
     bg_clips = [p.strip() for p in a.bg_video.split(",") if p.strip()] if a.bg_video else []
     if bg_clips:
-        # 背景视频: 每段 cover 裁剪到 4:3, 多段 concat, 单段直接链; -stream_loop 循环兜底不够长
-        cmd = [ffmpeg, "-y", "-v", "error"]
-        for p in bg_clips:
-            cmd += ["-stream_loop", "-1", "-i", p]
-        cmd += ["-i", audio_out]
-        chains = []
-        for i in range(len(bg_clips)):
-            chains.append(f"[{i}:v]scale={W}:{H}:force_original_aspect_ratio=increase,"
-                          f"crop={W}:{H},fps={FPS},setsar=1[v{i}]")
-        # 单段直接用 [v0]; 多段先 concat 成 [vc]
-        head = ";".join(chains) + ";"
-        if len(bg_clips) == 1:
-            vsrc = "[v0]"
-        else:
-            vsrc = "[vc]"
-            head += "".join(f"[v{i}]" for i in range(len(bg_clips))) \
-                    + f"concat=n={len(bg_clips)}:v=1:a=0[vc];"
-        fc = (head + f"{vsrc}trim=duration={total:.2f},setpts=PTS-STARTPTS[vv];"
-              f"[vv]{final_vf}[vout]")
-        cmd += ["-filter_complex", fc, "-map", "[vout]", "-map", f"{len(bg_clips)}:a",
-                "-t", f"{total:.2f}",
-                "-c:v", "libx264", "-preset", "fast", "-crf", "23", "-pix_fmt", "yuv420p",
-                "-c:a", "aac", "-b:a", "160k", "-shortest", final]
-        r = subprocess.run(cmd, capture_output=True, text=True)
-        if r.returncode != 0:
-            print(r.stderr[-2000:], file=sys.stderr); sys.exit(r.returncode)
+        # ★★★ 背景循环修复（2026-10-09）：老版 ffmpeg（EVCapture 2016 构建）上 -stream_loop -1 + concat
+        #   滤镜组合失效——每段只播一次、不循环，输出被截断（成片 108s vs 旁白 448s）。
+        #   改为三步，全部只用本脚本已验证可用的老版能力：
+        #   1) 每段背景单独归一化（cover 裁剪 + fps，有限时长，各自编码一次，内存安全）；
+        #   2) concat demuxer 列表按段序循环重复到 ≥ total+1s，-c copy 拼成单文件
+        #      （归一化后各段编码参数一致，copy 拼接安全；纯文件名 + cwd=tmp，同下方占位图分支写法）；
+        #   3) 单输入 + 字幕/标题 + 旁白一次合成，-t total 精确收口。
+        norm_files = []
+        for i, p in enumerate(bg_clips):
+            out = os.path.join(tmp, f"bg_{i:02d}.mp4")
+            subprocess.run([ffmpeg, "-y", "-v", "error", "-i", p,
+                            "-vf", (f"scale={W}:{H}:force_original_aspect_ratio=increase,"
+                                    f"crop={W}:{H},fps={FPS},setsar=1"),
+                            "-an", "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+                            "-pix_fmt", "yuv420p", out], check=True)
+            norm_files.append(out)
+        durs = [max(probe_duration(ffmpeg, p), 0.1) for p in norm_files]
+        lst = os.path.join(tmp, "bglist.txt")
+        with open(lst, "w", encoding="utf-8") as f:
+            i, acc = 0, 0.0
+            while acc < total + 1.0:
+                f.write(f"file '{os.path.basename(norm_files[i % len(norm_files)])}'\n")
+                acc += durs[i % len(norm_files)]
+                i += 1
+        bg_loop = os.path.join(tmp, "bg_loop.mp4")
+        subprocess.run([ffmpeg, "-y", "-v", "error", "-f", "concat", "-safe", "0",
+                        "-i", "bglist.txt", "-c", "copy", os.path.abspath(bg_loop)],
+                       check=True, cwd=tmp)
+        subprocess.run([ffmpeg, "-y", "-v", "error", "-i", bg_loop, "-i", audio_out,
+                        "-vf", final_vf, "-map", "0:v", "-map", "1:a",
+                        "-t", f"{total:.2f}",
+                        "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+                        "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "160k", final],
+                       check=True)
     else:
         # 分镜图模式(兜底): 每段一个占位帧 + zoompan
         seg_files = []

@@ -30,6 +30,10 @@ import { buildContextView, mainlineMessages } from './services/context-view.js';
 import { serverState } from './state.js';
 // 产物登记钩子（P2-3）：把 file_write / 媒体登记的副作用从主循环里搬出去
 import { runAfterToolHooks } from './services/tool-hooks.js';
+// 防失控循环闸门（2026-10-09）：同名同参重复 / 单工具连刷，在 executeTool 漏斗拦截
+import { checkToolLoop } from './services/tool-loop-guard.js';
+// 子任务执行详情（2026-10-09）：get_sub_task_detail 的查询与排版（编排者分析子任务失败用）
+import { loadSubTaskTrace, formatSubTaskTrace } from './services/sub-task-detail.js';
 import { registerArtifactHooks } from './services/artifact-hooks.js';
 // 工件协议 + 任务计划调度（2026-10-08 多智能体协同）
 import { runWithArtifactCollector, formatSubAgentReturn, collectArtifact } from './services/artifacts.js';
@@ -2839,6 +2843,12 @@ async function maybeAutoDiagnose(task: LlmTask, filePath: string, toolText: stri
   }
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// ★ 防失控循环闸门（2026-10-09）：见 services/tool-loop-guard.ts 顶部注释。
+//   实例：浏览器助手核实抖音评论区置顶入口（入口不存在），模型连续几十次
+//   browser_run_script 换脚本硬试。两条线：同名同参重复 ≥3 次拦 / 同一工具
+//   严格连续 ≥8 次拦。只拦不罚，返回指引文本让模型走汇报收口路径。
+
 async function executeTool(
   task: LlmTask,
   registry: ReturnType<typeof getToolRegistry>,
@@ -2875,6 +2885,15 @@ async function executeTool(
 
   // 参数归一化兜底：模型文本模式工具调用常把 url 放到 target/address/link 等字段，补齐避免误报缺参
   args = normalizeToolArgs(toolName, args);
+
+  // ★ 防失控循环闸门（2026-10-09）：位置在归一化之后——key 按归一化后的参数算，
+  //   模型把同一意图换字段名重发也能被识别为重复。放在缺参检查之前：连缺参调用
+  //   都在刷屏的更该拦。被拦时提前 return，后续快照/权限副作用一律不发生。
+  const loopBlock = checkToolLoop(task, toolName, args);
+  if (loopBlock) {
+    logger.warn(`[llm-task] 循环拦截: conv=${task.conversationId} tool=${toolName}`);
+    return loopBlock;
+  }
 
   // 必填参数防护：arguments 为空/残缺时不带空参硬执行，直接给模型可行动的指引。
   // ★★★ 文案已于 2026-09-29 修正：此前写"可能原因：输出被长度上限截断 / 模型不擅长工具调用"，
@@ -3206,6 +3225,15 @@ async function executeTool(
       lines.push(`- **${sub.name}** (id: \`${id}\`): ${sub.description || ''}${modelNote}`);
     }
     return lines.join('\n');
+  }
+
+  // get_sub_task_detail → 后端直接查 DB：子任务执行详情（编排者分析子智能体失败原因用）
+  if (toolName === 'get_sub_task_detail') {
+    const runId = String(args?.runId || '');
+    if (!runId) return 'runId 为必填项。子任务 ID 在 call_agent / spawn_subagent 返回结果末尾的「子任务ID」处获取。';
+    const trace = loadSubTaskTrace(runId);
+    if (trace.length === 0) return `未找到子任务 ${runId} 的执行记录（可能：ID 抄错 / 子任务尚未开始落库 / 属于另一会话）。`;
+    return formatSubTaskTrace(trace, Math.min(Number(args?.maxSteps) || 40, 200));
   }
 
   // list_models → 后端直接查 DB，返回语义化的可用模型清单（平台 + type + capabilities + description）
@@ -3944,7 +3972,11 @@ async function runSubAgent(
 ): Promise<string> {
   const { result, artifacts } = await runWithArtifactCollector(() =>
     runSubAgentImpl(task, args, parentToolCallId, depth, uiTools, specOverride, runOpts));
-  return artifacts.length > 0 ? formatSubAgentReturn(result, artifacts) : result;
+  const withArtifacts = artifacts.length > 0 ? formatSubAgentReturn(result, artifacts) : result;
+  // ★ 子任务 ID 回执（2026-10-09）：parentToolCallId 天然唯一标识这次委派（子智能体
+  //   落库的每条消息都带它）。追加在结果末尾，编排者后续可用 get_sub_task_detail
+  //   按 ID 查执行轨迹分析失败原因。一行即止，不撑上下文。
+  return `${withArtifacts}\n\n[子任务ID] ${parentToolCallId}（如需分析本任务执行过程，可调用 get_sub_task_detail 传入此 ID 查询）`;
 }
 
 async function runSubAgentImpl(
@@ -4055,6 +4087,9 @@ async function runSubAgentImpl(
     //   而那些智能体也可能被 call_agent 当成子智能体调用：不排除的话工具会**暴露给子智能体**。
     //   运行时虽有 `depth >= 1` 兜底拒绝，但"先暴露再拒绝"会白烧 token、还会诱导模型反复尝试。
     if (name === 'call_agent' || name === 'list_sub_agents' || name === 'spawn_subagent') continue;
+    // 子任务详情查询（2026-10-09）：只读但属编排者专属——子智能体查兄弟任务的轨迹
+    // 没有意义且会污染自己的上下文，从子工具面摘掉。
+    if (name === 'get_sub_task_detail') continue;
     // 编排类（plan_tasks / reassign_task / get_plan_status）同属委派族：子智能体不再做规划
     //（executeTool 的 depth>=1 已运行时拦截，这里提前从工具面摘掉，避免"先暴露再拒绝"白烧 token）
     if (name === 'plan_tasks' || name === 'reassign_task' || name === 'get_plan_status') continue;
@@ -5682,6 +5717,12 @@ export function buildToolsForBackend(agentId: string | null, userId: string, opt
   if (!seen.has('list_sub_agents') && registry.has('list_sub_agents')) {
     const def = registry.get('list_sub_agents')!;
     tools.push({ type: 'function', function: { name: 'list_sub_agents', description: def.description, parameters: def.inputSchema } });
+  }
+  // 5b) get_sub_task_detail（2026-10-09）：与 list_sub_agents 同族挂载——编排者必备，
+  //     不依赖各 agent 手动挂载；子任务失败后据此查执行轨迹做根因分析。
+  if (!seen.has('get_sub_task_detail') && registry.has('get_sub_task_detail')) {
+    const def = registry.get('get_sub_task_detail')!;
+    tools.push({ type: 'function', function: { name: 'get_sub_task_detail', description: def.description, parameters: def.inputSchema } });
   }
 
   // 6) ★ P2-1 动态工具路由（2026-10-07）：工具面超阈值时按任务相关性裁剪。

@@ -449,7 +449,7 @@ function createChat() {
     }
   });
   // 任务结束（completed/aborted/failed）兜底清理：SSE 步骤日志可能未清空，这里强制退出实况态
-  store.onTaskFinished((convId) => {
+  store.onTaskFinished(async (convId) => {
     if (store.browserExpanded || store.browserLockInput) {
       store.browserLockInput = false;
       store.browserExpanded = false;
@@ -461,14 +461,28 @@ function createChat() {
     store.clearBrowserTaskActive(convId);
     store.pausedConvIds.clear();
     store.clearAgentCursor();
-    // ★★ agent 开的页面没收干净 → 给用户一条明示（2026-10-08 用户诉求
-    //   「pageAgent 执行完了不会关闭页面？」）。
-    //   ★ 为什么是"提示"而不是"自动关"（用户拍板方案 B 的落点）：
-    //     哪些页还有用（用户要接着看的成果页）只有模型知道 —— 提示词已要求它收尾时自己关，
-    //     这里只在**它没关干净**时兜底告知，不替用户决定关掉可能有用的页面。
-    //   ★ 提示必须放在「读完残留之后、清理记账之前」—— 先取快照再清，否则永远读到空。
+    // ★★ agent 开的页面 → 任务收尾**自动关闭**（2026-10-09 用户诉求升级：
+    //   「子智能体运行任务完后代理的页面自动关闭，智能体接下来去其他任务，页面不能不关啊」。
+    //   原 2026-10-08 方案是"只弹提示不自动关"，实测页面照样堆积，用户拍板改自动关）。
+    //   安全边界不变：只关 agent 打开的（agentOpened），用户手开的不碰 —— 主进程
+    //   browserView:closeAgentTabs 按 agentOpened===true 过滤，双保险。
+    //   ★ 先取残留快照（知会条数），再关闭，最后清记账 —— 顺序不能反。
     const leftover = store.remainingAgentOpenedTabs(convId);
-    if (leftover.length > 0) {
+    const closeApi = (window as any).electronAPI?.browserView;
+    if (leftover.length > 0 && closeApi?.closeAgentTabs) {
+      try {
+        const r = await closeApi.closeAgentTabs();
+        store.clearAgentOpenedTabs(convId);
+        if ((r?.closed ?? 0) > 0) {
+          void import('element-plus').then(({ ElMessage }) => {
+            ElMessage.info({ message: `已自动关闭 AI 打开的 ${r.closed} 个页面`, duration: 4000 });
+          }).catch(() => { /* 提示失败不影响收尾 */ });
+        }
+      } catch { /* 关闭失败退回旧提示路径 */ 
+        store.clearAgentOpenedTabs(convId);
+      }
+    } else if (leftover.length > 0) {
+      // 非 Electron 环境（无 closeAgentTabs API）：退回 2026-10-08 的明示文案
       store.clearAgentOpenedTabs(convId);
       void import('element-plus').then(({ ElMessage }) => {
         ElMessage.info({

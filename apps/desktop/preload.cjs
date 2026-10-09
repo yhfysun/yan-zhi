@@ -150,6 +150,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     closeTab: (tabId, fromUi) => ipcRenderer.invoke('browserView:closeTab', tabId, fromUi),
     // 关闭指定 scope 下的所有 tab（多会话隔离：切换会话/卸载 BrowserPanel 时调用，避免 tab 堆积）
     closeAllTabs: (scope, fromUi) => ipcRenderer.invoke('browserView:closeAllTabs', scope, fromUi),
+    // 收尾自动收拾：关闭全部 agent 打开的 tab（agentOpened===true，用户手开的不动），返回 { closed: n }
+    closeAgentTabs: () => ipcRenderer.invoke('browserView:closeAgentTabs'),
     activateTab: (tabId) => ipcRenderer.invoke('browserView:activateTab', tabId),
     ensureActiveTab: (scope) => ipcRenderer.invoke('browserView:ensureActiveTab', scope),
     load: (tabId, url) => ipcRenderer.invoke('browserView:load', tabId, url),
@@ -180,6 +182,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // 主进程兜底自建 tab（ensureActiveTab 超时）时广播，渲染层补建 tab 壳，避免"导航黑洞"
     onTabCreated: (callback) => {
       ipcRenderer.on('browserView:tabCreated', (_e, tabId, url, scope) => callback(tabId, url, scope));
+    },
+    // tab 关闭广播（2026-10-09）：agent 关 tab / 收尾自动收拾 / closeAllTabs 时推送，渲染层幂等摘壳
+    onTabClosed: (callback) => {
+      ipcRenderer.on('browserView:tabClosed', (_e, tabId) => callback(tabId));
     },
     // 页面 title 变化推送，渲染层更新 tab 标题（真实网站名而非 URL）
     onTitleUpdated: (callback) => {

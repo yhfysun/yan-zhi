@@ -1,6 +1,6 @@
 // 聊天 store
 import { defineStore } from 'pinia';
-import { ref, computed, nextTick } from 'vue';
+import { ref, computed, nextTick, watch } from 'vue';
 import type { Conversation, Message, Platform, Model, DeltaToolCall, InlineDataView } from '@yan-zhi/shared';
 import { getPlatformAdapter, LlmClient, ContextWindow, getToolRegistry, resolveToolPath } from '@yan-zhi/core';
 import { uid } from '@yan-zhi/shared';
@@ -396,6 +396,18 @@ export const useChatStore = defineStore('chat', () => {
    * ★ 键是 convId：多会话并行时 A 会话的浏览器任务不得锁住 B 会话的面板。
    */
   const browserTaskConvs = ref<Set<string>>(new Set());
+  // ★ 浏览器工具活性时间戳（2026-10-09）：browserSteps 最后一条的时间。
+  //   动机（用户实报）：「pageAgent结束了…Agent 接管中一直在？」——接管条此前只看
+  //   会话整体 streaming，主智能体在编排间隙（跑非浏览器步骤/纯思考）时条子照样挂着。
+  //   收口：所有 browserSteps.push 都带 time（SSE tool:start/result、tool:execute、
+  //   本地 dispatchToolCall 共 6+ 处登记点），watch 最后一条即可全覆盖，不必逐点插桩。
+  const lastBrowserToolAt = ref(0);
+  watch(() => browserSteps.value.length, () => {
+    const last = browserSteps.value[browserSteps.value.length - 1];
+    if (last?.time) lastBrowserToolAt.value = last.time;
+  });
+  /** 接管条活性宽限：最后一次浏览器工具事件后，条子保留多久（覆盖 wait_for 30s 类长工具） */
+  const BROWSER_LIVE_GRACE_MS = 45000;
   /** 登记「本会话正在跑浏览器任务」（幂等；由工具事件驱动，见 subscribeTaskSse 的 tool 分支） */
   function markBrowserTaskActive(convId: string) {
     if (!convId) return;
@@ -2225,6 +2237,36 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
     })();
   }
 
+  // ★★★ 接管条残留自愈巡检（2026-10-09）：SSE 终态事件丢失（断流放弃重连 / 服务重启把
+  //   任务标 interrupted）时 runningConvIds 永远没人清 →「Agent 接管中 · 执行中」整条
+  //   挂着不掉（用户实报「pageAgent结束了…这个一直在？」）。原有自愈只挂在「切回会话」
+  //   （reconnectActiveTask 的调用点），用户不切会话就永远不触发。这里 30s 周期巡检：
+  //   会话仍标记运行中 + 属浏览器任务 + 浏览器工具已 2 分钟无任何事件 → 只查一次服务端
+  //   活动任务，无活动才清残留运行态（**不做** SSE 重连重订——长任务编排间隙浏览器
+  //   空闲 2 分钟是常态，反复重订会抖动流）。
+  async function sweepStaleBrowserTakeover(): Promise<void> {
+    if (runningConvIds.value.size === 0) return;
+    if (Date.now() - lastBrowserToolAt.value <= 120000) return;
+    for (const convId of Array.from(runningConvIds.value)) {
+      if (!browserTaskConvs.value.has(convId)) continue;
+      try {
+        const r = await api.get<any[]>(`/llm/tasks/active?conversationId=${convId}`);
+        if ('error' in (r as any) || !(r as any).data) return;
+        const act = (r as any).data as any[];
+        if (act.length === 0) {
+          // 服务端已无活动任务 → 前端运行态是残留，落结束态并清记账（与切会话自愈同口径）
+          markRunEnd(convId, 'aborted');
+          runningConvIds.value.delete(convId);
+          clearBrowserTaskActive(convId);
+          abortControllers.delete(convId);
+          taskIds.delete(convId);
+          emitTaskFinished(convId);
+        }
+      } catch { /* 查询失败（网络抖动）不动残留态，避免误清真正在跑的任务 */ }
+    }
+  }
+  setInterval(() => { void sweepStaleBrowserTakeover(); }, 30000);
+
   async function callLlm(
     platform: Platform,
     model: Model,
@@ -2430,6 +2472,7 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
     runningConvIds, isConvStreaming, runStatsByConv,
     browserExpanded, browserUserDismissed, browserLockInput, browserPaused, pausedConvIds,
     browserTaskActive, markBrowserTaskActive, clearBrowserTaskActive,
+    lastBrowserToolAt, BROWSER_LIVE_GRACE_MS,
     remainingAgentOpenedTabs, clearAgentOpenedTabs, markAgentOpenedTab,
     agentCursor, onAgentCursor, clearAgentCursor,
     pauseTask, resumeTask,

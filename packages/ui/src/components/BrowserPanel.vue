@@ -494,10 +494,21 @@ const inputLocked = computed(() =>
   && convTaskRunning.value
   && chatStore.browserTaskActive,
 );
+// ★ 实况条活性门控（2026-10-09）：接管条只在浏览器工具有"呼吸"时显示 ——
+//   最后一次 browser_* 工具事件在宽限期（45s，覆盖 wait_for 30s 类长工具）内、
+//   或任务已暂停（暂停态要露「已暂停 · 你已接管页面」和恢复按钮，不能消失）。
+//   动机（用户实报）：pageAgent 阶段结束后主智能体编排别的步骤，接管条挂着
+//   「执行中」干等几分钟，用户以为卡死。走秒节拍器让活性判断随时间自动失效。
+const nowTick = ref(Date.now());
+setInterval(() => { nowTick.value = Date.now(); }, 3000);
+const browserLiveFresh = computed(() =>
+  pausedNow.value
+  || (nowTick.value - (chatStore.lastBrowserToolAt || 0) < chatStore.BROWSER_LIVE_GRACE_MS),
+);
 // 实况条 / 虚拟鼠标：与锁定同源（断流后仍显示"接管中"，而不是整条消失）。
 // ★ 有 browserSteps 时照常展示步骤进度；没有（断流/重放中）也保留"执行中"形态。
 const liveControlVisible = computed(() =>
-  isPreviewScope && convTaskRunning.value
+  isPreviewScope && convTaskRunning.value && browserLiveFresh.value
   && (chatStore.browserTaskActive || chatStore.browserSteps.length > 0),
 );
 // Agent 接管形态的步骤进度/清单：取当前会话已登记的 task_plan（无计划 → 只显示「执行中」，不硬造步骤）
@@ -2107,6 +2118,19 @@ onMounted(async () => {
         history: url ? [url] : [], histIndex: url ? 0 : -1, pageZoom: 1, canBack: false, canForward: false,
       });
       activeTabId.value = tid;
+    }));
+    // ★ tab 关闭广播（2026-10-09）：agent 关 tab / 任务收尾自动收拾时摘除 tab 壳。
+    //   此前 webview 引擎下 agent 的 close_tab 只删主进程 meta，渲染层残留幽灵壳。
+    //   幂等：不认识/已移除的 tabId 直接忽略。激活位切换由本处兜底 + 主进程 tabActivated 驱动。
+    api.browserView.onTabClosed?.(aliveGuard((tid: string) => {
+      const idx = tabs.value.findIndex(t => t.id === tid);
+      if (idx < 0) return;
+      tabs.value.splice(idx, 1);
+      if (activeTabId.value === tid) {
+        activeTabId.value = tabs.value[0]?.id || '';
+        const next = activeTabId.value;
+        if (next) switchTab(next).catch(() => { /* ignore */ });
+      }
     }));
     // 页面 title 变化 → 更新 tab 标题（真实网站名而非 URL）+ 对话页 browser tab 名
     // 对话页 tab chip 名称只由 preview 空间实例更新（page 空间的网页标题不牵连对话页）
