@@ -11,6 +11,11 @@ export * from './context-policy';
 //   模块级单值，正是"跨会话互相污染"的根源；共用一份才能保证两链路行为一致。
 export * from './keyed-streak';
 
+// 按 key 串行的执行队列（A2）——**三端共用的唯一实现**。
+// ★ 为什么放 shared：前端已有同款思路（`ui/stores/browser-op-queue.ts`），服务端的
+//   文件「读-改-写」也需要；两处各写一份必然漂移。shared 被 core/ui/server 同时依赖。
+export * from './keyed-serial-queue';
+
 // 剪辑效果库（滤镜/转场/文字动画/音效）——**三端共用的单一真相源**。
 // ★ 为什么放 shared 而不是 server/services：核心 schema（packages/core）也要用它生成
 //   工具参数的 enum。放 server 下会让 core 依赖 server（层次倒置），

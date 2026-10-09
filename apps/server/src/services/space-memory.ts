@@ -9,7 +9,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { db } from '../db.js';
 import { serverState } from '../state.js';
-import { estimateTokens } from '@yan-zhi/shared';
+import { estimateTokens, runSerial, pruneSerialChains, type SerialChains } from '@yan-zhi/shared';
 import { createLogger } from './logger.js';
 
 const logger = createLogger('space-memory');
@@ -183,23 +183,42 @@ function pruneEntriesByMark(content: string, keep: number): string {
  *
  * @param keepPerMark 传入 { mark, keep } 时，追加后对该标记的条目做滚动淘汰（防文件无限膨胀）
  */
+/**
+ * ★★★ 串行链表（A2，2026-10-10）：按**文件绝对路径**串行化「读-改-写」。
+ *
+ * ★ 为什么必须（实测竞态）：本函数的 `await readFile` → 拼接 → `await writeFile`
+ *   **中间有真正的 await**（fs 异步）⇒ 两个并发调用各自读到同一份旧内容、各自写回
+ *   → **后写覆盖先写**（丢更新）。
+ * ★ 触发场景（本项目真实路径）：
+ *   · `appendTaskDecision` 是 **fire-and-forget**（`void appendTaskDecision(...)`）；
+ *   · 两条任务**同时收尾**（`call_agent` 并行 / 自动接力）写同一空间记忆文件；
+ *   · `appendTaskProgress` 一次调用连续写两份文件。
+ * ★ 丢的后果（静默、不报错）：空间记忆丢条目、计划进度回退 → **模型看到旧状态、重复干活**。
+ * ★ 键取**绝对路径**：不同文件之间本无冲突，按文件串行即可（并行度最大）。
+ */
+const memoryFileChains: SerialChains = new Map();
+
 async function appendLineWithHeader(
   filePath: string,
   header: string,
   line: string,
   keepPerMark?: { mark: RegExp; keep: number },
 ): Promise<void> {
-  await ensureParentDir(filePath);
-  let existing = '';
-  try { existing = await readFile(filePath, 'utf-8'); } catch { /* 新文件 */ }
-  if (!existing.trim()) {
-    await writeFile(filePath, `${header}\n\n- ${line}\n`, 'utf-8');
-    return;
-  }
-  const base = existing.endsWith('\n') ? existing : `${existing}\n`;
-  let next = `${base}- ${line}\n`;
-  if (keepPerMark) next = `${pruneEntriesByMark(next, keepPerMark.keep)}\n`;
-  await writeFile(filePath, next, 'utf-8');
+  // ★ 整段 RMW 必须串行（含 ensureParentDir —— 它也是 fs 写，同样不该并发）
+  await runSerial(memoryFileChains, filePath, async () => {
+    await ensureParentDir(filePath);
+    let existing = '';
+    try { existing = await readFile(filePath, 'utf-8'); } catch { /* 新文件 */ }
+    if (!existing.trim()) {
+      await writeFile(filePath, `${header}\n\n- ${line}\n`, 'utf-8');
+      return;
+    }
+    const base = existing.endsWith('\n') ? existing : `${existing}\n`;
+    let next = `${base}- ${line}\n`;
+    if (keepPerMark) next = `${pruneEntriesByMark(next, keepPerMark.keep)}\n`;
+    await writeFile(filePath, next, 'utf-8');
+  });
+  pruneSerialChains(memoryFileChains, 500); // 上限兜底（防链表随文件数无限增长）
 }
 
 /** 整体写入空间记忆文件（覆盖） */
@@ -211,9 +230,14 @@ export async function writeSpaceMemory(
   const space = getSpaceRow(userId, spaceId);
   if (!space) throw new Error('空间不存在或不属于当前用户');
   const filePath = getSpaceMemoryPath(space);
-  await ensureParentDir(filePath);
   const text = String(content || '').replace(/\r\n/g, '\n');
-  await writeFile(filePath, text, 'utf-8');
+  // ★ A2：与 `appendLineWithHeader` **共用同一条链表**（同一文件的两个写入口必须互斥，
+  //   否则"整文件覆盖"会与并发的"追加"互相踩踏 —— 覆盖掉的条目静默消失）。
+  await runSerial(memoryFileChains, filePath, async () => {
+    await ensureParentDir(filePath);
+    await writeFile(filePath, text, 'utf-8');
+  });
+  pruneSerialChains(memoryFileChains, 500);
   return { spaceId: space.id, path: filePath, size: Buffer.byteLength(text, 'utf-8') };
 }
 
@@ -640,7 +664,10 @@ export async function distillStaleProgress(
       if (drop.has(l)) { drop.delete(l); continue; }
       kept.push(l);
     }
-    await writeFile(progressPath, kept.join('\n'), 'utf-8');
+    await runSerial(memoryFileChains, progressPath, async () => {
+      await writeFile(progressPath, kept.join('\n'), 'utf-8');
+    });
+    pruneSerialChains(memoryFileChains, 500);
     logger.info(`[space-memory] 蒸馏完成：${toDistill.length} 条超期明细 → MEMORY.md 要点，原条目已删`);
     return true;
   } catch (e: any) {
