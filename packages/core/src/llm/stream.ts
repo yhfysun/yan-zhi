@@ -61,7 +61,12 @@ export async function* parseSSE(stream: ReadableStream<Uint8Array>): AsyncIterab
             },
             finishReason,
             usage: json.usage
-              ? { promptTokens: json.usage.prompt_tokens, completionTokens: json.usage.completion_tokens }
+              ? {
+                  promptTokens: json.usage.prompt_tokens,
+                  completionTokens: json.usage.completion_tokens,
+                  // ★ D1 可观测（2026-10-09）：OpenAI 把缓存命中放在 prompt_tokens_details.cached_tokens
+                  cachedTokens: json.usage.prompt_tokens_details?.cached_tokens,
+                }
               : undefined,
           };
         } catch {

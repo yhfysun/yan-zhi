@@ -585,7 +585,12 @@ export class LlmClient {
       },
       finishReason: data.choices?.[0]?.finish_reason,
       usage: data.usage
-        ? { promptTokens: data.usage.prompt_tokens, completionTokens: data.usage.completion_tokens }
+        ? {
+            promptTokens: data.usage.prompt_tokens,
+            completionTokens: data.usage.completion_tokens,
+            // ★ D1 可观测（2026-10-09）：OpenAI 缓存命中字段
+            cachedTokens: data.usage.prompt_tokens_details?.cached_tokens,
+          }
         : undefined,
     };
   }

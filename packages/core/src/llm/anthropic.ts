@@ -203,7 +203,12 @@ export async function* parseAnthropicSSE(stream: ReadableStream<Uint8Array>): As
         }
       } else if (type === 'message_delta') {
         const usage = ev.usage
-          ? { promptTokens: inputTokens, completionTokens: ev.usage.output_tokens ?? 0 }
+          ? {
+              promptTokens: inputTokens,
+              completionTokens: ev.usage.output_tokens ?? 0,
+              // ★ D1 可观测（2026-10-09）：Anthropic 缓存读取量
+              cachedTokens: ev.usage.cache_read_input_tokens,
+            }
           : undefined;
         if (ev.delta?.stop_reason) terminated = true;
         yield { finishReason: ev.delta?.stop_reason, usage } as ChatChunk;
@@ -272,7 +277,12 @@ export function anthropicResponseToChunk(data: any): ChatChunk {
     },
     finishReason: data?.stop_reason,
     usage: data?.usage
-      ? { promptTokens: data.usage.input_tokens, completionTokens: data.usage.output_tokens }
+      ? {
+          promptTokens: data.usage.input_tokens,
+          completionTokens: data.usage.output_tokens,
+          // ★ D1 可观测（2026-10-09）
+          cachedTokens: data.usage.cache_read_input_tokens,
+        }
       : undefined,
   };
 }

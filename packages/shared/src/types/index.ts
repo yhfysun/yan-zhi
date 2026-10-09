@@ -428,6 +428,15 @@ export interface ChatChunk {
   usage?: {
     promptTokens: number;
     completionTokens: number;
+    /**
+     * ★ 缓存命中的 token 数（2026-10-09，D1 可观测）。
+     *
+     * 为什么需要：Anthropic 用 `cache_read_input_tokens`、OpenAI 用 `prompt_tokens_details.cached_tokens`。
+     * 此前只读 prompt/completion → **缓存命中率不可观测**，于是"前缀缓存是否生效"无从判断
+     * （而 system prompt 尾部的时间戳恰好会让它 100% 失效，且改前看不出来）。
+     * ⇒ 先能看见，再谈优化（本项与"移除 system 尾部时间戳"配对）。
+     */
+    cachedTokens?: number;
   };
   /**
    * ★ 流已**正常收尾**的标记（2026-10-09）。
