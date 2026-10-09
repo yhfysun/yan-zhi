@@ -1721,6 +1721,7 @@ export function cleanupTasks(maxAgeMs: number = 30 * 60 * 1000) {
   for (const [id, task] of tasks) {
     if (task.status !== 'running' && now - task.createdAt > maxAgeMs) {
       tasks.delete(id);
+      forgetTaskScopedState(id); // ★ A5：一并清任务级 Map（此前**永不清理** → 无界增长）
     }
     // running 任务超 2 小时强制中止并清理（防内存泄漏）
     if (task.status === 'running' && now - task.createdAt > maxRunMs) {
@@ -1728,8 +1729,51 @@ export function cleanupTasks(maxAgeMs: number = 30 * 60 * 1000) {
       task.status = 'failed';
       task.error = '任务运行超时（超过 2 小时）';
       tasks.delete(id);
+      forgetTaskScopedState(id); // ★ A5：同上
     }
   }
+  // ★★★ A5（2026-10-09）：`autoDiagnoseLastAt` 是**会话级 45s 节流**表，
+  //   键是 conversationId（不是 taskId）⇒ **不能在任务终态删**（删了节流失效、
+  //   同一会话连续编辑会重复跑诊断）。它按**时间**淘汰：只保留仍在节流窗口内的条目。
+  //   ★ 用 `pruneAutoDiagnoseThrottle()`（函数调用）而非直接引用 —— 该 Map 声明在文件
+  //     更靠后处，直接引用虽在"定时器 5 分钟后才跑"的时序下不会触发 TDZ，
+  //     但那依赖时序巧合；走函数调用则**完全不依赖声明位置**（本仓踩过 TDZ 类问题）。
+  pruneAutoDiagnoseThrottle(now);
+}
+
+/**
+ * ★★★ A5（2026-10-09）：清理**任务级**辅助状态。
+ *
+ * ★ 为什么必须（实测）：`verifyStateByTask`（key = `task.id`）此前**只有写入、从不删除**
+ *   → 每个跑过的任务永久留一条（`{touched, verified, nudges}`）→ 长跑进程/高频会话下
+ *   **无界增长**（内存缓慢泄漏，且不可观测）。
+ * ★ 为什么只清 `verifyStateByTask`：另一个 Map `autoDiagnoseLastAt` 的键是
+ *   **conversationId**（会话级节流表），语义不同 —— 在任务终态删它会**破坏节流**
+ *   （见 `pruneAutoDiagnoseThrottle` 的时间淘汰）。
+ * ★ 判据：**同一处声明、键语义不同的两个 Map，清理策略必须分别定** ——
+ *   "顺手一起删"会把节流表删坏（那是另一个方向的 bug）。
+ */
+function forgetTaskScopedState(taskId: string): void {
+  verifyStateByTask.delete(taskId);
+}
+
+/** 按时间淘汰会话级自动诊断节流表（见 `autoDiagnoseLastAt` 注释） */
+function pruneAutoDiagnoseThrottle(now: number): void {
+  for (const [convKey, at] of autoDiagnoseLastAt) {
+    if (now - at > AUTO_DIAGNOSE_INTERVAL_MS) autoDiagnoseLastAt.delete(convKey);
+  }
+}
+
+/**
+ * ★★ A5（2026-10-09）：辅助状态的**规模观测出口**（供守门测试与运维排查）。
+ *
+ * ★ 为什么必须导出：这两个 Map 此前**没有任何可观测手段** —— 泄漏是"看不见"的
+ *   （与"记忆体积可观测"同族：先能看见，才谈治理）。规模可观测后，
+ *   守门测试才能**真跑**断言"清理真的生效"，而不是只查源码字符串。
+ * ★ 只读（返回数字），不改任何状态。
+ */
+export function auxStateSizes(): { verifyState: number; autoDiagnoseThrottle: number } {
+  return { verifyState: verifyStateByTask.size, autoDiagnoseThrottle: autoDiagnoseLastAt.size };
 }
 
 /**
