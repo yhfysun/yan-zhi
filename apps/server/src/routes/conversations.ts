@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { v4 as uuid } from 'uuid';
 import { authMiddleware } from '../auth.js';
-import { db, MESSAGE_LIST_COLS, clearMessageSummaries } from '../db.js';
+import { db, MESSAGE_LIST_COLS, clearMessageSummaries, listMessageSummaries, deleteMessageSummariesAfter } from '../db.js';
 import { normalizePermissionMode } from '../tool-permission.js';
 import { writeTaskPlanFile } from '../services/task-plan-file.js';
 import { WF_TOOL_PREFIX, MAX_WF_TOOLS_PER_CONVERSATION } from '../services/workflow-tool-registry.js';
@@ -212,6 +212,50 @@ router.delete('/:id', (req: Request, res: Response) => {
 // 需要快照时走独立按需接口 GET /api/messages/:mid/snapshot。
 // ★ 列清单统一取自 db.ts:MESSAGE_LIST_COLS —— 与 llm-task-manager 的 ReAct 热路径**共用同一常量**，
 //   避免"同一语义两处各写一份"的漂移（本项目既有教训）。
+// ── ★★★ 压缩历史（D8，2026-10-09）─────────────────────────────────────────
+// 压缩是**增量累积**的（新摘要吸收旧摘要），但读取只认**最新一条** →
+// "压了什么、压到第几轮"对用户完全不可见（只看到一个"已压缩 N 次"计数）。
+// `insertMessageSummary` 注释写着"追加不覆盖，保留历史以便回滚/审计"，
+// 而 `deleteMessageSummariesAfter`（回滚）**生产零调用** —— 存了历史却没有读的出口。
+// 这两条路由补上那个出口：列历史 + 回退到某个压缩点（**原文一字未动**，非破坏性）。
+
+// GET /api/conversations/:id/summaries —— 列出压缩历史（新→旧，最多 20 条）
+router.get('/:id/summaries', (req: Request, res: Response) => {
+  const userId = req.user!.userId;
+  const cid = req.params.id;
+  const conv = db.prepare('SELECT id FROM conversation WHERE id = ? AND user_id = ?').get(cid, userId);
+  if (!conv) { res.status(404).json({ error: '会话不存在' }); return; }
+  const items = listMessageSummaries(cid, 20).map((s) => ({
+    id: s.id,
+    // 不返回摘要全文（可能很长）：给前 200 字预览 + 覆盖的消息条数
+    preview: s.summary.slice(0, 200),
+    coveredCount: s.messageIds.length,
+    tokens: s.tokens,
+    createdAt: s.createdAt,
+    // 是否**当前生效**（读取路径只认最新一条）
+    active: false,
+  }));
+  if (items.length) items[0].active = true;
+  res.json({ items, total: items.length });
+});
+
+// POST /api/conversations/:id/summaries/:summaryId/rollback —— 回退到该压缩点（保留该条，删其之后）
+// ★ 非破坏性：只删 message_summary 行，**message 表一字未动** → 原文始终完整。
+//   回退后该条成为"最新"，下一轮上下文按它重建（等价于"回到那次压缩的状态"）。
+router.post('/:id/summaries/:summaryId/rollback', (req: Request, res: Response) => {
+  const userId = req.user!.userId;
+  const cid = req.params.id;
+  const conv = db.prepare('SELECT id FROM conversation WHERE id = ? AND user_id = ?').get(cid, userId);
+  if (!conv) { res.status(404).json({ error: '会话不存在' }); return; }
+  const sid = req.params.summaryId;
+  // 先校验该摘要确属本会话（避免跨会话误删）—— deleteMessageSummariesAfter 内部也会校验，
+  // 但这里显式查一次以便给出明确错误（否则"删了 0 条"分不清是"不存在"还是"已是最新"）。
+  const exists = listMessageSummaries(cid, 100).some((s) => s.id === sid);
+  if (!exists) { res.status(404).json({ error: '该压缩记录不存在或不属于本会话' }); return; }
+  const removed = deleteMessageSummariesAfter(cid, sid);
+  res.json({ ok: true, removed, note: '已回退压缩记录（对话原文未改动，下一轮按该压缩点重建上下文）' });
+});
+
 // GET /api/conversations/:id/context-breakdown?agentId=
 // 上下文分段估算（2026-10-06，对齐 WorkBuddy 同款分类）：系统级提示 / 工具定义与描述 /
 // 技能级 MCP / 对话内容。全部为 estimateTokens 估算值（与前端 tokenCount 同口径，非 API 精确值）。

@@ -86,6 +86,26 @@ export function getLatestMessageSummary(conversationId: string): MessageSummaryR
 }
 
 /**
+ * ★★★ 列出某会话的**全部**压缩摘要（新→旧）（D8，2026-10-09）。
+ *
+ * ★ 为什么必须有：压缩是**增量累积**的（新摘要吸收旧摘要），而读取只认**最新一条**
+ *   —— 于是"压缩了什么、压到第几轮"对用户**完全不可见**（只看得到"已压缩 N 次"这个计数）。
+ *   `insertMessageSummary` 的注释写着"追加不覆盖，保留历史以便回滚/审计"，但**从来没有读的出口**
+ *   （只有 `getLatestMessageSummary` 取最新）—— 等于历史存了却看不见，是"存而不用"。
+ * ⇒ 本函数是该历史的**唯一读出口**，供前端展示与「回退到压缩点」使用。
+ */
+export function listMessageSummaries(conversationId: string, limit = 20): MessageSummaryRow[] {
+  try {
+    const rows = db
+      .prepare('SELECT * FROM message_summary WHERE conversation_id = ? ORDER BY created_at DESC LIMIT ?')
+      .all(conversationId, Math.max(1, Math.min(Number(limit) || 20, 100))) as any[];
+    return rows.map(rowToSummary);
+  } catch {
+    return [];
+  }
+}
+
+/**
  * 追加一条压缩摘要（**追加不覆盖**，保留历史以便回滚/审计）。
  * ★ 为什么要传 userId：与 message 表同构，便于按用户隔离与后续清理。
  */
