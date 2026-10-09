@@ -81,7 +81,8 @@ import { startScheduledTaskScheduler } from './services/scheduled-tasks.js';
 import { startMemoryDreamingScheduler } from './services/memory-dreaming.js';
 import { syncDingtalkStreamClients } from './services/dingtalk-stream.js';
 import { nodeAdapter } from './node-adapter.js';
-import { db } from './db.js';
+import { db, dataDir } from './db.js';
+import { checkAndQuarantine } from './services/db-integrity.js';
 import { createLogger } from './services/logger.js';
 const logger = createLogger('index');
 
@@ -185,7 +186,7 @@ app.use('/api/user-hooks', userHookRoutes);
 app.use('/api/ollama-market', ollamaMarketRoutes);
 app.use('/api/tts-packs', ttsPackRoutes);
 app.use('/api/plugins', pluginRoutes);
-// 插件静态资源（皮肤壁纸/预览图）：/api/plugin-assets/:pluginId/*
+// 插件静态资源（皮肤壁纸/预览图）：/api/plugin-assets/:pluginId 下的子路径
 app.use('/api/plugin-assets', pluginAssetsRouter);
 
 // AI 媒体产物访问（api_image_generate / api_video_generate 落盘的持久文件，区别于截图 30 分钟临时区）
@@ -415,6 +416,18 @@ if (webDist) {
 app.listen(PORT_NUM, HOST, () => {
   logger.info(`后端已启动: http://${HOST === '0.0.0.0' ? '<局域网可达>' : HOST}:${PORT_NUM}`);
 });
+
+// ★★★ 启动时数据库完整性自检 + 损坏库隔离（2026-10-09，P3）：
+//   生产库实测出现 `database disk image is malformed`（6 条消息 + llm_task failed 命中），
+//   症状是「任务一跑就断 / 会话打不开」且无前置信号。这里在**任何读写之前**先探一次：
+//   好库 → 零副作用；坏库 → 改名隔离（data.db.corrupt-<ts>）并以空库启动，
+//   绝不带着坏库静默运行（那会让每个请求随机暴毙）。
+//   ★ 必须在 markOrphan* 之前：那些清理本身就要读库，坏库会让它们先炸。
+//   ★ DATA_DIR 下的 data.db 与 db.ts 同源（同一 dataDir），此处复用同一路径。
+try {
+  const dbPath = path.join(dataDir, 'data.db');
+  checkAndQuarantine(dbPath);
+} catch (e) { logger.warn('[db-integrity] 自检流程异常（不影响启动）:', e); }
 
 // 启动时回收上次进程遗留的运行/任务：llm_task 与 workflow_run 的 running 状态不会自己结束，
 // 不回收会永远卡在 running。随后补投遗留的工作流反写 —— 顺序不能反：先标 failed，补投才有失败可写。

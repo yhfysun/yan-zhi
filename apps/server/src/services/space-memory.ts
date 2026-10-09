@@ -4,7 +4,7 @@
 // 文件位置：
 //   - 空间绑定了本地目录（dir_path）→ <dir_path>/MEMORY.md（跟随空间目录，用户可直接编辑）
 //   - 未绑定目录 → <serverState.workspaceDir>/spaces/<spaceId>/MEMORY.md
-import { mkdir, readFile, writeFile, appendFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { db } from '../db.js';
@@ -76,12 +76,83 @@ function nowStamp(): string {
 }
 
 /**
+ * 条目行的**滚动保留上限**：同一「前缀特征」的条目最多保留这么多条，超出淘汰最旧的。
+ *
+ * ★★★ 为什么必须有（2026-10-09 实据诊断，P0）：
+ *   `appendTaskProgress` 每次任务收尾（含**每次自动接力、每次达最大步数中断、每次失败**）
+ *   都往 MEMORY.md 追加一条「任务【…】+ 一整套 markdown 总结」。
+ *   实测生产目录 `小说推文/MEMORY.md`：**12786 字符 / 34 条正文行，其中 27 条任务进展行
+ *   占 81%（10312 字，平均 381、最长 444 字）**，而注入上限仅 `INJECT_MAX_CHARS=6000`
+ *   → 每次新会话开局都要把这一大坨回灌进 system prompt。
+ *   ⇒ 形成正反馈：越断记忆越长 → 新会话开局越重 → 越容易再断。
+ *   修法（双管）：① 注入版压成一行短摘要（见 appendTaskProgress）；
+ *   ② 本处滚动淘汰——同一类条目只留最近 N 条，让文件**有界**。
+ *
+ * ★ 判据是「条目前缀特征」而不是按文件整体：决策记录/普通记忆不该被任务流水挤掉。
+ */
+export const PROGRESS_ENTRY_KEEP = 8;
+/**
+ * 任务进展条目的前缀特征（行首 `- ` + 时间戳 + 「任务【」），用于滚动淘汰分组；与 OUTCOME_LABEL 同族。
+ * ★ 必须含行首 `- `：文件里每条都带 list 前缀，锚 `^\d{4}` 会一条都匹配不到（淘汰静默失效）。
+ */
+const PROGRESS_ENTRY_MARK = /^- \d{4}-\d{2}-\d{2} \d{2}:\d{2} 任务【/;
+
+/**
+ * 「**已终结**」的任务进展条目特征 —— 任务【已完成】/【被用户终止】/【失败中断】。
+ * 这类条目只保留**最近 1 条**留痕，其余当场清理。
+ *
+ * ★★★ 为什么要单独处理（2026-10-09，用户诉求「完成了的没用了的该清理就清理」）：
+ *   原 `PROGRESS_ENTRY_KEEP` 是一刀切保留最近 8 条，但**已完成**的任务收尾条目对"继续接力"
+ *   毫无价值（活干完了），却和"达最大步数中断/空转中断"（还没干完）抢同一份注入预算。
+ *   实测生产 `小说推文/MEMORY.md`：7 条收尾条目里 4 条是【已完成】/【被用户终止】/【失败中断】。
+ *   ⇒ 已终结 → 只留最近 1 条；只有"没跑完"的才多留，把注入预算留给真正需要的活。
+ * ★ 保留 1 条而非 0 条：留痕可追溯"这个任务上一轮做过、结果如何"，但不再累积。
+ */
+const TERMINAL_ENTRY_MARK = /^- \d{4}-\d{2}-\d{2} \d{2}:\d{2} 任务【(?:已完成|被用户终止|失败中断)/;
+
+/**
+ * 任务进展行按「已终结 / 未终结」分别滚动淘汰 —— 让注入文件**既有界、又把预算留给没干完的活**。
+ *
+ * 规则（与 PROGRESS_ENTRY_KEEP 配套）：
+ *   · 已终结（【已完成/被用户终止/失败中断】）→ 只保留**最近 1 条**（无接力价值，只留痕）；
+ *   · 未终结（【达最大步数中断】/【空转中断】= 还得接着干）→ 保留最近 `keep` 条；
+ *   · 非任务进展行（头注/决策/普通记忆）→ 原样保留、保持相对顺序。
+ * 文件是追加写：index 小的更旧 → 淘汰时丢"最旧的那批"。
+ *
+ * ★ 只动**匹配特征**的行；★ 放在写入路径而非读取路径：读取侧（selectMemoryLines）只是按预算选取，
+ *   文件本身不缩水 → 每次读盘十几 KB、`api_space_memory_read` 全量返回。写入侧收口才是真的"文件有界"。
+ */
+function pruneEntriesByMark(content: string, keep: number): string {
+  const lines = content.split('\n');
+  const terminal: number[] = [];
+  const open: number[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (!PROGRESS_ENTRY_MARK.test(lines[i])) continue;
+    (TERMINAL_ENTRY_MARK.test(lines[i]) ? terminal : open).push(i);
+  }
+  const drop = new Set<number>();
+  if (terminal.length > 1) for (const i of terminal.slice(0, terminal.length - 1)) drop.add(i);
+  if (open.length > keep) for (const i of open.slice(0, open.length - keep)) drop.add(i);
+  if (drop.size === 0) return content;
+  return lines.filter((_, i) => !drop.has(i)).join('\n');
+}
+
+/** 行前缀标记（可选）：传入时对**该标记**的行做滚动淘汰 */
+
+/**
  * 往「一行一条」的记忆文件追加一行；文件不存在/为空时先写标准头部。
  *
  * 抽出来的原因：空间 MEMORY.md 与 .yan-zhi/task-memory/*.md 必须**同一套格式**，
  * 各自实现一份必然漂移（头部不同、换行处理不同）。
+ *
+ * @param keepPerMark 传入 { mark, keep } 时，追加后对该标记的条目做滚动淘汰（防文件无限膨胀）
  */
-async function appendLineWithHeader(filePath: string, header: string, line: string): Promise<void> {
+async function appendLineWithHeader(
+  filePath: string,
+  header: string,
+  line: string,
+  keepPerMark?: { mark: RegExp; keep: number },
+): Promise<void> {
   await ensureParentDir(filePath);
   let existing = '';
   try { existing = await readFile(filePath, 'utf-8'); } catch { /* 新文件 */ }
@@ -90,8 +161,9 @@ async function appendLineWithHeader(filePath: string, header: string, line: stri
     return;
   }
   const base = existing.endsWith('\n') ? existing : `${existing}\n`;
-  await writeFile(filePath, base, 'utf-8');
-  await appendFile(filePath, `- ${line}\n`, 'utf-8');
+  let next = `${base}- ${line}\n`;
+  if (keepPerMark) next = `${pruneEntriesByMark(next, keepPerMark.keep)}\n`;
+  await writeFile(filePath, next, 'utf-8');
 }
 
 /** 整体写入空间记忆文件（覆盖） */
@@ -120,7 +192,14 @@ export async function appendSpaceMemory(
   const line = String(entry || '').trim().replace(/\s*\n+\s*/g, ' '); // 追加语义=一行一条，压平换行
   if (!line) throw new Error('content 为必填项');
   const filePath = getSpaceMemoryPath(space);
-  await appendLineWithHeader(filePath, spaceMemoryHeader(space.name), `[${today()}] ${line}`);
+  // ★ 顺手做一次任务进展行的滚动淘汰（2026-10-09）：人工/模型追加也是写入路径，
+  //   同样应让文件有界 —— 否则只靠任务收尾时淘汰，长期不跑任务的档案会一直保留过期流水。
+  await appendLineWithHeader(
+    filePath,
+    spaceMemoryHeader(space.name),
+    `[${today()}] ${line}`,
+    { mark: PROGRESS_ENTRY_MARK, keep: PROGRESS_ENTRY_KEEP },
+  );
   return { spaceId: space.id, path: filePath, appended: true };
 }
 
@@ -381,6 +460,50 @@ function flattenForProgress(s: string, max: number): string {
 }
 
 /**
+ * 完整明细（只进 progress.md，不注入）—— 可长；`api_space_memory_read` 按需读。
+ * 读取侧另有 PROGRESS_READ_MAX_CHARS 兜底。
+ */
+const PROGRESS_FULL_MAX = 4000;
+/**
+ * 注入版单行上限（进 MEMORY.md → 会被回灌 system prompt）。
+ *
+ * ★★★ 为什么从 400 压到 300 且要"抽取要点"（2026-10-09，P0 实据）：
+ *   实测生产 MEMORY.md 27 条任务进展行共 10312 字（平均 381 / 最长 444），占文件 81%，
+ *   而注入预算只有 6000 → 一坨超长总结把预算吃光。改法：注入版**只留要点**，
+ *   完整总结留在 progress.md（不在注入路径）。
+ */
+const PROGRESS_COMPACT_MAX = 300;
+
+/** 要点抽取：优先"产物路径/落盘"这类跨会话接力最需要的字段，否则取首句 */
+const KEY_POINT_PATTERNS: RegExp[] = [
+  /(成片路径|产物路径|落盘|已写入|文件路径|输出路径)[：:][^。；;]{0,180}/,
+  /(C:\\[^\s。；;]{6,180})/,
+  /(\/[\w\-./]{8,180}\.(mp4|txt|json|md|mp3|srt))/,
+];
+
+/**
+ * 把一整套 markdown 任务总结压成**一行要点**（注入版）。
+ *
+ * ★ 不是简单截断头部 —— 总结首句往往是寒暄（"两件事都完成了"），
+ *   真正跨会话接力需要的是"做到哪 / 产物在哪"。按模式优先抽这些片段。
+ */
+function compactProgressSummary(summary: string, fullLine: string): string {
+  const flat = fullLine; // 已压平换行
+  for (const p of KEY_POINT_PATTERNS) {
+    const m = flat.match(p);
+    if (m && m[0] && m[0].trim().length >= 6) {
+      const hit = m[0].trim();
+      return hit.length > PROGRESS_COMPACT_MAX ? `${hit.slice(0, PROGRESS_COMPACT_MAX)}…` : hit;
+    }
+  }
+  const firstSentence = flat.split(/[。；;]/)[0]?.trim() || flat;
+  const head = firstSentence || flat;
+  // 首句也常是寒暄（"两件事都完成了"）→ 太短就回退到整行截断，保证有信息量
+  const use = head.length >= 24 ? head : flat;
+  return use.length > PROGRESS_COMPACT_MAX ? `${use.slice(0, PROGRESS_COMPACT_MAX)}…` : use;
+}
+
+/**
  * 记录一次任务收尾（进展摘要 → 空间记忆 + 进度明细）。
  *
  * ★ 由服务端在任务出口**自动调用**，不依赖模型主动调 `api_space_memory_append` ——
@@ -392,7 +515,11 @@ function flattenForProgress(s: string, max: number): string {
  * 设计取舍：
  *   · fail-safe：任何异常都静默返回 ok:false（收尾路径不能因为写记忆失败而报错给用户）；
  *   · 未挂空间的会话静默跳过（**绝不能**因此创建目录 —— 用户明确「没有任务类型默认目录不需要建立」）；
- *   · 只压一行、截断长度：MEMORY.md 是**注入**文件，写长了会把提示词预算吃掉。
+ *   · ★ 两份文件写**不同粒度**（2026-10-09，P0）：
+ *       ① progress.md = **完整**总结（最多 4000 字，一行压平），**不参与注入**，按需读；
+ *       ② MEMORY.md = **一行要点**（≤300 字，优先抽"产物路径/做到哪"），**会被注入**；
+ *     且 MEMORY.md 的任务进展行做**滚动淘汰**（保留最近 PROGRESS_ENTRY_KEEP 条）。
+ *     旧实现两份写同一长文本 → MEMORY.md 被逐批流水账撑爆（实测 81% 是任务进展行）。
  */
 export async function appendTaskProgress(
   conversationId: string | null | undefined,
@@ -405,23 +532,29 @@ export async function appendTaskProgress(
     if (!spaceId) return { ok: false };
     const space = getSpaceRow(null, spaceId);
     if (!space) return { ok: false };
-    const line = flattenForProgress(summary, 400);
-    if (!line) return { ok: false };
+    const fullLine = flattenForProgress(summary, PROGRESS_FULL_MAX);
+    if (!fullLine) return { ok: false };
 
     const stamp = nowStamp();
     const bits = [`【${OUTCOME_LABEL[outcome] ?? outcome}】`];
     if (extra?.steps) bits.push(`(${extra.steps} 步)`);
     if (extra?.agentName) bits.push(`${extra.agentName}：`);
-    const entry = `${stamp} 任务${bits.join('')}${line}`;
+    const prefix = `${stamp} 任务${bits.join('')}`;
 
-    // ① 明细：按需读、不参与注入
+    // ① 明细：完整总结，按需读、不参与注入（文件本身有界由读取侧 8000 字兜底）
     await appendLineWithHeader(
       getTaskProgressPath(space),
       `# ${space.name} · 任务进展\n\n> 每个长任务收尾时自动追加一条（做到哪、还剩什么）。按需读取，不自动注入。`,
-      entry,
+      `${prefix}${fullLine}`,
     );
-    // ② 空间记忆：真正被注入系统提示词的那份（同一条，保持两处一致）
-    await appendLineWithHeader(getSpaceMemoryPath(space), spaceMemoryHeader(space.name), entry);
+    // ② 空间记忆：**一行要点**（真正被注入系统提示词的那份）+ 滚动淘汰最近 N 条
+    const compact = compactProgressSummary(summary, fullLine);
+    await appendLineWithHeader(
+      getSpaceMemoryPath(space),
+      spaceMemoryHeader(space.name),
+      `${prefix}${compact}`,
+      { mark: PROGRESS_ENTRY_MARK, keep: PROGRESS_ENTRY_KEEP },
+    );
 
     return { ok: true, path: getTaskProgressPath(space) };
   } catch {

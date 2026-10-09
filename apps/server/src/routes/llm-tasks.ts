@@ -27,8 +27,8 @@ router.post('/tasks', (req: Request, res: Response) => {
   // 此前行为：createTask 幂等返回旧 taskId，前端重新订阅旧流 → 用户新要求人间蒸发，看起来像「不回」。
   const runningId = findRunningTaskId(conversationId, userId);
   if (runningId) {
-    const injected = userContent ? injectUserMessage(conversationId, String(userContent), userId) : 'no-task';
-    res.json({ data: { taskId: runningId, reused: true, injected: injected === 'injected' } });
+    const inj = userContent ? injectUserMessage(conversationId, String(userContent), userId) : { status: 'no-task' as const };
+    res.json({ data: { taskId: runningId, reused: true, injected: inj.status === 'injected', injectedMsgId: inj.msgId } });
     return;
   }
 const taskId = createTask({ conversationId, userId, platformId, modelId, userContent, agentId: agentId ?? null, appGuide, systemPrompt, tools, options, modeFlags, maxSteps, memoryExtractPlatformId, memoryExtractModelId, ontologyIds: Array.isArray(ontologyIds) ? ontologyIds.map(String) : undefined, includeUiTools: true, workspaceDir: typeof workspaceDir === 'string' ? workspaceDir : undefined,
@@ -114,13 +114,15 @@ router.post('/tasks/:id/resume', (req: Request, res: Response) => {
 // 注意：必须注册在 /tasks/:id 之前，否则会被 :id 通配吃掉。
 router.post('/tasks/inject', (req: Request, res: Response) => {
   const userId = req.user!.userId;
-  const { conversationId, content } = req.body || {};
+  const { conversationId, content, clientMsgId } = req.body || {};
   if (!conversationId || typeof content !== 'string' || !content.trim()) {
     res.status(400).json({ error: '缺少 conversationId/content' });
     return;
   }
-  const result = injectUserMessage(String(conversationId), content, userId);
-  res.json({ data: { status: result } });
+  // clientMsgId：前端队列条目 id，幂等键（2026-10-09）。同一 id 重复 POST（连点 / 网络重试）
+  // 只落一条消息，第二次回 duplicate=true + 同一 msgId。
+  const result = injectUserMessage(String(conversationId), content, userId, typeof clientMsgId === 'string' ? clientMsgId : undefined);
+  res.json({ data: { status: result.status, msgId: result.msgId, duplicate: !!result.duplicate } });
 });
 
 // POST /api/llm/tasks/:id/tool-result  前端提交工具执行结果

@@ -429,4 +429,17 @@ export interface ChatChunk {
     promptTokens: number;
     completionTokens: number;
   };
+  /**
+   * ★ 流已**正常收尾**的标记（2026-10-09）。
+   *
+   * 为什么要它：上游/代理常用 TCP FIN 半途关闭 SSE 连接，此时 `reader.read()` 是
+   * **正常 resolve `{done:true}` 而不是抛错**（只有 RST/超时才抛）。若只看"流结束"，
+   * 半截流会被误判为正常完成 → content 为空、reasoning 只有一半，却 emit task:completed
+   * （实测库内 12 条 assistant 记录正是此形状，用户看到的就是"转半天不出话"）。
+   *
+   * 判据：**见到 `finish_reason`（stop/tool_calls/length…）或 `data: [DONE]` 之一**才算收尾。
+   * 二者皆无而流结束 = 被掐断（调用方据此走续写/报错，勿当正常完成）。
+   * 该标记会作为最后一个 chunk 吐出（`finishReason` 可能为空，仅此标记为真）。
+   */
+  terminated?: boolean;
 }

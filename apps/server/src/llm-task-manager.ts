@@ -116,6 +116,42 @@ const DEFAULT_MAX_REACT_STEPS = 1000;
 export const EMPTY_ARGS_THRESHOLD = 3;
 
 /**
+ * ★★★ 自动接力两条上限（2026-10-09，P1 重设计）。
+ *
+ * 背景（实据诊断）：达单批步数上限后走「结账 → 决策 → 接力」，但原实现的**总批次数**被
+ *   `autoContinueMaxRounds`（默认 3）一刀切死 → 长任务（推文产线：选书→抓正文→出片→上传→回填）
+ *   跑到 3 批就必然终止，用户体感就是"老断"。而库内实测有 9 条「自动接力第 N/3 批」，
+ *   说明**接力本身在用**，但 3 批的额度太小。
+ *
+ * 新语义（两个数，别混）：
+ *   · `autoContinueHardCap`（=30）= **总批次数**硬顶 —— 防真正失控（纯烧 token 不产出）。
+ *     仅此一个数才是"绝对上限"，正常任务几乎不会撞到（撞到说明前 30 批都在空转）。
+ *   · `autoContinueMaxRounds`（默认 3）= **连续无进展批次数**上限（停滞上限）——
+ *     只要每批仍有**机械进展**（计划剩余步骤下降 / 模型自评有未完成事项），
+ *     停滞计数清零、继续接力；连续 N 批毫无进展才停。
+ *   ⇒ 有活干就一直干，干不动了才停 —— 与用户「不要一直断」的诉求一致。
+ */
+export const autoContinueHardCap = 30;
+
+/**
+ * ★★★ P0（2026-10-09）：流式断流判据 + 自动续写参数。
+ *
+ * 背景（实据诊断）：上游/代理常以 **TCP FIN 半途关闭 SSE**，此时 `reader.read()` 是
+ *   **正常结束**而非抛错 → 旧代码把半截流当"本轮完成"落库：content 为空、reasoning 只有一半，
+ *   却 emit `task:completed`（实测库内 12 条 assistant 记录正是此形状，用户体感"转半天不出话"＝卡死）。
+ *
+ * 判据（由 core 的 parseSSE 吐出的 `terminated` 标记承载）：
+ *   **见到 finish_reason 或 [DONE] 才算正常收尾**；未见而流结束 = 截断。
+ * 处置：先**就地续写**（把已产出内容当 assistant 前缀重新发起，追加到尾部），
+ *   续写用尽仍失败 → 落**可见**错误文案并保留部分内容，**绝不留下空 content 的 assistant 消息**。
+ */
+export const STREAM_TRUNCATE_MAX_RETRY = 2;
+
+/** 是否需要为「流被掐断」补写一轮（吞掉残缺的 reasoning，见循环内用法） */
+export const TRUNCATED_STREAM_NOTICE =
+  '（本轮上游输出被提前中断。已保留已生成的部分内容；如不完整请重新发送或继续。）';
+
+/**
  * ★ P0-4（2026-10-07）：可**并行**执行的只读工具白名单。
  *
  * 为什么要有这个白名单而不是"全并行"：与 call_agent 并行的既有判据一致 ——
@@ -133,8 +169,51 @@ const READONLY_PARALLEL_TOOLS = new Set<string>([
 ]);
 /** 兼容旧名（runTask 内多处引用）—— 新代码一律用 EMPTY_ARGS_THRESHOLD */
 const EMPTY_ARGS_DEGENERATE_THRESHOLD = EMPTY_ARGS_THRESHOLD;
-/** 前端委托工具（executeToolViaFrontend）的超时上限：2 分钟（此前裸写魔数，日志文案也硬编码 "2min"） */
+/** 前端委托工具的**默认**超时上限：2 分钟（此前裸写魔数，日志文案也硬编码 "2min"） */
 export const FRONTEND_TOOL_TIMEOUT_MS = 2 * 60 * 1000;
+
+/**
+ * ★★★ 浏览器工具的**分档超时** + 串行排队宽限（2026-10-09，P1 实据修复）。
+ *
+ * 背景：`browser_*` 全部委托前端 BrowserView 执行，此前**一刀切**套 `FRONTEND_TOOL_TIMEOUT_MS`（2 分钟），
+ *   但它们的耗时天然分化：
+ *   · `browser_get_page_content` / `get_visible_text` / `get_page_info` / `check` —— 通常秒级；
+ *   · `browser_navigate` —— 慢站 + 代理（FlClash 7890）+ 等 `domcontentloaded`，**常超 2 分钟**；
+ *   · `browser_click / type / upload / wait_for` —— 含前端等待，也可能超。
+ *   实测 `server.log`：某会话 15:17~17:28 连续 2 分钟超时，清一色是这几种。
+ *
+ * 更隐蔽的一层：前端用 `browser-op-queue`（`chainBrowserOp`）把浏览器操作**按会话串行化**，
+ *   服务端 7 个写路由另有 `withBrowserLock` —— 于是「排队等待」的时间也被计进了这 2 分钟。
+ *   慢站场景下"排队 + 执行"极易越界 → 工具被 reject，**但浏览器动作其实还在跑**，
+ *   界面因此停住不动 —— 与真卡死难以区分（用户口中的另一种"卡死"）。
+ *
+ * 处置：① 按工具分档（只读快、导航/交互慢）；② 超时时间**额外放宽排队余量**（`BROWSER_QUEUE_GRACE_MS`）。
+ */
+const BROWSER_SLOW_TOOLS = new Set([
+  'browser_navigate', 'browser_click', 'browser_type', 'browser_upload',
+  'browser_submit_form', 'browser_fill_form', 'browser_action_and_observe',
+  'browser_login_saved', 'browser_download', 'browser_wait_for', 'browser_drag',
+]);
+const BROWSER_FAST_TOOLS = new Set([
+  'browser_get_page_content', 'browser_get_visible_text', 'browser_get_page_info',
+  'browser_check', 'browser_screenshot', 'browser_run_script', 'browser_scroll',
+  'browser_hover', 'browser_press_key', 'browser_select_option', 'browser_uncheck',
+  'browser_scroll_into_view', 'browser_open_external',
+]);
+/** 慢档：导航/交互（含慢站加载 + 排队余量） */
+export const BROWSER_SLOW_TIMEOUT_MS = 7 * 60 * 1000;
+/** 快档：只读/轻交互（页面内容、可见文本、截图、脚本） */
+export const BROWSER_FAST_TIMEOUT_MS = 90 * 1000;
+/** 串行排队宽限：浏览器操作会被前端按会话串行化，排队时间不应算作"执行超时" */
+export const BROWSER_QUEUE_GRACE_MS = 60 * 1000;
+
+/** 按工具名解析前端委托超时（未登记的 browser_* 走默认慢档 —— 宁可等久也别误杀） */
+export function resolveFrontendToolTimeout(toolName: string): number {
+  if (BROWSER_SLOW_TOOLS.has(toolName)) return BROWSER_SLOW_TIMEOUT_MS + BROWSER_QUEUE_GRACE_MS;
+  if (BROWSER_FAST_TOOLS.has(toolName)) return BROWSER_FAST_TIMEOUT_MS + BROWSER_QUEUE_GRACE_MS;
+  if (toolName.startsWith('browser_')) return BROWSER_SLOW_TIMEOUT_MS + BROWSER_QUEUE_GRACE_MS;
+  return FRONTEND_TOOL_TIMEOUT_MS;
+}
 
 export type TaskStatus = 'running' | 'completed' | 'failed' | 'aborted' | 'paused';
 
@@ -206,6 +285,16 @@ interface LlmTask {
    *  非空即表示还有未消费的用户输入：本轮模型即便不再调工具，也不能直接 finish，
    *  必须再跑一轮把这些消息带进上下文。 */
   pendingInjects: string[];
+  /**
+   * 注入幂等记账：前端队列条目 id（clientMsgId）→ 本任务内该条注入产生的真实消息 id。
+   *
+   * ★★★ 为什么需要（2026-10-09 用户实报「同一个消息点击多次会发送 n 次」）：
+   *   「立即发送」此前完全无幂等 —— 连点几下就是一个 POST 一次落库，库里出现多条同内容
+   *   user 消息，模型下一轮把它们当多条指令重复执行。有 confidence 的幂等键后：
+   *   同一 clientMsgId 第二次直接返回既有 msgId（duplicate=true），**不再落库、不再 emit**。
+   *   ★ 随任务存活（收尾即随 task 一起被回收），不落库 —— 幂等只需覆盖"本次运行期间"的连点/重试。
+   */
+  injectedByClientId: Map<string, string>;
   /** 运行时生成子智能体的预算闸（AOrchestra 对齐，见 services/subagent-spec.ts）。
    *  上限来自 agent.config_json.maxSpawnPerTask，缺省 DEFAULT_MAX_SPAWN_PER_TASK。 */
   spawnBudget?: number;
@@ -665,6 +754,7 @@ export function createTask(params: {
     // ★ 越界守卫档位：非法/未下发 → ask（fail-safe，与 normalizePermissionMode 同取向）
     pathGuard: (params.pathGuard === 'strict' || params.pathGuard === 'off') ? params.pathGuard : 'ask',
     pendingInjects: [],
+    injectedByClientId: new Map<string, string>(),
     pendingBackgroundResults: [],
     // 运行时生成子智能体的预算闸：智能体可配 maxSpawnPerTask（0 = 关闭该能力）
     spawnBudget: (() => {
@@ -703,11 +793,15 @@ export function createTask(params: {
   return taskId;
 }
 
-/** 运行中注入用户追加消息（输入框「立即发送」）。
- *  语义：消息立即落库并推送给前端可见，模型在**下一轮** LLM 调用时从 loadMessages 读到它；
- *  为此把 msgId 记进 task.pendingInjects —— 本轮即便模型不再调工具也不 finish，多跑一轮把消息带上。
- *  与「排队等任务结束」的区别就在这里：排队消息不落库、不打断本轮，等任务结束后由前端起新任务。
- *  @returns 'injected' 已注入运行中任务 | 'no-task' 该会话无运行中任务（前端应走正常发送） */
+/** `injectUserMessage` 的返回契约 */
+export interface InjectResult {
+  status: 'injected' | 'no-task';
+  /** 命中幂等键（或本次落库）的真实消息 id —— 前端据此**本地立即回显**，不依赖 SSE 回放 */
+  msgId?: string;
+  /** 本次调用是否命中已有幂等记录（true=重复点击/重试，未新增消息） */
+  duplicate?: boolean;
+}
+
 /** 该会话是否有运行中任务（有则返回 taskId）—— 供路由层在创建前做「注入复用」判定 */
 export function findRunningTaskId(conversationId: string, userId?: string): string | null {
   for (const t of tasks.values()) {
@@ -716,19 +810,41 @@ export function findRunningTaskId(conversationId: string, userId?: string): stri
   return null;
 }
 
-export function injectUserMessage(conversationId: string, content: string, userId: string): 'injected' | 'no-task' {
+/** 运行中注入用户追加消息（输入框「立即发送」）。
+ *  语义：消息立即落库并推送给前端可见，模型在**下一轮** LLM 调用时从 loadMessages 读到它；
+ *  为此把 msgId 记进 task.pendingInjects —— 本轮即便模型不再调工具也不 finish，多跑一轮把消息带上。
+ *  与「排队等任务结束」的区别就在这里：排队消息不落库、不打断本轮，等任务结束后由前端起新任务。
+ *
+ *  ★★★ 幂等（2026-10-09 用户实报「同一个消息点击多次会发送 n 次」）：
+ *    「立即发送」按钮此前无任何幂等 —— 用户连点几下就真的注入几条（库里多条同内容 user 消息，
+ *    模型下一轮看到重复指令）。三层一起收口：
+ *      ① 前端按 clientMsgId 做在途守卫（第二轮点击直接忽略）；
+ *      ② 前端把队列条目 id 当幂等键随请求下发；
+ *      ③ 本函数按 clientMsgId 去重（也覆盖网络重试：同一 id 第二次直接返回既有结果，不再落库）。
+ *  @param clientMsgId 前端队列条目 id（幂等键）；缺省时退化为"不去重"（旧调用方兼容）。
+ *  @returns {status:'injected', msgId, duplicate} | {status:'no-task'}（前端应走正常发送） */
+export function injectUserMessage(conversationId: string, content: string, userId: string, clientMsgId?: string): InjectResult {
   const text = String(content || '');
-  if (!text.trim()) return 'no-task';
+  if (!text.trim()) return { status: 'no-task' };
   let target: LlmTask | undefined;
   for (const t of tasks.values()) {
     // 只注入到「本用户的、该会话的、运行中」任务：既防越权，也保证 pendingInjects 生效
     if (t.conversationId === conversationId && t.status === 'running' && t.userId === userId) { target = t; break; }
   }
-  if (!target) return 'no-task';
+  if (!target) return { status: 'no-task' };
+  const key = String(clientMsgId || '').trim();
+  // ★ 幂等命中（{clientMsgId → msgId} 记账，随任务存活）：重复点击 / 网络重试第二次直接复用同一 msgId，
+  //   **不重复落库、不重复 emit**。命中即说明该内容早已进过 pendingInjects（或被消费过），
+  //   直接回既有 msgId 让前端回显即可。
+  if (key) {
+    const hit = target.injectedByClientId.get(key);
+    if (hit) return { status: 'injected', msgId: hit, duplicate: true };
+  }
   const msgId = insertMessage(conversationId, target.userId, 'user', text);
   emit(target, { type: 'message:added', message: { id: msgId, role: 'user', content: text } });
   target.pendingInjects.push(msgId);
-  return 'injected';
+  if (key) target.injectedByClientId.set(key, msgId);
+  return { status: 'injected', msgId };
 }
 
 /** 订阅任务事件（从 since 索引开始重放 + 后续实时事件） */
@@ -1796,8 +1912,14 @@ async function runReActLoop(task: LlmTask, params: {
     let skippedArgTools: string[] = [];
     // 自动接力轮次计数（达 maxSteps 后接着跑的批次数，见循环结束后与 P0-2 决策分支）
     let continuationCount = 0;
-    // 自动接力总开关与上限：达单轮步数上限后自动接着做（用户可在智能体 config_json 里
-    // 设 autoContinueMaxRounds=0 关掉；默认 3 轮，防无限烧 token）
+    // ★★★ 停滞计数（2026-10-09，P1）：连续多少批**没有机械进展**（计划剩余步骤未下降）。
+    //   有进展就清零，连续 autoContinueMaxRounds 批无进展才停 —— 替代旧的"总批次数一刀切"。
+    let stallCount = 0;
+    // 上一批结束时计划的剩余步骤数（用于判定本批是否有机械进展；首次为 Infinity 让首批算"有进展"）
+    let lastPlanRemaining = Number.POSITIVE_INFINITY;
+    // 自动接力总开关与**停滞上限**：达单轮步数上限后自动接着做（用户可在智能体 config_json 里
+    // 设 autoContinueMaxRounds=0 关掉；默认 3 = **连续 3 批无进展**就停，不是总共 3 批）。
+    // ★ 总批次数另有硬顶 autoContinueHardCap，见常量定义块。
     const autoContinueMaxRounds = (() => {
       if (!params.agentId) return 3;
       try {
@@ -1816,8 +1938,8 @@ async function runReActLoop(task: LlmTask, params: {
 
     // ★ 外层 = 自动接力批次；内层 = 单批 ReAct 步数。
     //   到达单批上限后不终止，而是决策「是否接着做」：接力 → 继续外层；否则 return 收尾。
-    //   上限 autoContinueMaxRounds 保证不会无限续跑（默认 3，智能体 config_json 可关/可调）。
-    for (let batch = 0; batch <= autoContinueMaxRounds; batch++) {
+    //   总批次硬顶 autoContinueHardCap（防失控）；"何时停"由**停滞判定**决定（连续 N 批无进展）。
+    for (let batch = 0; batch <= autoContinueHardCap; batch++) {
       for (let step = 0; step < stepBudget; step++) {
         if (task.abortController.signal.aborted) throw new DOMException('Aborted', 'AbortError');
         await waitIfPaused(task); // 工具边界暂停：挂起时停在这里，resume/abort 后继续
@@ -1970,19 +2092,21 @@ async function runReActLoop(task: LlmTask, params: {
          *   所以必须把 finish_reason 带下去，让截断走独立分支。
          */
         let streamFinish: string | undefined;
+        // ★★★ P0（2026-10-09）：本轮流是否**正常收尾**。core parseSSE 会在流结束时吐
+        //   一个 `terminated` 标记：见到 finish_reason/[DONE] → true，被掐断 → false。
+        //   默认 true（未收到标记时按正常处理，避免误判）；只有明确 false 才判截断。
+        //   此前无此判据 → 半截流被当"本轮完成"落库（content 空、reasoning 一半），
+        //   emit task:completed，用户看到的就是"转半天不出话"＝卡死。
+        // ★ 用持有对象而非裸 let：TS 不跟踪嵌套函数（consumeStream）内的赋值，
+        //   裸变量会被流分析收窄成字面量 `true` → `=== false` 被判"无重叠"而报错。
+        const streamFlag = { terminated: true };
 
-        try {
-          for await (const chunk of client.chatStream(llmMessages, {
-            tools: tools.length > 0 ? tools : undefined,
-            temperature: effOpts.temperature,
-            maxTokens: effOpts.maxTokens,
-            topP: effOpts.topP,
-            frequencyPenalty: effOpts.frequencyPenalty,
-            presencePenalty: effOpts.presencePenalty,
-            reasoningEffort: effOpts.reasoningEffort,
-            signal: task.abortController.signal,
-          })) {
+        // 把「消费一个流」抽成局部函数：正常路径与**断流重试**路径共用同一段累加逻辑
+        // （重复写两遍必然漂移 —— 本项目已有多次"平行实现行为漂移"教训）。
+        const consumeStream = async (opts: Parameters<typeof client.chatStream>[1], msgs: any[] = llmMessages) => {
+          for await (const chunk of client.chatStream(msgs, opts)) {
             if (chunk.finishReason) streamFinish = chunk.finishReason;
+            if (chunk.terminated !== undefined) streamFlag.terminated = chunk.terminated;
             if (chunk.usage) {
               usageTokens = (chunk.usage.promptTokens || 0) + (chunk.usage.completionTokens || 0);
             }
@@ -2022,6 +2146,21 @@ async function runReActLoop(task: LlmTask, params: {
               emit(task, { type: 'tool_call', toolCalls: [...toolCallAcc] });
             }
           }
+        };
+
+        const streamOpts = {
+          tools: tools.length > 0 ? tools : undefined,
+          temperature: effOpts.temperature,
+          maxTokens: effOpts.maxTokens,
+          topP: effOpts.topP,
+          frequencyPenalty: effOpts.frequencyPenalty,
+          presencePenalty: effOpts.presencePenalty,
+          reasoningEffort: effOpts.reasoningEffort,
+          signal: task.abortController.signal,
+        };
+
+        try {
+          await consumeStream(streamOpts);
         } catch (e: any) {
           if (isAbortError(e)) throw e;
           // 重试不带 tools
@@ -2040,30 +2179,65 @@ async function runReActLoop(task: LlmTask, params: {
               sysMsg.content = (sysMsg.content || '') + `\n\n## 工具调用（文本模式）\n当要调用工具时，在回复中以下格式输出（可多次调用）：\n[TOOL_CALL]{"name":"工具名","arguments":{"参数名":"参数值"}}[/TOOL_CALL]\n可用工具：\n${toolList}\n调用后等待返回结果，再继续回复。`;
             }
             fullContent = ''; fullReasoning = ''; toolCallAcc.length = 0; usageTokens = 0;
-            for await (const chunk of client.chatStream(llmMessages, {
+            streamFlag.terminated = true; // 文本模式重试同样重置收尾判定
+            // 文本模式重试不带 tools（端点不支持 tools 时的降级路径）
+            await consumeStream({
               temperature: effOpts.temperature, maxTokens: effOpts.maxTokens,
               signal: task.abortController.signal,
-            })) {
-              if (chunk.usage) {
-                usageTokens = (chunk.usage.promptTokens || 0) + (chunk.usage.completionTokens || 0);
-              }
-              if (chunk.delta?.content) {
-                fullContent += chunk.delta.content;
-                emit(task, { type: 'chunk', content: chunk.delta.content });
-              }
-              if (chunk.delta?.reasoningContent) {
-                fullReasoning += chunk.delta.reasoningContent;
-                emit(task, { type: 'chunk', reasoning: chunk.delta.reasoningContent });
-              }
-            }
+            });
           } else {
             throw e;
           }
         }
 
+        // ★★★ P0（2026-10-09）：流被上游/代理**提前掐断**的处置。
+        //
+        // 判据（三重，宁可保守不误伤正常流）：
+        //   ① core 明确报告未收尾（`terminated === false`）；**或**
+        //   ② finish_reason 为空、且**完全没有任何产出**（content/reasoning 皆空、无工具）——
+        //      正常流不会"一个字都不吐就结束"；
+        //   ③ 尚未进入工具调用（有 tool_calls 时就算被截断也交给下层按 finish_reason 处理续跑，不在此重来）。
+        // 处置：先**就地续写**（把已产出内容当 assistant 前缀 prefill 重新发起，追加到尾部）。
+        //   prefill **不带 tools**：部分 OpenAI 兼容端点在「assistant 前缀 + tools」下会 400（与既有
+        //   "重试不带 tools" 同口径）。续写用尽仍失败 → 标截断，由下方落**可见**错误、绝不静默留白。
+        if (
+          (streamFlag.terminated === false || (!streamFinish && !fullContent && !fullReasoning)) &&
+          toolCallAcc.length === 0
+        ) {
+          for (let attempt = 1; attempt <= STREAM_TRUNCATE_MAX_RETRY; attempt++) {
+            if (task.abortController.signal.aborted) throw new DOMException('Aborted', 'AbortError');
+            logger.warn(
+              `[llm-task] 流被提前中断（未收尾${streamFinish ? `, finish=${streamFinish}` : ''}），` +
+              `尝试续写 ${attempt}/${STREAM_TRUNCATE_MAX_RETRY}：已产出 content=${fullContent.length} 字 / reasoning=${fullReasoning.length} 字 ` +
+              `conv=${task.conversationId}`,
+            );
+            const prefill: Message[] = [...llmMessages];
+            const partial = fullContent || fullReasoning;
+            if (partial.trim()) prefill.push({ id: 'prefill', conversationId: '', role: 'assistant', content: partial, createdAt: 0 });
+            else prefill.push({ id: 'prefill', conversationId: '', role: 'user', content: '（上一轮响应中断，请继续完成你刚才的回复。）', createdAt: 0 });
+            // 续写前清标记：只认可本次续写是否收尾
+            streamFlag.terminated = true;
+            try {
+              await consumeStream({
+                temperature: effOpts.temperature,
+                maxTokens: effOpts.maxTokens,
+                signal: task.abortController.signal,
+              }, prefill); // 续写用临时 prefill（不改 llmMessages 本身，不动持久上下文）
+            } catch (e2: any) {
+              if (isAbortError(e2)) throw e2;
+              logger.warn('[llm-task] 续写调用失败：', e2?.message || e2);
+              break;
+            }
+            // 续写拿到终态、或有产出 → 视为修复成功，跳出重试
+            if (streamFlag.terminated && (fullContent.trim() || fullReasoning.trim() || toolCallAcc.length > 0)) break;
+          }
+        }
+
         // 把本轮 finish_reason 落到任务上，供工具执行层的空参拦截按真实原因分派文案
         // （见 LlmTask.lastFinishReason 注释：截断与"没生成"必须区别对待）
-        task.lastFinishReason = streamFinish;
+        // ★ P0（2026-10-09）：流被掐断而 finish_reason 为空时，显式标 'truncated' ——
+        //   否则下游看到 `undefined` 会归因成"模型没生成/参数被截断"，指向错误方向。
+        task.lastFinishReason = streamFlag.terminated === false ? 'truncated' : streamFinish;
         // ★ P1-9：累计本任务 token 消耗（usage 优先，缺失时与 estTokens 同口径粗估），
         // 供预算闸判定（checkTaskBudgetHit）。粗估口径：内容长度 / 2（与 estTokens 一致）。
         task.totalTokens = (task.totalTokens || 0) + (usageTokens || Math.round((fullContent.length + fullReasoning.length) / 2));
@@ -2147,6 +2321,18 @@ async function runReActLoop(task: LlmTask, params: {
               emit(task, { type: 'tool_call', toolCalls: [...toolCallAcc] });
             }
           }
+        }
+
+        // ★★★ P0（2026-10-09）不静默：续写仍失败且**正文为空**时，绝不留下"空气泡"
+        //   —— 旧行为正是 content='' + reasoning 半截 直接落库，用户看到"转半天不出话"。
+        //   落一条可见提示（reasoning 原文仍在行内可供排查），让用户知道"被中断了、可重试"，
+        //   而不是以为模型什么都没做。
+        if (!fullContent.trim() && streamFlag.terminated === false) {
+          fullContent = TRUNCATED_STREAM_NOTICE;
+          logger.warn(
+            `[llm-task] 断流且无正文留痕（msg=${assistantMsgId} conv=${task.conversationId} ` +
+            `reasoning=${fullReasoning.length} 字）—— 已落可见提示`,
+          );
         }
 
         // 更新助手消息（tokens：provider usage 优先，缺失时按内容长度粗估，供 LLM 交互日志统计）
@@ -2397,18 +2583,37 @@ async function runReActLoop(task: LlmTask, params: {
         const budgetExhausted = !!taskBudgetHit;
         if (expectedContinue && !aborted && !degenerate && !budgetExhausted) {
           continuationCount++;
+          // 停滞判定（见 autoContinueHardCap 说明）：autoContinueMaxRounds 是"连续无进展"上限
+          const planRemainingNow = readPlanRemainingSteps(convId);
+          const noPlanTracked = lastPlanRemaining === 0 && planRemainingNow === 0;
+          const progressed = planRemainingNow < lastPlanRemaining || (noPlanTracked && expectedContinue);
+          if (progressed) stallCount = 0; else stallCount++;
+          lastPlanRemaining = planRemainingNow;
+          if (autoContinueMaxRounds > 0 && stallCount >= autoContinueMaxRounds) {
+            // 连续 N 批无进展 → 判定停滞，收尾（不再接力）
+            // 复用 tipText（既有契约：max_steps 必须复用已有总结，不重花一次 LLM）
+            tipText = `${tipText}\n\n（接力已停止：连续 ${stallCount} 批无新进展，判定已停滞。）`;
+            const stallId = insertMessage(convId, userId, 'assistant', tipText);
+            emit(task, { type: 'message:added', message: { id: stallId, role: 'assistant', content: tipText } });
+            emit(task, { type: 'task:completed' });
+            task.status = 'completed';
+            void recordTaskProgress(task, 'max_steps', tipText, { steps: budgetReached });
+            void consolidateOnTaskEnd(task, summaryText || tipText);
+            void extractMemoryFromConversation(task);
+            return;
+          }
           // 结构化记账：把「做到哪 + 还剩什么」落进空间记忆与进度明细（跨会话可见），
           // 再续下一批 —— 这就是用户说的"根据整理的记忆进行任务"。
           void recordTaskProgress(task, 'max_steps', tipText, {
             steps: budgetReached,
-            continuation: `自动接力第 ${continuationCount}/${autoContinueMaxRounds} 批`,
+            continuation: `自动接力第 ${continuationCount}/${autoContinueHardCap} 批`,
           });
           // 通知前端：不是结束，而是接着做（前端据此保持"运行中"态、不清输入锁）
-          const contMsg = `已达单批步数上限（${budgetReached} 步），**自动接力第 ${continuationCount}/${autoContinueMaxRounds} 批**继续推进。` +
+          const contMsg = `已达单批步数上限（${budgetReached} 步），**自动接力第 ${continuationCount} 批**继续推进（停滞计数 ${stallCount}/${autoContinueMaxRounds}）。` +
             (judged.reason ? `（依据：${judged.reason}）` : '');
           const contId = insertMessage(convId, userId, 'assistant', contMsg);
           emit(task, { type: 'message:added', message: { id: contId, role: 'assistant', content: contMsg } });
-          emit(task, { type: 'continuation', round: continuationCount, maxRounds: autoContinueMaxRounds, reason: judged.reason });
+          emit(task, { type: 'continuation', round: continuationCount, maxRounds: autoContinueHardCap, reason: judged.reason });
           // ★ P1-8（2026-10-07）：接力前检查计划是否已与现实脱节 —— 现实变了计划不跟着变，
           //   下一批就会按过期计划做错事（planner-executor 共识：plan 会 stale，必须有 re-planning）。
           //   失败绝不阻塞接力（replan 是增强能力）。
@@ -2453,7 +2658,7 @@ async function runReActLoop(task: LlmTask, params: {
           const id = insertMessage(convId, userId, 'user', r.text);
           emit(task, { type: 'message:added', message: { id, role: 'user', content: r.text } });
         }
-        // 把步数预算还给这一批，让外层批次继续跑（bounded by autoContinueMaxRounds）
+        // 把步数预算还给这一批，让外层批次继续跑（bounded by autoContinueHardCap）
         stepBudget = liveMaxSteps();
         continuationCount++;
         continue;
@@ -2563,7 +2768,8 @@ async function decideAutoContinue(args: {
   //   看起来"什么都没产出"的原因之一。
   //   改为：照常生成总结（这是用户最需要的产出），只是把"不接力"登记到 blockedBy。
   const disabled = autoContinueMaxRounds <= 0;
-  const roundsExhausted = !disabled && continuationCount >= autoContinueMaxRounds;
+  // 见 autoContinueHardCap：autoContinueMaxRounds 是停滞上限（调用方按进展判），这里只判硬顶
+  const hardCapped = !disabled && continuationCount >= autoContinueHardCap;
 
   // ④-a 任务计划里还有未完成步骤 → 直接判定该继续（机械信号比模型自评可靠）
   const planRemaining = readPlanRemainingSteps(conversationId);
@@ -2579,13 +2785,13 @@ async function decideAutoContinue(args: {
 
   // 模型/计划认为该继续 → 但可能被闸门挡住，blockedBy 说明是哪个闸
   const wanted = modelSaysContinue || planRemaining > 0;
-  const shouldContinue = wanted && !disabled && !roundsExhausted;
+  const shouldContinue = wanted && !disabled && !hardCapped;
   const reason = planRemaining > 0
     ? `任务计划尚有 ${planRemaining} 个未完成步骤`
     : modelSaysContinue ? '模型自评任务未完成' : '模型自评任务已完成';
   const blockedBy = !wanted ? undefined
     : disabled ? '自动接力已关闭（autoContinueMaxRounds=0）'
-    : roundsExhausted ? `已达自动接力上限（${autoContinueMaxRounds} 批）`
+    : hardCapped ? `已达自动接力硬顶（${autoContinueHardCap} 批）`
     : undefined;
   return { shouldContinue, summary, reason, blockedBy };
 }
@@ -3451,19 +3657,27 @@ async function executeToolViaFrontend(task: LlmTask, toolName: string, args: any
   return new Promise<string>((resolve, reject) => {
     const callId = 'tc_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
     const interactive = INTERACTIVE_TOOLS.has(toolName);
-    // 交互类工具不设 2 分钟超时（用户可能在"思考要不要确认"，隔天回来也要能继续答）
+    // 交互类工具不设超时（用户可能在"思考要不要确认"，隔天回来也要能继续答）
     // ★ timeoutMsOverride === 0 → 显式要求不设超时（授权弹窗同性质）。
     const noTimeout = timeoutMsOverride === 0;
+    // ★ P1（2026-10-09）：分档超时 —— browser_* 按慢/快档解析（含串行排队宽限），
+    //   不再一刀切 2 分钟。见 resolveFrontendToolTimeout 注释（慢站/代理下误杀的真实来源）。
+    const effectiveTimeout = timeoutMsOverride && timeoutMsOverride > 0
+      ? timeoutMsOverride
+      : resolveFrontendToolTimeout(toolName);
     const timer = (interactive || noTimeout)
       ? undefined
       : setTimeout(() => {
           const pending = task.pendingToolCalls.get(callId);
           if (pending) {
             task.pendingToolCalls.delete(callId);
-            logger.warn(`[llm-task] 前端工具执行超时(2min): ${toolName} callId=${callId} conv=${task.conversationId}（前端刷新/断连时常见，任务将以此错误继续）`);
+            logger.warn(`[llm-task] 前端工具执行超时(${Math.round(effectiveTimeout / 1000)}s): ${toolName} callId=${callId} conv=${task.conversationId}（前端刷新/断连时常见，任务将以此错误继续）`);
+            // 超时**可见**（2026-10-09）：广播一条事件，前端据此把该工具条标为"超时未回执"，
+            // 而不是让界面只是"停住不动"（与真卡死难以区分）。前端对未知事件类型容忍。
+            try { emit(task, { type: 'tool:timeout', callId, toolName, conversationId: task.conversationId, timeoutMs: effectiveTimeout }); } catch { /* 观测事件失败不影响超时处理 */ }
             pending.reject(new Error(`工具 ${toolName} 执行超时`));
           }
-        }, timeoutMsOverride && timeoutMsOverride > 0 ? timeoutMsOverride : FRONTEND_TOOL_TIMEOUT_MS);
+        }, effectiveTimeout);
     task.pendingToolCalls.set(callId, { resolve, reject, toolName, callId, requestedAt: Date.now(), timer, args });
     syncPendingToolsJson(task);
     // 通知前端执行工具。
@@ -3922,7 +4136,7 @@ async function deliverSubAgentResult(task: LlmTask, agentName: string, result: s
   }
   // 主任务已终态：落库普通消息（用户刷新可见；无在线订阅者，SSE 推不到也没关系）
   try {
-    if (injectUserMessage(task.conversationId, text, task.userId) === 'injected') return;
+    if (injectUserMessage(task.conversationId, text, task.userId).status === 'injected') return;
     const msgId = insertMessage(task.conversationId, task.userId, 'assistant', text);
     emit(task, { type: 'message:added', message: { id: msgId, role: 'assistant', content: text } });
   } catch (e: any) {
