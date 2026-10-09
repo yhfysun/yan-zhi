@@ -406,7 +406,19 @@ function createChat() {
 
   const input = ref('');
   const inputFocused = ref(false);
-  // 文本输入区 DOM 引用（el-input 实例）—— editQueued 时把焦点拉回输入框
+  /**
+   * ★★★ 发送重入锁（2026-10-09，P0 实据修复）。
+   *
+   * 为什么必须有：`send()` 在取走内容后要跨多个 `await`（建空间 / 建会话 / 落附件 / 读文件预览），
+   *   期间 `input.value` 尚未清空；键盘连发、Enter 连按、或"发送"按钮与 Enter 同时触发，
+   *   就会**并发进入多次** → 同一句话落库多条。
+   *   实测铁证：生产库同一秒写进 **11 条一模一样的 user 消息**「失败原因总结下」。
+   *
+   * 语义：进入 send() 即刻置位（**在任何 await 之前**），finally 释放；
+   *   置位期间重复调用直接忽略。这是"防重复提交"的**唯一入口守卫** ——
+   *   放在 store.callLlm 里的 runningConvIds 判据来不及挡（那里已在 await 之后）。
+   */
+  const sending = ref(false);
   const inputRef = ref<any>();
   const fileInputRef = ref<HTMLInputElement>();
   const uploadedFiles = ref<Array<{ name: string; size: number; type: string; dataUrl: string }>>([]);
@@ -2308,6 +2320,18 @@ async function healStalePlatform() {
   }
 
   async function send() {
+    // ★★★ 重入锁（2026-10-09）：状态在**任何 await 之前**同步置位。见 sending 声明处注释。
+    //   放在这里而不是 store 里 —— 这里是"用户点发送"的唯一入口，能挡住 await 窗口期的连发。
+    if (sending.value) return;
+    sending.value = true;
+    try {
+      await sendInner();
+    } finally {
+      sending.value = false;
+    }
+  }
+
+  async function sendInner() {
     if (!input.value.trim() && uploadedFiles.value.length === 0 && quotedUrls.value.length === 0) return;
 
     const hasPlatform = platformStore.platforms.length > 0;
@@ -2377,7 +2401,13 @@ async function healStalePlatform() {
       return;
     }
 
+    // ★★★ 取走内容即清空输入框（2026-10-09，多会话发消息"消失"修复）：
+    //   此前 input.value 要等下面「建空间 → 建会话 → 落附件」多个 await 之后才清空，
+    //   期间输入框仍有内容 → 连按 Enter / 双击会把同一句话再发一次；第二次走到
+    //   store.sendMessage 时第一次已 runningConvIds.add → 命中静默 return（消息凭空消失）。
+    //   提到这里（取内容那一刻）后，重入锁之外再加一道：第二个 send 进来时 input 已空 → 早退。
     const content = input.value;
+    input.value = '';
     let model = platformStore.models.find((m) => m.id === selectedModelId.value);
     let platform: Platform | undefined = platformStore.platforms.find((p) => p.id === model?.platformId);
     if (!platform || !model) {
@@ -2520,7 +2550,8 @@ async function healStalePlatform() {
         }
       }
 
-      input.value = '';
+      // input.value 已在取内容那一刻清空（见上方「取走内容即清空输入框」）——
+      // 这里不再重复清，避免"清空时机"这一语义出现两处（本项目既有教训：同一语义两处各写一份必漂移）。
 
       if (selectedFilePaths.value.size > 0) {
         const fileRefs: Array<Record<string, unknown>> = [];
@@ -2723,13 +2754,20 @@ async function healStalePlatform() {
     }
   }
 
-  /** 「立即发送」：注入运行中的任务，模型下一轮 LLM 调用时带上（不等整个任务结束） */
+  /** 「立即发送」：注入运行中的任务，模型下一轮 LLM 调用时带上（不等整个任务结束）。
+   *  ★ 幂等：同一条连点多次只注入一次（store 内在途守卫 + 后端 clientMsgId 去重，见 chat.ts）。 */
   async function sendQueuedNow(id: string) {
     const convId = store.currentConvId;
     if (!convId) return;
-    const injected = await store.injectQueuedMessage(convId, id);
-    if (injected) { ElMessage.success('已追加，模型下一轮将带上'); return; }
-    // 任务已结束（或注入失败）→ 退回普通发送，起新一轮
+    // ★ 已结束任务（或注入失败）→ 退回普通发送，起新一轮；点谁发谁（把该条提到队首）。
+    const res = await store.injectQueuedMessage(convId, id);
+    if (res.ok) {
+      if (!res.duplicate) ElMessage.success('已追加，模型下一轮将带上');
+      await nextTick();
+      scrollToBottom();
+      return;
+    }
+    store.promoteQueuedMessage(convId, id);
     await flushQueuedAfterTask(convId);
     // 仍未发出去（会话仍在运行 / 闸门占着）→ 必须明确告知。
     // 否则点击「立即发送」会毫无反馈，用户以为按钮坏了（2026-10-04 用户反馈）。
@@ -3535,7 +3573,7 @@ async function healStalePlatform() {
     onAgentSwitch, onModelChange,
     parseConfigCard, displayAssistantContent, getEditPlatform, getEditReason, onConfigSaved,
     queuedList, sendQueuedNow, editQueued, removeQueued, flushQueuedAfterTask,
-    startNewChat, selectConv, triggerFileUpload, addFiles, handleFileChange, removeFile, formatSize, send, stopChat, regenerateMsg, shouldShowMessage, collectToolCalls,
+    startNewChat, selectConv, triggerFileUpload, addFiles, handleFileChange, removeFile, formatSize, send, sending, stopChat, regenerateMsg, shouldShowMessage, collectToolCalls,
     filteredFiles, loadWorkspaceFiles, previewFile, toggleFileSelect, triggerFilePanelUpload, handleFilePanelUpload, deleteFileItem,
     resolveArtifactDirFor,
     openConvDir,

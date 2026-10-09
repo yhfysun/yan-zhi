@@ -397,6 +397,18 @@ export const useAgentStore = defineStore('agent', () => {
     return loadInflight;
   }
 
+  /**
+   * 兜底加载（2026-10-09）：更新安装后**首次启动**是最慢的一条路径（建库 + 迁移 +
+   * agens 平台联网同步模型列表），可能超过 loadAgents 的重试预算（~10.5s），
+   * 重试耗尽后 agents 永久为空 —— 表现为「对话页智能体下拉是空的，
+   * 进智能体管理页再回来才有」。本函数挂在下拉**展开**时机上：用户能看到下拉时
+   * 后端必然已就绪，此时若列表为空再拉一次（loadInflight 去重，幂等）。
+   */
+  async function ensureAgents() {
+    if (agents.value.length || loadInflight) return;
+    await loadAgents();
+  }
+
   async function loadAgent(id: string) {
     const r = await api.get<any>('/agents/' + id);
     if (r && 'data' in r && r.data) current.value = rowToAgent(r.data);
@@ -621,7 +633,7 @@ export const useAgentStore = defineStore('agent', () => {
   return {
     agents, current, running, runLogs,
     selectedId, selectedAgent, chatAgents, delegatableAgents, selectAgent,
-    loadAgents, loadAgent, createAgent, createChatAgent, updateAgent, updateWorkflow, deleteAgent, resetAgent,
+    loadAgents, ensureAgents, loadAgent, createAgent, createChatAgent, updateAgent, updateWorkflow, deleteAgent, resetAgent,
     publishAgent, unpublishAgent, installFromMarketplace,
     runAgent, addNode,
   };

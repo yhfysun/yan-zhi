@@ -519,6 +519,18 @@ export const useChatStore = defineStore('chat', () => {
     if (hit) hit.content = content;
   }
 
+  /** 把某条追加消息**提到队首**（「立即发送」在任务已结束、退回普通发送时用）。
+   *  flushQueuedAfterTask 每次只取队首一条 —— 不提前，用户点第 3 条却发了第 1 条，
+   *  与"点谁发谁"的直觉相悖。 */
+  function promoteQueuedMessage(convId: string, id: string) {
+    const arr = queuedByConv.value[convId];
+    if (!arr) return;
+    const idx = arr.findIndex((q) => q.id === id);
+    if (idx <= 0) return;
+    const [item] = arr.splice(idx, 1);
+    arr.unshift(item);
+  }
+
   /** 取出并清空某会话的全部待发消息（保留给需要一次性排空的场景） */
   function takeQueuedMessages(convId: string): QueuedMessage[] {
     const arr = queuedByConv.value[convId] || [];
@@ -535,19 +547,55 @@ export const useChatStore = defineStore('chat', () => {
     return first;
   }
 
-  /** 「立即发送」：注入到运行中的任务，模型下一轮带上。
-   *  @returns true=已注入；false=该会话已无运行中任务（调用方应退回普通发送） */
-  async function injectQueuedMessage(convId: string, id: string): Promise<boolean> {
+  /**
+   * 「立即发送」：注入到运行中的任务，模型下一轮带上。
+   *
+   * ★★★ 幂等与"点击即见"（2026-10-09 用户实报）：
+   *   · 「同一个消息点击多次会发送 n 次」→ 用具队列条目 id 当幂等键：
+   *     在途守卫（injecting）挡住第二次点击，clientMsgId 让后端也能去重（覆盖网络重试）。
+   *   · 「点击无用 / 聊天里看不到」→ 注入成功时后端**回传真实 msgId**，这里**本地立即插入**
+   *     该条 user 消息（SSE 的 message:added 后到会被 id 去重挡住，不会重复）。
+   *     此前完全依赖 SSE 回显 —— 断流或切走再回来时就"点了没反应、队列条目还消失了"。
+   *
+   * @returns { ok, duplicate } —— ok=false 表示该会话已无运行中任务（调用方退回普通发送）
+   */
+  const injectingQueued = ref<Set<string>>(new Set());
+  async function injectQueuedMessage(convId: string, id: string): Promise<{ ok: boolean; duplicate: boolean }> {
     const arr = queuedByConv.value[convId];
     const hit = arr?.find((q) => q.id === id);
-    if (!hit) return false;
-    const r = await api.post<any>('/llm/tasks/inject', { conversationId: convId, content: hit.content });
-    const status = (r as any)?.data?.status;
-    if (status === 'injected') {
-      removeQueuedMessage(convId, id);
-      return true;
+    if (!hit) return { ok: false, duplicate: false };
+    // 在途守卫：同一条已在发送中 → 直接忽略第二次点击（防连点落多条）
+    if (injectingQueued.value.has(id)) return { ok: true, duplicate: true };
+    injectingQueued.value = new Set(injectingQueued.value).add(id);
+    try {
+      const r = await api.post<any>('/llm/tasks/inject', {
+        conversationId: convId,
+        content: hit.content,
+        clientMsgId: id, // 幂等键：后端据此去重（连点 / 网络重试同一 id 只落一条）
+      });
+      if ('error' in (r as any)) return { ok: false, duplicate: false };
+      const data = (r as any)?.data || {};
+      if (data.status === 'injected') {
+        removeQueuedMessage(convId, id);
+        // ★ 本地立即回显：不依赖 SSE。按真实 id 去重（后到的 message:added 会被挡住）。
+        const realId = typeof data.msgId === 'string' && data.msgId ? data.msgId : null;
+        if (realId) {
+          const list = (messagesByConv.value[convId] ||= []);
+          if (!list.some((m) => m.id === realId)) {
+            list.push({
+              id: realId, conversationId: convId, role: 'user', content: hit.content,
+              createdAt: Date.now(),
+            } as any);
+          }
+        }
+        return { ok: true, duplicate: !!data.duplicate };
+      }
+      return { ok: false, duplicate: false };
+    } finally {
+      const next = new Set(injectingQueued.value);
+      next.delete(id);
+      injectingQueued.value = next;
     }
-    return false;
   }
 
   // 文件管理弹窗（el-dialog）是否显示——左侧栏「文件管理」按钮触发
@@ -1815,17 +1863,20 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
     const agentStore = useAgentStore();
     const agent = agentStore.selectedAgent;
     const steps = agent?.config?.maxReActSteps;
-    // ★ 下限 1、上限 500（用户 2026-09-28：「改了最大步数不立刻生效」顺带暴露的硬抬问题）。
+    // ★ 下限 1、上限 1000（用户 2026-09-28：「改了最大步数不立刻生效」顺带暴露的硬抬问题）。
     //   此前写的是 `if (steps >= 100) return steps; return 100;` —— 把一切 <100 的配置**静默抬到 100**，
     //   用户想把步数调小（快速迭代/省钱）根本做不到，且界面不提示，属于静默失效。
     //   现在：显式配置直接采纳（只做合法性夹取），未配置才回落到默认。
     // ★ 2026-09-29：默认 100 → 500（用户：「默认 500 步吧，50 步不太够啊」）。
-    //   长任务跑满 100 步仍有大量未完成步骤 → 默认偏小会让任务频繁触顶。
-    //   ★ 与后端 `DEFAULT_MAX_REACT_STEPS` 必须同值（两处不同步会让"界面显示"与"实际执行"不一致）。
+    // ★★ 2026-10-09（本次修复）：500 → 1000。后端 `DEFAULT_MAX_REACT_STEPS` 已提到 1000
+    //   （推文产线实测主任务 500 步也撞顶），而后端 `liveMaxSteps()` 的语义是
+    //   「显式传入 > 智能体现值 > 默认」—— 前端回落 500 会被当成**显式传入**，从而把后端
+    //   已经生效的 1000 默认**覆盖回 500**。⇒ 两处必须**同值**，否则"默认 1000 步"根本
+    //   从 UI 生效不了（这正是上次提默认值时漏改的那一半）。
     if (typeof steps === 'number' && Number.isFinite(steps) && steps > 0) {
-      return Math.min(Math.floor(steps), 500);
+      return Math.min(Math.floor(steps), 1000);
     }
-    return 500; // 默认 500（= 上限）
+    return 1000; // 默认 1000（与后端 DEFAULT_MAX_REACT_STEPS 同值）
   }
 
   /**
@@ -2237,21 +2288,30 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
     })();
   }
 
-  // ★★★ 接管条残留自愈巡检（2026-10-09）：SSE 终态事件丢失（断流放弃重连 / 服务重启把
-  //   任务标 interrupted）时 runningConvIds 永远没人清 →「Agent 接管中 · 执行中」整条
-  //   挂着不掉（用户实报「pageAgent结束了…这个一直在？」）。原有自愈只挂在「切回会话」
-  //   （reconnectActiveTask 的调用点），用户不切会话就永远不触发。这里 30s 周期巡检：
-  //   会话仍标记运行中 + 属浏览器任务 + 浏览器工具已 2 分钟无任何事件 → 只查一次服务端
-  //   活动任务，无活动才清残留运行态（**不做** SSE 重连重订——长任务编排间隙浏览器
-  //   空闲 2 分钟是常态，反复重订会抖动流）。
+  // ★★★ 假运行态残留自愈巡检（2026-10-09；2026-10-09 扩到全部会话）：
+  //   SSE 终态事件丢失（断流放弃重连 / 服务重启把任务标 interrupted）时 runningConvIds
+  //   永远没人清 → ①「Agent 接管中 · 执行中」整条挂着不掉（用户实报「pageAgent结束了…这个一直在？」）；
+  //   ② 该会话之后**发不出任何消息**（callLlm 同会话守卫命中；旧版是静默 return → 消息凭空消失）。
+  //   原有自愈只挂在「切回会话」（reconnectActiveTask），用户不切会话就永远不触发。
+  //   这里 30s 周期巡检：对每个「UI 认为在跑」的会话，只查一次服务端活动任务，
+  //   **无活动才清残留运行态**（真在跑 → 服务端有活动任务 → 不清，安全）。
+  //   **不做** SSE 重连重订 —— 长任务编排间隙浏览器空闲 2 分钟是常态，反复重订会抖动流。
   async function sweepStaleBrowserTakeover(): Promise<void> {
     if (runningConvIds.value.size === 0) return;
-    if (Date.now() - lastBrowserToolAt.value <= 120000) return;
+    // 浏览器会话的宽限：浏览器工具事件静默 2 分钟才查（长任务编排间隙浏览器空闲是常态）
+    const browserIdle = Date.now() - lastBrowserToolAt.value > 120000;
     for (const convId of Array.from(runningConvIds.value)) {
-      if (!browserTaskConvs.value.has(convId)) continue;
+      // ★★★ 2026-10-09：**不再只扫浏览器会话**（本次"B 会话发不出消息"修复的一环）。
+      //   此前是 `if (!browserTaskConvs.value.has(convId)) continue;` —— 把**纯文本会话整个
+      //   排除在自愈之外**。于是纯文本任务一旦丢了 SSE 终态事件，该会话的 runningConvIds
+      //   永久残留 → 之后每次发送都被 callLlm 的同会话守卫命中（旧版是静默 return，消息凭空消失）。
+      //   纯文本会话没有"浏览器事件"这个活性信号，只能以服务端活动任务为准（每 30s 一次 GET，
+      //   只在 UI 认为在跑的会话数上跑，量极小）。真在跑 → 服务端有活动任务 → 不清（安全）。
+      if (browserTaskConvs.value.has(convId) && !browserIdle) continue;
       try {
         const r = await api.get<any[]>(`/llm/tasks/active?conversationId=${convId}`);
-        if ('error' in (r as any) || !(r as any).data) return;
+        // ★ 单会话查询失败**只跳过本会话**（此前是 return，一个失败会让其余会话的自愈整轮失效）
+        if ('error' in (r as any) || !(r as any).data) continue;
         const act = (r as any).data as any[];
         if (act.length === 0) {
           // 服务端已无活动任务 → 前端运行态是残留，落结束态并清记账（与切会话自愈同口径）
@@ -2286,7 +2346,71 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
     // 调用方可显式锁定目标会话，避免消息/任务落到「发送开始时」之外的会话上（多会话并行时必现串台）。
     const convId = convIdOverride || currentConvId.value;
     if (!convId) throw new Error('未选择会话');
-    if (runningConvIds.value.has(convId)) return;
+    // ★★★ 同会话互斥 —— **绝不静默吞消息**（2026-10-09 实据修复，high）。
+    //
+    // 症状（用户实报）：多会话下 A 会话在跑，B 会话发消息后**页面上没有这条消息**，
+    //   输入框显示「任务运行中」，内容区毫无反应。
+    //   真因：本行此前是裸 `if (runningConvIds.value.has(convId)) return;` —— 直接返回，
+    //   既**不落库、不发 SSE、也不给任何提示**，用户消息凭空消失（与「输入框空了」（调用方
+    //   已清）、「显示运行中」（确有任务在跑）三者叠加，观感就是"点了没反应"）。
+    //
+    // 正确语义（两种"在跑"要分清，不能一律吞）：
+    //   ① 真在跑（服务端确有该会话的活动任务）→ 走「注入复用」：消息落库 + message:added
+    //      回显 + 模型下一轮带上（后端 /llm/tasks 的复用保护已实现并已进安装包）。
+    //      注入失败再退回"明确提示"，**仍不吞**（消息留在输入框里由调用方恢复）。
+    //   ② 假运行态残留（前端 runningConvIds 挂着，服务端其实没有活动任务）——SSE 终态事件
+    //      丢失（断流放弃重连 / 服务重启把任务标 interrupted）时的常见形态 →
+    //      先清残留运行态，再**继续正常起新任务**（不能因为一个死记账让该会话永久发不出消息）。
+    const runningId = taskIds.get(convId);
+    if (runningConvIds.value.has(convId)) {
+      // ★ 无条件查服务端（不依赖本地 taskIds —— 残留态下 taskIds 可能已被清，只有
+      //   runningConvIds 还挂着；不查就永远判不出"假运行态"）。
+      let activeTaskId: string | null = null;
+      try {
+        const r = await api.get<any[]>(`/llm/tasks/active?conversationId=${convId}`);
+        if (!('error' in r) && Array.isArray(r.data)) {
+          activeTaskId = r.data.find((t: any) => t.status === 'running')?.id ?? null;
+        } else {
+          activeTaskId = runningId ?? null; // 查询返回异常：退回本地记账（有记账即视为在跑）
+        }
+      } catch {
+        // 查询失败（网络抖动）→ 退回本地记账：有记账视为在跑（宁可提示，也不重复起任务）
+        activeTaskId = runningId ?? null;
+      }
+      if (activeTaskId) {
+        // 真在跑 → 注入复用（后端落库 + 推送 message:added，前端立即可见）
+        const content = options.userContent;
+        if (content && content.trim()) {
+          try {
+            const inj = await api.post<any>('/llm/tasks/inject', {
+              conversationId: convId,
+              content,
+              // 幂等键：任务 id + 内容长度，覆盖"连点/网络重试"重复下单
+              clientMsgId: `${activeTaskId}:${content.length}`,
+            });
+            if (!('error' in inj) && (inj as any).data?.status === 'injected') {
+              try {
+                const { ElMessage } = await import('element-plus');
+                ElMessage.info('已并入运行中的任务，将在下一轮执行时生效');
+              } catch { /* 提示失败不影响订阅 */ }
+              return;
+            }
+          } catch { /* 注入失败 → 落到下面的明确提示，绝不静默 */ }
+        }
+        // 注入不成（无内容 / 后端拒绝）→ **明确告知**，不吞（消息已由调用方负责留在输入框）
+        try {
+          const { ElMessage } = await import('element-plus');
+          ElMessage.warning('该会话正在执行任务，本条未发送：请等任务结束，或用「立即发送」把它并入下一轮');
+        } catch { /* ignore */ }
+        return;
+      }
+      // 假运行态残留 → 清掉死记账，继续正常起新任务
+      runningConvIds.value.delete(convId);
+      runStatsByConv.value[convId] = { status: 'aborted', startedAt: 0, endedAt: Date.now() };
+      clearBrowserTaskActive(convId);
+      abortControllers.delete(convId);
+      taskIds.delete(convId);
+    }
 
     runningConvIds.value.add(convId);
     runStatsByConv.value[convId] = { status: 'running', startedAt: Date.now() };
@@ -2476,7 +2600,7 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
     remainingAgentOpenedTabs, clearAgentOpenedTabs, markAgentOpenedTab,
     agentCursor, onAgentCursor, clearAgentCursor,
     pauseTask, resumeTask,
-    queuedByConv, queuedOf, enqueueMessage, removeQueuedMessage, updateQueuedMessage, takeQueuedMessages, takeFirstQueuedMessage, injectQueuedMessage,
+    queuedByConv, queuedOf, enqueueMessage, removeQueuedMessage, updateQueuedMessage, promoteQueuedMessage, takeQueuedMessages, takeFirstQueuedMessage, injectQueuedMessage,
     onTaskFinished,
     runningToolCallIds, isToolCallRunning,
     browserSteps, rightPanelOpen, thinkingMode, planMode, answerOnly,
