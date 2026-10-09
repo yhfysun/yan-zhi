@@ -15,6 +15,11 @@ import os
 import subprocess
 import sys
 
+# ★ 子进程静默（2026-10-09）：本文件有 10 处 ffmpeg/ffprobe 调用，是"黑框一直闪"的主要来源。
+#   打一次补丁 → 后续所有 subprocess.Popen 自动带 CREATE_NO_WINDOW。
+import _winquiet  # noqa: E402
+_winquiet.apply_popen_defaults()
+
 # 画幅由 --aspect 决定（2026-10-07）：4:3=1080x1440(默认) / 9:16=1080x1920(抖音竖屏) / 16:9=1920x1080(横屏)
 ASPECT_SIZES = {"4:3": (1080, 1440), "9:16": (1080, 1920), "16:9": (1920, 1080)}
 W, H = ASPECT_SIZES["4:3"]

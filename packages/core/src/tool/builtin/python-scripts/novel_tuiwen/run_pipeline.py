@@ -9,6 +9,11 @@ import os
 import subprocess
 import sys
 
+# ★ 子进程静默（2026-10-09）：ffmpeg/ffprobe/python 子进程在"无控制台的父进程"下会弹黑框。
+#   本模块给 subprocess.Popen 打默认 CREATE_NO_WINDOW 补丁 → 本文件后续所有子进程自动静默。
+import _winquiet  # noqa: E402
+_winquiet.apply_popen_defaults()
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 PY = sys.executable
 
@@ -21,7 +26,15 @@ if not os.environ.get("FFPROBE"):
 
 def run(cmd):
     print("+", " ".join(cmd), file=sys.stderr)
-    r = subprocess.run(cmd)
+    # ★ 2026-10-09：子进程输出必须**显式透传**并能被上层采集。
+    #   pythonw / 无控制台父进程下 sys.stdout 可能为 None，此时传 None 会抛错 → 用条件透传。
+    #   用户侧曾出现"pipeline.log 为空"，排障时被误判成"卡住不动"——日志拿不到是排障力的损失。
+    kw = {}
+    if sys.stdout is not None:
+        kw['stdout'] = sys.stdout
+    if sys.stderr is not None:
+        kw['stderr'] = sys.stderr
+    r = subprocess.run(cmd, **kw)
     if r.returncode != 0:
         sys.exit(r.returncode)
 
