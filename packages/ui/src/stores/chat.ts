@@ -1818,6 +1818,27 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
       return { ok: false, msg: '读取图片失败: ' + (e?.message || e) };
     }
 
+    // ★★★ 图片压缩与预算闸（C2，2026-10-09）——此前这里是**原图直发**：
+    //   `browser_screenshot` 的整页 PNG 常数 MB → 上游 400（Anthropic 单图 base64 约 5MB）
+    //   或一张图吃爆 token。压缩放在**这一处**是因为它是 UI 侧唯一的 vision 入口，
+    //   且 `LlmClient.visionAnalyze` 对两种协议共用 —— 改这里覆盖全部调用方。
+    //   ★ fail-open：压缩失败一律回退原图（压缩是优化，不能变成"图片用不了"）。
+    let sendMime = mime;
+    try {
+      const { downscaleImageBase64 } = await import('../utils/image-compress');
+      const c = await downscaleImageBase64(base64, mime);
+      if (c.compressed) {
+        console.info(`[image_analyze] 图片压缩: ${(c.originalBytes / 1048576).toFixed(2)}MB → ${(c.resultBytes / 1048576).toFixed(2)}MB (${c.width}x${c.height})`);
+        base64 = c.base64;
+        sendMime = c.mime;
+      }
+      if (c.note && c.resultBytes > 0 && c.note.includes('仍超预算')) {
+        console.warn('[image_analyze]', c.note);
+      }
+    } catch (e: any) {
+      console.warn('[image_analyze] 压缩流程异常，使用原图:', e?.message || e);
+    }
+
     const { usePlatformStore } = await import('./platform');
     const platformStore = usePlatformStore();
 
@@ -1831,7 +1852,9 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
       tried.add(key);
       try {
         const client = new LlmClient(p, m);
-        const text = await client.visionAnalyze(base64, mime, prompt);
+        // ★ 必须用 `sendMime`（压缩后可能是 image/jpeg）—— 若仍报原 mime（如 image/png），
+        //   上游按 PNG 解 JPEG 字节 → 解码失败。这是"压缩与声明必须同步"的硬约束。
+        const text = await client.visionAnalyze(base64, sendMime, prompt);
         if (text) return text;
         console.warn('[image_analyze] vision 返回空，换下一候选:', m.modelId);
         return null;
