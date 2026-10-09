@@ -451,6 +451,63 @@ export function formatTaskMemoryContext(content: string): string {
   ].join('\n');
 }
 
+/** 进展明细注入的字数上限（只注入**最近几条**，不是整份明细 —— 明细仍按需读） */
+const PROGRESS_INJECT_MAX_CHARS = 1200;
+/** 进展明细注入的条目数上限（只给"最近做到了哪"，多了就是重蹈"流水账撑爆注入预算"） */
+const PROGRESS_INJECT_MAX_ENTRIES = 3;
+
+/**
+ * ★★★ 任务进展「最近一批」注入（D5，2026-10-09）。
+ *
+ * ★ 为什么必须有（此前 progress.md **完全不注入**）：
+ *   progress.md 是跨会话接力的**主要线索**（"上一批做到哪、还剩什么"），
+ *   但它设计上"按需读"（防爆窗）→ 只有模型**主动**调 `api_space_memory_read` 才看得到。
+ *   而项目自己的方案文档就承认："长任务跑偏时模型根本不会去调"。
+ *   ⇒ 结果：换会话继续时，模型不知道上一批做到哪，只能从头再来或问用户。
+ *
+ * ★ 与"整份注入"的区别（**别搞混**）：这里只注入**最近 3 条 / 1200 字**，
+ *   是"接力棒"而非"流水账"。整份明细仍按需读 —— 否则就重蹈
+ *   "逐批流水账撑爆注入预算"的老路（MEMORY.md 曾被进展行占 81% 撑到 12786 字）。
+ *
+ * ★ 只注入**未终结**的条目优先？不 —— 保留原顺序取最近 N 条：
+ *   已终结的最后一条同样是"上一批干完了什么"的有效信息（可能已产出用户要的产物）。
+ */
+export function formatProgressContext(content: string): string {
+  const raw = String(content || '').trim();
+  if (!raw) return '';
+  // 只取任务进展行（跳过头部注释/空行），再从新到旧取最近 N 条
+  const entries = raw
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => PROGRESS_ENTRY_MARK.test(l));
+  if (!entries.length) return '';
+  const recent = entries.slice(-PROGRESS_INJECT_MAX_ENTRIES);
+  // ★★★ 按"均分预算"逐条分配，而不是"先到先得"（2026-10-09 真跑抓出的缺陷两连）：
+  //
+  //   第一版：`if (used + l.length > MAX) break;` —— 长任务的收尾条目是**完整 markdown 总结**
+  //     （实测"第3章"那条 > 3000 字），最新一条就超过 1200 上限 ⇒ **注入 0 条**，
+  //     接力棒完全失效（功能看起来在、实际什么都不给）。
+  //   第二版：超限即**截断该条** —— 有内容了，但最新那条把 1200 预算吃光 ⇒ 只注入 **1 条**，
+  //     丢掉了"最近几批的轨迹"，而这正是"接力棒"要看的。
+  //   第三版（本实现）：**每条的份额 = 总预算 / 条数**（均分），各条都截到自己的份额。
+  //     ⇒ 最近 3 条都露头（能看出轨迹），总量仍受预算约束。
+  //   ★ 两版都是"真跑真实数据"才发现的 —— 静态测试用短条目时全都通过。
+  const picked: string[] = [];
+  const perEntry = Math.max(1, Math.floor(PROGRESS_INJECT_MAX_CHARS / recent.length));
+  for (const l of [...recent].reverse()) {
+    const text = l.length > perEntry ? `${l.slice(0, perEntry - 1)}…` : l;
+    picked.unshift(text);
+  }
+  if (!picked.length) return '';
+  return [
+    '## 上一批任务的进展（接力棒）',
+    '> 以下是本目录**最近几批**长任务的收尾留痕（做到哪、还剩什么）。继续任务时**先看这里**，',
+    '> 按未完成的部分接着做；**不要**从头再来（已完成的结论与产物都在）。需要更早的明细时调 `api_space_memory_read`。',
+    '',
+    ...picked,
+  ].join('\n');
+}
+
 // ── 任务进展（progress）──────────────────────────────────────────────────
 // ★★★ 为什么必须补这块（2026-09-27，用户报「长任务没完整需要总结记忆进入空间记忆」）：
 //   此前长任务收尾只有两条通路，**都不进空间记忆**：

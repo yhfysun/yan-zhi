@@ -15,7 +15,7 @@ import {
   retrieveRelevantMemories, formatMemoryContext, bumpMemoryUsage,
   writeMemoryItems, flushMemoriesBeforeCompression, parseExtractedItems, type MemoryWriteItem,
 } from './services/memory-service.js';
-import { loadSpaceMemoryForConversation, formatSpaceMemoryContext, appendTaskDecision, loadTaskMemoryForConversation, formatTaskMemoryContext, appendTaskProgress } from './services/space-memory.js';
+import { loadSpaceMemoryForConversation, formatSpaceMemoryContext, appendTaskDecision, loadTaskMemoryForConversation, formatTaskMemoryContext, appendTaskProgress, readTaskProgressForConversation, formatProgressContext } from './services/space-memory.js';
 import {
   resolveExperienceBase, resolveSkillDraftsDir, appendExperienceEntry, buildExperienceContextForConversation,
   listExperienceSummaries, type ExperienceKind,
@@ -1907,6 +1907,17 @@ async function runReActLoop(task: LlmTask, params: {
         systemPromptBuilt += '\n\n' + formatTaskMemoryContext(taskMem);
       }
     } catch { /* 决策记录注入失败不影响任务 */ }
+    // ★★★ 任务进展「最近一批」注入（D5，2026-10-09）：progress.md 此前**完全不注入**，
+    //   而它是跨会话接力的**主要线索**（上一批做到哪、还剩什么）。按需读的设计导致
+    //   "长任务跑偏时模型不会主动去读"→ 换会话只能从头再来。
+    //   这里只注入**最近 3 条 / 1200 字**（是"接力棒"不是"流水账"），整份明细仍按需读。
+    try {
+      const prog = readTaskProgressForConversation(convId);
+      if (prog?.content) {
+        const block = formatProgressContext(prog.content);
+        if (block) systemPromptBuilt += '\n\n' + block;
+      }
+    } catch { /* 进展注入失败不影响任务 */ }
     // 任务类型 SOP 注入（「目录即任务」）：目录绑定了类型时，把类型执行手册 + 资源目录现状
     // 注入提示词，让模型按 SOP 分步引导用户，并知道 00-source 里已有哪些素材。
     try {
