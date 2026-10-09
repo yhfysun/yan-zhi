@@ -838,6 +838,104 @@ export function createTask(params: {
   return taskId;
 }
 
+/**
+ * ★★★ 多模态「注入期展开」（C1，2026-10-09）。
+ *
+ * ★ 背景：`Message.content` 只能是 string，`toApiMessage` 从不组装 `image_url`
+ *   → **模型从未真正收到过图像**。截图分析此前是"假的"：靠模型自觉再调 `image_analyze`
+ *   （而那个工具只在**前端**可执行，服务端全仓无 vision 调用）。
+ *
+ * ★ 设计取舍（**不把 content 改成 ContentBlock[] 落库**）：
+ *   持久化仍存**纯字符串**（图片引用以 `已存档: <path>` 形式留在正文里 —— 人类可读可审计）；
+ *   发送前把标记展开为 `imageParts`，`toApiMessage` 再组装成 `image_url` 块。
+ *   理由见 `shared/types` 里 `imageParts` 的注释（content 被字符串拼接/估算/渲染三处消费，
+ *   改成数组会静默产出 `[object Object]` 或抛错，牵动 db/压缩/前端）。
+ *
+ * ★★★ 只注入**最近 N 条**（历史图降级的简化版，C4 的先行部分）：
+ *   图像块在历史里**全量回放**会让每轮请求都背着几十张图（vision token 与像素面积成正比）
+ *   —— 长任务几十步下来成本爆炸。⇒ 只给最近 `IMAGE_INJECT_MAX_MESSAGES` 条带图，
+ *   更早的**保持文本形态**（正文里的路径仍在，模型需要时可判断是否再读）。
+ *
+ * ★ 幂等与一次性：解析成功的消息不带 `imagePartsTried`（下次仍可注入，但只在最近 N 条内）；
+ *   解析**失败**的标 `imagePartsTried=true` → 不再重试（避免每步都 stat 失效路径）。
+ */
+const IMAGE_INJECT_MAX_MESSAGES = 3;
+/** 单次请求最多注入多少张图（多条消息各带图时合计上限） */
+const IMAGE_INJECT_MAX_TOTAL = 4;
+/** 图片标记：`已存档: <path>`（与 computer-use 产出、C6 归档正则同一格式） */
+const IMAGE_ARCHIVE_MARK_RE = /已存档:\s*([^\n）)]+\.(?:png|jpe?g|webp|gif|bmp))/gi;
+
+async function attachImagesToMessages(messages: Message[]): Promise<void> {
+  try {
+    // 从后往前找"含标记且未尝试过"的消息，最多处理 N 条
+    const candidates: Message[] = [];
+    for (let i = messages.length - 1; i >= 0 && candidates.length < IMAGE_INJECT_MAX_MESSAGES; i--) {
+      const m = messages[i];
+      if (m.imagePartsTried) continue;
+      if (!IMAGE_ARCHIVE_MARK_RE.test(m.content || '')) { IMAGE_ARCHIVE_MARK_RE.lastIndex = 0; continue; }
+      IMAGE_ARCHIVE_MARK_RE.lastIndex = 0; // test() 带 /g 会推进 lastIndex，必须复位
+      candidates.push(m);
+    }
+    if (!candidates.length) return;
+
+    // 取 fs 适配器（core 内已在用；服务端 Electron 环境有实现）
+    const { getPlatformAdapter } = await import('@yan-zhi/core');
+    let fs: any;
+    try { fs = getPlatformAdapter().fs; } catch { return; } // 无适配器（如纯 Web 端）→ 跳过，保持现状
+    if (!fs?.readFileBase64) return;
+
+    let injected = 0;
+    for (const m of candidates) {
+      if (injected >= IMAGE_INJECT_MAX_TOTAL) break;
+      IMAGE_ARCHIVE_MARK_RE.lastIndex = 0;
+      const paths: string[] = [];
+      let hit: RegExpExecArray | null;
+      while ((hit = IMAGE_ARCHIVE_MARK_RE.exec(m.content || '')) !== null) {
+        const p = String(hit[1] || '').trim();
+        if (p) paths.push(p);
+      }
+      if (!paths.length) continue;
+      const parts: Array<{ mime: string; base64: string }> = [];
+      for (const p of paths) {
+        if (injected + parts.length >= IMAGE_INJECT_MAX_TOTAL) break;
+        try {
+          const abs = resolveToolPath(p, currentWorkspaceDir());
+          const exists = await fs.exists(abs).catch(() => false);
+          if (!exists) continue; // 文件已清理/路径失效 → 跳过（不标记 tried，可能是别的工作目录）
+          const base64 = await fs.readFileBase64(abs);
+          if (!base64) continue;
+          parts.push({ mime: mimeOfPath(abs), base64 });
+        } catch { /* 单张失败不影响其它 */ }
+      }
+      if (parts.length) {
+        m.imageParts = parts;
+        injected += parts.length;
+      } else {
+        // ★ 一个都没读到 → 标记"已尝试"，避免每步重复 stat 同一批失效路径
+        m.imagePartsTried = true;
+      }
+    }
+  } catch (e: any) {
+    // ★ fail-safe：注入图片失败**绝不能**影响主链路（退化为现状：纯文本发送）
+    logger.warn('[llm-task] 图片注入失败（降级为纯文本）:', e?.message || e);
+  }
+}
+
+/** 由扩展名推 MIME（只处理图片；其它返回 image/jpeg 兜底） */
+function mimeOfPath(p: string): string {
+  const ext = String(p).split('.').pop()?.toLowerCase() || '';
+  const map: Record<string, string> = {
+    png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
+    webp: 'image/webp', gif: 'image/gif', bmp: 'image/bmp',
+  };
+  return map[ext] || 'image/jpeg';
+}
+
+/** 当前工作目录（用于把相对路径解析成绝对路径）；取不到返回 null（resolveToolPath 会自行兜底） */
+function currentWorkspaceDir(): string | null {
+  return serverState.workspaceDir || null;
+}
+
 /** `injectUserMessage` 的返回契约 */
 export interface InjectResult {
   status: 'injected' | 'no-task';
@@ -2109,6 +2207,11 @@ async function runReActLoop(task: LlmTask, params: {
           content: m.content, toolCalls: m.toolCalls,
           toolCallId: m.toolCallId, createdAt: m.createdAt,
         })));
+
+        // ★★★ C1：发送前把 `已存档: <path>` 标记展开为图片块（视觉模型据此**真正看到**截图）。
+        //   放在这里（构建完 llmMessages 之后、发请求之前）—— 是主循环**唯一**的发送前时点。
+        //   ★ 只注入最近几条（见 attachImagesToMessages 的 C4 简化版说明）。
+        await attachImagesToMessages(llmMessages);
 
         // 文本模式工具调用：模型不支持 function calling 时，在 system prompt 注入 [TOOL_CALL] 格式说明
         const hasToolsToExpose = toolsBuilt.length > 0;
@@ -4626,6 +4729,11 @@ async function runSubAgentImpl(
         content: m.content, toolCalls: m.toolCalls,
         toolCallId: m.toolCallId, createdAt: m.createdAt,
       })));
+
+      // ★★★ C1（2026-10-09）：子智能体循环同样要能"看到图" ——
+      //   pageAgent/子智能体常是产出截图的那一方，若只有主循环注入，
+      //   "委派子智能体看图"这条最自然的用法反而不成立（子智能体看不到自己截的图）。
+      await attachImagesToMessages(llmMessages);
 
       // 文本模式工具调用
       const hasToolsToExpose = subTools.length > 0;

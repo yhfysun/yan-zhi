@@ -163,6 +163,26 @@ export interface Message {
   subAgentDepth?: number;
   /** 内嵌于聊天消息里的动态看板（数据浏览）契约；非持久化 UI 增强，见 data-query-contract change */
   dataView?: InlineDataView;
+  /**
+   * ★★★ 仅**发送期**存在的图片附件（C1，2026-10-09）——**不落库**。
+   *
+   * ★ 为什么用"另加字段 + 注入期展开"而不是把 `content` 改成 `ContentBlock[]`：
+   *   `content` 被至少三处当**字符串**用（`sanitizeToolMessages` 的
+   *   `` `[工具结果] ${m.content}` `` 拼接、`estimateTokens`、前端渲染）——
+   *   一旦改成数组，这些地方会**静默产出 "[object Object]"** 或直接抛错，
+   *   而要全部改对就牵动 db/压缩/前端（改动面与风险都大得多）。
+   *   ⇒ 落库仍是**纯字符串**（图片引用以路径形式留在正文里，人类可读、可审计）；
+   *     仅在 `toApiMessage` 组装上游请求体时，把标记展开为 `image_url` 块。
+   * ★ 写入者：服务端 `attachImagesToMessages()`（发送前一次性解析标记并读图）。
+   *   它**不可序列化**（base64 很大）——任何落库/快照路径必须剔除。
+   */
+  imageParts?: Array<{ mime: string; base64: string }>;
+  /**
+   * ★ 已尝试解析的**失败标记**（C1）：标记文本命中了但图读不到（路径失效/已清理）。
+   *   记下来是为了"**只尝试一次**" —— 否则每一步都会重试同一批失效路径
+   *   （每步都 stat + 失败日志，长任务白跑几百次）。
+   */
+  imagePartsTried?: boolean;
 }
 
 /** 聊天内嵌「数据浏览/动态看板」契约：只声明取数源 + 想要当过滤器的列；取数由面板 /run 参数化完成，不喂 LLM */

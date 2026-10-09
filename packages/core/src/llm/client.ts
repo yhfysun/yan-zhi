@@ -154,7 +154,25 @@ export class LlmClient {
    */
   private toApiMessage(m: Message): Record<string, unknown> {
     const out: Record<string, unknown> = { role: m.role };
-    if (m.content !== undefined) out.content = m.content;
+    // ★★★ 多模态展开（C1，2026-10-09）：有 `imageParts` 时把 content 组装成
+    //   `[{type:'text'},{type:'image_url'}]` —— 这是**唯一**会产出数组形态的地方，
+    //   因此 `sanitizeToolMessages`（对字符串做拼接）等下游处理**不会受影响**。
+    //   ★ 两协议共用本函数：`toAnthropicMessages` 侧已有 `toAnthropicBlocks` 认得
+    //     `image_url` 块（`anthropic.ts:49-55`），无需再改。
+    if (m.imageParts?.length) {
+      const parts: Array<Record<string, unknown>> = [];
+      if (m.content) parts.push({ type: 'text', text: m.content });
+      for (const p of m.imageParts) {
+        // 空 base64 跳过（避免产出上游无法解析的空图块 → 400）
+        if (!p?.base64) continue;
+        parts.push({ type: 'image_url', image_url: { url: `data:${p.mime || 'image/jpeg'};base64,${p.base64}` } });
+      }
+      // 全是空图块时退回纯文本（不能让 content 变成空数组）
+      if (parts.some((p) => p.type === 'image_url')) out.content = parts;
+      else if (m.content !== undefined) out.content = m.content;
+    } else if (m.content !== undefined) {
+      out.content = m.content;
+    }
     if (m.toolCalls?.length) {
       out.tool_calls = m.toolCalls.map(tc => {
         const anyTc = tc as any;
