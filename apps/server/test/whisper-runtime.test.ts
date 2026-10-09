@@ -24,6 +24,8 @@ import {
   modelsDir,
   findBinIn,
   findModelIn,
+  resolveWhisper,
+  resetWhisperCache,
 } from '../src/mcp/whisper-runtime.js';
 
 describe('pickNightlyTag —— 从 releases 列表取最新 nightly', () => {
@@ -126,6 +128,62 @@ describe('目录解析（与 ffmpeg-runtime 同构）', () => {
   it('findBinIn / findModelIn 对不存在的目录返回 null（不抛）', () => {
     expect(findBinIn('Z:/__nope__')).toBeNull();
     expect(findModelIn('Z:/__nope__', 'small')).toBeNull();
+  });
+});
+
+describe('★ 模型档位自动降级（2026-10-09 实测暴露）', () => {
+  it('★ 只装了 base 时，请求 small 也必须能用（不是报缺模型）', async () => {
+    // 造一个真实临时目录：有 whisper-cli + 只有 base 模型
+    const os = await import('node:os');
+    const fs = await import('node:fs');
+    const pathMod = await import('node:path');
+    const dir = fs.mkdtempSync(pathMod.join(os.tmpdir(), 'yz-whisper-degrade-'));
+    const mdir = pathMod.join(dir, 'models');
+    fs.mkdirSync(mdir, { recursive: true });
+    fs.writeFileSync(pathMod.join(dir, 'whisper-cli.exe'), 'x');
+    fs.writeFileSync(pathMod.join(mdir, 'ggml-base.bin'), 'x');
+
+    const prevDir = process.env.YZ_WHISPER_DIR;
+    const prevPath = process.env.YZ_WHISPER_PATH;
+    delete process.env.YZ_WHISPER_PATH;
+    process.env.YZ_WHISPER_DIR = dir;
+    resetWhisperCache();
+    try {
+      const st = await resolveWhisper('small');   // 请求 small，但只有 base
+      expect(st.ok).toBe(true);                   // ★ 必须能用，而不是报缺模型
+      expect(st.modelName).toBe('base');          // ★ 如实告知用的是 base
+      expect(st.model).toContain('ggml-base.bin');
+    } finally {
+      resetWhisperCache();
+      if (prevDir === undefined) delete process.env.YZ_WHISPER_DIR; else process.env.YZ_WHISPER_DIR = prevDir;
+      if (prevPath !== undefined) process.env.YZ_WHISPER_PATH = prevPath;
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
+    }
+  });
+
+  it('★ 一个模型都没有 → 报错文案要列出找过哪些档（便于排查）', async () => {
+    const os = await import('node:os');
+    const fs = await import('node:fs');
+    const pathMod = await import('node:path');
+    const dir = fs.mkdtempSync(pathMod.join(os.tmpdir(), 'yz-whisper-nomodel-'));
+    fs.writeFileSync(pathMod.join(dir, 'whisper-cli.exe'), 'x');
+    const prevDir = process.env.YZ_WHISPER_DIR;
+    const prevPath = process.env.YZ_WHISPER_PATH;
+    delete process.env.YZ_WHISPER_PATH;
+    process.env.YZ_WHISPER_DIR = dir;
+    resetWhisperCache();
+    try {
+      const st = await resolveWhisper('small');
+      expect(st.ok).toBe(false);
+      expect(st.error).toContain('没有任何可用模型');
+      expect(st.error).toContain('base');   // 列出了找过的档位
+      expect(st.error).toContain('whisper_install');
+    } finally {
+      resetWhisperCache();
+      if (prevDir === undefined) delete process.env.YZ_WHISPER_DIR; else process.env.YZ_WHISPER_DIR = prevDir;
+      if (prevPath !== undefined) process.env.YZ_WHISPER_PATH = prevPath;
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
+    }
   });
 });
 

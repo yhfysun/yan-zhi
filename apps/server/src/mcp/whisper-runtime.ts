@@ -57,6 +57,12 @@ export interface WhisperStatus {
   bin: string;
   /** 默认模型的 .bin 绝对路径（未下载时为空） */
   model: string;
+  /**
+   * **实际使用**的模型档位名（medium / small / base）。
+   * ★ 与「请求的档位」可能不同：找不到请求的档时会自动降级到已装的任一一档
+   *   （2026-10-09）—— 调用方应据此**如实告知用户**用的是哪档，而不是假装用了请求的那档。
+   */
+  modelName?: string;
   /** 命中来源：env / installed / bundled / path / none */
   source: 'env' | 'installed' | 'bundled' | 'path' | 'none';
   error: string;
@@ -212,19 +218,31 @@ export async function resolveWhisper(model = DEFAULT_WHISPER_MODEL): Promise<Whi
   ): WhisperStatus | null => {
     if (!bin) return null;
     const mDir = hitModelsDir || (hitDir ? path.join(hitDir, 'models') : mdir);
-    const m = findModelIn(mDir, model) || findModelIn(hitDir || dir, model);
+    let m = findModelIn(mDir, model) || findModelIn(hitDir || dir, model);
+    let usedModel = model;
+    // ★★★ 找不到请求的模型时**自动降级到已装的任一一档**（2026-10-09 实测暴露）：
+    //   默认是 small，但用户机器上常常只装了 base（跟随首次安装或手动放置）。
+    //   此前会直接报「缺少 ggml-small.bin」→ 用户明明有能用的模型却被告知缺模型，
+    //   还得再下一次 466MB。**有可用模型就不该拦**，如实告知用的是哪一档即可。
+    //   降级顺序：medium（最准）→ small → base（最轻），取第一个存在的。
+    if (!m) {
+      for (const alt of ['medium', 'small', 'base']) {
+        const hit = findModelIn(mDir, alt) || findModelIn(hitDir || dir, alt);
+        if (hit) { m = hit; usedModel = alt; break; }
+      }
+    }
     if (!m) {
       const urls = buildModelUrls(model);
       cached = {
         ok: false, bin, model: '', source,
         installDir: hitDir || dir, modelsDir: mDir,
-        error: `whisper-cli 已就位（${bin}），但缺少模型 ${modelFileName(model)}。`
+        error: `whisper-cli 已就位（${bin}），但没有任何可用模型（找过 ${Object.keys(WHISPER_MODELS).join(' / ')}）。`
           + `请用 whisper_install {what:"model"} 下载，或手动下载后放入：${mDir}`
           + `\n（下载地址见 whisper_install 的返回，或直接：${urls.primary}）`,
       };
       return cached;
     }
-    cached = { ok: true, bin, model: m, source, installDir: hitDir || dir, modelsDir: mDir, error: '' };
+    cached = { ok: true, bin, model: m, modelName: usedModel, source, installDir: hitDir || dir, modelsDir: mDir, error: '' };
     return cached;
   };
 

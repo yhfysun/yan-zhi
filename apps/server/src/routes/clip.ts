@@ -263,7 +263,8 @@ router.post('/asr', async (req: Request, res: Response) => {
       });
     }
     // ★ 返回形态对齐 /clip/probe 的 `{data: ...}`（前端 apiFetch 解包后 r.data 即数组本身）
-    return res.json({ data: cues, ok: true, model, language, source: wh.source });
+    //   model 用**实际使用**的档位（请求 small 但本机只有 base 时会自动降级，如实回报）
+    return res.json({ data: cues, ok: true, model: wh.modelName || model, requestedModel: model, language, source: wh.source });
   } catch (e: unknown) {
     return res.status(500).json({ error: `转写异常：${e instanceof Error ? e.message : String(e)}` });
   } finally {

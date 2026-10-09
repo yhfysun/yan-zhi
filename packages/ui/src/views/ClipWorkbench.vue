@@ -2558,8 +2558,8 @@ async function runAsrOnSelected() {
     //   失败时返回 `{ error }` → 先判 `'error' in r`，避免把错误当成功处理。
     const r = await api.post<AsrCue[]>('/clip/asr', {
       conversationId: convId.value, path: src, model: asrModel.value,
-    });
-    if ('error' in r) {
+    }) as { data?: AsrCue[]; model?: string; requestedModel?: string; error?: string };
+    if ('error' in r && r.error) {
       // 服务端已给出可执行指引（含手动放置目录），原样转达
       note(String((r as { error?: string }).error || '语音识别失败'));
       return;
@@ -2582,7 +2582,12 @@ async function runAsrOnSelected() {
     await save();
     selectText(added[0].id);
     rightTab.value = 'inspector';
-    note(`已识别 ${added.length} 条字幕（模型 ${asrModel.value}），右侧可逐条改文案与时间`);
+    // 如实告知实际用的模型（请求 small 但本机只有 base 时服务端会自动降级）
+    const usedModel = (r as { model?: string }).model || asrModel.value;
+    const fellBack = usedModel !== asrModel.value;
+    note(
+      `已识别 ${added.length} 条字幕（模型 ${usedModel}${fellBack ? `，${asrModel.value} 未装已自动降级` : ''}），右侧可逐条改文案与时间`,
+    );
   } catch (e: unknown) {
     note(e instanceof Error ? e.message : String(e));
   } finally {

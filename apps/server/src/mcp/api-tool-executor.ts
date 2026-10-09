@@ -1273,7 +1273,11 @@ async function mediaAsrTranscribe(
     return ok(JSON.stringify({
       ok: true, type: 'file', kind: 'srt',
       url: `${target.urlBase}/${path.basename(file)}`,
-      file, segmentCount: cues, model, language,
+      file, segmentCount: cues, model: wh.modelName || model, language,
+      // 如实告知：请求的档位与实际用的档位不一致时说明清楚（不假装用了请求的那档）
+      ...(wh.modelName && wh.modelName !== model
+        ? { modelFallback: `请求 ${model} 但本机未装，已自动改用 ${wh.modelName}（如需 ${model} 请用 whisper_install 下载）` }
+        : {}),
       note: '可直接交给 media_compose 的 subtitle 操作烧进视频（与 api_srt_generate 产出同构）。',
     }));
   } finally {
