@@ -22,7 +22,7 @@
  */
 import type { Message, Model } from '@yan-zhi/shared';
 import { effectiveContextLimit, MAX_SESSION_MESSAGES } from '@yan-zhi/shared';
-import { ContextWindow, enforceBudget, isCoveredPrefix, isSyntheticMessageId, type SummaryCache } from '@yan-zhi/core';
+import { ContextWindow, enforceBudget, isCoveredPrefix, isSyntheticMessageId, capStaleToolResults, type SummaryCache } from '@yan-zhi/core';
 import { getLatestMessageSummary, insertMessageSummary } from '../db.js';
 // constants.ts 是**零依赖模块**（它自己的注释就写明"必须能被任意模块安全引入"），
 // 因此这里直接静态引用，不需要延迟注入 —— 窗口解析口径必须只有一处。
@@ -198,6 +198,15 @@ export async function buildContextView(opts: BuildContextViewOpts): Promise<Cont
     ? [{ id: SYNTHETIC_SUMMARY_ID, conversationId, role: 'system', content: `前文摘要：${prefixSummary}`, createdAt: 0 } as Message]
     : [];
   let payload: Message[] = [...head, ...baseMessages];
+
+  // ── ②' 常态裁剪：把「保留窗口之外」的老工具结果压到 8KB（D4，2026-10-09）─────
+  //   ★ 此前 `capLongText` **只在 compress 内部**被调（即"只有超阈值才裁"）→ 低于阈值时，
+  //     `python_exec` 的长 stdout / `file_read` 的长文件 / 长正文**全量进上下文**，
+  //     逐条推高 token、更早撞阈值，更早被迫走"丢前文换摘要"这条**有损**路径。
+  //   ★ 提升为**每步常态**：只改 content 长度、不动消息结构 ⇒ tool 配对不可能被破坏；
+  //     幂等；且**只裁保留窗口之外**（最近 keepRecent 条保原文，避免"刚读到就没了"）。
+  //   ★ 放在压缩判定**之前**：先温和裁剪，若已降到阈值下就**不必走整段摘要**（保住全部对话结构）。
+  payload = capStaleToolResults(payload, keepRecent);
 
   const cw = ContextWindow.forBudget(trigger, keepRecent, keepFirst);
   if (setSummaryModel) setSummaryModel(cw);
