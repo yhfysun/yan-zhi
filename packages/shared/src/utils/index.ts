@@ -6,6 +6,11 @@ export * from './text-encoding';
 // 有效上下文策略（标称窗口 ≠ 可用窗口）—— 服务端压缩预算与前端用量展示的**同一口径**
 export * from './context-policy';
 
+// 按 key 分桶的「连续无变化计数」（B7）——**服务端与桌面两链路共用的唯一实现**。
+// ★ 为什么放 shared：两处（`server/routes/browser.ts` 与 `desktop/main.cjs`）本各写一份
+//   模块级单值，正是"跨会话互相污染"的根源；共用一份才能保证两链路行为一致。
+export * from './keyed-streak';
+
 // 剪辑效果库（滤镜/转场/文字动画/音效）——**三端共用的单一真相源**。
 // ★ 为什么放 shared 而不是 server/services：核心 schema（packages/core）也要用它生成
 //   工具参数的 enum。放 server 下会让 core 依赖 server（层次倒置），

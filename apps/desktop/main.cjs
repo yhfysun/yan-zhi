@@ -1397,6 +1397,11 @@ ipcMain.handle('browserView:createTab', (_e, scope) => {
 // 非 UI 路径（pageAgent 工具 / 页面 window.close）没有渲染层参与，主进程必须在这里收口。
 // 关闭单个 tab 的纯逻辑（IPC handler + closeAllTabs 共用）
 function closeTabById(tabId, fromUi) {
+  // ★ B7（2026-10-09）：tab 关闭 → 删掉它的 streak 桶。
+  //   放在这个**收敛入口**（注释说明"IPC handler + closeAllTabs 共用"）——
+  //   只在一个地方清理，避免"某条关闭路径漏了"导致桶缓慢泄漏。
+  //   （Map 另有 200 上限兜底，双保险。）
+  try { noChangeStreaks.delete(String(tabId == null ? 'default' : tabId)); } catch (e) { /* ignore */ }
   if (isWebviewEngine()) {
     const meta = webviewTabs.get(tabId);
     const closedScope = meta?.scope || 'preview';
@@ -2246,7 +2251,33 @@ async function injectYzAssistant(wc) {
 // 通用 action handler
 // 变化检测：这些 action 可能改变页面状态，执行后对比前后快照，防止模型盲操作死循环
 const CHANGE_ACTIONS = new Set(['click', 'type', 'press', 'select_option', 'check', 'uncheck', 'submit_form', 'search', 'next_page', 'prev_page']);
-let noChangeStreak = 0;
+// ★★★ B7（2026-10-09）：由模块级单值改为**按 tab 分桶**，与服务端（server/routes/browser.ts）同口径。
+//   单值会让"甲页面卡住"与"乙页面正常"互相污染：乙收到"连续 3 次无变化"的**假告警**
+//   （它其实只操作了一次），而甲的真告警会被乙的成功操作**清零** —— 两个方向都错且不报错。
+//   ★ 为什么按 tab 而不是按会话：① 语义上这是"页面的状态"；② 服务端 /action 拿不到会话标识；
+//     ③ 两链路都能拿到 tabId（桌面这里首参就是 tabId）。
+//   ★ 为什么内联而不 require('@yan-zhi/shared')：main.cjs 是 **CJS**，而 shared 是
+//     `type: module` + TS 源码（`main: ./src/index.ts`）→ CJS require 不了（实测）。
+//     ⇒ 内联一份等价实现，并用 `apps/desktop/test/keyed-streak-parity.test.cjs`
+//       钉住"与服务端 KeyedStreak 行为一致"（含文案逐字一致）。
+const NO_CHANGE_THRESHOLD = 3;
+const noChangeStreaks = new Map();
+function recordNoChange(tabKey, changed) {
+  const k = String(tabKey == null ? 'default' : tabKey);
+  if (changed) { noChangeStreaks.set(k, 0); return { streak: 0 }; }
+  const next = (noChangeStreaks.get(k) || 0) + 1;
+  noChangeStreaks.set(k, next);
+  // 上限兜底：关 tab 路径若有漏网，淘汰最早插入的桶（Map 迭代序=插入序）
+  while (noChangeStreaks.size > 200) {
+    const oldest = noChangeStreaks.keys().next().value;
+    if (oldest === undefined) break;
+    noChangeStreaks.delete(oldest);
+  }
+  if (next >= NO_CHANGE_THRESHOLD) {
+    return { streak: next, warning: '连续 ' + next + ' 次操作页面无任何变化，操作可能未生效。请停止重复同类操作：改用 index 精确定位（先 browser_get_page_info 获取最新编号）、重新分析页面、或 ask_user 请求人工介入。' };
+  }
+  return { streak: next };
+}
 const STATE_SNAPSHOT_JS = `(function(){try{var d=document.body;return{url:location.href,t:(d?d.innerText:'').slice(0,2000),n:document.querySelectorAll('a,button,input,select,textarea').length};}catch(e){return null;}})()`;
 
 /**
@@ -3336,13 +3367,13 @@ ipcMain.handle('browserView:action', async (_e, tabId, action, args) => {
       if (after) {
         const urlChanged = after.url !== beforeState.url;
         const changed = urlChanged || after.t !== beforeState.t || after.n !== beforeState.n;
-        noChangeStreak = changed ? 0 : noChangeStreak + 1;
+        // ★ B7：按 tab 分桶（拿不到 tabId 时归到活动页桶；文案统一由 recordNoChange 给出）
+        const streakKey = tabId != null ? tabId : activeTabId;
+        const st = recordNoChange(streakKey, changed);
         result.pageChanged = changed;
         result.urlChanged = urlChanged;
-        result.noChangeStreak = noChangeStreak;
-        if (noChangeStreak >= 3) {
-          result.warning = '连续 ' + noChangeStreak + ' 次操作页面无任何变化，操作可能未生效。请停止重复同类操作：改用 index 精确定位（先 browser_get_page_info 获取编号列表）、重新分析页面、或 ask_user 请求人工介入。';
-        }
+        result.noChangeStreak = st.streak;
+        if (st.warning) result.warning = st.warning;
       }
     }
 

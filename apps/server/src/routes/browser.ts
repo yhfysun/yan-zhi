@@ -8,7 +8,7 @@ import crypto from 'node:crypto';
 import { db } from '../db.js';
 import { encrypt, decrypt } from '../utils/crypto.js';
 import { recordBrowserMemoryEvent, readBrowserMemory } from '../services/browser-memory.js';
-import { withTimeout as sharedWithTimeout } from '@yan-zhi/shared';
+import { withTimeout as sharedWithTimeout, KeyedStreak } from '@yan-zhi/shared';
 import { createLogger } from '../services/logger.js';
 const logger = createLogger('browser');
 
@@ -631,7 +631,11 @@ function ensureYzReg() {
 
 // 变化检测：这些 action 可能改变页面状态，执行后对比前后快照
 const CHANGE_ACTIONS = new Set(['click', 'type', 'press', 'select_option', 'check', 'uncheck', 'submit_form', 'search', 'next_page', 'prev_page']);
-let noChangeStreak = 0;
+// ★★★ B7（2026-10-09）：由模块级单值改为**按 tab 分桶**。
+//   单值会让"A 页面卡住"与"B 页面正常"互相污染（B 收到假告警 / A 的真告警被清零），
+//   两个方向都错且不报错。按 tab 分桶是因为：① 语义上这是页面状态；
+//   ② 服务端 `/action` **拿不到会话标识**（单活动页架构）；③ 两链路都能拿到 tabId。
+const noChangeStreaks = new KeyedStreak({ threshold: 3 });
 const snapshotFn = () => { try { const d = document.body; return { url: location.href, t: (d ? d.innerText : '').slice(0, 2000), n: document.querySelectorAll('a,button,input,select,textarea').length }; } catch { return null; } };
 
 router.post('/action', withBrowserLock(async (req: Request, res: Response) => {
@@ -1331,7 +1335,7 @@ router.post('/action', withBrowserLock(async (req: Request, res: Response) => {
         const tid = Number(args.tabId);
         if (!tabs.has(tid)) { result = { error: `tabId ${tid} 不存在` }; break; }
         const p = tabs.get(tid);
-        if (p.isClosed?.()) { tabs.delete(tid); result = { error: `tabId ${tid} 已关闭` }; break; }
+        if (p.isClosed?.()) { tabs.delete(tid); noChangeStreaks.forget(String(tid)); result = { error: `tabId ${tid} 已关闭` }; break; }
         pageInstance = p;
         activeTabId = tid;
         result = { tabId: tid, url: p.url(), title: await p.title().catch(() => '') };
@@ -1343,6 +1347,8 @@ router.post('/action', withBrowserLock(async (req: Request, res: Response) => {
         const p = tabs.get(tid);
         await p.close().catch(() => {});
         tabs.delete(tid);
+        // ★ B7：tab 关闭 → 删掉它的 streak 桶（否则"tabId 复用"会继承旧计数）
+        noChangeStreaks.forget(String(tid));
         if (activeTabId === tid) {
           const rest = Array.from(tabs.keys());
           if (rest.length) { activeTabId = rest[0]; pageInstance = tabs.get(rest[0]); }
@@ -1664,13 +1670,13 @@ router.post('/action', withBrowserLock(async (req: Request, res: Response) => {
       if (after) {
         const urlChanged = after.url !== beforeState.url;
         const changed = urlChanged || after.t !== beforeState.t || after.n !== beforeState.n;
-        noChangeStreak = changed ? 0 : noChangeStreak + 1;
+        // ★ B7：按 tab 分桶（`reqTabId` 为空时归到活动页桶；文案统一由 KeyedStreak 给出）
+        const streakKey = reqTabId !== null ? String(reqTabId) : String(activeTabId);
+        const st = noChangeStreaks.record(streakKey, changed);
         r.pageChanged = changed;
         r.urlChanged = urlChanged;
-        r.noChangeStreak = noChangeStreak;
-        if (noChangeStreak >= 3) {
-          r.warning = '连续 ' + noChangeStreak + ' 次操作页面无任何变化，操作可能未生效。请停止重复同类操作：改用 index 精确定位（先 get_page_info 获取编号列表）、重新分析页面、或 ask_user 请求人工介入。';
-        }
+        r.noChangeStreak = st.streak;
+        if (st.warning) r.warning = st.warning;
       }
     }
     lastActivityAt = Date.now();
