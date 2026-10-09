@@ -5068,9 +5068,65 @@ async function recordTaskProgress(
     // 自动接力时，把「第几批」一并写进记忆行（同目录新会话能看出这是接力的中间批，不是首轮）
     const note = extra?.continuation ? `${summary}（${extra.continuation}）` : summary;
     await appendTaskProgress(task.conversationId, outcome, note, { steps: extra?.steps, agentName });
+    // ★★★ 记忆蒸馏（M5，2026-10-09）：收尾时顺手把**超期的明细条目**蒸馏进 MEMORY.md 并删原条目。
+    //   —— 对齐 WorkBuddy 的「蒸馏 + 删除」治理闭环（此前 yan-zhi 只有"截断"：
+    //   超出上限的内容要么被静默丢掉、要么堆在文件里永不清理）。
+    //   ★ 放在收尾路径的理由：收尾是**天然低频**时机（一次任务一次），且此刻明细刚写完；
+    //     加定时器反而会引入"与写入竞争"的新问题。
+    //   ★ 门控（都不满足就零成本跳过）：① 有空间 ② 有可用 LLM ③ 超期条目 ≥ 阈值。
+    //   ★ fail-safe：任何失败只 warn，绝不影响任务收尾。
+    void maybeDistillStaleMemory(task);
   } catch { /* 收尾留痕失败不影响任务状态上报 */ }
   // 经验提炼（自进化经验层）：成功挖步骤/事实，失败挖坑与规避。非阻塞，失败不影响收尾。
   void distillExperienceFromTask(task, outcome);
+}
+
+/**
+ * 收尾时的记忆蒸馏触发（M5）——「超期明细 → LLM 蒸馏成要点 → 写 MEMORY.md → 删原条目」。
+ *
+ * ★ 为什么模型从 task 解析而不是硬编码：与"记忆抽取/压缩前抢救"同一口径
+ *   （`resolveMemoryExtractLlm`，用户可在设置页配专用小模型），避免三处各写一遍模型来源。
+ * ★ 为什么用 `new LlmClient(platform, model)`：与本文件 `maybeReplanOnContinue`（2977 行）
+ *   完全同一范式 —— 那里也是"解析出 {platform,model} → 建 client → 非流式 chat"。
+ *   （`services/llm-call.ts` 的 chatViaRow 吃的是 **DB 行**，此处手上是已解析的 {platform,model}，
+ *    形状不符，故不用它；★ 别为了"统一出口"硬套一个签名不匹配的函数。）
+ */
+async function maybeDistillStaleMemory(task: LlmTask): Promise<void> {
+  try {
+    const { resolveConversationSpaceId, distillStaleProgress } = await import('./services/space-memory.js');
+    const spaceId = resolveConversationSpaceId(task.conversationId);
+    if (!spaceId) return; // 未挂空间 → 没有 space 级记忆文件可蒸馏
+    const llm = resolveMemoryExtractLlm(task);
+    if (!llm) return; // 没有可用模型 → 不蒸馏（保持"能跑就跑"的降级）
+    const client = new LlmClient(llm.platform, llm.model);
+    await distillStaleProgress(task.userId, spaceId, async (entries) => {
+      // 蒸馏提示词：要求**压缩成要点**并**保留可操作信息**（路径/命令/结论）——
+      // ★ 与压缩摘要是同一原则：不透明标识符（路径/命令/ID）一旦被改写就不可恢复。
+      const resp = await client.chat([
+        {
+          id: 'sys', conversationId: '', role: 'system', createdAt: 0,
+          content: '你是长期记忆的蒸馏器。把多条历史任务明细压缩成尽量少的要点，只输出要点本身，不要客套。',
+        },
+        {
+          id: 'usr', conversationId: '', role: 'user', createdAt: 0,
+          content: [
+            `以下是一个项目 ${entries.length} 条**已超过 30 天**的历史任务明细（原文将被删除，只保留你给出的要点）：`,
+            '',
+            ...entries,
+            '',
+            '请输出**压缩要点**，要求：',
+            '1. 合并同类项，丢掉过程中的试错与重复；',
+            '2. **必须原样保留**：产物路径、关键命令、文件/接口名、结论性的参数与决策 —— 这类信息一改就不可恢复；',
+            '3. 只保留"以后还会用到"的内容；一次性的临时进展不必保留；',
+            '4. 用「- 」开头的若干行输出，总长不超过 600 字。',
+          ].join('\n'),
+        },
+      ], { temperature: 0.2, maxTokens: 800 });
+      return resp.delta?.content || '';
+    });
+  } catch (e: any) {
+    logger.warn('[llm-task] 记忆蒸馏失败（不影响收尾）:', e?.message || e);
+  }
 }
 
 /** 记忆抽取：任务完成后从会话中抽取值得长期记住的信息，写入 memory 表。

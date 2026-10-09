@@ -10,6 +10,9 @@ import path from 'node:path';
 import { db } from '../db.js';
 import { serverState } from '../state.js';
 import { estimateTokens } from '@yan-zhi/shared';
+import { createLogger } from './logger.js';
+
+const logger = createLogger('space-memory');
 
 const MEMORY_FILE_NAME = 'MEMORY.md';
 
@@ -484,6 +487,110 @@ const OUTCOME_LABEL: Record<TaskProgressOutcome, string> = {
 function getTaskProgressPath(space: Pick<SpaceRow, 'id' | 'dir_path'>): string {
   if (space.dir_path) return path.join(space.dir_path, TASK_MEMORY_DIR, PROGRESS_FILE);
   return path.join(serverState.workspaceDir || process.cwd(), 'spaces', space.id, TASK_MEMORY_DIR, PROGRESS_FILE);
+}
+
+// ── ★★★ 记忆蒸馏（M5，2026-10-09）────────────────────────────────────────
+// 对齐 WorkBuddy 的治理闭环：**超期的明细 → LLM 蒸馏成要点写进 MEMORY.md → 删原条目**。
+//
+// ★ 为什么必须有（而"截断"不够）：yan-zhi 此前只有"截断"——超出上限的内容**要么被静默丢掉、
+//   要么堆在文件里永不清理**（实测 decisions 超 1.16x / progress 超 1.85x）。
+//   WorkBuddy 的关键设计**不是限额数字**，而是"蒸馏 + 删除"：既控制体积，又不丢信息
+//   （把有价值的部分提炼进长期记忆，再删原明细）。
+//
+// ★ 为什么放在写入路径（收尾时）而不是定时任务：收尾是**天然的低频时机**（一次任务一条），
+//   且此时明细刚写完、上下文最完整。再加定时器会引入"与写入竞争"的新问题。
+//
+// ★ 为什么 LLM 是**可选注入**（distill 参数）而不是 import：本模块是**纯文件模块**
+//   （不依赖 LlmClient / db 之外的运行时），保持这个边界才能在测试里直接跑。
+//   调用方（llm-task-manager 的 recordTaskProgress）负责注入模型与调用函数。
+
+/** 蒸馏触发的年龄阈值（天）：条目时间戳早于 `现在 - N 天` 视为"超期明细" */
+export const PROGRESS_DISTILL_AFTER_DAYS = 30;
+/** 蒸馏条目数下限：少于这个数就没必要花一次 LLM 调用 */
+export const PROGRESS_DISTILL_MIN_ENTRIES = 5;
+
+/** 从进度行里取时间戳（`- YYYY-MM-DD HH:mm 任务【…】`）；取不到返回 null */
+function progressLineTime(line: string): number | null {
+  const m = line.match(/^- (\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})/);
+  if (!m) return null;
+  const t = new Date(`${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:00`).getTime();
+  return Number.isFinite(t) ? t : null;
+}
+
+/** 蒸馏回调契约：给定要蒸馏的超期条目，返回一段「要点」文本（或空串表示放弃蒸馏） */
+export type DistillFn = (entries: string[]) => Promise<string>;
+
+/**
+ * 把 progress.md 里**超期的明细条目**蒸馏进 MEMORY.md，并从 progress.md 删除原条目。
+ *
+ * @returns 是否实际执行了蒸馏（未触达阈值 / 无 LLM / 失败 → false，**fail-safe 不抛**）
+ */
+export async function distillStaleProgress(
+  userId: string | null,
+  spaceId: string,
+  distill: DistillFn | null,
+  opts: { now?: number; afterDays?: number; minEntries?: number } = {},
+): Promise<boolean> {
+  if (!distill) return false; // 没注入 LLM = 不蒸馏（保持模块纯净）
+  try {
+    const space = getSpaceRow(userId, spaceId);
+    if (!space) return false;
+    const progressPath = getTaskProgressPath(space);
+    let raw = '';
+    try { raw = await readFile(progressPath, 'utf-8'); } catch { return false; } // 没有明细文件 → 无事可做
+    if (!raw.trim()) return false;
+
+    const afterDays = opts.afterDays ?? PROGRESS_DISTILL_AFTER_DAYS;
+    const minEntries = opts.minEntries ?? PROGRESS_DISTILL_MIN_ENTRIES;
+    const now = opts.now ?? Date.now();
+    const cutoff = now - afterDays * 24 * 60 * 60 * 1000;
+
+    const lines = raw.split('\n');
+    const staleIdx: number[] = [];
+    for (let i = 0; i < lines.length; i++) {
+      if (!PROGRESS_ENTRY_MARK.test(lines[i])) continue;
+      const t = progressLineTime(lines[i]);
+      // ★ 取不到时间戳**不蒸馏**（宁可留着，也不误删：删了不可恢复）
+      if (t !== null && t < cutoff) staleIdx.push(i);
+    }
+    // ★ 只有「全部条目都是超期的」才安全删除 —— 否则删掉中间一段会留下"空档"，
+    //   而超期条目天然在最前面（文件追加写），所以只需检查"第一条未超期条目的位置"。
+    if (staleIdx.length < minEntries) return false;
+    const firstFresh = lines.findIndex((l, i) => PROGRESS_ENTRY_MARK.test(l) && !staleIdx.includes(i));
+    // 若存在较新的条目，只蒸馏"连续在最前面的那批"（保持文件"旧→新"的连续语义）
+    const toDistill = firstFresh === -1
+      ? staleIdx.map((i) => lines[i])
+      : lines.slice(0, firstFresh).filter((l) => PROGRESS_ENTRY_MARK.test(l));
+    if (toDistill.length < minEntries) return false;
+
+    const digest = (await distill(toDistill)).trim();
+    if (!digest) return false; // 模型放弃 → 保留原样（不删）
+
+    // ① 蒸馏稿写进 MEMORY.md（同样走滚动淘汰，避免蒸馏稿本身堆积）
+    await appendLineWithHeader(
+      getSpaceMemoryPath(space),
+      spaceMemoryHeader(space.name),
+      `[${today()}] 【蒸馏·前 ${toDistill.length} 条超 ${afterDays} 天明细】${digest}`,
+      { mark: PROGRESS_ENTRY_MARK, keep: PROGRESS_ENTRY_KEEP },
+    );
+
+    // ② 从 progress.md 删除被蒸馏的原条目（保留其它行与相对顺序）
+    const drop = new Set<string>();
+    for (const l of toDistill) drop.add(l);
+    // ★ 按"出现次数"删除：同一条文本理论上可能重复，逐条消费避免一次删光重复项
+    const kept: string[] = [];
+    for (const l of lines) {
+      if (drop.has(l)) { drop.delete(l); continue; }
+      kept.push(l);
+    }
+    await writeFile(progressPath, kept.join('\n'), 'utf-8');
+    logger.info(`[space-memory] 蒸馏完成：${toDistill.length} 条超期明细 → MEMORY.md 要点，原条目已删`);
+    return true;
+  } catch (e: any) {
+    // ★ fail-safe：收尾路径不能因蒸馏失败而报错
+    logger.warn('[space-memory] 蒸馏失败（不影响任务收尾）:', e?.message || e);
+    return false;
+  }
 }
 
 /** 会话 → 所属空间 id（服务端上下文免归属校验）；未挂空间返回 '' */
