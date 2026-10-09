@@ -194,7 +194,7 @@ router.post('/run', (req: Request, res: Response) => {
   if (body.agentId && !body.agent) {
     const bundle = resolveBundleFromDb(String(body.agentId));
     if (!bundle) { res.status(404).json({ error: '智能体不存在' }); return; }
-    const runId = startWorkflowRun(bundle, inputs, userId, undefined, nodeOverrides);
+    const runId = startWorkflowRun(bundle, inputs, userId, undefined, nodeOverrides, undefined, conversationId);
     res.json({ data: { runId, warnings: res.locals.preflightWarnings || [] } });
     return;
   }
@@ -205,7 +205,7 @@ router.post('/run', (req: Request, res: Response) => {
     return;
   }
   const fullBundle: WorkflowRunBundle = { agent: bundle, subAgents: body.subAgents || {} };
-  const runId = startWorkflowRun(fullBundle, inputs, userId, undefined, nodeOverrides);
+  const runId = startWorkflowRun(fullBundle, inputs, userId, undefined, nodeOverrides, undefined, conversationId);
   res.json({ data: { runId, warnings: res.locals.preflightWarnings || [] } });
 });
 

@@ -15,6 +15,48 @@ const logger = createLogger('browser');
 const router = Router();
 router.use(optionalAuth); // 浏览器功能不需要登录，有 token 就解析（可选）
 
+/**
+ * ★★★ 浏览器**写操作**进程级串行（2026-10-09）。
+ *
+ * 为什么必须串行：服务端 Playwright 是**进程级单例** —— `browserInstance` / `pageInstance` /
+ * `activeTabId` 都是模块级单值，"当前活动页"全进程只有一份。多个 pageAgent（或一批并发
+ * browser_* 调用）同时操作会互相抢活动页：后到的 navigate 覆盖前一页，读取只能读到"当前页"，
+ * 表现为「多个 pageAgent 只有一个在动 / 结果错乱」（与前端 BrowserView 同一类问题）。
+ *
+ * ★ 只串行**会改动浏览器状态的操作**（navigate / action / back / forward / refresh / close / focus），
+ *   **不**串行只读查询（state / screenshot / downloads / history / stats）—— 后者不改状态，
+ *   且常被 UI 轮询；串行它们会让轮询排在长操作后面，UI 卡住。
+ *
+ * 为什么挂在 router 层而不是逐个 handler 里包：本模块入口多，逐个包必漏（"入口漂移"教训）。
+ * 中间件统一包装，新增写路由只需在下面的白名单里加一条。
+ */
+const browserQueue: Array<() => void> = [];
+let browserBusy = false;
+/** 需串行的写操作路径（按 router 注册路径判定） */
+const BROWSER_SERIAL_PATHS = new Set([
+  '/navigate', '/action', '/back', '/forward', '/refresh', '/close', '/focus',
+]);
+function withBrowserLock(handler: (req: Request, res: Response) => Promise<unknown> | unknown) {
+  return async (req: Request, res: Response) => {
+    if (!BROWSER_SERIAL_PATHS.has(req.path)) return handler(req, res); // 读操作直通
+    // 排队等锁（先到先得，FIFO）
+    if (browserBusy) {
+      await new Promise<void>((resolve) => browserQueue.push(resolve));
+    }
+    browserBusy = true;
+    try {
+      await handler(req, res);
+    } catch (e: any) {
+      // handler 内部通常自带 try/catch；这里兜底防未捕获导致锁不释放
+      logger.warn('[browser] 处理异常:', e?.message || e);
+      try { if (!res.headersSent) res.status(500).json({ error: e?.message || '浏览器操作失败' }); } catch { /* ignore */ }
+    } finally {
+      const next = browserQueue.shift();
+      if (next) next(); else browserBusy = false;
+    }
+  };
+}
+
 // Playwright 单例（懒启动）
 let chromiumModule: any = null;
 let browserInstance: any = null;
@@ -365,7 +407,7 @@ function scheduleIdleCheck() {
 }
 
 // POST /api/browser/navigate —— 导航到 URL（返回 url + title，前端用 /render 获取 DOM）
-router.post('/navigate', async (req: Request, res: Response) => {
+router.post('/navigate', withBrowserLock(async (req: Request, res: Response) => {
   try {
     const { url, viewport, tabId } = req.body || {};
     if (!url) { res.status(400).json({ error: 'url 为必填项' }); return; }
@@ -399,7 +441,7 @@ router.post('/navigate', async (req: Request, res: Response) => {
   } catch (e: any) {
     res.status(500).json({ error: e?.message || '导航失败' });
   }
-});
+}));
 
 
 // POST /api/browser/action —— 执行浏览器动作（click/type/press/scroll/hover/get_text/get_dom/wait）
@@ -519,7 +561,7 @@ const CHANGE_ACTIONS = new Set(['click', 'type', 'press', 'select_option', 'chec
 let noChangeStreak = 0;
 const snapshotFn = () => { try { const d = document.body; return { url: location.href, t: (d ? d.innerText : '').slice(0, 2000), n: document.querySelectorAll('a,button,input,select,textarea').length }; } catch { return null; } };
 
-router.post('/action', async (req: Request, res: Response) => {
+router.post('/action', withBrowserLock(async (req: Request, res: Response) => {
   try {
     const args = req.body || {};
     const { action, text, key, x, y, timeout } = args;
@@ -1568,7 +1610,7 @@ router.post('/action', async (req: Request, res: Response) => {
     }
     res.status(500).json({ error: msg, recoverable: true });
   }
-});
+}));
 
 // GET /api/browser/state —— 获取当前浏览器状态
 router.get('/state', async (_req: Request, res: Response) => {
@@ -1586,7 +1628,7 @@ router.get('/state', async (_req: Request, res: Response) => {
 });
 
 // POST /api/browser/focus —— 聚焦浏览器窗口（置于前台）
-router.post('/focus', async (_req: Request, res: Response) => {
+router.post('/focus', withBrowserLock(async (_req: Request, res: Response) => {
   try {
     if (!browserInstance) { res.status(400).json({ error: '浏览器未启动' }); return; }
     // headed 模式下，通过新建 page 并关闭来唤起窗口焦点
@@ -1597,10 +1639,10 @@ router.post('/focus', async (_req: Request, res: Response) => {
   } catch (e: any) {
     res.status(500).json({ error: e?.message || '聚焦失败' });
   }
-});
+}));
 
 // POST /api/browser/back —— 后退（返回 url + title）
-router.post('/back', async (_req: Request, res: Response) => {
+router.post('/back', withBrowserLock(async (_req: Request, res: Response) => {
   try {
     const page = await getPage();
     await page.goBack({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
@@ -1609,10 +1651,10 @@ router.post('/back', async (_req: Request, res: Response) => {
   } catch (e: any) {
     res.status(500).json({ error: e?.message || '后退失败' });
   }
-});
+}));
 
 // POST /api/browser/forward —— 前进（返回 url + title）
-router.post('/forward', async (_req: Request, res: Response) => {
+router.post('/forward', withBrowserLock(async (_req: Request, res: Response) => {
   try {
     const page = await getPage();
     await page.goForward({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
@@ -1621,10 +1663,10 @@ router.post('/forward', async (_req: Request, res: Response) => {
   } catch (e: any) {
     res.status(500).json({ error: e?.message || '前进失败' });
   }
-});
+}));
 
 // POST /api/browser/refresh —— 刷新当前页（返回 url + title）
-router.post('/refresh', async (_req: Request, res: Response) => {
+router.post('/refresh', withBrowserLock(async (_req: Request, res: Response) => {
   try {
     const page = await getPage();
     await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
@@ -1633,10 +1675,10 @@ router.post('/refresh', async (_req: Request, res: Response) => {
   } catch (e: any) {
     res.status(500).json({ error: e?.message || '刷新失败' });
   }
-});
+}));
 
 // POST /api/browser/close —— 关闭浏览器
-router.post('/close', async (_req: Request, res: Response) => {
+router.post('/close', withBrowserLock(async (_req: Request, res: Response) => {
   try {
     if (pageInstance && !pageInstance.isClosed?.()) await pageInstance.close();
     if (browserInstance) await browserInstance.close();
@@ -1646,7 +1688,7 @@ router.post('/close', async (_req: Request, res: Response) => {
   } catch (e: any) {
     res.status(500).json({ error: e?.message || '关闭失败' });
   }
-});
+}));
 
 // GET /api/browser/screenshot —— 当前页面截图（PNG）。?fullPage=true 截长图，?download=文件名 下载
 router.get('/screenshot', async (req: Request, res: Response) => {

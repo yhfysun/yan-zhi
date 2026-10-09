@@ -92,6 +92,31 @@ export function applyTaskPlan(
 }
 
 /**
+ * 计划状态同步（后端 PlanRunner 编排的并行子任务）：整体替换某会话的计划，
+ * 但**保留 steps 自带的状态**（不同于 applyTaskPlan 的"新计划全 pending"语义）。
+ * 用于 `plan:updated` 事件 —— 后端每次子任务状态变化就推送完整计划快照。
+ */
+export function syncPlan(
+  map: PlanMap,
+  key: string,
+  plan: { title?: string; steps?: Array<{ id?: string; title?: string; status?: string; note?: string }> },
+): PlanMap {
+  const rawSteps = Array.isArray(plan?.steps) ? plan!.steps! : [];
+  const steps: PlanStep[] = rawSteps
+    .filter((s) => s && s.title)
+    .map((s) => ({
+      id: String(s.id || uid()),
+      title: String(s.title),
+      description: s.note ? String(s.note) : undefined,
+      // skipped（上游失败未执行）在运行指示行没有对应态 → 归为 failed（带 note 说明）
+      status: s.status === 'skipped' ? 'failed'
+        : (['pending', 'running', 'done', 'failed'] as PlanStepStatus[]).includes(s.status as PlanStepStatus)
+          ? (s.status as PlanStepStatus) : 'pending',
+    }));
+  return { ...map, [key]: { title: String(plan?.title || '任务计划'), steps } };
+}
+
+/**
  * task_step：推进某会话计划里的一步。
  *
  * 边界一律显式报错而非静默通过 —— 模型若在没建计划的会话里直接推进步骤，

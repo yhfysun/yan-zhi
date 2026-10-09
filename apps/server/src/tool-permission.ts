@@ -172,12 +172,23 @@ const UNCONTROLLABLE_PREFIXES = ['custom_', 'mcp_', 'wf_'];
  *    它虽然自己不在子体里开放写工具，但**继承了父级可用的全部非写工具**，
  *    且是"模型自选能力组合"的入口 —— 只读会话里必须一并拒绝，
  *    否则就成了绕过权限分级的后门（父级只读，却生成一个能写文件的子智能体）。 */
-const DELEGATION_TOOLS = new Set(['call_agent', 'spawn_subagent']);
+const DELEGATION_TOOLS = new Set([
+  'call_agent', 'spawn_subagent',
+  // ★★ 多智能体编排（2026-10-08）：plan_tasks / reassign_task 与 call_agent **同性质** ——
+  //   它们不自己写文件，但会派发子智能体执行，子体可调用任意写工具（file_write / cmd_exec…）。
+  //   只读会话里放行 = 绕过权限分级（父级只读，却编排出一批能写的子体）。
+  //   ★ 这是本项目**第 N 次**"新工具忘了登记权限清单"的同族问题（前例：api_space_memory_append、
+  //     api_message_send、api_custom_tool_execute）—— 判据仍是**按实现判**：谁最终能写，就登记谁。
+  //   get_plan_status 是纯读，进 INTERACTION_TOOLS。
+  'plan_tasks', 'reassign_task',
+]);
 
 /** 纯交互/规划类工具：不产生外部副作用，任何模式都放行 */
 const INTERACTION_TOOLS = new Set([
   'ask_user', 'confirm_user', 'task_plan', 'task_step',
   'image_analyze', 'list_models', 'list_sub_agents',
+  // 计划状态查询：纯读 task_plan_item 表，无副作用（2026-10-08）
+  'get_plan_status',
 ]);
 
 export interface ToolPermissionVerdict {
@@ -253,7 +264,7 @@ const READONLY_SAFE_TOOLS = new Set([
   // 模型与多媒体理解（不产生文件）
   'list_models', 'image_analyze',
   // 纯交互/展示（无副作用）：任务进度、向用户提问
-  'task_plan', 'task_step', 'ask_user', 'confirm_user',
+  'task_plan', 'task_step', 'ask_user', 'confirm_user', 'get_plan_status',
   // 查询/读取类 API（按 api-tool-executor 的命名：list / get / search / browse）
   'api_kb_search', 'api_kb_list', 'api_kb_document_list', 'api_kb_chunks', 'api_kb_graph',
   'api_kb_search_all', 'api_kb_multi_hop', 'api_kb_entity_search', 'api_kb_revectorize_status',

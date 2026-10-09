@@ -516,6 +516,34 @@ CREATE INDEX IF NOT EXISTS idx_space_user ON space(user_id);
   CREATE INDEX IF NOT EXISTS idx_file_change_path ON file_change(path);
   CREATE INDEX IF NOT EXISTS idx_file_change_status ON file_change(status);
 
+  -- 多智能体协同：任务计划项（2026-10-08）。主智能体 plan_tasks 一次提交结构化 DAG，
+  -- PlanRunner 按依赖并行派发子智能体执行；产物只回 conversation_file 路径+描述（工件协议），
+  -- 失败重试耗尽后唤醒主智能体 reassign_task 重新分配。
+  CREATE TABLE IF NOT EXISTS task_plan_item (
+    id TEXT PRIMARY KEY,
+    plan_id TEXT NOT NULL,
+    conversation_id TEXT NOT NULL,
+    task_id TEXT,
+    item_key TEXT NOT NULL,
+    seq INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    platform_id TEXT,
+    model_id TEXT,
+    instruction TEXT NOT NULL,
+    depends_on_json TEXT NOT NULL DEFAULT '[]',
+    max_steps INTEGER,
+    status TEXT NOT NULL DEFAULT 'pending',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    error_summary TEXT,
+    artifact_ids_json TEXT NOT NULL DEFAULT '[]',
+    result_brief TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_task_plan_item_plan ON task_plan_item(plan_id);
+  CREATE INDEX IF NOT EXISTS idx_task_plan_item_conv ON task_plan_item(conversation_id);
+
   -- 越界访问审计（2026-10-01）：模型试图访问工作目录外位置的**全部尝试**（允许/拒绝都记）。
   --
   -- ★ 为什么必须有：此前越界访问**完全没有留痕** —— 用户既看不到模型读过什么，也查不到

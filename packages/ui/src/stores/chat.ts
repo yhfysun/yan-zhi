@@ -9,6 +9,7 @@ import { useAgentStore } from './agent';
 import { useToolsStore } from './tools';
 import { useSettingsStore } from './settings';
 import { useFileStore } from './file';
+import { chainBrowserOp, dropBrowserOpChain, type BrowserOpChains } from './browser-op-queue';
 import { useBrowserStore } from './browser';
 import { api, API_BASE, buildRequestHeaders } from '../api/client';
 import { consumeSseStream } from '../utils/sse';
@@ -46,6 +47,26 @@ function extractUrlFromArgs(args: unknown): string {
  * 只在 tab 仍存在时生效；tab 被关则自动失效回退。
  */
 const agentAnchoredTabs = new Map<string, string>(); // convId → tabId
+
+/**
+ * 浏览器操作**会话级串行锁**（2026-10-09）。
+ *
+ * ★★★ 为什么 pageAgent 需要特殊处理：浏览器是**单活动页状态机**（前端 `ensureActiveTab(scope)`
+ *   每 scope 单值、主进程 `activeTabId` 全局单值、服务端 Playwright 的 `activeTabId` 进程级单值）。
+ *   同一会话里若多个 pageAgent（或一次并发派发的多个 browser_* 调用）同时操作，
+ *   会互相抢同一个活动页 —— 后到的 navigate 覆盖前一个的页面，读取也只能读到"当前页"，
+ *   表现为「多个 pageAgent 只有一个在动 / 结果错乱」（实测：agent 的操作跑到用户停留的页面上）。
+ *   ⇒ 会话内把 browser_* 调用**串行化**（队尾等待），每个操作完整跑完再放下一个。
+ *   ★ 只在**同一会话内**串行：不同会话有各自的锚定 tab（agentAnchoredTabs 按 convId 隔离），
+ *     互不阻塞 —— 与既有 scope 隔离口径一致。
+ *   ★ 排队逻辑收敛在 `browser-op-queue.ts`（纯函数，可脱离 store 单测）。
+ */
+const browserOpChains: BrowserOpChains = new Map();
+
+/** 把一次浏览器操作挂到本会话的串行链尾（前一个跑完才轮到它）。无 convId 时不串行（退化旧行为）。 */
+function serializeBrowserOp<T>(convId: string | undefined, fn: () => Promise<T>): Promise<T> {
+  return chainBrowserOp(browserOpChains, convId, fn);
+}
 
 /**
  * agent 在本次任务中**打开过的**所有 tab（会话级，2026-10-08）。
@@ -307,6 +328,7 @@ import {
   removePlans,
   applyTaskPlan,
   applyTaskStep,
+  syncPlan,
   DRAFT_PLAN_KEY,
   type PlanMap,
   type PlanStep as PlanStepT,
@@ -1003,6 +1025,8 @@ async function loadConversations() {
     for (const id of ids) delete queuedByConv.value[id];
     // 一并清掉被删会话的计划，避免 plansByConv 里留孤儿键
     plansByConv.value = removePlans(plansByConv.value, ids);
+    // 浏览器操作串行链同样按会话清（防内存泄漏；进行中的操作不受影响）
+    for (const id of ids) dropBrowserOpChain(browserOpChains, id);
     await loadConversations();
   }
 
@@ -1319,7 +1343,19 @@ async function loadConversations() {
    *  2) custom_{idTag}_{name}     → 服务端沙箱 /api/tools/:id/execute（沙箱依赖 node:vm，仅服务端可用）
    *  3) 裸名                       → ToolRegistry.execute（内置工具，经平台适配器执行）
    *  重名不误路由：三类前缀互斥，裸名不得以 mcp_/custom_ 开头。 */
-  async function dispatchToolCall(fullName: string, args: unknown, ctx?: { parentToolCallId?: string; depth?: number; convId?: string }): Promise<{ ok: boolean; result?: unknown; msg?: string }> {
+  /**
+ * 工具分发入口。**browser_\* 本会话内串行**（2026-10-09），其余工具直通：
+ * 把 `dispatchToolCall` 的实现体整体收进 `dispatchToolCallInner`，本函数只做一层
+ * 「会话级串行锁」包装 —— 零改动内部 30+ 个 return 点，也避免将来漏包某个分支。
+ */
+async function dispatchToolCall(fullName: string, args: unknown, ctx?: { parentToolCallId?: string; depth?: number; convId?: string }): Promise<{ ok: boolean; result?: unknown; msg?: string }> {
+  if (fullName.startsWith('browser_')) {
+    return serializeBrowserOp(ctx?.convId, () => dispatchToolCallInner(fullName, args, ctx));
+  }
+  return dispatchToolCallInner(fullName, args, ctx);
+}
+
+async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { parentToolCallId?: string; depth?: number; convId?: string }): Promise<{ ok: boolean; result?: unknown; msg?: string }> {
     const mcpStore = useMcpStore();
     const registry = getToolRegistry();
 
@@ -1911,6 +1947,15 @@ async function loadConversations() {
                 toolCalls: event.toolCalls ?? arr[idx].toolCalls,
               };
             }
+            break;
+          }
+          // 计划状态更新（后端 PlanRunner 编排的并行子任务）——复用 task_plan 的展示通道
+          // （输入区上方运行指示行的步骤详情 + 进度条），**不新增任何 UI 元素**。
+          case 'plan:updated': {
+            const key = planKeyOf(convId);
+            // 用 syncPlan（保留 steps 自带状态），而非 applyTaskPlan（会把状态强制成 pending）
+            plansByConv.value = syncPlan(plansByConv.value, key, event.plan as any);
+            void persistPlan(key, plansByConv.value[key]);
             break;
           }
           case 'tool:start': {

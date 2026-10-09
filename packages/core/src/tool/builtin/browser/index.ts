@@ -3,6 +3,11 @@
 import type { BuiltInTool } from '../../types';
 import type { McpCallResult } from '../../../mcp/client';
 import { toolError } from '../../result';
+// ★ 不直接 import node:fs —— core 是平台无关层（三端可用），文件系统一律走
+//   getPlatformAdapter().fs（与 file-write.ts 同一约定）。此前误引 node:fs 会破坏
+//   该原则：core 被前端/bundle 引用时静态解析失败。
+import { getPlatformAdapter } from '../../../platform/types';
+import { joinPath } from '../fs-walk';
 
 /** 获取 auth token（浏览器/web/桌面端均可访问 localStorage） */
 function getAuthToken(): string | null {
@@ -79,6 +84,10 @@ async function saveShotToTemp(base64: string): Promise<{ file: string; screensho
 
 function ok(text: string): McpCallResult {
   return { content: [{ type: 'text', text }] };
+}
+/** 带 _meta 的成功返回（供执行循环做副作用：登记 conversation_file / 工件采集） */
+function okWithMeta(text: string, meta: Record<string, unknown>): McpCallResult {
+  return { content: [{ type: 'text', text }], _meta: meta };
 }
 function err(msg: string): McpCallResult {
   return toolError(msg);
@@ -548,12 +557,35 @@ export class BrowserGetPageContentTool implements BuiltInTool {
       maxInteractive: { type: 'number', description: 'Max interactive elements to return (default 50, max 300).' },
     },
   };
-  async execute(args: Record<string, unknown>): Promise<McpCallResult> {
+  async execute(args: Record<string, unknown>, ctx?: import('../../types').ToolContext): Promise<McpCallResult> {
     try {
       const maxTextLength = Math.min(Number(args.maxTextLength) || 5000, 20000);
       const maxInteractive = Math.min(Number(args.maxInteractive) || 50, 300);
       const data = await callBrowserApi('/action', 'POST', { action: 'get_page_content', tabId: args.tabId, maxTextLength, maxInteractive }) as any;
       if (data.error) return err(data.error);
+      // ★ 工件协议（2026-10-08）：正文疑似被截断（长度顶到请求上限）时以更大上限重取全文；
+      //   超长正文落盘为文件，上下文只留预览 + 路径 —— 解决「抓章节全文被 20K 截断」。
+      let bodyText: string = data.text || '';
+      let savedPath = '';
+      if (bodyText.length >= maxTextLength && maxTextLength < 20000) {
+        try {
+          const data2 = await callBrowserApi('/action', 'POST', { action: 'get_page_content', tabId: args.tabId, maxTextLength: 20000, maxInteractive: 0 }) as any;
+          if (!data2.error && (data2.text || '').length > bodyText.length) bodyText = data2.text;
+        } catch { /* 重取失败用原文 */ }
+      }
+      if (bodyText.length > 8000) {
+        const dir = ctx?.artifactDirs?.intermediate || ctx?.workspaceDir || '';
+        if (dir) {
+          try {
+            const { fs } = getPlatformAdapter();
+            // 幂等建目录：产物目录通常已由服务端建好，已存在/建不动都不阻断落盘
+            try { await fs.mkdir(dir); } catch { /* 已存在或权限受限，交给 writeFile 暴露 */ }
+            const safeTitle = String(data.title || 'page').replace(/[\\/:*?"<>|\s]+/g, '_').slice(0, 40) || 'page';
+            savedPath = joinPath(dir, `${safeTitle}-${Date.now()}.txt`);
+            await fs.writeFile(savedPath, bodyText);
+          } catch { savedPath = ''; /* 落盘失败退回截断行为 */ }
+        }
+      }
       // ★ P1-6（2026-10-07）：页面状态签名——判据硬编码进回执（实现见 computePageStateSignature）
       const pageState = computePageStateSignature(data);
       const elems = (data.interactive || []).map((e: any) => {
@@ -575,8 +607,19 @@ export class BrowserGetPageContentTool implements BuiltInTool {
         if (e.iframe) s += ' (in iframe)';
         return s;
       }).join('\n');
+      const header = `URL: ${data.url}\nTitle: ${data.title}\nPageState: ${pageState}（页面状态签名；与上次读取相同 = 操作未生效，需换定位方式重新观察）\n\n【页面可见文本】\n`;
+      if (savedPath) {
+        const preview = bodyText.slice(0, 4000);
+        const more = bodyText.length > 4000 ? `\n…[正文过长已截断：全文 ${bodyText.length} 字符已保存到文件 ${savedPath}，后续处理用 file_read 按此路径读取，不要重复抓取]` : '';
+        // ★ 必须回传 _meta.path：否则服务端通用钩子接不到该路径 → 落盘文件不登记
+        //   conversation_file / 不进工件清单（等于白落盘）。category=intermediate（原始抓取）。
+        return okWithMeta(
+          `${header}${preview}${more}\n\n【可交互元素】(${data.interactiveCount} 个，编号可直接用于 browser_click/browser_type 的 index 参数；也可直接用 <selector> 作为 selector 参数)\n${elems}`,
+          { path: savedPath, name: savedPath.split(/[/\\]/).pop() || 'page.txt', category: 'intermediate', bytes: bodyText.length },
+        );
+      }
       return ok(
-        `URL: ${data.url}\nTitle: ${data.title}\nPageState: ${pageState}（页面状态签名；与上次读取相同 = 操作未生效，需换定位方式重新观察）\n\n【页面可见文本】\n${data.text || '(空)'}\n\n【可交互元素】(${data.interactiveCount} 个，编号可直接用于 browser_click/browser_type 的 index 参数；也可直接用 <selector> 作为 selector 参数)\n${elems}`
+        `${header}${bodyText}\n\n【可交互元素】(${data.interactiveCount} 个，编号可直接用于 browser_click/browser_type 的 index 参数；也可直接用 <selector> 作为 selector 参数)\n${elems}`
       );
     } catch (e: any) { return err(e?.message || '获取页面内容失败'); }
   }

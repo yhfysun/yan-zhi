@@ -71,6 +71,15 @@ export interface RunOptions {
   signal?: AbortSignal;
   /** 断点：执行完这个节点后暂停（单节点调试的「运行到指定节点」） */
   stopAtNodeId?: string;
+  /**
+   * 无依赖节点的并行度（2026-10-08）。
+   * ★ 默认 1 = 严格按原串行语义执行（行为不变，单节点调试/取消/断点全部原样）。
+   * ★ >1 时把「依赖已就绪的节点」成批并发派发 —— 即**显式画出的并行分支**
+   *   （一个节点 fan-out 到多个子节点）会真正同时跑，跑完再汇合给下游 join 节点。
+   * ★ 判定依赖时**排除 condition 的 true/false 互斥边**：那是二选一，不能阻塞汇合点
+   *   （否则「A --true--> B --\, C --false--> D」的 D 会永远等不到另一条分支而入度不减）。
+   */
+  concurrency?: number;
 }
 
 /** executePlan 的内部参数（run 与 runPlan 共用，避免散着传 6 个位置参数） */
@@ -80,6 +89,7 @@ interface PlanOptions {
   onNodeEvent?: (e: NodeEvent) => void;
   signal?: AbortSignal;
   stopAtNodeId?: string;
+  concurrency?: number;
 }
 
 export class WorkflowEngine {
@@ -95,10 +105,10 @@ export class WorkflowEngine {
     inputs: Record<string, unknown>,
     opts: RunOptions = {},
   ): Promise<Record<string, unknown>> {
-    const { maxDepth = 3, callStack = [], onNodeEvent, signal, stopAtNodeId } = opts;
+    const { maxDepth = 3, callStack = [], onNodeEvent, signal, stopAtNodeId, concurrency = 1 } = opts;
     const ctx = createRunContext(inputs, callStack, signal);
     const plan = buildExecutionPlan(agent.workflow.nodes, agent.workflow.edges);
-    await this.executePlan(plan, agent, ctx, { maxDepth, callStack, onNodeEvent, signal, stopAtNodeId });
+    await this.executePlan(plan, agent, ctx, { maxDepth, callStack, onNodeEvent, signal, stopAtNodeId, concurrency });
 
     const finalResult: Record<string, unknown> = {};
     for (const node of agent.workflow.nodes) {
@@ -122,13 +132,14 @@ export class WorkflowEngine {
     ctx: RunContext,
     opts: RunOptions = {},
   ): Promise<void> {
-    const { maxDepth = 3, callStack = ctx.callStack, onNodeEvent, signal, stopAtNodeId } = opts;
+    const { maxDepth = 3, callStack = ctx.callStack, onNodeEvent, signal, stopAtNodeId, concurrency = 1 } = opts;
     await this.executePlan(plan, agent, ctx, {
       maxDepth,
       callStack,
       onNodeEvent,
       signal: signal ?? ctx.signal,
       stopAtNodeId,
+      concurrency,
     });
   }
 
@@ -140,87 +151,146 @@ export class WorkflowEngine {
   ) {
     const { nodes, edges } = agent.workflow;
     const nodeMap = new Map(nodes.map((n) => [n.id, n]));
-    const { pending } = plan;
     const signal = o.signal ?? ctx.signal;
+    const concurrency = Math.max(1, Math.floor(o.concurrency ?? 1));
 
-    while (pending.length > 0) {
+    // 工作队列模型（与旧串行逐字兼容）。plan.pending 是**入口节点队列**（初始 = 入度 0 者），
+    // 节点跑完把「被跟随边指向的下游」推入队列 —— 不是"全图节点 + 就绪判定"。
+    //
+    // 并行（concurrency>1）：从队首取一批，**仅当批内任意两个节点互不可达**才可同批 ——
+    //   这正是「明确画出来的分支并行」：一个节点 fan-out 到多个子节点时，这些子节点会被
+    //   同批并发；有依赖的（含 condition 分出的下游、join 汇合点）自动留到后续波次，不抢跑。
+    //
+    // 为什么不用入度计数：condition 的 true/false 是**互斥二选一**，未走的那支永不进队列，
+    //   用入度会让 join 点永远等不齐 → 死锁。改用「可达性」无需为互斥边特判。
+    const queue: string[] = [...plan.pending];
+    const enqueued = new Set<string>(queue);
+
+    const canReach = (from: string, to: string): boolean => {
+      if (from === to) return true;
+      const seen = new Set<string>([from]);
+      const stack = [from];
+      while (stack.length > 0) {
+        const cur = stack.pop()!;
+        for (const e of edges) {
+          if (e.source !== cur || seen.has(e.target)) continue;
+          if (e.target === to) return true;
+          seen.add(e.target);
+          stack.push(e.target);
+        }
+      }
+      return false;
+    };
+
+    while (queue.length > 0) {
       throwIfAborted(signal);
-      const nodeId = pending.shift()!;
-      const node = nodeMap.get(nodeId);
-      if (!node) continue;
 
-      const handler = this.handlers.get(node.type);
-      if (!handler) {
-        ctx.set(nodeId, null);
-        continue;
+      const batch: string[] = [];
+      if (concurrency === 1) {
+        batch.push(queue.shift()!);
+      } else {
+        while (queue.length > 0 && batch.length < concurrency) {
+          const cand = queue[0];
+          const conflict = batch.some((b) => canReach(b, cand) || canReach(cand, b));
+          if (conflict) break; // 与已入批节点有依赖 → 留到下一波
+          batch.push(queue.shift()!);
+        }
+        if (batch.length === 0) batch.push(queue.shift()!);
       }
 
-      // ── Loop 节点 ──
-      if (node.type === 'loop') {
-        o.onNodeEvent?.({ type: 'node:start', nodeId, nodeType: 'loop' });
-        try {
-          const source = ctx.outputs.size > 0
-            ? Array.from(ctx.outputs.values()).pop()
-            : ctx.inputs;
-          const key = (node.config.iterateKey as string) || 'item';
-          const maxIter = Number(node.config.maxIterations) || 5;
-          const results: unknown[] = [];
+      const results = await Promise.all(batch.map((id) =>
+        this.executeNode(id, nodeMap, edges, agent, ctx, o, signal).then((downstream) => ({ id, downstream })),
+      ));
 
-          const bodyEdges = edges.filter((e) => e.source === nodeId && e.sourceHandle === 'loop_body');
-          const exitEdges = edges.filter((e) => e.source === nodeId && e.sourceHandle === 'loop_exit');
-
-          if (bodyEdges.length > 0) {
-            const arr: unknown[] = Array.isArray(source) ? source : (source ? [source] : []);
-            const limit = Math.min(arr.length, maxIter);
-            for (let i = 0; i < limit; i++) {
-              throwIfAborted(signal); // 每轮迭代都要能停，否则长循环取消不掉
-              const itemCtx = createRunContext({ ...ctx.inputs, [key]: arr[i], index: i }, o.callStack, signal);
-              for (const [k, v] of ctx.outputs) itemCtx.set(k, v);
-              for (const e of bodyEdges) {
-                const subPlan = buildSubgraphPlan(nodeMap, e.target, edges);
-                await this.executePlan(subPlan, agent, itemCtx, o);
-              }
-              results.push(Array.from(itemCtx.outputs.values()));
-            }
-          }
-          ctx.set(nodeId, results.length > 0 ? results : source);
-
-          for (const e of exitEdges) {
-            if (!pending.includes(e.target)) pending.push(e.target);
-          }
-          o.onNodeEvent?.({ type: 'node:ok', nodeId, nodeType: 'loop' });
-          if (o.stopAtNodeId && nodeId === o.stopAtNodeId) return;
-        } catch (e: any) {
-          o.onNodeEvent?.({ type: 'node:error', nodeId, nodeType: 'loop', msg: e?.message });
-          throw e;
-        }
-        continue;
-      }
-
-      // ── SubAgent 循环检测 ──
-      if (node.type === 'sub_agent') {
-        const subId = node.config.subAgentId as string;
-        if (o.callStack.includes(subId)) {
-          throw new Error(`循环调用: ${o.callStack.join(' → ')} → ${subId}`);
-        }
-        if (o.callStack.length >= o.maxDepth) {
-          throw new Error(`子智能体嵌套超过 ${o.maxDepth} 层`);
+      for (const { id, downstream } of results) {
+        // 断点：执行完目标节点就停（单节点调试「运行到此节点」）—— 不再推下游
+        if (o.stopAtNodeId && id === o.stopAtNodeId) return;
+        for (const t of downstream) {
+          if (!enqueued.has(t)) { queue.push(t); enqueued.add(t); }
         }
       }
-
-      // 执行节点
-      const result = await handler.execute(node.config, ctx);
-      ctx.set(nodeId, result.output);
-
-      // 根据 sourceHandle 路由下游
-      for (const e of edges.filter((x) => x.source === nodeId)) {
-        if (!shouldFollowEdge(e, result)) continue;
-        if (!pending.includes(e.target)) pending.push(e.target);
-      }
-
-      // 断点：执行完目标节点就停（单节点调试「运行到此节点」）
-      if (o.stopAtNodeId && nodeId === o.stopAtNodeId) return;
     }
+  }
+
+  /** 执行单个节点；返回「被跟随边指向的下游节点 id」（交回 executePlan 入队） */
+  private async executeNode(
+    nodeId: string,
+    nodeMap: Map<string, WorkflowNode>,
+    edges: WorkflowEdge[],
+    agent: Agent,
+    ctx: RunContext,
+    o: PlanOptions,
+    signal: AbortSignal | undefined,
+  ): Promise<string[]> {
+    throwIfAborted(signal);
+    const node = nodeMap.get(nodeId);
+    if (!node) return [];
+
+    const handler = this.handlers.get(node.type);
+    if (!handler) {
+      ctx.set(nodeId, null);
+      return [];
+    }
+
+    // ── Loop 节点（内联展开 body，再走 loop_exit）──
+    if (node.type === 'loop') {
+      o.onNodeEvent?.({ type: 'node:start', nodeId, nodeType: 'loop' });
+      try {
+        const source = ctx.outputs.size > 0
+          ? Array.from(ctx.outputs.values()).pop()
+          : ctx.inputs;
+        const key = (node.config.iterateKey as string) || 'item';
+        const maxIter = Number(node.config.maxIterations) || 5;
+        const results: unknown[] = [];
+
+        const bodyEdges = edges.filter((e) => e.source === nodeId && e.sourceHandle === 'loop_body');
+        const exitEdges = edges.filter((e) => e.source === nodeId && e.sourceHandle === 'loop_exit');
+
+        if (bodyEdges.length > 0) {
+          const arr: unknown[] = Array.isArray(source) ? source : (source ? [source] : []);
+          const limit = Math.min(arr.length, maxIter);
+          for (let i = 0; i < limit; i++) {
+            throwIfAborted(signal); // 每轮迭代都要能停，否则长循环取消不掉
+            const itemCtx = createRunContext({ ...ctx.inputs, [key]: arr[i], index: i }, o.callStack, signal);
+            for (const [k, v] of ctx.outputs) itemCtx.set(k, v);
+            for (const e of bodyEdges) {
+              const subPlan = buildSubgraphPlan(nodeMap, e.target, edges);
+              await this.executePlan(subPlan, agent, itemCtx, o);
+            }
+            results.push(Array.from(itemCtx.outputs.values()));
+          }
+        }
+        ctx.set(nodeId, results.length > 0 ? results : source);
+        o.onNodeEvent?.({ type: 'node:ok', nodeId, nodeType: 'loop' });
+        return exitEdges.map((e) => e.target);
+      } catch (e: any) {
+        o.onNodeEvent?.({ type: 'node:error', nodeId, nodeType: 'loop', msg: e?.message });
+        throw e;
+      }
+    }
+
+    // ── SubAgent 循环检测 ──
+    if (node.type === 'sub_agent') {
+      const subId = node.config.subAgentId as string;
+      if (o.callStack.includes(subId)) {
+        throw new Error(`循环调用: ${o.callStack.join(' → ')} → ${subId}`);
+      }
+      if (o.callStack.length >= o.maxDepth) {
+        throw new Error(`子智能体嵌套超过 ${o.maxDepth} 层`);
+      }
+    }
+
+    // 执行节点
+    const result = await handler.execute(node.config, ctx);
+    ctx.set(nodeId, result.output);
+
+    // 根据 sourceHandle 路由下游（交回 executePlan 入队）
+    const downstream: string[] = [];
+    for (const e of edges.filter((x) => x.source === nodeId)) {
+      if (!shouldFollowEdge(e, result)) continue;
+      downstream.push(e.target);
+    }
+    return downstream;
   }
 }
 

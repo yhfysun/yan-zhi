@@ -10,6 +10,7 @@ import type { NodeHandler, RunContext, NodeResult } from '@yan-zhi/core';
 import type { Workflow, Platform, Model } from '@yan-zhi/shared';
 import { db } from './db.js';
 import { ensureArtifactDirFor } from './services/artifact-dir.js';
+import { collectArtifact } from './services/artifacts.js';
 import { overridableFieldsOf } from './services/workflow-delegate.js';
 import { findModelRow, rowToModel } from './services/model-resolve.js';
 import { DEFAULT_CONTEXT_WINDOW } from './constants.js';
@@ -594,7 +595,8 @@ class ServerSubAgentNodeHandler implements NodeHandler {
       null,
     );
     const nextStack = ctx.callStack ? [...ctx.callStack, subAgentId] : [subAgentId];
-    const result = await eng.run(def as any, subInputs, { callStack: nextStack });
+    // 子智能体（工作流型）内部的显式并行分支同样并发（与顶层一致；无 stopAtNodeId 概念）
+    const result = await eng.run(def as any, subInputs, { callStack: nextStack, concurrency: resolveWorkflowConcurrency() });
     return { output: result };
   }
 }
@@ -822,6 +824,18 @@ class ServerMemoryWriteNodeHandler implements NodeHandler {
   }
 }
 
+/**
+ * 工作流「显式并行分支」并发度（2026-10-08）。
+ * ★ 与子智能体/计划调度共享同一环境变量 YANZHI_MAX_CONCURRENT_AGENTS（1~8 钳位）——
+ *   同一物理约束（上游 LLM 配额）只能有一处调节；默认 4。
+ * ★ 只影响图上**画出来的并行分支**（fan-out 的子节点同批跑）；有依赖/condition 分叉
+ *   自动留到后续波次，不受此值影响。
+ */
+function resolveWorkflowConcurrency(): number {
+  const v = Number(process.env.YANZHI_MAX_CONCURRENT_AGENTS);
+  return Number.isFinite(v) && v >= 1 ? Math.min(8, Math.floor(v)) : 4;
+}
+
 function createServerEngine(
   bundle: WorkflowRunBundle,
   userId: string,
@@ -880,6 +894,10 @@ export async function executeBundle(
       onNodeEvent: run ? (e) => emitRunEvent(run, e) : undefined,
       signal,
       stopAtNodeId,
+      // 显式并行分支并发（2026-10-08）：图上 fan-out 出的分支同时跑，跑完汇合。
+      // ★ 单节点调试（stopAtNodeId）强制串行 —— 调试要的就是"可预测的顺序"，并发会让
+      //   变量检查器的中间态难以复现。
+      concurrency: stopAtNodeId ? 1 : resolveWorkflowConcurrency(),
     });
     logs.push({ nodeId: '__end__', status: 'ok', time: Date.now() });
     return result;
@@ -1091,12 +1109,18 @@ export function persistRunArtifacts(
   output: Record<string, unknown> | null,
   userId: string,
   agentName: string,
+  /**
+   * 真实会话 id（2026-10-08）：手动运行台触发的运行也没有 delivery，但路由已知发起会话。
+   * 有则产物登记到该会话（文件管理可见），无则回落 runId（保持旧行为）。
+   */
+  conversationId?: string,
 ): number {
+  const ownerConvId = conversationId || runId;
   const items = extractFileArtifacts(output);
   if (!items.length) return 0;
   let saved = 0;
   try {
-    const { dir } = ensureArtifactDirFor({ conversationId: runId, category: 'deliverable' });
+    const { dir } = ensureArtifactDirFor({ conversationId: ownerConvId, category: 'deliverable' });
     for (const item of items) {
       let filePath = item.path || '';
       if (!filePath && item.content) {
@@ -1107,11 +1131,13 @@ export function persistRunArtifacts(
       let size = 0;
       try { size = statSync(filePath).size; } catch { /* 取不到留 0 */ }
       const fileId = 'wfart_' + randomUUID().replace(/-/g, '').slice(0, 16);
-      // 会话归属写 runId：既不串进真实会话的文件列表，运行历史又能按它回查
+      // 会话归属：有真实会话就写它（文件管理里可见），否则回落 runId（运行历史可按它回查）
       try {
         db.prepare(
           'INSERT OR IGNORE INTO conversation_file (id, conversation_id, user_id, name, path, size, category, source, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-        ).run(fileId, runId, userId, item.name, filePath, size, 'deliverable', 'workflow', Date.now());
+        ).run(fileId, ownerConvId, userId, item.name, filePath, size, 'deliverable', 'workflow', Date.now());
+        // 工件采集：作为计划项（工作流型）执行时，让 runSubAgent 的工件清单能带上它
+        collectArtifact({ id: fileId, path: filePath, name: item.name, category: 'deliverable', size });
       } catch (e: any) {
         logger.warn(`[workflow] 产物登记失败 ${item.name}:`, e?.message || e);
       }
@@ -1162,6 +1188,8 @@ export function startWorkflowRun(
   overrides?: Record<string, Record<string, unknown>>,
   /** 单节点调试：执行完这个节点后暂停 */
   stopAtNodeId?: string,
+  /** 真实会话 id（2026-10-08）：手动运行台/无 delivery 时，产物登记到该会话（可空） */
+  conversationId?: string,
 ): string {
   const runId = 'wfr_' + randomUUID().replace(/-/g, '').slice(0, 20);
   const now = Date.now();
@@ -1207,7 +1235,7 @@ export function startWorkflowRun(
           // 无 delivery（手动运行台触发）→ 产物自己落盘，否则用户拿不到文件
           if (!delivery) {
             try {
-              persistRunArtifacts(runId, result, userId, bundle.agent.name || bundle.agent.id);
+              persistRunArtifacts(runId, result, userId, bundle.agent.name || bundle.agent.id, conversationId);
             } catch (e: any) {
               logger.warn('[workflow] 产物落盘异常:', e?.message || e);
             }

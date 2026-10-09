@@ -10,6 +10,7 @@ import { db } from '../db.js';
 import { promises as fsp } from 'node:fs';
 import { guessMime } from '../utils/mime.js';
 import { registerAfterToolHook, type ToolHookContext } from './tool-hooks.js';
+import { collectArtifact } from './artifacts.js';
 
 /** 媒体生成/加工类工具（产物落会话交付目录，需登记）。与 llm-task-manager 的 MEDIA_TOOLS 同集。 */
 const MEDIA_TOOLS = new Set([
@@ -38,6 +39,10 @@ function registerFile(ctx: ToolHookContext, opt: {
     guessMime(opt.fileName), opt.size, 'agent', ctx.assistantMsgId || null, Date.now(),
   );
   opt.emit({ type: 'file:registered', conversationId: ctx.conversationId });
+  // ★ 工件协议（2026-10-08）：凡走本单点登记的产物，顺手采进当前子智能体运行的
+  //   采集器作用域（runSubAgent 收尾据此把返回值改写为「短结论+工件清单」）。
+  //   无作用域（主智能体自己产出）时静默忽略。
+  collectArtifact({ id: cfId, path: opt.filePath, name: opt.fileName, category: opt.category, size: opt.size });
 }
 
 /**
@@ -46,11 +51,16 @@ function registerFile(ctx: ToolHookContext, opt: {
  * @param emit 事件广播函数（由主循环注入：任务级 emit，前端据此刷新文件面板）
  */
 export function registerArtifactHooks(emit: (ctx: ToolHookContext, e: { type: string; conversationId: string }) => void): void {
-  // ① file_write → 登记（用工具回传的**_meta.path**，不是模型传的 args.path）
+  // ① 通用 `_meta.path` → 登记（file_write / novel_tuiwen 等任何回传落盘路径的工具）
   //    ★ 为什么必须用 _meta：落盘位置由服务端按会话目录决定，模型给的 path 已不参与定位。
   //      仍用 args.path 会把**并不存在的位置**写进 conversation_file → 文件管理点开 404。
-  registerAfterToolHook('artifact:file_write', (toolName, _args, result, ctx) => {
-    if (toolName !== 'file_write' || isFailure(result)) return;
+  //    ★ 2026-10-08 泛化：原钩子只认 file_write，导致 novel_tuiwen（推文成片，回传
+  //      `_meta.path`+category=deliverable）的产物**既不登记也进不了工件清单** ——
+  //      "任意工具只要产文件就该登记"，判据不该绑在工具名上。
+  registerAfterToolHook('artifact:meta_path', (toolName, _args, result, ctx) => {
+    if (isFailure(result)) return;
+    // MEDIA_TOOLS 有自己的钩子（从 result JSON 解析），避免双重登记
+    if (MEDIA_TOOLS.has(toolName)) return;
     const m = ctx.meta as { path?: string; name?: string; category?: string; bytes?: number } | null;
     const filePath = String(m?.path || '');
     if (!filePath) return;

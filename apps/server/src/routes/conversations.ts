@@ -176,7 +176,11 @@ router.delete('/clear', (req: Request, res: Response) => {
   const userId = req.user!.userId;
   const ids = db.prepare('SELECT id FROM conversation WHERE user_id = ?').all(userId) as any[];
   const clear = () => {
-    for (const c of ids) db.prepare('DELETE FROM message WHERE conversation_id = ?').run(c.id);
+    for (const c of ids) {
+      db.prepare('DELETE FROM message WHERE conversation_id = ?').run(c.id);
+      // 任务计划派生物同步清（与 DELETE /:id 同一口径，见该处注释）
+      db.prepare('DELETE FROM task_plan_item WHERE conversation_id = ?').run(c.id);
+    }
     db.prepare('DELETE FROM conversation WHERE user_id = ?').run(userId);
   };
   db.transaction(clear)();
@@ -195,6 +199,10 @@ router.delete('/:id', (req: Request, res: Response) => {
   //   两处都是「新增了带 conversation_id 的状态，却没在删除路径上一起收」——同一类漏接线。
   clearMessageSummaries(cid);
   clearAuthorization(cid);
+  // ★ task_plan_item 同属 message 的派生物（2026-10-08）：多智能体任务计划随会话一起清。
+  //   与上两行同一类"新增了带 conversation_id 的状态，却没在删除路径上一起收"——
+  //   漏了会留下孤儿计划行（且会话 id 复用时会被 get_plan_status 读到旧计划）。
+  db.prepare('DELETE FROM task_plan_item WHERE conversation_id = ?').run(cid);
   db.prepare('DELETE FROM conversation WHERE id = ?').run(cid);
   res.json({ ok: true });
 });
