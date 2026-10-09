@@ -97,7 +97,7 @@ router.post('/agents/:id/unpublish', authMiddleware, (req: Request, res: Respons
   res.json({ success: true, data: { id: req.params.id, isPublic: false } });
 });
 
-// 商城鉴权中间件：/config 之外的 /marketplace/* 接口供远程节点访问，
+// 商城鉴权中间件：/config 之外的 /marketplace 下接口供远程节点访问，
 // 需 marketplace 已启用（enabled=1）且通过 auth_type 校验（none/bearer/api-key）。
 function marketplaceGuard(req: Request, res: Response, next: NextFunction) {
   ensureConfig();

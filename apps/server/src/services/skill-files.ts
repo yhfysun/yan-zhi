@@ -1,6 +1,6 @@
 // skill 子目录文件落盘（2026-10-06）—— DB files_json → <工作目录>/.yan-zhi/skills/<skill名>/
 //
-// ★ 为什么落盘：skill 的子目录文件（references/*.md 等）要能被 agent 的 file_read
+// ★ 为什么落盘：skill 的子目录文件（references 下的 .md 等）要能被 agent 的 file_read
 //   读到，必须以真实层级目录存在于工作目录。DB files_json 是真相源（管理/导入导出/
 //   换设备不丢），磁盘是运行时投影。
 //

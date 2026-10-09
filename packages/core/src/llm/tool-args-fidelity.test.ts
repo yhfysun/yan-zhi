@@ -97,10 +97,17 @@ describe('ContextWindow 计入并保留 toolCalls', () => {
 
   it('无摘要模型时的兜底摘要保留工具调用信息', async () => {
     const cw = new ContextWindow(1, 1); // 阈值极小 + 未设摘要模型 → 走兜底
+    // ★ 2026-10-09 同步：用例改为**完整配对**的 tool_calls 组（2 调用 ↔ 2 应答）。
+    //   原用例只回 1 个结果（2 调用 ↔ 1 应答），属"残缺调用组" → 2026-10-08 新增的
+    //   **悬空调用保护**（见 window.ts：结果未齐全的组必须整体拽进保留窗口）会把切点
+    //   前移到该组之前 → `cut < 2` 早退守卫放弃本次压缩 → 不产摘要（原用例因此变红）。
+    //   那是实现有意的保守：宁可原样发送，也不产"摘要覆盖 0~1 条"的畸形结果。
+    //   本用例要钉的语义（兜底摘要把 tool_calls 带进摘要）不变，只是构造需配对完整。
     const out = await cw.compress([
       msg({ role: 'user', content: '开始' }),
       withTools,
       msg({ role: 'tool', content: 'ok', toolCallId: 'call_1' }),
+      msg({ role: 'tool', content: 'ok', toolCallId: 'call_2' }),
       msg({ role: 'assistant', content: '收尾' }),
     ]);
     const summaryMsg = out.find((m) => m.id === 'summary');

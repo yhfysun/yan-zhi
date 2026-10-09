@@ -701,3 +701,70 @@ describe('空间右键「打开目录」+ 子菜单样式', () => {
     expect(CSS, '★ 子菜单的"暂无空间"提示未排除 hover').toMatch(/\.ctx-submenu > li\.disabled-hint:hover/);
   });
 });
+
+/**
+ * 「移动到空间」与「打开目录」必须一眼可分（2026-10-09 用户反馈：
+ * 「移动到空间的图标怎么跟打开目录图标一样？」）。
+ *
+ * ★ 真实缺陷：两者都用了 `FolderOpened`，而它们**同屏相邻**出现在同一个右键菜单里
+ *   （任务右键菜单：… 打开目录 / 移动到空间 …），用户扫一眼图标完全分不出谁是谁，
+ *   只能逐字读文字。而行内 hover 按钮**只有图标没有文字**（靠 title 提示），
+ *   图标撞脸 = 那个按钮彻底失去辨识度。
+ *
+ * ⇒ 语义分工：`FolderOpened`（打开文件夹）归「打开目录」；`Rank`（四向箭头 = 移动）归「移动到空间」。
+ *   ★ 钉判据而不是钉像素：断言"这两个动作的图标必须不同"+"同一动作在四处（行内按钮、
+ *   右键菜单项、右键子菜单、工作台面板）必须同一个图标"，而不是断言某个图标名写没写。
+ */
+describe('移动 vs 打开目录：图标语义必须可区分', () => {
+  const SIDEBAR = read('components/chat/ChatSidebar.vue');
+  const TASK_LIST = read('components/workbench/TaskListSection.vue');
+
+  /** 菜单项写法：`<el-icon><X /></el-icon>移动到空间`（图标在文字前面）。 */
+  const menuIconOf = (src: string, label: string) =>
+    [...src.matchAll(new RegExp(`<el-icon[^>]*>\\s*<([A-Z][A-Za-z0-9]*)\\s*\\/>\\s*<\\/el-icon>${label}`, 'g'))].map((m) => m[1]);
+
+  /** 行内按钮写法：`title="移动到空间" ... ><el-icon :size="12"><X /></el-icon>`（图标在 title 后面）。 */
+  const rowBtnIconOf = (src: string, label: string) =>
+    [...src.matchAll(new RegExp(`title="${label}"[\\s\\S]{0,160}?<el-icon[^>]*>\\s*<([A-Z][A-Za-z0-9]*)\\s*\\/>`, 'g'))].map(
+      (m) => m[1],
+    );
+
+  it('★ 办公侧栏：右键菜单里「移动到空间」不得再用 FolderOpened', () => {
+    const icons = menuIconOf(SIDEBAR, '移动到空间');
+    expect(icons.length, '★ 没解析到「移动到空间」菜单项（锚点失效，测试等于摆设）').toBeGreaterThan(0);
+    expect(icons, '★★「移动到空间」与「打开目录」同菜单相邻，图标不能再撞脸').not.toContain('FolderOpened');
+  });
+
+  it('★ 办公侧栏：行内按钮「移动到空间」不得再用 FolderOpened', () => {
+    const icons = rowBtnIconOf(SIDEBAR, '移动到空间');
+    // 未归类 / 已归类 / 空间分组三处行内按钮
+    expect(icons.length, '★ 没解析到行内「移动到空间」按钮').toBeGreaterThanOrEqual(3);
+    expect(icons, '★★ 行内按钮只有图标没有文字，撞脸等于没有辨识度').not.toContain('FolderOpened');
+  });
+
+  it('★ 工作台任务列表：菜单项 + 行内按钮同样不得用 FolderOpened', () => {
+    const menu = menuIconOf(TASK_LIST, '移动到空间');
+    const row = rowBtnIconOf(TASK_LIST, '移动到空间');
+    expect(menu.length, '★ 工作台缺「移动到空间」菜单项').toBeGreaterThan(0);
+    expect(row.length, '★ 工作台缺行内「移动到空间」按钮').toBeGreaterThan(0);
+    expect(menu, '★★ 工作台菜单项撞脸').not.toContain('FolderOpened');
+    expect(row, '★★ 工作台行内按钮撞脸').not.toContain('FolderOpened');
+  });
+
+  it('★★ 「打开目录」必须仍然是 FolderOpened（本次修的是移动，别把打开目录也改了）', () => {
+    const taskMenu = menuIconOf(SIDEBAR, '打开目录');
+    const spaceMenu = menuIconOf(SIDEBAR, '打开目录');
+    expect(taskMenu.length, '★ 任务右键「打开目录」被误删/改了写法').toBeGreaterThan(0);
+    expect(spaceMenu.length, '★ 空间右键「打开目录」被误删/改了写法').toBeGreaterThan(0);
+    expect(taskMenu.every((n) => n === 'FolderOpened'), '★「打开目录」应保持文件夹图标').toBe(true);
+    expect(spaceMenu.every((n) => n === 'FolderOpened'), '★ 空间「打开目录」应保持文件夹图标').toBe(true);
+  });
+
+  it('★★ 同一动作在两处组件里必须是同一个图标（否则功能相同时而像两件事）', () => {
+    const a = [...new Set([...menuIconOf(SIDEBAR, '移动到空间'), ...rowBtnIconOf(SIDEBAR, '移动到空间')])];
+    const b = [...new Set([...menuIconOf(TASK_LIST, '移动到空间'), ...rowBtnIconOf(TASK_LIST, '移动到空间')])];
+    expect(a.length, '★ 办公侧栏内部对「移动到空间」用了多个图标').toBe(1);
+    expect(b.length, '★ 工作台内部对「移动到空间」用了多个图标').toBe(1);
+    expect(a[0], '★★ 两个组件的「移动到空间」图标不一致').toBe(b[0]);
+  });
+});

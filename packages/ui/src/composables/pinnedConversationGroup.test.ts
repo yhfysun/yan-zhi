@@ -14,13 +14,20 @@
  *   ① 有独立的「置顶」分组标题，且**只在有置顶项时渲染**（无置顶不占位）；
  *   ② 置顶组用 `pinnedRootConversations`、主列表用 `unpinnedRootConversations`
  *      —— 两者互补，**同一个会话不能出现在两处**（重复展示比不分组更糟）；
- *   ③ 分组内仍有「取消置顶」入口（否则置顶进去就出不来）。
+ *   ③ 分组内仍有「取消置顶」入口（否则置顶进去就出不来）；
+ *   ④ ★★★ 置顶组必须在「任务」根节点【之外】（见文件末尾那条回归测试的注释 ——
+ *      2026-10-09 用户实测「置顶点了没用」的根因就是它被放进了可折叠的根节点里）。
  *
  * ★★★ 第二处必须同步（2026-10-09 实测漏改）：
  *   issue 备注原话「同类实现参考 TaskListSection.vue 也已接好 pinned…若改造需同步两处，
  *   **避免只有侧边栏生效**」。第一版我只改了 ChatSidebar → 工作台任务列表里置顶仍是
  *   "混在普通任务里"（用户视角：改了但没生效）。
  *   ⇒ 本测试同时钉住两处，防再次只改一处。
+ *
+ * ★★★ 教训（2026-10-09 二次实测）：
+ *   「分组补上了」≠「用户点置顶有反馈」。上轮 8 条测试全绿，用户却仍实测「点了没用」——
+ *   因为测试只钉了**存在性**，没钉**位置**：把整块搬进折叠容器里，测试照样绿。
+ *   ⇒ 守门测试要钉**用户可感知的语义**（"折叠时还在不在"），不是"代码里有没有这段"。
  */
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -75,6 +82,66 @@ describe('会话置顶分组', () => {
     const seg = SIDEBAR.slice(start, start + 3000);
     expect(seg).toMatch(/rows\.togglePinned\(conv\)/);
     expect(seg).toMatch(/取消置顶/);
+  });
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // ★★★ 回归防线（2026-10-09 用户实测「置顶点了没用」的根因，必钉）：
+  //   置顶组 v1 被塞进「任务」根节点的折叠容器 `.tree-children`（v-show="!rootCollapsed"）里。
+  //   而 rootCollapsed 持久化在 localStorage:yz_conv_root_collapsed —— 用户把「任务」收起来后，
+  //   置顶组跟着父容器一起 display:none：**数据写进库了，界面毫无变化**。
+  //   实测：折叠态点置顶 → PATCH 200、库里 pinned=1，但置顶组 0x0 被隐藏 →
+  //   用户看到「点了没反应」。这类回归**不报错、不抛异常**，只表现为"用户又说置顶没用"。
+  //
+  //   ★ 为什么上面 5 条测试漏检了它：那 5 条只断言"分组存在 / 数据互补 / 可折叠"，
+  //     **没有一条钉住它在 DOM 中的位置** —— 所以把整块搬进折叠容器里，测试照样全绿。
+  //     ⇒ 必须钉「置顶组在根节点**之外**」这个语义。
+  // ══════════════════════════════════════════════════════════════════════════
+  it('★★★ 置顶组必须在「任务」根节点【之外】（否则根节点一折叠，置顶就整个消失）', () => {
+    const pinnedAt = SIDEBAR.indexOf('class="tree-node tree-pinned"');
+    const rootAt = SIDEBAR.indexOf('class="tree-node tree-root"');
+    expect(pinnedAt, '未找到置顶组容器').toBeGreaterThan(0);
+    expect(rootAt, '未找到「任务」根节点').toBeGreaterThan(0);
+    // 置顶组排在根节点**之前** ⇒ 二者是 .conv-tree 下的平级顶层节点，不是 root 的子内容
+    expect(pinnedAt, '★ 置顶组被放到了「任务」根节点之后/之内 —— 根节点折叠时它会被一起隐藏（用户实测的「置顶点了没用」）')
+      .toBeLessThan(rootAt);
+
+    // 反向钉死：根节点的折叠子容器（v-show="!rootCollapsed"…）里**不得**出现置顶组。
+    const collapseGate = SIDEBAR.indexOf('v-show="!rootCollapsed"');
+    expect(collapseGate).toBeGreaterThan(0);
+    const rootFirstChild = SIDEBAR.indexOf('v-for="conv in unpinnedRootConversations"');
+    expect(rootFirstChild, '未找到根节点主列表').toBeGreaterThan(collapseGate);
+    const insideRootChildren = SIDEBAR.slice(collapseGate, rootFirstChild);
+    expect(insideRootChildren, '★ 置顶组出现在根节点的折叠容器内 —— 必须移到外面（与「任务」平级）')
+      .not.toMatch(/tree-pinned/);
+  });
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // 视觉语义：置顶「状态标记」必须是**实心星**（2026-10-09 用户实测追问：
+  //   「置顶状态选中了星星还是空心的？」）。
+  //
+  // ★ 为什么是实心：element-plus 的 `Star` 是**空心线框星**（SVG 路径含外轮廓 + 内部挖空
+  //   两个子路径），`StarFilled` 才是实心。置顶是**状态**，实心 = "已选中"，
+  //   空心 = "未选中/可点击"—— 用空心星表达"已置顶"在语义上是反的，观感也很弱。
+  // ★ 但**入口/标题**保留空心 Star（不是状态标记）：
+  //   · 分组标题「置顶」的图标要与同级的「任务」/各空间图标统一为线框风格；
+  //   · 右键菜单项是"置顶 ⇄ 取消置顶"双向入口，不是状态指示。
+  // ══════════════════════════════════════════════════════════════════════════
+  it('★★ 置顶行的状态星标必须是实心 StarFilled（空心 Star 表达"已置顶"是反语义）', () => {
+    // 列表行里的状态标记：pin-icon / tls-pin 必须用 StarFilled
+    const statusStars = [
+      /<el-icon class="pin-icon"[^>]*><StarFilled \/><\/el-icon>/,   // 侧栏置顶组行 / 主列表行
+      /<el-icon v-if="c\.pinned" class="tls-pin"><StarFilled \/><\/el-icon>/, // 工作台列表行
+    ];
+    expect(SIDEBAR, '★ 侧栏置顶行的状态星标必须是 StarFilled（空心 = 看不出"已置顶"）')
+      .toMatch(statusStars[0]);
+    expect(TASKLIST, '★ 工作台任务列表置顶行的状态星标必须是 StarFilled')
+      .toMatch(statusStars[1]);
+    // 反向：置顶**状态标记**处不得再出现空心 Star
+    expect(SIDEBAR, '★ 状态标记处仍是空心 Star —— 置顶后看不出被选中').not.toMatch(/class="pin-icon"[^>]*><Star \/><\/el-icon>/);
+    expect(TASKLIST, '★ 状态标记处仍是空心 Star').not.toMatch(/class="tls-pin"><Star \/><\/el-icon>/);
+    // 两边都必须真的 import 了 StarFilled（漏 import 会编译报错，这里提前兜住）
+    expect(SIDEBAR).toMatch(/import[\s\S]{0,200}StarFilled[\s\S]{0,200}from '@element-plus\/icons-vue'/);
+    expect(TASKLIST).toMatch(/import[\s\S]{0,200}StarFilled[\s\S]{0,200}from '@element-plus\/icons-vue'/);
   });
 
   // ══════════════════════════════════════════════════════════════════════════

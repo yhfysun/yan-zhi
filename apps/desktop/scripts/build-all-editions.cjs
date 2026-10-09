@@ -43,6 +43,7 @@
 const { execFileSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 
 const {
   ALL_EDITIONS,
@@ -135,11 +136,41 @@ function clearOutputDir(outDir) {
  *       确需跳过（如离线环境已有系统 Python）用 `YZ_SKIP_PYTHON_RUNTIME=1` 显式声明。
  *   ★ 生成失败**不静默**：这正对应 issues/打包前置资源缺失静默降级-20260919.md 的核心诉求。
  */
+/**
+ * 目录内容哈希：所有文件的相对路径 + 内容（与 python-runtime.ts 的版本戳同思路）。
+ * 仅用于随包脚本体积（KB 级），全量读文件成本可忽略。
+ */
+function dirHash(dir) {
+  const h = crypto.createHash('sha1');
+  const walk = (d, pre) => {
+    for (const e of fs.readdirSync(d, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      const fp = path.join(d, e.name);
+      if (e.isDirectory()) walk(fp, `${pre}${e.name}/`);
+      else {
+        h.update(`${pre}${e.name}\0`);
+        h.update(fs.readFileSync(fp));
+      }
+    }
+  };
+  walk(dir, '');
+  return h.digest('hex');
+}
+
 function preflight() {
   const pyDir = path.join(desktopDir, 'resources', 'python');
   const toolsDir = path.join(desktopDir, 'resources', 'python-tools');
   const hasPython = fs.existsSync(pyDir);
-  const hasTools = fs.existsSync(toolsDir);
+  // ★ 随包脚本不能只查目录存在（2026-10-09 实测踩坑）：本地 resources/python-tools 是
+  //   上次 build 的**陈旧快照**，新加的 novel_tuiwen 不在里面，而目录存在 → 旧判据放行
+  //   → 静默打出缺工具的包。改为**内容哈希比对**：与源头
+  //   packages/core/src/tool/builtin/python-scripts 逐文件（相对路径+内容）算哈希，
+  //   不一致即视为缺失 → 触发 build-python-runtime 重同步（python 已存在时走快路径，
+  //   只 copyScripts，秒级）。这同时覆盖两类问题：目录缺 / 文件内容旧。
+  const srcScriptsDir = path.join(repoRoot, 'packages', 'core', 'src', 'tool', 'builtin', 'python-scripts');
+  const toolsStale = fs.existsSync(toolsDir)
+    && fs.existsSync(srcScriptsDir)
+    && dirHash(srcScriptsDir) !== dirHash(toolsDir);
+  const hasTools = fs.existsSync(toolsDir) && !toolsStale;
 
   if (!hasPython || !hasTools) {
     const skip = process.env.YZ_SKIP_PYTHON_RUNTIME === '1';
@@ -153,9 +184,9 @@ function preflight() {
     } else {
       console.log('');
       console.log('==================================================================');
-      console.log('  内置 Python 运行时缺失 → **自动生成**（首次约需下载 40MB + 装依赖）');
+      console.log('  内置 Python 运行时缺失/过期 → **自动同步**（解释器已存在时仅同步脚本，秒级）');
       console.log(`    · ${hasPython ? '✓ 解释器已存在' : '✗ 解释器缺失'}`);
-      console.log(`    · ${hasTools ? '✓ 随包脚本已存在' : '✗ 随包脚本缺失'}`);
+      console.log(`    · ${fs.existsSync(toolsDir) ? (toolsStale ? '✗ 随包脚本与源不一致（陈旧快照）' : '✓ 随包脚本一致') : '✗ 随包脚本缺失'}`);
       console.log('  如需跳过（离线/自带系统 Python）: YZ_SKIP_PYTHON_RUNTIME=1 重新运行');
       console.log('==================================================================');
       // ★ 生成失败必须中断：否则会打出"看着成功、实则缺能力"的包（本 issue 的原始病灶）

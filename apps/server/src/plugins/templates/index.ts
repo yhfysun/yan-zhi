@@ -159,7 +159,7 @@ export const myPluginModule: PluginModule = {
       execute: async (args) => textResult({ hello: String(args.name) }),
     });
 
-    // 2. 可选：挂后端 HTTP 路由（挂载在 /api/plugin/my-plugin/*）
+    // 2. 可选：挂后端 HTTP 路由（挂载在 /api/plugin/my-plugin 下的子路径）
     // ctx.registerBackendRoute((app) => {
     //   app.get('/ping', (_req: unknown, res: { json: (d: unknown) => void }) => res.json({ pong: true }));
     // });
@@ -490,7 +490,7 @@ export const computerUseModule: PluginModule = {
     maxOps = Number((ctx.config as Record<string, unknown> | undefined)?.maxOps) || 200;
     allowSelfWindowClick = !!(ctx.config as Record<string, unknown> | undefined)?.allowSelfWindowClick;
 
-    // 后端路由：/api/plugin/computer-use/*
+    // 后端路由：/api/plugin/computer-use 下的子路径
     // POST /panic —— 急停入口（桌面端 globalShortcut Ctrl+Alt+Esc 调用）：冻结输入工具并禁用插件（恢复=手动重新启用）
     // GET  /audit —— 操作审计记录（插件页「记录」按钮）
     ctx.registerBackendRoute((raw) => {

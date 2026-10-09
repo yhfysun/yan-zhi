@@ -1,4 +1,4 @@
-// 浏览器自动化内置工具集 —— 调用服务端 /api/browser/* 端点（Playwright）
+// 浏览器自动化内置工具集 —— 调用服务端 /api/browser 下的端点（Playwright）
 // 包含：navigate / click / type / press_key / scroll / hover / get_text / get_dom / wait / screenshot
 import type { BuiltInTool } from '../../types';
 import type { McpCallResult } from '../../../mcp/client';

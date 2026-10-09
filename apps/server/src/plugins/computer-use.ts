@@ -426,7 +426,7 @@ export const computerUseModule: PluginModule = {
       if (typeof reapTimer.unref === 'function') reapTimer.unref();
     }
 
-    // 后端路由：/api/plugin/computer-use/*
+    // 后端路由：/api/plugin/computer-use 下的子路径
     // POST /panic —— 急停入口（桌面端 globalShortcut Ctrl+Alt+Esc 调用）：冻结输入工具并禁用插件（恢复=手动重新启用）
     // GET  /audit —— 操作审计记录（插件页「记录」按钮）
     ctx.registerBackendRoute((raw) => {

@@ -92,12 +92,14 @@ describe('① file_write 的路径必须由代码决定，不能靠模型传', (
 
   it('★★ conversation_file 必须登记**工具回传的实际路径**，不能用模型传的 args.path', () => {
     // ★ 2026-10-03 修复：file_write 登记分支已随「产物登记钩子」重构迁移到
-    //   services/artifact-hooks.ts（registerAfterToolHook('artifact:file_write')），
-    //   扫描目标从 llm-task-manager.ts 同步更新。钉住的语义不变：
+    //   services/artifact-hooks.ts。钉住的语义不变：
     //   路径必须来自工具 _meta（实际落盘位置），绝不能用模型传的 args.path。
+    // ★ 2026-10-09 同步：钩子已**泛化**为通用 `_meta.path` 钩子（`artifact:meta_path`）——
+    //   原只认 file_write，导致 novel_tuiwen 等回传落盘路径的工具产物不登记也进不了工件清单。
+    //   "任意工具只要产文件就该登记"，判据不绑工具名 → 锚点随实现前进（语义不变）。
     const code = strip(readRepo('apps/server/src/services/artifact-hooks.ts'));
-    const i = code.indexOf("registerAfterToolHook('artifact:file_write'");
-    expect(i, '未找到 file_write 登记钩子').toBeGreaterThan(0);
+    const i = code.indexOf("registerAfterToolHook('artifact:meta_path'");
+    expect(i, '未找到通用产物登记钩子（artifact:meta_path）').toBeGreaterThan(0);
     const block = code.slice(i, i + 900);
     // ★ 必须来自工具 _meta（实际落盘路径）
     expect(block, '★ 登记路径未取自工具回传 _meta').toMatch(/const filePath = String\(m\?\.path/);

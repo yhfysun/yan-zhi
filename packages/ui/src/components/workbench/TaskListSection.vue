@@ -80,7 +80,7 @@
               @click.stop
               @change="toggleConvSelect(c.id)"
             />
-            <el-icon v-if="c.pinned" class="tls-pin"><Star /></el-icon>
+            <el-icon v-if="c.pinned" class="tls-pin"><StarFilled /></el-icon>
             <span class="tls-dot" v-else-if="!batchMode"></span>
             <!-- 7.4 运行状态徽标：与 ChatSidebar 同款呼吸圆点 -->
             <span v-if="!batchMode && chatStore.isConvStreaming(c.id)" class="conv-run-badge" title="运行中"></span>
@@ -109,7 +109,7 @@
                 <el-icon :size="12"><EditPen /></el-icon>
               </span>
               <span class="task-row-act" role="button" title="移动到空间" @click="rows.openMoveMenu(c, $event)">
-                <el-icon :size="12"><FolderOpened /></el-icon>
+                <el-icon :size="12"><Rank /></el-icon>
               </span>
               <span class="task-row-act is-danger" role="button" title="删除" @click="rows.remove(c)">
                 <el-icon :size="12"><Delete /></el-icon>
@@ -171,7 +171,7 @@
           <el-icon><EditPen /></el-icon>重命名
         </li>
         <li class="has-submenu">
-          <el-icon><FolderOpened /></el-icon>移动到空间
+          <el-icon><Rank /></el-icon>移动到空间
           <el-icon class="submenu-arrow"><ArrowRight /></el-icon>
           <ul class="ctx-submenu">
             <li v-if="spaceStore.spaces.length === 0" class="disabled-hint">暂无空间，请先创建</li>
@@ -248,7 +248,7 @@
 <script setup lang="ts">
 import { computed, ref, onMounted, onBeforeUnmount } from 'vue';
 import {
-  EditPen, Top, Star, CaretRight, ChatDotRound, FolderOpened, Tools, Close, Delete, ArrowRight, Plus,
+  EditPen, Top, Star, StarFilled, CaretRight, ChatDotRound, FolderOpened, Rank, Tools, Close, Delete, ArrowRight, Plus,
 } from '@element-plus/icons-vue';
 import { useChatStore } from '../../stores/chat';
 import { useChat } from '../../composables/chat/useChat';

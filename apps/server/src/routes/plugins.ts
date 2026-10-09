@@ -239,7 +239,7 @@ router.delete('/:id', async (req: Request, res: Response) => {
 
 export default router;
 
-// ===== 插件静态资源：GET /api/plugin-assets/:pluginId/* =====
+// ===== 插件静态资源：GET /api/plugin-assets/:pluginId 下的子路径 =====
 // 皮肤壁纸/预览图等二进制资源不走 manifest（避免 base64 膨胀），按插件 id 从磁盘直读：
 //  - 已安装插件 → plugins/installed/<id>/
 //  - 内置插件   → assets/plugin-assets/<id>/（随安装包 extraResources 分发）
