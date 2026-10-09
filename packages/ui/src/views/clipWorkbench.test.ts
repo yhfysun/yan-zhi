@@ -593,4 +593,39 @@ describe('ClipWorkbench · 与后端契约一致', () => {
     expect(CODE).toContain('/clip/project?conversationId=');
     expect(CODE).toMatch(/api\.put\('\/clip\/project'/);
   });
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // 语音转字幕（本地 whisper.cpp）入口 —— 2026-10-08 新增
+  //
+  // ★ 为什么钉：ASR 后端（media_asr_transcribe / whisper.cpp）此前**只能从对话触发**，
+  //   工作台里"素材只有音频想自动打轴"却没有入口 = 能力有了、用户用不上。
+  //   这是典型的「注册了 ≠ 能用」—— 不钉住的话，后续重构很容易把入口删掉而不报错。
+  //   同样容易错的还有：忘了加**片段起点偏移**（ASR 时间轴是相对音频文件的，
+  //   字幕要落成片时间轴）→ 字幕整体前移。
+  // ══════════════════════════════════════════════════════════════════════════
+  it('★ 工作台有「语音转字幕」入口（按钮 + 处理函数 + 调 /clip/asr）', () => {
+    expect(CODE).toContain('runAsrOnSelected');
+    expect(CODE).toMatch(/runAsrOnSelected/);
+    expect(CODE).toContain("'/clip/asr'");
+    // 按钮存在且带禁用条件（识别中/未选片段时不可点）
+    expect(CODE).toMatch(/asrRunning/);
+  });
+
+  it('★ ASR 结果必须加「片段起点偏移」再落到字幕轨（否则整体前移）', () => {
+    const start = CODE.indexOf('async function runAsrOnSelected');
+    expect(start).toBeGreaterThan(0);
+    const body = CODE.slice(start, start + 2600);
+    // offset 取自片段 start，且用于 start/end 计算
+    expect(body).toMatch(/offset/);
+    expect(body).toMatch(/offset \+ c\.start/);
+    expect(body).toMatch(/offset \+ c\.end/);
+  });
+
+  it('★ 解包口径对齐 /clip/probe：用 `\'error\' in r` 判错、取 r.data（不能 r.data.data）', () => {
+    const start = CODE.indexOf('async function runAsrOnSelected');
+    const body = CODE.slice(start, start + 2600);
+    expect(body).toContain("'error' in r");
+    expect(body).toMatch(/r\.data/);
+    expect(body).not.toMatch(/r\.data\.data/);
+  });
 });

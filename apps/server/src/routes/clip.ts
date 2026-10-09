@@ -20,6 +20,11 @@ import { parseProbeJson, probeArgs } from '../services/clip-render.js';
 import { renderPreviewFrame } from '../services/clip-preview.js';
 import { SFX_LIBRARY, sfxById } from '../services/sfx-library.js';
 import { resolveFfmpeg } from '../mcp/ffmpeg-runtime.js';
+import {
+  resolveWhisper, ensureWav16k, runWhisperToSrt,
+  WHISPER_MODELS, DEFAULT_WHISPER_MODEL,
+} from '../mcp/whisper-runtime.js';
+import { parseSrt } from '../mcp/subtitle-style.js';
 import { runCmd } from '../services/exec-cmd.js';
 
 /** 跑 ffmpeg（复用既有 exec-cmd 的 runCmd，与其它媒体链路同一实现）。 */
@@ -197,6 +202,74 @@ router.post('/library/sfx', async (req: Request, res: Response) => {
     'INSERT INTO conversation_file (id, conversation_id, user_id, space_id, name, path, category, mime_type, size, source, message_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
   ).run(fileId, cid, String(req.user?.userId || 'guest'), null, fileName, outFile, 'upload', 'audio/mp4', size, 'user', null, Date.now());
   return res.json({ ok: true, name: fileName, path: outFile, bytes: size, label: item.label });
+});
+
+// POST /api/clip/asr —— 语音转字幕（本地 whisper.cpp）
+//
+// ★★★ 为什么要有这条（2026-10-08）：ASR 能力此前只能从**对话**触发
+//   （模型调 media_asr_transcribe）。剪辑工作台里"素材只有音频、想自动打轴"时
+//   却没有任何入口 —— 能力有了、用户用不上。本端点补这个入口。
+//
+// 与工具的关系：共用同一套 runtime（whisper-runtime），只是换成 HTTP 薄壳，
+// 免得前端为了转一次字幕还得绕去对话。返回的 cues 直接就是 ClipText 的
+// {start,end,text} 形态（复用 subtitle-style 的 parseSrt 解析），前端零转换。
+router.post('/asr', async (req: Request, res: Response) => {
+  const conversationId = String(req.body?.conversationId || '').trim();
+  const inputRaw = String(req.body?.path || '').trim();
+  const model = String(req.body?.model || '').trim() || DEFAULT_WHISPER_MODEL;
+  const language = String(req.body?.language || '').trim() || 'zh';
+  if (!conversationId) return res.status(400).json({ error: 'conversationId 必填' });
+  if (!inputRaw) return res.status(400).json({ error: 'path 必填（音频或视频文件路径）' });
+  if (!WHISPER_MODELS[model]) {
+    return res.status(400).json({ error: `未知模型 ${model}，可选：${Object.keys(WHISPER_MODELS).join(' / ')}` });
+  }
+  const conv = db.prepare('SELECT id FROM conversation WHERE id = ?').get(conversationId) as { id?: string } | undefined;
+  if (!conv) return res.status(404).json({ error: '会话不存在' });
+
+  const input = path.isAbsolute(inputRaw) ? inputRaw : path.resolve(inputRaw);
+  if (!fs.existsSync(input)) return res.status(404).json({ error: `文件不存在：${input}` });
+
+  // 依赖分诊：四类缺失各自给不同指引（前端原样展示，不让用户猜）
+  const wh = await resolveWhisper(model);
+  if (!wh.ok) {
+    return res.status(503).json({
+      error: wh.error,
+      need: 'whisper',
+      model, installDir: wh.installDir, modelsDir: wh.modelsDir,
+      // 前端据此给出「去装」的动作（调 whisper_install 走对话，或手动放置）
+      hint: '可在对话里让剪辑师调用 whisper_install 安装，或按上面目录手动放置。',
+    });
+  }
+  const ff = await resolveFfmpeg();
+  if (!ff.ok) return res.status(503).json({ error: ff.error, need: 'ffmpeg', hint: '可调用 media_install_ffmpeg。' });
+
+  const wav = await ensureWav16k(input, ff.ffmpeg);
+  if (!wav.ok) return res.status(500).json({ error: `音频准备失败：${wav.error || '未知错误'}` });
+
+  try {
+    const workPrefix = path.join(path.dirname(wav.wav), 'out');
+    const run = await runWhisperToSrt({
+      bin: wh.bin, model: wh.model, wav: wav.wav, outPrefix: workPrefix, language,
+    });
+    if (!run.ok) {
+      return res.status(500).json({ error: run.error || 'whisper 执行失败' });
+    }
+    const content = fs.readFileSync(run.srt, 'utf8');
+    const cues = parseSrt(content).map((c) => ({ text: c.text, start: c.start, end: c.end }));
+    if (!cues.length) {
+      return res.status(422).json({
+        error: '未检测到可用语音内容（识别结果为空）',
+        hint: `可能原因：① 音频没有说话声；② 语言参数与实际不符（当前 ${language}）；③ 音频过短。可换 medium 模型重试。`,
+      });
+    }
+    // ★ 返回形态对齐 /clip/probe 的 `{data: ...}`（前端 apiFetch 解包后 r.data 即数组本身）
+    return res.json({ data: cues, ok: true, model, language, source: wh.source });
+  } catch (e: unknown) {
+    return res.status(500).json({ error: `转写异常：${e instanceof Error ? e.message : String(e)}` });
+  } finally {
+    // 临时音频清理失败不该让请求失败
+    try { fs.rmSync(path.dirname(wav.wav), { recursive: true, force: true }); } catch { /* ignore */ }
+  }
 });
 
 // GET /api/clip/frame?conversationId=xxx&t=1.234

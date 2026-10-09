@@ -226,6 +226,17 @@
               <el-icon :size="13"><EditPen /></el-icon>
             </button>
             <button class="cp-mini danger" title="删除选中字幕" :disabled="!selectedTextId" @click="removeText"><el-icon :size="13"><ChatLineSquare /></el-icon></button>
+            <!-- 语音转字幕（本地 whisper.cpp）：素材只有音频/视频时自动打轴。
+                 ★ 加这条的起因（2026-10-08）：ASR 后端已通，但此前只能从**对话**触发 ——
+                   工作台里"想自动打轴"却找不到入口 = 能力有了、用户用不上。 -->
+            <button
+              class="cp-mini"
+              :title="asrRunning ? '正在识别…（本地 whisper.cpp，不上传）' : '语音转字幕：识别选中片段的语音，自动生成带时间轴的字幕（本地识别，不上传）'"
+              :disabled="asrRunning || !selectedClipId"
+              @click="runAsrOnSelected"
+            >
+              <el-icon :size="13" :class="{ 'cp-spin': asrRunning }"><Microphone /></el-icon>
+            </button>
             <span class="cp-spacer"></span>
             <span class="cp-hint">拖动素材入轨 · 拖动播放头定位 · 选中片段/字幕改参数</span>
           </div>
@@ -821,7 +832,7 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import {
   ArrowLeft, ArrowRight, Back, Check, ChatLineSquare, CopyDocument, DArrowLeft, Delete,
-  Close, EditPen, FolderOpened, Headset, Loading, Picture, Plus, Refresh, RefreshLeft, RefreshRight, Scissor, VideoCamera, VideoPlay, View, WarningFilled,
+  Close, EditPen, FolderOpened, Headset, Loading, Microphone, Picture, Plus, Refresh, RefreshLeft, RefreshRight, Scissor, VideoCamera, VideoPlay, View, WarningFilled,
 } from '@element-plus/icons-vue';
 import ChatMessageList from '../components/chat/ChatMessageList.vue';
 import ChatInputArea from '../components/chat/ChatInputArea.vue';
@@ -2520,6 +2531,64 @@ async function addTextAtPlayhead() {
   selectText(item.id);
   rightTab.value = 'inspector';
   note(`已在 ${start.toFixed(2)}s 添加字幕，右侧可改文案`);
+}
+
+// ===== 语音转字幕（本地 whisper.cpp）=====
+//
+// ★ 为什么在工作台里加这个（2026-10-08）：ASR 后端（media_asr_transcribe / whisper.cpp）
+//   此前只能从**对话**触发。剪辑时"素材只有音频想自动打轴"却没有入口 = 能力有了、用不上。
+// ★ 为什么不上传云端：用户拍板本地 whisper.cpp（隐私/离线/无按量计费）。
+// ★ 依赖缺失时**原样展示服务端的指引**（含手动放置目录），不自己编文案 ——
+//   服务端比前端清楚"到底缺二进制还是模型、该放哪个目录"。
+const asrRunning = ref(false);
+const asrModel = ref('small');   // base 快 / small 准（默认）/ medium 最准但慢
+
+async function runAsrOnSelected() {
+  const clip = selectedClip.value;
+  if (!clip) { note('先在时间轴上选中一个片段（要识别它的语音）'); return; }
+  const src = (clip as { src?: string; path?: string }).src || (clip as { path?: string }).path || '';
+  if (!src) { note('该片段没有可识别的源文件'); return; }
+  await ensureConversation();
+  asrRunning.value = true;
+  pendingLabel.value = '语音识别中（本地）';
+  try {
+    type AsrCue = { text: string; start: number; end: number };
+    // ★ 解包口径对齐 /clip/probe：apiFetch 已把响应解包成 `{ data: <接口 data 字段> }`，
+    //   所以 r.data 就是 cues 数组本身（**不能再写 r.data.data**，会拿到 undefined）。
+    //   失败时返回 `{ error }` → 先判 `'error' in r`，避免把错误当成功处理。
+    const r = await api.post<AsrCue[]>('/clip/asr', {
+      conversationId: convId.value, path: src, model: asrModel.value,
+    });
+    if ('error' in r) {
+      // 服务端已给出可执行指引（含手动放置目录），原样转达
+      note(String((r as { error?: string }).error || '语音识别失败'));
+      return;
+    }
+    const cues: AsrCue[] = Array.isArray(r.data) ? r.data : [];
+    if (!cues.length) { note('未识别到语音内容，可换 medium 模型或确认音频'); return; }
+    const p = ensureProject();
+    // ★ 片段在时间轴上的**起点偏移**：ASR 时间轴是相对音频文件的，
+    //   而字幕要落在成片时间轴上 → 必须加上该片段的起始位置（否则整体前移）
+    const offset = Number((clip as { start?: number }).start || 0);
+    const added: ClipText[] = cues.map((c) => ({
+      id: nextTextId(),
+      text: c.text,
+      start: Number((offset + c.start).toFixed(3)),
+      end: Number((offset + c.end).toFixed(3)),
+      position: 'bottom',
+    }));
+    p.texts.push(...added);
+    dirty.value = true;
+    await save();
+    selectText(added[0].id);
+    rightTab.value = 'inspector';
+    note(`已识别 ${added.length} 条字幕（模型 ${asrModel.value}），右侧可逐条改文案与时间`);
+  } catch (e: unknown) {
+    note(e instanceof Error ? e.message : String(e));
+  } finally {
+    asrRunning.value = false;
+    pendingLabel.value = '';
+  }
 }
 
 // ===== 播放头 =====
