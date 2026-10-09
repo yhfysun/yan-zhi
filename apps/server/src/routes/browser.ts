@@ -108,7 +108,45 @@ async function loadChromium() {
 
 // ========== 阶段一改造：超时兜底 + 健康探针 + CDP 模式 + headless 可配置 ==========
 const BROWSER_MODE = (process.env.BROWSER_MODE || 'launch') as 'launch' | 'cdp';
-const CDP_ENDPOINT = process.env.CDP_ENDPOINT || 'http://127.0.0.1:9222';
+// ★★★ B8（2026-10-09）：端点改为**可在连接失败时重解析**（此前是启动期固定常量）。
+//
+// 真缺口：桌面端 CDP 端口默认**自动分配**（`remote-debugging-port=0`，实际端口写在
+//   userData/DevToolsActivePort）。主进程把解析结果经 env 注入服务端 —— 这条路径本身是对的。
+//   但**服务端是独立进程**：桌面主进程崩溃/重启后（新端口）而服务端仍活着时，
+//   服务端会拿旧端点**永远** ECONNREFUSED（重试也没用，因为端口根本变了）。
+//   ⇒ 连接失败时重读 DevToolsActivePort 再试一次，让服务端能自愈到新端口。
+//
+// ★ 与 `bin/dev.mjs` / `main.cjs` 的 `resolveCdpEndpoint` **同源**（同一份目录候选与校验），
+//   不另造判据。★ 只在**失败后**才重解析（成功路径零开销、不改变既有行为）。
+let CDP_ENDPOINT = process.env.CDP_ENDPOINT || 'http://127.0.0.1:9222';
+
+/**
+ * 重读 userData/DevToolsActivePort 解析真实 CDP 端点（失败返回 null）。
+ * ★ 目录候选与 `bin/dev.mjs:readDevToolsActivePortEndpoint` 一致（dev 与打包两套 userData）。
+ */
+function reResolveCdpEndpoint(): string | null {
+  try {
+    const home = process.env.USERPROFILE || process.env.HOME || '';
+    const appData = process.env.APPDATA || path.join(home, 'AppData', 'Roaming');
+    const candidates =
+      process.platform === 'darwin'
+        ? [path.join(home, 'Library', 'Application Support', 'yan-zhi-dev'), path.join(home, 'Library', 'Application Support', 'yan-zhi')]
+        : process.platform === 'win32'
+          ? [path.join(appData, 'yan-zhi-dev'), path.join(appData, 'yan-zhi')]
+          : [path.join(home, '.config', 'yan-zhi-dev'), path.join(home, '.config', 'yan-zhi')];
+    for (const dir of candidates) {
+      try {
+        const port = parseInt(fs.readFileSync(path.join(dir, 'DevToolsActivePort'), 'utf8').split(/\r?\n/)[0], 10);
+        if (port > 0 && port < 65536) {
+          const ep = `http://127.0.0.1:${port}`;
+          if (ep !== CDP_ENDPOINT) logger.info(`[browser] CDP 端点重解析: ${CDP_ENDPOINT} → ${ep}`);
+          return ep;
+        }
+      } catch { /* 未就绪/不存在 */ }
+    }
+  } catch { /* 环境异常 → 静默（连接层会给出原始错误） */ }
+  return null;
+}
 // 修复：launch 模式强制 headless。此前 BROWSER_HEADLESS=false 可在 launch 模式弹出独立
 // Chromium 有头窗口（模型调浏览器工具时桌面突然多出一个浏览器），与「单一执行面」冲突——
 // 有界面只允许 Electron 自身的 BrowserView（桌面端 BROWSER_MODE=cdp 连自己）。
@@ -146,17 +184,27 @@ async function resetBrowser() {
 /** CDP 连接瞬时故障重试：ECONNREFUSED（启动竞态/浏览器重启瞬间）退避重试 2 次 */
 async function connectCdpWithRetry(chromium: any, endpoint: string): Promise<any> {
   let lastErr: any;
+  let ep = endpoint;
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      return await chromium.connectOverCDP(endpoint);
+      return await chromium.connectOverCDP(ep);
     } catch (e: any) {
       lastErr = e;
+      // ★★★ B8（2026-10-09）：重试**之前**先重读 DevToolsActivePort。
+      //   桌面主进程崩溃/重启后 CDP 端口会**重新自动分配**，而本进程仍持有旧端点
+      //   → 不重解析的话三次重试全打在已经没人监听的端口上（永远失败）。
+      //   ★ 只在失败后才重解析：成功路径零开销、行为不变。
+      const fresh = reResolveCdpEndpoint();
+      if (fresh && fresh !== ep) {
+        ep = fresh;
+        CDP_ENDPOINT = fresh; // 写回，后续 getBrowser 直接用新端点
+      }
       if (attempt < 2) await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
     }
   }
   const detail = lastErr?.message || String(lastErr);
   throw new Error(
-    `CDP 连接失败（已重试 3 次）: ${endpoint} —— 预览面板浏览器未就绪或调试端口被占用，可在预览面板重开浏览器后重试。原始错误: ${detail}`,
+    `CDP 连接失败（已重试 3 次，含端点重解析）: ${ep} —— 预览面板浏览器未就绪或调试端口被占用，可在预览面板重开浏览器后重试。原始错误: ${detail}`,
   );
 }
 
