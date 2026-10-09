@@ -340,13 +340,37 @@ async function isPageAlive(p: any): Promise<boolean> {
   }
 }
 
+/**
+ * ★★★ 判定"重建页面后是否要恢复 URL"（2026-10-09，抽成**纯函数**以便真跑验证）。
+ *
+ * ★ 为什么必须抽出来：这个判定的三个条件（曾经有 page / 有记录 URL / 当前不在该 URL）
+ *   如果内联在 `getPage()` 里，就只能用"源码里有没有这段字符串"来守门 —— 而那是**假绿**：
+ *   实测把 `hadPage` 写死成 `false`（恢复永不发生）时，字符串断言**全部通过**。
+ *   ⇒ 抽成纯函数后，"语义"才可被真正验证（本项目一贯做法）。
+ *
+ * @param hadPage 重建前是否已有 page（false = 首次创建 / 空闲超时已清空 → **不该**恢复）
+ * @param lastKnownUrl 上一次成功导航记录的 URL（空 = 无可恢复）
+ * @param currentUrl 新建 page 的当前 URL
+ */
+export function shouldRestorePageUrl(hadPage: boolean, lastKnownUrl: string, currentUrl: string): boolean {
+  if (!hadPage) return false;              // 不是"坏了重建"出来的 → 别把新任务拽到旧页面
+  if (!lastKnownUrl) return false;         // 没记录过 → 无可恢复
+  if (!currentUrl) return true;            // 拿不到当前 URL（异常页）→ 尝试恢复更安全
+  return currentUrl !== lastKnownUrl;      // 已在目标 URL → 不必重载
+}
+
 /** 获取或创建页面（当前活动标签页），含健康检查 */
 async function getPage() {
   if (pageInstance && (await isPageAlive(pageInstance))) {
     lastActivityAt = Date.now();
     return pageInstance;
   }
-  // page 假死：重置后重建
+  // ★★★ page 假死/丢失：重建时要**恢复 URL**（2026-10-09 接线，见下方注释）。
+  //   `hadPage` 用于区分两种情况，避免误用陈旧 URL：
+  //     · true  = 正在用的 page 坏了 → 任务原先在某个网页上 → 应回到那个 URL
+  //     · false = 首次创建 / 空闲超时已清空（`scheduleIdleCheck` 会置 `pageInstance=null`）
+  //               → 不该导航到"上一个任务的 URL"（那会让新任务凭空跳到旧页面）
+  const hadPage = !!pageInstance;
   if (pageInstance) {
     try { await pageInstance.close().catch(() => {}); } catch {}
     pageInstance = null;
@@ -358,6 +382,26 @@ async function getPage() {
   tabs.set(0, page);
   nextTabId = 1;
   lastActivityAt = Date.now();
+  // ★★★ 恢复任务所在 URL（2026-10-09）。此前这里只重建 page、**不恢复 URL**：
+  //   `createTabPage` 在 CDP 模式走 `pickCdpPage`（挑真实网页 target）、launch 模式是全新
+  //   `about:blank` 页 —— 于是"page 坏掉重建"会把任务**静默换到另一个页面**，
+  //   模型下一步的点击/读取全都作用在错的页面上，而且**不报错**（最难查的一类）。
+  //   `recordPageState` 早已在 /navigate 与 /action 成功后记录了 `lastKnownUrl`，
+  //   `recoverSession` 也早已实现了"导航回去"的逻辑 —— **但从未被接线调用**（死代码）。
+  //   ⇒ 这里把它接上（只取"导航回去"这一条已验证价值的能力，
+  //     不整体改用 `recoverSession` —— 那个函数没有 `ensureWebviewViaShell` 自动开面板的能力，
+  //     整体替换会**丢掉** createTabPage 更完整的兜底）。
+  if (hadPage && lastKnownUrl) {
+    try {
+      const cur = (() => { try { return page.url(); } catch { return ''; } })();
+      // ★ 判定委托给纯函数（`shouldRestorePageUrl`）—— 内联判定无法被真跑验证，只能查字符串（假绿）。
+      if (shouldRestorePageUrl(hadPage, lastKnownUrl, cur)) {
+        await withTimeout(page.goto(lastKnownUrl, { waitUntil: 'domcontentloaded' }), '恢复页面超时').catch((e) => {
+          logger.warn('[browser] 重建后恢复 URL 失败（不影响本次调用）:', e?.message || e);
+        });
+      }
+    } catch { /* 恢复 URL 失败不阻塞本次调用 */ }
+  }
   return page;
 }
 
@@ -371,7 +415,19 @@ function recordPageState(url: string, title?: string) {
   if (title != null) { lastKnownTitle = title; }
 }
 
-/** 会话恢复：browser 还在但 page 丢了 → 重建 page 并导航到最近 URL */
+/** 会话恢复：browser 还在但 page 丢了 → 重建 page 并导航到最近 URL
+ *
+ * ★★★ 接线状态说明（2026-10-09 核实）：本函数**仍然没有直接调用点**，但**不再是死代码** ——
+ *   它最有价值的两个能力，已分别由 `getBrowser()` 与 `getPage()` 承担：
+ *     · 「浏览器实例假死 → 重建」：`getBrowser()` 用 `isBrowserAlive`（真发一次 `version()`）探活，
+ *       假死则 `resetBrowser()` + 重连（CDP 模式带 3 次退避重试）。**比本函数更完整**；
+ *     · 「page 丢失 → 重建并回到原 URL」：`getPage()` 已接线（2026-10-09 补 `lastKnownUrl` 恢复）。
+ *   ⇒ 本函数保留作为**独立可调用的恢复入口**（如需一个"显式恢复会话"的 API/工具可继续用它），
+ *     ★ 但**不要**把它整体替换进 `getPage()` —— 它缺 `ensureWebviewViaShell`
+ *       （自动驱动应用壳打开预览面板）这个兜底，替换会**削弱**现有的自动恢复能力。
+ *   ★ 判据（本项目反复踩）：**"函数被定义"≠"能力可用"** —— 判断某能力是否真的存在，
+ *     要看调用链是否闭合，而不是 grep 到函数名就认为有。
+ */
 async function recoverSession(): Promise<{ recovered: boolean; url: string }> {
   let page: any = null;
   try {
