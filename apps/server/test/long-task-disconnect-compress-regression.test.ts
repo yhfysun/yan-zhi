@@ -25,10 +25,29 @@ const memSrc = fs.readFileSync(path.join(REPO_ROOT, 'apps/server/src/services/me
 const taskMgrSrc = fs.readFileSync(path.join(REPO_ROOT, 'apps/server/src/llm-task-manager.ts'), 'utf8');
 const planFileSrc = fs.readFileSync(path.join(REPO_ROOT, 'apps/server/src/services/task-plan-file.ts'), 'utf8');
 
-/** 截取从 startMarker 起的 length 个字符（把断言限定在某函数内） */
-function sliceFrom(src: string, startMarker: string, length = 4000): string {
+/**
+ * 截取从 startMarker 起的一段源码（把断言限定在某函数/回调内）。
+ *
+ * ★★★ 2026-10-10 修（原实现是 `src.slice(i, i + length)` **固定窗口**，会随代码变长而假红）：
+ *   `beforeCompress: async (toCompress)` 这个**对象属性回调**已长到 22000+ 字符，
+ *   而断言要找的 `flushedBatch` 在 **+22098** 位置 —— 900 窗口根本够不着
+ *   → 报"未按 batch 比较"，但源码里其实有（已 grep 核实）。**是测试脆弱，不是代码缺陷。**
+ *
+ * 新策略（无参调用时）：从 marker 起，取到**下一个同级属性声明**之前
+ *   （`\n      <ident>: ` 形态，即同缩进的对象属性）。若找不到则退到 maxLen 上限。
+ *   显式传 length 时仍按固定窗口（兼容需要精确小段的用例）。
+ */
+function sliceFrom(src: string, startMarker: string, length?: number): string {
   const i = src.indexOf(startMarker);
-  return i < 0 ? '' : src.slice(i, i + length);
+  if (i < 0) return '';
+  if (length !== undefined) return src.slice(i, i + length);
+  // 无参：找下一个同级对象属性（比 marker 的缩进一致的 `ident:`）
+  const lineStart = src.lastIndexOf('\n', i) + 1;
+  const indent = src.slice(lineStart, i).match(/^\s*/)?.[0] ?? '';
+  const rest = src.slice(i + startMarker.length);
+  const re = new RegExp(`\\n${indent}[A-Za-z_$][\\w$]*\\s*[:(]`, 'm');
+  const m = re.exec(rest);
+  return src.slice(i, m ? i + startMarker.length + m.index : i + 40000);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -292,9 +311,20 @@ describe('压缩补强二：抢救节流按"批次"而非"整任务一次"', () 
   });
 
   it('beforeCompress 内按 batch 比较并更新游标', () => {
-    const fn = sliceFrom(taskMgrSrc, 'beforeCompress: async (toCompress)', 900);
-    expect(fn).toMatch(/if\s*\(flushedBatch\s*===\s*batch\)\s*return/);
-    expect(fn).toMatch(/flushedBatch\s*=\s*batch/);
+    // ★ 2026-10-10 改为**全文件**断言（原用 sliceFrom 固定窗口 → 随代码变长而假红）。
+    //   为什么不需要限定窗口：这两条正则足够独特 —— `flushedBatch === batch` 与
+    //   `flushedBatch = batch` 在源码里**各自只出现一次**（已 grep 核实），
+    //   不会因为"限定范围"而更精确，只会因为窗口漂移而误报。
+    //   反例（本次踩到）：`beforeCompress` 回调体已长到 22000+ 字符，而 `flushedBatch`
+    //   在其 +22098 处；任何固定窗口（900/4000）都够不着 → 假红。
+    expect(taskMgrSrc).toMatch(/if\s*\(flushedBatch\s*===\s*batch\)\s*return/);
+    expect(taskMgrSrc).toMatch(/flushedBatch\s*=\s*batch/);
+    // 且必须落在 beforeCompress 回调之内（位置关系：游标判断在回调开始之后）
+    const cbIdx = taskMgrSrc.indexOf('beforeCompress: async (toCompress)');
+    const useIdx = taskMgrSrc.indexOf('flushedBatch === batch');
+    expect(cbIdx, '未找到 beforeCompress 回调').toBeGreaterThan(-1);
+    expect(useIdx, '★ flushedBatch 判断不在 beforeCompress 之后（可能被搬到了别处）')
+      .toBeGreaterThan(cbIdx);
   });
 });
 

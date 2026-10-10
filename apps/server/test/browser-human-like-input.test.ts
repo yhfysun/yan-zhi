@@ -21,9 +21,28 @@ const REPO_ROOT = path.resolve(__dirname, '../../..');
 const mainSrc = fs.readFileSync(path.join(REPO_ROOT, 'apps/desktop/main.cjs'), 'utf8');
 const toolSrc = fs.readFileSync(path.join(REPO_ROOT, 'packages/core/src/tool/builtin/browser/index.ts'), 'utf8');
 
-function sliceFrom(src: string, startMarker: string, length = 4000): string {
+/**
+ * 从 `startMarker` 起取**整个函数体**（到下一个顶层声明为止）。
+ *
+ * ★★★ 2026-10-10 修（原实现 `src.slice(i, i + 4000)` 是**固定窗口**，会随函数变长而假红）：
+ *   `cdpTypeText` 已长到 **5429 字符**，而 `via:` 在 5002、`dbg.detach()` 在 5382 —— 都掉出 4000 窗口
+ *   → 测试报"缺 via 标识 / 未 detach"，但源码里其实都有。**这是测试脆弱，不是代码缺陷。**
+ *
+ * ★ 实现刻意**不做花括号配对**：函数体里有正则字面量（如 `/^https:\/\//`），其中的 `//`
+ *   会被朴素扫描误判成行注释 → 状态机跑偏 → 取不到结尾（本文件实测踩到）。
+ *   改为"截到**下一个顶层声明**（`\nasync function` / `\nfunction` / `\nconst xxx = ` 等）之前"：
+ *   `main.cjs` 是**扁平**的 CommonJS 脚本，顶层声明都在列首，这个边界稳定且不受内容干扰。
+ */
+function sliceFrom(src: string, startMarker: string, maxLen = 30000): string {
   const i = src.indexOf(startMarker);
-  return i < 0 ? '' : src.slice(i, i + length);
+  if (i < 0) return '';
+  // 从 marker 的**下一行**开始，找第一个列首的顶层声明
+  const afterFirstLine = src.indexOf('\n', i);
+  if (afterFirstLine < 0) return src.slice(i, i + maxLen);
+  const rest = src.slice(afterFirstLine + 1);
+  const m = /^(?:async\s+function|function|const|let|var|class|\/\*\*)/m.exec(rest);
+  const end = m ? afterFirstLine + 1 + m.index : i + maxLen;
+  return src.slice(i, Math.min(end, i + maxLen));
 }
 
 /**
@@ -46,12 +65,12 @@ describe('A. CDP 真键盘通道（主路径）', () => {
   });
 
   it('必须用 Input.insertText 注入文本（走真实编辑管线，派发 beforeinput/input）', () => {
-    const fn = sliceFrom(mainSrc, 'async function cdpTypeText(', 4000);
+    const fn = sliceFrom(mainSrc, 'async function cdpTypeText(');
     expect(fn, '未使用 Input.insertText').toContain("'Input.insertText'");
   });
 
   it('pressEnter 必须用 Input.dispatchKeyEvent 真实按键（不是 JS 合成事件）', () => {
-    const fn = sliceFrom(mainSrc, 'async function cdpTypeText(', 4000);
+    const fn = sliceFrom(mainSrc, 'async function cdpTypeText(');
     expect(fn).toContain("'Input.dispatchKeyEvent'");
     // keyDown / char / keyUp 三件套
     expect(fn).toMatch(/type:\s*'keyDown'/);
@@ -60,37 +79,37 @@ describe('A. CDP 真键盘通道（主路径）', () => {
   });
 
   it('必须先聚焦目标元素（否则键盘事件路由不到它）', () => {
-    const fn = sliceFrom(mainSrc, 'async function cdpTypeText(', 4000);
+    const fn = sliceFrom(mainSrc, 'async function cdpTypeText(');
     expect(fn).toMatch(/el\.focus\(\)/);
   });
 
   it('注入前必须清空已有内容（text 是替换语义）', () => {
-    const fn = sliceFrom(mainSrc, 'async function cdpTypeText(', 4000);
+    const fn = sliceFrom(mainSrc, 'async function cdpTypeText(');
     // 富文本走 Range+execCommand('delete')，表单走 select()
     expect(fn).toMatch(/execCommand\('delete'/);
     expect(fn).toMatch(/\.select\(\)/);
   });
 
   it('必须有回读核验并带上 via 标识（供排查走的是哪条路径）', () => {
-    const fn = sliceFrom(mainSrc, 'async function cdpTypeText(', 4000);
+    const fn = sliceFrom(mainSrc, 'async function cdpTypeText(');
     expect(fn).toContain('via:');
     expect(fn).toContain("'cdp-keyboard'");
     expect(fn).toMatch(/applied/);
   });
 
   it('CDP 不可用必须返回 null 让调用方回落（不能抛错中断输入）', () => {
-    const fn = sliceFrom(mainSrc, 'async function cdpTypeText(', 4000);
+    const fn = sliceFrom(mainSrc, 'async function cdpTypeText(');
     expect(fn).toMatch(/return null/);
   });
 
   it('cdp.attach 后必须 detach（避免长期占用调试器）', () => {
-    const fn = sliceFrom(mainSrc, 'async function cdpTypeText(', 4000);
+    const fn = sliceFrom(mainSrc, 'async function cdpTypeText(');
     expect(fn).toMatch(/dbg\.detach\(\)/);
     expect(fn).toMatch(/attachedHere/);
   });
 
   it('元素定位失败必须与"CDP 不可用"区分（locateError 不回落到 JS 重复失败）', () => {
-    const fn = sliceFrom(mainSrc, 'async function cdpTypeText(', 4000);
+    const fn = sliceFrom(mainSrc, 'async function cdpTypeText(');
     expect(fn).toContain('locateError');
   });
 
@@ -112,48 +131,48 @@ describe('A. CDP 真键盘通道（主路径）', () => {
 // ═══════════════════════════════════════════════════════════════════════════
 describe('B. JS 兜底路径必须补齐"人的输入"事件序列', () => {
   it('typeIn 必须发 compositionstart/update/end（中文 IME 必经链路）', () => {
-    const fn = sliceFrom(mainSrc, 'function typeIn(el,text){', 4500);
+    const fn = sliceFrom(mainSrc, 'function typeIn(el,text){');
     expect(fn, '缺 compositionstart').toMatch(/CompositionEvent\('compositionstart'/);
     expect(fn, '缺 compositionupdate').toMatch(/CompositionEvent\('compositionupdate'/);
     expect(fn, '缺 compositionend').toMatch(/CompositionEvent\('compositionend'/);
   });
 
   it('必须发 keydown/keyup（提交拦截、字数统计、快捷键）', () => {
-    const fn = sliceFrom(mainSrc, 'function typeIn(el,text){', 4500);
+    const fn = sliceFrom(mainSrc, 'function typeIn(el,text){');
     expect(fn).toMatch(/KeyboardEvent\('keydown'/);
     expect(fn).toMatch(/KeyboardEvent\('keyup'/);
   });
 
   it('input 事件必须带 inputType（富文本/组件按它分支）', () => {
-    const fn = sliceFrom(mainSrc, 'function typeIn(el,text){', 4500);
+    const fn = sliceFrom(mainSrc, 'function typeIn(el,text){');
     expect(fn).toMatch(/InputEvent\('input'/);
     expect(fn).toContain('inputType');
   });
 
   it('必须发 focusin（部分组件靠它初始化）', () => {
-    const fn = sliceFrom(mainSrc, 'function typeIn(el,text){', 4500);
+    const fn = sliceFrom(mainSrc, 'function typeIn(el,text){');
     expect(fn).toMatch(/FocusEvent\('focusin'/);
   });
 
   it('contenteditable 必须走 execCommand(\'insertText\')（富文本 model 同步的唯一途径）', () => {
-    const fn = sliceFrom(mainSrc, 'function typeIn(el,text){', 4500);
+    const fn = sliceFrom(mainSrc, 'function typeIn(el,text){');
     expect(fn, '富文本未走编辑管线').toMatch(/execCommand\('insertText'/);
   });
 
   it('不再用"逐字符 setter 循环"的旧写法（那是无事件的程序化改值）', () => {
-    const fn = sliceFrom(mainSrc, 'function typeIn(el,text){', 4500);
+    const fn = sliceFrom(mainSrc, 'function typeIn(el,text){');
     // 旧写法特征：for 循环里 put(text.slice(0,i+1))
     expect(fn).not.toMatch(/text\.slice\(0,i\+1\)/);
   });
 
   it('必须保留 apply 核验（回读值与期望比对）', () => {
-    const fn = sliceFrom(mainSrc, 'function typeIn(el,text){', 4500);
+    const fn = sliceFrom(mainSrc, 'function typeIn(el,text){');
     expect(fn).toMatch(/applied:got===t/);
   });
 
   it('原生 value setter 仍在使用（受控组件 compatible）', () => {
     expect(mainSrc).toMatch(/function nativeValueSetter\(el\)/);
-    const fn = sliceFrom(mainSrc, 'function typeIn(el,text){', 4500);
+    const fn = sliceFrom(mainSrc, 'function typeIn(el,text){');
     expect(fn).toMatch(/nativeValueSetter\(el\)/);
   });
 });

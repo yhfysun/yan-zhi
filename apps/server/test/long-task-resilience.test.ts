@@ -92,9 +92,19 @@ describe('P0 空间记忆瘦身', () => {
     // 保留的是**最近的**（最旧的被淘汰）
     expect(mem, '★ 淘汰方向错误：最新一条不在文件里').toMatch(new RegExp(`ch${N}\\.mp4`));
     expect(mem, '★ 淘汰方向错误：最旧一条仍被保留').not.toMatch(/ch1\.mp4/);
-    // 明细文件不受淘汰影响（它是流水底账）
+    // ★★★ 明细文件**同样**做滚动淘汰（2026-10-09 M2 修，2026-10-10 同步此断言）。
+    //   旧断言是"明细应全量保留 N 条"，与 M2 冲突且**本身是错的**：实测该文件曾涨到
+    //   14840 字符 / 上限 8000（1.85x），而读取侧 `slice(0, 8000)` 取的是**头部（最旧内容）**
+    //   → 文件无限增长 + 读到最旧部分，双重失效。写入侧收口才是真的"文件有界"。
+    //   明细与注入版的区别**不在保留条数**（同用 PROGRESS_ENTRY_KEEP），而在**每条的长度**：
+    //   明细存完整总结（PROGRESS_FULL_MAX），注入版存压缩要点（≤300 字）。见上一条测试。
     const prog = readFileSync(join(spaceDir, '.yan-zhi', 'task-memory', 'progress.md'), 'utf8');
-    expect((prog.match(/^- /gm) || []).length, '★ 明细文件被误淘汰（流水底账应全量保留）').toBe(N);
+    const progLines = (prog.match(/^- /gm) || []).length;
+    expect(progLines, `★ 明细文件未做滚动淘汰（保留 ${progLines} 条，应为 ${PROGRESS_ENTRY_KEEP}）`)
+      .toBe(PROGRESS_ENTRY_KEEP);
+    // 淘汰方向同样是"留最近的"
+    expect(prog, '★ 明细淘汰方向错误：最新一条不在文件里').toMatch(new RegExp(`ch${N}\\.mp4`));
+    expect(prog, '★ 明细淘汰方向错误：最旧一条仍被保留').not.toMatch(/ch1\.mp4/);
   });
 
   it('★ 决策记录/普通记忆不得被任务进展行的淘汰逻辑误删', async () => {
