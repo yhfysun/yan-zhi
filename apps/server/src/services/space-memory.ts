@@ -570,6 +570,26 @@ function getTaskProgressPath(space: Pick<SpaceRow, 'id' | 'dir_path'>): string {
   return path.join(serverState.workspaceDir || process.cwd(), 'spaces', space.id, TASK_MEMORY_DIR, PROGRESS_FILE);
 }
 
+/**
+ * ★★★ 裸会话（**未挂空间**）的进展文件路径（D6，2026-10-10）。
+ *
+ * ★ 缺口（实测）：`appendTaskProgress` 在 `resolveConversationSpaceId` 为空时直接
+ *   `return { ok: false }` ⇒ **裸会话的跨会话链路完全断掉**——换会话继续时长任务，
+ *   模型不知道上一批做到哪（而用户本机有 22 个未挂空间的会话，属常见形态）。
+ * ★ 为什么落到**会话自己的目录**（`.yan-zhi/tasks/<convId>/task-memory/`）：
+ *   ① 该目录是既有的"会话产物主规则"（`artifact-dir.ts`），不新造位置；
+ *   ② 按 convId 隔离 ⇒ 不会像"塞进空间目录"那样把不同会话的进展混在一起；
+ *   ③ **不塞进 `task_plan_json`** —— 那个字段存的是**计划结构**（`{title, steps}`），
+ *      "计划接力棒"注入依赖它；把进展行混进去会破坏该结构（那是另一个方向的 bug）。
+ * ★ 时机说明：跨会话（新建会话）仍读不到（目录按 convId 隔离）—— 这**是有意取舍**：
+ *   裸会话没有"目录即任务"的物理锚点，能保证的是**同会话跨轮次**不断链。
+ *   要跨会话，用户应把会话挂到空间（那才有共享目录）。
+ */
+function getConversationProgressPath(conversationId: string): string {
+  const root = serverState.workspaceDir || process.cwd();
+  return path.join(root, '.yan-zhi', 'tasks', conversationId, TASK_MEMORY_DIR, PROGRESS_FILE);
+}
+
 // ── ★★★ 记忆蒸馏（M5，2026-10-09）────────────────────────────────────────
 // 对齐 WorkBuddy 的治理闭环：**超期的明细 → LLM 蒸馏成要点写进 MEMORY.md → 删原条目**。
 //
@@ -765,9 +785,6 @@ export async function appendTaskProgress(
 ): Promise<{ ok: boolean; path?: string }> {
   try {
     const spaceId = resolveConversationSpaceId(conversationId);
-    if (!spaceId) return { ok: false };
-    const space = getSpaceRow(null, spaceId);
-    if (!space) return { ok: false };
     const fullLine = flattenForProgress(summary, PROGRESS_FULL_MAX);
     if (!fullLine) return { ok: false };
 
@@ -776,6 +793,25 @@ export async function appendTaskProgress(
     if (extra?.steps) bits.push(`(${extra.steps} 步)`);
     if (extra?.agentName) bits.push(`${extra.agentName}：`);
     const prefix = `${stamp} 任务${bits.join('')}`;
+
+    // ★★★ D6（2026-10-10）：**裸会话分流** —— 此前 `if (!spaceId) return { ok: false }`
+    //   使未挂空间的会话**完全不留痕**（换会话/换轮次时模型不知道做到哪）。
+    //   现在改为写**会话自己的目录**（`.yan-zhi/tasks/<convId>/task-memory/`，
+    //   即既有的"会话产物主规则"位置，不新造路径）。
+    //   ★ 只写明细、**不写空间记忆**（裸会话没有空间，那份无处可放）。
+    if (!spaceId) {
+      if (!conversationId) return { ok: false };
+      const solePath = getConversationProgressPath(conversationId);
+      await appendLineWithHeader(
+        solePath,
+        `# 会话任务进展\n\n> 每个长任务收尾时自动追加一条（做到哪、还剩什么）。按需读取，不自动注入。`,
+        `${prefix}${fullLine}`,
+        { mark: PROGRESS_ENTRY_MARK, keep: PROGRESS_ENTRY_KEEP },
+      );
+      return { ok: true, path: solePath };
+    }
+    const space = getSpaceRow(null, spaceId);
+    if (!space) return { ok: false };
 
     // ① 明细：完整总结，按需读、不参与注入
     // ★★★ 2026-10-09 修（M2，high）：**必须在这里也做滚动淘汰**。
@@ -809,7 +845,19 @@ export function readTaskProgressForConversation(
   conversationId: string | null | undefined,
 ): { spaceId: string; spaceName: string; path: string; content: string; exists: boolean } | null {
   const spaceId = resolveConversationSpaceId(conversationId);
-  if (!spaceId) return null;
+  // ★★★ D6（2026-10-10）：裸会话读**会话自己的**进展文件（写入侧同源），
+  //   否则"写入有留痕、读取找不到"仍是断链（半修）。
+  if (!spaceId) {
+    if (!conversationId) return null;
+    const solePath = getConversationProgressPath(conversationId);
+    try {
+      const raw = readFileSync(solePath, 'utf-8');
+      const content = selectMemoryLines(raw, PROGRESS_READ_MAX_CHARS).text;
+      return { spaceId: '', spaceName: '（本会话）', path: solePath, content, exists: !!content.trim() };
+    } catch {
+      return { spaceId: '', spaceName: '（本会话）', path: solePath, content: '', exists: false };
+    }
+  }
   const space = getSpaceRow(null, spaceId);
   if (!space) return null;
   const filePath = getTaskProgressPath(space);
