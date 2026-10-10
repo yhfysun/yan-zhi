@@ -28,6 +28,10 @@ const LTM = strip(read('apps/server/src/llm-task-manager.ts'));
 const DB = strip(read('apps/server/src/db.ts'));
 const BROWSER = strip(read('apps/server/src/routes/browser.ts'));
 const DEV = read('apps/server/scripts/dev.cjs');
+// ★ 其余两条 dev 启动路径：桌面 dev（bin/dev.mjs desktop → main.cjs 的 dev 分支 spawn 后端）
+//   与 `dev.mjs server` 的直启分支。**用户日常跑的是 desktop 那条** —— 只测 dev.cjs 会漏掉它。
+const MAIN_CJS = read('apps/desktop/main.cjs');
+const DEV_MJS = read('bin/dev.mjs');
 
 function anchor(s: string, needle: string, what: string): number {
   const i = s.indexOf(needle);
@@ -49,6 +53,40 @@ describe('① 中断归因：dev 热重载必须与真实重启区分（13/16 �
       .toMatch(/YZ_HOT_RELOAD:\s*'1'/);
     // 必须确实用 watch（这是"每改一次代码就重启"的事实依据）
     expect(DEV, '★ 启动方式变化，本判据需复核').toMatch(/tsxCli,\s*'watch'/);
+  });
+
+  it('★★ 所有 dev 启动路径都必须注入热重载标记（只注入一处 = 另一条路径静默退化）', () => {
+    // ★★★ 2026-10-09 真缺口（实测）：标记只在 dev.cjs 注入，而用户跑的是
+    //   `bin/dev.mjs desktop` → main.cjs 的 dev 分支 spawn 后端（**没注入**）
+    //   → 任务被当"真中断"标 interrupted（DB 实测落「服务重启，任务被中断」），
+    //   用户看到「刚发了个继续直接失败」。
+    //   ★ 判据：**同一语义的标记必须覆盖所有启动路径** —— 容器是"每个 spawn 后端的地方"。
+    //
+    // ★★ 断言粒度：**逐 spawn 点**，不是"文件里有没有"。
+    //   变异验证教训（2026-10-09 本测试前两版）：
+    //     ① 只断言"文件含 YZ_HOT_RELOAD" → 删掉其中一个 spawn 点的注入仍然全绿（假绿）；
+    //     ② 改用"就近 900 字符窗口" → main.cjs 两个 spawn 点仅相距 550 字符，
+    //        窗口**跨到下一个点了**，删第一处仍绿（又一次假绿）。
+    //   ⇒ 正确切法：**从本 spawn 点到下一个 spawn 点**（或文件末），逐段检查，
+    //     段与段不重叠 → 任一处缺失必被抓住。
+    for (const [file, src] of [['apps/desktop/main.cjs', MAIN_CJS], ['bin/dev.mjs', DEV_MJS]] as const) {
+      const needle = "'watch', 'src/index.ts'";
+      const starts: number[] = [];
+      let idx = -1;
+      while ((idx = src.indexOf(needle, idx + 1)) !== -1) starts.push(idx);
+      expect(starts.length, `★ ${file} 未找到 dev spawn 点，本断言失效`).toBeGreaterThan(0);
+      for (let i = 0; i < starts.length; i++) {
+        const seg = src.slice(starts[i], i + 1 < starts.length ? starts[i + 1] : src.length);
+        expect(seg, `★ ${file} 第 ${i + 1} 个 dev spawn 点未注入 YZ_HOT_RELOAD（该路径会退化成"真中断"文案）`)
+          .toMatch(/YZ_HOT_RELOAD:\s*'1'/);
+      }
+    }
+    // 反面断言：生产分支绝不能注入（打包版行为必须完全不变）
+    const prodIdx = MAIN_CJS.indexOf('生产模式：用 Electron 作为 Node.js');
+    expect(prodIdx, '★ 生产分支锚点消失，本断言失效').toBeGreaterThan(-1);
+    const prodBranch = MAIN_CJS.slice(prodIdx);
+    expect(prodBranch.slice(0, prodBranch.indexOf('serverProcess.stdout')),
+      '★ 生产分支被注入了 YZ_HOT_RELOAD → 打包版会把真重启当热重载').not.toMatch(/YZ_HOT_RELOAD/);
   });
 
   it('★★ 回收必须按标记分流：热重载可续、真实重启保持原状', () => {

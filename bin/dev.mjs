@@ -631,6 +631,11 @@ async function main() {
           YANZHI_DEV_INSTANCE: '1',
           YANZHI_API_PORT: String(DEV_API_PORT),
           DATA_DIR: DEV_DATA_DIR,
+          // ★★★ 热重载标记（2026-10-09）：本路径同样是 `tsx watch`（改一次源码重启一次进程），
+          //   必须与 apps/server/scripts/dev.cjs / apps/desktop/main.cjs 的 dev 分支**同源注入** ——
+          //   否则孤儿任务回收会把"可续的暂停"当成"真中断"，用户看到「继续直接失败」。
+          //   （下方 pnpm 分支经 dev.cjs 已注入，此处是直启 Electron 那条路径的补齐。）
+          YZ_HOT_RELOAD: '1',
           ...browserEnv,
         }
       );
