@@ -68,7 +68,7 @@
               </div>
               <div class="param-item">
                 <div class="param-head"><span class="param-label">Max Tokens</span><span class="param-val">{{ form.maxTokens }}</span></div>
-                <el-slider v-model="form.maxTokens" :min="512" :max="65536" :step="256" size="small" />
+                <el-slider v-model="form.maxTokens" :min="512" :max="MAX_TOKENS_SLIDER_MAX" :step="256" size="small" />
               </div>
               <div class="param-item">
                 <div class="param-head"><span class="param-label">思考模式</span></div>
@@ -246,6 +246,7 @@ import { ref, computed, watch, reactive } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { User, EditPen, Cpu, Setting, Connection, Share, Files, Switch, ArrowRight, Collection, CopyDocument, Search, Notebook } from '@element-plus/icons-vue';
 import type { Agent } from '@yan-zhi/shared';
+import { DEFAULT_AGENT_PARAMS } from '@yan-zhi/shared';
 import { useAgentStore, usePlatformStore, useMcpStore, useSkillStore, useToolsStore, useAuthStore } from '../stores';
 import { api } from '../api/client';
 
@@ -259,17 +260,27 @@ const mcpStore = useMcpStore();
 const skillStore = useSkillStore();
 const toolsStore = useToolsStore();
 
-const visible = computed({ get: () => props.modelValue, set: (v) => emit('update:modelValue', v) });
-const isEdit = computed(() => !!props.agent?.id);
+const visible = computed({ get: () => props.modelValue, set: (v) => emit('update:modelValue', v) });const isEdit = computed(() => !!props.agent?.id);
 const activeTab = ref('basic');
 const mountTab = ref('tools');
 const mcpExpanded = reactive<Record<string, boolean>>({});
 const builtinToolsLoaded = ref(false);
 
+/**
+ * 「Max Tokens」滑块上限。
+ * ★ 与 `DEFAULT_AGENT_PARAMS.maxTokens` 同源（2026-10-10 收敛硬编码）——
+ *   此前模板里裸写 65536，与后端默认值各写一份，是"改一处忘一处"的典型隐患。
+ *   取默认值本身作为上限：再往上调没有实际收益（实测真实任务仅消耗约 7.7K token），
+ *   反而容易让用户误以为"调满才够用"。
+ */
+const MAX_TOKENS_SLIDER_MAX = DEFAULT_AGENT_PARAMS.maxTokens;
+
 const form = ref<any>({
   name: '', description: '', systemPrompt: '', modelId: '', type: 'harness',
   agentKind: 'main',
-  temperature: 0.7, maxTokens: 65536, topP: 1, frequencyPenalty: 0, presencePenalty: 0,
+  temperature: DEFAULT_AGENT_PARAMS.temperature, maxTokens: DEFAULT_AGENT_PARAMS.maxTokens,
+  topP: DEFAULT_AGENT_PARAMS.topP, frequencyPenalty: DEFAULT_AGENT_PARAMS.frequencyPenalty,
+  presencePenalty: DEFAULT_AGENT_PARAMS.presencePenalty,
   reasoningEffort: '', maxReActSteps: 500,
   builtinToolIds: [], customToolIds: [], mcpToolMounts: [], skillIds: [], subAgentIds: [], ontologyIds: [], knowledgeBaseIds: [],
   category: '',
@@ -443,8 +454,11 @@ watch(() => [props.modelValue, props.agent], () => {
       name: a?.name || '', description: a?.description || '', systemPrompt: a?.systemPrompt || '',
       modelId: a?.modelId || '', type: a?.type || 'harness',
       agentKind: a?.agentKind === 'sub' ? 'sub' : 'main',
-      temperature: a?.temperature ?? 0.7, maxTokens: a?.maxTokens ?? 65536, topP: a?.topP ?? 1,
-      frequencyPenalty: a?.frequencyPenalty ?? 0, presencePenalty: a?.presencePenalty ?? 0,
+      temperature: a?.temperature ?? DEFAULT_AGENT_PARAMS.temperature,
+      maxTokens: a?.maxTokens ?? DEFAULT_AGENT_PARAMS.maxTokens,
+      topP: a?.topP ?? DEFAULT_AGENT_PARAMS.topP,
+      frequencyPenalty: a?.frequencyPenalty ?? DEFAULT_AGENT_PARAMS.frequencyPenalty,
+      presencePenalty: a?.presencePenalty ?? DEFAULT_AGENT_PARAMS.presencePenalty,
       reasoningEffort: (a?.config as any)?.reasoningEffort || '', maxReActSteps: (a?.config as any)?.maxReActSteps ?? 500,
       builtinToolIds: a?.builtinToolIds ? [...a.builtinToolIds] : [],
       customToolIds: a?.customToolIds ? [...a.customToolIds] : [],

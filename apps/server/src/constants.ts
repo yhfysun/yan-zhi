@@ -9,6 +9,24 @@
  * 前端对应口径：packages/ui/src/utils/context-window.ts 的 DEFAULT_CONTEXT_WINDOW，两处必须同值。
  */
 
+/**
+ * 智能体（agent）默认采样参数 —— 定义已**下沉到 `@yan-zhi/shared`**（前端也要用同一份）。
+ *
+ * ★★★ 为什么下沉（2026-10-10 实据事故）：
+ *   `maxTokens` 此前散落 **7 处**硬编码（server: db.ts 表定义 / routes/agents.ts /
+ *   routes/marketplace.ts / index.ts 迁移；ui: stores/agent.ts 4 处）——
+ *   改一处忘一处，直接导致「源码 65536、库里表定义仍是 2048」的口径撕裂：
+ *     · 旧库 `agent` 表定义是 `max_tokens INTEGER DEFAULT 2048`；
+ *     · `CREATE TABLE IF NOT EXISTS` **不会修改已存在的表** → 表默认永远是 2048；
+ *     · 内置 agent seed 的 INSERT **不写 max_tokens** → 拿表默认 → 新种子 agent 又变回 2048；
+ *     · `deepseek-flash` 是**推理模型**（实测光"只输出数字"就吐 1311 字 reasoning）
+ *       → 2048 被 reasoning 占满 → `content` 恒空 + `finish_reason='length'`
+ *       → 用户只看到「助手未返回有效内容」，真因却是"输出预算被思考吃光"。
+ *   ⇒ 这里**重导出** shared 的定义，保持 server 侧既有 import 路径不变（零迁移成本）。
+ *   与 `DEFAULT_CONTEXT_WINDOW` 的两处同值约定相比，这里是更强的一步：**同一份定义**。
+ */
+export { DEFAULT_AGENT_PARAMS, LEGACY_AGENT_MAX_TOKENS } from '@yan-zhi/shared';
+
 /** 新建/读取模型时的默认上下文窗口：1M（token 数） */
 export const DEFAULT_CONTEXT_WINDOW = 1048576;
 

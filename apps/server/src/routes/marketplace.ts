@@ -1,6 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { authMiddleware } from '../auth.js';
 import { db } from '../db.js';
+import { DEFAULT_AGENT_PARAMS } from '../constants.js';
 
 const router = Router();
 
@@ -69,7 +70,9 @@ router.post('/agents/publish', authMiddleware, (req: Request, res: Response) => 
   const exists = db.prepare('SELECT id FROM agent WHERE id = ?').get(a.id);
   const fields = [
     a.name, a.description || null, a.avatar || null, a.systemPrompt || null,
-    a.temperature ?? 0.7, a.maxTokens ?? 65536, a.topP ?? 1.0, a.frequencyPenalty ?? 0, a.presencePenalty ?? 0,
+    a.temperature ?? DEFAULT_AGENT_PARAMS.temperature, a.maxTokens ?? DEFAULT_AGENT_PARAMS.maxTokens,
+    a.topP ?? DEFAULT_AGENT_PARAMS.topP, a.frequencyPenalty ?? DEFAULT_AGENT_PARAMS.frequencyPenalty,
+    a.presencePenalty ?? DEFAULT_AGENT_PARAMS.presencePenalty,
     JSON.stringify(a.workflow || { nodes: [], edges: [] }),
     a.inputsSchema ? JSON.stringify(a.inputsSchema) : null,
     a.config ? JSON.stringify(a.config) : null,

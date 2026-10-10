@@ -6,6 +6,7 @@ import { Router, Request, Response } from 'express';
 import { v4 as uuid } from 'uuid';
 import { authMiddleware } from '../auth.js';
 import { db, resetBuiltinAgent } from '../db.js';
+import { DEFAULT_AGENT_PARAMS } from '../constants.js';
 
 const router = Router();
 router.use(authMiddleware);
@@ -54,11 +55,11 @@ router.post('/', (req: Request, res: Response) => {
     b.description || null,
     b.avatar || null,
     b.systemPrompt || null,
-    b.temperature ?? 0.7,
-    b.maxTokens ?? 65536,
-    b.topP ?? 1.0,
-    b.frequencyPenalty ?? 0,
-    b.presencePenalty ?? 0,
+    b.temperature ?? DEFAULT_AGENT_PARAMS.temperature,
+    b.maxTokens ?? DEFAULT_AGENT_PARAMS.maxTokens,
+    b.topP ?? DEFAULT_AGENT_PARAMS.topP,
+    b.frequencyPenalty ?? DEFAULT_AGENT_PARAMS.frequencyPenalty,
+    b.presencePenalty ?? DEFAULT_AGENT_PARAMS.presencePenalty,
     b.platformId || null,
     b.modelId || null,
     JSON.stringify(b.workflow || { nodes: [], edges: [] }),

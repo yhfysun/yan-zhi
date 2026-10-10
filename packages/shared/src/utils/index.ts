@@ -22,6 +22,12 @@ export * from './keyed-serial-queue';
 //   于是 schema 只能手写第二份清单 → 与实现漂移（本项目已有三处各写一份的前车之鉴）。
 export * from './clip-effects';
 
+// 智能体默认采样参数（temperature / maxTokens / topP …）——**前后端共用的单一真相源**。
+// ★ 为什么放 shared（2026-10-10 实据）：这些默认值此前散落 **7 处**硬编码，
+//   改一处忘一处 → 出现"源码 65536、库里表定义仍是 2048"的撕裂，直接导致
+//   推理模型（deepseek-flash）输出预算被思考吃光 → 正文恒空、任务假装"完成"。
+export * from './agent-defaults';
+
 /** 生成唯一 ID */
 export function uid(prefix = ''): string {
   return prefix + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);

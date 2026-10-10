@@ -7,6 +7,7 @@ import { builtinTaskModeAgentDefs } from './builtin-task-mode-agents.js';
 import { createRequire } from 'node:module';
 import { openSqlite, type YzSqliteDb } from './services/sqlite-driver.js';
 import { createLogger } from './services/logger.js';
+import { DEFAULT_AGENT_PARAMS } from './constants.js';
 const logger = createLogger('db');
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -378,11 +379,11 @@ db.exec(`
     description TEXT,
     avatar TEXT,
     system_prompt TEXT,
-    temperature REAL DEFAULT 0.7,
-    max_tokens INTEGER DEFAULT 65536,
-    top_p REAL DEFAULT 1.0,
-    frequency_penalty REAL DEFAULT 0,
-    presence_penalty REAL DEFAULT 0,
+    temperature REAL DEFAULT ${DEFAULT_AGENT_PARAMS.temperature},
+    max_tokens INTEGER DEFAULT ${DEFAULT_AGENT_PARAMS.maxTokens},
+    top_p REAL DEFAULT ${DEFAULT_AGENT_PARAMS.topP},
+    frequency_penalty REAL DEFAULT ${DEFAULT_AGENT_PARAMS.frequencyPenalty},
+    presence_penalty REAL DEFAULT ${DEFAULT_AGENT_PARAMS.presencePenalty},
     platform_id TEXT,
     model_id TEXT,
     workflow_json TEXT DEFAULT '{"nodes":[],"edges":[]}',

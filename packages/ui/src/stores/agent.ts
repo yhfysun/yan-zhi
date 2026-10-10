@@ -2,7 +2,7 @@
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
 import type { Agent, Workflow, WorkflowNode, WorkflowEdge, NodeType } from '@yan-zhi/shared';
-import { uid } from '@yan-zhi/shared';
+import { uid, DEFAULT_AGENT_PARAMS } from '@yan-zhi/shared';
 import { api } from '../api/client';
 import { getWithRetry } from './platform';
 import { useAuthStore } from './auth';
@@ -17,7 +17,7 @@ function rowToAgent(r: any): Agent {
     avatar: r.avatar,
     systemPrompt: r.system_prompt || '',
     temperature: r.temperature ?? 0.7,
-    maxTokens: r.max_tokens ?? 65536,
+    maxTokens: r.max_tokens ?? DEFAULT_AGENT_PARAMS.maxTokens,
     topP: r.top_p ?? 1.0,
     frequencyPenalty: r.frequency_penalty ?? 0,
     presencePenalty: r.presence_penalty ?? 0,
@@ -113,7 +113,7 @@ const DEFAULT_AGENT_DATA = {
     '\n\n' +
     DATA_QUERY_PROMPT_BLOCK,
   temperature: 0.7,
-  maxTokens: 65536,
+  maxTokens: DEFAULT_AGENT_PARAMS.maxTokens,
   topP: 1.0,
   frequencyPenalty: 0,
   presencePenalty: 0,
@@ -205,7 +205,7 @@ const PAGE_AGENT_DATA = {
 - 定位元素优先级：取编号列表 → index 定位（最稳，不依赖页面结构）→ 稳定 id / ARIA / :contains(可见文本) 选择器 → 坐标（最后手段）。
 - 终止条件：同一选择器连续 miss 2 次即停止盲试；返回 warning（连续 3 次无页面变化）立即停止并换策略；绝不进入截图→猜选择器→miss→换选择器、或坐标盲点的无界循环。`,
   temperature: 0.3,
-  maxTokens: 65536,
+  maxTokens: DEFAULT_AGENT_PARAMS.maxTokens,
   topP: 1.0,
   frequencyPenalty: 0,
   presencePenalty: 0,
@@ -289,7 +289,7 @@ const DATA_AGENT_DATA = {
 - **字段只能引用本体已声明的维度/度量/时间维度/过滤器**，报「字段不存在」时按报错里的可用字段改名重试，最多 2 次；连续 2 次取数失败就停下如实说明原因与已尝试的本体 code。
 - 结果可能截断：关注 truncated 标记，必要时加过滤器缩小范围或翻页。`,
   temperature: 0.2,
-  maxTokens: 65536,
+  maxTokens: DEFAULT_AGENT_PARAMS.maxTokens,
   topP: 1.0,
   frequencyPenalty: 0,
   presencePenalty: 0,
@@ -614,7 +614,7 @@ export const useAgentStore = defineStore('agent', () => {
 
   function defaultNodeConfig(type: NodeType): Record<string, unknown> {
     switch (type) {
-      case 'llm': return { platformId: '', modelId: '', systemPrompt: '', temperature: 0.7, maxTokens: 65536 };
+      case 'llm': return { platformId: '', modelId: '', systemPrompt: '', temperature: DEFAULT_AGENT_PARAMS.temperature, maxTokens: DEFAULT_AGENT_PARAMS.maxTokens };
       case 'tool': return { toolSource: 'mcp', mcpServerId: '', toolName: '', arguments: {} };
       case 'input': return { schema: {} };
       case 'output': return { key: 'result' };
