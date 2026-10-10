@@ -133,6 +133,18 @@ export interface BuildContextViewOpts {
   beforeCompress?: (toCompress: Message[]) => Promise<void>;
   /** false = 不做落库（子智能体摘要不写 message_summary，避免污染主会话读出） */
   persist?: boolean;
+  /**
+   * ★ D3-转（2026-10-10）：**强制压缩**（手动入口用）—— 跳过"是否超阈值"的判定。
+   *
+   * ★ 为什么需要：自动压缩只在超过 `target`（有效窗口，标称×25%）时触发；
+   *   而用户有时**明知上下文很满**（想省钱/提速）却没有手段"现在压一下、轻装继续"。
+   * ★ 为什么不用另写一份压缩：`ContextWindow.compress()` 本就可直接调用
+   *   （不需要 `needsCompression` 先为真）⇒ **走同一条流水线**，
+   *   摘要/落库/缓存复用全部不变（另写一份必然漂移）。
+   * ★ 安全性：仍受 `hardCap` 兜底与 `enforceBudget` 保护，且 `compress` 内部
+   *   在 `cut<=0`（无法保住 tool 配对）时会**原样返回** —— 手动触发不会产出畸形结果。
+   */
+  forceCompress?: boolean;
 }
 
 /**
@@ -147,7 +159,7 @@ export async function buildContextView(opts: BuildContextViewOpts): Promise<Cont
   const {
     conversationId, userId, rawMessages, model,
     keepRecent, keepFirst = 0, summaryCache, setSummaryModel,
-    beforeCompress, maxTokens, persist = true,
+    beforeCompress, maxTokens, persist = true, forceCompress = false,
   } = opts;
 
   // ★★★ 压缩**目标** vs **硬上限**（2026-10-02 修"过度压缩"，两个数别混）：
@@ -213,7 +225,9 @@ export async function buildContextView(opts: BuildContextViewOpts): Promise<Cont
 
   let compacted = false;
   let mergedCovered = covered;
-  if (cw.needsCompression(payload)) {
+  // ★ D3-转（2026-10-10）：`forceCompress`（手动入口）→ **跳过阈值判定**直接压。
+  //   自动路径行为完全不变（仍按 `needsCompression`）。
+  if (forceCompress || cw.needsCompression(payload)) {
     payload = await cw.compress(payload, {
       summaryCache,
       beforeCompress,

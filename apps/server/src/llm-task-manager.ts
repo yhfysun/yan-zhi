@@ -6,7 +6,7 @@
 import type { Platform, Model, Message, DeltaToolCall } from '@yan-zhi/shared';
 import { formatTaskTypeContext, DEFAULT_CONFIRM_BATCH_SIZE, resolveTaskBudgets, checkTaskBudgetHit as sharedCheckTaskBudgetHit, addWaitCredit } from '@yan-zhi/shared';
 import { LlmClient, getToolRegistry, getApiToolRegistry, ContextWindow, adviceForTruncatedArgs, runCodeDiagnostics, invalidateDiagnosticsCache, resolveToolPath, setBrowserToolConversationId, type SummaryCache } from '@yan-zhi/core';
-import { db, MESSAGE_LIST_COLS } from './db.js';
+import { db, MESSAGE_LIST_COLS, getLatestMessageSummary } from './db.js';
 import { normalizePermissionMode, checkToolPermission, filterToolsByPermission, permissionModePrompt, checkWorkflowPermission, type PermissionMode } from './tool-permission.js';
 import { ensureToolsInitialized } from './mcp/index.js';
 import { executeApiTool, isApiExecutableTool } from './mcp/api-tool-executor.js';
@@ -32,6 +32,9 @@ import { serverState } from './state.js';
 import { runAfterToolHooks } from './services/tool-hooks.js';
 // 防失控循环闸门（2026-10-09）：同名同参重复 / 单工具连刷，在 executeTool 漏斗拦截
 import { checkToolLoop } from './services/tool-loop-guard.js';
+// ★★★ 浏览器执行面直连化（2026-10-10）：主进程 loopback 端点客户端。
+//   判定口径**只在本模块**（decideBrowserExecution），前端不得自行推断（防双执行 + 防 token 外泄）。
+import { browserBridgeAvailable, decideBrowserExecution, callBrowserBridge, toolNameToAction, bridgeMode } from './browser-bridge.js';
 // 子任务执行详情（2026-10-09）：get_sub_task_detail 的查询与排版（编排者分析子任务失败用）
 import { loadSubTaskTrace, formatSubTaskTrace } from './services/sub-task-detail.js';
 import { registerArtifactHooks } from './services/artifact-hooks.js';
@@ -833,7 +836,14 @@ export function createTask(params: {
   //   「启动回收孤儿任务」（markOrphanTasksInterrupted）查 llm_task 恒为空 → 任务静默消失、
   //   界面零提示（用户实测：任务跑到一半，UI 没跑完就没了）。落库后重启路径才能把它标 interrupted。
   persistTaskRow(task);
-  emit(task, { type: 'task:created', taskId, conversationId: params.conversationId });
+  emit(task, { type: 'task:created', taskId, conversationId: params.conversationId,
+    // ★★★ 执行面判据「单一给出」（P1-4，2026-10-10）：前端据此决定"要不要本地执行 browser_*"。
+    //   ★ 为什么由服务端下发而不是前端自己探端点：
+    //     ① 前端探 == 第二份判据 → 与 decideBrowserExecution 必然漂移；
+    //     ② 探端点需要 token → 会把凭据暴露到渲染层（安全边界禁止，见 browser-bridge 注释）。
+    //   ★ 值里**绝不含** URL/token —— 只是个枚举标记。
+    //   ★ 前端对未知事件字段容忍；老 frontend 忽略本字段 → 行为不变（不破坏兼容）。
+    browserExecution: browserBridgeAvailable() ? 'bridge' : 'frontend' });
   void runReActLoop(task, params);
   return taskId;
 }
@@ -1811,7 +1821,78 @@ export function auxStateSizes(): { verifyState: number; autoDiagnoseThrottle: nu
 }
 
 /**
- * ★★★ 启动时回收上次进程遗留的孤儿任务：DB 里 running/waiting_tool → interrupted。
+ * ★★★ 手动压缩（D3-转，2026-10-10）：用户主动「现在压一下」。
+ *
+ * ★ 为什么需要：自动压缩只在超过 `target`（有效窗口 = 标称×25%）时触发；
+ *   用户有时**明知上下文很满**（想省钱/提速/避免触顶）却没有手段提前压缩。
+ *
+ * ★ 为什么放在本文件（而不是新写一份压缩）：这里能直接复用**同一套流水线**——
+ *   `buildContextView` + `mainlineMessages`（剔除子智能体）+ `loadPlatform/loadModel`
+ *   （解析摘要模型）+ `summaryCache` 语义（增量摘要）。**另写一份必然漂移**。
+ *
+ * ★ 与自动压缩的唯一差别：传 `forceCompress: true`（跳过阈值判定），
+ *   其余（摘要/落库/兜底/配对保护）**完全同一条路径**。
+ *
+ * @returns 压缩摘要与统计（供前端回显）；失败返回 `{ ok: false, error }`
+ */
+export async function compressConversationNow(
+  conversationId: string,
+  userId: string,
+): Promise<{ ok: boolean; error?: string; compacted?: boolean; summary?: string; coveredCount?: number; tokensBefore?: number; tokensAfter?: number }> {
+  try {
+    const conv = db.prepare('SELECT platform_id, model_id FROM conversation WHERE id = ?').get(conversationId) as
+      | { platform_id?: string | null; model_id?: string | null } | undefined;
+    if (!conv) return { ok: false, error: '会话不存在' };
+    // 模型：优先会话自己的，回落第一个可用（与"记忆抽取/压缩前抢救"同一口径）
+    const platform = conv.platform_id ? loadPlatform(conv.platform_id, userId) : null;
+    const model = platform && conv.model_id ? loadModel(conv.model_id, userId, platform.id) : null;
+    if (!platform || !model) return { ok: false, error: '该会话未绑定可用的模型平台，无法生成摘要（请先在会话里选择模型）' };
+
+    const raw = mainlineMessages(loadMessages(conversationId))
+      .filter((m) => m.content || m.toolCalls || m.role === 'tool' || (m as any).reasoningContent);
+    if (!raw.length) return { ok: false, error: '会话没有可压缩的消息' };
+
+    let captured = '';
+    const view = await buildContextView({
+      conversationId,
+      userId,
+      rawMessages: raw,
+      model,
+      keepRecent: 6,
+      keepFirst: 2,
+      summaryCache: { ids: [], summary: '' },
+      setSummaryModel: (cw) => cw.setSummaryModel(platform, model),
+      // ★ 手动触发：跳过阈值判定（其余走同一条流水线）
+      forceCompress: true,
+      beforeCompress: async (toCompress) => {
+        // ★ 与自动路径一致：压缩前把即将被吞掉的细节先落盘（记忆抢救），失败不阻塞压缩。
+        //   ★ 用**同一个** `flushMemoriesBeforeCompression`（真实签名：
+        //     `(params, toCompress)`）—— 不另写一份（另写必然漂移）。
+        try {
+          await flushMemoriesBeforeCompression(
+            { userId, conversationId, agentId: null, platform, model },
+            toCompress,
+          );
+        } catch { /* 不阻塞 */ }
+      },
+    });
+    const latest = getLatestMessageSummary(conversationId);
+    captured = latest?.summary || '';
+    return {
+      ok: true,
+      compacted: view.compacted,
+      summary: captured,
+      coveredCount: latest?.messageIds?.length || 0,
+      tokensBefore: view.tokens,
+      tokensAfter: view.tokens,
+    };
+  } catch (e: any) {
+    return { ok: false, error: e?.message || String(e) };
+  }
+}
+
+/**
+ * 启动时回收上次进程遗留的孤儿任务：DB 里 running/waiting_tool → interrupted。
  *
  * ★★★ 区分「开发热重载」与「真实重启」（2026-10-09，high）：
  *   背景（实据）：实测 16 次任务中断里 **13 次是「服务重启，任务被中断」**，且时间**聚集在开发日**
@@ -3819,6 +3900,41 @@ async function executeTool(
   // navigate 打预览 BrowserView、click/type 等打服务端 headless Playwright 的双浏览器分裂
   // （Playwright 页面从未被导航 → locator.fill 30s 超时死循环）。
   const isBrowser = toolName.startsWith('browser_');
+  // ★★★ 执行面直连化（P1-2，2026-10-10）：浏览器工具**三档**分发。
+  //
+  // 为什么要直连：旧路径（下方 SSE 委托）要求**渲染层在线且有订阅者** ——
+  //   订阅者缺失时要等 15s 重连窗口（`:3896`），失败再等 8s（`:3906`）⇒ 单次最坏卡 23s；
+  //   无订阅者时更直接 `unattendedToolResult()`（**根本不执行**）。"一断全停"的根因就在这里。
+  //   ⇒ 主进程新开 loopback 端点后由服务端**直连**（不经 UI 层），结构上去掉这条依赖。
+  //
+  // ★ 判定口径**只有一处**：`decideBrowserExecution()`（browser-bridge.ts）。
+  //   前端不得自己探端点 —— 那会造出第二份判据（必然漂移），且会把 token 暴露到渲染层。
+  //
+  // ★ 灰度：off（本块整体跳过，行为逐字不变）/ shadow（只读走桥）/ on（读写走桥，失败降级 SSE）
+  //   / strict（读写走桥，SSE 视为错误）。
+  if (isBrowser) {
+    const exec = decideBrowserExecution(toolNameToAction(toolName));
+    if (exec === 'bridge') {
+      const bridgeTimeout = resolveFrontendToolTimeout(toolName);
+      try {
+        const raw = await callBrowserBridge(task.conversationId, toolName, args, bridgeTimeout);
+        // ★ 截图归档与 SSE 路径**共用同一后处理出口**（见 archiveDelegatedScreenshot 注释）——
+        //   否则"截图进临时区但登记不进 conversation_file"会以新形态复发（C6 刚修过同一处）。
+        if (toolName === 'browser_screenshot') {
+          return await archiveDelegatedScreenshot(raw, task, metaOut);
+        }
+        return raw;
+      } catch (e: any) {
+        if (e?.name === 'AbortError' || task.abortController.signal.aborted) throw e;
+        // strict：桥失败**不降级**（这条档位就是为了证明"零依赖渲染层"，静默降级会掩盖结论）
+        if (bridgeMode() === 'strict') {
+          return `浏览器工具 ${toolName} 直连执行面失败（strict 档不降级）：${e?.message || e}`;
+        }
+        // on：降级回 SSE 一次（打点，便于观察桥的可靠性；不静默）
+        logger.warn(`[browser-bridge] 桥调用失败，降级回 SSE 委托: ${toolName} conv=${task.conversationId} err=${e?.message || e}`);
+      }
+    }
+  }
   // SSE 瞬断兜底（2026-10-09）：订阅者暂缺时先等一个重连窗口（前端 0.5s→5s 退避重连），
   // 恢复就继续走前端执行面；仍无人订阅才落回原有离线路径。
   // 原实现 subscribers=0 立即落到离线 Playwright/报错 —— 产线长任务表现为「一断全停」。

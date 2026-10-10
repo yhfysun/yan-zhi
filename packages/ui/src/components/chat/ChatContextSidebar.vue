@@ -55,15 +55,47 @@
           </div>
         </div>
       </section>
+
+      <!-- ★★★ 上下文压缩（D3-转，2026-10-10）：手动压一下 + 压缩历史 -->
+      <section class="context-section">
+        <div class="context-section-heading">
+          <el-icon><MagicStick /></el-icon>
+          <span>上下文压缩</span>
+          <el-button
+            class="ctx-compact-btn"
+            size="small"
+            text
+            :loading="compacting"
+            :disabled="!canCompact"
+            @click="onCompact"
+          >立即压缩</el-button>
+        </div>
+        <div class="ctx-compact-hint">
+          自动压缩只在接近窗口上限时触发；此处可**主动**压一次（摘要会记入下方历史，可回退）。
+        </div>
+        <el-empty v-if="summaries.length === 0" description="暂无压缩记录" :image-size="40" />
+        <div v-else class="context-item-list">
+          <div v-for="s in summaries" :key="s.id" class="context-item">
+            <div class="context-item-copy">
+              <span class="context-item-name">
+                {{ s.active ? '当前生效' : '' }} 覆盖 {{ s.coveredCount }} 条
+              </span>
+              <span class="context-item-desc">{{ fmtTime(s.createdAt) }} · {{ s.preview }}</span>
+            </div>
+          </div>
+        </div>
+      </section>
     </div>
   </aside>
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue';
-import { Close, Collection, Connection, Files } from '@element-plus/icons-vue';
+import { computed, ref, watch } from 'vue';
+import { Close, Collection, Connection, Files, MagicStick } from '@element-plus/icons-vue';
+import { ElMessage } from 'element-plus';
 import { useChat } from '../../composables/chat/useChat';
 import type { Skill } from '../../stores/skill';
+import { api } from '../../api/client';
 
 const {
   contextSidebarOpen,
@@ -94,6 +126,47 @@ const mountedTools = computed(() =>
     }));
   }),
 );
+
+// ── ★★★ 上下文压缩（D3-转，2026-10-10）────────────────────────────────────
+const summaries = ref<Array<{ id: string; preview: string; coveredCount: number; tokens: number; createdAt: number; active: boolean }>>([]);
+const compacting = ref(false);
+const currentConvId = computed(() => store.currentConvId);
+/** 任务运行中不提供手动压缩（与服务端的 409 防护同源，避免无谓请求） */
+const canCompact = computed(() => !!currentConvId.value && !store.isConvStreaming(currentConvId.value));
+
+async function loadSummaries() {
+  const cid = currentConvId.value;
+  if (!cid) { summaries.value = []; return; }
+  try {
+    const r = await api.get<any>(`/conversations/${encodeURIComponent(cid)}/summaries`);
+    summaries.value = Array.isArray((r as any)?.items) ? (r as any).items : [];
+  } catch { summaries.value = []; }
+}
+
+async function onCompact() {
+  if (!canCompact.value || compacting.value) return;
+  compacting.value = true;
+  try {
+    const r = await store.compactNow();
+    ElMessage[r.ok ? 'success' : 'warning'](r.msg);
+    if (r.ok) await loadSummaries();   // 压完刷新历史（能立刻看到"当前生效"那条）
+  } finally {
+    compacting.value = false;
+  }
+}
+
+/** 时间戳 → 简短可读（只用于列表展示，够用即可） */
+function fmtTime(ts: number): string {
+  if (!ts) return '';
+  const d = new Date(ts);
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+// 切会话 / 侧栏打开时刷新一次（数据量小，直接拉）
+watch([currentConvId, () => contextSidebarOpen.value], ([cid, open]) => {
+  if (open && cid) void loadSummaries();
+}, { immediate: true });
 </script>
 
 <style scoped>
@@ -160,6 +233,19 @@ const mountedTools = computed(() =>
 
 .context-section-heading .el-icon {
   color: var(--el-color-primary, #7c3aed);
+}
+
+/* ★ 上下文压缩区块（D3-转）：按钮靠右、提示行与列表复用既有样式 */
+.ctx-compact-btn {
+  margin-left: auto;
+  padding: 2px 6px;
+  font-weight: 600;
+}
+.ctx-compact-hint {
+  margin-bottom: 8px;
+  color: var(--el-text-color-secondary, #64748b);
+  font-size: 11px;
+  line-height: 1.5;
 }
 
 .context-item-list {

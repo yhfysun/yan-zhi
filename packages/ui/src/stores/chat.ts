@@ -428,6 +428,42 @@ export const useChatStore = defineStore('chat', () => {
   }
   /** 当前会话是否正在跑浏览器任务（BrowserPanel 的锁定/实况判据） */
   const browserTaskActive = computed(() => !!currentConvId.value && browserTaskConvs.value.has(currentConvId.value));
+
+  // ★★★ 浏览器执行面判据（「执行面直连化」P2-1，2026-10-10）：由**服务端单一给出**。
+  //
+  // ★ 为什么必须由服务端下发、前端**不得自己探**（两条硬理由）：
+  //   ① 前端探端点 = 第二份判据 → 与 `decideBrowserExecution`（server/src/browser-bridge.ts）
+  //      必然漂移（本项目一贯判据：同一语义只能有一处实现）；
+  //   ② 探端点需要 token → 会把凭据暴露到渲染层/网页上下文（安全边界明令禁止）。
+  //   ⇒ 服务端在 `task:created` 里下发枚举标记（**不含 URL/token**）。
+  //
+  // ★ 语义：`bridge` = 本次任务的浏览器工具由**服务端直连主进程**执行，前端**只展示不执行**
+  //   （否则同一次调用会打两遍页面 = 双执行）。`frontend` = 前端照旧本地执行（既有行为）。
+  // ★ 键是 convId：多会话并行时各会话的档位可以不同（灰度期尤其可能混合）。
+  const browserExecutionByConv = ref<Map<string, 'bridge' | 'frontend'>>(new Map());
+  /** 本会话的浏览器工具是否由服务端直连执行（前端据此**跳过本地执行**） */
+  function isBrowserExecutionByBridge(convId?: string | null): boolean {
+    const cid = convId || currentConvId.value;
+    if (!cid) return false;
+    return browserExecutionByConv.value.get(cid) === 'bridge';
+  }
+  /** 登记/清理某会话的执行面（任务创建时写入；任务收尾时清理，避免残留影响下一任务） */
+  function setBrowserExecution(convId: string, exec: 'bridge' | 'frontend') {
+    if (!convId) return;
+    const next = new Map(browserExecutionByConv.value);
+    next.set(convId, exec);
+    browserExecutionByConv.value = next;
+  }
+  function clearBrowserExecution(convId?: string) {
+    if (!convId) {
+      if (browserExecutionByConv.value.size) browserExecutionByConv.value = new Map();
+      return;
+    }
+    if (!browserExecutionByConv.value.has(convId)) return;
+    const next = new Map(browserExecutionByConv.value);
+    next.delete(convId);
+    browserExecutionByConv.value = next;
+  }
   // Agent 虚拟鼠标（宿主层渲染）：主进程 browserView:action 动作完成后广播 guest 坐标，
   // BrowserPanel 在 webview 上方画常驻光标（webview 引擎下 guest 内瞬时光标会被 shield
   // 盖住且只闪现 0.5s，等于看不见）。tabId 用于多面板实例归属判断；at 用于重触发 CSS 动画。
@@ -2065,6 +2101,14 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
 
         switch (event.type) {
           case 'connected': break;
+          // ★★★ 执行面判据（P2-1，2026-10-10）：服务端单一给出，前端只服从。
+          //   收到 bridge ⇒ 本任务的 browser_* 由服务端直连主进程执行，前端**跳过本地执行**
+          //   （否则双执行：同一次调用打两遍页面）。老 server 不发本字段 → 不进入本分支 → 行为不变。
+          case 'task:created': {
+            const exec = event.browserExecution === 'bridge' ? 'bridge' : 'frontend';
+            setBrowserExecution(convId, exec as any);
+            break;
+          }
           case 'message:added': {
             const msg = event.message;
             const arr = messagesByConv.value[convId] || [];
@@ -2170,6 +2214,16 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
             // 去重：重放时跳过已执行的 tool:execute（避免重复调工具/弹窗）
             if (st.executedToolCallIds.has(callId)) break;
             st.executedToolCallIds.add(callId);
+            // ★★★ 执行面直连化（P2-1，2026-10-10）：桥生效时**前端不执行** browser_* ——
+            //   服务端已直连主进程执行（结果不经这里回传），前端只负责展示（tool:start/result 事件照旧）。
+            //   ★ 若这里仍执行 ⇒ **双执行**（同一次调用打两遍页面：重复点击/重复输入/重复导航）。
+            //   ★ 判据来自服务端下发的 `browserExecution`（见 isBrowserExecutionByBridge 注释），
+            //     **前端不得自己探端点**（否则造第二份判据 + 泄露 token）。
+            if (typeof toolName === 'string' && toolName.startsWith('browser_') && isBrowserExecutionByBridge(convId)) {
+              // 仅登记"本会话在跑浏览器任务"（接管条/输入锁仍要亮），然后**直接返回**不执行。
+              markBrowserTaskActive(convId);
+              break;
+            }
             // 多会话隔离：把当前任务所属 convId 传给工具分发（浏览器工具按 convId 取 scope，
             // 不同会话的 tab/激活/历史互不串台，避免会话 A 调 browser_get_page_content 读到会话 B 的页面）。
             const ctx = ptcId
@@ -2240,9 +2294,11 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
           //   表现为「回答已完整输出（含生成的图片）却一直显示『任务运行中』+ 停止按钮」。
           // ★ 终态必须清掉跨重连状态（否则 sseStreamStates 无界增长；且同 taskId 不会被复用，
           //   留着只是内存垃圾）。放在 markRunEnd 之前 —— 清状态不影响消息列表内容。
-          case 'task:completed': flushNow(convId); dropStreamState(taskId); taskEventCounts.delete(taskId); markRunEnd(convId, 'completed'); emitTaskFinished(convId); return false;
-          case 'task:aborted': flushNow(convId); dropStreamState(taskId); taskEventCounts.delete(taskId); markRunEnd(convId, 'aborted'); emitTaskFinished(convId); return false;
-          case 'task:error': flushNow(convId); dropStreamState(taskId); taskEventCounts.delete(taskId); markRunEnd(convId, 'error'); emitTaskFinished(convId); throw new Error(event.error || '任务执行失败');
+          // ★ 任务收尾清理执行面标记：避免残留在下一任务上（与 browserSteps / browserTaskConvs
+          //   同族，本文件多处收尾都做同样的清理）。放在**三态共同出口**（completed/aborted/error）。
+          case 'task:completed': flushNow(convId); dropStreamState(taskId); taskEventCounts.delete(taskId); clearBrowserExecution(convId); markRunEnd(convId, 'completed'); emitTaskFinished(convId); return false;
+          case 'task:aborted': flushNow(convId); dropStreamState(taskId); taskEventCounts.delete(taskId); clearBrowserExecution(convId); markRunEnd(convId, 'aborted'); emitTaskFinished(convId); return false;
+          case 'task:error': flushNow(convId); dropStreamState(taskId); taskEventCounts.delete(taskId); clearBrowserExecution(convId); markRunEnd(convId, 'error'); emitTaskFinished(convId); throw new Error(event.error || '任务执行失败');
           case 'task:paused': pausedConvIds.value.add(convId); browserLockInput.value = false; break;
           case 'task:resumed': pausedConvIds.value.delete(convId); break;
           case 'context:compacted': {
@@ -2699,15 +2755,42 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
     return callLlm(platform, model, { ...options }, onChunk, cid);
   }
 
+  /**
+   * ★★★ 手动压缩（D3-转，2026-10-10）：用户主动「现在压一下」。
+   *
+   * ★ 为什么需要：自动压缩只在超过有效窗口（标称×25%）时触发；用户有时**明知上下文很满**
+   *   （想省钱/提速/避免触顶）却没有手段提前压 —— 这是**便利性增强，非缺陷**。
+   * ★ 与自动压缩的关系：**同一条流水线**（服务端 `forceCompress` 只跳过阈值判定，
+   *   摘要/落库/记忆抢救全部不变）⇒ 压完能在「压缩历史」里看到、也可回退。
+   * ★ 冲突防护：任务运行中会被服务端拒绝（409）—— 手动压缩与主循环每步的压缩并发会互相干扰。
+   */
+  async function compactNow(convId?: string | null): Promise<{ ok: boolean; msg: string }> {
+    const cid = convId || currentConvId.value;
+    if (!cid) return { ok: false, msg: '未选择会话' };
+    if (runningConvIds.value.has(cid)) return { ok: false, msg: '任务运行中，无需手动压缩（自动压缩已覆盖）' };
+    try {
+      const r = await api.post<any>(`/conversations/${encodeURIComponent(cid)}/compact`);
+      if ('error' in r) return { ok: false, msg: r.error };
+      const d = (r as any).data || {};
+      if (!d.compacted) return { ok: true, msg: '暂无可压缩的内容（或已压到最小）' };
+      return { ok: true, msg: `已压缩（覆盖 ${d.coveredCount} 条消息，可在「压缩历史」查看/回退）` };
+    } catch (e: any) {
+      return { ok: false, msg: e?.message || '压缩失败' };
+    }
+  }
+
   return {
     conversations, currentMessages, streaming, currentConvId, mountedMcpServers, mcpDisabledTools, mcpToolAliases,
     runningConvIds, isConvStreaming, runStatsByConv,
     browserExpanded, browserUserDismissed, browserLockInput, browserPaused, pausedConvIds,
     browserTaskActive, markBrowserTaskActive, clearBrowserTaskActive,
     lastBrowserToolAt, BROWSER_LIVE_GRACE_MS,
+    // 执行面判据（服务端下发；前端只读服从）—— 见 isBrowserExecutionByBridge 注释
+    browserExecutionByConv, isBrowserExecutionByBridge, setBrowserExecution, clearBrowserExecution,
     remainingAgentOpenedTabs, clearAgentOpenedTabs, markAgentOpenedTab,
     agentCursor, onAgentCursor, clearAgentCursor,
     pauseTask, resumeTask,
+    compactNow,
     queuedByConv, queuedOf, enqueueMessage, removeQueuedMessage, updateQueuedMessage, promoteQueuedMessage, takeQueuedMessages, takeFirstQueuedMessage, injectQueuedMessage,
     onTaskFinished,
     runningToolCallIds, isToolCallRunning,

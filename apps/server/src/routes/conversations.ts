@@ -6,7 +6,7 @@ import { normalizePermissionMode } from '../tool-permission.js';
 import { writeTaskPlanFile } from '../services/task-plan-file.js';
 import { WF_TOOL_PREFIX, MAX_WF_TOOLS_PER_CONVERSATION } from '../services/workflow-tool-registry.js';
 import { clearAuthorization } from '../services/path-guard.js';
-import { buildSystemPromptForBackend, buildToolsForBackend, setRunningTaskPermissionMode } from '../llm-task-manager.js';
+import { buildSystemPromptForBackend, buildToolsForBackend, setRunningTaskPermissionMode, compressConversationNow } from '../llm-task-manager.js';
 import { estimateTokens } from '@yan-zhi/shared';
 
 const router = Router();
@@ -218,6 +218,34 @@ router.delete('/:id', (req: Request, res: Response) => {
 // `insertMessageSummary` 注释写着"追加不覆盖，保留历史以便回滚/审计"，
 // 而 `deleteMessageSummariesAfter`（回滚）**生产零调用** —— 存了历史却没有读的出口。
 // 这两条路由补上那个出口：列历史 + 回退到某个压缩点（**原文一字未动**，非破坏性）。
+
+// ── ★★★ 手动压缩（D3-转，2026-10-10）───────────────────────────────────────
+// POST /api/conversations/:id/compact —— 用户主动「现在压一下」。
+// ★ 与自动压缩**同一条流水线**（`buildContextView` + `forceCompress`），
+//   不另写压缩实现；摘要仍落 `message_summary`（可在压缩历史里看到、可回退）。
+// ★ 返回压缩后的统计供前端回显（压了多少条 / 摘要预览）。
+router.post('/:id/compact', async (req: Request, res: Response) => {
+  const userId = req.user!.userId;
+  const cid = req.params.id;
+  const conv = db.prepare('SELECT id FROM conversation WHERE id = ? AND user_id = ?').get(cid, userId);
+  if (!conv) { res.status(404).json({ error: '会话不存在' }); return; }
+  // ★ 拒绝在任务运行中手动压缩：压缩会写 message_summary，与主循环每步的压缩并发会互相干扰。
+  //   （用户想压时任务通常是空闲态；正在跑的任务本就由自动压缩覆盖。）
+  const running = (() => {
+    try {
+      const rows = db.prepare('SELECT status FROM conversation WHERE id = ?').get(cid) as any;
+      return rows?.status === 'running';
+    } catch { return false; }
+  })();
+  if (running) { res.status(409).json({ error: '任务正在运行中，无需手动压缩（自动压缩已覆盖）；请等空闲后再试' }); return; }
+  try {
+    const r = await compressConversationNow(cid, userId);
+    if (!r.ok) { res.status(400).json({ error: r.error || '压缩失败' }); return; }
+    res.json({ data: { compacted: !!r.compacted, coveredCount: r.coveredCount || 0, summaryPreview: (r.summary || '').slice(0, 200) } });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || '压缩失败' });
+  }
+});
 
 // GET /api/conversations/:id/summaries —— 列出压缩历史（新→旧，最多 20 条）
 router.get('/:id/summaries', (req: Request, res: Response) => {
