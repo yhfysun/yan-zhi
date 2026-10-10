@@ -2058,10 +2058,24 @@ onMounted(async () => {
       newTab(url);
     }));
     // agent 首次 navigate：主进程广播"在某 scope 打开 URL"——若面板仍停主页(无 <webview>)由此把它真正打开
-    (window as any).electronAPI?.onForceOpen?.(aliveGuard((url: string, scope?: string) => {
-      if (scope && scope !== browserScope) return; // 只接管归属自己空间的导航
+    (window as any).electronAPI?.onForceOpen?.(aliveGuard((url: string, scope?: string, tabId?: string | null) => {
+      // ★★★ scope 匹配放宽（「执行面直连化」，2026-10-10）：
+      //   主进程此刻广播的 scope 是**本会话锚定 tab 的 scope**（`preview:<convId>`）；面板的
+      //   browserScope 就是 `preview:<convId>`（同源）⇒ 严格相等即可。但旧主进程/旧调用可能
+      //   广播裸 `'preview'`，此时**严格相等会静默漏掉**（面板不打开 → agent 导航失败）。
+      //   ⇒ 兼容：裸 `preview` 与任意 `preview:*` 视为同一空间。
+      const sameScope = !scope
+        || scope === browserScope
+        || (scope === 'preview' && browserScope.startsWith('preview'));
+      if (!sameScope) return; // 只接管归属自己空间的导航
       if (!url) return;
       if (currentUrl.value === url) return;        // 已在目标页，不重复导航
+      // ★ 主进程指定了目标 tabId（agent 在既有 tab 上导航）→ 切到该 tab 再导航，
+      //   避免内容落到面板当前激活的**别的** tab 上（"导航了但看不到"）。
+      if (tabId && tabs.value.some(t => t.id === tabId) && tabId !== activeTabId.value) {
+        switchTab(tabId).then(() => openSite(url)).catch(() => openSite(url));
+        return;
+      }
       openSite(url);
     }));
     // 主进程在渲染层重载完成（did-finish-load）后的"重认领"通知：

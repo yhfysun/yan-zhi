@@ -444,6 +444,14 @@ function createChat() {
       } else {
         store.rightPanelOpen = true;
       }
+      // ★★★ 执行面直连化（2026-10-10）：**桥档下必须由这里把预览面板打开**。
+      //   桥路径下渲染层不执行 `browser_*`（见 stores/chat.ts 的 tool:execute 守卫），
+      //   而 `openTab` 此前只嵌在 `dispatchToolCall` 的 `browser_navigate` 分支里 ——
+      //   跳过执行 ⇒ 面板不被打开 ⇒ 主进程 `browser:wv:forceOpen` 无人接 ⇒
+      //   **第一次 navigate 必失败（拿不到 guest）且预览看不到**。
+      //   ⇒ 收口到本 watch（对 SSE 的 `tool:start`/`tool:result` 生效，与是否本地执行无关）。
+      //   BrowserPanel 由 `v-if="browserTab"` + `v-show` 驱动，`activeTabId` 指向 browser tab
+      //   即会挂载 ⇒ 挂载后 onMounted 自建首个 tab（或恢复已有）。
     }
     // n===0 时不强制切回 file，避免清空时面板闪一下；保留当前 tab（默认 file/git）
   });
@@ -481,6 +489,23 @@ function createChat() {
     //   ★ 先取残留快照（知会条数），再关闭，最后清记账 —— 顺序不能反。
     const leftover = store.remainingAgentOpenedTabs(convId);
     const closeApi = (window as any).electronAPI?.browserView;
+    // ★★★ 执行面直连化（2026-10-10）：桥档下渲染层的 `agentOpenedTabs` 记账恒为空
+    //   （记账在 `dispatchToolCall` 里，而桥路径**跳过执行**）⇒ 旧的 `closeAgentTabs()`
+    //   （按 `agentOpened` 过滤）**关不掉任何东西** ⇒ 「任务跑完一堆 agent 页面不关」静默退化。
+    //   ⇒ 优先用**按会话**的关闭入口（主进程按自己的 `agentTouchedTabs` 记账收口，不依赖渲染层）。
+    //   旧入口保留为兜底（非桥档 / 旧主进程无该 API）。
+    if (convId && closeApi?.closeConvTabs) {
+      try {
+        const r = await closeApi.closeConvTabs(convId);
+        store.clearAgentOpenedTabs(convId);
+        if ((r?.closed ?? 0) > 0) {
+          void import('element-plus').then(({ ElMessage }) => {
+            ElMessage.info({ message: `已自动关闭 AI 打开的 ${r.closed} 个页面`, duration: 4000 });
+          }).catch(() => { /* 提示失败不影响收尾 */ });
+        }
+        return;
+      } catch { /* 关闭失败退回旧路径 */ store.clearAgentOpenedTabs(convId); }
+    }
     if (leftover.length > 0 && closeApi?.closeAgentTabs) {
       try {
         const r = await closeApi.closeAgentTabs();

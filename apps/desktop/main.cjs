@@ -162,6 +162,127 @@ function resolveTabWebContents(tabId) {
 }
 const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// ============================================================
+// 会话 → tab 锚定（「浏览器执行面直连化」P0-2，2026-10-10）
+//
+// ★★★ 为什么必须下沉到主进程：
+//   直连化后，命令由**服务端**经本地端点直接送进来（见 browser-bridge.cjs），
+//   服务端只知道 `convId`（`ToolContext.conversationId`，A4 已打通），**不知道 tabId**。
+//   而"某会话当前锚在哪个 tab"此前由**渲染层** `agentAnchoredTabs`（chat.ts:50）持有 ——
+//   渲染层不再执行浏览器工具后，那个锚就没人维护了 ⇒ 主进程必须自己持有。
+//
+// ★★★ 只能有一处生效（这是本方案最贵的一条判据）：
+//   渲染层 `resolvePreviewTabId`(chat.ts:111) 与这里语义**完全一致**，
+//   若两处同时锚 ⇒ 「两个 activeTabId 体系」那个历史坑的翻版（一边锚 A、一边锚 B，
+//   动作落到错误的页上且不报错）。⇒ bridge 生效时渲染层不再执行、天然不锚；
+//   `browserView:action` 的 **IPC 路径（SSE 委托）始终显式传 tabId**，不读本表 ⇒ 两者不会打架。
+//
+// ★ 与 `activeTabId` 的分工：`activeTabId` 是"用户当前在看哪个"（UI 语义）；
+//   `convAnchors` 是"某会话的操作目标"（执行语义）。两者可以不同，不该互相顶替。
+// ============================================================
+const convAnchors = new Map(); // convId → tabId
+
+/**
+ * agent 经桥/工具操作过、**需要任务收尾关闭**的 tab：tabId → convId。
+ *
+ * ★★★ 为什么必须（「直连化」可见性契约，2026-10-10）：
+ *   桥路径下**渲染层不执行** browser_* 工具 ⇒ 渲染层 `agentOpenedTabs` 记账
+ *   （在 `dispatchToolCall` 里）**永远为空** ⇒ 任务收尾的 `closeAgentTabs()`
+ *   （按 `agentOpened` 过滤）**关不掉任何东西** ⇒ 「任务跑了半天，一堆 agent 页面
+ *   留在预览面板不关」——既有功能静默退化。
+ *   ⇒ 改为**主进程自己按会话收口**：谁操作的页由谁收，不依赖渲染层、也不依赖 agentOpened 标记。
+ *
+ * ★ 只记 **preview 空间** 的 tab（`preview` / `preview:<convId>`）：
+ *   `/browser` 独立浏览器页（scope='page'）是**用户自己的空间**，agent 收尾不该碰
+ *   （与 agentOpened 的既有安全边界一致：agent 只收拾自己打开的页）。
+ * ★ 用 Map 而非 Set：需要知道"哪个会话该关哪些页"，收尾时按 convId 过滤。
+ */
+const agentTouchedTabs = new Map();
+
+/** tab 的归属空间（取不到时回落 'preview'，与既有 `scopeOf` 口径一致） */
+function scopeOfTab(tabId) {
+  if (!tabId) return 'preview';
+  const meta = isWebviewEngine() ? webviewTabs.get(tabId) : browserViews.get(tabId);
+  return (meta && meta.scope) || 'preview';
+}
+
+/** tab 是否属于预览空间（agent 执行面）。`/browser` 页的 'page' 空间不在此列。 */
+function isPreviewScope(tabId) {
+  return String(scopeOfTab(tabId)).startsWith('preview');
+}
+
+/**
+ * 登记"本会话操作过某个 tab"（**不**改当前锚）。
+ *
+ * ★ 为什么与"设锚"拆开：一个动作可能**不改写操作目标**，但**确实用了**那个页 ——
+ *   典型是 `get_page_content(tabId=B)`（定向读取）与 `new_tab`（开新页）。
+ *   这些页必须登记：
+ *     ① 后续要能继续读它们（越权闸门认"本会话操作过"）；
+ *     ② 任务收尾要能关掉它们（`closeConvTabs` 按本表过滤）。
+ *   ★ 早期版本把两件事糅在 `setConvAnchor` 里 ⇒ 只能"设锚即登记"，无法表达
+ *     "用了但不切换" ⇒ 要么漏登记（越权/堆积），要么被迫改锚（打到错页）。
+ */
+function markConvTabTouched(convId, tabId) {
+  if (!convId || !tabId) return;
+  const tid = String(tabId);
+  if (isPreviewScope(tid)) agentTouchedTabs.set(tid, String(convId));
+}
+
+/** 记录"该会话当前的操作目标 tab"（**会**改锚）+ 登记操作过它。tab 关闭时必须失效。 */
+function setConvAnchor(convId, tabId) {
+  if (!convId || !tabId) return;
+  const cid = String(convId);
+  const tid = String(tabId);
+  const prev = convAnchors.get(cid);
+  // 换锚：老锚那个 tab 记下"本会话用过"（收尾要一并关，否则中间页堆积）
+  if (prev && prev !== tid) markConvTabTouched(cid, prev);
+  markConvTabTouched(cid, tid);
+  convAnchors.set(cid, tid);
+  // 上限兜底：会话很多时淘汰最早的（Map 插入序）——与 A4 的 activePageByConv 同手法
+  while (convAnchors.size > 200) {
+    const oldest = convAnchors.keys().next().value;
+    if (oldest === undefined) break;
+    convAnchors.delete(oldest);
+  }
+  while (agentTouchedTabs.size > 400) {
+    const oldest = agentTouchedTabs.keys().next().value;
+    if (oldest === undefined) break;
+    agentTouchedTabs.delete(oldest);
+  }
+}
+/** 取某会话的锚定 tabId；未锚定返回 null（**不回落 activeTabId** —— 那会把动作打到别人的页上） */
+function resolveTabIdForConv(convId) {
+  if (!convId) return null;
+  const tid = convAnchors.get(String(convId));
+  if (!tid) return null;
+  // 锚定的 tab 已不存在 → 清掉并返回 null（不返回幽灵 tabId）
+  const alive = isWebviewEngine() ? webviewTabs.has(tid) : browserViews.has(tid);
+  if (!alive) { convAnchors.delete(String(convId)); return null; }
+  return tid;
+}
+/** tab 关闭时的收口：把所有指向它的锚一并失效（唯一入口，避免某条关闭路径漏清） */
+function clearConvAnchorsForTab(tabId) {
+  if (!tabId) return;
+  const tid = String(tabId);
+  for (const [cid, t] of convAnchors) {
+    if (t === tid) convAnchors.delete(cid);
+  }
+  agentTouchedTabs.delete(tid);
+}
+
+/** 需建立/切换页面（写）的 action —— 未锚定时**允许**回落 activeTabId（首次 navigate 要能自发建 tab）。
+ *  其余（读/交互）在"带 convId 但未锚定"时必须**明确报错**，绝不静默打到全局活动页
+ *  （与 A4 的 `resolveReadPage` 语义同源：绝不静默返回别人的页）。
+ *
+ *  ★★ 判定本体在 `browser-target.cjs`（纯函数模块）—— 这里只引入，**不复制一份**：
+ *    判定错了的表现是"动作打到错的页且不报错"（最难查），故必须能被 vitest **真跑**验证，
+ *    而 main.cjs 依赖 electron 无法在测试里加载（静态断言抓不住"分支顺序/条件短路"类缺陷）。 */
+const {
+  resolveTarget: resolveBrowserTarget,
+  decideAnchorUpdate,
+} = require('./browser-target.cjs');
+
+
 // R3：摘除即静音 —— 收起右栏/切走 tab 后视频音乐不再出声（"收起了就该安静"）。
 // 如果有意保留后台音乐（如挂机听歌），把该开关设为 false 即可一行回退。
 const MUTE_ON_DETACH = true;
@@ -384,6 +505,9 @@ function startServer() {
   const serverDir = path.join(__dirname, '..', 'server');
   // CDP 端点此刻必须已定稿（Chromium 已随 ready 就绪），server env 一次性带下去
   const cdpEndpoint = resolveCdpEndpoint();
+  // ★ 浏览器桥的 URL/token（「执行面直连化」P0-3）：桥已在 whenReady 里 start() 过（见调用点注释）。
+  //   档位不是 off 时返回两条 env，服务端据此直连；off 时返回 {} ⇒ 服务端走原有 SSE 委托。
+  const bridgeEnv = browserBridge.envForServer();
   // 模型目录统一放**共享** models（两实例复用同一份 gguf，不重复下载 1.1GB，见 instance.cjs）
   const modelsDir = sharedDataDir('models');
   // 开发模式：把源码目录已有的模型文件同步到 userData/models（一次性，不覆盖）
@@ -401,13 +525,25 @@ function startServer() {
 
   if (!app.isPackaged) {
     // 开发模式：用 Electron 的 Node.js + tsx 运行 TypeScript 源码
+    //
+    // ★★★ 必须注入 YZ_HOT_RELOAD=1（2026-10-09，high）：
+    //   dev 后端是 `tsx watch` → **每改一次源码就重启进程**，正在跑的任务被
+    //   `markOrphanTasksInterrupted()`（llm-task-manager）整批回收。
+    //   该函数**已实现**按此标记分流：设了标记 → 标 `resumable` + 文案「热重载暂停，
+    //   发『继续』即可」；没设 → 标 `interrupted` + 文案「应用重启，任务已中断」。
+    //   ★ 此前只在 `apps/server/scripts/dev.cjs` 注入，**本文件（桌面 dev 路径）没注入** ——
+    //     而用户日常跑的就是这条路径（`bin/dev.mjs desktop` → 本文件的 dev 分支 spawn 后端），
+    //     于是本该是「可续的暂停」被当成「真中断」：DB 里实测落的是非热重载分支的
+    //     「服务重启，任务被中断」，用户看到「刚发了个继续直接失败」。
+    //   ⇒ 注入后两条 dev 启动路径口径一致（与 dev.cjs 同源，不臆造判据）。
+    //   ★ 只加在 dev 分支：生产分支（下方 else）**不设** → 打包版行为完全不变。
     const tsxPath = path.join(serverDir, 'node_modules', 'tsx', 'dist', 'cli.mjs');
     if (fs.existsSync(tsxPath)) {
       console.log('[后端] 用 Electron Node.js + tsx 启动:', tsxPath);
       serverProcess = spawn(process.execPath, [tsxPath, 'watch', 'src/index.ts'], {
         cwd: serverDir,
         stdio: 'inherit',
-        env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', PORT: String(API_PORT), YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: cdpEndpoint, WEB_DIST: path.join(__dirname, '..', '..', 'apps', 'web', 'dist'), ...editionEnv, ...guardEnv, ...readLicenseCodesEnv() },
+        env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', PORT: String(API_PORT), YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: cdpEndpoint, WEB_DIST: path.join(__dirname, '..', '..', 'apps', 'web', 'dist'), YZ_HOT_RELOAD: '1', ...bridgeEnv, ...editionEnv, ...guardEnv, ...readLicenseCodesEnv() },
       });
     } else {
       // 回退：npx tsx（可能 ABI 不兼容，但至少能启动）
@@ -416,7 +552,7 @@ function startServer() {
         cwd: serverDir,
         stdio: 'inherit',
         shell: true,
-        env: { ...process.env, PORT: String(API_PORT), YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: cdpEndpoint, WEB_DIST: path.join(__dirname, '..', '..', 'apps', 'web', 'dist'), ...editionEnv, ...guardEnv, ...readLicenseCodesEnv() },
+        env: { ...process.env, PORT: String(API_PORT), YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: cdpEndpoint, WEB_DIST: path.join(__dirname, '..', '..', 'apps', 'web', 'dist'), YZ_HOT_RELOAD: '1', ...bridgeEnv, ...editionEnv, ...guardEnv, ...readLicenseCodesEnv() },
       });
     }
     serverProcess.on('error', (err) => console.error('后端启动失败:', err));
@@ -432,7 +568,7 @@ function startServer() {
     logStream.write(`\n===== [${stamp()}] 后端启动 =====\n`);
     serverProcess = spawn(process.execPath, [serverPath], {
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', PORT: String(API_PORT), YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: cdpEndpoint, WEB_DIST: path.join(process.resourcesPath, 'server', 'web-dist'), ...(dataDir ? { DATA_DIR: dataDir } : {}), ...editionEnv, ...guardEnv, ...readLicenseCodesEnv() },
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', PORT: String(API_PORT), YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: cdpEndpoint, WEB_DIST: path.join(process.resourcesPath, 'server', 'web-dist'), ...(dataDir ? { DATA_DIR: dataDir } : {}), ...bridgeEnv, ...editionEnv, ...guardEnv, ...readLicenseCodesEnv() },
     });
     serverProcess.stdout.on('data', (d) => logStream.write(d));
     serverProcess.stderr.on('data', (d) => logStream.write(d));
@@ -1394,7 +1530,12 @@ ipcMain.handle('browser:wv:unregister', (_e, tabId) => {
 //     · `browserView:action` 的 `new_tab`（agent 工具链）→ **agentOpened: true**
 //   只靠提示词约束不可靠（模型可能传错 tabId、或被页面内容诱导），权限必须在执行侧强制。
 let tabSeq = 0;
-ipcMain.handle('browserView:createTab', (_e, scope) => {
+/**
+ * 建一个新的浏览器 tab（**唯一实现**）—— `browserView:createTab` IPC 与
+ * "会话首次导航时自建 guest" 两条路径共用（防两处实现漂移）。
+ * @returns 新 tabId
+ */
+function createBrowserTab(scope) {
   const newTabId = 'tab-' + (++tabSeq);
   if (isWebviewEngine()) {
     // webview 模式：只分配 tabId 与空间归属，guest 由渲染层 <webview> 元素创建后注册
@@ -1404,13 +1545,17 @@ ipcMain.handle('browserView:createTab', (_e, scope) => {
   }
   // R4：超限先按 LRU 挂起最久未激活的 tab（壳保留、激活复活），再新建，
   // 保证同时存活的 webContents ≤ MAX_TABS
+  // ★ 抽出本函数时**顺手修掉一处笔误**：原 IPC handler 在此分支又 `++tabSeq` 一次
+  //   （生成第二个 id 却只用了一个）⇒ browserview 引擎下每次建 tab 编号跳两格。
+  //   现在复用同一 `newTabId`，编号连续。**只影响 id 编号，不影响任何功能**。
   evictLruTabIfNeeded();
-  const tabId = 'tab-' + (++tabSeq);
-  ensureBrowserView(tabId);
-  const entry = browserViews.get(tabId);
+  ensureBrowserView(newTabId);
+  const entry = browserViews.get(newTabId);
   if (entry) { entry.scope = scope || 'preview'; entry.agentOpened = false; }
-  return tabId;
-});
+  return newTabId;
+}
+
+ipcMain.handle('browserView:createTab', (_e, scope) => createBrowserTab(scope));
 
 // 关闭标签页，销毁对应 BrowserView
 // fromUi=true 表示 UI 路径（渲染层会自行顶替相邻 tab，主进程不顶替不广播，避免双顶替抖动）；
@@ -1489,6 +1634,10 @@ ipcMain.handle('browserView:closeTab', (_e, tabId, fromUi) => {
 
 /** tab 关闭广播：渲染层（BrowserPanel）据此摘除 tab 壳，幂等 */
 function broadcastTabClosed(tabId) {
+  // ★ 收口：**所有**关闭路径都会经过这里（closeTabById 两处 + `case 'close_tab'`），
+  //   把"指向该 tab 的会话锚"一并失效 —— 逐条路径各清一次必然漏（`case 'close_tab'`
+  //   此前就没走 closeTabById，正是活证）。放在广播处是唯一不漏的位置。
+  clearConvAnchorsForTab(tabId);
   try {
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('browserView:tabClosed', tabId);
@@ -1526,6 +1675,32 @@ ipcMain.handle('browserView:closeAllTabs', (_e, scope, fromUi) => {
   for (const id of ids) {
     try { closeTabById(id, !!fromUi); } catch { /* ignore */ }
   }
+  return { closed: ids.length };
+});
+
+// ★★★ 按**会话**关闭 agent 操作过的页面（「直连化」可见性契约，2026-10-10）。
+//
+// ★ 为什么需要（而不是复用 closeAgentTabs）：桥路径下渲染层不执行 browser_* 工具 ⇒
+//   渲染层的 `agentOpenedTabs` 记账恒为空 ⇒ `closeAgentTabs()`（按 agentOpened 过滤）
+//   **关不掉任何东西** —— 任务收尾"自动关闭 AI 打开的页面"会静默失效。
+//   ⇒ 主进程按会话自己的记账（`agentTouchedTabs`）收口，不依赖渲染层、不依赖 agentOpened。
+//
+// ★ 安全边界（与既有 agentOpened 一致）：只关 **preview 空间** 且**被该会话操作过**的 tab；
+//   `/browser` 独立页（scope='page'，用户自己的空间）一律不碰。
+// ★ 幂等：未知 convId / 已关闭的 tab 直接忽略。
+ipcMain.handle('browserView:closeConvTabs', (_e, convId) => {
+  const cid = convId != null ? String(convId) : '';
+  if (!cid) return { closed: 0 };
+  const ids = [];
+  for (const [tid, owner] of agentTouchedTabs) {
+    if (owner === cid) ids.push(tid);
+  }
+  for (const tid of ids) {
+    // fromUi=true：这是一次"离开/收尾"清理，主进程不再做 R5 顶替（与 closeAllTabs 同口径）
+    try { closeTabById(tid, true); } catch { /* ignore */ }
+  }
+  // 锚一并失效（closeTabById 内部经 broadcastTabClosed 已清，这里再清一次防漏）
+  convAnchors.delete(cid);
   return { closed: ids.length };
 });
 
@@ -2434,8 +2609,34 @@ const DESKTOP_BROWSER_ACTIONS = [
 /** 渲染层可查询桌面端支持哪些 action（避免两份硬编码清单漂移） */
 ipcMain.handle('browserView:actions', () => DESKTOP_BROWSER_ACTIONS.slice());
 
-ipcMain.handle('browserView:action', async (_e, tabId, action, args) => {
+/**
+ * ★★★ 浏览器 action 的**唯一实现**（「执行面直连化」P0-1，2026-10-10）。
+ *
+ * ★ 为什么必须抽出来：本函数有两个调用方 ——
+ *   ① `ipcMain.handle('browserView:action')`（SSE 委托路径，渲染层调用）
+ *   ② `browser-bridge.cjs` 的本地端点（直连路径，服务端调用）
+ *   若桥自己复制一份 `switch`，两处的 action 行为**必然漂移**（本项目一贯判据：
+ *   同一语义只能有一处实现）。⇒ 桥只做"鉴权 + 白名单 + 调本函数"。
+ *
+ * @param convId 会话标识（服务端经桥透传；IPC 调用传 null —— 渲染层自己已锚定 tabId）
+ * @param tabId  目标 tab；null 表示"按会话锚定解析 / 回落活动页"
+ */
+async function runBrowserAction(convId, tabId, action, args) {
   args = args || {};
+  // ★★★ P0-2（2026-10-10）：执行目标解析 —— **判定本体在 `browser-target.cjs`**（纯函数、可真跑验证）。
+  //   三条语义（缺一条就会"打到错的页"且不报错）：
+  //   ① 显式 tabId **优先**（工具契约："可传 tabId 读取指定标签页，不必先切换标签页"）；
+  //   ② 显式 tabId 必须**属于本会话**（否则跨会话越权）；
+  //   ③ 无显式 tabId → 用锚；未锚定且非建页类 → **明确报错**（绝不静默用全局活动页）。
+  //   ★ 返回 ok:false 时直接回错误，不往下走。
+  {
+    const r = resolveBrowserTarget(convId, tabId, action, {
+      anchored: resolveTabIdForConv(convId),
+      isMine: (t) => agentTouchedTabs.get(t) === String(convId || ''),
+    });
+    if (!r.ok) return { error: r.error };
+    tabId = r.tabId;
+  }
   const entry = tabId ? browserViews.get(tabId) : (activeTabId ? browserViews.get(activeTabId) : null);
   let wc = null;
   if (isWebviewEngine()) {
@@ -2445,11 +2646,38 @@ ipcMain.handle('browserView:action', async (_e, tabId, action, args) => {
     // guest 自然不存在。此时不能直接报"未打开"——应先让渲染层在该 scope 打开目标页并建出
     // <webview>（:src=url → dom-ready → 注册 guest），再等 guest 出现后继续导航。
     if (!wc && action === 'navigate' && args.url) {
-      const scopeMeta = (activeTabId ? webviewTabs.get(activeTabId) : null);
-      const scope = (scopeMeta && scopeMeta.scope) || 'preview';
       const cleanUrl = String(args.url || '').trim().replace(/^[`"'\s]+|[`"'\s]+$/g, '');
-      // 广播给渲染层：匹配 scope 的浏览器面板把此 URL 作为当前页打开（复用 openSite 通道）
-      try { mainWindow.webContents.send('browser:wv:forceOpen', cleanUrl, scope); } catch { /* ignore */ }
+      // ★★★ 自建步骤：面板停在"浏览器首页/主页"（无任何已导航页）时还没有 <webview>、
+      //   guest 自然不存在。此时不能直接报"未打开"——先让渲染层在该 scope 打开目标页并建出
+      //   <webview>（:src=url → dom-ready → 注册 guest），再等 guest 出现后继续导航。
+      //
+      //   ★★★ 关键（2026-10-10 修真缺陷）：**必须把新 tab 登记成本会话的操作过页面**。
+      //     渲染层建 guest 时调的是 `browserView:createTab`（**不是** `switch(action)` 的
+      //     `case 'new_tab'`）⇒ 该 tab 不会经过任何登记点 ⇒ 后续动作若带显式 tabId
+      //     （agent 常带）会被"越权闸门"**误拒**（报"不属于本会话"），且 agent 首导航后
+      //     第二次带 tabId 的读/写**必然失败**（表现为"打开网页后就读不了"）。
+      //     ⇒ 这里显式登记（`agentTouchedTabs` 是"本会话用过"的唯一真相源）。
+      if (convId) {
+        const scopeMeta0 = (tabId ? webviewTabs.get(tabId) : null);
+        const wantScope = (scopeMeta0 && scopeMeta0.scope) || `preview:${convId}`;
+        try {
+          tabId = createBrowserTab(wantScope);
+          // ★ 登记"本会话操作过"——否则后续带显式 tabId 的动作会被越权闸门**误拒**
+          //   （见上方长注释：渲染层建 guest 走 createTab，不经过 action 登记点）。
+          markConvTabTouched(convId, tabId);
+        } catch { /* 建 tab 失败 → 退回下方广播路径（行为与修复前一致） */ }
+      }
+      // ★★★ 用**当前操作目标 tab 的 scope** 定位面板（2026-10-10 修）：
+      //   此前取 `activeTabId` 的 scope —— 桥路径下 activeTabId 可能是**别的会话/别的空间**的，
+      //   会把本会话的导航广播到错误的 BrowserPanel（"导航了但预览没反应"）。
+      const scopeMeta = (tabId ? webviewTabs.get(tabId) : null)
+        || (activeTabId ? webviewTabs.get(activeTabId) : null);
+      const scope = (scopeMeta && scopeMeta.scope) || (convId ? `preview:${convId}` : 'preview');
+      // ★★★ 通道原先**无人订阅**（实测 grep：渲染层零处监听 `browser:wv:forceOpen`）
+      //   ⇒ 这句话等于没说：面板没打开 / guest 未建时会**始终拿不到 wc**，navigate 必然失败
+      //     （loadURL 在 null 上抛错），且报错是"页面加载失败"，看不出真因（静默失效家族）。
+      //   ⇒ 补上渲染层订阅（BrowserPanel.onForceOpen）：面板据此打开并导航（自动建 <webview>/guest）。
+      try { mainWindow.webContents.send('browser:wv:forceOpen', cleanUrl, scope, tabId || null); } catch { /* ignore */ }
       // 给渲染层建 <webview>(dom-ready)+注册 guest 的时间
       wc = await waitForGuest(tabId || activeTabId, 8000);
     }
@@ -3512,10 +3740,38 @@ ipcMain.handle('browserView:action', async (_e, tabId, action, args) => {
         try { mainWindow.webContents.send('browserView:cursor', tabIdForCursor, zx, zy, cur.label || '', cur.kind || ''); } catch { /* ignore */ }
       }
     }
+
+    // ★★★ P0-2 锚定建立（2026-10-10，已修"显式 tabId / new_tab 改写锚"两个缺陷）：
+    //   动作**成功**后才锚（失败不锚 —— 否则后续动作会指到一个没真正成为目标的页）。
+    //   ★ 判定规则说明见 `browser-target.cjs` 的 `decideAnchorUpdate` 顶部注释（单一真相源）。
+    if (convId && result && !result.error && !result.ambiguous) {
+      // ★★★ 记账更新判定在纯函数模块里（**唯一实现**，可真跑验证）：
+      //   'anchor' = 改"当前操作页" / 'touch' = 只用不改锚（定向读 / new_tab 开的页）/ 'none' = 不动。
+      const upd = decideAnchorUpdate(action, args.tabId != null && args.tabId !== '', tabId, result.tabId);
+      if (upd.mode === 'anchor') setConvAnchor(convId, upd.tabId);
+      else if (upd.mode === 'touch') markConvTabTouched(convId, upd.tabId);
+    }
     return result;
   } catch (e) {
     return { error: e?.message || String(e) };
   }
+}
+
+// IPC 入口：SSE 委托路径（渲染层调用）。渲染层自己维护锚定与 tabId，
+// 故 convId 传 null —— 不走主进程的会话锚定（避免与渲染层"两个锚"打架，见 convAnchors 注释）。
+ipcMain.handle('browserView:action', async (_e, tabId, action, args) =>
+  runBrowserAction(null, tabId, action, args));
+
+// ============================================================
+// 浏览器桥（「执行面直连化」P0-3）：loopback HTTP 端点，服务端直连。
+// 见 browser-bridge.cjs 顶部注释（安全边界 / 白名单 / 灰度）。
+// ============================================================
+const browserBridge = require('./browser-bridge.cjs');
+browserBridge.attach({
+  runAction: runBrowserAction,
+  allowedActions: DESKTOP_BROWSER_ACTIONS,
+  log: (msg) => console.log(msg),
+  warn: (msg) => console.warn(msg),
 });
 
 // ============================================================
@@ -4647,7 +4903,7 @@ if (!gotTheLock) {
   });
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   Menu.setApplicationMenu(null);  // 移除默认菜单栏
   if (process.platform === 'win32') {
     // ★ Windows 任务栏图标（2026-10-05 定案）：任务栏按钮图标 = **窗口 icon**（WM_SETICON）。
@@ -4741,6 +4997,13 @@ app.whenReady().then(() => {
     console.error('数据库初始化失败:', err);
   }
   cleanupLegacyDiagAgent();
+  // ★★★ 浏览器桥必须在 startServer() **之前**启动并 await（「执行面直连化」P0-3）：
+  //   startServer 会 spawn 后端并把 `envForServer()` 的 URL/token 注入子进程 env ——
+  //   桥没起就没有端口/token，注入为空 ⇒ 服务端 `browserBridgeAvailable()` 为 false，
+  //   静默退回 SSE 委托（不报错，但直连没生效）。顺序错了是**静默失效**，故显式注释钉住。
+  //   ★ 必须 **await**：`server.listen()` 是异步的，不等就取 envForServer() 会拿到空 url/token
+  //     （真跑测试实测抓到的缺陷）→ 同样是静默失效。
+  await browserBridge.start();
   startServer();
 
   // computer-use 急停热键：Ctrl+Alt+Esc → 通知后端 panic（冻结输入工具并禁用插件）。
@@ -4845,6 +5108,7 @@ app.on('window-all-closed', () => {
 app.on('before-quit', () => {
   isQuitting = true;
   try { globalShortcut.unregisterAll(); } catch {}
+  try { browserBridge.close(); } catch { /* 端口自动分配，异常退出也无需处理残留 */ }
   if (serverProcess) { try { serverProcess.kill('SIGTERM'); } catch {} serverProcess = null; }
   for (const [id, entry] of mcpChildren) {
     try { entry.child.kill('SIGTERM'); } catch {}

@@ -29,9 +29,13 @@ const CHAT = read('packages/ui/src/stores/chat.ts');
 
 /** 从主进程的 `switch (action)` 里抽出全部一级 case 名 */
 function switchCases(): string[] {
-  // 只取 `browserView:action` 那个 handler 内的一级 switch（缩进 6 空格的 case）
-  const start = MAIN.indexOf("ipcMain.handle('browserView:action'");
-  expect(start, '★ 锚点缺失：action handler').toBeGreaterThan(-1);
+  // 只取浏览器 action 的**唯一实现** `runBrowserAction` 内的一级 switch（缩进 6 空格的 case）。
+  // ★ 2026-10-10（执行面直连化 P0-1）：switch 从 `ipcMain.handle('browserView:action')` 的
+  //   内联体**搬进了** `runBrowserAction` —— 因为现在有两个调用方（IPC + 浏览器桥），
+  //   桥不能再复制一份 switch（两处实现必然漂移）。锚点随之改到新位置；
+  //   断言语义不变（"能力清单 == 实际实现"）。**锚点缺失即红**，防止有人又改成别处。
+  const start = MAIN.indexOf('async function runBrowserAction(');
+  expect(start, '★ 锚点缺失：runBrowserAction（浏览器 action 唯一实现）').toBeGreaterThan(-1);
   const seg = MAIN.slice(start);
   const cases = new Set<string>();
   // 一级 case：6 空格缩进；fall-through 形如 `case 'next_page':` 后面直接跟下一个 case

@@ -38,8 +38,13 @@ describe('权限边界：agent 只能关闭自己打开的 tab（执行侧强制
 
   it('tab 归属标记 agentOpened 存在，且 UI 创建路径默认 false', () => {
     expect(mainSrc).toContain('agentOpened');
-    // browserView:createTab（渲染层/用户路径）必须显式置 false
-    const fn = sliceFrom(mainSrc, "ipcMain.handle('browserView:createTab'", 1200);
+    // ★ 2026-10-10（执行面直连化）：`ipcMain.handle('browserView:createTab')` 已收窄为
+    //   **一行委托** `createBrowserTab(scope)` —— 因为该实现现在有第二个调用方
+    //   （`browserView:action` 的"会话首次 navigate 自建 guest"分支，防两处实现漂移）。
+    //   断言语义不变（"UI/用户创建路径必须显式置 agentOpened:false"），锚点随之移到
+    //   **唯一实现** `createBrowserTab` 上。**锚点缺失即红**，防止有人又改成别处。
+    const fn = sliceFrom(mainSrc, 'function createBrowserTab(', 1200);
+    expect(fn, '★ 锚点缺失：createBrowserTab（tab 创建唯一实现）').toContain('agentOpened');
     expect(fn).toMatch(/agentOpened:\s*false/);
   });
 
@@ -149,11 +154,21 @@ describe('前端记账：agent 开过的 tab 按会话累积，收尾提示后�
   });
 
   it('收尾自动关后给用户一条知会（已自动关闭 N 个）', () => {
-    const fn = sliceFrom(useChatSrc, 'store.onTaskFinished(', 2200);
+    // ★ 窗口 2200 → 3600（2026-10-10）：新增「按会话关闭」分支（closeConvTabs，优先于
+    //   旧 closeAgentTabs 分支）把回退文案推到了原窗口之外 —— 属**锚点窗口偏移**，
+    //   不是行为变化（回退路径仍在；已逐行核对源码）。
+    const fn = sliceFrom(useChatSrc, 'store.onTaskFinished(', 3600);
     expect(fn).toContain('ElMessage');
     expect(fn).toMatch(/已自动关闭/);
     // 退回路径（无 Electron API）保留旧明示文案
     expect(fn).toMatch(/保留在预览面板|可自行关闭/);
+  });
+
+  it('收尾自动关：桥档优先按会话关闭 + 保留 agentOpened 兜底（2026-10-10）', () => {
+    const fn = sliceFrom(useChatSrc, 'store.onTaskFinished(', 3600);
+    // 桥档下渲染层 agentOpened 记账恒为空 ⇒ 必须有按会话的入口
+    expect(fn, '★ 缺按会话关闭（桥档下页面堆积）').toMatch(/closeConvTabs/);
+    expect(fn, '★ 缺 agentOpened 兜底').toMatch(/closeAgentTabs/);
   });
 
   it('主进程必须有 closeAgentTabs IPC，且按 agentOpened===true 过滤', () => {

@@ -155,6 +155,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     closeAllTabs: (scope, fromUi) => ipcRenderer.invoke('browserView:closeAllTabs', scope, fromUi),
     // 收尾自动收拾：关闭全部 agent 打开的 tab（agentOpened===true，用户手开的不动），返回 { closed: n }
     closeAgentTabs: () => ipcRenderer.invoke('browserView:closeAgentTabs'),
+    // ★ 按**会话**关闭 agent 操作过的页面（「直连化」可见性契约）：桥档下渲染层不执行
+    //   browser_* 工具 → 渲染层的 agentOpened 记账恒为空 → closeAgentTabs 关不掉东西。
+    //   主进程按自己的 agentTouchedTabs 收口（不依赖渲染层）。
+    closeConvTabs: (convId) => ipcRenderer.invoke('browserView:closeConvTabs', convId),
     activateTab: (tabId) => ipcRenderer.invoke('browserView:activateTab', tabId),
     ensureActiveTab: (scope) => ipcRenderer.invoke('browserView:ensureActiveTab', scope),
     load: (tabId, url) => ipcRenderer.invoke('browserView:load', tabId, url),
@@ -212,7 +216,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // webview 引擎：agent 首次 navigate 时主进程请求某 scope 的浏览器面板把 URL 作为当前页打开
   // （面板还停在主页/无 <webview> 时先由此建出 guest，浏览器才算真正"打开网址"）
   onForceOpen: (callback) => {
-    ipcRenderer.on('browser:wv:forceOpen', (_e, url, scope) => callback(url, scope));
+    ipcRenderer.on('browser:wv:forceOpen', (_e, url, scope, tabId) => callback(url, scope, tabId));
   },
 
   // pageAgent 浏览器操作统一通道（IPC 直连 BrowserView，不依赖后端 Playwright）
