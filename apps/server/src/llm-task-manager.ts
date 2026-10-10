@@ -5,7 +5,7 @@
 // 注：web_search 已移除，联网查询统一委派 pageAgent（真实浏览器搜索引擎）。
 import type { Platform, Model, Message, DeltaToolCall } from '@yan-zhi/shared';
 import { formatTaskTypeContext, DEFAULT_CONFIRM_BATCH_SIZE, resolveTaskBudgets, checkTaskBudgetHit as sharedCheckTaskBudgetHit, addWaitCredit } from '@yan-zhi/shared';
-import { LlmClient, getToolRegistry, getApiToolRegistry, ContextWindow, adviceForTruncatedArgs, runCodeDiagnostics, invalidateDiagnosticsCache, resolveToolPath, type SummaryCache } from '@yan-zhi/core';
+import { LlmClient, getToolRegistry, getApiToolRegistry, ContextWindow, adviceForTruncatedArgs, runCodeDiagnostics, invalidateDiagnosticsCache, resolveToolPath, setBrowserToolConversationId, type SummaryCache } from '@yan-zhi/core';
 import { db, MESSAGE_LIST_COLS } from './db.js';
 import { normalizePermissionMode, checkToolPermission, filterToolsByPermission, permissionModePrompt, checkWorkflowPermission, type PermissionMode } from './tool-permission.js';
 import { ensureToolsInitialized } from './mcp/index.js';
@@ -3871,6 +3871,13 @@ async function executeTool(
     //   把它计入墙钟 = 惩罚"用外部工具干活"，长任务必然每批超时。此处累计抵扣，预算判定时扣除。
     //   ★ 放在**唯一工具出口**（registry.execute 两侧），覆盖原生/API/MCP/自定义全部工具，零遗漏。
     const execStartedAt = Date.now();
+    // ★★★ A4 根治（2026-10-10）：把**当前会话**告知 core 的浏览器工具 ——
+    //   它们据此把 `x-yz-conversation-id` 带给浏览器路由，服务端按会话隔离"活动页"，
+    //   避免"A 会话导航中、B 会话读取/截图拿到 A 的页面"（且静默无报错）。
+    //   ★ 放在**唯一工具出口**（registry.execute 之前），一处覆盖全部 browser_* 工具，
+    //     不需要逐个改 33 个工具的 execute 签名（那必然漏）。
+    //   ★ 每次调用前都设置（含非 browser 工具）—— 保证不会残留上一个会话的值。
+    setBrowserToolConversationId(task.conversationId);
     const r = await registry.execute(toolName, args, toolCtx);
     try {
       task.waitCreditMs = addWaitCredit(task.waitCreditMs || 0, Date.now() - execStartedAt);

@@ -14,6 +14,35 @@ function getAuthToken(): string | null {
   try { return localStorage.getItem('auth_token'); } catch { return null; }
 }
 
+/**
+ * ★★★ 会话标识透传（A4 根治，2026-10-10）：把「这次浏览器操作属于哪个会话」带给后端。
+ *
+ * ★ 为什么必须（实测缺陷）：服务端 Playwright 是**进程级单例** ——
+ *   `pageInstance` / `activeTabId` 全局单值，读路由（`GET /state`、`GET /screenshot`）
+ *   直接读它 ⇒ **A 会话导航中、B 会话截图会拿到 A 的页面**，且**静默无报错**
+ *   （模型据此继续决策，全在错页面上）。
+ * ★ 会话标识从哪来：`ToolContext.conversationId` **早已存在**（`tool/types.ts`），
+ *   服务端执行工具时也已构造（`llm-task-manager` 的 `toolCtx`）——只是**浏览器工具收不到**
+ *   （34 个工具里 33 个 `execute` 还写在用旧的单参签名）。
+ *   ⇒ 本模块用**模块级"当前会话"变量**承载：由调用方（执行器）在每次执行前设置，
+ *     工具内部无需逐个改签名即可透传（改动面最小、且天然覆盖全部 browser_* 工具）。
+ *   ★ 为什么不用"改 33 个 execute 签名"：改动面大、且**必然漏**（本项目一贯判据）。
+ *     模块级变量在此是安全的：工具执行本身是**串行**的（见 `llm-task-manager` 的工具执行出口），
+ *     且每个工具内部读完即用（不存在跨 await 的错配窗口）——
+ *     实际读值发生在 `callBrowserApi` 同步取 header 的那一刻。
+ */
+let currentConversationId: string | null = null;
+
+/** 由执行器在调用 browser_* 工具前设置「当前会话」（见 `tool/types.ts` 的 ctx.conversationId） */
+export function setBrowserToolConversationId(convId: string | null | undefined): void {
+  currentConversationId = convId ? String(convId) : null;
+}
+
+/** 读取当前会话标识（供守门测试与排障） */
+export function getBrowserToolConversationId(): string | null {
+  return currentConversationId;
+}
+
 /** 调用浏览器 API 端点 */
 async function callBrowserApi(path: string, method: 'GET' | 'POST' = 'POST', body?: unknown): Promise<unknown> {
   // 桌面端：将 /navigate 和 /action 转发到 IPC 直接操作可见的 BrowserView（含虚拟鼠标光标）
@@ -29,6 +58,10 @@ async function callBrowserApi(path: string, method: 'GET' | 'POST' = 'POST', bod
   const token = getAuthToken();
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (token) headers['Authorization'] = `Bearer ${token}`;
+  // ★★★ A4 根治（2026-10-10）：带上会话标识 —— 服务端据此把"活动页"按会话隔离，
+  //   避免 A 会话导航中、B 会话读取拿到 A 的页面（且静默无报错）。
+  //   ★ header 名与 `apps/server/src/routes/browser.ts` 的读取处必须逐字一致。
+  if (currentConversationId) headers['x-yz-conversation-id'] = currentConversationId;
   // 后端 Node.js 环境用绝对 URL，前端用相对 URL
   const baseUrl = typeof window !== 'undefined' ? '' : `http://127.0.0.1:${process.env.PORT || 3001}`;
   // 内置工具发起的导航/操作打上 agent 标记：服务端据此把智能体操作沉淀进浏览器记忆文件（区别于用户手动浏览）

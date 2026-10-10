@@ -85,6 +85,62 @@ const IDLE_TIMEOUT_MS = 5 * 60 * 1000; // 5 分钟空闲后关闭
 interface DownloadRecord { url: string; filename: string; time: number; }
 const downloadRecords: DownloadRecord[] = [];
 
+/**
+ * ★★★ 会话 → 活动页 绑定表（A4 根治，2026-10-10）。
+ *
+ * ★ 为什么必须（实测缺陷）：本服务端是**进程级单例** —— `pageInstance` / `activeTabId`
+ *   全局单值，而 `GET /state` / `GET /screenshot` 等**读路由直读它** ⇒
+ *   **A 会话导航中、B 会话截图会拿到 A 的页面**，且**静默无报错**
+ *   （模型据此继续决策，全程作用在错页面上 —— 最难查的一类）。
+ * ★ 会话标识来源：core 的 `callBrowserApi` 透传的 `x-yz-conversation-id`
+ *   （上游是 `ToolContext.conversationId`）。
+ * ★ 与既有"写路由串行"的分工：串行（`withBrowserLock`）解决"同时写互相踩"；
+ *   本表解决"**读**到别人的页"。两者互补，都必要。
+ * ★ 键是会话 id；值是该会话**最近一次操作所在的 page**。
+ *   读路由优先取本会话的页：取不到（该会话还没操作过）→ **明确报错**而不是
+ *   静默返回全局活动页（那正是本次要消灭的"静默错页"）。
+ */
+const activePageByConv = new Map<string, any>();
+
+/** 取请求里的会话标识（core 透传；缺失返回 null —— 老调用方/非会话场景） */
+function convIdOf(req: Request): string | null {
+  const h = req.headers['x-yz-conversation-id'];
+  const v = Array.isArray(h) ? h[0] : h;
+  const s = String(v || '').trim();
+  return s || null;
+}
+
+/** 记录"该会话当前在哪个 page 上"（写路由成功后调用） */
+function bindConvPage(convId: string | null, page: any): void {
+  if (!convId || !page) return;
+  activePageByConv.set(convId, page);
+  // 上限兜底：会话很多时淘汰最早的（Map 插入序）
+  while (activePageByConv.size > 200) {
+    const oldest = activePageByConv.keys().next().value as string | undefined;
+    if (oldest === undefined) break;
+    activePageByConv.delete(oldest);
+  }
+}
+
+/**
+ * ★★★ 解析"本次读取该用哪个 page"（A4 根治的核心判定，抽成**纯函数**便于真跑验证）。
+ *
+ * 语义（三条，缺一条都会退回"静默错页"）：
+ *   ① 无会话标识（老调用方/非会话场景）→ 退回全局活动页（**保持向后兼容**，不制造破坏）；
+ *   ② 有会话标识且该会话已绑定页 → 用**它自己的页**（隔离生效）；
+ *   ③ 有会话标识但未绑定 → **返回 null**（调用方必须**明确报错**，
+ *      绝不能静默用全局活动页 —— 那就是"读到别人的页面"）。
+ */
+export function resolveReadPage(
+  convId: string | null,
+  boundPage: any,
+  globalPage: any,
+): { page: any; reason: 'global' | 'bound' | 'unbound-conv' } {
+  if (!convId) return { page: globalPage, reason: 'global' };
+  if (boundPage) return { page: boundPage, reason: 'bound' };
+  return { page: null, reason: 'unbound-conv' };
+}
+
 // C4 多标签页管理：tabId -> page（tab 0 为主标签页，pageInstance 始终指向当前活动页）
 const tabs = new Map<number, any>();
 let nextTabId = 0;
@@ -558,6 +614,8 @@ router.post('/navigate', withBrowserLock(async (req: Request, res: Response) => 
       title: String(title || ''),
       source: req.query.src === 'agent' ? 'agent' : 'user',
     });
+    // ★ A4 根治：记录"本会话现在在这个页上"（读路由据此隔离）
+    bindConvPage(convIdOf(req), page);
     res.json({ data: { url: currentUrl, title } });
   } catch (e: any) {
     res.status(500).json({ error: e?.message || '导航失败' });
@@ -1737,6 +1795,8 @@ router.post('/action', withBrowserLock(async (req: Request, res: Response) => {
       }
     }
     lastActivityAt = Date.now();
+    // ★ A4 根治：把本次操作所在的页绑定到该会话（读路由据此隔离，避免读到别人的页）
+    bindConvPage(convIdOf(req), page);
     res.json({ data: result });
   } catch (e: any) {
     const msg = e?.message || '浏览器动作失败';
@@ -1749,15 +1809,24 @@ router.post('/action', withBrowserLock(async (req: Request, res: Response) => {
 }));
 
 // GET /api/browser/state —— 获取当前浏览器状态
-router.get('/state', async (_req: Request, res: Response) => {
+router.get('/state', async (req: Request, res: Response) => {
   try {
-    if (!browserInstance || !pageInstance) {
+    // ★★★ A4 根治（2026-10-10）：按会话解析该用哪个页，不再直读全局单值。
+    const convId = convIdOf(req);
+    const picked = resolveReadPage(convId, convId ? activePageByConv.get(convId) : null, pageInstance);
+    if (picked.reason === 'unbound-conv') {
+      // ★ 该会话还没操作过浏览器 → **明确告知**，而不是静默返回别人的页面
+      res.json({ data: { active: false, error: 'CONV_HAS_NO_PAGE', hint: '本会话尚未在浏览器上执行任何操作；请先用 browser_navigate 打开页面' } });
+      return;
+    }
+    const page = picked.page;
+    if (!browserInstance || !page || page.isClosed?.()) {
       res.json({ data: { active: false } });
       return;
     }
-    const url = pageInstance.url();
-    const title = await pageInstance.title().catch(() => '');
-    res.json({ data: { active: true, url, title } });
+    const url = page.url();
+    const title = await page.title().catch(() => '');
+    res.json({ data: { active: true, url, title, convScoped: picked.reason === 'bound' } });
   } catch (e: any) {
     res.json({ data: { active: false, error: e?.message } });
   }
@@ -1829,13 +1898,22 @@ router.post('/close', withBrowserLock(async (_req: Request, res: Response) => {
 // GET /api/browser/screenshot —— 当前页面截图（PNG）。?fullPage=true 截长图，?download=文件名 下载
 router.get('/screenshot', async (req: Request, res: Response) => {
   try {
-    if (!pageInstance || pageInstance.isClosed?.()) {
+    // ★★★ A4 根治：截图也必须截**本会话**的页（否则 A 导航中、B 截图拿到 A 的页面）。
+    const convId = convIdOf(req);
+    const picked = resolveReadPage(convId, convId ? activePageByConv.get(convId) : null, pageInstance);
+    if (picked.reason === 'unbound-conv') {
+      res.status(400).json({ error: 'CONV_HAS_NO_PAGE', hint: '本会话尚未在浏览器上执行任何操作；请先用 browser_navigate 打开页面后再截图' });
+      return;
+    }
+    const pageInstance2 = picked.page;
+    if (!pageInstance2 || pageInstance2.isClosed?.()) {
       res.status(400).json({ error: '浏览器未启动' });
       return;
     }
     const fullPage = req.query.fullPage === 'true';
     const downloadName = req.query.download as string | undefined;
-    const screenshot = await pageInstance.screenshot({ type: 'png', fullPage });
+    // ★ 必须用 pageInstance2（会话解析结果）—— 若仍用全局 pageInstance，隔离等于没做
+    const screenshot = await pageInstance2.screenshot({ type: 'png', fullPage });
     res.set('Content-Type', 'image/png');
     res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
     if (downloadName) {

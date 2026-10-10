@@ -27,6 +27,10 @@ export { DoyzTool } from './doyz';
 export { NovelTuiwenTool } from './novel-tuiwen';
 export { SecurityTool } from './security';
 export { BrowserToolClasses, BROWSER_TOOL_NAMES } from './browser';
+// ★ A4 根治（2026-10-10）：会话标识透传的入口 —— 执行器在调用 browser_* 前设置，
+//   `callBrowserApi` 把它作为 `x-yz-conversation-id` 带给服务端（读路由据此按会话隔离）。
+//   ★ 本文件是**逐个具名导出**（无 `export *`）→ 漏了这一行则跨包引不到（TS2305）。
+export { setBrowserToolConversationId, getBrowserToolConversationId } from './browser';
 export { CallAgentTool } from './call-agent';
 export { ListSubAgentsTool } from './list-sub-agents';
 export { GetSubTaskDetailTool } from './get-sub-task-detail';
