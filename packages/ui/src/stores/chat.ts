@@ -1882,16 +1882,45 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
       const key = `${p.id}/${m.id}`;
       if (tried.has(key)) return null;
       tried.add(key);
+      // ★★★ C3（2026-10-10）：**已探明不支持的直接跳过** —— 此前失败结论不被记住
+      //   （`platform.ts` 只写回成功项 `if (r.ok && r.capability)`），于是每次识图都
+      //   逐个候选**真发请求**白试一遍（长任务里反复发生，纯浪费）。
+      //   ★ 三态语义：`no` = 已探明不支持（跳过）；`unknown` = 允许尝试（默认）。
+      //     `no` 有 30 分钟 TTL，到期回到 unknown（防"一次抖动被永久记成不支持"）。
       try {
-        const client = new LlmClient(p, m);
-        // ★ 必须用 `sendMime`（压缩后可能是 image/jpeg）—— 若仍报原 mime（如 image/png），
-        //   上游按 PNG 解 JPEG 字节 → 解码失败。这是"压缩与声明必须同步"的硬约束。
-        const text = await client.visionAnalyze(base64, sendMime, prompt);
-        if (text) return text;
-        console.warn('[image_analyze] vision 返回空，换下一候选:', m.modelId);
-        return null;
+        const { getVisionCapability, recordVisionAttempt } = await import('../utils/vision-capability');
+        if (getVisionCapability(p.id, m.id) === 'no') {
+          console.info('[image_analyze] 跳过已探明不支持视觉的候选:', m.modelId);
+          return null;
+        }
+        try {
+          const client = new LlmClient(p, m);
+          // ★ 必须用 `sendMime`（压缩后可能是 image/jpeg）—— 若仍报原 mime（如 image/png），
+          //   上游按 PNG 解 JPEG 字节 → 解码失败。这是"压缩与声明必须同步"的硬约束。
+          const text = await client.visionAnalyze(base64, sendMime, prompt);
+          if (text) {
+            recordVisionAttempt(p.id, m.id, true); // 记住"支持"
+            return text;
+          }
+          // 返回空文本：不算"不支持"（可能是内容策略/空回复），仅换下一候选
+          console.warn('[image_analyze] vision 返回空，换下一候选:', m.modelId);
+          return null;
+        } catch (e: any) {
+          // ★ 只把"能力性失败"记成 no（网络/超时类不记 —— 记了会被一次抖动永久误判）
+          const marked = recordVisionAttempt(p.id, m.id, false, e?.message || String(e));
+          console.warn(`[image_analyze] vision 失败，换下一候选: ${m.modelId}${marked ? '（已记为不支持）' : ''}`, e?.message || e);
+          return null;
+        }
       } catch (e: any) {
-        console.warn('[image_analyze] vision 失败，换下一候选:', m.modelId, e?.message || e);
+        // 缓存模块本身异常 → fail-open（不因为缓存问题让识图失败）
+        console.warn('[image_analyze] 能力缓存异常，按原有试错继续:', e?.message || e);
+        try {
+          const client = new LlmClient(p, m);
+          const text = await client.visionAnalyze(base64, sendMime, prompt);
+          if (text) return text;
+        } catch (e2: any) {
+          console.warn('[image_analyze] vision 失败（无缓存路径）:', m.modelId, e2?.message || e2);
+        }
         return null;
       }
     };
