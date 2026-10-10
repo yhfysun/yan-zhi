@@ -2226,6 +2226,23 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
             }
             break;
           }
+          case 'tool:timeout': {
+            // ★★★ 2026-10-10 补：服务端**早就在发**这个事件（见 llm-task-manager 的
+            //   `emit(task, { type: 'tool:timeout', ... })`），注释写着「前端据此把该工具条
+            //   标为"超时未回执"，而不是让界面只是"停住不动"（与真卡死难以区分）」——
+            //   但**前端一行都没处理** → 事件被静默丢弃，用户看到的就是"卡住没反应"。
+            //   实测：`browser_navigate` 慢档超时 **8 分钟**（7min + 1min 排队余量），
+            //   这 8 分钟里界面毫无提示，用户只能以为死机。
+            //   现在：把超时事实**写进浏览器步骤日志**（与 tool:start/result 同一展示面），
+            //   用户能立刻看出"某工具等了 N 秒没回执"，而不是干等。
+            markBrowserTaskActive(convId);
+            const secs = Math.round((Number(event.timeoutMs) || 0) / 1000);
+            pushBrowserStep(
+              String(event.toolName || ''),
+              `⏱ 已等待 ${secs}s 仍未收到执行回执（超时）。可能原因：浏览器面板未就绪 / 页面加载极慢 / 前端与后端连接不稳。任务会继续，不必重启。`,
+            );
+            break;
+          }
           case 'sub_agent:start': {
             if (event.parentToolCallId) runningToolCallIds.value.add(event.parentToolCallId);
             break;
