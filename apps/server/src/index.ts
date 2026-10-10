@@ -6,6 +6,7 @@ import { pathToFileURL, fileURLToPath } from 'node:url';
 import cors from 'cors';
 import { setPlatformAdapter, getPluginManager, getToolRegistry, setCustomToolDepPreparer } from '@yan-zhi/core';
 import { ensureToolsInitialized } from './mcp/index.js';
+import { DEFAULT_AGENT_PARAMS, LEGACY_AGENT_MAX_TOKENS } from './constants.js';
 import authRoutes from './auth.js';
 import licenseRoutes from './license.js';
 import { requireLicense, isLicenseGuardEnabled } from './license-guard.js';
@@ -83,7 +84,12 @@ import { syncDingtalkStreamClients } from './services/dingtalk-stream.js';
 import { nodeAdapter } from './node-adapter.js';
 import { db, dataDir } from './db.js';
 import { checkAndQuarantine } from './services/db-integrity.js';
-import { createLogger } from './services/logger.js';
+import { createLogger, configureLogger } from './services/logger.js';
+// ★★★ 日志落盘（2026-10-10）：必须在**其它模块打日志之前**配置好，
+//   否则启动早期的日志（db/插件/迁移）拿不到文件流，只进控制台 → 重启后现场丢失。
+//   ★ 为什么落 DATA_DIR/logs：与 data.db 同根，卸载/清理数据时一并带走，不散落。
+//   ★ 失败不影响业务（configureLogger 内部已 try/catch 并降级为仅控制台）。
+configureLogger(path.join(dataDir, 'logs'));
 const logger = createLogger('index');
 
 setPlatformAdapter(nodeAdapter);
@@ -489,20 +495,33 @@ try {
   if (n) logger.info(`[model] 上下文窗口默认提到 1M，共更新 ${n} 个模型`);
 } catch (e) { logger.warn('[model] 上下文窗口默认值迁移失败:', e); }
 
-// 一次性把智能体 max_tokens 旧默认 2048 提到 65536：
+// 把智能体 max_tokens 旧默认 2048 提到 65536：
 // 2048 会让推理型模型输出中途截断 → tool_call 参数残缺 → 反复重试死循环（2026-09-14 实锤根因）。
 // 只动恰好等于旧默认值 2048 的行，用户手调过的其它值不碰。
+//
+// ★★★ 2026-10-10 修正（从「一次性」改为「幂等每次校验」）—— 实测缺陷：
+//   原实现用 app_config 标记 `agent_max_tokens_64k_v1` **只跑一次**（本机已跑，值=16）。
+//   但 `CREATE TABLE IF NOT EXISTS agent` 的 `max_tokens INTEGER DEFAULT 2048` 是**旧库建表时的默认值**：
+//   SQLite 的 IF NOT EXISTS **不会修改已存在的表** → 该库表定义**至今仍是 2048**（实测 sqlite_master 确认）
+//   → **迁移之后新建的内置 agent**（INSERT 不写 max_tokens，拿表默认）又回到 2048。
+//   实测本机 13 个内置 agent（小说推文/配音/有声/翻译/剪辑/工作流那批）全中招。
+//   ⇒ 后果（用户实测 2026-10-10 20:29）：deepseek-flash 是**推理模型**，光思考就烧 1300+ 字，
+//     2048 被 reasoning 占满 → `content` 恒为空 + `finish_reason='length'` →
+//     用户只看到「助手未返回有效内容」（真因是"输出预算被思考吃光"，不是上游中断）。
+//   ⇒ 幂等化：每次启动都补一遍**内置 agent** 里仍等于旧默认 2048 的行。
+//     ★ 判定用「id 以 `a_builtin_` / `a_wf_` 开头 OR is_builtin=1」：
+//       本机实测 13 个中招者里，4 个 `a_wf_*_pipeline`（内置工作流）的 is_builtin 被标成 0，
+//       只判 is_builtin 会漏掉它们（它们同样由 builtin-workflow-agents.ts 定义、同样不写 max_tokens）。
+//     ★ 用户自建/克隆的 agent 不在这些前缀内 → 即便停在 2048 也是其显式选择，不越权修改。
+// ★ 口径统一（2026-10-10）：旧默认值与目标值都取自 `constants.ts` 的
+//   `LEGACY_AGENT_MAX_TOKENS` / `DEFAULT_AGENT_PARAMS.maxTokens`（此前散落 7 处硬编码，是撕裂的根源）。
 try {
-  const key = 'agent_max_tokens_64k_v1';
-  const done = db.prepare('SELECT value FROM app_config WHERE key = ?').get(key);
-  if (!done) {
-    const n = db.prepare('UPDATE agent SET max_tokens = 65536 WHERE max_tokens = 2048').run().changes;
-    db.prepare(
-      'INSERT INTO app_config (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at',
-    ).run(key, String(n), Date.now());
-    if (n) logger.info(`[agent] max_tokens 默认提到 65536，共更新 ${n} 个智能体`);
-  }
-} catch (e) { logger.warn('[agent] max_tokens 迁移失败:', e); }
+  const n = db.prepare(
+    'UPDATE agent SET max_tokens = ?, updated_at = ? ' +
+    "WHERE max_tokens = ? AND (is_builtin = 1 OR id LIKE 'a_builtin_%' OR id LIKE 'a_wf_%')",
+  ).run(DEFAULT_AGENT_PARAMS.maxTokens, Date.now(), LEGACY_AGENT_MAX_TOKENS).changes;
+  if (n) logger.info(`[agent] max_tokens 旧默认 ${LEGACY_AGENT_MAX_TOKENS} → ${DEFAULT_AGENT_PARAMS.maxTokens}（内置 agent 兜底修复，共 ${n} 个）`);
+} catch (e) { logger.warn('[agent] max_tokens 兜底修复失败:', e); }
 
 // 内置「调研报告生成助手」智能体：幂等 seed（首次创建 / 版本升级覆盖修正）+ LLM 节点模型自动回填
 try {
