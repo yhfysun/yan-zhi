@@ -255,3 +255,38 @@ describe('shared/local-server.ts 的解析规则（与 instance.cjs 口径一致
     assert.match(code, /Number\.isInteger/, '应校验整数');
   });
 });
+// ══════════════════════════════════════════════════════════════════════════
+// 端口冲突防护（2026-10-10，同端口口径下的必需配套）
+//
+// ★★★ 为什么必须钉住：dev 与安装版**同端口 3001** 后，若安装版正在运行，
+//   dev 后端 listen(3001) 会命中 EADDRINUSE。实测故障链（logs/server-error.log）：
+//     app.listen 无 error 处理 → `Unhandled 'error' event` → **进程崩溃**
+//     → 前端 SSE 全断 → 启动时 reapRunningTasks 把 running 任务标 interrupted
+//     → 用户看到「任务执行不下去」。
+//   两处必须同时成立，缺一不可：
+//     ① server 侧：listen 必须有 EADDRINUSE 处理（明确报错 + exit，不崩得莫名其妙）
+//     ② dev 编排：guardProductionPort 的返回值必须**真的生效**（被占则中止启动）
+// ══════════════════════════════════════════════════════════════════════════
+describe('端口冲突防护（同端口 3001 的必需配套）', () => {
+  const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
+  const strip = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '');
+
+  test('★ server 的 app.listen 必须处理 EADDRINUSE（否则 Unhandled error 崩进程）', () => {
+    const src = strip(read('apps/server/src/index.ts'));
+    // 必须把 listen 的返回值接住并挂 error 监听
+    assert.match(src, /(const|let)\s+\w*(httpServer|server)\w*\s*=\s*app\.listen\(/,
+      '★ app.listen 的返回值必须接住（否则无法挂 error 监听）');
+    assert.match(src, /\.on\(\s*['"]error['"]/, '★ 必须监听 listen 的 error 事件');
+    assert.match(src, /EADDRINUSE/, '★ 必须显式识别 EADDRINUSE 并给可行动提示');
+  });
+
+  test('★ bin/dev.mjs 必须让 guardProductionPort 的返回值生效（被占则中止）', () => {
+    const src = strip(read('bin/dev.mjs'));
+    // 必须把返回值接住
+    assert.match(src, /const\s+\w+\s*=\s*await\s+guardProductionPort\(/,
+      '★ guardProductionPort 的返回值必须被接住（旧实现直接忽略 → 明知端口被占仍继续启动）');
+    // 且必须据此中止
+    assert.match(src, /if\s*\(\s*!\s*\w+\s*\)\s*\{[\s\S]{0,400}?process\.exit\(/,
+      '★ 端口被正式版占用时必须中止启动（不能继续跑到 EADDRINUSE）');
+  });
+});

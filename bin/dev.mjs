@@ -662,11 +662,18 @@ async function main() {
   await syncDeps();
   await manageCache();
 
-  // 开发实例端口（默认 3002）必须留给 Electron 主进程内置后端。
-  // ★ 先查是否被**正式版**占用：若被占，只提示不杀（那是用户在用的软件）；
-  //   再清理 dev 自己可能残留的 node/electron（不带 yan-zhi.exe —— 见 SAFE_TO_KILL 注释）。
+  // 开发实例与安装版**同端口**（2026-10-10 起），且共用同一套库 →
+  //   端口被正式版占用时**必须中止启动**，不能像旧版那样只警告然后继续。
+  //   ★ 为什么必须中止（实测故障）：旧实现忽略 guardProductionPort 的返回值继续跑 →
+  //     后端 listen(3001) 命中 EADDRINUSE → 进程崩溃 → 前端 SSE 全断 →
+  //     正在跑的任务全部被标 interrupted（用户看到的就是「任务执行不下去」）。
+  //     见 logs/server-error.log 的 `EADDRINUSE: address already in use 127.0.0.1:3001`。
   if (appName === 'desktop') {
-    await guardProductionPort(DEV_API_PORT, 'backend');
+    const ok = await guardProductionPort(DEV_API_PORT, 'backend');
+    if (!ok) {
+      warn('已中止启动（避免与安装版抢端口/抢库）。若要并存调试，先改端口：YANZHI_API_PORT=3002 pnpm dev:desktop');
+      process.exit(1);
+    }
     await freePort(DEV_API_PORT, 'backend');
   }
   await freePort(app.vitePort, `${appName} vite`);

@@ -413,8 +413,29 @@ if (webDist) {
   logger.info(`[web] 前端静态资源已托管: ${webDist}（局域网访问 http://<本机IP>:${PORT_NUM}）`);
 }
 
-app.listen(PORT_NUM, HOST, () => {
+const httpServer = app.listen(PORT_NUM, HOST, () => {
   logger.info(`后端已启动: http://${HOST === '0.0.0.0' ? '<局域网可达>' : HOST}:${PORT_NUM}`);
+});
+
+/**
+ * 端口占用（EADDRINUSE）必须给出**可行动**的提示，而不是抛 Unhandled error 崩进程。
+ *
+ * ★★★ 为什么（2026-10-10 实测故障）：dev 与安装版**同端口 + 同库**后，
+ *   若安装版正在运行，dev 后端 listen(3001) 会命中 EADDRINUSE；
+ *   旧实现无 error 监听 → `Unhandled 'error' event` → 进程崩溃（见 logs/server-error.log）→
+ *   前端 SSE 全断 → 正在跑的任务全被标 interrupted，用户看到的就是「任务执行不下去」。
+ *   这里明确报错并退出，让编排器/用户立刻知道根因。
+ */
+httpServer.on('error', (err: any) => {
+  if (err?.code === 'EADDRINUSE') {
+    logger.error(
+      `[server] 端口 ${PORT_NUM} 已被占用（EADDRINUSE）—— 多半是**安装版言智正在运行**（dev 与它同端口同库）。` +
+      `请先退出安装版再启动 dev；或临时换端口：YANZHI_API_PORT=3002（注意库仍是同一份）。`,
+    );
+  } else {
+    logger.error('[server] 监听失败:', err?.message || err);
+  }
+  process.exit(1);
 });
 
 // ★★★ 启动时数据库完整性自检 + 损坏库隔离（2026-10-09，P3）：
