@@ -668,10 +668,11 @@
             </el-button>
           </el-tooltip>
           <!-- 7.3 打断入口收敛：停止键移到输入区上方「任务运行中」一行（见 .run-indicator），
-               此处恒为发送键 —— 运行中点击发送即入追加队列（原有行为），不再在两处各摆一个停止。 -->
+               此处恒为发送键 —— 运行中点击发送即入追加队列（原有行为），不再在两处各摆一个停止。
+               ★ disabled 只看 canSubmit（内容+模型），**不看** sending —— 见 canSubmit 注释。 -->
           <el-tooltip :content="store.streaming ? '发送（任务运行中将加入队列）' : '发送 (Enter)'" placement="top">
             <span>
-              <el-button type="primary" :icon="Promotion" :disabled="sending || (!input.trim() && uploadedFiles.length === 0 && quotedUrls.length === 0) || !selectedModelId" @click="send" circle class="send-btn" />
+              <el-button type="primary" :icon="Promotion" :disabled="!canSubmit" @click="send" circle class="send-btn" />
             </span>
           </el-tooltip>
         </div>
@@ -991,6 +992,17 @@ function onInputBlur(e: FocusEvent) {
 //   这两个高频动作也放进来（此前它们只在工具条上，收起态还看不见）。
 const inputMenu = reactive({ visible: false, x: 0, y: 0 });
 const hasInputText = computed(() => !!String(input.value || ''));
+/** 能否提交 —— **唯一**判据：有内容（文字/文件/引用任一）且选了模型。
+ *
+ *  ★★★ 为什么不再看 sending / streaming（2026-10-10，用户实报）：
+ *   - `sending` 是 `send()` 的**防重入锁**（跨"建空间→建会话→落附件"多个 await），
+ *     它的语义是"拦住重复提交"，**不是"禁止发送"**。挂在按钮 disabled 上会让
+ *     用户在那几百 ms~几秒的窗口里**点不动按钮**，尤其任务运行中想追加时最明显。
+ *   - 防重入已由 `send()` 内部的 `if (sending.value) return` + "取走内容即清空 input"
+ *     两道防线保证，按钮无需再重复表达。
+ *   - 任务运行中的追加走 `enqueueMessage`（useChat 2438），本就该允许点击。
+ *   - 唯一保留的额外条件是 `selectedModelId`：没选模型时发出去也没有执行面。
+ */
 const canSubmit = computed(() =>
   (!!input.value.trim() || uploadedFiles.value.length > 0 || quotedUrls.value.length > 0) && !!selectedModelId.value,
 );

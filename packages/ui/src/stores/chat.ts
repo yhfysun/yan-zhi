@@ -371,6 +371,32 @@ export const useChatStore = defineStore('chat', () => {
   const mcpToolAliases = ref<Record<string, Record<string, string>>>({});
   // E11: 浏览器面板步骤日志 —— dispatchToolCall 中 browser_* 工具执行后推送
   const browserSteps = ref<Array<{ action: string; result: string; time: number }>>([]);
+
+  /**
+   * 步骤日志容量与单条长度上限（2026-10-10，用户实报「pageAgent 一跑整个页面卡死」）。
+   *
+   * ★★★ 为什么必须有上限：`browserSteps` 此前是**只增不减、无上限**的数组（8 个 push
+   *   点、零处裁剪）。pageAgent 长任务轻松跑出上百步，且 `result` 直接塞工具返回原文
+   *   —— `browser_get_page_content` 返回整页结构化文本，单条可达数十 KB。结果：
+   *   ① 数组无限膨胀 → 内存持续涨；② 每次 push 都触发依赖它的 computed/watch；
+   *   ③ 面板渲染时 v-for 全量遍历。三者叠加就是「越跑越卡」。
+   *
+   * 保留策略：只留最近 MAX 条（步骤清单/进度是「最近发生了什么」，历史不需要无限回溯）；
+   *   单条 result 超 MAX_LEN 就截断并标注 —— 面板本就不展示全文，截断不影响可读性。
+   */
+  const BROWSER_STEPS_MAX = 120;
+  const BROWSER_STEP_RESULT_MAX = 600;
+  function pushBrowserStep(action: string, result: unknown) {
+    let text = typeof result === 'string' ? result : String(result ?? '');
+    if (text.length > BROWSER_STEP_RESULT_MAX) {
+      text = text.slice(0, BROWSER_STEP_RESULT_MAX) + `…（已省略 ${text.length - BROWSER_STEP_RESULT_MAX} 字）`;
+    }
+    browserSteps.value.push({ action, result: text, time: Date.now() });
+    if (browserSteps.value.length > BROWSER_STEPS_MAX) {
+      browserSteps.value.splice(0, browserSteps.value.length - BROWSER_STEPS_MAX);
+    }
+  }
+
   // Agent 浏览器实况控制：agent 驱动浏览器期间的状态旗标。
   // expanded：预览面板全屏放大（原地 fixed class，DOM 不动 —— Teleport 会搬 webview 导致页面重载）；
   // userDismissed：用户手动收起后本次浏览器任务内不再自动展开（不跟人抢 UI，按钮仍可手动开合）；
@@ -1546,7 +1572,7 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
       try { browserPlatform = getPlatformAdapter().platform; } catch { /* 兜底按 web */ }
       if (browserPlatform === 'mobile' && fullName.startsWith('browser_')) {
         const msgText = `当前平台（移动端）不支持内置浏览器工具 ${fullName}，无法打开/操作网页。请改用 web_search 等方式获取网络信息`;
-        browserSteps.value.push({ action: fullName, result: msgText, time: Date.now() });
+        pushBrowserStep(fullName, msgText);
         return { ok: false, msg: msgText };
       }
       // B 方案：智能体调 browser_navigate 时，桌面端桥接到预览面板的 BrowserView（共用同一浏览器）。
@@ -1570,7 +1596,7 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
               // ★ 记账（2026-10-08）：这条分支是 agent 真新建 tab，收尾时据它判断"还剩几个没收拾"
               markAgentOpenedTab(ctx?.convId || '', nt.tabId);
               const text = `已在新标签页打开。\ntabId=${nt.tabId}\nURL: ${target}\n后续读取该页内容时给 browser_get_page_content / browser_get_page_info 等读取工具传 tabId=${nt.tabId}`;
-              browserSteps.value.push({ action: 'browser_navigate(openInNewTab)', result: text, time: Date.now() });
+              pushBrowserStep('browser_navigate(openInNewTab)', text);
               return { ok: true, result: text };
             }
             // 引擎不支持则回退原覆盖导航
@@ -1593,7 +1619,7 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
             ]) as any;
             const ok = !result?.error;
             const text = ok ? `已导航到 ${result.url || target}` : (result?.error || '导航失败');
-            browserSteps.value.push({ action: 'browser_navigate', result: text, time: Date.now() });
+            pushBrowserStep('browser_navigate', text);
             return { ok, result: text, msg: ok ? undefined : text };
           } catch (e: any) {
             return { ok: false, msg: `IPC 导航失败: ${e?.message || e}` };
@@ -1602,7 +1628,7 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
         // Web 端走后端 Playwright
         const res = await registry.execute('browser_navigate', args as Record<string, unknown>);
         const text = res.content?.[0]?.text ?? '';
-        browserSteps.value.push({ action: 'browser_navigate', result: text, time: Date.now() });
+        pushBrowserStep('browser_navigate', text);
         return { ok: !res.isError, result: text, msg: res.isError ? text : undefined };
       }
 
@@ -1732,7 +1758,7 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
             } else {
               text = result?.error || `${action} 执行失败`;
             }
-            browserSteps.value.push({ action: fullName, result: text, time: Date.now() });
+            pushBrowserStep(fullName, text);
             return { ok, result: text, msg: ok ? undefined : text };
           } catch (e: any) {
             return { ok: false, msg: `IPC 调用失败 (${fullName}): ${e?.message || e}` };
@@ -1848,7 +1874,7 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
       // E11: browser_* 工具执行后推送步骤日志到浏览器面板
       if (fullName.startsWith('browser_')) {
         if (ctx?.convId) markBrowserTaskActive(ctx.convId);
-        browserSteps.value.push({ action: fullName, result: text, time: Date.now() });
+        pushBrowserStep(fullName, text);
       }
       return { ok: !res.isError, result: text, msg: res.isError ? text : undefined };
     }
@@ -2189,14 +2215,14 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
               // ★ 控制信号先于展示信号登记（2026-10-08）：即使下面的步骤数组因断流/重放
               //   被清空，会话级的"浏览器任务进行中"事实也不会丢 → 输入锁不放。
               markBrowserTaskActive(convId);
-              browserSteps.value.push({ action: event.toolName, result: '执行中...', time: Date.now() });
+              pushBrowserStep(event.toolName, '执行中...');
             }
             break;
           }
           case 'tool:result': {
             if (event.toolName?.startsWith('browser_')) {
               markBrowserTaskActive(convId);
-              browserSteps.value.push({ action: event.toolName, result: event.result, time: Date.now() });
+              pushBrowserStep(event.toolName, event.result);
             }
             break;
           }

@@ -1010,7 +1010,35 @@ function createChat() {
     },
   });
 
-  function renderMarkdown(c: string) { return md.render(c || ''); }
+  /**
+   * Markdown 渲染缓存（2026-10-10，用户实报「任务一跑整个应用卡死、聊天记录滚不动」）。
+   *
+   * ★★★ 为什么必须要：`renderMarkdown` 在模板里是**方法调用**
+   *   （`v-html="renderMarkdown(round.user.content)"` 等 4 处），Vue 每次重渲都会重新执行它。
+   *   而长会话（实测某会话 445 条消息、单条最大 15.8KB）在流式期间**每 50ms 就 flush 一次**
+   *   → `messageRounds` 重算 → 整棵消息列表重渲 → **所有历史消息的 Markdown 全部重新解析**。
+   *   几十万字符 × 每秒 20 次 = 主线程直接占死，表现就是「整个应用卡」。
+   *
+   * 策略：`content -> html` 的 LRU 缓存。Markdown 解析是**纯函数**（同样的输入永远同样的
+   *   输出），因此缓存永远安全，不存在脏读。流式中的那条消息内容每次都在变 → 它的 key
+   *   每帧都是新的，不会被误命中；而**所有历史消息**内容不变 → 后续重渲直接命中缓存，
+   *   从「每次全量解析」降级为「每次 O(1) 查找」。
+   */
+  const MD_CACHE_MAX = 300;
+  const mdCache = new Map<string, string>();
+  function renderMarkdown(c: string) {
+    const src = c || '';
+    const hit = mdCache.get(src);
+    if (hit !== undefined) return hit;
+    const html = md.render(src);
+    // LRU：Map 保插入序，超限就丢最旧的一条（而不是 clear，避免抖动时反复全丢）
+    if (mdCache.size >= MD_CACHE_MAX) {
+      const oldest = mdCache.keys().next().value;
+      if (oldest !== undefined) mdCache.delete(oldest);
+    }
+    mdCache.set(src, html);
+    return html;
+  }
 
   // 正文图片：统一缩略。模型在总结 md 里输出 ![](url) 是允许的，但尺寸必须严格受控
   // （此前无 renderer，图片按原始尺寸渲染，大图撑破一屏）。
@@ -1446,8 +1474,15 @@ function createChat() {
   const tokenPercent = computed(() => contextUsagePercent(tokenCount.value, declaredContextWindow.value));
   // 注：原 tokenBarColor（80/100 阈值硬编码 hex）已随右侧用量环一并删除 ——
   // Task 6 的 ContextUsagePill 用 token 化配色按 70/90 阈值自行分档。
-  // 仅当「当前会话」在流式时才锁定发送；其它会话并行运行时，当前空会话仍可输入/发送
-  const canSend = computed(() => (!!input.value.trim() || uploadedFiles.value.length > 0) && !!selectedModelId.value && !store.isConvStreaming(store.currentConvId));
+  /** 能否发送 —— 与 ChatInputArea 的 `canSubmit` **同一口径**（内容 + 模型）。
+   *
+   *  ★★★ 为什么去掉 `!store.isConvStreaming(...)`（2026-10-10）：
+   *   本会话在跑时，发送按钮的语义是「**追加到队列**」（见 sendInner 2438 的
+   *   `enqueueMessage` 分支）—— 那不是"发送被禁止"，而是"换个去向送"。加这个条件
+   *   会导致"任务跑着就发不出追加消息"，与设计意图直接冲突。真正的防重入由
+   *   `sending` 锁 + 「取走内容即清空 input」两道防线保证，不需要在 enable 判据里表达。
+   */
+  const canSend = computed(() => (!!input.value.trim() || uploadedFiles.value.length > 0) && !!selectedModelId.value);
 
   const userRoundIndices = computed<number[]>(() =>
     messageRounds.value
