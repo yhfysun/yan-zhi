@@ -2539,9 +2539,22 @@ async function cdpTypeText(wc, target, text, pressEnter) {
       return { locateError: (focusRes && focusRes.error) || '目标元素定位失败' };
     }
 
-    // ② 真实文本注入：insertText 走编辑管线（派发 beforeinput/input，富文本与受控组件都认）
+    // ② 真实文本注入。
+    //   ★ contenteditable（富文本 / 字节 editor-kit 等受控编辑器）：CDP 的 browser-level
+    //     Input.insertText 常被 React 重置（回读为空、字数计数不涨，抖音创作者中心作品描述框即此）。
+    //     改用 guest 内 execCommand('insertText')：① 渲染进程内闭环，不会像 browser-level 输入那样
+    //     泄漏到宿主聚焦元素（聊天输入框）；② 触发编辑器完整 beforeinput 管线，其内部 model 能同步。
+    //     实测抖音描述框以此方式才被计数识别（39 / 1000）。
+    //   ★ 普通 input/textarea：仍走 CDP 真键盘（中文 IME、受控组件都认）。
     if (text) {
-      await send('Input.insertText', { text: String(text) });
+      if (focusRes && focusRes.isCE) {
+        const ceOk = await wc.executeJavaScript(
+          `(function(){try{return document.execCommand('insertText',false,${JSON.stringify(String(text))});}catch(e){return false;}})()`
+        ).catch(() => false);
+        if (!ceOk) await send('Input.insertText', { text: String(text) });
+      } else {
+        await send('Input.insertText', { text: String(text) });
+      }
     }
 
     // ③ 回车（提交/搜索）：必须用真实按键，不是 JS 造 KeyboardEvent ——
@@ -2553,7 +2566,9 @@ async function cdpTypeText(wc, target, text, pressEnter) {
       await send('Input.dispatchKeyEvent', { type: 'keyUp', ...key });
     }
 
-    // ④ 回读核验：让调用方/模型知道"到底有没有写进去"（与 JS 实现同一契约）
+    // ④ 回读核验 + 失败兜底：CDP 真键盘若未生效（受控组件重置 / 聚焦错配到宿主），
+    //   退回 guest 内 typeIn（renderer-scoped，不会泄漏到宿主；已按 contenteditable / 表单分别
+    //   走 execCommand / IME 序列），保证"替换语义"输入真正落到目标元素。
     const verify = await wc.executeJavaScript(`(function(){
       var sel=${JSON.stringify(sel)};var idx=${idx};
       var el=null;
@@ -2564,16 +2579,32 @@ async function cdpTypeText(wc, target, text, pressEnter) {
       return el.isContentEditable===true?(el.textContent||''):(el.value!=null?String(el.value):'');
     })()`).catch(() => '');
 
-    const got = String(verify ?? '');
+    let got = String(verify ?? '');
     const expected = String(text || '');
+    let applied = got === expected;
+    let fallback = false;
+    if (!applied && text) {
+      const fb = await wc.executeJavaScript(`(function(){
+        var A=window.__yzAssistant; var el=null;
+        var idx=${idx}; var s=${JSON.stringify(sel)};
+        if(idx>=0){el=window.__yzElements&&window.__yzElements[idx];}
+        if(!el&&s){try{el=document.querySelector(s);}catch(e){}}
+        if(!el){el=document.activeElement;}
+        if(!el||!A)return {applied:false,value:''};
+        var r=A.typeIn(el,${JSON.stringify(String(text))});
+        return {applied:r.applied,value:r.value};
+      })()`).catch(() => ({ applied: false, value: '' }));
+      if (fb && fb.applied) { applied = true; got = String(fb.value || ''); fallback = true; }
+    }
+
     return {
-      applied: got === expected,
+      applied,
       typed: expected.length,
       value: got.slice(0, 120),
-      via: 'cdp-keyboard',
-      ...(got !== expected
-        ? { hint: 'CDP 真键盘已注入，但回读值与期望不一致（页面可能做了格式化/富文本包装，或输入被拦截）。建议用 browser_get_page_content 核验输入框当前值。' }
-        : {}),
+      via: fallback ? 'js-typein' : (focusRes && focusRes.isCE ? 'ce-execcommand' : 'cdp-keyboard'),
+      ...(applied
+        ? {}
+        : { hint: '输入未生效（页面可能做了格式化/受控组件重置/输入被拦截）。已尝试 guest 内 typeIn 兜底仍失败，建议用 browser_get_page_content 核验输入框当前值。' }),
     };
   } catch (e) {
     // CDP 不可用（未就绪/被占用/引擎不支持）→ 返回 null 让调用方回落 JS 实现
@@ -2867,25 +2898,23 @@ async function runBrowserAction(convId, tabId, action, args) {
           var a=${JSON.stringify(args)};
           var A=window.__yzAssistant;
           function clickEl(el){
-            el.scrollIntoView({behavior:'smooth',block:'center'});
-            return new Promise(function(res){
-              setTimeout(function(){
-                var rect=el.getBoundingClientRect();
-                var doc=el.ownerDocument;
-                if(doc===document){
-                  var x=rect.x+rect.width/2,y=rect.y+rect.height/2;
-                  var tag=A.clickAt(x,y);
-                  res({success:true,via:'real-mouse',tag:tag});
-                }else{
-                  // iframe 内元素：坐标相对 iframe 视口，改在元素上直接派发鼠标事件
-                  var w=doc.defaultView;
-                  var o={bubbles:true,cancelable:true,clientX:rect.x+rect.width/2,clientY:rect.y+rect.height/2,view:w};
-                  el.dispatchEvent(new MouseEvent('mousemove',o));el.dispatchEvent(new MouseEvent('mousedown',o));
-                  el.dispatchEvent(new MouseEvent('mouseup',o));el.dispatchEvent(new MouseEvent('click',o));
-                  res({success:true,via:'dom-events',iframe:true,tag:el.tagName.toLowerCase()});
-                }
-              },300);
-            });
+            // 先滚入视口（instant，避免 smooth 异步未到位导致后续坐标过期）
+            try{el.scrollIntoView({block:'center'});}catch(e){}
+            // ★ 优先 DOM 点击：不受视口裁切影响（被裁切但已渲染的元素也能触发），
+            //   直接派发到目标元素，不依赖坐标换算。坐标点击在元素被裁切/位于视口外时
+            //   会落在视口外（elementFromPoint 返回 null）而无效（抖音"发布"按钮实测）。
+            try{
+              el.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true,view:window}));
+              el.dispatchEvent(new MouseEvent('mouseup',{bubbles:true,cancelable:true,view:window}));
+              el.click(); // 原生 click：触发默认动作（onClick / 链接跳转 / 表单提交）
+              return Promise.resolve({success:true,via:'dom-click',tag:el.tagName.toLowerCase()});
+            }catch(e){
+              // 兜底：真实鼠标坐标点击（极少数只认真实坐标的场景）
+              var rect=el.getBoundingClientRect();
+              var x=rect.x+rect.width/2,y=rect.y+rect.height/2;
+              var tag=A.clickAt(x,y);
+              return Promise.resolve({success:true,via:'real-mouse',tag:tag});
+            }
           }
           function notFound(sel){return{error:'元素未找到: '+sel,hint:'建议先调用 browser_get_page_info 获取编号元素列表，再用 index 参数定位'};}
           if(a.index!=null){
