@@ -22,21 +22,24 @@ const inst = require('../instance.cjs');
 // 本文件在 apps/desktop/test/ → 仓库根要上溯三层
 const ROOT = path.resolve(__dirname, '..', '..', '..');
 
-describe('端口解析：开发与生产必须错开', () => {
+describe('端口解析：开发与生产同端口（2026-10-10 共用一套库口径）', () => {
   test('生产（无 env）用 3001', () => {
     assert.strictEqual(inst.resolveApiPort({}), inst.DEFAULT_API_PORT);
     assert.strictEqual(inst.resolveApiPort({}), 3001);
   });
 
-  test('开发实例（YANZHI_DEV_INSTANCE=1）用 3002，不得与生产同端口', () => {
+  test('★ 开发实例（YANZHI_DEV_INSTANCE=1）与生产**同端口 3001**', () => {
     const p = inst.resolveApiPort({ YANZHI_DEV_INSTANCE: '1' });
     assert.strictEqual(p, inst.DEV_API_PORT);
-    assert.strictEqual(p, 3002);
-    // 核心不变量：两实例端口必须不同，否则必然互相顶替
-    assert.notStrictEqual(inst.DEV_API_PORT, inst.DEFAULT_API_PORT);
+    // ★★★ 2026-10-10 口径反转：此前要求"必须错开"，现按用户诉求改为"必须相同"。
+    //   理由：dev 与安装版共用同一套 data.db，端口不同会让前端连着另一个库，
+    //   用户诉求是「dev 启动就能测真实数据」。
+    assert.strictEqual(p, 3001);
+    assert.strictEqual(inst.DEV_API_PORT, inst.DEFAULT_API_PORT,
+      'dev 与生产端口必须相同（共用一套库的前提）');
   });
 
-  test('显式 YANZHI_API_PORT 优先于实例默认（dev 编排器据此下发）', () => {
+  test('显式 YANZHI_API_PORT 优先于实例默认（临时并存时用它错开）', () => {
     assert.strictEqual(inst.resolveApiPort({ YANZHI_API_PORT: '4001' }), 4001);
     assert.strictEqual(inst.resolveApiPort({ YANZHI_DEV_INSTANCE: '1', YANZHI_API_PORT: '4001' }), 4001);
   });
@@ -73,10 +76,12 @@ describe('实例判定：判据是显式环境变量而非 app.isPackaged', () =
     }
   });
 
-  test('userData 目录名两实例必须不同', () => {
+  test('★ userData 目录名两实例**必须相同**（共用一套数据）', () => {
     assert.strictEqual(inst.userDataName(false), 'yan-zhi');
-    assert.strictEqual(inst.userDataName(true), 'yan-zhi-dev');
-    assert.notStrictEqual(inst.userDataName(true), inst.userDataName(false));
+    // ★★★ 2026-10-10 口径反转：此前是 'yan-zhi-dev'（隔离），现按用户诉求共用。
+    assert.strictEqual(inst.userDataName(true), 'yan-zhi');
+    assert.strictEqual(inst.userDataName(true), inst.userDataName(false),
+      'dev 与安装版必须共用同一 userData（库/密钥/localStorage 同一份）');
   });
 });
 
@@ -90,12 +95,12 @@ describe('目录解析：状态隔离，大文件缓存共用', () => {
     assert.strictEqual(d.seedFrom, null, '生产实例不应从任何地方引导复制');
   });
 
-  test('开发实例：userData 用 yan-zhi-dev，但共享目录仍是生产的 yan-zhi', () => {
+  test('★ 开发实例：userData 与共享目录**都指向生产的 yan-zhi**（共用）', () => {
     const d = inst.resolveUserDataDirs(APP_DATA, true);
-    assert.strictEqual(d.userData, path.join(APP_DATA, 'yan-zhi-dev'));
-    // ★ 关键：models / bin 走生产目录 → 不因切实例而丢 1.1GB 模型（避免变成功能回归）
+    // ★★★ 2026-10-10：dev 不再用 yan-zhi-dev，与生产同为 yan-zhi（用户诉求：共用一套库）
+    assert.strictEqual(d.userData, path.join(APP_DATA, 'yan-zhi'));
+    // models / bin 仍走生产目录 → 不因切实例而丢 1.1GB 模型
     assert.strictEqual(d.shared, path.join(APP_DATA, 'yan-zhi'));
-    assert.notStrictEqual(d.userData, d.shared);
     assert.strictEqual(d.shared, inst.sharedDataName() && path.join(APP_DATA, inst.sharedDataName()));
   });
 
@@ -103,9 +108,9 @@ describe('目录解析：状态隔离，大文件缓存共用', () => {
     assert.strictEqual(inst.sharedDataName(), 'yan-zhi');
   });
 
-  test('开发实例的 seedFrom 指向生产目录（首次引导状态作起点）', () => {
+  test('★ 开发实例 userData 与生产重合 → seedFrom 为 null（已是同一份，无需引导复制）', () => {
     const d = inst.resolveUserDataDirs(APP_DATA, true);
-    assert.strictEqual(d.seedFrom, path.join(APP_DATA, 'yan-zhi'));
+    assert.strictEqual(d.seedFrom, null, 'userData 与 shared 重合时不应再 seedFrom（会自我复制）');
   });
 });
 
@@ -128,19 +133,16 @@ describe('静态守门：源码里不得再出现「把正式版列入可杀名�
     }
   });
 
-  test('dev.mjs 不得再把 dev 端口写成 3001（应与生产错开）', () => {
+  test('★ dev.mjs 的端口治理走 DEV_API_PORT 常量（2026-10-10 起该常量 = 3001）', () => {
     const src = strip(read('bin/dev.mjs'));
-    // 不得出现「按 3001 做端口治理」的字面量调用（那是正式版的端口）
-    assert.ok(!/freePort\(\s*3001\b/.test(src), 'freePort(3001) 会误伤正式版后端');
-    assert.ok(!/guardProductionPort\(\s*3001\b/.test(src), 'guardProductionPort 不该守 3001');
-    assert.ok(!/waitForPort\(\s*3001\b/.test(src), 'waitForPort(3001) 探测的是正式版端口，dev 应探测自己的端口');
-    // 且必须真的用上开发端口常量（否则"改成常量"可能只是把调用删了）
-    assert.match(src, /freePort\(\s*DEV_API_PORT/, '应按 DEV_API_PORT 清理 dev 自己的残留');
+    // ★★★ 口径反转：此前断言"不得写 3001、必须错开"，现 dev 与生产**同为 3001**。
+    //   仍要求：一律走常量而非裸字面量（便于临时用 YANZHI_API_PORT 错开）。
+    assert.match(src, /freePort\(\s*DEV_API_PORT/, '应按 DEV_API_PORT 清理 dev 残留');
     assert.match(src, /waitForPort\(\s*DEV_API_PORT/, '应探测 DEV_API_PORT 就绪');
-    // DEV_API_PORT 与生产端口必须不同
+    assert.match(src, /guardProductionPort\(\s*DEV_API_PORT/, '应按 DEV_API_PORT 守卫正式版占用');
     const m = /const DEV_API_PORT\s*=\s*(\d+)/.exec(src);
     assert.ok(m, '未找到 DEV_API_PORT 声明');
-    assert.notStrictEqual(m[1], '3001', 'DEV_API_PORT 必须与生产端口 3001 错开');
+    assert.strictEqual(m[1], '3001', 'dev 端口须与生产同为 3001（共用一套库的前提）');
   });
 
   test('dev.mjs 启动 Electron 时注入了实例隔离两件套', () => {
@@ -233,11 +235,11 @@ describe('shared/local-server.ts 的解析规则（与 instance.cjs 口径一致
   const strip = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '');
   const code = strip(src);
 
-  test('默认 3001 / 开发 3002 常量与 instance.cjs 一致', () => {
+  test('★ 端口常量与 instance.cjs 一致（dev 与生产同为 3001）', () => {
     assert.match(code, /DEFAULT_API_PORT\s*=\s*3001/);
-    assert.match(code, /DEV_API_PORT\s*=\s*3002/);
+    assert.match(code, /DEV_API_PORT\s*=\s*DEFAULT_API_PORT/);
     assert.strictEqual(inst.DEFAULT_API_PORT, 3001);
-    assert.strictEqual(inst.DEV_API_PORT, 3002);
+    assert.strictEqual(inst.DEV_API_PORT, 3001);
   });
 
   test('优先级：electronAPI.apiPort → env → 默认', () => {

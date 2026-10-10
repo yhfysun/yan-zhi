@@ -16,7 +16,7 @@
  * 做了什么:
  *   1. 依赖指纹比对：lockfile / workspace package.json 变化才 pnpm install
  *   2. 缓存指纹比对：依赖或 vite 配置变化才删 node_modules/.vite，其余情况直接复用（启动快）
- *   3. 端口治理：1420 / 3002 / 5173 被本项目 **dev 残留进程**占用时清理
+ *   3. 端口治理：1420 / 3001 / 5173 被本项目 **dev 残留进程**占用时清理（3001 被已安装正式版占用则只提示，不杀）
  *   4. 就绪探测：Vite 返回 200 后才拉起 Electron，杜绝白屏
  *   5. 退出清理：Ctrl+C 或关闭时连带杀掉子进程树
  */
@@ -44,14 +44,13 @@ const CACHE_DIR = path.join(ROOT, '.workbuddy', 'dev-cache');
  *   `apps/server/data.db`（**源码目录里**）。后果：dev 与安装版各写一份库、数据互不可见；
  *   实测该库还发生过 B 树损坏（conversation/message）→ 会话接口全 500。
  *
- * ★ 目录选 `%APPDATA%/yan-zhi-dev/server-data`，与 apps/desktop/instance.cjs 的
- *   `DEV_USERDATA_NAME = 'yan-zhi-dev'` **同源**（Electron 的 userData 就是它，
- *   后端数据放其 server-data 子目录）—— 与安装版 `yan-zhi/server-data` 布局对称：
- *   同机可以同时跑「安装版」与「dev 版」，各用各的库，互不干扰。
- *   （不选「项目内 apps/server/dev-data」：那会让 Electron 的 keyring/localStorage
- *     落在 %APPDATA%/yan-zhi-dev，而 DB 落在项目里，两处分裂、备份时容易漏。）
+ * ★★★ 2026-10-10 变更（用户诉求「dev 与安装版共用一套库，dev 启动就能测真实数据」）：
+ *   目录**改为与安装版同名** `yan-zhi`（此前是 `yan-zhi-dev`）→
+ *   dev 与安装版读写**同一份** `%APPDATA%/yan-zhi/server-data/data.db`。
+ *   配套：instance.cjs 的 DEV_USERDATA_NAME / DEV_API_PORT 也同步同名同端口。
+ *   ⚠️ 代价：dev 的改动**直接作用于真实数据**（用户已确认接受）；两实例不能同时启动。
  */
-const DEV_USERDATA_NAME = 'yan-zhi-dev'; // 与 instance.cjs 的 DEV_USERDATA_NAME 同值（注释同步）
+const DEV_USERDATA_NAME = 'yan-zhi'; // 与 instance.cjs 的 DEV_USERDATA_NAME 同值（注释同步）
 
 function resolveDevDataDir() {
   const explicit = (process.env.DATA_DIR || '').trim();
@@ -247,23 +246,26 @@ function processName(pid) {
  *     用户看到的现象就是「我都装好了，你改代码它还在变」。
  *   **把用户正在用的正式版当"残留进程"清掉，是设计错误，不是顺手。**
  *
- * 现在：两个实例各占一个端口（生产 3001 / 开发 3002）→ 互不干扰，可同时运行。
- * 端口被**正式版**占用时不再杀，只提示（见 guardProductionPort）。
+ * 现在（2026-10-10 起）：dev 与安装版**共用 3001 与同一套库**（用户诉求：
+ *   「我直接 dev 启动就能测试」）→ 两实例**不能同时运行**。端口被**正式版**占用时
+ *   不杀，明确提示用户先退出正式版（见 guardProductionPort）。
+ *   ⚠️ 这与 2026-09-27 的隔离口径是**反向**的：那时为了避免"dev 顶替安装版"而错开端口，
+ *   现在为了"dev 能看到真实数据"而主动共用 —— 用户已确认接受这个取舍。
  */
 const SAFE_TO_KILL = /^(node|electron|tsx|vite|esbuild)(\.exe)?$/i;
 
 /** 正式版进程名 —— 命中即说明用户在用安装版，绝不能杀 */
 const PRODUCTION_PROCESS = /^(yan-zhi|言智)(\.exe)?$/i;
 
-/** 本实例（开发）使用的后端端口 —— 与生产错开，见 apps/desktop/instance.cjs */
-const DEV_API_PORT = 3002;
+/** 本实例（开发）使用的后端端口 —— 与安装版**同端口**（共用一套库），见 apps/desktop/instance.cjs */
+const DEV_API_PORT = 3001;
 
 /**
  * 目标端口被**安装版**占用时的处置：**不杀，明确提示**。
  *
  * 为什么不能杀：那是用户正在用的软件（可能正跑着任务）。杀它 = 用户的软件莫名退出。
- * 为什么必须提示：如果我们继续往这个端口上塞后端，两个实例的服务会互相顶替 ——
- * 正是本次要修的 bug。所以宁可让用户知道"端口被正式版占着"，也不要悄悄抢。
+ * 为什么必须提示：dev 与安装版现在是**同一套数据 + 同一端口**，同时跑必然互相顶替。
+ *   所以提示用户**先退出正式版**，而不是像旧版那样"自动改用另一个端口"。
  *
  * @returns true 表示端口可用（无占用 或 已成功释放 dev 残留）；false 表示被正式版占着
  */
@@ -273,7 +275,7 @@ async function guardProductionPort(port, label) {
   const prodPids = pids.filter((pid) => PRODUCTION_PROCESS.test(processName(pid)));
   if (!prodPids.length) return true;
   warn(`端口 ${port}（${label}）被**已安装的言智正式版**占用（pid=${prodPids.join(',')}）。`);
-  warn(`  → 开发实例改用 ${DEV_API_PORT}，不会影响正式版；若你要开发实例也用 ${port}，请先退出正式版。`);
+  warn(`  → dev 与正式版现在共用同一套数据库与端口，请**先退出正式版**再启动 dev。`);
   return false;
 }
 
@@ -363,12 +365,15 @@ function isPortOpen(port, timeoutMs = 800) {
  *  写在 userData/DevToolsActivePort 首行 —— 固定 9222 会被残留进程抢占导致抓取全灭。 */
 function readDevToolsActivePortEndpoint() {
   const home = process.env.USERPROFILE || process.env.HOME || '';
-  const candidates =
+  // ★ 2026-10-10：dev 与安装版共用 userData（DEV_USERDATA_NAME === 'yan-zhi'），
+  //   不再需要「dev 目录 + 生产目录」双候选，直接用统一目录名。
+  const appData =
     process.platform === 'darwin'
-      ? [path.join(home, 'Library', 'Application Support', 'yan-zhi-dev'), path.join(home, 'Library', 'Application Support', 'yan-zhi')]
+      ? path.join(home, 'Library', 'Application Support')
       : process.platform === 'win32'
-        ? [path.join(process.env.APPDATA || path.join(home, 'AppData', 'Roaming'), 'yan-zhi-dev'), path.join(process.env.APPDATA || path.join(home, 'AppData', 'Roaming'), 'yan-zhi')]
-        : [path.join(home, '.config', 'yan-zhi-dev'), path.join(home, '.config', 'yan-zhi')];
+        ? (process.env.APPDATA || path.join(home, 'AppData', 'Roaming'))
+        : (process.env.XDG_CONFIG_HOME || path.join(home, '.config'));
+  const candidates = [path.join(appData, DEV_USERDATA_NAME)];
   for (const dir of candidates) {
     try {
       const port = parseInt(fs.readFileSync(path.join(dir, 'DevToolsActivePort'), 'utf8').split(/\r?\n/)[0], 10);
@@ -693,10 +698,11 @@ async function main() {
   for (const k of Object.keys(process.env)) {
     if (/^ELECTRON_/i.test(k)) electronEnv[k] = undefined; // 置 undefined 即从子环境删除
   }
-  // ★ 实例隔离三件套（主进程据此选 userData 与端口，见 apps/desktop/instance.cjs）：
-  //   YANZHI_DEV_INSTANCE → userData 用 yan-zhi-dev（不碰安装版的 yan-zhi）
-  //   YANZHI_API_PORT     → 后端监听 3002（不占用正式版的 3001）
-  //   两者缺一都会退回"共用"，等于没隔离。
+  // ★ 开发实例标志（主进程据此区分**行为**，见 apps/desktop/instance.cjs）：
+  //   YANZHI_DEV_INSTANCE → 标记为开发实例（资源加载/调试开关等走 dev 分支）
+  //   YANZHI_API_PORT     → 后端监听端口（2026-10-10 起与安装版**同端口 3001**）
+  //   ⚠️ 注意：userData 与 DATA_DIR 现在与安装版**共用**（用户诉求：dev 直接测真实数据），
+  //      所以不再有"不碰安装版"的隔离语义 —— 两实例不能同时启动。
   electronEnv.YANZHI_DEV_INSTANCE = '1';
   electronEnv.YANZHI_API_PORT = String(DEV_API_PORT);
   // ★ 数据目录也下发（main.cjs 会在 app.getPath('userData') 基础上用 server-data 子目录；
@@ -704,7 +710,7 @@ async function main() {
   //   不会因为一个走 Electron、一个走裸 server 就落到两个不同的库上）。
   electronEnv.DATA_DIR = DEV_DATA_DIR;
   log('  env 净化: 已剥离 ELECTRON_* 变量，NODE_OPTIONS 置空');
-  log(`  实例隔离: YANZHI_DEV_INSTANCE=1, YANZHI_API_PORT=${DEV_API_PORT}（与安装版 3001 / yan-zhi 分开）`);
+  log(`  实例: YANZHI_DEV_INSTANCE=1, YANZHI_API_PORT=${DEV_API_PORT}（与安装版共用 yan-zhi 数据目录与端口）`);
   log(`  数据目录: DATA_DIR=${DEV_DATA_DIR}`);
 
   // 清理残留 Electron 主进程（旧窗口不占端口，freePort 杀不到；不清理会叠窗口导致看到旧界面）

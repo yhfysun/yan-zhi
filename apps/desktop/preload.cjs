@@ -3,9 +3,10 @@ const { ipcRenderer, contextBridge, webUtils } = require('electron');
 /**
  * 本实例的后端 API 端口 + 基址。
  *
- * ★★★ 必须由主进程下发（additionalArguments），**不在渲染层硬编码 3001**。
- *   原因：开发实例监听 3002、安装版监听 3001，两个实例可同时运行；
- *   若前端写死 3001，开发实例界面会去请求**安装版的后端**（数据串台、看着像"软件自己在变"）。
+ * ★★★ 必须由主进程下发（additionalArguments），**不在渲染层硬编码端口**。
+ *   原因：端口是"实例级"配置（2026-10-10 起 dev 与安装版同为 3001；
+ *   可用 YANZHI_API_PORT 临时错开做并存调试）；
+ *   若前端写死，实例切换时界面会去请求**另一个实例的后端**（数据串台、看着像"软件自己在变"）。
  *
  * 取值顺序：主进程下发的 `--yz-api-port=<n>` → 环境变量 → 3001（兜底）。
  * process.argv 在 preload（有 node 能力）里可读；渲染层拿不到 env，只能走 contextBridge。

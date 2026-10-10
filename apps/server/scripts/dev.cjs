@@ -46,12 +46,15 @@ const tsxCli = path.join(serverDir, 'node_modules', 'tsx', 'dist', 'cli.mjs');
  *
  * ★ 优先级：
  *   1. 显式 DATA_DIR（由 bin/dev.mjs / main.cjs 或用户/CI 下发，最高优先）
- *   2. `%APPDATA%/yan-zhi-dev/server-data`（本脚本被**单独**调用时的兜底，
+ *   2. `%APPDATA%/yan-zhi/server-data`（本脚本被**单独**调用时的兜底，
  *      与 bin/dev.mjs 的目录口径一致 —— 两处不一致会让同一个 dev 实例
  *      因启动方式不同而用两个库）
  * 判据只有一条：库**不许再落在 apps/server/ 根**（源码目录）。
+ *
+ * ★★★ 2026-10-10：目录名从 'yan-zhi-dev' 改为 'yan-zhi'，与安装版**共用同一套库**
+ *   （用户诉求：「我直接 dev 启动就能测试」）。见 bin/dev.mjs 顶部说明。
  */
-const DEV_USERDATA_NAME = 'yan-zhi-dev'; // 与 apps/desktop/instance.cjs 同值
+const DEV_USERDATA_NAME = 'yan-zhi'; // 与 apps/desktop/instance.cjs 同值
 function resolveDevDataDir() {
   const explicit = (process.env.DATA_DIR || '').trim();
   if (explicit) return explicit;

@@ -71,7 +71,8 @@ pnpm-debug.log*
 # db 的临时导出（sql.js 驱动在 flush 时会写 data.db.tmp；*.db 通配对 `.db.tmp` 不生效）
 *.db.tmp
 
-# 开发模式的后端数据目录（DATA_DIR 兜底落点；正常应指到 %APPDATA%/yan-zhi-dev/server-data）
+# 开发模式的后端数据目录（DATA_DIR 兜底落点；正常应指到 %APPDATA%/yan-zhi/server-data，
+# 2026-10-10 起与安装版**共用**同一目录 —— 库里不该再出现源码目录下的 data.db）
 apps/server/dev-data/
 
 # Corepack

@@ -10,8 +10,52 @@ import { createLogger } from './services/logger.js';
 const logger = createLogger('db');
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-// dataDir 单一真相源：以 db.ts 所在目录为基准，其他模块一律 import 复用，禁止自行重算
-export const dataDir = process.env.DATA_DIR || path.join(__dirname, '..');
+
+/**
+ * 数据目录（单一真相源，其他模块一律 import 复用）。
+ *
+ * ★★★ 兜底策略加固（2026-10-10）：**绝不再静默落到源码目录**。
+ *
+ * 历史故障：旧实现是 `process.env.DATA_DIR || path.join(__dirname, '..')`，
+ *   即没有 DATA_DIR 时库落到 `apps/server/data.db`（**源码目录里**）。事故链：
+ *   ① dev 编排器起初没注入 DATA_DIR → dev 与安装版各写一份库、数据互不可见；
+ *   ② 该库还发生过 B 树损坏（knowledge_base/doc 迁移中断留下孤儿索引）→ 会话接口全 500；
+ *   ③ 归并时才发现「所谓两套库」里那套是坏的（见 docs/db-merge-dev-prod.md）。
+ *
+ * 现在：没显式 DATA_DIR 时**优先落到 %APPDATA%/yan-zhi/server-data**（与安装版一致），
+ *   并打醒目警告。只有在连用户目录都取不到（极端环境）时才回退源码目录，且明确报错级别。
+ *   —— 宁可库落到「和安装版同一个正确位置」，也不要在源码目录里默默长出一份新库。
+ */
+function resolveDataDir(): string {
+  const explicit = (process.env.DATA_DIR || '').trim();
+  if (explicit) return explicit;
+
+  const home = process.env.USERPROFILE || process.env.HOME || '';
+  const appData =
+    process.platform === 'win32'
+      ? (process.env.APPDATA || (home ? path.join(home, 'AppData', 'Roaming') : ''))
+      : process.platform === 'darwin'
+        ? (home ? path.join(home, 'Library', 'Application Support') : '')
+        : (process.env.XDG_CONFIG_HOME || (home ? path.join(home, '.config') : ''));
+
+  if (appData) {
+    const fallback = path.join(appData, 'yan-zhi', 'server-data');
+    logger.warn(
+      `[db] 未注入 DATA_DIR —— 兜底使用 ${fallback}（与安装版共用）。` +
+      `正常路径应由 bin/dev.mjs / main.cjs 下发；若你在源码目录看到 data.db，说明兜底失效，请报障。`,
+    );
+    return fallback;
+  }
+
+  const legacy = path.join(__dirname, '..');
+  logger.error(
+    `[db] 无法解析用户数据目录，回退到源码目录 ${legacy} —— 这会让库混入仓库、` +
+    `且 dev 与安装版数据分裂。请显式设置 DATA_DIR 环境变量。`,
+  );
+  return legacy;
+}
+
+export const dataDir = resolveDataDir();
 fs.mkdirSync(dataDir, { recursive: true });
 const DB_PATH = path.join(dataDir, 'data.db');
 

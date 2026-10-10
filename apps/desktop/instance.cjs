@@ -20,12 +20,30 @@ const path = require('path');
 
 /** 生产默认端口（与 server/src/index.ts 的 PORT 默认值一致） */
 const DEFAULT_API_PORT = 3001;
-/** 开发实例默认端口 —— 与生产错开，避免争用与误杀 */
-const DEV_API_PORT = 3002;
+/**
+ * 开发实例默认端口。
+ *
+ * ★★★ 2026-10-10 改为与生产**同端口 3001**（用户诉求：「我直接 dev 启动就能测试」）。
+ *   此前是 3002，为的是「dev 与安装版可同时开、互不误杀」。但代价是两套库、两套数据，
+ *   用户实测受不了（dev 里看不到真实数据）。现在改成共用一套库 + 同端口 ——
+ *   **dev 与安装版不能同时启动**（会抢端口与单实例锁），这是有意为之。
+ *   若将来需临时并存，用 `YANZHI_API_PORT=3002` 环境变量覆盖即可（见 resolveApiPort）。
+ */
+const DEV_API_PORT = DEFAULT_API_PORT;
 /** 默认生产 userData 目录名（历史数据都在这里，不能改名） */
 const DEFAULT_USERDATA_NAME = 'yan-zhi';
-/** 开发实例的 userData 目录名 —— 与生产分开，互不污染 */
-const DEV_USERDATA_NAME = 'yan-zhi-dev';
+/**
+ * 开发实例的 userData 目录名。
+ *
+ * ★★★ 2026-10-10 改为与生产**同名**（用户诉求：dev 与安装版共用同一套数据）。
+ *   此前是 'yan-zhi-dev'，导致 dev 库落在 `%APPDATA%/yan-zhi-dev/server-data`，
+ *   与安装版的真实数据完全隔离 —— 用户实测「dev 启动看不到我的会话」。
+ *   现在两侧同名 → **同一份 data.db / keyring / localStorage / 浏览器存储**，
+ *   dev 改数据就是在改真实数据（用户已确认接受，不做 schema 保护）。
+ *   注意：`isDevInstance()` 仍按 YANZHI_DEV_INSTANCE 环境变量判定，用于区分**行为**
+ *   （如开发模式的资源加载），不再用于区分**数据位置**。
+ */
+const DEV_USERDATA_NAME = DEFAULT_USERDATA_NAME;
 
 /**
  * 解析 API 端口。
@@ -86,15 +104,23 @@ function sharedDataName() {
  *
  * 目的：用户不用在开发实例里重新配模型/授权码才能调试。
  * 复制而非移动，且仅首次（目标已存在就跳过）→ 不会反复覆盖用户在 dev 里的改动。
+ *
+ * ★★★ 2026-10-10：dev 与生产共用同一 userData 后，**seedFrom 恒为 null**
+ *   —— 两侧本就是同一个目录，若还返回"生产目录"就会变成**自己复制到自己**
+ *   （cpSync 递归自我拷贝，轻则报错重则撑爆磁盘）。判据用「路径是否相同」而非 isDev，
+ *   避免将来再有人改名时重新踩坑。
  */
 function resolveUserDataDirs(appDataPath, isDev) {
   const name = userDataName(isDev);
+  const userData = path.join(appDataPath, name);
+  const shared = path.join(appDataPath, sharedDataName());
+  const seedCandidate = path.join(appDataPath, DEFAULT_USERDATA_NAME);
   return {
-    userData: path.join(appDataPath, name),
+    userData,
     /** 大文件缓存目录（models/bin）：固定指向生产目录，两实例共用 */
-    shared: path.join(appDataPath, sharedDataName()),
-    /** 是否需要从生产目录引导复制（仅 dev 且自身目录不存在时） */
-    seedFrom: isDev ? path.join(appDataPath, DEFAULT_USERDATA_NAME) : null,
+    shared,
+    /** 是否需要从生产目录引导复制 —— 仅当自身目录与生产目录**不同**时才有意义 */
+    seedFrom: userData === seedCandidate ? null : seedCandidate,
   };
 }
 

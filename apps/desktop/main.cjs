@@ -15,7 +15,8 @@ let mainWindow = null;
 const IS_DEV_INSTANCE = inst.isDevInstance(process.env);
 /**
  * 本实例后端监听端口。
- * ★ 开发实例默认 3002、生产 3001 —— 两个实例可同时运行，互不顶替。
+ * ★ 2026-10-10 起：开发实例与安装版**同端口 3001**（用户诉求：dev 直接测真实数据）。
+ *   两实例不能同时运行；临时并存可用 YANZHI_API_PORT 覆盖。
  * 渲染层通过 preload 暴露的 electronAPI.apiPort 取同一个值。
  */
 const API_PORT = inst.resolveApiPort(process.env);
@@ -28,10 +29,13 @@ const API_ORIGIN = 'http://127.0.0.1:' + API_PORT;
 // 这里显式固定为 %APPDATA%\yan-zhi，首次启动时把历史目录整体搬入，
 // 避免升级后数据库、本地模型"全丢"。必须在 ready 前执行。
 //
-// ★★★ 实例隔离（2026-09-27）：开发实例用 `yan-zhi-dev`，与安装版的 `yan-zhi` 分开，
-//   否则两个实例共用 localStorage / 密钥 / 数据库 —— 用户会看到"装好的软件
-//   设置被我改代码改掉了"。但 **models / bin 是有意共用的**（1.1GB 模型不重复下载）。
-//   logs 独立（各自排障不混淆）。
+// ★★★ 实例隔离变更（2026-10-10）：开发实例**不再**用 `yan-zhi-dev`，
+//   改为与安装版**共用** `yan-zhi`（用户诉求「dev 直接启动就能测真实数据」）——
+//   即 dev 与安装版读写同一份 localStorage / 密钥 / 数据库。
+//   ⚠️ 代价：dev 的改动直接作用于真实数据；两实例不能同时启动。
+//   （历史行为 2026-09-27：曾用 `yan-zhi-dev` 隔离，理由是"别让 dev 改掉装好的软件设置"，
+//     现按用户明确要求反向。）
+//   models / bin 一如既往**有意共用**（1.1GB 模型不重复下载）。
 // ============================================================
 (function migrateUserDataDir() {
   const appData = app.getPath('appData');
@@ -625,7 +629,7 @@ function createWindow() {
       backgroundThrottling: false,
       // ★ 把**主进程算好的** API 端口显式下发给渲染层（preload 读 process.argv）。
       //   为什么不用 process.env：直启 `electron .` 时环境里没有 YANZHI_API_PORT，
-      //   主进程会算出实例默认（dev=3002），而 preload 读 env 只能回落 3001 → 两边不一致。
+      //   主进程会算出实例默认（2026-10-10 起 dev/生产同为 3001），而 preload 读 env 可能取不到 → 两边不一致。
       //   用 additionalArguments 保证「主进程算什么、渲染层就用什么」。
       additionalArguments: ['--yz-api-port=' + API_PORT, ...(IS_DEV_INSTANCE ? ['--yz-dev-instance'] : [])],
     },
@@ -4993,8 +4997,9 @@ app.whenReady().then(async () => {
   // ============================================================
   const forceDev = process.argv.includes('--dev');
   const isDev = forceDev && !app.isPackaged;
-  // ★ connect-src 必须放行**本实例实际端口**（dev=3002 / 生产=3001），
-  //   写死 3001 会让开发实例的所有 fetch 被 CSP 拦掉（表现为"界面正常但全功能 403/失败"）。
+  // ★ connect-src 必须放行**本实例实际端口**（2026-10-10 起 dev/生产同为 3001；
+  //   若用 YANZHI_API_PORT 临时错开则自动跟随 API_PORT），
+  //   写死端口会让实例的所有 fetch 被 CSP 拦掉（表现为"界面正常但全功能 403/失败"）。
   const csp = isDev
     ? "default-src 'self'; " +
       "script-src 'self'; " +

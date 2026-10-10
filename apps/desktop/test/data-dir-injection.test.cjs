@@ -57,12 +57,12 @@ describe('dev 模式必须注入 DATA_DIR（否则库落到源码目录）', () 
     }
   });
 
-  test('① bin/dev.mjs：定义了 DEV_DATA_DIR 且指向 yan-zhi-dev/server-data', () => {
+  test('① bin/dev.mjs：定义了 DEV_DATA_DIR 且指向 yan-zhi/server-data', () => {
     const src = strip(read('bin/dev.mjs'));
     assert.match(src, /const\s+DEV_DATA_DIR\s*=/, '★ 未定义 DEV_DATA_DIR');
-    // 与 instance.cjs 的 dev userData 目录同名，保证与安装版分开
-    assert.match(src, /DEV_USERDATA_NAME\s*=\s*'yan-zhi-dev'/, '★ dev userData 目录名应为 yan-zhi-dev');
-    assert.match(src, /'server-data'/, '★ DATA_DIR 应含 server-data 子目录（与安装版布局对称）');
+    // ★ 2026-10-10：改与安装版**同名**（共用一套库，用户诉求「dev 启动就能测」）
+    assert.match(src, /DEV_USERDATA_NAME\s*=\s*'yan-zhi'/, '★ dev userData 目录名应为 yan-zhi（与安装版共用）');
+    assert.match(src, /'server-data'/, '★ DATA_DIR 应含 server-data 子目录（与安装版布局一致）');
   });
 
   test('② apps/server/scripts/dev.cjs：spawn env 传了 DATA_DIR', () => {
