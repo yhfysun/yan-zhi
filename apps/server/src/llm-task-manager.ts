@@ -862,8 +862,47 @@ export function createTask(params: {
 const IMAGE_INJECT_MAX_MESSAGES = 3;
 /** 单次请求最多注入多少张图（多条消息各带图时合计上限） */
 const IMAGE_INJECT_MAX_TOTAL = 4;
-/** 图片标记：`已存档: <path>`（与 computer-use 产出、C6 归档正则同一格式） */
+/** 图片标记：`已存档: <path>`（与 C6 归档正则同一格式） */
 const IMAGE_ARCHIVE_MARK_RE = /已存档:\s*([^\n）)]+\.(?:png|jpe?g|webp|gif|bmp))/gi;
+/**
+ * ★★★ 工具结果里的 JSON 图片字段（C5 补齐，2026-10-10）。
+ *
+ * ★ 缺口（实测）：`computer_screenshot` 的返回是 `JSON.stringify(data, null, 2)`
+ *   （形如 `"file": "C:\\...\\screenshot-123.png"`），**不含** `已存档: <path>` 文本标记
+ *   ⇒ C1 的注入链路**接不到** computer-use 截图（视觉模型仍看不到，得靠 `image_analyze`）。
+ * ★ 只认**已知字段名**（`file` / `keptTo`）—— 不泛匹配所有 ".png" 字符串，
+ *   否则会把 `screenshotUrl`（URL）之类的也当路径去读（必然 stat 失败，白开销）。
+ */
+const IMAGE_JSON_FIELD_RE = /"(?:file|keptTo)"\s*:\s*"((?:[^"\\]|\\.)+\.(?:png|jpe?g|webp|gif|bmp))"/gi;
+
+/**
+ * 从一段文本里提取**图片文件路径**（单一实现，认多种形态）。
+ *
+ * ★ 为什么要抽函数而不是在注入处内联正则：图片路径在工具结果里的形态天然多样
+ *   （`已存档:` 文本、JSON 的 `file` 字段…），若各处各写一份正则**必然漂移**——
+ *   表现为"某种产出的图接不进来"（静默）。收口成一个纯函数，新增形态只改这里，
+ *   且可直接真跑测试。
+ * ★ 去重保序：同一路径出现两次只取一次（避免同图注入两遍、白耗 vision token）。
+ */
+export function extractImagePaths(text: string): string[] {
+  const src = String(text || '');
+  if (!src) return [];
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const push = (raw: string) => {
+    // JSON 里的反斜杠转义需还原（`C:\\a\\b.png` → `C:\a\b.png`）
+    const p = String(raw || '').replace(/\\\\/g, '\\').trim();
+    if (!p || seen.has(p)) return;
+    seen.add(p);
+    out.push(p);
+  };
+  let hit: RegExpExecArray | null;
+  IMAGE_ARCHIVE_MARK_RE.lastIndex = 0;
+  while ((hit = IMAGE_ARCHIVE_MARK_RE.exec(src)) !== null) push(hit[1]);
+  IMAGE_JSON_FIELD_RE.lastIndex = 0;
+  while ((hit = IMAGE_JSON_FIELD_RE.exec(src)) !== null) push(hit[1]);
+  return out;
+}
 
 async function attachImagesToMessages(messages: Message[]): Promise<void> {
   try {
@@ -872,8 +911,8 @@ async function attachImagesToMessages(messages: Message[]): Promise<void> {
     for (let i = messages.length - 1; i >= 0 && candidates.length < IMAGE_INJECT_MAX_MESSAGES; i--) {
       const m = messages[i];
       if (m.imagePartsTried) continue;
-      if (!IMAGE_ARCHIVE_MARK_RE.test(m.content || '')) { IMAGE_ARCHIVE_MARK_RE.lastIndex = 0; continue; }
-      IMAGE_ARCHIVE_MARK_RE.lastIndex = 0; // test() 带 /g 会推进 lastIndex，必须复位
+      // ★ C5：用共享提取函数判"这条消息里有没有图片路径"（认 `已存档:` 与 JSON file 两种形态）
+      if (!extractImagePaths(m.content || '').length) continue;
       candidates.push(m);
     }
     if (!candidates.length) return;
@@ -887,13 +926,8 @@ async function attachImagesToMessages(messages: Message[]): Promise<void> {
     let injected = 0;
     for (const m of candidates) {
       if (injected >= IMAGE_INJECT_MAX_TOTAL) break;
-      IMAGE_ARCHIVE_MARK_RE.lastIndex = 0;
-      const paths: string[] = [];
-      let hit: RegExpExecArray | null;
-      while ((hit = IMAGE_ARCHIVE_MARK_RE.exec(m.content || '')) !== null) {
-        const p = String(hit[1] || '').trim();
-        if (p) paths.push(p);
-      }
+      // ★ C5：共享提取函数（认 `已存档:` 文本 与 JSON `file`/`keptTo` 字段）
+      const paths = extractImagePaths(m.content || '');
       if (!paths.length) continue;
       const parts: Array<{ mime: string; base64: string }> = [];
       for (const p of paths) {
