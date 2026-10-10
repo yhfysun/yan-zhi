@@ -129,6 +129,35 @@ export function markAnthropicToolsCached(tools: unknown[]): void {
   if (last && typeof last === 'object') last.cache_control = { type: 'ephemeral' };
 }
 
+/**
+ * 计算 assistant 消息该带的 `reasoning_content` 值（**纯函数，可单测**）。
+ *
+ * ★★★ 2026-10-10 实据修复（第二版）—— 第一版只回传**非空** reasoning，仍会 400：
+ *   DeepSeek 系「思考模式」要求：只要是 assistant 消息（尤其带 tool_calls 的），
+ *   `reasoning_content` 字段**必须存在**；模型某轮只吐 tool_calls 不吐 reasoning 时
+ *   落库为 NULL ⇒ 旧判据 `if (m.reasoningContent)` 为假 ⇒ **字段整个缺失** ⇒ 整轮 400。
+ *   实测现场：会话 f0a901e3 的 22:46:28 消息（有 tool_calls / reasoning 为 NULL）
+ *   → 下一轮 `400 The reasoning_content in the thinking mode must be passed back to the API.`
+ *
+ * @returns 该带的值；`undefined` 表示**不该带该字段**（不设这个 key）。
+ *   · assistant + 有 tool_calls 或 content 非空 → 有 reasoning 用原文，没有用 `''`（兜底空串）
+ *   · 其余（user / tool / 空 assistant）→ undefined（不带，避免污染上游）
+ *
+ * ★ 为什么空串比省略字段安全：`reasoning_content` 在 OpenAI 规范里是未知字段，多数网关忽略；
+ *   需要它的网关缺了就 400。⇒ 两害相权，带上（哪怕空串）更安全。
+ */
+export function resolveReasoningField(m: {
+  role?: string;
+  content?: unknown;
+  toolCalls?: unknown[];
+  reasoningContent?: string;
+}): string | undefined {
+  const hasPayload = (m.toolCalls?.length ?? 0) > 0
+    || (typeof m.content === 'string' && m.content.length > 0);
+  if (m.role !== 'assistant' || !hasPayload) return undefined;
+  return m.reasoningContent ? m.reasoningContent : '';
+}
+
 export class LlmClient {
   constructor(
     private platform: Platform,
@@ -189,6 +218,18 @@ export class LlmClient {
       });
     }
     if (m.toolCallId) out.tool_call_id = m.toolCallId;
+    // ★★★ 带回 `reasoning_content`（2026-10-10 实据修复，两次迭代）：
+    //   【第一版】只把「历史里有 reasoning 的」回传 —— **不够**。实测仍 400：
+    //     模型中某一轮**只吐 tool_calls、没吐 reasoning**（落库 reasoning_content=NULL），
+    //     回传时 `if (m.reasoningContent)` 为假 ⇒ **字段整个缺失** ⇒ DeepSeek 思考模式
+    //     要求「带 tool_calls 的 assistant 消息必须带该字段」⇒ 整轮 400、任务 failed。
+    //     实据：会话 f0a901e3 的 22:46:28 消息（tc=1 / rc=NULL）→ 下一轮即 400。
+    //   【第二版】判据抽到 `shouldCarryReasoning()`（纯函数、可单测），
+    //     没有 reasoning 时兜底**空字符串**（不是省略字段）。
+    //   ★ 为什么敢无条件带：`reasoning_content` 在 OpenAI 规范里是**未知字段**，多数网关忽略
+    //     （不会因此报错）；而需要它的网关（DeepSeek 系 / new-api）**缺了就 400**。
+    const reasoning = resolveReasoningField(m);
+    if (reasoning !== undefined) out.reasoning_content = reasoning;
     return out;
   }
 
