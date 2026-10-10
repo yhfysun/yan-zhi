@@ -204,9 +204,13 @@ function capture(cmd, args) {
       } catch {
         /* 落到 utf8 */
       }
-    }
-    return buf.toString('utf8');
-  } catch {
+    }    return buf.toString('utf8');
+  } catch (e) {
+    // ★ 2026-10-10：**不再静默返回空串**。旧实现在这里无声吞掉，后果很隐蔽：
+    //   `pidsOnPort()` 拿到空 → 看起来"端口没被占用" → `freePort()` 什么都不杀
+    //   → 起 Vite 时撞 `Port 1420 is already in use`，而报错完全指不到真正原因。
+    //   （本机受限环境实测 `spawnSync netstat` 会 EBUSY —— 一旦发生，排查会绕很远。）
+    warn(`探测命令失败（${cmd}）：${e?.code || e?.message || e} —— 端口占用检测将不可靠`);
     return '';
   }
 }
