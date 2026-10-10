@@ -104,6 +104,20 @@ describe('③ 轮询消除：主路径改为会话级长连订阅', () => {
     expect(CODE_CHAT).toMatch(/function unsubscribeConversationEvents\(/);
     expect(CODE_CHAT).toMatch(/subscribeConversationEvents,\s*unsubscribeConversationEvents/);
   });
+
+  it('★★★ 终态推送必须可观测（"禁用标志凭什么解除"的唯一现场证据）', () => {
+    const i = CODE_CHAT.indexOf('async function subscribeConversationEvents');
+    const seg = CODE_CHAT.slice(i, i + 3200);
+    expect(seg, '★ 终态推送无日志 → 排障只能读代码猜').toMatch(/会话级终态推送/);
+    expect(seg, '★ 断线重连无日志 → 通道健康度不可见').toMatch(/会话级流断连/);
+  });
+
+  it('★★ 输入锁翻转必须可观测（打印四个条件的值，不只是布尔）', () => {
+    const i = CODE_PANEL.indexOf('const inputLocked');
+    const seg = CODE_PANEL.slice(i, i + 1200);
+    expect(seg, '★ 输入锁无翻转日志 → 不知为何锁着').toMatch(/输入锁 \$\{prev/);
+    expect(seg, '★ 未打印四条件 → 定位不到是哪一项导致锁定').toMatch(/browserTaskActive=\$\{/);
+  });
 });
 
 describe('④ 轮询消除：nowTick 不得再用常驻 setInterval', () => {

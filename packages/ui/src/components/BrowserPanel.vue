@@ -510,6 +510,18 @@ const inputLocked = computed(() =>
   && chatStore.browserTaskActive
   && !lockStaleByHardLimit.value,   // ★ 硬上限兜底：残留锁定主动解除（不依赖服务端查询）
 );
+// ★ 可观测（2026-10-11，排障命门）：禁用标志**只在翻转时**打一条日志 ——
+//   这是"输入框为什么锁着/凭什么解开"的唯一现场证据（此前该判定零日志，
+//   用户实报「没有任务禁用标志还一直在」时只能靠读代码猜）。
+//   ★ 只在翻转时打印（不是每次求值），不刷屏；且打印出**四个条件各自的值**，
+//     一眼看出是哪一项导致的锁 —— 这比只打 `inputLocked=true` 有用得多。
+watch(inputLocked, (now, prev) => {
+  console.log(
+    `[BrowserPanel] 输入锁 ${prev ? 'true' : 'false'} → ${now ? 'true' : 'false'}` +
+    `（scope=${browserScope} paused=${chatStore.browserPaused} streaming=${convTaskRunning.value}` +
+    ` browserTaskActive=${chatStore.browserTaskActive} 超5min兜底=${lockStaleByHardLimit.value}）`,
+  );
+});
 // ★ 实况条活性门控（2026-10-09）：接管条只在浏览器工具有"呼吸"时显示 ——
 //   最后一次 browser_* 工具事件在宽限期（45s，覆盖 wait_for 30s 类长工具）内、
 //   或任务已暂停（暂停态要露「已暂停 · 你已接管页面」和恢复按钮，不能消失）。

@@ -2613,6 +2613,9 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
               taskIds.delete(convId);
               clearBrowserTaskActive(convId);
               emitTaskFinished(convId);
+              // ★ 可观测（排障命门）：这条是"禁用标志凭什么解除"的**唯一现场证据**。
+              //   此前该路径零日志 → 「没有任务但输入框还锁着」只能靠读代码猜。
+              console.log(`[Chat] 会话级终态推送：${event.type} conv=${convId} → 已清运行态与浏览器记账（输入锁将解除）`);
             }
           }
           return; // 长连，永不 return false（不主动关流）
@@ -2622,6 +2625,8 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
         // 断线 → 退避重连（会话流是长活通道，必须自愈；失败静默，不打扰用户）
         attempt++;
         const delay = Math.min(500 * Math.pow(2, Math.min(attempt, 4)), 5000);
+        // ★ 可观测：重连是"推送通道健康度"的唯一线索（首页打开后若一直刷这条，说明通道有问题）
+        console.warn(`[Chat] 会话级流断连，第 ${attempt} 次重连（${delay}ms 后）conv=${convId}`);
         await new Promise((r) => { const t = setTimeout(r, delay); ac.signal.addEventListener('abort', () => { clearTimeout(t); r(null); }, { once: true }); });
       }
     }
