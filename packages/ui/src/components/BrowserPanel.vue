@@ -1656,6 +1656,9 @@ function setWebviewRef(tabId: string, el: any) {
  * 拿到元素就交给 :src 驱动；拿不到则返回 null，由调用方退化为主进程 load（waitForGuest 兜底）。
  */
 function waitWebviewEl(tabId: string, timeoutMs = 1500): Promise<any> {
+  // ★ 2026-10-11 刻意**保留 setInterval**（未走 visible-polling）：
+  //   这是**短时轮询**（≤1.5s，拿到元素立即 clearInterval），不是常驻轮询；
+  //   且它等的是 Vue 渲染一帧后的 `<webview>` 元素 —— 页面不可见时也必须能等到。
   const existed = webviewEls.get(tabId);
   if (existed) return Promise.resolve(existed);
   return new Promise((resolve) => {

@@ -2634,6 +2634,12 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
     if (ac) { try { ac.abort(); } catch { /* ignore */ } conversationSseAborts.delete(convId); }
   }
 
+  // ★ 最后一道保险的调度（60s 一跳）。
+  //   ★ 2026-10-11 刻意**保留 setInterval 而非 visible-polling**，理由：
+  //     ① 它是**全局 store 级**兜底（不属任何组件），而 visible-polling 是组件生命周期的用法；
+  //     ② 它一进来就 `if (runningConvIds.size === 0) return` —— **平时零开销**（没有任务在跑就不查）；
+  //     ③ 语义上它是"补漏"：恰恰在"用户切走、前端没注意"时也该发现残留，被可见性门控反而削弱兜底。
+  //   ⇒ 真正承担主路径的是会话级长连订阅（实时），本处只在双向都断时兜底。
   setInterval(() => { void sweepStaleBrowserTakeover(); }, SWEEP_INTERVAL_MS);
 
   async function callLlm(

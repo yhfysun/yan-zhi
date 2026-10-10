@@ -824,6 +824,10 @@ const runResult = ref<null | { status: 'completed' | 'aborted' | 'error'; second
 const runResultLabel = computed(() =>
   runResult.value?.status === 'completed' ? '任务已完成' : runResult.value?.status === 'error' ? '任务失败' : '已停止',
 );
+// 任务计时器（1s 走秒）。
+// ★ 2026-10-11 刻意**保留 setInterval**（未走 visible-polling）：这是**用户可见的本地计时**，
+//   不是网络轮询 —— 切走标签页时它只是更新一个数字，开销极小；而挂起会导致切回来"计时少了"，
+//   与用户对"任务已跑了多久"的预期不符。（轮询收口只针对**打接口**的定时器。）
 let runTimer: ReturnType<typeof setInterval> | null = null;
 let runResultHideTimer: ReturnType<typeof setTimeout> | null = null;
 

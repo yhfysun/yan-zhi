@@ -1830,6 +1830,10 @@ function stepFrame(dir: number) {
   seek(Math.max(0, Math.min(estTotal.value, playhead.value + dir * step)));
 }
 
+// 播放进度计时器（本地播放头推进）。
+// ★ 2026-10-11 刻意**保留 setInterval**（未走 visible-polling）：
+//   播放是**刚需连续推进**，不能因切页暂停（音频本身仍在播，暂停计时会导致进度与声音脱节）。
+//   （轮询收口只针对**打接口**的定时器，本处是纯本地状态推进。）
 let playTimer: ReturnType<typeof setInterval> | null = null;
 function togglePlay() {
   if (playTimer) { clearInterval(playTimer); playTimer = null; note('已暂停'); return; }
