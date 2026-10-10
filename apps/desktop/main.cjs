@@ -1816,8 +1816,12 @@ ipcMain.handle('browserView:ensureActiveTab', async (_e, scope) => {
       }
       if (best) { activeTabId = best; webviewTabs.get(best).lastActiveAt = Date.now(); return best; }
     }
-    const tabId = 'tab-' + (++tabSeq);
-    webviewTabs.set(tabId, { scope: wantScope, lastActiveAt: Date.now(), wcId: null });
+    // ★★★ 2026-10-11：改走 `createBrowserTab()`（此前自己 `tabSeq++` + `webviewTabs.set`）。
+    //   ★ 为什么：`createBrowserTab` 是 tab 创建的**唯一收口**（内含 `MAX_TABS` + LRU 逐出）。
+    //     本分支是"3s 等不到面板建 tab → 主进程兜底自建"，**agent 会真实走到**
+    //     （实测日志 `ensureActiveTab 超时自建`）⇒ 绕过收口 ⇒ 又是无上限堆积的缺口。
+    //   ★ 这是"平行实现漂移"的第 N 例：同一个"建 tab"语义散在 4 处，改一处必须全改。
+    const tabId = createBrowserTab(wantScope);
     activeTabId = tabId;
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('browserView:tabCreated', tabId, null, wantScope);
@@ -2759,6 +2763,27 @@ async function runBrowserAction(convId, tabId, action, args) {
     if (typeof _a.script === 'string' && _a.script.length > 200) _a.script = _a.script.slice(0, 200) + '…';
     console.log(`[browser-action] ${action} conv=${convId || '-'} tabId=${tabId || '-'} args=${JSON.stringify(_a).slice(0, 300)}`);
   } catch { /* 日志失败绝不影响动作 */ }
+  // ★★★ 2026-10-11：`browser_navigate(openInNewTab:true)` → **直接委派给 `new_tab`**。
+  //
+  //   ★ 先纠一个"看似有、实则失效"的缺口：
+  //     该参数的处理**原先只写在渲染层**（`packages/ui/src/stores/chat.ts` 里读 `args.openInNewTab`）。
+  //     而执行面直连化（2026-10-10）后，`browser_*` 由**服务端直连主进程**执行、
+  //     渲染层 `tool:execute` 守卫直接跳过 ⇒ 那段代码**根本不会跑**
+  //     ⇒ `openInNewTab` 被静默忽略 ⇒ 退化成"覆盖当前页"（正是工具描述承诺的反面）。
+  //
+  //   ★ 语义（用户拍板）：**开新页 ≠ 抢锚** —— 新开 tab 并返回 tabId，
+  //     但**不改变"本会话当前操作页"**。这与 `new_tab` 的语义**逐字一致**：
+  //       · 开新页 + 返回 tabId
+  //       · `decideAnchorUpdate('new_tab', …)` → **`touch`（不抢锚）**
+  //       · 已有完整实现：黄金通道 `tabCreated` 建壳 / tab 上限收口 / `agentOpened` 记账 / url 落位
+  //   ⇒ 所以**只做一次 action 改写**，复用 new_tab 全套 —— **绝不抄第二份建壳逻辑**
+  //     （本项目反复栽在"平行实现漂移"上，见 browser-target.cjs 与前述 scope 两条通道的教训）。
+  //   ★ 位置：必须在 `resolveBrowserTarget` **之前** —— 它按 action 决定"建页类是否回落活动页"，
+  //     改写后再解析才符合 new_tab 语义（new_tab 是建页类，且不需要锚）。
+  if (action === 'navigate' && args.openInNewTab === true) {
+    console.log('[browser-action] openInNewTab=true → 委派 new_tab（开新页不抢锚）');
+    action = 'new_tab';
+  }
   // ★★★ P0-2（2026-10-10）：执行目标解析 —— **判定本体在 `browser-target.cjs`**（纯函数、可真跑验证）。
   //   三条语义（缺一条就会"打到错的页"且不报错）：
   //   ① 显式 tabId **优先**（工具契约："可传 tabId 读取指定标签页，不必先切换标签页"）；
@@ -3004,6 +3029,11 @@ async function runBrowserAction(convId, tabId, action, args) {
         //   渲染层模板也已在用（`:src="t.srcUrl || 'about:blank'"`）⇒ 放行是安全的。
         const isBlank = /^about:blank$/i.test(cleanUrl);
         if (!isBlank && !/^https?:\/\//i.test(cleanUrl)) return { error: `无效 URL: ${cleanUrl}` };
+        // ★★★ 2026-10-11：`openInNewTab` 已在**进入 switch 之前**被改写为 `new_tab`
+        //   （见 `doAction` 之前的 `if (args.openInNewTab) action = 'new_tab'`）——
+        //   语义与 `new_tab` **完全一致**（开新页 + 返回 tabId + `decideAnchorUpdate` 判 touch 不抢锚），
+        //   且 new_tab 已有现成实现（黄金通道 tabCreated / tab 上限收口 / agentOpened 记账）。
+        //   ⇒ 本 case 只在"非 openInNewTab"时执行（否则根本进不到这里）。
         // webview 引擎没有 entry（无 bounds / 无缓存清理流程），只有 BrowserView 分支需要处理
         if (entry) {
           activateTab(tabId || activeTabId);
@@ -3617,10 +3647,22 @@ async function runBrowserAction(convId, tabId, action, args) {
           // 广播 tabCreated(scope=page) 会被 preview 的 BrowserPanel 按空间过滤而看不到新标签。
           const scope = 'preview';
           const target = (() => { const u = String(args.url || '').trim(); return u; })();
-          const tabId = 'tab-' + (++tabSeq);
-          // ★ agentOpened: true —— 这条路径是 agent 工具链（browser_new_tab / navigate openInNewTab），
-          //   标记后它才**允许被 agent 关闭**（权限闸门见 close_tab 分支）。用户手开的 tab 永远是 false。
-          webviewTabs.set(tabId, { scope, lastActiveAt: Date.now(), wcId: null, agentOpened: true });
+          // ★★★ 2026-10-11：**改走 `createBrowserTab()`**（此前自己 `tabSeq++` + `webviewTabs.set`）。
+          //   ★ 为什么要改（真漏洞）：`createBrowserTab` 是 tab 创建的**唯一收口**，它内部调
+          //     `evictLruWebviewTabIfNeeded()` 做 `MAX_TABS` + LRU 逐出。
+          //     而本分支此前**绕过它自建** ⇒ agent 的 `browser_new_tab` / `navigate(openInNewTab)`
+          //     这条路径**完全没有上限保护** ⇒ agent 反复开新页时 tab 无上限堆积
+          //     （每 tab = 一个 Chromium 渲染进程）⇒ 整机卡死。
+          //     ★ 这正是 R2 的漏洞残留：08d 修了 `createBrowserTab` 的 webview 分支，
+          //       但**没修"绕过它的第二个建 tab 点"** —— 又一例"平行实现漂移"。
+          const tabId = createBrowserTab(scope);
+          // webviewTabs 条目已由 createBrowserTab 建好；这里只补 agent 专有标记
+          const meta = webviewTabs.get(tabId);
+          if (meta) {
+            // ★ agentOpened: true —— 这条路径是 agent 工具链（browser_new_tab / navigate openInNewTab），
+            //   标记后它才**允许被 agent 关闭**（权限闸门见 close_tab 分支）。用户手开的 tab 永远是 false。
+            meta.agentOpened = true;
+          }
           activeTabId = tabId;
           // 通知渲染层补建 host tab 壳(:src=url 会驱动新建 <webview> 并注册 guest)，并激活
           if (mainWindow && !mainWindow.isDestroyed()) {

@@ -49,8 +49,13 @@ describe('权限边界：agent 只能关闭自己打开的 tab（执行侧强制
   });
 
   it('agent 的 new_tab 路径（browserView:action）必须置 agentOpened: true', () => {
-    const fn = sliceFrom(mainSrc, "case 'new_tab': {", 1200);
-    expect(fn).toMatch(/agentOpened:\s*true/);
+    const fn = sliceFrom(mainSrc, "case 'new_tab': {", 1800);
+    // ★ 2026-10-11 契约更新：new_tab 改为**走 createBrowserTab()**（tab 创建唯一收口，
+    //   内含 MAX_TABS/LRU 逐出；此前它自己 `tabSeq++` + `webviewTabs.set` 绕过了收口）
+    //   ⇒ agentOpened 从"字面量建对象"改为"建好后补标记"，语义不变。
+    expect(fn, '★ new_tab 必须走 createBrowserTab（否则绕过 tab 上限）').toMatch(/createBrowserTab\(/);
+    expect(fn, '★ agent 的 new_tab 必须置 agentOpened=true（否则关不掉自己的 tab）')
+      .toMatch(/agentOpened\s*=\s*true/);
   });
 
   it('close_tab（agent 通道）必须拒绝非 agentOpened 的 tab', () => {

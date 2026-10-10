@@ -775,3 +775,78 @@ describe('⑭ ★★★ 首次 navigate 必须能建立锚（isMine 挡不住—
       .toMatch(/isCurrentView:\s*\([^)]*\)\s*=>\s*[^,]*activeTabId/);
   });
 });
+
+// ⑮ ★★★ openInNewTab：开新页 ≠ 抢锚（2026-10-11，用户拍板语义）
+//
+// 背景（"看似有、实则失效"的缺口）：
+//   `openInNewTab` 的处理**原先只写在渲染层**（ui/stores/chat.ts 读 args.openInNewTab）。
+//   而执行面直连化（2026-10-10）后，browser_* 由**服务端直连主进程**执行、
+//   渲染层 tool:execute 守卫直接跳过 ⇒ 那段代码**根本不会跑**
+//   ⇒ 参数被静默忽略 ⇒ 退化成"覆盖当前页"（正是工具描述承诺"不再退化成覆盖当前页"的反面）。
+//
+// 修法：主进程入口把它**委派给 `new_tab`**（语义逐字一致：开新页 + 返回 tabId + touch 不抢锚），
+//   复用 new_tab 全套实现，**绝不抄第二份建壳逻辑**（本项目反复栽在"平行实现漂移"）。
+// ══════════════════════════════════════════════════════════════════════════
+describe('⑮ ★★★ openInNewTab 委派 new_tab（开新页不抢锚）', () => {
+  const MAIN3 = read('apps/desktop/main.cjs');
+  const bt = require(resolve(REPO, 'apps/desktop/browser-target.cjs'));
+
+  it('★★★ main.cjs 必须把 navigate+openInNewTab 改写为 new_tab（且在 resolveBrowserTarget 之前）', () => {
+    const m = stripComments(MAIN3);
+    const i = m.indexOf("args.openInNewTab === true");
+    expect(i, '★ 主进程没处理 openInNewTab → 直连路径下被静默忽略 → 退化成覆盖当前页').toBeGreaterThan(-1);
+    const seg = m.slice(i, i + 300);
+    expect(seg, '★ 未委派给 new_tab').toMatch(/action\s*=\s*'new_tab'/);
+    // ★ 位置断言：改写必须在 resolveBrowserTarget **之前**（它按 action 决定回落语义）
+    const iResolve = m.indexOf('resolveBrowserTarget(convId, tabId, action, {');
+    expect(i, '★ 改写位置在 resolveBrowserTarget 之后 → 解析用的是旧 action').toBeLessThan(iResolve);
+  });
+
+  it('★★★ 委派后锚语义必须是 touch（不抢锚）—— 这是 openInNewTab 的定义', () => {
+    // openInNewTab 已改写为 new_tab ⇒ decideAnchorUpdate('new_tab', …) 必须返回 touch
+    const upd = bt.decideAnchorUpdate('new_tab', false, 'tab-1', 'tab-9');
+    expect(upd.mode, '★ 开新页却改了"当前操作页" → 抢锚（与定义相反）').toBe('touch');
+    expect(upd.tabId).toBe('tab-9');
+  });
+
+  it('★★★ new_tab 必须走 createBrowserTab（否则绕过 tab 上限 → agent 反复开页即堆积卡死）', () => {
+    const m = stripComments(MAIN3);
+    const i = m.indexOf("case 'new_tab':");
+    expect(i).toBeGreaterThan(-1);
+    const seg = m.slice(i, i + 1800);
+    expect(seg, '★ new_tab 自己 tabSeq++ 自建 → 绕过 createBrowserTab 的 MAX_TABS/LRU 收口')
+      .toMatch(/createBrowserTab\(/);
+    expect(seg, '★ 仍在自建（webviewTabs.set + tabSeq++）→ 平行实现').not.toMatch(/webviewTabs\.set\(tabId,\s*\{/);
+    // agentOpened 标记必须保留（agent 只能关自己开的 tab）
+    expect(seg, '★ 丢了 agentOpened 标记 → agent 关不掉自己开的 tab').toMatch(/agentOpened\s*=\s*true/);
+  });
+
+  it('★★ createBrowserTab 内部必须有上限收口（防止被绕过的那条路径再出现）', () => {
+    const btSrc = read('apps/desktop/main.cjs');
+    const i = btSrc.indexOf('function createBrowserTab(scope)');
+    const seg = btSrc.slice(i, i + 1500);
+    expect(seg, '★ createBrowserTab 缺 evictLruWebviewTabIfNeeded').toMatch(/evictLruWebviewTabIfNeeded\(\)/);
+  });
+
+  it('★★★ webview 建 tab 必须**只有 createBrowserTab 一个收口**（防"平行实现漂移"再犯）', () => {
+    const code = stripComments(read('apps/desktop/main.cjs'));
+    // 所有向 webviewTabs 写入**新条目**的点，只允许出现在 createBrowserTab 内。
+    // （例外：`webviewTabs.set(tabId, t)` 形态是 wvRegister 更新既有条目的 wcId，不是建 tab；
+    //  这里用"字面量对象含 wcId: null"来识别"建新条目"。）
+    const newEntryHits = code.match(/webviewTabs\.set\([^,]+,\s*\{[^}]*wcId:\s*null/g) || [];
+    expect(newEntryHits.length, `★ 有 ${newEntryHits.length} 处直接新建 webviewTabs 条目（应为 1 = createBrowserTab 内）`)
+      .toBeLessThanOrEqual(1);
+    // 且 `++tabSeq` 在 webview 路径不得脱离 createBrowserTab 使用：
+    //   允许 BrowserView 引擎的 2 处（1007 弹窗 / 1853 兜底），它们各自调了 evictLruTabIfNeeded。
+    const seqHits = code.match(/\+\+tabSeq/g) || [];
+    expect(seqHits.length, `★ ++tabSeq 出现 ${seqHits.length} 处（应为 3：createBrowserTab + BrowserView 两处）`)
+      .toBeLessThanOrEqual(3);
+  });
+
+  it('★★ BrowserView 引擎的两处自建必须各自调 evictLruTabIfNeeded（旧引擎的收口不能丢）', () => {
+    const code = stripComments(read('apps/desktop/main.cjs'));
+    const hits = [...code.matchAll(/evictLruTabIfNeeded\(\)/g)];
+    // createBrowserTab 内 1 处 + 弹窗 handler 1 处 + ensureActiveTab 兜底 1 处 = 3 处
+    expect(hits.length, '★ BrowserView 收口点少了（旧引擎 tab 会堆积）').toBeGreaterThanOrEqual(3);
+  });
+});
