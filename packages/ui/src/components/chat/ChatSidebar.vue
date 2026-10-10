@@ -28,6 +28,64 @@
       </div>
 
       <div class="conv-tree" @contextmenu.prevent="openTreeMenu($event)" v-on="bindLongPress((ev) => openTreeMenu(ev))">
+        <!-- ── 置顶分组（2026-10-09）──────────────────────────────
+             ★★★ 为什么提到**根节点之外**（2026-10-09 用户实测「置顶点了没用」的根因）：
+               v1 把这个分组塞进「任务」根节点的 .tree-children 里。而「任务」根节点可折叠
+               （rootCollapsed 持久化在 localStorage:yz_conv_root_collapsed）。用户把「任务」
+               收起来之后，置顶组跟着父容器一起 display:none →
+               **数据确实写进了库，但界面上没有任何可见变化**（点完"加了置顶"却什么也没发生）。
+               实测：展开「任务」时置顶组正常渲染（3 条置顶都在），折叠时它 0x0 被隐藏，
+               而空间内的行点击置顶仍能正常显示星标 —— 唯独根级行"毫无反馈"，这就是根因。
+             ★ 所以置顶组必须是**与「任务」/空间平级的顶层节点**，不受任何分组的折叠态影响。
+               「置顶」本身仍可独立折叠（pinnedCollapsed），语义上等同于一个全局分组。
+             ★ 只收**根级**置顶：空间内的置顶已在该空间分组内排序靠前（行首星标 + 金色底可见），
+               再抽出来会让同一个会话出现在两处 —— 分组的意义是分区，不是重复展示。
+             ★ 无置顶项时**整组不渲染**（不占位、不打扰）—— 契合"极简、不加多余元素"的一贯要求。 -->
+        <div v-if="pinnedRootConversations.length > 0" class="tree-node tree-pinned">
+          <div class="tree-node-head" @click="togglePinnedCollapse">
+            <el-icon class="tree-caret" :class="{ expanded: !pinnedCollapsed }"><CaretRight /></el-icon>
+            <el-icon class="tree-node-icon"><Star /></el-icon>
+            <span class="tree-node-label">置顶</span>
+            <span class="tree-count">{{ pinnedRootConversations.length }}</span>
+          </div>
+          <div v-show="!pinnedCollapsed" class="tree-children">
+            <div
+              v-for="conv in pinnedRootConversations"
+              :key="conv.id"
+              class="conv-item pinned"
+              :class="{ active: conv.id === store.currentConvId, selecting: batchMode }"
+              @click="batchMode ? toggleConvSelect(conv.id) : rows.activate(conv)"
+              @contextmenu.prevent="openConvMenu($event, conv)"
+              v-on="bindLongPress((ev) => openConvMenu(ev, conv))"
+              @dblclick="!batchMode && rows.startRename(conv)"
+            >
+              <el-checkbox v-if="batchMode" :model-value="selectedConvIds.has(conv.id)" @click.stop @change="toggleConvSelect(conv.id)" />
+              <el-icon class="pin-icon"><StarFilled /></el-icon>
+              <span v-if="renamingId !== conv.id" class="conv-title">{{ conv.title }}</span>
+              <el-input
+                v-else
+                v-model="renamingTitle"
+                size="small"
+                @click.stop
+                @blur="rows.commitRename"
+                @keydown.enter.prevent="rows.commitRename"
+                @keydown.esc.prevent="rows.cancelRename"
+                ref="renameInputRef"
+              />
+              <span v-if="store.isConvStreaming(conv.id)" class="conv-run-badge" title="运行中"></span>
+              <el-tooltip v-if="conv.scheduledTaskId" content="定时任务发起" placement="top">
+                <el-icon class="scheduled-badge"><Timer /></el-icon>
+              </el-tooltip>
+              <span v-if="!batchMode && renamingId !== conv.id" class="task-row-actions" @click.stop @dblclick.stop>
+                <span class="task-row-act is-on" role="button" title="取消置顶" @click="rows.togglePinned(conv)"><el-icon :size="12"><Top /></el-icon></span>
+                <span class="task-row-act" role="button" title="重命名" @click="rows.startRename(conv)"><el-icon :size="12"><EditPen /></el-icon></span>
+<span class="task-row-act" role="button" title="移动到空间" @click="rows.openMoveMenu(conv, $event)"><el-icon :size="12"><Rank /></el-icon></span>
+                    <span class="task-row-act is-danger" role="button" title="删除" @click="rows.remove(conv)"><el-icon :size="12"><Delete /></el-icon></span>
+              </span>
+            </div>
+          </div>
+        </div>
+
         <!-- 对话根节点：未归类会话 -->
         <div class="tree-node tree-root">
           <div class="tree-node-head" @click="toggleRootCollapse">
@@ -47,7 +105,7 @@
           </div>
           <div v-show="!rootCollapsed" class="tree-children">
             <div
-              v-for="conv in rootConversations"
+              v-for="conv in unpinnedRootConversations"
               :key="conv.id"
               class="conv-item"
               :class="{ active: conv.id === store.currentConvId, pinned: conv.pinned, selecting: batchMode }"
@@ -57,7 +115,7 @@
               @dblclick="!batchMode && rows.startRename(conv)"
             >
               <el-checkbox v-if="batchMode" :model-value="selectedConvIds.has(conv.id)" @click.stop @change="toggleConvSelect(conv.id)" />
-              <el-icon class="pin-icon" v-if="conv.pinned"><Star /></el-icon>
+              <el-icon class="pin-icon" v-if="conv.pinned"><StarFilled /></el-icon>
               <el-icon v-else-if="!batchMode"><ChatDotRound /></el-icon>
               <span v-if="renamingId !== conv.id" class="conv-title">{{ conv.title }}</span>
               <el-input
@@ -88,7 +146,7 @@
                   <el-icon :size="12"><EditPen /></el-icon>
                 </span>
                 <span class="task-row-act" role="button" title="移动到空间" @click="rows.openMoveMenu(conv, $event)">
-                  <el-icon :size="12"><FolderOpened /></el-icon>
+                  <el-icon :size="12"><Rank /></el-icon>
                 </span>
                 <span class="task-row-act is-danger" role="button" title="删除" @click="rows.remove(conv)">
                   <el-icon :size="12"><Delete /></el-icon>
@@ -149,7 +207,7 @@
               @dblclick="!batchMode && rows.startRename(conv)"
             >
               <el-checkbox v-if="batchMode" :model-value="selectedConvIds.has(conv.id)" @click.stop @change="toggleConvSelect(conv.id)" />
-              <el-icon class="pin-icon" v-if="conv.pinned"><Star /></el-icon>
+              <el-icon class="pin-icon" v-if="conv.pinned"><StarFilled /></el-icon>
               <el-icon v-else-if="!batchMode"><ChatDotRound /></el-icon>
               <span v-if="renamingId !== conv.id" class="conv-title">{{ conv.title }}</span>
               <el-input
@@ -180,7 +238,7 @@
                   <el-icon :size="12"><EditPen /></el-icon>
                 </span>
                 <span class="task-row-act" role="button" title="移动到空间" @click="rows.openMoveMenu(conv, $event)">
-                  <el-icon :size="12"><FolderOpened /></el-icon>
+                  <el-icon :size="12"><Rank /></el-icon>
                 </span>
                 <span class="task-row-act is-danger" role="button" title="删除" @click="rows.remove(conv)">
                   <el-icon :size="12"><Delete /></el-icon>
@@ -237,7 +295,7 @@
       <el-icon><FolderOpened /></el-icon>打开目录
     </li>
     <li class="has-submenu">
-      <el-icon><FolderOpened /></el-icon>移动到空间
+      <el-icon><Rank /></el-icon>移动到空间
       <el-icon class="submenu-arrow"><ArrowRight /></el-icon>
       <ul class="ctx-submenu">
         <li v-if="spaceStore.spaces.length === 0" class="disabled-hint">暂无空间，请先创建</li>
@@ -383,7 +441,7 @@
 <script setup lang="ts">
 import { computed, ref, onMounted, onBeforeUnmount } from 'vue';
 import {
-  Plus, ChatDotRound, Star, EditPen, Delete, FolderOpened, ArrowRight, Close, Search, CaretRight, Timer, Memo, Tools, Top,
+  Plus, ChatDotRound, Star, StarFilled, EditPen, Delete, FolderOpened, Rank, ArrowRight, Close, Search, CaretRight, Timer, Memo, Tools, Top,
 } from '@element-plus/icons-vue';
 import { ElMessage } from 'element-plus';
 import { getTaskType } from '@yan-zhi/shared';
@@ -404,6 +462,8 @@ const {
   openConvMenu, selectedConvIds, renamingId, renamingTitle, renameInputRef,
   filteredConversations, startNewChat, batchSelectAll, batchDeleteConvs,
   rootConversations, conversationsBySpace, spaceCollapsed, toggleSpaceCollapse, rootCollapsed, toggleRootCollapse,
+  // 置顶分组（2026-10-09）
+  pinnedRootConversations, unpinnedRootConversations, pinnedCollapsed, togglePinnedCollapse,
   spaceStore, openSpaceMenu, openSpaceEdit, showSpaceEdit, spaceEditForm,
   saveSpaceEdit, deleteSpaceConfirm, spaceMenuTarget, closeSpaceMenu, ctxMenu,
   openConvDir, openPathInSystem,

@@ -37,7 +37,14 @@ describe('formatContextWindow token → 展示文案', () => {
   });
 
   it('缺省 / 非法值兜底为默认档 1M（历史数据 context_window 为空时不显示 0K）', () => {
-    expect(formatContextWindow(undefined)).toBe('1M');
+    // ★★★ 2026-10-10 行为变更（D7）：`undefined` / `null` 改为显示「未声明」。
+    //   ★ 为什么：后端把"恰好 1M"判为"用户没填"→ 退保守 32K（该判据有意保留）；
+    //     若这里把"未声明"也显示成 1M，用户就看不出"到底填没填"——
+    //     而"未填"与"真 1M"在数据层**同形**正是本次要修的根因（实测 561 个模型全被按 32K 估）。
+    //   ★ **原意图仍满足**：都**不显示 0K**（历史空数据不会显示成 "0K"）。
+    expect(formatContextWindow(undefined), '★ 未声明应显式提示（不再伪装成 1M）').toBe('未声明');
+    expect(formatContextWindow(null), '★ null 同为未声明').toBe('未声明');
+    // 非法值（0 / NaN）仍兜底默认档 —— 那是"填错了"，不是"没填"
     expect(formatContextWindow(0)).toBe('1M');
     expect(formatContextWindow(NaN)).toBe('1M');
   });

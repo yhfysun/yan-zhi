@@ -11,7 +11,7 @@
     <div class="input-box" :class="{ focused: inputFocused, 'is-dragover': dragOver }">
 
       <div class="input-agent-bar">
-        <el-dropdown trigger="click" placement="bottom-start" popper-class="agent-switch-popper" @command="onAgentSwitch">
+        <el-dropdown trigger="click" placement="bottom-start" popper-class="agent-switch-popper" @command="onAgentSwitch" @visible-change="onAgentDropdownVisible">
           <div class="agent-trigger" @click.stop>
             <span class="agent-trigger-avatar"><el-icon :size="14"><component :is="agentIconOf(agentStore.selectedAgent?.id, agentStore.selectedAgent?.name)" /></el-icon></span>
             <span class="agent-trigger-name">{{ agentStore.selectedAgent?.name || '选择智能体' }}</span>
@@ -671,7 +671,7 @@
                此处恒为发送键 —— 运行中点击发送即入追加队列（原有行为），不再在两处各摆一个停止。 -->
           <el-tooltip :content="store.streaming ? '发送（任务运行中将加入队列）' : '发送 (Enter)'" placement="top">
             <span>
-              <el-button type="primary" :icon="Promotion" :disabled="(!input.trim() && uploadedFiles.length === 0 && quotedUrls.length === 0) || !selectedModelId" @click="send" circle class="send-btn" />
+              <el-button type="primary" :icon="Promotion" :disabled="sending || (!input.trim() && uploadedFiles.length === 0 && quotedUrls.length === 0) || !selectedModelId" @click="send" circle class="send-btn" />
             </span>
           </el-tooltip>
         </div>
@@ -765,7 +765,7 @@ import { useRouter } from 'vue-router';
 const {
   inputFocused, workspaceDir, hasWorkspaceDir, clearWorkspaceDir, showWorkspaceDir, showMount, store, showSkills, mountedSkillIds,
   skillStore, skillSearch, filteredSkillStore, toggleSkillMount,
-  triggerFileUpload, input, inputRef, send, agentStore, onAgentSwitch, openEditAgent, modelGroups,
+  triggerFileUpload, input, inputRef, send, sending, agentStore, onAgentSwitch, openEditAgent, modelGroups,
   currentScene, clearScene,
   selectedModelId, onModelChange, openPlatformConfig, startNewChat, uploadedFiles, stopChat,
   queuedList, sendQueuedNow, editQueued, removeQueued,
@@ -786,6 +786,16 @@ const compactCount = computed(() =>
 
 const isCodeMode = useCodeStore().codeModeActive;
 const inputTooLong = computed(() => input.value.length > LONG_INPUT_THRESHOLD);
+
+/**
+ * 智能体下拉展开时兜底加载（2026-10-09）：
+ * 全新/覆盖安装后首启，后端冷启（建库+迁移+平台同步）可能超过启动时 loadAgents
+ * 的重试预算（~10.5s）→ 列表永久为空。用户能展开下拉时后端必然已就绪，
+ * 此时若列表仍为空就补拉一次（ensureAgents 幂等 + inflight 去重，不会重复请求）。
+ */
+function onAgentDropdownVisible(visible: boolean) {
+  if (visible) agentStore.ensureAgents();
+}
 
 // ===== 7.3 运行指示的步骤进度：任务计划（task_plan/task_step）登记了步骤才显示「步骤 x/y」=====
 const planTotal = computed(() => store.planSteps.length);

@@ -173,6 +173,8 @@
 .tree-caret.expanded { transform: rotate(90deg); }
 .tree-node-icon { color: var(--color-text-secondary); flex-shrink: 0; }
 .tree-root .tree-node-icon { color: var(--color-primary); }
+/* 置顶分组的星标图标（2026-10-09）：与「任务」(primary) / 空间(warning) 区分开 */
+.tree-pinned .tree-node-icon { color: var(--color-primary); }
 .tree-space .tree-node-icon { color: var(--color-warning); }
 .tree-node-label { font-size: 13px; font-weight: 600; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* 批量模式下目录/任务节点头右侧的多选框：整组一键选/取消 */

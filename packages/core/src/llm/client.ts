@@ -1,9 +1,13 @@
 // LLM 客户端 - 同时支持 OpenAI Chat Completions 与 Anthropic Messages 协议
-// 浏览器端通过 PlatformAdapter.llmProxyBase 走后端代理（/api/llm/*），避免 CORS 且不暴露 API Key；
+// 浏览器端通过 PlatformAdapter.llmProxyBase 走后端代理（/api/llm 下的接口），避免 CORS 且不暴露 API Key；
 // server 端（无 llmProxyBase）直连上游。
 import type { Platform, Model, Message, ChatChunk, ChatRequest } from '@yan-zhi/shared';
 import { getPlatformAdapter } from '../platform/types';
 import { parseSSE } from './stream';
+// 发送前顺序规整（2026-10-09）：把夹在 tool_calls 与其配对 tool 消息之间的「运行中追加消息」后移。
+// 见 message-order.ts 顶部 —— 「立即发送」注入点天然落在组中间，不规整则每次重放撞上游 400
+// （`tool_calls must be followed by tool messages`）。
+import { reorderToolGroups } from './message-order';
 import {
   toAnthropicMessages,
   toAnthropicTools,
@@ -150,7 +154,25 @@ export class LlmClient {
    */
   private toApiMessage(m: Message): Record<string, unknown> {
     const out: Record<string, unknown> = { role: m.role };
-    if (m.content !== undefined) out.content = m.content;
+    // ★★★ 多模态展开（C1，2026-10-09）：有 `imageParts` 时把 content 组装成
+    //   `[{type:'text'},{type:'image_url'}]` —— 这是**唯一**会产出数组形态的地方，
+    //   因此 `sanitizeToolMessages`（对字符串做拼接）等下游处理**不会受影响**。
+    //   ★ 两协议共用本函数：`toAnthropicMessages` 侧已有 `toAnthropicBlocks` 认得
+    //     `image_url` 块（`anthropic.ts:49-55`），无需再改。
+    if (m.imageParts?.length) {
+      const parts: Array<Record<string, unknown>> = [];
+      if (m.content) parts.push({ type: 'text', text: m.content });
+      for (const p of m.imageParts) {
+        // 空 base64 跳过（避免产出上游无法解析的空图块 → 400）
+        if (!p?.base64) continue;
+        parts.push({ type: 'image_url', image_url: { url: `data:${p.mime || 'image/jpeg'};base64,${p.base64}` } });
+      }
+      // 全是空图块时退回纯文本（不能让 content 变成空数组）
+      if (parts.some((p) => p.type === 'image_url')) out.content = parts;
+      else if (m.content !== undefined) out.content = m.content;
+    } else if (m.content !== undefined) {
+      out.content = m.content;
+    }
     if (m.toolCalls?.length) {
       out.tool_calls = m.toolCalls.map(tc => {
         const anyTc = tc as any;
@@ -270,8 +292,17 @@ export class LlmClient {
         out.push(m);
       }
     }
-    return out.filter(
-      (m) => m.role !== 'assistant' || (m.content && String(m.content).trim()) || (Array.isArray(m.tool_calls) && m.tool_calls.length),
+    // ★★★ 顺序规整（2026-10-09）：配对已完整（上面按 id 收口 + healToolCallIds 补 id），
+    //   但**相邻顺序**仍可能违规 —— 运行中「立即发送」注入的 user 消息天然落在
+    //   assistant(tool_calls) 与它的 tool 回执之间（注入时工具还没跑完）。OpenAI 兼容端点
+    //   要求回执**紧跟**调用，中间夹一条 user 就 400（`tool_calls must be followed by tool messages`）。
+    //   这里把这类"夹心"消息后移到整组之后；只读规整，库内顺序不动（与本次清洗同一取向）。
+    //   ★ 必须在**所有过滤之后**做：先保证集内消息都已配对，再摆顺序，避免把会被剥掉的
+    //     消息也算进位移。
+    return reorderToolGroups(
+      out.filter(
+        (m) => m.role !== 'assistant' || (m.content && String(m.content).trim()) || (Array.isArray(m.tool_calls) && m.tool_calls.length),
+      ),
     );
   }
 
@@ -572,7 +603,12 @@ export class LlmClient {
       },
       finishReason: data.choices?.[0]?.finish_reason,
       usage: data.usage
-        ? { promptTokens: data.usage.prompt_tokens, completionTokens: data.usage.completion_tokens }
+        ? {
+            promptTokens: data.usage.prompt_tokens,
+            completionTokens: data.usage.completion_tokens,
+            // ★ D1 可观测（2026-10-09）：OpenAI 缓存命中字段
+            cachedTokens: data.usage.prompt_tokens_details?.cached_tokens,
+          }
         : undefined,
     };
   }

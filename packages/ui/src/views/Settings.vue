@@ -400,6 +400,29 @@
           <p class="about-tip">源码：<a class="about-link" href="https://github.com/yhfysun/yan-zhi" target="_blank" rel="noopener">https://github.com/yhfysun/yan-zhi</a></p>
           <p class="about-tip">开源协议：Apache-2.0</p>
         </div>
+
+        <!-- 当前数据目录（2026-10-09）
+             ★ 为什么放这里：dev 与安装版各自用**独立的数据目录**（有意设计，避免调试污染
+               真实数据），但此前「跑在哪套数据上」完全不可见 —— 用户切运行方式后看到另一套库，
+               会误判成「数据丢了 / 平台没了」（issues/双库数据隔离造成丢失误判）。本区块把这个
+               答案摆出来：当前实例类型 + 数据目录路径 + 库体积，并支持一键复制路径排障。 -->
+        <div class="about-section" style="margin-top: 18px">
+          <h3>当前数据目录</h3>
+          <template v-if="dataDirInfo">
+            <p class="about-tip">
+              <el-tag :type="dataDirInfo.instance === 'dev' ? 'warning' : dataDirInfo.instance === 'packaged' ? 'success' : 'info'" size="small">
+                {{ dataDirInfo.instance === 'dev' ? '开发实例' : dataDirInfo.instance === 'packaged' ? '安装版' : '自定义' }}
+              </el-tag>
+              <span style="margin-left: 8px">{{ dataDirInfo.instanceNote }}</span>
+            </p>
+            <p class="about-tip" style="word-break: break-all">
+              目录：<code class="about-code">{{ dataDirInfo.dir }}</code>
+              <el-button link type="primary" size="small" @click="copyDataDir">复制路径</el-button>
+            </p>
+            <p class="about-tip">数据库：{{ dataDirInfo.dbBytes ? formatBytes(dataDirInfo.dbBytes) : '（未找到 data.db）' }}</p>
+          </template>
+          <p v-else class="about-tip">读取中…</p>
+        </div>
       </el-tab-pane>
       </el-tabs>
     </template>
@@ -1018,8 +1041,38 @@ function copyNodeUrl(n: { ip: string; port: number }) {
   navigator.clipboard.writeText(`http://${n.ip}:${n.port}`).then(() => ElMessage.success('已复制地址'));
 }
 
+// ===== 当前数据目录（「关于」页，2026-10-09）=====
+// 解决双库 issue 的真痛点：「跑在哪套数据上」不可见 → 用户误判「数据丢了」。
+// ★ 单一真相源：路径由服务端 db.ts 的 dataDir 给出，前端不自己拼（拼必然漂移）。
+type DataDirInfo = {
+  dir: string; dbFile: string; dbExists: boolean; dbBytes: number;
+  instance: 'dev' | 'packaged' | 'unknown'; instanceNote: string;
+};
+const dataDirInfo = ref<DataDirInfo | null>(null);
+async function loadDataDirInfo() {
+  try {
+    const r = await api.get<DataDirInfo>('/system/data-dir');
+    if ('error' in r) return;   // 失败静默：这只是展示信息，不该打扰用户
+    dataDirInfo.value = r.data;
+  } catch { /* 同上 */ }
+}
+function copyDataDir() {
+  const p = dataDirInfo.value?.dir;
+  if (!p) return;
+  navigator.clipboard.writeText(p).then(() => ElMessage.success('已复制数据目录路径'));
+}
+/** 库体积展示（字节 → 人类可读）。 */
+function formatBytes(n: number): string {
+  if (!Number.isFinite(n) || n <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let v = n; let i = 0;
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+  return `${v.toFixed(v >= 10 || i === 0 ? 0 : 1)} ${units[i]}`;
+}
+
 onMounted(() => {
   void loadLanIps();
+  void loadDataDirInfo();
 });
 
 // 短信验证码面板：仅在「本职区可见」时轮询（切走/卸载立刻停，避免无谓请求堆积）。
@@ -1222,6 +1275,14 @@ onMounted(async () => {
 .about-tip { font-size: 12px; opacity: 0.7; }
 .about-link { color: var(--color-primary); text-decoration: none; }
 .about-link:hover { text-decoration: underline; }
+/* 数据目录路径：等宽 + 可换行（Windows 长路径要能完整看到、方便复制排障） */
+.about-code {
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--color-background-secondary, rgba(127, 127, 127, 0.08));
+}
 .connect-url-box { display: flex; align-items: center; gap: 8px; background: rgba(15,23,42,0.04); border-radius: 6px; padding: 6px 10px; }
 .connect-url-box code { font-family: monospace; font-size: 13px; color: var(--color-primary); }
 

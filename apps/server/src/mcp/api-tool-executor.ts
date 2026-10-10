@@ -9,6 +9,10 @@ import { DEFAULT_CONTEXT_WINDOW } from '../constants.js';
 import { AGENS_API_URL, inferCapabilitiesFromModelId } from '../agens-platform/service.js';
 import { serverState } from '../state.js';
 import { resolveFfmpeg, installFfmpeg } from './ffmpeg-runtime.js';
+import {
+  resolveWhisper, installWhisper, ensureWav16k, runWhisperToSrt,
+  WHISPER_MODELS, DEFAULT_WHISPER_MODEL,
+} from './whisper-runtime.js';
 import { resolveYtdlp, installYtdlp, ytdlpFetch, isYoutubeHost, youtubeEnabled } from './ytdlp-runtime.js';
 import { decideInstallPolicy, formatBytes } from '../services/runtime-installer.js';
 import { buildSrt, type SrtCue } from './srt.js';
@@ -26,6 +30,10 @@ import { readSpaceMemory, appendSpaceMemory, readTaskProgressForConversation } f
 import { setSpaceTaskType, resolveSpaceResourceRoot } from '../services/space-resources.js';
 import { TASK_TYPE_IDS, getTaskType } from '@yan-zhi/shared';
 import { readBrowserMemoryOverview } from '../services/browser-memory.js';
+import {
+  resolveExperienceBase, listExperienceSummaries, readExperienceFile,
+  appendExperienceEntry, type ExperienceKind,
+} from '../services/experience.js';
 import { listVerificationCodes } from '../services/verification-codes.js';
 import { ensureArtifactDirFor, resolveArtifactDirFor } from '../services/artifact-dir.js';
 import { applyClipOp, summarizeProject, type ClipProject } from '../services/clip-project.js';
@@ -326,6 +334,7 @@ export const SUPPORTED_API_TOOLS = new Set([
   'api_code_semantic_search', 'api_code_definition',
   'api_memory_search', 'api_memory_list', 'api_memory_create', 'api_memory_delete',
   'api_space_memory_read', 'api_space_memory_append',
+  'api_experience_read', 'api_experience_write',
   'api_browser_memory_read',
   // 短信验证码中继（移动端同网回传）：读取侧，只读
   'api_verification_code_latest', 'api_verification_code_list',
@@ -358,6 +367,8 @@ export const SUPPORTED_API_TOOLS = new Set([
   'api_tts_speak', 'api_tts_voices',
   // 合成层：字幕生成 + ffmpeg 音视频合成（含按需下载 ffmpeg）
   'api_srt_generate', 'media_compose', 'media_install_ffmpeg', 'media_install_ytdlp',
+  // 本地语音识别（whisper.cpp）：音频/视频 → 带时间轴的 SRT（不上传云端）+ 按需安装
+  'media_asr_transcribe', 'whisper_install',
   // 剪辑与特效层：裁剪/变速/抽帧/变换/淡入淡出/调色/转场/画中画/图片运镜/BGM/音量/响度（统一走 media_edit 的 op）
   'media_edit',
   // 剪辑工程：多段 + 字幕(含动画) + BGM 的工程化剪辑与渲染（剪辑模式的唯一出口）
@@ -1145,6 +1156,139 @@ async function mediaInstallFfmpeg(): Promise<MpcToolExecutionResult> {
     policy: { decision: policy.decision, estimatedBytes: policy.bytes, estimatedSize: policy.bytes ? formatBytes(policy.bytes) : null },
     note: '安装完成，媒体合成（media_compose）现在可用。',
   }));
+}
+
+// ===== 本地语音识别（whisper.cpp）：音频/视频 → 带时间轴的 SRT =====
+// 与 api_srt_generate 的分工：那个是「按已有文本排版」（时间轴靠时长推算，零 ASR）；
+// 本组补的正是它做不到的——从**语音**里识别出文字与时间轴。
+// 用户拍板（2026-10-08）：本地 whisper.cpp，不上传云端（隐私/离线/无按量计费）。
+
+/** whisper 二进制实测体积（win32 CPU 版 8MB），用于体积策略判定 */
+const WHISPER_BIN_ESTIMATED_BYTES = 8 * 1024 * 1024;
+
+/** 指定模型的体积（字节），用于体积策略（模型普遍 > 50MB 阈值 → 需先确认） */
+function whisperModelBytes(model: string): number {
+  const mb = WHISPER_MODELS[model]?.sizeMB ?? 466;
+  return mb * 1024 * 1024;
+}
+
+/** whisper 缺失时给出「一键安装 + 手动放置 + 需代理」三条指引，不让用户自己猜。 */
+function whisperMissingHint(st: { error: string; installDir: string; modelsDir: string }, model: string): string {
+  const policy = decideInstallPolicy(whisperModelBytes(model));
+  return [
+    st.error,
+    '',
+    `处理方式：调用 whisper_install { what: "all", model: "${model}" } 由我自动下载。`,
+    `或手动放入目录：二进制 → ${st.installDir}，模型 → ${st.modelsDir}`,
+    policy.decision === 'confirm' ? `★ 模型约 ${WHISPER_MODELS[model]?.sizeMB ?? '?'}MB，请先向用户确认再下载。` : '',
+  ].filter(Boolean).join('\n');
+}
+
+/** whisper_install：装二进制 / 模型（幂等；失败带补救指引）。 */
+async function whisperInstall(args: Record<string, unknown>): Promise<MpcToolExecutionResult> {
+  const whatRaw = str(args, 'what').trim() || 'cli';
+  const what = (['cli', 'model', 'all'].includes(whatRaw) ? whatRaw : 'cli') as 'cli' | 'model' | 'all';
+  const model = str(args, 'model').trim() || DEFAULT_WHISPER_MODEL;
+  if (!WHISPER_MODELS[model]) {
+    return fail(`未知模型 ${model}，可选：${Object.keys(WHISPER_MODELS).join(' / ')}`);
+  }
+
+  const before = await resolveWhisper(model);
+  if (before.ok) {
+    return ok(JSON.stringify({
+      ok: true, alreadyInstalled: true, source: before.source,
+      dir: before.installDir, bin: before.bin, model: before.model,
+    }));
+  }
+
+  const policy = decideInstallPolicy(what === 'cli' ? WHISPER_BIN_ESTIMATED_BYTES : whisperModelBytes(model));
+  const r = await installWhisper(what, model, (m) => logger.info(`[whisper] ${m}`));
+  if (!r.ok) return fail(r.message);
+
+  const after = await resolveWhisper(model);
+  return ok(JSON.stringify({
+    ok: true, installed: true, source: after.source,
+    dir: after.installDir, bin: after.bin, model: after.model,
+    policy: {
+      decision: policy.decision,
+      estimatedBytes: policy.bytes,
+      estimatedSize: policy.bytes ? formatBytes(policy.bytes) : null,
+    },
+    note: '安装完成，media_asr_transcribe（本地语音转字幕）现在可用。',
+  }));
+}
+
+/** media_asr_transcribe：音频/视频 → SRT（本地 whisper.cpp）。 */
+async function mediaAsrTranscribe(
+  args: Record<string, unknown>,
+  conversationId?: string,
+): Promise<MpcToolExecutionResult> {
+  const inputRaw = str(args, 'input').trim();
+  if (!inputRaw) return fail('input 必填（音频或视频文件路径）');
+  const input = path.isAbsolute(inputRaw) ? inputRaw : path.resolve(inputRaw);
+  if (!existsSync(input)) return fail(`input 文件不存在：${input}`);
+
+  const model = str(args, 'model').trim() || DEFAULT_WHISPER_MODEL;
+  if (!WHISPER_MODELS[model]) return fail(`未知模型 ${model}，可选：${Object.keys(WHISPER_MODELS).join(' / ')}`);
+  const language = str(args, 'language').trim() || 'zh';
+  const maxSeconds = typeof args.maxSeconds === 'number' && args.maxSeconds > 0 ? args.maxSeconds : 0;
+
+  // 依赖分诊：先要 whisper + 模型，再要 ffmpeg（抽音轨）
+  const wh = await resolveWhisper(model);
+  if (!wh.ok) return fail(whisperMissingHint(wh, model));
+  const ff = await resolveFfmpeg();
+  if (!ff.ok) return fail(ffmpegMissingHint(ff));
+
+  // 1) 抽音轨为 16kHz 单声道 WAV（whisper.cpp 要求；视频输入自动只取音轨）
+  const wav = await ensureWav16k(input, ff.ffmpeg);
+  if (!wav.ok) return fail(`音频准备失败：${wav.error || '未知错误'}`);
+
+  // 2) 跑 whisper 产出 SRT（输出到临时前缀，成功后复制进交付目录）
+  const workPrefix = path.join(path.dirname(wav.wav), 'out');
+  const run = await runWhisperToSrt({
+    bin: wh.bin, model: wh.model, wav: wav.wav, outPrefix: workPrefix,
+    language, maxSeconds,
+  });
+  try {
+    if (!run.ok) {
+      return fail(
+        `${run.error || 'whisper 执行失败'}`
+        + `\n★ 若提示模型文件问题，用 whisper_install { what: "model", model: "${model}" } 重建；`
+        + `若提示可执行文件问题，用 whisper_install { what: "cli" }。`,
+      );
+    }
+
+    // 3) 落进交付目录并登记（返回结构对齐 api_srt_generate → media_compose 零改动）
+    const target = mediaTarget({ conversationId, kind: 'files' });
+    await mkdir(target.dir, { recursive: true });
+    const file = path.join(target.dir, `asr-${Date.now()}.srt`);
+    const content = await readFile(run.srt, 'utf8');
+
+    // ★ 空结果要明确报错而不是"成功返回空 SRT"（静默成功最坑：用户以为转写好了）
+    const cues = content.split('\n\n').filter((b) => b.trim() && /\d{2}:\d{2}:\d{2}/.test(b)).length;
+    if (cues === 0) {
+      return fail(
+        `未检测到可用语音内容（识别结果为空）。`
+        + `\n可能原因：① 音频没有说话声（纯音乐/静音）；② 语言参数与实际不符（当前 language=${language}）；`
+        + `③ 音频过短或采样异常。可换 model=medium 或确认音轨后重试。`,
+      );
+    }
+
+    await writeFile(file, content, 'utf8');
+    return ok(JSON.stringify({
+      ok: true, type: 'file', kind: 'srt',
+      url: `${target.urlBase}/${path.basename(file)}`,
+      file, segmentCount: cues, model: wh.modelName || model, language,
+      // 如实告知：请求的档位与实际用的档位不一致时说明清楚（不假装用了请求的那档）
+      ...(wh.modelName && wh.modelName !== model
+        ? { modelFallback: `请求 ${model} 但本机未装，已自动改用 ${wh.modelName}（如需 ${model} 请用 whisper_install 下载）` }
+        : {}),
+      note: '可直接交给 media_compose 的 subtitle 操作烧进视频（与 api_srt_generate 产出同构）。',
+    }));
+  } finally {
+    // 临时文件清理失败不该让整个调用失败（项目既有约定）
+    try { await rm(path.dirname(wav.wav), { recursive: true, force: true }); } catch { /* ignore */ }
+  }
 }
 
 /** yt-dlp 安装引导（视频网站解析下载）。yt-dlp.exe 自包含、约 15MB，低于静默阈值。 */
@@ -3145,6 +3289,38 @@ export async function executeApiTool(
           : { days, content: '', analysis: null, note: `近 ${days} 天没有浏览器使用记录` });
       }
 
+      // 领域经验档案（自进化经验层，.yan-zhi/experience/）：读=索引或单档案全文；写=追加/去重计数
+      case 'api_experience_read': {
+        requireUser(userId);
+        const { base } = resolveExperienceBase(conversationId, workspaceDir);
+        const topic = str(args, 'topic');
+        if (topic) {
+          const file = readExperienceFile(base, topic);
+          if (!file) {
+            const summaries = listExperienceSummaries(base);
+            return fail(`经验档案 ${topic} 不存在。已有档案：${summaries.map((s) => s.topic).join('、') || '（暂无）'}`);
+          }
+          return ok(file);
+        }
+        const summaries = listExperienceSummaries(base);
+        return ok(summaries.length
+          ? { base, count: summaries.length, files: summaries }
+          : { base, count: 0, note: '暂无经验档案（第一条经验写入后会自动建档）' });
+      }
+      case 'api_experience_write': {
+        requireUser(userId);
+        const { base } = resolveExperienceBase(conversationId, workspaceDir);
+        const kind = (str(args, 'kind') || 'step') as ExperienceKind;
+        const r = await appendExperienceEntry(base, {
+          kind,
+          topic: str(args, 'topic'),
+          title: str(args, 'title'),
+          detail: str(args, 'detail'),
+          source: str(args, 'source') || (conversationId ? `会话 ${conversationId.slice(0, 8)}` : undefined),
+        });
+        return ok(r);
+      }
+
       // 短信验证码中继（移动端同网回传）。只读；无记录时返回 null + 提示，
       // 便于模型向用户明确"没收到/已过期/未开启转发"而不是编一个验证码。
       case 'api_verification_code_latest': {
@@ -3810,6 +3986,10 @@ export async function executeApiTool(
         return await clipProjectTool(args, conversationId);
       case 'media_install_ffmpeg':
         return await mediaInstallFfmpeg();
+      case 'media_asr_transcribe':
+        return await mediaAsrTranscribe(args, conversationId);
+      case 'whisper_install':
+        return await whisperInstall(args);
       case 'media_install_ytdlp':
         return await mediaInstallYtdlp();
       // 网络素材获取：公开直链下载 + 竖屏标准化（先下载 → 标准化 → 再拼接）

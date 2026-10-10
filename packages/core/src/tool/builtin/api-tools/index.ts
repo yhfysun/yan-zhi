@@ -3,6 +3,7 @@ import type { ToolDefinition } from '../../types';
 import { registerAgentTools } from './agent';
 import { registerConversationTools } from './conversation';
 import { registerDataTools } from './data';
+import { registerExperienceTools } from './experience';
 import { registerFileTools } from './file';
 import { registerImTools } from './im';
 import { registerKnowledgeTools } from './knowledge';
@@ -45,7 +46,8 @@ export type ApiModuleName =
   | 'plugin'
   | 'space'
   | 'verification'
-  | 'data';
+  | 'data'
+  | 'experience';
 
 export const API_MODULES: ApiModuleName[] = [
   'agent',
@@ -70,6 +72,7 @@ export const API_MODULES: ApiModuleName[] = [
   'space',
   'verification',
   'data',
+  'experience',
 ];
 
 export function createApiToolRegistry(): Map<ApiModuleName, ToolDefinition[]> {
@@ -110,5 +113,6 @@ export function initApiToolRegistry(): void {
   registerSpaceTools(registry);
   registerVerificationTools(registry);
   registerDataTools(registry);
+  registerExperienceTools(registry);
   _instance = registry;
 }

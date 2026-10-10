@@ -113,6 +113,46 @@ function assertEditableModel(id: string) {
   }
 }
 
+/**
+ * ★★ 移动端首启竞态：内嵌 Node 后端要几秒才监听 3001，而本 store 的加载只在
+ * useChat.onMounted 里发**一次**请求 —— 扑空后 platforms/models 永久为空，
+ * 表现为「模型下拉是空的、必须自己去模型平台页点一下才出现」（用户实测反馈）。
+ *
+ * 处置：对「取列表」这类幂等只读请求加**指数退避重试**。只在拿到明确失败
+ * （网络层错误 / 5xx）时重试；4xx 是确定性业务错误（如鉴权、路径不存在），
+ * 重试没有意义反而拖慢首屏，直接返回。
+ *
+ * 为什么不用统一给 api client 加拦截器：那会让所有写请求也带重试语义，
+ * 而 POST 重试可能造成重复创建。这里只覆盖需要它的两个只读入口，范围可控。
+ *
+ * ★ 2026-10-09 移到模块级并导出，供 agent.ts / chat.ts 复用（唯一定义，
+ *   禁止各 store 复刻一份）：更新安装后首启，后端端口已监听但 seed/迁移未完，
+ *   一次性请求拿到空列表且无重试 → 「智能体/会话列表为空，进对应管理页才出现」。
+ */
+const RETRY_DELAYS_MS = [300, 700, 1500, 3000, 5000]; // 共 5 次重试，累计 ~10.5s 足够覆盖后端冷启
+
+export async function getWithRetry<T>(path: string): Promise<{ data: T } | ApiError> {
+  let last: { data: T } | ApiError | null = null;
+  for (let attempt = 0; attempt <= RETRY_DELAYS_MS.length; attempt++) {
+    const r = await api.get<T>(path);
+    if ('data' in r) return r;
+    last = r;
+    // 4xx 属确定性错误，重试无意义
+    const status = (r as ApiError).status;
+    if (typeof status === 'number' && status >= 400 && status < 500) return r;
+    // ★ status === 0 = 网络层没拿到响应（后端还没起 / 连接被拒）→ **必须重试**。
+    //   修复 `apiFetch` 之前这类错误是直接**抛异常**的，根本走不到这里；
+    //   现在它以 `{ error:'NETWORK_UNREACHABLE', status:0 }` 返回，
+    //   正好由本重试吃掉（与"移动端首启竞态"的设计意图一致）。
+    //   显式写出来而不是"落到默认重试"，是为了让这个哨兵值的语义在代码里可见。
+    if (status === 0) { /* 网络不可达 → 继续退避重试 */ }
+    if (attempt < RETRY_DELAYS_MS.length) {
+      await new Promise((res) => setTimeout(res, RETRY_DELAYS_MS[attempt]));
+    }
+  }
+  return last as { data: T } | ApiError;
+}
+
 export const usePlatformStore = defineStore('platform', () => {
   const platforms = ref<Platform[]>([]);
   const models = ref<Model[]>([]);
@@ -135,42 +175,6 @@ export const usePlatformStore = defineStore('platform', () => {
 
   // 单库收敛：数据面恒走后端（auth.useServerApi 恒 true），本地 adapter.db 分支已废弃。
   const on = () => useAuthStore().useServerApi; // 恒 true
-
-  /**
-   * ★★ 移动端首启竞态：内嵌 Node 后端要几秒才监听 3001，而本 store 的加载只在
-   * useChat.onMounted 里发**一次**请求 —— 扑空后 platforms/models 永久为空，
-   * 表现为「模型下拉是空的、必须自己去模型平台页点一下才出现」（用户实测反馈）。
-   *
-   * 处置：对「取列表」这类幂等只读请求加**指数退避重试**。只在拿到明确失败
-   * （网络层错误 / 5xx）时重试；4xx 是确定性业务错误（如鉴权、路径不存在），
-   * 重试没有意义反而拖慢首屏，直接返回。
-   *
-   * 为什么不用统一给 api client 加拦截器：那会让所有写请求也带重试语义，
-   * 而 POST 重试可能造成重复创建。这里只覆盖需要它的两个只读入口，范围可控。
-   */
-  const RETRY_DELAYS_MS = [300, 700, 1500, 3000, 5000]; // 共 5 次重试，累计 ~10.5s 足够覆盖后端冷启
-
-  async function getWithRetry<T>(path: string): Promise<{ data: T } | ApiError> {
-    let last: { data: T } | ApiError | null = null;
-    for (let attempt = 0; attempt <= RETRY_DELAYS_MS.length; attempt++) {
-      const r = await api.get<T>(path);
-      if ('data' in r) return r;
-      last = r;
-      // 4xx 属确定性错误，重试无意义
-      const status = (r as ApiError).status;
-      if (typeof status === 'number' && status >= 400 && status < 500) return r;
-      // ★ status === 0 = 网络层没拿到响应（后端还没起 / 连接被拒）→ **必须重试**。
-      //   修复 `apiFetch` 之前这类错误是直接**抛异常**的，根本走不到这里；
-      //   现在它以 `{ error:'NETWORK_UNREACHABLE', status:0 }` 返回，
-      //   正好由本重试吃掉（与"移动端首启竞态"的设计意图一致）。
-      //   显式写出来而不是"落到默认重试"，是为了让这个哨兵值的语义在代码里可见。
-      if (status === 0) { /* 网络不可达 → 继续退避重试 */ }
-      if (attempt < RETRY_DELAYS_MS.length) {
-        await new Promise((res) => setTimeout(res, RETRY_DELAYS_MS[attempt]));
-      }
-    }
-    return last as { data: T } | ApiError;
-  }
 
   async function loadPlatforms() {
     loading.value = true;

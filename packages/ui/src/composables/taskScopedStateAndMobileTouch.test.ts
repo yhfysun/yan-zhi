@@ -129,10 +129,20 @@ describe('① 新建任务 / 切会话：任务域状态必须整体归零', () 
       ['MCP 挂载列表', /mountedMcpServers\s*=\s*\[\]/],
       ['MCP 禁用工具', /mcpDisabledTools\s*=\s*\{\}/],
       ['MCP 工具别名', /mcpToolAliases\s*=\s*\{\}/],
-      ['权限模式（安全默认只读）', /permissionMode\s*=\s*'readonly'/],
+      // ★ 权限归零必须是「安全默认 readonly」（2026-10-08 更新口径）：
+      //   实现自 2026-10-07 起是 `isAutopilot ? 'all' : 'readonly'`
+      //   （小说推文全自动助手例外，用户拍板不弹窗）。断言改钉**安全意图**：
+      //   ① 必须显式赋值（不能继承上个任务）；
+      //   ② 默认落点必须是 readonly（'all' 只能出现在显式白名单分支里）。
+      //   ★ 不钉字面 `= 'readonly'`：那会把"有例外"误判成"不安全"，
+      //     而真正的风险是"默认放行"——见下方 not.toMatch。
+      ['权限模式（安全默认只读）', /permissionMode\s*=\s*[^;]+'readonly'/],
     ] as const) {
       expect(body, `★ ${name} 未归零（会继承上个任务的挂载/权限）`).toMatch(re);
     }
+    // 反向：权限归零不得默认全放行（'all' 只能由白名单判定产生）
+    expect(body, '★ 权限归零默认放行了（新任务不会继承只读安全默认）')
+      .not.toMatch(/permissionMode\s*=\s*'all'\s*;/);
   });
 
   it('★ 预览面板与浏览器地址必须归零（否则新任务右侧还挂着上个任务的文件/网站）', () => {
@@ -481,7 +491,16 @@ describe('⑥ 工具权限安全默认：新任务必须默认只读（2026-09-2
 
   it('★ 新建任务归零时权限必须回只读', () => {
     const body = bodyOf(stripComments(USE_CHAT), 'function resetTaskScopedState');
-    expect(body, '★ 新任务权限归零不是 readonly').toMatch(/permissionMode\s*=\s*'readonly'/);
+    // ★ 同口径（2026-10-08）：默认落点必须是 readonly。
+    //   实现是 `isAutopilot ? 'all' : 'readonly'` —— 'readonly' 必须在，且
+    //   不得写成 `permissionMode = 'all'` 这种无条件放行。
+    expect(body, '★ 新任务权限归零不是 readonly（默认落点丢了）')
+      .toMatch(/permissionMode\s*=\s*[^;]+'readonly'/);
+    expect(body, '★ 新任务权限归零无条件放行了')
+      .not.toMatch(/permissionMode\s*=\s*'all'\s*;/);
+    // 例外必须由**显式白名单**决定，不能是"谁都能拿到 all"
+    expect(body, '★ 权限例外未走白名单判定（应依据 isAutopilot/智能体 id）')
+      .toMatch(/isAutopilot|AUTOPILOT_AGENT_IDS/);
   });
 
   it('★★★ 后端 normalizePermissionMode 对未知值必须 fail-safe 收窄到 readonly', () => {
@@ -494,13 +513,22 @@ describe('⑥ 工具权限安全默认：新任务必须默认只读（2026-09-2
   });
 
   it('★ 后端所有兜底路径都必须落在 readonly（查不到会话/异常时不许放行）', () => {
-    // llm-task-manager：查库异常兜底 + 4 处 `|| 'default'` 兜底
+    // llm-task-manager：查库异常兜底 + 若干处 `|| 'default'` 兜底
     expect(LTM, '★ 任务创建时权限兜底不是 readonly').toMatch(/let permissionMode: PermissionMode = 'readonly'/);
     expect(LTM, '★ 仍存在 `|| \'default\'` 的权限兜底（查不到时放行）')
       .not.toMatch(/task\.permissionMode\s*\|\|\s*'default'/);
-    // ★ 2026-10-03：新增 2 处兜底点（spawn_sub_agent 工具面裁剪 + 子智能体工具全集裁剪，
-    //   均由本守门测试的“不得 || 'default'”反向断言逼出），总数 4 → 6。
-    expect((LTM.match(/task\.permissionMode\s*\|\|\s*'readonly'/g) || []).length, '★ 兜底点数量不对（应 6 处）').toBe(6);
+
+    // ★★★ 2026-10-09 改为「判据驱动」而非「数量驱动」：
+    //   原断言硬编码总数（6），任何人新增**一处合法的** readonly 兜底都会误报红
+    //   —— 实测已发生：多智能体协同新增 2 处 fail-safe 兜底（spawn_sub_agent 工具裁剪 /
+    //   子智能体工具全集裁剪），两处都正确落 readonly，却让「应 6 处」失败。
+    //   ★ 判据：这个测试真正要守的是「**不存在 default 放行兜底**」（上面那条反向断言），
+    //     数量只是它的副产物 —— 钉数量等于把"合法加固"当回归拦下来。
+    //   新判据：所有 `permissionMode || 'xxx'` 兜底的值只能是 readonly。
+    const fallbacks = [...LTM.matchAll(/task\.permissionMode\s*\|\|\s*'([^']*)'/g)].map((m) => m[1]);
+    expect(fallbacks.length, '★ 一处 readonly 兜底都没有（兜底逻辑被删了？）').toBeGreaterThan(0);
+    const bad = fallbacks.filter((v) => v !== 'readonly');
+    expect(bad, `★ 存在非 readonly 的权限兜底：${bad.join(', ')}（查不到时就放行）`).toEqual([]);
   });
 
   it('★ 建库默认值必须是 readonly（新装用户从第一刻起就安全）', () => {
@@ -671,5 +699,72 @@ describe('空间右键「打开目录」+ 子菜单样式', () => {
     expect(CSS, '★ 子菜单图标缺尺寸约束（会跟字号乱跑）').toMatch(/\.ctx-submenu > li > \.el-icon/);
     // 不可点的提示项要排除 hover（否则看着像能点）
     expect(CSS, '★ 子菜单的"暂无空间"提示未排除 hover').toMatch(/\.ctx-submenu > li\.disabled-hint:hover/);
+  });
+});
+
+/**
+ * 「移动到空间」与「打开目录」必须一眼可分（2026-10-09 用户反馈：
+ * 「移动到空间的图标怎么跟打开目录图标一样？」）。
+ *
+ * ★ 真实缺陷：两者都用了 `FolderOpened`，而它们**同屏相邻**出现在同一个右键菜单里
+ *   （任务右键菜单：… 打开目录 / 移动到空间 …），用户扫一眼图标完全分不出谁是谁，
+ *   只能逐字读文字。而行内 hover 按钮**只有图标没有文字**（靠 title 提示），
+ *   图标撞脸 = 那个按钮彻底失去辨识度。
+ *
+ * ⇒ 语义分工：`FolderOpened`（打开文件夹）归「打开目录」；`Rank`（四向箭头 = 移动）归「移动到空间」。
+ *   ★ 钉判据而不是钉像素：断言"这两个动作的图标必须不同"+"同一动作在四处（行内按钮、
+ *   右键菜单项、右键子菜单、工作台面板）必须同一个图标"，而不是断言某个图标名写没写。
+ */
+describe('移动 vs 打开目录：图标语义必须可区分', () => {
+  const SIDEBAR = read('components/chat/ChatSidebar.vue');
+  const TASK_LIST = read('components/workbench/TaskListSection.vue');
+
+  /** 菜单项写法：`<el-icon><X /></el-icon>移动到空间`（图标在文字前面）。 */
+  const menuIconOf = (src: string, label: string) =>
+    [...src.matchAll(new RegExp(`<el-icon[^>]*>\\s*<([A-Z][A-Za-z0-9]*)\\s*\\/>\\s*<\\/el-icon>${label}`, 'g'))].map((m) => m[1]);
+
+  /** 行内按钮写法：`title="移动到空间" ... ><el-icon :size="12"><X /></el-icon>`（图标在 title 后面）。 */
+  const rowBtnIconOf = (src: string, label: string) =>
+    [...src.matchAll(new RegExp(`title="${label}"[\\s\\S]{0,160}?<el-icon[^>]*>\\s*<([A-Z][A-Za-z0-9]*)\\s*\\/>`, 'g'))].map(
+      (m) => m[1],
+    );
+
+  it('★ 办公侧栏：右键菜单里「移动到空间」不得再用 FolderOpened', () => {
+    const icons = menuIconOf(SIDEBAR, '移动到空间');
+    expect(icons.length, '★ 没解析到「移动到空间」菜单项（锚点失效，测试等于摆设）').toBeGreaterThan(0);
+    expect(icons, '★★「移动到空间」与「打开目录」同菜单相邻，图标不能再撞脸').not.toContain('FolderOpened');
+  });
+
+  it('★ 办公侧栏：行内按钮「移动到空间」不得再用 FolderOpened', () => {
+    const icons = rowBtnIconOf(SIDEBAR, '移动到空间');
+    // 未归类 / 已归类 / 空间分组三处行内按钮
+    expect(icons.length, '★ 没解析到行内「移动到空间」按钮').toBeGreaterThanOrEqual(3);
+    expect(icons, '★★ 行内按钮只有图标没有文字，撞脸等于没有辨识度').not.toContain('FolderOpened');
+  });
+
+  it('★ 工作台任务列表：菜单项 + 行内按钮同样不得用 FolderOpened', () => {
+    const menu = menuIconOf(TASK_LIST, '移动到空间');
+    const row = rowBtnIconOf(TASK_LIST, '移动到空间');
+    expect(menu.length, '★ 工作台缺「移动到空间」菜单项').toBeGreaterThan(0);
+    expect(row.length, '★ 工作台缺行内「移动到空间」按钮').toBeGreaterThan(0);
+    expect(menu, '★★ 工作台菜单项撞脸').not.toContain('FolderOpened');
+    expect(row, '★★ 工作台行内按钮撞脸').not.toContain('FolderOpened');
+  });
+
+  it('★★ 「打开目录」必须仍然是 FolderOpened（本次修的是移动，别把打开目录也改了）', () => {
+    const taskMenu = menuIconOf(SIDEBAR, '打开目录');
+    const spaceMenu = menuIconOf(SIDEBAR, '打开目录');
+    expect(taskMenu.length, '★ 任务右键「打开目录」被误删/改了写法').toBeGreaterThan(0);
+    expect(spaceMenu.length, '★ 空间右键「打开目录」被误删/改了写法').toBeGreaterThan(0);
+    expect(taskMenu.every((n) => n === 'FolderOpened'), '★「打开目录」应保持文件夹图标').toBe(true);
+    expect(spaceMenu.every((n) => n === 'FolderOpened'), '★ 空间「打开目录」应保持文件夹图标').toBe(true);
+  });
+
+  it('★★ 同一动作在两处组件里必须是同一个图标（否则功能相同时而像两件事）', () => {
+    const a = [...new Set([...menuIconOf(SIDEBAR, '移动到空间'), ...rowBtnIconOf(SIDEBAR, '移动到空间')])];
+    const b = [...new Set([...menuIconOf(TASK_LIST, '移动到空间'), ...rowBtnIconOf(TASK_LIST, '移动到空间')])];
+    expect(a.length, '★ 办公侧栏内部对「移动到空间」用了多个图标').toBe(1);
+    expect(b.length, '★ 工作台内部对「移动到空间」用了多个图标').toBe(1);
+    expect(a[0], '★★ 两个组件的「移动到空间」图标不一致').toBe(b[0]);
   });
 });

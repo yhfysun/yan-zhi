@@ -8,12 +8,71 @@ import crypto from 'node:crypto';
 import { db } from '../db.js';
 import { encrypt, decrypt } from '../utils/crypto.js';
 import { recordBrowserMemoryEvent, readBrowserMemory } from '../services/browser-memory.js';
-import { withTimeout as sharedWithTimeout } from '@yan-zhi/shared';
+import { withTimeout as sharedWithTimeout, KeyedStreak } from '@yan-zhi/shared';
 import { createLogger } from '../services/logger.js';
 const logger = createLogger('browser');
 
 const router = Router();
 router.use(optionalAuth); // 浏览器功能不需要登录，有 token 就解析（可选）
+
+/**
+ * ★★★ 浏览器**写操作**进程级串行（2026-10-09）。
+ *
+ * 为什么必须串行：服务端 Playwright 是**进程级单例** —— `browserInstance` / `pageInstance` /
+ * `activeTabId` 都是模块级单值，"当前活动页"全进程只有一份。多个 pageAgent（或一批并发
+ * browser_* 调用）同时操作会互相抢活动页：后到的 navigate 覆盖前一页，读取只能读到"当前页"，
+ * 表现为「多个 pageAgent 只有一个在动 / 结果错乱」（与前端 BrowserView 同一类问题）。
+ *
+ * ★ 只串行**会改动浏览器状态的操作**（navigate / action / back / forward / refresh / close / focus），
+ *   **不**串行只读查询（state / screenshot / downloads / history / stats）—— 后者不改状态，
+ *   且常被 UI 轮询；串行它们会让轮询排在长操作后面，UI 卡住。
+ *
+ * 为什么挂在 router 层而不是逐个 handler 里包：本模块入口多，逐个包必漏（"入口漂移"教训）。
+ * 中间件统一包装，新增写路由只需在下面的白名单里加一条。
+ */
+const browserQueue: Array<() => void> = [];
+let browserBusy = false;
+/** 需串行的写操作路径（按 router 注册路径判定）
+ *
+ * ★★★ 2026-10-09 补（A1）：白名单此前**漏了三个真正的写操作**，它们都改页面状态：
+ *   · `GET /render`（`:1726`）→ `page.goto()` + `setViewportSize()` —— **导航就是写**，
+ *     且被预览面板（BrowserPanel）高频调用；与并发 `/action` 抢同一 `pageInstance`
+ *     → 跨会话错页（A 会话的读取拿到 B 刚导航的页面）。
+ *   · `POST /login-saved`（`:2394`）→ `goto()` + `locator().click()`
+ *   · `POST /passwords/:id/fill`（`:2372`）→ `locator().fill()`
+ * ★ 判据（本模块注释自己写过「逐个包必漏」）：**判定依据是"该 handler 是否改页面状态"，
+ *   不是"HTTP 方法是不是 POST"** —— `/render` 用 GET 却在导航，正是按方法判定的漏网之鱼。
+ */
+const BROWSER_SERIAL_PATHS = new Set([
+  '/navigate', '/action', '/back', '/forward', '/refresh', '/close', '/focus',
+  // ★ 2026-10-09 补：三个改页面状态的旁路写入口
+  '/render', '/login-saved',
+]);
+/** 含路径参数的写路由（无法用精确 Set 匹配，用前缀/正则判定） */
+const BROWSER_SERIAL_PATTERN = /^\/passwords\/[^/]+\/fill$/;
+function isBrowserSerialPath(p: string): boolean {
+  return BROWSER_SERIAL_PATHS.has(p) || BROWSER_SERIAL_PATTERN.test(p);
+}
+function withBrowserLock(handler: (req: Request, res: Response) => Promise<unknown> | unknown) {
+  return async (req: Request, res: Response) => {
+    if (!isBrowserSerialPath(req.path)) return handler(req, res); // 读操作直通
+    // 排队等锁（先到先得，FIFO）
+    if (browserBusy) {
+      await new Promise<void>((resolve) => browserQueue.push(resolve));
+    }
+    browserBusy = true;
+    try {
+      await handler(req, res);
+    } catch (e: any) {
+      // handler 内部通常自带 try/catch；这里兜底防未捕获导致锁不释放
+      logger.warn('[browser] 处理异常:', e?.message || e);
+      try { if (!res.headersSent) res.status(500).json({ error: e?.message || '浏览器操作失败' }); } catch { /* ignore */ }
+    } finally {
+      const next = browserQueue.shift();
+      if (next) next(); else browserBusy = false;
+    }
+  };
+}
 
 // Playwright 单例（懒启动）
 let chromiumModule: any = null;
@@ -25,6 +84,62 @@ const IDLE_TIMEOUT_MS = 5 * 60 * 1000; // 5 分钟空闲后关闭
 // 下载记录（Playwright download 事件收集，内存中保留最近 50 条）
 interface DownloadRecord { url: string; filename: string; time: number; }
 const downloadRecords: DownloadRecord[] = [];
+
+/**
+ * ★★★ 会话 → 活动页 绑定表（A4 根治，2026-10-10）。
+ *
+ * ★ 为什么必须（实测缺陷）：本服务端是**进程级单例** —— `pageInstance` / `activeTabId`
+ *   全局单值，而 `GET /state` / `GET /screenshot` 等**读路由直读它** ⇒
+ *   **A 会话导航中、B 会话截图会拿到 A 的页面**，且**静默无报错**
+ *   （模型据此继续决策，全程作用在错页面上 —— 最难查的一类）。
+ * ★ 会话标识来源：core 的 `callBrowserApi` 透传的 `x-yz-conversation-id`
+ *   （上游是 `ToolContext.conversationId`）。
+ * ★ 与既有"写路由串行"的分工：串行（`withBrowserLock`）解决"同时写互相踩"；
+ *   本表解决"**读**到别人的页"。两者互补，都必要。
+ * ★ 键是会话 id；值是该会话**最近一次操作所在的 page**。
+ *   读路由优先取本会话的页：取不到（该会话还没操作过）→ **明确报错**而不是
+ *   静默返回全局活动页（那正是本次要消灭的"静默错页"）。
+ */
+const activePageByConv = new Map<string, any>();
+
+/** 取请求里的会话标识（core 透传；缺失返回 null —— 老调用方/非会话场景） */
+function convIdOf(req: Request): string | null {
+  const h = req.headers['x-yz-conversation-id'];
+  const v = Array.isArray(h) ? h[0] : h;
+  const s = String(v || '').trim();
+  return s || null;
+}
+
+/** 记录"该会话当前在哪个 page 上"（写路由成功后调用） */
+function bindConvPage(convId: string | null, page: any): void {
+  if (!convId || !page) return;
+  activePageByConv.set(convId, page);
+  // 上限兜底：会话很多时淘汰最早的（Map 插入序）
+  while (activePageByConv.size > 200) {
+    const oldest = activePageByConv.keys().next().value as string | undefined;
+    if (oldest === undefined) break;
+    activePageByConv.delete(oldest);
+  }
+}
+
+/**
+ * ★★★ 解析"本次读取该用哪个 page"（A4 根治的核心判定，抽成**纯函数**便于真跑验证）。
+ *
+ * 语义（三条，缺一条都会退回"静默错页"）：
+ *   ① 无会话标识（老调用方/非会话场景）→ 退回全局活动页（**保持向后兼容**，不制造破坏）；
+ *   ② 有会话标识且该会话已绑定页 → 用**它自己的页**（隔离生效）；
+ *   ③ 有会话标识但未绑定 → **返回 null**（调用方必须**明确报错**，
+ *      绝不能静默用全局活动页 —— 那就是"读到别人的页面"）。
+ */
+export function resolveReadPage(
+  convId: string | null,
+  boundPage: any,
+  globalPage: any,
+): { page: any; reason: 'global' | 'bound' | 'unbound-conv' } {
+  if (!convId) return { page: globalPage, reason: 'global' };
+  if (boundPage) return { page: boundPage, reason: 'bound' };
+  return { page: null, reason: 'unbound-conv' };
+}
 
 // C4 多标签页管理：tabId -> page（tab 0 为主标签页，pageInstance 始终指向当前活动页）
 const tabs = new Map<number, any>();
@@ -49,7 +164,45 @@ async function loadChromium() {
 
 // ========== 阶段一改造：超时兜底 + 健康探针 + CDP 模式 + headless 可配置 ==========
 const BROWSER_MODE = (process.env.BROWSER_MODE || 'launch') as 'launch' | 'cdp';
-const CDP_ENDPOINT = process.env.CDP_ENDPOINT || 'http://127.0.0.1:9222';
+// ★★★ B8（2026-10-09）：端点改为**可在连接失败时重解析**（此前是启动期固定常量）。
+//
+// 真缺口：桌面端 CDP 端口默认**自动分配**（`remote-debugging-port=0`，实际端口写在
+//   userData/DevToolsActivePort）。主进程把解析结果经 env 注入服务端 —— 这条路径本身是对的。
+//   但**服务端是独立进程**：桌面主进程崩溃/重启后（新端口）而服务端仍活着时，
+//   服务端会拿旧端点**永远** ECONNREFUSED（重试也没用，因为端口根本变了）。
+//   ⇒ 连接失败时重读 DevToolsActivePort 再试一次，让服务端能自愈到新端口。
+//
+// ★ 与 `bin/dev.mjs` / `main.cjs` 的 `resolveCdpEndpoint` **同源**（同一份目录候选与校验），
+//   不另造判据。★ 只在**失败后**才重解析（成功路径零开销、不改变既有行为）。
+let CDP_ENDPOINT = process.env.CDP_ENDPOINT || 'http://127.0.0.1:9222';
+
+/**
+ * 重读 userData/DevToolsActivePort 解析真实 CDP 端点（失败返回 null）。
+ * ★ 目录候选与 `bin/dev.mjs:readDevToolsActivePortEndpoint` 一致（dev 与打包两套 userData）。
+ */
+function reResolveCdpEndpoint(): string | null {
+  try {
+    const home = process.env.USERPROFILE || process.env.HOME || '';
+    const appData = process.env.APPDATA || path.join(home, 'AppData', 'Roaming');
+    const candidates =
+      process.platform === 'darwin'
+        ? [path.join(home, 'Library', 'Application Support', 'yan-zhi-dev'), path.join(home, 'Library', 'Application Support', 'yan-zhi')]
+        : process.platform === 'win32'
+          ? [path.join(appData, 'yan-zhi-dev'), path.join(appData, 'yan-zhi')]
+          : [path.join(home, '.config', 'yan-zhi-dev'), path.join(home, '.config', 'yan-zhi')];
+    for (const dir of candidates) {
+      try {
+        const port = parseInt(fs.readFileSync(path.join(dir, 'DevToolsActivePort'), 'utf8').split(/\r?\n/)[0], 10);
+        if (port > 0 && port < 65536) {
+          const ep = `http://127.0.0.1:${port}`;
+          if (ep !== CDP_ENDPOINT) logger.info(`[browser] CDP 端点重解析: ${CDP_ENDPOINT} → ${ep}`);
+          return ep;
+        }
+      } catch { /* 未就绪/不存在 */ }
+    }
+  } catch { /* 环境异常 → 静默（连接层会给出原始错误） */ }
+  return null;
+}
 // 修复：launch 模式强制 headless。此前 BROWSER_HEADLESS=false 可在 launch 模式弹出独立
 // Chromium 有头窗口（模型调浏览器工具时桌面突然多出一个浏览器），与「单一执行面」冲突——
 // 有界面只允许 Electron 自身的 BrowserView（桌面端 BROWSER_MODE=cdp 连自己）。
@@ -87,17 +240,27 @@ async function resetBrowser() {
 /** CDP 连接瞬时故障重试：ECONNREFUSED（启动竞态/浏览器重启瞬间）退避重试 2 次 */
 async function connectCdpWithRetry(chromium: any, endpoint: string): Promise<any> {
   let lastErr: any;
+  let ep = endpoint;
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      return await chromium.connectOverCDP(endpoint);
+      return await chromium.connectOverCDP(ep);
     } catch (e: any) {
       lastErr = e;
+      // ★★★ B8（2026-10-09）：重试**之前**先重读 DevToolsActivePort。
+      //   桌面主进程崩溃/重启后 CDP 端口会**重新自动分配**，而本进程仍持有旧端点
+      //   → 不重解析的话三次重试全打在已经没人监听的端口上（永远失败）。
+      //   ★ 只在失败后才重解析：成功路径零开销、行为不变。
+      const fresh = reResolveCdpEndpoint();
+      if (fresh && fresh !== ep) {
+        ep = fresh;
+        CDP_ENDPOINT = fresh; // 写回，后续 getBrowser 直接用新端点
+      }
       if (attempt < 2) await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
     }
   }
   const detail = lastErr?.message || String(lastErr);
   throw new Error(
-    `CDP 连接失败（已重试 3 次）: ${endpoint} —— 预览面板浏览器未就绪或调试端口被占用，可在预览面板重开浏览器后重试。原始错误: ${detail}`,
+    `CDP 连接失败（已重试 3 次，含端点重解析）: ${ep} —— 预览面板浏览器未就绪或调试端口被占用，可在预览面板重开浏览器后重试。原始错误: ${detail}`,
   );
 }
 
@@ -281,13 +444,37 @@ async function isPageAlive(p: any): Promise<boolean> {
   }
 }
 
+/**
+ * ★★★ 判定"重建页面后是否要恢复 URL"（2026-10-09，抽成**纯函数**以便真跑验证）。
+ *
+ * ★ 为什么必须抽出来：这个判定的三个条件（曾经有 page / 有记录 URL / 当前不在该 URL）
+ *   如果内联在 `getPage()` 里，就只能用"源码里有没有这段字符串"来守门 —— 而那是**假绿**：
+ *   实测把 `hadPage` 写死成 `false`（恢复永不发生）时，字符串断言**全部通过**。
+ *   ⇒ 抽成纯函数后，"语义"才可被真正验证（本项目一贯做法）。
+ *
+ * @param hadPage 重建前是否已有 page（false = 首次创建 / 空闲超时已清空 → **不该**恢复）
+ * @param lastKnownUrl 上一次成功导航记录的 URL（空 = 无可恢复）
+ * @param currentUrl 新建 page 的当前 URL
+ */
+export function shouldRestorePageUrl(hadPage: boolean, lastKnownUrl: string, currentUrl: string): boolean {
+  if (!hadPage) return false;              // 不是"坏了重建"出来的 → 别把新任务拽到旧页面
+  if (!lastKnownUrl) return false;         // 没记录过 → 无可恢复
+  if (!currentUrl) return true;            // 拿不到当前 URL（异常页）→ 尝试恢复更安全
+  return currentUrl !== lastKnownUrl;      // 已在目标 URL → 不必重载
+}
+
 /** 获取或创建页面（当前活动标签页），含健康检查 */
 async function getPage() {
   if (pageInstance && (await isPageAlive(pageInstance))) {
     lastActivityAt = Date.now();
     return pageInstance;
   }
-  // page 假死：重置后重建
+  // ★★★ page 假死/丢失：重建时要**恢复 URL**（2026-10-09 接线，见下方注释）。
+  //   `hadPage` 用于区分两种情况，避免误用陈旧 URL：
+  //     · true  = 正在用的 page 坏了 → 任务原先在某个网页上 → 应回到那个 URL
+  //     · false = 首次创建 / 空闲超时已清空（`scheduleIdleCheck` 会置 `pageInstance=null`）
+  //               → 不该导航到"上一个任务的 URL"（那会让新任务凭空跳到旧页面）
+  const hadPage = !!pageInstance;
   if (pageInstance) {
     try { await pageInstance.close().catch(() => {}); } catch {}
     pageInstance = null;
@@ -299,6 +486,26 @@ async function getPage() {
   tabs.set(0, page);
   nextTabId = 1;
   lastActivityAt = Date.now();
+  // ★★★ 恢复任务所在 URL（2026-10-09）。此前这里只重建 page、**不恢复 URL**：
+  //   `createTabPage` 在 CDP 模式走 `pickCdpPage`（挑真实网页 target）、launch 模式是全新
+  //   `about:blank` 页 —— 于是"page 坏掉重建"会把任务**静默换到另一个页面**，
+  //   模型下一步的点击/读取全都作用在错的页面上，而且**不报错**（最难查的一类）。
+  //   `recordPageState` 早已在 /navigate 与 /action 成功后记录了 `lastKnownUrl`，
+  //   `recoverSession` 也早已实现了"导航回去"的逻辑 —— **但从未被接线调用**（死代码）。
+  //   ⇒ 这里把它接上（只取"导航回去"这一条已验证价值的能力，
+  //     不整体改用 `recoverSession` —— 那个函数没有 `ensureWebviewViaShell` 自动开面板的能力，
+  //     整体替换会**丢掉** createTabPage 更完整的兜底）。
+  if (hadPage && lastKnownUrl) {
+    try {
+      const cur = (() => { try { return page.url(); } catch { return ''; } })();
+      // ★ 判定委托给纯函数（`shouldRestorePageUrl`）—— 内联判定无法被真跑验证，只能查字符串（假绿）。
+      if (shouldRestorePageUrl(hadPage, lastKnownUrl, cur)) {
+        await withTimeout(page.goto(lastKnownUrl, { waitUntil: 'domcontentloaded' }), '恢复页面超时').catch((e) => {
+          logger.warn('[browser] 重建后恢复 URL 失败（不影响本次调用）:', e?.message || e);
+        });
+      }
+    } catch { /* 恢复 URL 失败不阻塞本次调用 */ }
+  }
   return page;
 }
 
@@ -312,7 +519,19 @@ function recordPageState(url: string, title?: string) {
   if (title != null) { lastKnownTitle = title; }
 }
 
-/** 会话恢复：browser 还在但 page 丢了 → 重建 page 并导航到最近 URL */
+/** 会话恢复：browser 还在但 page 丢了 → 重建 page 并导航到最近 URL
+ *
+ * ★★★ 接线状态说明（2026-10-09 核实）：本函数**仍然没有直接调用点**，但**不再是死代码** ——
+ *   它最有价值的两个能力，已分别由 `getBrowser()` 与 `getPage()` 承担：
+ *     · 「浏览器实例假死 → 重建」：`getBrowser()` 用 `isBrowserAlive`（真发一次 `version()`）探活，
+ *       假死则 `resetBrowser()` + 重连（CDP 模式带 3 次退避重试）。**比本函数更完整**；
+ *     · 「page 丢失 → 重建并回到原 URL」：`getPage()` 已接线（2026-10-09 补 `lastKnownUrl` 恢复）。
+ *   ⇒ 本函数保留作为**独立可调用的恢复入口**（如需一个"显式恢复会话"的 API/工具可继续用它），
+ *     ★ 但**不要**把它整体替换进 `getPage()` —— 它缺 `ensureWebviewViaShell`
+ *       （自动驱动应用壳打开预览面板）这个兜底，替换会**削弱**现有的自动恢复能力。
+ *   ★ 判据（本项目反复踩）：**"函数被定义"≠"能力可用"** —— 判断某能力是否真的存在，
+ *     要看调用链是否闭合，而不是 grep 到函数名就认为有。
+ */
 async function recoverSession(): Promise<{ recovered: boolean; url: string }> {
   let page: any = null;
   try {
@@ -365,7 +584,7 @@ function scheduleIdleCheck() {
 }
 
 // POST /api/browser/navigate —— 导航到 URL（返回 url + title，前端用 /render 获取 DOM）
-router.post('/navigate', async (req: Request, res: Response) => {
+router.post('/navigate', withBrowserLock(async (req: Request, res: Response) => {
   try {
     const { url, viewport, tabId } = req.body || {};
     if (!url) { res.status(400).json({ error: 'url 为必填项' }); return; }
@@ -395,11 +614,13 @@ router.post('/navigate', async (req: Request, res: Response) => {
       title: String(title || ''),
       source: req.query.src === 'agent' ? 'agent' : 'user',
     });
+    // ★ A4 根治：记录"本会话现在在这个页上"（读路由据此隔离）
+    bindConvPage(convIdOf(req), page);
     res.json({ data: { url: currentUrl, title } });
   } catch (e: any) {
     res.status(500).json({ error: e?.message || '导航失败' });
   }
-});
+}));
 
 
 // POST /api/browser/action —— 执行浏览器动作（click/type/press/scroll/hover/get_text/get_dom/wait）
@@ -516,10 +737,14 @@ function ensureYzReg() {
 
 // 变化检测：这些 action 可能改变页面状态，执行后对比前后快照
 const CHANGE_ACTIONS = new Set(['click', 'type', 'press', 'select_option', 'check', 'uncheck', 'submit_form', 'search', 'next_page', 'prev_page']);
-let noChangeStreak = 0;
+// ★★★ B7（2026-10-09）：由模块级单值改为**按 tab 分桶**。
+//   单值会让"A 页面卡住"与"B 页面正常"互相污染（B 收到假告警 / A 的真告警被清零），
+//   两个方向都错且不报错。按 tab 分桶是因为：① 语义上这是页面状态；
+//   ② 服务端 `/action` **拿不到会话标识**（单活动页架构）；③ 两链路都能拿到 tabId。
+const noChangeStreaks = new KeyedStreak({ threshold: 3 });
 const snapshotFn = () => { try { const d = document.body; return { url: location.href, t: (d ? d.innerText : '').slice(0, 2000), n: document.querySelectorAll('a,button,input,select,textarea').length }; } catch { return null; } };
 
-router.post('/action', async (req: Request, res: Response) => {
+router.post('/action', withBrowserLock(async (req: Request, res: Response) => {
   try {
     const args = req.body || {};
     const { action, text, key, x, y, timeout } = args;
@@ -852,24 +1077,33 @@ router.post('/action', async (req: Request, res: Response) => {
       case 'fill_form': {
         const fields = Array.isArray(args.fields) ? args.fields : [];
         const filled: string[] = [];
+        // ★ B3（2026-10-10）：逐字段失败原因（与桌面端同结构）。
+        //   此前 `locator` 抛错会让整批 fill_form 直接失败（前面已填的也白填、且无部分结果），
+        //   而 Desktop 侧是静默跳过 —— 两条链路「部分成功」的语义不一致。
+        //   ⇒ 统一为「尽力填 + 明确报告失败项」：单个字段失败不中断其余字段。
+        const failed: Array<{ selector: string; reason: string }> = [];
         const toPw = (s: string) => String(s).replace(/:contains\(\s*["']([\s\S]*?)["']\s*\)/g, ':has-text("$1")');
         for (const f of fields) {
           const sel = toPw(f.selector);
-          if (!sel) continue;
+          if (!sel) { failed.push({ selector: String(f?.selector || ''), reason: '缺少 selector' }); continue; }
           const ftype = String(f.type || 'text').toLowerCase();
-          if (ftype === 'select') {
-            const opt = f.label !== undefined ? { label: String(f.label) } : String(f.value ?? '');
-            await page.locator(sel).selectOption(opt as any);
-          } else if (ftype === 'checkbox' || ftype === 'radio') {
-            if (f.value === false || f.value === 'false') await page.locator(sel).uncheck().catch(() => {});
-            else await page.locator(sel).check().catch(() => {});
-          } else {
-            await page.locator(sel).scrollIntoViewIfNeeded().catch(() => {});
-            await page.locator(sel).fill(String(f.value ?? ''));
+          try {
+            if (ftype === 'select') {
+              const opt = f.label !== undefined ? { label: String(f.label) } : String(f.value ?? '');
+              await page.locator(sel).selectOption(opt as any);
+            } else if (ftype === 'checkbox' || ftype === 'radio') {
+              if (f.value === false || f.value === 'false') await page.locator(sel).uncheck();
+              else await page.locator(sel).check();
+            } else {
+              await page.locator(sel).scrollIntoViewIfNeeded().catch(() => {});
+              await page.locator(sel).fill(String(f.value ?? ''));
+            }
+            filled.push(sel);
+          } catch (e: any) {
+            failed.push({ selector: sel, reason: e?.message ? String(e.message).slice(0, 160) : '填写失败' });
           }
-          filled.push(sel);
         }
-        result = { filled: filled.length, fields: filled };
+        result = { filled: filled.length, fields: filled, failed };
         break;
       }
       case 'submit_form': {
@@ -1216,7 +1450,7 @@ router.post('/action', async (req: Request, res: Response) => {
         const tid = Number(args.tabId);
         if (!tabs.has(tid)) { result = { error: `tabId ${tid} 不存在` }; break; }
         const p = tabs.get(tid);
-        if (p.isClosed?.()) { tabs.delete(tid); result = { error: `tabId ${tid} 已关闭` }; break; }
+        if (p.isClosed?.()) { tabs.delete(tid); noChangeStreaks.forget(String(tid)); result = { error: `tabId ${tid} 已关闭` }; break; }
         pageInstance = p;
         activeTabId = tid;
         result = { tabId: tid, url: p.url(), title: await p.title().catch(() => '') };
@@ -1228,6 +1462,8 @@ router.post('/action', async (req: Request, res: Response) => {
         const p = tabs.get(tid);
         await p.close().catch(() => {});
         tabs.delete(tid);
+        // ★ B7：tab 关闭 → 删掉它的 streak 桶（否则"tabId 复用"会继承旧计数）
+        noChangeStreaks.forget(String(tid));
         if (activeTabId === tid) {
           const rest = Array.from(tabs.keys());
           if (rest.length) { activeTabId = rest[0]; pageInstance = tabs.get(rest[0]); }
@@ -1549,16 +1785,18 @@ router.post('/action', async (req: Request, res: Response) => {
       if (after) {
         const urlChanged = after.url !== beforeState.url;
         const changed = urlChanged || after.t !== beforeState.t || after.n !== beforeState.n;
-        noChangeStreak = changed ? 0 : noChangeStreak + 1;
+        // ★ B7：按 tab 分桶（`reqTabId` 为空时归到活动页桶；文案统一由 KeyedStreak 给出）
+        const streakKey = reqTabId !== null ? String(reqTabId) : String(activeTabId);
+        const st = noChangeStreaks.record(streakKey, changed);
         r.pageChanged = changed;
         r.urlChanged = urlChanged;
-        r.noChangeStreak = noChangeStreak;
-        if (noChangeStreak >= 3) {
-          r.warning = '连续 ' + noChangeStreak + ' 次操作页面无任何变化，操作可能未生效。请停止重复同类操作：改用 index 精确定位（先 get_page_info 获取编号列表）、重新分析页面、或 ask_user 请求人工介入。';
-        }
+        r.noChangeStreak = st.streak;
+        if (st.warning) r.warning = st.warning;
       }
     }
     lastActivityAt = Date.now();
+    // ★ A4 根治：把本次操作所在的页绑定到该会话（读路由据此隔离，避免读到别人的页）
+    bindConvPage(convIdOf(req), page);
     res.json({ data: result });
   } catch (e: any) {
     const msg = e?.message || '浏览器动作失败';
@@ -1568,25 +1806,34 @@ router.post('/action', async (req: Request, res: Response) => {
     }
     res.status(500).json({ error: msg, recoverable: true });
   }
-});
+}));
 
 // GET /api/browser/state —— 获取当前浏览器状态
-router.get('/state', async (_req: Request, res: Response) => {
+router.get('/state', async (req: Request, res: Response) => {
   try {
-    if (!browserInstance || !pageInstance) {
+    // ★★★ A4 根治（2026-10-10）：按会话解析该用哪个页，不再直读全局单值。
+    const convId = convIdOf(req);
+    const picked = resolveReadPage(convId, convId ? activePageByConv.get(convId) : null, pageInstance);
+    if (picked.reason === 'unbound-conv') {
+      // ★ 该会话还没操作过浏览器 → **明确告知**，而不是静默返回别人的页面
+      res.json({ data: { active: false, error: 'CONV_HAS_NO_PAGE', hint: '本会话尚未在浏览器上执行任何操作；请先用 browser_navigate 打开页面' } });
+      return;
+    }
+    const page = picked.page;
+    if (!browserInstance || !page || page.isClosed?.()) {
       res.json({ data: { active: false } });
       return;
     }
-    const url = pageInstance.url();
-    const title = await pageInstance.title().catch(() => '');
-    res.json({ data: { active: true, url, title } });
+    const url = page.url();
+    const title = await page.title().catch(() => '');
+    res.json({ data: { active: true, url, title, convScoped: picked.reason === 'bound' } });
   } catch (e: any) {
     res.json({ data: { active: false, error: e?.message } });
   }
 });
 
 // POST /api/browser/focus —— 聚焦浏览器窗口（置于前台）
-router.post('/focus', async (_req: Request, res: Response) => {
+router.post('/focus', withBrowserLock(async (_req: Request, res: Response) => {
   try {
     if (!browserInstance) { res.status(400).json({ error: '浏览器未启动' }); return; }
     // headed 模式下，通过新建 page 并关闭来唤起窗口焦点
@@ -1597,10 +1844,10 @@ router.post('/focus', async (_req: Request, res: Response) => {
   } catch (e: any) {
     res.status(500).json({ error: e?.message || '聚焦失败' });
   }
-});
+}));
 
 // POST /api/browser/back —— 后退（返回 url + title）
-router.post('/back', async (_req: Request, res: Response) => {
+router.post('/back', withBrowserLock(async (_req: Request, res: Response) => {
   try {
     const page = await getPage();
     await page.goBack({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
@@ -1609,10 +1856,10 @@ router.post('/back', async (_req: Request, res: Response) => {
   } catch (e: any) {
     res.status(500).json({ error: e?.message || '后退失败' });
   }
-});
+}));
 
 // POST /api/browser/forward —— 前进（返回 url + title）
-router.post('/forward', async (_req: Request, res: Response) => {
+router.post('/forward', withBrowserLock(async (_req: Request, res: Response) => {
   try {
     const page = await getPage();
     await page.goForward({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
@@ -1621,10 +1868,10 @@ router.post('/forward', async (_req: Request, res: Response) => {
   } catch (e: any) {
     res.status(500).json({ error: e?.message || '前进失败' });
   }
-});
+}));
 
 // POST /api/browser/refresh —— 刷新当前页（返回 url + title）
-router.post('/refresh', async (_req: Request, res: Response) => {
+router.post('/refresh', withBrowserLock(async (_req: Request, res: Response) => {
   try {
     const page = await getPage();
     await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
@@ -1633,10 +1880,10 @@ router.post('/refresh', async (_req: Request, res: Response) => {
   } catch (e: any) {
     res.status(500).json({ error: e?.message || '刷新失败' });
   }
-});
+}));
 
 // POST /api/browser/close —— 关闭浏览器
-router.post('/close', async (_req: Request, res: Response) => {
+router.post('/close', withBrowserLock(async (_req: Request, res: Response) => {
   try {
     if (pageInstance && !pageInstance.isClosed?.()) await pageInstance.close();
     if (browserInstance) await browserInstance.close();
@@ -1646,18 +1893,27 @@ router.post('/close', async (_req: Request, res: Response) => {
   } catch (e: any) {
     res.status(500).json({ error: e?.message || '关闭失败' });
   }
-});
+}));
 
 // GET /api/browser/screenshot —— 当前页面截图（PNG）。?fullPage=true 截长图，?download=文件名 下载
 router.get('/screenshot', async (req: Request, res: Response) => {
   try {
-    if (!pageInstance || pageInstance.isClosed?.()) {
+    // ★★★ A4 根治：截图也必须截**本会话**的页（否则 A 导航中、B 截图拿到 A 的页面）。
+    const convId = convIdOf(req);
+    const picked = resolveReadPage(convId, convId ? activePageByConv.get(convId) : null, pageInstance);
+    if (picked.reason === 'unbound-conv') {
+      res.status(400).json({ error: 'CONV_HAS_NO_PAGE', hint: '本会话尚未在浏览器上执行任何操作；请先用 browser_navigate 打开页面后再截图' });
+      return;
+    }
+    const pageInstance2 = picked.page;
+    if (!pageInstance2 || pageInstance2.isClosed?.()) {
       res.status(400).json({ error: '浏览器未启动' });
       return;
     }
     const fullPage = req.query.fullPage === 'true';
     const downloadName = req.query.download as string | undefined;
-    const screenshot = await pageInstance.screenshot({ type: 'png', fullPage });
+    // ★ 必须用 pageInstance2（会话解析结果）—— 若仍用全局 pageInstance，隔离等于没做
+    const screenshot = await pageInstance2.screenshot({ type: 'png', fullPage });
     res.set('Content-Type', 'image/png');
     res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
     if (downloadName) {
@@ -1681,7 +1937,7 @@ router.get('/downloads', async (_req: Request, res: Response) => {
 // GET /api/browser/render?url=... —— Playwright 预渲染：获取已渲染 DOM，移除 script，重写 URL
 // 流程：用 Playwright 加载页面 → 等待渲染 → 取完整 HTML → 移除 script/noscript/CSP meta →
 //       重写资源 URL 为代理 URL → 注入样式修复 → 返回 HTML（由前端 iframe 显示）
-router.get('/render', async (req: Request, res: Response) => {
+router.get('/render', withBrowserLock(async (req: Request, res: Response) => {
   try {
     const target = String(req.query.url || '');
     if (!/^https?:\/\//i.test(target)) {
@@ -1738,7 +1994,7 @@ router.get('/render', async (req: Request, res: Response) => {
   } catch (e: any) {
     res.status(500).json({ error: e?.message || '渲染失败' });
   }
-});
+}));
 
 // GET /api/browser/proxy —— 同源反向代理（内置浏览器核心）
 // 1) 剥离 X-Frame-Options / CSP(frame-ancestors) 等反嵌入头，使目标站能在 iframe 内真实渲染
@@ -2327,7 +2583,7 @@ router.post('/passwords/:id/reveal', (req: Request, res: Response) => {
 });
 
 // POST /api/browser/passwords/:id/fill —— 用已存凭证自动填充当前页登录表单（不提交）
-router.post('/passwords/:id/fill', async (req: Request, res: Response) => {
+router.post('/passwords/:id/fill', withBrowserLock(async (req: Request, res: Response) => {
   try {
     const row = db.prepare('SELECT username, password_enc, form_meta_json FROM saved_password WHERE id = ? AND user_id = ?').get(req.params.id, pwdUserId(req)) as any;
     if (!row) { res.status(404).json({ error: '凭证不存在' }); return; }
@@ -2345,11 +2601,11 @@ router.post('/passwords/:id/fill', async (req: Request, res: Response) => {
   } catch (e: any) {
     res.status(500).json({ error: e?.message || '填充失败' });
   }
-});
+}));
 
 // POST /api/browser/login-saved —— 用已存凭证登录目标站点
 // body: { host?, url? } —— 按 host 匹配凭证；若提供 url 先导航；自动找登录表单→填→提交→判断
-router.post('/login-saved', async (req: Request, res: Response) => {
+router.post('/login-saved', withBrowserLock(async (req: Request, res: Response) => {
   try {
     const { host, url } = req.body || {};
     const uid = pwdUserId(req);
@@ -2392,6 +2648,6 @@ router.post('/login-saved', async (req: Request, res: Response) => {
   } catch (e: any) {
     res.status(500).json({ error: e?.message || '登录失败' });
   }
-});
+}));
 
 export default router;

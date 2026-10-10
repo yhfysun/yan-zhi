@@ -61,7 +61,16 @@ export interface Model {
   modelId: string;
   alias?: string;
   type: ModelType;
-  contextWindow: number;
+  /**
+   * 上下文窗口（token）。★ D7（2026-10-10）：允许 `null` = **未声明**。
+   *
+   * ★ 为什么需要"未声明"这个态：后端 `resolveContextWindow` 把"恰好 1M"判为
+   *   "用户没填、是我们写进去的默认值"→ 退保守 32K（该判据**有意保留**，见 constants.ts 注释）。
+   *   而新增表单以前**预填 1M** ⇒ "没填"与"真 1M"在数据层**同形**
+   *   （实测生产库 561 个模型全是 1048576，含确实 1M 的 glm/deepseek 模型）⇒ 全被按 32K 估。
+   *   ⇒ 前端改为留空提交 `null`，与"真 1M"可区分。
+   */
+  contextWindow: number | null;
   enabled: boolean;
   /** 用户自控可见性：false = 该模型不进模型下拉，也不参与智能体动态选型（与远端同步无关） */
   visible?: boolean;
@@ -163,6 +172,26 @@ export interface Message {
   subAgentDepth?: number;
   /** 内嵌于聊天消息里的动态看板（数据浏览）契约；非持久化 UI 增强，见 data-query-contract change */
   dataView?: InlineDataView;
+  /**
+   * ★★★ 仅**发送期**存在的图片附件（C1，2026-10-09）——**不落库**。
+   *
+   * ★ 为什么用"另加字段 + 注入期展开"而不是把 `content` 改成 `ContentBlock[]`：
+   *   `content` 被至少三处当**字符串**用（`sanitizeToolMessages` 的
+   *   `` `[工具结果] ${m.content}` `` 拼接、`estimateTokens`、前端渲染）——
+   *   一旦改成数组，这些地方会**静默产出 "[object Object]"** 或直接抛错，
+   *   而要全部改对就牵动 db/压缩/前端（改动面与风险都大得多）。
+   *   ⇒ 落库仍是**纯字符串**（图片引用以路径形式留在正文里，人类可读、可审计）；
+   *     仅在 `toApiMessage` 组装上游请求体时，把标记展开为 `image_url` 块。
+   * ★ 写入者：服务端 `attachImagesToMessages()`（发送前一次性解析标记并读图）。
+   *   它**不可序列化**（base64 很大）——任何落库/快照路径必须剔除。
+   */
+  imageParts?: Array<{ mime: string; base64: string }>;
+  /**
+   * ★ 已尝试解析的**失败标记**（C1）：标记文本命中了但图读不到（路径失效/已清理）。
+   *   记下来是为了"**只尝试一次**" —— 否则每一步都会重试同一批失效路径
+   *   （每步都 stat + 失败日志，长任务白跑几百次）。
+   */
+  imagePartsTried?: boolean;
 }
 
 /** 聊天内嵌「数据浏览/动态看板」契约：只声明取数源 + 想要当过滤器的列；取数由面板 /run 参数化完成，不喂 LLM */
@@ -428,5 +457,27 @@ export interface ChatChunk {
   usage?: {
     promptTokens: number;
     completionTokens: number;
+    /**
+     * ★ 缓存命中的 token 数（2026-10-09，D1 可观测）。
+     *
+     * 为什么需要：Anthropic 用 `cache_read_input_tokens`、OpenAI 用 `prompt_tokens_details.cached_tokens`。
+     * 此前只读 prompt/completion → **缓存命中率不可观测**，于是"前缀缓存是否生效"无从判断
+     * （而 system prompt 尾部的时间戳恰好会让它 100% 失效，且改前看不出来）。
+     * ⇒ 先能看见，再谈优化（本项与"移除 system 尾部时间戳"配对）。
+     */
+    cachedTokens?: number;
   };
+  /**
+   * ★ 流已**正常收尾**的标记（2026-10-09）。
+   *
+   * 为什么要它：上游/代理常用 TCP FIN 半途关闭 SSE 连接，此时 `reader.read()` 是
+   * **正常 resolve `{done:true}` 而不是抛错**（只有 RST/超时才抛）。若只看"流结束"，
+   * 半截流会被误判为正常完成 → content 为空、reasoning 只有一半，却 emit task:completed
+   * （实测库内 12 条 assistant 记录正是此形状，用户看到的就是"转半天不出话"）。
+   *
+   * 判据：**见到 `finish_reason`（stop/tool_calls/length…）或 `data: [DONE]` 之一**才算收尾。
+   * 二者皆无而流结束 = 被掐断（调用方据此走续写/报错，勿当正常完成）。
+   * 该标记会作为最后一个 chunk 吐出（`finishReason` 可能为空，仅此标记为真）。
+   */
+  terminated?: boolean;
 }

@@ -109,6 +109,13 @@ const WRITE_TOOLS = new Set([
   //   实测（2026-09-27）：append 此前既没进写清单、也没进只读白名单 →
   //   落在兜底分支被放行 → 只读会话能往用户磁盘写文件。
   'api_space_memory_append',
+  // —— 领域经验档案写入（自进化经验层，2026-10-09）：写磁盘 .yan-zhi/experience 下的 .md ——
+  // ★ 注：本行原写作 experience 后跟斜杠加星号的通配写法，那个两字符序列会被"剥注释"类工具
+  //   当成块注释起点，与下方真注释的结束符配成一对 → **把中间的真实代码整段吃掉**
+  //   （表现为"代码明明写了却不生效"/源码断言假红，本项目已多次踩坑）。
+  //   ⇒ 注释里禁写该两字符序列；已改用"下的 .md"表述。
+  // ★ 与 api_experience_read 成对：read 只读放行（在下方 READONLY_SAFE_TOOLS），write 必须拦。
+  'api_experience_write',
   // —— 会话自配置：改当前会话的智能体/技能/模式（会改变后续所有轮次的执行身份）——
   // ★ 与配置变更同类：改完之后整个会话的行为都会变，只读会话里不应放行。
   'api_conversation_setup',
@@ -172,12 +179,25 @@ const UNCONTROLLABLE_PREFIXES = ['custom_', 'mcp_', 'wf_'];
  *    它虽然自己不在子体里开放写工具，但**继承了父级可用的全部非写工具**，
  *    且是"模型自选能力组合"的入口 —— 只读会话里必须一并拒绝，
  *    否则就成了绕过权限分级的后门（父级只读，却生成一个能写文件的子智能体）。 */
-const DELEGATION_TOOLS = new Set(['call_agent', 'spawn_subagent']);
+const DELEGATION_TOOLS = new Set([
+  'call_agent', 'spawn_subagent',
+  // ★★ 多智能体编排（2026-10-08）：plan_tasks / reassign_task 与 call_agent **同性质** ——
+  //   它们不自己写文件，但会派发子智能体执行，子体可调用任意写工具（file_write / cmd_exec…）。
+  //   只读会话里放行 = 绕过权限分级（父级只读，却编排出一批能写的子体）。
+  //   ★ 这是本项目**第 N 次**"新工具忘了登记权限清单"的同族问题（前例：api_space_memory_append、
+  //     api_message_send、api_custom_tool_execute）—— 判据仍是**按实现判**：谁最终能写，就登记谁。
+  //   get_plan_status 是纯读，进 INTERACTION_TOOLS。
+  'plan_tasks', 'reassign_task',
+]);
 
 /** 纯交互/规划类工具：不产生外部副作用，任何模式都放行 */
 const INTERACTION_TOOLS = new Set([
   'ask_user', 'confirm_user', 'task_plan', 'task_step',
   'image_analyze', 'list_models', 'list_sub_agents',
+  // 计划状态查询：纯读 task_plan_item 表，无副作用（2026-10-08）
+  'get_plan_status',
+  // 子任务执行详情查询：纯读 message 表（2026-10-09），编排者分析子任务失败用
+  'get_sub_task_detail',
 ]);
 
 export interface ToolPermissionVerdict {
@@ -253,7 +273,7 @@ const READONLY_SAFE_TOOLS = new Set([
   // 模型与多媒体理解（不产生文件）
   'list_models', 'image_analyze',
   // 纯交互/展示（无副作用）：任务进度、向用户提问
-  'task_plan', 'task_step', 'ask_user', 'confirm_user',
+  'task_plan', 'task_step', 'ask_user', 'confirm_user', 'get_plan_status',
   // 查询/读取类 API（按 api-tool-executor 的命名：list / get / search / browse）
   'api_kb_search', 'api_kb_list', 'api_kb_document_list', 'api_kb_chunks', 'api_kb_graph',
   'api_kb_search_all', 'api_kb_multi_hop', 'api_kb_entity_search', 'api_kb_revectorize_status',
@@ -279,6 +299,8 @@ const READONLY_SAFE_TOOLS = new Set([
   'api_marketplace_sources', 'api_marketplace_browse',
   'api_im_connector_list',
   'api_space_memory_read', 'api_browser_memory_read',
+  // 领域经验档案（自进化经验层）：读取路径纯只读（列目录 + 读 md）
+  'api_experience_read',
 ]);
 
 /**

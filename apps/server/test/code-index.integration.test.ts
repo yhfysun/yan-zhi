@@ -40,13 +40,18 @@ describe('code-index（真实 sqlite + 无 embedding 环境）', () => {
   });
 
   it('embedding 不可用 → build 返回明确原因（不静默）', async () => {
+    // ★★★ 本用例的判据必须是「**要么给原因、要么真建了索引**」，不能只看 indexedFiles
+    //   （2026-10-08 修，本机装了 Ollama + nomic-embed-text 后暴露）：
+    //   上一个用例（表懒创建）已经 `buildCodeIndex(WS)` 跑过一次，把两个文件索引完了；
+    //   本用例再跑同一个 WS → 命中 `skippedUnchanged` 增量快路径 → `indexedFiles === 0`
+    //   而 `ok === true`。于是 `else` 分支的 `indexedFiles >= 1` 必然失败。
+    //   ★ 判据：增量索引**跳过未变化文件是正确行为**，不是缺陷 —— 断言写错了口径。
     const r = await buildCodeIndex(WS);
-    // 测试环境的 app_config 无 embedding 配置、Ollama 兜底大概率也不在 —— 两种结果都合法：
-    // 有 embedding 时会真实建索引；没有时必须带 reason。
     if (!r.ok) {
       expect(r.reason).toContain('embedding');
     } else {
-      expect(r.indexedFiles).toBeGreaterThanOrEqual(1);
+      // 有 embedding：要么本次真建了索引，要么走过的文件都未变化被跳过（增量快路径）
+      expect(r.indexedFiles + r.skippedUnchanged).toBeGreaterThanOrEqual(1);
     }
   });
 

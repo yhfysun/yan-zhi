@@ -18,6 +18,7 @@ import {
   removePlans,
   applyTaskPlan,
   applyTaskStep,
+  syncPlan,
   planProgress,
   type PlanMap,
 } from './plan-buckets';
@@ -196,6 +197,35 @@ describe('会话删除时清理计划', () => {
   it('removePlans 全都不存在时返回原引用', () => {
     const map = createPlan({}, CONV_A, 'A', ['A1']);
     expect(removePlans(map, ['nope1', 'nope2'])).toBe(map);
+  });
+});
+
+describe('syncPlan（后端并行子任务状态同步）', () => {
+  it('★ 保留 steps 自带状态（不同于 applyTaskPlan 的「新计划全 pending」）', () => {
+    const map = createPlan({}, CONV_A, '旧计划', ['x']);
+    const next = syncPlan(map, CONV_A, {
+      title: '2 个子任务（1 完成）',
+      steps: [
+        { id: 't1', title: '抓全文', status: 'done' },
+        { id: 't2', title: '写文件', status: 'running', note: '进行中' },
+        { id: 't3', title: '合成', status: 'skipped', note: '上游失败未执行' },
+      ],
+    });
+    const plan = readPlan(next, CONV_A);
+    expect(plan?.title).toBe('2 个子任务（1 完成）');
+    expect(plan?.steps.map((s) => s.status)).toEqual(['done', 'running', 'failed']); // skipped → failed
+    expect(plan?.steps[0].id).toBe('t1'); // 保留后端给的 id
+    expect(plan?.steps[1].description).toBe('进行中'); // note → description
+  });
+
+  it('非法 status 归为 pending', () => {
+    const next = syncPlan({}, CONV_A, { title: 't', steps: [{ title: 'a', status: 'weird' }] });
+    expect(readPlan(next, CONV_A)?.steps[0].status).toBe('pending');
+  });
+
+  it('缺 title 的项被丢弃', () => {
+    const next = syncPlan({}, CONV_A, { title: 't', steps: [{ status: 'done' } as any] });
+    expect(readPlan(next, CONV_A)?.steps.length).toBe(0);
   });
 });
 

@@ -1,12 +1,46 @@
-// 浏览器自动化内置工具集 —— 调用服务端 /api/browser/* 端点（Playwright）
+// 浏览器自动化内置工具集 —— 调用服务端 /api/browser 下的端点（Playwright）
 // 包含：navigate / click / type / press_key / scroll / hover / get_text / get_dom / wait / screenshot
 import type { BuiltInTool } from '../../types';
 import type { McpCallResult } from '../../../mcp/client';
 import { toolError } from '../../result';
+// ★ 不直接 import node:fs —— core 是平台无关层（三端可用），文件系统一律走
+//   getPlatformAdapter().fs（与 file-write.ts 同一约定）。此前误引 node:fs 会破坏
+//   该原则：core 被前端/bundle 引用时静态解析失败。
+import { getPlatformAdapter } from '../../../platform/types';
+import { joinPath } from '../fs-walk';
 
 /** 获取 auth token（浏览器/web/桌面端均可访问 localStorage） */
 function getAuthToken(): string | null {
   try { return localStorage.getItem('auth_token'); } catch { return null; }
+}
+
+/**
+ * ★★★ 会话标识透传（A4 根治，2026-10-10）：把「这次浏览器操作属于哪个会话」带给后端。
+ *
+ * ★ 为什么必须（实测缺陷）：服务端 Playwright 是**进程级单例** ——
+ *   `pageInstance` / `activeTabId` 全局单值，读路由（`GET /state`、`GET /screenshot`）
+ *   直接读它 ⇒ **A 会话导航中、B 会话截图会拿到 A 的页面**，且**静默无报错**
+ *   （模型据此继续决策，全在错页面上）。
+ * ★ 会话标识从哪来：`ToolContext.conversationId` **早已存在**（`tool/types.ts`），
+ *   服务端执行工具时也已构造（`llm-task-manager` 的 `toolCtx`）——只是**浏览器工具收不到**
+ *   （34 个工具里 33 个 `execute` 还写在用旧的单参签名）。
+ *   ⇒ 本模块用**模块级"当前会话"变量**承载：由调用方（执行器）在每次执行前设置，
+ *     工具内部无需逐个改签名即可透传（改动面最小、且天然覆盖全部 browser_* 工具）。
+ *   ★ 为什么不用"改 33 个 execute 签名"：改动面大、且**必然漏**（本项目一贯判据）。
+ *     模块级变量在此是安全的：工具执行本身是**串行**的（见 `llm-task-manager` 的工具执行出口），
+ *     且每个工具内部读完即用（不存在跨 await 的错配窗口）——
+ *     实际读值发生在 `callBrowserApi` 同步取 header 的那一刻。
+ */
+let currentConversationId: string | null = null;
+
+/** 由执行器在调用 browser_* 工具前设置「当前会话」（见 `tool/types.ts` 的 ctx.conversationId） */
+export function setBrowserToolConversationId(convId: string | null | undefined): void {
+  currentConversationId = convId ? String(convId) : null;
+}
+
+/** 读取当前会话标识（供守门测试与排障） */
+export function getBrowserToolConversationId(): string | null {
+  return currentConversationId;
 }
 
 /** 调用浏览器 API 端点 */
@@ -24,6 +58,10 @@ async function callBrowserApi(path: string, method: 'GET' | 'POST' = 'POST', bod
   const token = getAuthToken();
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (token) headers['Authorization'] = `Bearer ${token}`;
+  // ★★★ A4 根治（2026-10-10）：带上会话标识 —— 服务端据此把"活动页"按会话隔离，
+  //   避免 A 会话导航中、B 会话读取拿到 A 的页面（且静默无报错）。
+  //   ★ header 名与 `apps/server/src/routes/browser.ts` 的读取处必须逐字一致。
+  if (currentConversationId) headers['x-yz-conversation-id'] = currentConversationId;
   // 后端 Node.js 环境用绝对 URL，前端用相对 URL
   const baseUrl = typeof window !== 'undefined' ? '' : `http://127.0.0.1:${process.env.PORT || 3001}`;
   // 内置工具发起的导航/操作打上 agent 标记：服务端据此把智能体操作沉淀进浏览器记忆文件（区别于用户手动浏览）
@@ -51,7 +89,7 @@ async function callBrowserApi(path: string, method: 'GET' | 'POST' = 'POST', bod
  *
  * 失败一律返回 null：展示是增强能力，不能因为它让"截图"这个动作本身失败。
  */
-async function saveShotToTemp(base64: string): Promise<{ file: string; screenshotUrl: string } | null> {
+async function saveShotToTemp(base64: string): Promise<{ file: string; screenshotUrl: string; size: number } | null> {
   try {
     if (!base64 || typeof window !== 'undefined') return null;
     const fsp = await import('node:fs/promises');
@@ -70,8 +108,9 @@ async function saveShotToTemp(base64: string): Promise<{ file: string; screensho
       }
     } catch { /* 清理失败不影响本次保存 */ }
     const file = nodePath.join(dir, `screenshot-${Date.now()}.png`);
-    await fsp.writeFile(file, Buffer.from(base64, 'base64'));
-    return { file, screenshotUrl: `/api/plugin/computer-use/screenshots/${nodePath.basename(file)}` };
+    const buf = Buffer.from(base64, 'base64');
+    await fsp.writeFile(file, buf);
+    return { file, screenshotUrl: `/api/plugin/computer-use/screenshots/${nodePath.basename(file)}`, size: buf.length };
   } catch {
     return null;
   }
@@ -79,6 +118,10 @@ async function saveShotToTemp(base64: string): Promise<{ file: string; screensho
 
 function ok(text: string): McpCallResult {
   return { content: [{ type: 'text', text }] };
+}
+/** 带 _meta 的成功返回（供执行循环做副作用：登记 conversation_file / 工件采集） */
+function okWithMeta(text: string, meta: Record<string, unknown>): McpCallResult {
+  return { content: [{ type: 'text', text }], _meta: meta };
 }
 function err(msg: string): McpCallResult {
   return toolError(msg);
@@ -393,7 +436,12 @@ export class BrowserScreenshotTool implements BuiltInTool {
         ...(saved?.file ? { nextStep: `你看不到画面，需要识别页面内容时调用 image_analyze(path="${saved.file}", prompt="描述页面内容并给出目标元素的位置")` } : {}),
       };
       // 保持返回结果是可被界面解析的 JSON：ChatMessageList 会读 screenshotUrl 把图显示在工具卡片下
-      return ok(JSON.stringify(payload));
+      // ★ _meta（2026-10-09）：落盘成功时回传 path → artifact-hooks 统一登记 conversation_file
+      //   （离线 Playwright 路径此前只落临时区不登记，文件管理/工件清单看不到）
+      const meta = saved?.file
+        ? { path: saved.file, name: saved.file.split(/[/\\]/).pop() || 'screenshot.png', category: 'intermediate', bytes: saved.size }
+        : undefined;
+      return meta ? okWithMeta(JSON.stringify(payload), meta) : ok(JSON.stringify(payload));
     } catch (e: any) { return err(e?.message || '截图失败'); }
   }
 }
@@ -416,6 +464,22 @@ export class BrowserFillFormTool implements BuiltInTool {
   async execute(args: Record<string, unknown>): Promise<McpCallResult> {
     try {
       const data = await callBrowserApi('/action', 'POST', { action: 'fill_form', fields: args.fields }) as any;
+      // ★★★ B3（2026-10-10）：必须**透传逐字段失败原因**。
+      //   此前只回 `Filled N fields: [...]` —— 而桌面端元素找不到时是**静默跳过**
+      //   （不计数、不报错），于是"只填上 1 个、其余全没找到"在模型看来与
+      //   "全部填好"**完全一样**（都是 `Filled 1 fields`）。这正是本项目
+      //   「静默失效」家族：不报错、只是结果不对。
+      //   ⇒ 有 failed 时**明确列出**（含 selector 与原因），让模型能重试/换选择器。
+      const failed = Array.isArray(data?.failed) ? data.failed : [];
+      if (failed.length) {
+        const lines = failed
+          .map((f: any) => `  - ${f?.selector || '(无选择器)'}: ${f?.reason || '未知原因'}`)
+          .join('\n');
+        return err(
+          `部分字段未填写成功（成功 ${data?.filled ?? 0} 个，失败 ${failed.length} 个）：\n${lines}\n` +
+          `建议：用 browser_get_page_info 重新获取元素编号与 selector 后重试。`,
+        );
+      }
       return ok(`Filled ${data.filled} fields: ${JSON.stringify(data.fields)}`);
     } catch (e: any) { return err(e?.message || '填表单失败'); }
   }
@@ -548,12 +612,35 @@ export class BrowserGetPageContentTool implements BuiltInTool {
       maxInteractive: { type: 'number', description: 'Max interactive elements to return (default 50, max 300).' },
     },
   };
-  async execute(args: Record<string, unknown>): Promise<McpCallResult> {
+  async execute(args: Record<string, unknown>, ctx?: import('../../types').ToolContext): Promise<McpCallResult> {
     try {
       const maxTextLength = Math.min(Number(args.maxTextLength) || 5000, 20000);
       const maxInteractive = Math.min(Number(args.maxInteractive) || 50, 300);
       const data = await callBrowserApi('/action', 'POST', { action: 'get_page_content', tabId: args.tabId, maxTextLength, maxInteractive }) as any;
       if (data.error) return err(data.error);
+      // ★ 工件协议（2026-10-08）：正文疑似被截断（长度顶到请求上限）时以更大上限重取全文；
+      //   超长正文落盘为文件，上下文只留预览 + 路径 —— 解决「抓章节全文被 20K 截断」。
+      let bodyText: string = data.text || '';
+      let savedPath = '';
+      if (bodyText.length >= maxTextLength && maxTextLength < 20000) {
+        try {
+          const data2 = await callBrowserApi('/action', 'POST', { action: 'get_page_content', tabId: args.tabId, maxTextLength: 20000, maxInteractive: 0 }) as any;
+          if (!data2.error && (data2.text || '').length > bodyText.length) bodyText = data2.text;
+        } catch { /* 重取失败用原文 */ }
+      }
+      if (bodyText.length > 8000) {
+        const dir = ctx?.artifactDirs?.intermediate || ctx?.workspaceDir || '';
+        if (dir) {
+          try {
+            const { fs } = getPlatformAdapter();
+            // 幂等建目录：产物目录通常已由服务端建好，已存在/建不动都不阻断落盘
+            try { await fs.mkdir(dir); } catch { /* 已存在或权限受限，交给 writeFile 暴露 */ }
+            const safeTitle = String(data.title || 'page').replace(/[\\/:*?"<>|\s]+/g, '_').slice(0, 40) || 'page';
+            savedPath = joinPath(dir, `${safeTitle}-${Date.now()}.txt`);
+            await fs.writeFile(savedPath, bodyText);
+          } catch { savedPath = ''; /* 落盘失败退回截断行为 */ }
+        }
+      }
       // ★ P1-6（2026-10-07）：页面状态签名——判据硬编码进回执（实现见 computePageStateSignature）
       const pageState = computePageStateSignature(data);
       const elems = (data.interactive || []).map((e: any) => {
@@ -575,8 +662,19 @@ export class BrowserGetPageContentTool implements BuiltInTool {
         if (e.iframe) s += ' (in iframe)';
         return s;
       }).join('\n');
+      const header = `URL: ${data.url}\nTitle: ${data.title}\nPageState: ${pageState}（页面状态签名；与上次读取相同 = 操作未生效，需换定位方式重新观察）\n\n【页面可见文本】\n`;
+      if (savedPath) {
+        const preview = bodyText.slice(0, 4000);
+        const more = bodyText.length > 4000 ? `\n…[正文过长已截断：全文 ${bodyText.length} 字符已保存到文件 ${savedPath}，后续处理用 file_read 按此路径读取，不要重复抓取]` : '';
+        // ★ 必须回传 _meta.path：否则服务端通用钩子接不到该路径 → 落盘文件不登记
+        //   conversation_file / 不进工件清单（等于白落盘）。category=intermediate（原始抓取）。
+        return okWithMeta(
+          `${header}${preview}${more}\n\n【可交互元素】(${data.interactiveCount} 个，编号可直接用于 browser_click/browser_type 的 index 参数；也可直接用 <selector> 作为 selector 参数)\n${elems}`,
+          { path: savedPath, name: savedPath.split(/[/\\]/).pop() || 'page.txt', category: 'intermediate', bytes: bodyText.length },
+        );
+      }
       return ok(
-        `URL: ${data.url}\nTitle: ${data.title}\nPageState: ${pageState}（页面状态签名；与上次读取相同 = 操作未生效，需换定位方式重新观察）\n\n【页面可见文本】\n${data.text || '(空)'}\n\n【可交互元素】(${data.interactiveCount} 个，编号可直接用于 browser_click/browser_type 的 index 参数；也可直接用 <selector> 作为 selector 参数)\n${elems}`
+        `${header}${bodyText}\n\n【可交互元素】(${data.interactiveCount} 个，编号可直接用于 browser_click/browser_type 的 index 参数；也可直接用 <selector> 作为 selector 参数)\n${elems}`
       );
     } catch (e: any) { return err(e?.message || '获取页面内容失败'); }
   }

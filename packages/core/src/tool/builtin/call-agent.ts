@@ -6,7 +6,7 @@ import type { McpCallResult } from '../../mcp/client';
 
 export class CallAgentTool implements BuiltInTool {
   name = 'call_agent';
-  description = '把子任务委托给指定的子智能体执行。子智能体可以是两种：对话型（以独立的系统提示词与可用工具运行，如 pageAgent 做浏览器自动化）；工作流型（type=workflow，执行一条固定的 DAG 流水线，如「调研报告生成助手」）。两者都由后端按 agentId 自动识别，你不需要区分调用方式，但入参形态不同：对话型传一段任务描述文本；工作流型按其声明的入参 schema 传值，多入参时传 JSON 对象。不确定该用哪个 agentId 时，可以先调用 list_sub_agents 列出可用子智能体及其 ID（其中会标注类型与入参）。';
+  description = '把子任务委托给指定的子智能体执行。子智能体可以是两种：对话型（以独立的系统提示词与可用工具运行，如 pageAgent 做浏览器自动化）；工作流型（type=workflow，执行一条固定的 DAG 流水线，如「调研报告生成助手」）。两者都由后端按 agentId 自动识别，你不需要区分调用方式，但入参形态不同：对话型传一段任务描述文本；工作流型按其声明的入参 schema 传值，多入参时传 JSON 对象。不确定该用哪个 agentId 时，可以先调用 list_sub_agents 列出可用子智能体及其 ID（其中会标注类型与入参）。并行：多个互不依赖的委派**放在同一轮里一起发出会被并发执行**（适合同时查多路资料/各写一块，结果只回报路径，大文件不入上下文）；需要"派完不等、先干别的"用 async:true（后台跑，完成后结果注入本会话）。';
   inputSchema = {
     type: 'object',
     properties: {

@@ -9,6 +9,9 @@
 // 少兜一层，历史 NULL 行就永远查不到（用户会觉得"我的会话没了"），
 // 而这种错不会报错、只会表现为列表少数据。
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 // ★ 2026-10-03 修复：不再直接 import better-sqlite3 —— postinstall 已把它重编为
 //   Electron ABI（fix-sqlite-electron.cjs），vitest 跑在系统 Node 上加载即
 //   NODE_MODULE_VERSION 不匹配。改走 sqlite-driver 的统一入口（原生不可用自动
@@ -17,6 +20,27 @@ import { openSqlite, type YzSqliteDb } from '../src/services/sqlite-driver.js';
 
 /** 与 routes/conversations.ts 里 GET / 的过滤 SQL 逐字一致的片段 */
 const MODE_FILTER = `COALESCE(NULLIF(mode, ''), 'office') = ?`;
+
+/**
+ * 从实现源码抽取 `VALID_MODES` 白名单（而非手写第二份清单）。
+ *
+ * ★★ 为什么这么做（2026-10-08 实测踩到）：本文件此前手写五个模式，新增 `clip` 时漏改，
+ *   而样本里又恰好没有 clip 会话 → 「并集 = 全部」的断言**假通过**。
+ *   ★ 判据：验证脚本一旦复刻实现，测的就是脚本不是实现 —— 所以这里读源码。
+ */
+const IMPLEMENTED_MODES: readonly string[] = (() => {
+  const src = readFileSync(
+    path.join(path.dirname(fileURLToPath(import.meta.url)), '../src/routes/conversations.ts'),
+    'utf8',
+  );
+  const m = src.match(/const VALID_MODES = new Set\(\[([^\]]+)\]\)/);
+  if (!m) {
+    throw new Error('★ 未能在 conversations.ts 中定位 VALID_MODES —— 抽取正则失效（实现被改写？），请同步本测试');
+  }
+  const ids = [...m[1].matchAll(/'([a-z]+)'/g)].map((x) => x[1]);
+  if (ids.length === 0) throw new Error('★ 从 VALID_MODES 中未解析出任何模式 id');
+  return ids;
+})();
 
 async function mkDb() {
   const { db } = await openSqlite(':memory:');
@@ -33,6 +57,13 @@ async function mkDb() {
   ins.run('c_office', 'guest', '办公会话', 'office', 100);
   ins.run('c_wf', 'guest', '工作流会话', 'wf', 200);
   ins.run('c_dev', 'guest', '开发会话', 'dev', 300);
+  // ★ 新增模式必须在这里有样本（2026-10-08 教训）：此前只建了 office/wf/dev 三个会话，
+  //   下方「全部模式并集 = 全部会话」的断言因此**假通过** —— 漏掉 clip/ops/sec 不会被发现。
+  //   判据：并集断言要能发现"某模式没有对应样本"，样本就必须覆盖每个模式
+  //   （守卫见下方「样本必须覆盖实现里的每一个模式」一条）。
+  ins.run('c_ops', 'guest', '运维会话', 'ops', 320);
+  ins.run('c_sec', 'guest', '安全会话', 'sec', 340);
+  ins.run('c_clip', 'guest', '剪辑会话', 'clip', 350);
   // ★ 两个脏值：历史行可能没写过 mode（NULL），也可能写成空串
   ins.run('c_null', 'guest', '历史NULL行', null, 400);
   ins.run('c_empty', 'guest', '历史空串行', '', 500);
@@ -67,10 +98,15 @@ describe('会话按模式隔离 · 过滤 SQL 口径', () => {
     expect(office).toContain('c_empty');  // 迁移前写入的空串行
   });
 
-  it('★ 五个模式的并集 = 该用户全部会话（不漏不重）', () => {
+  it('★ 全部模式的并集 = 该用户全部会话（不漏不重）', () => {
     const all = (db.prepare('SELECT id FROM conversation WHERE user_id = ?').all('guest') as Array<{ id: string }>)
       .map((r) => r.id).sort();
-    const union = ['office', 'dev', 'ops', 'sec', 'wf']
+    // ★★ 模式清单**从实现源码抽取**，不手写（2026-10-08 教训）：
+    //   本文件此前手写 ['office','dev','ops','sec','wf']，新增 clip 时没同步，
+    //   而样本里又恰好没有 clip 会话 → 断言**假通过**（漏了一个模式也发现不了）。
+    //   判据：这条断言的语义就是「一个都不能漏」，它引用的清单就必须与实现同源，
+    //        否则它测的是"我抄的清单"，不是"实现的清单"。
+    const union = [...IMPLEMENTED_MODES]
       .flatMap((m) => listOf(db, 'guest', m).map((r) => r.id))
       .sort();
     expect(union).toEqual(all);
@@ -78,9 +114,21 @@ describe('会话按模式隔离 · 过滤 SQL 口径', () => {
     expect(new Set(union).size).toBe(union.length);
   });
 
+  it('★ 样本必须覆盖实现里的每一个模式（否则上面的并集断言会假通过）', () => {
+    const seeded = db.prepare(
+      "SELECT DISTINCT COALESCE(NULLIF(mode, ''), 'office') AS m FROM conversation WHERE user_id = 'guest'",
+    ).all() as Array<{ m: string }>;
+    const have = new Set(seeded.map((r) => r.m));
+    const missing = [...IMPLEMENTED_MODES].filter((m) => !have.has(m));
+    expect(missing, `★ 以下模式没有样本会话，并集断言无法发现它被漏掉：${missing.join(', ')}`).toEqual([]);
+  });
+
   it('不存在的模式 → 空（调用方负责把非法值拦在"不过滤"分支）', () => {
-    expect(listOf(db, 'guest', 'ops')).toEqual([]);
+    // ★ 注意：这里**不能**再用 'ops' 当"没有会话的模式"（2026-10-08）——
+    //   样本已按「覆盖每个模式」补齐，ops 现在有会话了。本用例只该验证
+    //   "查一个不存在的模式得到空"，故用真正未定义的 id。
     expect(listOf(db, 'guest', '__nope__')).toEqual([]);
+    expect(listOf(db, 'other', '__nope__')).toEqual([]);
   });
 
   it('user 隔离不被模式过滤破坏', () => {

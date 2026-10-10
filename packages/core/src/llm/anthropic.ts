@@ -153,6 +153,9 @@ export async function* parseAnthropicSSE(stream: ReadableStream<Uint8Array>): As
   const blockToTool: Record<number, number> = {};
   let toolSeq = 0;
   let inputTokens = 0;
+  // ★ 是否见到终态（message_stop 事件 或 message_delta 带 stop_reason）——
+  //   与 OpenAI 侧 parseSSE 的 terminated 同一判据：未见即视为流被掐断（2026-10-09）。
+  let terminated = false;
 
   const reset = () => {
     eventType = '';
@@ -200,9 +203,17 @@ export async function* parseAnthropicSSE(stream: ReadableStream<Uint8Array>): As
         }
       } else if (type === 'message_delta') {
         const usage = ev.usage
-          ? { promptTokens: inputTokens, completionTokens: ev.usage.output_tokens ?? 0 }
+          ? {
+              promptTokens: inputTokens,
+              completionTokens: ev.usage.output_tokens ?? 0,
+              // ★ D1 可观测（2026-10-09）：Anthropic 缓存读取量
+              cachedTokens: ev.usage.cache_read_input_tokens,
+            }
           : undefined;
+        if (ev.delta?.stop_reason) terminated = true;
         yield { finishReason: ev.delta?.stop_reason, usage } as ChatChunk;
+      } else if (type === 'message_stop') {
+        terminated = true;
       }
     }
     reset();
@@ -232,14 +243,17 @@ export async function* parseAnthropicSSE(stream: ReadableStream<Uint8Array>): As
       buffer = lines.pop() || '';
       yield* processLines(lines);
     }
-    // 处理流末尾可能残留、无尾随空行的最后一帧
-    if (buffer.trim()) {
-      yield* processLines(buffer.split('\n'));
-      yield* emitPending();
-    }
+    // 处理流末尾可能残留、无尾随空行的最后一帧。
+    // ★ 两段都要（2026-10-09 修）：此前只看 `buffer.trim()`，当流以**单个**换行结尾时
+    //   buffer 已被 pop 成 ''，而最后一帧的 dataStr 仍挂着 → **末帧被丢弃**
+    //   （message_stop 丢失会直接导致 terminated 判为 false，把正常流误判成截断）。
+    if (buffer.trim()) yield* processLines(buffer.split('\n'));
+    if (dataStr) yield* emitPending();
   } finally {
     reader.releaseLock();
   }
+  // 收尾标记：false = 流被上游/代理提前掐断（未见 message_stop / stop_reason）。
+  yield { terminated } as ChatChunk;
 }
 
 /** 将 Anthropic 非流式响应转换为 ChatChunk */
@@ -263,7 +277,12 @@ export function anthropicResponseToChunk(data: any): ChatChunk {
     },
     finishReason: data?.stop_reason,
     usage: data?.usage
-      ? { promptTokens: data.usage.input_tokens, completionTokens: data.usage.output_tokens }
+      ? {
+          promptTokens: data.usage.input_tokens,
+          completionTokens: data.usage.output_tokens,
+          // ★ D1 可观测（2026-10-09）
+          cachedTokens: data.usage.cache_read_input_tokens,
+        }
       : undefined,
   };
 }

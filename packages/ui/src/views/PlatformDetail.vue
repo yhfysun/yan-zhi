@@ -309,8 +309,21 @@ const CAP_DEFS = [
 // 一律放开勾选与测试，以实测结果为准（通过自动勾上，不通过不勾）
 const capTesting = ref('');
 
+/**
+ * ★★★ D7（2026-10-10）：`contextWindowK` 默认**留空**（此前是 1024 = 1M）。
+ *
+ * ★ 为什么必须改（实测）：后端 `resolveContextWindow` 把"**恰好等于 1M**"判为
+ *   "用户没填、是我们写进去的默认值"→ 退回 32K 保守估算（注释里论证过"误判成本不对称"）。
+ *   但本表单**新增时预填 1024K** ⇒ "没填"与"真 1M"在数据层**完全同形**（都是 1048576）——
+ *   实测生产库 **561 个模型全是 1048576**（含 `glm-5.3-prime`、`deepseek-v4.1-flash`
+ *   等**确实 1M** 的模型）⇒ **全部被按 32K 估算**（不是"极少数误判"，是普遍过度保守）。
+ * ★ 改法：新增时留空，让用户**显式**选（`ctxPresets` 的 1M 按钮或手填）——
+ *   于是"未填"（null）与"真 1M"（1048576）可区分，两边的判据都恢复准确。
+ * ★ 留空时提交为 `null`（不是 0/1024）：后端 `resolveContextWindow` 对非有限值退保守值。
+ */
 const form = ref({
-  modelId: '', alias: '', type: 'llm', contextWindowK: 1024,
+  modelId: '', alias: '', type: 'llm',
+  contextWindowK: undefined as number | undefined,
   capabilities: ['reasoning'] as string[],
   description: '',
   pricingInput: 0, pricingOutput: 0,
@@ -333,7 +346,9 @@ function openAddModel() {
   showAdd.value = true;
 }
 
-function formatWindow(n: number): string {
+function formatWindow(n: number | null): string {
+  // ★ D7：null = 未声明（不兜成 1M，避免与"真 1M"同形）
+  if (n === null || n === undefined) return '未声明';
   if (n >= 1048576) {
     const m = n / 1048576;
     return `${m % 1 === 0 ? m : m.toFixed(1)}M`;
@@ -380,7 +395,9 @@ async function addOrEditModel() {
     if (editingModelId.value) {
       await store.updateModel(editingModelId.value, {
         modelId: form.value.modelId, alias: form.value.alias,
-        type: form.value.type as any, contextWindow: (form.value.contextWindowK || 1024) * 1024,
+        type: form.value.type as any,
+        // ★ D7：留空 → null（"未声明"），让后端按保守窗口估算；不再兜成 1M
+        contextWindow: form.value.contextWindowK ? form.value.contextWindowK * 1024 : null,
         capabilities: form.value.capabilities,
         description: form.value.description,
         pricing: { input: form.value.pricingInput, output: form.value.pricingOutput },
@@ -390,7 +407,9 @@ async function addOrEditModel() {
       await store.addModel({
         platformId: platformId.value, modelId: form.value.modelId,
         alias: form.value.alias, type: form.value.type as any,
-        contextWindow: (form.value.contextWindowK || 1024) * 1024, enabled: true, isDefault: false,
+        // ★ D7：同上（留空 → null）
+        contextWindow: form.value.contextWindowK ? form.value.contextWindowK * 1024 : null,
+        enabled: true, isDefault: false,
         capabilities: form.value.capabilities,
         description: form.value.description,
         pricing: { input: form.value.pricingInput, output: form.value.pricingOutput },

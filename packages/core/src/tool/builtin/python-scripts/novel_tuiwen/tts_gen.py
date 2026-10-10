@@ -11,6 +11,10 @@ import os
 import subprocess
 import sys
 
+# ★ 子进程静默（2026-10-09）：逐段 ffprobe 探测时长，是"黑框一直闪"的高频来源。
+import _winquiet  # noqa: E402
+_winquiet.apply_popen_defaults()
+
 DEFAULT_VOICE = "zh-CN-YunxiNeural"  # 年轻男声, 推文常用; 备选 zh-CN-XiaoyiNeural
 
 import re

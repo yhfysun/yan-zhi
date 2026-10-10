@@ -183,7 +183,13 @@ router.post('/:pid/models', (req: Request, res: Response) => {
   const now = Date.now();
   db.prepare(
     'INSERT INTO model (id, platform_id, user_id, model_id, alias, type, context_window, capabilities_json, pricing_json, description, enabled, is_default, is_builtin, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)',
-  ).run(id, pid, userId(req), modelId, alias || null, type || 'llm', contextWindow || DEFAULT_CONTEXT_WINDOW,
+    // ★★★ D7（2026-10-10）：**保留 null 语义**（`||` 会把 null 兜成 1M，使前端改动白做）。
+    //   背景：`resolveContextWindow` 把"恰好 1M"判为"用户没填"→ 退 32K 保守估算；
+    //   而前端新增表单以前预填 1M ⇒ "没填"与"真 1M"**同形**（实测生产库 **561 个模型全是
+    //   1048576**，含确实 1M 的 glm-5.3-prime / deepseek-v4.1-flash）⇒ **全被按 32K 估**。
+    //   ⇒ 存 NULL（schema 允许，无 NOT NULL），与"真 1M"可区分。
+  ).run(id, pid, userId(req), modelId, alias || null, type || 'llm',
+    (contextWindow === null || contextWindow === undefined) ? null : contextWindow,
     JSON.stringify(resolveCapabilities(modelId, capabilities)), JSON.stringify(pricing || {}), description || null,
     enabled !== undefined ? (enabled ? 1 : 0) : 1, isDefault ? 1 : 0, now);
   res.json({ data: rowToM(db.prepare('SELECT * FROM model WHERE id = ?').get(id)) });
@@ -255,7 +261,9 @@ router.post('/models/batch', (req: Request, res: Response) => {
       if (existingIds.has(m.modelId)) {
         updateStmt.run(m.type || 'llm', platformId, uid, m.modelId);
       } else {
-        insertStmt.run(newRowId(m.modelId), platformId, uid, m.modelId, m.alias || null, m.type || 'llm', m.contextWindow || DEFAULT_CONTEXT_WINDOW,
+        // ★ D7：同上（null = 未声明，不兜成 1M）
+        insertStmt.run(newRowId(m.modelId), platformId, uid, m.modelId, m.alias || null, m.type || 'llm',
+          (m.contextWindow === null || m.contextWindow === undefined) ? null : m.contextWindow,
           JSON.stringify(resolveCapabilities(m.modelId, m.capabilities)), JSON.stringify(m.pricing || {}),
           m.enabled !== undefined ? (m.enabled ? 1 : 0) : 1, m.isDefault ? 1 : 0, now);
       }

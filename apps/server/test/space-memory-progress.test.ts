@@ -145,11 +145,19 @@ describe('② appendTaskProgress：真实文件系统落盘（不是"源码里�
   });
 
   it('★★ 未挂空间的会话必须静默跳过，且**不得创建任何文件/目录**', async () => {
+    // ★★★ 2026-10-10 行为变更（D6）：本断言原为「未挂空间 → `r.ok === false`（完全不留痕）」。
+    //   D6 把它改成**写入会话自己的目录** —— 因为"完全不留痕"使**未挂空间的会话跨轮次断链**
+    //   （用户本机有 22 个未挂空间的会话），换轮次继续时模型不知道上一批做到哪。
+    //   ★ 但**原约定的实质未变**：`spaceDir`（空间目录）**仍然一个文件都不建** ——
+    //     D6 写的是 `.yan-zhi/tasks/<convId>/task-memory/progress.md`（会话维度），
+    //     不碰空间目录。下面第 2/3 条断言**原样保留**（这才是原约定的真正保护目标）。
     const { appendTaskProgress } = await import('../src/services/space-memory');
-    const r = await appendTaskProgress('conv_none', 'completed', '不该被记录');
-    expect(r.ok, '★ 未挂空间却报告成功').toBe(false);
-    expect(existsSync(join(spaceDir, 'MEMORY.md')), '★ 未挂空间却写了 MEMORY.md').toBe(false);
-    expect(existsSync(join(spaceDir, '.yan-zhi')), '★ 未挂空间却建了 .yan-zhi 目录（用户明确：没有任务类型不建默认目录）').toBe(false);
+    const r = await appendTaskProgress('conv_none', 'completed', '裸会话应当留痕到自己目录');
+    expect(r.ok, '★ 未挂空间的会话应留痕到**会话自己的目录**（D6；此前完全不留痕=跨轮次断链）').toBe(true);
+    expect(r.path, '★ 未返回落盘路径').toBeTruthy();
+    // ★ 原约定的实质：不得污染空间目录
+    expect(existsSync(join(spaceDir, 'MEMORY.md')), '★ 未挂空间却写了空间目录的 MEMORY.md').toBe(false);
+    expect(existsSync(join(spaceDir, '.yan-zhi')), '★ 未挂空间却建了空间目录下的 .yan-zhi（原约定：不建默认空间目录）').toBe(false);
   });
 
   it('★ 空摘要不得写入（避免 MEMORY.md 里出现无信息空条目）', async () => {

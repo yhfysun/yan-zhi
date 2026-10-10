@@ -80,7 +80,7 @@
               @click.stop
               @change="toggleConvSelect(c.id)"
             />
-            <el-icon v-if="c.pinned" class="tls-pin"><Star /></el-icon>
+            <el-icon v-if="c.pinned" class="tls-pin"><StarFilled /></el-icon>
             <span class="tls-dot" v-else-if="!batchMode"></span>
             <!-- 7.4 运行状态徽标：与 ChatSidebar 同款呼吸圆点 -->
             <span v-if="!batchMode && chatStore.isConvStreaming(c.id)" class="conv-run-badge" title="运行中"></span>
@@ -109,7 +109,7 @@
                 <el-icon :size="12"><EditPen /></el-icon>
               </span>
               <span class="task-row-act" role="button" title="移动到空间" @click="rows.openMoveMenu(c, $event)">
-                <el-icon :size="12"><FolderOpened /></el-icon>
+                <el-icon :size="12"><Rank /></el-icon>
               </span>
               <span class="task-row-act is-danger" role="button" title="删除" @click="rows.remove(c)">
                 <el-icon :size="12"><Delete /></el-icon>
@@ -171,7 +171,7 @@
           <el-icon><EditPen /></el-icon>重命名
         </li>
         <li class="has-submenu">
-          <el-icon><FolderOpened /></el-icon>移动到空间
+          <el-icon><Rank /></el-icon>移动到空间
           <el-icon class="submenu-arrow"><ArrowRight /></el-icon>
           <ul class="ctx-submenu">
             <li v-if="spaceStore.spaces.length === 0" class="disabled-hint">暂无空间，请先创建</li>
@@ -248,7 +248,7 @@
 <script setup lang="ts">
 import { computed, ref, onMounted, onBeforeUnmount } from 'vue';
 import {
-  EditPen, Top, Star, CaretRight, ChatDotRound, FolderOpened, Tools, Close, Delete, ArrowRight, Plus,
+  EditPen, Top, Star, StarFilled, CaretRight, ChatDotRound, FolderOpened, Rank, Tools, Close, Delete, ArrowRight, Plus,
 } from '@element-plus/icons-vue';
 import { useChatStore } from '../../stores/chat';
 import { useChat } from '../../composables/chat/useChat';
@@ -303,20 +303,39 @@ const convs = computed(() => {
 /** 分组：spaceId 固定（如开发模式）时单组；传 null（运维/安全）时按空间分组 */
 const groups = computed(() => {
   const sid = effSpaceId.value;
+
+  /**
+   * 置顶分组（2026-10-09）。
+   *
+   * ★ 为什么加（issues/会话置顶入口隐蔽-20260919 的「缺失项 1」，issue 备注明确写了
+   *   「若改造需同步两处，避免只有侧边栏生效」——这处此前确实漏了）：
+   *   置顶项此前只靠 `pinned` 排序排到各组最前，**混在普通任务里没有视觉分区**，
+   *   用户看不出"这些是置顶的」。issue 原话：「功能存在但不可发现 ≈ 功能不存在」。
+   * ★ 置顶组只在**全部模式**（无 spaceId 过滤）下出现：进了某个空间就该只看该空间的任务，
+   *   再抽一个跨空间的置顶组会与"当前目录"语义冲突。
+   * ★ 置顶项从原组**排除**（两处不重复）—— 分区不是重复展示。
+   */
+  const pinnedConvs = sid ? [] : convs.value.filter((c) => !!c.pinned);
+  const unpinned = (list: any[]) => list.filter((c) => !!c.pinned === false);
+
   if (sid) {
     const sp = spaceStore.spaces.find((s) => s.id === sid);
     return [{ id: sid, title: sp?.name || '当前目录', icon: FolderOpened, convs: convs.value }];
   }
-  // 全部模式：未归类 + 各空间
+  // 全部模式：置顶 + 未归类 + 各空间
   const out: Array<{ id: string; title: string; icon: any; convs: any[] }> = [];
-  const rootList = convs.value.filter((c) => !c.spaceId);
+  // 置顶组只在有置顶项时插入（无置顶不占位 —— 契合"极简、不加多余元素"的一贯要求）
+  if (pinnedConvs.length > 0) {
+    out.push({ id: '__pinned__', title: '置顶', icon: Star, convs: pinnedConvs });
+  }
+  const rootList = unpinned(convs.value.filter((c) => !c.spaceId));
   out.push({ id: '__root__', title: '未归类', icon: ChatDotRound, convs: rootList });
   for (const sp of spaceStore.spaces) {
     out.push({
       id: sp.id,
       title: sp.name,
       icon: FolderOpened,
-      convs: convs.value.filter((c) => c.spaceId === sp.id),
+      convs: unpinned(convs.value.filter((c) => c.spaceId === sp.id)),
     });
   }
   return out;
@@ -330,7 +349,10 @@ function toggleGroup(id: string) {
 /** 无 spaceId 过滤时，空的「未归类」组不占位（仅在有任务或搜索时显示） */
 const visibleGroups = computed(() => {
   if (effSpaceId.value) return groups.value;
-  return groups.value.filter((g) => g.id !== '__root__' || g.convs.length > 0);
+  // 置顶组同理：groups 已在无置顶项时不插入它，这里再兜一层（防将来改动漏判）
+  return groups.value.filter(
+    (g) => (g.id !== '__root__' && g.id !== '__pinned__') || g.convs.length > 0,
+  );
 });
 
 function groupSelectState(id: string) {

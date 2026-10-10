@@ -406,7 +406,19 @@ function createChat() {
 
   const input = ref('');
   const inputFocused = ref(false);
-  // 文本输入区 DOM 引用（el-input 实例）—— editQueued 时把焦点拉回输入框
+  /**
+   * ★★★ 发送重入锁（2026-10-09，P0 实据修复）。
+   *
+   * 为什么必须有：`send()` 在取走内容后要跨多个 `await`（建空间 / 建会话 / 落附件 / 读文件预览），
+   *   期间 `input.value` 尚未清空；键盘连发、Enter 连按、或"发送"按钮与 Enter 同时触发，
+   *   就会**并发进入多次** → 同一句话落库多条。
+   *   实测铁证：生产库同一秒写进 **11 条一模一样的 user 消息**「失败原因总结下」。
+   *
+   * 语义：进入 send() 即刻置位（**在任何 await 之前**），finally 释放；
+   *   置位期间重复调用直接忽略。这是"防重复提交"的**唯一入口守卫** ——
+   *   放在 store.callLlm 里的 runningConvIds 判据来不及挡（那里已在 await 之后）。
+   */
+  const sending = ref(false);
   const inputRef = ref<any>();
   const fileInputRef = ref<HTMLInputElement>();
   const uploadedFiles = ref<Array<{ name: string; size: number; type: string; dataUrl: string }>>([]);
@@ -432,6 +444,14 @@ function createChat() {
       } else {
         store.rightPanelOpen = true;
       }
+      // ★★★ 执行面直连化（2026-10-10）：**桥档下必须由这里把预览面板打开**。
+      //   桥路径下渲染层不执行 `browser_*`（见 stores/chat.ts 的 tool:execute 守卫），
+      //   而 `openTab` 此前只嵌在 `dispatchToolCall` 的 `browser_navigate` 分支里 ——
+      //   跳过执行 ⇒ 面板不被打开 ⇒ 主进程 `browser:wv:forceOpen` 无人接 ⇒
+      //   **第一次 navigate 必失败（拿不到 guest）且预览看不到**。
+      //   ⇒ 收口到本 watch（对 SSE 的 `tool:start`/`tool:result` 生效，与是否本地执行无关）。
+      //   BrowserPanel 由 `v-if="browserTab"` + `v-show` 驱动，`activeTabId` 指向 browser tab
+      //   即会挂载 ⇒ 挂载后 onMounted 自建首个 tab（或恢复已有）。
     }
     // n===0 时不强制切回 file，避免清空时面板闪一下；保留当前 tab（默认 file/git）
   });
@@ -449,7 +469,7 @@ function createChat() {
     }
   });
   // 任务结束（completed/aborted/failed）兜底清理：SSE 步骤日志可能未清空，这里强制退出实况态
-  store.onTaskFinished((convId) => {
+  store.onTaskFinished(async (convId) => {
     if (store.browserExpanded || store.browserLockInput) {
       store.browserLockInput = false;
       store.browserExpanded = false;
@@ -461,14 +481,45 @@ function createChat() {
     store.clearBrowserTaskActive(convId);
     store.pausedConvIds.clear();
     store.clearAgentCursor();
-    // ★★ agent 开的页面没收干净 → 给用户一条明示（2026-10-08 用户诉求
-    //   「pageAgent 执行完了不会关闭页面？」）。
-    //   ★ 为什么是"提示"而不是"自动关"（用户拍板方案 B 的落点）：
-    //     哪些页还有用（用户要接着看的成果页）只有模型知道 —— 提示词已要求它收尾时自己关，
-    //     这里只在**它没关干净**时兜底告知，不替用户决定关掉可能有用的页面。
-    //   ★ 提示必须放在「读完残留之后、清理记账之前」—— 先取快照再清，否则永远读到空。
+    // ★★ agent 开的页面 → 任务收尾**自动关闭**（2026-10-09 用户诉求升级：
+    //   「子智能体运行任务完后代理的页面自动关闭，智能体接下来去其他任务，页面不能不关啊」。
+    //   原 2026-10-08 方案是"只弹提示不自动关"，实测页面照样堆积，用户拍板改自动关）。
+    //   安全边界不变：只关 agent 打开的（agentOpened），用户手开的不碰 —— 主进程
+    //   browserView:closeAgentTabs 按 agentOpened===true 过滤，双保险。
+    //   ★ 先取残留快照（知会条数），再关闭，最后清记账 —— 顺序不能反。
     const leftover = store.remainingAgentOpenedTabs(convId);
-    if (leftover.length > 0) {
+    const closeApi = (window as any).electronAPI?.browserView;
+    // ★★★ 执行面直连化（2026-10-10）：桥档下渲染层的 `agentOpenedTabs` 记账恒为空
+    //   （记账在 `dispatchToolCall` 里，而桥路径**跳过执行**）⇒ 旧的 `closeAgentTabs()`
+    //   （按 `agentOpened` 过滤）**关不掉任何东西** ⇒ 「任务跑完一堆 agent 页面不关」静默退化。
+    //   ⇒ 优先用**按会话**的关闭入口（主进程按自己的 `agentTouchedTabs` 记账收口，不依赖渲染层）。
+    //   旧入口保留为兜底（非桥档 / 旧主进程无该 API）。
+    if (convId && closeApi?.closeConvTabs) {
+      try {
+        const r = await closeApi.closeConvTabs(convId);
+        store.clearAgentOpenedTabs(convId);
+        if ((r?.closed ?? 0) > 0) {
+          void import('element-plus').then(({ ElMessage }) => {
+            ElMessage.info({ message: `已自动关闭 AI 打开的 ${r.closed} 个页面`, duration: 4000 });
+          }).catch(() => { /* 提示失败不影响收尾 */ });
+        }
+        return;
+      } catch { /* 关闭失败退回旧路径 */ store.clearAgentOpenedTabs(convId); }
+    }
+    if (leftover.length > 0 && closeApi?.closeAgentTabs) {
+      try {
+        const r = await closeApi.closeAgentTabs();
+        store.clearAgentOpenedTabs(convId);
+        if ((r?.closed ?? 0) > 0) {
+          void import('element-plus').then(({ ElMessage }) => {
+            ElMessage.info({ message: `已自动关闭 AI 打开的 ${r.closed} 个页面`, duration: 4000 });
+          }).catch(() => { /* 提示失败不影响收尾 */ });
+        }
+      } catch { /* 关闭失败退回旧提示路径 */ 
+        store.clearAgentOpenedTabs(convId);
+      }
+    } else if (leftover.length > 0) {
+      // 非 Electron 环境（无 closeAgentTabs API）：退回 2026-10-08 的明示文案
       store.clearAgentOpenedTabs(convId);
       void import('element-plus').then(({ ElMessage }) => {
         ElMessage.info({
@@ -1124,6 +1175,23 @@ function createChat() {
   });
   /** 对话根节点：未归入任何空间的会话 */
   const rootConversations = computed(() => filteredConversations.value.filter((c) => !c.spaceId));
+  /**
+   * 置顶分组（2026-10-09）。
+   *
+   * ★ 为什么单列一组（issues/会话置顶入口隐蔽-20260919 的「缺失项 1」）：
+   *   此前置顶只靠 `pinned DESC` 排到最前，**混在普通会话里没有任何视觉分区** →
+   *   用户感知不到"这些是置顶的"（实测反馈：「会话列表没有星标功能」）。
+   *   入口（hover 星标 + 右键菜单）其实都在，缺的就是这个"看得出被置顶"的分组。
+   * ★ 只收**根级**置顶（未归空间的）：空间内的置顶已在该空间分组内排序靠前，
+   *   再抽出来会让同一个会话出现在两处 —— 分组的意义是分区，不是重复展示。
+   * ★ 搜索时同样生效（filteredConversations 已含搜索过滤），语义一致。
+   */
+  const pinnedRootConversations = computed(() => rootConversations.value.filter((c) => !!c.pinned));
+  /** 未置顶的根级会话（置顶组之下的主列表；置顶组为空时它等于 rootConversations） */
+  const unpinnedRootConversations = computed(() => rootConversations.value.filter((c) => !c.pinned));
+  /** 置顶组是否展开（会话级 UI 状态，与 spaceCollapsed 同形态） */
+  const pinnedCollapsed = ref(false);
+  const togglePinnedCollapse = () => { pinnedCollapsed.value = !pinnedCollapsed.value; };
   /** 按空间分组的会话：spaceId -> 会话列表 */
   const conversationsBySpace = computed(() => {
     const map: Record<string, typeof filteredConversations.value> = {};
@@ -1337,7 +1405,28 @@ function createChat() {
   );
 
   const tokenCount = computed(() =>
-    store.currentMessages.reduce((s, m) => s + estimateTokens(m.content || '') + estimateTokens(m.reasoningContent || ''), 0),
+    store.currentMessages.reduce(
+      (s, m) =>
+        s
+        + estimateTokens(m.content || '')
+        + estimateTokens(m.reasoningContent || '')
+        // ★★★ 必须计入 toolCalls（2026-10-09，D2）：后端 tokenCount（packages/core/src/compress/window.ts）
+        //   明确把 toolCalls 计入，并注明"toolCalls 常占最长部分"。
+        //   前端此前漏了它 → **显示用量系统性偏低**：用户更晚看到"快满了"，
+        //   而且前后端口径不一致会让"前端说还有空间、后端却开始压缩"看起来像 bug。
+        //   ★ 判据：同一个量在两处计算就必须同口径；这里按后端同样取 arguments 的字符串长度估算。
+        + (m.toolCalls || []).reduce((ts, tc) => {
+          const anyTc = tc as unknown as {
+            function?: { arguments?: unknown; name?: string };
+            arguments?: unknown;
+            toolName?: string;
+          };
+          const raw = anyTc.function?.arguments ?? anyTc.arguments;
+          const argText = typeof raw === 'string' ? raw : (raw ? JSON.stringify(raw) : '');
+          return ts + estimateTokens(argText) + estimateTokens(anyTc.function?.name || anyTc.toolName || '');
+        }, 0),
+      0,
+    ),
   );
   /** 标称上下文窗口（模型配置值）—— 只用来说明"模型 API 上限"，不用来算用量 */
   const declaredContextWindow = computed(() => {
@@ -2277,6 +2366,18 @@ async function healStalePlatform() {
   }
 
   async function send() {
+    // ★★★ 重入锁（2026-10-09）：状态在**任何 await 之前**同步置位。见 sending 声明处注释。
+    //   放在这里而不是 store 里 —— 这里是"用户点发送"的唯一入口，能挡住 await 窗口期的连发。
+    if (sending.value) return;
+    sending.value = true;
+    try {
+      await sendInner();
+    } finally {
+      sending.value = false;
+    }
+  }
+
+  async function sendInner() {
     if (!input.value.trim() && uploadedFiles.value.length === 0 && quotedUrls.value.length === 0) return;
 
     const hasPlatform = platformStore.platforms.length > 0;
@@ -2346,7 +2447,13 @@ async function healStalePlatform() {
       return;
     }
 
+    // ★★★ 取走内容即清空输入框（2026-10-09，多会话发消息"消失"修复）：
+    //   此前 input.value 要等下面「建空间 → 建会话 → 落附件」多个 await 之后才清空，
+    //   期间输入框仍有内容 → 连按 Enter / 双击会把同一句话再发一次；第二次走到
+    //   store.sendMessage 时第一次已 runningConvIds.add → 命中静默 return（消息凭空消失）。
+    //   提到这里（取内容那一刻）后，重入锁之外再加一道：第二个 send 进来时 input 已空 → 早退。
     const content = input.value;
+    input.value = '';
     let model = platformStore.models.find((m) => m.id === selectedModelId.value);
     let platform: Platform | undefined = platformStore.platforms.find((p) => p.id === model?.platformId);
     if (!platform || !model) {
@@ -2489,7 +2596,8 @@ async function healStalePlatform() {
         }
       }
 
-      input.value = '';
+      // input.value 已在取内容那一刻清空（见上方「取走内容即清空输入框」）——
+      // 这里不再重复清，避免"清空时机"这一语义出现两处（本项目既有教训：同一语义两处各写一份必漂移）。
 
       if (selectedFilePaths.value.size > 0) {
         const fileRefs: Array<Record<string, unknown>> = [];
@@ -2692,13 +2800,20 @@ async function healStalePlatform() {
     }
   }
 
-  /** 「立即发送」：注入运行中的任务，模型下一轮 LLM 调用时带上（不等整个任务结束） */
+  /** 「立即发送」：注入运行中的任务，模型下一轮 LLM 调用时带上（不等整个任务结束）。
+   *  ★ 幂等：同一条连点多次只注入一次（store 内在途守卫 + 后端 clientMsgId 去重，见 chat.ts）。 */
   async function sendQueuedNow(id: string) {
     const convId = store.currentConvId;
     if (!convId) return;
-    const injected = await store.injectQueuedMessage(convId, id);
-    if (injected) { ElMessage.success('已追加，模型下一轮将带上'); return; }
-    // 任务已结束（或注入失败）→ 退回普通发送，起新一轮
+    // ★ 已结束任务（或注入失败）→ 退回普通发送，起新一轮；点谁发谁（把该条提到队首）。
+    const res = await store.injectQueuedMessage(convId, id);
+    if (res.ok) {
+      if (!res.duplicate) ElMessage.success('已追加，模型下一轮将带上');
+      await nextTick();
+      scrollToBottom();
+      return;
+    }
+    store.promoteQueuedMessage(convId, id);
     await flushQueuedAfterTask(convId);
     // 仍未发出去（会话仍在运行 / 闸门占着）→ 必须明确告知。
     // 否则点击「立即发送」会毫无反馈，用户以为按钮坏了（2026-10-04 用户反馈）。
@@ -3480,6 +3595,8 @@ async function healStalePlatform() {
     selectedModelId, expandedReasoning, expandedTools, expandedToolGroups, collapsedToolGroups, collapsedMessages, expandedAgentProcess, expandedStepTools, activeNavRound,
     userRoundIndices, mountedSkillIds, drawerOpen, convCollapsed, sideTab, contextSidebarOpen, toggleContextSidebar, batchMode, selectedConvIds,
     rootConversations, conversationsBySpace, spaceCollapsed, toggleSpaceCollapse, rootCollapsed, toggleRootCollapse,
+    // 置顶分组（2026-10-09）：让"被置顶"在长列表里看得出来（issue 缺失项 1）
+    pinnedRootConversations, unpinnedRootConversations, pinnedCollapsed, togglePinnedCollapse,
     mountToolSelection, toolAliasMap, mountSearch, collapsedServers, toggleServerCollapse, filteredTools, initMountSelection, isToolMounted, toggleMountTool, isAllToolsMounted, toggleAllTools, setToolAlias,
     showAgentEdit, editingAgent, debugMode,
     showWorkspaceDir, workspaceDir, hasWorkspaceDir, loadWorkspaceDir, onWorkspaceDirSelected, clearWorkspaceDir,
@@ -3502,7 +3619,7 @@ async function healStalePlatform() {
     onAgentSwitch, onModelChange,
     parseConfigCard, displayAssistantContent, getEditPlatform, getEditReason, onConfigSaved,
     queuedList, sendQueuedNow, editQueued, removeQueued, flushQueuedAfterTask,
-    startNewChat, selectConv, triggerFileUpload, addFiles, handleFileChange, removeFile, formatSize, send, stopChat, regenerateMsg, shouldShowMessage, collectToolCalls,
+    startNewChat, selectConv, triggerFileUpload, addFiles, handleFileChange, removeFile, formatSize, send, sending, stopChat, regenerateMsg, shouldShowMessage, collectToolCalls,
     filteredFiles, loadWorkspaceFiles, previewFile, toggleFileSelect, triggerFilePanelUpload, handleFilePanelUpload, deleteFileItem,
     resolveArtifactDirFor,
     openConvDir,

@@ -203,6 +203,46 @@ export function capLongText(text: string, max: number = COMPRESS_TOOL_CAP_CHARS)
   return text.slice(0, head) + marker + (tail > 0 ? text.slice(-tail) : '');
 }
 
+/**
+ * ★★★ 常态裁剪「保留窗口之外」的老工具结果（D4，2026-10-09）。
+ *
+ * ★ 为什么必须有（实测）：`capLongText` 此前**唯一调用点**是 `compress` 内部的第 ① 级裁剪
+ *   （见下方 `compress` 里那处）—— 也就是**只有超阈值触发压缩时才会裁**。
+ *   于是低于阈值时，老的大工具输出（`python_exec` 的长 stdout、`file_read` 的长文件、
+ *   `browser_get_page_content` 的长正文）**全量进入上下文**，逐条推高 token，
+ *   让会话更早撞上阈值、更早被迫走"丢前文换摘要"这种**有损**路径。
+ *   ⇒ 把"裁老工具输出"从"压缩时才做"提升为**每步常态**，逼近成熟产品的 microcompact
+ *     （持续淘汰旧的大结果，而不是攒到阈值再一次性处理）。
+ *
+ * ★ 三条安全性（少一条都可能引入新 bug）：
+ *   ① **只改 `content` 字符串长度，不动消息结构** —— 不增删消息、不改顺序，
+ *      因此 tool_calls ↔ tool 的配对**不可能被破坏**（这是裁剪能常态化、而"丢消息"不能的前提）；
+ *   ② **幂等**：已裁过的文本必然 < 上限，再裁是 no-op（`capLongText` 自身保证）；
+ *   ③ **只裁保留窗口之外**：最近 `keepRecent` 条保持原文 —— 否则会出现"模型刚读到、
+ *      下一步就没了"的诡异行为（那是比费 token 更糟的体验）。
+ *
+ * @param keepRecent 保留最近多少条 tool 结果原文（与 compress 的 keepRecent 同口径）
+ */
+export function capStaleToolResults(
+  messages: Message[],
+  keepRecent = 6,
+  maxChars: number = COMPRESS_TOOL_CAP_CHARS,
+): Message[] {
+  if (!messages.length || keepRecent < 0) return messages;
+  // 定位"保留窗口"的起点：只裁它之前的 tool 消息
+  const boundary = Math.max(0, messages.length - keepRecent);
+  let changed = false;
+  const out = messages.map((m, i) => {
+    if (i >= boundary) return m;                    // 保留窗口内 → 原文
+    if (m.role !== 'tool') return m;                // 只处理 tool 结果
+    const text = m.content || '';
+    if (text.length <= maxChars) return m;          // 未超限 → 不动（幂等）
+    changed = true;
+    return { ...m, content: capLongText(text, maxChars) };
+  });
+  return changed ? out : messages;                  // 无变化返回原引用（避免无谓的响应式/比对开销）
+}
+
 export class ContextWindow {
   private summaryClient: LlmClient | null = null;
 

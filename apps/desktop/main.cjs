@@ -162,6 +162,127 @@ function resolveTabWebContents(tabId) {
 }
 const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// ============================================================
+// 会话 → tab 锚定（「浏览器执行面直连化」P0-2，2026-10-10）
+//
+// ★★★ 为什么必须下沉到主进程：
+//   直连化后，命令由**服务端**经本地端点直接送进来（见 browser-bridge.cjs），
+//   服务端只知道 `convId`（`ToolContext.conversationId`，A4 已打通），**不知道 tabId**。
+//   而"某会话当前锚在哪个 tab"此前由**渲染层** `agentAnchoredTabs`（chat.ts:50）持有 ——
+//   渲染层不再执行浏览器工具后，那个锚就没人维护了 ⇒ 主进程必须自己持有。
+//
+// ★★★ 只能有一处生效（这是本方案最贵的一条判据）：
+//   渲染层 `resolvePreviewTabId`(chat.ts:111) 与这里语义**完全一致**，
+//   若两处同时锚 ⇒ 「两个 activeTabId 体系」那个历史坑的翻版（一边锚 A、一边锚 B，
+//   动作落到错误的页上且不报错）。⇒ bridge 生效时渲染层不再执行、天然不锚；
+//   `browserView:action` 的 **IPC 路径（SSE 委托）始终显式传 tabId**，不读本表 ⇒ 两者不会打架。
+//
+// ★ 与 `activeTabId` 的分工：`activeTabId` 是"用户当前在看哪个"（UI 语义）；
+//   `convAnchors` 是"某会话的操作目标"（执行语义）。两者可以不同，不该互相顶替。
+// ============================================================
+const convAnchors = new Map(); // convId → tabId
+
+/**
+ * agent 经桥/工具操作过、**需要任务收尾关闭**的 tab：tabId → convId。
+ *
+ * ★★★ 为什么必须（「直连化」可见性契约，2026-10-10）：
+ *   桥路径下**渲染层不执行** browser_* 工具 ⇒ 渲染层 `agentOpenedTabs` 记账
+ *   （在 `dispatchToolCall` 里）**永远为空** ⇒ 任务收尾的 `closeAgentTabs()`
+ *   （按 `agentOpened` 过滤）**关不掉任何东西** ⇒ 「任务跑了半天，一堆 agent 页面
+ *   留在预览面板不关」——既有功能静默退化。
+ *   ⇒ 改为**主进程自己按会话收口**：谁操作的页由谁收，不依赖渲染层、也不依赖 agentOpened 标记。
+ *
+ * ★ 只记 **preview 空间** 的 tab（`preview` / `preview:<convId>`）：
+ *   `/browser` 独立浏览器页（scope='page'）是**用户自己的空间**，agent 收尾不该碰
+ *   （与 agentOpened 的既有安全边界一致：agent 只收拾自己打开的页）。
+ * ★ 用 Map 而非 Set：需要知道"哪个会话该关哪些页"，收尾时按 convId 过滤。
+ */
+const agentTouchedTabs = new Map();
+
+/** tab 的归属空间（取不到时回落 'preview'，与既有 `scopeOf` 口径一致） */
+function scopeOfTab(tabId) {
+  if (!tabId) return 'preview';
+  const meta = isWebviewEngine() ? webviewTabs.get(tabId) : browserViews.get(tabId);
+  return (meta && meta.scope) || 'preview';
+}
+
+/** tab 是否属于预览空间（agent 执行面）。`/browser` 页的 'page' 空间不在此列。 */
+function isPreviewScope(tabId) {
+  return String(scopeOfTab(tabId)).startsWith('preview');
+}
+
+/**
+ * 登记"本会话操作过某个 tab"（**不**改当前锚）。
+ *
+ * ★ 为什么与"设锚"拆开：一个动作可能**不改写操作目标**，但**确实用了**那个页 ——
+ *   典型是 `get_page_content(tabId=B)`（定向读取）与 `new_tab`（开新页）。
+ *   这些页必须登记：
+ *     ① 后续要能继续读它们（越权闸门认"本会话操作过"）；
+ *     ② 任务收尾要能关掉它们（`closeConvTabs` 按本表过滤）。
+ *   ★ 早期版本把两件事糅在 `setConvAnchor` 里 ⇒ 只能"设锚即登记"，无法表达
+ *     "用了但不切换" ⇒ 要么漏登记（越权/堆积），要么被迫改锚（打到错页）。
+ */
+function markConvTabTouched(convId, tabId) {
+  if (!convId || !tabId) return;
+  const tid = String(tabId);
+  if (isPreviewScope(tid)) agentTouchedTabs.set(tid, String(convId));
+}
+
+/** 记录"该会话当前的操作目标 tab"（**会**改锚）+ 登记操作过它。tab 关闭时必须失效。 */
+function setConvAnchor(convId, tabId) {
+  if (!convId || !tabId) return;
+  const cid = String(convId);
+  const tid = String(tabId);
+  const prev = convAnchors.get(cid);
+  // 换锚：老锚那个 tab 记下"本会话用过"（收尾要一并关，否则中间页堆积）
+  if (prev && prev !== tid) markConvTabTouched(cid, prev);
+  markConvTabTouched(cid, tid);
+  convAnchors.set(cid, tid);
+  // 上限兜底：会话很多时淘汰最早的（Map 插入序）——与 A4 的 activePageByConv 同手法
+  while (convAnchors.size > 200) {
+    const oldest = convAnchors.keys().next().value;
+    if (oldest === undefined) break;
+    convAnchors.delete(oldest);
+  }
+  while (agentTouchedTabs.size > 400) {
+    const oldest = agentTouchedTabs.keys().next().value;
+    if (oldest === undefined) break;
+    agentTouchedTabs.delete(oldest);
+  }
+}
+/** 取某会话的锚定 tabId；未锚定返回 null（**不回落 activeTabId** —— 那会把动作打到别人的页上） */
+function resolveTabIdForConv(convId) {
+  if (!convId) return null;
+  const tid = convAnchors.get(String(convId));
+  if (!tid) return null;
+  // 锚定的 tab 已不存在 → 清掉并返回 null（不返回幽灵 tabId）
+  const alive = isWebviewEngine() ? webviewTabs.has(tid) : browserViews.has(tid);
+  if (!alive) { convAnchors.delete(String(convId)); return null; }
+  return tid;
+}
+/** tab 关闭时的收口：把所有指向它的锚一并失效（唯一入口，避免某条关闭路径漏清） */
+function clearConvAnchorsForTab(tabId) {
+  if (!tabId) return;
+  const tid = String(tabId);
+  for (const [cid, t] of convAnchors) {
+    if (t === tid) convAnchors.delete(cid);
+  }
+  agentTouchedTabs.delete(tid);
+}
+
+/** 需建立/切换页面（写）的 action —— 未锚定时**允许**回落 activeTabId（首次 navigate 要能自发建 tab）。
+ *  其余（读/交互）在"带 convId 但未锚定"时必须**明确报错**，绝不静默打到全局活动页
+ *  （与 A4 的 `resolveReadPage` 语义同源：绝不静默返回别人的页）。
+ *
+ *  ★★ 判定本体在 `browser-target.cjs`（纯函数模块）—— 这里只引入，**不复制一份**：
+ *    判定错了的表现是"动作打到错的页且不报错"（最难查），故必须能被 vitest **真跑**验证，
+ *    而 main.cjs 依赖 electron 无法在测试里加载（静态断言抓不住"分支顺序/条件短路"类缺陷）。 */
+const {
+  resolveTarget: resolveBrowserTarget,
+  decideAnchorUpdate,
+} = require('./browser-target.cjs');
+
+
 // R3：摘除即静音 —— 收起右栏/切走 tab 后视频音乐不再出声（"收起了就该安静"）。
 // 如果有意保留后台音乐（如挂机听歌），把该开关设为 false 即可一行回退。
 const MUTE_ON_DETACH = true;
@@ -270,18 +391,37 @@ let mcpChildSeq = 0;
 /** 生产模式：后端数据目录与程序分离。
  *  旧版把 data.db 落在 resources/server/dist/apps/server/（安装目录内），
  *  NSIS 覆盖安装时卸载旧版会清空安装目录导致用户数据丢失。
- *  现统一放 userData/server-data，并把旧位置的数据一次性迁移过来。 */
+ *  现统一放 userData/server-data，并把旧位置的数据一次性迁移过来。
+ *
+ *  ★★★ dev 模式也必须给 DATA_DIR（2026-10-08 修，血泪教训）：
+ *    此前这里是 `if (!app.isPackaged) return null;` —— dev 下返回 null，
+ *    上层 `...(dataDir ? {DATA_DIR: dataDir} : {})` 于是不注入 → 后端 db.ts 退回
+ *    `apps/server/`（**源码目录**）建库。后果：
+ *      ① dev 与安装版各写一份库，数据互不可见；
+ *      ② 实测该库发生过 B 树损坏（conversation/message 两棵树）→ 会话接口全 500。
+ *    dev 下 Electron 的 userData 已被 instance.cjs 设为 `yan-zhi-dev`
+ *    （YANZHI_DEV_INSTANCE=1），所以这里的 server-data 天然落在
+ *    `%APPDATA%/yan-zhi-dev/server-data`，与安装版彻底分开。
+ *  ★ 显式传入的 DATA_DIR（bin/dev.mjs 下发）优先，避免 Electron 与裸 server 两条
+ *    启动路径拿到不同的目录。 */
 function ensureServerDataDir() {
-  if (!app.isPackaged) return null;
+  const explicit = (process.env.DATA_DIR || '').trim();
+  if (explicit) {
+    fs.mkdirSync(explicit, { recursive: true });
+    return explicit;
+  }
   const dataDir = path.join(app.getPath('userData'), 'server-data');
   fs.mkdirSync(dataDir, { recursive: true });
-  const newPath = path.join(dataDir, 'data.db');
-  if (!fs.existsSync(newPath)) {
-    const legacyDir = path.join(process.resourcesPath, 'server', 'dist', 'apps', 'server');
-    for (const f of ['data.db', 'data.db-wal', 'data.db-shm']) {
-      const src = path.join(legacyDir, f);
-      if (fs.existsSync(src)) {
-        try { fs.copyFileSync(src, path.join(dataDir, f)); } catch {}
+  if (app.isPackaged) {
+    // 生产：把旧位置（安装目录内）的数据一次性搬迁过来
+    const newPath = path.join(dataDir, 'data.db');
+    if (!fs.existsSync(newPath)) {
+      const legacyDir = path.join(process.resourcesPath, 'server', 'dist', 'apps', 'server');
+      for (const f of ['data.db', 'data.db-wal', 'data.db-shm']) {
+        const src = path.join(legacyDir, f);
+        if (fs.existsSync(src)) {
+          try { fs.copyFileSync(src, path.join(dataDir, f)); } catch {}
+        }
       }
     }
   }
@@ -365,6 +505,9 @@ function startServer() {
   const serverDir = path.join(__dirname, '..', 'server');
   // CDP 端点此刻必须已定稿（Chromium 已随 ready 就绪），server env 一次性带下去
   const cdpEndpoint = resolveCdpEndpoint();
+  // ★ 浏览器桥的 URL/token（「执行面直连化」P0-3）：桥已在 whenReady 里 start() 过（见调用点注释）。
+  //   档位不是 off 时返回两条 env，服务端据此直连；off 时返回 {} ⇒ 服务端走原有 SSE 委托。
+  const bridgeEnv = browserBridge.envForServer();
   // 模型目录统一放**共享** models（两实例复用同一份 gguf，不重复下载 1.1GB，见 instance.cjs）
   const modelsDir = sharedDataDir('models');
   // 开发模式：把源码目录已有的模型文件同步到 userData/models（一次性，不覆盖）
@@ -382,13 +525,25 @@ function startServer() {
 
   if (!app.isPackaged) {
     // 开发模式：用 Electron 的 Node.js + tsx 运行 TypeScript 源码
+    //
+    // ★★★ 必须注入 YZ_HOT_RELOAD=1（2026-10-09，high）：
+    //   dev 后端是 `tsx watch` → **每改一次源码就重启进程**，正在跑的任务被
+    //   `markOrphanTasksInterrupted()`（llm-task-manager）整批回收。
+    //   该函数**已实现**按此标记分流：设了标记 → 标 `resumable` + 文案「热重载暂停，
+    //   发『继续』即可」；没设 → 标 `interrupted` + 文案「应用重启，任务已中断」。
+    //   ★ 此前只在 `apps/server/scripts/dev.cjs` 注入，**本文件（桌面 dev 路径）没注入** ——
+    //     而用户日常跑的就是这条路径（`bin/dev.mjs desktop` → 本文件的 dev 分支 spawn 后端），
+    //     于是本该是「可续的暂停」被当成「真中断」：DB 里实测落的是非热重载分支的
+    //     「服务重启，任务被中断」，用户看到「刚发了个继续直接失败」。
+    //   ⇒ 注入后两条 dev 启动路径口径一致（与 dev.cjs 同源，不臆造判据）。
+    //   ★ 只加在 dev 分支：生产分支（下方 else）**不设** → 打包版行为完全不变。
     const tsxPath = path.join(serverDir, 'node_modules', 'tsx', 'dist', 'cli.mjs');
     if (fs.existsSync(tsxPath)) {
       console.log('[后端] 用 Electron Node.js + tsx 启动:', tsxPath);
       serverProcess = spawn(process.execPath, [tsxPath, 'watch', 'src/index.ts'], {
         cwd: serverDir,
         stdio: 'inherit',
-        env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', PORT: String(API_PORT), YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: cdpEndpoint, WEB_DIST: path.join(__dirname, '..', '..', 'apps', 'web', 'dist'), ...editionEnv, ...guardEnv, ...readLicenseCodesEnv() },
+        env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', PORT: String(API_PORT), YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: cdpEndpoint, WEB_DIST: path.join(__dirname, '..', '..', 'apps', 'web', 'dist'), YZ_HOT_RELOAD: '1', ...bridgeEnv, ...editionEnv, ...guardEnv, ...readLicenseCodesEnv() },
       });
     } else {
       // 回退：npx tsx（可能 ABI 不兼容，但至少能启动）
@@ -397,7 +552,7 @@ function startServer() {
         cwd: serverDir,
         stdio: 'inherit',
         shell: true,
-        env: { ...process.env, PORT: String(API_PORT), YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: cdpEndpoint, WEB_DIST: path.join(__dirname, '..', '..', 'apps', 'web', 'dist'), ...editionEnv, ...guardEnv, ...readLicenseCodesEnv() },
+        env: { ...process.env, PORT: String(API_PORT), YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: cdpEndpoint, WEB_DIST: path.join(__dirname, '..', '..', 'apps', 'web', 'dist'), YZ_HOT_RELOAD: '1', ...bridgeEnv, ...editionEnv, ...guardEnv, ...readLicenseCodesEnv() },
       });
     }
     serverProcess.on('error', (err) => console.error('后端启动失败:', err));
@@ -413,7 +568,7 @@ function startServer() {
     logStream.write(`\n===== [${stamp()}] 后端启动 =====\n`);
     serverProcess = spawn(process.execPath, [serverPath], {
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', PORT: String(API_PORT), YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: cdpEndpoint, WEB_DIST: path.join(process.resourcesPath, 'server', 'web-dist'), ...(dataDir ? { DATA_DIR: dataDir } : {}), ...editionEnv, ...guardEnv, ...readLicenseCodesEnv() },
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', PORT: String(API_PORT), YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: cdpEndpoint, WEB_DIST: path.join(process.resourcesPath, 'server', 'web-dist'), ...(dataDir ? { DATA_DIR: dataDir } : {}), ...bridgeEnv, ...editionEnv, ...guardEnv, ...readLicenseCodesEnv() },
     });
     serverProcess.stdout.on('data', (d) => logStream.write(d));
     serverProcess.stderr.on('data', (d) => logStream.write(d));
@@ -529,6 +684,13 @@ function createWindow() {
     webPreferences.nodeIntegrationInWorker = false;
     delete webPreferences.preload;
     delete webPreferences.preloadURL;
+    // ★★★ 原生弹窗（B4，2026-10-09）：webview 引擎的 guest 同样要禁用原生对话框。
+    //   ★ 为什么必须在这里也加：webview 引擎下 guest 由渲染层的 <webview> 承载，
+    //     其 webPreferences **由此钩子最终决定** —— 只改 BrowserView 那处会漏掉整个
+    //     webview 引擎（两引擎并存是本项目的既定设计，见 isWebviewEngine()）。
+    //   ★ 语义：页面 alert/confirm/prompt 被直接忽略（不阻塞 renderer 的 JS 执行），
+    //     与服务端 Playwright"未注册 handler 时自动 dismiss"的行为对齐。
+    webPreferences.disableDialogs = true;
   });
 
   // 渲染进程完整重载（HMR full-reload / F5）时，隐藏并摘除所有 BrowserView。
@@ -672,6 +834,19 @@ function createBrowserViewFor(tabId, entry) {
       nodeIntegration: false,
       contextIsolation: true,
       spellcheck: false,
+      // ★★★ 原生弹窗（B4，2026-10-09）：**禁用页面原生对话框**。
+      //
+      // ★ 缺口（实测）：桌面端此前无任何 dialog 处理 →
+      //   页面弹 `window.alert/confirm/prompt` 时会**同步阻塞该 renderer 的 JS 执行**，
+      //   pageAgent 后续所有 `executeJavaScript` / `capturePage` 一起挂起到 18s 总闸
+      //   （甚至永久）—— 用户体感是"浏览器工具突然全部卡死"。
+      // ★ 为什么服务端没这问题：Playwright **未注册 dialog handler 时会自动 dismiss**，
+      //   同一页面在服务端链路正常 ⇒ 两链路行为不一致（B6/B7 同族）。
+      // ★ 用**官方选项**而不是自己猜 API：`disableDialogs` 是 Electron webPreferences 的
+      //   正式字段（"Whether to disable dialogs completely. Overrides safeDialogs."）
+      //   ⇒ 页面调用 alert/confirm/prompt 会被直接忽略（不再阻塞），
+      //     且 `beforeunload` 的确认也不会拦住导航。与服务端"自动 dismiss"语义对齐。
+      disableDialogs: true,
       // 显式背景色：避免未加载/加载失败时默认黑底
       backgroundColor: '#ffffff',
     },
@@ -737,6 +912,17 @@ function createBrowserViewFor(tabId, entry) {
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('browserView:navigated', tabId, url);
     }
+  });
+
+  // ★ 自定义协议闸门（2026-10-09）：BrowserView 引擎的 guest 此前只挂了
+  //   setWindowOpenHandler（拦 window.open/target=_blank），没拦页面自身的导航 ——
+  //   pageAgent 点击 bitbrowser:// / tel: / mailto: 等未知协议链接时，Electron 把
+  //   导航交给系统 Shell → 本机无处理器 → Windows 反复弹「没有可打开此链接的应用」。
+  //   与 webview 引擎的 setupGuestPopupRedirect（1319 行）同一判定，共用 url-guard.cjs。
+  wc.on('will-navigate', (event, url) => {
+    if (isAllowedGuestNavigation(url)) return;   // http(s)/about/blob/data：放行
+    console.log('[nav] BrowserView guest 拦截非 http(s) 协议:', url);
+    event.preventDefault();
   });
   // 页面加载完成，通知前端
   wc.on('did-finish-load', () => {
@@ -1344,7 +1530,12 @@ ipcMain.handle('browser:wv:unregister', (_e, tabId) => {
 //     · `browserView:action` 的 `new_tab`（agent 工具链）→ **agentOpened: true**
 //   只靠提示词约束不可靠（模型可能传错 tabId、或被页面内容诱导），权限必须在执行侧强制。
 let tabSeq = 0;
-ipcMain.handle('browserView:createTab', (_e, scope) => {
+/**
+ * 建一个新的浏览器 tab（**唯一实现**）—— `browserView:createTab` IPC 与
+ * "会话首次导航时自建 guest" 两条路径共用（防两处实现漂移）。
+ * @returns 新 tabId
+ */
+function createBrowserTab(scope) {
   const newTabId = 'tab-' + (++tabSeq);
   if (isWebviewEngine()) {
     // webview 模式：只分配 tabId 与空间归属，guest 由渲染层 <webview> 元素创建后注册
@@ -1354,23 +1545,36 @@ ipcMain.handle('browserView:createTab', (_e, scope) => {
   }
   // R4：超限先按 LRU 挂起最久未激活的 tab（壳保留、激活复活），再新建，
   // 保证同时存活的 webContents ≤ MAX_TABS
+  // ★ 抽出本函数时**顺手修掉一处笔误**：原 IPC handler 在此分支又 `++tabSeq` 一次
+  //   （生成第二个 id 却只用了一个）⇒ browserview 引擎下每次建 tab 编号跳两格。
+  //   现在复用同一 `newTabId`，编号连续。**只影响 id 编号，不影响任何功能**。
   evictLruTabIfNeeded();
-  const tabId = 'tab-' + (++tabSeq);
-  ensureBrowserView(tabId);
-  const entry = browserViews.get(tabId);
+  ensureBrowserView(newTabId);
+  const entry = browserViews.get(newTabId);
   if (entry) { entry.scope = scope || 'preview'; entry.agentOpened = false; }
-  return tabId;
-});
+  return newTabId;
+}
+
+ipcMain.handle('browserView:createTab', (_e, scope) => createBrowserTab(scope));
 
 // 关闭标签页，销毁对应 BrowserView
 // fromUi=true 表示 UI 路径（渲染层会自行顶替相邻 tab，主进程不顶替不广播，避免双顶替抖动）；
 // 非 UI 路径（pageAgent 工具 / 页面 window.close）没有渲染层参与，主进程必须在这里收口。
 // 关闭单个 tab 的纯逻辑（IPC handler + closeAllTabs 共用）
 function closeTabById(tabId, fromUi) {
+  // ★ B7（2026-10-09）：tab 关闭 → 删掉它的 streak 桶。
+  //   放在这个**收敛入口**（注释说明"IPC handler + closeAllTabs 共用"）——
+  //   只在一个地方清理，避免"某条关闭路径漏了"导致桶缓慢泄漏。
+  //   （Map 另有 200 上限兜底，双保险。）
+  try { noChangeStreaks.delete(String(tabId == null ? 'default' : tabId)); } catch (e) { /* ignore */ }
   if (isWebviewEngine()) {
     const meta = webviewTabs.get(tabId);
     const closedScope = meta?.scope || 'preview';
     webviewTabs.delete(tabId);
+    // ★ 广播 tab 关闭（2026-10-09）：渲染层据此摘除 tab 壳（webview 引擎下 agent 的
+    //   close_tab / 收尾自动收拾此前只删主进程 meta，渲染层残留幽灵壳）。
+    //   渲染层对不认识的 tabId 幂等忽略，UI 路径重复收到也无害。
+    broadcastTabClosed(tabId);
     if (activeTabId === tabId) {
       activeTabId = null;
       // 非 UI 路径（pageAgent / window.close）：主进程顶替同空间内最近激活的 tab 并广播
@@ -1402,6 +1606,7 @@ function closeTabById(tabId, fromUi) {
     try { entry.view?.webContents?.destroy?.(); } catch { /* ignore */ }
     browserViews.delete(tabId);
   }
+  broadcastTabClosed(tabId);
   if (activeTabId === tabId) {
     activeTabId = null;
     // R5：非 UI 路径关掉当前 tab 时主进程自行顶替同空间内最近激活的剩余 tab 并广播。
@@ -1427,6 +1632,36 @@ ipcMain.handle('browserView:closeTab', (_e, tabId, fromUi) => {
   closeTabById(tabId, !!fromUi);
 });
 
+/** tab 关闭广播：渲染层（BrowserPanel）据此摘除 tab 壳，幂等 */
+function broadcastTabClosed(tabId) {
+  // ★ 收口：**所有**关闭路径都会经过这里（closeTabById 两处 + `case 'close_tab'`），
+  //   把"指向该 tab 的会话锚"一并失效 —— 逐条路径各清一次必然漏（`case 'close_tab'`
+  //   此前就没走 closeTabById，正是活证）。放在广播处是唯一不漏的位置。
+  clearConvAnchorsForTab(tabId);
+  try {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('browserView:tabClosed', tabId);
+    }
+  } catch { /* ignore */ }
+}
+
+// ★ 收尾自动收拾（2026-10-09）：关闭全部 agent 打开的 tab（agentOpened===true）。
+//   背景：pageAgent 任务跑完后页面一直留在预览面板堆积 —— 此前只给用户弹提示，
+//   用户拍板改为任务收尾自动关。安全边界不变：只关 agentOpened 的，用户手开的不碰。
+//   由渲染层在任务收尾回调里调用（此时模型已跑完、结果页该截图的已截图）。
+ipcMain.handle('browserView:closeAgentTabs', () => {
+  const ids = [];
+  if (isWebviewEngine()) {
+    for (const [id, t] of webviewTabs) if (t.agentOpened === true) ids.push(id);
+  } else {
+    for (const [id, e] of browserViews) if (e.agentOpened === true) ids.push(id);
+  }
+  for (const id of ids) {
+    try { closeTabById(id, false); } catch { /* ignore */ }
+  }
+  return { closed: ids.length };
+});
+
 // 关闭某空间下的所有 tab（多会话隔离：BrowserPanel 卸载/切换会话时调用，避免 tab 在主进程长期堆积占满 MAX_TABS）。
 // UI 路径（fromUi=true）下不做 R5 顶替——调用方就是要离开。
 ipcMain.handle('browserView:closeAllTabs', (_e, scope, fromUi) => {
@@ -1440,6 +1675,32 @@ ipcMain.handle('browserView:closeAllTabs', (_e, scope, fromUi) => {
   for (const id of ids) {
     try { closeTabById(id, !!fromUi); } catch { /* ignore */ }
   }
+  return { closed: ids.length };
+});
+
+// ★★★ 按**会话**关闭 agent 操作过的页面（「直连化」可见性契约，2026-10-10）。
+//
+// ★ 为什么需要（而不是复用 closeAgentTabs）：桥路径下渲染层不执行 browser_* 工具 ⇒
+//   渲染层的 `agentOpenedTabs` 记账恒为空 ⇒ `closeAgentTabs()`（按 agentOpened 过滤）
+//   **关不掉任何东西** —— 任务收尾"自动关闭 AI 打开的页面"会静默失效。
+//   ⇒ 主进程按会话自己的记账（`agentTouchedTabs`）收口，不依赖渲染层、不依赖 agentOpened。
+//
+// ★ 安全边界（与既有 agentOpened 一致）：只关 **preview 空间** 且**被该会话操作过**的 tab；
+//   `/browser` 独立页（scope='page'，用户自己的空间）一律不碰。
+// ★ 幂等：未知 convId / 已关闭的 tab 直接忽略。
+ipcMain.handle('browserView:closeConvTabs', (_e, convId) => {
+  const cid = convId != null ? String(convId) : '';
+  if (!cid) return { closed: 0 };
+  const ids = [];
+  for (const [tid, owner] of agentTouchedTabs) {
+    if (owner === cid) ids.push(tid);
+  }
+  for (const tid of ids) {
+    // fromUi=true：这是一次"离开/收尾"清理，主进程不再做 R5 顶替（与 closeAllTabs 同口径）
+    try { closeTabById(tid, true); } catch { /* ignore */ }
+  }
+  // 锚一并失效（closeTabById 内部经 broadcastTabClosed 已清，这里再清一次防漏）
+  convAnchors.delete(cid);
   return { closed: ids.length };
 });
 
@@ -2185,7 +2446,33 @@ async function injectYzAssistant(wc) {
 // 通用 action handler
 // 变化检测：这些 action 可能改变页面状态，执行后对比前后快照，防止模型盲操作死循环
 const CHANGE_ACTIONS = new Set(['click', 'type', 'press', 'select_option', 'check', 'uncheck', 'submit_form', 'search', 'next_page', 'prev_page']);
-let noChangeStreak = 0;
+// ★★★ B7（2026-10-09）：由模块级单值改为**按 tab 分桶**，与服务端（server/routes/browser.ts）同口径。
+//   单值会让"甲页面卡住"与"乙页面正常"互相污染：乙收到"连续 3 次无变化"的**假告警**
+//   （它其实只操作了一次），而甲的真告警会被乙的成功操作**清零** —— 两个方向都错且不报错。
+//   ★ 为什么按 tab 而不是按会话：① 语义上这是"页面的状态"；② 服务端 /action 拿不到会话标识；
+//     ③ 两链路都能拿到 tabId（桌面这里首参就是 tabId）。
+//   ★ 为什么内联而不 require('@yan-zhi/shared')：main.cjs 是 **CJS**，而 shared 是
+//     `type: module` + TS 源码（`main: ./src/index.ts`）→ CJS require 不了（实测）。
+//     ⇒ 内联一份等价实现，并用 `apps/desktop/test/keyed-streak-parity.test.cjs`
+//       钉住"与服务端 KeyedStreak 行为一致"（含文案逐字一致）。
+const NO_CHANGE_THRESHOLD = 3;
+const noChangeStreaks = new Map();
+function recordNoChange(tabKey, changed) {
+  const k = String(tabKey == null ? 'default' : tabKey);
+  if (changed) { noChangeStreaks.set(k, 0); return { streak: 0 }; }
+  const next = (noChangeStreaks.get(k) || 0) + 1;
+  noChangeStreaks.set(k, next);
+  // 上限兜底：关 tab 路径若有漏网，淘汰最早插入的桶（Map 迭代序=插入序）
+  while (noChangeStreaks.size > 200) {
+    const oldest = noChangeStreaks.keys().next().value;
+    if (oldest === undefined) break;
+    noChangeStreaks.delete(oldest);
+  }
+  if (next >= NO_CHANGE_THRESHOLD) {
+    return { streak: next, warning: '连续 ' + next + ' 次操作页面无任何变化，操作可能未生效。请停止重复同类操作：改用 index 精确定位（先 browser_get_page_info 获取最新编号）、重新分析页面、或 ask_user 请求人工介入。' };
+  }
+  return { streak: next };
+}
 const STATE_SNAPSHOT_JS = `(function(){try{var d=document.body;return{url:location.href,t:(d?d.innerText:'').slice(0,2000),n:document.querySelectorAll('a,button,input,select,textarea').length};}catch(e){return null;}})()`;
 
 /**
@@ -2252,9 +2539,22 @@ async function cdpTypeText(wc, target, text, pressEnter) {
       return { locateError: (focusRes && focusRes.error) || '目标元素定位失败' };
     }
 
-    // ② 真实文本注入：insertText 走编辑管线（派发 beforeinput/input，富文本与受控组件都认）
+    // ② 真实文本注入。
+    //   ★ contenteditable（富文本 / 字节 editor-kit 等受控编辑器）：CDP 的 browser-level
+    //     Input.insertText 常被 React 重置（回读为空、字数计数不涨，抖音创作者中心作品描述框即此）。
+    //     改用 guest 内 execCommand('insertText')：① 渲染进程内闭环，不会像 browser-level 输入那样
+    //     泄漏到宿主聚焦元素（聊天输入框）；② 触发编辑器完整 beforeinput 管线，其内部 model 能同步。
+    //     实测抖音描述框以此方式才被计数识别（39 / 1000）。
+    //   ★ 普通 input/textarea：仍走 CDP 真键盘（中文 IME、受控组件都认）。
     if (text) {
-      await send('Input.insertText', { text: String(text) });
+      if (focusRes && focusRes.isCE) {
+        const ceOk = await wc.executeJavaScript(
+          `(function(){try{return document.execCommand('insertText',false,${JSON.stringify(String(text))});}catch(e){return false;}})()`
+        ).catch(() => false);
+        if (!ceOk) await send('Input.insertText', { text: String(text) });
+      } else {
+        await send('Input.insertText', { text: String(text) });
+      }
     }
 
     // ③ 回车（提交/搜索）：必须用真实按键，不是 JS 造 KeyboardEvent ——
@@ -2266,7 +2566,9 @@ async function cdpTypeText(wc, target, text, pressEnter) {
       await send('Input.dispatchKeyEvent', { type: 'keyUp', ...key });
     }
 
-    // ④ 回读核验：让调用方/模型知道"到底有没有写进去"（与 JS 实现同一契约）
+    // ④ 回读核验 + 失败兜底：CDP 真键盘若未生效（受控组件重置 / 聚焦错配到宿主），
+    //   退回 guest 内 typeIn（renderer-scoped，不会泄漏到宿主；已按 contenteditable / 表单分别
+    //   走 execCommand / IME 序列），保证"替换语义"输入真正落到目标元素。
     const verify = await wc.executeJavaScript(`(function(){
       var sel=${JSON.stringify(sel)};var idx=${idx};
       var el=null;
@@ -2277,16 +2579,32 @@ async function cdpTypeText(wc, target, text, pressEnter) {
       return el.isContentEditable===true?(el.textContent||''):(el.value!=null?String(el.value):'');
     })()`).catch(() => '');
 
-    const got = String(verify ?? '');
+    let got = String(verify ?? '');
     const expected = String(text || '');
+    let applied = got === expected;
+    let fallback = false;
+    if (!applied && text) {
+      const fb = await wc.executeJavaScript(`(function(){
+        var A=window.__yzAssistant; var el=null;
+        var idx=${idx}; var s=${JSON.stringify(sel)};
+        if(idx>=0){el=window.__yzElements&&window.__yzElements[idx];}
+        if(!el&&s){try{el=document.querySelector(s);}catch(e){}}
+        if(!el){el=document.activeElement;}
+        if(!el||!A)return {applied:false,value:''};
+        var r=A.typeIn(el,${JSON.stringify(String(text))});
+        return {applied:r.applied,value:r.value};
+      })()`).catch(() => ({ applied: false, value: '' }));
+      if (fb && fb.applied) { applied = true; got = String(fb.value || ''); fallback = true; }
+    }
+
     return {
-      applied: got === expected,
+      applied,
       typed: expected.length,
       value: got.slice(0, 120),
-      via: 'cdp-keyboard',
-      ...(got !== expected
-        ? { hint: 'CDP 真键盘已注入，但回读值与期望不一致（页面可能做了格式化/富文本包装，或输入被拦截）。建议用 browser_get_page_content 核验输入框当前值。' }
-        : {}),
+      via: fallback ? 'js-typein' : (focusRes && focusRes.isCE ? 'ce-execcommand' : 'cdp-keyboard'),
+      ...(applied
+        ? {}
+        : { hint: '输入未生效（页面可能做了格式化/受控组件重置/输入被拦截）。已尝试 guest 内 typeIn 兜底仍失败，建议用 browser_get_page_content 核验输入框当前值。' }),
     };
   } catch (e) {
     // CDP 不可用（未就绪/被占用/引擎不支持）→ 返回 null 让调用方回落 JS 实现
@@ -2297,8 +2615,59 @@ async function cdpTypeText(wc, target, text, pressEnter) {
 }
 
 
-ipcMain.handle('browserView:action', async (_e, tabId, action, args) => {
+/**
+ * ★★★ 桌面端浏览器 action 的**能力清单**（B5 根治，2026-10-10）。
+ *
+ * ★ 为什么必须显式列出（实测缺口）：主进程的 action 分发是 `switch`（无法枚举），
+ *   而渲染层 `chat.ts` 的 `actionMap` 是**另一份硬编码清单** ⇒ **两份清单必然失同步**：
+ *   实测主进程已实现 **40 个 action**，而 `actionMap` 只映射 27 个 →
+ *   11 个**明明已实现**的能力落到兜底、报「桌面端暂不支持 XX」（**能力在、入口断**）。
+ * ★ 修法：本清单作为**单一真相源**，经 `browserView:actions` 暴露给渲染层；
+ *   渲染层据此判断"能不能走桌面端"，不再依赖自己那份会漂移的硬编码。
+ * ★ 加新 action 时**必须同时**：① 在 `switch` 里加 case ② 在此清单加名字。
+ *   （测试 `browser-desktop-action-parity.test.ts` 会比对两者，漏一处即红。）
+ */
+const DESKTOP_BROWSER_ACTIONS = [
+  'upload', 'navigate', 'click', 'type', 'press', 'scroll', 'hover', 'screenshot',
+  'get_page_info', 'get_visible_text', 'get_page_content', 'fill_form', 'submit_form',
+  'search', 'next_page', 'prev_page', 'wait_for', 'select_option', 'check', 'uncheck',
+  'get_text', 'get_dom', 'wait', 'back', 'forward', 'reload', 'get_url',
+  'new_tab', 'switch_tab', 'close_tab', 'get_tabs', 'wait_for_request', 'get_network_log',
+  'extract_list', 'visual_locate', 'download', 'scroll_into_view', 'is_visible', 'drag',
+  'run_script',
+];
+
+/** 渲染层可查询桌面端支持哪些 action（避免两份硬编码清单漂移） */
+ipcMain.handle('browserView:actions', () => DESKTOP_BROWSER_ACTIONS.slice());
+
+/**
+ * ★★★ 浏览器 action 的**唯一实现**（「执行面直连化」P0-1，2026-10-10）。
+ *
+ * ★ 为什么必须抽出来：本函数有两个调用方 ——
+ *   ① `ipcMain.handle('browserView:action')`（SSE 委托路径，渲染层调用）
+ *   ② `browser-bridge.cjs` 的本地端点（直连路径，服务端调用）
+ *   若桥自己复制一份 `switch`，两处的 action 行为**必然漂移**（本项目一贯判据：
+ *   同一语义只能有一处实现）。⇒ 桥只做"鉴权 + 白名单 + 调本函数"。
+ *
+ * @param convId 会话标识（服务端经桥透传；IPC 调用传 null —— 渲染层自己已锚定 tabId）
+ * @param tabId  目标 tab；null 表示"按会话锚定解析 / 回落活动页"
+ */
+async function runBrowserAction(convId, tabId, action, args) {
   args = args || {};
+  // ★★★ P0-2（2026-10-10）：执行目标解析 —— **判定本体在 `browser-target.cjs`**（纯函数、可真跑验证）。
+  //   三条语义（缺一条就会"打到错的页"且不报错）：
+  //   ① 显式 tabId **优先**（工具契约："可传 tabId 读取指定标签页，不必先切换标签页"）；
+  //   ② 显式 tabId 必须**属于本会话**（否则跨会话越权）；
+  //   ③ 无显式 tabId → 用锚；未锚定且非建页类 → **明确报错**（绝不静默用全局活动页）。
+  //   ★ 返回 ok:false 时直接回错误，不往下走。
+  {
+    const r = resolveBrowserTarget(convId, tabId, action, {
+      anchored: resolveTabIdForConv(convId),
+      isMine: (t) => agentTouchedTabs.get(t) === String(convId || ''),
+    });
+    if (!r.ok) return { error: r.error };
+    tabId = r.tabId;
+  }
   const entry = tabId ? browserViews.get(tabId) : (activeTabId ? browserViews.get(activeTabId) : null);
   let wc = null;
   if (isWebviewEngine()) {
@@ -2308,11 +2677,38 @@ ipcMain.handle('browserView:action', async (_e, tabId, action, args) => {
     // guest 自然不存在。此时不能直接报"未打开"——应先让渲染层在该 scope 打开目标页并建出
     // <webview>（:src=url → dom-ready → 注册 guest），再等 guest 出现后继续导航。
     if (!wc && action === 'navigate' && args.url) {
-      const scopeMeta = (activeTabId ? webviewTabs.get(activeTabId) : null);
-      const scope = (scopeMeta && scopeMeta.scope) || 'preview';
       const cleanUrl = String(args.url || '').trim().replace(/^[`"'\s]+|[`"'\s]+$/g, '');
-      // 广播给渲染层：匹配 scope 的浏览器面板把此 URL 作为当前页打开（复用 openSite 通道）
-      try { mainWindow.webContents.send('browser:wv:forceOpen', cleanUrl, scope); } catch { /* ignore */ }
+      // ★★★ 自建步骤：面板停在"浏览器首页/主页"（无任何已导航页）时还没有 <webview>、
+      //   guest 自然不存在。此时不能直接报"未打开"——先让渲染层在该 scope 打开目标页并建出
+      //   <webview>（:src=url → dom-ready → 注册 guest），再等 guest 出现后继续导航。
+      //
+      //   ★★★ 关键（2026-10-10 修真缺陷）：**必须把新 tab 登记成本会话的操作过页面**。
+      //     渲染层建 guest 时调的是 `browserView:createTab`（**不是** `switch(action)` 的
+      //     `case 'new_tab'`）⇒ 该 tab 不会经过任何登记点 ⇒ 后续动作若带显式 tabId
+      //     （agent 常带）会被"越权闸门"**误拒**（报"不属于本会话"），且 agent 首导航后
+      //     第二次带 tabId 的读/写**必然失败**（表现为"打开网页后就读不了"）。
+      //     ⇒ 这里显式登记（`agentTouchedTabs` 是"本会话用过"的唯一真相源）。
+      if (convId) {
+        const scopeMeta0 = (tabId ? webviewTabs.get(tabId) : null);
+        const wantScope = (scopeMeta0 && scopeMeta0.scope) || `preview:${convId}`;
+        try {
+          tabId = createBrowserTab(wantScope);
+          // ★ 登记"本会话操作过"——否则后续带显式 tabId 的动作会被越权闸门**误拒**
+          //   （见上方长注释：渲染层建 guest 走 createTab，不经过 action 登记点）。
+          markConvTabTouched(convId, tabId);
+        } catch { /* 建 tab 失败 → 退回下方广播路径（行为与修复前一致） */ }
+      }
+      // ★★★ 用**当前操作目标 tab 的 scope** 定位面板（2026-10-10 修）：
+      //   此前取 `activeTabId` 的 scope —— 桥路径下 activeTabId 可能是**别的会话/别的空间**的，
+      //   会把本会话的导航广播到错误的 BrowserPanel（"导航了但预览没反应"）。
+      const scopeMeta = (tabId ? webviewTabs.get(tabId) : null)
+        || (activeTabId ? webviewTabs.get(activeTabId) : null);
+      const scope = (scopeMeta && scopeMeta.scope) || (convId ? `preview:${convId}` : 'preview');
+      // ★★★ 通道原先**无人订阅**（实测 grep：渲染层零处监听 `browser:wv:forceOpen`）
+      //   ⇒ 这句话等于没说：面板没打开 / guest 未建时会**始终拿不到 wc**，navigate 必然失败
+      //     （loadURL 在 null 上抛错），且报错是"页面加载失败"，看不出真因（静默失效家族）。
+      //   ⇒ 补上渲染层订阅（BrowserPanel.onForceOpen）：面板据此打开并导航（自动建 <webview>/guest）。
+      try { mainWindow.webContents.send('browser:wv:forceOpen', cleanUrl, scope, tabId || null); } catch { /* ignore */ }
       // 给渲染层建 <webview>(dom-ready)+注册 guest 的时间
       wc = await waitForGuest(tabId || activeTabId, 8000);
     }
@@ -2502,25 +2898,23 @@ ipcMain.handle('browserView:action', async (_e, tabId, action, args) => {
           var a=${JSON.stringify(args)};
           var A=window.__yzAssistant;
           function clickEl(el){
-            el.scrollIntoView({behavior:'smooth',block:'center'});
-            return new Promise(function(res){
-              setTimeout(function(){
-                var rect=el.getBoundingClientRect();
-                var doc=el.ownerDocument;
-                if(doc===document){
-                  var x=rect.x+rect.width/2,y=rect.y+rect.height/2;
-                  var tag=A.clickAt(x,y);
-                  res({success:true,via:'real-mouse',tag:tag});
-                }else{
-                  // iframe 内元素：坐标相对 iframe 视口，改在元素上直接派发鼠标事件
-                  var w=doc.defaultView;
-                  var o={bubbles:true,cancelable:true,clientX:rect.x+rect.width/2,clientY:rect.y+rect.height/2,view:w};
-                  el.dispatchEvent(new MouseEvent('mousemove',o));el.dispatchEvent(new MouseEvent('mousedown',o));
-                  el.dispatchEvent(new MouseEvent('mouseup',o));el.dispatchEvent(new MouseEvent('click',o));
-                  res({success:true,via:'dom-events',iframe:true,tag:el.tagName.toLowerCase()});
-                }
-              },300);
-            });
+            // 先滚入视口（instant，避免 smooth 异步未到位导致后续坐标过期）
+            try{el.scrollIntoView({block:'center'});}catch(e){}
+            // ★ 优先 DOM 点击：不受视口裁切影响（被裁切但已渲染的元素也能触发），
+            //   直接派发到目标元素，不依赖坐标换算。坐标点击在元素被裁切/位于视口外时
+            //   会落在视口外（elementFromPoint 返回 null）而无效（抖音"发布"按钮实测）。
+            try{
+              el.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true,view:window}));
+              el.dispatchEvent(new MouseEvent('mouseup',{bubbles:true,cancelable:true,view:window}));
+              el.click(); // 原生 click：触发默认动作（onClick / 链接跳转 / 表单提交）
+              return Promise.resolve({success:true,via:'dom-click',tag:el.tagName.toLowerCase()});
+            }catch(e){
+              // 兜底：真实鼠标坐标点击（极少数只认真实坐标的场景）
+              var rect=el.getBoundingClientRect();
+              var x=rect.x+rect.width/2,y=rect.y+rect.height/2;
+              var tag=A.clickAt(x,y);
+              return Promise.resolve({success:true,via:'real-mouse',tag:tag});
+            }
           }
           function notFound(sel){return{error:'元素未找到: '+sel,hint:'建议先调用 browser_get_page_info 获取编号元素列表，再用 index 参数定位'};}
           if(a.index!=null){
@@ -2648,6 +3042,19 @@ ipcMain.handle('browserView:action', async (_e, tabId, action, args) => {
         })()`);
       }
       case 'screenshot': {
+        // 2026-10-09：截图同步落盘存档（userData/screenshots/screenshot-<ts>.png），
+        // 路径随结果回传；服务端据此复制进会话产物目录并登记 conversation_file（留证归档）。
+        // 存档失败不影响截图本身返回。
+        const saveShotArchive = async (image) => {
+          try {
+            const path = require('node:path');
+            const dir = path.join(app.getPath('userData'), 'screenshots');
+            await require('node:fs').promises.mkdir(dir, { recursive: true });
+            const file = path.join(dir, `screenshot-${Date.now()}.png`);
+            await require('node:fs').promises.writeFile(file, image.toPNG());
+            return file;
+          } catch { return undefined; }
+        };
         if (args.annotate) {
           // 元素标注截图：注入覆盖层画编号框（与 server Playwright 端对齐），截图后移除
           const overlayId = '__yz_annotate_overlay';
@@ -2679,10 +3086,12 @@ ipcMain.handle('browserView:action', async (_e, tabId, action, args) => {
           })()`);
           const image = await wc.capturePage();
           await wc.executeJavaScript(`(function(){var p=document.getElementById(${JSON.stringify(overlayId)});if(p)p.remove();})()`).catch(() => {});
-          return { base64: image.toDataURL().split(',')[1], annotated: true };
+          const archivedFile = await saveShotArchive(image);
+          return { base64: image.toDataURL().split(',')[1], annotated: true, ...(archivedFile ? { file: archivedFile } : {}) };
         }
         const image = await wc.capturePage();
-        return { base64: image.toDataURL().split(',')[1] };
+        const archivedFile = await saveShotArchive(image);
+        return { base64: image.toDataURL().split(',')[1], ...(archivedFile ? { file: archivedFile } : {}) };
       }
       case 'get_page_info': {
         // 穿透 iframe / Shadow DOM 收集可交互元素并编号注册（含 iframe 内弹窗元素）
@@ -2779,7 +3188,17 @@ ipcMain.handle('browserView:action', async (_e, tabId, action, args) => {
           var out=[];
           for(var k=0;k<els.length&&out.length<maxInteractive;k++){var el=els[k];
             var idx=A.register(el);
-            var o={index:idx,tag:el.tagName.toLowerCase(),text:(el.textContent||'').trim().slice(0,60)};
+            // ★★★ 补 selector（B6，2026-10-09）：本聚合动作此前只回 index/tag/text 等，
+            //   **漏了 selector** —— 而它的同族动作 get_page_info（见上方 :2803）
+            //   一直都有 selector:A.genSel(el)；工具描述与提示词也都承诺
+            //   "元素含 selector 可直接作为 selector 参数"。
+            //   后果：同一 prompt 在**桌面端**拿不到 selector（模型只能靠 index，SPA 重渲染后
+            //   index 失效就只好重新读页），而**服务端 Playwright 链路**是有的 →
+            //   同工具两条执行链行为不一致，是最难查的一类 bug。
+            //   ⇒ 用同一 A.genSel（与 get_page_info / chat.ts:2614 同源），零新增逻辑。
+            //   ★ 注意：本段位于 executeJavaScript 的**模板字符串内部**，注释里
+            //     **绝不能出现反引号**（会提前闭合模板串，报 "missing ) after argument list"）。
+            var o={index:idx,tag:el.tagName.toLowerCase(),selector:A.genSel(el),text:(el.textContent||'').trim().slice(0,60)};
             // P1-7 a11y 语义（2026-10-07）：优先 computedRole（Chromium 132+），引擎不支持时
             // 按「标签 + type」推断隐式角色；'generic'/null 无信息量跳过，两路都拿不到就不出字段。
             try{var cr=el.computedRole;if(cr&&cr!=='generic')o.axRole=cr;}catch(e){}
@@ -2814,17 +3233,88 @@ ipcMain.handle('browserView:action', async (_e, tabId, action, args) => {
         })()`);
       }
       case 'fill_form': {
+        // ★★★ B3/B5（2026-10-10）：本实现此前**违背工具契约**三处（服务端都支持）——
+        //   工具 schema 明确声明 `type is "text"|"select"|"checkbox"|"radio"` 且
+        //   "For select use **label or value**"，而这里有：
+        //   ① **不支持 radio**（只判 select/checkbox → radio 字段走 else 分支当成文本框填！
+        //      对 <input type=radio> 调 typeIn 会设 .value 却不改 checked ⇒ 单选**根本没选中**，
+        //      且返回值里仍把它算作"已填"—— 模型以为填好了）；
+        //   ② **不支持 label**（下拉只能按 value 选 ⇒ 模型给显示文本就选不中）；
+        //   ③ **静默跳过**（`if(!el)continue`）：元素没找到时**不报错**，
+        //      返回值里也不出现该字段 ⇒ 模型无法区分"填了"与"没填到"。
+        //   ⇒ 一并按服务端（browser.ts 同名分支）语义对齐。
         return await wc.executeJavaScript(`(function(){
-          var a=${JSON.stringify(args)};var fields=a.fields||[];var names=[];
-          for(var i=0;i<fields.length;i++){var f=fields[i];var el=window.__yzAssistant.resolve(f.selector);
-            if(!el)continue;el.scrollIntoView({behavior:'smooth',block:'center'});
-            var rect=el.getBoundingClientRect();window.__yzAssistant.showCursor(rect.x+rect.width/2,rect.y+rect.height/2,'填写');
-            if(f.type==='select'){el.value=f.value;el.dispatchEvent(new Event('change',{bubbles:true}));}
-            else if(f.type==='checkbox'){el.checked=!!f.value;el.dispatchEvent(new Event('change',{bubbles:true}));}
-            else{window.__yzAssistant.typeIn(el,String(f.value));}
-            names.push(f.selector);}
+          var a=${JSON.stringify(args)};var fields=a.fields||[];
+          var filled=[],failed=[];
+          function setNativeValue(el,v){
+            // 受控组件必须走 native setter，否则 React 的 value tracker 认不出变化
+            try{
+              var d=Object.getOwnPropertyDescriptor(el.constructor.prototype,'value');
+              if(d&&d.set){d.set.call(el,v);return true;}
+            }catch(e){}
+            try{el.value=v;return true;}catch(e){return false;}
+          }
+          for(var i=0;i<fields.length;i++){
+            var f=fields[i];var sel=f.selector;
+            var el=window.__yzAssistant.resolve(sel);
+            if(!el){
+              // ★ 不再静默跳过：记入 failed（含原因），让调用方与模型都能看见
+              failed.push({selector:sel,reason:'元素未找到'});
+              failed.push({selector:sel,reason:'元素未找到'});
+              continue;
+            }
+            el.scrollIntoView({behavior:'smooth',block:'center'});
+            var rect=el.getBoundingClientRect();
+            window.__yzAssistant.showCursor(rect.x+rect.width/2,rect.y+rect.height/2,'填写');
+            var ftype=String(f.type||'text').toLowerCase();
+            try{
+              if(ftype==='select'){
+                // ★ 支持 label（显示文本）与 value 两种选法（与服务端一致）
+                var target=null;
+                if(f.label!==undefined){
+                  var lbl=String(f.label);
+                  for(var oi=0;oi<el.options.length;oi++){
+                    if(String(el.options[oi].textContent||'').trim()===lbl.trim()){target=el.options[oi];break;}
+                  }
+                }
+                if(!target){
+                  var val=String(f.value==null?'':f.value);
+                  for(var oj=0;oj<el.options.length;oj++){
+                    if(String(el.options[oj].value)===val){target=el.options[oj];break;}
+                  }
+                }
+                if(target){el.value=target.value;}else{failed.push({selector:sel,reason:'选项未找到: '+(f.label!==undefined?f.label:f.value)});window.__yzAssistant.hideCursor();continue;}
+                el.dispatchEvent(new Event('input',{bubbles:true}));
+                el.dispatchEvent(new Event('change',{bubbles:true}));
+              }
+              else if(ftype==='checkbox'){
+                var wantC=!(f.value===false||f.value==='false'||f.value===0||f.value==='0');
+                if(el.checked!==wantC){el.click();} // 用 click 触发完整事件链
+              }
+              else if(ftype==='radio'){
+                // ★ 新增 radio：按 click 触发（改 checked 不触发事件，组件收不到）
+                var wantR=!(f.value===false||f.value==='false'||f.value===0||f.value==='0');
+                if(wantR){
+                  if(!el.checked){el.click();}
+                  if(!el.checked){ // click 未生效（如被遮挡/disabled）→ 兜底直改 + 事件
+                    el.checked=true;setNativeValue(el,String(f.value==null?'on':f.value));
+                    el.dispatchEvent(new Event('input',{bubbles:true}));
+                    el.dispatchEvent(new Event('change',{bubbles:true}));
+                  }
+                } else if(el.checked){el.click();}
+              }
+              else{
+                // 文本类：沿用 typeIn（清空→nativeSetter→IME 序列→input→change→回读核验）
+                var r=window.__yzAssistant.typeIn(el,String(f.value==null?'':f.value));
+                if(r&&r.applied===false){failed.push({selector:sel,reason:'值未生效（受控组件未接受）当前值='+r.value});window.__yzAssistant.hideCursor();continue;}
+              }
+              filled.push(sel);
+            }catch(e){
+              failed.push({selector:sel,reason:'填写异常: '+(e&&e.message?e.message:String(e))});
+            }
+          }
           setTimeout(function(){window.__yzAssistant.hideCursor();},500);
-          return{filled:names.length,fields:names};
+          return{filled:filled.length,fields:filled,failed:failed};
         })()`);
       }
       case 'submit_form': {
@@ -3019,6 +3509,7 @@ ipcMain.handle('browserView:action', async (_e, tabId, action, args) => {
             return { error: '该标签页不是本次 agent 打开的，无权关闭（用户手动打开的页面只能由用户关闭）。请勿再次尝试关闭它。' };
           }
           webviewTabs.delete(tid);
+          broadcastTabClosed(tid);   // 渲染层同步摘壳（2026-10-09）
           if (activeTabId === tid) {
             activeTabId = null;
             const any1 = webviewTabs.keys().next();
@@ -3249,13 +3740,13 @@ ipcMain.handle('browserView:action', async (_e, tabId, action, args) => {
       if (after) {
         const urlChanged = after.url !== beforeState.url;
         const changed = urlChanged || after.t !== beforeState.t || after.n !== beforeState.n;
-        noChangeStreak = changed ? 0 : noChangeStreak + 1;
+        // ★ B7：按 tab 分桶（拿不到 tabId 时归到活动页桶；文案统一由 recordNoChange 给出）
+        const streakKey = tabId != null ? tabId : activeTabId;
+        const st = recordNoChange(streakKey, changed);
         result.pageChanged = changed;
         result.urlChanged = urlChanged;
-        result.noChangeStreak = noChangeStreak;
-        if (noChangeStreak >= 3) {
-          result.warning = '连续 ' + noChangeStreak + ' 次操作页面无任何变化，操作可能未生效。请停止重复同类操作：改用 index 精确定位（先 browser_get_page_info 获取编号列表）、重新分析页面、或 ask_user 请求人工介入。';
-        }
+        result.noChangeStreak = st.streak;
+        if (st.warning) result.warning = st.warning;
       }
     }
 
@@ -3278,10 +3769,38 @@ ipcMain.handle('browserView:action', async (_e, tabId, action, args) => {
         try { mainWindow.webContents.send('browserView:cursor', tabIdForCursor, zx, zy, cur.label || '', cur.kind || ''); } catch { /* ignore */ }
       }
     }
+
+    // ★★★ P0-2 锚定建立（2026-10-10，已修"显式 tabId / new_tab 改写锚"两个缺陷）：
+    //   动作**成功**后才锚（失败不锚 —— 否则后续动作会指到一个没真正成为目标的页）。
+    //   ★ 判定规则说明见 `browser-target.cjs` 的 `decideAnchorUpdate` 顶部注释（单一真相源）。
+    if (convId && result && !result.error && !result.ambiguous) {
+      // ★★★ 记账更新判定在纯函数模块里（**唯一实现**，可真跑验证）：
+      //   'anchor' = 改"当前操作页" / 'touch' = 只用不改锚（定向读 / new_tab 开的页）/ 'none' = 不动。
+      const upd = decideAnchorUpdate(action, args.tabId != null && args.tabId !== '', tabId, result.tabId);
+      if (upd.mode === 'anchor') setConvAnchor(convId, upd.tabId);
+      else if (upd.mode === 'touch') markConvTabTouched(convId, upd.tabId);
+    }
     return result;
   } catch (e) {
     return { error: e?.message || String(e) };
   }
+}
+
+// IPC 入口：SSE 委托路径（渲染层调用）。渲染层自己维护锚定与 tabId，
+// 故 convId 传 null —— 不走主进程的会话锚定（避免与渲染层"两个锚"打架，见 convAnchors 注释）。
+ipcMain.handle('browserView:action', async (_e, tabId, action, args) =>
+  runBrowserAction(null, tabId, action, args));
+
+// ============================================================
+// 浏览器桥（「执行面直连化」P0-3）：loopback HTTP 端点，服务端直连。
+// 见 browser-bridge.cjs 顶部注释（安全边界 / 白名单 / 灰度）。
+// ============================================================
+const browserBridge = require('./browser-bridge.cjs');
+browserBridge.attach({
+  runAction: runBrowserAction,
+  allowedActions: DESKTOP_BROWSER_ACTIONS,
+  log: (msg) => console.log(msg),
+  warn: (msg) => console.warn(msg),
 });
 
 // ============================================================
@@ -4413,7 +4932,7 @@ if (!gotTheLock) {
   });
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   Menu.setApplicationMenu(null);  // 移除默认菜单栏
   if (process.platform === 'win32') {
     // ★ Windows 任务栏图标（2026-10-05 定案）：任务栏按钮图标 = **窗口 icon**（WM_SETICON）。
@@ -4507,6 +5026,13 @@ app.whenReady().then(() => {
     console.error('数据库初始化失败:', err);
   }
   cleanupLegacyDiagAgent();
+  // ★★★ 浏览器桥必须在 startServer() **之前**启动并 await（「执行面直连化」P0-3）：
+  //   startServer 会 spawn 后端并把 `envForServer()` 的 URL/token 注入子进程 env ——
+  //   桥没起就没有端口/token，注入为空 ⇒ 服务端 `browserBridgeAvailable()` 为 false，
+  //   静默退回 SSE 委托（不报错，但直连没生效）。顺序错了是**静默失效**，故显式注释钉住。
+  //   ★ 必须 **await**：`server.listen()` 是异步的，不等就取 envForServer() 会拿到空 url/token
+  //     （真跑测试实测抓到的缺陷）→ 同样是静默失效。
+  await browserBridge.start();
   startServer();
 
   // computer-use 急停热键：Ctrl+Alt+Esc → 通知后端 panic（冻结输入工具并禁用插件）。
@@ -4611,6 +5137,7 @@ app.on('window-all-closed', () => {
 app.on('before-quit', () => {
   isQuitting = true;
   try { globalShortcut.unregisterAll(); } catch {}
+  try { browserBridge.close(); } catch { /* 端口自动分配，异常退出也无需处理残留 */ }
   if (serverProcess) { try { serverProcess.kill('SIGTERM'); } catch {} serverProcess = null; }
   for (const [id, entry] of mcpChildren) {
     try { entry.child.kill('SIGTERM'); } catch {}

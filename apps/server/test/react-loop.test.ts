@@ -232,12 +232,24 @@ vi.mock('@yan-zhi/core', () => ({
     const ws = typeof workspaceDir === 'string' ? workspaceDir.trim() : '';
     return raw || ws || '.';
   },
+  // ★ 2026-10-08 补：path-guard 的 collectPathArgs 新增用 isAbsolutePath 区分
+  //   「无工作目录 + 相对路径」（不当越界）与「绝对路径」（真越界）。
+  //   老规矩：手写白名单 mock 不同步 → `No "isAbsolutePath" export is defined on the mock`，
+  //   而表象是「工具执行失败」，完全看不出是 mock 缺字段。
+  isAbsolutePath: (p: string) => /^([a-zA-Z]:[\\/]|[\\/]{2}|\/)/.test(String(p || '')),
   visibleMessages: (ms: any[]) => (ms || []).filter((m) => !(m && (m.parentToolCallId ?? m.parent_tool_call_id))),
   adviceForTruncatedArgs: ({ toolName, missingArgs }: any) => ({
     truncated: false,
     message: `工具 ${toolName} 未执行：arguments 缺少必填参数（${(missingArgs || []).join('、')}）。请重试。`,
   }),
   resolveContextWindow: (n: any) => (typeof n === 'number' && n > 0 ? n : 32768),
+  // ★ 2026-10-10 补：D4 工具结果常态裁剪（capStaleToolResults）被主链路/context-view 用到，
+  //   白名单 mock 未同步 → 任务加载即 failed（报 No "capStaleToolResults" export）。
+  //   透传实现：与生产同语义（只裁 content 长度、不动结构、幂等）。
+  capStaleToolResults: (ms) => ms,
+  // ★ 2026-10-10 补：A4（读路由按会话隔离）新增 setBrowserToolConversationId 到 core 主链路/白名单，
+  //   本手工白名单 mock 未同步 → 浏览器类工具报 No "setBrowserToolConversationId" export。
+  setBrowserToolConversationId: () => {},
 }));
 vi.mock('../src/mcp/index.js', () => ({ ensureToolsInitialized: () => {} }));
 vi.mock('../src/mcp/api-tool-executor.js', () => ({

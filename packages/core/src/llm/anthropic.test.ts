@@ -189,7 +189,9 @@ describe('parseAnthropicSSE', () => {
     expect(chunks).toContainEqual({ delta: { toolCalls: [{ index: 0, function: { arguments: '{"city":' } }] } });
     expect(chunks).toContainEqual({ delta: { content: '你好' } });
     expect(chunks).toContainEqual({ delta: { reasoningContent: '思考' } });
-    expect(chunks.at(-1)).toEqual({ finishReason: 'tool_use', usage: { promptTokens: 10, completionTokens: 5 } });
+    expect(chunks).toContainEqual({ finishReason: 'tool_use', usage: { promptTokens: 10, completionTokens: 5 } });
+    // ★ 见到 message_stop → 末帧标记为已正常收尾（2026-10-09 新增契约）
+    expect(chunks.at(-1)).toEqual({ terminated: true });
   });
 
   it('末帧无尾随空行也能解析', async () => {
@@ -198,7 +200,31 @@ describe('parseAnthropicSSE', () => {
     );
     const chunks = [];
     for await (const c of parseAnthropicSSE(stream)) chunks.push(c);
-    expect(chunks).toEqual([{ delta: { content: '结尾' } }]);
+    // ★ 无 message_stop / stop_reason → 末帧 terminated:false（流被掐断）（2026-10-09 契约）
+    expect(chunks).toEqual([{ delta: { content: '结尾' } }, { terminated: false }]);
+  });
+
+  it('★★ 见到 message_stop 才判为正常收尾（缺则 terminated:false，供上层走续写）', async () => {
+    const withStop = sseStream([
+      'event: content_block_delta',
+      'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"半句"}}',
+      '',
+      'event: message_stop',
+      'data: {"type":"message_stop"}',
+      '',
+    ].join('\n'));
+    const a = [];
+    for await (const c of parseAnthropicSSE(withStop)) a.push(c);
+    expect(a.at(-1)).toEqual({ terminated: true });
+
+    const noStop = sseStream([
+      'event: content_block_delta',
+      'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"半句"}}',
+      '',
+    ].join('\n'));
+    const b = [];
+    for await (const c of parseAnthropicSSE(noStop)) b.push(c);
+    expect(b.at(-1), '★ 无终态事件时末帧必须标 terminated:false').toEqual({ terminated: false });
   });
 });
 

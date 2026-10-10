@@ -19,7 +19,7 @@
 //   —— 判定逻辑只有一份，避免「同一语义在两处判定」必然漂移（本项目既有教训）。
 
 import path from 'node:path';
-import { resolveToolPath } from '@yan-zhi/core';
+import { resolveToolPath, isAbsolutePath } from '@yan-zhi/core';
 import { resolveArtifactDirFor } from './artifact-dir.js';
 import { serverState } from '../state.js';
 
@@ -213,11 +213,22 @@ export function collectPathArgs(
 ): PathAccessItem[] {
   const specs = TOOL_PATH_ARGS[toolName];
   if (!specs || !args) return [];
+  const ws = typeof workspaceDir === 'string' ? workspaceDir.trim() : '';
   const out: PathAccessItem[] = [];
   for (const spec of specs) {
     const raw = (args as Record<string, unknown>)[spec.field];
     if (typeof raw !== 'string' || !raw.trim()) continue; // 未给 / 空串 → 不触发授权
     const rawPath = raw.trim();
+    // ★★★ 无工作目录 + 相对路径 → **不参与判定**（2026-10-08 实测缺陷）。
+    //   为什么：`resolveToolPath(raw, '')` 对无工作目录的相对路径**原样返回**
+    //   （fs-walk.ts:67 的"旧行为"），于是 absPath 是 `"some-name"` 这种相对串，
+    //   与任何绝对根比较都"不在内" → 被误判为越界 → 走授权。
+    //   后果（实测）：纯聊天会话里模型调 file_read 会被弹授权窗（骚扰）；
+    //   **无前端时永久挂起**（授权弹窗有意不设超时），react-loop 集成测试因此 8s 超时。
+    //   判据：相对路径的语义是「以工作目录为基准」，没有工作目录是**缺配置**，
+    //   不是「访问了外面的世界」—— 要求用户为 `"2026年值得入手的手机推荐"` 授权本身说不通。
+    //   真正的绝对路径越界（C:\Windows\...）仍照常 need-auth（下面的分支保证）。
+    if (!ws && !isAbsolutePath(rawPath)) continue;
     out.push({
       toolName,
       action: spec.action,

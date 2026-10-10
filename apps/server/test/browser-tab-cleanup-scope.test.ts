@@ -3,13 +3,16 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 /**
- * 浏览器页面收拾 —— 权限边界 + 收尾提示的防回归测试（2026-10-08）。
+ * 浏览器页面收拾 —— 权限边界 + 收尾自动关闭的防回归测试（2026-10-08 立项，2026-10-09 升级）。
  *
- * 用户原话：「pageAgent 执行完了不会关闭页面？」
- * 取向（用户拍板）：
- *   ① **不写死自动关**，而是把"收拾页面"变成模型收尾时的明确动作（提示词引导）；
- *   ② **权限边界**：agent 只能关自己开的 tab，用户手开的一律关不掉（执行侧强制）；
- *   ③ 模型没关干净时，给用户一条明示（不替用户决定关掉可能有用的页）。
+ * 用户原话：「pageAgent 执行完了不会关闭页面？」→「子智能体运行任务完后代理的页面自动关闭，
+ * 智能体接下来去其他任务，页面不能不关啊」。
+ * 取向（用户拍板，2026-10-09 升级）：
+ *   ① 模型收尾时仍应自己收拾（提示词引导 + 批量 close_tab）；
+ *   ② **任务收尾兜底自动关**：agent 开的页面（agentOpened）主进程统一关闭 ——
+ *      取代旧的"只弹提示"方案（实测页面照样堆积）；
+ *   ③ **权限边界**：agent 只能关自己开的 tab，用户手开的一律关不掉（执行侧强制）；
+ *   ④ 主进程关闭必须广播 tabClosed，渲染层摘壳（防 webview 引擎幽灵壳）。
  *
  * ★ 断言基于真实源码（不做模块导入，避免 better-sqlite3 ABI 不匹配）。
  */
@@ -35,8 +38,13 @@ describe('权限边界：agent 只能关闭自己打开的 tab（执行侧强制
 
   it('tab 归属标记 agentOpened 存在，且 UI 创建路径默认 false', () => {
     expect(mainSrc).toContain('agentOpened');
-    // browserView:createTab（渲染层/用户路径）必须显式置 false
-    const fn = sliceFrom(mainSrc, "ipcMain.handle('browserView:createTab'", 1200);
+    // ★ 2026-10-10（执行面直连化）：`ipcMain.handle('browserView:createTab')` 已收窄为
+    //   **一行委托** `createBrowserTab(scope)` —— 因为该实现现在有第二个调用方
+    //   （`browserView:action` 的"会话首次 navigate 自建 guest"分支，防两处实现漂移）。
+    //   断言语义不变（"UI/用户创建路径必须显式置 agentOpened:false"），锚点随之移到
+    //   **唯一实现** `createBrowserTab` 上。**锚点缺失即红**，防止有人又改成别处。
+    const fn = sliceFrom(mainSrc, 'function createBrowserTab(', 1200);
+    expect(fn, '★ 锚点缺失：createBrowserTab（tab 创建唯一实现）').toContain('agentOpened');
     expect(fn).toMatch(/agentOpened:\s*false/);
   });
 
@@ -140,16 +148,83 @@ describe('前端记账：agent 开过的 tab 按会话累积，收尾提示后�
     expect(snapshotIdx, '取快照必须在清理之前').toBeLessThan(clearIdx);
   });
 
-  it('残留提示是给用户的明示（不自动关，符合方案 B）', () => {
-    const fn = sliceFrom(useChatSrc, 'store.onTaskFinished(', 1800);
+  it('收尾自动关：调用主进程 closeAgentTabs（只关 agent 开的，双保险）', () => {
+    const fn = sliceFrom(useChatSrc, 'store.onTaskFinished(', 2200);
+    expect(fn).toContain('closeAgentTabs');
+  });
+
+  it('收尾自动关后给用户一条知会（已自动关闭 N 个）', () => {
+    // ★ 窗口 2200 → 3600（2026-10-10）：新增「按会话关闭」分支（closeConvTabs，优先于
+    //   旧 closeAgentTabs 分支）把回退文案推到了原窗口之外 —— 属**锚点窗口偏移**，
+    //   不是行为变化（回退路径仍在；已逐行核对源码）。
+    const fn = sliceFrom(useChatSrc, 'store.onTaskFinished(', 3600);
     expect(fn).toContain('ElMessage');
+    expect(fn).toMatch(/已自动关闭/);
+    // 退回路径（无 Electron API）保留旧明示文案
     expect(fn).toMatch(/保留在预览面板|可自行关闭/);
-    // 绝不能自动关 —— 那会让用户丢页面
-    expect(fn).not.toMatch(/closeAllPreviewTabs|closePreviewTab\(/);
+  });
+
+  it('收尾自动关：桥档优先按会话关闭 + 保留 agentOpened 兜底（2026-10-10）', () => {
+    const fn = sliceFrom(useChatSrc, 'store.onTaskFinished(', 3600);
+    // 桥档下渲染层 agentOpened 记账恒为空 ⇒ 必须有按会话的入口
+    expect(fn, '★ 缺按会话关闭（桥档下页面堆积）').toMatch(/closeConvTabs/);
+    expect(fn, '★ 缺 agentOpened 兜底').toMatch(/closeAgentTabs/);
+  });
+
+  it('主进程必须有 closeAgentTabs IPC，且按 agentOpened===true 过滤', () => {
+    expect(mainSrc).toMatch(/ipcMain\.handle\('browserView:closeAgentTabs'/);
+    const fn = sliceFrom(mainSrc, "ipcMain.handle('browserView:closeAgentTabs'", 700);
+    expect(fn).toMatch(/agentOpened\s*===\s*true/);
+  });
+
+  it('主进程关 tab 必须广播 tabClosed（渲染层摘壳，防幽灵壳）', () => {
+    expect(mainSrc).toContain('browserView:tabClosed');
+    const closeFn = sliceFrom(mainSrc, 'function closeTabById(', 2200);
+    expect(closeFn).toContain('broadcastTabClosed(');
+  });
+
+  it('preload 暴露 closeAgentTabs 与 onTabClosed', () => {
+    const preloadSrc = fs.readFileSync(path.join(REPO_ROOT, 'apps/desktop/preload.cjs'), 'utf8');
+    expect(preloadSrc).toContain("invoke('browserView:closeAgentTabs')");
+    expect(preloadSrc).toContain("ipcRenderer.on('browserView:tabClosed'");
+  });
+
+  it('BrowserPanel 监听 tabClosed 摘除 tab 壳', () => {
+    const panelSrc = fs.readFileSync(path.join(REPO_ROOT, 'packages/ui/src/components/BrowserPanel.vue'), 'utf8');
+    expect(panelSrc).toContain('onTabClosed');
   });
 
   it('新任务开头清空记账（resetTaskScopedState）', () => {
     const fn = sliceFrom(useChatSrc, 'function resetTaskScopedState', 2500);
     expect(fn).toContain('clearAgentOpenedTabs');
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+describe('接管条活性门控：pageAgent 结束后「Agent 接管中」不能一直挂着', () => {
+  it('store 记录浏览器工具活性时间戳（watch browserSteps 收口，不逐点插桩）', () => {
+    expect(chatSrc).toContain('lastBrowserToolAt');
+    expect(chatSrc).toContain('BROWSER_LIVE_GRACE_MS');
+  });
+
+  it('store 有残留自愈巡检：浏览器空闲 2 分钟主动查服务端活动任务并清残留运行态', () => {
+    expect(chatSrc).toContain('sweepStaleBrowserTakeover');
+    const fn = sliceFrom(chatSrc, 'async function sweepStaleBrowserTakeover(', 1800);
+    // 只取本函数体（到下一个函数声明为止），避免断言被后续定义污染
+    const body = fn.slice(0, fn.indexOf('async function callLlm') > 0 ? fn.indexOf('async function callLlm') : fn.length);
+    expect(body).toMatch(/120000/);
+    expect(body).toMatch(/llm\/tasks\/active/);
+    expect(body).toMatch(/emitTaskFinished/);
+    // 只清残留，不做 SSE 重连重订（长任务编排间隙浏览器空闲是常态，重订会抖动流）
+    expect(body).not.toContain('reconnect');
+  });
+
+  it('BrowserPanel 接管条带活性门控 + 暂停态例外', () => {
+    const panelSrc = fs.readFileSync(path.join(REPO_ROOT, 'packages/ui/src/components/BrowserPanel.vue'), 'utf8');
+    expect(panelSrc).toContain('browserLiveFresh');
+    expect(panelSrc).toContain('nowTick');
+    // 暂停态必须例外：条子要露「已暂停 · 你已接管页面」和恢复按钮
+    const fn = sliceFrom(panelSrc, 'const browserLiveFresh', 400);
+    expect(fn).toMatch(/pausedNow/);
   });
 });

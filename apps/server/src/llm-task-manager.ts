@@ -4,9 +4,9 @@
 // UI 交互工具（ask_user/confirm_user 等）和 MCP/自定义工具委托前端，刷新时暂停等待重连。
 // 注：web_search 已移除，联网查询统一委派 pageAgent（真实浏览器搜索引擎）。
 import type { Platform, Model, Message, DeltaToolCall } from '@yan-zhi/shared';
-import { formatTaskTypeContext, DEFAULT_CONFIRM_BATCH_SIZE, resolveTaskBudgets, checkTaskBudgetHit as sharedCheckTaskBudgetHit } from '@yan-zhi/shared';
-import { LlmClient, getToolRegistry, getApiToolRegistry, ContextWindow, adviceForTruncatedArgs, runCodeDiagnostics, invalidateDiagnosticsCache, resolveToolPath, type SummaryCache } from '@yan-zhi/core';
-import { db, MESSAGE_LIST_COLS } from './db.js';
+import { formatTaskTypeContext, DEFAULT_CONFIRM_BATCH_SIZE, resolveTaskBudgets, checkTaskBudgetHit as sharedCheckTaskBudgetHit, addWaitCredit } from '@yan-zhi/shared';
+import { LlmClient, getToolRegistry, getApiToolRegistry, ContextWindow, adviceForTruncatedArgs, runCodeDiagnostics, invalidateDiagnosticsCache, resolveToolPath, setBrowserToolConversationId, type SummaryCache } from '@yan-zhi/core';
+import { db, MESSAGE_LIST_COLS, getLatestMessageSummary } from './db.js';
 import { normalizePermissionMode, checkToolPermission, filterToolsByPermission, permissionModePrompt, checkWorkflowPermission, type PermissionMode } from './tool-permission.js';
 import { ensureToolsInitialized } from './mcp/index.js';
 import { executeApiTool, isApiExecutableTool } from './mcp/api-tool-executor.js';
@@ -15,8 +15,13 @@ import {
   retrieveRelevantMemories, formatMemoryContext, bumpMemoryUsage,
   writeMemoryItems, flushMemoriesBeforeCompression, parseExtractedItems, type MemoryWriteItem,
 } from './services/memory-service.js';
-import { loadSpaceMemoryForConversation, formatSpaceMemoryContext, appendTaskDecision, loadTaskMemoryForConversation, formatTaskMemoryContext, appendTaskProgress } from './services/space-memory.js';
-import { backendTaskPlan, backendTaskStep, loadTaskPlanFromFile } from './services/task-plan-file.js';
+import { loadSpaceMemoryForConversation, formatSpaceMemoryContext, appendTaskDecision, loadTaskMemoryForConversation, formatTaskMemoryContext, appendTaskProgress, readTaskProgressForConversation, formatProgressContext } from './services/space-memory.js';
+import {
+  resolveExperienceBase, resolveSkillDraftsDir, appendExperienceEntry, buildExperienceContextForConversation,
+  listExperienceSummaries, type ExperienceKind,
+} from './services/experience.js';
+import { proposeSkillDraft, skillDraftNotifyText } from './services/skill-distill.js';
+import { backendTaskPlan, backendTaskStep, loadTaskPlanFromFile, savePlanJson } from './services/task-plan-file.js';
 import { summarizeResourceDirsSync } from './services/space-resources.js';
 // 提示词快照：构建（只存 id 引用）与按需回填的唯一定义处 —— 修单会话 O(n²) 的快照膨胀
 import { toSnapshotMessages, pruneOldSnapshots, SNAPSHOT_KEEP_PER_CONV } from './services/context-snapshot.js';
@@ -25,7 +30,17 @@ import { buildContextView, mainlineMessages } from './services/context-view.js';
 import { serverState } from './state.js';
 // 产物登记钩子（P2-3）：把 file_write / 媒体登记的副作用从主循环里搬出去
 import { runAfterToolHooks } from './services/tool-hooks.js';
+// 防失控循环闸门（2026-10-09）：同名同参重复 / 单工具连刷，在 executeTool 漏斗拦截
+import { checkToolLoop } from './services/tool-loop-guard.js';
+// ★★★ 浏览器执行面直连化（2026-10-10）：主进程 loopback 端点客户端。
+//   判定口径**只在本模块**（decideBrowserExecution），前端不得自行推断（防双执行 + 防 token 外泄）。
+import { browserBridgeAvailable, decideBrowserExecution, callBrowserBridge, toolNameToAction, bridgeMode } from './browser-bridge.js';
+// 子任务执行详情（2026-10-09）：get_sub_task_detail 的查询与排版（编排者分析子任务失败用）
+import { loadSubTaskTrace, formatSubTaskTrace } from './services/sub-task-detail.js';
 import { registerArtifactHooks } from './services/artifact-hooks.js';
+// 工件协议 + 任务计划调度（2026-10-08 多智能体协同）
+import { runWithArtifactCollector, formatSubAgentReturn, collectArtifact } from './services/artifacts.js';
+import { createPlan, runPlanToCompletion, getPlanStatusText, reassignPlanItem, registerPlanRunnerDeps } from './services/plan-runner.js';
 import { loadProjectSkills, truncateSkillBody } from './services/project-skills.js';
 import { parseSkillFiles, skillDirName, syncSkillsToWorkspace } from './services/skill-files.js';
 import { dirEntryFingerprint, makeFingerprintCache } from './services/fs-fingerprint.js';
@@ -92,10 +107,9 @@ const WORKFLOW_DELIVERY_TIMEOUT_MS = 30 * 1000;
  * ★ 2026-09-29：100 → 500（用户诉求「默认 500 步吧，50 步不太够啊」）。
  *   实测长任务（《驭兽斋》有声小说多章流水线）跑满 100 步后仍有大量未完成步骤 ——
  *   默认值偏小 → 频繁触顶 → 即使有自动接力也来回停顿，用户体感就是"老断"。
- *   ★ 与 `clampMaxSteps` 的**上限**同为 500：默认即上限，语义是"没有理由时给足预算"。
- *   注意别把"默认"和"下限"混淆 —— 用户显式配更小的值（如 30）必须尊重（快速迭代/省钱）。
+ * ★ 2026-10-09：500 → 1000（推文产线实测主任务 500 步也会撞顶）。用户显式配更小的值仍须尊重。
  */
-const DEFAULT_MAX_REACT_STEPS = 500;
+const DEFAULT_MAX_REACT_STEPS = 1000;
 
 /**
  * 空转断路器阈值（P6 提升为模块级导出，2026-10-04）：连续 N 次空参调用判定为退化。
@@ -103,6 +117,58 @@ const DEFAULT_MAX_REACT_STEPS = 500;
  *   子智能体等新循环入口也必须接这里，禁止再写字面量。
  */
 export const EMPTY_ARGS_THRESHOLD = 3;
+
+/**
+ * ★★★ 自动接力两条上限（2026-10-09，P1 重设计）。
+ *
+ * 背景（实据诊断）：达单批步数上限后走「结账 → 决策 → 接力」，但原实现的**总批次数**被
+ *   `autoContinueMaxRounds`（默认 3）一刀切死 → 长任务（推文产线：选书→抓正文→出片→上传→回填）
+ *   跑到 3 批就必然终止，用户体感就是"老断"。而库内实测有 9 条「自动接力第 N/3 批」，
+ *   说明**接力本身在用**，但 3 批的额度太小。
+ *
+ * 新语义（两个数，别混）：
+ *   · `autoContinueHardCap`（=30）= **总批次数**硬顶 —— 防真正失控（纯烧 token 不产出）。
+ *     仅此一个数才是"绝对上限"，正常任务几乎不会撞到（撞到说明前 30 批都在空转）。
+ *   · `autoContinueMaxRounds`（默认 3）= **连续无进展批次数**上限（停滞上限）——
+ *     只要每批仍有**机械进展**（计划剩余步骤下降 / 模型自评有未完成事项），
+ *     停滞计数清零、继续接力；连续 N 批毫无进展才停。
+ *   ⇒ 有活干就一直干，干不动了才停 —— 与用户「不要一直断」的诉求一致。
+ */
+export const autoContinueHardCap = 30;
+
+/**
+ * ★★★ 任务**总时长**硬顶（2026-10-09 新增，弹性墙钟的必要兜底）。
+ *
+ * 背景：2026-10-09 起墙钟预算改为「每批一份」（见 TASK_WAIT_CREDIT_CAP_MS 与接力块的基线重置），
+ *   目的是让"单批必然超 15 分钟"的出片类长任务能一趟跑完。但这样一来：
+ *   - 计划已被清空的会话（见 clearPlan 自毁那类的后果）里 `readPlanRemainingSteps()===0`，
+ *     停滞判定会判 `noPlanTracked && expectedContinue` ⇒ **永远算"有进展"** → 停滞闸失效；
+ *   - 只剩 `autoContinueHardCap = 30 批` 兜底，按每批 15 分钟算 = **最坏 7.5 小时**。
+ * ⇒ 必须有独立于"批次数"的**总墙钟**上限。
+ *
+ * ★ 这是"失控兜底"，不是"任务预算"：正常任务不该撞到（撞到说明 3 小时里没干成一件事）。
+ *   与 autoContinueHardCap 是**两个正交维度**（批次 vs 时长），少一个都能被绕过。
+ *   4 小时 = 用户"长任务"的心理上限，也远高于任何单章推文出片（实测 ~20 分钟）。
+ */
+export const TASK_TOTAL_WALL_CLOCK_HARD_CAP_MS = 4 * 60 * 60 * 1000;
+
+/**
+ * ★★★ P0（2026-10-09）：流式断流判据 + 自动续写参数。
+ *
+ * 背景（实据诊断）：上游/代理常以 **TCP FIN 半途关闭 SSE**，此时 `reader.read()` 是
+ *   **正常结束**而非抛错 → 旧代码把半截流当"本轮完成"落库：content 为空、reasoning 只有一半，
+ *   却 emit `task:completed`（实测库内 12 条 assistant 记录正是此形状，用户体感"转半天不出话"＝卡死）。
+ *
+ * 判据（由 core 的 parseSSE 吐出的 `terminated` 标记承载）：
+ *   **见到 finish_reason 或 [DONE] 才算正常收尾**；未见而流结束 = 截断。
+ * 处置：先**就地续写**（把已产出内容当 assistant 前缀重新发起，追加到尾部），
+ *   续写用尽仍失败 → 落**可见**错误文案并保留部分内容，**绝不留下空 content 的 assistant 消息**。
+ */
+export const STREAM_TRUNCATE_MAX_RETRY = 2;
+
+/** 是否需要为「流被掐断」补写一轮（吞掉残缺的 reasoning，见循环内用法） */
+export const TRUNCATED_STREAM_NOTICE =
+  '（本轮上游输出被提前中断。已保留已生成的部分内容；如不完整请重新发送或继续。）';
 
 /**
  * ★ P0-4（2026-10-07）：可**并行**执行的只读工具白名单。
@@ -122,8 +188,51 @@ const READONLY_PARALLEL_TOOLS = new Set<string>([
 ]);
 /** 兼容旧名（runTask 内多处引用）—— 新代码一律用 EMPTY_ARGS_THRESHOLD */
 const EMPTY_ARGS_DEGENERATE_THRESHOLD = EMPTY_ARGS_THRESHOLD;
-/** 前端委托工具（executeToolViaFrontend）的超时上限：2 分钟（此前裸写魔数，日志文案也硬编码 "2min"） */
+/** 前端委托工具的**默认**超时上限：2 分钟（此前裸写魔数，日志文案也硬编码 "2min"） */
 export const FRONTEND_TOOL_TIMEOUT_MS = 2 * 60 * 1000;
+
+/**
+ * ★★★ 浏览器工具的**分档超时** + 串行排队宽限（2026-10-09，P1 实据修复）。
+ *
+ * 背景：`browser_*` 全部委托前端 BrowserView 执行，此前**一刀切**套 `FRONTEND_TOOL_TIMEOUT_MS`（2 分钟），
+ *   但它们的耗时天然分化：
+ *   · `browser_get_page_content` / `get_visible_text` / `get_page_info` / `check` —— 通常秒级；
+ *   · `browser_navigate` —— 慢站 + 代理（FlClash 7890）+ 等 `domcontentloaded`，**常超 2 分钟**；
+ *   · `browser_click / type / upload / wait_for` —— 含前端等待，也可能超。
+ *   实测 `server.log`：某会话 15:17~17:28 连续 2 分钟超时，清一色是这几种。
+ *
+ * 更隐蔽的一层：前端用 `browser-op-queue`（`chainBrowserOp`）把浏览器操作**按会话串行化**，
+ *   服务端 7 个写路由另有 `withBrowserLock` —— 于是「排队等待」的时间也被计进了这 2 分钟。
+ *   慢站场景下"排队 + 执行"极易越界 → 工具被 reject，**但浏览器动作其实还在跑**，
+ *   界面因此停住不动 —— 与真卡死难以区分（用户口中的另一种"卡死"）。
+ *
+ * 处置：① 按工具分档（只读快、导航/交互慢）；② 超时时间**额外放宽排队余量**（`BROWSER_QUEUE_GRACE_MS`）。
+ */
+const BROWSER_SLOW_TOOLS = new Set([
+  'browser_navigate', 'browser_click', 'browser_type', 'browser_upload',
+  'browser_submit_form', 'browser_fill_form', 'browser_action_and_observe',
+  'browser_login_saved', 'browser_download', 'browser_wait_for', 'browser_drag',
+]);
+const BROWSER_FAST_TOOLS = new Set([
+  'browser_get_page_content', 'browser_get_visible_text', 'browser_get_page_info',
+  'browser_check', 'browser_screenshot', 'browser_run_script', 'browser_scroll',
+  'browser_hover', 'browser_press_key', 'browser_select_option', 'browser_uncheck',
+  'browser_scroll_into_view', 'browser_open_external',
+]);
+/** 慢档：导航/交互（含慢站加载 + 排队余量） */
+export const BROWSER_SLOW_TIMEOUT_MS = 7 * 60 * 1000;
+/** 快档：只读/轻交互（页面内容、可见文本、截图、脚本） */
+export const BROWSER_FAST_TIMEOUT_MS = 90 * 1000;
+/** 串行排队宽限：浏览器操作会被前端按会话串行化，排队时间不应算作"执行超时" */
+export const BROWSER_QUEUE_GRACE_MS = 60 * 1000;
+
+/** 按工具名解析前端委托超时（未登记的 browser_* 走默认慢档 —— 宁可等久也别误杀） */
+export function resolveFrontendToolTimeout(toolName: string): number {
+  if (BROWSER_SLOW_TOOLS.has(toolName)) return BROWSER_SLOW_TIMEOUT_MS + BROWSER_QUEUE_GRACE_MS;
+  if (BROWSER_FAST_TOOLS.has(toolName)) return BROWSER_FAST_TIMEOUT_MS + BROWSER_QUEUE_GRACE_MS;
+  if (toolName.startsWith('browser_')) return BROWSER_SLOW_TIMEOUT_MS + BROWSER_QUEUE_GRACE_MS;
+  return FRONTEND_TOOL_TIMEOUT_MS;
+}
 
 export type TaskStatus = 'running' | 'completed' | 'failed' | 'aborted' | 'paused';
 
@@ -195,6 +304,16 @@ interface LlmTask {
    *  非空即表示还有未消费的用户输入：本轮模型即便不再调工具，也不能直接 finish，
    *  必须再跑一轮把这些消息带进上下文。 */
   pendingInjects: string[];
+  /**
+   * 注入幂等记账：前端队列条目 id（clientMsgId）→ 本任务内该条注入产生的真实消息 id。
+   *
+   * ★★★ 为什么需要（2026-10-09 用户实报「同一个消息点击多次会发送 n 次」）：
+   *   「立即发送」此前完全无幂等 —— 连点几下就是一个 POST 一次落库，库里出现多条同内容
+   *   user 消息，模型下一轮把它们当多条指令重复执行。有 confidence 的幂等键后：
+   *   同一 clientMsgId 第二次直接返回既有 msgId（duplicate=true），**不再落库、不再 emit**。
+   *   ★ 随任务存活（收尾即随 task 一起被回收），不落库 —— 幂等只需覆盖"本次运行期间"的连点/重试。
+   */
+  injectedByClientId: Map<string, string>;
   /** 运行时生成子智能体的预算闸（AOrchestra 对齐，见 services/subagent-spec.ts）。
    *  上限来自 agent.config_json.maxSpawnPerTask，缺省 DEFAULT_MAX_SPAWN_PER_TASK。 */
   spawnBudget?: number;
@@ -207,6 +326,21 @@ interface LlmTask {
    * 不等待 —— 主循环照常 finish（防"空轮等待"烧 token）。
    */
   backgroundSubAgents: Map<string, BackgroundSubAgentInfo>;
+  /**
+   * 后台子智能体「结果已回、等待主循环消费」缓冲（2026-10-09）。
+   *
+   * ★★★ 为什么必须有无阻塞唤醒（用户实测缺陷的根因修复）：
+   *   后台子智能体（`call_agent async:true`）跑完后，主智能体常常已到"本轮无工具调用"的收尾点。
+   *   若此时直接 finish：前端收到 `task:completed` → **关闭 SSE 流** → `task.subscribers` 归零 →
+   *   之后所有 `browser_*` 只能回退**服务端 Playwright**（另一个浏览器，预览面板看不到）
+   *   → pageAgent 等于停摆。表现就是用户说的「异步执行，主智能体一停，子智能体也不工作」。
+   *   ⇒ 收尾时若 `backgroundSubAgents` 非空，则**不结束任务**（保持前端流开着、工具通道可用），
+   *   把任务**挂起在等待点**（零 token，不空转），等后台结果到齐后唤醒主循环继续决策。
+   */
+  /** 已回待消费的后台结果（消费即清空） */
+  pendingBackgroundResults: Array<{ agentName: string; text: string }>;
+  /** 「等后台子智能体跑完」的挂起点；后台任务结束时（成功/失败）调用它唤醒主循环 */
+  backgroundDrainWaiter?: () => void;
   /** 本任务内「子任务指纹 → 出现次数」：同类子任务反复现场生成时提示固化（见 shouldSuggestPersist）。
    *  任务级而非全局，是刻意的 —— 跨任务的重复统计靠空间记忆（见 recordSpawnedSubAgent）。 */
   specFingerprints?: Map<string, number>;
@@ -243,6 +377,33 @@ interface LlmTask {
    */
   totalTokens?: number;
   budgets?: { tokenBudget: number; wallClockMs: number };
+  /**
+   * ★★★ 墙钟**预算基线**（2026-10-09）：预算判定用 `budgetBaselineAt`，**不是** `createdAt`。
+   *
+   * 为什么必须拆成两个字段（不要合并回 createdAt）：
+   *   · `createdAt` 兼着两个**互斥**语义 —— ① 展示/审计的任务创建时刻；
+   *     ② `cleanupTasks()` 的任务回收看门狗基准（`now - createdAt > 2h` 强杀）。
+   *   · 预算接力需要**每批重置起点**（`budgetBaselineAt = Date.now()`），
+   *     若直接改 createdAt，看门狗基准被一起前移 → 任务**永远收不回** → 内存泄漏。
+   *   ★ 判据：一个字段被两处用**不同语义**读，改之前必须拆字段，不能复用。
+   */
+  budgetBaselineAt?: number;
+  /**
+   * ★★★ 等待抵扣累计（2026-10-09，见 shared/context-policy 的 TASK_WAIT_CREDIT_CAP_MS）：
+   *   工具执行耗时里"等外部子进程/网络"的部分（如 python_exec 出片 5~8 分钟）不计入墙钟。
+   *   由 executeTool 在**唯一工具出口**累加；预算判定时扣除。随任务对象回收，不落库。
+   */
+  waitCreditMs?: number;
+  /**
+   * ★ D1 可观测（2026-10-09）：prompt 缓存命中量。
+   * · `lastCachedTokens` / `lastPromptTokens`：**最近一轮**的命中与总 prompt 量
+   *   （判据：同会话连续两轮，`lastCachedTokens > 0` 说明前缀缓存生效）。
+   * · `cachedTokensTotal`：本任务累计命中量（用于估算省了多少全价 token）。
+   * 只做观测，不参与任何判定 —— 加它是为了"先能看见再优化"。
+   */
+  lastCachedTokens?: number;
+  lastPromptTokens?: number;
+  cachedTokensTotal?: number;
 }
 
 const tasks = new Map<string, LlmTask>();
@@ -639,6 +800,8 @@ export function createTask(params: {
     // ★ 越界守卫档位：非法/未下发 → ask（fail-safe，与 normalizePermissionMode 同取向）
     pathGuard: (params.pathGuard === 'strict' || params.pathGuard === 'off') ? params.pathGuard : 'ask',
     pendingInjects: [],
+    injectedByClientId: new Map<string, string>(),
+    pendingBackgroundResults: [],
     // 运行时生成子智能体的预算闸：智能体可配 maxSpawnPerTask（0 = 关闭该能力）
     spawnBudget: (() => {
       try {
@@ -654,6 +817,8 @@ export function createTask(params: {
     // ★ P1-9：任务预算（token 总预算 + 墙钟）。agent.config_json.totalTokenBudget /
     //   wallClockMinutes 可覆盖；无智能体或非法值 → 默认（resolveTaskBudgets 内兜底）。
     totalTokens: 0,
+    budgetBaselineAt: Date.now(),
+    waitCreditMs: 0,
     budgets: (() => {
       try {
         if (!params.agentId) return resolveTaskBudgets(undefined);
@@ -671,16 +836,159 @@ export function createTask(params: {
   //   「启动回收孤儿任务」（markOrphanTasksInterrupted）查 llm_task 恒为空 → 任务静默消失、
   //   界面零提示（用户实测：任务跑到一半，UI 没跑完就没了）。落库后重启路径才能把它标 interrupted。
   persistTaskRow(task);
-  emit(task, { type: 'task:created', taskId, conversationId: params.conversationId });
+  emit(task, { type: 'task:created', taskId, conversationId: params.conversationId,
+    // ★★★ 执行面判据「单一给出」（P1-4，2026-10-10）：前端据此决定"要不要本地执行 browser_*"。
+    //   ★ 为什么由服务端下发而不是前端自己探端点：
+    //     ① 前端探 == 第二份判据 → 与 decideBrowserExecution 必然漂移；
+    //     ② 探端点需要 token → 会把凭据暴露到渲染层（安全边界禁止，见 browser-bridge 注释）。
+    //   ★ 值里**绝不含** URL/token —— 只是个枚举标记。
+    //   ★ 前端对未知事件字段容忍；老 frontend 忽略本字段 → 行为不变（不破坏兼容）。
+    browserExecution: browserBridgeAvailable() ? 'bridge' : 'frontend' });
   void runReActLoop(task, params);
   return taskId;
 }
 
-/** 运行中注入用户追加消息（输入框「立即发送」）。
- *  语义：消息立即落库并推送给前端可见，模型在**下一轮** LLM 调用时从 loadMessages 读到它；
- *  为此把 msgId 记进 task.pendingInjects —— 本轮即便模型不再调工具也不 finish，多跑一轮把消息带上。
- *  与「排队等任务结束」的区别就在这里：排队消息不落库、不打断本轮，等任务结束后由前端起新任务。
- *  @returns 'injected' 已注入运行中任务 | 'no-task' 该会话无运行中任务（前端应走正常发送） */
+/**
+ * ★★★ 多模态「注入期展开」（C1，2026-10-09）。
+ *
+ * ★ 背景：`Message.content` 只能是 string，`toApiMessage` 从不组装 `image_url`
+ *   → **模型从未真正收到过图像**。截图分析此前是"假的"：靠模型自觉再调 `image_analyze`
+ *   （而那个工具只在**前端**可执行，服务端全仓无 vision 调用）。
+ *
+ * ★ 设计取舍（**不把 content 改成 ContentBlock[] 落库**）：
+ *   持久化仍存**纯字符串**（图片引用以 `已存档: <path>` 形式留在正文里 —— 人类可读可审计）；
+ *   发送前把标记展开为 `imageParts`，`toApiMessage` 再组装成 `image_url` 块。
+ *   理由见 `shared/types` 里 `imageParts` 的注释（content 被字符串拼接/估算/渲染三处消费，
+ *   改成数组会静默产出 `[object Object]` 或抛错，牵动 db/压缩/前端）。
+ *
+ * ★★★ 只注入**最近 N 条**（历史图降级的简化版，C4 的先行部分）：
+ *   图像块在历史里**全量回放**会让每轮请求都背着几十张图（vision token 与像素面积成正比）
+ *   —— 长任务几十步下来成本爆炸。⇒ 只给最近 `IMAGE_INJECT_MAX_MESSAGES` 条带图，
+ *   更早的**保持文本形态**（正文里的路径仍在，模型需要时可判断是否再读）。
+ *
+ * ★ 幂等与一次性：解析成功的消息不带 `imagePartsTried`（下次仍可注入，但只在最近 N 条内）；
+ *   解析**失败**的标 `imagePartsTried=true` → 不再重试（避免每步都 stat 失效路径）。
+ */
+const IMAGE_INJECT_MAX_MESSAGES = 3;
+/** 单次请求最多注入多少张图（多条消息各带图时合计上限） */
+const IMAGE_INJECT_MAX_TOTAL = 4;
+/** 图片标记：`已存档: <path>`（与 C6 归档正则同一格式） */
+const IMAGE_ARCHIVE_MARK_RE = /已存档:\s*([^\n）)]+\.(?:png|jpe?g|webp|gif|bmp))/gi;
+/**
+ * ★★★ 工具结果里的 JSON 图片字段（C5 补齐，2026-10-10）。
+ *
+ * ★ 缺口（实测）：`computer_screenshot` 的返回是 `JSON.stringify(data, null, 2)`
+ *   （形如 `"file": "C:\\...\\screenshot-123.png"`），**不含** `已存档: <path>` 文本标记
+ *   ⇒ C1 的注入链路**接不到** computer-use 截图（视觉模型仍看不到，得靠 `image_analyze`）。
+ * ★ 只认**已知字段名**（`file` / `keptTo`）—— 不泛匹配所有 ".png" 字符串，
+ *   否则会把 `screenshotUrl`（URL）之类的也当路径去读（必然 stat 失败，白开销）。
+ */
+const IMAGE_JSON_FIELD_RE = /"(?:file|keptTo)"\s*:\s*"((?:[^"\\]|\\.)+\.(?:png|jpe?g|webp|gif|bmp))"/gi;
+
+/**
+ * 从一段文本里提取**图片文件路径**（单一实现，认多种形态）。
+ *
+ * ★ 为什么要抽函数而不是在注入处内联正则：图片路径在工具结果里的形态天然多样
+ *   （`已存档:` 文本、JSON 的 `file` 字段…），若各处各写一份正则**必然漂移**——
+ *   表现为"某种产出的图接不进来"（静默）。收口成一个纯函数，新增形态只改这里，
+ *   且可直接真跑测试。
+ * ★ 去重保序：同一路径出现两次只取一次（避免同图注入两遍、白耗 vision token）。
+ */
+export function extractImagePaths(text: string): string[] {
+  const src = String(text || '');
+  if (!src) return [];
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const push = (raw: string) => {
+    // JSON 里的反斜杠转义需还原（`C:\\a\\b.png` → `C:\a\b.png`）
+    const p = String(raw || '').replace(/\\\\/g, '\\').trim();
+    if (!p || seen.has(p)) return;
+    seen.add(p);
+    out.push(p);
+  };
+  let hit: RegExpExecArray | null;
+  IMAGE_ARCHIVE_MARK_RE.lastIndex = 0;
+  while ((hit = IMAGE_ARCHIVE_MARK_RE.exec(src)) !== null) push(hit[1]);
+  IMAGE_JSON_FIELD_RE.lastIndex = 0;
+  while ((hit = IMAGE_JSON_FIELD_RE.exec(src)) !== null) push(hit[1]);
+  return out;
+}
+
+async function attachImagesToMessages(messages: Message[]): Promise<void> {
+  try {
+    // 从后往前找"含标记且未尝试过"的消息，最多处理 N 条
+    const candidates: Message[] = [];
+    for (let i = messages.length - 1; i >= 0 && candidates.length < IMAGE_INJECT_MAX_MESSAGES; i--) {
+      const m = messages[i];
+      if (m.imagePartsTried) continue;
+      // ★ C5：用共享提取函数判"这条消息里有没有图片路径"（认 `已存档:` 与 JSON file 两种形态）
+      if (!extractImagePaths(m.content || '').length) continue;
+      candidates.push(m);
+    }
+    if (!candidates.length) return;
+
+    // 取 fs 适配器（core 内已在用；服务端 Electron 环境有实现）
+    const { getPlatformAdapter } = await import('@yan-zhi/core');
+    let fs: any;
+    try { fs = getPlatformAdapter().fs; } catch { return; } // 无适配器（如纯 Web 端）→ 跳过，保持现状
+    if (!fs?.readFileBase64) return;
+
+    let injected = 0;
+    for (const m of candidates) {
+      if (injected >= IMAGE_INJECT_MAX_TOTAL) break;
+      // ★ C5：共享提取函数（认 `已存档:` 文本 与 JSON `file`/`keptTo` 字段）
+      const paths = extractImagePaths(m.content || '');
+      if (!paths.length) continue;
+      const parts: Array<{ mime: string; base64: string }> = [];
+      for (const p of paths) {
+        if (injected + parts.length >= IMAGE_INJECT_MAX_TOTAL) break;
+        try {
+          const abs = resolveToolPath(p, currentWorkspaceDir());
+          const exists = await fs.exists(abs).catch(() => false);
+          if (!exists) continue; // 文件已清理/路径失效 → 跳过（不标记 tried，可能是别的工作目录）
+          const base64 = await fs.readFileBase64(abs);
+          if (!base64) continue;
+          parts.push({ mime: mimeOfPath(abs), base64 });
+        } catch { /* 单张失败不影响其它 */ }
+      }
+      if (parts.length) {
+        m.imageParts = parts;
+        injected += parts.length;
+      } else {
+        // ★ 一个都没读到 → 标记"已尝试"，避免每步重复 stat 同一批失效路径
+        m.imagePartsTried = true;
+      }
+    }
+  } catch (e: any) {
+    // ★ fail-safe：注入图片失败**绝不能**影响主链路（退化为现状：纯文本发送）
+    logger.warn('[llm-task] 图片注入失败（降级为纯文本）:', e?.message || e);
+  }
+}
+
+/** 由扩展名推 MIME（只处理图片；其它返回 image/jpeg 兜底） */
+function mimeOfPath(p: string): string {
+  const ext = String(p).split('.').pop()?.toLowerCase() || '';
+  const map: Record<string, string> = {
+    png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
+    webp: 'image/webp', gif: 'image/gif', bmp: 'image/bmp',
+  };
+  return map[ext] || 'image/jpeg';
+}
+
+/** 当前工作目录（用于把相对路径解析成绝对路径）；取不到返回 null（resolveToolPath 会自行兜底） */
+function currentWorkspaceDir(): string | null {
+  return serverState.workspaceDir || null;
+}
+
+/** `injectUserMessage` 的返回契约 */
+export interface InjectResult {
+  status: 'injected' | 'no-task';
+  /** 命中幂等键（或本次落库）的真实消息 id —— 前端据此**本地立即回显**，不依赖 SSE 回放 */
+  msgId?: string;
+  /** 本次调用是否命中已有幂等记录（true=重复点击/重试，未新增消息） */
+  duplicate?: boolean;
+}
+
 /** 该会话是否有运行中任务（有则返回 taskId）—— 供路由层在创建前做「注入复用」判定 */
 export function findRunningTaskId(conversationId: string, userId?: string): string | null {
   for (const t of tasks.values()) {
@@ -689,19 +997,41 @@ export function findRunningTaskId(conversationId: string, userId?: string): stri
   return null;
 }
 
-export function injectUserMessage(conversationId: string, content: string, userId: string): 'injected' | 'no-task' {
+/** 运行中注入用户追加消息（输入框「立即发送」）。
+ *  语义：消息立即落库并推送给前端可见，模型在**下一轮** LLM 调用时从 loadMessages 读到它；
+ *  为此把 msgId 记进 task.pendingInjects —— 本轮即便模型不再调工具也不 finish，多跑一轮把消息带上。
+ *  与「排队等任务结束」的区别就在这里：排队消息不落库、不打断本轮，等任务结束后由前端起新任务。
+ *
+ *  ★★★ 幂等（2026-10-09 用户实报「同一个消息点击多次会发送 n 次」）：
+ *    「立即发送」按钮此前无任何幂等 —— 用户连点几下就真的注入几条（库里多条同内容 user 消息，
+ *    模型下一轮看到重复指令）。三层一起收口：
+ *      ① 前端按 clientMsgId 做在途守卫（第二轮点击直接忽略）；
+ *      ② 前端把队列条目 id 当幂等键随请求下发；
+ *      ③ 本函数按 clientMsgId 去重（也覆盖网络重试：同一 id 第二次直接返回既有结果，不再落库）。
+ *  @param clientMsgId 前端队列条目 id（幂等键）；缺省时退化为"不去重"（旧调用方兼容）。
+ *  @returns {status:'injected', msgId, duplicate} | {status:'no-task'}（前端应走正常发送） */
+export function injectUserMessage(conversationId: string, content: string, userId: string, clientMsgId?: string): InjectResult {
   const text = String(content || '');
-  if (!text.trim()) return 'no-task';
+  if (!text.trim()) return { status: 'no-task' };
   let target: LlmTask | undefined;
   for (const t of tasks.values()) {
     // 只注入到「本用户的、该会话的、运行中」任务：既防越权，也保证 pendingInjects 生效
     if (t.conversationId === conversationId && t.status === 'running' && t.userId === userId) { target = t; break; }
   }
-  if (!target) return 'no-task';
+  if (!target) return { status: 'no-task' };
+  const key = String(clientMsgId || '').trim();
+  // ★ 幂等命中（{clientMsgId → msgId} 记账，随任务存活）：重复点击 / 网络重试第二次直接复用同一 msgId，
+  //   **不重复落库、不重复 emit**。命中即说明该内容早已进过 pendingInjects（或被消费过），
+  //   直接回既有 msgId 让前端回显即可。
+  if (key) {
+    const hit = target.injectedByClientId.get(key);
+    if (hit) return { status: 'injected', msgId: hit, duplicate: true };
+  }
   const msgId = insertMessage(conversationId, target.userId, 'user', text);
   emit(target, { type: 'message:added', message: { id: msgId, role: 'user', content: text } });
   target.pendingInjects.push(msgId);
-  return 'injected';
+  if (key) target.injectedByClientId.set(key, msgId);
+  return { status: 'injected', msgId };
 }
 
 /** 订阅任务事件（从 since 索引开始重放 + 后续实时事件） */
@@ -743,6 +1073,9 @@ export function abortTask(taskId: string) {
   if (!task) return;
   task.abortController.abort();
   task.status = 'aborted';
+  // 放行「收尾等后台子智能体」的挂起点（否则它挂到后台任务自然结束才醒，abort 应立刻响应）
+  try { task.backgroundDrainWaiter?.(); } catch {}
+  task.backgroundDrainWaiter = undefined;
   // abort 优先于暂停：先放行所有暂停挂起者（它们醒来后看到 aborted 信号即退出）
   if (task.pauseWaiters) {
     for (const w of task.pauseWaiters) { try { w(); } catch {} }
@@ -806,6 +1139,28 @@ async function waitIfPaused(task: LlmTask): Promise<void> {
   if (task.abortController.signal.aborted) throw new DOMException('Aborted', 'AbortError');
   // resume 后若再次被 pause（快速往返），递归等待下一次放行
   if (task.paused) return waitIfPaused(task);
+}
+
+/**
+ * 等待「在跑的后台子智能体跑完」（2026-10-09）：收尾时若还有后台任务，主循环挂在这里
+ * 而不是直接 finish —— 保住前端 SSE 订阅（= 保住 browser_* 的前端执行通道）。
+ *
+ * ★ 零 token：只是等 promise，不调 LLM。
+ * ★ abort 可打断；暂停（paused）也尊重 —— 复用 waitIfPaused 的挂起语义。
+ * ★ 每有一个后台任务结束就唤醒一次，醒来复检：仍有人在跑 → 继续等（新启动的也算）。
+ */
+async function waitForBackgroundSubAgents(task: LlmTask): Promise<void> {
+  while (task.backgroundSubAgents.size > 0) {
+    if (task.abortController.signal.aborted) throw new DOMException('Aborted', 'AbortError');
+    await waitIfPaused(task);
+    await new Promise<void>((resolve) => {
+      task.backgroundDrainWaiter = resolve;
+      // abort 时立刻放行（否则挂到天荒地老）
+      const onAbort = () => { task.backgroundDrainWaiter = undefined; resolve(); };
+      task.abortController.signal.addEventListener('abort', onAbort, { once: true });
+    });
+    task.backgroundDrainWaiter = undefined;
+  }
 }
 
 function unattendedToolResult(toolName: string): string {
@@ -1410,6 +1765,7 @@ export function cleanupTasks(maxAgeMs: number = 30 * 60 * 1000) {
   for (const [id, task] of tasks) {
     if (task.status !== 'running' && now - task.createdAt > maxAgeMs) {
       tasks.delete(id);
+      forgetTaskScopedState(id); // ★ A5：一并清任务级 Map（此前**永不清理** → 无界增长）
     }
     // running 任务超 2 小时强制中止并清理（防内存泄漏）
     if (task.status === 'running' && now - task.createdAt > maxRunMs) {
@@ -1417,24 +1773,167 @@ export function cleanupTasks(maxAgeMs: number = 30 * 60 * 1000) {
       task.status = 'failed';
       task.error = '任务运行超时（超过 2 小时）';
       tasks.delete(id);
+      forgetTaskScopedState(id); // ★ A5：同上
     }
+  }
+  // ★★★ A5（2026-10-09）：`autoDiagnoseLastAt` 是**会话级 45s 节流**表，
+  //   键是 conversationId（不是 taskId）⇒ **不能在任务终态删**（删了节流失效、
+  //   同一会话连续编辑会重复跑诊断）。它按**时间**淘汰：只保留仍在节流窗口内的条目。
+  //   ★ 用 `pruneAutoDiagnoseThrottle()`（函数调用）而非直接引用 —— 该 Map 声明在文件
+  //     更靠后处，直接引用虽在"定时器 5 分钟后才跑"的时序下不会触发 TDZ，
+  //     但那依赖时序巧合；走函数调用则**完全不依赖声明位置**（本仓踩过 TDZ 类问题）。
+  pruneAutoDiagnoseThrottle(now);
+}
+
+/**
+ * ★★★ A5（2026-10-09）：清理**任务级**辅助状态。
+ *
+ * ★ 为什么必须（实测）：`verifyStateByTask`（key = `task.id`）此前**只有写入、从不删除**
+ *   → 每个跑过的任务永久留一条（`{touched, verified, nudges}`）→ 长跑进程/高频会话下
+ *   **无界增长**（内存缓慢泄漏，且不可观测）。
+ * ★ 为什么只清 `verifyStateByTask`：另一个 Map `autoDiagnoseLastAt` 的键是
+ *   **conversationId**（会话级节流表），语义不同 —— 在任务终态删它会**破坏节流**
+ *   （见 `pruneAutoDiagnoseThrottle` 的时间淘汰）。
+ * ★ 判据：**同一处声明、键语义不同的两个 Map，清理策略必须分别定** ——
+ *   "顺手一起删"会把节流表删坏（那是另一个方向的 bug）。
+ */
+function forgetTaskScopedState(taskId: string): void {
+  verifyStateByTask.delete(taskId);
+}
+
+/** 按时间淘汰会话级自动诊断节流表（见 `autoDiagnoseLastAt` 注释） */
+function pruneAutoDiagnoseThrottle(now: number): void {
+  for (const [convKey, at] of autoDiagnoseLastAt) {
+    if (now - at > AUTO_DIAGNOSE_INTERVAL_MS) autoDiagnoseLastAt.delete(convKey);
   }
 }
 
-/** 启动时回收上次进程遗留的孤儿任务：DB 里 running/waiting_tool → interrupted。
- *  简化版未做运行时持久化，此处仅清理 DB 残留（若有），并清空内存任务表。 */
+/**
+ * ★★ A5（2026-10-09）：辅助状态的**规模观测出口**（供守门测试与运维排查）。
+ *
+ * ★ 为什么必须导出：这两个 Map 此前**没有任何可观测手段** —— 泄漏是"看不见"的
+ *   （与"记忆体积可观测"同族：先能看见，才谈治理）。规模可观测后，
+ *   守门测试才能**真跑**断言"清理真的生效"，而不是只查源码字符串。
+ * ★ 只读（返回数字），不改任何状态。
+ */
+export function auxStateSizes(): { verifyState: number; autoDiagnoseThrottle: number } {
+  return { verifyState: verifyStateByTask.size, autoDiagnoseThrottle: autoDiagnoseLastAt.size };
+}
+
+/**
+ * ★★★ 手动压缩（D3-转，2026-10-10）：用户主动「现在压一下」。
+ *
+ * ★ 为什么需要：自动压缩只在超过 `target`（有效窗口 = 标称×25%）时触发；
+ *   用户有时**明知上下文很满**（想省钱/提速/避免触顶）却没有手段提前压缩。
+ *
+ * ★ 为什么放在本文件（而不是新写一份压缩）：这里能直接复用**同一套流水线**——
+ *   `buildContextView` + `mainlineMessages`（剔除子智能体）+ `loadPlatform/loadModel`
+ *   （解析摘要模型）+ `summaryCache` 语义（增量摘要）。**另写一份必然漂移**。
+ *
+ * ★ 与自动压缩的唯一差别：传 `forceCompress: true`（跳过阈值判定），
+ *   其余（摘要/落库/兜底/配对保护）**完全同一条路径**。
+ *
+ * @returns 压缩摘要与统计（供前端回显）；失败返回 `{ ok: false, error }`
+ */
+export async function compressConversationNow(
+  conversationId: string,
+  userId: string,
+): Promise<{ ok: boolean; error?: string; compacted?: boolean; summary?: string; coveredCount?: number; tokensBefore?: number; tokensAfter?: number }> {
+  try {
+    const conv = db.prepare('SELECT platform_id, model_id FROM conversation WHERE id = ?').get(conversationId) as
+      | { platform_id?: string | null; model_id?: string | null } | undefined;
+    if (!conv) return { ok: false, error: '会话不存在' };
+    // 模型：优先会话自己的，回落第一个可用（与"记忆抽取/压缩前抢救"同一口径）
+    const platform = conv.platform_id ? loadPlatform(conv.platform_id, userId) : null;
+    const model = platform && conv.model_id ? loadModel(conv.model_id, userId, platform.id) : null;
+    if (!platform || !model) return { ok: false, error: '该会话未绑定可用的模型平台，无法生成摘要（请先在会话里选择模型）' };
+
+    const raw = mainlineMessages(loadMessages(conversationId))
+      .filter((m) => m.content || m.toolCalls || m.role === 'tool' || (m as any).reasoningContent);
+    if (!raw.length) return { ok: false, error: '会话没有可压缩的消息' };
+
+    let captured = '';
+    const view = await buildContextView({
+      conversationId,
+      userId,
+      rawMessages: raw,
+      model,
+      keepRecent: 6,
+      keepFirst: 2,
+      summaryCache: { ids: [], summary: '' },
+      setSummaryModel: (cw) => cw.setSummaryModel(platform, model),
+      // ★ 手动触发：跳过阈值判定（其余走同一条流水线）
+      forceCompress: true,
+      beforeCompress: async (toCompress) => {
+        // ★ 与自动路径一致：压缩前把即将被吞掉的细节先落盘（记忆抢救），失败不阻塞压缩。
+        //   ★ 用**同一个** `flushMemoriesBeforeCompression`（真实签名：
+        //     `(params, toCompress)`）—— 不另写一份（另写必然漂移）。
+        try {
+          await flushMemoriesBeforeCompression(
+            { userId, conversationId, agentId: null, platform, model },
+            toCompress,
+          );
+        } catch { /* 不阻塞 */ }
+      },
+    });
+    const latest = getLatestMessageSummary(conversationId);
+    captured = latest?.summary || '';
+    return {
+      ok: true,
+      compacted: view.compacted,
+      summary: captured,
+      coveredCount: latest?.messageIds?.length || 0,
+      tokensBefore: view.tokens,
+      tokensAfter: view.tokens,
+    };
+  } catch (e: any) {
+    return { ok: false, error: e?.message || String(e) };
+  }
+}
+
+/**
+ * 启动时回收上次进程遗留的孤儿任务：DB 里 running/waiting_tool → interrupted。
+ *
+ * ★★★ 区分「开发热重载」与「真实重启」（2026-10-09，high）：
+ *   背景（实据）：实测 16 次任务中断里 **13 次是「服务重启，任务被中断」**，且时间**聚集在开发日**
+ *   （10-07 一天 9 次）—— `apps/server/scripts/dev.cjs:101` 用 `tsx watch` 启动，
+ *   **每改一次源码就重启一次进程**，正在跑的任务被整批标 interrupted。用户体感就是
+ *   「任务老是跑不起来 / 后面的任务执行不了」，而归因却是"会话太多"（相关而非因果）。
+ *
+ *   两种重启的**后果完全不同**：
+ *     · 开发热重载：任务计划（DB 的 task_plan_json）、进度明细（工作目录 progress.md）、
+ *       成片等产物**全都在**，用户发一句「继续」就能接上 → 应提示"可继续"而非"重发"。
+ *     · 真实重启/崩溃：用户主动退出或进程被系统杀掉，同样有落盘产物，但语义上更接近"意外"。
+ *
+ *   ⇒ 判据不是"重启了就一律 interrupted"，而是**告诉用户"东西还在、能接着做"**。
+ *   ★ 标记来源：`YZ_HOT_RELOAD=1`（由 `apps/server/scripts/dev.cjs` 注入；生产路径不设）
+ *     —— 与启动器同源，不臆造判据。生产行为**完全不变**（未设该变量时走原分支）。
+ *
+ * @returns 回收条数
+ */
 export function markOrphanTasksInterrupted(): number {
   let n = 0;
+  // ★ 只认显式注入的标记：未设 = 生产/真实重启 → 保持既有行为（零风险）
+  const hotReload = process.env.YZ_HOT_RELOAD === '1';
   try {
     const rows = db.prepare("SELECT id, conversation_id, user_id FROM llm_task WHERE status IN ('running','waiting_tool')").all() as Array<{ id: string; conversation_id: string; user_id?: string }>;
     for (const r of rows) {
       try {
-        db.prepare("UPDATE llm_task SET status = 'interrupted', error = '服务重启，任务被中断', updated_at = ? WHERE id = ?").run(Date.now(), r.id);
+        const errText = hotReload
+          ? '开发热重载（tsx watch）中断，计划与进度已保留，可直接继续'
+          : '服务重启，任务被中断';
+        // ★ 热重载不再叫「interrupted」——它**不是失败**，而是一次可续的暂停。
+        //   用独立状态让前端/查询能区分「可继续」与「已中断」，避免用户以为要重头再来。
+        const nextStatus = hotReload ? 'resumable' : 'interrupted';
+        db.prepare('UPDATE llm_task SET status = ?, error = ?, updated_at = ? WHERE id = ?').run(nextStatus, errText, Date.now(), r.id);
         // ★ 可见提示（2026-10-07）：重启把任务打断时，此前**界面零痕迹**（用户只看到任务凭空消失）。
         //   这里往原会话补一条说明，用户知道发生了什么、能直接重发。
         try {
           const uid = r.user_id || (db.prepare('SELECT user_id FROM conversation WHERE id = ?').get(r.conversation_id) as any)?.user_id || 'guest';
-          insertMessage(r.conversation_id, uid, 'assistant', '⚠️ 应用重启，正在运行的任务已中断。需要继续的话把要求再发一次即可（已完成的工作产物仍在）。');
+          const note = hotReload
+            ? '⚡ 开发热重载（改代码触发）暂停了正在运行的任务。**任务计划与进度均已保留**，直接发一句「继续」即可接着做（不必重发原要求）。'
+            : '⚠️ 应用重启，正在运行的任务已中断。需要继续的话把要求再发一次即可（已完成的工作产物仍在）。';
+          insertMessage(r.conversation_id, uid, 'assistant', note);
         } catch { /* 补提示失败不影响回收 */ }
         n++;
       } catch {}
@@ -1442,6 +1941,16 @@ export function markOrphanTasksInterrupted(): number {
   } catch { /* llm_task 表不存在则跳过 */ }
   // 内存中的任务本次启动不会有孤儿（新进程），清空即可
   return n;
+}
+
+/** ★ 该任务是否处于「可继续」状态（开发热重载暂停；计划/进度/产物都在）。
+ *  供前端与后续「一键继续」入口判断：resumable 与 interrupted 的 UX 不同 —— 前者应给"继续"，
+ *  后者才需要"重发」。 */
+export function isResumableTask(taskId: string): boolean {
+  try {
+    const row = db.prepare('SELECT status FROM llm_task WHERE id = ?').get(taskId) as { status?: string } | undefined;
+    return row?.status === 'resumable';
+  } catch { return false; }
 }
 
 /** 从 DB 查 llm_task 行（任务不在内存时，前端仍能查到"已中断"而不是 404） */
@@ -1623,6 +2132,9 @@ async function runReActLoop(task: LlmTask, params: {
           includeUiTools: !!params.includeUiTools,
           userContent: params.userContent,
           workspaceDir: params.workspaceDir,
+          // 只读会话：委派/编排工具会被裁掉 → 提示词改注入"分步规划 + 需放开权限"，
+          // 避免"用 plan_tasks 编排"与只读权限**互相矛盾**（同一事实两处判定必须同源）。
+          canDelegate: (task.permissionMode || 'readonly') !== 'readonly',
         });
     // 记忆注入：按用户当前输入检索相关记忆（recency×relevancy×type 加权、token 预算内），
     // 拼在 system prompt 尾部。检索失败绝不阻塞任务。
@@ -1652,6 +2164,17 @@ async function runReActLoop(task: LlmTask, params: {
         systemPromptBuilt += '\n\n' + formatTaskMemoryContext(taskMem);
       }
     } catch { /* 决策记录注入失败不影响任务 */ }
+    // ★★★ 任务进展「最近一批」注入（D5，2026-10-09）：progress.md 此前**完全不注入**，
+    //   而它是跨会话接力的**主要线索**（上一批做到哪、还剩什么）。按需读的设计导致
+    //   "长任务跑偏时模型不会主动去读"→ 换会话只能从头再来。
+    //   这里只注入**最近 3 条 / 1200 字**（是"接力棒"不是"流水账"），整份明细仍按需读。
+    try {
+      const prog = readTaskProgressForConversation(convId);
+      if (prog?.content) {
+        const block = formatProgressContext(prog.content);
+        if (block) systemPromptBuilt += '\n\n' + block;
+      }
+    } catch { /* 进展注入失败不影响任务 */ }
     // 任务类型 SOP 注入（「目录即任务」）：目录绑定了类型时，把类型执行手册 + 资源目录现状
     // 注入提示词，让模型按 SOP 分步引导用户，并知道 00-source 里已有哪些素材。
     try {
@@ -1679,6 +2202,14 @@ async function runReActLoop(task: LlmTask, params: {
         }
       }
     } catch { /* 任务类型注入失败不影响任务 */ }
+    // 领域经验注入（自进化经验层）：按任务文本匹配 .yan-zhi/experience/ 档案（索引 + 命中正文）。
+    // 历史任务的坑/验证过的步骤在此进入上下文 —— 同主题任务不再从零摸索。失败不阻塞。
+    try {
+      const expCtx = buildExperienceContextForConversation(convId, params.userContent, params.workspaceDir);
+      if (expCtx) {
+        systemPromptBuilt += '\n\n' + expCtx;
+      }
+    } catch { /* 经验注入失败不影响任务 */ }
     // 浏览器记忆不做自动注入：按需召回模式，智能体需要时调用 api_browser_memory_read 工具拉取
     if (modePrompt.length) {
       systemPromptBuilt += '\n\n## 模式指令（用户在输入框开启，优先级高于默认行为）\n' + modePrompt.join('\n');
@@ -1698,12 +2229,9 @@ async function runReActLoop(task: LlmTask, params: {
     // 记录会话级 MCP 挂载 serverId：无人值守（前端不在线）时后端直连 MCP 兜底
     task.mountedMcpServerIds = getMergedMcpServerIds(params.agentId ?? null, userId, convId);
 
-    // UI 交互工具 —— 必须委托前端执行（需要用户输入/确认）
-    // call_agent/list_sub_agents 已改为后端直接执行（后端有会话id，能查 DB）
-    const UI_TOOLS = new Set([
-      'ask_user', 'confirm_user', 'configure_model_platform', 'task_plan', 'task_step',
-      'image_analyze',
-    ]);
+    // UI 交互工具 —— 必须委托前端执行（需要用户输入/确认）。
+    // 定义在模块顶层（导出的 UI_TOOLS），此处直接复用：PlanRunner 派发计划项时
+    // 也传同一份，避免"主链路与调度器两套 uiTools 口径"（见顶层 UI_TOOLS 注释）。
 
     // 媒体生成工具（后端直执行，产物落会话交付目录）：成功后要登记到 conversation_file，
     // 否则产物只存在于对话气泡里，文件管理列表看不到。
@@ -1736,8 +2264,14 @@ async function runReActLoop(task: LlmTask, params: {
     let skippedArgTools: string[] = [];
     // 自动接力轮次计数（达 maxSteps 后接着跑的批次数，见循环结束后与 P0-2 决策分支）
     let continuationCount = 0;
-    // 自动接力总开关与上限：达单轮步数上限后自动接着做（用户可在智能体 config_json 里
-    // 设 autoContinueMaxRounds=0 关掉；默认 3 轮，防无限烧 token）
+    // ★★★ 停滞计数（2026-10-09，P1）：连续多少批**没有机械进展**（计划剩余步骤未下降）。
+    //   有进展就清零，连续 autoContinueMaxRounds 批无进展才停 —— 替代旧的"总批次数一刀切"。
+    let stallCount = 0;
+    // 上一批结束时计划的剩余步骤数（用于判定本批是否有机械进展；首次为 Infinity 让首批算"有进展"）
+    let lastPlanRemaining = Number.POSITIVE_INFINITY;
+    // 自动接力总开关与**停滞上限**：达单轮步数上限后自动接着做（用户可在智能体 config_json 里
+    // 设 autoContinueMaxRounds=0 关掉；默认 3 = **连续 3 批无进展**就停，不是总共 3 批）。
+    // ★ 总批次数另有硬顶 autoContinueHardCap，见常量定义块。
     const autoContinueMaxRounds = (() => {
       if (!params.agentId) return 3;
       try {
@@ -1756,8 +2290,8 @@ async function runReActLoop(task: LlmTask, params: {
 
     // ★ 外层 = 自动接力批次；内层 = 单批 ReAct 步数。
     //   到达单批上限后不终止，而是决策「是否接着做」：接力 → 继续外层；否则 return 收尾。
-    //   上限 autoContinueMaxRounds 保证不会无限续跑（默认 3，智能体 config_json 可关/可调）。
-    for (let batch = 0; batch <= autoContinueMaxRounds; batch++) {
+    //   总批次硬顶 autoContinueHardCap（防失控）；"何时停"由**停滞判定**决定（连续 N 批无进展）。
+    for (let batch = 0; batch <= autoContinueHardCap; batch++) {
       for (let step = 0; step < stepBudget; step++) {
         if (task.abortController.signal.aborted) throw new DOMException('Aborted', 'AbortError');
         await waitIfPaused(task); // 工具边界暂停：挂起时停在这里，resume/abort 后继续
@@ -1832,6 +2366,11 @@ async function runReActLoop(task: LlmTask, params: {
           content: m.content, toolCalls: m.toolCalls,
           toolCallId: m.toolCallId, createdAt: m.createdAt,
         })));
+
+        // ★★★ C1：发送前把 `已存档: <path>` 标记展开为图片块（视觉模型据此**真正看到**截图）。
+        //   放在这里（构建完 llmMessages 之后、发请求之前）—— 是主循环**唯一**的发送前时点。
+        //   ★ 只注入最近几条（见 attachImagesToMessages 的 C4 简化版说明）。
+        await attachImagesToMessages(llmMessages);
 
         // 文本模式工具调用：模型不支持 function calling 时，在 system prompt 注入 [TOOL_CALL] 格式说明
         const hasToolsToExpose = toolsBuilt.length > 0;
@@ -1910,21 +2449,31 @@ async function runReActLoop(task: LlmTask, params: {
          *   所以必须把 finish_reason 带下去，让截断走独立分支。
          */
         let streamFinish: string | undefined;
+        // ★★★ P0（2026-10-09）：本轮流是否**正常收尾**。core parseSSE 会在流结束时吐
+        //   一个 `terminated` 标记：见到 finish_reason/[DONE] → true，被掐断 → false。
+        //   默认 true（未收到标记时按正常处理，避免误判）；只有明确 false 才判截断。
+        //   此前无此判据 → 半截流被当"本轮完成"落库（content 空、reasoning 一半），
+        //   emit task:completed，用户看到的就是"转半天不出话"＝卡死。
+        // ★ 用持有对象而非裸 let：TS 不跟踪嵌套函数（consumeStream）内的赋值，
+        //   裸变量会被流分析收窄成字面量 `true` → `=== false` 被判"无重叠"而报错。
+        const streamFlag = { terminated: true };
 
-        try {
-          for await (const chunk of client.chatStream(llmMessages, {
-            tools: tools.length > 0 ? tools : undefined,
-            temperature: effOpts.temperature,
-            maxTokens: effOpts.maxTokens,
-            topP: effOpts.topP,
-            frequencyPenalty: effOpts.frequencyPenalty,
-            presencePenalty: effOpts.presencePenalty,
-            reasoningEffort: effOpts.reasoningEffort,
-            signal: task.abortController.signal,
-          })) {
+        // 把「消费一个流」抽成局部函数：正常路径与**断流重试**路径共用同一段累加逻辑
+        // （重复写两遍必然漂移 —— 本项目已有多次"平行实现行为漂移"教训）。
+        const consumeStream = async (opts: Parameters<typeof client.chatStream>[1], msgs: any[] = llmMessages) => {
+          for await (const chunk of client.chatStream(msgs, opts)) {
             if (chunk.finishReason) streamFinish = chunk.finishReason;
+            if (chunk.terminated !== undefined) streamFlag.terminated = chunk.terminated;
             if (chunk.usage) {
               usageTokens = (chunk.usage.promptTokens || 0) + (chunk.usage.completionTokens || 0);
+              // ★ D1 可观测（2026-10-09）：缓存命中的 token 数落日志 —— 先能看见才谈优化。
+              //   判据：**同会话连续两轮，第二轮 cachedTokens 应 > 0**；恒为 0 说明前缀不稳定
+              //   （最常见原因就是 system prompt 里的动态内容，如已被移除的尾部时间戳）。
+              if (chunk.usage.cachedTokens) {
+                task.cachedTokensTotal = (task.cachedTokensTotal || 0) + chunk.usage.cachedTokens;
+              }
+              task.lastPromptTokens = chunk.usage.promptTokens || 0;
+              task.lastCachedTokens = chunk.usage.cachedTokens || 0;
             }
             if (chunk.delta?.content) {
               fullContent += chunk.delta.content;
@@ -1962,6 +2511,21 @@ async function runReActLoop(task: LlmTask, params: {
               emit(task, { type: 'tool_call', toolCalls: [...toolCallAcc] });
             }
           }
+        };
+
+        const streamOpts = {
+          tools: tools.length > 0 ? tools : undefined,
+          temperature: effOpts.temperature,
+          maxTokens: effOpts.maxTokens,
+          topP: effOpts.topP,
+          frequencyPenalty: effOpts.frequencyPenalty,
+          presencePenalty: effOpts.presencePenalty,
+          reasoningEffort: effOpts.reasoningEffort,
+          signal: task.abortController.signal,
+        };
+
+        try {
+          await consumeStream(streamOpts);
         } catch (e: any) {
           if (isAbortError(e)) throw e;
           // 重试不带 tools
@@ -1980,30 +2544,65 @@ async function runReActLoop(task: LlmTask, params: {
               sysMsg.content = (sysMsg.content || '') + `\n\n## 工具调用（文本模式）\n当要调用工具时，在回复中以下格式输出（可多次调用）：\n[TOOL_CALL]{"name":"工具名","arguments":{"参数名":"参数值"}}[/TOOL_CALL]\n可用工具：\n${toolList}\n调用后等待返回结果，再继续回复。`;
             }
             fullContent = ''; fullReasoning = ''; toolCallAcc.length = 0; usageTokens = 0;
-            for await (const chunk of client.chatStream(llmMessages, {
+            streamFlag.terminated = true; // 文本模式重试同样重置收尾判定
+            // 文本模式重试不带 tools（端点不支持 tools 时的降级路径）
+            await consumeStream({
               temperature: effOpts.temperature, maxTokens: effOpts.maxTokens,
               signal: task.abortController.signal,
-            })) {
-              if (chunk.usage) {
-                usageTokens = (chunk.usage.promptTokens || 0) + (chunk.usage.completionTokens || 0);
-              }
-              if (chunk.delta?.content) {
-                fullContent += chunk.delta.content;
-                emit(task, { type: 'chunk', content: chunk.delta.content });
-              }
-              if (chunk.delta?.reasoningContent) {
-                fullReasoning += chunk.delta.reasoningContent;
-                emit(task, { type: 'chunk', reasoning: chunk.delta.reasoningContent });
-              }
-            }
+            });
           } else {
             throw e;
           }
         }
 
+        // ★★★ P0（2026-10-09）：流被上游/代理**提前掐断**的处置。
+        //
+        // 判据（三重，宁可保守不误伤正常流）：
+        //   ① core 明确报告未收尾（`terminated === false`）；**或**
+        //   ② finish_reason 为空、且**完全没有任何产出**（content/reasoning 皆空、无工具）——
+        //      正常流不会"一个字都不吐就结束"；
+        //   ③ 尚未进入工具调用（有 tool_calls 时就算被截断也交给下层按 finish_reason 处理续跑，不在此重来）。
+        // 处置：先**就地续写**（把已产出内容当 assistant 前缀 prefill 重新发起，追加到尾部）。
+        //   prefill **不带 tools**：部分 OpenAI 兼容端点在「assistant 前缀 + tools」下会 400（与既有
+        //   "重试不带 tools" 同口径）。续写用尽仍失败 → 标截断，由下方落**可见**错误、绝不静默留白。
+        if (
+          (streamFlag.terminated === false || (!streamFinish && !fullContent && !fullReasoning)) &&
+          toolCallAcc.length === 0
+        ) {
+          for (let attempt = 1; attempt <= STREAM_TRUNCATE_MAX_RETRY; attempt++) {
+            if (task.abortController.signal.aborted) throw new DOMException('Aborted', 'AbortError');
+            logger.warn(
+              `[llm-task] 流被提前中断（未收尾${streamFinish ? `, finish=${streamFinish}` : ''}），` +
+              `尝试续写 ${attempt}/${STREAM_TRUNCATE_MAX_RETRY}：已产出 content=${fullContent.length} 字 / reasoning=${fullReasoning.length} 字 ` +
+              `conv=${task.conversationId}`,
+            );
+            const prefill: Message[] = [...llmMessages];
+            const partial = fullContent || fullReasoning;
+            if (partial.trim()) prefill.push({ id: 'prefill', conversationId: '', role: 'assistant', content: partial, createdAt: 0 });
+            else prefill.push({ id: 'prefill', conversationId: '', role: 'user', content: '（上一轮响应中断，请继续完成你刚才的回复。）', createdAt: 0 });
+            // 续写前清标记：只认可本次续写是否收尾
+            streamFlag.terminated = true;
+            try {
+              await consumeStream({
+                temperature: effOpts.temperature,
+                maxTokens: effOpts.maxTokens,
+                signal: task.abortController.signal,
+              }, prefill); // 续写用临时 prefill（不改 llmMessages 本身，不动持久上下文）
+            } catch (e2: any) {
+              if (isAbortError(e2)) throw e2;
+              logger.warn('[llm-task] 续写调用失败：', e2?.message || e2);
+              break;
+            }
+            // 续写拿到终态、或有产出 → 视为修复成功，跳出重试
+            if (streamFlag.terminated && (fullContent.trim() || fullReasoning.trim() || toolCallAcc.length > 0)) break;
+          }
+        }
+
         // 把本轮 finish_reason 落到任务上，供工具执行层的空参拦截按真实原因分派文案
         // （见 LlmTask.lastFinishReason 注释：截断与"没生成"必须区别对待）
-        task.lastFinishReason = streamFinish;
+        // ★ P0（2026-10-09）：流被掐断而 finish_reason 为空时，显式标 'truncated' ——
+        //   否则下游看到 `undefined` 会归因成"模型没生成/参数被截断"，指向错误方向。
+        task.lastFinishReason = streamFlag.terminated === false ? 'truncated' : streamFinish;
         // ★ P1-9：累计本任务 token 消耗（usage 优先，缺失时与 estTokens 同口径粗估），
         // 供预算闸判定（checkTaskBudgetHit）。粗估口径：内容长度 / 2（与 estTokens 一致）。
         task.totalTokens = (task.totalTokens || 0) + (usageTokens || Math.round((fullContent.length + fullReasoning.length) / 2));
@@ -2089,6 +2688,18 @@ async function runReActLoop(task: LlmTask, params: {
           }
         }
 
+        // ★★★ P0（2026-10-09）不静默：续写仍失败且**正文为空**时，绝不留下"空气泡"
+        //   —— 旧行为正是 content='' + reasoning 半截 直接落库，用户看到"转半天不出话"。
+        //   落一条可见提示（reasoning 原文仍在行内可供排查），让用户知道"被中断了、可重试"，
+        //   而不是以为模型什么都没做。
+        if (!fullContent.trim() && streamFlag.terminated === false) {
+          fullContent = TRUNCATED_STREAM_NOTICE;
+          logger.warn(
+            `[llm-task] 断流且无正文留痕（msg=${assistantMsgId} conv=${task.conversationId} ` +
+            `reasoning=${fullReasoning.length} 字）—— 已落可见提示`,
+          );
+        }
+
         // 更新助手消息（tokens：provider usage 优先，缺失时按内容长度粗估，供 LLM 交互日志统计）
         const estTokens = usageTokens || Math.round((fullContent.length + fullReasoning.length) / 2);
         // 落库前补齐缺失的 call id：避免 assistant.tool_calls 与 tool 消息无法配对而被 sanitize 剥掉，
@@ -2119,6 +2730,28 @@ async function runReActLoop(task: LlmTask, params: {
           if (task.pendingInjects.length > 0) {
             task.pendingInjects = [];
             continue;
+          }
+          // ★★★ 后台子智能体仍在跑 → 不能在此 finish（2026-10-09，用户实测缺陷修复）。
+          //   直接 finish 会让前端关流 → task.subscribers 归零 → browser_* 失去前端执行通道
+          //   （回退服务端 Playwright = 另一个浏览器，预览面板看不到）→ pageAgent 停摆。
+          //   正解：**挂起等它们跑完**（零 token，不空转），拿到结果后唤醒本循环继续决策。
+          if (task.backgroundSubAgents.size > 0) {
+            const pending = task.backgroundSubAgents.size;
+            const holdMsg = `（本次收尾时仍有 ${pending} 个后台子智能体在运行，已就地等待它们完成，随后继续处理结果。）`;
+            try {
+              const hid = insertMessage(convId, userId, 'assistant', holdMsg);
+              emit(task, { type: 'message:added', message: { id: hid, role: 'assistant', content: holdMsg } });
+            } catch { /* 提示落库失败不影响等待 */ }
+            await waitForBackgroundSubAgents(task);
+            // 被终止：不再继续，走下方 abort 分支由外层收尾
+            if (task.abortController.signal.aborted) throw new DOMException('Aborted', 'AbortError');
+            // 把结果作为 user 消息灌进下一轮上下文（loadMessages 会带上），唤醒主智能体继续决策
+            const drained = task.pendingBackgroundResults.splice(0);
+            for (const r of drained) {
+              const id = insertMessage(convId, userId, 'user', r.text);
+              emit(task, { type: 'message:added', message: { id, role: 'user', content: r.text } });
+            }
+            continue; // 下一轮模型能看到后台结果并继续
           }
           // 空回复兜底：上一轮工具调用后模型返回空内容（常见于工具全失败），补提示避免用户看到空白
           if (!fullContent && !fullReasoning && step > 0) {
@@ -2267,12 +2900,15 @@ async function runReActLoop(task: LlmTask, params: {
       //
       // 注意：这一步只有在**真的跑到预算上限**时才执行；正常完成（无工具调用）在循环内
       // 已 return，不会到这里。
+      // ★ P1-9 修正（2026-10-09）：**预算口径优先于步数口径**。
+      //   原实现在预算触达时仍是 `budgetReached = stepBudget`（=最大循环数）走 else 分支，
+      //   于是落库文案永远是「已达到最大循环数（200）」—— 把真因（墙钟 15 分钟）掩盖成"步数不够"，
+      //   用户照着去加步数（错方向）。这里让预算触达时**先说预算**，步数信息并列为补充。
       const budgetReached = stepBudget;
-      // ★ P1-9：触达的是哪个预算（token/墙钟）就按哪个口径写文案，别都写成"最大循环数"
       let tipText = taskBudgetHit?.kind === 'tokens'
         ? `已达到任务 token 总预算（累计 ${taskBudgetHit.used} / 上限 ${taskBudgetHit.limit}），请检查任务是否需要拆分，或在智能体 config_json 调高 totalTokenBudget。`
         : taskBudgetHit?.kind === 'wallclock'
-        ? `已达到任务墙钟时间上限（${Math.round(taskBudgetHit.limit / 60000)} 分钟），请检查任务是否需要拆分，或在智能体 config_json 调高 wallClockMinutes。`
+        ? `已达到任务墙钟时间上限（${Math.round(taskBudgetHit.limit / 60000)} 分钟，已扣除等外部进程的时间），请检查任务是否需要拆分，或在智能体 config_json 调高 wallClockMinutes。`
         : `已达到最大循环数（${budgetReached}），请检查任务是否需要拆分或调高工具配置。`;
       let summaryText = '';
       try {
@@ -2293,7 +2929,14 @@ async function runReActLoop(task: LlmTask, params: {
         });
         summaryText = judged.summary;
         if (summaryText) {
-          tipText = `${summaryText}\n\n（注：本次任务已达到单批最大循环步数（${budgetReached}）。）`;
+          // ★ 2026-10-09 修：原实现**无条件**把 tipText 覆盖成"单批最大循环步数"，
+          //   把预算真因（墙钟/token）冲掉 → 库里只剩「注：本次任务已达到单批最大循环步数（200）」，
+          //   用户拿到的是"步数不够"的错方向。改为按实际触达的闸门措辞。
+          tipText = `${summaryText}\n\n（注：${taskBudgetHit
+            ? (taskBudgetHit.kind === 'tokens'
+              ? `本次任务已达到 token 总预算（${taskBudgetHit.used}/${taskBudgetHit.limit}）`
+              : `本次任务已达到墙钟时间上限（${Math.round(taskBudgetHit.limit / 60000)} 分钟，已扣除等外部进程的时间）`)
+            : `本次任务已达到单批最大循环步数（${budgetReached}）`}。）`;
         }
 
         // ── 决策：该不该自动接力 ──
@@ -2310,23 +2953,94 @@ async function runReActLoop(task: LlmTask, params: {
         //   偶发空参不再阻断（那正是最需要接力纠偏的场景）。
         const expectedContinue = judged.shouldContinue;
         const degenerate = consecutiveArgFailures >= EMPTY_ARGS_DEGENERATE_THRESHOLD;
-        // ★ P1-9：token/墙钟预算已耗尽 → 即使模型说该继续也不接力（接力只会立刻再触达、
-        //   白烧一次总结调用；与 degenerate 同性质的"结构性拒绝"）。
+        // ★★★ P1-9 修正（2026-10-09，high）：预算触达**不再无条件否决接力**。
+        //
+        //   原实现 `!budgetExhausted` 横在接力分支前 → 触达墙钟/token 后**一次都不接力**，
+        //   即使计划里还剩 7 步也照样「未自动续跑：任务墙钟时间已耗尽」。实测（会话 84412558）：
+        //   17.2 分钟触达 15 分钟墙钟 → 自动接力 0 次 → 用户体感"不能一趟跑出来"。
+        //   这与 2026-09-29 修掉的「reason 说该继续、结论却不续」是**同类毛病换了个闸门复发**。
+        //
+        //   ★ 新语义：预算是"该结账了"的信号，不是"该放弃"的信号 —— 只要
+        //     (a) 机械信号说还有活（计划有剩余步骤 / 模型自评未完成）且
+        //     (b) 不是真失控（未中止、未空转退化）
+        //   就**允许有限接力**；失控兜底由 autoContinueHardCap(30) + 停滞判定负责。
+        //
+        //   ★ 但必须防"预算已尽 → 接力立刻再触达 → 无限空转"：
+        //     · token 预算：接力前把**累计值对齐到预算**（否则下一批第一步就再次触发），
+        //       相当于"本任务已用满配额，这批是最后一次"；
+        //     · 墙钟：把**起点前移**为下批开始时刻，即"每批给一份完整墙钟预算"。
         const budgetExhausted = !!taskBudgetHit;
-        if (expectedContinue && !aborted && !degenerate && !budgetExhausted) {
+        if (expectedContinue && !aborted && !degenerate) {
           continuationCount++;
+          // ★★★ 总时长失控闸（2026-10-09）：弹性墙钟（每批一份）之后，批次数不足以兜底 ——
+          //   计划已被清空的会话里停滞闸会失效（noPlanTracked 恒真），只剩 30 批 × 15 分钟 = 最坏 7.5h。
+          //   这里按**任务总墙钟**（含等待，不做抵扣 —— 抵扣是给预算用的"干活时长"口径，
+          //   这里要的是"这台机器被占多久"）硬停。
+          const totalElapsedMs = Date.now() - (task.createdAt || Date.now());
+          if (totalElapsedMs >= TASK_TOTAL_WALL_CLOCK_HARD_CAP_MS) {
+            tipText = `${tipText}\n\n（接力已停止：任务总时长已达 ${Math.round(TASK_TOTAL_WALL_CLOCK_HARD_CAP_MS / 3600000)} 小时上限，为避免占用资源已终止。建议把任务拆成多次执行。）`;
+            const capId = insertMessage(convId, userId, 'assistant', tipText);
+            emit(task, { type: 'message:added', message: { id: capId, role: 'assistant', content: tipText } });
+            emit(task, { type: 'task:completed' });
+            task.status = 'completed';
+            void recordTaskProgress(task, 'max_steps', tipText, { steps: budgetReached });
+            void consolidateOnTaskEnd(task, summaryText || tipText);
+            void extractMemoryFromConversation(task);
+            return;
+          }
+          // 停滞判定（见 autoContinueHardCap 说明）：autoContinueMaxRounds 是"连续无进展"上限
+          const planRemainingNow = readPlanRemainingSteps(convId);
+          // ★ 无计划时的语义（2026-10-09 复核后**保持不变**，理由如下）：
+          //   原判据 `(noPlanTracked && expectedContinue)` 让"没计划"的会话算作有进展（停滞闸不生效）。
+          //   曾考虑改成"无计划 + 本批无产出 ⇒ 计入停滞"，但那需要引入新的数据源
+          //   （conversation_file 增量）与"本批区间"的新语义 —— 为一个次要改进引入两个新概念不划算，
+          //   且难以验证。当前兜底是**三层**：autoContinueHardCap(30 批) + TASK_TOTAL_WALL_CLOCK_HARD_CAP_MS
+          //   (4h) + cleanupTasks 的 2h 运行看门狗 ⇒ 不会失控。
+          //   ★ 真正的解药在别处：**修好计划落盘**（clearPlan 自毁）后，"无计划"不再长期存在，
+          //     停滞闸对本就最需要它的长任务恢复生效。
+          const noPlanTracked = lastPlanRemaining === 0 && planRemainingNow === 0;
+          const progressed = planRemainingNow < lastPlanRemaining || (noPlanTracked && expectedContinue);
+          if (progressed) stallCount = 0; else stallCount++;
+          lastPlanRemaining = planRemainingNow;
+          if (autoContinueMaxRounds > 0 && stallCount >= autoContinueMaxRounds) {
+            // 连续 N 批无进展 → 判定停滞，收尾（不再接力）
+            // 复用 tipText（既有契约：max_steps 必须复用已有总结，不重花一次 LLM）
+            tipText = `${tipText}\n\n（接力已停止：连续 ${stallCount} 批无新进展，判定已停滞。）`;
+            const stallId = insertMessage(convId, userId, 'assistant', tipText);
+            emit(task, { type: 'message:added', message: { id: stallId, role: 'assistant', content: tipText } });
+            emit(task, { type: 'task:completed' });
+            task.status = 'completed';
+            void recordTaskProgress(task, 'max_steps', tipText, { steps: budgetReached });
+            void consolidateOnTaskEnd(task, summaryText || tipText);
+            void extractMemoryFromConversation(task);
+            return;
+          }
           // 结构化记账：把「做到哪 + 还剩什么」落进空间记忆与进度明细（跨会话可见），
           // 再续下一批 —— 这就是用户说的"根据整理的记忆进行任务"。
           void recordTaskProgress(task, 'max_steps', tipText, {
             steps: budgetReached,
-            continuation: `自动接力第 ${continuationCount}/${autoContinueMaxRounds} 批`,
+            continuation: `自动接力第 ${continuationCount}/${autoContinueHardCap} 批`,
           });
           // 通知前端：不是结束，而是接着做（前端据此保持"运行中"态、不清输入锁）
-          const contMsg = `已达单批步数上限（${budgetReached} 步），**自动接力第 ${continuationCount}/${autoContinueMaxRounds} 批**继续推进。` +
+          const contMsg = `已达单批步数上限（${budgetReached} 步），**自动接力第 ${continuationCount} 批**继续推进（停滞计数 ${stallCount}/${autoContinueMaxRounds}）。` +
+            (budgetExhausted ? `（本批为预算触达后的有限接力：${taskBudgetHit!.kind === 'tokens' ? 'token 已达上限' : '墙钟已达上限'}，接力只做最后一批）` : '') +
             (judged.reason ? `（依据：${judged.reason}）` : '');
           const contId = insertMessage(convId, userId, 'assistant', contMsg);
           emit(task, { type: 'message:added', message: { id: contId, role: 'assistant', content: contMsg } });
-          emit(task, { type: 'continuation', round: continuationCount, maxRounds: autoContinueMaxRounds, reason: judged.reason });
+          emit(task, { type: 'continuation', round: continuationCount, maxRounds: autoContinueHardCap, reason: judged.reason });
+          // ★★★ 预算基线重置（2026-10-09）：预算触达后仍接力一次，必须让下一批有可用额度，
+          //   否则下一批第一步立刻再次触达 → 无限"接力-触达"空转。
+          //   · token：对齐到上限（这批是本任务最后一次）。
+          //   · 墙钟：起点前移为**此刻**（每批给一份完整墙钟预算）—— 对长任务这是关键：
+          //     出片这类任务单批就要 15 分钟以上，只有"每批一份预算"才能一趟跑完。
+          if (budgetExhausted) {
+            if (taskBudgetHit!.kind === 'tokens') {
+              task.totalTokens = taskBudgetHit!.limit;
+            } else {
+              task.budgetBaselineAt = Date.now();
+              task.waitCreditMs = 0;
+            }
+          }
           // ★ P1-8（2026-10-07）：接力前检查计划是否已与现实脱节 —— 现实变了计划不跟着变，
           //   下一批就会按过期计划做错事（planner-executor 共识：plan 会 stale，必须有 re-planning）。
           //   失败绝不阻塞接力（replan 是增强能力）。
@@ -2355,6 +3069,27 @@ async function runReActLoop(task: LlmTask, params: {
 
       const tipId = insertMessage(convId, userId, 'assistant', tipText);
       emit(task, { type: 'message:added', message: { id: tipId, role: 'assistant', content: tipText } });
+      // ★★★ 后台子智能体仍在跑 → 不 finish（2026-10-09，与"无工具调用收尾"同一闸）：
+      //   直接 emit task:completed 会让前端关流 → browser_* 失去前端执行通道 → pageAgent 停摆。
+      //   就地等待后把结果回灌、**继续外层接力批次**（等价于一次自动接力），让主智能体整合结果。
+      if (task.backgroundSubAgents.size > 0) {
+        const hold = `（仍有 ${task.backgroundSubAgents.size} 个后台子智能体在运行，已就地等待其完成后继续处理。）`;
+        try {
+          const hid = insertMessage(convId, userId, 'assistant', hold);
+          emit(task, { type: 'message:added', message: { id: hid, role: 'assistant', content: hold } });
+        } catch { /* 忽略 */ }
+        await waitForBackgroundSubAgents(task);
+        if (task.abortController.signal.aborted) throw new DOMException('Aborted', 'AbortError');
+        const drained = task.pendingBackgroundResults.splice(0);
+        for (const r of drained) {
+          const id = insertMessage(convId, userId, 'user', r.text);
+          emit(task, { type: 'message:added', message: { id, role: 'user', content: r.text } });
+        }
+        // 把步数预算还给这一批，让外层批次继续跑（bounded by autoContinueHardCap）
+        stepBudget = liveMaxSteps();
+        continuationCount++;
+        continue;
+      }
       emit(task, { type: 'task:completed' });
       task.status = 'completed';
       // 达最大步数 = 长任务最常见的"没跑完"形态：总结必须进空间记忆，
@@ -2366,6 +3101,30 @@ async function runReActLoop(task: LlmTask, params: {
       void extractMemoryFromConversation(task);
       return;
     } // ← 自动接力批次循环
+
+    // ★★ 兜底收尾（2026-10-09）：批次循环**跑尽**时仍可能处于 running。
+    //   为什么会有这条路径：两个收尾点引入"后台子智能体还在跑 → continue 等它"后，
+    //   若这类 continue 把 autoContinueMaxRounds 轮次消耗完，外层 for 会自然退出而**没有任何
+    //   emit task:completed** → 前端流永不关闭、任务永远显示"运行中"。原代码靠"收尾点都 return"
+    //   绕过了这点，现在必须显式兜底（同时也修复了原设计"最后一轮还在接力就无 finish"的隐患）。
+    if (task.status === 'running' && !task.abortController.signal.aborted) {
+      if (task.backgroundSubAgents.size > 0) {
+        try { await waitForBackgroundSubAgents(task); } catch { /* abort 时忽略，走 catch 收尾 */ }
+      }
+      const leftover = task.pendingBackgroundResults.splice(0);
+      for (const r of leftover) {
+        try {
+          const id = insertMessage(convId, userId, 'assistant', r.text);
+          emit(task, { type: 'message:added', message: { id, role: 'assistant', content: r.text } });
+        } catch { /* 忽略 */ }
+      }
+      if (!task.abortController.signal.aborted) {
+        emit(task, { type: 'task:completed' });
+        task.status = 'completed';
+        void recordTaskProgress(task, 'completed', lastAssistantText(convId));
+        void extractMemoryFromConversation(task);
+      }
+    }
 
   } catch (e: any) {
     if (isAbortError(e)) {
@@ -2401,7 +3160,7 @@ async function runReActLoop(task: LlmTask, params: {
  * （预算策略与常量同源，避免"判定逻辑复刻"）。此处只做 task 对象的取参适配。
  */
 function checkTaskBudgetHit(task: LlmTask): { kind: 'tokens' | 'wallclock'; used: number; limit: number } | null {
-  return sharedCheckTaskBudgetHit(task.budgets, task.totalTokens || 0, task.createdAt || Date.now());
+  return sharedCheckTaskBudgetHit(task.budgets, task.totalTokens || 0, task.budgetBaselineAt || task.createdAt || Date.now(), Date.now(), task.waitCreditMs || 0);
 }
 
 /**
@@ -2436,7 +3195,8 @@ async function decideAutoContinue(args: {
   //   看起来"什么都没产出"的原因之一。
   //   改为：照常生成总结（这是用户最需要的产出），只是把"不接力"登记到 blockedBy。
   const disabled = autoContinueMaxRounds <= 0;
-  const roundsExhausted = !disabled && continuationCount >= autoContinueMaxRounds;
+  // 见 autoContinueHardCap：autoContinueMaxRounds 是停滞上限（调用方按进展判），这里只判硬顶
+  const hardCapped = !disabled && continuationCount >= autoContinueHardCap;
 
   // ④-a 任务计划里还有未完成步骤 → 直接判定该继续（机械信号比模型自评可靠）
   const planRemaining = readPlanRemainingSteps(conversationId);
@@ -2452,13 +3212,13 @@ async function decideAutoContinue(args: {
 
   // 模型/计划认为该继续 → 但可能被闸门挡住，blockedBy 说明是哪个闸
   const wanted = modelSaysContinue || planRemaining > 0;
-  const shouldContinue = wanted && !disabled && !roundsExhausted;
+  const shouldContinue = wanted && !disabled && !hardCapped;
   const reason = planRemaining > 0
     ? `任务计划尚有 ${planRemaining} 个未完成步骤`
     : modelSaysContinue ? '模型自评任务未完成' : '模型自评任务已完成';
   const blockedBy = !wanted ? undefined
     : disabled ? '自动接力已关闭（autoContinueMaxRounds=0）'
-    : roundsExhausted ? `已达自动接力上限（${autoContinueMaxRounds} 批）`
+    : hardCapped ? `已达自动接力硬顶（${autoContinueHardCap} 批）`
     : undefined;
   return { shouldContinue, summary, reason, blockedBy };
 }
@@ -2716,6 +3476,12 @@ async function maybeAutoDiagnose(task: LlmTask, filePath: string, toolText: stri
   }
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// ★ 防失控循环闸门（2026-10-09）：见 services/tool-loop-guard.ts 顶部注释。
+//   实例：浏览器助手核实抖音评论区置顶入口（入口不存在），模型连续几十次
+//   browser_run_script 换脚本硬试。两条线：同名同参重复 ≥3 次拦 / 同一工具
+//   严格连续 ≥8 次拦。只拦不罚，返回指引文本让模型走汇报收口路径。
+
 async function executeTool(
   task: LlmTask,
   registry: ReturnType<typeof getToolRegistry>,
@@ -2752,6 +3518,15 @@ async function executeTool(
 
   // 参数归一化兜底：模型文本模式工具调用常把 url 放到 target/address/link 等字段，补齐避免误报缺参
   args = normalizeToolArgs(toolName, args);
+
+  // ★ 防失控循环闸门（2026-10-09）：位置在归一化之后——key 按归一化后的参数算，
+  //   模型把同一意图换字段名重发也能被识别为重复。放在缺参检查之前：连缺参调用
+  //   都在刷屏的更该拦。被拦时提前 return，后续快照/权限副作用一律不发生。
+  const loopBlock = checkToolLoop(task, toolName, args);
+  if (loopBlock) {
+    logger.warn(`[llm-task] 循环拦截: conv=${task.conversationId} tool=${toolName}`);
+    return loopBlock;
+  }
 
   // 必填参数防护：arguments 为空/残缺时不带空参硬执行，直接给模型可行动的指引。
   // ★★★ 文案已于 2026-09-29 修正：此前写"可能原因：输出被长度上限截断 / 模型不擅长工具调用"，
@@ -2927,6 +3702,33 @@ async function executeTool(
     }
   }
 
+  // ── 多智能体编排（2026-10-08）：plan_tasks / get_plan_status / reassign_task ──
+  // 仅主智能体（depth 0）可编排：子智能体再规划会造成 DAG 无限展开。
+  // plan_tasks 异步启动 PlanRunner，主循环不阻塞 —— 结果/失败由调度器投递回会话唤醒。
+  if (toolName === 'plan_tasks') {
+    if (depth >= 1) return '子智能体不能再做任务规划（仅主智能体可编排，防止 DAG 无限展开）';
+    const r = createPlan(task, args);
+    if (!r.ok) return r.message;
+    // 把本次任务的 uiTools 挂到 task 上：PlanRunner 派发计划项时透传给 runSubAgent，
+    // 保证子智能体工具面裁剪口径与主链路一致（pageAgent 的 browser_navigate 等）。
+    (task as any).uiTools = uiTools;
+    // ★ 同步等待计划跑完（见 runPlanToCompletion 注释：fire-and-forget 会导致主智能体
+    //   在计划完成前就 finish、唤醒失效）。阻塞期间不调 LLM；计划内部仍并行派发子任务。
+    const summary = await runPlanToCompletion(task, r.planId);
+    return `${r.message}\n\n${summary}`;
+  }
+  if (toolName === 'get_plan_status') {
+    return getPlanStatusText(task.conversationId, args?.planId);
+  }
+  if (toolName === 'reassign_task') {
+    if (depth >= 1) return '子智能体不能再重分配任务（仅主智能体可编排）';
+    const r = reassignPlanItem(task, args || {});
+    if (!r.ok || !r.planId) return r.message;
+    (task as any).uiTools = uiTools;
+    const summary = await runPlanToCompletion(task, r.planId);
+    return `${r.message}\n\n${summary}`;
+  }
+
   // call_agent → 后端直接执行子 ReAct 循环（仅主智能体可调用，子智能体深度=1 不可再嵌套）
   if (toolName === 'call_agent') {
     if (depth >= 1) return '子智能体不能再调用子智能体（深度仅允许 1 层）';
@@ -3058,6 +3860,15 @@ async function executeTool(
     return lines.join('\n');
   }
 
+  // get_sub_task_detail → 后端直接查 DB：子任务执行详情（编排者分析子智能体失败原因用）
+  if (toolName === 'get_sub_task_detail') {
+    const runId = String(args?.runId || '');
+    if (!runId) return 'runId 为必填项。子任务 ID 在 call_agent / spawn_subagent 返回结果末尾的「子任务ID」处获取。';
+    const trace = loadSubTaskTrace(runId);
+    if (trace.length === 0) return `未找到子任务 ${runId} 的执行记录（可能：ID 抄错 / 子任务尚未开始落库 / 属于另一会话）。`;
+    return formatSubTaskTrace(trace, Math.min(Number(args?.maxSteps) || 40, 200));
+  }
+
   // list_models → 后端直接查 DB，返回语义化的可用模型清单（平台 + type + capabilities + description）
   if (toolName === 'list_models') {
     return listAvailableModels(task.userId, args);
@@ -3089,14 +3900,69 @@ async function executeTool(
   // navigate 打预览 BrowserView、click/type 等打服务端 headless Playwright 的双浏览器分裂
   // （Playwright 页面从未被导航 → locator.fill 30s 超时死循环）。
   const isBrowser = toolName.startsWith('browser_');
+  // ★★★ 执行面直连化（P1-2，2026-10-10）：浏览器工具**三档**分发。
+  //
+  // 为什么要直连：旧路径（下方 SSE 委托）要求**渲染层在线且有订阅者** ——
+  //   订阅者缺失时要等 15s 重连窗口（`:3896`），失败再等 8s（`:3906`）⇒ 单次最坏卡 23s；
+  //   无订阅者时更直接 `unattendedToolResult()`（**根本不执行**）。"一断全停"的根因就在这里。
+  //   ⇒ 主进程新开 loopback 端点后由服务端**直连**（不经 UI 层），结构上去掉这条依赖。
+  //
+  // ★ 判定口径**只有一处**：`decideBrowserExecution()`（browser-bridge.ts）。
+  //   前端不得自己探端点 —— 那会造出第二份判据（必然漂移），且会把 token 暴露到渲染层。
+  //
+  // ★ 灰度：off（本块整体跳过，行为逐字不变）/ shadow（只读走桥）/ on（读写走桥，失败降级 SSE）
+  //   / strict（读写走桥，SSE 视为错误）。
+  if (isBrowser) {
+    const exec = decideBrowserExecution(toolNameToAction(toolName));
+    if (exec === 'bridge') {
+      const bridgeTimeout = resolveFrontendToolTimeout(toolName);
+      try {
+        const raw = await callBrowserBridge(task.conversationId, toolName, args, bridgeTimeout);
+        // ★ 截图归档与 SSE 路径**共用同一后处理出口**（见 archiveDelegatedScreenshot 注释）——
+        //   否则"截图进临时区但登记不进 conversation_file"会以新形态复发（C6 刚修过同一处）。
+        if (toolName === 'browser_screenshot') {
+          return await archiveDelegatedScreenshot(raw, task, metaOut);
+        }
+        return raw;
+      } catch (e: any) {
+        if (e?.name === 'AbortError' || task.abortController.signal.aborted) throw e;
+        // strict：桥失败**不降级**（这条档位就是为了证明"零依赖渲染层"，静默降级会掩盖结论）
+        if (bridgeMode() === 'strict') {
+          return `浏览器工具 ${toolName} 直连执行面失败（strict 档不降级）：${e?.message || e}`;
+        }
+        // on：降级回 SSE 一次（打点，便于观察桥的可靠性；不静默）
+        logger.warn(`[browser-bridge] 桥调用失败，降级回 SSE 委托: ${toolName} conv=${task.conversationId} err=${e?.message || e}`);
+      }
+    }
+  }
+  // SSE 瞬断兜底（2026-10-09）：订阅者暂缺时先等一个重连窗口（前端 0.5s→5s 退避重连），
+  // 恢复就继续走前端执行面；仍无人订阅才落回原有离线路径。
+  // 原实现 subscribers=0 立即落到离线 Playwright/报错 —— 产线长任务表现为「一断全停」。
+  if (isBrowser && task.subscribers.size === 0) {
+    await waitForFrontendSubscriber(task, 15000);
+  }
   if (isBrowser && task.subscribers.size > 0) {
+    let delegated: string;
     try {
-      return await executeToolViaFrontend(task, toolName, args, toolCallId, depth);
+      delegated = await executeToolViaFrontend(task, toolName, args, toolCallId, depth);
     } catch (e: any) {
       if (e?.name === 'AbortError' || task.abortController.signal.aborted) throw e;
-      // 前端委托超时/断连（SSE 瞬断、页面关闭）→ 明确报错，不静默切 Playwright
-      return `浏览器工具 ${toolName} 前端暂时不可达（SSE 断连或超时），本次未执行。请稍后重试，或告知用户检查应用窗口是否开启。`;
+      // 前端委托超时/断连（SSE 瞬断、页面关闭）→ 再等一个重连窗口重试一次，仍失败才报错
+      if (!(await waitForFrontendSubscriber(task, 8000))) {
+        return `浏览器工具 ${toolName} 前端暂时不可达（SSE 断连或超时），本次未执行。请稍后重试，或告知用户检查应用窗口是否开启。`;
+      }
+      try {
+        delegated = await executeToolViaFrontend(task, toolName, args, toolCallId, depth);
+      } catch (e2: any) {
+        if (e2?.name === 'AbortError' || task.abortController.signal.aborted) throw e2;
+        return `浏览器工具 ${toolName} 前端暂时不可达（SSE 断连或超时，等待重连后重试仍失败），本次未执行。请稍后重试，或告知用户检查应用窗口是否开启。`;
+      }
     }
+    // 截图归档：main.cjs 已落盘，这里复制进会话产物目录并登记 conversation_file
+    if (toolName === 'browser_screenshot') {
+      return await archiveDelegatedScreenshot(delegated, task, metaOut);
+    }
+    return delegated;
   }
   // 离线浏览器工具 → 检测 Playwright 可用性
   if (isBrowser) {
@@ -3150,7 +4016,22 @@ async function executeTool(
       ? resolveToolPath(String(args?.path || ''), task.workspaceDir)
       : '';
     const before = snapPath ? await readFileOrNull(snapPath) : null;
+    // ★★★ 等待抵扣（2026-10-09，见 shared/context-policy 的 TASK_WAIT_CREDIT_CAP_MS）：
+    //   工具执行耗时里的大头是**等外部子进程**（如 python_exec 跑 novel_tuiwen 出片 5~8 分钟）。
+    //   把它计入墙钟 = 惩罚"用外部工具干活"，长任务必然每批超时。此处累计抵扣，预算判定时扣除。
+    //   ★ 放在**唯一工具出口**（registry.execute 两侧），覆盖原生/API/MCP/自定义全部工具，零遗漏。
+    const execStartedAt = Date.now();
+    // ★★★ A4 根治（2026-10-10）：把**当前会话**告知 core 的浏览器工具 ——
+    //   它们据此把 `x-yz-conversation-id` 带给浏览器路由，服务端按会话隔离"活动页"，
+    //   避免"A 会话导航中、B 会话读取/截图拿到 A 的页面"（且静默无报错）。
+    //   ★ 放在**唯一工具出口**（registry.execute 之前），一处覆盖全部 browser_* 工具，
+    //     不需要逐个改 33 个工具的 execute 签名（那必然漏）。
+    //   ★ 每次调用前都设置（含非 browser 工具）—— 保证不会残留上一个会话的值。
+    setBrowserToolConversationId(task.conversationId);
     const r = await registry.execute(toolName, args, toolCtx);
+    try {
+      task.waitCreditMs = addWaitCredit(task.waitCreditMs || 0, Date.now() - execStartedAt);
+    } catch { /* 记账失败不影响工具结果 */ }
     let text = typeof r === 'string' ? r : (r.content?.map((c: any) => c.text || '').join('') || JSON.stringify(r));
     const meta = (r as any)?._meta as { path?: string; beforeContent?: string | null } | undefined;
     // 把 _meta 交给调用方（供登记 conversation_file / 写 Diff 快照）
@@ -3199,6 +4080,57 @@ async function executeTool(
 /** 通过 SSE 委托前端执行工具，等待前端 POST 结果回来。
  *  事件有缓冲：前端刷新断开时事件不丢失，重连后重放并执行。
  *  @param timeoutMsOverride 覆盖默认超时；传 0 表示**不设超时**（授权弹窗等"可能隔很久才答"的场景） */
+/**
+ * 等待前端 SSE 订阅者回归（断连重连窗口）。返回 true=已有订阅者；false=超时或任务已中止。
+ * 前端断流后按 0.5s→5s 指数退避重连（最多 8 次），这里轮询等待即可衔接上。
+ */
+async function waitForFrontendSubscriber(task: LlmTask, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (task.abortController.signal.aborted) return false;
+    if (task.subscribers.size > 0) return true;
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  return task.subscribers.size > 0;
+}
+
+/**
+ * browser_screenshot 归档后处理（2026-10-09）：桌面端 main.cjs 截图时已同步落
+ * userData/screenshots/screenshot-<ts>.png，前端把存档路径带回结果文本。
+ * 这里把文件复制进会话中间产物目录并设置 _meta → artifact-hooks 统一登记
+ * conversation_file（文件管理可见、工件清单可引用）。无存档路径（旧版 main /
+ * 落盘失败）时原样返回，行为不变；归档失败不影响截图本身。
+ */
+async function archiveDelegatedScreenshot(
+  result: string,
+  task: LlmTask,
+  metaOut?: { value?: Record<string, unknown> | null },
+): Promise<string> {
+  try {
+    // ★★★ 2026-10-09 修（C6）：原正则 `/已存档: (.+)/` 是**贪婪**的，而前端回传的文本是
+    //   `截图已捕获（已存档: <path>）`，结尾是**全角右括号** → `）` 被一起吞进路径
+    //   → `fsp.stat(src)` 报 ENOENT → 被下面的 catch 静默吞掉 → **截图能存临时区，但登记不进
+    //   conversation_file**（文件管理里看不到）。而失败是静默的，只表现为"截图没了"。
+    //   ★ 记忆曾误记"已复用 SCREENSHOT_NAME_RE 修过"—— 实测 `SCREENSHOT_NAME_RE` 只存在于
+    //     `plugins/computer-use.ts`，本函数从未使用它（记忆是线索不是结论，已回源码核实）。
+    //   改为**排除全角/半角右括号与换行**，从根上不受收尾标点影响。
+    const src = result.match(/已存档:\s*([^\n）)]+)/)?.[1]?.trim();
+    if (!src || !task.conversationId) return result;
+    const fsp = await import('node:fs/promises');
+    const nodePath = await import('node:path');
+    const size = (await fsp.stat(src)).size;
+    const dir = resolveArtifactDirFor({ conversationId: task.conversationId, category: 'intermediate' }).dir;
+    await fsp.mkdir(dir, { recursive: true });
+    const dest = nodePath.join(dir, nodePath.basename(src));
+    if (dest !== src) await fsp.copyFile(src, dest);
+    if (metaOut) metaOut.value = { path: dest, name: nodePath.basename(dest), category: 'intermediate', bytes: size };
+    return `截图已捕获并归档: ${dest}\n你看不到画面；需要理解页面内容或定位元素时，调用 image_analyze(path="${dest}", prompt="描述页面内容并给出目标元素的位置")`;
+  } catch (e: any) {
+    logger.warn('[llm-task] 截图归档失败（不影响截图本身）:', e?.message || e);
+    return result;
+  }
+}
+
 async function executeToolViaFrontend(task: LlmTask, toolName: string, args: any, toolCallId: string, depth: number = 0, timeoutMsOverride?: number): Promise<string> {
   // 工具发起前的暂停边界：暂停中不发新工具（正在跑的前一个动作已在各自的 await 里自然跑完）
   await waitIfPaused(task);
@@ -3209,19 +4141,27 @@ async function executeToolViaFrontend(task: LlmTask, toolName: string, args: any
   return new Promise<string>((resolve, reject) => {
     const callId = 'tc_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
     const interactive = INTERACTIVE_TOOLS.has(toolName);
-    // 交互类工具不设 2 分钟超时（用户可能在"思考要不要确认"，隔天回来也要能继续答）
+    // 交互类工具不设超时（用户可能在"思考要不要确认"，隔天回来也要能继续答）
     // ★ timeoutMsOverride === 0 → 显式要求不设超时（授权弹窗同性质）。
     const noTimeout = timeoutMsOverride === 0;
+    // ★ P1（2026-10-09）：分档超时 —— browser_* 按慢/快档解析（含串行排队宽限），
+    //   不再一刀切 2 分钟。见 resolveFrontendToolTimeout 注释（慢站/代理下误杀的真实来源）。
+    const effectiveTimeout = timeoutMsOverride && timeoutMsOverride > 0
+      ? timeoutMsOverride
+      : resolveFrontendToolTimeout(toolName);
     const timer = (interactive || noTimeout)
       ? undefined
       : setTimeout(() => {
           const pending = task.pendingToolCalls.get(callId);
           if (pending) {
             task.pendingToolCalls.delete(callId);
-            logger.warn(`[llm-task] 前端工具执行超时(2min): ${toolName} callId=${callId} conv=${task.conversationId}（前端刷新/断连时常见，任务将以此错误继续）`);
+            logger.warn(`[llm-task] 前端工具执行超时(${Math.round(effectiveTimeout / 1000)}s): ${toolName} callId=${callId} conv=${task.conversationId}（前端刷新/断连时常见，任务将以此错误继续）`);
+            // 超时**可见**（2026-10-09）：广播一条事件，前端据此把该工具条标为"超时未回执"，
+            // 而不是让界面只是"停住不动"（与真卡死难以区分）。前端对未知事件类型容忍。
+            try { emit(task, { type: 'tool:timeout', callId, toolName, conversationId: task.conversationId, timeoutMs: effectiveTimeout }); } catch { /* 观测事件失败不影响超时处理 */ }
             pending.reject(new Error(`工具 ${toolName} 执行超时`));
           }
-        }, timeoutMsOverride && timeoutMsOverride > 0 ? timeoutMsOverride : FRONTEND_TOOL_TIMEOUT_MS);
+        }, effectiveTimeout);
     task.pendingToolCalls.set(callId, { resolve, reject, toolName, callId, requestedAt: Date.now(), timer, args });
     syncPendingToolsJson(task);
     // 通知前端执行工具。
@@ -3373,6 +4313,11 @@ async function deliverWorkflowFile(ctx: WorkflowDeliveryCtx, item: { name: strin
     db.prepare('INSERT INTO conversation_file (id, conversation_id, user_id, space_id, name, path, category, mime_type, size, source, message_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
       .run(cfId, ctx.conversationId, ctx.userId, null, item.name, filePath, 'deliverable', guessMime(item.name), size, 'agent', msgId, Date.now());
     notifyConversation(ctx, { type: 'file:registered', conversationId: ctx.conversationId });
+    // ★ 工件采集（2026-10-08）：工作流型子智能体的交付文件也走这里登记，但**不经**
+    //   artifact-hooks.registerFile 单点（本身直接 INSERT），故显式采一次 ——
+    //   否则它作为计划项执行时产物不进工件清单，下游 {{artifact}} 引用解析不到。
+    //   无采集作用域（普通工作流调用）时 collectArtifact 为空操作。
+    collectArtifact({ id: cfId, path: filePath, name: item.name, category: 'deliverable', size });
   } catch (e: any) {
     // 落盘已成功，这里只丢登记：不能静默，打印出来便于定位
     logger.warn('[workflow] 交付文件登记失败:', e?.message || e);
@@ -3647,6 +4592,8 @@ async function startBackgroundSubAgent(
     } finally {
       task.backgroundSubAgents.delete(bgId);
       logger.warn(`[bg-subagent] 结束 conv=${task.conversationId} bg=${bgId} agent=${agentId}`);
+      // ★ 唤醒「收尾时就地等待」的主循环（2026-10-09）：它醒来会复检是否还有人跑。
+      try { task.backgroundDrainWaiter?.(); } catch {}
     }
     await deliverSubAgentResult(task, agentName, result);
   })();
@@ -3654,12 +4601,26 @@ async function startBackgroundSubAgent(
   return buildBackgroundReceipt(agentName, bgId);
 }
 
-/** 后台子智能体结果投递：任务在跑 → 注入（唤醒下一轮）；已收尾 → 落库普通消息 */
+/**
+ * 后台子智能体结果投递。
+ *
+ * ★ 2026-10-09 改为「唤醒优先」：主 task 仍在跑时把结果推进 `pendingBackgroundResults`
+ *   —— 若主循环正挂在收尾等待点（waitForBackgroundSubAgents），`backgroundDrainWaiter`
+ *   已把它叫醒；醒来后会把结果作为 user 消息灌进下一轮并 continue，由主智能体整合。
+ *   任务已终态（aborted/completed）时才落库成普通消息（此时无人唤醒，SSE 也大概率不在）。
+ */
 async function deliverSubAgentResult(task: LlmTask, agentName: string, result: string): Promise<void> {
   if (task.abortController.signal.aborted) return; // 整体中止：不投递，避免噪音
   const text = buildDeliveryText(agentName, capToolResult(result));
+  // 主任务仍在跑（含"挂在收尾等待点"）：入队等主循环消费 —— 这条路径保住前端订阅与工具通道
+  if (task.status === 'running') {
+    task.pendingBackgroundResults.push({ agentName, text });
+    try { task.backgroundDrainWaiter?.(); } catch {}
+    return;
+  }
+  // 主任务已终态：落库普通消息（用户刷新可见；无在线订阅者，SSE 推不到也没关系）
   try {
-    if (injectUserMessage(task.conversationId, text, task.userId) === 'injected') return;
+    if (injectUserMessage(task.conversationId, text, task.userId).status === 'injected') return;
     const msgId = insertMessage(task.conversationId, task.userId, 'assistant', text);
     emit(task, { type: 'message:added', message: { id: msgId, role: 'assistant', content: text } });
   } catch (e: any) {
@@ -3667,14 +4628,35 @@ async function deliverSubAgentResult(task: LlmTask, agentName: string, result: s
   }
 }
 
+/** PlanRunner 依赖注入（避免 plan-runner ↔ llm-task-manager 循环 import）：
+ *  执行体复用 runSubAgent（包装版 —— 工件协议生效）。计划结果由 runPlanToCompletion
+ *  同步返回给 plan_tasks / reassign_task 的调用点，**不再走后台投递**。 */
+registerPlanRunnerDeps({
+  runSubAgent: (task, args, parentToolCallId, depth, uiTools, specOverride, runOpts) =>
+    runSubAgent(task, args, parentToolCallId, depth, uiTools, specOverride, runOpts),
+  // 计划状态 → 前端「运行指示行」（2026-10-08）：
+  //   ① 落 conversation.task_plan_json（刷新/重连后消息流能从历史恢复出计划）；
+  //   ② 发 plan:updated —— 前端把它当 task_plan 应用进 plansByConv（**零新增 UI**，
+  //      复用输入区上方运行指示行的步骤详情与进度条）。
+  onPlanChange: (task, _planId, plan) => {
+    try { savePlanJson(task.conversationId, plan as any); } catch { /* 落库失败不阻断 */ }
+    emit(task, { type: 'plan:updated', plan });
+  },
+});
+
+/**
+ * runSubAgent（工件协议包装，2026-10-08）：真正执行在 runSubAgentImpl。
+ * 包装做两件事：
+ *   ① 开启工件采集器作用域 —— 期间所有经 artifact-hooks 登记的产物被收集；
+ *   ② 有产物时把返回值改写为「短结论 + 工件清单」，全文不回流主上下文。
+ * ★ 嵌套安全：PlanRunner 包住本函数时，采集器复用外层 store（见 runWithArtifactCollector）。
+ */
 async function runSubAgent(
   task: LlmTask,
   args: { agentId?: string; input?: unknown; platformId?: string; modelId?: string },
   parentToolCallId: string,
   depth: number,
   uiTools: Set<string>,
-  /** 运行时生成的临时子智能体：由 spawn_subagent 现场装配（见 services/subagent-spec.ts）。
-   *  给出时**跳过 DB agent 查询**，直接用注入的提示词/工具/模型执行。 */
   specOverride?: {
     agentId: string;
     agentName: string;
@@ -3684,6 +4666,33 @@ async function runSubAgent(
     modelId?: string;
     maxSteps?: number;
   },
+  runOpts?: { maxSteps?: number },
+): Promise<string> {
+  const { result, artifacts } = await runWithArtifactCollector(() =>
+    runSubAgentImpl(task, args, parentToolCallId, depth, uiTools, specOverride, runOpts));
+  const withArtifacts = artifacts.length > 0 ? formatSubAgentReturn(result, artifacts) : result;
+  // ★ 子任务 ID 回执（2026-10-09）：parentToolCallId 天然唯一标识这次委派（子智能体
+  //   落库的每条消息都带它）。追加在结果末尾，编排者后续可用 get_sub_task_detail
+  //   按 ID 查执行轨迹分析失败原因。一行即止，不撑上下文。
+  return `${withArtifacts}\n\n[子任务ID] ${parentToolCallId}（如需分析本任务执行过程，可调用 get_sub_task_detail 传入此 ID 查询）`;
+}
+
+async function runSubAgentImpl(
+  task: LlmTask,
+  args: { agentId?: string; input?: unknown; platformId?: string; modelId?: string },
+  parentToolCallId: string,
+  depth: number,
+  uiTools: Set<string>,
+  specOverride?: {
+    agentId: string;
+    agentName: string;
+    systemPrompt: string;
+    toolIds: string[];
+    platformId?: string;
+    modelId?: string;
+    maxSteps?: number;
+  },
+  runOpts?: { maxSteps?: number },
 ): Promise<string> {
   const agentId = args.agentId || (args as any).agent_id || (args as any).id;
   // input 允许是对象（多入参工作流的推荐用法）；harness 分支一律按文本处理
@@ -3776,6 +4785,12 @@ async function runSubAgent(
     //   而那些智能体也可能被 call_agent 当成子智能体调用：不排除的话工具会**暴露给子智能体**。
     //   运行时虽有 `depth >= 1` 兜底拒绝，但"先暴露再拒绝"会白烧 token、还会诱导模型反复尝试。
     if (name === 'call_agent' || name === 'list_sub_agents' || name === 'spawn_subagent') continue;
+    // 子任务详情查询（2026-10-09）：只读但属编排者专属——子智能体查兄弟任务的轨迹
+    // 没有意义且会污染自己的上下文，从子工具面摘掉。
+    if (name === 'get_sub_task_detail') continue;
+    // 编排类（plan_tasks / reassign_task / get_plan_status）同属委派族：子智能体不再做规划
+    //（executeTool 的 depth>=1 已运行时拦截，这里提前从工具面摘掉，避免"先暴露再拒绝"白烧 token）
+    if (name === 'plan_tasks' || name === 'reassign_task' || name === 'get_plan_status') continue;
     seen.add(name);
     // 内置工具
     if (registry.has(name)) {
@@ -3831,7 +4846,11 @@ async function runSubAgent(
   // 旧兜底 100 频繁触发「已达到最大循环数」）。修复：旧写法 Math.max(x, 100) 把任何配置值强制抬到 ≥100，
   // pageAgent 配置 25 步失效，子智能体陷入循环时跑满 100 步，用户只能手动终止 —— 配置值仍原样尊重，不强制抬高。
   const cfgSteps = (() => { try { return agent.config_json ? JSON.parse(agent.config_json).maxReActSteps : undefined; } catch { return undefined; } })();
-  const maxSteps = typeof cfgSteps === 'number' && cfgSteps > 0 ? Math.min(Math.floor(cfgSteps), 500) : 500;
+  // runOpts.maxSteps（2026-10-08）：PlanRunner 按计划项指定步数预算（如抓取类限 10），
+  // 优先于 agent 配置 —— 编排者对单任务的成本约束应压过角色默认值。
+  const maxSteps = typeof runOpts?.maxSteps === 'number' && runOpts.maxSteps > 0
+    ? Math.min(Math.floor(runOpts.maxSteps), 1000)
+    : typeof cfgSteps === 'number' && cfgSteps > 0 ? Math.min(Math.floor(cfgSteps), 1000) : 1000;
   const systemPrompt = agent.system_prompt || '你是一个智能助手。';
   const modelCaps = model.capabilities as string[] | undefined;
   const supportsTools = modelSupportsTools(modelCaps);
@@ -3911,6 +4930,11 @@ async function runSubAgent(
         content: m.content, toolCalls: m.toolCalls,
         toolCallId: m.toolCallId, createdAt: m.createdAt,
       })));
+
+      // ★★★ C1（2026-10-09）：子智能体循环同样要能"看到图" ——
+      //   pageAgent/子智能体常是产出截图的那一方，若只有主循环注入，
+      //   "委派子智能体看图"这条最自然的用法反而不成立（子智能体看不到自己截的图）。
+      await attachImagesToMessages(llmMessages);
 
       // 文本模式工具调用
       const hasToolsToExpose = subTools.length > 0;
@@ -4364,7 +5388,65 @@ async function recordTaskProgress(
     // 自动接力时，把「第几批」一并写进记忆行（同目录新会话能看出这是接力的中间批，不是首轮）
     const note = extra?.continuation ? `${summary}（${extra.continuation}）` : summary;
     await appendTaskProgress(task.conversationId, outcome, note, { steps: extra?.steps, agentName });
+    // ★★★ 记忆蒸馏（M5，2026-10-09）：收尾时顺手把**超期的明细条目**蒸馏进 MEMORY.md 并删原条目。
+    //   —— 对齐 WorkBuddy 的「蒸馏 + 删除」治理闭环（此前 yan-zhi 只有"截断"：
+    //   超出上限的内容要么被静默丢掉、要么堆在文件里永不清理）。
+    //   ★ 放在收尾路径的理由：收尾是**天然低频**时机（一次任务一次），且此刻明细刚写完；
+    //     加定时器反而会引入"与写入竞争"的新问题。
+    //   ★ 门控（都不满足就零成本跳过）：① 有空间 ② 有可用 LLM ③ 超期条目 ≥ 阈值。
+    //   ★ fail-safe：任何失败只 warn，绝不影响任务收尾。
+    void maybeDistillStaleMemory(task);
   } catch { /* 收尾留痕失败不影响任务状态上报 */ }
+  // 经验提炼（自进化经验层）：成功挖步骤/事实，失败挖坑与规避。非阻塞，失败不影响收尾。
+  void distillExperienceFromTask(task, outcome);
+}
+
+/**
+ * 收尾时的记忆蒸馏触发（M5）——「超期明细 → LLM 蒸馏成要点 → 写 MEMORY.md → 删原条目」。
+ *
+ * ★ 为什么模型从 task 解析而不是硬编码：与"记忆抽取/压缩前抢救"同一口径
+ *   （`resolveMemoryExtractLlm`，用户可在设置页配专用小模型），避免三处各写一遍模型来源。
+ * ★ 为什么用 `new LlmClient(platform, model)`：与本文件 `maybeReplanOnContinue`（2977 行）
+ *   完全同一范式 —— 那里也是"解析出 {platform,model} → 建 client → 非流式 chat"。
+ *   （`services/llm-call.ts` 的 chatViaRow 吃的是 **DB 行**，此处手上是已解析的 {platform,model}，
+ *    形状不符，故不用它；★ 别为了"统一出口"硬套一个签名不匹配的函数。）
+ */
+async function maybeDistillStaleMemory(task: LlmTask): Promise<void> {
+  try {
+    const { resolveConversationSpaceId, distillStaleProgress } = await import('./services/space-memory.js');
+    const spaceId = resolveConversationSpaceId(task.conversationId);
+    if (!spaceId) return; // 未挂空间 → 没有 space 级记忆文件可蒸馏
+    const llm = resolveMemoryExtractLlm(task);
+    if (!llm) return; // 没有可用模型 → 不蒸馏（保持"能跑就跑"的降级）
+    const client = new LlmClient(llm.platform, llm.model);
+    await distillStaleProgress(task.userId, spaceId, async (entries) => {
+      // 蒸馏提示词：要求**压缩成要点**并**保留可操作信息**（路径/命令/结论）——
+      // ★ 与压缩摘要是同一原则：不透明标识符（路径/命令/ID）一旦被改写就不可恢复。
+      const resp = await client.chat([
+        {
+          id: 'sys', conversationId: '', role: 'system', createdAt: 0,
+          content: '你是长期记忆的蒸馏器。把多条历史任务明细压缩成尽量少的要点，只输出要点本身，不要客套。',
+        },
+        {
+          id: 'usr', conversationId: '', role: 'user', createdAt: 0,
+          content: [
+            `以下是一个项目 ${entries.length} 条**已超过 30 天**的历史任务明细（原文将被删除，只保留你给出的要点）：`,
+            '',
+            ...entries,
+            '',
+            '请输出**压缩要点**，要求：',
+            '1. 合并同类项，丢掉过程中的试错与重复；',
+            '2. **必须原样保留**：产物路径、关键命令、文件/接口名、结论性的参数与决策 —— 这类信息一改就不可恢复；',
+            '3. 只保留"以后还会用到"的内容；一次性的临时进展不必保留；',
+            '4. 用「- 」开头的若干行输出，总长不超过 600 字。',
+          ].join('\n'),
+        },
+      ], { temperature: 0.2, maxTokens: 800 });
+      return resp.delta?.content || '';
+    });
+  } catch (e: any) {
+    logger.warn('[llm-task] 记忆蒸馏失败（不影响收尾）:', e?.message || e);
+  }
 }
 
 /** 记忆抽取：任务完成后从会话中抽取值得长期记住的信息，写入 memory 表。
@@ -4426,6 +5508,114 @@ async function extractMemoryFromConversation(task: LlmTask): Promise<void> {
   }
 }
 
+/**
+ * 经验提炼（自进化经验层，2026-10-09）：任务收尾时从会话里提炼「可复用的操作经验」，
+ * 追加进 .yan-zhi/experience/<topic>.md（坑/步骤/事实，服务端去重计数）。
+ *
+ * ★ 与 extractMemoryFromConversation 的分工：那边记「用户是谁/发生了什么」（memory 表），
+ *   这里记「下次同类任务怎么做」（坑的规避、验证过的步骤）——失败/中断的任务**尤其要提炼**，
+ *   卡住的坑恰是最值钱的经验（用户明确要求开发任务、bug 排障也要自进化）。
+ *
+ * 调用点：recordTaskProgress（任务 5 个出口的唯一收口）——所有任务类型通用，不只浏览器。
+ * 非阻塞 + 全程 fail-safe：提炼失败绝不影响任务收尾。
+ */
+async function distillExperienceFromTask(
+  task: LlmTask,
+  outcome: 'completed' | 'max_steps' | 'aborted' | 'failed' | 'empty_args_loop',
+): Promise<void> {
+  try {
+    // 素材门槛：至少 8 条有内容的消息（真实任务过程），一问一答的闲聊不值得提炼
+    const msgs = loadMessages(task.conversationId);
+    const recent = msgs.filter((m) => m.content || m.toolCalls?.length).slice(-24);
+    if (recent.length < 8) return;
+
+    // 避让上游配额（同 extractMemoryFromConversation 口径）：有任务在跑就跳过本轮
+    if (hasActiveUserTasks()) {
+      logger.info('[experience] 提炼跳过：有任务运行中（避让上游配额）');
+      return;
+    }
+    const llm = resolveMemoryExtractLlm(task);
+    if (!llm) return;
+
+    // 已有档案给模型当 topic 参考（让它往既有主题归档，而不是每任务开新文件）
+    const { base } = resolveExperienceBase(task.conversationId);
+    const knownTopics = listExperienceSummaries(base).map((s) => s.topic);
+    const topicHint = knownTopics.length ? `已有档案主题（优先归到这里）：${knownTopics.join('、')}` : '尚无档案';
+
+    const transcript = recent.map((m) => {
+      const role = m.role === 'user' ? '用户' : m.role === 'assistant' ? '助手' : m.role;
+      return `【${role}】\n${m.content || (m.toolCalls?.length ? '(调用工具)' : '')}`;
+    }).join('\n\n---\n\n');
+
+    // 出口形态决定提炼侧重：成功挖可复用步骤，失败/中断挖坑与规避
+    const focus = outcome === 'completed'
+      ? '任务成功完成。重点提炼：验证过的可复用操作步骤（step）、过程中确认的环境/配置/路径事实（fact)。'
+      : '任务未顺利完成（失败/中断/超步数）。重点提炼：踩到的坑与规避方法（pit）——是什么导致卡住、下次怎么绕开。';
+
+    const client = new LlmClient(llm.platform, llm.model);
+    const resp = await client.chat([
+      {
+        id: 'sys', conversationId: '', role: 'system', createdAt: 0,
+        content: '你是任务经验提炼助手。从对话记录中提炼「可复用的操作经验」，输出 JSON 对象 {"items":[{"kind":"pit|step|fact","topic":"主题","title":"一句话标题","detail":"详情"}]}。'
+          + '\nkind 定义：pit=踩过的坑（detail 写规避方法）；step=验证过的做法/步骤序列；fact=环境/配置/路径事实。'
+          + `\ntopic 是档案归档主题（即文件名），小写英文或中文短语：浏览器站点用 sites/<域名>；开发类 dev-<主题>（如 dev-打包、dev-依赖）；部署运维 ops-<主题>；办公流程 workflow-<主题>。${topicHint}。`
+          + `\n${focus}`
+          + '\n要求：只提炼有普适复用价值的（下次同类任务能直接用），最多 3 条，没有值得记的返回 {"items":[]}。标题要具体可区分，禁止空泛（如"注意细节"这种不要）。只输出 JSON。',
+      },
+      { id: 'usr', conversationId: '', role: 'user', content: transcript, createdAt: 0 },
+    ], { temperature: 0.2, maxTokens: 800, responseFormat: { type: 'json_object' } });
+
+    const text = resp.delta?.content || '';
+    let items: any[] = [];
+    try {
+      const parsed = JSON.parse(text);
+      items = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.items) ? parsed.items : [];
+    } catch { /* 解析失败当无条目 */ }
+
+    const valid = items
+      .filter((x) => x && typeof x.title === 'string' && x.title.trim())
+      .filter((x) => ['pit', 'step', 'fact'].includes(x.kind))
+      .slice(0, 3);
+    if (!valid.length) return;
+
+    let written = 0;
+    for (const it of valid) {
+      try {
+        const r = await appendExperienceEntry(base, {
+          kind: it.kind as ExperienceKind,
+          topic: String(it.topic || 'misc'),
+          title: String(it.title),
+          detail: typeof it.detail === 'string' ? it.detail : '',
+          source: `任务收尾（${outcome}）`,
+        });
+        written++;
+        logger.info(`[experience] 提炼写入: ${r.topic}${r.deduped ? '（去重计数+1）' : '（新条目）'}`);
+        // P1 自进化升级链：同一验证过的步骤**恰好第 2 次**成功 → 该流程值得固化，自动生成 skill 草稿
+        // （===2 只触发一次，后续计数增长不再重复提炼；草稿不静默生效，会话内轻提示，用户确认后才启用）
+        if (it.kind === 'step' && r.deduped && r.entryCount === 2) {
+          const draft = await proposeSkillDraft({
+            llm,
+            transcript,
+            triggerTopic: r.topic,
+            triggerTitle: String(it.title),
+            draftsRoot: resolveSkillDraftsDir(task.conversationId),
+          });
+          const notify = skillDraftNotifyText(draft);
+          if (notify) {
+            const msgId = insertMessage(task.conversationId, task.userId, 'assistant', notify);
+            emit(task, { type: 'message:added', message: { id: msgId, role: 'assistant', content: notify } });
+          }
+        }
+      } catch (e: any) {
+        logger.warn('[experience] 单条写入失败:', e?.message || e);
+      }
+    }
+    if (written) logger.info(`[experience] 本轮提炼共写入 ${written} 条`);
+  } catch (e: any) {
+    logger.error('[experience] 提炼失败:', e?.message || e);
+  }
+}
+
 // 定期清理已完成任务
 setInterval(() => cleanupTasks(), 5 * 60 * 1000);
 
@@ -4438,6 +5628,17 @@ const UI_TOOL_NAMES = new Set([
   'ask_user', 'confirm_user', 'configure_model_platform', 'task_plan', 'task_step',
   'image_analyze',
   'browser_navigate', 'browser_open_external',
+]);
+
+/**
+ * UI 交互工具（必须委托前端执行：需要用户输入/确认）。
+ * ★ 2026-10-08 提到模块顶层并导出：PlanRunner 派发计划项时**必须传同一份** ——
+ *   此前传空 Set 会让 pageAgent 的 browser_navigate 走错执行通道，且工具面裁剪
+ *   口径与主链路不一致。同一语义的常量只能有一处定义（本项目既有教训）。
+ */
+export const UI_TOOLS = new Set([
+  'ask_user', 'confirm_user', 'configure_model_platform', 'task_plan', 'task_step',
+  'image_analyze',
 ]);
 
 // ============================================================
@@ -4529,6 +5730,12 @@ export function buildSystemPromptForBackend(agentId: string | null, userId: stri
   includeUiTools?: boolean;
   userContent?: string;
   workspaceDir?: string;
+  /**
+   * 是否可委派/编排（2026-10-09）。只读权限会话为 false —— 此时 plan_tasks/reassign_task
+   * 已被 filterToolsByPermission 从工具面摘除，若仍注入"用 plan_tasks 编排"的协议，
+   * 模型会收到**相互矛盾**的指令（编排 vs 只读）并反复撞墙。默认 true（向后兼容其余调用点）。
+   */
+  canDelegate?: boolean;
 }): string {
   const parts: string[] = [];
   const convMounts = loadConversationMounts(opts?.conversationId);
@@ -4583,6 +5790,18 @@ export function buildSystemPromptForBackend(agentId: string | null, userId: stri
 
       // 自定义工具（与 buildToolsForBackend 同一过滤规则）
       toolLines.push(...buildCustomToolDescLines(agentId, userId, includeUiTools, convMounts.customToolIds));
+
+      // 多智能体编排工具（2026-10-08）：与 buildToolsForBackend 的 1.5 段同口径 —— 提示词模式
+      // 模型也要知道这些工具存在。★ 权限感知（2026-10-09）：plan_tasks/reassign_task 是委派类，
+      // 只读会话会被裁掉 —— 此处的文本清单也必须同步（否则提示词模式模型看到"可用"却调不动）。
+      // get_plan_status 是纯读，只读会话仍可用。
+      const orchestrationTools = opts?.canDelegate === false
+        ? ['get_plan_status']
+        : ['plan_tasks', 'get_plan_status', 'reassign_task'];
+      for (const name of orchestrationTools) {
+        const t = registry.get(name);
+        if (t) toolLines.push(`- \`${name}\`: ${t.description}${formatSchemaParams(t.inputSchema)}`);
+      }
 
       const sectionLines = toolLines.filter((l) => l.trim().length > 0);
       if (sectionLines.length > 0) {
@@ -4890,8 +6109,70 @@ export function buildSystemPromptForBackend(agentId: string | null, userId: stri
     }
   }
 
-  // 当前时间
-  parts.push(`---\n当前时间：${new Date().toLocaleString('zh-CN')}`);
+  // 长任务编排协议（2026-10-08，2026-10-09 修正为**两条路径**）。
+  // ★★ 修正原因（用户指出）：此前把"编排"写成"优先 plan_tasks、不要串行 call_agent"，等于低估了
+  //   `call_agent` —— 而 call_agent **同样能编排**：① 它就在主循环并发白名单里（同一轮发多个
+  //   call_agent → 真并发）；② 它走的就是 runSubAgent 包装版，**工件协议一样生效**。
+  //   所以"没有 plan_tasks 就不能并行编排"是错的 —— 两条路径都要写清楚。
+  // ★ 权限感知（2026-10-09）：只读会话委派/编排工具已被裁掉 → 注入不矛盾的说明而非空头指令。
+  const canDelegate = opts?.canDelegate !== false;
+  if (canDelegate) {
+    parts.push(
+      [
+        '---',
+        '## 长任务的编排（两条路径，按需选）',
+        '子智能体有两个用途截然不同的入口，**都支持并行**：',
+        '',
+        '**路径一：`call_agent`（你自己充当调度器）**',
+        '- 你亲手安排任务、自己读结果、自己决定下一步 —— 适合步骤不多、需要边走边看结果调整的活。',
+        '- **并行**：把多个互相独立、不依赖彼此结果的 `call_agent` **放在同一轮里一起发出**，会被并发执行（默认上限 2，超出的按序执行），比一个个等快得多。',
+        '- 例：同时委派 A 查资料、B 写初稿（两者互不依赖）→ 同一轮发两个 call_agent。',
+        '- 需要"先把活派下来、不等它、继续干别的"时，用 `call_agent` 的 `async:true`（后台跑，完成后结果注入本会话）。',
+        '',
+        '**路径二：`plan_tasks`（交给调度器）**',
+        '- 当任务步骤多、依赖关系明确、或你想把"选模型/重试/失败重派"交给调度器统一兜底时用它 —— 一次提交整张 DAG。',
+        '- **无依赖的任务 = 并行**：同一批提交、不写 `dependsOn`，调度器并发跑（默认上限 4）；',
+        '- **有依赖的**用 `dependsOn:["上游id"]`；下游指令里引用上游产物写 `{{artifact:上游id}}` 或 `{{artifact:LAST}}`（调度器替换成真实文件路径）；',
+        '- **按任务特质选模型**：机械活（格式转换/分词/取数）在任务项里指定 `modelId` 用小模型省配额，难的用强模型；抓取类把 `maxSteps` 设小（如 10）避免跑飞。',
+        '- 失败会自动重试 2 次；仍失败在返回汇总里列出（附原因）→ 用 `reassign_task` **换执行者/改指令/调步数** 重派（不要原样重试）。',
+        '- **`plan_tasks` 是同步阻塞的**：你会一等到底拿到「完成/失败汇总」，计划内部仍并行；不需要轮询、不要重复提交。',
+        '',
+        '**共同点（关键）**：无论走哪条路，子智能体产出的大文件**都不会回到你的上下文** —— 只回报「结论摘要 + 文件路径」。你据此推进即可，需要细节时用 `file_read` 按路径读。',
+        '**怎么选**：步骤少 / 要亲手调度 / 边走边看 → `call_agent`（记得同轮并发）；步骤多 / 依赖复杂 / 要自动重试重派 → `plan_tasks`。执行者用 `list_sub_agents` 查，缺合适的可用 `spawn_subagent` 现场定制。',
+      ].join('\n'),
+    );
+  } else {
+    parts.push(
+      [
+        '---',
+        '## 长任务的规划方式（当前会话为只读权限）',
+        '当前会话是**只读权限**：委派/编排类工具（`plan_tasks` / `reassign_task` / `call_agent`）已禁用，你也不能写文件或执行命令。',
+        '因此长任务**不要**尝试编排并行子智能体，改为：把任务拆成清晰的编号分步计划并逐项推进，能读就查证、能算就演算；',
+        '凡需要写入、执行或委派的步骤，直接告诉用户「这一步需要放开权限」并说明原因，**不要反复尝试被禁用/被拒的工具**。',
+      ].join('\n'),
+    );
+  }
+
+  // ★★★ 2026-10-09 删（D1，成本修复，重要）：
+  //   此前这里 `parts.push('---\n当前时间：' + new Date().toLocaleString('zh-CN'))`。
+  //   它拼接在 system prompt 的**最尾部**，且**每次构建必变**（精确到秒的本地时间字符串）。
+  //
+  //   ★ 为什么这是成本杀手：Anthropic 前缀缓存（client.ts:120-130 的 cache_control 断点）
+  //     要求被缓存的前缀**逐字节稳定**；OpenAI 的自动缓存同理。而 system prompt 是在
+  //     `buildSystemPromptForBackend` 里每次**新任务**重建的（任务内复用，跨任务不复用）
+  //     → 时间戳一变，**跨任务的前缀缓存 100% 失效**。
+  //     长任务（200 步循环）里每步都要重发 system + 历史，缓存失效意味着**首段全价计费**，
+  //     这是数量级的成本差距（Anthropic 缓存命中价约为原价的 1/10）。
+  //
+  //   ★ 为什么可以安全删除：模型**不需要**知道精确到秒的当前时间——
+  //     · 需要日期的场景（"今天几号"）由用户提问时自带，或走工具查询；
+  //     · system prompt 里没有任何逻辑依赖这个时间戳（全仓 grep 仅此一处拼接）。
+  //
+  //   ⇒ 结论：删掉它，让 system prompt 的**尾部稳定**。这是"稳定前缀/变动尾部"原则的
+  //     最小落地（进一步把记忆/计划等变动段彻底后置是后续优化，见方案文档 D1）。
+  //
+  //   ★ 副作用补救：若确实需要时间感知，应放在**首条 user 消息**（不参与前缀缓存），
+  //     而不是 system prompt 尾部。当前没有这种需求，故不引入。
 
   return parts.join('\n\n');
 }
@@ -5097,6 +6378,18 @@ export function buildToolsForBackend(agentId: string | null, userId: string, opt
     }
   }
 
+  // 1.5) 多智能体编排工具（2026-10-08）：无条件暴露 —— 长任务规划是主智能体的通用能力，
+  //      不随挂载变化（子智能体侧由 runSubAgent 的工具裁剪 + depth>=1 拦截双重排除）。
+  for (const name of ['plan_tasks', 'get_plan_status', 'reassign_task']) {
+    if (seen.has(name) || !registry.has(name)) continue;
+    const def = registry.get(name)!;
+    seen.add(name);
+    tools.push({
+      type: 'function',
+      function: { name, description: def.description, parameters: def.inputSchema },
+    });
+  }
+
   // 2) MCP 工具：agent.mcp_tool_mounts ∪ 会话级挂载（agent '*' 覆盖会话细粒度），暴露名与执行路由一致
   const agentMcpMounts: any[] = (() => {
     if (!agentId) return [];
@@ -5146,6 +6439,9 @@ export function buildToolsForBackend(agentId: string | null, userId: string, opt
     'api_image_generate', 'api_video_generate', 'api_video_status',
     // 短信验证码中继：手机上收到验证码后自动转发到本节点，默认暴露让所有智能体都能直接取用
     'api_verification_code_latest', 'api_verification_code_list',
+    // 领域经验档案（自进化经验层，2026-10-09）：读=查历史坑/步骤/事实；写=当场沉淀经验。
+    // 默认暴露给所有智能体 —— 自进化要求"任何任务都能记经验、都能查经验"，不随挂载变化。
+    'api_experience_read', 'api_experience_write',
   ];
   const mountedApiTools = [...toolIds, ...convMounts.builtinToolIds].filter((n) => isApiExecutableTool(n));
   // 已挂载专属 api_* 工具链的（数据查询智能体等）只暴露它挂载的工具：记忆/知识库这类通用工具
@@ -5198,6 +6494,12 @@ export function buildToolsForBackend(agentId: string | null, userId: string, opt
   if (!seen.has('list_sub_agents') && registry.has('list_sub_agents')) {
     const def = registry.get('list_sub_agents')!;
     tools.push({ type: 'function', function: { name: 'list_sub_agents', description: def.description, parameters: def.inputSchema } });
+  }
+  // 5b) get_sub_task_detail（2026-10-09）：与 list_sub_agents 同族挂载——编排者必备，
+  //     不依赖各 agent 手动挂载；子任务失败后据此查执行轨迹做根因分析。
+  if (!seen.has('get_sub_task_detail') && registry.has('get_sub_task_detail')) {
+    const def = registry.get('get_sub_task_detail')!;
+    tools.push({ type: 'function', function: { name: 'get_sub_task_detail', description: def.description, parameters: def.inputSchema } });
   }
 
   // 6) ★ P2-1 动态工具路由（2026-10-07）：工具面超阈值时按任务相关性裁剪。

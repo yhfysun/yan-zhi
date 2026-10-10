@@ -687,6 +687,9 @@ export function makeJavaSuiteTools(): BuiltInTool[] {
         const proc = execFile('java', ['-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=' + port, '-cp', cp, mainClass, ...programArgs.split(/\s+/).filter(Boolean)], {
           cwd: dir,
           maxBuffer: 10 * 1024 * 1024,
+          // ★ 2026-10-09：漏了 windowsHide → JVM 调试子进程会弹黑框（与 ffmpeg 同源问题）。
+          //   全仓核查后仅此一处遗漏（其余 spawn/execFile 均已带）。
+          windowsHide: true,
         }, (err) => {
           session.status = 'terminated';
           if (err && !err.killed) session.status = 'terminated';

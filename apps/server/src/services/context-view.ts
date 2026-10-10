@@ -22,7 +22,7 @@
  */
 import type { Message, Model } from '@yan-zhi/shared';
 import { effectiveContextLimit, MAX_SESSION_MESSAGES } from '@yan-zhi/shared';
-import { ContextWindow, enforceBudget, isCoveredPrefix, isSyntheticMessageId, type SummaryCache } from '@yan-zhi/core';
+import { ContextWindow, enforceBudget, isCoveredPrefix, isSyntheticMessageId, capStaleToolResults, type SummaryCache } from '@yan-zhi/core';
 import { getLatestMessageSummary, insertMessageSummary } from '../db.js';
 // constants.ts 是**零依赖模块**（它自己的注释就写明"必须能被任意模块安全引入"），
 // 因此这里直接静态引用，不需要延迟注入 —— 窗口解析口径必须只有一处。
@@ -133,6 +133,18 @@ export interface BuildContextViewOpts {
   beforeCompress?: (toCompress: Message[]) => Promise<void>;
   /** false = 不做落库（子智能体摘要不写 message_summary，避免污染主会话读出） */
   persist?: boolean;
+  /**
+   * ★ D3-转（2026-10-10）：**强制压缩**（手动入口用）—— 跳过"是否超阈值"的判定。
+   *
+   * ★ 为什么需要：自动压缩只在超过 `target`（有效窗口，标称×25%）时触发；
+   *   而用户有时**明知上下文很满**（想省钱/提速）却没有手段"现在压一下、轻装继续"。
+   * ★ 为什么不用另写一份压缩：`ContextWindow.compress()` 本就可直接调用
+   *   （不需要 `needsCompression` 先为真）⇒ **走同一条流水线**，
+   *   摘要/落库/缓存复用全部不变（另写一份必然漂移）。
+   * ★ 安全性：仍受 `hardCap` 兜底与 `enforceBudget` 保护，且 `compress` 内部
+   *   在 `cut<=0`（无法保住 tool 配对）时会**原样返回** —— 手动触发不会产出畸形结果。
+   */
+  forceCompress?: boolean;
 }
 
 /**
@@ -147,7 +159,7 @@ export async function buildContextView(opts: BuildContextViewOpts): Promise<Cont
   const {
     conversationId, userId, rawMessages, model,
     keepRecent, keepFirst = 0, summaryCache, setSummaryModel,
-    beforeCompress, maxTokens, persist = true,
+    beforeCompress, maxTokens, persist = true, forceCompress = false,
   } = opts;
 
   // ★★★ 压缩**目标** vs **硬上限**（2026-10-02 修"过度压缩"，两个数别混）：
@@ -199,12 +211,23 @@ export async function buildContextView(opts: BuildContextViewOpts): Promise<Cont
     : [];
   let payload: Message[] = [...head, ...baseMessages];
 
+  // ── ②' 常态裁剪：把「保留窗口之外」的老工具结果压到 8KB（D4，2026-10-09）─────
+  //   ★ 此前 `capLongText` **只在 compress 内部**被调（即"只有超阈值才裁"）→ 低于阈值时，
+  //     `python_exec` 的长 stdout / `file_read` 的长文件 / 长正文**全量进上下文**，
+  //     逐条推高 token、更早撞阈值，更早被迫走"丢前文换摘要"这条**有损**路径。
+  //   ★ 提升为**每步常态**：只改 content 长度、不动消息结构 ⇒ tool 配对不可能被破坏；
+  //     幂等；且**只裁保留窗口之外**（最近 keepRecent 条保原文，避免"刚读到就没了"）。
+  //   ★ 放在压缩判定**之前**：先温和裁剪，若已降到阈值下就**不必走整段摘要**（保住全部对话结构）。
+  payload = capStaleToolResults(payload, keepRecent);
+
   const cw = ContextWindow.forBudget(trigger, keepRecent, keepFirst);
   if (setSummaryModel) setSummaryModel(cw);
 
   let compacted = false;
   let mergedCovered = covered;
-  if (cw.needsCompression(payload)) {
+  // ★ D3-转（2026-10-10）：`forceCompress`（手动入口）→ **跳过阈值判定**直接压。
+  //   自动路径行为完全不变（仍按 `needsCompression`）。
+  if (forceCompress || cw.needsCompression(payload)) {
     payload = await cw.compress(payload, {
       summaryCache,
       beforeCompress,

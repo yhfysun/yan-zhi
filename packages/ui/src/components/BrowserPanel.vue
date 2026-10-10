@@ -482,16 +482,34 @@ const browserExpanded = computed({
 //     `browserSteps` 退回它本来的职责 —— 只管"步骤清单/进度条"的展示。
 //   ★ 保留 `browserLockInput` 作为**附加**放行条件（不是必要条件）：它现在还承担
 //     "用户手动点了暂停"之外的额外抑制语义，去掉会让旧行为回退。
-const taskRunningNow = computed(() => !!chatStore.streaming || chatStore.runningConvIds.size > 0);
+// ★ 2026-10-09 接管实况改用「本会话」运行态（chatStore.streaming = runningConvIds.has(currentConvId)）：
+//   旧判据 taskRunningNow 是全局的（任一会话在跑都为真），A 会话的接管条能借 B 会话的运行态苟活；
+//   且此前 liveControlVisible 完全不带运行态判据 → SSE 终态事件丢失时（断流放弃/服务重启
+//   interrupted）browserTaskActive 永远不清，出现「任务都结束了，接管条还挂着啥也不干」。
+//   现在任务收尾 runningConvIds 删除 → 实况条/虚拟鼠标随任务结束立即消失；
+//   断流期间订阅仍在重试（streaming 仍为真），接管条照常保留，行为不回退。
+const convTaskRunning = computed(() => isPreviewScope && chatStore.streaming);
 const inputLocked = computed(() =>
   isPreviewScope && !chatStore.browserPaused
-  && taskRunningNow.value
+  && convTaskRunning.value
   && chatStore.browserTaskActive,
+);
+// ★ 实况条活性门控（2026-10-09）：接管条只在浏览器工具有"呼吸"时显示 ——
+//   最后一次 browser_* 工具事件在宽限期（45s，覆盖 wait_for 30s 类长工具）内、
+//   或任务已暂停（暂停态要露「已暂停 · 你已接管页面」和恢复按钮，不能消失）。
+//   动机（用户实报）：pageAgent 阶段结束后主智能体编排别的步骤，接管条挂着
+//   「执行中」干等几分钟，用户以为卡死。走秒节拍器让活性判断随时间自动失效。
+const nowTick = ref(Date.now());
+setInterval(() => { nowTick.value = Date.now(); }, 3000);
+const browserLiveFresh = computed(() =>
+  pausedNow.value
+  || (nowTick.value - (chatStore.lastBrowserToolAt || 0) < chatStore.BROWSER_LIVE_GRACE_MS),
 );
 // 实况条 / 虚拟鼠标：与锁定同源（断流后仍显示"接管中"，而不是整条消失）。
 // ★ 有 browserSteps 时照常展示步骤进度；没有（断流/重放中）也保留"执行中"形态。
 const liveControlVisible = computed(() =>
-  isPreviewScope && (chatStore.browserTaskActive || chatStore.browserSteps.length > 0),
+  isPreviewScope && convTaskRunning.value && browserLiveFresh.value
+  && (chatStore.browserTaskActive || chatStore.browserSteps.length > 0),
 );
 // Agent 接管形态的步骤进度/清单：取当前会话已登记的 task_plan（无计划 → 只显示「执行中」，不硬造步骤）
 const planStepsNow = computed(() => (isPreviewScope ? chatStore.planSteps : []));
@@ -511,7 +529,8 @@ const currentStepNo = computed(() => {
 // ★ 判据与 liveControlVisible 同源（browserTaskActive）—— 断流后 steps 为空时，
 //   后续工具动作仍会通过主进程广播坐标，若这里依赖 steps 就会"看不见光标"。
 const agentCursorVisible = computed(() =>
-  isPreviewScope && (chatStore.browserTaskActive || chatStore.browserSteps.length > 0),
+  isPreviewScope && convTaskRunning.value
+  && (chatStore.browserTaskActive || chatStore.browserSteps.length > 0),
 );
 const cursorPos = computed(() => {
   const c = chatStore.agentCursor;
@@ -2039,10 +2058,24 @@ onMounted(async () => {
       newTab(url);
     }));
     // agent 首次 navigate：主进程广播"在某 scope 打开 URL"——若面板仍停主页(无 <webview>)由此把它真正打开
-    (window as any).electronAPI?.onForceOpen?.(aliveGuard((url: string, scope?: string) => {
-      if (scope && scope !== browserScope) return; // 只接管归属自己空间的导航
+    (window as any).electronAPI?.onForceOpen?.(aliveGuard((url: string, scope?: string, tabId?: string | null) => {
+      // ★★★ scope 匹配放宽（「执行面直连化」，2026-10-10）：
+      //   主进程此刻广播的 scope 是**本会话锚定 tab 的 scope**（`preview:<convId>`）；面板的
+      //   browserScope 就是 `preview:<convId>`（同源）⇒ 严格相等即可。但旧主进程/旧调用可能
+      //   广播裸 `'preview'`，此时**严格相等会静默漏掉**（面板不打开 → agent 导航失败）。
+      //   ⇒ 兼容：裸 `preview` 与任意 `preview:*` 视为同一空间。
+      const sameScope = !scope
+        || scope === browserScope
+        || (scope === 'preview' && browserScope.startsWith('preview'));
+      if (!sameScope) return; // 只接管归属自己空间的导航
       if (!url) return;
       if (currentUrl.value === url) return;        // 已在目标页，不重复导航
+      // ★ 主进程指定了目标 tabId（agent 在既有 tab 上导航）→ 切到该 tab 再导航，
+      //   避免内容落到面板当前激活的**别的** tab 上（"导航了但看不到"）。
+      if (tabId && tabs.value.some(t => t.id === tabId) && tabId !== activeTabId.value) {
+        switchTab(tabId).then(() => openSite(url)).catch(() => openSite(url));
+        return;
+      }
       openSite(url);
     }));
     // 主进程在渲染层重载完成（did-finish-load）后的"重认领"通知：
@@ -2099,6 +2132,19 @@ onMounted(async () => {
         history: url ? [url] : [], histIndex: url ? 0 : -1, pageZoom: 1, canBack: false, canForward: false,
       });
       activeTabId.value = tid;
+    }));
+    // ★ tab 关闭广播（2026-10-09）：agent 关 tab / 任务收尾自动收拾时摘除 tab 壳。
+    //   此前 webview 引擎下 agent 的 close_tab 只删主进程 meta，渲染层残留幽灵壳。
+    //   幂等：不认识/已移除的 tabId 直接忽略。激活位切换由本处兜底 + 主进程 tabActivated 驱动。
+    api.browserView.onTabClosed?.(aliveGuard((tid: string) => {
+      const idx = tabs.value.findIndex(t => t.id === tid);
+      if (idx < 0) return;
+      tabs.value.splice(idx, 1);
+      if (activeTabId.value === tid) {
+        activeTabId.value = tabs.value[0]?.id || '';
+        const next = activeTabId.value;
+        if (next) switchTab(next).catch(() => { /* ignore */ });
+      }
     }));
     // 页面 title 变化 → 更新 tab 标题（真实网站名而非 URL）+ 对话页 browser tab 名
     // 对话页 tab chip 名称只由 preview 空间实例更新（page 空间的网页标题不牵连对话页）

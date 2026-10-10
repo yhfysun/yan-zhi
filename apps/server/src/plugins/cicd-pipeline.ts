@@ -1,7 +1,7 @@
 // cicd-pipeline 插件：本地一键发布（打包 → 备份 → 上传 → 重启）
 // 复用 ops-shell 的 SSH/SFTP 连接池与文件传输能力。
 // 对外提供：
-//   - 后端路由（/api/plugin/cicd-pipeline/*）：流水线 CRUD、执行（SSE 进度推送）、模板、项目检测
+//   - 后端路由（/api/plugin/cicd-pipeline 下的子路径）：流水线 CRUD、执行（SSE 进度推送）、模板、项目检测
 //   - 插件工具（plugin_cicd-pipeline__*）：供 CICD 智能体在对话中创建/执行/查看流水线
 import type { BuiltInTool, McpCallResult, PluginManifest, PluginModule, PluginStorage } from '@yan-zhi/core';
 import type {
@@ -388,7 +388,7 @@ async function runLocal(
 }
 
 // ============================================================
-// 通配符展开（target/*.jar）
+// 通配符展开（target 目录下的 .jar）
 // ============================================================
 function expandArtifact(pattern: string, workDir: string): string[] {
   const abs = resolve(workDir, pattern);

@@ -139,8 +139,18 @@ function assertAppAllowed(target: string): void {
   if (DENIED_APPS.has(base)) throw new Error(`应用 "${base}" 在黑名单中，已拒绝`);
 }
 
-function textResult(data: unknown) {
-  return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+/**
+ * 工具文本结果。★ C5（2026-10-10）：新增可选 `meta` —— 产物类工具必须回传 `_meta.path`，
+ * 否则走通用钩子 `artifact:meta_path`（`artifact-hooks.ts:60`）时**登记不进 `conversation_file`**
+ * ⇒ **文件管理里永远看不到该产物**（静默、不报错）。
+ * ★ 为什么直接加在这里而不是每个工具自己拼 `_meta`：本文件 17 处 `textResult` 共用同一出口，
+ *   一处扩展即可，避免逐个调用点漏（本项目一贯判据：能收口就收口）。
+ */
+function textResult(data: unknown, meta?: Record<string, unknown>) {
+  return {
+    content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }],
+    ...(meta ? { _meta: meta } : {}),
+  };
 }
 
 function textOut(text: string) {
@@ -426,7 +436,7 @@ export const computerUseModule: PluginModule = {
       if (typeof reapTimer.unref === 'function') reapTimer.unref();
     }
 
-    // 后端路由：/api/plugin/computer-use/*
+    // 后端路由：/api/plugin/computer-use 下的子路径
     // POST /panic —— 急停入口（桌面端 globalShortcut Ctrl+Alt+Esc 调用）：冻结输入工具并禁用插件（恢复=手动重新启用）
     // GET  /audit —— 操作审计记录（插件页「记录」按钮）
     ctx.registerBackendRoute((raw) => {
@@ -553,7 +563,7 @@ export const computerUseModule: PluginModule = {
                 file, screenshotUrl, ...extra, ...(keptTo ? { keptTo } : {}),
                 note: '按窗口截图：offsetX/offsetY 为该窗口左上角在屏幕坐标系中的位置（截图像素坐标 + offset = 屏幕坐标，可直接喂给鼠标工具）。screenshotUrl 供对话界面展示，与识别无关',
                 nextStep: `你看不到画面，请立即调用 image_analyze(path="${file}", prompt="描述窗口内容并给出你要操作的界面元素的位置") 完成视觉识别后再操作`,
-              });
+              }, { path: keptTo || file, name: path.basename(keptTo || file), category: 'intermediate' });
               if (MAC) {
                 const rb = await osa(ctx.adapter.shell!, `
 tell application "System Events"
@@ -618,7 +628,7 @@ Write-Output ('OK' + [string][char]9 + $f[0] + [string][char]9 + $f[1] + [string
                 ...(keptTo ? { keptTo } : {}),
                 note: 'macOS：屏幕坐标与截图像素坐标一致（主屏）。screenshotUrl 供对话界面流式期间展示，与识别无关',
                 nextStep: `你看不到画面，请立即调用 image_analyze(path="${file}", prompt="描述屏幕内容并给出你要操作的界面元素的位置") 完成视觉识别后再操作`,
-              });
+              }, { path: keptTo || file, name: path.basename(keptTo || file), category: 'intermediate' });
             }
             const script = `Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -641,7 +651,7 @@ Write-Output ('OK' + [string][char]9 + $b.X + [string][char]9 + $b.Y + [string][
               ...(keptTo ? { keptTo } : {}),
               note: '坐标说明：鼠标工具使用屏幕坐标。单屏时与截图像素坐标一致；多屏时需将截图像素坐标加上 offsetX/offsetY。screenshotUrl 供对话界面流式期间展示，与识别无关',
               nextStep: `你看不到画面，请立即调用 image_analyze(path="${file}", prompt="描述屏幕内容并给出你要操作的界面元素的位置") 完成视觉识别后再操作`,
-            });
+            }, { path: keptTo || file, name: path.basename(keptTo || file), category: 'intermediate' });
           },
           {},
         ),

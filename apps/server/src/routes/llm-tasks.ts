@@ -3,7 +3,7 @@ import { Router, Request, Response } from 'express';
 import { authMiddleware } from '../auth.js';
 import { sseStream } from '../services/sse.js';
 import {
-  createTask, subscribe, abortTask, pauseTask, resumeTask, getActiveTasks, getTask, getTaskRow, resolveToolResult, injectUserMessage, findRunningTaskId,
+  createTask, subscribe, subscribeConversation, abortTask, pauseTask, resumeTask, getActiveTasks, getTask, getTaskRow, resolveToolResult, injectUserMessage, findRunningTaskId,
 } from '../llm-task-manager.js';
 
 const router = Router();
@@ -27,8 +27,8 @@ router.post('/tasks', (req: Request, res: Response) => {
   // 此前行为：createTask 幂等返回旧 taskId，前端重新订阅旧流 → 用户新要求人间蒸发，看起来像「不回」。
   const runningId = findRunningTaskId(conversationId, userId);
   if (runningId) {
-    const injected = userContent ? injectUserMessage(conversationId, String(userContent), userId) : 'no-task';
-    res.json({ data: { taskId: runningId, reused: true, injected: injected === 'injected' } });
+    const inj = userContent ? injectUserMessage(conversationId, String(userContent), userId) : { status: 'no-task' as const };
+    res.json({ data: { taskId: runningId, reused: true, injected: inj.status === 'injected', injectedMsgId: inj.msgId } });
     return;
   }
 const taskId = createTask({ conversationId, userId, platformId, modelId, userContent, agentId: agentId ?? null, appGuide, systemPrompt, tools, options, modeFlags, maxSteps, memoryExtractPlatformId, memoryExtractModelId, ontologyIds: Array.isArray(ontologyIds) ? ontologyIds.map(String) : undefined, includeUiTools: true, workspaceDir: typeof workspaceDir === 'string' ? workspaceDir : undefined,
@@ -54,6 +54,26 @@ router.get('/tasks/:id/stream', (req: Request, res: Response) => {
   sseStream(req, res, {
     connected: { seq: task.seq, eventCount: task.events.length },
     subscribe: (onEvent) => subscribe(taskId, since, onEvent),
+  });
+});
+
+// GET /api/llm/conversations/:id/stream  订阅「会话级」事件流（与任务无关）
+//
+// ★★★ 为什么必须补这条（2026-10-08）：会话级通知总线（subscribeConversation /
+//   emitConversation）在 2026-09-17 就建好了，注释写明"作为后续通知类能力的公共底座"，
+//   但**全仓库只有定义、零调用** —— 没有路由出口，前端无从订阅。后果：
+//     · 长任务（后台子智能体 pageAgent / 工作流）跑完的反写事件**推不出去**；
+//     · 用户必须**手动刷新**才能在对话里看到结果（正是"异步没弄好"的观感来源）。
+//   与任务级 SSE 的关系：任务在跑 → 事件走任务流（前端已订阅）；任务收尾后 → 走本流。
+//   两者共用 services/sse.ts 的统一出口（心跳/退订/帧格式同源，改协议不会漂）。
+//
+// ★ 注册顺序：必须在 `/tasks/:id/stream` 之外单独一条路径，不能挂成 `/tasks/:id/...`
+//   的子路径 —— 会话 id 与任务 id 是两种 id，混在一起会让 404 语义变模糊。
+router.get('/conversations/:id/stream', (req: Request, res: Response) => {
+  const conversationId = req.params.id;
+  sseStream(req, res, {
+    connected: { conversationId },
+    subscribe: (onEvent) => subscribeConversation(conversationId, onEvent),
   });
 });
 
@@ -94,13 +114,15 @@ router.post('/tasks/:id/resume', (req: Request, res: Response) => {
 // 注意：必须注册在 /tasks/:id 之前，否则会被 :id 通配吃掉。
 router.post('/tasks/inject', (req: Request, res: Response) => {
   const userId = req.user!.userId;
-  const { conversationId, content } = req.body || {};
+  const { conversationId, content, clientMsgId } = req.body || {};
   if (!conversationId || typeof content !== 'string' || !content.trim()) {
     res.status(400).json({ error: '缺少 conversationId/content' });
     return;
   }
-  const result = injectUserMessage(String(conversationId), content, userId);
-  res.json({ data: { status: result } });
+  // clientMsgId：前端队列条目 id，幂等键（2026-10-09）。同一 id 重复 POST（连点 / 网络重试）
+  // 只落一条消息，第二次回 duplicate=true + 同一 msgId。
+  const result = injectUserMessage(String(conversationId), content, userId, typeof clientMsgId === 'string' ? clientMsgId : undefined);
+  res.json({ data: { status: result.status, msgId: result.msgId, duplicate: !!result.duplicate } });
 });
 
 // POST /api/llm/tasks/:id/tool-result  前端提交工具执行结果

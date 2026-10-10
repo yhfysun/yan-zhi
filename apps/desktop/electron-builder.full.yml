@@ -23,6 +23,15 @@ files:
   #   guest will-navigate 闸门都靠它。漏登记 = 打包版启动即崩（Cannot find module './url-guard.cjs'），
   #   且「页面自定义协议（bitbrowser://）弹系统框」的修复会完全失效。
   - url-guard.cjs
+  # ★★★ 浏览器桥（2026-10-10，执行面直连化）：main.cjs require('./browser-bridge.cjs')，
+  #   服务端经 loopback 端点直连浏览器执行面。漏登记 = 打包版**启动即崩**
+  #   （Cannot find module './browser-bridge.cjs'）——与 keyring-crypto.cjs / instance.cjs 同一类坑。
+  #   注意：桥**默认档位 off**（YZ_BROWSER_BRIDGE 未设时不启动端点）⇒ 登记了也不改变现有行为。
+  - browser-bridge.cjs
+  # ★★★ 执行目标解析纯函数（2026-10-10，执行面直连化）：main.cjs require('./browser-target.cjs')，
+  #   多页语义（显式 tabId / new_tab 是否改写当前操作页）的**唯一判定**。
+  #   漏登记 = 打包版**启动即崩**（Cannot find module './browser-target.cjs'）——同 browser-bridge.cjs。
+  - browser-target.cjs
   # 版本档配置（scripts/set-edition.cjs 生成）：main.cjs 运行时读它拿构建档与预置码档。
   # ★ 漏登记 = 打包版读不到档位 → 落到兜底档（basic），且「阉割版只有办公」这条会静默失效。
   - edition.json

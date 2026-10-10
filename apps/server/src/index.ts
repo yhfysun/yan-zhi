@@ -21,6 +21,7 @@ import { buildArtifactRelDir, buildArtifactRelDirCandidates } from '@yan-zhi/sha
 import platformRoutes, { migrateLegacyLocalPlatformRows } from './routes/platforms.js';
 import { seedBuiltinWorkflowAgents, ensureBuiltinWorkflowModel, cleanupLegacyDiagAgents } from './builtin-workflow-agents.js';
 import { markOrphanWorkflowRunsInterrupted } from './workflow-runner.js';
+import { markOrphanPlanItemsInterrupted } from './services/plan-runner.js';
 import { syncWorkflowTools } from './services/workflow-tool-registry.js';
 import { markOrphanTasksInterrupted, resumeWorkflowDeliveries } from './llm-task-manager.js';
 import agentRoutes from './routes/agents.js';
@@ -55,6 +56,9 @@ import datasourceRoutes from './routes/datasources.js';
 import sqlConsoleRoutes from './routes/sql-console.js';
 import localConsoleRoutes from './routes/local-console.js';
 import envRoutes from './routes/env.js';
+// 系统信息（当前数据目录等）——「关于」页展示「跑在哪套数据上」
+// ★ 不受 MOBILE_MODE 限制：移动端同样需要知道数据落在哪
+import systemRoutes from './routes/system.js';
 import debugRoutes from './routes/debug.js';
 import queryContractRoutes from './routes/query-contract.js';
 import ontologyRoutes from './routes/ontologies.js';
@@ -77,7 +81,8 @@ import { startScheduledTaskScheduler } from './services/scheduled-tasks.js';
 import { startMemoryDreamingScheduler } from './services/memory-dreaming.js';
 import { syncDingtalkStreamClients } from './services/dingtalk-stream.js';
 import { nodeAdapter } from './node-adapter.js';
-import { db } from './db.js';
+import { db, dataDir } from './db.js';
+import { checkAndQuarantine } from './services/db-integrity.js';
 import { createLogger } from './services/logger.js';
 const logger = createLogger('index');
 
@@ -173,12 +178,15 @@ app.use('/api/mcp', mcpBridgeRoutes);
 app.use('/api/workspace', workspaceRoutes);
 app.use('/api/memory', memoryRoutes);
 app.use('/api/scheduled-tasks', scheduledTaskRoutes);
+// 系统信息：当前数据目录 / 实例类型（dev 还是安装版）
+// ★ 双库 issue 的真痛点就是「不可见」——本路由把这个答案交给前端
+app.use('/api/system', systemRoutes);
 // 用户工具钩子（P2-7 P2a）：设置页声明 deny/confirm 规则，executeTool 前置执行
 app.use('/api/user-hooks', userHookRoutes);
 app.use('/api/ollama-market', ollamaMarketRoutes);
 app.use('/api/tts-packs', ttsPackRoutes);
 app.use('/api/plugins', pluginRoutes);
-// 插件静态资源（皮肤壁纸/预览图）：/api/plugin-assets/:pluginId/*
+// 插件静态资源（皮肤壁纸/预览图）：/api/plugin-assets/:pluginId 下的子路径
 app.use('/api/plugin-assets', pluginAssetsRouter);
 
 // AI 媒体产物访问（api_image_generate / api_video_generate 落盘的持久文件，区别于截图 30 分钟临时区）
@@ -409,12 +417,25 @@ app.listen(PORT_NUM, HOST, () => {
   logger.info(`后端已启动: http://${HOST === '0.0.0.0' ? '<局域网可达>' : HOST}:${PORT_NUM}`);
 });
 
+// ★★★ 启动时数据库完整性自检 + 损坏库隔离（2026-10-09，P3）：
+//   生产库实测出现 `database disk image is malformed`（6 条消息 + llm_task failed 命中），
+//   症状是「任务一跑就断 / 会话打不开」且无前置信号。这里在**任何读写之前**先探一次：
+//   好库 → 零副作用；坏库 → 改名隔离（data.db.corrupt-<ts>）并以空库启动，
+//   绝不带着坏库静默运行（那会让每个请求随机暴毙）。
+//   ★ 必须在 markOrphan* 之前：那些清理本身就要读库，坏库会让它们先炸。
+//   ★ DATA_DIR 下的 data.db 与 db.ts 同源（同一 dataDir），此处复用同一路径。
+try {
+  const dbPath = path.join(dataDir, 'data.db');
+  checkAndQuarantine(dbPath);
+} catch (e) { logger.warn('[db-integrity] 自检流程异常（不影响启动）:', e); }
+
 // 启动时回收上次进程遗留的运行/任务：llm_task 与 workflow_run 的 running 状态不会自己结束，
 // 不回收会永远卡在 running。随后补投遗留的工作流反写 —— 顺序不能反：先标 failed，补投才有失败可写。
 try {
   const orphanTasks = markOrphanTasksInterrupted();
   const orphanRuns = markOrphanWorkflowRunsInterrupted();
-  if (orphanTasks || orphanRuns) logger.info(`[cleanup] 已回收遗留任务 ${orphanTasks} 条、遗留工作流运行 ${orphanRuns} 条`);
+  const orphanPlans = markOrphanPlanItemsInterrupted();
+  if (orphanTasks || orphanRuns || orphanPlans) logger.info(`[cleanup] 已回收遗留任务 ${orphanTasks} 条、遗留工作流运行 ${orphanRuns} 条、遗留计划项 ${orphanPlans} 条`);
   resumeWorkflowDeliveries();
 } catch (e) { logger.warn('[cleanup] 遗留运行回收/补投失败:', e); }
 

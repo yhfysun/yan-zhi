@@ -4,6 +4,7 @@ import { ref, computed } from 'vue';
 import type { Agent, Workflow, WorkflowNode, WorkflowEdge, NodeType } from '@yan-zhi/shared';
 import { uid } from '@yan-zhi/shared';
 import { api } from '../api/client';
+import { getWithRetry } from './platform';
 import { useAuthStore } from './auth';
 import { isChatSelectableAgent } from '../utils/agentSelectable';
 
@@ -150,6 +151,8 @@ const PAGE_AGENT_BUILTIN_TOOLS = [
   'browser_run_script',
   // P2-2 纯视觉兜底路线（2026-10-07）：截图 + 视觉识别（DOM 失效时的 MolmoWeb 式兜底）
   'browser_screenshot', 'image_analyze',
+  // 与 server db.ts 收口清单对齐（2026-10-07 upload / 2026-10-09 file_write 落盘）
+  'browser_upload', 'file_write',
   // 登录闭环必备：向用户提问/请求确认（扫码、验证码等人工干预场景）
   'ask_user',
 ];
@@ -365,11 +368,16 @@ export const useAgentStore = defineStore('agent', () => {
 
   async function loadAgents() {
     // 单库收敛：数据面走后端（data.db 唯一权威）。seed/迁移已收归后端 db.ts，前端仅拉取。
+    // ★ 2026-10-09 改走 getWithRetry：更新安装后首启，后端端口已监听但 seed 未完，
+    //   单发请求拿到空列表且**永久为空**（进智能体管理页才被二次加载救回）。
     if (loadInflight) return loadInflight;
     loadInflight = (async () => {
       try {
-        const r = await api.get<any[]>('/agents');
-        const rows: any[] = Array.isArray(r) ? r : ((r as any)?.data || []);
+        const r = await getWithRetry<any[]>('/agents');
+        // ★ 失败（网络层/5xx）时**保留现有列表**，不清空 —— 瞬态失败把列表洗成 []
+        //   就是「记录忽有忽无」的直接来源。
+        if ('error' in r || !('data' in r)) return;
+        const rows: any[] = Array.isArray(r.data) ? r.data : ((r as any)?.data || []);
         agents.value = rows.map(rowToAgent);
         // 优先沿用上次选中的智能体（含 localStorage 持久化值），否则回退到默认/第一个
         const persisted = readPersistedSelectedId();
@@ -387,6 +395,18 @@ export const useAgentStore = defineStore('agent', () => {
       }
     })();
     return loadInflight;
+  }
+
+  /**
+   * 兜底加载（2026-10-09）：更新安装后**首次启动**是最慢的一条路径（建库 + 迁移 +
+   * agens 平台联网同步模型列表），可能超过 loadAgents 的重试预算（~10.5s），
+   * 重试耗尽后 agents 永久为空 —— 表现为「对话页智能体下拉是空的，
+   * 进智能体管理页再回来才有」。本函数挂在下拉**展开**时机上：用户能看到下拉时
+   * 后端必然已就绪，此时若列表为空再拉一次（loadInflight 去重，幂等）。
+   */
+  async function ensureAgents() {
+    if (agents.value.length || loadInflight) return;
+    await loadAgents();
   }
 
   async function loadAgent(id: string) {
@@ -613,7 +633,7 @@ export const useAgentStore = defineStore('agent', () => {
   return {
     agents, current, running, runLogs,
     selectedId, selectedAgent, chatAgents, delegatableAgents, selectAgent,
-    loadAgents, loadAgent, createAgent, createChatAgent, updateAgent, updateWorkflow, deleteAgent, resetAgent,
+    loadAgents, ensureAgents, loadAgent, createAgent, createChatAgent, updateAgent, updateWorkflow, deleteAgent, resetAgent,
     publishAgent, unpublishAgent, installFromMarketplace,
     runAgent, addNode,
   };

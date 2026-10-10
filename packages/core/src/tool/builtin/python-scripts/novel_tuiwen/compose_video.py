@@ -15,6 +15,11 @@ import os
 import subprocess
 import sys
 
+# ★ 子进程静默（2026-10-09）：本文件有 10 处 ffmpeg/ffprobe 调用，是"黑框一直闪"的主要来源。
+#   打一次补丁 → 后续所有 subprocess.Popen 自动带 CREATE_NO_WINDOW。
+import _winquiet  # noqa: E402
+_winquiet.apply_popen_defaults()
+
 # 画幅由 --aspect 决定（2026-10-07）：4:3=1080x1440(默认) / 9:16=1080x1920(抖音竖屏) / 16:9=1920x1080(横屏)
 ASPECT_SIZES = {"4:3": (1080, 1440), "9:16": (1080, 1920), "16:9": (1920, 1080)}
 W, H = ASPECT_SIZES["4:3"]
@@ -53,8 +58,24 @@ def probe_duration(ffmpeg, path):
         return 5.0
 
 
+def disp_w(ch: str) -> float:
+    """显示宽度：CJK/全角=1，半角（英文/数字/标点）=0.55。"""
+    return 1.0 if ord(ch) > 0x2E80 else 0.55
+
+
 def wrap_text(s: str, width: int = 20):
-    return "\n".join(s[i:i + width] for i in range(0, len(s), width))
+    """按**显示宽度**换行（不再按字符个数），英文/数字混排时不会低估行宽导致字幕超出画面。"""
+    lines, cur, w = [], "", 0.0
+    for ch in s:
+        cw = disp_w(ch)
+        if w + cw > width and cur:
+            lines.append(cur)
+            cur, w = "", 0.0
+        cur += ch
+        w += cw
+    if cur:
+        lines.append(cur)
+    return "\n".join(lines)
 
 
 def wrap_title(s: str, max_chars: int, max_lines: int = 2):
@@ -107,21 +128,21 @@ def fmt_srt_ts(sec: float) -> str:
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
 
-def build_srt(cues, out_path):
-    """长句按 40 字切块(2 行 x 20), 时间按字数比例分摊, 避免单条字幕堆成文字墙。"""
-    CHUNK = 40
+def build_srt(cues, out_path, wrap_chars=20):
+    """长句按 ≤2 行 x wrap_chars 显示宽度切块, 时间按显示宽度比例分摊。
+    wrap_chars 由画幅+字幕字号动态算出（见 main），防止字幕行超出画面宽度。"""
     idx = 0
     with open(out_path, "w", encoding="utf-8-sig") as f:
         for start, end, text in cues:
-            chunks = [text[i:i + CHUNK] for i in range(0, len(text), CHUNK)] or [text]
+            chunks = wrap_text(text, wrap_chars * 2).split("\n") or [text]
             dur = end - start
-            chars = [len(c) for c in chunks]
-            total_chars = sum(chars) or 1
+            weights = [sum(disp_w(c) for c in ch) for ch in chunks]
+            total_w = sum(weights) or 1.0
             t = start
-            for c, n in zip(chunks, chars):
-                d = dur * n / total_chars
+            for c, n in zip(chunks, weights):
+                d = dur * n / total_w
                 idx += 1
-                f.write(f"{idx}\n{fmt_srt_ts(t)} --> {fmt_srt_ts(t + d)}\n{wrap_text(c)}\n\n")
+                f.write(f"{idx}\n{fmt_srt_ts(t)} --> {fmt_srt_ts(t + d)}\n{wrap_text(c, wrap_chars)}\n\n")
                 t += d
 
 
@@ -188,8 +209,13 @@ def main():
         cues.append((t, t + d, text))
         t += d
 
+    # ★ 字幕换行宽度动态算（2026-10-09 修"字幕超出画面"）：libass 对 SRT 默认 PlayResY=288，
+    #   FontSize=14 渲染像素 ≈ 14 * H/288（4:3≈70px/字、9:16≈93px/字、16:9≈52px/字），
+    #   原来写死 20 字/行在 4:3/9:16 下必然超宽。每行字数 = 画面宽度*0.90 / 单字像素。
+    _font_px = 14.0 * H / 288.0
+    wrap_chars = max(8, int(W * 0.90 / _font_px))
     srt = os.path.join(tmp, "subs.srt")
-    build_srt(cues, srt)
+    build_srt(cues, srt, wrap_chars)
 
     # ---- 2) 音频拼接 (+可选 BGM) ----
     audio_out = os.path.join(tmp, "narration.m4a")
@@ -256,6 +282,7 @@ def main():
         #          ④ concat demuxer（-c copy）生成 bg_full.mp4；
         #          ⑤ 主命令改为**单输入 bg_full**，trim 到 total。
         #   实测：3 段背景拼 4 轮 = 216.24s（精确）；单输入 -stream_loop/trim 均正常生效。
+        #   注：远端 origin 有同款修复但缺「坏素材检出」→ 本版为超集，保留检出 + 跳过 + 全坏报错。
         clip_files, clip_durs = [], []
         for i, p in enumerate(bg_clips):
             if not os.path.exists(p):

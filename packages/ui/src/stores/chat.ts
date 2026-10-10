@@ -1,6 +1,6 @@
 // 聊天 store
 import { defineStore } from 'pinia';
-import { ref, computed, nextTick } from 'vue';
+import { ref, computed, nextTick, watch } from 'vue';
 import type { Conversation, Message, Platform, Model, DeltaToolCall, InlineDataView } from '@yan-zhi/shared';
 import { getPlatformAdapter, LlmClient, ContextWindow, getToolRegistry, resolveToolPath } from '@yan-zhi/core';
 import { uid } from '@yan-zhi/shared';
@@ -9,8 +9,10 @@ import { useAgentStore } from './agent';
 import { useToolsStore } from './tools';
 import { useSettingsStore } from './settings';
 import { useFileStore } from './file';
+import { chainBrowserOp, dropBrowserOpChain, type BrowserOpChains } from './browser-op-queue';
 import { useBrowserStore } from './browser';
 import { api, API_BASE, buildRequestHeaders } from '../api/client';
+import { getWithRetry } from './platform';
 import { consumeSseStream } from '../utils/sse';
 import { useAuthStore } from './auth';
 // 会话按模式隔离：loadConversations / createConversation 都要知道"当前在哪个模式"
@@ -46,6 +48,26 @@ function extractUrlFromArgs(args: unknown): string {
  * 只在 tab 仍存在时生效；tab 被关则自动失效回退。
  */
 const agentAnchoredTabs = new Map<string, string>(); // convId → tabId
+
+/**
+ * 浏览器操作**会话级串行锁**（2026-10-09）。
+ *
+ * ★★★ 为什么 pageAgent 需要特殊处理：浏览器是**单活动页状态机**（前端 `ensureActiveTab(scope)`
+ *   每 scope 单值、主进程 `activeTabId` 全局单值、服务端 Playwright 的 `activeTabId` 进程级单值）。
+ *   同一会话里若多个 pageAgent（或一次并发派发的多个 browser_* 调用）同时操作，
+ *   会互相抢同一个活动页 —— 后到的 navigate 覆盖前一个的页面，读取也只能读到"当前页"，
+ *   表现为「多个 pageAgent 只有一个在动 / 结果错乱」（实测：agent 的操作跑到用户停留的页面上）。
+ *   ⇒ 会话内把 browser_* 调用**串行化**（队尾等待），每个操作完整跑完再放下一个。
+ *   ★ 只在**同一会话内**串行：不同会话有各自的锚定 tab（agentAnchoredTabs 按 convId 隔离），
+ *     互不阻塞 —— 与既有 scope 隔离口径一致。
+ *   ★ 排队逻辑收敛在 `browser-op-queue.ts`（纯函数，可脱离 store 单测）。
+ */
+const browserOpChains: BrowserOpChains = new Map();
+
+/** 把一次浏览器操作挂到本会话的串行链尾（前一个跑完才轮到它）。无 convId 时不串行（退化旧行为）。 */
+function serializeBrowserOp<T>(convId: string | undefined, fn: () => Promise<T>): Promise<T> {
+  return chainBrowserOp(browserOpChains, convId, fn);
+}
 
 /**
  * agent 在本次任务中**打开过的**所有 tab（会话级，2026-10-08）。
@@ -307,6 +329,7 @@ import {
   removePlans,
   applyTaskPlan,
   applyTaskStep,
+  syncPlan,
   DRAFT_PLAN_KEY,
   type PlanMap,
   type PlanStep as PlanStepT,
@@ -373,6 +396,18 @@ export const useChatStore = defineStore('chat', () => {
    * ★ 键是 convId：多会话并行时 A 会话的浏览器任务不得锁住 B 会话的面板。
    */
   const browserTaskConvs = ref<Set<string>>(new Set());
+  // ★ 浏览器工具活性时间戳（2026-10-09）：browserSteps 最后一条的时间。
+  //   动机（用户实报）：「pageAgent结束了…Agent 接管中一直在？」——接管条此前只看
+  //   会话整体 streaming，主智能体在编排间隙（跑非浏览器步骤/纯思考）时条子照样挂着。
+  //   收口：所有 browserSteps.push 都带 time（SSE tool:start/result、tool:execute、
+  //   本地 dispatchToolCall 共 6+ 处登记点），watch 最后一条即可全覆盖，不必逐点插桩。
+  const lastBrowserToolAt = ref(0);
+  watch(() => browserSteps.value.length, () => {
+    const last = browserSteps.value[browserSteps.value.length - 1];
+    if (last?.time) lastBrowserToolAt.value = last.time;
+  });
+  /** 接管条活性宽限：最后一次浏览器工具事件后，条子保留多久（覆盖 wait_for 30s 类长工具） */
+  const BROWSER_LIVE_GRACE_MS = 45000;
   /** 登记「本会话正在跑浏览器任务」（幂等；由工具事件驱动，见 subscribeTaskSse 的 tool 分支） */
   function markBrowserTaskActive(convId: string) {
     if (!convId) return;
@@ -393,6 +428,42 @@ export const useChatStore = defineStore('chat', () => {
   }
   /** 当前会话是否正在跑浏览器任务（BrowserPanel 的锁定/实况判据） */
   const browserTaskActive = computed(() => !!currentConvId.value && browserTaskConvs.value.has(currentConvId.value));
+
+  // ★★★ 浏览器执行面判据（「执行面直连化」P2-1，2026-10-10）：由**服务端单一给出**。
+  //
+  // ★ 为什么必须由服务端下发、前端**不得自己探**（两条硬理由）：
+  //   ① 前端探端点 = 第二份判据 → 与 `decideBrowserExecution`（server/src/browser-bridge.ts）
+  //      必然漂移（本项目一贯判据：同一语义只能有一处实现）；
+  //   ② 探端点需要 token → 会把凭据暴露到渲染层/网页上下文（安全边界明令禁止）。
+  //   ⇒ 服务端在 `task:created` 里下发枚举标记（**不含 URL/token**）。
+  //
+  // ★ 语义：`bridge` = 本次任务的浏览器工具由**服务端直连主进程**执行，前端**只展示不执行**
+  //   （否则同一次调用会打两遍页面 = 双执行）。`frontend` = 前端照旧本地执行（既有行为）。
+  // ★ 键是 convId：多会话并行时各会话的档位可以不同（灰度期尤其可能混合）。
+  const browserExecutionByConv = ref<Map<string, 'bridge' | 'frontend'>>(new Map());
+  /** 本会话的浏览器工具是否由服务端直连执行（前端据此**跳过本地执行**） */
+  function isBrowserExecutionByBridge(convId?: string | null): boolean {
+    const cid = convId || currentConvId.value;
+    if (!cid) return false;
+    return browserExecutionByConv.value.get(cid) === 'bridge';
+  }
+  /** 登记/清理某会话的执行面（任务创建时写入；任务收尾时清理，避免残留影响下一任务） */
+  function setBrowserExecution(convId: string, exec: 'bridge' | 'frontend') {
+    if (!convId) return;
+    const next = new Map(browserExecutionByConv.value);
+    next.set(convId, exec);
+    browserExecutionByConv.value = next;
+  }
+  function clearBrowserExecution(convId?: string) {
+    if (!convId) {
+      if (browserExecutionByConv.value.size) browserExecutionByConv.value = new Map();
+      return;
+    }
+    if (!browserExecutionByConv.value.has(convId)) return;
+    const next = new Map(browserExecutionByConv.value);
+    next.delete(convId);
+    browserExecutionByConv.value = next;
+  }
   // Agent 虚拟鼠标（宿主层渲染）：主进程 browserView:action 动作完成后广播 guest 坐标，
   // BrowserPanel 在 webview 上方画常驻光标（webview 引擎下 guest 内瞬时光标会被 shield
   // 盖住且只闪现 0.5s，等于看不见）。tabId 用于多面板实例归属判断；at 用于重触发 CSS 动画。
@@ -484,6 +555,18 @@ export const useChatStore = defineStore('chat', () => {
     if (hit) hit.content = content;
   }
 
+  /** 把某条追加消息**提到队首**（「立即发送」在任务已结束、退回普通发送时用）。
+   *  flushQueuedAfterTask 每次只取队首一条 —— 不提前，用户点第 3 条却发了第 1 条，
+   *  与"点谁发谁"的直觉相悖。 */
+  function promoteQueuedMessage(convId: string, id: string) {
+    const arr = queuedByConv.value[convId];
+    if (!arr) return;
+    const idx = arr.findIndex((q) => q.id === id);
+    if (idx <= 0) return;
+    const [item] = arr.splice(idx, 1);
+    arr.unshift(item);
+  }
+
   /** 取出并清空某会话的全部待发消息（保留给需要一次性排空的场景） */
   function takeQueuedMessages(convId: string): QueuedMessage[] {
     const arr = queuedByConv.value[convId] || [];
@@ -500,19 +583,55 @@ export const useChatStore = defineStore('chat', () => {
     return first;
   }
 
-  /** 「立即发送」：注入到运行中的任务，模型下一轮带上。
-   *  @returns true=已注入；false=该会话已无运行中任务（调用方应退回普通发送） */
-  async function injectQueuedMessage(convId: string, id: string): Promise<boolean> {
+  /**
+   * 「立即发送」：注入到运行中的任务，模型下一轮带上。
+   *
+   * ★★★ 幂等与"点击即见"（2026-10-09 用户实报）：
+   *   · 「同一个消息点击多次会发送 n 次」→ 用具队列条目 id 当幂等键：
+   *     在途守卫（injecting）挡住第二次点击，clientMsgId 让后端也能去重（覆盖网络重试）。
+   *   · 「点击无用 / 聊天里看不到」→ 注入成功时后端**回传真实 msgId**，这里**本地立即插入**
+   *     该条 user 消息（SSE 的 message:added 后到会被 id 去重挡住，不会重复）。
+   *     此前完全依赖 SSE 回显 —— 断流或切走再回来时就"点了没反应、队列条目还消失了"。
+   *
+   * @returns { ok, duplicate } —— ok=false 表示该会话已无运行中任务（调用方退回普通发送）
+   */
+  const injectingQueued = ref<Set<string>>(new Set());
+  async function injectQueuedMessage(convId: string, id: string): Promise<{ ok: boolean; duplicate: boolean }> {
     const arr = queuedByConv.value[convId];
     const hit = arr?.find((q) => q.id === id);
-    if (!hit) return false;
-    const r = await api.post<any>('/llm/tasks/inject', { conversationId: convId, content: hit.content });
-    const status = (r as any)?.data?.status;
-    if (status === 'injected') {
-      removeQueuedMessage(convId, id);
-      return true;
+    if (!hit) return { ok: false, duplicate: false };
+    // 在途守卫：同一条已在发送中 → 直接忽略第二次点击（防连点落多条）
+    if (injectingQueued.value.has(id)) return { ok: true, duplicate: true };
+    injectingQueued.value = new Set(injectingQueued.value).add(id);
+    try {
+      const r = await api.post<any>('/llm/tasks/inject', {
+        conversationId: convId,
+        content: hit.content,
+        clientMsgId: id, // 幂等键：后端据此去重（连点 / 网络重试同一 id 只落一条）
+      });
+      if ('error' in (r as any)) return { ok: false, duplicate: false };
+      const data = (r as any)?.data || {};
+      if (data.status === 'injected') {
+        removeQueuedMessage(convId, id);
+        // ★ 本地立即回显：不依赖 SSE。按真实 id 去重（后到的 message:added 会被挡住）。
+        const realId = typeof data.msgId === 'string' && data.msgId ? data.msgId : null;
+        if (realId) {
+          const list = (messagesByConv.value[convId] ||= []);
+          if (!list.some((m) => m.id === realId)) {
+            list.push({
+              id: realId, conversationId: convId, role: 'user', content: hit.content,
+              createdAt: Date.now(),
+            } as any);
+          }
+        }
+        return { ok: true, duplicate: !!data.duplicate };
+      }
+      return { ok: false, duplicate: false };
+    } finally {
+      const next = new Set(injectingQueued.value);
+      next.delete(id);
+      injectingQueued.value = next;
     }
-    return false;
   }
 
   // 文件管理弹窗（el-dialog）是否显示——左侧栏「文件管理」按钮触发
@@ -720,6 +839,27 @@ export const useChatStore = defineStore('chat', () => {
     }, 800);
   }
 
+  /**
+   * ★★★ 只清**界面展示**，不落盘（2026-10-09 修，high —— 跨会话接力被这里整条抹掉）。
+   *
+   * 背景（实据）：`send()` 开跑新任务时会调 `clearPlan(convId)`，而 clearPlan 的防抖回调是
+   *   `readPlan(plansByConv, key)` —— 它读的是**自己刚清空的 map**，因此取到的永远是 `null`，
+   *   于是**每次发消息都 PATCH taskPlan:null**。服务端收到 null 会
+   *   ① 把 `conversation.task_plan_json` 置空 ② **unlink 工作目录的 plan.md**。
+   *   后果（与 §计划接力棒跨会话 的"三处落盘点全空"完全吻合）：
+   *   · 跨会话接力彻底不成立 —— 计划刚登记就被下一次发消息删掉；
+   *   · 收尾时 `readPlanRemainingSteps()` = 0 → 机械接力信号丢失，只剩模型自评（倾向"已完成"）。
+   *
+   * ★ 判据：**"清展示"与"清持久化"是两件事，必须分开**。
+   *   TaskPlanCard 的「清除计划」按钮是用户显式动作 → 走 clearPlan（要落盘 null，合理）；
+   *   新任务开跑只是"别让上一轮的卡片残留在进度行上" → 走本函数（只清内存）。
+   *   把两者塞进同一个函数，就会让"顺带清一下显示"演变成"删掉用户的跨会话计划"。
+   */
+  function clearPlanDisplayOnly(convId?: string | null) {
+    const key = planKeyOf(convId);
+    plansByConv.value = removePlan(plansByConv.value, key);
+  }
+
   /** 计划落盘：写入 conversation.task_plan_json（刷新/换设备后 TaskPlanCard 可恢复）。
    *  task_plan/task_step 在一轮任务里高频更新 → 800ms 防抖合并 PATCH。 */
   let planSaveTimer: ReturnType<typeof setTimeout> | null = null;
@@ -798,6 +938,9 @@ export const useChatStore = defineStore('chat', () => {
     return agentStore.selectedId;
   }
 
+  // 上一次成功加载会话列表时的模式（loadConversations 失败时判断能否保留现有列表，防串模式）
+  let conversationsLoadedMode: string | null = null;
+
   /**
  * 加载会话列表。
  *
@@ -811,10 +954,15 @@ export const useChatStore = defineStore('chat', () => {
 async function loadConversations() {
     const mode = activeMode.value;
     if (isServerMode()) {
-      const r = await api.get<any[]>(`/conversations?mode=${encodeURIComponent(mode)}`);
-      if ('data' in r) {
+      // ★ 2026-10-09 改走 getWithRetry + 失败不清空：更新安装后首启竞态下，
+      //   单发请求失败会把会话列表洗成 [] ——「记录忽有忽无」的直接来源。
+      //   重试窗口（~10.5s）覆盖后端 seed/迁移冷启；仍失败则保留现有列表等下次刷新。
+      const r = await getWithRetry<any[]>(`/conversations?mode=${encodeURIComponent(mode)}`);
+      if ('data' in r && Array.isArray(r.data)) {
         conversations.value = (r.data as any[]).map(rowToConv);
-      } else {
+        conversationsLoadedMode = mode; // 成功才记录：失败时仅同模式列表可保留（防串模式）
+      } else if (conversationsLoadedMode !== mode) {
+        // 失败且现有列表属于别的模式 → 宁可清空也不串模式展示
         conversations.value = [];
       }
       return;
@@ -834,10 +982,12 @@ async function loadConversations() {
   async function loadMessages(convId: string) {
     currentConvId.value = convId;
     if (isServerMode()) {
+      // ★ 2026-10-09 同 loadConversations：失败不清空已加载的历史消息（瞬态失败
+      //   把消息洗成空 = 「会话还在、点开记录没了」的表象）。
       const r = await api.get<any[]>(`/conversations/${convId}/messages`);
       if ('data' in r) {
         messagesByConv.value[convId] = (r.data as any[]).map(rowToMsg);
-      } else {
+      } else if (messagesByConv.value[convId] === undefined) {
         messagesByConv.value[convId] = [];
       }
       const conv = conversations.value.find((c) => c.id === convId);
@@ -1003,6 +1153,8 @@ async function loadConversations() {
     for (const id of ids) delete queuedByConv.value[id];
     // 一并清掉被删会话的计划，避免 plansByConv 里留孤儿键
     plansByConv.value = removePlans(plansByConv.value, ids);
+    // 浏览器操作串行链同样按会话清（防内存泄漏；进行中的操作不受影响）
+    for (const id of ids) dropBrowserOpChain(browserOpChains, id);
     await loadConversations();
   }
 
@@ -1319,7 +1471,19 @@ async function loadConversations() {
    *  2) custom_{idTag}_{name}     → 服务端沙箱 /api/tools/:id/execute（沙箱依赖 node:vm，仅服务端可用）
    *  3) 裸名                       → ToolRegistry.execute（内置工具，经平台适配器执行）
    *  重名不误路由：三类前缀互斥，裸名不得以 mcp_/custom_ 开头。 */
-  async function dispatchToolCall(fullName: string, args: unknown, ctx?: { parentToolCallId?: string; depth?: number; convId?: string }): Promise<{ ok: boolean; result?: unknown; msg?: string }> {
+  /**
+ * 工具分发入口。**browser_\* 本会话内串行**（2026-10-09），其余工具直通：
+ * 把 `dispatchToolCall` 的实现体整体收进 `dispatchToolCallInner`，本函数只做一层
+ * 「会话级串行锁」包装 —— 零改动内部 30+ 个 return 点，也避免将来漏包某个分支。
+ */
+async function dispatchToolCall(fullName: string, args: unknown, ctx?: { parentToolCallId?: string; depth?: number; convId?: string }): Promise<{ ok: boolean; result?: unknown; msg?: string }> {
+  if (fullName.startsWith('browser_')) {
+    return serializeBrowserOp(ctx?.convId, () => dispatchToolCallInner(fullName, args, ctx));
+  }
+  return dispatchToolCallInner(fullName, args, ctx);
+}
+
+async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { parentToolCallId?: string; depth?: number; convId?: string }): Promise<{ ok: boolean; result?: unknown; msg?: string }> {
     const mcpStore = useMcpStore();
     const registry = getToolRegistry();
 
@@ -1476,8 +1640,40 @@ async function loadConversations() {
           'browser_run_script': 'run_script',
           // 文件上传（2026-10-07）：桌面端走 CDP DOM.setFileInputFiles 注入本地文件
           'browser_upload': 'upload',
+          // ★★★ B5（2026-10-10）：补齐 11 个**主进程早已实现**但这里漏映射的 action。
+          //   ★ 缺口（实测）：主进程 `browserView:action` 实现了 **40 个 action**，而本表只映射 27 个
+          //     ⇒ 下面 11 个会落到末尾兜底、报「桌面端暂不支持 XX」——
+          //     但它们**在主进程里明明已经实现**（能力在、入口断，属"静默失效"家族）。
+          //   ★ 实测差集（主进程 case 列表 vs 本表值）逐项核对得到，非推测。
+          'browser_new_tab': 'new_tab',
+          'browser_switch_tab': 'switch_tab',
+          'browser_close_tab': 'close_tab',
+          'browser_get_tabs': 'get_tabs',
+          'browser_download': 'download',
+          'browser_drag': 'drag',
+          'browser_scroll_into_view': 'scroll_into_view',
+          'browser_is_visible': 'is_visible',
+          'browser_wait_for_request': 'wait_for_request',
+          'browser_get_network_log': 'get_network_log',
+          'browser_visual_locate': 'visual_locate',
         };
-        const action = actionMap[fullName];
+        // ★★★ B5 根治（2026-10-10）：**优先用主进程的能力清单推导**映射，`actionMap` 退为兜底。
+        //
+        // ★ 为什么（实测缺口）：主进程的 action 分发是 `switch`（无法枚举），而本表是**另一份
+        //   硬编码清单** ⇒ 两份必然失同步：实测主进程已实现 40 个 action，本表只映射 27 个 →
+        //   11 个**明明已实现**的能力落到兜底、报「桌面端暂不支持 XX」（**能力在、入口断**）。
+        // ★ 推导规则：`browser_xxx` → `xxx`（与主进程 case 名逐字对应），仅当
+        //   `xxx` 出现在主进程公布的能力清单里才采用 —— 这样"以后主进程新增 action"
+        //   前端**自动支持**，不再需要同步两份清单。
+        // ★ 拿不到清单时（非桌面端 / 旧 preload）退回 `actionMap`，行为不变。
+        let action = actionMap[fullName];
+        if (!action && fullName.startsWith('browser_')) {
+          const derived = fullName.slice('browser_'.length);
+          try {
+            const supported: string[] | undefined = await (window as any).electronAPI?.browserView?.actions?.();
+            if (Array.isArray(supported) && supported.includes(derived)) action = derived;
+          } catch { /* 查询失败 → 退回兜底（不影响既有行为） */ }
+        }
         if (action) {
           try {
             const actTabId = await resolvePreviewTabId(ctx?.convId);
@@ -1499,7 +1695,9 @@ async function loadConversations() {
               } else if (action === 'get_visible_text' || action === 'get_text') {
                 text = result.text || '';
               } else if (action === 'screenshot') {
-                text = '截图已捕获';
+                // 2026-10-09：main.cjs 截图时已落盘存档，把路径带回 —— 服务端据此
+                // 复制进会话产物目录并登记 conversation_file（关键节点归档留证）。
+                text = result.file ? `截图已捕获（已存档: ${result.file}）` : '截图已捕获';
               } else if (action === 'get_dom') {
                 // 桌面端不把完整 DOM 回传模型（体积大且无必要）。若只回 "DOM 节点数"，
                 // 模型会因拿不到链接/文本内容而无限换参重试。给出可行动提示引导改用四件套。
@@ -1688,6 +1886,27 @@ async function loadConversations() {
       return { ok: false, msg: '读取图片失败: ' + (e?.message || e) };
     }
 
+    // ★★★ 图片压缩与预算闸（C2，2026-10-09）——此前这里是**原图直发**：
+    //   `browser_screenshot` 的整页 PNG 常数 MB → 上游 400（Anthropic 单图 base64 约 5MB）
+    //   或一张图吃爆 token。压缩放在**这一处**是因为它是 UI 侧唯一的 vision 入口，
+    //   且 `LlmClient.visionAnalyze` 对两种协议共用 —— 改这里覆盖全部调用方。
+    //   ★ fail-open：压缩失败一律回退原图（压缩是优化，不能变成"图片用不了"）。
+    let sendMime = mime;
+    try {
+      const { downscaleImageBase64 } = await import('../utils/image-compress');
+      const c = await downscaleImageBase64(base64, mime);
+      if (c.compressed) {
+        console.info(`[image_analyze] 图片压缩: ${(c.originalBytes / 1048576).toFixed(2)}MB → ${(c.resultBytes / 1048576).toFixed(2)}MB (${c.width}x${c.height})`);
+        base64 = c.base64;
+        sendMime = c.mime;
+      }
+      if (c.note && c.resultBytes > 0 && c.note.includes('仍超预算')) {
+        console.warn('[image_analyze]', c.note);
+      }
+    } catch (e: any) {
+      console.warn('[image_analyze] 压缩流程异常，使用原图:', e?.message || e);
+    }
+
     const { usePlatformStore } = await import('./platform');
     const platformStore = usePlatformStore();
 
@@ -1699,14 +1918,45 @@ async function loadConversations() {
       const key = `${p.id}/${m.id}`;
       if (tried.has(key)) return null;
       tried.add(key);
+      // ★★★ C3（2026-10-10）：**已探明不支持的直接跳过** —— 此前失败结论不被记住
+      //   （`platform.ts` 只写回成功项 `if (r.ok && r.capability)`），于是每次识图都
+      //   逐个候选**真发请求**白试一遍（长任务里反复发生，纯浪费）。
+      //   ★ 三态语义：`no` = 已探明不支持（跳过）；`unknown` = 允许尝试（默认）。
+      //     `no` 有 30 分钟 TTL，到期回到 unknown（防"一次抖动被永久记成不支持"）。
       try {
-        const client = new LlmClient(p, m);
-        const text = await client.visionAnalyze(base64, mime, prompt);
-        if (text) return text;
-        console.warn('[image_analyze] vision 返回空，换下一候选:', m.modelId);
-        return null;
+        const { getVisionCapability, recordVisionAttempt } = await import('../utils/vision-capability');
+        if (getVisionCapability(p.id, m.id) === 'no') {
+          console.info('[image_analyze] 跳过已探明不支持视觉的候选:', m.modelId);
+          return null;
+        }
+        try {
+          const client = new LlmClient(p, m);
+          // ★ 必须用 `sendMime`（压缩后可能是 image/jpeg）—— 若仍报原 mime（如 image/png），
+          //   上游按 PNG 解 JPEG 字节 → 解码失败。这是"压缩与声明必须同步"的硬约束。
+          const text = await client.visionAnalyze(base64, sendMime, prompt);
+          if (text) {
+            recordVisionAttempt(p.id, m.id, true); // 记住"支持"
+            return text;
+          }
+          // 返回空文本：不算"不支持"（可能是内容策略/空回复），仅换下一候选
+          console.warn('[image_analyze] vision 返回空，换下一候选:', m.modelId);
+          return null;
+        } catch (e: any) {
+          // ★ 只把"能力性失败"记成 no（网络/超时类不记 —— 记了会被一次抖动永久误判）
+          const marked = recordVisionAttempt(p.id, m.id, false, e?.message || String(e));
+          console.warn(`[image_analyze] vision 失败，换下一候选: ${m.modelId}${marked ? '（已记为不支持）' : ''}`, e?.message || e);
+          return null;
+        }
       } catch (e: any) {
-        console.warn('[image_analyze] vision 失败，换下一候选:', m.modelId, e?.message || e);
+        // 缓存模块本身异常 → fail-open（不因为缓存问题让识图失败）
+        console.warn('[image_analyze] 能力缓存异常，按原有试错继续:', e?.message || e);
+        try {
+          const client = new LlmClient(p, m);
+          const text = await client.visionAnalyze(base64, sendMime, prompt);
+          if (text) return text;
+        } catch (e2: any) {
+          console.warn('[image_analyze] vision 失败（无缓存路径）:', m.modelId, e2?.message || e2);
+        }
         return null;
       }
     };
@@ -1754,17 +2004,20 @@ async function loadConversations() {
     const agentStore = useAgentStore();
     const agent = agentStore.selectedAgent;
     const steps = agent?.config?.maxReActSteps;
-    // ★ 下限 1、上限 500（用户 2026-09-28：「改了最大步数不立刻生效」顺带暴露的硬抬问题）。
+    // ★ 下限 1、上限 1000（用户 2026-09-28：「改了最大步数不立刻生效」顺带暴露的硬抬问题）。
     //   此前写的是 `if (steps >= 100) return steps; return 100;` —— 把一切 <100 的配置**静默抬到 100**，
     //   用户想把步数调小（快速迭代/省钱）根本做不到，且界面不提示，属于静默失效。
     //   现在：显式配置直接采纳（只做合法性夹取），未配置才回落到默认。
     // ★ 2026-09-29：默认 100 → 500（用户：「默认 500 步吧，50 步不太够啊」）。
-    //   长任务跑满 100 步仍有大量未完成步骤 → 默认偏小会让任务频繁触顶。
-    //   ★ 与后端 `DEFAULT_MAX_REACT_STEPS` 必须同值（两处不同步会让"界面显示"与"实际执行"不一致）。
+    // ★★ 2026-10-09（本次修复）：500 → 1000。后端 `DEFAULT_MAX_REACT_STEPS` 已提到 1000
+    //   （推文产线实测主任务 500 步也撞顶），而后端 `liveMaxSteps()` 的语义是
+    //   「显式传入 > 智能体现值 > 默认」—— 前端回落 500 会被当成**显式传入**，从而把后端
+    //   已经生效的 1000 默认**覆盖回 500**。⇒ 两处必须**同值**，否则"默认 1000 步"根本
+    //   从 UI 生效不了（这正是上次提默认值时漏改的那一半）。
     if (typeof steps === 'number' && Number.isFinite(steps) && steps > 0) {
-      return Math.min(Math.floor(steps), 500);
+      return Math.min(Math.floor(steps), 1000);
     }
-    return 500; // 默认 500（= 上限）
+    return 1000; // 默认 1000（与后端 DEFAULT_MAX_REACT_STEPS 同值）
   }
 
   /**
@@ -1848,6 +2101,14 @@ async function loadConversations() {
 
         switch (event.type) {
           case 'connected': break;
+          // ★★★ 执行面判据（P2-1，2026-10-10）：服务端单一给出，前端只服从。
+          //   收到 bridge ⇒ 本任务的 browser_* 由服务端直连主进程执行，前端**跳过本地执行**
+          //   （否则双执行：同一次调用打两遍页面）。老 server 不发本字段 → 不进入本分支 → 行为不变。
+          case 'task:created': {
+            const exec = event.browserExecution === 'bridge' ? 'bridge' : 'frontend';
+            setBrowserExecution(convId, exec as any);
+            break;
+          }
           case 'message:added': {
             const msg = event.message;
             const arr = messagesByConv.value[convId] || [];
@@ -1913,6 +2174,15 @@ async function loadConversations() {
             }
             break;
           }
+          // 计划状态更新（后端 PlanRunner 编排的并行子任务）——复用 task_plan 的展示通道
+          // （输入区上方运行指示行的步骤详情 + 进度条），**不新增任何 UI 元素**。
+          case 'plan:updated': {
+            const key = planKeyOf(convId);
+            // 用 syncPlan（保留 steps 自带状态），而非 applyTaskPlan（会把状态强制成 pending）
+            plansByConv.value = syncPlan(plansByConv.value, key, event.plan as any);
+            void persistPlan(key, plansByConv.value[key]);
+            break;
+          }
           case 'tool:start': {
             // 仅浏览器类工具推送步骤日志，避免非浏览器工具污染右侧浏览器面板
             if (event.toolName?.startsWith('browser_')) {
@@ -1944,6 +2214,16 @@ async function loadConversations() {
             // 去重：重放时跳过已执行的 tool:execute（避免重复调工具/弹窗）
             if (st.executedToolCallIds.has(callId)) break;
             st.executedToolCallIds.add(callId);
+            // ★★★ 执行面直连化（P2-1，2026-10-10）：桥生效时**前端不执行** browser_* ——
+            //   服务端已直连主进程执行（结果不经这里回传），前端只负责展示（tool:start/result 事件照旧）。
+            //   ★ 若这里仍执行 ⇒ **双执行**（同一次调用打两遍页面：重复点击/重复输入/重复导航）。
+            //   ★ 判据来自服务端下发的 `browserExecution`（见 isBrowserExecutionByBridge 注释），
+            //     **前端不得自己探端点**（否则造第二份判据 + 泄露 token）。
+            if (typeof toolName === 'string' && toolName.startsWith('browser_') && isBrowserExecutionByBridge(convId)) {
+              // 仅登记"本会话在跑浏览器任务"（接管条/输入锁仍要亮），然后**直接返回**不执行。
+              markBrowserTaskActive(convId);
+              break;
+            }
             // 多会话隔离：把当前任务所属 convId 传给工具分发（浏览器工具按 convId 取 scope，
             // 不同会话的 tab/激活/历史互不串台，避免会话 A 调 browser_get_page_content 读到会话 B 的页面）。
             const ctx = ptcId
@@ -2014,9 +2294,11 @@ async function loadConversations() {
           //   表现为「回答已完整输出（含生成的图片）却一直显示『任务运行中』+ 停止按钮」。
           // ★ 终态必须清掉跨重连状态（否则 sseStreamStates 无界增长；且同 taskId 不会被复用，
           //   留着只是内存垃圾）。放在 markRunEnd 之前 —— 清状态不影响消息列表内容。
-          case 'task:completed': flushNow(convId); dropStreamState(taskId); taskEventCounts.delete(taskId); markRunEnd(convId, 'completed'); emitTaskFinished(convId); return false;
-          case 'task:aborted': flushNow(convId); dropStreamState(taskId); taskEventCounts.delete(taskId); markRunEnd(convId, 'aborted'); emitTaskFinished(convId); return false;
-          case 'task:error': flushNow(convId); dropStreamState(taskId); taskEventCounts.delete(taskId); markRunEnd(convId, 'error'); emitTaskFinished(convId); throw new Error(event.error || '任务执行失败');
+          // ★ 任务收尾清理执行面标记：避免残留在下一任务上（与 browserSteps / browserTaskConvs
+          //   同族，本文件多处收尾都做同样的清理）。放在**三态共同出口**（completed/aborted/error）。
+          case 'task:completed': flushNow(convId); dropStreamState(taskId); taskEventCounts.delete(taskId); clearBrowserExecution(convId); markRunEnd(convId, 'completed'); emitTaskFinished(convId); return false;
+          case 'task:aborted': flushNow(convId); dropStreamState(taskId); taskEventCounts.delete(taskId); clearBrowserExecution(convId); markRunEnd(convId, 'aborted'); emitTaskFinished(convId); return false;
+          case 'task:error': flushNow(convId); dropStreamState(taskId); taskEventCounts.delete(taskId); clearBrowserExecution(convId); markRunEnd(convId, 'error'); emitTaskFinished(convId); throw new Error(event.error || '任务执行失败');
           case 'task:paused': pausedConvIds.value.add(convId); browserLockInput.value = false; break;
           case 'task:resumed': pausedConvIds.value.delete(convId); break;
           case 'context:compacted': {
@@ -2110,41 +2392,101 @@ async function loadConversations() {
   /** 检查会话是否有未完成的后端任务，如有则重新订阅 SSE 恢复流式输出。 */
   async function reconnectActiveTask(convId: string): Promise<void> {
     if (!isServerMode()) return;
-    if (runningConvIds.value.has(convId)) return;
+    // ★ 2026-10-09 假运行态自愈：SSE 终态事件丢失（断流放弃重连 / 服务重启把任务标
+    //   interrupted）时，runningConvIds / browserTaskConvs 永远没人清 → 前端永远显示
+    //   「任务运行中 / Agent 接管中」。旧实现 has() 提前 return（UI 认为在跑就连服务端
+    //   都不问）、active 为空也只 return 不清理，没有任何自愈出口。
+    //   现在每次切回会话都问一次服务端：确认无活动任务且 UI 仍认为在跑 → 清残留。
+    //   查询本身失败（网络抖动）不动残留态，避免误清真正在跑的任务。
+    const wasUiRunning = runningConvIds.value.has(convId);
+    let activeTasks: any[] = [];
     try {
       const r = await api.get<any[]>(`/llm/tasks/active?conversationId=${convId}`);
-      if ('error' in r || !r.data || r.data.length === 0) return;
-      const task = r.data[0];
-      const taskId = task.id;
-      taskIds.set(convId, taskId);
-      runningConvIds.value.add(convId);
-      // 重连恢复：真实起点未知，用后端任务的 createdAt 兜底（缺省退化为当前时间）
-      runStatsByConv.value[convId] = { status: 'running', startedAt: Number(task.createdAt) || Date.now() };
-      const abortController = new AbortController();
-      abortControllers.set(convId, abortController);
-      void (async () => {
-        try {
-          // ★★★ 走带重连的包装（2026-10-08 修，high）：此前这里直接调 `subscribeTaskSse`，
-          //   于是**手动重连（切走再切回）拿到的流一旦再被掐断就永久停了** —— 而且它拿到的
-          //   `connected` 帧会把 `taskEventCounts` 虚高 1，使该任务**之后所有自动重连
-          //   都从错位下标开始**（漏事件 → 工具不执行 → 报「前端暂时不可达」）。
-          //   与 callLlm 走同一条路径，行为才一致。
-          await subscribeTaskSseWithReconnect(convId, taskId, abortController.signal, undefined);
-        } catch (e: any) {
-          markRunEnd(convId, e?.name === 'AbortError' ? 'aborted' : 'error');
-          if (e?.name === 'AbortError') return;
-          console.error('[Chat] 重连 SSE 失败:', e);
-        } finally {
-          markRunEnd(convId);
-          abortControllers.delete(convId);
-          taskIds.delete(convId);
-          runningConvIds.value.delete(convId);
-        }
-      })();
+      if ('error' in r || !r.data) return;
+      activeTasks = r.data;
     } catch (e) {
       console.error('[Chat] 检查活动任务失败:', e);
+      return;
+    }
+    if (activeTasks.length === 0) {
+      if (wasUiRunning) {
+        // 服务端已无此会话的活动任务 → 前端运行态是残留，落结束态并清浏览器任务记账
+        markRunEnd(convId, 'aborted');
+        runningConvIds.value.delete(convId);
+        clearBrowserTaskActive(convId);
+        abortControllers.delete(convId);
+        taskIds.delete(convId);
+      }
+      return;
+    }
+    if (wasUiRunning) return; // 已有订阅在跑，不重复订阅
+    const task = activeTasks[0];
+    const taskId = task.id;
+    taskIds.set(convId, taskId);
+    runningConvIds.value.add(convId);
+    // 重连恢复：真实起点未知，用后端任务的 createdAt 兜底（缺省退化为当前时间）
+    runStatsByConv.value[convId] = { status: 'running', startedAt: Number(task.createdAt) || Date.now() };
+    const abortController = new AbortController();
+    abortControllers.set(convId, abortController);
+    void (async () => {
+      try {
+        // ★★★ 走带重连的包装（2026-10-08 修，high）：此前这里直接调 `subscribeTaskSse`，
+        //   于是**手动重连（切走再切回）拿到的流一旦再被掐断就永久停了** —— 而且它拿到的
+        //   `connected` 帧会把 `taskEventCounts` 虚高 1，使该任务**之后所有自动重连
+        //   都从错位下标开始**（漏事件 → 工具不执行 → 报「前端暂时不可达」）。
+        //   与 callLlm 走同一条路径，行为才一致。
+        await subscribeTaskSseWithReconnect(convId, taskId, abortController.signal, undefined);
+      } catch (e: any) {
+        markRunEnd(convId, e?.name === 'AbortError' ? 'aborted' : 'error');
+        if (e?.name === 'AbortError') return;
+        console.error('[Chat] 重连 SSE 失败:', e);
+      } finally {
+        markRunEnd(convId);
+        abortControllers.delete(convId);
+        taskIds.delete(convId);
+        runningConvIds.value.delete(convId);
+      }
+    })();
+  }
+
+  // ★★★ 假运行态残留自愈巡检（2026-10-09；2026-10-09 扩到全部会话）：
+  //   SSE 终态事件丢失（断流放弃重连 / 服务重启把任务标 interrupted）时 runningConvIds
+  //   永远没人清 → ①「Agent 接管中 · 执行中」整条挂着不掉（用户实报「pageAgent结束了…这个一直在？」）；
+  //   ② 该会话之后**发不出任何消息**（callLlm 同会话守卫命中；旧版是静默 return → 消息凭空消失）。
+  //   原有自愈只挂在「切回会话」（reconnectActiveTask），用户不切会话就永远不触发。
+  //   这里 30s 周期巡检：对每个「UI 认为在跑」的会话，只查一次服务端活动任务，
+  //   **无活动才清残留运行态**（真在跑 → 服务端有活动任务 → 不清，安全）。
+  //   **不做** SSE 重连重订 —— 长任务编排间隙浏览器空闲 2 分钟是常态，反复重订会抖动流。
+  async function sweepStaleBrowserTakeover(): Promise<void> {
+    if (runningConvIds.value.size === 0) return;
+    // 浏览器会话的宽限：浏览器工具事件静默 2 分钟才查（长任务编排间隙浏览器空闲是常态）
+    const browserIdle = Date.now() - lastBrowserToolAt.value > 120000;
+    for (const convId of Array.from(runningConvIds.value)) {
+      // ★★★ 2026-10-09：**不再只扫浏览器会话**（本次"B 会话发不出消息"修复的一环）。
+      //   此前是 `if (!browserTaskConvs.value.has(convId)) continue;` —— 把**纯文本会话整个
+      //   排除在自愈之外**。于是纯文本任务一旦丢了 SSE 终态事件，该会话的 runningConvIds
+      //   永久残留 → 之后每次发送都被 callLlm 的同会话守卫命中（旧版是静默 return，消息凭空消失）。
+      //   纯文本会话没有"浏览器事件"这个活性信号，只能以服务端活动任务为准（每 30s 一次 GET，
+      //   只在 UI 认为在跑的会话数上跑，量极小）。真在跑 → 服务端有活动任务 → 不清（安全）。
+      if (browserTaskConvs.value.has(convId) && !browserIdle) continue;
+      try {
+        const r = await api.get<any[]>(`/llm/tasks/active?conversationId=${convId}`);
+        // ★ 单会话查询失败**只跳过本会话**（此前是 return，一个失败会让其余会话的自愈整轮失效）
+        if ('error' in (r as any) || !(r as any).data) continue;
+        const act = (r as any).data as any[];
+        if (act.length === 0) {
+          // 服务端已无活动任务 → 前端运行态是残留，落结束态并清记账（与切会话自愈同口径）
+          markRunEnd(convId, 'aborted');
+          runningConvIds.value.delete(convId);
+          clearBrowserTaskActive(convId);
+          abortControllers.delete(convId);
+          taskIds.delete(convId);
+          emitTaskFinished(convId);
+        }
+      } catch { /* 查询失败（网络抖动）不动残留态，避免误清真正在跑的任务 */ }
     }
   }
+  setInterval(() => { void sweepStaleBrowserTakeover(); }, 30000);
 
   async function callLlm(
     platform: Platform,
@@ -2165,14 +2507,81 @@ async function loadConversations() {
     // 调用方可显式锁定目标会话，避免消息/任务落到「发送开始时」之外的会话上（多会话并行时必现串台）。
     const convId = convIdOverride || currentConvId.value;
     if (!convId) throw new Error('未选择会话');
-    if (runningConvIds.value.has(convId)) return;
+    // ★★★ 同会话互斥 —— **绝不静默吞消息**（2026-10-09 实据修复，high）。
+    //
+    // 症状（用户实报）：多会话下 A 会话在跑，B 会话发消息后**页面上没有这条消息**，
+    //   输入框显示「任务运行中」，内容区毫无反应。
+    //   真因：本行此前是裸 `if (runningConvIds.value.has(convId)) return;` —— 直接返回，
+    //   既**不落库、不发 SSE、也不给任何提示**，用户消息凭空消失（与「输入框空了」（调用方
+    //   已清）、「显示运行中」（确有任务在跑）三者叠加，观感就是"点了没反应"）。
+    //
+    // 正确语义（两种"在跑"要分清，不能一律吞）：
+    //   ① 真在跑（服务端确有该会话的活动任务）→ 走「注入复用」：消息落库 + message:added
+    //      回显 + 模型下一轮带上（后端 /llm/tasks 的复用保护已实现并已进安装包）。
+    //      注入失败再退回"明确提示"，**仍不吞**（消息留在输入框里由调用方恢复）。
+    //   ② 假运行态残留（前端 runningConvIds 挂着，服务端其实没有活动任务）——SSE 终态事件
+    //      丢失（断流放弃重连 / 服务重启把任务标 interrupted）时的常见形态 →
+    //      先清残留运行态，再**继续正常起新任务**（不能因为一个死记账让该会话永久发不出消息）。
+    const runningId = taskIds.get(convId);
+    if (runningConvIds.value.has(convId)) {
+      // ★ 无条件查服务端（不依赖本地 taskIds —— 残留态下 taskIds 可能已被清，只有
+      //   runningConvIds 还挂着；不查就永远判不出"假运行态"）。
+      let activeTaskId: string | null = null;
+      try {
+        const r = await api.get<any[]>(`/llm/tasks/active?conversationId=${convId}`);
+        if (!('error' in r) && Array.isArray(r.data)) {
+          activeTaskId = r.data.find((t: any) => t.status === 'running')?.id ?? null;
+        } else {
+          activeTaskId = runningId ?? null; // 查询返回异常：退回本地记账（有记账即视为在跑）
+        }
+      } catch {
+        // 查询失败（网络抖动）→ 退回本地记账：有记账视为在跑（宁可提示，也不重复起任务）
+        activeTaskId = runningId ?? null;
+      }
+      if (activeTaskId) {
+        // 真在跑 → 注入复用（后端落库 + 推送 message:added，前端立即可见）
+        const content = options.userContent;
+        if (content && content.trim()) {
+          try {
+            const inj = await api.post<any>('/llm/tasks/inject', {
+              conversationId: convId,
+              content,
+              // 幂等键：任务 id + 内容长度，覆盖"连点/网络重试"重复下单
+              clientMsgId: `${activeTaskId}:${content.length}`,
+            });
+            if (!('error' in inj) && (inj as any).data?.status === 'injected') {
+              try {
+                const { ElMessage } = await import('element-plus');
+                ElMessage.info('已并入运行中的任务，将在下一轮执行时生效');
+              } catch { /* 提示失败不影响订阅 */ }
+              return;
+            }
+          } catch { /* 注入失败 → 落到下面的明确提示，绝不静默 */ }
+        }
+        // 注入不成（无内容 / 后端拒绝）→ **明确告知**，不吞（消息已由调用方负责留在输入框）
+        try {
+          const { ElMessage } = await import('element-plus');
+          ElMessage.warning('该会话正在执行任务，本条未发送：请等任务结束，或用「立即发送」把它并入下一轮');
+        } catch { /* ignore */ }
+        return;
+      }
+      // 假运行态残留 → 清掉死记账，继续正常起新任务
+      runningConvIds.value.delete(convId);
+      runStatsByConv.value[convId] = { status: 'aborted', startedAt: 0, endedAt: Date.now() };
+      clearBrowserTaskActive(convId);
+      abortControllers.delete(convId);
+      taskIds.delete(convId);
+    }
 
     runningConvIds.value.add(convId);
     runStatsByConv.value[convId] = { status: 'running', startedAt: Date.now() };
-    // ★ 清掉上一轮任务留下的旧计划：计划按会话持久保留（plansByConv / task_plan_json），
+    // ★ 清掉上一轮任务在**界面上**残留的旧计划：计划按会话持久保留（plansByConv / task_plan_json），
     //   不清的话新任务运行指示会显示旧计划的「步骤 3/3 全完成」，看起来像已完成的任务卡在运行中。
     //   新任务若做规划，task_plan/task_step 会重新登记。复用运行中任务（下方 has 提前 return）不受影响。
-    clearPlan(convId);
+    // ★★★ 2026-10-09 修：这里必须用 **clearPlanDisplayOnly**（只清内存），不能用 clearPlan ——
+    //   后者会 PATCH taskPlan:null，把工作目录的 plan.md 一并删掉，**跨会话接力当场失效**
+    //   （实测：发一条消息 → task_plan_json 变 NULL、plan.md 消失）。详见 clearPlanDisplayOnly 注释。
+    clearPlanDisplayOnly(convId);
     const abortController = new AbortController();
     abortControllers.set(convId, abortController);
 
@@ -2346,15 +2755,43 @@ async function loadConversations() {
     return callLlm(platform, model, { ...options }, onChunk, cid);
   }
 
+  /**
+   * ★★★ 手动压缩（D3-转，2026-10-10）：用户主动「现在压一下」。
+   *
+   * ★ 为什么需要：自动压缩只在超过有效窗口（标称×25%）时触发；用户有时**明知上下文很满**
+   *   （想省钱/提速/避免触顶）却没有手段提前压 —— 这是**便利性增强，非缺陷**。
+   * ★ 与自动压缩的关系：**同一条流水线**（服务端 `forceCompress` 只跳过阈值判定，
+   *   摘要/落库/记忆抢救全部不变）⇒ 压完能在「压缩历史」里看到、也可回退。
+   * ★ 冲突防护：任务运行中会被服务端拒绝（409）—— 手动压缩与主循环每步的压缩并发会互相干扰。
+   */
+  async function compactNow(convId?: string | null): Promise<{ ok: boolean; msg: string }> {
+    const cid = convId || currentConvId.value;
+    if (!cid) return { ok: false, msg: '未选择会话' };
+    if (runningConvIds.value.has(cid)) return { ok: false, msg: '任务运行中，无需手动压缩（自动压缩已覆盖）' };
+    try {
+      const r = await api.post<any>(`/conversations/${encodeURIComponent(cid)}/compact`);
+      if ('error' in r) return { ok: false, msg: r.error };
+      const d = (r as any).data || {};
+      if (!d.compacted) return { ok: true, msg: '暂无可压缩的内容（或已压到最小）' };
+      return { ok: true, msg: `已压缩（覆盖 ${d.coveredCount} 条消息，可在「压缩历史」查看/回退）` };
+    } catch (e: any) {
+      return { ok: false, msg: e?.message || '压缩失败' };
+    }
+  }
+
   return {
     conversations, currentMessages, streaming, currentConvId, mountedMcpServers, mcpDisabledTools, mcpToolAliases,
     runningConvIds, isConvStreaming, runStatsByConv,
     browserExpanded, browserUserDismissed, browserLockInput, browserPaused, pausedConvIds,
     browserTaskActive, markBrowserTaskActive, clearBrowserTaskActive,
+    lastBrowserToolAt, BROWSER_LIVE_GRACE_MS,
+    // 执行面判据（服务端下发；前端只读服从）—— 见 isBrowserExecutionByBridge 注释
+    browserExecutionByConv, isBrowserExecutionByBridge, setBrowserExecution, clearBrowserExecution,
     remainingAgentOpenedTabs, clearAgentOpenedTabs, markAgentOpenedTab,
     agentCursor, onAgentCursor, clearAgentCursor,
     pauseTask, resumeTask,
-    queuedByConv, queuedOf, enqueueMessage, removeQueuedMessage, updateQueuedMessage, takeQueuedMessages, takeFirstQueuedMessage, injectQueuedMessage,
+    compactNow,
+    queuedByConv, queuedOf, enqueueMessage, removeQueuedMessage, updateQueuedMessage, promoteQueuedMessage, takeQueuedMessages, takeFirstQueuedMessage, injectQueuedMessage,
     onTaskFinished,
     runningToolCallIds, isToolCallRunning,
     browserSteps, rightPanelOpen, thinkingMode, planMode, answerOnly,
@@ -2366,7 +2803,7 @@ async function loadConversations() {
     pendingPathAuth, submitPendingPathAuth,
     submitPendingConfirmation, skipPendingConfirmation, cancelPendingConfirmation,
     submitPlatformConfig, cancelPlatformConfig,
-    planSteps, planTitle, clearPlan,
+    planSteps, planTitle, clearPlan, clearPlanDisplayOnly,
     activeAgent, activeAgentId,
     loadConversations, loadMessages, createConversation, updateConversation, deleteConversation, deleteConversations,
     addMessage, updateMessage, deleteMessage, sendMessage, regenerate, stop,

@@ -59,14 +59,19 @@ describe('P2-3 工具前后置 Hooks', () => {
   });
 
   it('★★ 副作用必须搬到钩子（主循环只负责跑钩子）', () => {
-    expect(ARTIFACT_HOOKS, '★ 未注册 file_write 登记钩子').toMatch(/artifact:file_write/);
+    // ★ 2026-10-09 同步：file_write 的登记钩子已**泛化**为通用 `_meta.path` 钩子
+    //   （`artifact:meta_path`，覆盖 file_write / novel_tuiwen 等所有回传落盘路径的工具）。
+    //   钉的语义不变：登记副作用在钩子里、主循环不硬编码 `if (toolName === 'file_write')`。
+    //   原断言钉的是**工具名**（artifact:file_write），实现有意改成**判据**（_meta.path）——
+    //   这正是"任意工具只要产文件就该登记"的正确方向，故锚点随实现前进。
+    expect(ARTIFACT_HOOKS, '★ 未注册通用产物登记钩子').toMatch(/artifact:meta_path/);
     expect(ARTIFACT_HOOKS, '★ 未注册媒体产物登记钩子').toMatch(/artifact:media/);
     const body = win(LTM, 'await runAfterToolHooks(', 700, '主循环跑钩子');
     expect(body, '★ 未在主循环调用钩子').toMatch(/runAfterToolHooks/);
   });
 
   it('★★ 登记必须用工具回传的 _meta.path（不能用模型传的 args.path）', () => {
-    const body = win(ARTIFACT_HOOKS, 'artifact:file_write', 900, 'file_write 钩子');
+    const body = win(ARTIFACT_HOOKS, 'artifact:meta_path', 900, '通用产物钩子');
     expect(body, '★ 未用 ctx.meta 取路径').toMatch(/ctx\.meta|m\?\.path/);
     expect(body, '★ 用了模型传的 args.path（会登记不存在的路径 → 点开 404）').not.toMatch(/args\?\.path/);
   });

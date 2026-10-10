@@ -169,14 +169,16 @@ describe('模式定义完整性（路由与插件依赖）', () => {
     (globalThis as Record<string, unknown>).localStorage = new LocalStorageStub() as unknown as Storage;
   });
 
-  it('五模式定义与 openspec 表格一致（含新增的 wf）', async () => {
+  it('模式定义与 openspec 表格一致（含新增的 wf / clip）', async () => {
     const m = await freshModule(new LocalStorageStub());
-    expect(m.MODE_DEFS.map((d) => d.key)).toEqual(['office', 'dev', 'ops', 'sec', 'wf']);
+    expect(m.MODE_DEFS.map((d) => d.key)).toEqual(['office', 'dev', 'ops', 'sec', 'wf', 'clip']);
     expect(m.modeRoute('office')).toBe('/chat');
     expect(m.modeRoute('dev')).toBe('/code');
     expect(m.modeRoute('ops')).toBe('/ops');
     expect(m.modeRoute('sec')).toBe('/sec');
     expect(m.modeRoute('wf')).toBe('/workflow');
+    // 剪辑模式（第六模式）：无插件依赖、三端可用（与 wf 同档）
+    expect(m.modeRoute('clip')).toBe('/clip');
     // pluginId 必须与插件 manifest.id 完全一致（运行时已核实：/api/plugins 返回 ops-shell / sec-lab）
     expect(m.MODE_DEFS.find((d) => d.key === 'ops')?.pluginId).toBe('ops-shell');
     expect(m.MODE_DEFS.find((d) => d.key === 'sec')?.pluginId).toBe('sec-lab');

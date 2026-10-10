@@ -97,21 +97,41 @@ describe('主链路接线（源码守卫）', () => {
     expect(win).toContain('isWorkflowAgent(agentRow)');
   });
 
-  it('投递走注入通道：任务在跑 injectUserMessage（唤醒下一轮），否则落库普通消息', () => {
+  it('投递唤醒优先：主任务在跑 → 入队并唤醒主循环（不再只依赖注入通道）', () => {
     const i = LTM.indexOf('async function deliverSubAgentResult');
     expect(i).toBeGreaterThan(-1);
-    const win = LTM.slice(i, i + 1200);
-    expect(win).toContain('injectUserMessage(');
+    const win = LTM.slice(i, i + 1400);
+    // ★ 2026-10-09：加「主任务仍在跑 → pendingBackgroundResults 入队 + backgroundDrainWaiter 唤醒」分支
+    expect(win).toContain('pendingBackgroundResults.push');
+    expect(win).toContain('backgroundDrainWaiter');
+    // 终态兜底仍落库普通消息
     expect(win).toContain('insertMessage(');
     expect(win).toContain('aborted');
   });
 
-  it('主循环收尾前有后台在跑提示（不等待、照常 finish）', () => {
-    const i = LTM.indexOf('buildFinishNote(task.backgroundSubAgents)');
-    expect(i).toBeGreaterThan(-1);
-    // 提示必须出现在 task:completed 之前（收尾时给用户看的）
-    const finish = LTM.indexOf("emit(task, { type: 'task:completed' })", i);
-    expect(finish).toBeGreaterThan(i);
+  it('★ 收尾时有后台在跑 → 就地等待而非 finish（保住前端 SSE = 保住 browser_* 通道）', () => {
+    // 两个收尾点（无工具调用 / 步数耗尽）都应有 waitForBackgroundSubAgents 闸
+    const n = (LTM.match(/waitForBackgroundSubAgents\(task\)/g) || []).length;
+    expect(n).toBeGreaterThanOrEqual(3); // 两个收尾点 + finally 兜底
+    // 等待函数本身：等 Map 清空 + abort 可打断
+    expect(LTM).toMatch(/async function waitForBackgroundSubAgents/);
+    const wi = LTM.indexOf('async function waitForBackgroundSubAgents');
+    const w = LTM.slice(wi, wi + 900);
+    expect(w).toContain('backgroundSubAgents.size > 0');
+    expect(w).toContain('backgroundDrainWaiter');
+    expect(w).toContain('aborted');
+  });
+
+  it('后台能力字段初始化存在（结果缓冲 + 等待者）', () => {
+    expect(LTM).toMatch(/pendingBackgroundResults:\s*\[\]/);
+    expect(LTM).toMatch(/pendingBackgroundResults:\s*Array<\{ agentName: string; text: string \}>/);
+    expect(LTM).toMatch(/backgroundDrainWaiter/);
+  });
+
+  it('abort 时放行等待者（否则收尾挂到天荒地老）', () => {
+    const i = LTM.indexOf('export function abortTask');
+    const win = LTM.slice(i, i + 600);
+    expect(win).toContain('backgroundDrainWaiter');
   });
 
   it('任务级 backgroundSubAgents Map 初始化存在', () => {

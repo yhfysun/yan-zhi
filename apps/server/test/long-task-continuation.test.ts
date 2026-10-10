@@ -104,9 +104,13 @@ describe('② 达上限必须「决策 → 接力」，不能直接终止', () =
     expect(callIdx, '★ decideAutoContinue 定义了却没人调用（静默失效）').toBeGreaterThan(0);
   });
 
-  it('★★ 接力必须有轮次上限（否则无限烧 token）', () => {
-    expect(LTM, '★ 无 autoContinueMaxRounds 上限').toMatch(/autoContinueMaxRounds/);
-    expect(LTM, '★ 未按上限拦截（上限形同虚设）').toMatch(/continuationCount\s*<\s*autoContinueMaxRounds|continuationCount\s*>=\s*autoContinueMaxRounds/);
+  it('★★ 接力必须有上限（否则无限烧 token）—— 停滞上限 + 总批次硬顶', () => {
+    // 2026-10-09（P1）语义升级：autoContinueMaxRounds 从"总批次数"改为"连续无进展批次数"，
+    //   总批次另有硬顶 autoContinueHardCap。**意图不变**：接力必须有界、且可配置关闭。
+    expect(LTM, '★ 无停带上限 autoContinueMaxRounds').toMatch(/autoContinueMaxRounds/);
+    expect(LTM, '★ 无总批次硬顶 autoContinueHardCap').toMatch(/autoContinueHardCap\s*=\s*\d+/);
+    expect(LTM, '★ 未按上限拦截（上限形同虚设）')
+      .toMatch(/stallCount\s*>=\s*autoContinueMaxRounds|continuationCount\s*>=\s*autoContinueHardCap/);
     expect(LTM, '★ 上限不可配置（用户无法关闭自动接力）').toMatch(/autoContinueMaxRounds/);
   });
 
@@ -175,20 +179,21 @@ describe('④ 步数上下限必须放开', () => {
 
   it('★★ 后端子智能体步数不得封顶 100', () => {
     expect(LTM, '★ 子智能体步数仍被封顶 100（配置改大无效）').not.toMatch(/Math\.min\(Math\.floor\(cfgSteps\),\s*100\)/);
-    expect(LTM, '★ 未放开到更高上限').toMatch(/Math\.min\(Math\.floor\(cfgSteps\),\s*500\)/);
+    // ★ 2026-10-09：封顶 500 → 1000（推文产线实测 500 步也撞顶）。意图不变：不再卡在 100。
+    expect(LTM, '★ 未放开到更高上限').toMatch(/Math\.min\(Math\.floor\(cfgSteps\),\s*(500|1000)\)/);
   });
 
-  it('★★★ 默认步数必须是 500（用户 2026-09-29：「默认 500 步吧，50 步不太够啊」）', () => {
+  it('★★★ 默认步数必须够长（用户 2026-09-29：「默认 500 步吧，50 步不太够啊」→ 2026-10-09 提到 1000）', () => {
     // 后端：共享常量 + 两处使用（liveMaxSteps 与 getAgentLiveParams）
-    expect(LTM, '★ 未定义默认步数常量').toMatch(/DEFAULT_MAX_REACT_STEPS\s*=\s*500/);
+    expect(LTM, '★ 未定义默认步数常量').toMatch(/DEFAULT_MAX_REACT_STEPS\s*=\s*1000/);
     expect(LTM, '★ liveMaxSteps 未使用默认常量').toMatch(/params\.maxSteps \|\| live \|\| DEFAULT_MAX_REACT_STEPS/);
-    expect(LTM, '★ 智能体参数回显仍写死 100（界面与实际执行不一致）')
+    expect(LTM, '★ 智能体参数回显仍写死旧值（界面与实际执行不一致）')
       .not.toMatch(/maxReActSteps: config\?\.maxReActSteps \|\| 100/);
-    // 前端：回落值必须与后端同值
+    // 前端：回落值必须与后端同值（否则前端 500 会被当"显式传入"覆盖掉后端 1000 默认）
     const i = anchor(CHAT_STORE, 'function getMaxReActSteps', 'getMaxReActSteps');
     const body = CHAT_STORE.slice(i, i + 900);
-    expect(body, '★ 前端默认仍是 100（与后端 500 不一致）').toMatch(/return 500;/);
-    expect(body, '★ 前端仍回落 100').not.toMatch(/return 100;/);
+    expect(body, '★ 前端默认仍与后端不同值（默认 1000 步从 UI 生效不了）').toMatch(/return 1000;/);
+    expect(body, '★ 前端仍回落旧值 500').not.toMatch(/return 500;/);
   });
 });
 

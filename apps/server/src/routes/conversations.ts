@@ -1,12 +1,12 @@
 import { Router, Request, Response } from 'express';
 import { v4 as uuid } from 'uuid';
 import { authMiddleware } from '../auth.js';
-import { db, MESSAGE_LIST_COLS, clearMessageSummaries } from '../db.js';
+import { db, MESSAGE_LIST_COLS, clearMessageSummaries, listMessageSummaries, deleteMessageSummariesAfter } from '../db.js';
 import { normalizePermissionMode } from '../tool-permission.js';
 import { writeTaskPlanFile } from '../services/task-plan-file.js';
 import { WF_TOOL_PREFIX, MAX_WF_TOOLS_PER_CONVERSATION } from '../services/workflow-tool-registry.js';
 import { clearAuthorization } from '../services/path-guard.js';
-import { buildSystemPromptForBackend, buildToolsForBackend, setRunningTaskPermissionMode } from '../llm-task-manager.js';
+import { buildSystemPromptForBackend, buildToolsForBackend, setRunningTaskPermissionMode, compressConversationNow } from '../llm-task-manager.js';
 import { estimateTokens } from '@yan-zhi/shared';
 
 const router = Router();
@@ -176,7 +176,11 @@ router.delete('/clear', (req: Request, res: Response) => {
   const userId = req.user!.userId;
   const ids = db.prepare('SELECT id FROM conversation WHERE user_id = ?').all(userId) as any[];
   const clear = () => {
-    for (const c of ids) db.prepare('DELETE FROM message WHERE conversation_id = ?').run(c.id);
+    for (const c of ids) {
+      db.prepare('DELETE FROM message WHERE conversation_id = ?').run(c.id);
+      // 任务计划派生物同步清（与 DELETE /:id 同一口径，见该处注释）
+      db.prepare('DELETE FROM task_plan_item WHERE conversation_id = ?').run(c.id);
+    }
     db.prepare('DELETE FROM conversation WHERE user_id = ?').run(userId);
   };
   db.transaction(clear)();
@@ -195,6 +199,10 @@ router.delete('/:id', (req: Request, res: Response) => {
   //   两处都是「新增了带 conversation_id 的状态，却没在删除路径上一起收」——同一类漏接线。
   clearMessageSummaries(cid);
   clearAuthorization(cid);
+  // ★ task_plan_item 同属 message 的派生物（2026-10-08）：多智能体任务计划随会话一起清。
+  //   与上两行同一类"新增了带 conversation_id 的状态，却没在删除路径上一起收"——
+  //   漏了会留下孤儿计划行（且会话 id 复用时会被 get_plan_status 读到旧计划）。
+  db.prepare('DELETE FROM task_plan_item WHERE conversation_id = ?').run(cid);
   db.prepare('DELETE FROM conversation WHERE id = ?').run(cid);
   res.json({ ok: true });
 });
@@ -204,6 +212,78 @@ router.delete('/:id', (req: Request, res: Response) => {
 // 需要快照时走独立按需接口 GET /api/messages/:mid/snapshot。
 // ★ 列清单统一取自 db.ts:MESSAGE_LIST_COLS —— 与 llm-task-manager 的 ReAct 热路径**共用同一常量**，
 //   避免"同一语义两处各写一份"的漂移（本项目既有教训）。
+// ── ★★★ 压缩历史（D8，2026-10-09）─────────────────────────────────────────
+// 压缩是**增量累积**的（新摘要吸收旧摘要），但读取只认**最新一条** →
+// "压了什么、压到第几轮"对用户完全不可见（只看到一个"已压缩 N 次"计数）。
+// `insertMessageSummary` 注释写着"追加不覆盖，保留历史以便回滚/审计"，
+// 而 `deleteMessageSummariesAfter`（回滚）**生产零调用** —— 存了历史却没有读的出口。
+// 这两条路由补上那个出口：列历史 + 回退到某个压缩点（**原文一字未动**，非破坏性）。
+
+// ── ★★★ 手动压缩（D3-转，2026-10-10）───────────────────────────────────────
+// POST /api/conversations/:id/compact —— 用户主动「现在压一下」。
+// ★ 与自动压缩**同一条流水线**（`buildContextView` + `forceCompress`），
+//   不另写压缩实现；摘要仍落 `message_summary`（可在压缩历史里看到、可回退）。
+// ★ 返回压缩后的统计供前端回显（压了多少条 / 摘要预览）。
+router.post('/:id/compact', async (req: Request, res: Response) => {
+  const userId = req.user!.userId;
+  const cid = req.params.id;
+  const conv = db.prepare('SELECT id FROM conversation WHERE id = ? AND user_id = ?').get(cid, userId);
+  if (!conv) { res.status(404).json({ error: '会话不存在' }); return; }
+  // ★ 拒绝在任务运行中手动压缩：压缩会写 message_summary，与主循环每步的压缩并发会互相干扰。
+  //   （用户想压时任务通常是空闲态；正在跑的任务本就由自动压缩覆盖。）
+  const running = (() => {
+    try {
+      const rows = db.prepare('SELECT status FROM conversation WHERE id = ?').get(cid) as any;
+      return rows?.status === 'running';
+    } catch { return false; }
+  })();
+  if (running) { res.status(409).json({ error: '任务正在运行中，无需手动压缩（自动压缩已覆盖）；请等空闲后再试' }); return; }
+  try {
+    const r = await compressConversationNow(cid, userId);
+    if (!r.ok) { res.status(400).json({ error: r.error || '压缩失败' }); return; }
+    res.json({ data: { compacted: !!r.compacted, coveredCount: r.coveredCount || 0, summaryPreview: (r.summary || '').slice(0, 200) } });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || '压缩失败' });
+  }
+});
+
+// GET /api/conversations/:id/summaries —— 列出压缩历史（新→旧，最多 20 条）
+router.get('/:id/summaries', (req: Request, res: Response) => {
+  const userId = req.user!.userId;
+  const cid = req.params.id;
+  const conv = db.prepare('SELECT id FROM conversation WHERE id = ? AND user_id = ?').get(cid, userId);
+  if (!conv) { res.status(404).json({ error: '会话不存在' }); return; }
+  const items = listMessageSummaries(cid, 20).map((s) => ({
+    id: s.id,
+    // 不返回摘要全文（可能很长）：给前 200 字预览 + 覆盖的消息条数
+    preview: s.summary.slice(0, 200),
+    coveredCount: s.messageIds.length,
+    tokens: s.tokens,
+    createdAt: s.createdAt,
+    // 是否**当前生效**（读取路径只认最新一条）
+    active: false,
+  }));
+  if (items.length) items[0].active = true;
+  res.json({ items, total: items.length });
+});
+
+// POST /api/conversations/:id/summaries/:summaryId/rollback —— 回退到该压缩点（保留该条，删其之后）
+// ★ 非破坏性：只删 message_summary 行，**message 表一字未动** → 原文始终完整。
+//   回退后该条成为"最新"，下一轮上下文按它重建（等价于"回到那次压缩的状态"）。
+router.post('/:id/summaries/:summaryId/rollback', (req: Request, res: Response) => {
+  const userId = req.user!.userId;
+  const cid = req.params.id;
+  const conv = db.prepare('SELECT id FROM conversation WHERE id = ? AND user_id = ?').get(cid, userId);
+  if (!conv) { res.status(404).json({ error: '会话不存在' }); return; }
+  const sid = req.params.summaryId;
+  // 先校验该摘要确属本会话（避免跨会话误删）—— deleteMessageSummariesAfter 内部也会校验，
+  // 但这里显式查一次以便给出明确错误（否则"删了 0 条"分不清是"不存在"还是"已是最新"）。
+  const exists = listMessageSummaries(cid, 100).some((s) => s.id === sid);
+  if (!exists) { res.status(404).json({ error: '该压缩记录不存在或不属于本会话' }); return; }
+  const removed = deleteMessageSummariesAfter(cid, sid);
+  res.json({ ok: true, removed, note: '已回退压缩记录（对话原文未改动，下一轮按该压缩点重建上下文）' });
+});
+
 // GET /api/conversations/:id/context-breakdown?agentId=
 // 上下文分段估算（2026-10-06，对齐 WorkBuddy 同款分类）：系统级提示 / 工具定义与描述 /
 // 技能级 MCP / 对话内容。全部为 estimateTokens 估算值（与前端 tokenCount 同口径，非 API 精确值）。
