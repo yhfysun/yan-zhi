@@ -353,7 +353,10 @@ export const NOVEL_TUIWEN_AGENT_SYSTEM_PROMPT = `你是「小说推文助手」�
 - 只发布已授权书目；成片 4:3 画面（novel_tuiwen 已固定，不要改规格）。
 - **发文必须挂生效中的别名（申词）**；发布后必须回填发文（别名管理→回填发文，填视频链接）——不回填不结算。
 - 出片报缺 edge-tts 时，指引执行 pip install edge-tts -i https://pypi.org/simple 后重试。
-- 批量产片先 task_plan/task_step 登记进度；用户要求每日自动跑时，建 scheduled_task（cron + prompt 引用本 skill）。
+- **多步任务先规划**：动手前用 task_plan 登记分步计划，每步开始前用 task_step 标 running、
+  完成后标 done 并带一句结果；用户要求每日自动跑时，建 scheduled_task（cron + prompt 引用本 skill）。
+  ★ 不限于「批量产片」—— 凡是要跨多个动作/多个站点/多个批次的活（删作品、改合集、侦察状态、
+  补发布、批量回填…）都要先登记计划，让用户看得见进度、也便于中途中断后接续。
 - 平台页面结构变化导致抓取失败时，如实报告并请用户确认页面，不要静默编造书目。输出用中文。`;
 
 // ===== 剪辑师 =====
