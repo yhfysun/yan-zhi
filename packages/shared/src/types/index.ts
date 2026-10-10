@@ -61,7 +61,16 @@ export interface Model {
   modelId: string;
   alias?: string;
   type: ModelType;
-  contextWindow: number;
+  /**
+   * 上下文窗口（token）。★ D7（2026-10-10）：允许 `null` = **未声明**。
+   *
+   * ★ 为什么需要"未声明"这个态：后端 `resolveContextWindow` 把"恰好 1M"判为
+   *   "用户没填、是我们写进去的默认值"→ 退保守 32K（该判据**有意保留**，见 constants.ts 注释）。
+   *   而新增表单以前**预填 1M** ⇒ "没填"与"真 1M"在数据层**同形**
+   *   （实测生产库 561 个模型全是 1048576，含确实 1M 的 glm/deepseek 模型）⇒ 全被按 32K 估。
+   *   ⇒ 前端改为留空提交 `null`，与"真 1M"可区分。
+   */
+  contextWindow: number | null;
   enabled: boolean;
   /** 用户自控可见性：false = 该模型不进模型下拉，也不参与智能体动态选型（与远端同步无关） */
   visible?: boolean;

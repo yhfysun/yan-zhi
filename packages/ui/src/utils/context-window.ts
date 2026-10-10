@@ -22,7 +22,10 @@ export const CONTEXT_WINDOW_PRESETS: Array<{ tokens: number; label: string }> = 
 ];
 
 /** token 数 → 展示文案（262144 → "256K"，1048576 → "1M"；非整 K 保留原值） */
-export function formatContextWindow(n?: number): string {
+export function formatContextWindow(n?: number | null): string {
+  // ★ D7（2026-10-10）：`null` = **未声明**（用户没填）→ 显示"未声明"，
+  //   而不是兜成 1M 显示（那会让用户以为"已声明 1M"，与"没填"无法区分 —— 正是本次要修的同形问题）。
+  if (n === null || n === undefined) return '未声明';
   const v = Number(n) > 0 ? Number(n) : DEFAULT_CONTEXT_WINDOW;
   if (v >= 1048576) {
     const m = v / 1048576;
@@ -33,7 +36,8 @@ export function formatContextWindow(n?: number): string {
 }
 
 /** token 数 → K 值（面板自定义输入框回填用） */
-export function toContextWindowK(n?: number): number {
+export function toContextWindowK(n?: number | null): number {
+  // ★ D7：null = 未声明 → 输入框回落到默认 K（用户不填即为默认；后端按保守窗口估算）
   const v = Number(n) > 0 ? Number(n) : DEFAULT_CONTEXT_WINDOW;
   return Math.max(1, Math.round(v / 1024));
 }

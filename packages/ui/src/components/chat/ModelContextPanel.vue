@@ -41,8 +41,8 @@ import { CONTEXT_WINDOW_PRESETS, formatContextWindow, toContextWindowK } from '.
 const props = defineProps<{
   /** 模型展示名 */
   name: string;
-  /** 当前上下文窗口（token） */
-  contextWindow: number;
+  /** 当前上下文窗口（token）；★ D7：`null` = 未声明（透传给 formatContextWindow 显示"未声明"） */
+  contextWindow: number | null;
 }>();
 
 const emit = defineEmits<{
