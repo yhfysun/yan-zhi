@@ -52,13 +52,18 @@ novel_tuiwen { chapter: "novel/书名/ch01.txt", title: "书名", bg_video: "bg1
 - 口播结构：钩子(正文第一句) + 正文段(第二句起) + 结尾引导
 - 顶部引导语支持**自动两行 + 0.6s 淡入**（2026-10-07）：banner 传长句（如「搜「别名」看全文｜打开番茄小说」）会自动在自然分隔处（｜|，,、空格）断成两行居中显示 —— 不需要自己插换行。想让分行更刻意，可在 banner 里显式写 `\n` 或真实换行（按行拆，最多 2 行）。⚠️ 项目自带 ffmpeg 是 2019 版，**不支持 drawtext 的 text_align/line_spacing** → 多行是靠「按行链式 drawtext」实现（每行一个 filter、y 逐行下移）；改这块别用这两个选项，会报 `Option not found`。
 - 口播/画面/发布全链路「书名红线」：见下方「书名红线」条
+- ⚠️⚠️ **背景合成循环失效（2026-10-09 修复，最重要）**：项目自带 ffmpeg 是 **2019 版**（`git-2019-10-22`），**不支持「多输入 `-stream_loop -1` + concat 滤镜」**——此写法下 `-stream_loop` 对多输入**静默失效**，输出被**最短的那条输入轨**截断。
+  - 症状：成片时长 = 前 1~2 段背景时长之和（如 29.4+78.7=108.1s），而口播有 400+s → 视频早早黑屏结束、台词只念了 1/4。**不报错**，极易误判成"配音没生成"。
+  - 现修法（compose_video.py bg_clips 分支已重写）：① 每段背景**先归一化**（scale/crop/fps/setsar + `-an`）成 `bgclip_XX.mp4`；② `probe_duration` + `-count_frames` 探测**实际可解码时长**，**坏素材/截断文件会被跳过并告警**；③ 按顺序**循环重复片段列表**拼到累计 ≥ total；④ `concat` demuxer（`-c copy`，cwd=tmp + 纯文件名）生成 `bg_full.mp4`；⑤ 主命令改为**单输入** `bg_full.mp4` + `trim=total`。实测：3 段拼 4 轮 = 216.24s（精确）。
+  - ⚠️ **素材完整性必查**：`bg-ocean-evening.webm` 曾是**坏素材**（元数据报 14.585s/30fps，实际只解出 **47 帧=1.6s**，报 `File ended prematurely`）→ 混进列表会把背景拼短。脚本现在会自动检出并跳过；但下载新素材后仍建议 `ffprobe -count_frames` 验一遍真实帧数。
 - TTS 朗读规范化：时间→「X点X分秒」、进度 a/b（含 1\|4 转义）→中文分数、HP/MP/buff/BOSS 等术语→中文；①②③→「第一，」、3-5→「3到5」、→/&/≥→读法、装饰符号删除；只改送 TTS 文本，字幕显示原文。术语表在 tts_gen.py GAME_TERMS。；2026-10-07 修复「第一段重复」（旧版 hook 复用 segs[0][:40] 且 segments[0] 原样保留 → 开头 40 字念两遍；旧产物有此问题属预期，重跑即愈）。
 - 🔎 系列化建议（用户 2026-10-07 提出）：同一本书多章出片时，**让相邻章节的成片"接得上"**——① 勾子/封面都挂同一别名（观众搜同一词）；② 标题统一前缀「搜「别名」看全文｜第N章 <章名>」（账号主页一眼看成一串）；③ 发布时加「合集/合集名」（抖音发布页「添加合集」），把系列归到同一合集 → 观众能在合集里连着刷下一章。多章可 scheduled_task 逐日自动出片。
 - 📺 抖音合集（2026-10-07）系列化正解：发布页「发布设置」区 →「**添加到合集**」：首次点它会弹「创建新合集」（合集名 **≤20 字**，建议用别名/书名主题，别叫「我的作品集」），之后同系列发布直接勾选它 → 主页显示「第N集」，**后续同合集视频按发布时间自动累加集数**。**兜底/回溯**：creator.douyin.com → 内容管理 →「**合集管理**」→ 自定义创建合集（名称≤20字 + 简介 + 1:1 封面 1080×1080）→ 进合集「添加作品」勾选历史视频（单次 ≤50）→ 加入合集（可把已发布的第1章、第2章一起归入）。权限：**网页端需实名认证（无粉丝门槛）**；App 端需 ≥1万粉。发布页找不到合集入口 = 账号未开权限 → 别死磕，走兜底路径或如实报告。
 
 ## 依赖
-- ffmpeg 兜底 C://APP//EVCapture//ffmpeg.exe（FFMPEG/FFPROBE 环境变量可覆盖）
-- edge-tts（缺失时 pip install edge-tts -i https://pypi.org/simple）
+- ffmpeg 兜底（**2026-10-09 更正**）：本机实际在 `C:\Program Files\EVCapture\ffmpeg.exe`（**不是** `C:\APP\EVCapture\`——那个路径不存在，旧写法害脚本一度找不到）。find_ffmpeg 已改为**多候选**：`$FFMPEG` → `C:\Program Files\EVCapture\ffmpeg.exe` → `C:\APP\EVCapture\ffmpeg.exe` → PATH。ffprobe 与 ffmpeg 同目录。
+- edge-tts（缺失时 pip install edge-tts -i https://mirrors.aliyun.com/pypi/simple/ ）⚠️ **Tuna 镜像没有 edge-tts**（`No matching distribution found`），要用**阿里镜像**才装得上。
+- 内置 Python venv：`C:\Users\yhfys\.workbuddy\binaries\python\envs\default\Scripts\python.exe`
 
 ## CLI 直跑（开发）
 ```bash

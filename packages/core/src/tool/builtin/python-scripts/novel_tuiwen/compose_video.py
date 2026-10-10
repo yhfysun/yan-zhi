@@ -23,7 +23,17 @@ FONTS_DIR = r"C:\Windows\Fonts"
 
 
 def find_ffmpeg():
-    for p in (os.environ.get("FFMPEG"), r"C:\APP\EVCapture\ffmpeg.exe"):
+    # ★ 2026-10-09：原只找 C:\APP\EVCapture\ffmpeg.exe（本机不存在）→ 补多候选 + PATH 兜底
+    cands = [
+        os.environ.get("FFMPEG"),
+        r"C:\Program Files\EVCapture\ffmpeg.exe",
+        r"C:\APP\EVCapture\ffmpeg.exe",
+        os.path.join(os.path.dirname(os.environ.get("FFPROBE") or ""), "ffmpeg.exe")
+        if os.environ.get("FFPROBE") else None,
+    ]
+    import shutil
+    cands.append(shutil.which("ffmpeg"))
+    for p in cands:
         if p and os.path.exists(p):
             return p
     raise SystemExit("ffmpeg not found (set FFMPEG env)")
@@ -31,6 +41,9 @@ def find_ffmpeg():
 
 def probe_duration(ffmpeg, path):
     fp = os.path.join(os.path.dirname(ffmpeg), "ffprobe.exe")
+    if not os.path.exists(fp):
+        import shutil
+        fp = shutil.which("ffprobe") or fp
     out = subprocess.run([fp, "-v", "error", "-show_entries", "format=duration",
                           "-of", "default=noprint_wrappers=1:nokey=1", path],
                          capture_output=True, text=True)
@@ -235,29 +248,81 @@ def main():
 
     bg_clips = [p.strip() for p in a.bg_video.split(",") if p.strip()] if a.bg_video else []
     if bg_clips:
-        # 背景视频: 每段 cover 裁剪到 4:3, 多段 concat, 单段直接链; -stream_loop 循环兜底不够长
-        cmd = [ffmpeg, "-y", "-v", "error"]
-        for p in bg_clips:
-            cmd += ["-stream_loop", "-1", "-i", p]
-        cmd += ["-i", audio_out]
-        chains = []
-        for i in range(len(bg_clips)):
-            chains.append(f"[{i}:v]scale={W}:{H}:force_original_aspect_ratio=increase,"
-                          f"crop={W}:{H},fps={FPS},setsar=1[v{i}]")
-        # 单段直接用 [v0]; 多段先 concat 成 [vc]
-        head = ";".join(chains) + ";"
-        if len(bg_clips) == 1:
-            vsrc = "[v0]"
-        else:
-            vsrc = "[vc]"
-            head += "".join(f"[v{i}]" for i in range(len(bg_clips))) \
-                    + f"concat=n={len(bg_clips)}:v=1:a=0[vc];"
-        fc = (head + f"{vsrc}trim=duration={total:.2f},setpts=PTS-STARTPTS[vv];"
+        # ★ 2026-10-09 重写：原「多输入 -stream_loop -1 + concat 滤镜」在项目自带 2019 版 ffmpeg 上
+        #   实测失效——输出被最短的一条输入轨截断（第1/2章成片都只有 108.2s，而口播 448s）。
+        #   新方案：① 每段背景先归一化（scale/crop/fps/setsar + 去音轨）成 clip_i.mp4；
+        #          ② 探测每段「实际可解码时长」（防元数据虚高、文件截断的坏素材）；
+        #          ③ 按顺序循环重复片段，拼到累计 ≥ total；
+        #          ④ concat demuxer（-c copy）生成 bg_full.mp4；
+        #          ⑤ 主命令改为**单输入 bg_full**，trim 到 total。
+        #   实测：3 段背景拼 4 轮 = 216.24s（精确）；单输入 -stream_loop/trim 均正常生效。
+        clip_files, clip_durs = [], []
+        for i, p in enumerate(bg_clips):
+            if not os.path.exists(p):
+                print(f"[compose] 警告：背景 {p} 不存在，跳过", file=sys.stderr)
+                continue
+            clip = os.path.join(tmp, f"bgclip_{i:02d}.mp4")
+            subprocess.run(
+                [ffmpeg, "-y", "-v", "error", "-i", p,
+                 "-vf", f"scale={W}:{H}:force_original_aspect_ratio=increase,"
+                        f"crop={W}:{H},fps={FPS},setsar=1",
+                 "-an", "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+                 "-pix_fmt", "yuv420p", clip],
+                check=True,
+            )
+            dur = probe_duration(ffmpeg, clip)
+            # ★ 有效时长校验：坏素材（webm 截断）元数据报 14.6s 但实际只有 1.6s
+            fprobe = os.path.join(os.path.dirname(ffmpeg), "ffprobe.exe")
+            try:
+                r = subprocess.run([fprobe, "-v", "error", "-count_frames",
+                                    "-select_streams", "v:0",
+                                    "-show_entries", "stream=nb_read_frames",
+                                    "-of", "csv=p=0", clip],
+                                   capture_output=True, text=True)
+                n = int((r.stdout or "").strip().split(",")[0] or 0)
+                real = n / float(FPS)
+                if n > 0 and real < dur - 1.0:
+                    print(f"[compose] 警告：背景 {os.path.basename(p)} 只解出 {real:.1f}s"
+                          f"（元数据 {dur:.1f}s），疑似素材损坏/截断", file=sys.stderr)
+                    dur = real
+            except Exception:
+                pass
+            if dur < 1.0:
+                print(f"[compose] 警告：背景 {os.path.basename(p)} 有效时长 {dur:.1f}s 过短，跳过",
+                      file=sys.stderr)
+                continue
+            clip_files.append((os.path.basename(clip), dur))
+            clip_durs.append(dur)
+
+        if not clip_files:
+            raise SystemExit("所有背景素材均不可用（缺失或损坏），请检查 --bg-video")
+
+        # 循环重复片段，拼到累计 >= total（多留 1s 余量）
+        want = total + 1.0
+        seq, acc = [], 0.0
+        while acc < want:
+            for name, d in clip_files:
+                seq.append(name)
+                acc += d
+                if acc >= want:
+                    break
+        lst = os.path.join(tmp, "bglist.txt")
+        with open(lst, "w", encoding="utf-8") as f:
+            for name in seq:
+                f.write(f"file '{name}'\n")
+        bg_full = os.path.join(tmp, "bg_full.mp4")
+        # ★ concat demuxer（老版 ffmpeg）相对路径解析到**进程 cwd** → cwd=tmp + 纯文件名
+        subprocess.run([ffmpeg, "-y", "-v", "error", "-f", "concat", "-safe", "0",
+                        "-i", "bglist.txt", "-c", "copy", os.path.abspath(bg_full)],
+                       check=True, cwd=tmp)
+
+        fc = (f"[0:v]trim=duration={total:.2f},setpts=PTS-STARTPTS[vv];"
               f"[vv]{final_vf}[vout]")
-        cmd += ["-filter_complex", fc, "-map", "[vout]", "-map", f"{len(bg_clips)}:a",
-                "-t", f"{total:.2f}",
-                "-c:v", "libx264", "-preset", "fast", "-crf", "23", "-pix_fmt", "yuv420p",
-                "-c:a", "aac", "-b:a", "160k", "-shortest", final]
+        cmd = [ffmpeg, "-y", "-v", "error", "-i", bg_full, "-i", audio_out,
+               "-filter_complex", fc, "-map", "[vout]", "-map", "1:a",
+               "-t", f"{total:.2f}",
+               "-c:v", "libx264", "-preset", "fast", "-crf", "23", "-pix_fmt", "yuv420p",
+               "-c:a", "aac", "-b:a", "160k", "-shortest", final]
         r = subprocess.run(cmd, capture_output=True, text=True)
         if r.returncode != 0:
             print(r.stderr[-2000:], file=sys.stderr); sys.exit(r.returncode)

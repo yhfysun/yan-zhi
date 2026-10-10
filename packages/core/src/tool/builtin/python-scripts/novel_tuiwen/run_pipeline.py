@@ -12,11 +12,24 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 PY = sys.executable
 
-# 默认 ffmpeg 位置(可被环境变量覆盖)
+# 默认 ffmpeg 位置(可被环境变量覆盖)；★ 2026-10-09 补多候选：原只写 C:\APP\EVCapture（本机不存在）
+def _first_existing(*cands):
+    import shutil
+    for c in cands:
+        if c and os.path.exists(c):
+            return c
+    return None
+
+_FF_CANDS = [r"C:\Program Files\EVCapture\ffmpeg.exe", r"C:\APP\EVCapture\ffmpeg.exe"]
+_FP_CANDS = [r"C:\Program Files\EVCapture\ffprobe.exe", r"C:\APP\EVCapture\ffprobe.exe"]
 if not os.environ.get("FFMPEG"):
-    os.environ["FFMPEG"] = r"C:\APP\EVCapture\ffmpeg.exe"
+    _ff = _first_existing(*_FF_CANDS) or (__import__("shutil").which("ffmpeg"))
+    if _ff:
+        os.environ["FFMPEG"] = _ff
 if not os.environ.get("FFPROBE"):
-    os.environ["FFPROBE"] = r"C:\APP\EVCapture\ffprobe.exe"
+    _fp = _first_existing(*_FP_CANDS) or (__import__("shutil").which("ffprobe"))
+    if _fp:
+        os.environ["FFPROBE"] = _fp
 
 
 def run(cmd):
