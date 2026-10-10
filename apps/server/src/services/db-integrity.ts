@@ -28,7 +28,7 @@ const require = createRequire(import.meta.url);
 
 export type DbCheckResult =
   | { status: 'ok' }
-  | { status: 'skipped' }
+  | { status: 'skipped'; reason?: string }
   | { status: 'corrupt'; reason: string; backupPath?: string }
   | { status: 'no-db' };
 
@@ -63,8 +63,30 @@ export function checkAndQuarantine(
   try {
     verdict = (opts?.probe ? opts.probe(dbPath) : probeQuickCheck(dbPath)).trim().toLowerCase();
   } catch (e: any) {
-    // 打不开/探针抛错 —— 同样按损坏处理（能打开却报错的库，带着跑只会更糟）
-    verdict = `probe-error: ${e?.message || e}`;
+    // ★★★ 2026-10-10 修（高危缺陷，实测差点毁库）：**不能**把"驱动装不上"当成"库损坏"。
+    //
+    // 事故经过：用 Node 22（NODE_MODULE_VERSION 137）直接跑 server，而 better-sqlite3 是按
+    //   130 编译的 → `ERR_DLOPEN_FAILED`（ABI 不匹配）→ 旧实现把它归类为 `probe-error`
+    //   → 走下面的隔离分支 → **把一份完好、188MB、5000+ 条消息的库改名成 `data.db.corrupt-*`**，
+    //   然后以空库启动。用户视角是"我的数据全没了"。
+    //
+    // 判据：`quick_check` 探针失败分两类，处置必须相反 ——
+    //   · **库本身有问题**（`database disk image is malformed` / `file is not a database` 等）
+    //     → 隔离是对的（带着坏库跑会让每个请求随机暴毙）
+    //   · **环境/驱动问题**（模块加载失败、ABI 不匹配、require 不到、找不到文件）
+    //     → 隔离是**灾难**：库是好的，只是这个进程读不了它。必须保留原封不动，
+    //       让上层用"可用驱动"（sql.js 兜底，见 sqlite-driver.ts）继续，或明确报错退出。
+    const msg = String(e?.message || e);
+    const isEnvProblem =
+      e?.code === 'ERR_DLOPEN_FAILED' ||
+      /NODE_MODULE_VERSION|was compiled against a different Node|Cannot find module|MODULE_NOT_FOUND|dlopen|invalid ELF header|not a valid Win32 application/i.test(msg);
+    if (isEnvProblem) {
+      logger.warn(
+        `[db-integrity] 自检**未能执行**（驱动/环境问题，非库损坏）→ **不做隔离**，原库保持不动：${msg.slice(0, 200)}`,
+      );
+      return { status: 'skipped', reason: `env-problem: ${msg}` };
+    }
+    verdict = `probe-error: ${msg}`;
   }
   if (verdict === 'ok') {
     logger.info('[db-integrity] 数据库完整性自检通过');

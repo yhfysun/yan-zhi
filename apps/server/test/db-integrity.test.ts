@@ -66,3 +66,60 @@ describe('P3 数据库完整性自检', () => {
     expect(i, '★ 自检排在了 markOrphan* 之后（坏库会先炸在清理上）').toBeLessThan(orphan);
   });
 });
+/**
+ * ★★★ 高危回归（2026-10-10 实测事故）：**驱动加载失败绝不能触发"隔离"**。
+ *
+ * 事故经过：用 Node 22（NODE_MODULE_VERSION 137）直接跑 server，而 better-sqlite3
+ *   是按 130 编译的 → `ERR_DLOPEN_FAILED`（ABI 不匹配）→ 旧实现把它归为 `probe-error`
+ *   → 走隔离分支 → **把一份完好、188MB、5000+ 条消息的库改名成 data.db.corrupt-***，
+ *   然后以空库启动。用户视角就是"我的数据全没了"。
+ *
+ * 判据：探针失败必须分两类，处置**相反** ——
+ *   · 库本身坏（malformed / not a database）→ 隔离（带着跑会让请求随机暴毙）
+ *   · 环境/驱动问题（ABI 不匹配 / 模块加载失败）→ **不隔离**，原库保持不动
+ */
+describe('db-integrity · 驱动问题不得触发隔离（2026-10-10 事故回归）', () => {
+  const tmpDb = () => {
+    const dir = mkdtempSync(join(tmpdir(), 'yz-dbint-'));
+    const p = join(dir, 'data.db');
+    writeFileSync(p, 'x'.repeat(4096));
+    return p;
+  };
+
+  it('★★★ ERR_DLOPEN_FAILED（ABI 不匹配）→ skipped，且原库**原封不动**', async () => {
+    const { checkAndQuarantine } = await import('../src/services/db-integrity.js');
+    const p = tmpDb();
+    const err: any = new Error(
+      "The module was compiled against a different Node.js version using NODE_MODULE_VERSION 130. This version of Node.js requires NODE_MODULE_VERSION 137.",
+    );
+    err.code = 'ERR_DLOPEN_FAILED';
+    const r = checkAndQuarantine(p, { probe: () => { throw err; } });
+    expect(r.status, '★ 驱动问题被误判为损坏 → 会隔离好库').toBe('skipped');
+    expect(existsSync(p), '★ 原库被改名/删除了').toBe(true);
+    // 目录里不得出现任何 .corrupt-* 隔离产物
+    const siblings = readdirSync(join(p, '..'));
+    expect(siblings.filter((f) => f.includes('.corrupt-')), '★ 产生了隔离文件').toEqual([]);
+  });
+
+  it('★★ 其他环境类错误（Cannot find module / dlopen）同样不隔离', async () => {
+    const { checkAndQuarantine } = await import('../src/services/db-integrity.js');
+    for (const msg of ['Cannot find module \'better-sqlite3\'', 'dlopen failed: invalid ELF header']) {
+      const p = tmpDb();
+      const r = checkAndQuarantine(p, { probe: () => { throw new Error(msg); } });
+      expect(r.status, `「${msg}」被误判为损坏`).toBe('skipped');
+      expect(existsSync(p)).toBe(true);
+    }
+  });
+
+  it('★ 真损坏（malformed）仍必须隔离 —— 修驱动问题时不能把这条一并关掉', async () => {
+    const { checkAndQuarantine } = await import('../src/services/db-integrity.js');
+    const p = tmpDb();
+    const r = checkAndQuarantine(p, {
+      probe: () => { throw new Error('database disk image is malformed'); },
+    });
+    expect(r.status, '★ 真损坏未隔离 → 会带着坏库跑').toBe('corrupt');
+    expect(r.backupPath, '应给出隔离路径').toBeTruthy();
+    expect(existsSync(r.backupPath!), '隔离文件应存在（改名保底）').toBe(true);
+    expect(existsSync(p), '主库名应已被让出').toBe(false);
+  });
+});
