@@ -197,13 +197,14 @@ describe('⑥ 档位（真跑：off 不启动）', () => {
     process.env.YZ_BROWSER_BRIDGE = 'on';
   });
 
-  it('★ 非法档位回落 off', async () => {
+  it('★ 非法档位回落默认档（on）', async () => {
     process.env.YZ_BROWSER_BRIDGE = 'bogus';
     const mod = freshBridge();
     mod.attach({ runAction: async () => ({}), allowedActions: [], log: () => {}, warn: () => {} });
     const st = await mod.start();
-    expect(st.mode).toBe('off');
-    expect(st.url, '★ 非法档位不应启动端点').toBe('');
+    // ★ 2026-10-10：默认档从 off 提为 on → 非法值也应回落到 on（并启动端点）
+    expect(st.mode).toBe('on');
+    expect(st.url, '★ 非法档位应回落默认档并启动端点').not.toBe('');
     process.env.YZ_BROWSER_BRIDGE = 'on';
   });
 });

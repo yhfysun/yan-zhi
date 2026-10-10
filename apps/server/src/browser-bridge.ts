@@ -7,8 +7,18 @@
 // ★ 灰度档位 `YZ_BROWSER_BRIDGE`：off | shadow | on | strict
 //   · off     —— 不用桥（`available()` 恒 false）→ 服务端走原有 SSE 委托路径（行为逐字不变）
 //   · shadow  —— **只读 action** 走桥，写 action 仍走 SSE（不改用户可见行为，先验连通性）
-//   · on      —— 读写全走桥；桥失败自动降级回 SSE 一次（打点）
+//   · on      —— 读写全走桥；桥失败自动降级回 SSE 一次（打点）  ← **默认档（2026-10-10 起）**
 //   · strict  —— 全走桥；SSE 委托视为错误（用于证明"零依赖渲染层"）
+//
+// ★★★ 为什么默认从 off 改为 on（2026-10-10）：off 下浏览器工具全走 SSE 委托前端，
+//   而这条链路要求「渲染层在线且有订阅者」—— 前端一卡就回执超时（快档 150s / 慢档 8min，
+//   最坏单次卡 23s）→ 模型换招重试 → 撞 tool-loop-guard → 任务空转。
+//   实测证据：server.log 的 6 次「循环拦截」+ llm_task 表里 15 分钟后被 abort 的任务。
+//   `on` 直连主进程**去掉对前端的依赖**，且**保留了失败降级**（下端 catch 里降级回 SSE），
+//   因此即使桥有异常也只是退化为原行为，不会比 off 更糟。
+//
+//   ★ 为什么不直接 strict：strict 桥失败**不降级**，会把"桥小问题"放大成"工具全挂"。
+//     它只用于验证"零依赖渲染层"这个结论，不适合做默认档。
 //
 // ★ 为什么档位判定放在**服务端**：桥"在不在"（主进程起没起端点）与"用不用桥"（灰度）是两个正交问题。
 //   切档只需重启后端（dev 下 tsx watch 自动），**不需要重启 Electron 主进程**。
@@ -21,11 +31,14 @@ const logger = createLogger('browser-bridge');
 export const BRIDGE_PATH = '/v1/browser/action';
 export const TOKEN_HEADER = 'x-yz-bridge-token';
 
-/** 档位（非法值一律回落 off —— 写错档位不能变成"意外开启直连"这种更难查的故障） */
+/** 默认档位（2026-10-10 从 off 提为 on —— 见上方长注释） */
+export const DEFAULT_BRIDGE_MODE: BridgeMode = 'on';
+
+/** 档位（非法值一律回落默认 —— 写错档位不能变成"意外改变执行面"这种更难查的故障） */
 export type BridgeMode = 'off' | 'shadow' | 'on' | 'strict';
 export function bridgeMode(): BridgeMode {
-  const v = String(process.env.YZ_BROWSER_BRIDGE || 'off').trim().toLowerCase();
-  return (['off', 'shadow', 'on', 'strict'].includes(v) ? v : 'off') as BridgeMode;
+  const v = String(process.env.YZ_BROWSER_BRIDGE || DEFAULT_BRIDGE_MODE).trim().toLowerCase();
+  return (['off', 'shadow', 'on', 'strict'].includes(v) ? v : DEFAULT_BRIDGE_MODE) as BridgeMode;
 }
 
 /**

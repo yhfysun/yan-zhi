@@ -96,14 +96,30 @@ failed      1
 | # | 措施 | 状态 |
 |---|---|---|
 | 4 | §一 的卡顿修复 → 前端不再拖累委托，超时大幅减少 | ✅ 已落地 `840d2c7` |
-| 5 | `app.listen` 加 **EADDRINUSE 明确报错**（可行动提示 + exit 1），不再 Unhandled 崩溃 | ✅ 本次落地 |
-| 6 | `bin/dev.mjs`：`guardProductionPort` 被占时**中止启动**（不再忽略返回值继续跑） | ✅ 本次落地 |
-| 7 | `tool-loop-guard` 阈值 / 拦截后强制收口 | ⬜ **未做**（见下"待办"） |
-| 8 | `YZ_BROWSER_BRIDGE` 灰度档位（直连主进程，去掉 SSE 依赖） | ⬜ 已有实现但**默认 off** |
+| 5 | `app.listen` 加 **EADDRINUSE 明确报错**（可行动提示 + exit 1），不再 Unhandled 崩溃 | ✅ 落地 `1de7f54` |
+| 6 | `bin/dev.mjs`：`guardProductionPort` 被占时**中止启动**（不再忽略返回值继续跑） | ✅ 落地 `1de7f54` |
+| 7 | `tool-loop-guard` 拦后**强制收口**（硬停阈值 3 次 → 跳出内层循环 + 拒绝接力） | ✅ **已落地** |
+| 8 | `YZ_BROWSER_BRIDGE` 默认档 **off → on**（服务端直连主进程，去掉前端依赖） | ✅ **已落地** |
 
-> **为什么要动 R7/R8**：R4/R5 是**结构性**问题 —— 只要还走"服务端→SSE→前端"这条链路，
-> 前端一卡任务就磨。项目里已有 `browser-bridge` 直连方案（`c385092`），默认 `off` 是灰度高危开关。
-> 建议：**观察一段时间后开 `shadow` → `on`**。
+### R7 实现细节（tool-loop-guard 硬停）
+- `services/tool-loop-guard.ts`：新增 `TOOL_BLOCK_HARD_LIMIT = 3` + `FORCE_STOP_MARKER = '[FORCE_STOP]'`
+  + `toolBlockCount()`（累计拦截计数，**不受滑动窗口影响**）
+- 同工具累计被拦 ≥3 次 → 返回串带 `FORCE_STOP_MARKER` 前缀
+- `llm-task-manager.ts` 主循环：检测到标记 → `forceStoppedByLoopGuard = true` → **跳出内层循环**
+- 接力决策**最前面**加硬停分支：拒绝自动接力、直接收尾并告知用户
+  （否则新批次带同样上下文 + 同样工具，模型大概率继续换参数试探 → 白跳）
+- `space-memory.ts`：`TaskProgressOutcome` 加 `'loop_guard_stop'`（留痕，同目录新会话知道上批为何停）
+- 测试：`tool-loop-guard.test.ts` 8 → **11 项**（+3 硬停）
+
+### R8 实现细节（浏览器直连默认开）
+- `apps/server/src/browser-bridge.ts`：`DEFAULT_BRIDGE_MODE: BridgeMode = 'on'`（默认档 off → on）
+- `apps/desktop/browser-bridge.cjs`：`DEFAULT_BRIDGE_MODE = 'on'`（**两侧必须同值**，否则
+  "服务端想用桥、主进程没起端点" → 静默空转）
+- **安全性**：`on` 档桥失败会**自动降级回 SSE**（打点，不静默），因此不会比 off 更糟；
+  `strict` 才是不降级的高危档，不用
+- 时序已核对：`main.cjs` `await browserBridge.start()` → `startServer()` → `envForServer()`（顺序正确）
+- 测试：`browser-bridge-direct.test.ts` + `browser-bridge-e2e.test.ts` **94 项全过**（含真跑 e2e）
+- ⚠️ 回退开关：`YZ_BROWSER_BRIDGE=off`（只重启后端即可，不需重启 Electron）
 
 ---
 
@@ -155,14 +171,19 @@ failed      1
 
 ---
 
-## 六、待办（需排期，本次未做）
+## 六、待办（需排期）
 
 | # | 项 | 风险 | 建议 |
 |---|---|---|---|
 | A | `messageRounds` 增量化 / 虚拟滚动 | 中 | 长会话（>200 条）仍有重算压力；Markdown 缓存已覆盖主因，可观察后再定 |
-| B | `tool-loop-guard` 阈值与"拦后强制收口" | 中 | 当前只拦不罚，模型可能继续试探；可加"同工具被拦 N 次 → 强制结束本批" |
-| C | `YZ_BROWSER_BRIDGE` 开 `shadow` 灰度 | **高** | 直连方案能根治 R4；需真机观察鉴权/白名单稳定后再 `on` |
+| B | ~~`tool-loop-guard` 阈值与"拦后强制收口"~~ | — | ✅ **已完成**（硬停阈值 3 + 拒绝接力） |
+| C | ~~`YZ_BROWSER_BRIDGE` 开灰度~~ | — | ✅ **已完成**（默认档 off → on，含失败降级） |
 | D | 4 个既有测试失败（`browser-human-like-input`×2、`long-task-*`×2） | 低 | 远端拉下来就红，非本轮引入；需单独排查 |
+
+> **R7/R8 已完成** —— "任务执行不下去"的两条结构性根因已封堵：
+> ① 前端卡 → 委托超时（R8 直连绕开前端）；② 循环拦截后不收敛（R7 硬停收尾）。
+> ① 观察建议：跑几天真实任务，看后端日志有无 `[browser-bridge] 桥调用失败，降级回 SSE` 打点；
+>   若稳定则保持 `on`，异常则 `YZ_BROWSER_BRIDGE=off` 一键回退。
 
 ---
 

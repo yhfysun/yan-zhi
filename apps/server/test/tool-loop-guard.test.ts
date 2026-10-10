@@ -74,3 +74,50 @@ describe('tool-loop-guard 防失控循环闸门', () => {
     expect(checkToolLoop(t2, 'browser_run_script', { script: 'x' })).toBeNull();
   });
 });
+/**
+ * 循环闸门**硬停**（2026-10-10 新增）：拦到阈值后带 FORCE_STOP_MARKER，调用方据此终止内层循环。
+ *
+ * 背景（实测）：server.log 里某会话 15 分钟内 6 次「循环拦截」
+ * （browser_get_page_content×3 / browser_navigate×2 / browser_run_script×1），
+ * 任务在「等超时 → 被拦 → 换参数再试」里空转，用户等不下去只能手动 abort。
+ * 原实现「只拦不罚」压不住 —— 模型看到指引文本仍继续换花样试探。
+ */
+describe('循环闸门硬停（FORCE_STOP）', () => {
+  it('★ 同一工具被拦到 TOOL_BLOCK_HARD_LIMIT 次后，返回串带 FORCE_STOP_MARKER', async () => {
+    const { checkToolLoop: check, TOOL_BLOCK_HARD_LIMIT: LIMIT, FORCE_STOP_MARKER: MARK } =
+      await import('../src/services/tool-loop-guard.js');
+    const task = {};
+    const seen: Array<string | null> = [];
+    // 每次换参数（避开 A 线"同参"判定），但都让同名工具连续触发 → 走 B 线累计
+    for (let i = 0; i < 40; i++) {
+      seen.push(check(task, 'browser_run_script', { script: `return ${i}` }));
+    }
+    const blocked = seen.filter((s) => s)!;
+    expect(blocked.length, '★ 应至少被拦一次').toBeGreaterThan(0);
+    // 前 (LIMIT-1) 次拦截不带硬停标记
+    const withoutMark = blocked.filter((s) => !String(s).startsWith(MARK));
+    const withMark = blocked.filter((s) => String(s).startsWith(MARK));
+    expect(withMark.length, `★ 拦到第 ${LIMIT} 次仍未硬停`).toBeGreaterThan(0);
+    expect(withoutMark.length, '★ 硬停前应仍有"只拦不罚"的普通拦截').toBeGreaterThan(0);
+    expect(String(withMark[0])).toContain('立即停止所有工具调用');
+  });
+
+  it('★ toolBlockCount 记录累计拦截次数（与滑动的历史窗口无关）', async () => {
+    const { checkToolLoop: check, toolBlockCount } = await import('../src/services/tool-loop-guard.js');
+    const task = {};
+    expect(toolBlockCount(task, 'browser_x')).toBe(0);
+    // 同参三次 → 第三次起被拦
+    for (let i = 0; i < 3; i++) check(task, 'browser_x', { a: 1 });
+    expect(toolBlockCount(task, 'browser_x')).toBe(1);
+    // 继续同参 → 每次都拦，计数递增
+    check(task, 'browser_x', { a: 1 });
+    check(task, 'browser_x', { a: 1 });
+    expect(toolBlockCount(task, 'browser_x')).toBe(3);
+  });
+
+  it('★ 硬停阈值常量与标记名稳定（调用方按标记名识别，改名会静默失效）', async () => {
+    const m = await import('../src/services/tool-loop-guard.js');
+    expect(m.TOOL_BLOCK_HARD_LIMIT).toBe(3);
+    expect(m.FORCE_STOP_MARKER).toBe('[FORCE_STOP]');
+  });
+});

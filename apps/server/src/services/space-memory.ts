@@ -553,7 +553,7 @@ const PROGRESS_FILE = 'progress.md';
 const PROGRESS_READ_MAX_CHARS = 8000;
 
 /** 任务终结形态 —— 决定写入的措辞（模型据此判断"能不能接着做"） */
-export type TaskProgressOutcome = 'completed' | 'max_steps' | 'aborted' | 'failed' | 'empty_args_loop';
+export type TaskProgressOutcome = 'completed' | 'max_steps' | 'aborted' | 'failed' | 'empty_args_loop' | 'loop_guard_stop';
 
 const OUTCOME_LABEL: Record<TaskProgressOutcome, string> = {
   completed: '已完成',
@@ -563,6 +563,9 @@ const OUTCOME_LABEL: Record<TaskProgressOutcome, string> = {
   // 空转断路器停下（连续多步工具参数为空）——也是一种"没跑完"，必须留痕否则同目录新会话
   // 完全不知道上一批是因为退化停下的（会以为任务从未开始）。
   empty_args_loop: '空转中断',
+  // 防失控循环闸门硬停（2026-10-10）：同一工具被反复拦截 → 判定此路不通、拒绝接力直接收尾。
+  // 留痕原因同 empty_args_loop —— 否则同目录新会话不知道上一批是"撞闸门停的"。
+  loop_guard_stop: '循环闸门中断',
 };
 
 function getTaskProgressPath(space: Pick<SpaceRow, 'id' | 'dir_path'>): string {

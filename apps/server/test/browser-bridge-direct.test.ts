@@ -244,9 +244,14 @@ describe('⑥ ★★ 端点安全边界（可被真跑验证的静态面）', ()
     expect(stripComments(SRV_BRIDGE), '★ server 侧缺档位校验').toMatch(/\['off', 'shadow', 'on', 'strict'\]\.includes/);
   });
 
-  it('★★ 默认档位必须是 off（打包版先不发桥，行为零变化）', () => {
-    expect(stripComments(BRIDGE), '★ 默认档不是 off').toMatch(/YZ_BROWSER_BRIDGE \|\| 'off'/);
-    expect(stripComments(SRV_BRIDGE), '★ server 默认档不是 off').toMatch(/YZ_BROWSER_BRIDGE \|\| 'off'/);
+  it('★★ 默认档位必须是 on（2026-10-10 起：直连根治"前端一卡任务就磨"）', () => {
+    // ★ 口径反转：此前默认 off（打包版先不发桥）→ 用户实测「浏览器任务执行不下去」，
+    //   根因就是 off 下全走 SSE 委托前端。现提为 on，且失败仍会降级回 SSE（见 llm-task-manager）。
+    expect(stripComments(BRIDGE), '★ 主进程默认档不是 on').toMatch(/YZ_BROWSER_BRIDGE \|\| DEFAULT_BRIDGE_MODE|DEFAULT_BRIDGE_MODE = 'on'/);
+    expect(stripComments(SRV_BRIDGE), '★ server 默认档不是 on').toMatch(/YZ_BROWSER_BRIDGE \|\| DEFAULT_BRIDGE_MODE|DEFAULT_BRIDGE_MODE: BridgeMode = 'on'/);
+    // 两侧默认值必须同值（一侧 on 一侧 off = 服务端想用桥但端点没起 → 静默空转）
+    expect(stripComments(BRIDGE)).toMatch(/DEFAULT_BRIDGE_MODE = 'on'/);
+    expect(stripComments(SRV_BRIDGE)).toMatch(/DEFAULT_BRIDGE_MODE: BridgeMode = 'on'/);
   });
 });
 

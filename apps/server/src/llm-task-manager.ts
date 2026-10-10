@@ -31,7 +31,7 @@ import { serverState } from './state.js';
 // 产物登记钩子（P2-3）：把 file_write / 媒体登记的副作用从主循环里搬出去
 import { runAfterToolHooks } from './services/tool-hooks.js';
 // 防失控循环闸门（2026-10-09）：同名同参重复 / 单工具连刷，在 executeTool 漏斗拦截
-import { checkToolLoop } from './services/tool-loop-guard.js';
+import { checkToolLoop, FORCE_STOP_MARKER } from './services/tool-loop-guard.js';
 // ★★★ 浏览器执行面直连化（2026-10-10）：主进程 loopback 端点客户端。
 //   判定口径**只在本模块**（decideBrowserExecution），前端不得自行推断（防双执行 + 防 token 外泄）。
 import { browserBridgeAvailable, decideBrowserExecution, callBrowserBridge, toolNameToAction, bridgeMode } from './browser-bridge.js';
@@ -2287,6 +2287,8 @@ async function runReActLoop(task: LlmTask, params: {
     let taskBudgetHit: { kind: 'tokens' | 'wallclock'; used: number; limit: number } | null = null;
     // 累计已消耗步数（跨自动接力批次），用于 step 事件与日志的连续计数
     let emittedStep = 0;
+    // ★ 循环闸门硬停标记（2026-10-10）：同一工具被反复拦截达阈值 → 置位 → 跳出内层循环走收尾
+    let forceStoppedByLoopGuard = false;
 
     // ★ 外层 = 自动接力批次；内层 = 单批 ReAct 步数。
     //   到达单批上限后不终止，而是决策「是否接着做」：接力 → 继续外层；否则 return 收尾。
@@ -2881,12 +2883,27 @@ async function runReActLoop(task: LlmTask, params: {
 
           // 已并发跑过的（call_agent）直接取结果，不重复执行（统一出口里跳过执行、保留钩子/落库）
           const pre = concurrentResults.get(String(tc.id || ''));
-          await runToolCallAndPersist({
+          const toolResult = await runToolCallAndPersist({
             task, registry, convId, userId, assistantMsgId,
             toolName, args, tcId: tc.id || '', depth: 0, toolDefs: toolsBuilt, uiTools: UI_TOOLS,
             precomputed: pre,
           });
+          // ★★★ 循环闸门硬停（2026-10-10）：同一工具被拦到 TOOL_BLOCK_HARD_LIMIT 次后，
+          //   闸门返回带 FORCE_STOP_MARKER 的文案。此处**跳出内层 ReAct 循环**，
+          //   不再把控制权交回模型（它只会换参数继续试探 —— 实测 6 次拦截就是这么来的）。
+          //   跳出后走与"步数上限"相同的收尾块（结账 → 自评 → 接力确认），保证任务能收敛。
+          if (String(toolResult || '').includes(FORCE_STOP_MARKER)) {
+            logger.warn(
+              `[llm-task] 循环闸门硬停: conv=${task.conversationId} tool=${toolName} ` +
+              `→ 跳出内层循环走收尾（避免无休止换参数重试）`,
+            );
+            forceStoppedByLoopGuard = true;
+            break;
+          }
         }
+
+        // 被循环闸门硬停 → 立刻跳出本轮，不再进入下一轮 ReAct
+        if (forceStoppedByLoopGuard) break;
 
         // 继续下一轮 ReAct
         emittedStep++;
@@ -2984,6 +3001,21 @@ async function runReActLoop(task: LlmTask, params: {
             emit(task, { type: 'task:completed' });
             task.status = 'completed';
             void recordTaskProgress(task, 'max_steps', tipText, { steps: budgetReached });
+            void consolidateOnTaskEnd(task, summaryText || tipText);
+            void extractMemoryFromConversation(task);
+            return;
+          }
+          // ★★★ 循环闸门硬停优先于一切接力决策（2026-10-10）：
+          //   同一工具被反复拦截说明"这条路真的走不通"，此时**接力只会让它接着磨**
+          //   （新批次带着同样的上下文与同样的工具，模型大概率继续换参数试探）。
+          //   ⇒ 直接收尾并明确告知用户，而不是烧最坏 30 批 × 15 分钟 = 7.5 小时。
+          if (forceStoppedByLoopGuard) {
+            tipText = `${tipText}\n\n（任务已停止：检测到工具调用陷入循环，同一工具连续多次被防失控闸门拦截，已强制收尾。）`;
+            const stopId = insertMessage(convId, userId, 'assistant', tipText);
+            emit(task, { type: 'message:added', message: { id: stopId, role: 'assistant', content: tipText } });
+            emit(task, { type: 'task:completed' });
+            task.status = 'completed';
+            void recordTaskProgress(task, 'loop_guard_stop', tipText, { steps: budgetReached });
             void consolidateOnTaskEnd(task, summaryText || tipText);
             void extractMemoryFromConversation(task);
             return;
@@ -5361,7 +5393,7 @@ function lastAssistantText(convId: string, floor = 0): string {
  */
 async function recordTaskProgress(
   task: LlmTask,
-  outcome: 'completed' | 'max_steps' | 'aborted' | 'failed' | 'empty_args_loop',
+  outcome: 'completed' | 'max_steps' | 'aborted' | 'failed' | 'empty_args_loop' | 'loop_guard_stop',
   summary: string,
   extra?: { steps?: number; continuation?: string },
 ): Promise<void> {
@@ -5521,7 +5553,7 @@ async function extractMemoryFromConversation(task: LlmTask): Promise<void> {
  */
 async function distillExperienceFromTask(
   task: LlmTask,
-  outcome: 'completed' | 'max_steps' | 'aborted' | 'failed' | 'empty_args_loop',
+  outcome: 'completed' | 'max_steps' | 'aborted' | 'failed' | 'empty_args_loop' | 'loop_guard_stop',
 ): Promise<void> {
   try {
     // 素材门槛：至少 8 条有内容的消息（真实任务过程），一问一答的闲聊不值得提炼

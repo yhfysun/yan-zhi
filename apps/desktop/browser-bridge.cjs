@@ -37,9 +37,13 @@
 //   （会话锚定 / 虚拟光标 / 输入锁），现有 `pickCdpPage` 只能猜页，正是历史病灶。
 //
 // ★ 灰度（YZ_BROWSER_BRIDGE，在主进程与 server 同源读）：
-//   off（默认，桥不启动）| shadow（只读 action 走桥）| on（读写全走桥 + 失败自动降级）| strict（全走桥）
+//   off（桥不启动）| shadow（只读 action 走桥）| on（读写全走桥 + 失败自动降级）← **默认** | strict（全走桥）
 //   ★ 本文件只负责"起端点和鉴权"；档位语义由 server 侧 decideBrowserExecution 决定。
 //     这样"桥在不在"与"用不用桥"是两个正交问题，灰度切档不需要重启 Electron。
+//   ★★★ 2026-10-10：默认从 off 提为 on（与 server 侧 DEFAULT_BRIDGE_MODE 同源）。
+//     off 下端点根本不启动 → 服务端拿不到 URL/token → available() 恒 false → 永远走 SSE 委托，
+//     这正是「前端一卡任务就磨」的根因。提为 on 后端点就位，失败仍会自动降级回 SSE。
+//     ⚠️ 两侧默认值**必须一致**（守门测试会比对），否则会出现"服务端想用桥、主进程没起端点"的空转。
 
 const http = require('http');
 const crypto = require('crypto');
@@ -49,10 +53,13 @@ const BRIDGE_PATH = '/v1/browser/action';
 const TOKEN_HEADER = 'x-yz-bridge-token';
 const MAX_BODY_BYTES = 1 * 1024 * 1024; // 1MB：action 入参（含 base64 路径等）远小于此
 
-/** 档位：off 时不启动（默认值，打包版先不发桥） */
+/** 默认档位（与 server 侧 DEFAULT_BRIDGE_MODE 同值） */
+const DEFAULT_BRIDGE_MODE = 'on';
+
+/** 档位：off 时不启动端点（2026-10-10 起默认为 on，见上方长注释） */
 function bridgeMode() {
-  const v = String(process.env.YZ_BROWSER_BRIDGE || 'off').trim().toLowerCase();
-  return ['off', 'shadow', 'on', 'strict'].includes(v) ? v : 'off';
+  const v = String(process.env.YZ_BROWSER_BRIDGE || DEFAULT_BRIDGE_MODE).trim().toLowerCase();
+  return ['off', 'shadow', 'on', 'strict'].includes(v) ? v : DEFAULT_BRIDGE_MODE;
 }
 
 let server = null;
