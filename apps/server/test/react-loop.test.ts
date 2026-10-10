@@ -243,6 +243,13 @@ vi.mock('@yan-zhi/core', () => ({
     message: `工具 ${toolName} 未执行：arguments 缺少必填参数（${(missingArgs || []).join('、')}）。请重试。`,
   }),
   resolveContextWindow: (n: any) => (typeof n === 'number' && n > 0 ? n : 32768),
+  // ★ 2026-10-10 补：D4 工具结果常态裁剪（capStaleToolResults）被主链路/context-view 用到，
+  //   白名单 mock 未同步 → 任务加载即 failed（报 No "capStaleToolResults" export）。
+  //   透传实现：与生产同语义（只裁 content 长度、不动结构、幂等）。
+  capStaleToolResults: (ms) => ms,
+  // ★ 2026-10-10 补：A4（读路由按会话隔离）新增 setBrowserToolConversationId 到 core 主链路/白名单，
+  //   本手工白名单 mock 未同步 → 浏览器类工具报 No "setBrowserToolConversationId" export。
+  setBrowserToolConversationId: () => {},
 }));
 vi.mock('../src/mcp/index.js', () => ({ ensureToolsInitialized: () => {} }));
 vi.mock('../src/mcp/api-tool-executor.js', () => ({
