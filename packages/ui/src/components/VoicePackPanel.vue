@@ -97,6 +97,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { api } from '../api/client';
+import { startVisiblePolling } from '../utils/visible-polling';
 
 interface PackItem {
   id: string;
@@ -126,7 +127,7 @@ const engine = ref<EngineInfo | null>(null);
 const progress = ref<Record<string, Progress>>({});
 const busyId = ref('');
 const testingId = ref('');
-let poll: ReturnType<typeof setInterval> | undefined;
+let poll: (() => void) | undefined;
 
 function progressOf(id: string) {
   return progress.value[id] || null;
@@ -262,10 +263,12 @@ async function testVoice(it: PackItem) {
 
 onMounted(async () => {
   await load();
-  poll = setInterval(pollProgress, 1500);
+  // ★★★ 2026-10-11：改用可见性感知轮询（utils/visible-polling）——
+  //   合成进度在服务端照常推进，标签页切走时不必空转；切回立即刷新看到最新进度。
+  poll = startVisiblePolling(pollProgress, { intervalMs: 1500, immediate: false });
 });
 onUnmounted(() => {
-  if (poll) clearInterval(poll);
+  if (poll) { poll(); poll = undefined; }
 });
 </script>
 

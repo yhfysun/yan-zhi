@@ -263,10 +263,11 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref, computed, watch } from 'vue';
+import { onMounted, onBeforeUnmount, ref, computed, watch } from 'vue';
 import { Plus, Refresh, Edit, Delete, Search, Folder, Share, ArrowRight, Histogram, Document } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { api } from '../api/client';
+import { startVisiblePolling } from '../utils/visible-polling';
 import { useAuthStore, useSettingsStore } from '../stores';
 import { DEFAULT_APP_GUIDE, APP_GUIDE_DOCS } from '../stores/settings';
 import KbGraph from '../components/KbGraph.vue';
@@ -315,7 +316,9 @@ const currentEmbeddingDesc = ref('');
 const embeddingLoading = ref(false);
 const revectorizing = ref(false);
 const revectorizeProgress = ref({ done: 0, total: 0 });
-let revectorizePollTimer: ReturnType<typeof setInterval> | undefined;
+/** 向量化进度轮询的停止函数（2026-10-11：改用可见性感知轮询，见 utils/visible-polling）。
+ *  ★ 非 null 即表示"正在轮询"（替代旧的 timer 非空判定）。 */
+let revectorizePollTimer: (() => void) | null = null;
 
 async function loadEmbeddingModels() {
   embeddingLoading.value = true;
@@ -383,18 +386,24 @@ async function triggerRevectorize() {
 
 function startRevectorizePoll() {
   if (revectorizePollTimer) return;
-  revectorizePollTimer = setInterval(async () => {
+  // ★★★ 2026-10-11：改用可见性感知轮询（utils/visible-polling）——
+  //   本处是"向量化进度"轮询（有终止条件，属正当用法），但用户切走标签页时
+  //   仍在每 1s 打一次接口是纯浪费。现在隐藏时不安排下一次，切回来立即补一次。
+  const stop = startVisiblePolling(async () => {
     try {
       const r = await api.get<any>('/kb/revectorize-status');
       if ('data' in r && r.data) {
         revectorizeProgress.value = { done: r.data.done || 0, total: r.data.total || 0 };
         if (!r.data.running) {
           revectorizing.value = false;
-          if (revectorizePollTimer) { clearInterval(revectorizePollTimer); revectorizePollTimer = undefined; }
+          stop();
+          revectorizePollTimer = null;
         }
       }
     } catch { /* ignore */ }
-  }, 1000);
+  }, { intervalMs: 1000, immediate: false });
+  // 非 null 即表示"正在轮询"（外部用 `if (revectorizePollTimer) return` 判定）
+  revectorizePollTimer = stop;
 }
 
 async function onDocFilePicked(e: Event) {
@@ -486,6 +495,11 @@ onMounted(async () => {
   await ensureBuiltinGuide(); // 确保内置「应用使用说明」库存在（种子化）
   await loadBases();
   loadEmbeddingModels(); // 加载全局 embedding 模型配置（非阻塞）
+});
+
+// 卸载时收口向量化进度轮询（旧实现没有清理 → 离开页面后轮询仍在跑）
+onBeforeUnmount(() => {
+  if (revectorizePollTimer) { revectorizePollTimer(); revectorizePollTimer = null; }
 });
 
 async function loadBases() {

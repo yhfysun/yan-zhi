@@ -99,6 +99,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { Refresh, Document, Edit, Setting } from '@element-plus/icons-vue';
 import { ElMessage } from 'element-plus';
 import { api, LOCAL_API_BASE } from '../api/client';
+import { startVisiblePolling } from '../utils/visible-polling';
 import NodeSettingsDialog from '../components/common/NodeSettingsDialog.vue';
 
 const peers = ref<any[]>([]);
@@ -112,7 +113,8 @@ const savingRegister = ref(false);
 const sendingMessage = ref(false);
 const lastSince = ref(0);
 const messageList = ref<HTMLElement | null>(null);
-let pollTimer: ReturnType<typeof setInterval> | null = null;
+/** 可见性感知轮询的停止函数（2026-10-11：切走标签页时不再空转） */
+let stopPolling: (() => void) | null = null;
 
 const showNickname = ref(false);
 const savingNickname = ref(false);
@@ -146,11 +148,13 @@ function lsSet(key: string, val: string) {
 onMounted(async () => {
   await ensureSelf();
   loadPeers();
-  pollTimer = setInterval(pollMessages, 3000);
+  // ★★★ 2026-10-11：改用可见性感知轮询（节点消息在服务端无推送通道，只能拉；
+  //   但切走标签页时不该继续空转，见 utils/visible-polling）。
+  stopPolling = startVisiblePolling(pollMessages, { intervalMs: 3000 });
 });
 
 onBeforeUnmount(() => {
-  if (pollTimer) clearInterval(pollTimer);
+  if (stopPolling) { stopPolling(); stopPolling = null; }
 });
 
 async function ensureSelf() {

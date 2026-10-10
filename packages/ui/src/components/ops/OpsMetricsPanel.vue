@@ -42,6 +42,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { api } from '../../api/client';
+import { startVisiblePolling } from '../../utils/visible-polling';
 
 const props = defineProps<{
   connectionId: string;
@@ -52,7 +53,7 @@ interface MetricsRaw { loadavg: string; mem: string; disk: string; topCpu: strin
 const raw = ref<MetricsRaw | null>(null);
 const loading = ref(false);
 const error = ref('');
-let timer: number | null = null;
+let timer: (() => void) | null = null;
 
 async function fetchOnce() {
   if (!props.connectionId || loading.value) return;
@@ -70,11 +71,13 @@ async function fetchOnce() {
 
 function startPoll() {
   stopPoll();
-  void fetchOnce();
-  timer = window.setInterval(() => void fetchOnce(), 10000);
+  // ★★★ 2026-10-11：改用可见性感知轮询（utils/visible-polling）——
+  //   运维指标面板用户的典型用法是"打开看一眼"，切走后不必继续 10s 打一次接口；切回立即刷新。
+  //   （fetchOnce 由 startVisiblePolling 的 immediate 负责首次拉取）
+  timer = startVisiblePolling(fetchOnce, { intervalMs: 10000 });
 }
 function stopPoll() {
-  if (timer !== null) { window.clearInterval(timer); timer = null; }
+  if (timer !== null) { timer(); timer = null; }
 }
 
 watch(() => props.connectionId, () => { if (props.connectionId) startPoll(); else stopPoll(); });

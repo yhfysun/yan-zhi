@@ -188,6 +188,7 @@ import { useRouter } from 'vue-router';
 import { Refresh, Document, Edit, Setting, ArrowDown, Connection, Promotion } from '@element-plus/icons-vue';
 import { ElMessage } from 'element-plus';
 import { api, LOCAL_API_BASE } from '../api/client';
+import { startVisiblePolling } from '../utils/visible-polling';
 import NodeSettingsDialog from '../components/common/NodeSettingsDialog.vue';
 
 const router = useRouter();
@@ -216,8 +217,9 @@ const sending = ref(false);
 const lastSince = ref(0);
 const outgoing = ref<{ id: string; to: string; content: string; createdAt: number }[]>([]);
 const imMessageList = ref<HTMLElement | null>(null);
-let pollTimer: ReturnType<typeof setInterval> | null = null;
-let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+/** 可见性感知轮询的停止函数（2026-10-11：切走标签页时不再空转，见 utils/visible-polling） */
+let stopPolling: (() => void) | null = null;
+let stopHeartbeat: (() => void) | null = null;
 const HEARTBEAT_INTERVAL = 15000;
 
 const currentChannelLabel = computed(() => {
@@ -276,15 +278,20 @@ onMounted(async () => {
   await ensureSelf();
   loadPeers();
   await loadConnectors();
-  pollTimer = setInterval(dispatchPoll, 3000);
-  // 心跳：维持本节点在线状态，避免服务端按 last_seen 超时将其判为离线
-  heartbeatTimer = setInterval(sendHeartbeat, HEARTBEAT_INTERVAL);
-  sendHeartbeat();
+  // ★★★ 2026-10-11：改用**可见性感知轮询**（utils/visible-polling）。
+  //   为什么要轮询：IM 事件（飞书/企微/钉钉）与节点消息在服务端**没有推送通道**，
+  //   只能拉取（加 SSE 需要动服务端 IM 层，属独立工程）。
+  //   但旧实现是裸 `setInterval` —— 用户切走标签页/最小化时**仍在跑**，
+  //   白占主线程 + 网络 + 电池。现在：隐藏时**不安排下一次**（真零唤醒），
+  //   恢复可见时**立即补一次**（切回来数据就是新的）。
+  //   ★ 心跳例外（runWhenHidden）：它维持"本节点在线"的状态，停掉会被服务端判离线。
+  stopPolling = startVisiblePolling(dispatchPoll, { intervalMs: 3000 });
+  stopHeartbeat = startVisiblePolling(sendHeartbeat, { intervalMs: HEARTBEAT_INTERVAL, runWhenHidden: true });
 });
 
 onBeforeUnmount(() => {
-  if (pollTimer) clearInterval(pollTimer);
-  if (heartbeatTimer) clearInterval(heartbeatTimer);
+  if (stopPolling) { stopPolling(); stopPolling = null; }
+  if (stopHeartbeat) { stopHeartbeat(); stopHeartbeat = null; }
 });
 
 async function sendHeartbeat() {

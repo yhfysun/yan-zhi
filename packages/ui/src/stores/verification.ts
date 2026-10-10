@@ -7,6 +7,7 @@
 import { defineStore } from 'pinia';
 import { ref } from 'vue';
 import { api } from '../api/client';
+import { startVisiblePolling } from '../utils/visible-polling';
 
 export interface VerificationCodeItem {
   id: string;
@@ -26,7 +27,7 @@ export const useVerificationStore = defineStore('verification', () => {
   const pairToken = ref('');
   const loading = ref(false);
 
-  let timer: ReturnType<typeof setInterval> | null = null;
+  let timer: (() => void) | null = null;
 
   function unwrap<T>(r: { data: T } | { error: string }): T | null {
     if (r && 'data' in r) return r.data;
@@ -67,16 +68,19 @@ export const useVerificationStore = defineStore('verification', () => {
     return d?.token || '';
   }
 
-  /** 开启轮询（面板可见时调用）。间隔 3s：验证码时效短，要近乎实时。 */
+  /** 开启轮询（面板可见时调用）。间隔 3s：验证码时效短，要近乎实时。
+   *  ★★★ 2026-10-11：改用可见性感知轮询（utils/visible-polling）——
+   *   本处已是"面板可见才轮询"，再接一层**浏览器标签页**可见性：
+   *   整页切走时无需空转（验证码在服务端照常生成），切回立即刷新拿到最新一条。
+   *   ★ 注意 runWhenHidden 保持 false：验证码近实时要求只在"用户真在看"时才成立。 */
   function startPolling(intervalMs = 3000): void {
     stopPolling();
-    void refresh();
-    timer = setInterval(() => { void refresh(); }, intervalMs);
+    timer = startVisiblePolling(refresh, { intervalMs });
   }
 
   function stopPolling(): void {
     if (timer) {
-      clearInterval(timer);
+      timer();
       timer = null;
     }
   }

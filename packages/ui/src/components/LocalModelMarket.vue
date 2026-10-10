@@ -121,6 +121,7 @@ import { ref, computed, watch, onUnmounted } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { Download, Check, CircleCheckFilled, CircleCloseFilled, TrendCharts, Monitor } from '@element-plus/icons-vue';
 import { api } from '../api/client';
+import { startVisiblePolling } from '../utils/visible-polling';
 import { usePlatformStore } from '../stores';
 
 const props = defineProps<{ modelValue: boolean }>();
@@ -157,7 +158,7 @@ const items = ref<MarketItem[]>([]);
 const ollamaAvailable = ref(true);
 const activeTier = ref<'low' | 'mid' | 'high' | 'ultra' | 'embedding'>('low');
 const testing = ref('');
-let pollTimer: ReturnType<typeof setInterval> | undefined;
+let pollTimer: (() => void) | undefined;
 let wasDownloading = false;
 
 const filteredItems = computed(() => items.value.filter((it) => it.tier === activeTier.value));
@@ -169,7 +170,11 @@ const ollamaConnected = computed(() =>
 watch(visible, (v) => {
   if (v) {
     load();
-    pollTimer = setInterval(async () => {
+    // ★★★ 2026-10-11：改用可见性感知轮询（utils/visible-polling）。
+    //   本处已是"只在弹窗可见时轮询 + 仅在有下载时才打接口"，语义已正确；
+    //   再接一层可见性感知：**浏览器标签页被切走时停掉**（下载在服务端照常进行，
+    //   切回来立即刷新即可看到最新进度，不会丢信息）。
+    pollTimer = startVisiblePolling(async () => {
       const hasDl = items.value.some((i) => i.download?.state === 'downloading');
       if (hasDl) await load();
       // 从"有下载中"变为"全部完成"时，刷新模型管理页，让新拉取的模型立即可见
@@ -179,7 +184,7 @@ watch(visible, (v) => {
       } else if (hasDl) {
         wasDownloading = true;
       }
-    }, 1500);
+    }, { intervalMs: 1500, immediate: false });
   } else {
     stopPolling();
   }
@@ -188,8 +193,7 @@ watch(visible, (v) => {
 onUnmounted(stopPolling);
 
 function stopPolling() {
-  if (pollTimer) clearInterval(pollTimer);
-  pollTimer = undefined;
+  if (pollTimer) { pollTimer(); pollTimer = undefined; }
 }
 
 async function load() {
