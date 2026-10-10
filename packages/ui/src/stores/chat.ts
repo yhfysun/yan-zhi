@@ -1604,8 +1604,40 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
           'browser_run_script': 'run_script',
           // 文件上传（2026-10-07）：桌面端走 CDP DOM.setFileInputFiles 注入本地文件
           'browser_upload': 'upload',
+          // ★★★ B5（2026-10-10）：补齐 11 个**主进程早已实现**但这里漏映射的 action。
+          //   ★ 缺口（实测）：主进程 `browserView:action` 实现了 **40 个 action**，而本表只映射 27 个
+          //     ⇒ 下面 11 个会落到末尾兜底、报「桌面端暂不支持 XX」——
+          //     但它们**在主进程里明明已经实现**（能力在、入口断，属"静默失效"家族）。
+          //   ★ 实测差集（主进程 case 列表 vs 本表值）逐项核对得到，非推测。
+          'browser_new_tab': 'new_tab',
+          'browser_switch_tab': 'switch_tab',
+          'browser_close_tab': 'close_tab',
+          'browser_get_tabs': 'get_tabs',
+          'browser_download': 'download',
+          'browser_drag': 'drag',
+          'browser_scroll_into_view': 'scroll_into_view',
+          'browser_is_visible': 'is_visible',
+          'browser_wait_for_request': 'wait_for_request',
+          'browser_get_network_log': 'get_network_log',
+          'browser_visual_locate': 'visual_locate',
         };
-        const action = actionMap[fullName];
+        // ★★★ B5 根治（2026-10-10）：**优先用主进程的能力清单推导**映射，`actionMap` 退为兜底。
+        //
+        // ★ 为什么（实测缺口）：主进程的 action 分发是 `switch`（无法枚举），而本表是**另一份
+        //   硬编码清单** ⇒ 两份必然失同步：实测主进程已实现 40 个 action，本表只映射 27 个 →
+        //   11 个**明明已实现**的能力落到兜底、报「桌面端暂不支持 XX」（**能力在、入口断**）。
+        // ★ 推导规则：`browser_xxx` → `xxx`（与主进程 case 名逐字对应），仅当
+        //   `xxx` 出现在主进程公布的能力清单里才采用 —— 这样"以后主进程新增 action"
+        //   前端**自动支持**，不再需要同步两份清单。
+        // ★ 拿不到清单时（非桌面端 / 旧 preload）退回 `actionMap`，行为不变。
+        let action = actionMap[fullName];
+        if (!action && fullName.startsWith('browser_')) {
+          const derived = fullName.slice('browser_'.length);
+          try {
+            const supported: string[] | undefined = await (window as any).electronAPI?.browserView?.actions?.();
+            if (Array.isArray(supported) && supported.includes(derived)) action = derived;
+          } catch { /* 查询失败 → 退回兜底（不影响既有行为） */ }
+        }
         if (action) {
           try {
             const actTabId = await resolvePreviewTabId(ctx?.convId);

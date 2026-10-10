@@ -2409,6 +2409,31 @@ async function cdpTypeText(wc, target, text, pressEnter) {
 }
 
 
+/**
+ * ★★★ 桌面端浏览器 action 的**能力清单**（B5 根治，2026-10-10）。
+ *
+ * ★ 为什么必须显式列出（实测缺口）：主进程的 action 分发是 `switch`（无法枚举），
+ *   而渲染层 `chat.ts` 的 `actionMap` 是**另一份硬编码清单** ⇒ **两份清单必然失同步**：
+ *   实测主进程已实现 **40 个 action**，而 `actionMap` 只映射 27 个 →
+ *   11 个**明明已实现**的能力落到兜底、报「桌面端暂不支持 XX」（**能力在、入口断**）。
+ * ★ 修法：本清单作为**单一真相源**，经 `browserView:actions` 暴露给渲染层；
+ *   渲染层据此判断"能不能走桌面端"，不再依赖自己那份会漂移的硬编码。
+ * ★ 加新 action 时**必须同时**：① 在 `switch` 里加 case ② 在此清单加名字。
+ *   （测试 `browser-desktop-action-parity.test.ts` 会比对两者，漏一处即红。）
+ */
+const DESKTOP_BROWSER_ACTIONS = [
+  'upload', 'navigate', 'click', 'type', 'press', 'scroll', 'hover', 'screenshot',
+  'get_page_info', 'get_visible_text', 'get_page_content', 'fill_form', 'submit_form',
+  'search', 'next_page', 'prev_page', 'wait_for', 'select_option', 'check', 'uncheck',
+  'get_text', 'get_dom', 'wait', 'back', 'forward', 'reload', 'get_url',
+  'new_tab', 'switch_tab', 'close_tab', 'get_tabs', 'wait_for_request', 'get_network_log',
+  'extract_list', 'visual_locate', 'download', 'scroll_into_view', 'is_visible', 'drag',
+  'run_script',
+];
+
+/** 渲染层可查询桌面端支持哪些 action（避免两份硬编码清单漂移） */
+ipcMain.handle('browserView:actions', () => DESKTOP_BROWSER_ACTIONS.slice());
+
 ipcMain.handle('browserView:action', async (_e, tabId, action, args) => {
   args = args || {};
   const entry = tabId ? browserViews.get(tabId) : (activeTabId ? browserViews.get(activeTabId) : null);

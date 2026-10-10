@@ -146,6 +146,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // BrowserView：嵌入外部网页（多标签页，每个 tabId 对应独立 BrowserView）
   browserView: {
+    // ★ B5（2026-10-10）：查询桌面端支持哪些 action（单一真相源在主进程，
+    //   渲染层据此推导映射，避免两份硬编码清单漂移 → "能力在、入口断"）。
+    actions: () => ipcRenderer.invoke('browserView:actions'),
     createTab: (scope) => ipcRenderer.invoke('browserView:createTab', scope),
     closeTab: (tabId, fromUi) => ipcRenderer.invoke('browserView:closeTab', tabId, fromUi),
     // 关闭指定 scope 下的所有 tab（多会话隔离：切换会话/卸载 BrowserPanel 时调用，避免 tab 堆积）
