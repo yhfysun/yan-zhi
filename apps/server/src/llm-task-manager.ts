@@ -1380,6 +1380,94 @@ function parseLenientToolCall(jsonStr: string): { name: string; arguments: any }
  * 现改为：直接解析 → 剥 markdown 代码围栏再解析 → 提取首个平衡 {...} 块；全部失败返回 null + 错误说明，
  * 由调用方落库 tool 结果消息（保持 tool_calls 配对）并提示模型重试，绝不带着空参数硬执行。
  */
+/**
+ * 累积流式 tool_call 分片（纯函数，可单测）。
+ *
+ * ★★★ 为什么必须存在这道防串位（2026-10-10 实测故障）：
+ *   模型一批输出**两个工具**（`task_plan` + `call_agent`）时，实测 `call_agent` 的
+ *   `arguments` 只收到 **30 个字符**（`{"agentId": "a_builtin_page_ag`）→
+ *   `parseToolArguments` 报「不是合法 JSON」→ **工具未执行** →
+ *   要派发的 pageAgent 从未被拉起（用户侧表现为「pageAgent 页面不显示」「接管没生效」）。
+ *   根因：直接信任厂商给的 `tc.index`。而各网关对 index 的语义不一致 ——
+ *   有的从 1 开始、有的每个分片都重复同一个 index、有的干脆不带 →
+ *   后一个工具的**首个分片**会覆盖到前一个工具的槽位上，参数就此残缺。
+ *
+ * 判定优先级（从强到弱）：
+ *   ① 带 `id` → 按 id 精确匹配既有槽位（最可靠，id 唯一）
+ *   ② 槽位已有内容且 **id 或工具名冲突** → 判定为"另一个调用"，另起槽位（绝不覆盖）
+ *   ③ 其余按 `tc.index` / 追加（保持既有行为）
+ *
+ * 拼接去重：正常是**增量**分片直接拼；少数网关会**重发完整 arguments**（非增量），
+ *   此时按"以既有内容为前缀"识别并**替换**而非追加（否则拼成 `{...}{...}` 非法 JSON）。
+ */
+export function accumulateToolCallDeltas(acc: DeltaToolCall[], deltas: DeltaToolCall[]): void {
+  // ★ lastIdx 必须**跨调用**保持（挂在 acc 对象上）—— 不能是函数内局部变量！
+  //   否则每个 chunk 进来都重置为 -1，"无 id 的纯参数分片"就失去了归属依据，
+  //   会退化成按 tc.index 走 → 又回到串位老问题（实测：call_agent 的分片粘到了
+  //   同 index 的上一个工具 task_plan 上）。
+  const accAny = acc as any;
+  for (const tc of deltas) {
+    const cur = { ...tc } as DeltaToolCall;
+    // ── 定位目标槽位 ──────────────────────────────────────────────
+    // ① 带 id 且能找到既有槽位 → 就用它（id 最可靠）
+    // ② 不带 id（增量分片常如此）→ 粘住**上一次使用的槽位**（lastIdx）
+    //    ★ 这是关键：不带 id 的分片属于"当前正在累积的那个调用"，
+    //      不能被 tc.index 带偏（网关的 index 语义不可靠，实测同一批两个工具都报 0）。
+    // ③ 都不行 → 按 index / 追加
+    let idx: number;
+    const byId = cur.id ? acc.findIndex((x) => x && x.id === cur.id) : -1;
+    if (byId >= 0) {
+      idx = byId;
+    } else if (!cur.id && cur.function?.arguments && !cur.function?.name && (accAny.__lastIdx ?? -1) >= 0 && acc[accAny.__lastIdx ?? -1]) {
+      // 纯参数增量分片（无 id、无工具名）→ 归属上一个槽位
+      idx = accAny.__lastIdx ?? -1;
+    } else if (cur.id) {
+      // 新 id（新调用）→ 新槽位（先看 index 是否空着）
+      idx = (cur.index !== undefined && !acc[cur.index]) ? cur.index : acc.length;
+    } else if (cur.index !== undefined && acc[cur.index]) {
+      idx = cur.index;
+    } else if (cur.function?.name) {
+      idx = acc.length;
+    } else {
+      idx = acc.length > 0 ? acc.length - 1 : 0;
+    }
+
+    // ── 槽位占用冲突检测（防线二）───────────────────────────────
+    // 槽位已被"别的调用"占了 → 另起槽位，绝不覆盖
+    const slot = acc[idx];
+    if (slot) {
+      const idConflict = !!cur.id && !!slot.id && cur.id !== slot.id;
+      const nameConflict = !!cur.function?.name && !!slot.function?.name && cur.function.name !== slot.function.name;
+      if (idConflict || nameConflict) {
+        const sameId = cur.id ? acc.findIndex((x) => x && x.id === cur.id) : -1;
+        idx = sameId >= 0 ? sameId : acc.length;
+      }
+    }
+
+    // ── 写入 / 拼接 ────────────────────────────────────────────
+    if (!acc[idx]) {
+      acc[idx] = cur;
+      accAny.__lastIdx = idx;
+      continue;
+    }
+    const prev = acc[idx];
+    const prevArgs = prev.function?.arguments || '';
+    const incArgs = cur.function?.arguments || '';
+    // 重发整段（以既有内容为前缀）→ 替换；正常增量 → 追加
+    const isResend = incArgs.length > prevArgs.length && incArgs.startsWith(prevArgs);
+    const merged: any = {
+      ...prev, ...cur,
+      function: cur.function
+        ? { ...prev.function, ...cur.function, arguments: isResend ? incArgs : prevArgs + incArgs }
+        : prev.function,
+    };
+    // 保留既有 id（增量分片不带 id 时别把 id 清掉 —— 否则 tool 结果无法配对）
+    if (!merged.id && prev.id) merged.id = prev.id;
+    acc[idx] = merged as DeltaToolCall;
+    accAny.__lastIdx = idx;
+  }
+}
+
 function parseToolArguments(raw: string | undefined | null): { args: any; err?: string } {
   const s = String(raw || '').trim();
   if (!s || s === '{}') return { args: {} };
@@ -2486,30 +2574,10 @@ async function runReActLoop(task: LlmTask, params: {
               emit(task, { type: 'chunk', reasoning: chunk.delta.reasoningContent });
             }
             if (chunk.delta?.toolCalls) {
-              for (const tc of chunk.delta.toolCalls) {
-                let idx = tc.index;
-                if (idx === undefined) {
-                  if (tc.id) {
-                    const existById = toolCallAcc.findIndex(x => x.id === tc.id);
-                    idx = existById >= 0 ? existById : toolCallAcc.length;
-                  } else if (tc.function?.name) {
-                    idx = toolCallAcc.length;
-                  } else {
-                    idx = toolCallAcc.length > 0 ? toolCallAcc.length - 1 : 0;
-                  }
-                }
-                if (!toolCallAcc[idx]) {
-                  toolCallAcc[idx] = { ...tc };
-                } else {
-                  const prev = toolCallAcc[idx];
-                  toolCallAcc[idx] = {
-                    ...prev, ...tc,
-                    function: tc.function
-                      ? { ...prev.function, ...tc.function, arguments: (prev.function?.arguments || '') + (tc.function!.arguments || '') }
-                      : prev.function,
-                  };
-                }
-              }
+              // ★ 累积逻辑抽到纯函数（见 accumulateToolCallDeltas）—— 便于单测钉住
+              //   「两个工具的参数不互相覆盖」这条不变量（2026-10-10 实测踩到：
+              //   call_agent 的 arguments 只收到 30 字符）。
+              accumulateToolCallDeltas(toolCallAcc, chunk.delta.toolCalls);
               emit(task, { type: 'tool_call', toolCalls: [...toolCallAcc] });
             }
           }
