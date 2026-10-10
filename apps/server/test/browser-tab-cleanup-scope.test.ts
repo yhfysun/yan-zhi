@@ -207,16 +207,25 @@ describe('接管条活性门控：pageAgent 结束后「Agent 接管中」不能
     expect(chatSrc).toContain('BROWSER_LIVE_GRACE_MS');
   });
 
-  it('store 有残留自愈巡检：浏览器空闲 2 分钟主动查服务端活动任务并清残留运行态', () => {
+  it('store 有残留自愈巡检：浏览器超宽限主动查服务端活动任务并清残留运行态', () => {
     expect(chatSrc).toContain('sweepStaleBrowserTakeover');
     const fn = sliceFrom(chatSrc, 'async function sweepStaleBrowserTakeover(', 1800);
     // 只取本函数体（到下一个函数声明为止），避免断言被后续定义污染
     const body = fn.slice(0, fn.indexOf('async function callLlm') > 0 ? fn.indexOf('async function callLlm') : fn.length);
-    expect(body).toMatch(/120000/);
+    // ★★★ 2026-10-11 契约更新：宽限常量从内联的 `120000` 抽到独立纯函数文件
+    //   `stores/stale-run-sweep.ts`（BROWSER_SWEEP_GRACE_MS = 30000，120s → 30s）。
+    //   动机（用户实报「没有任务，禁用标志也一直存在着」）：120s 宽限意味着
+    //   跑过浏览器工具的会话，任务结束后最长 120s 禁用标志都挂着不掉。
+    //   ⇒ 这里改钉"判定来自纯函数"，而不是钉那个数字（数字在纯函数文件里，由 ui 测试钉住）。
+    expect(body, '★ 未走纯函数判定 → 判定不可单测、易回退').toMatch(/shouldSweepConv/);
     expect(body).toMatch(/llm\/tasks\/active/);
     expect(body).toMatch(/emitTaskFinished/);
     // 只清残留，不做 SSE 重连重订（长任务编排间隙浏览器空闲是常态，重订会抖动流）
     expect(body).not.toContain('reconnect');
+    // ★ 纯函数文件必须存在且导出判定与常量
+    const sweepSrc = fs.readFileSync(path.join(REPO_ROOT, 'packages/ui/src/stores/stale-run-sweep.ts'), 'utf8');
+    expect(sweepSrc).toMatch(/export function shouldSweepConv\(/);
+    expect(sweepSrc).toMatch(/export const BROWSER_SWEEP_GRACE_MS\s*=\s*30000/);
   });
 
   it('BrowserPanel 接管条带活性门控 + 暂停态例外', () => {

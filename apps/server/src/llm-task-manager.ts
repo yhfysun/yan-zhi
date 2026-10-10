@@ -34,7 +34,7 @@ import { runAfterToolHooks } from './services/tool-hooks.js';
 import { checkToolLoop, FORCE_STOP_MARKER } from './services/tool-loop-guard.js';
 // ★★★ 浏览器执行面直连化（2026-10-10）：主进程 loopback 端点客户端。
 //   判定口径**只在本模块**（decideBrowserExecution），前端不得自行推断（防双执行 + 防 token 外泄）。
-import { browserBridgeAvailable, decideBrowserExecution, callBrowserBridge, toolNameToAction, bridgeMode } from './browser-bridge.js';
+import { browserBridgeAvailable, decideBrowserExecution, callBrowserBridge, toolNameToAction, bridgeMode, isBridgeTransportError } from './browser-bridge.js';
 // 子任务执行详情（2026-10-09）：get_sub_task_detail 的查询与排版（编排者分析子任务失败用）
 import { loadSubTaskTrace, formatSubTaskTrace } from './services/sub-task-detail.js';
 import { registerArtifactHooks } from './services/artifact-hooks.js';
@@ -169,6 +169,51 @@ export const STREAM_TRUNCATE_MAX_RETRY = 2;
 /** 是否需要为「流被掐断」补写一轮（吞掉残缺的 reasoning，见循环内用法） */
 export const TRUNCATED_STREAM_NOTICE =
   '（本轮上游输出被提前中断。已保留已生成的部分内容；如不完整请重新发送或继续。）';
+
+/**
+ * ★★★ P0（2026-10-10）：判定「本轮流是否未正常收尾」—— 抽成**纯函数**便于单测钉住。
+ *
+ * 背景（实据，2026-10-10 20:21 用户实测）：`finish_reason`/`terminated` 标记**并非总能送达**。
+ *   代理以 TCP FIN 半途关流时，core 的 `terminated` 可能既不是 `true` 也不是 `false`
+ *   （未收到标记，保持默认 `true`）→ 旧判据 `terminated === false` 不成立 → 三道防线全漏：
+ *     · 续写分支: 条件② `!fullContent && !fullReasoning` 被 **reasoning 非空**否定；
+ *     · 可见提示: 条件 `terminated === false` 不成立；
+ *     · 空回复兜底: 条件 `!fullReasoning` 被否定 + `step > 0` 在首轮不成立。
+ *   ⇒ 任务带着 `content='' + reasoning 半截` 被标 `completed`，用户体感"又断了"。
+ *   ★ 关键盲点：**推理模型先吐 reasoning、后吐正文**，流在 reasoning 阶段被掐时
+ *     content 必为空、reasoning 必为半截 —— 旧判据恰把这种**最典型**的截断当成正常完成。
+ *
+ * 判据（按可靠性排序，任一成立即认为未收尾）：
+ *   ① core 明确报未收尾（`terminated === false`）；
+ *   ② **没有 finish_reason**（未见 finish_reason/[DONE] 就是没收尾）**且**没有产出工具调用
+ *      —— 这是**主判据**：正常流必带 finish_reason（stop/length/tool_calls），不带就是被掐；
+ *   ③ 无任何产出（content 与 reasoning 皆空）—— 正常流不会"一个字不吐就结束"。
+ *
+ * ★ 为什么②要排除「有工具调用」：带 tool_calls 的流即使被截，也交给下层按 finish_reason
+ *   走参数续跑/报错，不在此整轮重来（与既有实现同口径，防误伤）。
+ * ★ 为什么②要排除「有 finish_reason」：finish_reason='length' 是**正常收尾**的一种
+ *   （模型自己写完了，只是撞到长度上限），交给下游 `adviceForTruncatedArgs` 处理，不整轮重发。
+ *
+ * @param p.terminated   core 吐出的收尾标记（true=正常/false=明确截断/未收到时默认 true）
+ * @param p.finishReason 本轮末次非空 finish_reason（undefined = 从未收到）
+ * @param p.hasToolCalls 本轮是否累积到工具调用
+ * @param p.contentLen   本轮正文长度
+ * @param p.reasoningLen 本轮推理长度
+ */
+export function isStreamUnterminated(p: {
+  terminated: boolean;
+  finishReason?: string;
+  hasToolCalls: boolean;
+  contentLen: number;
+  reasoningLen: number;
+}): boolean {
+  if (p.hasToolCalls) return false;              // 交给下层按 finish_reason 处理，不整轮重来
+  if (p.terminated === false) return true;       // ① 明确截断
+  if (p.finishReason) return false;              // ②' 有终态 = 正常收尾（length 也是收尾）
+  if (p.contentLen === 0 && p.reasoningLen === 0) return true; // ③ 空产出
+  // ② 主判据：无终态 → 未收尾（含"只有半截 reasoning、无正文"这一最典型形态）
+  return true;
+}
 
 /**
  * ★ P0-4（2026-10-07）：可**并行**执行的只读工具白名单。
@@ -420,6 +465,24 @@ function emit(task: LlmTask, event: SSEEvent) {
   }
   for (const sub of task.subscribers) {
     try { sub(event); } catch {}
+  }
+  // ★★★ 2026-10-11：**终态事件双发到会话级总线** —— 消除前端的 `/llm/tasks/active` 轮询。
+  //
+  //   ★ 为什么必须（用户实报「没有任务，禁用标志也一直存在着」+ 问「轮询不是早就去掉了？」）：
+  //     任务级 SSE 只在**当前有订阅者**时送达。一旦前端订阅断掉（断流放弃重连 / 服务重启 /
+  //     后端进程被替换），终态事件就**永远推不出去** → 前端 `runningConvIds` 残留在"运行中"
+  //     → 输入框禁用标志一直挂着。
+  //     唯一的兜底是 `sweepStaleBrowserTakeover()` **每 30s 轮询** `/llm/tasks/active` 去问
+  //     —— 这正是"轮询"的根源，效率差且最长有 120s 盲区。
+  //   ⇒ 终态事件**多推一份到会话级总线**（`subscribeConversation`）：前端只需挂一条**长活的
+  //     会话级订阅**（与任务无关、任务结束后仍在），就能**实时**收到"任务结束了"，
+  //     不必再轮询。总线在无人在线时静默（`emitConversation` 已处理），零额外成本。
+  //   ★ 只双发**终态**（completed/aborted/error）—— 中间事件（chunk/tool:*）量极大且
+  //     前端只在订阅期间需要，双发会造成无谓的重复开销。
+  //   ★ 幂等：前端对重复终态已做去重（`dropStreamState` / `markRunEnd` 幂等），
+  //     正常订阅期间会收到两份，不会出错。
+  if (event.type === 'task:completed' || event.type === 'task:aborted' || event.type === 'task:error') {
+    emitConversation(task.conversationId, { ...event });
   }
 }
 
@@ -2625,20 +2688,25 @@ async function runReActLoop(task: LlmTask, params: {
           }
         }
 
-        // ★★★ P0（2026-10-09）：流被上游/代理**提前掐断**的处置。
+        // ★★★ P0（2026-10-09 引入 / 2026-10-10 校正判据）：流被上游/代理**提前掐断**的处置。
         //
-        // 判据（三重，宁可保守不误伤正常流）：
-        //   ① core 明确报告未收尾（`terminated === false`）；**或**
-        //   ② finish_reason 为空、且**完全没有任何产出**（content/reasoning 皆空、无工具）——
-        //      正常流不会"一个字都不吐就结束"；
-        //   ③ 尚未进入工具调用（有 tool_calls 时就算被截断也交给下层按 finish_reason 处理续跑，不在此重来）。
+        // ★ 判据抽到 `isStreamUnterminated()`（纯函数，可单测）—— **2026-10-10 实据修正**：
+        //   旧判据 `(terminated === false || (!finish && !content && !reasoning)) && !toolCalls`
+        //   在「代理半途关流、terminated 标记未送达」时**完全失效**（实测 20:21 用户现场：
+        //   content='' + reasoning 7269 字半截 + 无终态 → 被判"正常完成"）。
+        //   新判据以 **「无 finish_reason」** 为主（正常流必带终态），覆盖推理模型
+        //   "reasoning 先吐、正文后吐"被拦腰掐断的典型形态。
         // 处置：先**就地续写**（把已产出内容当 assistant 前缀 prefill 重新发起，追加到尾部）。
         //   prefill **不带 tools**：部分 OpenAI 兼容端点在「assistant 前缀 + tools」下会 400（与既有
         //   "重试不带 tools" 同口径）。续写用尽仍失败 → 标截断，由下方落**可见**错误、绝不静默留白。
-        if (
-          (streamFlag.terminated === false || (!streamFinish && !fullContent && !fullReasoning)) &&
-          toolCallAcc.length === 0
-        ) {
+        const unterminated = isStreamUnterminated({
+          terminated: streamFlag.terminated,
+          finishReason: streamFinish,
+          hasToolCalls: toolCallAcc.length > 0,
+          contentLen: fullContent.length,
+          reasoningLen: fullReasoning.length,
+        });
+        if (unterminated) {
           for (let attempt = 1; attempt <= STREAM_TRUNCATE_MAX_RETRY; attempt++) {
             if (task.abortController.signal.aborted) throw new DOMException('Aborted', 'AbortError');
             logger.warn(
@@ -2758,15 +2826,18 @@ async function runReActLoop(task: LlmTask, params: {
           }
         }
 
-        // ★★★ P0（2026-10-09）不静默：续写仍失败且**正文为空**时，绝不留下"空气泡"
-        //   —— 旧行为正是 content='' + reasoning 半截 直接落库，用户看到"转半天不出话"。
-        //   落一条可见提示（reasoning 原文仍在行内可供排查），让用户知道"被中断了、可重试"，
-        //   而不是以为模型什么都没做。
-        if (!fullContent.trim() && streamFlag.terminated === false) {
+        // ★★★ P0（2026-10-09 引入 / 2026-10-10 校正判据）不静默：续写仍失败且**正文为空**时，
+        //   绝不留下"空气泡" —— 旧行为正是 content='' + reasoning 半截 直接落库，
+        //   用户看到"转半天不出话"。
+        //   ★ 判据从 `streamFlag.terminated === false` 改为 `unterminated`（见 isStreamUnterminated）：
+        //     前者要求"明确收到截断标记"，代理半关 TCP 时标记常不送达 → 兜底静默失效（实测 10-10 20:21）。
+        //     现在只要「本轮未正常收尾」且正文为空，就落可见提示（reasoning 原文仍在行内可供排查），
+        //     让用户知道"被中断了、可重试"，而不是以为模型什么都没做。
+        if (!fullContent.trim() && unterminated) {
           fullContent = TRUNCATED_STREAM_NOTICE;
           logger.warn(
             `[llm-task] 断流且无正文留痕（msg=${assistantMsgId} conv=${task.conversationId} ` +
-            `reasoning=${fullReasoning.length} 字）—— 已落可见提示`,
+            `reasoning=${fullReasoning.length} 字 finish=${streamFinish || '无'} terminated=${streamFlag.terminated}）—— 已落可见提示`,
           );
         }
 
@@ -2823,9 +2894,28 @@ async function runReActLoop(task: LlmTask, params: {
             }
             continue; // 下一轮模型能看到后台结果并继续
           }
-          // 空回复兜底：上一轮工具调用后模型返回空内容（常见于工具全失败），补提示避免用户看到空白
-          if (!fullContent && !fullReasoning && step > 0) {
-            const tip = '（助手未返回有效内容，可能是工具调用失败导致。请重试或换一种问法。）';
+          // 空回复兜底：模型返回空内容（常见于工具全失败，或首轮就被掐断）→ 补提示避免用户看到空白。
+          // ★ 2026-10-10 修正两处（实测 20:21 用户现场"继续后又断了"）：
+          //   ① 去掉 `step > 0` —— 旧条件让**首轮**（step=0）空回复完全不兜底，
+          //      而"刚点继续就被掐"恰是首轮，最需要提示的场景反而没有；
+          //   ② 覆盖「正文为空」全形态（含"只有半截 reasoning、无正文"这一推理模型典型截断）。
+          //   注：若上方第一道防线已把正文替换为 TRUNCATED_STREAM_NOTICE，则此处不再重复覆盖
+          //   （那句提示本身已足够可见、且信息更准）。
+          // ★★★ 2026-10-10 二次修正：**必须按 finish_reason 分派文案**（实测复现根因）——
+          //   直连上游实测：`deepseek-flash`（推理模型）在 `max_tokens=200` 时
+          //   reasoning 吃满 313 字、**content 恒为空**、`finish_reason='length'`；
+          //   调到 2048 即正常（reasoning 1311 字 + content 正常）。即"空正文"的**真因**
+          //   多半是「推理 token 挤占了输出预算」，**不是**上游中断。
+          //   旧文案一律说"上游中断或工具失败" → 把用户引向错误方向（实测用户已困惑）。
+          if (!fullContent.trim()) {
+            const isLengthCapped = streamFinish === 'length';
+            const tip = isLengthCapped
+              ? '（本轮**输出达到长度上限**，模型把预算全用在思考上、没来得及写正文。\n' +
+                '这是推理模型（如 deepseek-flash）在「最大输出 tokens」偏小、或上下文过长时的典型表现。\n' +
+                '建议：① 在模型设置里调大「最大输出 tokens」；② 或换一个非推理模型；③ 或把任务拆小/新开会话降低上下文。）'
+              : (!streamFinish
+                ? '（助手未返回有效内容：本轮上游输出被提前中断（没有正常收尾标记）。请重试，或换一种问法。）'
+                : '（助手未返回有效内容，可能是工具调用失败导致。请重试或换一种问法。）');
             updateMessageContent(assistantMsgId, tip);
             emit(task, { type: 'message:updated', messageId: assistantMsgId, content: tip });
           }
@@ -4010,8 +4100,17 @@ async function executeTool(
   // ★ 判定口径**只有一处**：`decideBrowserExecution()`（browser-bridge.ts）。
   //   前端不得自己探端点 —— 那会造出第二份判据（必然漂移），且会把 token 暴露到渲染层。
   //
-  // ★ 灰度：off（本块整体跳过，行为逐字不变）/ shadow（只读走桥）/ on（读写走桥，失败降级 SSE）
-  //   / strict（读写走桥，SSE 视为错误）。
+  // ★ 灰度：off（本块整体跳过，行为逐字不变）/ shadow（只读走桥）/ on（读写走桥）
+  //   / strict（读写走桥，SSE 委托视为错误）。
+  //
+  // ★★★ 2026-10-10 根因修复：**去掉 `on` 档的死降级**。
+  //   旧行为：桥抛任何错 → `on` 档降级回 SSE 一次。但直连化后渲染层**已不再执行** browser_*
+  //   （`decideBrowserExecution` 判给桥；渲染层的 `tool:execute` 守卫会跳过）⇒ SSE 路径
+  //   **必然没有订阅者** ⇒ 必等 15s + 8s 才失败 ⇒ 一次 8s 的失败被拖成 23s，
+  //   且最终文案是"前端暂时不可达"（把"主进程页面未就绪"误导成"前端断了"）。
+  //   实测（2026-10-10 22:46）：桥报 `loadURL of null` → 降级 → 用户看到"前端不可达"。
+  //   ⇒ 现在：只有**传输层**失败（桥端点不可达/超时/鉴权）才降级（那才是"桥没起来"）；
+  //     其余失败直接回可诊断错误，让模型立刻换招或汇报，不再空转 23s。
   if (isBrowser) {
     const exec = decideBrowserExecution(toolNameToAction(toolName));
     if (exec === 'bridge') {
@@ -4030,8 +4129,13 @@ async function executeTool(
         if (bridgeMode() === 'strict') {
           return `浏览器工具 ${toolName} 直连执行面失败（strict 档不降级）：${e?.message || e}`;
         }
-        // on：降级回 SSE 一次（打点，便于观察桥的可靠性；不静默）
-        logger.warn(`[browser-bridge] 桥调用失败，降级回 SSE 委托: ${toolName} conv=${task.conversationId} err=${e?.message || e}`);
+        // 业务错误（动作执行失败）：不是桥故障，直接回给模型 —— 换招由模型决定。
+        if (!isBridgeTransportError(e)) {
+          logger.warn(`[browser-bridge] 动作执行失败（非桥故障，不降级）: ${toolName} conv=${task.conversationId} err=${e?.message || e}`);
+          return `浏览器操作失败: ${e?.message || e}`;
+        }
+        // 传输层失败（端点不可达/超时/鉴权）：桥本身没接上 —— 这时才降级回 SSE 一次。
+        logger.warn(`[browser-bridge] 桥传输失败，降级回 SSE 委托: ${toolName} conv=${task.conversationId} err=${e?.message || e}`);
       }
     }
   }

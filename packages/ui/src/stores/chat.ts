@@ -334,6 +334,10 @@ import {
   type PlanMap,
   type PlanStep as PlanStepT,
 } from './plan-buckets';
+// ★ 残留自愈判定的常量与纯函数抽到独立文件（与 plan-buckets 同模式：可脱离 pinia 单测）。
+//   见该文件顶部注释：这是"禁用标志挂多久"的唯一判定，必须能被行为测试真跑验证。
+export { SWEEP_INTERVAL_MS, BROWSER_SWEEP_GRACE_MS, shouldSweepConv } from './stale-run-sweep';
+import { SWEEP_INTERVAL_MS, shouldSweepConv } from './stale-run-sweep';
 
 export const useChatStore = defineStore('chat', () => {
   const conversations = ref<Conversation[]>([]);
@@ -2435,6 +2439,11 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
   /** 检查会话是否有未完成的后端任务，如有则重新订阅 SSE 恢复流式输出。 */
   async function reconnectActiveTask(convId: string): Promise<void> {
     if (!isServerMode()) return;
+    // ★★★ 2026-10-11：**先挂会话级长连订阅**（与任务无关，见 subscribeConversationEvents）。
+    //   这是"任务结束实时感知"的主路径 —— 挂上之后，即便任务级 SSE 完全断了，
+    //   终态事件也会从会话级总线送达 ⇒ 不再依赖 `/llm/tasks/active` 轮询。
+    //   ★ 位置：放在最前面（先建立推送通道，再校准状态），且**不 await**（长活，不能阻塞本函数）。
+    void subscribeConversationEvents(convId);
     // ★ 2026-10-09 假运行态自愈：SSE 终态事件丢失（断流放弃重连 / 服务重启把任务标
     //   interrupted）时，runningConvIds / browserTaskConvs 永远没人清 → 前端永远显示
     //   「任务运行中 / Agent 接管中」。旧实现 has() 提前 return（UI 认为在跑就连服务端
@@ -2492,26 +2501,39 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
     })();
   }
 
-  // ★★★ 假运行态残留自愈巡检（2026-10-09；2026-10-09 扩到全部会话）：
+  // ★★★ 假运行态残留自愈巡检（2026-10-09；2026-10-09 扩到全部会话；2026-10-11 消除 120s 盲区）：
   //   SSE 终态事件丢失（断流放弃重连 / 服务重启把任务标 interrupted）时 runningConvIds
   //   永远没人清 → ①「Agent 接管中 · 执行中」整条挂着不掉（用户实报「pageAgent结束了…这个一直在？」）；
-  //   ② 该会话之后**发不出任何消息**（callLlm 同会话守卫命中；旧版是静默 return → 消息凭空消失）。
+  //   ② **输入锁（禁用标志）一直挂着**（用户实报「没有任务也一直存在」）；
+  //   ③ 该会话之后**发不出任何消息**（callLlm 同会话守卫命中；旧版是静默 return → 消息凭空消失）。
   //   原有自愈只挂在「切回会话」（reconnectActiveTask），用户不切会话就永远不触发。
-  //   这里 30s 周期巡检：对每个「UI 认为在跑」的会话，只查一次服务端活动任务，
-  //   **无活动才清残留运行态**（真在跑 → 服务端有活动任务 → 不清，安全）。
-  //   **不做** SSE 重连重订 —— 长任务编排间隙浏览器空闲 2 分钟是常态，反复重订会抖动流。
+  //
+  // ★★★ 2026-10-11 根因修复（用户实报「没有任务，禁用标志也一直存在着」）：
+  //   旧实现有一道 `browserIdle` 宽限 —— 浏览器工具事件静默 **120s** 才允许查服务端：
+  //     `const browserIdle = now - lastBrowserToolAt > 120000;`
+  //     `if (browserTaskConvs.has(convId) && !browserIdle) continue;`
+  //   ⇒ 只要本会话跑过浏览器工具，**任务结束后最长 120s 内禁用标志一定挂着**
+  //     （若任务恰在 wait_for(30s) 之后结束，用户感受到的是 120s+ 的"没有任务还锁着"）。
+  //   ★ 旧宽限的**理由成立但手段错了**：它想避免"长任务编排间隙浏览器空闲 2 分钟"被误清，
+  //     于是拿"浏览器工具静默时长"当"任务是否还在跑"的**代理信号**。
+  //     而任务是否在跑，服务端 `/llm/tasks/active` **一句话就能问清** —— 不需要靠猜。
+  //   ⇒ 现在（2026-10-11 二次修订）：**主路径改为会话级长连订阅**（服务端终态双发），
+  //     巡检降级为"最后一道保险"，间隔 60s、宽限 30s（常量与判定见 store 外的
+  //     `SWEEP_INTERVAL_MS` / `BROWSER_SWEEP_GRACE_MS` / `shouldSweepConv`）。
+  //     两种情况都不会被误清：① 真在跑 → 服务端有活动任务；② 刚结束 → 宽限内不动。
+
   async function sweepStaleBrowserTakeover(): Promise<void> {
     if (runningConvIds.value.size === 0) return;
-    // 浏览器会话的宽限：浏览器工具事件静默 2 分钟才查（长任务编排间隙浏览器空闲是常态）
-    const browserIdle = Date.now() - lastBrowserToolAt.value > 120000;
+    const sinceLastBrowserToolMs = Date.now() - lastBrowserToolAt.value;
     for (const convId of Array.from(runningConvIds.value)) {
-      // ★★★ 2026-10-09：**不再只扫浏览器会话**（本次"B 会话发不出消息"修复的一环）。
+      // ★★★ 2026-10-09：**不再只扫浏览器会话**（"B 会话发不出消息"修复的一环）。
       //   此前是 `if (!browserTaskConvs.value.has(convId)) continue;` —— 把**纯文本会话整个
       //   排除在自愈之外**。于是纯文本任务一旦丢了 SSE 终态事件，该会话的 runningConvIds
-      //   永久残留 → 之后每次发送都被 callLlm 的同会话守卫命中（旧版是静默 return，消息凭空消失）。
-      //   纯文本会话没有"浏览器事件"这个活性信号，只能以服务端活动任务为准（每 30s 一次 GET，
-      //   只在 UI 认为在跑的会话数上跑，量极小）。真在跑 → 服务端有活动任务 → 不清（安全）。
-      if (browserTaskConvs.value.has(convId) && !browserIdle) continue;
+      //   永久残留 → 之后每次发送都被 callLlm 的同会话守卫命中。
+      //   纯文本会话没有"浏览器事件"这个活性信号，只能以服务端活动任务为准。
+      //   ★ 判定抽到 `shouldSweepConv()`（见上方，纯函数、可单测）。
+      //   真在跑 → 服务端有活动任务 → 不清（安全）。
+      if (!shouldSweepConv(browserTaskConvs.value.has(convId), sinceLastBrowserToolMs)) continue;
       try {
         const r = await api.get<any[]>(`/llm/tasks/active?conversationId=${convId}`);
         // ★ 单会话查询失败**只跳过本会话**（此前是 return，一个失败会让其余会话的自愈整轮失效）
@@ -2529,7 +2551,90 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
       } catch { /* 查询失败（网络抖动）不动残留态，避免误清真正在跑的任务 */ }
     }
   }
-  setInterval(() => { void sweepStaleBrowserTakeover(); }, 30000);
+
+  // ★★★ 2026-10-11：**用「会话级长连订阅」替代「每 30s 轮询 /llm/tasks/active」**。
+  //
+  //   ★ 用户原话：「轮询？这个不是早就去掉了？不是改成 websocket 双向通讯了？轮询效率肯定差啊」
+  //     查证结果：业务主链路**从来没有 WebSocket**（任务流是 `fetch` + `ReadableStream` 手读 SSE）；
+  //     而轮询确实还有一处 —— 就是上面这个 `sweepStaleBrowserTakeover` 每 30s 拉 `/llm/tasks/active`。
+  //     它的存在只是因为**终态事件可能推不出去**（前端订阅断了）。**问题的根不在轮询，在推送缺口。**
+  //
+  //   ⇒ 正确修法：让服务端把**终态事件多推一份到会话级总线**（已改 llm-task-manager 的 `emit`），
+  //     前端在这里挂一条**与任务无关、长活的会话级订阅**，任务结束的瞬间就能收到
+  //     `task:completed/aborted/error` ⇒ **不再需要任何轮询**。
+  //
+  //   ★ 为什么这条订阅能覆盖"订阅断掉"的场景：会话级总线（`GET /llm/conversations/:id/stream`）
+  //     是独立于任务的通道，不随任务终态关闭；它有自己的断线重连（下方 while 循环 + 指数退避）。
+  //     服务端 `emitConversation` 在无人在线时静默（内容已落库），零额外成本。
+  //
+  //   ★ 保留的角色分工：
+  //     · 本订阅 —— **实时**告知"任务结束了"（主路径，毫秒级）
+  //     · `reconnectActiveTask`（切回会话时查一次）—— 冷启动/断线期间的**校准**（幂等，不是轮询）
+  //     · `sweepStaleBrowserTakeover` —— **降级为最后一道保险**（间隔拉长、仅兜底极端情况）
+  const conversationSseAborts = new Map<string, AbortController>();
+  /** 是否已就该会话建立过会话级订阅（避免重复挂；切会话时复用） */
+  const conversationSseSubscribed = new Set<string>();
+
+  /**
+   * 订阅会话级事件总线（长活，自动重连）。
+   *
+   * ★ 生命周期：**跟随会话**，不跟随任务 —— 任务结束、SSE 断流、切会话都不影响它继续活着。
+   *   因此它能收到"任务级订阅已经断掉时"的终态事件，这正是消除轮询的关键。
+   */
+  async function subscribeConversationEvents(convId: string): Promise<void> {
+    if (!isServerMode() || !convId) return;
+    if (conversationSseSubscribed.has(convId)) return;
+    conversationSseSubscribed.add(convId);
+    const ac = new AbortController();
+    conversationSseAborts.set(convId, ac);
+    // 断线重连：指数退避 0.5s → 5s 封顶（与任务流同口径），直到会话被显式退订
+    let attempt = 0;
+    while (!ac.signal.aborted) {
+      try {
+        const res = await fetch(`${API_BASE}/llm/conversations/${encodeURIComponent(convId)}/stream`, {
+          headers: buildRequestHeaders({ Accept: 'text/event-stream' }),
+          signal: ac.signal,
+        });
+        if (!res.ok || !res.body) throw new Error(`会话流 HTTP ${res.status}`);
+        attempt = 0; // 连上了就重置退避
+        await consumeSseStream(res.body, async (payload): Promise<void | false> => {
+          let event: any;
+          try { event = JSON.parse(payload); } catch { return; }
+          // ★ 只处理**终态**（服务端只双发这三类，见 llm-task-manager 的 emit）。
+          //   收到即意味着"该会话的任务已结束" → 清残留运行态与浏览器记账。
+          //   ★ 幂等：正常订阅期间任务流也会送达同一事件；此处的清理操作全是幂等的
+          //     （`markRunEnd` / `delete` / `clearBrowserTaskActive` 重复调用无副作用）。
+          if (event.type === 'task:completed' || event.type === 'task:aborted' || event.type === 'task:error') {
+            if (runningConvIds.value.has(convId)) {
+              markRunEnd(convId, event.type === 'task:completed' ? 'completed'
+                : event.type === 'task:aborted' ? 'aborted' : 'error');
+              runningConvIds.value.delete(convId);
+              abortControllers.delete(convId);
+              taskIds.delete(convId);
+              clearBrowserTaskActive(convId);
+              emitTaskFinished(convId);
+            }
+          }
+          return; // 长连，永不 return false（不主动关流）
+        });
+      } catch (e: any) {
+        if (ac.signal.aborted) return;
+        // 断线 → 退避重连（会话流是长活通道，必须自愈；失败静默，不打扰用户）
+        attempt++;
+        const delay = Math.min(500 * Math.pow(2, Math.min(attempt, 4)), 5000);
+        await new Promise((r) => { const t = setTimeout(r, delay); ac.signal.addEventListener('abort', () => { clearTimeout(t); r(null); }, { once: true }); });
+      }
+    }
+  }
+
+  /** 退订会话级事件总线（会话被删除/切换清理时调用） */
+  function unsubscribeConversationEvents(convId: string): void {
+    conversationSseSubscribed.delete(convId);
+    const ac = conversationSseAborts.get(convId);
+    if (ac) { try { ac.abort(); } catch { /* ignore */ } conversationSseAborts.delete(convId); }
+  }
+
+  setInterval(() => { void sweepStaleBrowserTakeover(); }, SWEEP_INTERVAL_MS);
 
   async function callLlm(
     platform: Platform,
@@ -2828,6 +2933,8 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
     browserExpanded, browserUserDismissed, browserLockInput, browserPaused, pausedConvIds,
     browserTaskActive, markBrowserTaskActive, clearBrowserTaskActive,
     lastBrowserToolAt, BROWSER_LIVE_GRACE_MS,
+    // 会话级长连订阅（2026-10-11：替代 /llm/tasks/active 轮询的主路径）
+    subscribeConversationEvents, unsubscribeConversationEvents,
     // 执行面判据（服务端下发；前端只读服从）—— 见 isBrowserExecutionByBridge 注释
     browserExecutionByConv, isBrowserExecutionByBridge, setBrowserExecution, clearBrowserExecution,
     remainingAgentOpenedTabs, clearAgentOpenedTabs, markAgentOpenedTab,
