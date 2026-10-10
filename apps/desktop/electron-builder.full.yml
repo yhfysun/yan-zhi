@@ -32,6 +32,10 @@ files:
   #   多页语义（显式 tabId / new_tab 是否改写当前操作页）的**唯一判定**。
   #   漏登记 = 打包版**启动即崩**（Cannot find module './browser-target.cjs'）——同 browser-bridge.cjs。
   - browser-target.cjs
+  # ★★★ 主进程/渲染层日志落盘（2026-10-10 新增）：main.cjs 顶层 require('./main-log.cjs')。
+  #   漏登记 = 打包版**启动即崩**（Cannot find module './main-log.cjs'）——同 browser-bridge.cjs。
+  #   ★ 由 packaged-entry-modules.test.cjs 守门（本次就是它抓出来的）。
+  - main-log.cjs
   # 版本档配置（scripts/set-edition.cjs 生成）：main.cjs 运行时读它拿构建档与预置码档。
   # ★ 漏登记 = 打包版读不到档位 → 落到兜底档（basic），且「阉割版只有办公」这条会静默失效。
   - edition.json

@@ -95,20 +95,51 @@ export async function callBrowserBridge(
     });
     // 404 = 鉴权失败/路径不对（桥刻意不区分，见桥文件）→ 明确报错而非静默
     if (res.status === 404) {
-      throw new Error('浏览器桥鉴权失败（端点重解析后 token 可能已变，桥未就绪时会自动降级）');
+      const err = new Error('浏览器桥鉴权失败（端点重解析后 token 可能已变）');
+      (err as any).bridgeTransport = true;
+      throw err;
     }
-    if (res.status === 413) throw new Error('浏览器桥请求体过大');
-    if (!res.ok) throw new Error(`浏览器桥返回 HTTP ${res.status}`);
+    if (res.status === 413) {
+      const err = new Error('浏览器桥请求体过大');
+      (err as any).bridgeTransport = true;
+      throw err;
+    }
+    if (!res.ok) {
+      const err = new Error(`浏览器桥返回 HTTP ${res.status}`);
+      (err as any).bridgeTransport = true;
+      throw err;
+    }
     const json: any = await res.json().catch(() => ({}));
-    if (json && json.error) throw new Error(String(json.error));
+    // ★★★ HTTP 200 + `{error}` 是**动作执行失败**（业务错误），不是桥故障 —— 见 isBridgeTransportError 注释。
+    //   直接作为工具结果返回给模型（保留原始文案，模型据此换招），**不抛异常、不触发降级**。
+    if (json && json.error) return `浏览器操作失败: ${String(json.error)}`;
     // ★ 桥返回与 `browserView:action` 逐字同构 ⇒ 走**同一份**结果格式化（见 llm-task-manager 的 bridge 分支）
     return formatBridgeResult(action, json);
   } catch (e: any) {
-    if (e?.name === 'AbortError') throw new Error(`浏览器桥调用超时（${Math.round(timeoutMs / 1000)}s）`);
+    if (e?.name === 'AbortError') {
+      const err = new Error(`浏览器桥调用超时（${Math.round(timeoutMs / 1000)}s）`);
+      (err as any).bridgeTransport = true;
+      throw err;
+    }
     throw e;
   } finally {
     clearTimeout(timer);
   }
+}
+
+/**
+ * 桥调用失败是否属于**传输层**失败（端点不可达 / 超时 / 鉴权）。
+ *
+ * ★★★ 为什么必须区分（2026-10-10 根因修复）：
+ *   桥把「动作执行失败」也编码成 HTTP **200** + `{error: "..."}`（见 `browser-bridge.cjs`）——
+ *   这是**正常业务返回**，与"桥连不上"是两回事。
+ *   而调用方此前只看 `catch` 就降级回 SSE ⇒ **任何**业务失败（如"页面未就绪"）都会被
+ *   当成桥故障去走 SSE —— 而 `on` 档下渲染层已不执行浏览器工具，SSE 必失败
+ *   ⇒ 8s 的失败被拖成 23s 的失败，且最终文案指向"前端不可达"（指向错误方向）。
+ *   ⇒ 判据：只有传输层异常才返回 true（值得降级）；业务错误返回 false（直接回给模型）。
+ */
+export function isBridgeTransportError(e: any): boolean {
+  return !!(e && (e as any).bridgeTransport);
 }
 
 /**

@@ -84,7 +84,40 @@ function resolveTarget(convId, rawTab, action, opts) {
     return { ok: true, tabId: mine };
   }
   if (o.anchored) return { ok: true, tabId: String(o.anchored) };
-  if (ANCHOR_ESTABLISHING_ACTIONS.has(action)) return { ok: true, tabId: null };
+  // ★★★ 2026-10-10 三次根因修复：建页类动作未锚定时**回落 `activeTabId`（若属于本会话）**。
+  //
+  //   现场（日志实证）：navigate 首次自建 tab-1 并广播建壳 → 但**锚没建立** →
+  //   第二次 navigate 时 `resolveTarget` 返回 `tabId: null` → 下游 `waitForGuest(null || activeTabId)`
+  //   用 `activeTabId` 兜底拿到了 guest ⇒ navigate **看起来成功**，但主进程**不知道这次操作的是哪个 tab**
+  //   ⇒ `decideAnchorUpdate(action, false, null, null)` 返回 **'none'** ⇒ **锚永不建立**
+  //   ⇒ 后续所有读类动作（get_page_content / screenshot / get_dom）一律报"该会话尚未绑定浏览器页面"
+  //   ⇒ 模型以为导航没生效 → 疯狂换 URL 重试（实测 3 分钟 36 次 navigate）
+  //   ⇒ 每次重试因未锚定又走"自建新 tab" → **tab 无限堆积，每个 tab 一个 Chromium 渲染进程**
+  //   ⇒ 最终 `MaxListenersExceededWarning` + **整个应用卡死**（用户实报"pageAgent 一跑应用就卡住"）
+  //
+  //   ★ 为什么回落是安全的：`activeTabId` 是"用户当前在看哪个"（UI 语义），而建页类动作
+  //     （navigate/new_tab/switch_tab）本身就是要**改变/建立**操作目标 —— 首次 navigate 必须能
+  //     从"当前活动页"出发，否则 agent 第一步就走不动（本模块顶部注释已声明该语义）。
+  //   ★ 仍必须过 `isMine` 闸门：未登记的 activeTabId（别的会话的页）绝不回落，防跨会话越权。
+  if (ANCHOR_ESTABLISHING_ACTIONS.has(action)) {
+    const fb = o.activeTabId != null && o.activeTabId !== '' ? String(o.activeTabId) : null;
+    // ★★★ 2026-10-10 四次根因修复：闸门从「仅 isMine」放宽为「isMine **或** 就是当前活动页」。
+    //
+    //   ★ 为什么必须放宽（**这是前三次修复都没真正生效的原因**）：
+    //     `isMine(t)` 的实现是 `agentTouchedTabs.get(t) === convId`，而 `agentTouchedTabs`
+    //     **只在动作成功执行后**才登记 ⇒ **首次** navigate 时没有任何 tab 被登记过
+    //     ⇒ `isMine(activeTabId)` 恒为 **false** ⇒ 回落**仍然不生效** ⇒ `tabId` 还是 null
+    //     ⇒ 锚还是建不起来（前三次修复等于白改）。
+    //
+    //   ★ 为什么"当前活动页"是安全的：`activeTabId` 是**本面板**当前正在显示的页（UI 语义，
+    //     用户肉眼可见的那个 tab），它不可能是"别的会话的页" —— 用户能看到的页就是本会话可见的页。
+    //     跨会话越权的真实威胁是"未登记的 tabId 被显式传入"（那条由上方 ① ② 分支拦住，未动）。
+    //     这里只是允许"从当前可见页出发"，与模块顶部声明一致："首次 navigate 必须能自发建 tab"。
+    const mineByRegistry = !!(o.isMine && o.isMine(fb));
+    const isCurrentView = !!(fb && o.isCurrentView && o.isCurrentView(fb));
+    if (fb && (mineByRegistry || isCurrentView)) return { ok: true, tabId: fb };
+    return { ok: true, tabId: null };
+  }
   return {
     ok: false,
     error: '该会话尚未绑定浏览器页面（不能对全局活动页操作，避免误操作其它会话的页面）。请先调用 browser_navigate 打开目标页面。',

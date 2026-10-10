@@ -424,6 +424,7 @@ import { LlmClient } from '@yan-zhi/core';
 import { API_BASE, buildRequestHeaders } from '../api/client';
 import { useRoute } from 'vue-router';
 import { settingsDrawerOpen } from '../composables/useSettingsDrawer';
+import { startVisiblePolling } from '../utils/visible-polling';
 import { titleBarOverlayOpen } from '../composables/useTitleBarOverlay';
 import { useChat } from '../composables/chat/useChat';
 import SettingRow from './common/SettingRow.vue';
@@ -489,18 +490,70 @@ const browserExpanded = computed({
 //   现在任务收尾 runningConvIds 删除 → 实况条/虚拟鼠标随任务结束立即消失；
 //   断流期间订阅仍在重试（streaming 仍为真），接管条照常保留，行为不回退。
 const convTaskRunning = computed(() => isPreviewScope && chatStore.streaming);
+// ★★★ 2026-10-11 硬上限兜底（第二道网，防"自愈本身失败"）：
+//   用户实报「没有任务，禁用标志也一直存在着」。
+//   第一道网是**会话级长连订阅**（`subscribeConversationEvents`，服务端终态双发，实时）；
+//   第二道网是 store 的 `sweepStaleBrowserTakeover()`（60s 一跳，兜双向断连）；
+//   它靠 `GET /llm/tasks/active` 问服务端 —— **但查询本身可能一直失败**（后端挂了/网络异常）。
+//   ⇒ 这里加**不依赖网络**的兜底：距最后一次浏览器工具事件超过 `STALE_LOCK_MS`（5 分钟）
+//     就认定锁定是残留，主动解除。真在跑的任务不会静默 5 分钟（有 wait_for 上限 30s、
+//     有 tool:start 心跳），所以这个上限只会命中"残留"，不会误伤"真在跑"。
+//   ★ `lastBrowserToolAt === 0` 表示从未跑过浏览器工具 → 不适用（`browserTaskActive` 本就不为真）。
+const STALE_LOCK_MS = 5 * 60 * 1000;
+const lockStaleByHardLimit = computed(() => {
+  const last = chatStore.lastBrowserToolAt || 0;
+  return last > 0 && (nowTick.value - last) > STALE_LOCK_MS;
+});
 const inputLocked = computed(() =>
   isPreviewScope && !chatStore.browserPaused
   && convTaskRunning.value
-  && chatStore.browserTaskActive,
+  && chatStore.browserTaskActive
+  && !lockStaleByHardLimit.value,   // ★ 硬上限兜底：残留锁定主动解除（不依赖服务端查询）
 );
 // ★ 实况条活性门控（2026-10-09）：接管条只在浏览器工具有"呼吸"时显示 ——
 //   最后一次 browser_* 工具事件在宽限期（45s，覆盖 wait_for 30s 类长工具）内、
 //   或任务已暂停（暂停态要露「已暂停 · 你已接管页面」和恢复按钮，不能消失）。
-//   动机（用户实报）：pageAgent 阶段结束后主智能体编排别的步骤，接管条挂着
-//   「执行中」干等几分钟，用户以为卡死。走秒节拍器让活性判断随时间自动失效。
+// ★★★ 2026-10-11 二次修订：**去掉 3s 轮询节拍器，改事件驱动的精确定时**。
+//
+//   用户原话：「轮询？…轮询效率肯定差啊」。
+//   旧实现是一个常驻的 `setInterval(3000)` 更新 `nowTick`，用来让两个"按时失效"的
+//   判定（`browserLiveFresh` 的 45s 宽限、`lockStaleByHardLimit` 的 5min 上限）自动翻转。
+//   问题：**组件一挂载就永久每 3s 跳一次**（不论有没有浏览器任务），是纯粹的常驻开销，
+//   而且 3s 粒度意味着"到点"最多迟 3s 才反映。
+//
+//   ⇒ 改为**按需挂单次定时器**：只在"有活性计时需要观察"时，算准最近的到期时刻挂一个
+//     `setTimeout`；到点更新 `nowTick` 并**重新算下一次**。无任务时**零定时器**。
+//   ★ 语义完全等价（甚至更准）：`nowTick` 仍单调递增，两个 computed 照旧按差值判定。
 const nowTick = ref(Date.now());
-setInterval(() => { nowTick.value = Date.now(); }, 3000);
+let nowTickTimer: ReturnType<typeof setTimeout> | null = null;
+/** 重算下一次"需要更新 nowTick"的时刻（取两个宽限中更早到期的那个） */
+function scheduleNowTick() {
+  if (nowTickTimer) { clearTimeout(nowTickTimer); nowTickTimer = null; }
+  const last = chatStore.lastBrowserToolAt || 0;
+  // 没有任何活性计时需要观察（从未跑过浏览器工具）→ 不挂定时器
+  if (!last) return;
+  const now = Date.now();
+  // 两个到期时刻：45s 活性宽限、5min 残留硬上限
+  const liveDeadline = last + chatStore.BROWSER_LIVE_GRACE_MS;
+  const staleDeadline = last + STALE_LOCK_MS;
+  // 取"下一个还没到的到期时刻"（都已过 → 无需再定时，值已足够）
+  const next = [liveDeadline, staleDeadline].filter((d) => d > now).sort((a, b) => a - b)[0];
+  if (next === undefined) return;
+  nowTickTimer = setTimeout(() => {
+    nowTick.value = Date.now();
+    scheduleNowTick();   // 递归：算准下一个到期点
+  }, Math.max(0, next - now));
+}
+// 事件驱动：任何一次浏览器工具事件（lastBrowserToolAt 变化）都可能改变"下一个到期时刻"
+watch(() => chatStore.lastBrowserToolAt, () => {
+  nowTick.value = Date.now();
+  scheduleNowTick();
+}, { immediate: true });
+onUnmounted(() => {
+  if (nowTickTimer) { clearTimeout(nowTickTimer); nowTickTimer = null; }
+  // 每日分析调度器一并收口（此前无清理 → 组件卸载后 30 分钟一跳仍在跑）
+  if (dailyAnalysisTimer) { dailyAnalysisTimer(); dailyAnalysisTimer = null; }
+});
 const browserLiveFresh = computed(() =>
   pausedNow.value
   || (nowTick.value - (chatStore.lastBrowserToolAt || 0) < chatStore.BROWSER_LIVE_GRACE_MS),
@@ -1063,7 +1116,14 @@ function formatTime(ts: number): string {
 }
 
 function normalizeUrl(raw: string): string {
-  const url = raw.trim();
+  // ★★★ 剥离首尾引号/反引号/空白（2026-10-10 实据修复）：
+  //   模型（尤其 pageAgent）给出的 URL 常被引号包裹 —— JSON 序列化残留、markdown 代码标记等：
+  //     `"https://creator.douyin.com/..."`  /  `` `https://...` ``
+  //   此前不做剥离 ⇒ 落入最后一条「当成搜索词」分支 ⇒ 变成百度搜索（"导航了但打开的是搜索页"，
+  //   且**无任何报错**——最典型的静默失效）。
+  //   ★ 主进程侧 main.cjs 的 navigate 分支**早已**做同样的剥离（`replace(/^[`"'\s]+|[`"'\s]+$/g,'')`），
+  //     渲染层这里漏了 ⇒ 两处口径不一致（"平行实现漂移"）。此处补齐，与主进程同口径。
+  const url = raw.trim().replace(/^[`"'\s]+|[`"'\s]+$/g, '');
   if (!url) return '';
   if (/^https?:\/\//i.test(url)) return url;
   if (/^[\w-]+(\.[\w-]+)+/.test(url)) return 'https://' + url;
@@ -1613,9 +1673,14 @@ const bindWebviewRef = (tabId: string) => (el: any) => setWebviewRef(tabId, el);
 /** guest 挂载完成：把 webContentsId 注册给主进程，pageAgent 才能操作这个 tab */
 function onWebviewReady(tabId: string) {
   const el = webviewEls.get(tabId);
-  if (!el) return;
+  if (!el) {
+    console.warn(`[BrowserPanel] onWebviewReady 但无元素: tabId=${tabId}`);
+    return;
+  }
   try {
     const id = typeof el.getWebContentsId === 'function' ? el.getWebContentsId() : null;
+    // ★ 诊断日志：确认 dom-ready → 注册链路真的跑到（排障"8s 等不到 guest"）
+    console.log(`[BrowserPanel] onWebviewReady tabId=${tabId} wcId=${id} scope=${browserScope}`);
     if (id) {
       (window as any).electronAPI?.browser?.wvRegister?.(tabId, id, browserScope);
     } else {
@@ -1774,14 +1839,17 @@ async function ensureDailyAnalysis() {
 }
 
 // 单例定时器：每 30 分钟检查一次，跨日或新记录后自动补跑（仅应用运行时）
-let dailyAnalysisTimer: ReturnType<typeof setInterval> | null = null;
+// ★★★ 2026-10-11：改用可见性感知轮询（utils/visible-polling）——
+//   这是"跨日补跑"的低频检查（30 分钟一跳），但仍没理由在标签页切走时唤醒主线程。
+//   隐藏时不安排下一次；恢复可见时立即补一次（跨日场景切回来就会补跑，体验更好）。
+let dailyAnalysisTimer: (() => void) | null = null;
 function startDailyAnalysisScheduler() {
   if (dailyAnalysisTimer) return;
-  dailyAnalysisTimer = setInterval(() => {
+  dailyAnalysisTimer = startVisiblePolling(() => {
     const today = new Date().toISOString().slice(0, 10);
     if (analysis.value && analysis.value.date === today) return;
     ensureDailyAnalysis();
-  }, 30 * 60 * 1000);
+  }, { intervalMs: 30 * 60 * 1000, immediate: false });
 }
 
 function buildAnalysisPrompt(stats: any): string {
@@ -2059,6 +2127,8 @@ onMounted(async () => {
     }));
     // agent 首次 navigate：主进程广播"在某 scope 打开 URL"——若面板仍停主页(无 <webview>)由此把它真正打开
     (window as any).electronAPI?.onForceOpen?.(aliveGuard((url: string, scope?: string, tabId?: string | null) => {
+      // ★ 诊断日志（排障用，非用户可见提示）：forceOpen 是否到达本面板、命中哪个分支
+      console.log(`[BrowserPanel] onForceOpen url=${url} scope=${scope} tabId=${tabId} myScope=${browserScope} alive=${componentAlive}`);
       // ★★★ scope 匹配放宽（「执行面直连化」，2026-10-10）：
       //   主进程此刻广播的 scope 是**本会话锚定 tab 的 scope**（`preview:<convId>`）；面板的
       //   browserScope 就是 `preview:<convId>`（同源）⇒ 严格相等即可。但旧主进程/旧调用可能
@@ -2070,6 +2140,22 @@ onMounted(async () => {
       if (!sameScope) return; // 只接管归属自己空间的导航
       if (!url) return;
       if (currentUrl.value === url) return;        // 已在目标页，不重复导航
+      // ★★★ 主进程指定了目标 tabId —— **必须用这个 id 建壳**（2026-10-10 根因修复）。
+      //
+      //   现场：agent 首次 navigate 时主进程自建 tab（`createBrowserTab` → `tab-N`）并
+      //   `waitForGuest('tab-N', 8000)` 等渲染层把 guest 注册进来。而此前这里对
+      //   「tabs 里**没有** tab-N」的情况直接 `openSite(url)` → `navigate()` 用的是
+      //   面板**自己的** activeTabId ⇒ 面板给另一个 id 建了 webview，
+      //   主进程等的是 tab-N，**永远等不到** → 8s 超时 → `wc=null` → `loadURL` 抛错。
+      //   ⇒ 表现：只要预览面板已存在，agent 的第一次浏览器导航 100% 失败（用户实报）。
+      //   ⇒ 修法：没有壳就用主进程给的 id **补一个壳**（不再调 createTab —— 主进程已经建好了，
+      //     再建一个只会多出孤儿 tab），切过去再导航，两侧 id 才对齐。
+      if (tabId && !tabs.value.some(t => t.id === tabId)) {
+        tabs.value.push({
+          id: tabId, url: '', srcUrl: '', title: '', loading: false, urlInput: '',
+          history: [], histIndex: -1, pageZoom: 1, canBack: false, canForward: false,
+        });
+      }
       // ★ 主进程指定了目标 tabId（agent 在既有 tab 上导航）→ 切到该 tab 再导航，
       //   避免内容落到面板当前激活的**别的** tab 上（"导航了但看不到"）。
       if (tabId && tabs.value.some(t => t.id === tabId) && tabId !== activeTabId.value) {
@@ -2124,8 +2210,14 @@ onMounted(async () => {
     // 按空间过滤：主进程广播带 scope，只认本空间的 tab，避免两边 tab 列表串扰。
     api.browserView.onTabCreated?.(aliveGuard((tid: string, url: string | null, scope?: string) => {
       // page 空间只收明确标记为 page 的 tab；preview 空间收 preview 及未标记（旧主进程兼容）
+      // ★★★ scope 匹配放宽（「执行面直连化」，2026-10-10）：主进程 `new_tab` 分支广播的是**裸
+      //   `'preview'`**（见 main.cjs 的 new_tab case），而本面板的 browserScope 是
+      //   `preview:<convId>` —— 严格相等会**静默漏掉** ⇒ 渲染层不补壳 ⇒ 主进程 waitForGuest
+      //   必超时（"8s 内未建出页面"）。与 `onForceOpen` 同一口径放宽。
       const belong = scope || 'preview';
-      if (belong !== browserScope) return;
+      const sameScope = belong === browserScope
+        || (belong === 'preview' && browserScope.startsWith('preview'));
+      if (!sameScope) return;
       if (tabs.value.some(t => t.id === tid)) return;
       tabs.value.push({
         id: tid, url: url || '', srcUrl: url || '', title: '', loading: false, urlInput: url || '',

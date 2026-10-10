@@ -84,6 +84,11 @@ const API_ORIGIN = 'http://127.0.0.1:' + API_PORT;
     }
   }
   app.setPath('userData', userDataRoot);
+  // ★★★ 主进程日志落盘（2026-10-10）：必须**紧跟 setPath 之后**、且在其它模块打日志之前 ——
+  //   此时 userData 已定稿（`<userData>/logs/main-YYYY-MM-DD.log`），才能把启动全过程收进去。
+  //   ★ 见 main-log.cjs 顶部注释：此前主进程 50 处 console 只进终端，devtools 一关就什么线索都没有，
+  //     是"应用不打印日志、排障只能靠猜"的直接原因。
+  try { require('./main-log.cjs').installMainLogger(userDataRoot); } catch (e) { console.warn('[main-log] 安装失败:', e && e.message); }
   console.log(`[实例] ${IS_DEV_INSTANCE ? '开发' : '生产'}实例 | userData=${userDataRoot} | 端口=${API_PORT}`);
 })();
 
@@ -145,15 +150,28 @@ function guestWebContents(tabId) {
     return wc && !wc.isDestroyed() ? wc : null;
   } catch { return null; }
 }
-/** 等待渲染层注册 guest（<webview> 创建需要一帧） */
+/** 等待渲染层注册 guest（<webview> 创建需要一帧）
+ *
+ * ★★★ 2026-10-11：轮询间隔从**固定 100ms** 改为**自适应退避**。
+ *   动机（用户实报"卡"+ 问"轮询效率肯定差啊"）：一次 navigate 最长等 8s，
+ *   固定 100ms ⇒ **最多 80 次** `guestWebContents()` 调用，每次都要遍历 `webviewTabs`
+ *   并取 `getWebContentsId()`。主进程是单线程，这些调用全排在同一条事件循环上。
+ *   实际 `<webview>` 通常 100~500ms 内就 dom-ready，**后 7 秒的轮询几乎全是空转**。
+ *   ⇒ 前 1s 保持 50ms 密集（覆盖绝大多数正常情况，比原来更快命中）；
+ *     之后逐步退避到 250ms 封顶（长尾时把空转次数从 ~70 次降到 ~30 次）。
+ *   ★ 语义不变：仍然最多等到 `timeoutMs`，命中即返回，超时返回 null。
+ */
 async function waitForGuest(tabId, timeoutMs = 5000) {
   if (!tabId) return null;
   const started = Date.now();
   for (;;) {
     const wc = guestWebContents(tabId);
     if (wc) return wc;
-    if (Date.now() - started > timeoutMs) return null;
-    await new Promise((r) => setTimeout(r, 100));
+    const elapsed = Date.now() - started;
+    if (elapsed > timeoutMs) return null;
+    // 自适应间隔：前 1s → 50ms；1~3s → 150ms；>3s → 250ms
+    const interval = elapsed < 1000 ? 50 : elapsed < 3000 ? 150 : 250;
+    await new Promise((r) => setTimeout(r, interval));
   }
 }
 /** 统一入口：按当前引擎解析 tabId 对应的 webContents */
@@ -635,6 +653,11 @@ function createWindow() {
     },
   });
 
+  // ★★★ 渲染进程控制台落盘（2026-10-10）：浏览器面板（导航 / guest / BrowserView）的全部逻辑
+  //   都在渲染层，其 `console.*` 只出现在 devtools —— 用户一关 devtools 就再无任何线索。
+  //   这里挂 `console-message` 把 warn/error（及带 [browser] 前缀的信息）收进主进程日志。
+  try { require('./main-log.cjs').attachRendererConsole(mainWindow.webContents, 'renderer'); } catch { /* 不影响启动 */ }
+
   // 页面首屏渲染完成后再显示窗口，配合 show:false 彻底消除黑屏
   mainWindow.once('ready-to-show', () => {
     // dev 下窗口 icon 再补一道运行时设置：构造参数 icon 在部分 Windows/驱动组合下
@@ -1074,6 +1097,45 @@ function evictLruTabIfNeeded() {
     if (!lruId) break; // 只剩当前激活 tab，无处可逐
     console.log('[browserView] LRU 逐出挂起:', lruId);
     suspendBrowserViewEntry(lruId, browserViews.get(lruId));
+  }
+}
+
+/**
+ * webview 引擎的 tab 上限收口（2026-10-10 三次根因修复）。
+ *
+ * ★★★ 为什么必须：`evictLruTabIfNeeded` / `MAX_TABS` / 空闲巡检**只遍历 `browserViews`**
+ *   （旧 BrowserView 引擎），webview 分支此前是**无保护缺口**。而 webview 引擎下
+ *   **每个 tab = 渲染层一个 `<webview>` = 一个 Chromium 渲染进程**，
+ *   agent 反复重试（或任何 tab 泄漏路径）会无上限堆积 ⇒ `MaxListenersExceededWarning`
+ *   + CPU/内存爆炸 ⇒ **整个应用卡死**（用户实报"pageAgent 一跑就卡住"）。
+ *
+ * ★ 与 BrowserView 版的关键差异：这里**不能"挂起保留壳"**（guest 归渲染层所有），
+ *   必须**真正移除 + 广播 tabClosed** 让渲染层销毁 `<webview>` 元素 → 否则进程不释放。
+ *   保护的 tab：当前激活 tab、本会话 agent 正在用的锚定 tab（防逐出正在操作的页）。
+ */
+function evictLruWebviewTabIfNeeded() {
+  let guard = 0;
+  while (webviewTabs.size >= MAX_TABS && guard++ < 32) {
+    let lruId = null, lruAt = Infinity;
+    // 受保护的 tab：当前激活 + 正被某会话锚定的（防逐出 agent 正在操作的页）
+    const pinned = new Set(convAnchors.values());
+    for (const [id, t] of webviewTabs) {
+      if (id === activeTabId) continue;                       // 当前激活：永不逐
+      if (pinned.has(id)) continue;                           // 正被某会话锚定：永不逐
+      const at = t.lastActiveAt || 0;
+      if (at < lruAt) { lruAt = at; lruId = id; }
+    }
+    if (!lruId) break; // 只剩受保护的 tab，无处可逐
+    console.log(`[browserView] LRU 逐出 webview tab: ${lruId}（当前 ${webviewTabs.size} 个）`);
+    webviewTabs.delete(lruId);
+    // 让渲染层销毁对应 <webview> 元素（不广播的话元素与 guest 进程都会残留）
+    try {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('browserView:tabClosed', lruId);
+      }
+    } catch { /* ignore */ }
+    // 锚/touched 记账一并失效（唯一收口，避免留下幽灵 tabId）
+    clearConvAnchorsForTab(lruId);
   }
 }
 
@@ -1542,6 +1604,16 @@ let tabSeq = 0;
 function createBrowserTab(scope) {
   const newTabId = 'tab-' + (++tabSeq);
   if (isWebviewEngine()) {
+    // ★★★ 2026-10-10 三次根因修复：webview 引擎必须**同样有上限 + LRU 收口**。
+    //
+    //   现场（用户实报"pageAgent 一跑整个应用卡死"）：navigate 因锚未建立而反复重试，
+    //   每次重试都走自建分支 → `webviewTabs` **无上限地堆 tab** → 渲染层
+    //   `v-for="t in tabs"` 为每个 tab 建一个 `<webview>` = **一个 Chromium 渲染进程**
+    //   ⇒ 实测 3 分钟堆出十几个 guest ⇒ `MaxListenersExceededWarning: 11 did-stop-loading
+    //     listeners added to [WebContents]` + CPU/内存爆炸 ⇒ **整个应用卡死**。
+    //   ⇒ `evictLruTabIfNeeded` / `MAX_TABS` / 空闲巡检此前**只遍历 `browserViews`**（旧引擎），
+    //     webview 分支是个**无保护缺口** —— 这里补上。
+    evictLruWebviewTabIfNeeded();
     // webview 模式：只分配 tabId 与空间归属，guest 由渲染层 <webview> 元素创建后注册
     webviewTabs.set(newTabId, { scope: scope || 'preview', lastActiveAt: Date.now(), wcId: null, agentOpened: false });
     if (!activeTabId) activeTabId = newTabId;
@@ -2292,6 +2364,19 @@ const YZ_CURSOR_CSS = `
 
 // 注入虚拟鼠标 + 操作助手到 BrowserView 页面
 async function injectYzAssistant(wc) {
+  // ★★★ 2026-10-11：按需注入（此前每次 navigate 都无条件重跑整段大脚本）。
+  //   动机（用户实报"卡"+"轮询效率肯定差啊"）：navigate 每次收尾都调本函数，脚本很长
+  //   （含光标/输入辅助/元素编号等，数千字符的字符串注入 + 跨进程 executeJavaScript）。
+  //   而 agent 的典型流程是同一页上连续动作（get_page_content → click → type …），
+  //   每次 navigate（含 SPA 内跳转）都重注入一遍是纯浪费 —— 而且注入是幂等的
+  //   （脚本内 if(!c) 已保证不重复建节点），所以"跳过"完全安全。
+  //   ⇒ 先做一次轻量探测（只取一个标记位），已注入就整段跳过。
+  //   ★ 为什么用 window.__yzAssistant 当标记：脚本末尾会给它赋值（见下），
+  //     比查 DOM 节点更快、也不受页面是否已有同名元素干扰。
+  try {
+    const already = await wc.executeJavaScript('!!(window.__yzAssistant && window.__yzAssistant.__yzVersion)');
+    if (already) return;
+  } catch { /* 探测失败（页面未就绪等）→ 照常注入，行为与修复前一致 */ }
   try { await wc.insertCSS(YZ_CURSOR_CSS); } catch { /* ignore */ }
   await wc.executeJavaScript(`(function(){
     if(!document.body)return;
@@ -2443,7 +2528,11 @@ async function injectYzAssistant(wc) {
       try{return Array.prototype.slice.call(document.querySelectorAll(sel));}catch(e){return[];}
     }
     function resolve(sel){var a=resolveAll(sel);return a.length?a[0]:null;}
-    window.__yzAssistant={showCursor:showCursor,hideCursor:hideCursor,clickAt:clickAt,typeIn:typeIn,resolve:resolve,resolveAll:resolveAll,genSel:genSel,register:register};
+    window.__yzAssistant={showCursor:showCursor,hideCursor:hideCursor,clickAt:clickAt,typeIn:typeIn,resolve:resolve,resolveAll:resolveAll,genSel:genSel,register:register,
+      /* 注入版本标记（2026-10-11）：injectYzAssistant 的"已注入"探测靠它（见该函数入口）。
+         改了上面的脚本内容时要同时递增这里的值（否则新脚本在旧页面里不会被重注入）。
+         ★ 注意：本段位于模板字符串内，注释只能用块注释、且不得出现反引号。 */
+      __yzVersion:1};
   })()`);
 }
 
@@ -2658,6 +2747,18 @@ ipcMain.handle('browserView:actions', () => DESKTOP_BROWSER_ACTIONS.slice());
  */
 async function runBrowserAction(convId, tabId, action, args) {
   args = args || {};
+  // ★★★ 浏览器动作全链路日志（2026-10-10）：这是"面板开了却没导航"这类静默失效的**唯一可靠线索**。
+  //   此前 grep 全仓：浏览器动作路径**零日志** —— 出问题时既看不到"有没有收到 action"，
+  //   也看不到"tabId/scope 解析成什么"、"guest 拿到没有"，只能靠读代码猜。
+  //   ★ 只记关键摘要（action 名 + tabId + url），不记截图 base64 等大字段，避免日志爆炸。
+  //   ★ 这里**不拆函数**：`browser-bridge-direct.test.ts` 钉住「runBrowserAction 是唯一实现」，
+  //     必须在同一函数体内保留唯一那处 `switch(action)`。
+  try {
+    const _a = { ...args };
+    if (typeof _a.base64 === 'string') _a.base64 = `<${_a.base64.length} chars>`;
+    if (typeof _a.script === 'string' && _a.script.length > 200) _a.script = _a.script.slice(0, 200) + '…';
+    console.log(`[browser-action] ${action} conv=${convId || '-'} tabId=${tabId || '-'} args=${JSON.stringify(_a).slice(0, 300)}`);
+  } catch { /* 日志失败绝不影响动作 */ }
   // ★★★ P0-2（2026-10-10）：执行目标解析 —— **判定本体在 `browser-target.cjs`**（纯函数、可真跑验证）。
   //   三条语义（缺一条就会"打到错的页"且不报错）：
   //   ① 显式 tabId **优先**（工具契约："可传 tabId 读取指定标签页，不必先切换标签页"）；
@@ -2667,7 +2768,16 @@ async function runBrowserAction(convId, tabId, action, args) {
   {
     const r = resolveBrowserTarget(convId, tabId, action, {
       anchored: resolveTabIdForConv(convId),
+      // ★ 建页类动作未锚定时的回落目标（见 browser-target.cjs 的 `activeTabId` 注释）：
+      //   首次 navigate 必须能从"当前活动页"出发，否则锚永不建立 → 读类动作全被拒 → 模型疯狂重试。
+      activeTabId,
       isMine: (t) => agentTouchedTabs.get(t) === String(convId || ''),
+      // ★★★ 2026-10-10 四次根因修复：仅靠 `isMine` **挡不住**首次 navigate。
+      //   因为 `agentTouchedTabs` 只在动作**成功执行后**登记 ⇒ 首次 navigate 时该 tab 未登记
+      //   ⇒ `isMine` 返回 false ⇒ 回落不生效 ⇒ 锚建不起来（前三次修复等于白改）。
+      //   ⇒ 补一道"就是本面板当前活动页"的放行（UI 语义：用户肉眼可见的页 = 本会话可见的页）。
+      //   跨会话越权的真实威胁是"显式传别的会话的 tabId"，那条由 resolveTarget ①② 分支拦，未动。
+      isCurrentView: (t) => t === activeTabId,
     });
     if (!r.ok) return { error: r.error };
     tabId = r.tabId;
@@ -2702,19 +2812,34 @@ async function runBrowserAction(convId, tabId, action, args) {
           markConvTabTouched(convId, tabId);
         } catch { /* 建 tab 失败 → 退回下方广播路径（行为与修复前一致） */ }
       }
-      // ★★★ 用**当前操作目标 tab 的 scope** 定位面板（2026-10-10 修）：
-      //   此前取 `activeTabId` 的 scope —— 桥路径下 activeTabId 可能是**别的会话/别的空间**的，
-      //   会把本会话的导航广播到错误的 BrowserPanel（"导航了但预览没反应"）。
-      const scopeMeta = (tabId ? webviewTabs.get(tabId) : null)
-        || (activeTabId ? webviewTabs.get(activeTabId) : null);
-      const scope = (scopeMeta && scopeMeta.scope) || (convId ? `preview:${convId}` : 'preview');
-      // ★★★ 通道原先**无人订阅**（实测 grep：渲染层零处监听 `browser:wv:forceOpen`）
-      //   ⇒ 这句话等于没说：面板没打开 / guest 未建时会**始终拿不到 wc**，navigate 必然失败
-      //     （loadURL 在 null 上抛错），且报错是"页面加载失败"，看不出真因（静默失效家族）。
-      //   ⇒ 补上渲染层订阅（BrowserPanel.onForceOpen）：面板据此打开并导航（自动建 <webview>/guest）。
-      try { mainWindow.webContents.send('browser:wv:forceOpen', cleanUrl, scope, tabId || null); } catch { /* ignore */ }
+      // ★★★ 2026-10-10 二次根因修复：**改用 `browserView:tabCreated` 通道**（与 `new_tab` 同口径）。
+      //
+      //   实测（23:40 日志）：走 `browser:wv:forceOpen` 时 8s 必超时（`wc=NULL`），
+      //   而 `new_tab` 分支用 `tabCreated` 是**现网验证可用**的黄金路径（截图里"新标签页"就是它建的壳）。
+      //   两条通道语义重叠但实现不一致 = 平行实现漂移，是本次反复失败的直接原因。
+      //   ⇒ 统一到 tabCreated：渲染层 `onTabCreated` 直接 push 壳 + 设 activeTabId，
+      //     壳的 `:src` 驱动 `<webview>` 新建 → dom-ready → 注册 guest（不再依赖 forceOpen 分支）。
+      //
+      //   ★ scope 必须用**裸 `'preview'`**（与 new_tab 完全一致）：渲染层 `browserScope` 是
+      //     `preview:<convId>`，`onTabCreated` 已放宽为「裸 preview 匹配任意 preview:*」。
+      const scope = 'preview';
+      // 幂等：渲染层 onTabCreated 对已有壳的 tabId 会直接忽略，重复广播无副作用。
+      try {
+        mainWindow.webContents.send('browserView:tabCreated', tabId || null, cleanUrl, scope);
+        console.log(`[browser-action] 已广播 tabCreated: url=${cleanUrl} scope=${scope} tab=${tabId || '-'}`);
+      } catch { /* ignore */ }
       // 给渲染层建 <webview>(dom-ready)+注册 guest 的时间
-      wc = await waitForGuest(tabId || activeTabId, 8000);
+      const waitedTab = tabId || activeTabId;
+      wc = await waitForGuest(waitedTab, 8000);
+      // ★★★ 这条路径此前**零日志**（静默失效家族）：失败时只有下面 `wc.loadURL` 的原生
+      //   TypeError，看不出"广播出去了没""等的是哪个 tab""等到没有"。2026-10-10 实报
+      //   "页面打不开"就是靠读库反推才定位到 `wc=null`。⇒ 补一条可诊断日志。
+      console.log(`[browser-action] 自建后等待 guest: tab=${waitedTab || '-'} scope=${scope} wc=${wc ? 'ok' : 'NULL(8s 超时)'}`);
+      // ★★★ 仍然拿不到就**明确报错**，绝不走到 `wc.loadURL` 抛原生 TypeError：
+      //   原生 TypeError 对模型毫无信息量（表现为模型自己编"前端不可达"），对开发者也没有线索。
+      if (!wc) {
+        return { error: `浏览器页面未就绪：已请求预览面板打开该页，但 8s 内未建出页面（tab=${waitedTab || '-'}）。请重试一次；若持续失败，请确认浏览器预览面板已打开。` };
+      }
     }
     // 某些动作即便没有已建 host 也应执行（自建 / 纯查询 / 首次导航）
     const NO_HOST_REQUIRED = new Set(['navigate', 'new_tab', 'switch_tab', 'close_tab', 'get_tabs']);
@@ -2871,7 +2996,14 @@ async function runBrowserAction(convId, tabId, action, args) {
       case 'navigate': {
         // URL 清洗：剥离模型以 markdown 反引号/引号包裹传来的格式字符
         let cleanUrl = String(args.url || '').trim().replace(/^[`"'\s]+|[`"'\s]+$/g, '');
-        if (!/^https?:\/\//i.test(cleanUrl)) return { error: `无效 URL: ${cleanUrl}` };
+        // ★★★ 2026-10-11：放行 `about:blank`（用户实报的诊断项之一）。
+        //   旧实现只认 `^https?://`，模型想"重置/清空当前页"时传 `about:blank` **必被拒**
+        //   （报"无效 URL"），而模型拿不到有效反馈就会**换别的 URL 继续试** —— 实测日志里
+        //   它依次试了 `about:blank` / `example.com/` / `example.com/?x=1` / `douyin.com/`，
+        //   白烧好几轮。`about:blank` 是 Chromium 的合法内置页（`<webview src>` 默认值就是它），
+        //   渲染层模板也已在用（`:src="t.srcUrl || 'about:blank'"`）⇒ 放行是安全的。
+        const isBlank = /^about:blank$/i.test(cleanUrl);
+        if (!isBlank && !/^https?:\/\//i.test(cleanUrl)) return { error: `无效 URL: ${cleanUrl}` };
         // webview 引擎没有 entry（无 bounds / 无缓存清理流程），只有 BrowserView 分支需要处理
         if (entry) {
           activateTab(tabId || activeTabId);
@@ -2886,16 +3018,28 @@ async function runBrowserAction(convId, tabId, action, args) {
         // "IPC 导航超时"。限时 12s：超时视为"已开始加载"，提前返回当前状态（内部各段限时
         // 合计 < 18s 总闸），让模型用 browser_get_page_content / browser_wait_for 轮询加载结果。
         let loadErr = null;
+        let timedOut = false;
         await Promise.race([
           wc.loadURL(cleanUrl).catch((e) => { loadErr = e; }),
-          new Promise((r) => setTimeout(r, 12000)),
+          new Promise((r) => setTimeout(() => { timedOut = true; r(null); }, 12000)),
         ]);
         if (loadErr && !/ERR_ABORTED/.test(loadErr?.message || '')) {
           // 真失败（DNS/拒绝连接等）才报错；ERR_ABORTED 是导航被新导航接替，视为正常
           return { error: `页面加载失败（${loadErr?.code || loadErr?.errno || ''}）: ${cleanUrl}` };
         }
         await Promise.race([injectYzAssistant(wc), new Promise((r) => setTimeout(r, 1500))]);
-        return { url: wc.getURL() || cleanUrl, title: wc.getTitle(), loading: wc.isLoading() };
+        // ★★★ 2026-10-11：**显式区分"加载完成"与"超时仍在加载"** —— 修"模型把超时误判为失败"。
+        //   12s 超时是**故意的**（慢站不该把工具卡死），但旧返回值不带任何"仍在加载"的标记，
+        //   模型看到 navigate 返回后 get_page_content 读不到期望内容 → 以为**导航没生效**
+        //   → 换 URL 重试（实测 3 分钟 36 次穷举换 URL，每次还都自建新 tab → 堆积 → 应用卡死）。
+        //   ⇒ 返回体加 `loading` / `timedOut` 字段 + 明确提示，让模型知道"已开始加载、请用
+        //     browser_wait_for 或 get_page_content 轮询"，而不是"换一个 URL 再试"。
+        const stillLoading = timedOut || wc.isLoading();
+        const result = { url: wc.getURL() || cleanUrl, title: wc.getTitle(), loading: stillLoading };
+        if (timedOut) {
+          result.note = '页面已开始加载，但 12s 内未完成（慢站/资源多）。**不要换 URL 重试**；请用 browser_wait_for 等待或 browser_get_page_content 读取当前内容。';
+        }
+        return result;
       }
       case 'click': {
         return await wc.executeJavaScript(`(function(){
@@ -3781,11 +3925,18 @@ async function runBrowserAction(convId, tabId, action, args) {
       // ★★★ 记账更新判定在纯函数模块里（**唯一实现**，可真跑验证）：
       //   'anchor' = 改"当前操作页" / 'touch' = 只用不改锚（定向读 / new_tab 开的页）/ 'none' = 不动。
       const upd = decideAnchorUpdate(action, args.tabId != null && args.tabId !== '', tabId, result.tabId);
+      // ★ 诊断：锚定决策必须可观测（"navigate 成功后读不到页"的唯一线索）
+      console.log(`[browser-action] 锚定决策: action=${action} resolvedTabId=${tabId || '-'} resultTabId=${result.tabId || '-'} → ${upd.mode}${upd.tabId ? ':' + upd.tabId : ''}`);
       if (upd.mode === 'anchor') setConvAnchor(convId, upd.tabId);
       else if (upd.mode === 'touch') markConvTabTouched(convId, upd.tabId);
     }
+    // ★ 动作结果日志（与入口日志配对）—— 失败时打印 error，便于一眼看出"卡在哪一步"
+    try {
+      console.log(`[browser-action] ${action} → ${result && result.error ? 'ERROR: ' + result.error : 'ok'}`);
+    } catch { /* ignore */ }
     return result;
   } catch (e) {
+    try { console.error(`[browser-action] ${action} → THREW: ${(e && e.stack) || e}`); } catch { /* ignore */ }
     return { error: e?.message || String(e) };
   }
 }

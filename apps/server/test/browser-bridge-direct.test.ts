@@ -382,25 +382,35 @@ describe('⑪ ★★★ 可见性契约：桥档下"看不见/收不干净"两�
       .toMatch(/if\s*\(\s*isPreviewScope\(tid\)\s*\)\s*agentTouchedTabs\.set\(/);
   });
 
-  it('★★★ forceOpen 通道两端齐备（主进程发 + 渲染层收），且渲染层兼容裸 preview', () => {
-    expect(stripComments(MAIN), '★ 主进程未广播').toMatch(/send\('browser:wv:forceOpen'/);
-    expect(PRELOAD, '★ preload 未转发').toMatch(/onForceOpen:/);
-    // ★★ 断言 preload 里**真的绑了 ipcRenderer.on**（不是只声明了一个空函数）——
-    //    变异实测：把 on 那行删掉后 `onForceOpen:` 仍在（导出对象里）→ 漏抓。
-    expect(PRELOAD, '★ preload 只导出空函数、没真正订阅 IPC')
-      .toMatch(/onForceOpen:\s*\(callback\)\s*=>\s*\{\s*ipcRenderer\.on\('browser:wv:forceOpen'/);
-    expect(PANEL, '★ 渲染层未订阅').toMatch(/onForceOpen\?\.\(/);
-    // scope 必须兼容裸 'preview'（否则旧广播被严格相等静默漏掉）
-    expect(PANEL, '★ scope 匹配过严 → 旧广播会被漏掉（面板不打开）').toMatch(/scope === 'preview' && browserScope\.startsWith\('preview'\)/);
+  it('★★★ 自建 tab 统一走 tabCreated 通道（与 new_tab 同口径），且渲染层兼容裸 preview', () => {
+    // ★★★ 2026-10-10 二次根因修复：navigate 自建分支**必须用 `browserView:tabCreated`**。
+    //   实测：走 `browser:wv:forceOpen` 时 8s 必超时（日志 `wc=NULL(8s 超时)`），而 `new_tab`
+    //   用的 `tabCreated` 是现网验证可用的黄金路径 ⇒ 两条通道语义重叠 = 平行实现漂移。
+    //   ⇒ 断言"自建分支必须广播 tabCreated"，防回退。
+    const m = stripComments(MAIN);
+    const iSelf = m.indexOf("action === 'navigate' && args.url");
+    expect(iSelf, '★ 自建分支锚点缺失').toBeGreaterThan(-1);
+    const selfSeg = m.slice(iSelf, iSelf + 3000);
+    expect(selfSeg, '★ 自建分支未广播 tabCreated → 渲染层不建壳，waitForGuest 必超时')
+      .toMatch(/send\('browserView:tabCreated'/);
+    // scope 必须是**裸 'preview'**（渲染层 browserScope 是 preview:<convId>，靠放宽匹配命中）
+    expect(selfSeg, '★ 自建分支 scope 不是裸 preview → 与 new_tab 口径不一致')
+      .toMatch(/const scope = 'preview'/);
+    // 渲染层 onTabCreated 必须放宽 scope 匹配（否则裸 preview 广播被严格相等静默漏掉）
+    expect(PANEL, '★ onTabCreated scope 匹配过严 → 主进程裸 preview 广播被漏掉，渲染层不建壳')
+      .toMatch(/belong === 'preview' && browserScope\.startsWith\('preview'\)/);
   });
 
-  it('★★ forceOpen 广播必须用**目标 tab 的 scope**（不是 activeTabId 的）', () => {
+  it('★★★ 自建 tab 的 id 必须两端对齐 + wc=null 走显式错误', () => {
+    // ① 渲染层：forceOpen/onTabCreated 都必须用主进程给的 tabId 建壳（不能自己另起 id）
+    expect(PANEL, '★ onTabCreated 未用主进程给的 tid 建壳')
+      .toMatch(/id: tid, url: url \|\| ''/);
+    // ② 主进程：拿不到 wc 时必须**显式报错**返回，不得落到 wc.loadURL 抛原生 TypeError
     const m = stripComments(MAIN);
-    const i = m.indexOf("send('browser:wv:forceOpen'");
-    expect(i, '★ 锚点缺失').toBeGreaterThan(-1);
-    // 前面的 scope 推导必须基于 tabId（本会话锚定），而非仅 activeTabId
-    const before = m.slice(Math.max(0, i - 700), i);
-    expect(before, '★ scope 取自 activeTabId → 桥档下会广播到别的会话/空间').toMatch(/tabId\s*\?\s*webviewTabs\.get\(tabId\)/);
+    expect(m, '★ wc=null 未显式拦下 → 会抛 loadURL of null（模型只能瞎猜"前端不可达"）')
+      .toMatch(/已请求预览面板打开该页，但 8s 内未建出页面/);
+    // ③ 自建等待必须有可诊断日志（此前该路径零日志，排障只能读库反推）
+    expect(m, '★ 自建等待无日志（静默失效家族）').toMatch(/自建后等待 guest/);
   });
 });
 
@@ -597,10 +607,23 @@ describe('⑩ ★★ server 侧三档分支（bridge → SSE → 离线）', () 
     expect(iBridge, '★ bridge 分支在 SSE 之后 → 直连死代码').toBeLessThan(iSub);
   });
 
-  it('桥失败在 on 档降级回 SSE、strict 档不降级', () => {
+  it('★ 桥失败分两类：传输失败才降级 SSE、strict 不降级、业务错误不降级', () => {
     const ltm = stripComments(LTM);
     expect(ltm, '★ 缺 strict 不降级').toMatch(/bridgeMode\(\) === 'strict'/);
-    expect(ltm, '★ 缺降级打点').toMatch(/桥调用失败，降级回 SSE/);
+    // ★★★ 2026-10-10 根因修复：`on` 档**不再无条件降级**。
+    //   旧断言 `桥调用失败，降级回 SSE` 钉的是死降级行为（渲染层在 on 档下已不执行
+    //   browser_* ⇒ SSE 必然无订阅者 ⇒ 8s 失败被拖成 23s 且文案误导）。
+    //   新语义：只有**传输层**失败（端点不可达/超时/鉴权）才降级。
+    expect(ltm, '★ 缺传输失败的降级判定（isBridgeTransportError）')
+      .toMatch(/isBridgeTransportError\(e\)/);
+    expect(ltm, '★ 传输失败仍应降级（打点文案）').toMatch(/桥传输失败，降级回 SSE 委托/);
+    expect(ltm, '★ 业务错误不得触发降级').toMatch(/动作执行失败（非桥故障，不降级）/);
+    // 业务错误分支必须**早于**降级落点（先 return，才不会被后面的 SSE 宽限吃掉）
+    const iBiz = ltm.indexOf('动作执行失败（非桥故障，不降级）');
+    const iDeg = ltm.indexOf('桥传输失败，降级回 SSE 委托');
+    expect(iBiz, '★ 业务错误分支丢失').toBeGreaterThan(-1);
+    expect(iDeg, '★ 降级分支丢失').toBeGreaterThan(-1);
+    expect(iBiz, '★ 业务错误未在降级之前 return → 仍会被拖进 SSE 宽限').toBeLessThan(iDeg);
   });
 
   it('截图归档两路径共用同一后处理出口', () => {
@@ -611,5 +634,144 @@ describe('⑩ ★★ server 侧三档分支（bridge → SSE → 离线）', () 
     const bridgeSeg = ltm.slice(iBridge, iNext);
     expect(bridgeSeg, '★ bridge 路径未走截图归档 → 截图登记不进 conversation_file')
       .toMatch(/archiveDelegatedScreenshot\(/);
+  });
+});
+// ══════════════════════════════════════════════════════════════════════════
+// ⑬ ★★★ 锚定建立 + webview tab 上限（2026-10-10 三次根因修复）
+//
+// 用户实报："pageAgent 一跑整个应用卡死"。
+// 实证链条（main-2026-10-10.log 23:44~23:46，3 分钟 36 次 navigate）：
+//   ① navigate 未锚定时 resolveTarget 返回 tabId=null → 下游用 activeTabId 兜底拿到 guest
+//      ⇒ navigate"看起来成功"但主进程不知道操作的是哪个 tab
+//   ② decideAnchorUpdate(action, false, null, null) → 'none' ⇒ **锚永不建立**
+//   ③ 后续 get_page_content / screenshot / get_dom 全报"该会话尚未绑定浏览器页面"
+//   ④ 模型以为导航没生效 → 疯狂换 URL 重试 → 每次重试又走"自建新 tab"
+//   ⑤ webview 引擎的 createBrowserTab **无上限**（MAX_TABS/evict 只遍历 browserViews）
+//      ⇒ tab 无限堆积，每个 tab = 一个 Chromium 渲染进程
+//   ⑥ `MaxListenersExceededWarning: 11 did-stop-loading listeners` + CPU/内存爆炸 → 卡死
+// ══════════════════════════════════════════════════════════════════════════
+describe('⑬ ★★★ 锚定建立 + webview tab 上限（防"跑起来就卡死"）', () => {
+  const TARGET = read('apps/desktop/browser-target.cjs');
+  const bt = require(resolve(REPO, 'apps/desktop/browser-target.cjs'));
+
+  it('★★★ 建页类动作未锚定时必须回落 activeTabId（否则锚永不建立）', () => {
+    const isMine = (t: string) => t === 'tab-1';
+    // 场景 B（实测现场）：navigate 无显式 tabId、未锚定、activeTabId=tab-1（本会话的）
+    const r = bt.resolveTarget('c1', null, 'navigate', { anchored: null, activeTabId: 'tab-1', isMine });
+    expect(r.ok, '★ 未放行 → navigate 拿不到 tabId → 锚永建不起来').toBe(true);
+    expect(r.tabId, '★ 未回落 activeTabId → decideAnchorUpdate 收到 null → 返回 none → 读类动作全被拒')
+      .toBe('tab-1');
+  });
+
+  it('★★★ 回落仍必须过 isMine 闸门（防跨会话越权）', () => {
+    // activeTabId 属于**别的会话**（未登记）→ 绝不回落
+    const r = bt.resolveTarget('c1', null, 'navigate', {
+      anchored: null, activeTabId: 'tab-9', isMine: (t: string) => t === 'tab-1',
+    });
+    expect(r.ok).toBe(true);
+    expect(r.tabId, '★ 回落了别的会话的页 → 跨会话越权').toBeNull();
+  });
+
+  it('★★★ 读类动作**不得**回落 activeTabId（保持"绝不静默打别人的页"）', () => {
+    const r = bt.resolveTarget('c1', null, 'get_page_content', {
+      anchored: null, activeTabId: 'tab-1', isMine: () => true,
+    });
+    expect(r.ok, '★ 读类动作放行了未锚定的全局活动页 → A4 消灭过的静默错页回归').toBe(false);
+  });
+
+  it('★★★ main.cjs 必须把 activeTabId 传进判定（否则回落是死代码）', () => {
+    const m = stripComments(MAIN);
+    const i = m.indexOf('resolveBrowserTarget(convId, tabId, action, {');
+    expect(i, '★ 锚点缺失').toBeGreaterThan(-1);
+    const seg = m.slice(i, i + 600);
+    expect(seg, '★ 未传 activeTabId → 建页类回落逻辑失效，锚建立不了').toMatch(/activeTabId,/);
+  });
+
+  it('★★★ webview 引擎的建 tab 必须有上限收口（卡死根因）', () => {
+    const m = stripComments(MAIN);
+    // ① 必须有 webview 专用的 LRU 收口函数
+    expect(m, '★ 缺 evictLruWebviewTabIfNeeded → webview tab 无上限堆积 → 应用卡死')
+      .toMatch(/function evictLruWebviewTabIfNeeded\(/);
+    // ② 建 tab 的 webview 分支必须调用它（不能只保护 browserview 分支）
+    const iFn = m.indexOf('function createBrowserTab(scope)');
+    const seg = m.slice(iFn, iFn + 900);
+    expect(seg, '★ webview 分支未收口 → 建 tab 无上限').toMatch(/evictLruWebviewTabIfNeeded\(\)/);
+    // ③ 逐出必须广播 tabClosed（否则渲染层 <webview> 元素不销毁，进程不释放）
+    const iEv = m.indexOf('function evictLruWebviewTabIfNeeded(');
+    const evSeg = m.slice(iEv, iEv + 1600);
+    expect(evSeg, '★ 逐出未广播 tabClosed → <webview> 元素与 guest 进程残留').toMatch(/send\('browserView:tabClosed'/);
+    // ④ 必须清锚（否则留下幽灵 tabId）
+    expect(evSeg, '★ 逐出未清锚 → 幽灵 tabId 残留').toMatch(/clearConvAnchorsForTab\(/);
+  });
+
+  it('★★ 锚定决策必须可观测（"navigate 成功后读不到页"的唯一线索）', () => {
+    const m = stripComments(MAIN);
+    expect(m, '★ 锚定决策无日志 → 排障只能读库反查（本项目已栽过）')
+      .toMatch(/锚定决策: action=/);
+  });
+});
+
+// ⑭ ★★★ 四次根因：`isMine` 闸门挡住**首次** navigate（2026-10-10 深夜复查）
+//
+// 三次修复（⑬）把回落闸门定为 `isMine(fb)`，但 `isMine` 的实现是
+// `agentTouchedTabs.get(t) === convId`，而 `agentTouchedTabs` **只在动作成功执行后才登记**
+// ⇒ **首次** navigate 时该 tab 一个都没登记 ⇒ `isMine` 恒 false ⇒ 回落**仍不生效**
+// ⇒ tabId 还是 null ⇒ 锚还是建不起来 ⇒ ⑬ 的修复等于白改（"断言存在 ≠ 断言生效"的又一例）。
+//
+// 判据：回落闸门必须是「isMine **或** 就是本面板当前活动页」（isCurrentView）。
+//   · isCurrentView 安全的理由：activeTabId 是**本面板**正在显示的页（用户肉眼可见），
+//     不可能是"别的会话的页"；跨会话越权的真实威胁是显式传未登记的 tabId（由 ①② 分支拦）。
+// ══════════════════════════════════════════════════════════════════════════
+describe('⑭ ★★★ 首次 navigate 必须能建立锚（isMine 挡不住——antouchedTabs 还是空的）', () => {
+  const MAIN2 = read('apps/desktop/main.cjs');
+  const bt = require(resolve(REPO, 'apps/desktop/browser-target.cjs'));
+
+  it('★★★ 未登记的 activeTabId（= 本面板当前活动页）也必须回落', () => {
+    // 真实首次场景：agentTouchedTabs 为空 ⇒ isMine 恒 false，但 tab-1 就是当前活动页
+    const r = bt.resolveTarget('c1', null, 'navigate', {
+      anchored: null,
+      activeTabId: 'tab-1',
+      isMine: () => false,                      // ← 首次：一个都没登记
+      isCurrentView: (t: string) => t === 'tab-1',
+    });
+    expect(r.ok).toBe(true);
+    expect(r.tabId, '★ isMine 挡住首次 navigate → 回落不生效 → 锚永建不起来（⑬ 的修复白改）')
+      .toBe('tab-1');
+    // 连带：锚必须真的能建立（端到端语义）
+    const upd = bt.decideAnchorUpdate('navigate', false, r.tabId, undefined);
+    expect(upd.mode, '★ 仍未建立锚 → 后续读类动作全被拒 → 模型穷举换 URL → tab 堆积 → 卡死')
+      .toBe('anchor');
+    expect(upd.tabId).toBe('tab-1');
+  });
+
+  it('★★★ 非当前活动页且未登记 → 绝不回落（越权闸门未破）', () => {
+    const r = bt.resolveTarget('c1', null, 'navigate', {
+      anchored: null,
+      activeTabId: 'tab-9',                     // 不是本面板活动页
+      isMine: () => false,
+      isCurrentView: (t: string) => t === 'tab-1',
+    });
+    expect(r.ok).toBe(true);
+    expect(r.tabId, '★ 回落了非当前页的未登记 tab → 跨会话越权').toBeNull();
+  });
+
+  it('★★★ 显式传别的会话 tabId → 仍必须拒绝（回落放宽不影响越权闸门）', () => {
+    const r = bt.resolveTarget('c1', 'tab-99', 'navigate', {
+      anchored: null,
+      activeTabId: 'tab-1',
+      isMine: () => false,
+      isCurrentView: (t: string) => t === 'tab-1',
+    });
+    expect(r.ok, '★ 显式越权 tabId 被放行 → 跨会话越权').toBe(false);
+  });
+
+  it('★★★ main.cjs 必须传 isCurrentView 且真的引用 activeTabId（否则放宽是死代码）', () => {
+    const m = stripComments(MAIN2);
+    const i = m.indexOf('resolveBrowserTarget(convId, tabId, action, {');
+    expect(i).toBeGreaterThan(-1);
+    const seg = m.slice(i, i + 900);
+    // ★ 不能只查关键字存在 —— 必须"真的拿 activeTabId 比较"（防 `isCurrentView: () => false` 这类死代码）
+    expect(seg, '★ 未传 isCurrentView → 首次 navigate 仍被 isMine 挡住 → 锚建不起来')
+      .toMatch(/isCurrentView:\s*\([^)]*\)\s*=>\s*[^,]*activeTabId/);
   });
 });
