@@ -1576,10 +1576,10 @@ function createChat() {
   /** 能否发送 —— 与 ChatInputArea 的 `canSubmit` **同一口径**（内容 + 模型）。
    *
    *  ★★★ 为什么去掉 `!store.isConvStreaming(...)`（2026-10-10）：
-   *   本会话在跑时，发送按钮的语义是「**追加到队列**」（见 sendInner 2438 的
-   *   `enqueueMessage` 分支）—— 那不是"发送被禁止"，而是"换个去向送"。加这个条件
-   *   会导致"任务跑着就发不出追加消息"，与设计意图直接冲突。真正的防重入由
-   *   `sending` 锁 + 「取走内容即清空 input」两道防线保证，不需要在 enable 判据里表达。
+   *   本会话在跑时，发送按钮的语义是「**追加到队列**」（见 send() 入口的
+   *   `runningConvEarly` 入队分支，2026-10-11 上移到重入锁之前）—— 那不是"发送被禁止"，
+   *   而是"换个去向送"。加这个条件会导致"任务跑着就发不出追加消息"，与设计意图直接冲突。
+   *   真正的防重入由 `sending` 锁 + 「取走内容即清空 input」两道防线保证，不需要在 enable 判据里表达。
    */
   const canSend = computed(() => (!!input.value.trim() || uploadedFiles.value.length > 0) && !!selectedModelId.value);
 
@@ -2506,7 +2506,7 @@ async function healStalePlatform() {
     //   任务跑多久锁就挂多久 ⇒ 任务运行中点发送在锁处被**静默 return**，连 sendInner 里的
     //   入队分支都不可达 ⇒ 输入框保留原文（16:11 用户实报「追加功能失效」的直接根因）。
     //   把入队提到锁前：同步判断 + 同步入队 + 清输入框，零 await，完全不受锁影响。
-    //   sendInner 内的同类分支保留（直调 sendInner 的路径仍覆盖）。
+    //   （sendInner 内的旧入队分支已删除：send() 是唯一调用方，锁前已拦，留两份必漂移。）
     {
       const runningConvEarly = store.currentConvId;
       if (runningConvEarly && store.isConvStreaming(runningConvEarly)) {
