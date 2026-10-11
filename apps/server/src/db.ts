@@ -328,6 +328,19 @@ try {
   }
 } catch {}
 
+// 会话标题来源标记（2026-10-11，LLM 自动生成标题用）：
+//   NULL = 存量会话（行为不变，永不生成，避免老会话标题突变）；
+//   'auto' = 前端新建（首个任务 completed 时可由 LLM 生成标题）；
+//   'llm' = 已生成过（不再重复生成）；
+//   'user' = 用户手动改名（PATCH title 时路由强制置位，永不覆盖）。
+// 生成侧用 CAS（UPDATE ... WHERE title_source='auto'）写库，与用户改名天然防竞态。
+try {
+  const convCols3 = db.prepare(`SELECT name FROM pragma_table_info('conversation')`).all() as Array<{ name: string }>;
+  if (!convCols3.some((c) => c.name === 'title_source')) {
+    db.exec(`ALTER TABLE conversation ADD COLUMN title_source TEXT`);
+  }
+} catch {}
+
 db.exec(`
   CREATE TABLE IF NOT EXISTS message (
     id TEXT PRIMARY KEY,

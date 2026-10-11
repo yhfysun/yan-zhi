@@ -67,10 +67,12 @@ router.post('/', (req: Request, res: Response) => {
     if (def) resolvedAgentId = 'a_default_assistant';
   }
   db.prepare(
-    'INSERT INTO conversation (id, user_id, title, agent_id, platform_id, model_id, space_id, mcp_servers_json, skill_ids_json, pinned, permission_mode, mode, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    'INSERT INTO conversation (id, user_id, title, agent_id, platform_id, model_id, space_id, mcp_servers_json, skill_ids_json, pinned, permission_mode, mode, title_source, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
   ).run(id, userId, title, resolvedAgentId, platformId || null, modelId || null, spaceId || null, '[]', '[]', 0, normalizePermissionMode(permissionMode),
     // 归属模式：前端建会话时带上当前模式；缺省 office（与存量迁移口径一致）
-    VALID_MODES.has(String(mode)) ? String(mode) : 'office', now, now);
+    VALID_MODES.has(String(mode)) ? String(mode) : 'office',
+    // 标题来源：新建一律 'auto'（首个任务 completed 时允许 LLM 生成标题覆盖一次；见 services/conversation-title.ts）
+    'auto', now, now);
   const row = db.prepare('SELECT * FROM conversation WHERE id = ?').get(id);
   res.json({ data: row });
 });
@@ -88,6 +90,10 @@ router.patch('/:id', (req: Request, res: Response) => {
   for (const [key, col] of Object.entries(bodyFields)) {
     if (req.body[key] !== undefined) { sets.push(`${col} = ?`); vals.push(req.body[key]); }
   }
+  // ★ 标题来源收口（2026-10-11）：只要本次 PATCH 带了 title，就一律视为用户手动改名
+  //   → title_source 强制置 'user'（LLM 自动生成的标题是 title_source='auto'/'llm' 行，
+  //   永不会再被服务端生成逻辑覆盖）。前端无需感知该字段，服务端收口防伪造。
+  if (req.body.title !== undefined) { sets.push('title_source = ?'); vals.push('user'); }
   // spaceId：支持移动会话到空间（传 null/空字符串归"未归类"）
   if (req.body.spaceId !== undefined) {
     sets.push('space_id = ?');

@@ -2720,6 +2720,14 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
             }
             return;
           }
+          // ★ 会话标题自动生成（2026-10-11）：服务端首个任务 completed 后由 LLM 生成标题，
+          //   经会话级总线推过来 —— 就地更新列表里的标题（无轮询、无刷新）。
+          //   只更新内存与本地视图，不再回写服务端（服务端已落库，回写反而会把 title_source 洗成 'user'）。
+          if (event.type === 'conversation:title' && event.conversationId === convId && typeof event.title === 'string' && event.title) {
+            const conv = conversations.value.find((c) => c.id === convId);
+            if (conv && conv.title !== event.title) conv.title = event.title;
+            return;
+          }
           // ★ 处理**终态**（服务端在任务结束时任一双通道都会送达）。
           //   收到即意味着"该会话的任务已结束" → 清残留运行态与浏览器记账。
           //   ★ 幂等：正常订阅期间任务流也会送达同一事件；此处的清理操作全是幂等的

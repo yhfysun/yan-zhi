@@ -96,6 +96,10 @@ import {
 import { statSync, readFileSync, readdirSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import { createLogger } from './services/logger.js';
+// LLM 自动生成会话标题（2026-10-11）：首个任务 completed 时 fire-and-forget；
+// 本模块是「调用方」，conversation-title 反向通过 setTitleChangeNotifier 拿事件回推能力
+// （避免循环依赖 —— 那边绝不 import 这里）。
+import { generateTitleFor, setTitleChangeNotifier } from './services/conversation-title.js';
 const logger = createLogger('llm-task-manager');
 
 /** 工作流结果反写的 I/O 上限：反写本身很快，超时只为防异常挂住。 */
@@ -483,6 +487,12 @@ function emit(task: LlmTask, event: SSEEvent) {
   //     正常订阅期间会收到两份，不会出错。
   if (event.type === 'task:completed' || event.type === 'task:aborted' || event.type === 'task:error') {
     emitConversation(task.conversationId, { ...event });
+    // ★ 会话标题自动生成（2026-10-11）：只在 completed（aborted/error 的首轮内容没营养）、
+    //   只在 title_source='auto' 的会话生效（判据在 generateTitleFor 内），fire-and-forget
+    //   绝不阻塞收尾；防重复/防覆盖/CAS 写库都在 conversation-title.ts 收口。
+    if (event.type === 'task:completed') {
+      void generateTitleFor(task.conversationId, task.userId, { platformId: task.platformId, modelId: task.modelId });
+    }
   }
 }
 
@@ -1908,6 +1918,13 @@ function emitConversation(conversationId: string, event: SSEEvent): void {
     try { cb(event); } catch { /* 单个订阅者异常不影响其他人 */ }
   }
 }
+
+// ★ 标题变更回推（2026-10-11）：conversation-title 生成成功后经此把新标题推到会话级总线，
+//   前端订阅处就地更新列表标题（与终态双发同一通道，无需轮询/刷新）。
+//   模块加载即安装（emitConversation 是本模块私有函数，只能在这拿得到）。
+setTitleChangeNotifier((conversationId, title) => {
+  emitConversation(conversationId, { type: 'conversation:title', conversationId, title });
+});
 
 /** 清理已完成的任务（定期调用） */
 export function cleanupTasks(maxAgeMs: number = 30 * 60 * 1000) {
