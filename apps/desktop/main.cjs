@@ -3240,7 +3240,28 @@ async function runBrowserAction(convId, tabId, action, args) {
           }
           if(a.selector){
             var els=A.resolveAll(a.selector);
-            if(els.length===0)return notFound(a.selector);
+            // ★ 隐藏回退（2026-10-11）：:contains 伪选择器只收可见元素（offsetParent!==null），
+            //   折叠菜单/弹层里的按钮会**报"未找到"**，模型因此反复换选择器乱试
+            //   （实测抖音「继续编辑」按钮即此场景）。改为：可见优先，无可见时放宽到
+            //   "DOM 中存在即可"并明确标注 —— DOM click 不受视口裁切影响（见 clickEl）。
+            if(els.length===0){
+              var loose=[];
+              try{
+                var cm=String(a.selector).match(/^([\s\S]*?):contains\(\s*["']([\s\S]*?)["']\s*\)\s*$/);
+                if(cm){
+                  var bels=document.querySelectorAll(cm[1]||'*');
+                  for(var li=0;li<bels.length;li++){var be=bels[li];
+                    if((be.textContent||'').trim().indexOf(cm[2])>=0)loose.push(be);}
+                }
+              }catch(e){}
+              if(loose.length===0)return notFound(a.selector);
+              // clickEl 返回 Promise（executeJavaScript 会自动 await），故用 then 修饰结果
+              return clickEl(loose[0]).then(function(r){
+                r.hiddenFallback=true;
+                r.hint='元素在 DOM 中但当前不可见（折叠菜单/弹层/未滚到视口），已按 DOM 点击执行；如未生效请先展开对应菜单或滚动到该区域再点。';
+                return r;
+              });
+            }
             if(els.length>1){
               var cands=els.slice(0,10).map(function(el){
                 return{index:A.register(el),tag:el.tagName.toLowerCase(),text:(el.textContent||'').trim().slice(0,40),selector:A.genSel(el)};

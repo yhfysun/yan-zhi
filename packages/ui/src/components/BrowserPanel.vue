@@ -751,6 +751,26 @@ function applyElectronScrollbarTheme() {
 }
 
 // ── 多标签页管理函数 ──
+/**
+ * ★ 弹窗/内嵌意图页面套 iframe 宿主页（2026-10-11）。
+ * 根因：抖音创作者后台跳「即梦授权页」这类 URL 带 `is_in_frame=1`（天生为**被嵌入**设计），
+ * 应用把 popup 重定向成**顶层**标签页后，页面的嵌入检测/握手失败 → 整页白屏
+ * （日志实证：该 tab 反复 dom-ready 却始终白屏；真 Chrome 里它走小弹窗所以正常）。
+ * 修法：这类 URL 不直接顶层加载，改为加载一个宿主页，在 100% iframe 里渲染它 —— 还原其预期的
+ * 被嵌入环境。地址栏仍显示原始 URL（tab.url 不变，只把 srcUrl 换成宿主页）。
+ */
+function wrapEmbedIntent(url: string): string {
+  if (!url || !/[?&]is_in_frame=1(?:&|$)/.test(url)) return url;
+  const safe = url.replace(/"/g, '&quot;');
+  const html = '<!doctype html><html><head><meta charset="utf-8">'
+    + '<style>html,body{margin:0;height:100%;overflow:hidden;background:#fff}'
+    + 'iframe{border:0;width:100%;height:100%;display:block}</style></head>'
+    + '<body><iframe src="' + safe + '" allow="*"></iframe></body></html>';
+  try {
+    return 'data:text/html;charset=utf-8;base64,' + btoa(unescape(encodeURIComponent(html)));
+  } catch { return url; }   // 编码失败就退回直接打开，不比现状更差
+}
+
 async function newTab(url?: string) {
   hideTabCtx();
   const api = (window as any).electronAPI;
@@ -764,7 +784,8 @@ async function newTab(url?: string) {
   const tab: BrowserTab = {
     id: tabId,
     url: url || '',
-    srcUrl: url || '',
+    // 内嵌意图页（is_in_frame=1）用 iframe 宿主页做 src，地址栏仍显示原始 url
+    srcUrl: wrapEmbedIntent(url || ''),
     title: '',
     loading: false,
     urlInput: url || '',
@@ -1324,7 +1345,8 @@ async function navigate() {
     activeTab.value.urlInput = target;
     // srcUrl 只在"主动导航"时推进：页面自己点链接跳转只更新 url（见 applyNavigated），
     // 回写 :src 会让 webview 重新 loadURL → 历史栈出现两条相同记录 → 后退"看着没动"。
-    activeTab.value.srcUrl = target;
+    // 内嵌意图页（is_in_frame=1）改挂 iframe 宿主页，避免顶层打开白屏。
+    activeTab.value.srcUrl = wrapEmbedIntent(target);
     // 快照实时同步：tab.history/histIndex 只在 switchTab 时互存的话，路由切换（/browser 页 ↔
     // 对话页预览面板）重挂后 switchTab 会恢复到过期快照（history=[]），currentUrl 清空 →
     // showHome 误显示起始主页（"点了百度、tab 标题是百度、页面却变首页"的串扰根因）。
