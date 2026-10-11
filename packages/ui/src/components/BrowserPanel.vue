@@ -1297,6 +1297,13 @@ const frameSrc = computed(() => {
 async function navigate() {
   const target = normalizeUrl(urlInput.value);
   if (!target) return;
+  // ★ 空态兜底（2026-10-11 实测）：起始主页（无任何标签页，仅"+"号）时在地址栏输 URL 回车，
+  //   activeTab 为空 → url 写不进 tab、webview 元素不存在 → load('') 静默失败，回车"没反应"。
+  //   先建 tab 再导航（newTab(url) 内部会设好 urlInput 并回调 navigate，此时 tab 已就绪）。
+  if (!activeTab.value) {
+    await newTab(target);
+    return;
+  }
   pendingNavUrl = target;
   pushHistory(target);
   loading.value = true;
