@@ -54,6 +54,12 @@ export async function openSqlite(
   dbPath: string,
   opts?: OpenSqliteOptions,
 ): Promise<{ db: YzSqliteDb; driver: SqliteDriverName }> {
+  // 测试开关：better-sqlite3 的 .node 二进制按编译期 ABI 加载（本仓 130），vitest
+  // 若跑在 ABI 127 的 node 上则 `new Database()` 才抛错（require 的 try/catch 拦不住
+  // 懒加载）。测试需要真 SQL 语义时直接置此开关走 sql.js —— 与 CI 回退路径同源。
+  if (process.env.YZ_TEST_FORCE_SQLJS === '1') {
+    return { db: await openSqlJs(dbPath), driver: 'sql.js' };
+  }
   if (!opts?.forceDriver) {
     try {
       const mod = await import('better-sqlite3');
