@@ -559,13 +559,23 @@ function startServer() {
     //     「服务重启，任务被中断」，用户看到「刚发了个继续直接失败」。
     //   ⇒ 注入后两条 dev 启动路径口径一致（与 dev.cjs 同源，不臆造判据）。
     //   ★ 只加在 dev 分支：生产分支（下方 else）**不设** → 打包版行为完全不变。
+    //
+    // ★★★ 2026-10-11 删除 dev 分支的 WEB_DIST 注入（根治「dev 前端被旧快照冒充」）：
+    //   原先这里注入 `WEB_DIST = <repo>/apps/web/dist`，但**该目录在仓库里从不存在**
+    //   （monorepo 源码相对路径，dev 从未构建过 apps/web/dist）⇒ 后端 resolveWebDist()
+    //   第 ① 条落空 ⇒ 退回第 ② 条"向上爬目录猜" ⇒ **恰好爬中 apps/desktop/dist
+    //   （陈旧打包快照，存在）** ⇒ 后端把旧前端托管到 3001 ⇒ **盖掉 Vite (1420)**
+    //   ⇒ 窗口加载的是旧快照，当天所有前端修复全部不生效（浏览器工具全挂、页面卡死）。
+    //   ⇒ 修法：dev **不注入 WEB_DIST**（与 bin/dev.mjs、apps/server/scripts/dev.cjs 同源）。
+    //     窗口走 Vite (1420) 热更新；resolveWebDist() 也已同步删除"爬目录猜"分支，
+    //     dev 默认**不托管**前端。确需局域网访问 dev 前端时才显式给 YZ_SERVE_WEB_DIST。
     const tsxPath = path.join(serverDir, 'node_modules', 'tsx', 'dist', 'cli.mjs');
     if (fs.existsSync(tsxPath)) {
       console.log('[后端] 用 Electron Node.js + tsx 启动:', tsxPath);
       serverProcess = spawn(process.execPath, [tsxPath, 'watch', 'src/index.ts'], {
         cwd: serverDir,
         stdio: 'inherit',
-        env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', PORT: String(API_PORT), YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: cdpEndpoint, WEB_DIST: path.join(__dirname, '..', '..', 'apps', 'web', 'dist'), YZ_HOT_RELOAD: '1', ...bridgeEnv, ...editionEnv, ...guardEnv, ...readLicenseCodesEnv() },
+        env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', PORT: String(API_PORT), YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: cdpEndpoint, YZ_HOT_RELOAD: '1', ...bridgeEnv, ...editionEnv, ...guardEnv, ...readLicenseCodesEnv() },
       });
     } else {
       // 回退：npx tsx（可能 ABI 不兼容，但至少能启动）
@@ -574,7 +584,7 @@ function startServer() {
         cwd: serverDir,
         stdio: 'inherit',
         shell: true,
-        env: { ...process.env, PORT: String(API_PORT), YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: cdpEndpoint, WEB_DIST: path.join(__dirname, '..', '..', 'apps', 'web', 'dist'), YZ_HOT_RELOAD: '1', ...bridgeEnv, ...editionEnv, ...guardEnv, ...readLicenseCodesEnv() },
+        env: { ...process.env, PORT: String(API_PORT), YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: cdpEndpoint, YZ_HOT_RELOAD: '1', ...bridgeEnv, ...editionEnv, ...guardEnv, ...readLicenseCodesEnv() },
       });
     }
     serverProcess.on('error', (err) => console.error('后端启动失败:', err));

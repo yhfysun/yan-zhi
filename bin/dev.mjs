@@ -351,6 +351,45 @@ function waitForPort(port, timeoutMs = 90000) {
   });
 }
 
+/**
+ * 探测后端 (3001) 是否在**错误地托管打包快照**（而非静默放行）。
+ *
+ * ★★★ 为什么必须有（2026-10-11 事故，high）：
+ *   `apps/server/src/index.ts` 的 `resolveWebDist()` 曾有"向上爬目录猜 apps 下 dist"的
+ *   兜底分支 → dev 下**恰好爬中 `apps/desktop/dist`（陈旧打包快照，存在）** → 后端把旧
+ *   前端托管到 3001 → **盖掉 Vite (1420)** → 窗口加载的是旧快照（`assets/index-*.js`），
+ *   当天所有前端修复**一个都没生效**，表现就是「浏览器工具全挂、页面越跑越卡」。
+ *   ⇒ 该分支已删除（只认显式 WEB_DIST / YZ_SERVE_WEB_DIST）。本函数是**第二道防线**：
+ *     启动后实测 3001 返回体，若命中"打包产物特征"（引用 `./assets/index-*.js`）而非
+ *     "Vite 特征"（引用 `/@vite/client`），立刻 warn 指路 —— 免得再靠 curl 反推。
+ *
+ * 非致命：探测失败（网络/解析异常）静默通过，绝不阻断启动。
+ */
+async function assertFrontendServedByVite(port) {
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 3000);
+    const res = await fetch(`http://127.0.0.1:${port}/`, { signal: ctrl.signal });
+    clearTimeout(t);
+    if (!res.ok) return;
+    const html = (await res.text()).slice(0, 4000);
+    // 打包产物特征：引用 ./assets/index-<hash>.js（vite build 输出）
+    const looksBuilt = /["']\.?\/?assets\/index-[\w-]+\.js["']/.test(html);
+    // Vite dev 特征：注入 /@vite/client
+    const looksVite = html.includes('/@vite/client');
+    if (looksBuilt && !looksVite) {
+      warn(
+        `后端 (${port}) 正在托管**打包快照**前端（检测到 /assets/index-*.js）——\n` +
+          `      这会把 Electron 窗口从 Vite (${APPS.desktop.vitePort}) 热更新上顶掉，` +
+          `改动不会生效！\n` +
+          `      排查：删除或改名 apps/desktop/dist（陈旧快照）；确认未设置 WEB_DIST / YZ_SERVE_WEB_DIST。`
+      );
+    }
+  } catch {
+    /* 探测失败不阻断启动 */
+  }
+}
+
 /** 端口立即探测（短超时）：判断调试浏览器（CDP 9222）当前是否可达 */
 function isPortOpen(port, timeoutMs = 800) {
   return new Promise((resolve) => {
@@ -760,6 +799,8 @@ async function main() {
 
   log(`后端就绪探测中 (http://127.0.0.1:${DEV_API_PORT}) ...`);
   await waitForPort(DEV_API_PORT, 60000).catch(() => warn(`${DEV_API_PORT} 未在 60s 内就绪，请检查后端日志`));
+  // ★ 第二道防线：确认后端没在托管陈旧打包快照（否则窗口会被从 Vite 顶掉，改动不生效）
+  await assertFrontendServedByVite(DEV_API_PORT);
   log('全部就绪。Ctrl+C 结束全部进程。');
 }
 

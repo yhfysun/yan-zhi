@@ -2,7 +2,7 @@ import express from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { pathToFileURL, fileURLToPath } from 'node:url';
+import { pathToFileURL } from 'node:url';
 import cors from 'cors';
 import { setPlatformAdapter, getPluginManager, getToolRegistry, setCustomToolDepPreparer } from '@yan-zhi/core';
 import { ensureToolsInitialized } from './mcp/index.js';
@@ -389,24 +389,45 @@ app.get('/api/network/ip', (_req, res) => {
 });
 
 // 前端静态资源托管（local web ui）：让局域网内浏览器访问 http://<IP>:<PORT> 直接用完整界面。
-// 优先级：WEB_DIST（打包版主进程注入）> 向上查找仓库内 apps/web/dist、apps/desktop/dist（dev 模式）。
+//
+// ★★★ 2026-10-11 根治「dev 前端被旧快照冒充」：
+//   本函数此前有**两级优先级** —— ① `WEB_DIST` 环境变量；② 从源码目录向上爬 6 层找
+//   `apps/web/dist` / `apps/desktop/dist`（"dev 兜底"）。
+//
+//   第 ② 条是**灾难性设计**，已彻底删除。因果链（实测铁证）：
+//     · dev 启动时 `main.cjs:568` 注入的 `WEB_DIST=apps/web/dist` **该目录根本不存在**
+//       （monorepo 源码相对路径，仓库里从没构建过 apps/web/dist）⇒ 第 ① 条落空；
+//     · 第 ② 条于是爬目录，**恰好爬中 `apps/desktop/dist`（Oct 8 的陈旧快照，存在）**
+//       ⇒ 后端把这份旧前端托管到 3001 ⇒ **盖掉 Vite (1420)**；
+//     · 结果：`main.cjs:803` 的 `loadURL('http://localhost:1420')` 白写，
+//       窗口加载的是 Oct 8 的 `assets/index-*.js`（其中 `componentAlive` 出现 0 次）
+//       ⇒ 当天所有 BrowserPanel 修复（componentAlive 重置 / 监听器前移 / scope 放宽 /
+//       tab 上限收口）**一个都没被加载**，浏览器工具全挂、页面越跑越卡。
+//
+//   ⇒ 新口径（唯一真相源）：**只认显式来源，绝不猜目录**。
+//     前端由谁提供必须由「运行模式」决定，而不是靠"向上爬目录碰运气"。
+//     · 生产：`main.cjs` 注入 `resources/server/web-dist`（electron-builder 的
+//       `from: dist → to: server/web-dist` 映射，四个 yml 均已配置）；
+//     · dev：**不托管** —— Electron 窗口走 Vite (1420) 热更新；
+//       若确需局域网访问 dev 前端（`http://<本机IP>:3001`），
+//       必须**显式**设置 `YZ_SERVE_WEB_DIST=<前端产物目录>` 才托管。
 function resolveWebDist(): string | null {
-  if (process.env.WEB_DIST) {
-    const p = process.env.WEB_DIST;
-    if (fs.existsSync(path.join(p, 'index.html'))) return p;
+  // ① 生产：打包版主进程注入（resources/server/web-dist）
+  const fromMain = process.env.WEB_DIST;
+  if (fromMain && fs.existsSync(path.join(fromMain, 'index.html'))) return fromMain;
+
+  // ② dev 局域网调试：必须**显式**指定产物目录才托管（不再爬目录猜）
+  //    未设置 = 明确不托管，交给 Vite —— 这是 dev 的默认正确行为。
+  const explicit = process.env.YZ_SERVE_WEB_DIST;
+  if (explicit) {
+    if (fs.existsSync(path.join(explicit, 'index.html'))) return explicit;
+    logger.warn(`[web] YZ_SERVE_WEB_DIST 指向的目录无效（无 index.html）: ${explicit} —— 已忽略，前端仍走 Vite`);
+    return null;
   }
-  // dev：从 src 目录向上逐级找 apps/{web,desktop}/dist
-  // ESM 下无 __dirname（tsx/node 原生 ESM 均报错），与 db.ts 同款写法
-  let dir = path.dirname(fileURLToPath(import.meta.url));
-  for (let i = 0; i < 6; i++) {
-    for (const sub of ['apps/web/dist', 'apps/desktop/dist']) {
-      const p = path.join(dir, sub);
-      if (fs.existsSync(path.join(p, 'index.html'))) return p;
-    }
-    const parent = path.dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
+
+  // ③ 两条都没给：不托管。
+  //    ⚠️ 这里**必须**保持返回 null，绝不可再退回"向上爬目录"——
+  //    那就等于允许陈旧快照冒充 dev 前端（本次事故的根源）。
   return null;
 }
 const webDist = resolveWebDist();
@@ -417,6 +438,15 @@ if (webDist) {
     res.sendFile(path.join(webDist, 'index.html'), (err) => { if (err) next(); });
   });
   logger.info(`[web] 前端静态资源已托管: ${webDist}（局域网访问 http://<本机IP>:${PORT_NUM}）`);
+} else {
+  // ★ 可观测性（排障命门，非用户可见）：明确记录"不托管"这一**正常状态**。
+  //   此前该分支静默 —— 出事故时无法从日志判断"3001 到底有没有在提供前端"，
+  //   只能靠 curl 反推。dev 默认不托管 = 窗口走 Vite (1420)，这是正确行为。
+  logger.info(
+    process.env.YANZHI_DEV_INSTANCE === '1'
+      ? '[web] 未托管前端静态资源（dev 模式：窗口走 Vite，见 WEB_DIST / YZ_SERVE_WEB_DIST 均未显式提供）'
+      : '[web] 未托管前端静态资源（未提供 WEB_DIST）—— 局域网 http 访问将不可用，窗口自身不受影响'
+  );
 }
 
 const httpServer = app.listen(PORT_NUM, HOST, () => {
