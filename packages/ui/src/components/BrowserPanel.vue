@@ -874,6 +874,7 @@ async function ctxClose(mode: 'tab' | 'left' | 'right' | 'others' | 'all') {
         else { activeTabId.value = ''; urlInput.value = ''; history.value = []; histIndex.value = -1; }
       }
     }
+    await ensureTabExists();   // 浏览器常保至少一个 tab
   } else {
     // 关闭全部：关光后自动新建一个空白标签，避免出现空标签栏
     for (const id of [...list]) {
@@ -912,6 +913,16 @@ async function closeTab(tabId: string) {
       electronCanForward.value = false;
     }
   }
+  // ★ 兜底（2026-10-11）：关掉最后一个 tab 后自动补一个空白 tab —— 浏览器**始终至少一个 tab**。
+  //   此前会停在"只剩 + 号"的无 tab 空态，而该状态下 activeTab 为空 → 地址栏回车与常用网站
+  //   点击都会静默失败（navigate 无处写 url、webview 元素不存在）。空白 tab 内仍显示起始主页。
+  await ensureTabExists();
+}
+
+/** 浏览器常保至少一个标签页：无 tab 时补一个空白 tab（起始主页在其内展示）。 */
+async function ensureTabExists() {
+  if (tabs.value.length > 0) return;
+  try { await newTab(); } catch { /* 建 tab 失败不阻断关闭主流程 */ }
 }
 
 // ── BrowserView 尺寸同步：监听占位 div 尺寸/位置变化，调用 setBounds 同步原生 BrowserView ──
