@@ -2996,25 +2996,39 @@ async function runBrowserAction(convId, tabId, action, args) {
           if (!wc) return { error: '浏览器未就绪（无 webContents）' };
           const dbg = wc.debugger;
           let attachedHere = false;
-          if (!dbg.isAttached()) { dbg.attach('1.3'); attachedHere = true; }
+          // ★ B3（2026-10-11）：attach 失败必须有可区分错误（被其他调试客户端占用等），
+          //   不能落到外层 catch 变成不可诊断的"文件注入失败: ..."
+          if (!dbg.isAttached()) {
+            try { dbg.attach('1.3'); attachedHere = true; }
+            catch (e) { return { error: `CDP 调试器附加失败（可能被 DevTools 等其他客户端占用）: ${e && e.message || e}`, code: 'debugger_attach_failed' }; }
+          }
           const send = (method, params) => dbg.sendCommand(method, params);
           const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-          // 从候选 nodeId 中挑第一个「可见且未禁用」的 file input（页面上常有头像/封面等多个上传口，
-          // 旧实现盲取 nodeIds[0] 会选错节点 → 静默上传到错误位置）
-          const pickVisibleInput = async (nodeIds) => {
-            for (const nid of nodeIds) {
-              try {
-                const { object } = await send('DOM.resolveNode', { nodeId: nid });
-                if (!object || !object.objectId) continue;
-                const { result } = await send('Runtime.callFunctionOn', {
-                  objectId: object.objectId,
-                  functionDeclaration: 'function(){var r=this.getBoundingClientRect();var s=getComputedStyle(this);return !!(this.isConnected&&!this.disabled&&r.width>0&&r.height>0&&s.visibility!=="hidden"&&s.display!=="none");}',
-                  returnByValue: true,
-                });
-                if (result && result.value) return nid;
-              } catch { /* 单个节点解析失败不影响整体 */ }
-            }
-            return nodeIds[0];
+          // 探测候选 file input：只判「存活 + 未禁用」，可见性单独记录。
+          // ★★ B5（2026-10-11）：可见性只能用来**选哪个**，不能用来**否决能不能注入** ——
+          //   React/抖音这类站点的上传 input 常是 display:none / 0x0 的隐藏 input（由按钮 click 触发），
+          //   而 CDP 的 DOM.setFileInputFiles **不要求元素可见**（它直接给节点赋文件并触发 change）。
+          //   上一版（B3）把"不可见"当成不可用 → 抖音这类站点必然报 no_visible_input，上传全灭。
+          const probeInput = async (nid) => {
+            try {
+              const { object } = await send('DOM.resolveNode', { nodeId: nid });
+              if (!object || !object.objectId) return null;
+              const { result } = await send('Runtime.callFunctionOn', {
+                objectId: object.objectId,
+                functionDeclaration: 'function(){var r=this.getBoundingClientRect();var s=getComputedStyle(this);return {alive:!!this.isConnected,disabled:!!this.disabled,visible:!!(r.width>0&&r.height>0&&s.visibility!=="hidden"&&s.display!=="none")};}',
+                returnByValue: true,
+              });
+              const v = result && result.value;
+              if (!v || !v.alive || v.disabled) return null;
+              return { nodeId: nid, visible: !!v.visible };
+            } catch { /* 单个节点解析失败不影响整体 */ return null; }
+          };
+          // 优先可见的（页面常有多个上传口：头像/封面/视频，可见的更符合用户点击的入口）；
+          // 全隐藏时回落第一个「存活且未禁用」的节点 —— 仍比盲投 nodeIds[0] 安全（已排除失效/禁用）。
+          const pickInjectable = async (ids) => {
+            const all = [];
+            for (const nid of ids) { const p = await probeInput(nid); if (p) all.push(p); }
+            return all.find((p) => p.visible) || all[0] || null;
           };
           await send('Page.enable');
           await send('DOM.enable');
@@ -3080,14 +3094,41 @@ async function runBrowserAction(convId, tabId, action, args) {
             if (!nodeIds || !nodeIds.length) {
               result = { error: '页面上未找到 input[type=file]，且未捕获到文件选择器：请确认「上传」按钮已点击、文件选择框确实弹出。' };
             } else {
-              const target = await pickVisibleInput(nodeIds);
+              const picked = await pickInjectable(nodeIds);
+              let target = picked ? picked.nodeId : null;
+              // ★ B5：只有「一个存活且未禁用的节点都没有」才报错（此时 nodeId 确实失效，盲投会撞
+              //   "Either nodeId, backendNodeId or objectId must be specified"）。
+              if (!target) {
+                result = { error: '页面上有 input[type=file] 但节点已失效或全部禁用（no_valid_input）。建议：重新 get_page_info 取新编号，或改用 filechooser 模式——用 clickSelector/clickIndex 指定「上传」按钮重试。', code: 'no_valid_input' };
+              } else {
+                // ★ B3 复验：定位与注入之间 nodeId 可能因页面重渲染失效，先 describeNode 确认还活着；
+                //   失效则重新 getDocument+querySelectorAll 取一轮（最多一次），仍失败才报错。
+                try {
+                  await send('DOM.describeNode', { nodeId: target });
+                } catch {
+                  const fresh = await send('DOM.getDocument', { depth: -1, pierce: true })
+                    .then(({ root }) => send('DOM.querySelectorAll', { nodeId: root.nodeId, selector: 'input[type=file]' }))
+                    .catch(() => null);
+                  const freshIds = fresh && fresh.nodeIds ? fresh.nodeIds : [];
+                  const freshPick = freshIds.length ? await pickInjectable(freshIds) : null;
+                  target = freshPick ? freshPick.nodeId : null;
+                  if (!target) {
+                    result = { error: 'input[type=file] 节点在定位后失效且重取仍失败（node_stale）。建议：重新 get_page_info 后用新编号重试。', code: 'node_stale' };
+                  }
+                }
+              }
               // ★★ 参数名必须是单数 nodeId（CDP 协议：DOM.setFileInputFiles 接受 nodeId | backendNodeId | objectId）。
               //    曾误写成复数 nodeIds → CDP 静默忽略 → 三个标识符全缺 →
               //    抛 "Either nodeId, backendNodeId or objectId must be specified"，
               //    表现为「所有上传方式都报同一个错」（抖音上传 19 次尝试全灭的根因）。
               //    DOM.querySelectorAll 的**返回值**才叫 nodeIds（复数），别把请求参数也写成复数。
-              await send('DOM.setFileInputFiles', { files: [fp], nodeId: target });
-              result = { uploaded: true, via: 'cdp', filePath: fp, inputCount: nodeIds.length };
+              if (target) {
+                // hidden=true 表示注入到隐藏 input（React 站点常见）——setFileInputFiles 不要求可见，
+                // 仍会触发页面 change 处理；把它回传给模型，避免"看不到可见元素"时被误判为失败。
+                const hidden = !!(picked && picked.visible === false);
+                await send('DOM.setFileInputFiles', { files: [fp], nodeId: target });
+                result = { uploaded: true, via: 'cdp', filePath: fp, inputCount: nodeIds.length, hiddenInput: hidden };
+              }
             }
           }
           if (attachedHere) { try { dbg.detach(); } catch { /* ignore */ } }

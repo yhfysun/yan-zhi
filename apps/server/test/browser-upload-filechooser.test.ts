@@ -49,8 +49,19 @@ describe('browser_upload filechooser 实现（桌面端 main.cjs）', () => {
     expect(main).not.toContain('dt.items.add(file)');
   });
 
-  it('选择 input[type=file] 时应挑可见节点，而不是盲取 nodeIds[0]', () => {
-    expect(main).toContain('pickVisibleInput');
+  it('选择 input[type=file] 时优先可见节点，而不是盲取 nodeIds[0]', () => {
+    expect(main).toContain('pickInjectable');
+  });
+
+  it('★★ 可见性只能用于「选哪个」，不能否决「能不能注入」——隐藏 input 必须仍可注入（B5）', () => {
+    // 根因：抖音/React 站点的上传 input 常是 display:none / 0x0 隐藏 input（按钮 click 触发），
+    // 而 DOM.setFileInputFiles 不要求元素可见。B3 曾把"不可见"当不可用 → 报 no_visible_input、
+    // 抖音上传全灭。现在 probeInput 只判 alive/!disabled，可见性仅参与排序（visible 优先）。
+    const probe = main.match(/const probeInput = async[\s\S]*?\n {10}\};/)?.[0] || '';
+    expect(probe).toMatch(/disabled:\s*!!this\.disabled/);   // 仍排除禁用
+    expect(probe).toMatch(/visible:/);                        // 可见性单独记录
+    expect(main).toMatch(/all\.find\(\(p\)\s*=>\s*p\.visible\)\s*\|\|\s*all\[0\]/); // 全隐藏时回落存活节点
+    expect(main).not.toContain('pickVisibleInput');           // 旧的"不可见即否决"实现已移除
   });
 
   it('★★ DOM.setFileInputFiles 必须用单数 nodeId（写成复数 nodeIds 会被 CDP 静默忽略 → 报 Either nodeId...）', () => {
