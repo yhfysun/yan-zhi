@@ -785,7 +785,11 @@ async function main() {
                 '--disable-gpu',
                 '--disable-gpu-sandbox',
                 '--no-sandbox',
-                '--disable-software-rasterizer',
+                // ★ 2026-10-11：删掉 `--disable-software-rasterizer`（ee33a91 误引入）。
+                //   它与 `--disable-gpu` 自相矛盾：GPU 禁用后软件渲染唯一靠
+                //   SwiftShader 光栅化，再禁它 = 无任何渲染管线 → 窗口首帧永不
+                //   出来 → 主进程假死（Not Responding + CDP/bridge 全部超时）。
+                //   实测环境：远程桌面 GPU 进程连崩 0xC0000005 必触发本降级路径。
               ]),
             1500
           )
