@@ -76,6 +76,7 @@
            整段说明（用户反馈文案不该放这里），口径移到分母 title -->
       <div class="ctx-detail-hint" :class="{ 'is-danger': percent > 90 }">
         <template v-if="compactCount > 0">本会话已自动压缩 {{ compactCount }} 次，较早历史已转为摘要</template>
+        <template v-else-if="partialWindow">当前仅显示最近一屏消息，用量按已加载部分估算（服务端按全量决策压缩）</template>
         <template v-else>满额后较早历史将自动摘要压缩</template>
       </div>
     </div>
@@ -102,7 +103,9 @@ const props = withDefaults(defineProps<{
   conversationId?: string;
   /** 智能体 id：分段估算按该 agent 的提示词/工具面计算 */
   agentId?: string;
-}>(), { compactCount: 0, conversationId: '', agentId: '' });
+  /** 会话还有未加载的更早历史（懒加载分页中）→ usedTokens 只覆盖已加载窗口 */
+  partialWindow?: boolean;
+}>(), { compactCount: 0, conversationId: '', agentId: '', partialWindow: false });
 
 // ── 分段估算（2026-10-06，WorkBuddy 同款分类）──
 interface Breakdown { system: number; tools: number; mcp: number; skill: number; messages: number }

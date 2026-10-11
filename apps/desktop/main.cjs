@@ -194,10 +194,22 @@ async function waitForGuest(tabId, timeoutMs = 5000) {
     let set = guestWaiters.get(tabId);
     if (!set) { set = new Set(); guestWaiters.set(tabId, set); }
     set.add(wake);
+    // ★ 超时退出路径必须摘掉自己的 waiter（否则 Set 里留死函数，同 tab 反复等待会累积）
     const tick = new Promise((r) => setTimeout(r, 500));
-    await Promise.race([registered, tick]);
-    // 清理本次挂起的 waiter（防泄漏；被 register 唤醒时 wakeGuestWaiters 已整组删除）
+    const timeoutP = new Promise((r) => setTimeout(r, Math.max(timeoutMs - elapsed + 10, 10)));
+    const outcome = await Promise.race([
+      registered.then(() => 'w'),
+      tick.then(() => 't'),
+      timeoutP.then(() => 'x'),
+    ]);
+    // 清理本次挂起的 waiter（'w' 路径 wakeGuestWaiters 已整组删除，delete 无害）
     try { set.delete(wake); } catch { /* ignore */ }
+    if (outcome === 'x') {
+      // 兜底再查一次（可能 register 与超时同刻到达），查不到才真超时
+      const wc = guestWebContents(tabId);
+      if (wc) return wc;
+      return null;
+    }
     const wc = guestWebContents(tabId);
     if (wc) return wc;
   }

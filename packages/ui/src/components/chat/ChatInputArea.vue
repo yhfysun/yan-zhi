@@ -293,6 +293,7 @@
             :compact-count="compactCount"
             :conversation-id="store.currentConvId || ''"
             :agent-id="agentStore.selectedId || ''"
+            :partial-window="loadedConvHasMore"
           />
           <el-popover v-model:visible="plusOpen" placement="top-start" :width="264" trigger="click" :show-arrow="false" popper-class="plus-menu-popper">
             <template #reference>
@@ -778,6 +779,7 @@ const {
   //   两者都展示，否则用户按标称算会误以为"还有很大空间"。
   // ★ Task 6 起由工具条左下的 ContextUsagePill 胶囊承载（原右侧用量环已删）。
   tokenCount, contextLimit, tokenPercent, declaredContextWindow, messageRounds,
+  loadedConvHasMore,
 } = useChat();
 
 /** 当前会话已发生的自动压缩次数（消息流里的 compact_boundary 标记数），供胶囊明细展示 */

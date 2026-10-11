@@ -1520,6 +1520,17 @@ function createChat() {
     ),
   );
 
+  // ★★★ 2026-10-11 分页适配：会话还有未加载的更早历史时（hasMore），前端只见到尾部
+  //   50 条 → 直接 reduce 会**系统性偏低**（与服务端 context-breakdown 查全量的口径撕裂）。
+  //   修法：偏低量用「已加载窗口首条消息的时间」之前的**已压缩摘要**无法在前端便宜地补，
+  //   因此改为**懒加载下前端只估「当前可见窗口」并明确标注**：tokenCount 照旧算可见部分，
+  //   但用量环的语义变成「当前窗口占用」——服务端压缩决策始终按全量 + 摘要（不受影响）。
+  //   ★ 折衷理由：翻页补全量会让 computed 依赖 400+ 条消息（回到每帧全量 reduce 的老路，
+  //     正是本次要消灭的）；而 tokenCount 本就是 estimateTokens 估算而非 API 精确值。
+  const loadedConvHasMore = computed(() => {
+    const p = store.historyPagingByConv[store.currentConvId];
+    return !!p && p.hasMore;
+  });
   const tokenCount = computed(() =>
     store.currentMessages.reduce(
       (s, m) =>
@@ -3777,7 +3788,7 @@ async function healStalePlatform() {
     md, renderMarkdown, renderAssistantMarkdown, handleContentClick, handleContentDblClick, handleContentContextMenu,
     openPath, openPathInSystem,
     currentConv, filteredConversations, messageRounds, isToolErrorContent,
-    chatModels, modelGroups, mountableServers, tokenCount, contextLimit, tokenPercent, canSend,
+    chatModels, modelGroups, mountableServers, tokenCount, contextLimit, tokenPercent, loadedConvHasMore, canSend,
     // 标称窗口（模型 API 上限）：UI 需要同时展示"实际可用 / 标称"两个数，
     // 否则用户看到"才用 30%"会以为很空 —— 而 30% 可能已越过有效边界。
     declaredContextWindow,

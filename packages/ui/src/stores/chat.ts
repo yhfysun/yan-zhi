@@ -1038,9 +1038,9 @@ async function loadConversations() {
       const r = await api.get<any[]>(`/conversations/${convId}/messages?limit=${HISTORY_PAGE_SIZE}`);
       if ('data' in r) {
         messagesByConv.value[convId] = (r.data as any[]).map(rowToMsg);
-        const resp = r as any;
-        p.hasMore = resp.hasMore === true;
-        p.cursor = resp.oldestCursor ?? null;
+        // hasMore / oldestCursor 经 apiFetch 顶层字段透传（见 client.ts），不再是 data 内字段
+        p.hasMore = (r as any).hasMore === true;
+        p.cursor = (r as any).oldestCursor ?? null;
       } else if (messagesByConv.value[convId] === undefined) {
         messagesByConv.value[convId] = [];
       }
@@ -1098,9 +1098,8 @@ async function loadConversations() {
           const older = (r.data as any[]).map(rowToMsg);
           const cur = messagesByConv.value[convId];
           if (cur) messagesByConv.value[convId] = [...older, ...cur];
-          const resp = r as any;
-          p.hasMore = resp.hasMore === true;
-          p.cursor = resp.oldestCursor ?? null;
+          p.hasMore = (r as any).hasMore === true;
+          p.cursor = (r as any).oldestCursor ?? null;
         } else {
           p.hasMore = false; // 空页 = 到底（防哨兵反复打接口）
         }

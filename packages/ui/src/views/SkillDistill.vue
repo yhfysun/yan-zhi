@@ -706,8 +706,15 @@ async function selectConv(convId: string) {
     const r = await api.get<any[]>(`/conversations/${convId}/messages`);
     if ('data' in r) convMessages.value = r.data as any[];
   } else {
-    await chatStore.loadMessages(convId);
-    convMessages.value = [...chatStore.currentMessages];
+    // ★ 2026-10-11：不能走 chatStore.loadMessages —— 它已改分页首拉（最近 50 条），
+    //   蒸馏需要**全量**历史。登录态分支的无参请求即全量（后端保持兼容），
+    //   本地（未登录）分支同样直查全量。
+    const { getPlatformAdapter } = await import('@yan-zhi/core');
+    const rows = await getPlatformAdapter().db.query<any>(
+      'SELECT id, conversation_id, user_id, role, content, tool_calls_json, tool_call_id, reasoning_content, tokens, parent_tool_call_id, sub_agent_id, sub_agent_name, sub_agent_depth, created_at FROM message WHERE conversation_id = ? ORDER BY created_at ASC, id ASC',
+      [convId],
+    );
+    convMessages.value = rows as any[];
   }
   for (const m of convMessages.value) {
     msgChecked[m.id] = false;

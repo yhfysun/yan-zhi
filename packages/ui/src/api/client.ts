@@ -177,7 +177,11 @@ export async function apiFetch<T = any>(
   if (json.error) return { error: json.error, status: res.status, details: (json as any).data };
   // 认证接口返回 { token, user }，其他接口返回 { data: ... }
   if (json.token) return { data: json as T };
-  return { data: json.data ?? json };
+  // ★ 2026-10-11：透传 data 之外的顶层字段（如消息分页的 hasMore / oldestCursor）。
+  //   此前只返回 { data }，分页元数据被静默丢弃 → 前端 hasMore 恒 false，懒加载永不触发。
+  //   ★ 向后兼容：调用方不读这些字段则行为不变；json.data 缺失时回落整个 json（原语义）。
+  const { data: payload, ...meta } = json;
+  return { data: payload ?? json, ...meta } as { data: T };
 }
 
 export const api = {
