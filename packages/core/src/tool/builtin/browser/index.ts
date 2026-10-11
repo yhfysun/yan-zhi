@@ -171,6 +171,7 @@ export class BrowserNavigateTool implements BuiltInTool {
       url: { type: 'string', description: 'The URL to navigate to.' },
       tabId: { type: 'number', description: '可选：目标标签页 id（来自 browser_new_tab / browser_get_tabs），缺省为当前活动标签页。' },
       openInNewTab: { type: 'boolean', description: '编排层内部参数：同一批出现多个导航时，第 2 个及之后的导航会自动转为新开标签页并返回 tabId，无需手动传。' },
+      force: { type: 'boolean', description: '强制重新加载：目标 URL 与当前页面相同时默认不重复导航（返回 alreadyOpen，避免重置页面/清空已填表单）；确需刷新该页时才传 true。' },
     },
     required: ['url'],
   };
@@ -188,7 +189,13 @@ export class BrowserNavigateTool implements BuiltInTool {
         } catch { /* 单视图环境（桌面端 BrowserView）不支持多标签页，回退当前页导航 */ }
       }
       const tabId = args.tabId != null ? Number(args.tabId) : undefined;
-      const data = await callBrowserApi('/navigate', 'POST', { url, tabId }) as any;
+      // ★ 幂等：URL 与当前页相同时主进程不再重复导航（返回 alreadyOpen），
+      //   避免"填好的表单被重置、任务反复重来"；确需刷新才传 force:true。
+      const force = args.force === true ? true : undefined;
+      const data = await callBrowserApi('/navigate', 'POST', { url, tabId, force }) as any;
+      if (data && data.alreadyOpen) {
+        return ok(`当前页面已经就是该 URL，未重复导航（alreadyOpen —— 重复导航会重置页面/清空已填表单）。\nURL: ${data.url}\nTitle: ${data.title || ''}\n${data.note || ''}`);
+      }
       return ok(`Navigated to ${data.url}\nTitle: ${data.title}`);
     } catch (e: any) { return err(e?.message || '导航失败'); }
   }

@@ -3148,6 +3148,20 @@ async function runBrowserAction(convId, tabId, action, args) {
         //   渲染层模板也已在用（`:src="t.srcUrl || 'about:blank'"`）⇒ 放行是安全的。
         const isBlank = /^about:blank$/i.test(cleanUrl);
         if (!isBlank && !/^https?:\/\//i.test(cleanUrl)) return { error: `无效 URL: ${cleanUrl}` };
+        // ★★★ 同 URL 幂等（2026-10-11）：模型反复 navigate 到"当前已经在这个 URL"＝重新导航，
+        //   页面/表单全部重置 —— 抖音发布实测 23:08/23:13/23:19 三次 navigate 回
+        //   /content/upload，已上传视频与已填标题全丢，任务陷入"填了→没了→再填"死循环。
+        //   ⇒ 归一化后与当前地址相同就直接返回 alreadyOpen，**不触发真实导航**；
+        //     确需刷新时显式传 force:true 才真的 loadURL（保留出口，不把路堵死）。
+        const normUrl = (u) => String(u || '').trim().replace(/^https?:\/\//i, '').replace(/\/+$/, '').toLowerCase();
+        const curUrl = (wc && wc.getURL) ? wc.getURL() : '';
+        if (!isBlank && args.force !== true && curUrl && normUrl(curUrl) === normUrl(cleanUrl)) {
+          const curTitle = (wc && wc.getTitle) ? wc.getTitle() : '';
+          return {
+            url: curUrl, title: curTitle, alreadyOpen: true, loading: !!(wc && wc.isLoading && wc.isLoading()),
+            note: '当前页面已经就是该 URL，未重复导航（重复导航会重置页面/清空已填表单）。**不要换 URL 重试**；若确需强制刷新请传 force:true，或用 browser_get_page_content 读取当前内容。',
+          };
+        }
         // ★★★ 2026-10-11：`openInNewTab` 已在**进入 switch 之前**被改写为 `new_tab`
         //   （见 `doAction` 之前的 `if (args.openInNewTab) action = 'new_tab'`）——
         //   语义与 `new_tab` **完全一致**（开新页 + 返回 tabId + `decideAnchorUpdate` 判 touch 不抢锚），
