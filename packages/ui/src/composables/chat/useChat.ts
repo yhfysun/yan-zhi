@@ -2500,8 +2500,31 @@ async function healStalePlatform() {
   }
 
   async function send() {
+    // ★★★ 任务运行中 → 追加入队（2026-10-11 根因修复）：此判断**必须在重入锁之前**。
+    //   原因：下方重入锁覆盖整个 sendInner，而正常路径 sendInner 尾部 `await store.sendMessage`
+    //   = callLlm `await subscribeTaskSseWithReconnect`（等整个任务 SSE 流结束）——
+    //   任务跑多久锁就挂多久 ⇒ 任务运行中点发送在锁处被**静默 return**，连 sendInner 里的
+    //   入队分支都不可达 ⇒ 输入框保留原文（16:11 用户实报「追加功能失效」的直接根因）。
+    //   把入队提到锁前：同步判断 + 同步入队 + 清输入框，零 await，完全不受锁影响。
+    //   sendInner 内的同类分支保留（直调 sendInner 的路径仍覆盖）。
+    {
+      const runningConvEarly = store.currentConvId;
+      if (runningConvEarly && store.isConvStreaming(runningConvEarly)) {
+        if (uploadedFiles.value.length > 0) {
+          ElMessage.warning('任务进行中的追加消息暂不支持附件，请等任务结束后再发送带附件的消息');
+          return;
+        }
+        const queueTextEarly = input.value.trim();
+        if (!queueTextEarly) return;
+        store.enqueueMessage(runningConvEarly, queueTextEarly);
+        input.value = '';
+        return;
+      }
+    }
     // ★★★ 重入锁（2026-10-09）：状态在**任何 await 之前**同步置位。见 sending 声明处注释。
     //   放在这里而不是 store 里 —— 这里是"用户点发送"的唯一入口，能挡住 await 窗口期的连发。
+    //   （注意：此锁会覆盖整个任务时长 —— 正常路径 sendInner await store.sendMessage 等任务
+    //   SSE 全程。所以「运行中入队」判断必须放在它**前面**，见上方注释。）
     if (sending.value) return;
     sending.value = true;
     try {
@@ -2565,21 +2588,11 @@ async function healStalePlatform() {
       return;
     }
 
-    // ===== 任务运行中 → 追加队列（不打断当前任务）=====
-    // 此前是「输入框禁用 + 直接 return」，表现为「一个会话跑着，别的会话/新建会话就发不出消息」。
-    // 现在：本会话在跑就入队（可点「立即发送」注入下一轮），切到别的会话则完全不受影响。
-    const runningConv = store.currentConvId;
-    if (runningConv && store.isConvStreaming(runningConv)) {
-      if (uploadedFiles.value.length > 0) {
-        ElMessage.warning('任务进行中的追加消息暂不支持附件，请等任务结束后再发送带附件的消息');
-        return;
-      }
-      const queueText = input.value.trim();
-      if (!queueText) return;
-      store.enqueueMessage(runningConv, queueText);
-      input.value = '';
-      return;
-    }
+    // ===== 任务运行中 → 追加入队（不打断当前任务）=====
+    // ★ 该判断已上移到 send() 入口（重入锁之前）—— 此处在锁之后，任务运行中根本到不了
+    //   （锁覆盖整个任务 SSE 时长）。历史注释保留在 send() 处：此前是「输入框禁用 + 直接 return」，
+    //   表现为「一个会话跑着，别的会话/新建会话就发不出消息」；后改为入队。
+    //   （这里不再重复判 —— 同一语义两处各写一份必漂移，项目既有教训。）
 
     // ★★★ 取走内容即清空输入框（2026-10-09，多会话发消息"消失"修复）：
     //   此前 input.value 要等下面「建空间 → 建会话 → 落附件」多个 await 之后才清空，

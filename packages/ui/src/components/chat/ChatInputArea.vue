@@ -670,8 +670,10 @@
           </el-tooltip>
           <!-- 7.3 打断入口收敛：停止键移到输入区上方「任务运行中」一行（见 .run-indicator），
                此处恒为发送键 —— 运行中点击发送即入追加队列（原有行为），不再在两处各摆一个停止。
-               ★ disabled 只看 canSubmit（内容+模型），**不看** sending —— 见 canSubmit 注释。 -->
-          <el-tooltip :content="store.streaming ? '发送（任务运行中将加入队列）' : '发送 (Enter)'" placement="top">
+               ★ disabled 只看 canSubmit（内容+模型），**不看** sending —— 见 canSubmit 注释。
+               ★ tooltip 恒定文案（2026-10-11）：此前运行中会换成「发送（任务运行中将加入队列）」，
+                 用户明确反感（重复弹出 + 冗余提示）→ 简化为恒定「发送 (Enter)」。 -->
+          <el-tooltip content="发送 (Enter)" placement="top">
             <span>
               <el-button type="primary" :icon="Promotion" :disabled="!canSubmit" @click="send" circle class="send-btn" />
             </span>

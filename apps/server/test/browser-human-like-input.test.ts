@@ -102,6 +102,23 @@ describe('A. CDP 真键盘通道（主路径）', () => {
     expect(fn).toMatch(/return null/);
   });
 
+  it('★★★ 普通 input/textarea 必须先走 guest 内 typeIn 闭环（防文字泄漏进宿主聊天输入框）', () => {
+    const fn = sliceFrom(mainSrc, 'async function cdpTypeText(', 12000);
+    // 定位表单分支（else 分支，formRes 开始）：guest 内 typeIn 先行，CDP Input.insertText 仅兜底。
+    // ★ 不能用全文第一个 send('Input.insertText') 判断 —— 那是 contenteditable 分支自己的兜底（合法保留）。
+    const formIdx = fn.indexOf('const formRes = await wc.executeJavaScript');
+    expect(formIdx, '★ 表单分支未走 guest 内 typeIn（缺 formRes 注入块）').toBeGreaterThan(-1);
+    const guestTypeInIdx = fn.indexOf('A.typeIn(el,', formIdx);
+    expect(guestTypeInIdx, '★ 表单分支内缺 guest typeIn 调用').toBeGreaterThan(-1);
+    const cdpFallbackIdx = fn.indexOf("send('Input.insertText'", formIdx);
+    expect(cdpFallbackIdx, '★ 表单分支缺 CDP 兜底').toBeGreaterThan(-1);
+    expect(guestTypeInIdx, '★ guest 内 typeIn 必须先于 browser-level CDP 注入（CDP 注入会漏进宿主聚焦元素）')
+      .toBeLessThan(cdpFallbackIdx);
+    // via 必须能区分 guest-typein / cdp-keyboard 两条路
+    expect(fn).toContain('formVia');
+    expect(fn).toContain("'guest-typein'");
+  });
+
   it('cdp.attach 后必须 detach（避免长期占用调试器）', () => {
     const fn = sliceFrom(mainSrc, 'async function cdpTypeText(');
     expect(fn).toMatch(/dbg\.detach\(\)/);

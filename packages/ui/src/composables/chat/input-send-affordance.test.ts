@@ -52,7 +52,8 @@ describe('发送按钮禁用条件（症状①②）', () => {
   });
 
   it('行为语义：入队分支自身无 await（点追加即入队，不被网络/落盘拖住）', () => {
-    const i = CHAT.indexOf('if (runningConv && store.isConvStreaming(runningConv)) {');
+    // ★ 2026-10-11 入队判断已上移到 send() 入口（重入锁之前）—— 原因见 send-reentry-lock.test.ts。
+    const i = CHAT.indexOf('if (runningConvEarly && store.isConvStreaming(runningConvEarly)) {');
     expect(i, '★ 找不到追加队列分支').toBeGreaterThan(-1);
     const body = CHAT.slice(i, i + 700);
     expect(body, '★ 追加分支里找不到 enqueueMessage').toMatch(/store\.enqueueMessage\(/);

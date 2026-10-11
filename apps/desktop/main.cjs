@@ -2688,6 +2688,7 @@ async function cdpTypeText(wc, target, text, pressEnter) {
       // 定位失败不是"CDP 不可用"，而是真错误 —— 交给调用方按原逻辑回报（不回落，避免重复报错）
       return { locateError: (focusRes && focusRes.error) || '目标元素定位失败' };
     }
+    let formVia = ''; // 表单分支实际走的注入路径（guest-typein / cdp-keyboard），回填到 via
 
     // ② 真实文本注入。
     //   ★ contenteditable（富文本 / 字节 editor-kit 等受控编辑器）：CDP 的 browser-level
@@ -2695,7 +2696,11 @@ async function cdpTypeText(wc, target, text, pressEnter) {
     //     改用 guest 内 execCommand('insertText')：① 渲染进程内闭环，不会像 browser-level 输入那样
     //     泄漏到宿主聚焦元素（聊天输入框）；② 触发编辑器完整 beforeinput 管线，其内部 model 能同步。
     //     实测抖音描述框以此方式才被计数识别（39 / 1000）。
-    //   ★ 普通 input/textarea：仍走 CDP 真键盘（中文 IME、受控组件都认）。
+    //   ★ 普通 input/textarea（2026-10-11 泄漏修复，**guest 内闭环优先**）：
+    //     此前一律走 browser-level CDP Input.insertText —— 实测（16:11 抖音搜索）文本会同时
+    //     落进宿主聚焦元素（聊天输入框出现「我出生那天」），因为 webview guest 未持有系统级
+    //     焦点时 browser-level 注入会路由到当前聚焦的宿主输入框。现在表单分支先走 guest 内
+    //     typeIn（native setter + IME 组合事件，中文/受控组件都认，且带回读核验），CDP 仅兜底。
     if (text) {
       if (focusRes && focusRes.isCE) {
         const ceOk = await wc.executeJavaScript(
@@ -2703,7 +2708,22 @@ async function cdpTypeText(wc, target, text, pressEnter) {
         ).catch(() => false);
         if (!ceOk) await send('Input.insertText', { text: String(text) });
       } else {
-        await send('Input.insertText', { text: String(text) });
+        const formRes = await wc.executeJavaScript(`(function(){
+          var A=window.__yzAssistant; var el=null;
+          var idx=${idx}; var s=${JSON.stringify(sel)};
+          if(idx>=0){el=window.__yzElements&&window.__yzElements[idx];}
+          if(!el&&s){try{el=document.querySelector(s);}catch(e){}}
+          if(!el){el=document.activeElement;}
+          if(!el||!A)return {applied:false,value:''};
+          var r=A.typeIn(el,${JSON.stringify(String(text))});
+          return {applied:!!r.applied,value:String(r.value==null?'':r.value)};
+        })()`).catch(() => ({ applied: false, value: '' }));
+        if (formRes && formRes.applied) {
+          formVia = 'guest-typein';
+        } else {
+          // guest 内未生效（助手未注入 / 受控组件拒绝程序化输入）→ CDP 真键盘兜底
+          await send('Input.insertText', { text: String(text) });
+        }
       }
     }
 
@@ -2751,7 +2771,7 @@ async function cdpTypeText(wc, target, text, pressEnter) {
       applied,
       typed: expected.length,
       value: got.slice(0, 120),
-      via: fallback ? 'js-typein' : (focusRes && focusRes.isCE ? 'ce-execcommand' : 'cdp-keyboard'),
+      via: fallback ? 'js-typein' : (formVia || (focusRes && focusRes.isCE ? 'ce-execcommand' : 'cdp-keyboard')),
       ...(applied
         ? {}
         : { hint: '输入未生效（页面可能做了格式化/受控组件重置/输入被拦截）。已尝试 guest 内 typeIn 兜底仍失败，建议用 browser_get_page_content 核验输入框当前值。' }),
