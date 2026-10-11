@@ -34,6 +34,8 @@ description: 小说推文全自动产线：授权平台选书→过滤打分→�
 8. 回报选书理由 + 成片路径 + 发布/回填状态
 
 ## 页面 DOM 速查（全站 arco-design；类名带 hash 后缀会漂，优先「文本+结构」匹配）
+- 📄 **表单填写（别名创建弹窗 / 回填发文抽屉）专项**：`references/fanqie-dom.md`（arco 通用受控输入法、表单项 label 定位、下拉挂 body、抽屉「添加发文」按组提交、get_dom 复核手法）
+- 📄 **抖音发布页 / 合集专项**：`references/douyin-publish-dom.md`（上传/标题/发布设置锚点、「合集操作实现不了」三层排查：搜文本→查权限/实名→走兜底）
 - 左侧菜单：分组头 div.arco-menu-inline-header（内容库/申词记录），子项 div.arco-menu-item.arco-menu-item-indented；顶部同构 a.menu-item-*
 - 内容库：书目卡片带「别名推广」；搜索框 input.arco-input（placeholder「请输入作者名/书名/BookID」，受控组件用原生 setter 输入）
 - 书详情：目录「第N章 …」文本节点，点章节右侧加载正文；点不动改 x/y 坐标点击；正文末尾「下一章」逐章循环
@@ -47,10 +49,12 @@ description: 小说推文全自动产线：授权平台选书→过滤打分→�
 - 抖音创作者平台 creator.douyin.com：Web 上传可达 ✅，登录态需用户在浏览器面板登录一次
 
 ## 应用内用法
-novel_tuiwen { chapter: "novel/书名/ch01.txt", title: "书名", bg_video: "bg1.mp4,bg2.mp4" }
-产物：4:3 (1080x1440) mp4，deliverable，落 <工作目录>/output/
+novel_tuiwen { chapter: "novel/书名/ch03.txt", title: "书名", alias: "狐王痴狂", chapter: "3", bg_video: "bg1.mp4,bg2.mp4" }
+产物：4:3 (1080x1440) mp4，deliverable，落 <工作目录>/output/，文件名 `别名_第N章.mp4`
+- **标题条三要素（2026-10-11 必带）**：**别名 + 番茄小说 + 第几章**，自动拼成「搜「别名」看全文｜番茄小说 第N章」——传 alias + chapter 即可，不用手拼 banner；--banner 仍可显式覆盖。⚠️ 不传 alias/chapter 会告警（标题条只剩书名 = 违反书名红线）。标题条自动 ≤2 行（自然分隔符优先断行）+ 半透明黑底条，超宽自动缩字号。
 - 口播结构：钩子(正文第一句) + 正文段(第二句起) + 结尾引导
-- 顶部引导语支持**自动两行 + 0.6s 淡入**（2026-10-07）：banner 传长句（如「搜「别名」看全文｜打开番茄小说」）会自动在自然分隔处（｜|，,、空格）断成两行居中显示 —— 不需要自己插换行。想让分行更刻意，可在 banner 里显式写 `\n` 或真实换行（按行拆，最多 2 行）。⚠️ 项目自带 ffmpeg 是 2019 版，**不支持 drawtext 的 text_align/line_spacing** → 多行是靠「按行链式 drawtext」实现（每行一个 filter、y 逐行下移）；改这块别用这两个选项，会报 `Option not found`。
+- **字幕效果（2026-10-11 重做，SRT 改 ASS 直出）**：**无底框**（黑底 box 太丑已撤）——白字加粗+黑描边(3px)+轻投影；字号随画幅 H*4.2%（ASS PlayRes=真实分辨率，FontSize 即像素，4:3≈60px/9:16≈80px）；**长句单行快切 + 每条 140ms 淡入淡出**＝字幕逐句推进的滚动观感，不再两行长块换行；MarginV=H*5%。老版 ffmpeg(4.2) 兼容。
+- 顶部引导语自动 ≤2 行（2026-10-11 实装）：长句在自然分隔处（｜|，,、空格）断成两行居中显示，每行带半透明黑底 box——想让分行更刻意，可在 banner 里显式写 `\n` 或真实换行。⚠️ 项目自带 ffmpeg 是 2019 版，**不支持 drawtext 的 text_align/line_spacing** → 多行是靠「按行链式 drawtext」实现；改这块别用这两个选项，会报 `Option not found`。
 - 口播/画面/发布全链路「书名红线」：见下方「书名红线」条
 - ⚠️⚠️ **背景合成循环失效（2026-10-09 修复，最重要）**：项目自带 ffmpeg 是 **2019 版**（`git-2019-10-22`），**不支持「多输入 `-stream_loop -1` + concat 滤镜」**——此写法下 `-stream_loop` 对多输入**静默失效**，输出被**最短的那条输入轨**截断。
   - 症状：成片时长 = 前 1~2 段背景时长之和（如 29.4+78.7=108.1s），而口播有 400+s → 视频早早黑屏结束、台词只念了 1/4。**不报错**，极易误判成"配音没生成"。
@@ -59,6 +63,7 @@ novel_tuiwen { chapter: "novel/书名/ch01.txt", title: "书名", bg_video: "bg1
 - TTS 朗读规范化：时间→「X点X分秒」、进度 a/b（含 1\|4 转义）→中文分数、HP/MP/buff/BOSS 等术语→中文；①②③→「第一，」、3-5→「3到5」、→/&/≥→读法、装饰符号删除；只改送 TTS 文本，字幕显示原文。术语表在 tts_gen.py GAME_TERMS。；2026-10-07 修复「第一段重复」（旧版 hook 复用 segs[0][:40] 且 segments[0] 原样保留 → 开头 40 字念两遍；旧产物有此问题属预期，重跑即愈）。
 - 🔎 系列化建议（用户 2026-10-07 提出）：同一本书多章出片时，**让相邻章节的成片"接得上"**——① 勾子/封面都挂同一别名（观众搜同一词）；② 标题统一前缀「搜「别名」看全文｜第N章 <章名>」（账号主页一眼看成一串）；③ 发布时加「合集/合集名」（抖音发布页「添加合集」），把系列归到同一合集 → 观众能在合集里连着刷下一章。多章可 scheduled_task 逐日自动出片。
 - 📺 抖音合集（2026-10-07）系列化正解：发布页「发布设置」区 →「**添加到合集**」：首次点它会弹「创建新合集」（合集名 **≤20 字**，建议用别名/书名主题，别叫「我的作品集」），之后同系列发布直接勾选它 → 主页显示「第N集」，**后续同合集视频按发布时间自动累加集数**。**兜底/回溯**：creator.douyin.com → 内容管理 →「**合集管理**」→ 自定义创建合集（名称≤20字 + 简介 + 1:1 封面 1080×1080）→ 进合集「添加作品」勾选历史视频（单次 ≤50）→ 加入合集（可把已发布的第1章、第2章一起归入）。权限：**网页端需实名认证（无粉丝门槛）**；App 端需 ≥1万粉。发布页找不到合集入口 = 账号未开权限 → 别死磕，走兜底路径或如实报告。
+  - ⚠️ **「合集操作实现不了」三层排查（2026-10-11 补，详见 references/douyin-publish-dom.md）**：① 发布页整页 get_dom 搜「合集」文本——搜到就按文本定位；② 搜不到 → 查账号**实名认证**状态（网页端合集需实名，未实名 Web 端不放行，去 App 实名后重试）；③ 有实名仍无入口 → 账号未开权限，**别死磕发布页**，直接走兜底「内容管理→合集管理」或如实报告。抖音发布页改版频繁、类名无语义，每次先实抓再定位，别用记忆里的选择器硬点。
 
 ## 依赖
 - ffmpeg 兜底（**2026-10-09 更正**）：本机实际在 `C:\Program Files\EVCapture\ffmpeg.exe`（**不是** `C:\APP\EVCapture\`——那个路径不存在，旧写法害脚本一度找不到）。find_ffmpeg 已改为**多候选**：`$FFMPEG` → `C:\Program Files\EVCapture\ffmpeg.exe` → `C:\APP\EVCapture\ffmpeg.exe` → PATH。ffprobe 与 ffmpeg 同目录。
@@ -69,7 +74,8 @@ novel_tuiwen { chapter: "novel/书名/ch01.txt", title: "书名", bg_video: "bg1
 ```bash
 PY=C:/Users/Administrator/.workbuddy/binaries/python/envs/default/Scripts/python.exe
 cd novel-tuiwen/pipeline
-"$PY" run_pipeline.py --input ../sample/chapter01.txt --title 废井怀表 --bg-video "bg.mp4"
+"$PY" run_pipeline.py --input ../sample/chapter01.txt --title 废井怀表 \
+    --alias 狐王痴狂 --chapter 1 --bg-video "bg.mp4"
 ```
 
 ## 赛道规则（巨日禄工具宝箱）

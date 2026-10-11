@@ -10,8 +10,8 @@ PY=C:/Users/Administrator/.workbuddy/binaries/python/envs/default/Scripts/python
 cd pipeline
 # 背景视频模式(推荐)
 "$PY" run_pipeline.py --input ../sample/chapter01.txt --title 废井怀表 \
-    --bg-video "背景1.mp4,背景2.mp4"
-# 产物: ../output/废井怀表_chapter01.mp4 (1080x1440 4:3, 标题+字幕+配音)
+    --alias 狐王痴狂 --chapter 1 --bg-video "背景1.mp4,背景2.mp4"
+# 产物: ../output/狐王痴狂_第1章.mp4 (1080x1440 4:3, 标题条=搜「狐王痴狂」看全文｜番茄小说 第1章)
 ```
 
 ## 分步
@@ -28,9 +28,11 @@ python compose_video.py --script script.json --outdir ../output \
 
 ## 画面合成细节
 
-- 4:3 = 1080x1440，25fps；背景视频 cover 裁剪 + `-stream_loop` 循环铺满全片
-- 标题：顶部居中白字黑边（drawtext, msyh.ttc），字号 `--title-size 64`
-- 字幕：SRT(UTF-8-BOM) → libass `subtitles` 滤镜烧录；长句按 40 字切块、时间按字数比例分摊
+- 4:3 = 1080x1440，25fps；背景视频循环铺满（concat demuxer 方案，老版 ffmpeg 兼容）
+- **标题条三要素**：`--alias` + `--chapter` 自动拼「搜「别名」看全文｜番茄小说 第N章」；
+  自动 ≤2 行 + 半透明黑底条，超宽自动缩字号；`--banner` 可覆盖；文件名 `别名_第N章.mp4`
+- **字幕**：直接生成 ASS（PlayRes=真实分辨率）烧录；**无底框**——白字加粗+黑描边(3px)+轻投影；
+  字号随画幅 H*4.2%；长句**单行快切**+每条 140ms 淡入淡出（逐句推进的滚动观感）
 - 音频：逐段 TTS mp3 → concat 成单条 aac；`--bgm` 混入 BGM（音量 0.12）
 
 ## 依赖与环境

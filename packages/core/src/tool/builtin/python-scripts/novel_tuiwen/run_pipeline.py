@@ -63,10 +63,19 @@ def main():
     ap.add_argument("--bg-video", default="", help="背景视频(修驴蹄/骑单车等), 逗号分隔多段")
     ap.add_argument("--aspect", default="4:3", help="画幅: 4:3(默认) / 9:16(抖音竖屏) / 16:9(横屏)")
     ap.add_argument("--ending", default="", help="结尾引导文案（发抖音传：搜索别名XX看后续）")
-    ap.add_argument("--banner", default="", help="顶部常驻引导语（发抖音传：搜「别名」看全文）")
+    ap.add_argument("--banner", default="", help="顶部常驻引导语（覆盖自动生成的标题条）")
+    ap.add_argument("--alias", default="", help="别名（标题条三要素之一：搜「别名」看全文｜番茄小说 第N章）")
+    ap.add_argument("--chapter", default="", help="第几章（如 3；标题条与文件名都会带；缺省从文件名 chNN/chapterNN 推断）")
     ap.add_argument("--use-llm", action="store_true")
     a = ap.parse_args()
 
+    # 章节号：显式传 > 从文件名推断（ch03/chapter03/03.txt -> 3）
+    chapter = a.chapter
+    if not chapter:
+        import re as _re
+        m = _re.search(r"(?:ch|chapter)?0*(\d+)", os.path.basename(a.input), _re.IGNORECASE)
+        if m:
+            chapter = m.group(1)
     base = os.path.splitext(os.path.basename(a.input))[0]
     workdir = a.workdir or os.path.join(a.outdir, f"{base}_work")
     os.makedirs(workdir, exist_ok=True)
@@ -88,7 +97,9 @@ def main():
          "--script", script_json, "--outdir", out_dir]
         + (["--bg-video", a.bg_video] if a.bg_video else [])
         + (["--bgm", a.bgm] if a.bgm else [])
-        + ["--aspect", a.aspect] + (["--banner", a.banner] if a.banner else []))
+        + ["--aspect", a.aspect] + (["--banner", a.banner] if a.banner else [])
+        + (["--alias", a.alias] if a.alias else [])
+        + (["--chapter", chapter] if chapter else []))
 
 
 if __name__ == "__main__":
