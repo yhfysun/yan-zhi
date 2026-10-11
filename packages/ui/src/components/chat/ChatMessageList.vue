@@ -550,7 +550,7 @@ import { exportMarkdownDocx, absoluteMediaSrc, mediaOfTool, type MediaTarget } f
 
 const {
   store, platformStore, fileStore, messagesRef, messageRounds, formatTime, collapsedMessages, toggleMsgCollapse,
-  renderMarkdown, handleContentClick, handleContentDblClick, handleContentContextMenu,
+  renderMarkdown, renderAssistantMarkdown, handleContentClick, handleContentDblClick, handleContentContextMenu,
   copyMsg, editMsg, quoteMsg, distillUserMsg, delMsg,
   openSnapshotDialog, isLastRoundStreaming, getStreamingStep, parseConfigCard, getEditPlatform,
   getEditReason, onConfigSaved, expandedReasoning, toggleReasoning, expandedAgentProcess,
@@ -802,24 +802,11 @@ function fileChangePathOf(tool: string, result: unknown): string | null {
   return p.replace(/:+$/, '');
 }
 
-function renderAssistantMarkdown(content?: string) {
-  let c = content || '';
-  // 模型原始输出原样入库；渲染时隐藏文本模式工具调用块（工具调用已由结构化 chip/步骤区展示），
-  // 兼容 [TOOL_CALL]{...}[/TOOL_CALL] 与 <function=xxx>...</function> 及未闭合的尾部残留
-  c = c
-    .replace(/\[TOOL_CALL\][\s\S]*?\[\/TOOL_CALL\]/gi, '')
-    .replace(/\[TOOL_CALL\][\s\S]*$/i, '')
-    .replace(/<function\s*=\s*\w+\s*>[\s\S]*?<\/function>/gi, '')
-    .replace(/<function\s*=\s*\w+\s*>[\s\S]*$/i, '');
-  // 去掉平台配置卡片标记和 @@REASON@@ 分隔符（这些由 PlatformConfigCard 组件单独渲染）
-  c = c.replace(/\[\[PLATFORM_CONFIG:[^\]]*\]\]\s*$/g, '').split('\n@@REASON@@\n')[0].trim();
-  return c.split(/(\[tool_call\])/g).map((part) => {
-    if (part === '[tool_call]') {
-      return '<span class="inline-tool-chip"><span class="inline-tool-spinner"></span>正在调用工具</span>';
-    }
-    return renderMarkdown(part);
-  }).join('');
-}
+// ★★★ 2026-10-11：本地 `renderAssistantMarkdown` 已移除 —— 改用 `useChat` 导出的
+//   **带 LRU 缓存**的同名实现（见 useChat.ts 的 `renderAssistantMarkdown`）。
+//   原因：本组件的本地版在调（带缓存的）`renderMarkdown` 前先做 4 次贪婪正则 + split，
+//   这段预处理**不受缓存保护** ⇒ 流式每帧对 15.8KB 正文重跑正则，是卡顿第二主因。
+//   语义完全一致（逻辑已整体搬进 useChat），4 处模板调用点不变。
 
 /** 取整轮所有 assistant 消息产出的交付文件（按真实消息 id 集合过滤）
  *  交付文件在 chat.ts 中以产生 file_write 工具调用的那条助手消息真实 id 注册，

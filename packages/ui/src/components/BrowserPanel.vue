@@ -500,31 +500,6 @@ const convTaskRunning = computed(() => isPreviewScope && chatStore.streaming);
 //     有 tool:start 心跳），所以这个上限只会命中"残留"，不会误伤"真在跑"。
 //   ★ `lastBrowserToolAt === 0` 表示从未跑过浏览器工具 → 不适用（`browserTaskActive` 本就不为真）。
 const STALE_LOCK_MS = 5 * 60 * 1000;
-const lockStaleByHardLimit = computed(() => {
-  const last = chatStore.lastBrowserToolAt || 0;
-  return last > 0 && (nowTick.value - last) > STALE_LOCK_MS;
-});
-const inputLocked = computed(() =>
-  isPreviewScope && !chatStore.browserPaused
-  && convTaskRunning.value
-  && chatStore.browserTaskActive
-  && !lockStaleByHardLimit.value,   // ★ 硬上限兜底：残留锁定主动解除（不依赖服务端查询）
-);
-// ★ 可观测（2026-10-11，排障命门）：禁用标志**只在翻转时**打一条日志 ——
-//   这是"输入框为什么锁着/凭什么解开"的唯一现场证据（此前该判定零日志，
-//   用户实报「没有任务禁用标志还一直在」时只能靠读代码猜）。
-//   ★ 只在翻转时打印（不是每次求值），不刷屏；且打印出**四个条件各自的值**，
-//     一眼看出是哪一项导致的锁 —— 这比只打 `inputLocked=true` 有用得多。
-watch(inputLocked, (now, prev) => {
-  console.log(
-    `[BrowserPanel] 输入锁 ${prev ? 'true' : 'false'} → ${now ? 'true' : 'false'}` +
-    `（scope=${browserScope} paused=${chatStore.browserPaused} streaming=${convTaskRunning.value}` +
-    ` browserTaskActive=${chatStore.browserTaskActive} 超5min兜底=${lockStaleByHardLimit.value}）`,
-  );
-});
-// ★ 实况条活性门控（2026-10-09）：接管条只在浏览器工具有"呼吸"时显示 ——
-//   最后一次 browser_* 工具事件在宽限期（45s，覆盖 wait_for 30s 类长工具）内、
-//   或任务已暂停（暂停态要露「已暂停 · 你已接管页面」和恢复按钮，不能消失）。
 // ★★★ 2026-10-11 二次修订：**去掉 3s 轮询节拍器，改事件驱动的精确定时**。
 //
 //   用户原话：「轮询？…轮询效率肯定差啊」。
@@ -536,6 +511,15 @@ watch(inputLocked, (now, prev) => {
 //   ⇒ 改为**按需挂单次定时器**：只在"有活性计时需要观察"时，算准最近的到期时刻挂一个
 //     `setTimeout`；到点更新 `nowTick` 并**重新算下一次**。无任务时**零定时器**。
 //   ★ 语义完全等价（甚至更准）：`nowTick` 仍单调递增，两个 computed 照旧按差值判定。
+//
+//   ★★★ 2026-10-11 修复 TDZ 崩溃（本文件重大回归）：
+//     上一版把 `nowTick` 声明放到了使用它的 `lockStaleByHardLimit` computed **之后**，
+//     而 `watch(inputLocked, cb)`（见下）在创建时会**同步求值** inputLocked →
+//     lockStaleByHardLimit → 读 `nowTick.value`，此刻 const 尚未初始化 → 
+//     `ReferenceError: Cannot access 'nowTick' before initialization`。
+//     后果是 setup 直接抛异常 → 组件挂载失败 → `<webview>` 从不创建（预览打不开）、
+//     每次 update 重试刷爆主线程（页面卡死滚不动）、浏览器工具全挂（任务报错）。
+//     ⇒ 必须保证声明顺序：`nowTick` → `lockStaleByHardLimit` → `inputLocked` → watch。
 const nowTick = ref(Date.now());
 let nowTickTimer: ReturnType<typeof setTimeout> | null = null;
 /** 重算下一次"需要更新 nowTick"的时刻（取两个宽限中更早到期的那个） */
@@ -561,6 +545,28 @@ watch(() => chatStore.lastBrowserToolAt, () => {
   nowTick.value = Date.now();
   scheduleNowTick();
 }, { immediate: true });
+const lockStaleByHardLimit = computed(() => {
+  const last = chatStore.lastBrowserToolAt || 0;
+  return last > 0 && (nowTick.value - last) > STALE_LOCK_MS;
+});
+const inputLocked = computed(() =>
+  isPreviewScope && !chatStore.browserPaused
+  && convTaskRunning.value
+  && chatStore.browserTaskActive
+  && !lockStaleByHardLimit.value,   // ★ 硬上限兜底：残留锁定主动解除（不依赖服务端查询）
+);
+// ★ 可观测（2026-10-11，排障命门）：禁用标志**只在翻转时**打一条日志 ——
+//   这是"输入框为什么锁着/凭什么解开"的唯一现场证据（此前该判定零日志，
+//   用户实报「没有任务禁用标志还一直在」时只能靠读代码猜）。
+//   ★ 只在翻转时打印（不是每次求值），不刷屏；且打印出**四个条件各自的值**，
+//     一眼看出是哪一项导致的锁 —— 这比只打 `inputLocked=true` 有用得多。
+watch(inputLocked, (now, prev) => {
+  console.log(
+    `[BrowserPanel] 输入锁 ${prev ? 'true' : 'false'} → ${now ? 'true' : 'false'}` +
+    `（scope=${browserScope} paused=${chatStore.browserPaused} streaming=${convTaskRunning.value}` +
+    ` browserTaskActive=${chatStore.browserTaskActive} 超5min兜底=${lockStaleByHardLimit.value}）`,
+  );
+});
 onUnmounted(() => {
   if (nowTickTimer) { clearTimeout(nowTickTimer); nowTickTimer = null; }
   // 每日分析调度器一并收口（此前无清理 → 组件卸载后 30 分钟一跳仍在跑）
@@ -1147,9 +1153,22 @@ function normalizeUrl(raw: string): string {
 // preload 只提供 on*（没有对应的 off），右栏按 browser tab 的 v-if 反复挂载会不断累积监听器：
 // 已卸载实例的闭包依然会响应主进程广播并 newTab —— 这是"点一个链接开出 5 个 tab"的另一半原因
 // （另一半是主进程 session 级 + guest 级两个 handler 各广播一次）。
+// ★★★ 2026-10-11 大修（pageAgent 失效根因 + 监听器泄漏）：
+//   ① `componentAlive` 必须**每次挂载重置**（见 onMounted 顶部）—— 它是模块级变量，
+//      onUnmounted 置 false 后，第 2 次挂载若不重置 ⇒ 所有 aliveGuard 监听器全短路
+//      ⇒ onTabCreated 不执行 ⇒ <webview> 建不出 ⇒ waitForGuest 超时（wc=NULL）⇒ pageAgent 全挂。
+//   ② preload 的 on* 现已**返回 unsubscribe**（2026-10-11 改造）⇒ 本处收集到 ipcOffs，
+//      onUnmounted 逐个调用，彻底消除监听器累积（实测曾 11 个 tabCreated 监听器泄漏）。
+//   ★ ①是"决定性命中"（不改则功能全废）；②是"根治泄漏"（不改则反复挂载后事件重复消费）。
 let componentAlive = true;
+/** 本实例注册的所有 IPC 监听器的注销函数（onMounted 收集，onUnmounted 统一调用） */
+const ipcOffs: Array<() => void> = [];
 function aliveGuard<A extends any[]>(fn: (...args: A) => void) {
   return (...args: A) => { if (componentAlive) fn(...args); };
+}
+/** 包装 on* 调用：注册监听并把 unsubscribe 收入 ipcOffs（兼容旧 preload 不返回 off 的情况） */
+function trackIpc(onResult: unknown) {
+  if (typeof onResult === 'function') ipcOffs.push(onResult as () => void);
 }
 
 // ── 每标签页的本地导航栈（前进/后退的兜底真值来源）──
@@ -2079,55 +2098,30 @@ function onMenuCommand(cmd: string) {
 }
 
 onMounted(async () => {
-  // 引擎以主进程为准（BROWSER_ENGINE_DEFAULT）：主进程是单一真相源，
-  // 渲染层只负责按引擎渲染不同载体（<webview> 元素 vs BrowserView 占位 div）。
-  if (isElectron) {
-    try {
-      const eng = await (window as any).electronAPI?.browser?.engine?.();
-      if (eng === 'webview' || eng === 'browserview') browserEngine.value = eng;
-    } catch { /* 主进程无此 API 时保持默认值 */ }
-  }
-  // 恢复式挂载：store 中已有 tabs（路由 /browser ↔ /chat 切换、预览面板重开）时
-  // 恢复激活原 tab，绝不新建空 tab —— 否则每次挂载累积空白 tab 并把真实 tab 挤出
-  // 主进程 MAX_TABS=8 的 LRU 窗口（切回来"变回初始"的根因）。
-  const initUrl = route.query.url;
-  if (tabs.value.length > 0) {
-    const restoreId = (activeTabId.value && tabs.value.some(t => t.id === activeTabId.value))
-      ? activeTabId.value
-      : ([...tabs.value].reverse().find(t => t.url)?.id || tabs.value[tabs.value.length - 1].id);
-    // switchTab 对相同 tabId 会短路，先清空强制走完整的激活 + bounds 同步
-    activeTabId.value = '';
-    await switchTab(restoreId);
-  } else {
-    // 初始化第一个标签页
-    await newTab();
-  }
-  // 从路由 query 接收初始 URL（对话页点链接跳转过来），在应用内预览面板打开
-  if (typeof initUrl === 'string' && /^https?:\/\//i.test(initUrl)) {
-    nextTick(() => openSite(initUrl));
-  }
-  fetchData();
-  startDailyAnalysisScheduler();
+  // ★★★ 2026-10-11 修复「pageAgent 完全失效 + 浏览器停在主页 + wc=NULL(8s 超时)」：
+  //   `componentAlive` 是**模块级**变量（L1156），`onUnmounted` 会把它置 false，
+  //   但此前 `onMounted` **没有重置回 true**。后果：组件第 2 次挂载（切会话 / 切路由 /
+  //   预览面板重挂）后，所有 `aliveGuard(...)` 包装的监听器**全部短路**（`if (componentAlive)`
+  //   恒 false）⇒ `onTabCreated` 永不执行 ⇒ 主进程广播的 tab 建不出 `<webview>` 壳
+  //   ⇒ `waitForGuest` 必超时（日志铁证：`wc=NULL(8s 超时)`，且 tab 号跳格 1→2→4）
+  //   ⇒ 浏览器停在主页（无 tab 无 url）、pageAgent 所有动作失败。
+  //   ⇒ 每次挂载必须重置。**这是本次 pageAgent 失效的决定性根因。**
+  componentAlive = true;
 
-  // 监听外层主题切换：Web 端刷新自绘滚动条位置；Electron 端重新注入滚动条主题样式
-  themeObserver = new MutationObserver(() => {
-    if (isElectron) applyElectronScrollbarTheme();
-    else refreshCustomScrollbar();
-  });
-  themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
-
-  // Web 端：应用窗口 resize 时刷新自绘滚动条
-  if (!isElectron) window.addEventListener('resize', onAppResize);
-
+  // ★★★ 2026-10-11 重排：**监听器注册提到所有 await 之前**（消除 wc=NULL(8s) 的结构性隐患）。
+  //   原位置在 await newTab()/switchTab()、fetchData() 之后 —— 任一步抛异常/挂起都会让
+  //   后面 11 个 on* 注册**全部跳过** ⇒ onTabCreated 未注册 ⇒ 主进程广播无人接 ⇒ 8s 超时
+  //   ⇒ 浏览器停在主页、pageAgent 全挂。
+  //   ⇒ 提前到 componentAlive = true 之后立刻注册，**与后续任何初始化成败解耦**。
   // Electron 桌面端：注册 BrowserView 导航/加载回调 + 启动 ResizeObserver 同步 bounds
   if (isElectron) {
     const api = (window as any).electronAPI;
     // 监听 BrowserView 导航事件，同步地址栏 URL（带 tabId）
     // 导航/标题统一走 applyNavigated / applyTitle（webview 元素事件也复用同一套，避免两份漂移）
-    api.browserView.onNavigated(aliveGuard((tid: string, url: string) => applyNavigated(tid, url)));
+    trackIpc(api.browserView.onNavigated(aliveGuard((tid: string, url: string) => applyNavigated(tid, url))));
     // 网页 window.open / target=_blank：主进程在 partition 上拦截后转成此事件，
     // 统一在应用内新标签页打开，弹窗不会逃逸成系统窗口
-    (window as any).electronAPI?.onOpenTab?.(aliveGuard((url: string, scope?: string) => {
+    trackIpc((window as any).electronAPI?.onOpenTab?.(aliveGuard((url: string, scope?: string) => {
       if (!url) return;
       // 只接管归属自己空间的弹窗：主进程按"发起弹窗的 guest 属于哪个 tab"标注 scope，
       // 避免对话页预览与 /browser 独立页同时各开一个 tab（"点一下开出俩"的主因之一）。
@@ -2139,9 +2133,9 @@ onMounted(async () => {
       // 且面板反复挂载留下的旧监听器也会各消费一次（不挡就是"一下开 5 个"）。
       if (!claimPopup(url)) return;
       newTab(url);
-    }));
+    })));
     // agent 首次 navigate：主进程广播"在某 scope 打开 URL"——若面板仍停主页(无 <webview>)由此把它真正打开
-    (window as any).electronAPI?.onForceOpen?.(aliveGuard((url: string, scope?: string, tabId?: string | null) => {
+    trackIpc((window as any).electronAPI?.onForceOpen?.(aliveGuard((url: string, scope?: string, tabId?: string | null) => {
       // ★ 诊断日志（排障用，非用户可见提示）：forceOpen 是否到达本面板、命中哪个分支
       console.log(`[BrowserPanel] onForceOpen url=${url} scope=${scope} tabId=${tabId} myScope=${browserScope} alive=${componentAlive}`);
       // ★★★ scope 匹配放宽（「执行面直连化」，2026-10-10）：
@@ -2178,16 +2172,16 @@ onMounted(async () => {
         return;
       }
       openSite(url);
-    }));
+    })));
     // 主进程在渲染层重载完成（did-finish-load）后的"重认领"通知：
     // did-start-navigation 兜底会摘除全部 BrowserView，恢复依赖渲染层重挂链路；
     // 若 BrowserPanel 已挂载但占位尺寸无变化、ResizeObserver 不再触发，会一直停在
     // 摘除态（黑屏/首页占位）。这里收到通知后强制重跑一次可见性闸门补齐最后一环。
-    api.browserView.onResync?.(aliveGuard(() => {
+    trackIpc(api.browserView.onResync?.(aliveGuard(() => {
       nextTick(() => { if (shouldBeVisible.value) syncBrowserViewBounds(true); });
-    }));
+    })));
     // 监听页面加载完成事件（带 tabId）
-    api.browserView.onLoaded(aliveGuard(async (tid: string, _url: string) => {
+    trackIpc(api.browserView.onLoaded(aliveGuard(async (tid: string, _url: string) => {
       if (tid !== activeTabId.value) return;
       loading.value = false;
       if (activeTab.value) activeTab.value.loading = false;
@@ -2204,26 +2198,29 @@ onMounted(async () => {
           }
         } catch { /* ignore */ }
       }
-    }));
+    })));
     // 渲染进程崩溃且自动重载超过上限（主进程 CRASH_RELOAD_LIMIT=3）：
     // 只收尾 loading 状态，避免转圈不停。不新增任何可见 UI。
-    api.browserView.onCrashed?.(aliveGuard((tid: string, reason: string) => {
+    trackIpc(api.browserView.onCrashed?.(aliveGuard((tid: string, reason: string) => {
       if (tid !== activeTabId.value) return;
       loading.value = false;
       if (activeTab.value) activeTab.value.loading = false;
       console.warn('[BrowserPanel] 页面渲染进程崩溃且自动重载已达上限：', reason);
-    }));
+    })));
     // 非 UI 路径（pageAgent 工具 / 页面 window.close）关闭当前 tab 时，主进程自行顶替并广播。
     // activeTabId 已一致则忽略（幂等）：UI 路径下渲染层自身也会顶替，避免两次 switchTab 抖动。
-    api.browserView.onTabActivated?.(aliveGuard((tid: string) => {
+    trackIpc(api.browserView.onTabActivated?.(aliveGuard((tid: string) => {
       if (tid === activeTabId.value) return;
       if (!tabs.value.some(t => t.id === tid)) return; // 渲染层没有该 tab 壳，无从切换
       switchTab(tid).catch(() => { /* ignore */ });
-    }));
+    })));
     // 主进程兜底自建 tab（ensureActiveTab 超时自建）→ 补建 tab 壳。
     // 没有这步渲染层"无壳即忽略"，pageAgent 导航发生在主进程但预览面板毫无变化（导航黑洞）。
     // 按空间过滤：主进程广播带 scope，只认本空间的 tab，避免两边 tab 列表串扰。
-    api.browserView.onTabCreated?.(aliveGuard((tid: string, url: string | null, scope?: string) => {
+    trackIpc(api.browserView.onTabCreated?.(aliveGuard((tid: string, url: string | null, scope?: string) => {
+      // ★ 诊断日志（排障命门，非用户可见）：确认主进程广播是否到达本面板、各闸门取值。
+      //   `wc=NULL(8s 超时)` 时要能一眼看出是"回调没到"还是"被 scope/去重挡了"。
+      console.log(`[BrowserPanel] onTabCreated tid=${tid} url=${url} scope=${scope} myScope=${browserScope} alive=${componentAlive} 已有=${tabs.value.some(t => t.id === tid)}`);
       // page 空间只收明确标记为 page 的 tab；preview 空间收 preview 及未标记（旧主进程兼容）
       // ★★★ scope 匹配放宽（「执行面直连化」，2026-10-10）：主进程 `new_tab` 分支广播的是**裸
       //   `'preview'`**（见 main.cjs 的 new_tab case），而本面板的 browserScope 是
@@ -2232,18 +2229,19 @@ onMounted(async () => {
       const belong = scope || 'preview';
       const sameScope = belong === browserScope
         || (belong === 'preview' && browserScope.startsWith('preview'));
-      if (!sameScope) return;
-      if (tabs.value.some(t => t.id === tid)) return;
+      if (!sameScope) { console.log(`[BrowserPanel] onTabCreated 被 scope 挡：belong=${belong} myScope=${browserScope}`); return; }
+      if (tabs.value.some(t => t.id === tid)) { console.log(`[BrowserPanel] onTabCreated 已存在，跳过：${tid}`); return; }
       tabs.value.push({
         id: tid, url: url || '', srcUrl: url || '', title: '', loading: false, urlInput: url || '',
         history: url ? [url] : [], histIndex: url ? 0 : -1, pageZoom: 1, canBack: false, canForward: false,
       });
       activeTabId.value = tid;
-    }));
+      console.log(`[BrowserPanel] onTabCreated 已建壳 tab=${tid} tabs=${tabs.value.length} active=${activeTabId.value} isWebviewEngine=${isWebviewEngine.value}`);
+    })));
     // ★ tab 关闭广播（2026-10-09）：agent 关 tab / 任务收尾自动收拾时摘除 tab 壳。
     //   此前 webview 引擎下 agent 的 close_tab 只删主进程 meta，渲染层残留幽灵壳。
     //   幂等：不认识/已移除的 tabId 直接忽略。激活位切换由本处兜底 + 主进程 tabActivated 驱动。
-    api.browserView.onTabClosed?.(aliveGuard((tid: string) => {
+    trackIpc(api.browserView.onTabClosed?.(aliveGuard((tid: string) => {
       const idx = tabs.value.findIndex(t => t.id === tid);
       if (idx < 0) return;
       tabs.value.splice(idx, 1);
@@ -2252,14 +2250,14 @@ onMounted(async () => {
         const next = activeTabId.value;
         if (next) switchTab(next).catch(() => { /* ignore */ });
       }
-    }));
+    })));
     // 页面 title 变化 → 更新 tab 标题（真实网站名而非 URL）+ 对话页 browser tab 名
     // 对话页 tab chip 名称只由 preview 空间实例更新（page 空间的网页标题不牵连对话页）
-    api.browserView.onTitleUpdated?.(aliveGuard((tid: string, title: string) => applyTitle(tid, title)));
+    trackIpc(api.browserView.onTitleUpdated?.(aliveGuard((tid: string, title: string) => applyTitle(tid, title))));
     // Agent 虚拟鼠标广播：主进程动作完成后推送 guest 坐标（已按缩放换算）→ store 统一管理淡出
-    api.browserView.onCursor?.(aliveGuard((tid: string, x: number, y: number, label: string, kind: string) => {
+    trackIpc(api.browserView.onCursor?.(aliveGuard((tid: string, x: number, y: number, label: string, kind: string) => {
       chatStore.onAgentCursor(tid, x, y, label, kind);
-    }));
+    })));
 
     // webview 引擎：网页就在 DOM 里，无需 bounds 同步 / 无需主进程推送导航事件
     if (isWebviewEngine.value) return;
@@ -2279,6 +2277,58 @@ onMounted(async () => {
     syncBrowserViewBounds();
 
   }
+  // 引擎以主进程为准（BROWSER_ENGINE_DEFAULT）：主进程是单一真相源，
+  // 渲染层只负责按引擎渲染不同载体（<webview> 元素 vs BrowserView 占位 div）。
+  if (isElectron) {
+    try {
+      const eng = await (window as any).electronAPI?.browser?.engine?.();
+      if (eng === 'webview' || eng === 'browserview') browserEngine.value = eng;
+    } catch { /* 主进程无此 API 时保持默认值 */ }
+  }
+  // 恢复式挂载：store 中已有 tabs（路由 /browser ↔ /chat 切换、预览面板重开）时
+  // 恢复激活原 tab，绝不新建空 tab —— 否则每次挂载累积空白 tab 并把真实 tab 挤出
+  // 主进程 MAX_TABS=8 的 LRU 窗口（切回来"变回初始"的根因）。
+  const initUrl = route.query.url;
+  // ★★★ 2026-10-11 修复（`wc=NULL` 第二根因）：`await newTab()`/`switchTab()` 内部有
+  //   `await api.browserView.createTab(scope)` 等 IPC 调用，**任一步失败/超时都会抛异常**
+  //   ⇒ `onMounted` 在此中断 ⇒ **后面所有 `on*` 监听器注册全部跳过** ⇒ `onTabCreated`
+  //   从未注册 ⇒ 主进程广播的 tab 无人接 ⇒ `waitForGuest` 必超时（`wc=NULL(8s)`）
+  //   ⇒ 浏览器停在主页、pageAgent 全挂。（实测 11:22 重启后渲染层只有启动日志、
+  //     零条 BrowserPanel 日志 —— 组件挂载链在此断掉。）
+  //   ⇒ 必须 try/catch：**建 tab 失败不能拖垮监听器注册**（导航本身会由主进程兜底建 tab）。
+  try {
+    if (tabs.value.length > 0) {
+      const restoreId = (activeTabId.value && tabs.value.some(t => t.id === activeTabId.value))
+        ? activeTabId.value
+        : ([...tabs.value].reverse().find(t => t.url)?.id || tabs.value[tabs.value.length - 1].id);
+      // switchTab 对相同 tabId 会短路，先清空强制走完整的激活 + bounds 同步
+      activeTabId.value = '';
+      await switchTab(restoreId);
+    } else {
+      // 初始化第一个标签页
+      await newTab();
+    }
+  } catch (err) {
+    console.error('[BrowserPanel] 挂载期建 tab 失败（不影响监听器注册）：', err);
+  }
+  // 从路由 query 接收初始 URL（对话页点链接跳转过来），在应用内预览面板打开
+  if (typeof initUrl === 'string' && /^https?:\/\//i.test(initUrl)) {
+    nextTick(() => openSite(initUrl));
+  }
+  // ★ 同步/异步初始化也要隔离异常：任一抛出都会中断后面的监听器注册（同上）。
+  try { fetchData(); } catch (e) { console.error('[BrowserPanel] fetchData 失败：', e); }
+  try { startDailyAnalysisScheduler(); } catch (e) { console.error('[BrowserPanel] startDailyAnalysisScheduler 失败：', e); }
+
+  // 监听外层主题切换：Web 端刷新自绘滚动条位置；Electron 端重新注入滚动条主题样式
+  themeObserver = new MutationObserver(() => {
+    if (isElectron) applyElectronScrollbarTheme();
+    else refreshCustomScrollbar();
+  });
+  themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+
+  // Web 端：应用窗口 resize 时刷新自绘滚动条
+  if (!isElectron) window.addEventListener('resize', onAppResize);
+
 });
 
 // Electron 端：placeholder 出现时（用户导航到 URL）开始 ResizeObserver 观察
@@ -2292,9 +2342,17 @@ watch(browserViewPlaceholder, (el, oldEl) => {
 });
 
 onUnmounted(() => {
-  // 卸载即让本实例注册过的 IPC 监听全部失效：preload 只提供 on*（没有 off），
-  // 不这样的话旧实例的闭包会继续 newTab / 改状态（"点一下开出 5 个 tab"的元凶之一）。
+  // 卸载即让本实例注册过的 IPC 监听全部失效 —— 双保险：
+  //   ① `componentAlive = false`（逻辑门，防旧闭包改状态；每次挂载由 onMounted 重置）
+  //   ② 逐个调用 `ipcOffs` 里的 unsubscribe（**真注销**，根治监听器累积）
+  // ★ 2026-10-11：preload 的 on* 现返回 unsubscribe（此前只 on 不 off ⇒ 实测 11 个
+  //   tabCreated 监听器泄漏 ⇒ MaxListenersExceededWarning + 旧回调重复消费）。
+  //   ② 是根治；① 保留作防御（若旧 preload 不返回 off，逻辑门仍能挡住旧闭包）。
   componentAlive = false;
+  for (const off of ipcOffs) {
+    try { off(); } catch { /* 单个注销失败不影响其余 */ }
+  }
+  ipcOffs.length = 0;
   if (syncTimer !== null) {
     clearTimeout(syncTimer);
     syncTimer = null;

@@ -3,6 +3,7 @@ import { clampMenuPos } from '../../utils/menuPosition';
 import { isChatSelectableAgent } from '../../utils/agentSelectable';
 import { DEFAULT_CONTEXT_WINDOW } from '../../utils/context-window';
 import { hasLocalPath, isLocalPath, normalizePath, resolveOpenTarget, splitLocalPaths } from '../../utils/file-open';
+import { buildToolResultIndex } from '../../utils/tool-result';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import MarkdownIt from 'markdown-it';
 import hljs from 'highlight.js';
@@ -1040,6 +1041,49 @@ function createChat() {
     return html;
   }
 
+  /**
+   * ★★★ 助手正文专用渲染（2026-10-11，修「任务一跑页面卡死滚不动」的**第二主因**）。
+   *
+   * 背景：`ChatMessageList.vue:805` 原有同名**组件本地函数**，它在调用（带缓存的）
+   *   `renderMarkdown` **之前**先做 4 次贪婪正则 + split（剥 `[TOOL_CALL]` / `<function=>`
+   *   / `[[PLATFORM_CONFIG]]` / `@@REASON@@` 分隔符）+ `split('[tool_call]')`。
+   *   这段**预处理不受 mdCache 保护** ⇒ 流式期间每帧对 15.8KB 正文重跑正则。
+   *   ⇒ 把「预处理 + markdown」整体作为缓存单元（key = 原始 content）。
+   *
+   * 语义与组件本地版**完全一致**（逻辑逐条搬移，含 `[tool_call]` → chip 占位）。
+   * ★ 用独立 LRU（与 renderMarkdown 分开），避免两者互相挤占。
+   */
+  const ASSISTANT_MD_CACHE_MAX = 200;
+  const assistantMdCache = new Map<string, string>();
+  function renderAssistantMarkdown(content?: string) {
+    const raw = content || '';
+    const hit = assistantMdCache.get(raw);
+    if (hit !== undefined) return hit;
+
+    // 模型原始输出原样入库；渲染时隐藏文本模式工具调用块（工具调用已由结构化 chip/步骤区展示），
+    // 兼容 [TOOL_CALL]{...}[/TOOL_CALL] 与 <function=xxx>...</function> 及未闭合的尾部残留
+    let c = raw
+      .replace(/\[TOOL_CALL\][\s\S]*?\[\/TOOL_CALL\]/gi, '')
+      .replace(/\[TOOL_CALL\][\s\S]*$/i, '')
+      .replace(/<function\s*=\s*\w+\s*>[\s\S]*?<\/function>/gi, '')
+      .replace(/<function\s*=\s*\w+\s*>[\s\S]*$/i, '');
+    // 去掉平台配置卡片标记和 @@REASON@@ 分隔符（这些由 PlatformConfigCard 组件单独渲染）
+    c = c.replace(/\[\[PLATFORM_CONFIG:[^\]]*\]\]\s*$/g, '').split('\n@@REASON@@\n')[0].trim();
+    const html = c.split(/(\[tool_call\])/g).map((part) => {
+      if (part === '[tool_call]') {
+        return '<span class="inline-tool-chip"><span class="inline-tool-spinner"></span>正在调用工具</span>';
+      }
+      return renderMarkdown(part);
+    }).join('');
+
+    if (assistantMdCache.size >= ASSISTANT_MD_CACHE_MAX) {
+      const oldest = assistantMdCache.keys().next().value;
+      if (oldest !== undefined) assistantMdCache.delete(oldest);
+    }
+    assistantMdCache.set(raw, html);
+    return html;
+  }
+
   // 正文图片：统一缩略。模型在总结 md 里输出 ![](url) 是允许的，但尺寸必须严格受控
   // （此前无 renderer，图片按原始尺寸渲染，大图撑破一屏）。
   // src 必须补成可请求地址：模型贴的 /api/generated/... 是站点根相对路径，
@@ -1407,6 +1451,31 @@ function createChat() {
     }
     return rounds;
   });
+
+  /**
+   * ★★★ 工具结果索引（2026-10-11，修「任务一跑页面卡死滚不动」的**主因**）。
+   *
+   * 背景：模板里 `getToolResult(tc.id)` / `isToolError(tc.id)` 是**方法调用**
+   *   （`ChatMessageList.vue` 里分别出现 8 处 / 2 处），Vue **不缓存模板函数调用** ——
+   *   每次组件重渲都会重新执行。而这两个函数原本是：
+   *     `store.currentMessages.find(m => m.role==='tool' && m.toolCallId===id)`  ← O(n) 全表扫描
+   *     + `JSON.parse(toolMsg.content)`                                        ← 解析可能 15.8KB 的 JSON
+   *
+   * 为什么"每次都全量"：流式期间 `chunk` 每 50ms flush 一次 → `messageRounds` 重算
+   *   （重算本身仅 0.187ms，**不是瓶颈**）→ 但它返回**全新 round 对象引用** →
+   *   整棵消息列表重渲 → 所有历史消息里的 `getToolResult(...)` 全部重跑。
+   *   实测会话 445 条消息、一屏 ~50 个工具调用 ⇒ 每帧数百次 find + 数千次 JSON.parse，
+   *   每秒 20 帧 ⇒ 主线程占死。
+   *
+   * 修法：本 computed 与 `messageRounds` **同源同生命周期**（都只依赖 `store.currentMessages`），
+   *   一次遍历建好 `callId -> {content, isError}` 索引，热函数降为 **O(1)** 查表。
+   *   ★ 索引与 rounds 一起重算 ⇒ 天然不会脏读；content 未变的帧直接命中。
+   *   ★ `content` 存的是**解析后的展示文本**（与 `getToolResult` 原语义完全一致），
+   *     避免每帧重复 JSON.parse。
+   */
+  const toolResultIndex = computed<Map<string, { content: string | null; isError: boolean }>>(() =>
+    buildToolResultIndex(store.currentMessages),
+  );
 
   function isToolErrorContent(content: string): boolean {
     try {
@@ -3218,7 +3287,27 @@ async function healStalePlatform() {
     return 'group-ok';
   }
 
+  /**
+   * ★★ 2026-10-11：加 WeakMap 缓存（模板里 6 处调用，每帧重执行；纯计算但含 2 次正则 +
+   *   mcpServers 线性 find）。
+   *   ⚠️ 正确性关键：结果依赖 `mcpStore.servers`（会变）⇒ 缓存条目必须**带上当时的 servers 引用**，
+   *      命中时比对引用一致才返回；不一致则重算。否则 MCP 服务器改名/新增后显示会脏。
+   *   ★ WeakMap 以 tc 对象为 key：tc 引用稳定（messageRounds 直接引用 msg.toolCalls 元素），
+   *     且只有 `tool_call` 事件会整组替换（低频）⇒ 高频 chunk 路径稳定命中，无内存泄漏。
+   */
+  const toolDisplayCache = new WeakMap<object, { servers: unknown; value: { server: string; tool: string } }>();
   function resolveToolDisplay(tc: any): { server: string; tool: string } {
+    const servers = mcpStore.servers;
+    if (tc && typeof tc === 'object') {
+      const hit = toolDisplayCache.get(tc);
+      if (hit && hit.servers === servers) return hit.value;
+    }
+    const value = resolveToolDisplayUncached(tc);
+    if (tc && typeof tc === 'object') toolDisplayCache.set(tc, { servers, value });
+    return value;
+  }
+
+  function resolveToolDisplayUncached(tc: any): { server: string; tool: string } {
     const rawName = tc.function?.name || tc.toolName || tc.id || '';
     let m = rawName.match(/^mcp_(.{1,8}?)__(.+)$/);
     if (m) {
@@ -3237,13 +3326,21 @@ async function healStalePlatform() {
     return { server: 'MCP', tool: rawName };
   }
 
+  /** ★★ 2026-10-11：WeakMap 缓存（模板 2 处；纯函数：同一 tc → 同一输出，无外部依赖） */
+  const toolArgsCache = new WeakMap<object, string>();
   function resolveToolArgs(tc: any): string {
-    const args = tc.function?.arguments ?? tc.arguments;
-    if (!args) return '{}';
-    if (typeof args === 'string') {
-      try { return JSON.stringify(JSON.parse(args), null, 2); } catch { return args; }
+    if (tc && typeof tc === 'object') {
+      const hit = toolArgsCache.get(tc);
+      if (hit !== undefined) return hit;
     }
-    return safeJson(args);
+    const args = tc?.function?.arguments ?? tc?.arguments;
+    let out: string;
+    if (!args) out = '{}';
+    else if (typeof args === 'string') {
+      try { out = JSON.stringify(JSON.parse(args), null, 2); } catch { out = args; }
+    } else out = safeJson(args);
+    if (tc && typeof tc === 'object') toolArgsCache.set(tc, out);
+    return out;
   }
 
   /**
@@ -3251,7 +3348,17 @@ async function healStalePlatform() {
    * （文件路径 / 命令 / URL / 查询词…），让摘要行呈现「工具名 · 对象」而不是裸工具名。
    * 纯只读展示，不参与任何业务逻辑；挑不出对象就返回空串（行内不渲染该段）。
    */
+  const toolTargetHintCache = new WeakMap<object, string>();
   function toolTargetHint(tc: any): string {
+    if (tc && typeof tc === 'object') {
+      const hit = toolTargetHintCache.get(tc);
+      if (hit !== undefined) return hit;
+    }
+    const out = toolTargetHintUncached(tc);
+    if (tc && typeof tc === 'object') toolTargetHintCache.set(tc, out);
+    return out;
+  }
+  function toolTargetHintUncached(tc: any): string {
     let args: any = tc?.function?.arguments ?? tc?.arguments;
     if (typeof args === 'string') {
       try { args = JSON.parse(args); } catch { return ''; }
@@ -3276,13 +3383,13 @@ async function healStalePlatform() {
     try { return JSON.stringify(v, null, 2); } catch { return String(v); }
   }
 
+  /**
+   * ★★★ 2026-10-11：改为查 `toolResultIndex`（O(1)），不再每次 find + JSON.parse。
+   *   语义与原实现**完全一致**（解析逻辑已整体搬进索引 computed）。
+   *   模板里 8 处调用、流式期间每帧数百次 → 从 O(n) 降为 O(1)。
+   */
   function isToolError(toolCallId: string): boolean {
-    const toolMsg = store.currentMessages.find(m => m.role === 'tool' && m.toolCallId === toolCallId);
-    if (!toolMsg?.content) return false;
-    try {
-      const parsed = JSON.parse(toolMsg.content);
-      return !!parsed?.isError;
-    } catch { return false; }
+    return toolResultIndex.value.get(toolCallId)?.isError || false;
   }
 
   function getToolStatusClass(toolCallId: string): string {
@@ -3290,7 +3397,18 @@ async function healStalePlatform() {
     return isToolError(toolCallId) ? 'tool-status-error' : 'tool-status-ok';
   }
 
+  /**
+   * ★★★ 2026-10-11：改为查 `toolResultIndex`（O(1)）。
+   *   ⚠️ 语义差异点（有意为之，需知）：旧实现里 `toolMsg.content` 为空串时返回 null；
+   *      索引建表时对 `!raw` 也存 `{content:null}` ⇒ 行为一致。
+   *   返回 null 表示"工具还没结果"（模板据此显示 running 态）。
+   */
   function getToolResult(toolCallId: string): string | null {
+    return toolResultIndex.value.get(toolCallId)?.content ?? null;
+  }
+
+  /** 保留原实现（仅供测试对照 / 极端回退用；正常路径不再调用） */
+  function getToolResultUncached(toolCallId: string): string | null {
     const toolMsg = store.currentMessages.find(m => m.role === 'tool' && m.toolCallId === toolCallId);
     if (!toolMsg?.content) return null;
     try {
@@ -3649,7 +3767,7 @@ async function healStalePlatform() {
     showWorkspaceDir, workspaceDir, hasWorkspaceDir, loadWorkspaceDir, onWorkspaceDirSelected, clearWorkspaceDir,
     tryParseSnapshot, formatSnapshot, snapshotDialog, snapshotActiveTab, snapshotLoading, currentSnapshots, openSnapshotDialog,
     isDraftMode, renamingId, renamingTitle, renameInputRef, ctxMenu,
-    md, renderMarkdown, handleContentClick, handleContentDblClick, handleContentContextMenu,
+    md, renderMarkdown, renderAssistantMarkdown, handleContentClick, handleContentDblClick, handleContentContextMenu,
     openPath, openPathInSystem,
     currentConv, filteredConversations, messageRounds, isToolErrorContent,
     chatModels, modelGroups, mountableServers, tokenCount, contextLimit, tokenPercent, canSend,
@@ -3676,6 +3794,7 @@ async function healStalePlatform() {
     isToolItemOpen,
     getStepToolResult, isStepToolError, isStepToolsRunning, isStepToolsError, getStepToolGroupClass, getStepToolStatusClass,
     isToolGroupRunning, isToolGroupError, getToolGroupStatusClass, resolveToolDisplay, resolveToolArgs, toolTargetHint, safeJson, isToolError, getToolStatusClass, getToolResult,
+    toolResultIndex, getToolResultUncached,
     copyMsg, editMsg, quoteMsg, delMsg, openConvMenu, closeCtxMenu, togglePin, startRename, commitRename, deleteConv, toggleConvSelect, batchSelectAll, batchDeleteConvs,
     collapsedSubAgentResults, toggleSubAgentResult, collapsedMainResults, toggleMainResult,
     copySubAgentRoundMd, downloadSubAgentRoundMd, copySubAgentResultMd, downloadSubAgentResultMd,

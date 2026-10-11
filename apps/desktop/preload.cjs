@@ -175,49 +175,79 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getZoomFactor: (tabId) => ipcRenderer.invoke('browserView:getZoomFactor', tabId),
     setTheme: (tabId, theme) => ipcRenderer.invoke('browserView:setTheme', tabId, theme),
     action: (tabId, action, args) => ipcRenderer.invoke('browserView:action', tabId, action, args),
+    // ★★★ 2026-10-11：所有 onXxx 改为**返回 unsubscribe 函数**。
+    //   此前每个 onXxx 只 `ipcRenderer.on` 不注销 ⇒ 组件每次挂载都新增一份监听器
+    //   ⇒ 实测 `MaxListenersExceededWarning: 11 browserView:tabCreated listeners added`
+    //   ⇒ 内存泄漏 + 事件被旧回调重复消费（"一下开 5 个"类问题）。
+    //   ★ 向后兼容：旧调用方忽略返回值照常工作（只是不注销）。
     onNavigated: (callback) => {
-      ipcRenderer.on('browserView:navigated', (_e, tabId, url) => callback(tabId, url));
+      const h = (_e, tabId, url) => callback(tabId, url);
+      ipcRenderer.on('browserView:navigated', h);
+      return () => ipcRenderer.removeListener('browserView:navigated', h);
     },
     onLoaded: (callback) => {
-      ipcRenderer.on('browserView:loaded', (_e, tabId, url) => callback(tabId, url));
+      const h = (_e, tabId, url) => callback(tabId, url);
+      ipcRenderer.on('browserView:loaded', h);
+      return () => ipcRenderer.removeListener('browserView:loaded', h);
     },
     onCrashed: (callback) => {
-      ipcRenderer.on('browserView:crashed', (_e, tabId, reason) => callback(tabId, reason));
+      const h = (_e, tabId, reason) => callback(tabId, reason);
+      ipcRenderer.on('browserView:crashed', h);
+      return () => ipcRenderer.removeListener('browserView:crashed', h);
     },
     onTabActivated: (callback) => {
-      ipcRenderer.on('browserView:tabActivated', (_e, tabId) => callback(tabId));
+      const h = (_e, tabId) => callback(tabId);
+      ipcRenderer.on('browserView:tabActivated', h);
+      return () => ipcRenderer.removeListener('browserView:tabActivated', h);
     },
     // 主进程兜底自建 tab（ensureActiveTab 超时）时广播，渲染层补建 tab 壳，避免"导航黑洞"
     onTabCreated: (callback) => {
-      ipcRenderer.on('browserView:tabCreated', (_e, tabId, url, scope) => callback(tabId, url, scope));
+      const h = (_e, tabId, url, scope) => callback(tabId, url, scope);
+      ipcRenderer.on('browserView:tabCreated', h);
+      return () => ipcRenderer.removeListener('browserView:tabCreated', h);
     },
     // tab 关闭广播（2026-10-09）：agent 关 tab / 收尾自动收拾 / closeAllTabs 时推送，渲染层幂等摘壳
     onTabClosed: (callback) => {
-      ipcRenderer.on('browserView:tabClosed', (_e, tabId) => callback(tabId));
+      const h = (_e, tabId) => callback(tabId);
+      ipcRenderer.on('browserView:tabClosed', h);
+      return () => ipcRenderer.removeListener('browserView:tabClosed', h);
     },
     // 页面 title 变化推送，渲染层更新 tab 标题（真实网站名而非 URL）
     onTitleUpdated: (callback) => {
-      ipcRenderer.on('browserView:pageTitle', (_e, tabId, title) => callback(tabId, title));
+      const h = (_e, tabId, title) => callback(tabId, title);
+      ipcRenderer.on('browserView:pageTitle', h);
+      return () => ipcRenderer.removeListener('browserView:pageTitle', h);
     },
     // 渲染层重载完成后主进程通知"重认领"BrowserView（黑屏兜底，见 BrowserPanel onResync）
     onResync: (callback) => {
-      ipcRenderer.on('browserView:resync', () => callback());
+      const h = () => callback();
+      ipcRenderer.on('browserView:resync', h);
+      return () => ipcRenderer.removeListener('browserView:resync', h);
     },
     // Agent 虚拟鼠标广播：主进程在 browserView:action 完成后推送 guest 光标坐标（已按缩放换算）
     onCursor: (callback) => {
-      ipcRenderer.on('browserView:cursor', (_e, tabId, x, y, label, kind) => callback(tabId, x, y, label, kind));
+      const h = (_e, tabId, x, y, label, kind) => callback(tabId, x, y, label, kind);
+      ipcRenderer.on('browserView:cursor', h);
+      return () => ipcRenderer.removeListener('browserView:cursor', h);
     },
+    // ★ 不提供 offAll()：BrowserPanel 可能**两个实例并存**（对话页 preview 面板 + /browser 独立页），
+    //   一次性 removeAllListeners 会把另一实例的监听也清掉。故只暴露**精确的** unsubscribe
+    //   （每个 onXxx 返回各自的 removeListener 闭包），由组件实例自己收集、卸载时逐个调用。
   },
 
   // webview 引擎：网页 window.open / target=_blank 统一转应用内新标签页
   onOpenTab: (callback) => {
     // scope：弹窗归属空间（preview/page），渲染层据此只让对应的面板接管，避免两边同时开 tab
-    ipcRenderer.on('browser:wv:openTab', (_e, url, scope) => callback(url, scope));
+    const h = (_e, url, scope) => callback(url, scope);
+    ipcRenderer.on('browser:wv:openTab', h);
+    return () => ipcRenderer.removeListener('browser:wv:openTab', h);
   },
   // webview 引擎：agent 首次 navigate 时主进程请求某 scope 的浏览器面板把 URL 作为当前页打开
   // （面板还停在主页/无 <webview> 时先由此建出 guest，浏览器才算真正"打开网址"）
   onForceOpen: (callback) => {
-    ipcRenderer.on('browser:wv:forceOpen', (_e, url, scope, tabId) => callback(url, scope, tabId));
+    const h = (_e, url, scope, tabId) => callback(url, scope, tabId);
+    ipcRenderer.on('browser:wv:forceOpen', h);
+    return () => ipcRenderer.removeListener('browser:wv:forceOpen', h);
   },
 
   // pageAgent 浏览器操作统一通道（IPC 直连 BrowserView，不依赖后端 Playwright）
