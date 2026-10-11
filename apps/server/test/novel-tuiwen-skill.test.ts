@@ -52,12 +52,12 @@ describe('novel-tuiwen skill seed 关键锚点（防漂移）', () => {
     }
   });
 
-  it('回填时效规则（新别名 14 天内不回填会失效）存在', () => {
-    // ★ 2026-10-08 同步：官方口径为 **14 天**（此前项目误记为 7 天，已在 SKILL 内更正）。
-    //   断言仍钉住「有明确时效数字」，只把 7 改成 14。
+  it('回填时效规则（新别名 7 天内不回填会失效）存在', () => {
+    // ★ 2026-10-09 同步：官方页面原文核实口径为 **7 天**（此前误记为 14 天，已在 SKILL seed 内更正；
+    //   与 server/db.ts、core/schema.ts、builtin-task-mode-agents.ts 三处保持一致）。
     for (const [name, src] of [['core/schema.ts', CORE_SCHEMA()], ['server/db.ts', SERVER_DB()], ['agents', AGENTS()]] as const) {
-      expect(src, name).toMatch(/14\s*天内不回填/);
-      expect(src, name, '旧口径（7 天）不得再出现').not.toMatch(/7\s*天内不回填/);
+      expect(src, name).toMatch(/7\s*天内不回填/);
+      expect(src, name, '旧口径（14 天）不得再出现').not.toMatch(/14\s*天内不回填/);
     }
   });
 

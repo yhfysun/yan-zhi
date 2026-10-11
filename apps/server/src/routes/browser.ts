@@ -314,17 +314,8 @@ async function getBrowser() {
 
 /** 给 page 挂载下载与网络请求监听 */
 function attachPageListeners(page: any) {
-  // ★ B4（2026-10-11）：原生 alert/confirm/prompt 显式接管（统一 dismiss）。
-  //   Playwright 未注册 handler 时虽会自动 dismiss，但显式注册保证语义恒定 +
-  //   可观测（此前弹窗完全无日志，排障时看不到"为什么这步没生效"）。
-  //   与桌面端语义对齐：桌面 BrowserView 引擎用 disableDialogs（弹窗被忽略）、
-  //   webview 引擎 dialog 事件 dismiss（main.cjs setupGuestPopupRedirect）。
-  page.on('dialog', (dialog: any) => {
-    try {
-      console.log(`[browser-dialog] type=${dialog.type()} message=${String(dialog.message()).slice(0, 200)}`);
-      dialog.dismiss().catch(() => { /* ignore */ });
-    } catch { /* ignore */ }
-  });
+  // ★ B4（原生弹窗）：Playwright 未注册 dialog handler 时**会自动 dismiss**（与服务端语义对齐，
+  //   不在此显式注册 handler 以避免与桌面端实现反向漂移 —— 见 native-dialog.test.ts ④）。
   // 监听下载事件，记录到 downloadRecords
   page.on('download', async (download: any) => {
     try {

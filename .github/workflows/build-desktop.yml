@@ -69,6 +69,12 @@ jobs:
           node-version: 24
           cache: 'pnpm'
 
+      # better-sqlite3 / cpu-features 等原生模块在 Windows 上无 Node 24 预编译包，
+      # 会回退本机编译；windows-latest 自带 VS 但 node-gyp 认不出 VS2025，
+      # 用本 action 注入 VS 环境（设置 VSINSTALLDIR 等）让编译能找到 MSVC。
+      - name: 准备 MSVC 工具链（原生模块本机编译）
+        uses: ilammy/msvc-dev-cmd@v1
+
       - name: 安装依赖
         run: pnpm install
 

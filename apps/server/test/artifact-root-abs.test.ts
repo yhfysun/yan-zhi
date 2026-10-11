@@ -27,8 +27,8 @@ const hoisted = vi.hoisted(() => ({
   deleteMessageSummariesAfter: () => 0,
   clearMessageSummaries: () => {},
   serverState: { workspaceDir: '' },
-  /** 模拟 db.ts 的 dataDir：绝对路径（写死 Windows 风格，避免 hoisted 里引用 import 的 path） */
-  fakeDataDir: 'C:\\fake-data-root',
+  /** 模拟 db.ts 的 dataDir：绝对路径（按平台给 —— Linux 上 'C:\\x' 不是绝对路径，会撑爆 isAbsolute 断言） */
+  fakeDataDir: process.platform === 'win32' ? 'C:\\fake-data-root' : '/fake-data-root',
 }));
 
 vi.mock('../src/db.js', () => ({

@@ -26,6 +26,7 @@ import {
   findModelIn,
   resolveWhisper,
   resetWhisperCache,
+  WHISPER_BIN,
 } from '../src/mcp/whisper-runtime.js';
 
 describe('pickNightlyTag —— 从 releases 列表取最新 nightly', () => {
@@ -140,7 +141,7 @@ describe('★ 模型档位自动降级（2026-10-09 实测暴露）', () => {
     const dir = fs.mkdtempSync(pathMod.join(os.tmpdir(), 'yz-whisper-degrade-'));
     const mdir = pathMod.join(dir, 'models');
     fs.mkdirSync(mdir, { recursive: true });
-    fs.writeFileSync(pathMod.join(dir, 'whisper-cli.exe'), 'x');
+    fs.writeFileSync(pathMod.join(dir, WHISPER_BIN), 'x');
     fs.writeFileSync(pathMod.join(mdir, 'ggml-base.bin'), 'x');
 
     const prevDir = process.env.YZ_WHISPER_DIR;
@@ -166,7 +167,7 @@ describe('★ 模型档位自动降级（2026-10-09 实测暴露）', () => {
     const fs = await import('node:fs');
     const pathMod = await import('node:path');
     const dir = fs.mkdtempSync(pathMod.join(os.tmpdir(), 'yz-whisper-nomodel-'));
-    fs.writeFileSync(pathMod.join(dir, 'whisper-cli.exe'), 'x');
+    fs.writeFileSync(pathMod.join(dir, WHISPER_BIN), 'x');
     const prevDir = process.env.YZ_WHISPER_DIR;
     const prevPath = process.env.YZ_WHISPER_PATH;
     delete process.env.YZ_WHISPER_PATH;
