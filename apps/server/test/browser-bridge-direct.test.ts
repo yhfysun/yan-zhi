@@ -406,9 +406,11 @@ describe('⑪ ★★★ 可见性契约：桥档下"看不见/收不干净"两�
     expect(PANEL, '★ onTabCreated 未用主进程给的 tid 建壳')
       .toMatch(/id: tid, url: url \|\| ''/);
     // ② 主进程：拿不到 wc 时必须**显式报错**返回，不得落到 wc.loadURL 抛原生 TypeError
+    //    ★ 2026-10-11 等待上限 8s → 30s（waitForGuest 事件驱动化后健康路径零开销，
+    //      渲染主线程饱和时 IPC 迟到 30s+，8s 窗口必然失败）→ 锚点同步更新。
     const m = stripComments(MAIN);
     expect(m, '★ wc=null 未显式拦下 → 会抛 loadURL of null（模型只能瞎猜"前端不可达"）')
-      .toMatch(/已请求预览面板打开该页，但 8s 内未建出页面/);
+      .toMatch(/已请求预览面板打开该页，但 30s 内未建出页面/);
     // ③ 自建等待必须有可诊断日志（此前该路径零日志，排障只能读库反推）
     expect(m, '★ 自建等待无日志（静默失效家族）').toMatch(/自建后等待 guest/);
   });

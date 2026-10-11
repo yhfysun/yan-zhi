@@ -5,10 +5,19 @@
     <div v-if="historyLoading && !store.currentMessages.length" class="history-skeleton">
       <SkeletonList :rows="2" :row-height="44" />
     </div>
+    <!-- 历史向前翻页哨兵（2026-10-11）：滚到顶部附近即加载更早消息。
+         IntersectionObserver 触发 store.loadMoreHistory；prepend 后由
+         preserveScrollOnPrepend 保持视口位置（不跳）。 -->
+    <div v-if="historySentinelVisible" ref="historySentinelRef" class="history-sentinel">
+      <span v-if="historyLoadingMore" class="history-sentinel-loading">加载更早消息…</span>
+    </div>
     <!-- 任务规划卡（TaskPlanCard）已移除（2026-10-07）：此前只要有计划就常驻消息流顶部，任务结束后也不消失。
          规划展示统一收敛到输入区上方的运行指示行（可展开步骤详情 + 进度条 + 结束回执），不再两处重复。 -->
-    <!-- 8.1 日期分隔线：相邻轮次日期变化时渲染居中分隔；任一侧无时间戳则跳过该对 -->
-    <template v-for="(round, ri) in messageRounds" :key="ri">
+    <!-- 8.1 日期分隔线：相邻轮次日期变化时渲染居中分隔；任一侧无时间戳则跳过该对
+         ★ key 必须用轮次锚（用户消息 id）而非下标（2026-10-11）：向前翻页 prepend 时
+           下标整体位移 → 全部 key 变化 → Vue 把已渲染的几百条消息 DOM 全量卸载重挂 +
+           滚动位置跳飞。稳定 key 下 prepend 只挂载新翻出的顶部轮次，存量 DOM 原地保留。 -->
+    <template v-for="(round, ri) in messageRounds" :key="round.user?.id || 'r' + ri">
       <div v-if="dateDividerFor(ri)" class="msg-date-divider">
         <span class="msg-date-divider-line"></span>
         <span class="msg-date-divider-text">{{ dateDividerFor(ri) }}</span>
@@ -570,6 +579,74 @@ const {
 } = useChat();
 const isCodeMode = useCodeStore().codeModeActive;
 const askSupplementOpen = ref(false);
+
+// ===== 历史向前翻页（2026-10-11，懒加载的第二环）=====
+// 首拉只载最近 50 条（store.loadMessages）；更早历史滚到顶部时经 IntersectionObserver 触发。
+const historySentinelRef = ref<HTMLElement | null>(null);
+/** 哨兵只在「还有更早历史」时渲染（翻到底/不足一页时消失，不再触发） */
+const historySentinelVisible = computed(() => {
+  const p = store.historyPagingByConv[store.currentConvId];
+  return !!p && p.hasMore && store.currentMessages.length > 0;
+});
+const historyLoadingMore = computed(() => {
+  const p = store.historyPagingByConv[store.currentConvId];
+  return !!p && p.loading;
+});
+let historyObserver: IntersectionObserver | null = null;
+/** 去重触发：观察回调可能在加载期间连发，loadMoreHistory 内部有 loading 闸门 */
+function onHistorySentinelIntersect(entries: IntersectionObserverEntry[]) {
+  if (!entries.some((e) => e.isIntersecting)) return;
+  if (historyLoadingMore.value) return;
+  const convId = store.currentConvId;
+  if (!convId) return;
+  void store.loadMoreHistory(convId).then(() => preserveScrollOnPrepend(convId));
+}
+
+/**
+ * prepend 更早消息后保持视口位置：记录加载前 scrollHeight，DOM 更新后把
+ * scrollLeft/scrollTop 增加高度差 —— 用户视角"消息长出来了但没跳"。
+ */
+async function preserveScrollOnPrepend(convId: string) {
+  if (convId !== store.currentConvId) return;
+  await nextTick();
+  const el = messagesRef.value;
+  if (!el) return;
+  el.scrollTop = el.scrollHeight - prependScrollHeightBefore;
+}
+let prependScrollHeightBefore = 0;
+watch(
+  () => historyLoadingMore.value,
+  (loading) => {
+    if (loading) {
+      const el = messagesRef.value;
+      prependScrollHeightBefore = el ? el.scrollHeight : 0;
+    }
+  },
+);
+
+onMounted(() => {
+  historyObserver = new IntersectionObserver(onHistorySentinelIntersect, {
+    root: null,
+    // 提前 120px 触发：用户还没真正滚到顶就开始拉，减少等待感
+    rootMargin: '120px 0px 0px 0px',
+    threshold: 0,
+  });
+  watch(
+    [historySentinelRef, historySentinelVisible],
+    () => {
+      const obs = historyObserver;
+      if (!obs) return;
+      obs.disconnect();
+      const el = historySentinelRef.value;
+      if (el && historySentinelVisible.value) obs.observe(el);
+    },
+    { flush: 'post', immediate: true },
+  );
+});
+onBeforeUnmount(() => {
+  historyObserver?.disconnect();
+  historyObserver = null;
+});
 /** 越界授权卡：命令类工具（cmd_exec/python_exec）的文案与按钮不同（展示整条命令而非路径） */
 const authIsCommand = computed(() => !!store.pendingPathAuth?.isCommand);
 /** 触屏壳（视口窄 或 Capacitor）：长按操作排只在这一壳生效（与衔接文案同一口径） */
@@ -1051,6 +1128,18 @@ watch(activeNavRound, () => {
   margin: 6px auto 2px;
   padding: 0 20px;
   box-sizing: border-box;
+}
+
+/* ── 历史向前翻页哨兵：常态只占一条线高度（保证能进视口触发），加载中显示一行小字 */
+.history-sentinel {
+  min-height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.history-sentinel-loading {
+  font-size: 12px;
+  color: var(--color-text-secondary, #94a3b8);
 }
 
 /* ── 压缩标记（2026-10-02）───────────────────────────────────────────────────

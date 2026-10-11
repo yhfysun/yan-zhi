@@ -333,13 +333,72 @@ router.get('/:id/context-breakdown', (req: Request, res: Response) => {
   }
 });
 
+// GET /api/conversations/:id/messages
+// 分页协议（2026-10-11，为解决 403 条消息全量拉取导致渲染主线程饱和）：
+//   - 不带参数：全量返回（旧行为，向后兼容，老调用方不受影响）
+//   - 带 limit：返回**最新** limit 条（ASC 排列），附 hasMore / oldestCursor
+//   - limit + before + beforeId：向前翻页，取 (created_at, id) 组合游标**之前**的一页
+//     ★ 游标必须是组合键：流式批量插入同毫秒多条消息常见，单时间戳游标会漏消息
+//   - 排序统一 created_at ASC, id ASC（确定性次序，同毫秒内按 id 稳定，游标才能对齐）
 router.get('/:id/messages', (req: Request, res: Response) => {
   const userId = req.user!.userId;
   const cid = req.params.id;
   const conv = db.prepare('SELECT id FROM conversation WHERE id = ? AND user_id = ?').get(cid, userId);
   if (!conv) { res.status(404).json({ error: '会话不存在' }); return; }
-  const rows = db.prepare(`SELECT ${MESSAGE_LIST_COLS} FROM message WHERE conversation_id = ? ORDER BY created_at ASC`).all(cid);
-  res.json({ data: rows });
+
+  const limitRaw = req.query.limit;
+  if (limitRaw === undefined) {
+    const rows = db.prepare(
+      `SELECT ${MESSAGE_LIST_COLS} FROM message WHERE conversation_id = ? ORDER BY created_at ASC, id ASC`,
+    ).all(cid);
+    res.json({ data: rows });
+    return;
+  }
+
+  const limit = Number(limitRaw);
+  if (!Number.isFinite(limit) || !Number.isInteger(limit) || limit < 1 || limit > 500) {
+    res.status(400).json({ error: 'limit 必须是 1-500 的整数' });
+    return;
+  }
+
+  const before = req.query.before !== undefined ? Number(req.query.before) : null;
+  const beforeId = typeof req.query.beforeId === 'string' ? req.query.beforeId : null;
+  if (before !== null && (!Number.isFinite(before) || !Number.isInteger(before))) {
+    res.status(400).json({ error: 'before 必须是毫秒时间戳整数' });
+    return;
+  }
+  if ((before === null) !== (beforeId === null)) {
+    res.status(400).json({ error: 'before 与 beforeId 必须成对提供' });
+    return;
+  }
+
+  // 多取一条判断 hasMore，避免额外 COUNT 查询
+  const fetchLimit = limit + 1;
+  let rows: any[];
+  if (before !== null && beforeId) {
+    rows = db.prepare(
+      `SELECT ${MESSAGE_LIST_COLS} FROM message
+       WHERE conversation_id = ?
+         AND (created_at < ? OR (created_at = ? AND id < ?))
+       ORDER BY created_at DESC, id DESC LIMIT ?`,
+    ).all(cid, before, before, beforeId, fetchLimit);
+  } else {
+    rows = db.prepare(
+      `SELECT ${MESSAGE_LIST_COLS} FROM message WHERE conversation_id = ? ORDER BY created_at DESC, id DESC LIMIT ?`,
+    ).all(cid, fetchLimit);
+  }
+
+  const hasMore = rows.length > limit;
+  if (hasMore) rows = rows.slice(0, limit);
+  // DESC 取页后反转回 ASC，调用方拿到的顺序与全量接口一致
+  rows.reverse();
+
+  const oldest = rows.length > 0 ? rows[0] : null;
+  res.json({
+    data: rows,
+    hasMore,
+    oldestCursor: oldest ? { createdAt: oldest.created_at, id: oldest.id } : null,
+  });
 });
 
 // POST /api/conversations/:id/messages

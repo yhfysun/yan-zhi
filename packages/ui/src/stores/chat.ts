@@ -1009,14 +1009,38 @@ async function loadConversations() {
     conversations.value = rows.map(rowToConv);
   }
 
+  // ═══ 历史消息懒加载（2026-10-11，治"403 条消息全量拉取拖死渲染"主链路）═══
+  // 首次打开会话只拉最近 N 条；更早的历史靠顶部哨兵触发 loadMoreHistory 向前翻页。
+  const HISTORY_PAGE_SIZE = 50;
+  /** 每会话翻页状态：hasMore=是否还有更早历史；loading=去重并发；cursor=向前翻页游标 */
+  const historyPagingByConv = ref<Record<string, { hasMore: boolean; loading: boolean; cursor: { createdAt: number; id: string } | null }>>({});
+  function historyPagingOf(convId: string) {
+    let p = historyPagingByConv.value[convId];
+    if (!p) {
+      p = { hasMore: false, loading: false, cursor: null };
+      historyPagingByConv.value[convId] = p;
+    }
+    return p;
+  }
+  /** 会话删除时清理翻页状态（与 messagesByConv 同生命周期） */
+  function clearHistoryPaging(convId: string) {
+    delete historyPagingByConv.value[convId];
+  }
+
   async function loadMessages(convId: string) {
     currentConvId.value = convId;
     if (isServerMode()) {
       // ★ 2026-10-09 同 loadConversations：失败不清空已加载的历史消息（瞬态失败
       //   把消息洗成空 = 「会话还在、点开记录没了」的表象）。
-      const r = await api.get<any[]>(`/conversations/${convId}/messages`);
+      // ★ 2026-10-11 改分页首拉：只取最近 N 条（旧全量行为后端保留但前端不再用）。
+      //   403 条 / 122K 字符全量灌入是"任务一跑页面就卡死"的主链路之一。
+      const p = historyPagingOf(convId);
+      const r = await api.get<any[]>(`/conversations/${convId}/messages?limit=${HISTORY_PAGE_SIZE}`);
       if ('data' in r) {
         messagesByConv.value[convId] = (r.data as any[]).map(rowToMsg);
+        const resp = r as any;
+        p.hasMore = resp.hasMore === true;
+        p.cursor = resp.oldestCursor ?? null;
       } else if (messagesByConv.value[convId] === undefined) {
         messagesByConv.value[convId] = [];
       }
@@ -1036,11 +1060,16 @@ async function loadConversations() {
     }
     const adapter = getPlatformAdapter();
     // 与服务端对齐：历史还原不携带 system_prompt_snapshot（按需走 GET /messages/:mid/snapshot 或本地直查）
+    // ★ 本地（Electron IPC）通道同样只取最近 N 条（与 LIMIT ? 组合的 ORDER BY DESC 取页后前端反转为 ASC）
     const rows = await adapter.db.query<any>(
-      'SELECT id, conversation_id, user_id, role, content, tool_calls_json, tool_call_id, reasoning_content, tokens, parent_tool_call_id, sub_agent_id, sub_agent_name, sub_agent_depth, created_at FROM message WHERE conversation_id = ? ORDER BY created_at ASC',
-      [convId],
+      'SELECT id, conversation_id, user_id, role, content, tool_calls_json, tool_call_id, reasoning_content, tokens, parent_tool_call_id, sub_agent_id, sub_agent_name, sub_agent_depth, created_at FROM message WHERE conversation_id = ? ORDER BY created_at DESC, id DESC LIMIT ?',
+      [convId, HISTORY_PAGE_SIZE],
     );
-    messagesByConv.value[convId] = rows.map(rowToMsg);
+    const page = rows.slice().reverse();
+    messagesByConv.value[convId] = page.map(rowToMsg);
+    const pLocal = historyPagingOf(convId);
+    pLocal.hasMore = rows.length === HISTORY_PAGE_SIZE; // 恰好取满一页才可能有更多（本地无游标探测，够用）
+    pLocal.cursor = page.length > 0 ? { createdAt: page[0].created_at, id: page[0].id } : null;
     const conv = conversations.value.find((c) => c.id === convId);
     mountedMcpServers.value = conv?.mcpServerIds || [];
     mcpDisabledTools.value = conv?._mcpDisabledTools ? { ...conv._mcpDisabledTools } : {};
@@ -1048,6 +1077,53 @@ async function loadConversations() {
     // full 并入 all（语义重复，存量 full 会话读到即迁移）
     permissionMode.value = conv?.permissionMode === 'all' || conv?.permissionMode === 'full' ? 'all'
       : conv?.permissionMode === 'readonly' ? 'readonly' : 'default';
+  }
+
+  /**
+   * 向前翻页加载更早的历史消息（prepend 到已有消息头部）。
+   *
+   * ★ 调用方：ChatMessageList 顶部哨兵（IntersectionObserver）。去重三闸门：
+   *   hasMore=false（翻到底）/ loading=true（翻页进行中）/ cursor=null（无游标可翻）。
+   */
+  async function loadMoreHistory(convId: string): Promise<void> {
+    if (!convId) return;
+    const p = historyPagingOf(convId);
+    if (!p.hasMore || p.loading || !p.cursor) return;
+    p.loading = true;
+    try {
+      if (isServerMode()) {
+        const q = `limit=${HISTORY_PAGE_SIZE}&before=${p.cursor.createdAt}&beforeId=${encodeURIComponent(p.cursor.id)}`;
+        const r = await api.get<any[]>(`/conversations/${convId}/messages?${q}`);
+        if ('data' in r && Array.isArray(r.data) && r.data.length > 0) {
+          const older = (r.data as any[]).map(rowToMsg);
+          const cur = messagesByConv.value[convId];
+          if (cur) messagesByConv.value[convId] = [...older, ...cur];
+          const resp = r as any;
+          p.hasMore = resp.hasMore === true;
+          p.cursor = resp.oldestCursor ?? null;
+        } else {
+          p.hasMore = false; // 空页 = 到底（防哨兵反复打接口）
+        }
+        return;
+      }
+      const adapter = getPlatformAdapter();
+      const rows = await adapter.db.query<any>(
+        'SELECT id, conversation_id, user_id, role, content, tool_calls_json, tool_call_id, reasoning_content, tokens, parent_tool_call_id, sub_agent_id, sub_agent_name, sub_agent_depth, created_at FROM message WHERE conversation_id = ? AND (created_at < ? OR (created_at = ? AND id < ?)) ORDER BY created_at DESC, id DESC LIMIT ?',
+        [convId, p.cursor.createdAt, p.cursor.createdAt, p.cursor.id, HISTORY_PAGE_SIZE],
+      );
+      if (rows.length > 0) {
+        const older = rows.slice().reverse().map(rowToMsg);
+        const cur = messagesByConv.value[convId];
+        if (cur) messagesByConv.value[convId] = [...older, ...cur];
+        const first = older[0];
+        p.cursor = first ? { createdAt: (first as any).created_at, id: first.id } : null;
+        p.hasMore = rows.length === HISTORY_PAGE_SIZE;
+      } else {
+        p.hasMore = false;
+      }
+    } finally {
+      p.loading = false;
+    }
   }
 
   async function createConversation(title: string, opts?: { platformId?: string; modelId?: string; skillIds?: string[]; spaceId?: string; agentId?: string }): Promise<string> {
@@ -1160,6 +1236,7 @@ async function loadConversations() {
     }
     delete messagesByConv.value[id];
     delete queuedByConv.value[id];
+    clearHistoryPaging(id);
     // 一并清掉该会话的计划，避免 plansByConv 里留孤儿键
     plansByConv.value = removePlan(plansByConv.value, id);
     await loadConversations();
@@ -1181,6 +1258,7 @@ async function loadConversations() {
     }
     for (const id of ids) delete messagesByConv.value[id];
     for (const id of ids) delete queuedByConv.value[id];
+    for (const id of ids) clearHistoryPaging(id);
     // 一并清掉被删会话的计划，避免 plansByConv 里留孤儿键
     plansByConv.value = removePlans(plansByConv.value, ids);
     // 浏览器操作串行链同样按会话清（防内存泄漏；进行中的操作不受影响）
@@ -2075,27 +2153,46 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
     // 跨重连状态（外提见 SseStreamState）
     const st = streamStateOf(taskId);
     const chunkBuffer = st.chunkBuffer;
+    // ★ 自适应 flush 间隔（2026-10-11）：固定 50ms 在大会话（400+ 条消息）下每秒 20 次全树
+    //   patch，是"任务一跑页面就卡"的推手之一。间隔随**当前会话消息数**分档：
+    //   小会话保持 50ms（打字机体验），大会话拉长到 160ms（肉眼仍接近实时，重渲频率降 3 倍）。
+    //   chunk 在 buffer 里只累积不丢 —— 间隔拉长不吞内容，只合并 patch。
+    const FLUSH_BASE_MS = 50;
+    const FLUSH_LARGE_MS = 160;
+    const FLUSH_LARGE_THRESHOLD = 120; // 消息数阈值：超过视为大会话
+    function flushIntervalMs(convId: string): number {
+      const n = messagesByConv.value[convId]?.length || 0;
+      return n >= FLUSH_LARGE_THRESHOLD ? FLUSH_LARGE_MS : FLUSH_BASE_MS;
+    }
     function scheduleFlush(convId: string) {
       if (st.flushTimer !== null) return;
       st.flushTimer = setTimeout(() => {
         st.flushTimer = null;
         const arr = messagesByConv.value[convId];
-        if (!arr) return;
+        if (!arr) { chunkBuffer.clear(); return; }
+        // 定位启发：chunk 的目标消息几乎总在数组尾部附近（流式只追加尾部），
+        // 从尾向前找 —— 平均接近 O(1)，避免大会话每帧 findIndex 全表扫（400 条 × 20 帧/s）
         for (const [msgId, buf] of chunkBuffer) {
-          const idx = arr.findIndex(m => m.id === msgId);
+          let idx = -1;
+          for (let i = arr.length - 1; i >= 0; i--) {
+            if (arr[i].id === msgId) { idx = i; break; }
+          }
           if (idx < 0) continue;
           if (buf.content) arr[idx].content = (arr[idx].content || '') + buf.content;
           if (buf.reasoning) arr[idx].reasoningContent = (arr[idx].reasoningContent || '') + buf.reasoning;
         }
         chunkBuffer.clear();
-      }, 50);
+      }, flushIntervalMs(convId));
     }
     function flushNow(convId: string) {
       if (st.flushTimer !== null) { clearTimeout(st.flushTimer); st.flushTimer = null; }
       const arr = messagesByConv.value[convId];
       if (!arr) { chunkBuffer.clear(); return; }
       for (const [msgId, buf] of chunkBuffer) {
-        const idx = arr.findIndex(m => m.id === msgId);
+        let idx = -1;
+        for (let i = arr.length - 1; i >= 0; i--) {
+          if (arr[i].id === msgId) { idx = i; break; }
+        }
         if (idx < 0) continue;
         if (buf.content) arr[idx].content = (arr[idx].content || '') + buf.content;
         if (buf.reasoning) arr[idx].reasoningContent = (arr[idx].reasoningContent || '') + buf.reasoning;
@@ -2600,7 +2697,31 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
         await consumeSseStream(res.body, async (payload): Promise<void | false> => {
           let event: any;
           try { event = JSON.parse(payload); } catch { return; }
-          // ★ 只处理**终态**（服务端只双发这三类，见 llm-task-manager 的 emit）。
+          // ★ 2026-10-11 消费 `message:added`（服务端 notifyConversation 在任务**已结束**
+          //   时把落库消息推到会话总线 —— 典型场景：任务收尾的"完成提示"消息、
+          //   注入的追加消息）。收到的就是双通道都没赶上时的漏网消息 ⇒ 直接补进本地
+          //   列表，替代"等轮询兜底来补"的场景（双向通信改造的最后一环）。
+          //   ★ 幂等：任务级流正常时会先送达同一 id，`some(m => m.id === ...)` 去重挡住。
+          if (event.type === 'message:added' && event.message?.id) {
+            const msg = event.message;
+            const arr = messagesByConv.value[convId];
+            if (arr && !arr.some(m => m.id === msg.id)) {
+              arr.push({
+                id: msg.id,
+                conversationId: convId,
+                role: msg.role,
+                content: msg.content || '',
+                toolCallId: msg.toolCallId,
+                parentToolCallId: msg.parentToolCallId,
+                subAgentId: msg.subAgentId,
+                subAgentName: msg.subAgentName,
+                subAgentDepth: msg.subAgentDepth,
+                createdAt: msg.createdAt || Date.now(),
+              } as any);
+            }
+            return;
+          }
+          // ★ 处理**终态**（服务端在任务结束时任一双通道都会送达）。
           //   收到即意味着"该会话的任务已结束" → 清残留运行态与浏览器记账。
           //   ★ 幂等：正常订阅期间任务流也会送达同一事件；此处的清理操作全是幂等的
           //     （`markRunEnd` / `delete` / `clearBrowserTaskActive` 重复调用无副作用）。
@@ -2967,6 +3088,7 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
     planSteps, planTitle, clearPlan, clearPlanDisplayOnly,
     activeAgent, activeAgentId,
     loadConversations, loadMessages, createConversation, updateConversation, deleteConversation, deleteConversations,
+    loadMoreHistory, historyPagingByConv, HISTORY_PAGE_SIZE,
     addMessage, updateMessage, deleteMessage, sendMessage, regenerate, stop,
     getMergedMounts,
   };

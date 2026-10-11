@@ -152,26 +152,54 @@ function guestWebContents(tabId) {
 }
 /** 等待渲染层注册 guest（<webview> 创建需要一帧）
  *
- * ★★★ 2026-10-11：轮询间隔从**固定 100ms** 改为**自适应退避**。
- *   动机（用户实报"卡"+ 问"轮询效率肯定差啊"）：一次 navigate 最长等 8s，
- *   固定 100ms ⇒ **最多 80 次** `guestWebContents()` 调用，每次都要遍历 `webviewTabs`
- *   并取 `getWebContentsId()`。主进程是单线程，这些调用全排在同一条事件循环上。
- *   实际 `<webview>` 通常 100~500ms 内就 dom-ready，**后 7 秒的轮询几乎全是空转**。
- *   ⇒ 前 1s 保持 50ms 密集（覆盖绝大多数正常情况，比原来更快命中）；
- *     之后逐步退避到 250ms 封顶（长尾时把空转次数从 ~70 次降到 ~30 次）。
- *   ★ 语义不变：仍然最多等到 `timeoutMs`，命中即返回，超时返回 null。
+ * ★★★ 2026-10-11 二次改造：轮询 → **事件驱动 + 低频轮询兜底**（晚绑定）。
+ *
+ *   背景（当日 12:02 实测日志）：渲染主线程被大会话（403 条消息全量渲染）饱和时，
+ *   IPC 事件迟到 **34.3 秒**（主进程广播 tabCreated 12:02:34 → 渲染层收到 12:03:08），
+ *   而本函数当时只等 8s ⇒ `wc=NULL(8s 超时)` ⇒ 建页动作失败。
+ *   纯轮询在这种场景下无能为力：不管间隔多密，guest 在 34s 时才注册，8s 的窗口内
+ *   怎么轮都是空。⇒ 必须让"guest 注册"这个事件本身来唤醒 waiter。
+ *
+ *   机制：
+ *     ① `browser:wv:register` IPC 到达时，立即 resolve 该 tabId 上的全部挂起 waiter
+ *        （`guestWaiters`，见下方 register handler）—— 健康路径 0 额外延迟；
+ *     ② 保留低频轮询（500ms）兜底 —— 防 register 事件被吞的边缘情况（重注册/竞态）；
+ *     ③ 自建路径（navigate 无 guest → 广播 tabCreated 后等待）把上限放宽到 30s：
+ *        事件驱动下 guest 一到就返回，长上限在健康路径**零开销**；渲染层卡顿时
+ *        把「34s 迟到 = 失败」变成「慢成功」。
+ *
+ *   语义不变：仍然最多等 `timeoutMs`，命中即返回，超时返回 null。
  */
+const guestWaiters = new Map(); // tabId → Set<() => void>
+function wakeGuestWaiters(tabId) {
+  const set = guestWaiters.get(tabId);
+  if (!set) return;
+  guestWaiters.delete(tabId);
+  for (const wake of set) { try { wake(); } catch { /* ignore */ } }
+}
 async function waitForGuest(tabId, timeoutMs = 5000) {
   if (!tabId) return null;
   const started = Date.now();
-  for (;;) {
+  // 立即命中（guest 已就绪的绝大多数场景）：零延迟返回
+  {
     const wc = guestWebContents(tabId);
     if (wc) return wc;
+  }
+  for (;;) {
     const elapsed = Date.now() - started;
     if (elapsed > timeoutMs) return null;
-    // 自适应间隔：前 1s → 50ms；1~3s → 150ms；>3s → 250ms
-    const interval = elapsed < 1000 ? 50 : elapsed < 3000 ? 150 : 250;
-    await new Promise((r) => setTimeout(r, interval));
+    // 等待「register 事件」或「兜底轮询节拍」二者先到者
+    let wake;
+    const registered = new Promise((r) => { wake = r; });
+    let set = guestWaiters.get(tabId);
+    if (!set) { set = new Set(); guestWaiters.set(tabId, set); }
+    set.add(wake);
+    const tick = new Promise((r) => setTimeout(r, 500));
+    await Promise.race([registered, tick]);
+    // 清理本次挂起的 waiter（防泄漏；被 register 唤醒时 wakeGuestWaiters 已整组删除）
+    try { set.delete(wake); } catch { /* ignore */ }
+    const wc = guestWebContents(tabId);
+    if (wc) return wc;
   }
 }
 /** 统一入口：按当前引擎解析 tabId 对应的 webContents */
@@ -1582,6 +1610,9 @@ ipcMain.handle('browser:wv:register', (_e, tabId, wcId, scope) => {
   t.lastActiveAt = Date.now();
   webviewTabs.set(tabId, t);
   if (!activeTabId) activeTabId = tabId;
+  // ★ 事件驱动晚绑定（2026-10-11）：guest 注册即唤醒所有等这个 tab 的 waitForGuest
+  //   （渲染主线程饱和时 IPC 迟到 30s+，纯轮询等不到 —— 见 waitForGuest 注释）
+  wakeGuestWaiters(tabId);
   // 给这个 guest 宿主 wc 挂弹窗重定向（window.open/target=_blank → 应用内新标签页）
   try {
     const wc = webContents.fromId(wcId);
@@ -2859,21 +2890,26 @@ async function runBrowserAction(convId, tabId, action, args) {
       //     `preview:<convId>`，`onTabCreated` 已放宽为「裸 preview 匹配任意 preview:*」。
       const scope = 'preview';
       // 幂等：渲染层 onTabCreated 对已有壳的 tabId 会直接忽略，重复广播无副作用。
+      const waitForGuestStart = Date.now();
       try {
         mainWindow.webContents.send('browserView:tabCreated', tabId || null, cleanUrl, scope);
         console.log(`[browser-action] 已广播 tabCreated: url=${cleanUrl} scope=${scope} tab=${tabId || '-'}`);
       } catch { /* ignore */ }
       // 给渲染层建 <webview>(dom-ready)+注册 guest 的时间
+      // ★ 2026-10-11：8s → 30s。waitForGuest 已事件驱动化（register 即唤醒），
+      //   健康路径 guest 一到就返回，上限放宽零开销；渲染主线程被大会话拖卡时
+      //   IPC 迟到可达 30s+（实测 34.3s），8s 窗口必然失败 —— 放宽把"迟到=失败"
+      //   变成"慢成功"。
       const waitedTab = tabId || activeTabId;
-      wc = await waitForGuest(waitedTab, 8000);
+      wc = await waitForGuest(waitedTab, 30000);
       // ★★★ 这条路径此前**零日志**（静默失效家族）：失败时只有下面 `wc.loadURL` 的原生
       //   TypeError，看不出"广播出去了没""等的是哪个 tab""等到没有"。2026-10-10 实报
       //   "页面打不开"就是靠读库反推才定位到 `wc=null`。⇒ 补一条可诊断日志。
-      console.log(`[browser-action] 自建后等待 guest: tab=${waitedTab || '-'} scope=${scope} wc=${wc ? 'ok' : 'NULL(8s 超时)'}`);
+      console.log(`[browser-action] 自建后等待 guest: tab=${waitedTab || '-'} scope=${scope} wc=${wc ? 'ok' : 'NULL(30s 超时)'} 耗时=${Date.now() - (waitForGuestStart || Date.now())}ms`);
       // ★★★ 仍然拿不到就**明确报错**，绝不走到 `wc.loadURL` 抛原生 TypeError：
       //   原生 TypeError 对模型毫无信息量（表现为模型自己编"前端不可达"），对开发者也没有线索。
       if (!wc) {
-        return { error: `浏览器页面未就绪：已请求预览面板打开该页，但 8s 内未建出页面（tab=${waitedTab || '-'}）。请重试一次；若持续失败，请确认浏览器预览面板已打开。` };
+        return { error: `浏览器页面未就绪：已请求预览面板打开该页，但 30s 内未建出页面（tab=${waitedTab || '-'}）。请重试一次；若持续失败，请确认浏览器预览面板已打开。` };
       }
     }
     // 某些动作即便没有已建 host 也应执行（自建 / 纯查询 / 首次导航）

@@ -65,7 +65,27 @@ export function buildToolResultIndex(
   for (const msg of messages) {
     if (msg.role !== 'tool' || !msg.toolCallId) continue;
     if (idx.has(msg.toolCallId)) continue; // 取第一个（与 Array.find 语义一致）
-    idx.set(msg.toolCallId, parseToolResultContent(msg.content));
+    idx.set(msg.toolCallId, parseToolResultContentCached(msg.content));
   }
   return idx;
+}
+
+// ★★★ 解析结果缓存（2026-10-11，Task #9）：
+//   `toolResultIndex` computed 每帧（流式 flush）重建，每帧对**全部历史**工具消息重新
+//   JSON.parse —— 实测会话 189 条 tool 消息 ≈ 84KB/帧 × 20 帧/s ≈ 1.7MB/s 纯无效解析。
+//   工具消息 content 一旦落库**不再变** → 以 raw 串为键缓存解析结果：
+//   首帧后全部命中，每帧重建只剩 Map 赋值（微秒级）。
+//   ★ 键是 raw 串本身（值比较），无会话概念 → 跨会话同文本命中也是正确结果（解析是纯函数）。
+//   ★ 封顶防泄漏：超上限整体清空，下一帧冷重建一次性回填（成本有界）。
+const PARSE_CACHE_MAX = 4096;
+const parseCache = new Map<string, ToolResultEntry>();
+
+export function parseToolResultContentCached(raw: string | null | undefined): ToolResultEntry {
+  if (!raw) return { content: null, isError: false };
+  const hit = parseCache.get(raw);
+  if (hit) return hit;
+  const entry = parseToolResultContent(raw);
+  if (parseCache.size >= PARSE_CACHE_MAX) parseCache.clear();
+  parseCache.set(raw, entry);
+  return entry;
 }

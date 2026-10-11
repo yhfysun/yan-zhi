@@ -1295,14 +1295,21 @@ function createChat() {
   /**
    * 轮次结构（用户消息 → agent 步骤 → 最终回答）。
    *
-   * ★★★ 性能说明（2026-10-10 实测后**刻意不做**增量缓存）：
-   *   曾考虑"历史轮次对象引用复用"来降低流式期间的重复重建，但**实测证明不值得**：
-   *   本函数重算一次仅 **0.187 ms**（400 条消息 / 50 轮），流式 50ms flush 一次
-   *   ⇒ 每秒 20 次 = **3.7 ms CPU/秒（主线程占用的 0.37%）**，可忽略。
-   *   对比：同一轮里 `renderMarkdown` 才是大头（无缓存时 **830 ms/秒**）—— 那才是"整个应用卡"的元凶，
-   *   已用 LRU 缓存修掉（见 renderMarkdown 注释）。
-   *   ⇒ 结论：**不要为 0.37% 引入"复用对象引用"这种一旦判据错就显示脏数据的高风险优化**。
-   *   长列表的真正解法是虚拟滚动（大改动），留待有实际反馈时再评估。
+   * ★★★ 性能架构（2026-10-11 定稿，「长列表卡死」三层修法中本层的位置）：
+   *   ① 数据层窗口 = **分页**（store.loadMessages 首拉最近 50 条 + loadMoreHistory 向前翻页）
+   *      —— 即「只渲染尾部 N 轮」的实现位置。刻意**不做** DOM 级虚拟滚动：本列表是
+   *      markdown 渲染的变高内容，虚拟滚动需要估高，会破坏浏览器原生滚动锚定 / Ctrl+F /
+   *      横岗跳转（querySelector [data-round]）——风险远大于收益。
+   *   ② 每帧成本在**源头**消灭：toolResultIndex O(1) 查表（下方的 computed）+
+   *      renderMarkdown/AssistantMarkdown LRU + 流式 flush 自适应节流（stores/chat.ts）。
+   *   ③ 稳定 key：ChatMessageList 的 v-for 用用户消息 id 作 key（非下标），prepend 翻页
+   *      不再全量卸载重挂存量 DOM。
+   *
+   * ★ 本函数重算一次仅 ~0.2 ms（400 条消息），不是瓶颈；**刻意不做**轮次对象引用复用：
+   *   没有 v-memo 这类消费者时引用复用是死代码。而 v-memo 在本模板**不可用**——
+   *   模板内 30+ 处交互状态（collapsedMessages / expandedTools / runningToolCallIds /
+   *   openActionsMsgId…）都是组件级共享 reactive 容器（身份不变、内容变），
+   *   v-memo 浅比较会把「工具运行中→完成」「点开折叠」永久冻住（frozen-UI 陷阱）。
    */
   const messageRounds = computed<MessageRound[]>(() => {
     const msgs = store.currentMessages;

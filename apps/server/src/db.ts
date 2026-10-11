@@ -486,6 +486,8 @@ db.exec(`
 -- 该索引已移至迁移代码块之后创建。
 CREATE INDEX IF NOT EXISTS idx_space_user ON space(user_id);
   CREATE INDEX IF NOT EXISTS idx_message_conv ON message(conversation_id);
+  -- 分页游标查询专用（GET /messages?limit）：组合键覆盖「取最新 N 条 / 向前翻页」的排序+过滤
+  CREATE INDEX IF NOT EXISTS idx_message_conv_created ON message(conversation_id, created_at, id);
   CREATE INDEX IF NOT EXISTS idx_message_summary_conv ON message_summary(conversation_id, created_at);
   CREATE INDEX IF NOT EXISTS idx_platform_user ON platform(user_id);
   CREATE INDEX IF NOT EXISTS idx_model_platform ON model(platform_id);

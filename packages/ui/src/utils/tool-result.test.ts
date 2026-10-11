@@ -10,7 +10,7 @@
 //   ② 索引行为 —— 首个优先 / 跳过非 tool / 跳过无 id
 
 import { describe, it, expect } from 'vitest';
-import { parseToolResultContent, buildToolResultIndex } from './tool-result';
+import { parseToolResultContent, parseToolResultContentCached, buildToolResultIndex } from './tool-result';
 
 describe('parseToolResultContent（分支等价性）', () => {
   it('空 / null / undefined → content=null, isError=false', () => {
@@ -106,5 +106,35 @@ describe('buildToolResultIndex（索引行为）', () => {
   it('★ 空 content → content=null（模板据此显示 running 态）', () => {
     const idx = buildToolResultIndex([mk({ toolCallId: 'empty', content: '' })]);
     expect(idx.get('empty')).toEqual({ content: null, isError: false });
+  });
+});
+
+describe('parseToolResultContentCached（每帧重建的解析缓存，Task #9）', () => {
+  it('命中缓存：同一 raw 串返回同一对象引用（零重复解析）', () => {
+    const raw = JSON.stringify({ content: [{ type: 'text', text: 'cached' }] });
+    const a = parseToolResultContentCached(raw);
+    const b = parseToolResultContentCached(raw);
+    expect(a).toBe(b); // 引用相等 ⇒ 命中
+    expect(a.content).toBe('cached');
+  });
+
+  it('空值直通不进缓存', () => {
+    expect(parseToolResultContentCached('')).toEqual({ content: null, isError: false });
+    expect(parseToolResultContentCached(null)).toEqual({ content: null, isError: false });
+    expect(parseToolResultContentCached(undefined)).toEqual({ content: null, isError: false });
+  });
+
+  it('与无缓存版语义一致（逐分支抽查）', () => {
+    const samples = [
+      '这不是 JSON{',
+      JSON.stringify({ isError: true, content: [{ type: 'text', text: 'boom' }] }),
+      JSON.stringify({ content: [{ type: 'text', text: 'a' }, { type: 'text', text: 'b' }] }),
+      JSON.stringify({ content: [{ type: 'image', url: 'x' }] }),
+      JSON.stringify({ foo: 1 }),
+      '"纯字符串"',
+    ];
+    for (const s of samples) {
+      expect(parseToolResultContentCached(s)).toEqual(parseToolResultContent(s));
+    }
   });
 });
