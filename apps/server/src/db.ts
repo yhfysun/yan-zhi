@@ -1116,6 +1116,10 @@ const PAGE_AGENT_BUILTIN_TOOLS = [
   'browser_run_script',
   // 文件上传（2026-10-07）：filechooser 模式，pageAgent 可代用户挂本地文件（如视频上传）
   'browser_upload',
+  // ★ 表单批量填写/提交（2026-10-11，F1）：实现早已完整（fields 数组一次填多字段，
+  //   text/select/checkbox/radio/label 全支持，失败字段逐条上报），此前漏挂载导致
+  //   pageAgent 只能逐个 browser_type 填表 —— 典型"能力在、入口断"。已在 WRITE_TOOLS。
+  'browser_fill_form', 'browser_submit_form',
   // 落盘（2026-10-09）：推文产线里 pageAgent 抓到章节正文后要自己写盘（此前只能贴回对话，
   // 长章节有截断风险）。readonly 会话仍会被 checkToolPermission 运行时拒绝，不影响只读语义。
   'file_write',
@@ -1182,6 +1186,8 @@ PAGE_AGENT_BUILTIN_TOOLS 必须逐项一致——提示词推荐了却没挂 = �
 - browser_scroll: 滚动页面。传 y（正数向下/负数向上，像素，如 y=600）滚动一屏查看视口外内容；传 selector 则把目标元素滚到视野中央。用于查看长列表更多内容、触发懒加载，或让视口外的按钮/元素进入视野后再点击
 - browser_run_script: 代码模式——在页面里执行一段 JS 并返回结果。固定重复流程（翻页收集列表、批量提取、触发懒加载、循环签到检查）写成一段 (async () => { ... })() 脚本一次执行，替代多轮 click/scroll/read，大幅省步数；脚本内可用 document/fetch，返回值必须可 JSON 序列化（超时 30s）
 - browser_upload: 上传本地文件——在页面上设置 input[type=file] 的文件（如上传视频/图片到后台）。传选择器（可选）与本地文件路径
+- browser_fill_form: 批量填表——一次调用填写多个表单字段。fields 数组每项 {selector, value, type?}，type 为 text/select/checkbox/radio；select 用 label（显示文本）或 value；checkbox/radio 用 true/false。**多字段表单必须用它一次填完，禁止逐个 browser_type**；返回的 failed 列表会逐条列出未填成功的字段与原因，按提示换 selector 重试即可
+- browser_submit_form: 提交表单——填写完成后用它提交（也可改用 browser_click 点提交按钮）
 - browser_screenshot: 截图当前页面（annotate=true 时叠加元素编号框），返回文件路径
 - image_analyze: 视觉识别——把截图路径 + 描述传给视觉模型，返回画面内容/元素位置
 - file_write: 写文件到工作目录——抓到正文/结果后直接落盘（长内容别只贴在回复里，有截断风险）。
@@ -1214,6 +1220,13 @@ PAGE_AGENT_BUILTIN_TOOLS 必须逐项一致——提示词推荐了却没挂 = �
 3. browser_click 或 browser_type 用 x+y 坐标定位（坐标是最后手段，按识别结果换算）
 然后**重新截图复验**：画面确实变化 → 继续下一步；没变化 → 换识别目标或 ask_user。
 纪律：视觉路线每步成本高（截图+识图），仅作为 DOM 路径的**兜底**，能用 index 定位就回到 DOM 路线；连续 2 次视觉操作无画面变化 → 停止，返回已有结果并说明原因。
+
+【表单填写（效率硬规则）】
+- 遇到 2 个及以上输入框的表单，**必须用一次 browser_fill_form 传 fields 数组填完全部字段**，禁止逐个 browser_type（逐个填 = 多花 N 倍步数，且中途页面刷新会丢已填内容）。
+- fields 每项：selector 用 get_page_content 编号元素自带的 selector；下拉框 type=select 且优先传 label（显示文本）；单选/复选框 type=radio/checkbox 传 true/false。
+- 返回 failed 非空 = 部分字段没填上（会逐条列出原因）：按原因换 selector 重试漏掉的几个字段即可，已成功的不要重复填。
+- 填完用 browser_submit_form 提交；没有明确提交按钮语义时先 browser_get_page_content 找提交/登录/下一步类按钮再 click。
+- 上传类字段（input[type=file]）不在 fill_form 范围内，用 browser_upload 单独处理。
 
 【登录与人工干预】
 - 检测到需要登录/扫码/验证码等人工干预场景时，用 ask_user 让用户在浏览器面板中完成，等用户确认后用 browser_get_page_content 复核状态，再继续任务；不要把"需要登录"当结论直接返回给父智能体。

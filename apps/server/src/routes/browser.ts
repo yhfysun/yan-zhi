@@ -237,6 +237,28 @@ async function resetBrowser() {
   nextTabId = 0;
 }
 
+/**
+ * ★ B1（2026-10-11）：连接级断开监听 —— 补"断了但系统不知道"的缺口。
+ *   此前只在下一次操作前被动 version() 探活（isBrowserAlive），从断开到被发现
+ *   之间隔着"下一次调用"；监听 disconnected 即时置脏单例，下一次 getBrowser()/
+ *   getPage() 直接走重建（getPage 假死分支已含 lastKnownUrl 恢复，行为闭环）。
+ *   ★ 只置脏、不在事件回调里重建 —— 回调里重建会与进行中的操作竞态。
+ */
+function attachBrowserDisconnectWatch(browser: any) {
+  if (!browser || browser.__yzDisconnectWired) return;
+  try {
+    browser.__yzDisconnectWired = true;
+    browser.once('disconnected', () => {
+      console.log('[browser] 连接断开（disconnected）→ 置脏单例，等待下一次调用重建');
+      browserInstance = null;
+      pageInstance = null;
+      tabs.clear();
+      activeTabId = -1;
+      nextTabId = 0;
+    });
+  } catch { /* 事件 API 不可用则维持被动探活 */ }
+}
+
 /** CDP 连接瞬时故障重试：ECONNREFUSED（启动竞态/浏览器重启瞬间）退避重试 2 次 */
 async function connectCdpWithRetry(chromium: any, endpoint: string): Promise<any> {
   let lastErr: any;
@@ -283,6 +305,8 @@ async function getBrowser() {
     // launch 模式：强制 headless（不允许环境变量切有头，避免弹独立浏览器窗口）
     browserInstance = await withTimeout(chromium.launch({ headless: BROWSER_HEADLESS }), '浏览器启动失败');
   }
+  // ★ B1（2026-10-11）：实例建好后立即挂断开监听（见函数注释）
+  attachBrowserDisconnectWatch(browserInstance);
   lastActivityAt = Date.now();
   scheduleIdleCheck();
   return browserInstance;
@@ -290,6 +314,17 @@ async function getBrowser() {
 
 /** 给 page 挂载下载与网络请求监听 */
 function attachPageListeners(page: any) {
+  // ★ B4（2026-10-11）：原生 alert/confirm/prompt 显式接管（统一 dismiss）。
+  //   Playwright 未注册 handler 时虽会自动 dismiss，但显式注册保证语义恒定 +
+  //   可观测（此前弹窗完全无日志，排障时看不到"为什么这步没生效"）。
+  //   与桌面端语义对齐：桌面 BrowserView 引擎用 disableDialogs（弹窗被忽略）、
+  //   webview 引擎 dialog 事件 dismiss（main.cjs setupGuestPopupRedirect）。
+  page.on('dialog', (dialog: any) => {
+    try {
+      console.log(`[browser-dialog] type=${dialog.type()} message=${String(dialog.message()).slice(0, 200)}`);
+      dialog.dismiss().catch(() => { /* ignore */ });
+    } catch { /* ignore */ }
+  });
   // 监听下载事件，记录到 downloadRecords
   page.on('download', async (download: any) => {
     try {

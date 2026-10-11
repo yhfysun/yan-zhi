@@ -11,7 +11,7 @@
     >
       <!-- 视频交付物：静止显示首帧；hover 走 body 级浮层放大并静音自动播 5 秒；双击进灯箱播放 -->
       <video
-        v-if="isVideo(f)"
+        v-if="isVideo(f) && !missingFiles[f.id]"
         class="deliverable-thumb"
         :src="thumbSrc(f)"
         preload="metadata"
@@ -24,7 +24,7 @@
       ></video>
       <!-- 图片交付物：同卡片尺寸缩略；hover 走同一套浮层放大；双击进灯箱（滚轮缩放） -->
       <img
-        v-else-if="isImage(f)"
+        v-else-if="isImage(f) && !missingFiles[f.id]"
         class="deliverable-thumb"
         :src="thumbSrc(f)"
         :alt="f.name"
@@ -35,6 +35,8 @@
         @mouseleave="onThumbLeave"
         @dblclick.stop="zoom(f)"
       />
+      <!-- 文件已不存在占位：主源 404 + 回退不可用/回退也失败时显示（不再静默裂图/报 file:// 拦截） -->
+      <div v-else-if="missingFiles[f.id]" class="deliverable-thumb missing-thumb">文件已不存在</div>
       <span class="deliverable-file-name" :title="f.name">{{ f.name }}</span>
       <div class="deliverable-file-bottom">
         <span class="deliverable-file-meta">{{ formatTime(f.createdAt) }}</span>
@@ -118,11 +120,22 @@ function thumbSrc(f: ConversationFile): string {
  * 只在第一次失败时切换（避免失败→换源→再失败的死循环）。
  */
 const fallbackSrcs = ref<Record<string, string>>({});
+/** 文件已不存在：主源 404 且无可用回退（或回退也失败）→ 卡片显示占位，不再静默裂图 */
+const missingFiles = ref<Record<string, boolean>>({});
 function onThumbError(f: ConversationFile) {
-  if (fallbackSrcs.value[f.id]) return;              // 已回退过，不再重复
+  // ★ 已回退过还失败 = file:// 也读不到 → 文件物理不存在，显示占位（终态，不再循环）
+  if (fallbackSrcs.value[f.id]) {
+    missingFiles.value = { ...missingFiles.value, [f.id]: true };
+    return;
+  }
+  // ★ file:// 回退只在"页面本身是 file:// 源"（打包版桌面端）下可行；
+  //   dev 页面是 http://localhost 源，Chromium 必然拦截 file:// 子资源
+  //   （报 "Not allowed to load local resource"，实测误导排障——多数是文件真没了）。
+  //   dev 下直接进"文件已不存在"占位，不再发起必然失败的请求。
+  if (window.location.protocol !== 'file:') return;
   if (adapter.platform !== 'desktop') return;        // Web 端无本地文件可读
   const raw = (f.path || '').replace(/\\/g, '/');
-  if (!raw) return;
+  if (!raw) { missingFiles.value = { ...missingFiles.value, [f.id]: true }; return; }
   const url = raw.startsWith('/') ? `file://${raw}` : `file:///${raw}`;
   fallbackSrcs.value = { ...fallbackSrcs.value, [f.id]: f.conversationId && isVideo(f) ? `${url}#t=0.1` : url };
 }
@@ -243,6 +256,15 @@ async function reveal(f: ConversationFile) {
   background: rgba(0, 0, 0, 0.35);
   display: block;
   user-select: none;
+}
+/* 文件已不存在占位：与缩略图同尺寸，灰底细字，不抢视觉 */
+.missing-thumb {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.45);
+  cursor: default;
 }
 .deliverable-file-card.has-thumb .deliverable-file-name {
   font-size: 11.5px;

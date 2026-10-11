@@ -153,6 +153,8 @@ const PAGE_AGENT_BUILTIN_TOOLS = [
   'browser_screenshot', 'image_analyze',
   // 与 server db.ts 收口清单对齐（2026-10-07 upload / 2026-10-09 file_write 落盘）
   'browser_upload', 'file_write',
+  // 与 server db.ts 对齐（2026-10-11 F1）：表单批量填写/提交（此前漏挂载 → 只能逐个 browser_type）
+  'browser_fill_form', 'browser_submit_form',
   // 登录闭环必备：向用户提问/请求确认（扫码、验证码等人工干预场景）
   'ask_user',
 ];

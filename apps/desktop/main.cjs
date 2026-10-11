@@ -1604,6 +1604,19 @@ function setupGuestPopupRedirect(wc, scope) {
     console.log('[nav] guest 拦截非 http(s) 协议:', url);
     event.preventDefault();
   });
+  // ★ B4（2026-10-11）：webview 引擎 guest 的原生弹窗接管。
+  //   alert/confirm/prompt 会**同步阻塞 guest renderer 的 JS** → pageAgent 后续所有
+  //   executeJavaScript 全部挂起（BrowserView 引擎已用 webPreferences.disableDialogs 修复，
+  //   见 createBrowserViewFor:926；webview 的 webPreferences 在渲染层 tag 上，主进程改不了）。
+  //   处理：一律 **dismiss**（alert 直接关 / confirm 回 false / prompt 回 null）——
+  //   与服务端 Playwright「未注册 handler 时自动 dismiss」语义对齐，不再阻塞。
+  wc.on('dialog', (_e, _type, _message, callback) => {
+    try {
+      if (_type === 'confirm') callback(false);
+      else if (_type === 'prompt') callback(null);
+      else callback();
+    } catch { /* callback 已失效（页面跳转）→ 忽略 */ }
+  });
 }
 
 // 拦截网页通过 window 创建的真正二级窗口（session/guest handler 未覆盖的边缘路径），
@@ -3591,7 +3604,6 @@ async function runBrowserAction(convId, tabId, action, args) {
             var el=window.__yzAssistant.resolve(sel);
             if(!el){
               // ★ 不再静默跳过：记入 failed（含原因），让调用方与模型都能看见
-              failed.push({selector:sel,reason:'元素未找到'});
               failed.push({selector:sel,reason:'元素未找到'});
               continue;
             }
