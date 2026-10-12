@@ -1,13 +1,15 @@
 // 模式状态：四模式（office / dev / ops / sec）+ 各模式主导方（lead）。
+// 2026-10-12 增补：douyin（抖音运营模式）—— 第七模式，复用 /chat 同构对话页（无独立工作台 UI），
+//   会话按模式隔离 + 进模式自动绑抖音运营助手 + 自动挂「抖音运营」场景（见 App.vue / useChat.ts）。
 //
-// ★ 契约固化（决策 10）：模式是【同一份工作上下文的四个视图】——
-//   - 模式不持有会话池：四模式共用 chatStore.currentConvId，setMode() 禁止新建会话/清消息/换 spaceId
+// ★ 契约固化（决策 10）：模式是【同一份工作上下文的几个视图】——
+//   - 模式不持有会话池：各模式共用 chatStore.currentConvId，setMode() 禁止新建会话/清消息/换 spaceId
 //   - 模式不持有工作目录：统一读 settings.workspaceDir（code.ts 的 projectDir 与之双向同步）
 //   - 界面状态（编辑器标签 openFiles / OpsConsole 的 windows）各自保留，不随模式切换丢失
 //   - 「共享的是上下文，不是界面状态」
 import { ref, computed, watch, type ComputedRef, type Ref } from 'vue';
 
-export type AppMode = 'office' | 'dev' | 'ops' | 'sec' | 'wf' | 'clip';
+export type AppMode = 'office' | 'dev' | 'ops' | 'sec' | 'wf' | 'clip' | 'douyin';
 /** 主导方：ai = 对话居中；human = 工作区居中（编辑器/终端/控制台），对话靠边 */
 export type LeadMode = 'ai' | 'human';
 /** 对话位置排布：center = 居中主视觉；right = 右栏；inline = 与控制台同区（折叠条/步骤卡） */
@@ -37,6 +39,10 @@ export const MODE_DEFS: ModeDef[] = [
   { key: 'wf', label: '工作流模式', icon: 'Connection', desc: '运行 · 调试 · 定时', route: '/workflow' },
   // 剪辑模式：无插件依赖（三端可用），时间轴工作台 + 对话双驱动，工程由 clip_project 工具落盘
   { key: 'clip', label: '剪辑模式', icon: 'VideoCamera', desc: '剪辑 · 字幕动画 · 成片', route: '/clip' },
+  // 抖音运营模式（第七模式，2026-10-12）：无插件依赖、无独立工作台 UI —— 复用 /chat 对话页，
+  //   差异在「会话池隔离 + 抖音运营助手 + 抖音运营场景自动挂载」（带货/引流两线）。
+  //   route 独立（/douyin）而不是蹭 /chat：URL 要能反映模式，授权守卫也按路由逐模式拦。
+  { key: 'douyin', label: '抖音模式', icon: 'Promotion', desc: '带货 · 引流 · 内容', route: '/douyin' },
 ];
 
 const MODE_KEY = 'yz:mode';
@@ -89,6 +95,7 @@ const LEAD_DEFAULTS: Record<AppMode, LeadMode | null> = {
   sec: 'human',
   wf: 'human', // 默认运行模式（人工填参执行），调试优先
   clip: 'human', // 默认时间轴居中（人工剪），要 AI 主导时切到 ai
+  douyin: null, // 抖音运营：对话居中（与办公同形态，无独立工作台）
 };
 
 function readStoredMode(): AppMode {
@@ -115,7 +122,8 @@ function readStoredLeads(): Record<AppMode, LeadMode | null> {
     const parsed = JSON.parse(raw) as Partial<Record<AppMode, LeadMode>>;
     for (const d of MODE_DEFS) {
       const v = parsed[d.key];
-      if (d.key === 'office') continue; // 办公无 lead，持久化里也不读
+      // 无 lead 的模式（office/douyin）：持久化里也不读，避免脏数据造出个 lead 切换器
+      if (d.key === 'office' || d.key === 'douyin') continue;
       if (v === 'ai' || v === 'human') out[d.key] = v;
     }
   } catch { /* 坏数据回默认 */ }
@@ -135,10 +143,10 @@ watch(activeMode, (m) => {
 });
 watch(leads, (v) => {
   try {
-    // 只存有 lead 的三个模式
+    // 只存有 lead 的模式（office/douyin 无 lead，不落持久化）
     const slim: Partial<Record<AppMode, LeadMode>> = {};
     for (const d of MODE_DEFS) {
-      if (d.key === 'office') continue;
+      if (d.key === 'office' || d.key === 'douyin') continue;
       const lv = v[d.key];
       if (lv) slim[d.key] = lv;
     }
@@ -163,7 +171,8 @@ export function leadOf(m: AppMode): LeadMode {
 }
 
 export function setLead(m: AppMode, lead: LeadMode): void {
-  if (m === 'office') return; // 办公模式无 lead
+  // 无 lead 的模式：办公 / 抖音运营（对话居中，没有「人主导 vs AI 主导」的切换）
+  if (m === 'office' || m === 'douyin') return;
   leads.value = { ...leads.value, [m]: lead };
 }
 
@@ -172,6 +181,7 @@ export const activeLead: ComputedRef<LeadMode> = computed(() => leadOf(activeMod
 /** 对话位置排布（决策 3.1 形态矩阵） */
 export function chatPlacementOf(m: AppMode, lead: LeadMode): ChatPlacement {
   if (m === 'office') return 'center';
+  if (m === 'douyin') return 'center'; // 抖音运营：对话居中（与办公同形态）
   if (m === 'dev') return lead === 'ai' ? 'center' : 'right';
   if (m === 'wf') return lead === 'ai' ? 'center' : 'right'; // 运行模式：运行台居中 + 对话在右
   if (m === 'clip') return lead === 'ai' ? 'center' : 'right'; // 剪辑模式：时间轴居中 + 对话在右

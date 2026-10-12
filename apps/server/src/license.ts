@@ -31,8 +31,10 @@ export type Edition = 'lite' | 'basic' | 'pro';
 export const EDITION_MODES: Record<Edition, readonly string[]> = {
   lite: ['office'],
   // 剪辑属产出型能力（基础版即可用），与 wf/dev 同档
-  basic: ['office', 'wf', 'dev', 'clip'],
-  pro: ['office', 'wf', 'dev', 'clip', 'ops', 'sec'],
+  // 抖音运营（douyin，2026-10-12）同属内容/电商型产出能力，与 clip 同档（basic 起）；
+  // lite 是试用档，刻意只放「办公」。
+  basic: ['office', 'wf', 'dev', 'clip', 'douyin'],
+  pro: ['office', 'wf', 'dev', 'clip', 'ops', 'sec', 'douyin'],
 };
 
 export const EDITIONS: readonly Edition[] = ['lite', 'basic', 'pro'];

@@ -2184,6 +2184,10 @@ async function healStalePlatform() {
       // 工作流模式的新会话要带上工作流场景人格（参数补全 / 节点排障视角），
       // 否则场景定义了却从不激活 —— 与开发模式挂 code 场景同一套机制。
       setScene('wf');
+    } else if (activeMode.value === 'douyin') {
+      // 抖音运营模式的新会话自动挂「抖音运营」场景（带货+引流人格 + 两个 skill 关键词匹配），
+      // 与开发模式挂 code、工作流挂 wf 同一套机制。
+      setScene('douyin');
     }
     // ★★★ 目标目录绑了任务模式 → 新任务必须按该模式对齐「智能体 + 技能挂载 + 场景」。
     //

@@ -112,8 +112,11 @@ export interface Conversation {
    *
    * 创建时由前端写入当前模式，之后**不可变更**（改 mode 会让会话"跳"到
    * 别的模式列表里，归属语义就乱了）。存量会话在迁移时统一归 'office'。
+   *
+   * ★ 与前端 stores/mode.ts 的 AppMode 联合类型成对维护：2026-10-12 补 clip（既有缺口，
+   *   一直靠 chat.ts 的 as cast 兜着）与 douyin（抖音运营模式）。
    */
-  mode?: 'office' | 'dev' | 'ops' | 'sec' | 'wf';
+  mode?: 'office' | 'dev' | 'ops' | 'sec' | 'wf' | 'clip' | 'douyin';
   createdAt: number;
   updatedAt: number;
 }

@@ -169,9 +169,9 @@ describe('模式定义完整性（路由与插件依赖）', () => {
     (globalThis as Record<string, unknown>).localStorage = new LocalStorageStub() as unknown as Storage;
   });
 
-  it('模式定义与 openspec 表格一致（含新增的 wf / clip）', async () => {
+  it('模式定义与 openspec 表格一致（含新增的 wf / clip / douyin）', async () => {
     const m = await freshModule(new LocalStorageStub());
-    expect(m.MODE_DEFS.map((d) => d.key)).toEqual(['office', 'dev', 'ops', 'sec', 'wf', 'clip']);
+    expect(m.MODE_DEFS.map((d) => d.key)).toEqual(['office', 'dev', 'ops', 'sec', 'wf', 'clip', 'douyin']);
     expect(m.modeRoute('office')).toBe('/chat');
     expect(m.modeRoute('dev')).toBe('/code');
     expect(m.modeRoute('ops')).toBe('/ops');
@@ -179,6 +179,8 @@ describe('模式定义完整性（路由与插件依赖）', () => {
     expect(m.modeRoute('wf')).toBe('/workflow');
     // 剪辑模式（第六模式）：无插件依赖、三端可用（与 wf 同档）
     expect(m.modeRoute('clip')).toBe('/clip');
+    // 抖音运营模式（第七模式，2026-10-12）：无独立工作台 UI，复用 Chat.vue 但走独立路由
+    expect(m.modeRoute('douyin')).toBe('/douyin');
     // pluginId 必须与插件 manifest.id 完全一致（运行时已核实：/api/plugins 返回 ops-shell / sec-lab）
     expect(m.MODE_DEFS.find((d) => d.key === 'ops')?.pluginId).toBe('ops-shell');
     expect(m.MODE_DEFS.find((d) => d.key === 'sec')?.pluginId).toBe('sec-lab');
@@ -187,6 +189,17 @@ describe('模式定义完整性（路由与插件依赖）', () => {
     const wf = m.MODE_DEFS.find((d) => d.key === 'wf');
     expect(wf?.pluginId).toBeUndefined();
     expect(wf?.desktopOnly).toBeUndefined();
+    // 抖音运营模式同档：无插件依赖、三端可用（内容策划不依赖浏览器/插件）
+    const douyin = m.MODE_DEFS.find((d) => d.key === 'douyin');
+    expect(douyin?.pluginId).toBeUndefined();
+    expect(douyin?.desktopOnly).toBeUndefined();
+  });
+
+  it('douyin：无 lead（对话居中，与办公同形态）', async () => {
+    const m = await freshModule(new LocalStorageStub());
+    // chatPlacementOf 两个入参都传也无 lead 可切 —— 恒 center
+    expect(m.chatPlacementOf('douyin', 'ai')).toBe('center');
+    expect(m.chatPlacementOf('douyin', 'human')).toBe('center');
   });
 });
 

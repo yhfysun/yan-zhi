@@ -45,7 +45,7 @@
 <script setup lang="ts">
 import { computed, ref, watch, onMounted, onBeforeUnmount } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { Check, Lock, ChatDotRound, Monitor, Platform, Connection } from '@element-plus/icons-vue';
+import { Check, Lock, ChatDotRound, Monitor, Platform, Connection, VideoCamera, Promotion } from '@element-plus/icons-vue';
 import {
   activeMode, MODE_DEFS, setMode, modeRoute, visibleModeDefs,
   type AppMode, type ModeDef,
@@ -114,7 +114,12 @@ function onTriggerClick() {
   router.push(modeRoute(activeMode.value));
 }
 
-const ICONS: Record<string, unknown> = { ChatDotRound, Monitor, Platform, Lock, Connection };
+// 模式图标名（MODE_DEFS.icon）→ 组件。★ 新增模式必须在这里补图标，
+// 否则 iconOf 静默回落 ChatDotRound（"抖音模式显示成气泡"就是漏登记）。
+// 注：VideoCamera（剪辑模式）是历史漏登记项 —— 2026-10-12 补 douyin 时一并补上。
+const ICONS: Record<string, unknown> = {
+  ChatDotRound, Monitor, Platform, Lock, Connection, VideoCamera, Promotion,
+};
 function iconOf(name: string) {
   return ICONS[name] || ChatDotRound;
 }

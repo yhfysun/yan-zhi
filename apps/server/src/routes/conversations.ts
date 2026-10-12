@@ -32,7 +32,9 @@ router.use(authMiddleware);
 // ★ 'clip'（剪辑模式）必须在内：漏掉时 POST 会把 mode='clip' 静默落成 'office'，
 //   于是剪辑任务在剪辑模式列表里**看不到**（按 mode 过滤为空），
 //   却混进办公模式的列表（真实缺陷，靠 CDP 真跑才发现）。
-const VALID_MODES = new Set(['office', 'dev', 'ops', 'sec', 'wf', 'clip']);
+// ★ 'douyin'（抖音运营模式，2026-10-12）同理：漏掉它，抖音会话会静默落成 office，
+//   在抖音模式列表里看不到、混进办公列表。
+const VALID_MODES = new Set(['office', 'dev', 'ops', 'sec', 'wf', 'clip', 'douyin']);
 
 router.get('/', (req: Request, res: Response) => {
   const userId = req.user!.userId;
