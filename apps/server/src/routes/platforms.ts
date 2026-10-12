@@ -12,6 +12,7 @@ import {
   recordSuccess,
   recordFailure,
 } from '../services/token-pool.js';
+import { validateModelPools } from '../services/model-pools.js';
 import { DEFAULT_CONTEXT_WINDOW } from '../constants.js';
 import { inferCapabilitiesFromModelId } from '../agens-platform/service.js';
 import { createLogger } from '../services/logger.js';
@@ -130,8 +131,18 @@ router.patch('/:id', (req: Request, res: Response) => {
   const pid = req.params.id;
   const existing = db.prepare('SELECT * FROM platform WHERE id = ? AND user_id = ?').get(pid, userId(req));
   if (!existing) { res.status(404).json({ error: '平台不存在' }); return; }
-  const { name, protocol, apiUrl, apiKeyEnc, headers, pauseMinMs, pauseMaxMs, llmEnabled } = req.body || {};
+  const { name, protocol, apiUrl, apiKeyEnc, headers, pauseMinMs, pauseMaxMs, llmEnabled, modelPools } = req.body || {};
   const configTouched = [name, protocol, apiUrl, apiKeyEnc, headers, pauseMinMs, pauseMaxMs].some((v) => v !== undefined);
+  // 模型候选池（model-candidate-pools）：与 llmEnabled 同属使用偏好，内置平台也允许配；
+  // 校验失败（槽位错配/越权引用）必须挡在写入口
+  if (modelPools !== undefined) {
+    const v = validateModelPools(db, userId(req), modelPools);
+    if (!v.ok) { res.status(400).json({ error: v.error }); return; }
+    db.prepare('UPDATE platform SET model_pools_json = ? WHERE id = ?').run(JSON.stringify(v.pools || {}), pid);
+    if (!configTouched) {
+      res.json({ data: rowToP(db.prepare('SELECT * FROM platform WHERE id = ?').get(pid)) }); return;
+    }
+  }
   // 「可供大模型调用」是使用偏好而非连接配置，内置平台也允许切（内置平台的连接信息才禁改）
   if (llmEnabled !== undefined) {
     db.prepare('UPDATE platform SET llm_enabled = ? WHERE id = ?').run(llmEnabled ? 1 : 0, pid);

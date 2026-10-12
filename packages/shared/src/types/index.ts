@@ -287,6 +287,40 @@ export interface McpTool {
 /** 智能体类型 */
 export type AgentType = 'harness' | 'workflow';
 
+/** 模型候选池槽位（model-candidate-pools）：llm=对话 / vision=视觉理解 / image=生图 / video=生视频 */
+export type ModelPoolSlot = 'llm' | 'vision' | 'image' | 'video';
+/** 三层同构池结构：槽位 → 有序 model 主键数组（[0] 首选）；缺失槽位 = 未配置，回退下一层 */
+export interface ModelPools {
+  llm?: string[];
+  vision?: string[];
+  image?: string[];
+  video?: string[];
+}
+
+/**
+ * 槽位匹配判据（唯一真相源；server services/model-pools.ts 与前端选择器共用）。
+ * 口径：
+ *   - llm：type=llm 且不带媒体能力（image/video cap 的模型是生图/生视频专用，见 model-caps.ts）
+ *   - vision：type=llm 且带 vision 能力（视觉理解，区别于生图）
+ *   - image / video：type 命中或能力命中任一即可
+ * type 为空按 llm 处理（存量数据宽容）。
+ */
+export function matchesModelSlot(
+  type: string | null | undefined,
+  capabilities: string[] | null | undefined,
+  slot: ModelPoolSlot,
+): boolean {
+  const t = type || 'llm';
+  const caps = Array.isArray(capabilities) ? capabilities : [];
+  const hasMedia = caps.includes('image') || caps.includes('video');
+  switch (slot) {
+    case 'llm': return t === 'llm' && !hasMedia;
+    case 'vision': return t === 'llm' && caps.includes('vision');
+    case 'image': return t === 'image' || caps.includes('image');
+    case 'video': return t === 'video' || caps.includes('video');
+  }
+}
+
 /** MCP 工具挂载项 */
 export interface McpToolMount {
   serverId: string;
@@ -307,6 +341,8 @@ export interface Agent {
   presencePenalty?: number;
   platformId?: string;
   modelId?: string;
+  /** 模型候选池（智能体层）：未配置的槽位按 平台池 → 全局池 → 自动兜底 回退（services/model-pools.ts） */
+  modelPools?: ModelPools;
   /** 智能体类型：harness（默认，挂载即用）| workflow（DAG 连线编排） */
   type?: AgentType;
   /** Harness 挂载：内置工具名列表 */

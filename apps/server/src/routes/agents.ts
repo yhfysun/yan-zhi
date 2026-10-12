@@ -7,6 +7,7 @@ import { v4 as uuid } from 'uuid';
 import { authMiddleware } from '../auth.js';
 import { db, resetBuiltinAgent } from '../db.js';
 import { DEFAULT_AGENT_PARAMS } from '../constants.js';
+import { validateModelPools } from '../services/model-pools.js';
 
 const router = Router();
 router.use(authMiddleware);
@@ -77,6 +78,13 @@ router.post('/', (req: Request, res: Response) => {
     JSON.stringify(b.subAgentIds || []),
     JSON.stringify(b.ontologyIds || []),
     JSON.stringify(b.knowledgeBaseIds || []),
+    // 模型候选池：创建时同样走校验（错配模型进池必须在写入口拦下）
+    JSON.stringify((() => {
+      if (b.modelPools === undefined || b.modelPools === null) return {};
+      const v = validateModelPools(db, userId, b.modelPools);
+      if (!v.ok) throw new Error(v.error || 'modelPools 校验失败');
+      return v.pools || {};
+    })()),
     b.category || '',
     b.version ?? 1,
     now, now,
@@ -116,6 +124,12 @@ router.patch('/:id', (req: Request, res: Response) => {
   };
   for (const [k, col] of Object.entries(jsonMap)) {
     if (b[k] !== undefined) { sets.push(`${col} = ?`); vals.push(JSON.stringify(b[k])); }
+  }
+  // 模型候选池（model-candidate-pools）：写路径必须过 validateModelPools（槽位错配/越权引用在此挡住）
+  if (b.modelPools !== undefined) {
+    const v = validateModelPools(db, userId, b.modelPools);
+    if (!v.ok) { res.status(400).json({ error: v.error }); return; }
+    sets.push('model_pools_json = ?'); vals.push(JSON.stringify(v.pools || {}));
   }
   for (const [k, col] of Object.entries(strMap2)) {
     if (b[k] !== undefined) { sets.push(`${col} = ?`); vals.push(b[k]); }

@@ -67,6 +67,8 @@ import ontologyRoutes from './routes/ontologies.js';
 import llmProxyRoutes from './routes/llm-proxy.js';
 import llmTaskRoutes from './routes/llm-tasks.js';
 import llmLogsRoutes from './routes/llm-logs.js';
+// 模型候选池三层配置（model-candidate-pools）：global/platform/agent 读写集中一处
+import modelPoolRoutes from './routes/model-pools.js';
 import { gitExplorerManifest, gitExplorerModule } from './plugins/git-explorer.js';
 import { computerUseManifest, computerUseModule } from './plugins/computer-use.js';
 import { registerBuiltinSkins } from './plugins/skins.js';
@@ -145,6 +147,7 @@ app.use('/api/workspace', workspaceFileRoutes);
 app.use('/api/messages', messageRoutes);
 app.use('/api/spaces', spaceRoutes);
 app.use('/api/platforms', platformRoutes);
+app.use('/api/model-pools', modelPoolRoutes);
 app.use('/api/agents', agentRoutes);
 // 场景（模式）配置：动态创建「模式」= 智能体 + skill 关键词 + 场景提示词（2026-10-12）
 app.use('/api/scene-configs', sceneConfigRoutes);

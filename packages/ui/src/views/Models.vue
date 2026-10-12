@@ -39,6 +39,8 @@
         <div class="card-actions">
           <el-button size="small" :loading="testing === p.id" @click="test(p.id)">测试</el-button>
           <el-button size="small" @click="openPlatform(p.id)">管理模型</el-button>
+          <!-- 模型候选池（model-candidate-pools）：平台默认层，内置平台也可配（使用偏好） -->
+          <el-button size="small" @click="openPools(p)">候选池</el-button>
               <el-button v-if="!p.isBuiltin" size="small" @click="editPlatform(p)">编辑</el-button>
               <el-button size="small" type="danger" @click="del(p.id)">删除</el-button>
         </div>
@@ -149,6 +151,31 @@
     <!-- Mobile FAB -->
     <el-button type="primary" :icon="Plus" circle class="mobile-fab" @click="openAdd" />
 
+    <!-- 平台候选池（model-candidate-pools）：四槽位多选，条目限定本平台模型 -->
+    <el-dialog v-model="showPools" :title="`候选池 · ${poolPlatform?.name || ''}`" width="560px" destroy-on-close>
+      <el-form label-width="80px">
+        <el-form-item v-for="slot in POOL_SLOTS" :key="slot" :label="POOL_LABELS[slot]">
+          <el-select
+            v-model="poolForm[slot]"
+            placeholder="可多选，顺序即优先级"
+            filterable clearable multiple collapse-tags style="width:100%"
+          >
+            <el-option
+              v-for="m in platformModelsForSlot(slot)"
+              :key="m.id"
+              :label="m.alias || m.modelId"
+              :value="m.id"
+            />
+          </el-select>
+        </el-form-item>
+      </el-form>
+      <div class="form-tip">该平台下智能体未配置候选池时使用这里；此处只能选择本平台的模型。全局默认在「设置 → 通用」。</div>
+      <template #footer>
+        <el-button @click="showPools = false">取消</el-button>
+        <el-button type="primary" :loading="poolSaving" @click="savePools">保存</el-button>
+      </template>
+    </el-dialog>
+
     <!-- 本地模型商城：国内源下载 / 测试启用 / 删除 / Ollama 接入 -->
     <LocalModelMarket v-model="showLocalMarket" />
   </div>
@@ -159,7 +186,8 @@ import { ref, computed, onMounted } from 'vue';
 import { Plus, Connection, Download, Delete } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import type { ModelType, PlatformApiKey } from '@yan-zhi/shared';
-import { usePlatformStore } from '../stores';
+import { matchesModelSlot } from '@yan-zhi/shared';
+import { usePlatformStore, useModelPoolStore } from '../stores';
 import { waitForBackend } from '../api/backend-ready';
 import { DEFAULT_CONTEXT_WINDOW } from '../utils/context-window';
 import PlatformDetail from './PlatformDetail.vue';
@@ -168,8 +196,72 @@ import FormDialog from '../components/FormDialog.vue';
 import StatusActionBar from '../components/common/StatusActionBar.vue';
 
 const store = usePlatformStore();
+const modelPoolStore = useModelPoolStore();
 const showAdd = ref(false);
 const showLocalMarket = ref(false);
+
+// ===== 平台候选池（model-candidate-pools）=====
+const POOL_SLOTS = ['llm', 'vision', 'image', 'video'] as const;
+const POOL_LABELS: Record<string, string> = { llm: 'LLM', vision: '视觉', image: '生图', video: '生视频' };
+const showPools = ref(false);
+const poolSaving = ref(false);
+const poolPlatform = ref<{ id: string; name: string } | null>(null);
+const poolForm = ref<Record<string, string[]>>({ llm: [], vision: [], image: [], video: [] });
+
+async function openPools(p: { id: string; name: string }) {
+  poolPlatform.value = p;
+  // ★ 不能调 loadModels(p.id) —— 它会**整体替换** store.models 为单平台清单，
+  //   冲掉其他界面（智能体编辑下拉等）依赖的全量模型缓存。这里保证全量即可。
+  if (!store.modelsLoaded) await store.loadModels().catch(() => {});
+  const pools = await modelPoolStore.loadPlatform(p.id);
+  poolForm.value = {
+    llm: [...(pools.llm || [])], vision: [...(pools.vision || [])],
+    image: [...(pools.image || [])], video: [...(pools.video || [])],
+  };
+  showPools.value = true;
+}
+
+/** 本平台模型按槽位过滤（matchesModelSlot 与后端同源；只列启用且可见的） */
+function platformModelsForSlot(slot: string) {
+  const pid = poolPlatform.value?.id;
+  if (!pid) return [];
+  return store.models.filter((m: any) =>
+    m.platformId === pid && m.enabled && (m.visible === undefined || m.visible)
+    && matchesModelSlot(m.type, m.capabilities, slot as any),
+  );
+}
+
+async function savePools() {
+  if (!poolPlatform.value) return;
+  poolSaving.value = true;
+  try {
+    const err = await modelPoolStore.savePlatform(poolPlatform.value.id, poolForm.value as any);
+    if (err) ElMessage.error(err);
+    else { ElMessage.success('候选池已保存'); showPools.value = false; }
+  } finally {
+    poolSaving.value = false;
+  }
+}
+
+// ── 平台搜索 / 筛选（纯前端，不动数据） ──
+const platformKeyword = ref('');
+const protocolFilter = ref('');
+const statusFilter = ref('');
+const filteredPlatforms = computed(() => {
+  const kw = platformKeyword.value.trim().toLowerCase();
+  return store.platforms.filter((p: any) => {
+    if (protocolFilter.value && (p.protocol || 'openai') !== protocolFilter.value) return false;
+    if (statusFilter.value && (p.status || 'unknown') !== statusFilter.value) return false;
+    if (!kw) return true;
+    return (p.name || '').toLowerCase().includes(kw) || (p.apiUrl || '').toLowerCase().includes(kw);
+  });
+});
+const platformFilterActive = computed(() => !!platformKeyword.value.trim() || !!protocolFilter.value || !!statusFilter.value);
+function clearPlatformFilter() {
+  platformKeyword.value = '';
+  protocolFilter.value = '';
+  statusFilter.value = '';
+}
 
 const showDetail = ref(false);
 const detailId = ref('');

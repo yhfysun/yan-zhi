@@ -7,6 +7,7 @@ import { createTask, buildSystemPromptForBackend, buildToolsForBackend, loadAgen
 import { startWorkflowRun, resolveBundleFromDb, type WorkflowRunBundle } from '../workflow-runner.js';
 import { buildWorkflowInputFieldDefs } from './workflow-delegate.js';
 import { createLogger } from './logger.js';
+import { resolveFirstModel } from './model-pools.js';
 const logger = createLogger('scheduled-tasks');
 
 const MINUTE_MS = 60_000;
@@ -334,6 +335,12 @@ export async function runScheduledTask(task: any): Promise<ScheduledTaskRunResul
     if (agent) {
       platformId = platformId || agent.platform_id;
       modelId = modelId || agent.model_id;
+      // model-candidate-pools：任务/智能体都没绑单模型时，用该智能体的 llm 候选池首选
+      // （与会话主任务、子智能体委派同口径，池才不会"存了不用"）
+      if (!modelId) {
+        const poolFirst = resolveFirstModel(db, { userId, agentId: agent.id, platformId }, 'llm');
+        if (poolFirst) { platformId = poolFirst.platformId; modelId = poolFirst.model.id; }
+      }
     }
   }
   if (!platformId || !modelId) {

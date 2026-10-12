@@ -7,6 +7,8 @@ import type { Platform, Model, Message, DeltaToolCall } from '@yan-zhi/shared';
 import { formatTaskTypeContext, DEFAULT_CONFIRM_BATCH_SIZE, resolveTaskBudgets, checkTaskBudgetHit as sharedCheckTaskBudgetHit, addWaitCredit } from '@yan-zhi/shared';
 import { LlmClient, getToolRegistry, getApiToolRegistry, ContextWindow, adviceForTruncatedArgs, runCodeDiagnostics, invalidateDiagnosticsCache, resolveToolPath, setBrowserToolConversationId, type SummaryCache } from '@yan-zhi/core';
 import { db, MESSAGE_LIST_COLS, getLatestMessageSummary } from './db.js';
+import { resolvePool, resolveFailoverChain, resolveFirstModel, SLOTS, type Slot } from './services/model-pools.js';
+import { shouldRetryStatus } from './services/token-pool.js';
 import { normalizePermissionMode, checkToolPermission, filterToolsByPermission, permissionModePrompt, checkWorkflowPermission, type PermissionMode } from './tool-permission.js';
 import { ensureToolsInitialized } from './mcp/index.js';
 import { executeApiTool, isApiExecutableTool } from './mcp/api-tool-executor.js';
@@ -218,6 +220,24 @@ export function isStreamUnterminated(p: {
   if (p.contentLen === 0 && p.reasoningLen === 0) return true; // ③ 空产出
   // ② 主判据：无终态 → 未收尾（含"只有半截 reasoning、无正文"这一最典型形态）
   return true;
+}
+
+/**
+ * 模型调用失败是否该走「候选池故障转移」（换一个候选模型重试本轮）。
+ *
+ * 判据与 token 池换 Key 重试同源（token-pool.shouldRetryStatus：401/403/429/5xx），
+ * 另加网络层/超时错误 —— 这些才是「上游把这个模型打趴了」的信号。
+ * 反之 400/404/参数错误换模型毫无意义（换了也一样错），直接抛出走既有错误落库。
+ *
+ * 抽成纯函数并单测（test/model-pool-failover.test.ts）：
+ *   "该换没换" = 长任务白失败；"不该换乱换" = 掩盖真因（如参数错误被当成限流反复换模型）。
+ */
+export function isPoolFailoverable(e: unknown): boolean {
+  const err = e as any;
+  const status = Number(err?.status);
+  if (Number.isFinite(status) && status > 0) return shouldRetryStatus(status);
+  const msg = String(err?.message || e || '').toLowerCase();
+  return /429|rate.?limit|timeout|timed out|econn|enetunreach|eai_again|socket|network|上游/.test(msg);
 }
 
 /**
@@ -552,8 +572,12 @@ function loadModel(modelId: string, userId: string, platformId?: string): Model 
 
 /** list_models 工具执行：列出当前用户所有已启用且对模型可见的模型（可按 platformId/type/capability/category 过滤、分页），
  *  返回语义化文本，供 LLM 选型（图片/视频/视觉/向量化等任务指定模型）。
- *  可见性口径与前端模型下拉一致：查不到的平台/模型，智能体也不该动态选中。 */
-function listAvailableModels(userId: string, args: Record<string, unknown>): string {
+ *  可见性口径与前端模型下拉一致：查不到的平台/模型，智能体也不该动态选中。
+ *  model-candidate-pools（2026-10-12）：
+ *   - 传 `slot`（llm/vision/image/video）→ 只返回该槽位**生效池**（agent → 平台 → 全局 → 自动兜底）；
+ *   - 不传 slot 的平铺返回 → 池是**用户配置的**（非 autoPool 兜底）时给 llm 池成员加 ★，
+ *     引导模型优先选池内候选（池收敛了质量下限，"很多模型里选到差模型"的问题由此解决）。 */
+function listAvailableModels(userId: string, args: Record<string, unknown>, task?: { agentId?: string | null; platformId?: string | null }): string {
   const platformId = args.platformId as string | undefined;
   const typeFilter = args.type as string | undefined;
   const capFilter = args.capability as string | undefined;
@@ -562,6 +586,20 @@ function listAvailableModels(userId: string, args: Record<string, unknown>): str
   const offsetRaw = Number(args.offset);
   const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(Math.floor(limitRaw), 200) : 50;
   const offset = Number.isFinite(offsetRaw) && offsetRaw > 0 ? Math.floor(offsetRaw) : 0;
+
+  // ===== 候选池上下文（slot 直查 / llm 池打标）=====
+  const poolCtx = { userId, agentId: task?.agentId || null, platformId: task?.platformId || null };
+  const slotFilter = typeof args.slot === 'string' && (SLOTS as readonly string[]).includes(args.slot) ? (args.slot as Slot) : undefined;
+  const slotPoolIds = new Set<string>();
+  let markIds: Set<string> | null = null;
+  if (slotFilter) {
+    for (const e of resolvePool(db, poolCtx, slotFilter)) slotPoolIds.add(e.model.id);
+  } else {
+    const llmPool = resolvePool(db, poolCtx, 'llm');
+    if (llmPool.length && llmPool[0].source !== 'auto') {
+      markIds = new Set(llmPool.map((e) => e.model.id));
+    }
+  }
 
   // 语义分类 → 等价 type/capability 谓词（与 type/capability 同时传时以 category 为准）
   const CATEGORY_MAP: Record<string, { type?: string; cap?: string }> = {
@@ -594,6 +632,8 @@ function listAvailableModels(userId: string, args: Record<string, unknown>): str
       const caps: string[] = (() => { try { return JSON.parse(m.capabilities_json || '[]'); } catch { return []; } })();
       if (effType && (m.type || 'llm') !== effType) continue;
       if (effCap && !caps.includes(effCap)) continue;
+      // slot 直查模式：只保留生效池成员（池外模型对选型不可见）
+      if (slotFilter && !slotPoolIds.has(m.id)) continue;
       all.push({ platformName: p.name, platformId: p.id, protocol: p.protocol || 'openai', m });
     }
   }
@@ -621,15 +661,17 @@ function listAvailableModels(userId: string, args: Record<string, unknown>): str
     const alias = r.m.alias || r.m.model_id;
     const desc = r.m.description ? ` | 描述: ${r.m.description}` : '';
     const capStr = caps.length ? ` | 能力: ${caps.join(',')}` : '';
-    lines.push(`  - ${alias} (model: \`${r.m.model_id}\`, id: \`${r.m.id}\`) [type=${type}${capStr}]${desc}`);
+    const star = markIds?.has(r.m.id) ? '★' : '';
+    lines.push(`  - ${star}${alias} (model: \`${r.m.model_id}\`, id: \`${r.m.id}\`) [type=${type}${capStr}]${desc}`);
   }
 
   const pageLabel = `第 ${offset + 1}-${offset + page.length} 条 / 共 ${total} 条`;
   const moreHint = hasMore
     ? `\n（还有更多，传 offset=${offset + limit} 取下一页；limit 可调每页条数，最大 200）`
     : '';
+  const starHint = markIds ? '\n（★ = 当前智能体候选池内模型，选型优先考虑）' : '';
   lines.unshift(`可用模型 ${pageLabel}：`);
-  return lines.join('\n') + moreHint;
+  return lines.join('\n') + moreHint + starHint;
 }
 
 function loadMessages(convId: string): Message[] {
@@ -2355,9 +2397,10 @@ async function runReActLoop(task: LlmTask, params: {
       }
     }
 
-    const platform = loadPlatform(params.platformId, userId);
+    // let：故障转移换模型时会连同平台一起指向新候选（见下方 failoverChain）
+    let platform = loadPlatform(params.platformId, userId);
     // 带上 platformId：存量裸名回退时限定平台，避免同 API 名跨平台误命中另一个模型
-    const model = loadModel(params.modelId, userId, params.platformId);
+    let model = loadModel(params.modelId, userId, params.platformId);
     if (!platform || !model) {
       // 平台/模型失效：错误提示作为 assistant 消息落库+推送（刷新后仍可见），只发 task:error 前端仅 toast、刷新即丢
       const errMsg = `平台或模型不存在或已失效（platformId: ${params.platformId}），请在「设置 → 模型平台」重新选择可用模型后重试。`;
@@ -2368,11 +2411,37 @@ async function runReActLoop(task: LlmTask, params: {
       return;
     }
 
-    const client = new LlmClient(platform, model);
+    // ★ let：故障转移（model-candidate-pools P3）会换模型，client 与 model 都要能重新指向
+    let client = new LlmClient(platform, model);
     ensureToolsInitialized();
     const registry = getToolRegistry();
     const modelCaps = model.capabilities as string[] | undefined;
     const supportsTools = modelSupportsTools(modelCaps);
+
+    // ===== 候选池故障转移链（model-candidate-pools P3）=====
+    // 当前模型在首位，其后是池中其余候选：只有当前模型**真的失败**（429/5xx/网络/超时）才换。
+    // 链随任务存活（不落库）—— 幂等只需覆盖本次运行期间的重试。
+    const failoverChain = resolveFailoverChain(
+      db,
+      { userId, agentId: params.agentId ?? null, platformId: params.platformId },
+      model.id,
+      'llm',
+    );
+    let failoverCursor = 0;
+    /** 换到链上下一个候选模型并重建 client；无可换返回 null */
+    const switchToNextModel = (): string | null => {
+      while (failoverCursor + 1 < failoverChain.length) {
+        failoverCursor++;
+        const next = failoverChain[failoverCursor];
+        const nextPlatform = loadPlatform(next.platformId, userId);
+        if (!nextPlatform) continue;
+        model = next.model;
+        platform = nextPlatform;
+        client = new LlmClient(nextPlatform, next.model);
+        return next.model.id;
+      }
+      return null;
+    };
 
     // 后端统一构建 systemPrompt/tools（单一事实来源）：前端只传 agentId/appGuide。
     // 历史兼容：显式传 systemPrompt/tools 则优先（定时任务等场景）。
@@ -2604,9 +2673,11 @@ async function runReActLoop(task: LlmTask, params: {
             //   按它节流既不会每次压缩都调 LLM，也不会漏掉整批。
             if (flushedBatch === batch) return;
             flushedBatch = batch;
+            // platform/model 改为 let 后 TS 不再保留「上方 if (!platform || !model) 已返回」的窄化，
+            // 这里两者必然非空（守卫在上面），用断言表达已知不变式
             const memLlm = resolveMemoryExtractLlm(task) || { platform, model };
             await flushMemoriesBeforeCompression(
-              { userId, conversationId: convId, agentId: task.agentId ?? null, platform: memLlm.platform, model: memLlm.model },
+              { userId, conversationId: convId, agentId: task.agentId ?? null, platform: memLlm.platform!, model: memLlm.model! },
               toCompress,
             );
           },
@@ -2798,6 +2869,24 @@ async function runReActLoop(task: LlmTask, params: {
               temperature: effOpts.temperature, maxTokens: effOpts.maxTokens,
               signal: task.abortController.signal,
             });
+          } else if (isPoolFailoverable(e)) {
+            // ★ 候选池故障转移（model-candidate-pools P3）：长任务长时间打同一个模型
+            //   会撞上游限流（429）或服务错误（5xx）—— 逐个换池中下一个候选重试本轮，
+            //   换完仍失败才抛出（抛出的错误按原路径落库到助手占位消息）。
+            const nextId = switchToNextModel();
+            if (nextId) {
+              logger.warn(
+                `[llm-task] 模型调用失败，切换到候选池下一模型重试：${failoverChain[failoverCursor - 1]?.model.id} → ${nextId}` +
+                `（第 ${failoverCursor + 1}/${failoverChain.length} 个候选）conv=${task.conversationId} err=${e?.message || e}`,
+              );
+              // 重置本轮累加器：失败那次可能已经吐了半截内容/工具调用残片
+              fullContent = ''; fullReasoning = ''; toolCallAcc.length = 0; usageTokens = 0;
+              streamFinish = undefined; streamFlag.terminated = true;
+              await consumeStream(streamOpts);
+            } else {
+              logger.warn(`[llm-task] 候选池 ${failoverChain.length} 个模型全部失败，放弃故障转移 conv=${task.conversationId}`);
+              throw e;
+            }
           } else {
             throw e;
           }
@@ -4175,8 +4264,9 @@ async function executeTool(
   }
 
   // list_models → 后端直接查 DB，返回语义化的可用模型清单（平台 + type + capabilities + description）
+  // model-candidate-pools：支持 slot 直查生效池；平铺返回给池内候选打 ★（引导优先选池内）
   if (toolName === 'list_models') {
-    return listAvailableModels(task.userId, args);
+    return listAvailableModels(task.userId, args, task);
   }
 
   // 自定义工具 → 后端直接执行（node:vm 沙箱，避免后端→前端→后端绕圈）
@@ -4512,9 +4602,13 @@ async function runWorkflowSubAgent(
   if (!mapped.ok) return mapped.error;
 
   // 模型回退上下文：工作流 llm 节点未配置模型时用它兜底（见 ServerLlmNodeHandler）
+  // model-candidate-pools：智能体未绑单模型时用其 llm 候选池首选（与 ReAct 子智能体同口径）
   const inputs: Record<string, unknown> = { ...mapped.inputs };
   const platformId = args.platformId || agent.platform_id || task.platformId;
-  const modelId = args.modelId || agent.model_id || task.modelId;
+  const wfPoolFirst = !args.modelId && !agent.model_id
+    ? resolveFirstModel(db, { userId: task.userId, agentId: resolvedId, platformId }, 'llm')
+    : null;
+  const modelId = args.modelId || agent.model_id || wfPoolFirst?.model.id || task.modelId;
   if (platformId) inputs.__platformId = platformId;
   if (modelId) inputs.__modelId = modelId;
 
@@ -5059,9 +5153,14 @@ async function runSubAgentImpl(
     return runWorkflowSubAgent(task, agent, args, parentToolCallId, depth);
   }
 
-  // 解析平台/模型：调用方指定 > 子智能体配置 > 父任务（主智能体当前模型）
+  // 解析平台/模型：调用方指定 > 子智能体配置 > 子智能体候选池首选 > 父任务（主智能体当前模型）
+  // model-candidate-pools：智能体没绑单模型时，用它的 llm 候选池首选（而非直接退父任务模型），
+  // 这样「给子智能体配了池」这个动作才真正生效（否则池只是存了不用 = 断言存在≠断言生效）。
   const platformId = args.platformId || (agent.platform_id || task.platformId);
-  const modelId = args.modelId || (agent.model_id || task.modelId);
+  const poolFirst = !args.modelId && !agent.model_id
+    ? resolveFirstModel(db, { userId: task.userId, agentId: resolvedId, platformId }, 'llm')
+    : null;
+  const modelId = args.modelId || (agent.model_id || poolFirst?.model.id || task.modelId);
   let platform = loadPlatform(platformId, task.userId);
   let model = loadModel(modelId, task.userId, platformId);
   if (!platform && modelId) {

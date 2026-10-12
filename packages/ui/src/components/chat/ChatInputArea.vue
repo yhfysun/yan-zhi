@@ -242,7 +242,8 @@
               </div>
             </template>
             <template v-else-if="slashMode === 'model'">
-              <template v-for="g in modelGroups" :key="g.platformId">
+              <!-- 数据源与两个模型弹层一致：候选池优先（池空回落全量），slash 键盘导航同源不漂移 -->
+              <template v-for="g in dropdownModelGroups" :key="g.platformId">
                 <div class="cmd-menu-group">{{ g.platformName }}</div>
                 <div
                   v-for="(m, i) in g.models"
@@ -505,6 +506,14 @@
               <el-input v-model="modelSearch" size="small" placeholder="搜索模型" clearable class="pop-model-search">
                 <template #prefix><el-icon><Search /></el-icon></template>
               </el-input>
+              <!-- 候选池开关：仅配置了池时可点（池空 = 本来就是全量，不显示该行） -->
+              <div
+                v-if="effectivePoolGroups.length"
+                class="pop-select-item pool-toggle-row"
+                @click.stop="showAllModels = !showAllModels"
+              >
+                <span class="pop-select-name">{{ showAllModels ? '只看候选池' : '显示全部模型' }}</span>
+              </div>
               <div class="pop-model-scroll" ref="mobileModelScrollEl">
                 <template v-for="g in filteredModelGroups" :key="g.platformId">
                   <div class="pop-select-label pop-model-group" @click="togglePlatformGroup(g.platformId)">
@@ -599,6 +608,14 @@
               >
                 <template #prefix><el-icon><Search /></el-icon></template>
               </el-input>
+              <!-- 候选池开关：仅配置了池时可点（池空 = 本来就是全量，不显示该行） -->
+              <div
+                v-if="effectivePoolGroups.length"
+                class="pop-select-item pool-toggle-row"
+                @click.stop="showAllModels = !showAllModels"
+              >
+                <span class="pop-select-name">{{ showAllModels ? '只看候选池' : '显示全部模型' }}</span>
+              </div>
               <div class="pop-model-scroll" ref="modelScrollEl">
                 <template v-for="g in filteredModelGroups" :key="g.platformId">
                   <div class="pop-select-label pop-model-group" @click="togglePlatformGroup(g.platformId)">
@@ -1199,9 +1216,65 @@ const currentModelName = computed(() => {
   return '选择模型';
 });
 
+// ===== 模型候选池下拉瘦身（model-candidate-pools P2）=====
+const platformStore = usePlatformStore();
+// 数据源：GET /api/model-pools 的 effective 字段（llm + vision 合并展示）——
+// 回退顺序（agent → 平台 → 全局 → 兜底）在后端解析，前端不重复实现。
+// 池为空或用户点「显示全部模型」时回落全量（modelGroups），行为与旧版一致。
+const showAllModels = ref(false);
+const poolEntries = ref<Array<{ modelId: string; platformId: string; alias?: string; modelApiId: string }>>([]);
+const poolAgentKey = ref('');
+const poolAgentId = computed(() => agentStore.selectedAgent?.id || '');
+
+async function loadPoolForAgent(agentId: string) {
+  if (!agentId) { poolEntries.value = []; poolAgentKey.value = ''; return; }
+  if (poolAgentKey.value === agentId) return; // 同一智能体不重复拉（切模型不触发）
+  poolAgentKey.value = agentId;
+  try {
+    const r = await api.get<any>(`/model-pools?agentId=${encodeURIComponent(agentId)}`);
+    if ('error' in r || !r.data?.effective) { poolEntries.value = []; return; }
+    // llm 池在前、vision 池在后，各自保持池内顺序
+    poolEntries.value = [
+      ...((r.data.effective.llm || []) as any[]).map((e) => ({ modelId: e.modelId, platformId: e.platformId, alias: e.alias, modelApiId: e.modelApiId })),
+      ...((r.data.effective.vision || []) as any[]).map((e) => ({ modelId: e.modelId, platformId: e.platformId, alias: e.alias, modelApiId: e.modelApiId })),
+    ];
+  } catch {
+    poolEntries.value = []; // 后端不可达 → 回落全量，下拉不空
+  }
+}
+watch(poolAgentId, (id) => { void loadPoolForAgent(id); }, { immediate: true });
+
+/** 生效池分组：用 platformStore.models 反查完整 Model 对象（上下文面板/类型标注需要全字段） */
+const effectivePoolGroups = computed(() => {
+  if (!poolEntries.value.length) return [];
+  const all = platformStore.models;
+  const groups: Array<{ platformId: string; platformName: string; models: Model[] }> = [];
+  const index = new Map<string, { platformId: string; platformName: string; models: Model[] }>();
+  for (const e of poolEntries.value) {
+    const m = all.find((x: any) => x.id === e.modelId);
+    if (!m) continue; // 池内模型可能刚被停用，全量列表里已没有 → 跳过（后端 effective 已过滤，这里兜底）
+    let g = index.get(e.platformId);
+    if (!g) {
+      g = {
+        platformId: e.platformId,
+        platformName: platformStore.platforms.find((p: any) => p.id === e.platformId)?.name || e.platformId,
+        models: [],
+      };
+      index.set(e.platformId, g);
+      groups.push(g);
+    }
+    g.models.push(m);
+  }
+  return groups;
+});
+
+/** 下拉真正用的数据源：池优先，空池/显示全部时回落全量 */
+const dropdownModelGroups = computed(() =>
+  showAllModels.value || !effectivePoolGroups.value.length ? modelGroups.value : effectivePoolGroups.value,
+);
+
 // ===== 模型上下文窗口快捷设置（hover 模型项 → 左侧浮层，对齐 WorkBuddy）=====
 // 保存写回 model 表（platformStore.updateModel），与「配置模型平台」里的上下文窗口是同一个值
-const platformStore = usePlatformStore();
 /** 桌面端模型胶囊的弹层开关。 */
 const modelPopOpen = ref(false);
 /** ★ 窄屏模型钮的弹层开关 —— **必须与 modelPopOpen 分开**：
@@ -1224,10 +1297,10 @@ function togglePlatformGroup(platformId: string) {
   if (i >= 0) collapsedPlatforms.value.splice(i, 1);
   else collapsedPlatforms.value.push(platformId);
 }
-/** 下拉里真正渲染的分组：先按关键字过滤，空的平台整组丢掉，命中多的排前面 */
+/** 下拉里真正渲染的分组：数据源取候选池（池空/显示全部时回落全量），再按关键字过滤 */
 const filteredModelGroups = computed(() => {
   const kw = modelSearch.value.trim().toLowerCase();
-  const groups = modelGroups.value
+  const groups = dropdownModelGroups.value
     .map((g) => ({
       ...g,
       models: kw
@@ -1392,18 +1465,20 @@ const filteredCommands = computed(() => {
 
 const flatModels = computed<Array<{ id: string; name: string }>>(() => {
   const arr: Array<{ id: string; name: string }> = [];
-  for (const g of modelGroups.value) {
+  for (const g of dropdownModelGroups.value) {
     for (const m of g.models) arr.push({ id: m.id, name: m.alias || m.modelId });
   }
   return arr;
 });
 
 // 某个 platform 分组在扁平模型列表中的起始下标，用于高亮对应项
+// ★ 缓存随数据源失效：池/全量切换（或搜索过滤）后分组集合变了，旧 offset 全部作废
 const modelGroupOffset = new Map<string, number>();
+watch(dropdownModelGroups, () => { modelGroupOffset.clear(); });
 function flatModelOffset(g: { platformId: string }) {
   if (!modelGroupOffset.has(g.platformId)) {
     let acc = 0;
-    for (const gg of modelGroups.value) {
+    for (const gg of dropdownModelGroups.value) {
       if (gg.platformId === g.platformId) { modelGroupOffset.set(g.platformId, acc); break; }
       acc += gg.models.length;
     }

@@ -37,12 +37,28 @@
                   <el-button size="small" text class="prompt-copy" :icon="CopyDocument" title="复制提示词" @click="copySystemPrompt">复制</el-button>
                 </div>
               </el-form-item>
-              <el-form-item label="模型">
-                <el-select v-model="form.modelId" placeholder="选择模型" filterable clearable style="width:100%">
+              <el-form-item label="锁定模型">
+                <el-select v-model="form.modelId" placeholder="留空则按候选池顺序选用" filterable clearable style="width:100%">
                   <el-option-group v-for="g in modelGroups" :key="g.platformId" :label="g.platformName">
                     <el-option v-for="m in g.models" :key="m.id" :label="m.alias || m.modelId" :value="m.id" />
                   </el-option-group>
                 </el-select>
+              </el-form-item>
+              <!-- 模型候选池（model-candidate-pools）：四槽位有序多选，顺序即优先级（第一个为首选）。
+                   未配置的槽位按 平台池 → 全局池 → 自动兜底 回退（判据 matchesModelSlot 与后端同源）。 -->
+              <el-form-item v-for="slot in POOL_SLOTS" :key="slot" :label="POOL_LABELS[slot]">
+                <div class="pool-select-row">
+                  <el-select
+                    v-model="form.modelPools[slot]"
+                    :placeholder="`可多选，按选择顺序作为 ${POOL_LABELS[slot]} 候选`"
+                    filterable clearable multiple collapse-tags style="width:100%"
+                  >
+                    <el-option-group v-for="g in poolSlotGroups[slot]" :key="g.platformId" :label="g.platformName">
+                      <el-option v-for="m in g.models" :key="m.id" :label="m.alias || m.modelId" :value="m.id" />
+                    </el-option-group>
+                  </el-select>
+                  <span v-if="(form.modelPools[slot] || []).length" class="pool-first-tag">首选：{{ firstPoolName(slot) }}</span>
+                </div>
               </el-form-item>
               <el-form-item v-if="authStore.isLoggedIn" label="发布到商城">
                 <div class="publish-row">
@@ -246,7 +262,7 @@ import { ref, computed, watch, reactive } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { User, EditPen, Cpu, Setting, Connection, Share, Files, Switch, ArrowRight, Collection, CopyDocument, Search, Notebook } from '@element-plus/icons-vue';
 import type { Agent } from '@yan-zhi/shared';
-import { DEFAULT_AGENT_PARAMS } from '@yan-zhi/shared';
+import { DEFAULT_AGENT_PARAMS, matchesModelSlot } from '@yan-zhi/shared';
 import { useAgentStore, usePlatformStore, useMcpStore, useSkillStore, useToolsStore, useAuthStore } from '../stores';
 import { api } from '../api/client';
 
@@ -278,6 +294,7 @@ const MAX_TOKENS_SLIDER_MAX = DEFAULT_AGENT_PARAMS.maxTokens;
 const form = ref<any>({
   name: '', description: '', systemPrompt: '', modelId: '', type: 'harness',
   agentKind: 'main',
+  modelPools: { llm: [], vision: [], image: [], video: [] },
   temperature: DEFAULT_AGENT_PARAMS.temperature, maxTokens: DEFAULT_AGENT_PARAMS.maxTokens,
   topP: DEFAULT_AGENT_PARAMS.topP, frequencyPenalty: DEFAULT_AGENT_PARAMS.frequencyPenalty,
   presencePenalty: DEFAULT_AGENT_PARAMS.presencePenalty,
@@ -399,6 +416,25 @@ const modelGroups = computed(() => {
   const enabled = platformStore.models.filter((m: any) => m.enabled);
   return platformStore.platforms.map((p: any) => ({ platformId: p.id, platformName: p.name, models: enabled.filter((m: any) => m.platformId === p.id) })).filter((g: any) => g.models.length > 0);
 });
+
+// ===== 模型候选池（model-candidate-pools）=====
+const POOL_SLOTS = ['llm', 'vision', 'image', 'video'] as const;
+const POOL_LABELS: Record<string, string> = { llm: 'LLM 候选', vision: '视觉候选', image: '生图候选', video: '生视频候选' };
+/** 各槽位可选模型（matchesModelSlot 判据与后端同源：@yan-zhi/shared，不许前端另写一套口径） */
+const poolSlotGroups = computed(() => {
+  const out: Record<string, typeof modelGroups.value> = {};
+  for (const slot of POOL_SLOTS) {
+    out[slot] = modelGroups.value
+      .map((g) => ({ ...g, models: g.models.filter((m: any) => matchesModelSlot(m.type, m.capabilities, slot)) }))
+      .filter((g) => g.models.length > 0);
+  }
+  return out;
+});
+function firstPoolName(slot: string): string {
+  const id = (form.value.modelPools?.[slot] || [])[0];
+  const m = platformStore.models.find((x: any) => x.id === id);
+  return m ? (m.alias || m.modelId) : id;
+}
 const checkedToolCount = computed(() => (form.value.builtinToolIds?.length || 0) + (form.value.customToolIds?.length || 0) + (form.value.mcpToolMounts?.length || 0));
 
 /** 复制系统提示词到剪贴板（clipboard API 不可用时回退 execCommand） */
@@ -453,6 +489,12 @@ watch(() => [props.modelValue, props.agent], () => {
     form.value = {
       name: a?.name || '', description: a?.description || '', systemPrompt: a?.systemPrompt || '',
       modelId: a?.modelId || '', type: a?.type || 'harness',
+      modelPools: {
+        llm: [...(a?.modelPools?.llm || [])],
+        vision: [...(a?.modelPools?.vision || [])],
+        image: [...(a?.modelPools?.image || [])],
+        video: [...(a?.modelPools?.video || [])],
+      },
       agentKind: a?.agentKind === 'sub' ? 'sub' : 'main',
       temperature: a?.temperature ?? DEFAULT_AGENT_PARAMS.temperature,
       maxTokens: a?.maxTokens ?? DEFAULT_AGENT_PARAMS.maxTokens,
@@ -501,6 +543,7 @@ async function handleSave() {
   const data: Partial<Agent> = {
     name: form.value.name.trim(), description: form.value.description?.trim() || '',
     systemPrompt: form.value.systemPrompt || '', modelId: form.value.modelId || '',
+    modelPools: form.value.modelPools,
     platformId: m?.platformId || '', type: form.value.type,
     // 分类：main=主智能体（会话可选中）/ sub=子智能体（仅供其他智能体引用委派）
     agentKind: form.value.agentKind === 'sub' ? 'sub' : 'main',
@@ -559,6 +602,9 @@ async function handleDelete() {
 .tab-inner::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: 999px; }
 
 .publish-row { display: flex; align-items: center; gap: 10px; }
+/* 模型候选池：多选行 + 首选标记 */
+.pool-select-row { display: flex; align-items: center; gap: 8px; width: 100%; }
+.pool-first-tag { flex-shrink: 0; font-size: 12px; color: var(--el-text-color-secondary); white-space: nowrap; }
 .publish-hint { font-size: var(--font-size-xs); color: var(--color-text-secondary); }
 
 .prompt-wrap { width: 100%; display: flex; flex-direction: column; }

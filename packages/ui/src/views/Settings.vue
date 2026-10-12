@@ -88,6 +88,28 @@
               <el-option v-for="m in availableDefaultModels" :key="m.id" :label="m.alias || m.modelId" :value="m.id" />
             </el-select>
           </SettingRow>
+          <!-- 模型候选池（model-candidate-pools）：全局默认层。智能体未配置走其平台池，平台未配置走这里；都没配自动兜底全部可见模型 -->
+          <SettingRow label="全局模型候选池">
+            <div class="pool-global-grid">
+              <div v-for="slot in POOL_SLOTS" :key="slot" class="pool-global-row">
+                <span class="pool-global-label">{{ POOL_LABELS[slot] }}</span>
+                <el-select
+                  v-model="globalPools[slot]"
+                  placeholder="可多选"
+                  filterable clearable multiple collapse-tags size="small"
+                  style="flex:1"
+                >
+                  <el-option-group v-for="g in poolSlotGroups[slot]" :key="g.platformId" :label="g.platformName">
+                    <el-option v-for="m in g.models" :key="m.id" :label="m.alias || m.modelId" :value="m.id" />
+                  </el-option-group>
+                </el-select>
+              </div>
+              <div class="pool-global-actions">
+                <el-button size="small" type="primary" :loading="poolSaving" @click="saveGlobalPools">保存候选池</el-button>
+                <span class="pool-first-tag">智能体未配置时用其平台的池，平台未配置时用这里；都没配置则自动使用全部可见模型</span>
+              </div>
+            </div>
+          </SettingRow>
           <SettingRow
             label="记忆抽取模型"
             tip="留空则自动跟随全局默认模型（如 agnes 3.0 Flash，支持视觉），不可用时才回退本地小模型"
@@ -441,7 +463,8 @@ const embedded = computed(() => props.embedded);
 const isPaneMode = computed(() => !!props.pane);
 import { Download, Delete, Upload, Sunny, Moon, ArrowRight, Setting, Brush, DataLine, MagicStick, Link, InfoFilled } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { useSettingsStore, usePlatformStore } from '../stores';
+import { matchesModelSlot } from '@yan-zhi/shared';
+import { useSettingsStore, usePlatformStore, useModelPoolStore } from '../stores';
 import { usePluginStore } from '../stores/plugin';
 import { useToolsStore } from '../stores/tools';
 import { useVerificationStore } from '../stores/verification';
@@ -468,6 +491,7 @@ import UserHooksPanel from '../components/settings/UserHooksPanel.vue';
 
 const settingsStore = useSettingsStore();
 const platformStore = usePlatformStore();
+const modelPoolStore = useModelPoolStore();
 const pluginStore = usePluginStore();
 const toolsStore = useToolsStore();
 const vcode = useVerificationStore();
@@ -678,9 +702,42 @@ const availableMemoryExtractModels = computed(() =>
   platformStore.models.filter((m) => m.platformId === memoryExtractPlatformId.value && m.enabled),
 );
 
+// ===== 全局模型候选池（model-candidate-pools）=====
+const POOL_SLOTS = ['llm', 'vision', 'image', 'video'] as const;
+const POOL_LABELS: Record<string, string> = { llm: 'LLM', vision: '视觉', image: '生图', video: '生视频' };
+const globalPools = ref<Record<string, string[]>>({ llm: [], vision: [], image: [], video: [] });
+const poolSaving = ref(false);
+/** 各槽位可选模型（matchesModelSlot 与后端同源；生效模型 = enabled 且可见且平台 llm_enabled） */
+const poolSlotGroups = computed(() => {
+  const visible = platformStore.models.filter((m: any) => m.enabled && (m.visible === undefined || m.visible));
+  const groups = platformStore.platforms
+    .filter((p: any) => p.llmEnabled !== false)
+    .map((p: any) => ({ platformId: p.id, platformName: p.name, models: visible.filter((m: any) => m.platformId === p.id) }))
+    .filter((g) => g.models.length > 0);
+  const out: Record<string, typeof groups> = {};
+  for (const slot of POOL_SLOTS) {
+    out[slot] = groups
+      .map((g) => ({ ...g, models: g.models.filter((m: any) => matchesModelSlot(m.type, m.capabilities, slot)) }))
+      .filter((g) => g.models.length > 0);
+  }
+  return out;
+});
+async function saveGlobalPools() {
+  poolSaving.value = true;
+  try {
+    const err = await modelPoolStore.saveGlobal(globalPools.value as any);
+    if (err) ElMessage.error(err);
+    else ElMessage.success('候选池已保存');
+  } finally {
+    poolSaving.value = false;
+  }
+}
+
 onMounted(async () => {
   await settingsStore.load();
   await platformStore.loadPlatforms();
+  // 全局候选池：platformStore.loadPlatforms 只拉平台列表不带模型，模型清单按需加载各平台的
+  void modelPoolStore.load().then(() => { globalPools.value = { ...modelPoolStore.globalPools } as any; });
   defaultPlatformId.value = settingsStore.settings.defaultPlatformId;
   defaultModelId.value = settingsStore.settings.defaultModelId;
   darkMode.value = settingsStore.settings.darkMode;
@@ -1093,6 +1150,13 @@ onMounted(async () => {
 </script>
 
 <style scoped>
+/* 全局模型候选池 */
+.pool-global-grid { display: flex; flex-direction: column; gap: 6px; width: 420px; }
+.pool-global-row { display: flex; align-items: center; gap: 8px; }
+.pool-global-label { width: 52px; flex-shrink: 0; font-size: 12px; color: var(--el-text-color-secondary); }
+.pool-global-actions { display: flex; align-items: center; gap: 8px; margin-top: 2px; }
+.pool-first-tag { font-size: 12px; color: var(--el-text-color-secondary); }
+
 /* .page / .page-title come from App.vue global */
 .page-title { margin-bottom: 24px; }
 .glass-tabs { background: var(--glass-bg); backdrop-filter: var(--glass-filter); border-radius: var(--radius-md); padding: 16px; }

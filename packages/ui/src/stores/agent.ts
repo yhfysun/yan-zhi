@@ -1,7 +1,7 @@
 // 智能体 store（聊天 + 工作流统一）
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
-import type { Agent, Workflow, WorkflowNode, WorkflowEdge, NodeType } from '@yan-zhi/shared';
+import type { Agent, Workflow, WorkflowNode, WorkflowEdge, NodeType, ModelPools } from '@yan-zhi/shared';
 import { uid, DEFAULT_AGENT_PARAMS } from '@yan-zhi/shared';
 import { api } from '../api/client';
 import { getWithRetry } from './platform';
@@ -23,6 +23,8 @@ function rowToAgent(r: any): Agent {
     presencePenalty: r.presence_penalty ?? 0,
     platformId: r.platform_id || '',
     modelId: r.model_id || '',
+    // 模型候选池（宽容解析：损坏/缺失 → undefined = 未配置，走平台/全局回退）
+    modelPools: r.model_pools_json ? parsePoolsLoose(r.model_pools_json) : undefined,
     type: (r.type as Agent['type']) || 'harness',
     builtinToolIds: r.builtin_tool_ids ? JSON.parse(r.builtin_tool_ids) : undefined,
     customToolIds: r.custom_tool_ids ? JSON.parse(r.custom_tool_ids) : undefined,
@@ -49,6 +51,17 @@ function rowToAgent(r: any): Agent {
 }
 
 const EMPTY_WORKFLOW: Workflow = { nodes: [], edges: [] };
+
+/** 宽容解析池 JSON：任何异常 → undefined（与 services/model-pools.ts 的读路径宽容一致） */
+function parsePoolsLoose(raw: string): ModelPools | undefined {
+  try {
+    const v = JSON.parse(raw);
+    if (!v || typeof v !== 'object' || Array.isArray(v)) return undefined;
+    return v as ModelPools;
+  } catch {
+    return undefined;
+  }
+}
 
 // 默认 agent 自动挂载的常用内置工具。
 // cmd_exec 涉及系统 shell 执行（仅桌面端可用且有安全风险），不自动挂载，留给用户按需开启。
@@ -438,6 +451,7 @@ export const useAgentStore = defineStore('agent', () => {
       presencePenalty: data.presencePenalty ?? defaults.presencePenalty,
       platformId: data.platformId || '',
       modelId: data.modelId || '',
+      modelPools: data.modelPools || {},
       type: data.type || 'harness',
       builtinToolIds: data.builtinToolIds || [],
       customToolIds: data.customToolIds || [],
@@ -477,6 +491,8 @@ export const useAgentStore = defineStore('agent', () => {
     for (const [k, v] of Object.entries(strMap)) if ((patch as any)[k] !== undefined) body[v] = (patch as any)[k];
     for (const [k, v] of Object.entries(numMap)) if ((patch as any)[k] !== undefined) body[v] = (patch as any)[k];
     if (patch.config !== undefined) body.config = patch.config;
+    // 模型候选池：整体对象透传（服务端 validateModelPools 统一校验）
+    if (patch.modelPools !== undefined) body.modelPools = patch.modelPools;
     if (patch.workflow !== undefined) body.workflow = patch.workflow;
     if (patch.inputsSchema !== undefined) body.inputsSchema = patch.inputsSchema;
     for (const [k, v] of Object.entries(listMap)) if ((patch as any)[k] !== undefined) body[v] = (patch as any)[k];

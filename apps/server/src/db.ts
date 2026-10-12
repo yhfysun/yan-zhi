@@ -825,6 +825,14 @@ try { db.exec('ALTER TABLE model ADD COLUMN description TEXT'); } catch {}
 // 用户手动隐藏的选择会被下一次同步冲掉，故单独一列存用户意图。
 try { db.exec('ALTER TABLE model ADD COLUMN visible INTEGER NOT NULL DEFAULT 1'); } catch {}
 
+// 迁移：模型候选池（model-candidate-pools，2026-10-12）。
+// agent / platform 各存一份同构 JSON：{ llm[], vision[], image[], video[] }（槽位 → 有序 model 主键数组）。
+// 全局层存 app_config key='model_pools'（无 schema 变更）。解析口径唯一实现在 services/model-pools.ts：
+// 智能体 > 平台 > 全局，按槽位逐层回退，全空 autoPool 兜底（= 全部可见模型按类型筛）。
+// 注意：内置 agent seed 的 UPDATE 清单**不得**加入 model_pools_json 列 —— 那会把用户配的池冲掉。
+try { db.exec('ALTER TABLE agent ADD COLUMN model_pools_json TEXT'); } catch {}
+try { db.exec('ALTER TABLE platform ADD COLUMN model_pools_json TEXT'); } catch {}
+
 // ===== 客户端发现与聊天 =====
 db.exec(`
   CREATE TABLE IF NOT EXISTS chat_peer (

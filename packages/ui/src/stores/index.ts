@@ -5,6 +5,7 @@ export { useMcpStore } from './mcp';
 export { useSkillStore } from './skill';
 export { useDistillStore } from './distill';
 export { useAgentStore } from './agent';
+export { useModelPoolStore } from './model-pool';
 export { useSettingsStore } from './settings';
 export { useAuthStore } from './auth';
 export { useLicenseStore } from './license';
