@@ -57,4 +57,40 @@ function isAllowedGuestNavigation(url) {
   return false;
 }
 
-module.exports = { isSafeExternalUrl, isAllowedGuestNavigation };
+/**
+ * ★★★ 把「非 http(s) 导航一律拦截」收口成**唯一装配点**（2026-10-12）。
+ *
+ * ★ 为什么必须收口（这次弹窗"修了还出来"的真根因）：
+ *   此前 4 处守卫各自手挂 `will-navigate`，其中 webview 引擎用
+ *   `app.on('web-contents-created')` 兜底 —— 但它**跳过了 type==='webview'**，
+ *   理由是"guest 各自处理"。而 guest 只覆盖「容器自治的 guest 顶层」，**iframe 子帧不在内**：
+ *   Electron 33 起子帧导航**不再触发 `will-navigate`，只触发 `will-frame-navigate`**
+ *   （2026-10-12 实测：iframe src=https://.../inner.html 只出 will-frame-navigate、
+ *     isMainFrame=false；随后 iframe 内 location.href='bitbrowser://…' 同样只出 will-frame-navigate）。
+ *   ⇒ 小说推文站点页里带推广位 iframe 的场景，子帧跳自定义协议**无人拦** → 系统弹窗。
+ *   ★ 同类教训：`web-contents-created` 里对某类 contents 早早 `return`，等于把该类
+ *     整个排除在安全装配之外 —— 后来新增的差异机制（子帧事件）就会静默漏出。
+ *
+ * ★ 设计：一个 wc 同时挂 `will-navigate` 与 `will-frame-navigate`，判定同一份函数。
+ *   `will-frame-navigate` 的 event 在 Electron 33 上带 `preventDefault()`（实测生效：
+ *   挂上后 iframe 的 bitbrowser:// 被拦、不再走 Shell）。
+ *
+ * @param {{on: Function}} wc Electron webContents
+ * @returns {boolean} true = 已装配（重复调用返回 false，幂等）
+ */
+function guardNavigation(wc) {
+  if (!wc || typeof wc.on !== 'function' || wc.__yzNavGuarded) return false;
+  wc.__yzNavGuarded = true;
+  const block = (event, url) => {
+    if (isAllowedGuestNavigation(url)) return;
+    try { console.log('[nav] 拦截非 http(s) 导航:', url); } catch { /* ignore */ }
+    if (event && typeof event.preventDefault === 'function') event.preventDefault();
+  };
+  // 主帧导航（Electron 全版本）
+  wc.on('will-navigate', (event, url) => block(event, url));
+  // ★ 子帧（iframe）导航：Electron 33+ 的**唯一**钩子；旧版无此事件，注册无害
+  wc.on('will-frame-navigate', (event, url) => block(event, url));
+  return true;
+}
+
+module.exports = { isSafeExternalUrl, isAllowedGuestNavigation, guardNavigation };

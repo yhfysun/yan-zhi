@@ -8,6 +8,12 @@ const http = require('http');
 // 实例配置单一真相源：端口 / userData / 共享目录一律从这里取，禁止在本文件再硬编码。
 // 目的见 instance.cjs 顶部注释（dev 与安装版的运行期隔离）。
 const inst = require('./instance.cjs');
+// ★ 外链协议白名单（纯函数模块，有单测）—— 必须在**顶部** require：
+//   guardNavigation 在 ~800 行（主窗口创建处）就要用，靠后的 const 会 TDZ 抛错。
+//   四道闸门：① shell:openExternal 白名单 ② 主窗口 windowOpenHandler
+//   ③ 任意 webContents 的 will-navigate + will-frame-navigate（guardNavigation，子帧靠它）
+//   ④ guest 的 popup 重定向。判据见 url-guard.cjs 顶部注释。
+const { isSafeExternalUrl, isAllowedGuestNavigation, guardNavigation } = require('./url-guard.cjs');
 
 let mainWindow = null;
 
@@ -806,6 +812,11 @@ function createWindow() {
     event.preventDefault();
     shell.openExternal(url);
   });
+  // ★ 子帧（iframe）导航（2026-10-12 补）：Electron 33 起子帧**不再触发 will-navigate**，
+  //   只触发 will-frame-navigate —— 上面那处主帧 handler 覆盖不到 iframe。
+  //   应用自身页面里的 iframe 若跳自定义协议，同样会把 Shell 拉起来弹窗 ⇒ 一并拦。
+  //   （同步的全局 web-contents-created 也会挂，这里是显式声明，便于阅读与单测锚定。）
+  guardNavigation(mainWindow.webContents);
 
   // webview 引擎：guest 安全加固 —— 无论渲染层怎么声明，guest 一律无 node 集成 + 上下文隔离 +
   // 不加载任何 preload。外部网页永远拿不到 Node 能力与本地文件访问。
@@ -1045,16 +1056,14 @@ function createBrowserViewFor(tabId, entry) {
     }
   });
 
-  // ★ 自定义协议闸门（2026-10-09）：BrowserView 引擎的 guest 此前只挂了
+  // ★ 自定义协议闸门（2026-10-09 初版 / 2026-10-12 收口）：BrowserView 引擎的 guest 此前只挂了
   //   setWindowOpenHandler（拦 window.open/target=_blank），没拦页面自身的导航 ——
   //   pageAgent 点击 bitbrowser:// / tel: / mailto: 等未知协议链接时，Electron 把
   //   导航交给系统 Shell → 本机无处理器 → Windows 反复弹「没有可打开此链接的应用」。
-  //   与 webview 引擎的 setupGuestPopupRedirect（1319 行）同一判定，共用 url-guard.cjs。
-  wc.on('will-navigate', (event, url) => {
-    if (isAllowedGuestNavigation(url)) return;   // http(s)/about/blob/data：放行
-    console.log('[nav] BrowserView guest 拦截非 http(s) 协议:', url);
-    event.preventDefault();
-  });
+  //   ★ 2026-10-12：改用 url-guard.cjs 的 guardNavigation 统一装配（同时挂
+  //     will-navigate + will-frame-navigate）—— 子帧 iframe 只触发后者（实测），
+  //     旧版只挂 will-navigate 时推广位 iframe 会漏网（用户报"还是会出来"的真因）。
+  guardNavigation(wc);
   // 页面加载完成，通知前端
   wc.on('did-finish-load', () => {
     // 成功渲染后清零崩溃计数：只有"连续"崩溃才停手，偶尔一次崩溃不应永久拉黑页面
@@ -1651,25 +1660,38 @@ function setupGuestPopupRedirect(wc, scope) {
     }
     return { action: 'deny' };
   });
-  // ★ 自定义协议闸门（2026-10-08）：guest 页面内点击 bitbrowser:// / tel: / mailto: 等未知协议时，
-  // Electron 会尝试交给系统 Shell 处理 → 本机无处理器 → Windows 弹「没有可打开此链接的应用」。
-  // 这是任务跑起来后反复弹窗的真正入口（主窗口的 will-navigate 管不到 guest）。
-  // 处理：非 http/https 一律 preventDefault 静默丢弃；http/https 放行（让预览面板自己导航）。
-  wc.on('will-navigate', (event, url) => {
-    if (isAllowedGuestNavigation(url)) return;   // http(s)/about/blob/data：放行
-    console.log('[nav] guest 拦截非 http(s) 协议:', url);
-    event.preventDefault();
-  });
+  // ★ 自定义协议闸门（2026-10-08 初版 / 2026-10-12 收口）：guest 页面内点击
+  // bitbrowser:// / tel: / mailto: 等未知协议时，Electron 会尝试交给系统 Shell 处理
+  // → 本机无处理器 → Windows 弹「没有可打开此链接的应用」。
+  // ★ 2026-10-12：改用 guardNavigation 统一装配 —— 除 will-navigate 外还挂
+  //   will-frame-navigate（iframe 子帧只触发后者，实测；推广位 iframe 曾因此漏网）。
+  guardNavigation(wc);
   // ★ B4（webview 引擎的原生弹窗接管在 will-attach-webview 里用 disableDialogs 字段完成，
   //   见下方 will-attach-webview 处理：Electron webContents 本身没有 dialog 事件，
   //   主进程给 webContents 注册 dialog 监听永远不会触发，故不在此处重复（native-dialog.test.ts ② 禁止臆造该事件）。
   //   alert/confirm/prompt 由 disableDialogs 直接抑制，与服务端 Playwright「未注册 handler 时自动 dismiss」语义对齐。
 }
 
-// 拦截网页通过 window 创建的真正二级窗口（session/guest handler 未覆盖的边缘路径），
-// 绝不放开独立系统 BrowserWindow —— 全部 deny 并重定向回主窗口广播应用内新标签。
+// ★★★ 全局兜底：任何 webContents 创建时就挂上「非 http(s) 导航闸门」（2026-10-12 收口）。
+//
+// ★ 为什么必须有这一层（这次"修了还是会弹窗"的真根因）：
+//   此前守卫靠**逐个已知容器手挂**（主窗口 / 各 guest / BrowserView），而 webview 引擎的
+//   兜底分支 `app.on('web-contents-created')` 里写着 `if (type === 'webview') return`
+//   —— 理由是"guest 各自处理"。但那个 return 把**整个 webview 类型**排除在安全装配之外：
+//   · guest 只在 `setupGuestPopupRedirect` 被调到的那些 wc 上生效（容器自治路径）；
+//   · 更关键的是 Electron 33 起**子帧（iframe）导航不再触发 will-navigate，只触发
+//     will-frame-navigate**（2026-10-12 实测：iframe src=… 与随后 iframe 内
+//     location.href='bitbrowser://…' 都只出 will-frame-navigate、isMainFrame=false）。
+//   ⇒ 小说推文站点页里的推广位 iframe 一跳自定义协议就无人拦 → 系统弹窗。
+//
+// ★ 判据（本项目一贯）：**按实现收口，不按容器枚举** —— 枚举必然漏（新增容器/新增事件
+//   都会漏）。这里以「webContents 创建」这一个必然发生的时机做装配点，
+//   对**所有类型**统一挂 guardNavigation（幂等，已挂的不重复）。
+//   main 窗口/guest 各自的既有 hander 保留（它们还要做 popup 重定向等额外事）。
 app.on('web-contents-created', (_e, contents) => {
-  if (!isWebviewEngine()) return;               // 仅 webview 引擎启用；旧 BrowserView 走各自逻辑
+  // 对所有 webContents 类型（window / webview / browserView / backgroundPage…）统一挂闸门
+  try { guardNavigation(contents); } catch { /* ignore */ }
+  if (!isWebviewEngine()) return;               // 以下仅 webview 引擎的 popup 重定向
   const type = contents.getType && contents.getType();
   if (type === 'window' || type === 'webview') return; // 主窗口与 guest 各自处理，跳过防双重拦截
   setupGuestPopupRedirect(contents);
@@ -4535,7 +4557,10 @@ ipcMain.handle('shell:showItemInFolder', (_e, p) => {
 // Windows Shell，而本机又没有注册对应处理器，系统就会弹「没有可打开此链接的应用」——
 // 表现为任务运行中反复弹窗（小说推文的站点页面里混有第三方协议的推广位）。
 // 宁可静默丢弃，也绝不把未知协议交给 Shell。实现见 url-guard.cjs（纯函数，有单测）。
-const { isSafeExternalUrl, isAllowedGuestNavigation } = require('./url-guard.cjs');
+// ★ 2026-10-12：新增 guardNavigation 统一装配点（同时挂 will-navigate + will-frame-navigate）
+//   —— 子帧 iframe 导航只触发后者，此前逐容器手挂 will-navigate 会漏（用户报"还是会出来"）。
+//   ⚠️ require 已提到文件**顶部**（见开头）：guardNavigation 在窗口创建处（~800 行）就要用，
+//      留在这里会因 TDZ（const 未初始化）抛 ReferenceError。
 
 // 用系统默认浏览器打开外链（http/https），不在应用窗口内导航离开
 ipcMain.handle('shell:openExternal', (_e, url) => {

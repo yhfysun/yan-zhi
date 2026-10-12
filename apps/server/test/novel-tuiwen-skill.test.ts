@@ -77,3 +77,31 @@ describe('novel-tuiwen skill seed 关键锚点（防漂移）', () => {
     expect(novelBlock).not.toMatch(/maxReActSteps: 50\b/);
   });
 });
+
+describe('封面制作配方（2026-10-12 补：合集封面 + 每集视频封面）', () => {
+  // 背景：用户实测「生成的合集封面图很糟糕」——根因是让生图模型直接画中文字（必糊）。
+  // 收敛为两段式：api_image_generate 只出无字底图 → ffmpeg drawtext 烧字。
+  // 本测试钉三件事：① 双端 skill 种子都有配方；② 智能体工具面真的挂了出图工具
+  // （skill 写了但 agent 没挂 = 静默失效，2026-10-12 实测正是如此）；③ 书名红线进封面。
+  it('双端 skill 种子都含封面节（规格/两段式/书名红线）', () => {
+    for (const [name, src] of [['core/schema.ts', CORE_SCHEMA()], ['server/db.ts', SERVER_DB()]] as const) {
+      expect(src, name).toContain('## 封面制作');
+      expect(src, name).toContain('1080×1080');   // 合集封面 1:1
+      expect(src, name).toContain('≤5MB');          // 合集封面 JPG 大小上限
+      expect(src, name).toContain('1080×1920');    // 每集封面 9:16
+      expect(src, name).toContain('api_image_generate');
+      expect(src, name).toContain('drawtext');
+      expect(src, name).toContain('只烧别名');      // 书名红线同样管封面
+      expect(src, name).toContain('references/cover-recipes.md');
+    }
+  });
+
+  it('★ 小说推文智能体工具面挂了 api_image_generate（出封面底图，缺它 skill 配方即空转）', () => {
+    const agSrc = AGENTS();
+    const toolsBlock = agSrc.slice(
+      agSrc.indexOf('export const NOVEL_TUIWEN_AGENT_BUILTIN_TOOLS = ['),
+      agSrc.indexOf('export const NOVEL_TUIWEN_AGENT_SKILL_IDS'),
+    );
+    expect(toolsBlock).toContain("'api_image_generate'");
+  });
+});
