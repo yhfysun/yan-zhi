@@ -96,6 +96,7 @@ import {
 import { statSync, readFileSync, readdirSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import { createLogger } from './services/logger.js';
+import { gapBetweenToolHeadAndReceipt, shouldWarnOnGap } from './services/tool-receipt-adjacency.js';
 // LLM 自动生成会话标题（2026-10-11）：首个任务 completed 时 fire-and-forget；
 // 本模块是「调用方」，conversation-title 反向通过 setTitleChangeNotifier 拿事件回推能力
 // （避免循环依赖 —— 那边绝不 import 这里）。
@@ -678,6 +679,34 @@ function insertToolMessageAndEmit(
   content: string,
   ownership?: SubAgentOwnership,
 ): string {
+  // ★ 可观测性（2026-10-12）：回执远离组头 → 打 warn（发送前 reorderToolGroups 会兜住，
+  //   但"凭什么会被拉开这么远"需要现场证据，否则下次同类问题又要靠翻库反推）。
+  if (!ownership) {
+    try {
+      const tail = db
+        .prepare(
+          `SELECT role, tool_call_id AS toolCallId, tool_calls_json AS tcJson
+             FROM message WHERE conversation_id = ? ORDER BY created_at DESC LIMIT 40`,
+        )
+        .all(convId) as any[];
+      const shaped = tail
+        .map((r) => ({
+          role: r.role,
+          toolCallId: r.toolCallId,
+          toolCalls: r.tcJson ? (JSON.parse(r.tcJson) as any[]) : null,
+        }))
+        .reverse(); // DESC 取回 → 反转为旧→新，符合「tail 末尾是最近」
+      const gap = gapBetweenToolHeadAndReceipt(shaped, toolCallId);
+      if (shouldWarnOnGap(gap)) {
+        logger.warn(
+          `[llm-task] 回执与组头不相邻: conv=${convId} toolCallId=${toolCallId} gap=${gap} 条` +
+            `（发送前 reorderToolGroups 会跨距归位；若频繁出现说明主循环推进点提前，需排查）`,
+        );
+      }
+    } catch {
+      /* 可观测性失败绝不影响落库主流程 */
+    }
+  }
   const extra = ownership
     ? {
         toolCallId,

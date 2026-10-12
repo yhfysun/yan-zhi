@@ -1,5 +1,5 @@
 /**
- * 发送前消息顺序规整 —— **唯一出口**（2026-10-09）。
+ * 发送前消息顺序规整 —— **唯一出口**（2026-10-09，2026-10-12 扩「跨距回执归位」）。
  *
  * ═══════════════════════════════════════════════════════════════════════════
  * ★★★ 为什么必须有（用户实报：「追加任务立即发送按钮又失效了点击无用」的隐形杀手）
@@ -26,6 +26,24 @@
  *   · healToolCallIds  —— 补**缺失的 id**（让配对"对得上"）；
  *   · 本函数          —— 摆正**相邻顺序**（让配对"紧挨着"）。
  *   两道都跑完，才同时满足「对得上 + 紧挨着」。
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * ★★★ 2026-10-12 扩展：**跨距回执归位**（修上游 400 `messages 参数非法` / code 1214）
+ *
+ * 旧实现只做「窗口内收拢 + 夹心后移」：一旦窗口内撞上**下一个组头**就 `break`，
+ * 于是「回执被远远甩在后面」的形态永远归不了位。实测现场（会话 f0a901e3，10:52:21）：
+ *   组头 assistant(call_ab998b32, call_agent) 在 #1183（10:50:31）
+ *   其 tool 回执却在 #1200（10:52:20，迟到 109 秒）
+ *   中间夹了 **16 条**（1 条 user + 8 组完整 assistant/tool 对）
+ * ⇒ 输出仍是 `assistant(call_ab99) → user → …16 条… → tool(call_ab99)` ⇒ 上游 400、整轮失败。
+ *
+ * 成因：并发 `call_agent`（长耗时子 ReAct 循环）的组头先落库，主循环被「追加消息」推进了
+ * 新轮次，子结果回来时只能排在 16 条之后 —— 组头与回执被长距离拉开。
+ *
+ * ★ 补法：**全局回执索引**。遇组头时先按原逻辑在窗口内收拢；窗口关闭后若仍有 pending
+ *   未满足，就从全局索引把那条回执**迁移**到组头之后（原位置移除）。
+ *   —— 只调「谁紧挨着谁」，消息内容一字不改，与「只读规整」取向一致。
+ * ★ 幂等：顺序已正确时窗口内即可收齐，全局迁移不触发 → 输出与输入逐项相同。
  * ═══════════════════════════════════════════════════════════════════════════
  */
 
@@ -45,17 +63,35 @@ function isToolCallHead(m: ApiMessage | undefined): boolean {
  *   2. 收拢过程中**夹在中间**的其它消息（user / 无 tool_calls 的 assistant）暂存为 displaced；
  *   3. 本组收齐（本组所有 id 都拿到回执）或遇到下一个组头 / 非本组 tool 消息时结束，
  *      随后把 displaced 按原相对顺序**追加到本组之后**；
- *   4. 组内**没到齐**也照样结束 —— 缺的那条由 `sanitizeToolMessages` 的 orphan 分支处理，
- *      本函数绝不臆造回执。
+ *   4. 组内**没到齐**时：
+ *      · 旧行为：照旧结束（缺的交给 `sanitizeToolMessages` 的 orphan 分支处理）；
+ *      · ★ 新行为（2026-10-12）：先在**全局回执索引**里找该 id 的回执，找到就把它
+ *        **迁移**到本组（从原位置移除）—— 修「组头与回执被长距离隔开」的 400；
+ *        找不到才交给 orphan 分支。本函数绝不臆造回执。
  *
+ * ★ 每个回执消息**只会被消费一次**（`consumed` 集合）—— 避免同一回执被多个组重复引用。
  * ★ 幂等：顺序已正确时输出与输入逐项相同（只新建数组，不动对象），可安全重入。
  */
 export function reorderToolGroups(messages: ApiMessage[]): ApiMessage[] {
   const out: ApiMessage[] = [];
+  // ★ 全局回执索引：toolCallId → 该回执在**原数组**中的下标（用于跨距迁移）。
+  //   同一 id 有多条回执时保留**最早**的一条（与 OpenAI「同序配对」语义一致）。
+  const receiptIndex = new Map<string, number>();
+  for (let k = 0; k < messages.length; k++) {
+    const m = messages[k];
+    if (m?.role === 'tool' && typeof m.tool_call_id === 'string' && m.tool_call_id) {
+      if (!receiptIndex.has(m.tool_call_id)) receiptIndex.set(m.tool_call_id, k);
+    }
+  }
+  /** 已被某个组消费掉的下标（跨距迁移时从原位置跳过，避免重复引用） */
+  const consumed = new Set<number>();
+
   let i = 0;
   while (i < messages.length) {
     const head = messages[i];
     if (!isToolCallHead(head)) {
+      // ★ 已被跨距迁移走的回执：原位置直接跳过（不重复 push）
+      if (consumed.has(i)) { i++; continue; }
       out.push(head);
       i++;
       continue;
@@ -67,22 +103,37 @@ export function reorderToolGroups(messages: ApiMessage[]): ApiMessage[] {
       head.tool_calls.map((tc: any) => tc?.id).filter((id: unknown): id is string => typeof id === 'string' && !!id),
     );
     const displaced: ApiMessage[] = [];
+    // ① 窗口内收拢：紧随其后的、属于本组的 tool 回执（原逻辑，不动）
     while (i < messages.length && pending.size > 0) {
       const n = messages[i];
       if (n?.role === 'tool') {
         if (pending.has(n.tool_call_id)) {
           out.push(n);
           pending.delete(n.tool_call_id);
+          consumed.add(i);
           i++;
           continue;
         }
-        // 非本组的 tool 回执：本组到此为止，交由外层继续处理（不吞、不重排）
+        // 非本组的 tool 回执：本组窗口到此为止，交由外层继续处理（不吞、不重排）
         break;
       }
-      if (isToolCallHead(n)) break; // 下一个组头：本组到此为止
+      if (isToolCallHead(n)) break; // 下一个组头：本组窗口到此为止
       // ★ 夹在中间的其它消息（「立即发送」注入的 user 就在这里）→ 后移到本组之后
       displaced.push(n);
       i++;
+    }
+    // ② ★★★ 跨距回执归位（2026-10-12）：窗口内没到齐 → 到全局索引把回执找回来。
+    //    必须放在 displaced 之前 push，保证「紧挨着组头」的顺序。
+    if (pending.size > 0) {
+      for (const missingId of Array.from(pending)) {
+        const idx = receiptIndex.get(missingId);
+        if (idx === undefined) continue;  // 库里根本没有 → 交给 orphan 分支
+        if (consumed.has(idx)) continue;  // 已被别的组消费 → 不重复引用
+        if (idx < i) continue;            // 只向后迁移（向前的说明形态异常，不回溯）
+        out.push(messages[idx]);
+        consumed.add(idx);
+        pending.delete(missingId);
+      }
     }
     for (const d of displaced) out.push(d);
   }

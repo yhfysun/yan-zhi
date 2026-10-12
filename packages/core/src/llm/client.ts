@@ -77,6 +77,31 @@ export function upstreamErrorMessage(
   return `LLM 请求失败: ${status} ${statusText}${hint}${text ? ` ${text.slice(0, maxChars)}` : ''}`;
 }
 
+/**
+ * 400 是否应走「剥离 tool 协议降级重试」（**纯函数，可单测**）。
+ *
+ * ★★★ 2026-10-12（修上游 400 `messages 参数非法` / code 1214，会话 f0a901e3 10:52:21）：
+ *   原实现把判据写成一条内联正则，只认 OpenAI 官方文案（`tool_calls must be followed` 等）。
+ *   而**网关文案各异**：new-api 系返回笼统的「messages 参数非法。请检查文档。」→ 匹配不上
+ *   ⇒ 明明有「去掉 tools + 把 tool 角色降级为 user」这条路却走不到 ⇒ 400 直接抛给用户。
+ *
+ * @param text 上游响应体
+ * @param messages 本次请求的 messages（用于结构判据）
+ * @param hasTools 本次请求是否带了 tools
+ * @returns true = 应降级重试
+ *
+ * ★ 结构判据（`hasToolHistory`）是本次扩的关键：只要历史里**有 tool 协议痕迹**
+ *   （role:'tool' 或带 tool_calls 的 assistant），就把 400 视为「可能 tool 协议不被接受」。
+ *   降级本身安全（只改发送形态、不写库），比把 400 直接抛给用户划算。
+ */
+export function shouldRetryWithoutTools(text: string, messages: any[], hasTools: boolean): boolean {
+  if (!hasTools) return false;
+  const toolProtoRe = /does not support tools|tool_calls must be followed|insufficient tool messages following tool_calls|tool_choice|messages 参数非法|invalid.*messages|messages.*invalid|invalid_request_error/i;
+  if (toolProtoRe.test(text)) return true;
+  return Array.isArray(messages)
+    && messages.some((m) => m?.role === 'tool' || (Array.isArray(m?.tool_calls) && m.tool_calls.length));
+}
+
 export interface CapabilityTestResult {
   kind: CapabilityTestKind;
   label: string;
@@ -538,7 +563,12 @@ export class LlmClient {
       const text = await res.text().catch(() => '');
       // 工具相关 400 兜底：模型不支持 tools / 历史含孤儿 tool_calls（未配对）。
       // 去掉 tools 并把 tool 角色降级为 user 后重试，避免把 400 直接抛给用户。
-      if (res.status === 400 && /does not support tools|tool_calls must be followed|insufficient tool messages following tool_calls|tool_choice/i.test(text) && body.tools) {
+      //
+      // ★★★ 2026-10-12 扩判据（修上游 400 `messages 参数非法` / code 1214）：
+      //   原正则只认 OpenAI 官方文案，网关文案各异（new-api 返回笼统的「messages 参数非法」）
+      //   ⇒ 明明有「剥离 tool 协议降级重试」这条路却走不到。判据抽到 shouldRetryWithoutTools
+      //     （纯函数、可单测），并补一条**结构判据**：历史含 tool 痕迹即视为可疑 → 降级重试。
+      if (res.status === 400 && shouldRetryWithoutTools(text, body.messages as any[], !!body.tools)) {
         delete body.tools;
         // P0-1：tool_choice 不被端点支持（或依赖 tools）时一并剥离重试
         delete body.tool_choice;
