@@ -8,7 +8,7 @@
 
     <!-- 3D 循环轮播（容器不够宽自动降级为横向列表 / 按钮行） -->
     <SceneCarousel
-      :scenes="WELCOME_SCENES"
+      :scenes="welcomeScenes"
       :active-key="sceneMode"
       :agent-label="agentLabel"
       @pick="pickScene"
@@ -20,11 +20,15 @@
 <script setup lang="ts">
 import { computed, nextTick } from 'vue';
 import { ChatDotRound } from '@element-plus/icons-vue';
-import { WELCOME_SCENES, type SceneKey } from '../../config/scenes';
 import SceneCarousel from './SceneCarousel.vue';
 import { useChat } from '../../composables/chat/useChat';
+import { useSceneConfigStore } from '../../stores/sceneConfig';
 
 const { sceneMode, setScene, clearScene, input, agentStore } = useChat();
+// 场景（模式）配置：运行时以后端 scene_config 表为准（含用户/应用自建模式）；
+// store 初始值 = scenes.ts 内置兜底，首屏立即可见
+const sceneConfigStore = useSceneConfigStore();
+const welcomeScenes = computed(() => sceneConfigStore.welcomeScenes);
 
 function agentLabel(id: string): string {
   return agentStore.agents.find((a) => a.id === id)?.name || '日常办公助手';
@@ -45,7 +49,7 @@ function pickScene(key: string) {
     clearScene();
     return;
   }
-  setScene(key as Exclude<SceneKey, ''>);
+  setScene(key);
   focusInput();
 }
 

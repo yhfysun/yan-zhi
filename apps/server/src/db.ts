@@ -4,6 +4,10 @@ import { fileURLToPath } from 'node:url';
 // 办公岗位专属内置智能体定义（纯数据，不 import db，便于单测直接断言）
 import { builtinOfficeAgentDefs } from './builtin-office-agents.js';
 import { builtinTaskModeAgentDefs } from './builtin-task-mode-agents.js';
+// 抖音运营助手（带货 + 引流一体）—— 定义见 ./builtin-douyin-agents.ts
+import { builtinDouyinAgentDefs } from './builtin-douyin-agents.js';
+// 场景（模式）配置内置种子 —— 与前端 packages/ui/src/config/scenes.ts 双源维护（见该文件头注）
+import { builtinSceneDefs } from './builtin-scene-defs.js';
 import { createRequire } from 'node:module';
 import { openSqlite, type YzSqliteDb } from './services/sqlite-driver.js';
 import { createLogger } from './services/logger.js';
@@ -2199,6 +2203,8 @@ export const seedAgents: Array<Record<string, unknown>> = [
   // 任务模式专属内置智能体（小说改写 / 脚本文案 / 有声小说 / 配音）—— 定义见 ./builtin-task-mode-agents.ts
   // 与任务类型注册表（shared/utils/task-types.ts 的 agentId）成对维护：改 id 必须两边同步
   ...builtinTaskModeAgentDefs,
+  // 抖音运营助手（图文带货 + 引流共用一个智能体）—— 定义见 ./builtin-douyin-agents.ts
+  ...builtinDouyinAgentDefs,
   {
     // 代码探索助手：代码编写助手的专属只读探索子智能体（对标 CodeBuddy codebase-explorer）
     id: 'a_builtin_code_explorer',
@@ -3284,6 +3290,118 @@ api_tts_voices 返回 capacityNote 说明音色数不够时，**如实告诉用�
 
 详见 .claude/skills/video-editing/SKILL.md`,
     },
+    {
+      // 抖音图文带货（2026-10-12）：与「抖音运营助手」a_builtin_douyin_agent 成对维护
+      id: 'skill_douyin_sell', name: '抖音图文带货', category: '电商运营',
+      description: '抖音图文带货全流程：账号定位与人群、精选联盟选品（佣金/销量/人群匹配/季节性/体验）、图文结构（封面+3~9 张轮播+文案+话题）、挂车发布 SOP、曝光-点击-转化漏斗复盘与优化迭代；含广告法极限词与虚假宣传合规红线。',
+      triggers: ['抖音带货', '图文带货', '抖音电商', '选品', '挂车', '商品橱窗', '精选联盟', '带货脚本', '抖音运营'],
+      body: `# 抖音图文带货
+
+图文带货 = 用「图片轮播 + 文案 + 挂车（精选联盟商品）」的形式卖货。对起步账号比直播和短视频带货门槛低：不露脸、不拍视频、一条图文可以反复改。本文给完整方法论。
+
+## 一、先定位再选品（顺序不能反）
+1. **人群先行**：先想清楚「这条图文是给谁看的」——年龄/性别/职业/痛点。人群决定选品，不是反过来。
+2. **账号四件套**：名称（领域+价值，如「XX的AI工具箱」）、头像、简介（关注理由+更新频率）、背景图——四件套与选品品类必须同一语言体系。
+3. **起步期档期**：粉丝 < 1000 时以「建立人群认知」为主，带货是副线；用户明确要带货则小步测品（一次 1~2 个品）。
+
+## 二、选品（每次给 3~5 个候选，按下列维度打分）
+| 维度 | 看什么 | 红线 |
+|---|---|---|
+| 佣金率 | 到手佣金/售价，一般 ≥ 20% 才值得做 | 算完佣金再决定，别只看售价 |
+| 销量与竞争 | 已带人数、同内容饱和度 | 蓝海小众品优先，红海拼差异化 |
+| 人群匹配 | 与你账号吸引来的人是否同一批 | 不匹配的爆品不带（人群乱了他就不来了） |
+| 价格带 | 冲动消费区间（通常 9.9~99） | 高价品需要强信任，起步号别碰 |
+| 季节与场景 | 应季/节日/场景刚需 | 过季品不碰 |
+| 体验风险 | 质量/物流/售后口碑 | 口碑差的不带（砸账号） |
+
+佣金测算公式：**单条图文预估收益 = 曝光 × 点击率 × 转化率 × 客单价 × 佣金率**。各环节给区间假设并显式标注「假设值，需要用你的实际数据替换」。
+
+## 三、图文结构（一条图文的骨架）
+- **封面（第 1 张，决定点击）**：大字标题（痛点或利益点，≤ 12 字）+ 视觉主体 + 对比/悬念；封面标题与文案首句必须是同一句话的两个版本。
+- **轮播 3~9 张**：每张只讲一个信息点——第 2 张痛点场景 → 第 3~5 张解法/卖点演示（前后对比、使用步骤、细节特写）→ 第 6 张信任背书（销量/评价/原理）→ 最后一张行动引导（点下方购物车/关注看下期）。
+- **文案**：首句钩子（与封面呼应）→ 2~4 个短句卖点（口语、有细节、有数字）→ 互动提问（引导评论）→ 话题标签 3~5 个（1 个大词 + 2 个精准词 + 1 个自建词）。
+- **发布时间**：目标人群活跃时段（通勤 12-13 点 / 晚间 18-22 点），固定时间发，形成预期。
+- **配图生成（api_image_generate）**：封面大字选 **qwen-image-3.0-pro**（中英文文本渲染最强，适合带标题的封面/海报）；商品图选 **wan2.7-image-pro**（高质量、品牌色可控、支持 4096×4096）；批量轮播底图选 **z-image-turbo**（快且便宜）。
+  · 调用：api_image_generate { prompt, model: "qwen-image-3.0-pro", platformId: "<百炼平台id>" }（先在模型平台列表确认百炼平台 id，或先用 list_models 查询）。
+  · ★ 封面**底图不要带字**：生图模型画中文字必糊（伪字/乱码）——先出**无字底图**，再用 ffmpeg drawtext 或图片工具烧字（标题文字由本地排版保证准确）；商品图/场景图可直接用生成图。
+  · 百炼为 DashScope 原生通道（工具自动识别，无需特殊参数）；未配百炼时默认走 agnes 免费生图，prompt 同样适用。
+  · 竖屏图文：size 传 "1080x1440" 或 "3:4" 对应档位；方形封面传 "1080x1080"。
+
+## 四、挂车发布 SOP（交付成清单，不代发布）
+1. 选品来自精选联盟（带货权限与保证金规则以平台最新为准，细节委派 pageAgent 核实）；
+2. 发布时挂车：图文编辑页 → 添加商品 → 核对标题/价格/佣金 → 发布；
+3. 发布后 1 小时内回评区顶前排问题（互动率影响推流）；
+4. 记录该条数据基线（曝光/点击/成交），供复盘。
+
+## 五、数据复盘（曝光 → 点击 → 转化漏斗）
+| 断点 | 现象 | 改法 |
+|---|---|---|
+| 曝光低 | 内容点击率低或账号权重低 | 换封面标题（一次只换一个变量）；优化首图信息密度 |
+| 点击低（有点赞无成交） | 商品与内容错位、价格带不符 | 换更匹配人群的品；图文里增加使用场景演示 |
+| 转化低（点击多成交少） | 详情页说服不足/价格顾虑 | 增加信任背书图；用评论答疑化解价格疑虑 |
+| 复购低 | 品类无复购属性 | 搭关联品组合带 |
+
+复盘纪律：**一次只改一个变量**，改完至少观察 3 天再评；所有结论要能对应到具体某条图文的数据。
+
+## 六、合规红线（文案产出前逐条过）
+- **极限词禁用**：最、第一、顶级、百分百、根治、神器（平台判定会限流）；
+- **功效宣称**：医疗/减肥/增高/美白等功效话术一律不写，除非有资质且用户提供依据；
+- **价格真实**：不虚构原价、不「全网最低」；
+- **素材版权**：不用未授权影视/明星/品牌素材，商品图以联盟素材和自做为准；
+- 规则细节（违禁词清单、带货权限、保证金）以平台最新规则为准 —— 委派 pageAgent 核实，不凭记忆下结论。
+
+## 交付物
+每次任务至少交付：选品清单（含打分表）、单条图文脚本（逐图：画面 + 文案）、发布 SOP 清单、复盘表模板。全部 file_write 落盘（deliverable），对话给摘要 + 路径。`,
+    },
+    {
+      // 抖音引流（2026-10-12）：风口选题涨粉，与 skill_douyin_sell 成对维护
+      id: 'skill_douyin_traffic', name: '抖音引流', category: '电商运营',
+      description: '抖音引流涨粉方法论：风口选题（大模型使用方法、智能体创建教程、AI 工具实测等离变现近的题材）、爆款结构（3 秒钩子-痛点-解法-演示-CTA）、逐镜脚本、系列化与人设、评论区运营与搜索长尾布局；不承诺涨粉数据、不刷量。',
+      triggers: ['抖音引流', '涨粉', '起号', '抖音选题', '爆款', '追热点', '风口', '短视频脚本', '大模型教程', '智能体教程'],
+      body: `# 抖音引流（风口选题涨粉）
+
+目标：把粉丝做起来。起步账号的第一优先级不是变现，是**让对的人进来并留下来**。本文给选题方法与脚本结构。
+
+## 一、风口选题：什么题材值得做
+优先做「**离变现近、搜索长尾稳**」的三类：
+1. **工具方法类**：大模型/智能体的使用方法、AI 工具实测对比、效率神器盘点（解决具体问题，搜索流量持续）；
+2. **风口跟涨类**：平台新功能、新模型发布、新政策解读（时效流量，24 小时内出）；
+3. **系列专栏类**：把上两类沉淀成固定栏目（如「每天一个 AI 神技巧」），培养关注意识。
+
+选题清单每次给 10 个起，按 热点/常青/系列 分类，每条附：目标人群、痛点一句话、预估竞争度、与带货线的衔接（这条内容吸引来的人适合带什么货）。
+
+选题来源：平台热榜/搜索下拉词/对标账号爆款评论区（委派 pageAgent 联网获取，不凭记忆编「最近很火」）。
+
+## 二、爆款结构（逐镜脚本的骨架）
+**总时长 30~60 秒（图文号做「视频版引流」时）或一条图文的等价结构**：
+1. **3 秒钩子**（决定完播）：痛点提问 / 反常识结论 / 结果前置（「用这个方法，我 3 分钟搞定原本一下午的活」）；
+2. **痛点放大**（10 秒）：说清「不改现在的做法会继续亏什么」；
+3. **解法演示**（20~30 秒）：分步骤演示，一步一个画面，字幕同步关键词；
+4. **信任强化**（5 秒）：为什么是我 / 数据或前后对比；
+5. **CTA**（3 秒）：明确单一动作（「关注看下一期」/「评论区扣 1 领清单」）。
+
+逐镜脚本交付字段：镜号 / 时长 / 画面（拍什么或生成什么）/ 口播（逐字稿）/ 屏幕字幕 / 备注（道具、录屏位置）。
+- **生成补位画面（api_image_generate）**：录制/实拍拿不到的画面（空镜、演示截图美化、概念图）用 api_image_generate 补；模型选 **qwen-image-3.0-pro**（概念图/带字信息图）或 **z-image-turbo**（写实人像/产品图，快且便宜）；先在模型平台确认百炼平台 id 再传 platformId。**画面里的中文字一样会糊——文字交给字幕/后期，底图只出无字画面。**
+
+## 三、系列化与人设
+- **固定栏目**：统一片头语、统一封面版式、固定更新频率——用户知道「关注你能稳定得到什么」；
+- **人设三要素**：身份标签（谁在用）、语言风格（口头禅/节奏）、价值承诺（每期解决什么问题）；
+- **内容日历**：用 python_exec 产出月度排期 CSV（日期/选题/形式/挂钩商品/目标），按「3 条系列 + 1 条热点 + 1 条实验」的节奏排。
+
+## 四、评论区与搜索布局
+- 发布后 1 小时内回评区：前排问题置顶式回复（提问式评论优先回，拉升互动）；
+- 评论区预埋：小号或口播引导「扣关键词领资料」，把评论词做进下一条内容选题；
+- 搜索长尾：标题与字幕覆盖关键词的自然说法（用户会搜的那句话），蹭「AI 教程/大模型怎么用」这类稳定搜索词。
+
+## 五、合规与纪律
+- **不承诺结果**：不写「保证涨粉」「必火」；预期一律标注「假设 + 验证方式」；
+- **不刷量不搬运**：不买粉买赞、不洗稿搬运；发现用户在做，说明平台风险并给合规替代；
+- **数据真实**：引用的对比/收益数字要么来自用户真实数据，要么标注「演示示例」；
+- **不碰敏感题材**：不碰时政争议、不制造焦虑式恐吓（「再不用 AI 就被淘汰」类话术有度）。
+
+## 交付物
+选题清单（10+）、单条逐镜脚本、内容日历 CSV、评论区运营 SOP。全部 file_write 落盘（deliverable），对话给摘要 + 路径。`,
+    },
   ];
 
 // 批量 upsert 内置 skill：仅插入缺项 + 标记 source='builtin'，不覆盖用户改动的 body。
@@ -3311,7 +3429,10 @@ try {
 // ★ skill_novel_tuiwen（2026-10-08 补）：本轮给它补了四块**可执行配方**
 //   （抓正文 / 评论发表 / 视频合成要点 / 回填发文）。不加入白名单的话，
 //   老用户库里仍是旧 body —— 实测过：改完代码后查库，配方词一个都不在。
-const SKILL_BODY_REFRESH_IDS = ['skill_anime_storyboard', 'skill_video_shot_prompt', 'skill_translation_workflow', 'skill_business_ops', 'skill_novel_tuiwen'];
+// ★ skill_douyin_sell / skill_douyin_traffic（2026-10-12 新增）：新内置 skill 的 body
+//   也要进白名单 —— 万一同 id 的旧行先于代码定义存在（如手工插入/半途安装），
+//   批量 upsert 的「不覆盖」语义会让它们拿不到新版。
+const SKILL_BODY_REFRESH_IDS = ['skill_anime_storyboard', 'skill_video_shot_prompt', 'skill_translation_workflow', 'skill_business_ops', 'skill_novel_tuiwen', 'skill_douyin_sell', 'skill_douyin_traffic'];
 try {
   const getBody = db.prepare('SELECT body FROM skill WHERE id = ?');
   const setDef = db.prepare('UPDATE skill SET name = ?, description = ?, triggers_json = ?, body = ?, category = ? WHERE id = ?');
@@ -3689,6 +3810,75 @@ try {
   }
 } catch {}
 
+// ===== 场景（模式）配置表（2026-10-12）=====
+// 「场景/模式」从代码（前端 config/scenes.ts 写死 16 条）搬进配置表：
+//   一行 = 一个模式 = 绑定智能体（agent_id）+ 场景提示词（prompt）+ skill 关键词 + 欢迎卡示例。
+//   用户/应用经 POST /api/scene-configs 即可动态新增模式，不必改代码（路由见 routes/scene-configs.ts）。
+// 内置种子：./builtin-scene-defs.ts（与前端 packages/ui/src/config/scenes.ts 双源维护——
+//   后端=运行时权威，前端=首屏/离线兜底；两边按同一份内容同步改）。
+db.exec(`
+  CREATE TABLE IF NOT EXISTS scene_config (
+    id TEXT PRIMARY KEY,
+    key TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL,
+    icon TEXT,
+    color TEXT DEFAULT '#3b82f6',
+    description TEXT DEFAULT '',
+    agent_id TEXT,
+    prompt TEXT DEFAULT '',
+    skill_keywords_json TEXT DEFAULT '[]',
+    examples_json TEXT DEFAULT '[]',
+    is_mode INTEGER NOT NULL DEFAULT 0,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    is_builtin INTEGER NOT NULL DEFAULT 0,
+    force_sync INTEGER NOT NULL DEFAULT 0,
+    user_id TEXT NOT NULL DEFAULT 'guest',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+`);
+try { db.exec('CREATE INDEX IF NOT EXISTS idx_scene_config_order ON scene_config(sort_order, id)'); } catch {}
+
+// 内置场景种子 upsert（与 seedAgents 同语义）：
+//   - 内置行 id 固定为 scene_<key>，已存在 → 按代码收敛覆盖（force_sync，含用户改过的内容也回代码默认）；
+//   - 不存在 → 插入；若同名 key 已被非内置行占用（历史数据），跳过不抢（UNIQUE(key) 会撞）；
+//   - 用户自建行（is_builtin=0，id 为 uuid）一律不碰。
+// 幂等：刷新后内容与代码一致，重复执行无变化。
+try {
+  const sceneById = db.prepare('SELECT id FROM scene_config WHERE id = ?');
+  const sceneByKey = db.prepare('SELECT id FROM scene_config WHERE key = ?');
+  const sceneUpdate = db.prepare(
+    `UPDATE scene_config SET key = ?, name = ?, icon = ?, color = ?, description = ?, agent_id = ?, prompt = ?,
+       skill_keywords_json = ?, examples_json = ?, is_mode = ?, sort_order = ?, enabled = 1, is_builtin = 1, force_sync = 1, updated_at = ?
+     WHERE id = ?`,
+  );
+  const sceneInsert = db.prepare(
+    `INSERT INTO scene_config (id, key, name, icon, color, description, agent_id, prompt, skill_keywords_json, examples_json,
+       is_mode, sort_order, enabled, is_builtin, force_sync, user_id, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, 1, 'guest', ?, ?)`,
+  );
+  const now = Date.now();
+  builtinSceneDefs.forEach((s, i) => {
+    try {
+      const id = `scene_${s.key}`;
+      if (sceneById.get(id)) {
+        sceneUpdate.run(
+          s.key, s.name, s.icon, s.color, s.description, s.agentId, s.prompt,
+          JSON.stringify(s.skillKeywords), JSON.stringify(s.examples), s.isMode ? 1 : 0, i, now, id,
+        );
+        return;
+      }
+      // 同名 key 被非内置行占用（如用户自建时用了保留键——新路由已拦截，这里兜底旧数据）
+      if (sceneByKey.get(s.key)) return;
+      sceneInsert.run(
+        id, s.key, s.name, s.icon, s.color, s.description, s.agentId, s.prompt,
+        JSON.stringify(s.skillKeywords), JSON.stringify(s.examples), s.isMode ? 1 : 0, i, now, now,
+      );
+    } catch {}
+  });
+} catch {}
+
 // ===== 内置数据「恢复默认」 =====
 // 用户改过内置 agent 提示词 / skill 文档后，可一键恢复成代码内置默认值。
 // 默认来源：agent 用 seedAgents，批量 skill 用 builtinSkillDefaults；3 个单独 skill 见下方内联。
@@ -3773,4 +3963,25 @@ export function resetBuiltinSkill(skillId: string): boolean {
   }
 
   return false;
+}
+
+/** 恢复内置场景（模式）配置默认值（name/icon/color/description/agent_id/prompt/关键词/示例/is_mode/sort_order）。
+ *  返回 true=已恢复，false=非内置或不存在。 */
+export function resetBuiltinScene(sceneId: string): boolean {
+  const m = /^scene_(.+)$/.exec(sceneId);
+  if (!m) return false;
+  const def = builtinSceneDefs.find((s) => s.key === m[1]);
+  if (!def) return false;
+  const row = db.prepare('SELECT id FROM scene_config WHERE id = ?').get(sceneId);
+  if (!row) return false;
+  const idx = builtinSceneDefs.indexOf(def);
+  db.prepare(
+    `UPDATE scene_config SET key = ?, name = ?, icon = ?, color = ?, description = ?, agent_id = ?, prompt = ?,
+       skill_keywords_json = ?, examples_json = ?, is_mode = ?, sort_order = ?, enabled = 1, is_builtin = 1, force_sync = 1, updated_at = ?
+     WHERE id = ?`,
+  ).run(
+    def.key, def.name, def.icon, def.color, def.description, def.agentId, def.prompt,
+    JSON.stringify(def.skillKeywords), JSON.stringify(def.examples), def.isMode ? 1 : 0, idx, Date.now(), sceneId,
+  );
+  return true;
 }

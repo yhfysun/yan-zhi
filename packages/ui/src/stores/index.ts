@@ -20,3 +20,5 @@ export type { BrowserTab } from './browser';
 export { useMemoryStore } from './memory';
 export type { MemoryDimension, MemoryRow } from './memory';
 export { useCicdStore } from './cicd';
+// 场景（模式）配置 store（2026-10-12）：运行时以后端 scene_config 表为准
+export { useSceneConfigStore } from './sceneConfig';

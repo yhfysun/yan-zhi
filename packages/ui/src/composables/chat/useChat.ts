@@ -21,6 +21,7 @@ import {
   useLicenseStore,
 } from '../../stores';
 import { useGitStore } from '../../stores/git';
+import { useSceneConfigStore } from '../../stores/sceneConfig';
 import { isCodeModeActive, useCodeStore } from '../../stores/code';
 import { activeMode } from '../../stores/mode';
 import { useIsMobile } from '../useIsMobile';
@@ -30,7 +31,6 @@ import { api } from '../../api/client';
 import { waitForBackend } from '../../api/backend-ready';
 import type { Agent, Message, Conversation, Platform, Model } from '@yan-zhi/shared';
 import { estimateTokens, CHAT_MODEL_TYPES, buildArtifactRelDir, joinArtifactPath, TASK_TYPES, getTaskType, effectiveContextLimit, contextUsagePercent } from '@yan-zhi/shared';
-import { sceneByKey, type SceneKey } from '../../config/scenes';
 import {
   selectMedia,
   openMediaViewer,
@@ -62,6 +62,8 @@ function createChat() {
   const skillStore = useSkillStore();
   const agentStore = useAgentStore();
   const authStore = useAuthStore();
+  // 场景（模式）配置：运行时以后端 scene_config 表为准（2026-10-12 配置化）
+  const sceneConfigStore = useSceneConfigStore();
   const spaceStore = useSpaceStore();
   const fileStore = useFileStore();
   const distillStore = useDistillStore();
@@ -554,19 +556,22 @@ function createChat() {
   // 场景区分方式：① 场景系统提示词（发送首条消息时注入会话 system_prompt）
   //              ② 默认挂载 Skill（按关键词匹配技能库自动挂载）
   //              ③ 欢迎卡片示例引导语（ChatWelcome 展示）
+  // ★ 2026-10-12 起场景配置化：场景定义运行时来自后端 scene_config 表
+  //   （stores/sceneConfig.ts 拉取；scenes.ts 仅作首屏/离线兜底），用户/应用可动态新增模式。
   const SCENE_LS_KEY = 'yz_scene_mode';
-  const sceneMode = ref<SceneKey>((localStorage.getItem(SCENE_LS_KEY) || '') as SceneKey);
+  // 动态 key：不再绑死内置 SceneKey 联合类型（自建模式的 key 是任意字符串）
+  const sceneMode = ref<string>(localStorage.getItem(SCENE_LS_KEY) || '');
   const sceneSkillCount = ref(0);
-  const currentScene = computed(() => sceneByKey(sceneMode.value));
+  const currentScene = computed(() => sceneConfigStore.sceneByKey(sceneMode.value));
   function persistScene() {
     try { localStorage.setItem(SCENE_LS_KEY, sceneMode.value || ''); } catch { /* ignore */ }
   }
-  /** 选择场景：切换场景绑定的智能体（日常办公=日常办公助手 / 代码开发=代码编写助手 / 设计创意=设计创意助手），
+  /** 选择场景：切换场景绑定的智能体（日常办公=日常办公助手 / 代码开发=代码编写助手 / 设计创意=设计创意助手 / 抖音运营=抖音运营助手…），
    *  并在草稿态把挂载重置为「场景智能体自带 Skill ∪ 场景关键词匹配 Skill」 */
-  function setScene(key: Exclude<SceneKey, ''>) {
+  function setScene(key: string) {
     sceneMode.value = key;
     persistScene();
-    const scene = sceneByKey(key);
+    const scene = sceneConfigStore.sceneByKey(key);
     if (!scene) return;
     // 场景联动切换智能体（onAgentSwitch 会同步更新当前会话 agent_id；草稿态只改选中）
     if (scene.agentId && agentStore.agents.some((a) => a.id === scene.agentId) && agentStore.selectedId !== scene.agentId) {
@@ -1801,6 +1806,8 @@ async function healStalePlatform() {
     await useLicenseStore().init();
 
     await agentStore.loadAgents();
+    // 场景（模式）配置：拉后端 scene_config（含用户/应用自建模式）；失败保留 scenes.ts 内置兜底
+    await sceneConfigStore.loadScenes();
     await store.loadConversations();
     await platformStore.loadPlatforms();
     await platformStore.loadModels();

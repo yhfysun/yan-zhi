@@ -45,6 +45,8 @@ export const AGENT_ICON_BY_ID: Record<string, Component> = {
   a_builtin_translate_agent: Notebook,
   // 小微生意经营
   a_builtin_business_agent: Shop,
+  // 抖音运营（图文带货 + 引流）
+  a_builtin_douyin_agent: VideoCamera,
 };
 
 /**
@@ -56,6 +58,8 @@ export const AGENT_ICON_BY_ID: Record<string, Component> = {
  *   也会让本该走兜底的「小明的助手」被误判。只认真正的用途词。
  */
 const AGENT_ICON_BY_KEYWORD: Array<[RegExp, Component]> = [
+  // 抖音运营 —— 专指词，必须排最前（「抖音带货分析」这类名字里也含「分析」）
+  [/抖音|带货|引流|涨粉|起号|短视频|直播|douyin/i, VideoCamera],
   [/短剧|分镜|导演|剧本/, VideoCamera],
   // 翻译（放在「写作/文档」之前：翻译助手的活是译，不是写）。
   // 用词覆盖实际起名习惯：翻译 / 中英互译 / 多语言 / 本地化 / 笔译口译 / 译员。

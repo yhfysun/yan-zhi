@@ -4,29 +4,44 @@
 // 2. 默认挂载 Skill 不同 —— 按关键词匹配 Skill 商店里同名/同描述的技能并自动挂载
 // 3. 推荐引导语不同 —— 欢迎卡片给出各场景的典型任务示例
 //
+// ★★ 2026-10-12 起场景（模式）配置化：运行时权威 = 后端 scene_config 表
+//   （apps/server/src/builtin-scene-defs.ts 内置种子 + /api/scene-configs CRUD，
+//    用户/应用可动态新增「模式」行 = 智能体 + skill 关键词 + 场景提示词，不必改代码）。
+//   本文件降级为**首屏/离线兜底默认**（stores/sceneConfig.ts 初始值），与后端种子**双源维护**：
+//   改这里必须同步改 apps/server/src/builtin-scene-defs.ts（同一份内容）。
+//
 // 目录结构（openspec four-mode-workspace 决策 5）：
 // - SCENES 全量目录（含 code / ops / sec —— code 保留给开发模式自动切换，ops/sec 是模式场景）
-// - WELCOME_SCENES 欢迎卡渲染子集（12 张办公岗位卡，排除 code/ops/sec）
+// - WELCOME_SCENES 欢迎卡渲染子集（13 张办公岗位卡，排除 code/ops/sec/wf）
 // - 新增办公岗位一律挂 a_default_assistant + 岗位提示词（不新建内置智能体）
-//   例外（用户拍板）：translate / business 两个岗位有专属内置智能体
-//   （a_builtin_translate_agent / a_builtin_business_agent），因为术语一致性、
-//   回译校验、经营测算这些方法论需要专属提示词 + 专属技能，复用默认助手会串味。
+//   例外（用户拍板）：translate / business / douyin 三个岗位有专属内置智能体
+//   （a_builtin_translate_agent / a_builtin_business_agent / a_builtin_douyin_agent），
+//   因为术语一致性、回译校验、经营测算、带货+引流两线配合这些方法论需要专属提示词
+//   + 专属技能，复用默认助手会串味。
 import type { Component } from 'vue';
 import {
   Suitcase, Monitor, Brush, Coin, TrendCharts, Promotion, User, Sell,
-  ScaleToOriginal, DataAnalysis, Service, Connection, Notebook, Shop,
+  ScaleToOriginal, DataAnalysis, Service, Connection, Notebook, Shop, VideoCamera,
 } from '@element-plus/icons-vue';
 
 export type SceneKey =
   | 'office' | 'code' | 'design'
   | 'admin' | 'finance' | 'operation' | 'hr' | 'sales' | 'legal' | 'data' | 'service'
-  | 'translate' | 'business'
+  | 'translate' | 'business' | 'douyin'
   | 'ops' | 'sec'
   | 'wf'
   | '';
 
+/**
+ * 场景 key 类型：内置键见 SceneKey（保留字面量补全）；2026-10-12 配置化后允许任意字符串
+ * （用户/应用经 /api/scene-configs 自建模式的 key 不入内置联合类型）。
+ * ★ 必须命名别名而不能在 interface 里内联 `SceneKey | (string & {})`：匿名交集类型
+ *   在声明导出（TS2742）里不可命名，会拖垮整个 store 的推断类型。
+ */
+export type SceneKeyLike = SceneKey | (string & {});
+
 export interface SceneDef {
-  key: Exclude<SceneKey, ''>;
+  key: SceneKeyLike;
   label: string;
   icon: Component;
   color: string;
@@ -38,6 +53,9 @@ export interface SceneDef {
   prompt: string;
   /** 默认挂载 Skill 的匹配关键词（对 skill.name / skill.description 小写匹配） */
   skillKeywords: string[];
+  /** true=模式场景（code/ops/sec/wf）：不进欢迎卡轮播，由模式激活时自动挂上。
+   *   与后端 scene_config.is_mode 同口径（WELCOME_SCENES 按它过滤）。 */
+  isMode?: boolean;
 }
 
 export const SCENES: SceneDef[] = [
@@ -257,6 +275,30 @@ export const SCENES: SceneDef[] = [
     ].join('\n'),
     skillKeywords: ['生意', '开店', '创业', '经营', '选址', '测算', '餐饮', '电动车', '棋牌室'],
   },
+  {
+    // 抖音运营（2026-10-12）：带货 + 引流共用一个智能体（a_builtin_douyin_agent），
+    // 与后端 builtin-scene-defs.ts 的 douyin 条目双源维护（同一份内容）。
+    key: 'douyin',
+    label: '抖音运营',
+    icon: VideoCamera,
+    color: '#06b6d4',
+    desc: '图文带货 · 引流涨粉',
+    examples: [
+      '帮我选 3 个适合新手做的抖音图文带货品类，给出选品理由和佣金测算',
+      '策划一期「大模型使用方法」引流视频，给我完整逐镜脚本',
+      '这个月想涨 5000 粉，帮我定内容方向和发布排期表',
+    ],
+    agentId: 'a_builtin_douyin_agent',
+    prompt: [
+      '## 当前场景：抖音运营',
+      '用户处于抖音运营场景，你是陪用户从 0 做抖音的运营伙伴，两条线一体推进：',
+      '- 引流线：风口选题内容（大模型/智能体使用方法、AI 工具实测等涨粉题材），按「3 秒钩子-痛点-解法-演示-CTA」产出逐镜脚本与发布排期。',
+      '- 带货线：图文带货——精选联盟选品、封面+轮播图文结构、挂车发布 SOP、曝光-点击-转化漏斗复盘。',
+      '- 两条线咬合：引流内容决定进来什么人，人群决定带什么货；粉丝少先建人群再变现，用户明确要带货就小步测品。',
+      '- 硬约束：不承诺涨粉/收益数据、不刷量不搬运、极限词与功效宣称一律不写；平台规则委派 pageAgent 核实。',
+    ].join('\n'),
+    skillKeywords: ['抖音', '带货', '引流', '涨粉', '起号', '短视频', '直播', 'douyin', '选品'],
+  },
   // ===== 以下为模式场景：不出现在欢迎卡，由模式挂载时自动激活 =====
   {
     key: 'code',
@@ -275,6 +317,7 @@ export const SCENES: SceneDef[] = [
       '- 涉及命令执行/文件写入的工具有可用时，优先落地验证而不是只给建议。',
     ].join('\n'),
     skillKeywords: ['代码', '开发', '编程', 'code', '程序', '调试', 'git', '测试'],
+    isMode: true,
   },
   {
     key: 'ops',
@@ -293,6 +336,7 @@ export const SCENES: SceneDef[] = [
       '- 涉及发布时优先复用已固化的流水线（发布项目绑定），不要重新推导配置。',
     ].join('\n'),
     skillKeywords: ['运维', '服务器', '部署', '发布', '巡检', '日志', 'docker', 'linux', '故障'],
+    isMode: true,
   },
   {
     key: 'sec',
@@ -311,6 +355,7 @@ export const SCENES: SceneDef[] = [
       '- 全程留痕：说明将写入审计日志，事后可复核。',
     ].join('\n'),
     skillKeywords: ['安全', '扫描', '探测', '漏洞', '加固', '审计', '蓝队', '报告'],
+    isMode: true,
   },
   {
     key: 'wf',
@@ -330,15 +375,16 @@ export const SCENES: SceneDef[] = [
       '- 失败时定位到具体节点，说明是入参问题、模型问题还是工具问题，并给可执行的修改建议。',
     ].join('\n'),
     skillKeywords: ['工作流', '流程', '编排', '自动化', '运行', '定时', '节点', 'workflow'],
+    isMode: true,
   },
 ];
 
-/** 欢迎卡渲染子集：12 张办公岗位卡（排除 code/ops/sec/wf 模式场景） */
-export const WELCOME_SCENES: SceneDef[] = SCENES.filter(
-  (s) => !['code', 'ops', 'sec', 'wf'].includes(s.key),
-);
+/** 欢迎卡渲染子集：13 张办公岗位卡（排除 code/ops/sec/wf 四个模式场景，按 isMode 过滤）。
+ *  ★ 注意：运行时以 stores/sceneConfig.ts 拉取的后端 scene_config 为准（含用户自建模式），
+ *    这里只是 scenes.ts 内置兜底的同一过滤规则。 */
+export const WELCOME_SCENES: SceneDef[] = SCENES.filter((s) => !s.isMode);
 
-export function sceneByKey(key: SceneKey): SceneDef | null {
+export function sceneByKey(key: string): SceneDef | null {
   if (!key) return null;
   return SCENES.find((s) => s.key === key) || null;
 }

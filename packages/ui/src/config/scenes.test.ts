@@ -1,13 +1,17 @@
 // 场景目录（config/scenes.ts）完整性回归测试（openspec four-mode-workspace 决策 5）。
 //
 // 钉住的契约：
-//   1) 目录 16 项：12 张办公岗位欢迎卡 + code/ops/sec/wf 四个模式场景；
+//   1) 目录 17 项：13 张办公岗位欢迎卡 + code/ops/sec/wf 四个模式场景；
 //   2) WELCOME_SCENES 排除 code/ops/sec/wf（欢迎轮播不出现「代码开发」）；
 //   3) 所有场景 agentId 均指向既有内置智能体（岗位卡默认复用 a_default_assistant，
-//      translate/business 两个岗位例外 —— 各有专属内置智能体）；
+//      translate/business/douyin 三个岗位例外 —— 各有专属内置智能体）；
 //   4) 岗位场景提示词带场景标题行；法务带免责声明；ops/sec 带红线措辞；
-//      翻译带免责与四项自检；生意带合规红线；
+//      翻译带免责与四项自检；生意带合规红线；抖音带引流+带货两线；
 //   5) sceneByKey 全键可查、空串返回 null。
+//
+// ★ 2026-10-12：场景（模式）已配置化（后端 scene_config 表 + /api/scene-configs CRUD），
+//   本文件守的是 scenes.ts 这份「内置兜底默认」的完整性；与后端种子
+//   apps/server/src/builtin-scene-defs.ts 双源维护（同一份内容）。
 
 import { describe, it, expect } from 'vitest';
 import { SCENES, WELCOME_SCENES, sceneByKey, type SceneKey } from './scenes';
@@ -18,30 +22,32 @@ const KNOWN_AGENT_IDS = new Set([
   'a_builtin_code_agent',
   // 工作流模式的宿主：新建的工作流助手（type=harness，非工作流型）
   'a_builtin_workflow_assistant',
-  // 两个新岗位的专属内置智能体
+  // 三个新岗位的专属内置智能体
   'a_builtin_translate_agent',
   'a_builtin_business_agent',
+  // 抖音运营助手（图文带货 + 引流共用一个智能体）
+  'a_builtin_douyin_agent',
 ]);
 
 describe('场景目录完整性', () => {
-  it('SCENES 共 16 项：12 办公岗位 + code/ops/sec/wf 四个模式场景', () => {
-    expect(SCENES).toHaveLength(16);
+  it('SCENES 共 17 项：13 办公岗位 + code/ops/sec/wf 四个模式场景', () => {
+    expect(SCENES).toHaveLength(17);
   });
 
-  it('WELCOME_SCENES 恰好 12 张，排除 code/ops/sec/wf', () => {
-    expect(WELCOME_SCENES).toHaveLength(12);
+  it('WELCOME_SCENES 恰好 13 张，排除 code/ops/sec/wf', () => {
+    expect(WELCOME_SCENES).toHaveLength(13);
     const keys = WELCOME_SCENES.map((s) => s.key);
     expect(keys).not.toContain('code');
     expect(keys).not.toContain('ops');
     expect(keys).not.toContain('sec');
     // 工作流场景是模式场景，不进欢迎卡轮播
     expect(keys).not.toContain('wf');
-    // 用户拍板的岗位集合（决策记录 #16：保留 10 张；后续新增 translate / business 两张）
+    // 用户拍板的岗位集合（决策记录 #16：保留 10 张；后续新增 translate / business / douyin 三张）
     expect(keys).toEqual(
       expect.arrayContaining([
         'office', 'design', 'admin', 'finance', 'operation',
         'hr', 'sales', 'legal', 'data', 'service',
-        'translate', 'business',
+        'translate', 'business', 'douyin',
       ]),
     );
   });
@@ -89,6 +95,19 @@ describe('场景目录完整性', () => {
     // 合规红线：涉赌与电动车改装不可做
     expect(s?.prompt).toContain('红线');
     expect(s?.examples.join(' ')).toMatch(/电动车|棋牌室|餐饮|面馆/);
+  });
+
+  it('★ douyin 岗位挂专属内置智能体，且覆盖引流+带货两线与合规', () => {
+    const s = sceneByKey('douyin');
+    expect(s).not.toBeNull();
+    expect(s?.agentId).toBe('a_builtin_douyin_agent');
+    expect(s?.prompt).toContain('## 当前场景：抖音运营');
+    // 两条线都要在场景提示词里可感知
+    expect(s?.prompt).toContain('引流');
+    expect(s?.prompt).toContain('带货');
+    // 硬约束：不承诺数据 + 合规
+    expect(s?.prompt).toContain('不承诺');
+    expect(s?.skillKeywords).toContain('抖音');
   });
 
   it('所有场景 agentId 指向既有智能体（不新建未登记 id）', () => {
