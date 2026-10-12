@@ -415,8 +415,11 @@ interface LlmTask {
    * （用户报：「不是工作目录是当前目录？」—— 实测 `02-work` 一律 directory not found）。
    *
    * ★ 取值口径与提示词注入**必须一致**（`buildSystemPromptForBackend` 的 effectiveWorkspaceDir）：
-   *   `params.workspaceDir`（前端下发）> `serverState.workspaceDir`（全局）。
+   *   `params.workspaceDir`（前端下发）> 会话绑定空间的 `space.dir_path` >
+   *   `serverState.workspaceDir`（全局兜底）。
    *   两处不同源会出现"提示词里说工作目录是 A，工具却在 B 里找文件"这种最难查的不一致。
+   *   ★ 2026-10-12：插入会话空间一级（resolveConversationWorkspaceDir），修「A 会话任务
+   *     带 B 空间目录跑」—— 前端下发的是全局设置，切会话不同步，是串目录根因。
    */
   workspaceDir?: string;
   /**
@@ -831,6 +834,31 @@ export function hasActiveUserTasks(): boolean {
   return false;
 }
 
+/**
+ * ★★★ 按会话解析空间工作目录（2026-10-12 修「串工作目录」）。
+ *
+ * 为什么需要：workspaceDir 此前的取值链是「前端下发 > serverState 全局兜底」，**从不查
+ * conversation.space_id → space.dir_path**。而前端 workspaceDir 是全局单份设置（最后被
+ * 点选的空间/目录），用户在 B 空间点过目录后切回 A 会话发消息 → 任务带着 B 的目录跑
+ * → 全部工具（含子智能体）在 B 目录解析相对路径 —— 即「A 会话读写 B 空间文件」。
+ *
+ * 取值口径（createTask 与 buildSystemPromptForBackend 必须同源）：
+ *   前端显式下发 > 会话绑定空间的 dir_path > serverState 全局兜底。
+ *
+ * ★ 只认有效值：dir_path 为空串/纯空白视为未绑定（返回 null，继续走下一级兜底）。
+ *   查库失败 fail-safe 返回 null（不阻塞任务创建）。
+ */
+export function resolveConversationWorkspaceDir(conversationId: string | null | undefined): string | null {
+  if (!conversationId) return null;
+  try {
+    const row = db.prepare(
+      'SELECT s.dir_path AS dirPath FROM conversation c JOIN space s ON c.space_id = s.id WHERE c.id = ?',
+    ).get(conversationId) as any;
+    const dir = String(row?.dirPath || '').trim();
+    return dir || null;
+  } catch { return null; }
+}
+
 export function createTask(params: {
   conversationId: string;
   userId: string;
@@ -896,9 +924,15 @@ export function createTask(params: {
     memoryExtractModelId: params.memoryExtractModelId || undefined,
     ontologyIds: params.ontologyIds,
     permissionMode,
-    // ★ 工作目录：与提示词注入同源（前端下发 > 全局），供工具解析相对路径用。
+    // ★ 工作目录：与提示词注入同源（前端下发 > 会话绑定空间 > 全局），供工具解析相对路径用。
     //   见 LlmTask.workspaceDir 注释 —— 两处不同源会产生"提示词说 A、工具在 B 找"的不一致。
-    workspaceDir: params.workspaceDir?.trim() || serverState.workspaceDir || undefined,
+    //   ★ 2026-10-12 插入「会话绑定空间」一级：前端 workspaceDir 是全局设置（最后一次点选的
+    //     目录），切会话不同步它 → A 会话的任务曾带着 B 空间目录跑（串工作目录）。
+    //     会话挂了空间时以 space.dir_path 为准；没挂空间才落全局兜底。
+    workspaceDir: params.workspaceDir?.trim()
+      || resolveConversationWorkspaceDir(params.conversationId)
+      || serverState.workspaceDir
+      || undefined,
     // ★ 越界守卫档位：非法/未下发 → ask（fail-safe，与 normalizePermissionMode 同取向）
     pathGuard: (params.pathGuard === 'strict' || params.pathGuard === 'off') ? params.pathGuard : 'ask',
     pendingInjects: [],
@@ -1016,8 +1050,11 @@ export function extractImagePaths(text: string): string[] {
   return out;
 }
 
-async function attachImagesToMessages(messages: Message[]): Promise<void> {
+async function attachImagesToMessages(messages: Message[], task?: LlmTask): Promise<void> {
   try {
+    // ★ 2026-10-12：相对路径基准用任务快照（task.workspaceDir）而非全局 serverState ——
+    //   与工具执行同一口径，避免全局目录在任务运行期间被别的空间切换覆盖后，图片解析到错的目录。
+    const baseDir = task?.workspaceDir?.trim() || currentWorkspaceDir();
     // 从后往前找"含标记且未尝试过"的消息，最多处理 N 条
     const candidates: Message[] = [];
     for (let i = messages.length - 1; i >= 0 && candidates.length < IMAGE_INJECT_MAX_MESSAGES; i--) {
@@ -1045,7 +1082,7 @@ async function attachImagesToMessages(messages: Message[]): Promise<void> {
       for (const p of paths) {
         if (injected + parts.length >= IMAGE_INJECT_MAX_TOTAL) break;
         try {
-          const abs = resolveToolPath(p, currentWorkspaceDir());
+          const abs = resolveToolPath(p, baseDir);
           const exists = await fs.exists(abs).catch(() => false);
           if (!exists) continue; // 文件已清理/路径失效 → 跳过（不标记 tried，可能是别的工作目录）
           const base64 = await fs.readFileBase64(abs);
@@ -2569,7 +2606,7 @@ async function runReActLoop(task: LlmTask, params: {
         // ★★★ C1：发送前把 `已存档: <path>` 标记展开为图片块（视觉模型据此**真正看到**截图）。
         //   放在这里（构建完 llmMessages 之后、发请求之前）—— 是主循环**唯一**的发送前时点。
         //   ★ 只注入最近几条（见 attachImagesToMessages 的 C4 简化版说明）。
-        await attachImagesToMessages(llmMessages);
+        await attachImagesToMessages(llmMessages, task);
 
         // 文本模式工具调用：模型不支持 function calling 时，在 system prompt 注入 [TOOL_CALL] 格式说明
         const hasToolsToExpose = toolsBuilt.length > 0;
@@ -5184,7 +5221,7 @@ async function runSubAgentImpl(
       // ★★★ C1（2026-10-09）：子智能体循环同样要能"看到图" ——
       //   pageAgent/子智能体常是产出截图的那一方，若只有主循环注入，
       //   "委派子智能体看图"这条最自然的用法反而不成立（子智能体看不到自己截的图）。
-      await attachImagesToMessages(llmMessages);
+      await attachImagesToMessages(llmMessages, task);
 
       // 文本模式工具调用
       const hasToolsToExpose = subTools.length > 0;
@@ -5990,8 +6027,11 @@ export function buildSystemPromptForBackend(agentId: string | null, userId: stri
   const parts: string[] = [];
   const convMounts = loadConversationMounts(opts?.conversationId);
   const includeUiTools = !!opts?.includeUiTools;
-  // 工作目录（会话指定 > 全局兜底）——项目技能目录与 AGENTS.md/rules 段共用同一取值口径
-  const effectiveWorkspaceDir = (opts?.workspaceDir && opts.workspaceDir.trim()) || serverState.workspaceDir;
+  // 工作目录（会话指定 > 会话绑定空间 > 全局兜底）——项目技能目录与 AGENTS.md/rules 段共用同一取值口径
+  // ★ 2026-10-12：与 createTask 同源插入「会话绑定空间」一级（修串工作目录，见该函数注释）
+  const effectiveWorkspaceDir = (opts?.workspaceDir && opts.workspaceDir.trim())
+    || resolveConversationWorkspaceDir(opts?.conversationId)
+    || serverState.workspaceDir;
 
   // 应用指引（用户在前端配置的全局上下文/行为约束）：无条件注入，保证三条入口行为一致
   if (appGuide && appGuide.trim()) {

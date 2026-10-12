@@ -350,7 +350,12 @@ export async function runScheduledTask(task: any): Promise<ScheduledTaskRunResul
   }
 
   // 3. 后端构建系统提示词 + 工具 schema（排除 UI 工具，页面没开也能跑）
-  const systemPrompt = buildSystemPromptForBackend(task.agent_id || null, userId);
+  // ★ 2026-10-12：必须带 conversationId —— buildSystemPromptForBackend 的工作目录取值链
+  //   现含「会话绑定空间」一级（与 createTask 同源）；不传会话退化为全局目录，
+  //   定时任务会在错的目录里解析相对路径（串工作目录）。
+  const systemPrompt = buildSystemPromptForBackend(task.agent_id || null, userId, undefined, {
+    conversationId: convId,
+  });
   const tools = buildToolsForBackend(task.agent_id || null, userId);
   const modelParams = loadAgentModelParams(task.agent_id || null, userId);
 
