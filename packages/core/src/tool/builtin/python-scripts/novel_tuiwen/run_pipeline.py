@@ -64,8 +64,10 @@ def main():
     ap.add_argument("--aspect", default="4:3", help="画幅: 4:3(默认) / 9:16(抖音竖屏) / 16:9(横屏)")
     ap.add_argument("--ending", default="", help="结尾引导文案（发抖音传：搜索别名XX看后续）")
     ap.add_argument("--banner", default="", help="顶部常驻引导语（覆盖自动生成的标题条）")
-    ap.add_argument("--alias", default="", help="别名（标题条三要素之一：搜「别名」看全文｜番茄小说 第N章）")
-    ap.add_argument("--chapter", default="", help="第几章（如 3；标题条与文件名都会带；缺省从文件名 chNN/chapterNN 推断）")
+    ap.add_argument("--alias", default="", help="别名（顶部常驻「搜『别名』看全文｜番茄小说」+ 发布文案标题）")
+    ap.add_argument("--chapter", default="", help="第几集（如 3；画面「第N集」大字前3秒 + 文件名第N集 + 发布文案）")
+    ap.add_argument("--tags", default="", help="发布内容自定义话题标签，缺省 '#小说 #推文 <别名>'")
+    ap.add_argument("--no-publish-copy", action="store_true", help="跳过生成 publish.txt 发布文案")
     ap.add_argument("--use-llm", action="store_true")
     a = ap.parse_args()
 
@@ -100,6 +102,13 @@ def main():
         + ["--aspect", a.aspect] + (["--banner", a.banner] if a.banner else [])
         + (["--alias", a.alias] if a.alias else [])
         + (["--chapter", chapter] if chapter else []))
+    # 4) 发布文案（表单标题+内容模板）→ <workdir>/publish.txt
+    if not a.no_publish_copy:
+        run([PY, os.path.join(HERE, "publish_copy.py"),
+             "--script", script_json, "--outdir", workdir, "--stdout"]
+            + (["--alias", a.alias] if a.alias else [])
+            + (["--chapter", chapter] if chapter else [])
+            + (["--tags", a.tags] if a.tags else []))
 
 
 if __name__ == "__main__":

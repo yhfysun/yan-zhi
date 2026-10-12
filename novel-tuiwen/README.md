@@ -1,6 +1,6 @@
 # novel-tuiwen 小说推文自动出片管线
 
-第一阶段产物：`改编 → TTS 配音 → ffmpeg 合成` 全自动出片。
+第一阶段产物：`改编 → TTS 配音 → ffmpeg 合成 → 发布文案` 全自动出片。
 支持两种画面模式：**背景视频模式**（修驴蹄/骑单车等解压视频铺底，推荐）与分镜图模式（占位帧，后续接 ComfyUI AI 绘图）。
 
 ## 一键出片
@@ -11,8 +11,25 @@ cd pipeline
 # 背景视频模式(推荐)
 "$PY" run_pipeline.py --input ../sample/chapter01.txt --title 废井怀表 \
     --alias 狐王痴狂 --chapter 1 --bg-video "背景1.mp4,背景2.mp4"
-# 产物: ../output/狐王痴狂_第1章.mp4 (1080x1440 4:3, 标题条=搜「狐王痴狂」看全文｜番茄小说 第1章)
+# 产物: ../output/狐王痴狂_第1集.mp4 (1080x1440 4:3)
+#      + ../output/chapter01_work/publish.txt (发布表单标题+内容)
 ```
+
+## 画面结构 v3（2026-10-12）
+
+```
+┌──────────────────────────┐
+│ 搜『别名』看全文｜番茄小说  │ ← 顶部常驻标题条（黑底半透明，≤2行自动断行）
+│                          │
+│         第N集            │ ← 大字（H*11.5%），0.4s淡入→保持到3s→0.5s淡出，之后消失
+│                          │
+│        字幕...           │ ← ASS 单行快切：白字加粗+黑描边，宽 ≤0.80*W 必不超屏
+└──────────────────────────┘
+```
+
+- 「第N章/第N集」**不再常驻标题条**——只在开头 3 秒以大字形式出现（一集一个号，够了）
+- 标题条书名号用『』：老版 ffmpeg drawtext 把「」渲染成窄引号
+- 字幕防超屏：全角标点（…… —— "" 等 U+2000~206F）按全角计宽 + 宽度系数 0.88→0.80
 
 ## 分步
 
@@ -21,26 +38,45 @@ cd pipeline
 python script_gen.py --input chapter.txt --output script.json [--use-llm]
 # 2) 配音: Edge-TTS 逐段合成, 真实时长写回 script.json
 python tts_gen.py --script script.json --outdir audio/ [--voice zh-CN-YunxiNeural]
-# 3) 合成: 背景视频(或分镜图) + 标题 + libass字幕 + 配音 -> mp4
+# 3) 合成: 背景视频(或分镜图) + 标题条 + 「第N集」大字 + libass字幕 + 配音 -> mp4
 python compose_video.py --script script.json --outdir ../output \
-    --bg-video bg1.mp4,bg2.mp4 [--bgm bgm.mp3] [--keep-temp]
+    --bg-video bg1.mp4,bg2.mp4 [--alias 狐王痴狂 --chapter 1] [--bgm bgm.mp3] [--keep-temp]
+# 4) 发布文案: 表单标题+内容模板 -> <workdir>/publish.txt（run_pipeline 已自动跑）
+python publish_copy.py --script script.json --alias 狐王痴狂 --chapter 1 [--stdout]
+```
+
+## 发布文案模板（publish_copy.py，单一真相源）
+
+【标题】≤30 字：`{别名} 第{N}集｜{钩子前18字}`（禁原书名）
+
+【内容】五段固定结构：
+
+```
+{别名} 第{N}集
+{hook}
+{正文预告：第一段截60字}…
+后续更精彩，点击左下角继续看👉
+#小说 #推文 {别名}
 ```
 
 ## 画面合成细节
 
 - 4:3 = 1080x1440，25fps；背景视频循环铺满（concat demuxer 方案，老版 ffmpeg 兼容）
-- **标题条三要素**：`--alias` + `--chapter` 自动拼「搜「别名」看全文｜番茄小说 第N章」；
-  自动 ≤2 行 + 半透明黑底条，超宽自动缩字号；`--banner` 可覆盖；文件名 `别名_第N章.mp4`
+- **顶部标题条**：`--alias` 自动拼「搜『别名』看全文｜番茄小说」；`--banner` 可覆盖；
+  ≤2 行 + 半透明黑底条(0.55)，超宽在分隔符处自动断行；文件名 `别名_第N集.mp4`
+- **「第N集」大字**：`--chapter` 传入时叠加，H*11.5% 字号 + 黑描边投影，
+  **不加 box**（老版 ffmpeg box+alpha 淡出期出彩色伪影）
 - **字幕**：直接生成 ASS（PlayRes=真实分辨率）烧录；**无底框**——白字加粗+黑描边(3px)+轻投影；
   字号随画幅 H*4.2%；长句**单行快切**+每条 140ms 淡入淡出（逐句推进的滚动观感）
 - 音频：逐段 TTS mp3 → concat 成单条 aac；`--bgm` 混入 BGM（音量 0.12）
 
 ## 依赖与环境
 
-- Python venv: `edge-tts` 已装（pypi 直连）
-- ffmpeg: 暂用 `C:\APP\EVCapture\ffmpeg.exe`（libx264/aac/zoompan/drawtext 齐全），
-  可用 `FFMPEG` / `FFPROBE` 环境变量覆盖；建议后续换成新版静态包
-  （gyan.dev 直连可用但慢，60s 下载不完 80MB，需后台长下载）
+- Python venv: `edge-tts` 已装（pypi 直连）；**本机受限网络下 edge-tts 403**
+  （Microsoft 语音端点不可达），TTS 需代理或换源
+- ffmpeg: `C:\APP\EVCapture\ffmpeg.exe`（2016 版 N-80694，libx264/aac/drawtext 齐全），
+  可用 `FFMPEG` / `FFPROBE` 环境变量覆盖。
+  ★ 老版两坑已踩平：drawtext 无 `line_spacing`/`text_align`；drawbox 不认 `t=fill`（用 `t=max`）
 - drawtext 中文必须 `fontfile=C\:/Windows/Fonts/msyh.ttc`（本机无 fontconfig 配置）
 
 ## 分镜脚本 JSON 结构
@@ -55,8 +91,17 @@ python compose_video.py --script script.json --outdir ../output \
 }
 ```
 
+## 守门测试
+
+```bash
+cd pipeline && python -m pytest test_screen_structure.py -v   # 13 项，无需 ffmpeg
+```
+
+覆盖：全角标点计宽 / ASS 单行不超屏 / 标题条『』与特殊字符转义 / 第N集 alpha 收尾与 % 转义 /
+无 box / 发布文案标题≤30字与五段结构 / 章节号从文件名推断
+
 ## 后续接入点（对应总方案）
 
-- **绘图**：把 `scene` 字段喂 ComfyUI 工作流出图 → `--images img1.png,img2.png` 传入
+- **绘图**：把 `scene` 字段喂 ComfyUI 工作出图 → `--images img1.png,img2.png` 传入
 - **LLM 改编**：设 `OPENAI_BASE_URL` / `OPENAI_API_KEY` 后加 `--use-llm`
-- **发布/回传/数据**：yan-zhi 内置浏览器 + pageAgent（第二阶段）
+- **发布/回传/数据**：yan-zhi 内置浏览器 + pageAgent（第二阶段）；publish.txt 内容直接贴表单

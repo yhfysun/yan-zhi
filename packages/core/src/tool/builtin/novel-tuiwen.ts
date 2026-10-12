@@ -1,7 +1,8 @@
 // novel_tuiwen 内置工具 —— 有声小说推文视频生成。
-// 底层调用随包分发的 python-scripts/novel_tuiwen/run_pipeline.py（改编 → Edge-TTS 配音 → ffmpeg 合成）。
-// 产物：4:3 (1080x1440) mp4，含顶部标题 + libass 字幕 + 配音，可选背景视频（风景/海洋/动物世界等舒缓素材铺底）。
-// 产物分类约定（对齐 doyz/file_write）：成片 = deliverable，中间产物留在 workdir（intermediate 语义）。
+// 底层调用随包分发的 python-scripts/novel_tuiwen/run_pipeline.py（改编 → Edge-TTS 配音 → ffmpeg 合成 → 发布文案）。
+// 画面结构 v3（2026-10-12）：顶部常驻「搜『别名』看全文｜番茄小说」+ 中部「第N集」大字前3秒 + 底部单行字幕；
+// 第4步自动落 publish.txt 发布表单文案（标题≤30字 + 五段内容）。
+// 产物：4:3 (1080x1440) mp4；成片 = deliverable，中间产物留在 workdir（intermediate 语义）。
 import type { BuiltInTool, ToolContext } from '../types';
 import type { McpCallResult } from '../../mcp/client';
 import { resolveWorkspacePythonScript, runPythonScript } from './python-runtime';
@@ -24,8 +25,10 @@ export class NovelTuiwenTool implements BuiltInTool {
       aspect: { type: 'string', enum: ['4:3', '9:16', '16:9'], description: '画幅：9:16=抖音竖屏 1080x1920（抖音发布用这个）；4:3=1080x1440（默认）；16:9=横屏 1920x1080。' },
       ending: { type: 'string', description: '结尾引导口播。发抖音必传：搜索别名XX看后续（XX=生效中的别名关键词）。禁止出现原书名。' },
       banner: { type: 'string', description: '视频顶部常驻引导语（覆盖自动生成的标题条）。书名红线：画面顶部禁原书名，传别名。' },
-      alias: { type: 'string', description: '生效中的别名关键词。与 chapter_num 一起自动拼标题条「搜「别名」看全文｜番茄小说 第N章」（三要素，发抖音必传）。' },
-      chapter_num: { type: 'string', description: '第几章（如 3）。与 alias 一起进标题条与成片文件名；缺省从文件名 chNN 推断。' },
+      alias: { type: 'string', description: '生效中的别名关键词。自动拼顶部常驻标题条「搜『别名』看全文｜番茄小说」并进发布文案标题（发抖音必传）。书名红线：画面与文案均禁原书名，只推别名。' },
+      chapter_num: { type: 'string', description: '第几集（如 3）。画面中部「第N集」大字仅前3秒显示，并决定成片文件名（别名_第N集.mp4）与发布文案；缺省从文件名 chNN 推断。' },
+      tags: { type: 'string', description: '发布内容自定义话题标签，缺省 "#小说 #推文 <别名>"。' },
+      no_publish_copy: { type: 'boolean', description: '跳过生成 publish.txt 发布文案（默认生成到 <outdir>/.work/publish.txt）。' },
       voice: { type: 'string', description: 'TTS 音色（Edge-TTS），默认 zh-CN-YunxiNeural（年轻男声）；女声可用 zh-CN-XiaoyiNeural。' },
       out: { type: 'string', description: '输出目录，默认 <工作目录>/output/。' },
       use_llm: { type: 'boolean', description: '用 LLM 做钩子化改编（需环境变量 OPENAI_BASE_URL/OPENAI_API_KEY）。默认规则切分。' },
@@ -68,9 +71,12 @@ export class NovelTuiwenTool implements BuiltInTool {
     if (args.aspect && ['4:3', '9:16', '16:9'].includes(String(args.aspect))) argv.push('--aspect', String(args.aspect));
     if (typeof args.ending === 'string' && args.ending.trim()) argv.push('--ending', args.ending.trim());
     if (typeof args.banner === 'string' && args.banner.trim()) argv.push('--banner', args.banner.trim());
-    // 标题条三要素（2026-10-11）：别名 + 番茄小说 + 第N章 —— alias/chapter 透传给管线自动拼
+    // 标题条/集数（2026-10-12 画面v3）：alias→顶部常驻「搜『别名』看全文｜番茄小说」；
+    // chapter_num→「第N集」大字前3秒 + 文件名第N集 + 发布文案
     if (typeof args.alias === 'string' && args.alias.trim()) argv.push('--alias', args.alias.trim());
     if (typeof args.chapter_num === 'string' && args.chapter_num.trim()) argv.push('--chapter', args.chapter_num.trim());
+    if (typeof args.tags === 'string' && args.tags.trim()) argv.push('--tags', args.tags.trim());
+    if (args.no_publish_copy === true) argv.push('--no-publish-copy');
     // 中间产物与成片都收敛到 outDir
     argv.push('--outdir', outDirRaw);
 
@@ -94,13 +100,17 @@ export class NovelTuiwenTool implements BuiltInTool {
       // 从 stdout 提取成片路径：[compose] <path>  (Ns)
       const m = r.stdout.match(/\[compose\]\s+(.+?)\s+\(/);
       const videoPath = m ? m[1].trim() : '';
+      // 发布文案路径（run_pipeline 第4步）：[publish_copy] <path>
+      const pm = r.stdout.match(/\[publish_copy\]\s+(.+)/);
+      const publishPath = pm ? pm[1].trim() : '';
       const meta: Record<string, unknown> = {};
       if (videoPath) {
         meta.path = videoPath;
         meta.category = 'deliverable';
       }
+      if (publishPath) meta.publishCopy = publishPath;
       const text = videoPath
-        ? `成片已生成：${videoPath}\n\n${out}`
+        ? `成片已生成：${videoPath}${publishPath ? `\n发布文案（表单标题+内容）：${publishPath}` : ''}\n\n${out}`
         : out;
       return { content: [{ type: 'text', text }], _meta: Object.keys(meta).length ? meta : undefined };
     } catch (e: unknown) {
