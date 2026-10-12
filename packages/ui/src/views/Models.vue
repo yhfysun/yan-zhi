@@ -60,17 +60,15 @@
           <el-button size="small" @click="openPlatform(p.id)">管理模型</el-button>
           <!-- 模型候选池（model-candidate-pools）：平台默认层，内置平台也可配（使用偏好） -->
           <el-button size="small" @click="openPools(p)">候选池</el-button>
-          <!-- 模型候选池（model-candidate-pools）：平台默认层，内置平台也可配（使用偏好） -->
-          <el-button size="small" @click="openPools(p)">候选池</el-button>
               <el-button v-if="!p.isBuiltin" size="small" @click="editPlatform(p)">编辑</el-button>
               <el-button size="small" type="danger" @click="del(p.id)">删除</el-button>
         </div>
+      </el-card>
+      <el-empty v-if="store.platforms.length === 0" description="还没有平台，点击右下角新增" />
       <el-empty
         v-else-if="filteredPlatforms.length === 0"
         description="没有匹配的平台，换个关键字或筛选条件试试"
       />
-      </el-card>
-      <el-empty v-if="store.platforms.length === 0" description="还没有平台，点击右下角新增" />
     </div>
 
     <FormDialog
@@ -108,6 +106,7 @@
                 class="apikey-input"
               />
               <el-input v-model="k.label" placeholder="备注" class="apikey-label" />
+              <el-button size="small" :loading="testingFormKeyIndex === i" :disabled="!k.apiKey.trim()" @click="testFormKey(k, i)">测试</el-button>
               <el-button :icon="Delete" circle size="small" @click="formKeys.splice(i, 1)" />
             </div>
             <el-button size="small" :icon="Plus" @click="formKeys.push({ apiKey: '', label: '' })">添加 Token</el-button>
@@ -132,20 +131,24 @@
           <span class="apikey-manage-key" :class="{ 'apikey-disabled': !k.enabled }">{{ k.apiKey.slice(0, 8) }}****{{ k.apiKey.slice(-4) }}</span>
           <el-tag v-if="k.label" size="small" type="info">{{ k.label }}</el-tag>
           <el-tag v-if="!k.enabled" size="small" type="warning">已停用</el-tag>
-          <el-tag size="small" :type="k.failCount > 0 ? 'danger' : 'success'">失败 {{ k.failCount }} 次</el-tag>
-          <el-button size="small" link :loading="testingKeyId === k.id" :disabled="keyBusy(k.id)" @click="testKey(k)">测试</el-button>
-          <el-button v-if="k.failCount > 0" size="small" link @click="resetKey(k)">重置</el-button>
-          <el-button size="small" link type="danger" @click="delKey(k)">删除</el-button>
+          <el-tag v-if="k.failCount > 0" size="small" type="danger">失败 {{ k.failCount }} 次</el-tag>
+          <div class="apikey-actions">
+            <el-tooltip content="测试" placement="top"><el-button size="small" :icon="Connection" :loading="testingKeyId === k.id" :disabled="keyBusy(k.id)" @click="testKey(k)" /></el-tooltip>
+            <el-tooltip v-if="k.failCount > 0" content="重置失败次数" placement="top"><el-button size="small" :icon="RefreshLeft" @click="resetKey(k)" /></el-tooltip>
+            <el-tooltip content="删除" placement="top"><el-button size="small" :icon="Delete" type="danger" @click="delKey(k)" /></el-tooltip>
+          </div>
         </div>
         <el-empty v-if="store.apiKeys.length === 0" description="暂无 Token" :image-size="40" />
       </div>
 
-      <StatusActionBar :status="formStatus" :status-type="formStatusType">
+      <StatusActionBar v-if="!editingId" :status="formStatus" :status-type="formStatusType">
         <el-button :loading="testingForm" :icon="Connection" @click="testForm">测试连接</el-button>
         <el-button :loading="fetching" :icon="Download" @click="fetchModels">拉取模型列表</el-button>
       </StatusActionBar>
 
       <div v-if="!editingId && fetchedModels.length > 0" class="fetched-models">
+        <div class="fetched-header">
+          <el-checkbox v-model="checkAll" :indeterminate="isIndeterminate" @change="onCheckAll">全选</el-checkbox>
           <span class="fetched-count">
             <template v-if="fetchedFilterActive">显示 {{ filteredFetchedModels.length }} / </template>
             共 {{ fetchedModels.length }} 个，已选 {{ checkedModelIds.length }}
@@ -158,16 +161,14 @@
             clearable
             class="fetched-search"
           />
-          <el-checkbox v-model="checkAll" :indeterminate="isIndeterminate" @change="onCheckAll">全选</el-checkbox>
-          <span class="fetched-count">共 {{ fetchedModels.length }} 个，已选 {{ checkedModelIds.length }}</span>
-          <el-checkbox v-for="m in filteredFetchedModels" :key="m.id" :value="m.id" class="fetched-item">
+        </div>
         <el-checkbox-group v-model="checkedModelIds" class="fetched-list">
-          <el-checkbox v-for="m in fetchedModels" :key="m.id" :value="m.id" class="fetched-item">
+          <el-checkbox v-for="m in filteredFetchedModels" :key="m.id" :value="m.id" class="fetched-item">
             <span class="model-id">{{ m.id }}</span>
             <el-tag v-if="m.type" size="small" type="info">{{ m.type }}</el-tag>
-        <div v-if="filteredFetchedModels.length === 0" class="fetched-empty">没有匹配的模型，换个关键字试试</div>
           </el-checkbox>
         </el-checkbox-group>
+        <div v-if="filteredFetchedModels.length === 0" class="fetched-empty">没有匹配的模型，换个关键字试试</div>
       </div>
 
       <!-- footer 用 FormDialog 默认底栏（取消/保存），保存中文案随编辑态切换 -->
@@ -186,6 +187,8 @@
     </el-dialog>
 
     <!-- Mobile FAB -->
+    <el-button type="primary" :icon="Plus" circle class="mobile-fab" @click="openAdd" />
+
     <!-- 平台候选池（model-candidate-pools）：四槽位多选，条目限定本平台模型 -->
     <el-dialog v-model="showPools" :title="`候选池 · ${poolPlatform?.name || ''}`" width="560px" destroy-on-close>
       <el-form label-width="80px">
@@ -211,162 +214,6 @@
       </template>
     </el-dialog>
 
-    <el-button type="primary" :icon="Plus" circle class="mobile-fab" @click="openAdd" />
-
-    <!-- 平台候选池（model-candidate-pools）：四槽位多选，条目限定本平台模型 -->
-    <el-dialog v-model="showPools" :title="`候选池 · ${poolPlatform?.name || ''}`" width="560px" destroy-on-close>
-      <el-form label-width="80px">
-        <el-form-item v-for="slot in POOL_SLOTS" :key="slot" :label="POOL_LABELS[slot]">
-          <el-select
-            v-model="poolForm[slot]"
-            placeholder="可多选，顺序即优先级"
-            filterable clearable multiple collapse-tags style="width:100%"
-import { matchesModelSlot } from '@yan-zhi/shared';
-import { usePlatformStore, useModelPoolStore } from '../stores';
-            <el-option
-              v-for="m in platformModelsForSlot(slot)"
-              :key="m.id"
-              :label="m.alias || m.modelId"
-              :value="m.id"
-            />
-import SearchToolbar from '../components/common/SearchToolbar.vue';
-          </el-select>
-        </el-form-item>
-const modelPoolStore = useModelPoolStore();
-      </el-form>
-      <div class="form-tip">该平台下智能体未配置候选池时使用这里；此处只能选择本平台的模型。全局默认在「设置 → 通用」。</div>
-      <template #footer>
-// ===== 平台候选池（model-candidate-pools）=====
-const POOL_SLOTS = ['llm', 'vision', 'image', 'video'] as const;
-const POOL_LABELS: Record<string, string> = { llm: 'LLM', vision: '视觉', image: '生图', video: '生视频' };
-const showPools = ref(false);
-const poolSaving = ref(false);
-const poolPlatform = ref<{ id: string; name: string } | null>(null);
-const poolForm = ref<Record<string, string[]>>({ llm: [], vision: [], image: [], video: [] });
-
-async function openPools(p: { id: string; name: string }) {
-  poolPlatform.value = p;
-  // ★ 不能调 loadModels(p.id) —— 它会**整体替换** store.models 为单平台清单，
-  //   冲掉其他界面（智能体编辑下拉等）依赖的全量模型缓存。这里保证全量即可。
-  if (!store.modelsLoaded) await store.loadModels().catch(() => {});
-  const pools = await modelPoolStore.loadPlatform(p.id);
-  poolForm.value = {
-    llm: [...(pools.llm || [])], vision: [...(pools.vision || [])],
-    image: [...(pools.image || [])], video: [...(pools.video || [])],
-  };
-  showPools.value = true;
-}
-
-/** 本平台模型按槽位过滤（matchesModelSlot 与后端同源；只列启用且可见的） */
-function platformModelsForSlot(slot: string) {
-  const pid = poolPlatform.value?.id;
-  if (!pid) return [];
-  return store.models.filter((m: any) =>
-    m.platformId === pid && m.enabled && (m.visible === undefined || m.visible)
-    && matchesModelSlot(m.type, m.capabilities, slot as any),
-  );
-}
-
-async function savePools() {
-  if (!poolPlatform.value) return;
-  poolSaving.value = true;
-  try {
-    const err = await modelPoolStore.savePlatform(poolPlatform.value.id, poolForm.value as any);
-    if (err) ElMessage.error(err);
-    else { ElMessage.success('候选池已保存'); showPools.value = false; }
-  } finally {
-    poolSaving.value = false;
-  }
-}
-
-// ── 平台搜索 / 筛选（纯前端，不动数据） ──
-const platformKeyword = ref('');
-const protocolFilter = ref('');
-const statusFilter = ref('');
-const filteredPlatforms = computed(() => {
-  const kw = platformKeyword.value.trim().toLowerCase();
-  return store.platforms.filter((p: any) => {
-    if (protocolFilter.value && (p.protocol || 'openai') !== protocolFilter.value) return false;
-    if (statusFilter.value && (p.status || 'unknown') !== statusFilter.value) return false;
-    if (!kw) return true;
-    return (p.name || '').toLowerCase().includes(kw) || (p.apiUrl || '').toLowerCase().includes(kw);
-  });
-});
-const platformFilterActive = computed(() => !!platformKeyword.value.trim() || !!protocolFilter.value || !!statusFilter.value);
-function clearPlatformFilter() {
-  platformKeyword.value = '';
-  protocolFilter.value = '';
-  statusFilter.value = '';
-}
-
-// ===== 平台候选池（model-candidate-pools）=====
-const POOL_SLOTS = ['llm', 'vision', 'image', 'video'] as const;
-const POOL_LABELS: Record<string, string> = { llm: 'LLM', vision: '视觉', image: '生图', video: '生视频' };
-const showPools = ref(false);
-const poolSaving = ref(false);
-const poolPlatform = ref<{ id: string; name: string } | null>(null);
-const poolForm = ref<Record<string, string[]>>({ llm: [], vision: [], image: [], video: [] });
-
-async function openPools(p: { id: string; name: string }) {
-  poolPlatform.value = p;
-  // ★ 不能调 loadModels(p.id) —— 它会**整体替换** store.models 为单平台清单，
-  //   冲掉其他界面（智能体编辑下拉等）依赖的全量模型缓存。这里保证全量即可。
-  if (!store.modelsLoaded) await store.loadModels().catch(() => {});
-  const pools = await modelPoolStore.loadPlatform(p.id);
-  poolForm.value = {
-    llm: [...(pools.llm || [])], vision: [...(pools.vision || [])],
-    image: [...(pools.image || [])], video: [...(pools.video || [])],
-  };
-  showPools.value = true;
-}
-
-/** 本平台模型按槽位过滤（matchesModelSlot 与后端同源；只列启用且可见的） */
-function platformModelsForSlot(slot: string) {
-  const pid = poolPlatform.value?.id;
-  if (!pid) return [];
-  return store.models.filter((m: any) =>
-    m.platformId === pid && m.enabled && (m.visible === undefined || m.visible)
-    && matchesModelSlot(m.type, m.capabilities, slot as any),
-  );
-}
-
-async function savePools() {
-  if (!poolPlatform.value) return;
-  poolSaving.value = true;
-  try {
-    const err = await modelPoolStore.savePlatform(poolPlatform.value.id, poolForm.value as any);
-    if (err) ElMessage.error(err);
-    else { ElMessage.success('候选池已保存'); showPools.value = false; }
-  } finally {
-    poolSaving.value = false;
-  }
-}
-
-// ── 平台搜索 / 筛选（纯前端，不动数据） ──
-const platformKeyword = ref('');
-const protocolFilter = ref('');
-const statusFilter = ref('');
-const filteredPlatforms = computed(() => {
-  const kw = platformKeyword.value.trim().toLowerCase();
-  return store.platforms.filter((p: any) => {
-    if (protocolFilter.value && (p.protocol || 'openai') !== protocolFilter.value) return false;
-    if (statusFilter.value && (p.status || 'unknown') !== statusFilter.value) return false;
-    if (!kw) return true;
-    return (p.name || '').toLowerCase().includes(kw) || (p.apiUrl || '').toLowerCase().includes(kw);
-  });
-});
-const platformFilterActive = computed(() => !!platformKeyword.value.trim() || !!protocolFilter.value || !!statusFilter.value);
-function clearPlatformFilter() {
-  platformKeyword.value = '';
-  protocolFilter.value = '';
-  statusFilter.value = '';
-}
-
-        <el-button @click="showPools = false">取消</el-button>
-        <el-button type="primary" :loading="poolSaving" @click="savePools">保存</el-button>
-      </template>
-    </el-dialog>
-
     <!-- 本地模型商城：国内源下载 / 测试启用 / 删除 / Ollama 接入 -->
     <LocalModelMarket v-model="showLocalMarket" />
   </div>
@@ -374,7 +221,7 @@ function clearPlatformFilter() {
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
-import { Plus, Connection, Download, Delete } from '@element-plus/icons-vue';
+import { Plus, Connection, Download, Delete, RefreshLeft } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import type { ModelType, PlatformApiKey } from '@yan-zhi/shared';
 import { matchesModelSlot } from '@yan-zhi/shared';
@@ -382,26 +229,10 @@ import { usePlatformStore, useModelPoolStore } from '../stores';
 import { waitForBackend } from '../api/backend-ready';
 import { DEFAULT_CONTEXT_WINDOW } from '../utils/context-window';
 import PlatformDetail from './PlatformDetail.vue';
-// ── 拉取列表的搜索（平台一次可返回上百个模型） ──
-const fetchedKeyword = ref('');
-const filteredFetchedModels = computed(() => {
-  const kw = fetchedKeyword.value.trim().toLowerCase();
-  if (!kw) return fetchedModels.value;
-  return fetchedModels.value.filter((m) =>
-    (m.id || '').toLowerCase().includes(kw) || (m.type || '').toLowerCase().includes(kw),
-  );
-});
-const fetchedFilterActive = computed(() => !!fetchedKeyword.value.trim());
-
-// ★ 全选/半选只对**当前可见项**判定：筛掉的模型不该让"全选"永远勾不上
-const visibleFetchedIds = computed(() => filteredFetchedModels.value.map((m) => m.id));
-const checkAll = computed(() =>
-  visibleFetchedIds.value.length > 0 && visibleFetchedIds.value.every((id) => checkedModelIds.value.includes(id)),
-);
-const isIndeterminate = computed(() =>
-  visibleFetchedIds.value.some((id) => checkedModelIds.value.includes(id)) && !checkAll.value,
-);
+import LocalModelMarket from '../components/LocalModelMarket.vue';
+import FormDialog from '../components/FormDialog.vue';
 import StatusActionBar from '../components/common/StatusActionBar.vue';
+import SearchToolbar from '../components/common/SearchToolbar.vue';
 
 const store = usePlatformStore();
 const modelPoolStore = useModelPoolStore();
@@ -451,7 +282,6 @@ async function savePools() {
   }
 }
 
-  fetchedKeyword.value = '';
 // ── 平台搜索 / 筛选（纯前端，不动数据） ──
 const platformKeyword = ref('');
 const protocolFilter = ref('');
@@ -472,13 +302,7 @@ function clearPlatformFilter() {
   statusFilter.value = '';
 }
 
-  // 只增删**当前可见项**：不会因为在某个筛选条件下点了全选，就丢掉此前在别处勾上的模型
-  const visible = new Set(visibleFetchedIds.value);
-  if (val) {
-    checkedModelIds.value = [...new Set([...checkedModelIds.value, ...visible])];
-  } else {
-    checkedModelIds.value = checkedModelIds.value.filter((id) => !visible.has(id));
-  }
+const showDetail = ref(false);
 const detailId = ref('');
 const detailTitle = computed(() => {
   const p = store.platforms.find((x) => x.id === detailId.value);
@@ -487,11 +311,11 @@ const detailTitle = computed(() => {
 const editingId = ref('');
 const testing = ref('');
 const form = ref({ name: '', protocol: 'openai', apiUrl: '', pauseMinMs: 0, pauseMaxMs: 0 });
-  fetchedKeyword.value = '';
 const formKeys = ref<Array<{ apiKey: string; label: string }>>([]);
 
 // 测试 / 拉取状态
 const testingForm = ref(false);
+const testingFormKeyIndex = ref<number | null>(null);
 const fetching = ref(false);
 const saving = ref(false);
 const formStatus = ref('');
@@ -499,8 +323,25 @@ const formStatusType = ref<'ok' | 'err'>('ok');
 const fetchedModels = ref<{ id: string; type?: string }[]>([]);
 const checkedModelIds = ref<string[]>([]);
 
-const checkAll = computed(() => fetchedModels.value.length > 0 && checkedModelIds.value.length === fetchedModels.value.length);
-const isIndeterminate = computed(() => checkedModelIds.value.length > 0 && checkedModelIds.value.length < fetchedModels.value.length);
+// ── 拉取列表的搜索（平台一次可返回上百个模型） ──
+const fetchedKeyword = ref('');
+const filteredFetchedModels = computed(() => {
+  const kw = fetchedKeyword.value.trim().toLowerCase();
+  if (!kw) return fetchedModels.value;
+  return fetchedModels.value.filter((m) =>
+    (m.id || '').toLowerCase().includes(kw) || (m.type || '').toLowerCase().includes(kw),
+  );
+});
+const fetchedFilterActive = computed(() => !!fetchedKeyword.value.trim());
+
+// ★ 全选/半选只对**当前可见项**判定：筛掉的模型不该让"全选"永远勾不上
+const visibleFetchedIds = computed(() => filteredFetchedModels.value.map((m) => m.id));
+const checkAll = computed(() =>
+  visibleFetchedIds.value.length > 0 && visibleFetchedIds.value.every((id) => checkedModelIds.value.includes(id)),
+);
+const isIndeterminate = computed(() =>
+  visibleFetchedIds.value.some((id) => checkedModelIds.value.includes(id)) && !checkAll.value,
+);
 
 // 以数据库 status 为准，不进页自动 ping（避免线上平台因瞬时抖动被误判掉线）。
 // 需要校验时由用户手动点"测试连通性"按钮。
@@ -546,11 +387,32 @@ async function testForm() {
   }
 }
 
+async function testFormKey(k: { apiKey: string; label: string }, index: number) {
+  if (!form.value.apiUrl) { ElMessage.warning('请先填写 API URL'); return; }
+  const key = k.apiKey.trim();
+  if (!key) { ElMessage.warning('请先填写 API Key'); return; }
+  testingFormKeyIndex.value = index;
+  formStatus.value = '';
+  try {
+    const r = await store.testPlatformConfig({ apiUrl: form.value.apiUrl, apiKey: key, platformId: editingId.value || undefined });
+    if (r.ok) {
+      setStatus(`${r.msg}（${r.durationMs}ms）`, 'ok');
+      ElMessage.success(r.msg);
+    } else {
+      setStatus(r.msg, 'err');
+      ElMessage.error(r.msg);
+    }
+  } finally {
+    testingFormKeyIndex.value = null;
+  }
+}
+
 async function fetchModels() {
   if (!form.value.apiUrl) { ElMessage.warning('请先填写 API URL'); return; }
   fetching.value = true;
   formStatus.value = '';
   fetchedModels.value = [];
+  fetchedKeyword.value = '';
   checkedModelIds.value = [];
   try {
     const firstKey = formKeys.value.find((k) => k.apiKey.trim())?.apiKey.trim() || '';
@@ -561,7 +423,6 @@ async function fetchModels() {
       checkedModelIds.value = r.models.map((m: { id: string }) => m.id);
       setStatus(r.msg, 'ok');
       ElMessage.success(`拉取到 ${r.models.length} 个模型`);
-  fetchedKeyword.value = '';
     } else {
       setStatus(r.msg, 'err');
       ElMessage.error(r.msg);
@@ -572,7 +433,13 @@ async function fetchModels() {
 }
 
 function onCheckAll(val: any) {
-  checkedModelIds.value = val ? fetchedModels.value.map((m) => m.id) : [];
+  // 只增删**当前可见项**：不会因为在某个筛选条件下点了全选，就丢掉此前在别处勾上的模型
+  const visible = new Set(visibleFetchedIds.value);
+  if (val) {
+    checkedModelIds.value = [...new Set([...checkedModelIds.value, ...visible])];
+  } else {
+    checkedModelIds.value = checkedModelIds.value.filter((id) => !visible.has(id));
+  }
 }
 
 function editPlatform(p: any) {
@@ -581,6 +448,7 @@ function editPlatform(p: any) {
   form.value = { name: p.name, protocol: p.protocol || 'openai', apiUrl: p.apiUrl, pauseMinMs: p.pauseMinMs || 0, pauseMaxMs: p.pauseMaxMs || 0 };
   formKeys.value = [];
   fetchedModels.value = [];
+  fetchedKeyword.value = '';
   checkedModelIds.value = [];
   formStatus.value = '';
   store.loadApiKeys(p.id);
@@ -639,7 +507,6 @@ async function save() {
       }
       ElMessage.success(`已添加平台${checkedModelIds.value.length > 0 ? `，含 ${checkedModelIds.value.length} 个模型` : ''}`);
     }
-.filter-select { width: 116px; }
     showAdd.value = false;
     resetForm();
   } catch (e: any) {
@@ -655,6 +522,7 @@ function resetForm() {
   formKeys.value = [];
   formStatus.value = '';
   fetchedModels.value = [];
+  fetchedKeyword.value = '';
   checkedModelIds.value = [];
 }
 
@@ -707,8 +575,6 @@ async function test(id: string) {
   try {
     const r = await store.testConnectivity(id);
     if (r.ok) ElMessage.success(`${r.msg}（${r.durationMs}ms）`);
-.fetched-search { width: 180px; margin-left: auto; flex-shrink: 0; }
-.fetched-empty { padding: 12px 8px; font-size: 12px; color: var(--color-text-secondary); text-align: center; }
     else ElMessage.error(r.msg);
   } finally {
     testing.value = '';
@@ -734,6 +600,7 @@ async function del(id: string) {
 <style scoped>
 /* .page / .page-header / .page-title come from App.vue global */
 .platform-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 20px; }
+.filter-select { width: 116px; }
 
 .platform-card { background: var(--glass-bg); backdrop-filter: var(--glass-filter); }
 .card-head { display: flex; align-items: center; gap: 12px; }
@@ -801,6 +668,8 @@ async function del(id: string) {
   margin-bottom: 8px;
 }
 .fetched-count { font-size: 12px; color: var(--color-text-secondary); }
+.fetched-search { width: 180px; margin-left: auto; flex-shrink: 0; }
+.fetched-empty { padding: 12px 8px; font-size: 12px; color: var(--color-text-secondary); text-align: center; }
 .fetched-list { display: flex; flex-direction: column; gap: 4px; }
 .fetched-item {
   display: flex !important;
@@ -825,6 +694,8 @@ async function del(id: string) {
 .apikey-manage-row:last-child { border-bottom: none; }
 .apikey-manage-key { font-family: "JetBrains Mono", "Cascadia Code", monospace; font-size: 12px; flex: 1; }
 .apikey-manage-key.apikey-disabled { opacity: 0.45; text-decoration: line-through; }
+.apikey-actions { display: flex; align-items: center; gap: 4px; margin-left: auto; }
+.apikey-actions .el-button { padding: 5px 6px; }
 
 </style>
 

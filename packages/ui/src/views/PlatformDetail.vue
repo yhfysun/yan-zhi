@@ -91,15 +91,6 @@
         <div v-if="m.description" class="model-card-desc">{{ m.description }}</div>
 
         <div class="model-card-foot">
-          <el-input
-            v-if="!m.isBuiltin"
-            v-model="m.alias"
-            size="small"
-            placeholder="别名（可选）"
-            @click.stop
-            @change="updateAlias(m)"
-            class="alias-input"
-          />
           <div class="model-card-actions" @click.stop>
             <el-dropdown trigger="click" @command="(k: string) => runCapabilityTest(m, k)">
               <el-button size="small" :loading="testing === m.id">
@@ -460,7 +451,6 @@ function resetModelForm() {
   form.value = { modelId: '', alias: '', type: 'llm', contextWindowK: 1024, capabilities: ['reasoning'], description: '', pricingInput: 0, pricingOutput: 0 };
 }
 
-async function updateAlias(row: any) { if (row.isBuiltin) return; await store.updateModel(row.id, { alias: row.alias }); }
 async function toggleEnabled(row: any) { if (row.isBuiltin) return; await store.updateModel(row.id, { enabled: row.enabled }); }
 
 /** 平台级「可供大模型调用」总开关：关掉后整个平台的模型对下拉与智能体选型隐藏 */
@@ -697,7 +687,6 @@ async function testCapabilityInForm(c: { value: string; label: string; kind: str
   display: flex; align-items: center; gap: 8px;
   padding-top: 8px; border-top: 1px solid var(--glass-border);
 }
-.alias-input { max-width: 140px; }
 .model-card-actions { display: flex; gap: 4px; margin-left: auto; }
 
 /* 添加卡片 */
@@ -753,7 +742,6 @@ async function testCapabilityInForm(c: { value: string; label: string; kind: str
   .model-grid { grid-template-columns: 1fr; gap: 12px; }
   .model-filter-type { width: 110px; }
   .batch-toolbar { flex-wrap: wrap; gap: 8px; font-size: 12px; padding: 8px 12px; }
-  .alias-input { max-width: 100%; }
   .model-card-foot { flex-wrap: wrap; gap: 8px; }
   .model-card-actions { width: 100%; margin-left: 0; flex-wrap: wrap; justify-content: flex-start; }
 }
