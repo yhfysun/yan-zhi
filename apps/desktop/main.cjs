@@ -3212,9 +3212,56 @@ async function runBrowserAction(convId, tabId, action, args) {
         return await wc.executeJavaScript(`(function(){
           var a=${JSON.stringify(args)};
           var A=window.__yzAssistant;
-          function clickEl(el){
+          // ===OCCLUSION-START=== 遮挡感知 + 自动关闭遮挡层（2026-10-12）；click-occlusion.test.cjs 经此哨兵抽取真实代码
+          // ★ 遮挡检测（2026-10-12）：目标中心点若被其它元素盖住，很多悬浮层会给底层按钮
+          //   加 pointer-events:none 或在 handler 里判"弹窗开着就忽略"，导致 DOM 点击派发了却不生效。
+          //   ⇒ 先检测遮挡，被挡则尝试自动关闭遮挡层（点其关闭控件 / Esc）后再点真实目标。
+          function detectOcclusion(el){
+            try{
+              var r=el.getBoundingClientRect();
+              if(r.width<1||r.height<1)return null;
+              var cx=r.x+r.width/2, cy=r.y+r.height/2;
+              if(cx<0||cy<0||cx>window.innerWidth||cy>window.innerHeight)return null;
+              var top=document.elementFromPoint(cx,cy);
+              if(!top)return null;
+              if(top===el||el.contains(top))return null;
+              return {coveringEl:top, covering:{tag:top.tagName.toLowerCase(),
+                text:(top.textContent||'').trim().slice(0,40), selector:A.genSel(top)}};
+            }catch(e){return null;}
+          }
+          // ★ 尝试关闭遮挡层：优先点其子树里的显式关闭控件（× / 关闭 / 取消 / aria close），
+          //   找不到再退 Esc。只点"关闭类"控件，绝不点"确定/确认"等肯定动作（避免误触发布）。
+          async function tryDismiss(coveringEl){
+            if(!coveringEl)return false;
+            try{
+              var sel='button,[role="button"],a,span,i,svg,[aria-label]';
+              var list;try{list=Array.prototype.slice.call(coveringEl.querySelectorAll(sel));}catch(e){list=[];}
+              list.push(coveringEl);
+              for(var i=0;i<list.length;i++){var n=list[i];
+                var t=(n.textContent||'').trim();
+                var al=(n.getAttribute&&n.getAttribute('aria-label')||'').trim();
+                var cls=(typeof n.className==='string'?n.className:'');
+                var isClose=/^[×xX✕✖]$/.test(t)||/关闭|取消|收起|知道了/.test(t+al)||/modal-close|dialog-close|close-btn|icon-close/i.test(cls);
+                if(isClose){
+                  try{
+                    n.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true,view:window}));
+                    n.dispatchEvent(new MouseEvent('mouseup',{bubbles:true,cancelable:true,view:window}));
+                    n.click();return true;
+                  }catch(e){}
+                }
+              }
+              document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',keyCode:27,which:27,bubbles:true,cancelable:true}));
+              document.dispatchEvent(new KeyboardEvent('keyup',{key:'Escape',keyCode:27,which:27,bubbles:true,cancelable:true}));
+              return true;
+            }catch(e){return false;}
+          }
+          async function clickEl(el){
             // 先滚入视口（instant，避免 smooth 异步未到位导致后续坐标过期）
             try{el.scrollIntoView({block:'center'});}catch(e){}
+            var occ=detectOcclusion(el);
+            var autoDismissed=false, coveringInfo=null;
+            if(occ){coveringInfo=occ.covering; autoDismissed=await tryDismiss(occ.coveringEl);
+              await new Promise(function(r){setTimeout(r,350);});}
             // ★ 优先 DOM 点击：不受视口裁切影响（被裁切但已渲染的元素也能触发），
             //   直接派发到目标元素，不依赖坐标换算。坐标点击在元素被裁切/位于视口外时
             //   会落在视口外（elementFromPoint 返回 null）而无效（抖音"发布"按钮实测）。
@@ -3222,15 +3269,21 @@ async function runBrowserAction(convId, tabId, action, args) {
               el.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true,view:window}));
               el.dispatchEvent(new MouseEvent('mouseup',{bubbles:true,cancelable:true,view:window}));
               el.click(); // 原生 click：触发默认动作（onClick / 链接跳转 / 表单提交）
-              return Promise.resolve({success:true,via:'dom-click',tag:el.tagName.toLowerCase()});
+              var res={success:true,via:'dom-click',tag:el.tagName.toLowerCase()};
+              if(occ){res.occluded=true;res.autoDismissed=autoDismissed;res.covering=coveringInfo;
+                res.note='目标中心被悬浮层遮挡；'+(autoDismissed?'已尝试自动关闭遮挡层，':'未找到可关闭的遮挡层，')+'已直接对目标派发 DOM 点击。请用 get_page_content 复核是否真的生效（未生效说明遮挡层仍阻断，需手动关闭后重试）。';}
+              return res;
             }catch(e){
               // 兜底：真实鼠标坐标点击（极少数只认真实坐标的场景）
               var rect=el.getBoundingClientRect();
               var x=rect.x+rect.width/2,y=rect.y+rect.height/2;
               var tag=A.clickAt(x,y);
-              return Promise.resolve({success:true,via:'real-mouse',tag:tag});
+              var res2={success:true,via:'real-mouse',tag:tag};
+              if(occ){res2.occluded=true;res2.autoDismissed=autoDismissed;res2.covering=coveringInfo;}
+              return res2;
             }
           }
+          // ===OCCLUSION-END===
           function notFound(sel){return{error:'元素未找到: '+sel,hint:'建议先调用 browser_get_page_info 获取编号元素列表，再用 index 参数定位'};}
           if(a.index!=null){
             var el=window.__yzElements&&window.__yzElements[a.index];
