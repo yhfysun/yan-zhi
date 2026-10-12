@@ -49,10 +49,19 @@ describe('send() 重入锁', () => {
     expect(lockAt, '★ send() 里找不到重入锁判断').toBeGreaterThan(-1);
     expect(enqueueAt, '★ 入队判断必须排在重入锁之前（锁覆盖整个任务 SSE 时长）').toBeLessThan(lockAt);
     // 入队块自身零 await（同步完成判断+入队+清输入框）。窗口从入队判断行起（避开前置注释），
-    // 到锁为止；同时剥掉行注释（// ...）再查，防止文案里的 "await" 干扰。
-    const enqueueSeg = body.slice(enqueueAt, lockAt)
+    // 到锁为止；同时剥掉注释再查，防止文案里的 "await" 干扰。
+    //
+    // ★★★ 2026-10-12 修两个**假失败源**（此前偶然为绿，源码位移后暴露）：
+    //   ① **CRLF**：`src` 是工作区文件，行尾是 `\r\n`。`l.replace(/\/\/.*$/, '')` 里
+    //      `.` 不匹配 `\r` 且 `$` 无 `m` 标志 ⇒ 含 `\r` 的行**匹配失败、整行不剥**
+    //      ⇒ 注释里的 "await" 被当成真代码 ⇒ 假报"入队块有 await"。
+    //      ⇒ 先 `replace(/\r\n?/g, '\n')` 统一行尾。
+    //   ② **块注释** `/** ... */`：跨多行，逐行剥 `//` 处理不了 ⇒ 一并剥掉块注释。
+    const stripped = body.slice(enqueueAt, lockAt)
+      .replace(/\r\n?/g, '\n')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
       .split('\n').map((l) => l.replace(/\/\/.*$/, '')).join('\n');
-    expect(enqueueSeg, '★ 入队判断到锁之间出现 await —— 会被网络/落盘拖住').not.toMatch(/\bawait\b/);
+    expect(stripped, '★ 入队判断到锁之间出现 await —— 会被网络/落盘拖住').not.toMatch(/\bawait\b/);
   });
 
   it('行为语义：同步重入只放行一次（复刻锁逻辑）', async () => {

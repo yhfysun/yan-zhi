@@ -39,41 +39,13 @@ import {
   absoluteMediaSrc,
 } from '../useMediaPreview';
 
-export interface AgentStep {
-  reasoningContent?: string;
-  toolCalls: any[];
-  toolResults: Array<{ callId: string; content: string; isError: boolean }>;
-  partialContent?: string;
-  subAgentRounds?: SubAgentRound[];
-  /** 关联的真实助手消息 id，用于匹配交付文件等按消息 id 索引的资源 */
-  messageId?: string;
-}
-
-export interface SubAgentRound {
-  toolCallId: string;
-  subAgentId: string;
-  subAgentName?: string;
-  depth: number;
-  steps: AgentStep[];
-  finalContent?: string;
-}
-
-export interface MessageRound {
-  user: Message | null;
-  steps: AgentStep[];
-  allToolCalls: any[];
-  finalAssistant: Message | null;
-  hasAgentProcess?: boolean;
-  agentStats?: { stepCount: number; reasoningCount: number; toolCallCount: number };
-  /** 子智能体最终结果（已从 call_agent 工具结果提上来，直接在主内容区展示） */
-  subAgentResults?: Array<{ subAgentName: string; finalContent: string }>;
-  /**
-   * 本轮的压缩标记（2026-10-02）。
-   * ★ 后端推 `context:compacted` 时落一条 system 消息（带 compactMarker），这里把它
-   *   提到轮次上供 UI 渲染「此处已压缩」分隔线 —— 压缩是**有损**的，不该完全隐形。
-   */
-  compactMarkers?: Array<{ coveredCount: number; keptCount: number; tokens: number }>;
-}
+// ★★★ 2026-10-12：这三个「消息分轮」相关类型已随实现一起迁到 `./message-rounds`。
+//   ⚠️ 必须**同时 import 和 re-export** —— 本文件内部也在用这些类型（不只是对外暴露），
+//      只 re-export 会让文件内的引用全部 `Cannot find name`。re-export 是为了保持
+//      `from '.../useChat'` 的既有外部 import 全部有效（零破坏）。
+import { buildMessageRounds, type AgentStep, type SubAgentRound, type MessageRound } from './message-rounds';
+export type { AgentStep, SubAgentRound, MessageRound };
+export { buildMessageRounds };
 
 interface ParsedConfigCard {
   tip: string;
@@ -438,7 +410,14 @@ function createChat() {
   // 此处兜底其他 browser_* 工具只 push step 不开 tab 的场景）。
   // ⚠️ 不自动全屏：agent 操作浏览器时只打开预览面板，全屏是用户手动选项（工具条 ⛶ 按钮），
   // 自动 inset:0 会盖住聊天页 —— 用户明确不要这个行为。
-  watch(() => store.browserSteps.length, (n, o) => {
+  //
+  // ★★★ 判据从 `browserSteps.length` 改为 `browserStepSeq`（2026-10-12，根因修复）：
+  //   旧判据 `o === 0 && n > 0` 依赖长度的 0→N 跳变。而 `browserSteps` 有
+  //   `BROWSER_STEPS_MAX = 120` 上限（push + splice ⇒ **净长度恒 120**），填满后
+  //   length **永不再跳变** ⇒ 本 watch **永不触发** ⇒ 长任务的"首个步骤自动开面板"
+  //   兜底静默失效。改用**单调递增**的 `browserStepSeq`：语义就是"第几个浏览器步骤"，
+  //   裁剪动不了它（同 `lastBrowserToolAt` 的修法，见 stores/chat.ts pushBrowserStep 注释）。
+  watch(() => store.browserStepSeq, (n, o) => {
     if (o === 0 && n > 0) {
       if (!supportsBrowser) return; // E12: 移动端不打开浏览器 tab（步骤日志仅留在面板外/消息里）
       if (!store.previewTabs.some((t) => t.kind === 'browser')) {
@@ -455,19 +434,22 @@ function createChat() {
       //   BrowserPanel 由 `v-if="browserTab"` + `v-show` 驱动，`activeTabId` 指向 browser tab
       //   即会挂载 ⇒ 挂载后 onMounted 自建首个 tab（或恢复已有）。
     }
-    // n===0 时不强制切回 file，避免清空时面板闪一下；保留当前 tab（默认 file/git）
+    // 序号不回退，故无"清零"分支：收起面板由 onTaskFinished 兜底（见下）
   });
   // 浏览器任务生命周期：首次 browser 步骤 → 进入"agent 驾驶"态（锁输入）；
   // 步骤日志清空（任务收尾/reset）→ 退出实况态：解除锁定、清手动收起标记。
   // （不自动收起全屏：全屏已是纯手动，用户开着的就让它开着直到任务结束兜底清理）
-  watch(() => store.browserSteps.length, (n, o) => {
+  //
+  // ★★★ 判据同样改 `browserStepSeq`（2026-10-12）：原 `o === 0 && n > 0` 在数组填满后
+  //   **永不触发** ⇒ `browserLockInput` 浮标不再跟随（次要：主判据已迁到 browserTaskActive，
+  //   但这里负责 `browserUserDismissed` 复位，失效会让"用户手动收起后本次任务内不再自动展开"
+  //   的标记跨任务粘住）。序号单调递增 ⇒ 只在"首个步骤"跳一次，语义与旧实现等价且更准。
+  //   ★ "退出实况态"（旧 n===0 分支）不再由本 watch 承担 —— 由 `onTaskFinished` 兜底
+  //     （原本 `browserSteps.length = 0` 也只在 reset 路径发生，收尾主路径一直靠 onTaskFinished）。
+  watch(() => store.browserStepSeq, (n, o) => {
     if (o === 0 && n > 0) {
       store.browserUserDismissed = false;
       store.browserLockInput = true;
-    } else if (n === 0 && o > 0) {
-      store.browserLockInput = false;
-      store.browserExpanded = false;
-      store.browserUserDismissed = false;
     }
   });
   // 任务结束（completed/aborted/failed）兜底清理：SSE 步骤日志可能未清空，这里强制退出实况态
@@ -483,54 +465,22 @@ function createChat() {
     store.clearBrowserTaskActive(convId);
     store.pausedConvIds.clear();
     store.clearAgentCursor();
-    // ★★ agent 开的页面 → 任务收尾**自动关闭**（2026-10-09 用户诉求升级：
-    //   「子智能体运行任务完后代理的页面自动关闭，智能体接下来去其他任务，页面不能不关啊」。
-    //   原 2026-10-08 方案是"只弹提示不自动关"，实测页面照样堆积，用户拍板改自动关）。
-    //   安全边界不变：只关 agent 打开的（agentOpened），用户手开的不碰 —— 主进程
-    //   browserView:closeAgentTabs 按 agentOpened===true 过滤，双保险。
-    //   ★ 先取残留快照（知会条数），再关闭，最后清记账 —— 顺序不能反。
+    // ★★ agent 开的页面 → **保留**（2026-10-12 用户拍板改向：
+    //   「除非智能体自己主动关闭页面才关闭」—— 收尾不再自动关）。
+    //   历史：2026-10-08 只弹提示 → 2026-10-09 收尾自动关（closeAgentTabs/closeConvTabs）→
+    //   本次改回「页面留存，由模型自己决定关不关」。
+    //   保留说明：主进程 closeAgentTabs/closeConvTabs IPC 与 preload 通道**原样保留**
+    //   （模型主动批量 close_tab / 用户侧清理仍可用），只是任务收尾钩子不再调用。
+    //   记账仍按原节奏取快照+清理（只影响"剩余页面"知会，不再触发关闭）。
     const leftover = store.remainingAgentOpenedTabs(convId);
-    const closeApi = (window as any).electronAPI?.browserView;
-    // ★★★ 执行面直连化（2026-10-10）：桥档下渲染层的 `agentOpenedTabs` 记账恒为空
-    //   （记账在 `dispatchToolCall` 里，而桥路径**跳过执行**）⇒ 旧的 `closeAgentTabs()`
-    //   （按 `agentOpened` 过滤）**关不掉任何东西** ⇒ 「任务跑完一堆 agent 页面不关」静默退化。
-    //   ⇒ 优先用**按会话**的关闭入口（主进程按自己的 `agentTouchedTabs` 记账收口，不依赖渲染层）。
-    //   旧入口保留为兜底（非桥档 / 旧主进程无该 API）。
-    if (convId && closeApi?.closeConvTabs) {
-      try {
-        const r = await closeApi.closeConvTabs(convId);
-        store.clearAgentOpenedTabs(convId);
-        if ((r?.closed ?? 0) > 0) {
-          void import('element-plus').then(({ ElMessage }) => {
-            ElMessage.info({ message: `已自动关闭 AI 打开的 ${r.closed} 个页面`, duration: 4000 });
-          }).catch(() => { /* 提示失败不影响收尾 */ });
-        }
-        return;
-      } catch { /* 关闭失败退回旧路径 */ store.clearAgentOpenedTabs(convId); }
-    }
-    if (leftover.length > 0 && closeApi?.closeAgentTabs) {
-      try {
-        const r = await closeApi.closeAgentTabs();
-        store.clearAgentOpenedTabs(convId);
-        if ((r?.closed ?? 0) > 0) {
-          void import('element-plus').then(({ ElMessage }) => {
-            ElMessage.info({ message: `已自动关闭 AI 打开的 ${r.closed} 个页面`, duration: 4000 });
-          }).catch(() => { /* 提示失败不影响收尾 */ });
-        }
-      } catch { /* 关闭失败退回旧提示路径 */ 
-        store.clearAgentOpenedTabs(convId);
-      }
-    } else if (leftover.length > 0) {
-      // 非 Electron 环境（无 closeAgentTabs API）：退回 2026-10-08 的明示文案
-      store.clearAgentOpenedTabs(convId);
+    store.clearAgentOpenedTabs(convId);
+    if (leftover.length > 0) {
       void import('element-plus').then(({ ElMessage }) => {
         ElMessage.info({
-          message: `AI 打开了 ${leftover.length} 个页面仍保留在预览面板，可自行关闭`,
+          message: `AI 打开了 ${leftover.length} 个页面保留在预览面板（由智能体自行关闭，也可手动关）`,
           duration: 5000,
         });
       }).catch(() => { /* 提示失败不影响收尾 */ });
-    } else {
-      store.clearAgentOpenedTabs(convId);
     }
   });
   // 桌面端：右侧面板开合 / tab 切换与原生 BrowserView 图层联动，避免关闭面板后即梦页面仍浮在窗口上
@@ -1312,153 +1262,13 @@ function createChat() {
    *   openActionsMsgId…）都是组件级共享 reactive 容器（身份不变、内容变），
    *   v-memo 浅比较会把「工具运行中→完成」「点开折叠」永久冻住（frozen-UI 陷阱）。
    */
-  const messageRounds = computed<MessageRound[]>(() => {
-    const msgs = store.currentMessages;
-    const rounds: MessageRound[] = [];
-    let currentRound: MessageRound | null = null;
-    const stepByToolCallId = new Map<string, AgentStep>();
-
-    for (const msg of msgs) {
-      // 压缩标记（role='system' + compactMarker）：附到当前轮，不参与正文分轮逻辑
-      if ((msg as any).compactMarker) {
-        if (currentRound) {
-          if (!currentRound.compactMarkers) currentRound.compactMarkers = [];
-          currentRound.compactMarkers.push((msg as any).compactMarker);
-        }
-        continue;
-      }
-      if (msg.role === 'system') continue;
-      // 子智能体消息：归入父 step 的 subAgentRounds
-      if (msg.parentToolCallId) {
-        const parentStep = stepByToolCallId.get(msg.parentToolCallId);
-        if (!parentStep) continue;
-        if (!parentStep.subAgentRounds) parentStep.subAgentRounds = [];
-        let subRound = parentStep.subAgentRounds.find((r) => r.toolCallId === msg.parentToolCallId);
-        if (!subRound) {
-          subRound = {
-            toolCallId: msg.parentToolCallId,
-            subAgentId: msg.subAgentId || '',
-            subAgentName: msg.subAgentName,
-            depth: msg.subAgentDepth || 1,
-            steps: [],
-          };
-          parentStep.subAgentRounds.push(subRound);
-        }
-        if (msg.role === 'assistant') {
-          const subStep: AgentStep = {
-            reasoningContent: msg.reasoningContent,
-            toolCalls: msg.toolCalls || [],
-            toolResults: [],
-            partialContent: msg.content || undefined,
-            messageId: msg.id,
-          };
-          subRound.steps.push(subStep);
-          for (const tc of subStep.toolCalls) {
-            if (tc?.id) stepByToolCallId.set(tc.id, subStep);
-          }
-        } else if (msg.role === 'tool') {
-          for (let s = subRound.steps.length - 1; s >= 0; s--) {
-            const step = subRound.steps[s];
-            if (step.toolCalls.some((tc: any) => tc.id === msg.toolCallId)) {
-              step.toolResults.push({
-                callId: msg.toolCallId || '',
-                content: msg.content || '',
-                isError: isToolErrorContent(msg.content || ''),
-              });
-              break;
-            }
-          }
-        }
-        continue;
-      }
-      if (msg.role === 'user') {
-        if (currentRound) rounds.push(currentRound);
-        currentRound = { user: msg, steps: [], allToolCalls: [], finalAssistant: null };
-      } else if (msg.role === 'assistant') {
-        if (!currentRound) continue;
-        const step: AgentStep = {
-          reasoningContent: msg.reasoningContent,
-          toolCalls: msg.toolCalls || [],
-          toolResults: [],
-          partialContent: msg.content || undefined,
-          messageId: msg.id,
-        };
-        currentRound.steps.push(step);
-        for (const tc of step.toolCalls) {
-          if (tc?.id) stepByToolCallId.set(tc.id, step);
-        }
-        if (msg.toolCalls?.length) {
-          currentRound.allToolCalls.push(...msg.toolCalls);
-        }
-      } else if (msg.role === 'tool') {
-        if (!currentRound) continue;
-        for (let s = currentRound.steps.length - 1; s >= 0; s--) {
-          const step = currentRound.steps[s];
-          if (step.toolCalls.some((tc: any) => tc.id === msg.toolCallId)) {
-            step.toolResults.push({
-              callId: msg.toolCallId || '',
-              content: msg.content || '',
-              isError: isToolErrorContent(msg.content || ''),
-            });
-            break;
-          }
-        }
-      }
-    }
-    if (currentRound) rounds.push(currentRound);
-
-    for (const round of rounds) {
-      // 子智能体最终回答 = call_agent 工具返回结果（role=tool 且 toolCallId == subRound.toolCallId，
-      // 归入父 step.toolResults）。把它提到主内容区直接展示，而非埋在工具结果的 pre 里。
-      const subAgentResults: Array<{ subAgentName: string; finalContent: string }> = [];
-      for (const step of round.steps) {
-        if (!step.subAgentRounds) continue;
-        for (const subRound of step.subAgentRounds) {
-          const res = step.toolResults.find(r => r.callId === subRound.toolCallId);
-          if (res && res.content) {
-            subRound.finalContent = res.content;
-            subAgentResults.push({ subAgentName: subRound.subAgentName || subRound.subAgentId, finalContent: res.content });
-            // 清除最终回答步骤的 partialContent，避免与主内容区结果双重渲染
-            const finalStep = subRound.steps.find(s => s.toolCalls.length === 0);
-            if (finalStep) finalStep.partialContent = undefined;
-          }
-        }
-      }
-      if (subAgentResults.length) round.subAgentResults = subAgentResults;
-      const lastStep = round.steps[round.steps.length - 1];
-      if (lastStep && !lastStep.toolCalls.length) {
-        round.finalAssistant = {
-          id: lastStep.messageId || (round.user?.id ? round.user.id + '-fa' : 'fa'),
-          conversationId: '',
-          role: 'assistant',
-          content: lastStep.partialContent || '',
-          reasoningContent: lastStep.reasoningContent,
-          createdAt: 0,
-        };
-        round.steps.pop();
-      }
-      // 兜底：历史数据（重启后加载）或中断的轮次可能没有收尾的纯文本助手消息
-      // （最后一轮以工具调用/子智能体结果结束），此时 finalAssistant 为 null，
-      // 主内容区的复制/下载/折叠会全部失效（引用空 id）。合成一个 finalAssistant
-      // 保证旧数据交互一致；内容为空时导出会回退到子智能体结果。
-      if (!round.finalAssistant && round.user && (round.steps.length > 0 || round.allToolCalls.length > 0)) {
-        round.finalAssistant = {
-          id: round.user.id + '-fa',
-          conversationId: '',
-          role: 'assistant',
-          content: '',
-          createdAt: 0,
-        };
-      }
-      round.hasAgentProcess = round.steps.length > 0 || round.allToolCalls.length > 0;
-      round.agentStats = {
-        stepCount: round.steps.length,
-        reasoningCount: round.steps.filter(s => s.reasoningContent).length,
-        toolCallCount: round.steps.reduce((sum, s) => sum + s.toolCalls.length, 0),
-      };
-    }
-    return rounds;
-  });
+  // ★★★ 2026-10-12：实现已抽出到 `./message-rounds`（纯函数，可独立单测）。
+  //   本 computed 只负责"取当前会话消息 + 注入 isToolErrorContent"。
+  //   抽出的理由见该文件顶部注释（内容区渲染与否的唯一判定，且出错的形态是整页空白，
+  //   只能靠行为测试抓 —— 而 useChat.ts 依赖太重不适合直接单测）。
+  const messageRounds = computed<MessageRound[]>(() =>
+    buildMessageRounds(store.currentMessages, isToolErrorContent),
+  );
 
   /**
    * ★★★ 工具结果索引（2026-10-11，修「任务一跑页面卡死滚不动」的**主因**）。
@@ -2329,6 +2139,10 @@ async function healStalePlatform() {
     closeCtxMenu();
     // —— 浏览器实况态：browserSteps 是全局单例，跨会话必须残留清零（否则新任务继承放大/锁定）——
     store.browserSteps.length = 0;
+    // ★ 步骤序号一并归零（2026-10-12）：`browserStepSeq` 单调递增，不清则新会话第一个步骤时
+    //   `o !== 0` ⇒ "首个步骤自动开预览面板 / 锁输入"两个 watch 都不触发（新任务面板不弹）。
+    //   `browserSteps` 能靠 `length = 0` 归零，序号没有等价手段 ⇒ 必须显式复位（store 提供 reset）。
+    store.resetBrowserStepSeq();
     store.browserExpanded = false;
     store.browserLockInput = false;
     store.browserUserDismissed = false;

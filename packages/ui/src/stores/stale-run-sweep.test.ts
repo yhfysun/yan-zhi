@@ -87,7 +87,14 @@ describe('③ 轮询消除：主路径改为会话级长连订阅', () => {
 
   it('★★★ 必须是**长连 + 重连**（不能收完就退，会话流是长活通道）', () => {
     const i = CODE_CHAT.indexOf('async function subscribeConversationEvents');
-    const seg = CODE_CHAT.slice(i, i + 2600);
+    // ★ 窗口改用"到下一个顶层函数定义为止"，不再用魔数 2600（2026-10-12）：
+    //   魔数窗口在函数体因注释/逻辑增长后被挤出边界 → 假失败。
+    //   实测：pushBrowserStep 的注释加长后本函数体 3243 字符 > 2600，退避（offset 2911）
+    //   被推出窗口。这属**锚点窗口偏移**（不是行为变化）—— 但用魔数必然会再犯。
+    const nextFn = CODE_CHAT.indexOf('\n  async function', i + 10);
+    const nextFn2 = CODE_CHAT.indexOf('\n  function', i + 10);
+    const end = [nextFn, nextFn2].filter((x) => x > 0).sort((a, b) => a - b)[0] ?? CODE_CHAT.length;
+    const seg = CODE_CHAT.slice(i, end);
     expect(seg, '★ 缺重连循环 → 断一次就永久失效').toMatch(/while \(!ac\.signal\.aborted\)/);
     expect(seg, '★ 缺退避').toMatch(/Math\.min\(500 \* Math\.pow\(2/);
   });

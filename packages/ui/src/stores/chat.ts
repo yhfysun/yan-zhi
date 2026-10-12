@@ -387,18 +387,74 @@ export const useChatStore = defineStore('chat', () => {
    *
    * 保留策略：只留最近 MAX 条（步骤清单/进度是「最近发生了什么」，历史不需要无限回溯）；
    *   单条 result 超 MAX_LEN 就截断并标注 —— 面板本就不展示全文，截断不影响可读性。
+   *
+   * ★★★ 2026-10-12 上限 120 → 20（方案 A，见 docs/plan-browser-steps-retention-2026-10-12.md）：
+   *   查证结论：`browserSteps` **已无任何 UI 渲染它**（全仓库无 `v-for` 遍历 / 无取
+   *   `step.result`；只剩 3 处 `length > 0` 布尔判据）。它已从"步骤清单数据源"退化为
+   *   "控制信号的载体"（真正的步骤清单走 `chatStore.planSteps`，由 task_plan 驱动）。
+   *   ⇒ 为不展示的数组保留 120 条没有任何用户价值，只放大开销：
+   *     · 超限后每次 push 都多一次 `splice(0, len-MAX)`（O(n) 元素搬移）—— 120 → 20 是 **6 倍**削减
+   *     · 内存最坏 120×600 ≈ 72KB → 20×600 ≈ 12KB
+   *   ⇒ 只留最近 20 条供**排障**（排障主路径其实是 `%APPDATA%\yan-zhi\logs\main-*.log`
+   *     的 `[browser-action]` 日志，含完整 args，比这个数组更全）。
+   *   ⚠️ 上限**不得再被"顺手调大"**——守门测试 `browser-step-liveness.test.ts` 钉死 ≤20。
+   *      若将来真需要更长的可回溯历史，应新建**带事件索引的独立结构**，
+   *      而不是复活这个已被证明"不该承载语义"的数组（见方案 D）。
    */
-  const BROWSER_STEPS_MAX = 120;
+  const BROWSER_STEPS_MAX = 20;
   const BROWSER_STEP_RESULT_MAX = 600;
+
+  // ★★★ 控制信号（两个）—— **必须声明在 pushBrowserStep 之前**（2026-10-12）。
+  //
+  // ★★★ 为什么不能从 `browserSteps.length` 差分推导（本次事故根因，用户实报）：
+  //   上面 `BROWSER_STEPS_MAX` 的裁剪是 `push` + `splice`，**净长度恒为 120**。
+  //   于是 `watch(() => browserSteps.value.length, ...)` 在数组填满后**永不再触发**
+  //   ⇒ `lastBrowserToolAt` 冻结在"首次填满那一刻" ⇒ `BrowserPanel` 的 5 分钟硬上限
+  //   兜底把它判成"残留" ⇒ `inputLocked` / `liveControlVisible` / `agentCursorVisible`
+  //   三个 computed **同时被否决** ⇒ **禁用标志 / Agent 接管条 / 暂停恢复按钮 / 虚拟鼠标
+  //   一起消失**，而任务其实还在跑。
+  //   实测铁证（CDP 直连渲染进程读 pinia）：`browserStepsLen=120`、`lastStepAgoSec=12`
+  //   但 `agoSec=754`、`lockStaleByHardLimit=true`、`inputLockedShouldBe=false`。
+  //
+  // ★ 修法：**push 点就是活性点，显式登记，唯一真相**。绝不再依赖数组长度这一
+  //   "可被裁剪破坏的代理信号"（与 `stale-run-sweep.ts` 里"别拿浏览器静默时长当
+  //   任务是否在跑的代理"同一教训家族）。
+  //
+  // ⚠️⚠️ **声明顺序是硬约束**：原实现把 `lastBrowserToolAt` 放在 pushBrowserStep **之后**
+  //   （靠 watch 回调的延迟求值避开 TDZ）。改成 pushBrowserStep 内**同步**赋值后，
+  //   若仍放在后面 → `ReferenceError: Cannot access 'lastBrowserToolAt' before initialization`
+  //   → setup 直接抛异常。本项目已栽过两次同款 TDZ（见 browserPanelNowTickOrder.test.ts
+  //   记录的那次 setup 崩溃）。守门测试：`browser-step-liveness.test.ts` 的声明顺序断言。
+  /** 浏览器工具活性时间戳：最后一次 browser_* 工具事件的时间（由 pushBrowserStep 显式写入） */
+  const lastBrowserToolAt = ref(0);
+  /** 浏览器步骤**单调序号**（只增不减，不受 BROWSER_STEPS_MAX 裁剪影响）。
+   *  ★ 用途：`useChat` 里"首个步骤出现就打开预览面板 / 锁输入"的两个 watch 判据。
+   *    它们原用 `browserSteps.length` 的 0→N 跳变，数组填满后同样**永不触发**
+   *    （与 lastBrowserToolAt 同一根因）。改用本序号：语义就是"第几个浏览器步骤"，
+   *    天然单调，裁剪动不了它。
+   *  ★ 生命周期与 `browserSteps` 对齐：`browserSteps.length = 0`（跨会话 reset）后必须一起归零，
+   *    否则新会话第一个步骤时 `o !== 0` ⇒ 两个 watch 都不触发（新任务面板不弹）。
+   *    `browserSteps` 靠 `length = 0` 归零，序号没有等价手段 ⇒ 提供 `resetBrowserStepSeq()`。 */
+  const browserStepSeq = ref(0);
+  /** 归零步骤序号（与 `browserSteps.length = 0` 成对调用，见 useChat resetTaskScopedState） */
+  function resetBrowserStepSeq() {
+    browserStepSeq.value = 0;
+    lastBrowserToolAt.value = 0;
+  }
+
   function pushBrowserStep(action: string, result: unknown) {
     let text = typeof result === 'string' ? result : String(result ?? '');
     if (text.length > BROWSER_STEP_RESULT_MAX) {
       text = text.slice(0, BROWSER_STEP_RESULT_MAX) + `…（已省略 ${text.length - BROWSER_STEP_RESULT_MAX} 字）`;
     }
-    browserSteps.value.push({ action, result: text, time: Date.now() });
+    const now = Date.now();
+    browserSteps.value.push({ action, result: text, time: now });
     if (browserSteps.value.length > BROWSER_STEPS_MAX) {
       browserSteps.value.splice(0, browserSteps.value.length - BROWSER_STEPS_MAX);
     }
+    // ★ 两个控制信号在此**显式**登记 —— 见上方长注释：绝不能从 length 差分推导。
+    lastBrowserToolAt.value = now;
+    browserStepSeq.value += 1;
   }
 
   // Agent 浏览器实况控制：agent 驱动浏览器期间的状态旗标。
@@ -426,16 +482,14 @@ export const useChatStore = defineStore('chat', () => {
    * ★ 键是 convId：多会话并行时 A 会话的浏览器任务不得锁住 B 会话的面板。
    */
   const browserTaskConvs = ref<Set<string>>(new Set());
-  // ★ 浏览器工具活性时间戳（2026-10-09）：browserSteps 最后一条的时间。
-  //   动机（用户实报）：「pageAgent结束了…Agent 接管中一直在？」——接管条此前只看
-  //   会话整体 streaming，主智能体在编排间隙（跑非浏览器步骤/纯思考）时条子照样挂着。
-  //   收口：所有 browserSteps.push 都带 time（SSE tool:start/result、tool:execute、
-  //   本地 dispatchToolCall 共 6+ 处登记点），watch 最后一条即可全覆盖，不必逐点插桩。
-  const lastBrowserToolAt = ref(0);
-  watch(() => browserSteps.value.length, () => {
-    const last = browserSteps.value[browserSteps.value.length - 1];
-    if (last?.time) lastBrowserToolAt.value = last.time;
-  });
+  // ★ 浏览器工具活性时间戳与步骤序号 **已上移到 pushBrowserStep 之前声明**
+  //   （2026-10-12，见该处长注释：本次"禁用标志/接管条/虚拟鼠标/暂停集体消失"的根因修复）。
+  //   此处原有两个东西，均已移除：
+  //     ① `const lastBrowserToolAt = ref(0);` —— 上移（TDZ 硬约束）
+  //     ② `watch(() => browserSteps.value.length, ...)` 推导链 —— **删除**。
+  //        正是它把活性判定绑到"可被 BROWSER_STEPS_MAX 裁剪破坏的长度"上：
+  //        数组填满后 push+splice 净长度不变 → watch 永不触发 → 时间戳冻结 12 分钟
+  //        → 5min 硬上限误判"残留" → 四样 UI 一起消失。
   /** 接管条活性宽限：最后一次浏览器工具事件后，条子保留多久（覆盖 wait_for 30s 类长工具） */
   const BROWSER_LIVE_GRACE_MS = 45000;
   /** 登记「本会话正在跑浏览器任务」（幂等；由工具事件驱动，见 subscribeTaskSse 的 tool 分支） */
@@ -3071,7 +3125,7 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
     runningConvIds, isConvStreaming, runStatsByConv,
     browserExpanded, browserUserDismissed, browserLockInput, browserPaused, pausedConvIds,
     browserTaskActive, markBrowserTaskActive, clearBrowserTaskActive,
-    lastBrowserToolAt, BROWSER_LIVE_GRACE_MS,
+    lastBrowserToolAt, browserStepSeq, resetBrowserStepSeq, BROWSER_LIVE_GRACE_MS,
     // 会话级长连订阅（2026-10-11：替代 /llm/tasks/active 轮询的主路径）
     subscribeConversationEvents, unsubscribeConversationEvents,
     // 执行面判据（服务端下发；前端只读服从）—— 见 isBrowserExecutionByBridge 注释
@@ -3083,7 +3137,7 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
     queuedByConv, queuedOf, enqueueMessage, removeQueuedMessage, updateQueuedMessage, promoteQueuedMessage, takeQueuedMessages, takeFirstQueuedMessage, injectQueuedMessage,
     onTaskFinished,
     runningToolCallIds, isToolCallRunning,
-    browserSteps, rightPanelOpen, thinkingMode, planMode, answerOnly,
+    browserSteps, pushBrowserStep, rightPanelOpen, thinkingMode, planMode, answerOnly,
     permissionMode, setPermissionMode,
     showFilePopup, previewingFile, rightPanelTab, currentBrowserUrl, skipNextRecordVisit,
     previewTabs, activeTabId, activeTab,
