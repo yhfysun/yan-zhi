@@ -275,6 +275,16 @@ import { api } from '../../api/client';
 import CodeEditorPane from './CodeEditorPane.vue';
 import MarkdownPreview from './MarkdownPreview.vue';
 import BreadcrumbDropdown from './BreadcrumbDropdown.vue';
+// ★★★ 2026-10-12 修复「Failed to resolve component: AiDiffView / CodeConflictEditor」：
+//   这两个组件文件一直存在（同目录），模板里也一直在用（模型改动的 diff 对比、
+//   合并冲突三栏弹窗），但**从未 import** —— `<script setup>` 不会自动注册同目录组件，
+//   未 import 即"未注册"，Vue 在运行时解析失败并 warn，**该处的 UI 静默不渲染**：
+//     · `AiDiffView` 不渲染 ⇒ 模型改动**看不到 diff**，也就点不到「应用/回退」
+//     · `CodeConflictEditor` 不渲染 ⇒ 合并冲突**无法解决**
+//   （对照：`panels/AiChangesReviewPanel.vue` 里有 `import AiDiffView from '../AiDiffView.vue'`
+//     —— 同一组件在那边是正常 import 的，只有本文件漏了。）
+import AiDiffView from './AiDiffView.vue';
+import CodeConflictEditor from './CodeConflictEditor.vue';
 import ChatConsolePanel from '../chat/ChatConsolePanel.vue';
 
 const emit = defineEmits<{ 'pick-dir': [] }>();

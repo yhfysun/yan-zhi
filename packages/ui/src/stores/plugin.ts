@@ -2,6 +2,7 @@
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
 import { api } from '../api/client';
+import { waitForBackend } from '../api/backend-ready';
 import type {
   PluginManifest,
   PluginState,
@@ -72,6 +73,21 @@ export const usePluginStore = defineStore('plugin', () => {
   });
 
   async function refresh(): Promise<string | undefined> {
+    // ★★★ 2026-10-12 补：等后端就绪再拉插件列表。
+    //
+    //   症状（用户实报）：dev 冷启动时 console 报
+    //     `GET http://127.0.0.1:3001/api/plugins net::ERR_CONNECTION_REFUSED at plugin.ts:75`
+    //   实况：本函数由 `ModeSwitcher.vue` 的 onMounted 直接调用（**启动关键路径**），
+    //   而后端（tsx 冷编译）启动耗时可能 > 主进程的 30s 健康检查上限，被"强制创建窗口"。
+    //   ⇒ 前端挂载时后端还没监听 ⇒ 本请求必然被拒 ⇒ 插件列表静默为空
+    //     （`plugins.value` 拿不到数据，且 `loaded` 不会被置位，后续也不会自动重试）。
+    //
+    //   ★ 项目的统一口径是"启动期首个请求前先 await waitForBackend()"
+    //     （见 api/backend-ready.ts 顶部注释；auth.ts / license.ts / useChat.ts /
+    //      Agents.vue / Models.vue 都已遵守）—— **本函数此前漏了**，是唯一缺口。
+    //   ★ 幂等且有记忆（backend-ready.ts 顶部：就绪后立即返回、零额外延迟），
+    //     所以放在这里对"运行期再刷新"没有任何代价，可安全地每次调用。
+    await waitForBackend();
     const res = await api.get<PluginInfo[]>('/plugins');
     if ('error' in res) return res.error;
     plugins.value = res.data;

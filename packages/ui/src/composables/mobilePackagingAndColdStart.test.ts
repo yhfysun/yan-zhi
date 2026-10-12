@@ -304,6 +304,26 @@ describe('⑤ 不得把内部 guest 身份显示成"已登录账号"', () => {
     const body = code.slice(i, i + 700);
     expect(body, 'loadUser 未等后端就绪').toContain('waitForBackend');
   });
+
+  it('★★★ plugin.refresh 必须先等后端就绪（dev 冷启动后端 >30s 时插件列表静默为空）', () => {
+    // ★ 2026-10-12 实测（用户实报 console 原文）：
+    //   `GET http://127.0.0.1:3001/api/plugins net::ERR_CONNECTION_REFUSED at plugin.ts:75`
+    //   本函数由 `ModeSwitcher.vue` 的 onMounted 直接调用（启动关键路径），
+    //   而后端 tsx 冷编译可能 > 主进程 30s 健康检查上限（实测 17:25:34 启动 →
+    //   17:26:06「启动超时，强制创建窗口」→ 17:26:35 前端挂载即被拒）。
+    //   ⇒ 请求被拒 ⇒ `plugins.value` 空、`loaded` 不置位、后续也不重试 ⇒ **静默缺 UI**。
+    //   ★ 这是当时**唯一**漏掉 waitForBackend 的启动期请求（auth/license/useChat/Agents/Models 都有）。
+    const PLUGIN = read('stores/plugin.ts');
+    const code = stripComments(PLUGIN);
+    const i = code.indexOf('async function refresh');
+    expect(i, '未找到 plugin.refresh').toBeGreaterThan(-1);
+    const body = code.slice(i, i + 900);
+    const waitIdx = body.indexOf('waitForBackend');
+    const fetchIdx = body.indexOf("api.get<PluginInfo[]>('/plugins')");
+    expect(waitIdx, '★★★ plugin.refresh 未等后端就绪 —— 冷启动时插件列表静默为空').toBeGreaterThan(-1);
+    expect(fetchIdx, '未找到 /plugins 请求锚点').toBeGreaterThan(-1);
+    expect(waitIdx, '★ 等待必须在首个请求之前').toBeLessThan(fetchIdx);
+  });
 });
 
 /*
