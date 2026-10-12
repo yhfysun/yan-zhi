@@ -113,7 +113,7 @@
         <el-empty v-if="store.apiKeys.length === 0" description="暂无 Token" :image-size="40" />
       </div>
 
-      <StatusActionBar v-if="!editingId" :status="formStatus" :status-type="formStatusType">
+      <StatusActionBar :status="formStatus" :status-type="formStatusType">
         <el-button :loading="testingForm" :icon="Connection" @click="testForm">测试连接</el-button>
         <el-button :loading="fetching" :icon="Download" @click="fetchModels">拉取模型列表</el-button>
       </StatusActionBar>

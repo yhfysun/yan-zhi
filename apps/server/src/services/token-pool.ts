@@ -1,3 +1,4 @@
+import { v4 as uuid } from 'uuid';
 import { db } from '../db.js';
 
 const FAIL_WINDOW_MS = 10 * 60 * 1000;
@@ -92,7 +93,6 @@ export function listApiKeys(platformId: string): any[] {
 }
 
 export function addApiKey(platformId: string, userId: string, apiKey: string, label?: string): any {
-  const { v4: uuid } = require('uuid');
   const id = uuid();
   const now = Date.now();
   db.prepare(

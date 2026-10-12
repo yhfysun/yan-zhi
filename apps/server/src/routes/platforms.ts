@@ -295,8 +295,14 @@ router.post('/:pid/keys', (req: Request, res: Response) => {
   if ((platform as any).is_builtin) { res.status(403).json({ error: '内置平台不可添加 Key' }); return; }
   const { apiKey, label } = req.body || {};
   if (!apiKey) { res.status(400).json({ error: 'apiKey 为必填项' }); return; }
-  const row = addApiKey(pid, userId(req), apiKey, label);
-  res.json({ data: rowToKey(row) });
+  try {
+    const row = addApiKey(pid, userId(req), apiKey, label);
+    res.json({ data: rowToKey(row) });
+  } catch (e: any) {
+    // addApiKey 失败（如密钥写入异常）返回结构化错误，避免请求直接崩成 500 裸栈
+    logger.error(`[platforms] addApiKey 失败 pid=${pid}: ${e?.message || e}`);
+    res.status(500).json({ error: e?.message || '添加 Token 失败' });
+  }
 });
 
 router.patch('/keys/:kid', (req: Request, res: Response) => {
