@@ -223,3 +223,4 @@ apps/desktop/月饼礼盒推荐_2024.md
 # Pro 档打包输出（1.4GB，与 dist-release/ 同一性质；2026-10-08 实测
 # 此前只有本机 .git/info/exclude 的残留缓存掩盖，实际未忽略，会被 add 进提交）
 dist-pro/
+*.traineddata
