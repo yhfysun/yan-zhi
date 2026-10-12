@@ -335,16 +335,26 @@ describe('⑪ ★★★ 可见性契约：桥档下"看不见/收不干净"两�
 
   it('★★★ 预览面板的打开不能只依赖被跳过的 dispatchToolCall', () => {
     // 桥档下 tool:execute 被跳过 ⇒ dispatchToolCall 里的 `openTab` 永不执行。
-    // 对策：browserSteps 首次出现时（SSE tool:start/tool:result 驱动）也要把面板打开。
-    const i = USECHAT.indexOf("watch(() => store.browserSteps.length");
-    expect(i, '★ 锚点缺失：browserSteps watch').toBeGreaterThan(-1);
+    // 对策：浏览器**首个步骤**出现时（SSE tool:start/tool:result 驱动）也要把面板打开。
+    //
+    // ★★★ 契约变更（2026-10-12）：判据从 `browserSteps.length` 改为 `browserStepSeq`。
+    //   旧判据靠长度的 0→N 跳变，而 `browserSteps` 有 BROWSER_STEPS_MAX=120 上限
+    //   （push + splice ⇒ 净长度恒 120）⇒ 数组填满后本 watch **永不触发** ⇒
+    //   长任务里"首个步骤自动开面板"的兜底**静默失效**（与 lastBrowserToolAt 冻结同根因）。
+    const i = USECHAT.indexOf('watch(() => store.browserStepSeq');
+    expect(i, '★ 锚点缺失：browserStepSeq watch（不得退回 browserSteps.length）').toBeGreaterThan(-1);
     const seg = USECHAT.slice(i, i + 2500);
-    expect(seg, '★ browserSteps watch 里没有 openTab → 桥档下面板不会被打开').toMatch(/store\.openTab\(/);
+    expect(seg, '★ browserStepSeq watch 里没有 openTab → 桥档下面板不会被打开').toMatch(/store\.openTab\(/);
+    // 反向断言：不得再出现基于 length 的同类 watch（防回归到已证失效的判据）
+    expect(
+      USECHAT,
+      '★ 又出现 watch(() => store.browserSteps.length) —— 数组填满后必然静默失效',
+    ).not.toMatch(/watch\(\s*\(\)\s*=>\s*store\.browserSteps\.length/);
   });
 
-  it('★★★ 主进程必须有按会话关闭 agent 页面的入口（渲染层记账在桥档恒为空）', () => {
+  it('★★★ 主进程保留按会话关闭入口（2026-10-12 起收尾不再自动调，供模型主动收拾/用户清理）', () => {
     const m = stripComments(MAIN);
-    expect(m, '★ 缺 closeConvTabs IPC → 桥档下 agent 页面永不自动关闭')
+    expect(m, '★ 缺 closeConvTabs IPC → 模型主动收拾页面的通道丢失')
       .toMatch(/ipcMain\.handle\('browserView:closeConvTabs'/);
     // 必须按会话记账过滤（不依赖 agentOpened）
     expect(m, '★ 未按会话过滤').toMatch(/agentTouchedTabs/);
@@ -354,24 +364,17 @@ describe('⑪ ★★★ 可见性契约：桥档下"看不见/收不干净"两�
     expect(PRELOAD, '★ 未暴露 → 渲染层调不到').toMatch(/closeConvTabs:\s*\(convId\)\s*=>\s*ipcRenderer\.invoke\('browserView:closeConvTabs'/);
   });
 
-  it('★★★ 任务收尾优先走按会话关闭（桥档）+ 保留旧入口兜底', () => {
+  it('★★★ 任务收尾不得调用任何自动关闭入口（2026-10-12 用户拍板：页面由智能体自己关）', () => {
     const u = stripComments(USECHAT);
-    // ★★ 断言**判定条件本身**（`if (convId && closeApi?.closeConvTabs)`），
-    //    不是"closeConvTabs(convId) 这个符号存在" —— 变异实测：只断言符号时把条件改成
-    //    `if (false)` 仍通过（调用还在死分支里）→ 漏抓。同族判据"断言存在≠断言生效"。
-    expect(u, '★ 收尾未走 closeConvTabs 判定 → 桥档下页面堆积')
-      .toMatch(/if\s*\(\s*convId\s*&&\s*closeApi\?\.closeConvTabs\s*\)/);
-    expect(u, '★ 保留旧入口兜底缺失（非桥档/旧主进程会失去该能力）').toMatch(/closeApi\?\.closeAgentTabs/);
-  });
-
-  it('★★ 收尾"按会话关闭"必须在"按 agentOpened 关闭"之前判定', () => {
-    const u = stripComments(USECHAT);
-    // 用**判定条件**定位（不是调用点），保证顺序断言反映真实控制流
-    const iConv = u.search(/if\s*\(\s*convId\s*&&\s*closeApi\?\.closeConvTabs\s*\)/);
-    const iAgent = u.search(/if\s*\(\s*leftover\.length\s*>\s*0\s*&&\s*closeApi\?\.closeAgentTabs\s*\)/);
-    expect(iConv, '★ 缺按会话关闭判定').toBeGreaterThan(-1);
-    expect(iAgent, '★ 缺按 agentOpened 关闭判定').toBeGreaterThan(-1);
-    expect(iConv, '★ 顺序反了 → 桥档下先走空集合分支直接清账，后续分支不再执行').toBeLessThan(iAgent);
+    // ★ 契约变更：收尾钩子只清记账 + 出知会。自动关闭入口（closeConvTabs/closeAgentTabs）
+    //   在收尾路径必须**一个都不出现**（含死分支 —— 变异思路反过来用：存在即红）。
+    //   ★ 断言"调用形式"而非符号名：收尾钩子下方源码其他函数/长注释提到名字不算调用。
+    const start = u.indexOf('store.onTaskFinished(');
+    const fn = u.slice(start, start + 1400);
+    expect(fn, '★ 收尾钩子不得调用 closeConvTabs').not.toMatch(/closeConvTabs\s*\(/);
+    expect(fn, '★ 收尾钩子不得调用 closeAgentTabs').not.toMatch(/closeAgentTabs\s*\(/);
+    // 收尾必须有"保留"知会（用户需要知道页面留着）
+    expect(fn, '★ 缺保留知会 → 用户不知道页面去哪了').toMatch(/保留在预览面板/);
   });
 
   it('★★ agent 页面归属只记 preview 空间（不碰 /browser 用户空间）', () => {

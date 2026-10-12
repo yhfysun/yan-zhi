@@ -153,27 +153,26 @@ describe('前端记账：agent 开过的 tab 按会话累积，收尾提示后�
     expect(snapshotIdx, '取快照必须在清理之前').toBeLessThan(clearIdx);
   });
 
-  it('收尾自动关：调用主进程 closeAgentTabs（只关 agent 开的，双保险）', () => {
-    const fn = sliceFrom(useChatSrc, 'store.onTaskFinished(', 2200);
-    expect(fn).toContain('closeAgentTabs');
+  it('收尾不再自动关（2026-10-12 用户拍板改向）：不调用 closeConvTabs/closeAgentTabs', () => {
+    // ★ 契约变更：用户原话「除非智能体自己主动关闭页面才关闭」——
+    //   任务收尾只清渲染层记账 + 出知会，**不再触发主进程关闭**。
+    //   主进程 IPC 保留（模型主动 close_tab / 用户清理仍走它），但收尾钩子不得调用。
+    // ★ 窗口只到知会块结束（收尾钩子体本身约 30 行）—— 放宽会把源码**后面其他函数**
+    //   （如 closeRightPanel 一带）或长注释里的符号名吃进来误判。
+    const start = useChatSrc.indexOf('store.onTaskFinished(');
+    const fn = useChatSrc.slice(start, start + 1400);
+    // 断言"不得出现调用形式"（`xxx(` / `xxx?.`），而非符号名 —— 注释里提及不算调用。
+    expect(fn, '★ 收尾钩子不得再调用 closeConvTabs').not.toMatch(/closeConvTabs\s*\(/);
+    expect(fn, '★ 收尾钩子不得再调用 closeAgentTabs').not.toMatch(/closeAgentTabs\s*\(/);
+    // 且不得出现关闭入口的判定条件（防止"条件还在、调用删了"的半吊子改法）
+    expect(fn, '★ 收尾钩子不得保留关闭分支判定').not.toMatch(/closeApi\?\.close/);
   });
 
-  it('收尾自动关后给用户一条知会（已自动关闭 N 个）', () => {
-    // ★ 窗口 2200 → 3600（2026-10-10）：新增「按会话关闭」分支（closeConvTabs，优先于
-    //   旧 closeAgentTabs 分支）把回退文案推到了原窗口之外 —— 属**锚点窗口偏移**，
-    //   不是行为变化（回退路径仍在；已逐行核对源码）。
+  it('收尾保留知会：AI 打开的页面保留在预览面板（含"智能体自行关闭"说明）', () => {
     const fn = sliceFrom(useChatSrc, 'store.onTaskFinished(', 3600);
     expect(fn).toContain('ElMessage');
-    expect(fn).toMatch(/已自动关闭/);
-    // 退回路径（无 Electron API）保留旧明示文案
-    expect(fn).toMatch(/保留在预览面板|可自行关闭/);
-  });
-
-  it('收尾自动关：桥档优先按会话关闭 + 保留 agentOpened 兜底（2026-10-10）', () => {
-    const fn = sliceFrom(useChatSrc, 'store.onTaskFinished(', 3600);
-    // 桥档下渲染层 agentOpened 记账恒为空 ⇒ 必须有按会话的入口
-    expect(fn, '★ 缺按会话关闭（桥档下页面堆积）').toMatch(/closeConvTabs/);
-    expect(fn, '★ 缺 agentOpened 兜底').toMatch(/closeAgentTabs/);
+    expect(fn).toMatch(/保留在预览面板/);
+    expect(fn).toMatch(/智能体自行关闭|可自行关闭/);
   });
 
   it('主进程必须有 closeAgentTabs IPC，且按 agentOpened===true 过滤', () => {
