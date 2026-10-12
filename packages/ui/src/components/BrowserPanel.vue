@@ -884,13 +884,18 @@ async function ctxClose(mode: 'tab' | 'left' | 'right' | 'others' | 'all') {
   if (mode !== 'all') {
     // 逐个关闭：用闭包固定待关集合(closeTab 内部会改 tabs,不能在循环里取 idx)
     for (const id of [...list]) {
-      const idx = tabs.value.findIndex(t => t.id === id);
-      if (idx === -1) continue;
+      // idx 仅用于「该 tab 是否还存在」的存在性判断；真正摘除必须在 await IPC **之后**
+      // 按 tabId 重算 —— 主进程 broadcastTabClosed 先到时 onTabClosed 已摘过壳，
+      // 用 await 前算的 idx splice 会误删相邻 tab（2026-10-12 实报「关第一个全关」）。
+      if (!tabs.value.some((t) => t.id === id)) continue;
       if (isElectron) { try { await (window as any).electronAPI.browserView.closeTab(id, true); } catch { /* ignore */ } }
       webviewEls.delete(id);
-      tabs.value.splice(idx, 1);
+      const liveIdx = tabs.value.findIndex((t) => t.id === id);
+      if (liveIdx >= 0) tabs.value.splice(liveIdx, 1);
       if (activeTabId.value === id) {
-        const nextTab = tabs.value[idx] || tabs.value[idx - 1] || null;
+        // 顶替目标同样按当前 tabs 重算（广播路径可能已摘壳/已顶替）
+        const livePos = tabs.value.findIndex((t) => t.id === id);
+        const nextTab = tabs.value[livePos] || tabs.value[livePos - 1] || null;
         if (nextTab) await switchTab(nextTab.id);
         else { activeTabId.value = ''; urlInput.value = ''; history.value = []; histIndex.value = -1; }
       }
@@ -919,10 +924,17 @@ async function closeTab(tabId: string) {
   }
   // 关闭即清空：该 tab 的前进/后退轨迹随 tab 对象一起丢弃，guest 引用也一并摘掉
   webviewEls.delete(tabId);
-  tabs.value.splice(idx, 1);
+  // ★★★ 按 tabId **重算**下标再摘除（2026-10-12 用户实报「打开多个 tab，关第一个就全关」）：
+  //   await IPC 期间，主进程 closeTabById 的 broadcastTabClosed 会**先于 invoke 返回**
+  //   到达渲染层 ⇒ onTabClosed 处理器已按同一 tabId 摘过壳 ⇒ 关闭前算的 idx 已失效，
+  //   直接拿旧下标 splice 会把**相邻 tab 误删**（开 2 个关 1 个 → 两个都没了）。
+  //   广播路径幂等（findIndex 不到就 return），此处重算后天然幂等。
+  const liveIdx = tabs.value.findIndex((t) => t.id === tabId);
+  if (liveIdx >= 0) tabs.value.splice(liveIdx, 1);
   // 如果关闭的是当前标签，切换到相邻标签
+  // （顶替目标同样按当前 tabs 重算：广播路径可能已摘壳/已顶替，await 前算的 idx 已失效）
   if (activeTabId.value === tabId) {
-    const nextTab = tabs.value[idx] || tabs.value[idx - 1];
+    const nextTab = tabs.value[liveIdx] || tabs.value[liveIdx - 1];
     if (nextTab) {
       await switchTab(nextTab.id);
     } else {
