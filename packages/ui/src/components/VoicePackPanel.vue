@@ -19,8 +19,19 @@
     <div v-if="loading" class="vp-loading">加载中…</div>
 
     <template v-else>
+      <SearchToolbar v-model:query="packKeyword" placeholder="搜索语音包名称 / 描述" :count="filteredItems.length">
+        <template #actions>
+          <el-select v-model="installFilter" size="small" class="vp-filter-select">
+            <el-option label="全部" value="" />
+            <el-option label="已安装" value="installed" />
+            <el-option label="未安装" value="missing" />
+          </el-select>
+          <el-button v-if="packKeyword.trim() || installFilter" size="small" text @click="clearPackFilter">重置</el-button>
+        </template>
+      </SearchToolbar>
+
       <div class="vp-list">
-        <div v-for="it in items" :key="it.id" class="vp-card">
+        <div v-for="it in filteredItems" :key="it.id" class="vp-card">
           <div class="vp-card-head">
             <span class="vp-name">{{ it.name }}</span>
             <span v-if="it.installed" class="vp-badge vp-badge-ok">已安装</span>
@@ -77,6 +88,12 @@
         </div>
       </div>
 
+      <el-empty
+        v-if="filteredItems.length === 0"
+        :description="items.length === 0 ? '暂无可用语音包' : '没有匹配的语音包，换个关键字或安装状态试试'"
+        :image-size="60"
+      />
+
       <div v-if="previewUrl" class="vp-player">
         <div class="vp-player-head">
           <span class="vp-player-title">试听：{{ previewName }}</span>
@@ -98,6 +115,7 @@ import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { api } from '../api/client';
 import { startVisiblePolling } from '../utils/visible-polling';
+import SearchToolbar from './common/SearchToolbar.vue';
 
 interface PackItem {
   id: string;
@@ -123,6 +141,24 @@ interface EngineInfo { available: boolean; source: string; error: string }
 
 const loading = ref(true);
 const items = ref<PackItem[]>([]);
+// ── 搜索 / 安装状态筛选（语音包有几十个，没筛选只能一路往下翻） ──
+const packKeyword = ref('');
+const installFilter = ref('');
+const filteredItems = computed(() => {
+  const kw = packKeyword.value.trim().toLowerCase();
+  return items.value.filter((it) => {
+    if (installFilter.value === 'installed' && !it.installed) return false;
+    if (installFilter.value === 'missing' && it.installed) return false;
+    if (!kw) return true;
+    return (it.name || '').toLowerCase().includes(kw)
+      || (it.desc || '').toLowerCase().includes(kw)
+      || (it.license || '').toLowerCase().includes(kw);
+  });
+});
+function clearPackFilter() {
+  packKeyword.value = '';
+  installFilter.value = '';
+}
 const engine = ref<EngineInfo | null>(null);
 const progress = ref<Record<string, Progress>>({});
 const busyId = ref('');
@@ -290,7 +326,9 @@ onUnmounted(() => {
 .vp-engine-actions { display: flex; align-items: center; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
 .vp-engine-hint { font-size: 12px; color: var(--color-text-tertiary); }
 .vp-loading { font-size: 13px; color: var(--color-text-tertiary); padding: 24px 0; }
-.vp-list { display: flex; flex-direction: column; gap: 12px; }
+/* 列表区独立滚动：搜索/筛选条固定顶部，卡片区自己滚 */
+.vp-list { display: flex; flex-direction: column; gap: 12px; max-height: 60vh; overflow-y: auto; }
+.vp-filter-select { width: 104px; }
 .vp-card {
   border: 0.5px solid var(--color-border-tertiary);
   border-radius: var(--border-radius-lg, 12px);

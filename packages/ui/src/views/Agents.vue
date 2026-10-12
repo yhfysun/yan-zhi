@@ -85,6 +85,13 @@
         </aside>
 
         <div class="agents-content" v-loading="loading">
+          <!-- 搜索条固定在列表顶部，只有列表区滚动（搜索条不随内容滚走） -->
+          <SearchToolbar
+            v-model:query="agentKeyword"
+            placeholder="搜索智能体名称 / 描述 / 分类"
+            :count="visibleAgents.length"
+          />
+          <div class="agents-scroll">
           <template v-if="loading">
             <el-skeleton v-for="n in 4" :key="n" animated style="padding:16px">
               <template #template><el-skeleton-item variant="text" style="width:60%" /><el-skeleton-item variant="text" style="width:40%" /><el-skeleton-item variant="rect" style="height:40px;margin-top:8px" /></template>
@@ -133,6 +140,16 @@
           <el-empty v-if="!loading && store.agents.length === 0" description="还没有智能体，点击右上角新建">
             <el-button type="primary" :icon="Plus" @click="createAgent">立即创建</el-button>
           </el-empty>
+          <!-- 有数据但被搜索/分类筛空：给出复位入口，避免看着像"页面坏了" -->
+          <el-empty
+            v-else-if="!loading && visibleAgents.length === 0"
+            description="没有匹配的智能体，换个关键字或分类试试"
+            :image-size="60"
+          >
+            <el-button v-if="agentKeyword" size="small" @click="agentKeyword = ''">清空搜索</el-button>
+            <el-button v-if="selectedCategory" size="small" @click="selectedCategory = ''">查看全部</el-button>
+          </el-empty>
+          </div>
         </div>
       </div>
     </template>
@@ -153,12 +170,22 @@
         <el-button size="small" @click="browseAgentSource(selectedRemoteSource)">刷新列表</el-button>
       </div>
 
-      <div v-if="remoteAgentItems.length === 0" style="padding: 40px 0; text-align: center; color: var(--color-text-secondary);">
+      <SearchToolbar
+        v-model:query="remoteAgentKeyword"
+        placeholder="搜索远程智能体名称 / 描述"
+        :count="filteredRemoteAgents.length"
+      />
+
+      <div v-if="filteredRemoteAgents.length === 0 && remoteAgentKeyword.trim()" style="padding: 40px 0; text-align: center; color: var(--color-text-secondary);">
+        没有匹配的远程智能体
+      </div>
+
+      <div v-else-if="remoteAgentItems.length === 0" style="padding: 40px 0; text-align: center; color: var(--color-text-secondary);">
         该远程商城暂无可用智能体
       </div>
 
       <div v-else class="agent-grid">
-        <el-card v-for="item in remoteAgentItems" :key="item.id" class="agent-card remote-agent-card" shadow="hover">
+        <el-card v-for="item in filteredRemoteAgents" :key="item.id" class="agent-card remote-agent-card" shadow="hover">
           <div class="agent-card-head">
             <div class="agent-avatar remote-avatar"><el-icon :size="22"><component :is="agentIconOf(item.id, item.name)" /></el-icon></div>
             <div class="agent-info">
@@ -213,6 +240,7 @@ import FormDialog from '../components/FormDialog.vue';
 import MarketplaceShell from '../components/marketplace/MarketplaceShell.vue';
 import MarketplaceCard from '../components/marketplace/MarketplaceCard.vue';
 import MarketplaceEmpty from '../components/marketplace/MarketplaceEmpty.vue';
+import SearchToolbar from '../components/common/SearchToolbar.vue';
 
 const router = useRouter();
 const route = useRoute();
@@ -229,6 +257,16 @@ const currentView = ref<'marketplace' | 'local-agents' | 'remote-agents'>('marke
 const showAgentSourceForm = ref(false);
 const agentRemoteSources = ref<any[]>([]);
 const remoteAgentItems = ref<any[]>([]);
+/** 远程商城列表关键字搜索（远程源一次可返回几十上百个智能体） */
+const remoteAgentKeyword = ref('');
+const filteredRemoteAgents = computed(() => {
+  const kw = remoteAgentKeyword.value.trim().toLowerCase();
+  if (!kw) return remoteAgentItems.value;
+  return remoteAgentItems.value.filter((it: any) =>
+    (it.name || '').toLowerCase().includes(kw)
+    || (it.description || '').toLowerCase().includes(kw),
+  );
+});
 const selectedRemoteSource = ref<any>(null);
 const agentSourceForm = ref({ name: '', baseUrl: '', authType: 'none', authValue: '' });
 
@@ -240,6 +278,8 @@ const customCount = computed(() => store.agents.filter((a) => !a.isDefault && !a
 interface AgentGroup { key: string; label: string; agents: Agent[]; }
 // 自定义分类标签筛选（侧栏）：'' = 全部；'__uncat__' = 未分类
 const selectedCategory = ref('');
+// 关键字搜索（名称 / 描述 / 分类），与侧栏分类 AND
+const agentKeyword = ref('');
 const categories = computed(() => {
   const map = new Map<string, number>();
   let uncat = 0;
@@ -255,9 +295,16 @@ const categories = computed(() => {
   return items;
 });
 const visibleAgents = computed(() => {
-  if (!selectedCategory.value) return store.agents;
-  if (selectedCategory.value === '__uncat__') return store.agents.filter((a) => !(a.category || '').trim());
-  return store.agents.filter((a) => (a.category || '').trim() === selectedCategory.value);
+  // 关键字搜索收口在这里（分类筛选的唯一入口）：侧栏分类与搜索词是 AND 关系
+  const kw = agentKeyword.value.trim().toLowerCase();
+  const hit = (a: Agent) => !kw
+    || (a.name || '').toLowerCase().includes(kw)
+    || (a.description || '').toLowerCase().includes(kw)
+    || (a.category || '').toLowerCase().includes(kw);
+  let list = store.agents;
+  if (selectedCategory.value === '__uncat__') list = list.filter((a) => !(a.category || '').trim());
+  else if (selectedCategory.value) list = list.filter((a) => (a.category || '').trim() === selectedCategory.value);
+  return list.filter(hit);
 });
 const groupedAgents = computed<AgentGroup[]>(() => {
   const builtin: Agent[] = [];
@@ -432,7 +479,10 @@ async function remove(agent: Agent) {
 .cat-side-item.active { background: rgba(99,102,241,0.12); color: var(--color-primary); font-weight: 600; }
 .cat-side-count { font-size: 11px; font-weight: 600; color: var(--color-text-secondary); background: rgba(15,23,42,0.06); border-radius: 8px; padding: 0 6px; }
 .cat-side-item.active .cat-side-count { color: var(--color-primary); background: rgba(99,102,241,0.15); }
-.agents-content { flex: 1; min-width: 0; }
+/* 列表区独立滚动：搜索条固定在顶部，滚动只发生在卡片区（筛选条不被内容顶走） */
+.agents-content { flex: 1; min-width: 0; display: flex; flex-direction: column; max-height: calc(100vh - 160px); }
+.agents-content > :deep(.st-bar) { flex-shrink: 0; margin-bottom: 12px; }
+.agents-scroll { flex: 1; min-height: 0; overflow-y: auto; }
 
 /* ===== 智能体卡片网格 ===== */
 .agent-cat { margin-bottom: 14px; }

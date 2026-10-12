@@ -8,7 +8,29 @@
       <el-button type="primary" size="small" @click="openCreate">新增规则</el-button>
       <el-button size="small" @click="fillPreset">填入示例：git push 前确认</el-button>
     </div>
-    <el-table v-loading="loading" :data="hooks" size="small" empty-text="还没有规则 —— 上面的示例按钮可快速体验">
+    <SearchToolbar v-model:query="hookKeyword" placeholder="搜索规则名称 / 工具 / 匹配内容" :count="filteredHooks.length">
+      <template #actions>
+        <el-select v-model="hookActionFilter" size="small" class="hook-filter-select">
+          <el-option label="全部动作" value="" />
+          <el-option label="弹窗确认" value="confirm" />
+          <el-option label="直接拒绝" value="deny" />
+        </el-select>
+        <el-select v-model="hookEnabledFilter" size="small" class="hook-filter-select">
+          <el-option label="全部状态" value="" />
+          <el-option label="已启用" value="on" />
+          <el-option label="已停用" value="off" />
+        </el-select>
+        <el-button v-if="hookFilterActive" size="small" text @click="clearHookFilter">重置</el-button>
+      </template>
+    </SearchToolbar>
+
+    <el-table
+      v-loading="loading"
+      :data="filteredHooks"
+      size="small"
+      max-height="420"
+      :empty-text="emptyText"
+    >
       <el-table-column prop="name" label="名称" min-width="130" show-overflow-tooltip />
       <el-table-column label="工具" min-width="130">
         <template #default="{ row }"><code class="hook-code">{{ row.tool }}</code></template>
@@ -69,10 +91,11 @@
 </template>
 
 <script setup lang="ts">
-import { reactive, ref, onMounted } from 'vue';
+import { reactive, ref, computed, onMounted } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { api } from '../../api/client';
 import FormDialog from '../FormDialog.vue';
+import SearchToolbar from '../common/SearchToolbar.vue';
 
 interface UserHook {
   id: string;
@@ -84,6 +107,35 @@ interface UserHook {
 }
 
 const hooks = ref<UserHook[]>([]);
+
+// ── 搜索 / 筛选：规则条数多起来后，表格里逐行肉眼找太慢 ──
+const hookKeyword = ref('');
+const hookActionFilter = ref('');
+const hookEnabledFilter = ref('');
+const filteredHooks = computed(() => {
+  const kw = hookKeyword.value.trim().toLowerCase();
+  return hooks.value.filter((h) => {
+    if (hookActionFilter.value && h.action !== hookActionFilter.value) return false;
+    if (hookEnabledFilter.value === 'on' && !h.enabled) return false;
+    if (hookEnabledFilter.value === 'off' && h.enabled) return false;
+    if (!kw) return true;
+    return (h.name || '').toLowerCase().includes(kw)
+      || (h.tool || '').toLowerCase().includes(kw)
+      || (h.pattern || '').toLowerCase().includes(kw);
+  });
+});
+const hookFilterActive = computed(() => !!hookKeyword.value.trim() || !!hookActionFilter.value || !!hookEnabledFilter.value);
+/** 空态区分「真没有规则」与「被筛选条件筛掉了」—— 两者用户该做的事完全不同 */
+const emptyText = computed(() => {
+  if (hooks.value.length === 0) return '还没有规则 —— 上面的示例按钮可快速体验';
+  if (filteredHooks.value.length === 0) return '没有匹配的规则，换个关键字或筛选条件试试';
+  return '';
+});
+function clearHookFilter() {
+  hookKeyword.value = '';
+  hookActionFilter.value = '';
+  hookEnabledFilter.value = '';
+}
 const loading = ref(false);
 const dialogVisible = ref(false);
 const saving = ref(false);
@@ -190,6 +242,7 @@ onMounted(load);
 .user-hooks-panel { display: flex; flex-direction: column; gap: 12px; max-width: 900px; }
 .hooks-tip { margin: 0; color: var(--el-text-color-secondary); font-size: 13px; line-height: 1.6; }
 .hooks-toolbar { display: flex; gap: 8px; }
+.hook-filter-select { width: 106px; }
 .hook-code { font-size: 12px; }
 .form-tip { display: block; margin-top: 4px; color: var(--el-text-color-secondary); font-size: 12px; }
 </style>

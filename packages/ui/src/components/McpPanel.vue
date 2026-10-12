@@ -81,9 +81,25 @@
         <el-button type="primary" @click="openCredAdd" :icon="Plus" class="fab-add">新增凭证</el-button>
       </div>
 
-      <el-empty v-if="store.credentials.length === 0" description="暂无凭证，点击右上角生成第一个" :image-size="120" />
+      <SearchToolbar
+        v-if="store.credentials.length > 0"
+        v-model:query="credQuery"
+        placeholder="搜索凭证名称 / 键名 / 方案"
+        :count="filteredCredentials.length"
+      />
+
+      <el-empty
+        v-if="store.credentials.length === 0"
+        description="暂无凭证，点击右上角生成第一个"
+        :image-size="120"
+      />
+      <el-empty
+        v-else-if="filteredCredentials.length === 0"
+        description="没有匹配的凭证，换个关键字试试"
+        :image-size="120"
+      />
       <div v-else class="cred-list">
-        <ToggleListRow v-for="c in store.credentials" :key="c.id" :title="c.name">
+        <ToggleListRow v-for="c in filteredCredentials" :key="c.id" :title="c.name">
           <div class="cred-meta">
             <el-tag size="small" effect="light">{{ c.scheme === 'bearer' ? 'Bearer' : 'Raw' }}</el-tag>
             <el-tag size="small" effect="plain" type="info">{{ c.target === 'header' ? '请求头' : '环境变量' }}</el-tag>
@@ -117,9 +133,21 @@
         </div>
       </el-alert>
 
+      <SearchToolbar
+        v-if="store.accessKeys.length > 0"
+        v-model:query="keyQuery"
+        placeholder="搜索凭证名称 / 前缀"
+        :count="filteredAccessKeys.length"
+      />
+
       <el-empty v-if="store.accessKeys.length === 0" description="尚未签发访问凭证" :image-size="120" />
+      <el-empty
+        v-else-if="filteredAccessKeys.length === 0"
+        description="没有匹配的访问凭证，换个关键字试试"
+        :image-size="120"
+      />
       <div v-else class="cred-list">
-        <ToggleListRow v-for="k in store.accessKeys" :key="k.id" :title="k.name">
+        <ToggleListRow v-for="k in filteredAccessKeys" :key="k.id" :title="k.name">
           <div class="cred-meta">
             <el-tag size="small" effect="plain" type="info" class="mono">{{ k.keyPrefix }}…</el-tag>
             <span class="cred-time">签发于 {{ new Date(k.createdAt).toLocaleDateString() }}</span>
@@ -545,6 +573,27 @@ const filteredServers = computed(() => {
   const q = searchQuery.value.trim().toLowerCase();
   if (!q) return store.servers;
   return store.servers.filter((s) => (s.name || '').toLowerCase().includes(q));
+});
+
+// ── 凭证 / 访问凭证列表搜索（两个 tab 此前都是裸列，凭证一多就找不到） ──
+const credQuery = ref('');
+const filteredCredentials = computed(() => {
+  const q = credQuery.value.trim().toLowerCase();
+  if (!q) return store.credentials;
+  return store.credentials.filter((c: any) =>
+    (c.name || '').toLowerCase().includes(q)
+    || (c.key || '').toLowerCase().includes(q)
+    || (c.scheme || '').toLowerCase().includes(q)
+    || (c.target || '').toLowerCase().includes(q),
+  );
+});
+const keyQuery = ref('');
+const filteredAccessKeys = computed(() => {
+  const q = keyQuery.value.trim().toLowerCase();
+  if (!q) return store.accessKeys;
+  return store.accessKeys.filter((k: any) =>
+    (k.name || '').toLowerCase().includes(q) || (k.keyPrefix || '').toLowerCase().includes(q),
+  );
 });
 
 function initToolMap() {

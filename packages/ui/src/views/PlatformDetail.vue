@@ -24,6 +24,22 @@
       <el-switch :model-value="platform?.llmEnabled !== false" :loading="llmExposeSaving" @change="togglePlatformLlm" />
     </div>
 
+    <!-- 模型搜索 / 类型筛选：模型多时按关键字与类型快速定位，不改动任何数据 -->
+    <SearchToolbar
+      v-model:query="modelKeyword"
+      placeholder="搜索模型 ID / 别名 / 描述"
+      :count="filteredModels.length"
+    >
+      <template #actions>
+        <el-select v-model="modelTypeFilter" size="small" class="model-filter-type" placeholder="全部类型">
+          <el-option label="全部类型" value="" />
+          <el-option v-for="t in modelTypeOptions" :key="t.value" :label="t.label" :value="t.value" />
+        </el-select>
+        <span v-if="filterActive" class="model-filter-count">显示 {{ filteredModels.length }} / {{ models.length }}</span>
+        <el-button v-if="filterActive" size="small" text @click="clearModelFilter">重置</el-button>
+      </template>
+    </SearchToolbar>
+
     <div v-if="batchMode" class="batch-toolbar">
       <span>已选 {{ selectedModelIds.size }} 个</span>
       <el-button size="small" :disabled="models.length === 0" @click="batchSelectAll">全选</el-button>
@@ -33,7 +49,7 @@
 
     <div class="model-grid">
       <div
-        v-for="m in models"
+        v-for="m in filteredModels"
         :key="m.id"
         class="model-card"
         :class="{ disabled: !m.enabled, 'llm-hidden': m.visible === false }"
@@ -56,7 +72,7 @@
         </div>
 
         <div class="model-card-tags">
-          <el-tag size="small" :type="m.type === 'llm' ? '' : 'info'" effect="light">{{ m.type }}</el-tag>
+          <el-tag size="small" :type="m.type === 'llm' ? 'primary' : 'info'" effect="light">{{ m.type }}</el-tag>
           <el-tag v-if="m.isDefault" size="small" type="warning" effect="dark">默认</el-tag>
           <el-tag v-if="m.visible === false" size="small" type="info" effect="dark">已隐藏</el-tag>
           <el-tag v-if="m.isBuiltin" size="small" type="warning" effect="dark">内置</el-tag>
@@ -114,6 +130,7 @@
       </div>
 
       <el-empty v-if="models.length === 0 && !fetching" description="暂无模型，点击拉取远程模型或手动添加" />
+      <el-empty v-else-if="filteredModels.length === 0" description="没有匹配的模型，换个关键字或类型试试" :image-size="60" />
     </div>
 
     <!-- 手动添加对话框：统一 FormDialog（取消/保存底栏由组件默认渲染） -->
@@ -258,6 +275,8 @@ import { useRoute, useRouter } from 'vue-router';
 import { Plus, ArrowLeft, Expand, ArrowDown } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { usePlatformStore } from '../stores';
+import { filterModels, modelTypeOptions as buildModelTypeOptions, isFilterActive } from '../utils/modelFilter';
+import SearchToolbar from '../components/common/SearchToolbar.vue';
 import FormDialog from '../components/FormDialog.vue';
 
 const props = defineProps<{
@@ -273,6 +292,22 @@ const store = usePlatformStore();
 const platformId = computed(() => props.platformId || (route.params.platformId as string));
 const platform = computed(() => store.platforms.find((p) => p.id === platformId.value));
 const models = computed(() => store.models.filter((m) => m.platformId === platformId.value));
+
+// ── 模型搜索 / 类型筛选（纯前端过滤，不动数据；空关键字 + 空类型 = 全量） ──
+const modelKeyword = ref('');
+const modelTypeFilter = ref('');
+/** 类型下拉只列本平台真实出现过的类型（不列空选项） */
+const modelTypeOptions = computed(() => buildModelTypeOptions(models.value));
+/** 过滤逻辑收口在 utils/modelFilter（唯一实现，见该文件注释） */
+const filteredModels = computed(() =>
+  filterModels(models.value, { keyword: modelKeyword.value, type: modelTypeFilter.value }),
+);
+const filterActive = computed(() => isFilterActive({ keyword: modelKeyword.value, type: modelTypeFilter.value }));
+function clearModelFilter() {
+  modelKeyword.value = '';
+  modelTypeFilter.value = '';
+}
+
 const supportsEmbeddings = computed(() => platform.value?.protocol !== 'anthropic');
 const showAdd = ref(false);
 const editingModelId = ref('');
@@ -625,6 +660,10 @@ async function testCapabilityInForm(c: { value: string; label: string; kind: str
 .model-card-check { position: absolute; top: 16px; left: 16px; z-index: 1; }
 .model-card:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(0,0,0,0.06); border-color: var(--glass-border-strong); }
 
+/* 模型搜索 / 类型筛选：搜索条常驻列表上方（列表区自己滚，筛选条不被顶走） */
+.model-filter-type { width: 130px; flex-shrink: 0; }
+.model-filter-count { font-size: 12px; color: var(--color-text-secondary); }
+
 .batch-toolbar {
   display: flex; align-items: center; gap: 10px; margin-bottom: 12px;
   padding: 10px 16px; background: var(--glass-bg); border: 1px solid var(--glass-border);
@@ -712,6 +751,7 @@ async function testCapabilityInForm(c: { value: string; label: string; kind: str
     bottom: calc(56px + 12px + env(safe-area-inset-bottom, 0px));
   }
   .model-grid { grid-template-columns: 1fr; gap: 12px; }
+  .model-filter-type { width: 110px; }
   .batch-toolbar { flex-wrap: wrap; gap: 8px; font-size: 12px; padding: 8px 12px; }
   .alias-input { max-width: 100%; }
   .model-card-foot { flex-wrap: wrap; gap: 8px; }

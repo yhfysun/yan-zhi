@@ -40,7 +40,14 @@
     <div class="dc-body">
       <!-- 左：schema 树 -->
       <aside class="dc-tree">
-        <el-input v-model="schemaFilter" placeholder="搜索表 / 列" size="small" clearable :prefix-icon="Search" />
+        <div class="dc-tree-filters">
+          <el-input v-model="schemaFilter" placeholder="搜索表 / 列" size="small" clearable :prefix-icon="Search" />
+          <el-select v-model="schemaKindFilter" size="small" class="dc-kind-select">
+            <el-option label="全部" value="" />
+            <el-option label="表" value="table" />
+            <el-option label="视图" value="view" />
+          </el-select>
+        </div>
         <div class="dc-tree-scroll">
           <div v-if="schemaLoading" class="dc-tree-empty">加载结构中…</div>
           <div v-else-if="!filteredTables.length" class="dc-tree-empty">
@@ -201,12 +208,18 @@ interface SchemaColumn { name: string; type: string; pk: boolean; comment?: stri
 interface SchemaTable { name: string; kind: 'table' | 'view'; comment?: string; columns: SchemaColumn[]; _open?: boolean }
 const tables = ref<SchemaTable[]>([]);
 const schemaFilter = ref('');
+/** 表/视图筛选：'' = 全部 */
+const schemaKindFilter = ref('');
 const schemaLoading = ref(false);
 
 const filteredTables = computed(() => {
   const k = schemaFilter.value.trim().toLowerCase();
-  if (!k) return tables.value;
-  return tables.value
+  // 类型筛选先于关键字：schema 里表/视图混排时，"只看表"是高频诉求
+  const base = schemaKindFilter.value
+    ? tables.value.filter((t) => (t.kind || 'table') === schemaKindFilter.value)
+    : tables.value;
+  if (!k) return base;
+  return base
     .filter((t) => t.name.toLowerCase().includes(k) || t.columns.some((c) => c.name.toLowerCase().includes(k)))
     .map((t) => (t.name.toLowerCase().includes(k) ? t : { ...t, _open: true, columns: t.columns.filter((c) => c.name.toLowerCase().includes(k)) }));
 });

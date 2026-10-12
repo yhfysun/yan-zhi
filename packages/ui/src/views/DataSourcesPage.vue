@@ -6,16 +6,27 @@
         <div class="page-sub">连接外部数据库与内置项目库，作为本体（text2sql）与 SQL 控制台的数据面</div>
       </div>
       <div class="ds-actions">
-        <el-input
-          v-model="keyword"
+        <SearchToolbar
+          v-model:query="keyword"
           placeholder="搜索数据源 / 主机 / 库名"
-          clearable
-          class="ds-search"
-          :prefix-icon="Search"
-        />
-        <el-button type="primary" @click="openCreate">
-          <el-icon><Plus /></el-icon>新建数据源
-        </el-button>
+          :count="filtered.length"
+        >
+          <template #actions>
+            <el-select v-model="typeFilter" size="small" placeholder="全部类型" class="ds-filter-select">
+              <el-option label="全部类型" value="" />
+              <el-option v-for="t in typeOptions" :key="t.value" :label="t.label" :value="t.value" />
+            </el-select>
+            <el-select v-model="originFilter" size="small" class="ds-filter-select">
+              <el-option label="全部来源" value="" />
+              <el-option label="内置" value="builtin" />
+              <el-option label="外部" value="external" />
+            </el-select>
+            <el-button v-if="dsFilterActive" size="small" text @click="clearDsFilter">重置</el-button>
+            <el-button type="primary" @click="openCreate">
+              <el-icon><Plus /></el-icon>新建数据源
+            </el-button>
+          </template>
+        </SearchToolbar>
       </div>
     </header>
 
@@ -222,6 +233,7 @@ import { ElMessage, ElMessageBox } from 'element-plus';
 import { Search, Plus, ArrowRight, MoreFilled } from '@element-plus/icons-vue';
 import { api } from '../api/client';
 import FormDialog from '../components/FormDialog.vue';
+import SearchToolbar from '../components/common/SearchToolbar.vue';
 import '../styles/data-workbench.css';
 
 // ===== 类型分组（能力差异写进分组标题，用户选型前即知情） =====
@@ -271,16 +283,34 @@ const list = ref<DataSourceInfo[]>([]);
 const loading = ref(true);
 const loadError = ref('');
 const keyword = ref('');
+// ── 分类筛选：数据库类型 + 内置/外部来源 ──
+const typeFilter = ref('');
+const originFilter = ref('');
 const testingId = ref('');
 const syncingId = ref('');
 
 const filtered = computed(() => {
   const k = keyword.value.trim().toLowerCase();
-  if (!k) return list.value;
-  return list.value.filter((d) =>
-    [d.name, d.host, d.database, d.serviceName, d.type].some((s) => (s || '').toLowerCase().includes(k)),
-  );
+  return list.value.filter((d) => {
+    // 类型/来源/状态三个维度与关键字是 AND —— 数据源多了之后只靠关键字不够定位
+    if (typeFilter.value && d.type !== typeFilter.value) return false;
+    if (originFilter.value === 'builtin' && !d.builtin) return false;
+    if (originFilter.value === 'external' && d.builtin) return false;
+    if (!k) return true;
+    return [d.name, d.host, d.database, d.serviceName, d.type].some((s) => (s || '').toLowerCase().includes(k));
+  });
 });
+/** 类型下拉只列本页真实出现过的类型（不列零项选项） */
+const typeOptions = computed(() => {
+  const seen = new Set(list.value.map((d) => d.type));
+  return [...seen].map((t) => ({ value: t, label: typeLabel(t) }));
+});
+const dsFilterActive = computed(() => !!keyword.value.trim() || !!typeFilter.value || !!originFilter.value);
+function clearDsFilter() {
+  keyword.value = '';
+  typeFilter.value = '';
+  originFilter.value = '';
+}
 
 async function load() {
   loading.value = true;

@@ -105,6 +105,14 @@
   gap: 8px;
   min-height: 0;
 }
+/* 搜索框 + 表/视图筛选并排：左栏只有 250px，下拉不能再宽 */
+.dw-root .dc-tree-filters {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.dw-root .dc-tree-filters .el-input { flex: 1; min-width: 0; }
+.dw-root .dc-kind-select { width: 72px; flex: none; }
 .dw-root .dc-tree-scroll {
   flex: 1;
   min-height: 0;

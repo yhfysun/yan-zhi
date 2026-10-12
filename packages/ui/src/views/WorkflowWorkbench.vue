@@ -39,7 +39,17 @@
     <div class="wf-body">
       <!-- ===== 左栏：可运行工作流 + 运行历史 ===== -->
       <aside class="wf-side">
-        <input v-model="keyword" class="wf-search" placeholder="搜索工作流…" />
+        <div class="wf-search-row">
+          <input v-model="keyword" class="wf-search" placeholder="搜索工作流…" />
+          <select v-model="runStatusFilter" class="wf-status-select" :class="{ on: runStatusFilter }">
+            <option value="">全部</option>
+            <option value="none">从未运行</option>
+            <option value="completed">成功</option>
+            <option value="failed">失败</option>
+            <option value="running">运行中</option>
+          </select>
+          <button v-if="wfFilterActive" class="wf-clear" type="button" title="清除筛选" @click="keyword = ''; runStatusFilter = ''">×</button>
+        </div>
 
         <div class="wf-sec">可运行工作流（{{ filtered.length }}）</div>
         <div class="wf-list">
@@ -349,6 +359,8 @@ function ensureFixedAgent() {
 }
 
 const keyword = ref('');
+/** 运行状态筛选：'' = 全部；'none' = 从未运行 */
+const runStatusFilter = ref('');
 const selectedId = ref('');
 const form = reactive<Record<string, any>>({});
 const overrideForm = reactive<Record<string, Record<string, any>>>({});
@@ -455,11 +467,15 @@ async function onConvCommand(cmd: string) {
 
 const filtered = computed(() => {
   const k = keyword.value.trim().toLowerCase();
-  if (!k) return wf.agents.value;
-  return wf.agents.value.filter(
-    (a: WorkflowAgentItem) => a.name.toLowerCase().includes(k) || a.description.toLowerCase().includes(k),
-  );
+  return wf.agents.value.filter((a: WorkflowAgentItem) => {
+    // 运行状态筛选（含"从未运行"这一档 —— 排查"哪个工作流压根没跑过"时很有用）
+    const st = a.lastRun?.status || 'none';
+    if (runStatusFilter.value && st !== runStatusFilter.value) return false;
+    if (!k) return true;
+    return (a.name || '').toLowerCase().includes(k) || (a.description || '').toLowerCase().includes(k);
+  });
 });
+const wfFilterActive = computed(() => !!keyword.value.trim() || !!runStatusFilter.value);
 
 const current = computed<WorkflowAgentItem | null>(
   () => wf.agents.value.find((a) => a.id === selectedId.value) || null,
@@ -781,10 +797,21 @@ watch(() => agentStore.agents.length, ensureFixedAgent);
   border-right: 1px solid var(--el-border-color-lighter);
   display: flex; flex-direction: column; min-height: 0; overflow: hidden;
 }
+.wf-search-row { display: flex; align-items: center; gap: 6px; margin: 10px; }
 .wf-search {
-  margin: 10px; padding: 5px 10px; font-size: 12px; border-radius: 6px;
+  flex: 1; min-width: 0; padding: 5px 10px; font-size: 12px; border-radius: 6px;
   border: 1px solid var(--el-border-color); background: transparent; color: var(--el-text-color-primary);
 }
+.wf-status-select {
+  flex: none; width: 78px; padding: 5px 4px; font-size: 12px; border-radius: 6px;
+  border: 1px solid var(--el-border-color); background: transparent; color: var(--el-text-color-secondary);
+}
+.wf-status-select.on { color: var(--el-color-primary); border-color: var(--el-color-primary); }
+.wf-clear {
+  flex: none; width: 22px; height: 22px; line-height: 1; border-radius: 6px; cursor: pointer;
+  border: 1px solid var(--el-border-color); background: transparent; color: var(--el-text-color-secondary);
+}
+.wf-clear:hover { color: var(--el-color-primary); border-color: var(--el-color-primary); }
 .wf-sec {
   padding: 6px 12px; font-size: 11px; color: var(--el-text-color-secondary);
   letter-spacing: 0.4px;
