@@ -237,6 +237,28 @@ async function resetBrowser() {
   nextTabId = 0;
 }
 
+/**
+ * ★ B1（2026-10-11）：连接级断开监听 —— 补"断了但系统不知道"的缺口。
+ *   此前只在下一次操作前被动 version() 探活（isBrowserAlive），从断开到被发现
+ *   之间隔着"下一次调用"；监听 disconnected 即时置脏单例，下一次 getBrowser()/
+ *   getPage() 直接走重建（getPage 假死分支已含 lastKnownUrl 恢复，行为闭环）。
+ *   ★ 只置脏、不在事件回调里重建 —— 回调里重建会与进行中的操作竞态。
+ */
+function attachBrowserDisconnectWatch(browser: any) {
+  if (!browser || browser.__yzDisconnectWired) return;
+  try {
+    browser.__yzDisconnectWired = true;
+    browser.once('disconnected', () => {
+      console.log('[browser] 连接断开（disconnected）→ 置脏单例，等待下一次调用重建');
+      browserInstance = null;
+      pageInstance = null;
+      tabs.clear();
+      activeTabId = -1;
+      nextTabId = 0;
+    });
+  } catch { /* 事件 API 不可用则维持被动探活 */ }
+}
+
 /** CDP 连接瞬时故障重试：ECONNREFUSED（启动竞态/浏览器重启瞬间）退避重试 2 次 */
 async function connectCdpWithRetry(chromium: any, endpoint: string): Promise<any> {
   let lastErr: any;
@@ -283,6 +305,8 @@ async function getBrowser() {
     // launch 模式：强制 headless（不允许环境变量切有头，避免弹独立浏览器窗口）
     browserInstance = await withTimeout(chromium.launch({ headless: BROWSER_HEADLESS }), '浏览器启动失败');
   }
+  // ★ B1（2026-10-11）：实例建好后立即挂断开监听（见函数注释）
+  attachBrowserDisconnectWatch(browserInstance);
   lastActivityAt = Date.now();
   scheduleIdleCheck();
   return browserInstance;
@@ -290,6 +314,8 @@ async function getBrowser() {
 
 /** 给 page 挂载下载与网络请求监听 */
 function attachPageListeners(page: any) {
+  // ★ B4（原生弹窗）：Playwright 未注册 dialog handler 时**会自动 dismiss**（与服务端语义对齐，
+  //   不在此显式注册 handler 以避免与桌面端实现反向漂移 —— 见 native-dialog.test.ts ④）。
   // 监听下载事件，记录到 downloadRecords
   page.on('download', async (download: any) => {
     try {

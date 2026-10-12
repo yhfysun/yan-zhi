@@ -23,7 +23,9 @@ export class NovelTuiwenTool implements BuiltInTool {
       bg_video: { type: 'string', description: '背景视频路径，多个用逗号分隔（按顺序轮播，循环铺满全片）。**题材建议：风景 / 海洋 / 动物世界 / 延时自然等舒缓、无人声、可循环的素材**（与口播不抢注意力，也更符合平台调性）；尽量选与故事氛围匹配的（悬疑配暗色/夜景、治愈配明亮自然）。省略则用深色文字占位画面。' },
       aspect: { type: 'string', enum: ['4:3', '9:16', '16:9'], description: '画幅：9:16=抖音竖屏 1080x1920（抖音发布用这个）；4:3=1080x1440（默认）；16:9=横屏 1920x1080。' },
       ending: { type: 'string', description: '结尾引导口播。发抖音必传：搜索别名XX看后续（XX=生效中的别名关键词）。禁止出现原书名。' },
-      banner: { type: 'string', description: '视频顶部常驻引导语（发抖音必传：搜「别名」看全文）。书名红线：画面顶部禁原书名，传别名。' },
+      banner: { type: 'string', description: '视频顶部常驻引导语（覆盖自动生成的标题条）。书名红线：画面顶部禁原书名，传别名。' },
+      alias: { type: 'string', description: '生效中的别名关键词。与 chapter_num 一起自动拼标题条「搜「别名」看全文｜番茄小说 第N章」（三要素，发抖音必传）。' },
+      chapter_num: { type: 'string', description: '第几章（如 3）。与 alias 一起进标题条与成片文件名；缺省从文件名 chNN 推断。' },
       voice: { type: 'string', description: 'TTS 音色（Edge-TTS），默认 zh-CN-YunxiNeural（年轻男声）；女声可用 zh-CN-XiaoyiNeural。' },
       out: { type: 'string', description: '输出目录，默认 <工作目录>/output/。' },
       use_llm: { type: 'boolean', description: '用 LLM 做钩子化改编（需环境变量 OPENAI_BASE_URL/OPENAI_API_KEY）。默认规则切分。' },
@@ -66,6 +68,9 @@ export class NovelTuiwenTool implements BuiltInTool {
     if (args.aspect && ['4:3', '9:16', '16:9'].includes(String(args.aspect))) argv.push('--aspect', String(args.aspect));
     if (typeof args.ending === 'string' && args.ending.trim()) argv.push('--ending', args.ending.trim());
     if (typeof args.banner === 'string' && args.banner.trim()) argv.push('--banner', args.banner.trim());
+    // 标题条三要素（2026-10-11）：别名 + 番茄小说 + 第N章 —— alias/chapter 透传给管线自动拼
+    if (typeof args.alias === 'string' && args.alias.trim()) argv.push('--alias', args.alias.trim());
+    if (typeof args.chapter_num === 'string' && args.chapter_num.trim()) argv.push('--chapter', args.chapter_num.trim());
     // 中间产物与成片都收敛到 outDir
     argv.push('--outdir', outDirRaw);
 

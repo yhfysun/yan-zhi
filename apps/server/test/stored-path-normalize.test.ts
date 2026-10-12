@@ -25,7 +25,7 @@ const hoisted = vi.hoisted(() => ({
   deleteMessageSummariesAfter: () => 0,
   clearMessageSummaries: () => {},
   serverState: { workspaceDir: '' },
-  dataDir: 'C:\\fake-data-root',
+  dataDir: process.platform === 'win32' ? 'C:\\fake-data-root' : '/fake-data-root',
 }));
 
 vi.mock('../src/db.js', () => ({

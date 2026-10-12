@@ -2145,6 +2145,14 @@ async function healStalePlatform() {
     if (model && agentStore.selectedAgent) {
       agentStore.updateAgent(agentStore.selectedId, { modelId: model.modelId, platformId: model.platformId });
       selectedModelId.value = model.id;
+      // ★ 持久化到当前会话（2026-10-11 修「切模型刷新后回退到第一个模型」）：
+      //   此前只改了智能体绑定 + 本地 ref，没写回 conversation.model_id ——
+      //   刷新/重挂载时恢复链路（onMounted/watch currentConvId）以 conv.modelId 为准，
+      //   旧值把新选择盖掉 → 永远回到第一个模型。会话未创建（草稿态）时跳过，
+      //   发送时建会话会带上当前 selectedModelId。
+      if (store.currentConvId) {
+        void store.updateConversation(store.currentConvId, { modelId: model.modelId, platformId: model.platformId });
+      }
     }
   }
 
@@ -2253,6 +2261,10 @@ async function healStalePlatform() {
       const model = platformStore.models.find((m) => m.id === payload.modelId);
       if (model && agentStore.selectedAgent) {
         agentStore.updateAgent(agentStore.selectedId, { modelId: model.modelId, platformId: model.platformId });
+        // ★ 同 onModelChange：写回当前会话，防刷新后恢复链路用旧 conv.modelId 盖掉
+        if (store.currentConvId) {
+          void store.updateConversation(store.currentConvId, { modelId: model.modelId, platformId: model.platformId });
+        }
       }
     }
     ElMessage.success(

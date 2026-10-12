@@ -249,6 +249,11 @@ describe('pageAgent 系统提示词与工具白名单一致性', () => {
     const missing = coreTools.filter((tool) => !PAGE_AGENT_BUILTIN_TOOLS.includes(tool));
     expect(missing).toEqual([]);
   });
+
+  it('★ 表单批量填写/提交已挂载（2026-10-11 F1：漏挂载导致只能逐个 browser_type 填表）', () => {
+    expect(PAGE_AGENT_BUILTIN_TOOLS).toContain('browser_fill_form');
+    expect(PAGE_AGENT_BUILTIN_TOOLS).toContain('browser_submit_form');
+  });
 });
 
 describe('callBrowserApi 超时处理', () => {

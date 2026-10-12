@@ -1604,6 +1604,10 @@ function setupGuestPopupRedirect(wc, scope) {
     console.log('[nav] guest 拦截非 http(s) 协议:', url);
     event.preventDefault();
   });
+  // ★ B4（webview 引擎的原生弹窗接管在 will-attach-webview 里用 disableDialogs 字段完成，
+  //   见下方 will-attach-webview 处理：Electron webContents 本身没有 dialog 事件，
+  //   主进程给 webContents 注册 dialog 监听永远不会触发，故不在此处重复（native-dialog.test.ts ② 禁止臆造该事件）。
+  //   alert/confirm/prompt 由 disableDialogs 直接抑制，与服务端 Playwright「未注册 handler 时自动 dismiss」语义对齐。
 }
 
 // 拦截网页通过 window 创建的真正二级窗口（session/guest handler 未覆盖的边缘路径），
@@ -2996,25 +3000,39 @@ async function runBrowserAction(convId, tabId, action, args) {
           if (!wc) return { error: '浏览器未就绪（无 webContents）' };
           const dbg = wc.debugger;
           let attachedHere = false;
-          if (!dbg.isAttached()) { dbg.attach('1.3'); attachedHere = true; }
+          // ★ B3（2026-10-11）：attach 失败必须有可区分错误（被其他调试客户端占用等），
+          //   不能落到外层 catch 变成不可诊断的"文件注入失败: ..."
+          if (!dbg.isAttached()) {
+            try { dbg.attach('1.3'); attachedHere = true; }
+            catch (e) { return { error: `CDP 调试器附加失败（可能被 DevTools 等其他客户端占用）: ${e && e.message || e}`, code: 'debugger_attach_failed' }; }
+          }
           const send = (method, params) => dbg.sendCommand(method, params);
           const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-          // 从候选 nodeId 中挑第一个「可见且未禁用」的 file input（页面上常有头像/封面等多个上传口，
-          // 旧实现盲取 nodeIds[0] 会选错节点 → 静默上传到错误位置）
-          const pickVisibleInput = async (nodeIds) => {
-            for (const nid of nodeIds) {
-              try {
-                const { object } = await send('DOM.resolveNode', { nodeId: nid });
-                if (!object || !object.objectId) continue;
-                const { result } = await send('Runtime.callFunctionOn', {
-                  objectId: object.objectId,
-                  functionDeclaration: 'function(){var r=this.getBoundingClientRect();var s=getComputedStyle(this);return !!(this.isConnected&&!this.disabled&&r.width>0&&r.height>0&&s.visibility!=="hidden"&&s.display!=="none");}',
-                  returnByValue: true,
-                });
-                if (result && result.value) return nid;
-              } catch { /* 单个节点解析失败不影响整体 */ }
-            }
-            return nodeIds[0];
+          // 探测候选 file input：只判「存活 + 未禁用」，可见性单独记录。
+          // ★★ B5（2026-10-11）：可见性只能用来**选哪个**，不能用来**否决能不能注入** ——
+          //   React/抖音这类站点的上传 input 常是 display:none / 0x0 的隐藏 input（由按钮 click 触发），
+          //   而 CDP 的 DOM.setFileInputFiles **不要求元素可见**（它直接给节点赋文件并触发 change）。
+          //   上一版（B3）把"不可见"当成不可用 → 抖音这类站点必然报 no_visible_input，上传全灭。
+          const probeInput = async (nid) => {
+            try {
+              const { object } = await send('DOM.resolveNode', { nodeId: nid });
+              if (!object || !object.objectId) return null;
+              const { result } = await send('Runtime.callFunctionOn', {
+                objectId: object.objectId,
+                functionDeclaration: 'function(){var r=this.getBoundingClientRect();var s=getComputedStyle(this);return {alive:!!this.isConnected,disabled:!!this.disabled,visible:!!(r.width>0&&r.height>0&&s.visibility!=="hidden"&&s.display!=="none")};}',
+                returnByValue: true,
+              });
+              const v = result && result.value;
+              if (!v || !v.alive || v.disabled) return null;
+              return { nodeId: nid, visible: !!v.visible };
+            } catch { /* 单个节点解析失败不影响整体 */ return null; }
+          };
+          // 优先可见的（页面常有多个上传口：头像/封面/视频，可见的更符合用户点击的入口）；
+          // 全隐藏时回落第一个「存活且未禁用」的节点 —— 仍比盲投 nodeIds[0] 安全（已排除失效/禁用）。
+          const pickInjectable = async (ids) => {
+            const all = [];
+            for (const nid of ids) { const p = await probeInput(nid); if (p) all.push(p); }
+            return all.find((p) => p.visible) || all[0] || null;
           };
           await send('Page.enable');
           await send('DOM.enable');
@@ -3080,14 +3098,41 @@ async function runBrowserAction(convId, tabId, action, args) {
             if (!nodeIds || !nodeIds.length) {
               result = { error: '页面上未找到 input[type=file]，且未捕获到文件选择器：请确认「上传」按钮已点击、文件选择框确实弹出。' };
             } else {
-              const target = await pickVisibleInput(nodeIds);
+              const picked = await pickInjectable(nodeIds);
+              let target = picked ? picked.nodeId : null;
+              // ★ B5：只有「一个存活且未禁用的节点都没有」才报错（此时 nodeId 确实失效，盲投会撞
+              //   "Either nodeId, backendNodeId or objectId must be specified"）。
+              if (!target) {
+                result = { error: '页面上有 input[type=file] 但节点已失效或全部禁用（no_valid_input）。建议：重新 get_page_info 取新编号，或改用 filechooser 模式——用 clickSelector/clickIndex 指定「上传」按钮重试。', code: 'no_valid_input' };
+              } else {
+                // ★ B3 复验：定位与注入之间 nodeId 可能因页面重渲染失效，先 describeNode 确认还活着；
+                //   失效则重新 getDocument+querySelectorAll 取一轮（最多一次），仍失败才报错。
+                try {
+                  await send('DOM.describeNode', { nodeId: target });
+                } catch {
+                  const fresh = await send('DOM.getDocument', { depth: -1, pierce: true })
+                    .then(({ root }) => send('DOM.querySelectorAll', { nodeId: root.nodeId, selector: 'input[type=file]' }))
+                    .catch(() => null);
+                  const freshIds = fresh && fresh.nodeIds ? fresh.nodeIds : [];
+                  const freshPick = freshIds.length ? await pickInjectable(freshIds) : null;
+                  target = freshPick ? freshPick.nodeId : null;
+                  if (!target) {
+                    result = { error: 'input[type=file] 节点在定位后失效且重取仍失败（node_stale）。建议：重新 get_page_info 后用新编号重试。', code: 'node_stale' };
+                  }
+                }
+              }
               // ★★ 参数名必须是单数 nodeId（CDP 协议：DOM.setFileInputFiles 接受 nodeId | backendNodeId | objectId）。
               //    曾误写成复数 nodeIds → CDP 静默忽略 → 三个标识符全缺 →
               //    抛 "Either nodeId, backendNodeId or objectId must be specified"，
               //    表现为「所有上传方式都报同一个错」（抖音上传 19 次尝试全灭的根因）。
               //    DOM.querySelectorAll 的**返回值**才叫 nodeIds（复数），别把请求参数也写成复数。
-              await send('DOM.setFileInputFiles', { files: [fp], nodeId: target });
-              result = { uploaded: true, via: 'cdp', filePath: fp, inputCount: nodeIds.length };
+              if (target) {
+                // hidden=true 表示注入到隐藏 input（React 站点常见）——setFileInputFiles 不要求可见，
+                // 仍会触发页面 change 处理；把它回传给模型，避免"看不到可见元素"时被误判为失败。
+                const hidden = !!(picked && picked.visible === false);
+                await send('DOM.setFileInputFiles', { files: [fp], nodeId: target });
+                result = { uploaded: true, via: 'cdp', filePath: fp, inputCount: nodeIds.length, hiddenInput: hidden };
+              }
             }
           }
           if (attachedHere) { try { dbg.detach(); } catch { /* ignore */ } }
@@ -3107,6 +3152,20 @@ async function runBrowserAction(convId, tabId, action, args) {
         //   渲染层模板也已在用（`:src="t.srcUrl || 'about:blank'"`）⇒ 放行是安全的。
         const isBlank = /^about:blank$/i.test(cleanUrl);
         if (!isBlank && !/^https?:\/\//i.test(cleanUrl)) return { error: `无效 URL: ${cleanUrl}` };
+        // ★★★ 同 URL 幂等（2026-10-11）：模型反复 navigate 到"当前已经在这个 URL"＝重新导航，
+        //   页面/表单全部重置 —— 抖音发布实测 23:08/23:13/23:19 三次 navigate 回
+        //   /content/upload，已上传视频与已填标题全丢，任务陷入"填了→没了→再填"死循环。
+        //   ⇒ 归一化后与当前地址相同就直接返回 alreadyOpen，**不触发真实导航**；
+        //     确需刷新时显式传 force:true 才真的 loadURL（保留出口，不把路堵死）。
+        const normUrl = (u) => String(u || '').trim().replace(/^https?:\/\//i, '').replace(/\/+$/, '').toLowerCase();
+        const curUrl = (wc && wc.getURL) ? wc.getURL() : '';
+        if (!isBlank && args.force !== true && curUrl && normUrl(curUrl) === normUrl(cleanUrl)) {
+          const curTitle = (wc && wc.getTitle) ? wc.getTitle() : '';
+          return {
+            url: curUrl, title: curTitle, alreadyOpen: true, loading: !!(wc && wc.isLoading && wc.isLoading()),
+            note: '当前页面已经就是该 URL，未重复导航（重复导航会重置页面/清空已填表单）。**不要换 URL 重试**；若确需强制刷新请传 force:true，或用 browser_get_page_content 读取当前内容。',
+          };
+        }
         // ★★★ 2026-10-11：`openInNewTab` 已在**进入 switch 之前**被改写为 `new_tab`
         //   （见 `doAction` 之前的 `if (args.openInNewTab) action = 'new_tab'`）——
         //   语义与 `new_tab` **完全一致**（开新页 + 返回 tabId + `decideAnchorUpdate` 判 touch 不抢锚），
@@ -3153,9 +3212,56 @@ async function runBrowserAction(convId, tabId, action, args) {
         return await wc.executeJavaScript(`(function(){
           var a=${JSON.stringify(args)};
           var A=window.__yzAssistant;
-          function clickEl(el){
+          // ===OCCLUSION-START=== 遮挡感知 + 自动关闭遮挡层（2026-10-12）；click-occlusion.test.cjs 经此哨兵抽取真实代码
+          // ★ 遮挡检测（2026-10-12）：目标中心点若被其它元素盖住，很多悬浮层会给底层按钮
+          //   加 pointer-events:none 或在 handler 里判"弹窗开着就忽略"，导致 DOM 点击派发了却不生效。
+          //   ⇒ 先检测遮挡，被挡则尝试自动关闭遮挡层（点其关闭控件 / Esc）后再点真实目标。
+          function detectOcclusion(el){
+            try{
+              var r=el.getBoundingClientRect();
+              if(r.width<1||r.height<1)return null;
+              var cx=r.x+r.width/2, cy=r.y+r.height/2;
+              if(cx<0||cy<0||cx>window.innerWidth||cy>window.innerHeight)return null;
+              var top=document.elementFromPoint(cx,cy);
+              if(!top)return null;
+              if(top===el||el.contains(top))return null;
+              return {coveringEl:top, covering:{tag:top.tagName.toLowerCase(),
+                text:(top.textContent||'').trim().slice(0,40), selector:A.genSel(top)}};
+            }catch(e){return null;}
+          }
+          // ★ 尝试关闭遮挡层：优先点其子树里的显式关闭控件（× / 关闭 / 取消 / aria close），
+          //   找不到再退 Esc。只点"关闭类"控件，绝不点"确定/确认"等肯定动作（避免误触发布）。
+          async function tryDismiss(coveringEl){
+            if(!coveringEl)return false;
+            try{
+              var sel='button,[role="button"],a,span,i,svg,[aria-label]';
+              var list;try{list=Array.prototype.slice.call(coveringEl.querySelectorAll(sel));}catch(e){list=[];}
+              list.push(coveringEl);
+              for(var i=0;i<list.length;i++){var n=list[i];
+                var t=(n.textContent||'').trim();
+                var al=(n.getAttribute&&n.getAttribute('aria-label')||'').trim();
+                var cls=(typeof n.className==='string'?n.className:'');
+                var isClose=/^[×xX✕✖]$/.test(t)||/关闭|取消|收起|知道了/.test(t+al)||/modal-close|dialog-close|close-btn|icon-close/i.test(cls);
+                if(isClose){
+                  try{
+                    n.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true,view:window}));
+                    n.dispatchEvent(new MouseEvent('mouseup',{bubbles:true,cancelable:true,view:window}));
+                    n.click();return true;
+                  }catch(e){}
+                }
+              }
+              document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',keyCode:27,which:27,bubbles:true,cancelable:true}));
+              document.dispatchEvent(new KeyboardEvent('keyup',{key:'Escape',keyCode:27,which:27,bubbles:true,cancelable:true}));
+              return true;
+            }catch(e){return false;}
+          }
+          async function clickEl(el){
             // 先滚入视口（instant，避免 smooth 异步未到位导致后续坐标过期）
             try{el.scrollIntoView({block:'center'});}catch(e){}
+            var occ=detectOcclusion(el);
+            var autoDismissed=false, coveringInfo=null;
+            if(occ){coveringInfo=occ.covering; autoDismissed=await tryDismiss(occ.coveringEl);
+              await new Promise(function(r){setTimeout(r,350);});}
             // ★ 优先 DOM 点击：不受视口裁切影响（被裁切但已渲染的元素也能触发），
             //   直接派发到目标元素，不依赖坐标换算。坐标点击在元素被裁切/位于视口外时
             //   会落在视口外（elementFromPoint 返回 null）而无效（抖音"发布"按钮实测）。
@@ -3163,15 +3269,21 @@ async function runBrowserAction(convId, tabId, action, args) {
               el.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true,view:window}));
               el.dispatchEvent(new MouseEvent('mouseup',{bubbles:true,cancelable:true,view:window}));
               el.click(); // 原生 click：触发默认动作（onClick / 链接跳转 / 表单提交）
-              return Promise.resolve({success:true,via:'dom-click',tag:el.tagName.toLowerCase()});
+              var res={success:true,via:'dom-click',tag:el.tagName.toLowerCase()};
+              if(occ){res.occluded=true;res.autoDismissed=autoDismissed;res.covering=coveringInfo;
+                res.note='目标中心被悬浮层遮挡；'+(autoDismissed?'已尝试自动关闭遮挡层，':'未找到可关闭的遮挡层，')+'已直接对目标派发 DOM 点击。请用 get_page_content 复核是否真的生效（未生效说明遮挡层仍阻断，需手动关闭后重试）。';}
+              return res;
             }catch(e){
               // 兜底：真实鼠标坐标点击（极少数只认真实坐标的场景）
               var rect=el.getBoundingClientRect();
               var x=rect.x+rect.width/2,y=rect.y+rect.height/2;
               var tag=A.clickAt(x,y);
-              return Promise.resolve({success:true,via:'real-mouse',tag:tag});
+              var res2={success:true,via:'real-mouse',tag:tag};
+              if(occ){res2.occluded=true;res2.autoDismissed=autoDismissed;res2.covering=coveringInfo;}
+              return res2;
             }
           }
+          // ===OCCLUSION-END===
           function notFound(sel){return{error:'元素未找到: '+sel,hint:'建议先调用 browser_get_page_info 获取编号元素列表，再用 index 参数定位'};}
           if(a.index!=null){
             var el=window.__yzElements&&window.__yzElements[a.index];
@@ -3185,7 +3297,28 @@ async function runBrowserAction(convId, tabId, action, args) {
           }
           if(a.selector){
             var els=A.resolveAll(a.selector);
-            if(els.length===0)return notFound(a.selector);
+            // ★ 隐藏回退（2026-10-11）：:contains 伪选择器只收可见元素（offsetParent!==null），
+            //   折叠菜单/弹层里的按钮会**报"未找到"**，模型因此反复换选择器乱试
+            //   （实测抖音「继续编辑」按钮即此场景）。改为：可见优先，无可见时放宽到
+            //   "DOM 中存在即可"并明确标注 —— DOM click 不受视口裁切影响（见 clickEl）。
+            if(els.length===0){
+              var loose=[];
+              try{
+                var cm=String(a.selector).match(/^([\s\S]*?):contains\(\s*["']([\s\S]*?)["']\s*\)\s*$/);
+                if(cm){
+                  var bels=document.querySelectorAll(cm[1]||'*');
+                  for(var li=0;li<bels.length;li++){var be=bels[li];
+                    if((be.textContent||'').trim().indexOf(cm[2])>=0)loose.push(be);}
+                }
+              }catch(e){}
+              if(loose.length===0)return notFound(a.selector);
+              // clickEl 返回 Promise（executeJavaScript 会自动 await），故用 then 修饰结果
+              return clickEl(loose[0]).then(function(r){
+                r.hiddenFallback=true;
+                r.hint='元素在 DOM 中但当前不可见（折叠菜单/弹层/未滚到视口），已按 DOM 点击执行；如未生效请先展开对应菜单或滚动到该区域再点。';
+                return r;
+              });
+            }
             if(els.length>1){
               var cands=els.slice(0,10).map(function(el){
                 return{index:A.register(el),tag:el.tagName.toLowerCase(),text:(el.textContent||'').trim().slice(0,40),selector:A.genSel(el)};
@@ -3515,7 +3648,6 @@ async function runBrowserAction(convId, tabId, action, args) {
             var el=window.__yzAssistant.resolve(sel);
             if(!el){
               // ★ 不再静默跳过：记入 failed（含原因），让调用方与模型都能看见
-              failed.push({selector:sel,reason:'元素未找到'});
               failed.push({selector:sel,reason:'元素未找到'});
               continue;
             }

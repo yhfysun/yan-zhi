@@ -751,6 +751,26 @@ function applyElectronScrollbarTheme() {
 }
 
 // ── 多标签页管理函数 ──
+/**
+ * ★ 弹窗/内嵌意图页面套 iframe 宿主页（2026-10-11）。
+ * 根因：抖音创作者后台跳「即梦授权页」这类 URL 带 `is_in_frame=1`（天生为**被嵌入**设计），
+ * 应用把 popup 重定向成**顶层**标签页后，页面的嵌入检测/握手失败 → 整页白屏
+ * （日志实证：该 tab 反复 dom-ready 却始终白屏；真 Chrome 里它走小弹窗所以正常）。
+ * 修法：这类 URL 不直接顶层加载，改为加载一个宿主页，在 100% iframe 里渲染它 —— 还原其预期的
+ * 被嵌入环境。地址栏仍显示原始 URL（tab.url 不变，只把 srcUrl 换成宿主页）。
+ */
+function wrapEmbedIntent(url: string): string {
+  if (!url || !/[?&]is_in_frame=1(?:&|$)/.test(url)) return url;
+  const safe = url.replace(/"/g, '&quot;');
+  const html = '<!doctype html><html><head><meta charset="utf-8">'
+    + '<style>html,body{margin:0;height:100%;overflow:hidden;background:#fff}'
+    + 'iframe{border:0;width:100%;height:100%;display:block}</style></head>'
+    + '<body><iframe src="' + safe + '" allow="*"></iframe></body></html>';
+  try {
+    return 'data:text/html;charset=utf-8;base64,' + btoa(unescape(encodeURIComponent(html)));
+  } catch { return url; }   // 编码失败就退回直接打开，不比现状更差
+}
+
 async function newTab(url?: string) {
   hideTabCtx();
   const api = (window as any).electronAPI;
@@ -764,7 +784,8 @@ async function newTab(url?: string) {
   const tab: BrowserTab = {
     id: tabId,
     url: url || '',
-    srcUrl: url || '',
+    // 内嵌意图页（is_in_frame=1）用 iframe 宿主页做 src，地址栏仍显示原始 url
+    srcUrl: wrapEmbedIntent(url || ''),
     title: '',
     loading: false,
     urlInput: url || '',
@@ -874,6 +895,7 @@ async function ctxClose(mode: 'tab' | 'left' | 'right' | 'others' | 'all') {
         else { activeTabId.value = ''; urlInput.value = ''; history.value = []; histIndex.value = -1; }
       }
     }
+    await ensureTabExists();   // 浏览器常保至少一个 tab
   } else {
     // 关闭全部：关光后自动新建一个空白标签，避免出现空标签栏
     for (const id of [...list]) {
@@ -912,6 +934,16 @@ async function closeTab(tabId: string) {
       electronCanForward.value = false;
     }
   }
+  // ★ 兜底（2026-10-11）：关掉最后一个 tab 后自动补一个空白 tab —— 浏览器**始终至少一个 tab**。
+  //   此前会停在"只剩 + 号"的无 tab 空态，而该状态下 activeTab 为空 → 地址栏回车与常用网站
+  //   点击都会静默失败（navigate 无处写 url、webview 元素不存在）。空白 tab 内仍显示起始主页。
+  await ensureTabExists();
+}
+
+/** 浏览器常保至少一个标签页：无 tab 时补一个空白 tab（起始主页在其内展示）。 */
+async function ensureTabExists() {
+  if (tabs.value.length > 0) return;
+  try { await newTab(); } catch { /* 建 tab 失败不阻断关闭主流程 */ }
 }
 
 // ── BrowserView 尺寸同步：监听占位 div 尺寸/位置变化，调用 setBounds 同步原生 BrowserView ──
@@ -1297,6 +1329,13 @@ const frameSrc = computed(() => {
 async function navigate() {
   const target = normalizeUrl(urlInput.value);
   if (!target) return;
+  // ★ 空态兜底（2026-10-11 实测）：起始主页（无任何标签页，仅"+"号）时在地址栏输 URL 回车，
+  //   activeTab 为空 → url 写不进 tab、webview 元素不存在 → load('') 静默失败，回车"没反应"。
+  //   先建 tab 再导航（newTab(url) 内部会设好 urlInput 并回调 navigate，此时 tab 已就绪）。
+  if (!activeTab.value) {
+    await newTab(target);
+    return;
+  }
   pendingNavUrl = target;
   pushHistory(target);
   loading.value = true;
@@ -1306,7 +1345,8 @@ async function navigate() {
     activeTab.value.urlInput = target;
     // srcUrl 只在"主动导航"时推进：页面自己点链接跳转只更新 url（见 applyNavigated），
     // 回写 :src 会让 webview 重新 loadURL → 历史栈出现两条相同记录 → 后退"看着没动"。
-    activeTab.value.srcUrl = target;
+    // 内嵌意图页（is_in_frame=1）改挂 iframe 宿主页，避免顶层打开白屏。
+    activeTab.value.srcUrl = wrapEmbedIntent(target);
     // 快照实时同步：tab.history/histIndex 只在 switchTab 时互存的话，路由切换（/browser 页 ↔
     // 对话页预览面板）重挂后 switchTab 会恢复到过期快照（history=[]），currentUrl 清空 →
     // showHome 误显示起始主页（"点了百度、tab 标题是百度、页面却变首页"的串扰根因）。

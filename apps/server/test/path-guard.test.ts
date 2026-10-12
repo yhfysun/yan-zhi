@@ -58,7 +58,7 @@ describe('isWithinRoot —— 与项目既有 4 处校验同判据', () => {
   it('Windows 大小写不敏感（否则用户明明在授权目录里却被弹窗）', () => {
     const upper = WS.toUpperCase();
     const lower = WS.toLowerCase();
-    if (upper === lower) return; // POSIX 上跳过
+    if (process.platform !== 'win32') return; // 大小写不敏感是 Windows 专属语义，POSIX 上跳过
     expect(isWithinRoot(join(upper, 'a.ts'), lower)).toBe(true);
     expect(isWithinRoot(join(lower, 'a.ts'), upper)).toBe(true);
   });

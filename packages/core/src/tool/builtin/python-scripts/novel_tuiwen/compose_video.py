@@ -120,30 +120,81 @@ def esc_drawtext(s: str) -> str:
     return s
 
 
-def fmt_srt_ts(sec: float) -> str:
-    ms = int(round(sec * 1000))
-    h, ms = divmod(ms, 3600000)
-    m, ms = divmod(ms, 60000)
-    s, ms = divmod(ms, 1000)
-    return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+def fmt_ass_ts(sec: float) -> str:
+    """ASS 时间戳 H:MM:SS.cc（厘秒两位，四舍五入进位后钳 99）。"""
+    cs = int(round(sec * 100))
+    if cs >= 100 * 3600 * 24:  # 防御：超长不崩
+        cs = 100 * 3600 * 24 - 1
+    h, rem = divmod(cs, 100 * 3600)
+    m, rem = divmod(rem, 100 * 60)
+    s, cs = divmod(rem, 100)
+    if cs == 100:  # round 进位兜底
+        cs = 99
+    return f"{h:01d}:{m:02d}:{s:02d}.{cs:02d}"
 
 
-def build_srt(cues, out_path, wrap_chars=20):
-    """长句按 ≤2 行 x wrap_chars 显示宽度切块, 时间按显示宽度比例分摊。
-    wrap_chars 由画幅+字幕字号动态算出（见 main），防止字幕行超出画面宽度。"""
-    idx = 0
+def ass_clean(s: str) -> str:
+    """ASS 文本消毒：花括号/反斜杠会让 libass 把用户文本当内联标签吞掉，整组剥离。"""
+    import re
+    return re.sub(r"[{}\\]", "", s or "")
+
+
+def chunk_single_line(text: str, max_chars: int):
+    """按显示宽度把一条 cue 切成**单行**小块（时间按宽度比例分摊）。
+    单行快切 = 字幕逐句推进的"滚动感"，也彻底消灭两行长块。"""
+    pieces, cur, w = [], "", 0.0
+    for ch in text:
+        cw = disp_w(ch)
+        if cur and w + cw > max_chars:
+            pieces.append(cur)
+            cur, w = "", 0.0
+        cur += ch
+        w += cw
+    if cur:
+        pieces.append(cur)
+    return pieces or [text]
+
+
+def build_ass(cues, out_path, font_px: int, margin_v: int, fade_ms: int = 140):
+    """直接生成 ASS 字幕（替代 SRT，2026-10-11）：
+    - PlayRes = 真实分辨率 → FontSize 直接就是像素，不再经过 288 基准换算；
+    - 每条 Dialogue 单行 + {\\fad(fade_ms,fade_ms)} 淡入淡出，观感为逐句滚动推进；
+    - 无底框（BorderStyle=1）：白字加粗 + 黑描边(3px) + 轻投影(1px)，不再压一块黑底。
+    cues: (start, end, text)"""
+    max_chars = max(6, int(W * 0.88 / font_px))
+    lines = [
+        "[Script Info]",
+        "ScriptType: v4.00+",
+        f"PlayResX: {W}",
+        f"PlayResY: {H}",
+        "WrapStyle: 2",
+        "ScaledBorderAndShadow: yes",
+        "",
+        "[V4+ Styles]",
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, "
+        "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, "
+        "Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
+        f"Style: Default,Microsoft YaHei,{font_px},&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,"
+        f"1,0,0,0,100,100,0,0,1,3,1,2,40,40,{margin_v},1",
+        "",
+        "[Events]",
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
+    ]
+    for start, end, text in cues:
+        dur = max(end - start, 0.001)
+        pieces = chunk_single_line(ass_clean(text), max_chars)
+        weights = [sum(disp_w(c) for c in p) for p in pieces]
+        total_w = sum(weights) or 1.0
+        t = start
+        for p, wgt in zip(pieces, weights):
+            d = dur * wgt / total_w
+            lines.append(
+                f"Dialogue: 0,{fmt_ass_ts(t)},{fmt_ass_ts(t + d)},Default,,0,0,0,,"
+                f"{{\\fad({fade_ms},{fade_ms})}}{p}"
+            )
+            t += d
     with open(out_path, "w", encoding="utf-8-sig") as f:
-        for start, end, text in cues:
-            chunks = wrap_text(text, wrap_chars * 2).split("\n") or [text]
-            dur = end - start
-            weights = [sum(disp_w(c) for c in ch) for ch in chunks]
-            total_w = sum(weights) or 1.0
-            t = start
-            for c, n in zip(chunks, weights):
-                d = dur * n / total_w
-                idx += 1
-                f.write(f"{idx}\n{fmt_srt_ts(t)} --> {fmt_srt_ts(t + d)}\n{wrap_text(c, wrap_chars)}\n\n")
-                t += d
+        f.write("\n".join(lines) + "\n")
 
 
 def make_placeholder(scene: str, out_png: str, ffmpeg: str):
@@ -180,7 +231,9 @@ def main():
     ap.add_argument("--title-size", type=int, default=64)
     ap.add_argument("--bgm", default="")
     ap.add_argument("--aspect", default="4:3", choices=list(ASPECT_SIZES.keys()), help="画幅: 4:3(默认) / 9:16(抖音竖屏) / 16:9(横屏)")
-    ap.add_argument("--banner", default="", help="顶部常驻引导语（发抖音传：搜「别名」看全文）。优先于 script.banner 与 script.title；书名红线：画面顶部禁原书名")
+    ap.add_argument("--banner", default="", help="顶部常驻引导语（覆盖自动生成的标题条）。书名红线：画面顶部禁原书名")
+    ap.add_argument("--alias", default="", help="别名：与 --chapter 一起自动拼标题条「搜「别名」看全文｜番茄小说 第N章」（三要素）")
+    ap.add_argument("--chapter", default="", help="第几章（如 3）：标题条与文件名都会带（第N章）")
     ap.add_argument("--keep-temp", action="store_true")
     a = ap.parse_args()
     global W, H
@@ -209,13 +262,16 @@ def main():
         cues.append((t, t + d, text))
         t += d
 
-    # ★ 字幕换行宽度动态算（2026-10-09 修"字幕超出画面"）：libass 对 SRT 默认 PlayResY=288，
-    #   FontSize=14 渲染像素 ≈ 14 * H/288（4:3≈70px/字、9:16≈93px/字、16:9≈52px/字），
-    #   原来写死 20 字/行在 4:3/9:16 下必然超宽。每行字数 = 画面宽度*0.90 / 单字像素。
-    _font_px = 14.0 * H / 288.0
-    wrap_chars = max(8, int(W * 0.90 / _font_px))
-    srt = os.path.join(tmp, "subs.srt")
-    build_srt(cues, srt, wrap_chars)
+    # ★ 字幕效果（2026-10-11 重做）：改走 ASS 直接生成——
+    #   ① 无底框：白字加粗+黑描边(3px)+轻投影（黑底 box 用户反馈太丑，已撤）；
+    #   ② 字号随画幅：PlayRes=真实分辨率，FontSize=H*4.2%（4:3≈60px/9:16≈80px/16:9≈45px）；
+    #   ③ 单行快切：长句按显示宽度切成单行小块、时间按宽度分摊，字幕逐句推进（"滚动"观感），
+    #      彻底消灭两行长块换行；
+    #   ④ 每条 Dialogue 带 \fad(140,140) 淡入淡出，衔接更顺。老版 ffmpeg 的 libass 全兼容。
+    sub_font_px = max(40, int(H * 0.042))
+    margin_v = max(40, int(H * 0.05))
+    ass = os.path.join(tmp, "subs.ass")
+    build_ass(cues, ass, sub_font_px, margin_v)
 
     # ---- 2) 音频拼接 (+可选 BGM) ----
     audio_out = os.path.join(tmp, "narration.m4a")
@@ -243,7 +299,16 @@ def main():
     #   因为项目自带的 ffmpeg 是 2019 版（实测 `text_align` 报 Option not found；`line_spacing`/`alpha` 均支持）。
     #   链式多行在任意 ffmpeg 版本都稳，故不依赖 text_align。
     #   alpha 表达式做 0.6s 淡入。
-    top_text = a.banner or script.get("banner") or script.get("title", "小说推文")
+    # ★ 标题条三要素（2026-10-11）：别名 + 番茄小说 + 第N章。--banner 显式覆盖 >
+    #   --alias/--chapter 自动拼 > script.banner > title 兜底（此时告警：缺三要素且违反书名红线）。
+    top_text = a.banner or script.get("banner") or ""
+    if not top_text and (a.alias or a.chapter):
+        tail = "番茄小说" + (f" 第{a.chapter}章" if a.chapter else "")
+        top_text = f"搜「{a.alias}」看全文｜{tail}" if a.alias else tail
+    if not top_text:
+        top_text = script.get("title", "小说推文")
+        print("[compose] ⚠️ 未传 --banner/--alias/--chapter，标题条缺「别名+番茄小说+第N章」"
+              "三要素（书名红线要求烧别名而非书名）", file=sys.stderr)
     max_chars = max(6, int(W * 0.90 / a.title_size))
     title_lines = wrap_title(top_text, max_chars)
     _line_step = a.title_size + 12
@@ -255,21 +320,27 @@ def main():
         _parts.append(
             f"drawtext=fontfile='C\\:/Windows/Fonts/msyh.ttc':text='{_t}':"
             f"fontcolor=white:fontsize={a.title_size}:x=(w-text_w)/2:y={80 + _i * _line_step}:"
+            f"box=1:boxcolor=black@0.45:boxborderw=14:"
             f"borderw=3:bordercolor=black@0.7:"
             f"alpha='if(lt(t,0.6),t/0.6,1)'"
         )
     title_vf = ",".join(_parts) if _parts else (
         f"drawtext=fontfile='C\\:/Windows/Fonts/msyh.ttc':text='{esc_drawtext(top_text)}':"
         f"fontcolor=white:fontsize={a.title_size}:x=(w-text_w)/2:y=80:"
+        f"box=1:boxcolor=black@0.45:boxborderw=14:"
         f"borderw=3:bordercolor=black@0.7"
     )
-    srt_abs = os.path.abspath(srt).replace("\\", "/").replace(":", "\\:")
+    srt_abs = os.path.abspath(ass).replace("\\", "/").replace(":", "\\:")
     fontsdir_esc = FONTS_DIR.replace("\\", "/").replace(":", "\\:")
-    sub_vf = (f"subtitles='{srt_abs}':fontsdir='{fontsdir_esc}':"
-              f"force_style='FontName=Microsoft YaHei,FontSize=14,Outline=2,MarginV=60,Alignment=2'")
+    # ASS 自带完整样式（PlayRes=真实像素），无需 force_style；fontsdir 供 libass 找雅黑
+    sub_vf = f"subtitles='{srt_abs}':fontsdir='{fontsdir_esc}'"
     final_vf = f"{sub_vf},{title_vf}"
 
-    out_name = f"{script.get('title', 'novel')}_{os.path.splitext(os.path.basename(a.script))[0]}.mp4"
+    # 文件名：传了别名/章节时用「别名_第N章.mp4」，否则回落旧命名
+    if a.alias or a.chapter:
+        out_name = f"{a.alias or script.get('title', 'novel')}" + (f"_第{a.chapter}章" if a.chapter else "") + ".mp4"
+    else:
+        out_name = f"{script.get('title', 'novel')}_{os.path.splitext(os.path.basename(a.script))[0]}.mp4"
     final = os.path.join(a.outdir, out_name)
 
     bg_clips = [p.strip() for p in a.bg_video.split(",") if p.strip()] if a.bg_video else []
