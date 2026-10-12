@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>yan-zhi</title>
+<style>
+  /* 启动加载壳（2026-10-12）：后端健康检查期间显示，主窗 ready-to-show 后销毁。
+     极简：logo 文字 + indeterminate 滑条 + 一行阶段文案。无任何用户侧交互。 */
+  :root {
+    --bg: #1d1d1c;        /* 与主窗 backgroundColor 一致，衔接零闪烁 */
+    --title: #e6e6e6;
+    --muted: #8a8a8a;
+    --accent: #3b82f6;
+    --track: rgba(255, 255, 255, 0.10);
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    width: 100%; height: 100%; overflow: hidden;
+    background: var(--bg); color: var(--title);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', sans-serif;
+    -webkit-user-select: none; user-select: none;
+    -webkit-app-region: drag;   /* 无框窗：整个 splash 可拖动 */
+    cursor: default;
+  }
+  .root {
+    width: 100%; height: 100%;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    gap: 22px;
+  }
+  .logo {
+    font-size: 30px; font-weight: 600; letter-spacing: 2px;
+    color: var(--title);
+  }
+  .track {
+    width: 240px; height: 4px; border-radius: 2px;
+    background: var(--track); overflow: hidden;
+  }
+  .bar {
+    height: 100%; width: 30%;
+    background: var(--accent); border-radius: 2px;
+    animation: slide 1.4s linear infinite;
+  }
+  .bar.failed { animation: none; width: 100%; background: #ef4444; }
+  @keyframes slide {
+    0% { transform: translateX(-100%); }
+    100% { transform: translateX(333%); }
+  }
+  .caption {
+    font-size: 12px; color: var(--muted);
+    max-width: 420px; text-align: center;
+    line-height: 1.6; white-space: pre-line;
+  }
+</style>
+</head>
+<body>
+  <div class="root">
+    <div class="logo">言智</div>
+    <div class="track"><div id="bar" class="bar"></div></div>
+    <div id="caption" class="caption">正在准备运行环境…</div>
+  </div>
+
+  <script>
+    (function () {
+      var bar = document.getElementById('bar');
+      var caption = document.getElementById('caption');
+      // splash-preload.cjs 暴露 window.splashAPI；直接 file:// 调试时无 api，展示默认态
+      var api = window.splashAPI;
+      function apply(u) {
+        if (!u || typeof u !== 'object') return;
+        if (typeof u.caption === 'string') caption.textContent = u.caption;
+        if (u.failed) { bar.classList.add('failed'); }
+        else { bar.classList.remove('failed'); }
+      }
+      if (api && typeof api.onUpdate === 'function') api.onUpdate(apply);
+      if (api && typeof api.getLastUpdate === 'function') {
+        Promise.resolve(api.getLastUpdate()).then(apply).catch(function () {});
+      }
+    })();
+  </script>
+</body>
+</html>

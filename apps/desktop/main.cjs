@@ -107,6 +107,48 @@ function sharedDataDir(sub) {
 
 let serverProcess = null;
 let tray = null;
+
+// ★★★ 启动加载壳（splash，2026-10-12）：后端健康检查期间显示，主窗 ready-to-show 后销毁。
+//   背景：tsx 冷启动曾 >30s，旧逻辑 30s 超时后**强制创建主窗** → 前端请求全被拒
+//   （ERR_CONNECTION_REFUSED / 白屏）。现在超时不再建窗，改在 splash 上显示失败态。
+let splashWindow = null;
+let splashLastUpdate = null;   // splashAPI.getLastUpdate 的数据源（防错过已推送状态）
+const SPLASH_HEALTH_TIMEOUT_MS = 120000; // dev tsx 冷编译实测 60s+，30s 太紧
+function pushSplashUpdate(update) {
+  splashLastUpdate = update;
+  if (splashWindow && !splashWindow.isDestroyed()) {
+    splashWindow.webContents.send('splash:update', update);
+  }
+}
+function createSplashWindow() {
+  if (splashWindow && !splashWindow.isDestroyed()) return;
+  splashWindow = new BrowserWindow({
+    width: 360,
+    height: 200,
+    frame: false,
+    resizable: false,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    skipTaskbar: false,
+    backgroundColor: '#1D1D1C',
+    show: true,
+    center: true,
+    webPreferences: {
+      preload: path.join(__dirname, 'splash-preload.cjs'),
+      nodeIntegration: false,
+      contextIsolation: true,
+      spellcheck: false,
+    },
+  });
+  void splashWindow.loadFile(path.join(__dirname, 'splash.html'));
+}
+function destroySplashWindow() {
+  if (splashWindow && !splashWindow.isDestroyed()) {
+    try { splashWindow.destroy(); } catch { /* 已销毁则忽略 */ }
+  }
+  splashWindow = null;
+}
 let isQuitting = false;
 // BrowserView 多标签页管理：tabId → entry
 //   entry = { view, cacheClearPromise, scrollbarCssKey, attached, visible, bounds,
@@ -260,6 +302,15 @@ const convAnchors = new Map(); // convId → tabId
  * ★ 用 Map 而非 Set：需要知道"哪个会话该关哪些页"，收尾时按 convId 过滤。
  */
 const agentTouchedTabs = new Map();
+
+/**
+ * tab 最近一次广播/导航的 URL（2026-10-12）：navigate 自建分支"同 URL 复用"的判据。
+ * ★ 写入点：① 自建路径广播 tabCreated 前；② tabClosed 时清除（防陈旧复用）。
+ *   只存主进程已知的 URL（渲染层自行导航的 URL 不强求覆盖 —— 复用判定保守，
+ *   找不到就新建，行为与修复前一致，不会错杀）。
+ * ★ 上限兜底：与 agentTouchedTabs 同手法（Map 插入序淘汰最老）。
+ */
+const broadcastTabUrl = new Map();
 
 /** tab 的归属空间（取不到时回落 'preview'，与既有 `scopeOf` 口径一致） */
 function scopeOfTab(tabId) {
@@ -721,6 +772,9 @@ function createWindow() {
       } catch (e) { console.warn('[dev-icon] setIcon 失败:', e && e.message); }
     }
     mainWindow?.show();
+    // ★ splash 生命周期收口：主窗真正可见后才销毁（无缝衔接，不白闪）。
+    //   挂在 ready-to-show 里而非健康检查通过处 —— 建窗 ≠ 可见。
+    destroySplashWindow();
   });
 
   // 关闭窗口时隐藏而非销毁（守护模式：后端保持运行，可通过托盘重新打开）
@@ -1465,6 +1519,8 @@ ipcMain.on('window-close', (event) => {
   else mainWindow?.close();
 });
 ipcMain.handle('window-is-maximized', (event) => winOf(event)?.isMaximized() || false);
+// splash 状态回拉：splash 渲染层加载完成后立即取一次最新推送，避免错过已发状态
+ipcMain.handle('splash:get-last-update', () => splashLastUpdate);
 // 界面刷新（顶栏刷新按钮）：走 webContents.reloadIgnoringCache 而非渲染层 location.reload()，
 // 前者会丢弃渲染进程缓存的旧资源，界面卡死/白屏后更容易恢复
 ipcMain.on('window-reload', (event) => winOf(event)?.webContents.reloadIgnoringCache());
@@ -1771,6 +1827,7 @@ function broadcastTabClosed(tabId) {
   //   把"指向该 tab 的会话锚"一并失效 —— 逐条路径各清一次必然漏（`case 'close_tab'`
   //   此前就没走 closeTabById，正是活证）。放在广播处是唯一不漏的位置。
   clearConvAnchorsForTab(tabId);
+  broadcastTabUrl.delete(String(tabId));   // 同步清 URL 记账（防陈旧复用）
   try {
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('browserView:tabClosed', tabId);
@@ -2907,12 +2964,36 @@ async function runBrowserAction(convId, tabId, action, args) {
       if (convId) {
         const scopeMeta0 = (tabId ? webviewTabs.get(tabId) : null);
         const wantScope = (scopeMeta0 && scopeMeta0.scope) || `preview:${convId}`;
-        try {
-          tabId = createBrowserTab(wantScope);
-          // ★ 登记"本会话操作过"——否则后续带显式 tabId 的动作会被越权闸门**误拒**
-          //   （见上方长注释：渲染层建 guest 走 createTab，不经过 action 登记点）。
-          markConvTabTouched(convId, tabId);
-        } catch { /* 建 tab 失败 → 退回下方广播路径（行为与修复前一致） */ }
+        // ===NAV-REUSE-START=== 同 URL 复用（2026-10-12）；navigate-reuse-tab.test.cjs 经此哨兵抽取真实代码
+        // ★★★ 同 URL 复用：自建前先找本会话**已登记**的 tab 里有没有"同 URL 且存活"的
+        //   —— 有就复用，不再新建。
+        //   为什么必须（2026-10-12 14:35~14:40 实测）：渲染层被堵时 guest 迟迟建不出，
+        //   navigate 30s 超时 → 模型重试 → **每次重试都走到这里新建一个 tab 壳并广播**
+        //   （tab-1~tab-6 连号同 URL）→ 渲染层恢复后 6 个壳同时 spawn 8 个 guest 进程
+        //   → CPU/内存尖峰 = 「更新后应用变卡」的直接推手之一。
+        //   复用口径：只认 `agentTouchedTabs` 里属于本会话的 tab（agent 自己的页，
+        //   绝不碰用户手开的），URL 归一化后相同（与 alreadyOpen 同一 normUrl 口径）。
+        const normUrlLoc = (u) => String(u || '').trim().replace(/^https?:\/\//i, '').replace(/\/+$/, '').toLowerCase();
+        let reused = null;
+        for (const [tid, owner] of agentTouchedTabs) {
+          if (owner !== String(convId)) continue;
+          const meta = webviewTabs.get(tid);
+          if (!meta) continue;                       // 已被 LRU 逐出/关闭
+          const existed = broadcastTabUrl.get(tid);
+          if (existed && normUrlLoc(existed) === normUrlLoc(cleanUrl)) { reused = tid; break; }
+        }
+        if (reused) {
+          tabId = reused;
+          console.log(`[browser-action] navigate 自建前复用同 URL tab: ${reused} url=${cleanUrl}`);
+        } else {
+          try {
+            tabId = createBrowserTab(wantScope);
+            // ★ 登记"本会话操作过"——否则后续带显式 tabId 的动作会被越权闸门**误拒**
+            //   （见上方长注释：渲染层建 guest 走 createTab，不经过 action 登记点）。
+            markConvTabTouched(convId, tabId);
+          } catch { /* 建 tab 失败 → 退回下方广播路径（行为与修复前一致） */ }
+        }
+        // ===NAV-REUSE-END===
       }
       // ★★★ 2026-10-10 二次根因修复：**改用 `browserView:tabCreated` 通道**（与 `new_tab` 同口径）。
       //
@@ -2928,6 +3009,7 @@ async function runBrowserAction(convId, tabId, action, args) {
       // 幂等：渲染层 onTabCreated 对已有壳的 tabId 会直接忽略，重复广播无副作用。
       const waitForGuestStart = Date.now();
       try {
+        if (tabId) broadcastTabUrl.set(String(tabId), cleanUrl);   // 同 URL 复用判据（2026-10-12）
         mainWindow.webContents.send('browserView:tabCreated', tabId || null, cleanUrl, scope);
         console.log(`[browser-action] 已广播 tabCreated: url=${cleanUrl} scope=${scope} tab=${tabId || '-'}`);
       } catch { /* ignore */ }
@@ -3876,6 +3958,7 @@ async function runBrowserAction(convId, tabId, action, args) {
           activeTabId = tabId;
           // 通知渲染层补建 host tab 壳(:src=url 会驱动新建 <webview> 并注册 guest)，并激活
           if (mainWindow && !mainWindow.isDestroyed()) {
+            if (target) broadcastTabUrl.set(String(tabId), target);   // 同 URL 复用判据（2026-10-12）
             mainWindow.webContents.send('browserView:tabCreated', tabId, target || null, scope);
           }
           // 等 guest spawn + 注册(渲染层 :src 后 dom-ready) → 返回新 tab 元信息
@@ -5464,19 +5547,51 @@ app.whenReady().then(async () => {
   // （默认组合被占用时静默降级为"未注册"，由设置页显示冲突让用户改）
   setScreenshotHotkey(DEFAULT_SHOT_ACCEL);
 
-  // 健康检查：轮询后端 /api/health，就绪后创建窗口（替代固定 1.5s 延迟）
-  const checkHealth = (retries = 0) => {
-    if (retries > 60) { // 最多等 30 秒
-      console.error('[后端] 启动超时，强制创建窗口');
-      try { fs.appendFileSync(path.join(app.getPath('userData'), 'server.log'), `[${new Date().toLocaleString('zh-CN', { hour12: false })}] [后端] 30 秒健康检查超时，后端未就绪，强制创建窗口（大概率后端启动失败，见上方日志）\n`); } catch {}
+  // 健康检查：轮询后端 /api/health，就绪后创建窗口（替代固定 1.5s 延迟）。
+  // ★★★ 2026-10-12 改造：启动即显示 splash 加载壳；
+  //   ① 超时**不再强制 createWindow**（旧逻辑把必然白屏/拒连的窗口丢给用户），
+  //      改为 splash 显示「启动失败」态（见 server.log）；
+  //   ② dev 模式额外等 Vite(1420) 就绪 —— Vite 未起时建主窗同样白屏。
+  const viteOrigin = 'http://localhost:1420';
+  const checkVite = (retries, onReady) => {
+    const req = http.get(viteOrigin, (res) => {
+      res.resume();
+      onReady();
+    });
+    req.on('error', () => setTimeout(() => checkVite(retries + 1, onReady), 500));
+    req.setTimeout(2000, () => { req.destroy(); setTimeout(() => checkVite(retries + 1, onReady), 500); });
+  };
+  const onBackendReady = () => {
+    console.log('[后端] 健康检查通过');
+    if (process.argv.includes('--dev') && !app.isPackaged) {
+      checkVite(0, () => {
+        console.log('[vite] dev server 就绪，创建窗口');
+        createWindow();
+      });
+    } else {
       createWindow();
+    }
+  };
+  const startedAt = Date.now();
+  const checkHealth = (retries = 0) => {
+    if (Date.now() - startedAt >= SPLASH_HEALTH_TIMEOUT_MS) {
+      console.error('[后端] 启动超时（120 秒），不创建主窗，splash 显示失败态');
+      try { fs.appendFileSync(path.join(app.getPath('userData'), 'server.log'), `[${new Date().toLocaleString('zh-CN', { hour12: false })}] [后端] 120 秒健康检查超时，后端未就绪（大概率后端启动失败，见上方日志）；主窗未创建，请在 splash 结束后重启应用\n`); } catch {}
+      pushSplashUpdate({
+        failed: true,
+        caption: '启动失败：后端服务未能在 120 秒内就绪。\n请查看日志后重启应用。\n' + path.join(app.getPath('userData'), 'server.log'),
+      });
       return;
+    }
+    // 每 10 次重试（约 5 秒）刷新一次等待文案，避免用户面对静止画面
+    if (retries > 0 && retries % 10 === 0) {
+      const sec = Math.round((Date.now() - startedAt) / 1000);
+      pushSplashUpdate({ caption: `正在启动后端服务…（已等待 ${sec} 秒）` });
     }
     const req = http.get(API_ORIGIN + '/api/health', (res) => {
       res.resume();
       if (res.statusCode === 200) {
-        console.log('[后端] 健康检查通过，创建窗口');
-        createWindow();
+        onBackendReady();
       } else {
         setTimeout(() => checkHealth(retries + 1), 500);
       }
@@ -5484,6 +5599,7 @@ app.whenReady().then(async () => {
     req.on('error', () => setTimeout(() => checkHealth(retries + 1), 500));
     req.setTimeout(2000, () => { req.destroy(); setTimeout(() => checkHealth(retries + 1), 500); });
   };
+  createSplashWindow();
   setTimeout(checkHealth, 300);
 
   // 创建系统托盘图标（关闭窗口时后端保持守护运行，通过托盘退出）

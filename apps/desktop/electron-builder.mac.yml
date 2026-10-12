@@ -13,6 +13,9 @@ files:
   - snip-preload.cjs
   - snip-overlay.html
   - snip-overlay.js
+  # ★★ 启动加载壳（2026-10-12）：健康检查期间显示，漏登记 = 打包版 splash 加载失败（白屏壳）
+  - splash.html
+  - splash-preload.cjs
   - keyring-crypto.cjs
   # ★★ 实例配置单一真相源（端口 / userData / 共享目录）：main.cjs 第 10 行 require('./instance.cjs')。
   #   漏登记 = 打包版启动即崩（Error: Cannot find module './instance.cjs'）——
