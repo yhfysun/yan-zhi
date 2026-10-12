@@ -249,28 +249,29 @@ router.post('/models/batch', (req: Request, res: Response) => {
   const insertStmt = db.prepare(
     'INSERT OR IGNORE INTO model (id, platform_id, user_id, model_id, alias, type, context_window, capabilities_json, pricing_json, enabled, is_default, is_builtin, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)',
   );
-  const updateStmt = db.prepare(
-    'UPDATE model SET type = ?, enabled = 1 WHERE platform_id = ? AND user_id = ? AND model_id = ? AND is_builtin = 0',
-  );
   // 内置本地模型平台的模型行使用确定性 ID（ollama-local__<model_id>），跨机器一致
   const newRowId = (modelId: string) =>
     platformId === LOCAL_MODEL_PLATFORM_ID ? `${LOCAL_MODEL_PLATFORM_ID}__${modelId}` : uuid();
 
+  // 拉取远程模型语义：同名只重新启用（不动用户配置），远程新增的入库，库里多出的隐藏
+  //（enabled=0，不删除；下次远端又出现会被重新放开）。is_builtin = 1 的行不参与拉取
   db.transaction(() => {
     for (const m of models) {
       if (existingIds.has(m.modelId)) {
-        updateStmt.run(m.type || 'llm', platformId, uid, m.modelId);
-      } else {
-        // ★ D7：同上（null = 未声明，不兜成 1M）
-        insertStmt.run(newRowId(m.modelId), platformId, uid, m.modelId, m.alias || null, m.type || 'llm',
-          (m.contextWindow === null || m.contextWindow === undefined) ? null : m.contextWindow,
-          JSON.stringify(resolveCapabilities(m.modelId, m.capabilities)), JSON.stringify(m.pricing || {}),
-          m.enabled !== undefined ? (m.enabled ? 1 : 0) : 1, m.isDefault ? 1 : 0, now);
+        // 同名：不动别名/类型/上下文等用户配置，仅「重新启用」（enabled=1），
+        // 使远端再次出现的模型自动放开；is_builtin 行本就一直启用，跳过
+        db.prepare('UPDATE model SET enabled = 1 WHERE platform_id = ? AND user_id = ? AND model_id = ? AND is_builtin = 0').run(platformId, uid, m.modelId);
+        continue;
       }
+      // ★ D7：null = 未声明，不兜成 1M
+      insertStmt.run(newRowId(m.modelId), platformId, uid, m.modelId, m.alias || null, m.type || 'llm',
+        (m.contextWindow === null || m.contextWindow === undefined) ? null : m.contextWindow,
+        JSON.stringify(resolveCapabilities(m.modelId, m.capabilities)), JSON.stringify(m.pricing || {}),
+        m.enabled !== undefined ? (m.enabled ? 1 : 0) : 1, m.isDefault ? 1 : 0, now);
     }
-    for (const existingId of existingIds) {
-      if (!remoteIds.has(existingId)) {
-        db.prepare('UPDATE model SET enabled = 0 WHERE platform_id = ? AND user_id = ? AND model_id = ? AND is_builtin = 0').run(platformId, uid, existingId);
+    for (const r of existingRows) {
+      if (!remoteIds.has(r.model_id) && !r.is_builtin) {
+        db.prepare('UPDATE model SET enabled = 0 WHERE platform_id = ? AND user_id = ? AND model_id = ? AND is_builtin = 0').run(platformId, uid, r.model_id);
       }
     }
   })();

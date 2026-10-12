@@ -550,13 +550,31 @@ function loadModel(modelId: string, userId: string, platformId?: string): Model 
   return rowToModel(row, DEFAULT_CONTEXT_WINDOW);
 }
 
-/** list_models 工具执行：列出当前用户所有已启用且对模型可见的模型（可按 platformId/type/capability 过滤），
- *  返回语义化文本，供 LLM 选型（图片/视频/视觉/推理等任务指定模型）。
+/** list_models 工具执行：列出当前用户所有已启用且对模型可见的模型（可按 platformId/type/capability/category 过滤、分页），
+ *  返回语义化文本，供 LLM 选型（图片/视频/视觉/向量化等任务指定模型）。
  *  可见性口径与前端模型下拉一致：查不到的平台/模型，智能体也不该动态选中。 */
 function listAvailableModels(userId: string, args: Record<string, unknown>): string {
   const platformId = args.platformId as string | undefined;
   const typeFilter = args.type as string | undefined;
   const capFilter = args.capability as string | undefined;
+  const category = args.category as string | undefined;
+  const limitRaw = Number(args.limit);
+  const offsetRaw = Number(args.offset);
+  const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(Math.floor(limitRaw), 200) : 50;
+  const offset = Number.isFinite(offsetRaw) && offsetRaw > 0 ? Math.floor(offsetRaw) : 0;
+
+  // 语义分类 → 等价 type/capability 谓词（与 type/capability 同时传时以 category 为准）
+  const CATEGORY_MAP: Record<string, { type?: string; cap?: string }> = {
+    llm: { type: 'llm' },
+    image: { type: 'image' },
+    video: { type: 'video' },
+    vision: { cap: 'vision' },
+    embedding: { type: 'embedding' },
+    audio: { type: 'audio' },
+  };
+  const catRule = category ? CATEGORY_MAP[category] : undefined;
+  const effType = catRule?.type ?? typeFilter;
+  const effCap = catRule?.cap ?? capFilter;
 
   // 查平台（含过滤）：平台级总开关关掉即整平台不可见
   let platformRows: any[];
@@ -567,37 +585,51 @@ function listAvailableModels(userId: string, args: Record<string, unknown>): str
   }
   if (platformRows.length === 0) return platformId ? `平台不存在或未对模型开放: ${platformId}` : '当前用户未配置任何可用于大模型的模型平台';
 
-  const lines: string[] = [];
-  let total = 0;
+  // 先摊平为「平台名 + 模型」扁平列表，便于统一分类过滤与分页
+  type Row = { platformName: string; platformId: string; protocol: string; m: any };
+  const all: Row[] = [];
   for (const p of platformRows) {
     const models = db.prepare('SELECT * FROM model WHERE platform_id = ? AND user_id = ? AND enabled = 1 AND visible = 1').all(p.id, userId) as any[];
-    let matched: any[] = models;
-    if (typeFilter) matched = matched.filter((m: any) => (m.type || 'llm') === typeFilter);
-    if (capFilter) {
-      matched = matched.filter((m: any) => {
-        try { return (JSON.parse(m.capabilities_json || '[]')).includes(capFilter); } catch { return false; }
-      });
-    }
-    if (matched.length === 0) continue;
-
-    lines.push(`**平台 ${p.name}** (id: \`${p.id}\`, protocol: ${p.protocol || 'openai'})`);
-    for (const m of matched) {
-      total++;
-      const caps = (() => { try { return JSON.parse(m.capabilities_json || '[]'); } catch { return []; } })();
-      const type = m.type || 'llm';
-      const alias = m.alias || m.model_id;
-      const desc = m.description ? ` | 描述: ${m.description}` : '';
-      const capStr = caps.length ? ` | 能力: ${caps.join(',')}` : '';
-      lines.push(`  - ${alias} (model: \`${m.model_id}\`, id: \`${m.id}\`) [type=${type}${capStr}]${desc}`);
+    for (const m of models) {
+      const caps: string[] = (() => { try { return JSON.parse(m.capabilities_json || '[]'); } catch { return []; } })();
+      if (effType && (m.type || 'llm') !== effType) continue;
+      if (effCap && !caps.includes(effCap)) continue;
+      all.push({ platformName: p.name, platformId: p.id, protocol: p.protocol || 'openai', m });
     }
   }
+  all.sort((a, b) => a.platformName.localeCompare(b.platformName) || (a.m.alias || a.m.model_id).localeCompare(b.m.alias || b.m.model_id));
 
+  const total = all.length;
   if (total === 0) {
-    const hint = typeFilter || capFilter ? `（过滤条件 type=${typeFilter || '-'} capability=${capFilter || '-'} 下无匹配）` : '';
+    const hint = category || effType || effCap ? `（过滤条件 category=${category || '-'} type=${effType || '-'} capability=${effCap || '-'} 下无匹配）` : '';
     return `未找到可用模型${hint}。可用 list_models（不带过滤）查看全部模型。`;
   }
-  lines.unshift(`共 ${total} 个可用模型：`);
-  return lines.join('\n');
+
+  const page = all.slice(offset, offset + limit);
+  const hasMore = offset + limit < total;
+
+  // 按平台分组输出当前页
+  const lines: string[] = [];
+  let lastPid = '';
+  for (const r of page) {
+    if (r.platformId !== lastPid) {
+      lines.push(`**平台 ${r.platformName}** (id: \`${r.platformId}\`, protocol: ${r.protocol})`);
+      lastPid = r.platformId;
+    }
+    const caps = (() => { try { return JSON.parse(r.m.capabilities_json || '[]'); } catch { return []; } })();
+    const type = r.m.type || 'llm';
+    const alias = r.m.alias || r.m.model_id;
+    const desc = r.m.description ? ` | 描述: ${r.m.description}` : '';
+    const capStr = caps.length ? ` | 能力: ${caps.join(',')}` : '';
+    lines.push(`  - ${alias} (model: \`${r.m.model_id}\`, id: \`${r.m.id}\`) [type=${type}${capStr}]${desc}`);
+  }
+
+  const pageLabel = `第 ${offset + 1}-${offset + page.length} 条 / 共 ${total} 条`;
+  const moreHint = hasMore
+    ? `\n（还有更多，传 offset=${offset + limit} 取下一页；limit 可调每页条数，最大 200）`
+    : '';
+  lines.unshift(`可用模型 ${pageLabel}：`);
+  return lines.join('\n') + moreHint;
 }
 
 function loadMessages(convId: string): Message[] {
