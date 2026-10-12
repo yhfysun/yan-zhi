@@ -7,6 +7,7 @@ import path from 'node:path';
 import { db } from '../db.js';
 import { DEFAULT_CONTEXT_WINDOW } from '../constants.js';
 import { AGENS_API_URL, inferCapabilitiesFromModelId } from '../agens-platform/service.js';
+import { resolvePool } from '../services/model-pools.js';
 import { serverState } from '../state.js';
 import { resolveFfmpeg, installFfmpeg } from './ffmpeg-runtime.js';
 import {
@@ -457,6 +458,29 @@ interface MediaPlatformCtx {
   isAgnes: boolean;
 }
 
+/**
+ * 候选池里的媒体模型（image/video 槽位）→ 模型 id 序列（有序）。
+ * 无池配置（三层全空）时返回空数组：调用方回落到历史默认行为，零配置不回归。
+ */
+function resolveMediaPoolModels(userId: string | null | undefined, slot: 'image' | 'video'): string[] {
+  if (!userId) return [];
+  try {
+    const pool = resolvePool(db, { userId }, slot);
+    return pool.map((e) => e.model.id);
+  } catch {
+    return []; // 池解析不该阻断生图：任何异常都退回默认模型
+  }
+}
+
+/**
+ * 生图/生视频结果是否为「可换模型重试」的失败：限流（429）、鉴权/配额（401/403）、服务端错误（5xx）、网络超时。
+ * 其余（参数错误、响应格式不对）换个模型也一样错 —— 直接返回，避免无意义遍历。
+ */
+function isRetryableMediaFailure(r: MpcToolExecutionResult): boolean {
+  const text = `${(r as any)?.error || ''} ${(r as any)?.content || ''}`;
+  return /429|限频|401|403|5\d\d|timeout|ETIMEDOUT|network/i.test(text);
+}
+
 function resolveMediaPlatform(args: Record<string, unknown>, userId?: string | null): MediaPlatformCtx {
   const modelRef = str(args, 'model').trim();
   const platformId = str(args, 'platformId').trim();
@@ -605,27 +629,25 @@ function taskStatus(j: any): string {
 }
 
 /**
- * 生图/图生图响应的共用处理：取 data[0].url（或 b64），下载落盘，返回精简契约。
+ * 生图产物的落盘 + 最小交付契约（标准通道 / 百炼通道共用）。
  *
  * 返回契约刻意保持最小：{type, url, description} —— 界面按 url 直接渲染预览，
  * 不需要模型在正文里贴路径，也不会出现「本机备份 A:/B:」这类复述。
  * 本机绝对路径放在 file 字段（供右键「另存为 / 打开所在目录」使用）。
  */
-async function handleImageResult(
-  j: any,
+async function finalizeImageResult(
+  remoteUrl: string,
+  b64: string,
   model: string,
-  prompt: string,
+  description: string,
   conversationId?: string,
 ): Promise<MpcToolExecutionResult> {
-  const item = j?.data?.[0] || {};
-  const remoteUrl: string = typeof item.url === 'string' ? item.url : '';
-  const description = String(item.revised_prompt || prompt || '').trim();
   let localFile = '';
   let localUrl = '';
   try {
     const buf = remoteUrl
       ? await downloadBinary(remoteUrl)
-      : (item.b64_json ? Buffer.from(String(item.b64_json), 'base64') : null);
+      : (b64 ? Buffer.from(b64, 'base64') : null);
     if (buf && buf.length > 0) {
       const target = mediaTarget({ conversationId, kind: 'images' });
       await mkdir(target.dir, { recursive: true });
@@ -639,7 +661,7 @@ async function handleImageResult(
     // 产物没进交付目录 / 消息末尾没有交付卡片，根因往往就是这里。
     logger.warn(`[media] 生图产物落盘失败（来源：${remoteUrl ? '远端地址' : 'b64'}）：${e instanceof Error ? e.message : String(e)}`);
   }
-  if (!remoteUrl && !localUrl) return fail(`生图响应里没有图片地址：${JSON.stringify(j).slice(0, 300)}`);
+  if (!remoteUrl && !localUrl) return fail(`生图响应里没有图片地址：${model}`);
   return ok(JSON.stringify({
     ok: true,
     type: 'image',
@@ -650,6 +672,188 @@ async function handleImageResult(
   }));
 }
 
+/** 标准通道（OpenAI 兼容 /v1/images/generations）：取 data[0].url（或 b64）。 */
+async function handleImageResult(
+  j: any,
+  model: string,
+  prompt: string,
+  conversationId?: string,
+): Promise<MpcToolExecutionResult> {
+  const item = j?.data?.[0] || {};
+  const remoteUrl: string = typeof item.url === 'string' ? item.url : '';
+  const description = String(item.revised_prompt || prompt || '').trim();
+  if (!remoteUrl && !item.b64_json) return fail(`生图响应里没有图片地址：${JSON.stringify(j).slice(0, 300)}`);
+  return finalizeImageResult(remoteUrl, item.b64_json ? String(item.b64_json) : '', model, description, conversationId);
+}
+
+// ===== 百炼（DashScope）原生图像生成 driver =====
+//
+// 为什么单独一条通道：百炼的 **OpenAI 兼容模式不支持生图** —— 实测
+// `POST {compatible-mode}/v1/images/generations` 返回 **404**。它的图像生成走自己
+// 的原生端点，且**按模型分两条子通道**（实测确认）：
+//   · qwen-image-* / z-image-turbo → 同步多模态：/api/v1/services/aigc/multimodal-generation/generation
+//   · wan*（万相）→ 异步任务：/api/v1/services/aigc/image-generation/generation
+//                   （带 X-DashScope-Async: enable）→ 轮询 /api/v1/tasks/{task_id}
+// 与标准通道（agnes / 任意 OpenAI 兼容平台，/v1/images/generations）**并存**：
+// 按平台 baseUrl 自动分派 —— 标准通道零改动，agnes 免费能力不受影响。
+
+/** 平台是否为百炼（DashScope）：按 baseUrl 判定（dashscope.aliyuncs.com / bailian）。 */
+function isDashscopePlatform(baseUrl: string): boolean {
+  return /dashscope\.aliyuncs\.com|bailian/i.test(baseUrl);
+}
+
+/** 百炼原生 API 根（平台常配成 .../compatible-mode，原生端点在其上一级）。 */
+function dashscopeNativeRoot(baseUrl: string): string {
+  return baseUrl.replace(/\/compatible-mode\/?$/i, '').replace(/\/+$/, '');
+}
+
+/** OpenAI 风格尺寸 "1024x1024" → 百炼 "1024*1024"；已是 * 或非 WxH 的原样返回。 */
+function toDashscopeSize(size: string): string {
+  const s = size.trim();
+  if (!s) return '';
+  const m = /^(\d+)\s*[x×*]\s*(\d+)$/i.exec(s);
+  if (m) return `${m[1]}*${m[2]}`;
+  return s;
+}
+
+/** 从百炼响应（同步多模态 / 异步任务结果，结构一致）里取图片地址。 */
+function extractDashscopeImageUrl(j: any): string {
+  const c = j?.output?.choices?.[0]?.message?.content;
+  if (Array.isArray(c)) {
+    for (const item of c) {
+      const u = item?.image || item?.image_url;
+      if (typeof u === 'string' && u.startsWith('http')) return u;
+    }
+  }
+  return '';
+}
+
+/**
+ * 百炼原生生图（文生图 / 图生图）。
+ * 模型名以 `wan` 开头走异步任务端点，其余（qwen-image-* / z-image-turbo）走同步多模态端点。
+ */
+async function mediaGenerateImageDashscope(
+  ctx: MediaPlatformCtx,
+  prompt: string,
+  model: string,
+  size: string,
+  imageList: string[],
+  conversationId?: string,
+): Promise<MpcToolExecutionResult> {
+  const root = dashscopeNativeRoot(ctx.baseUrl);
+  const keys = ctx.keys;
+  const dsSize = toDashscopeSize(size);
+
+  // 参考图（图生图 / 多图合成）→ URL / dataURL（百炼多模态 content 支持 image 项）
+  const content: any[] = [];
+  for (const ref of imageList) {
+    const r = await toFrameRef(ref);
+    if (!r) return fail(`参考图不可读（支持 URL / base64 / 本机路径）：${String(ref).slice(0, 80)}`);
+    content.push({ image: r });
+  }
+  content.push({ text: prompt });
+
+  const body: Record<string, unknown> = {
+    model,
+    input: { messages: [{ role: 'user', content }] },
+    parameters: { ...(dsSize ? { size: dsSize } : {}), n: 1 },
+  };
+
+  const useAsync = /^wan/i.test(model);
+  const endpoint = useAsync
+    ? `${root}/api/v1/services/aigc/image-generation/generation`
+    : `${root}/api/v1/services/aigc/multimodal-generation/generation`;
+
+  const DONE = ['succeeded', 'success', 'finished', 'completed', 'done'];
+  const FAILED = ['failed', 'error', 'cancelled', 'canceled'];
+
+  let lastErr = '';
+  for (const key of keys) {
+    let res: Response;
+    try {
+      res = await fetchWithTimeout(endpoint, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${key}`,
+          'Content-Type': 'application/json',
+          ...(useAsync ? { 'X-DashScope-Async': 'enable' } : {}),
+        },
+        body: JSON.stringify(body),
+      }, 180000);
+    } catch (e: unknown) {
+      lastErr = e instanceof Error ? e.message : String(e);
+      continue;
+    }
+    const text = await res.text();
+    if (res.status === 429 || res.status === 401 || res.status === 403) {
+      bumpAgensKeyFail(key);
+      lastErr = `HTTP ${res.status}: ${text.slice(0, 200)}`;
+      continue;
+    }
+    if (!res.ok) {
+      // 百炼的裸错误码很难定位，翻成可行动的提示（实测踩过：编辑模型返回 404 Model not exist）
+      const hint = /Model not exist|model_not_exist|InvalidApiKey|not authorized/i.test(text)
+        ? '百炼侧没有这个模型（未开通 / 已下线 / 当前地域不支持）。请到百炼控制台确认模型可用，或换用 qwen-image-3.0-pro / wan2.7-image-pro / wan2.7-image / z-image-turbo。'
+        : /url error/i.test(text)
+          ? '模型名与端点不匹配（该模型不走这条原生端点）。'
+          : '';
+      return fail(`百炼生图请求失败 HTTP ${res.status}${hint ? '：' + hint + ' ' : '：'}${text.slice(0, 300)}`);
+    }
+    let j: any;
+    try { j = JSON.parse(text); } catch { return fail('百炼生图响应不是合法 JSON'); }
+
+    // 异步通道（万相）：先拿 task_id，再轮询
+    if (useAsync) {
+      const taskId = String(j?.output?.task_id || '');
+      if (!taskId) return fail(`百炼生图任务未返回 task_id：${text.slice(0, 300)}`);
+      let status = String(j?.output?.task_status || 'PENDING');
+      let finalJson: any = null;
+      const deadline = Date.now() + 8 * 60 * 1000;
+      while (Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 8000));
+        try {
+          const pr = await fetchWithTimeout(`${root}/api/v1/tasks/${taskId}`, { headers: { Authorization: `Bearer ${key}` } }, 30000);
+          const pt = await pr.text();
+          if (pr.ok) {
+            finalJson = JSON.parse(pt);
+            status = String(finalJson?.output?.task_status || taskStatus(finalJson) || status);
+          }
+        } catch { /* 网络抖动下轮再试 */ }
+        const st = status.toLowerCase();
+        if (DONE.includes(st)) break;
+        if (FAILED.includes(st)) return fail(`百炼生图任务失败（taskId=${taskId}）：${JSON.stringify(finalJson || j).slice(0, 400)}`);
+      }
+      const st = status.toLowerCase();
+      if (!DONE.includes(st)) {
+        return ok(JSON.stringify({
+          ok: false,
+          pending: true,
+          type: 'image',
+          model,
+          taskId,
+          status: status || 'processing',
+          note: `百炼生图任务仍在处理（taskId=${taskId}）。万相系列为异步任务，可稍后重试；要立即出图可改用同步模型 qwen-image-3.0-pro / z-image-turbo。`,
+        }));
+      }
+      const url = extractDashscopeImageUrl(finalJson || j);
+      if (!url) return fail(`百炼生图任务完成但没拿到图片地址：${JSON.stringify(finalJson || j).slice(0, 300)}`);
+      return finalizeImageResult(url, '', model, prompt, conversationId);
+    }
+
+    // 同步通道（qwen-image-* / z-image-turbo）：直接返回图片
+    const url = extractDashscopeImageUrl(j);
+    if (!url) return fail(`百炼生图响应里没有图片地址：${text.slice(0, 300)}`);
+    return finalizeImageResult(url, '', model, prompt, conversationId);
+  }
+  return fail(`所有百炼 Key 均不可用（限频或无效）：${lastErr}`);
+}
+
+/**
+ * 生图模型来源（model-candidate-pools P3）：
+ *   显式传 model > 候选池 image 槽位（按序，失败换下一个）> 历史默认值（零配置兼容）。
+ * 为什么池化：生图/生视频同样会被上游限流（429），此前默认写死 agnes-image-2.5-flash，
+ *   一个模型打挂整段流水线就断；池中候选按序回退与会话对话链路同口径。
+ */
 async function mediaGenerateImage(
   args: Record<string, unknown>,
   userId?: string | null,
@@ -657,7 +861,31 @@ async function mediaGenerateImage(
 ): Promise<MpcToolExecutionResult> {
   const prompt = str(args, 'prompt').trim();
   if (!prompt) return fail('prompt 为必填项');
-  const model = str(args, 'model') || 'agnes-image-2.5-flash';
+  const explicitModel = str(args, 'model').trim();
+  const chain = explicitModel
+    ? [explicitModel]
+    : (resolveMediaPoolModels(userId, 'image').length
+      ? resolveMediaPoolModels(userId, 'image')
+      : ['agnes-image-2.5-flash']);
+  let lastErrResult: MpcToolExecutionResult | null = null;
+  for (const m of chain) {
+    const r = await mediaGenerateImageOnce(args, userId, conversationId, m);
+    if (!isRetryableMediaFailure(r)) return r;
+    lastErrResult = r;
+    logger.warn(`[media] 生图模型 ${m} 调用失败，尝试候选池下一个模型`);
+  }
+  return lastErrResult || fail('生图失败：候选池内无可用模型');
+}
+
+async function mediaGenerateImageOnce(
+  args: Record<string, unknown>,
+  userId?: string | null,
+  conversationId?: string,
+  forcedModel?: string,
+): Promise<MpcToolExecutionResult> {
+  const prompt = str(args, 'prompt').trim();
+  if (!prompt) return fail('prompt 为必填项');
+  const model = forcedModel || str(args, 'model') || 'agnes-image-2.5-flash';
   const size = str(args, 'size');
   const ctx = resolveMediaPlatform(args, userId);
   if (!ctx.ok) return fail(ctx.error);
@@ -665,11 +893,19 @@ async function mediaGenerateImage(
   const keys = ctx.keys;
   if (!keys.length) return fail('未找到该平台的 API Key（Token 池为空），请先在模型平台里配置');
 
-  // 图生图/多图合成：带参考图时走 /v1/images/edits（multipart，端点透传；上游未开放时返回原始报错）
   const imagesRaw = args.images;
   const imageList: string[] = Array.isArray(imagesRaw)
     ? imagesRaw.map((v) => String(v)).filter((v) => v.trim())
     : (typeof imagesRaw === 'string' && imagesRaw.trim() ? [imagesRaw.trim()] : []);
+
+  // ★ 平台分派：百炼（DashScope）走原生端点；其余平台（agnes / 任意 OpenAI 兼容）走标准端点。
+  //   实测：百炼 compatible-mode 下 /v1/images/generations 返回 404，必须走原生通道。
+  //   标准通道零改动，agnes 免费生图不受影响。
+  if (isDashscopePlatform(baseUrl)) {
+    return await mediaGenerateImageDashscope(ctx, prompt, model, size, imageList, conversationId);
+  }
+
+  // 图生图/多图合成：带参考图时走 /v1/images/edits（multipart，端点透传；上游未开放时返回原始报错）
   if (imageList.length) {
     const blobs: { blob: Blob; name: string }[] = [];
     for (const ref of imageList) {
@@ -2341,6 +2577,7 @@ async function mediaEdit(
   }
 }
 
+/** 生视频：与生图同口径（显式 model > video 槽位候选池按序 > 历史默认值） */
 async function mediaGenerateVideo(
   args: Record<string, unknown>,
   userId?: string | null,
@@ -2348,7 +2585,31 @@ async function mediaGenerateVideo(
 ): Promise<MpcToolExecutionResult> {
   const prompt = str(args, 'prompt').trim();
   if (!prompt) return fail('prompt 为必填项');
-  const model = str(args, 'model') || 'agnes-video-2.5-flash';
+  const explicitVideoModel = str(args, 'model').trim();
+  const videoChain = explicitVideoModel
+    ? [explicitVideoModel]
+    : (resolveMediaPoolModels(userId, 'video').length
+      ? resolveMediaPoolModels(userId, 'video')
+      : ['agnes-video-2.5-flash']);
+  let lastVideoErr: MpcToolExecutionResult | null = null;
+  for (const m of videoChain) {
+    const r = await mediaGenerateVideoOnce(args, userId, conversationId, m);
+    if (!isRetryableMediaFailure(r)) return r;
+    lastVideoErr = r;
+    logger.warn(`[media] 生视频模型 ${m} 调用失败，尝试候选池下一个模型`);
+  }
+  return lastVideoErr || fail('生视频失败：候选池内无可用模型');
+}
+
+async function mediaGenerateVideoOnce(
+  args: Record<string, unknown>,
+  userId?: string | null,
+  conversationId?: string,
+  forcedModel?: string,
+): Promise<MpcToolExecutionResult> {
+  const prompt = str(args, 'prompt').trim();
+  if (!prompt) return fail('prompt 为必填项');
+  const model = forcedModel || str(args, 'model') || 'agnes-video-2.5-flash';
   const seconds = str(args, 'seconds') || '5';
   const size = str(args, 'size') || '720P';
   const waitMinutes = Math.min(Math.max(num(args, 'waitMinutes', 8), 1), 10);
@@ -2764,14 +3025,14 @@ export async function executeApiTool(
           applied.customToolIds = valid;
         }
 
-        // ── 工作模式（office / dev / ops / sec / wf / clip）──
+        // ── 工作模式（office / dev / ops / sec / wf / clip / douyin）──
         if (args.mode !== undefined) {
-          // ★ 与 routes/conversations.ts 的 VALID_MODES 必须同集：漏一个（如 clip）
+          // ★ 与 routes/conversations.ts 的 VALID_MODES 必须同集：漏一个（如 clip/douyin）
           //   会让模型"切模式"被拒，而用户侧表现为「说了切到剪辑模式但没生效」。
-          const MODES = ['office', 'dev', 'ops', 'sec', 'wf', 'clip'];
+          const MODES = ['office', 'dev', 'ops', 'sec', 'wf', 'clip', 'douyin'];
           const m = str(args, 'mode');
           if (!MODES.includes(m)) {
-            return fail(`未知的工作模式「${m}」。可选值：${MODES.join('、')}（wf = 工作流模式、clip = 剪辑模式）`);
+            return fail(`未知的工作模式「${m}」。可选值：${MODES.join('、')}（wf = 工作流模式、clip = 剪辑模式、douyin = 抖音运营模式）`);
           }
           db.prepare('UPDATE conversation SET mode = ? WHERE id = ?').run(m, cid);
           applied.mode = m;

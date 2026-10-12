@@ -52,6 +52,11 @@ export function registerMediaTools(m: Map<ApiModuleName, ToolDefinition[]>) {
         '文生图：按文字描述生成一张图片（默认 agnes-image-2.5-flash；也支持其他平台的生图模型，用 model+platformId 指定，先用 list_models 查询）。' +
         'prompt 要具体（主体/场景/风格/构图/光线/质量词），支持中英文。' +
         '可选 images 传入参考图（URL/base64/本机路径，可多张）做图生图/多图合成/构图保留编辑。' +
+        '★ 按平台自动选通道：标准平台（agnes 等 OpenAI 兼容）走 /v1/images/generations；' +
+        '百炼（DashScope）走其原生端点（自动区分同步/异步），无需额外参数。' +
+        '百炼推荐模型：qwen-image-3.0-pro（旗舰，中英文字渲染最强，适合封面/海报）、' +
+        'wan2.7-image-pro（高质量，支持 4096×4096/品牌色/角色一致性）、wan2.7-image（平衡）、' +
+        'z-image-turbo（快速低成本，写实人像/产品图）。' +
         '工具返回 {type, url, description} —— 界面已按 url 自动渲染图片预览，' +
         '因此正文里不要贴 JSON、不要贴本机绝对路径、不要复述「本机备份」，也不要重复附图；' +
         '确实需要图文混排说明时才用 markdown ![](url) 引用，且同一张图最多出现一次。',
@@ -59,8 +64,8 @@ export function registerMediaTools(m: Map<ApiModuleName, ToolDefinition[]>) {
         type: 'object',
         properties: {
           prompt: { type: 'string', description: '画面描述，越具体越好（主体+场景+风格+构图+光线+质量词）' },
-          model: { type: 'string', description: '生图模型：默认 agnes-image-2.5-flash；也可传其他平台的生图模型 id 或别名（先用 list_models 按 type=image 查询）' },
-          platformId: { type: 'string', description: '可选，指定平台 id（配合 model 使用）；都不传默认走 agnes 平台' },
+          model: { type: 'string', description: '生图模型：默认 agnes-image-2.5-flash；也可传其他平台的生图模型 id 或别名（先用 list_models 按 type=image 查询）。百炼（DashScope）平台推荐 qwen-image-3.0-pro / wan2.7-image-pro / wan2.7-image / z-image-turbo' },
+          platformId: { type: 'string', description: '可选，指定平台 id（配合 model 使用）；都不传默认走 agnes 平台。传百炼平台 id 时自动走其原生图像生成端点' },
           size: { type: 'string', description: '尺寸档位 "1K"/"2K"/"3K"/"4K" 或 宽x高（如 2048x1152，平台映射到最近支持的档位）；不传默认 1024x1024' },
           images: {
             type: 'array', items: { type: 'string' },
