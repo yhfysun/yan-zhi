@@ -37,9 +37,17 @@ export function setLicenseCodeSync(code: string | null): void {
  *
  * 迁移逻辑：keyring 里没有、localStorage 里有 → 写入 keyring 并清掉 localStorage 副本。
  * 清掉是必须的，否则明文副本一直留在 localStorage，这次迁移就白做了。
- * 返回最终生效的码（可能为 null）。 */
+ * 返回最终生效的码（可能为 null）。
+ *
+ * ★★★ 为什么不再无条件钉 `loadedFromStore`（2026-10-12 修复）：
+ *   keyring 读取是异步 IPC，冷启动存在「主进程 keyring 服务未就绪」的窗口。
+ *   一旦那次读失败，旧实现会把 `loadedFromStore` 连同 `memoryCode=null` 一起钉死，
+ *   之后所有调用都直接返回 null 永不重试 → 整场都拿不到授权码 →
+ *   所有业务请求 403（表现为「历史记录/智能体/插件全没了，重启才好」）。
+ *   改为：**只有真正拿到码才钉**；读失败保持可重试，下次调用会再读一次 keyring。
+ * */
 export async function loadLicenseCode(): Promise<string | null> {
-  if (loadedFromStore) return memoryCode;
+  if (loadedFromStore && memoryCode !== null) return memoryCode;
   let stored: string | null = null;
   try {
     stored = await getPlatformAdapter().keyring.get(STORAGE_KEY);
@@ -69,8 +77,14 @@ export async function loadLicenseCode(): Promise<string | null> {
     }
   }
 
-  memoryCode = stored;
-  loadedFromStore = true;
+  // ★ 读到了才钉「已加载」；两个来源都空则保持可重试（不钉死）。
+  if (stored) {
+    memoryCode = stored;
+    loadedFromStore = true;
+  } else {
+    memoryCode = null;
+    loadedFromStore = false;
+  }
   return memoryCode;
 }
 

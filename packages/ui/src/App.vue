@@ -224,6 +224,10 @@ onMounted(async () => {
   } catch {
     // 设置读取失败时仍允许应用正常渲染
   }
+  // ★ 授权码是业务请求的前置（2026-10-12 修复）：`/plugins` 属于授权门禁管控的接口，
+  //   若在 keyring 授权码就绪前就拉，会拿到 403 → 插件路由/皮肤/布局全缺，
+  //   只能重启才恢复（本函数注释里记的老坑）。init() 幂等，正常路径上零开销。
+  await useLicenseStore().init();
   await bootPluginLayer();
 });
 

@@ -18,6 +18,7 @@ import {
   useFileStore,
   useDistillStore,
   useSettingsStore,
+  useLicenseStore,
 } from '../../stores';
 import { useGitStore } from '../../stores/git';
 import { isCodeModeActive, useCodeStore } from '../../stores/code';
@@ -1977,6 +1978,17 @@ async function healStalePlatform() {
     // `waitForBackend` 有幂等记忆：授权校验（路由守卫）里已经等过一次，
     // 这里立即返回、零开销；只有在"授权校验超时放行"等边角情况下才真正等待。
     await waitForBackend();
+
+    // ★★★ 授权码是**所有业务请求的前置**（2026-10-12 修复）。
+    //
+    // keyring 里的授权码是异步 IPC 读取，冷启动存在「后端已就绪但码还没读出来」的窗口。
+    // 此时若直接发业务请求：后端门禁返 403，而 `getWithRetry` 对 4xx **不重试**
+    // （4xx 是确定性错误）→ agents / conversations / spaces 静默变成 []，
+    // 用户看到的就是「历史记录全没了，重启才好」。
+    //
+    // 路由守卫里虽然 `await licenseStore.init()`，但在「waitForBackend 超时放行」
+    // 这条边角路径上 init 可能没跑完；这里再兜一次（init 幂等，已初始化则立即返回）。
+    await useLicenseStore().init();
 
     await agentStore.loadAgents();
     await store.loadConversations();
