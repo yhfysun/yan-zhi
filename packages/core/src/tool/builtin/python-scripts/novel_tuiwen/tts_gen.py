@@ -11,6 +11,11 @@ import os
 import subprocess
 import sys
 
+# ★ 子进程静默（与 compose_video.py / run_pipeline.py 同款）：本文件用 ffprobe 逐段探测时长，
+#   不打补丁每个段都会闪一次黑框（长篇可达上百次）。打一次补丁 → 后续所有 Popen 自动带 CREATE_NO_WINDOW。
+import _winquiet  # noqa: E402
+_winquiet.apply_popen_defaults()
+
 DEFAULT_VOICE = "zh-CN-YunxiNeural"  # 年轻男声, 推文常用; 备选 zh-CN-XiaoyiNeural
 
 import re

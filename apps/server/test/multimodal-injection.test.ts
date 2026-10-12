@@ -85,7 +85,9 @@ describe('③ 服务端注入接线', () => {
   });
 
   it('★★★ 必须被**主循环与子循环两处**调用（子智能体是最常截图的一方）', () => {
-    const n = (LTM.match(/attachImagesToMessages\(llmMessages\)/g) || []).length;
+    // ★ 2026-10-12：调用点已带第二参 task（注入需要会话上下文），锚点不再写死右括号
+    //   —— 否则函数签名一演进就归零，报成"注入点 0 处"（实现没坏，是锚点过期）。
+    const n = (LTM.match(/attachImagesToMessages\(llmMessages/g) || []).length;
     expect(n, `★ 注入点只有 ${n} 处 —— 子智能体循环看不到自己截的图，"委派子智能体看图"不成立`)
       .toBeGreaterThanOrEqual(2);
   });

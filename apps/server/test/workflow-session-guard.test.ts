@@ -42,6 +42,42 @@ function newConv(agentId: string) {
   return convId;
 }
 
+/**
+ * 等到「助手消息已落库」或「任务已 settle」为止。
+ *
+ * ★★ 为什么不能像原来那样固定 sleep 600ms（2026-10-12 全量跑偶发红）：
+ *   createTask 在进主循环前还有若干 DB 读取（模型候选池解析等），全量并发跑时
+ *   这段前置耗时会被放大，600ms 就不够 → 读到"只有用户消息"的中间态。
+ *   ★ 判据：**任何"等一会儿再看"的固定 sleep 都是竞态**，断言的是时序不是行为；
+ *     要等的是**收敛条件**（助手消息出现 / 任务终态），不是一段臆测的时间。
+ */
+async function waitSettled(convId: string, taskId: string, timeoutMs = 8000) {
+  const t0 = Date.now();
+  for (;;) {
+    // ★ 排序口径与生产一致（routes/conversations.ts: `ORDER BY created_at ASC, id ASC`）：
+    //   只按 created_at 排会在同一毫秒内落库的用户/助手消息之间**顺序不定**
+    //   （本次全量跑偶发红的真因：拦截分支与用户消息常落在同一毫秒）。
+    const msgs = db.prepare('SELECT role, content FROM message WHERE conversation_id=? ORDER BY created_at ASC, id ASC').all(convId) as any[];
+    const task = getTask(taskId);
+    const done = task && (task.status === 'failed' || task.status === 'completed' || task.status === 'cancelled');
+    if (msgs.some((m: any) => m.role === 'assistant') || done) return { msgs, task };
+    if (Date.now() - t0 > timeoutMs) return { msgs, task };  // 超时也返回现状，让断言给出真实差异
+    await new Promise((r) => setTimeout(r, 50));
+  }
+}
+
+/**
+ * 取**最后一条助手消息**。
+ *
+ * ★ 为什么不能取「最后一条消息」（2026-10-12 实测）：拦截分支与用户消息的 created_at
+ *   常落在同一毫秒，"最后一条"是用户消息还是助手消息**由 SQLite 的决胜顺序决定** →
+ *   断言随机红。判据：断言的语义是"后端给出的指引"，就该**按角色取**，别依赖物理顺序。
+ */
+function lastAssistant(msgs: any[]): string {
+  const a = msgs.filter((m: any) => m.role === 'assistant');
+  return String(a[a.length - 1]?.content || '');
+}
+
 /** 跑一个任务并等它 settle，返回该会话落库的消息 */
 async function runAndCollect(agentId: string, userContent = '你好') {
   const convId = newConv(agentId);
@@ -53,10 +89,8 @@ async function runAndCollect(agentId: string, userContent = '你好') {
     userContent,
     agentId,
   });
-  // 拦截分支是同步走完的；给一点余量让文件落库
-  await new Promise((r) => setTimeout(r, 600));
-  const msgs = db.prepare('SELECT role, content FROM message WHERE conversation_id=? ORDER BY created_at').all(convId);
-  return { convId, taskId, msgs, task: getTask(taskId) };
+  const { msgs, task } = await waitSettled(convId, taskId);
+  return { convId, taskId, msgs, task };
 }
 
 beforeAll(async () => {
@@ -114,7 +148,7 @@ describe('会话绑定工作流型智能体 → 被拦截', () => {
 
   it('指引里给出三条正确入口（画布运行 / 定时任务 / call_agent 委派）', async () => {
     const { msgs } = await runAndCollect(wfId);
-    const text = String(msgs[msgs.length - 1].content || '');
+    const text = lastAssistant(msgs);
     expect(text).toContain('画布');
     expect(text).toContain('定时任务');
     expect(text).toContain('call_agent');
@@ -134,9 +168,8 @@ describe('会话绑定工作流型智能体 → 被拦截', () => {
       userContent: 'hi',
       agentId: wfId,
     });
-    await new Promise((r) => setTimeout(r, 600));
-    const msgs = db.prepare('SELECT role, content FROM message WHERE conversation_id=? ORDER BY created_at').all(convId);
-    const text = String(msgs[msgs.length - 1].content || '');
+    const { msgs } = await waitSettled(convId, taskId);
+    const text = lastAssistant(msgs);
     expect(text).toContain('工作流型智能体');
     expect(text).not.toContain('平台或模型不存在');
     expect(getTask(taskId)?.status).toBe('failed');
@@ -145,7 +178,7 @@ describe('会话绑定工作流型智能体 → 被拦截', () => {
   it('工作流 id 写坏（agent 不存在）时不误报为工作流，仍走正常流程', async () => {
     // isWorkflowAgent(null) === false → 不该被这条拦截吞掉，应由平台校验或后续流程处理
     const { msgs } = await runAndCollect('a_not_exist_agent_id');
-    const text = String(msgs[msgs.length - 1].content || '');
+    const text = lastAssistant(msgs);
     expect(text).not.toContain('工作流型智能体');
   });
 });

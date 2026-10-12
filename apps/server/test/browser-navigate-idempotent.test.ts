@@ -31,12 +31,15 @@ describe('browser_navigate 同 URL 幂等', () => {
   it('★ navigate 分支在真正 loadURL 之前先做「同 URL 已打开」短路', () => {
     // 以 alreadyOpen 所在位置为准向前找它所属的 case 'navigate'（文件里有多个 navigate 分支），
     // 判定必须排在 loadURL 之前，否则等于没做。
-    const idemAbs = MAIN.indexOf('alreadyOpen');
+    // ★ 必须锚在 `alreadyOpen: true` 这个**真实返回字段**上（2026-10-12）：
+    //   裸 `alreadyOpen` 会先命中 2997 行注释里的"与 alreadyOpen 同一 normUrl 口径"，
+    //   它属于上一个 `case 'navigate'`（2204）→ 切片取错块，断言假红。
+    const idemAbs = MAIN.indexOf('alreadyOpen: true');
     expect(idemAbs).toBeGreaterThan(0);
     const caseStart = MAIN.lastIndexOf("case 'navigate': {", idemAbs);
     expect(caseStart).toBeGreaterThan(0);
     const seg = MAIN.slice(caseStart, caseStart + 5000);
-    const idemAt = seg.indexOf('alreadyOpen');
+    const idemAt = seg.indexOf('alreadyOpen: true');
     const loadAt = seg.indexOf('wc.loadURL(');
     expect(idemAt).toBeGreaterThan(0);
     expect(loadAt).toBeGreaterThan(0);
@@ -57,7 +60,7 @@ describe('browser_navigate 同 URL 幂等', () => {
   });
 
   it('返回体带 alreadyOpen + 明确提示（模型据此不再换 URL 重试）', () => {
-    const seg = MAIN.slice(MAIN.indexOf('alreadyOpen'), MAIN.indexOf('alreadyOpen') + 700);
+    const seg = MAIN.slice(MAIN.indexOf('alreadyOpen: true'), MAIN.indexOf('alreadyOpen: true') + 700);
     expect(seg).toContain('alreadyOpen: true');
     expect(seg).toMatch(/不要换 URL 重试/);
   });

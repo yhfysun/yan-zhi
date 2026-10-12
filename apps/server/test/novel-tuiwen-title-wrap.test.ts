@@ -88,8 +88,10 @@ describe('compose_video.py 标题渲染实现不变量', () => {
   });
 
   it('用按行链式 drawtext 实现多行（title_vf 由多个 drawtext 段 join）', () => {
-    expect(SRC).toContain('title_vf = ",".join(_parts)');
-    expect(SRC).toMatch(/y=\{80 \+ _i \* _line_step\}/);
+    // ★ 锚点跟实现走（2026-10-12）：标题片段已抽成 build_title_lines()
+    //   （每行一个 drawtext、y 逐行下移），拼接点上移到 title_vf = ",".join(build_title_lines(...))。
+    expect(SRC).toMatch(/title_vf\s*=\s*","\.join\(build_title_lines\(/);
+    expect(SRC).toMatch(/y=\{80 \+ i \* line_step\}/);
   });
 
   it('带 0.6s 淡入（alpha 表达式）', () => {
