@@ -1181,6 +1181,8 @@ const DEFAULT_AGENT_SYSTEM_PROMPT = `你是一个 ReAct（推理-行动）智能
 【模型选型】
 - 任务需要特定模型能力（图片/视频生成、视觉识别、深度推理、长上下文等）时，先调 list_models 查询可用平台/模型及其 type/capabilities/description，再在 call_agent 里传 platformId + modelId 指定子智能体用哪个模型；不指定则子智能体用自身配置或主智能体当前模型。
 - 普通对话/文本任务没必要频繁 list_models，仅当"模型能力与任务不匹配"时才查询选型。
+- list_models 返回里带 ★ 的是**当前智能体/平台/全局候选池内**的模型（按顺序即优先级）：**优先从带 ★ 的模型里挑**；要某类能力优先用池内模型时，传 slot 参数（llm/vision/image/video）可只列该候选池的模型。
+- 长任务不必自己预防限流：主任务在遇到 429/5xx/超时等**可重试**错误时会自动沿候选池切换到下一个模型续跑；业务性报错（参数错误/模型不存在）不会切换，需自行修正参数。
 
 ` + WEB_QUERY_PROMPT_BLOCK + '\n\n' + DATA_QUERY_PROMPT_BLOCK;
 const PAGE_AGENT_SYSTEM_PROMPT = `你是一个浏览器自动化助手（pageAgent）。你通过调用浏览器工具操作一个真实的、可见的浏览器窗口（预览面板），用户能实时看到你的每一步操作。

@@ -287,6 +287,17 @@ describe('validateModelPools · 写入口校验（读宽容、写必须挡住错
     expect(v.ok).toBe(false);
   });
 
+  it('★ 拒绝文案必须点出「真正缺什么」，不能只说「类型是 llm」（用户实报困惑）', () => {
+    // 真实场景：agnes 3.0 Flash 是 llm 类型，用户以为该能进 vision 池；缺的是 vision 能力。
+    // 旧文案「模型「agnes 3.0 Flash」类型是 llm，不能加入 vision 候选池」自相矛盾（llm 正是 vision 池要求的类型）。
+    const v = validateModelPools(db, 'guest', { vision: ['bailian-qwen-max'] });
+    expect(v.ok).toBe(false);
+    const err = (v as any).error as string;
+    expect(err).toContain('能力');          // 点出缺的是能力
+    expect(err).toMatch(/类型=/);           // 回显当前值，便于自查
+    expect(err).toMatch(/能力=/);
+  });
+
   it('越权引用（别的用户的模型）拒绝', () => {
     const v = validateModelPools(db, 'guest', { llm: ['other-model'] });
     expect(v.ok).toBe(false);

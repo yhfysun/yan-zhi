@@ -292,9 +292,22 @@ export function validateModelPools(db: YzSqliteDb, userId: string, raw: unknown)
       let caps: string[] = [];
       try { const v = JSON.parse(row.capabilities_json || '[]'); if (Array.isArray(v)) caps = v; } catch { /* 坏能力按空处理 */ }
       if (!matchesSlot(row.type, caps, slot)) {
+        // ★ 报错必须说明**真正缺什么**：slot 判定是「type 或 capabilities」二者其一
+        //   （如 vision 槽要 `type=llm 且 caps 含 vision`）。只报「类型是 llm」会让用户
+        //   困惑（agnes 3.0 Flash 明明是 llm，却进不了 vision 池 —— 缺的是 vision 能力）。
         const label = row.alias || row.model_id || id;
         const typeLabel = row.type || 'llm';
-        return { ok: false, error: `模型「${label}」类型是 ${typeLabel}，不能加入 ${slot} 候选池` };
+        const capStr = caps.length ? caps.join('、') : '无';
+        const need: Record<Slot, string> = {
+          llm: '类型为 llm 且不具备图片/视频生成能力',
+          vision: '类型为 llm 且「能力」里勾选了视觉',
+          image: '类型为 image，或「能力」里勾选了图片生成',
+          video: '类型为 video，或「能力」里勾选了视频生成',
+        };
+        return {
+          ok: false,
+          error: `模型「${label}」不能加入 ${slot} 候选池：需要 ${need[slot]}；该模型当前 类型=${typeLabel}、能力=${capStr}`,
+        };
       }
     }
   }
