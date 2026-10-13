@@ -4,6 +4,7 @@
 import { Router, Request, Response } from 'express';
 import { authMiddleware } from '../auth.js';
 import { db } from '../db.js';
+import { hydrateSnapshot } from '../services/context-snapshot.js';
 
 const router = Router();
 router.use(authMiddleware);
@@ -214,7 +215,8 @@ router.get('/logs/:id/detail', (req: Request, res: Response) => {
       content: row.content,
       reasoningContent: row.reasoning_content,
       toolCalls,
-      systemPromptSnapshot: row.system_prompt_snapshot,
+      // ★ 2026-10-12 P2：回填（tools 等去重字段以内容哈希引用存储，直接返回会是哈希串）。
+      systemPromptSnapshot: hydrateSnapshot(row.system_prompt_snapshot),
     },
   });
 });

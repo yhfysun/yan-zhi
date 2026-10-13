@@ -23,6 +23,7 @@
  * ═══════════════════════════════════════════════════════════════════════════
  */
 import { db } from '../db.js';
+import { createHash } from 'node:crypto';
 
 /**
  * 合成消息 id 清单 —— **从 core 再导出**，不再本地各写一份。
@@ -52,23 +53,85 @@ export const SNAPSHOT_KEEP_PER_CONV = 200;
  */
 const SYNTHETIC_MESSAGE_IDS = _SYNTHETIC_IDS;
 
-/** 快照里的一条消息引用：要么是 DB 里的 id，要么是内联的合成消息 */
+/** 快照里的一条消息引用：DB 里的 id / 内联的合成消息 / 合成消息的**内容哈希引用** */
 type SnapshotMsgRef =
   | { id: string }
-  | { role: string; content: string; toolCalls?: any };
+  | { role: string; content: string; toolCalls?: any }
+  | { role: string; contentRef: string; toolCalls?: any };
+
+/**
+ * 合成消息正文的**内联阈值**（字符）：超过则改存内容哈希引用。
+ * ★ 2026-10-12 P2：系统提示词是合成 system 消息、正文 ~11KB，且在会话内**跨步骤逐字重复**
+ *   （实测单会话仅 14 个版本，却随 491 条快照存了 491 次）。⇒ 超过阈值的合成消息
+ *   （系统提示词、长摘要）改存 `contentRef`，读侧 hydrateSnapshot 从 snapshot_blob 回填；
+ *   短消息仍内联（省去 blob 往返）。
+ */
+const SNAPSHOT_INLINE_MAX = 400;
 
 /**
  * 构建快照要存的 `messages` 字段（**写侧唯一出口**）。
  *
- * 规则：落库消息 → 只留 `{id}`；合成消息（sys / summary）→ 内联 `{role, content}`。
+ * 规则：落库消息 → 只留 `{id}`；合成消息（sys / summary）→ 短的内联 `{role, content}`、
+ * 超阈值（>SNAPSHOT_INLINE_MAX）的存 `{role, contentRef}`（内容哈希引用，跨步骤去重）。
  * 顺序原样保留（回填依赖顺序）。
  */
 export function toSnapshotMessages(llmMessages: Array<{ id?: string; role: string; content?: any; toolCalls?: any }>): SnapshotMsgRef[] {
   return llmMessages.map((m) => {
     const id = String(m.id || '');
     if (id && !SYNTHETIC_MESSAGE_IDS.has(id)) return { id };
-    return { role: m.role, content: typeof m.content === 'string' ? m.content : '', toolCalls: m.toolCalls };
+    const content = typeof m.content === 'string' ? m.content : '';
+    // ★ 2026-10-12 P2：合成消息正文超阈值 → 内容哈希引用（同内容只存一份，跨步骤去重）
+    if (content.length > SNAPSHOT_INLINE_MAX) {
+      return { role: m.role, contentRef: internSnapshotBlob('msg', content), toolCalls: m.toolCalls };
+    }
+    return { role: m.role, content, toolCalls: m.toolCalls };
   });
+}
+
+/**
+ * 计算快照的 `systemPrompt` / `systemPromptOmitted` 两个字段（**写侧唯一出口**）。
+ *
+ * ★★★ 2026-10-12 P2：干掉"同一条快照内的重复"。
+ *   实测（生产库会话 f0a901e5）：单条快照 ~36KB，其中顶层 `systemPrompt` 11KB —— 而它与
+ *   `messages[0].content`（系统消息被 `toSnapshotMessages` **内联**）是**逐字相同**的一段文字，
+ *   等于每条快照把系统提示词存了两遍（491/491 条如此）。
+ *   ⇒ 已内联时**不再存顶层字段**，只置 `systemPromptOmitted:true`；读侧（服务端 hydrate 与
+ *     客户端 `formatSnapshot`）从 `messages[0].content` 回退 —— 展示**零变化**，只是少存一份。
+ *   ★ 未内联（系统消息是落库消息的 id 引用）时仍存顶层字段兜底，避免"读侧回退取不到"。
+ *   ★ 首个消息不是 system 时，回退到调用方给的 fallback（防止空快照）。
+ */
+export function buildSnapshotSystemFields(
+  llmMessages: Array<{ id?: string; role: string; content?: any }>,
+  fallback = '',
+): { systemPrompt: string; systemPromptOmitted: boolean } {
+  const first: any = llmMessages && llmMessages[0];
+  const isSys = !!(first && first.role === 'system');
+  if (!isSys) return { systemPrompt: fallback, systemPromptOmitted: false };
+  const content = typeof first.content === 'string' ? first.content : '';
+  const inlined = !(first.id && !SYNTHETIC_MESSAGE_IDS.has(String(first.id)));
+  return inlined ? { systemPrompt: '', systemPromptOmitted: true } : { systemPrompt: content, systemPromptOmitted: false };
+}
+
+/**
+ * 内容寻址 blob：按内容哈希存一份（同内容只存一次），供快照去重引用（**写侧唯一出口**）。
+ * ★ 2026-10-12 P2：tools 等大字段在会话内跨步骤高度重复。写入时算哈希、UPSERT 忽略重复；
+ *   快照只存 `toolsRef: <hash>`，读侧 `hydrateSnapshot` 回填。展示零变化。
+ */
+export function internSnapshotBlob(kind: string, content: string): string {
+  const hash = createHash('sha1').update(kind + '\u0000' + content).digest('hex');
+  try {
+    db.prepare('INSERT OR IGNORE INTO snapshot_blob (hash, kind, content, created_at) VALUES (?, ?, ?, ?)')
+      .run(hash, kind, content, Date.now());
+  } catch { /* 落库失败不阻断（读侧回退不到就显示原样，不至于更糟） */ }
+  return hash;
+}
+
+/** 取 blob 内容；不存在返回 null。 */
+export function getSnapshotBlob(hash: string): string | null {
+  try {
+    const row = db.prepare('SELECT content FROM snapshot_blob WHERE hash = ?').get(hash) as any;
+    return row ? String(row.content) : null;
+  } catch { return null; }
 }
 
 /**
@@ -92,8 +155,11 @@ export function hydrateSnapshot(snapshotJson: string | null | undefined): string
 
   const refs: any[] = Array.isArray(parsed.messages) ? parsed.messages : [];
   // v1（messages 里已是正文）或没有 messages → 直接返回原串，零开销
-  const needsHydration = refs.some((r) => r && typeof r === 'object' && typeof r.id === 'string' && r.role === undefined);
-  if (!needsHydration) return snapshotJson;
+  const needsHydration = refs.some((r) => r && typeof r === 'object'
+    && ((typeof r.id === 'string' && r.role === undefined) || typeof r.contentRef === 'string'));
+  // ★ 2026-10-12 P2：tools / systemPrompt 也可能以内容哈希引用形式存储（见 internSnapshotBlob）
+  const needsBlobHydration = !!parsed.toolsRef || !!parsed.systemPromptRef;
+  if (!needsHydration && !needsBlobHydration) return snapshotJson;
 
   const ids = refs.filter((r) => r && typeof r.id === 'string' && r.role === undefined).map((r) => r.id as string);
   const byId = new Map<string, { role: string; content: string; toolCalls: any }>();
@@ -123,8 +189,22 @@ export function hydrateSnapshot(snapshotJson: string | null | undefined): string
       if (!hit) return { role: 'system', content: `[原文已删除或不可见: ${r.id}]` };
       return { role: hit.role, content: truncate(hit.content), toolCalls: hit.toolCalls };
     }
-    return { role: r.role, content: truncate(String(r.content || '')), toolCalls: r.toolCalls };
+    // ★ 2026-10-12 P2：合成消息正文超阈值时存的是 `contentRef`（内容哈希引用）→ 从 blob 回填。
+    const raw = typeof r.contentRef === 'string' ? (getSnapshotBlob(r.contentRef) ?? '') : String(r.content || '');
+    // 系统提示词**不截断**：顶层 systemPrompt 已去重省略，这里是它唯一的完整来源，
+    // 截到 4000 会让「查看提示词」看不到后半段（其余消息仍按原规则截断，防超长工具输出撑爆页面）。
+    const content = r.role === 'system' ? raw : truncate(raw);
+    return { role: r.role, content, toolCalls: r.toolCalls };
   });
+  // ★ 2026-10-12 P2：回填去重字段（tools / systemPrompt 的内容哈希引用）
+  if (parsed.systemPromptRef && !parsed.systemPrompt) {
+    const b = getSnapshotBlob(parsed.systemPromptRef);
+    if (b != null) parsed.systemPrompt = b;
+  }
+  if (parsed.toolsRef && !parsed.tools) {
+    const b = getSnapshotBlob(parsed.toolsRef);
+    if (b != null) { try { parsed.tools = JSON.parse(b); } catch { /* 坏 blob 忽略 */ } }
+  }
   try {
     return JSON.stringify(parsed);
   } catch {

@@ -226,7 +226,14 @@
     </div>
 
     <!-- 远程浏览器渲染区 -->
-    <div v-else class="browser-viewport" ref="viewportRef">
+    <!-- ★★★ 2026-10-12 P1-B：viewport 由 `v-else` 改为 `v-show`。
+         为什么（用户实报"pageAgent 一跑就卡" + 实测 `MaxListenersExceededWarning: 11
+         did-stop-loading listeners`）：`showHome = !(activeTab.url)`，而 agent 建 tab 时
+         `url` 初始为空 ⇒ `showHome` 在会话流程中**频繁翻转** ⇒ 旧写法（`v-else`）每次翻转都会
+         **销毁并重建整个 viewport（含全部 webview 元素）** ⇒ guest 元素重造、旧 guest 的
+         `did-stop-loading` 等监听器**堆在 WebContents 上不释放**，且每重建一次多一个渲染进程。
+         ⇒ 改 `v-show`：元素常驻、只切 `display`，guest 与监听器都稳定存活。 -->
+    <div v-show="!showHome" class="browser-viewport" ref="viewportRef">
       <!-- Agent 实况锁定 shield：agent 驱动浏览器期间挡住人的一切输入（点击/双击/右键/键盘）。
            只盖视口区不盖工具条 —— 暂停/停止/收起始终可点。capture 阶段拦截 + preventDefault。 -->
       <div
@@ -1729,9 +1736,11 @@ watch(
 // 旧引擎下这些状态由主进程推送（browserView:onNavigated/onLoaded/onTitleUpdated）；
 // webview 引擎下 guest 就在渲染层 DOM 里，直接监听元素事件，链路更短也更可靠。
 const webviewEls = new Map<string, any>();
+/** ★ 2026-10-12 P1-B：按 tabId 缓存 ref 回调，保证同一元素跨渲染复用同一函数引用。 */
+const webviewRefCache = new Map<string, (el: any) => void>();
 function setWebviewRef(tabId: string, el: any) {
   if (el) webviewEls.set(tabId, el);
-  else webviewEls.delete(tabId);
+  else { webviewEls.delete(tabId); webviewRefCache.delete(tabId); }
 }
 
 /**
@@ -1753,10 +1762,21 @@ function waitWebviewEl(tabId: string, timeoutMs = 1500): Promise<any> {
     }, 50);
   });
 }
-/** 模板 ref 回调工厂：Vue 对每个 tab 生成的箭头函数参数需显式 any（strict 无隐式 any） */
-const bindWebviewRef = (tabId: string) => (el: any) => setWebviewRef(tabId, el);
+/** 模板 ref 回调工厂：Vue 对每个 tab 生成的箭头函数参数需显式 any（strict 无隐式 any）
+ *  ★ 2026-10-12 P1-B：**按 tabId 缓存同一函数** —— 内联箭头函数每次渲染都是新引用，
+ *    Vue 会对同一 <webview> 反复执行 ref 回调，引起事件重绑/抖动。缓存后引用稳定、不再抖动。 */
+const bindWebviewRef = (tabId: string): ((el: any) => void) => {
+  let fn = webviewRefCache.get(tabId);
+  if (!fn) { fn = (el: any) => setWebviewRef(tabId, el); webviewRefCache.set(tabId, fn); }
+  return fn;
+};
 
-/** guest 挂载完成：把 webContentsId 注册给主进程，pageAgent 才能操作这个 tab */
+/**
+ * guest 挂载完成：把 webContentsId 注册给主进程，pageAgent 才能操作这个 tab。
+ * ★ 2026-10-12 P1-B：同 (tabId, wcId) 在 1s 内重复触发（实测同一 tab 4ms 内 7 次）
+ *   → 只注册一次，避免重复 IPC 与诊断日志刷屏（主进程侧 wvRegister 本身幂等，这里再收一道）。
+ */
+const wvRegDedupe = new Map<string, number>();
 function onWebviewReady(tabId: string) {
   const el = webviewEls.get(tabId);
   if (!el) {
@@ -1765,6 +1785,11 @@ function onWebviewReady(tabId: string) {
   }
   try {
     const id = typeof el.getWebContentsId === 'function' ? el.getWebContentsId() : null;
+    const key = `${tabId}:${id}`;
+    const now = Date.now();
+    if (now - (wvRegDedupe.get(key) || 0) < 1000) return; // 1s 内同 guest 重复 dom-ready → 忽略
+    wvRegDedupe.set(key, now);
+    while (wvRegDedupe.size > 100) { const k = wvRegDedupe.keys().next().value as string; wvRegDedupe.delete(k); }
     // ★ 诊断日志：确认 dom-ready → 注册链路真的跑到（排障"8s 等不到 guest"）
     console.log(`[BrowserPanel] onWebviewReady tabId=${tabId} wcId=${id} scope=${browserScope}`);
     if (id) {
@@ -2405,6 +2430,10 @@ onUnmounted(() => {
     try { off(); } catch { /* 单个注销失败不影响其余 */ }
   }
   ipcOffs.length = 0;
+  // ★ 2026-10-12 P1-B：清掉 <webview> 元素引用、ref 回调缓存与注册去重表，避免卸载后残留引用。
+  webviewEls.clear();
+  webviewRefCache.clear();
+  wvRegDedupe.clear();
   if (syncTimer !== null) {
     clearTimeout(syncTimer);
     syncTimer = null;

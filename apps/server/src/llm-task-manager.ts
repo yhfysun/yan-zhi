@@ -26,7 +26,7 @@ import { proposeSkillDraft, skillDraftNotifyText } from './services/skill-distil
 import { backendTaskPlan, backendTaskStep, loadTaskPlanFromFile, savePlanJson } from './services/task-plan-file.js';
 import { summarizeResourceDirsSync } from './services/space-resources.js';
 // 提示词快照：构建（只存 id 引用）与按需回填的唯一定义处 —— 修单会话 O(n²) 的快照膨胀
-import { toSnapshotMessages, pruneOldSnapshots, SNAPSHOT_KEEP_PER_CONV } from './services/context-snapshot.js';
+import { toSnapshotMessages, buildSnapshotSystemFields, internSnapshotBlob, pruneOldSnapshots, SNAPSHOT_KEEP_PER_CONV } from './services/context-snapshot.js';
 // 上下文组装的**唯一出口**（主循环与子智能体循环共用）—— 压缩落库 + 子智能体隔离 + 预算分配
 import { buildContextView, mainlineMessages } from './services/context-view.js';
 import { serverState } from './state.js';
@@ -2739,12 +2739,16 @@ async function runReActLoop(task: LlmTask, params: {
             topP: effOpts.topP,
             reasoningEffort: effOpts.reasoningEffort,
           },
-          systemPrompt: llmMessages[0]?.role === 'system' ? llmMessages[0].content : '',
-          tools: toolsBuilt.map((t: any) => ({
+          // ★ 2026-10-12 P2：系统提示词已内联在 messages[0] 时**不再重复存顶层字段**
+          //   （见 context-snapshot.ts 的 buildSnapshotSystemFields —— 每条省 11KB / 30%）。
+          ...buildSnapshotSystemFields(llmMessages),
+          // ★ 2026-10-12 P2：tools 在会话内跨步骤高度重复（实测单会话仅 4 个版本却存 491 次）
+          //   → 存「内容哈希引用」，读侧 hydrateSnapshot 回填（展示零变化，每条省 ~9KB）。
+          toolsRef: internSnapshotBlob('tools', JSON.stringify(toolsBuilt.map((t: any) => ({
             name: t.function?.name || t.name,
             description: t.function?.description || '',
             parameters: t.function?.parameters,
-          })),
+          })))),
           // ★★★ messages 只存 **id 引用**，不存正文（2026-10-02）。
           //   此前存正文 → 每步一份全量历史 → 单会话 O(n²)（实测 1156 条消息 → 174.9MB）。
           //   实测最大快照 546KB 中 messages 占 **73.5%**（1154 条）→ 改引用后降到约 2%。
@@ -3547,6 +3551,18 @@ async function runReActLoop(task: LlmTask, params: {
       emit(task, { type: 'task:error', error: task.error });
     }
   }
+
+  // ★★★ 2026-10-12（P2）：任务收尾**无条件**裁剪本会话的历史提示词快照。
+  //
+  //   为什么（实测铁证）：旧实现只在主循环 `step % 20 === 0` 时裁剪（见上方 insertMessage 处），
+  //   而由许多**短任务**组成的会话（pageAgent 常态，单任务步数常 < 20）**永远不触发**
+  //   ⇒ 快照无上限累积：实测会话 f0a901e3 = **491 条**、c11dfe7b = **463 条**，
+  //     均**远超** `SNAPSHOT_KEEP_PER_CONV = 200`（即该上限根本没生效）；
+  //     全库 `system_prompt_snapshot` 合计 **149.9MB**（占 data.db 约 60%）。
+  //   ⇒ 在此处（completed / aborted / failed **所有出口共用的收尾点**）补一次。
+  //     子智能体快照同属本会话（见下方 insertMessage 的子智能体分支），一并被裁。
+  //   ★ try/catch：裁剪是"派生物治理"，绝不能影响任务结果与收尾上报。
+  try { pruneOldSnapshots(convId, SNAPSHOT_KEEP_PER_CONV); } catch { /* 裁剪失败不影响任务 */ }
 }
 
 /**
@@ -5381,8 +5397,10 @@ async function runSubAgentImpl(
           frequencyPenalty: agent.frequency_penalty,
           presencePenalty: agent.presence_penalty,
         },
-        systemPrompt,
-        tools: subTools.map((t: any) => ({ name: t.function.name, description: t.function.description })),
+        // ★ 2026-10-12 P2：同主循环 —— 已内联时不重复存顶层 systemPrompt（fallback 传原 agent 提示词）
+        ...buildSnapshotSystemFields(llmMessages, systemPrompt),
+        // ★ 2026-10-12 P2：tools 改存内容哈希引用（同主循环，读侧回填）
+        toolsRef: internSnapshotBlob('tools', JSON.stringify(subTools.map((t: any) => ({ name: t.function.name, description: t.function.description })))),
         // messages 只存 id 引用（同主循环，见 services/context-snapshot.ts 的 O(n²) 说明）
         messages: toSnapshotMessages(llmMessages),
       }, null, 2);

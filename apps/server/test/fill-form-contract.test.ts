@@ -136,7 +136,8 @@ describe('④ 不得引入回归（已证伪的猜测不要重复"修"）', () =
   });
 
   it('★★ typeIn 必须保持回读核验（applied 信号 —— 桌面端据此判断"值未生效"）', () => {
-    expect(MAIN, '★ typeIn 丢了回读核验（受控组件未接受时无法识别）').toMatch(/applied:got===t/);
+    // ★ 2026-10-12：判据由严格相等改为宽松等价（`applied:_applied`，规范化后相等/互相包含）。
+    expect(MAIN, '★ typeIn 丢了回读核验（受控组件未接受时无法识别）').toMatch(/applied:_applied/);
   });
 
   it('★★ 桌面端必须使用 typeIn 的回读结果判失败（而不是发了事件就算成功）', () => {

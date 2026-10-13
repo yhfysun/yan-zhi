@@ -27,6 +27,8 @@ const hoisted = vi.hoisted(() => {
   const conversations: Record<string, any> = {};
   // 可变 app_config 存储（验证 enabled=false 关闭注入路径）
   const appConfig: Record<string, string> = {};
+  // ★ 2026-10-12 P2：内容寻址 blob 表（快照去重：合成消息正文/工具 schema 存哈希引用）
+  const blobs = new Map<string, string>();
 
   // ── 内存 memory 表 ──
   const memories: any[] = [];
@@ -108,6 +110,12 @@ const hoisted = vi.hoisted(() => {
           },
         };
       }
+      if (/INSERT\s+OR\s+IGNORE\s+INTO\s+snapshot_blob/i.test(sql)) {
+        return { get: () => undefined, all: () => [], run: (...p: any[]) => { blobs.set(String(p[0]), String(p[2])); } };
+      }
+      if (/FROM\s+snapshot_blob/i.test(sql)) {
+        return { get: (h: string) => (blobs.has(h) ? { content: blobs.get(h) } : undefined), all: () => [], run: () => {} };
+      }
       return noop();
     },
     exec: () => {},
@@ -158,7 +166,7 @@ const hoisted = vi.hoisted(() => {
     return Buffer.from(new Float32Array(v).buffer);
   }
 
-  return { db, MockLlmClient, MockContextWindow, llmChunksQueue, capturedSystemPrompts, conversations, messages, memories, platforms, models, appConfig, get embedMode() { return embedMode; }, set embedMode(v) { embedMode = v; }, vecToBytes };
+  return { db, blobs, MockLlmClient, MockContextWindow, llmChunksQueue, capturedSystemPrompts, conversations, messages, memories, platforms, models, appConfig, get embedMode() { return embedMode; }, set embedMode(v) { embedMode = v; }, vecToBytes };
 });
 
 vi.mock('../src/db.js', () => ({
@@ -286,8 +294,15 @@ describe('记忆注入（端到端）', () => {
     // systemPromptSnapshot（前端「查看提示词」）同样可见
     const snapMsg = hoisted.messages.find((m) => m.role === 'assistant' && m.system_prompt_snapshot);
     const snap = JSON.parse(snapMsg.system_prompt_snapshot);
-    expect(snap.systemPrompt).toContain('## 相关记忆');
-    expect(snap.systemPrompt).toContain('深色主题');
+    // ★ 2026-10-12 P2：系统提示词已去重（顶层 systemPrompt 省略；正文超阈值时在 messages[0]
+    //   里存 `contentRef` 内容哈希引用）。读侧（服务端 hydrate / 客户端 formatSnapshot）会回填，
+    //   这里按同样口径：优先顶层 → messages[0].content → messages[0].contentRef 查 blob。
+    const sysMsg = Array.isArray(snap.messages) ? snap.messages.find((m: any) => m && m.role === 'system') : null;
+    const sysFromSnap = (typeof snap.systemPrompt === 'string' && snap.systemPrompt)
+      ? snap.systemPrompt
+      : (sysMsg?.content || (sysMsg?.contentRef ? (hoisted.blobs.get(sysMsg.contentRef) || '') : ''));
+    expect(sysFromSnap).toContain('## 相关记忆');
+    expect(sysFromSnap).toContain('深色主题');
 
     // 命中反馈闭环：被注入的 use_count +1，未注入的不变
     const hit = hoisted.memories.find((m) => m.id === 'mem_theme');

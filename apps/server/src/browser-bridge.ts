@@ -112,7 +112,12 @@ export async function callBrowserBridge(
     const json: any = await res.json().catch(() => ({}));
     // ★★★ HTTP 200 + `{error}` 是**动作执行失败**（业务错误），不是桥故障 —— 见 isBridgeTransportError 注释。
     //   直接作为工具结果返回给模型（保留原始文案，模型据此换招），**不抛异常、不触发降级**。
-    if (json && json.error) return `浏览器操作失败: ${String(json.error)}`;
+    //   ★★ 2026-10-12（诊断报告 P0-1）：超时/仍在加载（`timedOut`）**不是失败** ——
+    //     绝不能加"失败"前缀（"失败"二字会诱导模型重试，正是"pageAgent 一跑就卡"的成因之一）。
+    //     直接保留 main.cjs 原文案（其中已写明"不代表失败、不要重复调用同一动作"）。
+    if (json && json.error) {
+      return json.timedOut ? String(json.error) : `浏览器操作失败: ${String(json.error)}`;
+    }
     // ★ 桥返回与 `browserView:action` 逐字同构 ⇒ 走**同一份**结果格式化（见 llm-task-manager 的 bridge 分支）
     return formatBridgeResult(action, json);
   } catch (e: any) {
@@ -180,9 +185,12 @@ export function formatBridgeResult(action: string, r: any): string {
     return `URL: ${r.url}\nTitle: ${r.title}\n\n【页面可见文本】\n${r.text || '(空)'}\n\n【可交互元素】(${r.interactiveCount} 个，编号可直接用于 browser_click/browser_type 的 index 参数)\n${elems}`;
   }
   if (action === 'upload') {
-    return r.uploaded
-      ? `已注入本地文件（${r.via || 'cdp'}）: ${r.filePath}${r.inputCount > 1 ? `（页面有 ${r.inputCount} 个 file input，用第一个）` : ''}`
-      : (r.error || '文件注入失败');
+    if (!r.uploaded) return r.error || '文件注入失败';
+    const base = `已注入本地文件（${r.via || 'cdp'}）: ${r.filePath}${r.inputCount > 1 ? `（页面有 ${r.inputCount} 个 file input，用第一个）` : ''}`;
+    // ★ 2026-10-12（诊断报告 P0-3）：带上"页面是否回读到该文件"的核验结论。
+    //   此前只报"已注入"，模型拿不到成功证据 ⇒ 反复重传（用户实报"上传重试多"）。
+    if (r.note) return `${base}\n${r.verified === true ? '✔ ' : 'ℹ '}${r.note}`;
+    return base;
   }
   if (action === 'run_script') {
     let rt = '';

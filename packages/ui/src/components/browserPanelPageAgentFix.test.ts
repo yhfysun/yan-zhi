@@ -129,13 +129,19 @@ describe('② IPC 监听器必须可注销（防累积泄漏）', () => {
   });
 });
 
-describe('③ showHome 与 <webview> 渲染的耦合（理解现象用，非断言目标）', () => {
-  it('★ 确认 v-if="showHome" / v-else 结构存在（<webview> 在 v-else 分支内）', () => {
+describe('③ showHome 与 <webview> 渲染的耦合', () => {
+  it('★ 2026-10-12 P1-B：viewport 必须用 v-show（元素常驻）—— v-else 会在 showHome 翻转时销毁并重建 <webview>', () => {
     expect(PANEL).toMatch(/v-if="showHome"/);
-    expect(PANEL).toMatch(/v-else class="browser-viewport"/);
-    // <webview> 应在 browser-viewport 内（showHome 为真时不渲染 ⇒ 这是"停在主页"的机制）
+    // 关键回归守卫：viewport 用 v-show="!showHome"（元素常驻、只切 display），
+    // 不得退回 v-else —— 那会在 showHome 翻转（agent 建 tab 时 url 为空会频繁触发）时
+    // 销毁重建整个 viewport（含全部 <webview>）⇒ guest 监听器堆在旧 WebContents 上不释放
+    // （实测 MaxListenersExceededWarning: 11 did-stop-loading listeners）。
+    expect(PANEL, '★ viewport 退回 v-else 会在 showHome 翻转时销毁重建 <webview> → guest 监听器泄漏')
+      .toMatch(/v-show="!showHome" class="browser-viewport"/);
+    expect(PANEL, '★ 不应再有 v-else class="browser-viewport"').not.toMatch(/v-else class="browser-viewport"/);
+    // <webview> 仍应在 browser-viewport 内
     const homeIdx = PANEL.indexOf('v-if="showHome"');
-    const viewportIdx = PANEL.indexOf('v-else class="browser-viewport"');
+    const viewportIdx = PANEL.indexOf('class="browser-viewport"');
     const webviewIdx = PANEL.indexOf('<webview');
     expect(viewportIdx).toBeGreaterThan(homeIdx);
     expect(webviewIdx).toBeGreaterThan(viewportIdx);

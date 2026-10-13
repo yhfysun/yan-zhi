@@ -214,7 +214,14 @@ function fmtJson(j: any): string {
 function fmtSnapshot(s: string): string {
   try {
     const p = JSON.parse(s);
-    if (p && typeof p === 'object' && typeof p.systemPrompt === 'string') return p.systemPrompt;
+    if (p && typeof p === 'object') {
+      if (typeof p.systemPrompt === 'string' && p.systemPrompt) return p.systemPrompt;
+      // ★ 2026-10-12 P2：顶层 systemPrompt 省略（与 messages[0] 重复）时，从 messages 回退。
+      const sys = Array.isArray(p.messages)
+        ? p.messages.find((m: any) => m && m.role === 'system' && typeof m.content === 'string')
+        : null;
+      if (sys) return sys.content;
+    }
   } catch {}
   return s;
 }

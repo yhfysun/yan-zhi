@@ -2619,9 +2619,14 @@ async function injectYzAssistant(wc) {
       // ⑤ change + 失焦确认（真人输入完通常会点别处/提交，change 是表单校验的触发点）
       try{el.dispatchEvent(new Event('change',{bubbles:true}));}catch(e){}
 
-      // 回读核验：受控组件若仍未接受（value 与期望不符），给调用方一个可判断的信号
+      // 回读核验（宽松等价，2026-10-12 P0-2）：页面常对文本做 trim/折叠空白/maxlength 截断，
+      // 用严格相等会误判"未生效"→ 模型反复重填。规范化空白后：相等 / 互相包含 任一即算填入。
       var got=isCE?(el.textContent||''):(el.value!=null?String(el.value):'');
-      return{applied:got===t,value:got.slice(0,120)};
+      var _n=function(s){return String(s==null?'':s).replace(/\\s+/g,' ').trim();};
+      var _ga=_n(got),_ex=_n(t);
+      // ★ 非空守卫：回读为空时 _ex.indexOf('') 恒为 0 → 会把“组件重置为空”误判成已填入。
+      var _applied=(_ga===_ex)||(!!_ex&&!!_ga&&(_ga.indexOf(_ex)>=0||_ex.indexOf(_ga)>=0));
+      return{applied:_applied,normalized:_applied&&String(got)!==String(t),value:got.slice(0,120)};
     }
     // 为元素生成尽量稳定的唯一 CSS 选择器
     function genSel(el){
@@ -2707,6 +2712,38 @@ function recordNoChange(tabKey, changed) {
   return { streak: next };
 }
 const STATE_SNAPSHOT_JS = `(function(){try{var d=document.body;return{url:location.href,t:(d?d.innerText:'').slice(0,2000),n:document.querySelectorAll('a,button,input,select,textarea').length};}catch(e){return null;}})()`;
+
+/**
+ * 输入回读的「宽松等价」判据（2026-10-12，诊断报告 P0-2）。
+ *
+ * ★★★ 为什么必须放宽（用户实报"填表单反复填写"）：
+ *   此前回读核验用 `got === expected` **严格相等**。页面只要对文本做了规整
+ *   （trim / 折叠空白 / 换行规范化 / maxlength 截断 / 站点格式化），回读值就 ≠ 期望值
+ *   ⇒ 误判 `applied:false` ⇒ 提示语引导模型"核验并重填" ⇒ **同一字段被反复填**。
+ *   而文本其实早已进入输入框。
+ *
+ * ★ 判据（规范化空白后，三者任一即视为"已填入"）：
+ *   ① 完全相等；
+ *   ② 回读值**包含**期望值（页面加了前后缀/格式化）；
+ *   ③ 期望值包含回读值（页面按 maxlength 截断）。
+ *   返回 `{ applied, normalized }`：`normalized:true` 表示"不是逐字相等但已判定填入"，
+ *   调用方据此回中性文案、**不再诱导重填**。
+ */
+function looseTextEqual(got, expected) {
+  const norm = (s) => String(s == null ? '' : s).replace(/\s+/g, ' ').trim();
+  const rawGot = String(got == null ? '' : got);
+  const rawExp = String(expected == null ? '' : expected);
+  const a = norm(rawGot);
+  const b = norm(rawExp);
+  let applied;
+  if (a === b) applied = true;                                 // 规范化后完全相等
+  else if (!b) applied = a === '';                             // 期望为空：只有回读也为空才算
+  else applied = !!(a && (a.includes(b) || b.includes(a)));    // 互相包含（页面加前后缀 / maxlength 截断）
+  // normalized=true：原始值**并不逐字相等**，是"规范化后判定已填入"（页面规整过）。
+  // ★ 注意 `a && (...)` 里的 `a` 非空守卫：若回读为空（''），`b.includes('')` 恒为 true
+  //   ⇒ 会把"受控组件重置为空"误判成"已填入"（原信号必须保住）。
+  return { applied, normalized: applied && rawGot !== rawExp };
+}
 
 /**
  * ★★★ 真键盘输入（CDP 通道）—— 2026-10-08 用户诉求「能否完全模拟人的操作」。
@@ -2834,7 +2871,9 @@ async function cdpTypeText(wc, target, text, pressEnter) {
 
     let got = String(verify ?? '');
     const expected = String(text || '');
-    let applied = got === expected;
+    // ★ 2026-10-12 P0-2：严格相等 → 宽松等价（见 looseTextEqual 注释）。
+    let cmp = looseTextEqual(got, expected);
+    let applied = cmp.applied;
     let fallback = false;
     if (!applied && text) {
       const fb = await wc.executeJavaScript(`(function(){
@@ -2847,17 +2886,19 @@ async function cdpTypeText(wc, target, text, pressEnter) {
         var r=A.typeIn(el,${JSON.stringify(String(text))});
         return {applied:r.applied,value:r.value};
       })()`).catch(() => ({ applied: false, value: '' }));
-      if (fb && fb.applied) { applied = true; got = String(fb.value || ''); fallback = true; }
+      if (fb && fb.applied) { applied = true; cmp = { applied: true, normalized: false }; got = String(fb.value || ''); fallback = true; }
     }
 
     return {
       applied,
+      // normalized=true：不是逐字相等，但规范化后判定已填入（页面做了格式化/截断）
+      normalized: cmp.normalized,
       typed: expected.length,
       value: got.slice(0, 120),
       via: fallback ? 'js-typein' : (formVia || (focusRes && focusRes.isCE ? 'ce-execcommand' : 'cdp-keyboard')),
       ...(applied
         ? {}
-        : { hint: '输入未生效（页面可能做了格式化/受控组件重置/输入被拦截）。已尝试 guest 内 typeIn 兜底仍失败，建议用 browser_get_page_content 核验输入框当前值。' }),
+        : { hint: '输入未生效（受控组件重置或输入被页面拦截）。已尝试 guest 内 typeIn 兜底仍失败 —— 请用 browser_get_page_content 核验输入框当前值后再决定，**不要盲目重复输入**。' }),
     };
   } catch (e) {
     // CDP 不可用（未就绪/被占用/引擎不支持）→ 返回 null 让调用方回落 JS 实现
@@ -3160,6 +3201,20 @@ async function runBrowserAction(convId, tabId, action, args) {
             try { await send('Page.setInterceptFileChooserDialog', { enabled: true }); interceptOn = true; }
             catch { /* 协议不支持时保持关闭，走下面的 DOM 回落 */ }
             dbg.on('message', onMessage);
+            // ★★★ 2026-10-12 P1-A：**并发探测** DOM input[type=file]。
+            //   实测（日志）：模型用 `clickIndex` 时编号常已漂移 → 「上传」按钮没点到 →
+            //   fileChooserOpened **永不出现** → 旧实现仍死等满 10s 才回落 DOM ⇒ 单次上传 ~11s
+            //   （日志 11116ms；而 clickSelector 模式只 ~1.4s）。点击后若页面上已挂出可注入的
+            //   input（React/抖音这类站点的隐藏 input，pickInjectable 已支持），本可**立刻注入**。
+            //   ⇒ 等 chooser 的同时每 ~450ms 探一次 DOM，先命中者胜 —— 省掉整段 10s 空等。
+            let domPick = null; // { nodeId, visible }
+            const probeDomInput = async () => {
+              try {
+                const { root } = await send('DOM.getDocument', { depth: -1, pierce: true });
+                const { nodeIds } = await send('DOM.querySelectorAll', { nodeId: root.nodeId, selector: 'input[type=file]' });
+                if (nodeIds && nodeIds.length) { const p = await pickInjectable(nodeIds); if (p) domPick = p; }
+              } catch { /* 探测失败不影响 chooser 主路径 */ }
+            };
             try {
               const clickArgs = { selector: args.clickSelector, index: args.clickIndex, x: args.clickX, y: args.clickY };
               // 复用页面内助手（与用户看到的点击一致）；__yzAssistant.resolve 只接受 selector，
@@ -3177,11 +3232,14 @@ async function runBrowserAction(convId, tabId, action, args) {
                 return {error:'未找到上传按钮（index 已失效？请重新 get_page_info）'};
               })()`).catch((e) => ({ error: String((e && e.message) || e) }));
               if (clickRes && clickRes.error) chooserErr = clickRes.error;
-              // 等 fileChooserOpened（最多 10s）。★ 2026-10-08 由 6s 提到 10s：
-              //   视频网站（抖音创作者平台等）上传按钮点击后要等前端 chunk 加载完才挂/弹 filechooser，
-              //   6s 常不够 → 误判"未捕获文件选择器" → 报"上传不顺"。10s 仍在 18s 总闸之内。
+              // 等 fileChooserOpened（最多 10s，事件一到立即退出）。★ 2026-10-12：并发探测 DOM，
+              //   命中即可提前结束，不必为等不到的 chooser 空等 10s（见上）。
               const t0 = Date.now();
-              while (!chooserBackendId && !chooserErr && Date.now() - t0 < 10000) await wait(150);
+              let tick = 0;
+              while (!chooserBackendId && !chooserErr && !domPick && Date.now() - t0 < 10000) {
+                await wait(150);
+                if (!chooserBackendId && !domPick && (++tick % 3 === 0)) await probeDomInput();
+              }
             } finally {
               dbg.removeListener('message', onMessage);
               // ★ 必须关掉拦截：无论成功/失败都要还原，否则页面后续的 filechooser 会被一直劫持
@@ -3191,6 +3249,10 @@ async function runBrowserAction(convId, tabId, action, args) {
             if (chooserBackendId != null) {
               await send('DOM.setFileInputFiles', { files: [fp], backendNodeId: chooserBackendId });
               result = { uploaded: true, via: 'filechooser', filePath: fp };
+            } else if (domPick) {
+              // 并发探测命中：直接注入（等价下面的 DOM 回落，但省掉 10s 空等）。标记便于排障。
+              await send('DOM.setFileInputFiles', { files: [fp], nodeId: domPick.nodeId });
+              result = { uploaded: true, via: 'cdp', filePath: fp, hiddenInput: domPick.visible === false, concurrentProbe: true };
             }
           }
 
@@ -3238,6 +3300,40 @@ async function runBrowserAction(convId, tabId, action, args) {
                 result = { uploaded: true, via: 'cdp', filePath: fp, inputCount: nodeIds.length, hiddenInput: hidden };
               }
             }
+          }
+          // ★★★ 2026-10-12（诊断报告 P0-3）：上传"成功"后**回读页面证据**再回报。
+          //   此前只报 `uploaded:true`，模型拿不到"页面确实收到了文件"的证据 ⇒ 不确定就
+          //   **再传一遍**（用户实报"上传重试多"）。这里回读：input[type=file] 的 files
+          //   是否含该文件 + 页面文本是否出现文件名/上传中提示，作为 verified 依据。
+          //   ★ 核验失败只降级为"未回读到证据"，绝不改变"文件已投递"这个事实本身。
+          if (result && result.uploaded) {
+            try {
+              const base = String(fp).split(/[/\\]/).pop() || String(fp);
+              const ev = await wc.executeJavaScript(`(function(){
+                var name=${JSON.stringify(base)};
+                var inputs=document.querySelectorAll('input[type=file]');
+                var inFiles=false,count=0;
+                for(var i=0;i<inputs.length;i++){
+                  var fl=inputs[i].files||[];count+=fl.length;
+                  for(var j=0;j<fl.length;j++){if(fl[j]&&fl[j].name===name){inFiles=true;}}
+                }
+                var t=(document.body&&document.body.innerText||'').slice(0,20000);
+                var inText=!!name&&t.indexOf(name)>=0;
+                var busy=/上传中|正在上传|处理中|上传进度|上传完成|已上传/.test(t);
+                return {inFiles:inFiles,fileCount:count,inText:inText,busy:busy};
+              })()`).catch(function(){return null;});
+              if (ev) {
+                result.verified = !!(ev.inFiles || ev.inText);
+                result.evidence = ev;
+                if (result.verified) {
+                  result.note = '已核验：文件已进入页面（' + (ev.inFiles ? 'input[type=file] 已含该文件' : '页面已出现文件名') + '）。**上传已成功，请勿重复调用 upload**。';
+                } else if (ev.busy) {
+                  result.note = '文件已投递，页面显示"上传中/处理中"——属于进行中，**请勿重复调用 upload**；可用 browser_get_page_content 轮询进度。';
+                } else {
+                  result.note = '文件已投递给页面，但未从页面回读到明显证据（可能仍在解析或站点未即时渲染）。**请先观察/轮询页面，不要立即重复 upload**。';
+                }
+              }
+            } catch { /* 核验失败不影响上传本身的结果 */ }
           }
           if (attachedHere) { try { dbg.detach(); } catch { /* ignore */ } }
           return result;
@@ -4229,15 +4325,29 @@ async function runBrowserAction(convId, tabId, action, args) {
         new Promise((r) => setTimeout(() => r(null), 3000)),
       ]);
     }
-    // 总闸：默认任何 action 最多 18s（渲染层 20s 竞速之前返回明确错误，而非让渲染层猜超时）。
-    //   ★ 2026-10-08 例外：upload / screenshot 放宽到 60s —— 视频文件投递后页面要等待
-    //     前端 chunk 挂载与上传控件就绪（filechooser 等待本身已占 10s），18s 会把"正在上传"
-    //     误判成超时（用户报"视频上传不顺"）。渲染层对这两个 action 同步放宽竞速窗口。
+    // 总闸：默认任何 action 最多 30s；慢动作（upload/screenshot）60s。
+    //   ★★★ 2026-10-12 修正（诊断报告 P0-1，用户实报"pageAgent 一跑整个应用就卡"）：
+    //     此前默认 **18s**，且超时文案末尾写着「请稍后用 browser_get_page_content 重试」——
+    //     对抖音创作者中心这类重页面，读/执行类动作（尤其是 run_script / get_page_content）
+    //     经常 >18s ⇒ **每次都判超时 → 模型照文案不停重试 → 主循环被 18s×N 占满 →
+    //     SSE 会话流断连重连 → 整个应用看起来卡死**（实测：单会话 168 次超时 / 50 次循环拦截）。
+    //   ⇒ 两处纠正：
+    //     ① 默认窗口 18s → 30s（读/执行类动作不再轻易误判；30s 仍远小于服务端快档 90s 上限）。
+    //     ② 超时**不是"失败"**：返回 `timedOut` / `stillLoading` 结构化字段，文案明确写
+    //        「不代表失败、**不要重复调用同一动作**」——删掉那句诱导重试的措辞。
     const SLOW_ACTIONS = new Set(['upload', 'screenshot']);
-    const actionTimeout = SLOW_ACTIONS.has(action) ? 60000 : 18000;
+    const actionTimeout = SLOW_ACTIONS.has(action) ? 60000 : 30000;
     const result = await Promise.race([
       doAction(),
-      new Promise((r) => setTimeout(() => r({ error: `浏览器操作 ${action} 超时（${actionTimeout / 1000}s）：页面可能仍在加载或无响应，请稍后用 browser_get_page_content 重试` }), actionTimeout)),
+      new Promise((r) => setTimeout(() => {
+        let stillLoading = true;
+        try { stillLoading = !!(wc && !wc.isDestroyed() && wc.isLoading()); } catch { /* 取不到按加载中处理 */ }
+        r({
+          error: `浏览器操作 ${action} 在 ${actionTimeout / 1000}s 内未返回：页面仍在加载或该操作耗时较长（**不代表失败**）。请勿重复调用同一动作——改用 browser_wait_for 等待页面就绪后，再用 browser_get_page_content 读取当前内容。`,
+          timedOut: true,
+          stillLoading,
+        });
+      }, actionTimeout)),
     ]);
     if (result && !result.error && !result.ambiguous && beforeState) {
       await new Promise(r => setTimeout(r, 500)); // 等待页面响应

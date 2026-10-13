@@ -140,9 +140,11 @@ describe('修复三-b：视频上传超时放宽（不再被 18s 误判）', () 
   });
 
   it('filechooser 等待时间已从 6s 放宽（视频站点点按钮后挂载上传控件更慢）', () => {
-    // 断言不存在旧的 6000 硬等待写法
-    expect(main).not.toMatch(/!chooserBackendId\s*&&\s*!chooserErr\s*&&\s*Date\.now\(\)\s*-\s*t0\s*<\s*6000/);
-    expect(main).toMatch(/!chooserBackendId\s*&&\s*!chooserErr\s*&&\s*Date\.now\(\)\s*-\s*t0\s*<\s*(\d{5,})/);
+    // ★ 2026-10-12 P1-A：等待循环新增了 `!domPick`（并发探测 DOM input[type=file]，拿到即提前结束）。
+    //   断言放宽为「不存在 6000 硬等待、且存在 ≥10000 的等待预算」—— 不再钉死中间条件，
+    //   否则 P1-A 的合法改动会被误判成回归（本条即如此触发过）。
+    expect(main).not.toMatch(/Date\.now\(\)\s*-\s*t0\s*<\s*6000/);
+    expect(main).toMatch(/Date\.now\(\)\s*-\s*t0\s*<\s*(\d{5,})/);
   });
 });
 

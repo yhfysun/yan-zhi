@@ -184,7 +184,11 @@ describe('B. JS 兜底路径必须补齐"人的输入"事件序列', () => {
 
   it('必须保留 apply 核验（回读值与期望比对）', () => {
     const fn = sliceFrom(mainSrc, 'function typeIn(el,text){');
-    expect(fn).toMatch(/applied:got===t/);
+    // ★ 2026-10-12：判据由"严格相等"改为"宽松等价"（规范化空白后相等/互相包含）——
+    //   严格相等会把页面规整过（trim/折叠空白/maxlength 截断）的文本误判为"未生效"→
+    //   模型反复重填（用户实报"填表单反复填写"）。applied 信号本身必须保留。
+    expect(fn, '★ typeIn 丢了回读核验').toMatch(/applied:_applied/);
+    expect(fn, '★ 回读核验未做规范化的宽松等价（页面规整会被误判未生效→反复重填）').toMatch(/indexOf\(/);
   });
 
   it('原生 value setter 仍在使用（受控组件 compatible）', () => {

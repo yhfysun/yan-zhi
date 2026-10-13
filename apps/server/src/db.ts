@@ -755,6 +755,20 @@ try { db.exec('CREATE INDEX IF NOT EXISTS idx_conversation_mode ON conversation(
 
 // 迁移 message 表（添加 system_prompt_snapshot 列 + 子智能体归属列）
 try { db.exec('ALTER TABLE message ADD COLUMN system_prompt_snapshot TEXT'); } catch {}
+
+// ★★★ 2026-10-12（P2）：提示词快照去重用的**内容寻址** blob 表。
+//   为什么：快照里的 `tools`（完整工具 schema，~9KB）在会话内跨步骤**高度重复**
+//   （实测单会话仅 4 个版本，却随 491 条快照存了 491 次）。改为「按内容哈希存一份、
+//   快照只存 `toolsRef`」，读侧 `hydrateSnapshot` 回填 → 展示零变化，每条快照省 ~9KB。
+//   ★ hash 是**内容哈希**（同内容同 hash）⇒ 天然全局去重，不需按会话分区。
+try {
+  db.exec(`CREATE TABLE IF NOT EXISTS snapshot_blob (
+    hash TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    content TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  )`);
+} catch {}
 for (const col of ['parent_tool_call_id TEXT', 'sub_agent_id TEXT', 'sub_agent_name TEXT', 'sub_agent_depth INTEGER']) {
   const [name] = col.split(' ');
   try { db.exec(`ALTER TABLE message ADD COLUMN ${col}`); } catch {}

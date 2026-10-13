@@ -876,9 +876,17 @@ function createChat() {
           }
         }
         if (parsed.input) lines.push(`【输入: ${String(parsed.input).slice(0, 200)}】`);
-        lines.push('');
-        lines.push('========== 系统提示词 ==========');
-        lines.push(parsed.systemPrompt);
+        // ★ 2026-10-12 P2：顶层 systemPrompt 可能被省略（与 messages[0] 重复，不再重复存）→ 从 messages 回退。
+        const sysText = (typeof parsed.systemPrompt === 'string' && parsed.systemPrompt)
+          ? parsed.systemPrompt
+          : (Array.isArray(parsed.messages)
+            ? (parsed.messages.find((m: any) => m && m.role === 'system' && typeof m.content === 'string')?.content || '')
+            : '');
+        if (sysText) {
+          lines.push('');
+          lines.push('========== 系统提示词 ==========');
+          lines.push(sysText);
+        }
         return lines.join('\n');
       }
       return JSON.stringify(parsed, null, 2);

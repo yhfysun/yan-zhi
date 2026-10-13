@@ -400,6 +400,13 @@ export async function initSchema(execFn: (sql: string) => Promise<void>): Promis
   }
   // 迁移：message.system_prompt_snapshot
   try { await execFn(`ALTER TABLE message ADD COLUMN system_prompt_snapshot TEXT;`); } catch { /* 列已存在 */ }
+  // ★ 2026-10-12 P2：提示词快照去重用的**内容寻址** blob 表（落库/回填见 server 的
+  //   services/context-snapshot.ts；表结构与 server db.ts 的同名迁移保持一致）。
+  try {
+    await execFn(`CREATE TABLE IF NOT EXISTS snapshot_blob (
+      hash TEXT PRIMARY KEY, kind TEXT NOT NULL, content TEXT NOT NULL, created_at INTEGER NOT NULL
+    );`);
+  } catch { /* 已存在 */ }
   // 迁移：从旧 agent_profile 表复制数据到 agent
   try {
     await execFn(`INSERT OR IGNORE INTO agent (id, name, description, system_prompt, temperature, max_tokens, top_p, frequency_penalty, presence_penalty, platform_id, model_id, is_default, workflow_json, version, created_at, updated_at)
