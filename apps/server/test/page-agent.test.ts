@@ -33,6 +33,17 @@ beforeAll(async () => {
 });
 
 // ── pageAgent 配置（从 db.ts 复制，避免 import 整个 db 模块）────────────────
+//
+// ⚠️⚠️ 以下常量是**手抄的过时快照，请勿据此判断真实挂载面**（2026-10-13 标注）。
+//   实测偏差：本清单含 36 个 browser_*，其中 `browser_get_a11y_tree` **根本不存在**
+//   （全仓无实现）；同时**缺** browser_get_page_content / browser_fill_form /
+//   browser_run_script / browser_scroll / browser_upload / browser_screenshot /
+//   image_analyze / file_write 等——服务端挂载的 16 项里它只对上一部分。
+//   本文件之所以仍全绿，是因为它拿这份抄件跟**另一份同样手抄的推荐清单**对账
+//   （自洽但错误）= 典型的"假绿"。
+//   ★ 真正的一致性守门在 `apps/server/test/page-agent-tool-mount-consistency.test.ts`
+//     （从源码文本派生两侧清单，不手抄）。下面这些常量仅留给本文件既有的
+//     「工具类是否可实例化」等断言使用，不要再往这里加新工具名。
 const PAGE_AGENT_BUILTIN_TOOLS = [
   'browser_navigate', 'browser_click', 'browser_type', 'browser_press_key',
   'browser_scroll', 'browser_hover', 'browser_get_text', 'browser_get_dom',

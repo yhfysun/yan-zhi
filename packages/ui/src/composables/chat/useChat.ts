@@ -1361,6 +1361,20 @@ function createChat() {
   }
 
   /**
+   * 窗口是否已覆盖最早一轮（= 再往上没有可扩的轮次了）。
+   *
+   * ★ 2026-10-13 补：`handleScroll` 里用 `!windowAll.value` 做「无需再扩窗」的短路判断，
+   *   但**全仓没有 windowAll 的定义**（上游 HEAD 自带的编译错误：TS2552 Cannot find name）。
+   *   口径与 `expandWindowOnScroll` 的早退条件**同源**（`currentWindowStart(all) === 0`），
+   *   故按同一判据补上。安全边界：即便判据有偏差，最坏也只是多跑一次会立刻早退的 rAF，
+   *   不改变任何行为。
+   */
+  const windowAll = computed(() => {
+    const all = messageRounds.value;
+    return all.length === 0 || currentWindowStart(all) === 0;
+  });
+
+  /**
    * ★★★ 工具结果索引（2026-10-11，修「任务一跑页面卡死滚不动」的**主因**）。
    *
    * 背景：模板里 `getToolResult(tc.id)` / `isToolError(tc.id)` 是**方法调用**

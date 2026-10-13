@@ -839,10 +839,18 @@ try { db.exec('ALTER TABLE model ADD COLUMN description TEXT'); } catch {}
 // 用户手动隐藏的选择会被下一次同步冲掉，故单独一列存用户意图。
 try { db.exec('ALTER TABLE model ADD COLUMN visible INTEGER NOT NULL DEFAULT 1'); } catch {}
 
-// 迁移：模型候选池（model-candidate-pools，2026-10-12）。
-// agent / platform 各存一份同构 JSON：{ llm[], vision[], image[], video[] }（槽位 → 有序 model 主键数组）。
-// 全局层存 app_config key='model_pools'（无 schema 变更）。解析口径唯一实现在 services/model-pools.ts：
-// 智能体 > 平台 > 全局，按槽位逐层回退，全空 autoPool 兜底（= 全部可见模型按类型筛）。
+// 迁移：模型候选池（model-candidate-pools，2026-10-12；2026-10-13 修正第二层语义）。
+// 四槽位同构 JSON：{ llm[], vision[], image[], video[] }（槽位 → 有序 model 主键数组）。
+// 三层唯一实现在 services/model-pools.ts，按槽位逐层回退：
+//   智能体 agent.model_pools_json
+//   → 智能体平台 app_config key='agent_platform_model_pools'
+//   → 全局     app_config key='model_pools'
+//   → autoPool 兜底（= 全部可见模型按类型筛）
+// ★ 第二层是「智能体平台」（所有智能体的默认池，跨供应商），**不是**「模型平台」——
+//   platform 表存的是大模型供应商（百炼/agnes），拿它当第二层会把跨供应商选型逼成
+//   "一个供应商配一份"，与用户心智不符（用户 2026-10-13 指出）。
+// ★ platform.model_pools_json 列**保留但已停用**：既有库可能有残留值，删列风险大于收益，
+//   读取路径已完全不走它（见 services/model-pools.ts 的 readAgentPlatformPools）。
 // 注意：内置 agent seed 的 UPDATE 清单**不得**加入 model_pools_json 列 —— 那会把用户配的池冲掉。
 try { db.exec('ALTER TABLE agent ADD COLUMN model_pools_json TEXT'); } catch {}
 try { db.exec('ALTER TABLE platform ADD COLUMN model_pools_json TEXT'); } catch {}
@@ -3461,7 +3469,18 @@ try {
   const getBody = db.prepare('SELECT body FROM skill WHERE id = ?');
   const setDef = db.prepare('UPDATE skill SET name = ?, description = ?, triggers_json = ?, body = ?, category = ? WHERE id = ?');
   for (const id of SKILL_BODY_REFRESH_IDS) {
-    const def = builtinSkillDefaults.find((s) => s.id === id);
+    // ★ 不能用 builtinSkillDefaults.find 一条路（2026-10-13 修）：
+    //   skill_novel_tuiwen 是**内联定义**（NOVEL_TUIWEN_BODY，见本文件 2634-2671 的 seed 块），
+    //   不在批量定义数组里 → 旧写法 find 取不到就 continue，白名单里那一条**永远不生效**：
+    //   注释承诺的「老用户库里会刷成新 body」是**假承诺**。
+    //   教训与「提示词推荐了却没挂」同源：**读起来生效、实际不生效**的代码比报错更难查。
+    const def = builtinSkillDefaults.find((s) => s.id === id)
+      ?? (id === 'skill_novel_tuiwen'
+        ? {
+            name: '小说推文视频', description: NOVEL_TUIWEN_DESC,
+            triggers: NOVEL_TUIWEN_TRIGGERS, body: NOVEL_TUIWEN_BODY, category: '自动化',
+          }
+        : undefined);
     if (!def) continue;
     const row = getBody.get(id) as { body?: string | null } | undefined;
     if (!row || row.body === def.body) continue;
@@ -3982,6 +4001,19 @@ export function resetBuiltinSkill(skillId: string): boolean {
   if (batch) {
     db.prepare("UPDATE skill SET name = ?, description = ?, triggers_json = ?, body = ?, category = ?, source = 'builtin' WHERE id = ?").run(
       batch.name, batch.description, JSON.stringify(batch.triggers), batch.body, batch.category, skillId,
+    );
+    return true;
+  }
+
+  // ★ 内联定义：小说推文视频（2026-10-13 修）。
+  //   它既不在 STANDALONE_SKILL_DEFAULTS 也不在 builtinSkillDefaults，旧写法一路落到
+  //   `return false` → routes/skills.ts:81 返回 404「该 Skill 不是内置 skill」，
+  //   即**产品里最核心的技能无法一键恢复默认**（改坏了只能手改库）。
+  //   这里连 files_json 一并还原（该 skill 是唯一带 references 参考资料的，
+  //   只还原 body 会让正文引用的 references/*.md 与实际落盘内容对不上）。
+  if (skillId === 'skill_novel_tuiwen') {
+    db.prepare("UPDATE skill SET name = ?, description = ?, triggers_json = ?, body = ?, category = ?, files_json = ?, source = 'builtin' WHERE id = ?").run(
+      '小说推文视频', NOVEL_TUIWEN_DESC, JSON.stringify(NOVEL_TUIWEN_TRIGGERS), NOVEL_TUIWEN_BODY, '自动化', JSON.stringify(NOVEL_TUIWEN_FILES), skillId,
     );
     return true;
   }

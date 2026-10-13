@@ -1,9 +1,26 @@
 // 模型候选池 store（model-candidate-pools P1）。
 //
-// 职责：三层池（global / platform / agent）的读写与缓存。
-// ★ 回退顺序（agent → platform → global → autoPool）**不在前端实现** ——
+// 职责：三层池（agent / agentPlatform / global）的读写与缓存。
+// ★ 回退顺序（agent → agentPlatform → global → autoPool）**不在前端实现** ——
 //   前端只展示与保存；生效池一律读 GET /api/model-pools 的 effective 字段
 //   （后端 services/model-pools.ts 是唯一解析出口，前端自己算必然漂移）。
+//
+// ★ 第二层是「**智能体平台**」（对所有智能体生效的默认池，跨供应商可选），
+//   **不是**「模型平台」——后者指 /models 页里百炼/agnes 这类大模型供应商。
+//   所以这一层在 store 里是**单例**（agentPlatformPools 一个对象），不是按 platformId 的字典。
+//
+// ★★★ 2026-10-13 冲突合并说明（远端 0161d7e × 本地在途改动）：
+//   远端版带回了一套 per-platform 池（platformPools / loadPlatform / savePlatform /
+//   platformPoolOf）。但**同一个提交的后端里没有对应路由** ——
+//   GET /api/model-pools 只认 agentId（routes/model-pools.ts:49-72），
+//   PUT 只有 /global、/agent-platform、/agents/:aid，**没有** /model-pools/platforms/:pid；
+//   且远端版 load() 里把 platformPools 显式清成 `{}` 从不填充 ⇒ 那套是**对不上后端的
+//   死代码**（loadPlatform/savePlatform 调下去只会 404，platformPoolOf 恒返回空池）。
+//   本地在途版按真实后端口径实现了 agentPlatformPools，并有守门测试禁止那三个名字回潮
+//   （utils/model-pools.test.ts：「仍残留 savePlatform / loadPlatform / platformPoolOf」）。
+//   ⇒ 择优结论：**保留本地的 agentPlatformPools / saveAgentPlatform**，
+//     **保留远端这轮的真新增 effectivePools / effectiveVision**（被 stores/chat.ts 的
+//     vision 降级链消费），**丢弃 per-platform 那套死代码**。
 import { defineStore } from 'pinia';
 import { ref } from 'vue';
 import { api } from '../api/client';
@@ -33,10 +50,10 @@ function normalize(p: unknown): ModelPools {
 }
 
 export const useModelPoolStore = defineStore('modelPool', () => {
-  /** 全局默认池 */
+  /** L1 之外的全局默认池（应用级单例） */
   const globalPools = ref<ModelPools>({ ...EMPTY_POOLS });
-  /** 各平台池（platformId → pools） */
-  const platformPools = ref<Record<string, ModelPools>>({});
+  /** L2 智能体平台默认池（所有智能体的默认选型，跨供应商；应用级单例） */
+  const agentPlatformPools = ref<ModelPools>({ ...EMPTY_POOLS });
   /** 生效池（后端解析的有序候选，load() 时随 GET /api/model-pools 一并返回） */
   const effectivePools = ref<Record<string, EffectivePoolEntry[]> | null>(null);
   const loaded = ref(false);
@@ -59,15 +76,15 @@ export const useModelPoolStore = defineStore('modelPool', () => {
     modelsLoaded.value = true;
   }
 
+  /** 读全局层 + 智能体平台层 + 生效池（一次 GET 全取回） */
   async function load(): Promise<void> {
     const r = await api.get<any>('/model-pools');
     if ('error' in r || !r.data) return;
     globalPools.value = normalize(r.data.global);
-    platformPools.value = {};
-    // ★ 生效池（2026-10-13）：后端已按 agent→platform→global→autoPool 解析出**有序**
-    //   生效候选（effective[slot][0] 为首选）。此前只存了三层配置、把 effective 丢弃，
-    //   运行时消费方（image_analyze 的 vision 降级链）只能自己试错。现在存下来，
-    //   供 runImageAnalyze 等直接按池顺序取候选 —— 口径与后端唯一解析出口一致，不再漂移。
+    agentPlatformPools.value = normalize(r.data.agentPlatform);
+    // ★ 生效池（远端这轮的新增）：后端已按 agent→agentPlatform→global→autoPool 解析出
+    //   **有序**生效候选（effective[slot][0] 为首选）。存下来供 stores/chat.ts 的
+    //   vision 降级链直接按池顺序取候选 —— 与后端唯一解析出口同口径，不再漂移。
     const eff = (r.data.effective && typeof r.data.effective === 'object') ? r.data.effective : null;
     if (eff) {
       const rec: Record<string, EffectivePoolEntry[]> = {};
@@ -82,14 +99,6 @@ export const useModelPoolStore = defineStore('modelPool', () => {
     loaded.value = true;
   }
 
-  async function loadPlatform(pid: string): Promise<ModelPools> {
-    const r = await api.get<any>(`/model-pools?platformId=${encodeURIComponent(pid)}`);
-    if ('error' in r || !r.data) return { ...EMPTY_POOLS };
-    const pools = normalize(r.data.platform || EMPTY_POOLS);
-    platformPools.value = { ...platformPools.value, [pid]: pools };
-    return pools;
-  }
-
   async function saveGlobal(pools: ModelPools): Promise<string | null> {
     const r = await api.put<any>('/model-pools/global', { modelPools: pools });
     if (r && 'error' in r) return (r as any).error || '保存失败';
@@ -97,19 +106,15 @@ export const useModelPoolStore = defineStore('modelPool', () => {
     return null;
   }
 
-  async function savePlatform(pid: string, pools: ModelPools): Promise<string | null> {
-    const r = await api.put<any>(`/model-pools/platforms/${pid}`, { modelPools: pools });
+  async function saveAgentPlatform(pools: ModelPools): Promise<string | null> {
+    const r = await api.put<any>('/model-pools/agent-platform', { modelPools: pools });
     if (r && 'error' in r) return (r as any).error || '保存失败';
-    platformPools.value = { ...platformPools.value, [pid]: normalize((r as any).data) };
+    agentPlatformPools.value = normalize((r as any).data);
     return null;
   }
 
-  function platformPoolOf(pid: string): ModelPools {
-    return platformPools.value[pid] || { ...EMPTY_POOLS };
-  }
-
   /**
-   * 生效 vision 候选（有序，[0] 首选；2026-10-13）。
+   * 生效 vision 候选（有序，[0] 首选；来自远端这轮）。
    * 池未加载/为空时返回 []，调用方自行回退旧链路（capabilities 显标模型）。
    * ★ 消费方需要 Model/Platform 对象：modelId+platformId 可在 allModels(ensureModels)
    *   与 platformStore.platforms 里解析。
@@ -119,8 +124,8 @@ export const useModelPoolStore = defineStore('modelPool', () => {
   }
 
   return {
-    globalPools, platformPools, loaded, allModels, modelsLoaded,
-    load, loadPlatform, saveGlobal, savePlatform, platformPoolOf, ensureModels,
+    globalPools, agentPlatformPools, effectivePools, loaded, allModels, modelsLoaded,
+    load, saveGlobal, saveAgentPlatform, ensureModels,
     effectiveVision,
   };
 });

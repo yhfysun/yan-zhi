@@ -58,8 +58,6 @@
         <div class="card-actions">
           <el-button size="small" :loading="testing === p.id" @click="test(p.id)">测试</el-button>
           <el-button size="small" @click="openPlatform(p.id)">管理模型</el-button>
-          <!-- 模型候选池（model-candidate-pools）：平台默认层，内置平台也可配（使用偏好） -->
-          <el-button size="small" @click="openPools(p)">候选池</el-button>
               <el-button v-if="!p.isBuiltin" size="small" @click="editPlatform(p)">编辑</el-button>
               <el-button size="small" type="danger" @click="del(p.id)">删除</el-button>
         </div>
@@ -189,31 +187,6 @@
     <!-- Mobile FAB -->
     <el-button type="primary" :icon="Plus" circle class="mobile-fab" @click="openAdd" />
 
-    <!-- 平台候选池（model-candidate-pools）：四槽位多选，条目限定本平台模型 -->
-    <el-dialog v-model="showPools" :title="`候选池 · ${poolPlatform?.name || ''}`" width="560px" destroy-on-close>
-      <el-form label-width="80px">
-        <el-form-item v-for="slot in POOL_SLOTS" :key="slot" :label="POOL_LABELS[slot]">
-          <el-select
-            v-model="poolForm[slot]"
-            placeholder="可多选，顺序即优先级"
-            filterable clearable multiple collapse-tags style="width:100%"
-          >
-            <el-option
-              v-for="m in platformModelsForSlot(slot)"
-              :key="m.id"
-              :label="m.alias || m.modelId"
-              :value="m.id"
-            />
-          </el-select>
-        </el-form-item>
-      </el-form>
-      <div class="form-tip">该平台下智能体未配置候选池时使用这里；此处只能选择本平台的模型。全局默认在「设置 → 通用」。</div>
-      <template #footer>
-        <el-button @click="showPools = false">取消</el-button>
-        <el-button type="primary" :loading="poolSaving" @click="savePools">保存</el-button>
-      </template>
-    </el-dialog>
-
     <!-- 本地模型商城：国内源下载 / 测试启用 / 删除 / Ollama 接入 -->
     <LocalModelMarket v-model="showLocalMarket" />
   </div>
@@ -224,8 +197,7 @@ import { ref, computed, onMounted } from 'vue';
 import { Plus, Connection, Download, Delete, RefreshLeft } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import type { ModelType, PlatformApiKey } from '@yan-zhi/shared';
-import { POOL_SLOTS, POOL_LABELS, flatModelsForSlot, poolModelsOf } from '../utils/model-pools';
-import { usePlatformStore, useModelPoolStore } from '../stores';
+import { usePlatformStore } from '../stores';
 import { waitForBackend } from '../api/backend-ready';
 import { DEFAULT_CONTEXT_WINDOW } from '../utils/context-window';
 import PlatformDetail from './PlatformDetail.vue';
@@ -235,48 +207,12 @@ import StatusActionBar from '../components/common/StatusActionBar.vue';
 import SearchToolbar from '../components/common/SearchToolbar.vue';
 
 const store = usePlatformStore();
-const modelPoolStore = useModelPoolStore();
 const showAdd = ref(false);
 const showLocalMarket = ref(false);
 
-// ===== 平台候选池（model-candidate-pools）=====
-// POOL_SLOTS / POOL_LABELS 统一取自 utils/model-pools.ts（唯一实现）
-const showPools = ref(false);
-const poolSaving = ref(false);
-const poolPlatform = ref<{ id: string; name: string } | null>(null);
-const poolForm = ref<Record<string, string[]>>({ llm: [], vision: [], image: [], video: [] });
-
-async function openPools(p: { id: string; name: string }) {
-  poolPlatform.value = p;
-  // ★ 数据源走 modelPoolStore 的独立全量清单：store.loadModels(pid) 会整体替换
-  //   store.models 为单平台清单，冲掉其他界面依赖的缓存，这里绝不能调。
-  await modelPoolStore.ensureModels().catch(() => {});
-  const pools = await modelPoolStore.loadPlatform(p.id);
-  poolForm.value = {
-    llm: [...(pools.llm || [])], vision: [...(pools.vision || [])],
-    image: [...(pools.image || [])], video: [...(pools.video || [])],
-  };
-  showPools.value = true;
-}
-
-/** 本平台模型按槽位过滤（口径走 utils/model-pools.ts 唯一实现：enabled + visible + 平台 llm_enabled + matchesModelSlot） */
-function platformModelsForSlot(slot: string) {
-  const pid = poolPlatform.value?.id;
-  if (!pid) return [];
-  return flatModelsForSlot(poolModelsOf(modelPoolStore, store.models), store.platforms, slot as any, pid);
-}
-
-async function savePools() {
-  if (!poolPlatform.value) return;
-  poolSaving.value = true;
-  try {
-    const err = await modelPoolStore.savePlatform(poolPlatform.value.id, poolForm.value as any);
-    if (err) ElMessage.error(err);
-    else { ElMessage.success('候选池已保存'); showPools.value = false; }
-  } finally {
-    poolSaving.value = false;
-  }
-}
+// ★ 候选池不在这里：候选池的第二层是「**智能体平台**」（所有智能体的默认池，跨供应商），
+//   不是「模型平台」（本页 = 百炼/agnes 这类大模型供应商）。入口在 /agents（智能体平台）页。
+//   见 services/model-pools.ts 文件头与 pages/Agents.vue 的候选池入口。
 
 // ── 平台搜索 / 筛选（纯前端，不动数据） ──
 const platformKeyword = ref('');

@@ -18,8 +18,14 @@
  * ★ 为什么分两段测：
  *   ① 纯函数真跑（本文件）：过滤是"作用在哪个对象上"的判定，错了不报错、只是筛空 —— 必须真跑。
  *   ② 组件接线静态断言：纯函数对了，宿主 .vue 仍可能没用它（写了 helper 没人调 = 摆设）。
- *      Settings/Models/PlatformDetail/AgentEditDialog 依赖 pinia/vue-router，vitest(node) 下
+ *      Settings/Agents/AgentEditDialog 依赖 pinia/vue-router，vitest(node) 下
  *      无法直接挂载，故采用与 views/modelFilter.test.ts 一致的"读源码结构断言"范式。
+ *
+ * ★ 2026-10-13 第二处语义修正（用户指正：「候选是智能体平台啊不是大模型平台啊」）：
+ *   候选池的第二层是「**智能体平台**」（/agents 页，所有智能体的默认池，跨供应商可选），
+ *   **不是**「模型平台」（/models 页 = 百炼/agnes 这类大模型供应商）。
+ *   旧实现以 platform 表为 L2 ⇒ 逼用户按供应商拆配置，且入口挂在 /models 上，用户找不到。
+ *   现：入口在 /agents；两层都是 app_config 单例（agent_platform_model_pools / model_pools）。
  */
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -91,9 +97,9 @@ describe('POOL_SLOTS / POOL_LABELS · 元数据唯一实现', () => {
     expect(POOL_LABELS.video).toBe('生视频');
   });
 
-  it('★ 四个视图都从 utils/model-pools 取 POOL_LABELS，不得再有本地副本', () => {
+  it('★ 候选池视图都从 utils/model-pools 取 POOL_LABELS，不得再有本地副本', () => {
     for (const f of [
-      'views/Settings.vue', 'views/Models.vue', 'views/PlatformDetail.vue',
+      'views/Settings.vue', 'views/Agents.vue',
       'components/AgentEditDialog.vue',
     ]) {
       const src = read(f);
@@ -105,6 +111,26 @@ describe('POOL_SLOTS / POOL_LABELS · 元数据唯一实现', () => {
         /const\s+POOL_LABELS\s*[:=]/,
       );
     }
+  });
+
+  it('★ 候选池不得出现在「模型平台」页（/models 及其详情页）—— 那是大模型供应商，不是第二层', () => {
+    // 用户 2026-10-13 指正：候选池的第二层是「智能体平台」(/agents)，不是「模型平台」(/models)。
+    // 模型平台页只该有"这个供应商下有哪些模型"，不该有候选池配置。
+    for (const f of ['views/Models.vue', 'views/PlatformDetail.vue']) {
+      const src = read(f);
+      expect(src, `${f} 不该再引用候选池（POOL_SLOTS/POOL_LABELS/openPools/savePools）`).not.toMatch(
+        /POOL_SLOTS|POOL_LABELS|openPools|savePools|modelPoolStore/,
+      );
+    }
+  });
+
+  it('★ 智能体平台页（/agents）必须提供候选池入口，且写的是 agent-platform 层', () => {
+    const src = read('views/Agents.vue');
+    expect(src, '智能体平台页缺候选池入口按钮').toMatch(/@click="openPools"/);
+    expect(src, '未从 utils/model-pools 导入 POOL_LABELS').toMatch(/POOL_LABELS/);
+    // 保存必须走 store 的 agent-platform 出口（不是旧的 per-platform 出口）
+    expect(src, '未调用 saveAgentPlatform').toMatch(/saveAgentPlatform\s*\(/);
+    expect(src, '仍在使用已废弃的 savePlatform/loadPlatform').not.toMatch(/savePlatform\s*\(|loadPlatform\s*\(/);
   });
 });
 
@@ -164,15 +190,13 @@ describe('groupModelsForSlot · 按槽位分组（跨平台）', () => {
 });
 
 describe('候选池数据源 · 必须独立于 platformStore.models', () => {
-  it('★ 四个视图的候选池都不以 platformStore.models 作为数据源', () => {
+  it('★ 候选池视图都以 poolModelsOf 作为数据源（不得直吃 platformStore.models）', () => {
     // 修复前病根：loadModels(pid) 会把 store.models 整体替换成单平台清单 → 候选池下拉变空
-    const files = {
-      'views/Settings.vue': 'poolSlotGroups',
-      'views/Models.vue': 'platformModelsForSlot',
-      'views/PlatformDetail.vue': 'poolModelsForSlot',
-      'components/AgentEditDialog.vue': 'poolSlotGroups',
-    };
-    for (const [f] of Object.entries(files)) {
+    for (const f of [
+      'views/Settings.vue',
+      'views/Agents.vue',
+      'components/AgentEditDialog.vue',
+    ]) {
       const src = read(f);
       expect(src, `${f} 未使用 poolModelsOf 兜底数据源`).toMatch(/poolModelsOf\s*\(/);
     }
@@ -187,13 +211,25 @@ describe('候选池数据源 · 必须独立于 platformStore.models', () => {
     expect(src).toMatch(/if\s*\(\s*modelsLoaded\.value\s*\)\s*return/);
   });
 
-  it('★ 候选池的打开/取数函数体内不得出现 loadModels(单平台)（会污染共享缓存）', () => {
-    // ★ 必须切片：`onMounted` 里 `loadModels(platformId.value)` 是**合法**的
-    //   （平台详情页的模型卡片本来就要按平台拉），只有候选池取数路径才禁止。
+  it('★ 候选池 store 的第二层是 agentPlatform（应用级单例），不再按 platformId 存字典', () => {
+    const src = read('stores/model-pool.ts');
+    expect(src, '缺少 agentPlatformPools').toMatch(/agentPlatformPools/);
+    expect(src, '缺少 saveAgentPlatform').toMatch(/saveAgentPlatform/);
+    // 已废弃的 per-platform 出口不得残留
+    expect(src, '仍残留 platformPools 字典').not.toMatch(/platformPools/);
+    expect(src, '仍残留 savePlatform / loadPlatform / platformPoolOf').not.toMatch(
+      /savePlatform|loadPlatform|platformPoolOf/,
+    );
+    // 写出口必须打 agent-platform 端点（与后端路由一致）
+    expect(src, '未调用 /model-pools/agent-platform').toMatch(/\/model-pools\/agent-platform/);
+  });
+
+  it('★ 候选池取数路径不得调用 loadModels(单平台)（会污染共享缓存）', () => {
+    // ★ 必须切片：`onMounted` 里的 `loadModels(platformId.value)` 在平台详情页是**合法**的
+    //   （模型卡片本来就要按平台拉），只有候选池取数路径才禁止。
     //   对整文件断言会把合法调用一起判红 —— 断言范围不锁死 = 假红。
     const cases: [string, string, string][] = [
-      ['views/Models.vue', 'async function openPools', 'function platformModelsForSlot'],
-      ['views/PlatformDetail.vue', 'async function openPools', 'async function savePools'],
+      ['views/Agents.vue', 'async function openPools', 'async function savePools'],
       ['stores/model-pool.ts', 'async function ensureModels', 'async function load'],
     ];
     for (const [f, startAnchor, endAnchor] of cases) {
@@ -207,7 +243,7 @@ describe('候选池数据源 · 必须独立于 platformStore.models', () => {
   });
 });
 
-describe('渲染接线 · 设置页排版与平台入口', () => {
+describe('渲染接线 · 设置页排版与候选池入口', () => {
   it('★ 设置页：提示独占一行、按钮独立成行（不得挤在同一行，用户截图实报）', () => {
     const src = read('views/Settings.vue');
     // 结构：hint 与 button-row 是两个块级兄弟，不再共处一个 flex 行
@@ -219,13 +255,11 @@ describe('渲染接线 · 设置页排版与平台入口', () => {
     expect(src).not.toMatch(/class="pool-first-tag"/);
   });
 
-  it('★ 平台详情页（「管理模型」进入的页面）必须有候选池入口', () => {
-    const src = read('views/PlatformDetail.vue');
-    expect(src).toMatch(/class="llm-expose-bar pool-bar"/);
-    expect(src).toMatch(/openPools\s*\(/);
-    expect(src).toMatch(/savePools\s*\(/);
-    // 保存必须走 store（唯一的写出口），不得自己拼 api.put
-    expect(src).toMatch(/modelPoolStore\.savePlatform\s*\(/);
+  it('★ 智能体平台页（/agents）候选池弹窗：说明"对所有智能体生效" + 按平台分组 + 有保存出口', () => {
+    const src = read('views/Agents.vue');
+    expect(src, '弹窗缺说明（用户就是分不清"智能体平台"和"模型平台"才报的障）').toMatch(/pool-dialog-hint/);
+    expect(src, '候选池选项未按平台分组').toMatch(/el-option-group/);
+    expect(src, '保存未走 store 出口').toMatch(/saveAgentPlatform\s*\(/);
   });
 
   it('★ 智能体编辑：placeholder 里「候选」只出现一次（不得「视觉候选 候选」）', () => {

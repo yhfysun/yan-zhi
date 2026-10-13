@@ -45,7 +45,7 @@
                 </el-select>
               </el-form-item>
               <!-- 模型候选池（model-candidate-pools）：四槽位有序多选，顺序即优先级（第一个为首选）。
-                   未配置的槽位按 平台池 → 全局池 → 自动兜底 回退（判据 matchesModelSlot 与后端同源）。 -->
+                   未配置的槽位按 智能体平台默认池 → 全局池 → 自动兜底 回退（判据 matchesModelSlot 与后端同源）。 -->
               <el-form-item v-for="slot in POOL_SLOTS" :key="slot" :label="POOL_LABELS[slot]">
                 <div class="pool-select-row">
                   <el-select

@@ -2819,7 +2819,21 @@ const STATE_SNAPSHOT_JS = `(function(){try{var d=document.body;return{url:locati
  *   调用方据此回中性文案、**不再诱导重填**。
  */
 function looseTextEqual(got, expected) {
-  const norm = (s) => String(s == null ? '' : s).replace(/\s+/g, ' ').trim();
+  // ★ 2026-10-13 合并本轮修复：补一层零宽字符过滤。
+  //   上游版已做了空白折叠 + 双向包含 + normalized 信号；但 U+200B/200C/200D/FEFF 这类
+  //   不可见字符会让"肉眼看完全一样"的文本判不相等（页面/复制粘贴常见），误判成"没填上"。
+  //   ★ 刻意用码点比较，不写 /[​-‍﻿]/ —— 源码里直接落不可见字符、
+  //   或反斜杠个数写错，都会变成"看着对、实际错"；码点写法在源码里是纯 ASCII。
+  const stripZeroWidth = (s) => {
+    let out = '';
+    for (const ch of s) {
+      const c = ch.codePointAt(0);
+      if (c === 0x200b || c === 0x200c || c === 0x200d || c === 0xfeff) continue;
+      out += ch;
+    }
+    return out;
+  };
+  const norm = (s) => stripZeroWidth(String(s == null ? '' : s)).replace(/\s+/g, ' ').trim();
   const rawGot = String(got == null ? '' : got);
   const rawExp = String(expected == null ? '' : expected);
   const a = norm(rawGot);
@@ -3410,9 +3424,14 @@ async function runBrowserAction(convId, tabId, action, args) {
                 var A=window.__yzAssistant;
                 if(!A) return {error:'助手未注入'};
                 var el=null;
-                if(a.index!=null){el=(window.__yzElements&&window.__yzElements[a.index])||null;
+                // ★ 上传按钮**优先 selector、index 作兜底**（2026-10-13 修，实测口径）：
+                //   index 在「弹窗 / 懒挂载 / 上传控件后挂」这类场景常已漂移，点击落空 →
+                //   filechooser 根本不会弹 → 白等满 10s 才回落 DOM 模式。
+                //   诊断报告实测同一个上传：clickIndex 模式 11s（10116/11041ms）vs
+                //   clickSelector 模式 1.4s（1383ms）。此处只换优先级，不减少任何兜底能力。
+                if(a.selector){el=A.resolve(a.selector);}
+                if(!el && a.index!=null){el=(window.__yzElements&&window.__yzElements[a.index])||null;
                   if((!el||!el.isConnected)&&window.__yzSelMap&&window.__yzSelMap[a.index]){el=document.querySelector(window.__yzSelMap[a.index]);}}
-                if(!el && a.selector){el=A.resolve(a.selector);}
                 if(el){el.scrollIntoView({block:'center'});el.click();return{clicked:true};}
                 if(a.x!=null&&a.y!=null){var t=A.clickAt(a.x,a.y);return{clicked:true,via:'real-mouse',tag:t};}
                 return {error:'未找到上传按钮（index 已失效？请重新 get_page_info）'};

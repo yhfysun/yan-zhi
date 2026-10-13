@@ -9,12 +9,20 @@
 //
 // 设计：
 //   四槽位（slot）× 三层配置，每槽位一个**有序多选**候选池（数组顺序 = 优先级，[0] 首选）：
-//     L1 智能体   agent.model_pools_json
-//     L2 模型平台 platform.model_pools_json（该平台下所有智能体的默认池；条目限定本平台模型）
-//     L3 全局     app_config key='model_pools'
-//     L4 自动兜底 autoPool：全部生效模型按类型筛（三层全空/全失效时），
-//        排序 is_default DESC, created_at DESC（与既有默认模型挑选口径一致）。
-//   回退按 **槽位粒度**：智能体只配了 llm 没配 vision，则 vision 落到平台 → 全局 → 兜底。
+//     L1 智能体     agent.model_pools_json（单个智能体专属）
+//     L2 智能体平台 app_config key='agent_platform_model_pools'
+//                   ★ 不是「模型平台」——「模型平台」在项目里指 /models 页（百炼/agnes 这类
+//                     **大模型供应商**），而这一层要的是**所有智能体**的默认池，
+//                     跨供应商选模型，所以归在「智能体平台」（/agents 页）。
+//     L3 全局       app_config key='model_pools'
+//     L4 自动兜底   autoPool：全部生效模型按类型筛（三层全空/全失效时），
+//                   排序 is_default DESC, created_at DESC（与既有默认模型挑选口径一致）。
+//   回退按 **槽位粒度**：智能体只配了 llm 没配 vision，则 vision 落到智能体平台 → 全局 → 兜底。
+//
+// ★ 为什么 L2 不再是「模型平台」：池的语义是「这个智能体该用哪些模型」，
+//   而一个智能体的模型往往跨多个供应商（jl 对话 + agnes 生图）。以供应商为层，
+//   等于逼用户把跨供应商的选型拆到多个地方配；以「智能体平台」为层才是用户心智里的
+//   「我所有智能体的默认选型」。L2 因此**不限平台**（跨供应商可选）。
 //
 // ★ 同一语义只有一处实现：前端不自行实现回退顺序（P1 起走 GET /api/model-pools），
 //   后端所有消费点（会话 failover / 媒体生成 / list_models / 子智能体）一律调 resolvePool。
@@ -42,7 +50,7 @@ export type ModelPools = Partial<Record<Slot, string[]>>;
 
 /** 解析结果条目：模型 + 所属平台 + 命中来源层（诊断与 list_models 打标用） */
 export interface PoolEntry {
-  source: 'agent' | 'platform' | 'global' | 'auto';
+  source: 'agent' | 'agentPlatform' | 'global' | 'auto';
   platformId: string;
   platformName: string;
   model: ReturnType<typeof rowToModel>;
@@ -99,17 +107,15 @@ interface EffectiveModelRow {
   platform_name: string;
 }
 
-function loadEffectiveModels(db: YzSqliteDb, userId: string, platformId?: string): EffectiveModelRow[] {
-  const where = platformId ? 'AND m.platform_id = ?' : '';
-  const params: unknown[] = platformId ? [userId, platformId] : [userId];
+function loadEffectiveModels(db: YzSqliteDb, userId: string): EffectiveModelRow[] {
   return db
     .prepare(
       `SELECT m.id, m.platform_id, m.model_id, m.alias, m.type, m.context_window,
               m.capabilities_json, m.description, m.is_default, m.created_at, p.name AS platform_name
          FROM model m JOIN platform p ON p.id = m.platform_id
-        WHERE m.user_id = ? AND m.enabled = 1 AND m.visible = 1 AND p.llm_enabled = 1 ${where}`,
+        WHERE m.user_id = ? AND m.enabled = 1 AND m.visible = 1 AND p.llm_enabled = 1`,
     )
-    .all(...params) as EffectiveModelRow[];
+    .all(userId) as EffectiveModelRow[];
 }
 
 function capsOf(row: EffectiveModelRow): string[] {
@@ -128,16 +134,15 @@ function mapPoolIds(
   ids: string[],
   slot: Slot,
   source: PoolEntry['source'],
-  opts?: { restrictPlatformId?: string },
 ): PoolEntry[] {
   if (ids.length === 0) return [];
-  const all = loadEffectiveModels(db, userId, opts?.restrictPlatformId);
+  const all = loadEffectiveModels(db, userId);
   const byId = new Map(all.map((r) => [r.id, r]));
   const dropped: string[] = [];
   const entries: PoolEntry[] = [];
   for (const id of ids) {
     const row = byId.get(id);
-    // 失效项（停用/隐藏/平台关闭/错平台）视为不存在 —— 不报错（用户可能先配池后临时停用），
+    // 失效项（停用/隐藏/平台关闭）视为不存在 —— 不报错（用户可能先配池后临时停用），
     // 但必须留痕，否则「配了却不生效」无从排查
     if (!row || !matchesSlot(row.type, capsOf(row), slot)) {
       dropped.push(id);
@@ -163,11 +168,19 @@ function readAgentPools(db: YzSqliteDb, agentId: string, userId: string): ModelP
   return parsePoolsJson(row?.model_pools_json);
 }
 
-function readPlatformPools(db: YzSqliteDb, platformId: string, userId: string): ModelPools {
-  const row = db
-    .prepare('SELECT model_pools_json FROM platform WHERE id = ? AND user_id = ?')
-    .get(platformId, userId) as { model_pools_json: string | null } | undefined;
-  return parsePoolsJson(row?.model_pools_json);
+/**
+ * L2 智能体平台层：app_config key='agent_platform_model_pools'（应用级单例）。
+ *
+ * ★ 不是「模型平台」（platform 表）：那一层的语义是"这个供应商下的模型"，
+ *   而本层是"**所有智能体**的默认候选池"，跨供应商可选（见文件头设计说明）。
+ *   存储用 app_config 而非 platform 表，正是因为它不隶属于任何单个供应商。
+ * ★ 与 L3 全局层一样是应用级（不分用户）—— 桌面单用户场景，多用户后续再分。
+ */
+export function readAgentPlatformPools(db: YzSqliteDb): ModelPools {
+  const row = db.prepare("SELECT value FROM app_config WHERE key = 'agent_platform_model_pools'").get() as
+    | { value: string | null }
+    | undefined;
+  return parsePoolsJson(row?.value);
 }
 
 /** 全局层：app_config key='model_pools'（应用级，不分用户 —— 桌面单用户场景，多用户后续再分） */
@@ -184,18 +197,20 @@ export interface ResolvePoolOpts {
   userId: string;
   /** 智能体上下文（有值才查 L1）；agent 行不存在时跳过该层 */
   agentId?: string | null;
-  /** 平台上下文（有值才查 L2）；平台行不存在时跳过该层 */
-  platformId?: string | null;
 }
 
 /**
  * 解析某槽位的生效候选池（有序，[0] 首选）。
  *
- * 回退顺序：agent → platform → global → autoPool。
+ * 回退顺序：agent → agentPlatform（智能体平台）→ global → autoPool。
  * 每层「池数组为空或清洗后为空」都继续往下走（失效项不阻断回退）。
+ *
+ * ★ 不再需要 platformId：L2 是「智能体平台」层的**应用级单例**，
+ *   与模型供应商无关（旧实现拿 agent 绑定的 platform_id 去查 platform 表，
+ *   语义是"这个供应商下的默认池"，与"所有智能体的默认池"不是一回事）。
  */
 export function resolvePool(db: YzSqliteDb, opts: ResolvePoolOpts, slot: Slot): PoolEntry[] {
-  const { userId, agentId, platformId } = opts;
+  const { userId, agentId } = opts;
 
   // L1 智能体：跨平台选（用户在智能体配置里从全部可见模型里挑）
   if (agentId) {
@@ -203,13 +218,9 @@ export function resolvePool(db: YzSqliteDb, opts: ResolvePoolOpts, slot: Slot): 
     if (entries.length) return entries;
   }
 
-  // L2 平台：条目限定本平台模型（UI 平台池选择器也只列本平台模型，口径一致）
-  if (platformId) {
-    const entries = mapPoolIds(db, userId, readPlatformPools(db, platformId, userId)[slot] || [], slot, 'platform', {
-      restrictPlatformId: platformId,
-    });
-    if (entries.length) return entries;
-  }
+  // L2 智能体平台：所有智能体的默认池，跨平台可选（不再限定单个供应商）
+  const apEntries = mapPoolIds(db, userId, readAgentPlatformPools(db)[slot] || [], slot, 'agentPlatform');
+  if (apEntries.length) return apEntries;
 
   // L3 全局
   const globalEntries = mapPoolIds(db, userId, readGlobalPools(db)[slot] || [], slot, 'global');
@@ -266,8 +277,9 @@ export interface ValidatePoolsResult {
  *   - 归属：每个 model 主键必须存在且属于该用户
  *   - 槽位：matchesSlot 不匹配 → 明确报错（读路径剔除失效项是宽容，写路径必须挡住错配，
  *     否则用户配错槽位要到运行时才发现 —— 错误越晚爆越难查）
- *   - 允许引用跨平台模型（agent/全局层跨平台选型是需求内行为；平台层的限定由
- *     resolvePool 读路径兜，写这里不重复限定 —— 配置宽松、读取严格，职责分离）
+ *   - 允许引用跨平台模型：三层都是跨供应商选型（L1 智能体专属 / L2 智能体平台默认 /
+ *     L3 全局默认），没有任何一层按供应商限定 —— 这是需求内行为，写路径不额外限定，
+ *     配置宽松、读取严格，职责分离
  */
 export function validateModelPools(db: YzSqliteDb, userId: string, raw: unknown): ValidatePoolsResult {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {

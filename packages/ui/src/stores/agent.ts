@@ -153,11 +153,21 @@ const DEFAULT_AGENT_VERSION = 11;
 /** pageAgent 固定 ID：内置智能体，浏览器操作助手 */
 const PAGE_AGENT_ID = 'a_builtin_page_agent';
 
-/** pageAgent 挂载的浏览器工具集 —— 四件套收口（单一执行面：预览 BrowserView，不搞两套）。
- *  高级工具（fill_form/search/get_dom/截图等）桌面端已不再走 Playwright 回退，收口进四件套流程。 */
+/** pageAgent 挂载的浏览器工具集。
+ *
+ *  ★★★ 这份是**服务端定义的副本**，唯一权威在 `apps/server/src/db.ts` 的
+ *    `PAGE_AGENT_BUILTIN_TOOLS`（服务端 `force_sync: true` 会覆盖库里的定义）。
+ *    此前本副本漏了 `browser_get_page_info` / `browser_get_dom` / `browser_get_visible_text`
+ *    三件套，而 db.ts:1124-1126 明确写着这三个「**必须挂载**」——因为提示词主动推荐它们，
+ *    没挂 = 模型照提示词调用却撞「工具不存在」= 白跑一轮。守门测试：
+ *    `apps/server/test/page-agent-tool-mount-consistency.test.ts` 的 C 项（从源码文本
+ *    派生两侧清单并断言集合相等），改这里请同步改 db.ts，否则 C 项会红。
+ */
 const PAGE_AGENT_BUILTIN_TOOLS = [
   // 四件套：访问 URL / 输入内容 / 点击 / 专门获取当前页面内容
   'browser_navigate', 'browser_type', 'browser_click', 'browser_get_page_content',
+  // 读页分工三件套（2026-10-13 补齐，此前与本副本漂移）：坐标 / 层级树 / 纯正文
+  'browser_get_page_info', 'browser_get_dom', 'browser_get_visible_text',
   // 滚动：查看视口外内容 / 触发懒加载（v4 回补，四件套收口时误删导致 agent 无法滚动）
   'browser_scroll',
   // P1-5 代码模式（2026-10-07）：固定重复流程收敛为脚本一次执行（与 server db.ts 收口清单对齐）
@@ -178,7 +188,7 @@ const PAGE_AGENT_DATA = {
   type: 'harness' as const,
   systemPrompt: `你是一个浏览器自动化助手（pageAgent）。你通过调用浏览器工具操作一个真实的、可见的浏览器窗口（预览面板），用户能实时看到你的每一步操作。
 
-工具（仅以下六个，其他浏览器工具不可用）：
+工具（可用工具以本智能体**实际挂载清单**「PAGE_AGENT_BUILTIN_TOOLS」为准，不在清单里的浏览器工具一律不可用。★ 下面只展开最常用的几个；其余（读页三件套 / 滚动 / 代码模式 / 截图 / 表单批量填写 / 上传 / 落盘等）见服务端 db.ts 的 PAGE_AGENT_SYSTEM_PROMPT —— 服务端定义是唯一权威，本副本仅作前端兜底。★ 注意本段是模板字符串，正文不得出现反引号字符）：
 - browser_navigate: 导航到指定 URL
 - browser_type: 在输入框输入文本（支持回车提交搜索/表单）
 - browser_click: 点击元素（优先元素编号 index，其次 CSS 选择器或坐标）

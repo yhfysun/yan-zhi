@@ -12,7 +12,11 @@
               内置 {{ builtinCount }} 个 · 自定义 {{ customCount }} 个
             </template>
             <template #actions>
-              <el-button type="primary" size="small">进入管理</el-button>
+              <!-- ★ 必须自带 @click（2026-10-13 修，用户实报「这个按钮去掉都没用啊」）：
+                   MarketplaceCard 的动作区是 `<div class="marketplace-card-actions" @click.stop>`，
+                   `.stop` 刻意不冒泡到卡片根的 @click —— 所以动作区内的按钮**没有自己的处理器
+                   就永远是死的**。同区右侧远程卡片的「浏览/测试/删除」都带 @click，只有这个漏了。 -->
+              <el-button type="primary" size="small" @click="goToLocalAgents()">进入管理</el-button>
             </template>
           </MarketplaceCard>
 
@@ -65,7 +69,11 @@
             <p class="page-sub">内置智能体与自定义创建的智能体</p>
           </div>
         </div>
-        <el-button type="primary" :icon="Plus" @click="createAgent" class="fab-add">新建智能体</el-button>
+        <div class="header-actions">
+          <!-- 智能体平台默认候选池：对所有智能体生效（单个智能体未单独配时用这里） -->
+          <el-button :icon="MagicStick" @click="openPools">候选池</el-button>
+          <el-button type="primary" :icon="Plus" @click="createAgent" class="fab-add">新建智能体</el-button>
+        </div>
       </header>
 
       <div class="agents-layout">
@@ -221,6 +229,31 @@
       </el-form>
     </FormDialog>
 
+    <!-- 智能体平台默认候选池（model-candidate-pools）：四槽位有序多选，对该平台下**所有智能体**生效 -->
+    <el-dialog v-model="showPools" title="智能体平台候选池" width="600px" destroy-on-close>
+      <div class="pool-dialog-hint">
+        这里配的是<strong>所有智能体</strong>的默认候选池（跨模型平台可选）。某个智能体自己配了池就用它自己的；
+        都没配再回退「设置 → 通用」的全局默认池。顺序即优先级，第一个是首选。
+      </div>
+      <el-form label-width="80px">
+        <el-form-item v-for="slot in POOL_SLOTS" :key="slot" :label="POOL_LABELS[slot]">
+          <el-select
+            v-model="poolForm[slot]"
+            :placeholder="`${POOL_LABELS[slot]}候选：可多选，顺序即优先级`"
+            filterable clearable multiple collapse-tags style="width:100%"
+          >
+            <el-option-group v-for="g in poolSlotGroups[slot]" :key="g.platformId" :label="g.platformName">
+              <el-option v-for="m in g.models" :key="m.id" :label="m.alias || m.modelId" :value="m.id" />
+            </el-option-group>
+          </el-select>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="showPools = false">取消</el-button>
+        <el-button type="primary" :loading="poolSaving" @click="savePools">保存</el-button>
+      </template>
+    </el-dialog>
+
     <AgentEditDialog v-model="showEdit" :agent="editing" @saved="onSaved" @deleted="onDeleted" />
   </div>
 </template>
@@ -228,9 +261,11 @@
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { Plus, EditPen, Delete, Setting, Lock, ArrowLeft, UserFilled, Monitor, ArrowRight, ArrowDown } from '@element-plus/icons-vue';
+import { Plus, EditPen, Delete, Setting, Lock, ArrowLeft, UserFilled, Monitor, ArrowRight, ArrowDown, MagicStick } from '@element-plus/icons-vue';
 import { ElMessageBox, ElMessage } from 'element-plus';
 import { useAgentStore } from '../stores/agent';
+import { useModelPoolStore, usePlatformStore } from '../stores';
+import { POOL_SLOTS, POOL_LABELS, groupModelsForSlot, poolModelsOf } from '../utils/model-pools';
 import { resolveAgentIcon as agentIconOf } from '../utils/agentIcon';
 import { api } from '../api/client';
 import { waitForBackend } from '../api/backend-ready';
@@ -245,6 +280,46 @@ import SearchToolbar from '../components/common/SearchToolbar.vue';
 const router = useRouter();
 const route = useRoute();
 const store = useAgentStore();
+const platformStore = usePlatformStore();
+const modelPoolStore = useModelPoolStore();
+
+// ===== 智能体平台默认候选池（model-candidate-pools）=====
+// ★ 这一层不是「模型平台」（/models = 百炼/agnes 这类供应商），而是「智能体平台」的默认池：
+//   对所有智能体生效、跨供应商可选。见 services/model-pools.ts 文件头。
+const showPools = ref(false);
+const poolSaving = ref(false);
+const poolForm = ref<Record<string, string[]>>({ llm: [], vision: [], image: [], video: [] });
+/** 各槽位可选模型（跨所有平台，按平台分组）；数据源走 modelPoolStore 的独立全量清单
+ *  （platformStore.models 会被 loadModels(pid) 整体替换成单平台清单而变空） */
+const poolSlotGroups = computed(() => {
+  const src = poolModelsOf(modelPoolStore, platformStore.models);
+  const out: Record<string, ReturnType<typeof groupModelsForSlot>> = {};
+  for (const slot of POOL_SLOTS) {
+    out[slot] = groupModelsForSlot(src, platformStore.platforms, slot);
+  }
+  return out;
+});
+async function openPools() {
+  await Promise.all([
+    modelPoolStore.ensureModels().catch(() => {}),
+    platformStore.platformsLoaded ? Promise.resolve() : platformStore.loadPlatforms().catch(() => {}),
+  ]);
+  await modelPoolStore.load().catch(() => {});
+  const p = modelPoolStore.agentPlatformPools;
+  poolForm.value = {
+    llm: [...(p.llm || [])], vision: [...(p.vision || [])],
+    image: [...(p.image || [])], video: [...(p.video || [])],
+  };
+  showPools.value = true;
+}
+async function savePools() {
+  poolSaving.value = true;
+  try {
+    const err = await modelPoolStore.saveAgentPlatform(poolForm.value as any);
+    if (err) ElMessage.error(err);
+    else { ElMessage.success('智能体平台候选池已保存'); showPools.value = false; }
+  } finally { poolSaving.value = false; }
+}
 
 const loading = ref(false);
 const showEdit = ref(false);
@@ -441,6 +516,14 @@ async function remove(agent: Agent) {
 <style scoped>
 /* .page / .page-header / .page-title / .page-sub come from App.vue global */
 .page-sub.mono { font-family: "JetBrains Mono", "Cascadia Code", monospace; font-size: 12px; }
+/* 页头右侧按钮组（候选池 + 新建智能体）：改为弹性行内排布，避免两个按钮各占一行 */
+.header-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+/* 候选池弹窗顶部说明（说明"对所有智能体生效"，避免与"模型平台"混淆） */
+.pool-dialog-hint {
+  margin-bottom: 14px; padding: 10px 12px; border-radius: 8px;
+  background: var(--el-fill-color-light); color: var(--el-text-color-regular);
+  font-size: 12px; line-height: 1.7;
+}
 
 /* ===== 返回导航 ===== */
 .back-header { display: flex; align-items: flex-start; gap: 12px; }

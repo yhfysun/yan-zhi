@@ -1,21 +1,27 @@
 // 模型候选池三层配置路由（model-candidate-pools P1）。
 //
-// 为什么集中一处而不是散进 agents/platforms 路由：
+// 为什么集中一处而不是散进 agents 路由：
 //   三层的读写 + 校验是**同一语义**（validateModelPools / parsePoolsJson / resolvePool 都在
-//   services/model-pools.ts），散开必然各写一遍且口径漂移。agents/platforms 的既有 PATCH
+//   services/model-pools.ts），散开必然各写一遍且口径漂移。agents 的既有 PATCH
 //   只挂「随表单整体保存」的入口（modelPools 字段），独立配置页走本路由。
 //
+// ★ 三层 = 智能体 → 智能体平台 → 全局（见 services/model-pools.ts 文件头）。
+//   注意「智能体平台」≠「模型平台」：前者是 /agents 页（管理所有智能体，本层的池
+//   对所有智能体生效、跨供应商选模型），后者是 /models 页（百炼/agnes 这类大模型供应商）。
+//   第二层不隶属任何供应商，故存 app_config 而非 platform 表。
+//
 // 层与存储：
-//   GET  /api/model-pools?agentId=&platformId=  三层合并视图 + 各槽位生效池（来源标注）
-//   PUT  /api/model-pools/global                app_config key='model_pools'
-//   PUT  /api/model-pools/platforms/:pid        platform.model_pools_json（内置平台也可改：使用偏好）
-//   PUT  /api/model-pools/agents/:aid           agent.model_pools_json
+//   GET  /api/model-pools?agentId=     三层现状 + 各槽位生效池（来源标注）
+//   PUT  /api/model-pools/global            app_config key='model_pools'
+//   PUT  /api/model-pools/agent-platform    app_config key='agent_platform_model_pools'
+//   PUT  /api/model-pools/agents/:aid       agent.model_pools_json
 import { Router, Request, Response } from 'express';
 import { authMiddleware } from '../auth.js';
 import { db } from '../db.js';
 import {
   SLOTS,
   readGlobalPools,
+  readAgentPlatformPools,
   resolvePool,
   validateModelPools,
   type ModelPools,
@@ -32,27 +38,26 @@ function poolsToDto(p: ModelPools): Record<string, string[]> {
   return out;
 }
 
-// GET /api/model-pools —— 三层现状 + 各槽位生效池（前端配置页与下下拉数据源）
+/** 写 app_config 的池（智能体平台层 / 全局层共用 —— 同构单例，口径必须一致） */
+function writeConfigPools(key: string, pools: ModelPools): void {
+  db.prepare(
+    'INSERT INTO app_config (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at',
+  ).run(key, JSON.stringify(pools || {}), Date.now());
+}
+
+// GET /api/model-pools —— 三层现状 + 各槽位生效池（前端配置页与下拉数据源）
 router.get('/', (req: Request, res: Response) => {
   const uid = userId(req);
   const agentId = typeof req.query.agentId === 'string' && req.query.agentId ? req.query.agentId : undefined;
-  let platformId = typeof req.query.platformId === 'string' && req.query.platformId ? req.query.platformId : undefined;
-  // 未显式给平台时，用智能体绑定的平台作为 L2 上下文（「智能体没配 → 用其平台的池」语义）
-  if (!platformId && agentId) {
-    platformId = (db.prepare('SELECT platform_id FROM agent WHERE id = ? AND (user_id = ? OR is_public = 1)').get(agentId, uid) as any)?.platform_id || undefined;
-  }
 
   const agentPools = agentId
     ? (db.prepare('SELECT model_pools_json FROM agent WHERE id = ? AND (user_id = ? OR is_public = 1)').get(agentId, uid) as any)?.model_pools_json
-    : undefined;
-  const platformPools = platformId
-    ? (db.prepare('SELECT model_pools_json FROM platform WHERE id = ? AND user_id = ?').get(platformId, uid) as any)?.model_pools_json
     : undefined;
 
   // 生效池条目只回前端需要的最小面（id/别名/平台/来源），避免整行 Model 对象泄漏内部字段
   const effective: Record<string, unknown[]> = {};
   for (const slot of SLOTS) {
-    effective[slot] = resolvePool(db, { userId: uid, agentId, platformId }, slot).map((e) => ({
+    effective[slot] = resolvePool(db, { userId: uid, agentId }, slot).map((e) => ({
       modelId: e.model.id,
       platformId: e.platformId,
       platformName: e.platformName,
@@ -67,7 +72,8 @@ router.get('/', (req: Request, res: Response) => {
   res.json({
     data: {
       global: poolsToDto(readGlobalPools(db)),
-      platform: agentPools === undefined && platformPools === undefined ? null : poolsToDto(JSON.parse(platformPools || '{}') as ModelPools),
+      // 智能体平台层（所有智能体的默认池）；未配置则 null，前端据此显示"未配置"
+      agentPlatform: poolsToDto(readAgentPlatformPools(db)),
       agent: agentId ? poolsToDto(JSON.parse(agentPools || '{}') as ModelPools) : null,
       effective,
     },
@@ -79,23 +85,17 @@ router.put('/global', (req: Request, res: Response) => {
   const uid = userId(req);
   const v = validateModelPools(db, uid, req.body?.modelPools ?? req.body);
   if (!v.ok) { res.status(400).json({ error: v.error }); return; }
-  db.prepare(
-    'INSERT INTO app_config (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at',
-  ).run('model_pools', JSON.stringify(v.pools || {}), Date.now());
+  writeConfigPools('model_pools', v.pools || {});
   res.json({ data: poolsToDto(readGlobalPools(db)) });
 });
 
-// PUT /api/model-pools/platforms/:pid —— 平台默认池（内置平台也可改：与 llmEnabled 同属使用偏好）
-router.put('/platforms/:pid', (req: Request, res: Response) => {
+// PUT /api/model-pools/agent-platform —— 智能体平台默认池（对所有智能体生效）
+router.put('/agent-platform', (req: Request, res: Response) => {
   const uid = userId(req);
-  const pid = req.params.pid;
-  const platform = db.prepare('SELECT id FROM platform WHERE id = ? AND user_id = ?').get(pid, uid);
-  if (!platform) { res.status(404).json({ error: '平台不存在' }); return; }
   const v = validateModelPools(db, uid, req.body?.modelPools ?? req.body);
   if (!v.ok) { res.status(400).json({ error: v.error }); return; }
-  db.prepare('UPDATE platform SET model_pools_json = ? WHERE id = ?').run(JSON.stringify(v.pools || {}), pid);
-  const row = db.prepare('SELECT model_pools_json FROM platform WHERE id = ?').get(pid) as any;
-  res.json({ data: poolsToDto(JSON.parse(row?.model_pools_json || '{}') as ModelPools) });
+  writeConfigPools('agent_platform_model_pools', v.pools || {});
+  res.json({ data: poolsToDto(readAgentPlatformPools(db)) });
 });
 
 // PUT /api/model-pools/agents/:aid —— 智能体池

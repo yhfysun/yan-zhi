@@ -24,15 +24,6 @@
       <el-switch :model-value="platform?.llmEnabled !== false" :loading="llmExposeSaving" @change="togglePlatformLlm" />
     </div>
 
-    <!-- 平台级模型候选池（model-candidate-pools）：本平台下智能体未配池时用这里；只能选本平台模型 -->
-    <div class="llm-expose-bar pool-bar">
-      <div class="llm-expose-text">
-        <span class="llm-expose-title">模型候选池</span>
-        <span class="llm-expose-desc">{{ poolSummary || '未配置 —— 该平台下智能体未配池时回退全局默认池' }}</span>
-      </div>
-      <el-button size="small" @click="openPools">配置候选池</el-button>
-    </div>
-
     <!-- 模型搜索 / 类型筛选：模型多时按关键字与类型快速定位，不改动任何数据 -->
     <SearchToolbar
       v-model:query="modelKeyword"
@@ -256,31 +247,6 @@
       </div>
     </el-dialog>
 
-    <!-- 平台候选池（model-candidate-pools）：四槽位多选，条目限定本平台模型 -->
-    <el-dialog v-model="showPools" :title="`候选池 · ${platform?.name || ''}`" width="560px" destroy-on-close>
-      <el-form label-width="80px">
-        <el-form-item v-for="slot in POOL_SLOTS" :key="slot" :label="POOL_LABELS[slot]">
-          <el-select
-            v-model="poolForm[slot]"
-            placeholder="可多选，顺序即优先级"
-            filterable clearable multiple collapse-tags style="width:100%"
-          >
-            <el-option
-              v-for="m in poolModelsForSlot(slot)"
-              :key="m.id"
-              :label="m.alias || m.modelId"
-              :value="m.id"
-            />
-          </el-select>
-        </el-form-item>
-      </el-form>
-      <div class="form-tip">顺序即优先级（第一个为首选）。这里只能选本平台的模型；该平台下智能体未配置候选池时使用它。全局默认在「设置 → 通用」。</div>
-      <template #footer>
-        <el-button @click="showPools = false">取消</el-button>
-        <el-button type="primary" :loading="poolSaving" @click="savePools">保存</el-button>
-      </template>
-    </el-dialog>
-
     <!-- Mobile: header-actions as a collapsible toolbar below header -->
     <div v-if="!platform?.isBuiltin" class="header-actions-mobile">
       <el-button size="small" @click="fetchRemote" :loading="fetching">拉取</el-button>
@@ -299,9 +265,8 @@ import { ref, computed, onMounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { Plus, ArrowLeft, Expand, ArrowDown } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { usePlatformStore, useModelPoolStore } from '../stores';
+import { usePlatformStore } from '../stores';
 import { filterModels, modelTypeOptions as buildModelTypeOptions, isFilterActive } from '../utils/modelFilter';
-import { POOL_SLOTS, POOL_LABELS, flatModelsForSlot, poolModelsOf } from '../utils/model-pools';
 import SearchToolbar from '../components/common/SearchToolbar.vue';
 import FormDialog from '../components/FormDialog.vue';
 
@@ -315,7 +280,6 @@ const props = defineProps<{
 const route = useRoute();
 const router = useRouter();
 const store = usePlatformStore();
-const modelPoolStore = useModelPoolStore();
 const platformId = computed(() => props.platformId || (route.params.platformId as string));
 const platform = computed(() => store.platforms.find((p) => p.id === platformId.value));
 const models = computed(() => store.models.filter((m) => m.platformId === platformId.value));
@@ -394,45 +358,7 @@ const form = ref({
 onMounted(async () => {
   await store.loadPlatforms();
   await store.loadModels(platformId.value);
-  // 候选池摘要：平台层已配了什么（读接口，不参与回退计算 —— 回退只由后端决定）
-  if (platformId.value) void modelPoolStore.loadPlatform(platformId.value).catch(() => undefined);
 });
-
-// ===== 平台候选池（model-candidate-pools）=====
-// POOL_SLOTS / POOL_LABELS 统一取自 utils/model-pools.ts（唯一实现）
-const showPools = ref(false);
-const poolSaving = ref(false);
-const poolForm = ref<Record<string, string[]>>({ llm: [], vision: [], image: [], video: [] });
-/** 摘要：已配置的槽位及条目数（不展示回退结果 —— 那是后端 effective 的职责） */
-const poolSummary = computed(() => {
-  const p = modelPoolStore.platformPoolOf(platformId.value);
-  const parts = POOL_SLOTS
-    .filter((s) => (p[s] || []).length > 0)
-    .map((s) => `${POOL_LABELS[s]} ${p[s]!.length}`);
-  return parts.length ? `已配置：${parts.join(' · ')}` : '';
-});
-/** 本平台模型按槽位过滤（口径走 utils/model-pools.ts 唯一实现） */
-function poolModelsForSlot(slot: string) {
-  return flatModelsForSlot(poolModelsOf(modelPoolStore, store.models), store.platforms, slot as any, platformId.value);
-}
-async function openPools() {
-  // 独立于 store.models 的全量清单（store.loadModels(pid) 会覆盖共享缓存，不能直接用来做池数据源）
-  await modelPoolStore.ensureModels().catch(() => undefined);
-  const pools = await modelPoolStore.loadPlatform(platformId.value);
-  poolForm.value = {
-    llm: [...(pools.llm || [])], vision: [...(pools.vision || [])],
-    image: [...(pools.image || [])], video: [...(pools.video || [])],
-  };
-  showPools.value = true;
-}
-async function savePools() {
-  poolSaving.value = true;
-  try {
-    const err = await modelPoolStore.savePlatform(platformId.value, poolForm.value as any);
-    if (err) ElMessage.error(err);
-    else { ElMessage.success('候选池已保存'); showPools.value = false; }
-  } finally { poolSaving.value = false; }
-}
 
 function back() { router.push('/models'); }
 
@@ -714,8 +640,6 @@ async function testCapabilityInForm(c: { value: string; label: string; kind: str
 .llm-expose-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .llm-expose-title { font-size: 13px; font-weight: 600; color: var(--color-text); }
 .llm-expose-desc { font-size: 11.5px; color: var(--color-text-secondary); }
-/* 候选池入口条：与「可供大模型调用」同款容器，避免再引入一套面板样式 */
-.pool-bar { margin-bottom: 14px; }
 
 .model-card { position: relative;
   background: var(--glass-bg); backdrop-filter: var(--glass-filter); -webkit-backdrop-filter: var(--glass-filter);

@@ -588,7 +588,9 @@ function listAvailableModels(userId: string, args: Record<string, unknown>, task
   const offset = Number.isFinite(offsetRaw) && offsetRaw > 0 ? Math.floor(offsetRaw) : 0;
 
   // ===== 候选池上下文（slot 直查 / llm 池打标）=====
-  const poolCtx = { userId, agentId: task?.agentId || null, platformId: task?.platformId || null };
+  // ★ 不需要 platformId：候选池三层是 智能体 → 智能体平台 → 全局（后两层是应用级单例），
+  //   与模型供应商无关。见 services/model-pools.ts 文件头。
+  const poolCtx = { userId, agentId: task?.agentId || null };
   const slotFilter = typeof args.slot === 'string' && (SLOTS as readonly string[]).includes(args.slot) ? (args.slot as Slot) : undefined;
   const slotPoolIds = new Set<string>();
   let markIds: Set<string> | null = null;
@@ -2423,7 +2425,7 @@ async function runReActLoop(task: LlmTask, params: {
     // 链随任务存活（不落库）—— 幂等只需覆盖本次运行期间的重试。
     const failoverChain = resolveFailoverChain(
       db,
-      { userId, agentId: params.agentId ?? null, platformId: params.platformId },
+      { userId, agentId: params.agentId ?? null },
       model.id,
       'llm',
     );
@@ -4622,7 +4624,7 @@ async function runWorkflowSubAgent(
   const inputs: Record<string, unknown> = { ...mapped.inputs };
   const platformId = args.platformId || agent.platform_id || task.platformId;
   const wfPoolFirst = !args.modelId && !agent.model_id
-    ? resolveFirstModel(db, { userId: task.userId, agentId: resolvedId, platformId }, 'llm')
+    ? resolveFirstModel(db, { userId: task.userId, agentId: resolvedId }, 'llm')
     : null;
   const modelId = args.modelId || agent.model_id || wfPoolFirst?.model.id || task.modelId;
   if (platformId) inputs.__platformId = platformId;
@@ -5174,7 +5176,7 @@ async function runSubAgentImpl(
   // 这样「给子智能体配了池」这个动作才真正生效（否则池只是存了不用 = 断言存在≠断言生效）。
   const platformId = args.platformId || (agent.platform_id || task.platformId);
   const poolFirst = !args.modelId && !agent.model_id
-    ? resolveFirstModel(db, { userId: task.userId, agentId: resolvedId, platformId }, 'llm')
+    ? resolveFirstModel(db, { userId: task.userId, agentId: resolvedId }, 'llm')
     : null;
   const modelId = args.modelId || (agent.model_id || poolFirst?.model.id || task.modelId);
   let platform = loadPlatform(platformId, task.userId);
@@ -5249,10 +5251,24 @@ async function runSubAgentImpl(
   // 记忆四件套：未挂载专属 api_* 工具链的智能体默认可用。
   // 与 buildToolsForBackend 的「挂载优先」口径一致：挂了专属 api_* 工具（数据查询链）的
   // 只用它挂载的，避免记忆类工具分走去取数链的注意力。
+  //
+  // ★ 站点经验两件套（2026-10-13）：与记忆四件套同批补上。
+  //   病根：pageAgent 提示词有一整段【站点经验自进化（重要）】明确要求
+  //   「需要更完整内容用 api_experience_read 查」「当场调 api_experience_write 记一条」
+  //   （db.ts:1258-1259），但**子智能体工具面从来没补这两个** —— 只有 pageAgent 作为
+  //   会话主智能体时才经 alwaysApiTools 兜底可见（本文件 :6867）。
+  //   于是它作为子智能体被委派时（= 绝大多数真实调用），模型照提示词调用 → 撞
+  //   「工具不存在」→ 白跑一轮。这正是 db.ts:1198-1200 那条铁律
+  //   「提示词推荐了却没挂 = 最常见的白跑一轮来源」的又一实例。
+  //   工具实现与注册早已齐备（mcp/api-tool-executor.ts:3554/3571、注册表 :338），
+  //   且写侧已在 tool-permission 的 WRITE_TOOLS（只读会话运行时仍被拒，语义不变）。
   const hasOwnApiTools = builtinIds.some((n) => n.startsWith('api_'));
   const SUB_ALWAYS_API_TOOLS = hasOwnApiTools
     ? []
-    : ['api_memory_search', 'api_memory_list', 'api_memory_create', 'api_memory_delete'];
+    : [
+        'api_memory_search', 'api_memory_list', 'api_memory_create', 'api_memory_delete',
+        'api_experience_read', 'api_experience_write',
+      ];
   const apiRegistrySub = getApiToolRegistry();
   for (const tName of SUB_ALWAYS_API_TOOLS) {
     if (seen.has(tName)) continue;

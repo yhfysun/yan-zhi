@@ -183,6 +183,14 @@ export function resolveReasoningField(m: {
   return m.reasoningContent ? m.reasoningContent : '';
 }
 
+/**
+ * Token 池故障转移：一次请求内最多换几把 Key（2026-10-13）。
+ *
+ * ★ 为什么是 3：与 server 端 token-pool 的 `MAX_RETRY` 同量级。上限的意义是"别在
+ *   池里全是死 Key 时把一次调用拖成 N 次超时"，而不是"3 把就一定够"。
+ */
+export const MAX_KEY_SWAPS = 3;
+
 export class LlmClient {
   constructor(
     private platform: Platform,
@@ -422,16 +430,17 @@ export class LlmClient {
     try { return getPlatformAdapter().llmProxyBase; } catch { return undefined; }
   }
 
-  private async buildHeaders(): Promise<HeadersInit> {
+  /** @param apiKeyOverride Token 池轮换时指定的 Key（见 upstreamFetchRetry）。不传则走 keyring。 */
+  private async buildHeaders(apiKeyOverride?: string): Promise<HeadersInit> {
     const adapter = getPlatformAdapter();
-    const apiKey = await adapter.keyring.get(`platform:${this.platform.id}:apikey`);
+    const apiKey = apiKeyOverride ?? await adapter.keyring.get(`platform:${this.platform.id}:apikey`);
     return { ...buildProtocolHeaders('openai', apiKey || ''), ...this.platform.headers };
   }
 
   /** Anthropic 鉴权头：x-api-key + anthropic-version（不使用 Bearer） */
-  private async buildAnthropicHeaders(): Promise<HeadersInit> {
+  private async buildAnthropicHeaders(apiKeyOverride?: string): Promise<HeadersInit> {
     const adapter = getPlatformAdapter();
-    const apiKey = await adapter.keyring.get(`platform:${this.platform.id}:apikey`);
+    const apiKey = apiKeyOverride ?? await adapter.keyring.get(`platform:${this.platform.id}:apikey`);
     return { ...buildProtocolHeaders('anthropic', apiKey || ''), ...this.platform.headers };
   }
 
@@ -464,7 +473,7 @@ export class LlmClient {
   private async upstreamFetch(
     upstreamPath: string,
     body: any,
-    options?: { signal?: AbortSignal; anthropic?: boolean },
+    options?: { signal?: AbortSignal; anthropic?: boolean; apiKey?: string },
   ): Promise<Response> {
     const proxy = this.proxyBase;
     if (proxy) {
@@ -476,7 +485,9 @@ export class LlmClient {
         signal: options?.signal,
       });
     }
-    const headers = options?.anthropic ? await this.buildAnthropicHeaders() : await this.buildHeaders();
+    const headers = options?.anthropic
+      ? await this.buildAnthropicHeaders(options?.apiKey)
+      : await this.buildHeaders(options?.apiKey);
     return fetch(`${this.baseUrl}/${upstreamPath}`, {
       method: 'POST', headers, body: JSON.stringify(body), signal: options?.signal,
     });
@@ -486,12 +497,50 @@ export class LlmClient {
    *  抛错（fetch failed / ECONNRESET / socket hang up 等），HTTP 非 2xx 状态原样返回
    *  交由调用方按状态码处理；中止信号直接抛出。
    *  ★ 长任务（小说推文等无人值守）跑几十分钟，任何一次模型调用的瞬时断连都会
-   *  杀死整个任务 —— 必须自动吸收抖动（与 capabilityTest 的重试判定同一正则口径）。 */
+   *  杀死整个任务 —— 必须自动吸收抖动（与 capabilityTest 的重试判定同一正则口径）。
+   *
+   *  ★★★ Token 池轮换（2026-10-13）：401/403 时换池里的下一把 Key 重试。
+   *   背景（真实故障）：`PlatformAdapter.llmKeyPool`（types.ts:80）声明"设置后 LlmClient
+   *   直连失败会自动换 Key 重试并回写失败记录"，适配器（node-adapter.ts 的
+   *   llmKeyPoolAdapter）也实现了 acquire/reportSuccess/reportFailure —— 但**本类从未
+   *   调用过它**。于是 keyring 只剩"从池里随机取一把"当初始 Key 的作用，取到死 Key
+   *   就直接 401 失败收场：`platform_api_key.fail_count` 长期恒为 0（实测 agens-guest
+   *   池 11 把 Key 全为 0），死 Key 每轮仍按权重被发出去，表现为「偶发 401 打死长任务」
+   *   （10-10 ~ 10-13 共 5 次，跨 3 个会话）。
+   *   现在：失败即回写（池内权重衰减、10 分钟窗口），并换下一把（excludeIds 保证同一次
+   *   请求内不重复试同一把）。
+   *
+   *  只在**直连**时轮换：走后端代理（llmProxyBase）时 Key 由 llm-proxy 服务端持有且已
+   *  自行轮换，core 手里没有 Key 可换（见 types.ts:44 注释）。
+   */
   private async upstreamFetchRetry(url: string, body: unknown, opts?: { signal?: AbortSignal; anthropic?: boolean }, retries = 2): Promise<Response> {
+    // Token 池（仅 server 端直连路径注入）。无池时行为与改动前完全一致。
+    const pool = this.proxyBase ? undefined : (() => {
+      try { return getPlatformAdapter().llmKeyPool; } catch { return undefined; }
+    })();
+    let tokenId: string | null = null;
+    let apiKey: string | undefined;
+    const triedIds: string[] = [];
+    let keySwaps = 0;
+    if (pool) {
+      try {
+        const t = await pool.acquire(this.platform.id, triedIds);
+        if (t) { tokenId = t.id; apiKey = t.apiKey; triedIds.push(t.id); }
+      } catch { /* 取 Key 失败 → 按无池处理，回退 keyring 主 Key */ }
+    }
+    /** 失败回写：只记「这个 Key 本身可能就是问题」的状态（401/403 鉴权、429 限流、5xx 上游）。
+     *  400 这类是**请求**问题（工具 schema/参数非法），记到 Key 头上会把好 Key 冤枉降权。 */
+    const reportFailureIfKeyRelated = (status: number) => {
+      if (!pool || !tokenId) return;
+      if (status === 401 || status === 403 || status === 429 || status >= 500) {
+        try { pool.reportFailure(tokenId); } catch { /* 回写失败不影响主流程 */ }
+      }
+    };
+
     for (let attempt = 0; ; attempt++) {
       let res: Response | null = null;
       try {
-        res = await this.upstreamFetch(url, body, opts);
+        res = await this.upstreamFetch(url, body, { ...opts, apiKey });
       } catch (e: any) {
         const sig = opts?.signal;
         if (sig?.aborted || e?.name === 'AbortError') throw e;
@@ -502,16 +551,32 @@ export class LlmClient {
         }
         throw e;
       }
+      // ★ 鉴权失败 → 换下一把 Key。不等待：换 Key 与退避是两件事，池里有活 Key 应立即见效。
+      if ((res.status === 401 || res.status === 403) && pool && keySwaps < MAX_KEY_SWAPS) {
+        reportFailureIfKeyRelated(res.status);
+        try { await res.text(); } catch { /* 丢弃响应体，释放连接 */ }
+        let next: { id: string; apiKey: string } | null = null;
+        try { next = await pool.acquire(this.platform.id, triedIds); } catch { next = null; }
+        if (!next) return res; // 池里没有没试过的了 → 如实返回本次失败，由上层落库给用户看
+        tokenId = next.id; apiKey = next.apiKey; triedIds.push(next.id); keySwaps++;
+        continue;
+      }
       // ★ 可重试的 HTTP 状态（2026-10-07）：429（频率/过载）与 5xx（上游网关抖动）此前**原样返回**
       //   → 直接把长任务打死，用户看到「调用失败：429 Too Many Requests / The system is currently overloaded」。
       //   实测（10-07 12:58~13:08）上游过载高发，长任务被一次 429 杀掉代价过高。
       //   只在**未开始消费响应体**时重试（此处必然成立：SSE 尚未 yield），尊重 Retry-After。
       if ((res.status === 429 || res.status >= 500) && attempt < retries) {
+        reportFailureIfKeyRelated(res.status);
         const ra = Number(res.headers.get('retry-after'));
         const waitMs = Number.isFinite(ra) && ra > 0 ? Math.min(ra * 1000, 15000) : (attempt + 1) * 2000;
         try { await res.text(); } catch { /* 丢弃响应体，释放连接 */ }
         await new Promise((r) => setTimeout(r, waitMs));
         continue;
+      }
+      // 走到这里 = 本次请求已定案（成功，或不可重试的失败）：成功的 Key 回写以衰减历史失败计数
+      if (pool && tokenId) {
+        if (res.ok) { try { pool.reportSuccess(tokenId); } catch { /* 忽略 */ } }
+        else reportFailureIfKeyRelated(res.status);
       }
       return res;
     }

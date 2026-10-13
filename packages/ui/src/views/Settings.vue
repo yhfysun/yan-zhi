@@ -98,7 +98,7 @@
               <el-option v-for="m in availableDefaultModels" :key="m.id" :label="m.alias || m.modelId" :value="m.id" />
             </el-select>
           </SettingRow>
-          <!-- 模型候选池（model-candidate-pools）：全局默认层。智能体未配置走其平台池，平台未配置走这里；都没配自动兜底全部可见模型 -->
+          <!-- 模型候选池（model-candidate-pools）：全局默认层（第三层）。智能体未配 → 智能体平台默认池 → 这里；都没配自动兜底全部可见模型 -->
           <SettingRow label="全局模型候选池">
             <div class="pool-global-grid">
               <div v-for="slot in POOL_SLOTS" :key="slot" class="pool-global-row">
@@ -115,7 +115,7 @@
                 </el-select>
               </div>
               <div class="pool-global-actions">
-                <span class="pool-global-hint">顺序即优先级（第一个为首选）。智能体未配置时用其平台的池，平台未配置时用这里；都没配置则自动使用全部可见模型。</span>
+                <span class="pool-global-hint">顺序即优先级（第一个为首选）。智能体自己没有配候选池时，先看「智能体平台」页的默认池，再回退到这里；都没配置则自动使用全部可见模型。</span>
                 <div class="pool-global-btn-row">
                   <el-button size="small" type="primary" :loading="poolSaving" @click="saveGlobalPools">保存候选池</el-button>
                 </div>

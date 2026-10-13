@@ -1,12 +1,14 @@
 // 模型候选池解析测试（model-candidate-pools P0）。
 //
 // 钉住的契约（都是真实会踩的错法，不是凑数）：
-//   1) 三层回退顺序：agent → platform → global → autoPool，按**槽位粒度**回退
+//   1) 三层回退顺序：agent → agentPlatform（智能体平台）→ global → autoPool，按**槽位粒度**回退
 //      （agent 只配 llm 没配 vision 时，vision 必须落到下一层，而不是整池放弃）
 //   2) 槽位匹配：媒体模型（image/video cap）不能进 llm 池；vision 池只收带 vision 能力的 llm
 //   3) 生效过滤：停用 / 隐藏（visible=0）/ 平台关闭（llm_enabled=0）的模型不进池，
 //      且失效项**不阻断回退**（该层视为空，继续往下走）
-//   4) 平台层条目限定本平台模型（跨平台条目剔除）——与 UI 平台池选择器口径一致
+//   4) ★ L2 是「智能体平台」层（所有智能体的默认池，存 app_config，**跨供应商可选**）。
+//      「模型平台」（platform 表 = 百炼/agnes 这类大模型供应商）**不是**候选池的一层 ——
+//      2026-10-13 按用户指正改（旧实现以 platform 表为 L2，逼用户按供应商拆配置）。
 //   5) 兜底 autoPool：三层全空 = 全部生效模型按类型筛，is_default 优先（等价现状行为）
 //   6) 去重保序 + 损坏 JSON 宽容 + user_id 隔离
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
@@ -17,6 +19,7 @@ import {
   sanitizeIds,
   resolvePool,
   readGlobalPools,
+  readAgentPlatformPools,
   validateModelPools,
   type Slot,
 } from '../src/services/model-pools.js';
@@ -82,8 +85,10 @@ function setAgentPools(db: YzSqliteDb, id: string, pools: Record<Slot, string[]>
   );
 }
 
-function setPlatformPools(db: YzSqliteDb, id: string, pools: Record<Slot, string[]>) {
-  db.prepare('UPDATE platform SET model_pools_json = ? WHERE id = ?').run(JSON.stringify(pools), id);
+function setAgentPlatformPools(db: YzSqliteDb, pools: Record<Slot, string[]>) {
+  // ★ L2 是「智能体平台」层（所有智能体的默认池），存 app_config 单例，
+  //   不是「模型平台」（platform 表）—— 后者是大模型供应商，语义不同（见 services/model-pools.ts 头注）。
+  db.prepare("INSERT OR REPLACE INTO app_config (key, value) VALUES ('agent_platform_model_pools', ?)").run(JSON.stringify(pools));
 }
 
 function setGlobalPools(db: YzSqliteDb, pools: Record<Slot, string[]>) {
@@ -145,7 +150,8 @@ describe('resolvePool · 三层回退', () => {
   beforeEach(async () => { db = await mkDb(); vi.spyOn(console, 'warn').mockImplementation(() => {}); });
   afterEach(() => { vi.restoreAllMocks(); db.close(); });
 
-  const ctx = { userId: 'guest', agentId: 'a1', platformId: 'agens-guest' };
+  // ★ 候选池三层与模型供应商无关：ctx 只需要 userId + agentId（L2 是应用级单例）
+  const ctx = { userId: 'guest', agentId: 'a1' };
 
   it('三层全空 → autoPool 兜底：llm 池 = 全部生效对话模型，is_default 优先', () => {
     const pool = resolvePool(db, ctx, 'llm');
@@ -181,30 +187,32 @@ describe('resolvePool · 三层回退', () => {
     expect(visionPool[0].source).toBe('auto');
   });
 
-  it('agent 层全失效（引用已停用模型）→ 回落平台层', () => {
+  it('agent 层全失效（引用已停用模型）→ 回落智能体平台层', () => {
     setAgentPools(db, 'a1', { llm: ['agens-guest-agnes-disabled'] });
-    setPlatformPools(db, 'agens-guest', { llm: ['agens-guest-agnes-2.5-pro'] });
+    setAgentPlatformPools(db, { llm: ['agens-guest-agnes-2.5-pro'] });
     const pool = resolvePool(db, ctx, 'llm');
     expect(pool.map((e) => e.model.id)).toEqual(['agens-guest-agnes-2.5-pro']);
-    expect(pool[0].source).toBe('platform');
+    expect(pool[0].source).toBe('agentPlatform');
   });
 
-  it('平台层命中且限定本平台：跨平台条目被剔除', () => {
-    setPlatformPools(db, 'agens-guest', { llm: ['bailian-qwen-max', 'agens-guest-agnes-2.5-pro'] });
+  it('★ 智能体平台层跨供应商可选：不同平台的模型都能进（不再限定单平台）', () => {
+    // 旧实现以 platform 表为 L2，会把这个池里"不属于本平台"的条目当失效项剔掉；
+    // 新语义下 L2 是"所有智能体的默认池"，跨供应商正是它的用途。
+    setAgentPlatformPools(db, { llm: ['bailian-qwen-max', 'agens-guest-agnes-2.5-pro'] });
     const pool = resolvePool(db, ctx, 'llm');
-    expect(pool.map((e) => e.model.id)).toEqual(['agens-guest-agnes-2.5-pro']);
-    expect(pool[0].source).toBe('platform');
+    expect(pool.map((e) => e.model.id)).toEqual(['bailian-qwen-max', 'agens-guest-agnes-2.5-pro']);
+    expect(pool.every((e) => e.source === 'agentPlatform')).toBe(true);
   });
 
-  it('agent 与平台都空 → 落全局层', () => {
+  it('agent 与智能体平台都空 → 落全局层', () => {
     setGlobalPools(db, { llm: ['agens-guest-agnes-2.5-pro', 'bailian-qwen-max'] });
     const pool = resolvePool(db, ctx, 'llm');
     expect(pool.map((e) => e.model.id)).toEqual(['agens-guest-agnes-2.5-pro', 'bailian-qwen-max']);
     expect(pool[0].source).toBe('global');
   });
 
-  it('平台层配置了但该槽位为空 → 跳过平台层落全局（槽位粒度）', () => {
-    setPlatformPools(db, 'agens-guest', { image: ['agens-guest-agnes-image-2.5'] }); // 只配了 image
+  it('智能体平台层配置了但该槽位为空 → 跳过该层落全局（槽位粒度）', () => {
+    setAgentPlatformPools(db, { image: ['agens-guest-agnes-image-2.5'] }); // 只配了 image
     setGlobalPools(db, { llm: ['bailian-qwen-max'] });
     const pool = resolvePool(db, ctx, 'llm');
     expect(pool.map((e) => e.model.id)).toEqual(['bailian-qwen-max']);
@@ -234,10 +242,18 @@ describe('resolvePool · 三层回退', () => {
     expect(pool[0].source).toBe('auto');
   });
 
-  it('无 agentId / platformId 上下文时跳过对应层（媒体生成等无 agent 场景）', () => {
+  it('无 agentId 上下文时跳过 L1（媒体生成等无 agent 场景）', () => {
     setAgentPools(db, 'a1', { llm: ['bailian-qwen-max'] });
     const pool = resolvePool(db, { userId: 'guest' }, 'llm');
     expect(pool[0].source).toBe('auto');
+  });
+
+  it('★ 无 agentId 时 L2 智能体平台层**仍生效**（它对所有智能体生效，本就不需要 agent 上下文）', () => {
+    setAgentPools(db, 'a1', { llm: ['bailian-qwen-max'] }); // L1 只在有 agentId 时才读
+    setAgentPlatformPools(db, { llm: ['agens-guest-agnes-2.5-pro'] });
+    const pool = resolvePool(db, { userId: 'guest' }, 'llm');
+    expect(pool.map((e) => e.model.id)).toEqual(['agens-guest-agnes-2.5-pro']);
+    expect(pool[0].source).toBe('agentPlatform');
   });
 
   it('公开智能体（is_public=1）的池对其他用户生效', () => {
@@ -249,15 +265,60 @@ describe('resolvePool · 三层回退', () => {
   });
 });
 
-describe('readGlobalPools · 全局层读取', () => {
+describe('L2 语义 = 智能体平台（不是模型平台）', () => {
+  let db: YzSqliteDb;
+  beforeEach(async () => { db = await mkDb(); vi.spyOn(console, 'warn').mockImplementation(() => {}); });
+  afterEach(() => { vi.restoreAllMocks(); db.close(); });
+
+  it('★ source 只取 agent / agentPlatform / global / auto —— 不得出现旧名 platform', () => {
+    // 旧实现 L2 叫 'platform'（读 platform 表）；改名后若残留旧名，前端按 source 展示会错位。
+    // 这里从**实际返回值**里收 source（比读类型定义更实：类型退化了函数仍会照跑）。
+    const rows = [
+      ...resolvePool(db, { userId: 'guest', agentId: 'a1' }, 'llm'),
+      ...resolvePool(db, { userId: 'guest' }, 'image'),
+    ];
+    const sources = new Set(rows.map((e) => e.source));
+    expect(sources.has('platform' as any), 'source 仍是旧名 platform（L2 没改干净）').toBe(false);
+    for (const s of sources) {
+      expect(['agent', 'agentPlatform', 'global', 'auto']).toContain(s);
+    }
+  });
+
+  it('★ L2 存储键必须是 agent_platform_model_pools（不是 platform 表那套）', () => {
+    setAgentPlatformPools(db, { llm: ['agens-guest-agnes-2.5-pro'] });
+    const pool = resolvePool(db, { userId: 'guest', agentId: 'a1' }, 'llm');
+    expect(pool[0].source).toBe('agentPlatform');
+    // 同时断言：platform 表里写池**不生效**（证明确实不再读那一层）
+    db.prepare("UPDATE platform SET model_pools_json = ? WHERE id = 'agens-guest'")
+      .run(JSON.stringify({ image: ['agens-guest-agnes-image-2.5'] }));
+    const img = resolvePool(db, { userId: 'guest', agentId: 'a1' }, 'image');
+    expect(img.every((e) => e.source !== ('platform' as any)), 'platform 表的池仍被当成一层读了').toBe(true);
+  });
+});
+
+describe('readGlobalPools / readAgentPlatformPools · 应用级两层读取', () => {
   let db: YzSqliteDb;
   beforeEach(async () => { db = await mkDb(); });
   afterEach(() => db.close());
 
-  it('未配置 → {}；损坏 → {}', () => {
+  it('全局层：未配置 → {}；损坏 → {}', () => {
     expect(readGlobalPools(db)).toEqual({});
     db.prepare("INSERT INTO app_config (key, value) VALUES ('model_pools', '垃圾')").run();
     expect(readGlobalPools(db)).toEqual({});
+  });
+
+  it('★ 智能体平台层：未配置 → {}；损坏 → {}', () => {
+    expect(readAgentPlatformPools(db)).toEqual({});
+    db.prepare("INSERT INTO app_config (key, value) VALUES ('agent_platform_model_pools', '垃圾')").run();
+    expect(readAgentPlatformPools(db)).toEqual({});
+  });
+
+  it('★ 两层互相独立：写其中一层不影响另一层（key 不同）', () => {
+    db.prepare("INSERT INTO app_config (key, value) VALUES ('agent_platform_model_pools', ?)").run(
+      JSON.stringify({ llm: ['bailian-qwen-max'] }),
+    );
+    expect(readAgentPlatformPools(db).llm).toEqual(['bailian-qwen-max']);
+    expect(readGlobalPools(db)).toEqual({}); // 全局层仍是空
   });
 });
 
