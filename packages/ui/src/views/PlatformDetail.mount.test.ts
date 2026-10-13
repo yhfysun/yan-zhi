@@ -27,12 +27,16 @@ const MODELS = [
 ];
 
 // 只 mock 数据源：组件其余依赖全部用真实现
+// ★ 白名单式 mock：**主链路每加一个 store 导出都必须同步**，否则组件 setup 时
+//   拿到 undefined 直接抛错（本例：新增的 useModelPoolStore 漏了 → 10 个挂载用例全崩）。
 vi.mock('../stores', () => {
   const store = {
     platforms: [PLATFORM],
     models: MODELS,
     apiKeys: [],
     loading: false,
+    platformsLoaded: true,
+    modelsLoaded: true,
     loadPlatforms: vi.fn(async () => {}),
     loadModels: vi.fn(async () => {}),
     updateModel: vi.fn(async () => {}),
@@ -43,7 +47,22 @@ vi.mock('../stores', () => {
     testModelCapability: vi.fn(),
     fetchRemoteModels: vi.fn(async () => []),
   };
-  return { usePlatformStore: () => store };
+  // 候选池 store（model-candidate-pools）：跨平台候选池走自己的**独立全量清单**，
+  // 这里给同批假数据，供 `.pool-bar` 入口渲染 + 弹窗选项取数。
+  const poolStore = {
+    globalPools: { llm: [], vision: [], image: [], video: [] },
+    platformPools: {},
+    loaded: false,
+    allModels: MODELS,
+    modelsLoaded: true,
+    load: vi.fn(async () => {}),
+    loadPlatform: vi.fn(async () => ({ llm: [], vision: [], image: [], video: [] })),
+    saveGlobal: vi.fn(async () => null),
+    savePlatform: vi.fn(async () => null),
+    ensureModels: vi.fn(async () => {}),
+    platformPoolOf: () => ({ llm: [], vision: [], image: [], video: [] }),
+  };
+  return { usePlatformStore: () => store, useModelPoolStore: () => poolStore };
 });
 
 vi.mock('vue-router', () => ({

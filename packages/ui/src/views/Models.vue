@@ -224,7 +224,7 @@ import { ref, computed, onMounted } from 'vue';
 import { Plus, Connection, Download, Delete, RefreshLeft } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import type { ModelType, PlatformApiKey } from '@yan-zhi/shared';
-import { matchesModelSlot } from '@yan-zhi/shared';
+import { POOL_SLOTS, POOL_LABELS, flatModelsForSlot, poolModelsOf } from '../utils/model-pools';
 import { usePlatformStore, useModelPoolStore } from '../stores';
 import { waitForBackend } from '../api/backend-ready';
 import { DEFAULT_CONTEXT_WINDOW } from '../utils/context-window';
@@ -240,8 +240,7 @@ const showAdd = ref(false);
 const showLocalMarket = ref(false);
 
 // ===== 平台候选池（model-candidate-pools）=====
-const POOL_SLOTS = ['llm', 'vision', 'image', 'video'] as const;
-const POOL_LABELS: Record<string, string> = { llm: 'LLM', vision: '视觉', image: '生图', video: '生视频' };
+// POOL_SLOTS / POOL_LABELS 统一取自 utils/model-pools.ts（唯一实现）
 const showPools = ref(false);
 const poolSaving = ref(false);
 const poolPlatform = ref<{ id: string; name: string } | null>(null);
@@ -249,9 +248,9 @@ const poolForm = ref<Record<string, string[]>>({ llm: [], vision: [], image: [],
 
 async function openPools(p: { id: string; name: string }) {
   poolPlatform.value = p;
-  // ★ 不能调 loadModels(p.id) —— 它会**整体替换** store.models 为单平台清单，
-  //   冲掉其他界面（智能体编辑下拉等）依赖的全量模型缓存。这里保证全量即可。
-  if (!store.modelsLoaded) await store.loadModels().catch(() => {});
+  // ★ 数据源走 modelPoolStore 的独立全量清单：store.loadModels(pid) 会整体替换
+  //   store.models 为单平台清单，冲掉其他界面依赖的缓存，这里绝不能调。
+  await modelPoolStore.ensureModels().catch(() => {});
   const pools = await modelPoolStore.loadPlatform(p.id);
   poolForm.value = {
     llm: [...(pools.llm || [])], vision: [...(pools.vision || [])],
@@ -260,14 +259,11 @@ async function openPools(p: { id: string; name: string }) {
   showPools.value = true;
 }
 
-/** 本平台模型按槽位过滤（matchesModelSlot 与后端同源；只列启用且可见的） */
+/** 本平台模型按槽位过滤（口径走 utils/model-pools.ts 唯一实现：enabled + visible + 平台 llm_enabled + matchesModelSlot） */
 function platformModelsForSlot(slot: string) {
   const pid = poolPlatform.value?.id;
   if (!pid) return [];
-  return store.models.filter((m: any) =>
-    m.platformId === pid && m.enabled && (m.visible === undefined || m.visible)
-    && matchesModelSlot(m.type, m.capabilities, slot as any),
-  );
+  return flatModelsForSlot(poolModelsOf(modelPoolStore, store.models), store.platforms, slot as any, pid);
 }
 
 async function savePools() {

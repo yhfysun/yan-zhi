@@ -50,7 +50,7 @@
                 <div class="pool-select-row">
                   <el-select
                     v-model="form.modelPools[slot]"
-                    :placeholder="`可多选，按选择顺序作为 ${POOL_LABELS[slot]} 候选`"
+                    :placeholder="`${POOL_LABELS[slot]}候选：可多选，顺序即优先级`"
                     filterable clearable multiple collapse-tags style="width:100%"
                   >
                     <el-option-group v-for="g in poolSlotGroups[slot]" :key="g.platformId" :label="g.platformName">
@@ -262,9 +262,10 @@ import { ref, computed, watch, reactive } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { User, EditPen, Cpu, Setting, Connection, Share, Files, Switch, ArrowRight, Collection, CopyDocument, Search, Notebook } from '@element-plus/icons-vue';
 import type { Agent } from '@yan-zhi/shared';
-import { DEFAULT_AGENT_PARAMS, matchesModelSlot } from '@yan-zhi/shared';
-import { useAgentStore, usePlatformStore, useMcpStore, useSkillStore, useToolsStore, useAuthStore } from '../stores';
+import { DEFAULT_AGENT_PARAMS } from '@yan-zhi/shared';
+import { useAgentStore, usePlatformStore, useMcpStore, useSkillStore, useToolsStore, useAuthStore, useModelPoolStore } from '../stores';
 import { api } from '../api/client';
+import { POOL_SLOTS, POOL_LABELS, groupModelsForSlot, poolModelsOf } from '../utils/model-pools';
 
 const props = defineProps<{ modelValue: boolean; agent?: Agent | null }>();
 const emit = defineEmits<{ (e: 'update:modelValue', v: boolean): void; (e: 'saved', agentId: string): void; (e: 'deleted', agentId: string): void }>();
@@ -272,6 +273,7 @@ const emit = defineEmits<{ (e: 'update:modelValue', v: boolean): void; (e: 'save
 const agentStore = useAgentStore();
 const authStore = useAuthStore();
 const platformStore = usePlatformStore();
+const modelPoolStore = useModelPoolStore();
 const mcpStore = useMcpStore();
 const skillStore = useSkillStore();
 const toolsStore = useToolsStore();
@@ -412,27 +414,27 @@ async function loadKbs() {
 }
 // 内置智能体（如 pageAgent）也允许出现在子智能体列表中，默认助理可看到并确认已挂载的 pageAgent
 const subAgentList = computed(() => agentStore.agents.filter(a => a.id !== props.agent?.id));
+/** 候选池/锁定模型共用的模型源：优先 modelPoolStore 的独立全量清单
+ *  （platformStore.models 会被 loadModels(pid) 整体替换成单平台清单而变空） */
+const poolModels = computed(() => poolModelsOf(modelPoolStore, platformStore.models));
 const modelGroups = computed(() => {
-  const enabled = platformStore.models.filter((m: any) => m.enabled);
+  const enabled = poolModels.value.filter((m: any) => m.enabled);
   return platformStore.platforms.map((p: any) => ({ platformId: p.id, platformName: p.name, models: enabled.filter((m: any) => m.platformId === p.id) })).filter((g: any) => g.models.length > 0);
 });
 
 // ===== 模型候选池（model-candidate-pools）=====
-const POOL_SLOTS = ['llm', 'vision', 'image', 'video'] as const;
-const POOL_LABELS: Record<string, string> = { llm: 'LLM 候选', vision: '视觉候选', image: '生图候选', video: '生视频候选' };
-/** 各槽位可选模型（matchesModelSlot 判据与后端同源：@yan-zhi/shared，不许前端另写一套口径） */
+// POOL_SLOTS / POOL_LABELS 统一取自 utils/model-pools.ts（唯一实现；短名避免 label 折行）
+/** 各槽位可选模型：口径统一走 utils/model-pools.ts（matchesModelSlot 与后端同源，不许前端另写一套） */
 const poolSlotGroups = computed(() => {
-  const out: Record<string, typeof modelGroups.value> = {};
+  const out: Record<string, ReturnType<typeof groupModelsForSlot>> = {};
   for (const slot of POOL_SLOTS) {
-    out[slot] = modelGroups.value
-      .map((g) => ({ ...g, models: g.models.filter((m: any) => matchesModelSlot(m.type, m.capabilities, slot)) }))
-      .filter((g) => g.models.length > 0);
+    out[slot] = groupModelsForSlot(poolModels.value, platformStore.platforms, slot);
   }
   return out;
 });
 function firstPoolName(slot: string): string {
   const id = (form.value.modelPools?.[slot] || [])[0];
-  const m = platformStore.models.find((x: any) => x.id === id);
+  const m = poolModels.value.find((x: any) => x.id === id);
   return m ? (m.alias || m.modelId) : id;
 }
 const checkedToolCount = computed(() => (form.value.builtinToolIds?.length || 0) + (form.value.customToolIds?.length || 0) + (form.value.mcpToolMounts?.length || 0));
@@ -485,6 +487,9 @@ watch(() => [props.modelValue, props.agent], () => {
     void loadOntologies();
     // 知识库列表：挂载页数据源
     void loadKbs();
+    // 候选池 / 锁定模型要跨所有平台选：拉独立全量模型清单（幂等）+ 平台列表
+    void modelPoolStore.ensureModels();
+    if (!platformStore.platformsLoaded) void platformStore.loadPlatforms();
     const a = props.agent;
     form.value = {
       name: a?.name || '', description: a?.description || '', systemPrompt: a?.systemPrompt || '',
@@ -539,7 +544,8 @@ async function handleReset() {
 
 async function handleSave() {
   if (!form.value.name?.trim()) { ElMessage.warning('名称必填'); return; }
-  const m = platformStore.models.find((x: any) => x.id === form.value.modelId);
+  // 与锁定模型下拉同源（poolModels），避免两侧清单不一致导致 platformId 取空
+  const m = poolModels.value.find((x: any) => x.id === form.value.modelId);
   const data: Partial<Agent> = {
     name: form.value.name.trim(), description: form.value.description?.trim() || '',
     systemPrompt: form.value.systemPrompt || '', modelId: form.value.modelId || '',

@@ -105,8 +105,10 @@
                 </el-select>
               </div>
               <div class="pool-global-actions">
-                <el-button size="small" type="primary" :loading="poolSaving" @click="saveGlobalPools">保存候选池</el-button>
-                <span class="pool-first-tag">智能体未配置时用其平台的池，平台未配置时用这里；都没配置则自动使用全部可见模型</span>
+                <span class="pool-global-hint">顺序即优先级（第一个为首选）。智能体未配置时用其平台的池，平台未配置时用这里；都没配置则自动使用全部可见模型。</span>
+                <div class="pool-global-btn-row">
+                  <el-button size="small" type="primary" :loading="poolSaving" @click="saveGlobalPools">保存候选池</el-button>
+                </div>
               </div>
             </div>
           </SettingRow>
@@ -463,7 +465,7 @@ const embedded = computed(() => props.embedded);
 const isPaneMode = computed(() => !!props.pane);
 import { Download, Delete, Upload, Sunny, Moon, ArrowRight, Setting, Brush, DataLine, MagicStick, Link, InfoFilled } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { matchesModelSlot } from '@yan-zhi/shared';
+import { POOL_SLOTS, POOL_LABELS, groupModelsForSlot, poolModelsOf } from '../utils/model-pools';
 import { useSettingsStore, usePlatformStore, useModelPoolStore } from '../stores';
 import { usePluginStore } from '../stores/plugin';
 import { useToolsStore } from '../stores/tools';
@@ -703,22 +705,20 @@ const availableMemoryExtractModels = computed(() =>
 );
 
 // ===== 全局模型候选池（model-candidate-pools）=====
-const POOL_SLOTS = ['llm', 'vision', 'image', 'video'] as const;
-const POOL_LABELS: Record<string, string> = { llm: 'LLM', vision: '视觉', image: '生图', video: '生视频' };
+// POOL_SLOTS / POOL_LABELS / 分组口径统一取自 utils/model-pools.ts（唯一实现，避免各视图漂移）
 const globalPools = ref<Record<string, string[]>>({ llm: [], vision: [], image: [], video: [] });
 const poolSaving = ref(false);
-/** 各槽位可选模型（matchesModelSlot 与后端同源；生效模型 = enabled 且可见且平台 llm_enabled） */
+/**
+ * 各槽位可选模型。
+ * ★ 数据源必须是 modelPoolStore.allModels（跨全部平台的独立全量清单）——
+ *   用 platformStore.models 会被 loadModels(pid) 整体替换成单平台清单而变空。
+ * ★ 分组口径走 utils/model-pools.ts 的 groupModelsForSlot（唯一实现）。
+ */
 const poolSlotGroups = computed(() => {
-  const visible = platformStore.models.filter((m: any) => m.enabled && (m.visible === undefined || m.visible));
-  const groups = platformStore.platforms
-    .filter((p: any) => p.llmEnabled !== false)
-    .map((p: any) => ({ platformId: p.id, platformName: p.name, models: visible.filter((m: any) => m.platformId === p.id) }))
-    .filter((g) => g.models.length > 0);
-  const out: Record<string, typeof groups> = {};
+  const src = poolModelsOf(modelPoolStore, platformStore.models);
+  const out: Record<string, ReturnType<typeof groupModelsForSlot>> = {};
   for (const slot of POOL_SLOTS) {
-    out[slot] = groups
-      .map((g) => ({ ...g, models: g.models.filter((m: any) => matchesModelSlot(m.type, m.capabilities, slot)) }))
-      .filter((g) => g.models.length > 0);
+    out[slot] = groupModelsForSlot(src, platformStore.platforms, slot);
   }
   return out;
 });
@@ -736,7 +736,9 @@ async function saveGlobalPools() {
 onMounted(async () => {
   await settingsStore.load();
   await platformStore.loadPlatforms();
-  // 全局候选池：platformStore.loadPlatforms 只拉平台列表不带模型，模型清单按需加载各平台的
+  // 全局候选池：platformStore.loadPlatforms 只拉平台列表不带模型；候选池要跨所有平台选，
+  // 先拉全量模型（独立清单，不受 loadModels(pid) 影响），再读已保存的全局池
+  await modelPoolStore.ensureModels().catch(() => {});
   void modelPoolStore.load().then(() => { globalPools.value = { ...modelPoolStore.globalPools } as any; });
   defaultPlatformId.value = settingsStore.settings.defaultPlatformId;
   defaultModelId.value = settingsStore.settings.defaultModelId;
@@ -1151,11 +1153,13 @@ onMounted(async () => {
 
 <style scoped>
 /* 全局模型候选池 */
-.pool-global-grid { display: flex; flex-direction: column; gap: 6px; width: 420px; }
+.pool-global-grid { display: flex; flex-direction: column; gap: 6px; width: 460px; max-width: 100%; }
 .pool-global-row { display: flex; align-items: center; gap: 8px; }
 .pool-global-label { width: 52px; flex-shrink: 0; font-size: 12px; color: var(--el-text-color-secondary); }
-.pool-global-actions { display: flex; align-items: center; gap: 8px; margin-top: 2px; }
-.pool-first-tag { font-size: 12px; color: var(--el-text-color-secondary); }
+/* 提示独占一行、按钮右对齐 —— 挤在一行会互相压扁（截图实测） */
+.pool-global-actions { margin-top: 8px; }
+.pool-global-hint { display: block; font-size: 12px; line-height: 1.6; color: var(--el-text-color-secondary); }
+.pool-global-btn-row { display: flex; justify-content: flex-end; margin-top: 8px; }
 
 /* .page / .page-title come from App.vue global */
 .page-title { margin-bottom: 24px; }
