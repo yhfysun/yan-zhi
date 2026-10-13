@@ -456,7 +456,7 @@ export class BrowserScreenshotTool implements BuiltInTool {
 // ========== 批量填写表单 ==========
 export class BrowserFillFormTool implements BuiltInTool {
   name = 'browser_fill_form';
-  description = 'Fill multiple form fields at once. Each field: {selector, value, type?} where type is "text"|"select"|"checkbox"|"radio". For select use label or value. For checkbox/radio set value true/false.';
+  description = 'Fill multiple form fields at once. Each field: {selector, value, type?} where type is "text"|"select"|"checkbox"|"radio". For select use label or value. For checkbox/radio set value true/false. 普通输入框与富文本编辑器（contenteditable，如 Slate/ProseMirror）都支持：富文本字段直接传 selector 指向该 div，value 为要填的纯文本。返回 state 数组 = 各字段填写后的当前值（回读核验），据此判断是否全部生效，不要凭猜测重复填写。';
   inputSchema = {
     type: 'object',
     properties: {
@@ -610,7 +610,7 @@ export function computePageStateSignature(data: { url?: string; title?: string; 
 // ========== 获取页面内容（pageAgent 四件套之"读页"，聚合一次给齐） ==========
 export class BrowserGetPageContentTool implements BuiltInTool {
   name = 'browser_get_page_content';
-  description = 'Get the current page content in one call: url + title + visible text body + numbered interactive elements. 一次拿齐"内容 + 操作目标"：页面标题/URL、可见正文、以及带编号的可交互元素清单（每个元素含 index、tag、selector、type、name、placeholder、aria-label、value；输入框标注 ←可输入）。用途：既要看页面说了什么、又要知道点哪里/往哪输入时用它；click/type 之后想重新观察页面结果也用它。元素编号 index 可直接作为 browser_click / browser_type 的 index 参数，selector 也可直接作为 selector 参数。只看纯文本用 browser_get_visible_text；只要元素坐标用 browser_get_page_info；要看父子层级结构用 browser_get_dom。可传 tabId 读取指定标签页（来自 browser_new_tab / browser_get_tabs），用于多页并行场景，不必先切换标签页。';
+  description = 'Get the current page content in one call: url + title + visible text body + numbered interactive elements + form state. 一次拿齐"内容 + 操作目标 + 表单状态"：页面标题/URL、可见正文、带编号的可交互元素清单（每个元素含 index、tag、selector、type、name、placeholder、aria-label、value；输入框标注 ←可输入），以及【表单状态】段（页面上每个输入框/文本域/富文本/下拉的字段名、类型、是否必填、**当前值**）与【自上次读取的变化】段（哪些字段从什么变成了什么）。用途：既要看页面说了什么、又要知道点哪里/往哪输入时用它；click/type/fill_form 之后想确认结果也用它 —— **填完表单请以【表单状态】的值为准判断是否生效，不要重复填写**；【自上次读取的变化】为"无"说明上一步动作没改变任何字段，应换定位方式而不是重复同一动作。元素编号 index 可直接作为 browser_click / browser_type 的 index 参数，selector 也可直接作为 selector 参数。只看纯文本用 browser_get_visible_text；只要元素坐标用 browser_get_page_info；要看父子层级结构用 browser_get_dom。可传 tabId 读取指定标签页（来自 browser_new_tab / browser_get_tabs），用于多页并行场景，不必先切换标签页。';
   inputSchema = {
     type: 'object',
     properties: {
@@ -670,18 +670,44 @@ export class BrowserGetPageContentTool implements BuiltInTool {
         return s;
       }).join('\n');
       const header = `URL: ${data.url}\nTitle: ${data.title}\nPageState: ${pageState}（页面状态签名；与上次读取相同 = 操作未生效，需换定位方式重新观察）\n\n【页面可见文本】\n`;
+      // ★★★ 表单语义段（2026-10-13）：把"表单现在是什么状态"和"自上次读取以来哪些字段变了"
+      //   直接喂给模型 —— 这是治「反复填同一个表单」的关键。
+      //   此前模型填完只能自己从上百条可交互元素清单里比对当前值（值还常被截断/顺序漂移），
+      //   判错就再填一遍（实测同一段文字填 2~3 次、大量 run_script 用于手写回读）。
+      //   现在一次读页给出「字段=当前值」+「谁从什么变成了什么」，无需再猜。
+      const formFields: any[] = Array.isArray(data.formFields) ? data.formFields : [];
+      const formChanges: any[] = Array.isArray(data.formChanges) ? data.formChanges : [];
+      let formSection = '';
+      if (formFields.length > 0) {
+        const lines = formFields.map((f: any) => {
+          const label = f.label || f.selector || `#${f.index}`;
+          const kind = f.kind === 'richtext' ? '富文本' : (f.kind || 'text');
+          const meta: string[] = [kind];
+          if (f.required) meta.push('必填');
+          if (f.maxLength) meta.push(`${f.valueLen}/${f.maxLength}`);
+          const val = (f.value === '' || f.value == null) ? '(空)' : `"${String(f.value).slice(0, 60)}"`;
+          return `- ${label} (${meta.join(', ')})[index=${f.index}]: ${val}`;
+        }).join('\n');
+        formSection = `\n\n【表单状态】(${formFields.length} 个字段；值已逐字段回读，"已填/为空"以此为准 —— 已是目标值的字段不要重复填写)\n${lines}`;
+        if (formChanges.length > 0) {
+          const cl = formChanges.map((c: any) => `- ${c.field}: "${c.from}" → ${c.to === '' ? '(空)' : `"${c.to}"`}`).join('\n');
+          formSection += `\n\n【自上次读取的变化】(${formChanges.length} 个字段变了)\n${cl}`;
+        } else {
+          formSection += `\n\n【自上次读取的变化】无。若上一步刚做过填写/点击，说明它**没有改变任何字段**：不要再重复同一动作，改换定位方式（重新读页取新 index / 先滚动到元素 / 检查是否被遮挡）或说明卡点。`;
+        }
+      }
       if (savedPath) {
         const preview = bodyText.slice(0, 4000);
         const more = bodyText.length > 4000 ? `\n…[正文过长已截断：全文 ${bodyText.length} 字符已保存到文件 ${savedPath}，后续处理用 file_read 按此路径读取，不要重复抓取]` : '';
         // ★ 必须回传 _meta.path：否则服务端通用钩子接不到该路径 → 落盘文件不登记
         //   conversation_file / 不进工件清单（等于白落盘）。category=intermediate（原始抓取）。
         return okWithMeta(
-          `${header}${preview}${more}\n\n【可交互元素】(${data.interactiveCount} 个，编号可直接用于 browser_click/browser_type 的 index 参数；也可直接用 <selector> 作为 selector 参数)\n${elems}`,
+          `${header}${preview}${more}${formSection}\n\n【可交互元素】(${data.interactiveCount} 个，编号可直接用于 browser_click/browser_type 的 index 参数；也可直接用 <selector> 作为 selector 参数)\n${elems}`,
           { path: savedPath, name: savedPath.split(/[/\\]/).pop() || 'page.txt', category: 'intermediate', bytes: bodyText.length },
         );
       }
       return ok(
-        `${header}${bodyText}\n\n【可交互元素】(${data.interactiveCount} 个，编号可直接用于 browser_click/browser_type 的 index 参数；也可直接用 <selector> 作为 selector 参数)\n${elems}`
+        `${header}${bodyText}${formSection}\n\n【可交互元素】(${data.interactiveCount} 个，编号可直接用于 browser_click/browser_type 的 index 参数；也可直接用 <selector> 作为 selector 参数)\n${elems}`
       );
     } catch (e: any) { return err(e?.message || '获取页面内容失败'); }
   }
@@ -1089,7 +1115,7 @@ export class BrowserDragTool implements BuiltInTool {
 // ========== P1-5 代码模式（2026-10-07） ==========
 export class BrowserRunScriptTool implements BuiltInTool {
   name = 'browser_run_script';
-  description = 'Execute a JavaScript snippet in the current page context and return its JSON-serializable result. 代码模式：把多步固定操作收敛为一段脚本一次执行（如"滚动到底触发懒加载→收集全部列表项→返回 JSON"），替代多轮 click/scroll/get_page_content，大幅省步数与 token。脚本在页面主世界运行，可用 document / window / fetch；返回值必须可 JSON 序列化，用 return 返回（例：return JSON.stringify([...]) 或 return {...}）。★ 直接写 `const x=...; return x;` 即可（工具会自动包一层函数）；也可自己写成 (() => {...})() 或 (async () => {...})()。超时 30s，脚本长度上限 64000 字符。适用：重复性流程、批量提取、条件循环；需要看页面再决策时仍用 browser_get_page_content。可传 tabId 在指定标签页执行。';
+  description = 'Execute a JavaScript snippet in the current page context and return its JSON-serializable result. 代码模式：把多步固定操作收敛为一段脚本一次执行（如"滚动到底触发懒加载→收集全部列表项→返回 JSON"），替代多轮 click/scroll/get_page_content。脚本在页面主世界运行，可用 document / window / fetch；返回值必须可 JSON 序列化，用 return 返回（例：return JSON.stringify([...]) 或 return {...}）。★ 直接写 `const x=...; return x;` 即可（工具会自动包一层函数）；也可自己写成 (() => {...})() 或 (async () => {...})()。超时 30s，脚本长度上限 64000 字符。可传 tabId 在指定标签页执行。\n★ 适用边界（重要）：脚本只用于【批量提取数据 / 循环检查 / 一次脚本内自洽的多步流程】。查找并点击某个按钮、往输入框填文字这类单点交互请用 browser_click / browser_type / browser_fill_form —— 它们有元素重定位、防循环计数、回读核验等保护，脚本是裸奔的（选择器失效直接抛错、无任何防护）。页面找不到目标时先用 browser_get_page_content 重新定位，不要写脚本穷举选择器。';
   inputSchema = {
     type: 'object',
     properties: {

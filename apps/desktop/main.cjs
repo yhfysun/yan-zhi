@@ -1249,6 +1249,7 @@ function evictLruWebviewTabIfNeeded() {
     } catch { /* ignore */ }
     // 锚/touched 记账一并失效（唯一收口，避免留下幽灵 tabId）
     clearConvAnchorsForTab(lruId);
+    clearFormSnapshot(lruId);   // 表单快照同生命周期（防 Map 随长时间运行累积）
   }
 }
 
@@ -1264,6 +1265,58 @@ function scheduleTabIdleCheck() {
       if (now - (e.lastActiveAt || 0) > TAB_IDLE_UNLOAD_MS) {
         console.log('[browserView] 空闲卸载挂起:', id, e.url || '');
         suspendBrowserViewEntry(id, e);
+      }
+    }
+    // ★★★ webview 引擎空闲回收（2026-10-13，内存治理 A）：
+    //   旧巡检只遍历 browserViews —— 而现役引擎是 webview（每 tab = 一个完整 Chromium
+    //   渲染进程）。实测（会话 253bd3f4）：弹窗转出的 tab-2 全天 0 次使用却白挂 8 小时
+    //   （≈0.5GB）。这里对 webview 补同一语义：非激活、未被任何会话锚定、空闲超过
+    //   TAB_IDLE_UNLOAD_MS 的 tab，广播 tabClosed 让渲染层销毁 <webview> 元素（壳与
+    //   url 由渲染层 tab 记账保留，切回时按 url 重载）——与 LRU 逐出同一条链路，行为一致。
+    if (isWebviewEngine()) {
+      const pinned = new Set(convAnchors.values());
+      for (const [id, t] of webviewTabs) {
+        if (id === activeTabId) continue;           // 当前激活：不回收
+        if (pinned.has(id)) continue;               // 某会话锚定（agent 正在操作）：不回收
+        if ((t.lastActiveAt || 0) > now - TAB_IDLE_UNLOAD_MS) continue;
+        console.log('[browserView] webview 空闲回收:', id, '（空闲超过', TAB_IDLE_UNLOAD_MS / 60000, '分钟）');
+        try {
+          webviewTabs.delete(id);
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('browserView:tabClosed', id);
+          }
+        } catch { /* ignore */ }
+        clearConvAnchorsForTab(id);
+        clearFormSnapshot(id);
+      }
+    }
+    // ★★★ 后台 tab 降帧（2026-10-13，内存/卡顿治理 C）：
+    //   主窗口 backgroundThrottling 全局关闭（防最小化导航卡死，见 WebPreferences 注释），
+    //   代价是后台 tab 的渲染合成全速跑——重页面（抖音等长列表 + 定时器）把渲染主线程
+    //   拖住是"任务一跑界面就卡"的传导链第一环。这里按帧率维度补局部节流：
+    //   非激活/未锚定 guest 降到 1fps（定时器仍跑，但合成开销趋零），激活/锚定恢复满帧。
+    if (isWebviewEngine()) {
+      const pinned2 = new Set(convAnchors.values());
+      for (const [id, t] of webviewTabs) {
+        try {
+          const g = t.wcId ? webContents.fromId(t.wcId) : null;
+          if (!g || g.isDestroyed()) continue;
+          const isActive = id === activeTabId;
+          const isPinned = pinned2.has(id);
+          const target = (isActive || isPinned) ? 60 : 1;
+          if (typeof g.setFrameRate === 'function' && g.getFrameRate && g.getFrameRate() !== target) {
+            g.setFrameRate(target);
+          }
+          // ★ 顺带清 HTTP 磁盘/内存缓存（B3，内存治理）：空闲即非工作集，cache 可随时重下，
+          //   cookie/localStorage/登录态不受影响。空闲超过 10 分钟的 tab 通常累积了
+          //   几十~上百 MB 图片缓存。每次巡检只对"上次清理距今 >5 分钟"的执行，避免反复清。
+          if (!isActive && !isPinned && (now - (t.lastActiveAt || 0) > TAB_IDLE_UNLOAD_MS)) {
+            if (!(t.__lastCacheClear) || now - t.__lastCacheClear > 5 * 60 * 1000) {
+              t.__lastCacheClear = now;
+              g.session.clearCache().catch(() => { /* 清理失败不影响 */ });
+            }
+          }
+        } catch { /* ignore */ }
       }
     }
   }, 60 * 1000);
@@ -1644,6 +1697,27 @@ function broadcastOpenTab(url, scope) {
   if (now - last < 1500) return;         // 同一次点击的第二条通道：丢弃
   popupBroadcastGuard.set(url, now);
   for (const [u, t] of popupBroadcastGuard) if (now - t > 10000) popupBroadcastGuard.delete(u);
+  // ★★★ 同站复用优先（2026-10-13，内存治理 B）：弹窗/新开 tab 的 URL 若与既有 tab
+  //   「同 host+同 path」，广播 openTab 会让渲染层**再开一个完整 Chromium 渲染进程**
+  //   （实测 tab-2：10:52 弹窗开出的第二个抖音 tab，与 tab-1 同站，全天 0 次使用白挂 8 小时）。
+  //   ⇒ 命中已有 tab 时改广播 forceOpen（原地导航到该 URL + 激活它），不开新进程；
+  //     确需强制新开由调用方传 forceNew（保留出口）。
+  try {
+    if (!broadcastOpenTab.__forceNew) {
+      const norm = (u) => { try { const x = new URL(u); return x.host.replace(/^www\./, '') + x.pathname.replace(/\/+$/, ''); } catch { return String(u || ''); } };
+      const target = norm(url);
+      for (const [tid, t] of webviewTabs) {
+        if ((t.scope || 'preview') !== (scope || currentTabScope())) continue;
+        const wc = t.wcId ? webContents.fromId(t.wcId) : null;
+        if (!wc || wc.isDestroyed()) continue;
+        if (norm(wc.getURL()) === target) {
+          console.log('[bridge] popup 同站复用: 已有 tab', tid, '在', wc.getURL(), '→ 原地导航，不新建');
+          mainWindow.webContents.send('browser:wv:forceOpen', url, scope || currentTabScope(), tid);
+          return;
+        }
+      }
+    }
+  } catch { /* 探测失败按原路径广播 */ }
   mainWindow.webContents.send('browser:wv:openTab', url, scope || currentTabScope());
 }
 
@@ -1707,6 +1781,16 @@ ipcMain.handle('browser:wv:register', (_e, tabId, wcId, scope) => {
   // ★ 事件驱动晚绑定（2026-10-11）：guest 注册即唤醒所有等这个 tab 的 waitForGuest
   //   （渲染主线程饱和时 IPC 迟到 30s+，纯轮询等不到 —— 见 waitForGuest 注释）
   wakeGuestWaiters(tabId);
+  // ★★★ 消误报（2026-10-13）：`MaxListenersExceededWarning: 11 did-stop-loading listeners`。
+  //   这批监听是 **Electron webview 内部实现**在 guest WebContents 上按 attach 维护的
+  //   事件转发器（dom-ready 重发/re-attach 都会增加），实测**有界**（连续两天日志里
+  //   警告都是恰好 11，达到后不再增长），并非应用层泄漏 —— 挂上去卸不掉也无需卸。
+  //   ⇒ 给 guest 提高上限到 30，消掉误报（日志干净了，真泄漏才显眼），同时保留
+  //     超过 30 的真异常报警能力。
+  try {
+    const wcReg = webContents.fromId(wcId);
+    if (wcReg && !wcReg.isDestroyed() && typeof wcReg.setMaxListeners === 'function') wcReg.setMaxListeners(30);
+  } catch { /* wcId 无效/已销毁则忽略 */ }
   // 给这个 guest 宿主 wc 挂弹窗重定向（window.open/target=_blank → 应用内新标签页）
   try {
     const wc = webContents.fromId(wcId);
@@ -1739,6 +1823,10 @@ let tabSeq = 0;
 function createBrowserTab(scope) {
   const newTabId = 'tab-' + (++tabSeq);
   if (isWebviewEngine()) {
+    // ★ webview 引擎同样要启动空闲回收/降帧巡检（2026-10-13）：
+    //   此前 scheduleTabIdleCheck 只在旧引擎 ensureBrowserView 里调 —— webview 模式下
+    //   巡检从未启动，"10 分钟空闲卸载"对现役引擎形同虚设（tab-2 幽灵挂 8 小时的根因）。
+    scheduleTabIdleCheck();
     // ★★★ 2026-10-10 三次根因修复：webview 引擎必须**同样有上限 + LRU 收口**。
     //
     //   现场（用户实报"pageAgent 一跑整个应用卡死"）：navigate 因锚未建立而反复重试，
@@ -1782,6 +1870,7 @@ function closeTabById(tabId, fromUi) {
     const meta = webviewTabs.get(tabId);
     const closedScope = meta?.scope || 'preview';
     webviewTabs.delete(tabId);
+    clearFormSnapshot(tabId);
     // ★ 广播 tab 关闭（2026-10-09）：渲染层据此摘除 tab 壳（webview 引擎下 agent 的
     //   close_tab / 收尾自动收拾此前只删主进程 meta，渲染层残留幽灵壳）。
     //   渲染层对不认识的 tabId 幂等忽略，UI 路径重复收到也无害。
@@ -2934,6 +3023,76 @@ const DESKTOP_BROWSER_ACTIONS = [
 /** 渲染层可查询桌面端支持哪些 action（避免两份硬编码清单漂移） */
 ipcMain.handle('browserView:actions', () => DESKTOP_BROWSER_ACTIONS.slice());
 
+// ============================================================
+// 表单快照与差异（2026-10-13）
+//
+// ★ 为什么需要（会话 253bd3f4 实测的"反复填同一个表单"机制）：
+//   模型填完一个字段后**无法知道"现在表单整体是什么状态"** —— `applied` 只回答
+//   "本次调用写进去了没有"，回答不了"标题改了、描述还剩旧值、哪个字段还空着"。
+//   于是它只能再读一轮页面自己比对；而读回来的是**平铺的可交互元素清单**
+//   （几十上百条，值被截断、顺序随 SPA 重渲染漂移），从中推断"我填的到底生效没"
+//   极易判错 → 判定没生效 → 再填一遍。实测该会话 9 次 browser_type 里同一段文字
+//   填了 2~3 遍，全天 180 次 run_script 里相当一部分是手写脚本回读表单值。
+//
+// ★ 修法：读页时**顺带给出表单语义段 + 与上次读取的差异**（值级 diff）。
+//   模型一眼看到「作品描述: "XXTESTXX我出生那天…" → 含测试前缀」就不用再猜；
+//   看到「本次无字段变化」就知道上一步白做了，该换定位方式而不是重填。
+//   Claude（computer use）每步拿到"状态差异"正是它不反复填的关键。
+//
+// ★ 快照按 tab 存、并绑定 URL：跨页导航后不与上一页比较（否则整页字段都算"变了"，
+//   噪声淹没信号）。上限 40 字段、值 80 字，避免自己变成新的内存/日志负担。
+// ============================================================
+const lastFormSnapshots = new Map();   // tabKey → { url, fields: Map<key, value> }
+
+/** 依据「字段标签（退化到 selector）」建稳定 key —— 标签为空时用 selector 兜底 */
+function formFieldKey(f) {
+  const label = String((f && f.label) || '').trim();
+  return label || String((f && f.selector) || '');
+}
+
+/**
+ * 与上次读取比较，返回字段级变化列表；同时更新快照。
+ * @returns {Array<{field:string,from:string,to:string,filled:boolean}>} 最多 20 条
+ */
+function diffFormSnapshot(tabKey, url, fields) {
+  const list = Array.isArray(fields) ? fields : [];
+  const now = new Map();
+  for (const f of list) now.set(formFieldKey(f), String(f && f.value != null ? f.value : ''));
+  const prev = lastFormSnapshots.get(tabKey);
+  const changes = [];
+  if (prev && prev.url === url) {
+    for (const f of list) {
+      const key = formFieldKey(f);
+      const before = prev.fields.get(key);
+      const after = String(f && f.value != null ? f.value : '');
+      // 只报"上次见过且值变了"的字段：新出现的字段（上次没读到）不算变化，
+      // 否则 SPA 重渲染/懒加载会让每次读页都刷出一堆假变化。
+      if (before !== undefined && before !== after) {
+        changes.push({
+          field: key,
+          from: before.slice(0, 60),
+          to: after.slice(0, 60),
+          filled: !!after,
+        });
+      }
+    }
+  }
+  lastFormSnapshots.set(tabKey, { url, fields: now });
+  // 上限兜底：正常由 clearFormSnapshot 在 tab 关闭/逐出/回收时清理，但 tabId 单调递增，
+  // 任何一条遗漏路径都会让 Map 慢慢长大 → 这里再兜一层（超 200 条按插入序淘汰最早的）。
+  while (lastFormSnapshots.size > 200) {
+    const oldest = lastFormSnapshots.keys().next().value;
+    if (oldest === undefined) break;
+    lastFormSnapshots.delete(oldest);
+  }
+  return changes.slice(0, 20);
+}
+
+/** tab 关闭/回收时清快照（防 Map 随会话长时间累积） */
+function clearFormSnapshot(tabKey) {
+  try { lastFormSnapshots.delete(tabKey); } catch { /* ignore */ }
+}
+
 /**
  * ★★★ 浏览器 action 的**唯一实现**（「执行面直连化」P0-1，2026-10-10）。
  *
@@ -3120,6 +3279,33 @@ async function runBrowserAction(convId, tabId, action, args) {
     // 曾导致 get_page_info 等操作 20s IPC 超时。无 host 的动作(见 NO_HOST_REQUIRED)本就无文档可注入。
     if (action !== 'navigate' && wc) {
       await Promise.race([injectYzAssistant(wc), new Promise((r) => setTimeout(r, 3000))]);
+    }
+
+    // ★★★ 加载中前置等待闸（2026-10-13，"动作 30s 饿死"根因修复）。
+    //
+    //   现场（会话 253bd3f4 全天日志）：creator.douyin.com 的 SPA 在 12s 内从不加载完成
+    //   （navigate 恒定 ~14.3s 返回 = loadURL 12s 竞速超时），此时 get_page_content /
+    //   run_script 等 executeJavaScript 类动作在"文档仍在换"的页面上与导航竞速被**饿死**，
+    //   26/32 次错误全是"30s 内未返回"——每个动作固定烧满 30~45s，任务预算被烧光，
+    //   防失控闸门还把重试计成循环 → 循环闸门硬停。
+    //
+    //   修法：executeJavaScript 类动作执行前若页面 isLoading，先**限时等待**它停下
+    //   （dom-ready 事件或 8s 上限，二者先到）。等待是有界的，健康路径（页面已就绪）
+    //   **零开销**；慢站路径把"30s 饿死+模型重试"变成"先等一下再一次成功"。
+    //   navigate 不在此列：它自身管理 loadURL 竞速（12s），语义不同。
+    if (action !== 'navigate' && wc && typeof wc.isLoading === 'function') {
+      let loadingNow = false;
+      try { loadingNow = !!wc.isLoading(); } catch { /* 取不到按未加载处理 */ }
+      if (loadingNow) {
+        const SETTLE_MS = 8000;
+        await new Promise((resolve) => {
+          let done = false;
+          const finish = () => { if (!done) { done = true; try { wc.removeListener('dom-ready', finish); } catch { /* ignore */ } clearTimeout(timer); resolve(); } };
+          const timer = setTimeout(finish, SETTLE_MS);
+          try { wc.on('dom-ready', finish); } catch { clearTimeout(timer); resolve(); }
+        });
+        console.log(`[browser-action] ${action} 前置等待：页面加载中，已等至就绪/上限(${SETTLE_MS}ms)`);
+      }
     }
 
     const doAction = async () => {
@@ -3745,7 +3931,8 @@ async function runBrowserAction(convId, tabId, action, args) {
       case 'get_page_content': {
         // 聚合 action：title + url + 可见正文 + 可交互元素一次返回（pageAgent 四件套之"读页"），
         // 合并 get_page_info 采集与 get_visible_text 正文，减少一次 IPC 往返
-        return await wc.executeJavaScript(`(function(){
+        // ★ 2026-10-13：返回值多带 `formFields`（表单语义段）；差异在下方主进程侧补算
+        const r = await wc.executeJavaScript(`(function(){
           var A=window.__yzAssistant;
           var a=${JSON.stringify(args)};
           function visibleText(el){var s='';el.childNodes.forEach(function(n){
@@ -3815,11 +4002,68 @@ async function runBrowserAction(convId, tabId, action, args) {
             out.push(o);
           }
           var maxText=a.maxTextLength||5000;
+          // ── 表单语义段（2026-10-13）：字段名 / 类型 / 必填 / 当前值 ──
+          //   与上面的 interactive 平铺清单互补：那个回答"页面上有什么可点可填"，
+          //   这个回答"表单现在是什么状态"——后者才是"填了没填上"的判据。
+          var FSEL='input,textarea,select,[contenteditable="true"]';
+          var fel=[];
+          function collectFields(root){
+            var found;try{found=root.querySelectorAll(FSEL);}catch(e){return;}
+            for(var i=0;i<found.length;i++){
+              var el=found[i];
+              try{if(el.type==='hidden'||el.disabled)continue;}catch(e){}
+              var r;try{r=el.getBoundingClientRect();}catch(e){r={width:0,height:0};}
+              // 富文本容器（contenteditable）常是 0 尺寸但可编辑 → 不能按尺寸否决
+              if(!el.isContentEditable&&r.width<2&&r.height<2)continue;
+              fel.push(el);
+            }
+            var all;try{all=root.querySelectorAll('*');}catch(e){return;}
+            for(var j=0;j<all.length;j++){var n=all[j];
+              if(n.shadowRoot)collectFields(n.shadowRoot);
+              if(n.tagName==='IFRAME'||n.tagName==='FRAME'){try{var cd=n.contentDocument;if(cd&&cd.body)collectFields(cd.body);}catch(e){}}
+            }
+          }
+          collectFields(document.documentElement);
+          function fieldLabel(el){
+            var lb='';
+            try{if(el.placeholder)lb=el.placeholder;}catch(e){}
+            if(!lb){try{var al=el.getAttribute&&el.getAttribute('aria-label');if(al)lb=al;}catch(e){}}
+            if(!lb&&el.id){try{var lf=document.querySelector('label[for="'+el.id+'"]');if(lf)lb=(lf.textContent||'').trim();}catch(e){}}
+            if(!lb){try{var lp=el.closest&&el.closest('label');if(lp)lb=(lp.textContent||'').trim();}catch(e){}}
+            return String(lb||'').replace(/[\s ]+/g,' ').trim().slice(0,30);
+          }
+          function fieldValue(el){
+            try{
+              if(el.tagName==='SELECT'){var o=el.options[el.selectedIndex];return o?String(o.textContent||'').trim():'';}
+              if(el.isContentEditable)return String(el.innerText||'').trim();
+              if(el.type==='checkbox'||el.type==='radio')return el.checked?'(已选)':'(未选)';
+              return String(el.value==null?'':el.value);
+            }catch(e){return '';}
+          }
+          var formFields=[];
+          for(var fi=0;fi<fel.length&&formFields.length<40;fi++){
+            var fe=fel[fi];var fv=fieldValue(fe);
+            var ml=0;try{ml=(fe.maxLength&&fe.maxLength>0)?fe.maxLength:0;}catch(e){}
+            var o2={index:A.register(fe),selector:A.genSel(fe),label:fieldLabel(fe),
+              kind:fe.isContentEditable?'richtext':(fe.tagName==='SELECT'?'select':(fe.type||'text')),
+              value:fv.slice(0,80),valueLen:fv.length,required:false};
+            try{o2.required=!!(fe.required||(fe.getAttribute&&fe.getAttribute('aria-required')==='true'));}catch(e){}
+            if(ml)o2.maxLength=ml;
+            formFields.push(o2);
+          }
           return{url:location.href,title:document.title,
             text:visibleText(document.body).trim().slice(0,maxText),
             interactiveCount:els.length,interactive:out,
+            formFields:formFields,
             hint:'可交互元素已编号（index 字段），browser_click / browser_type 可直接用 index 参数定位'};
         })()`);
+        // ★ 表单变化差异由主进程算（需跨次调用的快照）：把结果挂到同一返回体上，
+        //   工具层据此渲染「表单状态 + 自上次读取的变化」两段给模型。
+        try {
+          const snapKey = tabId || activeTabId || 'default';
+          r.formChanges = diffFormSnapshot(snapKey, r.url || '', r.formFields);
+        } catch { /* 差异计算失败不影响读页 */ }
+        return r;
       }
       case 'fill_form': {
         // ★★★ B3/B5（2026-10-10）：本实现此前**违背工具契约**三处（服务端都支持）——
@@ -3892,17 +4136,42 @@ async function runBrowserAction(convId, tabId, action, args) {
                 } else if(el.checked){el.click();}
               }
               else{
-                // 文本类：沿用 typeIn（清空→nativeSetter→IME 序列→input→change→回读核验）
-                var r=window.__yzAssistant.typeIn(el,String(f.value==null?'':f.value));
-                if(r&&r.applied===false){failed.push({selector:sel,reason:'值未生效（受控组件未接受）当前值='+r.value});window.__yzAssistant.hideCursor();continue;}
+                // 文本类：先探测 contenteditable 富文本（Slate/ProseMirror 等，nativeSetter 对其无效）——
+                // 走"focus→全选→typeIn"路径：typeIn 内部经 CDP insertText 派发真实编辑事件，
+                // 富文本编辑器认的是 beforeinput/input 事件链而不是 value 属性。
+                // 10-13 实测（抖音编辑页）：作品描述是 contenteditable，旧实现当普通文本框填 →
+                // 表面成功实际没写进 → 模型反复重填（"反复填写一个表单"的机制之一）。
+                if(el.isContentEditable){
+                  try{ el.focus(); }catch(e2){}
+                  var sel2=window.getSelection();
+                  try{ sel2.selectAllChildren(el); }catch(e2){ var rg=document.createRange();rg.selectNodeContents(el);sel2.removeAllRanges();sel2.addRange(rg); }
+                  var r2=window.__yzAssistant.typeIn(el,String(f.value==null?'':f.value));
+                  if(r2&&r2.applied===false){failed.push({selector:sel,reason:'富文本值未生效 当前值='+String(r2.value||'').slice(0,40)});window.__yzAssistant.hideCursor();continue;}
+                }else{
+                  // 普通文本：沿用 typeIn（清空→nativeSetter→IME 序列→input→change→回读核验）
+                  var r=window.__yzAssistant.typeIn(el,String(f.value==null?'':f.value));
+                  if(r&&r.applied===false){failed.push({selector:sel,reason:'值未生效（受控组件未接受）当前值='+r.value});window.__yzAssistant.hideCursor();continue;}
+                }
               }
               filled.push(sel);
             }catch(e){
               failed.push({selector:sel,reason:'填写异常: '+(e&&e.message?e.message:String(e))});
             }
           }
+          // ★ 表单终态回执（2026-10-13）：逐字段回读当前值，模型一次拿到
+          //   "哪个改了/哪个没改/当前值是什么"，不再需要"再读一轮页面猜是否填上"
+          //   （此前 applied 只回答"本次调用写没写进去"，回答不了"表单现在什么状态"，
+          //     截断/乱序的二次读页曾把模型引向重复填写）。
+          var state=[];
+          try{
+            for(var si=0;si<fields.length;si++){
+              var sf=fields[si];var se=window.__yzAssistant.resolve(sf.selector);
+              var sv=se?(se.isContentEditable?String(se.innerText||''):String(se.value==null?'':se.value)):'(元素不存在)';
+              state.push({selector:sf.selector,value:sv.slice(0,60)});
+            }
+          }catch(e2){}
           setTimeout(function(){window.__yzAssistant.hideCursor();},500);
-          return{filled:filled.length,fields:filled,failed:failed};
+          return{filled:filled.length,fields:filled,failed:failed,state:state};
         })()`);
       }
       case 'submit_form': {
@@ -4308,7 +4577,7 @@ async function runBrowserAction(convId, tabId, action, args) {
             // 语法/执行失败时给模型可自纠的提示（否则它只会反复改参数重试）
             hint: _autoWrapped
               ? '脚本已自动包裹为函数执行。若仍失败，请检查语法；要返回数据请直接 return，会在包裹函数内生效。'
-              : '执行失败。若脚本含顶层 return，请包成 (() => { ... })() 或改写为表达式；查询类脚本建议 return JSON 可序列化值。',
+              : '执行失败（页面脚本抛异常，常见于选择器失效：hash class 如 .xxx-N8BqC1 在重渲染后不存在、或目标元素未加载）。不要换同类 hash class 重试——先用 browser_get_page_content 重新定位元素，或改用专用工具（click/type）。若脚本含顶层 return，请包成 (() => { ... })()。',
           };
         }
       }

@@ -2225,6 +2225,13 @@ onMounted(async () => {
         || (scope === 'preview' && browserScope.startsWith('preview'));
       if (!sameScope) return; // 只接管归属自己空间的导航
       if (!url) return;
+      // ★ 同站复用路径（2026-10-13）：主进程检测到已有 tab 在同 host+path 时，
+      //   传来的 tabId 就是**既有 tab** —— 已有壳就切过去导航，没壳才补建。
+      //   （切过去后 openSite 的"当前已在目标页"短路由 switchTab 后的 URL 判断处理。）
+      if (tabId && tabs.value.some(t => t.id === tabId) && tabId !== activeTabId.value) {
+        switchTab(tabId).then(() => openSite(url)).catch(() => openSite(url));
+        return;
+      }
       if (currentUrl.value === url) return;        // 已在目标页，不重复导航
       // ★★★ 主进程指定了目标 tabId —— **必须用这个 id 建壳**（2026-10-10 根因修复）。
       //

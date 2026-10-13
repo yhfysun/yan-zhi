@@ -144,6 +144,9 @@ const route = useRoute();
 const authStore = useAuthStore();
 const settingsStore = useSettingsStore();
 settingsStore.applyDarkMode(settingsStore.settings.darkMode);
+// 低内存模式（B5）：启动即应用（与 applyDarkMode 同点位）—— 设置从磁盘读回是异步的，
+// 但本地缓存里的值此刻已可用；load() 完成后 settings.ts 内还会再应用一次（幂等）。
+settingsStore.applyLiteMode(settingsStore.settings.liteMode);
 const pluginStore = usePluginStore();
 /** 移动外壳判定：视口窄 或 跑在 Capacitor 端（详见 useMobileShell 注释）。
  *  ★ 与下方 isMobilePlatform 的分工：本变量管「用哪套壳」，isMobilePlatform 管

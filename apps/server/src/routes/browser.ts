@@ -122,6 +122,53 @@ function bindConvPage(convId: string | null, page: any): void {
   }
 }
 
+// ============================================================
+// 表单快照与差异（2026-10-13）—— 与桌面链路（main.cjs 同名函数）保持同口径。
+//
+// ★ 为什么要有（会话 253bd3f4 实测）：模型填完字段后无法知道"表单整体现在什么状态"，
+//   只能从上百条可交互元素平铺清单里自己比对当前值（值还常被截断），判错就再填一遍。
+//   读页时直接给出「字段=当前值」+「自上次读取哪些字段变了」，模型才不用猜。
+//   Claude（computer use）每步拿到状态差异，正是它不反复填的关键。
+//
+// ★ 快照绑定 URL：跨页导航后不与上一页比较（否则整页字段都算"变了"，噪声淹没信号）。
+//   键用 `srv:<url>`（服务端这条链路是 pageInstance 单页模型，没有 tabId 概念）。
+// ============================================================
+const lastFormSnapshots = new Map<string, { url: string; fields: Map<string, string> }>();
+
+/** 字段身份键：标签优先，空标签退化到 selector（与桌面链路同规则） */
+function formFieldKey(f: any): string {
+  const label = String((f && f.label) || '').trim();
+  return label || String((f && f.selector) || '');
+}
+
+/** 与上次读取比较，返回值级变化列表；同时更新快照（最多 20 条） */
+function diffFormSnapshot(tabKey: string, url: string, fields: unknown): Array<{ field: string; from: string; to: string; filled: boolean }> {
+  const list = Array.isArray(fields) ? (fields as any[]) : [];
+  const now = new Map<string, string>();
+  for (const f of list) now.set(formFieldKey(f), String(f && f.value != null ? f.value : ''));
+  const prev = lastFormSnapshots.get(tabKey);
+  const changes: Array<{ field: string; from: string; to: string; filled: boolean }> = [];
+  if (prev && prev.url === url) {
+    for (const f of list) {
+      const key = formFieldKey(f);
+      const before = prev.fields.get(key);
+      const after = String(f && f.value != null ? f.value : '');
+      // 只报"上次见过且值变了"的字段：新出现的字段不算变化（SPA 重渲染/懒加载会刷假变化）
+      if (before !== undefined && before !== after) {
+        changes.push({ field: key, from: before.slice(0, 60), to: after.slice(0, 60), filled: !!after });
+      }
+    }
+  }
+  lastFormSnapshots.set(tabKey, { url, fields: now });
+  // 上限兜底：快照按 URL 累积（长时间运行会攒很多页）
+  while (lastFormSnapshots.size > 200) {
+    const oldest = lastFormSnapshots.keys().next().value as string | undefined;
+    if (oldest === undefined) break;
+    lastFormSnapshots.delete(oldest);
+  }
+  return changes.slice(0, 20);
+}
+
 /**
  * ★★★ 解析"本次读取该用哪个 page"（A4 根治的核心判定，抽成**纯函数**便于真跑验证）。
  *
@@ -1450,15 +1497,70 @@ router.post('/action', withBrowserLock(async (req: Request, res: Response) => {
             if (el.tagName === 'INPUT' && (el.type === 'radio' || el.type === 'checkbox')) o.checked = !!el.checked;
             out.push(o);
           }
+          // ── 表单语义段（2026-10-13）：与桌面链路同口径（见 main.cjs 同名分支）。
+          //   回答"表单现在是什么状态"（字段名/类型/必填/当前值）—— 这是模型判断
+          //   "我填的到底生效没有"的判据；只有可交互元素平铺清单时它会误判并重复填写。
+          const FSEL = 'input,textarea,select,[contenteditable="true"]';
+          const fel: any[] = [];
+          const collectFields = (root: any) => {
+            try { for (const el of Array.from(root.querySelectorAll(FSEL)) as any[]) {
+              try { if (el.type === 'hidden' || el.disabled) continue; } catch {}
+              const r = el.getBoundingClientRect();
+              if (!el.isContentEditable && r.width < 2 && r.height < 2) continue;   // 富文本容器可 0 尺寸
+              fel.push(el);
+            } } catch {}
+            try { for (const n of Array.from(root.querySelectorAll('*')) as any[]) {
+              if (n.shadowRoot) collectFields(n.shadowRoot);
+              if (n.tagName === 'IFRAME' || n.tagName === 'FRAME') { try { const cd = n.contentDocument; if (cd && cd.body) collectFields(cd.body); } catch {} }
+            } } catch {}
+          };
+          collectFields(document.documentElement);
+          const fieldLabel = (el: any): string => {
+            let lb = '';
+            try { if (el.placeholder) lb = el.placeholder; } catch {}
+            if (!lb) { try { const al = el.getAttribute && el.getAttribute('aria-label'); if (al) lb = al; } catch {} }
+            if (!lb && el.id) { try { const lf = document.querySelector('label[for="' + el.id + '"]'); if (lf) lb = (lf.textContent || '').trim(); } catch {} }
+            if (!lb) { try { const lp = el.closest && el.closest('label'); if (lp) lb = (lp.textContent || '').trim(); } catch {} }
+            return String(lb || '').replace(/[\s ]+/g, ' ').trim().slice(0, 30);
+          };
+          const fieldValue = (el: any): string => {
+            try {
+              if (el.tagName === 'SELECT') { const o = el.options[el.selectedIndex]; return o ? String(o.textContent || '').trim() : ''; }
+              if (el.isContentEditable) return String(el.innerText || '').trim();
+              if (el.type === 'checkbox' || el.type === 'radio') return el.checked ? '(已选)' : '(未选)';
+              return String(el.value == null ? '' : el.value);
+            } catch { return ''; }
+          };
+          const formFields: any[] = [];
+          for (const fe of fel) {
+            if (formFields.length >= 40) break;
+            const fv = fieldValue(fe);
+            const ml = (fe.maxLength && fe.maxLength > 0) ? fe.maxLength : 0;
+            const o2: any = {
+              index: R.register(fe), selector: R.genSel(fe), label: fieldLabel(fe),
+              kind: fe.isContentEditable ? 'richtext' : (fe.tagName === 'SELECT' ? 'select' : (fe.type || 'text')),
+              value: fv.slice(0, 80), valueLen: fv.length,
+              required: !!(fe.required || (fe.getAttribute && fe.getAttribute('aria-required') === 'true')),
+            };
+            if (ml) o2.maxLength = ml;
+            formFields.push(o2);
+          }
           return {
             url: location.href,
             title: document.title,
             text: visibleText(document.body).trim().slice(0, a.maxText),
             interactiveCount: els.length,
             interactive: out,
+            formFields,
             hint: '可交互元素已编号（index 字段），browser_click / browser_type 可直接用 index 参数定位',
           };
-        }, { maxText, maxInteractive }).catch(() => ({ url: page.url(), title: '', text: '', interactiveCount: 0, interactive: [] }));
+        }, { maxText, maxInteractive }).catch(() => ({ url: page.url(), title: '', text: '', interactiveCount: 0, interactive: [], formFields: [] }));
+        // 表单变化差异（与桌面链路同口径）：按"会话+页面"留快照算值级 diff。
+        // ★ 服务端这条链路没有 tabId 概念（pageInstance 单页），故用 url 作快照键。
+        try {
+          const rAny: any = result;
+          rAny.formChanges = diffFormSnapshot(`srv:${rAny.url || page.url()}`, rAny.url || '', rAny.formFields);
+        } catch { /* 差异计算失败不影响读页 */ }
         recordPageState((result as any).url, (result as any).title);
         break;
       }

@@ -16,56 +16,61 @@
     <!-- 8.1 日期分隔线：相邻轮次日期变化时渲染居中分隔；任一侧无时间戳则跳过该对
          ★ key 必须用轮次锚（用户消息 id）而非下标（2026-10-11）：向前翻页 prepend 时
            下标整体位移 → 全部 key 变化 → Vue 把已渲染的几百条消息 DOM 全量卸载重挂 +
-           滚动位置跳飞。稳定 key 下 prepend 只挂载新翻出的顶部轮次，存量 DOM 原地保留。 -->
-    <template v-for="(round, ri) in messageRounds" :key="round.user?.id || 'r' + ri">
-      <div v-if="dateDividerFor(ri)" class="msg-date-divider">
+           滚动位置跳飞。稳定 key 下 prepend 只挂载新翻出的顶部轮次，存量 DOM 原地保留。
+         ★★ 窗口化渲染（B1，2026-10-13）：v-for 数据源从全量 messageRounds 换成
+           visibleRounds（末尾 ~30 轮起步、滚近顶部懒扩窗）—— 长会话（实测 1024 条消息）
+           打开时 DOM 只挂窗口内轮次，UI 进程省数百 MB、主线程不再被全量渲染压死。
+           (vr.ri, vr.round) 对携带**全量下标**，模板内所有 vr.ri 语义（data-round / 折叠 key /
+           isLastRoundStreaming）不变；ensureRoundVisible 供跳转前扩窗。 -->
+    <template v-for="vr in visibleRounds" :key="vr.round.user?.id || 'r' + vr.ri">
+      <div v-if="dateDividerFor(vr.ri)" class="msg-date-divider">
         <span class="msg-date-divider-line"></span>
-        <span class="msg-date-divider-text">{{ dateDividerFor(ri) }}</span>
+        <span class="msg-date-divider-text">{{ dateDividerFor(vr.ri) }}</span>
         <span class="msg-date-divider-line"></span>
       </div>
-      <div class="round-group" :data-round="ri">
+      <div class="round-group" :data-round="vr.ri">
       <div
-        v-if="round.user"
+        v-if="vr.round.user"
         class="msg msg-user"
-        :class="{ 'is-actions-open': actionsShown(round.user.id) }"
-        v-on="msgLongPressHandlers(round.user.id)"
+        :class="{ 'is-actions-open': actionsShown(vr.round.user.id) }"
+        v-on="msgLongPressHandlers(vr.round.user.id)"
       >
         <!-- 8.1 双头像身份：用户头像 = 角色名首字符（accent 底，样式见 chat.css .avatar-user） -->
         <div class="msg-avatar avatar-user">你</div>
         <div class="msg-body">
           <div class="msg-meta">
             <span class="msg-role-name">你</span>
-            <span v-if="round.user.createdAt" class="msg-time">{{ formatTime(round.user.createdAt) }}</span>
+            <span v-if="vr.round.user.createdAt" class="msg-time">{{ formatTime(vr.round.user.createdAt) }}</span>
           </div>
           <div
-            v-if="round.user.content"
+            v-if="vr.round.user.content"
             class="msg-block"
-            :class="{ 'msg-collapsed': collapsedMessages[round.user.id] }"
-            @click="collapsedMessages[round.user.id] ? toggleMsgCollapse(round.user.id) : null"
+            :class="{ 'msg-collapsed': collapsedMessages[vr.round.user.id] }"
+            @click="collapsedMessages[vr.round.user.id] ? toggleMsgCollapse(vr.round.user.id) : null"
           >
-            <div v-show="!collapsedMessages[round.user.id]">
-              <div v-if="round.user.content" class="msg-content" v-html="renderMarkdown(round.user.content)" @click="handleContentClick" @dblclick="handleContentDblClick" @contextmenu="handleContentContextMenu"></div>
+            <div v-show="!collapsedMessages[vr.round.user.id]">
+              <div v-if="vr.round.user.content" class="msg-content" v-html="renderMarkdown(vr.round.user.content)" @click="handleContentClick" @dblclick="handleContentDblClick" @contextmenu="handleContentContextMenu"></div>
             </div>
-            <div v-show="collapsedMessages[round.user.id]" class="msg-collapsed-placeholder">
-              <span class="collapsed-line">{{ (round.user.content || '').replace(/\n/g, ' ').slice(0, 120) }}</span>
+            <div v-show="collapsedMessages[vr.round.user.id]" class="msg-collapsed-placeholder">
+              <span class="collapsed-line">{{ (vr.round.user.content || '').replace(/\n/g, ' ').slice(0, 120) }}</span>
               <span class="collapsed-hint">点击展开</span>
             </div>
           </div>
-          <div class="msg-actions" :class="{ 'is-open': actionsShown(round.user.id) }">
-            <el-tooltip content="复制" placement="top"><el-button text size="small" circle @click="copyMsg(round.user)"><el-icon><CopyDocument /></el-icon></el-button></el-tooltip>
-            <el-tooltip content="引用" placement="top"><el-button text size="small" circle @click="quoteMsg(round.user)"><el-icon><Link /></el-icon></el-button></el-tooltip>
-            <el-tooltip content="编辑" placement="top"><el-button text size="small" circle @click="editMsg(round.user)"><el-icon><EditPen /></el-icon></el-button></el-tooltip>
-            <el-tooltip content="蒸馏为 Skill" placement="top"><el-button text size="small" circle @click="distillUserMsg(round.user)"><el-icon><Files /></el-icon></el-button></el-tooltip>
-            <el-tooltip content="删除" placement="top"><el-button text size="small" circle @click="delMsg(round.user)"><el-icon><Delete /></el-icon></el-button></el-tooltip>
-            <el-tooltip content="查看提示词" placement="top"><el-button text size="small" circle @click="openSnapshotDialog(round.user)"><el-icon><View /></el-icon></el-button></el-tooltip>
+          <div class="msg-actions" :class="{ 'is-open': actionsShown(vr.round.user.id) }">
+            <el-tooltip content="复制" placement="top"><el-button text size="small" circle @click="copyMsg(vr.round.user)"><el-icon><CopyDocument /></el-icon></el-button></el-tooltip>
+            <el-tooltip content="引用" placement="top"><el-button text size="small" circle @click="quoteMsg(vr.round.user)"><el-icon><Link /></el-icon></el-button></el-tooltip>
+            <el-tooltip content="编辑" placement="top"><el-button text size="small" circle @click="editMsg(vr.round.user)"><el-icon><EditPen /></el-icon></el-button></el-tooltip>
+            <el-tooltip content="蒸馏为 Skill" placement="top"><el-button text size="small" circle @click="distillUserMsg(vr.round.user)"><el-icon><Files /></el-icon></el-button></el-tooltip>
+            <el-tooltip content="删除" placement="top"><el-button text size="small" circle @click="delMsg(vr.round.user)"><el-icon><Delete /></el-icon></el-button></el-tooltip>
+            <el-tooltip content="查看提示词" placement="top"><el-button text size="small" circle @click="openSnapshotDialog(vr.round.user)"><el-icon><View /></el-icon></el-button></el-tooltip>
           </div>
         </div>
       </div>
 
       <!-- 上下文压缩标记（2026-10-02）：压缩是**有损**的（前文被摘要替换），不该完全隐形 -->
       <div
-        v-for="(cm, ci) in (round.compactMarkers || [])"
-        :key="'compact-' + ri + '-' + ci"
+        v-for="(cm, ci) in (vr.round.compactMarkers || [])"
+        :key="'compact-' + vr.ri + '-' + ci"
         class="compact-marker"
       >
         <span class="compact-marker-line"></span>
@@ -75,40 +80,40 @@
         <span class="compact-marker-line"></span>
       </div>
 
-      <div v-if="round.finalAssistant || round.steps.length > 0 || isLastRoundStreaming(round, ri)" class="msg msg-assistant" :class="{ 'is-actions-open': actionsShown(round.finalAssistant?.id || '') }" v-on="msgLongPressHandlers(round.finalAssistant?.id || '')">
+      <div v-if="vr.round.finalAssistant || vr.round.steps.length > 0 || isLastRoundStreaming(vr.round, vr.ri)" class="msg msg-assistant" :class="{ 'is-actions-open': actionsShown(vr.round.finalAssistant?.id || '') }" v-on="msgLongPressHandlers(vr.round.finalAssistant?.id || '')">
         <!-- 8.1 双头像身份：AI 头像 = 当前智能体名首字符（无则 🤖），桌面端显示（窄栏由 CSS 收起） -->
-        <div class="msg-avatar avatar-assistant" :class="{ streaming: isLastRoundStreaming(round, ri) }">{{ assistantAvatarChar }}</div>
+        <div class="msg-avatar avatar-assistant" :class="{ streaming: isLastRoundStreaming(vr.round, vr.ri) }">{{ assistantAvatarChar }}</div>
         <div class="msg-body">
-          <div class="agent-response-card" :class="{ 'msg-collapsed': collapsedMessages[round.finalAssistant?.id || ''] }" @click="collapsedMessages[round.finalAssistant?.id || ''] ? toggleMsgCollapse(round.finalAssistant?.id || '') : null">
-            <div v-show="collapsedMessages[round.finalAssistant?.id || '']" class="msg-collapsed-placeholder">
-              <span class="collapsed-line">{{ (round.finalAssistant?.content || '').replace(/\[\[PLATFORM_CONFIG:[^\]]*\]\]/g, '').split('@@REASON@@')[0].replace(/\n/g, ' ').trim().slice(0, 120) }}</span>
+          <div class="agent-response-card" :class="{ 'msg-collapsed': collapsedMessages[vr.round.finalAssistant?.id || ''] }" @click="collapsedMessages[vr.round.finalAssistant?.id || ''] ? toggleMsgCollapse(vr.round.finalAssistant?.id || '') : null">
+            <div v-show="collapsedMessages[vr.round.finalAssistant?.id || '']" class="msg-collapsed-placeholder">
+              <span class="collapsed-line">{{ (vr.round.finalAssistant?.content || '').replace(/\[\[PLATFORM_CONFIG:[^\]]*\]\]/g, '').split('@@REASON@@')[0].replace(/\n/g, ' ').trim().slice(0, 120) }}</span>
               <span class="collapsed-hint">点击展开</span>
             </div>
-            <div v-show="!collapsedMessages[round.finalAssistant?.id || '']">
-              <div v-if="round.hasAgentProcess" class="agent-process-header" @click="toggleAgentProcess('round-' + ri)">
+            <div v-show="!collapsedMessages[vr.round.finalAssistant?.id || '']">
+              <div v-if="vr.round.hasAgentProcess" class="agent-process-header" @click="toggleAgentProcess('vr.round-' + vr.ri)">
                 <el-icon :size="14" class="agent-process-icon">
-                  <CaretRight v-if="!isProcessOpen(round, ri)" />
+                  <CaretRight v-if="!isProcessOpen(vr.round, vr.ri)" />
                   <CaretBottom v-else />
                 </el-icon>
                 <span>智能体思考过程</span>
-                <span class="agent-process-stats">({{ round.agentStats?.reasoningCount || 0 }} 次推理，{{ round.agentStats?.toolCallCount || 0 }} 个工具调用)</span>
+                <span class="agent-process-stats">({{ vr.round.agentStats?.reasoningCount || 0 }} 次推理，{{ vr.round.agentStats?.toolCallCount || 0 }} 个工具调用)</span>
                 <el-icon :size="12" class="agent-process-chevron">
-                  <ArrowDown v-if="isProcessOpen(round, ri)" />
+                  <ArrowDown v-if="isProcessOpen(vr.round, vr.ri)" />
                   <ArrowRight v-else />
                 </el-icon>
               </div>
-              <div v-if="round.hasAgentProcess" v-show="isProcessOpen(round, ri)" class="agent-process-steps">
-                <div v-for="(step, si) in round.steps" :key="'agent-step-' + ri + '-' + si" class="agent-step">
+              <div v-if="vr.round.hasAgentProcess" v-show="isProcessOpen(vr.round, vr.ri)" class="agent-process-steps">
+                <div v-for="(step, si) in vr.round.steps" :key="'agent-step-' + vr.ri + '-' + si" class="agent-step">
                   <div v-if="step.reasoningContent" class="msg-reasoning">
-                    <div class="reasoning-header" @click="toggleReasoning('agent-step-' + ri + '-' + si)">
-                      <el-icon><CaretRight v-if="!expandedReasoning['agent-step-' + ri + '-' + si]" /><CaretBottom v-else /></el-icon>
+                    <div class="reasoning-header" @click="toggleReasoning('agent-step-' + vr.ri + '-' + si)">
+                      <el-icon><CaretRight v-if="!expandedReasoning['agent-step-' + vr.ri + '-' + si]" /><CaretBottom v-else /></el-icon>
                       <span>推理 {{ si + 1 }}</span>
                     </div>
-                    <div v-show="expandedReasoning['agent-step-' + ri + '-' + si]" class="reasoning-body">{{ step.reasoningContent }}</div>
+                    <div v-show="expandedReasoning['agent-step-' + vr.ri + '-' + si]" class="reasoning-body">{{ step.reasoningContent }}</div>
                   </div>
                   <div v-if="step.partialContent" class="agent-step-partial" v-html="renderMarkdown(step.partialContent)" @click="handleContentClick"></div>
                   <div v-if="step.toolCalls.length" class="msg-reasoning" style="background:rgba(15,23,42,0.03);border-color:rgba(15,23,42,0.08)">
-                    <div class="reasoning-header" @click="toggleStepTools('agent-step-' + ri + '-' + si)" style="color:var(--color-text-secondary)">
+                    <div class="reasoning-header" @click="toggleStepTools('agent-step-' + vr.ri + '-' + si)" style="color:var(--color-text-secondary)">
                       <el-icon :size="14" class="tool-group-dot" :class="getStepToolGroupClass(step)">
                         <Loading v-if="isStepToolsRunning(step)" class="is-loading" />
                         <CircleCheck v-else-if="!isStepToolsError(step)" />
@@ -116,13 +121,13 @@
                       </el-icon>
                       <span>调用 {{ step.toolCalls.length }} 个工具</span>
                       <el-icon :size="12" style="margin-left:auto;color:var(--color-text-secondary)">
-                        <ArrowDown v-if="expandedStepTools['agent-step-' + ri + '-' + si] !== false" />
+                        <ArrowDown v-if="expandedStepTools['agent-step-' + vr.ri + '-' + si] !== false" />
                         <ArrowRight v-else />
                       </el-icon>
                     </div>
-                    <div v-show="expandedStepTools['agent-step-' + ri + '-' + si] !== false" class="tool-group-body" style="margin-top:6px;border-top:1px solid rgba(15,23,42,0.06);padding-top:6px">
+                    <div v-show="expandedStepTools['agent-step-' + vr.ri + '-' + si] !== false" class="tool-group-body" style="margin-top:6px;border-top:1px solid rgba(15,23,42,0.06);padding-top:6px">
                       <div v-for="(tc, idx) in step.toolCalls" :key="idx" class="tool-item">
-                        <div class="tool-item-header" @click="toggleTool('agent-step-' + ri + '-' + si + '-' + idx)">
+                        <div class="tool-item-header" @click="toggleTool('agent-step-' + vr.ri + '-' + si + '-' + idx)">
                           <div class="tool-item-left">
                             <el-icon :size="12" class="tool-item-status" :class="getStepToolStatusClass(step, tc.id)">
                               <CircleCheck v-if="getStepToolResult(step, tc.id) && !isStepToolError(step, tc.id)" />
@@ -134,19 +139,19 @@
                             <span v-if="toolTargetHint(tc)" class="tool-item-target" :title="toolTargetHint(tc)">{{ toolTargetHint(tc) }}</span>
                           </div>
                           <el-icon :size="12" class="tool-item-chevron">
-                            <ArrowDown v-if="isToolItemOpen(tc.id, 'agent-step-' + ri + '-' + si + '-' + idx)" />
+                            <ArrowDown v-if="isToolItemOpen(tc.id, 'agent-step-' + vr.ri + '-' + si + '-' + idx)" />
                             <ArrowRight v-else />
                           </el-icon>
                         </div>
                         <!-- 截图类工具（computer_screenshot 等）：流式期间在工具卡片下内嵌展示画面，任务结束自动移除 -->
-                        <div v-if="isRoundLive(round, ri) && resolveScreenshotUrl(getStepToolResult(step, tc.id))" class="tool-item-shot">
+                        <div v-if="isRoundLive(vr.round, vr.ri) && resolveScreenshotUrl(getStepToolResult(step, tc.id))" class="tool-item-shot">
                           <img :src="resolveScreenshotUrl(getStepToolResult(step, tc.id)) || ''" alt="屏幕截图" />
                           <span class="tool-item-shot-note">截图预览 · 仅流式期间展示，结束后自动清理</span>
                         </div>
                         <!-- 本条调用产出的图片 / 视频：贴在工具卡片上（折叠体之外）—— 展开状态无关，收起也能看到。
                              展开体里再放一份会重复，故只此一处；hover 浮层放大、双击进灯箱、右键取用。 -->
                         <ToolMediaPreview v-if="toolMedia(getStepToolResult(step, tc.id))" :media="toolMedia(getStepToolResult(step, tc.id))!" class="tool-item-media-inline" />
-                        <div v-show="isToolItemOpen(tc.id, 'agent-step-' + ri + '-' + si + '-' + idx)" class="tool-item-body">
+                        <div v-show="isToolItemOpen(tc.id, 'agent-step-' + vr.ri + '-' + si + '-' + idx)" class="tool-item-body">
                           <div class="tool-item-section">
                             <div class="tool-item-label">参数</div>
                             <pre class="tool-item-json">{{ resolveToolArgs(tc) }}</pre>
@@ -168,30 +173,30 @@
                           <SubAgentRoundView
                             v-if="resolveToolDisplay(tc).tool === 'call_agent' && step.subAgentRounds?.find(r => r.toolCallId === tc.id)"
                             :round="step.subAgentRounds!.find(r => r.toolCallId === tc.id)!"
-                            :id-prefix="'sub-' + ri + '-' + si + '-' + idx"
+                            :id-prefix="'sub-' + vr.ri + '-' + si + '-' + idx"
                           />
                         </div>
                       </div>
                     </div>
                   </div>
                 </div>
-                <div v-if="!round.steps.length && round.allToolCalls.length" class="agent-old-tools">
+                <div v-if="!vr.round.steps.length && vr.round.allToolCalls.length" class="agent-old-tools">
                   <div class="msg-reasoning">
-                    <div class="reasoning-header" @click="toggleToolGroup('round-' + ri)">
-                      <el-icon :size="14" class="tool-group-dot" :class="getToolGroupStatusClass(null, round.allToolCalls)">
-                        <Loading v-if="isToolGroupRunning(round.allToolCalls)" class="is-loading" />
-                        <CircleCheck v-else-if="!isToolGroupError(round.allToolCalls)" />
+                    <div class="reasoning-header" @click="toggleToolGroup('vr.round-' + vr.ri)">
+                      <el-icon :size="14" class="tool-group-dot" :class="getToolGroupStatusClass(null, vr.round.allToolCalls)">
+                        <Loading v-if="isToolGroupRunning(vr.round.allToolCalls)" class="is-loading" />
+                        <CircleCheck v-else-if="!isToolGroupError(vr.round.allToolCalls)" />
                         <CircleClose v-else />
                       </el-icon>
-                      <span>工具调用 ({{ round.allToolCalls.length }})</span>
+                      <span>工具调用 ({{ vr.round.allToolCalls.length }})</span>
                       <el-icon :size="12" style="margin-left:auto;color:var(--color-text-secondary)">
-                        <ArrowDown v-if="!expandedToolGroups['round-' + ri]" />
+                        <ArrowDown v-if="!expandedToolGroups['vr.round-' + vr.ri]" />
                         <ArrowRight v-else />
                       </el-icon>
                     </div>
-                    <div v-show="!expandedToolGroups['round-' + ri]" class="tool-group-body" style="margin-top:6px;border-top:1px dashed color-mix(in srgb, var(--color-primary) 12%, transparent);padding-top:6px">
-                      <div v-for="(tc, idx) in round.allToolCalls" :key="idx" class="tool-item">
-                        <div class="tool-item-header" @click="toggleTool('round-' + ri + '-' + idx)">
+                    <div v-show="!expandedToolGroups['vr.round-' + vr.ri]" class="tool-group-body" style="margin-top:6px;border-top:1px dashed color-mix(in srgb, var(--color-primary) 12%, transparent);padding-top:6px">
+                      <div v-for="(tc, idx) in vr.round.allToolCalls" :key="idx" class="tool-item">
+                        <div class="tool-item-header" @click="toggleTool('vr.round-' + vr.ri + '-' + idx)">
                           <div class="tool-item-left">
                             <el-icon :size="12" class="tool-item-status" :class="getToolStatusClass(tc.id)">
                               <CircleCheck v-if="getToolResult(tc.id) && !isToolError(tc.id)" />
@@ -203,13 +208,13 @@
                             <span v-if="toolTargetHint(tc)" class="tool-item-target" :title="toolTargetHint(tc)">{{ toolTargetHint(tc) }}</span>
                           </div>
                           <el-icon :size="12" class="tool-item-chevron">
-                            <ArrowDown v-if="expandedTools['round-' + ri + '-' + idx]" />
+                            <ArrowDown v-if="expandedTools['vr.round-' + vr.ri + '-' + idx]" />
                             <ArrowRight v-else />
                           </el-icon>
                         </div>
                         <!-- 本条调用产出的图片 / 视频：贴在工具卡片上（折叠体之外）—— 展开状态无关，收起也能看到 -->
                           <ToolMediaPreview v-if="toolMedia(getToolResult(tc.id))" :media="toolMedia(getToolResult(tc.id))!" class="tool-item-media-inline" />
-                          <div v-show="expandedTools['round-' + ri + '-' + idx]" class="tool-item-body">
+                          <div v-show="expandedTools['vr.round-' + vr.ri + '-' + idx]" class="tool-item-body">
                           <div class="tool-item-section">
                             <div class="tool-item-label">参数</div>
                             <pre class="tool-item-json">{{ resolveToolArgs(tc) }}</pre>
@@ -233,9 +238,9 @@
                 </div>
               </div>
               <div class="agent-response-body">
-                <template v-if="round.subAgentResults?.length">
-                  <div v-for="(sr, sri) in round.subAgentResults" :key="'sar-' + ri + '-' + sri" class="sub-agent-result" :data-card-variant="(ri + sri) % 4">
-                    <div class="sub-agent-result-head" @click="toggleSubAgentResult('sar-' + ri + '-' + sri)">
+                <template v-if="vr.round.subAgentResults?.length">
+                  <div v-for="(sr, sri) in vr.round.subAgentResults" :key="'sar-' + vr.ri + '-' + sri" class="sub-agent-result" :data-card-variant="(vr.ri + sri) % 4">
+                    <div class="sub-agent-result-head" @click="toggleSubAgentResult('sar-' + vr.ri + '-' + sri)">
                       <el-icon :size="13" class="sub-agent-result-icon"><ChatDotRound /></el-icon>
                       <span class="sub-agent-result-name">{{ sr.subAgentName }}</span>
                       <span class="sub-agent-result-tag">结果</span>
@@ -243,61 +248,61 @@
                         <el-tooltip content="复制 Markdown" placement="top"><el-button text size="small" circle @click="copySubAgentResultMd(sr)"><el-icon><CopyDocument /></el-icon></el-button></el-tooltip>
                         <el-tooltip content="下载为 .md 文件" placement="top"><el-button text size="small" circle @click="downloadSubAgentResultMd(sr, sri)"><el-icon><Download /></el-icon></el-button></el-tooltip>
                       </span>
-                      <el-icon :size="12" class="sub-agent-result-chevron"><ArrowDown v-if="!collapsedSubAgentResults['sar-' + ri + '-' + sri]" /><ArrowRight v-else /></el-icon>
+                      <el-icon :size="12" class="sub-agent-result-chevron"><ArrowDown v-if="!collapsedSubAgentResults['sar-' + vr.ri + '-' + sri]" /><ArrowRight v-else /></el-icon>
                     </div>
-                    <div v-show="!collapsedSubAgentResults['sar-' + ri + '-' + sri]" class="sub-agent-result-content" v-html="renderMarkdown(sr.finalContent)" @click="handleContentClick" @dblclick="handleContentDblClick" @contextmenu="handleContentContextMenu"></div>
+                    <div v-show="!collapsedSubAgentResults['sar-' + vr.ri + '-' + sri]" class="sub-agent-result-content" v-html="renderMarkdown(sr.finalContent)" @click="handleContentClick" @dblclick="handleContentDblClick" @contextmenu="handleContentContextMenu"></div>
                   </div>
                 </template>
-                <div v-if="hasMainResult(round, ri)" class="main-agent-result" :data-card-variant="ri % 4">
-                  <div class="main-agent-result-head" @click="toggleMainResult('mar-' + ri)">
+                <div v-if="hasMainResult(vr.round, vr.ri)" class="main-agent-result" :data-card-variant="vr.ri % 4">
+                  <div class="main-agent-result-head" @click="toggleMainResult('mar-' + vr.ri)">
                     <el-icon :size="13" class="main-agent-result-icon"><ChatDotRound /></el-icon>
                     <span class="main-agent-result-name">任务结果</span>
                     <span class="main-agent-result-tag">主智能体</span>
                     <span class="main-agent-result-actions" @click.stop>
-                      <el-tooltip content="复制 Markdown" placement="top"><el-button text size="small" circle @click="copyAssistantMd(round)"><el-icon><CopyDocument /></el-icon></el-button></el-tooltip>
-                      <el-tooltip content="下载为 .md 文件" placement="top"><el-button text size="small" circle @click="downloadAssistantMd(round)"><el-icon><Download /></el-icon></el-button></el-tooltip>
-                      <el-tooltip content="导出 Word" placement="top"><el-button text size="small" circle @click="exportAssistantDocx(round)"><el-icon><Document /></el-icon></el-button></el-tooltip>
+                      <el-tooltip content="复制 Markdown" placement="top"><el-button text size="small" circle @click="copyAssistantMd(vr.round)"><el-icon><CopyDocument /></el-icon></el-button></el-tooltip>
+                      <el-tooltip content="下载为 .md 文件" placement="top"><el-button text size="small" circle @click="downloadAssistantMd(vr.round)"><el-icon><Download /></el-icon></el-button></el-tooltip>
+                      <el-tooltip content="导出 Word" placement="top"><el-button text size="small" circle @click="exportAssistantDocx(vr.round)"><el-icon><Document /></el-icon></el-button></el-tooltip>
                     </span>
-                    <el-icon :size="12" class="main-agent-result-chevron"><ArrowDown v-if="!collapsedMainResults['mar-' + ri]" /><ArrowRight v-else /></el-icon>
+                    <el-icon :size="12" class="main-agent-result-chevron"><ArrowDown v-if="!collapsedMainResults['mar-' + vr.ri]" /><ArrowRight v-else /></el-icon>
                   </div>
-                  <div v-show="!collapsedMainResults['mar-' + ri]" class="main-agent-result-content">
-                    <div v-if="round.finalAssistant?.reasoningContent && !round.hasAgentProcess" class="msg-reasoning" :data-card-variant="(ri + 1) % 4">
-                      <div class="reasoning-header" @click="toggleReasoning('agent-fa-' + ri)">
-                        <el-icon><CaretRight v-if="!expandedReasoning['agent-fa-' + ri]" /><CaretBottom v-else /></el-icon>
+                  <div v-show="!collapsedMainResults['mar-' + vr.ri]" class="main-agent-result-content">
+                    <div v-if="vr.round.finalAssistant?.reasoningContent && !vr.round.hasAgentProcess" class="msg-reasoning" :data-card-variant="(vr.ri + 1) % 4">
+                      <div class="reasoning-header" @click="toggleReasoning('agent-fa-' + vr.ri)">
+                        <el-icon><CaretRight v-if="!expandedReasoning['agent-fa-' + vr.ri]" /><CaretBottom v-else /></el-icon>
                         <span>思考过程</span>
                       </div>
-                      <div v-show="expandedReasoning['agent-fa-' + ri]" class="reasoning-body">{{ round.finalAssistant.reasoningContent }}</div>
+                      <div v-show="expandedReasoning['agent-fa-' + vr.ri]" class="reasoning-body">{{ vr.round.finalAssistant.reasoningContent }}</div>
                     </div>
-                    <template v-if="round.finalAssistant?.content">
-                      <div class="msg-content" v-html="renderAssistantMarkdown(round.finalAssistant.content)" @click="handleContentClick" @dblclick="handleContentDblClick" @contextmenu="handleContentContextMenu"></div>
+                    <template v-if="vr.round.finalAssistant?.content">
+                      <div class="msg-content" v-html="renderAssistantMarkdown(vr.round.finalAssistant.content)" @click="handleContentClick" @dblclick="handleContentDblClick" @contextmenu="handleContentContextMenu"></div>
                       <PlatformConfigCard
-                        v-if="parseConfigCard(round.finalAssistant.content)"
-                        :mode="parseConfigCard(round.finalAssistant.content)!.mode"
-                        :platform="getEditPlatform(round.finalAssistant.content)"
-                        :reason="getEditReason(round.finalAssistant.content)"
+                        v-if="parseConfigCard(vr.round.finalAssistant.content)"
+                        :mode="parseConfigCard(vr.round.finalAssistant.content)!.mode"
+                        :platform="getEditPlatform(vr.round.finalAssistant.content)"
+                        :reason="getEditReason(vr.round.finalAssistant.content)"
                         class="msg-config-card"
                         @saved="onConfigSaved"
                       />
                       <!-- 动态看板（数据浏览）：模型 data_query_view 产契约后内嵌到当前助手消息，嵌套在聊天流程里 -->
                       <div
-                        v-if="round.finalAssistant?.dataView"
+                        v-if="vr.round.finalAssistant?.dataView"
                         class="msg-inline-dataview"
                       >
                         <div class="dataview-title">
                           <el-icon><Grid /></el-icon>
-                          <span>{{ round.finalAssistant.dataView.title || '数据明细' }}</span>
+                          <span>{{ vr.round.finalAssistant.dataView.title || '数据明细' }}</span>
                           <span class="dataview-tag">可交互数据看板</span>
                         </div>
-                        <DataQueryWorkbench :key="round.finalAssistant.id + '-dv'" :contract="round.finalAssistant.dataView" />
+                        <DataQueryWorkbench :key="vr.round.finalAssistant.id + '-dv'" :contract="vr.round.finalAssistant.dataView" />
                       </div>
                     </template>
-                    <template v-else-if="isLastRoundStreaming(round, ri)">
+                    <template v-else-if="isLastRoundStreaming(vr.round, vr.ri)">
                       <!-- 有实时正文：跑马灯式流式显示 + 末尾闪烁光标 -->
-                      <div v-if="getStreamingText(round, ri)" class="msg-content streaming-content" v-html="renderStreamingContent(getStreamingText(round, ri))" @click="handleContentClick" @dblclick="handleContentDblClick" @contextmenu="handleContentContextMenu"></div>
+                      <div v-if="getStreamingText(vr.round, vr.ri)" class="msg-content streaming-content" v-html="renderStreamingContent(getStreamingText(vr.round, vr.ri))" @click="handleContentClick" @dblclick="handleContentDblClick" @contextmenu="handleContentContextMenu"></div>
                       <!-- 有思考但无正文：显示正在思考 + 实时思考内容 -->
-                      <div v-else-if="getStreamingReasoning(round, ri)" class="msg-reasoning streaming-reasoning">
+                      <div v-else-if="getStreamingReasoning(vr.round, vr.ri)" class="msg-reasoning streaming-reasoning">
                         <div class="reasoning-header"><span>正在思考…</span></div>
-                        <div class="reasoning-body">{{ getStreamingReasoning(round, ri) }}</div>
+                        <div class="reasoning-body">{{ getStreamingReasoning(vr.round, vr.ri) }}</div>
                       </div>
                       <!-- 刚开始无任何内容：三点初始态 -->
                       <div v-else class="msg-content streaming">
@@ -310,8 +315,8 @@
                      生图/生视频由服务端直接落交付目录并登记，这里按消息 id 命中展示。
                      放在整轮末尾（而非原「任务结果」卡片正文内）——正文为空时也要能看到交付物。 -->
                 <DeliverableFileCard
-                  v-if="getRoundDeliverableFiles(round).length"
-                  :files="getRoundDeliverableFiles(round)"
+                  v-if="getRoundDeliverableFiles(vr.round).length"
+                  :files="getRoundDeliverableFiles(vr.round)"
                   class="msg-deliverable-card"
                 />
               </div>
@@ -320,15 +325,15 @@
           </div>
 
 
-          <div class="msg-actions msg-actions-assistant" :class="{ 'is-open': actionsShown(round.finalAssistant?.id || '') }">
-            <el-tooltip content="复制 Markdown" placement="top"><el-button text size="small" circle @click="copyAssistantMd(round)"><el-icon><CopyDocument /></el-icon></el-button></el-tooltip>
-            <el-tooltip content="下载为 .md 文件" placement="top"><el-button text size="small" circle @click="downloadAssistantMd(round)"><el-icon><Download /></el-icon></el-button></el-tooltip>
-            <el-tooltip content="导出 Word" placement="top"><el-button text size="small" circle @click="exportAssistantDocx(round)"><el-icon><Document /></el-icon></el-button></el-tooltip>
-            <el-tooltip content="引用" placement="top"><el-button text size="small" circle @click="quoteMsg(round.finalAssistant!)"><el-icon><Link /></el-icon></el-button></el-tooltip>
+          <div class="msg-actions msg-actions-assistant" :class="{ 'is-open': actionsShown(vr.round.finalAssistant?.id || '') }">
+            <el-tooltip content="复制 Markdown" placement="top"><el-button text size="small" circle @click="copyAssistantMd(vr.round)"><el-icon><CopyDocument /></el-icon></el-button></el-tooltip>
+            <el-tooltip content="下载为 .md 文件" placement="top"><el-button text size="small" circle @click="downloadAssistantMd(vr.round)"><el-icon><Download /></el-icon></el-button></el-tooltip>
+            <el-tooltip content="导出 Word" placement="top"><el-button text size="small" circle @click="exportAssistantDocx(vr.round)"><el-icon><Document /></el-icon></el-button></el-tooltip>
+            <el-tooltip content="引用" placement="top"><el-button text size="small" circle @click="quoteMsg(vr.round.finalAssistant!)"><el-icon><Link /></el-icon></el-button></el-tooltip>
             <el-tooltip content="重新生成" placement="top"><el-button text size="small" circle :disabled="store.streaming" @click="regenerateMsg"><el-icon><Refresh /></el-icon></el-button></el-tooltip>
-            <el-tooltip content="蒸馏为 Skill" placement="top"><el-button text size="small" circle @click="distillAssistantMsg(round)"><el-icon><Files /></el-icon></el-button></el-tooltip>
-            <el-tooltip content="删除" placement="top"><el-button text size="small" circle @click="delMsg(round.finalAssistant!)"><el-icon><Delete /></el-icon></el-button></el-tooltip>
-            <el-tooltip content="折叠" placement="top"><el-button text size="small" circle @click.stop="toggleMsgCollapse(round.finalAssistant!.id)"><el-icon><Fold /></el-icon></el-button></el-tooltip>
+            <el-tooltip content="蒸馏为 Skill" placement="top"><el-button text size="small" circle @click="distillAssistantMsg(vr.round)"><el-icon><Files /></el-icon></el-button></el-tooltip>
+            <el-tooltip content="删除" placement="top"><el-button text size="small" circle @click="delMsg(vr.round.finalAssistant!)"><el-icon><Delete /></el-icon></el-button></el-tooltip>
+            <el-tooltip content="折叠" placement="top"><el-button text size="small" circle @click.stop="toggleMsgCollapse(vr.round.finalAssistant!.id)"><el-icon><Fold /></el-icon></el-button></el-tooltip>
           </div>
         </div>
       </div>
@@ -558,7 +563,7 @@ import ChatFileChangeCard from './ChatFileChangeCard.vue';
 import { exportMarkdownDocx, absoluteMediaSrc, mediaOfTool, type MediaTarget } from '../../composables/useMediaPreview';
 
 const {
-  store, platformStore, fileStore, messagesRef, messageRounds, formatTime, collapsedMessages, toggleMsgCollapse,
+  store, platformStore, fileStore, messagesRef, messageRounds, visibleRounds, ensureRoundVisible, formatTime, collapsedMessages, toggleMsgCollapse,
   renderMarkdown, renderAssistantMarkdown, handleContentClick, handleContentDblClick, handleContentContextMenu,
   copyMsg, editMsg, quoteMsg, distillUserMsg, delMsg,
   openSnapshotDialog, isLastRoundStreaming, getStreamingStep, parseConfigCard, getEditPlatform,
@@ -599,7 +604,15 @@ function onHistorySentinelIntersect(entries: IntersectionObserverEntry[]) {
   if (historyLoadingMore.value) return;
   const convId = store.currentConvId;
   if (!convId) return;
-  void store.loadMoreHistory(convId).then(() => preserveScrollOnPrepend(convId));
+  // ★ 窗口化渲染（B1）：用户滚到顶 = 明确要看更早的内容 —— 先把窗口撑到最早，
+  //   让 loadMoreHistory 翻出的轮次**真的进入 DOM**。不这么做会出现两个坏结果：
+  //   ① 翻了页 DOM 高度不变 → 哨兵仍可见 → 连环翻页（把历史一次性拉光）；
+  //   ② 用户以为"没反应"。撑开只影响"用户主动上滚"的场景，会话初次打开仍是末尾 30 轮。
+  ensureRoundVisible(0);
+  void store.loadMoreHistory(convId).then(() => {
+    ensureRoundVisible(0);          // prepend 后新一轮成为第 0 轮 → 窗口随之再撑开
+    return preserveScrollOnPrepend(convId);
+  });
 }
 
 /**
@@ -686,6 +699,9 @@ function dateDividerFor(ri: number): string {
     const prevTs = rounds[ri - 1]?.user?.createdAt || 0;
     if (!prevTs || sameDay(prevTs, ts)) return '';
   }
+  // ★ 窗口化渲染：窗口内第一个轮次没有"前一轮"可比较（前一轮在窗外未渲染），
+  //   但它可能是换日的第一天 —— 该显示分隔线。用全量数组的前一轮判断即可，
+  //   前一轮在窗外时 rounds[ri-1] 仍存在（数据在，只是没渲染），逻辑天然正确。
   return formatDayLabel(ts);
 }
 

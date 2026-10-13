@@ -42,7 +42,7 @@
         :key="grp.id"
         class="tls-group"
       >
-        <div class="tls-group-head" @click="toggleGroup(grp.id)">
+        <div class="tls-group-head" @click="toggleGroup(grp.id)" @dblclick="onGroupDblClick(grp.id)">
           <el-icon class="tls-caret" :class="{ expanded: !collapsed[grp.id] }"><CaretRight /></el-icon>
           <el-icon class="tls-group-icon"><component :is="grp.icon" /></el-icon>
           <span class="tls-group-label" :title="grp.title">{{ grp.title }}</span>
@@ -277,7 +277,7 @@ const {
   batchMode, selectedConvIds, renamingId, renamingTitle,
   openTreeMenu, treeMenu, treeMenuNewTask, treeMenuNewSpace, closeTreeMenu,
   enterBatchSelect, exitBatchMode, toggleBatchMode, toggleConvSelect, batchDeleteConvs,
-  spaceStore,
+  spaceStore, startNewChat, selectSpaceAndSyncDir,
   showSpaceEdit, spaceEditForm, saveSpaceEdit,
 } = chat;
 
@@ -344,6 +344,19 @@ const groups = computed(() => {
 const collapsed = ref<Record<string, boolean>>({});
 function toggleGroup(id: string) {
   collapsed.value = { ...collapsed.value, [id]: !collapsed.value[id] };
+}
+
+/** 双击空间组头 → 在该空间新建会话（2026-10-13，与办公侧栏 ChatSidebar 同口径：
+ *  类 Claude 的"双击项目=进入并新建会话"。组头单击仍是折叠/展开，语义不冲突。
+ *  只对真实空间组生效（__pinned__/__root__ 不是空间，忽略）。 */
+function onGroupDblClick(id: string) {
+  if (id === '__pinned__' || id === '__root__') return;
+  const sp = spaceStore.spaces.find((s) => s.id === id);
+  if (!sp) return;
+  // 双击先触发两次 click（两次 toggleGroup 互相抵消），再确保展开收尾，消除抖动
+  if (collapsed.value[id]) toggleGroup(id);
+  void selectSpaceAndSyncDir(id);
+  void startNewChat(id);
 }
 
 /** 无 spaceId 过滤时，空的「未归类」组不占位（仅在有任务或搜索时显示） */

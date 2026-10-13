@@ -32,9 +32,21 @@ export type VisionCapability = 'yes' | 'no' | 'unknown';
 /** 否定结论的有效期（毫秒）：到期后允许重试（防"一次抖动被永久记成不支持"） */
 export const VISION_NO_TTL_MS = 30 * 60 * 1000;
 
+/** "空响应"负缓存的有效期（毫秒，2026-10-13）。
+ *
+ * ★ 为什么单独一档：模型对图片**返回空文本**（如 deepseek-flash 对某些截图三连空）
+ *   与"明确报不支持"不同 —— 可能是内容策略、上游静默丢图、模型小脾气。
+ *   但它**稳定复现**（同模型同型图连续空），不记的话每次 image_analyze 都先在它身上
+ *   白烧一次请求+等待（实测单次 10s+，长任务里反复发生）。
+ *   ⇒ 用**短 TTL**（10 分钟）：跳过一段时间的重复踩坑，又不会像 4xx 那样记 30 分钟，
+ *     过了 TTL 自然重探。 */
+export const VISION_EMPTY_TTL_MS = 10 * 60 * 1000;
+
 interface Entry {
   state: 'yes' | 'no';
   at: number;
+  /** 'no' 的细分来源：explicit=能力性失败(4xx/措辞)；empty=空文本响应。empty 用更短 TTL */
+  kind?: 'explicit' | 'empty';
 }
 
 /** 缓存：`platformId/modelId` → 探测结论 */
@@ -53,18 +65,22 @@ export function getVisionCapability(platformId: string, modelId: string, now = D
   const e = cache.get(visionCapKey(platformId, modelId));
   if (!e) return 'unknown';
   // ★ 否定结论过期 → 回到 unknown（允许重试；防"抖动被永久记成不支持"）
-  if (e.state === 'no' && now - e.at > VISION_NO_TTL_MS) return 'unknown';
+  if (e.state === 'no') {
+    const ttl = e.kind === 'empty' ? VISION_EMPTY_TTL_MS : VISION_NO_TTL_MS;
+    if (now - e.at > ttl) return 'unknown';
+  }
   return e.state;
 }
 
-/** 记录探测结论（`yes` 永久有效；`no` 带 TTL） */
+/** 记录探测结论（`yes` 永久有效；`no` 按 kind 带 TTL：explicit 30 分钟 / empty 10 分钟） */
 export function setVisionCapability(
   platformId: string,
   modelId: string,
   state: 'yes' | 'no',
   now = Date.now(),
+  kind: 'explicit' | 'empty' = 'explicit',
 ): void {
-  cache.set(visionCapKey(platformId, modelId), { state, at: now });
+  cache.set(visionCapKey(platformId, modelId), { state, at: now, kind });
 }
 
 /**
@@ -76,6 +92,9 @@ export function setVisionCapability(
  *
  * ★ 只有**明确的能力性失败**才记 `no`（不支持的措辞 / 明确的 4xx）；
  *   **网络类错误不记**（超时/断连 ≠ 不支持 —— 记了会造成"一次抖动永久误判"）。
+ * ★ 空文本响应（ok=false 且无 errMsg）记 `no`(kind='empty')，10 分钟短 TTL：
+ *   同模型稳定空响应不必每次重踩（2026-10-13，实测 deepseek-flash 连续空响应白烧多轮），
+ *   但语义弱于 4xx，TTL 到期自然重探。
  */
 export function recordVisionAttempt(
   platformId: string,
@@ -88,7 +107,12 @@ export function recordVisionAttempt(
     setVisionCapability(platformId, modelId, 'yes', now);
     return false;
   }
-  const msg = String(errMsg || '');
+  // 无错误信息的失败 = 空文本响应 → 记短 TTL 的 empty 档
+  if (errMsg === undefined || errMsg === null || errMsg === '') {
+    setVisionCapability(platformId, modelId, 'no', now, 'empty');
+    return true;
+  }
+  const msg = String(errMsg);
   // 网络/超时类 → 不记（这些与"模型是否支持视觉"无关）
   if (/timeout|timed out|超时|ECONNREFUSED|ECONNRESET|network|fetch failed|socket hang up|429|Too Many Requests/i.test(msg)) {
     return false;

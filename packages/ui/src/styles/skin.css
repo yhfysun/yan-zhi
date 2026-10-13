@@ -1809,3 +1809,25 @@ html[data-skin="on"] .loading-overlay {
 [data-skin="on"] .ctx-item:hover {
   background-color: color-mix(in srgb, var(--color-primary) 12%, transparent) !important;
 }
+
+/* ============================================================
+   低内存模式（B5，2026-10-13）—— 关掉全站毛玻璃
+   ------------------------------------------------------------
+   为什么值得单开一个模式：backdrop-filter 要求合成器对每个玻璃面板
+   **每帧**重新采样并重绘其背后内容（壁纸/对话流都在重绘范围内），
+   代价是常驻合成层与 GPU 内存（实测量级 50~100MB，面板越多越贵）。
+   在 16GB 机器上多开应用就触顶的场景里，"面板变实色"是划算的交换。
+
+   ★ 实现要点：backdrop-filter 散落在 skin.css / chat.css 与 33 个组件的
+     scoped 样式中（共 100+ 处），逐个改既漏又难维护 ⇒ 在文档根放
+     `data-lite="on"`（见 settings store 的 applyLiteMode），用**一条**全局
+     规则统一压制。scoped 样式带属性选择器，故必须 !important 才压得住。
+   ★ 只关模糊：颜色/透明度/边框/阴影一律不动 —— 观感是"面板变实、不糊"，
+     而不是切换成另一套主题；用户关掉开关即完全恢复原样（零残留）。
+   ============================================================ */
+[data-lite="on"] *,
+[data-lite="on"] *::before,
+[data-lite="on"] *::after {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}

@@ -1283,6 +1283,83 @@ function createChat() {
     buildMessageRounds(store.currentMessages, isToolErrorContent),
   );
 
+  // ==================================================================
+  // ★★★ 消息列表窗口化渲染（B1，2026-10-13，内存/卡顿治理最大单项）。
+  //
+  //   现状：全量轮次进 DOM —— 实测会话 1024 条消息（含工具回执）估算数万 DOM 节点，
+  //   UI 进程数百 MB；403 条时已实测渲染主线程饱和（IPC 迟到 34.3s，10-11 日志）。
+  //
+  //   方案：以**轮次**为单位开窗，DOM 只挂窗口内的轮次。为什么不用像素级虚拟滚动：
+  //   轮次高度差极大（一条用户消息 vs 几十个工具步骤），估高做占位条必然跳动，
+  //   而消息流的"位置稳定"比"省那几个节点"重要得多。
+  //
+  //   ★ 语义用**绝对起点**（windowStart），而不是"距末尾 N 轮"：
+  //     · `null` = 跟随末尾：窗口恒为末尾 ROUND_WINDOW_SIZE 轮 —— 流式追加时
+  //       窗口自然向前滑（用户在看最新输出，滑走的是最老那轮，符合预期）；
+  //     · 用户向上滚（视口接近顶部）→ **钉住起点**（记下当前起始下标）并向前扩窗；
+  //       此后追加消息只让窗口向下生长，**绝不卸掉用户正在读的内容**；
+  //     · 换会话/新任务 → 回到"跟随末尾"。
+  //   scrollToRound 跳转前调 ensureRoundVisible 把目标纳入窗口（否则 DOM 不在跳不到）。
+  //
+  //   ★ 不设"收窄"：收窄需要高度补偿（估高会跳），而窗口只会在用户主动向上滚时变大；
+  //     单会话轮次数有限（1024 条 ≈ 300 轮），最坏情形退化为现状，典型收益在"会话打开
+  //     初期只挂末尾 30 轮"——重会话切回时的卡顿与内存大头正在这里。
+  // ==================================================================
+  const ROUND_WINDOW_SIZE = 30;   // 跟随末尾时的窗口大小（轮）
+  const ROUND_WINDOW_STEP = 20;   // 每次向上扩窗的步长（轮）
+  /** 窗口起始轮的**身份锚**（该轮 user 消息 id）；null = 跟随末尾。
+   *  ★ 用身份而不是下标：向上翻页 loadMoreHistory 会把更早消息 prepend 到数组头部，
+   *    全量下标整体位移 —— 记下标的窗口会"锚到别的内容"（用户视野里的消息被换掉）。
+   *    记 id 则天然跟随内容平移。 */
+  const windowAnchorId = ref<string | null>(null);
+  /** 轮次身份（user 消息 id，缺省用轮内首个消息 id 兜底） */
+  function roundKey(r: MessageRound | undefined): string | null {
+    if (!r) return null;
+    return r.user?.id || (r as any).finalAssistant?.id || null;
+  }
+  /** 当前窗口起始下标：跟随末尾 → total-SIZE；否则 → 锚定轮的新下标 */
+  function currentWindowStart(all: MessageRound[]): number {
+    if (windowAnchorId.value === null) return Math.max(0, all.length - ROUND_WINDOW_SIZE);
+    const i = all.findIndex((r) => roundKey(r) === windowAnchorId.value);
+    // 锚定轮找不到（被删除/会话切换竞态）→ 回退到跟随末尾，绝不返回脏下标
+    return i >= 0 ? i : Math.max(0, all.length - ROUND_WINDOW_SIZE);
+  }
+  /** 窗口化轮次：[全量下标, round] 对 —— 模板仍用**全量下标**（data-round /
+   *  expandedReasoning['round-'+ri] 等所有 UI 状态 key 都以全量下标为锚，不能换） */
+  const visibleRounds = computed<Array<{ ri: number; round: MessageRound }>>(() => {
+    const all = messageRounds.value;
+    const start = currentWindowStart(all);
+    const out: Array<{ ri: number; round: MessageRound }> = [];
+    for (let i = start; i < all.length; i++) out.push({ ri: i, round: all[i] });
+    return out;
+  });
+  /** 跳转/定位前把目标轮次纳入窗口（否则 DOM 不存在 → 跳转静默失效） */
+  function ensureRoundVisible(ri: number) {
+    const all = messageRounds.value;
+    if (ri < 0 || ri >= all.length) return;
+    const start = currentWindowStart(all);
+    if (ri >= start) return;                     // 已在窗口内
+    const from = Math.max(0, ri - 3);            // 目标上方留 3 轮上下文
+    // 锚点取不到（极端数据：轮内既无 user 也无 finalAssistant）→ 保持 null（跟随末尾）
+    windowAnchorId.value = roundKey(all[from]);
+  }
+  // 换会话/新任务 → 回到"跟随末尾"
+  watch(() => store.currentConvId, () => { windowAnchorId.value = null; });
+  // 滚近顶部 → 钉住起点并向上扩窗（rAF 节流，与 handleScroll 同一事件源）
+  let windowExpandRaf = 0;
+  function expandWindowOnScroll() {
+    const el = messagesRef.value;
+    if (!el) return;
+    const all = messageRounds.value;
+    if (all.length === 0) return;
+    if (el.scrollTop >= el.clientHeight * 0.5) return;   // 只在接近顶部时扩窗
+    const start = currentWindowStart(all);
+    if (start === 0) return;                              // 已到最早
+    const from = Math.max(0, start - ROUND_WINDOW_STEP);
+    const anchor = roundKey(all[from]);
+    if (anchor) windowAnchorId.value = anchor;            // 扩窗：窗口首轮前移
+  }
+
   /**
    * ★★★ 工具结果索引（2026-10-11，修「任务一跑页面卡死滚不动」的**主因**）。
    *
@@ -2274,6 +2351,21 @@ async function healStalePlatform() {
     closeCtxMenu();
     const conv = store.conversations.find((c) => c.id === id);
     applyConvAgent(conv);
+    // ★ 上下文跟随会话（2026-10-13，与"发消息不改挂空间"配套的另一半）：
+    //   点开一个属于空间 A 的会话时，把「选中空间 + 工作目录」对齐到 A ——
+    //   否则用户先点了空间 B（workspaceDir 已被切到 B 的目录）再点回 A 会话继续干活，
+    //   输入区显示的当前目录还是 B 的，agent 的工具执行面/资源面板也指到 B（错位观感）。
+    //   只在会话真实归属某空间时同步；未归类会话不动用户当前的空间选择。
+    //   注意：这里**不是**把会话改挂空间（send 侧已根治），只是把"操作上下文"对齐到会话。
+    if (conv?.spaceId) {
+      const sp = spaceStore.spaces.find((s) => s.id === conv.spaceId);
+      if (sp) {
+        spaceStore.selectSpace(sp.id);
+        if (sp.dirPath && settingsStore.settings.workspaceDir !== sp.dirPath) {
+          void settingsStore.update({ workspaceDir: sp.dirPath });
+        }
+      }
+    }
     if (conv?.modelId && conv?.platformId) {
       const resolved = platformStore.resolveModel(conv.modelId, conv.platformId);
       if (resolved && CHAT_MODEL_TYPES.includes(resolved.type)) selectedModelId.value = resolved.id;
@@ -2530,14 +2622,21 @@ async function healStalePlatform() {
         await store.loadMessages(convId);
         isDraftMode.value = false;
       } else {
-        // 已有会话：补齐平台/模型，并把会话归入工作目录对应空间（若尚未归入）
+        // 已有会话：补齐平台/模型。
+        // ★★★ 不再改挂空间（2026-10-13，用户实报"任务在 A 空间跑，点了 B 空间再发消息，
+        //   会话和文件目录全变成 B 的"）：
+        //   此处原逻辑是 `if (spaceId && currentConv.spaceId !== spaceId) updates.spaceId = spaceId`
+        //   —— spaceId 来自 resolveSpaceForNewConv()（= 用户当前选中的空间）。用户中途点过
+        //   空间 B（哪怕只是想看看 B 里有什么，selectSpaceAndSyncDir 还会同步改 workspaceDir），
+        //   回到 A 会话继续发消息，整个会话就被悄悄迁到 B：任务列表里 A 空间少一个、B 空间多一个，
+        //   产物目录也跟着空间走（artifact-root = 会话所属空间 dirPath）→ 文件全落错地方。
+        //   ★ 语义对齐：**会话归属创建时的空间，发消息不改变归属**（与 Claude 的项目归属一致）；
+        //     跨空间移动是显式操作（右键"移动到空间"/行内 Rank 按钮），不隐性发生。
+        //     新会话（上方 !convId 分支）不受影响——它本来就该归当前选中的空间。
         const updates: { platformId?: string; modelId?: string; spaceId?: string } = {};
         if (!currentConv.value?.platformId) {
           updates.platformId = platform.id;
           updates.modelId = model.modelId;
-        }
-        if (spaceId && currentConv.value?.spaceId !== spaceId) {
-          updates.spaceId = spaceId;
         }
         if (Object.keys(updates).length) {
           await store.updateConversation(convId, updates);
@@ -3044,10 +3143,15 @@ async function healStalePlatform() {
 
   function scrollToBottom() { if (messagesRef.value) messagesRef.value.scrollTo({ top: messagesRef.value.scrollHeight, behavior: 'smooth' }); }
   function scrollToRound(ri: number) {
+    // ★ 窗口化渲染：目标轮次可能在窗外（DOM 不存在）—— 先扩窗覆盖它，
+    //   等 DOM 挂载后再滚（否则 querySelector 落空静默失效，跳转"点了没反应"）。
+    ensureRoundVisible(ri);
     activeNavRound.value = ri;
-    const group = document.querySelector(`[data-round="${ri}"]`) as HTMLElement;
-    if (!group) return;
-    group.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    nextTick(() => {
+      const group = document.querySelector(`[data-round="${ri}"]`) as HTMLElement;
+      if (!group) return;
+      group.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
   }
 
   function handleScroll() {
@@ -3058,6 +3162,10 @@ async function healStalePlatform() {
     showScrollBottom.value = canScroll && !atBottom;
     showScrollTop.value = canScroll && el.scrollTop > el.clientHeight;
     updateActiveNavRound(el);
+    // ★ 窗口化：滚近顶部时懒扩窗（rAF 节流，每帧最多一次）
+    if (!windowAll.value && !windowExpandRaf) {
+      windowExpandRaf = requestAnimationFrame(() => { windowExpandRaf = 0; expandWindowOnScroll(); });
+    }
   }
 
   function updateActiveNavRound(el: HTMLElement) {
@@ -3657,7 +3765,7 @@ async function healStalePlatform() {
     isDraftMode, renamingId, renamingTitle, renameInputRef, ctxMenu,
     md, renderMarkdown, renderAssistantMarkdown, handleContentClick, handleContentDblClick, handleContentContextMenu,
     openPath, openPathInSystem,
-    currentConv, filteredConversations, messageRounds, isToolErrorContent,
+    currentConv, filteredConversations, messageRounds, visibleRounds, ensureRoundVisible, isToolErrorContent,
     chatModels, modelGroups, mountableServers, tokenCount, contextLimit, tokenPercent, loadedConvHasMore, canSend,
     // 标称窗口（模型 API 上限）：UI 需要同时展示"实际可用 / 标称"两个数，
     // 否则用户看到"才用 30%"会以为很空 —— 而 30% 可能已越过有效边界。

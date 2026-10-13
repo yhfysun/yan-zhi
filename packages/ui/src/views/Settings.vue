@@ -48,6 +48,16 @@
           <SettingRow label="深色模式" tip="切换深色/浅色主题" tip-after>
             <el-switch v-model="darkMode" @change="toggleDarkMode" />
           </SettingRow>
+          <!-- 低内存模式（B5，2026-10-13）：关掉全站毛玻璃合成，省 50~100MB 常驻内存。
+               放"通用"而非"高级"是因为它解决的是"机器卡/内存紧"这类高频诉求，
+               藏太深等于不存在（本项目一贯的"功能存在但不可发现 ≈ 功能不存在"）。 -->
+          <SettingRow
+            label="低内存模式"
+            tip="关闭界面毛玻璃模糊效果（面板变实色），减少常驻合成层内存与 GPU 开销；观感差异有限，内存紧张时可开"
+            tip-after
+          >
+            <el-switch v-model="liteMode" @change="toggleLiteMode" />
+          </SettingRow>
           <SettingRow label="主题色">
             <div class="theme-grid">
               <div
@@ -602,6 +612,14 @@ async function downloadSkinSource(s: SkinTheme) {
 
 const darkMode = ref(settingsStore.settings.darkMode);
 
+/** 低内存模式开关（B5，2026-10-13）：本地 ref + 即时生效（applyLiteMode 由 store.update 触发） */
+const liteMode = ref(settingsStore.settings.liteMode);
+function toggleLiteMode(v: boolean | string | number) {
+  const on = v === true || v === 'true' || v === 1;
+  settingsStore.update({ liteMode: on });
+  ElMessage.success(on ? '已开启低内存模式（毛玻璃已关闭）' : '已关闭低内存模式（毛玻璃已恢复）');
+}
+
 // ===== 移动端远程后端地址（仅 Capacitor 环境显示）=====
 // 保存即 location.reload()：BASE_URL 是模块级常量，改动靠重载一次性生效，
 // 免去用户手动杀进程重启（这是 mobile_api_base 此前「无写入入口、改了不生效」的收尾）。
@@ -743,6 +761,7 @@ onMounted(async () => {
   defaultPlatformId.value = settingsStore.settings.defaultPlatformId;
   defaultModelId.value = settingsStore.settings.defaultModelId;
   darkMode.value = settingsStore.settings.darkMode;
+  liteMode.value = settingsStore.settings.liteMode;
   keepRecent.value = settingsStore.settings.keepRecent;
   enableCompression.value = settingsStore.settings.enableCompression;
   memoryExtractPlatformId.value = settingsStore.settings.memoryExtractPlatformId;

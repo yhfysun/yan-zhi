@@ -170,6 +170,7 @@
             class="tree-node-head"
             :class="{ 'tree-node-active': spaceStore.currentSpaceId === sp.id }"
             @click="onSpaceHeadClick(sp.id)"
+            @dblclick="onSpaceHeadDblClick(sp.id)"
             @contextmenu.prevent="openSpaceMenu($event, sp)"
             v-on="bindLongPress((ev) => openSpaceMenu(ev, sp))"
           >
@@ -523,6 +524,12 @@ function onConvSheetSelect(a: ActionSheetAction) {
  *  · 已选中 → 纯折叠/展开（用户在看空间内部的任务列表）；
  *  · 未选中 → 选中它并同步工作目录（表达「接下来的任务归这个空间」——
  *    这是任务类型/SOP 生效的前提，2026-09-27 补）。
+ *  ★ 不再动当前会话（2026-10-13）：切换空间只影响"下一个新任务"归属，
+ *    当前打开的会话（可能属于空间 A 且正在跑）保持原样 —— 此前点 B 空间后
+ *    继续在 A 会话发消息，A 会话会被 send() 改挂到 B（已在 send 侧根治，
+ *    这里保持"切换=切上下文"的纯语义）。
+ * ★ 双击空间节点 = 直接在该空间新建会话（2026-10-13，类 Claude 的项目体验：
+ *   "想进哪个项目就双击哪个项目"，不用先选中再点「+ 新建任务"）。
  */
 function onSpaceHeadClick(id: string) {
   if (spaceStore.currentSpaceId === id) {
@@ -530,6 +537,15 @@ function onSpaceHeadClick(id: string) {
     return;
   }
   void selectSpaceAndSyncDir(id);
+}
+
+/** 双击空间节点 → 在该空间新建会话（单击已保证选中态，这里直接建）。
+ *  ★ 双击会先触发两次 click（第二次 click 命中"已选中→折叠/展开"分支，折叠态翻转一次），
+ *    这里把折叠态强制展开收尾，消除双击末尾的抖动。 */
+function onSpaceHeadDblClick(id: string) {
+  if (spaceStore.currentSpaceId !== id) void selectSpaceAndSyncDir(id);
+  if (spaceCollapsed.value[id]) toggleSpaceCollapse(id);
+  void startNewChat(id);
 }
 
 /** 空间的任务类型标签（列表上直接可见，省得进编辑弹窗才知道） */

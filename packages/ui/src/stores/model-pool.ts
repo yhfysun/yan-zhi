@@ -12,6 +12,16 @@ import { rowToModel } from './platform';
 
 const EMPTY_POOLS: ModelPools = { llm: [], vision: [], image: [], video: [] };
 
+/** 生效池条目（GET /api/model-pools 的 effective[slot] 最小面，2026-10-13） */
+export interface EffectivePoolEntry {
+  modelId: string;      // model 主键 id（非 API 名）
+  platformId: string;
+  platformName?: string;
+  alias?: string;
+  modelApiId?: string;
+  source?: string;
+}
+
 function normalize(p: unknown): ModelPools {
   const v = (p && typeof p === 'object' && !Array.isArray(p) ? p : {}) as Record<string, unknown>;
   const out: ModelPools = {};
@@ -27,6 +37,8 @@ export const useModelPoolStore = defineStore('modelPool', () => {
   const globalPools = ref<ModelPools>({ ...EMPTY_POOLS });
   /** 各平台池（platformId → pools） */
   const platformPools = ref<Record<string, ModelPools>>({});
+  /** 生效池（后端解析的有序候选，load() 时随 GET /api/model-pools 一并返回） */
+  const effectivePools = ref<Record<string, EffectivePoolEntry[]> | null>(null);
   const loaded = ref(false);
 
   /**
@@ -52,6 +64,21 @@ export const useModelPoolStore = defineStore('modelPool', () => {
     if ('error' in r || !r.data) return;
     globalPools.value = normalize(r.data.global);
     platformPools.value = {};
+    // ★ 生效池（2026-10-13）：后端已按 agent→platform→global→autoPool 解析出**有序**
+    //   生效候选（effective[slot][0] 为首选）。此前只存了三层配置、把 effective 丢弃，
+    //   运行时消费方（image_analyze 的 vision 降级链）只能自己试错。现在存下来，
+    //   供 runImageAnalyze 等直接按池顺序取候选 —— 口径与后端唯一解析出口一致，不再漂移。
+    const eff = (r.data.effective && typeof r.data.effective === 'object') ? r.data.effective : null;
+    if (eff) {
+      const rec: Record<string, EffectivePoolEntry[]> = {};
+      for (const slot of ['llm', 'vision', 'image', 'video'] as const) {
+        const arr = eff[slot];
+        rec[slot] = Array.isArray(arr)
+          ? arr.filter((x: any) => x && typeof x === 'object' && typeof x.modelId === 'string' && typeof x.platformId === 'string')
+          : [];
+      }
+      effectivePools.value = rec;
+    }
     loaded.value = true;
   }
 
@@ -81,8 +108,19 @@ export const useModelPoolStore = defineStore('modelPool', () => {
     return platformPools.value[pid] || { ...EMPTY_POOLS };
   }
 
+  /**
+   * 生效 vision 候选（有序，[0] 首选；2026-10-13）。
+   * 池未加载/为空时返回 []，调用方自行回退旧链路（capabilities 显标模型）。
+   * ★ 消费方需要 Model/Platform 对象：modelId+platformId 可在 allModels(ensureModels)
+   *   与 platformStore.platforms 里解析。
+   */
+  function effectiveVision(): EffectivePoolEntry[] {
+    return effectivePools.value?.vision || [];
+  }
+
   return {
     globalPools, platformPools, loaded, allModels, modelsLoaded,
     load, loadPlatform, saveGlobal, savePlatform, platformPoolOf, ensureModels,
+    effectiveVision,
   };
 });

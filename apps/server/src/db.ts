@@ -1207,14 +1207,14 @@ PAGE_AGENT_BUILTIN_TOOLS 必须逐项一致——提示词推荐了却没挂 = �
 - browser_navigate: 导航到指定 URL
 - browser_type: 在输入框输入文本（支持回车提交搜索/表单）
 - browser_click: 点击元素（优先元素编号 index，其次 CSS 选择器或坐标）
-- browser_get_page_content: 一次获取当前页面完整状态：title + url + 可见正文 + 带 index 编号的可交互元素列表（已穿透 iframe/Shadow DOM）。返回含 PageState 页面状态签名：两次读取签名相同 = 操作未生效
+- browser_get_page_content: 一次获取当前页面完整状态：title + url + 可见正文 + 带 index 编号的可交互元素列表（已穿透 iframe/Shadow DOM）+ 返回含 PageState 页面状态签名（两次读取签名相同 = 操作未生效）。★ 另含【表单状态】段（每个输入框/文本域/富文本/下拉的字段名、类型、必填、**当前值**）与【自上次读取的变化】段（哪个字段从什么变成了什么）—— **填完表单以【表单状态】的值为准判断生效，不要重复填**；【自上次读取的变化】为"无"= 上一步动作没改变任何字段，须换定位方式而非重复同一动作
 - browser_get_page_info: 元素坐标——与 get_page_content 同样的编号元素，但额外给 x/y/w/h。需要按坐标点击、判断元素是否在视口内/被遮挡/需滚动、或配合 browser_screenshot(annotate=true) 时用它
 - browser_get_dom: 父子层级树——需要看清元素归属、弹窗/portal 挂在哪个容器下时用；只要操作目标时不必调它
 - browser_get_visible_text: 纯正文——只读内容、抽取长文时用，输出最小
 - browser_scroll: 滚动页面。传 y（正数向下/负数向上，像素，如 y=600）滚动一屏查看视口外内容；传 selector 则把目标元素滚到视野中央。用于查看长列表更多内容、触发懒加载，或让视口外的按钮/元素进入视野后再点击
-- browser_run_script: 代码模式——在页面里执行一段 JS 并返回结果。固定重复流程（翻页收集列表、批量提取、触发懒加载、循环签到检查）写成一段 (async () => { ... })() 脚本一次执行，替代多轮 click/scroll/read，大幅省步数；脚本内可用 document/fetch，返回值必须可 JSON 序列化（超时 30s）
+- browser_run_script: 代码模式——在页面里执行一段 JS 并返回结果。只用于【批量提取数据 / 循环检查 / 一次脚本内自洽的多步流程】（翻页收集列表、批量提取、触发懒加载）；脚本内可用 document/fetch，返回值必须可 JSON 序列化（超时 30s）。★ 单点交互（找按钮点击、往输入框填字）禁止写脚本穷举选择器——脚本没有防循环计数与元素重定位保护，选择器失效直接抛错；用 browser_click/browser_type，找不到目标先 browser_get_page_content 重新读页定位
 - browser_upload: 上传本地文件——在页面上设置 input[type=file] 的文件（如上传视频/图片到后台）。传选择器（可选）与本地文件路径
-- browser_fill_form: 批量填表——一次调用填写多个表单字段。fields 数组每项 {selector, value, type?}，type 为 text/select/checkbox/radio；select 用 label（显示文本）或 value；checkbox/radio 用 true/false。**多字段表单必须用它一次填完，禁止逐个 browser_type**；返回的 failed 列表会逐条列出未填成功的字段与原因，按提示换 selector 重试即可
+- browser_fill_form: 批量填表——一次调用填写多个表单字段。fields 数组每项 {selector, value, type?}，type 为 text/select/checkbox/radio；select 用 label（显示文本）或 value；checkbox/radio 用 true/false。普通输入框与富文本编辑器（contenteditable，如 Slate/ProseMirror）都支持：富文本字段直接传 selector 指向该 div。**多字段表单必须用它一次填完，禁止逐个 browser_type**；返回 state 数组 = 各字段填写后的当前值（回读核验），逐条核对 state 判断是否全部生效，**不要凭感觉重复填写**；failed 列表逐条列出未填成功的字段与原因，按提示换 selector 只重试失败的字段
 - browser_submit_form: 提交表单——填写完成后用它提交（也可改用 browser_click 点提交按钮）
 - browser_screenshot: 截图当前页面（annotate=true 时叠加元素编号框），返回文件路径
 - image_analyze: 视觉识别——把截图路径 + 描述传给视觉模型，返回画面内容/元素位置
@@ -1250,9 +1250,9 @@ PAGE_AGENT_BUILTIN_TOOLS 必须逐项一致——提示词推荐了却没挂 = �
 纪律：视觉路线每步成本高（截图+识图），仅作为 DOM 路径的**兜底**，能用 index 定位就回到 DOM 路线；连续 2 次视觉操作无画面变化 → 停止，返回已有结果并说明原因。
 
 【表单填写（效率硬规则）】
-- 遇到 2 个及以上输入框的表单，**必须用一次 browser_fill_form 传 fields 数组填完全部字段**，禁止逐个 browser_type（逐个填 = 多花 N 倍步数，且中途页面刷新会丢已填内容）。
+- 遇到 2 个及以上输入框的表单，**必须用一次 browser_fill_form 传 fields 数组填完全部字段**，禁止逐个 browser_type（逐个填 = 多花 N 倍步数，且中途页面刷新会丢已填内容）。富文本字段（contenteditable，如作品描述/评论框）也走 fill_form，selector 直接指向该 div。
 - fields 每项：selector 用 get_page_content 编号元素自带的 selector；下拉框 type=select 且优先传 label（显示文本）；单选/复选框 type=radio/checkbox 传 true/false。
-- 返回 failed 非空 = 部分字段没填上（会逐条列出原因）：按原因换 selector 重试漏掉的几个字段即可，已成功的不要重复填。
+- 返回 state 数组 = 各字段当前值（机器回读）：**逐条核对 state**，value 已是新值 = 填写成功，不要重填；failed 非空 = 只按原因换 selector 重试失败的那几个字段，已成功的不要重复填。
 - 填完用 browser_submit_form 提交；没有明确提交按钮语义时先 browser_get_page_content 找提交/登录/下一步类按钮再 click。
 - 上传类字段（input[type=file]）不在 fill_form 范围内，用 browser_upload 单独处理。
 

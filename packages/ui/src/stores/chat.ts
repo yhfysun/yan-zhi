@@ -1081,8 +1081,29 @@ async function loadConversations() {
     delete historyPagingByConv.value[convId];
   }
 
+  /** 非当前会话的消息驻留上限（B2，2026-10-13，内存治理）。
+   *  后台会话的消息数组只保留尾部这么多条：流式期间消息照常追加（SSE 在写尾部，
+   *  裁剪只丢头部旧条目），切回去时再按需向前翻页（loadMoreHistory）补。
+   *  ★ 只在"切走"时裁 —— 当前会话不裁（视图正渲染它，裁了会闪）。 */
+  const MESSAGE_RESIDENCY_LIMIT = 200;
+  function pruneMessageResidency(exceptConvId: string) {
+    for (const convId of Object.keys(messagesByConv.value)) {
+      if (convId === exceptConvId) continue;
+      const arr = messagesByConv.value[convId];
+      if (arr && arr.length > MESSAGE_RESIDENCY_LIMIT) {
+        messagesByConv.value[convId] = arr.slice(arr.length - MESSAGE_RESIDENCY_LIMIT);
+        // 裁剪后该会话的 hasMore 置真（头部被丢了，向前翻页才能补回）
+        const p = historyPagingOf(convId);
+        p.hasMore = true;
+      }
+    }
+  }
+
   async function loadMessages(convId: string) {
     currentConvId.value = convId;
+    // ★ 切会话时裁剪其它会话的驻留消息（B2）：长会话多开时驻留线性膨胀
+    //   （实测 5 个会话共 4000+ 条消息对象常驻），裁到尾部 200 条/会话。
+    pruneMessageResidency(convId);
     if (isServerMode()) {
       // ★ 2026-10-09 同 loadConversations：失败不清空已加载的历史消息（瞬态失败
       //   把消息洗成空 = 「会话还在、点开记录没了」的表象）。
@@ -2095,28 +2116,34 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
         }
         try {
           const client = new LlmClient(p, m);
-          // ★ 必须用 `sendMime`（压缩后可能是 image/jpeg）—— 若仍报原 mime（如 image/png），
-          //   上游按 PNG 解 JPEG 字节 → 解码失败。这是"压缩与声明必须同步"的硬约束。
-          const text = await client.visionAnalyze(base64, sendMime, prompt);
+          // ★ 必须用 sendMime（压缩后可能是 image/jpeg；报原 mime 上游会解码失败）
+          // ★★ 单候选 45s 限时（无内置超时的挂起候选拖爆 120s 前端工具闸，实测三次）
+          const text = await client.visionAnalyze(base64, sendMime, prompt, {
+            signal: AbortSignal.timeout(45_000),
+          });
           if (text) {
-            recordVisionAttempt(p.id, m.id, true); // 记住"支持"
+            recordVisionAttempt(p.id, m.id, true);
             return text;
           }
-          // 返回空文本：不算"不支持"（可能是内容策略/空回复），仅换下一候选
-          console.warn('[image_analyze] vision 返回空，换下一候选:', m.modelId);
+          // 返回空文本：记 10 分钟短 TTL 负缓存（稳定空响应不记则每次白烧一次请求）
+          recordVisionAttempt(p.id, m.id, false);
+          console.warn('[image_analyze] vision 返回空，换下一候选（10min内跳过）:', m.modelId);
           return null;
         } catch (e: any) {
-          // ★ 只把"能力性失败"记成 no（网络/超时类不记 —— 记了会被一次抖动永久误判）
+          // ★ 只把能力性失败记成 no（网络/超时类不记，防抖动被永久误判）
           const marked = recordVisionAttempt(p.id, m.id, false, e?.message || String(e));
           console.warn(`[image_analyze] vision 失败，换下一候选: ${m.modelId}${marked ? '（已记为不支持）' : ''}`, e?.message || e);
           return null;
         }
       } catch (e: any) {
-        // 缓存模块本身异常 → fail-open（不因为缓存问题让识图失败）
+        // 缓存异常 → fail-open
         console.warn('[image_analyze] 能力缓存异常，按原有试错继续:', e?.message || e);
         try {
           const client = new LlmClient(p, m);
-          const text = await client.visionAnalyze(base64, sendMime, prompt);
+          // 与上方主路径同口径：单候选 45s 限时（防单个挂起候选拖爆 120s 前端工具闸）
+          const text = await client.visionAnalyze(base64, sendMime, prompt, {
+            signal: AbortSignal.timeout(45_000),
+          });
           if (text) return text;
         } catch (e2: any) {
           console.warn('[image_analyze] vision 失败（无缓存路径）:', m.modelId, e2?.message || e2);
@@ -2149,6 +2176,28 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
       if (visionModel) {
         const viaAny = await attemptVision(platformStore.platforms.find((p) => p.id === visionModel.platformId), visionModel);
         if (viaAny) return { ok: true, result: viaAny };
+      }
+      // 2.5) ★ 生效 vision 候选池（2026-10-13）：GET /api/model-pools 的 effective.vision
+      //   （后端 agent→platform→global→autoPool 解析的**有序**候选，[0] 首选）。
+      //   此前只试 1)+2) 两个候选就落 OCR —— 会话模型对图片返回空（如 deepseek-flash，
+      //   实测 253bd3f4 三连空）+ 无显标 vision 模型时，明明池里配好的视觉模型却永远轮不到。
+      //   ★ 用户语义："image_analyze 不行就换池里的模型，不一定非用会话的"。这里按池顺序
+      //     逐个真试（tried 去重 + 能力负缓存跳过 + 45s 限时都在 attemptVision 内生效）。
+      try {
+        const { useModelPoolStore } = await import('./model-pool');
+        const poolStore = useModelPoolStore();
+        await Promise.all([poolStore.load().catch(() => {}), poolStore.ensureModels().catch(() => {})]);
+        for (const entry of poolStore.effectiveVision()) {
+          if (!entry?.modelId || !entry?.platformId) continue;
+          const pm = platformStore.platforms.find((p) => p.id === entry.platformId);
+          const mm = poolStore.allModels.find((m) => m.id === entry.modelId && m.platformId === entry.platformId)
+            || platformStore.models.find((m) => m.id === entry.modelId && m.platformId === entry.platformId);
+          const viaPool = await attemptVision(pm, mm);
+          if (viaPool) return { ok: true, result: viaPool };
+        }
+      } catch (e: any) {
+        // 池链路任何异常都不阻断 —— 回退 OCR（fail-open，与能力缓存同哲学）
+        console.warn('[image_analyze] 候选池链路异常，跳过池降级:', e?.message || e);
       }
     }
 

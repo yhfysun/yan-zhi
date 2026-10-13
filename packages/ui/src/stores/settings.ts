@@ -315,6 +315,16 @@ export interface AppSettings {
   /** 皮肤 id（空=无皮肤/纯调色板；非空=插件贡献的 kind='skin' 主题） */
   skin: ThemeName;
   darkMode: boolean;
+  /**
+   * 低内存模式（2026-10-13，内存治理 B5）。
+   *
+   * ★ 为什么需要：全站毛玻璃（backdrop-filter）要求合成器对每个玻璃面板**每帧**
+   *   重新采样并重绘背后的内容 —— 常驻 GPU 与合成层内存开销（实测量级 50~100MB，
+   *   面板越多越贵；配合皮肤壁纸时更明显）。关闭后退化为实色面板，观感差异有限，
+   *   但在 16GB 机器上多开几个应用就触顶的场景下是划算的交换。
+   * ★ 默认关闭（保持既有观感不变，用户显式开启才降级）。
+   */
+  liteMode: boolean;
   defaultPlatformId: string;
   defaultModelId: string;
   keepRecent: number;
@@ -505,6 +515,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   palette: 'porcelain',
   skin: 'builtin:porcelain',
   darkMode: false,
+  liteMode: false,   // 低内存模式默认关（保持既有毛玻璃观感；用户显式开启才降级）
   defaultPlatformId: '',
   defaultModelId: '',
   keepRecent: 6,
@@ -770,6 +781,7 @@ export const useSettingsStore = defineStore('settings', () => {
     applyPalette(settings.value.palette);
     applySkin(settings.value.skin);
     applyDarkMode(settings.value.darkMode);
+    applyLiteMode(settings.value.liteMode);
   }
 
   async function save() {
@@ -801,6 +813,7 @@ export const useSettingsStore = defineStore('settings', () => {
       applyPalette(settings.value.palette);
       applySkin(settings.value.skin);
     }
+    if (patch.liteMode !== undefined) applyLiteMode(patch.liteMode);
     await save();
   }
 
@@ -1323,5 +1336,20 @@ export const useSettingsStore = defineStore('settings', () => {
     }
   }
 
-  return { settings, loaded, load, save, update, applyPalette, applySkin, applyDarkMode, THEMES };
+  /**
+   * 低内存模式（B5，2026-10-13）：关掉全站毛玻璃。
+   *
+   * ★ 为什么用属性而不是逐个组件开关：backdrop-filter 的分布在几十个组件的 scoped 样式里，
+   *   逐个改既漏又难维护。这里在文档根放一个 `data-lite="on"`，由**一条全局 CSS 规则**
+   *   统一压制（styles/skin.css 的 [data-lite="on"] 段）—— 单点、可回退、零组件改动。
+   * ★ 语义：只关"每帧重采样"的模糊，颜色/透明度/边框一律不动，观感是"面板变实、不糊"，
+   *   而不是切到另一个主题。
+   */
+  function applyLiteMode(lite: boolean) {
+    const el = document.documentElement;
+    if (lite) el.setAttribute('data-lite', 'on');
+    else el.removeAttribute('data-lite');
+  }
+
+  return { settings, loaded, load, save, update, applyPalette, applySkin, applyDarkMode, applyLiteMode, THEMES };
 });
