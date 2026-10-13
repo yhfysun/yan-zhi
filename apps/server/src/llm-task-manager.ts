@@ -1780,6 +1780,23 @@ function isAbortError(e: any): boolean {
 }
 
 /**
+ * DSML 标记里的参数值还原类型（2026-10-13）。
+ *
+ * DSML 方言把参数写成 `value="…"` 的**字符串**，而工具 schema 常要 number/boolean
+ * （如 browser_get_dom 的 depth、browser_scroll 的 y）。这里只对**明确的 JSON 字面量**
+ * 还原类型，其余一律按原字符串 —— 不会把 `url="https://…"` 这种误判。
+ */
+function coerceDsmlValue(raw: string): unknown {
+  const v = raw.trim();
+  if (!v) return '';
+  try {
+    const j = JSON.parse(v);
+    if (typeof j !== 'string') return j;   // 数字/布尔/null/数组/对象
+  } catch { /* 不是 JSON 字面量 → 按字符串 */ }
+  return raw;
+}
+
+/**
  * 从 content 中解析所有 [TOOL_CALL] 块和 <function=xxx> XML 块（大小写不敏感），
  * 返回工具调用数组 + 清理后的 content + 被跳过的「只有名字没参数」的工具名。
  *
@@ -1854,12 +1871,51 @@ export function parseTextModeToolCalls(
       arguments: JSON.stringify(args),
     });
   }
-  // 始终清理 [TOOL_CALL] 和 <function=xxx> 标记（含不完整块），避免前端"正在调用工具"chip 永驻
+  // ── 方言三：DSML 标记（2026-10-13）────────────────────────────────────────
+  // ★ 实测（agnes-3.0-flash 经 apihub 中转到用户会话）：模型不吐 [TOOL_CALL]，而吐这串：
+  //     <|DSML|tool_calls>
+  //     <|DSML|invoke name="browser_navigate">
+  //     <|DSML|parameter parameterName="url" value="https://…" />
+  //     <|DSML|invoke>
+  //     </|DSML|tool_calls>
+  //   此前**全仓零识别**（grep DSML 为空）→ 既没变成工具调用、也没被清理 ⇒ 原样打印在
+  //   回复正文里（用户实报「为啥会打印 <|DSML|tool_calls> 这个？」），任务表现为
+  //   "模型只把要调用的工具复述了一遍，什么都没发生"。
+  //   容错按实测输出：闭合 invoke **可能没有斜杠**（`<|DSML|invoke>`）、
+  //   参数名两种写法（parameterName / name）、value 可能带单引号。
+  const dsmlBlockRe = /<\|DSML\|tool_calls>([\s\S]*?)(?:<\/\|DSML\|tool_calls>|$)/gi;
+  while ((m = dsmlBlockRe.exec(fullContent)) !== null) {
+    const body = m[1];
+    const invokeRe = /<\|DSML\|invoke\s+name\s*=\s*["']([^"']+)["']\s*\/?>/gi;
+    const invokes: { name: string; start: number; end: number }[] = [];
+    let inv: RegExpExecArray | null;
+    while ((inv = invokeRe.exec(body)) !== null) invokes.push({ name: inv[1], start: inv.index, end: invokeRe.lastIndex });
+    for (let i = 0; i < invokes.length; i++) {
+      // 该次调用的参数取值范围：本 invoke 之后、下一个 invoke 之前
+      const seg = body.slice(invokes[i].end, i + 1 < invokes.length ? invokes[i + 1].start : body.length);
+      const args: Record<string, unknown> = {};
+      const paramRe = /<\|DSML\|parameter\s+(?:parameterName|name)\s*=\s*["']([^"']+)["']\s+value\s*=\s*["']([\s\S]*?)["']\s*\/?>/gi;
+      let pm: RegExpExecArray | null;
+      while ((pm = paramRe.exec(seg)) !== null) args[pm[1]] = coerceDsmlValue(pm[2]);
+      // (A)/(B) 判据同 [TOOL_CALL] 方言：有没有写出参数体，而不是参数体是否为空对象
+      const hasParamBlock = /<\|DSML\|parameter\s/i.test(seg);
+      if (!hasParamBlock && needsArgs(invokes[i].name)) { skipped.push(invokes[i].name); continue; }
+      toolCalls.push({
+        id: `text_tc_${Date.now()}_${toolCalls.length}`,
+        name: invokes[i].name,
+        arguments: JSON.stringify(args),
+      });
+    }
+  }
+  // 始终清理 [TOOL_CALL] / <function=xxx> / <|DSML|…> 标记（含不完整块），
+  // 避免前端"正在调用工具"chip 永驻、也避免标记原样漏进用户可见正文
   const cleanedContent = fullContent
     .replace(/\[TOOL_CALL\][\s\S]*?\[\/TOOL_CALL\]/gi, '')
     .replace(/\[TOOL_CALL\][\s\S]*$/gi, '')
     .replace(/<function\s*=\s*\w+\s*>[\s\S]*?<\/function>/gi, '')
     .replace(/<function\s*=\s*\w+\s*>[\s\S]*$/gi, '')
+    .replace(/<\|DSML\|[\s\S]*?<\/\|DSML\|tool_calls>/gi, '')
+    .replace(/<\|DSML\|[\s\S]*$/gi, '')
     .trim();
   return { toolCalls, cleanedContent, skipped };
 }
@@ -2966,11 +3022,11 @@ async function runReActLoop(task: LlmTask, params: {
         const isEmptyArg = (tc: any) => { const a = tc.function?.arguments; return !a || a === '{}' || a === ''; };
         const hasEmptyArgs = toolCallAcc.length > 0 && toolCallAcc.some(isEmptyArg);
         if (toolCallAcc.length === 0 || hasEmptyArgs) {
-          const hasToolInContent = fullContent.toUpperCase().includes('[TOOL_CALL]') || fullContent.toUpperCase().includes('<FUNCTION');
+          const hasToolInContent = fullContent.toUpperCase().includes('[TOOL_CALL]') || fullContent.toUpperCase().includes('<FUNCTION') || fullContent.toUpperCase().includes('<|DSML|');
           // ★ reasoning 兜底（2026-09-29 修正）：此前 content 里有工具块时**完全不看 reasoning**，
           //   而 content 与 reasoning 各有一部分工具输出（或参数只吐在 reasoning 里）的模型会漏解析。
           //   现在：content 解析结果**为空**或**存在空参**时，再从 reasoning 补一次。
-          const hasToolInReasoning = fullReasoning.toUpperCase().includes('[TOOL_CALL]') || fullReasoning.toUpperCase().includes('<FUNCTION');
+          const hasToolInReasoning = fullReasoning.toUpperCase().includes('[TOOL_CALL]') || fullReasoning.toUpperCase().includes('<FUNCTION') || fullReasoning.toUpperCase().includes('<|DSML|');
           if (hasToolInContent || hasToolInReasoning) {
             const sources: string[] = [];
             if (hasToolInContent) sources.push(fullContent);
@@ -5521,8 +5577,8 @@ async function runSubAgentImpl(
       const isEmptyArgSub = (tc: any) => { const a = tc.function?.arguments; return !a || a === '{}' || a === ''; };
       const hasEmptyArgs = toolCallAcc.length > 0 && toolCallAcc.some(isEmptyArgSub);
       if (toolCallAcc.length === 0 || hasEmptyArgs) {
-        const hasToolInContent = fullContent.toUpperCase().includes('[TOOL_CALL]') || fullContent.toUpperCase().includes('<FUNCTION');
-        const hasToolInReasoning = fullReasoning.toUpperCase().includes('[TOOL_CALL]') || fullReasoning.toUpperCase().includes('<FUNCTION');
+        const hasToolInContent = fullContent.toUpperCase().includes('[TOOL_CALL]') || fullContent.toUpperCase().includes('<FUNCTION') || fullContent.toUpperCase().includes('<|DSML|');
+        const hasToolInReasoning = fullReasoning.toUpperCase().includes('[TOOL_CALL]') || fullReasoning.toUpperCase().includes('<FUNCTION') || fullReasoning.toUpperCase().includes('<|DSML|');
         if (hasToolInContent || hasToolInReasoning) {
           const sources: string[] = [];
           if (hasToolInContent) sources.push(fullContent);

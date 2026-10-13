@@ -184,3 +184,56 @@ describe('resolveContextWindow：未声明窗口时按 32K 保守估算（否则
     expect((cw as any).maxTokens).toBe(Math.floor(SAFE_CONTEXT_WINDOW * 0.5));
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 方言三：DSML 标记（2026-10-13）
+//
+// 用户实报：「为啥会打印 <|DSML|tool_calls>… 这个？」—— 模型没吐 [TOOL_CALL]，
+// 而吐了一套 DSML 标记，而全仓此前**零识别**（grep DSML 为空）⇒ 既没变成工具调用、
+// 也没被清理，原样打印在回复正文里，任务表现为"模型只复述了一遍要调用的工具"。
+// ★ SAMPLE 逐字取自用户会话（agnes-3.0-flash 经 apihub 中转的真实输出），不得美化：
+//   注意两个"不规整"之处 —— 收尾的 invoke **没有斜杠**、参数名是 parameterName。
+// ═══════════════════════════════════════════════════════════════════════════
+const DEFS_DSML = [
+  { type: 'function', function: { name: 'browser_navigate', parameters: { type: 'object', required: ['url'], properties: { url: { type: 'string' } } } } },
+  { type: 'function', function: { name: 'browser_get_dom', parameters: { type: 'object', required: ['depth'], properties: { depth: { type: 'number' } } } } },
+];
+
+describe('DSML 方言解析（2026-10-13）', () => {
+  const SAMPLE = `<|DSML|tool_calls>
+<|DSML|invoke name="browser_navigate">
+<|DSML|parameter parameterName="url" value="https://kol.fanqieopen.com/page/content?tab_type=2" />
+<|DSML|invoke>
+</|DSML|tool_calls>`;
+
+  it('★★★ 用户实报样本 → 必须解析成工具调用（此前原样打印、什么都没发生）', () => {
+    const r = parseTextModeToolCalls(SAMPLE, DEFS_DSML);
+    expect(r.toolCalls).toHaveLength(1);
+    expect(r.toolCalls[0].name).toBe('browser_navigate');
+    expect(JSON.parse(r.toolCalls[0].arguments)).toEqual({
+      url: 'https://kol.fanqieopen.com/page/content?tab_type=2',
+    });
+    expect(r.skipped).toHaveLength(0);
+  });
+
+  it('★ 清理后的正文不得残留任何 DSML 标记（否则用户仍会看到它）', () => {
+    const r = parseTextModeToolCalls(`先说明一句。\n${SAMPLE}\n后记一句。`, DEFS_DSML);
+    expect(r.cleanedContent).not.toMatch(/DSML/);
+    expect(r.cleanedContent).toContain('先说明一句');
+  });
+
+  it('★ 数值参数还原成 number（DSML 把值写成字符串，而 schema 要 number）', () => {
+    const src = '<|DSML|tool_calls><|DSML|invoke name="browser_get_dom"><|DSML|parameter parameterName="depth" value="2" /><|DSML|invoke></|DSML|tool_calls>';
+    const r = parseTextModeToolCalls(src, DEFS_DSML);
+    expect(r.toolCalls).toHaveLength(1);
+    expect(JSON.parse(r.toolCalls[0].arguments)).toEqual({ depth: 2 });
+  });
+
+  it('★ 输出被截断（无闭合标签、且参数体都没写出）→ 不产出假空参，正文仍被清干净', () => {
+    const src = '<|DSML|tool_calls>\n<|DSML|invoke name="browser_navigate">';
+    const r = parseTextModeToolCalls(src, DEFS_DSML);
+    expect(r.toolCalls).toHaveLength(0);
+    expect(r.skipped).toEqual(['browser_navigate']);
+    expect(r.cleanedContent).not.toMatch(/DSML/);
+  });
+});
