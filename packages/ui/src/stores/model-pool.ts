@@ -7,7 +7,8 @@
 import { defineStore } from 'pinia';
 import { ref } from 'vue';
 import { api } from '../api/client';
-import type { ModelPools } from '@yan-zhi/shared';
+import type { Model, ModelPools } from '@yan-zhi/shared';
+import { rowToModel } from './platform';
 
 const EMPTY_POOLS: ModelPools = { llm: [], vision: [], image: [], video: [] };
 
@@ -27,6 +28,24 @@ export const useModelPoolStore = defineStore('modelPool', () => {
   /** 各平台池（platformId → pools） */
   const platformPools = ref<Record<string, ModelPools>>({});
   const loaded = ref(false);
+
+  /**
+   * ★ 候选池专用的**全量**模型清单（跨所有平台）。
+   *
+   * 为什么不能直接用 platformStore.models：store.loadModels(pid) 会整体替换共享缓存
+   * 为单平台清单（设置页切默认平台、平台详情页进详情都会触发）→ 候选池下拉变空。
+   * 这里自己拉一份 /platforms/all-models，与 platformStore 互不影响。
+   */
+  const allModels = ref<Model[]>([]);
+  const modelsLoaded = ref(false);
+
+  async function ensureModels(): Promise<void> {
+    if (modelsLoaded.value) return;
+    const r = await api.get<any>('/platforms/all-models');
+    if ('error' in r || !Array.isArray(r.data)) return;
+    allModels.value = (r.data as any[]).map(rowToModel);
+    modelsLoaded.value = true;
+  }
 
   async function load(): Promise<void> {
     const r = await api.get<any>('/model-pools');
@@ -62,5 +81,8 @@ export const useModelPoolStore = defineStore('modelPool', () => {
     return platformPools.value[pid] || { ...EMPTY_POOLS };
   }
 
-  return { globalPools, platformPools, loaded, load, loadPlatform, saveGlobal, savePlatform, platformPoolOf };
+  return {
+    globalPools, platformPools, loaded, allModels, modelsLoaded,
+    load, loadPlatform, saveGlobal, savePlatform, platformPoolOf, ensureModels,
+  };
 });

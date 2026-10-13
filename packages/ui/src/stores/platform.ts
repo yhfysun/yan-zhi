@@ -42,7 +42,8 @@ function rowToApiKey(r: any): PlatformApiKey {
   };
 }
 
-function rowToModel(r: any): Model {
+/** 导出给 model-pool store 复用：候选池维护自己的全量模型清单，但行映射口径必须同一处 */
+export function rowToModel(r: any): Model {
   return {
     id: r.id,
     platformId: r.platform_id,
