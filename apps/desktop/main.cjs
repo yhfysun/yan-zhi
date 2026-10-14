@@ -3589,8 +3589,38 @@ async function runBrowserAction(convId, tabId, action, args) {
           const curTitle = (wc && wc.getTitle) ? wc.getTitle() : '';
           return {
             url: curUrl, title: curTitle, alreadyOpen: true, loading: !!(wc && wc.isLoading && wc.isLoading()),
-            note: '当前页面已经就是该 URL，未重复导航（重复导航会重置页面/清空已填表单）。**不要换 URL 重试**；若确需强制刷新请传 force:true，或用 browser_get_page_content 读取当前内容。',
+            note: '当前页面已经就是该 URL，未重复导航（重复导航会重置页面/清空已填表单）。**不要换 URL 重试**；要读当前内容用 browser_get_page_content。页面上若已有已填内容，**不要**用 force:true 刷新（会被拒绝并说明原因）。',
           };
+        }
+        // ★★★ 2026-10-14：`force:true` 是**唯一**能绕过上面同 URL 守卫的出口，而它正是
+        //   "已填表单被清空"的最后一条路 —— 经验档里曾**明确教**模型"页面卡住就用
+        //   browser_navigate 带 force:true 强制刷新"，用户因此实报
+        //   「表单都填好了又去刷新页面重新填写」。
+        //   ⇒ 同 URL + force + 页面上还有**未提交的已填字段** → 拒绝，并给出不破坏页面的出路。
+        //   ★ 只在"同 URL 刷新"这一种情形拦：**导航去别的页面不拦** —— 那是正常流程
+        //     （提交后跳到下一步时，表单里残留的值不该成为障碍）。
+        if (!isBlank && args.force === true && curUrl && normUrl(curUrl) === normUrl(cleanUrl)) {
+          const filled = await wc.executeJavaScript(`(function(){
+            var els = document.querySelectorAll('input, textarea, [contenteditable="true"]');
+            var n = 0, sample = [];
+            for (var i = 0; i < els.length; i++) {
+              var el = els[i];
+              if (el.readOnly === true || el.disabled === true) continue;
+              var v = el.isContentEditable ? (el.innerText || '') : (el.value || '');
+              if (!String(v).trim()) continue;
+              n++;
+              if (sample.length < 3) sample.push(String(el.getAttribute('placeholder') || el.tagName).slice(0, 20));
+            }
+            return { n: n, sample: sample };
+          })()`).catch(() => null);
+          if (filled && filled.n > 0) {
+            return {
+              error: `拒绝刷新：当前页面上还有 ${filled.n} 个已填写的字段（${filled.sample.join(' / ')}）。`
+                + '该页面**不存草稿**，刷新会把它们全部清空 —— 这正是"填好了又被刷新重填"的成因。'
+                + '请改走：① 先提交当前内容（browser_click 提交按钮），或 ② 用 browser_get_page_content '
+                + '读取当前状态确认结果；确需放弃这些内容并强制刷新时，先向用户确认。**不要重复传 force:true**。',
+            };
+          }
         }
         // ★★★ 2026-10-11：`openInNewTab` 已在**进入 switch 之前**被改写为 `new_tab`
         //   （见 `doAction` 之前的 `if (args.openInNewTab) action = 'new_tab'`）——
