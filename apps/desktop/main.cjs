@@ -3140,6 +3140,17 @@ function clearFormSnapshot(tabKey) {
  * @param convId 会话标识（服务端经桥透传；IPC 调用传 null —— 渲染层自己已锚定 tabId）
  * @param tabId  目标 tab；null 表示"按会话锚定解析 / 回落活动页"
  */
+// ★★★ 桥路径同 tab 动作**串行化**（2026-10-14）：实现抽到 ./browser-op-chain.cjs ——
+//   main.cjs 需要 Electron 才能加载，对它的测试只能做源码文本断言（太弱），
+//   而这里要防的两件事（串行顺序、排队上限放行）都是**行为级**的，必须真跑；
+//   该模块有行为测试（test/browser-op-chain.test.cjs）。
+//   ★ 为什么只在桥路径做、为什么必须有排队上限：见该文件头注。
+//   ★ 简言之：渲染层路径已有 chainBrowserOp 串行（且不该让用户点工具栏排队），
+//     桥路径此前**全链路零串行** —— 那才是"超时后两个动作在同一页面上打架"的缺口。
+const { chainTabAction } = require('./browser-op-chain.cjs');
+/** 同 tab 串行链（key = tabId；链的维护与上限见 browser-op-chain.cjs） */
+const tabActionChains = new Map();
+
 async function runBrowserAction(convId, tabId, action, args) {
   args = args || {};
   // ★★★ 浏览器动作全链路日志（2026-10-10）：这是"面板开了却没导航"这类静默失效的**唯一可靠线索**。
@@ -4734,8 +4745,24 @@ async function runBrowserAction(convId, tabId, action, args) {
     //     所以压窗口不会破坏操作本身，只让模型早十几秒知道"这页很慢"。
     const NAV_ACTIONS = new Set(['navigate']);
     const actionTimeout = SLOW_ACTIONS.has(action) ? 60000 : (NAV_ACTIONS.has(action) ? 30000 : 15000);
+    // ★★★ 桥路径串行执行（2026-10-14，见 chainBridgeAction 头注）：同 tab 上同一时刻只跑一个动作，
+    //   消除"超时后 doAction 仍在跑、模型又发下一个"造成的并发打架。
+    //   ★ 只对桥路径（convId 非空）加锁：渲染层路径已有 chainBrowserOp，且不该让用户点工具栏排队。
+    //   ★ 排队耗时同时记日志并回执（queuedMs）—— 用户要求把"排队"这件事量出来，不能再靠猜。
+    const enqueuedAt = Date.now();
+    let queuedMs = 0;
+    const actionPromise = convId
+      ? chainTabAction(tabActionChains, String(tabId || activeTabId || '__global__'), () => {
+          const waited = Date.now() - enqueuedAt;
+          if (waited > 200) {
+            console.log(`[browser-action] ${action} 排队等待 ${waited}ms（同 tab 上一个动作尚未结束）`);
+          }
+          queuedMs = waited;
+          return doAction();
+        })
+      : doAction();
     const result = await Promise.race([
-      doAction(),
+      actionPromise,
       new Promise((r) => setTimeout(() => {
         let stillLoading = true;
         try { stillLoading = !!(wc && !wc.isDestroyed() && wc.isLoading()); } catch { /* 取不到按加载中处理 */ }
@@ -4751,6 +4778,8 @@ async function runBrowserAction(convId, tabId, action, args) {
         });
       }, actionTimeout)),
     ]);
+    // ★ 把真实排队耗时带回执（观测量；0 = 没排队。用户要求把"排队耗时"量出来，不再靠猜）
+    if (result && queuedMs > 0) result.queuedMs = queuedMs;
     if (result && !result.error && !result.ambiguous && beforeState) {
       await new Promise(r => setTimeout(r, 500)); // 等待页面响应
       const after = await wc.executeJavaScript(STATE_SNAPSHOT_JS).catch(() => null);

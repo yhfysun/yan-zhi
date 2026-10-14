@@ -25,6 +25,9 @@ files:
   #   guest will-navigate 闸门都靠它。漏登记 = 打包版启动即崩（Cannot find module './url-guard.cjs'），
   #   且「页面自定义协议（bitbrowser://）弹系统框」的修复会完全失效。
   - url-guard.cjs
+  # ★★★ 桥路径同 tab 动作串行（2026-10-14）：main.cjs 模块级 require('./browser-op-chain.cjs')，
+  #   漏登记 = 打包版启动即崩（Cannot find module './browser-op-chain.cjs'）。
+  - browser-op-chain.cjs
   # ★★★ 浏览器桥（2026-10-10，执行面直连化）：main.cjs require('./browser-bridge.cjs')，
   #   服务端经 loopback 端点直连浏览器执行面。漏登记 = 打包版**启动即崩**
   #   （Cannot find module './browser-bridge.cjs'）——与 keyring-crypto.cjs / instance.cjs 同一类坑。
