@@ -31,39 +31,70 @@ export function cosine(a: number[], b: number[]): number {
 }
 
 /**
+ * 修复模型偶尔**漏转义**的 JSON 字符串 —— ★ 只在严格解析失败后作为兜底调用。
+ *
+ * ★★★ 2026-10-14 实报（medium）：记忆抽取会**静默丢数据**，日志只留一行 INFO
+ *   「模型输出无法解析为条目」。取回当时的原始输出，它是：
+ *     {"facts":[{"type":"agent","content":"…项目根目录 C:\Users\yhfys\Desktop\小说推文\第一…"}]}
+ *   —— **JSON 字符串里出现单个反斜杠 `\U` 是非法转义**，`JSON.parse` 必抛；而"从文本里抠
+ *   出 [...] 再 parse"的兜底抠出来的还是同一份非法 JSON，于是**一起抛** ⇒ 0 条、无告警。
+ *   本机用户的素材路径清一色 `C:\Users\...`，这类内容天然高频，不是偶发。
+ *   ★ 为什么必须"失败后才修"：对合法 JSON 无差别加倍反斜杠会把 `"a\\nb"`（含字面反斜杠）
+ *     改写成语义不同的串，反而制造错误 —— 严格解析成功时一律不动原文。
+ */
+function repairInvalidEscapes(s: string): string {
+  // 保留合法转义 \" \\ \/ \b \f \n \r \t \uXXXX，其余单个反斜杠补成 \\
+  return s.replace(/\\(?!["\\/bfnrtu])/g, '\\\\');
+}
+
+/** 严格解析优先；失败再用 repairInvalidEscapes 兜底（见其注释） */
+function parseJsonTolerant(s: string): unknown {
+  try {
+    return JSON.parse(s);
+  } catch {
+    return JSON.parse(repairInvalidEscapes(s));
+  }
+}
+
+/**
  * 解析抽取类 LLM 的 JSON 输出，兼容三种形态：
  * - JSON 数组（prompt 期望的形态）；
- * - {"items":[...]} 包装对象；
+ * - 包装对象 `{"items":[...]}` / `{"facts":[...]}` 等（模型在 response_format=json_object
+ *   模式下习惯包一层，此前只认 items ⇒ `{"facts":[…]}` 被静默丢成 0 条）；
  * - 单对象 {"type":"session","content":"..."} / {"id":"...","action":"promote",...}——
- *   部分模型在 response_format=json_object 模式下会返回单个对象而非数组
+ *   部分模型在 json_object 模式下会返回单个对象而非数组
  *   （此前只认数组，单对象被静默丢弃，导致抽取结果恒为 0 条）。
  * 解析失败时再尝试从文本中截取 [...] / {...} 片段。
+ * ★ 全程走 parseJsonTolerant：模型输出 Windows 路径时漏转义反斜杠是常态，见其注释。
  */
 export function parseExtractedItems(text: string): any[] {
   const t = String(text || '').trim();
   if (!t) return [];
   const fromObject = (obj: any): any[] | null => {
     if (Array.isArray(obj)) return obj;
-    if (Array.isArray(obj?.items)) return obj.items;
-    if (obj && typeof obj === 'object'
-      && (typeof obj.content === 'string' || (obj.id && typeof obj.action === 'string'))) return [obj];
+    if (!obj || typeof obj !== 'object') return null;
+    // 常见包装键（实测出现过 {"facts":[...]}）
+    for (const k of ['items', 'facts', 'memories', 'data', 'result', 'list']) {
+      if (Array.isArray(obj[k])) return obj[k];
+    }
+    if (typeof obj.content === 'string' || (obj.id && typeof obj.action === 'string')) return [obj];
     return null;
   };
   try {
-    const arr = fromObject(JSON.parse(t));
+    const arr = fromObject(parseJsonTolerant(t));
     if (arr) return arr;
   } catch { /* 尝试从文本截取 */ }
   const m = t.match(/\[[\s\S]*\]/);
   if (m) {
     try {
-      const arr = JSON.parse(m[0]);
+      const arr = parseJsonTolerant(m[0]);
       if (Array.isArray(arr)) return arr;
     } catch { /* 忽略 */ }
   }
   const om = t.match(/\{[\s\S]*\}/);
   if (om) {
     try {
-      const arr = fromObject(JSON.parse(om[0]));
+      const arr = fromObject(parseJsonTolerant(om[0]));
       if (arr) return arr;
     } catch { /* 忽略 */ }
   }
@@ -568,11 +599,11 @@ export async function flushMemoriesBeforeCompression(params: FlushParams, toComp
     // parseExtractedItems 本就能从纯文本里抠出 JSON，不影响结果。
     let resp;
     try {
-      resp = await client.chat(reqMessages, { temperature: 0.2, maxTokens: 800, responseFormat: { type: 'json_object' } as any });
+      resp = await client.chat(reqMessages, { temperature: 0.2, maxTokens: 1600, responseFormat: { type: 'json_object' } as any });
     } catch (e: any) {
       if (/LLM 请求失败: 400/.test(e?.message || '')) {
         logger.warn('[memory] 压缩前抢救: response_format=json_object 被拒(400)，去掉后重试');
-        resp = await client.chat(reqMessages, { temperature: 0.2, maxTokens: 800 });
+        resp = await client.chat(reqMessages, { temperature: 0.2, maxTokens: 1600 });
       } else {
         throw e;
       }
@@ -581,7 +612,11 @@ export async function flushMemoriesBeforeCompression(params: FlushParams, toComp
     const text = resp.delta?.content || '';
     const items = parseExtractedItems(text);
     if (!items.length && text.trim()) {
-      logger.info('[memory] 压缩前抢救: 模型输出无法解析为条目, 前120字:', text.slice(0, 120));
+      // ★ 2026-10-14：INFO → WARN 并带长度/截断线索（此前静默丢数据时日志里翻不到痕迹）
+      logger.warn(
+        `[memory] 压缩前抢救: 模型输出无法解析为条目（len=${text.length}${text.length >= 1600 ? '，疑似被 maxTokens 截断' : ''}），本次抢救已丢弃。前120字:`,
+        text.slice(0, 120),
+      );
     }
 
     // ★ todo 与事实**分流**（2026-10-08）：
