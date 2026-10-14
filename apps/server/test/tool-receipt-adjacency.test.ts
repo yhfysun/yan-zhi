@@ -62,6 +62,30 @@ describe('gapBetweenToolHeadAndReceipt · 纯逻辑（2026-10-12）', () => {
     const tail = [{ role: 'assistant' }, { role: 'assistant', toolCalls: [] }, { role: 'assistant', toolCalls: [{ id: undefined }] }];
     expect(gapBetweenToolHeadAndReceipt(tail, 'x')).toBe(-1);
   });
+
+  it('★★ 2026-10-14 修正：同批多调用的**批内回执**不算间隔（原实现必然误报 gap=1）', () => {
+    // 一个组头带两个 tool_calls、回执按序落库 —— 这正是最常见的健康形态
+    // （实测 conv 96125908 一天 13 条告警里绝大多数是这种：file_read ×2 / task_plan+call_agent）
+    const t: AdjacencyProbe[] = [
+      { role: 'assistant', toolCalls: [{ id: 'a1' }, { id: 'a2' }] },
+      tool('a1'),
+      tool('a2'),
+    ];
+    expect(gapBetweenToolHeadAndReceipt(t, 'a2'), '★ 旧实现这里返回 1 → 误报并带偏排查方向').toBe(0);
+    expect(shouldWarnOnGap(0)).toBe(false);
+    expect(gapBetweenToolHeadAndReceipt(t, 'a1')).toBe(0);
+  });
+
+  it('★ 但夹了**非本批**的消息仍要报（真正的"主循环推进点提前"不能漏）', () => {
+    const t: AdjacencyProbe[] = [
+      { role: 'assistant', toolCalls: [{ id: 'a1' }, { id: 'a2' }] },
+      user, // ← 无关消息插进来
+      tool('a1'),
+      tool('a2'),
+    ];
+    expect(gapBetweenToolHeadAndReceipt(t, 'a2')).toBe(1);
+    expect(shouldWarnOnGap(1)).toBe(true);
+  });
 });
 
 describe('接线守卫 · insertToolMessageAndEmit 必须调判据并告警', () => {

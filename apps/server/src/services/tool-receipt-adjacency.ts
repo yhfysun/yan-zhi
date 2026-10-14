@@ -26,15 +26,25 @@ export interface AdjacencyProbe {
 }
 
 /**
- * 计算「组头与其回执之间夹了多少条消息」。
+ * 计算「组头与其回执之间夹了多少条**不该夹的**消息」。
  *
  * @param tail 该会话**最近落库的消息**，**旧 → 新**排列（末尾 = 最新）。
  *             （调用方若用 `ORDER BY created_at DESC` 取回，需自行 reverse。）
  * @param toolCallId 本次要落库的回执对应的调用 id
  * @returns
  *   · `-1` —— 找不到组头（异常形态；配对问题另由 orphan 逻辑处理）
- *   · `0`  —— 紧邻（健康：组头就是最后一条）
+ *   · `0`  —— 紧邻（健康：中间只有**同批的**其他回执，或没有夹任何东西）
  *   · `>0` —— 被拉开（需告警）
+ *
+ * ★★★ 2026-10-14 修正（high，误报）：原实现把"组头之后的所有消息"一律计为间隔，于是
+ *   **同一批的多工具调用必然误报** —— 一个带 N 个 tool_calls 的组头，第 2 个回执前面天然
+ *   夹着第 1 个回执（gap=1）、第 3 个夹着前两个……而这条 warn 的文案写着"若频繁出现说明
+ *   主循环推进点提前，需排查"，等于把排查方向带偏。
+ *   实测 conv 96125908（2026-10-14）：一天内 13 条告警绝大多数是 gap=1，逐条对回库里的批次
+ *   都属**健康的批内顺序**（如 `file_read, file_read` / `task_plan, call_agent`）。
+ *   ⇒ 只数**非本批**的消息：同批 tool 回执（tool_call_id 属于同一个组头）是正常落库顺序，不计。
+ *     真正要抓的那条（gap=29：并发 call_agent 组头先落库、主循环推进了新轮次，中间夹进
+ *     1 条 user + 8 组完整 assistant/tool 对）一条都不会漏 —— 它们都不是本批的。
  */
 export function gapBetweenToolHeadAndReceipt(tail: AdjacencyProbe[], toolCallId: string): number {
   if (!toolCallId) return -1;
@@ -43,8 +53,17 @@ export function gapBetweenToolHeadAndReceipt(tail: AdjacencyProbe[], toolCallId:
     const m = tail[k];
     if (m?.role !== 'assistant' || !Array.isArray(m.toolCalls) || m.toolCalls.length === 0) continue;
     if (!m.toolCalls.some((tc) => tc?.id === toolCallId)) continue;
-    // 组头在 index k；它之后（更新）的消息条数 = 间隔
-    return tail.length - 1 - k;
+    // 组头在 index k；它之后夹着的、**不属于本批**的消息条数才是间隔
+    const siblingIds = new Set(
+      m.toolCalls.map((tc) => tc?.id).filter((id): id is string => typeof id === 'string'),
+    );
+    let gap = 0;
+    for (let j = k + 1; j < tail.length; j++) {
+      const n = tail[j];
+      if (n?.role === 'tool' && typeof n.toolCallId === 'string' && siblingIds.has(n.toolCallId)) continue;
+      gap++;
+    }
+    return gap;
   }
   return -1;
 }
