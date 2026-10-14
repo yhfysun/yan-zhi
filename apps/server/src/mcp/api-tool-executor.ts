@@ -697,18 +697,19 @@ async function handleImageResult(
 // 与标准通道（agnes / 任意 OpenAI 兼容平台，/v1/images/generations）**并存**：
 // 按平台 baseUrl 自动分派 —— 标准通道零改动，agnes 免费能力不受影响。
 
-/** 平台是否为百炼（DashScope）：按 baseUrl 判定（dashscope.aliyuncs.com / bailian）。 */
-function isDashscopePlatform(baseUrl: string): boolean {
+/** 平台是否为百炼（DashScope）：按 baseUrl 判定（dashscope.aliyuncs.com / bailian）。
+ *  ★ 2026-10-14 导出：供 routes/llm-proxy.ts 的生图代理分支复用（同一判据只有一处实现）。 */
+export function isDashscopePlatform(baseUrl: string): boolean {
   return /dashscope\.aliyuncs\.com|bailian/i.test(baseUrl);
 }
 
 /** 百炼原生 API 根（平台常配成 .../compatible-mode，原生端点在其上一级）。 */
-function dashscopeNativeRoot(baseUrl: string): string {
+export function dashscopeNativeRoot(baseUrl: string): string {
   return baseUrl.replace(/\/compatible-mode\/?$/i, '').replace(/\/+$/, '');
 }
 
 /** OpenAI 风格尺寸 "1024x1024" → 百炼 "1024*1024"；已是 * 或非 WxH 的原样返回。 */
-function toDashscopeSize(size: string): string {
+export function toDashscopeSize(size: string): string {
   const s = size.trim();
   if (!s) return '';
   const m = /^(\d+)\s*[x×*]\s*(\d+)$/i.exec(s);
@@ -717,7 +718,7 @@ function toDashscopeSize(size: string): string {
 }
 
 /** 从百炼响应（同步多模态 / 异步任务结果，结构一致）里取图片地址。 */
-function extractDashscopeImageUrl(j: any): string {
+export function extractDashscopeImageUrl(j: any): string {
   const c = j?.output?.choices?.[0]?.message?.content;
   if (Array.isArray(c)) {
     for (const item of c) {

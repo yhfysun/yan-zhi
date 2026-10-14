@@ -25,7 +25,9 @@ import { resolve } from 'node:path';
 const REPO = resolve(__dirname, '..', '..', '..', '..');
 const FILE = 'packages/ui/src/components/chat/ChatMessageList.vue';
 const RAW = readFileSync(resolve(REPO, FILE), 'utf8');
-const TEMPLATE = RAW.slice(RAW.indexOf('<template>'), RAW.indexOf('</template>') + 11);
+// 模板里还有嵌套的 `<template v-if=...>`，其 `</template>` 在前 —— 必须取**最后**一个才是根模板闭合
+const TEMPLATE = RAW.slice(RAW.indexOf('<template>'), RAW.lastIndexOf('</template>') + 11);
+const SCRIPT = RAW.slice(RAW.lastIndexOf('</template>') + 11);
 
 /** Vue 事件修饰符白名单（`@click.stop` 里的 `.stop` 是修饰符不是属性名的一部分） */
 const EVENT_MODIFIER_OK = /^@[\w-]+(\.(stop|prevent|self|once|passive|capture|exact|sync|ctrl|shift|alt|meta|enter|esc|tab|delete|backspace|space|up|down|left|right|native))+$/;
@@ -88,10 +90,94 @@ describe('② 窗口化 v-for 契约', () => {
 
   it('★★ 模板里不残留裸 round / ri 引用（说明替换彻底，没有半途而废的表达式）', () => {
     // 只看表达式区（属性值），静态文本里出现这些词无妨
-    const exprValues = [...TEMPLATE.matchAll(/(?::[\w.-]+|@[\w.-]+)="([^"]*)"/g)].map((m) => m[1]);
+    // ★ 例外：右侧「轮次横岗」那段 v-for 自己声明了循环变量 `ri`（`v-for="(ri, idx) in
+    //   userRoundIndices"`），那里的裸 ri 是**合法**的，与窗口化无关 —— 先把整段挖掉，
+    //   否则切片范围修正为完整模板后它会误报。（此前 TEMPLATE 只切到模板里第一个
+    //   `</template>`，后半段根本没被扫到。）
+    const navStart = TEMPLATE.indexOf('v-for="(ri, idx) in userRoundIndices"');
+    const navText = TEMPLATE.indexOf('round-nav-list-text', navStart >= 0 ? navStart : 0);
+    const navEnd = navText < 0 ? -1 : TEMPLATE.indexOf('</div>', navText);
+    const scannable = navStart < 0 || navEnd < 0
+      ? TEMPLATE
+      : TEMPLATE.slice(0, navStart) + TEMPLATE.slice(navEnd + '</div>'.length);
+    const exprValues = [...scannable.matchAll(/(?::[\w.-]+|@[\w.-]+)="([^"]*)"/g)].map((m) => m[1]);
     const joined = exprValues.join('\n');
     // 裸 ri 作为独立标识符（非 vr.ri、非字符串、非别的标识符的一部分）
     const bareRi = joined.match(/(^|[^.\w'"])\bri\b/g) || [];
     expect(bareRi, '★ 表达式里还有裸 ri（未被替换成 vr.ri）').toEqual([]);
+  });
+});
+
+/**
+ * ③ 折叠状态 key「写端 = 读端」守门（2026-10-14 实报：智能体思考过程点不动）。
+ *
+ * 背景（真踩，与 ① 同源）：那次机械替换还改坏了**字符串字面量里的 key 前缀** ——
+ *   模板写端 `toggleAgentProcess('round-' + ri)` 里 `'round-'` 的 `round` 也被当成
+ *   标识符替成了 `vr.round` ⇒ 点一下写进 `expandedAgentProcess['vr.round-3']`；
+ *   而脚本里的判定函数 `isProcessOpen()` 写的是 `expandedAgentProcess['round-' + ri]`
+ *   （该函数内没有裸 `round` 标识符，替换没碰到它）⇒ 两边**永远不同键**。
+ *   表现：「智能体思考过程」折叠块点击无反应（流式期强制展开还盖住了这个 bug，
+ *   只有任务结束后去点历史轮才暴露）；编译期、类型检查、原有守门测试全绿。
+ *
+ * ★ 本测试钉两件事：
+ *   ③-1 同一份折叠状态的**写端 key 前缀**（模板 `toggleX('前缀' + ...)`）与
+ *        **读端 key 前缀**（模板/脚本 `map['前缀' + ...]`）必须逐字相同；
+ *   ③-2 模板表达式里不得再出现 `'vr.xxx'` 这种被替换污染的字面量（通用特征）。
+ */
+describe('③ 折叠状态 key 读写前缀必须逐字一致（字符串字面量同样会被机械替换改坏）', () => {
+  /** 收集 `名字['前缀' +` 形式的前缀 */
+  function readPrefixes(src: string, mapName: string): string[] {
+    return [...src.matchAll(new RegExp(`${mapName}\\['([^']*)'\\s*\\+`, 'g'))].map((m) => m[1]);
+  }
+  /** 收集 `名字('前缀' +` 形式的前缀（模板里的 toggle* 调用即写端） */
+  function writePrefixes(src: string, fnName: string): string[] {
+    return [...src.matchAll(new RegExp(`\\b${fnName}\\('([^']*)'\\s*\\+`, 'g'))].map((m) => m[1]);
+  }
+
+  it('★★★ 智能体思考过程：模板写端前缀 === 脚本 isProcessOpen 读端前缀', () => {
+    const write = writePrefixes(TEMPLATE, 'toggleAgentProcess');
+    const read = readPrefixes(SCRIPT, 'expandedAgentProcess');
+    expect(write.length, '★ 锚点缺失：模板里没有 toggleAgentProcess(...) 调用').toBeGreaterThan(0);
+    expect(read.length, '★ 锚点缺失：脚本里没有 expandedAgentProcess[...] 读取').toBeGreaterThan(0);
+    expect(
+      [...new Set(write)].sort(),
+      '★ 写端/读端前缀不一致 ⇒ 点击后判定函数查不到该 key，折叠块点不动\n' +
+      `  写端 ${[...new Set(write)].join('、')} / 读端 ${[...new Set(read)].join('、')}\n` +
+      "  （两边都必须是 `round-`：模板 `toggleAgentProcess('round-' + vr.ri)`，" +
+      "脚本 `expandedAgentProcess['round-' + ri]`）",
+    ).toEqual([...new Set(read)].sort());
+  });
+
+  it('★★ 其余折叠状态：模板内写端与读端的前缀集合相同', () => {
+    // expandedReasoning 天然有两个前缀（步骤推理 agent-step- / 主智能体思考 agent-fa-），
+    // 所以断言的是**集合相等**而非「只有一个前缀」。
+    const pairs: Array<[string, string]> = [
+      ['expandedToolGroups', 'toggleToolGroup'],
+      ['expandedStepTools', 'toggleStepTools'],
+      ['expandedReasoning', 'toggleReasoning'],
+    ];
+    for (const [mapName, fnName] of pairs) {
+      const read = readPrefixes(TEMPLATE, mapName);
+      const write = writePrefixes(TEMPLATE, fnName);
+      expect(read.length, `★ 锚点缺失：模板里没有 ${mapName}[...] 读取`).toBeGreaterThan(0);
+      expect(write.length, `★ 锚点缺失：模板里没有 ${fnName}(...) 调用`).toBeGreaterThan(0);
+      expect(
+        [...new Set(write)].sort(),
+        `★ ${mapName} 写端前缀与读端前缀不匹配 ⇒ 点不动\n` +
+        `  写端 ${[...new Set(write)].join('、')} / 读端 ${[...new Set(read)].join('、')}`,
+      ).toEqual([...new Set(read)].sort());
+    }
+  });
+
+  it('★★ 模板表达式里不得出现 `vr.` 污染的字面量', () => {
+    // `'vr.round-' + vr.ri` 这种：字符串里被塞进了 `vr.` 前缀。任何合法 key 前缀
+    // 都不会以 `vr.` 开头，所以这是「机械替换改坏字面量」的零误报特征。
+    const exprValues = [...TEMPLATE.matchAll(/(?::[\w.-]+|@[\w.-]+)="([^"]*)"/g)].map((m) => m[1]);
+    const polluted = exprValues.filter((v) => /['"]vr\./.test(v));
+    expect(
+      polluted,
+      '★ 表达式里的字符串字面量被机械替换污染（`\'vr.xxx\'` 不是合法 key 前缀）:\n  ' +
+      polluted.join('\n  '),
+    ).toEqual([]);
   });
 });

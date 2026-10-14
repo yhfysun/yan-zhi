@@ -90,7 +90,7 @@
               <span class="collapsed-hint">点击展开</span>
             </div>
             <div v-show="!collapsedMessages[vr.round.finalAssistant?.id || '']">
-              <div v-if="vr.round.hasAgentProcess" class="agent-process-header" @click="toggleAgentProcess('vr.round-' + vr.ri)">
+              <div v-if="vr.round.hasAgentProcess" class="agent-process-header" @click="toggleAgentProcess('round-' + vr.ri)">
                 <el-icon :size="14" class="agent-process-icon">
                   <CaretRight v-if="!isProcessOpen(vr.round, vr.ri)" />
                   <CaretBottom v-else />
@@ -182,7 +182,7 @@
                 </div>
                 <div v-if="!vr.round.steps.length && vr.round.allToolCalls.length" class="agent-old-tools">
                   <div class="msg-reasoning">
-                    <div class="reasoning-header" @click="toggleToolGroup('vr.round-' + vr.ri)">
+                    <div class="reasoning-header" @click="toggleToolGroup('round-' + vr.ri)">
                       <el-icon :size="14" class="tool-group-dot" :class="getToolGroupStatusClass(null, vr.round.allToolCalls)">
                         <Loading v-if="isToolGroupRunning(vr.round.allToolCalls)" class="is-loading" />
                         <CircleCheck v-else-if="!isToolGroupError(vr.round.allToolCalls)" />
@@ -190,13 +190,13 @@
                       </el-icon>
                       <span>工具调用 ({{ vr.round.allToolCalls.length }})</span>
                       <el-icon :size="12" style="margin-left:auto;color:var(--color-text-secondary)">
-                        <ArrowDown v-if="!expandedToolGroups['vr.round-' + vr.ri]" />
+                        <ArrowDown v-if="!expandedToolGroups['round-' + vr.ri]" />
                         <ArrowRight v-else />
                       </el-icon>
                     </div>
-                    <div v-show="!expandedToolGroups['vr.round-' + vr.ri]" class="tool-group-body" style="margin-top:6px;border-top:1px dashed color-mix(in srgb, var(--color-primary) 12%, transparent);padding-top:6px">
+                    <div v-show="!expandedToolGroups['round-' + vr.ri]" class="tool-group-body" style="margin-top:6px;border-top:1px dashed color-mix(in srgb, var(--color-primary) 12%, transparent);padding-top:6px">
                       <div v-for="(tc, idx) in vr.round.allToolCalls" :key="idx" class="tool-item">
-                        <div class="tool-item-header" @click="toggleTool('vr.round-' + vr.ri + '-' + idx)">
+                        <div class="tool-item-header" @click="toggleTool('round-' + vr.ri + '-' + idx)">
                           <div class="tool-item-left">
                             <el-icon :size="12" class="tool-item-status" :class="getToolStatusClass(tc.id)">
                               <CircleCheck v-if="getToolResult(tc.id) && !isToolError(tc.id)" />
@@ -208,13 +208,13 @@
                             <span v-if="toolTargetHint(tc)" class="tool-item-target" :title="toolTargetHint(tc)">{{ toolTargetHint(tc) }}</span>
                           </div>
                           <el-icon :size="12" class="tool-item-chevron">
-                            <ArrowDown v-if="expandedTools['vr.round-' + vr.ri + '-' + idx]" />
+                            <ArrowDown v-if="expandedTools['round-' + vr.ri + '-' + idx]" />
                             <ArrowRight v-else />
                           </el-icon>
                         </div>
                         <!-- 本条调用产出的图片 / 视频：贴在工具卡片上（折叠体之外）—— 展开状态无关，收起也能看到 -->
                           <ToolMediaPreview v-if="toolMedia(getToolResult(tc.id))" :media="toolMedia(getToolResult(tc.id))!" class="tool-item-media-inline" />
-                          <div v-show="expandedTools['vr.round-' + vr.ri + '-' + idx]" class="tool-item-body">
+                          <div v-show="expandedTools['round-' + vr.ri + '-' + idx]" class="tool-item-body">
                           <div class="tool-item-section">
                             <div class="tool-item-label">参数</div>
                             <pre class="tool-item-json">{{ resolveToolArgs(tc) }}</pre>

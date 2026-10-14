@@ -1889,8 +1889,13 @@ export function parseTextModeToolCalls(
     const invokeRe = /<\|DSML\|invoke\s+name\s*=\s*["']([^"']+)["']\s*\/?>/gi;
     const invokes: { name: string; start: number; end: number }[] = [];
     let inv: RegExpExecArray | null;
-    while ((inv = invokeRe.exec(body)) !== null) invokes.push({ name: inv[1], start: inv.index, end: invokeRe.lastIndex });
+    while ((inv = invokeRe.exec(body)) !== null) invokes.push({ name: inv[1].trim(), start: inv.index, end: invokeRe.lastIndex });
     for (let i = 0; i < invokes.length; i++) {
+      // ★ 工具名已 trim 到裸名（见上）：模型常写成 `name=" browser_navigate"` 或尾部带空白，
+      //   而带空白的名字会**绕过**前端那些按严格相等判定的专用分支
+      //   （如 `fullName === 'browser_navigate'`）→ 最终落到兜底报「未知工具: browser_navigate」。
+      //   报错文案与正常名一模一样，极难查（2026-10-14 实测）。
+      if (!invokes[i].name) continue;
       // 该次调用的参数取值范围：本 invoke 之后、下一个 invoke 之前
       const seg = body.slice(invokes[i].end, i + 1 < invokes.length ? invokes[i + 1].start : body.length);
       const args: Record<string, unknown> = {};

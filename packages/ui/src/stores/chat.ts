@@ -1793,6 +1793,13 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
       if (isElectronDesktopBrowser && fullName.startsWith('browser_')) {
         // browser_* 工具名 → browserView:action action 名（统一通道，废弃 browser:call 的 10-action 子集）
         const actionMap: Record<string, string> = {
+          // ★★★ 2026-10-14：补 browser_navigate —— 它是**唯一**有专用分支（上方
+          //   `fullName === 'browser_navigate'`）却没进本表的工具。专用分支用的是**严格相等**，
+          //   一旦传进来的名字有变体（前后空格 / 大小写 / 前后缀），分支不命中就会掉进本表，
+          //   而本表没有它 ⇒ 直落末尾兜底报「未知工具: browser_navigate」（用户实报）。
+          //   主进程早已实现该 action（DESKTOP_BROWSER_ACTIONS 含 'navigate'，main.cjs 有
+          //   case 'navigate'），补上映射即成为一条可靠的兜底路径，不再死。
+          'browser_navigate': 'navigate',
           'browser_get_page_info': 'get_page_info',
           'browser_get_page_content': 'get_page_content',
           'browser_get_dom': 'get_dom',
