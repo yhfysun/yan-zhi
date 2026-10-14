@@ -1154,9 +1154,20 @@ const PAGE_AGENT_BUILTIN_TOOLS = [
   //   text/select/checkbox/radio/label 全支持，失败字段逐条上报），此前漏挂载导致
   //   pageAgent 只能逐个 browser_type 填表 —— 典型"能力在、入口断"。已在 WRITE_TOOLS。
   'browser_fill_form', 'browser_submit_form',
+  // 读文件（2026-10-14）：pageAgent 此前**只挂 file_write、没有 file_read** —— 需要读本地文件
+  //   （父智能体落盘的成品文案/章节/经验档）时无工具可用，只能拿浏览器凑：
+  //   browser_navigate(file://…) 会把本地路径当页面开进预览面板、fetch(file://) 也读不到
+  //   （实测 conv 96125908 就是为此把 .yan-zhi/experience/sites/douyin.md 开进了预览浏览器）。
+  //   ⇒ 补 file_read（只读，低风险）。三处必须同步：本数组 + 下方提示词工具段 + 前端 agent.ts。
+  'file_read',
+  // 文件读写/检索基础能力（2026-10-14 用户要求「基础能力都要有」）：列目录 / 全文检索 / 精准改文件
+  'file_list', 'file_grep', 'file_edit',
   // 落盘（2026-10-09）：推文产线里 pageAgent 抓到章节正文后要自己写盘（此前只能贴回对话，
   // 长章节有截断风险）。readonly 会话仍会被 checkToolPermission 运行时拒绝，不影响只读语义。
   'file_write',
+  // 代码/命令执行基础能力（2026-10-14 用户要求）：Python / JS / 系统命令
+  //   ⚠️ 这三个在本机执行，权限高于纯浏览器操作；只读会话由 checkToolPermission 运行时拒绝。
+  'python_exec', 'js_exec', 'cmd_exec',
   // P2-2 纯视觉兜底路线（2026-10-07）：DOM 路径失效时的 MolmoWeb 式「截图→识别→坐标动作」循环
   // （image_analyze 虽在 UI_TOOL_NAMES，但在线任务的 includeUiTools=true 时不过滤，pageAgent 在线委派可用）
   'browser_screenshot', 'image_analyze',
@@ -1226,8 +1237,16 @@ PAGE_AGENT_BUILTIN_TOOLS 必须逐项一致——提示词推荐了却没挂 = �
 - browser_submit_form: 提交表单——填写完成后用它提交（也可改用 browser_click 点提交按钮）
 - browser_screenshot: 截图当前页面（annotate=true 时叠加元素编号框），返回文件路径
 - image_analyze: 视觉识别——把截图路径 + 描述传给视觉模型，返回画面内容/元素位置
+- file_read: 读本地文件（工作目录内）——需要复用父任务落盘的成品文案/章节/经验档，或核对文件内容时用它。★ 不要用 browser_navigate 打开 file:// 去读文件：那会把本地路径当页面开进预览面板，且加载必然失败；读文件一律用本工具。
+- file_list: 列目录/文件清单（工作目录内）——定位素材/稿件/输出文件在哪。
+- file_grep: 文件全文检索——在一个或多个文件里按关键词/正则找内容，快速定位章节或片段。
+- file_edit: 精准改文件（先读后改，oldText 必须逐字一致）——小范围修改用它对；整段重写用 file_write。
 - file_write: 写文件到工作目录——抓到正文/结果后直接落盘（长内容别只贴在回复里，有截断风险）。
   ★ 只读权限会话会在运行时被拒绝（这是预期行为，不是故障）
+- python_exec: 在本机执行 Python——统计/切分/合并/生成 CSV 等；适合一切"算一下/批处理"的活。
+- js_exec: 在本机执行 JavaScript(Node)——JSON 处理/字符串批处理/小脚本。
+- cmd_exec: 执行本机系统命令——调用 CLI（如 ffmpeg / yt-dlp / 目录操作等）。
+  ★ file_* / python_exec / js_exec / cmd_exec 都直接作用于本机文件与进程：务必把文件写在当前工作目录内，命令要能在无人值守下安全完成。
 - ask_user: 向用户提问/请求确认（用于扫码登录等需要人工干预的场景）
 
 工作流程：

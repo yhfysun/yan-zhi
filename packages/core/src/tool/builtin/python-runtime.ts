@@ -143,16 +143,38 @@ export function withUtf8Output(env: Record<string, string>): Record<string, stri
   return env;
 }
 
-/** 定位 Python 解释器：打包优先，系统回退 */
+/**
+ * PATH 探测成功的解释器（进程内缓存）。
+ * ★ 只缓存**成功**结果；失败不缓存 —— "用户刚把 Python 装上" 这类情况下次仍会重新探测。
+ */
+let cachedShellPython: string | null = null;
+/** 探针超时：探测本身是**起进程**（不是跑脚本），机器忙时启动开销就够吃掉 5s */
+const PY_PROBE_TIMEOUT_MS = 15000;
+
+/**
+ * 定位 Python 解释器：打包优先，系统回退
+ *
+ * ★★★ 2026-10-14 实报（medium）：`python_exec` **间歇**回报「未找到 Python」，而同一会话里
+ *   同一工具几分钟前还正常（conv 96125908：16:41 / 16:51 报"未找到"，16:26 / 16:31 / 16:46 / 16:49
+ *   正常）。根因是此处**每次调用都现场重探**：三个候选逐个起子进程、`timeout: 5000`，而任务
+ *   运行期机器正被浏览器渲染占满 —— `--version` 的**启动**开销就能超 5s ⇒ 三个候选全判失败
+ *   ⇒ 报"未找到 Python"，把**机器忙**误报成**没装 Python**。更糟的是模型据此转向
+ *   `js_exec`（沙箱无 setTimeout）/ `cmd_exec` 绕路，白烧步数并推高循环拦截计数。
+ *   ⇒ ① 探针超时 5s → 15s；② 探成功后缓存，正常路径每个进程只探一次。
+ */
 export async function findPython(): Promise<string> {
   const bundled = getBundledPythonPath();
   if (bundled) return bundled;
+  if (cachedShellPython) return cachedShellPython;
   const shell = getPlatformAdapter().shell;
   if (!shell) throw new Error('python 执行需要桌面端或服务端环境（shell）。Web 浏览器端不支持。');
   for (const cmd of ['python', 'python3', 'py']) {
     try {
-      const r = await shell.exec(cmd, ['--version'], { timeout: 5000 });
-      if (r.exitCode === 0) return cmd;
+      const r = await shell.exec(cmd, ['--version'], { timeout: PY_PROBE_TIMEOUT_MS });
+      if (r.exitCode === 0) {
+        cachedShellPython = cmd;
+        return cmd;
+      }
     } catch {
       /* try next */
     }

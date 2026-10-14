@@ -174,8 +174,11 @@ const PAGE_AGENT_BUILTIN_TOOLS = [
   'browser_run_script',
   // P2-2 纯视觉兜底路线（2026-10-07）：截图 + 视觉识别（DOM 失效时的 MolmoWeb 式兜底）
   'browser_screenshot', 'image_analyze',
-  // 与 server db.ts 收口清单对齐（2026-10-07 upload / 2026-10-09 file_write 落盘）
-  'browser_upload', 'file_write',
+  // 与 server db.ts 收口清单对齐（2026-10-07 upload / 2026-10-09 file_write 落盘
+  //   / 2026-10-14 补 file_read 及文件检索/精准改 + python_exec/js_exec/cmd_exec 基础能力：
+  //   此前 pageAgent 只有 file_write，读本地文件只能拿 browser_navigate(file://…) 凑）
+  'browser_upload', 'file_read', 'file_write', 'file_list', 'file_grep', 'file_edit',
+  'python_exec', 'js_exec', 'cmd_exec',
   // 与 server db.ts 对齐（2026-10-11 F1）：表单批量填写/提交（此前漏挂载 → 只能逐个 browser_type）
   'browser_fill_form', 'browser_submit_form',
   // 登录闭环必备：向用户提问/请求确认（扫码、验证码等人工干预场景）
@@ -194,6 +197,10 @@ const PAGE_AGENT_DATA = {
 - browser_click: 点击元素（优先元素编号 index，其次 CSS 选择器或坐标）
 - browser_scroll: 滚动页面。传 y（正数向下/负数向上，像素，如 y=600）滚动一屏查看视口外内容；传 selector 则把目标元素滚到视野中央。用于查看长列表更多内容、触发懒加载，或让视口外的按钮/元素进入视野后再点击
 - browser_get_page_content: 一次获取当前页面完整状态：title + url + 可见正文 + 带 index 编号的可交互元素列表（已穿透 iframe/Shadow DOM）
+- file_read: 读本地文件（工作目录内）——复用父任务落盘的成品文案/章节/经验档；★ 读文件用它，不要用 browser_navigate 打开 file://
+- file_write: 写文件到工作目录（长内容别只贴在回复里，有截断风险）
+- file_list / file_grep / file_edit: 列目录 / 全文检索 / 精准改文件
+- python_exec / js_exec / cmd_exec: 在本机执行 Python / JavaScript(Node) / 系统命令
 - ask_user: 向用户提问/请求确认（用于扫码登录等需要人工干预的场景）
 
 工作流程：

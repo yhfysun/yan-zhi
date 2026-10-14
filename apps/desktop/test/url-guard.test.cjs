@@ -228,3 +228,22 @@ describe('main.cjs 接线守门 —— 收口到 guardNavigation，不得只挂 
     assert.match(body, /guardNavigation\(wc\)/, 'guest 装配必须收口到 guardNavigation');
   });
 });
+
+describe('new_tab URL 闸门（2026-10-14）', () => {
+  const mainSrc = fs.readFileSync(path.join(DESKTOP, 'main.cjs'), 'utf8');
+
+  test("case 'new_tab' 必须对 url 做白名单校验（防 file:// 开进预览浏览器）", () => {
+    // ★ 背景：browser_navigate(openInNewTab:true) 在进 switch 前被改写成 new_tab（见 main.cjs:3153），
+    //   而 new_tab 此前**没有任何 URL 校验** → navigate 分支的白名单被整个绕过：
+    //   模型传 file://…/xxx.md 会被直接开进预览浏览器（实测 conv 96125908 开了本地经验档 md）。
+    const start = mainSrc.indexOf("case 'new_tab':");
+    const end = mainSrc.indexOf("case 'switch_tab':");
+    assert.ok(start > -1 && end > start, '找不到 new_tab / switch_tab 分支（改名/改格式后本测试需同步）');
+    const body = mainSrc.slice(start, end);
+    assert.ok(
+      body.includes('[newtab-url-guard]'),
+      'new_tab 分支缺 URL 白名单哨兵 [newtab-url-guard] —— openInNewTab 改写成 new_tab 会绕过 navigate 的校验，file:// 会被直接开进预览浏览器',
+    );
+    assert.ok(body.includes('无效 URL'), 'new_tab 分支缺「无效 URL」拒绝返回');
+  });
+});

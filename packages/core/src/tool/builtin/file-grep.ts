@@ -74,8 +74,21 @@ export class FileGrepTool implements BuiltInTool {
     if (!exists) {
       return toolError(`Error: path not found: ${target}`);
     }
-    // 目录探测：尾部斜杠存在性（与 file_list/code_search 同款手法）
-    const isDir = await fs.exists(`${target.replace(/[\\/]+$/, '')}/`).catch(() => false);
+    // 目录探测：**必须用 stat（拿不到就 readDir 探测），不能用 `fs.exists(p + '/')`**。
+    //   ★★★ 2026-10-14 实报（high）：此处原先写 `fs.exists(target + '/')`，而
+    //   **Windows 上对「文件」加尾斜杠 stat 同样成功** ⇒ 单个文件被判成目录 ⇒
+    //   `walkFiles`（对文件 readDir 必然失败）返回空 ⇒ 恒回
+    //   「No files to search in: <那个文件>」。实测 conv 96125908 16:20:17 现场复现；
+    //   模型以为参数写错、换着花样重试同一文件，16:02:10 更因此连撞两次触发循环闸门硬停。
+    //   这个坑 fs-walk.ts:114 已踩过并写明（"2026-10-03 集成自测实测"），本文件**漏改** ——
+    //   同一语义的目录探测在本仓库只应有这一种写法（fs-walk.ts 内那两处为唯一先例）。
+    let isDir = false;
+    if (fs.stat) {
+      try { isDir = (await fs.stat(target)).isDir; } catch { isDir = false; }
+    } else {
+      // 无 stat 的适配器：readDir 对目录成功、对文件抛错，该语义两端都成立
+      isDir = await fs.readDir(target).then(() => true).catch(() => false);
+    }
 
     const files = isDir
       ? await walkFiles(fs, target, {

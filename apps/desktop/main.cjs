@@ -3849,6 +3849,29 @@ async function runBrowserAction(convId, tabId, action, args) {
             return file;
           } catch { return undefined; }
         };
+        // ★ 2026-10-14：capturePage 在「页面不可见 / 被其他窗口遮挡 / 所在标签页未激活」时
+        //   会抛 `Current display surface not available for capture` —— 10-12 诊断报告记了 9 次，
+        //   10-14 那次运行又连续 5 次。而截图是 DOM 失效时**唯一的视觉兜底**，一失败模型就只剩
+        //   browser_run_script 反复探查（实测正是这条把它推进死循环，最后被循环闸门掐死）。
+        //   ⇒ ① 短暂重试一次（刚切页/刚滚动完的瞬时不可捕获很常见）；
+        //     ② 仍失败则回**可行动**的错误，明确让模型改走 DOM 读取、别再换参数重试截图。
+        const capturePageWithRetry = async () => {
+          try {
+            return await wc.capturePage();
+          } catch (e1) {
+            await new Promise((r) => setTimeout(r, 400));
+            try {
+              return await wc.capturePage();
+            } catch (e2) {
+              throw new Error(
+                '截图不可用（页面当前不可见 / 被遮挡 / 所在标签页未激活），重试一次仍失败。'
+                + '**不要再调用 browser_screenshot**：改读页面结构 —— browser_get_page_content'
+                + '（正文 + 带编号的可交互元素）、browser_get_page_info（元素坐标），二者不依赖可视区。'
+                + `原始错误: ${(e2 && e2.message) || e2}`,
+              );
+            }
+          }
+        };
         if (args.annotate) {
           // 元素标注截图：注入覆盖层画编号框（与 server Playwright 端对齐），截图后移除
           const overlayId = '__yz_annotate_overlay';
@@ -3878,12 +3901,12 @@ async function runBrowserAction(convId, tabId, action, args) {
             document.documentElement.appendChild(ov);
             return true;
           })()`);
-          const image = await wc.capturePage();
+          const image = await capturePageWithRetry();
           await wc.executeJavaScript(`(function(){var p=document.getElementById(${JSON.stringify(overlayId)});if(p)p.remove();})()`).catch(() => {});
           const archivedFile = await saveShotArchive(image);
           return { base64: image.toDataURL().split(',')[1], annotated: true, ...(archivedFile ? { file: archivedFile } : {}) };
         }
-        const image = await wc.capturePage();
+        const image = await capturePageWithRetry();
         const archivedFile = await saveShotArchive(image);
         return { base64: image.toDataURL().split(',')[1], ...(archivedFile ? { file: archivedFile } : {}) };
       }
@@ -4338,6 +4361,16 @@ async function runBrowserAction(convId, tabId, action, args) {
       }
       // ========== C4 多标签页管理（桌面端单 BrowserView，降级提示） ==========
       case 'new_tab': {
+        // ★ [newtab-url-guard] 2026-10-14：new_tab 此前**完全没有 URL 校验** —— 而
+        //   browser_navigate(openInNewTab:true) 在进 switch 前就被改写成 new_tab（见 :3153），
+        //   于是 navigate 分支的白名单被整个绕过：模型传 file://…/xxx.md 会被**直接开进预览
+        //   浏览器**（实测 conv 96125908 把本地 .yan-zhi/experience/sites/douyin.md 开了出来）。
+        //   这里套用与 navigate 相同的白名单（http/https/about:blank/空）。
+        {
+          const rawNewTabUrl = String(args.url || '').trim().replace(/^[`"'\s]+|[`"'\s]+$/g, '');
+          const isBlankNewTabUrl = !rawNewTabUrl || /^about:blank$/i.test(rawNewTabUrl);
+          if (!isBlankNewTabUrl && !/^https?:\/\//i.test(rawNewTabUrl)) return { error: `无效 URL: ${rawNewTabUrl}` };
+        }
         // 多标签页：webview 引擎下每个 host 是一个 <webview>，支持真新建并返回 tabId。
         if (isWebviewEngine()) {
           // 归属空间固定 preview：agent/browser_new_tab 面向对话右栏的浏览器 host 新开页，

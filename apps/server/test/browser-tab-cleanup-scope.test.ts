@@ -29,6 +29,25 @@ function sliceFrom(src: string, startMarker: string, length = 2000): string {
   return i < 0 ? '' : src.slice(i, i + length);
 }
 
+/**
+ * 取某个 `case 'x': {` 分支的**完整正文**（截到下一个同缩进 case 为止）。
+ *
+ * ★ 为什么不用固定字符数（2026-10-14 实测踩到）：原先写的是 sliceFrom(…, 1800)，
+ *   而给 `case 'new_tab'` 补上 URL 守卫后，该分支里的 `meta.agentOpened = true` 被推到
+ *   第 **2099** 字符（HEAD 时是 1404）⇒ 固定窗口够不着 ⇒ 测试变红，**报的却是"没置
+ *   agentOpened"** —— 语义一个字没变，纯粹是窗口不够。这正是本仓库反复吃过的"锚点漂移"
+ *   （见 c436dfe「修 5 个既有红灯（锚点漂移 4 + 竞态 1）」）。
+ *   ⇒ 按 case 边界切片是自适应的：分支增长不会漂；同时因为**截到下一个 case 为止**，
+ *     也不会把断言误匹配到相邻分支里（比单纯放大窗口更精确）。
+ *   ★ 锚点缺失仍返回 '' → 断言照样红，"防丢锚点"的初衷不变。
+ */
+function sliceCase(src: string, startMarker: string): string {
+  const i = src.indexOf(startMarker);
+  if (i < 0) return '';
+  const next = src.indexOf("\n      case '", i + startMarker.length);
+  return src.slice(i, next < 0 ? src.length : next);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 describe('权限边界：agent 只能关闭自己打开的 tab（执行侧强制）', () => {
   /**
@@ -49,7 +68,7 @@ describe('权限边界：agent 只能关闭自己打开的 tab（执行侧强制
   });
 
   it('agent 的 new_tab 路径（browserView:action）必须置 agentOpened: true', () => {
-    const fn = sliceFrom(mainSrc, "case 'new_tab': {", 1800);
+    const fn = sliceCase(mainSrc, "case 'new_tab': {");
     // ★ 2026-10-11 契约更新：new_tab 改为**走 createBrowserTab()**（tab 创建唯一收口，
     //   内含 MAX_TABS/LRU 逐出；此前它自己 `tabSeq++` + `webviewTabs.set` 绕过了收口）
     //   ⇒ agentOpened 从"字面量建对象"改为"建好后补标记"，语义不变。
@@ -59,13 +78,13 @@ describe('权限边界：agent 只能关闭自己打开的 tab（执行侧强制
   });
 
   it('close_tab（agent 通道）必须拒绝非 agentOpened 的 tab', () => {
-    const fn = sliceFrom(mainSrc, "case 'close_tab': {", 1200);
+    const fn = sliceCase(mainSrc, "case 'close_tab': {");
     expect(fn, 'close_tab 缺权限闸门').toMatch(/meta\.agentOpened\s*!==\s*true/);
     expect(fn, '拒绝时应返回 error 而不是静默关闭').toMatch(/return\s*\{\s*error:/);
   });
 
   it('拒绝文案必须告诉模型"别再试"（防止反复重试白烧步数）', () => {
-    const fn = sliceFrom(mainSrc, "case 'close_tab': {", 1200);
+    const fn = sliceCase(mainSrc, "case 'close_tab': {");
     expect(fn).toMatch(/请勿再次尝试|不要再次/);
   });
 
@@ -77,7 +96,7 @@ describe('权限边界：agent 只能关闭自己打开的 tab（执行侧强制
   });
 
   it('get_tabs 必须把 agentOpened 暴露给模型（事前可见）', () => {
-    const fn = sliceFrom(mainSrc, "case 'get_tabs': {", 700);
+    const fn = sliceCase(mainSrc, "case 'get_tabs': {");
     expect(fn).toMatch(/agentOpened:\s*t\.agentOpened\s*===\s*true/);
   });
 });
