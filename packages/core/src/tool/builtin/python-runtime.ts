@@ -9,6 +9,7 @@ import type { McpCallResult } from '../../mcp/client';
 import { getPlatformAdapter } from '../../platform/types';
 import { capToolOutput } from './output-cap';
 import { toolError } from '../result';
+import { classifyPythonFailure, getPythonRepairer, type PythonRepairResult } from './python-repair';
 
 /** file:// URL → 本地路径（手工转换，避免 import 'url' 被 Vite 浏览器外部化后炸掉渲染进程 bundle） */
 function fileUrlToLocalPath(u: string): string {
@@ -229,4 +230,41 @@ export async function runPythonScript(
     cwd: opts.cwd,
     env,
   });
+}
+
+/**
+ * 跑 python 脚本，失败且**可自愈**时自动修复并重跑一次（2026-10-14）。
+ *
+ * 自愈由 server 注入（python-self-heal.ts）：装缺失模块 / 升级 edge-tts / 补系统代理，
+ * 成功后再跑一遍脚本 —— 让应用「出问题换法子修」，而不是把原始 stderr 丢回用户。
+ *
+ * 返回原始 exec 结果 + `repairLog`（本次自动做了哪些修复，供工具输出展示；无修复则空数组）。
+ */
+export async function runPythonScriptHealing(
+  scriptPath: string,
+  scriptArgs: string[] = [],
+  opts: { timeout?: number; cwd?: string; env?: Record<string, string> } = {},
+): Promise<{ stdout: string; stderr: string; exitCode: number; repairLog: string[] }> {
+  const first = await runPythonScript(scriptPath, scriptArgs, opts);
+  const repairLog: string[] = [];
+  if (first.exitCode === 0) return { ...first, repairLog };
+
+  const failure = classifyPythonFailure(first.stderr);
+  const repairer = getPythonRepairer();
+  if (!failure || !repairer) return { ...first, repairLog };
+
+  let result: PythonRepairResult;
+  try {
+    result = await repairer({ failure, scriptPath, cwd: opts.cwd, stderr: first.stderr });
+  } catch (e) {
+    repairLog.push(`自愈尝试失败：${(e as Error)?.message || e}`);
+    return { ...first, repairLog };
+  }
+  if (!result.repaired) {
+    repairLog.push(`自愈未成功（${failure.kind}）${result.detail ? `：${result.detail}` : ''}`);
+    return { ...first, repairLog };
+  }
+  repairLog.push(`已自动修复（${failure.kind}）${result.detail ? `：${result.detail}` : ''}，正在重跑…`);
+  const second = await runPythonScript(scriptPath, scriptArgs, opts);
+  return { ...second, repairLog };
 }

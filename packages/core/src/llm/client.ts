@@ -63,6 +63,18 @@ export function buildProtocolHeaders(protocol: string, apiKey: string): Record<s
  * 上游非 2xx 响应 → 可行动的错误信息（client 内 4 份复制的 hint 块收口）。
  * maxChars：流式路径截断 200，非流式 500。
  */
+/** 从上游响应体提取错误码（OpenAI 兼容 / 网关各异），拿不到返回 ''。 */
+export function upstreamErrorCode(text: string): string {
+  if (!text) return '';
+  try {
+    const j = JSON.parse(text);
+    const c = j?.error?.code ?? j?.code;
+    if (typeof c === 'string' && c) return c;
+  } catch { /* 非 JSON，退回正则 */ }
+  const m = /"code"\s*:\s*"([^"]+)"/.exec(text);
+  return m ? m[1] : '';
+}
+
 export function upstreamErrorMessage(
   status: number,
   statusText: string,
@@ -70,11 +82,56 @@ export function upstreamErrorMessage(
   text: string,
   maxChars = 500,
 ): string {
+  const code = upstreamErrorCode(text);
+  const probe = `${code} ${text}`.toLowerCase();
+  // ★ 2026-10-14：403 此前**无任何提示** → 用户只看到「LLM 请求失败: 403 Forbidden {json}」。
+  //   实测两例：AgnesAI 中转 `insufficient_user_quota`（额度用尽）、百炼 `invalid_api_key`。
+  //   按 code/报文区分配额耗尽与鉴权，给出可行动指引（换平台/模型或充值）。
+  const quota = /insufficient_user_quota|insufficient_quota|exceeded[_-]?quota|quota|余额|额度|欠费/.test(probe);
+  const badKey = /invalid_api_key|incorrect api key|unauthorized|api[ _-]?key/.test(probe);
   let hint = '';
   if (status === 401) hint = '（API Key 无效或未配置）';
+  else if (status === 403) hint = quota
+    ? `（上游额度已用尽：该平台账号余额不足，请更换平台/模型或充值${code ? `，code=${code}` : ''}）`
+    : badKey
+      ? `（API Key 无权限或无效${code ? `，code=${code}` : ''}）`
+      : `（上游拒绝访问（403）：无权限/额度用尽/被风控，请检查平台配置${code ? `，code=${code}` : ''}）`;
   else if (status === 404) hint = `（URL 不对，请检查平台 API URL。当前请求: ${urlDesc}）`;
   else if (status === 429) hint = '（请求频率超限）';
   return `LLM 请求失败: ${status} ${statusText}${hint}${text ? ` ${text.slice(0, maxChars)}` : ''}`;
+}
+
+/**
+ * 上游非 2xx 抛出的错误：把 HTTP `status`/`code` 挂在 Error 上。
+ *
+ * ★ 2026-10-14：此前一律 `new Error(...)`（无 status），而候选池故障转移
+ *   `isPoolFailoverable` 优先读 `err.status` —— 生产里恒为 undefined，只能落到
+ *   报文正则，而该正则又不含 401/403/配额字样 ⇒ 「配额耗尽 / Key 失效」这类
+ *   **本该换平台/模型**的错误被当成不可恢复，直接打死长任务。带上 status 即修好。
+ */
+export class LlmUpstreamError extends Error {
+  status: number;
+  code: string;
+  constructor(status: number, message: string, code = '') {
+    super(message);
+    this.name = 'LlmUpstreamError';
+    this.status = status;
+    this.code = code;
+  }
+}
+
+export function makeUpstreamError(
+  status: number,
+  statusText: string,
+  urlDesc: string,
+  text: string,
+  maxChars = 500,
+): LlmUpstreamError {
+  return new LlmUpstreamError(
+    status,
+    upstreamErrorMessage(status, statusText, urlDesc, text, maxChars),
+    upstreamErrorCode(text),
+  );
 }
 
 /**
@@ -644,7 +701,7 @@ export class LlmClient {
           return;
         }
       }
-      throw new Error(upstreamErrorMessage(res.status, res.statusText, urlDesc, text, 200));
+      throw makeUpstreamError(res.status, res.statusText, urlDesc, text, 200);
     }
     yield* parseSSE(res.body);
   }
@@ -693,7 +750,7 @@ export class LlmClient {
     }
     if (!res.ok || !res.body) {
       const text = await res.text().catch(() => '');
-      throw new Error(upstreamErrorMessage(res.status, res.statusText, urlDesc, text, 200));
+      throw makeUpstreamError(res.status, res.statusText, urlDesc, text, 200);
     }
     yield* parseAnthropicSSE(res.body);
   }
@@ -728,7 +785,7 @@ export class LlmClient {
       //   现与 chatStream 对齐：读 body + 带上真实请求 URL，让原因可见。
       const text = await res.text().catch(() => '');
       const urlDesc = this.proxyBase ? `${this.proxyBase}/chat/completions` : `${this.baseUrl}/v1/chat/completions`;
-      throw new Error(upstreamErrorMessage(res.status, res.statusText, urlDesc, text));
+      throw makeUpstreamError(res.status, res.statusText, urlDesc, text);
     }
     const data = await res.json();
     return {
@@ -778,7 +835,7 @@ export class LlmClient {
     if (!res.ok) {
       const text = await res.text().catch(() => '');
       const urlDesc = this.proxyBase ? `${this.proxyBase}/messages` : `${this.baseUrl}/v1/messages`;
-      throw new Error(upstreamErrorMessage(res.status, res.statusText, urlDesc, text));
+      throw makeUpstreamError(res.status, res.statusText, urlDesc, text);
     }
     const data = await res.json();
     return anthropicResponseToChunk(data);

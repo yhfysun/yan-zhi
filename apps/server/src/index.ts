@@ -86,6 +86,8 @@ import { startMemoryDreamingScheduler } from './services/memory-dreaming.js';
 import { syncDingtalkStreamClients } from './services/dingtalk-stream.js';
 import { nodeAdapter } from './node-adapter.js';
 import { db, dataDir } from './db.js';
+import { dedupeDuplicateModelRows, ensureModelDedupeIndex } from './services/model-dedupe.js';
+import { registerPythonSelfHeal } from './services/python-self-heal.js';
 import { checkAndQuarantine } from './services/db-integrity.js';
 import { createLogger, configureLogger } from './services/logger.js';
 // ★★★ 日志落盘（2026-10-10）：必须在**其它模块打日志之前**配置好，
@@ -96,6 +98,10 @@ configureLogger(path.join(dataDir, 'logs'));
 const logger = createLogger('index');
 
 setPlatformAdapter(nodeAdapter);
+
+// 注入 python 工具链自愈：缺依赖/edge-tts 403/代理问题 → 自动修（pip 带代理回退）后由 core 重跑脚本。
+// ★ 2026-10-14：让应用「出问题换法子修」，而不是把原始报错丢回用户。
+registerPythonSelfHeal();
 
 // 注入「自定义工具依赖准备器」—— core 里的自定义工具执行入口（ToolRegistry.loadCustomTools、
 // workflow/nodes.ts 的 custom 分支）拿不到 server 的装包能力（core 是纯逻辑包，不能 import
@@ -524,6 +530,16 @@ try {
   if (r.capsFilled.length) logger.info(`[agens] 已按模型名补齐能力: ${[...new Set(r.capsFilled)].join(', ')}`);
   if (r.migrated.length) logger.info(`[agens] 默认模型已切到 agnes-3.0-flash: ${r.migrated.join(', ')}`);
 } catch (e) { logger.warn('[agens] 初始化平台失败:', e); }
+
+// 启动时去重 model 表：同一 (platform_id, model_id) 多行 → 保留确定性 id，其余删并重指引用。
+// ★ 2026-10-14：修 2026-10-11 跨库合并留下的重复行（当时只按主键 id 去重，而同一平台模型存在
+//   多种 id 形态：旧拼写 `agnes-<mid>` / 新前缀 `agens-<mid>` / 迁移 uuid → 全部照插）。
+//   去重后再补唯一索引防复发 —— **顺序不可反**：库里还有重复时建唯一索引会被静默吞掉。
+try {
+  const removed = dedupeDuplicateModelRows(db);
+  if (removed) logger.info(`[model] 已去重重复模型行 ${removed} 条`);
+} catch (e) { logger.warn('[model] 去重模型行失败:', e); }
+ensureModelDedupeIndex(db);
 
 // 一次性把小于 1M 的模型上下文窗口提到 1M（本机平台如 Ollama 跳过，已 ≥1M 的保留不动）
 try {

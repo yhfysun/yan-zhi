@@ -16,6 +16,15 @@ import sys
 import _winquiet  # noqa: E402
 _winquiet.apply_popen_defaults()
 
+# ★ 2026-10-14：Windows 默认 ProactorEventLoop 在 asyncio.run 逐段调用后，transport 析构会
+#   打一长串 "RuntimeError: Event loop is closed" 噪音，把真正的报错（如 403）淹掉 —— 排障力的损失。
+#   改用 SelectorEventLoop 消除噪音。
+if sys.platform == "win32":
+    try:
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    except Exception:
+        pass
+
 DEFAULT_VOICE = "zh-CN-YunxiNeural"  # 年轻男声, 推文常用; 备选 zh-CN-XiaoyiNeural
 
 import re
@@ -132,10 +141,30 @@ async def synth(text: str, out_path: str, voice: str):
     await tts.save(out_path)
 
 
+# ★ 2026-10-14：微软端点对 edge-tts 的 WebSocket 握手返回 403（Invalid response status）——
+#   这是**确定性拒绝**（内置 Sec-MS-GEC 令牌随 Edge 版本轮换，装的是旧版就恒 403），
+#   与"网络抖动"不同：重试 3 次纯属浪费，且旧文案只丢一句笼统 RuntimeError，用户/上层 agent 无从下手。
+#   这里识别 403 → 立即带可执行指引失败。
+def _is_endpoint_403(err: Exception) -> bool:
+    s = f"{type(err).__name__} {err}"
+    return ("403" in s) and (
+        "Handshake" in s or "Invalid response status" in s or "wss://speech.platform.bing.com" in s
+    )
+
+
+_TTS_403_HINT = (
+    "edge-tts 被微软端点拒绝（403）：通常是 edge-tts 版本过旧、内置的 Sec-MS-GEC 令牌已被轮换。\n"
+    "修复：升级 edge-tts（请用与本管线相同的 Python 解释器）——\n"
+    "  python -m pip install --upgrade edge-tts\n"
+    "  若本机 pip 走系统代理并报 ProxyError，追加：--proxy http://127.0.0.1:7890（端口按实际代理改）"
+)
+
+
 def synth_with_retry(text: str, out_path: str, voice: str, retries: int = 3):
     """逐段重试：edge-tts 到微软的连接偶发 NoAudioReceived/超时（实测一段成功后
     下一段可能连断数次），整段管线失败重来代价太高（前面 20+ 段全部白合成）。
-    单段 3 次重试 + 递增间隔，基本能把抖动吸收掉。"""
+    单段 3 次重试 + 递增间隔，基本能把抖动吸收掉。
+    ★ 例外：端点 403 是确定性拒绝（版本/令牌问题），重试无意义 → 立即带指引失败。"""
     import time as _time
     last_err = None
     for attempt in range(1, retries + 1):
@@ -147,6 +176,8 @@ def synth_with_retry(text: str, out_path: str, voice: str, retries: int = 3):
         except Exception as e:
             last_err = e
             print(f"[tts] seg 失败(第{attempt}次): {type(e).__name__}: {str(e)[:80]}", file=sys.stderr)
+            if _is_endpoint_403(e):
+                raise RuntimeError(f"{_TTS_403_HINT}\n原始错误: {e}")
             _time.sleep(attempt * 2)
     raise RuntimeError(f"edge-tts 连续 {retries} 次失败: {last_err}")
 

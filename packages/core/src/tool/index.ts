@@ -3,6 +3,7 @@ export * from './registry';
 export * from './builtin/index';
 export * from './builtin/api-tools/index';
 export * from './builtin/python-runtime';
+export * from './builtin/python-repair';
 export * from './sandbox';
 
 import { ToolRegistry } from './registry';

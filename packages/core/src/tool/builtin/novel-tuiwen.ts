@@ -5,7 +5,7 @@
 // 产物：4:3 (1080x1440) mp4；成片 = deliverable，中间产物留在 workdir（intermediate 语义）。
 import type { BuiltInTool, ToolContext } from '../types';
 import type { McpCallResult } from '../../mcp/client';
-import { resolveWorkspacePythonScript, runPythonScript } from './python-runtime';
+import { resolveWorkspacePythonScript, runPythonScriptHealing } from './python-runtime';
 import { capToolOutput } from './output-cap';
 import { resolveToolPath, isAbsolutePath, joinPath } from './fs-walk';
 import * as path from 'path';
@@ -83,16 +83,33 @@ export class NovelTuiwenTool implements BuiltInTool {
     try {
       // 出片耗时随章节长度增长：第一章实测（6083 字 → 51 段 TTS → 19.5min 成片）TTS+合成 ≈ 12min；
       // 传 30min（runPythonScript 上限同步已提到 30min），ffmpeg 收尾被 kill 会产出缺 moov 的损坏 mp4
-      const r = await runPythonScript(script, argv, { timeout: 1800000, cwd: ws });
-      const out = [r.stdout ? capToolOutput(r.stdout) : '', r.stderr ? '[stderr]\n' + capToolOutput(r.stderr) : '']
-        .filter(Boolean)
-        .join('\n') || '(无输出)';
+      // ★ 2026-10-14：改用**自愈执行** —— 缺依赖 / edge-tts 403 / 代理问题会自动修复并重跑一次
+      //   （自愈能力由 server 注入，见 services/python-self-heal.ts）。
+      const r = await runPythonScriptHealing(script, argv, { timeout: 1800000, cwd: ws });
+      const outParts: string[] = [];
+      if (r.repairLog?.length) outParts.push('[自愈] ' + r.repairLog.join('；'));
+      if (r.stdout) outParts.push(capToolOutput(r.stdout));
+      if (r.stderr) outParts.push('[stderr]\n' + capToolOutput(r.stderr));
+      const out = outParts.join('\n') || '(无输出)';
       if (r.exitCode !== 0) {
-        // 常见依赖缺失给出可执行的自救指引
+        // 常见依赖缺失 / 端点拒绝给出可执行的自救指引
         if (/No module named ['"]?edge_tts/.test(r.stderr)) {
           return toolError(
             'Error: 缺少 edge-tts 依赖。请让用户或通过 cmd_exec 执行：\n' +
-            'python -m pip install edge-tts -i https://pypi.org/simple\n然后重试 novel_tuiwen。',
+            'python -m pip install edge-tts\n' +
+            '（若本机 pip 走系统代理并报 ProxyError，追加：--proxy http://127.0.0.1:7890，端口按实际代理改）\n' +
+            '然后重试 novel_tuiwen。',
+          );
+        }
+        // ★ 2026-10-14：edge-tts 端点 403（微软 WebSocket 握手拒绝）通常是 **edge-tts 版本过旧**、
+        //   内置 Sec-MS-GEC 令牌已被轮换 —— 升级即修（实测 7.2.8→7.3.1 复通）。此前落到通用失败 dump。
+        if (/edge[-_]tts/.test(r.stderr) && /403|Handshake|Invalid response status/.test(r.stderr)) {
+          return toolError(
+            'Error: edge-tts 被微软端点拒绝（403）——通常是 edge-tts 版本过旧、内置令牌已被轮换。\n' +
+            '自助修复（请用与本管线相同的 Python）：\n' +
+            'python -m pip install --upgrade edge-tts\n' +
+            '（若本机 pip 走系统代理并报 ProxyError，追加：--proxy http://127.0.0.1:7890，端口按实际代理改）\n' +
+            '装好后重试 novel_tuiwen。\n\n' + out,
           );
         }
         return toolError(`novel_tuiwen 出片失败（exit ${r.exitCode}）：\n${out}`);

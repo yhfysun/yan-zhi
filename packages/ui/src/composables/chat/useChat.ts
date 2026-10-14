@@ -2800,17 +2800,26 @@ async function healStalePlatform() {
       const isConfigIssue = statusMatch
         ? ['401', '404'].includes(statusMatch[1])
         : /代理或网络不通/.test(reason);
+      // ★ 2026-10-14：403（额度耗尽 / Key 无权限）单列一类「平台配置/额度」问题 —— 此前落到
+      //   笼统的「⚠️ 调用失败。」，用户不知道是余额不足还是别的。给出可读提示 + 平台配置卡片（好换平台/模型）。
+      const isQuotaIssue = statusMatch?.[1] === '403'
+        || /额度|配额|insufficient_user_quota|insufficient_quota|invalid_api_key|余额不足|欠费/.test(reason);
+      const needsPlatformCard = isConfigIssue || isQuotaIssue;
       const msgs = store.currentMessages;
       const last = msgs[msgs.length - 1];
       // 服务端任务失败时已把「（调用失败：…）」写入会话（message:updated 先于 task:error 到达），
       // 非配置类错误（400/429 等）不再重复追加前端提示；配置类错误仍追加引导卡片。
       const serverReported = !!(last && last.role === 'assistant' &&
         typeof last.content === 'string' && last.content.startsWith('（调用失败：'));
-      if (isConfigIssue || !serverReported) {
-        const tipText = isConfigIssue ? '⚠️ 平台无法访问，请在下方修正平台配置。' : '⚠️ 调用失败。';
-        // 配置类错误走 @@REASON@@ 结构（PlatformConfigCard 单独渲染原因）；非配置类用纯文本，
+      if (needsPlatformCard || !serverReported) {
+        const tipText = isConfigIssue
+          ? '⚠️ 平台无法访问，请在下方修正平台配置。'
+          : isQuotaIssue
+            ? '⚠️ 平台额度已用尽或 Key 无权限，请更换平台/模型，或在下方修正平台配置。'
+            : '⚠️ 调用失败。';
+        // 配置/额度类错误走 @@REASON@@ 结构（PlatformConfigCard 单独渲染原因）；其余用纯文本，
         // 避免无卡片时 @@REASON@@ 字面量泄漏到正文。
-        const fullContent = isConfigIssue
+        const fullContent = needsPlatformCard
           ? `${tipText}\n@@REASON@@\n${reason}${platform ? `\n[[PLATFORM_CONFIG:edit:${platform.id}]]` : '\n[[PLATFORM_CONFIG:create]]'}`
           : `${tipText}\n${reason}`;
         if (last && last.role === 'assistant' && !last.content) {

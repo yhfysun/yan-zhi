@@ -45,6 +45,10 @@ function agensApiKey(): string {
  * 历史库里可能残留旧前缀 agnes-key-N-...，这里顺带清理，避免同 key 重复占用池位。
  */
 function ensureAgensApiKeys(platformId: string, userId: string): void {
+  // ★ 2026-10-14：清理旧拼写前缀 `agnes-key-N-<platformId>` 的残留 —— 上面注释早已承诺，但代码此前
+  //   只 INSERT 不删，实测同一批内置 Key 以 `agnes-key-*` 与 `agens-key-*` 两种前缀各占一份池位、
+  //   重复轮询。只删本平台 + 旧前缀，用户自建（uuid id）的 Key 不受影响。
+  try { db.prepare("DELETE FROM platform_api_key WHERE platform_id = ? AND id LIKE 'agnes-key-%'").run(platformId); } catch { /* 忽略 */ }
   const insert = db.prepare(
     `INSERT OR IGNORE INTO platform_api_key
        (id, platform_id, user_id, api_key, label, fail_count, enabled, created_at)

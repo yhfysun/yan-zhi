@@ -237,7 +237,11 @@ export function isPoolFailoverable(e: unknown): boolean {
   const status = Number(err?.status);
   if (Number.isFinite(status) && status > 0) return shouldRetryStatus(status);
   const msg = String(err?.message || e || '').toLowerCase();
-  return /429|rate.?limit|timeout|timed out|econn|enetunreach|eai_again|socket|network|上游/.test(msg);
+  // ★ 2026-10-14：补「鉴权 / 配额」报文判据。生产里抛的是纯 Error（无 status），
+  //   `403 insufficient_user_quota`（额度耗尽）/ `401 invalid_api_key` 此前**匹配不上**下面这行
+  //   ⇒ 明明该换平台/模型，却直接判为不可恢复把长任务打死（实测会话 10-13 19:07 子智能体即如此）。
+  //   LlmUpstreamError 已让主路径带 status（走上面的分支）；此处是双保险，也覆盖代理/子智能体把错误改写成字符串的情况。
+  return /429|rate.?limit|timeout|timed out|econn|enetunreach|eai_again|socket|network|上游|401|403|forbidden|unauthorized|insufficient_user_quota|insufficient_quota|invalid_api_key|quota|额度|欠费/.test(msg);
 }
 
 /**
