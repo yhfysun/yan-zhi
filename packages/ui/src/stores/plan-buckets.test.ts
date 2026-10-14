@@ -20,6 +20,7 @@ import {
   applyTaskStep,
   syncPlan,
   planProgress,
+  ensurePlanPresent,
   type PlanMap,
 } from './plan-buckets';
 
@@ -243,5 +244,56 @@ describe('planProgress', () => {
 
   it('无计划时返回零值', () => {
     expect(planProgress(undefined)).toEqual({ total: 0, done: 0, failed: false });
+  });
+});
+
+/**
+ * ★ 2026-10-14 实报回归：内存计划缺失时，必须能从「会话行里的落盘计划」补齐。
+ *
+ * 真 bug（conv 96125908）：App 重启后 plansByConv 为空、而 conversation.task_plan_json 有计划，
+ * 于是模型**读得到 plan.md 却推不动进度** —— task_step 回「当前会话还没有任务计划」，
+ * 模型只好重建计划，而重建会把所有步骤重置为 pending，**已完成步骤就此作废**；
+ * 界面最终停在「步骤 0/5、已用时 22:02」。
+ */
+describe('ensurePlanPresent —— 改动前从会话行补齐内存计划', () => {
+  const persisted = {
+    title: '《骨债阴阳》系列收尾',
+    steps: [
+      { id: 's1', title: '第1集标题/描述修正', status: 'done' as const },
+      { id: 's2', title: '三集归入合集「骨债阴阳」', status: 'pending' as const },
+    ],
+  };
+
+  it('★ 内存没有、会话行有计划 → 补齐，且**保留已完成状态**', () => {
+    const map = ensurePlanPresent({}, CONV_A, persisted);
+    expect(readPlan(map, CONV_A)?.title).toBe('《骨债阴阳》系列收尾');
+    expect(readPlan(map, CONV_A)?.steps.map((s) => s.status)).toEqual(['done', 'pending']);
+  });
+
+  it('★ 补齐后 task_step 不再误报"还没有任务计划"（修复的落点）', () => {
+    const hydrated = ensurePlanPresent({}, CONV_A, persisted);
+    const r = applyTaskStep(hydrated, CONV_A, { index: 2, status: 'done' });
+    expect(r.outcome.ok, '★ 修复前这里是 false +「当前会话还没有任务计划」').toBe(true);
+    expect(planProgress(readPlan(r.map, CONV_A))).toEqual({ total: 2, done: 2, failed: false });
+  });
+
+  it('内存里已有计划时不覆盖（只补，不改）', () => {
+    const existing = createPlan({}, CONV_A, '内存里的计划', ['x']);
+    const map = ensurePlanPresent(existing, CONV_A, persisted);
+    expect(readPlan(map, CONV_A)?.title).toBe('内存里的计划');
+  });
+
+  it('会话行没有计划时不伪造空计划（原样返回）', () => {
+    for (const empty of [null, undefined, {}, { steps: [] }]) {
+      const map = ensurePlanPresent({}, CONV_A, empty as never);
+      expect(readPlan(map, CONV_A), `输入 ${JSON.stringify(empty)}`).toBeUndefined();
+    }
+  });
+
+  it('只影响目标会话，不动别的会话的桶', () => {
+    const other = createPlan({}, CONV_B, 'B 的计划', ['b1']);
+    const map = ensurePlanPresent(other, CONV_A, persisted);
+    expect(readPlan(map, CONV_B)?.title).toBe('B 的计划');
+    expect(readPlan(map, CONV_A)?.title).toBe('《骨债阴阳》系列收尾');
   });
 });

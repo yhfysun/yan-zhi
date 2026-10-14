@@ -325,6 +325,7 @@ export type { PlanStep, PlanStepStatus } from './plan-buckets';
 import {
   planKeyOf as resolvePlanKey,
   readPlan,
+  ensurePlanPresent,
   removePlan,
   removePlans,
   applyTaskPlan,
@@ -819,6 +820,25 @@ export const useChatStore = defineStore('chat', () => {
   /** 当前查看会话的计划键；也可显式传会话 id 取别的会话 */
   function planKeyOf(convId?: string | null): string {
     return resolvePlanKey(currentConvId.value, convId);
+  }
+
+  /**
+   * ★ 2026-10-14：**改动计划之前**先把内存补齐，并返回本次要操作的键。
+   *
+   * 为什么必须在改动点补（而不只是切会话时补，见 plan-buckets.ts:ensurePlanPresent 头注）：
+   * App 重启 / 页面重载后内存为空、而会话行里有落盘计划时，模型能读到工作目录的 plan.md
+   * 却推不动进度 —— task_step 误报「当前会话还没有任务计划」，模型重建计划时
+   * `applyTaskPlan` 会把所有步骤重置为 pending，**已完成步骤作废**。
+   * 实测 conv 96125908（2026-10-14）：界面最终停在「步骤 0/5、已用时 22:02」。
+   */
+  function hydratePlan(convId?: string | null): string {
+    const key = planKeyOf(convId);
+    plansByConv.value = ensurePlanPresent(
+      plansByConv.value,
+      key,
+      conversations.value.find((c) => c.id === key)?.taskPlan,
+    );
+    return key;
   }
   /** 当前查看会话的计划标题（无计划时为空串，卡片侧兜底为「任务计划」） */
   const planTitle = computed(() => readPlan(plansByConv.value, planKeyOf())?.title || '');
@@ -2023,16 +2043,18 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
       // 计划写入【发起该任务的会话】而非当前查看的会话：多会话并行时 A 会话的
       // 计划不得跑到 B 会话的卡片里（ctx.convId 由 SSE tool:execute 透传）。
       if (fullName === 'task_plan') {
-        const r = applyTaskPlan(plansByConv.value, planKeyOf(ctx?.convId), args as Record<string, unknown>);
+        const key = hydratePlan(ctx?.convId);
+        const r = applyTaskPlan(plansByConv.value, key, args as Record<string, unknown>);
         plansByConv.value = r.map;
-        if (r.outcome.ok) void persistPlan(planKeyOf(ctx?.convId), r.map[planKeyOf(ctx?.convId)]);
+        if (r.outcome.ok) void persistPlan(key, r.map[key]);
         return r.outcome;
       }
       // E12: task_step —— 更新某一步状态，刷新进度卡片（同样只动本会话的计划）
       if (fullName === 'task_step') {
-        const r = applyTaskStep(plansByConv.value, planKeyOf(ctx?.convId), args as Record<string, unknown>);
+        const key = hydratePlan(ctx?.convId);
+        const r = applyTaskStep(plansByConv.value, key, args as Record<string, unknown>);
         plansByConv.value = r.map;
-        if (r.outcome.ok) void persistPlan(planKeyOf(ctx?.convId), r.map[planKeyOf(ctx?.convId)]);
+        if (r.outcome.ok) void persistPlan(key, r.map[key]);
         return r.outcome;
       }
       const res = await registry.execute(fullName, args as Record<string, unknown>);

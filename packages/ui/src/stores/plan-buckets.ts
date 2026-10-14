@@ -42,6 +42,32 @@ export function readPlan(map: PlanMap, key: string): Plan | undefined {
   return map[key];
 }
 
+/**
+ * 内存里没有该会话的计划、但**会话行里有落盘计划**时，先还原进来；否则原样返回。
+ *
+ * ★★★ 2026-10-14 实报（high）：`task_step` 只认这里的 `planMap`（纯内存），
+ *   而**模型看到的计划**来自工作目录的 `.yan-zhi/task-memory/plan.md`（跨会话接力文件）。
+ *   在 App 重启 / 页面重载之后，内存为空、会话行却明明有计划 —— 模型于是「看得见计划、
+ *   推不动它」：task_step 直接回「当前会话还没有任务计划」，模型只好重建计划，而
+ *   `applyTaskPlan` 一律把步骤置为 pending，**已完成步骤就此作废**。
+ *   实测 conv 96125908（2026-10-14）：重建后「第1集标题/描述修正（完成）」整条消失，
+ *   模型只好把"（完成）"写进步骤标题文字里凑；界面最终停在「步骤 0/5、已用时 22:02」。
+ *   ⇒ 三个真相源（plan.md / conversation.task_plan_json / 本 map）里，内存这层必须在
+ *     **改动前**补齐 —— 原先只在 `loadMessages`（切会话）里补，重启后不经过那条路。
+ *
+ * 判据保守：**只补，不造** —— 会话行里没有计划时原样返回（不伪造空计划，见 readPlan 注释）。
+ */
+export function ensurePlanPresent(
+  map: PlanMap,
+  key: string,
+  persisted: { title?: string; steps?: unknown } | null | undefined,
+): PlanMap {
+  if (map[key] || !persisted) return map;
+  const steps = Array.isArray(persisted.steps) ? (persisted.steps as PlanStep[]) : [];
+  if (!steps.length) return map;
+  return { ...map, [key]: { title: String(persisted.title || '任务计划'), steps } };
+}
+
 /** 清掉某会话的计划；无该键时原样返回（保持引用稳定，避免无谓的响应式触发） */
 export function removePlan(map: PlanMap, key: string): PlanMap {
   if (!map[key]) return map;
