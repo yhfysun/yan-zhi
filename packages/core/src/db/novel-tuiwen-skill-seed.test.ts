@@ -30,6 +30,13 @@ describe('novel-tuiwen skill 种子（本轮补充的配方）', () => {
     expect(s.bodyMd).toContain('public-DraftEditor-content');
     expect(s.bodyMd).toContain('comment/list');
   });
+  it('★ 评论只发不置顶：Web 端无置顶入口的事实写在正文（2026-10-14 穷尽验证）', () => {
+    // 2026-10-14 实跑：评论能发出（创作者后台互动评论页），但置顶在 Web 端无入口
+    // （后台只有回复/删除/举报，公开页「…」菜单无置顶项，is_pinned 恒 0）→ 配方已删，
+    // 只留「别再找入口」的事实。防止后续编辑又把「选「置顶」」这步加回来。
+    expect(s.bodyMd).toContain('置顶 Web 端做不到');
+    expect(s.bodyMd).not.toContain('菜单里选「置顶」');
+  });
   it('★ 合成要点（ffmpeg 2019 限制）在', () => {
     expect(s.bodyMd).toContain('text_align');
     expect(s.bodyMd).toContain('链式 drawtext');

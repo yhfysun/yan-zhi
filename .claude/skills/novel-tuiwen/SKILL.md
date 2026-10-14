@@ -29,6 +29,7 @@ description: 小说推文全自动产线：授权平台选书→过滤打分→�
 5. 出片 novel_tuiwen { chapter, title, bg_video, voice? }
 6. 发布（抖音，需确认）：creator.douyin.com/creator-micro/content/upload 网页上传，标题带别名关键词+话题；**confirm_user 确认后才点发布**
 - 上传视频用 browser_upload（filechooser 模式：clickSelector 点上传按钮自动投递本地文件）
+- 发布后发**引导评论**走创作者后台互动评论页 `https://creator.douyin.com/creator-micro/interactive/comment`（选中作品→输入框键入；⚠️ `/creator-micro/data/comment` 会跳关注页，是坑）。输入框是 Draft.js（contenteditable）——**必须真实键盘键入**，JS 设 innerText 不生效；发完用 `comment/list` 接口核验 `total≥1`。⚠️ **评论置顶 Web 端做不到**（2026-10-14 穷尽验证：后台评论管理只有「回复/删除/举报」、全页无「置顶」字符串；公开视频页评论「…」菜单也无置顶项，`is_pinned` 恒 0）→ **别再找置顶入口**，要置顶只能手机 App 手动，发完如实说明。
 - 🚫 书名红线：出片 title 传别名（书名会烧进标题条）、ending 传「搜索别名XX看后续」、发布文案禁书名——别名才白挂
 7. 回填发文：抽屉内「抖音发文→添加发文」填抖音号+视频链接提交——不回填不结算；新别名 7 天内不回填失效（2026-10-09 官方页面核实），链接必须与发文类型匹配（不必每章都填，1 条即生效；但每章都填可延长结算窗口，见下"结算"条）
 8. 回报选书理由 + 成片路径 + 发布/回填状态

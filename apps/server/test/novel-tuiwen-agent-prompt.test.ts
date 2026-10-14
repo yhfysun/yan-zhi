@@ -29,6 +29,12 @@ describe('推文智能体 prompt（本轮同步的配方）', () => {
     expect(p).toContain('comment/list');
     expect(p).toContain('wchsYBpK');
   });
+  it('★ 评论只发不置顶（Web 端无置顶入口，2026-10-14 穷尽验证）', () => {
+    // 2026-10-14 实跑结论：评论可用创作者后台互动评论页发出，但置顶 Web 端无入口
+    // → prompt 里只留「别再找入口」的事实，防止后续又被加回「去置顶」这步。
+    expect(p).toContain('置顶 Web 端做不到');
+    expect(p).not.toContain('菜单里选「置顶」');
+  });
   it('反引号未被双重转义、无裸反引号残留', () => {
     expect(p).not.toContain('\\`');
   });
