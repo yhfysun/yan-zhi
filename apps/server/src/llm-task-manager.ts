@@ -5236,9 +5236,19 @@ async function runSubAgentImpl(
   // model-candidate-pools：智能体没绑单模型时，用它的 llm 候选池首选（而非直接退父任务模型），
   // 这样「给子智能体配了池」这个动作才真正生效（否则池只是存了不用 = 断言存在≠断言生效）。
   const platformId = args.platformId || (agent.platform_id || task.platformId);
-  const poolFirst = !args.modelId && !agent.model_id
+  const poolFirstRaw = !args.modelId && !agent.model_id
     ? resolveFirstModel(db, { userId: task.userId, agentId: resolvedId }, 'llm')
     : null;
+  // ★★★ 只采纳「显式配过池」的首选（agent / agentPlatform / global 三层，source !== 'auto'）。
+  //   L4 auto 兜底 = **全部生效模型**按 is_default DESC, created_at DESC 排序，**永不为空**
+  //   ⇒ 若把 auto 也算作"池首选"，下面 `|| task.modelId`（回退父任务当前模型）就是**死代码**：
+  //   子智能体在零池配置时会按排序随机挑到一个平台/模型，而不是用父任务那个**当前正在跑、
+  //   已验证可用**的模型。
+  //   实测（2026-10-14 执行记录，llm_task/message）：pageAgent 被挑到通道不可用的模型
+  //   → `503 Service Unavailable {"code":"model_not_found","message":"No available channel for model"}`
+  //   → 子智能体连启动都失败（页面记录里还留下"AgnesAI 平台 LLM 通道异常，换百炼…"的徒劳重试）。
+  //   零配置下回退父任务模型才是最稳的：父任务模型刚跑通，通道至少是活的。
+  const poolFirst = poolFirstRaw && poolFirstRaw.source !== 'auto' ? poolFirstRaw : null;
   const modelId = args.modelId || (agent.model_id || poolFirst?.model.id || task.modelId);
   let platform = loadPlatform(platformId, task.userId);
   let model = loadModel(modelId, task.userId, platformId);

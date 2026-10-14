@@ -312,8 +312,9 @@ describe('③ 移动端长按：消息操作排由长按露出（不再是 hover
   it('★ 消息列表必须接上 bindLongPress（不能只有 :hover）', () => {
     expect(CODE, '★ 消息列表未引入长按').toContain('bindLongPress');
     // 用户与助手两条消息都要接
-    expect(CODE, '★ 用户消息未接长按').toMatch(/msgLongPressHandlers\(round\.user\.id\)/);
-    expect(CODE, '★ 助手消息未接长按').toMatch(/msgLongPressHandlers\(round\.finalAssistant\?\.id/);
+    // 注：消息列表窗口化后模板改为迭代 `vr`（{ 全量下标 ri, round }），断言随之跟进
+    expect(CODE, '★ 用户消息未接长按').toMatch(/msgLongPressHandlers\(vr\.round\.user\.id\)/);
+    expect(CODE, '★ 助手消息未接长按').toMatch(/msgLongPressHandlers\(vr\.round\.finalAssistant\?\.id/);
   });
 
   it('★ 处理器必须记忆化（流式期间每 chunk 重渲染，不复用会堆积 unmount 钩子）', () => {
