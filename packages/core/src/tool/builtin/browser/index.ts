@@ -355,6 +355,8 @@ export class BrowserHoverTool implements BuiltInTool {
 // ========== 获取文本 ==========
 export class BrowserGetTextTool implements BuiltInTool {
   name = 'browser_get_text';
+  // 读**页面当前快照**：入参（selector / tabId）只决定"读哪块、读哪页"，结果随页面变化
+  readsExternalState = true;
   description = 'Get text content of an element by selector, or the entire page HTML. 传 selector：只取该元素的文本；不传 selector：返回整页原始 HTML 源码（含标签，非清洗文本）。用途：核对某个元素的文本、或需要看 HTML 源码/属性值。要"页面上人能看到的文字"改用 browser_get_visible_text；要元素编号与结构改用 browser_get_page_content。可传 tabId 读取指定标签页。';
   inputSchema = {
     type: 'object',
@@ -375,6 +377,8 @@ export class BrowserGetTextTool implements BuiltInTool {
 // ========== 获取 DOM ==========
 export class BrowserGetDomTool implements BuiltInTool {
   name = 'browser_get_dom';
+  // 读**页面当前快照**：DOM 树随页面变化，同参重复调用结果可能不同
+  readsExternalState = true;
   description = 'Get a structured DOM tree of visible elements (excludes script/style/svg), penetrating same-origin iframes and Shadow DOM. 返回带父子层级的树形结构，每个节点含 tag, id, class, role, aria-label, text, href, placeholder, type, name, value, children；可交互节点（a/button/input/select/textarea 等）带 index 编号，可直接用于 browser_click/browser_type。用途：需要看清元素的层级归属、容器关系、弹窗/portal 挂在哪个父节点下时用它——browser_get_page_content 的元素清单是扁平的，判断不了归属。参数：selector 收窄到某个子树，depth 限制树深，maxNodes 限制节点数（默认较大，长页面建议设 depth 防止输出过长）。可传 tabId 读取指定标签页。';
   inputSchema = {
     type: 'object',
@@ -414,6 +418,8 @@ export class BrowserWaitTool implements BuiltInTool {
 // ========== 截图 ==========
 export class BrowserScreenshotTool implements BuiltInTool {
   name = 'browser_screenshot';
+  // 读**页面当前快照**：截图拿到的是"此刻"的画面，与入参无关
+  readsExternalState = true;
   description = 'Take a screenshot of the current browser page. Returns base64 image data. 可传 tabId 截取指定标签页。fullPage=true 截整页长图（滚动拼接整个页面，不受窗口/面板显示不全影响）；默认只截当前可视区域。传 annotate=true 时会在截图中给每个可交互元素叠加编号框（index 编号），方便视觉精确定位后按 index 操作（annotate 与 fullPage 互斥，annotate 优先）。';
   inputSchema = {
     type: 'object',
@@ -556,6 +562,9 @@ export class BrowserPrevPageTool implements BuiltInTool {
 // ========== 智能等待 ==========
 export class BrowserWaitForTool implements BuiltInTool {
   name = 'browser_wait_for';
+  // 等的是"条件在未来某刻成立"：同参重放是天然轮询（现在超时、两秒后成功），
+  // 结果取决于页面演进而非入参 —— 代码审查 2026-10-14 指出本条漏标
+  readsExternalState = true;
   description = 'Wait for a condition: selector appearing, URL matching, or text appearing. Smarter than fixed wait.';
   inputSchema = {
     type: 'object',
@@ -577,6 +586,8 @@ export class BrowserWaitForTool implements BuiltInTool {
 // ========== 获取可见文本 ==========
 export class BrowserGetVisibleTextTool implements BuiltInTool {
   name = 'browser_get_visible_text';
+  // 读**页面当前快照**：可见正文随页面变化
+  readsExternalState = true;
   description = 'Get visible text content of the page or an element (filters hidden elements, returns clean text). 只返回人眼可见的纯文本：不含元素编号、不含 DOM 结构。用途：阅读正文、抽取长文、总结页面内容，比 browser_get_page_content 省 token。传 selector 可只取某个容器内的文本。需要操作页面（点击/输入）时改用 browser_get_page_content 或 browser_get_page_info。可传 tabId 读取指定标签页。';
   inputSchema = {
     type: 'object',
@@ -610,6 +621,9 @@ export function computePageStateSignature(data: { url?: string; title?: string; 
 // ========== 获取页面内容（pageAgent 四件套之"读页"，聚合一次给齐） ==========
 export class BrowserGetPageContentTool implements BuiltInTool {
   name = 'browser_get_page_content';
+  // ★ 本工具就是 2026-10-14 实报的当事人：模型带 maxTextLength 连调 3 次读的是页面
+  //   三个不同时刻的状态 —— "相同输入不会产生新结果"对它不成立（见 ToolDefinition 该字段注释）
+  readsExternalState = true;
   description = 'Get the current page content in one call: url + title + visible text body + numbered interactive elements + form state. 一次拿齐"内容 + 操作目标 + 表单状态"：页面标题/URL、可见正文、带编号的可交互元素清单（每个元素含 index、tag、selector、type、name、placeholder、aria-label、value；输入框标注 ←可输入），以及【表单状态】段（页面上每个输入框/文本域/富文本/下拉的字段名、类型、是否必填、**当前值**）与【自上次读取的变化】段（哪些字段从什么变成了什么）。用途：既要看页面说了什么、又要知道点哪里/往哪输入时用它；click/type/fill_form 之后想确认结果也用它 —— **填完表单请以【表单状态】的值为准判断是否生效，不要重复填写**；【自上次读取的变化】为"无"说明上一步动作没改变任何字段，应换定位方式而不是重复同一动作。元素编号 index 可直接作为 browser_click / browser_type 的 index 参数，selector 也可直接作为 selector 参数。只看纯文本用 browser_get_visible_text；只要元素坐标用 browser_get_page_info；要看父子层级结构用 browser_get_dom。可传 tabId 读取指定标签页（来自 browser_new_tab / browser_get_tabs），用于多页并行场景，不必先切换标签页。';
   inputSchema = {
     type: 'object',
@@ -761,6 +775,8 @@ export class BrowserUncheckTool implements BuiltInTool {
 // ========== 页面信息 ==========
 export class BrowserGetPageInfoTool implements BuiltInTool {
   name = 'browser_get_page_info';
+  // 读**页面当前快照**（元素坐标/编号随页面布局变化）
+  readsExternalState = true;
   description = 'Get current page url, title, and a numbered list of interactive elements with their on-screen coordinates (x/y/w/h), penetrating same-origin iframes and Shadow DOM, up to 300. 与 browser_get_page_content 的区别：本工具不返回正文文本，但每个元素额外带屏幕坐标和 bbox 尺寸。用途：需要坐标时用——按 x+y 点击、判断元素在视口内还是被遮挡/需滚动、配合 browser_screenshot 的 annotate=true 做截图编号框叠加、按位置筛选（如"右上角的按钮"）。元素属性同样齐全（index、selector、tag、text、type、name、placeholder、value、ariaLabel、role、select 的 options、checkbox 的 checked）。可传 tabId 读取指定标签页，不必先切换标签页。';
   inputSchema = {
     type: 'object',
@@ -884,6 +900,8 @@ export class BrowserCloseTabTool implements BuiltInTool {
 }
 export class BrowserGetTabsTool implements BuiltInTool {
   name = 'browser_get_tabs';
+  // 读**当前标签页集合**：agent 自己开/关页就会改变结果
+  readsExternalState = true;
   description = 'List all open browser tabs (id/url/title/active). 列出所有标签页。';
   inputSchema = { type: 'object', properties: {} };
   async execute(): Promise<McpCallResult> {
@@ -897,6 +915,8 @@ export class BrowserGetTabsTool implements BuiltInTool {
 // ========== C5 网络请求监听 ==========
 export class BrowserWaitForRequestTool implements BuiltInTool {
   name = 'browser_wait_for_request';
+  // 同 browser_wait_for：等网络请求在未来某刻完成，同参重复是合法的轮询
+  readsExternalState = true;
   description = 'Wait for a network request matching urlPattern to finish (includes XHR/fetch). Returns request url/status/method. 等待匹配 URL 模式的网络请求完成。';
   inputSchema = {
     type: 'object',
@@ -918,6 +938,8 @@ export class BrowserWaitForRequestTool implements BuiltInTool {
 }
 export class BrowserGetNetworkLogTool implements BuiltInTool {
   name = 'browser_get_network_log';
+  // 读**累计的网络记录**：日志只增不减，后一次调用必然可能包含新条目
+  readsExternalState = true;
   description = 'Get recent network request log (url/status/method/responseSize). 获取最近的网络请求日志（内存缓冲最近 100 条）。';
   inputSchema = {
     type: 'object',
@@ -937,6 +959,8 @@ export class BrowserGetNetworkLogTool implements BuiltInTool {
 // ========== C6 结构化数据提取 ==========
 export class BrowserExtractListTool implements BuiltInTool {
   name = 'browser_extract_list';
+  // 读**页面当前快照**（列表项随页面/懒加载变化）
+  readsExternalState = true;
   description = 'Extract a list of structured data from the page as JSON array. 按模板从页面批量提取列表数据。selector 指定列表项容器，fields 描述每项要提取的字段（字段名→{selector,attr}）。attr 为 "text" 取文本，"html" 取 innerHTML，其他值取对应属性（如 href/src）。若不传 fields，自动识别常见列表项（商品卡片：标题/价格/链接）。';
   inputSchema = {
     type: 'object',
@@ -962,6 +986,8 @@ export class BrowserExtractListTool implements BuiltInTool {
 // ========== C9 视觉定位闭环 ==========
 export class BrowserVisualLocateTool implements BuiltInTool {
   name = 'browser_visual_locate';
+  // 读**页面当前快照**（按截图做视觉定位，画面变了结果就变）
+  readsExternalState = true;
   description = 'Screenshot the page and return the saved image path, then use image_analyze to locate target elements by vision (fallback when get_page_info/get_dom cannot capture popup/portal structure). 截图后用视觉模型识别目标元素坐标/文本，作为 get_page_info/get_dom 拿不到弹窗结构时的兜底。本工具完成截图并返回路径，需紧接着调用 image_analyze(path=<返回路径>, prompt="找出所有 <target> 元素的位置和文本，返回候选列表含坐标/文本/置信度") 完成视觉识别闭环。';
   inputSchema = {
     type: 'object',
@@ -1061,6 +1087,8 @@ export class BrowserScrollIntoViewTool implements BuiltInTool {
 }
 export class BrowserIsVisibleTool implements BuiltInTool {
   name = 'browser_is_visible';
+  // 读**当前布局快照**（元素可见性随滚动/弹层/加载变化）
+  readsExternalState = true;
   description = 'Check whether an element is visible. Returns { visible: boolean, reason }. 返回元素是否可见及原因。用 index 或 selector 定位。';
   inputSchema = {
     type: 'object',

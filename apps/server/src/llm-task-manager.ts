@@ -33,7 +33,7 @@ import { serverState } from './state.js';
 // 产物登记钩子（P2-3）：把 file_write / 媒体登记的副作用从主循环里搬出去
 import { runAfterToolHooks } from './services/tool-hooks.js';
 // 防失控循环闸门（2026-10-09）：同名同参重复 / 单工具连刷，在 executeTool 漏斗拦截
-import { checkToolLoop, FORCE_STOP_MARKER } from './services/tool-loop-guard.js';
+import { checkToolLoop, FORCE_STOP_MARKER, neutralizeForceStopMarker } from './services/tool-loop-guard.js';
 // ★★★ 浏览器执行面直连化（2026-10-10）：主进程 loopback 端点客户端。
 //   判定口径**只在本模块**（decideBrowserExecution），前端不得自行推断（防双执行 + 防 token 外泄）。
 import { browserBridgeAvailable, decideBrowserExecution, callBrowserBridge, toolNameToAction, bridgeMode, isBridgeTransportError } from './browser-bridge.js';
@@ -3325,7 +3325,15 @@ async function runReActLoop(task: LlmTask, params: {
           //   闸门返回带 FORCE_STOP_MARKER 的文案。此处**跳出内层 ReAct 循环**，
           //   不再把控制权交回模型（它只会换参数继续试探 —— 实测 6 次拦截就是这么来的）。
           //   跳出后走与"步数上限"相同的收尾块（结账 → 自评 → 接力确认），保证任务能收敛。
-          if (String(toolResult || '').includes(FORCE_STOP_MARKER)) {
+          //
+          // ★★★ 判据必须是 **startsWith**，不能是 includes（2026-10-14 实报，high）：
+          //   闸门自己产出的串**必定以标记开头**；而工具结果里**提到**这四个字是常态 ——
+          //   ① file_grep 搜到经验档里那句"[FORCE_STOP]…导致后续阶段全部中断"的历史笔记；
+          //   ② 子智能体的收尾报告引用它收到的拦截原文，随后原样回传父任务。
+          //   用 includes 时这两种都会**误伤**：实测 conv 96125908 于 16:02:10 只因 file_grep
+          //   读到了那句笔记就把整个任务硬停；16:54:55 又因子报告引用该标记把父任务硬停 ——
+          //   而那一刻合集弹窗已打开、3 条目标视频就在列表里，只差两步。
+          if (String(toolResult || '').startsWith(FORCE_STOP_MARKER)) {
             logger.warn(
               `[llm-task] 循环闸门硬停: conv=${task.conversationId} tool=${toolName} ` +
               `→ 跳出内层循环走收尾（避免无休止换参数重试）`,
@@ -3999,7 +4007,13 @@ async function executeTool(
   // ★ 防失控循环闸门（2026-10-09）：位置在归一化之后——key 按归一化后的参数算，
   //   模型把同一意图换字段名重发也能被识别为重复。放在缺参检查之前：连缺参调用
   //   都在刷屏的更该拦。被拦时提前 return，后续快照/权限副作用一律不发生。
-  const loopBlock = checkToolLoop(task, toolName, args);
+  // ★ 读**外部可变状态**的工具（截图 / 读正文 / DOM / 标签页…）关掉 A 线：它们的输出是
+  //   外部状态的快照，参数相同结果却不同，"同参重复 = 白重试"对它们不成立。
+  //   判据取自**工具定义自身**（ToolDefinition.readsExternalState），此处只透传 ——
+  //   绝不在闸门里另抄一份工具名单（本仓库多次吃过"同一语义两处判定"的亏）。
+  const loopBlock = checkToolLoop(task, toolName, args, {
+    readsExternalState: registry.get(toolName)?.readsExternalState,
+  });
   if (loopBlock) {
     logger.warn(`[llm-task] 循环拦截: conv=${task.conversationId} tool=${toolName}`);
     return loopBlock;
@@ -5167,10 +5181,16 @@ async function runSubAgent(
   const { result, artifacts } = await runWithArtifactCollector(() =>
     runSubAgentImpl(task, args, parentToolCallId, depth, uiTools, specOverride, runOpts));
   const withArtifacts = artifacts.length > 0 ? formatSubAgentReturn(result, artifacts) : result;
+  // ★★★ 回传前去毒（2026-10-14 实报，high）：子智能体的收尾报告**必然**会引用它收到的
+  //   [FORCE_STOP] 原文，而这里是它回到父任务的**唯一出口**。不去毒，父任务的硬停判据就会
+  //   把"子智能体被停"读成"我也该停" —— 实测 conv 96125908 16:54:55 就是这么被连坐的，
+  //   父任务当时在合集弹窗已打开、只差两步的收尾关头，剩余 4 个步骤一步没跑。
+  //   ★ 子任务的停止**不应该**决定父任务是否停止：父任务收到报告后自行判断下一步。
+  const sanitized = neutralizeForceStopMarker(withArtifacts);
   // ★ 子任务 ID 回执（2026-10-09）：parentToolCallId 天然唯一标识这次委派（子智能体
   //   落库的每条消息都带它）。追加在结果末尾，编排者后续可用 get_sub_task_detail
   //   按 ID 查执行轨迹分析失败原因。一行即止，不撑上下文。
-  return `${withArtifacts}\n\n[子任务ID] ${parentToolCallId}（如需分析本任务执行过程，可调用 get_sub_task_detail 传入此 ID 查询）`;
+  return `${sanitized}\n\n[子任务ID] ${parentToolCallId}（如需分析本任务执行过程，可调用 get_sub_task_detail 传入此 ID 查询）`;
 }
 
 async function runSubAgentImpl(
@@ -6004,7 +6024,11 @@ async function extractMemoryFromConversation(task: LlmTask): Promise<void> {
     const resp = await client.chat([
       { id: 'sys', conversationId: '', role: 'system', content: '你是记忆抽取助手。从对话中抽取「值得长期记住的用户信息」，输出 JSON 数组，每项形如 {"type":"agent|session|daily","content":"一句话事实"}。agent=稳定的用户偏好/背景；daily=当天的重要事件/进展；session=本会话的上下文结论。若新信息与既有认知矛盾（如用户纠正了之前的偏好），可加 "conflictsWith" 字段说明被推翻的旧结论内容。相对日期（如"昨天"）转为绝对日期。只输出 JSON，不要解释。若没有值得记的返回 []。', createdAt: 0 },
       { id: 'usr', conversationId: '', role: 'user', content: transcript, createdAt: 0 },
-    ], { temperature: 0.2, maxTokens: 800, responseFormat: { type: 'json_object' } });
+      // ★ 2026-10-14：800 → 1600。抽取条目多时 800 会把 JSON 截断，而**截断的 JSON 必然
+      //   解析失败** ⇒ 整批记忆被丢。截断是除"漏转义反斜杠"之外的另一条已知丢数据路径
+      //   （见 memory-service.ts 里 repairInvalidEscapes 的头注）。
+      //   ★ 同文件 6118 行那处「任务经验提炼」不用跟着改：它的提示词限死最多 3 条，800 够。
+    ], { temperature: 0.2, maxTokens: 1600, responseFormat: { type: 'json_object' } });
 
     const text = resp.delta?.content || '';
     // 兼容数组 / {items:[...]} / 单对象（部分模型 json_object 模式下返回单个对象而非数组，
@@ -6013,7 +6037,12 @@ async function extractMemoryFromConversation(task: LlmTask): Promise<void> {
     if (items.length) {
       logger.info(`[memory] 抽取: 模型返回 ${items.length} 条候选`);
     } else if (text.trim()) {
-      logger.info('[memory] 抽取: 模型输出无法解析为条目, 前120字:', text.slice(0, 120));
+      // ★ 2026-10-14：INFO → WARN 并带上长度/截断线索。此前只是 INFO，静默丢记忆时日志里
+      //   翻不到痕迹（实测两次：16:02:36、16:55:19，两次丢的还是最该记住的东西）。
+      logger.warn(
+        `[memory] 抽取: 模型输出无法解析为条目（len=${text.length}${text.length >= 1600 ? '，疑似被 maxTokens 截断' : ''}），本次记忆已丢弃。前120字:`,
+        text.slice(0, 120),
+      );
     }
 
     // 统一走 memory-service 写入：语义去重（余弦>0.92 更新原行）、冲突标记（superseded_by）、

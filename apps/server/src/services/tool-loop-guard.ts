@@ -16,6 +16,21 @@
  * 只拦不罚：返回的是指引文本（让模型"停止重试、汇报结论"），不是抛错 ——
  * 任务循环把工具文本原样回灌模型，模型看到后走正常收口路径。
  *
+ * ★★★ 2026-10-14 三处修正（实测 conv 96125908：35 分钟的任务在**收尾处**被本闸门掐死，
+ *   同一个目标连试三天未成）—— 原实现把"工具重复"当成了"没有进展"，判据过粗：
+ *   ① A 线只对**结果由入参决定**的工具成立：读页类工具（截图 / 读正文 / 读 DOM…）的输出是
+ *      **外部状态的快照**，参数相同、结果不同，拦它既是误判、又让提示词"读页面确认"失效。
+ *      判据由工具自己声明（`ToolDefinition.readsExternalState`），闸门调用方透传 ——
+ *      闸门**不维护工具名单**（避免"同一语义两处判定"漂移）。
+ *      ★ 注意：这里曾经用过"无参调用才放行"的判据，**是错的** —— 实测模型恰恰带着
+ *        `maxTextLength` / `tabId` 这类显示参数重复调用，按空参放行等于没修（被代码审查拦下）。
+ *   ② 累计拦截数在该工具**被放行**时清零 —— 让"此路不通"只对**连续**失败成立（被别的工具/
+ *      动作打断后再次被拦，计数重新起算）。注意语义边界（代码审查指出的措辞问题）：本闸门在
+ *      **执行前**调用，"放行"只等于"这次没被判为重复/连刷"，**不等于工具执行成功**；这里要表达的
+ *      是"模型确实在推进别的事，不是反复被拦还硬磕"。
+ *   ③ 标记识别由调用方按 `startsWith` 判定 + 回传子智能体报告前 `neutralizeForceStopMarker` 去毒
+ *      （子智能体报告里**引用**该标记，曾把父任务一起硬停）。
+ *
  * 状态放 WeakMap（key=task 对象）：任务结束对象被 GC，历史自动清零，无需手动清理。
  */
 
@@ -36,6 +51,22 @@ export const TOOL_BLOCK_HARD_LIMIT = 3;
 /** 强制收口标记：调用方（llm-task-manager）据此终止内层循环，而不是继续把文本回灌给模型 */
 export const FORCE_STOP_MARKER = '[FORCE_STOP]';
 
+/**
+ * 把**文本中提到**的 FORCE_STOP 标记改写成无害文案（回传子智能体报告前用）。
+ *
+ * ★★★ 为什么必须去毒（2026-10-14 实报，high）：子智能体的收尾报告**必然**会引用它收到的
+ *   拦截原文（"连续多次脚本探查触发 [FORCE_STOP]，被强制要求停止工具调用"），而 `call_agent`
+ *   把这份报告**原样**当工具结果回传父任务 —— 父任务当时的判据是
+ *   `includes(FORCE_STOP_MARKER)`，于是 **子智能体被停 = 父任务跟着被硬停**。
+ *   实测（conv 96125908，2026-10-14 16:54:55）：父任务在合集弹窗已打开、3 条目标视频已在
+ *   弹窗列表里的收尾关头被硬停，剩余 4 个步骤一步没跑；同一条链在 10-12 / 10-13 各复现过。
+ *   ⇒ 判据改 `startsWith`（见调用方）+ 回传前统一去毒，**两道都要有**：判据只挡"开头匹配"，
+ *     去毒挡"将来任何按包含判断的消费方"（本项目已多次吃"同一语义两处判据漂移"的亏）。
+ */
+export function neutralizeForceStopMarker(text: string): string {
+  return String(text ?? '').split(FORCE_STOP_MARKER).join('[防循环闸门已触发]');
+}
+
 const taskToolHistory = new WeakMap<object, Array<{ name: string; key: string }>>();
 /** 每任务、每工具的**累计拦截次数**（与历史窗口无关 —— 窗口会滑动，拦截计数不该被滑走） */
 const taskBlockCounts = new WeakMap<object, Map<string, number>>();
@@ -50,6 +81,15 @@ export function toolCallKey(toolName: string, args: unknown): string {
   return `${toolName}::${s.length > 600 ? s.slice(0, 600) : s}`;
 }
 
+/** 清零某工具的累计拦截数（放行时调用，见 checkToolLoop 末尾注释） */
+function clearBlockCount(task: object, toolName: string): void {
+  const m = taskBlockCounts.get(task);
+  if (!m?.has(toolName)) return;
+  const next = new Map(m);
+  next.delete(toolName);
+  taskBlockCounts.set(task, next);
+}
+
 /** 取该工具累计被拦次数（供调用方/测试观察） */
 export function toolBlockCount(task: object, toolName: string): number {
   return taskBlockCounts.get(task)?.get(toolName) || 0;
@@ -58,12 +98,26 @@ export function toolBlockCount(task: object, toolName: string): number {
 /**
  * 记录本次调用并判定是否拦截。返回 null = 放行；返回字符串 = 给模型看的拦截文案。
  * ★ 返回串以 `FORCE_STOP_MARKER` 开头时 = 已达硬闸，调用方应**终止内层循环**（不再回灌模型）。
+ * ★ 调用方判据必须用 `startsWith`（不能用 `includes`）—— 工具结果里**提到**这四个字是常态
+ *   （经验档笔记、子智能体报告引用），用包含判断会误伤。见 neutralizeForceStopMarker。
+ *
  * @param task  任务对象（仅作 WeakMap key，不读字段）
+ * @param opts.readsExternalState 该工具的输出是否取决于**外部可变状态**（见 ToolDefinition
+ *        同名字段）。为 true 时**关掉 A 线**：同参重复对它不是"白重试" —— 读页类工具
+ *        参数相同、结果却随页面变化，A 线拦它既是误判、又会让提示词"读页面确认"失效。
+ *        ★ 调用方从工具定义取（`registry.get(toolName)?.readsExternalState`），
+ *          闸门自己不维护工具名单（避免"同一语义两处判定"漂移）。
  */
-export function checkToolLoop(task: object, toolName: string, args: unknown): string | null {
+export function checkToolLoop(
+  task: object,
+  toolName: string,
+  args: unknown,
+  opts?: { readsExternalState?: boolean },
+): string | null {
   const hist = taskToolHistory.get(task) || [];
   const key = toolCallKey(toolName, args);
-  const dupCount = hist.filter((h) => h.key === key).length;
+  // 读外部状态的工具不参与 A 线（B 线仍兜底）：见 opts.readsExternalState 注释
+  const dupCount = opts?.readsExternalState ? 0 : hist.filter((h) => h.key === key).length;
   // 严格连续数：从历史尾部往前数同名调用
   let consec = 0;
   for (let i = hist.length - 1; i >= 0 && hist[i].name === toolName; i--) consec++;
@@ -97,5 +151,16 @@ export function checkToolLoop(task: object, toolName: string, args: unknown): st
       n,
     );
   }
+  // ★★★ 放行即清零（2026-10-14 实报，high）：硬停的语义是"**此路不通**"，它对"反复被拦
+  //   仍硬磕同一件事"成立；而该工具被**放行**说明中间确实在推进别的事，不是那种死磕。
+  //   ★ 措辞边界（代码审查指出）：本闸门在**执行前**调用，"放行"只等于"这次没被判为重复/连刷"，
+  //     **不等于执行成功** —— 但足以说明"不是被反复拦住还硬试"。
+  //   此前计数只增不减 —— 于是"正常展开工作 → 中途被误拦几次 → 之后每次调用都被放行"的
+  //   **健康循环**，会把拦满 3 次后**每一次**正常调用都判成硬停，任务在收尾处被掐死。
+  //   实测（conv 96125908，2026-10-14 16:54:50）：browser_run_script 在两次拦截之间被放行了
+  //   十几次（正一路逼近目标），却因累计到第 4 次被硬停 —— 而那一刻合集弹窗已打开、
+  //   3 条目标视频已在列表里，只差「勾选 → 确认 → 保存」两步。
+  //   ⇒ 让"此路不通"只对**连续**失败成立。
+  clearBlockCount(task, toolName);
   return null;
 }
