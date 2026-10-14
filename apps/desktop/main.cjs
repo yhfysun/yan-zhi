@@ -177,6 +177,24 @@ let activeTabId = null;
 // 取代写死的 480px，避免首次导航因 bounds 未同步而被判为不可见。
 let lastGoodBounds = null;
 
+/**
+ * 浏览器面板当前是否可见（2026-10-14 新增，**只记录、不改变任何行为**）。
+ *
+ * ★★★ 为什么要它（截图必失败的真实根因）：webview 引擎下，**面板收起时 CSS 只是
+ *   宽度过渡归 0 + 透明（并非 display:none）**（见 BrowserPanel.vue 注释）——
+ *   `<webview>` 的合成 surface 随之消失，于是 `wc.capturePage()` 必抛
+ *   `Current display surface not available for capture`；而 guest webContents 仍活着，
+ *   `get_page_content` / `run_script` / `click` 照常成功。
+ *   实测吻合（conv 96125908，2026-10-14 16:45:51→16:51:27）：8 次截图**全失败**，
+ *   同期所有 JS 类动作**全成功**；16:55:55 面板重新就绪后自动恢复。
+ *   ⇒ 但主进程原先在 webview 引擎下对 `browserView:resize` / `browserView:hide`
+ *     **双双早返回**（「webview 由渲染层 CSS 控制显隐」），于是"截图为什么必失败"
+ *     在主进程侧**完全不可诊断**，只能靠翻日志反推。
+ *   ⇒ 这两个 IPC 渲染层本来就在发，这里只顺势记下可见性，不新增 IPC、不动显隐逻辑。
+ *   保守默认 true：拿不到信号时按"可见"处理，避免误判成不可见而拒截。
+ */
+let webviewPanelVisible = true;
+
 // ============================================================
 // 浏览器引擎：'webview'（DOM 内嵌 <webview>，浮层可覆盖）| 'browserview'（旧原生图层）
 // webview 模式下不再创建 BrowserView：guest 由渲染层 <webview> 元素承载，
@@ -2457,6 +2475,8 @@ ipcMain.handle('browser:call', async (event, action, args) => {
 });
 
 ipcMain.handle('browserView:resize', (e, tabId, x, y, width, height) => {
+  // ★ 记录面板可见性（见 webviewPanelVisible 注释）：渲染层只在面板可见时才同步非零 bounds
+  webviewPanelVisible = Math.max(0, Math.round(width)) > 0 && Math.max(0, Math.round(height)) > 0;
   if (isWebviewEngine()) return; // webview 由 CSS 布局，无需 bounds 同步
   const entry = tabId ? browserViews.get(tabId) : (activeTabId ? browserViews.get(activeTabId) : null);
   if (!entry) return;
@@ -2489,6 +2509,7 @@ ipcMain.handle('browserView:getUrl', (_e, tabId) => {
 });
 
 ipcMain.handle('browserView:hide', (_e, tabId) => {
+  webviewPanelVisible = false; // ★ 记录面板可见性（见 webviewPanelVisible 注释）
   if (isWebviewEngine()) return; // webview 由渲染层 CSS 控制显隐
   // 隐藏指定标签或当前激活标签
   const entry = tabId ? browserViews.get(tabId) : (activeTabId ? browserViews.get(activeTabId) : null);
@@ -3849,12 +3870,24 @@ async function runBrowserAction(convId, tabId, action, args) {
             return file;
           } catch { return undefined; }
         };
-        // ★ 2026-10-14：capturePage 在「页面不可见 / 被其他窗口遮挡 / 所在标签页未激活」时
-        //   会抛 `Current display surface not available for capture` —— 10-12 诊断报告记了 9 次，
-        //   10-14 那次运行又连续 5 次。而截图是 DOM 失效时**唯一的视觉兜底**，一失败模型就只剩
-        //   browser_run_script 反复探查（实测正是这条把它推进死循环，最后被循环闸门掐死）。
-        //   ⇒ ① 短暂重试一次（刚切页/刚滚动完的瞬时不可捕获很常见）；
-        //     ② 仍失败则回**可行动**的错误，明确让模型改走 DOM 读取、别再换参数重试截图。
+        // ★★★ 截图必失败的真实根因（2026-10-14 定位，详见 webviewPanelVisible 头注）：
+        //   webview 引擎下**面板收起时 webview 只是宽度归 0 + 透明**，合成 surface 随之消失 →
+        //   capturePage 抛 `Current display surface not available for capture`，而页面仍在运行。
+        //   实测 conv 96125908：该状态下 8 次截图**全失败**、同期 JS 类动作**全成功**，
+        //   且**持续 6 分钟不自愈**（16:45:51 → 16:51:27，中间隔 20s 重试同样失败）。
+        //   ⇒ 面板已知不可见时**直接快速失败**：既省掉后面的"等页面就绪"（页面早就就绪了，
+        //     是画面没了，等它毫无意义 —— 实测每次白等 8s），也不让模型再白试几轮。
+        if (isWebviewEngine() && !webviewPanelVisible) {
+          return {
+            error: '截图不可用：浏览器面板当前处于收起/隐藏状态 —— 面板收起时该页面的合成画面不存在，'
+              + 'Chromium 无法截图（但页面仍在运行，读页类工具照常可用）。'
+              + '**不要重复调用 browser_screenshot**：改用 browser_get_page_content（正文 + 带编号的'
+              + '可交互元素）或 browser_get_page_info（元素坐标）读取页面，二者都不依赖可见画面；'
+              + '确实需要视觉定位时，请让用户先把浏览器面板展开。',
+          };
+        }
+        // 面板可见却仍失败 → 属窗口被遮挡/最小化一类，重试一次再报（措辞与上面**区分开**，
+        // 避免把"面板收起"和"窗口被挡"两种成因混成一句话，那样谁都定位不了）
         const capturePageWithRetry = async () => {
           try {
             return await wc.capturePage();
@@ -3864,9 +3897,9 @@ async function runBrowserAction(convId, tabId, action, args) {
               return await wc.capturePage();
             } catch (e2) {
               throw new Error(
-                '截图不可用（页面当前不可见 / 被遮挡 / 所在标签页未激活），重试一次仍失败。'
-                + '**不要再调用 browser_screenshot**：改读页面结构 —— browser_get_page_content'
-                + '（正文 + 带编号的可交互元素）、browser_get_page_info（元素坐标），二者不依赖可视区。'
+                '截图不可用：应用窗口被其他窗口遮挡或最小化时无法截取画面（重试一次仍失败）。'
+                + '**不要再调用 browser_screenshot**：改用 browser_get_page_content / '
+                + 'browser_get_page_info 读页面结构，二者不依赖可见画面。'
                 + `原始错误: ${(e2 && e2.message) || e2}`,
               );
             }
