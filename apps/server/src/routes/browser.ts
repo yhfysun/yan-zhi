@@ -982,9 +982,24 @@ router.post('/action', withBrowserLock(async (req: Request, res: Response) => {
             }
             el.dispatchEvent(new Event('change', { bubbles: true }));
             const got = (!isCE && el.value != null) ? String(el.value) : (el.textContent || '');
-            const applied = got === p.text;
-            const out: Record<string, unknown> = { success: applied, index: p.idx, typed: p.text.length, applied, value: got.slice(0, 120) };
-            if (!applied) out.hint = '输入框未接受文本（可能为受控组件且拦截了程序化输入，或输入被页面重置）。建议截图核验实际值；若被重置，改用真实键盘逐键输入或让用户手输。';
+            // ★★★ 2026-10-14：判据由**严格相等**放宽（与桌面端 main.cjs 的 looseTextEqual 对齐）。
+            //   此前 `got === p.text`，而页面只要对文本做了规整（trim / 折叠空白 / 换行规范化 /
+            //   maxlength 截断 / 站点格式化），回读值就 ≠ 期望值 ⇒ 误判 applied:false ⇒
+            //   提示语诱导模型"核验并重填" ⇒ **同一字段被反复填**（用户实报"填好了又重填"）。
+            //   而文本其实早已进入输入框。桌面端已修、服务端这条是漏改（同一语义两处判定漂移）。
+            //   判据：规范化空白后，二者任一**包含**对方即视为已填入；`normalized:true` 表示
+            //   "不是逐字相等但判定已填入"，调用方据此回中性文案、不再诱导重填。
+            const normTxt = (v: unknown) => String(v ?? '').replace(/\s+/g, ' ').trim();
+            const ng = normTxt(got);
+            const ne = normTxt(p.text);
+            const exact = got === p.text;
+            const applied = exact || (ng.length > 0 && ne.length > 0 && (ng.includes(ne) || ne.includes(ng)));
+            const out: Record<string, unknown> = {
+              success: applied, index: p.idx, typed: p.text.length, applied,
+              ...(applied && !exact ? { normalized: true } : {}),
+              value: got.slice(0, 120),
+            };
+            if (!applied) out.hint = '输入框未接受文本（可能为受控组件且拦截了程序化输入，或输入被页面重置）。请用 browser_get_page_content 核验该字段当前值，**不要盲目重复填写**。';
             return out;
           }, { ref: typeRef, idx: args.index != null ? Number(args.index) : null, text: String(text || '') });
           if (args.pressEnter && !(r as any)?.error) {
