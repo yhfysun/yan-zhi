@@ -4720,14 +4720,32 @@ async function runBrowserAction(convId, tabId, action, args) {
     //     ② 超时**不是"失败"**：返回 `timedOut` / `stillLoading` 结构化字段，文案明确写
     //        「不代表失败、**不要重复调用同一动作**」——删掉那句诱导重试的措辞。
     const SLOW_ACTIONS = new Set(['upload', 'screenshot']);
-    const actionTimeout = SLOW_ACTIONS.has(action) ? 60000 : 30000;
+    // ★★★ 2026-10-14：默认档 30s → **15s**（读/执行类动作）。
+    //   依据（三份主进程日志共 1330 次真实动作，脚本按"桥墙钟"分档统计，非推测）：
+    //     · 成功动作耗时：p50=538ms / p90=9.9s / p95=14.3s / p99=23.9s —— 15s 仍覆盖 p95；
+    //     · **一旦超过 20s 就几乎注定拿不到结果**：20~30s 档 63 次里只成功 11 次（17%），
+    //       ≥30s 档 98 次里只成功 6 次（6%）；
+    //     · ≥20s 的 161 次动作占全部墙钟的 **59.9%（88 分钟）**，其中 **76 次是超时白等
+    //       （49.4 分钟）**，最大头是 get_page_content（33 次/22.0 分钟）与 run_script（34 次/21.2 分钟）。
+    //   把默认档压到 15s：可省下约 **30.4 分钟**白等，代价是 3 天内 30 次"本来会成功"的动作
+    //   被提前截断（各多一次往返，约 1 分钟量级）—— 净收益约 29 分钟。
+    //   ★ navigate 不进这一档：慢站导航实测常 14.5s（本项目自己注释过），30s 窗口是它的正常需求。
+    //   ★ 超时**不会中断**已发出的 doAction（Promise.race 只是提前交还控制权），
+    //     所以压窗口不会破坏操作本身，只让模型早十几秒知道"这页很慢"。
+    const NAV_ACTIONS = new Set(['navigate']);
+    const actionTimeout = SLOW_ACTIONS.has(action) ? 60000 : (NAV_ACTIONS.has(action) ? 30000 : 15000);
     const result = await Promise.race([
       doAction(),
       new Promise((r) => setTimeout(() => {
         let stillLoading = true;
         try { stillLoading = !!(wc && !wc.isDestroyed() && wc.isLoading()); } catch { /* 取不到按加载中处理 */ }
         r({
-          error: `浏览器操作 ${action} 在 ${actionTimeout / 1000}s 内未返回：页面仍在加载或该操作耗时较长（**不代表失败**）。请勿重复调用同一动作——改用 browser_wait_for 等待页面就绪后，再用 browser_get_page_content 读取当前内容。`,
+          // ★ 文案按"改道"写，不再引导"等一会儿再读同一个"（那正是"重试→再烧一轮"的来源）
+          error: `浏览器操作 ${action} 在 ${actionTimeout / 1000}s 内未返回（页面正忙，**不代表失败**）。`
+            + '**不要原地重试同一动作** —— 重试只会再等一轮。按性质改道：'
+            + '① 纯读取 → 用 browser_get_page_content 并调小 maxTextLength，或直接 browser_run_script 只取需要的字段；'
+            + '② 刚做过导航/上传、页面还在加载 → 用 browser_wait_for 等**一次**再继续；'
+            + '③ 同一个动作连续两次这样 → 判定该页假死，停下汇报（页面上的已填内容刷新即丢，**不要用刷新"恢复"**）。',
           timedOut: true,
           stillLoading,
         });
