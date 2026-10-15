@@ -964,4 +964,19 @@ describe('⑭ ★★★ 流键 flowKeyOf【真跑】（2026-10-15，后台标签
     expect(stripComments(MAIN), '★ close_tab 的权限闸门被拿掉了')
       .toMatch(/meta\.agentOpened !== true/);
   });
+
+  it('★★★ "正在跑动作"的 tab 必须被空闲回收 / LRU 逐出避让（单次动作最长 8 分钟）', () => {
+    // ★ 为什么必须（2026-10-15 查实）：回收/逐出的判据是"lastActiveAt 超过 10 分钟没用过"，
+    //   而单次浏览器动作最长可到 8 分钟（导航慢档 7min + 排队宽限 60s）——
+    //   动作开始得早时，回收会在**这一步还在飞**的时候把页抽走 ⇒ 工具莫名失败/读到空白，
+    //   且回执说不清原因（最像"页面自己变了"，最难查）。
+    const m = stripComments(MAIN);
+    expect(m, '★ 缺 tabActionBusy 声明').toMatch(/const tabActionBusy = new Set\(\)/);
+    expect(m, '★ 执行期间未登记忙碌').toMatch(/tabActionBusy\.add\(actionKey\)/);
+    expect(m, '★ 未在 finally 摘掉忙碌标记 → 那个 tab 被永久排除在回收之外（内存只涨不落）')
+      .toMatch(/\.finally\(\(\) => tabActionBusy\.delete\(actionKey\)\)/);
+    const hits = (m.match(/tabActionBusy\.has\(id\)\) continue;/g) || []).length;
+    expect(hits, `★ 只有 ${hits} 处避让（应为 4：webview 逐出 / webview 空闲回收 / BrowserView 逐出 / BrowserView 空闲挂起）`)
+      .toBe(4);
+  });
 });

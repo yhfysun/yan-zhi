@@ -1229,6 +1229,7 @@ function evictLruTabIfNeeded() {
     for (const [id, e] of browserViews) {
       if (e.suspended || !e.view) continue;
       if (id === activeTabId) continue;
+      if (tabActionBusy.has(id)) continue;        // ★ 正在跑动作：不逐（见 tabActionBusy 注释）
       const t = e.lastActiveAt || 0;
       if (t < lruAt) { lruAt = t; lruId = id; }
     }
@@ -1260,6 +1261,7 @@ function evictLruWebviewTabIfNeeded() {
     for (const [id, t] of webviewTabs) {
       if (id === activeTabId) continue;                       // 当前激活：永不逐
       if (pinned.has(id)) continue;                           // 正被某会话锚定：永不逐
+      if (tabActionBusy.has(id)) continue;                    // ★ 正在跑动作：永不逐（见 tabActionBusy 注释）
       const at = t.lastActiveAt || 0;
       if (at < lruAt) { lruAt = at; lruId = id; }
     }
@@ -1287,6 +1289,7 @@ function scheduleTabIdleCheck() {
     for (const [id, e] of browserViews) {
       if (e.suspended || !e.view) continue;
       if (id === activeTabId) continue;
+      if (tabActionBusy.has(id)) continue;        // ★ 正在跑动作：不挂起（见 tabActionBusy 注释）
       if (now - (e.lastActiveAt || 0) > TAB_IDLE_UNLOAD_MS) {
         console.log('[browserView] 空闲卸载挂起:', id, e.url || '');
         suspendBrowserViewEntry(id, e);
@@ -1303,6 +1306,7 @@ function scheduleTabIdleCheck() {
       for (const [id, t] of webviewTabs) {
         if (id === activeTabId) continue;           // 当前激活：不回收
         if (pinned.has(id)) continue;               // 某会话锚定（agent 正在操作）：不回收
+        if (tabActionBusy.has(id)) continue;        // ★ 正在跑动作：不回收（见 tabActionBusy 注释）
         if ((t.lastActiveAt || 0) > now - TAB_IDLE_UNLOAD_MS) continue;
         console.log('[browserView] webview 空闲回收:', id, '（空闲超过', TAB_IDLE_UNLOAD_MS / 60000, '分钟）');
         try {
@@ -3164,6 +3168,16 @@ function clearFormSnapshot(tabKey) {
 const { chainTabAction } = require('./browser-op-chain.cjs');
 /** 同 tab 串行链（key = tabId；链的维护与上限见 browser-op-chain.cjs） */
 const tabActionChains = new Map();
+/**
+ * ★★★ 正在**执行**动作的 tab（key 与 tabActionChains 同形）—— 空闲回收 / LRU 逐出**不得动**它们。
+ *
+ * 为什么必须（2026-10-15 查实）：单次浏览器动作最长可到 8 分钟（导航慢档 7 分钟 + 独立排队宽限 60 秒），
+ * 而空闲回收/逐出的判据是"`lastActiveAt` 超过 10 分钟没用过" —— 只要这次动作**开始得早**，
+ * 回收就会在动作还在飞的时候把那个页抽走 ⇒ 工具随后莫名失败或读到空白页，
+ * 且回执里说不清真正的原因（本项目最怕的一类：看着像"页面自己变了"）。
+ * ⇒ 登记范围只覆盖"正在执行"这一段（不含排队段），Set 也小（每个 tab 至多一个）。
+ */
+const tabActionBusy = new Set();
 
 async function runBrowserAction(convId, tabId, action, args, flow) {
   args = args || {};
@@ -3830,7 +3844,36 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
             }
           }
           // ===OCCLUSION-END===
-          function notFound(sel){return{error:'元素未找到: '+sel,hint:'建议先调用 browser_get_page_info 获取编号元素列表，再用 index 参数定位'};}
+          // ===NOTFOUND-START=== 未命中时的候选清单；notfound-candidates.test.cjs 经此哨兵抽取真实代码
+          // ★★★ 2026-10-15：未命中时**附上候选清单**，而不是只丢一句"未找到"。
+          //   实测（conv 7e99207b）：当天 34 次「元素未找到」，其中 6 次在同一个
+          //   `.arco-drawer-footer button:contains(…)` 上反复试 —— 模型不知道页面上**实际有什么**，
+          //   只能换文案/换选择器猜；猜够次数撞上循环闸门后，改去写 run_script 穷举 DOM（189 次）。
+          //   给出"同一基选择器下当前可见元素的编号+文本" ⇒ 一次往返就能改对（编号可直接点）。
+          function notFound(sel){
+            var out={error:'元素未找到: '+sel,hint:'建议先调用 browser_get_page_info 获取编号元素列表，再用 index 参数定位'};
+            try{
+              var base=String(sel).replace(/:contains\(\s*["'][\s\S]*?["']\s*\)/g,'')||'*';
+              var els;
+              try{els=document.querySelectorAll(base);}
+              catch(e){els=document.querySelectorAll('button,a,[role="button"],li,tr,td,span');}
+              var cands=[];
+              for(var i=0;i<els.length&&cands.length<10;i++){
+                var el=els[i];
+                if(el.offsetParent===null)continue;                 // 只列**可见**的（要点的东西得看得见）
+                cands.push({index:A.register(el),tag:el.tagName.toLowerCase(),
+                  text:(el.textContent||'').trim().slice(0,40),selector:A.genSel(el)});
+              }
+              if(cands.length){
+                out.candidates=cands;
+                out.hint='选择器没匹配到。下面是**同一基选择器**下当前**可见**的元素（含各自文本）——'
+                  +'请从中挑一个 index 重试（比继续换选择器快得多）。若目标不在其中，说明它此刻还没渲染出来：'
+                  +'先用 browser_hover / browser_click 展开对应菜单或滚到该区域，再重读页面；不要继续换选择器硬试。';
+              }
+            }catch(e){/* 候选清单是增益，失败就退回原提示 */}
+            return out;
+          }
+          // ===NOTFOUND-END===
           if(a.index!=null){
             var el=window.__yzElements&&window.__yzElements[a.index];
             // 自动降级：index 失效时用注册时记录的 selector 快照重定位一次，避免多一次 get_page_info 往返
@@ -4894,14 +4937,18 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
     //   ★ 排队耗时同时记日志并回执（queuedMs）—— 用户要求把"排队"这件事量出来，不能再靠猜。
     const enqueuedAt = Date.now();
     let queuedMs = 0;
+    const actionKey = String(tabId || activeTabId || '__global__');
     const actionPromise = convId
-      ? chainTabAction(tabActionChains, String(tabId || activeTabId || '__global__'), () => {
+      ? chainTabAction(tabActionChains, actionKey, () => {
           const waited = Date.now() - enqueuedAt;
           if (waited > 200) {
             console.log(`[browser-action] ${action} 排队等待 ${waited}ms（同 tab 上一个动作尚未结束）`);
           }
           queuedMs = waited;
-          return doAction();
+          // ★ 执行期间登记"这个 tab 正忙"（见 tabActionBusy 注释）：回收/逐出据此避让，
+          //   避免在任何一次长动作（最长 8 分钟）飞在半空时把页抽走。
+          tabActionBusy.add(actionKey);
+          return doAction().finally(() => tabActionBusy.delete(actionKey));
         })
       : doAction();
     const result = await Promise.race([
