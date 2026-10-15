@@ -840,6 +840,15 @@ export const useChatStore = defineStore('chat', () => {
   const pendingPathAuth = ref<PendingPathAuth | null>(null);
   // E12c: 模型平台配置弹窗 —— configure_model_platform 工具触发，等待用户填写并保存平台/模型
   const pendingPlatformConfig = ref<PendingPlatformConfig | null>(null);
+  /**
+   * 跨页预填聊天输入框（2026-10-15，Skill 蒸馏「去调试」P2-10）。
+   * 为什么要走 store 中转：输入框内容 `input` 是 useChat() 内的**局部 ref**，别的视图够不到；
+   * 而「去调试」建完调试会话后要预填一条测试 prompt 再跳过去。
+   * 语义：置入后由 useChat 的 watcher 取走并**立即清空** —— 不清空的话，用户下次进聊天页
+   * 会被同一条 prompt 再灌一次（输入框里凭空多出上次的测试语句，且看不出是哪来的）。
+   */
+  const pendingPrefill = ref('');
+  function prefillInput(text: string) { pendingPrefill.value = String(text || ''); }
   // E12: 任务规划进度 —— task_plan / task_step 工具写入，UI 渲染 todo 卡片。
   // **必须按会话分桶**：计划是「某一次任务的执行清单」，归属产生它的那个会话。
   // 早先用 planTitle / planSteps 两个全局 ref，A 会话登记的计划会原样出现在 B 会话里（串台）。
@@ -3292,6 +3301,7 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
     openTab, activatePreviewTab, closePreviewTab, closeAllPreviewTabs, closePreviewTabsLeft, closePreviewTabsRight,
     pendingQuestion, pendingConfirmation, pendingPlatformConfig, submitPendingQuestion,
     pendingPathAuth, submitPendingPathAuth,
+    pendingPrefill, prefillInput,
     submitPendingConfirmation, skipPendingConfirmation, cancelPendingConfirmation,
     submitPlatformConfig, cancelPlatformConfig,
     planSteps, planTitle, clearPlan, clearPlanDisplayOnly,

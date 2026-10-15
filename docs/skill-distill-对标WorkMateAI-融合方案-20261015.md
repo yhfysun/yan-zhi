@@ -209,12 +209,12 @@ P0 后可让它同样写 `skill_draft` 表，统一草稿入口——放 P2 顺�
 - **未做**：桌面端真机点击验证（本机未启动应用）——上线前建议手工过一遍
   「勾选消息 → AI 生成概览 → 改概览 → AI 提炼 → 编辑 Body → 存为草稿 → 刷新页面看草稿是否还在 → 发布」。
 
-### 8.4 P2 待办（未做；改动点已探明，新会话可直接开工）
+### 8.4 P2 待办（✅ 全部交付完毕）
 
-> 现状：P0 + P1 已交付并验证（见 8.3）。**第 12、13 项已于当天交付（见 8.5）**；
-> 以下第 10、11 项**代码未动**。
+> 现状：P0 + P1 已交付并验证（见 8.3）；第 12、13 项见 8.5，第 10、11 项见 8.6。
+> 本节保留原始改动点勘察，作为实施依据的存档。
 
-#### 10. 去调试（试跑）
+#### 10. 去调试（试跑）（✅ 已交付，见 8.6）
 
 - **目标**：草稿「去调试」→ 建临时会话并挂载该技能 → 预填一条测试 prompt → 跑完回蒸馏页迭代。
 - **已探明的事实**：
@@ -229,7 +229,7 @@ P0 后可让它同样写 `skill_draft` 表，统一草稿入口——放 P2 顺�
       但"调试的不是真正的挂载路径"，验证价值打折。
 - **注意**：`apps/desktop` 与 `apps/mobile` 共用 `packages/ui` 的 chat store，**不存在双写风险**（原方案 §6 风险 7 可关闭）。
 
-#### 11. 「交付内容」tab（任务过程 vs 交付物分流）
+#### 11. 「交付内容」tab（任务过程 vs 交付物分流）（✅ 已交付，见 8.6）
 
 - 数据已具备：`conversation_file` 表有 `category`（`upload` / `intermediate` / `deliverable`），
   见 `packages/core/src/db/schema.ts` 的 `conversation_file`。
@@ -303,5 +303,50 @@ P0 后可让它同样写 `skill_draft` 表，统一草稿入口——放 P2 顺�
 - **未做**：桌面端真机点击验证（本机未启动应用）。上线前建议手工过一遍
   「聊天里勾选消息 → 蒸馏 → 存为草稿 → 到「Skill 蒸馏」页看到该草稿 → 发布」，
   以及自动链路的「同一步骤第 2 次成功 → 会话内提示 → 草稿列表出现自动草稿」。
+
+### 8.6 P2-10 / P2-11 实施记录（2026-10-15 当天补做）
+
+| 项 | 层 | 文件 | 内容 |
+|---|---|---|---|
+| 10 | 前端 | `packages/ui/src/views/SkillDistill.vue` | 右屏操作条加「去调试」：落一条 `[调试] <显示名>` 的正式 skill 行（**同名复用**，复用时按当前编辑态刷新正文）→ 建临时会话并以 `skillIds` 挂载该技能 → `useChat().selectConv(convId)` 切到该会话 → 预填测试 prompt → 跳到任务页 |
+| 10 | 前端 | `packages/ui/src/stores/chat.ts` | 新增 `pendingPrefill` + `prefillInput()`：输入框内容 `input` 是 `useChat()` 内的**局部 ref**，跨视图够不到，故走 store 中转 |
+| 10 | 前端 | `packages/ui/src/composables/chat/useChat.ts` | 新增 watcher 消费 `pendingPrefill`：**取走即清**（不清则用户下次进聊天会被同一条 prompt 再灌一遍）；`immediate` 保证"先 set 再 push"的时序也能接住 |
+| 11 | 前端 | `packages/ui/src/views/SkillDistill.vue` | 左屏「任务记录」加分段 tab：`任务处理过程`（原会话列表）/ `交付内容`（该会话 `conversation_file.category='deliverable'`）；点交付物 → 打开该任务并摊开文件预览 |
+| 测试 | 前端 | `packages/ui/src/views/skillDistillDebugAndDeliverables.test.ts`（新增） | 15 用例 = 导航口径 2 例（不得用 `/chat/${convId}` 形式导航 / 必须 `useChat().selectConv`）+ P2-10 七例（按钮 / `[调试]` 前缀 + `createCustom` / 同名复用 + `updateSkill` / 会话挂载 `skillIds` / `selectConv` + 跳转 / **预填必须晚于 selectConv** / store 中转且**真写进输入框**并取走即清）+ P2-11 六例（两个 tab / 复用 `fileStore` / **按当前会话过滤** / 切会话刷新且读失败不打断 / 两种空态 / 点开预览先 selectConv） |
+
+**相对方案的偏差（有意为之）**
+
+1. **P2-10 用方案 A，并额外加「同名复用」**：方案原文只说"先落一条 skill 行"。不复用的话，反复去调试
+   同一份草稿会在技能库里堆一串同名 `[调试] xxx`；改成按名字查重复用、复用时刷新正文之后，「去调试」
+   变成幂等的——同一个草稿点几次都只有一条调试技能。
+2. **P2-11 用分段控件（`el-radio-group`）而非 `el-tabs`**：`el-tabs` 会在列表外多包一层，`.conv-list`
+   的 `max-height: 35%` 基准会从"左屏高度"变成"auto 高度"而**直接失效**（列表无限长）。分段控件与列表
+   是兄弟节点，百分比基准不变，零布局回归；语义上同样满足"加 tab"。
+3. **交付内容不新建读取通道**：直接用 `fileStore`（`/conversations/:id/files`）已有的分桶结果
+   （`filesByCategory.deliverable`），在 `selectConv` 里顺带刷新。没有为这一个 tab 另起 sqlite / 接口路径。
+4. **预填 prompt 的措辞是"提示"不是"代填"**：`用「<技能名>」处理一个真实需求：` —— 冒号后留空等用户补
+   需求，而不是替用户编一个假任务。
+5. **★ 打开会话一律走 `useChat().selectConv()`，不用 `/chat/:convId`**（本项第一版写错了，代码审查抓出）：
+   `Chat.vue` 既没开 `props: true` 也不读 `route.params`，**全仓没有任何代码消费 `convId` 这个路由参数**
+   —— 只 `router.push('/chat/' + convId)` 的话调试会话根本不会被打开，预填的 prompt 会落进**上一个会话**
+   的输入框（用户以为在调试、一按回车却发给了别的任务）；非办公模式下 `/chat*` 还会被路由守卫重定向到
+   当前模式工作台。这也解释了为什么既有调用点（CommandPalette / CodeWorkbench / ClipWorkbench / 任务行
+   菜单）全是 `selectConv(id)`。新测试里加了**反向守卫**钉住"不得再用 `/chat/${...}` 形式导航"。
+6. **预填必须排在 `selectConv` 之后**：`selectConv` 内部会 `resetDraftState()` 清空输入框，先预填必被清掉。
+   好在 `useChat` 是模块级单例、watcher 自 App 启动即常驻，所以"切完会话再后置 set"照样接得住。
+7. **交付内容按 `conversationId` 过滤 + 吞掉读取失败**：`fileStore` 是全局单例、与聊天页共用，读取失败时
+   它会**保留上一个会话的行** —— 不过滤就会把别的任务的交付物挂到当前任务名下。过滤后失败态自然退化为
+   空列表，所以这次读失败不必打断切会话。
+
+**验证**
+
+- `packages/ui`：`vue-tsc --noEmit` 零错误；`vitest run --no-file-parallelism` **63 文件 / 0 失败**。
+- 代码审查（本仓强制流程）抓出 1 个 HIGH：第一版用 `router.push('/chat/' + convId)` 打开会话，而该路由
+  参数**全仓无人消费** —— 已按偏差 5/6 修正。★ 连带教训：第一版测试断言的是这条错误写法（`router.push`
+  `` `/chat/${convId}` ``），等于把缺陷锁死、还会挡住修复；改成反向断言后才真正有意义。
+- **服务端本轮零改动**（无 server 文件变更），8.5 里 165 文件的结论不变。
+- **未做**：桌面端真机点击验证。上线前建议补一遍
+  「草稿 → 去调试 → 在聊天里确认技能已挂载、输入框已预填 → 跑完 → 回到蒸馏页发布」，
+  以及「左屏切到交付内容 → 选任务 → 看到交付物 → 点开预览」。
 
 

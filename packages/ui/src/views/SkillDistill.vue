@@ -24,6 +24,7 @@
             <span>任务记录</span>
           </div>
           <el-input
+            v-if="leftTab === 'process'"
             v-model="convSearch"
             placeholder="搜索任务"
             size="small"
@@ -32,8 +33,18 @@
           />
         </div>
 
-        <!-- 会话列表 -->
-        <div class="conv-list">
+        <!-- 任务过程 / 交付物分流（P2-11）：同一份「任务记录」按内容性质分两个 tab。
+             用分段控件而非 el-tabs：分段控件与列表是兄弟节点，`.conv-list` 的
+             `max-height: 35%` 仍以左屏高度为基准；套进 el-tabs 会变成 auto 高度基准直接失效。 -->
+        <el-radio-group v-model="leftTab" size="small" class="left-tabs">
+          <el-radio-button value="process">任务处理过程</el-radio-button>
+          <el-radio-button value="deliverable">
+            交付内容<template v-if="deliverables.length"> · {{ deliverables.length }}</template>
+          </el-radio-button>
+        </el-radio-group>
+
+        <!-- 会话列表（任务处理过程） -->
+        <div v-if="leftTab === 'process'" class="conv-list">
           <div
             v-for="conv in filteredConversations"
             :key="conv.id"
@@ -45,6 +56,23 @@
             <span class="conv-title">{{ conv.title }}</span>
           </div>
           <el-empty v-if="filteredConversations.length === 0" :image-size="40" description="无任务" />
+        </div>
+
+        <!-- 交付内容：该任务登记的产出文件（conversation_file.category='deliverable'） -->
+        <div v-else class="deliverable-list">
+          <el-empty v-if="!selectedConvId" :image-size="50" description="请先选择任务" />
+          <el-empty v-else-if="!deliverables.length" :image-size="50" description="该任务暂无交付内容" />
+          <div
+            v-for="f in deliverables"
+            :key="f.id"
+            class="deliverable-item"
+            :title="`${f.name}\n${f.path}`"
+            @click="openDeliverable(f)"
+          >
+            <el-icon><Document /></el-icon>
+            <span class="deliverable-name">{{ f.name }}</span>
+            <span class="deliverable-size">{{ formatSize(f.size) }}</span>
+          </div>
         </div>
 
         <!-- 消息勾选列表 -->
@@ -567,6 +595,16 @@
           </el-button>
           <el-button
             size="small"
+            :icon="VideoPlay"
+            :loading="debuggingDraft"
+            :disabled="!currentPreviewMd"
+            title="落一条 [调试] 技能 + 建临时会话挂载它，预填测试 prompt 后跳过去试跑"
+            @click="doDebugDraft"
+          >
+            去调试
+          </el-button>
+          <el-button
+            size="small"
             type="success"
             :icon="Upload"
             :loading="publishingDraft"
@@ -613,11 +651,14 @@ import { ref, computed, reactive, onMounted, watch } from 'vue';
 import {
   EditPen, Refresh, Check, Delete, MagicStick, ArrowDown, ArrowUp, ChatDotRound,
   Upload, Download, Close, Setting, List, CircleClose, CircleCheck, Document,
-  Lock, Unlock, View,
+  Lock, Unlock, View, VideoPlay,
 } from '@element-plus/icons-vue';
 import MarkdownIt from 'markdown-it';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { useDistillStore, useChatStore, usePlatformStore, useAuthStore, useSkillStore } from '../stores';
+import { useRouter } from 'vue-router';
+import type { ConversationFile } from '@yan-zhi/shared';
+import { useDistillStore, useChatStore, usePlatformStore, useAuthStore, useSkillStore, useFileStore } from '../stores';
+import { useChat } from '../composables/chat/useChat';
 import { api } from '../api/client';
 
 const distillStore = useDistillStore();
@@ -625,6 +666,10 @@ const chatStore = useChatStore();
 const platformStore = usePlatformStore();
 const authStore = useAuthStore();
 const skillStore = useSkillStore();
+const fileStore = useFileStore();
+const router = useRouter();
+/** ★ 打开某个会话必须走 useChat().selectConv —— 理由见 doDebugDraft（`/chat/:convId` 无人消费） */
+const chat = useChat();
 
 // 中屏折叠状态
 const configCollapsed = ref(false);
@@ -638,6 +683,15 @@ const savingId = ref('');
 
 // 左屏：从对话选记录
 const convSearch = ref('');
+/** 左屏 tab（P2-11）：任务处理过程 / 交付内容 */
+const leftTab = ref<'process' | 'deliverable'>('process');
+/** 交付内容 = 该会话 conversation_file 里 category='deliverable' 的那些。
+ *  复用 fileStore 既有查询（/conversations/:id/files），不为这一个 tab 另起一条读取通道。
+ *  ★ 必须按 conversationId 过滤：fileStore 是**全局单例**，与聊天页/资源面板共用，
+ *    读取失败时它会保留上一个会话的行 —— 不过滤就会把别的任务的交付物挂到当前任务名下。 */
+const deliverables = computed(() =>
+  fileStore.filesByCategory.deliverable.filter((f) => f.conversationId === selectedConvId.value),
+);
 const selectedConvId = ref('');
 const convMessages = ref<any[]>([]);
 const msgChecked = reactive<Record<string, boolean>>({});
@@ -652,6 +706,8 @@ const refining = ref(false);
 const refinedMd = ref('');
 const applying = ref(false);
 const savingAsNew = ref(false);
+/** 「去调试」建会话中（P2-10） */
+const debuggingDraft = ref(false);
 
 // ── 对标 WorkMateAI 融合方案新增状态（2026-10-15）────────────────────────────
 /** 右屏 Body 双视图：渲染预览 / 原文编辑 */
@@ -863,6 +919,10 @@ async function saveConfig() {
 
 async function selectConv(convId: string) {
   selectedConvId.value = convId;
+  // 交付内容 tab（P2-11）：顺带把该会话登记的产出文件拉回来（切会话即刷新）。
+  // 吞掉失败：这是旁路展示，不能因为一次读失败把切会话流程打断；
+  // 残留的旧会话行由 deliverables 的 conversationId 过滤挡掉。
+  void fileStore.loadConversationFiles(convId).catch(() => {});
   convMessages.value = [];
   if (authStore.isLoggedIn) {
     const r = await api.get<any[]>(`/conversations/${convId}/messages`);
@@ -1240,6 +1300,82 @@ async function doPublishDraft() {
   }
 }
 
+/** 字节 → 人类可读（交付内容列表用） */
+function formatSize(bytes: number | undefined): string {
+  const n = Number(bytes || 0);
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
+
+/** 交付内容点击 → 打开该任务，并把这份文件摊到右侧的文件预览 tab（复用聊天既有预览机制） */
+async function openDeliverable(f: ConversationFile) {
+  const convId = f.conversationId || selectedConvId.value;
+  if (!convId) return;
+  try {
+    // ★ 必须 selectConv：`/chat/:convId` 的路径参数全仓无人消费（Chat.vue 不读 route.params），
+    //   只 push 不会真的打开那个会话 —— 用户会看到 A 任务的消息旁边摊着 B 任务的预览。
+    await chat.selectConv(convId);
+    chatStore.openTab({ kind: 'file', name: f.name, path: f.path, conversationId: convId });
+    await router.push('/chat');
+  } catch (e: any) {
+    ElMessage.error(e?.message || '打开交付内容失败');
+  }
+}
+
+/**
+ * 去调试（P2-10，方案 A）：草稿 → 临时会话试跑。
+ *
+ * 为什么必须先落一条 skill 行：技能挂载**只认 `skill` 表的 id**（chat store 合并的是
+ * `agent.skillIds` ∪ `conv.skillIds`），而草稿存在 `skill_draft` 表里 —— 直接挂挂不上。
+ * 所以先建一条名字前缀「[调试]」的技能，会话挂它；调试满意走「发布为正式技能」，
+ * 不满意到 Skill 商店把这条 [调试] 项删掉即可。同名调试技能**复用**（否则反复调试
+ * 会在技能库里堆一串同名条目），复用时内容按当前编辑态刷新。
+ */
+async function doDebugDraft() {
+  const content = editedMd.value || currentPreviewMd.value;
+  if (!content) return;
+  debuggingDraft.value = true;
+  try {
+    const parsed = distillStore.parseSkillMd(content);
+    const displayName = (selectedDistillTask.value?.overview?.nameZh || '').trim() || parsed.name;
+    const debugName = `[调试] ${displayName}`;
+
+    // ① 临时技能行（同名复用）
+    const existing = skillStore.skills.find((s) => s.name === debugName);
+    let skillId: string;
+    if (existing) {
+      await skillStore.updateSkill(existing.id, {
+        description: parsed.description, bodyMd: parsed.body, triggers: parsed.triggers,
+      });
+      skillId = existing.id;
+    } else {
+      skillId = await skillStore.createCustom(debugName, parsed.description, parsed.body, parsed.triggers);
+    }
+
+    // ② 临时会话并挂载该技能（挂载落 conversation.skill_ids_json）
+    const convId = await chatStore.createConversation(debugName, { skillIds: [skillId] });
+
+    // ③ 切到该会话 + 跳到任务页开始试跑。
+    //   ★ 必须 selectConv：`/chat/:convId` 这个路由参数**全仓无人消费**（Chat.vue 不读
+    //     route.params，路由也没开 props），只 push 的话调试会话根本不会被打开 ——
+    //     预填的 prompt 会落进**上一个会话**的输入框，用户一按回车就发错任务。
+    //     另外非办公模式下 `/chat*` 会被路由守卫重定向到当前模式工作台，故目标是 `/chat`。
+    //   ★ 顺序：selectConv 内部 resetDraftState() 会清空输入框，预填必须排在它之后。
+    await chat.selectConv(convId);
+    await router.push('/chat');
+
+    // ④ 预填测试 prompt：输入框是 useChat 内的局部 ref，故走 store 中转（见 chat store 的 pendingPrefill）
+    chatStore.prefillInput(`用「${displayName}」处理一个真实需求：`);
+    ElMessage.success('已建调试会话并挂载该技能，输入框已预填测试 prompt');
+  } catch (e: any) {
+    ElMessage.error(e?.message || '创建调试会话失败');
+  } finally {
+    debuggingDraft.value = false;
+  }
+}
+
 /** 选中草稿（中屏概览区与右屏预览同步到它） */
 function openDraft(taskId: string) {
   activeDraftId.value = taskId;
@@ -1319,6 +1455,25 @@ function openDraft(taskId: string) {
   flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
   white-space: nowrap; font-size: 13px;
 }
+
+/* 左屏 tab 分段控件 + 交付内容列表（P2-11） */
+.left-tabs { margin-bottom: 8px; }
+.deliverable-list {
+  flex: 0 0 auto; max-height: 35%; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 4px;
+  margin-bottom: 10px;
+}
+.deliverable-item {
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 8px; border-radius: 6px; cursor: pointer;
+  transition: background 0.15s;
+}
+.deliverable-item:hover { background: var(--glass-bg-hover); }
+.deliverable-name {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; font-size: 12px;
+}
+.deliverable-size { flex-shrink: 0; font-size: 11px; color: var(--color-text-secondary); }
 
 .msg-section {
   flex: 1; min-height: 0; display: flex; flex-direction: column;

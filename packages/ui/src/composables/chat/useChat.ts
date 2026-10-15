@@ -384,6 +384,21 @@ function createChat() {
   const input = ref('');
   const inputFocused = ref(false);
   /**
+   * 跨页预填（Skill 蒸馏「去调试」，P2-10）：别的视图把测试 prompt 放进 chat store，
+   * 这里**取走即清** —— 不清的话用户下次进聊天会被同一条 prompt 再灌一遍。
+   * 注意 useChat 是**模块级单例**（见文件末尾的 instance），本 watcher 自 App 启动即常驻，
+   * 所以蒸馏页「切完会话再后置 set」的那笔预填同样接得住；immediate 只是兜底。
+   */
+  watch(
+    () => store.pendingPrefill,
+    (text) => {
+      if (!text) return;
+      input.value = text;
+      store.pendingPrefill = '';
+    },
+    { immediate: true },
+  );
+  /**
    * ★★★ 发送重入锁（2026-10-09，P0 实据修复）。
    *
    * 为什么必须有：`send()` 在取走内容后要跨多个 `await`（建空间 / 建会话 / 落附件 / 读文件预览），
