@@ -7,14 +7,13 @@ const rootDir = path.resolve(desktopDir, '..', '..');
 const runtimeDir = path.join(desktopDir, 'runtime', 'server-runtime');
 const buildDir = path.join(runtimeDir, '.build-package');
 const runtimeNodeModules = path.join(runtimeDir, 'node_modules');
-const desktopBetterSqlite = path.join(
-  desktopDir,
-  'node_modules',
-  'better-sqlite3',
-  'build',
-  'Release',
-  'better_sqlite3.node',
-);
+// better-sqlite3 ≥13（N-API 化）：二进制在包内 prebuilds/<platform>-<arch>.node，
+// 不再经过 build/Release；<13 仍走 build/Release。两处按存在性探测，兼容跨版本。
+const desktopBetterSqliteCandidates = [
+  path.join(desktopDir, 'node_modules', 'better-sqlite3', 'prebuilds', `${process.platform}-${process.arch}.node`),
+  path.join(desktopDir, 'node_modules', 'better-sqlite3', 'build', 'Release', 'better_sqlite3.node'),
+];
+const desktopBetterSqlite = desktopBetterSqliteCandidates.find((p) => fs.existsSync(p)) || desktopBetterSqliteCandidates[0];
 
 const ESBUILD_VERSION = '0.28.2';
 
@@ -328,7 +327,7 @@ for (const name of ['core', 'shared']) {
 
 if (!fs.existsSync(desktopBetterSqlite)) {
   throw new Error(
-    `[prepare-server-runtime] 找不到 Electron 版 better_sqlite3.node: ${desktopBetterSqlite}\n` +
+    `[prepare-server-runtime] 找不到 better-sqlite3 原生二进制（探测过 prebuilds/ 与 build/Release）：${desktopBetterSqlite}\n` +
       '请先运行 apps/desktop 的 postinstall 或 pnpm install。',
   );
 }
