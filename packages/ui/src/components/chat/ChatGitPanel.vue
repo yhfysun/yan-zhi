@@ -491,6 +491,7 @@ import {
   Loading, Upload, Download, CaretRight, CaretBottom, View, Fold, Expand, FullScreen, Hide,
 } from '@element-plus/icons-vue';
 import { useGitStore, type GitNumstatEntry, type GitAheadBehind } from '../../stores/git';
+import { useChatStore } from '../../stores/chat';
 import { useSettingsStore } from '../../stores/settings';
 import { useCodeStore } from '../../stores/code';
 import { usePlatformStore } from '../../stores/platform';
@@ -1517,10 +1518,11 @@ async function doBatchCheckoutPrompt() {
 
 // ===== 生命周期 =====
 /**
- * 工作目录变化 → 重新拉取仓库数据。
+ * 仓库根变化 → 重新拉取仓库数据。
  * ★ 这是「变更 0 / 工作区干净」的关键修复点：
- *   面板此前只在 workspaceDir 变化时初始化，而开发模式的工作目录来自 codeStore.projectDir，
- *   两者不同 → watch 永不触发 → init 从未执行 → gitStore.status 恒为 null → 列表永远为空。
+ *   面板最初的 watch 源只认 settingsStore.workspaceDir，而开发模式的工作目录来自
+ *   codeStore.projectDir，两者不同 → watch 永不触发 → init 从未执行 → 列表永远为空。
+ *   ⇒ 现在统一收敛到 workspace computed（resolveGitRepoSource），源变了这里就变。
  *   即使值相同也要初始化一次（首次挂载时 watch 不触发），故这里用 immediate + 值守卫。
  */
 let lastInitRepo = '';
