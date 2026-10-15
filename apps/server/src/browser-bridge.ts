@@ -91,6 +91,12 @@ export async function callBrowserBridge(
   toolName: string,
   args: unknown,
   timeoutMs: number,
+  /**
+   * 本执行流在**桌面端**的流键（锚与归属按它隔离）。
+   * ★ 与流锁的 tabKey **同源同值**（`services/browser-flow-lock.ts`）：锁在一把键上、
+   *   锚在另一把键上是最难查的一类漂移。缺省 = 共享主面板流 ⇒ 行为与今天一致。
+   */
+  flowKey?: string,
 ): Promise<string> {
   const url = process.env.YZ_BROWSER_BRIDGE_URL as string;
   const token = process.env.YZ_BROWSER_BRIDGE_TOKEN as string;
@@ -112,7 +118,9 @@ export async function callBrowserBridge(
     const res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', [TOKEN_HEADER]: token },
-      body: JSON.stringify({ convId, action, tabId: explicitTabId ?? undefined, args: argsObj }),
+      // ★ `flow`：本执行流的流键（缺省不发 = 桌面端按共享主流处理，行为与今天一致）。
+      //   桌面端据此把「锚 / 归属」分到各自的流上（见 main.cjs 的 flowKeyOf）。
+      body: JSON.stringify({ convId, action, tabId: explicitTabId ?? undefined, args: argsObj, flow: flowKey || undefined }),
       signal: ac.signal,
     });
     // 404 = 鉴权失败/路径不对（桥刻意不区分，见桥文件）→ 明确报错而非静默

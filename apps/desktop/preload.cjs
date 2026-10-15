@@ -202,7 +202,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     },
     // 主进程兜底自建 tab（ensureActiveTab 超时）时广播，渲染层补建 tab 壳，避免"导航黑洞"
     onTabCreated: (callback) => {
-      const h = (_e, tabId, url, scope) => callback(tabId, url, scope);
+      // ★ 第 4 个参数 `background`（2026-10-15 后台标签页）：该页是**后台流**建的 ⇒ 渲染层不切过去。
+      //   必须转发 —— 丢了它，两个 pageAgent 并行时用户正在看的页会被顶掉（验收口径 #2）。
+      const h = (_e, tabId, url, scope, background) => callback(tabId, url, scope, background);
       ipcRenderer.on('browserView:tabCreated', h);
       return () => ipcRenderer.removeListener('browserView:tabCreated', h);
     },

@@ -147,3 +147,29 @@ describe('③ showHome 与 <webview> 渲染的耦合', () => {
     expect(webviewIdx).toBeGreaterThan(viewportIdx);
   });
 });
+
+describe('④ ★★★ 后台标签页：后台流建的页不得抢用户视图（2026-10-15 后台标签页方案）', () => {
+  it('★★★ onTabCreated 不得**无条件**激活新页（否则后台流的页会顶掉用户正在看的页）', () => {
+    const i = PANEL.indexOf('onTabCreated?.(');
+    expect(i, '★ 锚点缺失：onTabCreated 回调').toBeGreaterThan(-1);
+    const seg = PANEL.slice(i, i + 2400);
+    // 判据必须能收到主进程广播的 background 标记（preload 已转发第 4 个参数）
+    expect(seg, '★ 未接收 background 参数 → 判不出这是后台流建的页').toMatch(/background\?: boolean/);
+    // 激活必须**有条件**：非后台，或本面板还没有任何活动页（那时切过去反而对，否则面板空着）
+    expect(seg, '★ 激活仍无条件 → 两个 pageAgent 并行时用户正在看的页被顶掉')
+      .toMatch(/if\s*\(!background\s*\|\|\s*!activeTabId\.value\)\s*activeTabId\.value\s*=\s*tid/);
+  });
+
+  it('★★ 后台页必须照常进 tabs（它要真的运行，只是不占视野）', () => {
+    // 若"不激活"顺手写成了"不建壳"，后台流的 guest 根本不存在 ⇒ agent 无页可用（静默失效）
+    const i = PANEL.indexOf('onTabCreated?.(');
+    const seg = PANEL.slice(i, i + 2400);
+    expect(seg, '★ 后台页未被 push 进 tabs → guest 不存在 → 后台流无页可操作').toMatch(/tabs\.value\.push\(/);
+    expect(seg, '★ 未把 background 记到 tab 上 → 标签栏无从打标').toMatch(/background:\s*!!background/);
+  });
+
+  it('★★ 标签栏必须给后台页打标（别让用户以为是自己开的页）', () => {
+    expect(PANEL, '★ 缺"后台"徽标 → 用户会以为多出来的页是自己开的').toMatch(/tab-bg-badge/);
+    expect(PANEL, '★ 徽标没有对应的样式（会挤乱标签栏）').toMatch(/\.tab-bg-badge\s*\{/);
+  });
+});

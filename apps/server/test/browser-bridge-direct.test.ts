@@ -256,12 +256,14 @@ describe('⑥ ★★ 端点安全边界（可被真跑验证的静态面）', ()
 });
 
 describe('⑦ ★★ 会话锚定下沉主进程（P0-2）', () => {
-  it('主进程持有 convAnchors 与解析/失效函数', () => {
+  it('主进程持有 convAnchors 与解析/失效函数（维度 = flowKey）', () => {
     const m = stripComments(MAIN);
     expect(m, '★ 缺 convAnchors').toMatch(/const convAnchors = new Map\(\)/);
-    expect(m, '★ 缺 setConvAnchor').toMatch(/function setConvAnchor\(/);
-    expect(m, '★ 缺 resolveTabIdForConv').toMatch(/function resolveTabIdForConv\(/);
-    expect(m, '★ 缺 clearConvAnchorsForTab').toMatch(/function clearConvAnchorsForTab\(/);
+    expect(m, '★ 缺 setFlowAnchor').toMatch(/function setFlowAnchor\(/);
+    expect(m, '★ 缺 resolveTabIdForFlow').toMatch(/function resolveTabIdForFlow\(/);
+    expect(m, '★ 缺 clearFlowAnchorsForTab').toMatch(/function clearFlowAnchorsForTab\(/);
+    // ★ 维度必须是 flowKey：拿 convId 取锚 ⇒ 同一会话的另一条流（后台标签页流）会抢同一个锚
+    expect(m, '★★ 未按 flowKey 取锚').toMatch(/anchored:\s*resolveTabIdForFlow\(flowKey\)/);
   });
 
   it('★★★ 未锚定时对非"建页类" action 必须明确报错（绝不静默用全局页）', () => {
@@ -281,7 +283,7 @@ describe('⑦ ★★ 会话锚定下沉主进程（P0-2）', () => {
     const i = m.indexOf('function broadcastTabClosed(');
     expect(i, '★ 锚点缺失：broadcastTabClosed').toBeGreaterThan(-1);
     const body = m.slice(i, m.indexOf('\n}', i));
-    expect(body, '★ 关闭时未清锚 → 会指向幽灵 tab').toMatch(/clearConvAnchorsForTab\(/);
+    expect(body, '★ 关闭时未清锚 → 会指向幽灵 tab').toMatch(/clearFlowAnchorsForTab\(/);
   });
 
   it('★★ IPC 路径传 convId=null（不与渲染层"两个锚"打架）', () => {
@@ -463,7 +465,7 @@ describe('⑫ ★★★ 多页语义：显式 tabId / new_tab 不得改写"当�
     const iNav = m.indexOf("!wc && action === 'navigate' && args.url");
     expect(iNav, '★ 锚点缺失：自建 guest 分支').toBeGreaterThan(-1);
     const seg = m.slice(iNav, iNav + 1500);
-    expect(seg, '★ 自建 tab 未登记本会话（后续带 tabId 会被误拒）').toMatch(/markConvTabTouched\(convId,\s*tabId\)/);
+    expect(seg, '★ 自建 tab 未登记本流（后续带 tabId 会被误拒）').toMatch(/markFlowTabTouched\(flowKey,\s*tabId\)/);
     expect(seg, '★ 自建 tab 未经过建 tab 唯一实现').toMatch(/tabId = createBrowserTab\(/);
     // 建 tab 只能有一处实现（IPC handler 必须委托，不得自带一份 set/ensure 逻辑）
     expect(m, '★ 缺 createBrowserTab').toMatch(/function createBrowserTab\(scope\)/);
@@ -712,13 +714,15 @@ describe('⑬ ★★★ 锚定建立 + webview tab 上限（防"跑起来就卡�
     const evSeg = m.slice(iEv, iEv + 1600);
     expect(evSeg, '★ 逐出未广播 tabClosed → <webview> 元素与 guest 进程残留').toMatch(/send\('browserView:tabClosed'/);
     // ④ 必须清锚（否则留下幽灵 tabId）
-    expect(evSeg, '★ 逐出未清锚 → 幽灵 tabId 残留').toMatch(/clearConvAnchorsForTab\(/);
+    expect(evSeg, '★ 逐出未清锚 → 幽灵 tabId 残留').toMatch(/clearFlowAnchorsForTab\(/);
   });
 
   it('★★ 锚定决策必须可观测（"navigate 成功后读不到页"的唯一线索）', () => {
     const m = stripComments(MAIN);
     expect(m, '★ 锚定决策无日志 → 排障只能读库反查（本项目已栽过）')
-      .toMatch(/锚定决策: action=/);
+      .toMatch(/锚定决策:/);
+    // ★ 多流并行后"这条动作属于哪条流"是定位互踩的第一线索 ⇒ 这条日志必须带 flow
+    expect(m, '★ 锚定决策日志未带 flow → 两条流各自的锚分不开').toMatch(/锚定决策: flow=/);
   });
 });
 
@@ -882,5 +886,67 @@ describe('⑮ ★★★ openInNewTab 委派 new_tab（开新页不抢锚）', ()
     const hits = [...code.matchAll(/evictLruTabIfNeeded\(\)/g)];
     // createBrowserTab 内 1 处 + 弹窗 handler 1 处 + ensureActiveTab 兜底 1 处 = 3 处
     expect(hits.length, '★ BrowserView 收口点少了（旧引擎 tab 会堆积）').toBeGreaterThanOrEqual(3);
+  });
+});
+
+describe('⑭ ★★★ 流键 flowKeyOf【真跑】（2026-10-15，后台标签页方案 §4.3）', () => {
+  // ★ 真跑：流键是"锚与归属的唯一维度"。算错了的表现是"两条流抢同一个锚 / 各自的页互相看不见"，
+  //   而且**不报错** —— 与 resolveTarget 同一类、必须真跑才抓得住的判据。
+  const bt = require(resolve(REPO, 'apps/desktop/browser-target.cjs'));
+
+  it('缺省 flow → 共享主面板流（今天的语义：现有调用点都没传 flow）', () => {
+    expect(bt.flowKeyOf('conv-A', undefined)).toBe('conv-A::shared');
+    expect(bt.flowKeyOf('conv-A', null)).toBe('conv-A::shared');
+    expect(bt.flowKeyOf('conv-A', '')).toBe('conv-A::shared');
+  });
+
+  it('★★★ 缺省流键的字面量必须与后端流锁的缺省 tabKey **逐字一致**', () => {
+    // ★ 两处取值不同 = "锁在一把键上、锚在另一把键上"：查不出来的那类漂移。
+    const lockSrc = read('apps/server/src/services/browser-flow-lock.ts');
+    const m = lockSrc.match(/SHARED_FLOW\s*=\s*'([^']+)'/);
+    expect(m, '★ 锚点缺失：browser-flow-lock.ts 的 SHARED_FLOW').not.toBeNull();
+    expect(bt.SHARED_FLOW, '★ 桌面端流键的后半段与后端锁的缺省键不是同一个字面量').toBe(m![1]);
+  });
+
+  it('★★ 显式 flow → 各自成键（两条流不共用锚）', () => {
+    expect(bt.flowKeyOf('conv-A', 'bg:sub:tc-1')).toBe('conv-A::bg:sub:tc-1');
+    expect(bt.flowKeyOf('conv-A', 'bg:sub:tc-1'), '★ 同会话两条流撞了同一个键')
+      .not.toBe(bt.flowKeyOf('conv-A', 'bg:sub:tc-2'));
+    expect(bt.flowKeyOf('conv-A', 'bg:sub:tc-1'), '★ 跨会话的同名流撞了同一个键')
+      .not.toBe(bt.flowKeyOf('conv-B', 'bg:sub:tc-1'));
+  });
+
+  it('★ convId 为空 → null（渲染层 IPC 路径不参与主进程锚定，行为不变）', () => {
+    expect(bt.flowKeyOf(null, 'bg:sub:tc-1')).toBeNull();
+    expect(bt.flowKeyOf(undefined, 'bg:sub:tc-1')).toBeNull();
+    expect(bt.flowKeyOf('', 'bg:sub:tc-1')).toBeNull();
+  });
+
+  it('★★★ isBackgroundFlow：只有 `bg:` 前缀才算后台流（"别抢用户视野"的三处分岔都靠它）', () => {
+    expect(bt.isBackgroundFlow('bg:sub:tc-1')).toBe(true);
+    expect(bt.isBackgroundFlow('shared')).toBe(false);
+    expect(bt.isBackgroundFlow(undefined), '★ 缺省必须**不是**后台流（今天的语义）').toBe(false);
+    expect(bt.isBackgroundFlow(null)).toBe(false);
+    expect(bt.isBackgroundFlow(''), '★ 空串误判成后台流 → 正常流建的页会不激活（用户看不到自己该看的页）').toBe(false);
+  });
+
+  it('★★★ 三处"不抢用户视野"的保护必须都在 main.cjs（缺一条就抢焦点）', () => {
+    const m = stripComments(MAIN);
+    // ① 后台流**不回落**用户当前页（否则它首次 navigate 直接把用户那页导航走）
+    expect(m, '★ 未按后台流屏蔽回落 → 后台流的首次导航会导航走用户正在看的页')
+      .toMatch(/activeTabId:\s*bgFlow\s*\?\s*null\s*:\s*activeTabId/);
+    // ② new_tab 不激活
+    expect(m, '★ new_tab 仍无条件激活 → 后台流开新页会顶掉用户视图')
+      .toMatch(/if\s*\(!bgFlow\)\s*activeTabId\s*=\s*tabId/);
+    // ③ switch_tab 拒绝（并按方案 §4.4 给替代做法，不报"失败"）
+    expect(m, '★ 未拒绝后台流的 switch_tab → 它会把用户正在看的页切走')
+      .toMatch(/if\s*\(bgFlow\)\s*\{[\s\S]{0,400}后台流不能切换可见标签页/);
+  });
+
+  it('★★ 广播必须带 background 标记，且 preload 必须转发（丢一环渲染层就无从判断）', () => {
+    expect(stripComments(MAIN), '★ tabCreated 广播未带 background 标记')
+      .toMatch(/send\('browserView:tabCreated',[^)]*bgFlow\)/);
+    expect(read('apps/desktop/preload.cjs'), '★ preload 未转发第 4 个参数 → 渲染层收不到 background')
+      .toMatch(/\(_e,\s*tabId,\s*url,\s*scope,\s*background\)\s*=>\s*callback\(tabId,\s*url,\s*scope,\s*background\)/);
   });
 });

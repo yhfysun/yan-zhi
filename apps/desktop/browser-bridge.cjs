@@ -153,6 +153,11 @@ function start() {
         const action = body && body.action ? String(body.action) : '';
         const tabId = body && body.tabId != null ? String(body.tabId) : null;
         const args = (body && body.args) || {};
+        // ★ 2026-10-15：本执行流的**流键**（缺省 null = 共享主面板流）。
+        //   桌面端据此把「锚 / 归属」分到各自的流上（见 main.cjs 的 flowKeyOf）——
+        //   后台标签页方案（docs/background-tab-parallel-plan.md §4.3）的前提。
+        //   不做白名单收窄：它只是本任务内的一个键，跨会话越权仍由 convId 闸门拦。
+        const flow = body && body.flow ? String(body.flow) : null;
 
         // ★ 能力面收窄：只允许 action 白名单（与 DESKTOP_BROWSER_ACTIONS 同源传入）
         if (!action) {
@@ -184,13 +189,13 @@ function start() {
         const t0 = Date.now();
         let result;
         try {
-          result = await deps.runAction(convId, tabId, action, args);
+          result = await deps.runAction(convId, tabId, action, args, flow);
         } catch (e) {
           result = { error: e && e.message ? e.message : String(e) };
         }
         const ms = Date.now() - t0;
-        // 可观测（安全边界 ⑦）：全部桥调用落日志（action / convId / tabId / 耗时 / 结果码）
-        deps.log(`[bridge] ${action} conv=${convId} tab=${tabId || '-'} ${ms}ms ${result && result.error ? 'ERR: ' + String(result.error).slice(0, 120) : 'OK'}`);
+        // 可观测（安全边界 ⑦）：全部桥调用落日志（action / convId / flow / tabId / 耗时 / 结果码）
+        deps.log(`[bridge] ${action} conv=${convId} flow=${flow || 'shared'} tab=${tabId || '-'} ${ms}ms ${result && result.error ? 'ERR: ' + String(result.error).slice(0, 120) : 'OK'}`);
 
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(result || {}));
@@ -254,7 +259,8 @@ function close() {
 
 /**
  * 接线（main.cjs 在 `runBrowserAction` 定义之后调用）。
- * @param runAction      (convId, tabId, action, args) => Promise<result> —— **唯一实现**（main.cjs 的 runBrowserAction）
+ * @param runAction      (convId, tabId, action, args, flow) => Promise<result> —— **唯一实现**（main.cjs 的 runBrowserAction）
+ *                       `flow` = 本执行流的流键（null = 共享主面板流）；锚/归属按它隔离。
  * @param allowedActions 能力面白名单（main.cjs 的 DESKTOP_BROWSER_ACTIONS，单一真相源）
  */
 function attach(d) {

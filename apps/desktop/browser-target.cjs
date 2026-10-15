@@ -12,6 +12,46 @@
 //   未登记的 tab 一律拒绝 ⇒ A 会话拿不到 B 会话的页。
 
 /**
+ * 缺省流键：同一会话内的**共享主面板流** —— 锚与归属的缺省维度。
+ * ★ 取值必须与后端流锁的缺省 tabKey **逐字一致**
+ *   （`apps/server/src/services/browser-flow-lock.ts` 的 `SHARED_FLOW`）：
+ *   锁在一把键上、锚在另一把键上是最难查的一类漂移。
+ */
+const SHARED_FLOW = 'shared';
+
+/**
+ * 流键 = `${convId}::${flow}` —— **锚与归属的唯一维度**（2026-10-15，后台标签页方案 §4.3）。
+ *
+ * ★ 为什么要从"会话"收紧为"流"（而不是继续只用 convId 一个维度）：
+ *   同一会话内将会有**多条执行流**（主面板流 + 各自申请的后台标签页流）。只按 convId 归一维度时，
+ *   后台流的锚会覆盖主面板的"当前操作页"——正是"两个流抢同一个锚"那类互踩（且不报错）。
+ *   ⇒ 每流各自一份锚、各自一份归属：后台流不需要抢主面板的页。
+ *
+ * ★ 缺省 `flow` → 共享主面板流 ⇒ **今天的语义逐字不变**（现有调用点都没传 flow）。
+ *   `flow` 由后端经桥的 body 顶层传入（见 browser-bridge.cjs / browser-bridge.ts）。
+ *
+ * @param convId 会话标识（空 → 返回 null：非会话路径本就不该用流键）
+ * @param flow   流标识（空 → 共享主面板流）
+ * @returns {string|null} flowKey
+ */
+function flowKeyOf(convId, flow) {
+  if (!convId) return null;
+  const f = flow == null || flow === '' ? SHARED_FLOW : String(flow);
+  return String(convId) + '::' + f;
+}
+
+/**
+ * 这个流是不是**后台流**（`bg:` 前缀）—— 与 flowKey 同一处取值，供"要不要抢用户视野"的分岔用。
+ *
+ * ★ 为什么后台流要单独识别：它的页是**给 agent 自己用的**，不该改变用户正在看的页 ——
+ *   ① 它自建的页**不激活**（渲染层不切过去，见 main.cjs 广播的 background 标记）；
+ *   ② 它**不回落** activeTabId（否则会导航走用户当前那页）。这两条都在 main.cjs 消费本判据。
+ */
+function isBackgroundFlow(flow) {
+  return String(flow == null ? '' : flow).startsWith('bg:');
+}
+
+/**
  * 需建立/切换页面（写）的 action —— 未锚定时**允许**回落活动页
  * （首次 navigate 要能自发建 tab；否则 agent 第一步就走不动）。
  * 其余（读/交互）在"带 convId 但未锚定"时必须**明确报错**，
@@ -175,9 +215,12 @@ function decideAnchorUpdate(action, hadExplicitTab, resolvedTabId, resultTabId, 
 }
 
 module.exports = {
+  SHARED_FLOW,
   ANCHOR_ESTABLISHING_ACTIONS,
   NO_ANCHOR_REWRITE_ACTIONS,
   tabIdCandidates,
+  flowKeyOf,
+  isBackgroundFlow,
   resolveTarget,
   decideAnchorUpdate,
 };

@@ -39,8 +39,8 @@ import { checkToolLoop, FORCE_STOP_MARKER, neutralizeForceStopMarker } from './s
 //   判定口径**只在本模块**（decideBrowserExecution），前端不得自行推断（防双执行 + 防 token 外泄）。
 import { browserBridgeAvailable, decideBrowserExecution, callBrowserBridge, toolNameToAction, bridgeMode, isBridgeTransportError } from './browser-bridge.js';
 import {
-  createFlowLock, tryAcquireFlow, acquireFlow, releaseFlow, flowOwnerOf,
-  BROWSER_FLOW_WAIT_MS, type BrowserFlowLock,
+  createFlowLocks, flowLockFor, flowOwnerAt, tryAcquireFlow, acquireFlow, releaseFlow, flowOwnerOf,
+  BROWSER_FLOW_WAIT_MS, SHARED_FLOW, type BrowserFlowLocks,
 } from './services/browser-flow-lock.js';
 // 子任务执行详情（2026-10-09）：get_sub_task_detail 的查询与排版（编排者分析子任务失败用）
 import { loadSubTaskTrace, formatSubTaskTrace } from './services/sub-task-detail.js';
@@ -429,12 +429,14 @@ interface LlmTask {
    */
   backgroundSubAgents: Map<string, BackgroundSubAgentInfo>;
   /**
-   * ★★★ 浏览器「执行流锁」（2026-10-15「导航跑偏」P0-① 第二层）：浏览器是**单活动页资源**，
-   *   同一任务内同一时刻只允许一个执行流驱动它（否则两条流互踩同一锚页 → 乒乓导航）。
-   *   覆盖第一层（同批 call_agent 串行化）够不到的路径：后台 async 子智能体、PlanRunner
-   *   并行计划项、主循环自身的 browser_* 与后台流并发。实现见 services/browser-flow-lock.ts。
+   * ★★★ 浏览器「执行流锁」按**标签页**分表（2026-10-15「导航跑偏」P0-① 第二层 → 同日升级为每页一把）。
+   *   浏览器实际是**每标签页一个活动页状态机**：同一 tab 上两个流并发会互踩同一锚页（乒乓导航），
+   *   而落在**不同 tab** 上是安全的。覆盖第一层（同批 call_agent 串行化）够不到的路径：
+   *   后台 async 子智能体、PlanRunner 并行计划项、主循环自身的 browser_* 与后台流并发。
+   *   ★ 缺省键 `SHARED_FLOW` = 所有流共用一把 ⇒ **今天的语义逐字不变**（不传 key 的调用点行为不变）。
+   *   实现与"为什么粒度是每页一把"见 services/browser-flow-lock.ts。
    */
-  browserFlow?: BrowserFlowLock;
+  browserFlows?: BrowserFlowLocks;
   /**
    * 后台子智能体「结果已回、等待主循环消费」缓冲（2026-10-09）。
    *
@@ -786,6 +788,10 @@ interface SubAgentOwnership {
   subAgentId: string;
   subAgentName: string;
   subAgentDepth: number;
+  /** 这条子智能体流在**浏览器**上占的标签页键（`shared` / `bg:<flowId>`）。
+   *  ★ 一路带到桥调用（`executeTool` → `callBrowserBridge` 的 `flow`）：桌面端据此把
+   *    「锚 / 归属」分到各自的流上。★ 与流锁的 tabKey **同源**（都来自 browserFlowKeyOf）。 */
+  browserFlowKey: string;
 }
 
 /** 落库一条 tool 消息并向会话流推送 message:added（归属字段两处口径在这里对齐） */
@@ -904,7 +910,7 @@ async function runToolCallAndPersist(opts: {
   } else {
     emit(task, { type: 'tool:start', toolName, args, ...subEvt });
     try {
-      result = await executeTool(task, registry, toolName, args, tcId, uiTools, depth, toolDefs, metaOut);
+      result = await executeTool(task, registry, toolName, args, tcId, uiTools, depth, toolDefs, metaOut, ownership?.browserFlowKey);
     } catch (e: any) {
       if (isAbortError(e)) {
         try {
@@ -2088,6 +2094,25 @@ function isBrowserCapableSubAgent(agentId: unknown, userId: string): boolean {
  *  runSubAgentImpl 的运行期记账共用，防两处漂移）。 */
 function toolIdsIncludeBrowser(ids: unknown): boolean {
   return (Array.isArray(ids) ? ids : []).some((n) => String(n).startsWith('browser_'));
+}
+
+/** 浏览器流的**标签页键**：这个子智能体该在哪条流上驱动浏览器（2026-10-15 后台标签页方案 §4.2）。
+ *
+ *  · `SHARED_FLOW`（缺省）—— 与本会话共用"当前操作页"：一把锁、一份锚
+ *    ⇒ 两个浏览器型子智能体**串行**（这正是"导航跑偏"要拦的那类互踩）；
+ *  · `bg:<flowId>` —— 自己的**后台标签页**：锁独立、锚独立 ⇒ 可与另一条流**并行**（各读各的页），
+ *    且**不抢**用户正在看的页（桌面端不会激活后台流建的页，见 main.cjs 的 createBrowserTab）。
+ *
+ *  ★ flowId 用**委派方的 toolCallId**（那次 `call_agent` 调用的 id）：它天然唯一，且与流锁里的
+ *    `sub:<toolCallId>` 同源 —— 一处取值、两处共用（服务端锁 + 桌面端锚维度）。
+ *  ★ `bg:` 前缀同时是**桌面端识别"这是后台流"的唯一依据**（main.cjs 的 isBackgroundFlow）：
+ *    前后端不各写一份判据，避免"锁在后台、锚却在共享"这类查不出来的漂移。
+ *
+ *  ★ 导出供测试真跑（判据错了的表现是"以为各占一页、其实抢同一页"，不报错且难查）。
+ */
+export function browserFlowKeyOf(args: any, parentToolCallId: string): string {
+  const t = String(args?.browserTarget ?? args?.browser_target ?? '').trim().toLowerCase();
+  return t === 'background' ? `bg:sub:${parentToolCallId}` : SHARED_FLOW;
 }
 
 /** 前端提交工具执行结果 */
@@ -3424,25 +3449,37 @@ async function runReActLoop(task: LlmTask, params: {
         //   · 判据**只针对"同批还有另一个浏览器型"**：非浏览器型兄弟（代码/检索类子智能体）
         //     与它并发是安全的（不碰浏览器），保留并发不牺牲既有收益。
         //   · 解析失败/查不到按"浏览器型"兜底（宁可串行不可漏判，见 isBrowserCapableSubAgent）。
+        //
+        // ★★★ 2026-10-15（后台标签页方案 §4.2）：串行化判据**从"同批有 ≥2 个浏览器型"收紧为
+        //   "本批有另一个浏览器型**落在同一个标签页上**"**。
+        //   为什么必须收紧：互斥的正确粒度是**标签页**（浏览器是每页一个活动页状态机）——
+        //   两条流各自申请了后台页（不同 tabKey）时并发是安全的。不收紧的话
+        //   `browserTarget:'background'` 会被这一层**无差别串行掉**，整个方案的收益归零。
         const batchCallAgentBrowser = new Map<any, boolean>();
+        const batchCallAgentTabKey = new Map<any, string>();
         for (const tc of toolCallAcc) {
           const n = tc.function?.name || (tc as any).toolName || '';
           if (n !== 'call_agent') continue;
           const a = parseToolArguments(tc.function?.arguments).args as any;
-          batchCallAgentBrowser.set(
-            tc,
-            a === null ? true : isBrowserCapableSubAgent(a?.agentId ?? a?.agent_id ?? a?.id, task.userId),
-          );
+          const capable = a === null ? true : isBrowserCapableSubAgent(a?.agentId ?? a?.agent_id ?? a?.id, task.userId);
+          batchCallAgentBrowser.set(tc, capable);
+          // 解析失败按"浏览器型 + 共享页"兜底（与上面的兜底同一取向）
+          if (capable) batchCallAgentTabKey.set(tc, a === null ? SHARED_FLOW : browserFlowKeyOf(a, String(tc.id || '')));
         }
-        const browserFlowCount = [...batchCallAgentBrowser.values()].filter(Boolean).length;
+        // 每个 tabKey 上**只放一个**进并发批（同页的第二个改串行 —— 同一页上并发才会互踩）
+        const tabKeyTaken = new Set<string>();
 
         const parallelizableCalls = toolCallAcc.filter((tc) => {
           const n = tc.function?.name || (tc as any).toolName || '';
           if (parseToolArguments(tc.function?.arguments).args === null) return false;
           if (n === 'call_agent') {
-            if (browserFlowCount >= 2 && batchCallAgentBrowser.get(tc) === true) {
-              logger.warn(`[llm-task] 同批多个浏览器型子智能体 → 本个改串行（防多流抢同一浏览器锚）conv=${task.conversationId}`);
-              return false;
+            if (batchCallAgentBrowser.get(tc) === true) {
+              const key = batchCallAgentTabKey.get(tc) || SHARED_FLOW;
+              if (tabKeyTaken.has(key)) {
+                logger.warn(`[llm-task] 同批已有浏览器型子智能体占着同一个标签页（tab=${key}）→ 本个改串行（防两流抢同一页）conv=${task.conversationId}`);
+                return false;
+              }
+              tabKeyTaken.add(key);
             }
             return true;
           }
@@ -4157,6 +4194,12 @@ async function executeTool(
    *   所以必须由它回传，调用方才能登记到正确位置。
    */
   metaOut?: { value?: Record<string, unknown> | null },
+  /**
+   * 本执行流的**浏览器标签页键**（`shared` / `bg:<flowId>`）——透传到桥的 `flow`，
+   * 桌面端据此把「锚 / 归属」分到各自流上。缺省 = 共享主面板流
+   * （主循环与并发批都不传；子智能体由 `runToolCallAndPersist` 从 ownership 带下来）。
+   */
+  browserFlowKey?: string,
 ): Promise<string> {
   // 会话级权限拦截（readonly）：写类/不可控工具在此硬拒绝。
   // 放在函数最顶端 —— 被拒时提前 return，file_write/file_edit 的 file_change 快照钩子
@@ -4612,7 +4655,7 @@ async function executeTool(
     //   前台子任务是**阻塞**委派，那时主循环不会发浏览器动作 ⇒ 这里只会命中
     //   "主循环 vs 后台(async)子任务"这一类真并发。
     if (depth === 0) {
-      const owner = flowOwnerOf(task.browserFlow);
+      const owner = flowOwnerAt(task.browserFlows);
       if (owner && owner.startsWith('sub:')) {
         logger.warn(`[llm-task] 主循环浏览器动作被拒（浏览器被后台子任务占用）conv=${task.conversationId} tool=${toolName} owner=${owner}`);
         return `浏览器正被后台子任务占用（占位者：${owner}）—— 浏览器是单活动页资源，同一任务的浏览器动作必须串行。`
@@ -4623,7 +4666,9 @@ async function executeTool(
     if (exec === 'bridge') {
       const bridgeTimeout = resolveFrontendToolTimeout(toolName);
       try {
-        const raw = await callBrowserBridge(task.conversationId, toolName, args, bridgeTimeout);
+        // ★ 末位 = 本流在桌面端的流键（锚/归属按它隔离，见 main.cjs 的 flowKeyOf）。
+        //   主循环/并发批缺省 = 共享主面板流；子智能体由 ownership 带下来（可能是 bg:<flowId>）。
+        const raw = await callBrowserBridge(task.conversationId, toolName, args, bridgeTimeout, browserFlowKey || SHARED_FLOW);
         // ★ 截图归档与 SSE 路径**共用同一后处理出口**（见 archiveDelegatedScreenshot 注释）——
         //   否则"截图进临时区但登记不进 conversation_file"会以新形态复发（C6 刚修过同一处）。
         if (toolName === 'browser_screenshot') {
@@ -5295,14 +5340,18 @@ async function startBackgroundSubAgent(
   //   后台是 fire-and-forget：若等它真跑起来才发现浏览器被占，已经白跑一整轮。
   //   ⇒ 浏览器型后台子任务在别的流占用期间**直接拒绝**（不排队、更不静默并发驱动）。
   const bgFlowId = `sub:${toolCallId}`;
+  // ★ 这条后台流要占的**标签页键**（与 runSubAgent 同源同值：一处取值、两处共用）
+  const bgTabKey = browserFlowKeyOf(args, toolCallId);
   const bgBrowserCapable = isBrowserCapableSubAgent(agentId, task.userId);
   if (bgBrowserCapable) {
-    task.browserFlow ||= createFlowLock();
-    if (!tryAcquireFlow(task.browserFlow, bgFlowId)) {
-      logger.warn(`[llm-task] 浏览器型后台子任务被拒（浏览器已被占）conv=${task.conversationId} owner=${flowOwnerOf(task.browserFlow)}`);
-      return `浏览器正被另一个浏览器型子任务占用（占位者：${flowOwnerOf(task.browserFlow)}）——`
-        + `浏览器是单活动页资源，后台并发会互相覆盖页面（这正是"导航跑偏/打开别的页面"的成因）。`
-        + `请等它完成后再委派，或去掉 async 改**同步**委派（同步会排队等待，不会互踩）。`;
+    task.browserFlows ||= createFlowLocks();
+    if (!tryAcquireFlow(flowLockFor(task.browserFlows, bgTabKey), bgFlowId)) {
+      const holder = flowOwnerAt(task.browserFlows, bgTabKey);
+      logger.warn(`[llm-task] 浏览器型后台子任务被拒（该标签页已被占）conv=${task.conversationId} tab=${bgTabKey} owner=${holder}`);
+      return `浏览器正被另一个浏览器型子任务占用（占位者：${holder}；它占的是 ${bgTabKey === SHARED_FLOW ? '本会话共用页面' : '同一个标签页'}）——`
+        + `同一个页面上两个流并发会互相覆盖页面（这正是"导航跑偏/打开别的页面"的成因）。`
+        + `请等它完成后再委派；想让它**各占一页、真正并行**，给其中一个传 browserTarget:"background"；`
+        + `或去掉 async 改**同步**委派（同步会排队等待，不会互踩）。`;
     }
   }
 
@@ -5322,8 +5371,9 @@ async function startBackgroundSubAgent(
     } finally {
       task.backgroundSubAgents.delete(bgId);
       // ★ 浏览器流锁释放（非持有者 = 幂等 no-op：runSubAgent 正常收尾时已释放，
-      //   异常路径由这里兜底，避免"锁被异常带走 → 后续浏览器任务全被挡"）
-      if (bgBrowserCapable) releaseFlow(task.browserFlow!, bgFlowId);
+      //   异常路径由这里兜底，避免"锁被异常带走 → 后续浏览器任务全被挡"）。
+      //   `task.browserFlows` 缺失时跳过（拿过锁就不可能缺失；这里只为不让 finally 抛错盖掉原异常）。
+      if (bgBrowserCapable && task.browserFlows) releaseFlow(flowLockFor(task.browserFlows, bgTabKey), bgFlowId);
       logger.warn(`[bg-subagent] 结束 conv=${task.conversationId} bg=${bgId} agent=${agentId}`);
       // ★ 唤醒「收尾时就地等待」的主循环（2026-10-09）：它醒来会复检是否还有人跑。
       try { task.backgroundDrainWaiter?.(); } catch {}
@@ -5407,19 +5457,25 @@ async function runSubAgent(
   //   PlanRunner 并行计划项、工作流型（含 browser_ 节点）子智能体。
   //   等待**有界**（BROWSER_FLOW_WAIT_MS）；拿不到就明确拒绝，绝不静默并发驱动浏览器。
   const flowId = `sub:${parentToolCallId}`;
+  // ★ 本子智能体要占的**标签页键**：`shared`（缺省 = 与主面板共用同一个操作页）或 `bg:<flowId>`
+  //   （自己一个后台页，可与别的流真正并行）。取值口径**只在 browserFlowKeyOf 一处**。
+  const tabKey = browserFlowKeyOf(args, parentToolCallId);
   const browserCapable = specOverride
     ? toolIdsIncludeBrowser(specOverride.toolIds)
     : isBrowserCapableSubAgent((args as any)?.agentId ?? (args as any)?.agent_id ?? (args as any)?.id, task.userId);
   let flowAcquired = false;
   if (browserCapable) {
-    task.browserFlow ||= createFlowLock();
-    flowAcquired = await acquireFlow(task.browserFlow, flowId, task.abortController.signal);
+    task.browserFlows ||= createFlowLocks();
+    const flowLock = flowLockFor(task.browserFlows, tabKey);
+    flowAcquired = await acquireFlow(flowLock, flowId, task.abortController.signal);
     if (!flowAcquired) {
-      logger.warn(`[llm-task] 浏览器流锁等待超时，子任务未启动 conv=${task.conversationId} flow=${flowId} owner=${flowOwnerOf(task.browserFlow)}`);
-      return `浏览器正被同一任务内的另一个执行流占用（占位者：${flowOwnerOf(task.browserFlow) || '未知'}），`
+      logger.warn(`[llm-task] 浏览器流锁等待超时，子任务未启动 conv=${task.conversationId} flow=${flowId} tab=${tabKey} owner=${flowOwnerOf(flowLock)}`);
+      return `浏览器正被同一任务内的另一个执行流占用（占位者：${flowOwnerOf(flowLock) || '未知'}），`
         + `已等待 ${Math.round(BROWSER_FLOW_WAIT_MS / 60000)} 分钟仍未释放 —— 本次子任务**未启动**。`
         + `浏览器是单活动页资源，两个流并发驱动会互相覆盖页面（这正是"导航跑偏/打开别的页面"的成因）。`
-        + `请等它结束后重新委派；有多个浏览器任务时**串行委派**（一次只跑一个）。`;
+        + (tabKey === SHARED_FLOW
+          ? `请等它结束后重新委派；有多个浏览器任务时**串行委派**（一次只跑一个）。`
+          : `这条后台流等的是它自己要占的标签页（${tabKey}）。请等它结束，或改用同步委派（会排队等待）。`);
     }
   }
   try {
@@ -5438,7 +5494,8 @@ async function runSubAgent(
     return `${sanitized}\n\n[子任务ID] ${parentToolCallId}（如需分析本任务执行过程，可调用 get_sub_task_detail 传入此 ID 查询）`;
   } finally {
     // 释放（非持有者 = 幂等 no-op）：异常/中止路径也必须还锁，否则后续浏览器任务全被挡
-    if (flowAcquired) releaseFlow(task.browserFlow!, flowId);
+    // 释放（非持有者 = 幂等 no-op）：异常/中止路径也必须还锁，否则后续浏览器任务全被挡
+    if (flowAcquired && task.browserFlows) releaseFlow(flowLockFor(task.browserFlows, tabKey), flowId);
   }
 }
 
@@ -5628,6 +5685,9 @@ async function runSubAgentImpl(
     subAgentId: resolvedId,
     subAgentName,
     subAgentDepth: depth + 1,
+    // ★ 这条流在浏览器上占哪一页（`shared` / `bg:<flowId>`）——一路带到桥调用，
+    //   桌面端据此把「锚 / 归属」分到各自流上。取值与流锁同一处（browserFlowKeyOf）。
+    browserFlowKey: browserFlowKeyOf(args, parentToolCallId),
   };
   const client = new LlmClient(platform, model);
   // 子智能体步数上限：尊重 agent 配置的 maxReActSteps（如 pageAgent 的 50），

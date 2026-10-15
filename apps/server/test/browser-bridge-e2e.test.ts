@@ -29,8 +29,8 @@ beforeAll(async () => {
   process.env.YZ_BROWSER_BRIDGE = 'on';
   bridge = require(resolve(REPO, 'apps/desktop/browser-bridge.cjs'));
   bridge.attach({
-    runAction: async (convId: string, tabId: string | null, action: string, args: any) => {
-      calls.push({ convId, tabId, action, args });
+    runAction: async (convId: string, tabId: string | null, action: string, args: any, flow?: string | null) => {
+      calls.push({ convId, tabId, action, args, flow });
       if (stubThrow) throw new Error(stubThrow);
       return stubResult;
     },
@@ -155,11 +155,16 @@ describe('④ 能力面与参数（真跑）', () => {
 });
 
 describe('⑤ 转发给唯一实现（真跑）', () => {
-  it('★★★ action/args/convId/tabId 逐字透传给 runAction', async () => {
+  it('★★★ action/args/convId/tabId/flow 逐字透传给 runAction', async () => {
     calls.length = 0;
     await post({ convId: 'conv-7', tabId: 'tab-3', action: 'click', args: { index: 5 } });
     expect(calls.length, '★ 未调用唯一实现').toBe(1);
-    expect(calls[0]).toEqual({ convId: 'conv-7', tabId: 'tab-3', action: 'click', args: { index: 5 } });
+    // ★ flow 缺省为 null（body 顶层没给）= 执行面并入共享主面板流 ⇒ 今天的语义不变
+    expect(calls[0]).toEqual({ convId: 'conv-7', tabId: 'tab-3', action: 'click', args: { index: 5 }, flow: null });
+    // 顶层给了 flow → 原样透传（锚/归属据此分到各条流上）
+    calls.length = 0;
+    await post({ convId: 'conv-7', action: 'click', args: {}, flow: 'bg:sub:tc-3' });
+    expect(calls[0].flow, '★ body.flow 未透传 → 流键在桥这一层被丢掉').toBe('bg:sub:tc-3');
   });
 
   it('★ 结果原样回传（与 browserView:action 同构）', async () => {
@@ -299,6 +304,33 @@ describe('⑨ ★★★ 显式 tabId 必须真的送达执行面（否则"静默
       calls.length = 0;
       await callBrowserBridge('conv-tabid', 'browser_get_page_content', {}, 5000);
       expect(calls[0].tabId ?? null, '★ 未显式指定时不应凭空给一个 tabId').toBeNull();
+    } finally {
+      if (savedUrl === undefined) delete process.env.YZ_BROWSER_BRIDGE_URL; else process.env.YZ_BROWSER_BRIDGE_URL = savedUrl;
+      if (savedTok === undefined) delete process.env.YZ_BROWSER_BRIDGE_TOKEN; else process.env.YZ_BROWSER_BRIDGE_TOKEN = savedTok;
+    }
+  });
+
+  it('★★★ 流键必须真的送达执行面（锚/归属按它隔离 —— 后台标签页方案的地基）', async () => {
+    // ★ 为什么必须真跑：这是一条**跨进程契约**（server 的 body 字段 → 桌面端桥的 body.flow
+    //   → runAction 的第 5 个参数）。任何一处漏接，桌面端就只能按 convId 存锚 ⇒
+    //   同一会话里的另一条流会抢同一个锚（且**不报错**，最难查的那一类）。
+    const { callBrowserBridge } = await import('../src/browser-bridge.js');
+    const savedUrl = process.env.YZ_BROWSER_BRIDGE_URL;
+    const savedTok = process.env.YZ_BROWSER_BRIDGE_TOKEN;
+    process.env.YZ_BROWSER_BRIDGE_URL = `http://127.0.0.1:${port}${PATH}`;
+    process.env.YZ_BROWSER_BRIDGE_TOKEN = token;
+    try {
+      calls.length = 0;
+      stubResult = { ok: true };
+      await callBrowserBridge('conv-flow', 'browser_navigate', { url: 'https://x.test' }, 5000, 'bg:sub:tc-9');
+      expect(calls.length).toBe(1);
+      expect(calls[0].flow, '★ 流键未送达执行面 → 锚仍按 convId 存 → 同会话两条流抢同一个锚')
+        .toBe('bg:sub:tc-9');
+      // 不传流键 → 执行面按共享主面板流处理（= 今天的语义，逐字不变）
+      calls.length = 0;
+      await callBrowserBridge('conv-flow', 'browser_navigate', { url: 'https://x.test' }, 5000);
+      expect(calls[0].flow ?? null, '★ 缺省时应为空（执行面据此并入共享流），不得凭空造一个流键')
+        .toBeNull();
     } finally {
       if (savedUrl === undefined) delete process.env.YZ_BROWSER_BRIDGE_URL; else process.env.YZ_BROWSER_BRIDGE_URL = savedUrl;
       if (savedTok === undefined) delete process.env.YZ_BROWSER_BRIDGE_TOKEN; else process.env.YZ_BROWSER_BRIDGE_TOKEN = savedTok;

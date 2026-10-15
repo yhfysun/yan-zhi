@@ -26,6 +26,12 @@ export interface BrowserTab {
   pageZoom: number;
   canBack: boolean;
   canForward: boolean;
+  /**
+   * 这个页是**后台流**（`browserTarget:'background'` 的子智能体）建的工作页（2026-10-15 后台标签页方案）。
+   * 用途：① 标签栏打标"后台"，避免用户以为是自己开的页；② 建页时不抢当前视图（见 BrowserPanel 的 onTabCreated）。
+   * 用户自己开的页、前台 agent 开的页都不带这个标记。
+   */
+  background?: boolean;
 }
 
 export type BrowserScope = string;

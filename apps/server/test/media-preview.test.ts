@@ -125,7 +125,9 @@ describe('③ 产物只登记了图片没视频：子智能体循环漏跑钩子
     // 重构后变量统一叫 metaOut（原按两处循环分别命名 subToolMetaOut）
     const body = win(LTM, 'async function runToolCallAndPersist(', 3000, '统一工具出口');
     expect(body, '★ 未接 executeTool 的 _meta 出参').toMatch(/metaOut/);
-    expect(body, '★ 未把出参传给 executeTool').toMatch(/executeTool\([^)]*metaOut\)/);
+    // ★ 2026-10-15：executeTool 末尾新增一个可选参数（浏览器流键），故 metaOut 之后允许再跟参数
+    //   —— 断言只钉"出参确实传进去了"，不再钉它是最后一个实参。
+    expect(body, '★ 未把出参传给 executeTool').toMatch(/executeTool\([^)]*metaOut\s*[,)]/);
     expect(body, '★ _meta 未传给钩子').toMatch(/meta:\s*\(?metaOut\.value/);
   });
 

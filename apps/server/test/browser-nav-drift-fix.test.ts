@@ -41,10 +41,15 @@ describe('① P0-① 同批并发 call_agent：浏览器型子智能体改串行
     const seg = ltm.slice(Math.max(0, i - 1600), i + 900);
     expect(seg, '★ 并发面未排除浏览器型 call_agent → 两个 pageAgent 仍并发抢锚')
       .toMatch(/isBrowserCapableSubAgent\(/);
-    // 判据必须是"同批存在**另一个**浏览器型"时才生效：
-    //   非浏览器型兄弟（代码/检索子智能体）与浏览器型并发是安全的，不得被无谓串行化。
-    expect(seg, '★ 未按"同批浏览器型数量 ≥2"限定 → 混合批（浏览器型+非浏览器型）被无谓串行化')
-      .toMatch(/browserFlowCount\s*>=\s*2/);
+    // 判据必须是"同批存在**另一个落在这个标签页上**的浏览器型"时才生效：
+    //   · 非浏览器型兄弟（代码/检索子智能体）与浏览器型并发是安全的；
+    //   · 浏览器型但**各占一页**（`browserTarget:'background'`）并发也是安全的。
+    //   ⇒ 两者都不得被无谓串行化（不收紧的话，后台并行会被这一层整段吃掉、方案收益归零）。
+    expect(seg, '★ 未按"该标签页已被占"限定 → 混合批 / 各占一页的后台流被无谓串行化')
+      .toMatch(/tabKeyTaken\.has\(key\)/);
+    expect(seg, '★ 每个 tabKey 只放一个进并发批（去重必须真的加上）').toMatch(/tabKeyTaken\.add\(key\)/);
+    expect(seg, '★ 串行化键必须由 browserFlowKeyOf 算出（否则与流锁的 tabKey 漂移）')
+      .toMatch(/browserFlowKeyOf\(a,/);
   });
 
   it('★★★ 别名表为模块级唯一实现（runSubAgentImpl 与判据共用，防漂移）', () => {
@@ -248,6 +253,8 @@ describe('⑤ 第三层：跨会话回落抢页（"上两个并发任务把预�
     expect(i, '★ 锚点缺失：目标解析调用').toBeGreaterThan(-1);
     const seg = m.slice(i, i + 1400);
     expect(seg, '★ 未传 isOwnedByOther → 跨会话回落抢页仍有缝').toMatch(/isOwnedByOther:/);
-    expect(seg, '★ 归属真相源必须是 agentTouchedTabs（tab → convId）').toMatch(/agentTouchedTabs\.get\(/);
+    expect(seg, '★ 归属真相源必须是 agentTouchedTabs').toMatch(/agentTouchedTabs\.get\(/);
+    expect(seg, '★★ 归属口径必须是 **flowKey**（拿 convId 比 → 同一会话的另一条流被误判成"别人的页"）')
+      .toMatch(/owner !== flowKey/);
   });
 });

@@ -17,8 +17,18 @@
 //     （因此"子智能体收尾"与"后台包装层收尾"都放一行也安全）；
 //   · 同一 flowId 重复 acquire → 立即成功（幂等：后台路径先占位、ReAct 层再取）。
 //
-// ★ 为什么锁是**每任务**一份（`LlmTask.browserFlow`）而不是全局单锁：
-//   不同会话各自驱动自己的锚页是既有设计（A4 会话隔离）；本模块只治**同一任务内**的互踩。
+// ★ 为什么锁的粒度是**每任务每标签页**一把（`LlmTask.browserFlows: Map<tabKey, 锁>`）
+//   而不是全局单锁，也不是"每任务一把"：
+//   · 全局单锁 → 不同会话各自驱动自己的锚页是既有设计（A4 会话隔离），本模块只治**同一任务内**的互踩；
+//   · 每任务一把 → 会把这把锁当成"整台浏览器只能有一个流"（今天的行为）。而浏览器实际是
+//     **每标签页一个活动页状态机**：两个流落在**不同 tab** 上并发是安全的（各读各的页），
+//     落在**同一 tab** 上才会互踩。⇒ 互斥的正确粒度是 tab，不是任务。
+//   · 今天的语义 = 所有流都落在同一个缺省键 `SHARED_FLOW` 上（互斥 + 排队）——**逐字不变**。
+//     要让某个流去占自己的后台标签页，由调用方给它一个独立的 tabKey（见方案 §4.2 的 `bg:<flowId>`），
+//     并在拿到 tab 后把键改写成 `tab-N`，这样"两个流落到同一个 tab"仍然互斥（防意外收敛）。
+//
+// ★ tabKey 同时是**桌面端锚/归属的流键**（`main.cjs` 的 flowKey = `${convId}::${flow}`）：
+//   两处用同一个常量、同一个取值，避免"锁在一把键上、锚在另一把键上"这种查不出来的漂移。
 
 /** 等待上限：覆盖"后台子任务收尾"的常见时长；超时即明确拒绝（不无限等、不静默） */
 export const BROWSER_FLOW_WAIT_MS = 5 * 60 * 1000;
@@ -38,6 +48,41 @@ export interface BrowserFlowLock {
 
 export function createFlowLock(): BrowserFlowLock {
   return { owner: null, queue: [] };
+}
+
+/** 缺省流键：所有流共用它 —— 等价于今天的"每任务一把"语义（桌面端 flowKey 为 `${convId}::shared`）。
+ *  要让某个流去占自己的后台标签页，调用方给它一个独立 key；缺省不变 ⇒ 不传 key 的调用点行为逐字不变。 */
+export const SHARED_FLOW = 'shared';
+
+/** 任务内的**按标签页**流锁表：tabKey → 锁（见本文件顶部"为什么粒度是每标签页一把"）。 */
+export type BrowserFlowLocks = Map<string, BrowserFlowLock>;
+
+export function createFlowLocks(): BrowserFlowLocks {
+  return new Map();
+}
+
+/** 取（必要时建）某 tabKey 的锁。缺省 `SHARED_FLOW` ⇒ 不传 key 时与今天的单锁行为一致。 */
+export function flowLockFor(locks: BrowserFlowLocks, tabKey: string = SHARED_FLOW): BrowserFlowLock {
+  let lock = locks.get(tabKey);
+  if (!lock) { lock = createFlowLock(); locks.set(tabKey, lock); }
+  return lock;
+}
+
+/** 只读探测：该 tabKey 上有没有锁（**不建**）。用于"只看一眼谁占着"这类判断。 */
+export function peekFlowLock(
+  locks: BrowserFlowLocks | undefined | null,
+  tabKey: string = SHARED_FLOW,
+): BrowserFlowLock | undefined {
+  if (!locks) return undefined;
+  return locks.get(tabKey);
+}
+
+/** 诊断用：某 tabKey 上当前的持有者（写日志 / 拼拒绝文案）。 */
+export function flowOwnerAt(
+  locks: BrowserFlowLocks | undefined | null,
+  tabKey: string = SHARED_FLOW,
+): string | null {
+  return flowOwnerOf(peekFlowLock(locks, tabKey));
 }
 
 /**

@@ -19,6 +19,8 @@
           <span class="tab-favicon" v-if="tab.loading">○</span>
           <span class="tab-favicon" v-else>●</span>
           <span class="tab-title">{{ tab.title || tab.url || '新标签页' }}</span>
+          <!-- 后台流的工作页打标：它是 agent 自己开的页，别让用户以为是自己开的（方案 §4.6） -->
+          <span class="tab-bg-badge" v-if="tab.background" title="后台子智能体自己开的工作页（不是你打开的那一页）">后台</span>
           <button class="tab-close" @click.stop="closeTab(tab.id)" v-if="tabs.length > 1" title="关闭标签页">×</button>
         </div>
         <button class="tab-new" @click="newTab()" title="新建标签页">
@@ -2312,7 +2314,7 @@ onMounted(async () => {
     // 主进程兜底自建 tab（ensureActiveTab 超时自建）→ 补建 tab 壳。
     // 没有这步渲染层"无壳即忽略"，pageAgent 导航发生在主进程但预览面板毫无变化（导航黑洞）。
     // 按空间过滤：主进程广播带 scope，只认本空间的 tab，避免两边 tab 列表串扰。
-    trackIpc(api.browserView.onTabCreated?.(aliveGuard((tid: string, url: string | null, scope?: string) => {
+    trackIpc(api.browserView.onTabCreated?.(aliveGuard((tid: string, url: string | null, scope?: string, background?: boolean) => {
       // ★ 诊断日志（排障命门，非用户可见）：确认主进程广播是否到达本面板、各闸门取值。
       //   `wc=NULL(8s 超时)` 时要能一眼看出是"回调没到"还是"被 scope/去重挡了"。
       console.log(`[BrowserPanel] onTabCreated tid=${tid} url=${url} scope=${scope} myScope=${browserScope} alive=${componentAlive} 已有=${tabs.value.some(t => t.id === tid)}`);
@@ -2328,9 +2330,16 @@ onMounted(async () => {
       tabs.value.push({
         id: tid, url: url || '', srcUrl: url || '', title: '', loading: false, urlInput: url || '',
         history: url ? [url] : [], histIndex: url ? 0 : -1, pageZoom: 1, canBack: false, canForward: false,
+        // ★ 后台流的工作页：打标（标签栏显示"后台"），并让下面**不抢用户当前视图**
+        background: !!background,
       });
-      activeTabId.value = tid;
-      console.log(`[BrowserPanel] onTabCreated 已建壳 tab=${tid} tabs=${tabs.value.length} active=${activeTabId.value} isWebviewEngine=${isWebviewEngine.value}`);
+      // ★★★ 2026-10-15（后台标签页）：**后台流建的页不切过去** —— 否则"两个 pageAgent 并行"
+      //   会把用户正在看的页面顶掉（这正是验收口径 #2「不抢焦点」要拦的事）。
+      //   唯一的例外：本面板当前**没有任何活动页** —— 那时切过去反而对（否则面板空着、用户看不到东西）。
+      //   页照常挂载（`v-for="t in tabs"` → `<webview>` 建壳并运行），只是不占视野。
+      if (!background || !activeTabId.value) activeTabId.value = tid;
+      else console.log(`[BrowserPanel] onTabCreated 后台页不切视图：tab=${tid}（当前 active=${activeTabId.value}）`);
+      console.log(`[BrowserPanel] onTabCreated 已建壳 tab=${tid} tabs=${tabs.value.length} active=${activeTabId.value} background=${!!background} isWebviewEngine=${isWebviewEngine.value}`);
     })));
     // ★ tab 关闭广播（2026-10-09）：agent 关 tab / 任务收尾自动收拾时摘除 tab 壳。
     //   此前 webview 引擎下 agent 的 close_tab 只删主进程 meta，渲染层残留幽灵壳。
@@ -2694,6 +2703,13 @@ onUnmounted(() => {
 .tab-favicon { font-size: 7px; opacity: 0.5; flex-shrink: 0; }
 .tab-item.active .tab-favicon { opacity: 0.8; }
 .tab-title { overflow: hidden; text-overflow: ellipsis; flex: 1; }
+/* 后台流的工作页徽标（方案 §4.6）：不抢标题宽度，但一眼看得出"这页不是我开的" */
+.tab-bg-badge {
+  flex: none; margin-left: 4px; padding: 0 5px; border-radius: 999px;
+  font-size: 10px; line-height: 15px; white-space: nowrap;
+  color: var(--el-text-color-secondary);
+  background: var(--el-fill-color, rgba(0, 0, 0, 0.06));
+}
 .tab-close {
   display: inline-flex; align-items: center; justify-content: center;
   width: 18px; height: 18px; border: none; background: transparent;
