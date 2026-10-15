@@ -70,7 +70,12 @@ describe('① file_write 的路径必须由代码决定，不能靠模型传', (
 
   it('★★ 调用点必须把 artifactDirs 算好传进去（用与媒体同一个单一出口）', () => {
     const code = strip(TASK_MGR);
-    const i = code.indexOf("registry.has(toolName)");
+    // ★ 锚点必须是**真正执行内置工具**的那个分支 `if (registry.has(toolName)) {`。
+    //   原先只搜裸串 "registry.has(toolName)"，会先命中它上面的**取反守卫**
+    //   `if (!registry.has(toolName)) {` —— 那是另一段逻辑，靠巧合离得够近才通过；
+    //   2026-10-15 executeTool 里插入了并发的批次判定后，3000 字符窗口够不到产物目录块，
+    //   断言随即误报。搜完整分支头，语义正确且不再受无关插入影响。
+    const i = code.indexOf('if (registry.has(toolName)) {');
     expect(i, '未找到内置工具执行分支').toBeGreaterThan(0);
     const block = code.slice(i, i + 3000);
     // ★ 断言不能只看"出现过 artifactDirs 这个词"（注释/类型里都可能出现）——
