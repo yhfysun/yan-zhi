@@ -188,13 +188,13 @@ describe('链路接线（静态断言，防入口漂移）', () => {
     expect(LTM).toContain("toolName === 'task_plan' || toolName === 'task_step'");
     expect(LTM).toContain('backendTaskPlan(task.conversationId');
     expect(LTM).toContain('backendTaskStep(task.conversationId');
-    // 兜底分支必须在 subscribers.size === 0 的条件下（前端在线仍走 UI 渲染），且真的调到后端实现
-    // ★ 2026-10-15：后端调用被提到 `localPlanFallback` 里、由两个场景共用，故断言随之指向收口变量。
-    expect(LTM).toMatch(/if \(localPlanFallback && task\.subscribers\.size === 0\)[\s\S]{0,160}return await localPlanFallback\(args\)/);
-    // ★★ 2026-10-15：**同一份**兜底也交给前端委托路径（超时收口用）——
-    //   两个场景（无人值守 / 前端没响应）共用一份实现，防"平行实现漂移"。
-    expect(LTM, '★ 超时路径没拿到兜底 → 前端一没响应就只能干等满超时、再把这一步判成失败')
-      .toMatch(/executeToolViaFrontend\(task, toolName, args, toolCallId, depth, undefined, localPlanFallback\)/);
+    // ★ 2026-10-15 **直连化**：计划类工具**一律走服务端**（此前是"前端在线就委托前端、没响应才兜底"），
+    //   触发条件因此由 `subscribers.size === 0` 变成 `isPlanTool` —— 与"前端在线与否"彻底无关。
+    expect(LTM).toMatch(/const isPlanTool = [^\n]*\n[\s\S]{0,240}await backendTask(Plan|Step)\(/);
+    // 且写成功后必须把新计划推给前端**展示**（否则进度卡片不刷新）
+    expect(LTM, '★ 未推送 plan:updated → 服务端写好了但用户看不到进度').toMatch(/type: 'plan:updated', plan, persisted: true/);
+    // ★ 不得再"前端在线就委托前端"（那正是被实测证伪的那条路：渲染层一堵，计划更新就干等）
+    expect(LTM, '★ 计划类工具又绕回渲染层往返').not.toMatch(/executeToolViaFrontend\([^)]*localPlanFallback/);
   });
   it('llm-task-manager：loadTaskPlan 有文件回退；readPlanRemainingSteps 复用 loadTaskPlan', () => {
     expect(LTM).toContain('loadTaskPlanFromFile(conversationId)');

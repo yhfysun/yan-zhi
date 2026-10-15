@@ -24,7 +24,7 @@ import {
 } from './services/experience.js';
 import { proposeSkillDraft, skillDraftNotifyText } from './services/skill-distill.js';
 import { insertSkillDraft } from './services/skill-draft-store.js';
-import { backendTaskPlan, backendTaskStep, loadTaskPlanFromFile, savePlanJson } from './services/task-plan-file.js';
+import { backendTaskPlan, backendTaskStep, loadPlanJson, loadTaskPlanFromFile, savePlanJson } from './services/task-plan-file.js';
 import { summarizeResourceDirsSync } from './services/space-resources.js';
 // 提示词快照：构建（只存 id 引用）与按需回填的唯一定义处 —— 修单会话 O(n²) 的快照膨胀
 import { toSnapshotMessages, buildSnapshotSystemFields, internSnapshotBlob, pruneOldSnapshots, SNAPSHOT_KEEP_PER_CONV } from './services/context-snapshot.js';
@@ -305,26 +305,8 @@ export const BROWSER_FAST_TIMEOUT_MS = 90 * 1000;
 /** 串行排队宽限：浏览器操作会被前端按会话串行化，排队时间不应算作"执行超时" */
 export const BROWSER_QUEUE_GRACE_MS = 60 * 1000;
 
-/**
- * 本地 UI 状态类工具 —— `task_plan` / `task_step`：它们只写**本地**计划（conversation 行 + plan.md 镜像），
- * 前端在线时由前端写、不在线时**后端直接写**（见 executeTool 里的 backendTaskPlan/backendTaskStep 兜底）。
- * ⇒ 这两个工具**没有任何"需要等很久"的正当理由**：等满 2 分钟纯属让整个 ReAct 循环干等。
- */
-export const UI_STATE_TOOLS = new Set(['task_plan', 'task_step']);
-/**
- * 本地 UI 状态类工具的前端委托超时（2026-10-15）。
- *
- * ★ 为什么单独给一档（实测 conv 7e99207b）：`task_step` 走渲染层时渲染层正忙 ⇒ 挂满
- *   `FRONTEND_TOOL_TIMEOUT_MS`(120s) 才回执，服务端日志 "前端工具执行超时(120s): task_step"，
- *   任务在**一次进度更新**上白等 162 秒（那段时间模型什么都做不了）。
- * ★ 正常时这个往返是亚秒级，20s 已有 20× 余量；到点就**改由后端自己写**（见 onFrontendToolTimeout）。
- */
-export const UI_STATE_TIMEOUT_MS = 20 * 1000;
-
 /** 按工具名解析前端委托超时（未登记的 browser_* 走默认慢档 —— 宁可等久也别误杀） */
 export function resolveFrontendToolTimeout(toolName: string): number {
-  // ★ 本地状态类**先判**：它们既不是 browser_*，也不该等默认的 2 分钟（见 UI_STATE_TIMEOUT_MS）
-  if (UI_STATE_TOOLS.has(toolName)) return UI_STATE_TIMEOUT_MS;
   if (BROWSER_SLOW_TOOLS.has(toolName)) return BROWSER_SLOW_TIMEOUT_MS + BROWSER_QUEUE_GRACE_MS;
   if (BROWSER_FAST_TOOLS.has(toolName)) return BROWSER_FAST_TIMEOUT_MS + BROWSER_QUEUE_GRACE_MS;
   if (toolName.startsWith('browser_')) return BROWSER_SLOW_TIMEOUT_MS + BROWSER_QUEUE_GRACE_MS;
@@ -357,11 +339,6 @@ interface PendingToolCall {
    * 实测 10-14 单日 84 次流断连，重连是常态而非例外。
    */
   graceTimer?: ReturnType<typeof setTimeout>;
-  /**
-   * 本地状态类工具的**服务端兜底**（2026-10-15）：超时 / 前端断连时改由它直接落库，
-   * 而不是把这一步判成失败。随 pending 生命周期携带（两条收口路径共用）。
-   */
-  onTimeoutFallback?: (args: any) => Promise<string>;
   args?: unknown;
 }
 
@@ -1385,7 +1362,7 @@ export function subscribe(taskId: string, since: number, onEvent: (event: SSEEve
           if (p) {
             // ★ 2026-10-15：与"超时"走**同一个收口**（本地状态类改由服务端落库，其余仍报错）。
             //   两条路径原先各写一份，措辞也因此漂移；收口后由 reason 区分文案。
-            void onFrontendToolTimeout(task, p.toolName || '', id, p.args, 15000, p.onTimeoutFallback, 'disconnect');
+            void onFrontendToolTimeout(task, p.toolName || '', id, 15000, 'disconnect');
           }
         }, 15000);
       }
@@ -4391,25 +4368,32 @@ async function executeTool(
   // UI 工具 → 委托前端（需要用户交互）；MCP 工具 → 优先委托前端（连接在前端，所见即所得），
   // 无人值守（定时任务/IM，无 SSE 订阅者）时后端直连 MCP 兜底，避免工具永远拿不到结果
   if (isUiTool || isMcp) {
-    // ★★★ 本地状态类（task_plan / task_step）的**服务端兜底**（唯一实现，两个场景共用）：
-    //   ① 无人值守（无 SSE 订阅者）→ 直接用它（2026-09-30 加）；
-    //   ② 前端在但**没响应**（超时）→ 由 `executeToolViaFrontend` 的超时收口调它（2026-10-15 加）。
-    //   两个场景的活是同一件（写 conversation.task_plan_json + 镜像 plan.md），
-    //   所以只有这一份实现 —— 不另起炉灶（"平行实现漂移"是本项目反复栽的坑）。
-    const localPlanFallback = (!isMcp && (toolName === 'task_plan' || toolName === 'task_step'))
-      ? (a: any) => (toolName === 'task_plan'
-        ? backendTaskPlan(task.conversationId, a || {})
-        : backendTaskStep(task.conversationId, a || {}))
-      : undefined;
-    if (localPlanFallback && task.subscribers.size === 0) {
+    // ★★★ 计划类工具（task_plan / task_step）走**服务端直连**，不再委托渲染层（2026-10-15）。
+    //
+    // 为什么不委托（实测 conv 7e99207b，同日三次）：这两个工具此前"前端在线就委托前端、没响应才由
+    //   服务端兜底"，而渲染层会被长任务周期性堵住（一次 120 秒、两次各 20 秒），于是每次计划更新
+    //   都要等渲染层 ⇒ 模型干等、进度条不动（用户看到的"卡住"就是这么来的）。
+    //   计划本来就是**服务端**的事（写 conversation.task_plan_json + 镜像 plan.md），前端只该展示。
+    //   ⇒ 服务端做**唯一写者**；写成功后用 `plan:updated` 把新计划推给前端**只做展示**
+    //     （沿用 PlanRunner 已有的展示通道，不新增 UI 元素；`persisted:true` ⇒ 前端**不回写**）。
+    //   ★ 这条路径同时覆盖三种情形：前端在线 / 离线（定时任务、IM）/ 前端卡住 —— 只有一份实现。
+    const isPlanTool = !isMcp && (toolName === 'task_plan' || toolName === 'task_step');
+    if (isPlanTool) {
       try {
-        return await localPlanFallback(args);
+        const receipt = toolName === 'task_plan'
+          ? await backendTaskPlan(task.conversationId, args || {})
+          : await backendTaskStep(task.conversationId, args || {});
+        try {
+          const plan = loadPlanJson(task.conversationId);
+          if (plan) emit(task, { type: 'plan:updated', plan, persisted: true });
+        } catch { /* 推送失败只是卡片没刷新，不该让工具报错（计划已落库） */ }
+        return receipt;
       } catch (e: any) {
         return `${toolName} 执行失败: ${e?.message || e}`;
       }
     }
     if (task.subscribers.size > 0) {
-      return executeToolViaFrontend(task, toolName, args, toolCallId, depth, undefined, localPlanFallback);
+      return executeToolViaFrontend(task, toolName, args, toolCallId, depth);
     }
     if (isMcp) {
       const resolved = resolveMcpToolName(task.mountedMcpServerIds || [], toolName);
@@ -4914,31 +4898,21 @@ async function archiveDelegatedScreenshot(
 }
 
 /**
- * 前端委托工具**超时**的收口（2026-10-15）。
+ * 前端委托工具**超时 / 断连**的统一收口（2026-10-15）。
  *
- * ★ 本地 UI 状态类（`task_plan`/`task_step`）到点后**改由服务端自己写**，而不是报错：
- *   它们只写本地计划，服务端本来就有完整实现（无人值守路径用的就是同一份 —— `backendTaskPlan`
- *   / `backendTaskStep`，写库 + 镜像 plan.md）。这样：
- *     ① 这一步**不丢**：计划照样落库落文件；
- *     ② 模型拿到的是**成功回执**而不是"工具执行失败" —— 后者会被读成"需要重试"，
- *        换来又一次往返（长任务"越跑越久"的一环）；
- *     ③ 不再为一次进度更新干等 2 分钟。
- *   ★ 双写安全：晚到的前端回执若还会落地，用的是**同一份入参**，而这两个操作都是幂等的
- *     （task_step = 置某一步状态；task_plan = 整体替换）⇒ 重复应用结果一致。
- * ★ 其余工具保持原语义（reject → "任务将以此错误继续"）：它们的失败可能真意味着"这一步没做"，
- *   不能替它们假装成功。
- *
- * ★ 导出供测试**真跑**（三个分支——有兜底/无兜底/兜底自己也失败——都必须各走各的路）。
+ * ★ 为什么必须收口成一处：收口原有两条路径（原始超时、最后一个订阅者断开后的 15 秒宽限），
+ *   各写一份 ⇒ 措辞必然漂移，且"改了一处漏一处"（本项目反复栽过）。
+ *   ⇒ 两条都走这里，用 `reason` 区分成因。
+ * ★ 两种成因的措辞**必须可区分**（"前端掉了"与"工具卡了"是两回事，混成一句谁都定位不了）。
+ * ★ 到点即 reject（"任务将以此错误继续"）：能不能继续由模型决定，不由我们替它假装成功。
+ *   （计划类工具已改为**服务端直连**、根本不走这条路 —— 见 executeTool 里 isPlanTool 那段。）
  */
 export async function onFrontendToolTimeout(
   task: LlmTask,
   toolName: string,
   callId: string,
-  args: any,
   timeoutMs: number,
-  fallback?: (args: any) => Promise<string>,
-  /** 为什么收口：`timeout` = 原始超时到点；`disconnect` = 最后一个订阅者断开后的 15s 宽限到点。
-   *  ★ 文案必须能区分（本项目吃过"两种成因混成一句话，谁都定位不了"的亏）。 */
+  /** 为什么收口：`timeout` = 原始超时到点；`disconnect` = 最后一个订阅者断开后的 15s 宽限到点。 */
   reason: 'timeout' | 'disconnect' = 'timeout',
 ): Promise<void> {
   const pending = task.pendingToolCalls.get(callId);
@@ -4947,30 +4921,17 @@ export async function onFrontendToolTimeout(
   clearPendingTimers(pending);
   syncPendingToolsJson(task);
   const secs = Math.round(timeoutMs / 1000);
-  // ★ 两种成因的措辞分开（不混成一句）
   const why = reason === 'disconnect'
     ? `前端断连，工具 ${toolName} 未在 ${secs} 秒内重连`
     : `工具 ${toolName} 执行超时`;
-  logger.warn(
-    `[llm-task] ${why} callId=${callId} conv=${task.conversationId}`
-    + (fallback ? '（本地状态类 → 改由服务端直接落库，不等前端）' : '（任务将以此错误继续）'),
-  );
+  logger.warn(`[llm-task] ${why} callId=${callId} conv=${task.conversationId}（任务将以此错误继续）`);
   // 超时**可见**（2026-10-09）：广播一条事件，前端据此把该工具条标为"超时未回执"，
   // 而不是让界面只是"停住不动"（与真卡死难以区分）。前端对未知事件类型容忍。
   try { emit(task, { type: 'tool:timeout', callId, toolName, conversationId: task.conversationId, timeoutMs, reason }); } catch { /* 观测事件失败不影响超时处理 */ }
-  if (fallback) {
-    try {
-      const receipt = await fallback(args);
-      pending.resolve(`${receipt}\n（${reason === 'disconnect' ? '前端断连' : `前端未在 ${secs} 秒内响应`}，这一步已由服务端直接落库；**不要重试**，继续往下。）`);
-      return;
-    } catch (e: any) {
-      logger.warn(`[llm-task] 超时兜底也失败（回落到"超时"语义）: ${toolName} err=${e?.message || e}`);
-    }
-  }
   pending.reject(new Error(why));
 }
 
-async function executeToolViaFrontend(task: LlmTask, toolName: string, args: any, toolCallId: string, depth: number = 0, timeoutMsOverride?: number, onTimeoutFallback?: (args: any) => Promise<string>): Promise<string> {
+async function executeToolViaFrontend(task: LlmTask, toolName: string, args: any, toolCallId: string, depth: number = 0, timeoutMsOverride?: number): Promise<string> {
   // 工具发起前的暂停边界：暂停中不发新工具（正在跑的前一个动作已在各自的 await 里自然跑完）
   await waitIfPaused(task);
   // 无人值守（无前端 SSE 订阅者）：UI/MCP 工具无法委托前端，直接返回提示让模型自行决策
@@ -4990,8 +4951,8 @@ async function executeToolViaFrontend(task: LlmTask, toolName: string, args: any
       : resolveFrontendToolTimeout(toolName);
     const timer = (interactive || noTimeout)
       ? undefined
-      : setTimeout(() => { void onFrontendToolTimeout(task, toolName, callId, args, effectiveTimeout, onTimeoutFallback); }, effectiveTimeout);
-    task.pendingToolCalls.set(callId, { resolve, reject, toolName, callId, requestedAt: Date.now(), timer, args, onTimeoutFallback });
+      : setTimeout(() => { void onFrontendToolTimeout(task, toolName, callId, effectiveTimeout); }, effectiveTimeout);
+    task.pendingToolCalls.set(callId, { resolve, reject, toolName, callId, requestedAt: Date.now(), timer, args });
     syncPendingToolsJson(task);
     // 通知前端执行工具。
     // conversationId 必须随事件下发：多会话并行时前端要据此把工具路由到「发起它的那个会话」

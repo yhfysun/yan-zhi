@@ -336,11 +336,8 @@ export type { PlanStep, PlanStepStatus } from './plan-buckets';
 import {
   planKeyOf as resolvePlanKey,
   readPlan,
-  ensurePlanPresent,
   removePlan,
   removePlans,
-  applyTaskPlan,
-  applyTaskStep,
   syncPlan,
   DRAFT_PLAN_KEY,
   type PlanMap,
@@ -860,23 +857,16 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   /**
-   * ★ 2026-10-14：**改动计划之前**先把内存补齐，并返回本次要操作的键。
+   * ★★★ 2026-10-15：这里原有的 `hydratePlan`（改动计划前先把内存补齐）**已随直连化删除**。
    *
-   * 为什么必须在改动点补（而不只是切会话时补，见 plan-buckets.ts:ensurePlanPresent 头注）：
-   * App 重启 / 页面重载后内存为空、而会话行里有落盘计划时，模型能读到工作目录的 plan.md
-   * 却推不动进度 —— task_step 误报「当前会话还没有任务计划」，模型重建计划时
-   * `applyTaskPlan` 会把所有步骤重置为 pending，**已完成步骤作废**。
-   * 实测 conv 96125908（2026-10-14）：界面最终停在「步骤 0/5、已用时 22:02」。
+   * 它当年修的是一类真 bug（2026-10-14 实测 conv 96125908）：App 重启/页面重载后**前端内存为空**、
+   * 而会话行里已有落盘计划 ⇒ `task_step` 误报「当前会话还没有任务计划」⇒ 模型重建计划 ⇒
+   * `applyTaskPlan` 把已完成步骤重置为 pending（进度作废），界面停在「步骤 0/5、已用时 22:02」。
+   *
+   * 直连化后这类问题**结构性消失**：计划由**服务端**读写（每次都从 `conversation.task_plan_json` 取），
+   * 前端内存空不空都不影响推进 —— 前端只按服务端推来的 `plan:updated` 渲染，不再自己 apply。
+   * ⇒ 前端不再需要"改动前补内存"这道防御（没有本地改动点了）。
    */
-  function hydratePlan(convId?: string | null): string {
-    const key = planKeyOf(convId);
-    plansByConv.value = ensurePlanPresent(
-      plansByConv.value,
-      key,
-      conversations.value.find((c) => c.id === key)?.taskPlan,
-    );
-    return key;
-  }
   /** 当前查看会话的计划标题（无计划时为空串，卡片侧兜底为「任务计划」） */
   const planTitle = computed(() => readPlan(plansByConv.value, planKeyOf())?.title || '');
   /** 当前查看会话的计划步骤（其他会话的计划不会出现在这里） */
@@ -2112,21 +2102,12 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
       // E12: task_plan —— 创建/替换任务计划，渲染进度卡片
       // 计划写入【发起该任务的会话】而非当前查看的会话：多会话并行时 A 会话的
       // 计划不得跑到 B 会话的卡片里（ctx.convId 由 SSE tool:execute 透传）。
-      if (fullName === 'task_plan') {
-        const key = hydratePlan(ctx?.convId);
-        const r = applyTaskPlan(plansByConv.value, key, args as Record<string, unknown>);
-        plansByConv.value = r.map;
-        if (r.outcome.ok) void persistPlan(key, r.map[key]);
-        return r.outcome;
-      }
-      // E12: task_step —— 更新某一步状态，刷新进度卡片（同样只动本会话的计划）
-      if (fullName === 'task_step') {
-        const key = hydratePlan(ctx?.convId);
-        const r = applyTaskStep(plansByConv.value, key, args as Record<string, unknown>);
-        plansByConv.value = r.map;
-        if (r.outcome.ok) void persistPlan(key, r.map[key]);
-        return r.outcome;
-      }
+      // ★★★ task_plan / task_step 已**直连化**（2026-10-15）：服务端独占写入（conversation.task_plan_json
+      //   + 镜像 plan.md），并通过 `plan:updated`（persisted:true）把新计划推给前端展示。
+      //   ⇒ 前端**不再执行**这两个工具（此前那段"本地 apply + PATCH 回写"已删除）。
+      //   删掉的理由（实测 conv 7e99207b，同日三次）：委托渲染层意味着每次计划更新都要等它回执，
+      //   而渲染层会被长任务周期性堵住（120 秒 1 次、20 秒 2 次）⇒ 模型干等、进度条不动。
+      //   现在这条路径不复存在：服务端写完就推，前端只渲染。若这里再看到它们，说明有别的派发路径漏了。
       const res = await registry.execute(fullName, args as Record<string, unknown>);
       const text = res.content?.[0]?.text ?? '';
       // E11: browser_* 工具执行后推送步骤日志到浏览器面板
@@ -2517,7 +2498,12 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
             const key = planKeyOf(convId);
             // 用 syncPlan（保留 steps 自带状态），而非 applyTaskPlan（会把状态强制成 pending）
             plansByConv.value = syncPlan(plansByConv.value, key, event.plan as any);
-            void persistPlan(key, plansByConv.value[key]);
+            // ★★★ 2026-10-15：`persisted:true` = 服务端**已经写好**了这份计划
+            //   （task_plan / task_step 已直连化，服务端是唯一写者）⇒ 前端**只展示、不回写**。
+            //   回写不只是多一次 PATCH：它会让"计划写者"变成两个，正是要消掉的那类漂移；
+            //   而这条推送的目的就是让卡片刷新**不再依赖渲染层往返**。
+            //   ★ PlanRunner 的 plan:updated 不带这个标记 → 维持原样回写（那条链路的写者仍是前端）。
+            if (event.persisted !== true) void persistPlan(key, plansByConv.value[key]);
             break;
           }
           case 'tool:start': {
