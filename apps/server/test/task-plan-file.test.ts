@@ -188,8 +188,13 @@ describe('链路接线（静态断言，防入口漂移）', () => {
     expect(LTM).toContain("toolName === 'task_plan' || toolName === 'task_step'");
     expect(LTM).toContain('backendTaskPlan(task.conversationId');
     expect(LTM).toContain('backendTaskStep(task.conversationId');
-    // 兜底分支必须在 subscribers.size === 0 的条件下（前端在线仍走 UI 渲染）
-    expect(LTM).toMatch(/task_plan' \|\| toolName === 'task_step'[^\n]*\n[^\n]*subscribers\.size === 0|subscribers\.size === 0[\s\S]{0,200}backendTaskPlan/);
+    // 兜底分支必须在 subscribers.size === 0 的条件下（前端在线仍走 UI 渲染），且真的调到后端实现
+    // ★ 2026-10-15：后端调用被提到 `localPlanFallback` 里、由两个场景共用，故断言随之指向收口变量。
+    expect(LTM).toMatch(/if \(localPlanFallback && task\.subscribers\.size === 0\)[\s\S]{0,160}return await localPlanFallback\(args\)/);
+    // ★★ 2026-10-15：**同一份**兜底也交给前端委托路径（超时收口用）——
+    //   两个场景（无人值守 / 前端没响应）共用一份实现，防"平行实现漂移"。
+    expect(LTM, '★ 超时路径没拿到兜底 → 前端一没响应就只能干等满超时、再把这一步判成失败')
+      .toMatch(/executeToolViaFrontend\(task, toolName, args, toolCallId, depth, undefined, localPlanFallback\)/);
   });
   it('llm-task-manager：loadTaskPlan 有文件回退；readPlanRemainingSteps 复用 loadTaskPlan', () => {
     expect(LTM).toContain('loadTaskPlanFromFile(conversationId)');

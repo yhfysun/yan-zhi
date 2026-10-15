@@ -63,6 +63,9 @@ import {
   BROWSER_SLOW_TIMEOUT_MS,
   BROWSER_FAST_TIMEOUT_MS,
   BROWSER_QUEUE_GRACE_MS,
+  UI_STATE_TIMEOUT_MS,
+  UI_STATE_TOOLS,
+  onFrontendToolTimeout,
   STREAM_TRUNCATE_MAX_RETRY,
   TRUNCATED_STREAM_NOTICE,
   isStreamUnterminated,
@@ -99,6 +102,92 @@ describe('P1 前端工具分档超时', () => {
     expect(MGR_SRC, '★ 超时处仍在裸用 2 分钟常量（分档未生效）')
       .not.toMatch(/:\s*FRONTEND_TOOL_TIMEOUT_MS\s*\)/);
     expect(MGR_SRC, '★ 缺分档解析器').toMatch(/function resolveFrontendToolTimeout/);
+  });
+});
+
+describe('P1b ★★★ 本地状态类（task_plan/task_step）不再干等 2 分钟，超时改由服务端落库（2026-10-15）', () => {
+  it('★★★ 这两个工具走**本地状态档**，远低于默认 2 分钟', () => {
+    for (const t of ['task_plan', 'task_step']) {
+      expect(resolveFrontendToolTimeout(t), `★ ${t} 仍在等默认的 2 分钟 —— 一次进度更新白等 120 秒`)
+        .toBe(UI_STATE_TIMEOUT_MS);
+    }
+    expect(UI_STATE_TIMEOUT_MS).toBeLessThan(FRONTEND_TOOL_TIMEOUT_MS / 4);
+    expect([...UI_STATE_TOOLS].sort()).toEqual(['task_plan', 'task_step']);
+    // ★ 别误伤：同为 UI_TOOLS 的 image_analyze 是**真的要跑视觉模型**的，必须留在默认档
+    expect(resolveFrontendToolTimeout('image_analyze'), '★ 视觉分析被拉进短档 → 正常调用会被误杀')
+      .toBe(FRONTEND_TOOL_TIMEOUT_MS);
+  });
+
+  it('★★★ 超时收口必须**先落库再回执**（而不是报失败诱导重试）', () => {
+    const i = MGR_SRC.indexOf('async function onFrontendToolTimeout(');
+    expect(i, '★ 锚点缺失：onFrontendToolTimeout').toBeGreaterThan(-1);
+    const seg = MGR_SRC.slice(i, i + 2600);
+    expect(seg, '★ 未调兜底实现').toMatch(/await fallback\(args\)/);
+    expect(seg, '★ 有兜底却仍直接 reject → 白等之后还把这一步判成失败').toMatch(/pending\.resolve\(/);
+    expect(seg, '★ 回执未明示"不要重试" → 模型会再发一次，白烧一轮').toMatch(/不要重试/);
+    expect(seg, '★ 回执用了"工具执行失败"措辞 → 与"这一步其实已落库"矛盾').not.toMatch(/工具执行失败/);
+  });
+
+  it('★★ 定时器只负责转交收口（旧的"原地 reject"已移出定时器体）', () => {
+    const i = MGR_SRC.indexOf('const timer = (interactive || noTimeout)');
+    expect(i, '★ 锚点缺失：超时定时器').toBeGreaterThan(-1);
+    const seg = MGR_SRC.slice(i, i + 700);
+    expect(seg, '★ 定时器未转交 onFrontendToolTimeout')
+      .toMatch(/onFrontendToolTimeout\(task, toolName, callId, args, effectiveTimeout, onTimeoutFallback\)/);
+    expect(seg, '★ 定时器体内又出现原地 reject（收口被绕开）').not.toMatch(/pending\.reject\(/);
+  });
+
+  it('★★ 兜底实现**只有一份**（无人值守与超时两个场景共用，防平行实现漂移）', () => {
+    expect(MGR_SRC, '★ 缺 localPlanFallback 收口').toMatch(/const localPlanFallback = /);
+    const hits = (MGR_SRC.match(/backendTaskPlan\(task\.conversationId/g) || []).length;
+    expect(hits, `★ backendTaskPlan(conv…) 出现 ${hits} 处（应为 1：只在那一个 localPlanFallback 里）`).toBe(1);
+    expect(MGR_SRC, '★ 超时路径没拿到兜底 → 又回到"干等 2 分钟然后报失败"')
+      .toMatch(/executeToolViaFrontend\(task, toolName, args, toolCallId, depth, undefined, localPlanFallback\)/);
+  });
+
+  /** 造一个只有 pendingToolCalls 的最小 task（emit/sync 都是 try/catch 包着的旁路） */
+  function probeTask(id: string) {
+    const settled: { ok?: string; err?: any } = {};
+    const task: any = { id, conversationId: 'conv-probe', pendingToolCalls: new Map(), events: [] };
+    task.settle = settled;
+    return task;
+  }
+  function armPending(task: any, callId: string, toolName: string) {
+    task.pendingToolCalls.set(callId, {
+      toolName, callId, requestedAt: Date.now(),
+      resolve: (v: string) => { task.settle.ok = v; },
+      reject: (e: any) => { task.settle.err = e; },
+    });
+  }
+
+  it('★★★ 【真跑】到点后**先落库、再以成功回执放行**（不拒绝、不诱导重试）', async () => {
+    const task = probeTask('task-probe-1');
+    armPending(task, 'c1', 'task_step');
+    let gotArgs: any = null;
+    await onFrontendToolTimeout(task, 'task_step', 'c1', { index: 2, status: 'done' }, UI_STATE_TIMEOUT_MS,
+      async (a: any) => { gotArgs = a; return '已更新第 2 步状态为 done'; });
+    expect(gotArgs, '★ 兜底没拿到原始入参 → 会落错步骤').toEqual({ index: 2, status: 'done' });
+    expect(task.settle.err, '★ 有兜底却仍 reject → 白等之后还把这一步判成失败').toBeUndefined();
+    expect(task.settle.ok, '★ 没给回执').toContain('已更新第 2 步');
+    expect(task.settle.ok, '★ 回执没明示"不要重试" → 模型会再发一次，白烧一轮').toContain('不要重试');
+    expect(task.pendingToolCalls.has('c1'), '★ 超时后没摘掉 pending → 表里留幽灵条目').toBe(false);
+  });
+
+  it('★★ 【真跑】无兜底的工具（如 image_analyze）到点仍然 reject —— 不能替真失败假装成功', async () => {
+    const task = probeTask('task-probe-2');
+    armPending(task, 'c2', 'image_analyze');
+    await onFrontendToolTimeout(task, 'image_analyze', 'c2', {}, UI_STATE_TIMEOUT_MS, undefined);
+    expect(task.settle.ok, '★ 无兜底却"成功"了 → 模型以为分析过了，其实没有').toBeUndefined();
+    expect(task.settle.err?.message, '★ 未按"超时"语义收口').toMatch(/执行超时/);
+  });
+
+  it('★★ 【真跑】兜底自己也抛错 → 回落到"超时"语义（不能既没落库又假装成功）', async () => {
+    const task = probeTask('task-probe-3');
+    armPending(task, 'c3', 'task_step');
+    await onFrontendToolTimeout(task, 'task_step', 'c3', { index: 1 }, UI_STATE_TIMEOUT_MS,
+      async () => { throw new Error('DB 挂了'); });
+    expect(task.settle.ok, '★ 兜底失败却仍返回成功 → 计划没落上而模型以为落了').toBeUndefined();
+    expect(task.settle.err?.message).toMatch(/执行超时/);
   });
 });
 
