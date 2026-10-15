@@ -189,6 +189,25 @@ describe('P1b ★★★ 本地状态类（task_plan/task_step）不再干等 2 �
     expect(task.settle.ok, '★ 兜底失败却仍返回成功 → 计划没落上而模型以为落了').toBeUndefined();
     expect(task.settle.err?.message).toMatch(/执行超时/);
   });
+
+  it('★★★ 【真跑】前端**断连**与**超时**两种成因的措辞必须可区分（本项目吃过"混成一句谁都定位不了"的亏）', async () => {
+    const task = probeTask('task-probe-4');
+    armPending(task, 'c4', 'image_analyze');
+    await onFrontendToolTimeout(task, 'image_analyze', 'c4', {}, 15000, undefined, 'disconnect');
+    expect(task.settle.err?.message, '★ 断连被写成了"执行超时" → 现场分不清是前端掉了还是工具卡了')
+      .toMatch(/前端断连/);
+    expect(task.settle.err?.message, '★ 断连文案丢了"15 秒内重连"这个关键信息').toMatch(/重连/);
+  });
+
+  it('★★ 断连宽限与原始超时必须走**同一个收口**（两条路径各写一份 = 措辞与兜底必然漂移）', () => {
+    const i = MGR_SRC.indexOf('pending.graceTimer = setTimeout(');
+    expect(i, '★ 锚点缺失：断连宽限定时器').toBeGreaterThan(-1);
+    const seg = MGR_SRC.slice(i, i + 400);
+    expect(seg, '★ 宽限路径未走统一收口（又自己 reject 了一份）')
+      .toMatch(/onFrontendToolTimeout\(task, p\.toolName \|\| '', id, p\.args, 15000, p\.onTimeoutFallback, 'disconnect'\)/);
+    expect(seg, '★ 宽限路径未把兜底传下去 → 断连时本地状态类工具仍会白丢一步')
+      .toMatch(/p\.onTimeoutFallback/);
+  });
 });
 
 describe('P0 断流不静默', () => {

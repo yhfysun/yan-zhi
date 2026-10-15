@@ -357,6 +357,11 @@ interface PendingToolCall {
    * 实测 10-14 单日 84 次流断连，重连是常态而非例外。
    */
   graceTimer?: ReturnType<typeof setTimeout>;
+  /**
+   * 本地状态类工具的**服务端兜底**（2026-10-15）：超时 / 前端断连时改由它直接落库，
+   * 而不是把这一步判成失败。随 pending 生命周期携带（两条收口路径共用）。
+   */
+  onTimeoutFallback?: (args: any) => Promise<string>;
   args?: unknown;
 }
 
@@ -1378,9 +1383,9 @@ export function subscribe(taskId: string, since: number, onEvent: (event: SSEEve
         pending.graceTimer = setTimeout(() => {
           const p = task.pendingToolCalls.get(id);
           if (p) {
-            clearPendingTimers(p);
-            task.pendingToolCalls.delete(id);
-            p.reject(new Error(`前端断连，工具 ${p.toolName || id} 未在 15 秒内重连`));
+            // ★ 2026-10-15：与"超时"走**同一个收口**（本地状态类改由服务端落库，其余仍报错）。
+            //   两条路径原先各写一份，措辞也因此漂移；收口后由 reason 区分文案。
+            void onFrontendToolTimeout(task, p.toolName || '', id, p.args, 15000, p.onTimeoutFallback, 'disconnect');
           }
         }, 15000);
       }
@@ -4932,29 +4937,37 @@ export async function onFrontendToolTimeout(
   args: any,
   timeoutMs: number,
   fallback?: (args: any) => Promise<string>,
+  /** 为什么收口：`timeout` = 原始超时到点；`disconnect` = 最后一个订阅者断开后的 15s 宽限到点。
+   *  ★ 文案必须能区分（本项目吃过"两种成因混成一句话，谁都定位不了"的亏）。 */
+  reason: 'timeout' | 'disconnect' = 'timeout',
 ): Promise<void> {
   const pending = task.pendingToolCalls.get(callId);
   if (!pending) return;
   task.pendingToolCalls.delete(callId);
   clearPendingTimers(pending);
   syncPendingToolsJson(task);
+  const secs = Math.round(timeoutMs / 1000);
+  // ★ 两种成因的措辞分开（不混成一句）
+  const why = reason === 'disconnect'
+    ? `前端断连，工具 ${toolName} 未在 ${secs} 秒内重连`
+    : `工具 ${toolName} 执行超时`;
   logger.warn(
-    `[llm-task] 前端工具执行超时(${Math.round(timeoutMs / 1000)}s): ${toolName} callId=${callId} conv=${task.conversationId}`
-    + (fallback ? '（本地状态类 → 改由服务端直接落库，不等前端）' : '（前端刷新/断连时常见，任务将以此错误继续）'),
+    `[llm-task] ${why} callId=${callId} conv=${task.conversationId}`
+    + (fallback ? '（本地状态类 → 改由服务端直接落库，不等前端）' : '（任务将以此错误继续）'),
   );
   // 超时**可见**（2026-10-09）：广播一条事件，前端据此把该工具条标为"超时未回执"，
   // 而不是让界面只是"停住不动"（与真卡死难以区分）。前端对未知事件类型容忍。
-  try { emit(task, { type: 'tool:timeout', callId, toolName, conversationId: task.conversationId, timeoutMs }); } catch { /* 观测事件失败不影响超时处理 */ }
+  try { emit(task, { type: 'tool:timeout', callId, toolName, conversationId: task.conversationId, timeoutMs, reason }); } catch { /* 观测事件失败不影响超时处理 */ }
   if (fallback) {
     try {
       const receipt = await fallback(args);
-      pending.resolve(`${receipt}\n（前端未在 ${Math.round(timeoutMs / 1000)} 秒内响应，这一步已由服务端直接落库；**不要重试**，继续往下。）`);
+      pending.resolve(`${receipt}\n（${reason === 'disconnect' ? '前端断连' : `前端未在 ${secs} 秒内响应`}，这一步已由服务端直接落库；**不要重试**，继续往下。）`);
       return;
     } catch (e: any) {
       logger.warn(`[llm-task] 超时兜底也失败（回落到"超时"语义）: ${toolName} err=${e?.message || e}`);
     }
   }
-  pending.reject(new Error(`工具 ${toolName} 执行超时`));
+  pending.reject(new Error(why));
 }
 
 async function executeToolViaFrontend(task: LlmTask, toolName: string, args: any, toolCallId: string, depth: number = 0, timeoutMsOverride?: number, onTimeoutFallback?: (args: any) => Promise<string>): Promise<string> {
@@ -4978,7 +4991,7 @@ async function executeToolViaFrontend(task: LlmTask, toolName: string, args: any
     const timer = (interactive || noTimeout)
       ? undefined
       : setTimeout(() => { void onFrontendToolTimeout(task, toolName, callId, args, effectiveTimeout, onTimeoutFallback); }, effectiveTimeout);
-    task.pendingToolCalls.set(callId, { resolve, reject, toolName, callId, requestedAt: Date.now(), timer, args });
+    task.pendingToolCalls.set(callId, { resolve, reject, toolName, callId, requestedAt: Date.now(), timer, args, onTimeoutFallback });
     syncPendingToolsJson(task);
     // 通知前端执行工具。
     // conversationId 必须随事件下发：多会话并行时前端要据此把工具路由到「发起它的那个会话」
