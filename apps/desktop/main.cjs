@@ -3231,7 +3231,12 @@ async function runBrowserAction(convId, tabId, action, args) {
       //     ⇒ 这里显式登记（`agentTouchedTabs` 是"本会话用过"的唯一真相源）。
       if (convId) {
         const scopeMeta0 = (tabId ? webviewTabs.get(tabId) : null);
-        const wantScope = (scopeMeta0 && scopeMeta0.scope) || `preview:${convId}`;
+        // ★ 2026-10-15：浏览器改为**应用级单例**（三级归属模型：浏览器=整个应用一份，
+        //   Git/文件=工作空间级，控制台=会话级）⇒ 执行面 scope 固定裸 'preview'，
+        //   与渲染层 BrowserPanel（scope='preview'）和 tabCreated 广播同源。
+        //   此前兜底用 `preview:${convId}`：面板 scope 已改为 'preview' 后
+        //   onTabCreated 的 belong 匹配不上 ⇒ 壳建不出来 ⇒ waitForGuest 超时。
+        const wantScope = (scopeMeta0 && scopeMeta0.scope) || 'preview';
         // ===NAV-REUSE-START=== 同 URL 复用（2026-10-12）；navigate-reuse-tab.test.cjs 经此哨兵抽取真实代码
         // ★★★ 同 URL 复用：自建前先找本会话**已登记**的 tab 里有没有"同 URL 且存活"的
         //   —— 有就复用，不再新建。

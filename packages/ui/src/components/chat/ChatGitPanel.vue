@@ -483,7 +483,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, watch, onMounted, onUnmounted } from 'vue';
+import { ref, reactive, computed, watch, onMounted, onUnmounted, markRaw } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import {
   Refresh, RefreshRight, RefreshLeft, Plus, Minus, Document, CopyDocument, Delete, Edit,
@@ -502,21 +502,18 @@ import { computeGraphLayout, segmentPath, laneX } from '../git/graphLanes';
 import { useGitAi, AI_COMMIT_RULES } from '../../composables/git/useGitAi';
 // 刷新合并闸门：本面板写操作收尾刷新与 statusVersion 跨区 watch 会同时触发
 import { createRefreshGate } from '../../utils/refreshGate';
+// 仓库根目录解析（三级归属：Git = 工作空间级，绝不拿 IDE 项目目录冒充）
+import { resolveGitRepoSource } from '../../utils/gitRepoSource';
+import { useRoute } from 'vue-router';
+import { useSpaceStore } from '../../stores/space';
 
 const gitStore = useGitStore();
 const settingsStore = useSettingsStore();
 const codeStore = useCodeStore();
 const platformStore = usePlatformStore();
-
-const props = withDefaults(defineProps<{
-  /** 显式指定仓库根目录；不传则自动取「开发模式项目目录 / 办公模式工作目录」 */
-  repo?: string;
-}>(), { repo: '' });
-
-const emit = defineEmits<{
-  (e: 'aiReview', diff: string): void;
-  (e: 'viewDiff', payload: { path: string; staged: boolean; repoPath?: string }): void;
-}>();
+const route = useRoute();
+const spaceStore = useSpaceStore();
+const chatStore = useChatStore();
 
 interface ChangedFile { path: string; statusChar: string; statusClass: string; staged: boolean; added: number; deleted: number; }
 interface MenuItem { label: string; handler: () => void; icon?: unknown; danger?: boolean; divided?: boolean; }
@@ -525,17 +522,44 @@ interface RepoSummary { path: string; name: string; branch: string; ahead: numbe
 const STATUS_CLASS: Record<string, string> = { M: 'modified', A: 'added', D: 'deleted', '?': 'untracked', R: 'renamed', U: 'conflict' };
 const UNMERGED_CODES = new Set(['DD', 'AU', 'UD', 'UA', 'DU', 'AA', 'UU']);
 
+const props = withDefaults(defineProps<{
+  /** 显式指定仓库根目录；不传则按「当前会话所属空间目录 > 工作目录设置」解析 */
+  repo?: string;
+}>(), { repo: '' });
+
+const emit = defineEmits<{
+  (e: 'aiReview', diff: string): void;
+  (e: 'viewDiff', payload: { path: string; staged: boolean; repoPath?: string }): void;
+}>();
+
 /**
  * 当前要查看的仓库根目录。
- * ★ 必须同时认「开发模式的项目目录」与「办公模式的工作目录」：
- *   开发模式的工作目录由 codeStore.projectDir 承载（左侧「当前项目」），
- *   而 settingsStore.workspaceDir 是办公模式那份 —— 二者不一定相同。
- *   原来只取 workspaceDir，导致开发模式源码管理面板拿不到仓库 → 永远「变更 0」。
- * 优先级：显式传入的 repo prop > 开发模式项目目录 > 设置里的工作目录。
+ *
+ * ★ 三级归属模型（2026-10-15）：Git = **工作空间级**（跟随当前空间绑定目录，
+ *   空间内所有会话共享一份），不是 IDE 项目目录、也不是「当前选中的是哪个 tab」。
+ *
+ *   原实现 `props.repo || codeStore.projectDir || settingsStore.workspaceDir` 有两个洞：
+ *   ① `codeStore.projectDir` 是 IDE（/code）当前项目目录，与工作空间无关且长期驻留
+ *      ⇒ 用户实报「当前工作空间目录没有 git，预览面板 git 却是别的有 git 的目录」；
+ *   ② 只认「全局设置里的 workspaceDir」，会话挂靠在空间 A 而用户当前选中空间 B 时
+ *      （workspaceDir 已同步成 B）会看错 —— 会话所属空间才是权威归属。
+ *
+ *   优先级（抽成纯函数 resolveGitRepoSource，与单测共用同一实现）：
+ *   显式 repo > 当前会话所属空间 dir_path > settings.workspaceDir >（仅 /code）projectDir。
+ *   ⚠️ projectDir 只在代码模式兜底：对话页预览面板**永远**不得落到它。
  */
-const workspace = computed(
-  () => props.repo || codeStore.projectDir || settingsStore.settings.workspaceDir || '',
-);
+const spaceDirOfCurrentConv = computed(() => {
+  const conv = chatStore.conversations.find((c) => c.id === chatStore.currentConvId);
+  const sid = conv?.spaceId;
+  if (!sid) return '';
+  return spaceStore.spaces.find((s) => s.id === sid)?.dirPath || '';
+});
+const workspace = computed(() => resolveGitRepoSource({
+  explicitRepo: props.repo,
+  spaceDir: spaceDirOfCurrentConv.value,
+  workspaceDir: settingsStore.settings.workspaceDir,
+  codeModeProjectDir: route.path.startsWith('/code') ? codeStore.projectDir : '',
+}));
 const repo = ref('');
 const activeRepo = ref('');
 const activeKey = computed(() => activeRepo.value || repo.value);
@@ -929,7 +953,11 @@ function openContextMenu(e: MouseEvent, items: MenuItem[]) {
     visible: true,
     x: Math.min(e.clientX, window.innerWidth - 200),
     y: Math.min(e.clientY, window.innerHeight - items.length * 32 - 12),
-    items,
+    // ★ items 必须 markRaw：MenuItem.icon 是**组件对象**，塞进 ref 后被 reactive() 深度代理 →
+    //   `<component :is="item.icon">` 拿到代理，Vue 在 createVNode 的 isProxy(type) 检查里
+    //   每次渲染都警告「Component that was made a reactive object」（同 SceneCarousel 图标问题）。
+    //   标记落在数组自身，外层 visible/x/y 仍是响应式，菜单照常开合。
+    items: markRaw(items),
   };
 }
 function closeContextMenu() { contextMenu.value.visible = false; }

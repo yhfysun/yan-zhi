@@ -42,13 +42,21 @@
     </div>
 
     <div v-if="gitTab" v-show="gitTab.id === store.activeTabId" class="right-panel-body">
-      <ChatGitPanel ref="gitPanelRef" @viewDiff="onViewDiff" />
+      <!-- repo = 当前会话所属工作空间的目录（三级归属：Git = 工作空间级）。
+           必须显式传：ChatGitPanel 的兜底链会落到 IDE 项目目录（跨工作空间脏值）。 -->
+      <ChatGitPanel ref="gitPanelRef" :repo="gitRepoDir" @viewDiff="onViewDiff" />
     </div>
 
-    <div v-if="browserTab" v-show="browserTab.id === store.activeTabId" class="right-panel-body">
-      <!-- scope=preview:<convId>：每个会话的浏览器 tab/激活/历史独立，互不串台。
-           切换会话时 key 变化强制重建组件，主进程 old scope 的 tab 会被摘除。 -->
-      <BrowserPanel v-if="store.currentConvId" :key="store.currentConvId" :scope="`preview:${store.currentConvId}`" />
+    <div v-if="browserTab && supportsBrowser" v-show="browserTab.id === store.activeTabId" class="right-panel-body">
+      <!-- ★★★ 浏览器是「应用级」资源（三级归属模型，2026-10-15 用户澄清）：
+           整个应用一份，切工作空间 / 切任务 / 切会话都不得销毁它。
+           ⇒ key 与 scope **固定**，不再随 currentConvId 变化。
+           此前 `:key="store.currentConvId" :scope="preview:${convId}"`：切会话即 unmount →
+           BrowserPanel onUnmounted 调 closeAllTabs 真销毁 BrowserView → 正在跑的
+           pageAgent 失去目标 webContents，任务直接中断（用户实报）。
+           scope 用裸 'preview'：BrowserPanel 的 isPreviewScope / agent 导航 watch /
+           主进程 tabCreated 广播三处均按「preview 与 preview:* 同空间」兼容。 -->
+      <BrowserPanel :key="'app-browser'" :scope="'preview'" />
     </div>
 
     <div v-if="dataTab" v-show="dataTab.id === store.activeTabId" class="right-panel-body">
@@ -106,6 +114,7 @@ import { Close, Minus, Document, Link, Folder, Grid, Monitor, Back, Right, Circl
 import { useChat } from '../../composables/chat/useChat';
 import { usePlatform } from '../../composables/usePlatform';
 import { useSettingsStore } from '../../stores/settings';
+import { useSpaceStore } from '../../stores/space';
 import type { DataTabContract, PreviewTab } from '../../stores/chat';
 import FilePreview from '../FilePreview.vue';
 import BrowserPanel from '../BrowserPanel.vue';
@@ -119,12 +128,30 @@ const { supportsBrowser } = usePlatform();
 
 const router = useRouter();
 const settingsStore = useSettingsStore();
+const spaceStore = useSpaceStore();
 const gitPanelRef = ref<InstanceType<typeof ChatGitPanel> | null>(null);
 const hasWorkspaceDir = computed(() => !!settingsStore.settings.workspaceDir);
 
+/**
+ * Git 面板的仓库根目录（三级归属：Git = **工作空间级**）。
+ * 优先取「当前会话所属空间的绑定目录」（会话归属创建时的空间，发消息不改变归属），
+ * 回退到设置里的工作目录（选中空间时由 selectSpaceAndSyncDir 同步）。
+ * ★ 刻意不含 codeStore.projectDir：那是 IDE 当前项目目录，与工作空间无关且长期驻留
+ *   ⇒ 此前预览面板 git 显示「别的有 git 的目录」的根因。
+ */
+const gitRepoDir = computed(() => {
+  const conv = store.conversations.find((c) => c.id === store.currentConvId);
+  const sid = conv?.spaceId;
+  if (sid) {
+    const dir = spaceStore.spaces.find((s) => s.id === sid)?.dirPath;
+    if (dir) return dir;
+  }
+  return settingsStore.settings.workspaceDir || '';
+});
+
 /** git 面板双击文件 → 打开文件预览 */
 function onViewDiff(payload: { path: string; staged: boolean; repoPath?: string }) {
-  const base = payload.repoPath || settingsStore.settings.workspaceDir || '';
+  const base = payload.repoPath || gitRepoDir.value || '';
   const full = base ? base.replace(/[\\/]+$/, '') + '/' + payload.path : payload.path;
   store.openTab({ kind: 'file', name: payload.path.split(/[\\/]/).pop() || payload.path, path: full });
 }
@@ -142,9 +169,9 @@ const defaultDataContract: DataTabContract = {
   filterCols: ['pinned'],
 };
 
-/** 仓库名（Git tab 标题） */
+/** 仓库名（Git tab 标题）——与 gitRepoDir 同源，避免标题与面板内容两个目录 */
 const repoName = computed(() => {
-  const dir = settingsStore.settings.workspaceDir || '';
+  const dir = gitRepoDir.value || '';
   return dir ? dir.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || 'Git' : 'Git';
 });
 
@@ -179,7 +206,7 @@ function openBrowserEntry() {
   store.openTab({ kind: 'browser', name: '浏览器', url: '' });
 }
 function openGitEntry() {
-  store.openTab({ kind: 'git', name: repoName.value, repoPath: settingsStore.settings.workspaceDir });
+  store.openTab({ kind: 'git', name: repoName.value, repoPath: gitRepoDir.value });
 }
 function openConsoleEntry() {
   store.openTab({ kind: 'console', name: '控制台' });

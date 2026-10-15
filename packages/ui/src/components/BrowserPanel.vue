@@ -472,6 +472,18 @@ const browserStore = useBrowserStore(browserScope);
 // 只在对话页预览空间启用：page 空间（/browser 独立页）没有聊天任务上下文。
 const chatStore = useChatStore();
 const isPreviewScope = browserScope === 'preview' || browserScope.startsWith('preview:');
+/**
+ * 裸 'preview' 与任意 'preview:*' 是否同一空间（升级兼容判定）。
+ * ★ 2026-10-15 起浏览器是应用级单例、scope 固定 'preview'，但主进程侧与存量 tab
+ *   的 scope 标签可能还是旧的 'preview:<convId>' —— 两侧必须按"同一家族"匹配，
+ *   否则壳被静默挡掉（agent 等 guest 30s 超时，任务断）。
+ * ★ 收口成唯一实现：onOpenTab / onForceOpen / onTabCreated 三处共用（此前各写一份，
+ *   是"平行实现漂移"的老病灶）。
+ */
+function isSamePreviewFamily(a?: string, b?: string): boolean {
+  if (!a || !b) return false;
+  return (a === 'preview' && b.startsWith('preview')) || (b === 'preview' && a.startsWith('preview'));
+}
 const browserExpanded = computed({
   get: () => isPreviewScope && chatStore.browserExpanded,
   set: (v: boolean) => { if (isPreviewScope) chatStore.browserExpanded = v; },
@@ -2202,9 +2214,11 @@ onMounted(async () => {
       if (!url) return;
       // 只接管归属自己空间的弹窗：主进程按"发起弹窗的 guest 属于哪个 tab"标注 scope，
       // 避免对话页预览与 /browser 独立页同时各开一个 tab（"点一下开出俩"的主因之一）。
+      // ★ 2026-10-15：浏览器是**应用级单例**，scope 固定 'preview'；裸 preview 与
+      //   任意 preview:*（升级前遗留 tab 的 scope 标签）视为同一空间，用同一判定。
       // scope 标注滞后时退而求其次：本面板正可见就接管（用户看得见的地方优先），
       // 既不归属本空间、又不可见，就不抢这个弹窗。
-      const mine = scope ? scope === browserScope : true;
+      const mine = !scope || scope === browserScope || isSamePreviewFamily(scope, browserScope);
       if (!mine && !shouldBeVisible.value) return;
       // 去重：同一次点击会被 session 级 + guest 级两个 handler 重复投递，
       // 且面板反复挂载留下的旧监听器也会各消费一次（不挡就是"一下开 5 个"）。
@@ -2216,13 +2230,10 @@ onMounted(async () => {
       // ★ 诊断日志（排障用，非用户可见提示）：forceOpen 是否到达本面板、命中哪个分支
       console.log(`[BrowserPanel] onForceOpen url=${url} scope=${scope} tabId=${tabId} myScope=${browserScope} alive=${componentAlive}`);
       // ★★★ scope 匹配放宽（「执行面直连化」，2026-10-10）：
-      //   主进程此刻广播的 scope 是**本会话锚定 tab 的 scope**（`preview:<convId>`）；面板的
-      //   browserScope 就是 `preview:<convId>`（同源）⇒ 严格相等即可。但旧主进程/旧调用可能
-      //   广播裸 `'preview'`，此时**严格相等会静默漏掉**（面板不打开 → agent 导航失败）。
-      //   ⇒ 兼容：裸 `preview` 与任意 `preview:*` 视为同一空间。
-      const sameScope = !scope
-        || scope === browserScope
-        || (scope === 'preview' && browserScope.startsWith('preview'));
+      //   主进程此刻广播的 scope 可能是**本会话锚定 tab 的 scope**（旧版 `preview:<convId>`，
+      //   或存量 tab 的旧标签）；2026-10-15 起面板 browserScope 固定 'preview'（应用级单例）。
+      //   ⇒ 用 isSamePreviewFamily 统一判定：严格相等，或同属 preview 家族。
+      const sameScope = !scope || scope === browserScope || isSamePreviewFamily(scope, browserScope);
       if (!sameScope) return; // 只接管归属自己空间的导航
       if (!url) return;
       // ★ 同站复用路径（2026-10-13）：主进程检测到已有 tab 在同 host+path 时，
@@ -2307,12 +2318,11 @@ onMounted(async () => {
       console.log(`[BrowserPanel] onTabCreated tid=${tid} url=${url} scope=${scope} myScope=${browserScope} alive=${componentAlive} 已有=${tabs.value.some(t => t.id === tid)}`);
       // page 空间只收明确标记为 page 的 tab；preview 空间收 preview 及未标记（旧主进程兼容）
       // ★★★ scope 匹配放宽（「执行面直连化」，2026-10-10）：主进程 `new_tab` 分支广播的是**裸
-      //   `'preview'`**（见 main.cjs 的 new_tab case），而本面板的 browserScope 是
+      //   `'preview'`**（见 main.cjs 的 new_tab case），而存量 tab/旧调用的 scope 标签可能是
       //   `preview:<convId>` —— 严格相等会**静默漏掉** ⇒ 渲染层不补壳 ⇒ 主进程 waitForGuest
-      //   必超时（"8s 内未建出页面"）。与 `onForceOpen` 同一口径放宽。
+      //   必超时（"8s 内未建出页面"）。与 `onForceOpen` 同一口径放宽（isSamePreviewFamily）。
       const belong = scope || 'preview';
-      const sameScope = belong === browserScope
-        || (belong === 'preview' && browserScope.startsWith('preview'));
+      const sameScope = belong === browserScope || isSamePreviewFamily(belong, browserScope);
       if (!sameScope) { console.log(`[BrowserPanel] onTabCreated 被 scope 挡：belong=${belong} myScope=${browserScope}`); return; }
       if (tabs.value.some(t => t.id === tid)) { console.log(`[BrowserPanel] onTabCreated 已存在，跳过：${tid}`); return; }
       tabs.value.push({
@@ -2479,9 +2489,11 @@ onUnmounted(() => {
     for (const tab of tabs.value) {
       try { (window as any).electronAPI.browserView.hide(tab.id); } catch { /* ignore */ }
     }
-    // 多会话隔离：关闭本 scope 名下所有 tab，避免切会话后旧 webview 长期占用主进程 MAX_TABS 窗口。
-    // page（/browser 独立浏览器页）不主动清——用户离开再回来还要恢复。
-    if (browserScope.startsWith('preview:')) {
+    // 多会话隔离 → 2026-10-15 起浏览器是**应用级单例**（三级归属模型），
+    // scope 固定 'preview'（不再按会话分）。这里只在面板真正卸载
+    //（离开对话页路由 / 移动端不支持）时清理本空间的 tab，避免 tab 长期占主进程
+    // MAX_TABS 窗口。page（/browser 独立浏览器页）不主动清——用户离开再回来还要恢复。
+    if (browserScope === 'preview' || browserScope.startsWith('preview:')) {
       try { (window as any).electronAPI?.browserView?.closeAllTabs?.(browserScope, true); } catch { /* ignore */ }
     }
   }

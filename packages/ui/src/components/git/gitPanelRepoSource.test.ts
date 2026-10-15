@@ -1,63 +1,76 @@
-// 差异面板「宿主容器」与 plain 模式的契约测试。
+// 差异面板「宿主容器」与仓库根目录解析的契约测试。
 //
-// 背景（本次修的两个真 bug）：
-//   1) 开发模式的源码管理面板永远显示「变更 0 / 工作区干净」——
-//      因为面板只认 settingsStore.workspaceDir，而开发模式的工作目录在 codeStore.projectDir；
-//      watch 永不触发 → init 从未执行 → gitStore.status 恒为 null。
-//   2) 提交弹窗里展开文件时「面板套面板」——内联的差异面板自带完整工具栏 + 边框，
-//      外面又是一层弹窗，观感是嵌套；且放大按钮重复（内联一个、宿主一个）。
+// 背景（本次修的真 bug，2026-10-15）：
+//   预览面板（对话页）的「Git 文件」显示了**别的**有 git 的目录。
+//   根因：ChatPreviewPane 没给 ChatGitPanel 传 repo，面板兜底链是
+//   `props.repo || codeStore.projectDir || settingsStore.workspaceDir` ——
+//   codeStore.projectDir 是 IDE（/code）当前项目目录，与当前工作空间无关且长期驻留
+//   （上次打开的项目，往往正是那个"有 git 记录的目录"）。
 //
-// 这里钉住「仓库根目录解析」的优先级与「plain 模式不渲染工具栏」两条契约。
+//   三级归属模型（用户澄清，权威口径）：预览面板三类资源分属不同层级 ——
+//   ① 浏览器 = 应用级；② Git / 文件 = 工作空间级；③ 控制台 = 会话级。
+//   Git 必须跟随「当前会话所属工作空间」，任何跨层级取值都是脏数据。
+//
+// ★ 这里 import **真实实现**（utils/gitRepoSource.ts）而不是复刻一份逻辑：
+//   复刻版测的是"我抄对了没"，实现漂移了测试照样绿（记忆 TESTING-NOTES：
+//   能真跑就真跑，锚点钉唯一实现）。
 
 import { describe, it, expect } from 'vitest';
+import { resolveGitRepoSource, normalizeRepoDir } from '../../utils/gitRepoSource';
 
 // ────────────────────────────────────────────────────────────
-// 1) 仓库根目录解析优先级（与 ChatGitPanel 的 workspace computed 同口径）
+// 1) 仓库根目录解析优先级（三级归属：Git = 工作空间级）
 // ────────────────────────────────────────────────────────────
-interface RepoSource {
-  /** 显式 prop（调用方指定，优先级最高） */
-  propRepo?: string;
-  /** 开发模式当前项目目录 */
-  projectDir?: string;
-  /** 办公模式设置里的工作目录 */
-  workspaceDir?: string;
-}
-
-function resolveRepo(s: RepoSource): string {
-  return s.propRepo || s.projectDir || s.workspaceDir || '';
-}
-
-describe('仓库根目录解析：必须认开发模式的项目目录', () => {
-  it('★ 开发模式：只有 projectDir 时也能解析出仓库（原 bug 的根因）', () => {
-    // 原实现只看 workspaceDir → 这里会得到空串 → 面板永远「变更 0」
-    expect(resolveRepo({ projectDir: 'C:/proj/a' })).toBe('C:/proj/a');
+describe('仓库根目录解析：Git 必须跟随当前工作空间', () => {
+  it('★ 回归（原 bug）：非代码模式下 IDE 项目目录不得成为来源', () => {
+    // 原实现 projectDir 优先于 workspaceDir ⇒ 预览面板 git 显示别的有 git 的目录
+    expect(resolveGitRepoSource({
+      workspaceDir: 'D:/novel-ws',
+      codeModeProjectDir: 'C:/proj/with-git',
+    })).toBe('D:/novel-ws');
   });
 
-  it('显式 prop 优先级最高', () => {
-    expect(resolveRepo({ propRepo: 'C:/explicit', projectDir: 'C:/proj', workspaceDir: 'C:/ws' }))
-      .toBe('C:/explicit');
+  it('显式 repo（tab.repoPath / 父级传入）优先级最高', () => {
+    expect(resolveGitRepoSource({
+      explicitRepo: 'D:/explicit',
+      spaceDir: 'D:/space',
+      workspaceDir: 'D:/ws',
+      codeModeProjectDir: 'C:/proj',
+    })).toBe('D:/explicit');
   });
 
-  it('无 prop 时 projectDir 优先于 workspaceDir', () => {
-    expect(resolveRepo({ projectDir: 'C:/proj', workspaceDir: 'C:/ws' })).toBe('C:/proj');
+  it('当前会话所属空间目录优先于全局 workspaceDir', () => {
+    // 会话挂靠空间 A、用户当前选中空间 B（workspaceDir 已同步成 B）时，
+    // 归属以会话所属空间为准（发消息不改变会话归属）。
+    expect(resolveGitRepoSource({ spaceDir: 'D:/spaceA', workspaceDir: 'D:/spaceB' }))
+      .toBe('D:/spaceA');
   });
 
-  it('开发模式目录为空时回落到办公模式的 workspaceDir', () => {
-    expect(resolveRepo({ workspaceDir: 'C:/ws' })).toBe('C:/ws');
+  it('会话无空间（未归类）时回落到 workspaceDir', () => {
+    expect(resolveGitRepoSource({ spaceDir: '', workspaceDir: 'D:/ws' })).toBe('D:/ws');
   });
 
-  it('三者皆空 → 空串（面板据此跳过请求，不发空 repo 的 API）', () => {
-    expect(resolveRepo({})).toBe('');
+  it('代码模式：前三者皆空时才用 IDE 项目目录兜底（老调用方兼容）', () => {
+    expect(resolveGitRepoSource({ codeModeProjectDir: 'C:/proj' })).toBe('C:/proj');
+  });
+
+  it('全空 → 空串（面板据此跳过请求，不发空 repo 的 API）', () => {
+    expect(resolveGitRepoSource({})).toBe('');
   });
 
   it('空串 prop 不遮蔽后面的来源（用 || 而非 ?? 的语义）', () => {
-    // 调用方传 repo="" 时不应把 projectDir 也一起废掉
-    expect(resolveRepo({ propRepo: '', projectDir: 'C:/proj' })).toBe('C:/proj');
+    expect(resolveGitRepoSource({ explicitRepo: '', spaceDir: 'D:/space' })).toBe('D:/space');
+  });
+
+  it('尾部斜杠归一化（同目录两种写法不能分裂成两份缓存 key）', () => {
+    expect(resolveGitRepoSource({ spaceDir: 'D:/space\\' })).toBe('D:/space');
+    expect(resolveGitRepoSource({ spaceDir: 'D:/space/' })).toBe('D:/space');
+    expect(normalizeRepoDir('  D:/space\\  ')).toBe('D:/space');
   });
 });
 
 // ───────────────────────────────────────────────────────────
-// 2) 初始化触发条件（watch 的值守卫）
+// 2) 初始化触发条件（watch 的值守卫，与面板内 lastInitRepo 同口径）
 // ────────────────────────────────────────────────────────────
 describe('初始化触发：同一仓库不重复拉取、换了仓库必须重拉', () => {
   /** 复刻面板里的 lastInitRepo 守卫 */
@@ -79,36 +92,35 @@ describe('初始化触发：同一仓库不重复拉取、换了仓库必须重�
 
   it('首次非空仓库 → 触发初始化（即使 watch 是 immediate，值相同也要跑第一次）', () => {
     const g = makeInitGate();
-    expect(g.onRepoChange('C:/a')).toBe(true);
-    expect(g.inits).toEqual(['C:/a']);
+    expect(g.onRepoChange('D:/a')).toBe(true);
+    expect(g.inits).toEqual(['D:/a']);
   });
 
   it('同一仓库重复变化 → 不重复初始化（避免切视图时反复请求）', () => {
     const g = makeInitGate();
-    g.onRepoChange('C:/a');
-    expect(g.onRepoChange('C:/a')).toBe(false);
+    g.onRepoChange('D:/a');
+    expect(g.onRepoChange('D:/a')).toBe(false);
     expect(g.inits).toHaveLength(1);
   });
 
   it('切到另一个仓库 → 必须重新初始化', () => {
     const g = makeInitGate();
-    g.onRepoChange('C:/a');
-    expect(g.onRepoChange('C:/b')).toBe(true);
-    expect(g.inits).toEqual(['C:/a', 'C:/b']);
+    g.onRepoChange('D:/a');
+    expect(g.onRepoChange('D:/b')).toBe(true);
+    expect(g.inits).toEqual(['D:/a', 'D:/b']);
   });
 
-  it('空仓库（未选项目目录）不初始化，也不污染 lastInitRepo', () => {
+  it('空仓库（未绑定目录）不初始化，也不污染 lastInitRepo', () => {
     const g = makeInitGate();
     expect(g.onRepoChange('')).toBe(false);
-    expect(g.onRepoChange('C:/a')).toBe(true); // 之后仍然能正常初始化
+    expect(g.onRepoChange('D:/a')).toBe(true); // 之后仍然能正常初始化
   });
 
-  it('★ 回归：workspaceDir → projectDir 的值变化必须能触发（原 bug 正是这里不触发）', () => {
+  it('★ 回归：解析结果从空间 A 目录换成空间 B 目录必须能触发', () => {
     const g = makeInitGate();
-    // 模拟：先按办公模式的 workspaceDir 初始化过
-    g.onRepoChange('C:/ws');
-    // 开发模式把 repo 解析结果换成了 projectDir → 必须重新初始化
-    expect(g.onRepoChange('C:/proj')).toBe(true);
+    g.onRepoChange('D:/spaceA');
+    // 会话切到另一个空间 → repo 解析值变化 → 必须重新初始化
+    expect(g.onRepoChange('D:/spaceB')).toBe(true);
   });
 });
 
@@ -143,7 +155,7 @@ describe('plain 模式渲染契约', () => {
     expect(p.selfExpandButton).toBe(true);
   });
 
-  it('fullscreen（独立窗口/全屏弹窗内）→ 无工具栏？否：保留导航与视图切换，但不给拖高条', () => {
+  it('fullscreen（独立窗口/全屏弹窗内）→ 保留导航与视图切换，但不给拖高条', () => {
     const p = renderPlan({ plain: false, fullscreen: true });
     expect(p.bar).toBe(true);          // 撑满态仍需并排/统一与差异导航
     expect(p.heightBar).toBe(false);   // 高度交给外层

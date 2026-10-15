@@ -2205,13 +2205,19 @@ async function healStalePlatform() {
    * ★ 刻意**不**归零的：跨会话共享且与会话无关的东西 ——
    *   selectedModelId（模型是全局偏好）、mountedSkillIds（草稿态要继承挂载）、
    *   场景 / 工作目录 / 侧栏折叠态 / 预览面板宽度。
+   *   ★ 预览 tab 里的 **browser 也保留**（keepBrowser，2026-10-15）：浏览器是应用级
+   *     资源（三级归属模型：浏览器=整个应用一份；Git/文件=工作空间级；控制台=会话级）。
+   *     任务级清掉它 ⇒ BrowserPanel 卸载 ⇒ 主进程销毁 BrowserView ⇒ 正在跑的
+   *     pageAgent 直接断（用户实报「切工作空间后预览浏览器没了，任务执行不了」）。
+   *     currentBrowserUrl 仍归零——它只是「agent 导航信号通道」，不是浏览器内容：
+   *     不清则 agent 下次导航到同一 URL 时 watch 值不变、导航静默丢失。
    */
   function resetTaskScopedState() {
     // —— 文件域（本次报障的根因）——
     fileStore.clear();                       // 会话文件列表 + fileStore.currentConvId
     fileSearch.value = '';
-    // —— 右侧预览域：预览 tab / 面板开合 / 浏览器地址都归属「某一个任务」——
-    store.closeAllPreviewTabs();
+    // —— 右侧预览域：预览 tab / 面板开合归零；浏览器 tab 保留（应用级资源）——
+    store.closeAllPreviewTabs({ keepBrowser: true });
     store.rightPanelOpen = false;
     store.showFilePopup = false;
     store.currentBrowserUrl = '';

@@ -96,7 +96,9 @@ function remainingAgentOpenedTabs(convId: string): string[] {
   const set = agentOpenedTabs.get(convId);
   if (!set || set.size === 0) return [];
   try {
-    const bs: any = useBrowserStore(`preview:${convId}`);
+    // ★ 2026-10-15：浏览器改为**应用级单例**（三级归属模型）⇒ 一律读全局 preview store。
+    //   此前按 `preview:${convId}` 读动态 store，与面板（scope='preview'）脱节 ⇒ 永远空。
+    const bs: any = useBrowserStore('preview');
     const alive = new Set<string>((bs.tabs || []).map((t: any) => String(t.id)));
     return [...set].filter((id) => alive.has(id));
   } catch { return [...set]; }
@@ -110,8 +112,15 @@ function clearAgentOpenedTabs(convId?: string): void {
 
 async function resolvePreviewTabId(convId?: string): Promise<string> {
   const electron = (window as any).electronAPI;
-  // 多会话隔离：convId 决定 scope；未传则退化为通用 preview（兼容旧调用点）。
-  const scope = convId ? `preview:${convId}` : 'preview';
+  // ★ 2026-10-15：浏览器是**应用级**资源（三级归属：浏览器=整个应用一份；
+  //   Git/文件=工作空间级；控制台=会话级）⇒ 执行面固定为裸 'preview'，
+  //   与 BrowserPanel（scope='preview'）和主进程广播（main.cjs 用 'preview'）同源。
+  //   此前按 `preview:${convId}` 分 store：切会话后面板重建到新 scope，agent 侧
+  //   读到的却是旧/空 store ⇒ 锚定 tab 失效、轮询 4s 后主进程再自建一个 scope 的
+  //   tab（壳还被面板 scope 挡掉）⇒ waitForGuest 30s 超时 ⇒ 任务断。
+  //   convId 仍参与「哪个 tab 属于哪个会话」的归属记账（agentAnchoredTabs /
+  //   agentTouchedTabs），与浏览器是否全局无关。
+  const scope = 'preview';
   const bs: any = useBrowserStore(scope);
   const exists = (id: string) => !!id && bs.tabs.some((t: any) => t.id === id);
   // ① agent 锚定 tab 优先（跨调用保持，不受用户切换影响）
@@ -772,8 +781,25 @@ export const useChatStore = defineStore('chat', () => {
       activeTabId.value = next ? next.id : null;
     }
   }
-  /** 全部关闭（面板保持展开，内容区显示空态） */
-  function closeAllPreviewTabs() {
+  /**
+   * 全部关闭（面板保持展开，内容区显示空态）。
+   *
+   * ★ `keepBrowser: true` 用于「任务级清理」（新建任务 / 切换会话）：
+   *   浏览器是**应用级**资源（2026-10-15 用户三级归属模型：浏览器=整个应用一份，
+   *   Git/文件=工作空间级，控制台=会话级）。此前任务级清理把 browser tab 一起清掉，
+   *   → ChatPreviewPane 的 BrowserPanel 卸载 → 主进程 closeAllTabs 真销毁 BrowserView
+   *   → 正在跑的 pageAgent 失去目标 webContents，任务直接中断（用户实报：
+   *   「A 任务在执行 pageAgent，点了别的工作空间，预览浏览器就没了」）。
+   *   ⇒ 任务级清理必须保留 browser tab；只有用户显式「关闭全部」才真关。
+   */
+  function closeAllPreviewTabs(opts?: { keepBrowser?: boolean }) {
+    if (opts?.keepBrowser) {
+      const kept = previewTabs.value.filter((t) => t.kind === 'browser');
+      previewTabs.value = kept;
+      if (kept.length === 0) { activeTabId.value = null; return; }
+      if (!kept.some((t) => t.id === activeTabId.value)) activeTabId.value = kept[0].id;
+      return;
+    }
     previewTabs.value = [];
     activeTabId.value = null;
   }

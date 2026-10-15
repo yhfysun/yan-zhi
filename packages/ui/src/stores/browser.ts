@@ -69,9 +69,14 @@ function getDynamicStore(scope: string): BrowserStore {
 
 /**
  * 按空间取浏览器 store：
- * - preview：对话页右栏预览面板（pageAgent / 主 agent 浏览器工具的执行面）
+ * - preview：对话页右栏预览面板（pageAgent / 主 agent 浏览器工具的执行面）。
+ *   ★ 2026-10-15 起它是**应用级单例**（三级归属模型：浏览器=整个应用一份，
+ *   Git/文件=工作空间级，控制台=会话级）：切工作空间 / 切会话 / 切任务都不销毁它，
+ *   否则 BrowserPanel 卸载会触发主进程 closeAllTabs 真销毁 BrowserView，
+ *   正在跑的 pageAgent 直接断（用户实报「点别的工作空间，预览浏览器就没了」）。
  * - page：/browser 独立浏览器页
- * - preview:<convId>：多会话隔离——不同会话的浏览器 tab/激活/历史互不串台。
+ * - preview:<convId>：**历史遗留**的多会话隔离 scope（升级前存量 tab 的标签）。
+ *   新链路不再产生它；保留动态 store 仅为兼容旧标签的匹配（isSamePreviewFamily）。
  * 不传默认 page（/browser 页 <BrowserPanel /> 无需感知此参数）。
  */
 export function useBrowserStore(scope: BrowserScope = 'page'): BrowserStore {

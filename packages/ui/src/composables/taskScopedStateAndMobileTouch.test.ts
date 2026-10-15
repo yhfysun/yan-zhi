@@ -145,10 +145,17 @@ describe('① 新建任务 / 切会话：任务域状态必须整体归零', () 
       .not.toMatch(/permissionMode\s*=\s*'all'\s*;/);
   });
 
-  it('★ 预览面板与浏览器地址必须归零（否则新任务右侧还挂着上个任务的文件/网站）', () => {
+  it('★ 预览面板归零、但浏览器 tab 必须保留（三级归属：浏览器=应用级资源）', () => {
     const body = bodyOf(SRC, 'function resetTaskScopedState');
-    expect(body, '★ 预览 tab 未关闭').toMatch(/closeAllPreviewTabs\(\)/);
+    // ★ 2026-10-15：closeAllPreviewTabs() → closeAllPreviewTabs({ keepBrowser: true })
+    //   任务级清理清掉 browser tab ⇒ BrowserPanel 卸载 ⇒ 主进程 closeAllTabs 真销毁
+    //   BrowserView ⇒ 正在跑的 pageAgent 失去目标 webContents，任务中断
+    //   （用户实报：「A 任务在执行 pageAgent，点了别的工作空间，预览浏览器就没了」）。
+    expect(body, '★ 预览 tab 未关闭（或漏传 keepBrowser，会把浏览器一起清掉）')
+      .toMatch(/closeAllPreviewTabs\(\{\s*keepBrowser:\s*true\s*\}\)/);
     expect(body, '★ 右侧面板未收起').toMatch(/rightPanelOpen\s*=\s*false/);
+    // currentBrowserUrl 仍归零：它是「agent 导航信号通道」而非浏览器内容 ——
+    // 不清则 agent 下次导航到同一 URL 时 watch 值不变，导航静默丢失。
     expect(body, '★ 浏览器地址残留（新任务继承上个任务的 URL）').toMatch(/currentBrowserUrl\s*=\s*''/);
   });
 
@@ -571,7 +578,9 @@ describe('⑤ 守门测试自身：断言锚点必须真实存在（防断言假
  *  m1  useChat.ts：resetTaskScopedState 删掉 fileStore.clear()          → 变红 ✓
  *  m2  useChat.ts：startNewChat 删掉 resetTaskScopedState() 调用         → 变红 ✓
  *  m3  useChat.ts：删掉 mountedMcpServers = []                          → 变红 ✓
- *  m4  useChat.ts：删掉 closeAllPreviewTabs() / currentBrowserUrl 归零    → 变红 ✓
+ * m4  useChat.ts：删掉 closeAllPreviewTabs() / currentBrowserUrl 归零    → 变红 ✓
+ * m4b useChat.ts：closeAllPreviewTabs 去掉 keepBrowser: true（2026-10-15）→ 变红 ✓
+ *     （浏览器=应用级资源；任务级清理带走它 ⇒ pageAgent 任务中断）
  *  m5  useChat.ts：collapsedByAuto 移回函数定义之后（TDZ）                → 变红 ✓
  *  m6  file.ts：clear() 只清 currentConvId 不清 files                    → 变红 ✓
  *  m7  ChatInputArea：删掉 is-mobile-collapsed 类挂载                    → 变红 ✓
