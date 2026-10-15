@@ -27,6 +27,10 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  // ★ 先关 DB 再删目录（2026-10-15）：better-sqlite3 ≥13（N-API）下原生驱动在
+  //   vitest 里真加载成功（此前 ABI 不匹配静默回退 sql.js，内存库无 SHM 文件），
+  //   WAL 模式的 data.db-shm/-wal 句柄未释放时 fsp.rm 会 EBUSY。
+  try { db?.close(); } catch { /* 已关或未开则忽略 */ }
   await fsp.rm(DATA, { recursive: true, force: true });
   await fsp.rm(WS, { recursive: true, force: true });
 });

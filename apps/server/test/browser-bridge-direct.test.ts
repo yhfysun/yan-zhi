@@ -400,8 +400,14 @@ describe('⑪ ★★★ 可见性契约：桥档下"看不见/收不干净"两�
     expect(selfSeg, '★ 自建分支 scope 不是裸 preview → 与 new_tab 口径不一致')
       .toMatch(/const scope = 'preview'/);
     // 渲染层 onTabCreated 必须放宽 scope 匹配（否则裸 preview 广播被严格相等静默漏掉）
+    // ★ 锚点更新（2026-10-15，随 a352f2b）：放宽判定收口到 isSamePreviewFamily
+    //   （onOpenTab / onForceOpen / onTabCreated 三处共用，消平行实现漂移）——
+    //   函数内已有 `a === 'preview' && b.startsWith('preview')` 语义，这里锚定
+    //   调用点 + 函数体两处，防任一侧单独退化。
     expect(PANEL, '★ onTabCreated scope 匹配过严 → 主进程裸 preview 广播被漏掉，渲染层不建壳')
-      .toMatch(/belong === 'preview' && browserScope\.startsWith\('preview'\)/);
+      .toMatch(/const sameScope = belong === browserScope \|\| isSamePreviewFamily\(belong, browserScope\)/);
+    expect(PANEL, '★ isSamePreviewFamily 放宽语义缺失（裸 preview ↔ preview:<convId> 家族互认）')
+      .toMatch(/a === 'preview' && b\.startsWith\('preview'\)/);
   });
 
   it('★★★ 自建 tab 的 id 必须两端对齐 + wc=null 走显式错误', () => {

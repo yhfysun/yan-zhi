@@ -52,6 +52,16 @@ function itemRow(planId: string, key: string): PlanItemRow {
 }
 
 beforeAll(() => {
+  // ★ FK 种子（2026-10-15）：conversation_file → conversation → user 的外键链需要父行。
+  //   better-sqlite3 <13 在 vitest（系统 Node，ABI 不匹配）下加载失败会静默回退
+  //   sql.js（WASM），其 pragma() 不强制 FK —— 测试此前"碰巧"通过；≥13 是 N-API，
+  //   原生驱动真加载后 foreign_keys=ON 真生效，缺种子即刻爆 FOREIGN KEY constraint failed。
+  db.prepare(
+    'INSERT OR IGNORE INTO user (id, username, password_hash, created_at) VALUES (?, ?, ?, ?)',
+  ).run('u_test', 'u_test_plan_runner', '!test-no-login', 0);
+  db.prepare(
+    'INSERT OR IGNORE INTO conversation (id, user_id, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
+  ).run(CONV, 'u_test', '多智能体计划测试', 0, 0);
   db.prepare('DELETE FROM task_plan_item WHERE conversation_id = ?').run(CONV);
   db.prepare('DELETE FROM conversation_file WHERE conversation_id = ?').run(CONV);
 });
