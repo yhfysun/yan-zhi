@@ -4,9 +4,9 @@
 // UI 交互工具（ask_user/confirm_user 等）和 MCP/自定义工具委托前端，刷新时暂停等待重连。
 // 注：web_search 已移除，联网查询统一委派 pageAgent（真实浏览器搜索引擎）。
 import type { Platform, Model, Message, DeltaToolCall } from '@yan-zhi/shared';
-import { formatTaskTypeContext, DEFAULT_CONFIRM_BATCH_SIZE, resolveTaskBudgets, checkTaskBudgetHit as sharedCheckTaskBudgetHit, addWaitCredit } from '@yan-zhi/shared';
+import { formatTaskTypeContext, formatTaskTypeSpecContext, formatParentTaskTypeSpecContext, DEFAULT_CONFIRM_BATCH_SIZE, resolveTaskBudgets, checkTaskBudgetHit as sharedCheckTaskBudgetHit, addWaitCredit } from '@yan-zhi/shared';
 import { LlmClient, getToolRegistry, getApiToolRegistry, ContextWindow, adviceForTruncatedArgs, runCodeDiagnostics, invalidateDiagnosticsCache, resolveToolPath, setBrowserToolConversationId, type SummaryCache } from '@yan-zhi/core';
-import { db, MESSAGE_LIST_COLS, getLatestMessageSummary } from './db.js';
+import { db, MESSAGE_LIST_COLS, getLatestMessageSummary, loadEffectiveTaskTypes } from './db.js';
 import { resolvePool, resolveFailoverChain, resolveFirstModel, SLOTS, type Slot } from './services/model-pools.js';
 import { shouldRetryStatus } from './services/token-pool.js';
 import { normalizePermissionMode, checkToolPermission, filterToolsByPermission, permissionModePrompt, checkWorkflowPermission, type PermissionMode } from './tool-permission.js';
@@ -321,14 +321,37 @@ interface PendingToolCall {
   toolName?: string;
   callId?: string;
   requestedAt?: number;
+  /** 工具的**原始超时**（`resolveFrontendToolTimeout` 定的那个）。只有它到点才该判工具失败。 */
   timer?: ReturnType<typeof setTimeout>;
-  /** 工具入参（ask_user/confirm_user 记录决策、/tasks/active 回显 pending 详情用） */
+  /**
+   * ★★★ 「最后一个订阅者断开」时设的 15 秒**断连宽限期**定时器（2026-10-15 拆出）。
+   *
+   * 为什么必须与 `timer` 分开：此前两者共用同一个字段，于是 `subscribe()`（前端重连）里
+   * 「清除断连宽限期」那一句 `if (pending.timer) clearTimeout(pending.timer)` 会把
+   * **原始超时也一并清掉** —— 而且**不再恢复**。后果：任何一次 SSE 重连之后，那个 pending
+   * 工具就**彻底没有超时**了；若它委托的前端结果又因故没回来（POST 重试 3 次后静默放弃），
+   * 这一步只能等用户手动中止或 2 小时看门狗 —— 表现为"任务卡住不动、既不失败也不结束"。
+   * 实测 10-14 单日 84 次流断连，重连是常态而非例外。
+   */
+  graceTimer?: ReturnType<typeof setTimeout>;
   args?: unknown;
 }
 
 /** 交互类工具：暂停等用户回答，没有"超时"语义 —— 用户隔天回来回答也应该有效。
  *  免 2 分钟创建超时、免 15 秒断连宽限（宽限 reject 会把挂着的问题杀掉）。 */
 const INTERACTIVE_TOOLS = new Set(['ask_user', 'confirm_user']);
+
+/**
+ * 清掉一个 pending 工具调用的**全部**定时器（原始超时 + 断连宽限）。
+ *
+ * ★ 为什么要收口成一处：拆出 `graceTimer` 之前，这两类定时器共用一个字段，于是
+ *   "清定时器"只要写一句就够；拆分后若各处仍各写一遍 `pending.timer`，**必然会漏掉一半**
+ *   （本仓库多次吃过"同一语义多处判定/多处收尾"的亏）。收口后新增定时器只需改这一处。
+ */
+function clearPendingTimers(pending: PendingToolCall): void {
+  if (pending.timer) { clearTimeout(pending.timer); pending.timer = undefined; }
+  if (pending.graceTimer) { clearTimeout(pending.graceTimer); pending.graceTimer = undefined; }
+}
 
 interface LlmTask {
   id: string;
@@ -866,7 +889,6 @@ async function runToolCallAndPersist(opts: {
   let result: string;
   if (precomputed !== undefined) {
     result = precomputed;
-    emit(task, { type: 'tool:result', toolName, result, ...subEvt });
   } else {
     emit(task, { type: 'tool:start', toolName, args, ...subEvt });
     try {
@@ -880,8 +902,16 @@ async function runToolCallAndPersist(opts: {
       }
       result = await enrichToolErrorReceipt(task, toolName, args, e);
     }
-    emit(task, { type: 'tool:result', toolName, result, ...subEvt });
   }
+
+  // ★★★ 进事件缓冲前**先截断**（2026-10-15，内存）：
+  //   `task.events` 的上限是按**条数**设的（MAX_EVENTS=10000），单条却可能是一份几十 KB 的
+  //   读页/DOM 结果。此前 `tool:result` 推的是**未截断**的 result（只有落库那份走 capToolResult），
+  //   于是缓冲里实际驻留的字节数没有上界，且每个订阅者都要把它重新序列化一遍。
+  //   截断口径与落库**同一函数**（capToolResult → MAX_TOOL_RESULT_CHARS），保证
+  //   "实时看到的"与"重载后落库的"一致（此前实时全量、重载截断，本身就是不一致）。
+  const cappedResult = capToolResult(result);
+  emit(task, { type: 'tool:result', toolName, result: cappedResult, ...subEvt });
 
   // ★★★ 工具执行完的"副作用"走钩子（P2-3）：产物登记等由 services/artifact-hooks.ts
   //   注册，这里只负责跑。钩子 fail-open：某个钩子出错只 warn，不影响工具结果。
@@ -893,8 +923,7 @@ async function runToolCallAndPersist(opts: {
     meta: (metaOut.value || null) as Record<string, unknown> | null,
   });
 
-  // 入库前压缩，防止单条极端大结果撑爆消息表与下轮上下文
-  const cappedResult = capToolResult(result);
+  // 入库（与上面事件缓冲**同一份** cappedResult，防两处口径漂移）
   insertToolMessageAndEmit(task, convId, userId, tcId, cappedResult, ownership);
   return cappedResult;
 }
@@ -1253,17 +1282,53 @@ export function injectUserMessage(conversationId: string, content: string, userI
   return { status: 'injected', msgId };
 }
 
-/** 订阅任务事件（从 since 索引开始重放 + 后续实时事件） */
+/**
+ * 取出「seq 大于 since」的事件 —— 重连重放的**唯一判据**（纯函数，便于直接测）。
+ *
+ * ★ 为什么单独抽出来：这个判据的 bug（用数组下标当游标）只有在**事件缓冲被裁剪过**之后
+ *   才显形，用真实任务触达 MAX_EVENTS 的代价太高、测试也跑不动。抽成纯函数后可以直接构造
+ *   "已被裁剪的缓冲 + 客户端游标"来钉住行为（见 seq-replay-cursor.test.ts）。
+ *
+ * @param events 任务事件缓冲（可能已被 emit 裁剪过最旧事件）
+ * @param since  客户端已收到的**最后一个事件的 seq**；0 = 从头全量重放
+ */
+export function eventsSince(events: SSEEvent[], since: number): SSEEvent[] {
+  const from = Number.isFinite(since) && since > 0 ? since : 0;
+  if (from === 0) return events.slice();
+  return events.filter((ev) => (typeof ev.seq === 'number' ? ev.seq : 0) > from);
+}
+
+/**
+ * 订阅任务事件（重放 seq > since 的事件 + 后续实时事件）。
+ *
+ * ★★★ `since` 的语义 =「客户端**已收到的最后一个事件的 seq**」（0 = 从头全量重放）。
+ *
+ * **必须用 seq，不能用数组下标**（2026-10-15 修，根因）：
+ *   `emit` 在 `task.events.length > MAX_EVENTS` 时会 `splice(0, 超出量)` **丢弃最旧事件**，
+ *   于是同一个事件的下标会**整体前移**；而客户端记的是"累计收到多少条"
+ *   （`taskEventCounts`，见 chat.ts）—— 两者只在"从未裁剪过"时数值相等。
+ *   而 `chunk` 事件按**每个流式增量**发一条，长任务必然越过 MAX_EVENTS(10000)。一旦裁剪：
+ *   · 轻则重放窗口整体错位（漏掉 / 重复若干事件）；
+ *   · 重则 `since`（= 累计条数）**大于** `task.events.length` → 循环一次都不执行 →
+ *     **断连期间的事件一条都不补**。若漏掉的正是一条 `tool:execute`，则工具永不执行、
+ *     无人 POST 结果 → 该步一直等到超时（用户看到的"卡住不动、任务跑不完"）。
+ *   seq 单调递增且不受裁剪影响，是唯一稳定的游标。
+ *
+ * 兼容性：`since = 0`（默认，也是现有全部调用方的取值）行为完全不变。
+ */
 export function subscribe(taskId: string, since: number, onEvent: (event: SSEEvent) => void): () => void {
   const task = tasks.get(taskId);
   if (!task) return () => {};
-  for (let i = since; i < task.events.length; i++) {
-    try { onEvent(task.events[i]); } catch {}
+  for (const ev of eventsSince(task.events, since)) {
+    try { onEvent(ev); } catch {}
   }
   task.subscribers.add(onEvent);
-  // 前端重连：清除所有 pendingToolCalls 的断连宽限期 timer，工具调用继续等待前端结果
+  // 前端重连：只清**断连宽限期**定时器（工具调用继续等前端结果）。
+  // ★★★ 绝不碰 `pending.timer`（工具原始超时）—— 此前两者共用一个字段，重连会把原始超时
+  //   一并清掉且不恢复 ⇒ 一次重连之后该 pending 工具**永久失去超时**，只能等用户中止或
+  //   2 小时看门狗（"卡住不动"的成因之一）。见 PendingToolCall.graceTimer 注释。
   for (const [, pending] of task.pendingToolCalls) {
-    if (pending.timer) { clearTimeout(pending.timer); pending.timer = undefined; }
+    if (pending.graceTimer) { clearTimeout(pending.graceTimer); pending.graceTimer = undefined; }
   }
   return () => {
     task.subscribers.delete(onEvent);
@@ -1273,10 +1338,11 @@ export function subscribe(taskId: string, since: number, onEvent: (event: SSEEve
     if (task.subscribers.size === 0 && task.status === 'running' && !task.paused) {
       for (const [id, pending] of task.pendingToolCalls) {
         if (INTERACTIVE_TOOLS.has(pending.toolName || '')) continue;
-        if (pending.timer) continue; // 已有 timer 不重复设
-        pending.timer = setTimeout(() => {
+        if (pending.graceTimer) continue; // 已有宽限 timer 不重复设（注意：不是 pending.timer）
+        pending.graceTimer = setTimeout(() => {
           const p = task.pendingToolCalls.get(id);
           if (p) {
+            clearPendingTimers(p);
             task.pendingToolCalls.delete(id);
             p.reject(new Error(`前端断连，工具 ${p.toolName || id} 未在 15 秒内重连`));
           }
@@ -1302,7 +1368,7 @@ export function abortTask(taskId: string) {
   }
   task.paused = false;
   for (const [, pending] of task.pendingToolCalls) {
-    if (pending.timer) clearTimeout(pending.timer);
+    clearPendingTimers(pending);
     // ★ 交互类工具在终止时也要落决策记录：用户在等回答的向导里可能已经答过几页
     //   （前端 cancelPendingConfirmation 会把已作答部分放进 summary 随结果回传）。
     //   但 abort 是"任务被终止"，前端此后不会再 POST tool-result ——
@@ -1969,7 +2035,7 @@ export function resolveToolResult(taskId: string, callId: string, result: string
   const pending = task.pendingToolCalls.get(callId);
   if (!pending) return;
   task.pendingToolCalls.delete(callId);
-  if (pending.timer) clearTimeout(pending.timer);
+  clearPendingTimers(pending);
   syncPendingToolsJson(task);
   pending.resolve(result);
   // ★ 交互类工具的回答必须落「任务决策记录」（硬性要求：用户确认过的内容写入空间记忆，
@@ -2580,20 +2646,38 @@ async function runReActLoop(task: LlmTask, params: {
     // 任务类型 SOP 注入（「目录即任务」）：目录绑定了类型时，把类型执行手册 + 资源目录现状
     // 注入提示词，让模型按 SOP 分步引导用户，并知道 00-source 里已有哪些素材。
     try {
-      const convRow = db.prepare('SELECT space_id FROM conversation WHERE id = ?').get(convId) as { space_id?: string | null } | undefined;
+      const convRow = db.prepare('SELECT space_id, task_type FROM conversation WHERE id = ?').get(convId) as
+        | { space_id?: string | null; task_type?: string | null }
+        | undefined;
       const spaceId = convRow?.space_id;
       if (spaceId) {
         const tRow = db.prepare('SELECT task_type, task_config_json FROM space WHERE id = ?').get(spaceId) as
           | { task_type?: string | null; task_config_json?: string | null }
           | undefined;
-        const taskType = tRow?.task_type;
+        // ★ 任务级优先于目录级（2026-10-14「父任务」层）：多任务目录（空间绑父类型）里
+        //   每条任务各选一条子线，选中的线落在 conversation.task_type。
+        //   顺序反了的后果：目录换了类型，老任务的线被悄悄改掉，且不报错。
+        const taskType = convRow?.task_type || tRow?.task_type || null;
         if (taskType) {
           let batchSize = DEFAULT_CONFIRM_BATCH_SIZE;
           try {
             const cfg = tRow?.task_config_json ? JSON.parse(tRow.task_config_json) : null;
             if (cfg && Number.isFinite(Number(cfg.confirmBatchSize))) batchSize = Number(cfg.confirmBatchSize);
           } catch { /* 配置损坏按默认 */ }
-          const ctx = formatTaskTypeContext(taskType, batchSize);
+          // 父任务类型本身没有 SOP —— 注入「选线」引导，让模型先问用户本条任务走哪条子线。
+          // 不引导的后果：模型自己猜一条线一路跑完（用户想带货它给你做选题），且不报错。
+          // ★ 配置表化后：以**库行**为准（用户在库里新建/改过的类型必须进得了提示词），
+          //   库里没有的（首次启动未 seed / seed 失败）才退回内置 TASK_TYPES 补齐。
+          //   只查内置数组 = 用户自建类型形同虚设；只查库 = seed 失败时 SOP 整体消失。
+          const effective = loadEffectiveTaskTypes();
+          const hit = effective.find((t) => t.id === taskType) || null;
+          const parent = hit && effective.some((t) => t.parentId === taskType);
+          const ctx = parent
+            ? formatParentTaskTypeSpecContext(hit!, effective.filter((t) => t.parentId === taskType))
+            : hit
+              ? formatTaskTypeSpecContext(hit, batchSize)
+              // 库里查不到也不在内置清单里（如类型被删）：按 id 走内置薄壳，兜底为空串（不阻断）
+              : formatTaskTypeContext(taskType, batchSize);
           if (ctx) {
             systemPromptBuilt += '\n\n' + ctx;
             // 资源目录现状：让模型知道用户已放了什么（有素材就直接开工，没有就引导上传）

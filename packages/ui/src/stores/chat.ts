@@ -168,6 +168,8 @@ function rowToConv(r: any): Conversation {
     platformId: r.platform_id,
     modelId: r.model_id,
     spaceId: r.space_id,
+    // 任务级任务类型（「父任务」层）：多任务目录里本条任务选的子线；空 = 跟随目录
+    taskType: r.task_type ?? r.taskType ?? null,
     scheduledTaskId: r.scheduled_task_id ?? r.scheduledTaskId,
     mcpServerIds,
     _mcpDisabledTools: convMcpDisabled,
@@ -1004,7 +1006,7 @@ export const useChatStore = defineStore('chat', () => {
   }
   let abortControllers = new Map<string, AbortController>();
   const taskIds = new Map<string, string>(); // convId → backend taskId（用于 abort）
-  const taskEventCounts = new Map<string, number>(); // taskId → 已收到事件数（重连时作为 since）
+  const taskEventCounts = new Map<string, number>(); // taskId → 已收到的**最后一个事件的 seq**（重连时作为 since）
 
   /**
    * 跨重连的**流内状态**（2026-10-08）。
@@ -1246,7 +1248,7 @@ async function loadConversations() {
     }
   }
 
-  async function createConversation(title: string, opts?: { platformId?: string; modelId?: string; skillIds?: string[]; spaceId?: string; agentId?: string }): Promise<string> {
+  async function createConversation(title: string, opts?: { platformId?: string; modelId?: string; skillIds?: string[]; spaceId?: string; agentId?: string; taskType?: string | null }): Promise<string> {
     // 未显式指定时记录当前选中的智能体，保证会话打开时能还原
     let agentId = opts?.agentId;
     if (!agentId) {
@@ -1272,6 +1274,8 @@ async function loadConversations() {
         permissionMode: permissionMode.value,
         // 归属模式：会话按模式隔离，建的时候定归属（之后不可改）
         mode: activeMode.value,
+        // 任务级任务类型（「父任务」层）：多任务目录里本条任务选的子线
+        taskType: opts?.taskType || null,
       });
       if ('data' in r) {
         const row = r.data as any;
@@ -1286,8 +1290,8 @@ async function loadConversations() {
     const ts = Date.now();
     const skillIdsJson = JSON.stringify(opts?.skillIds || []);
     await adapter.db.exec(
-      'INSERT INTO conversation (id, title, agent_id, platform_id, model_id, space_id, mcp_servers_json, skill_ids_json, pinned, mode, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      [id, title, agentId || null, opts?.platformId || null, opts?.modelId || null, spaceId || null, '[]', skillIdsJson, 0, activeMode.value, ts, ts],
+      'INSERT INTO conversation (id, title, agent_id, platform_id, model_id, space_id, mcp_servers_json, skill_ids_json, pinned, mode, task_type, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [id, title, agentId || null, opts?.platformId || null, opts?.modelId || null, spaceId || null, '[]', skillIdsJson, 0, activeMode.value, opts?.taskType || null, ts, ts],
     );
     await loadConversations();
     return id;
@@ -1307,6 +1311,8 @@ async function loadConversations() {
       if (patch.systemPrompt !== undefined) body.systemPrompt = patch.systemPrompt;
       if (patch.agentId !== undefined) body.agentId = patch.agentId;
       if (patch.spaceId !== undefined) body.spaceId = patch.spaceId || null;
+      // 任务级任务类型（「父任务」层）：给本条任务换一条子线；null = 清掉，回落跟随目录
+      if (patch.taskType !== undefined) body.taskType = patch.taskType || null;
       if (Object.keys(body).length === 0) return;
       await api.patch(`/conversations/${id}`, body);
       await loadConversations();
@@ -1320,6 +1326,7 @@ async function loadConversations() {
     if (patch.modelId !== undefined) { sets.push('model_id = ?'); params.push(patch.modelId); }
     if (patch.pinned !== undefined) { sets.push('pinned = ?'); params.push(patch.pinned ? 1 : 0); }
     if (patch.spaceId !== undefined) { sets.push('space_id = ?'); params.push(patch.spaceId || null); }
+    if (patch.taskType !== undefined) { sets.push('task_type = ?'); params.push(patch.taskType || null); }
     if (patch.mcpServerIds !== undefined || patch._mcpDisabledTools !== undefined || patch._mcpToolAliases !== undefined) {
       const serverIds = patch.mcpServerIds ?? mountedMcpServers.value;
       const disabled = patch._mcpDisabledTools ?? mcpDisabledTools.value;
@@ -2374,16 +2381,22 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
         try { event = JSON.parse(payload); } catch { return; }
 
         // ★ 追踪事件数（重连时作为 since 参数，避免重放旧事件）。
-        // ★★★ `connected` 帧**绝不能计入**（2026-10-08 修根因，high）：
-        //   服务端 `subscribe(taskId, since, ...)` 的 `since` 是 **`task.events` 数组的下标**，
-        //   而 `connected` 帧由 `sseStream` 直接写 header 后即发，**不进 task.events**
-        //   （services/sse.ts 与 routes/llm-tasks.ts 的双处注释都明确写了"前端也不要为它累加游标"）。
-        //   此前无条件 +1 → 每次重连的 whenN = 服务端真实下标 **+1** → **恒定漏掉一条事件**。
+        // ★★★ 游标口径必须是**事件自己的 seq**，不能是"累计收到多少条"（2026-10-15 修，根因）：
+        //   服务端 `subscribe(taskId, since, ...)` 按 `seq > since` 重放，而 `emit` 在
+        //   `task.events` 超过 MAX_EVENTS(10000) 时会丢弃最旧事件 —— 于是"下标"会整体前移，
+        //   与"条数"不再相等。`chunk` 事件按每个流式增量发一条，**长任务必然越过 10000**，
+        //   一旦错位：轻则重放窗口错位，重则 since > 事件数 → 断连期间一条都不补
+        //   （漏掉 `tool:execute` → 工具不执行 → 该步卡到超时）。故取 `max(旧值, event.seq)`：
+        //   `connected` 帧不计入（见下），重放的历史事件 seq 更小也不会让游标倒退。
+        // ★ `connected` 帧**绝不能计入**（2026-10-08 修根因，high）：
+        //   它由 `sseStream` 直接写 header 后即发，**不进 task.events**
+        //   （services/sse.ts 与 routes/llm-tasks.ts 双处注释都明确写了"前端也不要为它累加游标"）。
+        //   此前无条件 +1 → 每次重连的游标 **+1** → **恒定漏掉一条事件**。
         //   漏掉的若正好是 `tool:execute`，则：工具永不执行 → 不 POST /tool-result →
         //   服务端 2 分钟超时判「前端暂时不可达」；配合 `executedToolCallIds` 重放去重，
         //   还会出现"重连后把已执行的调用再执行一遍"的重复动作。这是"长任务经常断"的直接来源。
         if (event.type !== 'connected') {
-          taskEventCounts.set(taskId, (taskEventCounts.get(taskId) || 0) + 1);
+          taskEventCounts.set(taskId, Math.max(taskEventCounts.get(taskId) || 0, typeof event.seq === 'number' ? event.seq : 0));
         }
 
         switch (event.type) {
@@ -2656,8 +2669,8 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
    *     压到 ≤15s，从源头降低被掐概率；本函数是它失败后的兜底。
    *
    * ★ 做法：subscribeTaskSse 返回后查一次任务是否仍在运行（GET /llm/tasks/active）；
-   *   仍在运行 → 按 taskEventCounts 记录的已消费事件数做 since **续传重订**（服务端会重放该索引之后的
-   *   事件，不丢帧）；指数退避重试，上限 8 次；AbortSignal 触发（用户停止）时立即退出。
+   *   仍在运行 → 按 taskEventCounts 记录的**最后一个事件 seq** 做 since **续传重订**
+   *   （服务端重放 `seq > since` 的事件，不丢帧）；指数退避重试，上限 8 次；AbortSignal 触发（用户停止）时立即退出。
    *   任务已终态或查询失败 → 正常返回，交由调用方 finally 收尾。
    */
   async function subscribeTaskSseWithReconnect(
