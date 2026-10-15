@@ -8,6 +8,9 @@ import { builtinTaskModeAgentDefs } from './builtin-task-mode-agents.js';
 import { builtinDouyinAgentDefs } from './builtin-douyin-agents.js';
 // 场景（模式）配置内置种子 —— 与前端 packages/ui/src/config/scenes.ts 双源维护（见该文件头注）
 import { builtinSceneDefs } from './builtin-scene-defs.js';
+// 任务类型内置种子 —— 直接 re-export shared 的 TASK_TYPES（单一数据源，不另抄一份）
+import { builtinTaskTypeDefs, taskTypeToRow, taskTypeFromRow } from './builtin-task-type-defs.js';
+import type { TaskTypeSpec } from '@yan-zhi/shared';
 import { createRequire } from 'node:module';
 import { openSqlite, type YzSqliteDb } from './services/sqlite-driver.js';
 import { createLogger } from './services/logger.js';
@@ -323,6 +326,17 @@ try {
   }
 } catch {}
 
+// 会话级任务类型（2026-10-14「父任务」层）：多任务目录（空间绑了父类型）里，
+//   每条任务各选一条子线 —— 任务级优先于目录级，NULL = 跟随目录。
+// ★ 为什么加在 conversation 而不是只靠 space.task_type：一个抖音目录要同时管
+//   「引流」和「带货」两种任务，只有目录级类型就得拆两个空间、劈开素材与复盘。
+try {
+  const convColsT = db.prepare(`SELECT name FROM pragma_table_info('conversation')`).all() as Array<{ name: string }>;
+  if (!convColsT.some((c) => c.name === 'task_type')) {
+    db.exec(`ALTER TABLE conversation ADD COLUMN task_type TEXT`);
+  }
+} catch {}
+
 // 会话级自定义工具挂载（合并到智能体级）—— 让模型用 api_custom_tool_create 造出的工具
 // 可以只作用于当前会话（api_conversation_setup 传 customToolIds），不改智能体全局挂载。
 try {
@@ -331,6 +345,44 @@ try {
     db.exec(`ALTER TABLE conversation ADD COLUMN custom_tool_ids_json TEXT DEFAULT '[]'`);
   }
 } catch {}
+
+// ===== 任务类型配置表（2026-10-14）=====
+//
+// 背景：任务类型原先写死在 shared 的 TASK_TYPES（14 条），新增/改 SOP 必须改代码 + 发版。
+// 搬进配置表后：**用户/应用/大模型**都能动态创建任务类型（绑智能体 + skill 挂载 + SOP 步骤 + 父任务），
+// 不必发版也不必重新打包 —— 这正是用户要的「在自己的应用里让大模型创建」。
+//
+// 与 scene_config 同族的约定：
+//   - 行 id 形如 `tt_<key>`；内置行 is_builtin=1（禁改禁删，只能 reset 回代码默认）；
+//   - 内置 key 是保留键（用户行撞键直接 400，否则内置行会被顶掉）；
+//   - force_sync=1 的内置行：启动时用代码定义覆盖（改了代码定义，用户重启即可拿到新版）；
+//   - source 列为插件化预留：'builtin' / 'user' / 'plugin:<插件id>'，
+//     将来插件卸载时按 source 一次性清理，不必另造一套注册机制。
+db.exec(`
+  CREATE TABLE IF NOT EXISTS task_type (
+    id TEXT PRIMARY KEY,
+    key TEXT NOT NULL UNIQUE,
+    label TEXT NOT NULL,
+    summary TEXT,
+    guide TEXT,
+    agent_id TEXT,
+    skill_ids_json TEXT DEFAULT '[]',
+    steps_json TEXT DEFAULT '[]',
+    parent_key TEXT,
+    is_builtin INTEGER DEFAULT 0,
+    force_sync INTEGER DEFAULT 1,
+    enabled INTEGER DEFAULT 1,
+    source TEXT DEFAULT 'builtin',
+    sort_order INTEGER DEFAULT 0,
+    user_id TEXT,
+    created_at INTEGER,
+    updated_at INTEGER
+  );
+`);
+// 老库补列（CREATE TABLE IF NOT EXISTS 不会给已存在的表加列）
+try { db.exec(`ALTER TABLE task_type ADD COLUMN parent_key TEXT`); } catch {}
+try { db.exec(`ALTER TABLE task_type ADD COLUMN source TEXT DEFAULT 'builtin'`); } catch {}
+try { db.exec(`ALTER TABLE task_type ADD COLUMN user_id TEXT`); } catch {}
 
 // 会话标题来源标记（2026-10-11，LLM 自动生成标题用）：
 //   NULL = 存量会话（行为不变，永不生成，避免老会话标题突变）；
@@ -3941,6 +3993,47 @@ try {
   });
 } catch {}
 
+// 内置任务类型种子 upsert（与 scene_config 种子同语义，2026-10-14）：
+//   - 内置行 id 固定为 tt_<key>，已存在 → 按代码收敛覆盖（force_sync）；
+//   - 不存在 → 插入；同名 key 已被非内置行占用 → 跳过不抢；
+//   - 用户/应用/大模型自建行（is_builtin=0）一律不碰。
+// ★ 种子来源是 shared 的 TASK_TYPES（经 builtin-task-type-defs.ts 直接 re-export），
+//   不另抄一份 —— 改 shared 一处，前端兜底与后端种子同时生效。
+try {
+  const ttById = db.prepare('SELECT id FROM task_type WHERE id = ?');
+  const ttByKey = db.prepare('SELECT id FROM task_type WHERE key = ?');
+  const ttUpdate = db.prepare(
+    `UPDATE task_type SET key = ?, label = ?, summary = ?, guide = ?, agent_id = ?, skill_ids_json = ?,
+       steps_json = ?, parent_key = ?, sort_order = ?, enabled = 1, is_builtin = 1, force_sync = 1,
+       source = 'builtin', updated_at = ?
+     WHERE id = ?`,
+  );
+  const ttInsert = db.prepare(
+    `INSERT INTO task_type (id, key, label, summary, guide, agent_id, skill_ids_json, steps_json, parent_key,
+       sort_order, enabled, is_builtin, force_sync, source, user_id, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, 1, 'builtin', 'guest', ?, ?)`,
+  );
+  const now = Date.now();
+  builtinTaskTypeDefs.forEach((s, i) => {
+    try {
+      const id = `tt_${s.id}`;
+      const row = taskTypeToRow(s, i);
+      if (ttById.get(id)) {
+        ttUpdate.run(
+          row.key, row.label, row.summary, row.guide, row.agent_id, row.skill_ids_json,
+          row.steps_json, row.parent_key, i, now, id,
+        );
+        return;
+      }
+      if (ttByKey.get(s.id)) return;
+      ttInsert.run(
+        id, row.key, row.label, row.summary, row.guide, row.agent_id, row.skill_ids_json,
+        row.steps_json, row.parent_key, i, now, now,
+      );
+    } catch {}
+  });
+} catch {}
+
 // ===== 内置数据「恢复默认」 =====
 // 用户改过内置 agent 提示词 / skill 文档后，可一键恢复成代码内置默认值。
 // 默认来源：agent 用 seedAgents，批量 skill 用 builtinSkillDefaults；3 个单独 skill 见下方内联。
@@ -4059,4 +4152,52 @@ export function resetBuiltinScene(sceneId: string): boolean {
     JSON.stringify(def.skillKeywords), JSON.stringify(def.examples), def.isMode ? 1 : 0, idx, Date.now(), sceneId,
   );
   return true;
+}
+
+/** 恢复内置任务类型默认值（label/summary/guide/agent_id/skills/steps/parent）。
+ *  返回 true=已恢复，false=非内置或不存在。 */
+export function resetBuiltinTaskType(taskTypeId: string): boolean {
+  const m = /^tt_(.+)$/.exec(taskTypeId);
+  if (!m) return false;
+  const def = builtinTaskTypeDefs.find((s) => s.id === m[1]);
+  if (!def) return false;
+  const row = db.prepare('SELECT id FROM task_type WHERE id = ?').get(taskTypeId);
+  if (!row) return false;
+  const r = taskTypeToRow(def, builtinTaskTypeDefs.indexOf(def));
+  db.prepare(
+    `UPDATE task_type SET key = ?, label = ?, summary = ?, guide = ?, agent_id = ?, skill_ids_json = ?,
+       steps_json = ?, parent_key = ?, sort_order = ?, enabled = 1, is_builtin = 1, force_sync = 1,
+       source = 'builtin', updated_at = ?
+     WHERE id = ?`,
+  ).run(r.key, r.label, r.summary, r.guide, r.agent_id, r.skill_ids_json, r.steps_json, r.parent_key,
+    r.sort_order, Date.now(), taskTypeId);
+  return true;
+}
+
+/**
+ * 生效任务类型清单：**库行 ∪ 内置代码定义**（库行为准）。
+ *
+ * ★ 顺序与合并规则：
+ *   - 库行优先（用户在库里改过的 label/guide/steps/父 都以库为准）；
+ *   - 库里没有的**内置** key（如首次启动还没 seed、或用户删了又想恢复）→ 用 shared 的 TASK_TYPES 补齐；
+ *   - 用户自建行（is_builtin=0）原样带上；enabled=0 的行一律剔除。
+ * ★ 为什么不用"只查库"：库还没 seed 完（或 seed 失败）时，任务类型会整体消失，
+ *   表现为"目录绑了类型但提示词里没有 SOP"——静默降级，极难归因。
+ */
+export function loadEffectiveTaskTypes(): TaskTypeSpec[] {
+  const out: TaskTypeSpec[] = [];
+  const seen = new Set<string>();
+  try {
+    const rows = db.prepare('SELECT * FROM task_type WHERE enabled = 1 ORDER BY sort_order ASC, id ASC').all() as any[];
+    for (const r of rows) {
+      const spec = taskTypeFromRow(r);
+      if (!spec.id) continue;
+      out.push(spec);
+      seen.add(spec.id);
+    }
+  } catch { /* 表不存在/查询失败 → 只退回内置，不阻断任务 */ }
+  for (const t of builtinTaskTypeDefs) {
+    if (!seen.has(t.id)) out.push(t);
+  }
+  return out;
 }

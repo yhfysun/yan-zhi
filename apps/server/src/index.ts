@@ -27,6 +27,8 @@ import { syncWorkflowTools } from './services/workflow-tool-registry.js';
 import { markOrphanTasksInterrupted, resumeWorkflowDeliveries } from './llm-task-manager.js';
 import agentRoutes from './routes/agents.js';
 import sceneConfigRoutes from './routes/scene-configs.js';
+// 任务类型配置（2026-10-14）：动态创建任务类型 = 流程 + 智能体 + skill 挂载 + 父任务
+import taskTypeRoutes from './routes/task-types.js';
 import workflowRoutes from './routes/workflow.js';
 import mcpRoutes from './routes/mcp.js';
 import mcpCredentialRoutes from './routes/mcp-credentials.js';
@@ -157,6 +159,7 @@ app.use('/api/model-pools', modelPoolRoutes);
 app.use('/api/agents', agentRoutes);
 // 场景（模式）配置：动态创建「模式」= 智能体 + skill 关键词 + 场景提示词（2026-10-12）
 app.use('/api/scene-configs', sceneConfigRoutes);
+app.use('/api/task-types', taskTypeRoutes);
 app.use('/api/workflow', workflowRoutes);
 app.use('/api/mcp-servers', mcpRoutes);
 app.use('/api/mcp-credentials', mcpCredentialRoutes);

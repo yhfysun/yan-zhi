@@ -58,7 +58,7 @@ router.get('/', (req: Request, res: Response) => {
 // POST /api/conversations
 router.post('/', (req: Request, res: Response) => {
   const userId = req.user!.userId;
-  const { title, platformId, modelId, agentId, spaceId, permissionMode, mode } = req.body || {};
+  const { title, platformId, modelId, agentId, spaceId, permissionMode, mode, taskType } = req.body || {};
   if (!title) { res.status(400).json({ error: '标题为必填项' }); return; }
   const id = uuid();
   const now = Date.now();
@@ -69,10 +69,13 @@ router.post('/', (req: Request, res: Response) => {
     if (def) resolvedAgentId = 'a_default_assistant';
   }
   db.prepare(
-    'INSERT INTO conversation (id, user_id, title, agent_id, platform_id, model_id, space_id, mcp_servers_json, skill_ids_json, pinned, permission_mode, mode, title_source, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    'INSERT INTO conversation (id, user_id, title, agent_id, platform_id, model_id, space_id, mcp_servers_json, skill_ids_json, pinned, permission_mode, mode, task_type, title_source, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
   ).run(id, userId, title, resolvedAgentId, platformId || null, modelId || null, spaceId || null, '[]', '[]', 0, normalizePermissionMode(permissionMode),
     // 归属模式：前端建会话时带上当前模式；缺省 office（与存量迁移口径一致）
     VALID_MODES.has(String(mode)) ? String(mode) : 'office',
+    // 任务级任务类型（2026-10-14「父任务」层）：多任务目录里本条任务选中的子线；
+    // 空 = 跟随目录（space.task_type）。父类型也允许落在会话上（选线前的占位由注入侧兜）。
+    taskType ? String(taskType) : null,
     // 标题来源：新建一律 'auto'（首个任务 completed 时允许 LLM 生成标题覆盖一次；见 services/conversation-title.ts）
     'auto', now, now);
   const row = db.prepare('SELECT * FROM conversation WHERE id = ?').get(id);
@@ -91,6 +94,14 @@ router.patch('/:id', (req: Request, res: Response) => {
   const bodyFields: Record<string, string> = { title: 'title', platformId: 'platform_id', modelId: 'model_id', systemPrompt: 'system_prompt', agentId: 'agent_id' };
   for (const [key, col] of Object.entries(bodyFields)) {
     if (req.body[key] !== undefined) { sets.push(`${col} = ?`); vals.push(req.body[key]); }
+  }
+  // taskType：任务级任务类型（「父任务」层：多任务目录里给本条任务换一条子线）。
+  //   传 null/空串 = 清掉，回落到跟随目录（space.task_type）。
+  //   ★ 实时生效靠注入侧每次读库（llm-task-manager 取 conversation.task_type ?? space.task_type），
+  //     这里只落库，不复制一份到内存 —— 两处各存一份必然漂移。
+  if (req.body.taskType !== undefined) {
+    sets.push('task_type = ?');
+    vals.push(req.body.taskType ? String(req.body.taskType) : null);
   }
   // ★ 标题来源收口（2026-10-11）：只要本次 PATCH 带了 title，就一律视为用户手动改名
   //   → title_source 强制置 'user'（LLM 自动生成的标题是 title_source='auto'/'llm' 行，

@@ -125,7 +125,22 @@
 .space-dir-row .el-input { flex: 1; }
 /* 任务类型下拉：选项两行（名称 + 一句话说明）；选中后展示该类型的执行引导 */
 .tt-opt-label { font-size: 13px; }
+/* 父任务类型下的子线：缩进 + 弱化，一眼看出"挂在父下面" */
+.tt-opt-label.tt-opt-child { padding-left: 14px; color: var(--color-text-secondary, #64748b); }
 .tt-opt-summary { margin-left: 8px; font-size: 11px; color: var(--color-text-secondary, #94a3b8); }
+/* 多任务目录「选线」框 */
+.tt-line-hint { margin: 0 0 10px; font-size: 12px; line-height: 1.6; color: var(--color-text-secondary, #64748b); }
+.tt-line-list { display: flex; flex-direction: column; gap: 8px; }
+.tt-line-item {
+  display: flex; flex-direction: column; gap: 2px; align-items: flex-start;
+  padding: 10px 12px; border-radius: 8px; cursor: pointer; text-align: left;
+  border: 1px solid var(--glass-border, rgba(148, 163, 184, 0.25));
+  background: var(--glass-bg, rgba(15, 23, 42, 0.02));
+  color: var(--color-text-primary, #0f172a);
+}
+.tt-line-item:hover { border-color: var(--el-color-primary, #409eff); background: var(--glass-bg-hover, rgba(15, 23, 42, 0.05)); }
+.tt-line-label { font-size: 13px; font-weight: 600; }
+.tt-line-summary { font-size: 11.5px; color: var(--color-text-secondary, #64748b); }
 .tt-guide {
   margin-top: 6px; padding: 8px 10px; border-radius: 6px; font-size: 11.5px; line-height: 1.6;
   background: var(--glass-bg-hover, rgba(15, 23, 42, 0.03));

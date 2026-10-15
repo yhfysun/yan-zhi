@@ -92,6 +92,12 @@ export interface Conversation {
   platformId?: string;
   modelId?: string;
   spaceId?: string;
+  /**
+   * 任务级任务类型（2026-10-14「父任务」层）：空间绑了**父类型**（多任务目录）时，
+   * 本条任务选中的子线（如 douyin_traffic / douyin_sell）。
+   * 注入优先级：conversation.task_type ?? space.task_type；空 = 跟随目录。
+   */
+  taskType?: string | null;
   /** 由定时任务发起时记录的任务 ID，用于在会话列表显示定时标记 */
   scheduledTaskId?: string;
   mcpServerIds: string[];

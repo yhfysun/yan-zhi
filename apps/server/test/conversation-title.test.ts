@@ -67,6 +67,7 @@ function createTables(): void {
       agent_id TEXT, platform_id TEXT, model_id TEXT, space_id TEXT,
       mcp_servers_json TEXT DEFAULT '[]', skill_ids_json TEXT DEFAULT '[]',
       pinned INTEGER DEFAULT 0, permission_mode TEXT, mode TEXT,
+      task_type TEXT,
       updated_at INTEGER DEFAULT 0, created_at INTEGER DEFAULT 0
     );
     CREATE TABLE IF NOT EXISTS message (

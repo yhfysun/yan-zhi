@@ -4,7 +4,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { runCmd } from '../services/exec-cmd.js';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { db } from '../db.js';
+import { db, loadEffectiveTaskTypes } from '../db.js';
 import { DEFAULT_CONTEXT_WINDOW } from '../constants.js';
 import { AGENS_API_URL, inferCapabilitiesFromModelId } from '../agens-platform/service.js';
 import { resolvePool } from '../services/model-pools.js';
@@ -359,6 +359,8 @@ export const SUPPORTED_API_TOOLS = new Set([
   'api_plugin_list', 'api_plugin_get', 'api_plugin_enable', 'api_plugin_disable', 'api_plugin_set_config', 'api_plugin_uninstall',
   // 空间
   'api_space_list', 'api_space_create', 'api_space_update', 'api_space_delete', 'api_space_set_task_type',
+  // 任务类型配置（2026-10-14）：让模型能自己建"任务流程"= 类型 + 智能体 + skill 挂载，不必改代码发版
+  'api_task_type_list', 'api_task_type_create', 'api_task_type_update', 'api_task_type_delete',
   // 数据查询（P4.1/P4.2：数据源 / 本体上下文链 / 只读取数 / 翻页）
   'api_datasource_list', 'api_ontology_search', 'api_ontology_list', 'api_data_query', 'api_data_paginate',
   'api_ontology_overview', 'api_ontology_brief', 'api_ontology_detail', 'api_ontology_values',
@@ -4049,15 +4051,20 @@ export async function executeApiTool(
         const sid = str(args, 'spaceId') || resolveTaskSpaceId(conversationId);
         if (!sid) return fail('未指定 spaceId，且当前会话未归属任何空间（请先在侧栏选一个空间）');
         const raw = args.taskType === null || args.taskType === '' ? null : str(args, 'taskType');
-        if (raw && !TASK_TYPE_IDS.includes(raw)) {
-          return fail(`未知的任务类型「${raw}」。可选值：${TASK_TYPE_IDS.filter((t) => t !== 'general').join('、')}（传 null 或空串表示改回通用）`);
+        // ★ 可选值读**库 ∪ 内置**（loadEffectiveTaskTypes），不是内置的 TASK_TYPE_IDS：
+        //   2026-10-14 配置表化后，用户/大模型自建的类型必须也能被这里接受 ——
+        //   只认内置 ids 的话，模型建完类型再拿它设目录会被拒（"建了用不上"）。
+        const knownTypes = loadEffectiveTaskTypes();
+        if (raw && raw !== 'general' && !knownTypes.some((t) => t.id === raw)) {
+          return fail(`未知的任务类型「${raw}」。可选值：${knownTypes.filter((t) => t.id !== 'general').map((t) => t.id).join('、')}（传 null 或空串表示改回通用；也可以先用 api_task_type_create 创建一个新类型）`);
         }
         try {
           const r = await setSpaceTaskType(uid, sid, raw);
+          const label = knownTypes.find((t) => t.id === r.taskType)?.label || getTaskType(r.taskType).label;
           return ok({
             spaceId: r.spaceId,
             taskType: r.taskType,
-            label: getTaskType(r.taskType).label,
+            label,
             root: r.root,
             createdDirs: r.createdDirs,
             changed: r.changed,
@@ -4068,6 +4075,98 @@ export async function executeApiTool(
         } catch (e: unknown) {
           return fail(e instanceof Error ? e.message : String(e));
         }
+      }
+
+      // ===== 任务类型配置（2026-10-14 配置表化）=====
+      //
+      // ★ 为什么模型要能自己建任务类型：类型 = 一种可复用的任务流程。
+      //   写死在代码里时，加一种流程 = 改代码 + 发版 + 用户重新打包安装；
+      //   进库之后模型听到用户说"这个目录以后按周报流程走"就能当场建出类型、
+      //   绑上智能体与技能、再 api_space_set_task_type 绑到目录 —— 应用内即时生效。
+      // ★ 内置行保护放在路由层（统一口径），这里只做参数整理与结果收束。
+      case 'api_task_type_list': {
+        const rows = db.prepare('SELECT * FROM task_type WHERE enabled = 1 ORDER BY sort_order ASC, id ASC').all() as any[];
+        const countSteps = (s?: string | null) => {
+          if (!s) return 0;
+          try { const v = JSON.parse(s); return Array.isArray(v) ? v.length : 0; } catch { return 0; }
+        };
+        return ok({
+          data: rows.map((r) => ({
+            id: r.id, key: r.key, label: r.label, summary: r.summary,
+            agentId: r.agent_id, isBuiltin: !!r.is_builtin, parentKey: r.parent_key || null,
+            steps: countSteps(r.steps_json),
+          })),
+        });
+      }
+      case 'api_task_type_create': {
+        const uid = requireUser(userId);
+        const key = String(args.key || '').trim();
+        const label = String(args.label || '').trim();
+        if (!key || !/^[a-z0-9][a-z0-9_-]{0,63}$/i.test(key)) {
+          return fail('key 必填，且只能包含字母/数字/-/_（1~64 字符）');
+        }
+        if (!label) return fail('label（中文名）为必填项');
+        // 内置 key 是保留键：用户/模型抢内置键会把内置行顶掉（种子按 key 收敛失效）
+        if (TASK_TYPE_IDS.includes(key)) {
+          return fail(`「${key}」是内置保留键，请换一个 key（内置类型不可覆盖）`);
+        }
+        if (db.prepare('SELECT id FROM task_type WHERE key = ?').get(key)) {
+          return fail(`类型 key「${key}」已存在`);
+        }
+        const parentKey = args.parentKey ? String(args.parentKey) : null;
+        if (parentKey && !db.prepare('SELECT id FROM task_type WHERE key = ? AND enabled = 1').get(parentKey)) {
+          return fail(`父类型「${parentKey}」不存在`);
+        }
+        const steps = Array.isArray(args.steps) ? args.steps : [];
+        const skills = Array.isArray(args.skillIds) ? args.skillIds : [];
+        const now = Date.now();
+        const id = `tt_${key}`;
+        db.prepare(
+          `INSERT INTO task_type (id, key, label, summary, guide, agent_id, skill_ids_json, steps_json, parent_key,
+             sort_order, enabled, is_builtin, force_sync, source, user_id, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, 0, 'user', ?, ?, ?)`,
+        ).run(id, key, label, String(args.summary || ''), String(args.guide || ''),
+          args.agentId ? String(args.agentId) : null,
+          JSON.stringify(skills), JSON.stringify(steps), parentKey,
+          Number.isFinite(Number(args.sortOrder)) ? Number(args.sortOrder) : 999, uid, now, now);
+        return ok({
+          id, key, label,
+          note: `已创建任务类型「${label}」${steps.length ? `（${steps.length} 步）` : '（无步骤 = 父类型/无流程约束）'}。用 api_space_set_task_type 绑到目录上才生效；需要专属人格时先 api_agent_create 建智能体再回填 agentId。`,
+        });
+      }
+      case 'api_task_type_update': {
+        const id = String(args.id || '').trim();
+        if (!id) return fail('id 为必填项');
+        const row = db.prepare('SELECT * FROM task_type WHERE id = ?').get(id) as any;
+        if (!row) return fail('任务类型不存在');
+        if (row.is_builtin) return fail('内置任务类型不可修改（可复制成自建类型）');
+        const sets: string[] = [];
+        const vals: any[] = [];
+        const put = (col: string, v: any) => { sets.push(`${col} = ?`); vals.push(v); };
+        if (args.label !== undefined) put('label', String(args.label));
+        if (args.summary !== undefined) put('summary', String(args.summary));
+        if (args.guide !== undefined) put('guide', String(args.guide));
+        if (args.agentId !== undefined) put('agent_id', args.agentId ? String(args.agentId) : null);
+        if (args.skillIds !== undefined) put('skill_ids_json', JSON.stringify(Array.isArray(args.skillIds) ? args.skillIds : []));
+        if (args.steps !== undefined) put('steps_json', JSON.stringify(Array.isArray(args.steps) ? args.steps : []));
+        if (args.parentKey !== undefined) put('parent_key', args.parentKey ? String(args.parentKey) : null);
+        if (args.sortOrder !== undefined) put('sort_order', Number(args.sortOrder));
+        if (!sets.length) return ok({ id, changed: false });
+        put('updated_at', Date.now());
+        vals.push(id);
+        db.prepare(`UPDATE task_type SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
+        return ok({ id, changed: true });
+      }
+      case 'api_task_type_delete': {
+        const id = String(args.id || '').trim();
+        if (!id) return fail('id 为必填项');
+        const row = db.prepare('SELECT * FROM task_type WHERE id = ?').get(id) as any;
+        if (!row) return fail('任务类型不存在');
+        if (row.is_builtin) return fail('内置任务类型不可删除');
+        // 删父不删子：子类型上提为顶层
+        db.prepare('UPDATE task_type SET parent_key = NULL, updated_at = ? WHERE parent_key = ?').run(Date.now(), row.key);
+        db.prepare('DELETE FROM task_type WHERE id = ?').run(id);
+        return ok({ id, note: '已删除；其下的子类型已上提为顶层（不会被一起删掉）' });
       }
 
       // ===== 数据查询（P4.1/P4.2/P4.3）：数据源 / 本体上下文链 / 只读取数 / 翻页 =====

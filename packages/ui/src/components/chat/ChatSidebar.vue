@@ -361,18 +361,32 @@
       <el-form-item label="描述">
         <el-input v-model="spaceEditForm.description" type="textarea" :rows="2" placeholder="空间描述（可选）" />
       </el-form-item>
-      <!-- 任务类型：「目录即任务」——选定后自动生成资源目录骨架，模型按流程分步引导 -->
+      <!-- 任务类型：「目录即任务」——选定后自动生成资源目录骨架，模型按流程分步引导。
+           父任务类型（如抖音运营）可缩进显示其子线：选父 = 一个目录管多条任务，每条任务再选线 -->
       <el-form-item label="任务类型">
         <el-select v-model="spaceEditForm.taskType" placeholder="通用（不限定流程）" clearable style="width: 100%">
-          <el-option
-            v-for="t in taskTypes"
-            :key="t.id"
-            :label="t.label"
-            :value="t.id"
-          >
-            <span class="tt-opt-label">{{ t.label }}</span>
-            <span class="tt-opt-summary">{{ t.summary }}</span>
-          </el-option>
+          <!-- ★ 父子关系读 store（库行），否则用户在库里/让大模型建的父子关系显示不出来 -->
+          <template v-for="t in taskTypes" :key="t.id">
+            <el-option-group v-if="taskTypeStore.isParent(t.id)" :label="`${t.label}（多任务目录）`">
+              <el-option :label="t.label" :value="t.id">
+                <span class="tt-opt-label">{{ t.label }}</span>
+                <span class="tt-opt-summary">{{ t.summary }}</span>
+              </el-option>
+              <el-option
+                v-for="c in taskTypeStore.childrenOf(t.id)"
+                :key="c.id"
+                :label="`　└ ${c.label}`"
+                :value="c.id"
+              >
+                <span class="tt-opt-label tt-opt-child">{{ c.label }}</span>
+                <span class="tt-opt-summary">{{ c.summary }}</span>
+              </el-option>
+            </el-option-group>
+            <el-option v-else :label="t.label" :value="t.id">
+              <span class="tt-opt-label">{{ t.label }}</span>
+              <span class="tt-opt-summary">{{ t.summary }}</span>
+            </el-option>
+          </template>
         </el-select>
         <div v-if="spaceEditForm.taskType" class="tt-guide">{{ pickedTaskType.guide }}</div>
       </el-form-item>
@@ -381,6 +395,31 @@
 
   <!-- 空间目录选择器（桌面端可用原生目录选择，Web 端为内置浏览器） -->
   <WorkspaceDirDialog v-model="dirPickerVisible" :current-path="spaceEditForm.dirPath" @selected="onSpaceDirSelected" />
+
+  <!-- 多任务目录「选线」：空间绑了父任务类型（如抖音运营）时，新建任务先选本条走哪条子线。
+       不选就不建会话 —— 父类型没有 SOP，建了也是空跑（模型只能自己猜一条线）。 -->
+  <FormDialog
+    v-model="taskLinePickerOpen"
+    title="这条任务走哪条线？"
+    width="460px"
+    dialog-class="compact-dialog"
+    :confirm-text="''"
+    @submit="cancelTaskLine"
+  >
+    <p class="tt-line-hint">目录「{{ taskLinePicker?.spaceName }}」是多任务目录，每条任务选一条线推进（资源目录共用）。</p>
+    <div class="tt-line-list">
+      <button
+        v-for="c in taskLinePicker?.children || []"
+        :key="c.id"
+        type="button"
+        class="tt-line-item"
+        @click="confirmTaskLine(c.id)"
+      >
+        <span class="tt-line-label">{{ c.label }}</span>
+        <span class="tt-line-summary">{{ c.summary }}</span>
+      </button>
+    </div>
+  </FormDialog>
 
   <!-- 空间记忆（MEMORY.md）：跨会话、该空间下所有智能体共享的长期记忆。
        注意：这不是 memory 表的维度，而是挂在 space 上的一份文件，故入口在空间上而非「记忆管理」页。 -->
@@ -445,7 +484,7 @@ import {
   Plus, ChatDotRound, Star, StarFilled, EditPen, Delete, FolderOpened, Rank, ArrowRight, Close, Search, CaretRight, Timer, Memo, Tools, Top,
 } from '@element-plus/icons-vue';
 import { ElMessage } from 'element-plus';
-import { getTaskType } from '@yan-zhi/shared';
+import { getTaskType, isParentTaskType, getChildTaskTypes } from '@yan-zhi/shared';
 import { useChat } from '../../composables/chat/useChat';
 import { useTaskRowActions } from '../../composables/useTaskRowActions';
 import { bindLongPress } from '../../composables/useLongPress';
@@ -469,6 +508,8 @@ const {
   saveSpaceEdit, deleteSpaceConfirm, spaceMenuTarget, closeSpaceMenu, ctxMenu,
   openConvDir, openPathInSystem,
   taskTypes, pickedTaskType, selectSpaceAndSyncDir,
+  // 任务级任务类型（「父任务」层）：多任务目录选线
+  taskLinePicker, confirmTaskLine, cancelTaskLine, taskTypeStore,
   closeCtxMenu,
   treeMenu, openTreeMenu, treeMenuNewTask, treeMenuNewSpace, closeTreeMenu,
   enterBatchSelect, exitBatchMode, toggleBatchMode, toggleSelectAllInSpace, toggleSelectAllInRoot,
@@ -478,6 +519,12 @@ const {
 // 任务行共享操作（置顶/重命名/删除/移动空间/激活）：与 TaskListSection 共用同一 composable。
 // 重命名聚焦走 useChat 内置的 renameInputRef（模板里 rename 输入框绑了该 ref），无需额外适配。
 const rows = useTaskRowActions();
+
+// 选线框显隐（v-model 需要布尔；内容由 useChat 的 taskLinePicker 提供）
+const taskLinePickerOpen = computed({
+  get: () => !!taskLinePicker.value,
+  set: (v: boolean) => { if (!v) cancelTaskLine(); },
+});
 
 // ===== 移动端：任务行（会话）底部动作面板（Task 11.3）=====
 // 动作与桌面右键菜单同项；「移动到空间」子菜单平铺为带参 key（move:<spaceId>）

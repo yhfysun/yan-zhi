@@ -291,9 +291,14 @@ describe('⑤ 模型可改任务模式（api_space_set_task_type）', () => {
   });
 
   it('★★ 未知类型要明确报错并给出可选值，不能静默回落成通用', () => {
-    const fn = EXECUTOR.slice(EXECUTOR.indexOf("case 'api_space_set_task_type'")).slice(0, 1600);
-    expect(fn, '★★ 未知类型静默当成通用（用户以为设成功了）').toMatch(/TASK_TYPE_IDS\.includes\(raw\)/);
+    const fn = EXECUTOR.slice(EXECUTOR.indexOf("case 'api_space_set_task_type'")).slice(0, 2600);
+    // ★ 2026-10-14 配置表化：可选值从「内置 TASK_TYPE_IDS」改为「库行 ∪ 内置」，
+    //   否则用户在库里/让模型自建的类型会被判成未知（建了用不上）。
+    //   语义不变：命中不到就是一个 fail，绝不静默当成通用。
+    expect(fn, '★★ 未知类型静默当成通用（用户以为设成功了）').toMatch(/!knownTypes\.some\(\(t\) => t\.id === raw\)/);
+    expect(fn, '★★ 校验只读内置清单（自建类型会被判未知）').toMatch(/const knownTypes = loadEffectiveTaskTypes\(\)/);
     expect(fn, '★ 报错未给可选值').toMatch(/可选值/);
+    expect(fn, '★ 报错未提示可自建类型').toMatch(/api_task_type_create/);
   });
 
   it('★ spaceId 缺省时取当前会话空间（模型不必知道空间 id）', () => {

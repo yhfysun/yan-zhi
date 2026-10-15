@@ -96,6 +96,17 @@ export interface TaskTypeSpec {
    *   登记的好处：映射自检（技能必须存在）+ UI 能显示"这个模式会用到哪些技能"。
    */
   skillIds?: string[];
+  /**
+   * 父任务类型 id（2026-10-14 加「父任务」层）。
+   *
+   * ★ 解决什么问题：原来一个空间只能绑**一个**任务类型，想把「引流」和「带货」放在
+   *   同一个抖音目录里管，就得建两个空间/两份 00-source~03-output，素材与复盘被劈开。
+   *   加父层后：空间绑**父类型**（如抖音运营），目录仍是**一套**资源骨架，
+   *   而每条任务（会话）可以各选一条子线 —— 「一个目录管很多不同的任务」。
+   * ★ 父类型自身 steps 为空（它不规定流程，只负责分组与绑定智能体）；
+   *   子类型的 SOP 在任务级注入（conversation.task_type 优先于 space.task_type）。
+   */
+  parentId?: string;
   /** 执行 SOP：对话里逐步推进的规则，含确认点与产出落点 */
   steps: TaskStep[];
 }
@@ -425,6 +436,108 @@ export const TASK_TYPES: TaskTypeSpec[] = [
       { title: '导出', detail: '成稿落到 03-output', output: '03-output' },
     ],
   },
+  {
+    // 抖音运营（父任务类型，2026-10-14）：本身不规定流程，只负责「一个目录管两类任务」。
+    // 空间绑它 → 每条任务再选子线（douyin_traffic 引流 / douyin_sell 带货）。
+    // 智能体与两个子类型共用（一个智能体两线，见 builtin-douyin-agents.ts 文件头）。
+    id: 'douyin_ops',
+    label: '抖音运营',
+    summary: '一个目录管两类任务：引流涨粉 + 图文带货',
+    guide: '这是父任务类型：本目录共用一套资源目录（00-source~03-output），每条任务可以各选一条线——「抖音引流」做涨粉内容，「抖音图文带货」做选品与变现。新建任务时选一条线即可。',
+    agentId: 'a_builtin_douyin_agent',
+    skillIds: ['skill_douyin_traffic', 'skill_douyin_sell'],
+    steps: [],
+  },
+  {
+    // 抖音引流线（2026-10-14 补）：与 douyin_sell 共用 a_builtin_douyin_agent，
+    // 区别在 SOP 与 skill（引流做涨粉内容，带货做变现）。用户拍板"一个智能体两线"，
+    // 因为引流内容决定进来什么人、人群决定卖什么 —— 拆两个智能体会让用户来回切。
+    id: 'douyin_traffic',
+    label: '抖音引流',
+    summary: '风口选题 → 逐镜脚本 → 发布排期',
+    guide: '做涨粉向内容（大模型/智能体使用方法、AI 工具实测等离变现近的题材）。竞品结构与热点可用 pageAgent 核实；逐镜脚本落到 02-work，发布排期与复盘表落到 03-output。',
+    agentId: 'a_builtin_douyin_agent',
+    skillIds: ['skill_douyin_traffic'],
+    parentId: 'douyin_ops',
+    steps: [
+      {
+        title: '账号与人群定位',
+        detail: '粉丝数 / 已发内容类型 / 完播与互动水平；想吸引谁（年龄/性别/职业/痛点）；每周能出几条、能不能出镜或实拍',
+        confirmTool: 'confirm',
+        confirmAbout: '账号现状、目标人群、每周产能',
+        output: '02-work',
+      },
+      {
+        title: '风口选题',
+        detail: '用 browser_navigate / pageAgent 扒平台热点与搜索长尾，产出 10+ 候选选题（离变现近、搜索长尾稳），逐个标注切入角度与预期人群',
+        confirmTool: 'confirm',
+        confirmAbout: '本批选题是否采用',
+        output: '02-work',
+        batchable: true,
+      },
+      {
+        title: '逐镜脚本',
+        detail: '每条按「3 秒钩子 → 痛点 → 解法 → 演示 → CTA」写逐镜脚本（画面/台词/字幕/时长），只出脚本不出片；**不代发布、不碰登录态、不承诺涨粉数据**',
+        confirmTool: 'confirm',
+        confirmAbout: '本批脚本是否定稿',
+        output: '02-work',
+        batchable: true,
+      },
+      {
+        title: '封面与素材',
+        detail: `封面底图用 api_image_generate 出**无字底图**（生图模型画中文字必糊，字交给后期烧），批量前先出 1 张样片确认风格；每批默认 ${DEFAULT_CONFIRM_BATCH_SIZE} 张`,
+        confirmTool: 'confirm',
+        confirmAbout: '封面样片风格是否可用',
+        output: '02-work',
+        batchable: true,
+      },
+      { title: '发布排期', detail: '生成内容日历（发布时间/频率/话题标签/系列化编号），落到 03-output', output: '03-output' },
+      { title: '数据复盘', detail: '发布后记录曝光/完播/互动基线，指出下一条具体改什么（钩子/节奏/选题）', output: '03-output' },
+    ],
+  },
+  {
+    // 抖音带货线（2026-10-14 补）：图文带货变现，与 douyin_traffic 同一智能体。
+    id: 'douyin_sell',
+    label: '抖音图文带货',
+    summary: '精选联盟选品 → 图文结构 → 挂车 SOP → 漏斗复盘',
+    guide: '把商品资料、竞品图文截图放进 00-source。先按人群匹配选品（佣金/销量/季节/体验），再定图文结构与封面，按挂车 SOP 发布，最后复盘曝光-点击-转化漏斗。',
+    agentId: 'a_builtin_douyin_agent',
+    skillIds: ['skill_douyin_sell'],
+    parentId: 'douyin_ops',
+    steps: [
+      {
+        title: '账号与变现前提',
+        detail: '粉丝数 / 是否已开橱窗 / 带货权限与保证金口径（平台规则委派 pageAgent 核实，不凭记忆作答）',
+        confirmTool: 'confirm',
+        confirmAbout: '带货前提与可用品类范围',
+        output: '02-work',
+      },
+      {
+        title: '选品打分',
+        detail: '每次给 3~5 个候选，按佣金/销量/人群匹配/季节性/体验打分；佣金与利润测算用 python_exec；**不承诺收益、不刷量**，极限词与功效宣称一律不写',
+        confirmTool: 'confirm',
+        confirmAbout: '本批候选品是否入选',
+        output: '02-work',
+        batchable: true,
+      },
+      {
+        title: '图文结构',
+        detail: '封面 + 3~9 张轮播 + 文案 + 话题；封面大字用 qwen-image-3.0-pro 出无字底图再烧字，商品图用 wan2.7-image-pro，批量前先出 1 张样片',
+        confirmTool: 'confirm',
+        confirmAbout: '图文结构与封面是否定稿',
+        output: '02-work',
+      },
+      {
+        title: '挂车发布 SOP',
+        detail: '图文编辑页 → 添加商品 → 核对标题/价格/佣金 → 发布；**只给可照做的步骤与校验清单，不代发布、不碰登录态**',
+        confirmTool: 'confirm',
+        confirmAbout: '发布清单是否就绪',
+        output: '02-work',
+      },
+      { title: '发布后跟进', detail: '1 小时内回评区顶前排问题（互动率影响推流）；记录该条数据基线', output: 'none' },
+      { title: '漏斗复盘', detail: '曝光/点击/成交三段漏斗，指出下一轮具体改什么（选品/封面/前三张图/发布时间），落到 03-output', output: '03-output' },
+    ],
+  },
 ];
 
 /** 类型 id 集合（校验用） */
@@ -436,6 +549,88 @@ export function getTaskType(id?: string | null): TaskTypeSpec {
   return hit || TASK_TYPES[0];
 }
 
+// ────────────────────────────────────────────────────────────
+// 父任务层（2026-10-14）：一个空间绑父类型，每条任务各选一条子线
+// ────────────────────────────────────────────────────────────
+
+/** 某类型的**子任务类型**（没有子类的返回空数组） */
+export function getChildTaskTypes(parentId?: string | null): TaskTypeSpec[] {
+  if (!parentId) return [];
+  return TASK_TYPES.filter((t) => t.parentId === parentId);
+}
+
+/** 某类型的父类型；没有父（本身就是父或普通类型）→ undefined */
+export function getTaskTypeParent(id?: string | null): TaskTypeSpec | undefined {
+  const t = getTaskType(id);
+  if (!t.parentId) return undefined;
+  return TASK_TYPES.find((x) => x.id === t.parentId);
+}
+
+/**
+ * 是否父任务类型（= 有子类）。
+ *
+ * ★ 判据用"有子类"而不是加一个 isParent 布尔字段：布尔字段会与 parentId 漂移
+ *   （加了子类忘了翻布尔 → 下拉分组错、父类型被当成普通类型注入空 SOP）。
+ */
+export function isParentTaskType(id?: string | null): boolean {
+  return getChildTaskTypes(id).length > 0;
+}
+
+/** 顶层类型（下拉第一层：普通类型 + 父类型；子类型缩进在父类型下面） */
+export function getRootTaskTypes(): TaskTypeSpec[] {
+  return TASK_TYPES.filter((t) => !t.parentId);
+}
+
+/**
+ * 库行（`task_type` 表）→ 规格对象。
+ *
+ * ★ 列名映射必须只有这一处（2026-10-14 配置表化）：后端取库行注入提示词、
+ *   前端取库行渲染下拉，两边各写一份映射必然漂移（改列名改一处忘另一处，
+ *   表现为"下拉显示正常但提示词里是空的"——不报错，最难发现）。
+ * ★ 坏 JSON 一律按空数组/空步骤吞掉：用户手工改坏了库行，不该让任务起不来。
+ */
+export function taskTypeFromRow(r: Record<string, any>): TaskTypeSpec {
+  const parse = (s?: string | null) => {
+    if (!s) return [];
+    try { const v = JSON.parse(s); return Array.isArray(v) ? v : []; } catch { return []; }
+  };
+  return {
+    id: String(r.key || r.id || ''),
+    label: String(r.label || r.key || ''),
+    summary: String(r.summary || ''),
+    guide: String(r.guide || ''),
+    agentId: r.agent_id || r.agentId || undefined,
+    skillIds: parse(r.skill_ids_json ?? r.skillIdsJson),
+    steps: parse(r.steps_json ?? r.stepsJson),
+    parentId: (r.parent_key || r.parentId) ? String(r.parent_key || r.parentId) : undefined,
+  };
+}
+
+/** 规格对象 → 库行字段（创建/更新时收口，避免调用方拼列名） */
+export function taskTypeToRow(t: TaskTypeSpec, sortOrder = 0): Record<string, any> {
+  return {
+    key: t.id,
+    label: t.label,
+    summary: t.summary,
+    guide: t.guide,
+    agent_id: t.agentId || null,
+    skill_ids_json: JSON.stringify(t.skillIds || []),
+    steps_json: JSON.stringify(t.steps || []),
+    parent_key: t.parentId || null,
+    sort_order: sortOrder,
+  };
+}
+
+/**
+ * 多任务目录的引导块（薄壳）：空间绑了**父类型**、而本条任务还没选子线时注入。
+ *
+ * ★ 为什么必须显式让模型"问用户选哪条线"：父类型没有 SOP，若不引导，
+ *   模型会按自己猜的一条线一路跑完（用户想带货它给你做选题），且不报错。
+ */
+export function formatParentTaskTypeContext(parentId: string): string {
+  return formatParentTaskTypeSpecContext(getTaskType(parentId), getChildTaskTypes(parentId));
+}
+
 /** 交互工具 → 提示词里的中文名（模型读得懂"用哪个工具"比读英文工具名更不容易用错） */
 const CONFIRM_TOOL_LABEL: Record<'confirm' | 'ask', string> = {
   confirm: 'confirm_user（多页向导）',
@@ -443,18 +638,15 @@ const CONFIRM_TOOL_LABEL: Record<'confirm' | 'ask', string> = {
 };
 
 /**
- * 任务类型 → 系统提示词片段：**对话式任务模式规则**。
+ * 【规格对象 → 提示词片段】。
  *
- * ★★ 为什么必须写明「用哪个工具确认」而不是只说"让用户确认"：
- *   只写"确认"时，模型会**在正文里写一句"请确认"然后继续往下跑**（不阻塞、拿不到回答），
- *   这就是「一步步让用户确认」在纯提示词约束下的典型失效形态。
- *   写明 `confirm_user` 才把确认变成一次**真实的工具调用**（发起向导 → 挂起 → 等用户回答 → 拿到结构化结果）。
- *
- * ★ 写入 02-work / 03-output 的落点要求，是为了让产物**跨会话可复用**：
- *   只落在对话里的话，同目录下次开新会话就找不到了 —— 这正是「同一目录多次做任务」的反例。
+ * ★ 为什么必须有一个"吃 spec"的版本（2026-10-14 配置表化）：
+ *   任务类型搬进 `task_type` 表后，运行时的权威来源是**库行**，不是代码里的 TASK_TYPES。
+ *   只留 `formatTaskTypeContext(id)`（内部按 id 查内置数组）的话，
+ *   用户在库里新建/改过的类型根本进不了提示词 —— 配置表形同虚设。
+ *   ⇒ 以 spec 版本为唯一实现，id 版本退化成「查内置 → 调 spec 版本」的薄壳。
  */
-export function formatTaskTypeContext(id?: string | null, confirmBatchSize = DEFAULT_CONFIRM_BATCH_SIZE): string {
-  const t = getTaskType(id);
+export function formatTaskTypeSpecContext(t: TaskTypeSpec, confirmBatchSize = DEFAULT_CONFIRM_BATCH_SIZE): string {
   if (!t.steps.length) return '';
   const lines = t.steps.map((s, i) => {
     const bits: string[] = [];
@@ -487,6 +679,34 @@ export function formatTaskTypeContext(id?: string | null, confirmBatchSize = DEF
     '02-work = 过程产物；03-output = 最终交付。',
     '**开工前先检查 00-source 有没有素材**：没有就先引导用户上传或粘贴。',
     ...(MATERIAL_NEEDS[t.id] ? ['', ...materialRules(MATERIAL_NEEDS[t.id])] : []),
+  ].join('\n');
+}
+
+/** 按 id 取**内置**类型并渲染（薄壳：配置表化后运行时请直接调 spec 版本） */
+export function formatTaskTypeContext(id?: string | null, confirmBatchSize = DEFAULT_CONFIRM_BATCH_SIZE): string {
+  return formatTaskTypeSpecContext(getTaskType(id), confirmBatchSize);
+}
+
+/**
+ * 【父类型规格对象 → 提示词片段】：多任务目录的「选线」引导。
+ * 与 formatTaskTypeSpecContext 同理，配置表化后必须吃库行而不是内置数组。
+ */
+export function formatParentTaskTypeSpecContext(parent: TaskTypeSpec, children: TaskTypeSpec[]): string {
+  if (!children.length) return '';
+  const lines = children.map((c) => `- **${c.label}**（${c.id}）：${c.summary}`);
+  return [
+    `## 任务模式：${parent.label}（本目录为「多任务目录」）`,
+    `> ${parent.guide}`,
+    '',
+    '### 本目录下每条任务选一条线推进',
+    ...lines,
+    '',
+    '### 执行规则',
+    '1. **开工第一步必须用 ask_user 让用户选本条任务走哪条线**（也可由用户直接说明），',
+    '   选定后按该线的分步流程推进（含确认点与产出落点），**不要自己猜一条线就跑完**。',
+    '2. 本目录共用一套资源目录：素材放 00-source、参考资料 01-reference、过程产物 02-work、最终交付 03-output；',
+    '   **不同任务在同一套目录里协作，交付物文件名要带任务标识**（如 03-output/引流-选题清单.md），避免互相覆盖。',
+    '3. 每条任务只做选中的那条线；需要换线时新建任务并选另一条线，不要在一个任务里混着做。',
   ].join('\n');
 }
 

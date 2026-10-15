@@ -458,6 +458,9 @@ export async function initSchema(execFn: (sql: string) => Promise<void>): Promis
   try { await execFn(`ALTER TABLE conversation ADD COLUMN permission_mode TEXT NOT NULL DEFAULT 'readonly';`); } catch { /* 列已存在 */ }
   // 迁移：conversation 新增 task_plan_json 列（task_plan/task_step 的落盘，刷新/换设备后计划卡片可恢复）
   try { await execFn(`ALTER TABLE conversation ADD COLUMN task_plan_json TEXT;`); } catch { /* 列已存在 */ }
+  // 迁移：conversation 新增 task_type 列（2026-10-14「父任务」层：多任务目录里每条任务各选一条子线，
+  //   任务级优先于目录级 space.task_type；NULL = 跟随目录）
+  try { await execFn(`ALTER TABLE conversation ADD COLUMN task_type TEXT;`); } catch { /* 列已存在 */ }
   // 迁移：space 新增 task_type / task_config_json 列（「目录即任务」：目录绑定任务类型 + 类型覆盖配置）
   try { await execFn(`ALTER TABLE space ADD COLUMN task_type TEXT;`); } catch { /* 列已存在 */ }
   try { await execFn(`ALTER TABLE space ADD COLUMN task_config_json TEXT;`); } catch { /* 列已存在 */ }

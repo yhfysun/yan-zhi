@@ -19,6 +19,7 @@ import { registerPluginTools } from './plugin';
 import { registerScheduledTaskTools } from './scheduled-task';
 import { registerSkillTools } from './skill';
 import { registerSpaceTools } from './space';
+import { registerTaskTypeTools } from './task-type';
 import { registerGitTools } from './git';
 import { registerToolTools } from './tool';
 import { registerVerificationTools } from './verification';
@@ -45,6 +46,7 @@ export type ApiModuleName =
   | 'git'
   | 'plugin'
   | 'space'
+  | 'task-type'
   | 'verification'
   | 'data'
   | 'experience';
@@ -70,6 +72,7 @@ export const API_MODULES: ApiModuleName[] = [
   'git',
   'plugin',
   'space',
+  'task-type',
   'verification',
   'data',
   'experience',
@@ -111,6 +114,7 @@ export function initApiToolRegistry(): void {
   registerGitTools(registry);
   registerPluginTools(registry);
   registerSpaceTools(registry);
+  registerTaskTypeTools(registry);
   registerVerificationTools(registry);
   registerDataTools(registry);
   registerExperienceTools(registry);

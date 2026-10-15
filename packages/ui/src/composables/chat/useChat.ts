@@ -22,6 +22,7 @@ import {
 } from '../../stores';
 import { useGitStore } from '../../stores/git';
 import { useSceneConfigStore } from '../../stores/sceneConfig';
+import { useTaskTypeStore } from '../../stores/taskType';
 import { isCodeModeActive, useCodeStore } from '../../stores/code';
 import { activeMode } from '../../stores/mode';
 import { useIsMobile } from '../useIsMobile';
@@ -30,7 +31,7 @@ import { useRouter } from 'vue-router';
 import { api } from '../../api/client';
 import { waitForBackend } from '../../api/backend-ready';
 import type { Agent, Message, Conversation, Platform, Model } from '@yan-zhi/shared';
-import { estimateTokens, CHAT_MODEL_TYPES, buildArtifactRelDir, joinArtifactPath, TASK_TYPES, getTaskType, effectiveContextLimit, contextUsagePercent } from '@yan-zhi/shared';
+import { estimateTokens, CHAT_MODEL_TYPES, buildArtifactRelDir, joinArtifactPath, TASK_TYPES, getTaskType, isParentTaskType, getChildTaskTypes, effectiveContextLimit, contextUsagePercent } from '@yan-zhi/shared';
 import {
   selectMedia,
   openMediaViewer,
@@ -952,6 +953,11 @@ function createChat() {
   }
 
   const isDraftMode = ref(false);
+  /** 待建会话的任务级任务类型（「父任务」层：多任务目录里选中的子线）。
+   *   startNewChat 一开始就定值，建会话时带下去；不选 = null（跟随目录）。 */
+  const pendingTaskType = ref<string | null>(null);
+  /** 父任务目录的「选线」框：{ spaceId, spaceName, children }；null = 不显示 */
+  const taskLinePicker = ref<{ spaceId: string; spaceName: string; children: Array<{ id: string; label: string; summary: string }> } | null>(null);
   const renamingId = ref('');
   const renamingTitle = ref('');
   const renameInputRef = ref<any>(null);
@@ -1532,10 +1538,18 @@ function createChat() {
   const spaceEditForm = ref({ id: '', name: '', dirPath: '', description: '', taskType: '' });
   const spaceMenuTarget = ref<{ x: number; y: number; space: any } | null>(null);
 
-  /** 任务类型下拉的选项（来自 shared 注册表，前后端同一份） */
-  const taskTypes = TASK_TYPES;
+  /**
+   * 任务类型下拉的选项：**运行时以后端 task_type 表为准**，内置清单只作首屏/离线兜底。
+   *
+   * ★ 为什么要读库而不是直接用 TASK_TYPES（2026-10-14 配置表化）：
+   *   用户在库里（或让大模型）新建的类型若不在下拉里，等于"建了但用不上"；
+   *   而库里改过的 SOP/guide 也必须与注入侧同一份 —— 两边都读库才不会漂移。
+   * ★ 兜底纪律：store 初始值是 shared 的 TASK_TYPES，拉取失败保留现值不清空。
+   */
+  const taskTypeStore = useTaskTypeStore();
+  const taskTypes = computed(() => taskTypeStore.taskTypes);
   /** 当前编辑表单选中的类型说明（弹窗里给用户看清这个类型会做什么） */
-  const pickedTaskType = computed(() => getTaskType(spaceEditForm.value.taskType));
+  const pickedTaskType = computed(() => taskTypeStore.byKey(spaceEditForm.value.taskType) || getTaskType(spaceEditForm.value.taskType));
 
   /** 点空间节点 = 选中它（决定新任务归属）+ 同步工作目录（资源面板/工具执行面与之一致）。
    *  ★ 必须同时做：只 selectSpace 不改 workspaceDir，会出现「面板显示 A 空间的项目资源、
@@ -1907,6 +1921,8 @@ async function healStalePlatform() {
     await agentStore.loadAgents();
     // 场景（模式）配置：拉后端 scene_config（含用户/应用自建模式）；失败保留 scenes.ts 内置兜底
     await sceneConfigStore.loadScenes();
+    // 任务类型配置：拉后端 task_type（含用户/应用/大模型自建类型）；失败保留 shared 内置兜底
+    await taskTypeStore.loadTaskTypes();
     await store.loadConversations();
     await platformStore.loadPlatforms();
     await platformStore.loadModels();
@@ -2271,7 +2287,41 @@ async function healStalePlatform() {
     collapsedByAuto.clear(); // 自动折叠记账（否则会把旧会话的 id 当成"我折的"）
   }
 
-  async function startNewChat(spaceId?: string | null) {
+  /** 选线框确认：带着子线重新走一遍 startNewChat（这次不会再看父目录分支） */
+  async function confirmTaskLine(childId: string) {
+    const p = taskLinePicker.value;
+    taskLinePicker.value = null;
+    if (!p) return;
+    await startNewChat(p.spaceId, childId);
+  }
+
+  /** 选线框取消：不建会话（父目录下不选线就没有 SOP，建了也是空跑） */
+  function cancelTaskLine() {
+    taskLinePicker.value = null;
+  }
+
+  /**
+   * 给**已有会话**换任务线（多任务目录里"这条任务改成带货来做"）。
+   * 落库后由注入侧每次读库生效（不复制到内存，避免两处漂移）。
+   */
+  async function setConvTaskType(convId: string, taskType: string | null) {
+    await store.updateConversation(convId, { taskType });
+    const spec = getTaskType(taskType);
+    if (spec.agentId) applyTaskTypeAgent(taskType);
+  }
+
+  /**
+   * 新建任务（会话）。
+   *
+   * @param spaceId 目标空间；undefined = 当前选中空间，null = 不归类
+   * @param taskType 任务级任务类型（「父任务」层）：多任务目录里本条任务选的子线。
+   *   ★ 父目录（空间绑了父类型）下不传 = 先弹选线框；传了才建会话。
+   *     不弹的后果：模型收到父类型的"选线"引导，但会话行上没有子线，
+   *     每条任务都被当成"还没选线"，用户每次都要在对话里重选。
+   */
+  async function startNewChat(spaceId?: string | null, taskType?: string | null) {
+    // 任务级类型先定值：选线框确认后会带着子线再进本函数，建会话时用它
+    pendingTaskType.value = taskType || null;
     store.currentConvId = '';
     isDraftMode.value = true;
     mountedSkillIds.value = [];
@@ -2312,7 +2362,17 @@ async function healStalePlatform() {
       const targetSpace = targetSpaceId
         ? spaceStore.spaces.find((s) => s.id === targetSpaceId)
         : undefined;
-      if (targetSpace?.taskType) applyTaskTypeAgent(targetSpace.taskType);
+      // ★ 父任务目录：先让用户选本条任务走哪条子线（不选就不建会话）。
+      //   父类型下空间本身也会切到父类型的智能体（agentId 相同），子线只影响 SOP 注入。
+      //   ★ 父/子判定读 store（库行），否则用户在库里建的父子关系不生效。
+      if (targetSpace?.taskType && taskTypeStore.isParent(targetSpace.taskType) && !taskType) {
+        const children = taskTypeStore.childrenOf(targetSpace.taskType);
+        if (children.length > 0) {
+          taskLinePicker.value = { spaceId: targetSpace.id, spaceName: targetSpace.name || '', children };
+          return;
+        }
+      }
+      if (targetSpace?.taskType) applyTaskTypeAgent(taskType || targetSpace.taskType);
     }
     if (spaceId !== undefined) {
       spaceStore.selectSpace(spaceId);
@@ -2527,7 +2587,7 @@ async function healStalePlatform() {
       }
       if (!store.currentConvId) {
         const title = userContent ? titleFromContent(userContent) : '配置平台';
-        const id = await store.createConversation(title, { skillIds: [...mountedSkillIds.value], spaceId });
+        const id = await store.createConversation(title, { skillIds: [...mountedSkillIds.value], spaceId, taskType: pendingTaskType.value });
         try { await saveMountToDb(id); } catch { /* 忽略挂载持久化失败 */ }
         await store.loadMessages(id);
         isDraftMode.value = false;
@@ -2630,6 +2690,7 @@ async function healStalePlatform() {
           modelId: model.modelId,
           skillIds: [...mountedSkillIds.value],
           spaceId,
+          taskType: pendingTaskType.value,
         });
         convId = id;
         // 会话级 system_prompt：智能体提示词 + 场景提示词（会话级优先级高于 agent 级，需合并写入）
@@ -3792,6 +3853,9 @@ async function healStalePlatform() {
     showWorkspaceDir, workspaceDir, hasWorkspaceDir, loadWorkspaceDir, onWorkspaceDirSelected, clearWorkspaceDir,
     tryParseSnapshot, formatSnapshot, snapshotDialog, snapshotActiveTab, snapshotLoading, currentSnapshots, openSnapshotDialog,
     isDraftMode, renamingId, renamingTitle, renameInputRef, ctxMenu,
+    // 任务级任务类型（「父任务」层）：多任务目录选线 + 给已有会话换线
+    taskLinePicker, confirmTaskLine, cancelTaskLine, setConvTaskType,
+    taskTypeStore,
     md, renderMarkdown, renderAssistantMarkdown, handleContentClick, handleContentDblClick, handleContentContextMenu,
     openPath, openPathInSystem,
     currentConv, filteredConversations, messageRounds, visibleRounds, ensureRoundVisible, isToolErrorContent,
