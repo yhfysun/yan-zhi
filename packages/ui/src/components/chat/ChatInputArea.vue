@@ -1234,10 +1234,22 @@ async function loadPoolForAgent(agentId: string) {
     const r = await api.get<any>(`/model-pools?agentId=${encodeURIComponent(agentId)}`);
     if ('error' in r || !r.data?.effective) { poolEntries.value = []; return; }
     // llm 池在前、vision 池在后，各自保持池内顺序
-    poolEntries.value = [
+    const merged = [
       ...((r.data.effective.llm || []) as any[]).map((e) => ({ modelId: e.modelId, platformId: e.platformId, alias: e.alias, modelApiId: e.modelApiId })),
       ...((r.data.effective.vision || []) as any[]).map((e) => ({ modelId: e.modelId, platformId: e.platformId, alias: e.alias, modelApiId: e.modelApiId })),
     ];
+    // ★ 按 modelId 去重（保序留首个）：`type='llm'` 且带 vision 能力的模型**同时命中 llm 与 vision
+    //   两个槽位**（shared/matchesModelSlot：llm 判据「非多模态」、vision 判据「有 vision 能力」，
+    //   交集非空），两个槽位各自解析后在这里合并 → 同一模型出现两次：
+    //     · 下拉里冒出两个一模一样的条目；
+    //     · `:key="m.id"` 命中重复 key → Vue「Duplicate keys found during update」警告刷屏。
+    //   未配池时同样会撞：auto 兜底按槽位各筛一遍，视觉模型两边都进（用户零配置也见这个警告）。
+    const seen = new Set<string>();
+    poolEntries.value = merged.filter((e) => {
+      if (seen.has(e.modelId)) return false;
+      seen.add(e.modelId);
+      return true;
+    });
   } catch {
     poolEntries.value = []; // 后端不可达 → 回落全量，下拉不空
   }
