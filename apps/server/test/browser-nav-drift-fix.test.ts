@@ -202,3 +202,52 @@ describe('④ P1-⑤ get_tabs 回执：标注可关闭页 + 卡死页出路（�
     expect(out, '★ warning 被显式分支吞掉（navigate 正是最该看到它的动作）').toContain('连续 3 次操作页面无任何变化');
   });
 });
+
+describe('⑤ 第三层：跨会话回落抢页（"上两个并发任务把预览面板搞乱了"）', () => {
+  const bt = require(resolve(REPO, 'apps/desktop/browser-target.cjs'));
+
+  it('★★★ 当前活动页属于**别的会话** → 不回落（各自建页，绝不导航别人的现场）', () => {
+    const r = bt.resolveTarget('conv-B', null, 'navigate', {
+      anchored: null,
+      activeTabId: 'tab-1',
+      isMine: () => false,
+      isCurrentView: (t: string) => t === 'tab-1',      // 它确实是本面板可见页
+      isOwnedByOther: (t: string) => t === 'tab-1',     // 但归属 conv-A（别人正在用）
+    });
+    expect(r.ok).toBe(true);
+    expect(r.tabId, '★ 回落了别的会话正在用的页 → 把它的导航顶掉且不报错（"面板被搞乱"根因）')
+      .toBeNull();
+  });
+
+  it('★★ 无人认领的活动页（用户自己开的/首次）仍回落 —— 既有语义不回归', () => {
+    const r = bt.resolveTarget('conv-B', null, 'navigate', {
+      anchored: null,
+      activeTabId: 'tab-1',
+      isMine: () => false,
+      isCurrentView: (t: string) => t === 'tab-1',
+      isOwnedByOther: () => false,
+    });
+    expect(r.tabId, '★ 把首次 navigate 的起步路径堵死了（agent 第一步走不动）').toBe('tab-1');
+  });
+
+  it('★★ 归属自己的活动页照常回落；省略 isOwnedByOther 时行为逐字不变（旧调用方不受影响）', () => {
+    const mine = bt.resolveTarget('conv-A', null, 'navigate', {
+      anchored: null, activeTabId: 'tab-1',
+      isMine: (t: string) => t === 'tab-1', isCurrentView: () => true, isOwnedByOther: () => false,
+    });
+    expect(mine.tabId).toBe('tab-1');
+    const legacy = bt.resolveTarget('conv-B', null, 'navigate', {
+      anchored: null, activeTabId: 'tab-1', isMine: () => false, isCurrentView: () => true,
+    });
+    expect(legacy.tabId, '★ 省略新 opts 时行为变了 → 旧调用方/旧测试被牵连').toBe('tab-1');
+  });
+
+  it('★★★ main.cjs 必须把归属判据接进 resolveTarget（否则第三层是死代码）', () => {
+    const m = strip(MAIN);
+    const i = m.indexOf('resolveBrowserTarget(convId, tabId, action, {');
+    expect(i, '★ 锚点缺失：目标解析调用').toBeGreaterThan(-1);
+    const seg = m.slice(i, i + 1400);
+    expect(seg, '★ 未传 isOwnedByOther → 跨会话回落抢页仍有缝').toMatch(/isOwnedByOther:/);
+    expect(seg, '★ 归属真相源必须是 agentTouchedTabs（tab → convId）').toMatch(/agentTouchedTabs\.get\(/);
+  });
+});

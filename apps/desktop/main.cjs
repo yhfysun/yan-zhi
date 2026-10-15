@@ -3207,6 +3207,14 @@ async function runBrowserAction(convId, tabId, action, args) {
       //   ⇒ 补一道"就是本面板当前活动页"的放行（UI 语义：用户肉眼可见的页 = 本会话可见的页）。
       //   跨会话越权的真实威胁是"显式传别的会话的 tabId"，那条由 resolveTarget ①② 分支拦，未动。
       isCurrentView: (t) => t === activeTabId,
+      // ★★★ 2026-10-15（「导航跑偏」第三层，跨会话）：当前活动页若**已被别的会话**操作过，
+      //   不回落 —— 否则后启动的会话会把前一个会话正在用的页导航走（用户实报的
+      //   "上两个并发任务把预览面板搞乱了"），且前者的下一次读取会读到后者的页面、不报错。
+      //   归属真相源仍是 `agentTouchedTabs`（tab → 认领它的 convId）。
+      isOwnedByOther: (t) => {
+        const owner = agentTouchedTabs.get(String(t));
+        return !!owner && owner !== String(convId || '');
+      },
     });
     if (!r.ok) return { error: r.error };
     tabId = r.tabId;

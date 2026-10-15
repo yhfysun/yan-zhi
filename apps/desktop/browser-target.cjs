@@ -115,6 +115,16 @@ function resolveTarget(convId, rawTab, action, opts) {
     //     这里只是允许"从当前可见页出发"，与模块顶部声明一致："首次 navigate 必须能自发建 tab"。
     const mineByRegistry = !!(o.isMine && o.isMine(fb));
     const isCurrentView = !!(fb && o.isCurrentView && o.isCurrentView(fb));
+    // ★★★ 2026-10-15（「导航跑偏」第三层，**跨会话**）：归属**别的会话**的页不回落。
+    //
+    //   现象（用户实报「上两个并发任务把预览面板搞乱了（有标签页卡在 kol.fanqieopen.com
+    //   一直 loading）」）：两个会话同时跑浏览器任务时，后启动的那个还没有锚 →
+    //   回落 `activeTabId` 恰好是**前一个会话正在使用的页** → 它把别人的页导航走了，
+    //   前一会话的下一次读取读到的是后者的页面 —— 且**全程不报错**（最难查的一类）。
+    //   `isCurrentView` 单独放行是安全的（本面板可见页，用户肉眼可见），但"可见页属于
+    //   **别的会话**"不在其列：那是别人的执行现场。
+    //   ⇒ 归属别人的页 → 不回落（tabId=null 交下游自建新页，各会话各有各的页）。
+    if (fb && o.isOwnedByOther && o.isOwnedByOther(fb)) return { ok: true, tabId: null };
     if (fb && (mineByRegistry || isCurrentView)) return { ok: true, tabId: fb };
     return { ok: true, tabId: null };
   }
