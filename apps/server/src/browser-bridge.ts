@@ -116,7 +116,15 @@ export async function callBrowserBridge(
     //     绝不能加"失败"前缀（"失败"二字会诱导模型重试，正是"pageAgent 一跑就卡"的成因之一）。
     //     直接保留 main.cjs 原文案（其中已写明"不代表失败、不要重复调用同一动作"）。
     if (json && json.error) {
-      return json.timedOut ? String(json.error) : `浏览器操作失败: ${String(json.error)}`;
+      // ★★★ 2026-10-15：非超时的失败必须**带上 hint**。此前只取 `json.error`，把 main.cjs
+      //   精心写的可自纠指引（`hint`：点击"元素不可见已按 DOM 点击"、输入"受控组件拦截、
+      //   建议截图核验"、脚本"选择器失效先重新读页"…）**整条丢在桥这一层** —— 模型只看得到
+      //   "失败了"，看不到"下一步该怎么试"，于是换着选择器盲试（"步骤不准、重复操作多"）。
+      //   ★ 超时路径（`timedOut`）**不追加**：那一条已写明"不代表失败、不要重复调用同一动作"，
+      //     且**绝不能**出现"失败"二字（会诱导重试，见上一条注释）。
+      if (json.timedOut) return String(json.error);
+      const hint = json.hint ? `\n${String(json.hint)}` : '';
+      return `浏览器操作失败: ${String(json.error)}${hint}`;
     }
     // ★ 桥返回与 `browserView:action` 逐字同构 ⇒ 走**同一份**结果格式化（见 llm-task-manager 的 bridge 分支）
     return formatBridgeResult(action, json);

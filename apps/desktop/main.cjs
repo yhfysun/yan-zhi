@@ -4703,12 +4703,42 @@ async function runBrowserAction(convId, tabId, action, args) {
           const r = await wc.executeJavaScript(script, false);
           return { url: (typeof wc.getURL === 'function' ? wc.getURL() : '') || '', result: r === undefined ? null : r, ...(_autoWrapped ? { autoWrapped: true } : {}) };
         } catch (e) {
+          // ★★★ 2026-10-15：失败时**二次取证**，把页面真实异常带回给模型。
+          //
+          // 为什么必须这么做：`catch (e)` 里拿到的 `e.message` 是 Electron
+          // `executeJavaScript` 的 rejection 文案 —— 页面内抛出的异常被它统一成一句
+          // "Script failed to execute... Check the renderer console for the error."，
+          // 而**模型看不到 console**。于是模型只知道"失败了"，不知道"哪一行、什么错"，
+          // 只能换着选择器盲试（实测 10-14 单日 12 次，是当前最高频的失败）。
+          //
+          // 取证方式：把同一段脚本再在**页面内 try/catch** 里跑一次，把真实的
+          // message/stack 当**正常返回值**取回。**成功路径完全不变** —— 只在已失败后走这里。
+          // · 表达式脚本（IIFE）→ 内层函数体里当语句执行，副作用与首次一致；
+          // · 裸 return 脚本 → 内层是函数体，`return` 合法，甚至能返回正确值。
+          // ★ 已知边界（勿当成 bug）：**纯语法错误取不回** —— 注入的脚本文本会成为探测自身的
+          //   源码，编译期就失败，内层 try/catch 捕不到；此时探测同样 reject，下面的 `detail`
+          //   留空、退回原始文案（行为与修复前一致，不会更差）。而实测高频的
+          //   "Script failed to execute…" 本身就是**运行期抛错**（Electron 对解析失败给的是另一种
+          //   SyntaxError 文案），正是本探测能覆盖的那类。
+          // 2s 限时：取证只是锦上添花，绝不能因为探测本身挂起而拖慢动作。
+          let detail = '';
+          try {
+            const probe = `(function(){ try { (function(){ ${script}\n }).call(this); return ''; } catch (e) { return String((e && (e.stack || e.message)) || e); } })()`;
+            detail = String((await Promise.race([
+              wc.executeJavaScript(probe, false),
+              new Promise((r) => setTimeout(() => r(''), 2000)),
+            ])) || '');
+          } catch { /* 取证失败：退回原始文案（行为与修复前一致） */ }
+          const real = detail || ((e && e.message) || String(e));
+          // 按**真实**异常类型给可自纠的指引，而不是笼统的"检查语法"
+          const hint = /SyntaxError/.test(real)
+            ? '这是**运行期 SyntaxError**（脚本已开始执行后抛出，如 JSON.parse 收到非法文本）。请按报错修正数据来源后重发。'
+            : _autoWrapped
+              ? '脚本已自动包裹为函数执行，但仍抛错。请按上面的真实异常修正（常见："Cannot read properties of null" = 选择器没匹配到元素）。'
+              : '执行失败（页面脚本抛异常，常见于选择器失效：hash class 如 .xxx-N8BqC1 在重渲染后不存在、或目标元素未加载）。**不要换同类 hash class 重试**——先用 browser_get_page_content 重新定位元素，或改用专用工具（click/type）。';
           return {
-            error: (e && e.message) || String(e),
-            // 语法/执行失败时给模型可自纠的提示（否则它只会反复改参数重试）
-            hint: _autoWrapped
-              ? '脚本已自动包裹为函数执行。若仍失败，请检查语法；要返回数据请直接 return，会在包裹函数内生效。'
-              : '执行失败（页面脚本抛异常，常见于选择器失效：hash class 如 .xxx-N8BqC1 在重渲染后不存在、或目标元素未加载）。不要换同类 hash class 重试——先用 browser_get_page_content 重新定位元素，或改用专用工具（click/type）。若脚本含顶层 return，请包成 (() => { ... })()。',
+            error: `脚本执行抛错：${real}`,
+            hint,
           };
         }
       }
