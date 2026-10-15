@@ -21,6 +21,7 @@ import {
   readGlobalPools,
   readAgentPlatformPools,
   validateModelPools,
+  selectSubAgentModelIdPriority,
   type Slot,
 } from '../src/services/model-pools.js';
 
@@ -382,5 +383,50 @@ describe('validateModelPools · 写入口校验（读宽容、写必须挡住错
     const v = validateModelPools(db, 'guest', {});
     expect(v.ok).toBe(true);
     expect(v.pools).toEqual({});
+  });
+});
+
+// ===== 子智能体模型选型优先级（model-candidate-pools，2026-10-15 用户规则）=====
+// 钉死的契约：调用方指定 > 子智能体单模型绑定 > 父任务当前模型（对话模型）> 候选池首选。
+// ★ 核心防回归：父任务模型（task.modelId）必须排在候选池（poolFirstId）之前。
+//   旧的 bug 把池放父模型前 —— 一配池就无视父任务已验证可用的模型，子智能体挑到
+//   通道不可用的模型而 401/503；这条测试就是保证「对话的模型用不了才用候选」不丢。
+describe('selectSubAgentModelIdPriority · 子智能体选型优先级（父模型优先于候选池）', () => {
+  it('调用方指定模型优先于一切', () => {
+    expect(selectSubAgentModelIdPriority({
+      callerModelId: 'caller', agentModelId: 'agent', parentModelId: 'parent', poolFirstId: 'pool',
+    })).toBe('caller');
+  });
+
+  it('调用方没指定时，子智能体单模型绑定优先', () => {
+    expect(selectSubAgentModelIdPriority({
+      callerModelId: null, agentModelId: 'agent', parentModelId: 'parent', poolFirstId: 'pool',
+    })).toBe('agent');
+  });
+
+  it('★ 父任务当前模型优先于候选池（这正是 401 bug 的反例）', () => {
+    // 旧逻辑：... || poolFirst?.model.id || task.modelId → 配池就抢走父模型。
+    // 新逻辑：父模型在池之前。
+    expect(selectSubAgentModelIdPriority({
+      callerModelId: null, agentModelId: null, parentModelId: 'parent', poolFirstId: 'pool',
+    })).toBe('parent');
+  });
+
+  it('前三者都缺失才回退候选池首选', () => {
+    expect(selectSubAgentModelIdPriority({
+      callerModelId: null, agentModelId: null, parentModelId: null, poolFirstId: 'pool',
+    })).toBe('pool');
+  });
+
+  it('全空返回 null（调用方需自行报错，而不是静默用错模型）', () => {
+    expect(selectSubAgentModelIdPriority({
+      callerModelId: null, agentModelId: null, parentModelId: null, poolFirstId: null,
+    })).toBeNull();
+  });
+
+  it('空字符串视为缺失（与 `a || b` 短路语义一致）', () => {
+    expect(selectSubAgentModelIdPriority({
+      callerModelId: '', agentModelId: '', parentModelId: 'parent', poolFirstId: 'pool',
+    })).toBe('parent');
   });
 });

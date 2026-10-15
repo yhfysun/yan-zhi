@@ -7,7 +7,7 @@ import type { Platform, Model, Message, DeltaToolCall } from '@yan-zhi/shared';
 import { formatTaskTypeContext, formatTaskTypeSpecContext, formatParentTaskTypeSpecContext, DEFAULT_CONFIRM_BATCH_SIZE, resolveTaskBudgets, checkTaskBudgetHit as sharedCheckTaskBudgetHit, addWaitCredit } from '@yan-zhi/shared';
 import { LlmClient, getToolRegistry, getApiToolRegistry, ContextWindow, adviceForTruncatedArgs, runCodeDiagnostics, invalidateDiagnosticsCache, resolveToolPath, setBrowserToolConversationId, type SummaryCache } from '@yan-zhi/core';
 import { db, MESSAGE_LIST_COLS, getLatestMessageSummary, loadEffectiveTaskTypes } from './db.js';
-import { resolvePool, resolveFailoverChain, resolveFirstModel, SLOTS, type Slot } from './services/model-pools.js';
+import { resolvePool, resolveFailoverChain, resolveFirstModel, selectSubAgentModelIdPriority, SLOTS, type Slot } from './services/model-pools.js';
 import { shouldRetryStatus } from './services/token-pool.js';
 import { normalizePermissionMode, checkToolPermission, filterToolsByPermission, permissionModePrompt, checkWorkflowPermission, type PermissionMode } from './tool-permission.js';
 import { ensureToolsInitialized } from './mcp/index.js';
@@ -4983,13 +4983,14 @@ async function runWorkflowSubAgent(
   if (!mapped.ok) return mapped.error;
 
   // 模型回退上下文：工作流 llm 节点未配置模型时用它兜底（见 ServerLlmNodeHandler）
-  // model-candidate-pools：智能体未绑单模型时用其 llm 候选池首选（与 ReAct 子智能体同口径）
+  // model-candidate-pools（2026-10-15 同 ReAct 子智能体口径收紧）：父任务当前模型优先于候选池，
+  // 候选池只作父模型缺失时的后备。
   const inputs: Record<string, unknown> = { ...mapped.inputs };
   const platformId = args.platformId || agent.platform_id || task.platformId;
-  const wfPoolFirst = !args.modelId && !agent.model_id
+  const wfPoolFirst = !args.modelId && !agent.model_id && !task.modelId
     ? resolveFirstModel(db, { userId: task.userId, agentId: resolvedId }, 'llm')
     : null;
-  const modelId = args.modelId || agent.model_id || wfPoolFirst?.model.id || task.modelId;
+  const modelId = args.modelId || agent.model_id || task.modelId || wfPoolFirst?.model.id;
   if (platformId) inputs.__platformId = platformId;
   if (modelId) inputs.__modelId = modelId;
 
@@ -5591,26 +5592,31 @@ async function runSubAgentImpl(
     return runWorkflowSubAgent(task, agent, args, parentToolCallId, depth);
   }
 
-  // 解析平台/模型：调用方指定 > 子智能体配置 > 子智能体候选池首选 > 父任务（主智能体当前模型）
-  // model-candidate-pools：智能体没绑单模型时，用它的 llm 候选池首选（而非直接退父任务模型），
-  // 这样「给子智能体配了池」这个动作才真正生效（否则池只是存了不用 = 断言存在≠断言生效）。
+  // 解析平台/模型（model-candidate-pools，2026-10-15 按用户规则收紧）：
+  //   优先级 = 调用方指定 > 子智能体单模型绑定 > **父任务当前模型（对话的模型）** > 子智能体候选池首选
+  //   用户规则：「除非对话的模型用不了了，才用候选模型」—— 父任务正在跑、已验证可用的模型必须优先，
+  //   候选池只是它用不了时的后备，绝不能抢在它前面主动替换（旧逻辑把 poolFirst 放在 task.modelId 之前，
+  //   等于一配池就无视父任务模型，与规则冲突）。
+  //   候选池仍"生效"：仅当父任务模型缺失（task.modelId 为空，极少见）才回退池；runSubAgentImpl 内已挂
+  //   故障转移链（见下方 subFailoverChain），父模型真失败时沿池续跑，池不是死代码。
   const platformId = args.platformId || (agent.platform_id || task.platformId);
-  const poolFirstRaw = !args.modelId && !agent.model_id
+  // 只在"调用方没指定、智能体没绑单模型、且父任务也没模型"时才取池首选（此时池是唯一候选）。
+  // source==='auto' 仍排除：auto = 全部生效模型排序、永不为空，放进来会让 `|| task.modelId` 变死代码，
+  // 与 2026-10-14 pageAgent 被挑到通道不可用模型的事故同理（只是搬到子智能体场景）。
+  const poolFirstRaw = !args.modelId && !agent.model_id && !task.modelId
     ? resolveFirstModel(db, { userId: task.userId, agentId: resolvedId }, 'llm')
     : null;
-  // ★★★ 只采纳「显式配过池」的首选（agent / agentPlatform / global 三层，source !== 'auto'）。
-  //   L4 auto 兜底 = **全部生效模型**按 is_default DESC, created_at DESC 排序，**永不为空**
-  //   ⇒ 若把 auto 也算作"池首选"，下面 `|| task.modelId`（回退父任务当前模型）就是**死代码**：
-  //   子智能体在零池配置时会按排序随机挑到一个平台/模型，而不是用父任务那个**当前正在跑、
-  //   已验证可用**的模型。
-  //   实测（2026-10-14 执行记录，llm_task/message）：pageAgent 被挑到通道不可用的模型
-  //   → `503 Service Unavailable {"code":"model_not_found","message":"No available channel for model"}`
-  //   → 子智能体连启动都失败（页面记录里还留下"AgnesAI 平台 LLM 通道异常，换百炼…"的徒劳重试）。
-  //   零配置下回退父任务模型才是最稳的：父任务模型刚跑通，通道至少是活的。
   const poolFirst = poolFirstRaw && poolFirstRaw.source !== 'auto' ? poolFirstRaw : null;
-  const modelId = args.modelId || (agent.model_id || poolFirst?.model.id || task.modelId);
+  const modelId = selectSubAgentModelIdPriority({
+    callerModelId: args.modelId,
+    agentModelId: agent.model_id,
+    parentModelId: task.modelId,
+    poolFirstId: poolFirst?.model.id,
+  });
   let platform = loadPlatform(platformId, task.userId);
-  let model = loadModel(modelId, task.userId, platformId);
+  // modelId 可能为 null（未指定任何模型），loadModel 内部 findModelRow 已对空值早返回，
+  // 这里用 `?? ''` 满足类型（不传 null），运行时与旧 `any` 入参行为一致：拿不到就返回 null。
+  let model = loadModel(modelId ?? '', task.userId, platformId);
   if (!platform && modelId) {
     // 仅指定了 modelId 而未指定 platformId，或 platformId 无效：尝试按 model 反查平台
     // ★ 这里也必须走 findModelRow（两种标识都认）：子智能体配置里存的可能是业务名，
@@ -5621,6 +5627,27 @@ async function runSubAgentImpl(
       model = loadModel(mRow.id, task.userId, mRow.platform_id);
     }
   }
+
+  // ===== 子智能体候选池故障转移链（model-candidate-pools，2026-10-15 用户规则）=====
+  // 父任务（对话）模型 model.id 作为链首；只有它**真的失败**才沿候选池换下一个。
+  // 当用户给子智能体配了池时，池作为父模型用不了时的后备，不抢父模型位。
+  // client 在下方 5471 行以 `let` 声明，便于换模型时重建。
+  const subFailoverChain = resolveFailoverChain(db, { userId: task.userId, agentId: resolvedId }, model?.id ?? '', 'llm');
+  let subFailoverCursor = 0;
+  const switchSubModel = (): string | null => {
+    while (subFailoverCursor + 1 < subFailoverChain.length) {
+      subFailoverCursor++;
+      const next = subFailoverChain[subFailoverCursor];
+      const nextPlatform = loadPlatform(next.platformId, task.userId);
+      if (!nextPlatform) continue;
+      model = next.model;
+      platform = nextPlatform;
+      client = new LlmClient(nextPlatform, next.model);
+      return next.model.id;
+    }
+    return null;
+  };
+
   if (!platform || !model) {
     if (args.platformId || args.modelId) {
       return `指定的子智能体模型不可用（platformId=${args.platformId || '-'}, modelId=${args.modelId || '-'}）。请先调用 list_models 工具查询可用平台与模型。`;
@@ -5723,7 +5750,7 @@ async function runSubAgentImpl(
     //   桌面端据此把「锚 / 归属」分到各自流上。取值与流锁同一处（browserFlowKeyOf）。
     browserFlowKey: browserFlowKeyOf(args, parentToolCallId),
   };
-  const client = new LlmClient(platform, model);
+  let client = new LlmClient(platform, model);
   // 子智能体步数上限：尊重 agent 配置的 maxReActSteps（如 pageAgent 的 50），
   // 未配置时兜底 500（2026-10-05 用户拍板：长任务靠上下文压缩承载，不靠截断；
   // 旧兜底 100 频繁触发「已达到最大循环数」）。修复：旧写法 Math.max(x, 100) 把任何配置值强制抬到 ≥100，
@@ -5737,7 +5764,7 @@ async function runSubAgentImpl(
   const systemPrompt = agent.system_prompt || '你是一个智能助手。';
   const modelCaps = model.capabilities as string[] | undefined;
   const supportsTools = modelSupportsTools(modelCaps);
-  const tools = supportsTools ? subTools : [];
+  let tools = supportsTools ? subTools : [];
 
   emit(task, { type: 'sub_agent:start', agentId: resolvedId, agentName: subAgentName, parentToolCallId, depth: depth + 1 });
 
@@ -5801,7 +5828,9 @@ async function runSubAgentImpl(
         keepRecent: 6,
         keepFirst: 2,
         summaryCache: subCache,
-        setSummaryModel: (cw) => cw.setSummaryModel(platform, model),
+        // platform/model 经上方 `if (!platform || !model) return` 守卫后必为非空，
+        // 但 TS 不收窄闭包捕获的 let，这里用断言保持类型干净（运行时契约不变）。
+        setSummaryModel: (cw) => cw.setSummaryModel(platform!, model!),
         persist: false,
       });
       const messagesToSend = subView.messages;
@@ -5867,8 +5896,12 @@ async function runSubAgentImpl(
       let usageTokens = 0;
       const toolCallAcc: DeltaToolCall[] = [];
 
-      try {
-        for await (const chunk of client.chatStream(llmMessages, {
+      // 候选池故障转移（model-candidate-pools，2026-10-15 用户规则）：父模型失败才换候选
+      let subStreamDone = false;
+      while (!subStreamDone) {
+        let streamOk = false;
+        try {
+          for await (const chunk of client.chatStream(llmMessages, {
           tools: tools.length > 0 ? tools : undefined,
           temperature: agent.temperature,
           maxTokens: agent.max_tokens,
@@ -5916,6 +5949,7 @@ async function runSubAgentImpl(
             emit(task, { type: 'tool_call', toolCalls: [...toolCallAcc], subAgentId: resolvedId, parentToolCallId });
           }
         }
+        streamOk = true;
       } catch (e: any) {
         if (isAbortError(e)) throw e;
         // 重试不带 tools
@@ -5941,9 +5975,27 @@ async function runSubAgentImpl(
             if (chunk.delta?.content) { fullContent += chunk.delta.content; emit(task, { type: 'chunk', content: chunk.delta.content, subAgentId: resolvedId, parentToolCallId }); }
             if (chunk.delta?.reasoningContent) { fullReasoning += chunk.delta.reasoningContent; emit(task, { type: 'chunk', reasoning: chunk.delta.reasoningContent, subAgentId: resolvedId, parentToolCallId }); }
           }
+          streamOk = true; // 文本模式重试成功（再抛错会冒泡）
+        } else if (isPoolFailoverable(e)) {
+          // ★ 候选池故障转移：父模型真失败 → 换池中下一个候选重跑本轮
+          const nextId = switchSubModel();
+          if (nextId) {
+            logger.warn(
+              `[sub-agent] 模型调用失败，切换到候选池下一模型重试：${subFailoverChain[subFailoverCursor - 1]?.model.id} → ${nextId}` +
+              `（第 ${subFailoverCursor + 1}/${subFailoverChain.length} 个候选）sub=${resolvedId} conv=${task.conversationId} err=${e?.message || e}`,
+            );
+            fullContent = ''; fullReasoning = ''; toolCallAcc.length = 0; usageTokens = 0;
+            // 换模型后重算工具支持度，避免无工具模型被当纯对话降级（与主循环同口径）
+            const st = modelSupportsTools((model.capabilities as string[] | undefined));
+            tools = st ? subTools : [];
+            continue; // 用新模型重跑本轮（streamOk 仍 false，循环继续）
+          }
+          throw e; // 候选耗尽，按原错误落库
         } else {
           throw e;
         }
+      }
+      subStreamDone = streamOk;
       }
 
       // 文本模式工具调用解析（同时检查 reasoning_content，某些模型把 [TOOL_CALL] 放在推理中）

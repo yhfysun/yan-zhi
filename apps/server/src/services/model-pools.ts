@@ -243,6 +243,25 @@ export function resolveFirstModel(db: YzSqliteDb, opts: ResolvePoolOpts, slot: S
 }
 
 /**
+ * 子智能体模型选型优先级（model-candidate-pools，2026-10-15 用户规则）。
+ *
+ *   调用方指定 > 子智能体单模型绑定 > **父任务当前模型（对话模型）** > 候选池首选
+ *
+ * ★ 关键约束：候选池（poolFirstId）只在前三者都缺失时才有机会，绝不抢在父任务模型前面。
+ *   这是「除非对话的模型用不了了，才用之前说的候选模型」的代码化 —— 旧逻辑把池放在父模型前，
+ *   导致一配池就无视父任务已验证可用的模型，子智能体挑到通道不可用的模型而 401/503。
+ *   抽成纯函数是为了把这条优先级用单测钉死（见 model-pools.test.ts），避免被悄悄改回。
+ */
+export function selectSubAgentModelIdPriority(p: {
+  callerModelId?: string | null;
+  agentModelId?: string | null;
+  parentModelId?: string | null;
+  poolFirstId?: string | null;
+}): string | null {
+  return p.callerModelId || p.agentModelId || p.parentModelId || p.poolFirstId || null;
+}
+
+/**
  * 故障转移链：当前模型排在**最前**，其后接池中其余候选。
  *
  * 为什么当前模型一定在首位：任务已经用它跑了若干轮，上下文（缓存前缀、工具协议）都按它
