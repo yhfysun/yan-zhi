@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>guest</title>
+<style>body { font: 14px system-ui; margin: 0; padding: 8px; }</style>
+</head>
+<body>
+<div id="probe">probe page</div>
+<script>
+// 探针：模拟 creator-micro 这类「等到可见才挂载」的微前端。
+// 两条最容易暴露隐藏态的判据：
+//   ① requestAnimationFrame —— 页面 hidden 时**完全停摆**（Chromium 不排帧）
+//   ② setTimeout 节流       —— 页面 hidden 时被压到「至多 1 次/秒」
+window.__probe = function (waitMs) {
+  const t0 = Date.now();
+  let rafCount = 0;
+  let timerFiredAt = null;
+  const loop = () => { rafCount++; requestAnimationFrame(loop); };
+  requestAnimationFrame(loop);
+  setTimeout(() => { timerFiredAt = Date.now() - t0; }, 300);
+  return new Promise((resolve) => {
+    // 隐藏态下 rAF 不跑，只能靠定时器收口；因此收口探针也走定时器并放宽等待窗口
+    setTimeout(() => resolve({
+      visibilityState: document.visibilityState,
+      hidden: document.hidden,
+      rafCount,
+      timerDelayMs: timerFiredAt,
+      elapsedMs: Date.now() - t0,
+    }), waitMs);
+  });
+};
+</script>
+</body>
+</html>

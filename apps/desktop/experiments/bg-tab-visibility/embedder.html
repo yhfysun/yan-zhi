@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>embedder — P0 实验：后台标签页的可见性判据</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #fff; font: 13px system-ui; }
+  #viewport { position: absolute; left: 0; top: 0; width: 100%; height: 100%; overflow: hidden; }
+  /* ★★ 用例 `app-inactive`：**逐字复刻产品现状** —— 见 packages/ui/src/components/BrowserPanel.vue:2910
+     非激活 tab 保留挂载、铺满视口、留在视觉层，只靠 opacity:0 + z-index:0 沉下去。 */
+  .page-webview {
+    position: absolute; left: 0; top: 0; width: 100%; height: 100%;
+    border: 0; background: #fff; opacity: 0; pointer-events: none; z-index: 0;
+  }
+  .page-webview.wv-active { opacity: 1; pointer-events: auto; z-index: 1; }
+</style>
+</head>
+<body>
+<div id="viewport"></div>
+<script>
+// 每个用例一个 webview。用例形态**逐个对照产品现状**，不是随手编的：
+const CASES = [
+  // ① 对照组：产品里"当前激活 tab"的形态（opacity:1 + z-index:1）
+  { name: 'active',            style: 'opacity:1;pointer-events:auto;z-index:1;' },
+  // ② ★最重要：产品里"非激活 tab（后台页）"的形态 —— 挂载、铺满、留在层里，只下沉
+  { name: 'app-inactive',      style: 'opacity:0;z-index:0;' },
+  // ③ 方案 §4.4 提议的后台形态：挂载但移出视口
+  { name: 'offscreen-left',    style: 'position:absolute;left:-10000px;top:0;width:600px;height:400px;opacity:1;' },
+  // ④ 面板收起（仓库实证形态：宽度归 0 + 透明）
+  { name: 'panel-collapsed',   style: 'width:0;height:0;opacity:0;' },
+  // ⑤ 历史踩坑形态：display:none（CSS 注释明说会让 guest 停止合成）
+  { name: 'display-none',      style: 'display:none;' },
+  // ⑥ visibility:hidden
+  { name: 'visibility-hidden', style: 'visibility:hidden;' },
+  // ⑦ 滚出滚动容器（另一种"移出视口"的常见写法）
+  { name: 'scrolled-out',      style: 'position:absolute;left:0;top:5000px;width:600px;height:400px;' },
+];
+
+const viewport = document.getElementById('viewport');
+
+function makeWebview(c) {
+  const wv = document.createElement('webview');
+  wv.id = 'wv-' + c.name;
+  wv.className = 'page-webview';
+  wv.setAttribute('style', c.style);
+  wv.setAttribute('src', 'guest.html?case=' + encodeURIComponent(c.name));
+  // ★ 关键：dom-ready 在创建后约 100ms 就触发，**必须在创建处就登记监听**，
+  //   否则"先建完 7 个、再逐个等"会全部错过事件（首轮实验的假超时就源于此）。
+  wv.__ready = new Promise((res, rej) => {
+    wv.addEventListener('dom-ready', () => res(Date.now()), { once: true });
+    setTimeout(() => rej(new Error('dom-ready 超时')), 15000);
+  });
+  viewport.appendChild(wv);
+  return wv;
+}
+
+function withTimeout(p, ms, label) {
+  return Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('超时:' + label)), ms))]);
+}
+
+const built = CASES.map((c) => ({ c, wv: makeWebview(c) }));
+
+// ★ 等"真的开始出帧"再开测：窗口刚 show/restore 时可能还没进入合成，
+//   那时所有 guest 一律掉帧 —— 测出来的是"环境还没热"，不是形态差异。
+//   （第 4 轮就栽在这上面：normal 轮 active 只拿到 44 帧、其余全 0；
+//     同一批元素到 restored 轮全部恢复 90 帧。）
+window.__whenPainted = function () {
+  return new Promise((resolve) => {
+    let n = 0;
+    const loop = () => { if (++n >= 3) resolve(n); else requestAnimationFrame(loop); };
+    requestAnimationFrame(loop);
+    setTimeout(() => resolve(-1), 5000); // 兜底：若永远不出帧也要能继续（结果为 -1 即"没热"）
+  });
+};
+
+// ★ 一轮 = 逐个探针。由主进程在切换窗口状态后调用（normal → minimized → restored），
+//   同一批 webview 全程不动，只有窗口状态变，从而把"哪个条件产生了 hidden"单独隔离出来。
+window.__start = async function () {
+  const out = {};
+  for (const { c, wv } of built) {
+    const r = { case: c.name };
+    try {
+      await withTimeout(wv.__ready, 16000, c.name + '/dom-ready');
+      // 探针：1.5s 窗口内数 rAF 帧数 + 量 setTimeout(300ms) 的实际延迟
+      r.probe = await withTimeout(wv.executeJavaScript('window.__probe(1500)'), 12000, c.name + '/probe');
+    } catch (e) {
+      r.error = String((e && e.message) || e);
+    }
+    out[c.name] = r;
+  }
+  return out;
+};
+</script>
+</body>
+</html>
