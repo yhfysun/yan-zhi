@@ -180,6 +180,7 @@
       top="6vh"
       class="platform-detail-dialog"
       destroy-on-close
+      @closed="refreshModelCounts"
     >
       <PlatformDetail :key="detailId" :platform-id="detailId" embedded />
     </el-dialog>
@@ -193,11 +194,12 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue';
+import { ref, computed, watch, onMounted } from 'vue';
 import { Plus, Connection, Download, Delete, RefreshLeft } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import type { ModelType, PlatformApiKey } from '@yan-zhi/shared';
 import { usePlatformStore } from '../stores';
+import { api } from '../api/client';
 import { waitForBackend } from '../api/backend-ready';
 import { DEFAULT_CONTEXT_WINDOW } from '../utils/context-window';
 import PlatformDetail from './PlatformDetail.vue';
@@ -209,6 +211,9 @@ import SearchToolbar from '../components/common/SearchToolbar.vue';
 const store = usePlatformStore();
 const showAdd = ref(false);
 const showLocalMarket = ref(false);
+
+// 本地模型商城关闭后重拉计数（拉取/接入本地模型会影响平台模型数）
+watch(showLocalMarket, (v) => { if (!v) refreshModelCounts(); });
 
 // ★ 候选池不在这里：候选池的第二层是「**智能体平台**」（所有智能体的默认池，跨供应商），
 //   不是「模型平台」（本页 = 百炼/agnes 这类大模型供应商）。入口在 /agents（智能体平台）页。
@@ -282,10 +287,31 @@ onMounted(async () => {
   //   （`loadPlatforms` 内部虽有 getWithRetry，但这里等待能让首帧就拿到数据、少一次空态闪烁）。
   await waitForBackend();
   store.loadPlatforms();
+  refreshModelCounts();
 });
 
+// ── 各平台模型计数：跨实体视图**自带独立清单**，绝不读 platformStore.models ──
+// ★★ 2026-10-15 用户实报：点某平台「管理模型」看到模型后，**其他平台的「N 个模型」全部变 0**。
+//   根因：modelCount() 原来读 platformStore.models 共享缓存，而 PlatformDetail onMounted 会
+//   `store.loadModels(pid)` 把该缓存**整体替换**成单平台清单（与候选池下拉曾静默变空同根因，
+//   见 stores/model-pool.ts 文件头注释）。本页是「一眼看全部平台」的跨实体视图，
+//   计数型视图只需要计数 → 自己拉一份 /platforms/all-models 统计，与共享缓存互不影响。
+const modelCounts = ref<Record<string, number>>({});
+
+async function refreshModelCounts() {
+  const r = await api.get<any[]>('/platforms/all-models');
+  if ('error' in r || !Array.isArray(r.data)) return;
+  const counts: Record<string, number> = {};
+  for (const row of r.data) {
+    const pid = row?.platform_id;
+    if (typeof pid !== 'string' || !pid) continue;
+    counts[pid] = (counts[pid] || 0) + 1;
+  }
+  modelCounts.value = counts;
+}
+
 function modelCount(platformId: string) {
-  return store.models.filter((m) => m.platformId === platformId).length;
+  return modelCounts.value[platformId] || 0;
 }
 
 function setStatus(msg: string, type: 'ok' | 'err' = 'ok') {
@@ -439,6 +465,8 @@ async function save() {
       }
       ElMessage.success(`已添加平台${checkedModelIds.value.length > 0 ? `，含 ${checkedModelIds.value.length} 个模型` : ''}`);
     }
+    // 平台/模型刚发生过增删 → 计数清单过期，关闭前重拉（否则卡片显示旧数）
+    await refreshModelCounts();
     showAdd.value = false;
     resetForm();
   } catch (e: any) {
@@ -524,6 +552,7 @@ async function del(id: string) {
   try {
     await ElMessageBox.confirm('删除平台会同时删除其下所有模型，确认？', '提示', { type: 'warning', confirmButtonClass: 'yz-confirm-danger' });
     await store.deletePlatform(id);
+    await refreshModelCounts();
     ElMessage.success('已删除');
   } catch {}
 }
