@@ -3697,6 +3697,15 @@ async function runBrowserAction(convId, tabId, action, args) {
           result.note = (result.note ? result.note + '\n' : '') +
             '页面处于**隐藏态**（预览面板收起/未显示）：creator.douyin.com 等微前端站点在此状态下可能永远停在"加载中"不渲染内容（document.visibilityState=hidden 时异步 chunk 加载被暂停）。**刷新无用、不要 force 刷新**；① 纯取数请改用 browser_run_script 在页面内 fetch 接口（比等渲染更可靠）；② 需要看页面 UI 时先让用户展开预览面板，再读取。';
         }
+        // ★★★ 2026-10-15「导航跑偏」P2-⑦：把**接口地址当页面导航**的引导。
+        //   实测（10-14 晚 conv 13822a0d 21:17 起）：模型直接用 navigate 打开
+        //   /web/api/mix/list/... 这类 JSON 端点当 HTTP 客户端 —— 能跑通，但每次占用
+        //   一次导航 + 渲染，还会把"当前操作页"带到一屏 JSON 上（后续读到的是 JSON 而不是业务页）。
+        //   ⇒ 回执给一句更省的一招（页内 fetch 带登录态，经验档已验证可行）。
+        if (/\/api\/|\.json(\?|$)/i.test(cleanUrl)) {
+          result.note = (result.note ? result.note + '\n' : '') +
+            '这看起来是**接口地址**（JSON 端点）：直接导航会占用导航+渲染，并把"当前操作页"带到 JSON 上。取数优先用 browser_run_script 在页面内 fetch（credentials:"include" 可带登录态），比导航更稳更快。';
+        }
         return result;
       }
       case 'click': {

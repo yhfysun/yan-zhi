@@ -38,6 +38,10 @@ import { checkToolLoop, FORCE_STOP_MARKER, neutralizeForceStopMarker } from './s
 // ★★★ 浏览器执行面直连化（2026-10-10）：主进程 loopback 端点客户端。
 //   判定口径**只在本模块**（decideBrowserExecution），前端不得自行推断（防双执行 + 防 token 外泄）。
 import { browserBridgeAvailable, decideBrowserExecution, callBrowserBridge, toolNameToAction, bridgeMode, isBridgeTransportError } from './browser-bridge.js';
+import {
+  createFlowLock, tryAcquireFlow, acquireFlow, releaseFlow, flowOwnerOf,
+  BROWSER_FLOW_WAIT_MS, type BrowserFlowLock,
+} from './services/browser-flow-lock.js';
 // 子任务执行详情（2026-10-09）：get_sub_task_detail 的查询与排版（编排者分析子任务失败用）
 import { loadSubTaskTrace, formatSubTaskTrace } from './services/sub-task-detail.js';
 import { registerArtifactHooks } from './services/artifact-hooks.js';
@@ -424,6 +428,13 @@ interface LlmTask {
    * 不等待 —— 主循环照常 finish（防"空轮等待"烧 token）。
    */
   backgroundSubAgents: Map<string, BackgroundSubAgentInfo>;
+  /**
+   * ★★★ 浏览器「执行流锁」（2026-10-15「导航跑偏」P0-① 第二层）：浏览器是**单活动页资源**，
+   *   同一任务内同一时刻只允许一个执行流驱动它（否则两条流互踩同一锚页 → 乒乓导航）。
+   *   覆盖第一层（同批 call_agent 串行化）够不到的路径：后台 async 子智能体、PlanRunner
+   *   并行计划项、主循环自身的 browser_* 与后台流并发。实现见 services/browser-flow-lock.ts。
+   */
+  browserFlow?: BrowserFlowLock;
   /**
    * 后台子智能体「结果已回、等待主循环消费」缓冲（2026-10-09）。
    *
@@ -2061,12 +2072,15 @@ function isBrowserCapableSubAgent(agentId: unknown, userId: string): boolean {
   const resolvedId = SUBAGENT_ALIASES[raw] || raw;
   try {
     const row = db
-      .prepare('SELECT builtin_tool_ids FROM agent WHERE id = ? AND (user_id = ? OR is_public = 1)')
+      .prepare('SELECT builtin_tool_ids, workflow_json FROM agent WHERE id = ? AND (user_id = ? OR is_public = 1)')
       .get(resolvedId, userId) as any;
     if (!row) return true;
     let ids: string[] = [];
     try { ids = JSON.parse(row.builtin_tool_ids || '[]'); } catch { return true; }
-    return toolIdsIncludeBrowser(ids);
+    if (toolIdsIncludeBrowser(ids)) return true;
+    // ★ 2026-10-15：工作流型子智能体的工具面在 workflow_json（builtin_tool_ids 为空）——
+    //   含 browser_* 节点的流水线同样会驱动浏览器，一并按"浏览器型"处理（宁可串行不可漏判）。
+    return !!row.workflow_json && String(row.workflow_json).includes('browser_');
   } catch { return true; }
 }
 
@@ -4592,6 +4606,19 @@ async function executeTool(
         `最接近的可用浏览器工具：${hint}。` +
         `请改用其中之一；若只是想读当前页，用 browser_get_page_content（正文+元素）或 browser_get_page_info（元素+坐标）。`;
     }
+    // ★★★ 2026-10-15「导航跑偏」P0-①（第二层，主循环侧）：后台浏览器型子任务占用期间，
+    //   主循环自己的 browser_* 动作**显式拒绝** —— 不选择"等待"，因为工具调用有超时上限
+    //   （等下去只会把一次失败拖成一次超时），而"两个流并发驱动同一锚页"正是要消灭的行为。
+    //   前台子任务是**阻塞**委派，那时主循环不会发浏览器动作 ⇒ 这里只会命中
+    //   "主循环 vs 后台(async)子任务"这一类真并发。
+    if (depth === 0) {
+      const owner = flowOwnerOf(task.browserFlow);
+      if (owner && owner.startsWith('sub:')) {
+        logger.warn(`[llm-task] 主循环浏览器动作被拒（浏览器被后台子任务占用）conv=${task.conversationId} tool=${toolName} owner=${owner}`);
+        return `浏览器正被后台子任务占用（占位者：${owner}）—— 浏览器是单活动页资源，同一任务的浏览器动作必须串行。`
+          + `请等它完成后继续（可调用 get_sub_task_detail 查它的进度），期间不要重复调用 browser_* 工具。`;
+      }
+    }
     const exec = decideBrowserExecution(toolNameToAction(toolName));
     if (exec === 'bridge') {
       const bridgeTimeout = resolveFrontendToolTimeout(toolName);
@@ -5264,6 +5291,21 @@ async function startBackgroundSubAgent(
     return buildConcurrencyFullMessage(task.backgroundSubAgents);
   }
 
+  // ★★★ 2026-10-15「导航跑偏」P0-①（第二层，后台路径）：**先占位**再启动。
+  //   后台是 fire-and-forget：若等它真跑起来才发现浏览器被占，已经白跑一整轮。
+  //   ⇒ 浏览器型后台子任务在别的流占用期间**直接拒绝**（不排队、更不静默并发驱动）。
+  const bgFlowId = `sub:${toolCallId}`;
+  const bgBrowserCapable = isBrowserCapableSubAgent(agentId, task.userId);
+  if (bgBrowserCapable) {
+    task.browserFlow ||= createFlowLock();
+    if (!tryAcquireFlow(task.browserFlow, bgFlowId)) {
+      logger.warn(`[llm-task] 浏览器型后台子任务被拒（浏览器已被占）conv=${task.conversationId} owner=${flowOwnerOf(task.browserFlow)}`);
+      return `浏览器正被另一个浏览器型子任务占用（占位者：${flowOwnerOf(task.browserFlow)}）——`
+        + `浏览器是单活动页资源，后台并发会互相覆盖页面（这正是"导航跑偏/打开别的页面"的成因）。`
+        + `请等它完成后再委派，或去掉 async 改**同步**委派（同步会排队等待，不会互踩）。`;
+    }
+  }
+
   const bgId = makeBackgroundId();
   const agentName = agentRow?.name || agentId;
   task.backgroundSubAgents.set(bgId, { bgId, agentId, agentName, toolCallId, startedAt: Date.now() });
@@ -5279,6 +5321,9 @@ async function startBackgroundSubAgent(
         : `后台子智能体执行异常：${e?.message || e}`;
     } finally {
       task.backgroundSubAgents.delete(bgId);
+      // ★ 浏览器流锁释放（非持有者 = 幂等 no-op：runSubAgent 正常收尾时已释放，
+      //   异常路径由这里兜底，避免"锁被异常带走 → 后续浏览器任务全被挡"）
+      if (bgBrowserCapable) releaseFlow(task.browserFlow!, bgFlowId);
       logger.warn(`[bg-subagent] 结束 conv=${task.conversationId} bg=${bgId} agent=${agentId}`);
       // ★ 唤醒「收尾时就地等待」的主循环（2026-10-09）：它醒来会复检是否还有人跑。
       try { task.backgroundDrainWaiter?.(); } catch {}
@@ -5356,19 +5401,45 @@ async function runSubAgent(
   },
   runOpts?: { maxSteps?: number },
 ): Promise<string> {
-  const { result, artifacts } = await runWithArtifactCollector(() =>
-    runSubAgentImpl(task, args, parentToolCallId, depth, uiTools, specOverride, runOpts));
-  const withArtifacts = artifacts.length > 0 ? formatSubAgentReturn(result, artifacts) : result;
-  // ★★★ 回传前去毒（2026-10-14 实报，high）：子智能体的收尾报告**必然**会引用它收到的
-  //   [FORCE_STOP] 原文，而这里是它回到父任务的**唯一出口**。不去毒，父任务的硬停判据就会
-  //   把"子智能体被停"读成"我也该停" —— 实测 conv 96125908 16:54:55 就是这么被连坐的，
-  //   父任务当时在合集弹窗已打开、只差两步的收尾关头，剩余 4 个步骤一步没跑。
-  //   ★ 子任务的停止**不应该**决定父任务是否停止：父任务收到报告后自行判断下一步。
-  const sanitized = neutralizeForceStopMarker(withArtifacts);
-  // ★ 子任务 ID 回执（2026-10-09）：parentToolCallId 天然唯一标识这次委派（子智能体
-  //   落库的每条消息都带它）。追加在结果末尾，编排者后续可用 get_sub_task_detail
-  //   按 ID 查执行轨迹分析失败原因。一行即止，不撑上下文。
-  return `${sanitized}\n\n[子任务ID] ${parentToolCallId}（如需分析本任务执行过程，可调用 get_sub_task_detail 传入此 ID 查询）`;
+  // ★★★ 2026-10-15「导航跑偏」P0-①（第二层，任务级流锁）：
+  //   浏览器是**单活动页资源** —— 浏览器型子智能体在**整个运行期**持有任务级锁，
+  //   覆盖第一层（同批 call_agent 串行化）够不到的路径：后台 async 子智能体、
+  //   PlanRunner 并行计划项、工作流型（含 browser_ 节点）子智能体。
+  //   等待**有界**（BROWSER_FLOW_WAIT_MS）；拿不到就明确拒绝，绝不静默并发驱动浏览器。
+  const flowId = `sub:${parentToolCallId}`;
+  const browserCapable = specOverride
+    ? toolIdsIncludeBrowser(specOverride.toolIds)
+    : isBrowserCapableSubAgent((args as any)?.agentId ?? (args as any)?.agent_id ?? (args as any)?.id, task.userId);
+  let flowAcquired = false;
+  if (browserCapable) {
+    task.browserFlow ||= createFlowLock();
+    flowAcquired = await acquireFlow(task.browserFlow, flowId, task.abortController.signal);
+    if (!flowAcquired) {
+      logger.warn(`[llm-task] 浏览器流锁等待超时，子任务未启动 conv=${task.conversationId} flow=${flowId} owner=${flowOwnerOf(task.browserFlow)}`);
+      return `浏览器正被同一任务内的另一个执行流占用（占位者：${flowOwnerOf(task.browserFlow) || '未知'}），`
+        + `已等待 ${Math.round(BROWSER_FLOW_WAIT_MS / 60000)} 分钟仍未释放 —— 本次子任务**未启动**。`
+        + `浏览器是单活动页资源，两个流并发驱动会互相覆盖页面（这正是"导航跑偏/打开别的页面"的成因）。`
+        + `请等它结束后重新委派；有多个浏览器任务时**串行委派**（一次只跑一个）。`;
+    }
+  }
+  try {
+    const { result, artifacts } = await runWithArtifactCollector(() =>
+      runSubAgentImpl(task, args, parentToolCallId, depth, uiTools, specOverride, runOpts));
+    const withArtifacts = artifacts.length > 0 ? formatSubAgentReturn(result, artifacts) : result;
+    // ★★★ 回传前去毒（2026-10-14 实报，high）：子智能体的收尾报告**必然**会引用它收到的
+    //   [FORCE_STOP] 原文，而这里是它回到父任务的**唯一出口**。不去毒，父任务的硬停判据就会
+    //   把"子智能体被停"读成"我也该停" —— 实测 conv 96125908 16:54:55 就是这么被连坐的，
+    //   父任务当时在合集弹窗已打开、只差两步的收尾关头，剩余 4 个步骤一步没跑。
+    //   ★ 子任务的停止**不应该**决定父任务是否停止：父任务收到报告后自行判断下一步。
+    const sanitized = neutralizeForceStopMarker(withArtifacts);
+    // ★ 子任务 ID 回执（2026-10-09）：parentToolCallId 天然唯一标识这次委派（子智能体
+    //   落库的每条消息都带它）。追加在结果末尾，编排者后续可用 get_sub_task_detail
+    //   按 ID 查执行轨迹分析失败原因。一行即止，不撑上下文。
+    return `${sanitized}\n\n[子任务ID] ${parentToolCallId}（如需分析本任务执行过程，可调用 get_sub_task_detail 传入此 ID 查询）`;
+  } finally {
+    // 释放（非持有者 = 幂等 no-op）：异常/中止路径也必须还锁，否则后续浏览器任务全被挡
+    if (flowAcquired) releaseFlow(task.browserFlow!, flowId);
+  }
 }
 
 async function runSubAgentImpl(
