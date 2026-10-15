@@ -3305,6 +3305,16 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
           } catch { /* 建 tab 失败 → 退回下方广播路径（行为与修复前一致） */ }
         }
         // ===NAV-REUSE-END===
+        // ★★★ 归属标记（2026-10-15 修漏标）：这条路径是 **agent 工具链**（agent 自己 navigate 触发的自建/复用），
+        //   建的页属于 agent ⇒ 必须标 agentOpened。漏标的两个可观测后果：
+        //     ① `browser_get_tabs` 把 agent 自己建的页显示成 `[用户页·勿关]` ⇒ 模型不去关它
+        //        （这正是 P1-⑤ 备注的"两天 close_tab 调用 = 0"的另一半成因 —— 不全是批量形态的锅）；
+        //     ② `browser_close_tab` 的权限闸门（`agentOpened !== true` 即拒）会拒掉它自己的页 ⇒
+        //        agent 建的页只能等任务收尾被动清理，中途卡死的页清不掉、继续污染后续导航。
+        //   ★ 这是**收窄**而非放宽：本分支只在"agent 要用页"时跑；复用也只复用**本流登记过**的页
+        //     （登记只发生在 agent 动作成功之后）⇒ 不会把用户手开的页标成 agent 的。
+        const selfMeta = webviewTabs.get(String(tabId));
+        if (selfMeta) selfMeta.agentOpened = true;
       }
       // ★★★ 2026-10-10 二次根因修复：**改用 `browserView:tabCreated` 通道**（与 `new_tab` 同口径）。
       //

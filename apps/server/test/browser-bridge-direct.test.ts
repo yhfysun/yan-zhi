@@ -949,4 +949,19 @@ describe('⑭ ★★★ 流键 flowKeyOf【真跑】（2026-10-15，后台标签
     expect(read('apps/desktop/preload.cjs'), '★ preload 未转发第 4 个参数 → 渲染层收不到 background')
       .toMatch(/\(_e,\s*tabId,\s*url,\s*scope,\s*background\)\s*=>\s*callback\(tabId,\s*url,\s*scope,\s*background\)/);
   });
+
+  it('★★★ agent 自己 navigate 自建的页必须标 agentOpened（否则它自己的页不可关、还显示成"用户页"）', () => {
+    // ★ 漏标的两个可观测后果（都是静默的）：
+    //   ① `browser_get_tabs` 把它显示成 `[用户页·勿关]` ⇒ 模型不去关它（"两天 close_tab 调用 = 0"的另一半成因）；
+    //   ② `browser_close_tab` 的权限闸门（`agentOpened !== true` 即拒）拒掉 agent 自己的页 ⇒
+    //      中途卡死的页清不掉，继续污染后续导航。
+    const i = MAIN.indexOf('// ===NAV-REUSE-END===');
+    expect(i, '★ 锚点缺失：NAV-REUSE 哨兵').toBeGreaterThan(-1);
+    expect(MAIN.slice(i, i + 1400),
+      '★ 自建/复用的页未标 agentOpened → 它自己的页关不掉、且在列表里被标成"用户页"')
+      .toMatch(/webviewTabs\.get\(String\(tabId\)\)[\s\S]{0,200}agentOpened\s*=\s*true/);
+    // 闸门本身不能松动（安全边界：用户手开的页永不可被 agent 关）
+    expect(stripComments(MAIN), '★ close_tab 的权限闸门被拿掉了')
+      .toMatch(/meta\.agentOpened !== true/);
+  });
 });
