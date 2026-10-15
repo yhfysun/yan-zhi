@@ -3,6 +3,16 @@
     <header class="page-header">
       <h2 class="page-title">Skill 蒸馏</h2>
       <span class="page-sub">从对话记录蒸馏出可复用的 Skill · 三屏工作台</span>
+      <div class="flow-guide">
+        <span class="flow-step">1. 勾选任务消息</span>
+        <span class="flow-arrow">→</span>
+        <span class="flow-step">2. AI 生成概览 · 手动修正</span>
+        <span class="flow-arrow">→</span>
+        <span class="flow-step">3. AI 提炼技能 · 精调</span>
+        <span class="flow-arrow">→</span>
+        <span class="flow-step">4. 发布为正式技能</span>
+        <el-tag size="small" type="info" effect="plain">或右上角「一键生成」直通</el-tag>
+      </div>
     </header>
 
     <div class="three-pane">
@@ -55,6 +65,19 @@
               <el-radio-button value="user">用户</el-radio-button>
               <el-radio-button value="assistant">助手</el-radio-button>
             </el-radio-group>
+          </div>
+          <!-- AI 自动过滤：把工具中间态/报错重试等无效消息自动置为「排除」，可撤销 -->
+          <div v-if="selectedConvId" class="msg-filter-row">
+            <el-button
+              size="small"
+              :icon="MagicStick"
+              :loading="autoFiltering"
+              :disabled="convMessages.length === 0"
+              @click="doAutoFilter"
+            >AI 自动过滤</el-button>
+            <el-button v-if="autoExcludedIds.length" size="small" text @click="undoAutoFilter">
+              撤销过滤（{{ autoExcludedIds.length }}）
+            </el-button>
           </div>
           <div v-if="!selectedConvId" class="msg-empty">
             <el-empty :image-size="50" description="请先选择任务" />
@@ -177,7 +200,59 @@
           </transition>
         </section>
 
-        <!-- 区域 2：蒸馏指令输入框 -->
+        <!-- 区域 2：技能概览（两段式第一步：AI 生成、人可修正；提炼时作硬约束） -->
+        <section class="glass-card section section-overview">
+          <div class="section-head">
+            <div class="section-title">
+              <el-icon><Document /></el-icon>
+              <span>技能概览</span>
+              <el-tag v-if="activeOverviewTask" size="small" effect="plain">{{ statusLabel(activeOverviewTask.status) }}</el-tag>
+            </div>
+            <div class="head-actions">
+              <el-button size="small" type="primary" :loading="overviewLoading" @click="doGenerateOverview">
+                {{ activeOverviewTask ? 'AI 重新生成概览' : 'AI 生成概览' }}
+              </el-button>
+            </div>
+          </div>
+          <div class="section-body">
+            <template v-if="activeOverviewTask && ovForm">
+              <el-form label-width="92px" size="small" class="ov-form">
+                <div class="config-row">
+                  <el-form-item label="中文名称">
+                    <el-input v-model="ovForm.nameZh" placeholder="如：停电排查与报障处理" />
+                  </el-form-item>
+                  <el-form-item label="英文标识">
+                    <el-input v-model="ovForm.slug" placeholder="kebab-case" />
+                  </el-form-item>
+                </div>
+                <el-form-item label="技能说明">
+                  <el-input v-model="ovForm.description" type="textarea" :rows="2" />
+                </el-form-item>
+                <el-form-item label="前置输入">
+                  <el-input v-model="ovForm.inputsText" type="textarea" :rows="2" placeholder="每行一项" />
+                </el-form-item>
+                <el-form-item label="处理过程">
+                  <el-input v-model="ovForm.stepsText" type="textarea" :rows="5" placeholder="每行一步（按顺序）" />
+                </el-form-item>
+                <el-form-item label="输出内容">
+                  <el-input v-model="ovForm.outputsText" type="textarea" :rows="2" placeholder="每行一项" />
+                </el-form-item>
+                <el-form-item label="触发词">
+                  <el-input v-model="ovForm.triggersText" placeholder="逗号分隔，如：停电排查, 报障, 召测电表" />
+                </el-form-item>
+                <div class="ov-actions">
+                  <el-button size="small" @click="saveOverview">保存修正</el-button>
+                  <el-button size="small" type="success" :loading="distillingFromOverview" @click="doDistillFromOverview">
+                    AI 提炼技能 →
+                  </el-button>
+                </div>
+              </el-form>
+            </template>
+            <el-empty v-else :image-size="60" description="勾选左屏消息后点「AI 生成概览」（两段式第一步）" />
+          </div>
+        </section>
+
+        <!-- 区域 3：蒸馏指令输入框 -->
         <section class="glass-card section section-instruction">
           <div class="section-head">
             <div class="section-title">
@@ -230,7 +305,7 @@
           <div class="section-head" @click="tasksCollapsed = !tasksCollapsed">
             <div class="section-title">
               <el-icon><List /></el-icon>
-              <span>蒸馏任务</span>
+              <span>草稿列表</span>
               <el-tag size="small" effect="plain">{{ distillStore.tasks.length }}</el-tag>
             </div>
             <div class="head-actions" @click.stop>
@@ -305,7 +380,7 @@
                           <el-icon><Refresh /></el-icon> 重新蒸馏
                         </el-button>
                         <el-button size="small" type="success" @click="doSave(task.id)" :loading="savingId === task.id">
-                          <el-icon><Check /></el-icon> 保存到 Skill 商店
+                          <el-icon><Upload /></el-icon> 发布为正式技能
                         </el-button>
                         <el-button size="small" type="danger" @click="distillStore.removeTask(task.id)">
                           <el-icon><Delete /></el-icon> 删除
@@ -396,7 +471,7 @@
                 :key="task.id"
                 class="skill-item"
                 :class="{ active: selectedTaskId === task.id }"
-                @click="selectedTaskId = task.id"
+                @click="openDraft(task.id)"
               >
                 <div class="skill-item-head">
                   <span class="skill-item-name">{{ task.title }}</span>
@@ -450,10 +525,23 @@
               </div>
             </div>
 
-            <!-- body 预览 -->
+            <!-- body：渲染预览 / 原文编辑 双视图 -->
             <div class="skill-section">
-              <div class="detail-label">Body（Markdown 原文）</div>
-              <pre class="skill-body-md">{{ currentParsed.body || '(空)' }}</pre>
+              <div class="skill-section-head">
+                <div class="detail-label">Body</div>
+                <el-radio-group v-model="previewMode" size="small">
+                  <el-radio-button value="preview">预览</el-radio-button>
+                  <el-radio-button value="edit">编辑</el-radio-button>
+                </el-radio-group>
+              </div>
+              <div v-if="previewMode === 'preview'" class="md-body" v-html="renderedBody"></div>
+              <template v-else>
+                <el-input v-model="editedMd" type="textarea" :rows="14" class="body-editor" />
+                <div class="editor-actions">
+                  <el-button size="small" type="primary" @click="saveEditedMd">保存修改</el-button>
+                  <el-button size="small" text @click="resetEditedMd">还原</el-button>
+                </div>
+              </template>
             </div>
 
             <!-- 改造结果预览（如果有） -->
@@ -470,13 +558,22 @@
         <div class="preview-actions">
           <el-button
             size="small"
-            type="success"
             :icon="Check"
             :loading="savingAsNew"
             :disabled="!currentPreviewMd"
-            @click="doSaveCurrentAsSkill"
+            @click="doSaveAsDraft"
           >
-            保存到 Skill 商店
+            存为草稿
+          </el-button>
+          <el-button
+            size="small"
+            type="success"
+            :icon="Upload"
+            :loading="publishingDraft"
+            :disabled="!currentPreviewMd"
+            @click="doPublishDraft"
+          >
+            发布为正式技能
           </el-button>
           <el-button
             size="small"
@@ -512,12 +609,13 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, reactive, onMounted } from 'vue';
+import { ref, computed, reactive, onMounted, watch } from 'vue';
 import {
   EditPen, Refresh, Check, Delete, MagicStick, ArrowDown, ArrowUp, ChatDotRound,
-  Upload, Download, Close, Setting, List, CircleClose, CircleCheck,
+  Upload, Download, Close, Setting, List, CircleClose, CircleCheck, Document,
   Lock, Unlock, View,
 } from '@element-plus/icons-vue';
+import MarkdownIt from 'markdown-it';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { useDistillStore, useChatStore, usePlatformStore, useAuthStore, useSkillStore } from '../stores';
 import { api } from '../api/client';
@@ -555,6 +653,25 @@ const refinedMd = ref('');
 const applying = ref(false);
 const savingAsNew = ref(false);
 
+// ── 对标 WorkMateAI 融合方案新增状态（2026-10-15）────────────────────────────
+/** 右屏 Body 双视图：渲染预览 / 原文编辑 */
+const previewMode = ref<'preview' | 'edit'>('preview');
+const editedMd = ref('');
+const md = new MarkdownIt({ html: false, linkify: true, breaks: true });
+/** 中屏当前正在编辑概览的草稿 id（两段式第一步的产物） */
+const activeDraftId = ref('');
+/** 概览表单（textarea 承载数组字段，保存时再切回数组） */
+const ovForm = reactive({
+  nameZh: '', slug: '', description: '',
+  inputsText: '', stepsText: '', outputsText: '', triggersText: '',
+});
+const overviewLoading = ref(false);
+const distillingFromOverview = ref(false);
+const publishingDraft = ref(false);
+/** AI 自动过滤：本次被自动置为「排除」的消息 id（可一键撤销） */
+const autoExcludedIds = ref<string[]>([]);
+const autoFiltering = ref(false);
+
 // 右屏
 const rightViewMode = ref<'saved' | 'distill'>('saved');
 const skillSearch = ref('');
@@ -566,6 +683,8 @@ onMounted(async () => {
   await distillStore.loadConfig();
   await chatStore.loadConversations();
   await skillStore.loadSkills();
+  // 草稿持久化：从 skill_draft 表拉回上次的蒸馏草稿（刷新/换设备不丢）
+  await distillStore.loadTasks();
 });
 
 const availableModels = computed(() => {
@@ -630,9 +749,9 @@ function permTitle(perm: string) {
   return '正常（点击切换权限）';
 }
 
-// 已完成的蒸馏任务（用于右屏蒸馏结果列表）
+// 已完成提炼的草稿（用于右屏蒸馏结果列表）：只要有 resultMd 就进列表（含已发布）
 const doneDistillTasks = computed(() =>
-  distillStore.tasks.filter((t) => t.status === 'done' && t.resultMd),
+  distillStore.tasks.filter((t) => !!t.resultMd),
 );
 
 // 当前选中的 Skill
@@ -660,6 +779,33 @@ const currentParsed = computed(() => {
   return distillStore.parseSkillMd(currentPreviewMd.value);
 });
 
+/** 渲染后的 Body（预览视图） */
+const renderedBody = computed(() => {
+  const body = currentParsed.value.body || '';
+  return body ? md.render(body) : '<p class="md-empty">（空）</p>';
+});
+
+/** 中屏正在编辑概览的草稿（两段式：概览中间态的载体） */
+const activeOverviewTask = computed(() =>
+  distillStore.tasks.find((t) => t.id === activeDraftId.value),
+);
+
+/** 草稿切换时把概览灌进表单（textarea 承载数组字段，人改完再切回数组） */
+watch(activeOverviewTask, (t) => {
+  const o = t?.overview;
+  if (!o) return;
+  ovForm.nameZh = o.nameZh || '';
+  ovForm.slug = o.slug || '';
+  ovForm.description = o.description || '';
+  ovForm.inputsText = (o.inputs || []).join('\n');
+  ovForm.stepsText = (o.steps || []).join('\n');
+  ovForm.outputsText = (o.outputs || []).join('\n');
+  ovForm.triggersText = (o.triggers || []).join(', ');
+}, { immediate: true });
+
+/** 预览内容变化时同步编辑态原文 */
+watch(currentPreviewMd, (v) => { editedMd.value = v || ''; }, { immediate: true });
+
 const sortedFilteredSkills = computed(() => {
   let list = skillStore.skills;
   if (skillSearch.value) {
@@ -676,14 +822,30 @@ const sortedFilteredSkills = computed(() => {
 
 function toggleExpand(id: string) {
   expandedTaskId.value = expandedTaskId.value === id ? '' : id;
+  // 展开草稿时同步中屏概览区与右屏预览
+  if (expandedTaskId.value === id) openDraft(id);
 }
 
-function statusTagType(status: string): 'info' | 'warning' | 'success' | 'danger' {
-  return status === 'done' ? 'success' : status === 'running' ? 'warning' : status === 'failed' ? 'danger' : 'info';
+function statusTagType(status: string): 'info' | 'warning' | 'success' | 'danger' | 'primary' {
+  if (status === 'overview') return 'info';
+  if (status === 'running') return 'warning';
+  if (status === 'done' || status === 'draft') return 'success';
+  if (status === 'published') return 'primary';
+  if (status === 'failed') return 'danger';
+  return 'info';
 }
 
 function statusLabel(status: string): string {
-  return status === 'done' ? '完成' : status === 'running' ? '蒸馏中' : status === 'failed' ? '失败' : '待处理';
+  const map: Record<string, string> = {
+    overview: '概览待修正',
+    pending: '待处理',
+    running: '处理中',
+    done: '已提炼',
+    draft: '已提炼',
+    published: '已发布',
+    failed: '失败',
+  };
+  return map[status] || status;
 }
 
 function formatTime(ts: number): string {
@@ -814,13 +976,13 @@ async function doRedistill(taskId: string) {
 async function doSave(taskId: string) {
   savingId.value = taskId;
   try {
-    const newId = await distillStore.saveAsSkill(taskId);
-    ElMessage.success('已保存到 Skill 商店');
-    // 切换到已保存视图并选中新保存的 Skill
+    const newId = await distillStore.publishDraft(taskId);
+    ElMessage.success('已发布为正式技能');
+    // 切换到已保存视图并选中新发布的 Skill
     rightViewMode.value = 'saved';
     selectedSkillId.value = newId;
   } catch (e: any) {
-    ElMessage.error(e?.message || '保存失败');
+    ElMessage.error(e?.message || '发布失败');
   } finally {
     savingId.value = '';
   }
@@ -846,27 +1008,6 @@ async function doRefineCurrent() {
     ElMessage.error(e?.message || '改造失败');
   } finally {
     refining.value = false;
-  }
-}
-
-/** 保存当前预览的 Markdown 到 Skill 商店 */
-async function doSaveCurrentAsSkill() {
-  const md = refinedMd.value || currentPreviewMd.value;
-  if (!md) {
-    ElMessage.warning('没有可保存的内容');
-    return;
-  }
-  savingAsNew.value = true;
-  try {
-    const newId = await distillStore.saveMdAsSkill(md);
-    ElMessage.success('已保存到 Skill 商店');
-    refinedMd.value = '';
-    rightViewMode.value = 'saved';
-    selectedSkillId.value = newId;
-  } catch (e: any) {
-    ElMessage.error(e?.message || '保存失败');
-  } finally {
-    savingAsNew.value = false;
   }
 }
 
@@ -923,6 +1064,187 @@ async function doTogglePublic(id: string, isPublic: boolean) {
 function onTogglePublic() {
   if (!selectedSkill.value) return;
   doTogglePublic(selectedSkill.value.id, !selectedSkill.value.isPublic);
+}
+
+// ── 对标 WorkMateAI 融合方案新增动作（2026-10-15）──────────────────────────
+
+/** 两段式·第一步：从勾选消息 AI 生成技能概览（人可后续修正） */
+async function doGenerateOverview() {
+  if (selectedMessages.value.length === 0 && !refineInstruction.value.trim()) {
+    ElMessage.warning('请先在左屏勾选消息');
+    return;
+  }
+  overviewLoading.value = true;
+  try {
+    const conv = chatStore.conversations.find((c) => c.id === selectedConvId.value);
+    const msgs = selectedMessages.value.length
+      ? selectedMessages.value
+      : [{ role: 'user', content: refineInstruction.value }];
+    const taskId = await distillStore.generateOverview(msgs, {
+      title: `概览：${conv?.title || '任务'}`,
+      sourceConvId: selectedConvId.value || undefined,
+    });
+    activeDraftId.value = taskId;
+    rightViewMode.value = 'distill';
+    selectedTaskId.value = taskId;
+    ElMessage.success('概览已生成，可手动修正后再提炼');
+  } catch (e: any) {
+    ElMessage.error(e?.message || '概览生成失败');
+  } finally {
+    overviewLoading.value = false;
+  }
+}
+
+/** 保存概览修正（silent=true 用于提炼前静默保存） */
+async function saveOverview(silent = false) {
+  if (!activeOverviewTask.value) return;
+  const lines = (s: string) => s.split('\n').map((x) => x.trim()).filter(Boolean);
+  await distillStore.updateOverview(activeDraftId.value, {
+    nameZh: ovForm.nameZh.trim(),
+    slug: ovForm.slug.trim().toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, ''),
+    description: ovForm.description.trim(),
+    inputs: lines(ovForm.inputsText),
+    steps: lines(ovForm.stepsText),
+    outputs: lines(ovForm.outputsText),
+    triggers: ovForm.triggersText.split(',').map((x) => x.trim()).filter(Boolean),
+  });
+  if (!silent) ElMessage.success('概览修正已保存');
+}
+
+/** 两段式·第二步：以（人修正过的）概览为硬约束提炼 SKILL.md */
+async function doDistillFromOverview() {
+  if (!activeOverviewTask.value) {
+    ElMessage.warning('请先生成概览');
+    return;
+  }
+  distillingFromOverview.value = true;
+  try {
+    await saveOverview(true);
+    await distillStore.distillFromOverview(activeDraftId.value);
+    rightViewMode.value = 'distill';
+    selectedTaskId.value = activeDraftId.value;
+    ElMessage.success('已提炼出 Skill，可在右屏预览/编辑');
+  } catch (e: any) {
+    ElMessage.error(e?.message || '提炼失败');
+  } finally {
+    distillingFromOverview.value = false;
+  }
+}
+
+/** AI 自动过滤：把无效消息（工具中间态/报错重试/空消息）自动置为「排除」 */
+async function doAutoFilter() {
+  if (convMessages.value.length === 0) return;
+  autoFiltering.value = true;
+  try {
+    const ids = await distillStore.autoFilter(
+      convMessages.value.map((m) => ({ id: m.id, role: m.role, content: m.content || '' })),
+    );
+    if (ids.length === 0) {
+      ElMessage.info('没有发现无效消息');
+      return;
+    }
+    for (const id of ids) {
+      msgPerm[id] = 'excluded';
+      msgChecked[id] = false;
+    }
+    autoExcludedIds.value = ids;
+    ElMessage.success(`已自动排除 ${ids.length} 条无效消息（可撤销）`);
+  } catch (e: any) {
+    ElMessage.error(e?.message || '自动过滤失败');
+  } finally {
+    autoFiltering.value = false;
+  }
+}
+
+/** 撤销自动过滤（只还原本次被自动排除的消息） */
+function undoAutoFilter() {
+  for (const id of autoExcludedIds.value) {
+    if (msgPerm[id] === 'excluded') msgPerm[id] = 'normal';
+  }
+  autoExcludedIds.value = [];
+  ElMessage.success('已撤销自动过滤');
+}
+
+/** 编辑态保存 Body 修改（草稿→写库；已保存 Skill→应用更新；改造结果→暂存内存） */
+async function saveEditedMd() {
+  if (!editedMd.value.trim()) return;
+  try {
+    if (rightViewMode.value === 'distill' && selectedDistillTask.value) {
+      await distillStore.updateResultMd(selectedDistillTask.value.id, editedMd.value);
+      ElMessage.success('草稿已更新');
+    } else if (selectedSkill.value) {
+      const parsed = distillStore.parseSkillMd(editedMd.value);
+      await skillStore.updateSkill(selectedSkill.value.id, {
+        description: parsed.description,
+        bodyMd: parsed.body,
+        triggers: parsed.triggers,
+      });
+      ElMessage.success('已应用修改');
+    } else {
+      refinedMd.value = editedMd.value;
+    }
+    previewMode.value = 'preview';
+  } catch (e: any) {
+    ElMessage.error(e?.message || '保存失败');
+  }
+}
+
+function resetEditedMd() {
+  editedMd.value = currentPreviewMd.value;
+}
+
+/** 存为草稿（默认落地动作，不进 Skill 商店） */
+async function doSaveAsDraft() {
+  const content = editedMd.value || currentPreviewMd.value;
+  if (!content) return;
+  savingAsNew.value = true;
+  try {
+    if (rightViewMode.value === 'distill' && selectedDistillTask.value) {
+      await distillStore.updateResultMd(selectedDistillTask.value.id, content);
+      selectedTaskId.value = selectedDistillTask.value.id;
+    } else {
+      const id = await distillStore.saveMdAsDraft(content);
+      rightViewMode.value = 'distill';
+      selectedTaskId.value = id;
+      activeDraftId.value = id;
+    }
+    ElMessage.success('已存为草稿');
+  } catch (e: any) {
+    ElMessage.error(e?.message || '保存失败');
+  } finally {
+    savingAsNew.value = false;
+  }
+}
+
+/** 发布为正式技能（显式动作；概览中文名作为技能显示名） */
+async function doPublishDraft() {
+  publishingDraft.value = true;
+  try {
+    let skillId = '';
+    if (rightViewMode.value === 'distill' && selectedDistillTask.value) {
+      // 编辑态有未保存内容：先落草稿再发布，避免发布陈旧内容
+      if (editedMd.value && editedMd.value !== selectedDistillTask.value.resultMd) {
+        await distillStore.updateResultMd(selectedDistillTask.value.id, editedMd.value);
+      }
+      skillId = await distillStore.publishDraft(selectedDistillTask.value.id);
+    } else {
+      skillId = await distillStore.saveMdAsSkill(editedMd.value || currentPreviewMd.value);
+    }
+    ElMessage.success('已发布为正式技能');
+    rightViewMode.value = 'saved';
+    selectedSkillId.value = skillId;
+  } catch (e: any) {
+    ElMessage.error(e?.message || '发布失败');
+  } finally {
+    publishingDraft.value = false;
+  }
+}
+
+/** 选中草稿（中屏概览区与右屏预览同步到它） */
+function openDraft(taskId: string) {
+  activeDraftId.value = taskId;
+  selectedTaskId.value = taskId;
+  rightViewMode.value = 'distill';
 }
 </script>
 
@@ -1252,5 +1574,66 @@ function onTogglePublic() {
 @media (max-width: 1023px) {
   .pane table, .pane pre, .pane .el-table { max-width: 100%; }
   .pane .el-table__body-wrapper, .pane .el-scrollbar__wrap { overflow-x: auto; }
+}
+
+/* ===== 对标 WorkMateAI 融合方案新增样式（2026-10-15）===== */
+/* 顶部 4 步流程引导条 */
+.flow-guide {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  margin-top: 8px; font-size: 12px; color: var(--color-text-secondary);
+}
+.flow-step {
+  padding: 2px 8px; border-radius: 10px;
+  background: var(--btn-bg); border: 1px solid var(--glass-border);
+}
+.flow-arrow { opacity: 0.6; }
+
+/* 左屏：AI 自动过滤行 */
+.msg-filter-row {
+  display: flex; align-items: center; gap: 8px;
+  margin-bottom: 8px; flex-shrink: 0;
+}
+
+/* 中屏：技能概览表单 */
+.ov-form { max-width: 100%; }
+.ov-form .el-form-item { margin-bottom: 10px; }
+.ov-actions { display: flex; gap: 8px; margin-top: 4px; }
+
+/* 右屏：Body 双视图 */
+.skill-section-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 8px; margin-bottom: 6px;
+}
+.md-body {
+  background: rgba(15,23,42,0.03); padding: 12px; border-radius: 6px;
+  font-size: 13px; line-height: 1.7; max-height: 320px; overflow: auto;
+  word-break: break-word;
+}
+.md-body :deep(h1), .md-body :deep(h2), .md-body :deep(h3) { font-size: 14px; margin: 10px 0 6px; }
+.md-body :deep(h4), .md-body :deep(h5) { font-size: 13px; margin: 8px 0 4px; }
+.md-body :deep(ul), .md-body :deep(ol) { padding-left: 20px; margin: 6px 0; }
+.md-body :deep(p) { margin: 6px 0; }
+.md-body :deep(code) {
+  background: rgba(15,23,42,0.08); padding: 1px 4px; border-radius: 3px;
+  font-family: "JetBrains Mono", monospace; font-size: 12px;
+}
+.md-body :deep(pre) {
+  background: rgba(15,23,42,0.06); padding: 8px 10px; border-radius: 6px; overflow-x: auto;
+}
+.md-empty { color: var(--color-text-secondary); }
+.body-editor :deep(textarea) { font-family: "JetBrains Mono", monospace; font-size: 12px; }
+.editor-actions { display: flex; gap: 6px; margin-top: 6px; }
+
+/* 左屏消息气泡化回放（用户右 / 助手左），勾选与三态权限档保留 */
+.msg-check-item .msg-check-body {
+  border-radius: 12px; padding: 8px 10px; max-width: 88%;
+  background: rgba(15,23,42,0.04);
+}
+.msg-check-item.role-user { flex-direction: row-reverse; }
+.msg-check-item.role-user .msg-check-body {
+  background: color-mix(in srgb, var(--color-primary) 10%, transparent);
+}
+.msg-check-item.role-assistant .msg-check-body {
+  background: color-mix(in srgb, var(--color-accent) 8%, transparent);
 }
 </style>

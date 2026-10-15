@@ -3,9 +3,11 @@
 // 触发判据（调用方把关）：同一主题的 ✅步骤 在经验档案里累计 ≥2 次（appendExperienceEntry
 // 返回 entryCount>=2 且 deduped=true）→ 说明这是"重复出现的完整流程"，值得固化为技能。
 //
-// 产出：`.yan-zhi/skill-drafts/<slug>/SKILL.md` —— **不静默生效**：
-//   · drafts 目录不在项目技能加载路径（loadProjectSkills 只扫 .yan-zhi/skills/）
-//   · 会话内回一条轻量消息，用户确认后移入 .yan-zhi/skills/（或让模型调 api_skill_create 入库）
+// 产出（双写，2026-10-15 P2-13）：
+//   · `.yan-zhi/skill-drafts/<slug>/SKILL.md` —— 落盘留档；
+//   · `skill_draft` 表一行 —— 与手动蒸馏（蒸馏工作台）汇入同一个草稿列表，UI 可见可编辑。
+// 仍然**不静默生效**：drafts 目录不在项目技能加载路径（loadProjectSkills 只扫 .yan-zhi/skills/），
+// 落库的草稿也只是 status='draft'。会话内回一条轻量消息指向蒸馏工作台，用户确认后才发布为正式技能。
 import { mkdir, writeFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { createLogger } from './logger.js';
@@ -33,6 +35,8 @@ export interface SkillDraftResult {
   /** true = 草稿已存在（跳过重写，不重复打扰） */
   existed?: boolean;
   reason?: string;
+  /** 完整 SKILL.md 正文（front-matter + body）；调用方据此落 `skill_draft` 行 */
+  resultMd?: string;
 }
 
 function slugify(name: string): string {
@@ -93,10 +97,11 @@ export async function proposeSkillDraft(input: SkillDraftInput): Promise<SkillDr
       body,
     ].filter((l) => l !== null).join('\n');
 
+    const md = `${fm}\n`;
     await mkdir(dir, { recursive: true });
-    await writeFile(path.join(dir, 'SKILL.md'), `${fm}\n`, 'utf-8');
+    await writeFile(path.join(dir, 'SKILL.md'), md, 'utf-8');
     logger.info(`[skill-distill] 草稿已生成: ${slug}（触发：${input.triggerTopic}）`);
-    return { ok: true, name, slug, path: path.join(dir, 'SKILL.md'), existed };
+    return { ok: true, name, slug, path: path.join(dir, 'SKILL.md'), existed, resultMd: md };
   } catch (e: any) {
     logger.warn('[skill-distill] 提炼失败:', e?.message || e);
     return { ok: false, reason: e?.message || String(e) };
@@ -107,8 +112,7 @@ export async function proposeSkillDraft(input: SkillDraftInput): Promise<SkillDr
 export function skillDraftNotifyText(r: SkillDraftResult): string | null {
   if (!r.ok || r.existed) return null;
   return [
-    `🔁 检测到重复任务流程（${r.name}），已自动生成技能草稿：`,
-    `📍 ${r.path}`,
-    '该草稿**尚未启用**。确认没问题后，把它移入 `.yan-zhi/skills/` 目录（或直接说"把草稿 X 做成技能"让我用 api_skill_create 入库）即可在后续任务中自动生效；不需要就忽略或删掉。',
+    `🔁 检测到重复任务流程（${r.name}），已自动生成技能草稿。`,
+    '到「Skill 蒸馏」页的草稿列表里可以查看/编辑这份草稿；确认没问题后点「发布为正式技能」即可在后续任务中自动生效，不需要就删掉。',
   ].join('\n');
 }

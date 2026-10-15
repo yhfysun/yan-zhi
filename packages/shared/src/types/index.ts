@@ -466,6 +466,31 @@ export interface Skill {
   createdAt: number;
 }
 
+/**
+ * 技能概览（2026-10-15，Skill 蒸馏两段式生成流程的中间态）：
+ * 勾选消息 → AI 生成概览（人可修正）→ 概览在提炼时做硬约束 → AI 提炼成 SKILL.md。
+ * 对标 WorkMateAI 的「技能概览」表单（中文名称/英文标识/说明/前置输入/处理过程/输出内容）。
+ */
+export interface SkillOverview {
+  /** 中文名称，如「停电排查与报障处理」 */
+  nameZh: string;
+  /** 英文标识 kebab-case，如 power-outage-investigation-and-reporting */
+  slug: string;
+  /** 一句话说明 */
+  description: string;
+  /** 前置输入 */
+  inputs: string[];
+  /** 处理过程概述（编号步骤） */
+  steps: string[];
+  /** 输出内容 */
+  outputs: string[];
+  /** 触发词（沿用既有 triggers 概念） */
+  triggers: string[];
+}
+
+/** 蒸馏草稿状态机：overview（仅概览）→ draft（已提炼 SKILL.md）→ published（已发布为 skill 表） */
+export type SkillDraftStatus = 'overview' | 'draft' | 'published';
+
 /** 模型调用日志 */
 export interface ModelCall {
   id: string;

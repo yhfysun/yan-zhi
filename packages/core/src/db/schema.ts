@@ -189,6 +189,24 @@ CREATE TABLE IF NOT EXISTS skill (
   created_at INTEGER NOT NULL
 );
 
+-- Skill 蒸馏草稿（2026-10-15，对标 WorkMateAI 融合方案 P0-1）
+-- 三屏工作台的蒸馏任务从内存改落库，刷新/换设备不丢；
+-- overview_json = 两段式生成的「技能概览」中间态（可编辑），result_md = 提炼出的 SKILL.md 全文。
+CREATE TABLE IF NOT EXISTS skill_draft (
+  id TEXT PRIMARY KEY,
+  user_id TEXT,
+  title TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'overview',
+  source_conv_id TEXT,
+  source_msg_ids_json TEXT,
+  overview_json TEXT,
+  result_md TEXT,
+  error TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_skill_draft_user ON skill_draft(user_id, updated_at DESC);
+
 -- ★ model_call 表已删除（P4，2026-10-04）：建表后全仓库零写入零读取（死表）；
 --   模型调用记录实际以 message 表 + llm-logs 只读路由（联表查询）为准。
 --   老库里的遗留表不迁移不清理（无引用，无害）。

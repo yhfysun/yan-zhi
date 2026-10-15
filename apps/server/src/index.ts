@@ -35,6 +35,7 @@ import mcpCredentialRoutes from './routes/mcp-credentials.js';
 import mcpAccessKeyRoutes from './routes/mcp-access-keys.js';
 import { createInboundMcpRouter } from './mcp/inbound-server.js';
 import skillRoutes from './routes/skills.js';
+import skillDraftRoutes from './routes/skill-drafts.js';
 import toolsRoutes from './routes/tools.js';
 import toolMarketplaceRoutes from './routes/tool-marketplace-sources.js';
 import skillMarketplaceRoutes from './routes/skill-marketplace-sources.js';
@@ -167,6 +168,8 @@ app.use('/api/mcp-access-keys', mcpAccessKeyRoutes);
 // 入站 MCP 服务端：作为 MCP server 被外部客户端连接（SSE + Streamable HTTP）
 app.use('/mcp', createInboundMcpRouter());
 app.use('/api/skills', skillRoutes);
+// Skill 蒸馏草稿（2026-10-15）：三屏工作台的蒸馏任务持久化
+app.use('/api/skill-drafts', skillDraftRoutes);
 app.use('/api/tools', toolsRoutes);
 app.use('/api/tool-marketplace', toolMarketplaceRoutes);
 app.use('/api/skill-marketplace', skillMarketplaceRoutes);

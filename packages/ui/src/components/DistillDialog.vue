@@ -61,6 +61,9 @@
             <el-button size="small" @click="runDistill" :loading="distilling">
               <el-icon><Refresh /></el-icon> 重新蒸馏
             </el-button>
+            <el-button size="small" @click="saveDraft" :loading="savingDraft">
+              <el-icon><DocumentAdd /></el-icon> 存为草稿
+            </el-button>
             <el-button size="small" type="success" @click="saveSkill" :loading="saving">
               <el-icon><Check /></el-icon> 保存到 Skill 商店
             </el-button>
@@ -77,7 +80,7 @@
 
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue';
-import { MagicStick, Loading, EditPen, Refresh, Check } from '@element-plus/icons-vue';
+import { MagicStick, Loading, EditPen, Refresh, Check, DocumentAdd } from '@element-plus/icons-vue';
 import { ElMessage } from 'element-plus';
 import { useDistillStore, usePlatformStore } from '../stores';
 
@@ -97,6 +100,7 @@ const platformStore = usePlatformStore();
 const distilling = ref(false);
 const refining = ref(false);
 const saving = ref(false);
+const savingDraft = ref(false);
 const result = ref('');
 const refineInstruction = ref('');
 
@@ -155,6 +159,22 @@ async function runRefine() {
     ElMessage.error(e?.message || '改造失败');
   } finally {
     refining.value = false;
+  }
+}
+
+/** 存为草稿：进蒸馏工作台的草稿列表，不进 Skill 商店（弹窗保持「一键直通」的轻量路径） */
+async function saveDraft() {
+  if (!result.value) return;
+  savingDraft.value = true;
+  try {
+    const title = distillStore.parseSkillMd(result.value).name || '蒸馏草稿';
+    await distillStore.saveMdAsDraft(result.value, title);
+    ElMessage.success('已存为草稿，可在「Skill 蒸馏」页继续编辑');
+    emit('update:visible', false);
+  } catch (e: any) {
+    ElMessage.error(e?.message || '保存失败');
+  } finally {
+    savingDraft.value = false;
   }
 }
 

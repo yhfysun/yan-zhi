@@ -837,6 +837,30 @@ try { db.exec('ALTER TABLE skill ADD COLUMN is_public INTEGER NOT NULL DEFAULT 0
 //   任务启动时同步落盘到 <工作目录>/.yan-zhi/skills/<skill名>/ 供 file_read 读取。
 try { db.exec('ALTER TABLE skill ADD COLUMN files_json TEXT'); } catch {}
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Skill 蒸馏草稿（2026-10-15，对标 WorkMateAI 融合方案 P0-1）
+// 三屏工作台的蒸馏任务此前是前端内存 ref（刷新即丢），现在落库持久化。
+// status: 'overview'（仅概览）→ 'draft'（已提炼出 SKILL.md）→ 'published'（已发布为正式技能）
+// overview_json = SkillOverview JSON（中文名/英文标识/说明/输入/步骤/输出，可编辑的中间态）
+// result_md = 提炼出的 SKILL.md 全文；source_msg_ids_json = 蒸馏时勾选的消息 id（重蒸需要）
+// ─────────────────────────────────────────────────────────────────────────────
+try {
+  db.exec(`CREATE TABLE IF NOT EXISTS skill_draft (
+    id TEXT PRIMARY KEY,
+    user_id TEXT,
+    title TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'overview',
+    source_conv_id TEXT,
+    source_msg_ids_json TEXT,
+    overview_json TEXT,
+    result_md TEXT,
+    error TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  )`);
+  db.exec('CREATE INDEX IF NOT EXISTS idx_skill_draft_user ON skill_draft(user_id, updated_at DESC)');
+} catch { /* 已存在 */ }
+
 // 迁移 agent 表（添加商城相关字段，如果 agent 表存在）
 try {
   for (const col of ['source', 'remote_source_id']) {
