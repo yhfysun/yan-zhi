@@ -305,7 +305,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue';
+import { ref, reactive, computed, watch, onMounted, onBeforeUnmount, nextTick, markRaw } from 'vue';
 import { clampMenuPos } from '../../utils/menuPosition';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import {
@@ -430,51 +430,44 @@ const ctxMenu = ref<{ visible: boolean; x: number; y: number; items: MenuItem[] 
   visible: false, x: 0, y: 0, items: [],
 });
 
+/** 打开右击菜单（四处菜单共用；原先各写一遍 ctxMenu.value = {...}）。
+ *  ★ items 必须 markRaw：MenuItem.icon 是**组件对象**，塞进 ref 后被 reactive() 深度代理 →
+ *    `<component :is="item.icon">` 拿到代理，Vue 在 createVNode 的 isProxy(type) 检查里
+ *    每次渲染都警告「Component that was made a reactive object」（同 SceneCarousel 图标问题）。
+ *    标记落在数组自身，ctxMenu 的 visible/x/y 仍是响应式，菜单开合不受影响。 */
+function showCtxMenu(e: MouseEvent, items: MenuItem[]) {
+  ctxMenu.value = { visible: true, ...clampMenuPos(e), items: markRaw(items) };
+}
+
 function openBlankMenu(e: MouseEvent) {
   if (formVisible.value) return;
-  ctxMenu.value = {
-    visible: true,
-    ...clampMenuPos(e),
-    items: [
-      { label: '新建定时任务', icon: ChatDotRound, handler: () => openCreate() },
-      { label: '新建分组', icon: FolderOpened, handler: () => createGroupInline() },
-    ],
-  };
+  showCtxMenu(e, [
+    { label: '新建定时任务', icon: ChatDotRound, handler: () => openCreate() },
+    { label: '新建分组', icon: FolderOpened, handler: () => createGroupInline() },
+  ]);
 }
 
 function openGroupMenu(e: MouseEvent, group: { id: string; name: string }) {
-  ctxMenu.value = {
-    visible: true,
-    ...clampMenuPos(e),
-    items: [
-      { label: '新建定时任务', icon: ChatDotRound, handler: () => openCreate(group.id) },
-      { label: '重命名分组', icon: EditPen, handler: () => startGroupRename(group.id, group.name) },
-      { label: '删除分组', icon: Delete, handler: () => deleteGroupConfirm(group.id, group.name), danger: true },
-    ],
-  };
+  showCtxMenu(e, [
+    { label: '新建定时任务', icon: ChatDotRound, handler: () => openCreate(group.id) },
+    { label: '重命名分组', icon: EditPen, handler: () => startGroupRename(group.id, group.name) },
+    { label: '删除分组', icon: Delete, handler: () => deleteGroupConfirm(group.id, group.name), danger: true },
+  ]);
 }
 
 function openUngroupedMenu(e: MouseEvent) {
-  ctxMenu.value = {
-    visible: true,
-    ...clampMenuPos(e),
-    items: [
-      { label: '新建定时任务', icon: ChatDotRound, handler: () => openCreate() },
-      { label: '新建分组', icon: FolderOpened, handler: () => createGroupInline() },
-    ],
-  };
+  showCtxMenu(e, [
+    { label: '新建定时任务', icon: ChatDotRound, handler: () => openCreate() },
+    { label: '新建分组', icon: FolderOpened, handler: () => createGroupInline() },
+  ]);
 }
 
 function openTaskMenu(e: MouseEvent, task: ScheduledTask) {
-  ctxMenu.value = {
-    visible: true,
-    ...clampMenuPos(e),
-    items: [
-      { label: '编辑', icon: EditPen, handler: () => openEdit(task) },
-      { label: '立即运行', icon: VideoPlay, handler: () => onRun(task) },
-      { label: '删除', icon: Delete, handler: () => onDelete(task), danger: true },
-    ],
-  };
+  showCtxMenu(e, [
+    { label: '编辑', icon: EditPen, handler: () => openEdit(task) },
+    { label: '立即运行', icon: VideoPlay, handler: () => onRun(task) },
+    { label: '删除', icon: Delete, handler: () => onDelete(task), danger: true },
+  ]);
 }
 
 function closeCtxMenu() {

@@ -18,7 +18,7 @@
 //   （a_builtin_translate_agent / a_builtin_business_agent / a_builtin_douyin_agent），
 //   因为术语一致性、回译校验、经营测算、带货+引流两线配合这些方法论需要专属提示词
 //   + 专属技能，复用默认助手会串味。
-import type { Component } from 'vue';
+import { markRaw, type Component } from 'vue';
 import {
   Suitcase, Monitor, Brush, Coin, TrendCharts, Promotion, User, Sell,
   ScaleToOriginal, DataAnalysis, Service, Connection, Notebook, Shop, VideoCamera,
@@ -378,6 +378,20 @@ export const SCENES: SceneDef[] = [
     isMode: true,
   },
 ];
+
+// ★★ 图标必须 markRaw（2026-10-14，用户报 Vue 警告「Component that was made a reactive object」）。
+//   icon 是**组件对象**，而本数组会被 stores/sceneConfig.ts 放进 `ref<SceneDef[]>` → 深度响应式，
+//   每个元素被 reactive() 代理后，取 `s.icon` 又会把组件再代理一层。Vue 在 createVNode 里对
+//   `isProxy(type)` 有专门检查：命中即警告（且**每次渲染创建 vnode 都判一次，不去重**）
+//   —— SceneCarousel 13 张卡一次渲染刷 13 条，任何重渲染/重挂载再刷一批（表现为「刷新后越来越多」）。
+//   markRaw 的标记（__v_skip）落在组件对象**自身**，因此标记一次后放进任何响应式容器都不会再被代理；
+//   就地标记（不 map 出新对象）以保持 SCENES 元素与 sceneByKey / WELCOME_SCENES 同一。
+//   ★ 与 config/sceneIcon.ts 的映射表标记**互为冗余**（两处 import 的是同一批 element-plus 单例，
+//     标记的是同一个对象）——刻意保留：本文件不依赖另一模块的副作用，将来新增图标（或改用别的
+//     图标源）时这里自然覆盖，不必回头核对 sceneIcon.ts 的登记表。devTpls.ts 的图标大部分不在
+//     那张表里，那边的标记是唯一保障（撤回即触发 Vue 警告）。
+//   本循环覆盖 SCENES 全量，新增场景卡无需逐条改。
+SCENES.forEach((s) => markRaw(s.icon));
 
 /** 欢迎卡渲染子集：13 张办公岗位卡（排除 code/ops/sec/wf 四个模式场景，按 isMode 过滤）。
  *  ★ 注意：运行时以 stores/sceneConfig.ts 拉取的后端 scene_config 为准（含用户自建模式），

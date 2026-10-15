@@ -6,7 +6,7 @@
 //   a_builtin_code_agent / a_builtin_code_explorer / a_builtin_backend_dev / a_builtin_ui_designer
 //   a_builtin_frontend_dev / a_builtin_java_agent / a_builtin_cicd_agent
 // ⚠️ skillIds 必须是 db.ts builtinSkillDefaults 里已存在的 id
-import type { Component } from 'vue';
+import { markRaw, type Component } from 'vue';
 import {
   FolderAdd, SetUp, Cpu, Share, Reading, DocumentChecked,
   Connection, Picture, Brush, MagicStick, Position, Odometer, Coffee, Box,
@@ -183,3 +183,9 @@ export const DEV_TPLS: DevTpl[] = [
     examples: ['检测当前项目并生成发布流水线', '把当前项目打包发到测试环境'],
   },
 ];
+
+// ★★ 图标必须 markRaw —— 同 config/scenes.ts：icon 是组件对象，DEV_TPLS 会进 SceneCarousel 渲染，
+//   一旦被父层放进响应式状态（computed/ref/store）即被 reactive() 代理，Vue 在 createVNode 的
+//   `isProxy(type)` 检查里每次渲染都警告「Component that was made a reactive object」（不去重）。
+//   标记落在组件对象自身（__v_skip），故此处标记一次，任何容器都不会再代理它。
+DEV_TPLS.forEach((t) => markRaw(t.icon));
