@@ -1971,6 +1971,34 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
                 try { rt = JSON.stringify((result as any).result); } catch { rt = String((result as any).result); }
                 if (rt.length > 8000) rt = rt.slice(0, 8000) + `…(截断，原长 ${rt.length})`;
                 text = `Executed in page. URL: ${(result as any).url || ''}\nResult: ${rt || '(undefined)'}`;
+              } else if (action === 'navigate' || action === 'new_tab') {
+                // ★★★ 2026-10-15「导航跑偏」：与 server 的 formatBridgeResult **同口径**新增本分支。
+                //   此前 navigate 落末尾的 `JSON.stringify(result).slice(0, 500)` 兜底 —— 长 note
+                //   （隐藏态出路、接口地址引导等）会被截断吞掉，而那正是模型最需要的纠偏信息。
+                const nr = result as any;
+                const parts: string[] = [];
+                if (action === 'new_tab' && nr.tabId) parts.push(`已在新标签页打开（tabId=${nr.tabId}）。后续读取该页用读取类工具的 tabId=${nr.tabId}。`);
+                if (nr.url) parts.push(`URL: ${nr.url}`);
+                if (nr.title) parts.push(`Title: ${nr.title}`);
+                if (nr.loading) parts.push('状态: 仍在加载（不是失败——用 browser_wait_for / browser_get_page_content 等待，不要换 URL 重试）。');
+                if (nr.visibilityState) parts.push(`页面可见性: ${nr.visibilityState}`);
+                if (nr.warning) parts.push(`⚠ ${nr.warning}`);
+                if (nr.note) parts.push(nr.note);
+                text = parts.length ? parts.join('\n') : JSON.stringify(result).slice(0, 500);
+              } else if (action === 'get_tabs') {
+                // ★ 同上：标注哪些页可关（agent 打开的）+ 卡死页出路 —— 模型才会真的用 close_tab 清场
+                const tabs = Array.isArray((result as any).tabs) ? (result as any).tabs : [];
+                const lines = tabs.map((t: any) =>
+                  `- tabId=${t.tabId}${t.active ? ' [当前]' : ''} ${t.agentOpened ? '[可关]' : '[用户页·勿关]'} ${t.loading ? '[加载中]' : ''} ${t.title || t.url || '空白'}`);
+                const closable = tabs.filter((t: any) => t.agentOpened).map((t: any) => String(t.tabId));
+                const hint = closable.length
+                  ? `\n\n可用 browser_close_tab({ "tabIds": [${closable.map((id: string) => JSON.stringify(id)).join(', ')}] }) 一次关掉这些 agent 打开的页（任务收尾或页面卡死时清理）。`
+                  : '';
+                const stuck = tabs.filter((t: any) => t.loading && t.agentOpened).map((t: any) => t.tabId);
+                const stuckHint = stuck.length
+                  ? `\n⚠ tabId=${stuck.join(', ')} 处于**加载中**：若长时间不变即为卡死页，不要靠反复导航"唤醒"，不需要时用 browser_close_tab 关掉。`
+                  : '';
+                text = `浏览页 ${tabs.length} 个：\n${lines.join('\n') || '(无)'}${hint}${stuckHint}`;
               } else {
                 text = result.success ? `${action} 执行成功` : JSON.stringify(result).slice(0, 500);
               }
