@@ -272,3 +272,36 @@ describe('⑧ ★★★ 端到端真跑：不依赖渲染层（本任务的验�
     expect(calls[0].convId).toBe('conv-e2e');
   });
 });
+
+describe('⑨ ★★★ 显式 tabId 必须真的送达执行面（否则"静默读错页"）', () => {
+  it('★★★ server 的 callBrowserBridge 把 args.tabId 提到顶层，主进程才拿得到', async () => {
+    // 实测缺口（2026-10-15 自查）：工具 schema 把 tabId 放在 args 里，而
+    // `browser-bridge.cjs` 读的是 **body 顶层** tabId ⇒ 不转发时模型显式传的 tabId
+    // 被静默忽略，动作落回会话锚页：`browser_get_page_content({tabId:'tab-3'})` 实际读锚页
+    // 且不报错 —— A4 消灭过的"静默错页"家族。工具描述却逐字承诺"可传 tabId 读取指定标签页"。
+    const { callBrowserBridge } = await import('../src/browser-bridge.js');
+    const savedUrl = process.env.YZ_BROWSER_BRIDGE_URL;
+    const savedTok = process.env.YZ_BROWSER_BRIDGE_TOKEN;
+    process.env.YZ_BROWSER_BRIDGE_URL = `http://127.0.0.1:${port}${PATH}`;
+    process.env.YZ_BROWSER_BRIDGE_TOKEN = token;
+    try {
+      calls.length = 0;
+      stubResult = { ok: true };
+      await callBrowserBridge('conv-tabid', 'browser_get_page_content', { tabId: 'tab-3' }, 5000);
+      expect(calls.length).toBe(1);
+      expect(calls[0].tabId, '★ args.tabId 未提到顶层 → 主进程 resolveTarget 拿不到 → 动作落回锚页（静默读错页）')
+        .toBe('tab-3');
+      // 纯数字写法同样送达（主进程 tabIdCandidates 负责归一成 tab-N）
+      calls.length = 0;
+      await callBrowserBridge('conv-tabid', 'browser_get_page_content', { tabId: 3 }, 5000);
+      expect(String(calls[0].tabId), '★ 纯数字 tabId 未送达（模型按 schema 传 number 会被忽略）').toBe('3');
+      // 不传 tabId 时顶层为空 → 主进程按锚解析，行为不变
+      calls.length = 0;
+      await callBrowserBridge('conv-tabid', 'browser_get_page_content', {}, 5000);
+      expect(calls[0].tabId ?? null, '★ 未显式指定时不应凭空给一个 tabId').toBeNull();
+    } finally {
+      if (savedUrl === undefined) delete process.env.YZ_BROWSER_BRIDGE_URL; else process.env.YZ_BROWSER_BRIDGE_URL = savedUrl;
+      if (savedTok === undefined) delete process.env.YZ_BROWSER_BRIDGE_TOKEN; else process.env.YZ_BROWSER_BRIDGE_TOKEN = savedTok;
+    }
+  });
+});

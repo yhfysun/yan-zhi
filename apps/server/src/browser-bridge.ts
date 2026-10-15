@@ -98,11 +98,21 @@ export async function callBrowserBridge(
 
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), timeoutMs > 0 ? timeoutMs : 60000);
+  const argsObj: Record<string, unknown> = (args && typeof args === 'object') ? (args as Record<string, unknown>) : {};
+  // ★★★ 2026-10-15「导航跑偏」（复审后自查发现的最后一处静默错页）：
+  //   工具 schema 把 `tabId` 放在 **args** 里，而主进程 `resolveBrowserTarget` 读的是
+  //   **body 顶层** `tabId`（`browser-bridge.cjs` 的 `body.tabId`）。此前不转发 ⇒
+  //   **模型显式传的 tabId 被静默忽略**，动作落回会话锚页：
+  //     `browser_get_page_content({ tabId: 'tab-3' })` 实际读的是锚页，且**不报错**
+  //     —— 正是 A4 消灭过的"静默错页"家族（工具描述却逐字承诺"可传 tabId 读取指定
+  //     标签页，不必先切换标签页"）。
+  //   ⇒ 把 args.tabId 提到顶层（args 里保留原样：主进程另用它判"是否显式指定"）。
+  const explicitTabId = (argsObj as any).tabId;
   try {
     const res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', [TOKEN_HEADER]: token },
-      body: JSON.stringify({ convId, action, args: args || {} }),
+      body: JSON.stringify({ convId, action, tabId: explicitTabId ?? undefined, args: argsObj }),
       signal: ac.signal,
     });
     // 404 = 鉴权失败/路径不对（桥刻意不区分，见桥文件）→ 明确报错而非静默
