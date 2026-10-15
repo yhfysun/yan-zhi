@@ -23,6 +23,7 @@ import {
   listExperienceSummaries, type ExperienceKind,
 } from './services/experience.js';
 import { proposeSkillDraft, skillDraftNotifyText } from './services/skill-distill.js';
+import { insertSkillDraft } from './services/skill-draft-store.js';
 import { backendTaskPlan, backendTaskStep, loadTaskPlanFromFile, savePlanJson } from './services/task-plan-file.js';
 import { summarizeResourceDirsSync } from './services/space-resources.js';
 // 提示词快照：构建（只存 id 引用）与按需回填的唯一定义处 —— 修单会话 O(n²) 的快照膨胀
@@ -2028,6 +2029,53 @@ function markDuplicateNavigations(toolCalls: any[]): Set<string> {
 }
 
 
+/**
+ * call_agent 子智能体 id 别名（pageAgent 系）。
+ * ★ 2026-10-15 从 runSubAgentImpl 内提出为模块级：isBrowserCapableSubAgent 也要做同一
+ *   归一化 —— 同一语义只有一处实现（本仓库多次吃过"平行实现漂移"的亏）。
+ */
+const SUBAGENT_ALIASES: Record<string, string> = {
+  pageAgent: 'a_builtin_page_agent',
+  page_agent: 'a_builtin_page_agent',
+  pageagent: 'a_builtin_page_agent',
+};
+
+/**
+ * call_agent 目标子智能体是否挂载了浏览器工具（「导航跑偏」P0-① 判据，2026-10-15）。
+ *
+ * ★ 背景（实测 10-14 晚 conv 13822a0d）：同批并发的两个 pageAgent 子智能体各自
+ *   navigate，全部打到同一个会话锚 tab-1 上 —— A 刚导航完 B 立刻覆盖，A 读到 B 的页
+ *   → 判定"我的导航没生效" → 再导航 → 乒乓 57 次。per-tab 动作串行化（8d32f6d）只保证
+ *   "动作不并发"，管不了"两个逻辑流先后打到同一页"的互踩 —— 浏览器是单活动页状态机，
+ *   **驱动它的执行流必须互斥**。
+ *
+ * ★ 为什么按"挂了 browser_* 工具"判：pageAgent 是浏览器操作助手，浏览器活全在子智能体里
+ *   （库里实证 57 次 navigate 全带 sub_agent_name），"禁子智能体用浏览器"不可行；
+ *   保留并发能力、只把"会碰浏览器的流"串行化，是行为面最小的修法。
+ *
+ * ★ 宁可串行不可漏判：agentId 解析不出 / 查不到行 / 配置损坏，一律按**会碰浏览器**处理。
+ */
+function isBrowserCapableSubAgent(agentId: unknown, userId: string): boolean {
+  const raw = String(agentId ?? '').trim();
+  if (!raw) return true;
+  const resolvedId = SUBAGENT_ALIASES[raw] || raw;
+  try {
+    const row = db
+      .prepare('SELECT builtin_tool_ids FROM agent WHERE id = ? AND (user_id = ? OR is_public = 1)')
+      .get(resolvedId, userId) as any;
+    if (!row) return true;
+    let ids: string[] = [];
+    try { ids = JSON.parse(row.builtin_tool_ids || '[]'); } catch { return true; }
+    return toolIdsIncludeBrowser(ids);
+  } catch { return true; }
+}
+
+/** 工具 id 列表里是否含浏览器工具 —— **唯一判据**（isBrowserCapableSubAgent 与
+ *  runSubAgentImpl 的运行期记账共用，防两处漂移）。 */
+function toolIdsIncludeBrowser(ids: unknown): boolean {
+  return (Array.isArray(ids) ? ids : []).some((n) => String(n).startsWith('browser_'));
+}
+
 /** 前端提交工具执行结果 */
 export function resolveToolResult(taskId: string, callId: string, result: string) {
   const task = tasks.get(taskId);
@@ -3355,10 +3403,36 @@ async function runReActLoop(task: LlmTask, params: {
         const concurrentResults = new Map<string, string>();
         // ★ P0-4（2026-10-07）：并行面从 call_agent 推广为「call_agent ∪ 只读白名单」。
         //   READONLY_PARALLEL_TOOLS 的取舍判据见其定义处注释（无副作用 + 无共享状态才放行）。
+        // ★★★ 2026-10-15「导航跑偏」P0-①：同批 call_agent 的**浏览器型**识别（每批算一次）。
+        //   · 浏览器是**单活动页状态机** —— 两个**浏览器型**子智能体并发跑必然互踩：
+        //     A 导航完 B 立刻覆盖同一锚 tab，A 读到 B 的页 → 判定"我的导航没生效" → 再导航
+        //     → 乒乓（实测 10-14 晚单会话 57 次 navigate、5 个孤儿 tab、453:0 的 tabId 使用比）。
+        //   · 判据**只针对"同批还有另一个浏览器型"**：非浏览器型兄弟（代码/检索类子智能体）
+        //     与它并发是安全的（不碰浏览器），保留并发不牺牲既有收益。
+        //   · 解析失败/查不到按"浏览器型"兜底（宁可串行不可漏判，见 isBrowserCapableSubAgent）。
+        const batchCallAgentBrowser = new Map<any, boolean>();
+        for (const tc of toolCallAcc) {
+          const n = tc.function?.name || (tc as any).toolName || '';
+          if (n !== 'call_agent') continue;
+          const a = parseToolArguments(tc.function?.arguments).args as any;
+          batchCallAgentBrowser.set(
+            tc,
+            a === null ? true : isBrowserCapableSubAgent(a?.agentId ?? a?.agent_id ?? a?.id, task.userId),
+          );
+        }
+        const browserFlowCount = [...batchCallAgentBrowser.values()].filter(Boolean).length;
+
         const parallelizableCalls = toolCallAcc.filter((tc) => {
           const n = tc.function?.name || (tc as any).toolName || '';
           if (parseToolArguments(tc.function?.arguments).args === null) return false;
-          return n === 'call_agent' || READONLY_PARALLEL_TOOLS.has(n);
+          if (n === 'call_agent') {
+            if (browserFlowCount >= 2 && batchCallAgentBrowser.get(tc) === true) {
+              logger.warn(`[llm-task] 同批多个浏览器型子智能体 → 本个改串行（防多流抢同一浏览器锚）conv=${task.conversationId}`);
+              return false;
+            }
+            return true;
+          }
+          return READONLY_PARALLEL_TOOLS.has(n);
         });
         // ★ 并发上限（2026-10-07 调整）：默认 2（原 4）。实测并发 4 时上游 429
         //   （Too Many Requests / system overloaded）明显高发 —— 并发数直接把请求压到上游配额上。
@@ -4498,6 +4572,26 @@ async function executeTool(
   //   ⇒ 现在：只有**传输层**失败（桥端点不可达/超时/鉴权）才降级（那才是"桥没起来"）；
   //     其余失败直接回可诊断错误，让模型立刻换招或汇报，不再空转 23s。
   if (isBrowser) {
+    // ★★★ 2026-10-15「导航跑偏」P0-③：**未知浏览器工具立即快速失败**。
+    //
+    //   实测（server-2026-10-14.log）：模型幻觉出 `browser_get_info`（全代码库无此工具），
+    //   请求打到桥 → 桥按白名单判"不支持的浏览器 action"回 HTTP 400 → 调用方把它当**传输层**
+    //   失败 → 降级 SSE 委托 → 前端也不认识这个工具 → 各挂满 480 秒，两次共 **16 分钟空转**。
+    //
+    //   修法：桥调用前先查工具注册表（浏览器工具全部在内置注册表里），未知就**当场**回明确
+    //   错误 + 最接近的候选名 —— 模型下一步就能改口，不再有"降级 → 空等"这条路。
+    //   ★ 只对 browser_ 前缀生效：其它前缀（mcp_/custom_/api_）的未知工具走原有兜底分支。
+    if (!registry.has(toolName)) {
+      const known = registry.names().filter((n) => n.startsWith('browser_')).sort();
+      // 近似候选：按名字片段命中（`get_info` → `get_page_info`）——不需要编辑距离那么大动干戈
+      const bits = toolName.replace(/^browser_/, '').split('_').filter((b) => b.length >= 3);
+      const close = known.filter((k) => bits.some((b) => k.includes(b)));
+      const hint = (close.length ? close : known).slice(0, 6).join(' / ');
+      logger.warn(`[llm-task] 未知浏览器工具快速失败: ${toolName} conv=${task.conversationId}`);
+      return `未知工具 \`${toolName}\`（不存在，重试不会成功）。` +
+        `最接近的可用浏览器工具：${hint}。` +
+        `请改用其中之一；若只是想读当前页，用 browser_get_page_content（正文+元素）或 browser_get_page_info（元素+坐标）。`;
+    }
     const exec = decideBrowserExecution(toolNameToAction(toolName));
     if (exec === 'bridge') {
       const bridgeTimeout = resolveFrontendToolTimeout(toolName);
@@ -5302,12 +5396,7 @@ async function runSubAgentImpl(
   if (!input) return 'input 为必填项。请在 call_agent 的 arguments 中传入 input 参数（描述要让子智能体执行的任务），例如 {"agentId":"a_builtin_page_agent","input":"打开网站并执行操作"}';
   if (depth >= 1) return '子智能体不能再调用子智能体（深度仅允许 1 层）';
 
-  // 别名兜底
-  const SUBAGENT_ALIASES: Record<string, string> = {
-    pageAgent: 'a_builtin_page_agent',
-    page_agent: 'a_builtin_page_agent',
-    pageagent: 'a_builtin_page_agent',
-  };
+  // 别名兜底（SUBAGENT_ALIASES 为模块级唯一实现 —— isBrowserCapableSubAgent 同源共用）
   const resolvedId = SUBAGENT_ALIASES[agentId] || agentId;
 
   // ★★★ 运行时生成的临时子智能体：它在 agent 表里**没有行**。
@@ -6240,6 +6329,21 @@ async function distillExperienceFromTask(
             triggerTitle: String(it.title),
             draftsRoot: resolveSkillDraftsDir(task.conversationId),
           });
+          // P2-13：自动草稿同时落 `skill_draft` 表，与手动蒸馏（蒸馏工作台）汇入同一个草稿列表。
+          // 单独 try/catch：落库失败不能连带吞掉下面的会话内提示（此时 SKILL.md 文件其实已经写成功）。
+          if (draft.ok && !draft.existed && draft.resultMd) {
+            try {
+              insertSkillDraft({
+                userId: task.userId,
+                title: draft.name || '自动蒸馏草稿',
+                status: 'draft',
+                sourceConvId: task.conversationId,
+                resultMd: draft.resultMd,
+              });
+            } catch (e: any) {
+              logger.warn('[skill-distill] 自动草稿落库失败:', e?.message || e);
+            }
+          }
           const notify = skillDraftNotifyText(draft);
           if (notify) {
             const msgId = insertMessage(task.conversationId, task.userId, 'assistant', notify);

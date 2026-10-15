@@ -3183,8 +3183,10 @@ async function runBrowserAction(convId, tabId, action, args) {
   //   ★ 位置：必须在 `resolveBrowserTarget` **之前** —— 它按 action 决定"建页类是否回落活动页"，
   //     改写后再解析才符合 new_tab 语义（new_tab 是建页类，且不需要锚）。
   if (action === 'navigate' && args.openInNewTab === true) {
-    console.log('[browser-action] openInNewTab=true → 委派 new_tab（开新页不抢锚）');
+    console.log('[browser-action] openInNewTab=true → 委派 new_tab（编排层注入，锚跟随新页）');
     action = 'new_tab';
+    // ★★★ 2026-10-15（「导航跑偏」P0-②）：记录"本次 new_tab 是编排层委派的"。
+    args._orchestratedNewTab = true;
   }
   // ★★★ P0-2（2026-10-10）：执行目标解析 —— **判定本体在 `browser-target.cjs`**（纯函数、可真跑验证）。
   //   三条语义（缺一条就会"打到错的页"且不报错）：
@@ -3674,9 +3676,26 @@ async function runBrowserAction(convId, tabId, action, args) {
         //   ⇒ 返回体加 `loading` / `timedOut` 字段 + 明确提示，让模型知道"已开始加载、请用
         //     browser_wait_for 或 get_page_content 轮询"，而不是"换一个 URL 再试"。
         const stillLoading = timedOut || wc.isLoading();
+        // ★★★ 2026-10-15「导航跑偏」P1-④：回执带上 `visibilityState`。
+        //   实测（经验档 creator.douyin.com.md 10-15 条目 + 当天 12 次 navigate）：
+        //   creator-micro 微前端在 `document.visibilityState=hidden`（面板收起/失焦）时
+        //   **永远停在"加载中，请稍候…"不挂载内容**，模型读不到东西 → 判定导航失败 →
+        //   反复 force 刷新（对隐藏态无效）。把状态直接带回，模型当场知道该换招。
+        let visibilityState = '';
+        try {
+          visibilityState = String(await Promise.race([
+            wc.executeJavaScript('document.visibilityState').catch(() => ''),
+            new Promise((r) => setTimeout(() => r(''), 800)),
+          ]) || '');
+        } catch { /* 取不到不阻塞导航结果 */ }
         const result = { url: wc.getURL() || cleanUrl, title: wc.getTitle(), loading: stillLoading };
+        if (visibilityState) result.visibilityState = visibilityState;
         if (timedOut) {
           result.note = '页面已开始加载，但 12s 内未完成（慢站/资源多）。**不要换 URL 重试**；请用 browser_wait_for 等待或 browser_get_page_content 读取当前内容。';
+        }
+        if (visibilityState === 'hidden') {
+          result.note = (result.note ? result.note + '\n' : '') +
+            '页面处于**隐藏态**（预览面板收起/未显示）：creator.douyin.com 等微前端站点在此状态下可能永远停在"加载中"不渲染内容（document.visibilityState=hidden 时异步 chunk 加载被暂停）。**刷新无用、不要 force 刷新**；① 纯取数请改用 browser_run_script 在页面内 fetch 接口（比等渲染更可靠）；② 需要看页面 UI 时先让用户展开预览面板，再读取。';
         }
         return result;
       }
@@ -4497,9 +4516,37 @@ async function runBrowserAction(convId, tabId, action, args) {
         return { error: '该浏览器引擎不支持 switch_tab' };
       }
       case 'close_tab': {
-        if (isWebviewEngine()) {
-          const tid = String(args.tabId ?? activeTabId ?? '');
-          const meta = webviewTabs.get(tid);
+        if (!isWebviewEngine()) return { error: '该浏览器引擎不支持 close_tab' };
+        // ★★★ 2026-10-15（「导航跑偏」P1-⑤，复审 HIGH）：**批量形态必须在主进程也生效**。
+        //   工具描述明确推荐 `tabIds` 数组（"收尾时批量关闭用这个"），而本 case 此前只读
+        //   `args.tabId` —— 桥路径（默认档）下模型按描述传数组时 `args.tabId` 为 undefined，
+        //   下面 `?? activeTabId` 兜底会把**当前活动页**关掉（关错页、真正卡死的页还留着）。
+        //   归一化 'tab-N' 与纯数字两种写法（与 browser-target.cjs 的 tabIdCandidates 同口径）。
+        const normTab = (v) => {
+          const s = String(v == null ? '' : v).trim();
+          if (!s) return '';
+          return /^\d+$/.test(s) ? 'tab-' + s : s;
+        };
+        const batchIds = Array.isArray(args.tabIds) ? args.tabIds.map(normTab).filter(Boolean) : [];
+        if (batchIds.length) {
+          // 逐个走**同一道**权限闸门；关闭本体复用唯一实现 closeTabById（不抄第二份摘壳逻辑）
+          const closedIds = [];
+          const failed = [];
+          for (const tid of batchIds) {
+            const m = webviewTabs.get(tid);
+            if (!m) { failed.push(`${tid}（不存在）`); continue; }
+            if (m.agentOpened !== true) { failed.push(`${tid}（非 agent 打开，无权关闭）`); continue; }
+            closeTabById(tid, false);
+            closedIds.push(tid);
+          }
+          return {
+            closed: closedIds.length > 0,
+            tabIds: closedIds,
+            failed: failed.length ? failed : undefined,
+          };
+        }
+        const tid = normTab(args.tabId ?? activeTabId);
+        const meta = webviewTabs.get(tid);
           // ★★★ 权限闸门（2026-10-08，安全边界）：**agent 只能关闭自己打开的标签页**。
           //   本分支是 `browserView:action`，调用方恒为 agent 工具链（用户关 tab 走
           //   `browserView:closeTab` IPC，是另一条路径，不受此限）。
@@ -4509,16 +4556,11 @@ async function runBrowserAction(convId, tabId, action, args) {
           if (meta && meta.agentOpened !== true) {
             return { error: '该标签页不是本次 agent 打开的，无权关闭（用户手动打开的页面只能由用户关闭）。请勿再次尝试关闭它。' };
           }
-          webviewTabs.delete(tid);
-          broadcastTabClosed(tid);   // 渲染层同步摘壳（2026-10-09）
-          if (activeTabId === tid) {
-            activeTabId = null;
-            const any1 = webviewTabs.keys().next();
-            if (!any1.done) activeTabId = any1.value;
-          }
+          // ★★★ 2026-10-15：关闭本体复用**唯一实现** closeTabById（内已含 broadcastTabClosed
+          //   → 清锚 + 渲染层摘壳，以及活动页项替 + 广播）—— 此前这里抄了半份，
+          //   正是 broadcastTabClosed 注释里点名的"活证"（关闭路径各清一次必然漏）。
+          closeTabById(tid, false);
           return { closed: true };
-        }
-        return { error: '该浏览器引擎不支持 close_tab' };
       }
       case 'get_tabs': {
         if (!isWebviewEngine()) return { tabs: [] };
@@ -4527,7 +4569,7 @@ async function runBrowserAction(convId, tabId, action, args) {
           const wc2 = guestWebContents(id);
           // ★ agentOpened 随列表返回（2026-10-08）：让模型**先知道**哪些页能关，
           //   而不是关失败了才知道 —— 配合 close_tab 的权限闸门，形成"事前可见 + 事后强制"。
-          tabs2.push({ tabId: id, url: wc2 ? wc2.getURL() : '', title: wc2 ? wc2.getTitle() : '', scope: t.scope || 'preview', agentOpened: t.agentOpened === true });
+          tabs2.push({ tabId: id, url: wc2 ? wc2.getURL() : '', title: wc2 ? wc2.getTitle() : '', scope: t.scope || 'preview', agentOpened: t.agentOpened === true, active: id === activeTabId, loading: wc2 && typeof wc2.isLoading === 'function' ? !!wc2.isLoading() : false });
         }
         return { tabs: tabs2, activeTabId };
       }
@@ -4857,7 +4899,9 @@ async function runBrowserAction(convId, tabId, action, args) {
     if (convId && result && !result.error && !result.ambiguous) {
       // ★★★ 记账更新判定在纯函数模块里（**唯一实现**，可真跑验证）：
       //   'anchor' = 改"当前操作页" / 'touch' = 只用不改锚（定向读 / new_tab 开的页）/ 'none' = 不动。
-      const upd = decideAnchorUpdate(action, args.tabId != null && args.tabId !== '', tabId, result.tabId);
+      const upd = decideAnchorUpdate(action, args.tabId != null && args.tabId !== '', tabId, result.tabId, {
+        orchestratedNewTab: args._orchestratedNewTab === true,
+      });
       // ★ 诊断：锚定决策必须可观测（"navigate 成功后读不到页"的唯一线索）
       console.log(`[browser-action] 锚定决策: action=${action} resolvedTabId=${tabId || '-'} resultTabId=${result.tabId || '-'} → ${upd.mode}${upd.tabId ? ':' + upd.tabId : ''}`);
       if (upd.mode === 'anchor') setConvAnchor(convId, upd.tabId);

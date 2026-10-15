@@ -68,9 +68,21 @@ export function decideBrowserExecution(action: string): 'bridge' | 'frontend' {
   return 'bridge'; // on / strict
 }
 
+/** 工具名（browser_xxx）→ 桥 action 名（xxx）的**例外表**（默认只去掉 browser_ 前缀）。
+ *
+ *  ★ 2026-10-15（「导航跑偏」复审 MEDIUM）：`browser_press_key` 的桥 action 是 `press`
+ *    —— 桌面端能力清单（DESKTOP_BROWSER_ACTIONS）与主进程 `case 'press'` 用的都是 `press`；
+ *    不登记这条映射，桥会判「不支持的 action」，该工具在直连档下形同不可用。
+ *  ★ 判据单一：本表是**唯一**例外源；新增例外必须在此登记（并同步桌面端白名单）。
+ */
+const TOOL_ACTION_ALIASES: Record<string, string> = {
+  press_key: 'press',
+};
+
 /** 工具名（browser_xxx）→ 桥 action 名（xxx）。与渲染层 actionMap 的推导规则一致。 */
 export function toolNameToAction(toolName: string): string {
-  return toolName.startsWith('browser_') ? toolName.slice('browser_'.length) : toolName;
+  const raw = toolName.startsWith('browser_') ? toolName.slice('browser_'.length) : toolName;
+  return TOOL_ACTION_ALIASES[raw] || raw;
 }
 
 /** 调用桥。失败抛错，由调用方决定是否降级。 */
@@ -165,6 +177,43 @@ export function isBridgeTransportError(e: any): boolean {
  */
 export function formatBridgeResult(action: string, r: any): string {
   if (!r || typeof r !== 'object') return String(r ?? '');
+  if (action === 'navigate' || action === 'new_tab') {
+    // ★★★ 2026-10-15「导航跑偏」P1-④：navigate 此前**没有专属分支** → 落最后的
+    //   `JSON.stringify(r).slice(0,500)`，长 note（隐藏态引导等）会被截断吞掉。
+    //   显式渲染 url/title/loading/visibilityState/note，让每一条都给到模型。
+    const lines: string[] = [];
+    if (action === 'new_tab' && r.tabId) lines.push(`已在新标签页打开（tabId=${r.tabId}）。后续读取该页用读取类工具的 tabId=${r.tabId}。`);
+    if (r.url) lines.push(`URL: ${r.url}`);
+    if (r.title) lines.push(`Title: ${r.title}`);
+    if (r.loading) lines.push('状态: 仍在加载（不是失败——用 browser_wait_for / browser_get_page_content 等待，不要换 URL 重试）。');
+    if (r.visibilityState) lines.push(`页面可见性: ${r.visibilityState}`);
+    // ★ 2026-10-15（复审 LOW）：`warning` 是"连续 N 次操作页面无任何变化"的纠偏信号
+    //   （main.cjs 通用赋值）—— 此前 navigate 落 JSON 兜底时它还可能在，显式分支必须带上，
+    //   否则最该看到它的动作（navigate）反而收不到。
+    if (r.warning) lines.push(`⚠ ${r.warning}`);
+    if (r.note) lines.push(r.note);
+    return lines.length ? lines.join('\n') : JSON.stringify(r).slice(0, 500);
+  }
+  if (action === 'get_tabs') {
+    // ★ 2026-10-15「导航跑偏」P1-⑤：明确标注"哪些页可以关" —— 模型才会用 close_tab 清场
+    //   （实测两天 close_tab 调用 = 0，卡死页一直留着污染后续任务）。
+    const tabs = Array.isArray(r.tabs) ? r.tabs : [];
+    const lines = tabs.map((t: any) =>
+      `- tabId=${t.tabId}${t.active ? ' [当前]' : ''} ${t.agentOpened ? '[可关]' : '[用户页·勿关]'} ${t.loading ? '[加载中]' : ''} ${t.title || t.url || '空白'}` +
+      `${t.url && t.title ? ` (${String(t.url).slice(0, 100)})` : ''}`);
+    const closable = tabs.filter((t: any) => t.agentOpened).map((t: any) => String(t.tabId));
+    const stuck = tabs.filter((t: any) => t.loading && t.agentOpened).map((t: any) => t.tabId);
+    const hint = closable.length
+      // ★ 2026-10-15（复审 HIGH）：示例必须是**合法 JSON**且 id 带引号 —— 此前 `[tab-1, tab-2]`
+      //   既不是合法 JSON，照着抄还会因 id 类型不对而落到"关当前活动页"（执行侧已修，
+      //   但示例本身也得对：模型会逐字照抄）。
+      ? `\n\n可用 browser_close_tab({ "tabIds": [${closable.map((id: string) => JSON.stringify(id)).join(', ')}] }) 一次关掉这些 agent 打开的页（任务收尾或页面卡死时清理）。`
+      : '';
+    const stuckHint = stuck.length
+      ? `\n⚠ tabId=${stuck.join(', ')} 处于**加载中**：若长时间不变即为卡死页，会拖慢/污染本会话后续导航 —— 不需要它时用 browser_close_tab 关掉（不要靠反复导航去"唤醒"它）。`
+      : '';
+    return `浏览页 ${tabs.length} 个：\n${lines.join('\n') || '(无)'}${hint}${stuckHint}`;
+  }
   if (action === 'get_page_info') {
     const ic = (r.interactive || []).length;
     const lines = (r.interactive || []).slice(0, 20).map((e: any) => `[${e.index}] ${e.tag}${e.text ? ': ' + e.text : ''}`).join('\n');

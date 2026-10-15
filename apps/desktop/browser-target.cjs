@@ -130,7 +130,15 @@ function resolveTarget(convId, rawTab, action, opts) {
  * @param action         桥 action 名
  * @param hadExplicitTab 入参是否带显式 tabId
  * @param resolvedTabId  解析后的实际作用 tab（resolveTarget 的结果）
- * @param resultTabId    返回体里的新 tab id（`new_tab` 用）
+ * @param resultTabId    返回体里的新 tab id（`new_tab` 委派链）
+ * @param opts           { orchestratedNewTab?: boolean }
+ *   ★ `orchestratedNewTab`（2026-10-15 修复「导航跑偏」P0-②）：本次 `new_tab` 是编排层把
+ *     `navigate(openInNewTab:true)` 委派过来的（**不是模型显式调 browser_new_tab**）。
+ *     模型的心智模型是「我导航到了 X」——它并不知道也没要求开新页；若沿用 touch（不抢锚），
+ *     模型后续所有无 tabId 动作仍落在旧锚页 → 读到旧页内容 → 判定"导航没生效" → 再导航 →
+ *     又被编排层转成又一个新 tab（孤儿页雪崩，实测 10-14 晚 tab-2~tab-6 五个孤儿、
+ *     453 次动作 0 次显式使用 tabId）。⇒ 编排层替模型做的导航决定，锚必须跟着走；
+ *     模型**显式**调用 `browser_new_tab`（想"开着备用"）仍维持 touch 不变。
  * @returns { mode: 'anchor'|'touch'|'none', tabId?: string }
  *   · 'anchor' —— **改**"当前操作页"（写/交互/无 tabId 的 navigate）
  *   · 'touch'  —— **只登记**"本会话用过"（定向读 / new_tab 开的页）
@@ -139,9 +147,11 @@ function resolveTarget(convId, rawTab, action, opts) {
  * ★ 为什么必须区分：一个动作可能"用了某个页"但"不改操作目标"。
  *   糅在一起时只能二选一 ⇒ 要么漏登记（定向读被拒 / 收尾不关），要么被迫改锚（打到错页）。
  */
-function decideAnchorUpdate(action, hadExplicitTab, resolvedTabId, resultTabId) {
+function decideAnchorUpdate(action, hadExplicitTab, resolvedTabId, resultTabId, opts) {
   if (action === 'new_tab') {
     const t = resultTabId != null && resultTabId !== '' ? String(resultTabId) : null;
+    // ★ 编排层委派（navigate+openInNewTab 改写而来）→ 锚跟随新页（见 opts 注释）
+    if (opts && opts.orchestratedNewTab && t) return { mode: 'anchor', tabId: t };
     return t ? { mode: 'touch', tabId: t } : { mode: 'none' };
   }
   if (action === 'switch_tab') {

@@ -155,9 +155,24 @@ function start() {
         const args = (body && body.args) || {};
 
         // ★ 能力面收窄：只允许 action 白名单（与 DESKTOP_BROWSER_ACTIONS 同源传入）
-        if (!action || !deps.allowedActions.includes(action)) {
+        if (!action) {
           res.writeHead(400, { 'Content-Type': 'application/json' });
-          return res.end(JSON.stringify({ error: `不支持的浏览器 action: ${action}` }));
+          return res.end(JSON.stringify({ error: '缺少 action' }));
+        }
+        // ★★★ 2026-10-15（「导航跑偏」复审 MEDIUM）：action **有值但不在白名单** = 业务错误
+        //   （工具名/动作映射不对），**不是桥故障**。此前一律回 HTTP 400，而 server 侧对
+        //   `!res.ok` 一律判传输层失败 → 降级 SSE 委托 → 桥档下渲染层不执行 browser_*
+        //   → 各挂满 480s（实测 `browser_get_info` 两次共 16 分钟；同类映射缺口如
+        //   `browser_press_key`→`press_key` 也走这条路）。
+        //   ⇒ 改为 HTTP 200 + `{error, hint}`（与"动作执行失败"同一约定，见 server 侧
+        //     `isBridgeTransportError` 的判据注释）：模型当场拿到可读错误并改口。
+        //   ★ 白名单校验本身**不放宽**（安全边界③：端点是能力面收窄的，不是通用 IPC 隧道）。
+        if (!deps.allowedActions.includes(action)) {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          return res.end(JSON.stringify({
+            error: `不支持的浏览器 action: ${action}（该动作不在桌面端能力清单里）`,
+            hint: '工具名/动作映射可能不对：请改用标准浏览器工具（browser_navigate / browser_get_page_content / browser_get_page_info / browser_click / browser_type / browser_get_tabs / browser_close_tab 等），不要自行拼写或泛化工具名。',
+          }));
         }
         if (!convId) {
           // 桥调用**必须**带会话标识 —— 没有它就没法把动作限定在"发起它的那个会话"的页上，

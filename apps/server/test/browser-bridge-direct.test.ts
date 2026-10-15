@@ -813,11 +813,34 @@ describe('⑮ ★★★ openInNewTab 委派 new_tab（开新页不抢锚）', ()
     expect(i, '★ 改写位置在 resolveBrowserTarget 之后 → 解析用的是旧 action').toBeLessThan(iResolve);
   });
 
-  it('★★★ 委派后锚语义必须是 touch（不抢锚）—— 这是 openInNewTab 的定义', () => {
-    // openInNewTab 已改写为 new_tab ⇒ decideAnchorUpdate('new_tab', …) 必须返回 touch
-    const upd = bt.decideAnchorUpdate('new_tab', false, 'tab-1', 'tab-9');
-    expect(upd.mode, '★ 开新页却改了"当前操作页" → 抢锚（与定义相反）').toBe('touch');
-    expect(upd.tabId).toBe('tab-9');
+  it('★★★ 委派后锚语义：**编排层**委派（openInNewTab）→ 锚跟随；模型显式 new_tab → touch', () => {
+    // ★★★ 2026-10-15「导航跑偏」P0-② 契约变更（诊断报告实证，非拍脑袋）：
+    //   旧语义一律 touch —— 但 `openInNewTab` 是**编排层**（markDuplicateNavigations）
+    //   替模型做的决定，模型心智是「我导航到了 X」。touch 会让模型后续无 tabId 的动作
+    //   全部落回旧锚页 → 读到旧页 → 判定"导航没生效" → 再导航 → 孤儿页雪崩
+    //   （实测 10-14 晚 tab-2~6 五个孤儿、453 次动作 0 次显式使用 tabId）。
+    //   ⇒ 编排层委派的 new_tab 锚跟随；模型**显式** browser_new_tab 仍 touch（"开着备用"语义不变）。
+    const orchestrated = bt.decideAnchorUpdate('new_tab', false, 'tab-1', 'tab-9', { orchestratedNewTab: true });
+    expect(orchestrated.mode, '★ 编排层委派后锚没跟随 → 模型读旧页误判失败 → 乒乓导航复发').toBe('anchor');
+    expect(orchestrated.tabId).toBe('tab-9');
+    // 显式 new_tab（无 opts）维持 touch —— ⑮ 原语义不回归
+    const explicit = bt.decideAnchorUpdate('new_tab', false, 'tab-1', 'tab-9');
+    expect(explicit.mode, '★ 显式 new_tab 抢锚 → "开新页不抢锚"语义回归').toBe('touch');
+    expect(explicit.tabId).toBe('tab-9');
+    // 委派但无 resultTabId（开页失败）→ 不动锚
+    expect(bt.decideAnchorUpdate('new_tab', false, 'tab-1', null, { orchestratedNewTab: true }).mode).toBe('none');
+  });
+
+  it('★★★ main.cjs 必须把"编排层委派"旗标透传到锚定判定（否则判定分支是死代码）', () => {
+    const m = stripComments(MAIN3);
+    const i = m.indexOf("args.openInNewTab === true");
+    const seg = m.slice(i, i + 400);
+    expect(seg, '★ 改写点未记录编排层委派旗标').toMatch(/args\._orchestratedNewTab\s*=\s*true/);
+    const iDecide = m.indexOf('decideAnchorUpdate(action,');
+    expect(iDecide, '★ 锚定判定调用丢失').toBeGreaterThan(-1);
+    const dSeg = m.slice(iDecide, iDecide + 400);
+    expect(dSeg, '★ 旗标未传进 decideAnchorUpdate → 锚跟随是死代码')
+      .toMatch(/orchestratedNewTab:\s*args\._orchestratedNewTab\s*===\s*true/);
   });
 
   it('★★★ new_tab 必须走 createBrowserTab（否则绕过 tab 上限 → agent 反复开页即堆积卡死）', () => {

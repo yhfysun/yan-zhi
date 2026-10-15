@@ -87,7 +87,14 @@ describe('P2-4 并行子智能体', () => {
     // ★ 2026-10-08 同步：P0-4（2026-10-07）把并发范围从「只 call_agent」扩到
     //   「call_agent + 只读白名单」。原锚点 `const agentCalls = toolCallAcc.filter` 已重构。
     //   防护意图不变：并发集合必须**显式列举**，绝不能变成「全并行」。
-    expect(LTM, '★ 并发筛选逻辑丢失').toMatch(/return n === 'call_agent' \|\| READONLY_PARALLEL_TOOLS\.has\(n\)/);
+    // ★ 2026-10-15 同步（「导航跑偏」P0-①）：call_agent 分支内新增"浏览器型子智能体在同批
+    //   有兄弟 call_agent 时改串行"的排除（防两个 pageAgent 抢同一浏览器锚）。表达式从
+    //   单行三目拆成了分支，锚点随之更新 —— 意图仍是"显式列举"（这次是收窄，不是放宽）。
+    expect(LTM, '★ 并发筛选逻辑丢失（call_agent 未显式列举）').toMatch(/n === 'call_agent'/);
+    expect(LTM, '★ 并发筛选逻辑丢失（只读白名单未显式列举）')
+      .toMatch(/return READONLY_PARALLEL_TOOLS\.has\(n\)/);
+    // 红线：不得退化成"全并行"（不查白名单直接放行）
+    expect(LTM, '★ 并发筛选退化成全并行').not.toMatch(/parallelizableCalls = toolCallAcc\.filter\(\(\)\s*=>\s*true\)/);
     const body = win(LTM, 'const READONLY_PARALLEL_TOOLS = new Set<string>([', 300, '只读并发白名单');
     expect(body, '★ 白名单存在').toMatch(/file_read/);
     // 红线：这三类绝不能进并发白名单（浏览器单活动页 / UI 弹框 / 写类有依赖）

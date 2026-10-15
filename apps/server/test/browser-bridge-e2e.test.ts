@@ -118,10 +118,16 @@ describe('③ 路径与方法（真跑）', () => {
 });
 
 describe('④ 能力面与参数（真跑）', () => {
-  it('★★ 非白名单 action → 400（能力面收窄）', async () => {
+  it('★★ 非白名单 action → 200 + 业务错误（能力面收窄；**不得**被判成桥故障）', async () => {
+    // ★★★ 2026-10-15（「导航跑偏」复审 MEDIUM）契约变更：此前回 HTTP 400，而 server 侧对
+    //   `!res.ok` 一律判**传输层**失败 → 降级 SSE 委托 → 桥档下渲染层不执行 browser_*
+    //   → 单次挂满 480s（实测 `browser_get_info` 两次共 16 分钟；`browser_press_key` 这类
+    //   映射缺口也走同一条路）。⇒ 改为 HTTP 200 + `{error, hint}`（与"动作执行失败"同约定），
+    //   模型当场拿到可读错误并改口。**白名单校验本身不放宽**（能力面收窄不变）。
     const r = await post({ convId: 'c1', action: 'run_script', args: {} });
-    expect(r.status, '★ 未拦非白名单 action → 端点成了通用 IPC').toBe(400);
+    expect(r.status, '★ 回非 2xx 会被 server 判成桥故障 → 降级 SSE → 480s 空等').toBe(200);
     expect(r.json.error).toMatch(/不支持的浏览器 action/);
+    expect(r.json.hint, '★ 缺可读 hint → 模型无从改口').toMatch(/标准浏览器工具/);
   });
 
   it('★★ 缺 convId → 400（防静默打到全局页）', async () => {

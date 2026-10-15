@@ -869,12 +869,21 @@ export class BrowserCloseTabTool implements BuiltInTool {
   async execute(args: Record<string, unknown>): Promise<McpCallResult> {
     try {
       // 批量优先：收尾时通常要一次关掉多个中间页
+      // ★★★ 2026-10-15（复审 HIGH）：id 归一化 —— 接受 `tab-N` 与纯数字两种写法。
+      //   旧实现 `(x) => Number(x)` + `Number.isFinite` 会把 `'tab-1'` 变成 NaN 后**静默过滤**
+      //   → ids 为空 → 退回单数分支且 tabId 为 undefined → 主进程按"当前活动页"关闭：
+      //   **关错页**（真正要关的卡死页还留着）。归一化后两种写法都指向同一个 tab。
+      const normId = (x: unknown): string => {
+        const s = String(x ?? '').trim();
+        if (!s) return '';
+        return /^\d+$/.test(s) ? 'tab-' + s : s;
+      };
       const ids = Array.isArray(args.tabIds)
-        ? (args.tabIds as unknown[]).map((x) => Number(x)).filter((n) => Number.isFinite(n))
+        ? (args.tabIds as unknown[]).map(normId).filter(Boolean)
         : [];
       if (ids.length) {
-        const closed: number[] = [];
-        const failed: number[] = [];
+        const closed: string[] = [];
+        const failed: string[] = [];
         for (const tabId of ids) {
           try {
             const d = await callBrowserApi('/action', 'POST', { action: 'close_tab', tabId }) as any;
