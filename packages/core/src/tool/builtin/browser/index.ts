@@ -825,14 +825,22 @@ export class BrowserLoginSavedTool implements BuiltInTool {
 // ========== C4 多标签页管理 ==========
 export class BrowserNewTabTool implements BuiltInTool {
   name = 'browser_new_tab';
-  description = 'Open a new browser tab and optionally navigate to a URL. Returns the new tab id. 新开标签页并导航（可选 url），返回标签页 id。需要同时打开/对比多个页面时用本工具（不要并行调用多个 browser_navigate）；拿到 tabId 后可用读取类工具（browser_get_page_content 等）的 tabId 参数直接读取该页，无需切换标签页。';
+  description = 'Open a new browser tab and optionally navigate to a URL. Returns the new tab id. 新开标签页并导航（可选 url），返回标签页 id。需要同时打开/对比多个页面时用本工具（不要并行调用多个 browser_navigate）；拿到 tabId 后可用读取类工具（browser_get_page_content 等）的 tabId 参数直接读取该页，无需切换标签页。'
+    + ' 默认开新页会切到新页（用户能看到你在动哪页）；若这一页只是你自用的中间页、不想打断用户当前正在看的页面，传 background:true。'
+    + ' ★ 要让用户看到某页，用 browser_switch_tab 显式切过去 —— 不要指望它自己跟着走。';
   inputSchema = {
     type: 'object',
-    properties: { url: { type: 'string', description: 'Optional URL to navigate the new tab to. 不传则打开空白标签页。' } },
+    properties: {
+      url: { type: 'string', description: 'Optional URL to navigate the new tab to. 不传则打开空白标签页。' },
+      background: {
+        type: 'boolean',
+        description: 'true = 后台开页（不抢用户当前视图），适合只供自己读写的中间页；缺省 false = 开新页并切过去。需要用户看见结果（填充/提交/交付页）时用缺省值。',
+      },
+    },
   };
   async execute(args: Record<string, unknown>): Promise<McpCallResult> {
     try {
-      const data = await callBrowserApi('/action', 'POST', { action: 'new_tab', url: args.url }) as any;
+      const data = await callBrowserApi('/action', 'POST', { action: 'new_tab', url: args.url, background: args.background === true }) as any;
       return ok(`新标签页已打开。tabId=${data.tabId}${args.url ? `, url=${data.url}` : ''}`);
     } catch (e: any) { return err(e?.message || '新开标签页失败'); }
   }

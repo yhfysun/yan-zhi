@@ -935,17 +935,22 @@ describe('⑭ ★★★ 流键 flowKeyOf【真跑】（2026-10-15，后台标签
     // ① 后台流**不回落**用户当前页（否则它首次 navigate 直接把用户那页导航走）
     expect(m, '★ 未按后台流屏蔽回落 → 后台流的首次导航会导航走用户正在看的页')
       .toMatch(/activeTabId:\s*bgFlow\s*\?\s*null\s*:\s*activeTabId/);
-    // ② new_tab 不激活
-    expect(m, '★ new_tab 仍无条件激活 → 后台流开新页会顶掉用户视图')
-      .toMatch(/if\s*\(!bgFlow\)\s*activeTabId\s*=\s*tabId/);
+    // ② new_tab 不激活 —— 判据从「仅后台流」放宽为「后台流 **或** 模型显式 background:true」
+    //    （2026-10-16 用户拍板「让模型自己选」：中间页不该抢用户视野）。
+    //    仍必须**先算判据再决定激活**：直接写 `if (!bgFlow) activeTabId = tabId` 会忽略 background。
+    expect(m, '★ new_tab 未把 background:true 计入判据（模型显式要后台开页却不生效）')
+      .toMatch(/const wantBackground = bgFlow \|\| args\.background === true;/);
+    expect(m, '★ new_tab 仍无条件激活 → 后台流/后台页开新页会顶掉用户视图')
+      .toMatch(/if \(!wantBackground\) activeTabId = tabId;/);
     // ③ switch_tab 拒绝（并按方案 §4.4 给替代做法，不报"失败"）
     expect(m, '★ 未拒绝后台流的 switch_tab → 它会把用户正在看的页切走')
       .toMatch(/if\s*\(bgFlow\)\s*\{[\s\S]{0,400}后台流不能切换可见标签页/);
   });
 
   it('★★ 广播必须带 background 标记，且 preload 必须转发（丢一环渲染层就无从判断）', () => {
+    // 广播的第 4 参数已从 `bgFlow` 换成统一的判据 `wantBackground`（= bgFlow || 模型显式 background:true）
     expect(stripComments(MAIN), '★ tabCreated 广播未带 background 标记')
-      .toMatch(/send\('browserView:tabCreated',[^)]*bgFlow\)/);
+      .toMatch(/send\('browserView:tabCreated',[^)]*wantBackground\)/);
     expect(read('apps/desktop/preload.cjs'), '★ preload 未转发第 4 个参数 → 渲染层收不到 background')
       .toMatch(/\(_e,\s*tabId,\s*url,\s*scope,\s*background\)\s*=>\s*callback\(tabId,\s*url,\s*scope,\s*background\)/);
   });

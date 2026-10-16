@@ -3362,7 +3362,15 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
       // ★★★ 仍然拿不到就**明确报错**，绝不走到 `wc.loadURL` 抛原生 TypeError：
       //   原生 TypeError 对模型毫无信息量（表现为模型自己编"前端不可达"），对开发者也没有线索。
       if (!wc) {
-        return { error: `浏览器页面未就绪：已请求预览面板打开该页，但 30s 内未建出页面（tab=${waitedTab || '-'}）。请重试一次；若持续失败，请确认浏览器预览面板已打开。` };
+        // ★★★ 2026-10-16（用户：治「30s 超时重试导致的 tab 膨胀」）：
+        //   旧文案是「请重试一次」—— 模型照做，而"重试"= 再 navigate 一次 ⇒
+        //   若 URL 与上次不同（或复用判据没命中）就**又建一个新 tab**（实测 11:24–11:27
+        //   三个 30s 超时换来 tab-2/tab-3/tab-6/tab-7 四个页）。而 tab 其实**已经建出来了**，
+        //   只是渲染层建 guest 慢（实测 14s ~ 73s）⇒ 文案改为"别重开、按 tabId 接着读"。
+        return { error: `浏览器页面未就绪：已请求预览面板打开该页，但 30s 内未建出页面（tab=${waitedTab || '-'}）。`
+          + `⚠️ **不要再 navigate 同一个 URL**（会再建一个 tab，越堆越多）；该页仍在创建中：`
+          + `先 ` + '`browser_get_tabs`' + ` 看它是否已就绪，再用 ` + '`browser_get_page_content`'
+          + ` 传 tabId=${waitedTab || 'N'} 重试读取。若始终是空页，请让用户展开浏览器预览面板（收起状态会拖住页面创建）。` };
       }
     }
     // 某些动作即便没有已建 host 也应执行（自建 / 纯查询 / 首次导航）
@@ -4594,14 +4602,18 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
             //   标记后它才**允许被 agent 关闭**（权限闸门见 close_tab 分支）。用户手开的 tab 永远是 false。
             meta.agentOpened = true;
           }
-          // ★★★ 后台流不得顶替用户正在看的页：它开的新页只是它自己的工作区。
-          //   （前台流保持原语义 = 开新页即切过去 —— 模型的意图就是"我导航到了这里"。）
-          if (!bgFlow) activeTabId = tabId;
+          // ★★★ 开新页要不要抢用户视野 —— 两条来源：
+          //   ① 后台流（`bg:`）：它的页是给 agent 自己用的，一律不抢；
+          //   ② 模型显式 `background:true`（2026-10-16 新增，用户拍板"让模型自己选"）：
+          //      中间页不该打断用户当前正在看的页面。
+          //   前台流 + 缺省 ⇒ 开新页即切过去（模型的意图就是"我导航到了这里"）。
+          const wantBackground = bgFlow || args.background === true;
+          if (!wantBackground) activeTabId = tabId;
           // 通知渲染层补建 host tab 壳(:src=url 会驱动新建 <webview> 并注册 guest)；
           // 是否切换过去由第 4 个参数（background）决定，渲染层据此决定要不要改 activeTabId。
           if (mainWindow && !mainWindow.isDestroyed()) {
             if (target) broadcastTabUrl.set(String(tabId), target);   // 同 URL 复用判据（2026-10-12）
-            mainWindow.webContents.send('browserView:tabCreated', tabId, target || null, scope, bgFlow);
+            mainWindow.webContents.send('browserView:tabCreated', tabId, target || null, scope, wantBackground);
           }
           // 等 guest spawn + 注册(渲染层 :src 后 dom-ready) → 返回新 tab 元信息
           let wc2 = await waitForGuest(tabId, 6000);
@@ -4623,7 +4635,17 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
         }
         if (isWebviewEngine()) {
           const tid = String(args.tabId ?? activeTabId ?? '');
-          if (webviewTabs.has(tid)) { activeTabId = tid; webviewTabs.get(tid).lastActiveAt = Date.now(); return { activeTabId: tid }; }
+          if (webviewTabs.has(tid)) {
+            activeTabId = tid;
+            webviewTabs.get(tid).lastActiveAt = Date.now();
+            // ★ 2026-10-16：`switch_tab` 此前**只改主进程、不广播** ⇒ 面板纹丝不动。
+            //   用户实报「模型没有切换激活 tab 的工具」，真相是切了但界面不跟随。
+            //   渲染层 `onTabActivated` 是幂等实现（activeTabId 已一致则忽略），重复广播无副作用。
+            if (mainWindow && !mainWindow.isDestroyed()) {
+              try { mainWindow.webContents.send('browserView:tabActivated', tid); } catch { /* ignore */ }
+            }
+            return { activeTabId: tid };
+          }
           return { error: '标签页不存在: ' + tid };
         }
         return { error: '该浏览器引擎不支持 switch_tab' };
@@ -5021,7 +5043,24 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
       });
       // ★ 诊断：锚定决策必须可观测（"navigate 成功后读不到页"的唯一线索）；带 flow 便于多流定位
       console.log(`[browser-action] 锚定决策: flow=${flow || 'shared'} action=${action} resolvedTabId=${tabId || '-'} resultTabId=${result.tabId || '-'} → ${upd.mode}${upd.tabId ? ':' + upd.tabId : ''}`);
-      if (upd.mode === 'anchor') setFlowAnchor(flowKey, upd.tabId);
+      if (upd.mode === 'anchor') {
+        setFlowAnchor(flowKey, upd.tabId);
+        // ★★★ 2026-10-16（用户拍板「面板跟随锚」）：前台流一旦换了"当前操作页"，
+        //   主进程 `activeTabId` 与渲染层面板都要跟过去。
+        //   为什么必须：`activeTabId`（用户在看哪个）与 `convAnchors`（流在哪操作）本可以不同，
+        //   但此前**没有任何机制让面板跟随执行目标** ⇒ 实拍（2026-10-16 11:39）模型在 tab-1 上
+        //   做番茄回填并提交成功，面板却停在最后新建的快手 tab（tab-7）上 ——
+        //   用户看到"两个 tab 卡在快手、任务像死了"，而真正的回填发生在看不见的页上。
+        //   后台流（`bg:`）不在此列：它的页是给 agent 自己用的，不该抢用户视野。
+        if (!bgFlow && upd.tabId && upd.tabId !== activeTabId) {
+          activeTabId = upd.tabId;
+          const m = isWebviewEngine() ? webviewTabs.get(String(upd.tabId)) : null;
+          if (m) m.lastActiveAt = Date.now();   // 刚被 agent 用过，别让空闲回收把它卸了
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            try { mainWindow.webContents.send('browserView:tabActivated', String(upd.tabId)); } catch { /* ignore */ }
+          }
+        }
+      }
       else if (upd.mode === 'touch') markFlowTabTouched(flowKey, upd.tabId);
     }
     // ★ 动作结果日志（与入口日志配对）—— 失败时打印 error，便于一眼看出"卡在哪一步"
