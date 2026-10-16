@@ -92,6 +92,7 @@ import { db, dataDir } from './db.js';
 import { dedupeDuplicateModelRows, ensureModelDedupeIndex } from './services/model-dedupe.js';
 import { registerPythonSelfHeal } from './services/python-self-heal.js';
 import { checkAndQuarantine } from './services/db-integrity.js';
+import { logCredentialAudit } from './services/credential-audit.js';
 import { createLogger, configureLogger } from './services/logger.js';
 // ★★★ 日志落盘（2026-10-10）：必须在**其它模块打日志之前**配置好，
 //   否则启动早期的日志（db/插件/迁移）拿不到文件流，只进控制台 → 重启后现场丢失。
