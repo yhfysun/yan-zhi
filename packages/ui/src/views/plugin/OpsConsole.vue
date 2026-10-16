@@ -425,7 +425,6 @@
           </el-tab-pane>
         </el-tabs>
       </section>
-    </div>
 
     <!-- 资源 / 目录 右键菜单（自绘，与文件页同款） -->
     <Teleport to="body">
