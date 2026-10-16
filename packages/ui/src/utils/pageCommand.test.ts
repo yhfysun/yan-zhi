@@ -7,8 +7,9 @@
 
 import { describe, it, expect } from 'vitest';
 import {
-  buildScriptSource, digestOf, formatScriptResult, inputPromptsOf, isCommandEnabled, matchHostPattern,
-  matchPageCommands, matchUrlPattern, needsConfirm, renderCommandBody, usedVarsOf, type PageCommand,
+  buildScriptRepairPrompt, buildScriptSource, digestOf, formatScriptResult, inputPromptsOf,
+  isCommandEnabled, matchHostPattern, matchPageCommands, matchUrlPattern, needsConfirm,
+  renderCommandBody, usedVarsOf, type PageCommand,
 } from './pageCommand';
 
 function cmd(p: Partial<PageCommand> & { id: string }): PageCommand {
@@ -200,5 +201,16 @@ describe('★ P2 脚本型：确认口径与脚本组装', () => {
     const long = formatScriptResult('长', 'z'.repeat(9000), 1);
     expect(long).toContain('已截断，原长 9000 字');
     expect(long.length).toBeLessThan(7000);
+  });
+
+  it('自愈请求（P3-4）：带上原脚本与真实报错，且明确"只出文本、不要执行"', () => {
+    const src = 'return document.querySelectorAll("a").length();';
+    const p = buildScriptRepairPrompt('导出链接', src, 'TypeError: document.querySelectorAll(...).length is not a function');
+    expect(p).toContain('导出链接');
+    expect(p).toContain(src);                                        // 原脚本原样带上
+    expect(p).toContain('TypeError: document.querySelectorAll');     // 真实报错带上
+    expect(p).toMatch(/不要执行任何浏览器操作/);                        // 不允许它顺手动手
+    expect(p).toContain('```js');                                    // 要求给可直接替换的完整脚本
+    expect(buildScriptRepairPrompt('x', 'return 1', '')).toContain('(无错误信息)');   // 没报错也不留空
   });
 });

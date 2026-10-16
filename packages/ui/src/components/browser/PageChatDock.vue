@@ -18,6 +18,12 @@
       <span class="pcd-title">💬 页面对话</span>
       <span class="pcd-scope" :title="scopeHint">{{ isOwnConv ? '本页专属会话' : '当前会话' }}</span>
       <span class="pcd-spacer"></span>
+      <!-- P3-4 自愈：脚本刚跑失败才出现（只出文本、不自动执行、不改指令库） -->
+      <button
+        v-if="state.repairHint" class="pcd-icon-btn repair"
+        title="让 AI 看报错给出修正版脚本（只出文本，不自动执行）"
+        :disabled="state.streaming || convBusy" @click="onRepairScript"
+      >🛠 修复脚本</button>
       <button class="pcd-icon-btn" title="页面指令（管理 / 新建）" @click="$emit('manage')">指令</button>
       <button class="pcd-icon-btn" :disabled="!state.messages.length" title="清空本页对话" @click="onClear">清空</button>
       <button class="pcd-icon-btn" title="收起面板" @click="$emit('close')">✕</button>
@@ -82,7 +88,7 @@ import { ElMessage, ElMessageBox } from 'element-plus';
 import { usePageChatStore } from '../../stores/page-chat';
 import { usePageCommandsStore } from '../../stores/page-commands';
 import {
-  buildScriptSource, digestOf, formatScriptResult, inputPromptsOf, needsConfirm,
+  buildScriptRepairPrompt, buildScriptSource, digestOf, formatScriptResult, inputPromptsOf, needsConfirm,
   renderCommandBody, usedVarsOf, type PageCommand, type PageCommandVars,
 } from '../../utils/pageCommand';
 import { collectPageContext, hostOf } from '../../utils/pageContext';
@@ -253,6 +259,8 @@ async function runScriptCommand(c: PageCommand) {
     const dur = Date.now() - started;
     if (r?.error) {
       pageChat.note(props.tabId, `⚠️ 「${c.name}」执行失败：${r.error}${r.hint ? '\n' + r.hint : ''}`, true);
+      // P3-4 自愈入口：把"原脚本 + 真实报错"备好，面板头部出现「🛠 修复脚本」
+      state.value.repairHint = buildScriptRepairPrompt(c.name, script, String(r.error));
       audit('error', { error: String(r.error).slice(0, 500) });
     } else {
       pageChat.note(props.tabId, formatScriptResult(c.name, r?.result, dur));
@@ -261,8 +269,22 @@ async function runScriptCommand(c: PageCommand) {
     cmdsStore.markUsed(c.id);
   } catch (e: any) {
     pageChat.note(props.tabId, `⚠️ 「${c.name}」执行异常：${e?.message || e}`, true);
+    state.value.repairHint = buildScriptRepairPrompt(c.name, script, String(e?.message || e));
     audit('error', { error: String(e?.message || e).slice(0, 500) });
   }
+}
+
+/**
+ * P3-4 自愈：把"原脚本 + 报错"交给模型出修正版（**只出文本、不执行**）。
+ * 用户拿到修正脚本后，自己在指令编辑器里替换、再手动跑 —— 这一步不做自动替换：
+ * 自动改用户的指令库、或自动重跑，都属于"没经过同意就动手"。
+ */
+async function onRepairScript() {
+  const hint = state.value.repairHint;
+  if (!hint) return;
+  state.value.repairHint = '';                 // 先清空，避免连点重复发送
+  if (convBusy.value) { ElMessage.warning('当前会话正在执行任务，等它结束再问'); return; }
+  await sendText(hint);
 }
 
 /** 执行前的确认弹窗：展示**将要执行的完整脚本**（变量已渲染）+ 权限风险（方案 §5.4） */
@@ -340,6 +362,7 @@ watch(() => props.tabCount, (now) => {
 }
 .pcd-icon-btn:hover:not(:disabled) { background: var(--el-fill-color-light, #f5f7fa); color: var(--el-color-primary); }
 .pcd-icon-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.pcd-icon-btn.repair { color: var(--el-color-warning, #e6a23c); }
 
 .pcd-list { flex: 1; min-height: 0; overflow-y: auto; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
 .pcd-empty { color: var(--el-text-color-secondary, #909399); font-size: 12px; line-height: 1.6; }

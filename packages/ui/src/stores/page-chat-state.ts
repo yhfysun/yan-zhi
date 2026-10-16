@@ -39,6 +39,11 @@ export interface PageChatState {
    */
   targetUrl: string;
   targetTabCount: number;
+  /**
+   * 脚本失败后的**自愈请求**（P3-4）：非空时面板头部显示「🛠 修复脚本」。
+   * 存整段 prompt（而不是散字段）—— 它就是要发出去的那段话，省得两处拼装漂移。
+   */
+  repairHint: string;
 }
 
 let seq = 0;
@@ -58,6 +63,7 @@ export function createChatState(tabId: string): PageChatState {
     lastError: '',
     targetUrl: '',
     targetTabCount: 0,
+    repairHint: '',
   };
 }
 
@@ -138,6 +144,7 @@ export function resetChatState(state: PageChatState): void {
   state.streaming = false;
   state.taskId = '';
   state.lastError = '';
+  state.repairHint = '';   // 手动清空后不再挂着"修复脚本"入口（它对应的是已被清掉的那次失败）
 }
 
 /** 读一条状态里的流式助手消息（UI 判断"正在打字的最后一条"，也用于滚动锚点） */

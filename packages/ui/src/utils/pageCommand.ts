@@ -151,6 +151,24 @@ export function formatScriptResult(name: string, result: unknown, durationMs: nu
   return isJson ? `${head}\n\n\`\`\`json\n${truncated}\n\`\`\`` : `${head}\n\n${truncated}`;
 }
 
+/**
+ * 脚本失败后的**自愈请求**（P3-4）：让模型看着"原脚本 + 真实报错"给出修正版。
+ * ★ 两条口径：
+ *   ① 只要**文本**（修正后的完整脚本），**不执行任何动作** —— 是否替换、是否再跑，由用户点了才算；
+ *   ② 明确"在当前页主世界运行 + 返回值可 JSON 序列化 + 有只读 ctx"，否则模型容易给出脱离运行环境的写法。
+ */
+export function buildScriptRepairPrompt(name: string, script: string, error: string): string {
+  return '下面这条页面脚本指令在本页执行失败了，请分析原因并给出修正版。\n'
+    + '要求：\n'
+    + '1. 只输出**完整可替换的脚本**（放在一个 ```js 代码块里），**不要执行任何浏览器操作**；\n'
+    + '2. 用一两句话说明失败原因与修正点；\n'
+    + '3. 脚本在当前页面的主世界运行，返回值必须可 JSON 序列化，可用只读的 ctx（url/title/host/selection）；\n'
+    + '4. 不要偷换目标：仍然是"在那一条指令里做那件事"。\n\n'
+    + `【指令名】${name}\n\n`
+    + `【原脚本】\n\`\`\`js\n${script}\n\`\`\`\n\n`
+    + `【执行报错】\n${error || '(无错误信息)'}`;
+}
+
 /** 抽出 `${input:提示}` 的提示文案（按出现顺序、去重）——UI 据此逐个弹输入框 */
 export function inputPromptsOf(body: string): string[] {
   const out: string[] = [];
