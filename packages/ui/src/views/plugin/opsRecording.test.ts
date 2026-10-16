@@ -46,9 +46,14 @@ describe('OpsConsole · 录像入口', () => {
 
   it('录制状态来自服务端 ready 帧，断开/释放时清掉', () => {
     expect(CONSOLE).toMatch(/w\.termRecording = !!msg\.recording/);
-    // 断开后不清会让用户以为还在录
-    const closers = CONSOLE.match(/w\.termRecording = false/g) ?? [];
-    expect(closers.length).toBeGreaterThanOrEqual(2);   // onclose 与 disposeTerminal
+    // 断开后不清会让用户以为还在录。
+    // ★ 2026-10-16：断线路径不再自己置标志位，而是走统一收尾 markTermDisconnected →
+    //   disposeTerminal（清 termRecording 在那里）。断言改成钉住这条**链路**，
+    //   而不是数 `w.termRecording = false` 的出现次数 —— 数次数会随重构无意义地漂移。
+    const dis = CONSOLE.match(/function disposeTerminal\(w: OpsWin\)[\s\S]*?\n\}/)?.[0] ?? '';
+    expect(dis, '找不到 disposeTerminal').not.toBe('');
+    expect(dis, '释放时未清录制标识（用户会以为还在录）').toMatch(/w\.termRecording = false/);
+    expect(CONSOLE, 'WS 断开未走统一收尾').toMatch(/else markTermDisconnected\(w\)/);
   });
 });
 

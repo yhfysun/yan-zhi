@@ -653,8 +653,99 @@ export function copyRemoteFile(sftp: SFTPWrapper, from: string, to: string): Pro
  * 加条目上限是有意的：递归是逐条 RTT，几万条的目录会把这条连接占很久。
  * 那种规模更适合走 ssh_exec 的 `rm -rf`（那条路有危险命令黑名单 + 人工批准兜底）。
  */
+/**
+ * SFTP 任务记录 —— 上传 / 下载 / 删除**共用一份**形状（2026-10-16 引入）。
+ *
+ * 为什么统一：用户要的是「任务列表」，三种操作在界面上是同一种东西（一条带着
+ * 进度、状态、名字的行），后端再分三种 payload 只会让前端写三套解析。
+ *
+ * 为什么不用旧的 `{ transferred, total }`：那两个字节数表达不了「删了多少个条目」，
+ * 也没法说「正在处理哪个文件」—— 而用户明确要「删目录时实时看到删了哪些文件」。
+ * 故改为条目口径（doneCount/totalCount）+ 当前项 + 删除明细列表；字节口径保留给
+ * 上传/下载画进度条。
+ */
+export interface SftpJob {
+  kind: 'upload' | 'download' | 'delete';
+  /** 人类可读的任务名（界面上那一行） */
+  label: string;
+  state: 'running' | 'done' | 'failed';
+  /** 字节口径（上传/下载用；删除任务恒为 0/1，表示"按条目数看进度"） */
+  transferred: number;
+  total: number;
+  /** 条目口径：已处理 / 总数（三种任务都有） */
+  doneCount: number;
+  totalCount: number;
+  /** 正在处理的条目路径（上传/下载），删除任务为空（它有 deleted 明细） */
+  currentFile: string;
+  /** 删除任务：累计已删条目数（不受保留上限影响） */
+  deletedCount: number;
+  /** 删除任务：最近删掉的路径（保留上限见 MAX_JOB_DELETED_KEEP） */
+  deleted: string[];
+  error?: string;
+}
+
+/**
+ * 「已删路径」在任务里保留的条数上限。
+ * 递归删十万个文件的目录时，全留会把内存和前端 DOM 一起撑爆；界面是「实时滚动看」，
+ * 只需要最近这些。全量留痕由审计（sftp.delete，含条数与路径样本）负责。
+ */
+export const MAX_JOB_DELETED_KEEP = 500;
+
+/**
+ * 审计详情里的「已删路径样本」后缀：最多 12 条、总长 400 字符，其余以「共 N 项」收尾。
+ * 审计是长期留痕（上限 500 条），不能因为一次删了十万个文件就往里塞一个几十 KB 的字符串 ——
+ * 那是把审计表撑爆、而不是留痕。全量明细在删除进行时由任务列表实时展示。
+ */
+export function auditPathTail(paths: string[]): string {
+  if (!paths.length) return '';
+  const shown: string[] = [];
+  let len = 0;
+  for (const p of paths) {
+    if (shown.length >= 12 || len + p.length > 400) break;
+    shown.push(p);
+    len += p.length + 2;
+  }
+  const rest = paths.length - shown.length;
+  return `：${shown.join('、')}${rest > 0 ? ` …（共 ${paths.length} 项）` : ''}`;
+}
+
+/** SSE 每帧的负载：任务记录原样外，删除明细只推最近 50 条（前端实时看，不需要全量）。 */
+function jobPayload(j: SftpJob): Record<string, unknown> {
+  return {
+    kind: j.kind,
+    label: j.label,
+    state: j.state,
+    transferred: j.transferred,
+    total: j.total,
+    doneCount: j.doneCount,
+    totalCount: j.totalCount,
+    currentFile: j.currentFile,
+    deletedCount: j.deletedCount,
+    deleted: j.deleted.slice(-50),
+    error: j.error,
+  };
+}
+
 export const MAX_RECURSIVE_DELETE_ENTRIES = 20000;
-export async function removeRemoteRecursive(sftp: SFTPWrapper, target: string, budget = { n: 0 }): Promise<void> {
+/**
+ * 递归删除远程路径：文件直接 unlink；目录先深度遍历删子项、再 rmdir。
+ *
+ * ★ 原来这里只调 rmdir —— **非空目录必失败**，而界面上那个「删除」对目录也是显示的，
+ *   用户点了只会拿到一句「目录可能非空」。现在按用户要求：目录连同内容一起删。
+ *
+ * 加条目上限是有意的：递归是逐条 RTT，几万条的目录会把这条连接占很久。
+ * 那种规模更适合走 ssh_exec 的 `rm -rf`（那条路有危险命令黑名单 + 人工批准兜底）。
+ *
+ * ★ 2026-10-16 新增 `onDeleted`（用户要求「删目录时要能实时看到正在删哪些文件」）：
+ *   每删掉**一个条目**（文件 / 软链 / 子目录，按实际删除顺序、深度优先）回调一次。
+ *   回调只做记账，不允许抛错或 await（抛了会中断整棵树的删除）。
+ */
+export async function removeRemoteRecursive(
+  sftp: SFTPWrapper,
+  target: string,
+  budget = { n: 0 },
+  onDeleted?: (path: string, isDir: boolean) => void,
+): Promise<void> {
   budget.n += 1;
   if (budget.n > MAX_RECURSIVE_DELETE_ENTRIES) {
     throw new Error(
@@ -662,9 +753,11 @@ export async function removeRemoteRecursive(sftp: SFTPWrapper, target: string, b
       + '请改用 ssh_exec 的 rm -rf（有危险命令护栏与人工批准）',
     );
   }
-  const st = await statRemote(sftp, target);
+  // ★ 用 lstat 不跟随软链：断链不再报 "No such file"，指向目录的软链也只删链接本身（见 lstatRemote 注释）
+  const st = await lstatRemote(sftp, target);
   if (!st.isDir) {
     await new Promise<void>((resolve, reject) => sftp.unlink(target, (err) => (err ? reject(err) : resolve())));
+    onDeleted?.(target, false);
     return;
   }
   const names = await new Promise<string[]>((resolve, reject) => {
@@ -672,14 +765,33 @@ export async function removeRemoteRecursive(sftp: SFTPWrapper, target: string, b
   });
   for (const n of names) {
     if (n === '.' || n === '..') continue;
-    await removeRemoteRecursive(sftp, `${target.replace(/\/+$/, '')}/${n}`, budget);
+    await removeRemoteRecursive(sftp, `${target.replace(/\/+$/, '')}/${n}`, budget, onDeleted);
   }
   await new Promise<void>((resolve, reject) => sftp.rmdir(target, (err) => (err ? reject(err) : resolve())));
+  onDeleted?.(target, true);
 }
 
 export async function statRemote(sftp: SFTPWrapper, path: string): Promise<{ mode: number; size: number; mtime: number; isDir: boolean }> {
   const st = await new Promise<{ mode: number; size: number; mtime: number }>((resolve, reject) =>
     sftp.stat(path, (err, s) => (err ? reject(err) : resolve(s as never))),
+  );
+  return { mode: st.mode, size: st.size ?? 0, mtime: (st.mtime ?? 0) * 1000, isDir: modeIsDir(st.mode) };
+}
+
+/**
+ * 取**链接自身**的属性（lstat，不跟随软链）。
+ *
+ * ★★ 2026-10-16 修（用户实报「删除失败: No such file」）：删除路径此前用 `statRemote`（= sftp.stat，
+ *   **跟随**软链），两个后果 —— 一个报错、一个更危险：
+ *     ① 目录里的**断链**（目标已删的软链）：stat 直接 ENOENT ⇒ 界面上删除永远失败；
+ *     ② 指向**目录**的软链被判成 dir ⇒ 递归下去把**目标目录的内容全删掉**，最后再用 rmdir
+ *        收一个软链（rmdir 对软链必失败）—— 一次「删软链」等于删掉别人的真数据，还报错说没删成。
+ *   列表侧（listRemoteDir）本就按 readdir 的 mode 判类型、不跟随；删除侧至此与它同口径：
+ *   软链要删的就是**链接本身**，绝不穿透。
+ */
+export async function lstatRemote(sftp: SFTPWrapper, path: string): Promise<{ mode: number; size: number; mtime: number; isDir: boolean }> {
+  const st = await new Promise<{ mode: number; size: number; mtime: number }>((resolve, reject) =>
+    sftp.lstat(path, (err, s) => (err ? reject(err) : resolve(s as never))),
   );
   return { mode: st.mode, size: st.size ?? 0, mtime: (st.mtime ?? 0) * 1000, isDir: modeIsDir(st.mode) };
 }
@@ -2325,8 +2437,31 @@ const opsShellModule: PluginModule = {
       });
 
       // ===== SFTP 文件管理器（远端目录列举 + 上传/下载 + 目录操作） =====
-      // 进度走 SSE：上传/下载启动后返回 sessionId，前端连 /sftp/progress/:id/stream 订阅
-      const sftpJobs = new Map<string, { aborted: boolean; last: { transferred: number; total: number } }>();
+      // 进度走 SSE：上传/下载/**删除**启动后返回 jobId，前端连 /sftp/progress/:id/stream 订阅，
+      // 据此渲染「任务列表」（2026-10-16 起三类操作同一套任务模型，见 SftpJob 注释）。
+      const sftpJobs = new Map<string, SftpJob>();
+      /** 新建一条任务记录（三类操作共用的入口，省得三处各写一遍字段） */
+      const newJob = (
+        kind: SftpJob['kind'],
+        label: string,
+        opts: { totalCount: number; totalBytes?: number },
+      ): string => {
+        const jobId = `sftp-${kind}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+        sftpJobs.set(jobId, {
+          kind, label, state: 'running',
+          transferred: 0, total: opts.totalBytes || 1,
+          doneCount: 0, totalCount: opts.totalCount,
+          currentFile: '',
+          deletedCount: 0, deleted: [],
+        });
+        return jobId;
+      };
+      /** 任务收尾：置终态 + 延时回收（留 3s 让正在订阅的 SSE 把最后状态推完） */
+      const finishJob = (jobId: string, state: 'done' | 'failed', error?: string) => {
+        const j = sftpJobs.get(jobId);
+        if (j) { j.state = state; if (error) j.error = error; }
+        setTimeout(() => sftpJobs.delete(jobId), 3000);
+      };
       const json = (res: unknown, body: unknown) => (res as { json: (d: unknown) => void }).json(body);
       const fail = (res: unknown, code: number, msg: string) =>
         (res as { status: (n: number) => { json: (d: unknown) => void } }).status(code).json({ error: msg });
@@ -2407,7 +2542,14 @@ const opsShellModule: PluginModule = {
         }
       });
 
-      // 删除（仅文件/空目录；生产二次确认）
+      // 删除（文件 / 目录连同内容一起；生产二次确认）
+      //
+      // ★ 2026-10-16 改造成「任务」（用户要求：「删除远程目录或文件都要有记录，尤其是删除
+      //   目录最后有个地方能看到实时删除的文件」）：
+      //   旧实现**同步**删完才回一个 ok —— 删一个几万条的目录时界面整个卡住，也不知道
+      //   删到哪儿了、删成了没有。现在立刻回 jobId，删除在后台逐条跑，边删边把「刚删掉的
+      //   路径」推给界面（实时列表）；跑完落一条**含条目数与路径样本**的审计（留痕）。
+      //   审计只落一条（不是每文件一条）：审计上限 500 条，按文件落会把整个日志冲掉。
       r.post('/sftp/unlink', async (req: unknown, res: unknown) => {
         const body = (req as { body: Record<string, unknown> }).body || {};
         const got = await resolveSftpConn(req, res, String(body.connectionId || ''));
@@ -2418,16 +2560,50 @@ const opsShellModule: PluginModule = {
         }
         const root = await resolveRemoteRoot(got.sftp, got.conn.sftpPath);
         const path = normalizeRemotePath(String(body.path || ''), root);
+        // 先探一次类型（不跟随软链）：任务名与审计要说清删的是目录还是文件，删之前问准。
+        let isDir = false;
         try {
-          // 目录连内容一起删（非空目录原先会 rmdir 失败）
-          await removeRemoteRecursive(got.sftp, path);
-          await audit('sftp.delete', { connection: got.conn.name, detail: path, ok: true });
-          json(res, { data: { ok: true } });
+          isDir = (await lstatRemote(got.sftp, path)).isDir;
         } catch (e) {
-          fail(res, 500, `删除失败: ${(e as Error).message}`);
-        } finally {
+          fail(res, 404, `路径不可读：${(e as Error).message}`);
           try { got.sftp.end(); } catch { /* ignore */ }
+          return;
         }
+        const jobId = newJob('delete', `${isDir ? '删除目录' : '删除文件'} ${path}`, { totalCount: 1 });
+        json(res, { data: { jobId, kind: 'delete', path, isDir } });
+        void (async () => {
+          const job = sftpJobs.get(jobId);
+          try {
+            await removeRemoteRecursive(got.sftp, path, { n: 0 }, (p) => {
+              const j = sftpJobs.get(jobId);
+              if (!j) return;
+              j.deletedCount += 1;
+              j.doneCount = j.deletedCount;
+              j.deleted.push(p);
+              // 超上限只丢最旧的明细（计数照累），见 MAX_JOB_DELETED_KEEP
+              if (j.deleted.length > MAX_JOB_DELETED_KEEP) {
+                j.deleted.splice(0, j.deleted.length - MAX_JOB_DELETED_KEEP);
+              }
+            });
+            await audit('sftp.delete', {
+              connection: got.conn.name,
+              detail: `${path}（${isDir ? '目录' : '文件'}，共删 ${job?.deletedCount ?? 0} 项）${job ? auditPathTail(job.deleted) : ''}`,
+              ok: true,
+            });
+            finishJob(jobId, 'done');
+          } catch (e) {
+            const msg = (e as Error).message;
+            // 失败也要留痕：删了一半报错时，"已删掉哪些" 是事后排查的关键信息
+            await audit('sftp.delete', {
+              connection: got.conn.name,
+              detail: `${path} 删除失败（已删 ${job?.deletedCount ?? 0} 项）：${msg}`,
+              ok: false,
+            });
+            finishJob(jobId, 'failed', msg);
+          } finally {
+            try { got.sftp.end(); } catch { /* ignore */ }
+          }
+        })();
       });
 
       // ===== 本地目录操作（本地栏用） =====
@@ -2516,6 +2692,14 @@ const opsShellModule: PluginModule = {
         }
       });
 
+      /**
+       * 任务进度订阅（SSE）。
+       *
+       * ★ 2026-10-16 改：以 `state` 为准（running / done / failed），**终态那一帧推完就关流**。
+       *   旧版靠读字节数猜状态（0/1=完成、-1=失败），既要客户端也懂这套暗号，又一旦
+       *   客户端漏读最后一帧就永远收不到终止信号。关流是协议层面的事实，谁都躲不过。
+       *   首帧立刻推一次：几百毫秒就结束的小任务，不等第一个 300ms 心跳也能看到结果。
+       */
       function sftpProgressStream(req: unknown, res: unknown, jobId: string) {
         const job = sftpJobs.get(jobId);
         const rr = res as unknown as {
@@ -2531,12 +2715,36 @@ const opsShellModule: PluginModule = {
         rr.setHeader('Connection', 'keep-alive');
         rr.setHeader('X-Accel-Buffering', 'no');
         rr.write(':connected\n\n');
-        const timer = setInterval(() => {
+        let closed = false;
+        // ⚠️ timer 必须先声明成可空：首帧 push() 就可能落在终态上并回调 stop()，
+        //    那时定时器还没建起来（TDZ 会直接抛，而不是"清掉一个不存在的定时器"）。
+        let timer: ReturnType<typeof setInterval> | null = null;
+        const stop = () => { if (closed) return; closed = true; if (timer !== null) clearInterval(timer); };
+        const push = (): boolean => {
           const j = sftpJobs.get(jobId);
-          if (!j) { clearInterval(timer); try { rr.end(); } catch { /* ignore */ } return; }
-          try { rr.write(`data:${JSON.stringify({ transferred: j.last.transferred, total: j.last.total })}\n\n`); } catch { clearInterval(timer); }
-        }, 300);
-        (req as unknown as { on: (ev: string, cb: (...a: unknown[]) => void) => void }).on('close', () => clearInterval(timer));
+          // 任务记录已被回收（正常只发生在终态之后）：报一次 failed 让界面别停在「进行中」
+          if (!j) {
+            try { rr.write(`data:${JSON.stringify({ state: 'failed', error: '任务已结束' })}\n\n`); rr.end(); } catch { /* ignore */ }
+            stop();
+            return false;
+          }
+          try {
+            rr.write(`data:${JSON.stringify(jobPayload(j))}\n\n`);
+          } catch {
+            stop();
+            return false;
+          }
+          if (j.state !== 'running') {
+            // 终态：把这一帧冲刷出去再关流（不关的话客户端只能靠超时判断"已经结束了"）
+            setTimeout(() => { try { rr.end(); } catch { /* ignore */ } }, 50);
+            stop();
+            return false;
+          }
+          return true;
+        };
+        if (!push()) return;
+        timer = setInterval(push, 300);
+        (req as unknown as { on: (ev: string, cb: (...a: unknown[]) => void) => void }).on('close', stop);
       }
 
       // 上传（单文件 / 多文件 / 文件夹；目录由后端递归展开，前端只需传绝对路径）
@@ -2568,36 +2776,42 @@ const opsShellModule: PluginModule = {
         }
         if (!plan.length) { fail(res, 400, '没有可上传的文件（目录为空？）'); return; }
 
-        // 进度按总字节聚合，多文件/文件夹上传时进度条不会来回跳
-        const jobId = `sftp-up-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
-        const job = { aborted: false, last: { transferred: 0, total: totalBytes || 1 } };
-        sftpJobs.set(jobId, job);
-        json(res, { data: { jobId, count: plan.length, total: totalBytes } });
+        // 进度按总字节聚合，多文件/文件夹上传时进度条不会来回跳；
+        // 同时给条目口径（doneCount/totalCount）与「当前文件」，供任务列表显示"第几个 / 正在传谁"
+        const jobId = newJob('upload', `上传 → ${destDir}`, { totalCount: plan.length, totalBytes });
+        json(res, { data: { jobId, kind: 'upload', count: plan.length, total: totalBytes, destDir } });
         // 异步执行，不阻塞响应
         void (async () => {
           try {
             const ensuredDirs = new Set<string>([destDir]);
             let done = 0;
+            let idx = 0;
             for (const p of plan) {
               const parent = p.dest.slice(0, p.dest.lastIndexOf('/'));
               if (parent && !ensuredDirs.has(parent)) {
                 await ensureRemoteDir(got.sftp, parent);
                 ensuredDirs.add(parent);
               }
+              const j0 = sftpJobs.get(jobId);
+              if (j0) { j0.currentFile = p.dest; j0.doneCount = idx; }
               await sftpFastPut(got.sftp, p.src, p.dest, (transferred) => {
-                job.last = { transferred: done + transferred, total: totalBytes || 1 };
+                const j = sftpJobs.get(jobId);
+                if (j) j.transferred = done + transferred;
               });
               done += p.size;
-              job.last = { transferred: done, total: totalBytes || 1 };
+              idx += 1;
+              const j1 = sftpJobs.get(jobId);
+              if (j1) { j1.transferred = done; j1.doneCount = idx; }
             }
             await audit('sftp.upload', { connection: got.conn.name, detail: `${plan.length} 个文件 → ${destDir}`, ok: true });
-            job.last = { transferred: 0, total: 1 }; // 完成标记
+            finishJob(jobId, 'done');
           } catch (e) {
-            job.last = { transferred: -1, total: 1 }; // -1 表示失败
+            const msg = (e as Error).message;
             logger.warn('[ops-sftp] 上传失败', e);
+            await audit('sftp.upload', { connection: got.conn.name, detail: `${plan.length} 个文件 → ${destDir} 失败：${msg}`, ok: false });
+            finishJob(jobId, 'failed', msg);
           } finally {
             try { got.sftp.end(); } catch { /* ignore */ }
-            setTimeout(() => sftpJobs.delete(jobId), 3000);
           }
         })();
       });
@@ -2622,23 +2836,28 @@ const opsShellModule: PluginModule = {
           fail(res, 404, `远端路径不可读：${(e as Error).message}`);
           return;
         }
-        const jobId = `sftp-dn-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
-        const job = { aborted: false, last: { transferred: 0, total: 0 } };
-        sftpJobs.set(jobId, job);
-        json(res, { data: { jobId } });
+        const localName = localPath.split('/').pop() || localPath;
+        const jobId = newJob('download', `下载 ${localName}`, { totalCount: 1 });
+        json(res, { data: { jobId, kind: 'download', name: localName } });
         void (async () => {
           try {
+            const j0 = sftpJobs.get(jobId);
+            if (j0) j0.currentFile = remotePath;
             await sftpFastGet(got.sftp, remotePath, localPath, (transferred, total) => {
-              job.last = { transferred, total };
+              const j = sftpJobs.get(jobId);
+              if (j) { j.transferred = transferred; j.total = total || 1; }
             });
             await audit('sftp.download', { connection: got.conn.name, detail: `${remotePath} → ${localPath}`, ok: true });
-            job.last = { transferred: 0, total: 1 };
+            const j1 = sftpJobs.get(jobId);
+            if (j1) j1.doneCount = 1;
+            finishJob(jobId, 'done');
           } catch (e) {
-            job.last = { transferred: -1, total: 1 };
+            const msg = (e as Error).message;
             logger.warn('[ops-sftp] 下载失败', e);
+            await audit('sftp.download', { connection: got.conn.name, detail: `${remotePath} → ${localPath} 失败：${msg}`, ok: false });
+            finishJob(jobId, 'failed', msg);
           } finally {
             try { got.sftp.end(); } catch { /* ignore */ }
-            setTimeout(() => sftpJobs.delete(jobId), 3000);
           }
         })();
       });

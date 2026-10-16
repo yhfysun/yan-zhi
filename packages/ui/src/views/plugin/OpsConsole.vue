@@ -430,6 +430,7 @@
     <Teleport to="body">
 <div
       v-if="treeCtx.visible"
+      ref="treeMenuEl"
       class="ctx-menu"
       :style="{ left: treeCtx.x + 'px', top: treeCtx.y + 'px' }"
       @click.stop
@@ -466,18 +467,23 @@
     </div>
 </Teleport>
 
-    <!-- 窗口标签右键菜单 -->
-    <div
-      v-if="tabCtx.visible"
-      class="ops-ctxmenu"
-      :style="{ left: tabCtx.x + 'px', top: tabCtx.y + 'px' }"
-      @click.stop
-      @contextmenu.prevent
-    >
-      <div class="ops-ctxmenu-item" @click="ctxCloseTab">关闭</div>
-      <div class="ops-ctxmenu-item" @click="ctxCloseOtherTabs">关闭其他</div>
-      <div class="ops-ctxmenu-item" @click="ctxCloseAllTabs">关闭全部</div>
-    </div>
+    <!-- 窗口标签右键菜单：与资源树菜单同一套基座（`.ctx-menu` 的 position/z-index 在全局 menu.css）
+         —— 原先用的 `ops-ctxmenu` 全仓没有任何样式定义，等于又一个"看不见的菜单"。
+         Teleport 到 body 同其余菜单：既免掉祖先 transform/filter 影响 fixed 定位，也统一层级。 -->
+    <Teleport to="body">
+      <div
+        v-if="tabCtx.visible"
+        ref="tabMenuEl"
+        class="ctx-menu"
+        :style="{ left: tabCtx.x + 'px', top: tabCtx.y + 'px' }"
+        @click.stop
+        @contextmenu.prevent
+      >
+        <div class="ops-ctxmenu-item" @click="ctxCloseTab">关闭</div>
+        <div class="ops-ctxmenu-item" @click="ctxCloseOtherTabs">关闭其他</div>
+        <div class="ops-ctxmenu-item" @click="ctxCloseAllTabs">关闭全部</div>
+      </div>
+    </Teleport>
 
     <!-- 日志弹窗 -->
     <el-dialog v-model="logDialog.visible" :title="`容器日志 · ${logDialog.container}`" width="780px" top="6vh">
@@ -517,7 +523,7 @@ import {
   opsConnections,
   opsCollapsedGroups,
 } from './opsSession';
-import { clampMenuPos } from '../../utils/menuPosition';
+import { placeMenuAfterRender } from '../../composables/useMenuPlacement';
 import { consumeSseStream } from '../../utils/sse';
 import { startVisiblePolling } from '../../utils/visible-polling';
 import { ref, computed, nextTick, onMounted, onUnmounted, watch } from 'vue';
@@ -860,7 +866,7 @@ async function openTermTransport(
     console.info('[ops] WebSocket 终端不可用，回退 SSE：', (e as Error)?.message || e);
   }
   try {
-    return await openSseTermTransport(c, cols, rows, onOutput);
+    return await openSseTermTransport(c, cols, rows, onOutput, () => markTermDisconnected(w));
   } catch (e) {
     ElMessage.error((e as Error)?.message || '终端连接失败');
     return null;
@@ -924,19 +930,16 @@ function openWsTermTransport(
     };
     sock.onerror = () => fail(new Error('WebSocket 连接失败'));
     sock.onclose = () => {
-      // 握手中途被关 → 回退到 SSE；已就绪后关闭 → 只标记断开（窗口还在，可点「连接终端」重连）
+      // 握手中途被关 → 回退到 SSE；已就绪后关闭 → 断开收尾（窗口还在，可点「连接终端」重连）
       if (!settled) fail(new Error('WebSocket 已关闭'));
-      else {
-        w.termOpen = false;
-        w.termRecording = false;
-      }
+      else markTermDisconnected(w);
     };
   });
 }
 
 /** SSE + POST 通道（回退路径）：SSE 收输出，按键与 resize 各走一次 POST */
 async function openSseTermTransport(
-  c: OpsConn, cols: number, rows: number, onOutput: (t: string) => void,
+  c: OpsConn, cols: number, rows: number, onOutput: (t: string) => void, onClosed?: () => void,
 ): Promise<TermTransport> {
   const r = await api.post<{ sessionId: string; defaultCommand?: string | null; autoRun?: boolean }>(
     '/plugin/ops-shell/term/open',
@@ -961,6 +964,11 @@ async function openSseTermTransport(
       await consumeSseStream(resp.body, (payload) => {
         try { onOutput(b64ToUtf8(payload)); } catch { /* 脏帧跳过 */ }
       });
+      // ★ 流**自然结束** = 服务端 PTY 没了（会话回收 / 连接断）。此前这里是静默的：
+      //   界面还显示着一个"活着"的终端，其实打什么都石沉大海。与 WS 断开同口径收尾。
+      //   注意主动断开（disposeTerminal → ac.abort()）会在这里之前抛错进 catch，
+      //   且那时 termOpen 已被置 false，onClosed 里的提示不会误报。
+      onClosed?.();
     } catch { /* 会话关闭/网络中断，静默 */ }
   })();
   return {
@@ -971,12 +979,20 @@ async function openSseTermTransport(
 }
 
 async function openTerminal(w: OpsWin) {
-  // 已有活着的 xterm（典型场景：从别的页面切回来）→ 只接回 DOM，不重开 PTY
+  // 已有**还活着**的 xterm（典型场景：从别的页面切回来）→ 只接回 DOM，不重开 PTY。
+  //
+  // ★★ 2026-10-16 修「点『连接终端』没反应」（用户实报）：判据必须是"句柄 + 仍然连着"，
+  //   光有句柄不够。断线路径（WS onclose / SSE 流结束）此前只把 `w.termOpen` 置 false、
+  //   句柄仍留在 terms 里，而旧代码见句柄就 attachTerm —— 把 xterm 挂进一个 v-show=false
+  //   的容器（termOpen 从头到尾没被置回 true），于是按钮看着完全没反应；
+  //   何况那条通道已经死了，就算显示出来也打不了字。
   const alive = terms.get(w.id);
-  if (alive) {
+  if (alive && w.termOpen) {
     attachTerm(alive, w);
     return;
   }
+  // 句柄残留但连接已断 → 彻底释放，落下去走一次真正的重连
+  if (alive) disposeTerminal(w);
   if (w.termConnecting || w.termOpen) return;
   const c = connOf(w);
   if (!c) return;
@@ -1063,6 +1079,21 @@ function disposeTerminal(w: OpsWin) {
   w.termOpen = false;
   w.termRecording = false;
   resetTerminalContext(w);
+}
+
+/**
+ * 终端通道断开的统一收尾（WS onclose / SSE 流结束都走这里）。
+ *
+ * ★★ 2026-10-16 修「点『连接终端』没反应」的另一半：断开时**必须释放句柄**，
+ *   不能只把 `w.termOpen` 置 false。残留的死句柄会让 openTerminal 走进"接回已有终端"
+ *   的早退分支（那条分支假设通道还活着）——xterm 被挂进 v-show=false 的容器，
+ *   按钮看着完全没反应。顺带如实告诉用户"断了"，而不是留一个看起来活着、
+ *   实际打什么都石沉大海的终端。
+ */
+function markTermDisconnected(w: OpsWin) {
+  const wasOpen = w.termOpen;
+  disposeTerminal(w);
+  if (wasOpen) ElMessage.warning('终端连接已断开，点「连接终端」可重连');
 }
 
 /** 断开终端（窗口还在，可重新连接） */
@@ -1696,18 +1727,26 @@ type TreeCtxGroup = { id: string; name: string; real: boolean; items: OpsConn[] 
 const treeCtx = ref<{ visible: boolean; x: number; y: number; conn: OpsConn | null; group: TreeCtxGroup | null }>({
   visible: false, x: 0, y: 0, conn: null, group: null,
 });
+/** 资源树菜单元素：渲染后按真实尺寸校正位置（见 composables/useMenuPlacement） */
+const treeMenuEl = ref<HTMLElement | null>(null);
+/** 资源树的三处右键共用：先按光标落位，渲染后按**真实尺寸**校正（贴光标 + 不越界） */
+function openTreeMenuAt(ev: MouseEvent, patch: { conn: OpsConn | null; group: TreeCtxGroup | null }) {
+  const at = { x: ev.clientX, y: ev.clientY };
+  treeCtx.value = { visible: true, ...at, ...patch };
+  placeMenuAfterRender(treeMenuEl, at, (p) => { treeCtx.value = { ...treeCtx.value, ...p }; });
+}
 const ctxConnGroupId = computed(() => treeCtx.value.conn?.groupId || '');
 const ctxCanFile = computed(() => !!treeCtx.value.conn && connType(treeCtx.value.conn) !== 'database');
 
 function onConnCtx(c: OpsConn, ev: MouseEvent) {
-  treeCtx.value = { visible: true, ...clampMenuPos(ev), conn: c, group: null };
+  openTreeMenuAt(ev, { conn: c, group: null });
 }
 function onGroupCtx(g: TreeCtxGroup, ev: MouseEvent) {
-  treeCtx.value = { visible: true, ...clampMenuPos(ev), conn: null, group: g };
+  openTreeMenuAt(ev, { conn: null, group: g });
 }
 /** 列表空白处右键：只给「新建」（连接 / 目录） */
 function onTreeCtx(ev: MouseEvent) {
-  treeCtx.value = { visible: true, ...clampMenuPos(ev), conn: null, group: null };
+  openTreeMenuAt(ev, { conn: null, group: null });
 }
 function closeTreeCtx() {
   treeCtx.value = { ...treeCtx.value, visible: false };
@@ -1754,8 +1793,12 @@ function groupPath(g: OpsGroup): string {
 const tabCtx = ref<{ visible: boolean; x: number; y: number; win: OpsWin | null }>({
   visible: false, x: 0, y: 0, win: null,
 });
+/** 窗口标签菜单元素：同上（渲染后按真实尺寸校正） */
+const tabMenuEl = ref<HTMLElement | null>(null);
 function onWinCtx(w: OpsWin, ev: MouseEvent) {
-  tabCtx.value = { visible: true, ...clampMenuPos(ev), win: w };
+  const at = { x: ev.clientX, y: ev.clientY };
+  tabCtx.value = { visible: true, ...at, win: w };
+  placeMenuAfterRender(tabMenuEl, at, (p) => { tabCtx.value = { ...tabCtx.value, ...p }; });
 }
 function closeTabCtx() {
   tabCtx.value = { ...tabCtx.value, visible: false };

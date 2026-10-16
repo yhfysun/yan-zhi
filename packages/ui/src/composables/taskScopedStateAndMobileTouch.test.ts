@@ -681,7 +681,10 @@ describe('任务右键菜单：打开目录', () => {
  */
 describe('空间右键「打开目录」+ 子菜单样式', () => {
   const SIDEBAR = read('components/chat/ChatSidebar.vue');
-  const CSS = read('views/chat.css');
+  // ★ 2026-10-16：`.ctx-menu` 规则已从 views/chat.css 搬到全局的 styles/menu.css
+  //   （放在按路由懒加载的 chat.css 里 ⇒ 没访问过聊天页的窗口里菜单完全没样式、看不见）。
+  //   断言意图不变，只是读新家。守门见 styles/ctxMenuGlobal.test.ts
+  const CSS = read('styles/menu.css');
 
   it('★★ 空间（目录）右键菜单必须有「打开目录」（用户报的就是这里）', () => {
     // 空间菜单块（spaceMenuTarget）里要有 打开目录，且传空间自己的 dirPath

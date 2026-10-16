@@ -8,10 +8,14 @@
 //
 // ★ 挂载方式跟随仓库既有做法（createApp + ElementPlus），本包没有 @vue/test-utils。
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { createApp, h, nextTick, type App } from 'vue';
 import ElementPlus from 'element-plus';
 import * as Icons from '@element-plus/icons-vue';
 import ConsoleShell from '../../components/console/ConsoleShell.vue';
+
+const SHELL_SRC = readFileSync(resolve(__dirname, '../../components/console/ConsoleShell.vue'), 'utf8');
 
 interface Mounted { host: HTMLElement; app: App }
 
@@ -92,5 +96,20 @@ describe('ConsoleShell · 控制台通用外壳', () => {
 
     localStorage.removeItem('yz_resize_ops_aside');
     localStorage.removeItem('yz_resize_shop_aside');
+  });
+
+  it('★★ 分隔条样式必须来自**非 scoped** 块（父组件渲染的文件面板分隔条也要吃得到）', () => {
+    // 真机事故（2026-10-16）：把 .rs-handle 收进 scoped 块后，运维文件面板那条分隔条由
+    // **父组件 OpsConsole** 渲染（`.ops-body > .rs-handle-right`），scoped 的 data-v 属性
+    // 跨不过去 ⇒ 实测 width:0 / cursor:auto：既看不见也拖不动（面板宽度调不了）。
+    // 它此前靠只随聊天页加载的 chat.css 里一份同名全局规则顶着 —— 冷启动直接进运维时同样失效。
+    const scopedBlock = SHELL_SRC.slice(SHELL_SRC.indexOf('<style scoped>'), SHELL_SRC.indexOf('</style>'));
+    expect(scopedBlock, '★ .rs-handle 又跑回 scoped 块里了（父组件渲染的分隔条会整条失效）')
+      .not.toMatch(/^\s*\.rs-handle\b/m);
+
+    const globalBlock = SHELL_SRC.slice(SHELL_SRC.lastIndexOf('<style>'));
+    expect(globalBlock, '★ 缺非 scoped 的 .rs-handle 基座规则').toMatch(/\.rs-handle\s*\{/);
+    expect(globalBlock, '★ 缺 7px 命中宽度（会缩成 0，拖不动）').toMatch(/flex:\s*0 0 7px/);
+    expect(globalBlock, '★ 缺 col-resize 光标（用户看不出这里能拖）').toMatch(/cursor:\s*col-resize/);
   });
 });

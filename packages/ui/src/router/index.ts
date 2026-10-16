@@ -204,6 +204,24 @@ const routes: RouteRecordRaw[] = [
     // 共享壳据此隐藏 mobile-topbar；仅移动外壳消费，桌面端无感。
     meta: { title: '设置', mobilePageShell: true },
   },
+  {
+    // ★ 兜底页（2026-10-16）：**必须留在数组最后**（vue-router 按注册顺序匹配，前面先命中）。
+    //
+    // 为什么要有（用户实报「切到别的模式还是黑屏、没有任何报错」）：无匹配路径时
+    // `<router-view>` 什么都不渲染，深色主题下整个内容区就是一块黑，控制台只有一条
+    // `[Vue Router warn]: No match found ...` —— 用户不知道发生了什么，也退不出来。
+    // 兜底页把这种状态变成「看得见的一句话 + 一个出口按钮」。
+    // 插件贡献的模式路由（/ops、/sec、/shop）冷启动时还没注册，也会先落到这里，
+    // 页面文案因此分「插件层还没就绪」与「真的没有这个地址」两种（见 RouteFallback.vue）。
+    //
+    // ⚠️ meta.fallback 是给守卫认的标记：挂了它之后 `to.matched` 不再为空，
+    //    所有「是否没匹配上」的判断都必须改用 isFallbackRoute()（见其注释）。
+    path: '/:pathMatch(.*)*',
+    name: 'route-fallback',
+    component: () => import('../views/RouteFallback.vue'),
+    // 不给 guest：未激活授权时，无匹配路径仍应被授权门禁弹到 /license（与挂兜底页之前一致）。
+    meta: { title: '页面未就绪', fallback: true },
+  },
 ];
 
 const router = createRouter({
@@ -241,15 +259,56 @@ function firstLicensedRoute(): string {
 }
 
 /**
- * 插件路由「首次同步完成」的信号 —— 治冷启动竞态。
+ * 模式路由是否**真的注册在路由表里**（★ 2026-10-16 新增，治「切换模式后黑屏」）。
+ *
+ * 为什么需要：`/ops`、`/sec`、`/shop` 这类模式路由由插件贡献、冷启动时才 addRoute。
+ *   「模式记忆」重定向（下面 beforeEach 里 /chat → modeRoute(activeMode)）此前**不看
+ *   目标路由存不存在**就直接把用户送过去 —— 一旦那个插件路由还没注册上（dev 冷启动
+ *   后端慢、插件接口 403、插件被禁用），重定向的落点就是一条无匹配路径：
+ *   内容区整块空白、控制台只有一条 `No match found` 的 warn，且**每次想去对话都被弹回
+ *   同一个空白页** —— 用户看到的就是「切到别的模式还是黑屏」。有了这道判断，
+ *   路由没就绪时就不再抢着重定向，用户能正常去 /chat，等插件路由真到了再走模式记忆。
+ *
+ * ⚠️ 用 getRoutes().some(path 相等) 而不是 router.hasRoute(name)：模式 key 与路由 name
+ *   并不总是一致（office→'chat'、dev→'code'、wf→'workflow'），只有 path 口径是统一的。
+ *   也不用 router.resolve()：它对无匹配路径同样会打那条 warn（白白刷控制台）。
+ */
+function isModeRouteRegistered(m: AppMode): boolean {
+  const target = modeRoute(m);
+  return router.getRoutes().some((r) => r.path === target);
+}
+
+/**
+ * 「这条导航到底有没有落在一个真页面上」的统一口径（2026-10-16 与兜底页一起引入）。
+ *
+ * 为什么不能只看 `to.matched.length === 0`：末尾挂了一条 `/:pathMatch(.*)*` 兜底路由之后，
+ * 任何无匹配路径都会 matched 到兜底页 ⇒ length 恒 ≥1，旧判断全部失效。所以改成看
+ * `meta.fallback` 标记。**凡是要判断"没匹配上"的地方都必须走这里**，别再写 length===0。
+ */
+function isFallbackRoute(r: { matched: Array<{ meta?: Record<string, unknown> }> }): boolean {
+  return r.matched.length === 0 || r.matched.some((m) => !!m.meta?.fallback);
+}
+
+/**
+ * 插件路由「首次同步完成」的信号 —— 治冷启动竞态，也是兜底页「自动再进一次」的扳机。
  *
  * `/ops`、`/sec`、`/shop` 的模式路由**是插件贡献的**（见各插件 manifest 的
  * `contributes.routes`），RouteRecord 由 `syncPluginRoutes()` 在
  * `onMounted → pluginStore.refresh()` 之后才 addRoute。而冷启动时用户可能一上来
  * 就落在这些路径上：桌面端上次会话的窗口 URL、书签、外部跳转、移动端 deep link、
- * 多窗口的第二个窗口。首次导航跑在 addRoute 之前 → `to.matched` 为空 → 无匹配 →
- * 空白页（观感是「点了一下没反应 / 白屏」，而不是什么错误提示）。
- * 处置见 `beforeEach` 末尾：等这个信号（带上限）再重导航一次。
+ * 多窗口的第二个窗口。首次导航跑在 addRoute 之前 → 无匹配。
+ *
+ * ★★ 2026-10-16 撤掉「守卫里阻塞等插件路由」的旧兜底（用户实报「切到运维模式整块黑屏」
+ *    ＋控制台只有一条 `No match found for location with path "/ops"`）。
+ * 旧做法：`to.matched` 为空且目标是模式路由时 `await waitForPluginRoutes()`（3s，dev 一度
+ *   放宽到 10s）再重导航。两个问题：
+ *     ① **等待期间内容区什么都没有** —— 导航挂在 pending，`<router-view>` 不渲染，
+ *        深色主题下看就是"黑屏"，且这段时间点什么都没反应（导航被占住）；
+ *     ② 等待有上限，超时后照样落在「没这条路由」上 —— 后端慢（dev 现编译）时只是把黑屏推迟。
+ * 现做法：**不阻塞**，让这次导航按「没匹配上」走完 → 末尾的兜底路由接住它 → 渲染
+ *   RouteFallback（"还在载入 / 没有这个页面" + 重试 + 回对话）；插件路由一注册完就
+ *   自动再进一次（本信号 + recoverIfCurrentRouteUnmatched 两条路都盯着）。
+ *   冷启动 / 后端慢 / 插件被禁用三种情况走同一条路径，不再有三套时序假设。
  */
 let pluginRoutesSynced = false;
 let resolvePluginRoutesSynced: (() => void) | null = null;
@@ -257,9 +316,14 @@ const pluginRoutesSyncedSignal = new Promise<void>((resolve) => {
   resolvePluginRoutesSynced = resolve;
 });
 
-/** 插件路由首次同步完成的信号；已同步则立即 resolve。 */
+/** 插件路由首次同步完成的信号；已同步则立即 resolve。兜底页据此决定"自动再进一次"的时机。 */
 export function whenPluginRoutesSynced(): Promise<void> {
   return pluginRoutesSynced ? Promise.resolve() : pluginRoutesSyncedSignal;
+}
+
+/** 插件路由是否已同步过（同步即真值、不回退）。兜底页据此区分「还在加载」与「确实没有」。 */
+export function arePluginRoutesSynced(): boolean {
+  return pluginRoutesSynced;
 }
 
 function markPluginRoutesSynced(): void {
@@ -268,34 +332,6 @@ function markPluginRoutesSynced(): void {
   resolvePluginRoutesSynced?.();
   resolvePluginRoutesSynced = null;
 }
-
-/** 冷启动等待上限：插件层 403（授权门禁未放行）或接口挂了时，不能把用户无限期按在空白页上。 */
-const PLUGIN_ROUTES_SYNC_TIMEOUT_MS = 3000;
-
-/**
- * 等插件路由首次同步，最多等 maxMs。
- * 超时不是错误分支：到点就放行，让这次导航按「确实没有这条路由」走完 ——
- * 好过一直挂在空白页上（用户至少还能从侧栏去到别处）。
- */
-function waitForPluginRoutes(maxMs = PLUGIN_ROUTES_SYNC_TIMEOUT_MS): Promise<void> {
-  return new Promise((resolve) => {
-    const done = () => {
-      clearTimeout(timer);
-      resolve();
-    };
-    const timer = setTimeout(done, maxMs);
-    whenPluginRoutesSynced().then(done, done);
-  });
-}
-
-/**
- * 冷启动重试过的路径 —— 防重导航成环。
- *
- * 等完（或超时）后路由仍没注册上时，重导航会再次走到同一个分支：没有这个集合就是
- * 「等 → 重导航 → 再等」的死循环。注意 vue-router 的无限重定向保护**只在 dev 生效**
- * （`process.env.NODE_ENV !== 'production'`），线上会真的转不出来。
- */
-const coldStartRetried = new Set<string>();
 
 router.beforeEach(async (to) => {
   // 移动端重功能路由重定向到对话页，避免手动输 URL 进入
@@ -328,21 +364,17 @@ router.beforeEach(async (to) => {
     (to.path === '/chat' || to.path.startsWith('/chat/')) &&
     activeMode.value !== 'office' &&
     // 当前模式已失权时不再跳回它（否则换低档码后 /chat 会被弹到一个不该存在的模式）
-    isModeLicensed(activeMode.value)
+    isModeLicensed(activeMode.value) &&
+    // ★ 2026-10-16：目标模式路由还没注册时**不许**抢着重定向 —— 否则落点是空白页，
+    //   而且会把每一次「回对话」都弹回同一个空白页（见 isModeRouteRegistered 注释）。
+    isModeRouteRegistered(activeMode.value)
   ) {
     return { path: modeRoute(activeMode.value) };
   }
-  // ★ 冷启动竞态兜底：`/ops` 这类**插件贡献的模式路由**在冷启动时还没 addRoute，
-  //   此刻 `to.matched` 为空（无匹配）→ 空白页。等首次同步完成（上限 3s）再重导航一次，
-  //   这次路由表已就绪就能正常进。同一个路径只重试一次（见 coldStartRetried）。
-  //   ★ 位置：必须放在上面两条门禁**之后** —— 未激活授权 / 未授权模式该当场弹走，
-  //     不该陪跑这几秒（授权门禁未放行时 /plugins 是 403，永远等不到同步完成）。
-  if (to.matched.length === 0 && MODE_ROUTE_KEYS[to.path] && !coldStartRetried.has(to.fullPath)) {
-    coldStartRetried.add(to.fullPath);
-    await waitForPluginRoutes();
-    // replace：冷启动的首次导航不该在历史里多留一条（否则「返回」会退到同一个页面）
-    return { path: to.path, query: to.query, hash: to.hash, replace: true };
-  }
+  // ★ 冷启动竞态这里**刻意什么都不做**：/ops 这类插件贡献的模式路由此时还没 addRoute，
+  //   本次导航会落到末尾的兜底路由（meta.fallback）→ 渲染 RouteFallback（"还在载入…"），
+  //   插件路由一到（syncPluginRoutes → markPluginRoutesSynced）就自动再进一次。
+  //   旧的"await 等插件路由再重导航"已撤 —— 见文件上方那段说明（等待期间就是黑屏）。
 });
 
 /** 动态挂载插件贡献的前端路由（在 usePluginStore.refresh 之后调用） */
@@ -362,9 +394,35 @@ export async function syncPluginRoutes(): Promise<void> {
     }
     // 首次同步完成 → 放行冷启动里等着的导航（见 whenPluginRoutesSynced）
     markPluginRoutesSynced();
+    recoverIfCurrentRouteUnmatched();
   } catch {
     /* plugin store 未就绪 */
   }
+}
+
+/**
+ * ★ 2026-10-16「迟到注册自愈」：路由注册完，若**当前**停在一条无匹配的路径上，就地重导航一次。
+ *
+ * 为什么必须有（用户实报「进运维模式再切别的模式还是黑屏、无报错」）：冷启动那条路径
+ *   「等插件路由 → 3s(dev 10s) 超时 → 放行 → 导航带着 unmatched 落定」之后，路由表**才**
+ *   补上 —— 而 Vue 不会因为你 addRoute 就重跑一次导航，`<router-view>` 便永远渲染空。
+ *   页面上没有任何报错、外壳还在，观感就是"黑屏卡住"。
+ *   有了这一句，无论注册迟到多久，当前页都会自己恢复。
+ *
+ * replace 而非 push：这条重导航是修页面，不是用户操作，不该进历史栈。
+ * 防环：重导航会再走一遍 beforeEach，此时 matched 已非空（刚注册上）⇒ 不会再次触发；
+ *   即便极端情况下仍匹配不上，coldStartRetried 也挡着那次「等待」分支。
+ */
+function recoverIfCurrentRouteUnmatched(): void {
+  const cur = router.currentRoute.value;
+  if (!isFallbackRoute(cur)) return;
+  // 只捞「本该是模式页」的地址（/ops 这类插件路由）。两条不捞的理由：
+  //   · START_LOCATION（首次导航还没落定，path='/'）：捞它就等于把用户**想去 /ops** 的
+  //     那次导航改写成回首页 —— 而它随后会正常走完，无需插手；
+  //   · 真正的野路径：捞它只会原地再失败一次，交给兜底页自己的「重试」按钮。
+  const mode = MODE_ROUTE_KEYS[cur.path];
+  if (!mode || !isModeRouteRegistered(mode)) return;
+  void router.replace({ path: cur.path, query: cur.query, hash: cur.hash });
 }
 
 export default router;

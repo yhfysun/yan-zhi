@@ -79,12 +79,29 @@ describe('OpsConsole · 通道选择与回退', () => {
     expect(CONSOLE).toMatch(/setTimeout\(\(\) => fail\(new Error\('WebSocket 握手超时'\)\), \d+\)/);
   });
 
-  it('已就绪后连接断开 → 清掉连接与录制状态，让「连接终端」重新可用', () => {
+  it('★ 已就绪后连接断开 → 走统一收尾（释放句柄 + 提示可重连）', () => {
     const fn = CONSOLE.match(/function openWsTermTransport\([\s\S]*?\n\}\n/);
     expect(fn, '找不到 openWsTermTransport').toBeTruthy();
-    expect(fn![0]).toMatch(/w\.termOpen = false/);
-    // 录制标识要一起清掉，否则断开后还显示「录制中」，用户以为还在录
-    expect(fn![0]).toMatch(/w\.termRecording = false/);
+    expect(fn![0], '断开未走统一收尾').toMatch(/else markTermDisconnected\(w\)/);
+    // 清掉连接与录制状态：断开后还显示「录制中」，用户以为还在录
+    const dis = CONSOLE.match(/function disposeTerminal\(w: OpsWin\)[\s\S]*?\n\}/)?.[0] ?? '';
+    expect(dis, '找不到 disposeTerminal').not.toBe('');
+    expect(dis).toMatch(/w\.termOpen = false/);
+    expect(dis).toMatch(/w\.termRecording = false/);
+  });
+
+  it('★★ 断开的死句柄不许走进「接回已有终端」分支（否则点「连接终端」毫无反应）', () => {
+    // 真实事故（2026-10-16 用户实报「点击连接终端也没用」）：WS 断开只置 termOpen=false、
+    // 句柄留在 terms 里 → openTerminal 见句柄就 attachTerm → xterm 被挂进 v-show=false 的
+    // 容器且 termOpen 再没被置回 true ⇒ 按钮看着完全没反应。
+    const fn = CONSOLE.match(/async function openTerminal\(w: OpsWin\)[\s\S]*?\n\}/)?.[0] ?? '';
+    expect(fn, '找不到 openTerminal').not.toBe('');
+    expect(fn, '早退分支未判"仍然连着"').toMatch(/if \(alive && w\.termOpen\)/);
+    expect(fn, '残留死句柄未释放就往下走').toMatch(/if \(alive\) disposeTerminal\(w\)/);
+    // 统一收尾必须真的释放句柄，而不是只改标志位
+    const mk = CONSOLE.match(/function markTermDisconnected\(w: OpsWin\)[\s\S]*?\n\}/)?.[0] ?? '';
+    expect(mk, '找不到 markTermDisconnected').not.toBe('');
+    expect(mk, '未释放句柄').toContain('disposeTerminal(w)');
   });
 });
 

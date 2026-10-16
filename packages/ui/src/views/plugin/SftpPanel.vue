@@ -12,13 +12,56 @@
       </div>
     </div>
 
-    <!-- 传输进度 -->
-    <div v-if="transfer.active" class="sftp-progress">
-      <div class="sftp-progress-meta">
-        <span>{{ transfer.label }}</span>
-        <span class="sftp-progress-pct">{{ transfer.percent }}%</span>
+    <!-- 任务列表（2026-10-16）：上传 / 下载 / 删除统一在这里看进度。
+         删除任务可展开看**实时删除的文件** —— 旧版只有一条聚合进度条，删目录时既不知道
+         删到哪儿了，也没有任何「删了哪些」的痕迹；上传文件夹同样看不到逐个文件的进度。 -->
+    <div v-if="tasks.length" class="sftp-tasks">
+      <div class="sftp-tasks-head">
+        <span class="sftp-tasks-title">
+          <el-icon class="sftp-tasks-icon"><Tickets /></el-icon>
+          任务{{ runningCount ? `（进行中 ${runningCount}）` : `（${tasks.length}）` }}
+        </span>
+        <div class="sftp-tasks-actions">
+          <el-button link size="small" @click="tasksOpen = !tasksOpen">{{ tasksOpen ? '收起' : '展开' }}</el-button>
+          <el-button link size="small" :disabled="!finishedCount" @click="clearFinishedTasks">清除已完成</el-button>
+        </div>
       </div>
-      <el-progress :percentage="transfer.percent" :status="transfer.status" :stroke-width="6" :show-text="false" />
+
+      <div v-if="tasksOpen" class="sftp-tasks-body">
+        <div
+          v-for="t in orderedTasks"
+          :key="t.id"
+          class="sftp-task"
+          :class="{ 'is-failed': t.state === 'failed', 'is-done': t.state === 'done' }"
+        >
+          <el-icon class="sftp-task-icon">
+            <Upload v-if="t.kind === 'upload'" /><Download v-else-if="t.kind === 'download'" /><Delete v-else />
+          </el-icon>
+          <div class="sftp-task-main">
+            <div class="sftp-task-line">
+              <span class="sftp-task-label" :title="t.label">{{ t.label }}</span>
+              <span class="sftp-task-meta">{{ taskMeta(t) }}</span>
+            </div>
+            <el-progress
+              v-if="t.kind !== 'delete'"
+              :percentage="percentOf(t)"
+              :status="t.state === 'failed' ? 'exception' : (t.state === 'done' ? 'success' : '')"
+              :stroke-width="4"
+              :show-text="false"
+            />
+            <!-- 删除任务：实时删除明细（默认收起，点开跟最新） -->
+            <div v-if="t.kind === 'delete' && t.deleted.length" class="sftp-task-del">
+              <span class="sftp-task-del-toggle" @click="t.expanded = !t.expanded">
+                {{ t.expanded ? '收起明细' : '查看删掉的项' }}（{{ t.deletedCount }}）
+              </span>
+              <div v-if="t.expanded" class="sftp-task-del-list">
+                <div v-for="(p, i) in delRows(t)" :key="t.id + i" class="sftp-task-del-item" :title="p">{{ p }}</div>
+              </div>
+            </div>
+            <div v-if="t.error" class="sftp-task-err" :title="t.error">{{ t.error }}</div>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- 双栏：远程 │ 本地（任务 7.5 / 12.3）
@@ -199,6 +242,7 @@
     <Teleport to="body">
 <div
       v-if="ctx.visible"
+      ref="ctxMenuEl"
       class="ctx-menu"
       :style="{ left: ctx.x + 'px', top: ctx.y + 'px' }"
       @click.stop
@@ -241,11 +285,11 @@
 
 <script setup lang="ts">
 import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue';
-import { clampMenuPos } from '../../utils/menuPosition';
+import { placeMenuAfterRender } from '../../composables/useMenuPlacement';
 import { consumeSseStream } from '../../utils/sse';
 import {
-  ArrowUp, Connection, Document, Download, EditPen,
-  Folder, FolderAdd, FolderOpened, HomeFilled, Link, Refresh, Upload,
+  ArrowUp, Connection, Delete, Document, Download, EditPen,
+  Folder, FolderAdd, FolderOpened, HomeFilled, Link, Refresh, Tickets, Upload,
 } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { api, API_BASE } from '../../api/client';
@@ -301,7 +345,79 @@ const remotePathInput = ref<{ focus: () => void } | null>(null);
 const fileInput = ref<HTMLInputElement | null>(null);
 const folderInput = ref<HTMLInputElement | null>(null);
 
-const transfer = ref({ active: false, label: '', percent: 0, status: '' as '' | 'success' | 'exception' | 'warning' });
+/**
+ * 任务列表（2026-10-16）。
+ *
+ * 为什么把旧的那条 `transfer` 聚合进度条换成列表：用户要的是「上传文件和目录要有任务列表
+ * 可以看到进度」，以及「删目录时要能看到实时删掉的文件」—— 一条只有一个百分比的进度条
+ * 两样都做不到（同时进行两件事时还会互相覆盖 label）。
+ *
+ * 一条任务 = 后端的一个 job（见 ops-shell 的 SftpJob）；进度由 SSE 增量刷新。
+ */
+interface SftpTask {
+  /** 后端 jobId，同时用作列表 key */
+  id: string;
+  kind: 'upload' | 'download' | 'delete';
+  label: string;
+  state: 'running' | 'done' | 'failed';
+  transferred: number;
+  total: number;
+  doneCount: number;
+  totalCount: number;
+  currentFile: string;
+  /** 删除任务：累计已删条目数（服务端的计数，不随前端保留上限缩水） */
+  deletedCount: number;
+  /** 删除任务：前端累积的已删路径（最近 DELETED_KEEP 条；服务端每帧只推最近 50 条） */
+  deleted: string[];
+  /** 删除明细是否展开 */
+  expanded: boolean;
+  error?: string;
+}
+
+/** 前端保留的已删路径上限：与后端 MAX_JOB_DELETED_KEEP 同量级，避免长任务把 DOM 撑爆。 */
+const DELETED_KEEP = 200;
+/** 明细里一次性渲染的行数上限（更早的在 title 里也能看到计数，不必都塞进 DOM）。 */
+const DELETED_ROWS = 60;
+
+const tasks = ref<SftpTask[]>([]);
+const tasksOpen = ref(true);
+
+const orderedTasks = computed(() => [...tasks.value].sort((a, b) => {
+  // 进行中的排前面（用户最关心），其余保持插入顺序（新任务在后）
+  const rank = (t: SftpTask) => (t.state === 'running' ? 0 : 1);
+  return rank(a) - rank(b);
+}));
+const runningCount = computed(() => tasks.value.filter((t) => t.state === 'running').length);
+const finishedCount = computed(() => tasks.value.filter((t) => t.state !== 'running').length);
+
+/** 明细行：最近删的排最前（跟着看最新），只渲染末尾 DELETED_ROWS 条 */
+function delRows(t: SftpTask): string[] {
+  return t.deleted.slice(-DELETED_ROWS).reverse();
+}
+
+/** 行右侧那行小字：删除看条数，上传/下载看「第几个 · 合计」+ 字节 */
+function taskMeta(t: SftpTask): string {
+  if (t.kind === 'delete') {
+    if (t.state === 'done') return `已删除 ${t.deletedCount} 项`;
+    if (t.state === 'failed') return `中断于 ${t.deletedCount} 项`;
+    return `已删除 ${t.deletedCount} 项…`;
+  }
+  const idx = t.totalCount > 1 ? `${t.doneCount}/${t.totalCount} · ` : '';
+  if (t.state === 'done') return `${idx}完成`;
+  if (t.state === 'failed') return `${idx}失败`;
+  return `${idx}${fmtSize(t.transferred)}${t.total > 1 ? ` / ${fmtSize(t.total)}` : ''}`;
+}
+
+/** 上传/下载的百分比（删除任务不画进度条：遍历前不知道树里有多少项，画了只能是假的） */
+function percentOf(t: SftpTask): number {
+  if (t.state === 'done') return 100;
+  if (!t.total) return t.state === 'running' ? 10 : 0;
+  return Math.min(100, Math.round((t.transferred / t.total) * 100));
+}
+
+function clearFinishedTasks() {
+  tasks.value = tasks.value.filter((t) => t.state === 'running');
+}
 
 const isElectron = typeof window !== 'undefined' && !!(window as any).electronAPI?.isElectron;
 const electron = (window as any).electronAPI;
@@ -421,8 +537,15 @@ type CtxPane = 'remote' | 'local';
 const ctx = ref<{ visible: boolean; x: number; y: number; name: string; isDir: boolean; pane: CtxPane }>({
   visible: false, x: 0, y: 0, name: '', isDir: false, pane: 'remote',
 });
+/** 菜单元素：渲染后按真实尺寸校正位置（见 composables/useMenuPlacement） */
+const ctxMenuEl = ref<HTMLElement | null>(null);
 function openCtx(ev: MouseEvent, pane: CtxPane, name: string, isDir: boolean) {
-  ctx.value = { visible: true, ...clampMenuPos(ev), name, isDir, pane };
+  // ★ 先按光标落位，再由 placeMenuAfterRender 量出**真实尺寸**后校正：
+  //   贴光标右下 / 下方放不下则翻到上方 / 不越界。旧实现按"猜 320px 高"硬夹，
+  //   在窗口底部右击会把三行菜单推到光标上方两百多像素（用户：'隔这么远'）。
+  const at = { x: ev.clientX, y: ev.clientY };
+  ctx.value = { visible: true, ...at, name, isDir, pane };
+  placeMenuAfterRender(ctxMenuEl, at, (p) => { ctx.value = { ...ctx.value, ...p }; });
 }
 function onRemoteCtx(e: RemoteEntry, ev: MouseEvent) {
   if (!remoteSelected.value.has(e.name)) remoteSelected.value = new Set([e.name]);
@@ -746,13 +869,12 @@ async function uploadItems(items: UploadItem[], destDir?: string) {
     ).then(() => true).catch(() => false);
     if (!ok) return;
   }
-  transfer.value = { active: true, label: `上传 ${label} → ${dest}`, percent: 0, status: '' };
-  const r = await api.post<{ jobId: string }>('/plugin/ops-shell/sftp/upload', {
+  const r = await api.post<{ jobId: string; count: number; total: number }>('/plugin/ops-shell/sftp/upload', {
     connectionId: props.connectionId, destDir: dest, files: finalItems, confirmed: needConfirm,
   });
-  if ('error' in r) { transfer.value.active = false; ElMessage.error(r.error); return; }
-  const ok = await subscribeProgress(r.data.jobId);
-  transfer.value = { ...transfer.value, active: false, status: ok ? 'success' : 'exception' };
+  if ('error' in r) { ElMessage.error(r.error); return; }
+  addTask(r.data.jobId, 'upload', `上传 ${label} → ${dest}`, r.data.count, r.data.total);
+  const ok = await subscribeTask(r.data.jobId);
   if (ok) ElMessage.success(`已上传 ${label}`);
   await loadRemote();
 }
@@ -863,56 +985,93 @@ async function downloadNames(names: string[], destDir?: string) {
 
   let done = 0;
   for (const p of plan) {
-    transfer.value = { active: true, label: `下载 ${p.local.split('/').pop()}（${done + 1}/${plan.length}）`, percent: 0, status: '' };
+    const name = p.local.split('/').pop() || p.local;
     const r = await api.post<{ jobId: string }>('/plugin/ops-shell/sftp/download', {
       connectionId: props.connectionId, remotePath: p.remote, localPath: p.local,
     });
-    if ('error' in r) {
-      transfer.value = { ...transfer.value, active: false, status: 'exception' };
-      ElMessage.error(r.error);
-      return;
-    }
-    const ok = await subscribeProgress(r.data.jobId);
-    transfer.value = { ...transfer.value, active: false, status: ok ? 'success' : 'exception' };
-    if (!ok) return;
+    if ('error' in r) { ElMessage.error(r.error); return; }
+    addTask(r.data.jobId, 'download', `下载 ${name} → ${dest}`, 1);
+    const ok = await subscribeTask(r.data.jobId);
+    if (!ok) { ElMessage.error(`「${name}」下载失败`); return; }
     done += 1;
   }
   ElMessage.success(`已下载 ${done} 项到 ${dest}`);
   if (dest === localPath.value) void loadLocal();
 }
 
-// ===== 进度订阅（SSE）；返回是否成功 =====
-async function subscribeProgress(jobId: string): Promise<boolean> {
-  return new Promise<boolean>((resolve) => {
-    const token = localStorage.getItem('auth_token') || '';
-    void (async () => {
-      try {
-        const resp = await fetch(`${API_BASE}/plugin/ops-shell/sftp/progress/${jobId}/stream`, {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        if (!resp.body) { resolve(true); return; }
-        // SSE 解码统一走 utils/sse（P5 收口）
-        await consumeSseStream(resp.body, (payload) => {
-          let data: any;
-          try { data = JSON.parse(payload); } catch { return; }
-          if (data.transferred < 0) {
-            transfer.value = { ...transfer.value, active: false, status: 'exception' };
-            ElMessage.error('传输失败');
-            resolve(false); return false;
-          }
-          // 完成标记：后端完成后置 transferred=0,total=1
-          if (data.transferred === 0 && data.total === 1) { resolve(true); return false; }
-          const total = data.total > 0 ? data.total : 1;
-          const pct = Math.min(100, Math.round((data.transferred / total) * 100));
-          transfer.value = { ...transfer.value, active: true, percent: pct };
-        });
-        resolve(true);
-      } catch {
-        resolve(true);
+  /** 登记一条任务行（★ 之后一律用 taskOf(id) 拿**响应式代理**再改：
+   *  直接改这里返回的裸对象不会触发渲染 —— 数组进 ref 后才被包成代理） */
+  const addTask = (id: string, kind: SftpTask['kind'], labelText: string, totalCount: number, totalBytes = 0) => {
+    tasks.value = [...tasks.value, {
+      id, kind, label: labelText, state: 'running',
+      transferred: 0, total: totalBytes, doneCount: 0, totalCount,
+      currentFile: '', deletedCount: 0, deleted: [], expanded: false,
+    }];
+    tasksOpen.value = true;
+  };
+  const taskOf = (id: string): SftpTask | undefined => tasks.value.find((x) => x.id === id);
+
+  /** 一帧进度写进任务行；删除任务把新增的路径接到明细尾部（见 DELETED_KEEP） */
+  function applyJobFrame(jobId: string, d: Record<string, unknown>): void {
+    const t = taskOf(jobId);
+    if (!t) return;
+    if (typeof d.label === 'string' && d.label) t.label = d.label;
+    if (typeof d.state === 'string') t.state = d.state as SftpTask['state'];
+    if (typeof d.transferred === 'number') t.transferred = d.transferred;
+    if (typeof d.total === 'number') t.total = d.total;
+    if (typeof d.doneCount === 'number') t.doneCount = d.doneCount;
+    if (typeof d.totalCount === 'number') t.totalCount = d.totalCount;
+    if (typeof d.currentFile === 'string') t.currentFile = d.currentFile;
+    if (typeof d.error === 'string' && d.error) t.error = d.error;
+    if (t.kind === 'delete' && typeof d.deletedCount === 'number') {
+      const delta = d.deletedCount - t.deletedCount;
+      t.deletedCount = d.deletedCount;
+      // 服务端每帧只推最近 50 条：只接这一帧新增的尾部 delta 条，避免整段重复追加
+      if (delta > 0 && Array.isArray(d.deleted)) {
+        const all = d.deleted as string[];
+        const fresh = delta <= all.length ? all.slice(all.length - delta) : all;
+        t.deleted = [...t.deleted, ...fresh].slice(-DELETED_KEEP);
       }
-    })();
-  });
-}
+    }
+  }
+
+  /** 订阅一个后端任务的 SSE，返回是否成功结束。
+   *  ★ 终止口径：服务端推 `state` 终态帧后**关流**（见 ops-shell 的 sftpProgressStream），
+   *    不再靠"读字节哨兵"猜 —— 旧实现一旦漏掉最后一帧就永远显示进行中。 */
+  async function subscribeTask(jobId: string): Promise<boolean> {
+    let ok = true;
+    let sawFinal = false;
+    try {
+      const token = localStorage.getItem('auth_token') || '';
+      const resp = await fetch(`${API_BASE}/plugin/ops-shell/sftp/progress/${jobId}/stream`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!resp.body) return true;
+      // SSE 解码统一走 utils/sse（P5 收口）
+      await consumeSseStream(resp.body, (payload) => {
+        let data: Record<string, unknown>;
+        try { data = JSON.parse(payload); } catch { return; }
+        applyJobFrame(jobId, data);
+        if (data.state === 'done' || data.state === 'failed') {
+          sawFinal = true;
+          ok = data.state === 'done';
+          return false; // 终态：停止消费
+        }
+      });
+      const t = taskOf(jobId);
+      // 流关了却没见到终态帧 = 连接中断（任务在服务端可能还在跑）——如实写进任务
+      if (!sawFinal && t && t.state === 'running') {
+        t.state = 'failed';
+        t.error = '进度连接已断开（服务端可能仍在执行）';
+        ok = false;
+      }
+      return ok;
+    } catch {
+      const t = taskOf(jobId);
+      if (t && t.state === 'running') { t.state = 'failed'; t.error = '进度连接异常'; }
+      return false;
+    }
+  }
 
 // ===== 新建目录 / 重命名 / 删除 / 复制（两栏共用，按 ctx.pane 分叉） =====
 /** 当前栏是否生产连接（只有远程栏有这个概念） */
@@ -973,14 +1132,19 @@ async function deleteSelected() {
   ).then(() => true).catch(() => false);
   if (!ok) return;
   for (const name of names) {
-    const res = pane === 'local'
-      ? await api.post('/plugin/ops-shell/local/delete', {
-        path: joinLocal(localPath.value, name), recursive: true,
-      })
-      : await api.post('/plugin/ops-shell/sftp/unlink', {
-        connectionId: props.connectionId, path: joinRemote(remotePath.value, name), confirmed: isProd,
-      });
+    if (pane === 'local') {
+      const res = await api.post('/plugin/ops-shell/local/delete', { path: joinLocal(localPath.value, name), recursive: true });
+      if ('error' in res) { ElMessage.error(`${name}: ${res.error}`); return; }
+      continue;
+    }
+    // 远程删除是「任务」：立刻拿到 jobId，删除在后台逐条跑，订阅里能实时看到删掉了哪些
+    const res = await api.post<{ jobId: string; isDir: boolean }>('/plugin/ops-shell/sftp/unlink', {
+      connectionId: props.connectionId, path: joinRemote(remotePath.value, name), confirmed: isProd,
+    });
     if ('error' in res) { ElMessage.error(`${name}: ${res.error}`); return; }
+    addTask(res.data.jobId, 'delete', `${res.data.isDir ? '删除目录' : '删除文件'} ${name}`, 1);
+    const deleted = await subscribeTask(res.data.jobId);
+    if (!deleted) { ElMessage.error(`${name}: 删除失败`); return; }
   }
   await (pane === 'local' ? loadLocal() : loadRemote());
 }
@@ -1041,11 +1205,39 @@ onUnmounted(() => {
 .sftp-host-icon { font-size: 13px; }
 .sftp-head-actions { display: flex; gap: 6px; flex-wrap: wrap; }
 
-/* ===== 进度 ===== */
-.sftp-progress { flex-shrink: 0; }
-.sftp-progress-meta { display: flex; justify-content: space-between; font-size: 11px; color: var(--color-text-secondary); margin-bottom: 3px; }
-.sftp-progress-meta > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sftp-progress-pct { font-weight: 600; flex-shrink: 0; margin-left: 10px; }
+/* ===== 任务列表（上传 / 下载 / 删除） ===== */
+.sftp-tasks {
+  flex-shrink: 0; border: 1px solid var(--glass-border); border-radius: 8px;
+  background: var(--glass-bg); overflow: hidden;
+}
+.sftp-tasks-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 4px 8px; font-size: 12px; color: var(--color-text-secondary);
+}
+.sftp-tasks-title { display: inline-flex; align-items: center; gap: 5px; }
+.sftp-tasks-icon { font-size: 13px; }
+.sftp-tasks-actions { display: flex; align-items: center; gap: 2px; }
+/* 任务多时内部滚动，不把双栏列表挤走 */
+.sftp-tasks-body { max-height: 190px; overflow: auto; border-top: 1px solid var(--glass-border); }
+.sftp-task { display: flex; gap: 6px; padding: 5px 8px; }
+.sftp-task + .sftp-task { border-top: 1px dashed var(--glass-border); }
+.sftp-task-icon { font-size: 13px; color: var(--color-text-tertiary); margin-top: 2px; flex: none; }
+.sftp-task.is-failed .sftp-task-icon { color: var(--color-danger, #c25b4e); }
+.sftp-task.is-done .sftp-task-icon { color: var(--color-success, #4fa97f); }
+.sftp-task-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.sftp-task-line { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.sftp-task-label { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sftp-task-meta { flex: none; font-size: 11px; color: var(--color-text-tertiary); }
+.sftp-task-err { font-size: 11px; color: var(--color-danger, #c25b4e); word-break: break-all; }
+/* 删除明细：实时滚动的已删路径 */
+.sftp-task-del-toggle { font-size: 11px; color: var(--color-primary); cursor: pointer; }
+.sftp-task-del-list {
+  margin-top: 3px; max-height: 110px; overflow: auto;
+  font-family: var(--font-mono, Consolas, monospace); font-size: 11px;
+  color: var(--color-text-secondary); background: rgba(127, 127, 127, 0.08);
+  border-radius: 4px; padding: 3px 5px;
+}
+.sftp-task-del-item { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ===== 路径栏 ===== */
 .sftp-pathbar {

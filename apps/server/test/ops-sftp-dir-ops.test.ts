@@ -21,31 +21,60 @@ vi.mock('../src/utils/crypto.js', () => ({
 }));
 
 import {
-  MAX_RECURSIVE_DELETE_ENTRIES, opsShellModule, removeRemoteRecursive,
+  MAX_RECURSIVE_DELETE_ENTRIES, auditPathTail, opsShellModule, removeRemoteRecursive,
 } from '../src/plugins/ops-shell.js';
 
 // ---------- A. 远程递归删除 ----------
 
-/** 极简假 SFTP：只实现 stat / readdir / rmdir / unlink，够跑递归删除 */
-function fakeSftp(nodes: Record<string, 'dir' | 'file'>) {
+/** 极简假 SFTP：stat / lstat / readdir / rmdir / unlink。
+ *  节点值：'dir' | 'file' | `link:<目标路径>`。
+ *  ★ 语义对齐真实 SFTP（否则「删软链会不会删穿目标」根本测不出来）：
+ *    stat / readdir **跟随**软链（父目录总是跟随），lstat 不跟随，unlink/rmdir 作用于解析后的路径，
+ *    且 rmdir 对软链必失败（真实服务器就是这样）。 */
+function fakeSftp(nodes: Record<string, string>) {
   const calls: string[] = [];
   const norm = (p: string) => p.replace(/\/+$/, '') || '/';
+  /** 逐段解析软链；followLast=false 时最后一段保留为链接自身 */
+  const resolve = (p: string, followLast: boolean): string | null => {
+    const segs = norm(p).split('/').filter(Boolean);
+    let cur = '';
+    for (let i = 0; i < segs.length; i++) {
+      cur += '/' + segs[i];
+      const kind = nodes[cur];
+      if (!kind) return null;
+      if (kind.startsWith('link:') && (followLast || i < segs.length - 1)) cur = norm(kind.slice(5));
+    }
+    return cur || '/';
+  };
+  const attrsOf = (real: string) => ({
+    mode: nodes[real] === 'dir' ? 0o040755 : nodes[real].startsWith('link:') ? 0o120777 : 0o100644,
+    size: 1,
+    mtime: 1,
+  });
   const sftp: any = {
-    stat(p: string, cb: any) {
-      const kind = nodes[norm(p)];
-      if (!kind) { cb(new Error('no such file')); return; }
-      cb(null, { mode: kind === 'dir' ? 0o040755 : 0o100644, size: 1, mtime: 1 });
-    },
+    stat(p: string, cb: any) { const r = resolve(p, true); if (!r || !nodes[r]) { cb(new Error('No such file')); return; } cb(null, attrsOf(r)); },
+    lstat(p: string, cb: any) { const r = resolve(p, false); if (!r || !nodes[r]) { cb(new Error('No such file')); return; } cb(null, attrsOf(r)); },
     readdir(p: string, cb: any) {
-      const prefix = norm(p) === '/' ? '/' : `${norm(p)}/`;
+      const r = resolve(p, true);
+      if (!r || !nodes[r]) { cb(new Error('No such file')); return; }
+      const prefix = r === '/' ? '/' : `${r}/`;
       const names = Object.keys(nodes)
         .filter((k) => k.startsWith(prefix) && !k.slice(prefix.length).includes('/'))
         .map((k) => ({ filename: k.slice(prefix.length) }));
-      calls.push(`ls ${norm(p)}`);
+      calls.push(`ls ${r}`);
       cb(null, names);
     },
-    rmdir(p: string, cb: any) { calls.push(`rmdir ${norm(p)}`); delete nodes[norm(p)]; cb(null); },
-    unlink(p: string, cb: any) { calls.push(`unlink ${norm(p)}`); delete nodes[norm(p)]; cb(null); },
+    rmdir(p: string, cb: any) {
+      const r = resolve(p, false);
+      if (!r || !nodes[r]) { cb(new Error('No such file')); return; }
+      if (nodes[r].startsWith('link:')) { cb(new Error('Failure')); return; }
+      calls.push(`rmdir ${r}`); delete nodes[r]; cb(null);
+    },
+    unlink(p: string, cb: any) {
+      const r = resolve(p, false);
+      if (!r || !nodes[r]) { cb(new Error('No such file')); return; }
+      calls.push(`unlink ${r}`); delete nodes[r]; cb(null);
+    },
   };
   return { sftp: sftp as never, calls, nodes };
 }
@@ -83,6 +112,7 @@ describe('removeRemoteRecursive · 目录连同内容一起删', () => {
     const unlinked: string[] = [];
     const sftp: any = {
       stat: (_p: string, cb: any) => cb(null, { mode: 0o040755, size: 0, mtime: 0 }),
+      lstat: (_p: string, cb: any) => cb(null, { mode: 0o040755, size: 0, mtime: 0 }),
       readdir: (_p: string, cb: any) => cb(null, [{ filename: '.' }, { filename: '..' }]),
       rmdir: (_p: string, cb: any) => cb(null),
       unlink: (p: string, cb: any) => { unlinked.push(p); cb(null); },
@@ -101,6 +131,91 @@ describe('removeRemoteRecursive · 目录连同内容一起删', () => {
     const { sftp, nodes } = fakeSftp({ '/d': 'dir', '/d/a.txt': 'file' });
     await removeRemoteRecursive(sftp, '/d/');
     expect(Object.keys(nodes)).toHaveLength(0);
+  });
+
+  // ★★ 2026-10-16 用户实报「删除失败: No such file」。
+  //   根因：删除侧用的是 stat（**跟随**软链），目录里的**断链**（目标已删）stat 必 ENOENT，
+  //   于是界面上这个软链永远删不掉。列表侧一直是按 readdir 的 mode 判类型、不跟随，两边口径不一致。
+  it('★ 断链（目标已删的软链）能删掉，不再报 No such file', async () => {
+    const { sftp, calls, nodes } = fakeSftp({ '/app': 'dir', '/app/current': 'link:/app/v1-gone' });
+    await removeRemoteRecursive(sftp, '/app/current');
+    expect(calls).toEqual(['unlink /app/current']);
+    expect(nodes['/app/current']).toBeUndefined();
+  });
+
+  // ★★ 同一个根因更危险的一面：跟随软链 ⇒ 指向**目录**的软链被判成 dir ⇒ 递归把
+  //   **目标目录的内容全删掉**，最后 rmdir 一个软链还必失败。删软链 = 删别人的真数据。
+  it('★★ 指向目录的软链只删链接本身，绝不递归删穿目标（数据安全）', async () => {
+    const { sftp, calls, nodes } = fakeSftp({
+      '/app': 'dir', '/app/current': 'link:/srv/data', '/srv/data': 'dir', '/srv/data/keep.txt': 'file',
+    });
+    await removeRemoteRecursive(sftp, '/app/current');
+    expect(calls).toEqual(['unlink /app/current']);
+    expect(nodes['/srv/data/keep.txt'], '★★ 软链目标里的文件被删了 —— 这是数据损失').toBe('file');
+    expect(nodes['/app/current']).toBeUndefined();
+  });
+});
+
+// ---------- A2. 删除留痕（用户要求：删目录时要能实时看到删了哪些文件 + 要有记录）----------
+
+describe('removeRemoteRecursive · onDeleted 逐条回调', () => {
+  it('按**实际删除顺序**回调每个条目，且目录必然在它的子项之后', async () => {
+    const { sftp } = fakeSftp({
+      '/d': 'dir', '/d/a.txt': 'file', '/d/sub': 'dir', '/d/sub/b.txt': 'file',
+    });
+    const seen: Array<[string, boolean]> = [];
+    await removeRemoteRecursive(sftp, '/d', { n: 0 }, (p, isDir) => seen.push([p, isDir]));
+    // 界面是拿这个顺序当"实时删除列表"滚动的，顺序错了用户看到的就是乱的
+    expect(seen).toEqual([
+      ['/d/a.txt', false],
+      ['/d/sub/b.txt', false],
+      ['/d/sub', true],
+      ['/d', true],
+    ]);
+  });
+
+  it('传了 onDeleted 也不改删除结果（回调只记账，不许动手）', async () => {
+    const { sftp, nodes } = fakeSftp({ '/d': 'dir', '/d/a.txt': 'file' });
+    await removeRemoteRecursive(sftp, '/d', { n: 0 }, () => { /* 只记账 */ });
+    expect(Object.keys(nodes)).toHaveLength(0);
+  });
+
+  it('软链只回调链接自身（不穿透回调目标里的文件）', async () => {
+    const { sftp } = fakeSftp({
+      '/app': 'dir', '/app/current': 'link:/srv/data', '/srv/data': 'dir', '/srv/data/keep.txt': 'file',
+    });
+    const seen: string[] = [];
+    await removeRemoteRecursive(sftp, '/app/current', { n: 0 }, (p) => seen.push(p));
+    expect(seen).toEqual(['/app/current']);
+  });
+
+  it('不传 onDeleted 时行为与老调用方完全一致（可空参数不该有副作用）', async () => {
+    const { sftp, calls } = fakeSftp({ '/d': 'dir', '/d/a.txt': 'file' });
+    await removeRemoteRecursive(sftp, '/d');
+    expect(calls).toEqual(['ls /d', 'unlink /d/a.txt', 'rmdir /d']);
+  });
+});
+
+describe('auditPathTail · 审计详情里的路径样本', () => {
+  it('空数组 → 空串（详情里不该多出一个孤零零的冒号）', () => {
+    expect(auditPathTail([])).toBe('');
+  });
+
+  it('少量路径全列出', () => {
+    expect(auditPathTail(['/a', '/b'])).toBe('：/a、/b');
+  });
+
+  it('★ 最多 12 条：删十万个文件时审计详情不能被撑爆', () => {
+    const many = Array.from({ length: 500 }, (_, i) => `/f${i}`);
+    const out = auditPathTail(many);
+    expect(out.endsWith('…（共 500 项）')).toBe(true);
+    expect(out.length).toBeLessThan(600);        // 总长上限（12 条 × 路径 + 后缀）
+    expect(out.split('、')).toHaveLength(12);    // 恰好 12 条
+  });
+
+  it('★ 总长限制：单条极长路径不会被无限拼接', () => {
+    const long = Array.from({ length: 12 }, (_, i) => `/${'x'.repeat(200)}${i}`);
+    expect(auditPathTail(long).length).toBeLessThan(600);
   });
 });
 

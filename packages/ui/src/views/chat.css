@@ -1332,64 +1332,12 @@
 .mount-tool-alias:focus { border-color: var(--color-primary); }
 .mount-tool-alias::placeholder { color: rgba(15,23,42,0.25); }
 
-/* 自绘右键/长按菜单：对齐统一浮层菜单 token（Task 11.5 —— 圆角 12px + --shadow-2 + 36px 行高；
-   危险项/hover 色本就引用 token，与 menu.css 的 .yz-menu-popper 规范同一套视觉语言） */
-.ctx-menu {
-  position: fixed; z-index: 9999;
-  background: var(--glass-bg); backdrop-filter: var(--glass-filter);
-  border: 1px solid var(--glass-border); border-radius: var(--radius-menu, 12px);
-  padding: 4px; min-width: 140px; box-shadow: var(--shadow-2, 0 8px 32px rgba(0,0,0,0.16));
-  list-style: none; margin: 0;
-}
-.ctx-menu > * {
-  display: flex; align-items: center; gap: 8px;
-  padding: 8px 12px; cursor: pointer; font-size: 13px; border-radius: 6px; transition: background 0.15s;
-  position: relative; width: 100%; margin: 0;
-  background: transparent; border: none; color: inherit; text-align: left; outline: none;
-}
-/* 统一行高 36px（分隔线除外）—— 与 menu.css 统一浮层菜单规范一致 */
-.ctx-menu > li:not(.ctx-sep) { min-height: var(--menu-item-h, 36px); }
-.ctx-menu > *:hover { background: var(--glass-bg-hover); }
-.ctx-menu > .danger, .ctx-menu > .is-danger { color: var(--el-color-danger); }
-.ctx-menu > .danger:hover, .ctx-menu > .is-danger:hover { background: rgba(239,68,68,0.08); }
-.ctx-menu > .ctx-sep { padding: 0; height: 1px; margin: 4px 0; background: var(--glass-border); cursor: default; border-radius: 0; }
-.ctx-menu > .ctx-sep:hover { background: var(--glass-border); }
-.ctx-menu > .disabled, .ctx-menu > .is-disabled { color: var(--color-text-secondary); cursor: not-allowed; opacity: 0.5; }
-.ctx-menu > .disabled:hover, .ctx-menu > .is-disabled:hover { background: transparent; }
-.ctx-menu > .disabled-hint { color: var(--color-text-secondary); cursor: default; font-size: 12px; }
-.ctx-menu > .disabled-hint:hover { background: transparent; }
-.ctx-menu .has-submenu .submenu-arrow { margin-left: auto; font-size: 11px; opacity: 0.5; }
-.ctx-menu .has-submenu .ctx-submenu {
-  display: none; position: absolute; left: 100%; top: -4px;
-  background: var(--glass-bg); backdrop-filter: var(--glass-filter);
-  border: 1px solid var(--glass-border); border-radius: var(--radius-menu, 12px);
-  padding: 4px; min-width: 160px; box-shadow: var(--shadow-2, 0 8px 32px rgba(0,0,0,0.16));
-  list-style: none; margin: 0; max-height: 280px; overflow-y: auto;
-}
-.ctx-menu .has-submenu:hover .ctx-submenu { display: block; }
-
-/* ★★ 子菜单项的样式（2026-09-27 修的真实缺陷）：
-   上面那批 `padding/圆角/hover/图标间距` 的选择器是 `.ctx-menu > *`（**直接子元素**），
-   而子菜单项是 `.ctx-menu > li > ul.ctx-submenu > li` —— 隔了一层，**一条都没匹配上**。
-   症状就是「子菜单是裸的 li + 裸锚点样式」：行高塌陷、无圆角、无 hover、图标无间距，
-   和主菜单完全不是一套观感。这里把同一套规则补齐到子菜单项上。 */
-.ctx-menu .ctx-submenu > li {
-  display: flex; align-items: center; gap: 8px;
-  padding: 8px 12px; cursor: pointer; font-size: 13px; border-radius: 6px; transition: background 0.15s;
-  position: relative; width: 100%; margin: 0;
-  background: transparent; border: none; color: inherit; text-align: left; outline: none;
-  min-height: var(--menu-item-h, 36px);
-}
-.ctx-menu .ctx-submenu > li:hover { background: var(--glass-bg-hover); }
-.ctx-menu .ctx-submenu > li.danger { color: var(--el-color-danger); }
-.ctx-menu .ctx-submenu > li.danger:hover { background: rgba(239,68,68,0.08); }
-/* 子菜单里的"暂无空间"提示：不可点、不参与 hover */
-.ctx-menu .ctx-submenu > li.disabled-hint {
-  color: var(--color-text-secondary); cursor: default; font-size: 12px;
-}
-.ctx-menu .ctx-submenu > li.disabled-hint:hover { background: transparent; }
-/* 子菜单图标：与主菜单同宽同色，避免"主菜单图标 15px、子菜单图标跑到字号大小" */
-.ctx-menu .ctx-submenu > li > .el-icon { font-size: 14px; flex-shrink: 0; }
+/* ★★ 2026-10-16：`.ctx-menu`（自绘右键/长按菜单）的**全部样式已搬到 `styles/menu.css`**。
+   原来它写在这里，而本文件只由 `views/Chat.vue` 的 `<style src="./chat.css">` 引入 ⇒
+   **只有访问过聊天页，全应用的右键菜单才有样式**。冷启动直接进运维（模式被记住）时，
+   chat.css 从未加载：菜单被渲染成 body 末尾的 `position: static` 无样式块，
+   在 `body { overflow: hidden }` 下连位置都在视口外 —— 用户看到的正是「右击菜单没出现」。
+   搬走的理由与守门测试见 styles/menu.css 里那段注释。 */
 
 /* 空间选择器 */
 .space-selector { flex-shrink: 0; padding: 6px 8px 0 8px; }

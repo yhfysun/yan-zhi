@@ -233,9 +233,22 @@
   --el-bg-color: #1D1D1C;
   --el-bg-color-overlay: #262624;
   --el-bg-color-page: #141414;
+  /* ★★ 2026-10-16 补齐 fill-color 整族（用户实报「工作流模式这个字都看不清楚」）。
+     此前只定义了 blank /（基础档）/ light 三个，**漏了 lighter**（也漏了 extra-light / darker）——
+     漏掉的那个会回落到 Element Plus 的**浅色默认值**（`--el-fill-color-lighter: #fafafa`）。
+     症状：深色模式 + 皮肤关闭时，「覆盖节点配置」「单节点调试」这类拿它当底色的折叠头
+     渲染成**一条 #fafafa 的白底**，而文字走本仓暗色的 `--el-text-color-*` ⇒ 浅字压白底，
+     基本看不见（用户截图即此）。开着皮肤时看不出来：skin.css 的
+     `[data-theme="dark"][data-skin="on"]` 另给了一份 `--el-fill-color-lighter` 顶着 ——
+     所以这是「皮肤一关就暴露」的缺口，全仓 11 处引用都踩它。
+     取值口径与本区块既有阶梯一致：比 --el-bg-color(#1D1D1C) 略亮，向 --color-border-strong 收敛。 */
   --el-fill-color-blank: #1D1D1C;
   --el-fill-color: #2A2A28;
   --el-fill-color-light: #2A2A28;
+  --el-fill-color-lighter: #262624;
+  --el-fill-color-extra-light: #232321;
+  --el-fill-color-dark: #33332F;
+  --el-fill-color-darker: #3A3A37;
   --el-border-color: #3A3A37;
   --el-border-color-light: #33332F;
   --el-border-color-lighter: #2A2A28;
@@ -261,7 +274,6 @@
   --el-color-warning-light-9: rgba(192, 122, 92, 0.16);
   --el-color-danger: #C25B4E;
   --el-color-danger-light-9: rgba(194, 91, 78, 0.16);
-  --el-fill-color-dark: #33332F;
 
   --overlay-shadow: var(--shadow-3);
 

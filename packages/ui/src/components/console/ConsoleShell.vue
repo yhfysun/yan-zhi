@@ -93,7 +93,28 @@ defineExpose({ collapsed, toggleAside, asideW });
 }
 .cs-aside-toggle:hover { color: var(--color-primary); background: var(--glass-bg-hover); }
 
-/* ===== 面板拖拽分隔条（与 Chat 页 .rs-handle 一致） ===== */
+/* ===== 面板拖拽分隔条（与 Chat 页 .rs-handle 一致） =====
+   ★ 本组规则**不在本 scoped 块里**，而是放在文件末尾那个**非 scoped 的 `<style>` 块**中：
+   运维文件面板的分隔条是**父组件 OpsConsole** 渲染的（`.ops-body > .rs-handle-right`），
+   scoped 规则带 data-v 属性跨不过去 ⇒ 那条分隔条会一条样式都吃不到（实测宽 0 / cursor auto，
+   看不见也拖不动）。规则与理由见文件末尾。 */
+
+</style>
+
+<!-- ============================================================
+     分隔条（`.rs-handle`）—— 故意**不 scoped**，是全局原语
+     ============================================================
+     ★★ 为什么单独开一个非 scoped 块（2026-10-16 真机事故）：
+     本壳的**左栏**分隔条在自己的模板里，scoped 够用；但运维的**文件面板**分隔条由
+     **父组件 OpsConsole** 渲染（`.ops-body > .rs-handle-right`）—— scoped 规则带 data-v 属性，
+     跨不到父组件的模板 ⇒ 那条分隔条一条样式都吃不到：实测 `width: 0` / `cursor: auto`，
+     既不显示也拖不动（文件面板宽度调不了）。
+     它此前靠 `views/chat.css` 里一份**同名全局规则**顶着，而 chat.css 只在聊天页被加载 ⇒
+     冷启动直接进运维（模式被记住）时同样失效 —— 与 `.ctx-menu` 是同一次事故的两个面：
+     **共用控件的样式不能住在按路由懒加载的样式表里**。
+     ⚠️ 别改成 scoped 块里的 `:global(.rs-handle)::after`：本仓 Vue 版本会把伪元素规则编到元素自身上
+     （实测分隔条 `position: absolute` 脱离文档流、宽变 2px），所以这里用最朴素的非 scoped 块。 -->
+<style>
 .rs-handle {
   flex: 0 0 7px; width: 7px; cursor: col-resize; position: relative; z-index: 6;
   background: transparent; transition: background 0.15s ease;
