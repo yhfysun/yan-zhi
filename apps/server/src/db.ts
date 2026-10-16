@@ -3862,6 +3862,59 @@ Listing 优化最常见的失败不是文案写得不好，而是**一次改了�
 头程方案比选表、库存与补货计划、库存台账（CSV）。全部 file_write 落盘（deliverable），对话里只给摘要与路径。`,
     },
     {
+      // 客服与售后（2026-10-16，P1 补）：与写动作 shop_reply_send 配套 —— 话术出稿、
+      // 用户确认后才发（走闸门）。资金动作一律标注需人工处理。
+      id: 'skill_shop_service', name: '客服与售后', category: '电商运营',
+      description: '客服与售后处理方法论：先定渠道与处理权限口径、诉求分类分级与升级判定、话术四段结构（共情-澄清-方案-时效）、退款补偿只给依据不代做资金动作、差评与纠纷的留证与公开回复；含不诱导改评价等合规红线。',
+      triggers: ['客服', '售后', '话术', '工单', '差评', '纠纷', '退款', '退换', '投诉', 'buyer message', '客诉'],
+      body: `# 客服与售后
+
+客服的产出不是"回得快"，是**回对了**：给的方案在权限内、承诺能兑现、不留后患。所以话术之前先定口径。
+
+## 一、先定口径（否则话术就是空话）
+
+- 渠道：站内信 / 客服系统 / 邮件 / 差评区 —— 不同渠道的 SLA 与"能公开说什么"完全不同（差评区是公开的，措辞要更谨慎）；
+- 响应时限：平台考核的首次响应与最终解决时限分别是多久；
+- 处理权限：能补发吗、能退款吗、能免运费吗、最大补偿额度是多少 —— 超出授权的一律走升级。
+
+## 二、分类与分级
+
+按诉求归类：咨询 / 物流 / 退换 / 质量 / 纠纷 / 差评。
+优先级从高到低：情绪激烈或已提到投诉举报 → 临近超时 → 涉及金额 → 一般咨询。
+
+**必须升级人工**的情形（不要自己答）：金额超出授权、涉及法律或人身安全、平台已介入、消费者明确提出赔偿诉求。
+
+## 三、话术结构（四条固定顺序）
+
+1. **共情**：先接住情绪（"换我也会着急"），不要一上来讲规则；
+2. **澄清事实**：摆出已核实的客观信息（订单号、发货时间、物流节点）；不确定的就说"我去核实"，不要猜；
+3. **给方案**：能给的写具体（补发 / 退款 / 优惠 / 加急），给不了的说明原因并给替代方案；**方案必须在权限内**；
+4. **定时效**：下一步什么时候有结果（"今晚 8 点前答复"），且必须是你兑现得了的。
+
+## 四、退款与补偿
+
+- 只给**口径与依据**（责任在哪方、平台规则怎么规定、符合哪条售后政策），**资金动作由人工执行**；
+- 涉及退款 / 赔付 / 补偿的回复，在变更单里标注「需人工处理」，不要在获批后自行加码；
+- 补偿额度必须有依据（平台规则或上级授权），不为了息事宁人随口承诺。
+
+## 五、差评与纠纷
+
+- 差评先分**可协商与不可协商**：允许协商修改的，话术聚焦解决实际问题，**绝不诱导或要求买家改评价**（违规且平台可追溯）；
+- 纠纷与平台介入：留证（聊天记录、物流轨迹、商品照片），按平台流程提交；不私下断言"平台不会判你输"；
+- 公开回复（差评区）与私信话术要分开写：公开回复是给后续买家看的，重点呈现"问题已解决"。
+
+## 六、合规红线（逐条过）
+
+- 不承诺平台做不到的（没有权限时"一定全额退款"就是虚假承诺）；
+- 不诱导改评价、不索要好评、不用返现换好评；
+- 不泄露其他买家信息，不透露内部成本与供应商；
+- 不用极限词与攻击性表述。
+
+## 交付物
+
+诉求分类分级表、可直接发送的话术（逐条）、需升级人工的名单、以及一张变更单（对象 / 拟发送全文 / 口径依据）。涉及资金动作的显式标注需人工处理。全部 file_write 落盘（deliverable），对话里只给摘要与路径。`,
+    },
+    {
       // 抖音图文带货（2026-10-12）：与「抖音运营助手」a_builtin_douyin_agent 成对维护
       id: 'skill_douyin_sell', name: '抖音图文带货', category: '电商运营',
       description: '抖音图文带货全流程：账号定位与人群、精选联盟选品（佣金/销量/人群匹配/季节性/体验）、图文结构（封面+3~9 张轮播+文案+话题）、挂车发布 SOP、曝光-点击-转化漏斗复盘与优化迭代；含广告法极限词与虚假宣传合规红线。',
@@ -4007,7 +4060,7 @@ try {
 // ★ 店铺运营同族另五条（skill_amazon_listing / skill_amazon_ads_profit / skill_taobao_ops /
 //   skill_1688_sourcing / skill_overseas_warehouse，2026-10-16 P1 补齐）：同理一并进白名单，
 //   否则老库拿到的是残留旧行、拿不到新 body。
-const SKILL_BODY_REFRESH_IDS = ['skill_anime_storyboard', 'skill_video_shot_prompt', 'skill_translation_workflow', 'skill_business_ops', 'skill_novel_tuiwen', 'skill_douyin_sell', 'skill_douyin_traffic', 'skill_shop_selection', 'skill_amazon_listing', 'skill_amazon_ads_profit', 'skill_taobao_ops', 'skill_1688_sourcing', 'skill_overseas_warehouse'];
+const SKILL_BODY_REFRESH_IDS = ['skill_anime_storyboard', 'skill_video_shot_prompt', 'skill_translation_workflow', 'skill_business_ops', 'skill_novel_tuiwen', 'skill_douyin_sell', 'skill_douyin_traffic', 'skill_shop_selection', 'skill_amazon_listing', 'skill_amazon_ads_profit', 'skill_taobao_ops', 'skill_1688_sourcing', 'skill_overseas_warehouse', 'skill_shop_service'];
 try {
   const getBody = db.prepare('SELECT body, files_json FROM skill WHERE id = ?');
   const setDef = db.prepare('UPDATE skill SET name = ?, description = ?, triggers_json = ?, body = ?, category = ? WHERE id = ?');

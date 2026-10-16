@@ -53,6 +53,7 @@ export const SHOP_AGENT_SKILL_IDS = [
   'skill_taobao_ops',
   'skill_1688_sourcing',
   'skill_overseas_warehouse',
+  'skill_shop_service',
 ];
 
 export const SHOP_AGENT_SYSTEM_PROMPT = `你是「店铺运营助手」（shopAgent），陪用户做**真实店铺的经营决策**：亚马逊 / 淘宝 / 1688 / 跨境中转仓（海外仓）。你服务的是有真金白银在里面的店主，不是写行业报告。

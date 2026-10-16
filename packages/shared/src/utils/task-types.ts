@@ -549,7 +549,7 @@ export const TASK_TYPES: TaskTypeSpec[] = [
     agentId: 'a_builtin_shop_agent',
     skillIds: [
       'skill_shop_selection', 'skill_amazon_listing', 'skill_amazon_ads_profit',
-      'skill_taobao_ops', 'skill_1688_sourcing', 'skill_overseas_warehouse',
+      'skill_taobao_ops', 'skill_1688_sourcing', 'skill_overseas_warehouse', 'skill_shop_service',
     ],
     steps: [],
   },
@@ -762,6 +762,49 @@ export const TASK_TYPES: TaskTypeSpec[] = [
       {
         title: '台账',
         detail: '输出可复用的库存与头程台账（CSV，python_exec 产出）：SKU / 在途 / 在仓 / 日均销 / 可售天数 / 建议补货量 / 头程成本分摊。落 03-output',
+        output: '03-output',
+      },
+    ],
+  },
+  {
+    // 客服与售后（2026-10-16，P1 补）：与 shop_reply_send / shop_order_place 之外的
+    // 「回消息」写动作配套 —— 话术出稿、用户确认后才发（走闸门）。
+    id: 'shop_service',
+    label: '客服与售后',
+    summary: '渠道与口径 → 诉求分类分级 → 话术与处理方案 → 变更单',
+    guide: '把买家消息导出、工单截图、差评内容放进 00-source。先定渠道与口径（哪些渠道、SLA、能给什么），再把诉求分类分级，产出可直接发送的话术与处理方案；涉及退款/补偿/承诺时效的必须在变更单里标注「需人工处理」，资金动作由你执行。**发消息走 shop_reply_send 闸门**（要你确认后才发）。',
+    agentId: 'a_builtin_shop_agent',
+    skillIds: ['skill_shop_service'],
+    parentId: 'shop_ops',
+    steps: [
+      {
+        title: '渠道与口径',
+        detail: '涉及哪些渠道（站内信 / 客服系统 / 邮件 / 差评区）、响应时限要求、本次能给的处理权限（能否补发、能否退款、最大补偿额度）。口径不清就先问清 —— 话术的边界由它决定',
+        confirmTool: 'confirm',
+        confirmAbout: '渠道、SLA 与可给的处理权限',
+        output: '02-work',
+      },
+      {
+        title: '诉求分类与分级',
+        detail: '归类（咨询 / 物流 / 退换 / 质量 / 纠纷 / 差评）并定优先级（情绪激烈、临近超时、涉及金额的排前面）；同时标出「必须升级人工」的（金额超权限、法律风险、平台介入中）',
+        confirmTool: 'confirm',
+        confirmAbout: '分类分级与升级名单',
+        output: '02-work',
+        batchable: true,
+      },
+      {
+        title: '话术与处理方案',
+        detail: '每条按「共情 → 澄清事实 → 给方案 → 定时效」写话术，能给的方案写具体（补发/退款/优惠），给不了的说明原因与替代方案；禁止空承诺与诱导改评价',
+        confirmTool: 'confirm',
+        confirmAbout: '话术是否定稿',
+        output: '02-work',
+        batchable: true,
+      },
+      {
+        title: '变更单与发送',
+        detail: '把定稿话术逐条整理成变更单（对象 / 拟发送全文 / 口径依据），经你确认后用 shop_reply_send 发送；涉及退款/补偿的标注需人工处理，资金动作不由助手执行',
+        confirmTool: 'confirm',
+        confirmAbout: '变更单是否确认（确认后才会发送）',
         output: '03-output',
       },
     ],
