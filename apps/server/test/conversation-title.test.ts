@@ -68,7 +68,9 @@ function createTables(): void {
       mcp_servers_json TEXT DEFAULT '[]', skill_ids_json TEXT DEFAULT '[]',
       pinned INTEGER DEFAULT 0, permission_mode TEXT, mode TEXT,
       task_type TEXT,
-      updated_at INTEGER DEFAULT 0, created_at INTEGER DEFAULT 0
+      updated_at INTEGER DEFAULT 0, created_at INTEGER DEFAULT 0,
+      -- 生命周期三列（2026-10-16）：PATCH 走 writableGuard 守卫，缺列 = no such column = 500
+      archived_at INTEGER, deleted_at INTEGER, last_activity_at INTEGER
     );
     CREATE TABLE IF NOT EXISTS message (
       id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, user_id TEXT NOT NULL,

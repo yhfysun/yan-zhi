@@ -50,7 +50,9 @@ async function mkDb() {
       user_id TEXT NOT NULL,
       title TEXT NOT NULL,
       mode TEXT,
-      updated_at INTEGER NOT NULL
+      updated_at INTEGER NOT NULL,
+      -- 生命周期三列（2026-10-16）：列表 SQL 带 lifecycle 过滤，缺列 = no such column
+      archived_at INTEGER, deleted_at INTEGER, last_activity_at INTEGER
     );
   `);
   const ins = db.prepare('INSERT INTO conversation (id, user_id, title, mode, updated_at) VALUES (?, ?, ?, ?, ?)');

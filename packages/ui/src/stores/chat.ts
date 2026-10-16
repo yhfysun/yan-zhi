@@ -344,7 +344,6 @@ import {
   planKeyOf as resolvePlanKey,
   readPlan,
   removePlan,
-  removePlans,
   syncPlan,
   DRAFT_PLAN_KEY,
   type PlanMap,
@@ -1142,18 +1141,26 @@ async function loadConversations(scope: 'active' | 'archived' | 'trashed' | 'all
     await loadConversations();
   }
 
-  /** 从回收站恢复（清 deleted_at；归档标记不动） */
+  /**
+   * 从回收站恢复。
+   * ★ 同时清 archived_at（与服务端 restoreRow 同口径，2026-10-16 缺陷 H2）：
+   *   「恢复」的直觉是回到可用状态 —— 归档后删除再恢复的会话必须回主列表，
+   *   否则前端提示「已恢复到主列表」而会话实际在归档区，用户会以为丢了。
+   */
   async function restoreConversation(id: string) {
     if (isServerMode()) {
       await api.post(`/conversations/${id}/restore`, {});
     } else {
       const adapter = getPlatformAdapter();
-      await adapter.db.exec('UPDATE conversation SET deleted_at = NULL WHERE id = ?', [id]);
+      await adapter.db.exec('UPDATE conversation SET deleted_at = NULL, archived_at = NULL WHERE id = ?', [id]);
     }
     await loadConversations();
+    await loadLifecycleCounts();
   }
 
-  /** 永久删除（绕过回收站）。真删路径服务端已收口到 conversation-lifecycle.ts */
+  /** 永久删除（绕过回收站）。真删路径服务端已收口到 conversation-lifecycle.ts；
+   *  本地模式只有 message/conversation 两张表（conversation_file 走 FK CASCADE），
+   *  内存半边统一走 dropConvRuntime（与删除收口同源，勿再各写一份） */
   async function purgeConversation(id: string) {
     if (isServerMode()) {
       await api.delete(`/conversations/${id}/permanent`);
@@ -1162,27 +1169,48 @@ async function loadConversations(scope: 'active' | 'archived' | 'trashed' | 'all
       await adapter.db.exec('DELETE FROM message WHERE conversation_id = ?', [id]);
       await adapter.db.exec('DELETE FROM conversation WHERE id = ?', [id]);
     }
-    if (currentConvId.value === id) currentConvId.value = '';
-    delete messagesByConv.value[id];
-    delete queuedByConv.value[id];
-    clearHistoryPaging(id);
-    plansByConv.value = removePlan(plansByConv.value, id);
+    dropConvRuntime(id);
     await loadConversations();
+    await loadLifecycleCounts();
   }
 
   /** 清空回收站（永久）。返回删除条数 */
   async function emptyTrash(): Promise<number> {
+    let ids: Array<{ id: string }> = [];
     if (isServerMode()) {
       const r = await api.delete<{ removed: number }>('/conversations/trash');
       return ('data' in r && r.data) ? (r.data.removed ?? 0) : 0;
     }
     const adapter = getPlatformAdapter();
-    const rows = await adapter.db.query<any>('SELECT id FROM conversation WHERE deleted_at IS NOT NULL');
-    for (const r of rows) {
+    ids = await adapter.db.query<any>('SELECT id FROM conversation WHERE deleted_at IS NOT NULL');
+    for (const r of ids) {
       await adapter.db.exec('DELETE FROM message WHERE conversation_id = ?', [r.id]);
       await adapter.db.exec('DELETE FROM conversation WHERE id = ?', [r.id]);
     }
-    return rows.length;
+    // ★ 内存半边一个都不能少（2026-10-16 缺陷 H1：此前这里什么都不清）
+    for (const r of ids) dropConvRuntime(r.id);
+    await loadConversations();
+    await loadLifecycleCounts();
+    return ids.length;
+  }
+
+  /** 一键归档某空间下的全部 active 会话（侧栏空间右键菜单）。返回归档条数 */
+  async function archiveAllInSpace(spaceId: string): Promise<number> {
+    let n = 0;
+    if (isServerMode()) {
+      const r = await api.post<{ archived: number }>('/conversations/archive-all', { spaceId });
+      n = ('data' in r && r.data) ? (r.data.archived ?? 0) : 0;
+    } else {
+      const adapter = getPlatformAdapter();
+      const res = await adapter.db.exec(
+        'UPDATE conversation SET archived_at = ? WHERE space_id = ? AND deleted_at IS NULL AND archived_at IS NULL',
+        [Math.floor(Date.now()), spaceId],
+      );
+      n = (res as any)?.changes ?? 0;
+    }
+    await loadConversations();
+    await loadLifecycleCounts();
+    return n;
   }
 
   /** 侧栏角标：已归档 / 回收站数量（server 模式走后端计数，本地模式自己数） */
@@ -1475,6 +1503,23 @@ async function loadConversations(scope: 'active' | 'archived' | 'trashed' | 'all
     await loadConversations();
   }
 
+  /**
+   * 抹掉一个会话的**全部内存态**（删除收口的内存半边，2026-10-16 缺陷 H1）。
+   * ★ DB 半边：服务端收口在 conversation-lifecycle.ts；本地只有 message/conversation 两张表
+   *   （conversation_file 有 FK CASCADE）。内存半边此前只有 deleteConversations 清全了，
+   *   purge/emptyTrash 都漏 —— browserOpChains 留着已抹会话的串行链、currentConvId 指向幽灵会话。
+   * ★ 任何「会话从列表里消失」的路径（软删/真删/清空回收站）都必须走这里，新增内存键也要补进来。
+   */
+  function dropConvRuntime(id: string) {
+    if (currentConvId.value === id) currentConvId.value = '';
+    delete messagesByConv.value[id];
+    delete queuedByConv.value[id];
+    clearHistoryPaging(id);
+    plansByConv.value = removePlan(plansByConv.value, id);
+    // 浏览器操作串行链同样按会话清（防内存泄漏；进行中的操作不受影响）
+    dropBrowserOpChain(browserOpChains, id);
+  }
+
   async function deleteConversation(id: string) {
     // ★ 2026-10-16：删除改为**软删进回收站**（后端同一口径，本地模式同步）。
     //   此前这里是真删 message + conversation，点错一下全部不可恢复。
@@ -1484,14 +1529,7 @@ async function loadConversations(scope: 'active' | 'archived' | 'trashed' | 'all
       const adapter = getPlatformAdapter();
       await adapter.db.exec('UPDATE conversation SET deleted_at = ? WHERE id = ?', [Math.floor(Date.now()), id]);
     }
-    if (currentConvId.value === id) {
-      currentConvId.value = '';
-    }
-    delete messagesByConv.value[id];
-    delete queuedByConv.value[id];
-    clearHistoryPaging(id);
-    // 一并清掉该会话的计划，避免 plansByConv 里留孤儿键
-    plansByConv.value = removePlan(plansByConv.value, id);
+    dropConvRuntime(id);
     await loadConversations();
     await loadLifecycleCounts();
   }
@@ -1507,16 +1545,7 @@ async function loadConversations(scope: 'active' | 'archived' | 'trashed' | 'all
         await adapter.db.exec('UPDATE conversation SET deleted_at = ? WHERE id = ?', [Math.floor(Date.now()), id]);
       }
     }
-    if (ids.includes(currentConvId.value)) {
-      currentConvId.value = '';
-    }
-    for (const id of ids) delete messagesByConv.value[id];
-    for (const id of ids) delete queuedByConv.value[id];
-    for (const id of ids) clearHistoryPaging(id);
-    // 一并清掉被删会话的计划，避免 plansByConv 里留孤儿键
-    plansByConv.value = removePlans(plansByConv.value, ids);
-    // 浏览器操作串行链同样按会话清（防内存泄漏；进行中的操作不受影响）
-    for (const id of ids) dropBrowserOpChain(browserOpChains, id);
+    for (const id of ids) dropConvRuntime(id);
     await loadConversations();
     await loadLifecycleCounts();
   }
@@ -1557,7 +1586,9 @@ async function loadConversations(scope: 'active' | 'archived' | 'trashed' | 'all
           ts,
         ],
       );
-      await adapter.db.exec('UPDATE conversation SET updated_at = ? WHERE id = ?', [ts, targetConvId]);
+      // ★ last_activity_at 与 updated_at 同步更新（2026-10-16 缺陷 M4）：
+      //   它是自动归档（P2）的「真实对话活动」判据，本地模式漏更会让判据永远停在创建时间。
+      await adapter.db.exec('UPDATE conversation SET updated_at = ?, last_activity_at = ? WHERE id = ?', [ts, ts, targetConvId]);
     } catch (e) {
       console.warn('[Chat] addMessage 落库失败，降级仅存内存:', e);
     }
@@ -1604,7 +1635,7 @@ async function loadConversations(scope: 'active' | 'archived' | 'trashed' | 'all
             ts,
           ],
         );
-        await adapter.db.exec('UPDATE conversation SET updated_at = ? WHERE id = ?', [ts, targetConvId]);
+        await adapter.db.exec('UPDATE conversation SET updated_at = ?, last_activity_at = ? WHERE id = ?', [ts, ts, targetConvId]);
       } catch (e) {
         console.warn('[Chat] pushMessageOptimistic 落库失败:', e);
       }
@@ -3424,6 +3455,7 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
     loadConversations, loadMessages, createConversation, updateConversation, deleteConversation, deleteConversations,
     // 会话生命周期（2026-10-16 归档 + 回收站）
     archiveConversation, restoreConversation, purgeConversation, emptyTrash, loadLifecycleCounts, lifecycleCounts,
+    archiveAllInSpace, dropConvRuntime,
     loadConversationsByScope,
     loadMoreHistory, historyPagingByConv, HISTORY_PAGE_SIZE,
     addMessage, updateMessage, deleteMessage, sendMessage, regenerate, stop,

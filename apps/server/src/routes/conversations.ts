@@ -6,6 +6,7 @@ import { db, MESSAGE_LIST_COLS, listMessageSummaries, deleteMessageSummariesAfte
 //   本文件不再手写 DELETE FROM conversation（清理清单随派生表增长，散写必然漏）。
 import {
   parseScope, lifecycleClause, hardDeleteRow, softDeleteRow, restoreRow, setArchivedRow, emptyTrash,
+  writableGuard, archiveAllInSpace,
 } from '../services/conversation-lifecycle.js';
 import { normalizePermissionMode } from '../tool-permission.js';
 import { writeTaskPlanFile } from '../services/task-plan-file.js';
@@ -78,6 +79,18 @@ router.get('/counts', (req: Request, res: Response) => {
   res.json({ data: { archived: Number(row?.archived || 0), trashed: Number(row?.trashed || 0) } });
 });
 
+// POST /api/conversations/archive-all —— 一键归档某空间下的全部 active 会话（侧栏空间右键菜单）。
+// ★ 必须注册在 /:id 参数路由之前，否则 'archive-all' 会被当成会话 id。
+// ★ 单条 SQL 批量，不让前端 N 次循环调 POST /:id/archive（慢且中途失败会出现半归档状态）。
+//   只动 active：已归档的保持原归档时间，回收站的不碰（等用户在回收站里决定去留）。
+router.post('/archive-all', (req: Request, res: Response) => {
+  const userId = req.user!.userId;
+  const spaceId = String(req.body?.spaceId || '');
+  if (!spaceId) { res.status(400).json({ error: 'spaceId 为必填项' }); return; }
+  const n = archiveAllInSpace(userId, spaceId);
+  res.json({ data: { archived: n } });
+});
+
 // POST /api/conversations
 router.post('/', (req: Request, res: Response) => {
   const userId = req.user!.userId;
@@ -111,6 +124,20 @@ router.patch('/:id', (req: Request, res: Response) => {
   const cid = req.params.id;
   const existing = db.prepare('SELECT * FROM conversation WHERE id = ? AND user_id = ?').get(cid, userId) as any;
   if (!existing) { res.status(404).json({ error: '会话不存在' }); return; }
+
+  // ★ 归档 = 只读（2026-10-16 缺陷 M1 修正，此前只拦了发消息）：唯一例外是 title ——
+  //   改名无害（不改会话内容/挂载），且用户给归档会话起个备注名是合理诉求。
+  //   其余字段（换模型/换 agent/改提示词/挪空间/改权限/改计划/改 MCP）全拦：
+  //   它们都会改变「恢复后继续对话」的产出，与只读语义冲突。
+  //   回收站内的会话对外不可见，直接 404。
+  const guard = writableGuard(cid, userId);
+  if (guard === 'not_found' || guard === 'trashed') { res.status(404).json({ error: '会话不存在' }); return; }
+  const patchKeys = Object.keys(req.body || {});
+  const onlyRename = patchKeys.length > 0 && patchKeys.every((k) => k === 'title');
+  if (guard === 'archived' && !onlyRename) {
+    res.status(409).json({ error: 'CONVERSATION_ARCHIVED', message: '会话已归档（只读），取消归档后才能修改' });
+    return;
+  }
 
   const sets: string[] = [];
   const vals: any[] = [];

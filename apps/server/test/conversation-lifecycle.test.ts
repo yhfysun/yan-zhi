@@ -66,6 +66,7 @@ vi.mock('../src/services/path-guard.js', () => ({ clearAuthorization: () => {} }
 const { db: conn } = await openSqlite(':memory:');
 hoisted.conn = conn;
 const { default: conversationsRouter } = await import('../src/routes/conversations.js');
+const { writableGuard } = await import('../src/services/conversation-lifecycle.js');
 
 const app = express();
 app.use(express.json());
@@ -84,6 +85,7 @@ function seed() {
       agent_id TEXT, platform_id TEXT, model_id TEXT, space_id TEXT,
       mcp_servers_json TEXT DEFAULT '[]', skill_ids_json TEXT DEFAULT '[]',
       system_prompt TEXT, pinned INTEGER DEFAULT 0,
+      title_source TEXT DEFAULT 'auto',
       permission_mode TEXT DEFAULT 'readonly',
       mode TEXT DEFAULT 'office',
       created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
@@ -358,5 +360,96 @@ describe('DELETE /clear（设置页「清空缓存」）', () => {
     expect(trashed).toContain('c_d7'); // 已归档的也一并收进来
     // 消息没被真删
     expect(msgCount('c_normal')).toBeGreaterThan(0);
+  });
+});
+
+// ═══ 2026-10-16 缺陷修复回归（H1 后端半边 / H2 / H3 / M1 / 空间批量归档）═══════════════
+describe('restore 语义（缺陷 H2）', () => {
+  it('归档 → 删除 → 恢复：回到主列表（archived_at 一并清掉，与「已恢复到主列表」提示一致）', async () => {
+    const cid = freshConv('c_fix_h2');
+    await req('POST', `/${cid}/archive`, { archived: true });
+    await req('DELETE', `/${cid}`);
+    const r = await req('POST', `/${cid}/restore`);
+    expect(r.status).toBe(200);
+    const row = conn.prepare('SELECT archived_at, deleted_at FROM conversation WHERE id = ?').get(cid) as any;
+    expect(row.deleted_at).toBeNull();
+    expect(row.archived_at).toBeNull(); // ★ 此前只清 deleted_at，会话落回归档区但提示说回了主列表
+    expect(listIds((await req('GET', '/')).body)).toContain(cid);
+  });
+});
+
+describe('PATCH 归档只读（缺陷 M1：改名放行，其余拦）', () => {
+  it('归档会话改名放行（无害操作）', async () => {
+    const cid = freshConv('c_fix_m1a');
+    await req('POST', `/${cid}/archive`, { archived: true });
+    const r = await req('PATCH', `/${cid}`, { title: '归档后改的备注名' });
+    expect(r.status).toBe(200);
+    expect((conn.prepare('SELECT title FROM conversation WHERE id = ?').get(cid) as any).title).toBe('归档后改的备注名');
+  });
+
+  it('归档会话换模型 / 换 agent 被拦（409 CONVERSATION_ARCHIVED），数据不动', async () => {
+    const cid = freshConv('c_fix_m1b');
+    await req('POST', `/${cid}/archive`, { archived: true });
+    for (const patch of [{ modelId: 'm_other' }, { agentId: 'a_other' }, { spaceId: 'sp_x' }]) {
+      const r = await req('PATCH', `/${cid}`, patch);
+      expect(r.status).toBe(409);
+      expect(r.body.error).toBe('CONVERSATION_ARCHIVED');
+    }
+    expect((conn.prepare('SELECT model_id, agent_id, space_id FROM conversation WHERE id = ?').get(cid) as any))
+      .toEqual({ model_id: null, agent_id: null, space_id: null });
+  });
+
+  it('回收站里的会话 PATCH 一律 404（对外不可见）', async () => {
+    const cid = freshConv('c_fix_m1c');
+    await req('DELETE', `/${cid}`);
+    expect((await req('PATCH', `/${cid}`, { title: 'x' })).status).toBe(404);
+  });
+});
+
+describe('writableGuard（files.ts 等写点共用的唯一守卫）', () => {
+  it('active → ok；archived → archived；trashed → trashed；不存在 → not_found', () => {
+    const U = hoisted.testUser;
+    const cid = freshConv('c_fix_guard');
+    expect(writableGuard(cid, U)).toBe('ok');
+    conn.prepare('UPDATE conversation SET archived_at = ? WHERE id = ?').run(Date.now(), cid);
+    expect(writableGuard(cid, U)).toBe('archived');
+    conn.prepare('UPDATE conversation SET deleted_at = ? WHERE id = ?').run(Date.now(), cid);
+    expect(writableGuard(cid, U)).toBe('trashed');
+    expect(writableGuard('c_no_such', U)).toBe('not_found');
+    // 别人的会话同样视为不存在（越权防护与存在性合并成一个出口）
+    expect(writableGuard(cid, 'u_other')).toBe('not_found');
+  });
+});
+
+describe('POST /archive-all（空间右键「全部归档」）', () => {
+  it('只归档该空间的 active 会话；已归档保持原归档时间；回收站不碰', async () => {
+    const a = freshConv('c_fix_aa1');
+    const b = freshConv('c_fix_aa2');
+    const other = freshConv('c_fix_aa3'); // 别的空间
+    const already = freshConv('c_fix_aa4'); // 已归档 → 归档时间不能被刷新
+    const trashed = freshConv('c_fix_aa5'); // 回收站 → 不碰
+    conn.prepare('UPDATE conversation SET space_id = ? WHERE id = ?').run('sp_fix', a);
+    conn.prepare('UPDATE conversation SET space_id = ? WHERE id = ?').run('sp_fix', b);
+    conn.prepare('UPDATE conversation SET space_id = ? WHERE id = ?').run('sp_other', other);
+    const oldTs = Date.now() - 100000;
+    conn.prepare('UPDATE conversation SET archived_at = ? WHERE id = ?').run(oldTs, already);
+    conn.prepare('UPDATE conversation SET space_id = ? WHERE id = ?').run('sp_fix', already);
+    await req('DELETE', `/${trashed}`);
+    conn.prepare('UPDATE conversation SET space_id = ? WHERE id = ?').run('sp_fix', trashed);
+
+    const r = await req('POST', '/archive-all', { spaceId: 'sp_fix' });
+    expect(r.status).toBe(200);
+    expect(r.body.data.archived).toBe(2); // 只有 a、b
+    const state = (id: string) => conn.prepare('SELECT archived_at, deleted_at FROM conversation WHERE id = ?').get(id) as any;
+    expect(state(a).archived_at).not.toBeNull();
+    expect(state(b).archived_at).not.toBeNull();
+    expect(state(other).archived_at).toBeNull();          // 别的空间不受牵连
+    expect(state(already).archived_at).toBe(oldTs);        // 已归档的时间不被刷新
+    expect(state(trashed).deleted_at).not.toBeNull();      // 回收站的仍在回收站
+    expect(state(trashed).archived_at).toBeNull();
+  });
+
+  it('缺 spaceId 返回 400', async () => {
+    expect((await req('POST', '/archive-all', {})).status).toBe(400);
   });
 });

@@ -145,3 +145,61 @@ describe('后端收口 · 两条 SQL 分支与任务入口', () => {
     expect(body).toMatch(/role === 'user'/);
   });
 });
+
+// ═══ 2026-10-16 缺陷修复回归（H1 内存收口 / H2 restore / M1 只读 / M4 活动时间 / 空间批量归档）═══
+describe('缺陷修复回归 · 2026-10-16 第二轮', () => {
+  const CLIP_ROUTES = strip(readRepo('apps/server/src/routes/clip.ts'));
+  const WORKSPACE_FILES = strip(readRepo('apps/server/src/routes/workspace-files.ts'));
+  const LIFECYCLE_SVC = strip(readRepo('apps/server/src/services/conversation-lifecycle.ts'));
+  const FILES_ROUTES = strip(readRepo('apps/server/src/routes/files.ts'));
+
+  it('H1：本地「会话消失」的内存清理收口到 dropConvRuntime，四处删除路径都走它', () => {
+    expect(CHAT_STORE).toMatch(/function dropConvRuntime\(id: string\)/);
+    expect(CHAT_STORE).toMatch(/dropConvRuntime\(browserOpChains, id\)|dropBrowserOpChain\(browserOpChains, id\)/);
+    for (const fn of ['purgeConversation', 'emptyTrash', 'deleteConversation', 'deleteConversations']) {
+      const at = CHAT_STORE.indexOf(`function ${fn}`);
+      expect(at, `${fn} 必须存在`).toBeGreaterThan(-1);
+      expect(CHAT_STORE.slice(at, at + 1600), `${fn} 必须调 dropConvRuntime`).toMatch(/dropConvRuntime\(/);
+    }
+  });
+
+  it('H2：本地 restore 与服务端 restoreRow 都清 archived_at（回主列表，与提示一致）', () => {
+    expect(CHAT_STORE).toMatch(/SET deleted_at = NULL, archived_at = NULL WHERE id = \?/);
+    expect(LIFECYCLE_SVC).toMatch(/SET deleted_at = NULL, archived_at = NULL WHERE id = \? AND user_id = \? AND deleted_at IS NOT NULL/);
+  });
+
+  it('M1：PATCH 有归档/回收站守卫（writableGuard），title 单独放行', () => {
+    expect(CONV_ROUTES).toMatch(/writableGuard\(cid, userId\)/);
+    expect(CONV_ROUTES).toMatch(/onlyRename/);
+    expect(CONV_ROUTES).toMatch(/CONVERSATION_ARCHIVED/);
+  });
+
+  it('M2：files.ts 写点全过 guardConvWrite（5 处：artifact-dir ensure / files / upload / patch / delete）', () => {
+    expect(FILES_ROUTES).toMatch(/function guardConvWrite/);
+    const count = (FILES_ROUTES.match(/guardConvWrite\(res, cid, userId\)/g) || []).length;
+    expect(count, `写守卫调用点应 ≥5，实际 ${count}`).toBeGreaterThanOrEqual(5);
+  });
+
+  it('H3：clip.ts 列表与 conversationExists 排除回收站；M3：workspace-files 排除回收站', () => {
+    expect(CLIP_ROUTES).toMatch(/conversationExists/);
+    expect(CLIP_ROUTES).toMatch(/AND deleted_at IS NULL/);
+    expect(WORKSPACE_FILES).toMatch(/WHERE user_id = \? AND deleted_at IS NULL/);
+  });
+
+  it('M4：本地 addMessage / pushMessageOptimistic 都更新 last_activity_at', () => {
+    const count = (CHAT_STORE.match(/SET updated_at = \?, last_activity_at = \? WHERE id = \?/g) || []).length;
+    expect(count, `本地活动时间戳更新点应 =2，实际 ${count}`).toBe(2);
+  });
+
+  it('空间「全部归档」：后端 /archive-all + store/useChat/侧栏三层接线齐全', () => {
+    // 后端路由注册在参数路由之前（'archive-all' 否则会被当会话 id）
+    const allAt = CONV_ROUTES.indexOf("'/archive-all'");
+    const idAt = CONV_ROUTES.indexOf("'/:id/restore'");
+    expect(allAt).toBeGreaterThan(-1);
+    expect(allAt, '/archive-all 必须注册在 /:id/restore 之前').toBeLessThan(idAt);
+    expect(LIFECYCLE_SVC).toMatch(/function archiveAllInSpace/);
+    expect(CHAT_STORE).toMatch(/function archiveAllInSpace\(spaceId: string\)/);
+    expect(USE_CHAT).toMatch(/function archiveAllInSpace\(space/);
+    expect(SIDEBAR).toMatch(/archiveAllInSpace\(spaceMenuTarget\.space\)/);
+  });
+});

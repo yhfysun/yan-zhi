@@ -4,6 +4,9 @@ import { existsSync, statSync, writeFileSync } from 'node:fs';
 import { v4 as uuid } from 'uuid';
 import { authMiddleware } from '../auth.js';
 import { db } from '../db.js';
+// ★ 归档/回收站会话的文件写守卫（2026-10-16 缺陷 M2）：此前只判会话存在，
+//   归档（只读）/回收站的会话仍能上传、改名、删除文件。唯一实现收在 lifecycle 服务里。
+import { writableGuard } from '../services/conversation-lifecycle.js';
 import { resolveArtifactDirFor, ensureArtifactDirFor, findArtifactFileAcrossRoots, resolveRegisteredFilePath } from '../services/artifact-dir.js';
 import { buildArtifactRelDir, buildArtifactRelDirCandidates, type FileCategory } from '@yan-zhi/shared';
 import { guessMime } from '../utils/mime.js';
@@ -12,6 +15,17 @@ const router = Router();
 router.use(authMiddleware);
 
 const FILE_CATEGORIES: FileCategory[] = ['upload', 'intermediate', 'deliverable'];
+
+/**
+ * 写操作守卫：trashed → 404（对外不可见）；archived → 409（只读）。'ok' 才放行。
+ * 只拦**写**（建目录/上传/改/删），读（列文件/读流）放行 —— 归档会话的产物仍应可查看。
+ */
+function guardConvWrite(res: Response, cid: string, userId: string): boolean {
+  const g = writableGuard(cid, userId);
+  if (g === 'not_found' || g === 'trashed') { res.status(404).json({ error: '会话不存在' }); return false; }
+  if (g === 'archived') { res.status(409).json({ error: 'CONVERSATION_ARCHIVED', message: '会话已归档（只读），取消归档后才能修改文件' }); return false; }
+  return true;
+}
 
 function parseCategory(v: unknown): FileCategory {
   const s = String(v || '');
@@ -66,10 +80,12 @@ function rowToFile(r: any) {
 router.get('/:id/artifact-dir', (req: Request, res: Response) => {
   const userId = req.user!.userId;
   const cid = req.params.id;
-  const conv = db.prepare('SELECT id FROM conversation WHERE id = ? AND user_id = ?').get(cid, userId);
-  if (!conv) { res.status(404).json({ error: '会话不存在' }); return; }
   const category = parseCategory(req.query.category);
   const ensure = req.query.ensure === '1' || req.query.ensure === 'true';
+  // ensure=1 会创建目录 = 写操作；仅解析（ensure=0）是纯读，归档会话也放行
+  if (ensure && !guardConvWrite(res, cid, userId)) return;
+  const conv = db.prepare('SELECT id FROM conversation WHERE id = ? AND user_id = ?').get(cid, userId);
+  if (!conv) { res.status(404).json({ error: '会话不存在' }); return; }
   const info = ensure
     ? ensureArtifactDirFor({ conversationId: cid, category })
     : resolveArtifactDirFor({ conversationId: cid, category });
@@ -199,6 +215,7 @@ router.get('/:id/file-stream', (req: Request, res: Response) => {
 router.post('/:id/files', (req: Request, res: Response) => {
   const userId = req.user!.userId;
   const cid = req.params.id;
+  if (!guardConvWrite(res, cid, userId)) return;
   const conv = db.prepare('SELECT id, space_id FROM conversation WHERE id = ? AND user_id = ?').get(cid, userId) as any;
   if (!conv) { res.status(404).json({ error: '会话不存在' }); return; }
   const { name, path, category, mimeType, size, source, messageId } = req.body || {};
@@ -223,6 +240,7 @@ router.post('/:id/files', (req: Request, res: Response) => {
 router.post('/:id/files/upload', (req: Request, res: Response) => {
   const userId = req.user!.userId;
   const cid = req.params.id;
+  if (!guardConvWrite(res, cid, userId)) return;
   const conv = db.prepare('SELECT id, space_id FROM conversation WHERE id = ? AND user_id = ?').get(cid, userId) as any;
   if (!conv) { res.status(404).json({ error: '会话不存在' }); return; }
   const { name, base64, category } = req.body || {};
@@ -269,6 +287,7 @@ router.patch('/:id/files/:fileId', (req: Request, res: Response) => {
   const userId = req.user!.userId;
   const cid = req.params.id;
   const fileId = req.params.fileId;
+  if (!guardConvWrite(res, cid, userId)) return;
   const existing = db.prepare('SELECT * FROM conversation_file WHERE id = ? AND conversation_id = ? AND user_id = ?').get(fileId, cid, userId) as any;
   if (!existing) { res.status(404).json({ error: '文件不存在' }); return; }
   const sets: string[] = [];
@@ -288,6 +307,7 @@ router.delete('/:id/files/:fileId', (req: Request, res: Response) => {
   const userId = req.user!.userId;
   const cid = req.params.id;
   const fileId = req.params.fileId;
+  if (!guardConvWrite(res, cid, userId)) return;
   const existing = db.prepare('SELECT * FROM conversation_file WHERE id = ? AND conversation_id = ? AND user_id = ?').get(fileId, cid, userId);
   if (!existing) { res.status(404).json({ error: '文件不存在' }); return; }
   db.prepare('DELETE FROM conversation_file WHERE id = ?').run(fileId);

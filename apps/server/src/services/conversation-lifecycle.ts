@@ -74,12 +74,43 @@ export function emptyTrash(userId: string): number {
   return ids.length;
 }
 
-/** 从回收站恢复（清掉 deleted_at；归档标记不动 —— 恢复后仍是归档态才符合直觉） */
+/**
+ * 从回收站恢复。
+ * ★ 同时清掉 archived_at（2026-10-16 缺陷 H2 修正）：「恢复」的直觉是回到**可用状态**。
+ *   此前只清 deleted_at、保留 archived_at，导致「归档 → 删除 → 恢复」的会话落回归档区，
+ *   而前端提示却写「已恢复到主列表」—— 提示与去向不一致，用户会以为会话丢了。
+ *   副作用：原本归档的会话恢复后回到主列表。这是接受的取舍（要归档随时可再归档一次）。
+ */
 export function restoreRow(cid: string, userId: string): boolean {
   const r = db.prepare(
-    'UPDATE conversation SET deleted_at = NULL WHERE id = ? AND user_id = ? AND deleted_at IS NOT NULL',
+    'UPDATE conversation SET deleted_at = NULL, archived_at = NULL WHERE id = ? AND user_id = ? AND deleted_at IS NOT NULL',
   ).run(cid, userId);
   return r.changes > 0;
+}
+
+/**
+ * 「归档 = 只读」的写守卫（唯一实现，别在各路由散写 archived_at/deleted_at 判断 —— 必然漂移）。
+ * 返回 'ok' 才允许继续写；trashed 一律视为不存在（回收站里的东西对外不可见）。
+ * 边界（用户拍板 2026-10-16）：归档会话**允许改名**（无害），其余写操作拦掉。
+ * 改名是否放行由调用方决定 —— 本守卫只回答「这个会话还活不活着」。
+ */
+export function writableGuard(cid: string, userId: string): 'ok' | 'not_found' | 'trashed' | 'archived' {
+  const row = db.prepare('SELECT archived_at, deleted_at FROM conversation WHERE id = ? AND user_id = ?')
+    .get(cid, userId) as { archived_at?: number | null; deleted_at?: number | null } | undefined;
+  if (!row) return 'not_found';
+  // 不复用 lifecycleOf（它的返回含 'all'，语义也不对：这里问的是「能不能写」）
+  if (row.deleted_at) return 'trashed';
+  if (row.archived_at) return 'archived';
+  return 'ok';
+}
+
+/** 把某空间下的全部 active 会话一键归档。返回归档条数（已归档/回收站的不动） */
+export function archiveAllInSpace(userId: string, spaceId: string): number {
+  const r = db.prepare(
+    `UPDATE conversation SET archived_at = ?
+     WHERE user_id = ? AND space_id = ? AND deleted_at IS NULL AND archived_at IS NULL`,
+  ).run(Date.now(), userId, spaceId);
+  return r.changes;
 }
 
 /**

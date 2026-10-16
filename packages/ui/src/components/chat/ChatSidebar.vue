@@ -525,6 +525,10 @@
     <li @click="treeMenuNewSpace(); closeSpaceMenu()">
       <el-icon><Plus /></el-icon>新建空间
     </li>
+    <!-- 一键归档该空间下的全部会话（2026-10-16）：只动 active，回收站/已归档的不碰 -->
+    <li @click="archiveAllInSpace(spaceMenuTarget.space); closeSpaceMenu()">
+      <el-icon><FolderChecked /></el-icon>全部归档
+    </li>
     <li class="danger" @click="deleteSpaceConfirm(spaceMenuTarget.space); closeSpaceMenu()">
       <el-icon><Delete /></el-icon>删除空间
     </li>
@@ -587,6 +591,7 @@ const {
   spaceSelectState, rootSelectState,
   // 会话生命周期（2026-10-16 归档 + 回收站）
   archiveConv, restoreConv, purgeConv, loadLifecycleLists, archivedConversations, trashedConversations,
+  archiveAllInSpace,
 } = useChat();
 
 // 任务行共享操作（置顶/重命名/删除/移动空间/激活）：与 TaskListSection 共用同一 composable。

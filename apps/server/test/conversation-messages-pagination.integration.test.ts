@@ -104,7 +104,9 @@ function seed(n: number): Array<{ id: string; createdAt: number }> {
     CREATE TABLE IF NOT EXISTS conversation (
       id TEXT PRIMARY KEY, user_id TEXT NOT NULL, title TEXT, mode TEXT,
       pinned INTEGER DEFAULT 0, updated_at INTEGER DEFAULT 0,
-      permission_mode TEXT, agent_id TEXT, skill_ids_json TEXT, task_type TEXT
+      permission_mode TEXT, agent_id TEXT, skill_ids_json TEXT, task_type TEXT,
+      -- 生命周期三列（2026-10-16）：列表 SQL 带 lifecycle 过滤，缺列 = no such column
+      archived_at INTEGER, deleted_at INTEGER, last_activity_at INTEGER
     );
     CREATE TABLE IF NOT EXISTS message (
       id TEXT PRIMARY KEY,

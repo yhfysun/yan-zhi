@@ -41,8 +41,10 @@ function allowedRootsForUser(userId: string): string[] {
     }
   } catch { /* 表不存在等极端情况 */ }
   // 用户各会话的产物根/目录（会话工作目录派生产物落在这里）
+  // ★ 排除回收站（2026-10-16 缺陷 M3）：已删会话的产物目录不再作为工作区根暴露。
+  //   归档的保留 —— 归档是「收起来」不是「销毁」，产物仍应可在工作区里找到。
   try {
-    const convs = db.prepare('SELECT id FROM conversation WHERE user_id = ?').all(userId) as Array<{ id: string }>;
+    const convs = db.prepare('SELECT id FROM conversation WHERE user_id = ? AND deleted_at IS NULL').all(userId) as Array<{ id: string }>;
     for (const c of convs) {
       for (const category of ['deliverable', 'intermediate', 'upload'] as const) {
         try {

@@ -3756,6 +3756,18 @@ async function healStalePlatform() {
     }
   }
 
+  /** 一键归档某空间下的全部会话（侧栏空间右键菜单，2026-10-16） */
+  async function archiveAllInSpace(space: { id: string; name?: string } | null) {
+    if (!space?.id) return;
+    closeSpaceMenu();
+    try {
+      const n = await store.archiveAllInSpace(space.id);
+      ElMessage.success(n > 0 ? `已归档「${space.name || '该空间'}」的 ${n} 个会话` : '该空间没有可归档的会话');
+    } catch (e: any) {
+      ElMessage.error(e?.message || '归档失败');
+    }
+  }
+
   /** 从回收站恢复 */
   async function restoreConv(conv: Conversation | null) {
     if (!conv) return;
@@ -3976,6 +3988,7 @@ async function healStalePlatform() {
     copyMsg, editMsg, quoteMsg, delMsg, openConvMenu, closeCtxMenu, togglePin, startRename, commitRename, deleteConv, toggleConvSelect, batchSelectAll, batchDeleteConvs,
     // 会话生命周期（2026-10-16 归档 + 回收站）
     archiveConv, restoreConv, purgeConv, loadLifecycleLists, archivedConversations, trashedConversations,
+    archiveAllInSpace,
     currentConvArchived,
     collapsedSubAgentResults, toggleSubAgentResult, collapsedMainResults, toggleMainResult,
     copySubAgentRoundMd, downloadSubAgentRoundMd, copySubAgentResultMd, downloadSubAgentResultMd,
