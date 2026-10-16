@@ -8,7 +8,13 @@ export class ManifestError extends Error {
   }
 }
 
-const VALID_PERMS: PluginPermission[] = ['fs', 'shell', 'git', 'db', 'network', 'clipboard', 'desktop-input', 'remote-shell'];
+// ★ 新增权限必须同时改 types.ts 的 PluginPermission 联合与本表 ——
+//   漏改这里的后果不是"该权限被忽略"，而是 validateManifest **抛错**，
+//   而它是在 registerBuiltin 里被调用的，一抛就中断**整个插件系统初始化**：
+//   所有插件（含无关的 ops-shell / sec-lab）的后端路由全部不挂载 → 全量 404。
+//   2026-10-16 实测踩过（shop-write 未登记，运维/安全/店铺三条线的接口一起 404），
+//   故 test/shop-write-gate.test.ts 里加了一条「清单必须能通过真实 validateManifest」的守门。
+const VALID_PERMS: PluginPermission[] = ['fs', 'shell', 'git', 'db', 'network', 'clipboard', 'desktop-input', 'remote-shell', 'shop-write'];
 
 /** 校验清单对象，返回类型安全的 manifest */
 export function validateManifest(m: unknown): PluginManifest {
