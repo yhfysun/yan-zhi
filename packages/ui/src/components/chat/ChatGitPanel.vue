@@ -1,7 +1,7 @@
 <template>
   <div class="git-panel" @click="closeContextMenu">
     <!-- 顶栏：仓库 / 分支 / 同步状态 / 操作 -->
-    <header class="git-top">
+    <header v-if="gitIsRepo !== false" class="git-top">
       <el-dropdown
         v-if="repoSummaries.length > 1"
         trigger="click"
@@ -91,7 +91,8 @@
     <div v-if="busy || gitLoading" class="git-progress" />
 
     <!-- 变更工具条（IDEA Commit 工具窗顶部那排图标） -->
-    <div class="git-toolbar">
+    <!-- 非 Git 仓库时整条收起：暂存 / 回滚 / 储藏点下去每条都 400（见 loadRepoData 的探针短路） -->
+    <div v-if="gitIsRepo !== false" class="git-toolbar">
       <button class="git-tb-btn" title="刷新状态" :disabled="busy" @click="refreshAll(true)">
         <el-icon><RefreshRight /></el-icon>
       </button>
@@ -114,7 +115,7 @@
     </div>
 
     <!-- 筛选（固定顶部） -->
-    <div class="git-filter">
+    <div v-if="gitIsRepo !== false" class="git-filter">
       <el-input v-model="filterText" size="small" placeholder="筛选变更文件" clearable @keydown.esc="filterText = ''">
         <template #prefix><el-icon><Search /></el-icon></template>
       </el-input>
@@ -122,7 +123,15 @@
 
     <!-- 列表区（独立滚动） -->
     <div class="git-scroll">
-      <template v-if="gitLoading">
+      <!-- 非 Git 仓库：列表区换成一句说明 + 初始化入口。把根因写在界面上，
+           用户不必去翻控制台那四条 400 才知道发生了什么。 -->
+      <div v-if="gitIsRepo === false" class="git-no-repo">
+        <el-icon :size="26"><Box /></el-icon>
+        <p class="git-no-repo-title">该目录还不是 Git 仓库</p>
+        <p class="git-no-repo-path">{{ activeRepo || repo }}</p>
+        <el-button size="small" type="primary" :loading="busy" @click="doInitRepo">初始化仓库</el-button>
+      </div>
+      <template v-else-if="gitLoading">
         <div v-for="i in 5" :key="'sk' + i" class="git-skeleton" />
       </template>
 
@@ -490,7 +499,7 @@ import {
   PriceTag, Box, DArrowRight, Check, Search, MagicStick, ArrowDown, MoreFilled, Switch,
   Loading, Upload, Download, CaretRight, CaretBottom, View, Fold, Expand, FullScreen, Hide,
 } from '@element-plus/icons-vue';
-import { useGitStore, type GitNumstatEntry, type GitAheadBehind } from '../../stores/git';
+import { useGitStore, probeGitRepo, shouldSkipGitRead, type GitNumstatEntry, type GitAheadBehind } from '../../stores/git';
 import { useChatStore } from '../../stores/chat';
 import { useSettingsStore } from '../../stores/settings';
 import { useCodeStore } from '../../stores/code';
@@ -563,6 +572,20 @@ const workspace = computed(() => resolveGitRepoSource({
 }));
 const repo = ref('');
 const activeRepo = ref('');
+/**
+ * 当前活动仓库是不是 Git 仓库（探针结果）。
+ * `false` = 后端明确回答"不是仓库" → 整块操作区收起来，换成一句说明 + 一个「初始化仓库」；
+ * 同时不再去拉 status/branches/log/numstat/…（那些注定 400，见 stores/git.ts 的 probeGitRepo 注释）。
+ * `null` = 还没探 / 探测失败 → 保持原样照旧拉取。
+ */
+const gitIsRepo = ref<boolean | null>(null);
+/**
+ * 「这个目录不是仓库」的布尔视图（给模板用）。
+ * ★ 为什么不在模板里直接写 `gitIsRepo === false`：同一个渲染函数里前面已经有
+ *   `v-if="gitIsRepo !== false"`，TS 会把后续比较中的 gitIsRepo 收窄成 `true | null`，
+ *   于是 `=== false` 直接报 TS2367（"两个类型没有重叠"）—— 编译期就过不去。
+ */
+const isNonRepo = computed(() => gitIsRepo.value === false);
 const activeKey = computed(() => activeRepo.value || repo.value);
 const activeRepoName = computed(() => activeRepo.value.split(/[\\/]/).filter(Boolean).pop() || '仓库');
 
@@ -734,11 +757,30 @@ function openConflict(rel: string) {
 }
 
 // ===== 数据加载 =====
+/** 清空面板里的仓库数据（没有仓库 / 不是 Git 仓库两种情况共用，免得上一个仓库的列表残留下来） */
+function clearRepoData() {
+  currentBranch.value = '';
+  numstat.value = [];
+  aheadBehind.value = { ahead: 0, behind: 0 };
+  remoteBranchesList.value = [];
+  tagsList.value = [];
+  stashList.value = [];
+  graphEntries.value = [];
 async function loadRepoData(target?: string) {
   // 防御：target 可能为空（缓存恢复时 activeRepo 未回填），回落到工作目录根，仍为空则直接放弃
   const r = (target || activeRepo.value || repo.value || '').trim();
   if (!r) return;
   if (!activeRepo.value) activeRepo.value = r;
+  // ★ 先探针、再拉数据（2026-10-16 用户实报：非 Git 目录一次进入齐刷刷 400）。
+  //   本面板一轮要打 9 个接口（status/branches/log/numstat/aheadBehind/remoteBranches/
+  //   tagList/stashList/graph），不是仓库时**每一条**都 400 —— 短路是唯一能让控制台安静下来的做法。
+  //   探测失败（null）仍照旧拉：不能把"后端没起来"伪装成"不是仓库"，见 probeGitRepo 注释。
+  const probe = await probeGitRepo(r);
+  gitIsRepo.value = probe;
+  if (shouldSkipGitRead(probe)) {
+    clearRepoData();
+    return;
+  }
   await Promise.allSettled([
     gitStore.fetchStatus(r),
     gitStore.fetchBranches(r),
@@ -832,6 +874,24 @@ async function switchRepo(p: string) {
   await loadRepoData(p);
   gitLoading.value = false;
   void persist();
+}
+
+/** 非 Git 仓库 → 一键初始化（后端只做 `git init`，不提交）。成功后立刻重载面板数据。 */
+async function doInitRepo() {
+  const r = (activeRepo.value || repo.value || '').trim();
+  if (!r) return;
+  busy.value = true;
+  try {
+    const res = await gitStore.initRepo(r);
+    if ('error' in res) throw new Error(res.error);
+    ElMessage.success('已初始化 Git 仓库');
+    await loadRepoData(r);
+  } catch (e) {
+    ElMessage.error((e as Error).message || '初始化 Git 仓库失败');
+  } finally {
+    busy.value = false;
+    void persist();
+  }
 }
 
 // ===== 缓存（后端落在仓库内 .yan-zhi/git-cache.json）=====
@@ -1605,6 +1665,10 @@ onUnmounted(() => { document.removeEventListener('click', onDocClick); });
 
 /* ===== 列表区（独立滚动） ===== */
 .git-scroll { flex: 1; min-height: 0; overflow-y: auto; }
+/* 非 Git 仓库的整块说明（列表区唯一内容）：图标 + 一句结论 + 目录路径 + 一个动作 */
+.git-no-repo { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 36px 16px; color: var(--color-text-secondary, #6b6b6b); text-align: center; }
+.git-no-repo-title { margin: 4px 0 0; font-size: 13px; color: var(--color-text, #1a1a1a); }
+.git-no-repo-path { margin: 0 0 8px; font-size: 11px; word-break: break-all; opacity: 0.75; }
 .git-skeleton { height: 14px; margin: 8px 10px; border-radius: 4px; background: linear-gradient(90deg, rgba(15,23,42,0.06), rgba(15,23,42,0.12), rgba(15,23,42,0.06)); animation: git-pulse 1.2s ease-in-out infinite; }
 @keyframes git-pulse { 0%, 100% { opacity: 0.5; } 50% { opacity: 1; } }
 

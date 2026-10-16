@@ -58,6 +58,26 @@ router.get('/discover', async (req: Request, res: Response) => {
   }
 });
 
+// GET /git/isRepo —— 该目录是不是 Git 仓库。**不是也不报错**（200 + isRepo:false）：
+// 前端据此短路 Git 区，否则 status/branches/conflicts/log 四条会齐刷刷 400（见 service.isRepo 注释）。
+router.get('/isRepo', async (req: Request, res: Response) => {
+  try {
+    res.json({ data: await gitService.isRepo(String(req.query.repo || '')) });
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message });
+  }
+});
+
+// POST /git/init —— 非 Git 目录一键初始化（只 init，不提交）
+router.post('/init', async (req: Request, res: Response) => {
+  try {
+    await gitService.initRepo(req.body.repo);
+    res.json({ data: { ok: true } });
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message });
+  }
+});
+
 router.get('/status', async (req: Request, res: Response) => {
   try {
     res.json({ data: await gitService.status(String(req.query.repo || '')) });

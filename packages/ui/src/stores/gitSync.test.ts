@@ -27,6 +27,8 @@ const WRITE_METHODS = [
   'resolveConflict', 'resolveContent', 'restore',
   'stageFiles', 'unstageFiles', 'ignoreFiles',
   'createBranch', 'mergeBranch', 'abortMerge', 'fetch',
+  // initRepo：非 Git 目录一键初始化。会改变仓库状态（且探针结论翻面后两侧都得重拉）→ 必须 bump
+  'initRepo',
   'stashSave', 'stashPop', 'stashApply', 'stashDrop',
   'tagCreate', 'tagDelete',
   'revert', 'reset', 'cherryPick', 'rebase', 'rebaseAbort',

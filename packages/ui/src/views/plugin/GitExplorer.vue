@@ -59,6 +59,14 @@
         <div>选择一个仓库开始</div>
       </div>
 
+      <!-- 所选的不是 Git 仓库：整页换成一句说明 + 初始化入口（工具条留在上面，方便换仓库） -->
+      <div v-else-if="gitIsRepo === false" class="gx-empty">
+        <el-icon class="gx-empty-icon"><FolderAdd /></el-icon>
+        <div>该目录还不是 Git 仓库</div>
+        <div class="gx-no-repo-path">{{ repo }}</div>
+        <el-button size="small" type="primary" :loading="busy" @click="doInitRepo">初始化仓库</el-button>
+      </div>
+
       <div v-else class="gx-body">
         <!-- 左栏：更改 / 文件树 -->
         <div class="gx-left">
@@ -283,9 +291,9 @@ import { useRoute, useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import {
   Refresh, RefreshLeft, RefreshRight, Sort, ArrowDown, Connection, Document,
-  CaretRight, CaretBottom, WarningFilled, Delete, FolderOpened,
+  CaretRight, CaretBottom, WarningFilled, Delete, FolderOpened, FolderAdd,
 } from '@element-plus/icons-vue';
-import { useGitStore, type GitNumstatEntry, type GitAheadBehind } from '../../stores/git';
+import { useGitStore, probeGitRepo, shouldSkipGitRead, type GitNumstatEntry, type GitAheadBehind } from '../../stores/git';
 import GitDiffViewer from '../../components/chat/GitDiffViewer.vue';
 import CodeEditor from '../../components/CodeEditor.vue';
 
@@ -301,6 +309,12 @@ const recentRepos = ref<string[]>([]);
 const leftTab = ref<'changes' | 'tree'>('changes');
 const busy = ref(false);
 const gitLoading = ref(false);
+/**
+ * 所选仓库是不是 Git 仓库（探针结果）。
+ * `false` = 明确不是仓库 → 面板换成一句说明 + 一个「初始化仓库」，且不再拉那四条注定 400 的接口；
+ * `null` = 还没探 / 探测失败 → 保持原样照旧拉取（见 stores/git.ts 的 probeGitRepo 注释）。
+ */
+const gitIsRepo = ref<boolean | null>(null);
 
 const currentBranch = ref('');
 const numstat = ref<GitNumstatEntry[]>([]);
@@ -389,12 +403,29 @@ function detectLanguage(filePath: string): 'javascript' | 'json' | 'markdown' | 
 }
 
 // ===== 数据加载 =====
+/** 清空仓库相关显示值（换仓库 / 不是 Git 仓库两种情况共用，免得上一个仓库的数据残留） */
+function clearRepoData() {
+  currentBranch.value = '';
+  numstat.value = [];
+  aheadBehind.value = { ahead: 0, behind: 0 };
+  hasRemote.value = false;
+}
+
 async function loadRepoData(target?: string) {
   const r = (target || repo.value).trim();
   if (!r) return;
   repo.value = r;
   gitLoading.value = true;
   try {
+    // ★ 先探针、再拉数据（2026-10-16）：不是 Git 仓库时下面四条**全部** 400
+    //   （simple-git 抛 `fatal: not a git repository`），并弹一个语焉不详的错误提示。
+    //   明确不是仓库 → 短路并落到模板里的说明态；探测失败（null）仍照旧拉，见 probeGitRepo 注释。
+    const probe = await probeGitRepo(r);
+    gitIsRepo.value = probe;
+    if (shouldSkipGitRead(probe)) {
+      clearRepoData();
+      return;
+    }
     await Promise.all([
       gitStore.fetchStatus(r),
       gitStore.fetchBranches(r),
@@ -408,6 +439,23 @@ async function loadRepoData(target?: string) {
     ElMessage.error((e as Error).message);
   } finally {
     gitLoading.value = false;
+  }
+}
+
+/** 非 Git 仓库 → 一键初始化（后端只做 `git init`，不提交），成功后重新加载本页数据 */
+async function doInitRepo() {
+  const r = repo.value.trim();
+  if (!r) return;
+  busy.value = true;
+  try {
+    const res = await gitStore.initRepo(r);
+    if ('error' in res) throw new Error(res.error);
+    ElMessage.success('已初始化 Git 仓库');
+    await loadRepoData(r);
+  } catch (e) {
+    ElMessage.error((e as Error).message || '初始化 Git 仓库失败');
+  } finally {
+    busy.value = false;
   }
 }
 
@@ -768,6 +816,8 @@ onMounted(async () => {
   font-size: 13px;
 }
 .gx-empty-icon { font-size: 32px; }
+/* 「不是 Git 仓库」态里那行目录路径：可能很长，换行不撑破容器 */
+.gx-no-repo-path { max-width: 70%; word-break: break-all; opacity: 0.75; font-size: 12px; }
 
 @media (max-width: 767px) {
   .gx-toolbar { flex-wrap: wrap; }

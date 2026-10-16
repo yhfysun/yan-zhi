@@ -88,6 +88,34 @@ export class GitService {
     }
   }
 
+  /**
+   * 该目录（或任一父目录）是不是 Git 仓库；是则连仓库根一起返回。
+   *
+   * ★ 为什么要单独一个探针（2026-10-16 用户实报「打开非 Git 目录时控制台刷 400」）：
+   *   前端顶栏与侧栏进入时会各拉 status/branches/conflicts/log —— 目录不是仓库时
+   *   simple-git 每条都抛 `fatal: not a git repository`，路由统一转成 400 ⇒ 一次进入
+   *   打四条失败请求，控制台被刷满，而用户看到的只是"Git 区没数据"。
+   *   前端拿到这里的否定结论后直接短路，不再发那些注定失败的请求。
+   *
+   * 复用 `discover()`：它本来就不抛异常，只是语义是「往上找仓库根」，
+   * 被当成"是不是仓库"的判据太隐晦 —— 故显式封装，给前端一个明确信号。
+   *
+   * @returns isRepo=false 表示该目录不在任何仓库内（**不是错误**）；root 为仓库根（可能在上级目录）
+   */
+  async isRepo(repo: string): Promise<{ isRepo: boolean; root: string | null }> {
+    const ws = await this.getWorkspaceDir();
+    this.assertWithinWorkspace(repo, ws);
+    const root = await this.discover(repo);
+    return { isRepo: !!root, root };
+  }
+
+  /** 在指定目录初始化 Git 仓库（非 Git 目录的一键补救）。只 init，不提交、不建 .gitignore。 */
+  async initRepo(repo: string): Promise<void> {
+    const ws = await this.getWorkspaceDir();
+    this.assertWithinWorkspace(repo, ws);
+    await this.open(repo).init();
+  }
+
   async status(repo: string) {
     const ws = await this.getWorkspaceDir();
     this.assertWithinWorkspace(repo, ws);

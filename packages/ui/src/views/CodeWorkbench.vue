@@ -36,7 +36,20 @@
       <div class="cp-top-right">
         <!-- IDEA 风格 Git 区：分支切换 + Commit + 推送/拉取 -->
         <div v-if="code.projectDir" class="cp-git">
-          <button class="cp-git-branch" :title="gitBranch || '非 Git 仓库'" @click.stop="toggleGitBranch">
+          <!-- 非 Git 仓库：整块换成一个「初始化仓库」。分支/提交/同步在这里全无意义，
+               点下去每条都会打后端并 400（`not a git repository`）—— 与其逐按钮 disable，
+               不如直接换掉，顺便把根因写给用户看。 -->
+          <button
+            v-if="gitIsRepo === false"
+            class="cp-git-init"
+            :disabled="gitBusy"
+            title="该目录还不是 Git 仓库，点此初始化"
+            @click.stop="onGitInit"
+          >
+            <el-icon :size="12"><Plus /></el-icon>
+            <span class="cp-git-init-label">初始化仓库</span>
+          </button>
+          <button v-else class="cp-git-branch" :title="gitBranch || '非 Git 仓库'" @click.stop="toggleGitBranch">
             <el-icon :size="12"><Share /></el-icon>
             <span class="cp-git-branch-name">{{ gitBranch || 'no-git' }}</span>
             <span v-if="gitDirty" class="cp-git-dirty" :title="`${gitDirty} 处改动`">{{ gitDirty }}</span>
@@ -44,7 +57,7 @@
           </button>
           <!-- 冲突入口：仅在存在未解决冲突时出现 -->
           <button
-            v-if="gitConflicts.length"
+            v-if="gitIsRepo !== false && gitConflicts.length"
             class="cp-git-act is-conflict"
             :title="`${gitConflicts.length} 个冲突文件待解决`"
             @click="openConflictResolver(gitConflicts)"
@@ -53,12 +66,12 @@
             <span class="cp-git-badge danger">{{ gitConflicts.length }}</span>
           </button>
           <!-- 提交：图标 + 改动数徽标，点击打开提交弹窗 -->
-          <button class="cp-git-act" :class="{ 'is-on': commitOpen }" :disabled="!gitBranch" title="提交（Ctrl+K）" @click="openGitCommit">
+          <button v-if="gitIsRepo !== false" class="cp-git-act" :class="{ 'is-on': commitOpen }" :disabled="!gitBranch" title="提交（Ctrl+K）" @click="openGitCommit">
             <el-icon :size="14"><Check /></el-icon>
             <span v-if="gitDirty" class="cp-git-badge">{{ gitDirty }}</span>
           </button>
           <!-- 同步：拉取 / 推送 / 获取，收进一个图标下拉 -->
-          <button class="cp-git-act" :class="{ 'is-on': gitSyncDropdown }" :disabled="!gitBranch || gitBusy" title="同步：拉取 / 推送" @click.stop="toggleGitSync">
+          <button v-if="gitIsRepo !== false" class="cp-git-act" :class="{ 'is-on': gitSyncDropdown }" :disabled="!gitBranch || gitBusy" title="同步：拉取 / 推送" @click.stop="toggleGitSync">
             <el-icon :size="14"><Refresh /></el-icon>
             <span v-if="gitAhead || gitBehind" class="cp-git-badge blue">{{ gitAhead || gitBehind }}</span>
           </button>
@@ -250,7 +263,7 @@ import { useCodeStore, setCodeModeActive } from '../stores/code';
 import { activeMode, leadOf, setLead, type LeadMode } from '../stores/mode';
 import { useChatStore } from '../stores/chat';
 import { useSpaceStore } from '../stores/space';
-import { useGitStore } from '../stores/git';
+import { useGitStore, probeGitRepo, shouldSkipGitRead } from '../stores/git';
 // 刷新合并闸门：本组件的写操作收尾刷新与 statusVersion 跨区 watch 会同时触发（见 refreshGitStatus 注释）
 import { createRefreshGate } from '../utils/refreshGate';
 import { useChat } from '../composables/chat/useChat';
@@ -454,6 +467,13 @@ const gitSyncDropdownStyle = ref<Record<string, string>>({});
 const gitAhead = ref(0);
 const gitBehind = ref(0);
 const gitConflicts = ref<string[]>([]);
+/**
+ * 当前项目目录是不是 Git 仓库（探针结果）。
+ * `false` = 后端明确回答"不是仓库" → 顶部 Git 区改成「初始化仓库」一个动作，
+ * 且**不再**去拉 status/branches/conflicts（那些注定 400，见 stores/git.ts 的 probeGitRepo 注释）。
+ * `null` = 还没探 / 探测失败 → 保持原样照旧拉取。
+ */
+const gitIsRepo = ref<boolean | null>(null);
 
 // ===== 提交弹窗 / 冲突弹窗 =====
 const commitOpen = ref(false);
@@ -462,10 +482,27 @@ const checkoutConflict = ref<{ visible: boolean; branch: string; files: string[]
 });
 const conflictResolver = ref<{ visible: boolean; files: string[] }>({ visible: false, files: [] });
 
+/** 清空顶部 Git 区的全部显示值（没有项目目录 / 项目目录不是 Git 仓库，两种情况共用） */
+function clearGitState() {
+  gitBranch.value = null; gitDirty.value = 0; gitLocalBranches.value = [];
+  gitAhead.value = 0; gitBehind.value = 0; gitConflicts.value = [];
+}
+
 async function refreshGitStatusInner() {
   if (!code.projectDir) {
-    gitBranch.value = null; gitDirty.value = 0; gitLocalBranches.value = [];
-    gitAhead.value = 0; gitBehind.value = 0; gitConflicts.value = [];
+    gitIsRepo.value = null;
+    clearGitState();
+    return;
+  }
+  // ★ 先探针、再拉数据（2026-10-16 用户实报：项目目录不是 Git 仓库时，一次进入齐刷刷四条 400）。
+  //   明确不是仓库 → 短路，一条请求都不发；探测失败（null）→ 当作未知照旧拉，
+  //   不能把"后端没起来"伪装成"不是仓库"（口径见 stores/git.ts 的 probeGitRepo 注释）。
+  const probe = await probeGitRepo(code.projectDir);
+  gitIsRepo.value = probe;
+  if (shouldSkipGitRead(probe)) {
+    gitBranchDropdown.value = false;
+    gitSyncDropdown.value = false;
+    clearGitState();
     return;
   }
   const q = encodeURIComponent(code.projectDir);
@@ -516,6 +553,29 @@ function toggleGitSync(e: MouseEvent) {
   }
   gitBranchDropdown.value = false;
   gitSyncDropdown.value = !gitSyncDropdown.value;
+}
+
+/**
+ * 项目目录还不是 Git 仓库时的唯一动作：一键初始化（后端只做 `git init`，不提交）。
+ *
+ * 成功后 `initRepo` 会 bump statusVersion → 本组件与侧栏都会重新刷新，
+ * 那一轮探针的结论就翻面成"是仓库"，于是分支/改动数自然出现。
+ * 这里仍显式 await 一次刷新，是为了让按钮的 loading 与结果同步（否则提示先于数据跳出来）。
+ */
+async function onGitInit() {
+  const repo = code.projectDir;
+  if (!repo) return;
+  gitBusy.value = true;
+  try {
+    const res = await gitStore.initRepo(repo);
+    if ('error' in res) throw new Error(res.error);
+    ElMessage.success('已初始化 Git 仓库');
+    await refreshGitStatus();
+  } catch (err) {
+    ElMessage.error((err as Error).message || '初始化 Git 仓库失败');
+  } finally {
+    gitBusy.value = false;
+  }
 }
 
 /**
@@ -760,6 +820,15 @@ onMounted(async () => {
 }
 .cp-git-act.is-conflict { color: #b91c1c; border-color: #fecaca; background: #fef2f2; }
 .cp-git-act.is-conflict:hover { border-color: #b91c1c; color: #b91c1c; }
+/* 非 Git 仓库时的唯一动作：虚线框 + 文字，明显区别于旁边的图标按钮（它是"请你动手"而不是"状态"） */
+.cp-git-init {
+  display: inline-flex; align-items: center; gap: 4px; height: 26px; padding: 0 8px;
+  border: 1px dashed var(--glass-border, #e7e4dc); border-radius: 6px; background: transparent;
+  color: var(--color-text, #1a1a1a); font-size: 12px; cursor: pointer;
+}
+.cp-git-init:hover:not(:disabled) { border-color: var(--color-primary, #c2410c); color: var(--color-primary, #c2410c); }
+.cp-git-init:disabled { opacity: 0.35; cursor: not-allowed; }
+.cp-git-init-label { white-space: nowrap; }
 /* 角标：改动数 / 待推送 / 冲突数 */
 .cp-git-badge {
   position: absolute; top: -4px; right: -4px;

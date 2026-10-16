@@ -38,6 +38,52 @@ export interface GitCheckoutResult {
   message: string;
 }
 
+// ===== 「这个目录是不是 Git 仓库」探针（2026-10-16）=====
+//
+// ★ 为什么需要（用户实报）：工作目录不是 Git 仓库时（新建的小说目录、任何普通文件夹），
+//   Git 区的**每一条**读取都会失败 —— simple-git 抛
+//   `fatal: not a git repository (or any of the parent directories): .git`，后端路由统一转 400。
+//   实测一次进入就齐刷刷四条：
+//     GET /api/git/status?repo=…    400
+//     GET /api/git/branches?repo=…  400
+//     GET /api/git/conflicts?repo=… 400
+//     GET /api/git/log?repo=…&n=30  400
+//   用户视角是「Git 区没数据 + 控制台一片红」，完全看不出根因是「这个目录本来就不是仓库」。
+//
+// ★ 口径是**三态**不是布尔（见 shouldSkipGitRead）：明确不是仓库才短路；
+//   探测本身失败要当作"未知"照旧拉取 —— 否则一次网络抖动就会把"后端没起来"伪装成"不是仓库"。
+
+/**
+ * 探针：该目录（或任一父目录）是不是 Git 仓库。
+ * @returns true/false = 后端明确回答；null = 探测失败（网络层 / 后端 400），调用方按"未知"处理
+ */
+export async function probeGitRepo(repo: string): Promise<boolean | null> {
+  if (!repo) return false;
+  const res = await api.get<{ isRepo: boolean }>(`/git/isRepo?repo=${encodeURIComponent(repo)}`);
+  if (!('data' in res)) return null;
+  return res.data?.isRepo === true;
+}
+
+/**
+ * 探针结果 → 是否**跳过** Git 读取。
+ * ★ `null` 必须返回 false（不跳过）：未知 ≠ 不是仓库，见上方口径。
+ */
+export function shouldSkipGitRead(probe: boolean | null): boolean {
+  return probe === false;
+}
+
+/**
+ * 面板快照**落盘前**的净化：本次探针明确"不是仓库"时，把随快照落盘的仓库数据一律清空。
+ *
+ * ★ 为什么必须在写盘前清（2026-10-16 用户实报「这个目录都没 git 初始化，左边还显示 master / 变更 1」）：
+ *   `gitStore.status` 是**全局单槽**——切到非 Git 目录时它不会自己清空，还留着上一个仓库的值
+ *   （实测：先看过 chat_excel，再打开小说目录 第一本，缓存里就写进了 chat_excel 的
+ *    `current:"master"` 与它已暂存的文件）。面板 persist() 会把这份值写进**当前目录**的
+ *   .yan-zhi/git-cache.json ⇒ 下次打开该目录时缓存被恢复，一个从没有过 .git 的目录
+ *   就长期显示着别的仓库的变更。清空是唯一能打断这条污染链的位置。
+ *
+ * `null`（还没探 / 探测失败）**不净化**：未知不等于不是仓库，见 probeGitRepo 注释。
+ */
 export const useGitStore = defineStore('git', () => {
   const supported = ref(false);
   const status = ref<Record<string, unknown> | null>(null);
@@ -233,6 +279,15 @@ export const useGitStore = defineStore('git', () => {
     return api.post('/git/abortMerge', { repo });
   }
 
+  /**
+   * 非 Git 目录一键初始化（后端只做 `git init`，不提交）。
+   * 会改变仓库状态 → 必须 withBump：探针结论从"不是仓库"翻面后，
+   * 顶栏与侧栏都靠这次 bump 重新拉取（各自先探针再拉数据，见 probeGitRepo 注释）。
+   */
+  async function initRepo(repo: string) {
+    return api.post('/git/init', { repo });
+  }
+
   // ===== fetch / stash / tag / blame / revert / reset / cherry-pick / rebase =====
   async function fetch(repo: string, remote?: string, branch?: string) {
     return api.post('/git/fetch', { repo, remote, branch });
@@ -392,6 +447,7 @@ export const useGitStore = defineStore('git', () => {
     createBranch: withBump(createBranch),
     mergeBranch: withBump(mergeBranch),
     abortMerge: withBump(abortMerge),
+    initRepo: withBump(initRepo),
     fetch: withBump(fetch),
     stashSave: withBump(stashSave),
     stashList,
