@@ -10,7 +10,7 @@
 import { getPluginManager } from '@yan-zhi/core';
 import type { BuiltInTool, McpCallResult, PluginManifest, PluginModule, PluginWebSocket, PluginWsRequest } from '@yan-zhi/core';
 import { Client } from 'ssh2';
-import { readdirSync, lstatSync, mkdirSync } from 'node:fs';
+import { readdirSync, lstatSync, mkdirSync, renameSync, rmSync } from 'node:fs';
 import { createServer, type Server } from 'node:net';
 import mysql from 'mysql2/promise';
 import pg from 'pg';
@@ -644,6 +644,39 @@ export function copyRemoteFile(sftp: SFTPWrapper, from: string, to: string): Pro
   });
 }
 
+/**
+ * 递归删除远程路径：文件直接 unlink；目录先深度遍历删子项、再 rmdir。
+ *
+ * ★ 原来这里只调 rmdir —— **非空目录必失败**，而界面上那个「删除」对目录也是显示的，
+ *   用户点了只会拿到一句「目录可能非空」。现在按用户要求：目录连同内容一起删。
+ *
+ * 加条目上限是有意的：递归是逐条 RTT，几万条的目录会把这条连接占很久。
+ * 那种规模更适合走 ssh_exec 的 `rm -rf`（那条路有危险命令黑名单 + 人工批准兜底）。
+ */
+export const MAX_RECURSIVE_DELETE_ENTRIES = 20000;
+export async function removeRemoteRecursive(sftp: SFTPWrapper, target: string, budget = { n: 0 }): Promise<void> {
+  budget.n += 1;
+  if (budget.n > MAX_RECURSIVE_DELETE_ENTRIES) {
+    throw new Error(
+      `目录内条目超过 ${MAX_RECURSIVE_DELETE_ENTRIES} 个，已中止以免长时间占用连接；`
+      + '请改用 ssh_exec 的 rm -rf（有危险命令护栏与人工批准）',
+    );
+  }
+  const st = await statRemote(sftp, target);
+  if (!st.isDir) {
+    await new Promise<void>((resolve, reject) => sftp.unlink(target, (err) => (err ? reject(err) : resolve())));
+    return;
+  }
+  const names = await new Promise<string[]>((resolve, reject) => {
+    sftp.readdir(target, (err, list) => (err ? reject(err) : resolve((list || []).map((x) => x.filename))));
+  });
+  for (const n of names) {
+    if (n === '.' || n === '..') continue;
+    await removeRemoteRecursive(sftp, `${target.replace(/\/+$/, '')}/${n}`, budget);
+  }
+  await new Promise<void>((resolve, reject) => sftp.rmdir(target, (err) => (err ? reject(err) : resolve())));
+}
+
 export async function statRemote(sftp: SFTPWrapper, path: string): Promise<{ mode: number; size: number; mtime: number; isDir: boolean }> {
   const st = await new Promise<{ mode: number; size: number; mtime: number }>((resolve, reject) =>
     sftp.stat(path, (err, s) => (err ? reject(err) : resolve(s as never))),
@@ -1066,20 +1099,20 @@ export function makeTools(): BuiltInTool[] {
     {
       name: 'ssh_upload',
       description:
-        '通过 SFTP 上传本机文件到远程服务器。remotePath 传相对路径时会自动拼到该连接的 SFTP 默认目录下；省略 remotePath 则上传到默认目录。生产连接需 confirmed=true。',
+        '通过 SFTP 上传本机文件到远程服务器。remotePath 传相对路径时会自动拼到该连接的 SFTP 默认目录下；省略 remotePath 则上传到默认目录。生产连接需**人工批准**（模型传 confirmed 无效）。',
       inputSchema: {
         type: 'object',
         properties: {
           connection: { type: 'string', description: '连接名称（或 connectionId）' },
           localPath: { type: 'string', description: '本机文件绝对路径' },
           remotePath: { type: 'string', description: '远程目标路径；相对路径按连接的 SFTP 默认目录解析，省略则用默认目录' },
-          confirmed: { type: 'boolean', description: '生产连接必须为 true' },
+          confirmed: { type: 'boolean', description: '已废弃：生产写操作改由人工批准，模型无法自行确认' },
         },
         required: ['connection', 'localPath'],
       },
       execute: async (args) => {
         const conn = await resolveConn(args);
-        if (isProduction(conn) && !args.confirmed) return textResult('生产连接的文件写入需确认后带 confirmed=true 重新调用');
+        if (isProduction(conn)) { const g = await gateProductionAction(conn, '上传 ' + String(args.localPath || '') + ' → ' + String(args.remotePath || '(默认目录)'), 'SFTP 上传'); if (g !== null) return textResult(g); }
         const localPath = String(args.localPath || '');
         if (!localPath) return textResult('localPath 必填');
         const remotePath = resolveRemotePath(conn, String(args.remotePath || ''));
@@ -1361,7 +1394,7 @@ export function makeTools(): BuiltInTool[] {
           database: { type: 'string', description: 'database 类型的库名' },
           group: { type: 'string', description: '目标目录名；传空字符串移出目录' },
           jump: { type: 'string', description: '跳板机：已有连接的名称或 id；传空字符串取消跳板' },
-          confirmed: { type: 'boolean', description: '生产连接必须为 true' },
+          confirmed: { type: 'boolean', description: '已废弃：生产写操作改由人工批准，模型无法自行确认' },
         },
         required: ['connection'],
       },
@@ -1442,7 +1475,7 @@ export function makeTools(): BuiltInTool[] {
         type: 'object',
         properties: {
           connection: { type: 'string', description: '连接名（或 connectionId）' },
-          confirmed: { type: 'boolean', description: '生产连接必须为 true' },
+          confirmed: { type: 'boolean', description: '已废弃：生产写操作改由人工批准，模型无法自行确认' },
         },
         required: ['connection'],
       },
@@ -1593,20 +1626,20 @@ export function makeTools(): BuiltInTool[] {
     },
     {
       name: 'sftp_mkdir',
-      description: '在远程创建目录（父目录不存在会一并创建）。生产连接需 confirmed=true。',
+      description: '在远程创建目录（父目录不存在会一并创建）。生产连接需**人工批准**（模型传 confirmed 无效）。',
       inputSchema: {
         type: 'object',
         properties: {
           connection: { type: 'string', description: '连接名（或 connectionId）' },
           path: { type: 'string', description: '要创建的远程目录；相对路径按 SFTP 默认目录解析' },
-          confirmed: { type: 'boolean', description: '生产连接必须为 true' },
+          confirmed: { type: 'boolean', description: '已废弃：生产写操作改由人工批准，模型无法自行确认' },
         },
         required: ['connection', 'path'],
       },
       execute: async (args) => {
         const conn = await resolveConn(args);
         if (conn.type === 'database') return textResult('数据库连接不支持文件操作');
-        if (isProduction(conn) && !args.confirmed) return textResult('生产连接的文件写入需确认后带 confirmed=true 重新调用');
+        if (isProduction(conn)) { const g = await gateProductionAction(conn, '新建目录 ' + String(args.path || ''), 'SFTP 新建目录'); if (g !== null) return textResult(g); }
         try {
           const sftp = await getSftp(conn);
           const root = await resolveRemoteRoot(sftp, conn.sftpPath);
@@ -1621,21 +1654,21 @@ export function makeTools(): BuiltInTool[] {
     },
     {
       name: 'sftp_rename',
-      description: '重命名 / 移动远程文件或目录。生产连接需 confirmed=true。',
+      description: '重命名 / 移动远程文件或目录。生产连接需**人工批准**（模型传 confirmed 无效）。',
       inputSchema: {
         type: 'object',
         properties: {
           connection: { type: 'string', description: '连接名（或 connectionId）' },
           from: { type: 'string', description: '原路径；相对路径按 SFTP 默认目录解析' },
           to: { type: 'string', description: '新路径；相对路径按 SFTP 默认目录解析' },
-          confirmed: { type: 'boolean', description: '生产连接必须为 true' },
+          confirmed: { type: 'boolean', description: '已废弃：生产写操作改由人工批准，模型无法自行确认' },
         },
         required: ['connection', 'from', 'to'],
       },
       execute: async (args) => {
         const conn = await resolveConn(args);
         if (conn.type === 'database') return textResult('数据库连接不支持文件操作');
-        if (isProduction(conn) && !args.confirmed) return textResult('生产连接的文件写入需确认后带 confirmed=true 重新调用');
+        if (isProduction(conn)) { const g = await gateProductionAction(conn, '重命名 ' + String(args.from || '') + ' → ' + String(args.to || ''), 'SFTP 重命名'); if (g !== null) return textResult(g); }
         try {
           const sftp = await getSftp(conn);
           const root = await resolveRemoteRoot(sftp, conn.sftpPath);
@@ -1653,7 +1686,7 @@ export function makeTools(): BuiltInTool[] {
       name: 'sftp_backup',
       description:
         '备份远程文件：在同一目录复制一份带时间戳的副本（<文件名>.bak-YYYYMMDD-HHmmss）。'
-        + '改配置前先备份是个好习惯。只能备份文件，不支持目录。生产连接需 confirmed=true。',
+        + '改配置前先备份是个好习惯。只能备份文件，不支持目录。生产连接需**人工批准**（模型传 confirmed 无效）。',
       inputSchema: {
         type: 'object',
         properties: {
@@ -1666,7 +1699,7 @@ export function makeTools(): BuiltInTool[] {
       execute: async (args) => {
         const conn = await resolveConn(args);
         if (conn.type === 'database') return textResult('数据库连接不支持文件操作');
-        if (isProduction(conn) && !args.confirmed) return textResult('生产连接的文件写入需确认后带 confirmed=true 重新调用');
+        if (isProduction(conn)) { const g = await gateProductionAction(conn, '备份 ' + String(args.path || ''), 'SFTP 备份'); if (g !== null) return textResult(g); }
         try {
           const sftp = await getSftp(conn);
           const root = await resolveRemoteRoot(sftp, conn.sftpPath);
@@ -1685,7 +1718,7 @@ export function makeTools(): BuiltInTool[] {
     },
     {
       name: 'sftp_delete',
-      description: '删除远程文件（不支持目录，目录请用 ssh_exec 的 rm -r 并自行确认）。生产连接需 confirmed=true。',
+      description: '删除远程文件或目录（目录连同**全部内容**一起删除，不可恢复）。生产连接需**人工批准**（模型传 confirmed 无效）。',
       inputSchema: {
         type: 'object',
         properties: {
@@ -1698,7 +1731,7 @@ export function makeTools(): BuiltInTool[] {
       execute: async (args) => {
         const conn = await resolveConn(args);
         if (conn.type === 'database') return textResult('数据库连接不支持文件操作');
-        if (isProduction(conn) && !args.confirmed) return textResult('生产连接的文件写入需确认后带 confirmed=true 重新调用');
+        if (isProduction(conn)) { const g = await gateProductionAction(conn, '删除 ' + String(args.path || ''), 'SFTP 删除'); if (g !== null) return textResult(g); }
         try {
           const sftp = await getSftp(conn);
           const root = await resolveRemoteRoot(sftp, conn.sftpPath);
@@ -2386,18 +2419,75 @@ const opsShellModule: PluginModule = {
         const root = await resolveRemoteRoot(got.sftp, got.conn.sftpPath);
         const path = normalizeRemotePath(String(body.path || ''), root);
         try {
-          const st = await statRemote(got.sftp, path);
-          if (st.isDir) {
-            await new Promise<void>((resolve, reject) => got.sftp.rmdir(path, (err) => (err ? reject(err) : resolve())));
-          } else {
-            await new Promise<void>((resolve, reject) => got.sftp.unlink(path, (err) => (err ? reject(err) : resolve())));
-          }
+          // 目录连内容一起删（非空目录原先会 rmdir 失败）
+          await removeRemoteRecursive(got.sftp, path);
           await audit('sftp.delete', { connection: got.conn.name, detail: path, ok: true });
           json(res, { data: { ok: true } });
         } catch (e) {
-          fail(res, 500, `删除失败(目录可能非空): ${(e as Error).message}`);
+          fail(res, 500, `删除失败: ${(e as Error).message}`);
         } finally {
           try { got.sftp.end(); } catch { /* ignore */ }
+        }
+      });
+
+      // ===== 本地目录操作（本地栏用） =====
+      // 桌面端的服务进程就在本机，本地 fs 直接做即可，不必绕 Electron IPC。
+      // 与 /sftp/download 同一信任模型（都接受客户端给的本地路径），但多了两道自保：
+      // 拒绝根路径（删了不可挽回）、删目录必须显式带 recursive。
+      /** 是否是文件系统根 / 盘符根 —— 这类路径删掉不可挽回 */
+      const isLocalRoot = (p: string): boolean => {
+        const norm = p.trim().replace(/[\\/]+$/, '');
+        if (!norm) return true;              // '/' 或 '\'
+        return /^[a-zA-Z]:$/.test(norm);     // 'C:'（'C:/' 'C:\' 去尾斜杠后）
+      };
+      const localPathOf = (v: unknown): string => String(v || '').trim();
+
+      r.post('/local/mkdir', async (req: unknown, res: unknown) => {
+        const body = (req as { body: Record<string, unknown> }).body || {};
+        const p = localPathOf(body.path);
+        if (!p) { failRes(res, 400, '路径不能为空'); return; }
+        try {
+          mkdirSync(p, { recursive: true });
+          await audit('local.mkdir', { detail: p, ok: true });
+          jsonRes(res).json({ data: { ok: true } });
+        } catch (e) {
+          failRes(res, 500, `新建目录失败: ${(e as Error).message}`);
+        }
+      });
+
+      r.post('/local/rename', async (req: unknown, res: unknown) => {
+        const body = (req as { body: Record<string, unknown> }).body || {};
+        const from = localPathOf(body.from);
+        const to = localPathOf(body.to);
+        if (!from || !to) { failRes(res, 400, '源路径与目标路径均必填'); return; }
+        if (isLocalRoot(from)) { failRes(res, 400, '拒绝操作文件系统根路径'); return; }
+        try {
+          renameSync(from, to);
+          await audit('local.rename', { detail: `${from} → ${to}`, ok: true });
+          jsonRes(res).json({ data: { ok: true, to } });
+        } catch (e) {
+          failRes(res, 500, `重命名失败: ${(e as Error).message}`);
+        }
+      });
+
+      r.post('/local/delete', async (req: unknown, res: unknown) => {
+        const body = (req as { body: Record<string, unknown> }).body || {};
+        const p = localPathOf(body.path);
+        if (!p) { failRes(res, 400, '路径不能为空'); return; }
+        if (isLocalRoot(p)) { failRes(res, 400, '拒绝删除文件系统根路径'); return; }
+        try {
+          const st = lstatSync(p);
+          if (st.isDirectory()) {
+            // 目录必须显式带 recursive：纯本地接口静默递归删整棵树太容易误伤
+            if (body.recursive !== true) { failRes(res, 400, '删除目录需显式带 recursive: true'); return; }
+            rmSync(p, { recursive: true, force: true });
+          } else {
+            rmSync(p, { force: true });
+          }
+          await audit('local.delete', { detail: p, ok: true });
+          jsonRes(res).json({ data: { ok: true } });
+        } catch (e) {
+          failRes(res, 500, `删除失败: ${(e as Error).message}`);
         }
       });
 

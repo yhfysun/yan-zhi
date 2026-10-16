@@ -136,6 +136,7 @@
           @dragover="onLocalDragOver"
           @dragleave="onPaneDragLeave('local', $event)"
           @drop="onLocalDrop"
+          @contextmenu.prevent="onLocalListCtx"
         >
           <div class="sftp-cols-head">
             <span class="sftp-c-name">名称</span>
@@ -157,6 +158,7 @@
             @drop.stop="onLocalDropOnDir(e)"
             @click="onLocalClick($event, e, i)"
             @dblclick="onLocalDblClick(e)"
+            @contextmenu.prevent.stop="onLocalCtx(e, $event)"
           >
             <el-icon class="sftp-row-icon" :class="e.isDir ? 'is-dir' : 'is-file'">
               <Folder v-if="e.isDir" /><Document v-else />
@@ -202,20 +204,35 @@
       @click.stop
       @contextmenu.prevent
     >
-      <template v-if="!ctx.name">
-        <!-- 空白处右键：上传到当前目录 -->
-        <div class="sftp-ctxmenu-item" @click="pickUploadFiles(); closeCtx()">上传文件</div>
-        <div class="sftp-ctxmenu-item" @click="pickUploadFolder(); closeCtx()">上传文件夹</div>
-        <div class="sftp-ctxmenu-item" @click="promptMkdir(); closeCtx()">新建目录</div>
+      <!-- 远程栏 -->
+      <template v-if="ctx.pane === 'remote'">
+        <template v-if="!ctx.name">
+          <!-- 空白处右键：上传到当前目录 -->
+          <div class="sftp-ctxmenu-item" @click="pickUploadFiles(); closeCtx()">上传文件</div>
+          <div class="sftp-ctxmenu-item" @click="pickUploadFolder(); closeCtx()">上传文件夹</div>
+          <div class="sftp-ctxmenu-item" @click="promptMkdir(); closeCtx()">新建目录</div>
+        </template>
+        <template v-else>
+          <div v-if="ctx.isDir" class="sftp-ctxmenu-item" @click="openCtxDir(); closeCtx()">打开</div>
+          <!-- 「下载」改叫「复制到本地」：目录也支持（递归下载），文案与本地栏对称 -->
+          <div class="sftp-ctxmenu-item" @click="copyCtxToOther(); closeCtx()">复制到本地</div>
+          <div class="sftp-ctxmenu-item" @click="promptRename(); closeCtx()">重命名</div>
+          <div v-if="!ctx.isDir" class="sftp-ctxmenu-item" @click="backupSelected(); closeCtx()">备份</div>
+          <div class="sftp-ctxmenu-item is-danger" @click="deleteSelected(); closeCtx()">删除</div>
+        </template>
       </template>
+
+      <!-- 本地栏 -->
       <template v-else>
-        <div v-if="ctx.isDir" class="sftp-ctxmenu-item" @click="openCtxDir(); closeCtx()">打开</div>
-        <div class="sftp-ctxmenu-item" @click="pickUploadFiles(); closeCtx()">上传文件</div>
-        <div class="sftp-ctxmenu-item" @click="pickUploadFolder(); closeCtx()">上传文件夹</div>
-        <div class="sftp-ctxmenu-item" @click="promptRename(); closeCtx()">重命名</div>
-        <div v-if="!ctx.isDir" class="sftp-ctxmenu-item" @click="downloadNames([ctx.name]); closeCtx()">下载</div>
-        <div v-if="!ctx.isDir" class="sftp-ctxmenu-item" @click="backupSelected(); closeCtx()">备份</div>
-        <div class="sftp-ctxmenu-item is-danger" @click="deleteSelected(); closeCtx()">删除</div>
+        <template v-if="!ctx.name">
+          <div class="sftp-ctxmenu-item" @click="promptMkdir(); closeCtx()">新建目录</div>
+        </template>
+        <template v-else>
+          <div v-if="ctx.isDir" class="sftp-ctxmenu-item" @click="openCtxDir(); closeCtx()">打开</div>
+          <div class="sftp-ctxmenu-item" @click="copyCtxToOther(); closeCtx()">复制到远程</div>
+          <div class="sftp-ctxmenu-item" @click="promptRename(); closeCtx()">重命名</div>
+          <div class="sftp-ctxmenu-item is-danger" @click="deleteSelected(); closeCtx()">删除</div>
+        </template>
       </template>
     </div>
 </Teleport>
@@ -397,20 +414,48 @@ function onRemoteClick(ev: MouseEvent, e: RemoteEntry, idx: number) {
   remoteSelected.value = s;
 }
 
-// ===== 右键菜单 =====
-const ctx = ref({ visible: false, x: 0, y: 0, name: '', isDir: false });
+// ===== 右键菜单（远程 / 本地两栏共用一份状态，用 pane 分叉） =====
+// 为什么共用：以前菜单只挂在远程栏上，本地栏**整个没有右键菜单** —— 一份状态 + pane
+// 分叉，比写两套几乎一样的菜单更难漏。
+type CtxPane = 'remote' | 'local';
+const ctx = ref<{ visible: boolean; x: number; y: number; name: string; isDir: boolean; pane: CtxPane }>({
+  visible: false, x: 0, y: 0, name: '', isDir: false, pane: 'remote',
+});
+function openCtx(ev: MouseEvent, pane: CtxPane, name: string, isDir: boolean) {
+  ctx.value = { visible: true, ...clampMenuPos(ev), name, isDir, pane };
+}
 function onRemoteCtx(e: RemoteEntry, ev: MouseEvent) {
   if (!remoteSelected.value.has(e.name)) remoteSelected.value = new Set([e.name]);
-  ctx.value = { visible: true, ...clampMenuPos(ev), name: e.name, isDir: e.type === 'dir' };
+  openCtx(ev, 'remote', e.name, e.type === 'dir');
 }
-/** 空白处右键：只提供上传 / 新建目录（上传目标是当前目录） */
+/** 远程栏空白处右键：上传 / 新建目录（目标都是当前远程目录） */
 function onListCtx(ev: MouseEvent) {
   remoteSelected.value = new Set();
-  ctx.value = { visible: true, ...clampMenuPos(ev), name: '', isDir: false };
+  openCtx(ev, 'remote', '', false);
+}
+function onLocalCtx(e: LocalEntry, ev: MouseEvent) {
+  if (!localSelected.value.has(e.name)) localSelected.value = new Set([e.name]);
+  openCtx(ev, 'local', e.name, e.isDir);
+}
+/** 本地栏空白处右键：只给「新建目录」（上传的目标是远程，放这里会让人误解） */
+function onLocalListCtx(ev: MouseEvent) {
+  localSelected.value = new Set();
+  openCtx(ev, 'local', '', false);
 }
 function openCtxDir() {
+  if (ctx.value.pane === 'local') {
+    const e = localEntries.value.find((x) => x.name === ctx.value.name);
+    if (e) { localPath.value = e.path; void loadLocal(); }
+    return;
+  }
   remotePath.value = joinRemote(remotePath.value, ctx.value.name);
   void loadRemote();
+}
+/** 本次要操作的名字：右键那一项优先（若它在多选里则整批），否则取多选 */
+function ctxNames(): string[] {
+  const sel = ctx.value.pane === 'local' ? localSelected.value : remoteSelected.value;
+  if (ctx.value.name) return sel.has(ctx.value.name) ? Array.from(sel) : [ctx.value.name];
+  return Array.from(sel);
 }
 function closeCtx() {
   ctx.value = { ...ctx.value, visible: false };
@@ -869,51 +914,84 @@ async function subscribeProgress(jobId: string): Promise<boolean> {
   });
 }
 
-// ===== 新建目录 / 重命名 / 删除 =====
+// ===== 新建目录 / 重命名 / 删除 / 复制（两栏共用，按 ctx.pane 分叉） =====
+/** 当前栏是否生产连接（只有远程栏有这个概念） */
+function ctxIsProd(): boolean {
+  return ctx.value.pane === 'remote' && isProdTag(props.conn.tag || '');
+}
+
 async function promptMkdir() {
-  const r = await ElMessageBox.prompt('目录名', '新建远程目录', {
+  const pane = ctx.value.pane;
+  const r = await ElMessageBox.prompt('目录名', pane === 'local' ? '新建本地目录' : '新建远程目录', {
     inputPlaceholder: '如 uploads',
     inputValidator: (v: string) => (v && v.trim() ? true : '名称不能为空'),
   }).catch(() => null);
   if (!r) return;
-  const res = await api.post('/plugin/ops-shell/sftp/mkdir', {
-    connectionId: props.connectionId, path: joinRemote(remotePath.value, r.value.trim()),
-  });
-  if ('error' in res) ElMessage.error(res.error); else await loadRemote();
+  const name = r.value.trim();
+  const res = pane === 'local'
+    ? await api.post('/plugin/ops-shell/local/mkdir', { path: joinLocal(localPath.value, name) })
+    : await api.post('/plugin/ops-shell/sftp/mkdir', { connectionId: props.connectionId, path: joinRemote(remotePath.value, name) });
+  if ('error' in res) { ElMessage.error(res.error); return; }
+  await (pane === 'local' ? loadLocal() : loadRemote());
 }
 
 async function promptRename() {
-  const name = ctx.value.name || Array.from(remoteSelected.value)[0];
+  const pane = ctx.value.pane;
+  const name = ctx.value.name || ctxNames()[0];
   if (!name) return;
   const r = await ElMessageBox.prompt('新名称', '重命名', {
     inputValue: name,
     inputValidator: (v: string) => (v && v.trim() ? true : '名称不能为空'),
   }).catch(() => null);
-  if (!r || r.value.trim() === name) return;
-  const res = await api.post('/plugin/ops-shell/sftp/rename', {
-    connectionId: props.connectionId,
-    from: joinRemote(remotePath.value, name),
-    to: joinRemote(remotePath.value, r.value.trim()),
-  });
-  if ('error' in res) ElMessage.error(res.error); else await loadRemote();
+  if (!r || !r.value.trim() || r.value.trim() === name) return;
+  const to = r.value.trim();
+  const res = pane === 'local'
+    ? await api.post('/plugin/ops-shell/local/rename', {
+      from: joinLocal(localPath.value, name), to: joinLocal(localPath.value, to),
+    })
+    : await api.post('/plugin/ops-shell/sftp/rename', {
+      connectionId: props.connectionId,
+      from: joinRemote(remotePath.value, name),
+      to: joinRemote(remotePath.value, to),
+    });
+  if ('error' in res) { ElMessage.error(res.error); return; }
+  await (pane === 'local' ? loadLocal() : loadRemote());
 }
 
 async function deleteSelected() {
-  const names = Array.from(remoteSelected.value);
+  const pane = ctx.value.pane;
+  const names = ctxNames();
   if (!names.length) return;
-  const isProd = isProdTag(props.conn.tag || '');
+  const isProd = ctxIsProd();
   const label = names.length === 1 ? `「${names[0]}」` : `${names.length} 项`;
+  // 目录是**连同内容一起删**的（本地与远程都递归），文案必须说清 ——
+  // 旧文案写「仅支持文件与空目录」，而界面对目录也显示删除，等于那个按钮对目录是坏的
+  const dirNote = ctx.value.isDir ? '目录会连同**全部内容**一起删除，' : '';
   const ok = await ElMessageBox.confirm(
-    `${isProd ? '生产连接：' : ''}确认删除 ${label}？（仅支持文件与空目录）`, '确认删除', { type: 'warning', confirmButtonClass: 'yz-confirm-danger' },
+    `${isProd ? '生产连接：' : ''}确认删除 ${label}？${dirNote}不可恢复。`,
+    '确认删除', { type: 'warning', confirmButtonClass: 'yz-confirm-danger' },
   ).then(() => true).catch(() => false);
   if (!ok) return;
   for (const name of names) {
-    const res = await api.post('/plugin/ops-shell/sftp/unlink', {
-      connectionId: props.connectionId, path: joinRemote(remotePath.value, name), confirmed: isProd,
-    });
+    const res = pane === 'local'
+      ? await api.post('/plugin/ops-shell/local/delete', {
+        path: joinLocal(localPath.value, name), recursive: true,
+      })
+      : await api.post('/plugin/ops-shell/sftp/unlink', {
+        connectionId: props.connectionId, path: joinRemote(remotePath.value, name), confirmed: isProd,
+      });
     if ('error' in res) { ElMessage.error(`${name}: ${res.error}`); return; }
   }
-  await loadRemote();
+  await (pane === 'local' ? loadLocal() : loadRemote());
+}
+
+/** 复制到另一端：远程 → 本地（下载），本地 → 远程（上传）；目录都递归 */
+async function copyCtxToOther() {
+  const name = ctx.value.name;
+  if (!name) return;
+  if (ctx.value.pane === 'remote') { await downloadNames([name], localPath.value); return; }
+  const entry = localEntries.value.find((x) => x.name === name);
+  if (entry) await uploadPaths([entry.path]);
 }
 
 onMounted(async () => {

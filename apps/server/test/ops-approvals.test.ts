@@ -270,3 +270,54 @@ describe('ssh_exec · 生产连接的人工批准闸门', () => {
     expect(second).toContain('已重启');
   });
 });
+
+describe('SFTP 写工具 · 同一道闸门', () => {
+  const SFTP_CASES: Array<[string, Record<string, unknown>, string]> = [
+    ['sftp_delete', { path: '/data/app/old.zip' }, '删除 /data/app/old.zip'],
+    ['sftp_mkdir', { path: '/data/app/newdir' }, '新建目录 /data/app/newdir'],
+    ['sftp_rename', { from: '/data/app/a.conf', to: '/data/app/b.conf' }, '重命名 /data/app/a.conf → /data/app/b.conf'],
+    ['sftp_backup', { path: '/data/app/a.conf' }, '备份 /data/app/a.conf'],
+  ];
+
+  it.each(SFTP_CASES)('★★ %s 传 confirmed:true 也不执行（与 ssh_exec 同一个洞）', async (tool, args, expected) => {
+    await seed(prod('c1'));
+    const out = await runTool(tool, { connection: 'prod-1', ...args, confirmed: true });
+    expect(out).toContain('需要人工批准');
+    // 待批准里登记的命令原文，就是人在界面上看到的那一句
+    expect((await approvals())[0].command).toBe(expected);
+  });
+
+  it('ssh_upload 把「从哪到哪」写清楚（批准时得知道覆盖的是哪个文件）', async () => {
+    await seed(prod('c1'));
+    const out = await runTool('ssh_upload', {
+      connection: 'prod-1', localPath: 'C:/tmp/new.conf', remotePath: '/etc/app/app.conf',
+    });
+    expect(out).toContain('需要人工批准');
+    expect((await approvals())[0].command).toBe('上传 C:/tmp/new.conf → /etc/app/app.conf');
+  });
+
+  it('★ 批准后原样重试即可越过闸门（不再回待批准）', async () => {
+    await seed(prod('c1'));
+    await runTool('sftp_delete', { connection: 'prod-1', path: '/data/app/old.zip' });
+    await decide('c1', '删除 /data/app/old.zip', true);
+    const out = await runTool('sftp_delete', { connection: 'prod-1', path: '/data/app/old.zip' });
+    // 越过闸门后才会去建 SFTP（假 ssh2 没有 sftp 方法 → 会报别的错）。
+    // 判据是「不再是待批准」而不是「成功了」—— 这里只验闸门本身
+    expect(out).not.toContain('需要人工批准');
+  });
+
+  it('★ 改了路径就是另一条命令，必须重新批准', async () => {
+    await seed(prod('c1'));
+    await runTool('sftp_delete', { connection: 'prod-1', path: '/data/app/old.zip' });
+    await decide('c1', '删除 /data/app/old.zip', true);
+    const out = await runTool('sftp_delete', { connection: 'prod-1', path: '/data/app/other.zip' });
+    expect(out).toContain('需要人工批准');
+  });
+
+  it('非生产连接的 SFTP 写入不受影响', async () => {
+    await seed(dev('c2'));
+    const out = await runTool('sftp_mkdir', { connection: 'dev-1', path: '/tmp/x' });
+    expect(out).not.toContain('需要人工批准');
+    expect(await approvals()).toHaveLength(0);
+  });
+});
