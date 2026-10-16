@@ -763,7 +763,15 @@ function b64ToUtf8(b64: string): string {
   return new TextDecoder('utf-8').decode(bytes);
 }
 
-/** 安全 fit：容器不可见 / 尺寸为 0 时跳过（隐藏窗口里 fit 会算出离谱行列，终端会变「很长」） */
+/**
+ * 安全 fit：容器不可见 / 尺寸为 0 时跳过（隐藏窗口里 fit 会算出离谱行列，终端会变「很长」）。
+ *
+ * ★★ 2026-10-16：**行列没变就一行 DOM 都别碰**。本函数跑在 ResizeObserver 回调的调用链上，
+ *   而 `fit()` 会写 xterm 的内部尺寸 → 布局再变 → RO 再次投递 → Chromium 每帧报一条
+ *   `ResizeObserver loop completed with undelivered notifications`（实测 2 分钟 3425 条，
+ *   把 renderer 日志整个刷满）。预量一次、无变化直接返回，是打断该环最彻底的一刀：
+ *   不动 DOM 就绝不会触发下一次投递。
+ */
 function fitTerm(w: OpsWin) {
   const h = terms.get(w.id);
   if (!h) return;
@@ -2032,8 +2040,16 @@ onUnmounted(() => {
 
 
 
-/* ===== 工作区 ===== */
-.ops-workspace { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+/* ===== 工作区 =====
+   ★★ 2026-10-16 修「内容撑破窗口后被静默裁掉、且滚不到」：
+   根元素从 `.page` 换成 ConsoleShell 后，丢了 `.page` 自带的 `overflow-y: auto`（整页的滚动容器），
+   新外壳是 `overflow: hidden` ⇒ 内容一旦高过可视区，多出来的**既看不见也滚不到**
+   （实测 1280×840 且开着文件面板：工作区被撑到 927px，底部 123px 凭空消失）。
+   撑高的元凶是本条少了 `min-height: 0` —— 没有它，本节点的自动最小尺寸＝内容的最小内容高度
+   （= 文件面板两栏在**不确定高度**下的内容高之和），于是它拒绝收缩 ⇒ 外层 .ops-tabs/.ops-body/.ops-main-files
+   跟着一起变高、.sftp-panes 的 1fr 退化成"内容高" ⇒ **本地栏被顶到窗口下沿之外**（表现就是"本地那栏没了"）。
+   两处一起给：min-height: 0 让正常情况收进可视区；overflow: auto 作兜底（真超高时可滚，不再静默裁掉）。 */
+.ops-workspace { flex: 1; min-width: 0; min-height: 0; overflow: auto; display: flex; flex-direction: column; }
 .ops-workspace-empty { flex: 1; display: flex; align-items: center; justify-content: center; }
 .ops-tabs { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 .ops-tabs :deep(.el-tabs__header) { margin-bottom: 8px; flex-shrink: 0; }
