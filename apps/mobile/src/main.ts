@@ -6,7 +6,7 @@ import 'element-plus/dist/index.css';
 import * as Icons from '@element-plus/icons-vue';
 import App from '@yan-zhi/ui/App.vue';
 import { router } from '@yan-zhi/ui';
-import { setPlatformAdapter, initSchema, seedBuiltinSkills } from '@yan-zhi/core';
+import { setPlatformAdapter, initSchema, seedBuiltinSkills, seedBuiltinPageCommands } from '@yan-zhi/core';
 import { App as CapApp } from '@capacitor/app';
 import { Capacitor } from '@capacitor/core';
 import { ElMessage } from 'element-plus';
@@ -72,6 +72,8 @@ function registerBackButton(): void {
 //   ★ 新增任何 await 初始化步骤时，必须确保最终一定会走到 app.mount（见 issues 台账留档）。
 initSchema((sql) => mobileAdapter.db.exec(sql))
   .then(() => seedBuiltinSkills((sql, params) => mobileAdapter.db.exec(sql, params)))
+  // 内置「页面指令」种子（页面内对话方案 §5 P1）—— 与 skill 种子同链，仍在 .catch 之前
+  .then(() => seedBuiltinPageCommands((sql, params) => mobileAdapter.db.exec(sql, params)))
   .catch((err) => {
     console.error('[mobile] 数据库初始化失败，界面仍将启动：', err);
   })

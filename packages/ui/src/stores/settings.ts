@@ -338,6 +338,13 @@ export interface AppSettings {
    * ★ 默认必须是 ask —— off 会让模型可静默读写磁盘任意位置，只应由用户明确选择。
    */
   pathGuard: 'ask' | 'strict' | 'off';
+  /**
+   * 页面指令里的**脚本型**是否允许被标为"信任（不再每次确认）"。
+   * ★ 默认 false：脚本在页面主世界跑，可读本页内容与登录态、可发请求、可改并提交表单；
+   *   按用户拍板的口径「默认每次执行弹确认」，要免确认必须先在这里显式打开，
+   *   再在具体那条指令上打开"信任"。内置/导入来源的脚本指令**永远不允许免确认**。
+   */
+  browserTrustScriptCommands: boolean;
   /** 工作目录最近使用记录（目录选择器 chip 快捷入口，新选择的目录提到最前，最多 5 个） */
   recentWorkspaceDirs: string[];
   appGuide: string;
@@ -523,6 +530,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   workspaceDir: '',
   recentWorkspaceDirs: [],
   pathGuard: 'ask',
+  // 脚本型页面指令默认**每次执行都要确认**；要免确认必须先在这里显式打开（用户拍板口径）
+  browserTrustScriptCommands: false,
   appGuide: DEFAULT_APP_GUIDE,
   memoryExtractPlatformId: '',
   memoryExtractModelId: '',

@@ -6,7 +6,7 @@ import 'element-plus/dist/index.css';
 import * as Icons from '@element-plus/icons-vue';
 import App from './App.vue';
 import { router } from '@yan-zhi/ui';
-import { setPlatformAdapter, initSchema, seedBuiltinSkills } from '@yan-zhi/core';
+import { setPlatformAdapter, initSchema, seedBuiltinSkills, seedBuiltinPageCommands } from '@yan-zhi/core';
 import { localApiBase } from '@yan-zhi/shared';
 import { desktopAdapter } from './platform';
 
@@ -23,6 +23,8 @@ console.log('[desktop] 平台适配器已注入');
 // 初始化数据库 schema，完成后挂载 Vue 应用
 initSchema((sql) => desktopAdapter.db.exec(sql))
   .then(() => seedBuiltinSkills((sql, params) => desktopAdapter.db.exec(sql, params)))
+  // 内置「页面指令」种子（页面内对话方案 §5 P1）：与 skill 种子同一条链，幂等 upsert
+  .then(() => seedBuiltinPageCommands((sql, params) => desktopAdapter.db.exec(sql, params)))
   .then(() => {
     console.log('[desktop] 数据库 schema 初始化完成');
     const app = createApp(App);

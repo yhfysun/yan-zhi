@@ -105,10 +105,27 @@
         <svg viewBox="0 0 24 24" width="18" height="18"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M7 11V7a5 5 0 0110 0v4M5 11h14a2 2 0 012 2v7a2 2 0 01-2 2H5a2 2 0 01-2-2v-7a2 2 0 012-2z"/></svg>
       </button>
 
-      <!-- 🤖 交给 AI：把当前页 URL 引用到关联会话输入框，用户补一句指令即可让 Agent 接管 -->
-      <button class="handoff-btn" @click="handPageToAgent" :disabled="!currentUrl" title="把当前页交给 AI（引用到任务输入框）">
-        <span class="handoff-ico">🤖</span><span class="handoff-label">交给 AI</span>
-      </button>
+      <!-- 🤖 AI 菜单（页面内对话方案 §4.5）：
+           ① 页面对话 = 就地停靠对话面板（P0 新增，轻任务在这页上直接做）；
+           ② 页面移交给主智能体 / ③ 页面追加到任务中 = 原有的「交给 AI」「引用到任务」两个入口，
+              行为逐字不变，只是收进菜单（腾出工具条宽度给全屏/更多）。 -->
+      <el-dropdown trigger="click" @command="onAiMenuCommand">
+        <button class="handoff-btn" :class="{ active: pageChatOpen }" title="页面 AI：就地对话 / 移交给主智能体">
+          <span class="handoff-ico">🤖</span><span class="handoff-label">AI</span>
+          <span class="handoff-caret">▾</span>
+        </button>
+        <template #dropdown>
+          <el-dropdown-menu>
+            <el-dropdown-item command="chat" :disabled="!currentUrl">
+              {{ pageChatOpen ? '关闭页面对话' : '开启页面对话' }}
+            </el-dropdown-item>
+            <el-dropdown-item command="handoff" :disabled="!currentUrl" divided>页面移交给主智能体</el-dropdown-item>
+            <el-dropdown-item command="quote" :disabled="!currentUrl">页面追加到任务中</el-dropdown-item>
+            <!-- 页面指令（P1）：站点匹配 + 任务描述的指令库，命中当前页的在对话面板里一键发出 -->
+            <el-dropdown-item command="commands" divided>页面指令…</el-dropdown-item>
+          </el-dropdown-menu>
+        </template>
+      </el-dropdown>
 
       <!-- 全屏实况开关：原地放大（DOM 不动，避免 webview 重载） -->
       <button class="nav-btn" :class="{ active: browserExpanded }" @click="toggleExpanded" :title="browserExpanded ? '收起全屏 (Esc)' : '全屏实况'">
@@ -173,6 +190,11 @@
         <span>{{ bm.title || bm.url.replace(/^https?:\/\//, '').split('/')[0] }}</span>
       </div>
     </div>
+
+    <!-- 内容区：起始主页 / 网页视口 +（右侧）页面对话停靠面板。
+         注：子块保持原缩进 —— 只为套一层横向 flex 而整块重排会产生 ~150 行无意义 diff，
+         评审时反而看不清真正的改动（本文件改动一律以可读性优先）。 -->
+    <div class="browser-body">
 
     <!-- 起始主页（无导航时显示） -->
     <div v-if="showHome" class="home-page">
@@ -324,6 +346,25 @@
 
     </div>
 
+    <!-- 页面对话（P0）：轻任务就地做，重任务走上方 AI 菜单的「移交给主智能体」。
+         状态按 tab 隔离（stores/page-chat.ts），关 tab 即清；面板卸载只中止不烧 token。
+         ⚠️ 必须在 .browser-viewport **外面**：webview 是 position:absolute 铺满视口的，
+         放里面会被它盖住（面板点了没反应）。 -->
+    <PageChatDock
+      v-if="pageChatOpen && activeTabId"
+      :tab-id="activeTabId"
+      :url="currentUrl"
+      :title="activeTab?.title || ''"
+      :scope="browserScope"
+      :conv-id="pageChatConvId"
+      :agent-id="pageChatAgentId"
+      @close="setPageChatOpen(false)"
+      @manage="showPageCommands = true"
+    />
+    </div>
+
+    <!-- 页面指令管理（P1）：站点匹配 + 任务描述的指令库；命中当前页的在对话面板里一键发出 -->
+    <PageCommandsDialog v-model="showPageCommands" :url="currentUrl" />
 
     <!-- 收藏夹弹窗 -->
     <el-dialog v-model="showBookmarks" title="收藏夹" width="480px" class="el-dialog--sm" append-to-body>
@@ -358,6 +399,15 @@
       <SettingRow class="browser-setting" label="外部站点默认走代理">
         <el-switch v-model="defaultProxy" @change="onDefaultProxyChange" />
       </SettingRow>
+      <!-- P2：脚本型页面指令的"信任"总闸。默认关 —— 用户拍板口径是"每次执行都要确认"，
+           要免确认必须先在这里显式打开，再在具体那条指令上打开"信任"。 -->
+      <SettingRow class="browser-setting" label="允许信任脚本指令">
+        <el-switch v-model="trustScriptCommands" />
+      </SettingRow>
+      <div class="browser-setting-hint">
+        只在想让某条**脚本**指令免确认时才需开启（开启后仍需在「页面指令」里逐条打开"信任"）。
+        脚本以你自己的身份在这一页运行：能读本页内容与登录态、可发请求、可改并提交表单。
+      </div>
       <el-divider>常用网站管理</el-divider>
       <div v-for="(p, i) in pinned" :key="p.url" class="pin-row">
         <span class="pin-name">{{ p.name }}</span>
@@ -428,6 +478,10 @@ import { ZoomIn, ZoomOut, CircleCheck, CircleClose, Loading, List } from '@eleme
 import { usePlatformStore } from '../stores/platform';
 import { useChatStore } from '../stores/chat';
 import { useBrowserStore, claimPopup, type BrowserTab } from '../stores/browser';
+import { usePageChatStore } from '../stores/page-chat';
+import { useSettingsStore } from '../stores/settings';
+import PageChatDock from './browser/PageChatDock.vue';
+import PageCommandsDialog from './browser/PageCommandsDialog.vue';
 import { usePlatform } from '../composables/usePlatform';
 import { LlmClient } from '@yan-zhi/core';
 import { API_BASE, buildRequestHeaders } from '../api/client';
@@ -911,6 +965,7 @@ async function ctxClose(mode: 'tab' | 'left' | 'right' | 'others' | 'all') {
       if (!tabs.value.some((t) => t.id === id)) continue;
       if (isElectron) { try { await (window as any).electronAPI.browserView.closeTab(id, true); } catch { /* ignore */ } }
       webviewEls.delete(id);
+      pageChat.dropTab(id);   // 页面对话随 tab 一起清（同 closeTab 口径）
       const liveIdx = tabs.value.findIndex((t) => t.id === id);
       if (liveIdx >= 0) tabs.value.splice(liveIdx, 1);
       if (activeTabId.value === id) {
@@ -929,6 +984,7 @@ async function ctxClose(mode: 'tab' | 'left' | 'right' | 'others' | 'all') {
       const k = tabs.value.findIndex(t => t.id === id);
       if (k >= 0) tabs.value.splice(k, 1);
       webviewEls.delete(id);
+      pageChat.dropTab(id);
     }
     if (tabs.value.length === 0) await newTab();
   }
@@ -967,6 +1023,8 @@ async function closeTab(tabId: string) {
       electronCanForward.value = false;
     }
   }
+  // 页面对话随 tab 一起消失（"关闭标签页后即清除"）：中止在跑任务 + 丢弃该页对话状态
+  pageChat.dropTab(tabId);
   // ★ 兜底（2026-10-11）：关掉最后一个 tab 后自动补一个空白 tab —— 浏览器**始终至少一个 tab**。
   //   此前会停在"只剩 + 号"的无 tab 空态，而该状态下 activeTab 为空 → 地址栏回车与常用网站
   //   点击都会静默失败（navigate 无处写 url、webview 元素不存在）。空白 tab 内仍显示起始主页。
@@ -978,6 +1036,49 @@ async function ensureTabExists() {
   if (tabs.value.length > 0) return;
   try { await newTab(); } catch { /* 建 tab 失败不阻断关闭主流程 */ }
 }
+
+// ── 页面内对话（P0）：就地停靠面板 ──
+// 方案：docs/浏览器-页面内对话与页面指令-方案-20261016.md §4
+// 状态不放在这里：全部按 tabId 落在 stores/page-chat.ts（组件不持消息状态 ⇒ 切 tab 天然不串）。
+const pageChat = usePageChatStore();
+/** 面板开关（localStorage 记忆：切路由/重挂载后保持用户上次的选择） */
+const pageChatOpen = ref(safeGetString('browser_page_chat_open', '0') === '1');
+function setPageChatOpen(v: boolean) {
+  pageChatOpen.value = v;
+  safeSetString('browser_page_chat_open', v ? '1' : '0');
+  // 视口宽度变了：原生图层/占位要重新对齐一次（否则 BrowserView 会比占位宽出一块）
+  if (v) nextTick(() => syncBrowserViewBounds(true));
+  else hideTabCtx();
+}
+/**
+ * 页面对话的会话归属（方案 §4.6 的落地）：
+ * - preview 空间（对话右栏）：**共用当前会话** —— 那页归本会话所有（或就是它的可见页），
+ *   换成别的会话会被"跨会话认页"闸门挡住（browser-target.cjs:117-124）。
+ * - page 空间（/browser 独立页）：留空 ⇒ 由 store 给**每个 tab** 自建专用会话
+ *   （page 空间的 tab 永不被任何会话认领，靠"未锚定 + 建页类动作回落可见页"绑定，提示词已写明）。
+ */
+const pageChatConvId = computed(() => (browserScope === 'preview' ? (chatStore.currentConvId as string) || '' : ''));
+const pageChatAgentId = computed(() => {
+  if (browserScope !== 'preview') return '';
+  const conv = (chatStore.conversations as any[] | undefined)?.find?.((c: any) => c.id === chatStore.currentConvId);
+  return conv?.agentId || '';
+});
+/** AI 菜单命令（原「交给 AI」「引用到任务」的行为逐字保留，只是入口收进菜单） */
+function onAiMenuCommand(cmd: string) {
+  if (cmd === 'chat') setPageChatOpen(!pageChatOpen.value);
+  else if (cmd === 'handoff') handPageToAgent();
+  else if (cmd === 'quote') addQuotedUrl(currentUrl.value);
+  else if (cmd === 'commands') showPageCommands.value = true;   // P1：页面指令管理
+}
+
+// ── 页面指令（P1/P2，方案 §5）──管理对话框的开关（与页面对话面板解耦：不开对话也能管理指令）
+const showPageCommands = ref(false);
+// 脚本型指令的"信任"总闸（P2）：默认关，写进设置（跨端一致）；单条指令的"信任"以它为前置
+const settingsStore = useSettingsStore();
+const trustScriptCommands = computed({
+  get: () => !!settingsStore.settings.browserTrustScriptCommands,
+  set: (v: boolean) => { void settingsStore.update({ browserTrustScriptCommands: v }); },
+});
 
 // ── BrowserView 尺寸同步：监听占位 div 尺寸/位置变化，调用 setBounds 同步原生 BrowserView ──
 let browserViewResizeObserver: ResizeObserver | null = null;
@@ -1816,9 +1917,39 @@ function onWebviewReady(tabId: string) {
   }
 }
 
+/**
+ * 空白页判据（2026-10-16 用户实报「关掉唯一一个 tab 后变成黑页」的根因收口）：
+ *   `<webview :src="t.srcUrl || 'about:blank'">` —— 没有网址的 tab 会真的去加载 about:blank，
+ *   而 Electron 的 webview **会为空 guest 的这次加载触发 `did-navigate "about:blank"`**
+ *   （实测：新建 `<webview src="about:blank">` 必出该事件）。
+ *   一旦把它当"真实网址"写回 tab，tab 就从"空标签页"变成"有页面的标签页"：
+ *     `showHome` 变 false ⇒ 起始主页被顶掉、只剩一片黑；地址栏写死 about:blank；
+ *     tab 标题回退成 about:blank；本地历史栈还多一条登不进也退不出的记录。
+ *   ⇒ 空白页**不是页面导航**，必须在入口处拦住（不能指望"没人会去关最后一个 tab"）。
+ */
+function isBlankPageUrl(url: string) {
+  const u = String(url || '').trim();
+  return !u || /^about:blank(#.*)?$/i.test(u);
+}
+
 /** 导航状态统一处理（主进程推送与 webview 元素事件共用） */
 function applyNavigated(tid: string, url: string) {
   if (tid !== activeTabId.value || !url) return;
+  // 空白页：把该 tab 归位成"没有页面的空标签页"（起始主页重新可见），且**不进历史栈**。
+  // 幂等：webview 每次重建 / 回主页都会再报一次 about:blank，重复执行无副作用。
+  if (isBlankPageUrl(url)) {
+    urlInput.value = '';
+    history.value = [];
+    histIndex.value = -1;
+    pendingNavUrl = '';
+    if (activeTab.value) {
+      activeTab.value.url = '';
+      activeTab.value.urlInput = '';
+      activeTab.value.srcUrl = '';
+    }
+    if (isElectron) { electronCanBack.value = false; electronCanForward.value = false; }
+    return;
+  }
   // 旧引擎：面板未打开却收到导航事件 → 隐藏图层避免残留（webview 引擎无需此兜底）
   if (!isWebviewEngine.value && !shouldBeVisible.value) {
     try { (window as any).electronAPI.browserView.hide(tid); } catch { /* ignore */ }
@@ -2348,6 +2479,7 @@ onMounted(async () => {
       const idx = tabs.value.findIndex(t => t.id === tid);
       if (idx < 0) return;
       tabs.value.splice(idx, 1);
+      pageChat.dropTab(tid);   // agent/主进程关掉 tab → 该页面对话一并清除（幂等：不认识就 no-op）
       if (activeTabId.value === tid) {
         activeTabId.value = tabs.value[0]?.id || '';
         const next = activeTabId.value;
@@ -2445,6 +2577,9 @@ watch(browserViewPlaceholder, (el, oldEl) => {
 });
 
 onUnmounted(() => {
+  // 页面对话：面板卸载 → **中止**本面板各 tab 上在跑的任务（只停不停留消息：tabs 会跨挂载保留，
+  // 用户切回来还能看到刚才的问答；但绝不能"关掉页面还在烧 token"）。
+  try { pageChat.stopTabs(tabs.value.map((t) => t.id)); } catch { /* 收尾失败不阻断其余清理 */ }
   // 卸载即让本实例注册过的 IPC 监听全部失效 —— 双保险：
   //   ① `componentAlive = false`（逻辑门，防旧闭包改状态；每次挂载由 onMounted 重置）
   //   ② 逐个调用 `ipcOffs` 里的 unsubscribe（**真注销**，根治监听器累积）
@@ -2597,8 +2732,19 @@ onUnmounted(() => {
   box-shadow: var(--shadow-sm);
 }
 .handoff-btn:disabled { opacity: 0.4; cursor: default; }
+/* 页面对话面板开着时按钮点亮（与「全屏实况」的 active 同语义） */
+.handoff-btn.active {
+  background: color-mix(in srgb, var(--el-color-primary) 26%, transparent);
+  border-color: var(--el-color-primary);
+}
 .handoff-ico { font-size: 13px; line-height: 1; }
 .handoff-label { white-space: nowrap; }
+.handoff-caret { font-size: 9px; line-height: 1; opacity: 0.75; }
+
+/* ── 内容区：起始主页 / 网页视口 +（右侧）页面对话面板 ──
+   横向 flex；子项 min-width:0 允许被压缩（否则窄窗口下视口不肯让位给对话面板）。 */
+.browser-body { flex: 1; min-height: 0; min-width: 0; display: flex; }
+.browser-body > * { min-width: 0; }
 
 /* ── Agent 接管进度条（shield 锁定期间顶部常驻）── */
 .agent-takeover-bar {
@@ -2968,6 +3114,11 @@ onUnmounted(() => {
 /* 设置行：复用 common/SettingRow，此处覆盖为「左标签 + 右控件顶到行两端」的紧凑形态 */
 .browser-setting { justify-content: space-between; align-items: center; padding: 10px 0; margin-bottom: 0; }
 .browser-setting :deep(.setting-row-label) { width: auto; padding-right: 0; text-align: left; color: var(--el-text-color-primary); }
+/* 设置项下方的一行说明（P2 的「允许信任脚本指令」用它讲清风险与前置条件） */
+.browser-setting-hint {
+  font-size: 11px; line-height: 1.6; color: var(--el-text-color-secondary, #909399);
+  margin: -4px 0 8px;
+}
 .pin-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; }
 .pin-name { width: 90px; font-size: 13px; color: var(--el-text-color-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pin-url { flex: 1; font-size: 12px; color: var(--el-text-color-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

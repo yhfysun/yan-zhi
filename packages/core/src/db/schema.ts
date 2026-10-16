@@ -1,4 +1,56 @@
 // 数据库表结构定义（SQLite DDL，三端共用）
+/**
+ * 浏览器「页面指令」表 DDL —— **单一来源**（2026-10-16 · 页面内对话与页面指令方案 §5 P1）。
+ *
+ * 为什么单独抽出来（而不是只写在 SCHEMA_SQL 里）：这张表由**服务端路由**真实读取，
+ * 而服务端并不调用 initSchema（schema 一直是客户端启动时建的）。为了不出现
+ * "客户端建了表 / 服务端那条链路没有表 ⇒ 接口 500 且只在真机上暴露"，
+ * 服务端启动时用同一份文本按需建表 —— 同一语义两处各写一份 DDL 是本项目的经典翻车点。
+ */
+export const PAGE_COMMAND_DDL = `CREATE TABLE IF NOT EXISTS browser_page_command (
+  id            TEXT PRIMARY KEY,
+  user_id       TEXT,                                    -- NULL = 内置（所有人可见）；否则为创建者
+  name          TEXT NOT NULL,
+  description   TEXT,
+  kind          TEXT NOT NULL DEFAULT 'task',             -- 'task'（P1 唯一可用）| 'script'（P2）
+  body          TEXT NOT NULL,                            -- 任务描述 / 脚本源码；模板占位符形如 \${url} \${selection} \${input:提示}
+  match_host    TEXT NOT NULL DEFAULT '*',                -- 'www.baidu.com' / '*.fanqieopen.com' / '*'
+  match_url     TEXT,                                     -- 可选 URL 正则，优先级高于 match_host
+  source        TEXT NOT NULL DEFAULT 'user',             -- 'user' | 'builtin'（与 skill.source 同口径）
+  enabled       INTEGER NOT NULL DEFAULT 1,
+  need_confirm  INTEGER NOT NULL DEFAULT 1,               -- P2 脚本执行前是否二次确认
+  run_count     INTEGER NOT NULL DEFAULT 0,
+  last_used_at  INTEGER,
+  created_at    INTEGER NOT NULL,
+  updated_at    INTEGER NOT NULL
+);`;
+
+/**
+ * 脚本型指令的**执行审计**表（2026-10-16 · 方案 §5.4 硬约束③"审计留痕"）。
+ *
+ * 只记**元信息**，不存页面内容：脚本能在页面主世界读到的一切（登录态、表单值、页面正文）
+ * 都不落库；`result_digest` 是执行结果的**摘要**（长度 + 短哈希），够回答"跑没跑、成没成、
+ * 结果多大"，不足以还原数据。
+ * ★ 与指令表同样：服务端不跑 initSchema ⇒ 这张表的 DDL 也是单一来源，路由加载时按需建。
+ */
+export const PAGE_COMMAND_RUN_DDL = `CREATE TABLE IF NOT EXISTS browser_command_run (
+  id            TEXT PRIMARY KEY,
+  command_id    TEXT NOT NULL,
+  command_name  TEXT,                                    -- 快照：指令被改名/删除后审计仍可读
+  command_kind  TEXT NOT NULL DEFAULT 'script',
+  user_id       TEXT,
+  tab_id        TEXT,
+  url           TEXT,
+  host          TEXT,
+  started_at    INTEGER NOT NULL,
+  ended_at      INTEGER,
+  duration_ms   INTEGER,
+  status        TEXT NOT NULL,                           -- 'ok' | 'error' | 'aborted'
+  result_digest TEXT,                                    -- 结果摘要（长度+短哈希），**不是**结果本身
+  error         TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_command_run_cmd ON browser_command_run(command_id, started_at);`;
+
 export const SCHEMA_SQL = `
 -- 平台
 CREATE TABLE IF NOT EXISTS platform (
@@ -351,6 +403,13 @@ CREATE TABLE IF NOT EXISTS plugin_storage (
   PRIMARY KEY (plugin_id, key),
   FOREIGN KEY (plugin_id) REFERENCES plugin(id) ON DELETE CASCADE
 );
+
+-- 浏览器「页面指令」（2026-10-16 · 页面内对话与页面指令方案 §5 的 P1）
+-- 一条指令 = 站点匹配 + 一段"任务描述"（kind='task'，走页面内对话通道执行）。
+-- kind='script'（页面脚本）留到 P2：脚本在页面主世界跑、可读 cookie/带凭据 fetch，
+-- 默认权限口径（每次确认 / 白名单 / 审计）待拍板，字段先占位不启用。
+${PAGE_COMMAND_DDL}
+${PAGE_COMMAND_RUN_DDL}
 `;
 
 /** 迁移 SQL：为已有数据库添加新字段 */
@@ -922,6 +981,131 @@ export async function seedBuiltinSkills(
       );
     } catch (e) {
       console.warn(`[seed] 内置 skill ${s.id} 写入失败:`, e);
+    }
+  }
+}
+
+/**
+ * 内置「页面指令」种子（2026-10-16 · 页面内对话与页面指令方案 §5，P1）。
+ *
+ * 全部 kind='task'（自然语言任务描述），零脚本风险 —— 脚本型（kind='script'）在 P2，
+ * 需先定默认权限口径（默认每次确认 / 导入来源强制确认 / 审计留痕）。
+ * ${...} 是**指令模板占位符**（运行时由 UI 插值），不是 TS 模板串 —— 所以正文一律单引号字符串。
+ */
+export const BUILTIN_PAGE_COMMANDS_SEED: Array<{
+  id: string; name: string; description: string; body: string; matchHost: string; matchUrl: string | null;
+  /** 'task'（默认，自然语言任务描述）| 'script'（页面脚本；P2 起可用，默认每次执行都要确认） */
+  kind?: 'task' | 'script';
+}> = [
+  {
+    id: 'pc_summarize',
+    name: '总结本页要点',
+    description: '读完当前页可见正文，输出不超过 5 条要点',
+    body: '读完这一页的可见正文，用不超过 5 条要点总结它讲了什么（中文，每条一行；不要复述导航栏/页脚这类模板内容）。',
+    matchHost: '*', matchUrl: null,
+  },
+  {
+    id: 'pc_extract_table',
+    name: '提取本页表格',
+    description: '把当前页主表格结构化成 markdown 表格',
+    body: '把这一页的主表格结构化成 markdown 表格输出（保留表头；数据超过 30 行时只输出前 30 行并注明已截断）。',
+    matchHost: '*', matchUrl: null,
+  },
+  {
+    id: 'pc_extract_links',
+    name: '列出本页所有链接',
+    description: '去重列出当前页可点击链接',
+    body: '列出这一页所有可点击的链接：每行一条「显示文本 — URL」，去掉重复项与空锚点（# 开头）。',
+    matchHost: '*', matchUrl: null,
+  },
+  {
+    id: 'pc_translate',
+    name: '翻译本页',
+    description: '把当前页正文译成中文（原文中文则译英文）',
+    body: '把这一页正文翻译成中文；原文是中文则译成英文。保留数字、链接与专有名词原样。',
+    matchHost: '*', matchUrl: null,
+  },
+  {
+    id: 'pc_fill_form',
+    name: '填这个表单（不提交）',
+    description: '按我提供的信息填表，填完等我确认',
+    body: '用我接下来提供的信息填写当前页的表单。**不要提交**；填完后逐个字段告诉我填了什么，等我确认再动提交。',
+    matchHost: '*', matchUrl: null,
+  },
+  {
+    id: 'pc_find_errors',
+    name: '找报错信息',
+    description: '找当前页的报错/警告并解释',
+    body: '在这一页里找出报错、异常、警告的文本：逐条列出原文，并给出可能原因与下一步建议；确实没有就明确回答"没有找到报错"。',
+    matchHost: '*', matchUrl: null,
+  },
+  {
+    id: 'pc_fanqie_chapters',
+    name: '整理本页章节列表',
+    description: '站点示例指令：番茄作家后台的章节/作品清单',
+    body: '整理这一页的章节或作品列表：逐行输出「名称 — 字数 — 状态」，最后给一行合计。',
+    matchHost: '*.fanqieopen.com', matchUrl: null,
+  },
+  // ── P2：只读脚本样例（内置脚本**永远需要确认**，不允许被标"信任"）──
+  {
+    id: 'pc_script_links_json',
+    name: '导出本页链接（JSON）',
+    description: '脚本型（只读）：把本页所有链接去重后按 JSON 返回，便于复制/入库',
+    kind: 'script',
+    body: 'const list = Array.from(document.querySelectorAll("a[href]"))\n'
+      + '  .map(function (a) { return { text: (a.innerText || "").trim().slice(0, 80), href: a.href }; })\n'
+      + '  .filter(function (l) { return /^https?:/i.test(l.href); });\n'
+      + 'const seen = new Set(); const uniq = [];\n'
+      + 'for (const l of list) { if (!seen.has(l.href)) { seen.add(l.href); uniq.push(l); } }\n'
+      + 'return { url: location.href, title: document.title, count: uniq.length, links: uniq.slice(0, 200) };',
+    matchHost: '*', matchUrl: null,
+  },
+  {
+    id: 'pc_script_page_stats',
+    name: '统计本页元素',
+    description: '脚本型（只读）：返回字数、链接/图片/表单数量与标题结构',
+    kind: 'script',
+    body: 'return {\n'
+      + '  url: location.href,\n'
+      + '  title: document.title,\n'
+      + '  chars: ((document.body && document.body.innerText) || "").length,\n'
+      + '  links: document.querySelectorAll("a[href]").length,\n'
+      + '  images: document.images.length,\n'
+      + '  forms: document.forms.length,\n'
+      + '  headings: Array.from(document.querySelectorAll("h1,h2,h3")).slice(0, 20).map(function (h) { return (h.innerText || "").trim(); }),\n'
+      + '};',
+    matchHost: '*', matchUrl: null,
+  },
+];
+
+/** 把内置页面指令 upsert 进库（幂等；沿用 skill 种子的 ON CONFLICT 口径） */
+export async function seedBuiltinPageCommands(
+  execFn: (sql: string, params?: any[]) => Promise<void>,
+): Promise<void> {
+  const now = Date.now();
+  for (const c of BUILTIN_PAGE_COMMANDS_SEED) {
+    try {
+      await execFn(
+        `INSERT INTO browser_page_command
+           (id, user_id, name, description, kind, body, match_host, match_url, source,
+            enabled, need_confirm, run_count, created_at, updated_at)
+         VALUES (?, NULL, ?, ?, ?, ?, ?, ?, 'builtin', 1, 1, 0, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           name = excluded.name,
+           description = excluded.description,
+           kind = excluded.kind,
+           body = excluded.body,
+           match_host = excluded.match_host,
+           match_url = excluded.match_url,
+           updated_at = excluded.updated_at`,
+        // ★ 不覆盖 enabled / run_count / last_used_at：用户在界面上停用过的内置指令，
+        //   不能因为一次升级种子又被打开（那是"用户改了配置又被打回去"的经典投诉）。
+        // ★ need_confirm 恒为 1：内置指令（含脚本样例）**永远需要确认** —— 内容随版本更新，
+        //   用户"信任"的是当时那段脚本，升级换了内容就不能再免确认。
+        [c.id, c.name, c.description, c.kind || 'task', c.body, c.matchHost, c.matchUrl, now, now],
+      );
+    } catch (e) {
+      console.warn(`[seed] 内置页面指令 ${c.id} 写入失败:`, e);
     }
   }
 }

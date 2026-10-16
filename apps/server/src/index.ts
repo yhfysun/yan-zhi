@@ -55,6 +55,9 @@ import previewRoutes from './routes/preview.js';
 import workspaceRoutes from './routes/workspace.js';
 import memoryRoutes from './routes/memory.js';
 import scheduledTaskRoutes from './routes/scheduled-tasks.js';
+// 浏览器「页面指令」库（2026-10-16 · 页面内对话与页面指令方案 §5 P1）——
+// 挂在与 /api/browser 同级的独立路径：移动端 /api/browser 被 501 拦住，指令库不该被连坐。
+import pageCommandRoutes from './routes/page-commands.js';
 import userHookRoutes from './routes/user-hooks.js';
 import ollamaMarketRoutes from './routes/ollama-market.js';
 import ttsPackRoutes from './routes/tts-packs.js';
@@ -187,6 +190,9 @@ app.use('/api/marketplace', marketplaceRoutes);
   } else {
     app.use('/api/browser', browserRoutes);
   }
+// 浏览器「页面指令」（页面内对话方案 §5 P1）：站点匹配 + 任务描述的指令库。
+// 放 501 分支之外 —— 指令只是"一条预设消息"，网页端/桌面端都要能读写。
+app.use('/api/page-commands', pageCommandRoutes);
 app.use('/api/peers', peersRoutes);
 // 局域网节点发现：扫本机私网 /24 上的其他言智节点（移动端「设为后端」/ 商城源地址来源）
 app.use('/api/lan', lanRoutes);
