@@ -10,118 +10,14 @@
  * 客户端用 ssh2 的 `Client` —— 与运维模式上传走的是同一套协议实现。
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { generateKeyPairSync, randomBytes } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Server, Client, utils } from 'ssh2';
+import { Client } from 'ssh2';
 
 import { sftpUploadRange } from '../src/plugins/ops-shell.js';
-
-const { STATUS_CODE, OPEN_MODE } = utils.sftp;
-
-/** 一台内存文件系统的 SFTP 服务器；顺便把协议层的动作记下来给断言用 */
-function startFakeSftp() {
-  const files = new Map<string, Buffer>();
-  const dirs = new Set<string>(['/']);
-  const handles = new Map<number, string>();
-  /** 每次 OPEN 的原始 flags（★ 断言 TRUNC 就在这里看） */
-  const opens: Array<{ path: string; flags: number }> = [];
-  /** 每次 WRITE 的偏移与长度（★ 断言"续传是从 offset 处写的"） */
-  const writes: Array<{ path: string; offset: number; len: number }> = [];
-  let handleSeq = 0;
-
-  // 主机密钥用 RSA/PKCS#1：ssh2 1.17 解析不了 ed25519 的 PKCS#8 PEM
-  //（"Cannot parse privateKey: Unsupported key format"），RSA 的经典 PEM 一定能吃。
-  const hostKey = generateKeyPairSync('rsa', {
-    modulusLength: 2048,
-    privateKeyEncoding: { type: 'pkcs1', format: 'pem' },
-    publicKeyEncoding: { type: 'pkcs1', format: 'pem' },
-  }).privateKey;
-  const server = new Server(
-    { hostKeys: [hostKey] },
-    (client) => {
-      client.on('authentication', (ctx) => {
-        if (ctx.method === 'password' && ctx.username === 'tester' && ctx.password === 'secret') ctx.accept();
-        else ctx.reject();
-      });
-      client.on('ready', () => {
-        client.on('session', (accept) => {
-          const session = accept();
-          session.on('sftp', (acceptSftp) => {
-            const sftp = acceptSftp() as unknown as {
-              on: (ev: string, cb: (...a: never[]) => void) => void;
-              status: (reqid: number, code: number) => void;
-              handle: (reqid: number, h: Buffer) => void;
-              name: (reqid: number, n: unknown[]) => void;
-              attrs: (reqid: number, a: unknown) => void;
-            };
-            const pathOf = (h: Buffer) => handles.get(h.readUInt32BE(0)) ?? '';
-            const attrsOf = (p: string) => ({
-              mode: dirs.has(p) ? 0o040755 : 0o100644,
-              uid: 0, gid: 0, size: files.get(p)?.length ?? 0, atime: 0, mtime: 0,
-            });
-            const replyAttrs = (reqid: number, p: string) => {
-              if (!files.has(p) && !dirs.has(p)) { sftp.status(reqid, STATUS_CODE.NO_SUCH_FILE); return; }
-              sftp.attrs(reqid, attrsOf(p));
-            };
-
-            sftp.on('REALPATH', (reqid: number, p: string) => {
-              const rp = !p || p === '.' ? '/' : p;
-              sftp.name(reqid, [{ filename: rp, longname: rp, attrs: attrsOf(rp) }]);
-            });
-            sftp.on('STAT', (reqid: number, p: string) => replyAttrs(reqid, p));
-            sftp.on('LSTAT', (reqid: number, p: string) => replyAttrs(reqid, p));
-            // ★ ssh2 服务端 OPEN 回调里的 flags 是**裸的 uint32**，不是 `{ flags }` 对象
-            //   （SFTP.js 里 `const pflags = bufferParser.readUInt32BE()`）——写成属性访问会
-            //   永远拿到 undefined，于是每个 CREAT 文件都被判成"不存在"，第一次 OPEN 就 NO_SUCH_FILE。
-            sftp.on('OPEN', (reqid: number, filename: string, flags: number) => {
-              const f = flags;
-              opens.push({ path: filename, flags: f });
-              const exists = files.has(filename);
-              if (!exists && !(f & OPEN_MODE.CREAT)) { sftp.status(reqid, STATUS_CODE.NO_SUCH_FILE); return; }
-              if ((f & OPEN_MODE.TRUNC) || !exists) files.set(filename, Buffer.alloc(0));
-              const id = ++handleSeq;
-              handles.set(id, filename);
-              const h = Buffer.alloc(4);
-              h.writeUInt32BE(id, 0);
-              sftp.handle(reqid, h);
-            });
-            sftp.on('WRITE', (reqid: number, h: Buffer, offset: number, data: Buffer) => {
-              const p = pathOf(h);
-              const base = files.get(p) ?? Buffer.alloc(0);
-              // 偏移写法对错在这里露馅：落在 base.length 之后就是"中间留洞"
-              const out = Buffer.alloc(Math.max(base.length, offset + data.length));
-              base.copy(out, 0);
-              data.copy(out, offset);
-              files.set(p, out);
-              writes.push({ path: p, offset, len: data.length });
-              sftp.status(reqid, STATUS_CODE.OK);
-            });
-            sftp.on('FSTAT', (reqid: number, h: Buffer) => replyAttrs(reqid, pathOf(h)));
-            sftp.on('CLOSE', (reqid: number, h: Buffer) => {
-              handles.delete(h.readUInt32BE(0));
-              sftp.status(reqid, STATUS_CODE.OK);
-            });
-            sftp.on('MKDIR', (reqid: number, p: string) => { dirs.add(p); sftp.status(reqid, STATUS_CODE.OK); });
-            sftp.on('OPENDIR', (reqid: number, p: string) => {
-              if (!dirs.has(p) && !files.has(p)) { sftp.status(reqid, STATUS_CODE.NO_SUCH_FILE); return; }
-              const id = ++handleSeq;
-              handles.set(id, p);
-              const h = Buffer.alloc(4);
-              h.writeUInt32BE(id, 0);
-              sftp.handle(reqid, h);
-            });
-            sftp.on('READDIR', (reqid: number) => { sftp.name(reqid, []); sftp.status(reqid, STATUS_CODE.EOF); });
-            sftp.on('REMOVE', (reqid: number, p: string) => { files.delete(p); sftp.status(reqid, STATUS_CODE.OK); });
-            sftp.on('RMDIR', (reqid: number, p: string) => { dirs.delete(p); sftp.status(reqid, STATUS_CODE.OK); });
-          });
-        });
-      });
-    },
-  );
-  return { server, files, opens, writes };
-}
+import { OPEN_MODE, startFakeSftp } from './fake-sftp-server.js';
 
 describe('断点续传 · 对着真正的 SFTP 服务器跑一遍', () => {
   const state = startFakeSftp();
@@ -130,8 +26,7 @@ describe('断点续传 · 对着真正的 SFTP 服务器跑一遍', () => {
   let dir: string;
 
   beforeAll(async () => {
-    const port = await new Promise<number>((res) =>
-      state.server.listen(0, '127.0.0.1', () => res((state.server.address() as { port: number }).port)));
+    const port = await state.listen();
     client = new Client();
     await new Promise<void>((res, rej) => {
       client.on('ready', () => res()).on('error', rej);
@@ -143,7 +38,7 @@ describe('断点续传 · 对着真正的 SFTP 服务器跑一遍', () => {
 
   afterAll(() => {
     try { client.end(); } catch { /* ignore */ }
-    try { state.server.close(); } catch { /* ignore */ }
+    state.close();
     try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
   });
 
