@@ -129,6 +129,72 @@ describe('写操作记录 · shop_write_log', () => {
   });
 });
 
+describe('写操作闸门 · 七个动作一起守门', () => {
+  const WRITE_TOOLS = [
+    'shop_price_update', 'shop_stock_update', 'shop_listing_publish', 'shop_listing_create',
+    'shop_campaign_apply', 'shop_reply_send', 'shop_order_place',
+  ];
+  /** 每个写工具的最小合法入参（**故意不带 confirmed**） */
+  const MIN_ARGS: Record<string, Record<string, unknown>> = {
+    shop_price_update: { shopName: '测试店', sku: 'B0A', currentPrice: 10, newPrice: 9, reason: 'r' },
+    shop_stock_update: { shopName: '测试店', sku: 'B0A', currentStock: 5, newStock: 3, reason: 'r' },
+    shop_listing_publish: { shopName: '测试店', sku: 'B0A', listing: 'offline', reason: 'r' },
+    shop_listing_create: { shopName: '测试店', sourceRef: 'https://detail.1688.com/x', title: '标题', price: 19.9, reason: 'r' },
+    shop_campaign_apply: { shopName: '测试店', campaign: '双11 预热场', skus: 'B0A,B0B', dealPrice: 15, reason: 'r' },
+    shop_reply_send: { shopName: '测试店', threadId: '买家A', replyText: '您好，物流我帮您查一下', reason: 'r' },
+    shop_order_place: { shopName: '测试店', offerRef: 'https://detail.1688.com/y', qty: 100, unitPrice: 8.5, reason: 'r' },
+  };
+
+  it('★★★ 七个写动作在未确认时【全部】拒绝执行 —— 漏一个就等于"模型自己批准自己"', async () => {
+    for (const name of WRITE_TOOLS) {
+      const map = await withShop('测试');
+      const text = await run(name, MIN_ARGS[name]);
+      expect(text, `${name} 未确认却给了执行指引`).not.toContain('✓ 已批准');
+      expect(text, `${name} 未说明未执行`).toContain('未执行');
+      expect(text, `${name} 未提示如何放行`).toContain('confirmed: true');
+      expect(auditOf(map).at(-1)?.action, `${name} 的审计动作名不对`).toBe(`write.${name.slice('shop_'.length)}.denied`);
+      expect(auditOf(map).at(-1)?.note).toBe('未确认');
+    }
+  });
+
+  it('★★ 七个写动作在生产店铺上：confirmed=true 仍全部被拒（缺 approveProduction）', async () => {
+    for (const name of WRITE_TOOLS) {
+      const map = await withShop('生产');
+      const text = await run(name, { ...MIN_ARGS[name], confirmed: true });
+      expect(text, `${name} 生产店铺未被拦住`).not.toContain('✓ 已批准');
+      expect(text).toContain('额外人工批准');
+      expect(auditOf(map).at(-1)?.note).toBe('生产店铺未额外批准');
+    }
+  });
+
+  it('★ 七个写动作在非生产店铺上：加 approveProduction 后全部放行（至少不因闸门被拦）', async () => {
+    for (const name of WRITE_TOOLS) {
+      await withShop('测试');
+      const text = await run(name, { ...MIN_ARGS[name], confirmed: true, approveProduction: true });
+      expect(text, `${name} 已确认却仍被拦`).toContain('✓ 已批准');
+    }
+  });
+
+  it('★★ 采购下单的硬边界：执行指引必须写明付款由人工完成', async () => {
+    await withShop('测试');
+    const text = await run('shop_order_place', { ...MIN_ARGS.shop_order_place, confirmed: true });
+    expect(text).toContain('付款必须由用户人工完成');
+    expect(text).toContain('提交订单');
+  });
+
+  it('★ 回消息必须原样带回文案，且涉及退款/承诺时要标注需人工处理', async () => {
+    await withShop('测试');
+    const plain = await run('shop_reply_send', { ...MIN_ARGS.shop_reply_send, confirmed: true });
+    expect(plain).toContain('您好，物流我帮您查一下');
+
+    await withShop('测试');
+    const risky = await run('shop_reply_send', {
+      shopName: '测试店', threadId: '买家B', replyText: '我给您安排退款', reason: 'r', confirmed: true,
+    });
+    expect(risky).toContain('需人工处理');
+  });
+});
+
 describe('守门 · 声明与清单必须同步', () => {
   it('★★★ 清单必须能通过真实的 validateManifest —— 未知权限会让**整个插件系统初始化**失败', () => {
     // 2026-10-16 实测：P2 声明了 shop-write 却没登记进 packages/core 的 VALID_PERMS，

@@ -18,6 +18,7 @@ import type { BuiltInTool, McpCallResult, PluginManifest, PluginModule } from '@
 import { encrypt, decrypt } from '../utils/crypto.js';
 import { pushPluginAudit } from '../services/plugin-audit.js';
 import { isProductionTag } from './ops-shell-guard.js';
+import { parseSpApiCreds, spApiCheck } from '../services/amazon-sp-api.js';
 import { createLogger } from '../services/logger.js';
 
 const logger = createLogger('shop-ops');
@@ -398,30 +399,84 @@ export function makeShopTools(): BuiltInTool[] {
     },
   };
 
-  // ---------- 写操作：申请改价（P2 打样的唯一写动作） ----------
+  // ---------- 写操作：统一走「申请 → 用户确认 →（生产额外批准）」闸门 ----------
   //
-  // ★★ 为什么是"申请"而不是"直接改"：本插件既不持有平台登录态、也没有平台写接口 ——
+  // ★★ 为什么全部做成"申请"而不是"直接改"：本插件既不持有平台登录态、也没有平台写接口 ——
   //    真正的改动由智能体在**获批之后**用 pageAgent 在卖家后台完成。
-  //    这个工具的价值是那道**闸门**：把"要改什么"固化成变更单，强制二次确认
-  //    （生产店铺还要额外批准），并写审计留痕。
-  //    ★ 未确认绝不放行 —— 硬约束在工具里，不依赖模型自觉。
+  //    这些工具的价值是那道**闸门**：把"要改什么"固化成变更单，强制二次确认
+  //    （生产店铺还要额外批准），并写审计留痕。未确认绝不放行 —— 硬约束在工具里，不依赖模型自觉。
+  //
+  // ★ 闸门收敛成**一份**实现（runWriteGate）：动作之间的差别只有「变更单写什么、获批后怎么执行」。
+  //   逐个复制必然改出分歧 —— ops-shell 那边同一种审计逻辑曾复制到 5 处，改 cap 时漏了一处。
+
+  interface WriteReq {
+    /** 审计动作名，如 write.stock_update */
+    action: string;
+    conn: StoredConnection;
+    /** 变更单标题，如「改价变更单」 */
+    title: string;
+    /** 目标对象（sku / 商品 id / 会话 id），进审计 */
+    target: string;
+    /** 变更单正文行（不含标题与店铺行） */
+    lines: string[];
+    /** 获批后交给 pageAgent 的执行指引 */
+    exec: string;
+    confirmed?: boolean;
+    approveProduction?: boolean;
+  }
+
+  const findConn = async (shopName: string): Promise<StoredConnection | undefined> =>
+    (await loadConnections()).find((c) => c.shopName === shopName);
+
+  const runWriteGate = async (req: WriteReq): Promise<string> => {
+    const platform = PLATFORM_BY_ID.get(req.conn.platform);
+    const isProd = isProductionTag(req.conn.tag);
+    const order = [
+      `【${req.title}】`,
+      `店铺：${req.conn.shopName}（${platform?.label ?? req.conn.platform}${req.conn.site ? ' · ' + req.conn.site : ''}${isProd ? ' · ★生产' : ''}）`,
+      ...req.lines,
+    ].join('\n');
+
+    if (req.confirmed !== true) {
+      await audit(`${req.action}.denied`, { connection: req.conn.shopName, detail: req.target, ok: false, note: '未确认' });
+      return textResult(`${order}\n\n★ 未确认，**未执行**。请把这张变更单交给用户确认；用户明确同意后，原样重试并带 confirmed: true。`);
+    }
+    if (isProd && req.approveProduction !== true) {
+      await audit(`${req.action}.denied`, { connection: req.conn.shopName, detail: req.target, ok: false, note: '生产店铺未额外批准' });
+      return textResult(`${order}\n\n★ 该店铺标记为「生产」，需要**额外人工批准**：请在控制台核对变更单与影响面后，再带 approveProduction: true 重试。`);
+    }
+    await audit(`${req.action}.approved`, {
+      connection: req.conn.shopName, detail: req.target, ok: true, summary: req.lines.join(' | '),
+    });
+    return textResult(
+      `${order}\n\n✓ 已批准（已记审计）。执行方式：${req.exec}\n`
+      + '改完**回读页面确认已生效**再回报；若失败或结果与变更单不符，按上面的回滚方式处理并如实说明。',
+    );
+  };
+
+  /** 写工具共用的两个闸门入参 */
+  const WRITE_GATE_PROPS = {
+    confirmed: { type: 'boolean', description: '用户是否已明确确认这张变更单' },
+    approveProduction: { type: 'boolean', description: '仅生产店铺需要：控制台核对后的额外批准' },
+  };
+  const GATE_HINT =
+    '【受闸门约束的写操作】首次调用（不带 confirmed）只返回一张变更单并**拒绝执行**；'
+    + '把变更单交给用户确认、用户明确同意后，原样重试并带 confirmed: true 才放行。'
+    + '标记为「生产」的店铺还需要额外的人工批准（approveProduction: true）。'
+    + '放行后由你用 pageAgent 在卖家后台执行并回读确认。';
+
   const priceUpdate: BuiltInTool = {
     name: 'shop_price_update',
-    description:
-      '【受闸门约束的写操作】申请修改某个商品的价格。首次调用（不带 confirmed）只返回一张变更单并**拒绝执行**；'
-      + '把变更单交给用户确认、用户明确同意后，原样重试并带 confirmed: true 才放行。'
-      + '标记为「生产」的店铺还需要额外的人工批准（approveProduction: true）。'
-      + '放行后由你用 pageAgent 在卖家后台执行并回读确认。一次只改一个商品。',
+    description: `${GATE_HINT}本动作：改单个商品的售价。一次只改一个商品。`,
     inputSchema: {
       type: 'object',
       properties: {
         shopName: { type: 'string', description: '店铺名（必须已登记）' },
         sku: { type: 'string', description: '商品唯一标识（亚马逊 ASIN / 淘宝商品 ID / 卖家 SKU）' },
-        currentPrice: { type: 'number', description: '当前价格（用于变更单的「从什么改成什么」）' },
+        currentPrice: { type: 'number', description: '当前价格（变更单的「从什么改成什么」）' },
         newPrice: { type: 'number', description: '目标价格' },
         reason: { type: 'string', description: '为什么改（用户给的理由，禁止编造）' },
-        confirmed: { type: 'boolean', description: '用户是否已明确确认这张变更单' },
-        approveProduction: { type: 'boolean', description: '仅生产店铺需要：控制台核对后的额外批准' },
+        ...WRITE_GATE_PROPS,
       },
       required: ['shopName', 'sku', 'currentPrice', 'newPrice', 'reason'],
     },
@@ -431,40 +486,339 @@ export function makeShopTools(): BuiltInTool[] {
       const reason = String(args.reason || '').trim();
       const currentPrice = Number(args.currentPrice);
       const newPrice = Number(args.newPrice);
-      const list = await loadConnections();
-      const conn = list.find((c) => c.shopName === shopName);
+      const conn = await findConn(shopName);
       if (!conn) return textResult(`未找到店铺「${shopName}」—— 先用 conn_list 确认店铺名。`);
       if (!sku) return textResult('sku 必填（亚马逊 ASIN / 淘宝商品 ID / 卖家 SKU）。');
       if (!reason) return textResult('reason 必填 —— 改价理由必须来自用户，不要编造。');
       if (!Number.isFinite(currentPrice) || !Number.isFinite(newPrice) || newPrice <= 0) {
         return textResult('currentPrice / newPrice 必须是正数。');
       }
-      const isProd = isProductionTag(conn.tag);
       const delta = currentPrice > 0 ? ((newPrice - currentPrice) / currentPrice) * 100 : 0;
-      const order = [
-        '【改价变更单】',
-        `店铺：${conn.shopName}（${PLATFORM_BY_ID.get(conn.platform)?.label ?? conn.platform}${conn.site ? ' · ' + conn.site : ''}${isProd ? ' · ★生产' : ''}）`,
-        `商品：${sku}`,
-        `价格：${currentPrice} → ${newPrice}（${delta >= 0 ? '+' : ''}${delta.toFixed(2)}%）`,
-        `理由：${reason}`,
-        `回滚方式：改回 ${currentPrice}`,
-      ].join('\n');
-
-      if (args.confirmed !== true) {
-        await audit('write.price_update.denied', { connection: conn.shopName, detail: sku, ok: false, note: '未确认' });
-        return textResult(`${order}\n\n★ 未确认，**未执行**。请把这张变更单交给用户确认；用户明确同意后，原样重试并带 confirmed: true。`);
-      }
-      if (isProd && args.approveProduction !== true) {
-        await audit('write.price_update.denied', { connection: conn.shopName, detail: sku, ok: false, note: '生产店铺未额外批准' });
-        return textResult(`${order}\n\n★ 该店铺标记为「生产」，需要**额外人工批准**：请在控制台核对变更单与影响面后，再带 approveProduction: true 重试。`);
-      }
-      await audit('write.price_update.approved', {
-        connection: conn.shopName, detail: sku, ok: true, from: currentPrice, to: newPrice, reason,
+      return runWriteGate({
+        action: 'write.price_update', conn, title: '改价变更单', target: sku,
+        lines: [
+          `商品：${sku}`,
+          `价格：${currentPrice} → ${newPrice}（${delta >= 0 ? '+' : ''}${delta.toFixed(2)}%）`,
+          `理由：${reason}`,
+          `回滚方式：改回 ${currentPrice}`,
+        ],
+        exec: `用 pageAgent 在登录态的卖家后台把 ${sku} 的价格从 ${currentPrice} 改成 ${newPrice}。`,
+        confirmed: args.confirmed === true,
+        approveProduction: args.approveProduction === true,
       });
-      return textResult(
-        `${order}\n\n✓ 已批准（已记审计）。执行方式：用 pageAgent 在登录态的卖家后台把 ${sku} 的价格从 ${currentPrice} 改成 ${newPrice}，`
-        + `改完**回读页面确认已生效**再回报；若失败或价格不符，按回滚方式改回 ${currentPrice} 并如实说明。`,
-      );
+    },
+  };
+
+  const stockUpdate: BuiltInTool = {
+    name: 'shop_stock_update',
+    description: `${GATE_HINT}本动作：改单个商品的库存数量（含售罄下架式的置零）。一次只改一个商品。`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        shopName: { type: 'string', description: '店铺名（必须已登记）' },
+        sku: { type: 'string', description: '商品唯一标识' },
+        currentStock: { type: 'number', description: '当前库存' },
+        newStock: { type: 'number', description: '目标库存（0 = 售罄）' },
+        reason: { type: 'string', description: '为什么改（用户给的理由，禁止编造）' },
+        ...WRITE_GATE_PROPS,
+      },
+      required: ['shopName', 'sku', 'currentStock', 'newStock', 'reason'],
+    },
+    execute: async (args) => {
+      const shopName = String(args.shopName || '').trim();
+      const sku = String(args.sku || '').trim();
+      const reason = String(args.reason || '').trim();
+      const currentStock = Number(args.currentStock);
+      const newStock = Number(args.newStock);
+      const conn = await findConn(shopName);
+      if (!conn) return textResult(`未找到店铺「${shopName}」—— 先用 conn_list 确认店铺名。`);
+      if (!sku) return textResult('sku 必填。');
+      if (!reason) return textResult('reason 必填 —— 改库存理由必须来自用户，不要编造。');
+      if (!Number.isInteger(currentStock) || !Number.isInteger(newStock) || newStock < 0) {
+        return textResult('currentStock / newStock 必须是非负整数。');
+      }
+      return runWriteGate({
+        action: 'write.stock_update', conn, title: '改库存变更单', target: sku,
+        lines: [
+          `商品：${sku}`,
+          `库存：${currentStock} → ${newStock}${newStock === 0 ? '（置零 = 售罄下架）' : ''}`,
+          `理由：${reason}`,
+          `回滚方式：改回 ${currentStock}`,
+        ],
+        exec: `用 pageAgent 在登录态的卖家后台把 ${sku} 的可售库存从 ${currentStock} 改成 ${newStock}。`,
+        confirmed: args.confirmed === true,
+        approveProduction: args.approveProduction === true,
+      });
+    },
+  };
+
+  const listingPublish: BuiltInTool = {
+    name: 'shop_listing_publish',
+    description: `${GATE_HINT}本动作：商品**上下架**（online 上架 / offline 下架）。一次只处理一个商品。`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        shopName: { type: 'string', description: '店铺名（必须已登记）' },
+        sku: { type: 'string', description: '商品唯一标识' },
+        listing: { type: 'string', description: 'online = 上架 / offline = 下架' },
+        reason: { type: 'string', description: '为什么上下架（用户给的理由，禁止编造）' },
+        ...WRITE_GATE_PROPS,
+      },
+      required: ['shopName', 'sku', 'listing', 'reason'],
+    },
+    execute: async (args) => {
+      const shopName = String(args.shopName || '').trim();
+      const sku = String(args.sku || '').trim();
+      const reason = String(args.reason || '').trim();
+      const listing = String(args.listing || '').trim();
+      const conn = await findConn(shopName);
+      if (!conn) return textResult(`未找到店铺「${shopName}」—— 先用 conn_list 确认店铺名。`);
+      if (!sku) return textResult('sku 必填。');
+      if (listing !== 'online' && listing !== 'offline') return textResult('listing 只能是 online 或 offline。');
+      if (!reason) return textResult('reason 必填 —— 上下架理由必须来自用户，不要编造。');
+      const label = listing === 'online' ? '上架' : '下架';
+      return runWriteGate({
+        action: 'write.listing_publish', conn, title: `${label}变更单`, target: sku,
+        lines: [
+          `商品：${sku}`,
+          `动作：${label}`,
+          `理由：${reason}`,
+          `回滚方式：${listing === 'online' ? '改回下架' : '改回上架'}`,
+        ],
+        exec: `用 pageAgent 在登录态的卖家后台把 ${sku} ${label}（商品管理页的上下架开关）。`,
+        confirmed: args.confirmed === true,
+        approveProduction: args.approveProduction === true,
+      });
+    },
+  };
+
+  const listingCreate: BuiltInTool = {
+    name: 'shop_listing_create',
+    description:
+      `${GATE_HINT}本动作：**铺货上架** —— 在目标平台新建一个商品（1688 拿货铺到亚马逊/淘宝等）。`
+      + '必须先把标题/卖点/价格/规格/图片素材准备好并在变更单里列清；本工具只负责过闸门，不生成素材。一次只铺一个商品。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        shopName: { type: 'string', description: '目标店铺名（必须已登记）' },
+        sourceRef: { type: 'string', description: '货源标识（1688 商品链接 / 供应商货号），用于留档与溯源' },
+        title: { type: 'string', description: '拟用标题（已按平台规则写好）' },
+        price: { type: 'number', description: '拟售价' },
+        reason: { type: 'string', description: '为什么铺这个品（来自选品/货源分析的结论）' },
+        ...WRITE_GATE_PROPS,
+      },
+      required: ['shopName', 'sourceRef', 'title', 'price', 'reason'],
+    },
+    execute: async (args) => {
+      const shopName = String(args.shopName || '').trim();
+      const sourceRef = String(args.sourceRef || '').trim();
+      const title = String(args.title || '').trim();
+      const reason = String(args.reason || '').trim();
+      const price = Number(args.price);
+      const conn = await findConn(shopName);
+      if (!conn) return textResult(`未找到店铺「${shopName}」—— 先用 conn_list 确认店铺名。`);
+      if (!sourceRef || !title) return textResult('sourceRef（货源标识）与 title（拟用标题）必填。');
+      if (!reason) return textResult('reason 必填 —— 铺货理由必须来自选品/货源分析，不要编造。');
+      if (!Number.isFinite(price) || price <= 0) return textResult('price 必须是正数。');
+      return runWriteGate({
+        action: 'write.listing_create', conn, title: '铺货上架变更单', target: sourceRef,
+        lines: [
+          `货源：${sourceRef}`,
+          `拟用标题：${title}`,
+          `拟售价：${price}`,
+          `理由：${reason}`,
+          '回滚方式：下架并删除该新建商品（保留下架截图留档）',
+          '★ 前置检查：侵权/品牌授权/认证门槛（FCC/CE/CPC 等）已按 skill_1688_sourcing 筛过一遍',
+        ],
+        exec: `用 pageAgent 在登录态的卖家后台新建商品：标题用上面这条、售价 ${price}，按平台要求填写必填属性与图片。`,
+        confirmed: args.confirmed === true,
+        approveProduction: args.approveProduction === true,
+      });
+    },
+  };
+
+  const campaignApply: BuiltInTool = {
+    name: 'shop_campaign_apply',
+    description:
+      `${GATE_HINT}本动作：**报名平台活动**（大促/日常资源位）。`
+      + '活动报名往往是多商品一次提交，所以本工具允许传商品列表，但**列表必须与用户逐项核对过**；'
+      + '报名前先算活动价下的到手毛利（低于成本的要显式标注并让用户确认）。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        shopName: { type: 'string', description: '店铺名（必须已登记）' },
+        campaign: { type: 'string', description: '活动名称与档期（如「双11 预热场 11.01-11.03」）' },
+        skus: { type: 'string', description: '参与商品，多个用英文逗号分隔' },
+        dealPrice: { type: 'number', description: '活动价（全部商品同一价时填这个；不同价请在 reason 里逐一说明）' },
+        reason: { type: 'string', description: '为什么报名（含到手毛利结论）' },
+        ...WRITE_GATE_PROPS,
+      },
+      required: ['shopName', 'campaign', 'skus', 'reason'],
+    },
+    execute: async (args) => {
+      const shopName = String(args.shopName || '').trim();
+      const campaign = String(args.campaign || '').trim();
+      const skus = String(args.skus || '').trim();
+      const reason = String(args.reason || '').trim();
+      const dealPrice = Number(args.dealPrice);
+      const conn = await findConn(shopName);
+      if (!conn) return textResult(`未找到店铺「${shopName}」—— 先用 conn_list 确认店铺名。`);
+      if (!campaign || !skus) return textResult('campaign（活动与档期）与 skus（参与商品）必填。');
+      if (!reason) return textResult('reason 必填 —— 报名理由里要含活动价下的到手毛利结论。');
+      const skuList = skus.split(',').map((s) => s.trim()).filter(Boolean);
+      if (!skuList.length) return textResult('skus 解析后为空。');
+      return runWriteGate({
+        action: 'write.campaign_apply', conn, title: '活动报名变更单', target: skuList.join(','),
+        lines: [
+          `活动：${campaign}`,
+          `参与商品（${skuList.length} 个）：${skuList.join('、')}`,
+          Number.isFinite(dealPrice) && dealPrice > 0 ? `活动价：${dealPrice}` : '活动价：见理由（多商品不同价）',
+          `理由与毛利结论：${reason}`,
+          '回滚方式：在活动报名截止前撤销报名；已生效的活动价需在活动结束后改回原价',
+        ],
+        exec: `用 pageAgent 在登录态的卖家后台「营销/活动」里报名 ${campaign}，按变更单逐个勾选商品并填写活动价。`,
+        confirmed: args.confirmed === true,
+        approveProduction: args.approveProduction === true,
+      });
+    },
+  };
+
+  const replySend: BuiltInTool = {
+    name: 'shop_reply_send',
+    description:
+      `${GATE_HINT}本动作：**回复买家消息/站内信**（客服与售后）。`
+      + '回复文案必须逐字写进变更单 —— 发出的内容是用户确认过的那一份，不允许获批后自行改写。'
+      + '涉及退款、补偿、赔付、承诺时效的，必须在变更单里显式标注「需人工处理」，本工具不代做资金动作。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        shopName: { type: 'string', description: '店铺名（必须已登记）' },
+        threadId: { type: 'string', description: '会话/工单标识（买家名或会话号），用于定位与审计' },
+        replyText: { type: 'string', description: '拟发送的完整回复文案（会原样发出）' },
+        reason: { type: 'string', description: '为什么这样回（对应用户的诉求与口径）' },
+        ...WRITE_GATE_PROPS,
+      },
+      required: ['shopName', 'threadId', 'replyText', 'reason'],
+    },
+    execute: async (args) => {
+      const shopName = String(args.shopName || '').trim();
+      const threadId = String(args.threadId || '').trim();
+      const replyText = String(args.replyText || '');
+      const reason = String(args.reason || '').trim();
+      const conn = await findConn(shopName);
+      if (!conn) return textResult(`未找到店铺「${shopName}」—— 先用 conn_list 确认店铺名。`);
+      if (!threadId) return textResult('threadId 必填（否则发错人）。');
+      if (!replyText.trim()) return textResult('replyText 必填 —— 要发送的文案不能为空。');
+      if (!reason) return textResult('reason 必填 —— 回复口径必须来自用户，不要编造。');
+      const risky = /退款|退货|赔付|补偿|赔偿|承诺|到账|免单/.test(replyText);
+      return runWriteGate({
+        action: 'write.reply_send', conn, title: '回复买家变更单', target: threadId,
+        lines: [
+          `对象：${threadId}`,
+          `拟发送全文：\n${replyText}`,
+          `口径依据：${reason}`,
+          '回滚方式：无法撤回已发送消息 —— 若发错，需另发一条更正并说明',
+          ...(risky ? ['★ 文案涉及退款/补偿/承诺时效：**需人工处理**资金与承诺动作，本工具只发消息'] : []),
+        ],
+        exec: `用 pageAgent 在登录态的客服/站内信里找到 ${threadId}，把变更单里的全文**原样**发出（不要改写）。`,
+        confirmed: args.confirmed === true,
+        approveProduction: args.approveProduction === true,
+      });
+    },
+  };
+
+  const orderPlace: BuiltInTool = {
+    name: 'shop_order_place',
+    description:
+      `${GATE_HINT}本动作：**在 1688 下采购单**（货源采购）。`
+      + '★ 硬边界：本工具只批准"走到提交订单为止"——**付款必须由用户人工完成**，'
+      + '不允许代替输入支付密码、短信验证码或走免密支付。'
+      + '下单前必须已确认货源合规（侵权/授权/认证）与到手差价。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        shopName: { type: 'string', description: '用于采购的店铺连接名（平台通常是 1688）' },
+        offerRef: { type: 'string', description: '1688 商品链接或报价单号' },
+        qty: { type: 'number', description: '采购数量' },
+        unitPrice: { type: 'number', description: '单价（阶梯价里取你实际能拿的那档）' },
+        reason: { type: 'string', description: '为什么下这一单（含到手差价与合规结论）' },
+        ...WRITE_GATE_PROPS,
+      },
+      required: ['shopName', 'offerRef', 'qty', 'unitPrice', 'reason'],
+    },
+    execute: async (args) => {
+      const shopName = String(args.shopName || '').trim();
+      const offerRef = String(args.offerRef || '').trim();
+      const reason = String(args.reason || '').trim();
+      const qty = Number(args.qty);
+      const unitPrice = Number(args.unitPrice);
+      const conn = await findConn(shopName);
+      if (!conn) return textResult(`未找到店铺「${shopName}」—— 先用 conn_list 确认店铺名。`);
+      if (!offerRef) return textResult('offerRef（1688 商品链接/报价单号）必填。');
+      if (!reason) return textResult('reason 必填 —— 下单理由里要含到手差价与合规结论。');
+      if (!Number.isInteger(qty) || qty <= 0) return textResult('qty 必须是正整数。');
+      if (!Number.isFinite(unitPrice) || unitPrice <= 0) return textResult('unitPrice 必须是正数。');
+      return runWriteGate({
+        action: 'write.order_place', conn, title: '采购下单变更单', target: offerRef,
+        lines: [
+          `货源：${offerRef}`,
+          `数量：${qty} × 单价 ${unitPrice}（合计约 ${(qty * unitPrice).toFixed(2)}）`,
+          `理由与合规结论：${reason}`,
+          '回滚方式：付款前可取消订单；已付款需走退款流程（人工）',
+          '★ 硬边界：**付款必须由用户人工完成** —— 不允许代输支付密码/验证码，不走免密支付',
+        ],
+        exec: `用 pageAgent 在 1688 打开 ${offerRef}，加入 ${qty} 件、核对单价 ${unitPrice}，**走到提交订单页为止就停下**，把订单页交给用户人工付款。`,
+        confirmed: args.confirmed === true,
+        approveProduction: args.approveProduction === true,
+      });
+    },
+  };
+
+  // ---------- SP-API：凭据连通性检查（只读，不产生任何写操作） ----------
+  //
+  // 写操作目前靠 pageAgent 点 DOM —— 能用但脆弱（改版/风控/限流）。亚马逊有官方 API，
+  // 配好凭据后调它远比点页面稳。这个工具的价值是：**在真正需要它之前就能验凭据**，
+  // 而不是等某次抓数失败才发现配额或授权有问题。
+  const spApiCheckTool: BuiltInTool = {
+    name: 'shop_sp_api_check',
+    description:
+      '检查某个**亚马逊**店铺的 SP-API 凭据是否可用：用连接里存的凭据换 LWA token、SigV4 签名、调用一次官方接口。'
+      + '凭据没配会明确说未配置；配置有误会指出**是哪一步**失败（换 token / 签名 / 接口被拒）。只读，不产生写操作。',
+    inputSchema: {
+      type: 'object',
+      properties: { shopName: { type: 'string', description: '亚马逊店铺连接名' } },
+      required: ['shopName'],
+    },
+    execute: async (args) => {
+      const shopName = String(args.shopName || '').trim();
+      const conn = await findConn(shopName);
+      if (!conn) return textResult(`未找到店铺「${shopName}」—— 先用 conn_list 确认店铺名。`);
+      if (conn.platform !== 'amazon') {
+        return textResult(`「${conn.shopName}」的平台是 ${conn.platform} —— SP-API 只适用于亚马逊店铺。`);
+      }
+      if (!conn.secretEnc) {
+        return textResult('该店铺未配置凭据。SP-API 需要在编辑弹窗的「API 凭据」里填一段 JSON（clientId / clientSecret / refreshToken / awsAccessKeyId / awsSecretAccessKey，可选 awsSessionToken 与 region=na|eu|fe）；未配置时走浏览器流程即可。');
+      }
+      let raw = '';
+      try {
+        raw = decrypt(conn.secretEnc);
+      } catch (e) {
+        return textResult(`凭据解密失败：${(e as Error).message}`);
+      }
+      const creds = parseSpApiCreds(raw);
+      if (!creds) {
+        return textResult('凭据格式不对：需要 JSON，且至少含 clientId / clientSecret / refreshToken（缺 IAM 的 AK/SK 时会在签名那一步失败）。');
+      }
+      const r = await spApiCheck(creds);
+      if (r.ok) return textResult(`✓ SP-API 可用。${r.note}`);
+      const stepLabel: Record<string, string> = {
+        creds: '凭据未配置',
+        lwa: 'LWA 换 token 失败（clientId / clientSecret / refreshToken 有误，或应用尚未授权）',
+        sigv4: 'SigV4 签名失败（缺 IAM 的 awsAccessKeyId / awsSecretAccessKey）',
+        api: '接口调用被拒（IAM 角色未授权 SP-API / 站点不对 / 触发限流）',
+      };
+      await audit('spapi.check.failed', { connection: conn.shopName, ok: false, note: r.step });
+      return textResult(`✗ SP-API 不可用 —— 卡在「${stepLabel[r.step] ?? r.step}」：${r.reason}`);
     },
   };
 
@@ -489,7 +843,12 @@ export function makeShopTools(): BuiltInTool[] {
     },
   };
 
-  return [connList, connCreate, connUpdate, connDelete, connCheck, priceUpdate, writeLog];
+  return [
+    connList, connCreate, connUpdate, connDelete, connCheck,
+    spApiCheckTool,
+    priceUpdate, stockUpdate, listingPublish, listingCreate, campaignApply, replySend, orderPlace,
+    writeLog,
+  ];
 }
 
 export const shopOpsManifest: PluginManifest = {
@@ -504,7 +863,14 @@ export const shopOpsManifest: PluginManifest = {
   //   （未确认 / 生产未额外批准一律拒绝执行），不依赖调用方自觉。
   permissions: ['network', 'shop-write'],
   contributes: {
-    tools: ['conn_list', 'conn_create', 'conn_update', 'conn_delete', 'conn_check', 'shop_price_update', 'shop_write_log'],
+    tools: [
+      'conn_list', 'conn_create', 'conn_update', 'conn_delete', 'conn_check',
+      'shop_sp_api_check',
+      // 七个受闸门约束的写动作（未确认一律拒绝执行）
+      'shop_price_update', 'shop_stock_update', 'shop_listing_publish', 'shop_listing_create',
+      'shop_campaign_apply', 'shop_reply_send', 'shop_order_place',
+      'shop_write_log',
+    ],
     // ★ 与 ops-shell / sec-lab 同口径：不贡献 sidebar ——「更多」里的分组与顶栏模式下拉
     //   是同一个入口，重复（用户拍板 2026-10-16）。模式靠下面的 routes 拿路由。
     routes: [
