@@ -428,7 +428,7 @@ export function makeShopTools(): BuiltInTool[] {
   const findConn = async (shopName: string): Promise<StoredConnection | undefined> =>
     (await loadConnections()).find((c) => c.shopName === shopName);
 
-  const runWriteGate = async (req: WriteReq): Promise<string> => {
+  const runWriteGate = async (req: WriteReq): Promise<McpCallResult> => {
     const platform = PLATFORM_BY_ID.get(req.conn.platform);
     const isProd = isProductionTag(req.conn.tag);
     const order = [
