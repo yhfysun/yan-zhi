@@ -504,6 +504,14 @@ try {
   checkAndQuarantine(dbPath);
 } catch (e) { logger.warn('[db-integrity] 自检流程异常（不影响启动）:', e); }
 
+// ★ 2026-10-16 加密凭证自检：把「库里有解不开的密文」在**启动时**就报出来。
+//   起因见 services/credential-audit.ts 文件头：dev→生产库逐表合并只搬数据行、主密钥行被跳过，
+//   症状是运维「测试连接」报 Unsupported state or unable to authenticate data 且用户无从下手。
+//   只报不修、永不抛错。顺序必须在 db-integrity 之后 —— 坏库先被隔离，再谈里面的凭证。
+try {
+  logCredentialAudit(db);
+} catch (e) { logger.warn('[credential-audit] 自检流程异常（不影响启动）:', e); }
+
 // 启动时回收上次进程遗留的运行/任务：llm_task 与 workflow_run 的 running 状态不会自己结束，
 // 不回收会永远卡在 running。随后补投遗留的工作流反写 —— 顺序不能反：先标 failed，补投才有失败可写。
 try {
