@@ -61,22 +61,28 @@ describe('上传：先扫描成队列，再排队执行', () => {
     expect(SRC, '没把截断标记灌进任务').toMatch(/filesTruncated: r\.data\.planTruncated/);
   });
 
-  it('★ 待执行 = 队列里还没轮到的那些（按 doneCount 切，且跳过正在传的那一个）', () => {
+  it('★ 待执行 = 队列里还没轮到的那些（扣掉已完成与**在飞**的，一个都不能重复计）', () => {
     const fn = SRC.match(/const pendingFiles = computed\([\s\S]*?\n\}\);/)?.[0] ?? '';
     expect(fn, '找不到 pendingFiles').not.toBe('');
     expect(fn, '没限定上传任务').toContain("t.kind !== 'upload'");
     expect(fn, '没限定进行中').toContain("t.state !== 'running'");
-    expect(fn, '切片起点不对（会把正在传的那个也算进待执行）').toMatch(/t\.files\.slice\(t\.doneCount \+ 1\)/);
+    // ★ 少了 activeFiles.length 这一截，正在传的文件会被同时算进"待执行"（看着像重复排队）
+    expect(fn, '切片没扣掉在飞的文件数').toMatch(/t\.files\.slice\(t\.doneCount \+ t\.activeFiles\.length\)/);
+  });
+
+  it('★ 并发窗口：展示"正在传 N 个"以及是哪几个', () => {
+    expect(SRC, '任务模型缺 activeFiles').toMatch(/activeFiles: string\[\]/);
+    expect(SRC, 'SSE 帧没落到 activeFiles').toMatch(/Array\.isArray\(d\.activeFiles\)/);
+    expect(SRC, '没展示在飞文件数').toMatch(/正在传 \{\{ t\.activeFiles\.length \}\} 个/);
+    // 名字太长只报前几个，title 里给全量
+    expect(SRC).toMatch(/function activeNames\(t: SftpTask\)/);
+    expect(SRC).toMatch(/:title="t\.activeFiles\.join\('\\n'\)"/);
   });
 
   it('待执行清单有渲染上限（几千个文件不能全塞进 DOM）', () => {
     expect(SRC).toMatch(/const PENDING_ROWS = \d+/);
     expect(SRC).toMatch(/slice\(0, PENDING_ROWS\)/);
     expect(SRC, '超出部分没有收尾提示').toContain('pendingMore');
-  });
-
-  it('正在执行里显示"正在传哪个文件"', () => {
-    expect(SRC).toMatch(/正在传输：\{\{ basename\(t\.currentFile\) \}\}/);
   });
 });
 

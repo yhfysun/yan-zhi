@@ -21,7 +21,8 @@ vi.mock('../src/utils/crypto.js', () => ({
 }));
 
 import {
-  MAX_RECURSIVE_DELETE_ENTRIES, auditPathTail, opsShellModule, removeRemoteRecursive,
+  MAX_RECURSIVE_DELETE_ENTRIES, MAX_UPLOAD_CONCURRENCY, auditPathTail, opsShellModule,
+  removeRemoteRecursive, runWithConcurrency,
 } from '../src/plugins/ops-shell.js';
 
 // ---------- A. 远程递归删除 ----------
@@ -216,6 +217,76 @@ describe('auditPathTail · 审计详情里的路径样本', () => {
   it('★ 总长限制：单条极长路径不会被无限拼接', () => {
     const long = Array.from({ length: 12 }, (_, i) => `/${'x'.repeat(200)}${i}`);
     expect(auditPathTail(long).length).toBeLessThan(600);
+  });
+});
+
+// ---------- A3. 上传的并发闸门（用户要求："1000 个文件不能同时传"）----------
+
+describe('runWithConcurrency · 有界并发窗口', () => {
+  it('★ 同时在飞的数量永不超过上限，且每个条目恰好跑一次', async () => {
+    const items = Array.from({ length: 17 }, (_, i) => i);
+    const seen: number[] = [];
+    let flying = 0;
+    let peak = 0;
+    await runWithConcurrency(items, 4, async (n) => {
+      flying += 1;
+      peak = Math.max(peak, flying);
+      await new Promise((r) => setTimeout(r, 1));
+      seen.push(n);
+      flying -= 1;
+    });
+    expect(peak, '同时跑起来的数量超了上限').toBeLessThanOrEqual(4);
+    expect(peak, '根本没有并发（退化成串行了）').toBeGreaterThan(1);
+    expect(seen.sort((a, b) => a - b), '有条目漏跑或多跑').toEqual(items);
+  });
+
+  it('上限大于条目数时按条目数起 worker（不会空转、也不会漏）', async () => {
+    const seen: number[] = [];
+    let peak = 0;
+    let flying = 0;
+    await runWithConcurrency([1, 2], 10, async (n) => {
+      flying += 1; peak = Math.max(peak, flying);
+      await new Promise((r) => setTimeout(r, 1));
+      flying -= 1; seen.push(n);
+    });
+    expect(peak).toBeLessThanOrEqual(2);
+    expect(seen.sort()).toEqual([1, 2]);
+  });
+
+  it('★ 单个条目出错 → 不再领新活，全部收尾后抛**第一个**错误', async () => {
+    // 语义很关键：出错就停发新活（在飞的让它跑完），否则会出现"任务已标失败、后台还在传"
+    const started: number[] = [];
+    let flying = 0;
+    let peak = 0;
+    await expect(runWithConcurrency(Array.from({ length: 20 }, (_, i) => i), 3, async (n) => {
+      started.push(n);
+      flying += 1; peak = Math.max(peak, flying);
+      await new Promise((r) => setTimeout(r, 1));
+      flying -= 1;
+      if (n === 1) throw new Error('boom');
+    })).rejects.toThrow('boom');
+    expect(started, '出错后还在继续领新活').toContain(1);
+    expect(started.length, '出错后把整批都跑完了').toBeLessThan(20);
+  });
+
+  it('空清单直接返回（不 throw、不空转）', async () => {
+    let called = 0;
+    await expect(runWithConcurrency([], 4, async () => { called += 1; })).resolves.toBeUndefined();
+    expect(called).toBe(0);
+  });
+
+  it('★ 上限被改成 0 / 负数 / NaN 时按 1 串行跑，绝不"什么都不做"', async () => {
+    // 配置是用户可手改的（插件配置项），改坏了不能变成"上传卡住不动"
+    for (const bad of [0, -3, Number.NaN]) {
+      const seen: number[] = [];
+      await runWithConcurrency([1, 2, 3], bad, async (n) => { seen.push(n); });
+      expect(seen, `limit=${String(bad)} 时没跑完`).toEqual([1, 2, 3]);
+    }
+  });
+
+  it('并发上限常量是正的、且有合理上界（单条 SFTP 通道开不了太多路）', () => {
+    expect(MAX_UPLOAD_CONCURRENCY).toBeGreaterThan(0);
+    expect(MAX_UPLOAD_CONCURRENCY).toBeLessThanOrEqual(64);
   });
 });
 

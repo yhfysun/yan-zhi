@@ -48,8 +48,13 @@
                     :stroke-width="4"
                     :show-text="false"
                   />
-                  <div v-if="t.kind === 'upload' && t.currentFile" class="stp-cur" :title="t.currentFile">
-                    正在传输：{{ basename(t.currentFile) }}
+                  <!-- 并发窗口：同时在飞的那几个文件（最多 上传并发数 个） -->
+                  <div
+                    v-if="t.kind === 'upload' && t.activeFiles.length"
+                    class="stp-cur"
+                    :title="t.activeFiles.join('\n')"
+                  >
+                    正在传 {{ t.activeFiles.length }} 个：{{ activeNames(t) }}
                   </div>
                   <!-- 删除任务：实时删除明细 -->
                   <div v-if="t.kind === 'delete' && t.deleted.length" class="stp-del">
@@ -411,6 +416,12 @@ interface SftpTask {
   files: { name: string; size: number }[];
   /** 清单是否被后端截断（超出 MAX_UPLOAD_PLAN_ITEMS 时只回前若干条） */
   filesTruncated: boolean;
+  /**
+   * **正在传输的文件**（后端有界并发窗口里同时在飞的那几个，最多 uploadConcurrency 个）。
+   * 「待执行」要从队列的第 `doneCount + activeFiles.length` 个才开始 —— 少减这一截，
+   * 正在传的文件会被同时算进"待执行"，看着就像重复排队。
+   */
+  activeFiles: string[];
   error?: string;
 }
 
@@ -440,17 +451,24 @@ const taskButtonTitle = computed(() => {
   return tasks.value.length ? `任务（${tasks.value.length}）` : '任务';
 });
 
-/** 待执行 = 上传任务里**还没轮到**的文件（见 SftpTask.files 注释） */
+/** 待执行 = 上传任务里**还没轮到**的文件（见 SftpTask.files / activeFiles 注释） */
 const pendingFiles = computed(() => {
   const out: Array<{ name: string; size: number }> = [];
   for (const t of tasks.value) {
     if (t.kind !== 'upload' || t.state !== 'running' || !t.files.length) continue;
-    out.push(...t.files.slice(t.doneCount + 1));
+    // 已完成 doneCount 个、正在飞 activeFiles.length 个，剩下的才在排队
+    out.push(...t.files.slice(t.doneCount + t.activeFiles.length));
   }
   return out;
 });
 const pendingRows = computed(() => pendingFiles.value.slice(0, PENDING_ROWS));
 const pendingMore = computed(() => Math.max(0, pendingFiles.value.length - PENDING_ROWS));
+
+/** 正在传输的文件名摘要（并发窗口里同时在飞的几个；太长只报前几个） */
+function activeNames(t: SftpTask): string {
+  const names = t.activeFiles.map((p) => basename(p));
+  return names.length > 3 ? `${names.slice(0, 3).join('、')}…` : names.join('、');
+}
 
 /** 明细行：最近删的排最前（跟着看最新），只渲染末尾 DELETED_ROWS 条 */
 function delRows(t: SftpTask): string[] {
@@ -1079,6 +1097,7 @@ async function downloadNames(names: string[], destDir?: string) {
       transferred: 0, total: opts.totalBytes ?? 0, doneCount: 0, totalCount,
       currentFile: '', deletedCount: 0, deleted: [], expanded: false,
       files: opts.files ?? [], filesTruncated: !!opts.filesTruncated,
+      activeFiles: [],
     }];
     // 起了任务就把弹窗打开：用户要的是"扫描后排队能看见"，藏在图标后面等于没有
     tasksOpen.value = true;
@@ -1096,6 +1115,7 @@ async function downloadNames(names: string[], destDir?: string) {
     if (typeof d.doneCount === 'number') t.doneCount = d.doneCount;
     if (typeof d.totalCount === 'number') t.totalCount = d.totalCount;
     if (typeof d.currentFile === 'string') t.currentFile = d.currentFile;
+    if (Array.isArray(d.activeFiles)) t.activeFiles = (d.activeFiles as unknown[]).filter((x): x is string => typeof x === 'string');
     if (typeof d.error === 'string' && d.error) t.error = d.error;
     if (t.kind === 'delete' && typeof d.deletedCount === 'number') {
       const delta = d.deletedCount - t.deletedCount;

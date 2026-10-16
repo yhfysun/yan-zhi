@@ -66,6 +66,9 @@ export const opsShellManifest: PluginManifest = {
       idleTimeoutMs: { type: 'number', description: 'SSH 会话空闲回收（ms）', default: 600000 },
       maxAuditEntries: { type: 'number', description: '审计记录上限', default: 500 },
       recordSessions: { type: 'boolean', description: '录制终端会话（asciinema .cast，可在「录像」页回放）', default: true },
+      // 同时上传的文件数上限（2026-10-16，用户要求）：上传是先扫描成队列再排队传，
+      // 所以要有个"同时在飞几个"的闸门 —— 其余的在队列里候补，传完一个补一个。
+      uploadConcurrency: { type: 'number', description: '同时上传的文件数上限（1–32，其余排队候补；默认 10）', default: 10 },
       knownHostMode: { type: 'string', description: '主机密钥校验：tofu=首次记录后必须一致（默认）/ strict=只认已记录的 / off=不校验', default: 'tofu' },
     },
   },
@@ -677,6 +680,12 @@ export interface SftpJob {
   totalCount: number;
   /** 正在处理的条目路径（上传/下载），删除任务为空（它有 deleted 明细） */
   currentFile: string;
+  /**
+   * **正在传输的文件**（上传任务；有界并发下最多 uploadConcurrency 个）。
+   * ★ 为什么不能只有 currentFile：上传是"扫描成队列 → 并发窗口里传"，
+   *   界面既要显示"正在传哪几个"，也要按 activeFiles.length 算出"待执行从队列第几个开始"。
+   */
+  activeFiles: string[];
   /** 删除任务：累计已删条目数（不受保留上限影响） */
   deletedCount: number;
   /** 删除任务：最近删掉的路径（保留上限见 MAX_JOB_DELETED_KEEP） */
@@ -728,6 +737,8 @@ function jobPayload(j: SftpJob): Record<string, unknown> {
     doneCount: j.doneCount,
     totalCount: j.totalCount,
     currentFile: j.currentFile,
+    activeFiles: j.activeFiles,
+    activeCount: j.activeFiles.length,
     deletedCount: j.deletedCount,
     deleted: j.deleted.slice(-50),
     error: j.error,
@@ -864,6 +875,45 @@ function safeFileSize(p: string): number {
 }
 
 /**
+ * 有界并发跑一批任务：**最多 limit 个在飞**，其余排队候补（谁先完成谁领下一个）。
+ *
+ * ★ 为什么单独抽出来：这是"上传先扫描成队列、再按并发窗口排队传"的核心调度 ——
+ *   用户明确要求「1000 个大文件不能同时上传，要有上限，其它的在待上传里，上传成功了就候补」。
+ *   抽成纯函数就能用单测直接钉住三条契约：在飞数永不超过上限、每个条目恰好跑一次、
+ *   出错后不再领新活并把第一个错误抛出去。
+ *
+ * ★ 出错语义：单个条目失败就**不再领新活**（在飞的让它跑完，避免"任务已标失败、后台还在传"），
+ *   全部收尾后抛出第一个错误 —— 调用方据此把任务标成 failed。
+ *   （不直接用 Promise.all：那样会留下仍在跑的 worker，任务状态就对不上了。）
+ */
+export async function runWithConcurrency<T>(
+  items: T[],
+  limit: number,
+  worker: (item: T, index: number) => Promise<void>,
+): Promise<void> {
+  const total = items.length;
+  if (!total) return;
+  // 收进 [1, total]：limit 传 0/负数/NaN 时按 1 串行跑，绝不出现"零个 worker 什么都不做"
+  const workers = Math.max(1, Math.min(Math.floor(Number(limit)) || 1, total));
+  let next = 0;
+  let firstError: unknown = null;
+  const run = async (): Promise<void> => {
+    while (!firstError) {
+      const i = next++;
+      if (i >= total) return;
+      try {
+        await worker(items[i], i);
+      } catch (e) {
+        if (!firstError) firstError = e;
+        return;
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: workers }, run));
+  if (firstError) throw firstError;
+}
+
+/**
  * 展开上传清单：目录递归成文件列表，保留目录结构；返回总字节数（进度基数）。
  * `files[].rel` 为相对目标目录的路径前缀（缺省取本地 basename）；路径不存在会抛错，由调用方转 400。
  */
@@ -919,6 +969,27 @@ async function audit(action: string, opts: { connection?: string; detail?: strin
 
 /** 是否录制终端会话。默认开（对齐堡垒机的合规口径），可在插件配置里关掉 */
 let recordSessions = true;
+
+/**
+ * **同时上传的文件数上限**（2026-10-16，用户要求）。
+ *
+ * 背景：上传现在是"先扫描成队列、再排队传"。用户的原话是「1000 个大文件不能 1000 个同时上传，
+ * 肯定有个最大限制，比如 10 个 20 个同时上传，其它的就在待上传里，上传成功了就候补」——
+ * 于是有了这个闸门：同时在飞不超过它，其余在队列里候补，传完一个补一个。
+ *
+ * 取值理由：SFTP 是同一条 SSH 通道上多路请求，开太多会被服务端限流、反而更慢；
+ * 家用/办公带宽下 10 路已足够喂满链路。可在插件配置里调（ops-shell.uploadConcurrency）。
+ */
+let uploadConcurrency = 10;
+/** 上限（含配置校验用）：32 已经远超单条 SFTP 通道的合理并发 */
+export const MAX_UPLOAD_CONCURRENCY = 32;
+
+/** 把配置里的并发数收进合法区间（配置可能被手改成 0/负数/字符串） */
+function normalizeConcurrency(v: unknown): number {
+  const n = Math.floor(Number(v));
+  if (!Number.isFinite(n) || n < 1) return 10;
+  return Math.min(MAX_UPLOAD_CONCURRENCY, n);
+}
 
 async function loadRecordings(): Promise<RecordingMeta[]> {
   if (!pluginStorage) return [];
@@ -2021,6 +2092,8 @@ const opsShellModule: PluginModule = {
     pluginStorage = ctx.storage;
     // 录制开关：默认开（对齐堡垒机的合规口径），可在插件管理页关掉
     recordSessions = (ctx.config as { recordSessions?: boolean } | undefined)?.recordSessions !== false;
+    // 同时上传的文件数上限（其余排队候补）：配置可能被手改坏，统一收进 1–32
+    uploadConcurrency = normalizeConcurrency((ctx.config as { uploadConcurrency?: unknown } | undefined)?.uploadConcurrency);
     // 主机密钥校验策略：默认 tofu（首次记录、之后必须一致）。见 ops-known-hosts.ts
     const hk = (ctx.config as { knownHostMode?: string } | undefined)?.knownHostMode;
     hostKeyMode = hk === 'strict' || hk === 'off' ? hk : 'tofu';
@@ -2460,6 +2533,7 @@ const opsShellModule: PluginModule = {
           transferred: 0, total: opts.totalBytes || 1,
           doneCount: 0, totalCount: opts.totalCount,
           currentFile: '',
+          activeFiles: [],
           deletedCount: 0, deleted: [],
         });
         return jobId;
@@ -2802,25 +2876,44 @@ const opsShellModule: PluginModule = {
         void (async () => {
           try {
             const ensuredDirs = new Set<string>([destDir]);
-            let done = 0;
-            let idx = 0;
-            for (const p of plan) {
+            let doneBytes = 0;
+            let doneCount = 0;
+            /** 在飞文件的字节进度：plan 下标 → 已传字节。
+             *  ★ 并发下**必须逐文件记账**：串行时代码里那个"done + 当前文件已传"的写法
+             *    在 N 路并飞时会漏算（done 只反映已完成，另外 N-1 个的字节全丢了）。 */
+            const inFlight = new Map<number, number>();
+            const syncProgress = () => {
+              const j = sftpJobs.get(jobId);
+              if (!j) return;
+              let flying = 0;
+              for (const v of inFlight.values()) flying += v;
+              j.transferred = doneBytes + flying;
+              j.doneCount = doneCount;
+              j.activeFiles = [...inFlight.keys()].map((k) => plan[k].dest);
+              j.currentFile = j.activeFiles[0] ?? '';
+            };
+            await runWithConcurrency(plan, uploadConcurrency, async (p, i) => {
               const parent = p.dest.slice(0, p.dest.lastIndexOf('/'));
               if (parent && !ensuredDirs.has(parent)) {
-                await ensureRemoteDir(got.sftp, parent);
+                // 并发下多个 worker 可能同时想建同一级父目录 —— mkdir 已存在会报错并被
+                // ensureRemoteDir 忽略，这里只是少建几次；Set 让常见情况不重复发请求。
                 ensuredDirs.add(parent);
+                await ensureRemoteDir(got.sftp, parent);
               }
-              const j0 = sftpJobs.get(jobId);
-              if (j0) { j0.currentFile = p.dest; j0.doneCount = idx; }
-              await sftpFastPut(got.sftp, p.src, p.dest, (transferred) => {
-                const j = sftpJobs.get(jobId);
-                if (j) j.transferred = done + transferred;
-              });
-              done += p.size;
-              idx += 1;
-              const j1 = sftpJobs.get(jobId);
-              if (j1) { j1.transferred = done; j1.doneCount = idx; }
-            }
+              inFlight.set(i, 0);
+              syncProgress();
+              try {
+                await sftpFastPut(got.sftp, p.src, p.dest, (transferred) => {
+                  inFlight.set(i, transferred);
+                  syncProgress();
+                });
+              } finally {
+                inFlight.delete(i);
+              }
+              doneBytes += p.size;
+              doneCount += 1;
+              syncProgress();
+            });
             await audit('sftp.upload', { connection: got.conn.name, detail: `${plan.length} 个文件 → ${destDir}`, ok: true });
             finishJob(jobId, 'done');
           } catch (e) {
