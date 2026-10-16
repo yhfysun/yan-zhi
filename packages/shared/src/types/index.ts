@@ -152,6 +152,18 @@ export interface Conversation {
    * updatedAt，用它就会变成"改个名也算活跃"，14 天计时被静默重置。
    */
   lastActivityAt?: number | null;
+  /**
+   * 会话来源标记（2026-10-16）：空 = 普通会话（用户从对话页新建，或存量会话）；
+   * `'browser-page'` = 浏览器页面对话（/browser 空间每 tab 一个）。
+   *
+   * ★ 取值是**白名单**，实现只有一处：`@yan-zhi/core` 的 `db/conversation-source.ts`
+   *   （前端建会话的写入口与后端列表过滤都从那里取，别在这里再列一遍字面量）。
+   * ★ 不写成 TS 联合类型：多一个来源就要动 shared 这个上下游都依赖的包，
+   *   而"加一个来源"本该只改 core 一个文件。
+   */
+  source?: string | null;
+  /** 来源附加信息（页面对话：建这条会话时所在页面的地址 / 站点 / 归属空间） */
+  sourceMeta?: { url?: string; host?: string; scope?: string } | null;
 }
 
 /** 会话归属的生命周期状态：正常 / 已归档 / 已在回收站 */

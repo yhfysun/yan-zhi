@@ -13,6 +13,8 @@ import { writeTaskPlanFile } from '../services/task-plan-file.js';
 import { WF_TOOL_PREFIX, MAX_WF_TOOLS_PER_CONVERSATION } from '../services/workflow-tool-registry.js';
 import { buildSystemPromptForBackend, buildToolsForBackend, setRunningTaskPermissionMode, compressConversationNow } from '../llm-task-manager.js';
 import { estimateTokens } from '@yan-zhi/shared';
+// 会话来源标记：白名单与规范化只有 core 一处实现（写入与过滤共用，免得上游各自写字面量）
+import { normalizeConversationSource, normalizeSourceMeta, sourceFilterClause } from '@yan-zhi/core';
 
 const router = Router();
 router.use(authMiddleware);
@@ -50,19 +52,23 @@ router.get('/', (req: Request, res: Response) => {
   const userId = req.user!.userId;
   const mode = typeof req.query.mode === 'string' ? req.query.mode : '';
   const life = lifecycleClause(parseScope(req.query.scope));
+  // 条件按 AND 拼装，而不是"每个维度各写一条 SQL"：mode × source × scope 三档各写各的
+  // 立刻变成 8 条 SQL，其中必然有一条漏加条件（漏 life 就会把回收站会话放回主列表）。
+  const conds: string[] = ['user_id = ?', life];
+  const params: unknown[] = [userId];
   // 非法 mode 视为「不过滤」而不是「查不到」：前端传错值时不该让用户看到空列表
   if (mode && VALID_MODES.has(mode)) {
-    const rows = db.prepare(
-      `SELECT * FROM conversation
-       WHERE user_id = ? AND COALESCE(NULLIF(mode, ''), 'office') = ? AND ${life}
-       ORDER BY pinned DESC, updated_at DESC`,
-    ).all(userId, mode);
-    res.json({ data: rows });
-    return;
+    conds.push(`COALESCE(NULLIF(mode, ''), 'office') = ?`);
+    params.push(mode);
   }
+  // 来源过滤（2026-10-16，页面内对话的历史入口）：按 source 拉，与 mode **正交** ——
+  //   历史弹窗要看的是"所有页面对话"，不能因为用户此刻待在 dev 模式就查不到那些页面对话。
+  //   非法来源同样按不过滤处理（口径与 mode 一致，实现在 core 的 sourceFilterClause）。
+  const sourceCond = sourceFilterClause(req.query.source);
+  if (sourceCond) conds.push(sourceCond);
   const rows = db.prepare(
-    `SELECT * FROM conversation WHERE user_id = ? AND ${life} ORDER BY pinned DESC, updated_at DESC`,
-  ).all(userId);
+    `SELECT * FROM conversation WHERE ${conds.join(' AND ')} ORDER BY pinned DESC, updated_at DESC`,
+  ).all(...params);
   res.json({ data: rows });
 });
 
@@ -95,7 +101,7 @@ router.post('/archive-all', (req: Request, res: Response) => {
 // POST /api/conversations
 router.post('/', (req: Request, res: Response) => {
   const userId = req.user!.userId;
-  const { title, platformId, modelId, agentId, spaceId, permissionMode, mode, taskType } = req.body || {};
+  const { title, platformId, modelId, agentId, spaceId, permissionMode, mode, taskType, source, sourceMeta } = req.body || {};
   if (!title) { res.status(400).json({ error: '标题为必填项' }); return; }
   const id = uuid();
   const now = Date.now();
@@ -106,7 +112,7 @@ router.post('/', (req: Request, res: Response) => {
     if (def) resolvedAgentId = 'a_default_assistant';
   }
   db.prepare(
-    'INSERT INTO conversation (id, user_id, title, agent_id, platform_id, model_id, space_id, mcp_servers_json, skill_ids_json, pinned, permission_mode, mode, task_type, title_source, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    'INSERT INTO conversation (id, user_id, title, agent_id, platform_id, model_id, space_id, mcp_servers_json, skill_ids_json, pinned, permission_mode, mode, task_type, title_source, source, source_meta_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
   ).run(id, userId, title, resolvedAgentId, platformId || null, modelId || null, spaceId || null, '[]', '[]', 0, normalizePermissionMode(permissionMode),
     // 归属模式：前端建会话时带上当前模式；缺省 office（与存量迁移口径一致）
     VALID_MODES.has(String(mode)) ? String(mode) : 'office',
@@ -114,7 +120,12 @@ router.post('/', (req: Request, res: Response) => {
     // 空 = 跟随目录（space.task_type）。父类型也允许落在会话上（选线前的占位由注入侧兜）。
     taskType ? String(taskType) : null,
     // 标题来源：新建一律 'auto'（首个任务 completed 时允许 LLM 生成标题覆盖一次；见 services/conversation-title.ts）
-    'auto', now, now);
+    'auto',
+    // 来源标记（2026-10-16）：浏览器页面对话 = 'browser-page'；白名单外一律 NULL（普通会话）。
+    // 置空也不报错：来源只是"能认出来"的线索，不该让一次笔误把整条建会话链路打挂。
+    normalizeConversationSource(source),
+    normalizeSourceMeta(sourceMeta),
+    now, now);
   const row = db.prepare('SELECT * FROM conversation WHERE id = ?').get(id);
   res.json({ data: row });
 });

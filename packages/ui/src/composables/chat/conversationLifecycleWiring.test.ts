@@ -125,12 +125,21 @@ describe('UI · 两处列表同口径 + 归档只读', () => {
   });
 });
 
-describe('后端收口 · 两条 SQL 分支与任务入口', () => {
-  it('列表路由两条 SQL 分支都带 lifecycle 过滤（历史上两条 SQL 各写一遍）', () => {
+describe('后端收口 · 列表 SQL 与任务入口', () => {
+  it('★ 列表路由只有**一条** SQL：条件按 AND 拼装，lifecycle 恒在（2026-10-16 收口）', () => {
+    // 原实现是"有 mode 分支 / 无 mode 分支"两条 SQL 各写一遍，本用例当时钉的是
+    // "两条都要拼上 ${life}"。加 source 过滤后这两个维度会变成 4 条 SQL，
+    // 必然出现某条漏加条件（漏 life 就把回收站会话放回主列表），故改为**单条 SQL + 条件数组拼装**。
+    // ⇒ 断言口径随之改成"不存在第二条能漂移的 SQL"，而不是"数够两条"。
     const get = CONV_ROUTES.slice(CONV_ROUTES.indexOf("router.get('/'"));
     const body = get.slice(0, get.indexOf('\nrouter.'));
-    const occurrences = body.match(/\$\{life\}/g) || [];
-    expect(occurrences.length, '两条 SQL 分支都要拼上 lifecycle 过滤').toBe(2);
+    const selects = body.match(/SELECT \* FROM conversation/g) || [];
+    expect(selects.length, '★ 列表路由又出现第二条 SQL 了 —— 请回到"条件数组 join(AND)"的单一拼装').toBe(1);
+    // life 现在不再以 `${life}` 出现在 SQL 里，而是条件数组的第一批 —— 断言随之改成"它在数组里"
+    expect(body, '★ 条件数组的第一批必须含 user_id 与 life（漏 life 会把回收站会话放回主列表）')
+      .toMatch(/conds: string\[\] = \['user_id = \?', life\]/);
+    expect(body, '★ 条件必须是 join 出来的，否则新增过滤维度时又会分叉成多条 SQL')
+      .toMatch(/conds\.join\(' AND '\)/);
   });
 
   it('createTask 拦归档/回收站会话（覆盖前端 SSE / IM / 定时任务全部入口）', () => {

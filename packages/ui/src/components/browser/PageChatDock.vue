@@ -13,20 +13,28 @@
 -->
 <template>
   <div class="page-chat-dock">
-    <!-- 头部：归属 + 指令入口 + 清空/收起 -->
+    <!-- 头部：归属 + 历史/技能 + 指令入口 + 清空/收起 -->
     <div class="pcd-head">
       <span class="pcd-title">💬 页面对话</span>
       <span class="pcd-scope" :title="scopeHint">{{ isOwnConv ? '本页专属会话' : '当前会话' }}</span>
-      <span class="pcd-spacer"></span>
-      <!-- P3-4 自愈：脚本刚跑失败才出现（只出文本、不自动执行、不改指令库） -->
-      <button
-        v-if="state.repairHint" class="pcd-icon-btn repair"
-        title="让 AI 看报错给出修正版脚本（只出文本，不自动执行）"
-        :disabled="state.streaming || convBusy" @click="onRepairScript"
-      >🛠 修复脚本</button>
-      <button class="pcd-icon-btn" title="页面指令（管理 / 新建）" @click="$emit('manage')">指令</button>
-      <button class="pcd-icon-btn" :disabled="!state.messages.length" title="清空本页对话" @click="onClear">清空</button>
-      <button class="pcd-icon-btn" title="收起面板" @click="$emit('close')">✕</button>
+      <!-- 按钮组单独成容器并允许换行：面板只有 340px 宽，按钮多了之后
+           "一个 flex:1 的 spacer + 一堆按钮" 会把按钮挤成竖排或直接溢出 -->
+      <div class="pcd-head-actions">
+        <!-- P3-4 自愈：脚本刚跑失败才出现（只出文本、不自动执行、不改指令库） -->
+        <button
+          v-if="state.repairHint" class="pcd-icon-btn repair"
+          title="让 AI 看报错给出修正版脚本（只出文本，不自动执行）"
+          :disabled="state.streaming || convBusy" @click="onRepairScript"
+        >🛠 修复脚本</button>
+        <button class="pcd-icon-btn" title="历史页面会话（列表 / 打开 / 删除）" @click="historyVisible = true">🕘 历史</button>
+        <button
+          class="pcd-icon-btn" title="把这次页面对话蒸馏成 Skill（可存进技能商店）"
+          :disabled="!distillMessages.length" @click="distillVisible = true"
+        >✨ 技能</button>
+        <button class="pcd-icon-btn" title="页面指令（管理 / 新建）" @click="$emit('manage')">指令</button>
+        <button class="pcd-icon-btn" :disabled="!state.messages.length" title="清空本页对话" @click="onClear">清空</button>
+        <button class="pcd-icon-btn" title="收起面板" @click="$emit('close')">✕</button>
+      </div>
     </div>
 
     <!-- 消息流 -->
@@ -79,6 +87,20 @@
         >发送</button>
       </div>
     </div>
+
+    <!-- P3-5 历史：列表 / 打开（切本 tab 的会话绑定并读回消息）/ 删除（软删进回收站） -->
+    <PageChatHistoryDialog
+      v-model:visible="historyVisible"
+      :tab-id="tabId"
+      :current-conv-id="state.conversationId"
+      :current-host="hostOf(url || '')"
+      @opened="scrollToBottom"
+    />
+
+    <!-- 总结成 Skill：复用主对话那套蒸馏弹窗（勾选素材 → 蒸馏 → 改造 → 存进技能商店）。
+         ★ 只喂**真正的对话**（distillMessagesOf 丢掉"已停止/漂移告警"这类本地面板提示），
+           否则用户存出来的技能里会多出一条莫名其妙的运维步骤。 -->
+    <DistillDialog v-model:visible="distillVisible" :messages="distillMessages" />
   </div>
 </template>
 
@@ -92,7 +114,11 @@ import {
   renderCommandBody, usedVarsOf, type PageCommand, type PageCommandVars,
 } from '../../utils/pageCommand';
 import { collectPageContext, hostOf } from '../../utils/pageContext';
+import { distillMessagesOf } from '../../utils/pageChatHistory';
 import { useChat } from '../../composables/chat/useChat';
+// P3-5：历史弹窗（本目录）+ 总结成 skill（复用主对话那套蒸馏弹窗，不另造一套）
+import PageChatHistoryDialog from './PageChatHistoryDialog.vue';
+import DistillDialog from '../DistillDialog.vue';
 
 const props = defineProps<{
   /** 当前页所在 tab（状态键） */
@@ -118,8 +144,13 @@ const { renderMarkdown, renderAssistantMarkdown, store: chatStore } = useChat();
 
 const draft = ref('');
 const listRef = ref<HTMLElement | null>(null);
+/** P3-5：历史弹窗 / 蒸馏弹窗的开关 */
+const historyVisible = ref(false);
+const distillVisible = ref(false);
 
 const state = computed(() => pageChat.stateOf(props.tabId));
+/** 蒸馏素材：只含真正的对话（丢掉"已停止""页面漂移"这类本地面板提示） */
+const distillMessages = computed(() => distillMessagesOf(state.value.messages));
 const isOwnConv = computed(() => !!state.value.ownConversation);
 // preview 空间共用主会话：主会话正在跑任务时不允许再塞一条（避免同会话任务互抢）
 const convBusy = computed(() =>
@@ -353,11 +384,16 @@ watch(() => props.tabCount, (now) => {
   border-bottom: 1px solid var(--el-border-color-lighter, #ebeef5);
   font-size: 13px; flex-shrink: 0;
 }
-.pcd-title { font-weight: 600; color: var(--el-text-color-primary, #303133); }
-.pcd-scope { font-size: 11px; color: var(--el-text-color-secondary, #909399); }
-.pcd-spacer { flex: 1; }
+.pcd-title { font-weight: 600; color: var(--el-text-color-primary, #303133); flex-shrink: 0; }
+.pcd-scope { font-size: 11px; color: var(--el-text-color-secondary, #909399); flex-shrink: 0; }
+/* 按钮组：占满剩余宽度、靠右、放不下就换行
+   （340px 的面板里要放 6 个入口，"flex:1 的 spacer + 一排按钮"会把按钮挤到溢出的解法） */
+.pcd-head-actions {
+  flex: 1; min-width: 0; display: flex; align-items: center; justify-content: flex-end;
+  flex-wrap: wrap; gap: 2px 4px;
+}
 .pcd-icon-btn {
-  border: none; background: transparent; cursor: pointer; font-size: 12px;
+  border: none; background: transparent; cursor: pointer; font-size: 12px; white-space: nowrap;
   color: var(--el-text-color-secondary, #909399); padding: 2px 4px; border-radius: 4px;
 }
 .pcd-icon-btn:hover:not(:disabled) { background: var(--el-fill-color-light, #f5f7fa); color: var(--el-color-primary); }

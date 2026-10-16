@@ -76,6 +76,11 @@
               <el-tooltip v-if="conv.scheduledTaskId" content="定时任务发起" placement="top">
                 <el-icon class="scheduled-badge"><Timer /></el-icon>
               </el-tooltip>
+              <!-- 来源标记（2026-10-16）：来自浏览器页面对话的会话在这里一眼认出来。
+                   这里只标、不改行为 —— 打开/删除在浏览器面板的「历史」入口里做。 -->
+              <el-tooltip v-if="conv.source === BROWSER_PAGE_SOURCE" content="来自浏览器页面对话（在浏览器面板「历史」里打开 / 删除）" placement="top">
+                <span class="conv-src-badge">页面</span>
+              </el-tooltip>
               <span v-if="!batchMode && renamingId !== conv.id" class="task-row-actions" @click.stop @dblclick.stop>
                 <span class="task-row-act is-on" role="button" title="取消置顶" @click="rows.togglePinned(conv)"><el-icon :size="12"><Top /></el-icon></span>
                 <span class="task-row-act" role="button" title="重命名" @click="rows.startRename(conv)"><el-icon :size="12"><EditPen /></el-icon></span>
@@ -133,6 +138,11 @@
               <span v-if="store.isConvStreaming(conv.id)" class="conv-run-badge" title="运行中"></span>
               <el-tooltip v-if="conv.scheduledTaskId" content="定时任务发起" placement="top">
                 <el-icon class="scheduled-badge"><Timer /></el-icon>
+              </el-tooltip>
+              <!-- 来源标记（2026-10-16）：来自浏览器页面对话的会话在这里一眼认出来。
+                   这里只标、不改行为 —— 打开/删除在浏览器面板的「历史」入口里做。 -->
+              <el-tooltip v-if="conv.source === BROWSER_PAGE_SOURCE" content="来自浏览器页面对话（在浏览器面板「历史」里打开 / 删除）" placement="top">
+                <span class="conv-src-badge">页面</span>
               </el-tooltip>
               <!-- 行尾 hover 操作组：置顶/重命名/移动空间/删除（移动与右键菜单同一 moveTo 流程） -->
               <span v-if="!batchMode && renamingId !== conv.id" class="task-row-actions" @click.stop @dblclick.stop>
@@ -226,6 +236,11 @@
               <span v-if="store.isConvStreaming(conv.id)" class="conv-run-badge" title="运行中"></span>
               <el-tooltip v-if="conv.scheduledTaskId" content="定时任务发起" placement="top">
                 <el-icon class="scheduled-badge"><Timer /></el-icon>
+              </el-tooltip>
+              <!-- 来源标记（2026-10-16）：来自浏览器页面对话的会话在这里一眼认出来。
+                   这里只标、不改行为 —— 打开/删除在浏览器面板的「历史」入口里做。 -->
+              <el-tooltip v-if="conv.source === BROWSER_PAGE_SOURCE" content="来自浏览器页面对话（在浏览器面板「历史」里打开 / 删除）" placement="top">
+                <span class="conv-src-badge">页面</span>
               </el-tooltip>
               <!-- 行尾 hover 操作组：与根列表同款，共用 useTaskRowActions -->
               <span v-if="!batchMode && renamingId !== conv.id" class="task-row-actions" @click.stop @dblclick.stop>
@@ -578,6 +593,8 @@ import {
 } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { getTaskType, isParentTaskType, getChildTaskTypes } from '@yan-zhi/shared';
+// 来源标记的白名单常量取自 core（别在模板里写 'browser-page' 字面量）
+import { CONV_SOURCE_BROWSER_PAGE } from '@yan-zhi/core';
 import { useChat } from '../../composables/chat/useChat';
 import { useTaskRowActions } from '../../composables/useTaskRowActions';
 import { bindLongPress } from '../../composables/useLongPress';
@@ -589,6 +606,9 @@ import FormDialog from '../FormDialog.vue';
 import EmptyState from '../common/EmptyState.vue';
 import ActionSheet from '../common/ActionSheet.vue';
 import type { ActionSheetAction } from '../common/ActionSheet.vue';
+
+/** 会话来源徽标的判据（模板里 `v-if="conv.source === BROWSER_PAGE_SOURCE"`） */
+const BROWSER_PAGE_SOURCE = CONV_SOURCE_BROWSER_PAGE;
 
 const {
   sideTab, search, store, batchMode, toggleConvSelect,

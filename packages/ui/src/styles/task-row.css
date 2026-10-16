@@ -58,6 +58,23 @@
   100% { box-shadow: 0 0 0 0 transparent; }
 }
 
+/* ===== 会话来源徽标（2026-10-16）：标出"这条会话来自浏览器页面对话" =====
+   与 conv-run-badge 同族，同样两个列表都要用（ChatSidebar / TaskListSection）——
+   与 .task-row-act 一样必须放全局文件：写在按路由懒加载的 views/chat.css 里，
+   四模式工作台的任务列表就拿不到（本仓出过这种"只有办公侧栏生效"的事故，
+   见 composables/pinnedConversationGroup.test.ts 的注释）。 */
+.conv-src-badge {
+  flex: 0 0 auto;
+  font-size: 10px;
+  line-height: 16px;
+  padding: 0 5px;
+  border-radius: 8px;
+  margin-left: 2px;
+  white-space: nowrap;
+  color: var(--color-primary);
+  background: color-mix(in srgb, var(--color-primary) 12%, transparent);
+}
+
 /* ===== 显式「新建任务」按钮（列表头部；宽度/占位由各列表自行安排） ===== */
 .new-task-btn {
   display: inline-flex;

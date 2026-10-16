@@ -70,7 +70,10 @@ function createTables(): void {
       task_type TEXT,
       updated_at INTEGER DEFAULT 0, created_at INTEGER DEFAULT 0,
       -- 生命周期三列（2026-10-16）：PATCH 走 writableGuard 守卫，缺列 = no such column = 500
-      archived_at INTEGER, deleted_at INTEGER, last_activity_at INTEGER
+      archived_at INTEGER, deleted_at INTEGER, last_activity_at INTEGER,
+      -- 来源标记两列（2026-10-16 页面内对话历史）：POST /conversations 的 INSERT 会写它们，
+      -- 本测试 mock 掉了 db.js ⇒ apps/server/src/db.ts 的启动迁移不作用于本库，夹具必须自带
+      source TEXT, source_meta_json TEXT
     );
     CREATE TABLE IF NOT EXISTS message (
       id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, user_id TEXT NOT NULL,

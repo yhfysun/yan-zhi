@@ -99,6 +99,10 @@ CREATE TABLE IF NOT EXISTS conversation (
   pinned INTEGER NOT NULL DEFAULT 0,
   permission_mode TEXT NOT NULL DEFAULT 'readonly',
   task_plan_json TEXT,
+  -- 会话来源标记（2026-10-16）：NULL = 普通会话；'browser-page' = 浏览器页面对话。
+  -- 取值白名单与规范化见 db/conversation-source.ts（别处不要写字面量）
+  source TEXT,
+  source_meta_json TEXT,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
@@ -550,6 +554,16 @@ export async function initSchema(execFn: (sql: string) => Promise<void>): Promis
   try { await execFn(`UPDATE conversation SET last_activity_at = COALESCE(last_activity_at, updated_at) WHERE last_activity_at IS NULL;`); } catch { /* 旧库无列时跳过 */ }
   // 列表默认只看未归档+未删除的会话 ⇒ 这两列会出现在每条列表 SQL 里，建索引避免全表扫
   try { await execFn(`CREATE INDEX IF NOT EXISTS idx_conversation_lifecycle ON conversation(deleted_at, archived_at);`); } catch { /* 索引已存在 */ }
+  // 迁移：conversation 新增来源标记两列（2026-10-16 浏览器页面对话落库可查）。
+  //   source = NULL 普通会话 / 'browser-page' 页面对话；白名单与规范化见 db/conversation-source.ts。
+  //   ★ 必须是**可空**列：存量会话一律 NULL，不需要回填（NULL 就是"普通会话"这个默认语义）。
+  try { await execFn(`ALTER TABLE conversation ADD COLUMN source TEXT;`); } catch { /* 列已存在 */ }
+  try { await execFn(`ALTER TABLE conversation ADD COLUMN source_meta_json TEXT;`); } catch { /* 列已存在 */ }
+  // 来源过滤是列表查询的条件之一（历史弹窗按 source 拉），建索引避免全表扫。
+  // ★★★ 这里**不能**照抄服务端的 `(user_id, source)`：**core 的 conversation 表没有 user_id 列**
+  //   （用户归属只存在于服务端库）。照抄的后果是 CREATE INDEX 直接失败 —— 而且被下面的
+  //   catch 吞成"索引已存在"，静默无索引（本测试就是这么发现的：断言里找不到这个索引）。
+  try { await execFn(`CREATE INDEX IF NOT EXISTS idx_conversation_source ON conversation(source);`); } catch { /* 索引已存在 */ }
   // 迁移：space 新增 task_type / task_config_json 列（「目录即任务」：目录绑定任务类型 + 类型覆盖配置）
   try { await execFn(`ALTER TABLE space ADD COLUMN task_type TEXT;`); } catch { /* 列已存在 */ }
   try { await execFn(`ALTER TABLE space ADD COLUMN task_config_json TEXT;`); } catch { /* 列已存在 */ }

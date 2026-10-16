@@ -9,6 +9,8 @@ export * from './workflow/engine';
 export * from './workflow/nodes';
 export * from './compress/window';
 export * from './db/schema';
+// 会话来源标记（2026-10-16）：写入口与列表过滤的白名单唯一出口
+export * from './db/conversation-source';
 // 页面指令的导入校验（P3-2）：导出/导入共用，导入的脚本强制"每次确认"
 export * from './db/page-command-import';
 export * from './skill/loader';

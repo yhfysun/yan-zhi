@@ -19,6 +19,9 @@ import { consumeSseStream } from '../utils/sse';
 import { useSettingsStore } from './settings';
 import { usePlatformStore } from './platform';
 import { buildPageTaskPrompt, collectPageContext, hostOf, isRealPageUrl, type ContextTabLike } from '../utils/pageContext';
+// 来源标记唯一出口（core）：本 store 不自造 'browser-page' 字面量
+import { CONV_SOURCE_BROWSER_PAGE, type ConversationSourceMeta } from '@yan-zhi/core';
+import { toSessions, type PageChatSession } from '../utils/pageChatHistory';
 import {
   addErrorNote, addMessage, addUserEcho, applyTaskEvent, createChatState, replaceMessagesFromServer,
   resetChatState, type PageChatState,
@@ -132,20 +135,28 @@ export const usePageChatStore = defineStore('page-chat', () => {
   }
 
   /** 懒创建一个承载本对话的会话（page 空间专用；标题带上站点，便于在会话列表里认出来） */
-  async function createOwnConversation(title: string, agentId: string): Promise<string> {
-    const r = await api.post<any>('/conversations', { title, agentId });
+  async function createOwnConversation(title: string, agentId: string, meta?: ConversationSourceMeta): Promise<string> {
+    // ★ 必须带来源标记：这条会话是"浏览器页面对话"（历史入口按它查、会话列表按它打徽标）。
+    //   没有标记就只能靠标题前缀猜，用户一改名就失效。
+    const r = await api.post<any>('/conversations', {
+      title, agentId, source: CONV_SOURCE_BROWSER_PAGE, sourceMeta: meta || undefined,
+    });
     if ('error' in r) throw new Error(r.error);
     const id = (r.data as any)?.id;
     if (!id) throw new Error('创建会话失败：返回体缺少 id');
     return String(id);
   }
 
-  /** 自建会话收尾：用服务端消息列表覆盖本地（工具步骤/子智能体消息一并呈现） */
-  async function refreshFromServer(state: PageChatState): Promise<void> {
+  /** 自建会话收尾：用服务端消息列表覆盖本地（工具步骤/子智能体消息一并呈现）。返回是否真读到了 */
+  async function refreshFromServer(state: PageChatState): Promise<boolean> {
     try {
       const r = await api.get<any[]>(`/conversations/${state.conversationId}/messages`);
-      if ('data' in r && Array.isArray(r.data)) replaceMessagesFromServer(state, r.data);
-    } catch { /* 拉取失败就保留本地视图，不影响可用性 */ }
+      if ('data' in r && Array.isArray(r.data)) {
+        replaceMessagesFromServer(state, r.data);
+        return true;
+      }
+      return false;
+    } catch { return false; }   // 拉取失败就保留本地视图，不影响可用性
   }
 
   /** 订阅任务 SSE，逐条归约到该 tab 的状态里 */
@@ -186,14 +197,28 @@ export const usePageChatStore = defineStore('page-chat', () => {
       return { ok: false, msg };
     }
 
-    // 会话解析：传了 convId = 共用（preview）；没传 = 本 tab 自建（page）
+    // 会话解析：
+    //   · 显式传了 convId（preview 空间 = 当前主会话）⇒ 共用那一个；
+    //   · 没传 ⇒ 用**本 tab 已有的**专用会话；确实没有才新建。
+    // ★ "复用"这一步不能省：此前没传就一律新建，于是 /browser 里**每发一句就多出一条会话**
+    //   （历史列表被一句一条的会话灌满、"本页专属会话"名不副实、每次发送都从零上下文开始）。
     let convId = String(input.convId || '');
     let own = false;
     let agentId = String(input.agentId || '');
     try {
-      if (!convId) {
+      if (convId) {
+        own = false;                     // 共用主会话（preview 空间）
+      } else if (state.conversationId) {
+        convId = state.conversationId;   // 复用本 tab 的专用会话（含"历史"里打开的）
+        own = true;
+      } else {
         agentId = agentId || PAGE_CHAT_AGENT_ID;
-        convId = await createOwnConversation(`浏览器 · ${hostOf(String(tab?.url)) || '页面'}`, agentId);
+        const url = String(tab?.url || '');
+        convId = await createOwnConversation(
+          `浏览器 · ${hostOf(url) || '页面'}`, agentId,
+          // 来源附加信息：站点/地址落库，历史列表才能显示"哪一页"、才能做"只看本站"
+          { url, host: hostOf(url), scope: 'page' },
+        );
         own = true;
       }
     } catch (e: any) {
@@ -248,5 +273,58 @@ export const usePageChatStore = defineStore('page-chat', () => {
     }
   }
 
-  return { states, stateOf, hasChat, isStreaming, dropTab, dropAll, clearTab, stop, stopTabs, note, send };
+  // ── P3-5「历史」（2026-10-16，用户拍板"落库可查可删可总结成 skill"）──────────────
+  //
+  // 口径：页面对话**落库**（建会话时就带来源标记），但**不主动挤进主会话列表的日常视野** ——
+  // 它由浏览器面板的「历史」入口管理（列表 / 打开续聊 / 删除三件事）。
+
+  /**
+   * 拉本用户的全部页面对话（按来源查，**与当前所在模式无关**）。
+   * 失败不抛：返回空列表 + warning，由 UI 如实提示 —— "历史是空的"和"读不到历史"必须能分清。
+   */
+  async function listSessions(): Promise<{ rows: PageChatSession[]; warning: string }> {
+    const q = new URLSearchParams({ source: CONV_SOURCE_BROWSER_PAGE, scope: 'active' });
+    const r: any = await api.get(`/conversations?${q.toString()}`);
+    if (r && 'error' in r) return { rows: [], warning: `历史读取失败：${r.error}` };
+    return { rows: toSessions(r?.data), warning: '' };
+  }
+
+  /**
+   * 把某个 tab 切到一条历史会话：清掉本 tab 原有消息 → 绑定会话 → 从服务端读回消息。
+   * ★ 只读回消息、**不自动重放任务**：要接着聊就正常发消息（走同一条 send 通道）。
+   * ★ ownConversation=true：它确实是"页面对话"自己的会话，收尾可以按服务端真相对齐。
+   */
+  async function openSession(tabId: string, session: PageChatSession): Promise<PageChatSendResult> {
+    const state = stateOf(tabId);
+    if (state.streaming) return { ok: false, msg: '这一页正在执行，先停止或等它结束' };
+    resetChatState(state);            // 两条会话的消息绝不能混在同一个面板里
+    state.conversationId = session.id;
+    state.ownConversation = true;
+    const ok = await refreshFromServer(state);
+    if (!ok) {
+      addErrorNote(state, '已切到这条历史会话，但消息没读上来（网络问题或该会话已被删），可以直接继续发言。');
+      return { ok: false, msg: '' };
+    }
+    if (!state.messages.length) note(tabId, '这条历史会话没有留下消息。');
+    return { ok: true };
+  }
+
+  /**
+   * 删一条页面对话：服务端**软删进回收站**（可恢复），不是真删。
+   * ★ 删完必须把正在用它的 tab 解绑：否则下一次发言会打到一条已在回收站里的会话
+   *   （服务端按 409/404 拒绝，表现是"点了发送没反应、只说会话不存在"）。
+   */
+  async function deleteSession(id: string): Promise<{ ok: true } | { ok: false; msg: string }> {
+    const r: any = await api.delete(`/conversations/${encodeURIComponent(id)}`);
+    if (r && 'error' in r) return { ok: false, msg: String(r.error) };
+    for (const s of Object.values(states.value)) {
+      if (s.conversationId === id) { s.conversationId = ''; s.ownConversation = false; }
+    }
+    return { ok: true };
+  }
+
+  return {
+    states, stateOf, hasChat, isStreaming, dropTab, dropAll, clearTab, stop, stopTabs, note, send,
+    listSessions, openSession, deleteSession,
+  };
 });

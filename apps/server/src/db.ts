@@ -830,6 +830,19 @@ try { db.exec('UPDATE conversation SET last_activity_at = COALESCE(last_activity
 // 列表默认只查 deleted_at IS NULL AND archived_at IS NULL ⇒ 复合过滤，走索引避免全表扫
 try { db.exec('CREATE INDEX IF NOT EXISTS idx_conversation_lifecycle ON conversation(deleted_at, archived_at)'); } catch {}
 
+// ── 会话来源标记两列（2026-10-16「浏览器页面对话落库可查」，必须与 core/db/schema.ts 同步）──
+// source = NULL 普通会话 / 'browser-page' 页面对话；白名单与规范化见 core 的 db/conversation-source.ts。
+// ★ 必须可空：存量会话一律 NULL，NULL 就是"普通会话"这个默认语义，不需要回填。
+// ★ 服务端**不跑 initSchema**（schema 一直是客户端启动时建的，见 routes/page-commands.ts:9），
+//   所以这两列对"纯服务端部署 + 旧库"只能靠这里补 —— 漏了就是按来源查列表直接 500
+//   （"no such column: source"），页面内对话的历史入口一开就报错。
+try { db.exec('ALTER TABLE conversation ADD COLUMN source TEXT'); } catch {}
+try { db.exec('ALTER TABLE conversation ADD COLUMN source_meta_json TEXT'); } catch {}
+// 来源过滤是历史弹窗的主查询条件（按 user + source 拉），建索引避免全表扫。
+// ★ 服务端库有 user_id，故是两列复合索引；core 侧的 conversation 表没有 user_id，
+//   那边是单列 idx_conversation_source（照抄这条会静默建不出索引，见 core/schema.ts 的注释）。
+try { db.exec('CREATE INDEX IF NOT EXISTS idx_conversation_source ON conversation(user_id, source)'); } catch {}
+
 // 迁移 message 表（添加 system_prompt_snapshot 列 + 子智能体归属列）
 try { db.exec('ALTER TABLE message ADD COLUMN system_prompt_snapshot TEXT'); } catch {}
 

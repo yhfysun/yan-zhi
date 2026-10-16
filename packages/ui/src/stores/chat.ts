@@ -2,7 +2,7 @@
 import { defineStore } from 'pinia';
 import { ref, computed, nextTick, watch } from 'vue';
 import type { Conversation, Message, Platform, Model, DeltaToolCall, InlineDataView } from '@yan-zhi/shared';
-import { getPlatformAdapter, LlmClient, ContextWindow, getToolRegistry, resolveToolPath } from '@yan-zhi/core';
+import { getPlatformAdapter, LlmClient, ContextWindow, getToolRegistry, resolveToolPath, parseSourceMeta } from '@yan-zhi/core';
 import { uid } from '@yan-zhi/shared';
 import { useMcpStore } from './mcp';
 import { useAgentStore } from './agent';
@@ -205,6 +205,16 @@ function rowToConv(r: any): Conversation {
     archivedAt: r.archived_at ?? r.archivedAt ?? null,
     deletedAt: r.deleted_at ?? r.deletedAt ?? null,
     lastActivityAt: r.last_activity_at ?? r.lastActivityAt ?? null,
+    // ── 来源标记（2026-10-16）：空 = 普通会话；'browser-page' = 浏览器页面对话 ──────
+    // ★ 不做白名单收窄（与 mode 的处理相反）：来源在这里只用于**展示**（列表徽标），
+    //   收窄的收益是"未知来源不显示徽标"，代价是"以后新加来源要记得同步改这里"——
+    //   而这个文件正是历史上漂移过好几处的地方（见上面 mode 的注释）。
+    //   写入口的白名单收窄在 core 的 normalizeConversationSource，一处就够。
+    source: r.source ?? null,
+    sourceMeta: (() => {
+      if (!r.source_meta_json) return null;
+      try { return parseSourceMeta(r.source_meta_json); } catch { return null; }
+    })(),
   };
 }
 
@@ -1403,7 +1413,7 @@ async function loadConversations(scope: 'active' | 'archived' | 'trashed' | 'all
     }
   }
 
-  async function createConversation(title: string, opts?: { platformId?: string; modelId?: string; skillIds?: string[]; spaceId?: string; agentId?: string; taskType?: string | null }): Promise<string> {
+  async function createConversation(title: string, opts?: { platformId?: string; modelId?: string; skillIds?: string[]; spaceId?: string; agentId?: string; taskType?: string | null; source?: string; sourceMeta?: { url?: string; host?: string; scope?: string } }): Promise<string> {
     // 未显式指定时记录当前选中的智能体，保证会话打开时能还原
     let agentId = opts?.agentId;
     if (!agentId) {
@@ -1431,6 +1441,9 @@ async function loadConversations(scope: 'active' | 'archived' | 'trashed' | 'all
         mode: activeMode.value,
         // 任务级任务类型（「父任务」层）：多任务目录里本条任务选的子线
         taskType: opts?.taskType || null,
+        // 来源标记（2026-10-16）：只有页面对话会传；不传 = 普通会话（服务端落 NULL）
+        source: opts?.source,
+        sourceMeta: opts?.sourceMeta,
       });
       if ('data' in r) {
         const row = r.data as any;
@@ -1445,8 +1458,9 @@ async function loadConversations(scope: 'active' | 'archived' | 'trashed' | 'all
     const ts = Date.now();
     const skillIdsJson = JSON.stringify(opts?.skillIds || []);
     await adapter.db.exec(
-      'INSERT INTO conversation (id, title, agent_id, platform_id, model_id, space_id, mcp_servers_json, skill_ids_json, pinned, mode, task_type, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      [id, title, agentId || null, opts?.platformId || null, opts?.modelId || null, spaceId || null, '[]', skillIdsJson, 0, activeMode.value, opts?.taskType || null, ts, ts],
+      'INSERT INTO conversation (id, title, agent_id, platform_id, model_id, space_id, mcp_servers_json, skill_ids_json, pinned, mode, task_type, source, source_meta_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [id, title, agentId || null, opts?.platformId || null, opts?.modelId || null, spaceId || null, '[]', skillIdsJson, 0, activeMode.value, opts?.taskType || null,
+        opts?.source || null, opts?.sourceMeta ? JSON.stringify(opts.sourceMeta) : null, ts, ts],
     );
     await loadConversations();
     return id;
